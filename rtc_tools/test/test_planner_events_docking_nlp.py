@@ -28,6 +28,7 @@ _STRINGS = {
     "segment_kind": "none",
     "nlp_reason": "off",
     "segment_infeasible_group": "none",
+    "segment_cut_site": "none",
     "replace_step": "none",
     "replacement_outcome": "off",
     "replacement_core_reason": "none",

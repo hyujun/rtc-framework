@@ -357,6 +357,10 @@ std::vector<Entry<MpcDockingSegmentCoreParams>> CoreTable() {
       {"solver.eps_rel", "0.00000001", "-1", t, [](const R& r) { return r.solver.eps_rel; }, 1e-8},
       {"solver.max_iter", "200", "0", t,
        [](const R& r) { return static_cast<double>(r.solver.max_iter); }, 200.0},
+      {"solver.max_iter_in", "50", "0", t,
+       [](const R& r) { return static_cast<double>(r.solver.max_iter_in); }, 50.0},
+      {"solver.max_iter_warm", "30", "-1", t,
+       [](const R& r) { return static_cast<double>(r.solver_max_iter_warm); }, 30.0},
   };
 }
 
@@ -477,7 +481,7 @@ TEST(DockingParamsKeys, TheTablesAreNotEmptyAndTheirKeysAreDistinct) {
   const auto nlp = NlpTable();
   const auto mpc = MpcTable();
   EXPECT_EQ(hand.size(), 20u);
-  EXPECT_EQ(CoreTable().size(), 57u);
+  EXPECT_EQ(CoreTable().size(), 59u);
   EXPECT_EQ(nlp.size(), 23u + CoreTable().size());
   EXPECT_EQ(mpc.size(), 13u + CoreTable().size());
   for (const auto& table : {AllGood(hand), AllGood(nlp), AllGood(mpc)}) {
@@ -1004,6 +1008,18 @@ TEST(DockingParamsCore, AnAbsentMapChangesNothing) {
   ReadDockingCoreParams(YAML::Load("{}"), "x.core", 6, core);
   EXPECT_EQ(core.u_scale, d.u_scale);
   EXPECT_EQ(core.sigma_T, d.sigma_T);
+}
+
+// 0 is how an overlay switches a shipped cap off (it cannot delete a key):
+// the parser takes it, and the core reads it as no separate cap.
+TEST(DockingParamsCore, AWarmCapOfZeroIsAcceptedAndSwitchesItOff) {
+  MpcDockingSegmentCoreParams core;
+  core.solver_max_iter_warm = 10;
+  ReadDockingCoreParams(YAML::Load("{solver: {max_iter_warm: 0}}"), "x.core", 6, core);
+  EXPECT_EQ(core.solver_max_iter_warm, 0);
+  EXPECT_THROW(
+      ReadDockingCoreParams(YAML::Load("{solver: {max_iter_warm: -1}}"), "x.core", 6, core),
+      std::exception);
 }
 
 TEST(DockingParamsCore, AKeyAbsentKeepsWhatTheCallerHeld) {

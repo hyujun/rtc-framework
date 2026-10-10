@@ -22,7 +22,7 @@
 //     the QP grows with the node count.
 //   • a whole wake with the solves capped at 1, 2, 4 and 8.
 //   • how far past its share a solve runs when the share is short: the core
-//     reads its deadline between iterations only.
+//     reads its deadline before each QP, and does not interrupt one.
 #include "rtc_controllers/catching/nlp_catch_search.hpp"
 #include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
 #include "rtc_controllers/testing/mpc_docking_fixture.hpp"
@@ -361,8 +361,8 @@ TEST(NlpSearchShipped, RecordsAWholeWakeByTheNumberOfSolves) {
 
 TEST(NlpSearchShipped, RecordsHowFarASolveRunsPastAShortShare) {
   // A share far below what a cold solve takes. The core reads its deadline
-  // between iterations, so a solve ends one iteration after its share ran out
-  // at the latest — by how much is that iteration's cost.
+  // before each QP, so a solve ends one QP after its share ran out at the
+  // latest — by how much is that QP's cost, and the evaluations around it.
   constexpr std::int64_t kShareNs = 2 * kMs;
   for (ShippedArm& shipped : ShippedArms()) {
     ASSERT_TRUE(shipped.rig.arm.model);

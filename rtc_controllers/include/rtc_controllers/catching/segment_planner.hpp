@@ -166,10 +166,17 @@ inline constexpr std::size_t kSegmentDockingElasticGroups = 7;
 
 /// What a solve of the mpc_docking planner adds to SegmentRecord: why the solve
 /// ended where it did and where its time went. Left at its default by every
-/// other planner (`ran` false), and by a docking solve the core refused before
-/// any iterate existed. Not part of the trace digest of the fields below.
+/// other planner (`ran` false), and — `cut_site_name` apart — by a docking
+/// solve the core refused before any iterate existed. Not part of the trace
+/// digest of the fields below.
 struct DockingSolveStats {
   bool ran{false};  ///< a docking solve (or evaluation) that reached an iterate filled this
+  /// The QP the core's deadline kept the solve from starting, as the core
+  /// spells it (static storage, never null); "none" for every other ending.
+  /// Written for EVERY docking solve: the deadline can pass before the
+  /// initialisation QP ("init_qp"), and that solve has no iterate (`ran`
+  /// false).
+  const char* cut_site_name{"none"};
   std::int32_t qp_solves{0};      ///< QPs solved, penalty re-solves and cold retries included
   std::int32_t qp_iterations{0};  ///< the QP solver's iterations, summed
   std::int32_t backtracks{0};     ///< step halvings, summed over iterations
@@ -178,9 +185,14 @@ struct DockingSolveStats {
   /// first iterate, linearising, assembling the QPs, in the QP solver, and in
   /// the merit evaluation.
   double start_us{0.0}, linearize_us{0.0}, assemble_us{0.0}, qp_us{0.0}, merit_us{0.0};
-  double kkt_residual{0.0};  ///< stationarity residual of the last QP (∞-norm)
-  double grad_norm{0.0};  ///< ‖∇J‖∞ at the same point — what the residual is judged against
-  double complementarity{0.0};  ///< max |λ_i · gap_i| of the last QP
+  /// The last QP whose step was judged: its stationarity residual (∞-norm),
+  /// ‖∇J‖∞ at the same point — what the residual is judged against — and
+  /// max |λ_i · gap_i|. NaN, with `elastic`, when no step was judged
+  /// (SegmentRecord::iterations 0: an evaluation, or a solve the deadline cut
+  /// before its first iteration's QP).
+  double kkt_residual{0.0};
+  double grad_norm{0.0};
+  double complementarity{0.0};
   /// The row group the core named when it ended infeasible, as the core spells
   /// it (static storage, never null); "none" for every other ending.
   const char* infeasible_group_name{"none"};
@@ -224,6 +236,12 @@ struct SegmentRecord {
   /// First solve: the segment is the search's own solution (CatchSolution),
   /// re-evaluated by the planner and published as it is — nothing was solved.
   bool from_search{false};
+  /// First solve: the core was handed the iterate the previous wake's solve
+  /// of the same plan ended on as its start trajectory, not the search's
+  /// catch pose (the CSV's segment_start_from_memory). The core still runs
+  /// its initialisation QP — toward that trajectory — when the start state
+  /// has moved off it.
+  bool start_from_memory{false};
   bool cold_retry{false};  ///< a stop core's reference was refused, re-solved without it
   std::int32_t iterations{0};
   std::int32_t qp_status{-1};

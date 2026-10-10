@@ -84,9 +84,10 @@ def _check_header_matches_data(filepath: str) -> None:
 # to_numeric(errors="coerce"), so a column whose values are all "off"/"none"
 # (the segment planner disabled) turns into all-NaN and every `!= "off"` filter
 # downstream silently selects nothing. `nlp_reason` (NlpRejectName, or `off`),
-# `segment_infeasible_group` (DockingRowGroupName, or `none`), `replace_step`
-# (ReplaceStepName) and the two `replacement_*` names are the same case, and
-# all-`off`/`none` is what every session of another search or planner writes.
+# `segment_infeasible_group` (DockingRowGroupName, or `none`), `segment_cut_site`
+# (MpcDockingCutSiteName, or `none`), `replace_step` (ReplaceStepName) and the
+# two `replacement_*` names are the same case, and all-`off`/`none` is what
+# every session of another search or planner writes.
 _STR_COLS = {
     "goal_type",
     "command_type",
@@ -100,6 +101,7 @@ _STR_COLS = {
     "segment_kind",
     "nlp_reason",
     "segment_infeasible_group",
+    "segment_cut_site",
     "replace_step",
     "replacement_outcome",
     "replacement_core_reason",

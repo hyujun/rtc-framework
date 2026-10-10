@@ -159,3 +159,6 @@ demo_catching_controller:
               eps_abs: 1.0e-7
               eps_rel: 1.0e-9
               max_iter: 400
+              # max_iter_warm: the mpc_docking planner's core's (#803) — the
+              # reason and the numbers are there.
+              max_iter_warm: 10

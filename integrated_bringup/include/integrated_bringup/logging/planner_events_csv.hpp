@@ -53,6 +53,20 @@
 // the lateral rows and of the timing row [m] (`segment_chance_*`: negative is
 // the violation). `segment_solve_us` of a row whose `segment_core_reason` is
 // `deadline` is the instant the core was cut at, not the time the solve takes.
+// `segment_cut_site` names the QP that solve was kept from starting
+// (MpcDockingCutSiteName: `init_qp`, `iteration`, `cold_retry`,
+// `penalty_reset`, `penalty_probe`; `none` when the core did not cut it), and
+// `segment_start_from_memory` is 1 on a first solve the planner handed the
+// iterate the previous wake's solve of the same plan ended on (0: the
+// search's catch pose, and every other solve; the core still runs its
+// initialisation QP toward that iterate when the start state has moved —
+// `segment_qp_solves` − `segment_iterations` says so). These two are written
+// for a solve without an iterate too: cut before its initialisation QP
+// (`init_qp`) a solve has none, and the rest of the block is NaN (0 for a
+// count). The last-QP columns (`segment_kkt_residual`, `segment_grad_norm`,
+// `segment_complementarity`, `segment_elastic_*`) are NaN on a row with
+// `segment_iterations` 0 — an evaluation, or a solve cut before its first
+// iteration's QP: no QP's step was judged.
 //
 // `replace_step` says where a wake's attempt to replace the followed plan
 // ended (ReplaceStepName; `none` on a wake that attempted none), and the
@@ -77,8 +91,11 @@
 // does not say. `solve_us` is the wall time of the solve the candidate uses —
 // the fixed-grid one, or the continuous one when `continuous` is 1 (a
 // deadline cut it, as in planner_events); `sigma_c` is the raw σ at the catch
-// node as the solve was given it (NaN: no valid covariance there). Nothing in the record changes
-// shape per wake: the candidate rows are a fixed array in NlpSearchStats.
+// node as the solve was given it (NaN: no valid covariance there). `cut_site`
+// is `segment_cut_site`'s name for that solve — a candidate cut before its
+// initialisation QP has a row with `iterations` and `qp_solves` 0. Nothing in
+// the record changes shape per wake: the candidate rows are a fixed array in
+// NlpSearchStats.
 //
 // Readers select columns by NAME: the set has grown and shrunk, and a log
 // from before a change lacks the newer names.
@@ -132,6 +149,7 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "nlp_sigma_c_cell,"
         "nlp_screen_us,nlp_solve_us_max,nlp_cmd_gap_q,nlp_cmd_gap_qd,"
         "segment_qp_solves,segment_qp_iterations,segment_backtracks,segment_mu_updates,"
+        "segment_cut_site,segment_start_from_memory,"
         "segment_start_us,segment_linearize_us,segment_assemble_us,segment_qp_us,segment_merit_us,"
         "segment_kkt_residual,segment_grad_norm,segment_complementarity,segment_infeasible_group,"
         "segment_viol_torque,segment_viol_gap,segment_viol_entrance,segment_viol_lateral,"
@@ -153,7 +171,7 @@ inline void WriteNlpCandidatesHeader(std::ostream& os) {
     os << "viol_"
        << rtc::catching::DockingRowGroupName(static_cast<rtc::catching::DockingRowGroup>(g)) << ',';
   }
-  os << "continuous,iterations,qp_solves,solve_us,c_catch,sigma_c,phi\n";
+  os << "continuous,iterations,qp_solves,solve_us,c_catch,sigma_c,phi,cut_site\n";
 }
 
 inline void WriteNlpCandidatesRows(std::ostream& os, const rtc::catching::PlannerCycleRecord& r) {
@@ -173,7 +191,10 @@ inline void WriteNlpCandidatesRows(std::ostream& os, const rtc::catching::Planne
       os << ((c.violated_mask >> static_cast<unsigned>(g)) & 1U) << ',';
     }
     os << (c.continuous_used ? 1 : 0) << ',' << c.iterations << ',' << c.qp_solves << ','
-       << c.solve_ns / 1000 << ',' << c.c_catch << ',' << c.sigma_c << ',' << c.phi << '\n';
+       << c.solve_ns / 1000 << ',' << c.c_catch << ',' << c.sigma_c << ',' << c.phi << ','
+       << rtc::catching::MpcDockingCutSiteName(
+              static_cast<rtc::catching::MpcDockingCutSite>(c.cut_site))
+       << '\n';
   }
 }
 
@@ -308,7 +329,8 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   num(n.ran, n.cmd_gap_qd);
   // ── The mpc_docking core's account of the solve ──
   const rtc::catching::DockingSolveStats& k = d.docking;
-  os << k.qp_solves << ',' << k.qp_iterations << ',' << k.backtracks << ',' << k.mu_updates << ',';
+  os << k.qp_solves << ',' << k.qp_iterations << ',' << k.backtracks << ',' << k.mu_updates << ','
+     << k.cut_site_name << ',' << (d.start_from_memory ? 1 : 0) << ',';
   num(k.ran, k.start_us);
   num(k.ran, k.linearize_us);
   num(k.ran, k.assemble_us);

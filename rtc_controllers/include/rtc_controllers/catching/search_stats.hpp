@@ -167,7 +167,12 @@ struct NlpCandidateStat {
   /// group that refused, not only the worst (what the verdict reads).
   std::uint16_t violated_mask{0};
   bool continuous_used{false};  ///< the candidate's solution is a continuous one
-  std::int32_t iterations{0};   ///< SQP iterations of the solve it uses
+  /// The QP the core's deadline kept the solve it uses from starting: the
+  /// docking core's MpcDockingCutSite as its code (0 = none — not cut by the
+  /// core). A solve cut before its initialisation QP has no iterate
+  /// (`iterations` and `qp_solves` 0).
+  std::uint8_t cut_site{0};
+  std::int32_t iterations{0};  ///< SQP iterations of the solve it uses
   std::int32_t qp_solves{0};
   /// Wall time of the solve the candidate USES — the fixed-grid one, or the
   /// continuous one when `continuous_used` (a deadline cut it there).

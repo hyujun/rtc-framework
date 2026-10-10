@@ -39,8 +39,19 @@
 //        published as they are, bit for bit. Whether the solve that produced
 //        them converged is the search's statement (CatchSolution::converged):
 //        an evaluation does not converge.
-//      – Otherwise the core solves from x₀, started by its initialisation QP
-//        toward the plan's catch pose (plan.q_star).
+//      – Otherwise the core solves from x₀. Its start is the iterate the
+//        previous wake's solve of THIS first segment ended on, when there is
+//        one — the same track, plan id and catch instant, withheld then —
+//        with the nodes that have passed dropped and x₀ written over node 0
+//        (StartFromDockingSolution: the search's rule for a candidate it
+//        solved a wake before). Else the initialisation QP aims at the plan's
+//        catch pose (plan.q_star). What is remembered is the last such solve
+//        that returned an iterate the solver did not fail on — converged and
+//        withheld, cut by its deadline, or with a row it could not meet; one
+//        per planner. It is dropped when that plan is published, with the
+//        trial, and when a solve that started from it is refused for anything
+//        but its deadline, or a solve fails in the solver (it would fail
+//        there again).
 //  • Replan — a later segment of the followed plan, at the first grid point
 //    the replan budget still reaches (the one that leaves the most pre-catch
 //    intervals). x₀ is the source segment (the one the RT reports pending or
@@ -193,6 +204,12 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
   /// ran from (tests).
   [[nodiscard]] const MpcDockingSegmentCoreInput* LastInputForTesting(int n_pre) const noexcept;
 
+  /// What the next first solve of the same plan would start from (header
+  /// note), or nullptr (tests).
+  [[nodiscard]] const SegmentSnapshot* FirstMemoryForTesting() const noexcept {
+    return first_memory_.valid ? &first_memory_ : nullptr;
+  }
+
   /// The slowest and the summed configure-time warm-up solve [ns].
   [[nodiscard]] std::int64_t WarmUpMaxNs() const noexcept { return warmup_max_ns_; }
 
@@ -245,6 +262,11 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
   [[nodiscard]] bool RunCore(bool evaluate, MpcDockingSegmentCore& core,
                              const MpcDockingSegmentCoreInput& in,
                              MpcDockingSegmentCoreResult& res) noexcept;
+  // What a first solve leaves for the next wake's (header note): its iterate,
+  // nothing, or — cut before any iterate — what was there.
+  void RememberFirst(const PlannerRtState& rt, const PlanSnapshot& plan, std::int64_t t_eff,
+                     int n_pre, const SegmentRecord& rec, bool ok,
+                     const MpcDockingSegmentCoreResult& res) noexcept;
 
   bool configured_{false};
   MpcDockingSegmentPlannerParams params_{};
@@ -267,6 +289,10 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
   // published for it. Nothing is remembered beside a segment: no solve here
   // starts after the catch, where a line would be inherited.
   SegmentRing<NoSegmentPayload> ring_{};
+  // The iterate the last first solve of a not yet published plan ended on,
+  // packed as a segment of that plan (its token, plan id and t_c are the key
+  // a later solve matches); `valid` false = none.
+  SegmentSnapshot first_memory_{};
   std::int64_t warmup_max_ns_{0};
   std::int64_t warmup_total_ns_{0};
   SolverHook solver_hook_{nullptr};

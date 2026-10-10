@@ -189,6 +189,35 @@ class TestSolveGroups:
         assert group["qp_solves_p50"] is None and group["qp_iterations_per_qp_p50"] is None
         assert ps.format_solve_groups([group])[1].split()[6] == "-"
 
+    def test_a_docking_solve_cut_before_any_qp_has_solved_none(self):
+        # The core names the QP it did not start: cut before the initialisation
+        # QP (no iterate), or — started from a trajectory it was handed —
+        # before the first iteration's. Their 0 is a count. An evaluation's
+        # (no cut site) is still "not recorded".
+        def zero(site):
+            return {
+                "segment_iterations": 0,
+                "segment_qp_solves": 0,
+                "segment_qp_iterations": 0,
+                "segment_cut_site": site,
+            }
+
+        df = _frame(
+            [
+                ("first", "budget", "deadline", 36_000, zero("init_qp")),
+                ("first", "budget", "deadline", 36_500, zero("iteration")),
+                ("first", "published", "none", 900, zero("none")),
+            ]
+        )
+        table = ps.solve_table(df)
+        assert table["qp_solves"].tolist()[:2] == [0.0, 0.0]
+        assert table["qp_iterations"].tolist()[:2] == [0.0, 0.0]
+        assert np.isnan(table["qp_solves"].tolist()[2])
+        by = {g["core_reason"]: g for g in ps.solve_groups(df)}
+        assert by["deadline"]["qp_solves_p50"] == 0
+        assert by["deadline"]["qp_iterations_per_qp_p50"] is None
+        assert by["none"]["qp_solves_p50"] is None
+
     def test_no_solve_no_group(self):
         assert ps.solve_groups(_frame([("none", "off", "none", 0)])) == []
         assert ps.solve_groups(pd.DataFrame({"wake_ns": [1]})) == []

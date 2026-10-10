@@ -25,9 +25,6 @@ namespace {
 // cores were given for the same key, which is what lets one planner evaluate
 // the other's solution on an identical grid.
 constexpr double kNsPerSec = 1e9;
-// A warm-up solve may take this many first-solve budgets: enough for its first
-// iterations, bounded whatever the problem turns out to be.
-constexpr std::int64_t kWarmUpBudgets = 4;
 
 [[nodiscard]] constexpr std::size_t U(int i) noexcept {
   return static_cast<std::size_t>(i);
@@ -55,13 +52,22 @@ void RecordSolve(const MpcDockingSegmentCoreResult& r, DockingSolveStats& s) noe
   s.assemble_us = r.assemble_us;
   s.qp_us = r.qp_us;
   s.merit_us = r.merit_us;
-  s.kkt_residual = r.kkt_residual;
-  s.grad_norm = r.grad_norm;
-  s.complementarity = r.complementarity;
+  // The last QP's numbers exist only where a QP's step was judged: an
+  // evaluation, and a solve cut before its first iteration's QP, have none —
+  // NaN in the record, not the core's 0 (which a reader would take for a
+  // stationary point).
+  const bool judged = r.iterations > 0;
+  const double none = std::numeric_limits<double>::quiet_NaN();
+  s.kkt_residual = judged ? r.kkt_residual : none;
+  s.grad_norm = judged ? r.grad_norm : none;
+  s.complementarity = judged ? r.complementarity : none;
   s.infeasible_group_name =
       r.reason == MpcDockingReason::kInfeasible ? DockingRowGroupName(r.infeasible_group) : "none";
   s.violation = r.violation;
   s.elastic = r.elastic;
+  if (!judged) {
+    s.elastic.fill(none);
+  }
   s.c_catch = r.c_catch;
   s.c_guarded = r.c_guarded;
   s.sigma_s = r.sigma_s;
@@ -106,6 +112,7 @@ bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& mo
   inputs_.clear();
   results_.clear();
   ring_.Clear();
+  first_memory_ = SegmentSnapshot{};
   const auto fail = [error](std::string why) {
     if (error != nullptr) {
       *error = std::move(why);
@@ -259,7 +266,10 @@ bool MpcDockingSegmentPlanner::WarmUp(const MpcDockingSegmentPlannerModel& model
     in.p_line = p_b;
     in.d_line = -e3;
     const std::int64_t start = clock_();
-    in.deadline_ns = start + kWarmUpBudgets * first_ns_;
+    // No deadline: the core starts no QP past one, and a warm-up the clock
+    // cut before its first QP would refuse the configuration for the host's
+    // load. The core's iteration caps bound the solve.
+    in.deadline_ns = 0;
     WarmUpProbe probe;
     core.SetStageHook(&WarmUpStageHook, &probe);
     static_cast<void>(core.Solve(in, results_[slot]));
@@ -267,7 +277,6 @@ bool MpcDockingSegmentPlanner::WarmUp(const MpcDockingSegmentPlannerModel& model
     const std::int64_t took = clock_() - start;
     warmup_max_ns_ = std::max(warmup_max_ns_, took);
     warmup_total_ns_ += took;
-    in.deadline_ns = 0;
     if (!probe.reached_qp) {
       why = std::string("mpc_docking planner: the warm-up solve of the core for n_pre = ") +
             std::to_string(kc) +
@@ -312,10 +321,17 @@ const MpcDockingSegmentCoreInput* MpcDockingSegmentPlanner::LastInputForTesting(
 
 void MpcDockingSegmentPlanner::ResetTrial() noexcept {
   ring_.Clear();
+  first_memory_.valid = false;
 }
 
 void MpcDockingSegmentPlanner::NotePublished(const SegmentSnapshot& p) noexcept {
   ring_.Push(p, NoSegmentPayload{});
+  // The plan whose first solve was remembered is out: its later segments are
+  // replans. (A segment of ANOTHER plan — the followed one's, while its
+  // replacement is still being solved for — leaves the memory alone.)
+  if (first_memory_.valid && p.plan_id == first_memory_.plan_id) {
+    first_memory_.valid = false;
+  }
 }
 
 bool MpcDockingSegmentPlanner::FollowedTrack(const PlannerRtState& rt,
@@ -401,9 +417,14 @@ SegmentOutcome MpcDockingSegmentPlanner::Judge(const MpcDockingSegmentCoreResult
                                                SegmentRecord& rec) const noexcept {
   rec.solve_ns = end - start;
   SetCoreReason(rec, r.reason);
+  rec.docking.cut_site_name = MpcDockingCutSiteName(r.cut_site);
   if (!ok) {
-    // Refused before any iterate: the result's nodes are another solve's.
-    return end - start > budget_ns ? SegmentOutcome::kBudget : SegmentOutcome::kSolveFailed;
+    // Refused before any iterate: the result's nodes are another solve's. A
+    // deadline that had passed before the initialisation QP is the budget's,
+    // by the core's own word — its test of the instant (≥) is not this one.
+    return r.reason == MpcDockingReason::kDeadline || end - start > budget_ns
+               ? SegmentOutcome::kBudget
+               : SegmentOutcome::kSolveFailed;
   }
   rec.iterations = r.iterations;
   rec.qp_status = r.qp_status;
@@ -662,11 +683,31 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   }
   in.initial_valid = false;
   in.catch_target_valid = true;
+  // The previous wake's solve of this same first segment, when it left an
+  // iterate: the same activation, track, plan id and catch instant, on a grid
+  // this one continues (header note).
+  if (first_memory_.valid &&
+      first_memory_.token.activation_generation == rt.activation_generation &&
+      first_memory_.token.generation == plan.token.generation &&
+      first_memory_.plan_id == plan.plan_id && first_memory_.t_c_ns == t_c &&
+      DockingSolutionCoversGrid(first_memory_, nv_, n_pre, params_.n_stop)) {
+    StartFromDockingSolution(first_memory_, n_pre, params_.n_stop,
+                             std::span<const int>(device_of_model_.data(), U(nv_)), in);
+    // Node 0 is the start state, whatever the remembered trajectory had there.
+    for (int m = 0; m < nv_; ++m) {
+      in.q_init(m, 0) = in.q0[m];
+      in.qd_init(m, 0) = in.qd0[m];
+      in.qdd_init(m, 0) = in.qdd0[m];
+    }
+    in.initial_valid = true;
+    rec.start_from_memory = true;
+  }
   SetBall(ball, t_eff, n_pre, in);
   in.deadline_ns = start + first_ns_;
   const bool ok = RunCore(/*evaluate=*/false, core, in, res);
   const std::int64_t end = clock_();
   rec.outcome = Judge(res, ok, ok && res.converged, n_pre, start, end, first_ns_, t_eff, rec);
+  RememberFirst(rt, plan, t_eff, n_pre, rec, ok, res);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;
   }
@@ -677,6 +718,34 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   }
   NoteFirst(rt);
   return true;
+}
+
+void MpcDockingSegmentPlanner::RememberFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
+                                             std::int64_t t_eff, int n_pre,
+                                             const SegmentRecord& rec, bool ok,
+                                             const MpcDockingSegmentCoreResult& res) noexcept {
+  if (!ok) {
+    // No iterate, so nothing new to remember. A solve that was handed the
+    // memory and refused for anything but its deadline is not handed it
+    // again; cut before its initialisation QP it says nothing of its start,
+    // and a refused solve that started elsewhere says nothing of the memory.
+    if (rec.start_from_memory && res.reason != MpcDockingReason::kDeadline) {
+      first_memory_.valid = false;
+    }
+    return;
+  }
+  // An iterate the SOLVER failed on says nothing about the rows, and the next
+  // wake would fail there again (the search's rule). The finiteness test is
+  // its own: a remembered NaN would be refused by every later solve's input
+  // check, wake after wake.
+  if (res.reason == MpcDockingReason::kQpFailed ||
+      res.reason == MpcDockingReason::kSolutionNonFinite || !res.q.allFinite() ||
+      !res.qd.allFinite() || !res.qdd.allFinite()) {
+    first_memory_.valid = false;
+    return;
+  }
+  Pack(rt, plan.token.generation, plan.plan_id, plan.t_c_ns, t_eff, n_pre, rec.x0_clamped, res,
+       first_memory_);
 }
 
 bool MpcDockingSegmentPlanner::StartsOnTheReport(const PlannerRtState& rt,
