@@ -1744,7 +1744,9 @@ void CatchingPlanLaneTest::RealClockPairCase(bool docking) {
   // The planner replanned from what the RT reported, every time.
   EXPECT_EQ(not_followed, 0) << "a replan wake found no source while the RT held a segment";
   EXPECT_GT(replans_with_a_source, 0) << "no replan wake was sampled while the plan was followed";
-  // The stop's end is fixed (MD-21): t_c + N_s·Δ_s, whichever segment ends it.
+  // The stop's end is fixed (MD-21): t_c + N_s·Δ_s, whichever segment ends it
+  // — 0.35 s on both shipped grids (7 × 50 ms the mpc planner's, 4 × 87.5 ms
+  // the docking planner's).
   const rtc::catching::SegmentSnapshot final_seg = ctrl_->GetFollowedSegmentForTesting();
   const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
   ASSERT_TRUE(final_seg.valid);

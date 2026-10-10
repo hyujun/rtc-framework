@@ -11,7 +11,8 @@
 # from here alone.
 #
 # PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the chance rows (off),
-# publish.slack_v_max and core.catch.nu_ref; the other values are starting
+# publish.slack_v_max, core.catch.nu_ref, the stop grid and the SQP's tol_kkt
+# and mu_max; the other values are starting
 # values, not tuned. The QP solver allocates inside a solve (#654), so this
 # planner must not run on a SCHED_FIFO planner thread on hardware until that
 # is closed.
@@ -40,10 +41,18 @@ demo_catching_controller:
             # max |q_dot_cmd| that counts as "at rest" for a plan's first
             # segment [rad/s].
             rest_tol: 0.05
+          # The stop part: 4 nodes of 0.0875 s in three move blocks — the 0.35 s
+          # it had as 7 x 0.05 s (E1-F19 part 2, #745). A solve's time is QP time
+          # and follows the node count, and the stop part was 7 of the nodes:
+          # on the D-2 tuning set with no deadline a solve the nlp search
+          # accepts needed 27.9 ms (median) at 7 nodes and 20.6 ms at 4,
+          # the same 13 throws accepted.
+          # A coarser grid leaves more room between two nodes: a segment whose
+          # joint speed passes the rating there is withheld (outcome `speed`).
           stop:
-            n_nodes: 7
-            dt_s: 0.05
-            blocks: [1, 1, 2, 3]
+            n_nodes: 4
+            dt_s: 0.0875
+            blocks: [1, 1, 2]
           # A first segment's and a replan's budget [s] — also the core's
           # deadline. Nothing is published after the catch: the last segment
           # published before it carries the arm to rest.
@@ -134,7 +143,17 @@ demo_catching_controller:
             sqp:
               max_iterations: 50
               tol_violation: 1.0e-6
-              tol_kkt: 1.0e-4
+              # tol_kkt and mu_max (E1-F19 part 2, #745). mu_max is the cap of
+              # the elastic penalty; at the initial penalty (1e2, the code
+              # default of mu_init) no penalty probe runs. A probe is one more
+              # QP per iteration, and it is the solves that END REFUSED that
+              # ran them: on the D-2 tuning set with no deadline their median
+              # went from 57 to 20 ms, an accepted solve's from 20.6 to 18.1 ms.
+              # The accepted throws did not change. The QP solver's own
+              # tolerances and iteration cap (solver.*) and the other penalty
+              # keys moved neither time.
+              tol_kkt: 1.0e-2
+              mu_max: 1.0e+2
             solver:
               eps_abs: 1.0e-7
               eps_rel: 1.0e-9

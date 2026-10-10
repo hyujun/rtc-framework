@@ -10,8 +10,9 @@
 # under planner.segment.mpc_docking, and the planner reads its design values
 # from here alone.
 #
-# PROVISIONAL, SIM ONLY. The values below are starting values, not tuned
-# (E1-F19). The QP solver allocates inside a solve (#654), so this planner must
+# PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the chance rows (off),
+# publish.slack_c_max, the stop grid and the SQP's tol_kkt and mu_max; the
+# other values are starting values, not tuned. The QP solver allocates inside a solve (#654), so this planner must
 # not run on a SCHED_FIFO planner thread on hardware until that is closed.
 demo_catching_controller:
   catching:
@@ -38,10 +39,19 @@ demo_catching_controller:
             # max |q_dot_cmd| that counts as "at rest" for a plan's first
             # segment [rad/s].
             rest_tol: 0.05
+          # The stop part: 4 nodes of 0.0875 s in three move blocks — the 0.35 s
+          # it had as 7 x 0.05 s (E1-F19 part 2, #745). A solve's time is QP time
+          # and follows the node count, and the stop part was 7 of the nodes:
+          # mapped offline on the D-2 tuning set with no deadline, a solve the
+          # nlp search accepts needed 40.7 ms (median, 9 of the 12 throws the
+          # set labels) with the values shipped before and 17.1 ms (8 of 12)
+          # with this file's and the search's.
+          # A coarser grid leaves more room between two nodes: a segment whose
+          # joint speed passes the rating there is withheld (outcome `speed`).
           stop:
-            n_nodes: 7
-            dt_s: 0.05
-            blocks: [1, 1, 2, 3]
+            n_nodes: 4
+            dt_s: 0.0875
+            blocks: [1, 1, 2]
           # A first segment's and a replan's budget [s] — also the core's
           # deadline. Nothing is published after the catch: the last segment
           # published before it carries the arm to rest.
@@ -54,8 +64,14 @@ demo_catching_controller:
           # The corridor and the speed envelope are soft in the problem: the
           # largest slack a published segment may lean on — the corridor's in
           # [m], the envelope's in the units of its row (c^2, [m^2/s^2]).
+          # slack_c_max (E1-F19, #745): at 0 a converged solve that leans on the
+          # corridor by a few millimetres is withheld; 0.06 m is the value the
+          # part-1 units of this arm published with. slack_v_max stays 0: the
+          # envelope slacks of the segments withheld on the D-2 tuning set run
+          # from 0.3 to 8 m^2/s^2 (most past the 2.5 m/s the hand was flown
+          # to), and 1.5 published no more in a unit.
           publish:
-            slack_c_max: 0.0
+            slack_c_max: 0.06
             slack_v_max: 0.0
           # The docking core's tuning (MpcDockingSegmentCoreParams) — what is NOT
           # a property of the hand. The hand's identified values (the entrance
@@ -94,15 +110,25 @@ demo_catching_controller:
               lambda1_v: 1.0
               lambda2_v: 0.0
             capture:
-              # Chance rows on: the lateral, speed and timing rows are
-              # tightened by the ball's covariance at the catch node.
-              chance: true
+              # Chance rows OFF (E1-F19, #745), as on the other shipped arm.
+              # `true` tightens the lateral, speed and timing rows by the
+              # ball's covariance at the catch node. In a sim unit on the D-2
+              # tuning set with the values shipped before (chance on among
+              # them) the nlp search started no solve (27 throws: every
+              # candidate refused before one — too far, reach, and on 107
+              # wakes the speed window); these are the values this arm's
+              # units were tuned with.
+              # Off also means the catch node's covariance is not CHECKED: a
+              # wake whose covariance is not valid yet is planned on the mean.
+              chance: false
               face_eps: 0.0125
               speed_faces: 8
               eps_nu: 0.01
               eps_sigma: 1.0e-4
             timing:
-              row: true
+              # The closure-timing row is one of the chance rows: with
+              # capture.chance off it is not built whatever this says.
+              row: false
               eps_t: 0.05
             stop:
               w_perp: 0.0
@@ -112,7 +138,18 @@ demo_catching_controller:
             sqp:
               max_iterations: 50
               tol_violation: 1.0e-6
-              tol_kkt: 1.0e-4
+              # tol_kkt and mu_max (E1-F19 part 2, #745). mu_max is the cap of
+              # the elastic penalty; at the initial penalty (1e2, the code
+              # default of mu_init) no penalty probe runs. A probe is one more
+              # QP per iteration, and it is the solves that END REFUSED that
+              # ran them: mapped offline on the D-2 tuning set with no deadline
+              # their median went from 71 to 11 ms with the stop grid above
+              # (the accepted throws: 9 to 8 of 12, all the changes together).
+              # The QP solver's own tolerances (solver.*) and the other
+              # penalty keys were swept on the other shipped arm only, where
+              # they moved neither time.
+              tol_kkt: 1.0e-2
+              mu_max: 1.0e+2
             solver:
               eps_abs: 1.0e-7
               eps_rel: 1.0e-9

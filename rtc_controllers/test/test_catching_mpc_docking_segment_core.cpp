@@ -635,7 +635,7 @@ TEST(MpcDockingSegmentCore, InfeasibleProblemsAreReportedWithTheirRowGroup) {
 
 // A short lead on the 7-DOF arm, on four grids: one coarse pre-catch interval
 // (the QP then has no running terms and no approach rows at all), two, and
-// four fine ones. The stop is the shipped 7 × 0.05 s with blocks 1, 1, 2, 3.
+// four fine ones. The stop is 7 × 0.05 s with blocks 1, 1, 2, 3.
 TEST(MpcDockingSegmentCore, RecordsShortLeadGrids) {
   struct Grid {
     const char* tag;

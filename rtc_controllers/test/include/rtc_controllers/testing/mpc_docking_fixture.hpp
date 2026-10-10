@@ -665,7 +665,8 @@ inline SolveTally SolveRealThrows(const Rig& rig, double speed_lo, double speed_
   return tally;
 }
 
-// The shipped stop segment (7 × 0.05 s, blocks 1, 1, 2, 3) behind `n_pre`
+// A stop segment of 7 × 0.05 s in blocks 1, 1, 2, 3 (the consuming profiles'
+// grid until they shortened it to 4 nodes) behind `n_pre`
 // pre-catch intervals of `dt_pre`, one block each.
 inline void SetShortLeadGrid(MpcDockingSegmentCoreParams& p, int n_pre, double dt_pre) {
   p.n_pre = n_pre;

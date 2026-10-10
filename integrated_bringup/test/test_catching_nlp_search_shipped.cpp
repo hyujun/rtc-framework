@@ -116,8 +116,10 @@ struct Rig {
     constants.t_arm_s = 0.0;
     constants.control_dt = 0.002;
 
-    // One candidate per vision period; the shipped segment grid — 0.1 s
-    // pre-catch intervals, a 7 × 0.05 s stop in blocks 1, 1, 2, 3 — with as
+    // One candidate per vision period; the segment grid these timings were
+    // recorded on (the one shipped until E1-F19 part 2, #745, shortened the
+    // stop part to 4 × 0.0875 s) — 0.1 s pre-catch intervals, a 7 × 0.05 s
+    // stop in blocks 1, 1, 2, 3 — with as
     // many pre-catch intervals as the grid search's shipped horizon (0.95 s)
     // needs, so that the node count's effect is visible up to it.
     params.cand_dt = 1.0 / 30.0;
