@@ -295,9 +295,14 @@ MJCF_TEMPLATE = """\
         <joint name="shoulder_pan_joint" class="test_robot" axis="0 0 1"
                range="-6.2832 6.2832"/>
         <!-- URDF shoulder has ixy=0.001 → principal moments [0.0112, 0.0092, 0.00666]
-             after diagonalizing the xy-block.  MJCF diaginertia stores those
-             eigenvalues so the validator (commit 6033081) sees no mismatch. -->
-        <inertial mass="3.7" pos="0 0 0" diaginertia="0.0112 0.0092 0.00666"/>
+             after diagonalizing the xy-block, about axes turned 45° around z
+             (0.0112 along (1, 1, 0)).  diaginertia stores the eigenvalues and
+             quat that turn, so this is the same tensor as the URDF's — without
+             the quat the moments would match and the body would not.  quat
+             stays the LAST attribute: tests below replace on the text up to
+             `diaginertia`. -->
+        <inertial mass="3.7" pos="0 0 0" diaginertia="0.0112 0.0092 0.00666"
+                  quat="0.92387953 0 0 0.38268343"/>
       </body>
     </body>
   </worldbody>
