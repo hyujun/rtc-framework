@@ -64,8 +64,10 @@
 # `vision_lane_probe --dump` beside the unit, from the estimator's activation to the end, into
 # <out_dir>/probe/ (lane_prediction_dump.csv: every horizon point of every prediction message, which
 # analyse_unit.sh hands to catching_trials as --probe-dump). conditions.txt says which (probe_dump:
-# on | off) — the probe is one more process on the host. A unit that asked for the dump and has none
-# fails (FAIL:no probe dump): its analysis would silently be the one without it.
+# on | off) — the probe is one more process on the host. A unit that asked for the dump fails without a
+# whole one: FAIL:probe not running (it died at its start — before a throw), FAIL:probe killed (it did not
+# end on SIGINT, so its last rows may be cut), FAIL:no probe dump. Its analysis would otherwise silently be
+# the one without the dump.
 # Leaves <out_dir>/status = DONE | FAIL:<why>. Never set -u (setup_env.sh is sourced).
 OUT=$1; SHORT=$2; OV=$3; NT=$4; SEED=$5
 COND=${ARM:-mpc}
@@ -300,6 +302,9 @@ if [ "${PROBE_DUMP:-0}" == "1" ]; then
   PPG=$!
 fi
 sleep 2
+if [ -n "$PPG" ] && ! kill -0 -- -$PPG 2>/dev/null; then
+  cleanup; echo "FAIL:probe not running" > "$OUT/status"; exit 1
+fi
 ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController "{activate_controllers: [demo_catching_controller], deactivate_controllers: [demo_joint_controller], strictness: 1, timeout: {sec: 3}}" > "$OUT/switch.log" 2>&1
 SERIES=(--throws-file "$THROWS_FILE")
 [ -n "$THROWS_LIMIT" ] && SERIES+=(--limit "$THROWS_LIMIT")
@@ -317,8 +322,10 @@ echo "date_end: $(date -Is)" >> "$OUT/conditions.txt"
 cleanup
 if [ $rc -eq 3 ]; then echo "FAIL:host_busy" > "$OUT/status"; exit 1; fi
 if [ $rc -ne 0 ]; then echo "FAIL:trials rc=$rc" > "$OUT/status"; exit 1; fi
-if [ "${PROBE_DUMP:-0}" == "1" ] && [ "$(wc -l < "$OUT/probe/lane_prediction_dump.csv" 2>/dev/null || echo 0)" -lt 2 ]; then
-  echo "FAIL:no probe dump" > "$OUT/status"; exit 1
+if [ "${PROBE_DUMP:-0}" == "1" ]; then
+  grep -qs "^killed group $PPG " "$OUT/cleanup.log" && { echo "FAIL:probe killed" > "$OUT/status"; exit 1; }
+  DUMP=$OUT/probe/lane_prediction_dump.csv
+  { [ -s "$DUMP" ] && [ "$(wc -l < "$DUMP")" -ge 2 ]; } || { echo "FAIL:no probe dump" > "$OUT/status"; exit 1; }
 fi
 # An empty session.txt (no `logging_data/<digits>` in the launch log) would make
 # the session the workspace root: the copy below would take the whole workspace.

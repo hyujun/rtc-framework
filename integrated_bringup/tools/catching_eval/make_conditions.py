@@ -47,7 +47,6 @@ OUT = f"{DATA}/conditions"
 CONTROLLER = "demo_catching_controller"
 ROBOTS = {"p1b": "ur5e_p1b", "leap": "iiwa7_leap"}
 K_CAP = 40
-HORIZON_MIN_S = 0.51
 # name: (horizon_s, points) — formulation §1.7
 CONDITIONS = {
     "L-50": (1.0, 20),
@@ -72,10 +71,17 @@ def grid(horizon_s, points):
     step_s = step_ns / 1e9
     if round(step_s * 1e9) != step_ns:
         sys.exit(f"step {step_s} does not round-trip to {step_ns} ns")
-    n_min = math.ceil(HORIZON_MIN_S / step_s) + 1
+    return step_s
+
+
+def n_min_for(horizon_min_s, step_s, points):
+    """``io.n_min`` of a grid of ``step_s``: the validator's ``ceil(horizon_min / dt) + 1``,
+    with the ROBOT's shipped ``io.horizon_min`` — the two robots' differ (a constant here
+    once left four ur5e_p1b conditions one sample short of their own controller's check)."""
+    n_min = math.ceil(horizon_min_s / step_s) + 1
     if not n_min <= points <= K_CAP:
         sys.exit(f"n_min {n_min} <= points {points} <= kCap {K_CAP} fails")
-    return step_s, n_min
+    return n_min
 
 
 def leaf_checker():
@@ -96,7 +102,7 @@ def main():
         shipped_profile = json.load(f)
     rows = []
     for cond, (horizon_s, points) in CONDITIONS.items():
-        step_s, n_min = grid(horizon_s, points)
+        step_s = grid(horizon_s, points)
         os.makedirs(f"{OUT}/{cond}", exist_ok=True)
         if cond == "L-50":
             p = shipped_profile["prediction"]
@@ -131,6 +137,7 @@ def main():
                 ctrl["planner"]["search"]["grid"]["slice"]["dt"],
             )
             assert ship == (0.05, 12, 0.05), (robot, ship)
+            n_min = n_min_for(ctrl["io"]["horizon_min"], step_s, points)
             if cond == "L-50":
                 overlay = "catch_lead_on"
             else:

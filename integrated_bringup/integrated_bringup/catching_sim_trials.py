@@ -327,7 +327,7 @@ class HandBox:
 
 
 # #537 S8-F-1 (2026-09-26): the cliff at the catch point, face-on, at the
-# shortest flight the commit window allows (first plan 0.20 + T_freeze 0.37 +
+# shortest flight the commit window allowed then (first plan 0.20 + T_freeze 0.37 +
 # margin); the lob arm for the slow balls a face-on throw cannot deliver above
 # the work table; the LHS box the v50(r) map is fitted on. Speeds below 3.5 m/s
 # face-on put the release under the table (the re-derivation's §2b).
