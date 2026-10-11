@@ -808,6 +808,96 @@ def test_the_plan_set_refuses_verdicts_that_do_not_cover_the_list_or_an_unknown_
         d.main([*base, "--verdicts", str(none)])
 
 
+def _segment_verdict_file(path, throws, accepted_ids, segment_ids, judged_ids=None, drop=False):
+    """A verdicts CSV of a ``--judge-segments`` map: ``segment_accepted`` is empty for a
+    throw the search refused, else True / False."""
+    judged = set(accepted_ids) if judged_ids is None else set(judged_ids)
+    with path.open("w", newline="") as handle:
+        w = csv.writer(handle)
+        w.writerow(["throw_id", "accepted", *([] if drop else ["segment_accepted"]), "reason"])
+        for t in throws:
+            i = t["throw_id"]
+            cell = [] if drop else ["" if i not in judged else str(i in segment_ids)]
+            w.writerow([i, i in accepted_ids, *cell, ""])
+
+
+def _plan_set_argv(listed, verdicts, out, *extra):
+    return ["plan-set", "--throws-file", str(listed), "--verdicts", str(verdicts),
+            "--out", str(out), *extra]  # fmt: skip
+
+
+def test_the_search_tier_is_the_default_and_the_meta_names_the_tier(tmp_path):
+    listed, throws, _ = _list_of_all(tmp_path)
+    accepted = {t["throw_id"] for t in throws[::3]}
+    verdicts = tmp_path / "verdicts_grid.csv"
+    _verdict_file(verdicts, throws, accepted)
+    default, explicit = tmp_path / "a.json", tmp_path / "b.json"
+    assert d.main(_plan_set_argv(listed, verdicts, default)) == 0
+    assert d.main(_plan_set_argv(listed, verdicts, explicit, "--tier", "search")) == 0
+    assert default.read_bytes() == explicit.read_bytes()
+    plan, meta = ctl.load_throw_list(default)
+    assert [t["throw_id"] for t in plan] == sorted(accepted)
+    assert meta["kind"] == "plan_set" and meta["tier"] == "search"
+    assert meta["set_name"] == "throw_search_set"
+    assert meta["counts"] == {"judged": len(throws), "accepted": len(accepted)}
+
+
+def test_the_segment_tier_is_the_throws_whose_segment_pass_published_the_pair(tmp_path):
+    listed, throws, _ = _list_of_all(tmp_path)
+    searched = {t["throw_id"] for t in throws[::2]}
+    segmented = {t["throw_id"] for t in throws[::4]}
+    verdicts = tmp_path / "verdicts_grid.csv"
+    _segment_verdict_file(verdicts, throws, searched, segmented)
+    out = tmp_path / "plan.json"
+    assert d.main(_plan_set_argv(listed, verdicts, out, "--tier", "segment")) == 0
+    plan, meta = ctl.load_throw_list(out)
+    assert [t["throw_id"] for t in plan] == sorted(segmented)
+    assert meta["kind"] == "plan_set" and meta["tier"] == "segment"
+    assert meta["set_name"] == "throw_segment_set"
+    assert meta["counts"] == {
+        "judged": len(throws),
+        "accepted": len(segmented),
+        "search_accepted": len(searched),
+    }
+    assert meta["axes"] == {"discrete": ["distance_m"]} and "design" in meta
+    assert meta["verdicts"][0]["sha256"] == hashlib.sha256(verdicts.read_bytes()).hexdigest()
+    src = {t["throw_id"]: t for t in ctl.load_throw_list(listed)[0]}
+    assert all(t == src[t["throw_id"]] for t in plan)
+    # the search tier of the same file is the search set
+    both = tmp_path / "search.json"
+    assert d.main(_plan_set_argv(listed, verdicts, both)) == 0
+    assert [t["throw_id"] for t in ctl.load_throw_list(both)[0]] == sorted(searched)
+    # a plan set of either tier is what `sample` reads
+    assert d.main(["sample", "--plan-set", str(out), "--out-dir", str(tmp_path / "s"),
+                   "--strata", "distance_m", "--seed", "1", "--chunk", "1000"]) == 0  # fmt: skip
+
+
+def test_the_segment_tier_refuses_a_file_that_judged_no_segment(tmp_path):
+    listed, throws, _ = _list_of_all(tmp_path)
+    searched = {t["throw_id"] for t in throws[::2]}
+    out = tmp_path / "plan.json"
+    plain = tmp_path / "plain.csv"
+    _verdict_file(plain, throws, searched)
+    with pytest.raises(SystemExit, match="segment_accepted"):
+        d.main(_plan_set_argv(listed, plain, out, "--tier", "segment"))
+    empty = tmp_path / "empty.csv"
+    _segment_verdict_file(empty, throws, searched, set(), judged_ids=set())
+    with pytest.raises(SystemExit, match="empty for every throw"):
+        d.main(_plan_set_argv(listed, empty, out, "--tier", "segment"))
+    none = tmp_path / "none.csv"
+    _segment_verdict_file(none, throws, searched, set())  # judged, none published
+    with pytest.raises(SystemExit, match="by the segment pass"):
+        d.main(_plan_set_argv(listed, none, out, "--tier", "segment"))
+    stray = tmp_path / "stray.csv"
+    _segment_verdict_file(stray, throws, set(), {throws[0]["throw_id"]},
+                          judged_ids={throws[0]["throw_id"]})  # fmt: skip
+    with pytest.raises(SystemExit, match="not search-accepted"):
+        d.main(_plan_set_argv(listed, stray, out, "--tier", "segment"))
+    assert not out.exists()
+    with pytest.raises(SystemExit):
+        d.main(_plan_set_argv(listed, plain, out, "--tier", "nonsense"))
+
+
 # ── the sample ────────────────────────────────────────────────────────────────
 
 

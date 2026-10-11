@@ -1587,3 +1587,697 @@ def test_segment_mode_overrides_that_one_value_after_the_overlays_and_is_recorde
     # only the modes the tool knows
     with pytest.raises(SystemExit):
         _setup_args(config, "--segment-mode", "nonsense")
+
+
+# ── the segment binding ───────────────────────────────────────────────────────
+
+
+def _docking_tree(**eta) -> dict:
+    tree = _set(_tree(), "planner.segment.mode", "mpc_docking")
+    if eta:
+        _set(tree, "planner.segment.mpc_docking.eta_v", eta["eta_v"])
+    return tree
+
+
+def test_segment_binding_mpc_formulas():
+    b = m.segment_binding(_tree(), _facts())
+    assert b.kind == "mpc"
+    doc = b.document
+    assert list(doc) == ["mode", "mpc"] and doc["mode"] == "mpc"
+    mpc = doc["mpc"]
+    # model order (a2, a0, a1); the same position box the nlp search's limits use
+    nlp = m.search_binding(_tree(), _facts(), "nlp").document["nlp"]["limits"]
+    assert mpc["q_min"] == nlp["q_min"] and mpc["q_max"] == nlp["q_max"]
+    assert mpc["q_min"] == pytest.approx([-0.975, -2.9, -1.95])
+    assert mpc["qdot_max"] == [4.0, 2.0, 3.0]  # device ratings, no margin, model order
+    assert mpc["tau_max"] == [20.0, 100.0, 50.0]
+    assert mpc["eta_v"] == 0.7  # planner.segment.mpc.eta_v, not the docking planner's
+    assert mpc["t_arm_s"] == 0.05 and mpc["control_dt"] == 0.002
+    assert set(b.sources) == {f"mpc.{k}" for k in mpc}
+    for key, entry in b.sources.items():
+        assert entry["source"] and "::" in entry["mirrors"], key
+    assert b.sources["mpc.eta_v"]["mirror_param"] == "planner.segment.mpc.eta_v"
+    assert "ResolvedSegmentMpcEtaV" in b.sources["mpc.eta_v"]["mirrors"]
+    assert "SetupMpcSegmentPlanner" in b.sources["mpc.q_min"]["mirrors"]
+    assert b.sources["mpc.control_dt"]["mirror_param"] == "control.dt"
+    assert yaml.safe_load(b.yaml_text()) == doc
+
+
+def test_segment_binding_mpc_follows_the_device_box_the_clik_keeps():
+    hand = _limits(HAND, [0.0, np.inf], [1.0, 1.0], [5.0, 5.0], [1.0, 1.0], device="hand")
+    mpc = m.segment_binding(_tree(), _facts(hand=hand)).document["mpc"]
+    assert mpc["q_min"] == [-1.2, -2.9, -2.5]  # no CLIK box: the URDF's limits
+    assert mpc["q_max"] == [1.2, 2.9, 2.5]
+    with pytest.raises(m.BindingError, match="hand device"):
+        m.segment_binding(_tree(), _facts(hand=None))
+
+
+def test_segment_binding_mpc_docking_formulas():
+    tree = _docking_tree()
+    b = m.segment_binding(tree, _facts())
+    assert b.kind == "mpc_docking"
+    doc = b.document
+    assert list(doc) == ["mode", "mpc_docking"] and doc["mode"] == "mpc_docking"
+    d = doc["mpc_docking"]
+    assert d["t_arm_s"] == 0.05 and d["control_dt"] == 0.002
+    assert d["qd_rating"] == [4.0, 2.0, 3.0]  # without the margin
+    assert d["hand_t_close_e2e"] == 0.3 and d["ball_mass"] == 0.057
+    # EntranceCloseLead of the DOCKING planner's own core (nu_ref.z = −1.25)
+    assert d["hand_t_close_lead"] == pytest.approx(0.25 - 0.01 / 1.25)
+    lim = d["limits"]
+    # the limits are the nlp search's under the same speed margin, key by key
+    nlp = m.search_binding(tree, _facts(), "nlp").document["nlp"]["limits"]
+    assert lim == nlp
+    assert lim["qd_max"] == pytest.approx([0.6 * 4.0, 0.6 * 2.0, 0.6 * 3.0])
+    assert lim["qdd_max"] == [30.0, 10.0, 20.0]
+    assert lim["tau_lo"] == pytest.approx([-16.0, -80.0, -40.0])
+    # a segment mode of mpc_docking and a nlp search: the speed margin is the docking one
+    other = _set(_docking_tree(), "planner.segment.mpc_docking.eta_v", 0.5)
+    assert m.segment_binding(other, _facts()).document["mpc_docking"]["limits"]["qd_max"] == (
+        pytest.approx([0.5 * 4.0, 0.5 * 2.0, 0.5 * 3.0])
+    )
+    assert set(b.sources) == {
+        *(f"mpc_docking.{k}" for k in d if k != "limits"),
+        *(f"mpc_docking.limits.{k}" for k in lim),
+    }
+    assert "mpc_docking.core.catch.nu_ref" in b.sources["mpc_docking.hand_t_close_lead"]["source"]
+    assert "SetupMpcDockingSegmentPlanner" in b.sources["mpc_docking.qd_rating"]["mirrors"]
+    qd = b.sources["mpc_docking.limits.qd_max"]
+    assert "BuildDockingLimits" in qd["mirrors"]
+    assert qd["mirror_param"] == "planner.segment.mpc_docking.eta_v"
+    no_box = _set(_docking_tree(), "robot.arm.qdd_max", m._ABSENT)
+    assert m.segment_binding(no_box, _facts()).document["mpc_docking"]["limits"]["qdd_max"] == []
+    tbd = _set(_docking_tree(), "robot.hand.T_close_e2e", "TBD")
+    _set(tbd, "core.ball.mass", "TBD")
+    got = m.segment_binding(tbd, _facts()).document["mpc_docking"]
+    assert math.isnan(got["hand_t_close_e2e"]) and math.isnan(got["ball_mass"])
+    assert "hand_t_close_e2e: .nan" in m.segment_binding(tbd, _facts()).yaml_text()
+
+
+def test_the_nlp_search_limits_and_the_docking_segments_limits_are_one_construction():
+    for form in ("dynamic", "kinematic"):
+        tree = _set(_docking_tree(), "joint_cmd.accel_constraint", form)
+        nlp = m.search_binding(tree, _facts(), "nlp").document["nlp"]["limits"]
+        assert m.segment_binding(tree, _facts()).document["mpc_docking"]["limits"] == nlp
+
+
+def test_segment_binding_of_closed_form_is_refused_saying_so():
+    tree = _set(_tree(), "planner.segment.mode", "closed_form")
+    with pytest.raises(m.BindingError, match="closed_form"):
+        m.segment_binding(tree, _facts())
+
+
+@pytest.mark.parametrize(
+    ("mode", "path", "value", "named"),
+    [
+        ("mpc", "planner.segment.mpc.eta_v", m._ABSENT, "planner.segment.mpc.eta_v"),
+        ("mpc", "planner.segment.mpc.eta_v", "TBD", "planner.segment.mpc.eta_v"),
+        ("mpc", "robot.arm.limit_margin", "TBD", "robot.arm.limit_margin"),
+        ("mpc", "joint_cmd.lag.T_arm", m._ABSENT, "joint_cmd.lag.T_arm"),
+        ("mpc", "planner.segment.mode", m._ABSENT, "planner.segment.mode"),
+        ("mpc", "planner.segment.mode", "docking", "planner.segment.mode"),
+        ("mpc_docking", "planner.segment.mpc_docking.eta_v", m._ABSENT, "mpc_docking.eta_v"),
+        ("mpc_docking", "planner.segment.mpc_docking.eta_v", "TBD", "mpc_docking.eta_v"),
+        ("mpc_docking", "planner.segment.mpc_docking.core", m._ABSENT, "mpc_docking.core"),
+        ("mpc_docking", "joint_cmd.eta_tau", m._ABSENT, "joint_cmd.eta_tau"),
+        ("mpc_docking", "robot.arm.qdd_max", [1.0, 2.0], "robot.arm.qdd_max"),
+    ],
+)
+def test_a_segment_binding_input_the_controller_would_default_is_refused_naming_the_key(
+    mode, path, value, named
+):
+    tree = _set(_tree(), "planner.segment.mode", mode)
+    _set(tree, path, value)
+    if path == "planner.segment.mode":
+        tree = _set(_tree(), path, value)
+    with pytest.raises(m.BindingError, match=re.escape(named)):
+        m.segment_binding(tree, _facts())
+
+
+def test_a_device_rating_the_controller_would_replace_by_a_constant_is_refused_for_segments():
+    arm = _limits(ARM, [-3.0, -2.0, -1.0], [3.0, 2.0, -0.95], [2.0, 3.0, 4.0], None)
+    with pytest.raises(m.BindingError, match=r"devices\.arm\.joint_limits\.max_torque"):
+        m.segment_binding(_tree(), _facts(arm=arm))
+
+
+def test_the_segment_passes_binding_is_the_search_bindings_plus_the_segment_map():
+    search = m.search_binding(_tree(), _facts(), "grid")
+    segment = m.segment_binding(_tree(), _facts())
+    both = m.with_segment(search, segment)
+    assert both.kind == "grid"
+    assert both.document == {**search.document, "segment": segment.document}
+    assert list(both.document)[-1] == "segment"
+    assert both.sources["segment.mpc.q_min"] == segment.sources["mpc.q_min"]
+    assert {k: v for k, v in both.sources.items() if not k.startswith("segment.")} == (
+        search.sources
+    )
+    # the search binding is untouched by the segment one
+    assert "segment" not in search.document
+
+
+# ── the segment pass's rows ───────────────────────────────────────────────────
+
+
+def test_names_stay_text_in_a_result_row():
+    for column in ("outcome", "segment_outcome", "segment_kind", "segment_core_reason"):
+        assert m._cell(column, "published") == "published"
+        assert m._cell(column, "") == ""
+    assert math.isnan(m._cell("segment_slack_max", "")) and m._cell("segment_k", "2") == 2
+    assert m._cell("segment_slack_max", "nan") != m._cell("segment_slack_max", "nan")
+    rows = m.parse_search_rows(
+        "throw_id,wake,outcome,segment_outcome,segment_slack_max\n3,0,held,slack,0.25\n"
+    )
+    assert rows == [
+        {
+            "throw_id": 3,
+            "wake": 0,
+            "outcome": "held",
+            "segment_outcome": "slack",
+            "segment_slack_max": 0.25,
+        }
+    ]
+
+
+def _srow(
+    throw_id,
+    wake,
+    outcome="published",
+    valid=1,
+    seg="published",
+    kind="first",
+    core="none",
+    lead=0.5,
+    wall=10.0,
+    **extra,
+):
+    """A segment-mode result row. A plan is on the row only when its pair went out."""
+    out = outcome == "published" and valid == 1
+    return {
+        "throw_id": throw_id,
+        "wake": wake,
+        "now_ns": m.RELEASE_NS + 100_000_000 + wake * 40_000_000,
+        "outcome": outcome,
+        "search_valid": valid,
+        "plan_reason": 0 if valid else 4,
+        "nlp_reason": "off",
+        "t_c_ns": m.RELEASE_NS + 900_000_000 if out else math.nan,
+        "lead_s": lead if out else math.nan,
+        "segment_outcome": seg,
+        "segment_kind": kind,
+        "segment_core_reason": core,
+        "wall_us": wall,
+        **extra,
+    }
+
+
+def test_segment_verdicts():
+    rows = [
+        # 0: a search refusal, a withheld plan (slack), then the pair; the row after is unread
+        _srow(0, 0, valid=0, seg="off", kind="none"),
+        _srow(0, 1, outcome="held", seg="slack", wall=7.0),
+        _srow(0, 2, wall=5.0, lead=0.72),
+        _srow(0, 3, outcome="held", seg="slack"),
+        # 1: the segment planner fails twice, the later reason wins the tie with the cycle's
+        _srow(1, 0, outcome="held", seg="solve_failed", core="infeasible"),
+        _srow(1, 1, outcome="held", seg="catch_error"),
+        _srow(1, 2, outcome="superseded", seg="published"),
+        _srow(1, 3, outcome="held", seg="catch_error"),
+        # 3: a published "no plan" is the search's reason, not a pair
+        _srow(3, 0, valid=0, seg="off", kind="none"),
+    ]
+    got = m.segment_verdicts([0, 1, 2, 3], rows, {0: 5, 1: 4, 3: 1})
+    by = {v["throw_id"]: v for v in got}
+    assert [v["throw_id"] for v in got] == [0, 1, 2, 3]
+    a = by[0]
+    assert a["segment_accepted"] and a["segment_first_wake"] == 2
+    assert a["segment_reject_reason"] == ""
+    assert a["segment_after_release_s"] == pytest.approx(0.18)
+    assert a["segment_t_c_s"] == pytest.approx(0.9) and a["segment_lead_s"] == 0.72
+    assert a["segment_wakes_run"] == 3 and a["segment_wall_us"] == 22.0
+    assert a["segment_wake_reasons"] == {"search:reach_time": 1, "segment:slack": 1}
+    b = by[1]
+    assert not b["segment_accepted"] and b["segment_first_wake"] is None
+    assert b["segment_reject_reason"] == "segment:catch_error"
+    assert b["segment_wake_reasons"] == {
+        "segment:solve_failed/infeasible": 1,
+        "segment:catch_error": 2,
+        "cycle:superseded": 1,
+    }
+    assert b["segment_wakes_run"] == 4 and math.isnan(b["segment_t_c_s"])
+    assert by[2]["segment_reject_reason"] == m.REASON_NO_WAKE
+    assert by[2]["segment_wakes_run"] == 0 and math.isnan(by[2]["segment_wall_us"])
+    assert by[3]["segment_reject_reason"] == "search:reach_time"
+    for v in got:
+        assert set(m.SEGMENT_VERDICT_KEYS) <= set(v)
+
+
+def test_a_refused_throws_reason_is_what_became_of_its_plans_not_its_planless_wakes():
+    # One wake had a plan and its segment was withheld; the three after it had none (the
+    # ball is past the reach by then). The plan-less wakes are the majority and do not vote.
+    rows = [
+        _srow(0, 0, outcome="held", seg="catch_error"),
+        _srow(0, 1, valid=0, seg="off", kind="none"),
+        _srow(0, 2, valid=0, seg="off", kind="none"),
+        _srow(0, 3, valid=0, seg="off", kind="none"),
+    ]
+    (verdict,) = m.segment_verdicts([0], rows, {0: 4})
+    assert not verdict["segment_accepted"]
+    assert verdict["segment_reject_reason"] == "segment:catch_error"
+    assert verdict["segment_wake_reasons"] == {"segment:catch_error": 1, "search:reach_time": 3}
+
+
+def test_a_segment_wake_reads_as_the_planner_event_log_reads_it():
+    for row in (
+        _srow(0, 0, outcome="held", seg="slack"),
+        _srow(0, 0, outcome="held", seg="solve_failed", core="infeasible"),
+        _srow(0, 0, outcome="superseded", seg="published"),
+        _srow(0, 0, outcome="held", seg="published", kind="none"),
+        _srow(0, 0, valid=0, seg="off", kind="none"),
+    ):
+        got = m.segment_verdicts([0], [row], {0: 1})[0]
+        assert got["segment_wake_reasons"] == {_wake_reject_reason(row): 1}
+    # no forcing of the outcome: the search's wake_reason would read this one as `published`
+    held = _srow(0, 0, outcome="held", seg="published", kind="none")
+    assert _wake_reject_reason(held).startswith("cycle:held")
+    assert not m.pair_published(held)
+    assert m.pair_published(_srow(0, 0)) and not m.pair_published(_srow(0, 0, valid=0))
+
+
+def test_unjudged_throws_have_empty_segment_cells_and_judged_ones_their_verdict():
+    judged = {v["throw_id"]: v for v in m.segment_verdicts([4], [_srow(4, 0)], {4: 1})}
+    assert m.segment_cells(judged, 4, object()) == {
+        k: judged[4][k] for k in m.SEGMENT_VERDICT_KEYS
+    }
+    empty = m.segment_cells(judged, 5, object())
+    assert list(empty) == list(m.SEGMENT_VERDICT_KEYS) and set(empty.values()) == {""}
+    assert m.segment_cells(judged, None, object()) == empty
+    assert m.segment_cells(judged, 4, None) == {}  # no segment pass: today's columns
+
+
+def test_the_segment_summary_counts_throws_and_wakes_in_the_reason_distribution_shape():
+    rows = [
+        _srow(0, 0, outcome="held", seg="slack"),
+        _srow(0, 1),
+        _srow(1, 0, outcome="held", seg="slack"),
+        _srow(1, 1, outcome="held", seg="catch_error"),
+        _srow(1, 2, outcome="held", seg="slack"),
+    ]
+    verdicts = m.segment_verdicts([0, 1], rows, {0: 2, 1: 3})
+    got = m.segment_summary(verdicts)
+    assert (got["judged"], got["accepted"], got["refused"]) == (2, 1, 1)
+    assert got["acceptance_rate"] == 0.5
+    assert got["reasons"]["throws"] == {"segment:slack": 1}
+    assert got["reasons"]["wakes"] == {"segment:slack": 3, "segment:catch_error": 1}
+    assert got["reasons"]["wakes_of_refused_throws"] == {
+        "segment:slack": 2,
+        "segment:catch_error": 1,
+    }
+    assert got["first_wake"]["n"] == 1 and got["wall_us"]["n"] == 2
+    assert m.segment_summary([])["acceptance_rate"] is None
+
+
+def test_the_wake_file_of_the_segment_pass_holds_the_accepted_throws_wakes_only(tmp_path):
+    source = tmp_path / "wakes.csv"
+    source.write_text(f"{m.WAKE_CSV_HEADER}\n0,0,1,2\n12,0,1,2\n1,0,1,2\n12,1,1,2\n0,1,1,2\n")
+    out = tmp_path / "segment_wakes.csv"
+    m.filter_wake_csv(source, out, {0, 12})
+    assert out.read_text().splitlines() == [
+        m.WAKE_CSV_HEADER,
+        "0,0,1,2",
+        "12,0,1,2",
+        "12,1,1,2",
+        "0,1,1,2",
+    ]
+
+
+# ── the sim comparison of the segment tier ────────────────────────────────────
+
+
+def _offline(throw_id, accepted, segment, reason="", search_reason="search:x"):
+    row = {
+        "throw_id": throw_id,
+        "accepted": accepted,
+        "reject_reason": "" if accepted else search_reason,
+    }
+    row.update(
+        m.unjudged_segment_verdict() if segment is None else segment_cells_of(segment, reason)
+    )
+    return row
+
+
+def segment_cells_of(accepted, reason):
+    cells = m.unjudged_segment_verdict()
+    cells["segment_accepted"] = accepted
+    cells["segment_reject_reason"] = "" if accepted else reason
+    return cells
+
+
+def test_the_segment_sim_table_crosses_the_offline_segment_class_with_the_sim_plan_verdict():
+    offline = [
+        _offline(0, True, True),
+        _offline(1, True, True),
+        _offline(2, True, False, "segment:slack"),
+        _offline(3, True, False, "segment:catch_error"),
+        _offline(4, False, None, search_reason="search:reach_time"),
+        _offline(5, False, None, search_reason="search:reach_time"),
+        _offline(50, True, True),
+    ]
+    sim = [
+        {"idx": 0, "throw_id": "0", "plan_verdict": "published", "truth_success": "True"},
+        {"idx": 1, "throw_id": "1", "plan_verdict": "withheld", "plan_reject": "segment:slack"},
+        {"idx": 2, "throw_id": "2", "plan_verdict": "published", "truth_success": "False"},
+        {"idx": 3, "throw_id": "3", "plan_verdict": "no_plan", "plan_reject": "search:x"},
+        {"idx": 4, "throw_id": "4", "plan_verdict": "no_search", "truth_success": "False"},
+        {"idx": 5, "throw_id": "5", "plan_verdict": "published", "truth_success": "True"},
+        {"idx": 6, "throw_id": "6", "plan_verdict": "published", "invalid_reason": "lane_drop"},
+        {"idx": 7, "throw_id": "7", "plan_verdict": ""},
+        {"idx": 8, "throw_id": "", "plan_verdict": "no_plan"},
+        {"idx": 9, "throw_id": "99", "plan_verdict": "published", "truth_success": "True"},
+    ]
+    joined, got = m.sim_segment_table(offline, sim)
+    assert (got["trials"], got["invalid"], got["unjudged"], got["without_throw_id"]) == (
+        10,
+        1,
+        1,
+        1,
+    )
+    table = got["table"]
+    assert set(table) == {"segment_accepted", "segment_refused", "search_refused"}
+    assert set(table["segment_accepted"]) == {"published", "withheld", "no_plan"}
+    zero = {"truth_success": 0, "truth_fail": 0, "truth_unknown": 0}
+    assert table["segment_accepted"]["published"] == {**zero, "truth_success": 1}
+    assert table["segment_accepted"]["withheld"] == {**zero, "truth_unknown": 1}
+    assert table["segment_refused"]["published"] == {**zero, "truth_fail": 1}
+    assert table["segment_refused"]["no_plan"] == {**zero, "truth_unknown": 1}
+    assert table["search_refused"]["no_plan"] == {**zero, "truth_fail": 1}  # no_search counts here
+    assert table["search_refused"]["published"] == {**zero, "truth_success": 1}
+    assert got["no_search_trials"] == 1
+    # throw 1: accepted offline, withheld in the sim → disagree; 2 and 5: refused offline,
+    # published in the sim → disagree; 0 agrees (accepted/published), 3 and 4 (not/not)
+    assert got["both_accepted"] == 1 and got["both_not_accepted"] == 2
+    assert got["compared"] == 6 and got["agreement"] == pytest.approx(3 / 6)
+    dis = got["disagreements"]
+    a = dis["offline_accepted_sim_not_published"]
+    assert a["throws"] == [1] and a["sim_reasons"] == {"segment:slack": 1}
+    assert a["offline_reasons"] == {"none": 1}
+    b = dis["offline_refused_sim_published"]
+    assert b["throws"] == [2, 5]
+    assert b["offline_reasons"] == {"segment:slack": 1, "search:reach_time": 1}
+    assert b["sim_reasons"] == {"published": 2}
+    assert got["sim_throws_without_an_offline_verdict"] == [99]
+    assert got["offline_throws_not_thrown"] == 1  # throw 50
+    # parallel to sim_table's joined rows, which skip the same trials
+    other, _ = m.sim_table(sim, [{**v, "accepted": bool(v["accepted"])} for v in offline])
+    assert len(joined) == len(other) == 8
+    assert joined[0]["offline_segment_class"] == "segment_accepted"
+    assert joined[2]["offline_segment_class"] == "segment_refused"
+    assert joined[2]["offline_segment_reason"] == "segment:slack"
+    assert joined[4]["offline_segment_class"] == "search_refused"
+    assert joined[4]["offline_segment_reason"] == "search:reach_time"
+    assert joined[-1]["offline_segment_class"] == "" and joined[-2]["offline_segment_class"] == ""
+
+
+def test_an_empty_segment_cell_is_search_refused_not_segment_refused():
+    assert m.offline_segment_class({"segment_accepted": ""}) == m.SEG_SEARCH_REFUSED
+    assert m.offline_segment_class({"accepted": False}) == m.SEG_SEARCH_REFUSED
+    assert m.offline_segment_class({"segment_accepted": "False"}) == m.SEG_REFUSED
+    assert m.offline_segment_class({"segment_accepted": "True"}) == m.SEG_ACCEPTED
+    assert m.offline_segment_class({"segment_accepted": False}) == m.SEG_REFUSED
+
+
+# ── the whole run with a stand-in binary ──────────────────────────────────────
+
+# A stand-in for catch_search_batch that answers by throw id, so the CLI's two passes, the
+# shards and the files they write are pinned without the installed binary. Search pass: an
+# even throw gets a plan at its second wake. Segment pass (the binding has a `segment` map):
+# a throw whose id is a multiple of 4 has the pair published at its second wake, the other
+# even throws never get past `slack`.
+_FAKE_JUDGE = """#!{python}
+import csv, sys, yaml
+argv = sys.argv[1:]
+if "--print-reach-bound" in argv:
+    sys.exit(1)
+opt = {{argv[i]: argv[i + 1] for i in range(0, len(argv) - 1, 2)}}
+binding = yaml.safe_load(open(opt["--binding"]))
+segment = "segment" in binding
+if segment and {refuse_segment}:
+    print("catch_search_batch: the segment planner refused its configuration - fake", file=sys.stderr)
+    sys.exit(3)
+nv = len(binding["device_of_model"])
+wakes = {{}}
+for row in csv.DictReader(open(opt["--wakes"])):
+    wakes.setdefault(int(row["throw_id"]), {{}})[int(row["wake"])] = int(row["now_ns"])
+head = ["throw_id", "wake", "now_ns"] + (["outcome"] if segment else []) + [
+    "search_valid", "plan_reason", "nlp_reason", "t_c_ns", "lead_s",
+    *[f"p_c_{{a}}" for a in "xyz"], *[f"q_star{{i}}" for i in range(nv)]]
+if segment:
+    head += ["segment_outcome", "segment_kind", "segment_core_reason", "segment_k"]
+head += ["wall_us"]
+with open(opt["--out"], "w") as handle:
+    handle.write(",".join(head) + "\\n")
+    for tid in sorted(wakes):
+        for wake in sorted(wakes[tid]):
+            valid = int(tid % 2 == 0 and wake >= 1)
+            outcome, seg, kind = "published", "off", "none"
+            published = valid
+            if segment and tid % 2 == 0 and wake >= 1:
+                kind = "first"
+                published = int(tid % 4 == 0)
+                outcome = "published" if published else "held"
+                seg = "published" if published else "slack"
+            plan = ["1900000000", "0.7", *["0.1"] * 3, *["0.2"] * nv] if published else [""] * (5 + nv)
+            cells = [str(tid), str(wake), str(wakes[tid][wake])]
+            if segment:
+                cells.append(outcome)
+            cells += [str(valid), "0" if valid else "4", "off"] + plan
+            if segment:
+                cells += [seg, kind, "none", "0"]
+            cells.append("12.5")
+            handle.write(",".join(cells) + "\\n")
+            if published or (not segment and valid):
+                break
+"""
+
+
+def _fake_judge(tmp_path: Path, refuse_segment: bool = False) -> Path:
+    import sys  # noqa: PLC0415
+
+    path = tmp_path / "fake_catch_search_batch"
+    path.write_text(_FAKE_JUDGE.format(python=sys.executable, refuse_segment=refuse_segment))
+    path.chmod(0o755)
+    return path
+
+
+def _segment_argv(out: Path, judge: Path, *extra: str) -> list[str]:
+    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    return [
+        "--config-dir", str(config), "--search", "grid", "--out-dir", str(out),
+        "--judge", str(judge),
+        "--ball-config", str(config / "mujoco_simulator.yaml"),
+        "--drag-coefficient", "0.55", "--drag-coefficient-source", "test",
+        "--air-density", "1.204", "--air-density-source", "test",
+        "--distances-m", "3.5", "--azimuths-deg", "0", "--release-heights-m", "1.6 2.0",
+        "--aim-deviations-deg", "0", "--speeds-m-s", "6.5", "--elevations-deg", "20 30",
+        "--grid-origin", "wait_catch_point",
+        "--detection-delay-s", "0.15", "--vision-period-s", "0.05",
+        "--prediction-horizon-s", "1.0", "--horizon-s", "2.0", *extra,
+    ]  # fmt: skip
+
+
+def _shipped_or_skip():
+    pytest.importorskip("pinocchio")
+    if not (_REPO / "integrated_bringup/config/ur5e_p1b").is_dir():
+        pytest.skip("integrated_bringup config is not beside this checkout")
+
+
+def _read_csv(path: Path) -> list[dict]:
+    with path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+@pytest.mark.parametrize("cut", [(), ("--jobs", "2", "--shard-throws", "1")])
+def test_judge_segments_runs_the_segment_pass_on_the_accepted_throws_only(tmp_path, cut):
+    _shipped_or_skip()
+    judge = _fake_judge(tmp_path)
+    sim = tmp_path / "trials.csv"
+    sim.write_text(
+        "idx,throw_id,plan_verdict,plan_reject,truth_success,invalid_reason\n"
+        "0,0,published,,True,\n1,1,no_plan,search:reach_time,False,\n"
+        "2,2,published,,False,\n3,3,published,,True,\n"
+    )
+    plain = tmp_path / "plain"
+    assert m.main(_segment_argv(plain, judge)) == 0
+    out = tmp_path / "out"
+    argv = _segment_argv(out, judge, "--judge-segments", "--sim-trials", str(sim), *cut)
+    assert m.main(argv) == 0
+
+    # the search pass writes what it wrote without the flag: same files, same bytes
+    assert (out / "search_grid.csv").read_bytes() == (plain / "search_grid.csv").read_bytes()
+    assert (out / "binding_grid.yaml").read_bytes() == (plain / "binding_grid.yaml").read_bytes()
+    assert not (plain / "binding_grid_segment.yaml").exists()
+    assert not list(plain.glob("segment_*"))
+    plain_columns = list(_read_csv(plain / "verdicts_grid.csv")[0])
+    rows = _read_csv(out / "verdicts_grid.csv")
+    assert list(rows[0])[: len(plain_columns)] == plain_columns
+    assert list(rows[0])[len(plain_columns) :] == list(m.SEGMENT_VERDICT_KEYS)
+
+    # the binding of the pass: the search binding plus the segment map, sources beside it
+    doc = yaml.safe_load((out / "binding_grid_segment.yaml").read_text())
+    assert doc["segment"]["mode"] == "mpc"
+    assert {k: v for k, v in doc.items() if k != "segment"} == yaml.safe_load(
+        (out / "binding_grid.yaml").read_text()
+    )
+    sources = yaml.safe_load((out / "binding_grid_segment_sources.yaml").read_text())
+    assert "segment.mpc.eta_v" in sources and "grid.eta_v" in sources
+
+    # the segment pass saw the accepted throws (0 and 2) only, with the search pass's wakes
+    seg_rows = m.parse_search_rows((out / "segment_grid.csv").read_text())
+    assert {r["throw_id"] for r in seg_rows} == {0, 2}
+    assert all(isinstance(r["outcome"], str) for r in seg_rows)
+    by_id = {int(r["throw_id"]): r for r in rows}
+    assert by_id[0]["segment_accepted"] == "True" and by_id[0]["segment_first_wake"] == "1"
+    assert by_id[0]["segment_reject_reason"] == ""
+    assert float(by_id[0]["segment_lead_s"]) == 0.7 and float(by_id[0]["segment_wall_us"]) == 25.0
+    assert by_id[2]["segment_accepted"] == "False"
+    assert by_id[2]["segment_reject_reason"] == "segment:slack"
+    # "not judged" is empty, not False
+    for throw_id in (1, 3):
+        assert by_id[throw_id]["accepted"] == "False"
+        assert all(by_id[throw_id][k] == "" for k in m.SEGMENT_VERDICT_KEYS)
+    if cut:
+        assert not (out / "shards").exists()
+
+    summary = json.loads((out / "search_map_summary.json").read_text())
+    seg = summary["searches"]["grid"]["segment"]
+    assert (seg["mode"], seg["judged"], seg["accepted"], seg["refused"]) == ("mpc", 2, 1, 1)
+    assert seg["reasons"]["throws"] == {"segment:slack": 1}
+    assert seg["reasons"]["wakes"]["search:reach_time"] == 2
+    assert seg["reasons"]["wakes"]["segment:slack"] >= 1
+    assert seg["wall_s"] >= 0 and "refused_configuration" not in seg
+    assert summary["provenance"]["segments"]["judged"] is True
+    assert len(summary["provenance"]["segments"]["binding_sha256"]) == 64
+    assert (
+        "segments" not in json.loads((plain / "search_map_summary.json").read_text())["provenance"]
+    )
+
+    # the sim comparison of the tier, and its columns in the per-throw join
+    table = summary["sim"]["searches"]["grid"]["segment"]
+    assert table["table"]["segment_accepted"]["published"]["truth_success"] == 1
+    assert table["table"]["segment_refused"]["published"]["truth_fail"] == 1
+    assert table["table"]["search_refused"]["published"]["truth_success"] == 1
+    assert table["table"]["search_refused"]["no_plan"]["truth_fail"] == 1
+    assert table["compared"] == 4 and table["agreement"] == pytest.approx(2 / 4)
+    joined = {int(r["throw_id"]): r for r in _read_csv(out / "sim_join_grid.csv")}
+    assert joined[0]["offline_segment_class"] == "segment_accepted"
+    assert joined[2]["offline_segment_class"] == "segment_refused"
+    assert joined[2]["offline_segment_reason"] == "segment:slack"
+    assert joined[1]["offline_segment_class"] == "search_refused"
+    # the sim table without the flag is unchanged
+    plain_sim = _run_plain_sim(tmp_path, judge, sim)
+    assert "segment" not in plain_sim["sim"]["searches"]["grid"]
+
+
+def _run_plain_sim(tmp_path: Path, judge: Path, sim: Path) -> dict:
+    out = tmp_path / "plain_sim"
+    assert m.main(_segment_argv(out, judge, "--sim-trials", str(sim))) == 0
+    return json.loads((out / "search_map_summary.json").read_text())
+
+
+def test_a_segment_pass_without_an_accepted_throw_runs_nothing(tmp_path):
+    _shipped_or_skip()
+    judge = _fake_judge(tmp_path)
+    # one throw per shard: shards 1 and 3 hold a refused throw and run no segment pass
+    out = tmp_path / "out"
+    argv = _segment_argv(out, judge, "--judge-segments", "--jobs", "2", "--shard-throws", "1")
+    assert m.main([*argv, "--keep-shards"]) == 0
+    shards = sorted((out / "shards").iterdir())
+    assert [(s / "segment_grid.csv").is_file() for s in shards] == [True, False, True, False]
+    assert [(s / "segment_wakes_grid.csv").is_file() for s in shards] == [True, False, True, False]
+    assert len(_read_csv(out / "segment_grid.csv")) == len(
+        seg_rows := m.parse_search_rows((out / "segment_grid.csv").read_text())
+    ) and {r["throw_id"] for r in seg_rows} == {0, 2}
+    summary = json.loads((out / "search_map_summary.json").read_text())
+    assert summary["searches"]["grid"]["segment"]["argv_runs"] == 2
+
+
+def test_a_refused_segment_planner_is_an_answer_and_leaves_the_segment_cells_empty(tmp_path):
+    _shipped_or_skip()
+    out = tmp_path / "out"
+    judge = _fake_judge(tmp_path, refuse_segment=True)
+    assert m.main(_segment_argv(out, judge, "--judge-segments")) == 0
+    summary = json.loads((out / "search_map_summary.json").read_text())
+    seg = summary["searches"]["grid"]["segment"]
+    assert "segment planner refused its configuration" in seg["refused_configuration"]
+    assert "judged" not in seg
+    assert summary["searches"]["grid"]["accepted"] == 2  # the search pass stands
+    rows = _read_csv(out / "verdicts_grid.csv")
+    assert all(r[k] == "" for r in rows for k in m.SEGMENT_VERDICT_KEYS)
+    assert not (out / "segment_grid.csv").exists()
+
+
+def test_judging_segments_of_a_tree_without_a_segment_planner_exits_before_any_run(tmp_path):
+    _shipped_or_skip()
+    out = tmp_path / "out"
+    judge = _fake_judge(tmp_path)
+    argv = _segment_argv(out, judge, "--judge-segments", "--segment-mode", "closed_form")
+    with pytest.raises(SystemExit, match="closed_form"):
+        m.main(argv)
+    assert not list(out.glob("search_*.csv")) and not list(out.glob("binding_*"))
+    assert not (out / "wakes.csv").exists()
+
+
+# ── through the installed binary, with the segment pass ───────────────────────
+
+
+@pytest.fixture(scope="module")
+def shipped_segment_run(tmp_path_factory):
+    pytest.importorskip("pinocchio")
+    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    if not config.is_dir():
+        pytest.skip("integrated_bringup config is not beside this checkout")
+    if _installed_search() is None:
+        pytest.skip(f"{m.SEARCH_EXECUTABLE} is not installed (build rtc_controllers)")
+    out = tmp_path_factory.mktemp("shipped_segment")
+    argv = _segment_argv(out, _installed_search(), "--judge-segments")
+    assert m.main(argv) == 0
+    return out
+
+
+def test_the_installed_binary_judges_the_pair_of_every_accepted_throw(shipped_segment_run):
+    out = shipped_segment_run
+    summary = json.loads((out / "search_map_summary.json").read_text())
+    entry = summary["searches"]["grid"]
+    assert entry["accepted"] + entry["refused"] == 4
+    seg = entry["segment"]
+    assert "refused_configuration" not in seg, seg.get("refused_configuration")
+    assert seg["judged"] == entry["accepted"]
+    assert seg["accepted"] + seg["refused"] == seg["judged"]
+    rows = _read_csv(out / "verdicts_grid.csv")
+    for row in rows:
+        if row["accepted"] == "True":
+            assert row["segment_accepted"] in ("True", "False")
+            if row["segment_accepted"] == "False":
+                assert row["segment_reject_reason"]
+        else:
+            assert all(row[k] == "" for k in m.SEGMENT_VERDICT_KEYS)
+    accepted_ids = {int(r["throw_id"]) for r in rows if r["accepted"] == "True"}
+    if not accepted_ids:
+        assert not (out / "segment_grid.csv").exists()
+        return
+    seg_rows = m.parse_search_rows((out / "segment_grid.csv").read_text())
+    assert {r["throw_id"] for r in seg_rows} == accepted_ids
+    assert {"outcome", "segment_outcome", "segment_kind", "segment_core_reason"} <= set(
+        seg_rows[0]
+    )
+    by_throw: dict[int, list[dict]] = {}
+    for row in seg_rows:
+        by_throw.setdefault(row["throw_id"], []).append(row)
+    for own in by_throw.values():
+        assert [r["wake"] for r in own] == list(range(len(own)))
+        # rows stop at the first wake whose pair went out
+        assert not any(m.pair_published(r) for r in own[:-1])
+        if m.pair_published(own[-1]):
+            assert math.isfinite(own[-1]["lead_s"])
+        else:
+            assert all(math.isnan(r["lead_s"]) for r in own if r["search_valid"] == 1)
+    assert yaml.safe_load((out / "binding_grid_segment.yaml").read_text())["segment"]["mode"]

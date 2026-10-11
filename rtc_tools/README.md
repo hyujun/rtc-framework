@@ -88,7 +88,7 @@ rtc_tools/
 | `ros2 run rtc_tools catch_speed_budget` | `analysis.catch_speed_budget` | 지도의 수락 후보별 v_dir,max (LP·DLS)·토크 한계 방향 가속·stroke → γ 창이 열리는 투척 표 |
 | `ros2 run rtc_tools catch_gate_map` | `analysis.catch_gate_map` | kinematic 지도의 수락 후보를 `catch_gate_batch` (런타임 게이트 함수) 로 판정 + 토크 검사 도달시간 층 → 두 층의 gate-catchable 지도·탈락 사유·대기 자세 제안 |
 | `ros2 run rtc_tools catch_search_map` | `analysis.catch_search_map` | 투척 설계 → 비행 모델의 wake 열 → `catch_search_batch` (런타임 `CatchSearch::Plan`, grid · nlp) → 투척별 수용 · 사유 · 축별 수용률 · 두 탐색 불일치 · gate 지도 층별 대조 · sim 판정 × 결과 표 |
-| `ros2 run rtc_tools catch_throw_design` | `analysis.catch_throw_design` | `design`: 발사점 · 통과점 · 발사각 격자 → 항력 모델로 속력 풀이 → 투척별 축 값과 `screen:*` (탐색 없음). `select`: 격자의 부분집합 · id 목록 · 이웃 판정이 갈린 곳의 세분화 점을 투척 목록으로 (제한된 투척은 뺀다). `plan-set`: 지도의 판정표에서 수용된 투척 목록. `sample`: plan 집단에서 층마다 같은 비율로 뽑아 섞고 묶음 파일로 |
+| `ros2 run rtc_tools catch_throw_design` | `analysis.catch_throw_design` | `design`: 발사점 · 통과점 · 발사각 격자 → 항력 모델로 속력 풀이 → 투척별 축 값과 `screen:*` (탐색 없음). `select`: 격자의 부분집합 · id 목록 · 이웃 판정이 갈린 곳의 세분화 점을 투척 목록으로 (제한된 투척은 뺀다). `plan-set`: 지도의 판정표에서 수용된 투척 목록 (`--tier search` 는 탐색 집단, `--tier segment` 는 구간 집단). `sample`: plan 집단에서 층마다 같은 비율로 뽑아 섞고 묶음 파일로 |
 | `ros2 run rtc_tools catching_trials` | `analysis.catching_trials` | `catching_sim_trials` 한 run (세션 CSV + trials dir + sim lane) → 시행별 표·요약 JSON (S8-A) |
 | `ros2 run rtc_tools catching_decel` | `analysis.catching_decel` | unit 들의 DECEL 정지 구간 지표 (시행별 표·요약 JSON) · `--a`/`--b` 로 같은 투척의 2×2 표·불일치율·paired 비열등 시행 수·Tango 비열등 검정과 정확 검정력 (MPC 계획 E0-F02 · E1-F06) |
 | `ros2 run rtc_tools catching_grid_sweep` | `analysis.catching_grid_sweep` | arm (격자 조건) 별 성공률·수신 메시지·예측 오차·계획기 시간 · `--ref` 대비와 `--pair` 의 paired 차이·McNemar·Holm (MPC 계획 E0-F04) |
@@ -985,6 +985,23 @@ ros2 run rtc_tools catch_gate_map \
   `--sim-trials` 의 `catching_trials.csv` 와 `throw_id` 로 이은 sim 표 (수용·게시 = `published` / 수용·미게시 =
   `withheld` / 거부 = `no_plan`·`no_search`, × `truth_success`, 무효 시행 제외) 와 오프라인 일치율
 
+- **구간 판정** (`--judge-segments`, 기본 꺼짐): 한 shard 의 탐색이 끝난 뒤 **탐색이 수용한 투척만**, 같은 wake 로 계획기
+  주기 전체 (`PlannerCycle::Run`: 탐색 → 첫 구간 풀이 → 쌍 게시) 를 돌린다. 한 wake 의 쌍이 게시됐다 ⇔ `outcome ==
+  published` ∧ `search_valid == 1`, 투척의 행은 거기서 멈춘다. binding 은 탐색 binding 에 최상위 `segment:` 맵을 더한
+  `binding_<search>_segment.yaml` (+ `_segment_sources.yaml`) 이고 (`segment_binding`; 트리의 `planner.segment.mode` 가
+  `mpc` / `mpc_docking` 의 모양을 고른다 — `SetupMpcSegmentPlanner` · `SetupMpcDockingSegmentPlanner` · `BuildDockingLimits`
+  를 따른다. `closed_form` 은 구간 계획기가 없어 실행 전에 거부), `binding_<search>.yaml` 은 그대로다. 두 번째 실행이
+  `segment_<search>.csv` (batch 출력: 탐색 열 + `outcome` · `segment_*` 열 — 계획기 이벤트 로그의 이름이라
+  `_wake_reject_reason` 이 행을 그대로 읽는다) 를 쓰고, `verdicts_<search>.csv` 에 `segment_accepted` ·
+  `segment_first_wake` · `segment_after_release_s` · `segment_t_c_s` · `segment_lead_s` · `segment_reject_reason` ·
+  `segment_wake_reasons` · `segment_wakes_run` · `segment_wall_us` 가 붙는다. 탐색이 거부했거나 걸러진 투척의 이 열은
+  **빈 칸**이다 (거부 = `False` 와 구별되는 "판정 안 함"). 요약은 탐색 항목마다 `segment` 블록 (`mode` · `judged` ·
+  `accepted` · `refused` · 사유 분포 · 시간 · 설정 거부 문장), `provenance.segments` 에 구간 binding 의 sha256 을 적는다.
+  `--sim-trials` 와 함께면 sim 표 옆 `segment` 에 오프라인 구간 판정 (`segment_accepted` / `segment_refused` /
+  `search_refused`) × sim `plan_verdict` (`published` / `withheld` / `no_plan`) × `truth_success` 와 일치율 (수용 ∧ 게시
+  + 미수용 ∧ 미게시), 어긋난 두 칸의 사유 분포를 적고 `sim_join_<search>.csv` 에 투척별 열이 붙는다. 여기도 안 되는 것:
+  쌍 게시 뒤의 replan · 교체, 추정 잡음 (공분산 0), 실행 시계가 만드는 것 (예산을 넘긴 풀이, 풀이 중 더 새 예측이 와서
+  버려진 쌍, 오래된 RT 보고)
 - **사전 판정이 붙은 투척**: 목록 항목의 `screen` 이 비어 있지 않으면 (`catch_throw_design` 이 붙인다) 탐색에 넘기지
   않고 그 이름으로 거부한다. `--judge-screened` 는 그 투척에도 탐색을 돌린다 — 조건을 탐색 자체로 확인하는 실행이고,
   받은 것이 있으면 요약의 `searches.<search>.screened.accepted` 에 id 가 나온다. 목록의 `meta.unlaunchable` (발사
@@ -1017,13 +1034,14 @@ ros2 run rtc_tools catch_search_map \
   --speeds-m-s '6.0 6.5' --elevations-deg '40 46' --grid-origin wait_catch_point \
   --detection-delay-s 0.15 --vision-period-s 0.0333333 --prediction-horizon-s 1.0 \
   [--overlay <file>] [--sample 50 --sample-seed <seed>] [--gate-map <dir>] [--sim-trials <csv>] \
-  [--throws-file <list.json> [--judge-screened]] [--jobs 6] [--estimator-profile <json>]
+  [--throws-file <list.json> [--judge-screened]] [--judge-segments] [--jobs 6] [--estimator-profile <json>]
 ```
 
 출력: `throw_list.json` · `wakes.csv` · `catching_tree.yaml` (batch 에 준 합성 트리) · `model_config.yaml` ·
 `binding_<search>.yaml` · `binding_<search>_sources.yaml` · `search_<search>.csv` (batch 출력 그대로) ·
-`verdicts_<search>.csv` (투척별) · `gate_join_<search>.csv` · `sim_join_<search>.csv` · `search_map_summary.json`.
-탐색이 설정을 거부하면 (batch 종료 코드 3) 그 문장을 요약의 `refused_configuration` 에 적고 지도는 없다.
+`verdicts_<search>.csv` (투척별) · (`--judge-segments`) `binding_<search>_segment{,_sources}.yaml` · `segment_<search>.csv` · `gate_join_<search>.csv` · `sim_join_<search>.csv` · `search_map_summary.json`.
+탐색이 설정을 거부하면 (batch 종료 코드 3) 그 문장을 요약의 `refused_configuration` 에 적고 지도는 없다. 구간 계획기가
+거부하면 `segment.refused_configuration` 에 적고 구간 열은 비며 탐색 지도는 그대로다.
 
 - 테스트 `test/test_catch_search_map.py`: 격자 id = `generate_throw_grid` 순서, LHS 의 층마다 한 표본 · seed 재현,
   목록 왕복과 거부, 지도의 목록 함수가 `catching_throw_list` 의 것인지 · 지도가 쓴 격자·표본 목록이 드라이버 규칙을
@@ -1075,7 +1093,10 @@ ros2 run rtc_tools catch_search_map \
   (없으면 출하값). 바꾼 값은 `catching_tree.yaml` 과 요약 · `design_meta.json` provenance 의 `overrides` 에 남는다
 - **`plan-set`**: `--throws-file <지도가 판정한 목록>` `--verdicts <verdicts_<search>.csv …>` `--out` — 수용된 투척을
   `throw_id` 오름차순 `catching_throw_list/1` 로 쓴다. 판정이 목록을 덮지 못하거나 수용된 id 가 목록에 없으면 개수를 대며
-  거부한다. meta: 원본 목록과 판정 파일별 sha256, 판정 수 · 수용 수, 원본의 `design` · `axes` · `limit` (`unlaunchable` 행은
+  거부한다. `--tier search` (기본) 는 `accepted` 열 (탐색 집단), `--tier segment` 는 `segment_accepted` 가 참인 투척
+  (구간 집단 — `--judge-segments` 로 만든 판정표만 받고, 그 열이 없거나 모든 투척에서 비어 있으면 이름을 대며 거부한다).
+  meta: 원본 목록과 판정 파일별 sha256, `tier` · `set_name` (`throw_search_set` / `throw_segment_set`), 판정 수 · 수용 수
+  (구간이면 `search_accepted` 도), 원본의 `design` · `axes` · `limit` (`unlaunchable` 행은
   싣지 않는다)
 - **`sample`**: `--plan-set` `--out-dir` `--strata <축…>` `--seed` `--chunk` `[--max-throws]` — 층 (축 값 조합) 마다 같은
   비율, 정수는 최대 잔여 방식 (합 = min(N, 크기), 동률은 층 키 순서). 층 안의 선택은 `sha256("<seed>:pick:<id>")`, 전체

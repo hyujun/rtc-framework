@@ -60,7 +60,9 @@ in the list's ``meta.limit``, the threshold and how many it removed, overall and
 value of every design axis, so a map's acceptance denominators can be rebuilt.
 
 **After a map**: ``plan-set`` writes the throws a map accepted (ascending
-``throw_id``) as a throw list; ``sample`` picks the throws to throw from it —
+``throw_id``) as a throw list — ``--tier search`` (default) the throws the search
+accepted (the search set), ``--tier segment`` those whose segment pass, run with
+``catch_search_map --judge-segments``, published its pair (the segment set); ``sample`` picks the throws to throw from it —
 the same fraction of every stratum of the given axes, ranked and shuffled by
 SHA-256 of ``seed`` and ``throw_id`` (no RNG stream, so the same files on any
 Python, numpy or PC) — and splits them into chunk files. What both write is a
@@ -1318,13 +1320,27 @@ def _cmd_design(args: argparse.Namespace) -> int:
     return 0
 
 
-def _read_verdicts(paths: Sequence[Path]) -> dict[int, bool]:
+def _read_verdicts(paths: Sequence[Path], column: str = "accepted") -> dict[int, bool]:
+    """Throw id → the verdict cell ``column`` reads as true. An empty cell is false."""
     accepted: dict[int, bool] = {}
     for path in paths:
         with Path(path).open(newline="") as handle:
             for row in csv.DictReader(handle):
-                accepted[int(row["throw_id"])] = row["accepted"] in ("True", "1", "true")
+                accepted[int(row["throw_id"])] = row[column] in ("True", "1", "true")
     return accepted
+
+
+def _segment_judged(path: Path) -> int:
+    """How many throws of a verdicts CSV the segment pass judged (a non-empty
+    ``segment_accepted`` cell). ``ValueError`` if the file has no such column."""
+    with Path(path).open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if SEGMENT_COLUMN not in (reader.fieldnames or ()):
+            raise ValueError(
+                f"{path}: no {SEGMENT_COLUMN} column — run catch_search_map with "
+                "--judge-segments to judge the segment tier"
+            )
+        return sum(1 for row in reader if row[SEGMENT_COLUMN] != "")
 
 
 def _cmd_select(args: argparse.Namespace) -> int:
@@ -1418,6 +1434,10 @@ def _cmd_select(args: argparse.Namespace) -> int:
 # Meta of a source list that says how to read its throws; NOT its unlaunchable rows.
 _CARRIED_META = ("axes", "design", "limit")
 PLAN_SET_KIND = "plan_set"
+PLAN_TIERS = ("search", "segment")
+# The throw set each tier names, and the verdict cell that decides it.
+PLAN_SET_NAMES = {"search": "throw_search_set", "segment": "throw_segment_set"}
+SEGMENT_COLUMN = "segment_accepted"
 SAMPLE_KIND = "sample"
 
 
@@ -1461,23 +1481,54 @@ def build_plan_set(
 def _cmd_plan_set(args: argparse.Namespace) -> int:
     source = read_throw_list_file(args.throws_file)
     paths = [Path(p) for p in args.verdicts]
+    tier = args.tier
     try:
-        accepted = build_plan_set(source.throws, [_read_verdicts([p]) for p in paths])
+        searched = build_plan_set(source.throws, [_read_verdicts([p]) for p in paths])
+        if tier == "segment":
+            for p in paths:
+                if _segment_judged(p) == 0:
+                    raise ValueError(
+                        f"{p}: {SEGMENT_COLUMN} is empty for every throw — the segment pass "
+                        "judged none (no throw was accepted by the search, or it was refused)"
+                    )
+            # A throw the segment pass did not judge has an empty cell: not in the set.
+            segment_files = [_read_verdicts([p], SEGMENT_COLUMN) for p in paths]
+            accepted = build_plan_set(source.throws, segment_files)
+            outside = {t["throw_id"] for t in accepted} - {t["throw_id"] for t in searched}
+            if outside:
+                raise ValueError(
+                    f"{len(outside)} throws are segment-accepted but not search-accepted "
+                    f"(first: {sorted(outside)[:5]})"
+                )
+        else:
+            accepted = searched
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     if not accepted:
-        raise SystemExit(f"no throw of the {len(source.throws)} judged was accepted")
+        raise SystemExit(
+            f"no throw of the {len(source.throws)} judged was accepted"
+            + (" by the segment pass" if tier == "segment" else "")
+        )
+    counts = {"judged": len(source.throws), "accepted": len(accepted)}
+    if tier == "segment":
+        counts["search_accepted"] = len(searched)
     meta = {
         "tool": "rtc_tools.analysis.catch_throw_design",
         "kind": PLAN_SET_KIND,
+        "tier": tier,
+        "set_name": PLAN_SET_NAMES[tier],
         "source_list": {"sha256": source.sha256, "n_throws": len(source.throws)},
         # The file name says the search (verdicts_<search>.csv); no directory — see above.
         "verdicts": [{"name": p.name, "sha256": _sha256_bytes(p.read_bytes())} for p in paths],
-        "counts": {"judged": len(source.throws), "accepted": len(accepted)},
+        "counts": counts,
         **_carried(source.meta),
     }
     write_throw_list(Path(args.out), accepted, csm._jsonable(meta))
-    print(f"plan set: {args.out} ({len(accepted)} of {len(source.throws)} judged accepted)")
+    label = "plan set" if tier == "search" else PLAN_SET_NAMES[tier]
+    print(
+        f"{label}: {args.out} ({len(accepted)} of {len(source.throws)} judged accepted"
+        f"{' by the segment pass' if tier == 'segment' else ''})"
+    )
     return 0
 
 
@@ -1685,6 +1736,14 @@ def main(argv: list[str] | None = None) -> int:
         nargs="+",
         required=True,
         help="verdicts_<search>.csv of the map (it covers the list)",
+    )
+    plan.add_argument(
+        "--tier",
+        choices=PLAN_TIERS,
+        default="search",
+        help="search: the throws the search accepted (the `accepted` column); segment: those "
+        "whose segment pass published its pair (the `segment_accepted` column of a "
+        "`catch_search_map --judge-segments` run)",
     )
     plan.add_argument("--out", type=Path, required=True, help="the plan set to write")
     plan.set_defaults(run=_cmd_plan_set)
