@@ -1503,3 +1503,87 @@ def test_screens_derived_for_another_configuration_are_refused_unless_the_search
     m.write_throw_list(path, throws, {"design": design})
     held = _run_list(tmp_path / "held", path)
     assert held["throws_screened"]["basis"]["differs"] == []
+
+
+# ── --segment-mode: one value of the composed tree ────────────────────────────
+
+
+def _setup_args(config: Path, *extra: str):
+    import argparse  # noqa: PLC0415
+
+    ap = argparse.ArgumentParser()
+    m.add_setup_arguments(ap)
+    return ap.parse_args(
+        [
+            "--config-dir", str(config),
+            "--ball-config", str(config / "mujoco_simulator.yaml"),
+            "--drag-coefficient", "0.55", "--drag-coefficient-source", "test",
+            "--air-density", "1.204", "--air-density-source", "test",
+            *extra,
+        ]
+    )  # fmt: skip
+
+
+def test_segment_mode_overrides_that_one_value_after_the_overlays_and_is_recorded(tmp_path):
+    pytest.importorskip("pinocchio")
+    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    if not config.is_dir():
+        pytest.skip("integrated_bringup config is not beside this checkout")
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text(
+        yaml.safe_dump(
+            {
+                "node": {
+                    "ros__parameters": {
+                        "demo_catching_controller": {
+                            "catching": {"planner": {"segment": {"mode": "closed_form"}}}
+                        }
+                    }
+                }
+            }
+        )
+    )
+    plain = m.load_setup(_setup_args(config), tmp_path, ())
+    shipped = plain.catching["planner"]["segment"]["mode"]
+    assert plain.overrides == {}
+    layered = m.load_setup(_setup_args(config, "--overlay", str(overlay)), tmp_path, ())
+    assert layered.catching["planner"]["segment"]["mode"] == "closed_form"
+    assert layered.overrides == {}
+    target = next(mode for mode in m.SEGMENT_MODES if mode not in (shipped, "closed_form"))
+    over = m.load_setup(
+        _setup_args(config, "--overlay", str(overlay), "--segment-mode", target), tmp_path, ()
+    )
+    assert over.catching["planner"]["segment"]["mode"] == target
+    assert over.overrides == {
+        "planner.segment.mode": {"layers": "closed_form", "override": target}
+    }
+
+    # exactly one value differs from the tree the layers compose
+    def flat(node, prefix=""):
+        if isinstance(node, dict):
+            return {
+                k: v
+                for key, child in node.items()
+                for k, v in flat(child, f"{prefix}{key}.").items()
+            }
+        return {prefix: node}
+
+    before, after = flat(layered.catching), flat(over.catching)
+    assert [k for k in before.keys() | after.keys() if before.get(k) != after.get(k)] == [
+        "planner.segment.mode."
+    ]
+    # the written tree and the provenance carry it
+    tree = tmp_path / "catching_tree.yaml"
+    m.write_catching_tree(tree, over.catching)
+    assert yaml.safe_load(tree.read_text())["catching"]["planner"]["segment"]["mode"] == target
+    judge = tmp_path / "judge"
+    judge.write_bytes(b"x")
+    record = m.provenance(over, judge=judge, params_path=tree, bound=None, estimator=None)
+    assert record["overrides"] == over.overrides
+    assert (
+        m.provenance(plain, judge=judge, params_path=tree, bound=None, estimator=None)["overrides"]
+        == {}
+    )
+    # only the modes the tool knows
+    with pytest.raises(SystemExit):
+        _setup_args(config, "--segment-mode", "nonsense")

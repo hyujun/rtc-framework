@@ -32,7 +32,7 @@ rtc_tools/
 │   │   ├── catch_speed_budget.py        ← 수락 후보별 팔 속도·토크 한계 방향 가속 → γ 창 판정표 (S4.4)
 │   │   ├── catch_gate_map.py            ← kinematic 지도 위의 나머지 게이트 (도달시간·γ 창·정지점) → gate-catchable 지도 (S3.5b)
 │   │   ├── catch_search_map.py          ← 계획기 탐색 자체 (`catch_search_batch`) 의 투척별 수용 지도 · binding · gate/sim 대조 (L3 §4.1)
-│   │   ├── catch_throw_design.py        ← 통과점 투척 설계 (발사점 · 통과점 · 발사각 → 속력 풀이) · 사전 판정 `screen:*` · 격자 부분집합과 경계 세분화 (L3 부록 C)
+│   │   ├── catch_throw_design.py        ← 통과점 투척 설계 (발사점 · 통과점 · 발사각 → 속력 풀이) · 사전 판정 `screen:*` · 격자 부분집합과 경계 세분화 · 최소 통과 시간 제한 · plan 집단과 층화 추출 (L3 부록 C)
 │   │   ├── catching_throw_list.py       ← 투척 목록 파일 `catching_throw_list/1` 의 단일 형식 (검증·읽기·쓰기 — 지도와 sim 드라이버가 함께 쓴다)
 │   │   ├── vision_lane.py               ← ball_perception 예측 lane 디코더·요약 (D-4 / S3.4)
 │   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4) · `--dump` 전 지평·공분산·innovation·nis (S8-A)
@@ -88,7 +88,7 @@ rtc_tools/
 | `ros2 run rtc_tools catch_speed_budget` | `analysis.catch_speed_budget` | 지도의 수락 후보별 v_dir,max (LP·DLS)·토크 한계 방향 가속·stroke → γ 창이 열리는 투척 표 |
 | `ros2 run rtc_tools catch_gate_map` | `analysis.catch_gate_map` | kinematic 지도의 수락 후보를 `catch_gate_batch` (런타임 게이트 함수) 로 판정 + 토크 검사 도달시간 층 → 두 층의 gate-catchable 지도·탈락 사유·대기 자세 제안 |
 | `ros2 run rtc_tools catch_search_map` | `analysis.catch_search_map` | 투척 설계 → 비행 모델의 wake 열 → `catch_search_batch` (런타임 `CatchSearch::Plan`, grid · nlp) → 투척별 수용 · 사유 · 축별 수용률 · 두 탐색 불일치 · gate 지도 층별 대조 · sim 판정 × 결과 표 |
-| `ros2 run rtc_tools catch_throw_design` | `analysis.catch_throw_design` | `design`: 발사점 · 통과점 · 발사각 격자 → 항력 모델로 속력 풀이 → 투척별 축 값과 `screen:*` (탐색 없음). `select`: 격자의 부분집합 · id 목록 · 이웃 판정이 갈린 곳의 세분화 점을 투척 목록으로 |
+| `ros2 run rtc_tools catch_throw_design` | `analysis.catch_throw_design` | `design`: 발사점 · 통과점 · 발사각 격자 → 항력 모델로 속력 풀이 → 투척별 축 값과 `screen:*` (탐색 없음). `select`: 격자의 부분집합 · id 목록 · 이웃 판정이 갈린 곳의 세분화 점을 투척 목록으로 (제한된 투척은 뺀다). `plan-set`: 지도의 판정표에서 수용된 투척 목록. `sample`: plan 집단에서 층마다 같은 비율로 뽑아 섞고 묶음 파일로 |
 | `ros2 run rtc_tools catching_trials` | `analysis.catching_trials` | `catching_sim_trials` 한 run (세션 CSV + trials dir + sim lane) → 시행별 표·요약 JSON (S8-A) |
 | `ros2 run rtc_tools catching_decel` | `analysis.catching_decel` | unit 들의 DECEL 정지 구간 지표 (시행별 표·요약 JSON) · `--a`/`--b` 로 같은 투척의 2×2 표·불일치율·paired 비열등 시행 수·Tango 비열등 검정과 정확 검정력 (MPC 계획 E0-F02 · E1-F06) |
 | `ros2 run rtc_tools catching_grid_sweep` | `analysis.catching_grid_sweep` | arm (격자 조건) 별 성공률·수신 메시지·예측 오차·계획기 시간 · `--ref` 대비와 `--pair` 의 paired 차이·McNemar·Holm (MPC 계획 E0-F04) |
@@ -1058,9 +1058,32 @@ ros2 run rtc_tools catch_search_map \
   키에서 (`catch_search_map` 의 `screen_reach` · `lead_floors` · `common_lead_floor`) — 값과 출처가 `design_meta.json` 에
   있다. nlp 의 하한 키가 없거나 `TBD` 면 (컨트롤러는 내장값으로 돈다 — 사본을 두지 않는다) 시간 판정을 하지 않는다. 앞의 둘은 발사 상태가 없어 투척 목록에 들어가지 않고 목록의
   `meta.unlaunchable` 로 간다
+- **발사각 축**: 값 목록이 아니라 범위다 — `--max-elevation-deg` · `--min-elevation-deg` · `--elevation-step-deg` (셋 다
+  필수) 가 `max − k·step` (≥ min) 을 오름차순으로 만든다. 최대각은 언제나 값이고 최소각은 격자에 놓일 때만 값이다. 옛
+  `--elevations-deg` 는 없다; 세 수는 `design_meta.json` 의 `elevation` 에 남는다
+- **제한** (`--min-pass-time-s`, 선택): 발사된 투척의 항력 풀이 `pass_time_s` 가 그보다 **짧으면** (같으면 아님)
+  `design.csv` 의 `limit` 열 (`screen` 뒤) 에 `limit:pass_time`. `screen` 과 독립이고 따로 센다 — `screen` 은 어느 탐색도
+  받을 수 없다는 뜻이라 지도가 검증하지만, 제한된 투척은 수용될 수 있다. `design_meta.json` 의 `limits` 에 기준값 · 규칙 ·
+  수 (전체 · 축 값별) 를 적는다
 - **`select`**: `--subset <axis>=<values>` 의 부분 격자, `--ids-file`, 또는 `--refine-from <verdicts.csv …>` — 부분
   격자에서 한 축으로 한 칸 떨어진 두 점의 판정이 다르면 그 사이의 격자점 (재귀 없음, 파일들의 합집합; 파일별 점 수와
-  축별 쌍 수를 찍는다). `--max-throws` 를 넘으면 쓰지 않고 끝난다
+  축별 쌍 수를 찍는다). **제한된 투척은 세 경로 모두에서 목록에 쓰지 않는다**; 목록 `meta.limit` 이 기준값과 뺀 수 (전체 ·
+  축 값별, 뺀 수와 뺄 때의 선택 크기) 를 적어 지도의 수용률 분모를 복원하게 한다. `--refine-from` 은 파일마다 판정이
+  없어 건너뛴 이웃 쌍의 수와 제한으로 빠진 세분화 점의 수도 적는다. `--max-throws` 는 뺀 뒤의 수로 세어 넘으면 쓰지 않고
+  끝난다. `limit` 열이 없는 옛 `design.csv` 도 읽는다 (제한 없음)
+- **`--segment-mode`** (`design` 과 `catch_search_map`): 합성 트리의 `planner.segment.mode` 한 값만 `--overlay` 뒤에 덮어쓴다
+  (없으면 출하값). 바꾼 값은 `catching_tree.yaml` 과 요약 · `design_meta.json` provenance 의 `overrides` 에 남는다
+- **`plan-set`**: `--throws-file <지도가 판정한 목록>` `--verdicts <verdicts_<search>.csv …>` `--out` — 수용된 투척을
+  `throw_id` 오름차순 `catching_throw_list/1` 로 쓴다. 판정이 목록을 덮지 못하거나 수용된 id 가 목록에 없으면 개수를 대며
+  거부한다. meta: 원본 목록과 판정 파일별 sha256, 판정 수 · 수용 수, 원본의 `design` · `axes` · `limit` (`unlaunchable` 행은
+  싣지 않는다)
+- **`sample`**: `--plan-set` `--out-dir` `--strata <축…>` `--seed` `--chunk` `[--max-throws]` — 층 (축 값 조합) 마다 같은
+  비율, 정수는 최대 잔여 방식 (합 = min(N, 크기), 동률은 층 키 순서). 층 안의 선택은 `sha256("<seed>:pick:<id>")`, 전체
+  순서 (섞기) 는 `sha256("<seed>:order:<id>")` — 난수 라이브러리를 쓰지 않아 버전 · PC 가 달라도 같다. `sample.json` (섞인
+  순서 전체) 과 그 연속 조각 `chunk_000.json` … (각 `catching_throw_list/1`, `catching_sim_trials --throws-file` 이 읽는다).
+  meta 는 `plan_set_sha256` (plan 집단 파일 바이트의 sha256 — `throw_id` 와 함께 여러 PC 의 결과를 합치는 열쇠) · 층 축 · seed
+  · 층별 (전체, 뽑은 수) · `max_throws` · 묶음 크기, 묶음 파일은 `chunk_index` · `chunk_count` · `sample_sha256` 도. 두 명령의
+  출력은 입력 파일의 바이트와 인자만의 함수다 (절대 경로 · 시각 없음)
 
 ```bash
 ros2 run rtc_tools catch_throw_design design \
@@ -1069,21 +1092,30 @@ ros2 run rtc_tools catch_throw_design design \
   --drag-coefficient 0.55 --drag-coefficient-source '<file:line>' \
   --air-density 1.204 --air-density-source '<file:line>' \
   --distances-m 1.5:4.0:0.25 --azimuths-deg=-40:40:10 --release-heights-m 1.0:1.7:0.1 \
-  --pass-dx-m=-0.4:0.4:0.1 --pass-dy-m=-0.4:0.4:0.1 --elevations-deg '45 60' \
-  --speed-max-m-s 12 --detection-delay-s 0.15 [--jobs 6]
+  --pass-dx-m=-0.4:0.4:0.1 --pass-dy-m=-0.4:0.4:0.1 \
+  --max-elevation-deg 70 --min-elevation-deg 5 --elevation-step-deg 5 [--min-pass-time-s 0.5] \
+  --speed-max-m-s 12 --detection-delay-s 0.15 [--segment-mode mpc_docking] [--jobs 6]
 ros2 run rtc_tools catch_throw_design select --design-dir <design> --out <list.json> \
   --subset 'distance_m=1.5 2.0 2.5 3.0 3.5 4.0' --subset 'azimuth_deg=-40 -20 0 20 40' ...
 ros2 run rtc_tools catch_search_map --throws-file <list.json> --judge-screened --jobs 6 ...
+# plan 집단과 뽑기: 지도는 <map>/verdicts_grid.csv · verdicts_nlp.csv (검색마다 하나) 를 쓴다
+ros2 run rtc_tools catch_throw_design plan-set --throws-file <list.json> \
+  --verdicts <map>/verdicts_grid.csv --out <plan_set.json>
+ros2 run rtc_tools catch_throw_design sample --plan-set <plan_set.json> --out-dir <sample> \
+  --strata distance_m elevation_deg --seed 1 --max-throws 2500 --chunk 250
 ```
 
-출력: `design.csv` (설계점마다 한 행) · `design_meta.json` (격자, 구, lead 하한, 사전 판정 수 — 전체 · 축별 ·
+출력: `design.csv` (설계점마다 한 행) · `design_meta.json` (격자, 발사각 범위, 제한 수, 구, lead 하한, 사전 판정 수 — 전체 · 축별 ·
 ascending 인 칸, 출처) · `catching_tree.yaml` · `model_config.yaml`.
 
 - 테스트 `test/test_catch_throw_design.py`: 축 인자 (`lo:hi:step`), id = 곱의 순번 · 부분집합 · 격자 밖 값 거부, 세분화
   (판정이 갈린 쌍 사이만 · 축 제한 · 판정 없는 점 제외 · 사이가 없는 축), 묶음 적분 = `integrate_flight` (1e-9 m),
   최근접 = `closest_approach`, 정점 = 무항력 닫힌 해, 구 안의 마지막 시각 (그 시각의 공이 구 위), 폴리라인 거리,
   무항력 속력 = 닫힌 해, 항력 속력으로 쏜 비행이 통과점을 지남, 설계점 = 여섯 축의 `generate_throw_grid` 투척,
-  네 screen 각각, 적는 값 · flag, chunk · 프로세스 수 무관, CSV 왕복, 목록과 `unlaunchable`
+  네 screen 각각, 적는 값 · flag, chunk · 프로세스 수 무관, CSV 왕복, 목록과 `unlaunchable`, 발사각 범위 (최대각이 값 ·
+  간격 ≤ 0 · 최소 > 최대 거부), 제한 (엄격한 부등호 · screen 과 독립), `select` 의 세 경로가 제한된 투척을 뺌 · meta · `--max-throws` ·
+  옛 CSV, 세분화가 건너뛴 쌍과 제한으로 빠진 점, `plan-set` (오름차순 · 덮지 못함 · 모르는 id 거부 · 해시), `sample` (층별
+  비율 · 합 · 같은 입력과 seed 는 같은 바이트 · 다른 seed 는 다른 표본 · 묶음 이음 · 읽힘)
 - 테스트 `test/test_catching_throw_list.py`: 목록 형식 자체 — 비트 단위 왕복 · 순서 · 키 순서, 기본값, 머리 · 항목
   거부마다 출처와 값을 말하는지, `THROW_RECORD_KEYS` 의 키 하나하나 거부, 비유한 JSON 토큰 · JSON 아님 · 없는 파일,
   쓰기 전 거부 (파일이 생기지 않음), 한 번 읽기의 sha256 · 절대 경로 · `record()`

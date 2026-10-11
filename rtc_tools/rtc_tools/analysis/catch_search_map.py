@@ -106,7 +106,7 @@ import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -1992,6 +1992,13 @@ def add_setup_arguments(ap: argparse.ArgumentParser) -> None:
         "(repeatable): a sim overlay, an evaluation overlay. Pass the files the run launched "
         "with, or the map describes another configuration",
     )
+    ap.add_argument(
+        "--segment-mode",
+        choices=SEGMENT_MODES,
+        help="set catching.planner.segment.mode of the composed tree, after the overlays "
+        "(default: the value the layers give). The only value of the tree this overrides; "
+        "the override is recorded in the provenance",
+    )
     # ── the ball: the same arguments as the kinematic map, none defaulted ──
     ap.add_argument("--ball-config", type=Path, nargs="+", required=True)
     ap.add_argument("--drag-coefficient", type=float, required=True)
@@ -2019,6 +2026,8 @@ class MapSetup:
     fk: CatchFrameFk
     catch_point_w: np.ndarray
     ball: BallParams
+    # Values of the composed tree a command line argument replaced: path → {from, to}.
+    overrides: Mapping = field(default_factory=dict)
 
 
 def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str]) -> MapSetup:
@@ -2039,6 +2048,17 @@ def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str])
     layers = [*robot_files, *[Path(p) for p in args.overlay]]
     controller_yaml = config_dir / "controllers" / f"{profile.controller}.yaml"
     catching, _ = composed_catching(controller_yaml, profile.controller, layers)
+    overrides: dict = {}
+    segment_mode = getattr(args, "segment_mode", None)
+    if segment_mode is not None:
+        # After the overlays: the argument is the last word on this one value.
+        planner = dict(catching.get("planner") or {})
+        segment = dict(planner.get("segment") or {})
+        shipped = segment.get("mode")
+        segment["mode"] = segment_mode
+        planner["segment"] = segment
+        catching = {**catching, "planner": planner}
+        overrides["planner.segment.mode"] = {"layers": shipped, "override": segment_mode}
     robot_params = load_robot_params(layers)
 
     def tree_value(path: str, why: str):
@@ -2114,6 +2134,7 @@ def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str])
         fk=fk,
         catch_point_w=catch_point_w,
         ball=ball,
+        overrides=overrides,
     )
 
 
@@ -2359,6 +2380,7 @@ def provenance(
         "layers": [
             {"path": str(Path(p).resolve()), "sha256": _sha256_file(p)} for p in setup.layers
         ],
+        "overrides": dict(setup.overrides),
         "repo": repo_state(),
         "judge": {"path": str(Path(judge).resolve()), "sha256": _sha256_file(judge)},
         "reach_bound": dict(bound) if bound is not None else None,
@@ -2797,6 +2819,7 @@ def main(argv: list[str] | None = None) -> int:
         "config_dir": str(config_dir.resolve()),
         "controller": profile.controller,
         "layers": [str(p) for p in layers],
+        "overrides": dict(setup.overrides),
         "tree_search_mode": _lookup(catching, "planner.search.mode"),
         "segment_mode": _lookup(catching, "planner.segment.mode"),
         "sub_model": sub_model,
