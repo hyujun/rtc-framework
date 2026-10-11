@@ -1433,6 +1433,251 @@ TEST(MpcSegmentCoreApproach, DeltaScaleAndColdStart) {
       << "a warm start that is identical to a cold one: the fixture cannot tell them apart";
 }
 
+// ── 5b. The first solve's reference and the trust region (#710) ──────────────
+// The reference a planner hands the FIRST solve of a plan is a rest-to-rest
+// reach whose displacement is cut, joint by joint, to what a speed cap allows
+// (its minimum-jerk peak 1.875·d/T under ref_speed_fraction·η_v·q̇_max), and
+// the trust region is centred on that curve. The tests below pin what the grid
+// alone bounds, and what one linearisation reaches when the cut curve stops
+// short of a catch posture the velocity box can reach.
+
+constexpr double kRefSpeedFraction = 0.9;  // the planner's cap on the reference's peak speed
+constexpr double kPublishGate = 0.02;      // the catch position error a planner publishes under [m]
+constexpr double kPublishSlack = 0.1;      // … and the torque slack, fraction of τ_max
+
+// The approach problem at the values a controller profile ships (2026-10-11):
+// the pre-catch spacing, the stop grid, the catch weights, the box margins.
+MpcSegmentCoreParams FirstSolveParams(int n_pre, double delta_tr) {
+  MpcSegmentCoreParams p = GridParams(Grid{n_pre, 0.1, 7, 0.05, 1, {1, 1, 2, 3}});
+  p.catch_terms = true;
+  p.w_axis = 100.0;
+  p.w_v_par = 1.0;
+  p.w_v_perp = 20.0;
+  p.eta_v = 0.9;
+  p.eta_tau = 0.7;
+  p.m_q = 0.05;
+  p.delta_tr = delta_tr;
+  return p;
+}
+
+struct FirstSolveCase {
+  ArmModel arm;
+  MpcSegmentCoreLimits limits;
+  Eigen::VectorXd q_target;  // the catch posture
+  Eigen::VectorXd q_cut;     // … cut to the reference's speed cap
+  CatchPose target;          // the catch frame at q_target
+  double t_reach{0.0};       // max_j |q_target − q_0|_j / (η_v q̇_max,j) [s]
+};
+
+// A catch posture `shortfall` [rad] beyond the cut on the joint that moves
+// most (the others in proportion), over a pre-catch span of `t_span` [s].
+FirstSolveCase MakeFirstSolveCase(ArmModel arm, double eta_v, double t_span, double shortfall) {
+  FirstSolveCase c{std::move(arm), {}, {}, {}, {}, 0.0};
+  c.limits = LimitsFromModel(*c.arm.model);
+  const Eigen::Index n = c.arm.model->nv;
+  c.q_target = c.arm.q_nominal;
+  c.q_cut = c.arm.q_nominal;
+  for (Eigen::Index j = 0; j < n; ++j) {
+    const double v_box = eta_v * c.limits.qd_max[j];
+    const double allowed = kRefSpeedFraction * v_box * t_span / 1.875;
+    const double share = 1.0 - 0.1 * static_cast<double>(j);  // joint 0 moves most
+    const double d = (j % 2 == 0 ? 1.0 : -1.0) * share * (allowed + shortfall);
+    c.q_target[j] += d;
+    c.q_cut[j] += std::clamp(d, -allowed, allowed);
+    c.t_reach = std::max(c.t_reach, std::abs(d) / v_box);
+  }
+  pinocchio::Data data(*c.arm.model);
+  c.target = CatchPoseAt(c.arm, data, c.q_target, Eigen::VectorXd::Zero(n));
+  return c;
+}
+
+struct FirstSolveRun {
+  bool solved{false};
+  MpcSegmentCoreReason reason{MpcSegmentCoreReason::kNotInitialized};
+  double pos_err{0.0};       // ‖p_C(q_kc) − p̂_b‖ [m]
+  double slack_max{0.0};     // torque slack, fraction of τ_max
+  Eigen::VectorXd catch_dq;  // q_kc − q_0
+};
+
+// `solves` linearisations: the first on the reach reference to `q_goal`, each
+// later one on the solution before it (w_Δ off throughout — the first solve of
+// a plan has no previous solution to stay near).
+FirstSolveRun RunFirstSolve(const FirstSolveCase& c, const MpcSegmentCoreParams& params,
+                            const Eigen::VectorXd& q_goal, int solves) {
+  FirstSolveRun run;
+  MpcSegmentCore mpc;
+  run.reason = mpc.Init(*c.arm.model, c.arm.frame, params, c.limits);
+  if (run.reason != MpcSegmentCoreReason::kNone) {
+    return run;
+  }
+  MpcSegmentCoreResult res;
+  mpc.ResizeResult(res);
+  MpcSegmentCoreInput in;
+  ReachReference(mpc, c.arm.q_nominal, q_goal, in);
+  in.p_b = c.target.p;
+  in.a_d = c.target.z;
+  in.v_b = -5.0 * c.target.z;  // a_d = −v̂_b/‖v̂_b‖
+  in.gamma_ref = 0.6;
+  in.w_p = 2500.0 * Eigen::Matrix3d::Identity();
+  in.w_delta_scale = 0.0;
+  in.cold_start = true;
+  for (int s = 0; s < solves; ++s) {
+    if (!mpc.Solve(in, res)) {
+      run.reason = res.reason;
+      return run;
+    }
+    UseAsReference(res, in);
+    in.cold_start = false;
+  }
+  run.solved = true;
+  run.reason = res.reason;
+  run.pos_err = res.catch_pos_err.norm();
+  run.slack_max = res.slack_max;
+  run.catch_dq = res.q.col(mpc.CatchNode()) - c.arm.q_nominal;
+  return run;
+}
+
+// One table cell: the catch position error [mm] — starred when the torque slack
+// is over what a planner publishes with — or that the solve was refused.
+std::string FirstSolveCell(const FirstSolveRun& r) {
+  char buf[32];
+  if (r.solved) {
+    std::snprintf(buf, sizeof(buf), "%6.1f%c", 1e3 * r.pos_err,
+                  r.slack_max > kPublishSlack ? '*' : ' ');
+  } else {
+    std::snprintf(buf, sizeof(buf), "%7s", "refused");
+  }
+  return buf;
+}
+
+// The pre-catch grid is one interval of constant jerk when the catch is one
+// spacing away. From rest that is q(T) − q_0 = jT³/6 with q̇(T) = jT²/2 inside
+// the velocity box, so the catch node moves at most η_v·q̇_max·T/3 — less than
+// the cut reference's own reach (0.48·η_v·q̇_max·T), whatever the trust region.
+TEST(MpcSegmentCoreFirstSolve, OnePreCatchIntervalBoundsTheCatchDisplacement) {
+  constexpr double kSpan = 0.1;
+  constexpr double kEtaV = 0.9;
+  for (const bool seven : {false, true}) {
+    const FirstSolveCase c = MakeFirstSolveCase(seven ? RealArm7() : RealArm6(), kEtaV, kSpan, 0.2);
+    const Eigen::VectorXd bound = kEtaV * c.limits.qd_max * kSpan / 3.0;
+    int solved = 0;
+    for (const double delta_tr : {0.1, 0.5, kInf}) {
+      for (const bool cut : {true, false}) {
+        SCOPED_TRACE(c.arm.name + (cut ? " cut" : " uncut") + " reference, delta_tr " +
+                     std::to_string(delta_tr));
+        const FirstSolveRun run =
+            RunFirstSolve(c, FirstSolveParams(1, delta_tr), cut ? c.q_cut : c.q_target, 1);
+        std::printf(
+            "[first-solve] %s n_pre 1 %-5s tr %-4.1f : error [mm] %s, catch node moved %.3f of "
+            "the cut reference's reach\n",
+            c.arm.name.c_str(), cut ? "cut" : "uncut", delta_tr, FirstSolveCell(run).c_str(),
+            run.solved ? std::abs(run.catch_dq[0] / (c.q_cut[0] - c.arm.q_nominal[0])) : 0.0);
+        if (!run.solved) {
+          continue;
+        }
+        ++solved;
+        for (Eigen::Index j = 0; j < bound.size(); ++j) {
+          EXPECT_LE(std::abs(run.catch_dq[j]), bound[j] + 1e-6) << "joint " << j;
+        }
+        // The catch posture is out of this grid's reach: the miss is not small.
+        EXPECT_GT(run.pos_err, kPublishGate);
+      }
+    }
+    EXPECT_GE(solved, 3) << c.arm.name << ": the bound was checked on too few solves";
+  }
+}
+
+// How far the first solve lands from a catch posture the velocity box reaches,
+// against how much of the way the cut reference leaves out. Columns: the cut
+// reference under the shipped trust region and under wider ones; the reach
+// reference left uncut; the cut reference re-linearised on its own solution.
+// The last column is that iteration run long — it says the posture is reached
+// at all, which is what makes the other columns a statement about the first
+// solve and not about the target.
+//
+// Asserted on the longer span, where every case is well inside the velocity
+// box. The shorter span is printed for the record only: its cases sit close to
+// the box, where the converged solution is itself the weights' trade.
+TEST(MpcSegmentCoreFirstSolve, CatchErrorAgainstTheReferenceShortfall) {
+  constexpr double kEtaV = 0.9;
+  std::printf("[first-solve] catch position error [mm]; publish gate %.0f mm\n",
+              1e3 * kPublishGate);
+  std::printf("[first-solve] %-9s %5s %9s %6s | %7s %7s %7s | %7s %7s | %7s %7s %7s | %7s\n", "arm",
+              "n_pre", "shortfall", "reach", "cut", "tr 0.3", "tr inf", "uncut", "tr 0.3", "2 lin",
+              "3 lin", "2@0.3", "20 lin");
+  for (const bool seven : {false, true}) {
+    for (const int n_pre : {4, 6}) {
+      for (const double shortfall : {0.0, 0.1, 0.2, 0.3}) {
+        const double t_span = 0.1 * n_pre;
+        const FirstSolveCase c =
+            MakeFirstSolveCase(seven ? RealArm7() : RealArm6(), kEtaV, t_span, shortfall);
+        SCOPED_TRACE(c.arm.name + " n_pre " + std::to_string(n_pre) + " shortfall " +
+                     std::to_string(shortfall));
+        const MpcSegmentCoreParams shipped = FirstSolveParams(n_pre, 0.1);
+        const MpcSegmentCoreParams wide = FirstSolveParams(n_pre, 0.3);
+        const MpcSegmentCoreParams open = FirstSolveParams(n_pre, kInf);
+        const FirstSolveRun cut = RunFirstSolve(c, shipped, c.q_cut, 1);
+        const FirstSolveRun cut_wide = RunFirstSolve(c, wide, c.q_cut, 1);
+        const FirstSolveRun cut_open = RunFirstSolve(c, open, c.q_cut, 1);
+        const FirstSolveRun uncut = RunFirstSolve(c, shipped, c.q_target, 1);
+        const FirstSolveRun uncut_wide = RunFirstSolve(c, wide, c.q_target, 1);
+        const FirstSolveRun two = RunFirstSolve(c, shipped, c.q_cut, 2);
+        const FirstSolveRun three = RunFirstSolve(c, shipped, c.q_cut, 3);
+        const FirstSolveRun two_wide = RunFirstSolve(c, wide, c.q_cut, 2);
+        const FirstSolveRun converged = RunFirstSolve(c, shipped, c.q_cut, 20);
+        std::printf("[first-solve] %-9s %5d %9.2f %6.2f | %s %s %s | %s %s | %s %s %s | %s\n",
+                    c.arm.name.c_str(), n_pre, shortfall, c.t_reach / t_span,
+                    FirstSolveCell(cut).c_str(), FirstSolveCell(cut_wide).c_str(),
+                    FirstSolveCell(cut_open).c_str(), FirstSolveCell(uncut).c_str(),
+                    FirstSolveCell(uncut_wide).c_str(), FirstSolveCell(two).c_str(),
+                    FirstSolveCell(three).c_str(), FirstSolveCell(two_wide).c_str(),
+                    FirstSolveCell(converged).c_str());
+        if (n_pre != 6) {
+          continue;
+        }
+        for (const FirstSolveRun* run : {&cut, &cut_wide, &cut_open, &uncut, &uncut_wide, &two,
+                                         &three, &two_wide, &converged}) {
+          ASSERT_TRUE(run->solved) << MpcSegmentCoreReasonName(run->reason);
+        }
+        // The posture is reached: the iteration ends inside the gate.
+        EXPECT_LT(converged.pos_err, kPublishGate);
+        if (shortfall == 0.0) {
+          // Nothing was cut: both references are the same curve.
+          EXPECT_EQ(cut.pos_err, uncut.pos_err);
+          EXPECT_LT(cut.pos_err, 0.5 * kPublishGate);
+          if (seven) {
+            // The trust region is not only a cost: on the redundant arm the
+            // unbounded step lands worse even with nothing to make up.
+            EXPECT_GT(cut_open.pos_err, 2.0 * cut.pos_err);
+          }
+          continue;
+        }
+        // One linearisation on the uncut reach is inside the gate…
+        EXPECT_LT(uncut.pos_err, 0.5 * kPublishGate);
+        if (shortfall <= 0.1) {
+          // …and so is the cut one while the cut is about a trust region wide.
+          EXPECT_LT(cut.pos_err, 0.5 * kPublishGate);
+          continue;
+        }
+        // Beyond that the cut reference misses, and a wider trust region around
+        // the same curve does not make up for where it was linearised.
+        EXPECT_GT(cut.pos_err, 2.0 * uncut.pos_err);
+        EXPECT_GT(cut_wide.pos_err, 2.0 * uncut.pos_err);
+        EXPECT_GT(cut_open.pos_err, 2.0 * uncut.pos_err);
+        // A second linearisation halves the miss or better; a third is inside
+        // the gate where the second is not yet.
+        EXPECT_LT(two.pos_err, 0.5 * cut.pos_err);
+        EXPECT_LT(three.pos_err, kPublishGate);
+        if (shortfall >= 0.3) {
+          EXPECT_GT(cut.pos_err, 2.0 * kPublishGate);
+        } else {
+          EXPECT_LT(two.pos_err, kPublishGate);
+        }
+      }
+    }
+  }
+}
+
 // ── 6. Allocation ────────────────────────────────────────────────────────────
 
 struct AllocCounts {
