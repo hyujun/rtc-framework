@@ -1309,9 +1309,11 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
   planner["wait_pose"] = wait;
   const double t_freeze = planner["freeze"]["T_freeze"].as<double>() + 0.01;
   planner["freeze"]["T_freeze"] = t_freeze;
-  // Lead on with the shipped T_arm: the freeze-window check is unchanged. (The
-  // shipped switch is already on since #821, so this line no longer moves it.)
-  node["catching"]["joint_cmd"]["lag"]["lead_enable"] = true;
+  // The lead switch flipped off its shipped value, with the shipped T_arm: the
+  // validator reads T_arm whatever the switch says, so the freeze-window check
+  // is unchanged and this is the only mirrored value that moves the switch alone.
+  const bool lead_enable = !node["catching"]["joint_cmd"]["lag"]["lead_enable"].as<bool>();
+  node["catching"]["joint_cmd"]["lag"]["lead_enable"] = lead_enable;
   const double t_arm = node["catching"]["joint_cmd"]["lag"]["T_arm"].as<double>();
 
   auto node_handle = NodeWithProfile("catching_shipped_mirror_" + profile, "mpc_on");
@@ -1329,7 +1331,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
   }
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.freeze.T_freeze").as_double(), t_freeze);
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("joint_cmd.lag.T_arm").as_double(), t_arm);
-  EXPECT_TRUE(node_handle->get_parameter("joint_cmd.lag.lead_enable").as_bool());
+  EXPECT_EQ(node_handle->get_parameter("joint_cmd.lag.lead_enable").as_bool(), lead_enable);
   // S8-C: RETREAT's hand timeout. A profile that does not set the key gets
   // the DERIVED value (ur5e_p1b); one that sets it from a measurement gets
   // exactly that (iiwa7_leap since S8-D, #537 — the derived 1.454 s was
