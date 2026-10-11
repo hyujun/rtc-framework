@@ -226,8 +226,8 @@ catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으�
 | `joint_cmd.task_accel_max_linear` | m/s² | `kinematic` 전용 — 위치 행 가속 한계 |
 | `joint_cmd.task_accel_max_angular` | rad/s² | `kinematic` 전용 — 회전 · 접근축 행 가속 한계 |
 | `joint_cmd.eta_tau` | – | `dynamic` 전용 — $\eta_\tau$. $\tau_{\max}$ 는 팔 device `joint_limits.max_torque` |
-| `joint_cmd.lag.T_arm` | s | §4.4 식별값 $T_{arm}$. 출하 sim 은 0 — sim actuator 의 고유 지연 보상은 sim overlay 가 `T_freeze` 와 함께 켠다. `lead_enable` 이 false 여도 검증기는 이 값을 `planner.freeze.T_freeze` 하한에 넣는다 |
-| `joint_cmd.lag.lead_enable` | – | §4.5 선행 보상. 식별 전에는 false |
+| `joint_cmd.lag.T_arm` | s | §4.4 식별값 $T_{arm}$. 출하값은 sim 서보의 지연 (`mujoco_simulator.yaml` 의 kd/kp) 이고 `planner.freeze.T_freeze` 가 그 값을 덮는다 — 실기 값은 S10 이 식별하며, 그때 sim 값을 둘 자리를 따로 정한다. `lead_enable` 이 false 여도 검증기는 이 값을 `planner.freeze.T_freeze` 하한에 넣는다 |
+| `joint_cmd.lag.lead_enable` | – | §4.5 선행 보상. 출하값은 true (sim 서보의 지연을 선행한다). 실기 구성은 `provisional` 이 풀리기 전에는 이 값과 무관하게 park 된다 |
 | `joint_cmd.lag.provisional` | – | `T_arm` 이 실기 식별값인가 (fail-closed: 키가 없으면 true). sim 은 경고, 실기 구성은 park |
 | `supervisor.track_err_abort` | rad | **L7 §6 단일 원천.** L5 는 참조만 한다 |
 

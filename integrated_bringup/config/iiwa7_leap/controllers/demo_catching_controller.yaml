@@ -448,12 +448,12 @@ demo_catching_controller:
       sub_model: "iiwa7_catch"
       freeze:
         # Decision G (2026-09-23), set when the close lead was the closure time
-        # 0.1037: the L3 §4.11 lower bound T_close,tot 0.1047 + T_arm (0,
-        # shipped) + margin 0.03 = 0.135, rounded up with room. Also covers the
-        # S8-D sim overlays' T_arm 0.05 (bound 0.1847), so those leave it
-        # alone. With the lead robot.hand.T_close_lead 0.0577 the bound is
-        # 0.0887 (0.1387 with T_arm 0.05) — the value is kept, it only freezes
-        # earlier than it must. Provisional.
+        # 0.1037 and T_arm was 0: the L3 §4.11 lower bound T_close,tot 0.1047
+        # + margin 0.03 = 0.135, rounded up with room (0.1847 with T_arm
+        # 0.05). With the lead robot.hand.T_close_lead 0.0577 and T_arm 0.05
+        # (joint_cmd.lag, #821) the bound is 0.0577 + h/2 0.001 + 0.05 +
+        # margin 0.03 = 0.1387 — the value is kept, it only freezes earlier
+        # than it must. Startup log: "commit at t_c − 0.190 s". Provisional.
         # Read by the search, by every segment mode and by the RT (the commit
         # instant).
         T_freeze: 0.19
@@ -497,19 +497,24 @@ demo_catching_controller:
       accel_constraint: dynamic
       eta_tau: 0.8
       lag:
-        # 0 here because T_arm is the REAL arm's lag, which S10 identifies;
-        # `lead_enable` turns the compensation on once it has. The sim arm is
-        # NOT lag-free: its position servo is a first-order lag of kd/kp, set
-        # to 0.05 s in ../mujoco_simulator.yaml (S8-D), and the S8-D sim runs
-        # lead it with ../sim_overlays/catch_lead_on.yaml.
+        # The SIM arm's lag, led: its position servo is a first-order lag of
+        # kd/kp, set to 0.05 s in ../mujoco_simulator.yaml (S8-D). Shipped
+        # since #821 (2026-10-11); until then these two were 0 / false here
+        # and the sim ran the lead through the catch_lead_on sim overlay.
+        # T_arm is not only the lead: the validator derives the commit window
+        # from it (planner.freeze.T_freeze, which already covers it).
+        #
+        # A REAL arm's T_arm is not this number — S10 identifies it. The day
+        # it does, the sim's 0.05 needs a place of its own: this key cannot
+        # hold both.
         #
         # `provisional` is about the REAL arm's T_arm (#537 pre-S10 R3): sim
         # warns, a real arm parks until S10 identifies it — whatever the value
         # and with the lead off too, since T_arm also sits in the T_freeze
         # floor. Absent reads as true.
         provisional: true
-        T_arm: 0.0
-        lead_enable: false
+        T_arm: 0.05
+        lead_enable: true
 
     supervisor:
       # ── Thresholds the joint command layer reports to (L7 §6, S5.3) ───────

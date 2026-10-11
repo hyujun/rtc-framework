@@ -27,7 +27,7 @@ demo_catching_controller:
           cand_dt: 0.05
           # Smallest and largest t_c - t_0 [s]. The smallest has to leave room
           # for the commit: a pair is published only while t_c is more than
-          # planner.freeze.T_freeze (0.36 s) away. The largest is what
+          # planner.freeze.T_freeze (0.39 s) away. The largest is what
           # n_pre.max pre-catch intervals reach.
           t_lead_min: 0.40
           t_max: 0.90

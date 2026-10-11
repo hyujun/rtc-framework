@@ -75,7 +75,7 @@ using rtc::catching::SegmentOutcomeName;
 using rtc::catching::SegmentSnapshot;
 
 constexpr std::int64_t kMs = 1'000'000;
-constexpr std::int64_t kTArm = 50 * kMs;  // the sim profile catch_lead_on's T_arm
+constexpr std::int64_t kTArm = 50 * kMs;  // a sim servo's lag, as a sim profile ships it
 constexpr std::int64_t kH = 2 * kMs;
 constexpr std::uint64_t kActivation = 3;
 constexpr std::uint64_t kTrack = 7;

@@ -1309,8 +1309,8 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
   planner["wait_pose"] = wait;
   const double t_freeze = planner["freeze"]["T_freeze"].as<double>() + 0.01;
   planner["freeze"]["T_freeze"] = t_freeze;
-  // Lead on with the shipped T_arm (0): the freeze-window check is unchanged,
-  // so this is the only mirrored value that moves the lead switch alone.
+  // Lead on with the shipped T_arm: the freeze-window check is unchanged. (The
+  // shipped switch is already on since #821, so this line no longer moves it.)
   node["catching"]["joint_cmd"]["lag"]["lead_enable"] = true;
   const double t_arm = node["catching"]["joint_cmd"]["lag"]["T_arm"].as<double>();
 

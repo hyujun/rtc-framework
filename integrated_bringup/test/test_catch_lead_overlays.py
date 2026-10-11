@@ -234,6 +234,76 @@ def test_the_commit_window_is_derived_from_t_arm(arms, shipped):
     _check_commit_window(arms[LEAD_ON]["catching"], shipped["catching"], "ur5e_p1b")
 
 
+# ── The shipped lead (#821) ──────────────────────────────────────────────────
+
+# What the shipped controller YAML carries since the lead moved into it: the
+# values the catch_lead_on overlays write. Nothing else pins them once the
+# overlays go.
+SHIPPED_LEAD = {
+    "ur5e_p1b": {"T_arm": 0.05, "lead_enable": True, "provisional": True, "T_freeze": 0.39},
+    LEAP: {"T_arm": 0.05, "lead_enable": True, "provisional": True, "T_freeze": 0.19},
+}
+
+
+def _shipped_catching(profile: str) -> dict:
+    path = os.path.join(CONFIG_ROOT, profile, "controllers", "demo_catching_controller.yaml")
+    return _shipped_tree(path)["catching"]
+
+
+@pytest.mark.parametrize("profile", sorted(SHIPPED_LEAD))
+def test_the_shipped_controller_leads_the_sim_plant(profile):
+    """The shipped lag block is the sim servo's lag with the lead on, and it stays
+    provisional: that flag is what parks a real arm until S10 identifies its own
+    T_arm (the validator's kProvisionalOnRealArm), whatever the value here."""
+    catching = _shipped_catching(profile)
+    expected = SHIPPED_LEAD[profile]
+    assert catching["joint_cmd"]["lag"] == {
+        key: expected[key] for key in ("provisional", "T_arm", "lead_enable")
+    }
+    assert catching["planner"]["freeze"]["T_freeze"] == expected["T_freeze"]
+    # The shipped keys alone hold the window the overlays were checked against.
+    _check_commit_window({}, catching, profile)
+
+
+@pytest.mark.parametrize("profile", sorted(SHIPPED_LEAD))
+def test_the_shipped_t_arm_is_the_sim_servo_lag(profile):
+    """T_arm is the lag of the plant the shipped sim runs: a position PD tracks a
+    ramp kd/kp behind, on every arm joint (mujoco_simulator.yaml)."""
+    sim = _load(os.path.join(CONFIG_ROOT, profile, "mujoco_simulator.yaml"))
+    params = sim["mujoco_simulator"]["ros__parameters"]
+    assert params["use_yaml_servo_gains"] is True
+    lags = [kd / kp for kp, kd in zip(params["servo_kp"], params["servo_kd"], strict=True)]
+    t_arm = _shipped_catching(profile)["joint_cmd"]["lag"]["T_arm"]
+    assert lags == [pytest.approx(t_arm)] * len(lags)
+
+
+def test_the_shipped_p1b_freeze_is_the_design_bound_rounded_up():
+    """ur5e_p1b's T_freeze moved with T_arm: the L3 §4.11 lower bound
+    T_close_lead + h/2 + T_arm + margin, rounded up to 10 ms."""
+    catching = _shipped_catching("ur5e_p1b")
+    base = _load(os.path.join(CONFIG_DIR, RATE_FILE["ur5e_p1b"]))
+    h = 1.0 / base["/**"]["ros__parameters"]["control_rate"]
+    bound = (
+        catching["robot"]["hand"]["T_close_lead"]
+        + h / 2
+        + catching["joint_cmd"]["lag"]["T_arm"]
+        + catching["planner"]["search"]["grid"]["time"]["margin"]
+    )
+    assert bound == pytest.approx(0.383)
+    assert catching["planner"]["freeze"]["T_freeze"] == pytest.approx(math.ceil(bound * 100) / 100)
+
+
+def test_the_lead_on_overlays_now_repeat_the_shipped_values(arms, shipped, leap_arm, leap_shipped):
+    """Until the overlays are removed they must not move anything: a sim launched
+    with one and a sim launched without are the same controller."""
+    for arm, ship in ((arms[LEAD_ON], shipped), (leap_arm, leap_shipped)):
+        for path, value in _leaves(arm).items():
+            node = ship
+            for part in path:
+                node = node[part]
+            assert node == value, ".".join(path)
+
+
 # ── ur5e_p1b sim.yaml (S8-G R2: the planner's envelope box) ──────────────────
 
 
