@@ -336,7 +336,6 @@ def _diag_columns(header: Sequence[str], joints: Sequence[str]) -> list[str]:
         "mode",
         "plan_t_c_s",
         "ref_saturated",
-        "clik_bound_conflict",
         "track_err_rad",
     ]
     vec = [f"{p}_{ax}" for p in ("ref_xd", "ref_u_des", "ref_xdd", "ref_e") for ax in "xyz"]
@@ -497,7 +496,6 @@ def analyse_unit(
     u_des = _norm(diag, "ref_u_des")
     xdd = _norm(diag, "ref_xdd")
     sat = diag["ref_saturated"].to_numpy(dtype=float) > 0.5
-    conflict = diag["clik_bound_conflict"].to_numpy(dtype=float) > 0.5
     plan_t_c = diag["plan_t_c_s"].to_numpy(dtype=float)
 
     segments = active_segments(mode)
@@ -556,7 +554,6 @@ def analyse_unit(
         "v_max_hit_frac": float((xd[active] >= A_MAX_HIT * budget.eta_v * budget.v_max).mean())
         if budget.v_max > 0
         else math.nan,
-        "bound_conflict_frac": float(conflict[active].mean()),
     }
 
     # ── per trial: residuals and the reach time re-judged ───────────────────

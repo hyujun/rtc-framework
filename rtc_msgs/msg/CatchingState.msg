@@ -53,7 +53,7 @@ uint8 REASON_NO_CATCHABLE_PLAN    = 7
 uint8 REASON_PLAN_INVALID         = 8
 uint8 REASON_QP_FAILED            = 9
 uint8 REASON_REF_SATURATED        = 10
-uint8 REASON_JOINT_CONFLICT       = 11
+# 11 is unassigned: its reason was removed (#755) and the numbers after it stay.
 uint8 REASON_TRACK_ERR            = 12
 uint8 REASON_ABORT_ESCALATED      = 13
 uint8 REASON_ESTOP                = 14
@@ -177,12 +177,10 @@ float64 ref_gamma_dd
 # ── Joint command (L5, CLIK) ────────────────────────────────────────────────
 bool clik_ran            # the law reached the solve this tick
 bool clik_converged
-bool clik_bound_conflict   # the acceleration box overrode velocity ∩ position
 bool clik_command_mismatch # evaluate_at_command: cache.q (arm) ≠ previous q_ref
 int32 clik_status          # ProxQP QPSolverOutput (0 = SOLVED), −1 = not solved
 int32 clik_iterations
 float64 clik_solve_us      # wall time of the solve [µs] — the G5-C budget's input
-uint64 clik_conflict_mask  # bit i = velocity index i conflicted
 int32 qp_fail_streak       # consecutive TRIALS ended by a CLIK failure (not solves; a trial
                            # reaching HOLD's verdict resets it); supervisor.n_qp latch a fault
 

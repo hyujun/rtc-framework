@@ -117,12 +117,10 @@ struct CatchingDiagLogPod {
   // ── Joint command (L5, CLIK) ─────────────────────────────────────────────
   bool clik_ran{false};
   bool clik_converged{false};
-  bool clik_bound_conflict{false};
   bool clik_command_mismatch{false};
   std::int32_t clik_status{-1};
   std::int32_t clik_iterations{0};
   double clik_solve_us{0.0};
-  std::uint64_t clik_conflict_mask{0};
   std::int32_t qp_fail_streak{0};
 
   // ── Tracking ─────────────────────────────────────────────────────────────
@@ -334,7 +332,8 @@ struct CatchingDiagLogColumns {
   }
 }
 
-/// Reason name for the CSV. Values mirror rtc::catching::Reason.
+/// Reason name for the CSV. Values mirror rtc::catching::Reason; 11 is
+/// unassigned there (#755) and reads "unknown".
 [[nodiscard]] inline std::string_view CatchingReasonStr(std::uint8_t v) noexcept {
   switch (v) {
     case 0:
@@ -359,8 +358,6 @@ struct CatchingDiagLogColumns {
       return "qp_failed";
     case 10:
       return "ref_saturated";
-    case 11:
-      return "joint_conflict";
     case 12:
       return "track_err";
     case 13:
@@ -428,8 +425,8 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
   os << ",ref_e_x,ref_e_y,ref_e_z";
   os << ",ref_ed_x,ref_ed_y,ref_ed_z";
   os << ",ref_gamma,ref_gamma_d,ref_gamma_dd";
-  os << ",clik_ran,clik_converged,clik_bound_conflict,clik_command_mismatch";
-  os << ",clik_status,clik_iterations,clik_solve_us,clik_conflict_mask,qp_fail_streak";
+  os << ",clik_ran,clik_converged,clik_command_mismatch";
+  os << ",clik_status,clik_iterations,clik_solve_us,qp_fail_streak";
   os << ",track_err_rad,abort_stopped,fault_cause,fault_reset_refused";
   os << ",hand_phase_valid,hand_phase,hand_rho,hand_timeout";
   os << ",hand_stalled_n,hand_effort_frac,hand_blocked_s,outcome_source";
@@ -496,9 +493,9 @@ inline void WriteCatchingDiagLogRow(std::ostream& os, const CatchingDiagLogPod& 
   detail::WriteXyzRow(os, p.ref_ed);
   os << ',' << p.ref_gamma << ',' << p.ref_gamma_d << ',' << p.ref_gamma_dd;
   os << ',' << (p.clik_ran ? 1 : 0) << ',' << (p.clik_converged ? 1 : 0) << ','
-     << (p.clik_bound_conflict ? 1 : 0) << ',' << (p.clik_command_mismatch ? 1 : 0);
+     << (p.clik_command_mismatch ? 1 : 0);
   os << ',' << p.clik_status << ',' << p.clik_iterations << ',' << p.clik_solve_us << ','
-     << p.clik_conflict_mask << ',' << p.qp_fail_streak;
+     << p.qp_fail_streak;
   os << ',' << p.track_err_rad << ',' << (p.abort_stopped ? 1 : 0) << ','
      << static_cast<int>(p.fault_cause) << ',' << static_cast<int>(p.fault_reset_refused);
   os << ',' << (p.hand_phase_valid ? 1 : 0) << ',' << static_cast<int>(p.hand_phase) << ','

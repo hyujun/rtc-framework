@@ -100,7 +100,6 @@ def make_msg(**overrides):
         clik_status=0,
         clik_iterations=12,
         clik_solve_us=180.0,
-        clik_bound_conflict=False,
         qp_fail_streak=0,
     )
     for k, v in overrides.items():
@@ -156,7 +155,26 @@ def test_an_unnamed_value_shows_the_number_rather_than_unknown():
     # builds, and the NUMBER is what identifies which — "UNKNOWN" would throw
     # away the only diagnostic information in the event.
     assert mode_name(len(MODE_NAMES)) == f"mode:{len(MODE_NAMES)}"
-    assert reason_name(len(REASON_NAMES)) == f"reason:{len(REASON_NAMES)}"
+    unnamed = max(REASON_NAMES) + 1
+    assert reason_name(unnamed) == f"reason:{unnamed}"
+    # The reason numbers have a hole (a removed reason keeps its number
+    # unassigned), and the hole is unnamed like any other.
+    assert reason_name(11) == "reason:11"
+
+
+def test_reason_names_follow_the_message_constants():
+    import re
+    from pathlib import Path
+
+    from ament_index_python.packages import get_package_share_directory
+
+    msg = Path(get_package_share_directory("rtc_msgs")) / "msg" / "CatchingState.msg"
+    codes = {
+        int(m.group(2)): m.group(1)
+        for m in re.finditer(r"^uint8 REASON_(\w+)\s*=\s*(\d+)", msg.read_text(), re.M)
+    }
+    assert codes, "no REASON_* constants found in CatchingState.msg"
+    assert codes == REASON_NAMES
 
 
 @pytest.mark.parametrize(
@@ -359,13 +377,12 @@ def test_a_tick_that_did_not_solve_never_claims_status_zero():
 def test_a_failed_solve_reports_the_status_and_the_streak():
     status = CatchingStatus()
     status.update(
-        make_msg(clik_converged=False, clik_status=1, qp_fail_streak=2, clik_bound_conflict=True),
+        make_msg(clik_converged=False, clik_status=1, qp_fail_streak=2),
         now_s=100.0,
     )
     out = text(status)
     assert "FAILED (status 1)" in out
     assert "QP fail streak 2" in out
-    assert "BOUND CONFLICT" in out
 
 
 def test_a_saturated_reference_is_called_out():

@@ -1,6 +1,6 @@
 /// @file test_clik_options.cpp
 /// @brief ClikReferenceGenerator S2.2b options (dynamic_catching, L5 §5.1, gates
-///        G5-A / G5-B / G5-B2 / G5-C / G5-C3 — CLIK side only).
+///        G5-A / G5-B / G5-C / G5-C3 — CLIK side only).
 ///
 /// Every option defaults off; "off ⇒ bit-identical" is the golden-vector
 /// suite's job (test_clik_golden.cpp). This file checks what each option does
@@ -298,35 +298,16 @@ TEST_F(ClikOptionsTest, PerJointLimitReclampsCollapsedBox) {
   EXPECT_NEAR(gen.VRef()(3), -0.2, kSolverEps);
 }
 
-// ── Acceleration box + bound_conflict (G5-B, G5-B2 CLIK side) ──────────────
-
-TEST_F(ClikOptionsTest, AccelBoxRejectsInvalid) {
-  const double nan = std::numeric_limits<double>::quiet_NaN();
-  const double inf = std::numeric_limits<double>::infinity();
-  for (const double bad : {0.0, -1.0, nan, inf}) {
-    auto cfg = BaseConfig();
-    cfg.a_max = Eigen::VectorXd::Constant(kNv, 10.0);
-    cfg.a_max(2) = bad;
-    ClikReferenceGenerator gen;
-    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << bad;
-  }
-  auto cfg = BaseConfig();
-  cfg.a_max = Eigen::VectorXd::Constant(3, 10.0);
-  ClikReferenceGenerator gen;
-  EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error);
-}
+// ── Velocity ∩ position box under random references (G5-B, CLIK side) ──────
 
 // G5-B: 1e4 ticks of random target jumps with the robot tracking q_ref
-// exactly. Velocity and acceleration stay inside their boxes on every tick
-// (to the solver tolerance), and the position limit is exceeded only through a
-// reported conflict, by less than the margin the CLIK box was shrunk by.
-TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndAccelerationBoxes) {
+// exactly. Velocity stays inside its box on every tick, and the position
+// inside the box the CLIK was given — both to the solver tolerance.
+TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndPositionBoxes) {
   constexpr double kMargin = 0.1;
-  constexpr double kAMax = 20.0;
   auto cfg = BaseConfig();
   cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv, 1.5);
   cfg.v_limit_per_joint.tail(2).setConstant(0.1);
-  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
   const Eigen::VectorXd q_lo = model_->lowerPositionLimit;
   const Eigen::VectorXd q_hi = model_->upperPositionLimit;
   cfg.q_min = q_lo.array() + kMargin;
@@ -346,7 +327,6 @@ TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndAccelerationBoxes) {
   Eigen::VectorXd q = q_home_;
   Eigen::VectorXd v_prev = Eigen::VectorXd::Zero(kNv);
   pinocchio::SE3 des = home;
-  int conflicts = 0;
   double worst_overshoot = 0.0;
   for (int k = 0; k < 10000; ++k) {
     if (k % 250 == 0) {
@@ -356,12 +336,9 @@ TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndAccelerationBoxes) {
     cache_.Update(q, v_prev);
     ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt)) << k;
     const Eigen::VectorXd& v = gen.VRef();
-    const auto& diag = gen.LastSolve();
-    conflicts += diag.bound_conflict ? 1 : 0;
     for (int j = 0; j < kNv; ++j) {
       ASSERT_LE(std::abs(v(j)), cfg.v_limit_per_joint(j) + kSolverEps)
           << "tick " << k << " j " << j;
-      ASSERT_LE(std::abs(v(j) - v_prev(j)), kAMax * kDt + kSolverEps) << "tick " << k << " j " << j;
     }
     q = gen.QRef();
     v_prev = v;
@@ -370,107 +347,11 @@ TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndAccelerationBoxes) {
       worst_overshoot = std::max(worst_overshoot, over);
     }
   }
-  RecordProperty("bound_conflict_ticks", std::to_string(conflicts));
   RecordProperty("worst_overshoot_rad", std::to_string(worst_overshoot));
-  EXPECT_LT(worst_overshoot, kMargin) << "q left the true joint envelope";
-  if (worst_overshoot > kSolverEps) {
-    EXPECT_GT(conflicts, 0) << "overshoot without a reported conflict";
-  }
-}
-
-// G5-B2 (CLIK side): a joint driven at speed toward its limit cannot stop
-// within one tick; the acceleration bound wins, the conflict is reported with
-// the joint's bit, and the step stays within a_max·dt.
-TEST_F(ClikOptionsTest, AccelConflictKeepsAccelBoundAndReports) {
-  constexpr double kAMax = 5.0;
-  auto cfg = BaseConfig();
-  cfg.q_min = model_->lowerPositionLimit;
-  cfg.q_max = model_->upperPositionLimit;
-  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
-  ClikReferenceGenerator gen;
-  gen.Init(kNv, cfg);
-  gen.SetTaskGain(Vec6::Zero());
-  gen.SetPostureGains(50.0, 0.0);  // posture drives joint 0 hard toward q_max
-
-  Eigen::VectorXd q_des = q_home_;
-  q_des(0) = cfg.q_max(0) + 1.0;
-  Eigen::VectorXd q = q_home_;
-  q(0) = cfg.q_max(0) - 0.5;
-  // Ramp up to speed, far from the limit.
-  for (int k = 0; k < 200 && q(0) < cfg.q_max(0) - 0.02; ++k) {
-    cache_.Update(q, v_zero_);
-    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, pinocchio::SE3::Identity(), q_des, kDt));
-    q = gen.QRef();
-  }
-  ASSERT_GT(gen.VRef()(0), 0.5) << "joint 0 never got up to speed";
-
-  bool saw_conflict = false;
-  for (int k = 0; k < 400; ++k) {
-    const double v_before = gen.VRef()(0);
-    cache_.Update(q, v_zero_);
-    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, pinocchio::SE3::Identity(), q_des, kDt));
-    ASSERT_LE(std::abs(gen.VRef()(0) - v_before), kAMax * kDt + kSolverEps) << k;
-    if (gen.LastSolve().bound_conflict) {
-      saw_conflict = true;
-      EXPECT_TRUE(gen.LastSolve().conflict_mask & 1U) << "joint 0 bit";
-    }
-    q = gen.QRef();
-  }
-  EXPECT_TRUE(saw_conflict);
-}
-
-// ResetAnchor clears v_prev: after a fast run, the next step starts from rest.
-TEST_F(ClikOptionsTest, ResetAnchorRestartsAccelerationFromRest) {
-  constexpr double kAMax = 5.0;
-  auto cfg = BaseConfig();
-  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
-  ClikReferenceGenerator gen;
-  gen.Init(kNv, cfg);
-  gen.SetTaskGain(Vec6::Constant(20.0));
-  const pinocchio::SE3 des = OffsetTarget(0.3);
-  Eigen::VectorXd q = q_home_;
-  for (int k = 0; k < 300; ++k) {
-    cache_.Update(q, v_zero_);
-    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
-    q = gen.QRef();
-  }
-  ASSERT_GT(gen.VRef().cwiseAbs().maxCoeff(), 2.0 * kAMax * kDt);
-
-  gen.ResetAnchor();
-  cache_.Update(q_home_, v_zero_);
-  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
-  EXPECT_LE(gen.VRef().cwiseAbs().maxCoeff(), kAMax * kDt + kSolverEps);
-  EXPECT_FALSE(gen.LastSolve().bound_conflict);
-  // Re-anchored to the measured state, not carried from the fast run.
-  EXPECT_LE((gen.QRef() - q_home_).cwiseAbs().maxCoeff(), kAMax * kDt * kDt + 1e-12);
-}
-
-// A failed call outputs v_ref = 0, so the next call's acceleration window is
-// centred on 0, not on the velocity before the failure (review finding).
-TEST_F(ClikOptionsTest, FailedCallRestartsAccelerationFromRest) {
-  constexpr double kAMax = 5.0;
-  auto cfg = BaseConfig();
-  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
-  ClikReferenceGenerator gen;
-  gen.Init(kNv, cfg);
-  gen.SetTaskGain(Vec6::Constant(20.0));
-  const pinocchio::SE3 des = OffsetTarget(0.3);
-  Eigen::VectorXd q = q_home_;
-  for (int k = 0; k < 300; ++k) {
-    cache_.Update(q, v_zero_);
-    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
-    q = gen.QRef();
-  }
-  ASSERT_GT(gen.VRef().cwiseAbs().maxCoeff(), 2.0 * kAMax * kDt);
-
-  pinocchio::SE3 bad = des;
-  bad.translation()(1) = std::numeric_limits<double>::quiet_NaN();
-  cache_.Update(q, v_zero_);
-  ASSERT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, bad, q_home_, kDt));
-  ASSERT_TRUE(gen.VRef().isZero(0.0));
-
-  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
-  EXPECT_LE(gen.VRef().cwiseAbs().maxCoeff(), kAMax * kDt + kSolverEps);
+  // The box bounds v by (q_max − q)/dt to the solver tolerance, so one tick can
+  // pass the CLIK's limit by eps·dt at most — far inside the margin the box was
+  // shrunk by, which is what keeps q inside the true joint envelope.
+  EXPECT_LE(worst_overshoot, kSolverEps * kDt + 1e-12) << "q left the box the CLIK was given";
 }
 
 // ── Smoothing term ──────────────────────────────────────────────────────────
@@ -515,6 +396,100 @@ TEST_F(ClikOptionsTest, SmoothingDampsTheStepAndKeepsTheFixedPoint) {
   EXPECT_LT(step_on, 0.5 * step_off);
   EXPECT_LT(err_off, 1e-3);
   EXPECT_LT(err_on, 1e-3);
+}
+
+// ── v_prev is forgotten by ResetAnchor and by a failed call ────────────────
+//
+// The smoothing term (w_s/2)·‖v − v_prev‖² is what reads v_prev here: with a
+// heavy w_s the first step after a fast run is pulled toward the old velocity
+// unless v_prev was cleared. Each test compares that step with a generator
+// that never moved, and with one that only re-anchored (the control — it must
+// differ, or the comparison would pass with v_prev still stale).
+
+class ClikRestartTest : public ClikOptionsTest {
+ protected:
+  enum class Restart : std::uint8_t { kFresh, kReseedOnly, kResetAnchor, kFailedCall };
+
+  struct Step {
+    Eigen::VectorXd v_ref;
+    Eigen::VectorXd q_ref;
+  };
+
+  // The first step from q_home of a generator that (unless kFresh) has just
+  // run at speed away from it.
+  void FirstStepFromHome(Restart restart, Step* out) {
+    auto cfg = BaseConfig();
+    cfg.v_limit = 0.0;  // no box: the step is the cost's minimiser alone
+    // Heavy enough that the two solves agree well inside the solver tolerance
+    // whatever their warm start: H ⪰ w_s·I bounds the step error by eps / w_s.
+    cfg.w_smooth = 10.0;
+    ClikReferenceGenerator gen;
+    gen.Init(kNv, cfg);
+    gen.SetTaskGain(Vec6::Constant(5.0));
+    const pinocchio::SE3 des = OffsetTarget(0.3);
+
+    if (restart != Restart::kFresh) {
+      Eigen::VectorXd q = q_home_;
+      for (int k = 0; k < 50; ++k) {
+        cache_.Update(q, v_zero_);
+        ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+        q = gen.QRef();
+      }
+      ASSERT_GT(gen.VRef().cwiseAbs().maxCoeff(), kFastSpeed) << "the run never got up to speed";
+      ASSERT_GT((q - q_home_).cwiseAbs().maxCoeff(), kFarFromHome) << "the run stayed at home";
+      if (restart == Restart::kResetAnchor) {
+        gen.ResetAnchor();
+      } else if (restart == Restart::kFailedCall) {
+        pinocchio::SE3 bad = des;
+        bad.translation()(1) = std::numeric_limits<double>::quiet_NaN();
+        cache_.Update(q, v_zero_);
+        ASSERT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, bad, q_home_, kDt));
+        ASSERT_TRUE(gen.VRef().isZero(0.0));
+      }
+    }
+
+    // kReseedOnly asks for the measured anchor and nothing else. The others
+    // ask to carry forward, so a measured anchor is the restart's doing.
+    const bool reseed_anchor = restart == Restart::kReseedOnly;
+    cache_.Update(q_home_, v_zero_);
+    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt, reseed_anchor));
+    out->v_ref = gen.VRef();
+    out->q_ref = gen.QRef();
+  }
+
+  // The restarted step equals the fresh one to the solver tolerance (the QP's
+  // warm start is not part of the restart), and the control does not.
+  void ExpectRestartsFromRest(Restart restart) {
+    Step fresh;
+    Step reseed_only;
+    Step restarted;
+    ASSERT_NO_FATAL_FAILURE(FirstStepFromHome(Restart::kFresh, &fresh));
+    ASSERT_NO_FATAL_FAILURE(FirstStepFromHome(Restart::kReseedOnly, &reseed_only));
+    ASSERT_NO_FATAL_FAILURE(FirstStepFromHome(restart, &restarted));
+    const double stale = (reseed_only.v_ref - fresh.v_ref).cwiseAbs().maxCoeff();
+    const double dv = (restarted.v_ref - fresh.v_ref).cwiseAbs().maxCoeff();
+    const double dq = (restarted.q_ref - fresh.q_ref).cwiseAbs().maxCoeff();
+    RecordProperty("stale_v_prev_step_diff", std::to_string(stale));
+    RecordProperty("restarted_v_ref_diff", std::to_string(dv));
+    RecordProperty("restarted_q_ref_diff", std::to_string(dq));
+    EXPECT_GT(stale, kStaleStep) << "a stale v_prev does not show in this step";
+    EXPECT_LE(dv, kSolverEps) << "v_prev survived the restart";
+    EXPECT_LE(dq, kSolverEps) << "the anchor survived the restart";
+  }
+
+  static constexpr double kFastSpeed = 0.2;     // rad/s reached by the run
+  static constexpr double kFarFromHome = 0.01;  // rad travelled by the run
+  static constexpr double kStaleStep = 0.05;    // rad/s a stale v_prev moves the step by
+};
+
+TEST_F(ClikRestartTest, ResetAnchorRestartsFromRest) {
+  ExpectRestartsFromRest(Restart::kResetAnchor);
+}
+
+// A failed call outputs v_ref = 0, so the next call smooths toward 0, not
+// toward the velocity before the failure (review finding).
+TEST_F(ClikRestartTest, FailedCallRestartsFromRest) {
+  ExpectRestartsFromRest(Restart::kFailedCall);
 }
 
 // ── Twist feedforward (SE3 path, D-5) ───────────────────────────────────────
@@ -825,7 +800,6 @@ TEST_F(ClikAxisTest, AllOptionsOnComputeIsAllocationFree) {
   cfg.q_min = model_->lowerPositionLimit;
   cfg.q_max = model_->upperPositionLimit;
   cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv, 1.0);
-  cfg.a_max = Eigen::VectorXd::Constant(kNv, 10.0);
   cfg.w_smooth = 1e-3;
   cfg.max_iter = 30;
   cfg.evaluate_at_command = true;

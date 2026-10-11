@@ -90,8 +90,8 @@ namespace rtc::tsid {
 // cache was evaluated at (cache.v — the command velocity under D-6, the same
 // state h and J̇ are evaluated at); only its ARM entries enter, because the
 // hand is commanded elsewhere and its acceleration is not this solve's:
-//   kBox       — the per-joint window v_prev ± a_max·dt folded into the box
-//                (the legacy option; no extra rows, bit-identical output);
+//   kNone      — no acceleration constraint: no extra rows, the QP is the
+//                velocity ∩ position box alone (the default);
 //   kKinematic — the task acceleration J·v̇ + J̇·v_c of the rows the cost
 //                tracks, |·| ≤ task_accel_max_{linear,angular} per row
 //                (J̇·v_c = the registered frame's classical drift dJv). ONLY
@@ -167,7 +167,7 @@ namespace rtc::tsid {
 class ClikReferenceGenerator {
  public:
   /// Which acceleration constraint the QP carries (see the file header).
-  enum class AccelConstraint : std::uint8_t { kBox, kKinematic, kDynamic };
+  enum class AccelConstraint : std::uint8_t { kNone, kKinematic, kDynamic };
 
   struct Config {
     std::vector<int> arm_v_idx;   // arm velocity indices, Pinocchio order (≥1)
@@ -205,19 +205,10 @@ class ClikReferenceGenerator {
     // replaces v_limit everywhere v_limit is used, including the re-clamp of a
     // collapsed position box.
     Eigen::VectorXd v_limit_per_joint;
-    // Acceleration box [nv] (rad/s² or m/s²), each finite and > 0; empty → off.
-    // Intersects the velocity ∩ position box with v_prev ± a_max·dt, v_prev =
-    // the v_ref of the last successful Compute() (0 after Init / ResetAnchor and
-    // after a failed call, whose output command is v_ref = 0).
-    // When the intersection is empty the acceleration window wins: the joint
-    // gets l = u = clamp(v*, v_prev − a·dt, v_prev + a·dt), v* the point of the
-    // velocity ∩ position interval nearest v_prev, and LastSolve() raises
-    // bound_conflict with the joint's bit in conflict_mask (L5 §4.3). Requires
-    // nv ≤ 64 (the mask width). The same a_max must feed the planner's
-    // reach-time check so the plan matches what CLIK executes (D-16).
-    Eigen::VectorXd a_max;
     // Smoothing weight w_s ≥ 0 (finite): adds (w_s/2)·‖v − v_prev‖² to the
     // cost, pulling the command toward the previous one (L5 §4.3). 0 → off.
+    // v_prev is the v_ref of the last successful Compute() (0 after Init /
+    // ResetAnchor and after a failed call, whose output command is v_ref = 0).
     // Keep w_s ≪ w_task like the posture weights, or it competes with tracking.
     double w_smooth{0.0};
     // Command-value evaluation (D-6, L5 §4.2). The caller passes a cache
@@ -237,10 +228,10 @@ class ClikReferenceGenerator {
     // Weight of the two approach-axis rows of the position + axis Compute()
     // overload (L5 §4.3 w_a; finite and > 0). Unused by the SE3 overload.
     double w_axis{0.5};
-    // The acceleration constraint (file header). kBox reads `a_max` above;
-    // the other two refuse a set `a_max` (the constraint is ONE of the three)
-    // and read their own fields, which kBox in turn refuses when set.
-    AccelConstraint accel_constraint{AccelConstraint::kBox};
+    // The acceleration constraint (file header). kKinematic and kDynamic each
+    // read their own fields below and refuse the other's; kNone refuses both
+    // (a bound that is set but not selected reads as if it were on).
+    AccelConstraint accel_constraint{AccelConstraint::kNone};
     // kKinematic: bound on each tracked task row's acceleration — the
     // position rows [m/s²] and the rotation / approach-axis rows [rad/s²].
     // Finite and > 0 when kKinematic, 0 otherwise.
@@ -503,8 +494,6 @@ class ClikReferenceGenerator {
     int iterations{0};             ///< ProxQP outer iterations
     double solve_time_us{0.0};     ///< wall time of the solve [µs]
     bool command_mismatch{false};  ///< evaluate_at_command: cache.q (arm) ≠ previous QRef()
-    bool bound_conflict{false};    ///< acceleration box overrode velocity ∩ position
-    std::uint64_t conflict_mask{0};  ///< bit i = velocity index i conflicted
     /// kKinematic / kDynamic: rows assembled this call, how many the solution
     /// sits on (within tolerance), and whether it broke one — then the call
     /// failed (the rows could not hold with the velocity ∩ position box) and
@@ -536,16 +525,16 @@ class ClikReferenceGenerator {
   [[nodiscard]] const SolveDiagnostics& LastSolve() const noexcept { return last_solve_; }
 
   /// Forget the integration anchor and the previous velocity: the next
-  /// Compute() re-anchors q_ref to cache.q and the acceleration box starts
-  /// from v_prev = 0. Call at activation, re-arm and E-STOP release (L5 §4.2)
-  /// — leaving v_prev from the previous run would make the first tick's
-  /// acceleration box relative to a stale velocity. RT-safe.
+  /// Compute() re-anchors q_ref to cache.q and the smoothing term starts from
+  /// v_prev = 0. Call at activation, re-arm and E-STOP release (L5 §4.2) —
+  /// leaving v_prev from the previous run would pull the first tick toward a
+  /// stale velocity. RT-safe.
   void ResetAnchor() noexcept {
     anchor_initialized_ = false;
     command_check_armed_ = false;
     v_prev_.setZero();
     if (n_accel_rows_max_ > 0) {
-      qp_solver_.ResetWarmStart();  // a new trial's rows start cold (kBox: legacy)
+      qp_solver_.ResetWarmStart();  // a new trial's rows start cold (kNone: legacy)
     }
   }
 
@@ -567,7 +556,7 @@ class ClikReferenceGenerator {
   // to the braking-distance bound. No-op when off. Returns false on a
   // mis-sized or non-finite M, h, q or v — the caller fails the call.
   [[nodiscard]] bool ApplyBrakeBound(const PinocchioCache& cache, double dt) noexcept;
-  // kKinematic / kDynamic rows below the box (no-op for kBox). `axis_rows`
+  // kKinematic / kDynamic rows below the box (no-op for kNone). `axis_rows`
   // selects the position + axis overload's task rows (j_pos_ / j_axis_) over
   // the SE3 overload's (j_task_). Returns false on a non-finite row.
   [[nodiscard]] bool AssembleAccelRows(const PinocchioCache& cache,
@@ -630,10 +619,9 @@ class ClikReferenceGenerator {
   double damping_sq_{1e-4};
   double v_limit_{1.5};
   Eigen::VectorXd v_limit_per_joint_;  // [nv] or empty (scalar v_limit_)
-  Eigen::VectorXd a_max_;              // [nv] or empty (acceleration box off)
   Eigen::VectorXd v_prev_;             // [nv] v_ref of the last successful Compute()
   double w_smooth_{0.0};               // smoothing weight, 0 → off
-  AccelConstraint accel_constraint_{AccelConstraint::kBox};
+  AccelConstraint accel_constraint_{AccelConstraint::kNone};
   double task_a_lin_{0.0};  // kKinematic row bounds
   double task_a_ang_{0.0};
   Eigen::VectorXd tau_bound_;        // [nv] eta_tau·tau_max (kDynamic)

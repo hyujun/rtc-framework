@@ -216,7 +216,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 |---------|------|------|------|
 | **헤더** | `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
 | **슈퍼바이저** | `mode` | `uint8` | `MODE_IDLE=0` … `MODE_FAULT=10` (`rtc::catching::Mode` 와 동일 순서) |
-| | `reason` | `uint8` | `REASON_NONE=0` … `REASON_TIP_STALE=20` (`rtc::catching::Reason`) |
+| | `reason` | `uint8` | `REASON_NONE=0` … `REASON_TIP_STALE=20` (`rtc::catching::Reason`). 번호는 연속이 아니다 — 11 은 비어 있다. 사유를 지워도 뒤 번호를 당기지 않는다 |
 | | `outcome` | `uint8` | 시행 결과 — `OUTCOME_NONE=0` … `OUTCOME_ABORTED=4` (S8 부터) |
 | **컨트롤러 상태** | `armed` | `bool` | **RT tick 이 보는** 무장 latch. `catching.enable` 파라미터 값이 아니다 — tick 이 E-STOP·fault 에서 내리므로 둘이 갈리는 순간이 관측 대상이다 |
 | | `estop_active` / `fault_latched` | `bool` | 이 tick 의 E-STOP 요청 / fault 래치 |
@@ -234,8 +234,8 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | **기준 (L4)** | `ref_valid` / `ref_saturated` | `bool` | 이 tick 에 기준이 나왔는가 / 포화했는가 |
 | | `ref_x` / `ref_xd` / `ref_xdd` / `ref_u_des` | `float64[3]` | `ref_xdd` 는 **실현** 가속도, `ref_u_des` 는 포화 전 요구값 — 포화 구간은 둘이 함께 있어야 해석된다 |
 | | `ref_e` / `ref_ed` / `ref_gamma` / `ref_gamma_d` / `ref_gamma_dd` | `float64[3]` / `float64` | DS 오차 (한 tick 이전 기준) 와 γ 프로파일 |
-| **관절 명령 (L5)** | `clik_ran` / `clik_converged` / `clik_bound_conflict` / `clik_command_mismatch` | `bool` | solve 도달 여부 · 수렴 · box 충돌 · `evaluate_at_command` 불일치 |
-| | `clik_status` / `clik_iterations` / `clik_solve_us` / `clik_conflict_mask` | `int32` / `float64` / `uint64` | ProxQP 상태 (0 = SOLVED, −1 = 미해결) · 반복 · solve 시간 (G5-C 예산의 입력) · 충돌 비트 |
+| **관절 명령 (L5)** | `clik_ran` / `clik_converged` / `clik_command_mismatch` | `bool` | solve 도달 여부 · 수렴 · `evaluate_at_command` 불일치 |
+| | `clik_status` / `clik_iterations` / `clik_solve_us` | `int32` / `float64` | ProxQP 상태 (0 = SOLVED, −1 = 미해결) · 반복 · solve 시간 (G5-C 예산의 입력) |
 | | `qp_fail_streak` | `int32` | CLIK 실패로 끝난 **시행**의 연속 수 (solve 수가 아니다 — `HOLD` 판정에 이른 시행이 0 으로). `supervisor.n_qp` 회에서 fault 래치 |
 | **추종** | `track_err_rad` | `float64` | ‖q_meas − q_cmd‖. D-6 이 측정값을 CLIK 밖에 두므로 **팔이 명령 위치에 없다는 것을 아는 유일한 감시자** |
 | | `q_cmd` / `q_meas` / `arm_joint_names` | `float64[]` / `string[]` | device 순서, 이름은 configure 에서 한 번 박힌다. `q_cmd` 는 **그 tick 에 실제로 나간 명령** (법칙 비활성 구간의 hold latch 포함) 이고, 명령이 없는 tick (latch 전 침묵) 은 **NaN** 이다 — 0.0 을 쓰면 위 `track_err_rad` 을 오프라인으로 재계산하는 소비자가 존재하지 않는 수 rad 오차를 본다 |
@@ -636,7 +636,7 @@ colcon test --packages-select rtc_msgs
     ├── 입력 (L1): n/generation/sequence/나이/지평 + 거부 카운터
     ├── plan (L3): t_c/p_c/a_d/γ_f/w5/w6/사유
     ├── 기준 (L4): x/xd/xdd/u_des/e/ed/γ
-    ├── 관절 명령 (L5): CLIK status/iterations/solve_us/conflict + 추종 오차
+    ├── 관절 명령 (L5): CLIK status/iterations/solve_us + 추종 오차
     └── 손 (L6)·지문 (D-24): phase/ρ/force/contact/freshness
 
 (GUI/외부 도구는 sensor_msgs/JointState `/rtc_cm/<group>/joint_states` +

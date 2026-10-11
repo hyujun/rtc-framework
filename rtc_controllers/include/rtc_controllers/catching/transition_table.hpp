@@ -89,30 +89,34 @@ enum class Mode : std::uint8_t {
 };
 inline constexpr std::size_t kNumModes = 11;
 
+/// The values are the wire numbers of rtc_msgs/CatchingState REASON_* and of
+/// the logs, so they are written out and a removed reason leaves its number
+/// unassigned instead of renumbering the ones after it. 11 is unassigned
+/// (#755). A value is therefore NOT an index: iterate kAllReasons.
 enum class Reason : std::uint8_t {
-  kNone,
-  kBallStale,
-  kBallStaleCommitted,
-  kBallStaleLong,
-  kTrackChanged,
-  kHorizonExtrap,
-  kPredInconsistent,
-  kNoCatchablePlan,
-  kPlanInvalid,
-  kQpFailed,
-  kRefSaturated,
-  kJointConflict,
-  kTrackErr,
-  kAbortEscalated,
-  kEstop,
-  kFaultReset,
-  kSpeedScaling,
-  kClockUnhealthy,
-  kParamsTbd,
-  kHandTimeout,
-  kTipStale,
+  kNone = 0,
+  kBallStale = 1,
+  kBallStaleCommitted = 2,
+  kBallStaleLong = 3,
+  kTrackChanged = 4,
+  kHorizonExtrap = 5,
+  kPredInconsistent = 6,
+  kNoCatchablePlan = 7,
+  kPlanInvalid = 8,
+  kQpFailed = 9,
+  kRefSaturated = 10,
+  kTrackErr = 12,
+  kAbortEscalated = 13,
+  kEstop = 14,
+  kFaultReset = 15,
+  kSpeedScaling = 16,
+  kClockUnhealthy = 17,
+  kParamsTbd = 18,
+  kHandTimeout = 19,
+  kTipStale = 20,
 };
-inline constexpr std::size_t kNumReasons = 21;
+/// How many reasons there are — not the largest value plus one.
+inline constexpr std::size_t kNumReasons = 20;
 
 enum class Outcome : std::uint8_t {
   kNone,
@@ -141,7 +145,6 @@ inline constexpr std::array<Reason, kNumReasons> kAllReasons = {
     Reason::kPlanInvalid,
     Reason::kQpFailed,
     Reason::kRefSaturated,
-    Reason::kJointConflict,
     Reason::kTrackErr,
     Reason::kAbortEscalated,
     Reason::kEstop,
@@ -165,7 +168,7 @@ struct TransitionRow {
 
 // ── The merged (Mode × Reason) → Mode table ─────────────────────────────────
 // clang-format off
-inline constexpr std::array<TransitionRow, 96> kTransitionTable = {{
+inline constexpr std::array<TransitionRow, 89> kTransitionTable = {{
     // IDLE (§4.1 row 1; §4.2 PARAMS_TBD, CLOCK_UNHEALTHY "IDLE 진입 거부")
     {Mode::kIdle, Reason::kNone, Mode::kArmed},
     {Mode::kIdle, Reason::kParamsTbd, Mode::kIdle},
@@ -192,7 +195,6 @@ inline constexpr std::array<TransitionRow, 96> kTransitionTable = {{
     {Mode::kTracking, Reason::kNoCatchablePlan, Mode::kTracking},
     {Mode::kTracking, Reason::kHorizonExtrap, Mode::kTracking},
     {Mode::kTracking, Reason::kQpFailed, Mode::kAbortSafe},
-    {Mode::kTracking, Reason::kJointConflict, Mode::kAbortSafe},
     {Mode::kTracking, Reason::kTrackErr, Mode::kAbortSafe},
     {Mode::kTracking, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kTracking, Reason::kClockUnhealthy, Mode::kAbortSafe},
@@ -210,7 +212,6 @@ inline constexpr std::array<TransitionRow, 96> kTransitionTable = {{
     {Mode::kApproach, Reason::kPlanInvalid, Mode::kRetreat},
     {Mode::kApproach, Reason::kRefSaturated, Mode::kRetreat},
     {Mode::kApproach, Reason::kQpFailed, Mode::kAbortSafe},
-    {Mode::kApproach, Reason::kJointConflict, Mode::kAbortSafe},
     {Mode::kApproach, Reason::kTrackErr, Mode::kAbortSafe},
     {Mode::kApproach, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kApproach, Reason::kClockUnhealthy, Mode::kAbortSafe},
@@ -227,7 +228,6 @@ inline constexpr std::array<TransitionRow, 96> kTransitionTable = {{
     {Mode::kCommitted, Reason::kHorizonExtrap, Mode::kCommitted},
     {Mode::kCommitted, Reason::kTipStale, Mode::kCommitted},
     {Mode::kCommitted, Reason::kQpFailed, Mode::kAbortSafe},
-    {Mode::kCommitted, Reason::kJointConflict, Mode::kAbortSafe},
     {Mode::kCommitted, Reason::kTrackErr, Mode::kAbortSafe},
     {Mode::kCommitted, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kCommitted, Reason::kClockUnhealthy, Mode::kAbortSafe},
@@ -244,7 +244,6 @@ inline constexpr std::array<TransitionRow, 96> kTransitionTable = {{
     {Mode::kClosing, Reason::kTipStale, Mode::kClosing},
     {Mode::kClosing, Reason::kHandTimeout, Mode::kClosing},
     {Mode::kClosing, Reason::kQpFailed, Mode::kAbortSafe},
-    {Mode::kClosing, Reason::kJointConflict, Mode::kAbortSafe},
     {Mode::kClosing, Reason::kTrackErr, Mode::kAbortSafe},
     {Mode::kClosing, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kClosing, Reason::kClockUnhealthy, Mode::kAbortSafe},
@@ -259,7 +258,6 @@ inline constexpr std::array<TransitionRow, 96> kTransitionTable = {{
     {Mode::kDecel, Reason::kHandTimeout, Mode::kDecel},
     {Mode::kDecel, Reason::kTipStale, Mode::kDecel},
     {Mode::kDecel, Reason::kQpFailed, Mode::kAbortSafe},
-    {Mode::kDecel, Reason::kJointConflict, Mode::kAbortSafe},
     {Mode::kDecel, Reason::kTrackErr, Mode::kAbortSafe},
     {Mode::kDecel, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kDecel, Reason::kClockUnhealthy, Mode::kAbortSafe},
@@ -271,7 +269,6 @@ inline constexpr std::array<TransitionRow, 96> kTransitionTable = {{
     {Mode::kHold, Reason::kNone, Mode::kRetreat},
     {Mode::kHold, Reason::kTipStale, Mode::kHold},
     {Mode::kHold, Reason::kQpFailed, Mode::kAbortSafe},
-    {Mode::kHold, Reason::kJointConflict, Mode::kAbortSafe},
     {Mode::kHold, Reason::kTrackErr, Mode::kAbortSafe},
     {Mode::kHold, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kHold, Reason::kClockUnhealthy, Mode::kAbortSafe},
@@ -281,7 +278,6 @@ inline constexpr std::array<TransitionRow, 96> kTransitionTable = {{
     // RETREAT (§4.1 row 9; "전 구간" fatal reasons, ESTOP clear)
     {Mode::kRetreat, Reason::kNone, Mode::kArmed},
     {Mode::kRetreat, Reason::kQpFailed, Mode::kAbortSafe},
-    {Mode::kRetreat, Reason::kJointConflict, Mode::kAbortSafe},
     {Mode::kRetreat, Reason::kTrackErr, Mode::kAbortSafe},
     {Mode::kRetreat, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kRetreat, Reason::kClockUnhealthy, Mode::kAbortSafe},

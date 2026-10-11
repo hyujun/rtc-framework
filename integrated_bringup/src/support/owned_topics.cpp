@@ -1,6 +1,7 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 
 #include <rtc_base/tracing/trace_scope.hpp>
+#include <rtc_controllers/catching/transition_table.hpp>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/logging.hpp>
@@ -23,6 +24,46 @@ namespace {
 [[nodiscard]] std::string MakeActualChildFrame(const std::string& link) {
   return link + "_actual";
 }
+
+// rtc::catching::Reason reaches the wire as its number (`msg.reason` in
+// PublishCatchingStateFromSnapshot), so each value has to be the REASON_* of
+// the same name. A reason added, removed or renumbered on one side only stops
+// this file compiling.
+[[nodiscard]] constexpr bool IsWireNumber(rtc::catching::Reason reason, std::uint8_t wire) {
+  return static_cast<std::uint8_t>(reason) == wire;
+}
+
+using CatchingReason = rtc::catching::Reason;
+using CatchingStateMsg = rtc_msgs::msg::CatchingState;
+static_assert(rtc::catching::kNumReasons == 20,
+              "a Reason was added or removed: pair it with its REASON_* below");
+static_assert(IsWireNumber(CatchingReason::kNone, CatchingStateMsg::REASON_NONE));
+static_assert(IsWireNumber(CatchingReason::kBallStale, CatchingStateMsg::REASON_BALL_STALE));
+static_assert(IsWireNumber(CatchingReason::kBallStaleCommitted,
+                           CatchingStateMsg::REASON_BALL_STALE_COMMITTED));
+static_assert(IsWireNumber(CatchingReason::kBallStaleLong,
+                           CatchingStateMsg::REASON_BALL_STALE_LONG));
+static_assert(IsWireNumber(CatchingReason::kTrackChanged, CatchingStateMsg::REASON_TRACK_CHANGED));
+static_assert(IsWireNumber(CatchingReason::kHorizonExtrap,
+                           CatchingStateMsg::REASON_HORIZON_EXTRAP));
+static_assert(IsWireNumber(CatchingReason::kPredInconsistent,
+                           CatchingStateMsg::REASON_PRED_INCONSISTENT));
+static_assert(IsWireNumber(CatchingReason::kNoCatchablePlan,
+                           CatchingStateMsg::REASON_NO_CATCHABLE_PLAN));
+static_assert(IsWireNumber(CatchingReason::kPlanInvalid, CatchingStateMsg::REASON_PLAN_INVALID));
+static_assert(IsWireNumber(CatchingReason::kQpFailed, CatchingStateMsg::REASON_QP_FAILED));
+static_assert(IsWireNumber(CatchingReason::kRefSaturated, CatchingStateMsg::REASON_REF_SATURATED));
+static_assert(IsWireNumber(CatchingReason::kTrackErr, CatchingStateMsg::REASON_TRACK_ERR));
+static_assert(IsWireNumber(CatchingReason::kAbortEscalated,
+                           CatchingStateMsg::REASON_ABORT_ESCALATED));
+static_assert(IsWireNumber(CatchingReason::kEstop, CatchingStateMsg::REASON_ESTOP));
+static_assert(IsWireNumber(CatchingReason::kFaultReset, CatchingStateMsg::REASON_FAULT_RESET));
+static_assert(IsWireNumber(CatchingReason::kSpeedScaling, CatchingStateMsg::REASON_SPEED_SCALING));
+static_assert(IsWireNumber(CatchingReason::kClockUnhealthy,
+                           CatchingStateMsg::REASON_CLOCK_UNHEALTHY));
+static_assert(IsWireNumber(CatchingReason::kParamsTbd, CatchingStateMsg::REASON_PARAMS_TBD));
+static_assert(IsWireNumber(CatchingReason::kHandTimeout, CatchingStateMsg::REASON_HAND_TIMEOUT));
+static_assert(IsWireNumber(CatchingReason::kTipStale, CatchingStateMsg::REASON_TIP_STALE));
 
 // Copy the estimator POD into the wire PullEstimate sub-message (#167).
 // GraspState and WbcState embed the same PullEstimate, so both publish paths
@@ -433,12 +474,10 @@ void PublishCatchingStateFromSnapshot(const rtc::PublishSnapshot& snap,
 
   msg.clik_ran = tick.clik_ran;
   msg.clik_converged = tick.clik_converged;
-  msg.clik_bound_conflict = tick.clik_bound_conflict;
   msg.clik_command_mismatch = tick.clik_command_mismatch;
   msg.clik_status = tick.clik_status;
   msg.clik_iterations = tick.clik_iterations;
   msg.clik_solve_us = tick.clik_solve_us;
-  msg.clik_conflict_mask = tick.clik_conflict_mask;
   msg.qp_fail_streak = tick.qp_fail_streak;
 
   msg.track_err_rad = tick.track_err_rad;

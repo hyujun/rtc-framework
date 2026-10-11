@@ -48,6 +48,14 @@ using rtc::catching::Mode;
 using rtc::catching::Reason;
 using rtc::catching::TransitionRow;
 
+// Where a Reason sits in kAllReasons, which is how CompletenessResult indexes
+// unused_reason. Not the enum value: that is the wire number, and one of the
+// numbers is unassigned.
+[[nodiscard]] std::size_t ReasonIndex(Reason reason) {
+  const auto it = std::find(kAllReasons.begin(), kAllReasons.end(), reason);
+  return static_cast<std::size_t>(it - kAllReasons.begin());
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // G7-B — decel target: exact continuity at entry, continuity at the stop
 // branch, acceleration consistent with finite differences of velocity.
@@ -235,7 +243,8 @@ TEST(TransitionTable, BrokenTableWithAnUnusedReasonIsDetected) {
     EXPECT_FALSE(result.unreachable[i]) << "index " << i;
     EXPECT_FALSE(result.no_exit[i]) << "index " << i;
   }
-  const std::size_t reason_index = static_cast<std::size_t>(Reason::kNoCatchablePlan);
+  const std::size_t reason_index = ReasonIndex(Reason::kNoCatchablePlan);
+  ASSERT_LT(reason_index, kNumReasons);
   EXPECT_TRUE(result.unused_reason[reason_index]);
   EXPECT_FALSE(result.duplicate_cell);
   EXPECT_FALSE(result.Ok());
@@ -537,8 +546,8 @@ TEST_F(ContactDebounceTest, GaussianNoiseFalseAlarmRateAtTheDocDefaultKSigmaIsRe
 // ── QP-independent joint-space stop (A-S5-10, S5.3) ─────────────────────────
 //
 // The path ABORT_SAFE takes when the abort was CAUSED by the joint command
-// layer (QP_FAILED / JOINT_CONFLICT), where routing the stop back through that
-// layer is the one thing that cannot be done.
+// layer (QP_FAILED), where routing the stop back through that layer is the one
+// thing that cannot be done.
 
 namespace {
 

@@ -7,7 +7,7 @@
 /// the finite-difference acceleration (v_ref − v_prev)/dt the command implies.
 /// Each bound is paired with a premise — the same scenario without the rows
 /// breaks it — so a green run is not a scenario that never came near the
-/// limit. "kBox ⇒ bit-identical" is test_clik_golden.cpp's job.
+/// limit. "kNone ⇒ bit-identical" is test_clik_golden.cpp's job.
 
 #include <gtest/gtest.h>
 
@@ -250,40 +250,28 @@ class ClikAccelTest : public ::testing::Test {
 
 TEST_F(ClikAccelTest, InitRefusesFieldsOfAnotherForm) {
   {
-    auto cfg = BaseConfig();  // kBox
+    auto cfg = BaseConfig();  // kNone
     cfg.tau_max = tau_max_;
     ClikReferenceGenerator gen;
-    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << "box with tau_max";
+    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << "none with tau_max";
   }
   {
     auto cfg = BaseConfig();
     cfg.task_accel_max_linear = 5.0;
     ClikReferenceGenerator gen;
-    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << "box with task_accel_max";
+    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << "none with task_accel_max";
   }
   {
     auto cfg = BaseConfig();
     cfg.eta_tau = 0.5;  // a margin nobody would apply
     ClikReferenceGenerator gen;
-    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << "box with eta_tau";
+    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << "none with eta_tau";
   }
   {
     auto cfg = Kinematic(5.0, 10.0);
     cfg.eta_tau = 0.8;
     ClikReferenceGenerator gen;
     EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << "kinematic with eta_tau";
-  }
-  {
-    auto cfg = Kinematic(5.0, 10.0);
-    cfg.a_max = Eigen::VectorXd::Constant(kNv, 10.0);
-    ClikReferenceGenerator gen;
-    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << "kinematic with a_max";
-  }
-  {
-    auto cfg = Dynamic();
-    cfg.a_max = Eigen::VectorXd::Constant(kNv, 10.0);
-    ClikReferenceGenerator gen;
-    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << "dynamic with a_max";
   }
   {
     auto cfg = Dynamic();

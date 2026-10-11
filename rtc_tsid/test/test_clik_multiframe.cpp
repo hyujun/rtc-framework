@@ -164,8 +164,7 @@ struct ArmModel {
 }
 
 constexpr int kVariants = 4;
-constexpr const char* kVariantNames[kVariants] = {"plain", "boxes_smooth_accel_box", "kinematic",
-                                                  "dynamic"};
+constexpr const char* kVariantNames[kVariants] = {"plain", "boxes_smooth", "kinematic", "dynamic"};
 
 [[nodiscard]] Clik::Config VariantConfig(const ArmModel& m, int variant) {
   Clik::Config cfg;
@@ -175,7 +174,6 @@ constexpr const char* kVariantNames[kVariants] = {"plain", "boxes_smooth_accel_b
   cfg.v_limit = 1.5;
   cfg.w_task = 2.0;  // not the defaults: a weight wired to the wrong field shows
   cfg.w_axis = 0.7;
-  const int nv = m.model->nv;
   switch (variant) {
     case 0:
       break;
@@ -185,7 +183,6 @@ constexpr const char* kVariantNames[kVariants] = {"plain", "boxes_smooth_accel_b
       cfg.v_limit_per_joint = m.model->upperVelocityLimit;
       cfg.w_smooth = 1e-3;
       cfg.anchor_drift_max = 0.05;
-      cfg.a_max = Eigen::VectorXd::Constant(nv, 20.0);
       break;
     case 2:
       cfg.q_min = m.model->lowerPositionLimit;
@@ -225,8 +222,6 @@ void ExpectSameCall(const Clik& single, const Clik& multi, bool axis_task, const
   EXPECT_EQ(a.status, b.status) << at;
   EXPECT_EQ(a.iterations, b.iterations) << at;
   EXPECT_EQ(a.command_mismatch, b.command_mismatch) << at;
-  EXPECT_EQ(a.bound_conflict, b.bound_conflict) << at;
-  EXPECT_EQ(a.conflict_mask, b.conflict_mask) << at;
   EXPECT_EQ(a.accel_rows, b.accel_rows) << at;
   EXPECT_EQ(a.accel_rows_binding, b.accel_rows_binding) << at;
   EXPECT_EQ(a.accel_rows_violated, b.accel_rows_violated) << at;
@@ -1344,7 +1339,7 @@ TEST_F(ClikBrakeTest, InitRejectsABrakingBoundWithoutItsInputs) {
   EXPECT_FALSE(throws(DynamicConfig(true, 1.0))) << "premise";
   EXPECT_FALSE(throws(DynamicConfig(true, 0.5)));
 
-  Clik::Config cfg = BoxedConfig();  // kBox
+  Clik::Config cfg = BoxedConfig();  // kNone
   cfg.brake_from_torque = true;
   EXPECT_TRUE(throws(cfg)) << "no torque bound to brake with";
 
@@ -1406,7 +1401,7 @@ TEST_F(ClikTreeTest, InitRejectsInconsistentMultiFrameConfig) {
   EXPECT_TRUE(throws(cfg)) << "a task column outside the torque rows";
   cfg.task_v_idx = {arm_a_[0], arm_a_[3]};
   EXPECT_FALSE(throws(cfg));
-  cfg.accel_constraint = Mode::kBox;
+  cfg.accel_constraint = Mode::kNone;
   cfg.tau_max.resize(0);
   cfg.eta_tau = 0.0;
   cfg.task_v_idx = {arm_a_[0], trunk_[0]};

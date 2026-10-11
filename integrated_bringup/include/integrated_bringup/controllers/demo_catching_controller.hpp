@@ -649,9 +649,9 @@ class DemoCatchingController final : public RTControllerInterface {
   /// What the last RT tick concluded about the trajectory snapshot it held.
   [[nodiscard]] rtc::catching::TrajView GetTrajView() const noexcept { return traj_view_; }
 
-  /// The last CLIK solve's diagnostics — status, iteration count, solve time,
-  /// `bound_conflict`. Read off the RT thread; this is the input to the S5.4
-  /// state message and to the G5-C timing gate.
+  /// The last CLIK solve's diagnostics — status, iteration count, solve time.
+  /// Read off the RT thread; this is the input to the S5.4 state message and
+  /// to the G5-C timing gate.
   [[nodiscard]] const rtc::tsid::ClikReferenceGenerator::SolveDiagnostics& GetLastSolve()
       const noexcept {
     return clik_.LastSolve();

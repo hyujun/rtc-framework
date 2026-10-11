@@ -4,9 +4,8 @@
 // through L4 and L5 like any other reference. `ABORT_SAFE` never uses it — its
 // stop is always in joint space, whatever the cause (L7 §4.1). A task-space
 // stop would be exactly the wrong thing when the abort was CAUSED by that layer
-// (`QP_FAILED` or `JOINT_CONFLICT`), because it would route the stop through
-// the component that just failed, and one path for every cause is one path to
-// verify.
+// (`QP_FAILED`), because it would route the stop through the component that
+// just failed, and one path for every cause is one path to verify.
 //
 // So this is that path: no QP, no task space, no model. It walks each
 // joint's commanded velocity to zero at its own acceleration limit and

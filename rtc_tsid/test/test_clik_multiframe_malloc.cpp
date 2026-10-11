@@ -265,11 +265,11 @@ TEST_F(ClikMultiFrameMallocTest, AFullCallAllocatesOnlyInsideTheQpSolver) {
     bool second_relative;
   };
 
-  Clik::Config box = BaseConfig();
-  box.relative_tasks = true;
+  Clik::Config none = BaseConfig();
+  none.relative_tasks = true;
   const std::array<Case, 3> cases = {{{"dynamic", DynamicConfig(), true},
                                       {"kinematic", KinematicConfig(), false},
-                                      {"box", box, true}}};
+                                      {"none", none, true}}};
   for (const Case& c : cases) {
     Clik gen;
     gen.Init(kNv, c.cfg);

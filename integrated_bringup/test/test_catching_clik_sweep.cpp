@@ -120,7 +120,6 @@ struct CaseResult {
   double clik_err_final_m{};  // the same at the catch instant
   int ticks{};
   int non_converged{};
-  int bound_conflict{};
   int ref_saturated{};
   double solve_us_max{};
   double solve_us_mean{};
@@ -293,9 +292,6 @@ class ClikSweepTest : public ::testing::Test {
         if (!rec.clik_converged) {
           r.non_converged += 1;
         }
-        if (rec.clik_bound_conflict) {
-          r.bound_conflict += 1;
-        }
       }
       if (rec.ref_saturated) {
         r.ref_saturated += 1;
@@ -382,14 +378,14 @@ TEST_F(ClikSweepTest, TheSolverStaysHealthyAcrossTheBallEnvelope) {
   csv.precision(9);
   csv << "speed_m_s,elevation_deg,azimuth_deg,t_c_s,axis_demand_deg,catch_err_m,axis_err_deg,clik_"
          "err_max_m,"
-         "clik_err_final_m,ticks,non_converged,bound_conflict,ref_saturated,solve_us_mean,"
+         "clik_err_final_m,ticks,non_converged,ref_saturated,solve_us_mean,"
          "solve_us_max,end_mode\n";
   for (const CaseResult& r : results) {
     csv << r.speed << ',' << r.elevation_deg << ',' << r.azimuth_deg << ',' << r.t_c_s << ','
         << r.axis_demand_deg << ',' << r.catch_err_m << ',' << r.axis_err_deg << ','
         << r.clik_err_max_m << ',' << r.clik_err_final_m << ',' << r.ticks << ',' << r.non_converged
-        << ',' << r.bound_conflict << ',' << r.ref_saturated << ',' << r.solve_us_mean << ','
-        << r.solve_us_max << ',' << r.end_mode << '\n';
+        << ',' << r.ref_saturated << ',' << r.solve_us_mean << ',' << r.solve_us_max << ','
+        << r.end_mode << '\n';
   }
   csv.close();
   std::cout << "clik sweep written to " << path << "\n";

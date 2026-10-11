@@ -89,25 +89,6 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
       }
     }
   }
-  if (config.a_max.size() != 0) {
-    if (config.a_max.size() != nv) {
-      throw std::runtime_error("ClikReferenceGenerator: a_max size " +
-                               std::to_string(config.a_max.size()) + " != nv " +
-                               std::to_string(nv));
-    }
-    if (nv > 64) {
-      throw std::runtime_error(
-          "ClikReferenceGenerator: acceleration box needs nv <= 64 (conflict_mask width), got " +
-          std::to_string(nv));
-    }
-    for (Eigen::Index i = 0; i < config.a_max.size(); ++i) {
-      const double a = config.a_max(i);
-      if (!std::isfinite(a) || !(a > 0.0)) {
-        throw std::runtime_error("ClikReferenceGenerator: a_max must be finite and > 0, got " +
-                                 std::to_string(a) + " at index " + std::to_string(i));
-      }
-    }
-  }
   if (!std::isfinite(config.w_smooth) || config.w_smooth < 0.0) {
     throw std::runtime_error("ClikReferenceGenerator: w_smooth must be finite and >= 0, got " +
                              std::to_string(config.w_smooth));
@@ -176,23 +157,23 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
     }
   }
 
-  // Acceleration constraint: exactly one of box | kinematic | dynamic, and a
-  // field of another form set is a configuration that reads as if it were on.
+  // Acceleration constraint: none | kinematic | dynamic, and a field of a form
+  // that is not selected is a configuration that reads as if it were on.
   const bool kin_set = config.task_accel_max_linear != 0.0 || config.task_accel_max_angular != 0.0;
   const bool dyn_set = config.tau_max.size() != 0 || config.eta_tau != 0.0;
   switch (config.accel_constraint) {
-    case AccelConstraint::kBox:
+    case AccelConstraint::kNone:
       if (kin_set || dyn_set) {
         throw std::runtime_error(
             "ClikReferenceGenerator: task_accel_max_* / tau_max / eta_tau are set but "
-            "accel_constraint is box");
+            "accel_constraint is none");
       }
       break;
     case AccelConstraint::kKinematic:
-      if (config.a_max.size() != 0 || dyn_set) {
+      if (dyn_set) {
         throw std::runtime_error(
             "ClikReferenceGenerator: accel_constraint kinematic takes task_accel_max_* only "
-            "(a_max / tau_max must be empty, eta_tau 0)");
+            "(tau_max must be empty, eta_tau 0)");
       }
       if (!std::isfinite(config.task_accel_max_linear) || !(config.task_accel_max_linear > 0.0) ||
           !std::isfinite(config.task_accel_max_angular) || !(config.task_accel_max_angular > 0.0)) {
@@ -201,10 +182,10 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
       }
       break;
     case AccelConstraint::kDynamic:
-      if (config.a_max.size() != 0 || kin_set) {
+      if (kin_set) {
         throw std::runtime_error(
             "ClikReferenceGenerator: accel_constraint dynamic takes tau_max / eta_tau only "
-            "(a_max / task_accel_max_* must be unset)");
+            "(task_accel_max_* must be unset)");
       }
       if (config.tau_max.size() != nv) {
         throw std::runtime_error("ClikReferenceGenerator: tau_max size " +
@@ -351,7 +332,6 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   damping_sq_ = config.damping_sq;
   v_limit_ = config.v_limit;
   v_limit_per_joint_ = config.v_limit_per_joint;
-  a_max_ = config.a_max;
   w_smooth_ = config.w_smooth;
   accel_constraint_ = config.accel_constraint;
   task_a_lin_ = config.task_accel_max_linear;
@@ -362,7 +342,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
     tau_bound_.resize(0);
   }
   switch (accel_constraint_) {
-    case AccelConstraint::kBox:
+    case AccelConstraint::kNone:
       n_accel_rows_max_ = 0;
       break;
     case AccelConstraint::kKinematic:
@@ -413,7 +393,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   // C is constant (per-joint velocity box) → set once here; only l/u/H/g change
   // per tick. Dim fields are fixed so QPSolverWrapper only update()s on the RT
   // path (no re-init / heap alloc). kKinematic / kDynamic add their rows BELOW
-  // the box (rewritten each tick); kBox adds none, so its QP is the legacy one.
+  // the box (rewritten each tick); kNone adds none, so its QP is the legacy one.
   const int n_ineq = nv_ + n_accel_rows_max_;
   qp_data_.Init(nv_, 0, n_ineq);
   qp_data_.C.topLeftCorner(nv_, nv_).setIdentity();
@@ -954,7 +934,6 @@ void ClikReferenceGenerator::AssembleBox(const Eigen::VectorXd& q, double dt) no
   const bool per_joint = (v_limit_per_joint_.size() == N);
   const bool vel_box = per_joint || (v_limit_ > 0.0);
   const bool pos_box = (q_min_.size() == N && q_max_.size() == N);
-  const bool accel_box = (a_max_.size() == N);
   const double inf = std::numeric_limits<double>::infinity();
   for (int i = 0; i < N; ++i) {
     const double v_max = per_joint ? v_limit_per_joint_(i) : v_limit_;
@@ -978,27 +957,6 @@ void ClikReferenceGenerator::AssembleBox(const Eigen::VectorXd& q, double dt) no
     if (lo > hi) {
       lo = vel_box ? std::clamp(hi, -v_max, v_max) : hi;
       hi = lo;
-    }
-    if (accel_box) {
-      // Acceleration window around the previous command (L5 §4.3). [lo, hi] is
-      // non-empty here (the collapse above guarantees it). If the window misses
-      // it, keep the acceleration bound — a one-tick velocity jump on a
-      // position interface is what a protective stop reacts to — and report
-      // the conflict; the position overshoot it allows is what limit_margin is
-      // for, and the supervisor aborts on the flag.
-      const double a_dt = a_max_(i) * dt;
-      const double w_lo = v_prev_(i) - a_dt;
-      const double w_hi = v_prev_(i) + a_dt;
-      if (w_lo > hi || w_hi < lo) {
-        const double v = std::clamp(std::clamp(v_prev_(i), lo, hi), w_lo, w_hi);
-        lo = v;
-        hi = v;
-        last_solve_.bound_conflict = true;
-        last_solve_.conflict_mask |= (std::uint64_t{1} << static_cast<unsigned>(i));
-      } else {
-        lo = std::max(lo, w_lo);
-        hi = std::min(hi, w_hi);
-      }
     }
     l(i) = lo;
     u(i) = hi;
@@ -1099,7 +1057,7 @@ bool ClikReferenceGenerator::AssembleAccelRows(const PinocchioCache& cache,
                                                const PinocchioCache::RegisteredFrame& rf, double dt,
                                                bool axis_rows) noexcept {
   n_accel_rows_ = 0;
-  if (accel_constraint_ == AccelConstraint::kBox) {
+  if (accel_constraint_ == AccelConstraint::kNone) {
     return true;  // the legacy QP: no rows, nothing touched
   }
   const double inv_dt = 1.0 / dt;
@@ -1118,7 +1076,7 @@ bool ClikReferenceGenerator::AssembleAccelRows(const PinocchioCache& cache,
                                                std::span<const FrameTask> tasks,
                                                double dt) noexcept {
   n_accel_rows_ = 0;
-  if (accel_constraint_ == AccelConstraint::kBox) {
+  if (accel_constraint_ == AccelConstraint::kNone) {
     return true;
   }
   const double inv_dt = 1.0 / dt;
@@ -1253,7 +1211,7 @@ bool ClikReferenceGenerator::Fail(const PinocchioCache& cache) noexcept {
   if (n_accel_rows_max_ > 0) {
     // With coupling rows a failed solve's duals are no start for the next
     // tick: warm-started from them ProxQP kept reporting PRIMAL_INFEASIBLE
-    // after one bad tick. kBox keeps the legacy warm start (golden).
+    // after one bad tick. kNone keeps the legacy warm start (golden).
     qp_solver_.ResetWarmStart();
   }
   return false;

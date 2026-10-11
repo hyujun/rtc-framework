@@ -176,14 +176,13 @@ Kinematics WBC (`ClikReferenceGenerator`) 와 dynamics WBC (`SE3Task`/`ObjectSE3
 | 옵션 | 내용 |
 |---|---|
 | `Config::max_iter` | ProxQP outer iteration 상한 (기본 20 = 기존값). 초과 시 `Compute` false, `LastSolve().status` = `PROXQP_MAX_ITER_REACHED` |
-| `LastSolve()` | 마지막 호출의 도달 여부·수렴·비유한·ProxQP status·반복 수·solve time·`command_mismatch`·`bound_conflict`·`conflict_mask` (진단 전용) |
+| `LastSolve()` | 마지막 호출의 도달 여부·수렴·비유한·ProxQP status·반복 수·solve time·`command_mismatch` (진단 전용) |
 | `Config::v_limit_per_joint` | 관절별 속도 한계 [nv]. 설정하면 스칼라 `v_limit` 을 대체 (collapse 재 clamp 포함) |
-| `Config::a_max` + `ResetAnchor()` | 가속 box `v_prev ± a_max·dt` 를 속도 ∩ 위치 box 와 교차. 교집합이 비면 가속 한계를 지키고 `bound_conflict` (nv ≤ 64). `ResetAnchor()` 가 anchor 와 `v_prev` 를 초기화 (activate·재무장·E-STOP 해제). 실패한 호출 뒤에도 `v_prev` = 0 |
-| `Config::w_smooth` | 비용에 `(w_s/2)‖v − v_prev‖²` |
+| `Config::w_smooth` + `ResetAnchor()` | 비용에 `(w_s/2)‖v − v_prev‖²`. `v_prev` 는 직전에 성공한 호출의 `v_ref` 다. `ResetAnchor()` 가 anchor 와 `v_prev` 를 초기화 (activate·재무장·E-STOP 해제). 실패한 호출 뒤에도 `v_prev` = 0 |
 | `Compute(…, twist_ff)` | SE3 경로 twist feedforward: `r_task = Kx ⊙ e_x + twist_ff` (base 정렬) |
 | `Config::evaluate_at_command` | 호출자가 명령값 `q_c` 로 갱신한 cache 를 넘긴다. anchor = `cache.q`, 팔 성분이 직전 `QRef()` 와 다르면 `command_mismatch` 로 실패, `anchor_drift_max` 와 함께 쓰면 `Init` 거부 |
 | `Compute(…, PositionAxisTarget, …)` | 위치 3행 + LOCAL x·y 접근축 2행 (`rtc_math::se3::AxisAlignError`). 오차·Jacobian 모두 world 정렬, `Config::w_axis`·`SetAxisGain`, `LastAxisRegion()` |
-| `Config::accel_constraint` (dynamic_catching 결정 K) | 가속 제약 형태 하나: `kBox` (기본 — 위 `a_max`, 행 추가 없음·비트 일치) · `kKinematic` (추종 과제 행의 가속 `J·v̇ + J̇·v_c` ≤ `task_accel_max_linear`/`_angular`, J̇v = 등록 frame `dJv` — 영공간은 속도 box 만) · `kDynamic` (팔 인덱스 토크 `M_arm·v̇_arm + h` ≤ `eta_tau·tau_max`). `v_c` = `cache.v` 의 팔 성분 (h·J̇ 와 같은 상태). 뒤 둘은 box 아래 단위 norm 부등식 행이며 hard — box 와 함께 만족할 수 없으면 `Compute` 실패 (`LastSolve().accel_rows_violated` + `converged` false, 또는 비수렴). 행이 있으면 실패·`ResetAnchor()` 뒤 warm start 를 버린다. 다른 형태의 필드 (`eta_tau` 포함, 기본 0 = 미설정) 를 같이 주면 `Init` 거부. 진단 `accel_rows`·`accel_rows_binding`. M 에 회전자 관성은 없다 (URDF) — `eta_tau` 여유가 덮는다고 가정 |
+| `Config::accel_constraint` (dynamic_catching 결정 K) | 가속 제약: `kNone` (기본 — 제약 없음, 행 추가 없음·비트 일치) · `kKinematic` (추종 과제 행의 가속 `J·v̇ + J̇·v_c` ≤ `task_accel_max_linear`/`_angular`, J̇v = 등록 frame `dJv` — 영공간은 속도 box 만) · `kDynamic` (팔 인덱스 토크 `M_arm·v̇_arm + h` ≤ `eta_tau·tau_max`). `v_c` = `cache.v` 의 팔 성분 (h·J̇ 와 같은 상태). 뒤 둘은 box 아래 단위 norm 부등식 행이며 hard — box 와 함께 만족할 수 없으면 `Compute` 실패 (`LastSolve().accel_rows_violated` + `converged` false, 또는 비수렴). 행이 있으면 실패·`ResetAnchor()` 뒤 warm start 를 버린다. 다른 형태의 필드 (`eta_tau` 포함, 기본 0 = 미설정) 를 같이 주면 `Init` 거부. 진단 `accel_rows`·`accel_rows_binding`. M 에 회전자 관성은 없다 (URDF) — `eta_tau` 여유가 덮는다고 가정 |
 
 **다중 frame 호출 (E2-F04, #636).** `Compute(cache, MultiFrameInput)` 는 `FrameTask` 목록 (1 … `Config::max_frame_tasks`, 최대 16) 을 한 QP 로 푼다 — 과제마다 SE3 6 행 또는 위치 3 + 접근축 2 행, 자기 이득 · 가중 · feedforward 를 갖고, 비용은 과제 항의 합에 자세 · 감쇠 · 평활 항을 더한 것이다. box · 가속 제약 · anchor · 실패 분기는 단일 과제 오버로드와 같은 코드다. 기존 두 오버로드의 출력은 바뀌지 않았다 (`test_clik_golden`).
 
@@ -380,7 +379,7 @@ colcon test-result --verbose
 | `test_tsid_performance` | 성능 벤치마크 |
 | `test_phase3_integration` | Phase 3 모듈 통합 (WQP/HQP + SE3 + CoM + preset 전환) |
 | `test_clik_golden` | CLIK 기본 경로 golden-vector (4 시나리오 2520 값, Release 비트 일치·sanitizer 상대 1e-12) + 기록 입력의 분기 도달 검사 |
-| `test_clik_options` | S2.2b 옵션: 진단, `max_iter`, 관절별 속도 한계, 가속 box·`bound_conflict`·`ResetAnchor` (랜덤 1e4 tick), 평활, twist feedforward, 명령값 평가 모드, 위치 + 접근축 오버로드 (G5-A 수렴, 반평행 출발, base 변환, 할당 0) |
+| `test_clik_options` | S2.2b 옵션: 진단, `max_iter`, 관절별 속도 한계, 속도 ∩ 위치 box (랜덤 1e4 tick), `ResetAnchor`·실패 뒤의 `v_prev` 초기화, 평활, twist feedforward, 명령값 평가 모드, 위치 + 접근축 오버로드 (G5-A 수렴, 반평행 출발, base 변환, 할당 0) |
 | `test_clik_multiframe` | 다중 frame 오버로드 (E2-F04): golden 표의 universe 시나리오 2 개를 새 오버로드로 재생해 SE3 오버로드와 비트 일치 (입력은 `clik_golden_scenarios.hpp` 하나) · 단일 과제가 두 단일 과제 오버로드와 비트 일치 (9-DoF · 6-DoF, 옵션 4 종, 폐루프 100 tick) · 상대 Jacobian 대 상대 pose 의 유한차분 (새 `pinocchio::Data`) · 2 과제 solve 대 닫힌식 가중 최소제곱의 정류 잔차 · formulation §4 항목 8 (`v* = q̇_ref`) · tree 17 토크 행 대 RNEA · 과제별 가속 행 · 되먹임 상한 · 제동 한계 (켬 / 끔 대조) · 입력 거부 26 종의 출력 불변 |
 | `test_clik_multiframe_malloc` | 다중 frame `Compute()` 의 RT-1: `rtc_base` 의 C malloc gate 로 **solve 직전까지 할당 0** (가속 행에서 실패하는 호출 — 입력 검사 · 상대 Jacobian · 비용 · box · 제동 · 행 조립 · 실패 분기를 지난다). 전체 호출의 C 할당 (ProxQP 안) 은 test property 로 기록만 한다 (#654) |
 | `test_clik_pink_reference` | 2-frame CLIK 대 pink (독립 공개 QP IK) 의 기록된 해 — world 과제 + 상대 과제 + 자세 + 위치 ∩ 속도 한계, 9-DoF 팔과 17-DoF tree 24 문제. 두 층: pink 그대로 (Jlog6 포함, 1 mm / 1 mrad 오차, 허용 `1e-5 + 2e-3‖v‖`) · Jlog6 를 뺀 pink (0.2 m / 0.5 rad, 허용 1e-5). 기준값은 `golden/gen_pink_reference.py` 가 만든다 (빌드가 돌리지 않는다 — 절차 · 두 정식화의 대응 · 버전은 그 docstring). pink 가 없는 host 에서도 건너뛰지 않는다 |

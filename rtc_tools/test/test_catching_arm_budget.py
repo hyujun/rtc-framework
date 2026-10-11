@@ -264,7 +264,6 @@ def _tick(t, mode, e_mm, u, xdd, sat, q_a, plan_t_c) -> dict:
         "mode": mode,
         "plan_t_c_s": plan_t_c,
         "ref_saturated": sat,
-        "clik_bound_conflict": 0,
         "track_err_rad": 0.0,
         "t_arm_s": 0.05,
         "ref_xd_x": 1.0,
@@ -702,6 +701,31 @@ def test_a_unit_recorded_with_the_old_mirror_name_gives_the_same_budget(tmp_path
     old = ab.analyse_unit(unit, session, cfg, n_boot=5)["summary"]["budget"]
     assert old == new
     assert old["source"]["eta_v"] == "controller_mirror"
+
+
+def test_a_diag_with_columns_this_tool_does_not_read_gives_the_same_result(tmp_path):
+    # A recording made before #755 carries two CLIK columns the writer no longer
+    # emits. The tool reads the columns it names and nothing else, so such a
+    # file is analysed like one without them.
+    cfg = make_config(tmp_path / "share")
+    unit, session, _ = make_session(tmp_path, n_trials=1)
+    without = ab.analyse_unit(unit, session, cfg, n_boot=5)["summary"]
+    diag = session / "controllers" / CONTROLLER / "catching_diag.csv"
+    with diag.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    widened = []
+    for row in rows:
+        out = {}
+        for name, value in row.items():
+            out[name] = value
+            if name == "ref_saturated":
+                out["clik_removed_flag"] = 0
+                out["clik_removed_mask"] = 0
+        widened.append(out)
+    assert len(widened[0]) == len(rows[0]) + 2
+    _write_csv(diag, widened)
+    with_extra = ab.analyse_unit(unit, session, cfg, n_boot=5)["summary"]
+    assert json.dumps(with_extra, sort_keys=True) == json.dumps(without, sort_keys=True)
 
 
 def test_a_mirror_with_the_old_and_the_new_name_is_refused(tmp_path):
