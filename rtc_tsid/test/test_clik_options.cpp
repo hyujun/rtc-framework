@@ -419,60 +419,6 @@ TEST_F(ClikOptionsTest, AccelConflictKeepsAccelBoundAndReports) {
   EXPECT_TRUE(saw_conflict);
 }
 
-// ResetAnchor clears v_prev: after a fast run, the next step starts from rest.
-TEST_F(ClikOptionsTest, ResetAnchorRestartsAccelerationFromRest) {
-  constexpr double kAMax = 5.0;
-  auto cfg = BaseConfig();
-  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
-  ClikReferenceGenerator gen;
-  gen.Init(kNv, cfg);
-  gen.SetTaskGain(Vec6::Constant(20.0));
-  const pinocchio::SE3 des = OffsetTarget(0.3);
-  Eigen::VectorXd q = q_home_;
-  for (int k = 0; k < 300; ++k) {
-    cache_.Update(q, v_zero_);
-    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
-    q = gen.QRef();
-  }
-  ASSERT_GT(gen.VRef().cwiseAbs().maxCoeff(), 2.0 * kAMax * kDt);
-
-  gen.ResetAnchor();
-  cache_.Update(q_home_, v_zero_);
-  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
-  EXPECT_LE(gen.VRef().cwiseAbs().maxCoeff(), kAMax * kDt + kSolverEps);
-  EXPECT_FALSE(gen.LastSolve().bound_conflict);
-  // Re-anchored to the measured state, not carried from the fast run.
-  EXPECT_LE((gen.QRef() - q_home_).cwiseAbs().maxCoeff(), kAMax * kDt * kDt + 1e-12);
-}
-
-// A failed call outputs v_ref = 0, so the next call's acceleration window is
-// centred on 0, not on the velocity before the failure (review finding).
-TEST_F(ClikOptionsTest, FailedCallRestartsAccelerationFromRest) {
-  constexpr double kAMax = 5.0;
-  auto cfg = BaseConfig();
-  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
-  ClikReferenceGenerator gen;
-  gen.Init(kNv, cfg);
-  gen.SetTaskGain(Vec6::Constant(20.0));
-  const pinocchio::SE3 des = OffsetTarget(0.3);
-  Eigen::VectorXd q = q_home_;
-  for (int k = 0; k < 300; ++k) {
-    cache_.Update(q, v_zero_);
-    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
-    q = gen.QRef();
-  }
-  ASSERT_GT(gen.VRef().cwiseAbs().maxCoeff(), 2.0 * kAMax * kDt);
-
-  pinocchio::SE3 bad = des;
-  bad.translation()(1) = std::numeric_limits<double>::quiet_NaN();
-  cache_.Update(q, v_zero_);
-  ASSERT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, bad, q_home_, kDt));
-  ASSERT_TRUE(gen.VRef().isZero(0.0));
-
-  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
-  EXPECT_LE(gen.VRef().cwiseAbs().maxCoeff(), kAMax * kDt + kSolverEps);
-}
-
 // ── Smoothing term ──────────────────────────────────────────────────────────
 
 TEST_F(ClikOptionsTest, SmoothingRejectsInvalid) {
@@ -515,6 +461,100 @@ TEST_F(ClikOptionsTest, SmoothingDampsTheStepAndKeepsTheFixedPoint) {
   EXPECT_LT(step_on, 0.5 * step_off);
   EXPECT_LT(err_off, 1e-3);
   EXPECT_LT(err_on, 1e-3);
+}
+
+// ── v_prev is forgotten by ResetAnchor and by a failed call ────────────────
+//
+// The smoothing term (w_s/2)·‖v − v_prev‖² is what reads v_prev here: with a
+// heavy w_s the first step after a fast run is pulled toward the old velocity
+// unless v_prev was cleared. Each test compares that step with a generator
+// that never moved, and with one that only re-anchored (the control — it must
+// differ, or the comparison would pass with v_prev still stale).
+
+class ClikRestartTest : public ClikOptionsTest {
+ protected:
+  enum class Restart : std::uint8_t { kFresh, kReseedOnly, kResetAnchor, kFailedCall };
+
+  struct Step {
+    Eigen::VectorXd v_ref;
+    Eigen::VectorXd q_ref;
+  };
+
+  // The first step from q_home of a generator that (unless kFresh) has just
+  // run at speed away from it.
+  void FirstStepFromHome(Restart restart, Step* out) {
+    auto cfg = BaseConfig();
+    cfg.v_limit = 0.0;  // no box: the step is the cost's minimiser alone
+    // Heavy enough that the two solves agree well inside the solver tolerance
+    // whatever their warm start: H ⪰ w_s·I bounds the step error by eps / w_s.
+    cfg.w_smooth = 10.0;
+    ClikReferenceGenerator gen;
+    gen.Init(kNv, cfg);
+    gen.SetTaskGain(Vec6::Constant(5.0));
+    const pinocchio::SE3 des = OffsetTarget(0.3);
+
+    if (restart != Restart::kFresh) {
+      Eigen::VectorXd q = q_home_;
+      for (int k = 0; k < 50; ++k) {
+        cache_.Update(q, v_zero_);
+        ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+        q = gen.QRef();
+      }
+      ASSERT_GT(gen.VRef().cwiseAbs().maxCoeff(), kFastSpeed) << "the run never got up to speed";
+      ASSERT_GT((q - q_home_).cwiseAbs().maxCoeff(), kFarFromHome) << "the run stayed at home";
+      if (restart == Restart::kResetAnchor) {
+        gen.ResetAnchor();
+      } else if (restart == Restart::kFailedCall) {
+        pinocchio::SE3 bad = des;
+        bad.translation()(1) = std::numeric_limits<double>::quiet_NaN();
+        cache_.Update(q, v_zero_);
+        ASSERT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, bad, q_home_, kDt));
+        ASSERT_TRUE(gen.VRef().isZero(0.0));
+      }
+    }
+
+    // kReseedOnly asks for the measured anchor and nothing else. The others
+    // ask to carry forward, so a measured anchor is the restart's doing.
+    const bool reseed_anchor = restart == Restart::kReseedOnly;
+    cache_.Update(q_home_, v_zero_);
+    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt, reseed_anchor));
+    out->v_ref = gen.VRef();
+    out->q_ref = gen.QRef();
+  }
+
+  // The restarted step equals the fresh one to the solver tolerance (the QP's
+  // warm start is not part of the restart), and the control does not.
+  void ExpectRestartsFromRest(Restart restart) {
+    Step fresh;
+    Step reseed_only;
+    Step restarted;
+    ASSERT_NO_FATAL_FAILURE(FirstStepFromHome(Restart::kFresh, &fresh));
+    ASSERT_NO_FATAL_FAILURE(FirstStepFromHome(Restart::kReseedOnly, &reseed_only));
+    ASSERT_NO_FATAL_FAILURE(FirstStepFromHome(restart, &restarted));
+    const double stale = (reseed_only.v_ref - fresh.v_ref).cwiseAbs().maxCoeff();
+    const double dv = (restarted.v_ref - fresh.v_ref).cwiseAbs().maxCoeff();
+    const double dq = (restarted.q_ref - fresh.q_ref).cwiseAbs().maxCoeff();
+    RecordProperty("stale_v_prev_step_diff", std::to_string(stale));
+    RecordProperty("restarted_v_ref_diff", std::to_string(dv));
+    RecordProperty("restarted_q_ref_diff", std::to_string(dq));
+    EXPECT_GT(stale, kStaleStep) << "a stale v_prev does not show in this step";
+    EXPECT_LE(dv, kSolverEps) << "v_prev survived the restart";
+    EXPECT_LE(dq, kSolverEps) << "the anchor survived the restart";
+  }
+
+  static constexpr double kFastSpeed = 0.2;     // rad/s reached by the run
+  static constexpr double kFarFromHome = 0.01;  // rad travelled by the run
+  static constexpr double kStaleStep = 0.05;    // rad/s a stale v_prev moves the step by
+};
+
+TEST_F(ClikRestartTest, ResetAnchorRestartsFromRest) {
+  ExpectRestartsFromRest(Restart::kResetAnchor);
+}
+
+// A failed call outputs v_ref = 0, so the next call smooths toward 0, not
+// toward the velocity before the failure (review finding).
+TEST_F(ClikRestartTest, FailedCallRestartsFromRest) {
+  ExpectRestartsFromRest(Restart::kFailedCall);
 }
 
 // ── Twist feedforward (SE3 path, D-5) ───────────────────────────────────────
