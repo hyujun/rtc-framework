@@ -88,30 +88,30 @@ MODE_NAMES = (
     "FAULT",
 )
 
-# rtc::catching::Reason (rtc_msgs/CatchingState REASON_*).
-REASON_NAMES = (
-    "NONE",
-    "BALL_STALE",
-    "BALL_STALE_COMMITTED",
-    "BALL_STALE_LONG",
-    "TRACK_CHANGED",
-    "HORIZON_EXTRAP",
-    "PRED_INCONSISTENT",
-    "NO_CATCHABLE_PLAN",
-    "PLAN_INVALID",
-    "QP_FAILED",
-    "REF_SATURATED",
-    "JOINT_CONFLICT",
-    "TRACK_ERR",
-    "ABORT_ESCALATED",
-    "ESTOP",
-    "FAULT_RESET",
-    "SPEED_SCALING",
-    "CLOCK_UNHEALTHY",
-    "PARAMS_TBD",
-    "HAND_TIMEOUT",
-    "TIP_STALE",
-)
+# rtc::catching::Reason (rtc_msgs/CatchingState REASON_*), by wire number. The
+# numbers are not dense: a removed reason leaves its number unassigned.
+REASON_NAMES = {
+    0: "NONE",
+    1: "BALL_STALE",
+    2: "BALL_STALE_COMMITTED",
+    3: "BALL_STALE_LONG",
+    4: "TRACK_CHANGED",
+    5: "HORIZON_EXTRAP",
+    6: "PRED_INCONSISTENT",
+    7: "NO_CATCHABLE_PLAN",
+    8: "PLAN_INVALID",
+    9: "QP_FAILED",
+    10: "REF_SATURATED",
+    12: "TRACK_ERR",
+    13: "ABORT_ESCALATED",
+    14: "ESTOP",
+    15: "FAULT_RESET",
+    16: "SPEED_SCALING",
+    17: "CLOCK_UNHEALTHY",
+    18: "PARAMS_TBD",
+    19: "HAND_TIMEOUT",
+    20: "TIP_STALE",
+}
 
 # rtc::catching::PlanReason (rtc_msgs/CatchingState PLAN_REASON_*): why there is
 # no plan — the planner's first bottleneck (dynamic_catching S6, decision E).
@@ -336,9 +336,7 @@ def hand_phase_name(value: int) -> str:
 
 
 def reason_name(value: int) -> str:
-    if 0 <= value < len(REASON_NAMES):
-        return REASON_NAMES[value]
-    return f"reason:{value}"
+    return REASON_NAMES.get(value, f"reason:{value}")
 
 
 @dataclass
@@ -395,7 +393,6 @@ class CatchingStatus:
     clik_status: int = -1
     clik_iterations: int = 0
     clik_solve_us: float = 0.0
-    clik_bound_conflict: bool = False
     qp_fail_streak: int = 0
 
     # S7: the attempt's verdict, the hand sequencer, the fingertips.
@@ -497,7 +494,6 @@ class CatchingStatus:
         self.clik_status = int(msg.clik_status)
         self.clik_iterations = int(msg.clik_iterations)
         self.clik_solve_us = float(msg.clik_solve_us)
-        self.clik_bound_conflict = bool(msg.clik_bound_conflict)
         self.qp_fail_streak = int(msg.qp_fail_streak)
 
         # S7 fields. Read with defaults so a recording from before S7 (whose
@@ -708,8 +704,6 @@ class CatchingStatus:
         ]
         if self.ref_saturated:
             parts.append("reference SATURATED")
-        if self.clik_bound_conflict:
-            parts.append("BOUND CONFLICT")
         if self.qp_fail_streak > 0:
             # Trials in a row the solver ended (#537 S9b), not failed solves:
             # it stays up across good solves until a verdict or a fault reset.

@@ -53,6 +53,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdarg>
@@ -64,6 +65,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -151,8 +153,6 @@ const char* ReasonName(Reason r) {
       return "QpFailed";
     case Reason::kRefSaturated:
       return "RefSaturated";
-    case Reason::kJointConflict:
-      return "JointConflict";
     case Reason::kTrackErr:
       return "TrackErr";
     case Reason::kAbortEscalated:
@@ -173,6 +173,33 @@ const char* ReasonName(Reason r) {
       return "TipStale";
   }
   return "?";
+}
+
+// The CSV's snake_case reason name as ReasonName spells it.
+std::string PascalCase(std::string_view snake) {
+  std::string out;
+  bool upper = true;
+  for (const char c : snake) {
+    if (c == '_') {
+      upper = true;
+      continue;
+    }
+    out.push_back(upper ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c);
+    upper = false;
+  }
+  return out;
+}
+
+// The log names a reason by its NUMBER (a switch over literals), apart from
+// the enum: every reason has to have its own name there, and the number no
+// reason has (11, #755) has none.
+TEST(CatchingReasonNames, TheLogNamesEveryReasonByItsNumber) {
+  for (const Reason reason : rtc::catching::kAllReasons) {
+    const auto number = static_cast<std::uint8_t>(reason);
+    EXPECT_EQ(PascalCase(integrated_bringup::CatchingReasonStr(number)), ReasonName(reason))
+        << "number " << static_cast<int>(number);
+  }
+  EXPECT_EQ(integrated_bringup::CatchingReasonStr(11), "unknown");
 }
 
 const char* PhaseName(HandPhase p) {

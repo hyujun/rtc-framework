@@ -870,13 +870,6 @@ def print_catching_diag_statistics(df):
             - (df["clik_converged"].astype(float) > 0.5).sum()
         )
         print(f"CLIK solves that did not converge: {failed}")
-    if "clik_bound_conflict" in df.columns:
-        conflicts = int((df["clik_bound_conflict"].astype(float) > 0.5).sum())
-        if conflicts > 0:
-            print(
-                f"Bound conflicts: {conflicts} tick(s) — the acceleration box overrode "
-                "velocity ∩ position"
-            )
     if "qp_fail_streak" in df.columns:
         # Trials in a row ended by a CLIK failure (#537 S9b), not failed solves.
         print(f"Longest QP failure streak (trials): {int(df['qp_fail_streak'].max())}")

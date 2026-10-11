@@ -2950,12 +2950,10 @@ _CATCHING_DIAG_FIXED_COLUMNS = [
     "ref_gamma_dd",
     "clik_ran",
     "clik_converged",
-    "clik_bound_conflict",
     "clik_command_mismatch",
     "clik_status",
     "clik_iterations",
     "clik_solve_us",
-    "clik_conflict_mask",
     "qp_fail_streak",
     "track_err_rad",
     "abort_stopped",
@@ -3213,6 +3211,37 @@ class TestCatchingDiagRoundTrip:
         from rtc_tools.plotting.plotters.catching import plot_catching_diag
 
         plot_catching_diag(self._df(tmp_path), save_dir=str(tmp_path))
+        assert (tmp_path / "catching_diag.png").exists()
+
+    def test_a_recording_with_columns_no_longer_written_is_still_read(self, tmp_path, capsys):
+        """A recording made before #755 carries two CLIK columns the writer no
+        longer emits. Detection, loading, the plot and the statistics go by
+        column NAME, so the extra columns change nothing."""
+        from rtc_tools.plotting.plotters.catching import (
+            plot_catching_diag,
+            print_catching_diag_statistics,
+        )
+
+        columns = _catching_diag_columns()
+        at = columns.index("clik_command_mismatch")
+        wide = columns[:at] + ["clik_removed_flag", "clik_removed_mask"] + columns[at:]
+        rows = []
+        for i in range(12):
+            row = _catching_diag_row(i + 1, columns=columns)
+            rows.append(row[:at] + [0, 0] + row[at:])
+        path = tmp_path / "catching_diag.csv"
+        _write_csv(str(path), wide, rows)
+        assert detect_log_type_by_columns(wide) == "catching_diag"
+        df = load_log_csv(str(path), "catching_diag")
+        (tmp_path / "narrow").mkdir()
+        narrow = self._df(tmp_path / "narrow")
+        assert df[columns].equals(narrow[columns])
+
+        print_catching_diag_statistics(narrow)
+        expected = capsys.readouterr().out
+        print_catching_diag_statistics(df)
+        assert capsys.readouterr().out == expected
+        plot_catching_diag(df, save_dir=str(tmp_path))
         assert (tmp_path / "catching_diag.png").exists()
 
 

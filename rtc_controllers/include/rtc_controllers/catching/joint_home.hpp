@@ -2,9 +2,9 @@
 // IDLE's homing and RETREAT's return to the wait pose move the arm in JOINT
 // space, without the QP (#537 S7 decision Q3): the wait pose is a joint vector
 // and "arrived" is judged per joint (`supervisor.ready.pose_tol`, rad), and a
-// RETREAT that follows QP_FAILED / JOINT_CONFLICT cannot route its motion back
-// through the solver that just failed. L4 §5.3's task-space retreat reference
-// was never built; this replaces it.
+// RETREAT that follows QP_FAILED cannot route its motion back through the
+// solver that just failed. L4 §5.3's task-space retreat reference was never
+// built; this replaces it.
 //
 // THE LAW, per joint, on the controller's CARRIED command (q, q̇) — the same
 // state the abort ramp (JointSpaceStopStep) integrates, so the two hand over

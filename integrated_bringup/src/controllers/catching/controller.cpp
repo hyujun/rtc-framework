@@ -751,13 +751,7 @@ rtc::catching::Reason DemoCatchingController::SolveClikAndCommand(
   const auto& solve = clik_.LastSolve();
   RecordClikSolve(solve);
   if (!ok) {
-    // `bound_conflict` is a DIFFERENT failure from a solver that did not
-    // converge: the boxes disagreed, which the supervisor routes the same way
-    // but which names a configuration problem rather than a numerical one.
-    // Only the CLIK's acceleration window raises it, and this controller does
-    // not pass one, so kJointConflict does not arise here; whether the path
-    // stays is #755.
-    return solve.bound_conflict ? Reason::kJointConflict : Reason::kQpFailed;
+    return Reason::kQpFailed;
   }
 
   // Kept for a motion stage that takes the command over on this same tick
@@ -1121,13 +1115,11 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
 
 void DemoCatchingController::NoteLawVerdict(rtc::catching::Reason law) noexcept {
   using rtc::catching::Reason;
-  // BOTH CLIK failure reasons count, because both end the trial:
-  // `kJointConflict` is a solve that could not honour its own boxes, and a box
-  // that keeps conflicting is exactly as unrecoverable as a solver that keeps
-  // failing. Counting only one of them leaves a controller that loops
-  // APPROACH → ABORT_SAFE → RETREAT → ARMED → TRACKING forever without ever
-  // escalating. Checked in every mode the law runs in (#537 S7), not only in
-  // APPROACH: a failure after the freeze ends the trial the same way.
+  // A CLIK failure ends the trial, and a solver that keeps failing is not
+  // recoverable: without this count the controller loops APPROACH → ABORT_SAFE
+  // → RETREAT → ARMED → TRACKING forever without ever escalating. Checked in
+  // every mode the law runs in (#537 S7), not only in APPROACH: a failure
+  // after the freeze ends the trial the same way.
   //
   // One increment per TRIAL (D-S9-D2). Every law mode answers a CLIK failure
   // with ABORT_SAFE on this same tick, so this call is the trial's last law
@@ -1135,7 +1127,7 @@ void DemoCatchingController::NoteLawVerdict(rtc::catching::Reason law) noexcept 
   // consecutive failed SOLVES and a good solve cleared it — which made n_qp
   // reachable only by trials that failed on their FIRST solve: a trial that
   // failed after a run of good ones started from 0 every time.
-  const bool clik_failed = (law == Reason::kQpFailed || law == Reason::kJointConflict);
+  const bool clik_failed = (law == Reason::kQpFailed);
   if (!clik_failed) {
     return;
   }
@@ -1228,9 +1220,8 @@ namespace {
 /// The law verdicts that end a trial (R-PREC's "law failure / fatal" tier).
 [[nodiscard]] bool IsFatalLawReason(rtc::catching::Reason r) noexcept {
   using rtc::catching::Reason;
-  return r == Reason::kQpFailed || r == Reason::kJointConflict || r == Reason::kTrackErr ||
-         r == Reason::kRefSaturated || r == Reason::kBallStaleLong || r == Reason::kPlanInvalid ||
-         r == Reason::kParamsTbd;
+  return r == Reason::kQpFailed || r == Reason::kTrackErr || r == Reason::kRefSaturated ||
+         r == Reason::kBallStaleLong || r == Reason::kPlanInvalid || r == Reason::kParamsTbd;
 }
 
 }  // namespace
@@ -3084,12 +3075,10 @@ void DemoCatchingController::RecordClikSolve(
     const rtc::tsid::ClikReferenceGenerator::SolveDiagnostics& solve) noexcept {
   tick_record_.clik_ran = solve.reached_solve;
   tick_record_.clik_converged = solve.converged;
-  tick_record_.clik_bound_conflict = solve.bound_conflict;
   tick_record_.clik_command_mismatch = solve.command_mismatch;
   tick_record_.clik_status = solve.status;
   tick_record_.clik_iterations = solve.iterations;
   tick_record_.clik_solve_us = solve.solve_time_us;
-  tick_record_.clik_conflict_mask = solve.conflict_mask;
 }
 
 void DemoCatchingController::PublishTickRecord(const ControllerState& state) noexcept {
