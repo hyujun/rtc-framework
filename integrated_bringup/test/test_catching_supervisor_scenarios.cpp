@@ -1906,9 +1906,7 @@ TEST_P(MpcScenarioTest, AClikFailureWhileFollowingIsAnAbort) {
   state_.devices[1].positions[0] = std::numeric_limits<double>::quiet_NaN();
   ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 20)) << Transitions();
   const int a = Entry(Mode::kAbortSafe);
-  EXPECT_TRUE(log_[static_cast<std::size_t>(a)].reason == Reason::kQpFailed ||
-              log_[static_cast<std::size_t>(a)].reason == Reason::kJointConflict)
-      << Window(a, 2);
+  EXPECT_EQ(log_[static_cast<std::size_t>(a)].reason, Reason::kQpFailed) << Window(a, 2);
   EXPECT_FALSE(ctrl_->IsFollowingSegmentForTesting()) << "ABORT_SAFE entry drops the segment";
   EXPECT_FALSE(log_[static_cast<std::size_t>(a)].rt_segment_active);
 }
