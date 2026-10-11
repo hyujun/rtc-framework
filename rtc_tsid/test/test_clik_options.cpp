@@ -1,6 +1,6 @@
 /// @file test_clik_options.cpp
 /// @brief ClikReferenceGenerator S2.2b options (dynamic_catching, L5 §5.1, gates
-///        G5-A / G5-B / G5-B2 / G5-C / G5-C3 — CLIK side only).
+///        G5-A / G5-B / G5-C / G5-C3 — CLIK side only).
 ///
 /// Every option defaults off; "off ⇒ bit-identical" is the golden-vector
 /// suite's job (test_clik_golden.cpp). This file checks what each option does
@@ -298,35 +298,16 @@ TEST_F(ClikOptionsTest, PerJointLimitReclampsCollapsedBox) {
   EXPECT_NEAR(gen.VRef()(3), -0.2, kSolverEps);
 }
 
-// ── Acceleration box + bound_conflict (G5-B, G5-B2 CLIK side) ──────────────
-
-TEST_F(ClikOptionsTest, AccelBoxRejectsInvalid) {
-  const double nan = std::numeric_limits<double>::quiet_NaN();
-  const double inf = std::numeric_limits<double>::infinity();
-  for (const double bad : {0.0, -1.0, nan, inf}) {
-    auto cfg = BaseConfig();
-    cfg.a_max = Eigen::VectorXd::Constant(kNv, 10.0);
-    cfg.a_max(2) = bad;
-    ClikReferenceGenerator gen;
-    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << bad;
-  }
-  auto cfg = BaseConfig();
-  cfg.a_max = Eigen::VectorXd::Constant(3, 10.0);
-  ClikReferenceGenerator gen;
-  EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error);
-}
+// ── Velocity ∩ position box under random references (G5-B, CLIK side) ──────
 
 // G5-B: 1e4 ticks of random target jumps with the robot tracking q_ref
-// exactly. Velocity and acceleration stay inside their boxes on every tick
-// (to the solver tolerance), and the position limit is exceeded only through a
-// reported conflict, by less than the margin the CLIK box was shrunk by.
-TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndAccelerationBoxes) {
+// exactly. Velocity stays inside its box on every tick, and the position
+// inside the box the CLIK was given — both to the solver tolerance.
+TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndPositionBoxes) {
   constexpr double kMargin = 0.1;
-  constexpr double kAMax = 20.0;
   auto cfg = BaseConfig();
   cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv, 1.5);
   cfg.v_limit_per_joint.tail(2).setConstant(0.1);
-  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
   const Eigen::VectorXd q_lo = model_->lowerPositionLimit;
   const Eigen::VectorXd q_hi = model_->upperPositionLimit;
   cfg.q_min = q_lo.array() + kMargin;
@@ -346,7 +327,6 @@ TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndAccelerationBoxes) {
   Eigen::VectorXd q = q_home_;
   Eigen::VectorXd v_prev = Eigen::VectorXd::Zero(kNv);
   pinocchio::SE3 des = home;
-  int conflicts = 0;
   double worst_overshoot = 0.0;
   for (int k = 0; k < 10000; ++k) {
     if (k % 250 == 0) {
@@ -356,12 +336,9 @@ TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndAccelerationBoxes) {
     cache_.Update(q, v_prev);
     ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt)) << k;
     const Eigen::VectorXd& v = gen.VRef();
-    const auto& diag = gen.LastSolve();
-    conflicts += diag.bound_conflict ? 1 : 0;
     for (int j = 0; j < kNv; ++j) {
       ASSERT_LE(std::abs(v(j)), cfg.v_limit_per_joint(j) + kSolverEps)
           << "tick " << k << " j " << j;
-      ASSERT_LE(std::abs(v(j) - v_prev(j)), kAMax * kDt + kSolverEps) << "tick " << k << " j " << j;
     }
     q = gen.QRef();
     v_prev = v;
@@ -370,53 +347,11 @@ TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndAccelerationBoxes) {
       worst_overshoot = std::max(worst_overshoot, over);
     }
   }
-  RecordProperty("bound_conflict_ticks", std::to_string(conflicts));
   RecordProperty("worst_overshoot_rad", std::to_string(worst_overshoot));
-  EXPECT_LT(worst_overshoot, kMargin) << "q left the true joint envelope";
-  if (worst_overshoot > kSolverEps) {
-    EXPECT_GT(conflicts, 0) << "overshoot without a reported conflict";
-  }
-}
-
-// G5-B2 (CLIK side): a joint driven at speed toward its limit cannot stop
-// within one tick; the acceleration bound wins, the conflict is reported with
-// the joint's bit, and the step stays within a_max·dt.
-TEST_F(ClikOptionsTest, AccelConflictKeepsAccelBoundAndReports) {
-  constexpr double kAMax = 5.0;
-  auto cfg = BaseConfig();
-  cfg.q_min = model_->lowerPositionLimit;
-  cfg.q_max = model_->upperPositionLimit;
-  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
-  ClikReferenceGenerator gen;
-  gen.Init(kNv, cfg);
-  gen.SetTaskGain(Vec6::Zero());
-  gen.SetPostureGains(50.0, 0.0);  // posture drives joint 0 hard toward q_max
-
-  Eigen::VectorXd q_des = q_home_;
-  q_des(0) = cfg.q_max(0) + 1.0;
-  Eigen::VectorXd q = q_home_;
-  q(0) = cfg.q_max(0) - 0.5;
-  // Ramp up to speed, far from the limit.
-  for (int k = 0; k < 200 && q(0) < cfg.q_max(0) - 0.02; ++k) {
-    cache_.Update(q, v_zero_);
-    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, pinocchio::SE3::Identity(), q_des, kDt));
-    q = gen.QRef();
-  }
-  ASSERT_GT(gen.VRef()(0), 0.5) << "joint 0 never got up to speed";
-
-  bool saw_conflict = false;
-  for (int k = 0; k < 400; ++k) {
-    const double v_before = gen.VRef()(0);
-    cache_.Update(q, v_zero_);
-    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, pinocchio::SE3::Identity(), q_des, kDt));
-    ASSERT_LE(std::abs(gen.VRef()(0) - v_before), kAMax * kDt + kSolverEps) << k;
-    if (gen.LastSolve().bound_conflict) {
-      saw_conflict = true;
-      EXPECT_TRUE(gen.LastSolve().conflict_mask & 1U) << "joint 0 bit";
-    }
-    q = gen.QRef();
-  }
-  EXPECT_TRUE(saw_conflict);
+  // The box bounds v by (q_max − q)/dt to the solver tolerance, so one tick can
+  // pass the CLIK's limit by eps·dt at most — far inside the margin the box was
+  // shrunk by, which is what keeps q inside the true joint envelope.
+  EXPECT_LE(worst_overshoot, kSolverEps * kDt + 1e-12) << "q left the box the CLIK was given";
 }
 
 // ── Smoothing term ──────────────────────────────────────────────────────────
@@ -865,7 +800,6 @@ TEST_F(ClikAxisTest, AllOptionsOnComputeIsAllocationFree) {
   cfg.q_min = model_->lowerPositionLimit;
   cfg.q_max = model_->upperPositionLimit;
   cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv, 1.0);
-  cfg.a_max = Eigen::VectorXd::Constant(kNv, 10.0);
   cfg.w_smooth = 1e-3;
   cfg.max_iter = 30;
   cfg.evaluate_at_command = true;
