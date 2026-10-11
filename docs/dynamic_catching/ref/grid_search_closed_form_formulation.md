@@ -494,7 +494,7 @@ $$
 | DECEL → HOLD | $\tau\ge\tau_s$ | 정지한 대상 추종 |
 | REF_SATURATED | `sat_ticks` 연속 포화 (공 추종 tick) | COMMITTED 전 RETREAT / 후 ABORT_SAFE |
 
-$T_{freeze}\ge T_{close,lead}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane 의 사유 (`BALL_STALE` · `HORIZON_EXTRAP` · `BALL_STALE_LONG`) 와 CLIK 의 사유 (`QP_FAILED` · `JOINT_CONFLICT` · `TRACK_ERR`) 는 두 planner 공통이고, 전체 상태 머신 · 사유 · 리셋 목록은 L7 §4.1 · §4.8.
+$T_{freeze}\ge T_{close,lead}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane 의 사유 (`BALL_STALE` · `HORIZON_EXTRAP` · `BALL_STALE_LONG`) 와 CLIK 의 사유 (`QP_FAILED` · `TRACK_ERR`) 는 두 planner 공통이고, 전체 상태 머신 · 사유 · 리셋 목록은 L7 §4.1 · §4.8.
 
 ---
 

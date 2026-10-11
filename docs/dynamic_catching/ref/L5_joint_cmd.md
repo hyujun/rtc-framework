@@ -92,7 +92,7 @@ $$\ell_i=\max\Big(-\dot q_{\max,i},\ \frac{q_{\min,i}+m_q-q_{c,i}}{\Delta t}\Big
 - $\Delta t$ 는 `ControllerState::dt` (= 1/`control_rate`). 가속 한계는 이 box 에 접지 않고 행으로 건다 (아래).
 - $H$ 는 $\mu^2>0$ 이므로 양정치이고, 차원 $n_v$ 와 제약 수가 고정이다. QP 해는 ProxQP `eps_abs` (1e-6) 안에서만 box 를 지킨다.
 
-**가속 창 (`box` 형태) 은 포구 층에서 쓰지 않는다 (#712).** `ClikReferenceGenerator` 에는 관절별 창 $\dot q_{prev}\pm\ddot q_{\max}\Delta t$ 를 위 box 에 접는 형태와 그 경계 충돌 규칙 (`bound_conflict` · `conflict_mask`) 이 남아 있다. 포구 컨트롤러는 그 형태를 넘기지 않는다. 그래서 `bound_conflict` 가 서지 않고, L7 의 `JOINT_CONFLICT` 는 이 컨트롤러에서 발화하지 않는다 (사유 코드 · 전이 · 기록 열은 남아 있다 — 지울지는 #755). 가속 한계와 속도 ∩ 위치 box 가 양립하지 않는 tick 은 아래 행이 hard 라 solve 실패로 끝난다.
+**가속 한계는 이 box 에 접지 않는다.** 관절별 창 $\dot q_{prev}\pm\ddot q_{\max}\Delta t$ 를 위 box 에 접는 형태는 `ClikReferenceGenerator` 에 없다. 가속 한계는 아래의 행으로만 걸고 그 행은 hard 다 — 가속 한계와 속도 ∩ 위치 box 가 양립하지 않는 tick 은 solve 실패 (L7 `QP_FAILED`) 로 끝난다.
 
 **가속 제약의 두 형태.** $\dot v\approx(v-\dot q_c)/\Delta t$ 로 두면 두 형태 모두 $v$ 에 **선형**이다. $\dot q_c$ 는 cache 가 평가된 속도 (명령값 평가 모드에서 명령 속도 — $h$ · $\dot J$ 가 평가된 같은 상태) 의 **팔 성분**이다. 손은 다른 곳에서 명령되므로 그 가속은 이 solve 의 것이 아니다. 둘 중 하나를 고른다 (`joint_cmd.accel_constraint`). **기본값이 없다** — 키가 없거나 `TBD` 면 컨트롤러가 park 하고 ERROR 가 그 키를 지목한다 (다른 형태의 키가 같이 있어도 configure 실패가 아니라 park 다). 형태를 골랐는데 다른 형태의 키를 함께 주면 파서가 거부하고 `Init` 도 같은 규칙이다. 행은 box 아래에 부등식 행으로 붙는다 ($C=[I;\,C_a]$).
 
@@ -111,7 +111,7 @@ $$0\le v_i\le\frac{2a_id_i}{a_i\Delta t+\sqrt{a_i^2\Delta t^2+2a_id_i}},\qquad a
 
 **반복 상한과 상태 노출.** `max_iter` (기본 20, `joint_cmd.qp.max_iter`) 를 넘거나 수렴 실패하거나 비유한 결과가 나오면 `Compute` 는 false 를 돌려준다. solver status · 반복 수 · solve time 은 `LastSolve()` 로 노출된다.
 
-**실패 경로 — QP 비의존 관절공간 abort.** CLIK 은 실패 시 `q_ref = q_meas`, `v_ref = 0`, false 를 돌려준다. 포구 컨트롤러는 **이 출력을 소비하지 않는다** — $q_{meas}$ 로 점프하면 $q_c$ 불연속이고 $v=0$ 은 가속 한계를 무시한 즉시 정지다. 대신 QP 없이 동작하는 관절공간 경로 (`RunJointSpaceAbort` → `RampArmToStop`) 로 직전 $\dot q_{prev}$ 에서 관절별로 $\ddot q_{\max}\Delta t$ 씩 0 으로 감속하며 $q_c$ 를 적분하고 (위치 한계 clamp 포함), L7 `QP_FAILED` / `JOINT_CONFLICT` → `ABORT_SAFE` 로 넘긴다. CLIK 실패로 끝난 **시행**이 연속으로 **L7 소유의 단일 키** `supervisor.n_qp` (L7 §4.1) 에 이르면 L7 FAULT 래치 — 세는 단위는 solve 가 아니라 시행이다. 카운터는 성공한 solve 가 아니라 `HOLD` 판정 · fault reset · activation 이 지운다. L5 는 이 카운터를 새로 두지 않고 L7 판정을 참조만 한다.
+**실패 경로 — QP 비의존 관절공간 abort.** CLIK 은 실패 시 `q_ref = q_meas`, `v_ref = 0`, false 를 돌려준다. 포구 컨트롤러는 **이 출력을 소비하지 않는다** — $q_{meas}$ 로 점프하면 $q_c$ 불연속이고 $v=0$ 은 가속 한계를 무시한 즉시 정지다. 대신 QP 없이 동작하는 관절공간 경로 (`RunJointSpaceAbort` → `RampArmToStop`) 로 직전 $\dot q_{prev}$ 에서 관절별로 $\ddot q_{\max}\Delta t$ 씩 0 으로 감속하며 $q_c$ 를 적분하고 (위치 한계 clamp 포함), L7 `QP_FAILED` → `ABORT_SAFE` 로 넘긴다. CLIK 실패로 끝난 **시행**이 연속으로 **L7 소유의 단일 키** `supervisor.n_qp` (L7 §4.1) 에 이르면 L7 FAULT 래치 — 세는 단위는 solve 가 아니라 시행이다. 카운터는 성공한 solve 가 아니라 `HOLD` 판정 · fault reset · activation 이 지운다. L5 는 이 카운터를 새로 두지 않고 L7 판정을 참조만 한다.
 
 **RT tick 안 try/catch 금지 (RT-2).** `ClikReferenceGenerator::Compute` 는 noexcept 이고 모든 할당 · 검증 (throw) 은 non-RT `Init` 에 있다. RT 경로의 방어는 입력 검증 (비유한 · 차원) 과 false 반환으로 한다.
 
@@ -174,9 +174,9 @@ MuJoCo 팔 actuator (`<general>` position-PD) 는 `servoj` 와 동특성이 다�
 | 자세 군 | `Config::posture_groups` (서로소 관절 집합마다 가중 · 이득). 비면 팔 · 손 두 군이다 |
 | 공유 코드 | box 조립, 가속 행, solve, anchor 적분 · 실패 분기는 private helper 로 공유한다 (floating-point 누적 순서를 golden 이 비트 단위로 고정) |
 | 접근축 행 | $J_a=S\,R_{WC}^\top J_\omega^{LWA}$, $r_a=S\,R_{WC}^\top(K_a e_a+\omega_{ff})$, $e_a$ = `rtc::math::se3::AxisAlignError` |
-| 옵션 (전부 기본 off) | 관절별 속도 한계, 가속 제약 (`box` · `kinematic` · `dynamic` — 포구 컨트롤러는 뒤의 둘만 넘긴다), 평활 가중 $w_s$, `max_iter`, SE3 경로의 twist feedforward, 명령값 평가 모드, 자세 속도 feedforward, 과제별 되먹임 상한 (다중 frame 호출), 제동 거리 한계 (`dynamic` 에서만, §4.3) |
+| 옵션 (전부 기본 off) | 관절별 속도 한계, 가속 제약 (`kinematic` · `dynamic`), 평활 가중 $w_s$, `max_iter`, SE3 경로의 twist feedforward, 명령값 평가 모드, 자세 속도 feedforward, 과제별 되먹임 상한 (다중 frame 호출), 제동 거리 한계 (`dynamic` 에서만, §4.3) |
 | 명령값 평가 모드 | CLIK 안에 cache 를 두지 않는다. 호출자가 $q_c$ 로 갱신한 cache 를 넘긴다 (§4.2). anchor 는 하나 (cache.q) 다 |
-| 진단 | `LastSolve()`: `reached_solve` · `converged` · `non_finite` · ProxQP status · 반복 수 · solve time · `command_mismatch` · `bound_conflict` + `conflict_mask` · `accel_rows` · `accel_rows_binding` · `accel_rows_violated`. 다중 frame 호출: `tasks` · `rejected_input` · `fb_saturated` · `rot_near_pi`. 제동 한계: `brake_active` · `brake_static_infeasible` · `brake_box_empty` |
+| 진단 | `LastSolve()`: `reached_solve` · `converged` · `non_finite` · ProxQP status · 반복 수 · solve time · `command_mismatch` · `accel_rows` · `accel_rows_binding` · `accel_rows_violated`. 다중 frame 호출: `tasks` · `rejected_input` · `fb_saturated` · `rot_near_pi`. 제동 한계: `brake_active` · `brake_static_infeasible` · `brake_box_empty` |
 
 차원: 결정변수는 **결합 모델 전체 $n_v$**. CLIK 의 control model 은 actuated 축약 모델이 있으면 그것이고 없을 때만 tree/full 로 fallback 한다. 팔 열은 `Config::arm_v_idx`, 손 열은 `hand_v_idx` 로 고른다 (이 둘이 posture 의 두 군이다). 할당은 `Init` 에서만, `Compute` 는 noexcept · 할당 0. `Manipulability()` (팔 6×6 damped √det) 는 진단값이다.
 
@@ -191,9 +191,9 @@ MuJoCo 팔 actuator (`<general>` position-PD) 는 `servoj` 와 동특성이 다�
 1. cache 를 명령 상태 ($q_c$, 명령 속도) 로 갱신 (`PrepareLawTick`; 손 성분은 측정값)
 2. planner 별 기준 생성 — 아래
 3. `SolveClikAndCommand`: 확장 CLIK `Compute` (catch frame index, base frame index, dt = `ControllerState::dt`, `reseed_anchor=false`)
-4. 성공: `QRef()` 팔 성분 → `devices[0].commands`, `command_type = kPosition`. 실패: §4.3 관절공간 abort 경로 + L7 `QP_FAILED` / `JOINT_CONFLICT`
+4. 성공: `QRef()` 팔 성분 → `devices[0].commands`, `command_type = kPosition`. 실패: §4.3 관절공간 abort 경로 + L7 `QP_FAILED`
 5. L6 시퀀서 결과 → `devices[1]` (손)
-6. 진단 (status · 반복 · solve time · `bound_conflict`) 은 SPSC 로 aux drain (RT-1 — tick 에서 로깅 금지)
+6. 진단 (status · 반복 · solve time) 은 SPSC 로 aux drain (RT-1 — tick 에서 로깅 금지)
 
 **CLIK 이 받는 입력은 planner 가 정한다** (단계 2).
 
@@ -237,11 +237,11 @@ catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으�
 
 ## 8. 디버깅 방법
 
-- 기록: $q_c$, $q$, $\dot q^\ast$, 경계 $(\ell,\upsilon)$, 활성 관절 인덱스, 과제 잔차 $\Vert J_p\dot q-v_p^\ast\Vert$, 축 잔차, solve time, solver status · 반복 수, `bound_conflict`.
+- 기록: $q_c$, $q$, $\dot q^\ast$, 경계 $(\ell,\upsilon)$, 활성 관절 인덱스, 과제 잔차 $\Vert J_p\dot q-v_p^\ast\Vert$, 축 잔차, solve time, solver status · 반복 수.
 - 과제 잔차가 크다: 한계 활성 여부, 특이 자세 (`Manipulability()`), 가중치 비율 확인.
 - 접근축이 roll 과 섞인다: $R_{WC}^\top$ 회전 방향 (LWA → catch frame) 과 catch frame 축 정의 (`_base.yaml`) 확인.
 - 명령 대비 측정 지연이 식별값과 다르다: 드라이버 파라미터가 식별 때와 같은지, 시뮬레이션이면 sim 서보 게인 확인.
-- 관절 한계 근처에서 떨림: `limit_margin`, 가속 경계와의 충돌 빈도 확인.
+- 관절 한계 근처에서 떨림: `limit_margin`, 가속 행과 box 가 양립하지 않아 solve 가 실패한 빈도 확인.
 - $q_c$ 가 한 틱에 튄다: CLIK 실패 출력 (`q_ref = q_meas`) 을 소비했는지, 재앵커가 §4.2 표 밖 시점에 일어났는지 확인.
 
 ## 9. 검증 방법과 합격 게이트
@@ -250,8 +250,7 @@ catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으�
 |---|---|---|
 | G5-A | 정지 목표에서 위치 오차 < 1 mm, 축 오차 < 0.5° 수렴 | `[SIM-ANY]` |
 | G5-A2 | 옵션 전부 off 에서 기존 CLIK 출력 bit-identical, 기존 테스트 assertion 무수정 green | `[SIM-ANY]` |
-| G5-B | 무작위 기준 1e4 틱에서 속도 · 가속 한계 위반 0, 위치 한계 위반은 `limit_margin` 이내. "위반 0" 은 ProxQP `eps_abs` 안을 뜻한다 | `[SIM-ANY]` |
-| G5-B2 | 경계 충돌 유도 시나리오 (CLIK 의 `box` 형태): `bound_conflict` 발생, $\vert\dot q^\ast-\dot q_{prev}\vert\le\ddot q_{\max}\Delta t$ 유지. CLIK 단독으로 판정한다 — 포구 컨트롤러는 그 형태를 넘기지 않으므로 L7 전이는 판정 대상이 아니다 (§4.3) | `[SIM-ANY]` |
+| G5-B | 무작위 기준 1e4 틱에서 속도 한계 위반 0, 위치 box (`limit_margin` 만큼 좁힌 것) 위반 0. "위반 0" 은 ProxQP `eps_abs` 안을 뜻한다 (위치는 `eps_abs`$\cdot\Delta t$). 가속 제약은 행이라 (§4.3) 여기서 세지 않는다 — 행을 벗어난 해는 solve 실패로 돌려준다 | `[SIM-ANY]` |
 | G5-C | RT: page fault 0, 할당 0 (solver 밖 — ProxQP 안의 할당은 횟수를 기록하되 위반으로 세지 않는다, #654), QP 차원 고정, solve time 분위수 < 예산. `control_rate` 500 Hz 의 tick 2000 µs 기준 **p99 ≤ 400 µs (20 %) · 최대 ≤ 1500 µs (75 %)** — 평균이 아니라 꼬리로 건다 (L8 §5). 제어 PC 판정은 G8-A | `[SIM-ANY]` |
 | G5-C2 | backend 왕복: `ControllerOutput.devices[0].commands` 와 backend 가 쓴 명령 slot 이 전 틱에서 일치 (backend clamp 미발동) | `[SIM-P1B]` / `[HW-P1B]` |
 | G5-C3 | `max_iter` 설정값 준수, 초과 시 status 노출 + 관절공간 abort 경로 (가속 한계 준수), L7 `QP_FAILED` 전이. RT tick 에 try/catch 없음, `Compute` noexcept | `[SIM-ANY]` |

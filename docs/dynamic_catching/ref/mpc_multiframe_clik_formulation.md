@@ -707,7 +707,7 @@ $$
 $$
 
 - $a_{brk}$ 는 관절별 제동 감속도다. 토크 제약 아래에서는 낼 수 있는 가속이 상태에 따라 달라지므로 보수적인 값으로 둔다.
-- 기본값은 꺼짐이다. 끄면 기존 `ClikReferenceGenerator` 의 동작 (1-step box, 충돌 시 `bound_conflict` 와 직전 값 유지) 그대로다. 기존 로봇의 golden 회귀는 꺼진 상태로 판정한다.
+- 기본값은 꺼짐이다. 끄면 기존 `ClikReferenceGenerator` 의 동작 (1-step box) 그대로다. 기존 로봇의 golden 회귀는 꺼진 상태로 판정한다.
 - `rtc_tsid` 에는 가속 수준의 같은 제약 `JointLimitConstraint` 가 있다. 속도 수준으로 옮겨 쓴다.
 
 **충돌 damper** `[선택]` (기본 꺼짐 — 아직 구현하지 않았다). 오차 되먹임이 팔을 계획 경로 밖으로 밀 수 있으므로 tick 주기 QP 에도 충돌 제약을 둘 수 있다 [Faverjon1987] [Stasse2008]. 거리가 영향 거리 $d_i$ 아래인 쌍에 대해
@@ -872,7 +872,7 @@ R-1 과 R-8 의 식 일부는 이 문서의 유도다.
 | M-5 | 정지 자세를 유지할 토크가 한계 안인지 보는 종단 행이 필요하다 | — | 자체 | §1.2 — 종단 노드의 토크 행이 정적 토크 행이다 |
 | M-6 | 비용은 변수 수만이 아니라 행 수가 정한다. condensing 뒤에는 상태 제약이 모두 dense 행이 되고 move blocking 은 행 수를 줄이지 않는다. condensed QP 를 만드는 비용은 horizon 의 제곱 규모이고 반복마다 든다 | [Verschueren2022] [Frison2016] | 본문 | §1.1 "문제 크기" |
 | M-7 | 정지 구간을 2–3 노드로 묶으면 종단 등식을 맞추고 남는 jerk 자유도가 없을 수 있다 | — | 자체 | §1.1 "정지 구간의 블록 수" — 관절마다 3개 이상 |
-| M-8 | 위치 box 와 가속 · 토크 한계가 한 tick 에서 양립하지 않을 수 있다. 문헌의 해법은 제동 거리로 속도를 묶는 viability 한계다. `ClikReferenceGenerator` 는 1-step 위치 box 를 쓰고 충돌 시 `bound_conflict` 와 실패 (직전 값 유지) 로 처리한다. `rtc_tsid` 에는 가속 수준의 viability 제약 `JointLimitConstraint` 가 따로 있다 | [DelPrete2018] [Faroni2018] [Flacco2015] | 초록 · 로컬 | §2.2 "제동 거리 한계" — opt-in, 기본 꺼짐 |
+| M-8 | 위치 box 와 가속 · 토크 한계가 한 tick 에서 양립하지 않을 수 있다. 문헌의 해법은 제동 거리로 속도를 묶는 viability 한계다. `ClikReferenceGenerator` 는 1-step 위치 box 를 쓰고, 가속 · 토크 행과 양립하지 않는 tick 은 solve 실패로 끝난다. `rtc_tsid` 에는 가속 수준의 viability 제약 `JointLimitConstraint` 가 따로 있다 | [DelPrete2018] [Faroni2018] [Flacco2015] | 초록 · 로컬 | §2.2 "제동 거리 한계" — opt-in, 기본 꺼짐 |
 | M-9 | 오차 되먹임이 팔을 계획 경로 밖으로 밀 수 있다. 문헌과 공개 구현은 tick 주기 QP 에 velocity damper 를 둔다 | [Stasse2008] | 초록 | §2.2 "충돌 damper" — 선택 항, 기본 꺼짐 |
 | M-10 | 노드 사이 여유는 속도에 비례해 커져 팔–팔 제약을 실행 불가능하게 만들 수 있다. [Schulman2014] 는 연속한 두 노드의 swept volume 에 제약을 건다 | [Schulman2014] | 본문 | §1.3 "노드 사이 여유" — $c_j$ 정의, 계수 1/2 |
 | M-11 | G1 URDF 에는 armature 가 없고 MJCF 에만 있다 | G1 URDF · MJCF | 로컬 | §1.3 토크 행 — 제어 모델에 넣지 않는다 (MD-25) |
