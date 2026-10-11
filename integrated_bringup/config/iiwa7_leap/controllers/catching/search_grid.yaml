@@ -138,23 +138,31 @@ demo_catching_controller:
           # runtime solve alike. Recorded here because G6-F asks the derivation and
           # the value to live together.
           #
-          # MEASURED, S3.5a map (2026-09-21), 3402-throw grid at 4 m: 1499 throws
-          # accepted from the best single wait pose at the old shared threshold 0.1,
-          # 1158 at the robot-specific 0.174 below (reproduced by running the map
-          # tool with THIS file as --params),
-          # T_f >= 1.0 s. Details and the rejected alternatives: D-18, L3 §4.2.
+          # The manipulability ascent is OFF on this arm and its gate is lowered
+          # (user decision 2026-10-11, #710): `k_manip` 0 and `manipulability_min`
+          # 0.1 below. Both have to move together — see the two keys. Details:
+          # L3 appendix D.
           ik:
-            # k_manip > 0 is NOT optional. It enables the D-25 null-space log w5
-            # ascent, and without it (the in-code default 0) the 5-row task leaves
-            # the arm wherever the seed put it: w5 came out 0.06-0.09 at plausible
-            # wait poses, i.e. BELOW the gate, so every candidate in the map was
-            # rejected as below_manip_min. With the ascent on, w5 reaches
-            # 0.100-0.273 (median 0.226) and the gate is passable. A config that carries the
-            # threshold but leaves this at 0 rejects everything at runtime.
-            k_manip: 0.5
-            # 20 (the L3 default) was not enough to let the ascent settle; 40 left
-            # 1366 candidates `not_converged`, which is confounded with
-            # genuinely unreachable points and is a follow-up sweep, not a bound.
+            # 0 = no null-space log w5 ascent (D-25): the 5-row task leaves the
+            # roll where the seed's branch puts it, so the catch posture stays
+            # near the wait pose. With the ascent on (0.5, shipped until #710) the
+            # posture was driven away from it — the fifth joint by a median
+            # 1.5 rad — and on the candidate box (180 throws at 1.5 m, the wait
+            # pose of #747) NO accepted candidate could be reached inside the
+            # velocity box in the time left: grid x mpc published no plan.
+            # MEASURED (#710, 2026-10-11), offline, (k_manip, manipulability_min):
+            # throws with a reachable accepted candidate — 0 / 180 at (0.5, 0.174),
+            # 1 at (0, 0.174), 10 at (0.5, 0), 180 at (0, 0) and at (0, 0.1).
+            # A small gain buys no manipulability and costs reach: at 0 / 0.05 /
+            # 0.1 / 0.2 the chosen candidate's median w5 is 0.131 / 0.132 / 0.132 /
+            # 0.137 while the throws reached inside the velocity AND acceleration
+            # box fall 173 / 158 / 127 / 47.
+            # In sim only (0, 0) was thrown: grid x mpc published for 79 / 180
+            # throws and caught 59, no limit violation (one seed).
+            # Not measured: grid x closed_form with these values.
+            k_manip: 0.0
+            # Kept from the ascent's tuning (20, the L3 default, did not let it
+            # settle); the units of #710 ran with 40 and the ascent off.
             max_iter: 40
             # The remaining IK design values, written at their in-code defaults
             # (CatchPoseIkOptions) so the profile shows every number the solve runs.
@@ -185,15 +193,21 @@ demo_catching_controller:
             # poses for catching. w6 is recorded per candidate either way (C-3).
             definition: "arm_5row"
             manipulability_min:
-              # ROBOT-SPECIFIC ON PURPOSE (user decision 2026-09-21). w5 =
-              # sqrt(det(J5 J5^T)) scales with the arm's link lengths, so one number
-              # means different strictness on different arms: the shipped 0.1 sat at
-              # roughly the 40th percentile of the 6-axis arm's task-feasible w5 but
-              # only ~the 10th of the 7-axis arm's, i.e. the two arms were being held
-              # to different standards and the map's coverage comparison was not
-              # like-for-like. Each value is 0.1 scaled by that arm's task-feasible
-              # median w5 (gate off, same grid): 0.2176 vs the 6-axis arm's 0.1249, so 0.1 * 0.2176/0.1249 = 0.174. Tightening costs coverage - 77% of the previously accepted throws survive - and that cost is the point: it is what equal strictness actually looks like.
-              arm_5row: 0.174
+              # 0.1 (user decision 2026-10-11, #710): the gate stays, below the
+              # postures the arm can reach in time. From today's wait pose those
+              # have w5 0.10 - 0.15 (p10 0.103), and offline a reachable candidate
+              # is left on 180 / 180 throws at 0.1 (0.12: 177, 0.14: 121, 0.174: 1).
+              # The search on this file, offline, picks a reachable candidate on
+              # every one of the 180 throws — the same plans as with the gate at 0.
+              # NOT THROWN IN SIM at 0.1: the sim unit of #710 ran with the gate at
+              # 0 and followed plans with w5 0.11 - 0.14 (lowest 0.098, one of 83
+              # below 0.1), so a few candidates sit close to this threshold.
+              # The value before was 0.174: 0.1 scaled by this arm's task-feasible
+              # median w5 so that the two arms were held to the same strictness
+              # (user decision 2026-09-21, measured on a 4 m throw grid from the
+              # wait pose of that day). 0.1 is the other arm's number, not the
+              # same strictness — that comparison is given up here.
+              arm_5row: 0.1
               # No value: the 6-row gate is not the definition above, and 0.1 is not
               # a conservative stand-in for a different-dimension quantity — the
               # parser leaves a TBD threshold non-finite so Solve fails closed.
