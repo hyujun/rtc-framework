@@ -2,7 +2,10 @@
 //
 // Builds the catch search a configuration selects on the catch sub-model, runs
 // `rtc::catching::CatchSearch::Plan` over the wakes of each throw, and writes
-// one CSV row per wake. The python side (`rtc_tools.analysis.catch_search_map`)
+// one CSV row per wake. A binding that also carries a segment planner's values
+// runs the whole planner wake instead (`rtc::catching::PlannerCycle::Run`: the
+// search, the first segment, the pair). The python side
+// (`rtc_tools.analysis.catch_search_map`)
 // owns the throws, the flight that fills the prediction snapshots, the values
 // a controller binds at configure time and the aggregation; the verdict is
 // this binary's, so the map and the running planner share one search.
@@ -39,6 +42,12 @@ Every wake is the search's first look at an arm at rest on planner.wait_pose
 that follows no plan; the covariance is zero and the clock does not advance.
 The wakes of a throw run in order up to the first that returns a plan.
 
+With `segment` in the binding a wake is the whole planner wake — the search,
+the first segment's solve and the cycle's decision to publish the pair — on a
+clock that stands at the wake's instant. The wakes of a throw then run up to
+the first whose pair is published, and each row also says what the cycle and
+the segment planner did (outcome, segment_outcome, segment_core_reason, ...).
+
   --model-config PATH   ModelConfig YAML (PinocchioModelBuilder::LoadModelConfig
                         schema). Must declare the catch frame under `extra_frames`.
   --sub-model NAME      the catch sub-model (planner.sub_model of the profile)
@@ -51,6 +60,8 @@ The wakes of a throw run in order up to the first that returns a plan.
                         of the tree gives: `search` (grid | nlp),
                         `device_of_model`, and that search's map (see
                         ParseSearchBatchBinding). Every key is required.
+                        Optional: `segment` (`mode`: mpc | mpc_docking, and that
+                        planner's map) — the whole wake is then run
   --wakes PATH          wake CSV: throw_id,wake,now_ns,t_ns,p_{x,y,z},v_{x,y,z},
                         a_{x,y,z} — one row per predicted sample, MODEL WORLD
                         coordinates, instants in ns on one axis. '-' = stdin
@@ -167,14 +178,25 @@ int main(int argc, char** argv) {
     }
     const rtc::catching::SearchBatchBinding binding =
         rtc::catching::ParseSearchBatchBinding(YAML::LoadFile(args.binding), model->nv);
-    rtc::catching::SearchBatchSearch built =
-        rtc::catching::MakeSearchBatchSearch(model, handle, frame, tree.node, binding);
-    if (built.search == nullptr) {
-      // A profile the search cannot run on is an answer, not a broken run —
-      // but there is no map to write from it.
-      std::cerr << "catch_search_batch: the search refused its configuration — " << built.error
-                << '\n';
-      return 3;
+    // A profile a function cannot run on is an answer, not a broken run — but
+    // there is no map to write from it.
+    const bool whole_wake = binding.segment.has_value();
+    rtc::catching::SearchBatchSearch built;
+    rtc::catching::PlanBatchBuild cycle;
+    if (whole_wake) {
+      cycle = rtc::catching::MakePlanBatch(model, handle, frame, tree.node, binding);
+      if (cycle.batch == nullptr) {
+        std::cerr << "catch_search_batch: the planner refused its configuration — " << cycle.error
+                  << '\n';
+        return 3;
+      }
+    } else {
+      built = rtc::catching::MakeSearchBatchSearch(model, handle, frame, tree.node, binding);
+      if (built.search == nullptr) {
+        std::cerr << "catch_search_batch: the search refused its configuration — " << built.error
+                  << '\n';
+        return 3;
+      }
     }
 
     std::vector<rtc::catching::SearchBatchWake> wakes;
@@ -188,7 +210,8 @@ int main(int argc, char** argv) {
       wakes = rtc::catching::ParseSearchWakeCsv(in);
     }
     const std::vector<rtc::catching::SearchBatchRow> rows =
-        rtc::catching::RunSearchBatch(*built.search, built.q_rest, wakes);
+        whole_wake ? cycle.batch->Run(wakes)
+                   : rtc::catching::RunSearchBatch(*built.search, built.q_rest, wakes);
 
     std::ofstream file;
     if (!args.out.empty()) {
@@ -199,9 +222,13 @@ int main(int argc, char** argv) {
     }
     std::ostream& os = args.out.empty() ? std::cout : file;
     const int nv = model->nv;
-    os << rtc::catching::SearchBatchCsvHeader(nv) << '\n';
+    os << (whole_wake ? rtc::catching::PlanBatchCsvHeader(nv)
+                      : rtc::catching::SearchBatchCsvHeader(nv))
+       << '\n';
     for (const auto& row : rows) {
-      os << rtc::catching::SearchBatchCsvRow(row, nv) << '\n';
+      os << (whole_wake ? rtc::catching::PlanBatchCsvRow(row, nv)
+                        : rtc::catching::SearchBatchCsvRow(row, nv))
+         << '\n';
     }
     return 0;
   } catch (const std::exception& e) {

@@ -22,20 +22,39 @@
 // switching rule, a replacement, a follow window) needs the segment planner
 // and the RT, and is not reproduced here.
 //
+// THE WHOLE WAKE (PlanBatch). A binding that also carries a segment planner's
+// values runs, per wake, what a planner thread runs: `PlannerCycle::Run` with
+// that search and that segment planner installed — the search, the first
+// segment's solve, and the cycle's decision to publish the two as a pair or to
+// withhold both. The wakes of a throw then run up to the first whose PAIR is
+// published, so a throw whose plans are all withheld runs every wake. What a
+// wake is handed is the list above with one change: the clock stands at the
+// wake's own instant (WakeClock) instead of at zero. It still does not advance
+// inside a wake, and a search measures only differences on it, so the search's
+// verdicts are those of the search-only run; the segment planner needs the
+// instant itself (the age of the RT's report, where node 0 can stand).
+// Not reproduced there either: a solve past its budget, a pair dropped because
+// a newer prediction or a reset landed during the solve, and everything after
+// the pair — the replans, a replacement, the RT's own admission of the pair.
+//
 // It knows no robot: the model, the catching tree, the values a controller
 // binds at configure time (SearchBatchBinding) and the wakes all arrive from
 // the caller.
 #pragma once
 
+#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/catching/catch_search.hpp"
 #include "rtc_controllers/catching/docking_params.hpp"
 #include "rtc_controllers/catching/grid_catch_search.hpp"
+#include "rtc_controllers/catching/mpc_docking_segment_core.hpp"
 #include "rtc_controllers/catching/nlp_catch_search.hpp"
+#include "rtc_controllers/catching/planner_cycle.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/reach_bound.hpp"
 #include "rtc_controllers/catching/search_stats.hpp"
+#include "rtc_controllers/catching/segment_planner.hpp"
 #include "rtc_controllers/catching/traj_ingress.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
@@ -47,6 +66,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -56,6 +76,11 @@ namespace rtc::catching {
 
 /// The clock a batch search is configured with: it never advances.
 [[nodiscard]] std::int64_t StoppedClock() noexcept;
+
+/// The clock of a whole-wake batch (PlanBatch): the instant of the wake
+/// `PlanBatch::Run` is running on the calling thread, 0 outside one. It does
+/// not advance inside a wake.
+[[nodiscard]] std::int64_t WakeClock() noexcept;
 
 // ── The wakes ────────────────────────────────────────────────────────────────
 
@@ -98,10 +123,19 @@ struct SearchBatchRow {
   std::int64_t now_ns{0};
   PlanSnapshot plan{};
   SearchStats stats{};
-  /// Wall-clock duration of the `Plan` call alone [µs] (steady clock). Not the
-  /// search's own clock, which is StoppedClock: this is how long the machine
-  /// took, so unlike every other field it is NOT reproducible.
+  /// Wall-clock duration of the `Plan` call alone [µs] (steady clock) — of the
+  /// whole `PlannerCycle::Run` on a row of PlanBatch. Not the search's own
+  /// clock, which does not advance: this is how long the machine took, so
+  /// unlike every other field it is NOT reproducible.
   double wall_us{0.0};
+  // ── A row of PlanBatch::Run only; RunSearchBatch leaves the defaults ──
+  /// The row is a whole wake's. `plan` is then what the cycle STORED — the
+  /// pair's plan, or a "no plan" — and is left at its default on a wake that
+  /// stored nothing, whose search may still have produced one (`search_valid`).
+  bool cycle{false};
+  bool search_valid{false};  ///< the wake's search returned a plan
+  CycleOutcome outcome{CycleOutcome::kIdle};
+  SegmentRecord segment{};  ///< the first segment's solve
 };
 
 /// The columns that carry a planner wake's record use the names the planner
@@ -118,6 +152,24 @@ struct SearchBatchRow {
 /// One result row, doubles at round-trip precision.
 [[nodiscard]] std::string SearchBatchCsvRow(const SearchBatchRow& row, int nv);
 
+/// The header of a whole-wake batch: SearchBatchCsvHeader's columns in their
+/// places, and before the last one (`wall_us`) what the cycle and the first
+/// segment's solve did, under the planner event log's names: `outcome`
+/// (CycleOutcomeName), `segment_outcome`, `segment_kind`,
+/// `segment_core_reason` (names), `segment_k`, `segment_n_nodes`,
+/// `segment_iterations`, `segment_from_search`, `segment_ref_scaled`,
+/// `segment_ref_scale`, `segment_slack_max`, `segment_slack_terminal_max`,
+/// `segment_catch_pos_err`, `segment_catch_axis_err`,
+/// `segment_speed_ratio_max`, `segment_tau_ratio_max`.
+///
+/// `search_valid` is the SEARCH's verdict on the wake; the plan columns are
+/// filled only where a pair was published (`outcome` published and
+/// `search_valid` 1) — a plan withheld with its segment leaves them empty.
+[[nodiscard]] std::string PlanBatchCsvHeader(int nv);
+
+/// One row of a whole-wake batch (`row.cycle` true).
+[[nodiscard]] std::string PlanBatchCsvRow(const SearchBatchRow& row, int nv);
+
 /// Run `search` over `wakes` (header note): throws in the given order, each
 /// from a reset search (`ResetTrial`), its wakes in order up to and including
 /// the first that returns a valid plan.
@@ -131,6 +183,30 @@ struct SearchBatchRow {
 
 /// Which search a binding builds.
 enum class SearchBatchKind : std::uint8_t { kGrid, kNlp };
+
+/// Which segment planner a binding builds.
+enum class SegmentBatchKind : std::uint8_t { kMpc, kMpcDocking };
+
+/// What a controller resolves at configure time and hands the segment planner
+/// next to the catching tree. As SearchBatchBinding: nothing has a default,
+/// joint vectors are in MODEL order, NaN is a value.
+struct SegmentBatchBinding {
+  SegmentBatchKind kind{SegmentBatchKind::kMpc};
+  double t_arm_s{0.0};     ///< the arm lag the lead axis runs on [s]
+  double control_dt{0.0};  ///< the RT period [s]
+  // ── mpc ──
+  std::vector<double> q_min;  ///< the position box [rad]
+  std::vector<double> q_max;
+  std::vector<double> qdot_max;  ///< device ratings [rad/s]
+  std::vector<double> tau_max;   ///< device ratings [N·m]
+  double eta_v{0.0};             ///< the velocity row's margin
+  // ── mpc_docking ──
+  MpcDockingSegmentCoreLimits limits{};  ///< `armature` is zero
+  std::vector<double> qd_rating;         ///< device ratings [rad/s]
+  double hand_t_close_e2e{0.0};          ///< the measured closure time [s]
+  double hand_t_close_lead{0.0};         ///< the close lead from the cores' catch node [s]
+  double ball_mass{0.0};                 ///< [kg]
+};
 
 /// What a controller resolves at configure time and hands the search next to
 /// the catching tree — device ratings, margins already applied, the hand's
@@ -150,6 +226,9 @@ struct SearchBatchBinding {
   double hand_t_close_e2e{0.0};          ///< the measured closure time [s]
   double hand_t_close_lead{0.0};         ///< the close lead from the cores' catch node [s]
   double ball_mass{0.0};                 ///< [kg]
+  /// The segment planner of a whole-wake batch (MakePlanBatch); none in a
+  /// search-only binding.
+  std::optional<SegmentBatchBinding> segment;
 };
 
 /// Read a binding file. Top level: `search` (`grid` | `nlp`),
@@ -160,9 +239,15 @@ struct SearchBatchBinding {
 ///   nlp:  t_arm_s, control_dt, t_close_lead, hand_t_close_e2e,
 ///         hand_t_close_lead, ball_mass,
 ///         limits: {q_min, q_max, qd_max, qdd_max, tau_max, tau_lo, tau_hi}
-/// Every key of the selected search's map is required and no other key is
-/// accepted. `qddot_max` / `limits.qdd_max` may be empty (no acceleration
-/// box); every other joint vector has `nv` entries. Scalars may be `.nan`.
+/// and, optionally, `segment`: `mode` (`mpc` | `mpc_docking`) and the map of
+/// that planner:
+///   mpc:         q_min, q_max, qdot_max, tau_max, eta_v, t_arm_s, control_dt
+///   mpc_docking: t_arm_s, control_dt, qd_rating, hand_t_close_e2e,
+///                hand_t_close_lead, ball_mass,
+///                limits: {q_min, q_max, qd_max, qdd_max, tau_max, tau_lo, tau_hi}
+/// Every key of a selected map is required and no other key is accepted.
+/// `qddot_max` / `limits.qdd_max` may be empty (no acceleration box); every
+/// other joint vector has `nv` entries. Scalars may be `.nan`.
 /// @throws std::invalid_argument naming the key on anything else, including a
 ///         `device_of_model` that is not a permutation of 0…nv−1.
 [[nodiscard]] SearchBatchBinding ParseSearchBatchBinding(const YAML::Node& root, int nv);
@@ -188,6 +273,62 @@ struct SearchBatchSearch {
     const std::shared_ptr<const pinocchio::Model>& arm, rtc_urdf_bridge::RtModelHandle& handle,
     pinocchio::FrameIndex catch_frame, const YAML::Node& catching,
     const SearchBatchBinding& binding);
+
+// ── The whole wake ───────────────────────────────────────────────────────────
+
+struct PlanBatchBuild;
+
+/// A planner cycle with a search and a segment planner installed, and the
+/// boxes it reads and writes (header: "THE WHOLE WAKE").
+class PlanBatch {
+ public:
+  PlanBatch() = default;
+  PlanBatch(const PlanBatch&) = delete;
+  PlanBatch& operator=(const PlanBatch&) = delete;
+
+  /// Run the cycle over `wakes`: throws in the given order, each behind a
+  /// trial reset of the cycle, its wakes in order up to and including the
+  /// first whose pair is published.
+  /// @throws std::invalid_argument a wake with no sample or more than `kCap`
+  [[nodiscard]] std::vector<SearchBatchRow> Run(const std::vector<SearchBatchWake>& wakes);
+
+  /// `planner.wait_pose`, DEVICE order.
+  [[nodiscard]] const std::vector<double>& RestPose() const noexcept { return q_rest_; }
+
+ private:
+  friend PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>&,
+                                      rtc_urdf_bridge::RtModelHandle&, pinocchio::FrameIndex,
+                                      const YAML::Node&, const SearchBatchBinding&);
+
+  rtc::SeqLock<TrajectorySnapshot> traj_{};
+  rtc::SeqLock<CovarianceSnapshot> cov_{};
+  rtc::SeqLock<PlannerRtState> rt_{};
+  rtc::SeqLock<PlanSnapshot> plan_{};
+  rtc::SeqLock<SegmentSnapshot> segment_{};
+  PlannerCycle cycle_{};
+  std::vector<double> q_rest_;
+  std::uint32_t reset_epoch_{0};  // one per throw: the cycle resets on its change
+};
+
+/// A configured whole-wake batch, or why a function refused its configuration.
+struct PlanBatchBuild {
+  std::unique_ptr<PlanBatch> batch;  ///< null when `error` is set
+  std::string error;
+};
+
+/// Build the cycle `binding` selects, the way a controller's configure does:
+/// the search as MakeSearchBatchSearch builds it, the segment planner of
+/// `binding.segment` from its own map of `catching`
+/// (`planner.segment.<mode>`) and the binding's values, both installed in a
+/// cycle configured with the tree's `planner.*` and timed on WakeClock.
+/// @throws std::invalid_argument what MakeSearchBatchSearch and the parsers
+///         throw, a binding without `segment`, a segment vector that does not
+///         match the arm, and a tree without the selected planner's map
+[[nodiscard]] PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
+                                           rtc_urdf_bridge::RtModelHandle& handle,
+                                           pinocchio::FrameIndex catch_frame,
+                                           const YAML::Node& catching,
+                                           const SearchBatchBinding& binding);
 
 // ── The reach bound ──────────────────────────────────────────────────────────
 
