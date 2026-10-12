@@ -1971,10 +1971,11 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
           .successful);
 }
 
-TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
-  // #698: `cost.w_perp` is WRITTEN in catching/segment_mpc.yaml — not left to
-  // the code default — and 0: the stop-path term is off, so the shipped solve
-  // is the one before the key existed (the core's own default).
+TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOn) {
+  // #698 · #713: `cost.w_perp` is WRITTEN in catching/segment_mpc.yaml — not
+  // left to the code default, which stays 0 (off) — and it is the value #713
+  // measured, 100 on both profiles: the shipped solve keeps its stop on the
+  // ball's line. A profile that lost the key would run the core's default.
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
   const YAML::Node node =
@@ -1982,7 +1983,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
   const YAML::Node cost = node["catching"]["planner"]["segment"]["mpc"]["cost"];
   ASSERT_TRUE(cost.IsMap()) << profile;
   ASSERT_TRUE(cost["w_perp"].IsDefined()) << profile << ": cost.w_perp is not written";
-  EXPECT_EQ(cost["w_perp"].as<double>(), 0.0) << profile;
+  EXPECT_EQ(cost["w_perp"].as<double>(), 100.0) << profile;
   const std::string fragment = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
                                "/controllers/catching/segment_mpc.yaml";
   const YAML::Node in_fragment =
@@ -1990,8 +1991,8 @@ TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
                               ["cost"]["w_perp"];
   EXPECT_TRUE(in_fragment.IsDefined()) << profile << ": the key belongs to segment_mpc.yaml";
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
-  EXPECT_EQ(planner.mpc_segment.w_perp, 0.0) << profile;
-  EXPECT_EQ(planner.mpc_segment.w_perp, rtc::catching::MpcSegmentCoreParams{}.w_perp) << profile;
+  EXPECT_EQ(planner.mpc_segment.w_perp, 100.0) << profile;
+  EXPECT_EQ(rtc::catching::MpcSegmentCoreParams{}.w_perp, 0.0) << "the code default stays off";
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
