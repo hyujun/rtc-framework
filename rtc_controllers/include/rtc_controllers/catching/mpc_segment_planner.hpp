@@ -104,7 +104,9 @@
 // stop_dev_*, stop_along_end): the catch frame at the solution's stop nodes
 // (FK) — the catch node to node N on a catch core, every node on a stop core.
 // That FK runs after the solve's end is stamped and before the solve is
-// judged, so the budget does not see it and a withheld solve is measured too.
+// judged, so the budget and the solve's own late check do not see it and a
+// withheld solve is measured too. The wake is that much longer — a few
+// microseconds — and the cycle's re-check at the publish stamp does see it.
 // A solve without a line (no direction; a stop core whose source carries none)
 // records NaN and, with w_⊥ = 0, solves as it always did.
 //
@@ -232,8 +234,8 @@ struct MpcSegmentStopDeviation {
 /// is the last node's position along the line from `p`, positive in `d`'s
 /// direction. A distance that is not a number makes `dev_max` one too.
 /// @param q arm.nq × (N+1) joint positions, model order
-/// @return every member NaN when the columns are not in `q` or its rows are
-///         not the model's.
+/// @return every member NaN when the columns are not in `q`, its rows are not
+///         the model's, or the model has no such frame.
 [[nodiscard]] MpcSegmentStopDeviation MeasureMpcSegmentStop(
     const pinocchio::Model& arm, pinocchio::Data& data, pinocchio::FrameIndex frame,
     const Eigen::Ref<const Eigen::MatrixXd>& q, int k_first, int k_last, const Eigen::Vector3d& p,

@@ -2658,6 +2658,34 @@ def test_the_threshold_is_the_settings_value(tmp_path):
     assert ct.Settings().tc_shift_max_ms == ct.TC_SHIFT_MAX_MS == 5.0
 
 
+def test_the_executed_stop_medians_leave_out_shifted_rows_and_the_planned_ones_do_not(pilot):
+    """The executed stop columns are read from the row's t_c column on (#713):
+    a shifted row is left out of their medians. The planned ones are the
+    solve's own record and keep every valid trial."""
+    import copy
+
+    rows = copy.deepcopy(pilot.rows)
+    shifted = list(range(0, 25, 2))  # 13 of 25: included, they would BE the median
+    for i, row in enumerate(rows):
+        for key in ct.STOP_LINE_KEYS[1:]:
+            row[key] = 1e4 if i in shifted else 10.0
+        if i in shifted:
+            row["tc_axis"] = "shifted"
+            row["tc_stamp_minus_tc_ms"] = 120.0
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    s = pilot.summary
+    summary = ct._summarise(
+        rows, [], ct.Settings(n_boot=50), None, None, profile, s["arm_joints"], s["dt_s"], "test"
+    )
+    assert set(ct.STOP_TC_KEYS) == {k for k in ct.STOP_LINE_KEYS if k.startswith("stop_exec_")}
+    for key in ct.STOP_TC_KEYS:
+        assert summary["medians"][key] == 10.0
+    for key in ct.STOP_LINE_KEYS[4:]:
+        assert summary["medians"][key] == 1e4
+    assert set(ct.STOP_TC_KEYS) <= set(summary["tc_axis"]["medians_exclude"])
+    assert "stop_seq" not in summary["medians"]
+
+
 def test_golden_tc_axis_is_ok_on_every_trial_and_the_medians_are_the_full_ones(pilot):
     assert [r["tc_axis"] for r in pilot.rows] == ["ok"] * 25
     assert {r["tc_axis_source"] for r in pilot.rows} == {"planner_wake"}

@@ -2790,6 +2790,10 @@ STOP_LINE_KEYS = (
     "stop_plan_dev_max_mm",
     "stop_plan_along_end_mm",
 )
+# The executed three are read from the row's ``t_c`` column on (#602), like
+# :data:`TC_COLUMN_KEYS`: a row whose column is off the catch instant is left
+# out of their medians.
+STOP_TC_KEYS = STOP_LINE_KEYS[1:4]
 
 
 def stop_line_columns(
@@ -2820,9 +2824,14 @@ def stop_line_columns(
       (``segment_stop_dev_end`` / ``_max`` / ``_along_end``: its nodes only, so
       the largest is not over the same span as the executed one).
 
-    NaN without a commit, when no segment is held in the window, when the
-    window ends before ``t_end``, on a log without the columns, when the solve
-    had no line, or with no clock lane to put the wakes on the diag's axis.
+    All NaN without a commit, when no segment is held in the window, when the
+    window ends before ``t_end``, on a log without the columns, or with no
+    clock lane to put the wakes on the diag's axis. ``stop_seq`` alone is
+    filled when no row published that segment in this trial, and the executed
+    three are NaN when the solve recorded no line (or a measured tick of the
+    span is not a number). The span starts at the row's ``t_c`` column: on a
+    row whose column is off the catch instant (``tc_axis`` ``shifted``, #602)
+    the executed three are read late (:data:`STOP_TC_KEYS`).
     """
     rec: dict = dict.fromkeys(STOP_LINE_KEYS, math.nan)
     if (
@@ -4273,7 +4282,7 @@ def tc_axis_summary(rows: Sequence[Mapping], max_shift_ms: float) -> dict:
         "n_unknown": sum(1 for r in committed if r["tc_axis"] == "unknown"),
         "shifted_trials": [r["idx"] for r in committed if r["tc_axis"] == "shifted"],
         "shift_ms_abs_p50_p95_max": _p50_p95_max(committed, "tc_stamp_minus_tc_ms", absolute=True),
-        "medians_exclude": list(TC_COLUMN_KEYS),
+        "medians_exclude": [*TC_COLUMN_KEYS, *STOP_TC_KEYS],
     }
 
 
@@ -4935,7 +4944,7 @@ def _summarise(
         # A row whose t_c column is off the catch instant (#602) is left out of
         # the medians read at that column; ``tc_axis`` below counts them.
         "medians": {
-            k: _median(on_axis if k in TC_COLUMN_KEYS else valid, k)
+            k: _median(on_axis if k in TC_COLUMN_KEYS or k in STOP_TC_KEYS else valid, k)
             for k in (
                 "clik_mm",
                 "servo_mm",

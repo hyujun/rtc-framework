@@ -670,6 +670,12 @@ def test_a_segment_whose_solve_recorded_no_line_has_no_executed_distance():
     assert rec["stop_seq"] == STOP_SEQ
     assert all(math.isnan(rec[k]) for k in ct.STOP_LINE_KEYS if k.startswith("stop_exec_"))
     assert rec["stop_plan_dev_end_mm"] == pytest.approx(25.0)
+    # A measured tick inside the span that is not a number poisons the largest.
+    ctx = _stop_ctx()
+    ctx.q_meas[int(np.argmin(np.abs(ctx.t - (T_X + 0.2))))] = math.nan
+    rec = ct.stop_line_columns(ctx, T_X, *_stop_events())
+    assert math.isnan(rec["stop_exec_dev_max_mm"])
+    assert rec["stop_exec_dev_end_mm"] == pytest.approx(30.0, abs=1e-6)
     # No row published that segment in this trial: only its number is known.
     wakes_t, events = _stop_events()
     rec = ct.stop_line_columns(_stop_ctx(), T_X, wakes_t, events._replace(seq=events.seq + 100))

@@ -1995,10 +1995,15 @@ TEST(ApproachPlannerRecord, TheStopIsMeasuredAgainstTheBallsLineWhateverTheWeigh
         followed = r.Publish(now);
       }
       if (w == 0.0) {
-        EXPECT_EQ(r.planner.ApproachCoreInput(6).p_c, Eigen::Vector3d::Zero());
-        EXPECT_EQ(r.planner.ApproachCoreInput(6).d_hat, Eigen::Vector3d::UnitX());
-        EXPECT_EQ(r.planner.StopCoreInput(0).p_c, Eigen::Vector3d::Zero());
-        EXPECT_EQ(r.planner.StopCoreInput(1).d_hat, Eigen::Vector3d::UnitX());
+        // No core was handed a line: every input still holds the default.
+        for (int j = 1; j <= 6; ++j) {
+          EXPECT_EQ(r.planner.ApproachCoreInput(j).p_c, Eigen::Vector3d::Zero()) << j;
+          EXPECT_EQ(r.planner.ApproachCoreInput(j).d_hat, Eigen::Vector3d::UnitX()) << j;
+        }
+        for (int k = 0; k <= 2; ++k) {
+          EXPECT_EQ(r.planner.StopCoreInput(k).p_c, Eigen::Vector3d::Zero()) << k;
+          EXPECT_EQ(r.planner.StopCoreInput(k).d_hat, Eigen::Vector3d::UnitX()) << k;
+        }
       }
     }
   }
@@ -3049,6 +3054,56 @@ double RssMb() {
   long rss = 0;
   f >> total >> rss;
   return static_cast<double>(rss) * 4096.0 / (1024.0 * 1024.0);
+}
+
+// The two solves the tests above do not reach: a stop core re-solved without
+// its reference (the record is of the solution the retry returned, on the
+// source's line), and the first segment of a replacement (a start on the
+// followed segment; the line is the NEW plan's).
+TEST(ApproachPlannerRecord, AColdRetryAndAReplacementsFirstSegmentAreMeasuredToo) {
+  const std::int64_t lag = kTArm + kReplan + 2 * kH;
+  for (const double w : {0.0, kPerp}) {
+    SCOPED_TRACE("w_perp " + std::to_string(w));
+    {
+      Rig r(Arm6(), PerpParams(w));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U);
+      const MpcSegmentBallTarget moved = MovedBall(s.c);
+      std::int64_t now = kT0 + 20 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                   moved, r.out, r.rec))
+          << Why(r.rec);
+      // The published segment ends off rest: the stop core refuses it as a
+      // reference and is re-solved from nothing.
+      for (int j = 0; j < r.out.nv; ++j) {
+        r.out.qd[static_cast<std::size_t>(r.out.n_nodes * kMaxSegmentNv + j)] = 5e-4;
+      }
+      const std::uint32_t s2 = r.Publish(now);
+      now = s.t_c - lag - 1 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s2),
+                                   MpcSegmentBallTarget{}, r.out, r.rec))
+          << Why(r.rec);
+      ASSERT_TRUE(r.rec.cold_retry);
+      const Eigen::Vector3d d = moved.v_b.normalized();
+      ExpectStopRecord(r.rec, StopOf(r.arm, r.out, 0, moved.p_b, d), moved.p_b, d);
+    }
+    {
+      Rig r(Arm6(), PerpParams(w));
+      const Replacement x = Replace(r, 330 * kMs, 40 * kMs);
+      ASSERT_NE(x.first.seq, 0U);
+      SetClock(x.now);
+      ASSERT_TRUE(r.planner.PlanFirst(
+          FollowingRt(r.arm, r.arm.q_nominal, x.now - kH, x.first.t_c, 0, x.first.seq), x.plan,
+          BallFor(x.c), r.out, r.rec))
+          << Why(r.rec);
+      ASSERT_TRUE(r.rec.x0_from_segment);
+      const Eigen::Vector3d d = x.c.v.normalized();
+      ExpectStopRecord(r.rec, StopOf(r.arm, r.out, r.out.n_pre, x.c.p, d), x.c.p, d);
+      EXPECT_GT((x.c.p - x.first.c.p).norm(), 1e-4);  // not the followed plan's line
+    }
+  }
 }
 
 // The measurement on its own: what it returns, what it refuses, that it
