@@ -511,9 +511,10 @@ struct CatchingParams {
   /// η_τ of the torque rows. The D-16 derivation's margin (0.8, user decision
   /// 2026-09-20) is the default: the same torque budget, now spent per tick.
   TbdDouble joint_cmd_eta_tau{TbdDouble::Resolved(0.8)};  // –, (0, 1] — dynamic
-  /// L5 §4.4/§4.5. **sim is 0** (2026-09-20: no lag is injected), and the
-  /// lead axis then coincides with the real one. A non-zero value is the
-  /// hardware identification (S10) or the axis-confusion fixture.
+  /// L5 §4.4/§4.5. The parser default is 0 — no lag, and the lead axis then
+  /// coincides with the real one. A non-zero value is the lag of the plant
+  /// the configuration runs on: a sim servo's, the hardware identification
+  /// (S10), or the axis-confusion fixture.
   TbdDouble joint_cmd_lag_t_arm{TbdDouble::Resolved(0.0)};  // s, >= 0
   bool joint_cmd_lag_lead_enable{false};
   /// `lag.provisional` blocks a real-arm configuration until T_arm has been

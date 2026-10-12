@@ -9,15 +9,26 @@
 //   5. What a wake is handed: an arm at rest that follows no plan, a zero
 //      covariance of the prediction, a report as old as the wake.
 //   6. The wake CSV and the binding file are fail-closed.
+//   7. A whole-wake batch (a binding with `segment`) is `PlannerCycle::Run`:
+//      its search cells are the search-only batch's, a throw stops at its
+//      first published pair, a withheld pair runs every wake and leaves the
+//      plan cells empty, and a throw's rows do not depend on the throws
+//      before it.
 //
 // Drives the grid search on the 6R wrist arm, built through the binding the
-// executable uses.
+// executable uses; the whole-wake batch drives a 6-joint arm with inertias
+// (the mpc segment planner solves its dynamics).
 #include "rtc_controllers/catching/catch_search_batch.hpp"
 #include "rtc_controllers/catching/time_types.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/testing/catch_arm_fixture.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
+#include "rtc_urdf_bridge/types.hpp"
 
 #include <gtest/gtest.h>
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -28,6 +39,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -35,12 +47,17 @@
 
 namespace {
 
+using rtc::catching::CycleOutcome;
 using rtc::catching::kCap;
+using rtc::catching::MakePlanBatch;
 using rtc::catching::MakeSearchBatchInputs;
 using rtc::catching::MakeSearchBatchSearch;
 using rtc::catching::NowReal;
 using rtc::catching::ParseSearchBatchBinding;
 using rtc::catching::ParseSearchWakeCsv;
+using rtc::catching::PlanBatchBuild;
+using rtc::catching::PlanBatchCsvHeader;
+using rtc::catching::PlanBatchCsvRow;
 using rtc::catching::ReachBound;
 using rtc::catching::ReachBoundJson;
 using rtc::catching::ReportedSegments;
@@ -54,7 +71,11 @@ using rtc::catching::SearchBatchRow;
 using rtc::catching::SearchBatchSearch;
 using rtc::catching::SearchBatchWake;
 using rtc::catching::SearchStats;
+using rtc::catching::SegmentBatchKind;
+using rtc::catching::SegmentKind;
+using rtc::catching::SegmentOutcome;
 using rtc::catching::TrajSample;
+using rtc::catching::WakeClock;
 
 constexpr std::int64_t kMs = 1'000'000;
 constexpr std::int64_t kNow = 10'000 * kMs;
@@ -618,6 +639,377 @@ TEST(CatchSearchBatchBinding, AnNlpProfileWithoutTheHandsValuesIsReported) {
       MakeSearchBatchSearch(rig.arm.model, *rig.arm.handle, rig.arm.frame, tree, binding);
   EXPECT_EQ(search.search, nullptr);
   EXPECT_NE(search.error.find("robot.hand.docking"), std::string::npos) << search.error;
+}
+
+// ── 7. The whole wake ────────────────────────────────────────────────────────
+
+const char* const kDockingSegment =
+    "segment:\n  mode: mpc_docking\n  mpc_docking:\n"
+    "    t_arm_s: 0.05\n    control_dt: 0.002\n    qd_rating: [2, 2, 3]\n"
+    "    hand_t_close_e2e: 0.2\n    hand_t_close_lead: .nan\n    ball_mass: 0.057\n"
+    "    limits:\n      q_min: [-1, -2, -3]\n      q_max: [1, 2, 3]\n      qd_max: [1, 1, 1]\n"
+    "      qdd_max: []\n      tau_max: [10, 20, 30]\n      tau_lo: [-9, -18, -27]\n"
+    "      tau_hi: [9, 18, 27]\n";
+
+/// A 6-joint arm with inertias, a grid search and the mpc segment planner on
+/// it, built from a catching tree and a binding as the executable builds a
+/// whole-wake batch. The arm, the catch posture and the ball are those of the
+/// approach-cycle suite, whose first wake publishes a pair.
+struct CycleRig {
+  std::shared_ptr<const pinocchio::Model> model;
+  std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle;
+  pinocchio::FrameIndex frame{0};
+  int nv{0};
+  Eigen::Vector3d p_c;
+  Eigen::Vector3d v_ball;
+  std::vector<double> wait_pose;
+  /// `planner.segment.mpc.publish.catch_pos_err_max` of the tree [m].
+  double catch_err_max{0.02};
+
+  CycleRig() {
+    rtc_urdf_bridge::ModelConfig config;
+    config.urdf_path = std::string(RTC_TEST_ROBOT_DESCRIPTIONS_DIR) + "/ur5e/urdf/ur5e.urdf";
+    config.root_joint_type = "fixed";
+    rtc_urdf_bridge::PinocchioModelBuilder builder(config);
+    model = builder.GetFullModel();
+    handle = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model);
+    frame = model->getFrameId("tool0");
+    nv = model->nv;
+    Eigen::VectorXd q_ref(nv);
+    q_ref << 0.2, -1.4, 1.1, -1.9, -1.6, 0.1;
+    pinocchio::Data data(*model);
+    pinocchio::forwardKinematics(*model, data, q_ref);
+    pinocchio::updateFramePlacement(*model, data, frame);
+    p_c = data.oMf[frame].translation();
+    // A slow ball along the frame's −z: a short reach from the wait pose.
+    v_ball = -1.0 * data.oMf[frame].rotation().col(2);
+    for (int j = 0; j < nv; ++j) {
+      wait_pose.push_back(q_ref[j] + (j % 2 == 0 ? 0.03 : -0.03));
+    }
+  }
+
+  [[nodiscard]] static std::string List(const std::vector<double>& v) {
+    std::ostringstream s;
+    s.precision(17);
+    s << '[';
+    for (std::size_t i = 0; i < v.size(); ++i) {
+      s << (i == 0 ? "" : ", ") << v[i];
+    }
+    s << ']';
+    return s.str();
+  }
+
+  [[nodiscard]] YAML::Node Tree() const {
+    std::ostringstream s;
+    s.precision(17);
+    s << "planner:\n  enabled: true\n  wait_pose: " << List(wait_pose)
+      << "\n  freeze: {T_freeze: 0.2}\n"
+         "  search:\n    grid:\n      budget_s: 0.05\n      max_ik: 8\n      n_settle: 0\n"
+         "      slice: {t_lead_min: 0.6, t_max: 0.8}\n      hand: {d_eff: 0.2, r_cap: 0.03}\n"
+         "      ik: {max_iter: 60}\n"
+         "      catchability: {manipulability_min: {arm_5row: 1.0e-6}}\n"
+         "  segment:\n    mode: mpc\n    mpc:\n"
+         "      horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}\n"
+         "      approach: {n_pre_max: 6, dt_pre_s: 0.1}\n"
+         "      replan: {k_max: 2}\n"
+         "      publish: {catch_pos_err_max: "
+      << catch_err_max << "}\n";
+    return YAML::Load(s.str());
+  }
+
+  [[nodiscard]] YAML::Node BindingFile(bool with_segment = true) const {
+    std::vector<double> q_min;
+    std::vector<double> q_max;
+    for (int j = 0; j < nv; ++j) {
+      q_min.push_back(model->lowerPositionLimit[j]);
+      q_max.push_back(model->upperPositionLimit[j]);
+    }
+    std::ostringstream s;
+    s << "search: grid\ndevice_of_model: [0, 1, 2, 3, 4, 5]\ngrid:\n"
+         "  qdot_max: [2, 2, 3, 3, 3, 3]\n  qddot_max: [20, 20, 20, 20, 20, 20]\n"
+         "  eta_v: 0.9\n  v_max: 3.0\n  a_dec: 10.0\n  t_arm_s: 0.0\n  t_close_lead: 0.1\n"
+         "  t_close_total: 0.101\n  ball_mass: 0.057\n  ref_omega: 10.0\n  ref_zeta: 1.0\n"
+         "  ref_a_max: 21.0\n  control_dt: 0.002\n  follows_segments: true\n";
+    if (with_segment) {
+      s << "segment:\n  mode: mpc\n  mpc:\n    q_min: " << List(q_min)
+        << "\n    q_max: " << List(q_max)
+        << "\n    qdot_max: [2, 2, 3, 3, 3, 3]\n    tau_max: [150, 150, 150, 28, 28, 28]\n"
+           "    eta_v: 0.9\n    t_arm_s: 0.0\n    control_dt: 0.002\n";
+    }
+    return YAML::Load(s.str());
+  }
+
+  [[nodiscard]] PlanBatchBuild Build() const {
+    return MakePlanBatch(model, *handle, frame, Tree(), ParseSearchBatchBinding(BindingFile(), nv));
+  }
+
+  [[nodiscard]] SearchBatchSearch BuildSearch() const {
+    return MakeSearchBatchSearch(model, *handle, frame, Tree(),
+                                 ParseSearchBatchBinding(BindingFile(false), nv));
+  }
+
+  /// A throw that passes through `p` with `v` 0.7 s after its first wake:
+  /// `n_wakes` wakes 50 ms apart, each a prediction of 20 samples 50 ms apart
+  /// from its own instant.
+  [[nodiscard]] static std::vector<SearchBatchWake> Throw(std::int64_t id, const Eigen::Vector3d& p,
+                                                          const Eigen::Vector3d& v, int n_wakes) {
+    std::vector<SearchBatchWake> out;
+    const std::int64_t t_c = kNow + 700 * kMs;
+    for (int w = 0; w < n_wakes; ++w) {
+      SearchBatchWake wake;
+      wake.throw_id = id;
+      wake.wake = w;
+      wake.now_ns = kNow + w * 50 * kMs;
+      for (int k = 0; k < 20; ++k) {
+        TrajSample s;
+        s.t_ns = wake.now_ns + k * 50 * kMs;
+        const double dt = static_cast<double>(s.t_ns - t_c) / 1e9;
+        const Eigen::Vector3d at = p + v * dt;
+        s.p = {at.x(), at.y(), at.z()};
+        s.v = {v.x(), v.y(), v.z()};
+        wake.samples.push_back(s);
+      }
+      out.push_back(wake);
+    }
+    return out;
+  }
+
+  [[nodiscard]] std::vector<SearchBatchWake> Catchable(std::int64_t id, int n_wakes = 4) const {
+    return Throw(id, p_c, v_ball, n_wakes);
+  }
+};
+
+std::map<std::string, std::string> CycleCells(const SearchBatchRow& row, int nv) {
+  const auto names = Split(PlanBatchCsvHeader(nv));
+  const auto values = Split(PlanBatchCsvRow(row, nv));
+  EXPECT_EQ(names.size(), values.size());
+  std::map<std::string, std::string> out;
+  for (std::size_t i = 0; i < std::min(names.size(), values.size()); ++i) {
+    out[names[i]] = values[i];
+  }
+  return out;
+}
+
+TEST(CatchPlanBatch, AThrowStopsAtItsFirstPublishedPairAndItsSearchCellsAreTheSearchBatchs) {
+  const CycleRig rig;
+  PlanBatchBuild built = rig.Build();
+  ASSERT_NE(built.batch, nullptr) << built.error;
+  ASSERT_EQ(built.batch->RestPose(), rig.wait_pose);
+  const auto wakes = rig.Catchable(7);
+  const auto rows = built.batch->Run(wakes);
+  ASSERT_FALSE(rows.empty());
+  ASSERT_LT(rows.size(), wakes.size()) << "the wakes after the pair are not run";
+  const SearchBatchRow& last = rows.back();
+  EXPECT_TRUE(last.cycle);
+  ASSERT_EQ(last.outcome, CycleOutcome::kPublished)
+      << rtc::catching::SegmentOutcomeName(last.segment.outcome) << " / "
+      << last.segment.core_reason_name;
+  EXPECT_TRUE(last.search_valid);
+  EXPECT_TRUE(last.plan.valid);
+  EXPECT_EQ(last.segment.outcome, SegmentOutcome::kPublished);
+  EXPECT_EQ(last.segment.kind, SegmentKind::kFirst);
+  // The clock stood at the wake's instant, and is back at zero outside a run.
+  EXPECT_EQ(last.plan.publish_ns, last.now_ns);
+  EXPECT_EQ(WakeClock(), 0);
+  for (std::size_t i = 0; i + 1 < rows.size(); ++i) {
+    EXPECT_FALSE(rows[i].outcome == CycleOutcome::kPublished && rows[i].plan.valid) << i;
+  }
+
+  // The search of a whole wake decides what the search alone decides: the
+  // search-only batch stops at the same wake with the same cells.
+  SearchBatchSearch search = rig.BuildSearch();
+  ASSERT_NE(search.search, nullptr) << search.error;
+  const auto search_rows = RunSearchBatch(*search.search, search.q_rest, wakes);
+  ASSERT_FALSE(search_rows.empty());
+  ASSERT_TRUE(search_rows.back().plan.valid);
+  ASSERT_LE(search_rows.size(), rows.size());
+  const std::size_t at = search_rows.size() - 1;
+  ASSERT_TRUE(rows[at].search_valid);
+  if (rows[at].outcome == CycleOutcome::kPublished) {
+    EXPECT_EQ(WithoutWallUs(SearchBatchCsvRow(rows[at], rig.nv)),
+              WithoutWallUs(SearchBatchCsvRow(search_rows[at], rig.nv)));
+  }
+  for (std::size_t i = 0; i < at; ++i) {
+    EXPECT_EQ(WithoutWallUs(SearchBatchCsvRow(rows[i], rig.nv)),
+              WithoutWallUs(SearchBatchCsvRow(search_rows[i], rig.nv)))
+        << i;
+  }
+
+  const auto cells = CycleCells(last, rig.nv);
+  EXPECT_EQ(cells.at("search_valid"), "1");
+  EXPECT_EQ(cells.at("outcome"), "published");
+  EXPECT_EQ(cells.at("segment_outcome"), "published");
+  EXPECT_EQ(cells.at("segment_kind"), "first");
+  EXPECT_FALSE(cells.at("t_c_ns").empty());
+  EXPECT_FALSE(cells.at("segment_catch_pos_err").empty());
+}
+
+TEST(CatchPlanBatch, AWithheldPairRunsEveryWakeAndLeavesThePlanCellsEmpty) {
+  CycleRig rig;
+  rig.catch_err_max = 1e-6;  // no solve lands the catch node that close
+  PlanBatchBuild built = rig.Build();
+  ASSERT_NE(built.batch, nullptr) << built.error;
+  const auto wakes = rig.Catchable(4);
+  const auto rows = built.batch->Run(wakes);
+  ASSERT_EQ(rows.size(), wakes.size());
+  for (const auto& row : rows) {
+    EXPECT_FALSE(row.outcome == CycleOutcome::kPublished && row.plan.valid) << row.wake;
+  }
+  const SearchBatchRow& first = rows.front();
+  ASSERT_TRUE(first.search_valid);
+  EXPECT_EQ(first.outcome, CycleOutcome::kHeld);
+  EXPECT_EQ(first.segment.outcome, SegmentOutcome::kCatchError);
+  EXPECT_FALSE(first.plan.valid);
+  const auto cells = CycleCells(first, rig.nv);
+  EXPECT_EQ(cells.at("search_valid"), "1");
+  EXPECT_EQ(cells.at("outcome"), "held");
+  EXPECT_EQ(cells.at("segment_outcome"), "catch_error");
+  EXPECT_EQ(cells.at("segment_kind"), "first");
+  EXPECT_EQ(cells.at("t_c_ns"), "");
+  EXPECT_EQ(cells.at("q_star0"), "");
+  EXPECT_NE(cells.at("segment_catch_pos_err"), "nan");
+}
+
+TEST(CatchPlanBatch, AThrowsRowsDoNotDependOnTheThrowsBeforeIt) {
+  const CycleRig rig;
+  PlanBatchBuild built = rig.Build();
+  ASSERT_NE(built.batch, nullptr) << built.error;
+  const auto other =
+      CycleRig::Throw(3, rig.p_c + Eigen::Vector3d(0.0, 0.02, -0.02), rig.v_ball * 0.9, 4);
+  const auto far = CycleRig::Throw(2, rig.p_c + Eigen::Vector3d(10.0, 0.0, 0.0), rig.v_ball, 3);
+  const auto forward = Concat({rig.Catchable(1), far, other});
+  const auto backward = Concat({other, far, rig.Catchable(1)});
+  const auto by_throw = [&](const std::vector<SearchBatchWake>& wakes) {
+    std::map<std::int64_t, std::vector<std::string>> out;
+    for (const auto& row : built.batch->Run(wakes)) {
+      out[row.throw_id].push_back(WithoutWallUs(PlanBatchCsvRow(row, rig.nv)));
+    }
+    return out;
+  };
+  const auto a = by_throw(forward);
+  const auto b = by_throw(backward);
+  ASSERT_EQ(a.size(), 3U);
+  EXPECT_EQ(a, b);
+  EXPECT_EQ(a.at(2).size(), 3U) << "the unreachable throw ran every wake";
+}
+
+TEST(CatchPlanBatch, TheCsvKeepsTheSearchColumnsAndEndsWithWallUs) {
+  const std::string search = SearchBatchCsvHeader(6);
+  const std::string whole = PlanBatchCsvHeader(6);
+  const std::string prefix = WithoutWallUs(search);
+  ASSERT_EQ(whole.compare(0, prefix.size(), prefix), 0);
+  const auto names = Split(whole);
+  EXPECT_EQ(names.back(), "wall_us");
+  EXPECT_EQ(names[Split(prefix).size()], "outcome");
+  for (const char* name :
+       {"segment_outcome", "segment_kind", "segment_core_reason", "segment_catch_pos_err"}) {
+    EXPECT_NE(std::find(names.begin(), names.end(), name), names.end()) << name;
+  }
+}
+
+TEST(CatchPlanBatchBinding, ReadsBothSegmentPlanners) {
+  const CycleRig rig;
+  const SearchBatchBinding mpc = ParseSearchBatchBinding(rig.BindingFile(), rig.nv);
+  ASSERT_TRUE(mpc.segment.has_value());
+  EXPECT_EQ(mpc.segment->kind, SegmentBatchKind::kMpc);
+  EXPECT_EQ(mpc.segment->q_min.size(), 6U);
+  EXPECT_EQ(mpc.segment->tau_max[3], 28.0);
+  EXPECT_EQ(mpc.segment->eta_v, 0.9);
+  EXPECT_EQ(mpc.segment->control_dt, 0.002);
+  EXPECT_FALSE(ParseSearchBatchBinding(rig.BindingFile(false), rig.nv).segment.has_value());
+
+  const SearchBatchBinding docking =
+      ParseSearchBatchBinding(YAML::Load(std::string(kNlpBinding) + kDockingSegment), 3);
+  ASSERT_TRUE(docking.segment.has_value());
+  EXPECT_EQ(docking.segment->kind, SegmentBatchKind::kMpcDocking);
+  EXPECT_EQ(docking.segment->t_arm_s, 0.05);
+  EXPECT_EQ(docking.segment->qd_rating, (std::vector<double>{2.0, 2.0, 3.0}));
+  EXPECT_TRUE(std::isnan(docking.segment->hand_t_close_lead));  // a TBD value stays one
+  EXPECT_EQ(docking.segment->limits.qdd_max.size(), 0);
+  EXPECT_EQ(docking.segment->limits.tau_lo[1], -18.0);
+  ASSERT_EQ(docking.segment->limits.armature.size(), 3);
+}
+
+TEST(CatchPlanBatchBinding, TheSegmentMapIsFailClosed) {
+  const CycleRig rig;
+  const auto refused = [&](const std::string& edit_from, const std::string& edit_to) {
+    std::ostringstream text;
+    text << rig.BindingFile();
+    std::string s = text.str();
+    const std::size_t at = s.rfind(edit_from);
+    EXPECT_NE(at, std::string::npos) << edit_from;
+    if (at == std::string::npos) {
+      return false;
+    }
+    s.replace(at, edit_from.size(), edit_to);
+    try {
+      static_cast<void>(ParseSearchBatchBinding(YAML::Load(s), rig.nv));
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  EXPECT_FALSE(refused("eta_v: 0.9", "eta_v: 0.8"));
+  EXPECT_FALSE(refused("eta_v: 0.9", "eta_v: .nan")) << "a TBD scalar is a value";
+  EXPECT_TRUE(refused("mode: mpc", "mode: closed_form"));
+  EXPECT_TRUE(refused("mode: mpc", "mode: mpc_docking")) << "the selected planner's map is absent";
+  EXPECT_TRUE(refused("eta_v: 0.9", "eta_vv: 0.9")) << "an unknown key, and a missing one";
+  EXPECT_TRUE(refused("tau_max: [150, ", "tau_max: ["));
+  EXPECT_TRUE(refused("tau_max: [150, ", "tau_max: [.nan, "));
+  EXPECT_TRUE(refused("segment:", "segmentt:")) << "an unknown top-level key";
+}
+
+TEST(CatchPlanBatchBinding, ABindingOrATreeWithoutTheSegmentPlannerIsRefused) {
+  const CycleRig rig;
+  EXPECT_THROW(
+      static_cast<void>(MakePlanBatch(rig.model, *rig.handle, rig.frame, rig.Tree(),
+                                      ParseSearchBatchBinding(rig.BindingFile(false), rig.nv))),
+      std::invalid_argument);
+  YAML::Node tree = rig.Tree();
+  tree["planner"]["segment"].remove("mpc");
+  EXPECT_THROW(static_cast<void>(MakePlanBatch(rig.model, *rig.handle, rig.frame, tree,
+                                               ParseSearchBatchBinding(rig.BindingFile(), rig.nv))),
+               std::invalid_argument);
+}
+
+TEST(CatchPlanBatch, AProfileAControllerParksIsRefusedInThatControllersWords) {
+  // The grid search with the mpc_docking planner on a tree that has the
+  // planner's map and none of the hand's identified capture set: a controller's
+  // configure parks on it (docking_config.hpp), and the batch judges nothing.
+  const CycleRig rig;
+  YAML::Node binding = rig.BindingFile(false);
+  binding["segment"] = YAML::Load(
+      "mode: mpc_docking\n"
+      "mpc_docking:\n"
+      "  t_arm_s: 0.0\n  control_dt: 0.002\n  qd_rating: [2, 2, 3, 3, 3, 3]\n"
+      "  hand_t_close_e2e: 0.2\n  hand_t_close_lead: 0.05\n  ball_mass: 0.057\n"
+      "  limits:\n    q_min: [-6, -6, -3, -6, -6, -6]\n    q_max: [6, 6, 3, 6, 6, 6]\n"
+      "    qd_max: [2, 2, 3, 3, 3, 3]\n    qdd_max: []\n"
+      "    tau_max: [150, 150, 150, 28, 28, 28]\n"
+      "    tau_lo: [-150, -150, -150, -28, -28, -28]\n"
+      "    tau_hi: [150, 150, 150, 28, 28, 28]\n");
+  YAML::Node tree = rig.Tree();
+  tree["planner"]["segment"]["mode"] = "mpc_docking";
+  tree["planner"]["segment"]["mpc_docking"] = YAML::Load("{approach: {n_pre_max: 6}}");
+  const PlanBatchBuild built = MakePlanBatch(rig.model, *rig.handle, rig.frame, tree,
+                                             ParseSearchBatchBinding(binding, rig.nv));
+  EXPECT_EQ(built.batch, nullptr);
+  EXPECT_NE(built.error.find("'catching.robot.hand.docking.s_ent' is unset or TBD"),
+            std::string::npos)
+      << built.error;
+}
+
+TEST(CatchPlanBatch, TheWakeClockIsZeroAgainAfterARunThatThrew) {
+  const CycleRig rig;
+  const PlanBatchBuild built = rig.Build();
+  ASSERT_NE(built.batch, nullptr) << built.error;
+  // A second throw whose wake has no sample is refused — after the first ran
+  // and set the clock.
+  std::vector<SearchBatchWake> wakes = rig.Catchable(1, 1);
+  wakes.push_back(rig.Catchable(2, 1).front());
+  wakes.back().samples.clear();
+  EXPECT_THROW(static_cast<void>(built.batch->Run(wakes)), std::invalid_argument);
+  EXPECT_EQ(rtc::catching::WakeClock(), 0);
 }
 
 }  // namespace

@@ -29,6 +29,12 @@ Usage:
   # to <session>/sim/{clock_lane,ball_contact_lane}.csv
   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py sim_lanes:=true
 
+  # Catching planner selection (#821): the shipped demo_catching_controller
+  # with catching.planner.search.mode / catching.planner.segment.mode changed
+  # and nothing else (empty = the shipped value; any other value is refused)
+  ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
+      catch_search_mode:=nlp catch_segment_mode:=mpc_docking
+
 Nodes launched:
   1. mujoco_simulator_node  — MuJoCo physics simulator (replaces UR driver)
   2. integrated_rt_controller     — 500Hz controller (CV-based wakeup in sim mode)
@@ -54,6 +60,13 @@ from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from integrated_bringup.catch_modes import (
+    SEARCH_ARGUMENT,
+    SEGMENT_ARGUMENT,
+    catch_mode_overrides,
+    catch_search_mode_argument_description,
+    catch_segment_mode_argument_description,
+)
 from integrated_bringup.sim_lanes import sim_lane_overrides, sim_lanes_argument_description
 from integrated_bringup.sim_overlay import (
     resolve_sim_overlay,
@@ -234,6 +247,18 @@ def launch_setup(context, *args, **kwargs):
                 "Must be 'mock' or 'handler' (or empty to use YAML default)."
             )
         ctrl_overrides["demo_wbc_controller.mpc.engine"] = engine_str
+
+    # ── Catching planner selection (#821) — integrated_bringup.catch_modes ───
+    # Two controller keys and no overlay file. The override path creates any
+    # key it is given, so the helper owns the spelling and refuses a value that
+    # is not a mode; whoever throws at this sim reads the controller's mirror
+    # back first (planner.search.mode / planner.segment.mode).
+    ctrl_overrides.update(
+        catch_mode_overrides(
+            LaunchConfiguration(SEARCH_ARGUMENT).perform(context),
+            LaunchConfiguration(SEGMENT_ARGUMENT).perform(context),
+        )
+    )
 
     if ctrl_overrides:
         ctrl_params.append(ctrl_overrides)
@@ -542,6 +567,18 @@ def generate_launch_description():
         description=sim_lanes_argument_description(),
     )
 
+    catch_search_mode_arg = DeclareLaunchArgument(
+        SEARCH_ARGUMENT,
+        default_value="",
+        description=catch_search_mode_argument_description(),
+    )
+
+    catch_segment_mode_arg = DeclareLaunchArgument(
+        SEGMENT_ARGUMENT,
+        default_value="",
+        description=catch_segment_mode_argument_description(),
+    )
+
     use_cpu_affinity_arg = DeclareLaunchArgument(
         "use_cpu_affinity",
         default_value="true",
@@ -639,6 +676,8 @@ def generate_launch_description():
             object_seed_arg,
             sim_overlay_arg,
             sim_lanes_arg,
+            catch_search_mode_arg,
+            catch_segment_mode_arg,
             max_log_sessions_arg,
             use_cpu_affinity_arg,
             initial_controller_arg,

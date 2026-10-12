@@ -568,7 +568,7 @@ class DemoWbcController final : public RTControllerInterface {
   void FillUnsolvedPublishState(double dt) noexcept;
 
   // ── WBC CSV fill (controller-private data: a_opt / SE3 ramp / fingertip
-  //    force / TSID-QP diagnostics — see ~/.claude/plans/wbc-csv-logging.md) ─
+  //    force / TSID-QP diagnostics) ─────────────────────────────────────────
   // role 0 = arm (SE3 task block), role 1 = hand (motor + fingertip force).
   void FillDeviceWbcLogPod(const ControllerState& state, const ControllerOutput& output,
                            std::size_t device_idx, std::uint8_t role,
@@ -1309,7 +1309,7 @@ class DemoWbcController final : public RTControllerInterface {
   // (DeviceWbcLog) instead of the generic DeviceStateLog — adds a_opt
   // acceleration, SE3 trajectory (arm), and fingertip force (hand). The hand
   // sensor channel stays generic (DeviceSensorLog). wbc_diag is a single
-  // per-tick TSID/QP diagnostics channel. See ~/.claude/plans/wbc-csv-logging.md.
+  // per-tick TSID/QP diagnostics channel.
   rtc::LogHandle<integrated_bringup::DeviceWbcLogPod> primary_wbc_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceWbcLogPod> secondary_wbc_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;

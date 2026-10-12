@@ -185,6 +185,7 @@ repo_scripts/
 | `get_build_swap_max()` | 그 상한과 함께 허용할 swap — 기본 상한이면 `MemTotal` 의 25%, `RTC_BUILD_MEM_MAX` 를 직접 줬으면 0 |
 | `build_mem_scope_prefix()` | 그 상한이 걸린 systemd user scope 로 명령을 감쌀 prefix 를 `BUILD_MEM_SCOPE_PREFIX` 배열에 채운다 (`MemoryMax` + `MemorySwapMax`). probe 가 scope 안에서 `memory.max` 를 읽어 한도가 실제로 걸리는지 확인하고, 못 걸면 prefix 는 비고 `BUILD_MEM_SCOPE_WHY` 에 이유를 남긴다 (`no-session` / `not-enforced`) |
 | `build_mem_scope_end()` | scope 안의 명령이 끝난 뒤 부른다. scope 가 OOM 으로 프로세스를 잃었으면 `BUILD_MEM_SCOPE_OOM=1` — unit 의 `Result=oom-kill` (systemd ≥ 253) 또는 cgroup `memory.events` 의 `oom_kill` (그 이전) 로 판정해 컴파일 에러와 메모리 부족을 가른다. failed unit · 기록 파일도 지운다 |
+| `prune_dangling_install_links <install 의 패키지 dir> <소스 루트>` | `--symlink-install` 이 남긴 잔재를 지운다: 그 디렉토리에서 **대상이 소스 루트 아래였던 끊긴 링크**만 지우고 지운 경로를 한 줄씩 출력. 살아 있는 링크와 다른 곳 (`build/` · `/opt`) 을 가리키는 끊긴 링크는 그대로 둔다. `build.sh` 가 빌드에 성공한 뒤 빌드한 패키지마다 부른다 (`--no-symlink` 면 부르지 않는다). 항상 0 반환 |
 | `print_build_host_summary()` | 이 호스트의 기본 job 수 · 메모리 상한 가용성 · ccache 유무를 한 줄씩 보고 (`install.sh` 의 설치 뒤 · `verify` 모드). 항상 0 반환 |
 | `normalize_on_off()` | on/off knob 정규화 (`on`·`1`·`true`·`yes` / `off`·`0`·`false`·`no`, 대소문자 무시). 그 밖은 1 |
 

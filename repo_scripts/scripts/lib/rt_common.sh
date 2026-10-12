@@ -886,6 +886,25 @@ describe_build_mem_scope() {
   fi
 }
 
+# `colcon build --symlink-install` 은 소스에서 지운 파일의 링크를 install 에 남긴다:
+# 다시 빌드해도 그대로다. 대상이 없는 링크는 share 를 훑는 테스트를 실패시키고, 이름만
+# 보는 조회 (`ros2 launch` 의 파일 찾기) 에는 아직 있는 파일로 보인다.
+# $1 (install 의 한 패키지 디렉토리) 에서 **대상이 $2 (소스 루트) 아래였던 끊긴
+# 링크**만 지우고, 지운 경로를 한 줄씩 출력한다. 살아 있는 링크와, 다른 곳 (build/ ·
+# /opt) 을 가리키는 끊긴 링크는 건드리지 않는다 — 그것은 이 스크립트가 아는 잔재가
+# 아니다. 항상 0 을 반환한다.
+prune_dangling_install_links() {
+  local dir="$1" root="${2%/}" real link target
+  [[ -d "$dir" && -n "$root" ]] || return 0
+  real="$(cd "$root" 2>/dev/null && pwd -P)" || real="$root"
+  while IFS= read -r -d '' link; do
+    target="$(readlink -- "$link" 2>/dev/null)" || continue
+    [[ "$target" == "$root"/* || "$target" == "$real"/* ]] || continue
+    rm -f -- "$link" && echo "$link"
+  done < <(find "$dir" -xtype l -print0 2>/dev/null)
+  return 0
+}
+
 # 이 호스트에서 빌드가 어떻게 돌지 — job 수 · 메모리 상한 · ccache — 를 한 줄씩
 # 알린다. install.sh 가 설치 뒤와 `verify` 모드에서 부른다: 세 가지 모두 없어도
 # 빌드는 되므로, 빠진 것은 여기서 말하지 않으면 아무도 모른다. 항상 0 을 반환한다.

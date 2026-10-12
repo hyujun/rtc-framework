@@ -336,7 +336,8 @@ catching:
     # without them is parked). The wait pose is the fixture's home, where
     # every suite measures the arm at start: an aligned arm skips homing
     # (#537 S7 Q13), so the S5/S6 cases still arm on their first tick. The
-    # freeze is the shipped p1b value, above T_close_e2e + T_arm + h.
+    # freeze is what p1b shipped with T_arm 0 (until #821), above
+    # T_close_e2e + T_arm + h for this fixture's T_arm 0.
     wait_pose: [)"
      << kUr5eHome[0] << ", " << kUr5eHome[1] << ", " << kUr5eHome[2] << ", " << kUr5eHome[3] << ", "
      << kUr5eHome[4] << ", " << kUr5eHome[5] << R"(]

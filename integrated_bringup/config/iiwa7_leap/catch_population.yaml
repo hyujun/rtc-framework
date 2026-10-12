@@ -1,0 +1,72 @@
+# The throw population of this robot's catching controller, and how it is narrowed (#821):
+#
+#   population --search--> throw_search_set --segment--> throw_segment_set --sim--> throw_catch_set
+#
+#   stage 1 (offline):  ros2 run rtc_tools catch_population --config <this file> --out <result folder>
+#   stage 2 (sim):      ros2 run integrated_bringup catch_population_trials --config <this file> --out <result folder>
+#   report:             ros2 run rtc_tools catch_population_report <result folder>
+#
+# The robot is the folder this file is in: the controller configuration judged is this
+# folder's, shipped values unchanged. An arm changes two keys only — planner.search.mode and
+# planner.segment.mode. Schema and every key: rtc_tools/utils/catch_population.py (an unknown or
+# missing key is refused by name).
+schema: catch_population/1
+
+arms:
+  # This robot's grid x mpc segment set is some 4,200 throws: 1,000 of it are thrown (#821, 10-12).
+  - {search: grid, segment: mpc, max_throws: 1000}   # the shipped pair
+  - {search: nlp, segment: mpc_docking}
+
+ball:
+  config: mujoco_simulator.yaml      # this folder's: the sim ball's radius and mass
+  # The sim's drag model, as the simulator compiles it.
+  drag_coefficient: {value: 0.55, source: "rtc_mujoco_sim/src/projectile_ball.cpp:30"}
+  air_density: {value: 1.204, source: "rtc_mujoco_sim/include/rtc_mujoco_sim/projectile_ball.hpp:98"}
+
+# The estimator's timing, copied from its profile so that stage 1 runs without the estimator's
+# workspace. Change the profile, change these.
+timing:
+  detection_delay_s: 0.15
+  vision_period_s: 0.033333333333333333
+  prediction_horizon_s: 1.0
+  source: "ball_perception_sim sim_profile.catching.json (ball_perception 9005aab)"
+
+# The offline judge's flight integration.
+judge:
+  horizon_s: 2.5
+  step_s: 0.002
+  min_catch_height_m: 0.0
+
+# The design grid IS the population: launch points x pass points x elevations, less the throws
+# that cannot be launched under speed_max_m_s and those that pass sooner than min_pass_time_s
+# after release. An axis is lo:hi:step (both ends) or a list of values.
+population:
+  launch:
+    distance_m: "1.5:4.0:0.5"
+    azimuth_deg: "-40:40:20"
+    release_height_m: "1.0 1.4 1.7"
+  pass:
+    dx_m: "-0.4:0.4:0.2"
+    dy_m: "-0.4:0.4:0.2"
+  elevation_deg: {max: 70, min: 5, step: 5}
+  min_pass_time_s: 0.5
+  speed_max_m_s: 12
+
+# What stage 2 throws of each arm's set: the same share of every (distance x elevation) stratum,
+# drawn by seed and shuffled. throw_set (search | segment) and max_throws (null = the whole set)
+# are the defaults of every arm; an arm may state its own.
+sample:
+  throw_set: segment
+  max_throws: 2500
+  strata: [distance_m, elevation_deg]
+  seed: 821
+  chunk: 250
+
+# Stage 2. One chunk is one sim bringup; a chunk that fails on the rig (the sim under 0.95 of
+# real time with host_watch abort, the estimator not activated, a failed bringup) is thrown again.
+sim:
+  viewer: true
+  estimator_seeds: [8210]
+  end_on_ball_low: true
+  host_watch: abort
+  retries: 3

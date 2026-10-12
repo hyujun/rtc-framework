@@ -401,6 +401,68 @@ test_build_propagates_colcon_failure() {
   expect_eq "colcon rc 3 -> build.sh fails" 1 "$(run_build STUB_COLCON_RC=3 --)"
 }
 
+# ── 지운 소스 파일의 install 링크 ──────────────────────────────────────────
+# colcon --symlink-install 은 소스에서 지운 파일의 링크를 install 에 남기고, 다시
+# 빌드해도 지우지 않는다 (2026-10-12: 지운 config 둘의 링크가 share 를 훑는 테스트를
+# 실패시켰다). build.sh 는 방금 빌드한 패키지에서, 이 repo 를 가리키던 끊긴 링크만
+# 지운다 — 어느 링크를 지웠는지 말하면서.
+link_state() { if [[ -L "$1" ]]; then echo link; else echo gone; fi; }
+
+make_install_links() {  # 살아 있는 링크 하나와 끊긴 링크 셋 (지울 것은 그중 하나).
+  SHARE_A="$FAKE_WS/install/pkg_a/share/pkg_a/config"
+  SHARE_C="$FAKE_WS/install/pkg_c/share/pkg_c/config"
+  rm -rf -- "$FAKE_WS/install" "$FAKE_REPO/pkg_a"
+  mkdir -p "$SHARE_A" "$SHARE_C" "$FAKE_REPO/pkg_a/config"
+  echo live >"$FAKE_REPO/pkg_a/config/kept.yaml"
+  ln -s "$FAKE_REPO/pkg_a/config/kept.yaml" "$SHARE_A/kept.yaml"
+  ln -s "$FAKE_REPO/pkg_a/config/deleted.yaml" "$SHARE_A/deleted.yaml"
+  ln -s "$FAKE_WS/build/pkg_a/generated.dsv" "$SHARE_A/generated.dsv"
+  ln -s "$FAKE_REPO/pkg_c/config/deleted.yaml" "$SHARE_C/deleted.yaml"
+}
+
+test_build_removes_install_links_whose_source_file_is_gone() {
+  make_install_links
+  expect_eq "rc" 0 "$(run_build --)"
+  expect_eq "the link to a deleted source file" gone "$(link_state "$SHARE_A/deleted.yaml")"
+  expect_eq "a live link stays" link "$(link_state "$SHARE_A/kept.yaml")"
+  expect_eq "the file it points to stays" live "$(cat "$FAKE_REPO/pkg_a/config/kept.yaml")"
+  # 끊겼어도 이 repo 를 가리키지 않는 링크는 build.sh 가 아는 잔재가 아니다.
+  expect_eq "a dangling link into build/ stays" link "$(link_state "$SHARE_A/generated.dsv")"
+  # pkg_c 는 이번에 빌드하지 않았다 (run_build 는 -p pkg_a,pkg_b).
+  expect_eq "a package that was not built is left alone" link "$(link_state "$SHARE_C/deleted.yaml")"
+  if grep -q "stale install link.*pkg_a/share/pkg_a/config/deleted.yaml" "$TMP/build.out"; then
+    pass
+  else
+    fail "[stale link] build.sh did not name the link it removed"
+  fi
+  expect_eq "it names nothing else" 1 "$(grep -c "stale install link" "$TMP/build.out")"
+}
+
+test_build_leaves_install_links_alone_when_the_build_fails_or_copies() {
+  make_install_links
+  expect_eq "colcon failed" 1 "$(run_build STUB_COLCON_RC=3 --)"
+  expect_eq "a failed build prunes nothing" link "$(link_state "$SHARE_A/deleted.yaml")"
+  # --no-symlink: install 은 사본이고, 거기 있는 링크는 이 빌드가 만든 것이 아니다.
+  expect_eq "rc" 0 "$(run_build -- --no-symlink)"
+  expect_eq "--no-symlink prunes nothing" link "$(link_state "$SHARE_A/deleted.yaml")"
+  rm -rf -- "$FAKE_WS/install" "$FAKE_REPO/pkg_a"
+}
+
+test_prune_matches_the_source_root_through_a_symlinked_checkout() {
+  # 링크의 대상은 colcon 이 본 경로다: checkout 이 symlink 로 닿은 것이면 실제 경로다.
+  local real="$TMP/prune/real_repo" via="$TMP/prune/via" inst="$TMP/prune/install/pkg"
+  mkdir -p "$real" "$inst"
+  ln -s "$real" "$via"
+  ln -s "$real/gone.yaml" "$inst/by_real_path.yaml"
+  ln -s "$via/gone.yaml" "$inst/by_given_path.yaml"
+  ln -s "$TMP/prune/real_repo_other/gone.yaml" "$inst/sibling_prefix.yaml"
+  expect_eq "both spellings of the root" "by_given_path.yaml by_real_path.yaml" \
+    "$(prune_dangling_install_links "$inst" "$via/" | xargs -n1 basename | sort | xargs)"
+  expect_eq "a path that only shares the prefix stays" link "$(link_state "$inst/sibling_prefix.yaml")"
+  expect_eq "a missing directory is not an error" 0 \
+    "$(prune_dangling_install_links "$TMP/prune/nowhere" "$real" >/dev/null; echo $?)"
+}
+
 # ── 테스트 빌드 여부 ───────────────────────────────────────────────────────
 # colcon 이 받은 --cmake-args 중 BUILD_TESTING 의 값 (없으면 빈 문자열).
 logged_build_testing() { sed -n 's/^ARG=-DBUILD_TESTING=//p' "$COLCON_LOG"; }
@@ -892,6 +954,9 @@ test_build_jobs_flag_sets_make_jobs_not_workers
 test_build_knob_precedence
 test_build_rejects_bad_jobs_before_colcon
 test_build_propagates_colcon_failure
+test_build_removes_install_links_whose_source_file_is_gone
+test_build_leaves_install_links_alone_when_the_build_fails_or_copies
+test_prune_matches_the_source_root_through_a_symlinked_checkout
 test_setup_env_survives_a_host_without_mujoco
 test_build_does_not_build_tests_by_default
 test_build_tests_flag_and_env

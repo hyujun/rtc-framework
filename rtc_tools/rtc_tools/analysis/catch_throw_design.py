@@ -48,6 +48,26 @@ their sources (:func:`screen_constants`); nothing of the searches is copied.
 The screens are checked against the searches themselves by running a map with
 ``catch_search_map --judge-screened``.
 
+**The elevation axis is a range** (``--max-elevation-deg`` / ``--min-elevation-deg`` /
+``--elevation-step-deg``): ``max − k·step`` while >= min, stored ascending.
+
+**Limits** — a second label column, ``limit``, apart from the screens. A screened
+throw is one no search can accept, and a map verifies that; a throw whose
+drag-solved ``pass_time_s`` is strictly below ``--min-pass-time-s`` is kept out of
+the population by the user, and a search CAN accept it. The two are independent and
+counted separately. ``select`` writes no limited throw (on every path) and records,
+in the list's ``meta.limit``, the threshold and how many it removed, overall and per
+value of every design axis, so a map's acceptance denominators can be rebuilt.
+
+**After a map**: ``plan-set`` writes the throws a map accepted (ascending
+``throw_id``) as a throw list — ``--tier search`` (default) the throws the search
+accepted (the search set), ``--tier segment`` those whose segment pass, run with
+``catch_search_map --judge-segments``, published its pair (the segment set); ``sample`` picks the throws to throw from it —
+the same fraction of every stratum of the given axes, ranked and shuffled by
+SHA-256 of ``seed`` and ``throw_id`` (no RNG stream, so the same files on any
+Python, numpy or PC) — and splits them into chunk files. What both write is a
+function of the input files' bytes and the arguments alone.
+
 Throws, flights and every position here are in the SIM WORLD.
 """
 
@@ -55,6 +75,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import sys
@@ -78,7 +99,11 @@ from rtc_tools.analysis.catchability_map import (
     invert_transform,
     transform_point,
 )
-from rtc_tools.analysis.catching_throw_list import write_throw_list
+from rtc_tools.analysis.catching_throw_list import read_throw_list_file, write_throw_list
+
+# Two axis values are the same value when they agree to AXIS_DECIMALS decimals; the axis
+# text is parsed where the population's configuration file is (one parser for both).
+from rtc_tools.utils.catch_population import AXIS_DECIMALS, axis_values
 
 DESIGN_AXES = (
     "distance_m",
@@ -95,10 +120,10 @@ _AXIS_ARGUMENT = {
     "release_height_m": "release-heights-m",
     "pass_dx_m": "pass-dx-m",
     "pass_dy_m": "pass-dy-m",
-    "elevation_deg": "elevations-deg",
 }
-# Two axis values are the same value when they agree to this many decimals.
-AXIS_DECIMALS = 9
+# The elevation axis is not given as values: it is a range from its maximum down
+# (:func:`elevation_axis`), by --max-elevation-deg / --min-elevation-deg /
+# --elevation-step-deg.
 
 SCREEN_KEY = csm.SCREEN_KEY
 SCREEN_ASCENDING = "screen:shoot_ascending"
@@ -107,6 +132,12 @@ SCREEN_REACH = "screen:reach"
 SCREEN_TIME = "screen:time"
 # Screens that leave no launch state: such a throw is in no throw list.
 UNLAUNCHABLE_SCREENS = (SCREEN_ASCENDING, SCREEN_SHOOT_FAIL)
+
+# A population limit, apart from the screens: a screened throw is one no search can
+# accept (and a map verifies that); a limited throw is one the user keeps out of the
+# population although a search may accept it.
+LIMIT_KEY = "limit"
+LIMIT_PASS_TIME = "limit:pass_time"
 
 THROW_KIND = "pass_point"
 
@@ -159,29 +190,33 @@ DESIGN_COLUMNS = (
     "body_distance_m",
     "body_flag",
     SCREEN_KEY,
+    LIMIT_KEY,
 )
 _INT_COLUMNS = ("throw_id",)
 _BOOL_COLUMNS = ("apex_flag", "body_flag")
-_TEXT_COLUMNS = (SCREEN_KEY,)
+_TEXT_COLUMNS = (SCREEN_KEY, LIMIT_KEY)
 
 
 # ── The grid ──────────────────────────────────────────────────────────────────
 
 
-def axis_values(text: str) -> list[float]:
-    """An axis from its argument: ``lo:hi:step`` (both ends included) or a list of values."""
-    if ":" in text:
-        parts = text.split(":")
-        if len(parts) != 3:
-            raise ValueError(f"'{text}': a range is lo:hi:step")
-        lo, hi, step = (float(p) for p in parts)
-        if not step > 0.0 or hi < lo:
-            raise ValueError(f"'{text}': the step must be > 0 and hi >= lo")
-        count = round((hi - lo) / step)
-        if abs(lo + count * step - hi) > 10.0**-AXIS_DECIMALS:
-            raise ValueError(f"'{text}': hi is not a whole number of steps from lo")
-        return [round(lo + i * step, AXIS_DECIMALS) for i in range(count + 1)]
-    return [float(v) for v in text.replace(",", " ").split()]
+def elevation_axis(max_deg: float, min_deg: float, step_deg: float) -> list[float]:
+    """The elevation axis of a range: ``max − k·step`` for k = 0, 1, … while the value is
+    >= ``min``, ascending. The maximum is always a value; the minimum is one only if it
+    lies on that lattice."""
+    if not all(math.isfinite(v) for v in (max_deg, min_deg, step_deg)):
+        raise ValueError("the elevation maximum, minimum and step must be finite")
+    if not step_deg > 0.0:
+        raise ValueError(f"the elevation step must be > 0, got {step_deg}")
+    if min_deg > max_deg:
+        raise ValueError(f"the elevation minimum {min_deg} is above the maximum {max_deg}")
+    floor = round(min_deg, AXIS_DECIMALS)
+    values = []
+    k = 0
+    while (value := round(max_deg - k * step_deg, AXIS_DECIMALS)) >= floor:
+        values.append(value)
+        k += 1
+    return values[::-1]
 
 
 @dataclass(frozen=True)
@@ -268,6 +303,18 @@ def refinement_ids(
     ``accepted`` does not hold is left out. ``axes`` limits the axes refined.
     Returns the ids, ascending, and the number of differing pairs per axis.
     """
+    found, pairs, _ = refinement_report(grid, coarse, accepted, axes)
+    return found, pairs
+
+
+def refinement_report(
+    grid: DesignGrid,
+    coarse: Mapping[str, Sequence[float]],
+    accepted: Mapping[int, bool],
+    axes: Sequence[str] | None = None,
+) -> tuple[np.ndarray, dict[str, int], dict[str, int]]:
+    """:func:`refinement_ids` and, per axis, the neighbour pairs it skipped because a point
+    of the pair has no verdict in ``accepted`` (a throw no list held is never judged)."""
     refine = tuple(DESIGN_AXES if axes is None else axes)
     unknown = [axis for axis in refine if axis not in DESIGN_AXES]
     if unknown:
@@ -284,12 +331,14 @@ def refinement_ids(
     verdict = np.array([accepted.get(int(i), -1) for i in ids], dtype=np.int64)
     verdict = verdict.reshape([len(p) for p in picks])
     pairs = dict.fromkeys(DESIGN_AXES, 0)
+    skipped = dict.fromkeys(DESIGN_AXES, 0)
     out: list[np.ndarray] = []
     for k, axis in enumerate(DESIGN_AXES):
         lo = np.take(verdict, range(len(picks[k]) - 1), axis=k)
         hi = np.take(verdict, range(1, len(picks[k])), axis=k)
         differ = (lo >= 0) & (hi >= 0) & (lo != hi)
         pairs[axis] = int(differ.sum())
+        skipped[axis] = int(((lo < 0) | (hi < 0)).sum())
         if axis not in refine or not differ.any():
             continue
         where = np.argwhere(differ)
@@ -300,7 +349,7 @@ def refinement_ids(
                 fine[k] = between
                 out.append(np.ravel_multi_index(fine, grid.shape))
     found = np.unique(np.array(out, dtype=np.int64)) if out else np.empty(0, dtype=np.int64)
-    return found, pairs
+    return found, pairs, skipped
 
 
 # ── Flights, many at once ─────────────────────────────────────────────────────
@@ -773,9 +822,12 @@ def design_throws(
     speed_cap_m_s: float,
     horizon_s: float,
     step_s: float,
+    min_pass_time_s: float | None = None,
 ) -> dict[str, np.ndarray]:
     """Design the throws at ``values`` (one array per :data:`DESIGN_AXES`): the launch,
-    the flight's recorded axes and the screen label. One array per
+    the flight's recorded axes and the screen label. A launched throw whose
+    ``pass_time_s`` is strictly below ``min_pass_time_s`` (None: no limit) gets
+    :data:`LIMIT_PASS_TIME` in the ``limit`` column, whatever its screen. One array per
     :data:`DESIGN_COLUMNS`. ``speed_cap_m_s`` bounds the speed SEARCH and is at
     least ``speed_max_m_s``, above which a solved throw is not launched."""
     ids = np.asarray(throw_ids, dtype=np.int64)
@@ -899,6 +951,11 @@ def design_throws(
     out["body_distance_m"] = body
     out["body_flag"] = body < constants.body_flag_radius_m
     out[SCREEN_KEY] = screen
+    limit = np.full(n, "", dtype=object)
+    if min_pass_time_s is not None:
+        with np.errstate(invalid="ignore"):
+            limit[launched & (found.pass_time_s < min_pass_time_s)] = LIMIT_PASS_TIME
+    out[LIMIT_KEY] = limit
     return out
 
 
@@ -1060,6 +1117,40 @@ def screen_summary(rows: Sequence[Mapping]) -> dict:
     }
 
 
+def is_limited(row: Mapping) -> bool:
+    """Whether a design row carries a population limit; a row of a design CSV that has no
+    ``limit`` column is not limited."""
+    return bool(row.get(LIMIT_KEY))
+
+
+def limit_counts(rows: Sequence[Mapping]) -> dict:
+    """How many of ``rows`` are limited: ``throws`` / ``limited`` overall and for every value
+    of every design axis (``by_axis[axis][repr(value)]``). The per-value pair is what a
+    map's acceptance denominator is rebuilt from."""
+    by_axis: dict[str, dict] = {}
+    for axis in DESIGN_AXES:
+        groups: dict[float, list[int]] = {}
+        for row in rows:
+            cell = groups.setdefault(row[axis], [0, 0])
+            cell[0] += 1
+            cell[1] += is_limited(row)
+        by_axis[axis] = {
+            repr(value): {"throws": c[0], "limited": c[1]} for value, c in sorted(groups.items())
+        }
+    return {
+        "throws": len(rows),
+        "limited": sum(1 for row in rows if is_limited(row)),
+        "by_axis": by_axis,
+    }
+
+
+LIMIT_RULE = (
+    f"{LIMIT_PASS_TIME} when a launched throw's drag-solved pass_time_s is strictly below "
+    "the threshold (equal is not limited); independent of the screen label. select drops "
+    "such throws from the list it writes"
+)
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
@@ -1081,9 +1172,22 @@ def _subset(texts: Sequence[str] | None) -> dict[str, list[float]]:
 def _cmd_design(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        elevations = elevation_axis(
+            args.max_elevation_deg, args.min_elevation_deg, args.elevation_step_deg
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if args.min_pass_time_s is not None and not args.min_pass_time_s >= 0.0:
+        raise SystemExit(f"--min-pass-time-s must be >= 0, got {args.min_pass_time_s}")
     setup = csm.load_setup(args, out_dir, ())
     catching = setup.catching
-    grid = DesignGrid({axis: tuple(getattr(args, axis)) for axis in DESIGN_AXES})
+    grid = DesignGrid(
+        {
+            **{axis: tuple(getattr(args, axis)) for axis in _AXIS_ARGUMENT},
+            "elevation_deg": tuple(elevations),
+        }
+    )
     judge = csm.find_judge(args.judge, csm.SEARCH_EXECUTABLE)
     params_path = out_dir / "catching_tree.yaml"
     csm.write_catching_tree(params_path, catching)
@@ -1128,6 +1232,7 @@ def _cmd_design(args: argparse.Namespace) -> int:
         speed_cap_m_s=args.speed_search_cap_m_s,
         horizon_s=args.horizon_s,
         step_s=args.step_s,
+        min_pass_time_s=args.min_pass_time_s,
     )
     wall = time.monotonic() - started
     write_design_csv(out_dir / "design.csv", table)
@@ -1136,6 +1241,17 @@ def _cmd_design(args: argparse.Namespace) -> int:
     meta = {
         "tool": "rtc_tools.analysis.catch_throw_design",
         "grid": {"axes": {a: list(grid.axes[a]) for a in DESIGN_AXES}, "throws": grid.size},
+        "elevation": {
+            "max_deg": args.max_elevation_deg,
+            "min_deg": args.min_elevation_deg,
+            "step_deg": args.elevation_step_deg,
+            "rule": "max − k·step for k = 0, 1, … while the value is >= min",
+        },
+        "limits": {
+            "min_pass_time_s": args.min_pass_time_s,
+            "rule": LIMIT_RULE,
+            **limit_counts(rows),
+        },
         "frame": "sim_world",
         "origin_xy_m": [float(v) for v in origin],
         "wait_pose": setup.wait_pose,
@@ -1190,28 +1306,54 @@ def _cmd_design(args: argparse.Namespace) -> int:
     return 0
 
 
-def _read_verdicts(paths: Sequence[Path]) -> dict[int, bool]:
+def _read_verdicts(paths: Sequence[Path], column: str = "accepted") -> dict[int, bool]:
+    """Throw id → the verdict cell ``column`` reads as true. An empty cell is false."""
     accepted: dict[int, bool] = {}
     for path in paths:
         with Path(path).open(newline="") as handle:
             for row in csv.DictReader(handle):
-                accepted[int(row["throw_id"])] = row["accepted"] in ("True", "1", "true")
+                accepted[int(row["throw_id"])] = row[column] in ("True", "1", "true")
     return accepted
+
+
+def _segment_unjudged(path: Path) -> tuple[int, int]:
+    """Of a verdicts CSV: how many throws the search accepted, and how many of those the
+    segment pass did not judge (an empty ``segment_accepted`` cell). A file whose search
+    accepted no throw has nothing to judge — (0, 0), which is not a refusal.
+    ``ValueError`` if the file has no such column."""
+    with Path(path).open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if SEGMENT_COLUMN not in (reader.fieldnames or ()):
+            raise ValueError(
+                f"{path}: no {SEGMENT_COLUMN} column — run catch_search_map with "
+                "--judge-segments to judge the segment tier"
+            )
+        searched = [row for row in reader if row["accepted"] in ("True", "1", "true")]
+        return len(searched), sum(1 for row in searched if row[SEGMENT_COLUMN] == "")
 
 
 def _cmd_select(args: argparse.Namespace) -> int:
     design_dir = Path(args.design_dir)
     grid, meta = _load_grid(design_dir)
     subset = _subset(args.subset)
+    design_rows = read_design_csv(design_dir / "design.csv")
+    limited_ids = {row["throw_id"] for row in design_rows if is_limited(row)}
     selection: dict = {"design_dir": str(design_dir.resolve()), "subset": subset}
     if args.refine_from:
         wanted: set[int] = set()
         selection["refine"] = {}
         for path in args.refine_from:
-            found, pairs = refinement_ids(
+            found, pairs, skipped = refinement_report(
                 grid, subset, _read_verdicts([path]), axes=args.refine_axes
             )
-            selection["refine"][str(path)] = {"points": int(found.size), "pairs_by_axis": pairs}
+            selection["refine"][str(path)] = {
+                "points": int(found.size),
+                "pairs_by_axis": pairs,
+                # A throw no list held has no verdict: the limit makes these.
+                "pairs_skipped_no_verdict": sum(skipped.values()),
+                "pairs_skipped_no_verdict_by_axis": skipped,
+                "points_removed_by_limit": sum(1 for i in found.tolist() if i in limited_ids),
+            }
             wanted.update(int(i) for i in found)
         selection["refine_axes"] = args.refine_axes
         ids = np.array(sorted(wanted), dtype=np.int64)
@@ -1220,14 +1362,20 @@ def _cmd_select(args: argparse.Namespace) -> int:
         selection["ids_file"] = str(Path(args.ids_file).resolve())
     else:
         ids = grid.ids(subset)
-    selection["throws"] = int(ids.size)
-    if args.max_throws is not None and ids.size > args.max_throws:
-        print(json.dumps(selection, indent=2))
-        raise SystemExit(f"{ids.size} throws selected, over --max-throws {args.max_throws}")
     keep = {int(i) for i in ids}
-    rows = [row for row in read_design_csv(design_dir / "design.csv") if row["throw_id"] in keep]
-    if len(rows) != len(keep):
+    chosen = [row for row in design_rows if row["throw_id"] in keep]
+    if len(chosen) != len(keep):
         raise SystemExit("the selection names throws the design does not hold")
+    removed = limit_counts(chosen)
+    rows = [row for row in chosen if not is_limited(row)]
+    threshold = (meta.get("limits") or {}).get("min_pass_time_s")
+    selection["throws_before_limit"] = len(chosen)
+    selection["throws"] = len(rows)
+    if args.max_throws is not None and len(rows) > args.max_throws:
+        print(json.dumps(selection, indent=2))
+        raise SystemExit(
+            f"{len(rows)} throws selected after the limit, over --max-throws {args.max_throws}"
+        )
     throws, unlaunchable = throw_list_of(rows)
     labels = Counter(row[SCREEN_KEY] or "none" for row in rows)
     selection["labels"] = dict(sorted(labels.items()))
@@ -1235,15 +1383,249 @@ def _cmd_select(args: argparse.Namespace) -> int:
         "tool": "rtc_tools.analysis.catch_throw_design",
         "selection": selection,
         "axes": meta["axes"],
+        "limit": {
+            "min_pass_time_s": threshold,
+            "rule": LIMIT_RULE,
+            "removed": removed["limited"],
+            "selected_before_removal": removed["throws"],
+            "by_axis": removed["by_axis"],
+        },
         "unlaunchable": unlaunchable,
-        "design": {k: meta[k] for k in ("grid", "pass_plane", "speed", "reach", "lead", "ball")},
+        # A design without one of the first six is refused (KeyError): the map
+        # checks the screen labels against them. A design made before the
+        # elevation axis and the limit has neither of the last two.
+        "design": {
+            **{k: meta[k] for k in ("grid", "pass_plane", "speed", "reach", "lead", "ball")},
+            **{k: meta[k] for k in ("elevation", "limits") if k in meta},
+        },
         "design_provenance": meta.get("provenance"),
     }
     if not throws:
         raise SystemExit(f"the selection holds no launchable throw ({selection['labels']})")
     write_throw_list(Path(args.out), throws, csm._jsonable(list_meta))
     print(json.dumps(selection, indent=2))
-    print(f"throw list: {args.out} ({len(throws)} launches, {len(unlaunchable)} without one)")
+    print(
+        f"throw list: {args.out} ({len(throws)} launches, {len(unlaunchable)} without one, "
+        f"{removed['limited']} removed by the limit)"
+    )
+    return 0
+
+
+# ── The plan set and the sample ───────────────────────────────────────────────
+
+# Meta of a source list that says how to read its throws; NOT its unlaunchable rows.
+_CARRIED_META = ("axes", "design", "limit")
+PLAN_SET_KIND = "plan_set"
+PLAN_TIERS = ("search", "segment")
+# The throw set each tier names, and the verdict cell that decides it.
+PLAN_SET_NAMES = {"search": "throw_search_set", "segment": "throw_segment_set"}
+SEGMENT_COLUMN = "segment_accepted"
+SAMPLE_KIND = "sample"
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _carried(meta: Mapping) -> dict:
+    return {k: meta[k] for k in _CARRIED_META if k in meta}
+
+
+def build_plan_set(
+    throws: Sequence[Mapping], verdict_files: Sequence[Mapping[int, bool]]
+) -> list[dict]:
+    """The accepted throws of ``throws`` in ascending ``throw_id``.
+
+    ``verdict_files`` are the verdicts (throw id → accepted) of the maps that judged
+    the list. ``ValueError`` if a file contradicts another, if the verdicts do not
+    cover ``throws`` or if an accepted id is not one of them.
+    """
+    verdicts: dict[int, bool] = {}
+    for one in verdict_files:
+        for throw_id, accepted in one.items():
+            if verdicts.setdefault(throw_id, accepted) != accepted:
+                raise ValueError(f"throw {throw_id} has two different verdicts")
+    by_id = {int(t["throw_id"]): t for t in throws}
+    missing = sorted(set(by_id) - set(verdicts))
+    if missing:
+        raise ValueError(
+            f"the verdicts cover {len(by_id) - len(missing)} of the list's {len(by_id)} "
+            f"throws; {len(missing)} have no verdict (first: {missing[:5]})"
+        )
+    stray = sorted(i for i, accepted in verdicts.items() if accepted and i not in by_id)
+    if stray:
+        raise ValueError(
+            f"{len(stray)} accepted throw ids are not in the list (first: {stray[:5]})"
+        )
+    return [by_id[i] for i in sorted(by_id) if verdicts[i]]
+
+
+def _cmd_plan_set(args: argparse.Namespace) -> int:
+    source = read_throw_list_file(args.throws_file)
+    paths = [Path(p) for p in args.verdicts]
+    tier = args.tier
+    try:
+        searched = build_plan_set(source.throws, [_read_verdicts([p]) for p in paths])
+        if tier == "segment":
+            for p in paths:
+                n_searched, unjudged = _segment_unjudged(p)
+                if unjudged:
+                    which = (
+                        f"every throw the search accepted ({n_searched})"
+                        if unjudged == n_searched
+                        else f"{unjudged} of the {n_searched} throws the search accepted"
+                    )
+                    raise ValueError(
+                        f"{p}: {SEGMENT_COLUMN} is empty for {which} — the segment pass did "
+                        "not judge them (it refused its configuration?)"
+                    )
+            # A throw the segment pass did not judge has an empty cell: not in the set.
+            segment_files = [_read_verdicts([p], SEGMENT_COLUMN) for p in paths]
+            accepted = build_plan_set(source.throws, segment_files)
+            outside = {t["throw_id"] for t in accepted} - {t["throw_id"] for t in searched}
+            if outside:
+                raise ValueError(
+                    f"{len(outside)} throws are segment-accepted but not search-accepted "
+                    f"(first: {sorted(outside)[:5]})"
+                )
+        else:
+            accepted = searched
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if not accepted:
+        raise SystemExit(
+            f"no throw of the {len(source.throws)} judged was accepted"
+            + (" by the segment pass" if tier == "segment" else "")
+        )
+    counts = {"judged": len(source.throws), "accepted": len(accepted)}
+    if tier == "segment":
+        counts["search_accepted"] = len(searched)
+    meta = {
+        "tool": "rtc_tools.analysis.catch_throw_design",
+        "kind": PLAN_SET_KIND,
+        "tier": tier,
+        "set_name": PLAN_SET_NAMES[tier],
+        "source_list": {"sha256": source.sha256, "n_throws": len(source.throws)},
+        # The file name says the search (verdicts_<search>.csv); no directory — see above.
+        "verdicts": [{"name": p.name, "sha256": _sha256_bytes(p.read_bytes())} for p in paths],
+        "counts": counts,
+        **_carried(source.meta),
+    }
+    write_throw_list(Path(args.out), accepted, csm._jsonable(meta))
+    label = "plan set" if tier == "search" else PLAN_SET_NAMES[tier]
+    print(
+        f"{label}: {args.out} ({len(accepted)} of {len(source.throws)} judged accepted"
+        f"{' by the segment pass' if tier == 'segment' else ''})"
+    )
+    return 0
+
+
+def _rank(seed: int, purpose: str, throw_id: int) -> str:
+    # A hash, not an RNG stream: the same on every Python, numpy and PC.
+    return _sha256_bytes(f"{seed}:{purpose}:{throw_id}".encode())
+
+
+def stratum_key(throw: Mapping, strata: Sequence[str]) -> tuple[float, ...]:
+    return tuple(round(float(throw[axis]), AXIS_DECIMALS) for axis in strata)
+
+
+def allocate(sizes: Mapping[tuple, int], total: int) -> dict[tuple, int]:
+    """``total`` split over the strata in proportion to their ``sizes``: each gets the
+    floor of its share and the strata with the largest remainders one more, ties in key
+    order, so the counts sum to ``total`` exactly and no stratum exceeds its size."""
+    whole = sum(sizes.values())
+    if not 0 <= total <= whole:
+        raise ValueError(f"cannot take {total} of {whole}")
+    share = {key: total * size // whole for key, size in sizes.items()}
+    remainder = {key: total * size % whole for key, size in sizes.items()}
+    extra = total - sum(share.values())
+    for key in sorted(sizes, key=lambda k: (-remainder[k], k))[:extra]:
+        share[key] += 1
+    return share
+
+
+def sample_throws(
+    throws: Sequence[Mapping], strata: Sequence[str], seed: int, max_throws: int | None
+) -> tuple[list[dict], list[dict]]:
+    """The sample, in thrown order, and the per-stratum ``total`` / ``sampled`` counts.
+
+    Every stratum (a distinct tuple of the ``strata`` axes' values) gets the same
+    fraction of its throws. Inside a stratum the throws are ranked by
+    ``sha256(f"{seed}:pick:{throw_id}")`` and the first ones taken; the sample is
+    ordered by ``sha256(f"{seed}:order:{throw_id}")`` — the shuffle. Neither depends
+    on the order of ``throws``.
+    """
+    unknown = [a for a in strata if a not in DESIGN_AXES]
+    if unknown or not strata:
+        raise ValueError(f"--strata wants design axes of {DESIGN_AXES}, got {list(strata)}")
+    groups: dict[tuple, list[Mapping]] = {}
+    for throw in throws:
+        groups.setdefault(stratum_key(throw, strata), []).append(throw)
+    size = len(throws)
+    total = size if max_throws is None else min(max_throws, size)
+    share = allocate({key: len(group) for key, group in groups.items()}, total)
+    picked: list[Mapping] = []
+    counts = []
+    for key in sorted(groups):
+        ranked = sorted(
+            groups[key], key=lambda t: (_rank(seed, "pick", t["throw_id"]), t["throw_id"])
+        )
+        picked.extend(ranked[: share[key]])
+        counts.append(
+            {
+                "values": dict(zip(strata, key, strict=True)),
+                "total": len(groups[key]),
+                "sampled": share[key],
+            }
+        )
+    picked.sort(key=lambda t: (_rank(seed, "order", t["throw_id"]), t["throw_id"]))
+    return [dict(t) for t in picked], counts
+
+
+def _cmd_sample(args: argparse.Namespace) -> int:
+    if args.chunk < 1 or (args.max_throws is not None and args.max_throws < 1):
+        raise SystemExit("--chunk and --max-throws must be >= 1")
+    plan = read_throw_list_file(args.plan_set)
+    try:
+        sample, counts = sample_throws(plan.throws, args.strata, args.seed, args.max_throws)
+    except (ValueError, KeyError) as exc:
+        raise SystemExit(f"{args.plan_set}: {exc}") from exc
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stale = [
+        p.name for p in out_dir.iterdir() if p.name == "sample.json" or p.match("chunk_*.json")
+    ]
+    if stale:
+        raise SystemExit(f"{out_dir} already holds {sorted(stale)[:3]}...; use an empty directory")
+    pieces = [sample[i : i + args.chunk] for i in range(0, len(sample), args.chunk)]
+    meta = {
+        "tool": "rtc_tools.analysis.catch_throw_design",
+        "kind": SAMPLE_KIND,
+        "plan_set_sha256": plan.sha256,
+        "plan_set_throws": len(plan.throws),
+        "strata_axes": list(args.strata),
+        "seed": args.seed,
+        "max_throws": args.max_throws,
+        "chunk": args.chunk,
+        "n_throws": len(sample),
+        "strata": counts,
+        **_carried(plan.meta),
+    }
+    write_throw_list(out_dir / "sample.json", sample, csm._jsonable(meta))
+    sample_sha = _sha256_bytes((out_dir / "sample.json").read_bytes())
+    width = max(3, len(str(len(pieces) - 1)))
+    for index, piece in enumerate(pieces):
+        chunk_meta = {
+            **meta,
+            "chunk_index": index,
+            "chunk_count": len(pieces),
+            "sample_sha256": sample_sha,
+        }
+        write_throw_list(
+            out_dir / f"chunk_{index:0{width}d}.json", piece, csm._jsonable(chunk_meta)
+        )
+    print(f"sample: {out_dir / 'sample.json'} ({len(sample)} of {len(plan.throws)} throws)")
+    print(f"{len(pieces)} chunks of up to {args.chunk} in {out_dir}")
     return 0
 
 
@@ -1257,7 +1639,7 @@ def main(argv: list[str] | None = None) -> int:
     design.add_argument(
         "--judge", type=Path, help=f"path to {csm.SEARCH_EXECUTABLE} (default: ament)"
     )
-    for axis in DESIGN_AXES:
+    for axis in _AXIS_ARGUMENT:
         design.add_argument(
             f"--{_AXIS_ARGUMENT[axis]}",
             type=axis_values,
@@ -1265,6 +1647,27 @@ def main(argv: list[str] | None = None) -> int:
             required=True,
             help="values, or lo:hi:step",
         )
+    design.add_argument(
+        "--max-elevation-deg",
+        type=float,
+        required=True,
+        help="the elevation axis is max − k·step while >= --min-elevation-deg; "
+        "this maximum is always one of its values",
+    )
+    design.add_argument(
+        "--min-elevation-deg",
+        type=float,
+        required=True,
+        help="lowest elevation (a value of the axis only if it lies on the step lattice)",
+    )
+    design.add_argument("--elevation-step-deg", type=float, required=True, help="> 0")
+    design.add_argument(
+        "--min-pass-time-s",
+        type=float,
+        help="a launched throw with a pass time strictly below this is labelled "
+        f"{LIMIT_PASS_TIME} in the limit column and left out of every selection "
+        "(default: no limit)",
+    )
     design.add_argument(
         "--pass-plane-offset-m",
         type=float,
@@ -1310,6 +1713,47 @@ def main(argv: list[str] | None = None) -> int:
     select.add_argument("--refine-axes", nargs="+", choices=DESIGN_AXES, help="refine these only")
     select.add_argument("--max-throws", type=int, help="refuse a larger selection")
     select.set_defaults(run=_cmd_select)
+
+    plan = sub.add_parser(
+        "plan-set", help="the accepted throws of a map's verdicts, as a throw list"
+    )
+    plan.add_argument("--throws-file", type=Path, required=True, help="the list the map judged")
+    plan.add_argument(
+        "--verdicts",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="verdicts_<search>.csv of the map (it covers the list)",
+    )
+    plan.add_argument(
+        "--tier",
+        choices=PLAN_TIERS,
+        default="search",
+        help="search: the throws the search accepted (the `accepted` column); segment: those "
+        "whose segment pass published its pair (the `segment_accepted` column of a "
+        "`catch_search_map --judge-segments` run)",
+    )
+    plan.add_argument("--out", type=Path, required=True, help="the plan set to write")
+    plan.set_defaults(run=_cmd_plan_set)
+
+    sample = sub.add_parser(
+        "sample", help="pick the throws to throw from a plan set and split them into chunks"
+    )
+    sample.add_argument("--plan-set", type=Path, required=True)
+    sample.add_argument("--out-dir", type=Path, required=True)
+    sample.add_argument(
+        "--strata",
+        nargs="+",
+        required=True,
+        metavar="AXIS",
+        help=f"design axes whose value tuples are the strata (of {', '.join(DESIGN_AXES)})",
+    )
+    sample.add_argument("--seed", type=int, required=True)
+    sample.add_argument(
+        "--max-throws", type=int, help="throws to pick (absent or >= the plan set: all)"
+    )
+    sample.add_argument("--chunk", type=int, required=True, help="throws per chunk file")
+    sample.set_defaults(run=_cmd_sample)
 
     args = ap.parse_args(argv)
     return args.run(args)

@@ -108,9 +108,10 @@
 #        the package is green, but that file graded nothing, and the agent is
 #        the one who runs it by hand (skipped_result_files). Report only.
 #   3. Stale install/ detection (rename-aware)
-#        - any deleted launch/*.py or config/**/*.yaml whose basename still
-#          resolves under install/ — warns about stray artefacts that
-#          colcon --symlink-install does not prune.
+#        - any deleted launch file or file under config/ that install/ still
+#          holds — as a link whose target is gone (what --symlink-install
+#          leaves, and what './build.sh -p <pkg>' removes) or as a copied file
+#          of that name.
 #   4. shellcheck on changed *.sh (any path), whole file
 #        - runs at --severity=warning (notes do not block); repo-root
 #          .shellcheckrc supplies external-sources + SC2034 suppression.
@@ -2696,6 +2697,17 @@ fi
 # (./build.sh -c) is too destructive to invoke automatically and is forbidden
 # when external packages share the tree (memory project_local_deps_state).
 # Skipped on pure-format (no deletes possible) and when install/ is absent.
+#
+# What is looked for is the file's NAME as a regular file (a copy: name match,
+# as inexact as it sounds) or as a DANGLING link. Under --symlink-install an
+# installed config IS a link, which `-type f` never matched: until 2026-10-12
+# this phase could not see the very case it is named for, and two deleted
+# sim overlays surfaced as a failing share-scanning test instead (#821). A
+# live link of that name is another package's or another robot's file and is
+# not reported. Any file under config/ counts, not only YAML (a throw-set
+# .json went the same way). build.sh prunes such links from the packages it
+# builds (rt_common.sh prune_dangling_install_links), so under --run Phase 2
+# has removed them by the time this runs.
 STALE_INSTALL=""
 INSTALL_ROOTS=""
 if [ "$PURE_FORMAT" -eq 0 ]; then
@@ -2705,13 +2717,13 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
   done
   if [ -n "$INSTALL_ROOTS" ]; then
     DELETED=$(git diff --diff-filter=D --name-only "$VERIFY_BASE" 2>/dev/null \
-                | grep -E '(^|/)(launch/[^/]+\.(py|xml|yaml)$|config/.*\.(yaml|yml)$)' \
+                | grep -E '(^|/)(launch/[^/]+\.(py|xml|yaml)$|config/.+$)' \
                 || true)
     while IFS= read -r path; do
       [ -n "$path" ] || continue
       bname=$(basename "$path")
       for root in $INSTALL_ROOTS; do
-        FOUND=$(find "$root" -name "$bname" -type f 2>/dev/null | head -3 || true)
+        FOUND=$(find "$root" -name "$bname" \( -type f -o -xtype l \) 2>/dev/null | head -3 || true)
         if [ -n "$FOUND" ]; then
           STALE_INSTALL="${STALE_INSTALL}  - ${path} deleted from src but still in install/:\n$(echo "$FOUND" | sed 's/^/      /')\n"
           break
@@ -2835,7 +2847,7 @@ if [ -n "$TEST_FAILURES" ]; then
   REPORT="${REPORT}Test/build failures:\n${TEST_FAILURES}\n"
 fi
 if [ -n "$STALE_INSTALL" ]; then
-  REPORT="${REPORT}Stale install/ artefacts (rename without prune — manual rm required):\n${STALE_INSTALL}\n"
+  REPORT="${REPORT}Stale install/ artefacts (deleted from src, still in install/ — './build.sh -p <pkg>' removes a link whose target is gone; a copied file needs a manual rm):\n${STALE_INSTALL}\n"
 fi
 if [ -n "$SHELLCHECK_FAILURES" ]; then
   REPORT="${REPORT}shellcheck (warning+) on changed shell scripts:\n${SHELLCHECK_FAILURES}\n"

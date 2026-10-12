@@ -44,13 +44,31 @@ this module owns is everything around it:
    throw's planner events (``catching_trials.most_frequent_reason`` over
    ``catching_trials._wake_reject_reason``). The wake × reason counts are kept
    unreduced next to it. Only the wakes up to a throw's first plan are judged:
-   the arm stands on the wait pose and follows no plan.
+   the arm stands on the wait pose and follows no plan. With ``--judge-segments``
+   a **second pass** judges the throws the search accepted, on the same wakes,
+   through the whole planner wake (``PlannerCycle::Run``: search, first segment
+   solve, pair publish): the throw is *segment-accepted* when some wake
+   publishes its plan together with the first segment, and its rows stop there.
+   :func:`segment_binding` binds the segment planner (``mpc`` or ``mpc_docking``,
+   as ``planner.segment.mode`` says) the way :func:`search_binding` binds the
+   search; the pass's wake reasons are the planner event log's own
+   (``segment:<outcome>``, ``cycle:<outcome>``, ``search:<reason>``), reduced by
+   the same ``most_frequent_reason`` — but over the wakes WHOSE SEARCH HAD A
+   PLAN (what became of the plan is what kept the throw out of this tier; the
+   plan-less late wakes of a flight would outvote it). A sim throw's
+   ``plan_reject`` is reduced over ALL its wakes, so the two reason columns of
+   the sim comparison are not like for like: read the unreduced
+   ``segment_wake_reasons`` to compare. A throw the search refused (or that was
+   screened) is *not judged* by it: its segment cells are empty, not ``False``.
+   The search pass and what it writes are the same with or without the flag.
 5. **The summaries.** Acceptance rate per axis bin, reason distributions, the
    throws on which the two searches disagree, a per-throw join against a
    ``catch_gate_map`` output (gate verdict × search verdict per reach layer),
    and a sim table — search verdict × published or not × ``truth_success`` —
-   from ``catching_trials`` output joined by ``throw_id``. Descriptive counts
-   only; nothing here is a pass or a fail.
+   from ``catching_trials`` output joined by ``throw_id``; with the segment pass
+   also the offline segment verdict × the sim's ``plan_verdict`` (published ·
+   withheld · no plan) with their agreement. Descriptive counts only; nothing
+   here is a pass or a fail.
 6. **The shards.** The throws are cut into shards, each with its own wake file
    and its own runs of the binary, on ``--jobs`` processes. A throw's verdict
    depends on that throw alone, so the cut changes no verdict.
@@ -81,9 +99,12 @@ the URDF at ``catching.io.arm_base_frame`` times ``catching.io.base_T_world``
 axis on which every throw is released at :data:`RELEASE_NS`.
 
 **Not reproduced.** What a running clock produces (a search cut by its budget,
-a solve past its deadline), what the covariance changes (it is zero here), the
-search after a plan is followed, and the conditions a controller parks on
-before it ever searches. Those layers are read from the sim.
+a solve past its deadline, a pair dropped because a newer prediction arrived
+during the solve, a stale RT report), what the covariance changes (it is zero
+here: no estimator noise), the search after a plan is followed, the replan and
+the replacement after a pair is published (the segment pass stops at the first
+published pair), and the conditions a controller parks on before it ever
+searches. Those layers are read from the sim.
 
 Every robot value is an argument or read from the profile.
 """
@@ -106,7 +127,7 @@ import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -1021,6 +1042,190 @@ def arm_lead_s(catching: Mapping) -> float:
     return float(int(t_arm * 1e9)) * 1e-9 if lead_enable and not math.isnan(t_arm) else 0.0
 
 
+def _note(
+    sources: dict, key: str, source: str, mirrors: str, mirror_param: str | None = None
+) -> None:
+    sources[key] = {"source": source, "mirrors": mirrors}
+    if mirror_param is not None:
+        sources[key]["mirror_param"] = mirror_param
+
+
+def _control_dt(robot: RobotFacts) -> float:
+    """``RTControllerInterface::GetDefaultDt``: 1 / control_rate."""
+    if not (math.isfinite(robot.control_rate_hz) and robot.control_rate_hz > 0.0):
+        raise BindingError(f"control_rate = {robot.control_rate_hz!r} must be > 0")
+    return 1.0 / robot.control_rate_hz
+
+
+_DT_SOURCE = ("1 / control_rate (robot config)", "RTControllerInterface::GetDefaultDt")
+_T_ARM_SOURCE = (
+    "joint_cmd.lag.T_arm in whole ns when joint_cmd.lag.lead_enable is true and T_arm is "
+    "resolved, else 0",
+    "DemoCatchingController::SetupTrajInput (t_arm_ns_)",
+    "joint_cmd.lag.T_arm, joint_cmd.lag.lead_enable",
+)
+
+
+def _device_of_model(robot: RobotFacts) -> list[int]:
+    """``ResolveCatchSubModel``: model joint (velocity order) → index in the arm device's
+    ``joint_state_names``."""
+    arm = robot.arm
+    if sorted(robot.model_joint_names) != sorted(arm.joint_names):
+        raise BindingError(
+            f"the catch sub-model's joints {list(robot.model_joint_names)} are not the arm "
+            f"device's {list(arm.joint_names)}"
+        )
+    return [arm.joint_names.index(name) for name in robot.model_joint_names]
+
+
+def _hand_lead(catching: Mapping) -> tuple[float, float, str, float]:
+    """``HandProfile::CloseLead`` and the entrance offset: ``(T_close_e2e, close lead, the key
+    the lead comes from, s_ent)``. The lead is ``T_close_lead`` when the profile writes it,
+    else ``T_close_e2e``; TBD → NaN."""
+    t_close_e2e = _decision(catching, "robot.hand.T_close_e2e")
+    lead_given = _lookup(catching, "robot.hand.T_close_lead") is not _ABSENT
+    close_lead = _decision(catching, "robot.hand.T_close_lead") if lead_given else t_close_e2e
+    lead_key = "robot.hand.T_close_lead" if lead_given else "robot.hand.T_close_e2e"
+    return t_close_e2e, close_lead, lead_key, _decision(catching, "robot.hand.docking.s_ent")
+
+
+def _entrance_close_lead(catching: Mapping, core: str) -> tuple[float, str]:
+    """``EntranceCloseLead``: the lead from a docking core's catch node, the ball's crossing
+    of the entrance plane — shorter by the flight over s_ent at the reference closing
+    speed c = −nu_ref.z of that core."""
+    _, close_lead, lead_key, s_ent = _hand_lead(catching)
+    path = f"{core}.catch.nu_ref"
+    nu_ref = _written(catching, path, "the reference closing speed of that core")
+    if not isinstance(nu_ref, list | tuple) or len(nu_ref) != 3:
+        raise BindingError(f"catching.{path} = {nu_ref!r} must be three numbers")
+    c = -_scalar(nu_ref[2], path)
+    text = f"{lead_key} − robot.hand.docking.s_ent / (−{path}[2])"
+    if math.isnan(close_lead) or math.isnan(s_ent) or math.isnan(c) or not c > 0.0:
+        return math.nan, text
+    return close_lead - s_ent / c, text
+
+
+def _accel_box(catching: Mapping, nv: int, device_of_model: Sequence[int]) -> tuple[list, str]:
+    """``ApplyArmAccelBox`` / ``ResolvePlannerArm``: the acceleration box is on only when
+    robot.arm.qdd_max gives one positive number per arm joint. Model order; empty for none."""
+    box = _lookup(catching, "robot.arm.qdd_max")
+    if box is _ABSENT:
+        return [], "robot.arm.qdd_max is absent: no acceleration box"
+    try:
+        qdd = np.asarray(box, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise BindingError(f"catching.robot.arm.qdd_max = {box!r} is not a list") from exc
+    if qdd.shape != (nv,) or not np.all(np.isfinite(qdd)) or not np.all(qdd > 0.0):
+        raise BindingError(
+            f"catching.robot.arm.qdd_max = {box!r} must be {nv} positive numbers (arm joint order)"
+        )
+    return _floats(qdd[list(device_of_model)]), "robot.arm.qdd_max, device order → model order"
+
+
+def _position_box(
+    catching: Mapping, robot: RobotFacts, device_of_model: Sequence[int]
+) -> tuple[np.ndarray, np.ndarray, str]:
+    """The position box a segment has to stay in (``BuildClikBoxes``; model order): the URDF's
+    limit ∩ the CLIK's device box pulled ``limit_margin`` inwards from both sides, never past
+    the joint's midpoint — all or nothing over the arm and the hand."""
+    arm = robot.arm
+    margin = _resolved(catching, "robot.arm.limit_margin", "the CLIK position box's margin")
+    lower = _device_array(arm, "position_lower")
+    upper = _device_array(arm, "position_upper")
+    if robot.hand is None:
+        raise BindingError(
+            "the binding needs the hand device's position limits (the CLIK box is all or "
+            "nothing over the arm and the hand) — read them with robot_facts(hand_device=...)"
+        )
+    clik_box = _box_complete(arm) and _box_complete(robot.hand)
+    mid = 0.5 * (lower + upper)
+    margined_lower = np.minimum(lower + margin, mid)
+    margined_upper = np.maximum(upper - margin, mid)
+    q_min = robot.urdf_position_lower.copy()
+    q_max = robot.urdf_position_upper.copy()
+    if clik_box:
+        q_min = np.maximum(q_min, margined_lower[list(device_of_model)])
+        q_max = np.minimum(q_max, margined_upper[list(device_of_model)])
+    text = (
+        "URDF position limit ∩ the device limit pulled robot.arm.limit_margin inwards (not "
+        "past the joint's midpoint)"
+        if clik_box
+        else "URDF position limit (the device position box is incomplete: no CLIK box)"
+    )
+    return q_min, q_max, text
+
+
+_RATING_TEXT = (
+    "min(devices.{device}.joint_limits.max_velocity, URDF velocity limit), device order → "
+    "model order"
+)
+_TORQUE_TEXT = (
+    "min(devices.{device}.joint_limits.max_torque, URDF effort limit), device order → model order"
+)
+
+
+def _docking_limits(
+    catching: Mapping,
+    robot: RobotFacts,
+    device_of_model: Sequence[int],
+    qdd_model: list,
+    qdd_text: str,
+    eta_v: float,
+    eta_key: str,
+    eta_mirrors: str,
+) -> tuple[dict, dict]:
+    """``DemoCatchingController::BuildDockingLimits``: the docking cores' limits (model order)
+    and, per key, where each came from. ``eta_v`` is the speed margin read from ``eta_key``."""
+    arm = robot.arm
+    # The CLIK's torque margin under its dynamic form, the ratings themselves otherwise.
+    form = _written(catching, "joint_cmd.accel_constraint", "the CLIK's acceleration form")
+    if form not in ("kinematic", "dynamic"):
+        raise BindingError(
+            f"catching.joint_cmd.accel_constraint = {form!r} selects no form (kinematic or "
+            "dynamic): the controller does not run the arm on it"
+        )
+    if form == "dynamic":
+        eta_tau = _scalar(
+            _written(catching, "joint_cmd.eta_tau", "the torque margin of the dynamic form"),
+            "joint_cmd.eta_tau",
+        )
+        if math.isnan(eta_tau):
+            eta_tau = 1.0
+        eta_tau_text = "joint_cmd.eta_tau (accel_constraint dynamic; TBD → 1)"
+    else:
+        eta_tau = 1.0
+        eta_tau_text = "1 (accel_constraint kinematic)"
+    q_min, q_max, box_text = _position_box(catching, robot, device_of_model)
+    rating = _device_array(arm, "max_velocity")
+    torque = _device_array(arm, "max_torque")[list(device_of_model)]
+    limits = {
+        "q_min": _floats(q_min),
+        "q_max": _floats(q_max),
+        "qd_max": _floats(eta_v * rating[list(device_of_model)]),
+        "qdd_max": qdd_model,
+        "tau_max": _floats(torque),
+        "tau_lo": _floats(-eta_tau * torque),
+        "tau_hi": _floats(eta_tau * torque),
+    }
+    fn = "DemoCatchingController::BuildDockingLimits"
+    clik = f"{fn}, DemoCatchingController::BuildClikBoxes"
+    sources: dict[str, dict] = {}
+    _note(sources, "q_min", box_text, clik)
+    _note(sources, "q_max", box_text, clik)
+    _note(
+        sources,
+        "qd_max",
+        f"{eta_key} × {_RATING_TEXT.format(device=arm.device)}",
+        f"{fn}, {eta_mirrors}" if eta_mirrors else fn,
+        eta_key,
+    )
+    _note(sources, "qdd_max", qdd_text, fn, "robot.arm.qdd_max")
+    _note(sources, "tau_max", _TORQUE_TEXT.format(device=arm.device), fn)
+    _note(sources, "tau_lo", f"−({eta_tau_text}) × tau_max", fn)
+    _note(sources, "tau_hi", f"+({eta_tau_text}) × tau_max", fn)
+    return limits, sources
+
+
 def search_binding(catching: Mapping, robot: RobotFacts, kind: str) -> SearchBinding:
     """What a controller configured with ``catching`` on ``robot`` hands the ``kind`` search.
 
@@ -1033,20 +1238,11 @@ def search_binding(catching: Mapping, robot: RobotFacts, kind: str) -> SearchBin
     sources: dict[str, dict] = {}
 
     def note(key: str, source: str, mirrors: str, mirror_param: str | None = None) -> None:
-        sources[key] = {"source": source, "mirrors": mirrors}
-        if mirror_param is not None:
-            sources[key]["mirror_param"] = mirror_param
+        _note(sources, key, source, mirrors, mirror_param)
 
     arm = robot.arm
     nv = len(robot.model_joint_names)
-    if sorted(robot.model_joint_names) != sorted(arm.joint_names):
-        raise BindingError(
-            f"the catch sub-model's joints {list(robot.model_joint_names)} are not the arm "
-            f"device's {list(arm.joint_names)}"
-        )
-    # ResolveCatchSubModel: model joint (velocity order) → index in the arm
-    # device's joint_state_names.
-    device_of_model = [arm.joint_names.index(name) for name in robot.model_joint_names]
+    device_of_model = _device_of_model(robot)
     note(
         "device_of_model",
         f"index in devices.{arm.device}.joint_state_names of each catch sub-model joint, "
@@ -1061,40 +1257,16 @@ def search_binding(catching: Mapping, robot: RobotFacts, kind: str) -> SearchBin
         )
     docking = segment_mode == "mpc_docking"
 
-    # RTControllerInterface::GetDefaultDt: 1 / control_rate.
-    if not (math.isfinite(robot.control_rate_hz) and robot.control_rate_hz > 0.0):
-        raise BindingError(f"control_rate = {robot.control_rate_hz!r} must be > 0")
-    control_dt = 1.0 / robot.control_rate_hz
-    dt_source = ("1 / control_rate (robot config)", "RTControllerInterface::GetDefaultDt")
+    control_dt = _control_dt(robot)
+    dt_source = _DT_SOURCE
 
     t_arm_s = arm_lead_s(catching)
-    t_arm_source = (
-        "joint_cmd.lag.T_arm in whole ns when joint_cmd.lag.lead_enable is true and T_arm is "
-        "resolved, else 0",
-        "DemoCatchingController::SetupTrajInput (t_arm_ns_)",
-        "joint_cmd.lag.T_arm, joint_cmd.lag.lead_enable",
-    )
+    t_arm_source = _T_ARM_SOURCE
 
-    # HandProfile::CloseLead: T_close_lead when the profile writes it, else T_close_e2e.
-    t_close_e2e = _decision(catching, "robot.hand.T_close_e2e")
-    lead_given = _lookup(catching, "robot.hand.T_close_lead") is not _ABSENT
-    close_lead = _decision(catching, "robot.hand.T_close_lead") if lead_given else t_close_e2e
-    lead_key = "robot.hand.T_close_lead" if lead_given else "robot.hand.T_close_e2e"
-    s_ent = _decision(catching, "robot.hand.docking.s_ent")
+    t_close_e2e, close_lead, lead_key, _ = _hand_lead(catching)
 
     def entrance_close_lead(core: str) -> tuple[float, str]:
-        """EntranceCloseLead: the lead from a docking core's catch node, the ball's crossing
-        of the entrance plane — shorter by the flight over s_ent at the reference closing
-        speed c = −nu_ref.z of that core."""
-        path = f"{core}.catch.nu_ref"
-        nu_ref = _written(catching, path, "the reference closing speed of that core")
-        if not isinstance(nu_ref, list | tuple) or len(nu_ref) != 3:
-            raise BindingError(f"catching.{path} = {nu_ref!r} must be three numbers")
-        c = -_scalar(nu_ref[2], path)
-        text = f"{lead_key} − robot.hand.docking.s_ent / (−{path}[2])"
-        if math.isnan(close_lead) or math.isnan(s_ent) or math.isnan(c) or not c > 0.0:
-            return math.nan, text
-        return close_lead - s_ent / c, text
+        return _entrance_close_lead(catching, core)
 
     # ResolvedCloseLead: the lead from the catch instant of the planner whose
     # SEGMENTS the arm follows — the entrance crossing under mpc_docking.
@@ -1111,29 +1283,9 @@ def search_binding(catching: Mapping, robot: RobotFacts, kind: str) -> SearchBin
     )
     ball_mass = _decision(catching, "core.ball.mass")
 
-    # ApplyArmAccelBox / ResolvePlannerArm: the acceleration box is on only when
-    # robot.arm.qdd_max gives one positive number per arm joint.
-    box = _lookup(catching, "robot.arm.qdd_max")
-    if box is _ABSENT:
-        qdd_model: list[float] = []
-        qdd_text = "robot.arm.qdd_max is absent: no acceleration box"
-    else:
-        try:
-            qdd = np.asarray(box, dtype=float)
-        except (TypeError, ValueError) as exc:
-            raise BindingError(f"catching.robot.arm.qdd_max = {box!r} is not a list") from exc
-        if qdd.shape != (nv,) or not np.all(np.isfinite(qdd)) or not np.all(qdd > 0.0):
-            raise BindingError(
-                f"catching.robot.arm.qdd_max = {box!r} must be {nv} positive numbers (arm "
-                "joint order)"
-            )
-        qdd_model = _floats(qdd[device_of_model])
-        qdd_text = "robot.arm.qdd_max, device order → model order"
+    qdd_model, qdd_text = _accel_box(catching, nv, device_of_model)
     rating = _device_array(arm, "max_velocity")
-    rating_text = (
-        f"min(devices.{arm.device}.joint_limits.max_velocity, URDF velocity limit), device "
-        "order → model order"
-    )
+    rating_text = _RATING_TEXT.format(device=arm.device)
 
     document: dict = {"search": kind, "device_of_model": device_of_model}
     if kind == "grid":
@@ -1236,46 +1388,16 @@ def search_binding(catching: Mapping, robot: RobotFacts, kind: str) -> SearchBin
     # arm follows.
     eta_key = "planner.segment.mpc_docking.eta_v" if docking else "planner.segment.mpc.eta_v"
     eta_v = _resolved(catching, eta_key, "the speed margin of the cores' velocity box")
-    # BuildDockingLimits: the CLIK's torque margin under its dynamic form, the
-    # ratings themselves otherwise.
-    form = _written(catching, "joint_cmd.accel_constraint", "the CLIK's acceleration form")
-    if form not in ("kinematic", "dynamic"):
-        raise BindingError(
-            f"catching.joint_cmd.accel_constraint = {form!r} selects no form (kinematic or "
-            "dynamic): the controller does not run the arm on it"
-        )
-    if form == "dynamic":
-        eta_tau = _scalar(
-            _written(catching, "joint_cmd.eta_tau", "the torque margin of the dynamic form"),
-            "joint_cmd.eta_tau",
-        )
-        if math.isnan(eta_tau):
-            eta_tau = 1.0
-        eta_tau_text = "joint_cmd.eta_tau (accel_constraint dynamic; TBD → 1)"
-    else:
-        eta_tau = 1.0
-        eta_tau_text = "1 (accel_constraint kinematic)"
-    # SetupArmCommand / BuildClikBoxes: the device box pulled limit_margin
-    # inwards from both sides, never past the joint's midpoint; all or nothing
-    # over the arm and the hand.
-    margin = _resolved(catching, "robot.arm.limit_margin", "the CLIK position box's margin")
-    lower = _device_array(arm, "position_lower")
-    upper = _device_array(arm, "position_upper")
-    if robot.hand is None:
-        raise BindingError(
-            "the nlp binding needs the hand device's position limits (the CLIK box is all or "
-            "nothing over the arm and the hand) — read them with robot_facts(hand_device=...)"
-        )
-    clik_box = _box_complete(arm) and _box_complete(robot.hand)
-    mid = 0.5 * (lower + upper)
-    margined_lower = np.minimum(lower + margin, mid)
-    margined_upper = np.maximum(upper - margin, mid)
-    q_min = robot.urdf_position_lower.copy()
-    q_max = robot.urdf_position_upper.copy()
-    if clik_box:
-        q_min = np.maximum(q_min, margined_lower[device_of_model])
-        q_max = np.minimum(q_max, margined_upper[device_of_model])
-    torque = _device_array(arm, "max_torque")[device_of_model]
+    limits, limit_sources = _docking_limits(
+        catching,
+        robot,
+        device_of_model,
+        qdd_model,
+        qdd_text,
+        eta_v,
+        eta_key,
+        "DemoCatchingController::ResolvedSegmentEtaV",
+    )
     hand_lead, hand_lead_text = entrance_close_lead("planner.search.nlp.core")
     document["nlp"] = {
         "t_arm_s": t_arm_s,
@@ -1284,24 +1406,9 @@ def search_binding(catching: Mapping, robot: RobotFacts, kind: str) -> SearchBin
         "hand_t_close_e2e": t_close_e2e,
         "hand_t_close_lead": hand_lead,
         "ball_mass": ball_mass,
-        "limits": {
-            "q_min": _floats(q_min),
-            "q_max": _floats(q_max),
-            "qd_max": _floats(eta_v * rating[device_of_model]),
-            "qdd_max": qdd_model,
-            "tau_max": _floats(torque),
-            "tau_lo": _floats(-eta_tau * torque),
-            "tau_hi": _floats(eta_tau * torque),
-        },
+        "limits": limits,
     }
     setup = "DemoCatchingController::SetupNlpCatchSearch"
-    limits = "DemoCatchingController::BuildDockingLimits"
-    box_text = (
-        "URDF position limit ∩ the device limit pulled robot.arm.limit_margin inwards (not "
-        "past the joint's midpoint)"
-        if clik_box
-        else "URDF position limit (the device position box is incomplete: no CLIK box)"
-    )
     note("nlp.t_arm_s", *t_arm_source)
     note("nlp.control_dt", *dt_source, "control.dt")
     note("nlp.t_close_lead", *resolved_lead_source)
@@ -1312,23 +1419,133 @@ def search_binding(catching: Mapping, robot: RobotFacts, kind: str) -> SearchBin
         "DemoCatchingController::EntranceCloseLead (the search's own core)",
     )
     note("nlp.ball_mass", "core.ball.mass (TBD → NaN)", setup)
-    note("nlp.limits.q_min", box_text, f"{limits}, DemoCatchingController::BuildClikBoxes")
-    note("nlp.limits.q_max", box_text, f"{limits}, DemoCatchingController::BuildClikBoxes")
-    note(
-        "nlp.limits.qd_max",
-        f"{eta_key} × {rating_text}",
-        f"{limits}, DemoCatchingController::ResolvedSegmentEtaV",
-        eta_key,
-    )
-    note("nlp.limits.qdd_max", qdd_text, limits, "robot.arm.qdd_max")
-    torque_text = (
-        f"min(devices.{arm.device}.joint_limits.max_torque, URDF effort limit), device order "
-        "→ model order"
-    )
-    note("nlp.limits.tau_max", torque_text, limits)
-    note("nlp.limits.tau_lo", f"−({eta_tau_text}) × tau_max", limits)
-    note("nlp.limits.tau_hi", f"+({eta_tau_text}) × tau_max", limits)
+    sources.update({f"nlp.limits.{key}": entry for key, entry in limit_sources.items()})
     return SearchBinding(kind, document, sources)
+
+
+def segment_binding(catching: Mapping, robot: RobotFacts) -> SearchBinding:
+    """What a controller configured with ``catching`` on ``robot`` hands the segment planner
+    the tree's ``planner.segment.mode`` selects: the ``segment`` map of a binding file.
+
+    ``robot`` has to carry the hand device's limits (:func:`robot_facts` with a
+    ``hand_device``): the position box is the CLIK's, all or nothing over the arm and the
+    hand. ``closed_form`` has no segment planner and is refused. The returned
+    ``SearchBinding.kind`` is the segment mode and ``document`` the map as the binary reads it
+    (``mode`` plus the mode's own map), joint vectors in MODEL order.
+    """
+    mode = _written(catching, "planner.segment.mode", "which segment planner runs")
+    if mode == "closed_form":
+        raise BindingError(
+            "catching.planner.segment.mode is closed_form: the RT makes its own reference and "
+            "no segment planner exists to judge — select mpc or mpc_docking"
+        )
+    if mode not in SEGMENT_MODES:
+        raise BindingError(
+            f"catching.planner.segment.mode = {mode!r} must be one of {SEGMENT_MODES}"
+        )
+    sources: dict[str, dict] = {}
+    arm = robot.arm
+    nv = len(robot.model_joint_names)
+    device_of_model = _device_of_model(robot)
+    control_dt = _control_dt(robot)
+    t_arm_s = arm_lead_s(catching)
+    rating = _device_array(arm, "max_velocity")[device_of_model]
+    rating_text = _RATING_TEXT.format(device=arm.device)
+
+    if mode == "mpc":
+        setup = "DemoCatchingController::SetupMpcSegmentPlanner"
+        # MpcSegmentPlannerConstants::eta_v = ResolvedSegmentMpcEtaV: its own key; a TBD or
+        # absent one runs a value compiled into the controller.
+        eta_key = "planner.segment.mpc.eta_v"
+        eta_v = _resolved(catching, eta_key, "the mpc segment planner's speed margin")
+        q_min, q_max, box_text = _position_box(catching, robot, device_of_model)
+        torque = _device_array(arm, "max_torque")[device_of_model]
+        document = {
+            "mode": mode,
+            "mpc": {
+                "q_min": _floats(q_min),
+                "q_max": _floats(q_max),
+                "qdot_max": _floats(rating),
+                "tau_max": _floats(torque),
+                "eta_v": eta_v,
+                "t_arm_s": t_arm_s,
+                "control_dt": control_dt,
+            },
+        }
+        clik = f"{setup}, DemoCatchingController::BuildClikBoxes"
+        _note(sources, "mpc.q_min", box_text, clik)
+        _note(sources, "mpc.q_max", box_text, clik)
+        _note(
+            sources,
+            "mpc.qdot_max",
+            rating_text,
+            "DemoCatchingController::ResolvePlannerArm (qdot_max)",
+        )
+        _note(sources, "mpc.tau_max", _TORQUE_TEXT.format(device=arm.device), setup)
+        _note(
+            sources,
+            "mpc.eta_v",
+            eta_key,
+            "DemoCatchingController::ResolvedSegmentMpcEtaV",
+            eta_key,
+        )
+        _note(sources, "mpc.t_arm_s", *_T_ARM_SOURCE)
+        _note(sources, "mpc.control_dt", *_DT_SOURCE, "control.dt")
+        return SearchBinding(mode, document, sources)
+
+    # ── mpc_docking ──
+    setup = "DemoCatchingController::SetupMpcDockingSegmentPlanner"
+    core = "planner.segment.mpc_docking.core"
+    eta_key = "planner.segment.mpc_docking.eta_v"
+    # mpc_docking_params_.eta_v is read as BuildDockingLimits' margin.
+    eta_v = _resolved(catching, eta_key, "the docking segment planner's speed margin")
+    qdd_model, qdd_text = _accel_box(catching, nv, device_of_model)
+    limits, limit_sources = _docking_limits(
+        catching, robot, device_of_model, qdd_model, qdd_text, eta_v, eta_key, ""
+    )
+    t_close_e2e, _, _, _ = _hand_lead(catching)
+    hand_lead, hand_lead_text = _entrance_close_lead(catching, core)
+    document = {
+        "mode": mode,
+        "mpc_docking": {
+            "t_arm_s": t_arm_s,
+            "control_dt": control_dt,
+            "qd_rating": _floats(rating),
+            "hand_t_close_e2e": t_close_e2e,
+            "hand_t_close_lead": hand_lead,
+            "ball_mass": _decision(catching, "core.ball.mass"),
+            "limits": limits,
+        },
+    }
+    _note(sources, "mpc_docking.t_arm_s", *_T_ARM_SOURCE)
+    _note(sources, "mpc_docking.control_dt", *_DT_SOURCE, "control.dt")
+    _note(sources, "mpc_docking.qd_rating", rating_text, setup + " (dm.qd_rating = arm.qdot_max)")
+    _note(
+        sources,
+        "mpc_docking.hand_t_close_e2e",
+        "robot.hand.T_close_e2e (TBD → NaN)",
+        setup,
+        "hand.T_close_e2e",
+    )
+    _note(
+        sources,
+        "mpc_docking.hand_t_close_lead",
+        hand_lead_text,
+        "DemoCatchingController::EntranceCloseLead (the docking planner's own core)",
+    )
+    _note(sources, "mpc_docking.ball_mass", "core.ball.mass (TBD → NaN)", setup)
+    sources.update({f"mpc_docking.limits.{key}": entry for key, entry in limit_sources.items()})
+    return SearchBinding(mode, document, sources)
+
+
+def with_segment(search: SearchBinding, segment: SearchBinding) -> SearchBinding:
+    """The segment pass's binding: the search binding's document plus ``segment: <map>``, its
+    sources prefixed alike. Run with it, the binary plans whole wakes."""
+    return SearchBinding(
+        search.kind,
+        {**search.document, "segment": segment.document},
+        {**search.sources, **{f"segment.{k}": v for k, v in segment.sources.items()}},
+    )
 
 
 # ── The batch ─────────────────────────────────────────────────────────────────
@@ -1346,9 +1563,20 @@ class SearchRun:
     argv: list[str]
 
 
+# Result columns that are names, not numbers: the nlp search's reason and the planner cycle's
+# outcome names of a segment-mode run.
+TEXT_COLUMNS = (
+    "nlp_reason",
+    "outcome",
+    "segment_outcome",
+    "segment_kind",
+    "segment_core_reason",
+)
+
+
 def _cell(column: str, text: str):
-    """One result cell, typed: the reason name stays text, an empty cell is NaN."""
-    if column == "nlp_reason":
+    """One result cell, typed: a name stays text, an empty cell is NaN."""
+    if column in TEXT_COLUMNS:
         return text
     if text == "":
         return math.nan
@@ -1423,6 +1651,29 @@ def wake_reason(row: Mapping) -> str:
     return _wake_reject_reason({**row, "outcome": "published"})
 
 
+def _rows_by_throw(rows: Sequence[Mapping]) -> dict[int, list[Mapping]]:
+    """A run's wake rows by ``throw_id``, each throw's in wake order."""
+    by_throw: dict[int, list[Mapping]] = {}
+    for row in rows:
+        by_throw.setdefault(int(row["throw_id"]), []).append(row)
+    for own in by_throw.values():
+        own.sort(key=lambda r: int(r["wake"]))
+    return by_throw
+
+
+def _plan_cells(plan: Mapping | None) -> tuple[int | None, float, float, float]:
+    """A plan row's wake, its instant and its catch instant after release [s], and its
+    lead [s]; the empty cells of a throw without one for ``None``."""
+    if plan is None:
+        return None, math.nan, math.nan, math.nan
+    return (
+        int(plan["wake"]),
+        (int(plan["now_ns"]) - RELEASE_NS) * 1e-9,
+        (int(plan["t_c_ns"]) - RELEASE_NS) * 1e-9,
+        float(plan["lead_s"]),
+    )
+
+
 def throw_verdicts(
     throw_ids: Sequence[int], rows: Sequence[Mapping], wakes_given: Mapping[int, int]
 ) -> list[dict]:
@@ -1439,40 +1690,161 @@ def throw_verdicts(
     - ``wakes_given`` / ``wakes_run``: the wakes the throw had, and those the
       search ran. Rows after a throw's first plan are not read.
     """
-    by_throw: dict[int, list[Mapping]] = {}
-    for row in rows:
-        by_throw.setdefault(int(row["throw_id"]), []).append(row)
+    by_throw = _rows_by_throw(rows)
     out = []
     for throw_id in throw_ids:
-        own = sorted(by_throw.get(int(throw_id), ()), key=lambda r: int(r["wake"]))
         reasons: list[str] = []
         plan = None
-        for row in own:
+        for row in by_throw.get(int(throw_id), ()):
             if int(row["search_valid"]) == 1:
                 plan = row
                 break
             reasons.append(wake_reason(row))
-        verdict = {
-            "throw_id": int(throw_id),
-            "accepted": plan is not None,
-            "wakes_given": int(wakes_given.get(int(throw_id), 0)),
-            "wakes_run": len(reasons) + (plan is not None),
-            "first_accept_wake": None,
-            "plan_after_release_s": math.nan,
-            "t_c_s": math.nan,
-            "lead_s": math.nan,
-            "reject_reason": "",
-            "wake_reasons": dict(Counter(reasons)),
-        }
-        if plan is not None:
-            verdict["first_accept_wake"] = int(plan["wake"])
-            verdict["plan_after_release_s"] = (int(plan["now_ns"]) - RELEASE_NS) * 1e-9
-            verdict["t_c_s"] = (int(plan["t_c_ns"]) - RELEASE_NS) * 1e-9
-            verdict["lead_s"] = float(plan["lead_s"])
-        else:
-            verdict["reject_reason"] = most_frequent_reason(reasons) or REASON_NO_WAKE
-        out.append(verdict)
+        wake, after_release_s, t_c_s, lead_s = _plan_cells(plan)
+        out.append(
+            {
+                "throw_id": int(throw_id),
+                "accepted": plan is not None,
+                "wakes_given": int(wakes_given.get(int(throw_id), 0)),
+                "wakes_run": len(reasons) + (plan is not None),
+                "first_accept_wake": wake,
+                "plan_after_release_s": after_release_s,
+                "t_c_s": t_c_s,
+                "lead_s": lead_s,
+                "reject_reason": ""
+                if plan is not None
+                else most_frequent_reason(reasons) or REASON_NO_WAKE,
+                "wake_reasons": dict(Counter(reasons)),
+            }
+        )
     return out
+
+
+SEGMENT_VERDICT_KEYS = (
+    "segment_accepted",
+    "segment_first_wake",
+    "segment_after_release_s",
+    "segment_t_c_s",
+    "segment_lead_s",
+    "segment_reject_reason",
+    "segment_wake_reasons",
+    "segment_wakes_run",
+    "segment_wall_us",
+)
+
+
+def pair_published(row: Mapping) -> bool:
+    """Whether a segment-mode wake published its plan together with the first segment: the
+    cycle published and the search had a plan. (A published wake without one is a published
+    "no plan".)"""
+    return str(row.get("outcome")) == "published" and int(row["search_valid"]) == 1
+
+
+def segment_verdicts(throw_ids: Sequence[int], rows: Sequence[Mapping]) -> list[dict]:
+    """One segment verdict per throw of ``throw_ids`` from a segment-mode run's wake rows.
+
+    The wakes are the search pass's, and the rows are the planner cycle's: a wake
+    publishes its plan iff :func:`pair_published`, and a throw's rows stop at the first
+    such wake. Keys are :data:`SEGMENT_VERDICT_KEYS`:
+
+    - ``segment_accepted``: some wake published the pair. ``segment_first_wake``,
+      ``segment_after_release_s``, ``segment_t_c_s`` and ``segment_lead_s`` are what the
+      search verdict's ``first_accept_wake`` / ``plan_after_release_s`` / ``t_c_s`` /
+      ``lead_s`` are, read off that wake's plan cells.
+    - ``segment_reject_reason``: "" when accepted; else the most frequent reason of the
+      wakes WHOSE SEARCH HAD A PLAN — ``catching_trials._wake_reject_reason`` on the row
+      as it is (``segment:<outcome>``, ``cycle:<outcome>``), reduced by
+      ``most_frequent_reason``. A throw of the search set has at least one such wake, and
+      what kept it out of this tier is what became of the plan there; the wakes without a
+      plan (``search:<reason>`` — most of a flight's late wakes) would outvote it. A throw
+      none of whose wakes had a plan is reduced over all its wakes; ``no_wake`` for a
+      throw that was given none.
+    - ``segment_wake_reasons``: reason → wakes that did not publish the pair, unreduced.
+    - ``segment_wakes_run``: the rows read; ``segment_wall_us``: the ``wall_us`` of those
+      rows.
+    """
+    by_throw = _rows_by_throw(rows)
+    out = []
+    for throw_id in throw_ids:
+        reasons: list[str] = []
+        planned: list[str] = []
+        plan = None
+        run = 0
+        wall: list[float] = []
+        for row in by_throw.get(int(throw_id), ()):
+            run += 1
+            if "wall_us" in row:
+                wall.append(float(row["wall_us"]))
+            if pair_published(row):
+                plan = row
+                break
+            reasons.append(_wake_reject_reason(row))
+            if int(row["search_valid"]) == 1:
+                planned.append(reasons[-1])
+        wake, after_release_s, t_c_s, lead_s = _plan_cells(plan)
+        out.append(
+            {
+                "throw_id": int(throw_id),
+                "segment_accepted": plan is not None,
+                "segment_first_wake": wake,
+                "segment_after_release_s": after_release_s,
+                "segment_t_c_s": t_c_s,
+                "segment_lead_s": lead_s,
+                "segment_reject_reason": ""
+                if plan is not None
+                else most_frequent_reason(planned or reasons) or REASON_NO_WAKE,
+                "segment_wake_reasons": dict(Counter(reasons)),
+                "segment_wakes_run": run,
+                "segment_wall_us": sum(wall) if wall else math.nan,
+            }
+        )
+    return out
+
+
+def unjudged_segment_verdict() -> dict:
+    """The segment cells of a throw the segment pass did not judge: all empty, so that
+    "not judged" reads differently from "refused"."""
+    return dict.fromkeys(SEGMENT_VERDICT_KEYS, "")
+
+
+def segment_cells(
+    judged: Mapping[int, Mapping], throw_id: int | None, bound: object | None
+) -> dict:
+    """The segment columns of one throw's verdict row: its segment verdict if the pass
+    judged it, empty cells if not; nothing at all without a segment pass (``bound`` None)."""
+    if bound is None:
+        return {}
+    verdict = judged.get(throw_id) if throw_id is not None else None
+    if verdict is None:
+        return unjudged_segment_verdict()
+    return {key: verdict[key] for key in SEGMENT_VERDICT_KEYS}
+
+
+def segment_summary(verdicts: Sequence[Mapping]) -> dict:
+    """The segment pass's counts over the throws it judged (``verdicts``: the entries of
+    :func:`segment_verdicts`): accepted / refused and the reason distribution, in
+    :func:`reason_distribution`'s shape."""
+    accepted = [v for v in verdicts if v["segment_accepted"]]
+    return {
+        "judged": len(verdicts),
+        "accepted": len(accepted),
+        "refused": len(verdicts) - len(accepted),
+        "acceptance_rate": len(accepted) / len(verdicts) if verdicts else None,
+        "reasons": reason_distribution(
+            [
+                {
+                    "accepted": v["segment_accepted"],
+                    "reject_reason": v["segment_reject_reason"],
+                    "wake_reasons": v["segment_wake_reasons"],
+                }
+                for v in verdicts
+            ]
+        ),
+        "first_wake": distribution(v["segment_first_wake"] for v in accepted),
+        "lead_s": distribution(v["segment_lead_s"] for v in accepted),
+        "t_c_s": distribution(v["segment_t_c_s"] for v in accepted),
+        "wall_us": distribution(v["segment_wall_us"] for v in verdicts),
+    }
 
 
 def accepted_plans(rows: Sequence[Mapping]) -> dict[int, Mapping]:
@@ -1883,6 +2255,146 @@ def sim_table(
     return joined, summary
 
 
+SEG_ACCEPTED = "segment_accepted"
+SEG_REFUSED = "segment_refused"
+SEG_SEARCH_REFUSED = "search_refused"
+SEG_CLASSES = (SEG_ACCEPTED, SEG_REFUSED, SEG_SEARCH_REFUSED)
+SIM_PLAN_CLASSES = (PLAN_VERDICT_PUBLISHED, PLAN_VERDICT_WITHHELD, PLAN_VERDICT_NO_PLAN)
+
+
+def offline_segment_class(verdict: Mapping) -> str:
+    """An offline verdict row as the segment tier sees it: the segment pass accepted it,
+    refused it, or never judged it because the search refused (or it was screened)."""
+    cell = _truth_cell(verdict.get("segment_accepted"))
+    if cell is None:
+        return SEG_SEARCH_REFUSED
+    return SEG_ACCEPTED if cell else SEG_REFUSED
+
+
+def sim_segment_table(
+    sim_rows: Sequence[Mapping], verdicts: Sequence[Mapping]
+) -> tuple[list[dict], dict]:
+    """The offline segment verdict × the sim's ``plan_verdict``, and their agreement.
+
+    ``verdicts`` are an offline map's per-throw rows (the search verdict with the
+    ``segment_*`` cells, empty for a throw the segment pass did not judge);
+    ``sim_rows`` are ``catching_trials`` rows. Skipped as :func:`sim_table` skips them: a
+    trial with an ``invalid_reason`` and one without a ``plan_verdict``. A ``no_search``
+    trial counts as ``no_plan`` (``no_search_trials`` says how many).
+
+    The contingency has the rows ``segment_accepted`` · ``segment_refused`` ·
+    ``search_refused`` and the columns ``published`` · ``withheld`` · ``no_plan``, each
+    cell split by ``truth_success``, over the trials whose throw has an offline verdict.
+    (The two reasons are reduced over different wakes: the offline one over the wakes
+    whose search had a plan — :func:`segment_verdicts` — the sim's over all of them.)
+    ``agreement`` is (offline accepted ∧ sim published) + (offline not accepted ∧ sim not
+    published) over those trials; of the two disagreement cells, ``offline_accepted_sim_
+    not_published`` and ``offline_refused_sim_published``, the distributions of the offline
+    ``segment_reject_reason`` (the search's ``reject_reason`` for a throw the segment pass
+    did not judge) and of the sim's ``plan_reject`` are given.
+
+    The second value is the table; the first has one entry per judged sim trial, in
+    :func:`sim_table`'s order, to be laid beside its joined rows.
+    """
+    offline = {int(v["throw_id"]): v for v in verdicts}
+    cells: dict[str, dict[str, dict[str, int]]] = {
+        cls: {
+            plan: {"truth_success": 0, "truth_fail": 0, "truth_unknown": 0}
+            for plan in SIM_PLAN_CLASSES
+        }
+        for cls in SEG_CLASSES
+    }
+    counts = {"trials": len(sim_rows), "invalid": 0, "unjudged": 0, "without_throw_id": 0}
+    no_search = 0
+    without_offline: list[int] = []
+    thrown: set[int] = set()
+    agree = {"both_accepted": 0, "both_not_accepted": 0}
+    disagree = {
+        "offline_accepted_sim_not_published": {
+            "throws": [],
+            "offline_reasons": Counter(),
+            "sim_reasons": Counter(),
+        },
+        "offline_refused_sim_published": {
+            "throws": [],
+            "offline_reasons": Counter(),
+            "sim_reasons": Counter(),
+        },
+    }
+    joined = []
+    for row in sim_rows:
+        if str(row.get("invalid_reason") or "") not in ("", "nan"):
+            counts["invalid"] += 1
+            continue
+        verdict = str(row.get("plan_verdict") or "")
+        if sim_search_class(verdict) is None:
+            counts["unjudged"] += 1
+            continue
+        plan = PLAN_VERDICT_NO_PLAN if verdict == PLAN_VERDICT_NO_SEARCH else verdict
+        no_search += verdict == PLAN_VERDICT_NO_SEARCH
+        throw_id = _throw_id_cell(row.get("throw_id"))
+        entry: dict = {"offline_segment_class": "", "offline_segment_reason": ""}
+        joined.append(entry)
+        if throw_id is None:
+            counts["without_throw_id"] += 1
+            continue
+        mine = offline.get(throw_id)
+        if mine is None:
+            without_offline.append(throw_id)
+            continue
+        thrown.add(throw_id)
+        cls = offline_segment_class(mine)
+        reason = str(mine.get("segment_reject_reason") or "") or str(
+            mine.get("reject_reason") or ""
+        )
+        entry["offline_segment_class"] = cls
+        entry["offline_segment_reason"] = "" if cls == SEG_ACCEPTED else reason
+        truth = _truth_cell(row.get("truth_success"))
+        cell = "truth_unknown" if truth is None else "truth_success" if truth else "truth_fail"
+        cells[cls][plan][cell] += 1
+        published = plan == PLAN_VERDICT_PUBLISHED
+        sim_reason = str(row.get("plan_reject") or "") or plan
+        if cls == SEG_ACCEPTED and published:
+            agree["both_accepted"] += 1
+        elif cls != SEG_ACCEPTED and not published:
+            agree["both_not_accepted"] += 1
+        else:
+            key = (
+                "offline_accepted_sim_not_published"
+                if cls == SEG_ACCEPTED
+                else "offline_refused_sim_published"
+            )
+            disagree[key]["throws"].append(throw_id)
+            disagree[key]["offline_reasons"][reason or "none"] += 1
+            disagree[key]["sim_reasons"][sim_reason] += 1
+    compared = (
+        agree["both_accepted"]
+        + agree["both_not_accepted"]
+        + sum(len(d["throws"]) for d in disagree.values())
+    )
+    summary = {
+        **counts,
+        "no_search_trials": int(no_search),
+        "compared": compared,
+        "table": cells,
+        **agree,
+        "agreement": (agree["both_accepted"] + agree["both_not_accepted"]) / compared
+        if compared
+        else None,
+        "disagreements": {
+            name: {
+                "throws": sorted(d["throws"]),
+                "offline_reasons": _ranked(d["offline_reasons"]),
+                "sim_reasons": _ranked(d["sim_reasons"]),
+            }
+            for name, d in disagree.items()
+        },
+        "sim_throws_without_an_offline_verdict": sorted(without_offline),
+        "offline_throws_not_thrown": len(set(offline) - thrown),
+    }
+    return joined, summary
+
+
 # ── I/O ───────────────────────────────────────────────────────────────────────
 
 
@@ -1992,6 +2504,13 @@ def add_setup_arguments(ap: argparse.ArgumentParser) -> None:
         "(repeatable): a sim overlay, an evaluation overlay. Pass the files the run launched "
         "with, or the map describes another configuration",
     )
+    ap.add_argument(
+        "--segment-mode",
+        choices=SEGMENT_MODES,
+        help="set catching.planner.segment.mode of the composed tree, after the overlays "
+        "(default: the value the layers give). The only value of the tree this overrides; "
+        "the override is recorded in the provenance",
+    )
     # ── the ball: the same arguments as the kinematic map, none defaulted ──
     ap.add_argument("--ball-config", type=Path, nargs="+", required=True)
     ap.add_argument("--drag-coefficient", type=float, required=True)
@@ -2019,13 +2538,16 @@ class MapSetup:
     fk: CatchFrameFk
     catch_point_w: np.ndarray
     ball: BallParams
+    # Values of the composed tree a command line argument replaced: path → {from, to}.
+    overrides: Mapping = field(default_factory=dict)
 
 
 def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str]) -> MapSetup:
     """Compose the profile ``args`` names and write its model config into ``out_dir``.
 
     ``searches`` are the searches the caller will bind: the hand device's
-    limits are read only when ``nlp`` is one of them.
+    limits are read only when ``nlp`` is one of them, or when ``args`` asks for the
+    segment pass (``judge_segments``), whose position box is the CLIK's.
     """
     config_dir = Path(args.config_dir)
     profile = load_profile(config_dir, args.controller)
@@ -2039,6 +2561,17 @@ def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str])
     layers = [*robot_files, *[Path(p) for p in args.overlay]]
     controller_yaml = config_dir / "controllers" / f"{profile.controller}.yaml"
     catching, _ = composed_catching(controller_yaml, profile.controller, layers)
+    overrides: dict = {}
+    segment_mode = getattr(args, "segment_mode", None)
+    if segment_mode is not None:
+        # After the overlays: the argument is the last word on this one value.
+        planner = dict(catching.get("planner") or {})
+        segment = dict(planner.get("segment") or {})
+        shipped = segment.get("mode")
+        segment["mode"] = segment_mode
+        planner["segment"] = segment
+        catching = {**catching, "planner": planner}
+        overrides["planner.segment.mode"] = {"layers": shipped, "override": segment_mode}
     robot_params = load_robot_params(layers)
 
     def tree_value(path: str, why: str):
@@ -2064,11 +2597,13 @@ def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str])
             "different models"
         )
     try:
-        # Only the nlp binding reads the hand (whether its position box is complete).
+        # Only the nlp and segment bindings read the hand (whether the position box is complete).
         facts = robot_facts(
             robot_params,
             profile.arm_device,
-            profile.hand_device if "nlp" in searches else None,
+            profile.hand_device
+            if "nlp" in searches or getattr(args, "judge_segments", False)
+            else None,
             artifacts.urdf_text,
             sub_model,
         )
@@ -2114,6 +2649,7 @@ def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str])
         fk=fk,
         catch_point_w=catch_point_w,
         ball=ball,
+        overrides=overrides,
     )
 
 
@@ -2359,6 +2895,7 @@ def provenance(
         "layers": [
             {"path": str(Path(p).resolve()), "sha256": _sha256_file(p)} for p in setup.layers
         ],
+        "overrides": dict(setup.overrides),
         "repo": repo_state(),
         "judge": {"path": str(Path(judge).resolve()), "sha256": _sha256_file(judge)},
         "reach_bound": dict(bound) if bound is not None else None,
@@ -2389,6 +2926,46 @@ class ShardJob:
     bindings: Mapping[str, Path]
     wakes_path: Path
     out_paths: Mapping[str, Path]
+    # The segment pass, per search kind: its binding file, the wake CSV of the shard's
+    # accepted throws and its result CSV. Empty: no segment pass.
+    segment_bindings: Mapping[str, Path] = field(default_factory=dict)
+    segment_wakes_paths: Mapping[str, Path] = field(default_factory=dict)
+    segment_out_paths: Mapping[str, Path] = field(default_factory=dict)
+
+
+def filter_wake_csv(source: Path, out: Path, throw_ids: set[int]) -> None:
+    """``source`` (a wake CSV) with only the lines of ``throw_ids``, header kept."""
+    wanted = {str(i) for i in throw_ids}
+    with Path(source).open() as src, Path(out).open("w") as dst:
+        dst.write(src.readline())
+        for line in src:
+            if line.split(",", 1)[0] in wanted:
+                dst.write(line)
+
+
+def run_segment_pass(job: ShardJob, kind: str, accepted_ids: list[int]) -> dict:
+    """The segment pass of one search kind on a shard: the planner cycle on the wakes of the
+    throws the search accepted, with the search pass's wakes. No accepted throw, no run."""
+    if not accepted_ids:
+        return {"ran": False, "refusal": None, "wall_s": 0.0, "argv": None, "verdicts": []}
+    wakes = job.segment_wakes_paths[kind]
+    filter_wake_csv(job.wakes_path, wakes, set(accepted_ids))
+    run = run_search_batch(
+        job.judge,
+        kind,
+        model_config=job.model_config,
+        sub_model=job.sub_model,
+        catch_frame=job.catch_frame,
+        params=job.params,
+        binding=job.segment_bindings[kind],
+        wakes=wakes,
+        out=job.segment_out_paths[kind],
+    )
+    entry: dict = {"ran": True, "refusal": run.refusal, "wall_s": run.wall_s, "argv": run.argv}
+    if run.rows is not None:
+        entry["verdicts"] = segment_verdicts(accepted_ids, run.rows)
+        entry["wake_rows"] = len(run.rows)
+    return entry
 
 
 def run_shard(job: ShardJob) -> dict:
@@ -2448,6 +3025,9 @@ def run_shard(job: ShardJob) -> dict:
             entry.update(
                 verdicts=verdicts, plans=accepted_plans(run.rows), wake_rows=len(run.rows)
             )
+            if kind in job.segment_bindings:
+                accepted_ids = [v["throw_id"] for v in verdicts if v["accepted"]]
+                entry["segment"] = run_segment_pass(job, kind, accepted_ids)
         out["searches"][kind] = entry
     return out
 
@@ -2518,6 +3098,14 @@ def main(argv: list[str] | None = None) -> int:
         "without it such a throw is refused by its label and no search sees it",
     )
 
+    ap.add_argument(
+        "--judge-segments",
+        action="store_true",
+        help="after each search pass, run the planner cycle (search, first segment, pair "
+        "publish) on the wakes of the throws the search accepted, and add the segment "
+        "verdict (segment_* columns of verdicts_<kind>.csv, a `segment` block of the summary)",
+    )
+
     # ── the wakes ──
     ap.add_argument("--detection-delay-s", type=float, required=True, help="release → first wake")
     ap.add_argument("--vision-period-s", type=float, required=True, help="wake → next wake")
@@ -2568,7 +3156,8 @@ def main(argv: list[str] | None = None) -> int:
         "--sim-trials",
         type=Path,
         nargs="+",
-        help="catching_trials.csv file(s) of a sim run of the throw list",
+        help="catching_trials.csv file(s) of a sim run of the throw list (several: their rows "
+        "are read as one run)",
     )
     ap.add_argument("--axis-bins", type=int, default=8, help="bins of the binned axes")
     args = ap.parse_args(argv)
@@ -2579,6 +3168,13 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     setup = load_setup(args, out_dir, args.search)
     catching, profile, facts, fk = setup.catching, setup.profile, setup.facts, setup.fk
+    segment_bound: SearchBinding | None = None
+    if args.judge_segments:
+        # Before any wake or run: a tree with no segment planner has nothing to judge.
+        try:
+            segment_bound = segment_binding(catching, facts)
+        except BindingError as exc:
+            raise SystemExit(f"binding (segment): {exc}") from exc
     sub_model, catch_frame, wait_pose = setup.sub_model, setup.catch_frame, setup.wait_pose
     base_frame, base_t_world, catch_point_w = (
         setup.base_frame,
@@ -2723,6 +3319,26 @@ def main(argv: list[str] | None = None) -> int:
             yaml.safe_dump(bindings[kind].sources, sort_keys=False, allow_unicode=True, width=100)
         )
 
+    # The segment pass writes these only when it runs (and its result CSV only when a
+    # throw was accepted): an earlier run's would read as this one's.
+    for kind in SEARCH_KINDS:
+        for name in (
+            f"binding_{kind}_segment.yaml",
+            f"binding_{kind}_segment_sources.yaml",
+            f"segment_{kind}.csv",
+            f"segment_wakes_{kind}.csv",
+        ):
+            (out_dir / name).unlink(missing_ok=True)
+    segment_paths: dict[str, Path] = {}
+    if segment_bound is not None:
+        for kind in args.search:
+            combined = with_segment(bindings[kind], segment_bound)
+            segment_paths[kind] = out_dir / f"binding_{kind}_segment.yaml"
+            segment_paths[kind].write_text(combined.yaml_text())
+            (out_dir / f"binding_{kind}_segment_sources.yaml").write_text(
+                yaml.safe_dump(combined.sources, sort_keys=False, allow_unicode=True, width=100)
+            )
+
     # ── shards ──
     size = args.shard_throws
     if size == 0 and args.jobs > 1:
@@ -2751,6 +3367,13 @@ def main(argv: list[str] | None = None) -> int:
             bindings=binding_paths,
             wakes_path=shard_dir(i) / "wakes.csv",
             out_paths={kind: shard_dir(i) / f"search_{kind}.csv" for kind in args.search},
+            segment_bindings=segment_paths,
+            segment_wakes_paths={
+                kind: shard_dir(i) / f"segment_wakes_{kind}.csv" for kind in segment_paths
+            },
+            segment_out_paths={
+                kind: shard_dir(i) / f"segment_{kind}.csv" for kind in segment_paths
+            },
         )
         for i, shard in enumerate(shards)
     ]
@@ -2786,8 +3409,21 @@ def main(argv: list[str] | None = None) -> int:
             parts = [job.out_paths[kind] for job in jobs if job.out_paths[kind].is_file()]
             if parts:
                 _concatenate_csv(parts, out_dir / f"search_{kind}.csv")
+        for kind in segment_paths:
+            parts = [
+                job.segment_out_paths[kind]
+                for job in jobs
+                if job.segment_out_paths[kind].is_file()
+            ]
+            if parts:
+                _concatenate_csv(parts, out_dir / f"segment_{kind}.csv")
         if not args.keep_shards:
             shutil.rmtree(shard_root, ignore_errors=True)
+    elif not args.keep_shards:
+        # The segment pass's wake file is the search pass's wakes.csv cut to the accepted
+        # throws: an intermediate, as a shard directory is.
+        for kind in segment_paths:
+            (out_dir / f"segment_wakes_{kind}.csv").unlink(missing_ok=True)
 
     summary: dict = {
         "tool": "rtc_tools.analysis.catch_search_map",
@@ -2797,6 +3433,7 @@ def main(argv: list[str] | None = None) -> int:
         "config_dir": str(config_dir.resolve()),
         "controller": profile.controller,
         "layers": [str(p) for p in layers],
+        "overrides": dict(setup.overrides),
         "tree_search_mode": _lookup(catching, "planner.search.mode"),
         "segment_mode": _lookup(catching, "planner.segment.mode"),
         "sub_model": sub_model,
@@ -2834,6 +3471,12 @@ def main(argv: list[str] | None = None) -> int:
         "shards": {"count": len(jobs), "jobs": args.jobs, "elapsed_s": elapsed},
         "searches": {},
     }
+    if segment_bound is not None:
+        summary["provenance"]["segments"] = {
+            "judged": True,
+            "mode": segment_bound.kind,
+            "binding_sha256": hashlib.sha256(segment_bound.yaml_text().encode()).hexdigest(),
+        }
 
     verdicts_by_kind: dict[str, list[dict]] = {}
     rows_by_kind: dict[str, list[dict]] = {}
@@ -2851,9 +3494,35 @@ def main(argv: list[str] | None = None) -> int:
         if refusal is not None:
             entry["refused_configuration"] = refusal
             print(f"{kind}: {refusal}", file=sys.stderr)
+            if segment_bound is not None:
+                entry["segment"] = {
+                    "mode": segment_bound.kind,
+                    "not_run": "the search refused its configuration",
+                }
             continue
         judged_verdicts = {v["throw_id"]: v for part in parts for v in part["verdicts"]}
         plans = {k: v for part in parts for k, v in part["plans"].items()}
+        segment_by_id: dict[int, dict] = {}
+        if segment_bound is not None:
+            segment_parts = [part["segment"] for part in parts]
+            segment_refusal = next(
+                (p["refusal"] for p in segment_parts if p["refusal"] is not None), None
+            )
+            entry["segment"] = {
+                "mode": segment_bound.kind,
+                "binding": segment_bound.document,
+                "wall_s": sum(p["wall_s"] for p in segment_parts),
+                "argv": next((p["argv"] for p in segment_parts if p["argv"]), None),
+                "argv_runs": sum(p["ran"] for p in segment_parts),
+            }
+            if segment_refusal is not None:
+                entry["segment"]["refused_configuration"] = segment_refusal
+                print(f"{kind} segment: {segment_refusal}", file=sys.stderr)
+            else:
+                segment_list = [v for p in segment_parts for v in p["verdicts"]]
+                segment_by_id = {v["throw_id"]: v for v in segment_list}
+                entry["segment"].update(segment_summary(segment_list))
+                entry["segment"]["wake_rows"] = sum(p.get("wake_rows", 0) for p in segment_parts)
         verdicts, rows = [], []
         for throw in throws:
             throw_id = throw["throw_id"]
@@ -2866,12 +3535,15 @@ def main(argv: list[str] | None = None) -> int:
                     **{k: v for k, v in throw.items() if k not in ("pos", "vel", "omega")},
                     **flight_rows.get(throw_id, {}),
                     **verdict,
+                    **segment_cells(segment_by_id, throw_id, segment_bound),
                 }
             )
         for entry_row in unlaunchable:
             verdict = screened_verdict(entry_row["throw_id"], str(entry_row.get(SCREEN_KEY)))
             verdicts.append(verdict)
-            rows.append({**entry_row, **verdict})
+            rows.append(
+                {**entry_row, **verdict, **segment_cells(segment_by_id, None, segment_bound)}
+            )
         _write_rows(out_dir / f"verdicts_{kind}.csv", rows)
         verdicts_by_kind[kind], rows_by_kind[kind] = verdicts, rows
         entry.update(map_summary(verdicts, rows, args.axis_bins, discrete_axes, binned_axes))
@@ -2917,6 +3589,12 @@ def main(argv: list[str] | None = None) -> int:
         summary["sim"] = {"trials_csv": [str(p) for p in args.sim_trials], "searches": {}}
         for kind in rows_by_kind or [None]:
             joined, table = sim_table(sim_rows, verdicts_by_kind.get(kind))
+            seg = summary["searches"].get(kind, {}).get("segment") if kind else None
+            if seg is not None and "judged" in seg:
+                seg_joined, table["segment"] = sim_segment_table(sim_rows, rows_by_kind[kind])
+                if len(seg_joined) != len(joined):
+                    raise RuntimeError("the two sim tables skipped different trials")
+                joined = [{**a, **b} for a, b in zip(joined, seg_joined, strict=True)]
             _write_rows(out_dir / f"sim_join_{kind or 'none'}.csv", joined)
             summary["sim"]["searches"][kind or "none"] = table
 

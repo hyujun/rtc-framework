@@ -623,8 +623,8 @@ TEST_F(CatchingTrackingTest, LeadCompensationReducesTheErrorUnderAnActuationDela
   // 2026-09-20 premise about the sim, corrected 2026-09-24), leading and not
   // leading produce identical commands and the "before/after" comparison
   // measures nothing. The delay comes from a FIXTURE that only this test can
-  // reach (option ㄱ, #537); the shipped `T_arm` stays 0. The sim-runtime
-  // comparison is G8-E (S8-B).
+  // reach (option ㄱ, #537), not from the shipped `T_arm` (the sim servo's lag
+  // since #821). The sim-runtime comparison is G8-E (S8-B).
   //
   // The comparison is run TWICE against the same plant and the same ball, with
   // the compensation off and on. Asserting that the compensation HELPS, rather

@@ -105,6 +105,9 @@ add_library(rtc_controllers STATIC
   # dynamic_catching E1-F16: the docking keys — the hand's identified capture set
   # (`robot.hand.docking.*`) and the two docking functions' own maps.
   src/params/docking_params.cpp
+  # What only shows with the docking maps side by side (one check for a
+  # controller's configure and the offline whole-wake batch).
+  src/catching/docking_config.cpp
   src/catching/planner_cycle.cpp
   src/catching/grid_catch_search.cpp
   # dynamic_catching MPC E1-F01 (#627): the segment MPC numeric core — a jerk-input
@@ -799,6 +802,10 @@ if(BUILD_TESTING)
   target_include_directories(test_catch_search_batch PRIVATE
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catch_search_batch PRIVATE -Wno-mismatched-new-delete)
+  # The whole-wake batch solves the mpc segment planner's dynamics: an arm
+  # with inertias, as the approach-cycle suite drives.
+  target_compile_definitions(test_catch_search_batch PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
   # dynamic_catching S6-A: planner data contract + one planner wake. The RT
   # admission rule (L3 §5.2 (a)-(f)), `planner.*` parsing, the cycle's

@@ -6,6 +6,7 @@
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/types/types.hpp"  // rtc::SteadyNowNs
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
+#include "rtc_controllers/catching/docking_config.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -2345,11 +2346,9 @@ double DemoCatchingController::ResolvedCloseLead() const {
 double DemoCatchingController::EntranceCloseLead(
     const rtc::catching::MpcDockingSegmentCoreParams& core) const {
   const rtc::catching::TbdDouble lead = params_.hand.CloseLead();
-  const double c = -core.nu_ref.z();
-  if (lead.tbd || !std::isfinite(hand_docking_.s_ent) || !std::isfinite(c) || !(c > 0.0)) {
-    return std::numeric_limits<double>::quiet_NaN();  // DockingConfigInvalid names it
-  }
-  return lead.value - hand_docking_.s_ent / c;
+  // NaN for a TBD lead: DockingConfigInvalid names it.
+  return rtc::catching::EntranceCloseLead(
+      lead.tbd ? std::numeric_limits<double>::quiet_NaN() : lead.value, hand_docking_, core);
 }
 
 double DemoCatchingController::ResolvedSegmentEtaV() const {
@@ -2381,116 +2380,21 @@ void DemoCatchingController::ParseDockingConfig() {
 }
 
 const char* DemoCatchingController::DockingConfigInvalid() {
-  const bool nlp = search_mode_ == rtc::catching::CatchingSearchMode::kNlp;
-  const bool docking = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking;
-  if (!nlp && !docking) {
-    return nullptr;  // no docking function runs: none of this is consumed
-  }
-  const auto refuse = [this](std::string why) {
-    docking_refusal_ = std::move(why);
-    return docking_refusal_.c_str();
-  };
-  // The hand's identified values (E1-F15): nobody may guess one.
-  if (const char* unset = hand_docking_.FirstUnset(); unset != nullptr) {
-    return refuse(std::string("'catching.") + unset +
-                  "' is unset or TBD (the hand's identified capture set)");
-  }
-  if (params_.hand.T_close_e2e.tbd || params_.hand.CloseLead().tbd) {
-    return refuse(
-        "'catching.robot.hand.T_close_e2e' or 'T_close_lead' is unset or TBD (the "
-        "nominal closure instant is their difference)");
-  }
-  if (params_.ball.mass.tbd) {
-    return refuse("'catching.core.ball.mass' is unset or TBD (the impact rows)");
-  }
-  // A selected function's own map first: without it every value below is a
-  // code default, and a refusal that names one of those (the lead against a
-  // default closing speed) would hide that the map is missing — or nothing
-  // would refuse, and the search would run on defaults no profile wrote. The
-  // map has no decision key of its own to be unset (the catch box was the one,
-  // L3 §4.9), so what is asked for is the map and the core design inside it:
-  // that catches a profile without the search's fragment, and an overlay that
-  // wrote a leaf or two into the gap. It cannot tell a complete map from one
-  // that has a `core:` and little else.
-  if (nlp) {
-    // Const nodes throughout: a lookup must not create the key it asks about.
-    const YAML::Node& catching = catching_node_;
-    const YAML::Node planner = catching["planner"];
-    const YAML::Node search =
-        planner.IsDefined() && planner.IsMap() ? planner["search"] : YAML::Node();
-    const YAML::Node map = search.IsDefined() && search.IsMap() ? search["nlp"] : YAML::Node();
-    const bool has_map = map.IsDefined() && map.IsMap();
-    const YAML::Node core = has_map ? map["core"] : YAML::Node();
-    if (!has_map || !core.IsDefined() || !core.IsMap()) {
-      return refuse(
-          "'catching.planner.search.nlp.core' is not in this profile (the selected search's "
-          "map — is its file included?)");
-    }
-  }
-  if (docking && mpc_docking_params_.n_pre_max < 1) {
-    return refuse(
-        "'catching.planner.segment.mpc_docking.approach.n_pre_max' is unset (the "
-        "planner's pre-catch grid — its map is not in this profile?)");
-  }
-  if ((nlp && !(EntranceCloseLead(nlp_search_params_.core) >= 0.0)) ||
-      (docking && !(EntranceCloseLead(mpc_docking_params_.core) >= 0.0))) {
-    return refuse(
-        "'catching.robot.hand.T_close_lead' is shorter than the ball's flight from the "
-        "entrance plane to the catch point (robot.hand.docking.s_ent over the "
-        "reference closing speed, core.catch.nu_ref): the close would be due after "
-        "the entrance crossing");
-  }
-  // A first segment is planned from the RT state the wake loaded, and the
-  // segment planners refuse one older than their bound: a search allowed to
-  // run that long leaves no first segment to publish, ever.
-  const double age_max_s =
-      1e-9 * static_cast<double>(docking ? rtc::catching::kMpcDockingMaxRtStateAgeNs
-                                         : rtc::catching::kMpcSegmentMaxRtStateAgeNs);
-  if (nlp && !(nlp_search_params_.budget_s < age_max_s)) {
-    return refuse("'catching.planner.search.nlp.budget.budget_s' is " +
-                  std::to_string(nlp_search_params_.budget_s) +
-                  " s, not below the oldest RT state the segment planner plans a first segment "
-                  "from (" +
-                  std::to_string(age_max_s) +
-                  " s): every plan the search found would be withheld as stale");
-  }
-  if (nlp && docking) {
-    // The planner republishes the search's solution after re-evaluating it on
-    // its own core: the two grids have to be one.
-    if (const char* differ =
-            rtc::catching::DockingGridMismatch(nlp_search_params_, mpc_docking_params_);
-        differ != nullptr) {
-      return refuse(differ);
-    }
-    if (nlp_search_params_.continuous_tc) {
-      return refuse(
-          "'catching.planner.search.nlp.continuous_tc' is true: a solution whose catch "
-          "interval has its own length is off the mpc_docking planner's grid, so no "
-          "plan of it could be published");
-    }
-  }
-  // The reference closing speed lives in a function's `core:` map, the band
-  // it has to lie in under the hand's: the two are checked here, where both
-  // are known.
-  const auto speed_outside = [this](const rtc::catching::MpcDockingSegmentCoreParams& core) {
-    const double c = -core.nu_ref.z();
-    return !(c >= hand_docking_.c_min && c <= hand_docking_.c_cap_max);
-  };
-  if (nlp && speed_outside(nlp_search_params_.core)) {
-    return refuse("'catching.planner.search.nlp.core.catch.nu_ref' closes at " +
-                  std::to_string(-nlp_search_params_.core.nu_ref.z()) +
-                  " m/s, outside 'catching.robot.hand.docking.speed' [c_min, c_cap_max] = [" +
-                  std::to_string(hand_docking_.c_min) + ", " +
-                  std::to_string(hand_docking_.c_cap_max) + "]");
-  }
-  if (docking && speed_outside(mpc_docking_params_.core)) {
-    return refuse("'catching.planner.segment.mpc_docking.core.catch.nu_ref' closes at " +
-                  std::to_string(-mpc_docking_params_.core.nu_ref.z()) +
-                  " m/s, outside 'catching.robot.hand.docking.speed' [c_min, c_cap_max] = [" +
-                  std::to_string(hand_docking_.c_min) + ", " +
-                  std::to_string(hand_docking_.c_cap_max) + "]");
-  }
-  return nullptr;
+  // The checks are rtc_controllers' (docking_config.hpp): the offline
+  // whole-wake batch refuses the same profiles through the same function.
+  rtc::catching::DockingConfig config;
+  config.nlp = search_mode_ == rtc::catching::CatchingSearchMode::kNlp;
+  config.docking = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking;
+  config.catching = &catching_node_;
+  config.hand = &hand_docking_;
+  config.hand_close_unset = params_.hand.T_close_e2e.tbd || params_.hand.CloseLead().tbd;
+  config.search_close_lead = EntranceCloseLead(nlp_search_params_.core);
+  config.planner_close_lead = EntranceCloseLead(mpc_docking_params_.core);
+  config.ball_mass_unset = params_.ball.mass.tbd;
+  config.search = &nlp_search_params_;
+  config.planner = &mpc_docking_params_;
+  docking_refusal_ = rtc::catching::DockingConfigRefusal(config);
+  return docking_refusal_.empty() ? nullptr : docking_refusal_.c_str();
 }
 
 bool DemoCatchingController::BuildDockingLimits(const PlannerArm& arm, double eta_v,

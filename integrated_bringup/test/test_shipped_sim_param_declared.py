@@ -164,9 +164,10 @@ def test_sim_overlay_keys_are_declared(profile: str, declared: set[str]) -> None
     suffix, which is how they are declared.
     """
     paths = _overlay_paths(profile)
-    if profile in ("ur5e_p1b", "iiwa7_leap"):
-        # Both profiles ship overlays (iiwa7_leap since S8-D); an empty list here
-        # means the directory moved, not that there is nothing to check.
+    if profile == "ur5e_p1b":
+        # This profile ships overlays (iiwa7_leap's only one, the catching lead,
+        # moved into its controller YAML in #821); an empty list here means the
+        # directory moved, not that there is nothing to check.
         assert paths, f"{profile}: no sim_overlays/*.yaml found — test is vacuous"
     for path in paths:
         with open(path) as handle:
@@ -178,9 +179,9 @@ def test_sim_overlay_keys_are_declared(profile: str, declared: set[str]) -> None
         )
         section = sections.get("mujoco_simulator")
         if section is None:
-            # A controller-only overlay (the S8-B catch_lead_* files write only
-            # `integrated_rt_controller`): no sim key to check here, and its
-            # controller keys are pinned by test_catch_lead_overlays.py.
+            # A controller-only overlay writes only `integrated_rt_controller`:
+            # no sim key to check here (none ships since #821; its controller keys
+            # are what test_catch_lead_overlays.py's leaf rule is for).
             continue
         params = section["ros__parameters"]
         for name in _flatten(params):

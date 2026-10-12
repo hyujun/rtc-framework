@@ -3147,7 +3147,8 @@ TEST_F(SupervisorScenarioTest, AShortStaleAfterTheFreezeIsOnlyRecorded) {
 }
 
 TEST_F(SupervisorScenarioTest, ALongStaleAfterTheFreezeAbortsOnBallStaleLong) {
-  // With the shipped T_freeze (0.36) COMMITTED lasts only T_freeze − T_close_e2e
+  // With this fixture's T_freeze (0.36 — what p1b shipped with T_arm 0, until
+  // #821) COMMITTED lasts only T_freeze − T_close_e2e
   // = 80 ms, shorter than the 0.1 s the long-stale bound adds on top of
   // t_stale, so a lane that goes quiet in COMMITTED is long-stale only in
   // CLOSING. The freeze is widened (0.8 s, window 0.52 s) so the abort the

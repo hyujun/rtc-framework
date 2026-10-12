@@ -225,6 +225,12 @@ install(
   RENAME catching_sim_trials
 )
 
+install(
+  PROGRAMS scripts/catch_population_trials.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME catch_population_trials
+)
+
 # ── Export ─────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
@@ -1752,8 +1758,9 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_catching_sim_trials_s8f test/test_catching_sim_trials_s8f.py)
   ament_add_pytest_test(test_catching_sim_trials_throw_list
     test/test_catching_sim_trials_throw_list.py)
-  # #798: the shipped throw sets (config/<robot>/throw_sets/) are valid lists of their
-  # robot, labelled by both searches, and share no throw within a robot.
+  # #821: the shipped throw sets (config/<robot>/throw_sets/ — each arm's catch set of the
+  # throw population) are valid lists of their robot and arm, say what was thrown and
+  # caught, and hold no throw twice.
   ament_add_pytest_test(test_catching_throw_sets test/test_catching_throw_sets.py)
   # #601 host load watch: a slow sim is found from the truth rows, the run
   # aborts / warns / stays silent by mode, the runner's own pytest is not load.
@@ -1793,6 +1800,17 @@ if(BUILD_TESTING)
   # mirror: an old key is refused, an old mirror name is read through the alias
   # table (#711).
   ament_add_pytest_test(test_catching_keys_tools test/test_catching_keys_tools.py)
+  # #821 stage 2 (catch_population_trials). What a unit driver reads off a
+  # bringup's logs — startup, modes (moved here from tools/catching_eval with
+  # their tests), an abnormal start; what the command decides without a sim
+  # (plan, command lines, mirror expectations, retry); one unit and the whole
+  # command over stand-in processes (a `ros2` stub on PATH — no ROS graph is
+  # opened); and the collect step on planted units.
+  ament_add_pytest_test(test_catching_startup test/test_catching_startup.py)
+  ament_add_pytest_test(test_catch_population_trials test/test_catch_population_trials.py)
+  ament_add_pytest_test(test_catch_population_unit test/test_catch_population_unit.py)
+  ament_add_pytest_test(test_catch_population_collect
+    test/test_catch_population_collect.py)
   # tools/docking_ident (not installed — read from the source tree, E1-F15): the
   # rig's inputs out of the shipped profiles, its copy of the simulator's ball
   # against rtc_mujoco_sim's C++, and report.py on planted stores. The rig

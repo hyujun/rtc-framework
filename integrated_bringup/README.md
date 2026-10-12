@@ -80,7 +80,7 @@ integrated_bringup/
 │   ├── ur5e_p1a/_base.yaml                 <- mode-agnostic SSoT (URDF + 모델 토폴로지 + device roster/limits + control_rate/logging)
 │   ├── ur5e_p1a/robot.yaml                 <- 실제 로봇 delta (backend/토픽 + E-STOP + init 타이밍, _base 위에 overlay)
 │   ├── ur5e_p1a/sim.yaml                   <- 시뮬레이션 delta (MuJoCo backend + sim-sync + 완화된 E-STOP, _base 위에 overlay)
-│   ├── <robot>/throw_sets/                 <- 포구 평가의 투척 목록 (ur5e_p1b · iiwa7_leap): D1_regression_v0 (130 발) · D2_tuning_v0 (30 · 27 발) · candidate_box_v0 (180 발) — E1-F21 · #798, §Catching sim trials
+│   ├── <robot>/throw_sets/                 <- 포구 평가의 투척 목록 (ur5e_p1b · iiwa7_leap): 조합마다 `throw_catch_set_<search>_<segment>.json` — 투척 모집단의 catch 집단 (#821, §Catching sim trials)
 │   └── controllers/
 │       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi/pull_estimator/momentum_observer)
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
@@ -108,6 +108,11 @@ integrated_bringup/
 │   └── sim_g1_p1b.launch.py            <- MuJoCo 시뮬레이션 launch (Unitree G1 상체 fixed-base + proto_1b 오른손, §g1_p1b)
 ├── integrated_bringup/                 <- ament_python 패키지 (GUI 모듈 · sim 도구)
 │   ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 (투척마다 한 S7 순환 + host 부하 감시, §Catching sim trials)
+│   ├── catch_population_trials.py      <- 포구 모집단의 sim 단계 (#821): 묶음마다 sim 을 띄워 던지고 모은다 (§포구 모집단의 sim 단계)
+│   ├── catch_population_collect.py     <- 끝난 unit → 조합별 `sim_throws.csv` · `throw_catch_set.json`
+│   ├── catching_startup.py             <- unit 의 기동 판정: 준비 · mode 줄 · 기동 이상 (`tools/catching_eval/` 의 두 스크립트가 shim 으로 부른다)
+│   ├── catching_tc_vector.py           <- unit 분석: `catching_trials` + t_c 간격의 벡터 분해 (`tools/catching_eval/tc_vector.py` 가 shim)
+│   ├── catch_modes.py                  <- `catch_search_mode:=` · `catch_segment_mode:=` → 컨트롤러 override 두 키 (sim launch 공용)
 │   ├── sim_overlay.py                  <- `sim_overlay:=` 해석 (sim launch 공용)
 │   ├── sim_lanes.py                    <- `sim_lanes:=` → clock/ball contact lane 파라미터 (sim launch 공용)
 │   └── demo_gui/
@@ -119,6 +124,7 @@ integrated_bringup/
 ├── scripts/
 │   ├── demo_controller_gui.py          <- 컨트롤러 튜닝 GUI 진입점 (얇은 shim)
 │   ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 진입점 (얇은 shim)
+│   ├── catch_population_trials.py      <- 포구 모집단의 sim 단계 진입점 (얇은 shim)
 │   └── motion_editor_gui.py            <- 모션 에디터 GUI (PyQt5)
 └── tools/                              <- 설치하지 않는 평가 도구 — source tree 에서 실행한다 (§포구 평가 도구)
     ├── catching_eval/                  <- 포구 sim 평가: unit 드라이버 · overlay · 조건 생성 · 판정 · N arm 의 기록
@@ -251,11 +257,12 @@ S8-F 대조 `s8f_shipped_score`·beanbag, S8-G 격자 `s8g_*`, S8-I 자세 `s8i_
 (`sim_overlay:=/path/to/arm.yaml` — overlay 는 다른 overlay 를 include 하지 못하므로 잎을 전부 적은 자기완결 파일).
 새 실험 arm 도 repo 밖 (private 도구 디렉터리) 에서 경로로 씁니다.
 
-포구 컨트롤러 overlay 는 컨트롤러 섹션 (`integrated_rt_controller`) 을 씁니다. 출하된 것은 `catch_lead_on` 하나이고 러너의 표준 arm 입니다
-(sim 팔의 1차 지연 0.05 s 를 `joint_cmd.lag.T_arm` 으로 주고 `T_freeze` 를 0.39 로 올립니다 — 하한과의 관계는 그 파일 머리 주석). 컨트롤러 키는 경로가 한 단계만 어긋나도
-**경고 없이 무시되고 출하값으로 돌기 때문에**, 기동 로그의 `commit at t_c − 0.390 s` 로 적용을 확인합니다. sim 팔 지연 0.05 s 자체는 overlay 가 아니라
+포구 컨트롤러 overlay 는 컨트롤러 섹션 (`integrated_rt_controller`) 을 씁니다. **출하된 포구 overlay 는 없습니다** ([#821](https://github.com/hyujun/rtc-framework/issues/821)) — 러너의 표준 arm 이던 `catch_lead_on` 의 값
+(sim 팔의 1차 지연 0.05 s 를 `joint_cmd.lag.T_arm` 으로 주고 선행을 켜며, `ur5e_p1b` 는 `T_freeze` 를 0.39 로 둔다) 은 출하 컨트롤러 YAML (`controllers/demo_catching_controller.yaml`) 의 값이 됐고, overlay 없이 띄운 sim 이 그 arm 입니다. 탐색과 구간 계획기는 overlay 가 아니라 launch 인자 (`catch_search_mode:=` · `catch_segment_mode:=`) 로 바꿉니다.
+직접 쓴 overlay 는 여전히 경로로 넘길 수 있는데, 컨트롤러 키의 경로가 한 단계라도 어긋나면 (`catching:` 누락 등)
+**경고 없이 무시되고 출하값으로 돌기 때문에**, 컨트롤러 미러 (`ros2 param get`) 나 기동 로그의 `commit at t_c − 0.390 s` 로 적용을 확인합니다. sim 팔 지연 0.05 s 자체는
 `config/ur5e_p1b/mujoco_simulator.yaml` 의 서보 게인 (`use_yaml_servo_gains: true`, kd/kp = 0.05 s) 이 정합니다 —
-MJCF 게인 그대로면 0.2 s 입니다. 근거는 `catch_lead_on.yaml` 헤더, 경로 고정은
+MJCF 게인 그대로면 0.2 s 입니다. 출하값의 고정과 override 의 잎 규칙 (출하 키 · 같은 타입) 은
 `test/test_catch_lead_overlays.py` 가 갖습니다.
 
 공 종류는 overlay 의 시뮬레이터 섹션에서 바꿉니다 (`mujoco_simulator.ros__parameters.projectile_ball.ball_type: beanbag`
@@ -275,9 +282,9 @@ reference.omega` (· `reference.a_max` · `robot.arm.qdd_max`) 로 합니다 —
 `test_demo_catching_controller.cpp` (`ShippedCatchingProfile`) 가 핀합니다. 옛 `robot.arm.accel_limits_{package,path,group}` 키는 더 이상 없고,
 config 에 남아 있으면 컨트롤러가 park (`kRemovedKey`) 합니다 — sim 도 실기도 configure 는 SUCCESS, ERROR 가 지운 키와 새 키 (`robot.arm.qdd_max`·`robot.arm.qdd_provisional`) 를 대고 activate 는 거부됩니다 (조용히 무시하면 옛 overlay 가 출하 box 로 돌고, configure 를 실패시키면 CM 이 로봇의 모든 컨트롤러를 거부합니다). 지운 값도 같습니다: CLIK 의 가속 제약 `joint_cmd.accel_constraint` 는 `kinematic` · `dynamic` 뿐이고 **기본값이 없습니다** — `box` 를 적으면 `kRemovedKey` 로, 키가 없거나 `TBD` 면 소비 값 미정 (`kConsumedValues`) 으로 park 하며 ERROR 가 그 키를 지목합니다. 지운 키 · 값이 여럿이면 한 번의 configure 가 모두 지목합니다.
 
-`sim_iiwa7_leap.launch.py` 도 같은 규칙으로 `config/iiwa7_leap/sim_overlays/` 를 읽습니다 (S8-D).
-`catch_lead_on` 은 `T_arm` 0.05 · `lead_enable` 을 켜고 (`T_freeze` 는 출하 0.19 가 이미 설계 하한 0.1387 (`T_close_lead` + h/2 + `T_arm` + margin) 을 덮는다 —
-기동 로그 `commit at t_c − 0.190 s`). 씬은 바꾸지 않습니다 — 출하 씬이 테이블·물체 없는 받침대 씬 `scene_right_pedestal.xml` 입니다. 이 로봇의 sim 팔
+`sim_iiwa7_leap.launch.py` 도 같은 규칙으로 `sim_overlay:=` 를 받지만 (S8-D) 이 로봇에 출하된 overlay 는 없습니다 — 하나뿐이던 `catch_lead_on` (`T_arm` 0.05 · `lead_enable`) 이 #821 에서 출하 컨트롤러 YAML 로 들어갔습니다
+(`T_freeze` 는 출하 0.19 가 이미 설계 하한 0.1387 (`T_close_lead` + h/2 + `T_arm` + margin) 을 덮는다 —
+기동 로그 `commit at t_c − 0.190 s`). 출하 씬은 테이블·물체 없는 받침대 씬 `scene_right_pedestal.xml` 입니다. 이 로봇의 sim 팔
 지연 0.05 s 도 `config/iiwa7_leap/mujoco_simulator.yaml` 의 서보 게인 (kp ×4) 이 정합니다.
 
 ```bash
@@ -1080,7 +1087,7 @@ ros2 topic pub --once /demo_dualarm_controller/p1b/joint_goal rtc_msgs/RobotTarg
 
 S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장되면 팔을 `planner.wait_pose` 로 관절공간 homing 하고 손을 q_pre 에 둔 채 기다린다 (IDLE → ARMED). 러너는 미러 `planner.wait_pose` 로 조준·정렬하므로 **`planner.wait_pose_source: yaml` 전제**다 — `current` 로 띄우면 채택 자세와 미러가 달라 ARMED 정렬 gate 가 거부한다; 자세 실험은 overlay `planner.wait_pose` 로 한다 (S8-I). 시행이 끝나면 다시 그 자세로 돌아간다 (RETREAT → ARMED).
 
-**switch 시점 자세를 대기 자세로 (S8-I, `planner.wait_pose_source: current` — 출하 overlay 는 없다. `catch_lead_on` 의 잎에 이 키를 더한 자기완결 overlay 를 경로로 넘긴다).** 러너 없이 손으로 쓰는 흐름이다: `demo_joint_controller` 에 관절 목표 (`/demo_joint_controller/ur5e/joint_goal`, `goal_type: joint`) 나 `demo_task_controller` 에 TCP 목표 (`/demo_task_controller/ur5e/joint_goal`, `goal_type: task`, `base` 프레임 (x, y, z, roll, pitch, yaw) ZYX — 출하 `trajectory_speed` 0.01 m/s 라 0.1 m 에 10 s) 를 보내 팔을 두고, `/rtc_cm/switch_controller` 로 포구 컨트롤러를 활성화한다. 팔이 **정지한** 첫 판독 tick 이 그 자세를 채택하고 (기동 로그 `wait pose adopted from the arm's switched-in pose: [...]`, diag `wait_pose_adopted`·`q_wait_<joint>`), `catching.enable` 은 homing 없이 곧 ARMED 다. 팔이 아직 움직이거나 팔 속도 lane 을 읽을 수 없으면 결정을 미루고, 그 상태에서 무장하거나 E-STOP 아래에서 switch 했거나 자세가 margined 관절 상자 밖이면 **거부** — YAML 자세가 남고 WARN `switched-in wait pose REFUSED ... <사유> [arm joint i, reading x]` 한 줄이 나온다 (무장 시 YAML 자세까지 homing). 2026-09-27 headless sim 검증: 관절 목표 3 자세 + TCP 목표 2 자세 (출하 자세에서 최대 0.35 rad · 8–11 cm) + 출하 복귀 재채택 — 채택 오차 ≤ 1.2e-4 rad, 채택 로그 0.11 s, 무장 시 팔 이동 ≤ 1e-4 rad, 각 자세에서 손 근처 투척 한 발이 plan → HOLD → RETREAT 로 채택 자세에 복귀 (6/6, 포획 2); wrist_3 6.25 rad (margined box 밖) 은 거부되어 YAML 자세로 12.8 s homing. 미러 `planner.wait_pose` 는 YAML 값이므로 채택 자세는 로그·diag 로만 읽는다. 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
+**switch 시점 자세를 대기 자세로 (S8-I, `planner.wait_pose_source: current` — 출하 overlay 는 없다. 이 키 하나를 적은 overlay 를 경로로 넘긴다).** 러너 없이 손으로 쓰는 흐름이다: `demo_joint_controller` 에 관절 목표 (`/demo_joint_controller/ur5e/joint_goal`, `goal_type: joint`) 나 `demo_task_controller` 에 TCP 목표 (`/demo_task_controller/ur5e/joint_goal`, `goal_type: task`, `base` 프레임 (x, y, z, roll, pitch, yaw) ZYX — 출하 `trajectory_speed` 0.01 m/s 라 0.1 m 에 10 s) 를 보내 팔을 두고, `/rtc_cm/switch_controller` 로 포구 컨트롤러를 활성화한다. 팔이 **정지한** 첫 판독 tick 이 그 자세를 채택하고 (기동 로그 `wait pose adopted from the arm's switched-in pose: [...]`, diag `wait_pose_adopted`·`q_wait_<joint>`), `catching.enable` 은 homing 없이 곧 ARMED 다. 팔이 아직 움직이거나 팔 속도 lane 을 읽을 수 없으면 결정을 미루고, 그 상태에서 무장하거나 E-STOP 아래에서 switch 했거나 자세가 margined 관절 상자 밖이면 **거부** — YAML 자세가 남고 WARN `switched-in wait pose REFUSED ... <사유> [arm joint i, reading x]` 한 줄이 나온다 (무장 시 YAML 자세까지 homing). 2026-09-27 headless sim 검증: 관절 목표 3 자세 + TCP 목표 2 자세 (출하 자세에서 최대 0.35 rad · 8–11 cm) + 출하 복귀 재채택 — 채택 오차 ≤ 1.2e-4 rad, 채택 로그 0.11 s, 무장 시 팔 이동 ≤ 1e-4 rad, 각 자세에서 손 근처 투척 한 발이 plan → HOLD → RETREAT 로 채택 자세에 복귀 (6/6, 포획 2); wrist_3 6.25 rad (margined box 밖) 은 거부되어 YAML 자세로 12.8 s homing. 미러 `planner.wait_pose` 는 YAML 값이므로 채택 자세는 로그·diag 로만 읽는다. 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
 
 `catching_sim_trials` 는 떠 있는 sim 을 구동만 한다. 투척마다 다음을 한다.
 
@@ -1097,7 +1104,7 @@ S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장
 |---|---|---|
 | `hand_cliff` · `hand_lob` · `hand_lhs` (S8-F) | **손 근처 투척** — 도착으로 지정한다: 떠 있는 컨트롤러의 `wait_pose` 를 FK 해 얻은 포구점 p_c·접근축 (catch frame +z) 을 기준으로, 도착 속력 v · 비행 시간 T · 접근축에 수직한 평면의 오프셋 (r, ψ) · 접근축 기준 입사각 α 를 정하고 `rtc_tools.analysis.catchability_map.aim_at_hand` 가 출하 항력 법칙으로 **역적분**해 릴리스를 낸다. `hand_cliff` = r 0 · T 0.65 · 정면, v {3.5, 4, 4.5, 5, 5.5, 6, 7} × 8 (속력 교차 순서, `--n` 무시) · `hand_lob` = 수평 아래 85° 급강하, v {2.5, 3, 3.5, 4} × 14 · `hand_lhs` = v [3.5, 7] · T [0.65, 0.8] · r [0, 0.2] · ψ [0, 360) · α [−10°, +15°] 의 Latin hypercube `--n` 발 (`--seed` 재현; 릴리스 공 표면이 `--floor-z` (기본 0.05, 작업 테이블 상판) 아래면 다시 뽑는다 — 받아들인 발당 `HAND_LHS_MAX_DRAWS_PER_THROW` 회를 넘기면 상자 자체가 이 기하에 안 맞는 것이라 이유를 적고 멈춘다) | 탐색 (dynamic_catching S8-F). 시행 기록에 인자·도출량 (Δz·d·v0·앙각·입사각)·목표점 `target_m` 과 **조준 검증** (`aim_error_m`: 첫 truth 표본에서 항력 법칙으로 적분한 비행이 목표점을 얼마나 비껴가는지 — truth 는 손에서 끊기므로 표본이 아니라 모델로 읽는다; `model_rms_m` 은 첫 접촉 전 truth 와 그 모델의 차) 이 남는다. 항력 상수는 C++ 프리셋이라 `--drag-coefficient`·`--air-density` (+ `-source` file:line) 로 주고 (기본 tennis; beanbag 은 0.5 · `projectile_ball.cpp:39`), `--arm` 은 unit 의 overlay 이름을 `run_meta.json` 에 남기는 라벨, `--limit` 은 계열의 앞 N 발만 (스모크). `run_meta.json` 의 `hand_geometry` 가 p_c·접근축·공 파라미터와 출처다. 탐색에 포구점의 위치 제한이 없으므로 (L3 §4.9) 출하 overlay 로 그대로 쓴다 — S8-F 때는 넓힌 `catch_box` 를 적은 arm (`s8f_reach_first` · `s8f_shipped_score` · `s8f_reach_first_beanbag`) 이 필요했고, 그 파일들은 git 이력에 있다 (지금은 그 키 때문에 컨트롤러가 park 한다) |
 
-**투척 목록 파일 (`--throws-file PATH`).** JSON 파일이 투척을 정한다 — 오프라인 도구와 sim 이 같은 투척을 쓴다. 출하 세트는 `config/<robot>/throw_sets/` 다 (E1-F21 · #798): `D1_regression_v0.json` (회귀 130 발) · `D2_tuning_v0.json` (튜닝, p1b 30 · leap 27 발) · `candidate_box_v0.json` (후보 상자의 LHS 180 발 — p1b R 2.5 · leap R 1.5, #800 의 결정). 투척마다 두 탐색의 오프라인 라벨 (`offline_<search>_{verdict,reason,first_accept_wake,t_c_s,lead_s,search_wall_us}`) 이 실려 있고, 로봇의 세 세트는 투척을 공유하지 않는다 (`test_catching_throw_sets.py`). **두 unit 의 시행은 (목록 파일의 sha256, `throw_id`) 로 짝짓는다** (`rtc_tools.analysis.catching_throw_list.throw_key` — `summarize.py` · `catching_decel` · `catching_pool` 이 쓴다; `catching_trials.csv` 의 `throws_file_sha256` 열과 요약의 `throws_file`). 같은 launch 를 다시 쓴 파일은 sha 가 달라 다른 모집단이다 — 세트는 그대로 두고 버전을 올린다. `--dist`·`--seed` 와 함께 주면 인자 오류이고, `--n` 은 쓰이지 않으며, `--limit` 은 파일의 앞 N 발만 던진다. 투척 순서는 파일 순서다. 손 근처 기하(FK)는 필요 없다. 형식의 검증·읽기·쓰기는 `rtc_tools.analysis.catching_throw_list` 하나다 — 오프라인 도구 (`catch_search_map`) 도 같은 모듈로 쓰므로 그 목록은 여기서 그대로 받는다. 이 드라이버의 `load_throw_list(path) -> (throws, meta)` · `write_throw_list(path, throws, meta)` 는 그 모듈의 함수다. 파일은 인자를 읽을 때 한 번 읽고 검증한다: 없거나 형식이 틀린 파일은 sim 에 닿기 전, `<out>` 에 아무것도 쓰기 전에 인자 오류 (종료 코드 2) 로 끝나고, 그 한 번 읽은 내용이 던질 투척과 `run_meta.json` 의 기록이 된다.
+**투척 목록 파일 (`--throws-file PATH`).** JSON 파일이 투척을 정한다 — 오프라인 도구와 sim 이 같은 투척을 쓴다. 출하 세트는 `config/<robot>/throw_sets/` 다 (#821): 조합 (탐색 × 구간 계획기) 마다 `throw_catch_set_<search>_<segment>.json` — 그 로봇의 투척 모집단 (`catch_population.yaml`) 에서 segment 집단을 던져 **sim 이 잡은 투척**이다 (`ur5e_p1b` grid × mpc 89 · nlp × mpc_docking 32 발, `iiwa7_leap` 451 · 30 발; `iiwa7_leap` 의 grid × mpc 는 segment 집단 4,212 발에서 층별로 뽑은 1,000 발을 던진 것이다). **한 번의 실행 (2026-10-11 · 10-12 의 viewer 시험, 추정기 seed 8210) 의 결과다** — nlp × mpc_docking 은 같은 묶음을 같은 seed 로 다시 던져도 잡는 투척이 달라진다 (집계는 같다). 파일의 `meta` 가 던진 집단과 그 sha256 · 던진 수 · 쌍이 게시된 수 · 실행의 날짜와 revision 을 싣고, 투척마다 잡힌 seed (`caught_seeds`) 와 설계의 축 값이 실려 있다. 세트에 없는 투척은 "놓친 투척" 이 아니라 뽑히지 않았거나 놓친 투척이다 (`meta.note`). 한 세트 안에 같은 투척은 없고, 두 조합의 세트는 한 모집단에서 나오므로 투척을 공유할 수 있다 (`test_catching_throw_sets.py`). 옛 세트 (#798 의 D-1 회귀 · D-2 튜닝 · 후보 상자 — 설정 주석과 계획 문서가 측정의 근거로 인용한다) 는 #821 에서 지웠고 git 이력에 있다 (`git show b4e4e87e:integrated_bringup/config/<robot>/throw_sets/<D1_regression_v0|D2_tuning_v0|candidate_box_v0>.json`). **두 unit 의 시행은 (목록 파일의 sha256, `throw_id`) 로 짝짓는다** (`rtc_tools.analysis.catching_throw_list.throw_key` — `summarize.py` · `catching_decel` · `catching_pool` 이 쓴다; `catching_trials.csv` 의 `throws_file_sha256` 열과 요약의 `throws_file`). 같은 launch 를 다시 쓴 파일은 sha 가 달라 다른 모집단이다 — 세트는 그대로 두고 버전을 올린다. `--dist`·`--seed` 와 함께 주면 인자 오류이고, `--n` 은 쓰이지 않으며, `--limit` 은 파일의 앞 N 발만 던진다. 투척 순서는 파일 순서다. 손 근처 기하(FK)는 필요 없다. 형식의 검증·읽기·쓰기는 `rtc_tools.analysis.catching_throw_list` 하나다 — 오프라인 도구 (`catch_search_map`) 도 같은 모듈로 쓰므로 그 목록은 여기서 그대로 받는다. 이 드라이버의 `load_throw_list(path) -> (throws, meta)` · `write_throw_list(path, throws, meta)` 는 그 모듈의 함수다. 파일은 인자를 읽을 때 한 번 읽고 검증한다: 없거나 형식이 틀린 파일은 sim 에 닿기 전, `<out>` 에 아무것도 쓰기 전에 인자 오류 (종료 코드 2) 로 끝나고, 그 한 번 읽은 내용이 던질 투척과 `run_meta.json` 의 기록이 된다.
 
 ```json
 {
@@ -1116,6 +1123,8 @@ S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장
 
 **측정 lane (`sim_lanes:=true`).** sim 의 clock 위상 lane 과 공 접촉 truth lane 은 노드 파라미터라 기동 때만 읽힌다. `sim_lanes:=true` (`sim_ur5e_p1b`·`sim_iiwa7_leap`·`sim_g1_p1b`, 공용 `integrated_bringup.sim_lanes`) 는 둘을 켜고 `<session>/sim/{clock_lane,ball_contact_lane}.csv` 에 쓴다 — 시행의 lane 이 그 세션의 컨트롤러 CSV 옆에 남아 `catching_trials` (`rtc_tools`) 가 둘을 잇는다. 기본은 off (YAML 그대로).
 
+**탐색 · 구간 계획기 선택 (`catch_search_mode:=` · `catch_segment_mode:=`, #821).** `sim_ur5e_p1b` · `sim_iiwa7_leap` 은 출하 `demo_catching_controller` 의 `catching.planner.search.mode` (`grid` \| `nlp`) 와 `catching.planner.segment.mode` (`closed_form` \| `mpc` \| `mpc_docking`) 를 launch 인자로 받는다 (공용 `integrated_bringup.catch_modes`). 빈 값은 출하값 그대로이고, mode 가 아닌 값은 launch 가 거부한다. overlay 파일을 쓰지 않고 그 두 키만 바꾼다 — 포구 모집단의 조합이 이것이다. **이 인자가 타는 경로는 받은 키를 그대로 만든다** (`ApplyControllerParamOverrides`): 키가 한 단계 어긋나면 만들어지기만 하고 읽히지 않아 출하 조합으로 돌면서 아무 경고도 없다. 그래서 키는 `catch_modes` 한 곳에서만 적고 (`test/test_launch_description_evaluates.py` 가 출하 YAML 의 키임을 고정한다), 던지는 쪽은 투척 전에 컨트롤러의 미러 (`planner.search.mode` · `planner.segment.mode`) 를 되읽는다 — `catch_population_trials` 가 그렇게 한다.
+
 ```bash
 # 1) sim (계획기는 enable_mpc:=true 가 필요하다 — mpc_off 면 활성화 거부)
 ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false use_cpu_affinity:=false enable_mpc:=true sim_lanes:=true
@@ -1125,22 +1134,22 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
   "{activate_controllers: [demo_catching_controller], deactivate_controllers: [demo_joint_controller], strictness: 1, timeout: {sec: 3}}"
 # 4) 투척 — <out>/truth_trial_NN.csv (공 ground truth) + trial_results.json (모드 전이·판정·정렬 오차)
 ros2 run integrated_bringup catching_sim_trials <out> \
-  --throws-file $(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1b/throw_sets/candidate_box_v0.json
+  --throws-file $(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1b/throw_sets/throw_catch_set_grid_mpc.json
 #    같은 목록의 앞 25 발만
 ros2 run integrated_bringup catching_sim_trials <out> --throws-file <위 파일> --limit 25
 #    손 근처 투척 (S8-F): --arm 은 sim 을 띄운 overlay 의 이름을 run_meta.json 에 남기는 라벨이다
 ros2 run integrated_bringup catching_sim_trials <out> --dist hand_cliff --seed 901 --arm <overlay 이름>
 ros2 run integrated_bringup catching_sim_trials <out> --dist hand_lhs --n 150 --seed 911 --arm <overlay 이름>
 
-# iiwa7_leap (S8-D): 같은 순서, launch·profile·overlay 만 다르다. `catch_lead_on`
-# overlay 는 T_arm 0.05 선행을 켠다 (씬은 출하 받침대 씬 그대로다).
+# iiwa7_leap (S8-D): 같은 순서, launch·profile 만 다르다. 선행 (T_arm 0.05) 은 출하값이고
+# 씬은 출하 받침대 씬 그대로다 (overlay 없음).
 ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_viewer:=false use_cpu_affinity:=false \
-  enable_mpc:=true sim_lanes:=true sim_overlay:=catch_lead_on
+  enable_mpc:=true sim_lanes:=true
 ros2 launch ball_perception_sim sim_estimator.launch.py \
   profile_path:=$(ros2 pkg prefix ball_perception_sim)/share/ball_perception_sim/config/sim_profile.catching.json \
   producer_revision:=<rtc-framework 커밋>
 ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap \
-  --throws-file $(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/iiwa7_leap/throw_sets/candidate_box_v0.json
+  --throws-file $(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/iiwa7_leap/throw_sets/throw_catch_set_grid_mpc.json
 ```
 
 **host 부하 감시 (`--host-watch`, #601).** sim 이 벽시계보다 느리게 돌면 (RTF < 1 — 같은 host 의 다른 세션 빌드·테스트 등) 공 stamp 가 컨트롤러의 steady 시계보다 뒤처져 정상 입력이 `BALL_STALE` 로 끊기고, 성공률이 포구가 아니라 host 를 잰다 (dynamic_catching D-S8-17). 러너는 투척마다 자기가 기록하는 truth 행에서 sim 속도를 읽는다 — stamp 구간 / 수신 구간, sim 시간 `--host-window` (기본 0.25 s) 창 중 가장 느린 값. `sim_lanes:=true` 는 필요 없다. 그 값이 `--host-rtf-min` (기본 0.95) 아래면 부하다 (`rtc_tools` `catching_trials` 의 `rtf_trial_min` 과 같은 창·임계).
@@ -1157,9 +1166,65 @@ ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap \
 
 `trial_results.json` 의 `outcome` 이 시행 판정, `cycle_closed` 가 순환 완료 여부, `err_q_at_throw` 가 투척 순간의 정렬 오차다. `wall_t_relative_offset` 은 이 기록을 `catching_diag.csv` 의 시간축에 잇는다 (시행 중앙값이라 sim 이 벽시계보다 느리면 흐른다 — `rtc_tools` `catching_trials` 는 clock lane 이 있으면 쓰지 않는다). `truth_csv` 는 trials dir 기준 파일 이름이다 (절대경로였던 예전 기록은 dir 을 옮기고 같은 `<out>` 으로 다시 돌리면 다른 run 의 파일을 가리켰다). 이제 homing 도 포구 컨트롤러가 하므로 모든 구간이 `catching_diag.csv` 에 행으로 남는다. `armed_at_throw` 는 투척 직전 컨트롤러가 발행한 무장 상태다. demo_controller_gui 의 Catching 패널은 같은 기준 (RETREAT 진입 때의 판정) 으로 이 패널이 본 시행 수를 판정별로 센다 (`this panel: attempts N: …`, 패널을 다시 띄우면 새로 센다).
 
+### 포구 모집단의 sim 단계 (`catch_population_trials`)
+
+포구 모집단 (#821) 의 2 단계다. 1 단계 (`rtc_tools` 의 `catch_population`) 가 조합마다 남긴 묶음 파일 (`<결과 폴더>/<조합>/throws/chunk_NNN.json`) 을 sim 에서 던지고, 잡은 투척을 모은다. **설치되는 명령이다** — git 저장소 · `setup_env.sh` · source tree 없이, ROS 와 이 workspace 를 source 한 환경에서 돈다. 설정 파일은 1 단계와 같은 것 (`config/<robot>/catch_population.yaml`) 이고 로봇은 그 파일이 놓인 폴더다.
+
+```bash
+# 개발 PC 의 긴 실행은 with_verify_hold.sh 로 띄운다 (묶음 사이에는 sim 이 없다 — 그 틈에 빌드 · 테스트가 시작되지 않게)
+repo_scripts/scripts/with_verify_hold.sh \
+  ros2 run integrated_bringup catch_population_trials \
+    --config $(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1b/catch_population.yaml \
+    --out <결과 폴더> --estimator-ws <추정기의 colcon workspace>
+# 무엇을 띄울지만 본다 / 던지지 않고 다시 모은다
+ros2 run integrated_bringup catch_population_trials --config <파일> --out <결과 폴더> --estimator-ws <ws> --dry-run
+ros2 run integrated_bringup catch_population_trials --config <파일> --out <결과 폴더> --collect-only
+```
+
+| 인자 | 뜻 |
+|---|---|
+| `--config` · `--out` | 설정 파일과 1 단계의 결과 폴더 (필수). 결과 폴더의 `config.yaml` (1 단계가 남긴 사본) 과 `sim` 절 밖이 다르면 거부한다 |
+| `--estimator-ws` | 추정기 (`ball_perception`) 의 colcon workspace. 기본은 `BALL_SIM_WS`. 그 workspace 는 추정기를 띄우는 셸에서만 source 한다 |
+| `--profile` | 추정기의 profile. 기본은 `PROFILE`, 없으면 그 workspace 의 출하 catching profile. profile 은 이 저장소 밖의 파일이다 — 그 `prediction.horizon_s` 가 설정의 `timing.prediction_horizon_s` (1 단계가 판정에 쓴 값) 와 다르면 던지기 전에 거부한다 |
+| `--arms` · `--seeds` | 던질 조합 (`<search>_<segment>`) 과 추정기 seed. 기본은 설정의 전부 · `sim.estimator_seeds` |
+| `--max-chunks N` · `--throws-limit N` | 조합마다 묶음 0 … N−1 만 · 묶음마다 앞 N 발만 (smoke) |
+| `--viewer on\|off` | MuJoCo viewer. 기본은 설정의 `sim.viewer` |
+| `--domain-id` | 그 실행의 `ROS_DOMAIN_ID`. 기본은 `EVAL_DOMAIN`, 없으면 88 |
+| `--collect-only` | 던지지 않는다. 분석이 없는 unit 을 분석하고 결과 파일을 다시 만든다 |
+| `--dry-run` | 그 실행의 unit 과 띄울 명령을 찍고 끝낸다 |
+
+**묶음 하나가 unit 하나이고 sim 기동 한 번이다.** unit 은 `<결과 폴더>/sim/<조합>/seed_<seed>/chunk_NNN/` 이고 `run_unit.sh` 가 남기는 파일을 그대로 남긴다 (`status` = `DONE` \| `FAIL:<이유>`, `conditions.txt`, `mirror.txt`, `launch.log`, `est.log`, `trials.log`, `trials/`, `session/`, `ct/` …) — unit 을 읽는 도구가 그대로 읽는다. `launch_overrides.yaml` 은 그 unit 의 launch 인자를 overlay 꼴로 다시 적은 **기록**이고 (입력이 아니다), `conditions.txt` 의 `overlay:` 가 그 파일을 가리킨다 — `summarize.py --unit` 이 unit 이 바꾼 값을 거기서 읽는다. unit 의 순서:
+
+1. 앞 unit 과 같은 분, 또는 이미 세션이 있는 분에는 띄우지 않는다 (세션 디렉토리의 이름이 분 단위다)
+2. sim 기동 — 조합의 두 mode 를 launch 인자로 (`catch_search_mode:=` · `catch_segment_mode:=`, overlay 파일 없음), viewer 는 `sim.viewer`, `sim_lanes:=true`, `max_log_sessions:=60` (launch 가 오래된 세션을 지운다)
+3. 준비 확인 (`supervisor: trials enabled`, 120 초까지)
+4. **투척 전에 컨트롤러의 미러를 되읽는다**: 두 mode, 그리고 출하값 그대로여야 하는 값 — `T_arm` · `lead_enable` · `T_freeze` · CLIK 형태 · 그 조합의 구간 격자 (`n_pre_max`, docking 의 정지 `n_nodes` · `dt_s`) · sim 의 공. "출하값" 은 설치된 설정에서 읽는다 (로봇별 표가 코드에 없다). 기동 로그의 mode 줄 · 격자 줄 · 예산 줄도 대조한다. 다르면 `FAIL:mirror <어긋난 것>` — 단어는 `run_unit.sh` 의 것이다 (`T_freeze` · `mode_mirror` · `n_pre_max` · `stop_dt` …)
+5. 추정기 기동 (seed 는 추정기에만 간다), 컨트롤러 전환, `catching_sim_trials --throws-file <묶음>` (`sim.end_on_ball_low` · `sim.host_watch` 대로)
+6. 종료 — 드라이버 · 추정기 · sim 순서로 SIGINT 뒤 기다렸다가 SIGKILL, 그 뒤 남은 세 실행 파일 (이 workspace 의 sim · RT 노드, 추정기 workspace 의 추정기) 을 정리한다
+7. 세션 기록의 오염 검사 (같은 분에 시작한 테스트가 같은 세션 디렉토리에 쓴 파일) 뒤 세션을 unit 으로 복사하고 원본을 지운다. 실패한 unit 은 세션을 `session_failed` 로 갖는다
+8. 분석 (`catching_tc_vector` — `analyse_unit.sh` 가 돌리는 것) 은 **unit 이 끝난 뒤, sim 이 없을 때** 돈다. sim 옆에서는 돌리지 않는다. 설치된 `catching_trials` 의 인터프리터 (배포판 python) 로 돌린다 — venv 의 pandas 로 낸 수와 섞이지 않게
+9. 수집 — 한 seed 의 unit 들은 한 조건에서 던진 것이어야 한다: `conditions.txt` 의 `profile_sha256` · `end_on_ball_low` · `host_watch` 가 unit 사이에 다르면 그 키와 묶음을 대며 거부한다 (이어 돌린 실행은 DONE 인 unit 을 건너뛰므로, 조건을 바꾸기 전후의 묶음이 한 seed 로 합쳐질 수 있다)
+
+**이어 던지기와 재시도** (`run_all.sh` 의 규칙). `DONE` 인 unit 은 건너뛴다. 실패한 unit 은 `<chunk>.failN` 으로 치우고 다시 던진다 — 명령을 띄울 때 한 번 (사람의 결정), 그 뒤로는 **rig 실패**일 때만 `sim.retries` 번의 기동까지: `host_busy` · `estimator not activated` · `startup` · `abnormal_start`. 그 밖의 실패 (`FAIL:mirror …` · `FAIL:trials rc=…` · `FAIL:switch` · `FAIL:sim exited` · `FAIL:contaminated …` · `FAIL:signal`) 는 실패한 자리에 남고 실행은 다음 unit 으로 간다. 순서는 seed 별로, 그 안에서 모든 조합의 묶음 k 뒤에 묶음 k+1 이다 — 일찍 끝난 실행에도 모든 조합이 있다. `<결과 폴더>/STOP` 파일이 있으면 다음 기동 전에 멈춘다. SIGINT · SIGTERM · SIGHUP 은 도는 unit 과 그것이 띄운 것을 끝낸다 (`FAIL:signal`). 진행은 `<결과 폴더>/sim/progress.log` 에 남는다.
+
+**기동 이상 (`FAIL:abnormal_start`).** 모든 확인을 통과하고도 그 sim 이 아닌 경우다. 2026-10-11 에 viewer 가 뜨는 순간 키 입력이 그 창으로 들어가 (`G` — 세계 중력) 공이 중력 없이 날았고, 컨트롤러가 TRACKING ↔ ARMED 를 80 회 오가거나 APPROACH 1 초 뒤 중단했으며, 사람이 멈출 때까지 82 발을 던졌다. 두 징후 중 하나면 unit 을 끝낸다: (1) 기동 로그에 물리를 바꾸는 viewer 키의 줄 (`[Viewer] World gravity …` · `Contacts …` · `Integrator → …` · `Solver → …` · `Solver iterations → …`) — unit 내내 본다. (2) 드라이버 로그의 첫 5 발 중 mode 목록이 40 개 이상인 투척 (정상 투척은 15 개 이하였다) — 공이 끝나지 않는 투척이다. 둘 다 팔이 투척으로 한 일과 무관해서 다시 던진다. 근거는 unit 의 `abnormal_start.txt` 에 남는다. **viewer 를 켠 실행 중에는 그 창에 키를 넣지 않는다** — 로그를 남기지 않는 키 (Space · `+`/`-` · `R` · `K` · `O`) 는 이 검사가 보지 못한다.
+
+**결과** (조합마다, 실행 끝과 `--collect-only` 에서 다시 만든다):
+
+| 파일 | 내용 |
+|---|---|
+| `<조합>/sim_throws.csv` | `DONE` 인 모든 unit 의 `ct/catching_trials.csv` 의 모든 행, 앞에 `arm,seed,chunk` 세 열. 투척 × seed 마다 한 행 (`throw_id` · `plan_verdict` · `truth_success` · `invalid_reason` …). 분석기 자신의 `seed` 열 (투척 계열의 seed — 목록에서는 빈 값) 은 `series_seed` 로 적힌다 |
+| `<조합>/throw_catch_set.json` | `catching_throw_list/1` — 던진 투척 가운데 한 seed 에서라도 잡은 것 (`truth_success`). 투척마다 `caught_seeds` · `thrown_seeds`. meta: 던진 집단 (`thrown_set`: `search` \| `segment`) 과 그 sha256 · 크기 (`source_set`), 전부인지 뽑은 것인지 (`sample`: `n_throws` / `of` · `whole_set`), seed 별 던진 묶음과 던진 수 · 무효 · 쌍 게시 · 포구 수 (`seeds`). 잡은 투척이 없으면 파일을 쓰지 않는다 |
+
+**catch 집단은 "그 seed 에서 잡은 투척" 이다.** 그리고 **던지지 않은 투척은 놓친 투척이 아니다** — 집단에 없는 투척은 뽑히지 않았거나, 아직 던지지 않았거나 (`seeds[].chunks` 와 `chunks_total`), 던졌으나 놓친 것이고, meta 가 그것을 가른다. 오프라인의 segment 집단과 sim 의 쌍 게시도 같지 않아 쌍 게시 수를 따로 적는다.
+
+**다른 PC 의 unit 을 합친다.** 합치는 열쇠는 (뽑은 집단의 sha256, `throw_id`) 다. unit 디렉토리를 이 결과 폴더의 `sim/<조합>/seed_<seed>/` 아래로 복사하고 `--collect-only` 를 돌린다. unit 이 적은 `throws_file_sha256` 이 이 폴더의 묶음 파일의 sha256 과 다르면 그 unit 을 이름으로 거부하고 아무것도 쓰지 않는다 (seed · 로봇 · 조합이 디렉토리와 다른 unit 도).
+
+**unit 이 도는 동안 같은 머신에서 다른 것을 돌리지 않는다** (아래 §포구 평가 도구 와 같다 — `host_busy` 로 묶음이 다시 던져진다).
+
 ### 포구 평가 도구 (`tools/`)
 
-`integrated_bringup/tools/` 의 스크립트는 **설치하지 않는다. 측정하는 workspace 의 source tree 에서 실행한다.** repo 는 스크립트의 자리에서, colcon workspace 는 그 두 단계 위에서 찾는다 (`RTC_WS` 로 다른 곳을 가리킬 수 있다). repo 가 `<workspace>/src` 아래에 없으면 `run_unit.sh` 는 거부한다 — unit 에 적히는 revision 이 빌드된 tree 의 것이어야 하기 때문이다. 도구는 repo 안에 아무것도 쓰지 않는다. 원자료 · 실험 overlay · 실험 plan 은 repo 에 넣지 않는다.
+`integrated_bringup/tools/` 의 스크립트는 **설치하지 않는다. 측정하는 workspace 의 source tree 에서 실행한다.** (포구 모집단의 묶음은 위의 설치된 명령 `catch_population_trials` 가 던진다 — `run_unit.sh` · `run_all.sh` 가 하는 일을 옮긴 것이다.) repo 는 스크립트의 자리에서, colcon workspace 는 그 두 단계 위에서 찾는다 (`RTC_WS` 로 다른 곳을 가리킬 수 있다). repo 가 `<workspace>/src` 아래에 없으면 `run_unit.sh` 는 거부한다 — unit 에 적히는 revision 이 빌드된 tree 의 것이어야 하기 때문이다. 도구는 repo 안에 아무것도 쓰지 않는다. 원자료 · 실험 overlay · 실험 plan 은 repo 에 넣지 않는다.
 
 **unit 이 도는 동안 같은 머신에서 다른 것을 돌리지 않는다** — 빌드 · 테스트만이 아니라 `ros2` CLI 와 기록 분석도 (`host_busy` 로 unit 이 버려진다).
 
@@ -1168,14 +1233,14 @@ ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap \
 | 스크립트 | 하는 일 |
 |---|---|
 | `THROWS_FILE=<목록> run_unit.sh <out> <p1b\|leap> <overlay.yaml> <n (무시)> <seed>` | unit 하나 — 투척은 `THROWS_FILE` 의 목록이고 (`THROWS_LIMIT=N` 은 앞 N 발; 없으면 거부, #798), seed 는 추정기에만 간다 (sim 은 seed 를 받지 않는다). sim 을 띄우고, 컨트롤러의 미러가 기대값과 같은지 확인하고 (기동 로그의 `segment mode: <값>` · `search mode: <값>` 줄도 대조한다 (`EXPECT_SEARCH`, 기본 `grid`) — `closed_form` arm 은 `segment mode: closed_form` 줄이 **있어야** 통과하고, 기동 줄은 `<out>/segment_startup.txt` 에 남는다), 추정기를 띄우고, `catching_sim_trials` (`--throws-file <목록> [--limit N] --host-watch abort`) 를 돌린 뒤 세션 로그를 unit 으로 옮긴다. `<out>/status` 가 `DONE` 또는 `FAIL:<이유>` 다. tree 가 dirty 하면 거부한다 (`ALLOW_DIRTY=1` 로 푼다). INT · TERM · HUP 을 받으면 sim 과 추정기를 끝내고 `FAIL:signal` 을 적는다 (세션 로그는 다른 실패처럼 `<out>/session_failed` 로 옮긴다) |
-| `check_startup.py <launch.log>` | 컨트롤러가 올라왔는가 — `run_unit.sh` 의 기동 대기가 1 초마다 묻는다. 종료 코드 0 = `supervisor: trials enabled` 줄이 있다, 1 = bringup 이 실패했다 (`Config load failed` · `bring_up_failed` · `refus…` 가 **`[INFO]` 가 아닌 줄**에 있다 — 그 첫 줄이 unit 의 `startup_failure.txt` 에 남는다), 2 = 아직 둘 다 없다. level 을 보는 이유: 정상 기동도 `[INFO]` 로 "… is refused without the IK (too_far)" 를 찍는다 (도달 반경 줄, ready 줄보다 수십 ms 앞) — level 을 보지 않던 옛 대기는 그 사이에 폴링이 걸리면 투척 전에 `FAIL:startup` 을 냈다 (#747) |
+| `check_startup.py <launch.log>` | 컨트롤러가 올라왔는가 — `run_unit.sh` 의 기동 대기가 1 초마다 묻는다 (판정은 설치되는 `integrated_bringup.catching_startup` 이 갖고 이 파일은 shim 이다 — `catch_population_trials` 가 같은 함수를 쓴다; mode 줄을 대조하는 `check_segment_mode.py` 도 같다). 종료 코드 0 = `supervisor: trials enabled` 줄이 있다, 1 = bringup 이 실패했다 (`Config load failed` · `bring_up_failed` · `refus…` 가 **`[INFO]` 가 아닌 줄**에 있다 — 그 첫 줄이 unit 의 `startup_failure.txt` 에 남는다), 2 = 아직 둘 다 없다. level 을 보는 이유: 정상 기동도 `[INFO]` 로 "… is refused without the IK (too_far)" 를 찍는다 (도달 반경 줄, ready 줄보다 수십 ms 앞) — level 을 보지 않던 옛 대기는 그 사이에 폴링이 걸리면 투척 전에 `FAIL:startup` 을 냈다 (#747) |
 | `run_all.sh` | plan 의 unit 을 차례로 돌린다. 다시 띄우면 `DONE` 인 unit 은 건너뛴다. **rig 실패**로 끝난 unit 만 `<dir>.fail<N>` 로 치우고 같은 seed 로 `MAX_TRY` (기본 3) 번까지 다시 돌린다 — rig 실패는 그 arm 이 투척으로 한 일과 무관한 실패다: `FAIL:host_busy` · `FAIL:estimator not activated` · `FAIL:startup` (투척 전의 bringup). 그 밖의 실패 (`FAIL:overlay …` · `FAIL:trials rc=…` · `FAIL:dirty tree` 등) 는 **다시 돌리지 않는다** (#746): unit 은 실패한 자리에 남고 `progress.log` 에 `not retried` 줄이 적히며 batch 는 다음 unit 으로 간다 — 그 unit 의 투척이 원인일 수 있는 실패를 다시 돌리면 어떤 결과를 기록할지를 고르게 된다. `run_all.sh` 를 다시 띄우는 것은 사람의 결정이고, 그때는 그 unit 을 치우고 새로 돌린다. `$DATA/STOP` 파일이 있으면 그 unit 뒤에 멈춘다. **`repo_scripts/scripts/with_verify_hold.sh` 로 띄운다** |
 | `analyse_unit.sh <ur5e_p1b\|iiwa7_leap> <unit>...` | 끝난 unit 에 `rtc_tools` 의 `catching_trials` 와 `tc_vector.py` 를 돌려 `<unit>/ct/` 에 쓴다. unit 을 모으는 중에는 돌리지 않는다 (host 부하) |
-| `mk_overlay.py <out.yaml> <p1b\|leap> <closed_form\|mpc\|mpc_docking> [grid\|nlp [tennis\|beanbag\|hard]]` | 그 로봇의 `sim_overlays/catch_lead_on.yaml` 에 `planner.segment.mode` 하나 (넷째 인자를 주면 `planner.search.mode` 도) 를 더한 overlay 를 쓴다 (두 arm 모두 mode 를 적는다 — 출하 기본값에 기대지 않는다). 다섯째 인자는 sim 의 공이다 (#746): 주면 `mujoco_simulator.ros__parameters.projectile_ball.ball_type` 을 적는다 — **sim 의 키 하나뿐**이고 컨트롤러 · 추정기 profile · 손의 식별 집합은 그 로봇의 출하값 그대로다. `nlp` × `closed_form` 과 다른 leaf 가 섞이면 거부한다 |
+| `mk_overlay.py <out.yaml> <p1b\|leap> <closed_form\|mpc\|mpc_docking> [grid\|nlp [tennis\|beanbag\|hard]]` | `planner.segment.mode` 하나 (넷째 인자를 주면 `planner.search.mode` 도) 만 적은 overlay 를 쓴다 (두 arm 모두 mode 를 적는다 — 출하 기본값에 기대지 않는다; 나머지 키는 선행을 포함해 전부 출하값이다 — #821 전에는 `catch_lead_on` overlay 를 바탕으로 읽었다). `catch_population_trials` 는 overlay 없이 launch 인자를 쓰므로 이 도구는 `run_unit.sh` 용이다. 다섯째 인자는 sim 의 공이다 (#746): 주면 `mujoco_simulator.ros__parameters.projectile_ball.ball_type` 을 적는다 — **sim 의 키 하나뿐**이고 컨트롤러 · 추정기 profile · 손의 식별 집합은 그 로봇의 출하값 그대로다. `nlp` × `closed_form` 은 거부한다 |
 | `summarize.py --cfg <config dir> --overlay-cf … --overlay-mpc … --cf <unit>… --mpc <unit>…` | 로봇 하나의 G-1 판정 (짝 구성, 무효 처리, 성공 판정, Tango 검정, 기준 1–4). 규칙은 #632 의 규칙 코멘트가 정했다. 시행을 unit 의 디렉토리 이름으로 찾으므로 **이름이 같은 unit 둘은 거부한다** (두 arm 의 unit 이름이 달라야 한다). 기계적인 부분은 `test/test_catching_eval_summarize.py` 가 고정한다 |
 | `summarize.py --cfg <config dir> --unit <unit>… [--all-pairs] [--json out.json]` | **N arm 의 기록** (#746) — 같은 투척에서 arm 마다 무엇이 나왔는지를 적고 **아무것도 판정하지 않는다** (대조군 · 비열등 한계 · PASS / FAIL 이 없다 — 풀이의 p99 가 예산 안인지, 관절 한계를 넘은 tick 이 몇인지는 사실로 적는다). arm 은 search × segment × 공이고 **unit 의 `mirror.txt` 에서 읽는다** (`planner.search.mode` · `planner.segment.mode` · `ball_type`) — 플래그나 디렉토리 이름이 아니다. `conditions.txt` 의 `expect_search` · `expect_mode` · `expect_ball` 이 미러와 다르면 거부하고 (#746 전의 unit 은 그 줄이 없어 미러만으로 읽는다), overlay 는 `conditions.txt` 가 적은 파일을 쓴다 (없으면 거부). `nlp` 탐색의 예산 미러는 #746 부터 남기므로, 그 전의 unit 이 섞인 arm 은 남긴 unit 들의 값을 쓴다 (그 값끼리 다르면 거부). 짝은 **한 반복 안에서만** 맺는다 — 반복 = 추정기 seed 하나 × 투척 목록 하나 — 그래서 한 목록을 seed 둘로 던지면 층 둘이고, 층별 · 목록별 · 합산 표를 낸다 (합산은 투척 하나를 반복마다 한 번 센다). 표를 맺는 arm 쌍은 **공이 같고 계획기가 다른 쌍**과 **계획기가 같고 공이 다른 쌍**이다 (`--all-pairs`: 전부). 쌍마다 `truth_success` 와 D4 의 2×2 표, arm 별 성공률과 Wilson 구간, 쌍 차이 (b − a) 와 score 구간, McNemar exact p, 그리고 Tango 행 — **참고 행**이다 (δ 는 G-1 의 값을 적을 뿐 무엇도 정하지 않는다: 둘 다 0 발인 표도 Tango 로는 "비열등" 이 된다). arm 마다: 성공률 (목록별 · unit 별), 계획 판정 (`published` · `withheld` · `no_plan`) 과 거부 사유 · 판정별 포구 수, 입구 통과 (#807 — 게시된 투척이 입구 평면을 `ρ_ref` 에서 10 mm 안으로 지난 수와 그중 포구), 풀이 — **끝난 풀이는 분포로, 코어가 기한에 끊은 풀이는 수와 몫으로** (`rtc_tools.analysis.planner_solves`), 예산은 **그 arm 의 계획기 것** (`planner.segment.mpc.budget.*` 또는 `planner.segment.mpc_docking.budget.*`; `closed_form` 은 없음) — `nlp` 탐색의 wake, 한계 위반, 실패 양상, 그리고 같은 arm 의 seed 둘을 서로 맺은 표 (반복이 결과를 얼마나 옮기는가). `test/test_catching_eval_record.py` |
 | `unit_report.py <unit>... [--json out.json]` | unit 하나가 기록한 것을 그대로 읽어 낸다 (판정 없음): 투척 수와 HOLD · ABORT_SAFE 와 `trial_results.json` 의 `final_outcome` 별 수 — **그 값은 supervisor 의 label 이지 포구의 판정이 아니다**: 새 cycle 이 시작되지 않은 투척에는 앞 투척의 label 이 그대로 남는다 (E1-F19 에서 `iiwa7_leap` 의 3 건을 44 건으로 읽었다). 성공은 `catching_trials` 의 `truth_success` 로 센다 (`summarize.py` 가 쓰는 것). 계획기 wake 의 outcome 과 교체 시도가 끝난 자리 (`replace_step`), 구간 풀이의 묶음별 표 (종류 · outcome · 코어 사유 · 불능 행 그룹 — 반복 · QP 수 · 끝난 풀이의 시간 분포 · **코어가 기한에 끊은 풀이의 수** · QP 시간의 비중 · 그룹별 위반), `nlp` 탐색의 wake 사유 · 후보 수 · 탈락 사유, RT 구간 lane 의 이벤트와 구간 법칙이 도는 tick 의 `t_compute_us`. 끊긴 풀이의 시간은 풀이 시간으로 내지 않는다 — 규칙과 표는 `rtc_tools.analysis.planner_solves` 가 갖는다. 옛 로그는 있는 열만큼 낸다. `test/test_catching_eval_unit_report.py` |
-| `tc_vector.py` | t_c 의 간격을 공의 진행 방향과 그 수직으로 나눈 값. `analyse_unit.sh` 가 부른다. 열 `segment_wait_node0_ms` · `segment_n_followed` · `segment_workspace_refused` 를 쓰고, `summarize.py` 는 옛 도구가 쓴 `ct/` (`decel_*` 이름) 를 읽지 않고 다시 만들라는 오류로 멈춘다. unit 에 `probe/lane_prediction_dump.csv` 가 있으면 (`PROBE_DUMP=1`) `catching_trials` 에 `--probe-dump` 로 넘긴다 |
+| `tc_vector.py` | t_c 의 간격을 공의 진행 방향과 그 수직으로 나눈 값. `analyse_unit.sh` 가 부른다 (분석은 설치되는 `integrated_bringup.catching_tc_vector` 가 갖고 이 파일은 shim 이다). 열 `segment_wait_node0_ms` · `segment_n_followed` · `segment_workspace_refused` 를 쓰고, `summarize.py` 는 옛 도구가 쓴 `ct/` (`decel_*` 이름) 를 읽지 않고 다시 만들라는 오류로 멈춘다. unit 에 `probe/lane_prediction_dump.csv` 가 있으면 (`PROBE_DUMP=1`) `catching_trials` 에 `--probe-dump` 로 넘긴다 |
 | `make_conditions.py` | 예측 격자 조건 (E0-F04, #647) 의 profile · overlay · `conditions.tsv` · plan 을 `$DATA/conditions/` 에 쓴다. `io.n_min` 은 **그 로봇의** 출하 `io.horizon_min` 으로 센다 (`ceil(horizon_min / dt) + 1` — 두 로봇의 값이 다르다) |
 
 | 환경변수 | 쓰는 곳 | 뜻 |
@@ -1208,7 +1273,7 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.search.g
   integrated_bringup/tools/catching_eval/run_unit.sh <out> <robot 열> <overlay 열> <n> <seed>
 ```
 
-조건의 overlay 는 mode 를 적지 않으므로 출하 법칙 (`planner.segment.mode`) 으로 돈다. `EXPECT_MODE` (기본 `mpc`) 가 그것과 다르면 맞춰 준다. `L-50` 행의 overlay 는 경로가 아니라 이름 (`catch_lead_on`) 이다. `run_unit.sh` 는 파일을 받으므로 `integrated_bringup/config/<robot>/sim_overlays/catch_lead_on.yaml` 을 넘긴다 (`<out>` · overlay · `DATA` · `PROFILE` 은 부른 자리 기준의 상대 경로여도 된다). `make_conditions.py` 는 overlay 의 leaf 규칙을 `test/test_catch_lead_overlays.py` 의 `_unread_leaves` 에서 경로로 불러 쓴다 — 그 테스트의 이름을 바꾸면 이 스크립트를 같이 고친다.
+조건의 overlay 는 mode 를 적지 않으므로 출하 법칙 (`planner.segment.mode`) 으로 돈다. `EXPECT_MODE` (기본 `mpc`) 가 그것과 다르면 맞춰 준다. 조건의 overlay 는 격자 키 셋만 적는다 — `L-50` 행의 것은 그 셋이 출하값과 같은 파일이다 (다르면 쓰지 않고 거부한다; #821 전에는 `catch_lead_on` 을 이름으로 가리켰다). `run_unit.sh` 에는 그 파일을 넘긴다 (`<out>` · overlay · `DATA` · `PROFILE` 은 부른 자리 기준의 상대 경로여도 된다). `make_conditions.py` 는 overlay 의 leaf 규칙을 `test/test_catch_lead_overlays.py` 의 `_unread_leaves` 에서 경로로 불러 쓴다 — 그 테스트의 이름을 바꾸면 이 스크립트를 같이 고친다.
 
 `.last_minute` 는 세션 디렉토리의 이름이 분 단위라서 둔다: 같은 `DATA` 의 앞 unit 과 같은 분에는 다음 unit 을 띄우지 않는다. `DATA` 가 다른 두 평가를 같은 workspace 에서 같이 돌리면 이 보호가 닿지 않는다.
 

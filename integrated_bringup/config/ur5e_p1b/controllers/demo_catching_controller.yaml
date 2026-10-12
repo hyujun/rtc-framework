@@ -489,21 +489,25 @@ demo_catching_controller:
       accel_constraint: dynamic
       eta_tau: 0.8
       lag:
-        # 0 here because T_arm is the REAL arm's lag, which S10 identifies;
-        # `lead_enable` turns the compensation on once it has. The sim arm is
-        # NOT lag-free — ../mujoco_simulator.yaml runs its servo at kd/kp =
-        # 0.05 s (#537 D-S8-13) — and the sim runs with the lead on only
-        # through the sim_overlays/catch_lead_* files (T_arm 0.05, T_freeze
-        # 0.39 — the L3 §4.11 bound T_close_lead + h/2 + T_arm + margin for
-        # T_arm 0.05, see that file).
+        # The SIM arm's lag, led: ../mujoco_simulator.yaml runs the position
+        # servo at kd/kp = 0.05 s (#537 D-S8-13), a first-order lag the S8-A
+        # least-squares fit reads as 50 ms on all six joints. Shipped since
+        # #821 (2026-10-11); until then these two were 0 / false here and the
+        # sim ran the lead through the catch_lead_on sim overlay (removed). T_arm is not
+        # only the lead: the validator derives the commit window from it
+        # (planner.freeze.T_freeze below).
+        #
+        # A REAL arm's T_arm is not this number — S10 identifies it. The day
+        # it does, the sim's 0.05 needs a place of its own: this key cannot
+        # hold both.
         #
         # `provisional` is about the REAL arm's T_arm (#537 pre-S10 R3): sim
         # warns, a real arm parks until S10 identifies it — whatever the value
         # and with the lead off too, since T_arm also sits in the T_freeze
         # floor. Absent reads as true.
         provisional: true
-        T_arm: 0.0
-        lead_enable: false
+        T_arm: 0.05
+        lead_enable: true
 
     supervisor:
       # ── Thresholds the joint command layer reports to (L7 §6, S5.3) ───────
@@ -627,16 +631,22 @@ demo_catching_controller:
       sub_model: "ur5e_catch"
       freeze:
         # Decision G (2026-09-23): the L3 §4.11 lower bound — the close lead
-        # robot.hand.T_close_lead + h/2 0.001 + T_arm (0, sim) + margin 0.03,
-        # rounded up with room. With the lead at 0.302 (E1-F19 part 2) the
-        # bound is 0.333. Provisional. Read by the search, by every segment
-        # mode and by the RT (the commit instant).
-        T_freeze: 0.36
+        # robot.hand.T_close_lead 0.302 (E1-F19 part 2) + h/2 0.001 + T_arm
+        # 0.05 (joint_cmd.lag) + margin 0.03 = 0.383, rounded up to 10 ms.
+        # (0.36 while T_arm was 0 here, #821.) The grid search's commit-lead
+        # rank gate (kRankCommitLead) uses the same sum and the lower end of
+        # its candidate window is T_freeze, so at or above the bound no
+        # candidate in the window carries that penalty bit. The bound is a
+        # design value, not the configure requirement: the validator's own
+        # (T_close_lead + T_arm + h = 0.354) is lower. Startup log: "commit
+        # at t_c − 0.390 s". Provisional. Read by the search, by every
+        # segment mode and by the RT (the commit instant).
+        T_freeze: 0.39
         # While a plan is followed on a segment planner's segments the search
         # still runs, until the catch instant is this close [s]: not set, so it
         # is T_freeze — the search stops where the plan freezes. A larger
         # value stops it earlier; one below T_freeze parks.
-        # t_stop_plan: 0.36
+        # t_stop_plan: 0.39
       # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
       # That flag is the only one `planner:` has, across the fragments too — it
       # covers `hand.d_eff` and `hand.r_cap` (catching/search_grid.yaml), which

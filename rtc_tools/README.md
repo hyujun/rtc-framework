@@ -32,7 +32,9 @@ rtc_tools/
 │   │   ├── catch_speed_budget.py        ← 수락 후보별 팔 속도·토크 한계 방향 가속 → γ 창 판정표 (S4.4)
 │   │   ├── catch_gate_map.py            ← kinematic 지도 위의 나머지 게이트 (도달시간·γ 창·정지점) → gate-catchable 지도 (S3.5b)
 │   │   ├── catch_search_map.py          ← 계획기 탐색 자체 (`catch_search_batch`) 의 투척별 수용 지도 · binding · gate/sim 대조 (L3 §4.1)
-│   │   ├── catch_throw_design.py        ← 통과점 투척 설계 (발사점 · 통과점 · 발사각 → 속력 풀이) · 사전 판정 `screen:*` · 격자 부분집합과 경계 세분화 (L3 부록 C)
+│   │   ├── catch_throw_design.py        ← 통과점 투척 설계 (발사점 · 통과점 · 발사각 → 속력 풀이) · 사전 판정 `screen:*` · 격자 부분집합과 경계 세분화 · 최소 통과 시간 제한 · plan 집단과 층화 추출 (L3 부록 C)
+│   │   ├── catch_population.py          ← 투척 모집단 1 단계: 설정 파일 하나 → 설계 · 모집단 · 조합별 탐색 집단 · 구간 집단 · 던질 묶음 · manifest (기존 도구를 차례로 부른다, #821)
+│   │   ├── catch_population_report.py   ← 결과 폴더의 집단 통계 텍스트와 3D plot · sim 결과 (쌍 게시 · 포구) 와 층별 추정 (#821)
 │   │   ├── catching_throw_list.py       ← 투척 목록 파일 `catching_throw_list/1` 의 단일 형식 (검증·읽기·쓰기 — 지도와 sim 드라이버가 함께 쓴다)
 │   │   ├── vision_lane.py               ← ball_perception 예측 lane 디코더·요약 (D-4 / S3.4)
 │   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4) · `--dump` 전 지평·공분산·innovation·nis (S8-A)
@@ -58,6 +60,7 @@ rtc_tools/
 │   └── utils/
 │       ├── hand_udp_sender_example.py   ← 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
 │       ├── session_dir.py               ← 세션 디렉토리 유틸리티 (RTC_SESSION_DIR / RTC_RUN_ID 관리)
+│       ├── catch_population.py          ← 투척 모집단 설정 파일 (`catch_population/1`) 의 형식 검증과 결과 폴더의 경로 표 — 1 단계 · 2 단계 · 보고가 함께 쓴다 (#821)
 │       ├── controller_config.py         ← 컨트롤러 YAML + `include:` 조각의 합성 (CM `LoadControllerConfig` 의 Python mirror)
 │       ├── smoothing.py                 ← box 평활 하나 (catching 의 plot 패널과 분석 열이 공유)
 │       ├── rotations.py                 ← URDF roll-pitch-yaw → 회전행렬 하나 (MJCF 대조 · catch frame 도구 · docking rig 가 공유)
@@ -72,7 +75,7 @@ rtc_tools/
 
 **빌드 타입**: `ament_python` (`setup.py`의 `entry_points` 사용)
 
-**Entry points** (19개 — SSoT 는 `setup.py` 의 `console_scripts`. 아래 표는 주요 항목이고,
+**Entry points** (28개 — SSoT 는 `setup.py` 의 `console_scripts`. 아래 표는 주요 항목이고,
 `analysis/` 의 나머지 CLI 는 각 스크립트 절에서 호출 형태를 준다):
 
 | 실행 명령 | 모듈 | 설명 |
@@ -88,7 +91,9 @@ rtc_tools/
 | `ros2 run rtc_tools catch_speed_budget` | `analysis.catch_speed_budget` | 지도의 수락 후보별 v_dir,max (LP·DLS)·토크 한계 방향 가속·stroke → γ 창이 열리는 투척 표 |
 | `ros2 run rtc_tools catch_gate_map` | `analysis.catch_gate_map` | kinematic 지도의 수락 후보를 `catch_gate_batch` (런타임 게이트 함수) 로 판정 + 토크 검사 도달시간 층 → 두 층의 gate-catchable 지도·탈락 사유·대기 자세 제안 |
 | `ros2 run rtc_tools catch_search_map` | `analysis.catch_search_map` | 투척 설계 → 비행 모델의 wake 열 → `catch_search_batch` (런타임 `CatchSearch::Plan`, grid · nlp) → 투척별 수용 · 사유 · 축별 수용률 · 두 탐색 불일치 · gate 지도 층별 대조 · sim 판정 × 결과 표 |
-| `ros2 run rtc_tools catch_throw_design` | `analysis.catch_throw_design` | `design`: 발사점 · 통과점 · 발사각 격자 → 항력 모델로 속력 풀이 → 투척별 축 값과 `screen:*` (탐색 없음). `select`: 격자의 부분집합 · id 목록 · 이웃 판정이 갈린 곳의 세분화 점을 투척 목록으로 |
+| `ros2 run rtc_tools catch_throw_design` | `analysis.catch_throw_design` | `design`: 발사점 · 통과점 · 발사각 격자 → 항력 모델로 속력 풀이 → 투척별 축 값과 `screen:*` (탐색 없음). `select`: 격자의 부분집합 · id 목록 · 이웃 판정이 갈린 곳의 세분화 점을 투척 목록으로 (제한된 투척은 뺀다). `plan-set`: 지도의 판정표에서 수용된 투척 목록 (`--tier search` 는 탐색 집단, `--tier segment` 는 구간 집단). `sample`: plan 집단에서 층마다 같은 비율로 뽑아 섞고 묶음 파일로 |
+| `ros2 run rtc_tools catch_population` | `analysis.catch_population` | 투척 모집단 1 단계: 설정 파일 (`catch_population.yaml`) → `catch_throw_design` · `catch_search_map` 을 차례로 불러 모집단 · 조합별 `throw_search_set` · `throw_segment_set` · 던질 묶음 · `manifest.json` 을 결과 폴더에 쓰고 보고를 낸다 (이어 돌리기 · `--report-only`) |
+| `ros2 run rtc_tools catch_population_report` | `analysis.catch_population_report` | 결과 폴더 → `report/` 의 통계 텍스트 (터미널에도) 와 집단별 · 조합별 3D plot. `sim_throws.csv` 가 있으면 던짐 → 쌍 게시 → 포구와 층별 추정을 더한다 |
 | `ros2 run rtc_tools catching_trials` | `analysis.catching_trials` | `catching_sim_trials` 한 run (세션 CSV + trials dir + sim lane) → 시행별 표·요약 JSON (S8-A) |
 | `ros2 run rtc_tools catching_decel` | `analysis.catching_decel` | unit 들의 DECEL 정지 구간 지표 (시행별 표·요약 JSON) · `--a`/`--b` 로 같은 투척의 2×2 표·불일치율·paired 비열등 시행 수·Tango 비열등 검정과 정확 검정력 (MPC 계획 E0-F02 · E1-F06) |
 | `ros2 run rtc_tools catching_grid_sweep` | `analysis.catching_grid_sweep` | arm (격자 조건) 별 성공률·수신 메시지·예측 오차·계획기 시간 · `--ref` 대비와 `--pair` 의 paired 차이·McNemar·Holm (MPC 계획 E0-F04) |
@@ -985,6 +990,23 @@ ros2 run rtc_tools catch_gate_map \
   `--sim-trials` 의 `catching_trials.csv` 와 `throw_id` 로 이은 sim 표 (수용·게시 = `published` / 수용·미게시 =
   `withheld` / 거부 = `no_plan`·`no_search`, × `truth_success`, 무효 시행 제외) 와 오프라인 일치율
 
+- **구간 판정** (`--judge-segments`, 기본 꺼짐): 한 shard 의 탐색이 끝난 뒤 **탐색이 수용한 투척만**, 같은 wake 로 계획기
+  주기 전체 (`PlannerCycle::Run`: 탐색 → 첫 구간 풀이 → 쌍 게시) 를 돌린다. 한 wake 의 쌍이 게시됐다 ⇔ `outcome ==
+  published` ∧ `search_valid == 1`, 투척의 행은 거기서 멈춘다. binding 은 탐색 binding 에 최상위 `segment:` 맵을 더한
+  `binding_<search>_segment.yaml` (+ `_segment_sources.yaml`) 이고 (`segment_binding`; 트리의 `planner.segment.mode` 가
+  `mpc` / `mpc_docking` 의 모양을 고른다 — `SetupMpcSegmentPlanner` · `SetupMpcDockingSegmentPlanner` · `BuildDockingLimits`
+  를 따른다. `closed_form` 은 구간 계획기가 없어 실행 전에 거부), `binding_<search>.yaml` 은 그대로다. 두 번째 실행이
+  `segment_<search>.csv` (batch 출력: 탐색 열 + `outcome` · `segment_*` 열 — 계획기 이벤트 로그의 이름이라
+  `_wake_reject_reason` 이 행을 그대로 읽는다) 를 쓰고, `verdicts_<search>.csv` 에 `segment_accepted` ·
+  `segment_first_wake` · `segment_after_release_s` · `segment_t_c_s` · `segment_lead_s` · `segment_reject_reason` ·
+  `segment_wake_reasons` · `segment_wakes_run` · `segment_wall_us` 가 붙는다. 탐색이 거부했거나 걸러진 투척의 이 열은
+  **빈 칸**이다 (거부 = `False` 와 구별되는 "판정 안 함"). 요약은 탐색 항목마다 `segment` 블록 (`mode` · `judged` ·
+  `accepted` · `refused` · 사유 분포 · 시간 · 설정 거부 문장), `provenance.segments` 에 구간 binding 의 sha256 을 적는다.
+  두 번째 실행의 입력 `segment_wakes_<search>.csv` (탐색이 수용한 투척의 wake 만 추린 것) 는 중간 파일이라 `--keep-shards` 없이는 남기지 않고, 같은 `--out-dir` 에 다시 돌리면 앞선 실행의 구간 판정 파일 (`binding_<search>_segment*.yaml` · `segment_<search>.csv`) 을 먼저 지운다 — 구간 판정을 돌리지 않았거나 수용이 없던 실행 옆에 옛 파일이 남지 않는다. 거부한 투척의 `segment_reject_reason` 은 **탐색이 plan 을 낸 wake 만** 놓고 줄인 값이다 (sim 의 `plan_reject` 는 모든 wake — 두 열은 같은 정의가 아니다). `--sim-trials` 와 함께면 sim 표 옆 `segment` 에 오프라인 구간 판정 (`segment_accepted` / `segment_refused` /
+  `search_refused`) × sim `plan_verdict` (`published` / `withheld` / `no_plan`) × `truth_success` 와 일치율 (수용 ∧ 게시
+  + 미수용 ∧ 미게시), 어긋난 두 칸의 사유 분포를 적고 `sim_join_<search>.csv` 에 투척별 열이 붙는다. 여기도 안 되는 것:
+  쌍 게시 뒤의 replan · 교체, 추정 잡음 (공분산 0), 실행 시계가 만드는 것 (예산을 넘긴 풀이, 풀이 중 더 새 예측이 와서
+  버려진 쌍, 오래된 RT 보고)
 - **사전 판정이 붙은 투척**: 목록 항목의 `screen` 이 비어 있지 않으면 (`catch_throw_design` 이 붙인다) 탐색에 넘기지
   않고 그 이름으로 거부한다. `--judge-screened` 는 그 투척에도 탐색을 돌린다 — 조건을 탐색 자체로 확인하는 실행이고,
   받은 것이 있으면 요약의 `searches.<search>.screened.accepted` 에 id 가 나온다. 목록의 `meta.unlaunchable` (발사
@@ -1017,13 +1039,14 @@ ros2 run rtc_tools catch_search_map \
   --speeds-m-s '6.0 6.5' --elevations-deg '40 46' --grid-origin wait_catch_point \
   --detection-delay-s 0.15 --vision-period-s 0.0333333 --prediction-horizon-s 1.0 \
   [--overlay <file>] [--sample 50 --sample-seed <seed>] [--gate-map <dir>] [--sim-trials <csv>] \
-  [--throws-file <list.json> [--judge-screened]] [--jobs 6] [--estimator-profile <json>]
+  [--throws-file <list.json> [--judge-screened]] [--judge-segments] [--jobs 6] [--estimator-profile <json>]
 ```
 
 출력: `throw_list.json` · `wakes.csv` · `catching_tree.yaml` (batch 에 준 합성 트리) · `model_config.yaml` ·
 `binding_<search>.yaml` · `binding_<search>_sources.yaml` · `search_<search>.csv` (batch 출력 그대로) ·
-`verdicts_<search>.csv` (투척별) · `gate_join_<search>.csv` · `sim_join_<search>.csv` · `search_map_summary.json`.
-탐색이 설정을 거부하면 (batch 종료 코드 3) 그 문장을 요약의 `refused_configuration` 에 적고 지도는 없다.
+`verdicts_<search>.csv` (투척별) · (`--judge-segments`) `binding_<search>_segment{,_sources}.yaml` · `segment_<search>.csv` · `gate_join_<search>.csv` · `sim_join_<search>.csv` · `search_map_summary.json`.
+탐색이 설정을 거부하면 (batch 종료 코드 3) 그 문장을 요약의 `refused_configuration` 에 적고 지도는 없다. 구간 계획기가
+거부하면 `segment.refused_configuration` 에 적고 구간 열은 비며 탐색 지도는 그대로다.
 
 - 테스트 `test/test_catch_search_map.py`: 격자 id = `generate_throw_grid` 순서, LHS 의 층마다 한 표본 · seed 재현,
   목록 왕복과 거부, 지도의 목록 함수가 `catching_throw_list` 의 것인지 · 지도가 쓴 격자·표본 목록이 드라이버 규칙을
@@ -1058,9 +1081,35 @@ ros2 run rtc_tools catch_search_map \
   키에서 (`catch_search_map` 의 `screen_reach` · `lead_floors` · `common_lead_floor`) — 값과 출처가 `design_meta.json` 에
   있다. nlp 의 하한 키가 없거나 `TBD` 면 (컨트롤러는 내장값으로 돈다 — 사본을 두지 않는다) 시간 판정을 하지 않는다. 앞의 둘은 발사 상태가 없어 투척 목록에 들어가지 않고 목록의
   `meta.unlaunchable` 로 간다
+- **발사각 축**: 값 목록이 아니라 범위다 — `--max-elevation-deg` · `--min-elevation-deg` · `--elevation-step-deg` (셋 다
+  필수) 가 `max − k·step` (≥ min) 을 오름차순으로 만든다. 최대각은 언제나 값이고 최소각은 격자에 놓일 때만 값이다. 옛
+  `--elevations-deg` 는 없다; 세 수는 `design_meta.json` 의 `elevation` 에 남는다
+- **제한** (`--min-pass-time-s`, 선택): 발사된 투척의 항력 풀이 `pass_time_s` 가 그보다 **짧으면** (같으면 아님)
+  `design.csv` 의 `limit` 열 (`screen` 뒤) 에 `limit:pass_time`. `screen` 과 독립이고 따로 센다 — `screen` 은 어느 탐색도
+  받을 수 없다는 뜻이라 지도가 검증하지만, 제한된 투척은 수용될 수 있다. `design_meta.json` 의 `limits` 에 기준값 · 규칙 ·
+  수 (전체 · 축 값별) 를 적는다
 - **`select`**: `--subset <axis>=<values>` 의 부분 격자, `--ids-file`, 또는 `--refine-from <verdicts.csv …>` — 부분
   격자에서 한 축으로 한 칸 떨어진 두 점의 판정이 다르면 그 사이의 격자점 (재귀 없음, 파일들의 합집합; 파일별 점 수와
-  축별 쌍 수를 찍는다). `--max-throws` 를 넘으면 쓰지 않고 끝난다
+  축별 쌍 수를 찍는다). **제한된 투척은 세 경로 모두에서 목록에 쓰지 않는다**; 목록 `meta.limit` 이 기준값과 뺀 수 (전체 ·
+  축 값별, 뺀 수와 뺄 때의 선택 크기) 를 적어 지도의 수용률 분모를 복원하게 한다. `--refine-from` 은 파일마다 판정이
+  없어 건너뛴 이웃 쌍의 수와 제한으로 빠진 세분화 점의 수도 적는다. `--max-throws` 는 뺀 뒤의 수로 세어 넘으면 쓰지 않고
+  끝난다. `limit` 열이 없는 옛 `design.csv` 도 읽는다 (제한 없음)
+- **`--segment-mode`** (`design` 과 `catch_search_map`): 합성 트리의 `planner.segment.mode` 한 값만 `--overlay` 뒤에 덮어쓴다
+  (없으면 출하값). 바꾼 값은 `catching_tree.yaml` 과 요약 · `design_meta.json` provenance 의 `overrides` 에 남는다
+- **`plan-set`**: `--throws-file <지도가 판정한 목록>` `--verdicts <verdicts_<search>.csv …>` `--out` — 수용된 투척을
+  `throw_id` 오름차순 `catching_throw_list/1` 로 쓴다. 판정이 목록을 덮지 못하거나 수용된 id 가 목록에 없으면 개수를 대며
+  거부한다. `--tier search` (기본) 는 `accepted` 열 (탐색 집단), `--tier segment` 는 `segment_accepted` 가 참인 투척
+  (구간 집단 — `--judge-segments` 로 만든 판정표만 받는다. 그 열이 없거나, 탐색이 수용한 투척 가운데 그 칸이 빈 것이 있으면 파일과 수를 대며 거부한다 — 구간 계획기가 설정을 거부한 판정표다. 탐색이 하나도 수용하지 않은 파일은 판정할 것이 없었던 것이라 받는다).
+  meta: 원본 목록과 판정 파일별 sha256, `tier` · `set_name` (`throw_search_set` / `throw_segment_set`), 판정 수 · 수용 수
+  (구간이면 `search_accepted` 도), 원본의 `design` · `axes` · `limit` (`unlaunchable` 행은
+  싣지 않는다)
+- **`sample`**: `--plan-set` `--out-dir` `--strata <축…>` `--seed` `--chunk` `[--max-throws]` — 층 (축 값 조합) 마다 같은
+  비율, 정수는 최대 잔여 방식 (합 = min(N, 크기), 동률은 층 키 순서). 층 안의 선택은 `sha256("<seed>:pick:<id>")`, 전체
+  순서 (섞기) 는 `sha256("<seed>:order:<id>")` — 난수 라이브러리를 쓰지 않아 버전 · PC 가 달라도 같다. `sample.json` (섞인
+  순서 전체) 과 그 연속 조각 `chunk_000.json` … (각 `catching_throw_list/1`, `catching_sim_trials --throws-file` 이 읽는다).
+  meta 는 `plan_set_sha256` (plan 집단 파일 바이트의 sha256 — `throw_id` 와 함께 여러 PC 의 결과를 합치는 열쇠) · 층 축 · seed
+  · 층별 (전체, 뽑은 수) · `max_throws` · 묶음 크기, 묶음 파일은 `chunk_index` · `chunk_count` · `sample_sha256` 도. 두 명령의
+  출력은 입력 파일의 바이트와 인자만의 함수다 (절대 경로 · 시각 없음)
 
 ```bash
 ros2 run rtc_tools catch_throw_design design \
@@ -1069,24 +1118,102 @@ ros2 run rtc_tools catch_throw_design design \
   --drag-coefficient 0.55 --drag-coefficient-source '<file:line>' \
   --air-density 1.204 --air-density-source '<file:line>' \
   --distances-m 1.5:4.0:0.25 --azimuths-deg=-40:40:10 --release-heights-m 1.0:1.7:0.1 \
-  --pass-dx-m=-0.4:0.4:0.1 --pass-dy-m=-0.4:0.4:0.1 --elevations-deg '45 60' \
-  --speed-max-m-s 12 --detection-delay-s 0.15 [--jobs 6]
+  --pass-dx-m=-0.4:0.4:0.1 --pass-dy-m=-0.4:0.4:0.1 \
+  --max-elevation-deg 70 --min-elevation-deg 5 --elevation-step-deg 5 [--min-pass-time-s 0.5] \
+  --speed-max-m-s 12 --detection-delay-s 0.15 [--segment-mode mpc_docking] [--jobs 6]
 ros2 run rtc_tools catch_throw_design select --design-dir <design> --out <list.json> \
   --subset 'distance_m=1.5 2.0 2.5 3.0 3.5 4.0' --subset 'azimuth_deg=-40 -20 0 20 40' ...
 ros2 run rtc_tools catch_search_map --throws-file <list.json> --judge-screened --jobs 6 ...
+# plan 집단과 뽑기: 지도는 <map>/verdicts_grid.csv · verdicts_nlp.csv (검색마다 하나) 를 쓴다
+ros2 run rtc_tools catch_throw_design plan-set --throws-file <list.json> \
+  --verdicts <map>/verdicts_grid.csv --out <plan_set.json>
+ros2 run rtc_tools catch_throw_design sample --plan-set <plan_set.json> --out-dir <sample> \
+  --strata distance_m elevation_deg --seed 1 --max-throws 2500 --chunk 250
 ```
 
-출력: `design.csv` (설계점마다 한 행) · `design_meta.json` (격자, 구, lead 하한, 사전 판정 수 — 전체 · 축별 ·
+출력: `design.csv` (설계점마다 한 행) · `design_meta.json` (격자, 발사각 범위, 제한 수, 구, lead 하한, 사전 판정 수 — 전체 · 축별 ·
 ascending 인 칸, 출처) · `catching_tree.yaml` · `model_config.yaml`.
 
 - 테스트 `test/test_catch_throw_design.py`: 축 인자 (`lo:hi:step`), id = 곱의 순번 · 부분집합 · 격자 밖 값 거부, 세분화
   (판정이 갈린 쌍 사이만 · 축 제한 · 판정 없는 점 제외 · 사이가 없는 축), 묶음 적분 = `integrate_flight` (1e-9 m),
   최근접 = `closest_approach`, 정점 = 무항력 닫힌 해, 구 안의 마지막 시각 (그 시각의 공이 구 위), 폴리라인 거리,
   무항력 속력 = 닫힌 해, 항력 속력으로 쏜 비행이 통과점을 지남, 설계점 = 여섯 축의 `generate_throw_grid` 투척,
-  네 screen 각각, 적는 값 · flag, chunk · 프로세스 수 무관, CSV 왕복, 목록과 `unlaunchable`
+  네 screen 각각, 적는 값 · flag, chunk · 프로세스 수 무관, CSV 왕복, 목록과 `unlaunchable`, 발사각 범위 (최대각이 값 ·
+  간격 ≤ 0 · 최소 > 최대 거부), 제한 (엄격한 부등호 · screen 과 독립), `select` 의 세 경로가 제한된 투척을 뺌 · meta · `--max-throws` ·
+  옛 CSV, 세분화가 건너뛴 쌍과 제한으로 빠진 점, `plan-set` (오름차순 · 덮지 못함 · 모르는 id 거부 · 해시), `sample` (층별
+  비율 · 합 · 같은 입력과 seed 는 같은 바이트 · 다른 seed 는 다른 표본 · 묶음 이음 · 읽힘)
 - 테스트 `test/test_catching_throw_list.py`: 목록 형식 자체 — 비트 단위 왕복 · 순서 · 키 순서, 기본값, 머리 · 항목
   거부마다 출처와 값을 말하는지, `THROW_RECORD_KEYS` 의 키 하나하나 거부, 비유한 JSON 토큰 · JSON 아님 · 없는 파일,
   쓰기 전 거부 (파일이 생기지 않음), 한 번 읽기의 sha256 · 절대 경로 · `record()`
+
+
+### `catch_population.py` · `catch_population_report.py` — 투척 모집단 1 단계와 보고 (#821)
+
+설정 파일 하나 (`<config>/<robot>/catch_population.yaml` — 형식과 키는 `utils/catch_population.py` 의 docstring, 없는 키 ·
+모르는 키 · 범위 밖의 값은 키 이름으로 거부) 가 모집단과 그것을 거르는 방법을 정한다. **로봇은 파일이 놓인 폴더다** — 판정에
+쓰는 컨트롤러 설정이 그 폴더이고, 조합 (`arms`) 이 출하값에서 바꾸는 것은 `planner.search.mode` 와 `planner.segment.mode` 둘뿐이다.
+
+```
+설계 ─제한─▶ 모집단 ─탐색─▶ search 집단 ─구간─▶ segment 집단 ─뽑기─▶ 던질 묶음 ─(2 단계: sim)─▶ 쌍 게시 ─▶ 포구
+```
+
+- **`catch_population`** 은 판정도 설계도 직접 하지 않는다. 있는 도구의 `main` 을 설정 파일의 값으로 차례로 부른다:
+  `catch_throw_design design` → `select` (모집단 = 발사 불가 · 제한을 뺀 목록) → 조합마다 `catch_search_map --search <search>
+  --segment-mode <segment> --judge-segments` **한 번** (탐색 판정과, 수용된 투척의 구간 판정) → `plan-set --tier search` ·
+  `--tier segment` → 조합이 던지는 집단 (`throw_set`) 의 `sample` (설정의 층 · seed · 묶음 크기, 조합의 `max_throws`)
+- **이어 돌리기**: 산출물이 이미 있는 단계는 건너뛴다 — 끊긴 실행은 같은 명령으로 잇는다. 결과 폴더는 설정 하나의 것이다:
+  폴더의 `config.yaml` (파일의 사본) 과 바이트가 다른 파일을 주면 거부하고 새 `--out` 을 쓰라고 한다. 비어 있지 않은데
+  `config.yaml` 이 없는 폴더도 거부한다
+- **빈 집단은 결과다**: 판정기가 한 발도 수용하지 않은 층은 집단 파일을 쓰지 않고 (0 발), 그 조합에 던질 것이 없으면 묶음도
+  없다. 탐색이나 구간 계획기가 설정을 거부한 조합은 그 문장과 함께 "집단 없음" 이다. 어느 쪽이든 manifest 와 보고에 적고 나머지
+  조합을 계속한다
+- **`inputs.json`**: 판정에 쓴 설정 폴더의 YAML 전부 (설정 파일 자신은 `config.yaml` 이 묶는다) 의 sha256. 첫 실행이 적고,
+  그 뒤의 실행은 파일이 바뀌었으면 **바뀐 파일의 이름을 대며 거부한다** — 컨트롤러 YAML 을 고친 뒤 같은 `--out` 으로 다시
+  돌리면 "이미 있는" 지도와 집단이 새 설정의 것으로 넘어가기 때문이다. 판정기의 바이너리는 여기 묶지 않는다 (조합마다
+  manifest 의 provenance 에 적힌다)
+- **설정 파일은 쓴 대로 읽거나 거부한다**: 따옴표 없는 `-40:40:20` 은 YAML 이 60 진수 정수로 읽으므로 거부하고 (범위는
+  따옴표를 친 문자열 `'lo:hi:step'` 이다), 같은 키를 두 번 쓴 파일도 거부한다
+- **던질 목록은 지금 있는 집단의 것이어야 한다**: `sample.json` 이 적은 집단의 sha256 이 집단 파일과 다르면 다시 뽑는다.
+  투척 목록 파일은 다 쓴 뒤에 제 이름으로 나타난다 (쓰다 끊긴 파일을 "끝난 단계" 로 읽지 않는다)
+- **`manifest.json`**: 설정 파일의 sha256 과 읽은 경로, 모집단 파일의 sha256, 조합마다 집단의 크기와 sha256 · 던질 목록 ·
+  지도 요약이 적은 provenance (판정기와 합성 트리의 해시 · layer · override). git revision 은 읽을 수 있을 때만 적는다
+  (설치본만 있는 PC 에는 저장소가 없다). 이 명령이 쓰지 않는 키 (다른 단계의 것) 는 그대로 둔다
+- **`catch_population_report`** 는 폴더의 파일만 읽는다 (판정하지 않고, 로봇의 설정 폴더도 필요 없다). `report/` 에
+  `population_report.txt` (같은 내용을 터미널에) — 설정 (격자 · 발사각 범위 · 제한), 집단의 크기 (설계점 → 발사 불가 ·
+  제한으로 빠진 수 → 모집단 → 조합별 search · segment → 던질 수), 거부 사유 (지도 요약의 것), 조합끼리의 겹침, 여섯 축의
+  값별 · 속력 · 통과 시간 · 정점 높이의 구간별 수와 모집단 대비 비율. 판정하지 않은 집단은 `not judged` 다. 통계는 있는 함수다:
+  축별 비율은 `catch_search_map.acceptance_by_axis`, 겹침은 `search_disagreement`, 구간은 `catching_trials.wilson_interval`
+- **3D plot** (PNG, `--show` 면 창도): 집단마다 `set_<이름>.png` (발사점 → 통과점의 비행을 발사각 색으로, 대기 자세의 팔과
+  포구점), 조합마다 `sets_<조합>.png` (집단마다 한 색). 그리는 비행은 집단당 `--max-flights` 개까지이고 (`throw_id` 의 해시로
+  골라 매번 같은 투척), 그린 수를 제목에 적는다. 팔은 설계가 판정 모델의 FK 로 구해 `design_meta.json` 에 적은 관절 원점과
+  포구점이다 — 모델 파일을 열지 않는다. 비행은 설계의 힘 법칙 (`integrate_flights`) 이고, 그린 끝점과 통과점의 최대 거리를 찍는다
+- **sim 결과가 있으면** (`<조합>/sim_throws.csv` — 2 단계가 쓴다: `arm,seed,chunk` 뒤에 unit 의 `catching_trials.csv` 열 전부.
+  unit 의 표에도 `seed` 열이 있어 앞의 세 열은 위치로 읽는다): 조합 · 추정기 seed 마다 던짐 → 쌍 게시 → 포구 (`truth_success`)
+  의 수와 축 값별 · 구간별 표, `set_<조합>_published_seed_<seed>.png` · `set_<조합>_caught_seed_<seed>.png` ·
+  `sets_<조합>_seed_<seed>.png` (발사점과 비행을 결과별 색으로). 행은 `catch_search_map.sim_table` 로 읽는다 —
+  `invalid_reason` 이 있는 시행은 던진 투척이 아니다. 없으면 1 단계의 보고와 같다
+- **뽑아 던진 조합**: 표의 수는 **던진 투척 안의 수**이고 (비율 옆 구간은 그 안의 Wilson 95 %), 집단 전체는 **추정**이다 —
+  `sample.json` 의 층마다 (집단의 수 ÷ 던진 수) 로 되돌려 더한다 (`stratified_estimate`). 던진 투척이 없는 층은 추정 밖이고
+  따로 센다. 집단을 전부 던졌으면 추정을 내지 않고 그 수가 집단의 수라고 적는다
+
+```bash
+ros2 run rtc_tools catch_population --config <config>/<robot>/catch_population.yaml --out <result> \
+  [--jobs 10] [--judge <catch_search_batch>] [--arms grid_mpc …] [--report-only] [--show] [--max-flights 400]
+ros2 run rtc_tools catch_population_report <result> [--show] [--max-flights 400]
+```
+
+결과 폴더 (`utils/catch_population.py` 의 `ResultLayout`): `config.yaml` · `inputs.json` · `manifest.json` · `design/` · `population.json` ·
+`<조합>/map/` (지도의 출력) · `<조합>/throw_search_set.json` · `<조합>/throw_segment_set.json` · `<조합>/throws/`
+(`sample.json` + `chunk_NNN.json`) · `report/`. 조합의 이름은 `<search>_<segment>` 다.
+
+- 테스트 `test/test_catch_population.py`: 손으로 만든 결과 폴더에서 보고의 수 전부 (집단의 크기와 비율 · 발사 불가 라벨이
+  사유에서 빠짐 · 겹침 · 축 값별 행 · 판정 안 함 · 구간 계획기의 거부), sim 결과가 있을 때의 층 (seed 별 · 무효 시행 제외 ·
+  전부 던진 조합과 뽑아 던진 조합), 손계산한 층별 추정과 던지지 않은 층, 구간의 경계, 집단의 상태 (판정 안 함 · 거부 · 빈 집단 · 파일 없음 · 있음), 서로 어긋난 파일의
+  거부, 그릴 투척의 고정과 비행의 끝점, PNG 목록. 가짜 판정기로 전체 실행 — 폴더의 파일과 집단이 판정을 따름 · manifest 의 해시 ·
+  두 번째 실행이 아무것도 다시 하지 않음 · 지운 산출물만 같은 바이트로 다시 만듦 · 다른 설정과 남의 폴더 거부 ·
+  `--report-only` · `--arms` · 빈 집단과 설정 거부 뒤에도 나머지 조합이 끝남
+- 테스트 `test/test_catch_population_config.py`: 설정 파일의 형식 — 키마다 필수, 모르는 키 · 틀린 타입 · 범위 밖의 값을 키의
+  전체 경로로 거부, 축 인자가 설계 도구의 것, 결과 폴더의 경로 표, 출하 파일 둘이 읽힘
 
 
 ### `urdf_to_mjcf.py` — URDF/XACRO → MJCF 변환

@@ -112,15 +112,22 @@ ROBOT_COMBOS: list[tuple[str, dict[str, str]]] = [
 
 # Arguments not every launch can be driven with. `sim_overlay` and `sim_lanes`
 # are declared by the p1b, iiwa7_leap and g1_p1b sims (not p1a); `sim_overlay`
-# drives an overlay that profile ships (iiwa7_leap's since S8-D).
+# drives an overlay that profile ships (iiwa7_leap ships none since #821, like
+# g1_p1b, so only its lanes and catching arguments are driven). The two
+# catching planner arguments (#821) are declared by the two sims that run the
+# throw population: p1b and iiwa7_leap.
+CATCH_MODES = {"catch_search_mode": "nlp", "catch_segment_mode": "mpc_docking"}
 EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     "sim_ur5e_p1b.launch.py": [
         ("sim_overlay", {"sim_overlay": "inference_pole"}),
         ("sim_lanes", {"sim_lanes": "true"}),
+        ("catch_modes", CATCH_MODES),
+        ("catch_search_mode", {"catch_search_mode": "grid"}),
     ],
     "sim_iiwa7_leap.launch.py": [
-        ("sim_overlay", {"sim_overlay": "catch_lead_on"}),
         ("sim_lanes", {"sim_lanes": "true"}),
+        ("catch_modes", CATCH_MODES),
+        ("catch_segment_mode", {"catch_segment_mode": "mpc"}),
     ],
     # g1_p1b declares both arguments but ships no overlay to name, so only the
     # lanes are driven here.
@@ -614,6 +621,109 @@ def test_no_sim_lanes_leaves_the_lanes_to_the_yaml(filename):
 def test_a_misspelled_sim_lanes_value_is_rejected(filename):
     with pytest.raises(RuntimeError, match="sim_lanes must be true or false"):
         _evaluate(filename, {"sim_lanes": "ture"})
+
+
+# ── catch_search_mode / catch_segment_mode (#821) ────────────────────────────
+# An arm of the throw population is the shipped controller with two keys changed,
+# given as launch arguments instead of an overlay file. The path they take —
+# a `demo_catching_controller.*` parameter poked into the controller's YAML —
+# CREATES whatever key it is given (test_catch_lead_overlays.py's docstring has
+# the measured case), so what is pinned here is exactly what would otherwise be
+# silent: the two keys the launch writes are keys the shipped controller YAML
+# has, with its type; nothing is written without the arguments; and a value that
+# is not a mode stops the launch.
+CATCH_SIMS = (P1B_SIM, LEAP_SIM)
+CATCH_KEYS = {
+    "demo_catching_controller.catching.planner.search.mode": "nlp",
+    "demo_catching_controller.catching.planner.segment.mode": "mpc_docking",
+}
+SHIPPED_CONTROLLER = {
+    P1B_SIM: ("ur5e_p1b", "demo_catching_controller.yaml"),
+    LEAP_SIM: ("iiwa7_leap", "demo_catching_controller.yaml"),
+}
+
+
+def _controller_overrides(filename: str, overrides: dict[str, str]) -> dict:
+    """What the launch hands the RT node for `demo_catching_controller`, as leaves."""
+    nodes, context = _nodes_by_name({"use_cpu_affinity": "false", **overrides}, filename)
+    values = _override_values(nodes["integrated_rt_controller"], context)
+    return {k: v for k, v in values.items() if k.startswith("demo_catching_controller.")}
+
+
+def _as_tree(leaves: dict) -> dict:
+    """Dotted parameter names → the nested tree `ApplyControllerParamOverrides` writes."""
+    tree: dict = {}
+    for name, value in leaves.items():
+        node = tree
+        parts = name.split(".")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = value
+    return tree
+
+
+@pytest.mark.parametrize("filename", CATCH_SIMS)
+def test_the_catch_mode_arguments_write_the_two_mode_keys_and_no_other(filename):
+    assert _controller_overrides(filename, CATCH_MODES) == CATCH_KEYS
+    # One argument alone writes its key alone: the other stays the shipped value.
+    assert _controller_overrides(filename, {"catch_search_mode": "grid"}) == {
+        "demo_catching_controller.catching.planner.search.mode": "grid"
+    }
+    # They are the controller's, not the simulator's.
+    nodes, context = _nodes_by_name({"use_cpu_affinity": "false", **CATCH_MODES}, filename)
+    sim = _override_values(nodes["mujoco_simulator"], context)
+    assert not [k for k in sim if "catching" in k or "catch_" in k], sorted(sim)
+
+
+@pytest.mark.parametrize("filename", CATCH_SIMS)
+def test_no_catch_mode_argument_leaves_the_controller_to_its_yaml(filename):
+    assert _controller_overrides(filename, {}) == {}
+
+
+@pytest.mark.parametrize("filename", CATCH_SIMS)
+def test_the_keys_the_catch_mode_arguments_write_are_shipped_controller_keys(filename):
+    """The read-back a throw driver does (the controller's mirror) is the runtime half;
+    this is the half that needs no sim: a key one level off would be created, never
+    read, and the unit would silently be the shipped pair."""
+    from test_catch_lead_overlays import CONTROLLER, _shipped_tree, _unread_leaves
+
+    robot, name = SHIPPED_CONTROLLER[filename]
+    shipped = _shipped_tree(
+        os.path.join(os.path.dirname(__file__), "..", "config", robot, "controllers", name)
+    )
+    written = _as_tree(_controller_overrides(filename, CATCH_MODES))
+    assert list(written) == [CONTROLLER], written
+    assert _unread_leaves(written[CONTROLLER], shipped) == []
+    # Positive control: the same check does see a key that is one level off.
+    shallow = {"planner": written[CONTROLLER]["catching"]["planner"]}
+    assert _unread_leaves(shallow, shipped) == [
+        "planner.search.mode: not in the shipped YAML",
+        "planner.segment.mode: not in the shipped YAML",
+    ]
+
+
+@pytest.mark.parametrize("filename", CATCH_SIMS)
+@pytest.mark.parametrize(
+    ("argument", "value"),
+    [
+        ("catch_search_mode", "nlpp"),
+        ("catch_search_mode", "mpc"),  # a segment mode is not a search mode
+        ("catch_segment_mode", "docking"),
+        ("catch_segment_mode", "grid"),
+        ("catch_segment_mode", "MPC"),
+    ],
+)
+def test_a_catch_mode_that_is_not_a_mode_is_rejected(filename, argument, value):
+    with pytest.raises(RuntimeError, match=f"{argument} must be one of"):
+        _evaluate(filename, {argument: value})
+
+
+@pytest.mark.parametrize("filename", [f for f in SIM_LAUNCH_FILES if f not in CATCH_SIMS])
+def test_the_other_sims_do_not_declare_the_catch_mode_arguments(filename):
+    """`ros2 launch` ignores an argument a file does not declare: a throw driver
+    pointed at one of these would run the shipped pair and say nothing."""
+    declared = _declared_arguments(_load_launch_module(filename).generate_launch_description())
+    assert not {"catch_search_mode", "catch_segment_mode"} & set(declared), sorted(declared)
 
 
 # ── Shield-first ordering (issue #405) ───────────────────────────────────────

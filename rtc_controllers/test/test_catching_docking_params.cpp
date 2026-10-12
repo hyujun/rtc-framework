@@ -10,6 +10,7 @@
 // full key, the literal `TBD` → unset for a decision and refused for the rest,
 // and an unknown key next to it → refused by name.
 #include "rtc_controllers/catching/catching_params.hpp"
+#include "rtc_controllers/catching/docking_config.hpp"
 #include "rtc_controllers/catching/docking_params.hpp"
 
 #include <gtest/gtest.h>
@@ -33,7 +34,10 @@
 namespace {
 
 using rtc::catching::ApplyHandDocking;
+using rtc::catching::DockingConfig;
+using rtc::catching::DockingConfigRefusal;
 using rtc::catching::DockingGridMismatch;
+using rtc::catching::EntranceCloseLead;
 using rtc::catching::HandDockingParams;
 using rtc::catching::kMaxDockingFaces;
 using rtc::catching::kMaxSegmentNodes;
@@ -1284,6 +1288,146 @@ TEST(DockingParamsHand, ProvisionalDefaultsToTrueAndEMaxAndPMaxToOff) {
   EXPECT_TRUE(std::isinf(h.e_max) && h.e_max > 0.0);
   EXPECT_TRUE(std::isinf(h.p_max) && h.p_max > 0.0);
   EXPECT_EQ(h.FirstUnset(), nullptr);
+}
+
+// ═══ The maps side by side (docking_config.hpp) ══════════════════════════════
+
+/// A profile both docking functions run on: a set hand, equal grids, both
+/// reference closing speeds in the middle of the hand's band.
+struct ConfigRig {
+  YAML::Node tree{YAML::Load("planner: {search: {nlp: {core: {}}}}")};
+  HandDockingParams hand{kParseHand(Make(HandBase()))};
+  NlpCatchSearchParams search;
+  MpcDockingSegmentPlannerParams planner{PlannerGrid()};
+  DockingConfig config;
+
+  ConfigRig() {
+    const double c = 0.5 * (hand.c_min + hand.c_cap_max);
+    search.core.nu_ref.z() = -c;
+    planner.core.nu_ref.z() = -c;
+    search.budget_s = 0.01;
+    search.continuous_tc = false;
+    config.nlp = true;
+    config.docking = true;
+    config.catching = &tree;
+    config.hand = &hand;
+    config.search_close_lead = 0.05;
+    config.planner_close_lead = 0.05;
+    config.search = &search;
+    config.planner = &planner;
+  }
+};
+
+TEST(DockingConfigCheck, NothingIsReadWhenNeitherFunctionIsSelected) {
+  const DockingConfig nothing;  // every pointer null, the hand never looked at
+  EXPECT_EQ(DockingConfigRefusal(nothing), "");
+}
+
+TEST(DockingConfigCheck, ARunnableProfileIsNotRefusedUnderEitherSelection) {
+  ConfigRig r;
+  EXPECT_EQ(DockingConfigRefusal(r.config), "");
+  r.config.docking = false;
+  EXPECT_EQ(DockingConfigRefusal(r.config), "");
+  r.config.nlp = false;
+  r.config.docking = true;
+  EXPECT_EQ(DockingConfigRefusal(r.config), "");
+}
+
+TEST(DockingConfigCheck, EachRefusalNamesItsKey) {
+  const auto refusal = [](const std::function<void(ConfigRig&)>& spoil) {
+    ConfigRig r;
+    spoil(r);
+    return DockingConfigRefusal(r.config);
+  };
+  const auto names = [](const std::string& why, const char* key) {
+    return why.find(key) != std::string::npos;
+  };
+  EXPECT_TRUE(names(refusal([](ConfigRig& r) { r.hand = HandDockingParams{}; }),
+                    "'catching.robot.hand.docking.s_ent' is unset or TBD"));
+  EXPECT_TRUE(names(refusal([](ConfigRig& r) { r.config.hand_close_unset = true; }),
+                    "'catching.robot.hand.T_close_e2e' or 'T_close_lead'"));
+  EXPECT_TRUE(names(refusal([](ConfigRig& r) { r.config.ball_mass_unset = true; }),
+                    "'catching.core.ball.mass'"));
+  EXPECT_TRUE(names(
+      refusal([](ConfigRig& r) { r.tree = YAML::Load("planner: {search: {nlp: {budget: {}}}}"); }),
+      "'catching.planner.search.nlp.core' is not in this profile"));
+  EXPECT_TRUE(names(refusal([](ConfigRig& r) { r.tree = YAML::Node(); }),
+                    "'catching.planner.search.nlp.core' is not in this profile"));
+  EXPECT_TRUE(names(refusal([](ConfigRig& r) { r.planner.n_pre_max = 0; }),
+                    "'catching.planner.segment.mpc_docking.approach.n_pre_max' is unset"));
+  for (const double lead : {-1e-3, std::numeric_limits<double>::quiet_NaN()}) {
+    EXPECT_TRUE(names(refusal([lead](ConfigRig& r) { r.config.search_close_lead = lead; }),
+                      "'catching.robot.hand.T_close_lead' is shorter"))
+        << lead;
+    EXPECT_TRUE(names(refusal([lead](ConfigRig& r) { r.config.planner_close_lead = lead; }),
+                      "'catching.robot.hand.T_close_lead' is shorter"))
+        << lead;
+  }
+  // The bound is strict: a search allowed exactly the oldest RT state's age.
+  const std::string stale = refusal([](ConfigRig& r) { r.search.budget_s = 0.05; });
+  EXPECT_TRUE(names(stale, "'catching.planner.search.nlp.budget.budget_s' is 0.05")) << stale;
+  EXPECT_TRUE(names(stale, "would be withheld as stale")) << stale;
+  EXPECT_EQ(refusal([](ConfigRig& r) { r.search.n_stop += 1; }),
+            "planner.search.nlp.stop.n_nodes differs from "
+            "planner.segment.mpc_docking.stop.n_nodes");
+  EXPECT_TRUE(names(refusal([](ConfigRig& r) { r.search.continuous_tc = true; }),
+                    "'catching.planner.search.nlp.continuous_tc' is true"));
+  EXPECT_TRUE(
+      names(refusal([](ConfigRig& r) { r.search.core.nu_ref.z() = -2.0 * r.hand.c_cap_max; }),
+            "'catching.planner.search.nlp.core.catch.nu_ref' closes at"));
+  EXPECT_TRUE(names(refusal([](ConfigRig& r) { r.planner.core.nu_ref.z() = -0.5 * r.hand.c_min; }),
+                    "'catching.planner.segment.mpc_docking.core.catch.nu_ref' closes at"));
+}
+
+TEST(DockingConfigCheck, AFunctionThatIsNotSelectedHasNoSay) {
+  // The planner's map is not read under the nlp search alone...
+  ConfigRig r;
+  r.config.docking = false;
+  r.planner.n_pre_max = 0;
+  r.planner.core.nu_ref.z() = 0.0;
+  r.config.planner_close_lead = std::numeric_limits<double>::quiet_NaN();
+  r.config.planner = nullptr;
+  EXPECT_EQ(DockingConfigRefusal(r.config), "");
+  // ...nor the search's, or the tree, under the planner alone.
+  ConfigRig d;
+  d.config.nlp = false;
+  d.search.budget_s = 1.0;
+  d.search.continuous_tc = true;
+  d.config.search_close_lead = -1.0;
+  d.config.search = nullptr;
+  d.config.catching = nullptr;
+  EXPECT_EQ(DockingConfigRefusal(d.config), "");
+}
+
+TEST(DockingConfigCheck, AnInputTheSelectionReadsMustBeGiven) {
+  const auto thrown = [](const std::function<void(ConfigRig&)>& drop) {
+    ConfigRig r;
+    drop(r);
+    try {
+      (void)DockingConfigRefusal(r.config);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  EXPECT_TRUE(thrown([](ConfigRig& r) { r.config.hand = nullptr; }));
+  EXPECT_TRUE(thrown([](ConfigRig& r) { r.config.catching = nullptr; }));
+  EXPECT_TRUE(thrown([](ConfigRig& r) { r.config.search = nullptr; }));
+  EXPECT_TRUE(thrown([](ConfigRig& r) { r.config.planner = nullptr; }));
+}
+
+TEST(DockingConfigCheck, TheEntranceLeadIsTheHandsLeadLessTheFlightFromTheEntrancePlane) {
+  ConfigRig r;
+  r.hand.s_ent = 0.03;
+  r.search.core.nu_ref.z() = -1.5;
+  EXPECT_DOUBLE_EQ(EntranceCloseLead(0.1, r.hand, r.search.core), 0.1 - 0.03 / 1.5);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(std::isnan(EntranceCloseLead(nan, r.hand, r.search.core)));
+  r.search.core.nu_ref.z() = 0.0;  // no closing speed to cross the gap at
+  EXPECT_TRUE(std::isnan(EntranceCloseLead(0.1, r.hand, r.search.core)));
+  r.search.core.nu_ref.z() = -1.5;
+  r.hand.s_ent = nan;
+  EXPECT_TRUE(std::isnan(EntranceCloseLead(0.1, r.hand, r.search.core)));
 }
 
 }  // namespace
