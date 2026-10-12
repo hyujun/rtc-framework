@@ -4,19 +4,21 @@
 Writes into $DATA/conditions (DATA has no default — the data directory of the
 evaluation, outside the repository):
   <COND>/profile.json         ball_perception's shipped catching profile, `prediction` changed
-  <COND>/overlay_<robot>.yaml the shipped catch_lead_on leaves + the three grid keys
+  <COND>/overlay_<robot>.yaml the three grid keys (every other key is the shipped one)
   conditions.tsv              cond, robot, profile, overlay, dt, n_min, points
   plan.txt                    the unit order, unless it exists
 
 The shipped profile is read from $BALL_SIM_WS (the estimator's colcon
-workspace), the shipped controller config and overlays from the source tree
-this file is in. The plan lines name CONDITIONS (`<dir> <robot> <cond> <n>
+workspace), the shipped controller config from the source tree this file is in. The plan lines name CONDITIONS (`<dir> <robot> <cond> <n>
 <seed>`): they are not run_all.sh's plan format, which names an overlay path.
 The leaf rule is test_catch_lead_overlays' `_unread_leaves`, loaded from
 integrated_bringup/test by path — renaming that test breaks this script.
 
-L-50 IS the shipped configuration: the installed profile itself and the shipped
-overlay by name, so L-50 is E0-F02's configuration with the profile moved.
+L-50 IS the shipped configuration: the installed profile itself, and an overlay
+whose three grid keys are refused unless they are the shipped values — so L-50
+is E0-F02's configuration with the profile moved. (Until #821 the overlays were
+the `catch_lead_on` overlay's leaves plus the grid keys; that overlay's values
+are in the shipped controller YAML now and the file is gone.)
 Refuses to write anything that fails: horizon an exact ns multiple of the step,
 n_min = ceil(horizon_min / dt) + 1 <= points <= kCap, every overlay leaf a
 shipped controller key of the same type (test_catch_lead_overlays' rule).
@@ -138,32 +140,27 @@ def main():
             )
             assert ship == (0.05, 12, 0.05), (robot, ship)
             n_min = n_min_for(ctrl["io"]["horizon_min"], step_s, points)
-            if cond == "L-50":
-                overlay = "catch_lead_on"
-            else:
-                with open(f"{cfg}/sim_overlays/catch_lead_on.yaml") as f:
-                    ov = yaml.safe_load(f)
-                c = ov["integrated_rt_controller"]["ros__parameters"]["demo_catching_controller"][
-                    "catching"
-                ]
-                reject_renamed_keys(c, source=f"{cfg}/sim_overlays/catch_lead_on.yaml")
-                c.setdefault("prediction", {})["dt_expected"] = step_s
-                c.setdefault("io", {})["n_min"] = n_min
-                c.setdefault("planner", {}).setdefault("search", {}).setdefault(
-                    "grid", {}
-                ).setdefault("slice", {})["dt"] = step_s
-                problems = unread(
-                    ov["integrated_rt_controller"]["ros__parameters"]["demo_catching_controller"],
-                    shipped_ctrl,
-                )
-                if problems:
-                    sys.exit(f"{cond} {robot}: {problems}")
-                overlay = f"{OUT}/{cond}/overlay_{short}.yaml"
-                with open(overlay, "w") as f:
-                    f.write(
-                        f"# E0-F04 {cond} ({robot}): shipped catch_lead_on + the prediction grid.\n"
-                    )
-                    yaml.safe_dump(ov, f, sort_keys=False)
+            grid_keys = {
+                "prediction": {"dt_expected": step_s},
+                "io": {"n_min": n_min},
+                "planner": {"search": {"grid": {"slice": {"dt": step_s}}}},
+            }
+            if cond == "L-50" and (step_s, n_min, step_s) != ship:
+                sys.exit(f"L-50 {robot}: the grid keys {(step_s, n_min, step_s)} are not {ship}")
+            ov = {
+                "integrated_rt_controller": {
+                    "ros__parameters": {CONTROLLER: {"catching": grid_keys}}
+                }
+            }
+            problems = unread(
+                ov["integrated_rt_controller"]["ros__parameters"][CONTROLLER], shipped_ctrl
+            )
+            if problems:
+                sys.exit(f"{cond} {robot}: {problems}")
+            overlay = f"{OUT}/{cond}/overlay_{short}.yaml"
+            with open(overlay, "w") as f:
+                f.write(f"# E0-F04 {cond} ({robot}): shipped + the prediction grid.\n")
+                yaml.safe_dump(ov, f, sort_keys=False)
             rows.append(
                 (
                     cond,

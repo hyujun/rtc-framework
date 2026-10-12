@@ -493,7 +493,7 @@ demo_catching_controller:
         # servo at kd/kp = 0.05 s (#537 D-S8-13), a first-order lag the S8-A
         # least-squares fit reads as 50 ms on all six joints. Shipped since
         # #821 (2026-10-11); until then these two were 0 / false here and the
-        # sim ran the lead through the catch_lead_on sim overlay. T_arm is not
+        # sim ran the lead through the catch_lead_on sim overlay (removed). T_arm is not
         # only the lead: the validator derives the commit window from it
         # (planner.freeze.T_freeze below).
         #

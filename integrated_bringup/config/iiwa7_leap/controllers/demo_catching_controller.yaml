@@ -500,7 +500,7 @@ demo_catching_controller:
         # The SIM arm's lag, led: its position servo is a first-order lag of
         # kd/kp, set to 0.05 s in ../mujoco_simulator.yaml (S8-D). Shipped
         # since #821 (2026-10-11); until then these two were 0 / false here
-        # and the sim ran the lead through the catch_lead_on sim overlay.
+        # and the sim ran the lead through the catch_lead_on sim overlay (removed).
         # T_arm is not only the lead: the validator derives the commit window
         # from it (planner.freeze.T_freeze, which already covers it).
         #

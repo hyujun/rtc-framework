@@ -14,8 +14,9 @@ Usage:
   ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_viewer:=false
 
   # Scene overlay: a params file layered on top of mujoco_simulator.yaml
-  # (bare name = config/iiwa7_leap/sim_overlays/<name>.yaml, or a path)
-  ros2 launch integrated_bringup sim_iiwa7_leap.launch.py sim_overlay:=catch_lead_on
+  # (bare name = config/iiwa7_leap/sim_overlays/<name>.yaml, or a path). This
+  # profile ships none: write one outside the repo and pass its path
+  ros2 launch integrated_bringup sim_iiwa7_leap.launch.py sim_overlay:=/path/to/arm.yaml
 
   # Measurement lanes (S8): per-step clock phase + ball contact truth, written
   # to <session>/sim/{clock_lane,ball_contact_lane}.csv
