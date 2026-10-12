@@ -81,6 +81,22 @@
 // was produced or the node had no valid covariance. `sigma_l` is the monitor's
 // column (a search wake leaves it NaN, #800): a search wake's σ is here.
 //
+// The `segment_stop_*` columns (#713, at the tail) say how far the solve's
+// stop leaves the ball's line, whatever `cost.w_perp` is. `segment_stop_line_p_*`
+// [m] and `segment_stop_line_d_*` (unit) are that line in the model's world:
+// through the ball's predicted position at t_c along its direction of travel
+// there — a pre-catch solve's own ball, a stop solve's followed segment's.
+// `segment_stop_dev_max` and `segment_stop_dev_end` [m] are the catch frame's
+// distance from it at the solution's stop nodes (FK) — the catch node to the
+// last on a pre-catch solve, every node on a stop solve: the largest and the
+// last node's — and `segment_stop_along_end` [m] the last node along the
+// line from its point (positive: the ball's direction). The line is NaN when
+// the solve has none (a ball without a direction, a followed segment that
+// carries none, a solve withheld before it ran, the mpc_docking planner); the
+// three distances are NaN as well for a solve that reached no solution. A
+// solve withheld AFTER it ran (budget, slack, …) is measured like a published
+// one.
+//
 // nlp_candidates.csv (same directory, #798 — E1-F19 part 2's instrument):
 // one row per candidate the NLP search SOLVED on a wake, drained from the same
 // record by the same timer. `wake_ns` and `snapshot_sequence` join it to the
@@ -161,7 +177,10 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "segment_c_catch,segment_c_guarded,segment_sigma_s,segment_sigma_t,"
         "segment_chance_lateral,segment_chance_timing,segment_cost_reference,segment_cost_stop,"
         "replace_step,replacement_outcome,replacement_core_reason,replacement_iterations,"
-        "replacement_solve_us,cov_n,chosen_sigma_c\n";
+        "replacement_solve_us,cov_n,chosen_sigma_c,"
+        "segment_stop_line_p_x,segment_stop_line_p_y,segment_stop_line_p_z,"
+        "segment_stop_line_d_x,segment_stop_line_d_y,segment_stop_line_d_z,"
+        "segment_stop_dev_max,segment_stop_dev_end,segment_stop_along_end\n";
 }
 
 /// nlp_candidates.csv — one row per solved candidate of a wake (header note).
@@ -358,8 +377,16 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   const auto& w = r.replacement;
   os << rtc::catching::ReplaceStepName(r.replace_step) << ','
      << rtc::catching::SegmentOutcomeName(w.outcome) << ',' << w.core_reason_name << ','
-     << w.iterations << ',' << w.solve_ns / 1000 << ',' << s.cov_n << ',' << s.chosen_sigma_c
-     << '\n';
+     << w.iterations << ',' << w.solve_ns / 1000 << ',' << s.cov_n << ',' << s.chosen_sigma_c;
+  // ── The stop against the ball's line (the wake's own solve, not the
+  // replacement's) ──
+  for (const double v : d.stop_line_p) {
+    os << ',' << v;
+  }
+  for (const double v : d.stop_line_d) {
+    os << ',' << v;
+  }
+  os << ',' << d.stop_dev_max << ',' << d.stop_dev_end << ',' << d.stop_along_end << '\n';
 }
 
 }  // namespace integrated_bringup
