@@ -61,7 +61,9 @@ CATCH_SET_NOTE = (
     "seeds the throw was thrown on. A throw that is not here was not drawn into the sample, "
     "or not thrown yet (seeds[].chunks of chunks_total), or thrown and missed — not being "
     "here is not a miss. pair_published counts the throws whose plan and first segment were "
-    "published in the sim, which the offline segment set does not decide."
+    "published in the sim, which the offline segment set does not decide. A catch is ONE "
+    "run's outcome (runs: each unit's date, revisions and viewer): the same chunk thrown "
+    "again under the same seed does not catch the same throws."
 )
 _SEED_DIR = re.compile(r"^seed_(\d+)$")
 _CHUNK_DIR = re.compile(r"^chunk_\d{3,}$")
@@ -237,6 +239,18 @@ def read_unit_rows(unit: UnitRef) -> tuple[list[str], list[dict[str, str]]]:
     return header, rows
 
 
+# What a unit's conditions.txt says of the run it was: a catch is one run's outcome,
+# so the set says which run each of its units was.
+RUN_KEYS = ("date_start", "rtc_framework_rev", "ball_perception_rev", "viewer")
+
+
+def unit_run_record(unit: UnitRef) -> dict:
+    """One unit as the run it was: its seed and chunk, and :data:`RUN_KEYS` of its
+    ``conditions.txt`` (None for one it does not record)."""
+    cond = read_conditions(unit.path)
+    return {"seed": unit.seed, "chunk": unit.chunk, **{key: cond.get(key) for key in RUN_KEYS}}
+
+
 @dataclass
 class SeedCounts:
     """What one estimator seed's units did with the throws they threw."""
@@ -317,6 +331,7 @@ def catch_set_meta(
     sample_sha256: str | None,
     chunks_total: int,
     seeds: Sequence[SeedCounts],
+    runs: Sequence[Mapping],
     thrown_ids: int,
     caught_ids: int,
 ) -> dict:
@@ -353,6 +368,8 @@ def catch_set_meta(
         "merge_key": ["source_set.sha256", "throw_id"],
         "chunks_total": chunks_total,
         "seeds": [seed.as_record() for seed in seeds],
+        # One entry per unit collected (:func:`unit_run_record`).
+        "runs": list(runs),
         "counts": {"thrown": thrown_ids, "caught": caught_ids},
         "note": CATCH_SET_NOTE,
         **{k: sample_meta[k] for k in CARRIED_META if k in sample_meta},
@@ -423,6 +440,7 @@ def collect_arm(
     header: list[str] = []
     out_rows: list[tuple[UnitRef, dict[str, str]]] = []
     seeds: dict[int, SeedCounts] = {}
+    runs: list[dict] = []
     thrown_seeds: dict[int, list[int]] = {}
     caught_seeds: dict[int, list[int]] = {}
     throws: dict[int, dict] = {}
@@ -434,6 +452,7 @@ def collect_arm(
         }
         counts = seeds.setdefault(unit.seed, SeedCounts(unit.seed))
         counts.chunks.append(unit.chunk)
+        runs.append(unit_run_record(unit))
         for row in rows:
             throw_id = _throw_id(row, f"unit {unit.name}")
             if throw_id not in listed:
@@ -488,6 +507,7 @@ def collect_arm(
         sample_sha256=sample.sha256,
         chunks_total=len(chunk_files),
         seeds=result.seeds,
+        runs=runs,
         thrown_ids=result.thrown_ids,
         caught_ids=result.caught_ids,
     )

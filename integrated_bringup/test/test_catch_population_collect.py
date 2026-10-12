@@ -247,6 +247,27 @@ def test_the_meta_says_what_was_thrown_and_what_each_seed_did_with_it(tmp_path):
     assert meta["axes"] == {"discrete": ["distance_m"]} and meta["design"] == {"grid": "…"}
 
 
+def test_the_catch_set_says_which_run_each_unit_was(tmp_path):
+    # A catch is one run's outcome: the set carries each collected unit's date, the two
+    # revisions and whether the viewer was on, as its conditions.txt recorded them.
+    layout = _folder(tmp_path)
+    said = {
+        "date_start": "2026-10-11T20:34:55+09:00",
+        "rtc_framework_rev": "b3d8dfd2",
+        "ball_perception_rev": "9005aab",
+        "viewer": "on",
+    }
+    _unit(layout, 8210, "chunk_000", [(1, "published", True)], conditions=said)
+    _unit(layout, 8211, "chunk_000", [(1, "published", True)])  # an older record: no such lines
+    _collect(layout)
+    meta = read_throw_list_file(layout.set_file(ARM["arm"], "catch")).meta
+    assert meta["runs"] == [
+        {"seed": 8210, "chunk": "chunk_000", **said},
+        {"seed": 8211, "chunk": "chunk_000", **dict.fromkeys(said)},
+    ]
+    assert "ONE run's outcome" in meta["note"]
+
+
 def test_a_set_thrown_whole_says_so(tmp_path):
     layout = _folder(tmp_path, drawn=5, of=5)
     _unit(layout, 8210, "chunk_000", [(1, "published", True)])
