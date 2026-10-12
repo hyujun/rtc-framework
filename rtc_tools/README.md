@@ -997,7 +997,7 @@ ros2 run rtc_tools catch_gate_map \
   `segment_wake_reasons` · `segment_wakes_run` · `segment_wall_us` 가 붙는다. 탐색이 거부했거나 걸러진 투척의 이 열은
   **빈 칸**이다 (거부 = `False` 와 구별되는 "판정 안 함"). 요약은 탐색 항목마다 `segment` 블록 (`mode` · `judged` ·
   `accepted` · `refused` · 사유 분포 · 시간 · 설정 거부 문장), `provenance.segments` 에 구간 binding 의 sha256 을 적는다.
-  `--sim-trials` 와 함께면 sim 표 옆 `segment` 에 오프라인 구간 판정 (`segment_accepted` / `segment_refused` /
+  두 번째 실행의 입력 `segment_wakes_<search>.csv` (탐색이 수용한 투척의 wake 만 추린 것) 는 중간 파일이라 `--keep-shards` 없이는 남기지 않고, 같은 `--out-dir` 에 다시 돌리면 앞선 실행의 구간 판정 파일 (`binding_<search>_segment*.yaml` · `segment_<search>.csv`) 을 먼저 지운다 — 구간 판정을 돌리지 않았거나 수용이 없던 실행 옆에 옛 파일이 남지 않는다. 거부한 투척의 `segment_reject_reason` 은 **탐색이 plan 을 낸 wake 만** 놓고 줄인 값이다 (sim 의 `plan_reject` 는 모든 wake — 두 열은 같은 정의가 아니다). `--sim-trials` 와 함께면 sim 표 옆 `segment` 에 오프라인 구간 판정 (`segment_accepted` / `segment_refused` /
   `search_refused`) × sim `plan_verdict` (`published` / `withheld` / `no_plan`) × `truth_success` 와 일치율 (수용 ∧ 게시
   + 미수용 ∧ 미게시), 어긋난 두 칸의 사유 분포를 적고 `sim_join_<search>.csv` 에 투척별 열이 붙는다. 여기도 안 되는 것:
   쌍 게시 뒤의 replan · 교체, 추정 잡음 (공분산 0), 실행 시계가 만드는 것 (예산을 넘긴 풀이, 풀이 중 더 새 예측이 와서
@@ -1094,7 +1094,7 @@ ros2 run rtc_tools catch_search_map \
 - **`plan-set`**: `--throws-file <지도가 판정한 목록>` `--verdicts <verdicts_<search>.csv …>` `--out` — 수용된 투척을
   `throw_id` 오름차순 `catching_throw_list/1` 로 쓴다. 판정이 목록을 덮지 못하거나 수용된 id 가 목록에 없으면 개수를 대며
   거부한다. `--tier search` (기본) 는 `accepted` 열 (탐색 집단), `--tier segment` 는 `segment_accepted` 가 참인 투척
-  (구간 집단 — `--judge-segments` 로 만든 판정표만 받고, 그 열이 없거나 모든 투척에서 비어 있으면 이름을 대며 거부한다).
+  (구간 집단 — `--judge-segments` 로 만든 판정표만 받는다. 그 열이 없거나, 탐색이 수용한 투척 가운데 그 칸이 빈 것이 있으면 파일과 수를 대며 거부한다 — 구간 계획기가 설정을 거부한 판정표다. 탐색이 하나도 수용하지 않은 파일은 판정할 것이 없었던 것이라 받는다).
   meta: 원본 목록과 판정 파일별 sha256, `tier` · `set_name` (`throw_search_set` / `throw_segment_set`), 판정 수 · 수용 수
   (구간이면 `search_accepted` 도), 원본의 `design` · `axes` · `limit` (`unlaunchable` 행은
   싣지 않는다)

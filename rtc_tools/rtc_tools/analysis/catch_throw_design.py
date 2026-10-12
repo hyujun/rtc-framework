@@ -1330,9 +1330,11 @@ def _read_verdicts(paths: Sequence[Path], column: str = "accepted") -> dict[int,
     return accepted
 
 
-def _segment_judged(path: Path) -> int:
-    """How many throws of a verdicts CSV the segment pass judged (a non-empty
-    ``segment_accepted`` cell). ``ValueError`` if the file has no such column."""
+def _segment_unjudged(path: Path) -> tuple[int, int]:
+    """Of a verdicts CSV: how many throws the search accepted, and how many of those the
+    segment pass did not judge (an empty ``segment_accepted`` cell). A file whose search
+    accepted no throw has nothing to judge — (0, 0), which is not a refusal.
+    ``ValueError`` if the file has no such column."""
     with Path(path).open(newline="") as handle:
         reader = csv.DictReader(handle)
         if SEGMENT_COLUMN not in (reader.fieldnames or ()):
@@ -1340,7 +1342,8 @@ def _segment_judged(path: Path) -> int:
                 f"{path}: no {SEGMENT_COLUMN} column — run catch_search_map with "
                 "--judge-segments to judge the segment tier"
             )
-        return sum(1 for row in reader if row[SEGMENT_COLUMN] != "")
+        searched = [row for row in reader if row["accepted"] in ("True", "1", "true")]
+        return len(searched), sum(1 for row in searched if row[SEGMENT_COLUMN] == "")
 
 
 def _cmd_select(args: argparse.Namespace) -> int:
@@ -1402,19 +1405,12 @@ def _cmd_select(args: argparse.Namespace) -> int:
             "by_axis": removed["by_axis"],
         },
         "unlaunchable": unlaunchable,
+        # A design without one of the first six is refused (KeyError): the map
+        # checks the screen labels against them. A design made before the
+        # elevation axis and the limit has neither of the last two.
         "design": {
-            k: meta[k]
-            for k in (
-                "grid",
-                "elevation",
-                "limits",
-                "pass_plane",
-                "speed",
-                "reach",
-                "lead",
-                "ball",
-            )
-            if k in meta
+            **{k: meta[k] for k in ("grid", "pass_plane", "speed", "reach", "lead", "ball")},
+            **{k: meta[k] for k in ("elevation", "limits") if k in meta},
         },
         "design_provenance": meta.get("provenance"),
     }
@@ -1486,10 +1482,16 @@ def _cmd_plan_set(args: argparse.Namespace) -> int:
         searched = build_plan_set(source.throws, [_read_verdicts([p]) for p in paths])
         if tier == "segment":
             for p in paths:
-                if _segment_judged(p) == 0:
+                n_searched, unjudged = _segment_unjudged(p)
+                if unjudged:
+                    which = (
+                        f"every throw the search accepted ({n_searched})"
+                        if unjudged == n_searched
+                        else f"{unjudged} of the {n_searched} throws the search accepted"
+                    )
                     raise ValueError(
-                        f"{p}: {SEGMENT_COLUMN} is empty for every throw — the segment pass "
-                        "judged none (no throw was accepted by the search, or it was refused)"
+                        f"{p}: {SEGMENT_COLUMN} is empty for {which} — the segment pass did "
+                        "not judge them (it refused its configuration?)"
                     )
             # A throw the segment pass did not judge has an empty cell: not in the set.
             segment_files = [_read_verdicts([p], SEGMENT_COLUMN) for p in paths]

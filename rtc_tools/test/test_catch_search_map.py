@@ -1805,7 +1805,7 @@ def test_segment_verdicts():
         # 3: a published "no plan" is the search's reason, not a pair
         _srow(3, 0, valid=0, seg="off", kind="none"),
     ]
-    got = m.segment_verdicts([0, 1, 2, 3], rows, {0: 5, 1: 4, 3: 1})
+    got = m.segment_verdicts([0, 1, 2, 3], rows)
     by = {v["throw_id"]: v for v in got}
     assert [v["throw_id"] for v in got] == [0, 1, 2, 3]
     a = by[0]
@@ -1840,7 +1840,7 @@ def test_a_refused_throws_reason_is_what_became_of_its_plans_not_its_planless_wa
         _srow(0, 2, valid=0, seg="off", kind="none"),
         _srow(0, 3, valid=0, seg="off", kind="none"),
     ]
-    (verdict,) = m.segment_verdicts([0], rows, {0: 4})
+    (verdict,) = m.segment_verdicts([0], rows)
     assert not verdict["segment_accepted"]
     assert verdict["segment_reject_reason"] == "segment:catch_error"
     assert verdict["segment_wake_reasons"] == {"segment:catch_error": 1, "search:reach_time": 3}
@@ -1854,7 +1854,7 @@ def test_a_segment_wake_reads_as_the_planner_event_log_reads_it():
         _srow(0, 0, outcome="held", seg="published", kind="none"),
         _srow(0, 0, valid=0, seg="off", kind="none"),
     ):
-        got = m.segment_verdicts([0], [row], {0: 1})[0]
+        got = m.segment_verdicts([0], [row])[0]
         assert got["segment_wake_reasons"] == {_wake_reject_reason(row): 1}
     # no forcing of the outcome: the search's wake_reason would read this one as `published`
     held = _srow(0, 0, outcome="held", seg="published", kind="none")
@@ -1864,7 +1864,7 @@ def test_a_segment_wake_reads_as_the_planner_event_log_reads_it():
 
 
 def test_unjudged_throws_have_empty_segment_cells_and_judged_ones_their_verdict():
-    judged = {v["throw_id"]: v for v in m.segment_verdicts([4], [_srow(4, 0)], {4: 1})}
+    judged = {v["throw_id"]: v for v in m.segment_verdicts([4], [_srow(4, 0)])}
     assert m.segment_cells(judged, 4, object()) == {
         k: judged[4][k] for k in m.SEGMENT_VERDICT_KEYS
     }
@@ -1882,7 +1882,7 @@ def test_the_segment_summary_counts_throws_and_wakes_in_the_reason_distribution_
         _srow(1, 1, outcome="held", seg="catch_error"),
         _srow(1, 2, outcome="held", seg="slack"),
     ]
-    verdicts = m.segment_verdicts([0, 1], rows, {0: 2, 1: 3})
+    verdicts = m.segment_verdicts([0, 1], rows)
     got = m.segment_summary(verdicts)
     assert (got["judged"], got["accepted"], got["refused"]) == (2, 1, 1)
     assert got["acceptance_rate"] == 0.5
@@ -1954,7 +1954,7 @@ def test_the_segment_sim_table_crosses_the_offline_segment_class_with_the_sim_pl
         {"idx": 8, "throw_id": "", "plan_verdict": "no_plan"},
         {"idx": 9, "throw_id": "99", "plan_verdict": "published", "truth_success": "True"},
     ]
-    joined, got = m.sim_segment_table(offline, sim)
+    joined, got = m.sim_segment_table(sim, offline)
     assert (got["trials"], got["invalid"], got["unjudged"], got["without_throw_id"]) == (
         10,
         1,
@@ -2198,6 +2198,27 @@ def test_a_segment_pass_without_an_accepted_throw_runs_nothing(tmp_path):
     ) and {r["throw_id"] for r in seg_rows} == {0, 2}
     summary = json.loads((out / "search_map_summary.json").read_text())
     assert summary["searches"]["grid"]["segment"]["argv_runs"] == 2
+
+
+def test_a_rerun_leaves_nothing_of_an_earlier_segment_pass(tmp_path):
+    _shipped_or_skip()
+    judge = _fake_judge(tmp_path)
+    out = tmp_path / "out"
+    segment_files = [
+        "binding_grid_segment.yaml",
+        "binding_grid_segment_sources.yaml",
+        "segment_grid.csv",
+    ]
+    assert m.main(_segment_argv(out, judge, "--judge-segments")) == 0
+    assert all((out / name).is_file() for name in segment_files)
+    # the accepted throws' wakes were an intermediate of the pass
+    assert not (out / "segment_wakes_grid.csv").exists()
+    assert m.main(_segment_argv(out, judge, "--judge-segments", "--keep-shards")) == 0
+    assert (out / "segment_wakes_grid.csv").is_file()
+    # the same directory, no segment pass: what is in it is this run's
+    assert m.main(_segment_argv(out, judge)) == 0
+    assert not any((out / name).exists() for name in [*segment_files, "segment_wakes_grid.csv"])
+    assert "segment_accepted" not in _read_csv(out / "verdicts_grid.csv")[0]
 
 
 def test_a_refused_segment_planner_is_an_answer_and_leaves_the_segment_cells_empty(tmp_path):

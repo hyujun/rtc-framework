@@ -568,6 +568,11 @@ def test_limit_counts_give_the_denominators_per_axis_value():
 # ── select ────────────────────────────────────────────────────────────────────
 
 
+# What a list's readers check its screen labels against: `select` refuses a design
+# without one of them.
+_SCREEN_BASIS = {k: {"of": k} for k in ("pass_plane", "speed", "reach", "lead", "ball")}
+
+
 def _design_dir(tmp_path, *, min_pass_time_s=None, old_csv=False):
     """A design directory of GRID (324 throws) as ``design`` writes it."""
     out = tmp_path / ("old" if old_csv else "design")
@@ -585,8 +590,13 @@ def _design_dir(tmp_path, *, min_pass_time_s=None, old_csv=False):
     meta = {
         "grid": {"axes": {a: list(GRID.axes[a]) for a in d.DESIGN_AXES}, "throws": GRID.size},
         "axes": {"discrete": list(d.DESIGN_AXES), "binned": []},
+        **_SCREEN_BASIS,
         "limits": {"min_pass_time_s": min_pass_time_s, **d.limit_counts(rows)},
     }
+    if old_csv:  # ... and its meta had neither the limit nor the elevation axis
+        del meta["limits"]
+    else:
+        meta["elevation"] = {"of": "elevation"}
     (out / "design_meta.json").write_text(json.dumps(meta))
     return out, table
 
@@ -609,6 +619,7 @@ def _limited_design(tmp_path, quantile):
     meta = {
         "grid": {"axes": {a: list(GRID.axes[a]) for a in d.DESIGN_AXES}},
         "axes": {},
+        **_SCREEN_BASIS,
         "limits": {"min_pass_time_s": threshold},
     }
     (out / "design_meta.json").write_text(json.dumps(meta))
@@ -662,6 +673,29 @@ def test_select_reads_a_design_csv_that_has_no_limit_column(tmp_path):
     throws, meta = ctl.load_throw_list(tmp_path / "l.json")
     assert throws and meta["limit"]["removed"] == 0
     assert meta["limit"]["min_pass_time_s"] is None
+
+
+def test_select_carries_the_design_basis_and_refuses_a_design_without_it(tmp_path):
+    dd, _ = _design_dir(tmp_path)
+    assert _select(dd, tmp_path / "l.json", "--subset", "distance_m=2.0") == 0
+    _, meta = ctl.load_throw_list(tmp_path / "l.json")
+    assert set(meta["design"]) == {
+        "grid", "pass_plane", "speed", "reach", "lead", "ball", "elevation", "limits",
+    }  # fmt: skip
+    old, _ = _design_dir(tmp_path, old_csv=True)
+    assert _select(old, tmp_path / "o.json", "--subset", "distance_m=2.0") == 0
+    _, old_meta = ctl.load_throw_list(tmp_path / "o.json")
+    assert set(old_meta["design"]) == {"grid", "pass_plane", "speed", "reach", "lead", "ball"}
+    # The screen basis is not optional: a list without it would have its screen labels
+    # taken on trust by the map.
+    design_meta = json.loads((dd / "design_meta.json").read_text())
+    for key in ("reach", "lead", "pass_plane", "speed", "ball", "grid"):
+        (dd / "design_meta.json").write_text(
+            json.dumps({k: v for k, v in design_meta.items() if k != key})
+        )
+        with pytest.raises(KeyError, match=key):
+            _select(dd, tmp_path / "x.json", "--subset", "distance_m=2.0")
+    assert not (tmp_path / "x.json").exists()
 
 
 def test_refine_records_the_pairs_it_skipped_and_the_points_the_limit_removed(tmp_path):
@@ -896,6 +930,36 @@ def test_the_segment_tier_refuses_a_file_that_judged_no_segment(tmp_path):
     assert not out.exists()
     with pytest.raises(SystemExit):
         d.main(_plan_set_argv(listed, plain, out, "--tier", "nonsense"))
+
+
+def test_the_segment_tier_reads_a_part_whose_search_accepted_no_throw(tmp_path):
+    # A list mapped in parts: the search of the second part accepted nothing, so its
+    # segment pass had nothing to judge and every segment cell of that file is empty.
+    listed, throws, _ = _list_of_all(tmp_path)
+    half = len(throws) // 2
+    first, second = throws[:half], throws[half:]
+    searched = {t["throw_id"] for t in first[::2]}
+    segmented = {t["throw_id"] for t in first[::4]}
+    a, b = tmp_path / "a.csv", tmp_path / "b.csv"
+    _segment_verdict_file(a, first, searched, segmented)
+    _segment_verdict_file(b, second, set(), set())
+    out = tmp_path / "plan.json"
+    argv = ["plan-set", "--throws-file", str(listed), "--verdicts", str(a), str(b),
+            "--out", str(out), "--tier", "segment"]  # fmt: skip
+    assert d.main(argv) == 0
+    plan, meta = ctl.load_throw_list(out)
+    assert [t["throw_id"] for t in plan] == sorted(segmented)
+    assert meta["counts"] == {
+        "judged": len(throws),
+        "accepted": len(segmented),
+        "search_accepted": len(searched),
+    }
+    # ... while a part with accepted throws the pass did not judge is still refused
+    partly = tmp_path / "partly.csv"
+    unjudged = sorted(searched)[:3]
+    _segment_verdict_file(partly, first, searched, segmented, judged_ids=searched - set(unjudged))
+    with pytest.raises(SystemExit, match=f"3 of the {len(searched)} throws the search accepted"):
+        d.main([*argv[:4], str(partly), str(b), *argv[6:]])
 
 
 # ── the sample ────────────────────────────────────────────────────────────────

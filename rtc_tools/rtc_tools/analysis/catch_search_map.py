@@ -53,7 +53,12 @@ this module owns is everything around it:
    as ``planner.segment.mode`` says) the way :func:`search_binding` binds the
    search; the pass's wake reasons are the planner event log's own
    (``segment:<outcome>``, ``cycle:<outcome>``, ``search:<reason>``), reduced by
-   the same ``most_frequent_reason``. A throw the search refused (or that was
+   the same ``most_frequent_reason`` — but over the wakes WHOSE SEARCH HAD A
+   PLAN (what became of the plan is what kept the throw out of this tier; the
+   plan-less late wakes of a flight would outvote it). A sim throw's
+   ``plan_reject`` is reduced over ALL its wakes, so the two reason columns of
+   the sim comparison are not like for like: read the unreduced
+   ``segment_wake_reasons`` to compare. A throw the search refused (or that was
    screened) is *not judged* by it: its segment cells are empty, not ``False``.
    The search pass and what it writes are the same with or without the flag.
 5. **The summaries.** Acceptance rate per axis bin, reason distributions, the
@@ -1646,6 +1651,29 @@ def wake_reason(row: Mapping) -> str:
     return _wake_reject_reason({**row, "outcome": "published"})
 
 
+def _rows_by_throw(rows: Sequence[Mapping]) -> dict[int, list[Mapping]]:
+    """A run's wake rows by ``throw_id``, each throw's in wake order."""
+    by_throw: dict[int, list[Mapping]] = {}
+    for row in rows:
+        by_throw.setdefault(int(row["throw_id"]), []).append(row)
+    for own in by_throw.values():
+        own.sort(key=lambda r: int(r["wake"]))
+    return by_throw
+
+
+def _plan_cells(plan: Mapping | None) -> tuple[int | None, float, float, float]:
+    """A plan row's wake, its instant and its catch instant after release [s], and its
+    lead [s]; the empty cells of a throw without one for ``None``."""
+    if plan is None:
+        return None, math.nan, math.nan, math.nan
+    return (
+        int(plan["wake"]),
+        (int(plan["now_ns"]) - RELEASE_NS) * 1e-9,
+        (int(plan["t_c_ns"]) - RELEASE_NS) * 1e-9,
+        float(plan["lead_s"]),
+    )
+
+
 def throw_verdicts(
     throw_ids: Sequence[int], rows: Sequence[Mapping], wakes_given: Mapping[int, int]
 ) -> list[dict]:
@@ -1662,39 +1690,33 @@ def throw_verdicts(
     - ``wakes_given`` / ``wakes_run``: the wakes the throw had, and those the
       search ran. Rows after a throw's first plan are not read.
     """
-    by_throw: dict[int, list[Mapping]] = {}
-    for row in rows:
-        by_throw.setdefault(int(row["throw_id"]), []).append(row)
+    by_throw = _rows_by_throw(rows)
     out = []
     for throw_id in throw_ids:
-        own = sorted(by_throw.get(int(throw_id), ()), key=lambda r: int(r["wake"]))
         reasons: list[str] = []
         plan = None
-        for row in own:
+        for row in by_throw.get(int(throw_id), ()):
             if int(row["search_valid"]) == 1:
                 plan = row
                 break
             reasons.append(wake_reason(row))
-        verdict = {
-            "throw_id": int(throw_id),
-            "accepted": plan is not None,
-            "wakes_given": int(wakes_given.get(int(throw_id), 0)),
-            "wakes_run": len(reasons) + (plan is not None),
-            "first_accept_wake": None,
-            "plan_after_release_s": math.nan,
-            "t_c_s": math.nan,
-            "lead_s": math.nan,
-            "reject_reason": "",
-            "wake_reasons": dict(Counter(reasons)),
-        }
-        if plan is not None:
-            verdict["first_accept_wake"] = int(plan["wake"])
-            verdict["plan_after_release_s"] = (int(plan["now_ns"]) - RELEASE_NS) * 1e-9
-            verdict["t_c_s"] = (int(plan["t_c_ns"]) - RELEASE_NS) * 1e-9
-            verdict["lead_s"] = float(plan["lead_s"])
-        else:
-            verdict["reject_reason"] = most_frequent_reason(reasons) or REASON_NO_WAKE
-        out.append(verdict)
+        wake, after_release_s, t_c_s, lead_s = _plan_cells(plan)
+        out.append(
+            {
+                "throw_id": int(throw_id),
+                "accepted": plan is not None,
+                "wakes_given": int(wakes_given.get(int(throw_id), 0)),
+                "wakes_run": len(reasons) + (plan is not None),
+                "first_accept_wake": wake,
+                "plan_after_release_s": after_release_s,
+                "t_c_s": t_c_s,
+                "lead_s": lead_s,
+                "reject_reason": ""
+                if plan is not None
+                else most_frequent_reason(reasons) or REASON_NO_WAKE,
+                "wake_reasons": dict(Counter(reasons)),
+            }
+        )
     return out
 
 
@@ -1718,9 +1740,7 @@ def pair_published(row: Mapping) -> bool:
     return str(row.get("outcome")) == "published" and int(row["search_valid"]) == 1
 
 
-def segment_verdicts(
-    throw_ids: Sequence[int], rows: Sequence[Mapping], wakes_given: Mapping[int, int]
-) -> list[dict]:
+def segment_verdicts(throw_ids: Sequence[int], rows: Sequence[Mapping]) -> list[dict]:
     """One segment verdict per throw of ``throw_ids`` from a segment-mode run's wake rows.
 
     The wakes are the search pass's, and the rows are the planner cycle's: a wake
@@ -1743,18 +1763,15 @@ def segment_verdicts(
     - ``segment_wakes_run``: the rows read; ``segment_wall_us``: the ``wall_us`` of those
       rows.
     """
-    by_throw: dict[int, list[Mapping]] = {}
-    for row in rows:
-        by_throw.setdefault(int(row["throw_id"]), []).append(row)
+    by_throw = _rows_by_throw(rows)
     out = []
     for throw_id in throw_ids:
-        own = sorted(by_throw.get(int(throw_id), ()), key=lambda r: int(r["wake"]))
         reasons: list[str] = []
         planned: list[str] = []
         plan = None
         run = 0
         wall: list[float] = []
-        for row in own:
+        for row in by_throw.get(int(throw_id), ()):
             run += 1
             if "wall_us" in row:
                 wall.append(float(row["wall_us"]))
@@ -1764,27 +1781,23 @@ def segment_verdicts(
             reasons.append(_wake_reject_reason(row))
             if int(row["search_valid"]) == 1:
                 planned.append(reasons[-1])
-        verdict = {
-            "segment_accepted": plan is not None,
-            "segment_first_wake": None,
-            "segment_after_release_s": math.nan,
-            "segment_t_c_s": math.nan,
-            "segment_lead_s": math.nan,
-            "segment_reject_reason": "",
-            "segment_wake_reasons": dict(Counter(reasons)),
-            "segment_wakes_run": run,
-            "segment_wall_us": sum(wall) if wall else math.nan,
-        }
-        if plan is not None:
-            verdict["segment_first_wake"] = int(plan["wake"])
-            verdict["segment_after_release_s"] = (int(plan["now_ns"]) - RELEASE_NS) * 1e-9
-            verdict["segment_t_c_s"] = (int(plan["t_c_ns"]) - RELEASE_NS) * 1e-9
-            verdict["segment_lead_s"] = float(plan["lead_s"])
-        else:
-            verdict["segment_reject_reason"] = (
-                most_frequent_reason(planned or reasons) or REASON_NO_WAKE
-            )
-        out.append({"throw_id": int(throw_id), **verdict})
+        wake, after_release_s, t_c_s, lead_s = _plan_cells(plan)
+        out.append(
+            {
+                "throw_id": int(throw_id),
+                "segment_accepted": plan is not None,
+                "segment_first_wake": wake,
+                "segment_after_release_s": after_release_s,
+                "segment_t_c_s": t_c_s,
+                "segment_lead_s": lead_s,
+                "segment_reject_reason": ""
+                if plan is not None
+                else most_frequent_reason(planned or reasons) or REASON_NO_WAKE,
+                "segment_wake_reasons": dict(Counter(reasons)),
+                "segment_wakes_run": run,
+                "segment_wall_us": sum(wall) if wall else math.nan,
+            }
+        )
     return out
 
 
@@ -2259,7 +2272,7 @@ def offline_segment_class(verdict: Mapping) -> str:
 
 
 def sim_segment_table(
-    verdicts: Sequence[Mapping], sim_rows: Sequence[Mapping]
+    sim_rows: Sequence[Mapping], verdicts: Sequence[Mapping]
 ) -> tuple[list[dict], dict]:
     """The offline segment verdict × the sim's ``plan_verdict``, and their agreement.
 
@@ -2272,6 +2285,8 @@ def sim_segment_table(
     The contingency has the rows ``segment_accepted`` · ``segment_refused`` ·
     ``search_refused`` and the columns ``published`` · ``withheld`` · ``no_plan``, each
     cell split by ``truth_success``, over the trials whose throw has an offline verdict.
+    (The two reasons are reduced over different wakes: the offline one over the wakes
+    whose search had a plan — :func:`segment_verdicts` — the sim's over all of them.)
     ``agreement`` is (offline accepted ∧ sim published) + (offline not accepted ∧ sim not
     published) over those trials; of the two disagreement cells, ``offline_accepted_sim_
     not_published`` and ``offline_refused_sim_published``, the distributions of the offline
@@ -2928,7 +2943,7 @@ def filter_wake_csv(source: Path, out: Path, throw_ids: set[int]) -> None:
                 dst.write(line)
 
 
-def run_segment_pass(job: ShardJob, kind: str, accepted_ids: list[int], wakes_given) -> dict:
+def run_segment_pass(job: ShardJob, kind: str, accepted_ids: list[int]) -> dict:
     """The segment pass of one search kind on a shard: the planner cycle on the wakes of the
     throws the search accepted, with the search pass's wakes. No accepted throw, no run."""
     if not accepted_ids:
@@ -2948,7 +2963,7 @@ def run_segment_pass(job: ShardJob, kind: str, accepted_ids: list[int], wakes_gi
     )
     entry: dict = {"ran": True, "refusal": run.refusal, "wall_s": run.wall_s, "argv": run.argv}
     if run.rows is not None:
-        entry["verdicts"] = segment_verdicts(accepted_ids, run.rows, wakes_given)
+        entry["verdicts"] = segment_verdicts(accepted_ids, run.rows)
         entry["wake_rows"] = len(run.rows)
     return entry
 
@@ -3012,7 +3027,7 @@ def run_shard(job: ShardJob) -> dict:
             )
             if kind in job.segment_bindings:
                 accepted_ids = [v["throw_id"] for v in verdicts if v["accepted"]]
-                entry["segment"] = run_segment_pass(job, kind, accepted_ids, wakes_given)
+                entry["segment"] = run_segment_pass(job, kind, accepted_ids)
         out["searches"][kind] = entry
     return out
 
@@ -3304,6 +3319,16 @@ def main(argv: list[str] | None = None) -> int:
             yaml.safe_dump(bindings[kind].sources, sort_keys=False, allow_unicode=True, width=100)
         )
 
+    # The segment pass writes these only when it runs (and its result CSV only when a
+    # throw was accepted): an earlier run's would read as this one's.
+    for kind in SEARCH_KINDS:
+        for name in (
+            f"binding_{kind}_segment.yaml",
+            f"binding_{kind}_segment_sources.yaml",
+            f"segment_{kind}.csv",
+            f"segment_wakes_{kind}.csv",
+        ):
+            (out_dir / name).unlink(missing_ok=True)
     segment_paths: dict[str, Path] = {}
     if segment_bound is not None:
         for kind in args.search:
@@ -3394,6 +3419,11 @@ def main(argv: list[str] | None = None) -> int:
                 _concatenate_csv(parts, out_dir / f"segment_{kind}.csv")
         if not args.keep_shards:
             shutil.rmtree(shard_root, ignore_errors=True)
+    elif not args.keep_shards:
+        # The segment pass's wake file is the search pass's wakes.csv cut to the accepted
+        # throws: an intermediate, as a shard directory is.
+        for kind in segment_paths:
+            (out_dir / f"segment_wakes_{kind}.csv").unlink(missing_ok=True)
 
     summary: dict = {
         "tool": "rtc_tools.analysis.catch_search_map",
@@ -3561,7 +3591,7 @@ def main(argv: list[str] | None = None) -> int:
             joined, table = sim_table(sim_rows, verdicts_by_kind.get(kind))
             seg = summary["searches"].get(kind, {}).get("segment") if kind else None
             if seg is not None and "judged" in seg:
-                seg_joined, table["segment"] = sim_segment_table(rows_by_kind[kind], sim_rows)
+                seg_joined, table["segment"] = sim_segment_table(sim_rows, rows_by_kind[kind])
                 if len(seg_joined) != len(joined):
                     raise RuntimeError("the two sim tables skipped different trials")
                 joined = [{**a, **b} for a, b in zip(joined, seg_joined, strict=True)]
