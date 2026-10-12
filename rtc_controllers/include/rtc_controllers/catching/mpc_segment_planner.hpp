@@ -77,8 +77,7 @@
 //  • The line is the BALL's: through its predicted position at t_c along its
 //    direction of travel there, d̂ = v̂_b/‖v̂_b‖ — the very vectors the solve
 //    hands the core as p_b and v_b (PlanFirst: the plan's p_c and v_c; a
-//    pre-catch Replan: the ball target's). It is the line the search reserves
-//    its stopping point on.
+//    pre-catch Replan: the ball target's).
 //  • A stop core has no ball: it takes the line of its SOURCE — the segment
 //    the RT reports pending or following (SourceSeq), which x₀ and the
 //    reference come from too. Every published segment carries one beside the
