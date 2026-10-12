@@ -4,6 +4,7 @@
 #include "batch_csv.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
+#include "rtc_controllers/catching/docking_config.hpp"
 #include "rtc_controllers/catching/docking_params.hpp"
 #include "rtc_controllers/catching/mpc_docking_segment_planner.hpp"
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
@@ -207,6 +208,73 @@ template <typename T>
 
 // The instant WakeClock reports: the wake PlanBatch::Run is on, on this thread.
 thread_local std::int64_t wake_clock_ns = 0;
+
+/// WakeClock is 0 again when a run ends — by a return or by a throw.
+struct WakeClockScope {
+  WakeClockScope() = default;
+  WakeClockScope(const WakeClockScope&) = delete;
+  WakeClockScope& operator=(const WakeClockScope&) = delete;
+
+  ~WakeClockScope() { wake_clock_ns = 0; }
+};
+
+/// The nominal posture of the docking core's posture cost: the wait pose
+/// (DEVICE order) in MODEL order.
+void SetNominalPosture(const PlannerParams& planner,
+                       const std::array<int, kMaxPlanNv>& device_of_model, int nv,
+                       MpcDockingSegmentCoreParams& core) {
+  core.q_nom.resize(nv);
+  for (int m = 0; m < nv; ++m) {
+    core.q_nom[m] =
+        planner.wait_pose[static_cast<std::size_t>(device_of_model[static_cast<std::size_t>(m)])];
+  }
+}
+
+[[nodiscard]] std::array<int, kMaxPlanNv> DeviceOfModel(const SearchBatchBinding& binding) {
+  std::array<int, kMaxPlanNv> out{};
+  std::copy(binding.device_of_model.begin(), binding.device_of_model.end(), out.begin());
+  return out;
+}
+
+/// The loop both batches are: throws in the given order, `new_throw` before a
+/// throw's first wake, `run_wake` on each of its wakes until one returns true
+/// (the throw is done; its later wakes are not run).
+template <typename NewThrow, typename RunWake>
+[[nodiscard]] std::vector<SearchBatchRow> RunThrows(const std::vector<SearchBatchWake>& wakes,
+                                                    NewThrow&& new_throw, RunWake&& run_wake) {
+  std::vector<SearchBatchRow> out;
+  out.reserve(wakes.size());
+  bool first = true;
+  bool done = false;
+  std::int64_t throw_id = 0;
+  for (const SearchBatchWake& wake : wakes) {
+    if (first || wake.throw_id != throw_id) {
+      first = false;
+      throw_id = wake.throw_id;
+      done = false;
+      new_throw();
+    }
+    if (done) {
+      continue;
+    }
+    SearchBatchRow row;
+    row.throw_id = wake.throw_id;
+    row.wake = wake.wake;
+    row.now_ns = wake.now_ns;
+    done = run_wake(wake, row);
+    out.push_back(row);
+  }
+  return out;
+}
+
+/// The wall clock around `call` [us]. Offline tool: never handed to a planner.
+template <typename Call>
+[[nodiscard]] double WallUs(Call&& call) {
+  const auto started = std::chrono::steady_clock::now();
+  call();
+  return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started)
+      .count();
+}
 
 }  // namespace
 
@@ -429,37 +497,16 @@ std::vector<SearchBatchRow> RunSearchBatch(CatchSearch& search, std::span<const 
                                            const std::vector<SearchBatchWake>& wakes) {
   // No segment: the RT of a batch wake follows no plan.
   const ReportedSegments no_segments{};
-  std::vector<SearchBatchRow> out;
-  out.reserve(wakes.size());
-  bool first = true;
-  bool planned = false;
-  std::int64_t throw_id = 0;
-  for (const SearchBatchWake& wake : wakes) {
-    if (first || wake.throw_id != throw_id) {
-      first = false;
-      throw_id = wake.throw_id;
-      planned = false;
-      search.ResetTrial();
-    }
-    if (planned) {
-      continue;
-    }
-    const SearchBatchInputs in = MakeSearchBatchInputs(wake, q_rest);
-    SearchBatchRow row;
-    row.throw_id = wake.throw_id;
-    row.wake = wake.wake;
-    row.now_ns = wake.now_ns;
-    // Offline tool: the wall clock around the call, never handed to the search.
-    const auto started = std::chrono::steady_clock::now();
-    row.plan = search.Plan(in.traj, in.cov, /*cov_matched=*/true, in.rt, no_segments,
-                           NowReal{wake.now_ns}, /*budget_cap_ns=*/0, row.stats);
-    row.wall_us =
-        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started)
-            .count();
-    planned = row.plan.valid;
-    out.push_back(row);
-  }
-  return out;
+  return RunThrows(
+      wakes, [&search] { search.ResetTrial(); },
+      [&](const SearchBatchWake& wake, SearchBatchRow& row) {
+        const SearchBatchInputs in = MakeSearchBatchInputs(wake, q_rest);
+        row.wall_us = WallUs([&] {
+          row.plan = search.Plan(in.traj, in.cov, /*cov_matched=*/true, in.rt, no_segments,
+                                 NowReal{wake.now_ns}, /*budget_cap_ns=*/0, row.stats);
+        });
+        return row.plan.valid;
+      });
 }
 
 // ── The binding ──────────────────────────────────────────────────────────────
@@ -564,12 +611,7 @@ SearchBatchSearch MakeSearchBatchSearch(const std::shared_ptr<const pinocchio::M
   // would describe no profile at all.
   const char* const kind =
       SearchModeName(grid ? CatchingSearchMode::kGrid : CatchingSearchMode::kNlp);
-  const YAML::Node search_map =
-      catching.IsMap() && catching["planner"] && catching["planner"].IsMap() &&
-              catching["planner"]["search"] && catching["planner"]["search"].IsMap()
-          ? catching["planner"]["search"][kind]
-          : YAML::Node();
-  if (!search_map || !search_map.IsMap()) {
+  if (!HasPlannerMap(catching, "search", kind)) {
     throw std::invalid_argument(std::string("the tree has no planner.search.") + kind +
                                 " map — the selected search would run on compiled-in values");
   }
@@ -583,9 +625,7 @@ SearchBatchSearch MakeSearchBatchSearch(const std::shared_ptr<const pinocchio::M
   SearchBatchSearch out;
   out.q_rest.assign(planner.wait_pose.begin(),
                     planner.wait_pose.begin() + static_cast<std::ptrdiff_t>(n));
-  std::array<int, kMaxPlanNv> device_of_model{};
-  std::copy(binding.device_of_model.begin(), binding.device_of_model.end(),
-            device_of_model.begin());
+  const std::array<int, kMaxPlanNv> device_of_model = DeviceOfModel(binding);
 
   if (grid) {
     if (binding.qdot_max.size() != n ||
@@ -628,12 +668,7 @@ SearchBatchSearch MakeSearchBatchSearch(const std::shared_ptr<const pinocchio::M
   params.limits = binding.limits;
   ApplyHandDocking(hand, binding.hand_t_close_e2e, binding.hand_t_close_lead, binding.ball_mass,
                    params.core);
-  // The nominal posture of the posture cost: the wait pose, model order.
-  params.core.q_nom.resize(nv);
-  for (int m = 0; m < nv; ++m) {
-    params.core.q_nom[m] =
-        planner.wait_pose[static_cast<std::size_t>(device_of_model[static_cast<std::size_t>(m)])];
-  }
+  SetNominalPosture(planner, device_of_model, nv, params.core);
   auto search = std::make_unique<NlpCatchSearch>();
   std::string error;
   if (!search->Configure(model, binding.nlp, params, ik.options, &StoppedClock, &error)) {
@@ -647,52 +682,31 @@ SearchBatchSearch MakeSearchBatchSearch(const std::shared_ptr<const pinocchio::M
 // ── The whole wake ───────────────────────────────────────────────────────────
 
 std::vector<SearchBatchRow> PlanBatch::Run(const std::vector<SearchBatchWake>& wakes) {
-  std::vector<SearchBatchRow> out;
-  out.reserve(wakes.size());
-  bool first = true;
-  bool paired = false;
-  std::int64_t throw_id = 0;
-  for (const SearchBatchWake& wake : wakes) {
-    if (first || wake.throw_id != throw_id) {
-      first = false;
-      throw_id = wake.throw_id;
-      paired = false;
+  const WakeClockScope clock;
+  return RunThrows(
+      wakes,
       // A new reset epoch is what tells the cycle the trial is another one: it
       // resets the search and the segment planner and withdraws the segment.
-      ++reset_epoch_;
-    }
-    if (paired) {
-      continue;
-    }
-    SearchBatchInputs in = MakeSearchBatchInputs(wake, q_rest_);
-    in.rt.reset_epoch = reset_epoch_;
-    cov_.Store(in.cov);
-    traj_.Store(in.traj);
-    rt_.Store(in.rt);
-    wake_clock_ns = wake.now_ns;
-    SearchBatchRow row;
-    row.throw_id = wake.throw_id;
-    row.wake = wake.wake;
-    row.now_ns = wake.now_ns;
-    row.cycle = true;
-    // Offline tool: the wall clock around the call, never handed to the cycle.
-    const auto started = std::chrono::steady_clock::now();
-    const PlannerCycleRecord rec = cycle_.Run(NowReal{wake.now_ns});
-    row.wall_us =
-        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started)
-            .count();
-    row.stats = rec.search;
-    row.search_valid = rec.search_valid;
-    row.outcome = rec.outcome;
-    row.segment = rec.segment;
-    if (rec.outcome == CycleOutcome::kPublished) {
-      row.plan = plan_.Load();
-    }
-    paired = rec.outcome == CycleOutcome::kPublished && rec.plan_valid;
-    out.push_back(row);
-  }
-  wake_clock_ns = 0;
-  return out;
+      [this] { ++reset_epoch_; },
+      [this](const SearchBatchWake& wake, SearchBatchRow& row) {
+        SearchBatchInputs in = MakeSearchBatchInputs(wake, q_rest_);
+        in.rt.reset_epoch = reset_epoch_;
+        cov_.Store(in.cov);
+        traj_.Store(in.traj);
+        rt_.Store(in.rt);
+        wake_clock_ns = wake.now_ns;
+        row.cycle = true;
+        PlannerCycleRecord rec{};
+        row.wall_us = WallUs([&] { rec = cycle_.Run(NowReal{wake.now_ns}); });
+        row.stats = rec.search;
+        row.search_valid = rec.search_valid;
+        row.outcome = rec.outcome;
+        row.segment = rec.segment;
+        if (rec.outcome == CycleOutcome::kPublished) {
+          row.plan = plan_.Load();
+        }
+        return rec.outcome == CycleOutcome::kPublished && rec.plan_valid;
+      });
 }
 
 PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
@@ -729,9 +743,37 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
   keys.search_grid = binding.kind == SearchBatchKind::kGrid;
   keys.segment_mpc = mpc;
   const PlannerParams planner = ParsePlannerParams(catching, keys);
-  std::array<int, kMaxPlanNv> device_of_model{};
-  std::copy(binding.device_of_model.begin(), binding.device_of_model.end(),
-            device_of_model.begin());
+  const std::array<int, kMaxPlanNv> device_of_model = DeviceOfModel(binding);
+
+  // What a controller's configure refuses of the docking functions' profile
+  // (docking_config.hpp): the batch judges no profile that controller parks.
+  const bool nlp = binding.kind == SearchBatchKind::kNlp;
+  HandDockingParams hand;
+  NlpCatchSearchParams nlp_params;
+  MpcDockingSegmentPlannerParams docking_params;
+  if (nlp || !mpc) {
+    hand = ParseHandDockingParams(catching);
+    if (nlp) {
+      nlp_params = ParseNlpSearchParams(catching, nv);
+    }
+    if (!mpc) {
+      docking_params = ParseMpcDockingSegmentParams(catching, nv);
+    }
+    DockingConfig config;
+    config.nlp = nlp;
+    config.docking = !mpc;
+    config.catching = &catching;
+    config.hand = &hand;
+    // The binding's leads are each core's, from the entrance crossing.
+    config.search_close_lead = binding.hand_t_close_lead;
+    config.planner_close_lead = sb.hand_t_close_lead;
+    config.search = &nlp_params;
+    config.planner = &docking_params;
+    if (std::string why = DockingConfigRefusal(config); !why.empty()) {
+      out.error = std::move(why);
+      return out;
+    }
+  }
 
   std::unique_ptr<SegmentPlanner> segment_planner;
   std::string error;
@@ -759,28 +801,7 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     if (sb.qd_rating.size() != n) {
       throw std::invalid_argument("binding: segment.mpc_docking.qd_rating does not match the arm");
     }
-    const HandDockingParams hand = ParseHandDockingParams(catching);
-    if (const char* unset = hand.FirstUnset(); unset != nullptr) {
-      out.error = std::string("robot.hand.docking: '") + unset + "' is not set";
-      return out;
-    }
-    MpcDockingSegmentPlannerParams params = ParseMpcDockingSegmentParams(catching, nv);
-    if (binding.kind == SearchBatchKind::kNlp) {
-      // The planner republishes the search's solution after re-evaluating it
-      // on its own core: a controller refuses the pair unless the two grids
-      // are one and the solution is on the planner's.
-      const NlpCatchSearchParams nlp = ParseNlpSearchParams(catching, nv);
-      if (const char* differ = DockingGridMismatch(nlp, params); differ != nullptr) {
-        out.error = differ;
-        return out;
-      }
-      if (nlp.continuous_tc) {
-        out.error =
-            "planner.search.nlp.continuous_tc is true: its solutions are off the "
-            "mpc_docking planner's grid";
-        return out;
-      }
-    }
+    MpcDockingSegmentPlannerParams params = docking_params;
     MpcDockingSegmentPlannerModel model;
     model.arm = arm;
     model.catch_frame = catch_frame;
@@ -793,12 +814,7 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     consts.t_arm_s = sb.t_arm_s;
     consts.control_dt = sb.control_dt;
     ApplyHandDocking(hand, sb.hand_t_close_e2e, sb.hand_t_close_lead, sb.ball_mass, params.core);
-    // The nominal posture of the posture cost: the wait pose, model order.
-    params.core.q_nom.resize(nv);
-    for (int m = 0; m < nv; ++m) {
-      params.core.q_nom[m] =
-          planner.wait_pose[static_cast<std::size_t>(device_of_model[static_cast<std::size_t>(m)])];
-    }
+    SetNominalPosture(planner, device_of_model, nv, params.core);
     segment_planner = MakeMpcDockingSegmentPlanner(model, consts, params, &WakeClock, &error);
   }
   if (segment_planner == nullptr) {

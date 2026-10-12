@@ -320,7 +320,9 @@ struct PlanBatchBuild {
 /// the search as MakeSearchBatchSearch builds it, the segment planner of
 /// `binding.segment` from its own map of `catching`
 /// (`planner.segment.<mode>`) and the binding's values, both installed in a
-/// cycle configured with the tree's `planner.*` and timed on WakeClock.
+/// cycle configured with the tree's `planner.*` and timed on WakeClock. A
+/// profile on which that controller would park its docking functions is
+/// reported in `error`, in the controller's words (DockingConfigRefusal).
 /// @throws std::invalid_argument what MakeSearchBatchSearch and the parsers
 ///         throw, a binding without `segment`, a segment vector that does not
 ///         match the arm, and a tree without the selected planner's map

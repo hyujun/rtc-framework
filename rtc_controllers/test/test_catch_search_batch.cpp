@@ -972,4 +972,44 @@ TEST(CatchPlanBatchBinding, ABindingOrATreeWithoutTheSegmentPlannerIsRefused) {
                std::invalid_argument);
 }
 
+TEST(CatchPlanBatch, AProfileAControllerParksIsRefusedInThatControllersWords) {
+  // The grid search with the mpc_docking planner on a tree that has the
+  // planner's map and none of the hand's identified capture set: a controller's
+  // configure parks on it (docking_config.hpp), and the batch judges nothing.
+  const CycleRig rig;
+  YAML::Node binding = rig.BindingFile(false);
+  binding["segment"] = YAML::Load(
+      "mode: mpc_docking\n"
+      "mpc_docking:\n"
+      "  t_arm_s: 0.0\n  control_dt: 0.002\n  qd_rating: [2, 2, 3, 3, 3, 3]\n"
+      "  hand_t_close_e2e: 0.2\n  hand_t_close_lead: 0.05\n  ball_mass: 0.057\n"
+      "  limits:\n    q_min: [-6, -6, -3, -6, -6, -6]\n    q_max: [6, 6, 3, 6, 6, 6]\n"
+      "    qd_max: [2, 2, 3, 3, 3, 3]\n    qdd_max: []\n"
+      "    tau_max: [150, 150, 150, 28, 28, 28]\n"
+      "    tau_lo: [-150, -150, -150, -28, -28, -28]\n"
+      "    tau_hi: [150, 150, 150, 28, 28, 28]\n");
+  YAML::Node tree = rig.Tree();
+  tree["planner"]["segment"]["mode"] = "mpc_docking";
+  tree["planner"]["segment"]["mpc_docking"] = YAML::Load("{approach: {n_pre_max: 6}}");
+  const PlanBatchBuild built = MakePlanBatch(rig.model, *rig.handle, rig.frame, tree,
+                                             ParseSearchBatchBinding(binding, rig.nv));
+  EXPECT_EQ(built.batch, nullptr);
+  EXPECT_NE(built.error.find("'catching.robot.hand.docking.s_ent' is unset or TBD"),
+            std::string::npos)
+      << built.error;
+}
+
+TEST(CatchPlanBatch, TheWakeClockIsZeroAgainAfterARunThatThrew) {
+  const CycleRig rig;
+  const PlanBatchBuild built = rig.Build();
+  ASSERT_NE(built.batch, nullptr) << built.error;
+  // A second throw whose wake has no sample is refused — after the first ran
+  // and set the clock.
+  std::vector<SearchBatchWake> wakes = rig.Catchable(1, 1);
+  wakes.push_back(rig.Catchable(2, 1).front());
+  wakes.back().samples.clear();
+  EXPECT_THROW(static_cast<void>(built.batch->Run(wakes)), std::invalid_argument);
+  EXPECT_EQ(rtc::catching::WakeClock(), 0);
+}
+
 }  // namespace

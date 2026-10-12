@@ -105,6 +105,9 @@ add_library(rtc_controllers STATIC
   # dynamic_catching E1-F16: the docking keys — the hand's identified capture set
   # (`robot.hand.docking.*`) and the two docking functions' own maps.
   src/params/docking_params.cpp
+  # What only shows with the docking maps side by side (one check for a
+  # controller's configure and the offline whole-wake batch).
+  src/catching/docking_config.cpp
   src/catching/planner_cycle.cpp
   src/catching/grid_catch_search.cpp
   # dynamic_catching MPC E1-F01 (#627): the segment MPC numeric core — a jerk-input
