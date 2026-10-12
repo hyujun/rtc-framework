@@ -281,6 +281,23 @@ struct SegmentRecord {
   /// The segment x₀ came from (a replan: the reference too): a replan, and the
   /// first solve of a replacement. 0 when x₀ is the reported command.
   std::uint32_t source_seq{0};
+  /// The line the solve's stop is measured against, model world: a point [m]
+  /// and a unit direction. NaN when the planner has none for this solve. Not a
+  /// field of the trace digest — nor are the three distances below.
+  std::array<double, 3> stop_line_p{std::numeric_limits<double>::quiet_NaN(),
+                                    std::numeric_limits<double>::quiet_NaN(),
+                                    std::numeric_limits<double>::quiet_NaN()};
+  std::array<double, 3> stop_line_d{std::numeric_limits<double>::quiet_NaN(),
+                                    std::numeric_limits<double>::quiet_NaN(),
+                                    std::numeric_limits<double>::quiet_NaN()};
+  /// The catch frame's distance from that line over the solution's stop nodes
+  /// [m] (FK): the largest, and the last node's. NaN without a line or a
+  /// solution.
+  double stop_dev_max{std::numeric_limits<double>::quiet_NaN()};
+  double stop_dev_end{std::numeric_limits<double>::quiet_NaN()};
+  /// The last node's catch frame along the line, from the line's point [m]
+  /// (signed: positive is the line's direction).
+  double stop_along_end{std::numeric_limits<double>::quiet_NaN()};
   /// The mpc_docking planner's own account of the solve (E1-F18). Not a field
   /// of the trace digest.
   DockingSolveStats docking{};

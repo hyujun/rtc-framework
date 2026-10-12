@@ -95,6 +95,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
                                   std::string* error) {
   configured_ = false;
   perp_on_ = false;
+  arm_.reset();
   cores_.clear();
   inputs_.clear();
   results_.clear();
@@ -206,6 +207,9 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   }
   params_ = params;
   perp_on_ = params.w_perp > 0.0;
+  arm_ = model.arm;
+  catch_frame_ = model.catch_frame;
+  fk_data_ = pinocchio::Data(*arm_);
   clock_ = clock;
   nv_ = n;
   device_of_model_ = model.device_of_model;
@@ -476,24 +480,71 @@ bool MpcSegmentPlanner::SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::
   return true;
 }
 
-bool MpcSegmentPlanner::SetStopLine(MpcSegmentCoreInput& in, SegmentRecord& rec) const noexcept {
+MpcSegmentPlanner::StopLine MpcSegmentPlanner::BallLine(const MpcSegmentCoreInput& in,
+                                                        SegmentOutcome& why) const noexcept {
   // The ball as this solve takes it (SetCatchInputs wrote both, finite): the
   // line through p̂_b along v̂_b. Finite components can still have a norm that
-  // overflows, and a ball at rest has no direction — neither is solved on a
-  // line that was not built.
+  // overflows, and a ball at rest has no direction — neither gives a line.
+  StopLine line;
   const double speed = in.v_b.norm();
   if (!in.p_b.allFinite() || !std::isfinite(speed)) {
-    rec.outcome = SegmentOutcome::kInputNonFinite;
-    return false;
+    why = SegmentOutcome::kInputNonFinite;
+    return line;
   }
   // Written as "usable", so a NaN v_eps is not.
   if (!(speed > consts_.v_eps)) {
-    rec.outcome = SegmentOutcome::kNoBall;
-    return false;
+    why = SegmentOutcome::kNoBall;
+    return line;
   }
-  in.p_c = in.p_b;
-  in.d_hat = in.v_b / speed;
-  return true;
+  line.valid = true;
+  line.p_c = in.p_b;
+  line.d_hat = in.v_b / speed;
+  return line;
+}
+
+void MpcSegmentPlanner::RecordStop(const StopLine& line, const MpcSegmentCoreResult& r, bool solved,
+                                   int k_first, int n_total, SegmentRecord& rec) noexcept {
+  if (!line.valid) {
+    return;
+  }
+  for (int i = 0; i < 3; ++i) {
+    rec.stop_line_p[U(i)] = line.p_c[i];
+    rec.stop_line_d[U(i)] = line.d_hat[i];
+  }
+  if (!solved) {
+    return;
+  }
+  const MpcSegmentStopDeviation m = MeasureMpcSegmentStop(*arm_, fk_data_, catch_frame_, r.q,
+                                                          k_first, n_total, line.p_c, line.d_hat);
+  rec.stop_dev_max = m.dev_max;
+  rec.stop_dev_end = m.dev_end;
+  rec.stop_along_end = m.along_end;
+}
+
+MpcSegmentStopDeviation MeasureMpcSegmentStop(const pinocchio::Model& arm, pinocchio::Data& data,
+                                              pinocchio::FrameIndex frame,
+                                              const Eigen::Ref<const Eigen::MatrixXd>& q,
+                                              int k_first, int k_last, const Eigen::Vector3d& p,
+                                              const Eigen::Vector3d& d) noexcept {
+  MpcSegmentStopDeviation out;
+  if (k_first < 0 || k_last < k_first || k_last >= q.cols() || q.rows() != arm.nq ||
+      frame >= arm.frames.size()) {
+    return out;
+  }
+  // std::max drops a NaN, so a distance that is not a number is kept as one.
+  double worst = 0.0;
+  for (int k = k_first; k <= k_last; ++k) {
+    pinocchio::forwardKinematics(arm, data, q.col(k));
+    pinocchio::updateFramePlacement(arm, data, frame);
+    const Eigen::Vector3d e = data.oMf[frame].translation() - p;
+    out.along_end = d.dot(e);
+    out.dev_end = (e - out.along_end * d).norm();
+    worst = std::isfinite(out.dev_end) && std::isfinite(worst)
+                ? std::max(worst, out.dev_end)
+                : std::numeric_limits<double>::quiet_NaN();
+  }
+  out.dev_max = worst;
+  return out;
 }
 
 bool MpcSegmentBetweenNodeSpeedOk(const Eigen::Ref<const Eigen::MatrixXd>& qd,
@@ -831,14 +882,23 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
     rec.outcome = SegmentOutcome::kInputNonFinite;
     return false;
   }
-  // The stop-path line: the plan's catch point along the ball's travel.
-  if (perp_on_ && !SetStopLine(in, rec)) {
-    return false;
+  // The stop-path line: the plan's catch point along the ball's travel. The
+  // core reads it with the term on only — and is then not solved without it.
+  SegmentOutcome no_line = SegmentOutcome::kNoBall;
+  const StopLine line = BallLine(in, no_line);
+  if (perp_on_) {
+    if (!line.valid) {
+      rec.outcome = no_line;
+      return false;
+    }
+    in.p_c = line.p_c;
+    in.d_hat = line.d_hat;
   }
   // No retry: a catch core cannot be solved without its reference.
   const bool ok = core.Solve(in, res);
   const std::int64_t end = clock_();
   NoteSolve(ok, true, n_pre, t_eff, plan.plan_id, plan.t_c_ns);
+  RecordStop(line, res, ok, n_pre, n_total, rec);
   rec.outcome = Judge(res, ok, n_pre, n_total, true, start, end, first_ns_, t_eff, rec);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;
@@ -859,9 +919,7 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
   } else {
     ring_.ClearReported();
   }
-  if (perp_on_) {
-    ready_line_ = StopLine{true, in.p_c, in.d_hat};
-  }
+  ready_line_ = line;
   return true;
 }
 
@@ -1029,8 +1087,8 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   // A stop core's stop-path line is its SOURCE's — the line of the segment
   // the RT follows, which x₀ and the reference come from too — whatever
   // `ball` holds on this wake and whatever was published since: the hand
-  // stops on the line it is on. A source without a line is not solved from —
-  // never on a default line.
+  // stops on the line it is on. With the term on, a source without a line is
+  // not solved from — never on a default line.
   const StopLine& src_line = ring_.PayloadOf(src);
   if (perp_on_ && !pre && !src_line.valid) {
     rec.outcome = SegmentOutcome::kNoBall;
@@ -1095,16 +1153,18 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
     rec.outcome = SegmentOutcome::kNoBall;
     return false;
   }
+  // A catch core's line is this replan's ball — the newer prediction moves the
+  // line with it. A copy: publishing nothing, this solve cannot move the
+  // ring, but the line is read again after the solve.
+  SegmentOutcome no_line = SegmentOutcome::kNoBall;
+  const StopLine line = pre ? BallLine(in, no_line) : src_line;
   if (perp_on_) {
-    if (pre) {
-      // This replan's ball: the newer prediction moves the line with it.
-      if (!SetStopLine(in, rec)) {
-        return false;
-      }
-    } else {
-      in.p_c = src_line.p_c;
-      in.d_hat = src_line.d_hat;
+    if (!line.valid) {
+      rec.outcome = no_line;
+      return false;
     }
+    in.p_c = line.p_c;
+    in.d_hat = line.d_hat;
   }
   bool ok = core.Solve(in, res);
   if (!ok && !pre &&
@@ -1122,6 +1182,7 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   }
   const std::int64_t end = clock_();
   NoteSolve(ok, pre, index, t_eff, rt.plan_id, t_c);
+  RecordStop(line, res, ok, n_pre, n_total, rec);
   rec.outcome = Judge(res, ok, n_pre, n_total, pre, start, end, replan_ns_, t_eff, rec);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;
@@ -1135,11 +1196,9 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
     SetCoreReason(rec, MpcSegmentCoreReason::kNone);
     return false;
   }
-  if (perp_on_) {
-    // A catch-core segment carries the line it was solved on; a stop segment
-    // inherits its source's (the same one — `in` holds it either way).
-    ready_line_ = StopLine{true, in.p_c, in.d_hat};
-  }
+  // A catch-core segment carries the line it was solved on; a stop segment
+  // inherits its source's.
+  ready_line_ = line;
   return true;
 }
 

@@ -3740,6 +3740,15 @@ _PLANNER_EVENTS_COLUMNS = [
     "replacement_solve_us",
     "cov_n",
     "chosen_sigma_c",
+    "segment_stop_line_p_x",
+    "segment_stop_line_p_y",
+    "segment_stop_line_p_z",
+    "segment_stop_line_d_x",
+    "segment_stop_line_d_y",
+    "segment_stop_line_d_z",
+    "segment_stop_dev_max",
+    "segment_stop_dev_end",
+    "segment_stop_along_end",
 ]
 
 # What a recording from before E1-F18 has: the header up to `segment_source_seq`.

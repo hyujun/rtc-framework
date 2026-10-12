@@ -205,22 +205,21 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 **mpc planner · catching 의 남은 일**
 
 - [#819](https://github.com/hyujun/rtc-framework/issues/819) — mpc: 첫 풀이의 기준을 속력 상한에 자르면 닿는 포구가 보류된다
-- [#713](https://github.com/hyujun/rtc-framework/issues/713) — catching: 조정되지 않은 채 출하된 mpc planner 의 값 — `cost.w_perp` · `publish.slack_terminal_max`
 - [#716](https://github.com/hyujun/rtc-framework/issues/716) — catching: formulation 의 포구 구간 다중 노드 (K_c) 와 그 위의 경로 이탈 항 `w_path` 가 구현에 없다
 - [#715](https://github.com/hyujun/rtc-framework/issues/715) — integrated_bringup: 세 군 (두 번째 손) 지원 — 보류
 
-**`mpc planner · catching 의 남은 일` 넷의 순서 (권장).** 이 문서에서 네 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이다. 이슈에 정해진 시기 (#713 · #716 은 E1-F20 뒤, #819 는 #710 의 기록 뒤 — 그 조건은 이제 충족됐다) 안에서 고른 순서이고, "착수 때 정할 것" 은 아직 열려 있다.
+**`mpc planner · catching 의 남은 일` 셋의 순서 (권장).** 이 문서에서 세 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이다. 이슈에 정해진 시기 (#716 은 E1-F20 뒤, #819 는 #710 의 기록 뒤 — 그 조건은 이제 충족됐다) 안에서 고른 순서이고, "착수 때 정할 것" 은 아직 열려 있다.
 
 | 순서 | 이슈 | 착수 조건 | 브랜치 | 착수 때 정할 것 |
 |---|---|---|---|---|
-| 1 | #713 | 충족됐다 — E1-F20 과 #755 가 끝났다 | 단독 — 정지 직선 · 이탈 거리의 로그 열과 `cost.w_perp` 의 값 | — |
-| 2 | #819 | 충족됐다 — #710 의 단계 0 의 기록 (코어 단위 테스트와 overlay unit) 이 있다 | 단독 — 계획기의 첫 풀이. #713 과 같은 planner 라 한 PR 에 섞지 않는다 | 닫는 기준과 확인 unit, velocity box 근처에서 QP 가 안 풀릴 때의 대비의 형태, `linearization.ref_speed_fraction` 키를 남길지. 방향은 정해졌다 — 첫 기준을 자르지 않고, `delta_tr` 은 그 뒤에 다시 재고, 선형화를 더하는 것은 보류한다 (#710 의 결정 2) |
+| 1 | #819 | 충족됐다 — #710 의 단계 0 의 기록 (코어 단위 테스트와 overlay unit) 이 있다. #713 은 끝났다 | 단독 — 계획기의 첫 풀이 | 닫는 기준과 확인 unit, velocity box 근처에서 QP 가 안 풀릴 때의 대비의 형태, `linearization.ref_speed_fraction` 키를 남길지. 방향은 정해졌다 — 첫 기준을 자르지 않고, `delta_tr` 은 그 뒤에 다시 재고, 선형화를 더하는 것은 보류한다 (#710 의 결정 2) |
 | — | #716 | E1-F20 뒤 (끝났다) | 정하지 않았다 | 단일 팔에서도 할지, G1 구성의 항으로 E3 에서 할지 (권장은 E3) |
 | — | #715 | 보류 — 착수 조건이 없다 | — | — |
 
-- **묶지 않는 이유.** #716 의 범위는 E1-F20 의 결과 (§5 의 "E1-F20 에서 넘어온 일") 를 보고 정하고, #819 의 범위는 #710 의 기록이 정했다. `mpc` 의 법칙을 한 PR 에서 두 곳 바꾸면 측정이 원인을 가르지 못한다 (#819 는 첫 풀이의 게시율, #713 은 정지 구간의 직선 이탈을 본다). PR 을 쌓지 않으므로 같은 파일을 고친다는 것은 묶을 이유가 아니다.
+- **묶지 않는 이유.** #716 의 범위는 E1-F20 의 결과 (§5 의 "E1-F20 에서 넘어온 일") 를 보고 정하고, #819 의 범위는 #710 의 기록이 정했다. `mpc` 의 법칙을 한 PR 에서 두 곳 바꾸면 측정이 원인을 가르지 못한다 (#819 는 첫 풀이의 게시율을 본다 — 정지 구간의 직선 이탈은 #713 이 따로 쟀다). PR 을 쌓지 않으므로 같은 파일을 고친다는 것은 묶을 이유가 아니다.
 - **#710 은 끝났다 (2026-10-11).** `iiwa7_leap` 에서 `grid` × `mpc` 가 계획을 못 내던 까닭은 첫 풀이의 기준이 아니라 `grid` IK 의 두 값이었다 — 수락된 후보 가운데 속도 한계로 닿는 것이 없었다. `k_manip` 을 0 으로, 하한을 0.1 로 두었고 (사용자 결정, 확인 unit 은 더 던지지 않았다), 근거와 남은 것은 L3 부록 D 와 이슈의 기록이 갖는다 ([0-A](https://github.com/hyujun/rtc-framework/issues/710#issuecomment-6105029085) · [0-B](https://github.com/hyujun/rtc-framework/issues/710#issuecomment-6105097576) · [0-C](https://github.com/hyujun/rtc-framework/issues/710#issuecomment-6105692143)). 재지 않은 채로 둔 것: 출하 값 (하한 0.1) 의 sim unit, `grid` × `closed_form` 에서의 결과, leap 의 throw set 라벨 (옛 값의 것이다). 첫 풀이의 기준을 자르는 법칙은 두 로봇에 공통인 별개의 문제여서 #819 로 옮겼다.
-- **#713 은 CSV 의 열을 더한다.** `planner_events` 에 새 이름으로 생긴다.
+- **#713 은 끝났다 (2026-10-12).** `cost.w_perp` 는 두 로봇 모두 100 으로 출하한다 (사용자 결정). sim 에서 #821 의 segment 집단을 `w_perp` 만 바꿔 던졌다: 정지 끝에서 손이 공의 직선에서 벗어난 거리의 중앙값이 `ur5e_p1b` 140 → 2 mm, `iiwa7_leap` 67 → 2.5 mm 이고 (묶음 셋에서 같다), 정지는 직선 방향으로 길어지며 (약 85 · 30 mm), 게시 · `ABORT_SAFE` · 예산은 지킨다. 포구 수의 변화는 그 표본으로 가르지 못했고, 100 보다 큰 값은 던지지 않았다. 그 측정을 위해 `planner_events` 에 풀이마다 정지 직선과 이탈을 적는 9 열 (`segment_stop_*`, `w_perp` 0 에서도) 과 `catching_trials` 의 투척당 이탈 (`stop_*`) 을 더했다. 기록은 이슈가 갖는다 — [시행 전 고정](https://github.com/hyujun/rtc-framework/issues/713#issuecomment-6118676969) · [1 차](https://github.com/hyujun/rtc-framework/issues/713#issuecomment-6121104151) · [결정](https://github.com/hyujun/rtc-framework/issues/713#issuecomment-6121834909) · [2 차](https://github.com/hyujun/rtc-framework/issues/713#issuecomment-6123763984).
+  - **#819 로 넘어가는 것.** 이 항은 포구 노드에도 걸려 `catch_error` 로 보류되던 풀이의 일부를 게시로, 일부를 `speed` · `slack` 보류로 옮긴다 (`iiwa7_leap` 에서 뚜렷하다). #819 가 첫 풀이의 기준을 바꾸고 `delta_tr` 을 다시 재므로, 그 뒤에 `w_perp` 100 의 이탈과 그 보류의 수를 다시 확인한다 — 같은 측정 (`segment_stop_*` · `stop_*`) 으로 잰다.
 - **#716 에서 정하지 않은 것.** formulation §1.6 은 단일 팔의 포구 구간이 한 노드인 것을 손 폐쇄 명령 시각 ($t_c-T_{close}$ — 폐쇄가 $t_c$ 에 끝난다) 의 귀결로 적는다. 여러 노드로 두려면 세 planner 가 함께 쓰는 그 규칙이 바뀐다.
 
 **이 문서가 정하지 않은 것.** 실기 epic 과 E3 의 선후 (실기는 `ur5e_p1b` 이고 E3 는 G1 sim 이라 서로의 선행이 아니다). 실기 planner 는 단계 E 앞에서 정한다 (§3).

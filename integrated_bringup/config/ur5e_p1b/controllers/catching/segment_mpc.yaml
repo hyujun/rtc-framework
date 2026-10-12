@@ -133,16 +133,20 @@ demo_catching_controller:
             # catch on, the squared distance of the catch frame from a line is
             # penalised. 0 = off — the solve is the one before this key existed.
             # The line is the BALL's (decided 2026-10-03, #698): through its
-            # predicted catch position along its direction of travel at t_c — the
-            # line the search reserves its stopping point on. A replan at or
-            # after the catch keeps the line of the segment the RT follows (not
-            # of a newer one that was published and not taken). A solve with no
-            # line to build — a ball slower than v_eps (above), or a followed
-            # segment that carries no line — is withheld, not solved on a
-            # default. The weight raises the QP's condition number; above 1.0e4,
-            # the largest value the cores are tested with, the configure refuses
-            # the key. Not tuned on any arm: ships off.
-            w_perp: 0.0
+            # predicted catch position along its direction of travel at t_c. A
+            # replan at or after the catch keeps the line of the segment the RT
+            # follows (not of a newer one that was published and not taken). A
+            # solve with no line to build — a ball slower than v_eps (above), or
+            # a followed segment that carries no line — is withheld, not solved
+            # on a default. The weight raises the QP's condition number; above
+            # 1.0e4, the largest value the cores are tested with, the configure
+            # refuses the key.
+            # 100 is measured (#713, sim): at the end of the stop the hand is a
+            # median 2 mm off the line — 140 mm at 0, 34 mm at 10 — and the
+            # solves keep their budgets. Nothing above 100 was thrown. The line
+            # and the distance are recorded for every solve (planner_events.csv
+            # segment_stop_*), at 0 too.
+            w_perp: 100.0
           linearization:
             # Trust-region half-width around the reference [rad], finite > 0.
             # m_q must stay below it.

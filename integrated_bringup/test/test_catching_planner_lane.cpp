@@ -501,8 +501,9 @@ TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
   std::ostringstream header;
   integrated_bringup::WritePlannerEventsHeader(header);
   const std::vector<std::string> names = split(header.str());
-  // #798 appended cov_n and chosen_sigma_c after the replacement columns.
-  EXPECT_EQ(names.back(), "chosen_sigma_c");
+  // #798 appended cov_n and chosen_sigma_c after the replacement columns, #713
+  // the stop columns after those.
+  EXPECT_EQ(names.back(), "segment_stop_along_end");
   // No name twice: a reader that selects by name would take one of them.
   EXPECT_EQ(std::set<std::string>(names.begin(), names.end()).size(), names.size());
   const auto row_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
@@ -649,6 +650,57 @@ TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
     const std::string name = rtc::catching::NlpRejectName(integrated_bringup::kNlpRejectColumns[i]);
     EXPECT_EQ(at("nlp_rej_" + name), at("nlp_rej_follow_window") + static_cast<long>(i)) << name;
   }
+}
+
+// #713: the stop against the ball's line — nine columns at the tail, read back
+// by NAME. They are the wake's own solve's (`segment`), never the withheld
+// replacement's, and a record nothing filled writes them as NaN.
+TEST(PlannerEventsCsv, TheStopColumnsCarryTheSegmentRecordByName) {
+  const auto split = [](std::string s) {
+    while (!s.empty() && s.back() == '\n') {
+      s.pop_back();
+    }
+    std::vector<std::string> out;
+    std::istringstream in(s);
+    for (std::string cell; std::getline(in, cell, ',');) {
+      out.push_back(cell);
+    }
+    return out;
+  };
+  std::ostringstream header;
+  integrated_bringup::WritePlannerEventsHeader(header);
+  const std::vector<std::string> names = split(header.str());
+  const std::vector<std::string> stop = {
+      "segment_stop_line_p_x", "segment_stop_line_p_y", "segment_stop_line_p_z",
+      "segment_stop_line_d_x", "segment_stop_line_d_y", "segment_stop_line_d_z",
+      "segment_stop_dev_max",  "segment_stop_dev_end",  "segment_stop_along_end"};
+  ASSERT_GE(names.size(), stop.size());
+  EXPECT_EQ(std::vector<std::string>(names.end() - 9, names.end()), stop);
+  EXPECT_EQ(names[names.size() - 10], "chosen_sigma_c");
+  const auto tail_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
+    std::ostringstream row;
+    integrated_bringup::WritePlannerEventsRow(row, rec);
+    const std::vector<std::string> cells = split(row.str());
+    EXPECT_EQ(cells.size(), names.size());
+    return cells.size() < 9 ? cells : std::vector<std::string>(cells.end() - 9, cells.end());
+  };
+
+  rtc::catching::PlannerCycleRecord rec{};
+  EXPECT_EQ(tail_of(rec), std::vector<std::string>(9, "nan"));
+
+  // A line without a solution: the three distances stay NaN.
+  rec.segment.stop_line_p = {0.5, -0.25, 1.5};
+  rec.segment.stop_line_d = {0.0, 0.5, -0.75};
+  // The replacement's first solve has a record of its own; it is not written here.
+  rec.replacement.stop_line_p = {9.0, 9.0, 9.0};
+  rec.replacement.stop_dev_end = 9.0;
+  EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"0.5", "-0.25", "1.5", "0", "0.5", "-0.75",
+                                                    "nan", "nan", "nan"}));
+  rec.segment.stop_dev_max = 0.125;
+  rec.segment.stop_dev_end = 0.0625;
+  rec.segment.stop_along_end = -0.25;
+  EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"0.5", "-0.25", "1.5", "0", "0.5", "-0.75",
+                                                    "0.125", "0.0625", "-0.25"}));
 }
 
 // ── The lane ────────────────────────────────────────────────────────────────

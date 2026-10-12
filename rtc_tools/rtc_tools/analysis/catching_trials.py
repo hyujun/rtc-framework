@@ -971,6 +971,7 @@ DIAG_SEGMENT_COLUMNS = (
     "segment_event",
     "segment_following",
     "segment_seq",
+    "segment_held",
     "segment_rho",
     "segment_p_d_x",
     "segment_p_d_y",
@@ -2078,6 +2079,7 @@ class TrialContext:
     segment_event: np.ndarray | None = None
     segment_following: np.ndarray | None = None
     segment_seq: np.ndarray | None = None
+    segment_held: np.ndarray | None = None
     segment_rho: np.ndarray | None = None
     segment_p_d: np.ndarray | None = None
     _cache: dict = field(default_factory=dict)
@@ -2525,6 +2527,14 @@ class SegmentEvents(NamedTuple):
     elastic: np.ndarray  # (rows, len(DOCKING_ELASTIC_GROUPS)); NaN where the log has no column
     viol: np.ndarray  # (rows, len(DOCKING_ROW_GROUPS))
     snapshot_seq: np.ndarray  # snapshot_sequence: 0 on a wake that ran no search
+    # The stop against the ball's line (#713): the line the solve's stop is
+    # measured against — a point [m] and a unit direction, model world — and
+    # the solution's own distances from it [m]. NaN on a log without the columns.
+    stop_line_p: np.ndarray  # (rows, 3) segment_stop_line_p_{x,y,z}
+    stop_line_d: np.ndarray  # (rows, 3) segment_stop_line_d_{x,y,z}
+    stop_dev_max: np.ndarray
+    stop_dev_end: np.ndarray
+    stop_along_end: np.ndarray
 
 
 SEGMENT_EVENT_COLUMNS = (
@@ -2538,6 +2548,10 @@ SEGMENT_EVENT_COLUMNS = (
     "segment_slack_v",
     *(f"segment_elastic_{g}" for g in planner_solves.DOCKING_ELASTIC_GROUPS),
     *(f"segment_viol_{g}" for g in planner_solves.DOCKING_ROW_GROUPS),
+    *(f"segment_stop_line_{v}_{a}" for v in "pd" for a in "xyz"),
+    "segment_stop_dev_max",
+    "segment_stop_dev_end",
+    "segment_stop_along_end",
 )
 
 
@@ -2574,6 +2588,11 @@ def _planner_segment_events(ctl: Path) -> SegmentEvents | None:
             [number(f"segment_viol_{g}") for g in planner_solves.DOCKING_ROW_GROUPS]
         ),
         snapshot_seq=number("snapshot_sequence"),
+        stop_line_p=np.column_stack([number(f"segment_stop_line_p_{a}") for a in "xyz"]),
+        stop_line_d=np.column_stack([number(f"segment_stop_line_d_{a}") for a in "xyz"]),
+        stop_dev_max=number("segment_stop_dev_max"),
+        stop_dev_end=number("segment_stop_dev_end"),
+        stop_along_end=number("segment_stop_along_end"),
     )
 
 
@@ -2759,6 +2778,112 @@ def last_segment_columns(
         rec["last_seg_snapshot_gen"] = float(ctx.input_gen[k])
     if ctx.input_age is not None and ctx.input_age[k] >= 0.0:
         rec["last_seg_pred_age_ms"] = float((ctx.input_age[k] + wake_t - ctx.t[k]) * 1e3)
+    return rec
+
+
+STOP_LINE_KEYS = (
+    "stop_seq",
+    "stop_exec_dev_end_mm",
+    "stop_exec_dev_max_mm",
+    "stop_exec_along_end_mm",
+    "stop_plan_dev_end_mm",
+    "stop_plan_dev_max_mm",
+    "stop_plan_along_end_mm",
+)
+# The executed three are read from the row's ``t_c`` column on (#602), like
+# :data:`TC_COLUMN_KEYS`: a row whose column is off the catch instant is left
+# out of their medians.
+STOP_TC_KEYS = STOP_LINE_KEYS[1:4]
+
+
+def stop_line_columns(
+    ctx: TrialContext,
+    t_c: float,
+    wakes_t: np.ndarray | None,
+    events: SegmentEvents | None,
+) -> dict:
+    """How far the hand leaves the ball's line over the stop (#713, mm).
+
+    The stop ends when the followed segment is past its last node. The tick
+    that first reads ``segment_held`` after the command for ``t_c`` is that
+    instant on the command's axis; the arm is there one lead later, at
+    ``t_end = t(held) + t_lead(held)``. The segment is the one followed at the
+    held tick (``stop_seq``) and its line the one its solve recorded — the
+    ``planner_events.csv`` row that published that ``segment_seq`` inside this
+    trial (``segment_stop_line_*``: through the ball's predicted position at
+    t_c along its travel; a stop segment carries the line of the segment it was
+    solved from, so the line is one over the whole stop).
+
+    - ``stop_exec_dev_end_mm`` / ``_max_mm`` — the MEASURED catch frame's
+      distance from that line at ``t_end``, and the largest over the ticks from
+      ``t_c`` to ``t_end``;
+    - ``stop_exec_along_end_mm`` — the measured frame at ``t_end`` along the
+      line from its point (positive: the ball's direction);
+    - ``stop_plan_dev_end_mm`` / ``_max_mm`` / ``stop_plan_along_end_mm`` — the
+      same three as that segment's solve recorded them of its own solution
+      (``segment_stop_dev_end`` / ``_max`` / ``_along_end``: its nodes only, so
+      the largest is not over the same span as the executed one).
+
+    All NaN without a commit, when no segment is held in the window, when the
+    window ends before ``t_end``, on a log without the columns, or with no
+    clock lane to put the wakes on the diag's axis. ``stop_seq`` alone is
+    filled when no row published that segment in this trial, and the executed
+    three are NaN when the solve recorded no line (or a measured tick of the
+    span is not a number). The span starts at the row's ``t_c`` column: on a
+    row whose column is off the catch instant (``tc_axis`` ``shifted``, #602)
+    the executed three are read late (:data:`STOP_TC_KEYS`).
+    """
+    rec: dict = dict.fromkeys(STOP_LINE_KEYS, math.nan)
+    if (
+        events is None
+        or wakes_t is None
+        or not math.isfinite(t_c)
+        or ctx.segment_seq is None
+        or ctx.segment_following is None
+        or ctx.segment_held is None
+    ):
+        return rec
+    lead = ctx.t_lead if ctx.t_lead is not None else np.zeros(len(ctx.t))
+    # The command for t_c is written one lead before it: a held tick earlier
+    # than that belongs to whatever the arm followed before this catch.
+    held = _first(ctx.segment_following & ctx.segment_held & (ctx.t + lead >= t_c))
+    if held is None:
+        return rec
+    t_end = float(ctx.t[held] + lead[held])
+    if not t_end <= ctx.t[-1]:
+        return rec
+    seq = int(ctx.segment_seq[held])
+    rec["stop_seq"] = seq
+    with np.errstate(invalid="ignore"):
+        rows = np.nonzero(
+            events.published
+            & (events.seq == seq)
+            & (wakes_t >= ctx.t[0])
+            & (wakes_t <= ctx.t[held])
+        )[0]
+    if not rows.size:
+        return rec
+    i = int(rows[-1])
+    p, d = events.stop_line_p[i], events.stop_line_d[i]
+    rec.update(
+        stop_plan_dev_end_mm=float(events.stop_dev_end[i]) * 1e3,
+        stop_plan_dev_max_mm=float(events.stop_dev_max[i]) * 1e3,
+        stop_plan_along_end_mm=float(events.stop_along_end[i]) * 1e3,
+    )
+    if not (np.all(np.isfinite(p)) and np.all(np.isfinite(d))):
+        return rec
+    ticks = np.nonzero((ctx.t >= t_c) & (ctx.t <= t_end))[0]
+    k_end = int(np.argmin(np.abs(ctx.t - t_end)))
+    if not ticks.size or ticks[-1] != k_end:
+        ticks = np.append(ticks, k_end)
+    e = ctx.fk_meas(ticks) - p
+    along = e @ d
+    dev = np.linalg.norm(e - np.outer(along, d), axis=1)
+    rec.update(
+        stop_exec_dev_end_mm=float(dev[-1]) * 1e3,
+        stop_exec_dev_max_mm=float(dev.max()) * 1e3,
+        stop_exec_along_end_mm=float(along[-1]) * 1e3,
+    )
     return rec
 
 
@@ -3091,6 +3216,7 @@ def _segment_arrays(w) -> dict:
         "segment_event": code("segment_event"),
         "segment_following": flag("segment_following"),
         "segment_seq": code("segment_seq"),
+        "segment_held": flag("segment_held"),
         "segment_rho": number("segment_rho"),
         "segment_p_d": w[p_d].to_numpy(float) if all(c in w.columns for c in p_d) else None,
     }
@@ -3335,6 +3461,7 @@ def analyse_session(
                     )
                 )
         row.update(last_segment_columns(ctx, t_c_row, t_lead_row, wakes_t, segment_events))
+        row.update(stop_line_columns(ctx, t_c_row, wakes_t, segment_events))
         row["ref_saturated_max_streak"] = max_streak(ctx.ref_valid & ctx.ref_saturated)
 
         def fk_world(ticks, ctx=ctx):
@@ -4155,7 +4282,7 @@ def tc_axis_summary(rows: Sequence[Mapping], max_shift_ms: float) -> dict:
         "n_unknown": sum(1 for r in committed if r["tc_axis"] == "unknown"),
         "shifted_trials": [r["idx"] for r in committed if r["tc_axis"] == "shifted"],
         "shift_ms_abs_p50_p95_max": _p50_p95_max(committed, "tc_stamp_minus_tc_ms", absolute=True),
-        "medians_exclude": list(TC_COLUMN_KEYS),
+        "medians_exclude": [*TC_COLUMN_KEYS, *STOP_TC_KEYS],
     }
 
 
@@ -4817,7 +4944,7 @@ def _summarise(
         # A row whose t_c column is off the catch instant (#602) is left out of
         # the medians read at that column; ``tc_axis`` below counts them.
         "medians": {
-            k: _median(on_axis if k in TC_COLUMN_KEYS else valid, k)
+            k: _median(on_axis if k in TC_COLUMN_KEYS or k in STOP_TC_KEYS else valid, k)
             for k in (
                 "clik_mm",
                 "servo_mm",
@@ -4832,6 +4959,7 @@ def _summarise(
                 *CMD_KINEMATICS_KEYS,
                 "segment_wait_node0_ms",
                 "segment_rho_replan_max",
+                *STOP_LINE_KEYS[1:],
             )
         },
         # Which law's reference the t_c decomposition read, per valid trial

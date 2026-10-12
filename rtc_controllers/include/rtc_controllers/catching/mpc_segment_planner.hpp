@@ -77,8 +77,7 @@
 //  • The line is the BALL's: through its predicted position at t_c along its
 //    direction of travel there, d̂ = v̂_b/‖v̂_b‖ — the very vectors the solve
 //    hands the core as p_b and v_b (PlanFirst: the plan's p_c and v_c; a
-//    pre-catch Replan: the ball target's). It is the line the search reserves
-//    its stopping point on.
+//    pre-catch Replan: the ball target's).
 //  • A stop core has no ball: it takes the line of its SOURCE — the segment
 //    the RT reports pending or following (SourceSeq), which x₀ and the
 //    reference come from too. Every published segment carries one beside the
@@ -94,8 +93,21 @@
 //    (kNoBall), a speed that is not finite is kInputNonFinite, and a stop
 //    grid point whose source segment carries no line is kNoBall — each
 //    withheld BEFORE the solve.
-// With w_⊥ = 0 none of this runs: no line is built, kept or required, and no
-// solve is withheld for one.
+// With w_⊥ = 0 no core reads a line and no solve is withheld for one: the
+// cores' inputs keep their default.
+//
+// ── The record of the stop (every solve, whatever w_⊥ is; #713) ───────────────
+// The planner builds the same line on every solve and keeps it beside every
+// published segment — with w_⊥ = 0 too, where only the record reads it. A solve
+// that reached a solution is measured against it (SegmentRecord::stop_line_*,
+// stop_dev_*, stop_along_end): the catch frame at the solution's stop nodes
+// (FK) — the catch node to node N on a catch core, every node on a stop core.
+// That FK runs after the solve's end is stamped and before the solve is
+// judged, so the budget and the solve's own late check do not see it and a
+// withheld solve is measured too. The wake is that much longer — a few
+// microseconds — and the cycle's re-check at the publish stamp does see it.
+// A solve without a line (no direction; a stop core whose source carries none)
+// records NaN and, with w_⊥ = 0, solves as it always did.
 //
 // ── Contracts ─────────────────────────────────────────────────────────────────
 //  • Configure() is non-RT: it Inits the k_max + 1 stop cores and the
@@ -120,6 +132,7 @@
 #include "rtc_controllers/catching/trajectory.hpp"
 
 #include <Eigen/Core>
+#include <pinocchio/multibody/data.hpp>
 #include <pinocchio/multibody/model.hpp>
 
 #include <array>
@@ -203,6 +216,29 @@ struct MpcSegmentBallTarget {
                                                 int n_pre, double dt_pre, double dt,
                                                 std::span<const double> qd_max,
                                                 double& ratio_max) noexcept;
+
+/// How far a node trajectory's catch frame leaves a line [m]
+/// (MeasureMpcSegmentStop). NaN = not measured.
+struct MpcSegmentStopDeviation {
+  double dev_max{std::numeric_limits<double>::quiet_NaN()};    ///< largest distance from the line
+  double dev_end{std::numeric_limits<double>::quiet_NaN()};    ///< the last node's distance
+  double along_end{std::numeric_limits<double>::quiet_NaN()};  ///< the last node along the line
+};
+
+/// @brief The catch frame's distance from a line over the nodes
+///        `k_first`..`k_last` of a node trajectory (RT-safe; #713).
+///
+/// FK of each column of `q` on `data` (scratch — its contents are replaced).
+/// The distance is from the line through `p` along the unit `d`; `along_end`
+/// is the last node's position along the line from `p`, positive in `d`'s
+/// direction. A distance that is not a number makes `dev_max` one too.
+/// @param q arm.nq × (N+1) joint positions, model order
+/// @return every member NaN when the columns are not in `q`, its rows are not
+///         the model's, or the model has no such frame.
+[[nodiscard]] MpcSegmentStopDeviation MeasureMpcSegmentStop(
+    const pinocchio::Model& arm, pinocchio::Data& data, pinocchio::FrameIndex frame,
+    const Eigen::Ref<const Eigen::MatrixXd>& q, int k_first, int k_last, const Eigen::Vector3d& p,
+    const Eigen::Vector3d& d) noexcept;
 
 /// @brief The ball at `t_c_ns` from one trajectory snapshot and its
 ///        covariance (RT-safe, pure).
@@ -302,10 +338,10 @@ class MpcSegmentPlanner final : public SegmentPlanner {
                             SegmentSnapshot& out, SegmentRecord& rec) noexcept override;
 
   /// The cycle published `p` (its segment_seq filled): a later replan may be
-  /// solved from it. With `cost.w_perp` > 0 the segment takes the stop-path
-  /// line of the solve that produced it — handed over once, by the PlanFirst
-  /// or Replan that returned true right before this call. A segment published
-  /// any other way carries no line, and no stop core is solved from it.
+  /// solved from it. The segment takes the stop-path line of the solve that
+  /// produced it — handed over once, by the PlanFirst or Replan that returned
+  /// true right before this call. A segment published any other way carries no
+  /// line; with `cost.w_perp` > 0 no stop core is solved from it.
   void NotePublished(const SegmentSnapshot& p) noexcept override;
 
   /// The track generation of the plan `rt` follows, from the segments
@@ -415,10 +451,6 @@ class MpcSegmentPlanner final : public SegmentPlanner {
                                     const Eigen::Vector3d& a_d, const MpcSegmentBallTarget& ball,
                                     bool first, MpcSegmentCoreInput& in,
                                     SegmentRecord& rec) const noexcept;
-  // The stop-path line of a catch-core solve (w_⊥ > 0 only), from the ball as
-  // `in` already carries it: p_c = in.p_b, d̂ = in.v_b/‖in.v_b‖. False — the
-  // outcome recorded, nothing written — when no direction can be built.
-  [[nodiscard]] bool SetStopLine(MpcSegmentCoreInput& in, SegmentRecord& rec) const noexcept;
   // The start and the reference of a first segment whose arm follows a plan
   // (header note): x₀ from the reported segment at `t_eff`, projected into the
   // core's box, and the quintic from it to the plan's q_star over the
@@ -473,15 +505,32 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   std::uint32_t last_solve_plan_id_{0};
   std::int64_t last_solve_t_c_{0};
 
-  // The stop-path line (`cost.w_perp` > 0; nothing below is read otherwise).
-  // Fixed-size, so remembering one allocates nothing.
+  // The stop-path line. Fixed-size, so remembering one allocates nothing.
   struct StopLine {
     bool valid{false};
     Eigen::Vector3d p_c{Eigen::Vector3d::Zero()};
     Eigen::Vector3d d_hat{Eigen::Vector3d::UnitX()};
   };
 
+  // The line of a catch-core solve, from the ball as `in` already carries it:
+  // through in.p_b along in.v_b/‖in.v_b‖. Not valid when no direction can be
+  // built, and `why` is then the outcome a solve that needs the line is
+  // withheld with (kInputNonFinite, kNoBall).
+  [[nodiscard]] StopLine BallLine(const MpcSegmentCoreInput& in,
+                                  SegmentOutcome& why) const noexcept;
+  // Write `line` and — for a solve that reached a solution — the catch frame's
+  // distance from it over the solution's nodes `k_first`..`n_total` into `rec`
+  // (FK on fk_data_). Nothing is written without a line.
+  void RecordStop(const StopLine& line, const MpcSegmentCoreResult& r, bool solved, int k_first,
+                  int n_total, SegmentRecord& rec) noexcept;
+
+  // `cost.w_perp` > 0: the cores read the line, and a solve without one is
+  // withheld.
   bool perp_on_{false};
+  // The arm and the scratch the record's FK runs on (the cores keep their own).
+  std::shared_ptr<const pinocchio::Model> arm_;
+  pinocchio::FrameIndex catch_frame_{0};
+  pinocchio::Data fk_data_;
   // The published segments of the followed plan and of a replacement
   // published for it (segment_ring.hpp), each with its stop-path line: a
   // catch-core segment's own, a stop segment's inherited from its source. A

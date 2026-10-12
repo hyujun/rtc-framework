@@ -427,6 +427,11 @@ def _events(rows):
         elastic=elastic,
         viol=viol,
         snapshot_seq=np.zeros(n),
+        stop_line_p=np.full((n, 3), math.nan),
+        stop_line_d=np.full((n, 3), math.nan),
+        stop_dev_max=np.full(n, math.nan),
+        stop_dev_end=np.full(n, math.nan),
+        stop_along_end=np.full(n, math.nan),
     )
     return np.array([r[0] for r in rows], float), events
 
@@ -538,11 +543,173 @@ def test_the_segment_events_are_read_as_far_as_the_log_has_them(tmp_path):
     assert events.viol[2, lateral] == 1e-7
     # Columns this log does not have are NaN, not zero.
     assert np.isnan(events.slack_v).all() and np.isnan(events.elastic).all()
+    assert events.stop_line_p.shape == events.stop_line_d.shape == (3, 3)
+    assert np.isnan(events.stop_line_p).all() and np.isnan(events.stop_dev_end).all()
     assert np.isnan(np.delete(events.viol, lateral, axis=1)).all()
     # A log from before the segment columns has no events at all.
     frame[["wake_ns", "snapshot_sequence"]].to_csv(ctl / ct.PLANNER_EVENTS_CSV, index=False)
     assert ct._planner_segment_events(ctl) is None
     assert ct._planner_segment_events(tmp_path / "absent") is None
+
+
+# ── The stop against the ball's line (#713) ──────────────────────────────────
+# A hand that leaves a KNOWN line by a known amount: 20 mm at t_c, a 30 mm bump
+# 0.1 s later, 30 mm at the end of the stop, travelling 0.2 m/s along the line.
+
+STOP_S = 0.35  # catch node → last node
+LEAD = 0.05
+LINE_D = V_BALL / np.linalg.norm(V_BALL)
+LINE_N = np.cross(LINE_D, [0.0, 0.0, 1.0]) / np.linalg.norm(np.cross(LINE_D, [0.0, 0.0, 1.0]))
+STOP_SEQ = 13
+
+
+def _stop_dev(t):
+    bump = np.maximum(0.0, 1.0 - np.abs(t - (T_X + 0.1)) / 0.1)
+    return 0.02 + 0.01 * (t - T_X) / STOP_S + 0.03 * bump
+
+
+def _stop_ctx(*, lead=LEAD, held=True):
+    ctx = _static_ctx(lead=lead)
+    t = ctx.t
+    n = len(t)
+    ctx.q_meas = P_CATCH + np.outer(0.2 * (t - T_X), LINE_D) + np.outer(_stop_dev(t), LINE_N)
+    # Before t_c the hand is nowhere near the line: nothing of it may be read.
+    ctx.q_meas[t < T_X - 1e-9] += 0.5 * LINE_N
+    ctx.segment_following = np.ones(n, bool)
+    ctx.segment_seq = np.full(n, 11)
+    ctx.segment_seq[t >= T_X - lead - 1e-9] = STOP_SEQ
+    # Held when the reference is past its last node: one lead before the arm is.
+    ctx.segment_held = (t >= T_X + STOP_S - lead - 1e-9) if held else np.zeros(n, bool)
+    # The hold of an earlier catch is still up when this window starts.
+    ctx.segment_held[t < 0.2] = True
+    return ctx
+
+
+def _stop_events(*, line=True):
+    wakes_t, events = _events(
+        [
+            (-5.0, STOP_SEQ, True, "stop"),  # the same number in an earlier trial
+            (0.70, 11, True, "advance"),
+            (T_X - 0.08, STOP_SEQ, True, "stop"),
+            (T_X + 0.9, STOP_SEQ, True, "stop"),  # after the stop ended
+        ]
+    )
+    n = len(wakes_t)
+    p = np.full((n, 3), math.nan)
+    d = np.full((n, 3), math.nan)
+    if line:
+        p[2], d[2] = P_CATCH, LINE_D
+    p[0], d[0] = P_CATCH + 1.0, LINE_N  # the earlier trial's line: not this one's
+    plan = np.full(n, math.nan)
+    plan[2] = 1.0
+    return wakes_t, events._replace(
+        stop_line_p=p,
+        stop_line_d=d,
+        stop_dev_max=0.041 * plan,
+        stop_dev_end=0.025 * plan,
+        stop_along_end=0.066 * plan,
+    )
+
+
+def test_the_stop_is_read_off_the_measured_hand_against_the_followed_segments_line():
+    rec = ct.stop_line_columns(_stop_ctx(), T_X, *_stop_events())
+    assert set(rec) == set(ct.STOP_LINE_KEYS)
+    assert rec["stop_seq"] == STOP_SEQ
+    assert rec["stop_exec_dev_end_mm"] == pytest.approx(30.0, abs=1e-6)
+    assert rec["stop_exec_dev_max_mm"] == pytest.approx(_stop_dev(T_X + 0.1) * 1e3, abs=1e-6)
+    assert rec["stop_exec_dev_max_mm"] > 50.0  # the bump, not either end
+    assert rec["stop_exec_along_end_mm"] == pytest.approx(0.2 * STOP_S * 1e3, abs=1e-6)
+    # What the solve recorded of its own solution, carried through in mm.
+    assert rec["stop_plan_dev_end_mm"] == pytest.approx(25.0)
+    assert rec["stop_plan_dev_max_mm"] == pytest.approx(41.0)
+    assert rec["stop_plan_along_end_mm"] == pytest.approx(66.0)
+
+
+def test_the_end_of_the_stop_is_one_lead_after_the_held_tick():
+    """Positive control: read at the held tick itself the arm is one lead short
+    of the end, and both the distance and the travel say so."""
+    ctx = _stop_ctx()
+    ctx.t_lead = np.zeros(len(ctx.t))
+    rec = ct.stop_line_columns(ctx, T_X, *_stop_events())
+    t_held = T_X + STOP_S - LEAD
+    assert rec["stop_exec_dev_end_mm"] == pytest.approx(_stop_dev(t_held) * 1e3, abs=1e-6)
+    assert rec["stop_exec_along_end_mm"] == pytest.approx(0.2 * (STOP_S - LEAD) * 1e3, abs=1e-6)
+    assert abs(rec["stop_exec_dev_end_mm"] - 30.0) > 1.0
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["no_events", "no_wakes", "no_commit", "no_held_column", "never_held", "window_ends_early"],
+)
+def test_without_a_held_segment_the_stop_columns_are_empty(case):
+    ctx, t_c = _stop_ctx(held=case != "never_held"), T_X
+    wakes_t, events = _stop_events()
+    if case == "no_events":
+        events = None
+    elif case == "no_wakes":
+        wakes_t = None
+    elif case == "no_commit":
+        t_c = math.nan
+    elif case == "no_held_column":
+        ctx.segment_held = None
+    elif case == "never_held":
+        ctx.segment_held[:] = False
+    elif case == "window_ends_early":  # held, but the window stops before the arm gets there
+        keep = ctx.t <= T_X + STOP_S - LEAD + 0.02
+        for name in ("t", "q_meas", "segment_following", "segment_seq", "segment_held", "t_lead"):
+            setattr(ctx, name, getattr(ctx, name)[keep])
+    rec = ct.stop_line_columns(ctx, t_c, wakes_t, events)
+    assert set(rec) == set(ct.STOP_LINE_KEYS)
+    assert all(math.isnan(v) for v in rec.values())
+
+
+def test_a_segment_whose_solve_recorded_no_line_has_no_executed_distance():
+    # A log from before the columns, or a solve without a line: the segment is
+    # named, nothing is measured against a line that is not there.
+    rec = ct.stop_line_columns(_stop_ctx(), T_X, *_stop_events(line=False))
+    assert rec["stop_seq"] == STOP_SEQ
+    assert all(math.isnan(rec[k]) for k in ct.STOP_LINE_KEYS if k.startswith("stop_exec_"))
+    assert rec["stop_plan_dev_end_mm"] == pytest.approx(25.0)
+    # A measured tick inside the span that is not a number poisons the largest.
+    ctx = _stop_ctx()
+    ctx.q_meas[int(np.argmin(np.abs(ctx.t - (T_X + 0.2))))] = math.nan
+    rec = ct.stop_line_columns(ctx, T_X, *_stop_events())
+    assert math.isnan(rec["stop_exec_dev_max_mm"])
+    assert rec["stop_exec_dev_end_mm"] == pytest.approx(30.0, abs=1e-6)
+    # No row published that segment in this trial: only its number is known.
+    wakes_t, events = _stop_events()
+    rec = ct.stop_line_columns(_stop_ctx(), T_X, wakes_t, events._replace(seq=events.seq + 100))
+    assert rec["stop_seq"] == STOP_SEQ
+    assert all(math.isnan(rec[k]) for k in ct.STOP_LINE_KEYS if k != "stop_seq")
+
+
+def test_the_stop_columns_are_read_from_the_log(tmp_path):
+    pd = pytest.importorskip("pandas")
+    frame = pd.DataFrame(
+        {
+            "wake_ns": [1, 2],
+            "snapshot_sequence": [0, 0],
+            "segment_outcome": ["published", "budget"],
+            "segment_kind": ["stop", "stop"],
+            "segment_seq": [4, 0],
+            "segment_stop_line_p_x": [0.5, math.nan],
+            "segment_stop_line_p_y": [-0.25, math.nan],
+            "segment_stop_line_p_z": [1.5, math.nan],
+            "segment_stop_line_d_x": [0.0, math.nan],
+            "segment_stop_line_d_y": [0.6, math.nan],
+            "segment_stop_line_d_z": [-0.8, math.nan],
+            "segment_stop_dev_max": [0.125, math.nan],
+            "segment_stop_dev_end": [0.0625, math.nan],
+            "segment_stop_along_end": [-0.25, math.nan],
+        }
+    )
+    frame.to_csv(tmp_path / ct.PLANNER_EVENTS_CSV, index=False, na_rep="nan")
+    events = ct._planner_segment_events(tmp_path)
+    assert events.stop_line_p[0].tolist() == [0.5, -0.25, 1.5]
+    assert events.stop_line_d[0].tolist() == [0.0, 0.6, -0.8]
+    assert (events.stop_dev_max[0], events.stop_dev_end[0]) == (0.125, 0.0625)
+    assert events.stop_along_end[0] == -0.25
+    assert np.isnan(events.stop_line_p[1]).all() and math.isnan(events.stop_dev_end[1])
 
 
 # ── The summary block ────────────────────────────────────────────────────────

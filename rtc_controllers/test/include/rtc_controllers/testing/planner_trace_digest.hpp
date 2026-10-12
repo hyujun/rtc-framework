@@ -70,7 +70,9 @@ class ValueDigest {
 // Every field of each struct, in declaration order — except the blocks and
 // fields that were added for one implementation or for the log after the
 // constants were recorded: SearchStats::nlp (the NLP search's block, E1-F14),
-// SegmentRecord::docking (the mpc_docking planner's block, E1-F18), and
+// SegmentRecord::docking (the mpc_docking planner's block, E1-F18),
+// SegmentRecord's stop_line_* / stop_dev_* / stop_along_end (the stop against
+// the ball's line, #713), and
 // PlannerCycleRecord's `replacement` and `replace_step`. A digest is a pin on
 // the behaviour of the searches and planners it was recorded from, and a
 // block those leave at its default would move every recorded constant without
