@@ -2713,6 +2713,7 @@ def _segment_block(n: int) -> dict:
         "segment_event": event,
         "segment_following": (i % 3 != 0).astype(int),
         "segment_seq": i // 40 + 1,
+        "segment_held": (i % 5 == 0).astype(int),
         "segment_rho": (i % 10) / 10.0,
         "segment_p_d_x": 0.001 * i,
         "segment_p_d_y": -0.001 * i,
