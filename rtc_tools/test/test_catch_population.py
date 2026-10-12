@@ -832,6 +832,52 @@ def test_a_second_run_redoes_nothing_and_a_removed_product_alone_is_made_again(f
     assert all(after[p][1] == before[p][1] for p in after)  # the same bytes
 
 
+def test_a_folder_judged_with_other_files_is_refused_by_their_names(tmp_path):
+    # The population file's hash does not cover the controller configuration beside it:
+    # a skipped step would hand the old verdicts on as the new files'.
+    config = _robot_folder(tmp_path)
+    judge = _fake_judge(tmp_path)
+    layout = ResultLayout(tmp_path / "result")
+    assert _run(config, layout.root, judge) == 0
+    recorded = json.loads(layout.inputs.read_text())
+    assert recorded["config_dir"]["sim.yaml"] == _sha(config.parent / "sim.yaml")
+    assert config.name not in recorded["config_dir"]  # that file is held by config.yaml
+    manifest = layout.manifest.read_bytes()
+
+    layer = config.parent / "sim.yaml"
+    kept = layer.read_bytes()
+    layer.write_bytes(kept + b"# tuned\n")
+    with pytest.raises(SystemExit, match="judged with other files.*sim.yaml.*use a new --out"):
+        _run(config, layout.root, judge)
+    layer.write_bytes(kept)
+
+    added = config.parent / "controllers" / "added.yaml"
+    added.parent.mkdir(exist_ok=True)
+    added.write_text("{}\n")
+    with pytest.raises(SystemExit, match="changed since: controllers/added.yaml"):
+        _run(config, layout.root, judge)
+    added.unlink()
+
+    assert layout.manifest.read_bytes() == manifest  # a refused run wrote nothing
+    assert _run(config, layout.root, judge) == 0  # the files as they were: a resume
+
+
+def test_a_sample_of_a_set_that_is_no_longer_there_is_drawn_again(tmp_path):
+    config = _robot_folder(tmp_path)
+    judge = _fake_judge(tmp_path)
+    layout = ResultLayout(tmp_path / "result")
+    assert _run(config, layout.root, judge) == 0
+    sample = layout.throws_dir("grid_mpc") / "sample.json"
+    document = json.loads(sample.read_text())
+    assert document["meta"]["plan_set_sha256"] == _sha(layout.set_file("grid_mpc", "segment"))
+    # a sample that says it was drawn from other bytes than the set file's
+    document["meta"]["plan_set_sha256"] = "00" * 32
+    sample.write_text(json.dumps(document))
+    assert _run(config, layout.root, judge) == 0
+    again = json.loads(sample.read_text())
+    assert again["meta"]["plan_set_sha256"] == _sha(layout.set_file("grid_mpc", "segment"))
+
+
 def test_a_folder_of_another_configuration_is_refused(finished, tmp_path):
     config, judge, layout = finished
     other = tmp_path / "some_robot"

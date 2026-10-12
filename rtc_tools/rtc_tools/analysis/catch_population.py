@@ -252,18 +252,68 @@ def claim_folder(config: PopulationConfig, layout: ResultLayout) -> None:
     shutil.copyfile(config.path, layout.config)
 
 
+def judged_inputs(config: PopulationConfig) -> dict:
+    """What the verdicts of a result folder are verdicts OF, beside the population file
+    itself: every YAML of the robot's configuration folder — the controller tree the
+    judge is handed is composed from them — by sha256. (The judge's binary is not held
+    here: each arm's map records the one it was judged with, in the manifest.)"""
+    folder = config.config_dir
+    return {
+        "config_dir": {
+            str(path.relative_to(folder)): _sha256(path)
+            for path in sorted(folder.rglob("*.yaml"))
+            if path.is_file() and path != config.path
+        }
+    }
+
+
+def claim_inputs(config: PopulationConfig, layout: ResultLayout) -> None:
+    """Hold the folder to the files its verdicts were judged with, or refuse it.
+
+    The population file's hash (:func:`claim_folder`) does not cover the controller
+    configuration beside it: with one of those files changed, a step that is skipped
+    because its output exists would hand the OLD verdicts on as this configuration's.
+    The first run records them (``inputs.json``); a later run whose files differ is
+    refused by the names that changed."""
+    now = judged_inputs(config)
+    if not layout.inputs.is_file():
+        if (layout.design / "design_meta.json").is_file():
+            _say(f"{layout.inputs.name}: not recorded when this folder was judged — recorded now")
+        partial = layout.inputs.with_name(f".{layout.inputs.name}.partial")
+        partial.write_text(json.dumps(now, indent=2) + "\n", encoding="utf-8")
+        partial.replace(layout.inputs)
+        return
+    try:
+        files = dict(json.loads(layout.inputs.read_text(encoding="utf-8"))["config_dir"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(f"{layout.inputs} cannot be read ({exc}): use a new --out") from exc
+    changed = sorted(
+        name
+        for name in files.keys() | now["config_dir"].keys()
+        if files.get(name) != now["config_dir"].get(name)
+    )
+    if changed:
+        raise SystemExit(
+            f"{layout.root} was judged with other files than are here now — changed since: "
+            f"{', '.join(changed)}. Its verdicts are not this configuration's: use a new --out"
+        )
+
+
 def sample_is_complete(layout: ResultLayout, arm: Arm) -> bool:
-    """Whether ``<arm>/throws/`` holds a whole sample: ``sample.json`` and every chunk
-    file it was cut into (``sample`` writes the list first, then the chunks)."""
+    """Whether ``<arm>/throws/`` holds a whole sample OF THE SET THAT IS THERE:
+    ``sample.json``, drawn from the arm's set as it is now, and every chunk file it was
+    cut into (``sample`` writes the list first, then the chunks)."""
     path = layout.throws_dir(arm.name) / "sample.json"
-    if not path.is_file():
+    drawn_from = layout.set_file(arm.name, arm.throw_set)
+    if not path.is_file() or not drawn_from.is_file():
         return False
     try:
         meta = json.loads(path.read_text())["meta"]
         expected = math.ceil(int(meta["n_throws"]) / int(meta["chunk"]))
+        same_set = meta["plan_set_sha256"] == _sha256(drawn_from)
     except (ValueError, KeyError, TypeError):
         return False
-    return len(list(path.parent.glob("chunk_*.json"))) == expected
+    return same_set and len(list(path.parent.glob("chunk_*.json"))) == expected
 
 
 def judge_arm(
@@ -315,7 +365,12 @@ def judge_arm(
     # What an interrupted sample left: `sample` writes into an empty directory only.
     throws_dir = layout.throws_dir(name)
     if throws_dir.is_dir():
-        for stale in [throws_dir / "sample.json", *throws_dir.glob("chunk_*.json")]:
+        stale_files = [
+            throws_dir / "sample.json",
+            *throws_dir.glob("chunk_*.json"),
+            *throws_dir.glob(".*.partial"),
+        ]
+        for stale in stale_files:
             stale.unlink(missing_ok=True)
     run_tool(f"{name}: throws to throw", ctd.main, sample_arguments(config, layout, arm))
 
@@ -454,6 +509,7 @@ def main(argv: list[str] | None = None) -> int:
         return report(layout.root, show=args.show, max_flights=args.max_flights)
 
     claim_folder(config, layout)
+    claim_inputs(config, layout)
     judge = ["--judge", str(args.judge)] if args.judge is not None else []
     started = time.monotonic()
     if (layout.design / "design_meta.json").is_file():

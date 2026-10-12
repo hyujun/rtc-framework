@@ -1167,6 +1167,14 @@ ascending 인 칸, 출처) · `catching_tree.yaml` · `model_config.yaml`.
 - **빈 집단은 결과다**: 판정기가 한 발도 수용하지 않은 층은 집단 파일을 쓰지 않고 (0 발), 그 조합에 던질 것이 없으면 묶음도
   없다. 탐색이나 구간 계획기가 설정을 거부한 조합은 그 문장과 함께 "집단 없음" 이다. 어느 쪽이든 manifest 와 보고에 적고 나머지
   조합을 계속한다
+- **`inputs.json`**: 판정에 쓴 설정 폴더의 YAML 전부 (설정 파일 자신은 `config.yaml` 이 묶는다) 의 sha256. 첫 실행이 적고,
+  그 뒤의 실행은 파일이 바뀌었으면 **바뀐 파일의 이름을 대며 거부한다** — 컨트롤러 YAML 을 고친 뒤 같은 `--out` 으로 다시
+  돌리면 "이미 있는" 지도와 집단이 새 설정의 것으로 넘어가기 때문이다. 판정기의 바이너리는 여기 묶지 않는다 (조합마다
+  manifest 의 provenance 에 적힌다)
+- **설정 파일은 쓴 대로 읽거나 거부한다**: 따옴표 없는 `-40:40:20` 은 YAML 이 60 진수 정수로 읽으므로 거부하고 (범위는
+  따옴표를 친 문자열 `'lo:hi:step'` 이다), 같은 키를 두 번 쓴 파일도 거부한다
+- **던질 목록은 지금 있는 집단의 것이어야 한다**: `sample.json` 이 적은 집단의 sha256 이 집단 파일과 다르면 다시 뽑는다.
+  투척 목록 파일은 다 쓴 뒤에 제 이름으로 나타난다 (쓰다 끊긴 파일을 "끝난 단계" 로 읽지 않는다)
 - **`manifest.json`**: 설정 파일의 sha256 과 읽은 경로, 모집단 파일의 sha256, 조합마다 집단의 크기와 sha256 · 던질 목록 ·
   지도 요약이 적은 provenance (판정기와 합성 트리의 해시 · layer · override). git revision 은 읽을 수 있을 때만 적는다
   (설치본만 있는 PC 에는 저장소가 없다). 이 명령이 쓰지 않는 키 (다른 단계의 것) 는 그대로 둔다
@@ -1194,7 +1202,7 @@ ros2 run rtc_tools catch_population --config <config>/<robot>/catch_population.y
 ros2 run rtc_tools catch_population_report <result> [--show] [--max-flights 400]
 ```
 
-결과 폴더 (`utils/catch_population.py` 의 `ResultLayout`): `config.yaml` · `manifest.json` · `design/` · `population.json` ·
+결과 폴더 (`utils/catch_population.py` 의 `ResultLayout`): `config.yaml` · `inputs.json` · `manifest.json` · `design/` · `population.json` ·
 `<조합>/map/` (지도의 출력) · `<조합>/throw_search_set.json` · `<조합>/throw_segment_set.json` · `<조합>/throws/`
 (`sample.json` + `chunk_NNN.json`) · `report/`. 조합의 이름은 `<search>_<segment>` 다.
 

@@ -68,6 +68,26 @@ def test_round_trip_is_bit_exact_ordered_and_keeps_extras(tmp_path):
     assert (ctl.THROW_LIST_SCHEMA, ctl.THROW_LIST_FRAME) == ("catching_throw_list/1", "sim_world")
 
 
+def test_a_list_appears_whole_or_not_at_all(tmp_path, monkeypatch):
+    # A resumed run takes a file that exists as a step that is done: a write that is cut
+    # must leave the old file (or none) under the name, never the first half of a list.
+    path = tmp_path / "list.json"
+    ctl.write_throw_list(path, [{"throw_id": 1, "pos": [0, 0, 1], "vel": [1, 0, 2]}])
+    before = path.read_bytes()
+
+    def cut(src, dst):
+        raise OSError("killed before the rename")
+
+    monkeypatch.setattr(ctl.os, "replace", cut)
+    with pytest.raises(OSError, match="killed before the rename"):
+        ctl.write_throw_list(path, [{"throw_id": 2, "pos": [0, 0, 1], "vel": [1, 0, 2]}])
+    assert path.read_bytes() == before
+    monkeypatch.undo()
+    ctl.write_throw_list(path, [{"throw_id": 2, "pos": [0, 0, 1], "vel": [1, 0, 2]}])
+    assert [t["throw_id"] for t in ctl.read_throw_list_file(path).throws] == [2]
+    assert sorted(p.name for p in tmp_path.glob("*.json")) == ["list.json"]
+
+
 def test_defaults(tmp_path):
     (throw,), meta = ctl.load_throw_list(_file(tmp_path, {**_doc(), "meta": {}}))
     assert meta == {}

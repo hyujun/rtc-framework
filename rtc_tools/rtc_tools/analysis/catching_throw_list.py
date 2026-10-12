@@ -222,7 +222,8 @@ def write_throw_list(
 
     Floats are written at ``repr`` precision (``json`` default), so ``pos`` /
     ``vel`` / ``omega`` round-trip bit for bit. The document is validated the
-    way the loader validates it, before anything is written.
+    way the loader validates it, before anything is written, and the file
+    appears under its name only once it is complete.
     """
     doc = {
         "schema": THROW_LIST_SCHEMA,
@@ -234,4 +235,9 @@ def write_throw_list(
         ],
     }
     parse_throw_list(json.loads(json.dumps(doc)), str(path))
-    Path(path).write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    # Whole or not at all: a reader (and a resumed run, which takes a file that exists
+    # as a step that is done) must never find the first half of a list.
+    path = Path(path)
+    partial = path.with_name(f".{path.name}.partial")
+    partial.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    os.replace(partial, path)

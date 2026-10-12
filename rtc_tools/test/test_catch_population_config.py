@@ -235,6 +235,32 @@ def test_a_file_that_cannot_be_this_schema_is_refused(tmp_path):
         cp.load_config(path)
 
 
+def test_a_range_that_yaml_reads_as_another_number_is_refused(tmp_path):
+    # PyYAML reads an unquoted -40:40:20 as the base-60 integer -146420: one value, finite,
+    # an axis the design would run on. The file must say what it means or be refused.
+    path = _write(tmp_path, _edited(("population", "launch", "azimuth_deg"), "AXIS"))
+    text = path.read_text()
+    assert text.count("azimuth_deg: AXIS") == 1
+    for unquoted in ("-40:40:20", "1:4:1", "1:30:0.5"):
+        path.write_text(text.replace("azimuth_deg: AXIS", f"azimuth_deg: {unquoted}"))
+        with pytest.raises(cp.ConfigError, match=f"{unquoted} is read as a base-60 number"):
+            cp.load_config(path)
+    # quoted, the same text is the range it says; a plain number is still one value
+    path.write_text(text.replace("azimuth_deg: AXIS", "azimuth_deg: '-40:40:20'"))
+    assert cp.load_config(path).population.azimuth_deg == "-40:40:20"
+    path.write_text(text.replace("azimuth_deg: AXIS", "azimuth_deg: 15"))
+    assert cp.axis_values(cp.load_config(path).population.azimuth_deg) == [15.0]
+
+
+def test_a_key_given_twice_is_refused(tmp_path):
+    # yaml keeps the last of two equal keys: a block pasted twice would win without a word.
+    path = _write(tmp_path, GOOD)
+    twice = path.read_text() + yaml.safe_dump({"sample": GOOD["sample"]}, sort_keys=False)
+    path.write_text(twice)
+    with pytest.raises(cp.ConfigError, match="is not YAML.*the key 'sample' is given twice"):
+        cp.load_config(path)
+
+
 def test_the_axis_parser_is_the_design_tools():
     from rtc_tools.analysis import catch_throw_design as design
 

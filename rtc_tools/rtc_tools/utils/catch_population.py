@@ -464,12 +464,63 @@ def parse_config(document, path: Path) -> PopulationConfig:
     )
 
 
+class _ConfigLoader(yaml.SafeLoader):
+    """YAML as this schema reads it: a key is given once, and a number is not base 60.
+
+    PyYAML reads an unquoted ``-40:40:20`` as the base-60 integer −146420 and keeps the
+    last of two equal keys. Either turns what the file says into something else without
+    a word, which is what this schema refuses everywhere else."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            if isinstance(key_node, yaml.ScalarNode):
+                if key_node.value in seen:
+                    raise yaml.constructor.ConstructorError(
+                        None,
+                        None,
+                        f"the key '{key_node.value}' is given twice",
+                        key_node.start_mark,
+                    )
+                seen.add(key_node.value)
+        return super().construct_mapping(node, deep)
+
+
+def _decimal_number(construct):
+    def constructor(loader, node):
+        text = loader.construct_scalar(node)
+        if ":" in text:
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"{text} is read as a base-60 number — quote it (a range is the text 'lo:hi:step')",
+                node.start_mark,
+            )
+        return construct(loader, node)
+
+    return constructor
+
+
+_ConfigLoader.add_constructor(
+    "tag:yaml.org,2002:int", _decimal_number(yaml.SafeLoader.construct_yaml_int)
+)
+_ConfigLoader.add_constructor(
+    "tag:yaml.org,2002:float", _decimal_number(yaml.SafeLoader.construct_yaml_float)
+)
+
+
+def read_document(text: str):
+    """The YAML document of a configuration file's text (:class:`_ConfigLoader`'s rules);
+    ``yaml.YAMLError`` for a text that is not one."""
+    return yaml.load(text, Loader=_ConfigLoader)  # noqa: S506 — a SafeLoader subclass
+
+
 def load_config(path: Path | str) -> PopulationConfig:
     """The configuration file at ``path``. :class:`ConfigError` for a file that cannot be
     read, is not YAML, or is not this schema; the ball's file must exist beside it."""
     path = Path(path).resolve()
     try:
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document = read_document(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ConfigError(f"cannot read {path}: {exc.strerror or exc}") from exc
     except yaml.YAMLError as exc:
@@ -489,6 +540,7 @@ class ResultLayout:
 
     <root>/config.yaml                 the configuration file as it was read (a copy)
     <root>/manifest.json               what was judged with what (hashes, revision if known)
+    <root>/inputs.json                 the files the verdicts are verdicts of (hashes)
     <root>/design/                     the design (catch_throw_design design)
     <root>/population.json             the population: a catching_throw_list/1
     <root>/<arm>/map/                  the offline judge's output (catch_search_map)
@@ -556,6 +608,10 @@ class ResultLayout:
     @property
     def sim_root(self) -> Path:
         return self.root / "sim"
+
+    @property
+    def inputs(self) -> Path:
+        return self.root / "inputs.json"
 
     @property
     def stop_file(self) -> Path:
