@@ -112,7 +112,8 @@ ROBOT_COMBOS: list[tuple[str, dict[str, str]]] = [
 
 # Arguments not every launch can be driven with. `sim_overlay` and `sim_lanes`
 # are declared by the p1b, iiwa7_leap and g1_p1b sims (not p1a); `sim_overlay`
-# drives an overlay that profile ships (iiwa7_leap's since S8-D). The two
+# drives an overlay that profile ships (iiwa7_leap ships none since #821, like
+# g1_p1b, so only its lanes and catching arguments are driven). The two
 # catching planner arguments (#821) are declared by the two sims that run the
 # throw population: p1b and iiwa7_leap.
 CATCH_MODES = {"catch_search_mode": "nlp", "catch_segment_mode": "mpc_docking"}
@@ -124,7 +125,6 @@ EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
         ("catch_search_mode", {"catch_search_mode": "grid"}),
     ],
     "sim_iiwa7_leap.launch.py": [
-        ("sim_overlay", {"sim_overlay": "catch_lead_on"}),
         ("sim_lanes", {"sim_lanes": "true"}),
         ("catch_modes", CATCH_MODES),
         ("catch_segment_mode", {"catch_segment_mode": "mpc"}),

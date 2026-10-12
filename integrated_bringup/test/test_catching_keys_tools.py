@@ -60,7 +60,10 @@ def test_show_catch_frame_reads_the_shipped_pocket_at_its_new_path():
     assert pocket.get("d_eff") is not None
 
 
-def test_mk_overlay_writes_the_new_mode_key_and_refuses_an_old_one(tmp_path, monkeypatch):
+def test_mk_overlay_writes_the_new_mode_key_and_nothing_else(tmp_path):
+    # mk_overlay.py copied the catch_lead_on overlay and refused one that still wrote a
+    # pre-#711 key; since #821 it reads no file (the lead ships), so there is no source
+    # to refuse — what is left to hold is that the mode key is the new one, alone.
     out = tmp_path / "o.yaml"
     mk_overlay.main([str(out), "p1b", "closed_form"])
     doc = yaml.safe_load(out.read_text())
@@ -70,22 +73,13 @@ def test_mk_overlay_writes_the_new_mode_key_and_refuses_an_old_one(tmp_path, mon
         "decel" not in catching.get("supervisor", {})
         or "mode" not in catching["supervisor"]["decel"]
     )
-
-    # an overlay source that still writes an old key is refused before anything is written
-    root = tmp_path / "cfg"
-    shutil.copytree(CONFIG / "ur5e_p1b", root / "ur5e_p1b")
-    src = root / "ur5e_p1b" / "sim_overlays" / "catch_lead_on.yaml"
-    src_doc = yaml.safe_load(src.read_text())
-    catching = src_doc["integrated_rt_controller"]["ros__parameters"][CONTROLLER]["catching"]
-    catching.setdefault("supervisor", {}).setdefault("decel", {})["mode"] = "mpc"
-    src.write_text(yaml.safe_dump(src_doc))
-    monkeypatch.setattr(mk_overlay, "REPO", root)
-    with pytest.raises(
-        RenamedCatchingKeyError,
-        match=r"supervisor\.decel\.mode → catching\.planner\.segment\.mode",
-    ):
-        mk_overlay.main([str(tmp_path / "o2.yaml"), "p1b", "mpc"])
-    assert not (tmp_path / "o2.yaml").exists()
+    assert doc == {
+        "integrated_rt_controller": {
+            "ros__parameters": {
+                CONTROLLER: {"catching": {"planner": {"segment": {"mode": "closed_form"}}}}
+            }
+        }
+    }
 
 
 def test_summarize_reads_a_mirror_txt_under_either_name_and_refuses_a_mixed_one(tmp_path):
