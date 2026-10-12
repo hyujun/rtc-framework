@@ -1764,6 +1764,7 @@ _ptl_span() {
 # check_rt_setup.sh의 사용자 표시와 BIOS HT off FAIL 판정에만 사용된다.
 #
 # 테스트 훅: $RTC_SYSFS_ROOT (default: /sys), $RTC_PROC_CPUINFO (default: /proc/cpuinfo)
+#           $RTC_SYSFS_ROOT 가 /sys 가 아니면 CPUID fallback 은 건너뛴다 (호스트의 답이다).
 # 환경변수: $RTC_FORCE_HYBRID_GENERATION — 세대 enum만 override (§1.3 결정).
 #           id 리스트는 생성하지 않으며 sysfs 감지 결과를 유지한다.
 
@@ -1942,10 +1943,17 @@ _rt_enumerate_online_cpus() {
 # Fallback 1: CPUID leaf 0x1A.
 # Returns 0 on success, sets _RT_FB_P_CPUS / _RT_FB_E_CPUS.
 # Returns 1 (and leaves globals empty) if cpuid / taskset are missing, the
-# leaf is unsupported, or the split is homogeneous.
+# leaf is unsupported, the split is homogeneous, or $RTC_SYSFS_ROOT points
+# away from /sys.
 _rt_detect_hybrid_via_cpuid() {
   _RT_FB_P_CPUS=""
   _RT_FB_E_CPUS=""
+  # CPUID is the one input of the cascade with no mock: it answers for the
+  # machine this shell runs on. Under a redirected $RTC_SYSFS_ROOT the CPU ids
+  # below come from that tree while the core types would come from the host —
+  # on a hybrid host with `cpuid` installed every mock topology that reaches
+  # this fallback was classified by the host's P/E split.
+  [[ "${RTC_SYSFS_ROOT:-/sys}" == "/sys" ]] || return 1
   command -v cpuid   >/dev/null 2>&1 || return 1
   command -v taskset >/dev/null 2>&1 || return 1
 
