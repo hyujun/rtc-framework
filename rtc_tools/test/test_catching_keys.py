@@ -204,9 +204,9 @@ def _cpp_segment_columns() -> tuple[list[str], list[str]]:
 
 
 # `segment_*` columns added AFTER the rename (E1-F18, #744: the docking core's
-# account of a solve). They were never written under a `decel_*` name, so they
-# have no alias — and a `segment_*` column added from here on has to be named
-# here for the test below to pass.
+# account of a solve; #713: the stop against the ball's line). They were never
+# written under a `decel_*` name, so they have no alias — and a `segment_*`
+# column added from here on has to be named here for the test below to pass.
 _SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME = (
     "segment_qp_solves",
     "segment_qp_iterations",
@@ -247,6 +247,15 @@ _SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME = (
     "segment_chance_timing",
     "segment_cost_reference",
     "segment_cost_stop",
+    "segment_stop_line_p_x",
+    "segment_stop_line_p_y",
+    "segment_stop_line_p_z",
+    "segment_stop_line_d_x",
+    "segment_stop_line_d_y",
+    "segment_stop_line_d_z",
+    "segment_stop_dev_max",
+    "segment_stop_dev_end",
+    "segment_stop_along_end",
 )
 
 
@@ -254,16 +263,16 @@ def test_the_column_alias_targets_are_the_segment_columns_the_cpp_headers_write(
     diag, events = _cpp_segment_columns()
     cpp_new = {c for c in [*diag, *events] if c.startswith("segment_")}
     added = set(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME)
-    assert len(added) == len(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME) == 39
+    assert len(added) == len(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME) == 48
     assert added <= cpp_new
     assert len(ck.RENAMED_COLUMNS) == 49
     # Every renamed column, and nothing else: what the headers write beyond the
     # alias targets is exactly the columns added after the rename.
     assert set(ck.RENAMED_COLUMNS.values()) == cpp_new - added
     # 17 + 33 renamed columns, `segment_seq` is in both files; the events file
-    # has the 39 added ones as well.
+    # has the 48 added ones as well.
     assert len([c for c in diag if c.startswith("segment_")]) == 17
-    assert len([c for c in events if c.startswith("segment_")]) == 33 + 39
+    assert len([c for c in events if c.startswith("segment_")]) == 33 + 48
     # No header writes an old name any more; no old name is also a new one.
     assert not [c for c in [*diag, *events] if c in ck.RENAMED_COLUMNS]
     assert not set(ck.RENAMED_COLUMNS) & set(ck.RENAMED_COLUMNS.values())
