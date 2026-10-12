@@ -3,18 +3,17 @@
 Every input is built in the test — no recorded unit is read.
 """
 
-import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "catching_eval"))
-import check_segment_mode as csm  # noqa: E402
-import check_startup as cst  # noqa: E402
+TOOLS = Path(__file__).resolve().parents[1] / "tools" / "catching_eval"
+sys.path.insert(0, str(TOOLS))
 import summarize as sm  # noqa: E402
 
+from integrated_bringup import catching_tc_vector  # noqa: E402
 from rtc_tools.analysis import catching_trials as ct  # noqa: E402
 
 A, C, CL, D, H = (
@@ -277,180 +276,8 @@ def test_an_old_summary_json_and_an_old_vec_csv_are_refused_too(tmp_path):
         sm.reject_old_ct_outputs(tmp_path, {}, ok, vec)
 
 
-# ── check_segment_mode.py: which mode did the controller log? ────────────────
-
-_MPC_LINE = (
-    "[INFO] [1.0] [demo_catching_controller]: segment mode: mpc — takes a plan with its first "
-    "segment and follows the MPC's segments from APPROACH to the end of the stop"
-)
-_CF_LINE = (
-    "[INFO] [1.0] [demo_catching_controller]: segment mode: closed_form — the RT tick makes "
-    "the reference itself"
-)
-_OTHER = (
-    "[INFO] [1.0] [demo_catching_controller]: planner enabled: wake timeout 0.1 s, budget 0.2 s"
-)
-
-
-@pytest.mark.parametrize(
-    ("expected", "log", "passes"),
-    [
-        ("closed_form", _OTHER + "\n" + _CF_LINE + "\n", True),
-        ("mpc", _OTHER + "\n" + _MPC_LINE + "\n", True),
-        # positive controls: the case the old check passed — the mpc line is absent
-        # and the closed_form line is absent too (a controller that never configured).
-        ("closed_form", _OTHER + "\n", False),
-        ("closed_form", _OTHER + "\n" + _MPC_LINE + "\n", False),
-        ("mpc", _OTHER + "\n" + _CF_LINE + "\n", False),
-        ("mpc", _OTHER + "\n", False),
-        ("closed_form", "", False),
-        ("mpc", "", False),
-        # both lines: no controller configures twice into one launch.log
-        ("mpc", _MPC_LINE + "\n" + _CF_LINE + "\n", False),
-        ("closed_form", _MPC_LINE + "\n" + _CF_LINE + "\n", False),
-        # the old spelling says nothing about the mode
-        ("mpc", "[demo_catching_controller]: DECEL law: mpc — takes a plan\n", False),
-    ],
-)
-def test_the_segment_mode_check_needs_the_expected_line_present(expected, log, passes):
-    assert (csm.check(log, expected) is None) is passes
-
-
-def test_the_segment_mode_check_refuses_an_unknown_expected_mode():
-    assert "not one of" in csm.check(_MPC_LINE, "decel")
-
-
-def test_the_segment_mode_script_exits_on_the_verdict(tmp_path):
-    log = tmp_path / "launch.log"
-    log.write_text(_OTHER + "\n" + _CF_LINE + "\n")
-    script = Path(csm.__file__)
-    run = [sys.executable, str(script), str(log)]
-    assert subprocess.run([*run, "closed_form"], capture_output=True).returncode == 0
-    refused = subprocess.run([*run, "mpc"], capture_output=True, text=True)
-    assert refused.returncode == 1 and "no 'segment mode: mpc' line" in refused.stderr
-    log.write_text(_OTHER + "\n")  # nothing logged: both expectations fail
-    assert subprocess.run([*run, "closed_form"], capture_output=True).returncode == 1
-    assert subprocess.run([*run, "mpc", str(tmp_path / "missing.log")]).returncode == 2
-    assert subprocess.run([*run[:2], str(tmp_path / "missing.log"), "mpc"]).returncode == 1
-
-
-_DOCKING_LINE = (
-    "[INFO] [1.0] [demo_catching_controller]: segment mode: mpc_docking — the docking planner"
-)
-_GRID_LINE = "[INFO] [1.0] [demo_catching_controller]: search mode: grid — enumerates the grid"
-_NLP_LINE = "[INFO] [1.0] [demo_catching_controller]: search mode: nlp — solves the NLP"
-
-
-def test_the_segment_mode_check_knows_mpc_docking_and_not_as_mpc():
-    log = _OTHER + "\n" + _DOCKING_LINE + "\n"
-    assert csm.check(log, "mpc_docking") is None
-    # `mpc_docking` must not read as `mpc` (the regex alternation order)
-    assert csm.logged_modes(log) == {"mpc_docking"}
-    assert csm.check(log, "mpc") is not None
-    assert csm.check(_OTHER + "\n" + _MPC_LINE + "\n", "mpc_docking") is not None
-
-
-@pytest.mark.parametrize(
-    ("expected", "log", "passes"),
-    [
-        ("grid", _GRID_LINE + "\n", True),
-        ("nlp", _NLP_LINE + "\n", True),
-        ("grid", _NLP_LINE + "\n", False),
-        ("nlp", _GRID_LINE + "\n", False),
-        ("grid", _OTHER + "\n", False),  # a controller that never configured is silent
-        ("grid", _GRID_LINE + "\n" + _NLP_LINE + "\n", False),
-    ],
-)
-def test_the_search_mode_check_needs_the_expected_line_present(expected, log, passes):
-    assert (csm.check_search(log, expected) is None) is passes
-
-
-def test_the_search_mode_check_refuses_an_unknown_expected_mode():
-    assert "not one of" in csm.check_search(_GRID_LINE, "annealing")
-
-
-def test_the_segment_mode_script_checks_the_search_line_with_the_flag(tmp_path):
-    log = tmp_path / "launch.log"
-    log.write_text("\n".join([_OTHER, _DOCKING_LINE, _NLP_LINE]) + "\n")
-    run = [sys.executable, str(Path(csm.__file__)), str(log), "mpc_docking"]
-    assert subprocess.run(run, capture_output=True).returncode == 0  # CLI unchanged
-    assert subprocess.run([*run, "--search", "nlp"], capture_output=True).returncode == 0
-    refused = subprocess.run([*run, "--search", "grid"], capture_output=True, text=True)
-    assert refused.returncode == 1 and "no 'search mode: grid' line" in refused.stderr
-    assert subprocess.run([*run, "--bogus", "nlp"], capture_output=True).returncode == 2
-
-
-# ── check_startup.py: has the controller come up, or has the bringup failed? ──
-
-_READY = (
-    "[integrated_rt_controller-2] [INFO] [1.0] [integrated_bringup.demo_catching_controller]: "
-    "supervisor: trials enabled — commit at t_c − 0.370 s"
-)
-# What a healthy controller logs while it configures, before the ready line (#793).
-_REACH_BOUND = (
-    "[integrated_rt_controller-2] [INFO] [1.0] [integrated_bringup.demo_catching_controller]: "
-    "search: reach bound 1.1169 m about [0.0000 0.0000 0.1625] (model world, 6 joints) — a "
-    "candidate whose IK target is farther than that plus the IK's position tolerance is refused "
-    "without the IK (too_far)"
-)
-_REFUSING = (
-    "[integrated_rt_controller-2] [ERROR] [1.0] [integrated_bringup.demo_catching_controller]: "
-    "refusing to configure: no `catching:` section."
-)
-_CONFIG_LOAD = (
-    "[integrated_rt_controller-2] [ERROR] [1.0] [integrated_rt_controller]: Config load failed "
-    "for 'demo_catching_controller' (pkg=integrated_bringup): bad YAML"
-)
-_WILL_REFUSE = (
-    "[integrated_rt_controller-2] [WARN] [1.0] [integrated_bringup.demo_catching_controller]: "
-    "DISABLED: … This controller will refuse to activate; the robot still comes up."
-)
-
-
-@pytest.mark.parametrize(
-    ("log", "state"),
-    [
-        ("", cst.WAITING),
-        (_OTHER + "\n", cst.WAITING),
-        # The race this check was written for: the poll sees the reach-bound line and
-        # not yet the ready line. The old pattern (`refus` anywhere) failed the unit here.
-        (_OTHER + "\n" + _REACH_BOUND + "\n", cst.WAITING),
-        (_REACH_BOUND + "\n" + _READY + "\n", cst.READY),
-        (_READY + "\n", cst.READY),
-        # positive controls: a failed bringup is still a failure
-        (_REACH_BOUND + "\n" + _REFUSING + "\n", cst.FAILED),
-        (_CONFIG_LOAD + "\n", cst.FAILED),
-        (_WILL_REFUSE + "\n", cst.FAILED),
-        # a line with no level at all (the launch's own output) counts
-        ("bring_up_failed: integrated_rt_controller\n", cst.FAILED),
-        # ready wins: the controller came up, whatever was logged on the way
-        (_WILL_REFUSE + "\n" + _READY + "\n", cst.READY),
-    ],
-)
-def test_the_startup_check_tells_a_failed_bringup_from_a_healthy_refusal_line(log, state):
-    assert cst.startup_state(log) == state
-
-
-def test_the_startup_check_names_the_failure_lines_only():
-    log = "\n".join([_OTHER, _REACH_BOUND, _REFUSING, _CONFIG_LOAD]) + "\n"
-    assert cst.failure_lines(log) == [_REFUSING, _CONFIG_LOAD]
-
-
-def test_the_startup_script_exits_on_the_state(tmp_path):
-    log = tmp_path / "launch.log"
-    run = [sys.executable, cst.__file__, str(log)]
-    assert subprocess.run(run, capture_output=True).returncode == 2  # no log yet
-    log.write_text(_REACH_BOUND + "\n")
-    assert subprocess.run(run, capture_output=True).returncode == 2
-    log.write_text(_REACH_BOUND + "\n" + _REFUSING + "\n")
-    failed = subprocess.run(run, capture_output=True, text=True)
-    assert failed.returncode == 1 and failed.stderr.strip() == _REFUSING
-    log.write_text(_REACH_BOUND + "\n" + _READY + "\n")
-    assert subprocess.run(run, capture_output=True).returncode == 0
-
-
 def test_run_unit_asks_the_startup_check_and_no_longer_greps_for_refus():
-    text = (Path(cst.__file__).parent / "run_unit.sh").read_text()
+    text = (TOOLS / "run_unit.sh").read_text()
     assert 'check_startup.py" "$OUT/launch.log"' in text
     assert "bring_up_failed\\|refus" not in text
 
@@ -459,8 +286,7 @@ def test_a_unit_that_asks_for_the_probe_dump_gets_it_flushed_and_handed_on():
     """PROBE_DUMP=1 (#807): the probe runs in its own group, is stopped BEFORE the
     estimator and the sim (it writes its CSVs on SIGINT), a unit without the dump
     fails, and the analysis hands the dump to catching_trials."""
-    tools = Path(cst.__file__).parent
-    text = (tools / "run_unit.sh").read_text()
+    text = (TOOLS / "run_unit.sh").read_text()
     assert 'vision_lane_probe "$OUT/probe/lane" --dump' in text
     cleanup = text[text.index("cleanup() {") : text.index("keep_failed_session() {")]
     assert cleanup.index('stop_group "$PPG"') < cleanup.index('stop_group "$EPG"')
@@ -469,7 +295,12 @@ def test_a_unit_that_asks_for_the_probe_dump_gets_it_flushed_and_handed_on():
         assert f'echo "FAIL:{why}" > "$OUT/status"' in text
     assert text.index('echo "FAIL:probe not running"') < text.index("catching_sim_trials")
     assert 'echo "probe_dump: ' in text
-    vector = (tools / "tc_vector.py").read_text()
+    # tc_vector.py is a shim since #821: the analysis it runs is the installed module.
+    assert (
+        "from integrated_bringup.catching_tc_vector import main"
+        in (TOOLS / "tc_vector.py").read_text()
+    )
+    vector = Path(catching_tc_vector.__file__).read_text()
     assert 'unit / "probe" / "lane_prediction_dump.csv"' in vector
     assert '"--probe-dump", str(dump)' in vector
 
