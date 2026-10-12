@@ -267,6 +267,78 @@ test_freq_fallback_amd_negative() {
   expect_eq "AMDFreq.generation"       "none"    "$NUC_GENERATION"
 }
 
+# ── Test 8b: a mock tree is not classified by the HOST's CPUID ─────────────
+# The CPUID fallback has no mock — it asks the machine the test runs on. On a
+# hybrid Intel host with the `cpuid` tool (a provisioning prerequisite there,
+# README) it answered for every mock tree that reaches the fallbacks, and the
+# tests of this file went red on that host only. Stand-ins for `cpuid` and
+# `taskset` put such a host on PATH: 4 P + the rest E, no HT.
+test_cpuid_fallback_skipped_under_mock_sysfs() {
+  local stub="$TMP/hybrid_host_bin"
+  mkdir -p "$stub"
+  cat >"$stub/taskset" <<'EOF'
+#!/bin/bash
+# taskset -c <cpu> <cmd...>: hand the cpu to the stand-in cpuid.
+cpu="$2"; shift 2
+RTC_TEST_STUB_CPU="$cpu" exec "$@"
+EOF
+  cat >"$stub/cpuid" <<'EOF'
+#!/bin/bash
+# cpuid -r -1 -l 0x1a: leaf 0x1A of a 4P + nE host (0x40 = Core, 0x20 = Atom).
+if (( ${RTC_TEST_STUB_CPU:-0} < 4 )); then eax=0x40000001; else eax=0x20000003; fi
+echo "   0x0000001a 0x00: eax=${eax} ebx=0x00000000 ecx=0x00000000 edx=0x00000000"
+EOF
+  chmod +x "$stub/taskset" "$stub/cpuid"
+
+  # The stand-ins do answer: without the redirect the fallback takes them.
+  # (Guards this test against a stub the fallback would not have reached.)
+  local line
+  line=$(PATH="$stub:$PATH" taskset -c 5 cpuid -r -1 -l 0x1a)
+  expect_eq "CpuidHost.stub_answers" "1" "$([[ "$line" == *"eax=0x20000003"* ]] && echo 1 || echo 0)"
+
+  # Homogeneous tree (the AMD mock of Test 8): stays non-hybrid.
+  local root="$TMP/cpuid_host_amd"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5400000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5400000
+  done
+  mock_write_cpuinfo "$TMP/cpuid_host_amd_cpuinfo" "false"
+
+  PATH="$stub:$PATH" RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/cpuid_host_amd_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "CpuidHost.AMD.is_hybrid"      "0"     "$IS_HYBRID"
+  expect_eq "CpuidHost.AMD.detect_source"  "none"  "$HYBRID_DETECT_SOURCE"
+  expect_eq "CpuidHost.AMD.generation"     "none"  "$NUC_GENERATION"
+
+  # Hybrid tree without types/ (the Meteor Lake mock of Test 7): the split is
+  # the tree's own, from its cpuinfo_max_freq — 6 P, not the host's 4.
+  root="$TMP/cpuid_host_mtl"
+  mock_reset "$root"
+  for i in 0 1 2 3 4 5; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5100000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5100000
+  done
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((12+i)) $((6+i)) 3800000
+  done
+  mock_add_cpu "$root" 20 14 2500000
+  mock_add_cpu "$root" 21 15 2500000
+  mock_write_cpuinfo "$TMP/cpuid_host_mtl_cpuinfo" "false"
+
+  PATH="$stub:$PATH" RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/cpuid_host_mtl_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "CpuidHost.MTL.detect_source"  "cpufreq_cluster"  "$HYBRID_DETECT_SOURCE"
+  expect_eq "CpuidHost.MTL.generation"     "meteor_lake"      "$NUC_GENERATION"
+  expect_eq "CpuidHost.MTL.num_p_physical" "6"                "$NUM_P_PHYSICAL"
+  expect_eq "CpuidHost.MTL.p_physical_ids" "0 2 4 6 8 10"     "$P_CORE_PHYSICAL_IDS"
+}
+
 # ── Test 9: detect_source tag is "sysfs_types" when primary path wins ──────
 # Reuses the NUC13 mock (sysfs + hybrid flag) to pin down the reported source.
 test_detect_source_primary() {
@@ -1198,6 +1270,7 @@ test_amd_ryzen
 test_env_hint_override
 test_freq_fallback_meteor_lake
 test_freq_fallback_amd_negative
+test_cpuid_fallback_skipped_under_mock_sysfs
 test_detect_source_primary
 test_container_no_freq_files
 test_platform_label_raptor_lake_s_desktop
