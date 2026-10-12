@@ -30,7 +30,7 @@ markdown 이 수식 안의 문자를 먼저 해석하므로 (GitHub 기준), 수
 
 | 상태 | 내용 | 절 |
 |---|---|---|
-| 구현됨 | 단일 팔 구성의 MPC (`mpc` planner — ur5e_p1b · iiwa7_leap). jerk 입력 모델과 move blocking, 포구 노드의 위치 · 접근축 · 상대속도 항, 일관성 항, 정지 경로 항, 토크 행과 그 slack, 위치 · 속도 한계, 종단 정지, trust region, 상대속도 slack, 관절 노드 게시와 RT 의 닫힌식 평가 · FK. 정지 경로 항과 상대속도 slack 은 출하 YAML 에서 꺼져 있다 | §1.1, §1.2 와 §1.3 의 단일 팔 부분, §1.5, §1.6 |
+| 구현됨 | 단일 팔 구성의 MPC (`mpc` planner — ur5e_p1b · iiwa7_leap). jerk 입력 모델과 move blocking, 포구 노드의 위치 · 접근축 · 상대속도 항, 일관성 항, 정지 경로 항, 토크 행과 그 slack, 위치 · 속도 한계, 종단 정지, trust region, 상대속도 slack, 관절 노드 게시와 RT 의 닫힌식 평가 · FK. 상대속도 slack 은 출하 YAML 에서 꺼져 있고, 정지 경로 항은 켜져 있다 (`cost.w_perp` 100 — §1.6 의 "구현의 규약") | §1.1, §1.2 와 §1.3 의 단일 팔 부분, §1.5, §1.6 |
 | 구현됨 | 지금의 CLIK — frame 과제 하나 (포구 컨트롤러는 catch frame 의 위치 3 행과 접근축 2 행), 팔 · 손 자세 과제, 평활 항, 위치 ∩ 속도 box, 팔 관절의 토크 행 (`dynamic`). 자세 과제의 속도 feedforward 는 CLIK 의 자세 feedforward 입력으로 넣는다 (§1.5) | §2.3, §2.1 · §2.2 의 단일 frame 극한 (§4 항목 4) |
 | 구현됨 (`rtc_tsid` 의 QP 와 그것을 부르는 바인딩 `demo_dualarm_controller` (§11) — 포구 컨트롤러는 아직 단일 frame 호출을 쓴다) | 다중 frame CLIK — frame 과제 목록, 몸통 기준 (상대) 과제, 전체 관절의 자세 과제 $\dot q_n$, 되먹임 상한, 제동 거리 한계. 구현이 §2 의 식과 다른 곳은 §10 | §2, §10 |
 | 아직 구현하지 않음 | §1.3 의 dual-arm · waist 전용 항 — waist 억제, 왼팔 자세 유지, 각운동량 항, 관절군별 $E$. 후보마다 QP 를 푸는 바깥 루프 | §1.1, §1.3, §1.4 |
