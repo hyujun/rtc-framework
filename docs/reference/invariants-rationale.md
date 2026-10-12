@@ -149,6 +149,7 @@ RT loop 안에서 허용되는 통계의 형태: loop period error (`now - last_
 | PROC-6 | 회귀 은폐 방지. RT timing 과 무관한 process 규칙 (구 RT-7). squash 단서를 명시하는 이유는 규칙이 머지 방식을 고려하지 않고 쓰여 있어 **문자 그대로는 지킬 수 없었기** 때문이다 — #422·#423 에서 연속 발현했고, 두 번 모두 분리한 commit 이 `main` 에서 사라졌다. 감사 가능성은 no-ff 를 머지 기본으로 만든 근거의 하나다 ([conventions.md](../../agent_docs/conventions.md#commit-message-conventions) §Merge method) |
 | PROC-7 | CM 은 tick 마다 새 `stamp_ns` 를 만들고 publish thread 는 SeqLock 을 다시 Load 하므로, Store 생략은 "미발행" 이 아니라 **stale body + fresh stamp 재발행** 이다 — E-STOP 중에 살아있어 보이는 `valid=1` telemetry 가 그 발현 (issue #234 P-1). 계약·경로는 [controllers.md](../../agent_docs/controllers.md#ros2-topics) |
 | PROC-8 | 두 원시는 대체재가 아니다. **동일 executor 를 두 곳에서 구동하는 것은 rclcpp 가 금지** — spin 하는 fixture 가 이미 전용 스레드를 갖고 있으면 헬퍼의 추가 spin 이 UB 다. 반대 방향도 있다: 기본 callback group 밖의 lane 을 검사하는 테스트에서 기본 executor 를 pump 하면 검사 대상까지 서비스돼 assertion 이 아무것도 증명하지 못한다. 이 혼동은 이미 한 번 머지됐다 되돌려졌고 (#356), 그 뒤로 유일한 방어선이 헤더 주석 한 덩어리였다 — 주석은 다음 사람이 정리하면 센서 없이 사라진다. 탐지는 hook Phase 0c (헬퍼 헤더 한정, 주석 제외 후 grep) |
+| PROC-9 | repo 를 다른 PC 로 옮겼을 때 평가 폴더 없이 똑같이 구동돼야 한다 (사용자 결정 2026-10-12, #821). 평가 결과로 정한 값 · 세트는 repo 에 실려야 하고, 평가 폴더와 private plan 은 지워도 되는 것이어야 한다 (AGENTS.md §6.6). 예외 셋은 그때 지목된 것이다: 공 추정기 (`ball_perception`, 다른 저장소 · 다른 PC), 학습 정책 모델 (`RTC_POLICY_DIR`, 비공개 자산), 로봇 개체의 calibration (`ur5e_calibration.yaml`). 검토 때 catching 코드 · 설정에는 밖의 참조가 없었고, catching 이 아닌 헤더 주석 셋이 지워진 plan 파일을 가리키고 있었다 |
 
 ## Numerical
 
