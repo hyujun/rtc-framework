@@ -46,7 +46,7 @@
 
 ### `RTC_SYSFS_ROOT` / `RTC_PROC_CPUINFO`
 
-테스트 전용. 기본 `/sys`, `/proc/cpuinfo`. `test_rt_common.sh` / `test_cpu_topology.cpp` mock 디렉토리 구성 시만.
+테스트 전용. 기본 `/sys`, `/proc/cpuinfo`. `test_rt_common.sh` / `test_cpu_topology.cpp` mock 디렉토리 구성 시만. `RTC_SYSFS_ROOT` 가 `/sys` 가 아니면 shell 의 CPUID fallback 은 건너뛴다 — CPUID 는 mock 이 없는 유일한 입력이라 호스트의 P/E 분할이 mock tree 를 분류하게 된다 (`cpuid` 가 설치된 hybrid 호스트에서만 드러난다).
 
 ## 검증
 
