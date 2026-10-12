@@ -33,6 +33,8 @@ rtc_tools/
 │   │   ├── catch_gate_map.py            ← kinematic 지도 위의 나머지 게이트 (도달시간·γ 창·정지점) → gate-catchable 지도 (S3.5b)
 │   │   ├── catch_search_map.py          ← 계획기 탐색 자체 (`catch_search_batch`) 의 투척별 수용 지도 · binding · gate/sim 대조 (L3 §4.1)
 │   │   ├── catch_throw_design.py        ← 통과점 투척 설계 (발사점 · 통과점 · 발사각 → 속력 풀이) · 사전 판정 `screen:*` · 격자 부분집합과 경계 세분화 · 최소 통과 시간 제한 · plan 집단과 층화 추출 (L3 부록 C)
+│   │   ├── catch_population.py          ← 투척 모집단 1 단계: 설정 파일 하나 → 설계 · 모집단 · 조합별 탐색 집단 · 구간 집단 · 던질 묶음 · manifest (기존 도구를 차례로 부른다, #821)
+│   │   ├── catch_population_report.py   ← 결과 폴더의 집단 통계 텍스트와 3D plot · sim 결과 (쌍 게시 · 포구) 와 층별 추정 (#821)
 │   │   ├── catching_throw_list.py       ← 투척 목록 파일 `catching_throw_list/1` 의 단일 형식 (검증·읽기·쓰기 — 지도와 sim 드라이버가 함께 쓴다)
 │   │   ├── vision_lane.py               ← ball_perception 예측 lane 디코더·요약 (D-4 / S3.4)
 │   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4) · `--dump` 전 지평·공분산·innovation·nis (S8-A)
@@ -58,6 +60,7 @@ rtc_tools/
 │   └── utils/
 │       ├── hand_udp_sender_example.py   ← 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
 │       ├── session_dir.py               ← 세션 디렉토리 유틸리티 (RTC_SESSION_DIR / RTC_RUN_ID 관리)
+│       ├── catch_population.py          ← 투척 모집단 설정 파일 (`catch_population/1`) 의 형식 검증과 결과 폴더의 경로 표 — 1 단계 · 2 단계 · 보고가 함께 쓴다 (#821)
 │       ├── controller_config.py         ← 컨트롤러 YAML + `include:` 조각의 합성 (CM `LoadControllerConfig` 의 Python mirror)
 │       ├── smoothing.py                 ← box 평활 하나 (catching 의 plot 패널과 분석 열이 공유)
 │       ├── rotations.py                 ← URDF roll-pitch-yaw → 회전행렬 하나 (MJCF 대조 · catch frame 도구 · docking rig 가 공유)
@@ -72,7 +75,7 @@ rtc_tools/
 
 **빌드 타입**: `ament_python` (`setup.py`의 `entry_points` 사용)
 
-**Entry points** (19개 — SSoT 는 `setup.py` 의 `console_scripts`. 아래 표는 주요 항목이고,
+**Entry points** (28개 — SSoT 는 `setup.py` 의 `console_scripts`. 아래 표는 주요 항목이고,
 `analysis/` 의 나머지 CLI 는 각 스크립트 절에서 호출 형태를 준다):
 
 | 실행 명령 | 모듈 | 설명 |
@@ -89,6 +92,8 @@ rtc_tools/
 | `ros2 run rtc_tools catch_gate_map` | `analysis.catch_gate_map` | kinematic 지도의 수락 후보를 `catch_gate_batch` (런타임 게이트 함수) 로 판정 + 토크 검사 도달시간 층 → 두 층의 gate-catchable 지도·탈락 사유·대기 자세 제안 |
 | `ros2 run rtc_tools catch_search_map` | `analysis.catch_search_map` | 투척 설계 → 비행 모델의 wake 열 → `catch_search_batch` (런타임 `CatchSearch::Plan`, grid · nlp) → 투척별 수용 · 사유 · 축별 수용률 · 두 탐색 불일치 · gate 지도 층별 대조 · sim 판정 × 결과 표 |
 | `ros2 run rtc_tools catch_throw_design` | `analysis.catch_throw_design` | `design`: 발사점 · 통과점 · 발사각 격자 → 항력 모델로 속력 풀이 → 투척별 축 값과 `screen:*` (탐색 없음). `select`: 격자의 부분집합 · id 목록 · 이웃 판정이 갈린 곳의 세분화 점을 투척 목록으로 (제한된 투척은 뺀다). `plan-set`: 지도의 판정표에서 수용된 투척 목록 (`--tier search` 는 탐색 집단, `--tier segment` 는 구간 집단). `sample`: plan 집단에서 층마다 같은 비율로 뽑아 섞고 묶음 파일로 |
+| `ros2 run rtc_tools catch_population` | `analysis.catch_population` | 투척 모집단 1 단계: 설정 파일 (`catch_population.yaml`) → `catch_throw_design` · `catch_search_map` 을 차례로 불러 모집단 · 조합별 `throw_search_set` · `throw_segment_set` · 던질 묶음 · `manifest.json` 을 결과 폴더에 쓰고 보고를 낸다 (이어 돌리기 · `--report-only`) |
+| `ros2 run rtc_tools catch_population_report` | `analysis.catch_population_report` | 결과 폴더 → `report/` 의 통계 텍스트 (터미널에도) 와 집단별 · 조합별 3D plot. `sim_throws.csv` 가 있으면 던짐 → 쌍 게시 → 포구와 층별 추정을 더한다 |
 | `ros2 run rtc_tools catching_trials` | `analysis.catching_trials` | `catching_sim_trials` 한 run (세션 CSV + trials dir + sim lane) → 시행별 표·요약 JSON (S8-A) |
 | `ros2 run rtc_tools catching_decel` | `analysis.catching_decel` | unit 들의 DECEL 정지 구간 지표 (시행별 표·요약 JSON) · `--a`/`--b` 로 같은 투척의 2×2 표·불일치율·paired 비열등 시행 수·Tango 비열등 검정과 정확 검정력 (MPC 계획 E0-F02 · E1-F06) |
 | `ros2 run rtc_tools catching_grid_sweep` | `analysis.catching_grid_sweep` | arm (격자 조건) 별 성공률·수신 메시지·예측 오차·계획기 시간 · `--ref` 대비와 `--pair` 의 paired 차이·McNemar·Holm (MPC 계획 E0-F04) |
@@ -1140,6 +1145,67 @@ ascending 인 칸, 출처) · `catching_tree.yaml` · `model_config.yaml`.
 - 테스트 `test/test_catching_throw_list.py`: 목록 형식 자체 — 비트 단위 왕복 · 순서 · 키 순서, 기본값, 머리 · 항목
   거부마다 출처와 값을 말하는지, `THROW_RECORD_KEYS` 의 키 하나하나 거부, 비유한 JSON 토큰 · JSON 아님 · 없는 파일,
   쓰기 전 거부 (파일이 생기지 않음), 한 번 읽기의 sha256 · 절대 경로 · `record()`
+
+
+### `catch_population.py` · `catch_population_report.py` — 투척 모집단 1 단계와 보고 (#821)
+
+설정 파일 하나 (`<config>/<robot>/catch_population.yaml` — 형식과 키는 `utils/catch_population.py` 의 docstring, 없는 키 ·
+모르는 키 · 범위 밖의 값은 키 이름으로 거부) 가 모집단과 그것을 거르는 방법을 정한다. **로봇은 파일이 놓인 폴더다** — 판정에
+쓰는 컨트롤러 설정이 그 폴더이고, 조합 (`arms`) 이 출하값에서 바꾸는 것은 `planner.search.mode` 와 `planner.segment.mode` 둘뿐이다.
+
+```
+설계 ─제한─▶ 모집단 ─탐색─▶ search 집단 ─구간─▶ segment 집단 ─뽑기─▶ 던질 묶음 ─(2 단계: sim)─▶ 쌍 게시 ─▶ 포구
+```
+
+- **`catch_population`** 은 판정도 설계도 직접 하지 않는다. 있는 도구의 `main` 을 설정 파일의 값으로 차례로 부른다:
+  `catch_throw_design design` → `select` (모집단 = 발사 불가 · 제한을 뺀 목록) → 조합마다 `catch_search_map --search <search>
+  --segment-mode <segment> --judge-segments` **한 번** (탐색 판정과, 수용된 투척의 구간 판정) → `plan-set --tier search` ·
+  `--tier segment` → 조합이 던지는 집단 (`throw_set`) 의 `sample` (설정의 층 · seed · 묶음 크기, 조합의 `max_throws`)
+- **이어 돌리기**: 산출물이 이미 있는 단계는 건너뛴다 — 끊긴 실행은 같은 명령으로 잇는다. 결과 폴더는 설정 하나의 것이다:
+  폴더의 `config.yaml` (파일의 사본) 과 바이트가 다른 파일을 주면 거부하고 새 `--out` 을 쓰라고 한다. 비어 있지 않은데
+  `config.yaml` 이 없는 폴더도 거부한다
+- **빈 집단은 결과다**: 판정기가 한 발도 수용하지 않은 층은 집단 파일을 쓰지 않고 (0 발), 그 조합에 던질 것이 없으면 묶음도
+  없다. 탐색이나 구간 계획기가 설정을 거부한 조합은 그 문장과 함께 "집단 없음" 이다. 어느 쪽이든 manifest 와 보고에 적고 나머지
+  조합을 계속한다
+- **`manifest.json`**: 설정 파일의 sha256 과 읽은 경로, 모집단 파일의 sha256, 조합마다 집단의 크기와 sha256 · 던질 목록 ·
+  지도 요약이 적은 provenance (판정기와 합성 트리의 해시 · layer · override). git revision 은 읽을 수 있을 때만 적는다
+  (설치본만 있는 PC 에는 저장소가 없다). 이 명령이 쓰지 않는 키 (다른 단계의 것) 는 그대로 둔다
+- **`catch_population_report`** 는 폴더의 파일만 읽는다 (판정하지 않고, 로봇의 설정 폴더도 필요 없다). `report/` 에
+  `population_report.txt` (같은 내용을 터미널에) — 설정 (격자 · 발사각 범위 · 제한), 집단의 크기 (설계점 → 발사 불가 ·
+  제한으로 빠진 수 → 모집단 → 조합별 search · segment → 던질 수), 거부 사유 (지도 요약의 것), 조합끼리의 겹침, 여섯 축의
+  값별 · 속력 · 통과 시간 · 정점 높이의 구간별 수와 모집단 대비 비율. 판정하지 않은 집단은 `not judged` 다. 통계는 있는 함수다:
+  축별 비율은 `catch_search_map.acceptance_by_axis`, 겹침은 `search_disagreement`, 구간은 `catching_trials.wilson_interval`
+- **3D plot** (PNG, `--show` 면 창도): 집단마다 `set_<이름>.png` (발사점 → 통과점의 비행을 발사각 색으로, 대기 자세의 팔과
+  포구점), 조합마다 `sets_<조합>.png` (집단마다 한 색). 그리는 비행은 집단당 `--max-flights` 개까지이고 (`throw_id` 의 해시로
+  골라 매번 같은 투척), 그린 수를 제목에 적는다. 팔은 설계가 판정 모델의 FK 로 구해 `design_meta.json` 에 적은 관절 원점과
+  포구점이다 — 모델 파일을 열지 않는다. 비행은 설계의 힘 법칙 (`integrate_flights`) 이고, 그린 끝점과 통과점의 최대 거리를 찍는다
+- **sim 결과가 있으면** (`<조합>/sim_throws.csv` — 2 단계가 쓴다: `arm,seed,chunk` 뒤에 unit 의 `catching_trials.csv` 열 전부.
+  unit 의 표에도 `seed` 열이 있어 앞의 세 열은 위치로 읽는다): 조합 · 추정기 seed 마다 던짐 → 쌍 게시 → 포구 (`truth_success`)
+  의 수와 축 값별 · 구간별 표, `set_<조합>_published_seed_<seed>.png` · `set_<조합>_caught_seed_<seed>.png` ·
+  `sets_<조합>_seed_<seed>.png` (발사점과 비행을 결과별 색으로). 행은 `catch_search_map.sim_table` 로 읽는다 —
+  `invalid_reason` 이 있는 시행은 던진 투척이 아니다. 없으면 1 단계의 보고와 같다
+- **뽑아 던진 조합**: 표의 수는 **던진 투척 안의 수**이고 (비율 옆 구간은 그 안의 Wilson 95 %), 집단 전체는 **추정**이다 —
+  `sample.json` 의 층마다 (집단의 수 ÷ 던진 수) 로 되돌려 더한다 (`stratified_estimate`). 던진 투척이 없는 층은 추정 밖이고
+  따로 센다. 집단을 전부 던졌으면 추정을 내지 않고 그 수가 집단의 수라고 적는다
+
+```bash
+ros2 run rtc_tools catch_population --config <config>/<robot>/catch_population.yaml --out <result> \
+  [--jobs 10] [--judge <catch_search_batch>] [--arms grid_mpc …] [--report-only] [--show] [--max-flights 400]
+ros2 run rtc_tools catch_population_report <result> [--show] [--max-flights 400]
+```
+
+결과 폴더 (`utils/catch_population.py` 의 `ResultLayout`): `config.yaml` · `manifest.json` · `design/` · `population.json` ·
+`<조합>/map/` (지도의 출력) · `<조합>/throw_search_set.json` · `<조합>/throw_segment_set.json` · `<조합>/throws/`
+(`sample.json` + `chunk_NNN.json`) · `report/`. 조합의 이름은 `<search>_<segment>` 다.
+
+- 테스트 `test/test_catch_population.py`: 손으로 만든 결과 폴더에서 보고의 수 전부 (집단의 크기와 비율 · 발사 불가 라벨이
+  사유에서 빠짐 · 겹침 · 축 값별 행 · 판정 안 함 · 구간 계획기의 거부), sim 결과가 있을 때의 층 (seed 별 · 무효 시행 제외 ·
+  전부 던진 조합과 뽑아 던진 조합), 손계산한 층별 추정과 던지지 않은 층, 구간의 경계, 집단의 상태 (판정 안 함 · 거부 · 빈 집단 · 파일 없음 · 있음), 서로 어긋난 파일의
+  거부, 그릴 투척의 고정과 비행의 끝점, PNG 목록. 가짜 판정기로 전체 실행 — 폴더의 파일과 집단이 판정을 따름 · manifest 의 해시 ·
+  두 번째 실행이 아무것도 다시 하지 않음 · 지운 산출물만 같은 바이트로 다시 만듦 · 다른 설정과 남의 폴더 거부 ·
+  `--report-only` · `--arms` · 빈 집단과 설정 거부 뒤에도 나머지 조합이 끝남
+- 테스트 `test/test_catch_population_config.py`: 설정 파일의 형식 — 키마다 필수, 모르는 키 · 틀린 타입 · 범위 밖의 값을 키의
+  전체 경로로 거부, 축 인자가 설계 도구의 것, 결과 폴더의 경로 표, 출하 파일 둘이 읽힘
 
 
 ### `urdf_to_mjcf.py` — URDF/XACRO → MJCF 변환

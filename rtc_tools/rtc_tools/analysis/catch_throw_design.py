@@ -101,6 +101,10 @@ from rtc_tools.analysis.catchability_map import (
 )
 from rtc_tools.analysis.catching_throw_list import read_throw_list_file, write_throw_list
 
+# Two axis values are the same value when they agree to AXIS_DECIMALS decimals; the axis
+# text is parsed where the population's configuration file is (one parser for both).
+from rtc_tools.utils.catch_population import AXIS_DECIMALS, axis_values
+
 DESIGN_AXES = (
     "distance_m",
     "azimuth_deg",
@@ -120,8 +124,6 @@ _AXIS_ARGUMENT = {
 # The elevation axis is not given as values: it is a range from its maximum down
 # (:func:`elevation_axis`), by --max-elevation-deg / --min-elevation-deg /
 # --elevation-step-deg.
-# Two axis values are the same value when they agree to this many decimals.
-AXIS_DECIMALS = 9
 
 SCREEN_KEY = csm.SCREEN_KEY
 SCREEN_ASCENDING = "screen:shoot_ascending"
@@ -196,22 +198,6 @@ _TEXT_COLUMNS = (SCREEN_KEY, LIMIT_KEY)
 
 
 # ── The grid ──────────────────────────────────────────────────────────────────
-
-
-def axis_values(text: str) -> list[float]:
-    """An axis from its argument: ``lo:hi:step`` (both ends included) or a list of values."""
-    if ":" in text:
-        parts = text.split(":")
-        if len(parts) != 3:
-            raise ValueError(f"'{text}': a range is lo:hi:step")
-        lo, hi, step = (float(p) for p in parts)
-        if not step > 0.0 or hi < lo:
-            raise ValueError(f"'{text}': the step must be > 0 and hi >= lo")
-        count = round((hi - lo) / step)
-        if abs(lo + count * step - hi) > 10.0**-AXIS_DECIMALS:
-            raise ValueError(f"'{text}': hi is not a whole number of steps from lo")
-        return [round(lo + i * step, AXIS_DECIMALS) for i in range(count + 1)]
-    return [float(v) for v in text.replace(",", " ").split()]
 
 
 def elevation_axis(max_deg: float, min_deg: float, step_deg: float) -> list[float]:
