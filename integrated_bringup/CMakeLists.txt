@@ -1758,8 +1758,9 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_catching_sim_trials_s8f test/test_catching_sim_trials_s8f.py)
   ament_add_pytest_test(test_catching_sim_trials_throw_list
     test/test_catching_sim_trials_throw_list.py)
-  # #798: the shipped throw sets (config/<robot>/throw_sets/) are valid lists of their
-  # robot, labelled by both searches, and share no throw within a robot.
+  # #821: the shipped throw sets (config/<robot>/throw_sets/ — each arm's catch set of the
+  # throw population) are valid lists of their robot and arm, say what was thrown and
+  # caught, and hold no throw twice.
   ament_add_pytest_test(test_catching_throw_sets test/test_catching_throw_sets.py)
   # #601 host load watch: a slow sim is found from the truth rows, the run
   # aborts / warns / stays silent by mode, the runner's own pytest is not load.

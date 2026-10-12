@@ -1,0 +1,2367 @@
+{
+  "schema": "catching_throw_list/1",
+  "frame": "sim_world",
+  "meta": {
+    "tool": "integrated_bringup.catch_population_trials",
+    "kind": "catch_set",
+    "tier": "catch",
+    "set_name": "throw_catch_set",
+    "robot": "ur5e_p1b",
+    "arm": {
+      "name": "nlp_mpc_docking",
+      "search": "nlp",
+      "segment": "mpc_docking"
+    },
+    "thrown_set": "segment",
+    "source_set": {
+      "set_name": "throw_segment_set",
+      "sha256": "3f0b4725e14830d3f4bb453643e824e81ae19f76d11d0364960d09c6c1910a52",
+      "n_throws": 1110
+    },
+    "sample": {
+      "sha256": "01e1e21e3d5ea9a74edd0eefff6625f04fa36548facf9946e067852bd0124172",
+      "n_throws": 1110,
+      "of": 1110,
+      "whole_set": true,
+      "seed": 821,
+      "max_throws": null,
+      "strata_axes": [
+        "distance_m",
+        "elevation_deg"
+      ]
+    },
+    "merge_key": [
+      "source_set.sha256",
+      "throw_id"
+    ],
+    "chunks_total": 5,
+    "seeds": [
+      {
+        "seed": 8210,
+        "chunks": [
+          "chunk_000",
+          "chunk_001",
+          "chunk_002",
+          "chunk_003",
+          "chunk_004"
+        ],
+        "thrown": 1110,
+        "invalid": 0,
+        "pair_published": 731,
+        "caught": 32
+      }
+    ],
+    "runs": [
+      {
+        "seed": 8210,
+        "chunk": "chunk_000",
+        "date_start": "2026-10-11T20:52:29+09:00",
+        "rtc_framework_rev": "b3d8dfd2",
+        "ball_perception_rev": "9005aab",
+        "viewer": "on"
+      },
+      {
+        "seed": 8210,
+        "chunk": "chunk_001",
+        "date_start": "2026-10-11T21:28:29+09:00",
+        "rtc_framework_rev": "b3d8dfd2",
+        "ball_perception_rev": "9005aab",
+        "viewer": "on"
+      },
+      {
+        "seed": 8210,
+        "chunk": "chunk_002",
+        "date_start": "2026-10-11T23:13:02+09:00",
+        "rtc_framework_rev": "b3d8dfd2",
+        "ball_perception_rev": "9005aab",
+        "viewer": "on"
+      },
+      {
+        "seed": 8210,
+        "chunk": "chunk_003",
+        "date_start": "2026-10-11T23:32:46+09:00",
+        "rtc_framework_rev": "b3d8dfd2",
+        "ball_perception_rev": "9005aab",
+        "viewer": "on"
+      },
+      {
+        "seed": 8210,
+        "chunk": "chunk_004",
+        "date_start": "2026-10-11T22:50:56+09:00",
+        "rtc_framework_rev": "b3d8dfd2",
+        "ball_perception_rev": "9005aab",
+        "viewer": "on"
+      }
+    ],
+    "counts": {
+      "thrown": 1110,
+      "caught": 32
+    },
+    "note": "throw_catch_set: the thrown throws the sim caught (truth_success) on at least one estimator seed. A catch is 'caught on that seed' (caught_seeds); thrown_seeds are the seeds the throw was thrown on. A throw that is not here was not drawn into the sample, or not thrown yet (seeds[].chunks of chunks_total), or thrown and missed \u2014 not being here is not a miss. pair_published counts the throws whose plan and first segment were published in the sim, which the offline segment set does not decide. A catch is ONE run's outcome (runs: each unit's date, revisions and viewer): the same chunk thrown again under the same seed does not catch the same throws.",
+    "axes": {
+      "discrete": [
+        "distance_m",
+        "azimuth_deg",
+        "release_height_m",
+        "pass_dx_m",
+        "pass_dy_m",
+        "elevation_deg"
+      ],
+      "binned": [
+        "speed_m_s",
+        "aim_deviation_deg",
+        "apex_margin_m",
+        "flight_time_s",
+        "terminal_speed_m_s",
+        "closest_distance_m",
+        "arrival_descent_deg",
+        "approach_angle_deg",
+        "reach_last_s",
+        "lead_available_s"
+      ]
+    },
+    "design": {
+      "grid": {
+        "axes": {
+          "distance_m": [
+            1.5,
+            2.0,
+            2.5,
+            3.0,
+            3.5,
+            4.0
+          ],
+          "azimuth_deg": [
+            -40.0,
+            -20.0,
+            0.0,
+            20.0,
+            40.0
+          ],
+          "release_height_m": [
+            1.0,
+            1.4,
+            1.7
+          ],
+          "pass_dx_m": [
+            -0.4,
+            -0.2,
+            0.0,
+            0.2,
+            0.4
+          ],
+          "pass_dy_m": [
+            -0.4,
+            -0.2,
+            0.0,
+            0.2,
+            0.4
+          ],
+          "elevation_deg": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0
+          ]
+        },
+        "throws": 31500
+      },
+      "elevation": {
+        "max_deg": 70.0,
+        "min_deg": 5.0,
+        "step_deg": 5.0,
+        "rule": "max \u2212 k\u00b7step for k = 0, 1, \u2026 while the value is >= min"
+      },
+      "limits": {
+        "min_pass_time_s": 0.5,
+        "rule": "limit:pass_time when a launched throw's drag-solved pass_time_s is strictly below the threshold (equal is not limited); independent of the screen label. select drops such throws from the list it writes",
+        "throws": 31500,
+        "limited": 7531,
+        "by_axis": {
+          "distance_m": {
+            "1.5": {
+              "throws": 5250,
+              "limited": 2036
+            },
+            "2.0": {
+              "throws": 5250,
+              "limited": 1632
+            },
+            "2.5": {
+              "throws": 5250,
+              "limited": 1331
+            },
+            "3.0": {
+              "throws": 5250,
+              "limited": 1106
+            },
+            "3.5": {
+              "throws": 5250,
+              "limited": 869
+            },
+            "4.0": {
+              "throws": 5250,
+              "limited": 557
+            }
+          },
+          "azimuth_deg": {
+            "-40.0": {
+              "throws": 6300,
+              "limited": 1557
+            },
+            "-20.0": {
+              "throws": 6300,
+              "limited": 1543
+            },
+            "0.0": {
+              "throws": 6300,
+              "limited": 1502
+            },
+            "20.0": {
+              "throws": 6300,
+              "limited": 1481
+            },
+            "40.0": {
+              "throws": 6300,
+              "limited": 1448
+            }
+          },
+          "release_height_m": {
+            "1.0": {
+              "throws": 10500,
+              "limited": 1694
+            },
+            "1.4": {
+              "throws": 10500,
+              "limited": 2974
+            },
+            "1.7": {
+              "throws": 10500,
+              "limited": 2863
+            }
+          },
+          "pass_dx_m": {
+            "-0.4": {
+              "throws": 6300,
+              "limited": 1250
+            },
+            "-0.2": {
+              "throws": 6300,
+              "limited": 1369
+            },
+            "0.0": {
+              "throws": 6300,
+              "limited": 1498
+            },
+            "0.2": {
+              "throws": 6300,
+              "limited": 1643
+            },
+            "0.4": {
+              "throws": 6300,
+              "limited": 1771
+            }
+          },
+          "pass_dy_m": {
+            "-0.4": {
+              "throws": 6300,
+              "limited": 1492
+            },
+            "-0.2": {
+              "throws": 6300,
+              "limited": 1499
+            },
+            "0.0": {
+              "throws": 6300,
+              "limited": 1518
+            },
+            "0.2": {
+              "throws": 6300,
+              "limited": 1517
+            },
+            "0.4": {
+              "throws": 6300,
+              "limited": 1505
+            }
+          },
+          "elevation_deg": {
+            "5.0": {
+              "throws": 2250,
+              "limited": 653
+            },
+            "10.0": {
+              "throws": 2250,
+              "limited": 1434
+            },
+            "15.0": {
+              "throws": 2250,
+              "limited": 1374
+            },
+            "20.0": {
+              "throws": 2250,
+              "limited": 1355
+            },
+            "25.0": {
+              "throws": 2250,
+              "limited": 1004
+            },
+            "30.0": {
+              "throws": 2250,
+              "limited": 701
+            },
+            "35.0": {
+              "throws": 2250,
+              "limited": 468
+            },
+            "40.0": {
+              "throws": 2250,
+              "limited": 283
+            },
+            "45.0": {
+              "throws": 2250,
+              "limited": 158
+            },
+            "50.0": {
+              "throws": 2250,
+              "limited": 70
+            },
+            "55.0": {
+              "throws": 2250,
+              "limited": 25
+            },
+            "60.0": {
+              "throws": 2250,
+              "limited": 6
+            },
+            "65.0": {
+              "throws": 2250,
+              "limited": 0
+            },
+            "70.0": {
+              "throws": 2250,
+              "limited": 0
+            }
+          }
+        }
+      },
+      "pass_plane": {
+        "height_world_m": 1.501999689941636,
+        "offset_m": 0.0,
+        "source": "FK of planner.wait_pose (catch frame origin) + --pass-plane-offset-m"
+      },
+      "speed": {
+        "max_m_s": 12.0,
+        "search_cap_m_s": 48.0
+      },
+      "reach": {
+        "bound_radius_m": 1.1169465004429824,
+        "tolerance_m": 0.002,
+        "entrance_offset_m": 0.007,
+        "screen_radius_m": 1.1259465004429823,
+        "source": "catch_search_batch --print-reach-bound (ComputeReachBound, the larger of the searches' ik.eps_pos) + |robot.hand.docking.s_ent| (the nlp target's offset)",
+        "bound": {
+          "schema": "catch_reach_bound/1",
+          "frame": "catch_frame",
+          "sub_model": "ur5e_catch",
+          "centre": [
+            0,
+            0,
+            0.1625
+          ],
+          "radius": 1.1169465004429824,
+          "tolerance": 0.002,
+          "tolerance_by_search": {
+            "grid": 0.002,
+            "nlp": 0.002
+          },
+          "joints": 6,
+          "unbounded_by": ""
+        },
+        "centre_world_m": [
+          0.0,
+          0.0,
+          0.8624999999999999
+        ]
+      },
+      "lead": {
+        "detection_delay_s": 0.15,
+        "per_search": {
+          "grid": {
+            "lead_s": 0.39,
+            "source": "planner.search.grid.slice.t_lead_min, or planner.freeze.T_freeze when it is open",
+            "mirrors": "GridCatchSearchParams::LeadMin"
+          },
+          "nlp": {
+            "source": "planner.search.nlp.t_lead_min + t_arm_s (the binding's) + planner.search.nlp.budget.budget_s + planner.search.nlp.budget.start_lead_s",
+            "mirrors": "NlpCatchSearch::Plan (t_0) and its candidate window",
+            "lead_s": 0.49400000000000005,
+            "terms": {
+              "planner.search.nlp.t_lead_min": 0.4,
+              "planner.search.nlp.budget.budget_s": 0.04,
+              "planner.search.nlp.budget.start_lead_s": 0.004,
+              "t_arm_s": 0.05
+            }
+          }
+        },
+        "floor_s": 0.39,
+        "rule": "screen:time when reach_last_s \u2212 detection_delay_s < floor_s, the smallest lead floor of the searches in the tree \u2014 one threshold for both, so both searches are handed the same throws"
+      },
+      "ball": {
+        "radius_m": 0.0335,
+        "mass_kg": 0.057,
+        "drag_coefficient": 0.55,
+        "air_density_kg_m3": 1.204,
+        "sources": {
+          "radius_m": "/home/junho/ros2_ws/rtc_ws/src/rtc-framework/integrated_bringup/config/ur5e_p1b/mujoco_simulator.yaml:projectile_ball.radius_m",
+          "mass_kg": "/home/junho/ros2_ws/rtc_ws/src/rtc-framework/integrated_bringup/config/ur5e_p1b/mujoco_simulator.yaml:projectile_ball.mass_kg",
+          "drag_coefficient": "rtc_mujoco_sim/src/projectile_ball.cpp:30",
+          "air_density_kg_m3": "rtc_mujoco_sim/include/rtc_mujoco_sim/projectile_ball.hpp:98"
+        }
+      }
+    },
+    "limit": {
+      "min_pass_time_s": 0.5,
+      "rule": "limit:pass_time when a launched throw's drag-solved pass_time_s is strictly below the threshold (equal is not limited); independent of the screen label. select drops such throws from the list it writes",
+      "removed": 7531,
+      "selected_before_removal": 31500,
+      "by_axis": {
+        "distance_m": {
+          "1.5": {
+            "throws": 5250,
+            "limited": 2036
+          },
+          "2.0": {
+            "throws": 5250,
+            "limited": 1632
+          },
+          "2.5": {
+            "throws": 5250,
+            "limited": 1331
+          },
+          "3.0": {
+            "throws": 5250,
+            "limited": 1106
+          },
+          "3.5": {
+            "throws": 5250,
+            "limited": 869
+          },
+          "4.0": {
+            "throws": 5250,
+            "limited": 557
+          }
+        },
+        "azimuth_deg": {
+          "-40.0": {
+            "throws": 6300,
+            "limited": 1557
+          },
+          "-20.0": {
+            "throws": 6300,
+            "limited": 1543
+          },
+          "0.0": {
+            "throws": 6300,
+            "limited": 1502
+          },
+          "20.0": {
+            "throws": 6300,
+            "limited": 1481
+          },
+          "40.0": {
+            "throws": 6300,
+            "limited": 1448
+          }
+        },
+        "release_height_m": {
+          "1.0": {
+            "throws": 10500,
+            "limited": 1694
+          },
+          "1.4": {
+            "throws": 10500,
+            "limited": 2974
+          },
+          "1.7": {
+            "throws": 10500,
+            "limited": 2863
+          }
+        },
+        "pass_dx_m": {
+          "-0.4": {
+            "throws": 6300,
+            "limited": 1250
+          },
+          "-0.2": {
+            "throws": 6300,
+            "limited": 1369
+          },
+          "0.0": {
+            "throws": 6300,
+            "limited": 1498
+          },
+          "0.2": {
+            "throws": 6300,
+            "limited": 1643
+          },
+          "0.4": {
+            "throws": 6300,
+            "limited": 1771
+          }
+        },
+        "pass_dy_m": {
+          "-0.4": {
+            "throws": 6300,
+            "limited": 1492
+          },
+          "-0.2": {
+            "throws": 6300,
+            "limited": 1499
+          },
+          "0.0": {
+            "throws": 6300,
+            "limited": 1518
+          },
+          "0.2": {
+            "throws": 6300,
+            "limited": 1517
+          },
+          "0.4": {
+            "throws": 6300,
+            "limited": 1505
+          }
+        },
+        "elevation_deg": {
+          "5.0": {
+            "throws": 2250,
+            "limited": 653
+          },
+          "10.0": {
+            "throws": 2250,
+            "limited": 1434
+          },
+          "15.0": {
+            "throws": 2250,
+            "limited": 1374
+          },
+          "20.0": {
+            "throws": 2250,
+            "limited": 1355
+          },
+          "25.0": {
+            "throws": 2250,
+            "limited": 1004
+          },
+          "30.0": {
+            "throws": 2250,
+            "limited": 701
+          },
+          "35.0": {
+            "throws": 2250,
+            "limited": 468
+          },
+          "40.0": {
+            "throws": 2250,
+            "limited": 283
+          },
+          "45.0": {
+            "throws": 2250,
+            "limited": 158
+          },
+          "50.0": {
+            "throws": 2250,
+            "limited": 70
+          },
+          "55.0": {
+            "throws": 2250,
+            "limited": 25
+          },
+          "60.0": {
+            "throws": 2250,
+            "limited": 6
+          },
+          "65.0": {
+            "throws": 2250,
+            "limited": 0
+          },
+          "70.0": {
+            "throws": 2250,
+            "limited": 0
+          }
+        }
+      }
+    }
+  },
+  "throws": [
+    {
+      "throw_id": 52,
+      "kind": "pass_point",
+      "pos": [
+        1.149066664678467,
+        -0.9641814145298089,
+        1.0
+      ],
+      "vel": [
+        -2.3278709726118043,
+        1.6249595694923435,
+        4.054400480059348
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": -40.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": 0.2,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.949509078718701,
+      "aim_deviation_deg": 5.083211041400253,
+      "aim_azimuth_deg": 145.08321104140026,
+      "pass_x": -0.3531176487155026,
+      "pass_y": 0.08441140006768463,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6612667611565597,
+      "pass_error_m": 3.039857254805156e-11,
+      "pass_vz_m_s": -2.478006270279482,
+      "apex_height_m": 1.8186083788524692,
+      "apex_margin_m": 0.31660868891083327,
+      "apex_flag": false,
+      "flight_time_s": 0.538904592319644,
+      "terminal_speed_m_s": 3.0250384831944412,
+      "closest_distance_m": 0.2635369201201068,
+      "arrival_descent_deg": 25.315606284974894,
+      "approach_angle_deg": 30.63971006458483,
+      "reach_min_distance_m": 0.7009589783345105,
+      "reach_last_s": 0.9293306484245123,
+      "lead_available_s": 0.7793306484245123,
+      "body_distance_m": 0.4083089474696829,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 53,
+      "kind": "pass_point",
+      "pos": [
+        1.149066664678467,
+        -0.9641814145298089,
+        1.0
+      ],
+      "vel": [
+        -2.0744163088246177,
+        1.4480367132863716,
+        4.381785028504735
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": -40.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": 0.2,
+      "elevation_deg": 60.0,
+      "speed_m_s": 5.059649531476562,
+      "aim_deviation_deg": 5.083211041400253,
+      "aim_azimuth_deg": 145.08321104140026,
+      "pass_x": -0.3531176487155026,
+      "pass_y": 0.08441140006768463,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.7435254341868033,
+      "pass_error_m": 6.263367602343806e-11,
+      "pass_vz_m_s": -2.9590216779563945,
+      "apex_height_m": 1.954464385926165,
+      "apex_margin_m": 0.4524646959845291,
+      "apex_flag": false,
+      "flight_time_s": 0.6445506972732918,
+      "terminal_speed_m_s": 3.1469765455529286,
+      "closest_distance_m": 0.32548666261393017,
+      "arrival_descent_deg": 39.592864418933345,
+      "approach_angle_deg": 32.076809369556045,
+      "reach_min_distance_m": 0.6604043992582563,
+      "reach_last_s": 1.0170056108567556,
+      "lead_available_s": 0.8670056108567555,
+      "body_distance_m": 0.4083089474696829,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 94,
+      "kind": "pass_point",
+      "pos": [
+        1.149066664678467,
+        -0.9641814145298089,
+        1.0
+      ],
+      "vel": [
+        -2.3295512986050593,
+        1.1603044346106914,
+        3.716785200157141
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": -40.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": -0.2,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.5373569242365,
+      "aim_deviation_deg": 13.52299268309434,
+      "aim_azimuth_deg": 153.52299268309434,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.31558859993231536,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.5700158357766401,
+      "pass_error_m": 6.55853149567065e-12,
+      "pass_vz_m_s": -1.9154078038127451,
+      "apex_height_m": 1.690459585595542,
+      "apex_margin_m": 0.18845989565390608,
+      "apex_flag": false,
+      "flight_time_s": 0.5458239984941836,
+      "terminal_speed_m_s": 3.0240414852359714,
+      "closest_distance_m": 0.2732478619215398,
+      "arrival_descent_deg": 33.767601289227066,
+      "approach_angle_deg": 23.917114719357293,
+      "reach_min_distance_m": 0.5650492800284076,
+      "reach_last_s": 0.9219916121130554,
+      "lead_available_s": 0.7719916121130553,
+      "body_distance_m": 0.3203412387213137,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 152,
+      "kind": "pass_point",
+      "pos": [
+        1.149066664678467,
+        -0.9641814145298089,
+        1.0
+      ],
+      "vel": [
+        -1.7289261482538665,
+        0.7036789016604131,
+        4.003025116965557
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": -40.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": 0.0,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 65.0,
+      "speed_m_s": 4.416849523112042,
+      "aim_deviation_deg": 17.85350742292489,
+      "aim_azimuth_deg": 157.8535074229249,
+      "pass_x": 0.04688235128449741,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6498806462151401,
+      "pass_error_m": 9.050094007534426e-12,
+      "pass_vz_m_s": -2.4112591749424737,
+      "apex_height_m": 1.8009342782597757,
+      "apex_margin_m": 0.2989345883181398,
+      "apex_flag": false,
+      "flight_time_s": 0.6769264887143165,
+      "terminal_speed_m_s": 3.2216987304021956,
+      "closest_distance_m": 0.390393865014236,
+      "arrival_descent_deg": 56.04075125366399,
+      "approach_angle_deg": 34.93836814480469,
+      "reach_min_distance_m": 0.4701007192243849,
+      "reach_last_s": 1.0251522338276253,
+      "lead_available_s": 0.8751522338276253,
+      "body_distance_m": 0.41343347364493144,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 1075,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        -0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.4800060805166453,
+        0.27779455820924415,
+        4.322360457887634
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": -20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.2,
+      "elevation_deg": 60.0,
+      "speed_m_s": 4.99103194779204,
+      "aim_deviation_deg": 13.60873171520194,
+      "aim_azimuth_deg": 173.60873171520194,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.31558859993231536,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.7291628969064536,
+      "pass_error_m": 5.0669246576262594e-11,
+      "pass_vz_m_s": -2.8767060383188734,
+      "apex_height_m": 1.9293631517181473,
+      "apex_margin_m": 0.4273634617765114,
+      "apex_flag": false,
+      "flight_time_s": 0.646545726047121,
+      "terminal_speed_m_s": 3.1712449497735284,
+      "closest_distance_m": 0.36450081202588824,
+      "arrival_descent_deg": 41.005328712890794,
+      "approach_angle_deg": 16.931447490604,
+      "reach_min_distance_m": 0.7220903530197851,
+      "reach_last_s": 0.9999290782912391,
+      "lead_available_s": 0.8499290782912391,
+      "body_distance_m": 0.46390254096951566,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 1076,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        -0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.193026678112917,
+        0.24564894496571182,
+        4.732373082873657
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": -20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.2,
+      "elevation_deg": 65.0,
+      "speed_m_s": 5.221595963935248,
+      "aim_deviation_deg": 13.60873171520194,
+      "aim_azimuth_deg": 173.60873171520194,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.31558859993231536,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.8269202258075228,
+      "pass_error_m": 1.2387135761571244e-10,
+      "pass_vz_m_s": -3.4285664007539256,
+      "apex_height_m": 2.1109262198580936,
+      "apex_margin_m": 0.6089265299164577,
+      "apex_flag": false,
+      "flight_time_s": 0.7681999107773723,
+      "terminal_speed_m_s": 3.5551586258527803,
+      "closest_distance_m": 0.396103780434655,
+      "arrival_descent_deg": 53.74546195239068,
+      "approach_angle_deg": 29.346710199845184,
+      "reach_min_distance_m": 0.6792883233692009,
+      "reach_last_s": 1.095585110126314,
+      "lead_available_s": 0.9455851101263141,
+      "body_distance_m": 0.46390254096951566,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 1102,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        -0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.7057038070259676,
+        0.9170816770389532,
+        4.08007461169227
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": -20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": 0.2,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.980851406204688,
+      "aim_deviation_deg": 1.2762265079566628,
+      "aim_azimuth_deg": 161.27622650795666,
+      "pass_x": -0.3531176487155026,
+      "pass_y": 0.08441140006768463,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6678290163043602,
+      "pass_error_m": 3.374500678887671e-11,
+      "pass_vz_m_s": -2.5170913159150623,
+      "apex_height_m": 1.8287694751970622,
+      "apex_margin_m": 0.3267697852554263,
+      "apex_flag": false,
+      "flight_time_s": 0.5479366838749896,
+      "terminal_speed_m_s": 3.0662784502330678,
+      "closest_distance_m": 0.2662200382228483,
+      "arrival_descent_deg": 26.2696284853383,
+      "approach_angle_deg": 16.043031864467416,
+      "reach_min_distance_m": 0.7059956311401648,
+      "reach_last_s": 0.930546670979078,
+      "lead_available_s": 0.7805466709790779,
+      "body_distance_m": 0.4083089474696829,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 1132,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        -0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.0879193913334246,
+        -0.003418346425829747,
+        4.4775635850695075
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": -20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 65.0,
+      "speed_m_s": 4.940444790516227,
+      "aim_deviation_deg": 20.093804698080458,
+      "aim_azimuth_deg": -179.90619530191955,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.767433006369672,
+      "pass_error_m": 5.423395066372905e-11,
+      "pass_vz_m_s": -3.09634676042811,
+      "apex_height_m": 1.9972836096824034,
+      "apex_margin_m": 0.49528391974076746,
+      "apex_flag": false,
+      "flight_time_s": 0.734449186849237,
+      "terminal_speed_m_s": 3.4234467353861535,
+      "closest_distance_m": 0.43279101192127284,
+      "arrival_descent_deg": 54.291563771543466,
+      "approach_angle_deg": 29.628282244260973,
+      "reach_min_distance_m": 0.677291574813007,
+      "reach_last_s": 1.0619741174222197,
+      "lead_available_s": 0.9119741174222197,
+      "body_distance_m": 0.4648710872817999,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 1144,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        -0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.6574379735080225,
+        0.3357672134440027,
+        3.8253887973461485
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": -20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": -0.2,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.669937435932925,
+      "aim_deviation_deg": 12.798838616119898,
+      "aim_azimuth_deg": 172.7988386161199,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.31558859993231536,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6005680773154879,
+      "pass_error_m": 1.1146195078026722e-11,
+      "pass_vz_m_s": -2.108146140901496,
+      "apex_height_m": 1.730566869730647,
+      "apex_margin_m": 0.2285671797890112,
+      "apex_flag": false,
+      "flight_time_s": 0.5549058696603687,
+      "terminal_speed_m_s": 3.073790011267558,
+      "closest_distance_m": 0.24589143289305443,
+      "arrival_descent_deg": 32.81673687857273,
+      "approach_angle_deg": 9.771776664565477,
+      "reach_min_distance_m": 0.6224060185970978,
+      "reach_last_s": 0.9231745993272128,
+      "lead_available_s": 0.7731745993272128,
+      "body_distance_m": 0.3203412387213137,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 1145,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        -0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.357687080571938,
+        0.29789369652588643,
+        4.116100955148822
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": -20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": -0.2,
+      "elevation_deg": 60.0,
+      "speed_m_s": 4.752863988933696,
+      "aim_deviation_deg": 12.798838616119898,
+      "aim_azimuth_deg": 172.7988386161199,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.31558859993231536,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.678060127419777,
+      "pass_error_m": 2.3191004672185045e-11,
+      "pass_vz_m_s": -2.5787245017287446,
+      "apex_height_m": 1.844656266606376,
+      "apex_margin_m": 0.34265657666474003,
+      "apex_flag": false,
+      "flight_time_s": 0.6404302630390506,
+      "terminal_speed_m_s": 3.182235921373163,
+      "closest_distance_m": 0.25640755988759634,
+      "arrival_descent_deg": 44.12854572856458,
+      "approach_angle_deg": 20.094180216971253,
+      "reach_min_distance_m": 0.5707437579664552,
+      "reach_last_s": 0.9994299046397762,
+      "lead_available_s": 0.8494299046397762,
+      "body_distance_m": 0.3203412387213137,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 2194,
+      "kind": "pass_point",
+      "pos": [
+        1.5,
+        0.0,
+        1.0
+      ],
+      "vel": [
+        -2.697621307671535,
+        -0.5149896816461578,
+        3.922177837771559
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 0.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": -0.2,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.788095036954871,
+      "aim_deviation_deg": 10.808010649551136,
+      "aim_azimuth_deg": -169.19198935044886,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.31558859993231536,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6267473235003207,
+      "pass_error_m": 1.7321921674806617e-11,
+      "pass_vz_m_s": -2.269620160456106,
+      "apex_height_m": 1.7672051877800703,
+      "apex_margin_m": 0.2652054978384344,
+      "apex_flag": false,
+      "flight_time_s": 0.5668237978621298,
+      "terminal_speed_m_s": 3.137978569053227,
+      "closest_distance_m": 0.2123471506032529,
+      "arrival_descent_deg": 32.58184874836405,
+      "approach_angle_deg": 13.039247696924413,
+      "reach_min_distance_m": 0.6591218732279712,
+      "reach_last_s": 0.9255641068214162,
+      "lead_available_s": 0.7755641068214162,
+      "body_distance_m": 0.3203412387213137,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 2208,
+      "kind": "pass_point",
+      "pos": [
+        1.5,
+        0.0,
+        1.0
+      ],
+      "vel": [
+        -2.7235201502795077,
+        -0.1904328353779708,
+        3.899086436823598
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 0.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": 0.0,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.759905641458698,
+      "aim_deviation_deg": 3.9997017595372446,
+      "aim_azimuth_deg": -176.00029824046277,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.11558859993231538,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6205792137591722,
+      "pass_error_m": 1.563438267737638e-11,
+      "pass_vz_m_s": -2.2318578780835714,
+      "apex_height_m": 1.7583879779691973,
+      "apex_margin_m": 0.2563882880275614,
+      "apex_flag": false,
+      "flight_time_s": 0.5699558323736856,
+      "terminal_speed_m_s": 3.153468934929849,
+      "closest_distance_m": 0.12148473877948378,
+      "arrival_descent_deg": 33.5332138462137,
+      "approach_angle_deg": 9.883403363625339,
+      "reach_min_distance_m": 0.5691980782884993,
+      "reach_last_s": 0.9373472342656273,
+      "lead_available_s": 0.7873472342656272,
+      "body_distance_m": 0.26292944045969563,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 2378,
+      "kind": "pass_point",
+      "pos": [
+        1.5,
+        0.0,
+        1.0
+      ],
+      "vel": [
+        -1.8767148489190828,
+        0.42594492085879937,
+        4.126985142435147
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 0.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": 0.2,
+      "pass_dy_m": 0.4,
+      "elevation_deg": 65.0,
+      "speed_m_s": 4.553624278049215,
+      "aim_deviation_deg": -12.787393057432865,
+      "aim_azimuth_deg": 167.21260694256713,
+      "pass_x": 0.24688235128449743,
+      "pass_y": 0.2844114000676846,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6816977410931344,
+      "pass_error_m": 1.5011769605166592e-11,
+      "pass_vz_m_s": -2.601113536679618,
+      "apex_height_m": 1.8502805832776104,
+      "apex_margin_m": 0.34828089333597445,
+      "apex_flag": false,
+      "flight_time_s": 0.699801285312427,
+      "terminal_speed_m_s": 3.336030507589131,
+      "closest_distance_m": 0.443114775685804,
+      "arrival_descent_deg": 56.3009378767003,
+      "approach_angle_deg": 32.76394892149051,
+      "reach_min_distance_m": 0.3633088494215198,
+      "reach_last_s": 1.0492535151433056,
+      "lead_available_s": 0.8992535151433055,
+      "body_distance_m": 0.4814591075153083,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 3162,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.0305651708257746,
+        -1.1849599992753388,
+        5.041792375685545
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 65.0,
+      "speed_m_s": 5.563002379324875,
+      "aim_deviation_deg": 10.26619733922656,
+      "aim_azimuth_deg": -149.73380266077345,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.8968826508369646,
+      "pass_error_m": 3.0701108322261916e-10,
+      "pass_vz_m_s": -3.809729349015567,
+      "apex_height_m": 2.2564613792400237,
+      "apex_margin_m": 0.7544616892983877,
+      "apex_flag": false,
+      "flight_time_s": 0.8180537781200815,
+      "terminal_speed_m_s": 3.7831145904948924,
+      "closest_distance_m": 0.4822456669346141,
+      "arrival_descent_deg": 53.963030038913914,
+      "approach_angle_deg": 37.401477034465884,
+      "reach_min_distance_m": 0.8431341446743054,
+      "reach_last_s": 1.1083492140920346,
+      "lead_available_s": 0.9583492140920346,
+      "body_distance_m": 0.5841943327789234,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 3244,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.473562337649587,
+        -1.3116383466638109,
+        3.998535356843629
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": -0.2,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.881310355898923,
+      "aim_deviation_deg": 7.935348331000522,
+      "aim_azimuth_deg": -152.0646516689995,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.31558859993231536,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6468374458414728,
+      "pass_error_m": 2.4092061678970822e-11,
+      "pass_vz_m_s": -2.391485949286148,
+      "apex_height_m": 1.7967004056793412,
+      "apex_margin_m": 0.2947007157377053,
+      "apex_flag": false,
+      "flight_time_s": 0.5796252379691197,
+      "terminal_speed_m_s": 3.2058236270745275,
+      "closest_distance_m": 0.18513246172820416,
+      "arrival_descent_deg": 32.91047946831243,
+      "approach_angle_deg": 26.583775318223356,
+      "reach_min_distance_m": 0.6811161066614492,
+      "reach_last_s": 0.9282542143026206,
+      "lead_available_s": 0.7782542143026205,
+      "body_distance_m": 0.3203412387213137,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 3314,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.2992669618543338,
+        -1.3981628924185898,
+        3.8431481530868488
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": 0.0,
+      "pass_dy_m": -0.2,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.691617606133947,
+      "aim_deviation_deg": 11.303396000636596,
+      "aim_azimuth_deg": -148.6966039993634,
+      "pass_x": 0.04688235128449741,
+      "pass_y": -0.31558859993231536,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6054383004549173,
+      "pass_error_m": 1.2110312752611208e-11,
+      "pass_vz_m_s": -2.138428887193425,
+      "apex_height_m": 1.7372265040117931,
+      "apex_margin_m": 0.23522681407015722,
+      "apex_flag": false,
+      "flight_time_s": 0.5798360093601291,
+      "terminal_speed_m_s": 3.207223985777852,
+      "closest_distance_m": 0.18242641413856653,
+      "arrival_descent_deg": 36.12327761128622,
+      "approach_angle_deg": 29.96650715063434,
+      "reach_min_distance_m": 0.6097155184581604,
+      "reach_last_s": 0.9266651679219415,
+      "lead_available_s": 0.7766651679219415,
+      "body_distance_m": 0.2396677253304188,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 3329,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.116596158937586,
+        -0.976425160035881,
+        4.0373451895448955
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": 0.0,
+      "pass_dy_m": 0.0,
+      "elevation_deg": 60.0,
+      "speed_m_s": 4.661924663990373,
+      "aim_deviation_deg": 4.764754367948409,
+      "aim_azimuth_deg": -155.2352456320516,
+      "pass_x": 0.04688235128449741,
+      "pass_y": -0.11558859993231538,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6579372415220743,
+      "pass_error_m": 1.6847856443291676e-11,
+      "pass_vz_m_s": -2.4589585251947734,
+      "apex_height_m": 1.8133107816301364,
+      "apex_margin_m": 0.31131109168850046,
+      "apex_flag": false,
+      "flight_time_s": 0.6579372415242811,
+      "terminal_speed_m_s": 3.325832735487513,
+      "closest_distance_m": 1.244493927770783e-11,
+      "arrival_descent_deg": 47.67617964782336,
+      "approach_angle_deg": 30.73442128451545,
+      "reach_min_distance_m": 0.3959340025858731,
+      "reach_last_s": 1.0081946143264138,
+      "lead_available_s": 0.8581946143264138,
+      "body_distance_m": 0.154770798279262,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 3398,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        0.5130302149885031,
+        1.0
+      ],
+      "vel": [
+        -2.2153111112382255,
+        -1.1977623225200518,
+        3.5966193988888957
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": 0.2,
+      "pass_dy_m": 0.0,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.390661567610067,
+      "aim_deviation_deg": 8.398960789345173,
+      "aim_azimuth_deg": -151.60103921065482,
+      "pass_x": 0.24688235128449743,
+      "pass_y": -0.11558859993231538,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.5342702170661616,
+      "pass_error_m": 3.4499070267202114e-12,
+      "pass_vz_m_s": -1.6831033577395058,
+      "apex_height_m": 1.6473274339756847,
+      "apex_margin_m": 0.1453277440340488,
+      "apex_flag": false,
+      "flight_time_s": 0.5774903388816596,
+      "terminal_speed_m_s": 3.2132046068577225,
+      "closest_distance_m": 0.14402900134255064,
+      "arrival_descent_deg": 40.85522551459398,
+      "approach_angle_deg": 29.340771595472354,
+      "reach_min_distance_m": 0.3940764071172576,
+      "reach_last_s": 0.9298793878486206,
+      "lead_available_s": 0.7798793878486205,
+      "body_distance_m": 0.24243784634324608,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 3860,
+      "kind": "pass_point",
+      "pos": [
+        1.4095389311788626,
+        0.5130302149885031,
+        1.7
+      ],
+      "vel": [
+        -2.25417775770829,
+        -1.315451733595053,
+        3.7273652388228893
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 20.0,
+      "release_height_m": 1.7,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.550272766587759,
+      "aim_deviation_deg": 10.26619733922656,
+      "aim_azimuth_deg": -149.73380266077345,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.8032864584074397,
+      "pass_error_m": 7.107159305519417e-11,
+      "pass_vz_m_s": -4.135239506916606,
+      "apex_height_m": 2.394319949976677,
+      "apex_margin_m": 0.8923202600350413,
+      "apex_flag": false,
+      "flight_time_s": 0.7330479313589108,
+      "terminal_speed_m_s": 4.269581441340659,
+      "closest_distance_m": 0.480856586256087,
+      "arrival_descent_deg": 54.38825667053244,
+      "approach_angle_deg": 37.670354674826214,
+      "reach_min_distance_m": 0.848246174381775,
+      "reach_last_s": 0.9976065391740606,
+      "lead_available_s": 0.8476065391740606,
+      "body_distance_m": 0.5841943327789234,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 4308,
+      "kind": "pass_point",
+      "pos": [
+        1.149066664678467,
+        0.9641814145298089,
+        1.0
+      ],
+      "vel": [
+        -2.118252383116614,
+        -1.7564528944377371,
+        3.929904166913015
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 40.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": 0.0,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.797527143235168,
+      "aim_deviation_deg": -0.3345092112448793,
+      "aim_azimuth_deg": -140.33450921124486,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.11558859993231538,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6288011022801671,
+      "pass_error_m": 1.7926327089412553e-11,
+      "pass_vz_m_s": -2.282156670777984,
+      "apex_height_m": 1.7701660484516963,
+      "apex_margin_m": 0.26816635851006043,
+      "apex_flag": false,
+      "flight_time_s": 0.5919106034613785,
+      "terminal_speed_m_s": 3.2715383304206567,
+      "closest_distance_m": 0.15973554983239024,
+      "arrival_descent_deg": 36.05789335831729,
+      "approach_angle_deg": 36.60983859367473,
+      "reach_min_distance_m": 0.5818309916322,
+      "reach_last_s": 0.9382690315044752,
+      "lead_available_s": 0.7882690315044751,
+      "body_distance_m": 0.26292944045969563,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 4560,
+      "kind": "pass_point",
+      "pos": [
+        1.149066664678467,
+        0.9641814145298089,
+        1.4
+      ],
+      "vel": [
+        -1.988680773719536,
+        -1.9590073941317458,
+        3.9866979118785375
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 1.5,
+      "azimuth_deg": 40.0,
+      "release_height_m": 1.4,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 55.0,
+      "speed_m_s": 4.866859503889677,
+      "aim_deviation_deg": 4.569335944632258,
+      "aim_azimuth_deg": -135.43066405536777,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.7766463891887176,
+      "pass_error_m": 8.21185341948194e-11,
+      "pass_vz_m_s": -3.6433472076356948,
+      "apex_height_m": 2.19209384395924,
+      "apex_margin_m": 0.6900941540176042,
+      "apex_flag": false,
+      "flight_time_s": 0.6811702857159464,
+      "terminal_speed_m_s": 3.816541677737261,
+      "closest_distance_m": 0.4361799906061021,
+      "arrival_descent_deg": 45.726863356790545,
+      "approach_angle_deg": 42.03225967865113,
+      "reach_min_distance_m": 0.8759411994882881,
+      "reach_last_s": 0.9629871916752215,
+      "lead_available_s": 0.8129871916752215,
+      "body_distance_m": 0.5841943327789234,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 7722,
+      "kind": "pass_point",
+      "pos": [
+        2.0,
+        0.0,
+        1.4
+      ],
+      "vel": [
+        -3.5248190576222935,
+        -0.47273144715776755,
+        3.556377990330779
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.0,
+      "azimuth_deg": 0.0,
+      "release_height_m": 1.4,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.2,
+      "elevation_deg": 45.0,
+      "speed_m_s": 5.02947798685096,
+      "aim_deviation_deg": 7.63864818056662,
+      "aim_azimuth_deg": -172.3613518194334,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.31558859993231536,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6866155267215568,
+      "pass_error_m": 6.224842863389313e-11,
+      "pass_vz_m_s": -3.1908064143393653,
+      "apex_height_m": 2.03077636135233,
+      "apex_margin_m": 0.5287766714106943,
+      "apex_flag": false,
+      "flight_time_s": 0.6083982983210534,
+      "terminal_speed_m_s": 4.1772833964766045,
+      "closest_distance_m": 0.30802060203726134,
+      "arrival_descent_deg": 35.79783005166328,
+      "approach_angle_deg": 13.393551863436116,
+      "reach_min_distance_m": 0.7757810273511359,
+      "reach_last_s": 0.891388275107056,
+      "lead_available_s": 0.741388275107056,
+      "body_distance_m": 0.46390254096951566,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 7793,
+      "kind": "pass_point",
+      "pos": [
+        2.0,
+        0.0,
+        1.4
+      ],
+      "vel": [
+        -3.078098334239803,
+        -0.45116565940381975,
+        3.707529875019903
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.0,
+      "azimuth_deg": 0.0,
+      "release_height_m": 1.4,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": -0.2,
+      "elevation_deg": 50.0,
+      "speed_m_s": 4.839836524268173,
+      "aim_deviation_deg": 8.33862966249279,
+      "aim_azimuth_deg": -171.6613703375072,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.31558859993231536,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.7186294108904474,
+      "pass_error_m": 5.699596350439151e-11,
+      "pass_vz_m_s": -3.3532094665256595,
+      "apex_height_m": 2.085831558282242,
+      "apex_margin_m": 0.5838318683406061,
+      "apex_flag": false,
+      "flight_time_s": 0.6819182301439001,
+      "terminal_speed_m_s": 4.216440398189113,
+      "closest_distance_m": 0.23698268174832185,
+      "arrival_descent_deg": 45.4238966127726,
+      "approach_angle_deg": 22.0829751831116,
+      "reach_min_distance_m": 0.6216714469352582,
+      "reach_last_s": 0.9762658761187945,
+      "lead_available_s": 0.8262658761187944,
+      "body_distance_m": 0.3203412387213137,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 8411,
+      "kind": "pass_point",
+      "pos": [
+        1.8793852415718169,
+        0.6840402866513374,
+        1.0
+      ],
+      "vel": [
+        -2.573619996969048,
+        -1.382927164343362,
+        5.060436966511212
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.0,
+      "azimuth_deg": 20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 60.0,
+      "speed_m_s": 5.843289289664763,
+      "aim_deviation_deg": 8.25123097475765,
+      "aim_azimuth_deg": -151.74876902524235,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.8996515496118359,
+      "pass_error_m": 5.127172020280568e-10,
+      "pass_vz_m_s": -3.8217909169352824,
+      "apex_height_m": 2.2627551210869883,
+      "apex_margin_m": 0.7607554311453524,
+      "apex_flag": false,
+      "flight_time_s": 0.8165905390757365,
+      "terminal_speed_m_s": 4.091554392437561,
+      "closest_distance_m": 0.4544021264084263,
+      "arrival_descent_deg": 47.83294862217164,
+      "approach_angle_deg": 32.70124447358658,
+      "reach_min_distance_m": 0.8663866920353971,
+      "reach_last_s": 1.0872685256444528,
+      "lead_available_s": 0.9372685256444527,
+      "body_distance_m": 0.5841943327789234,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 9109,
+      "kind": "pass_point",
+      "pos": [
+        1.8793852415718169,
+        0.6840402866513374,
+        1.7
+      ],
+      "vel": [
+        -2.8162955631981297,
+        -1.5133281687868474,
+        3.810199104859571
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.0,
+      "azimuth_deg": 20.0,
+      "release_height_m": 1.7,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 50.0,
+      "speed_m_s": 4.973861685291007,
+      "aim_deviation_deg": 8.25123097475765,
+      "aim_azimuth_deg": -151.74876902524235,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.8180743151461509,
+      "pass_error_m": 1.6679924108586874e-10,
+      "pass_vz_m_s": -4.196566674976528,
+      "apex_height_m": 2.423493306224662,
+      "apex_margin_m": 0.9214936162830263,
+      "apex_flag": false,
+      "flight_time_s": 0.7458433451454848,
+      "terminal_speed_m_s": 4.635173889215186,
+      "closest_distance_m": 0.4575503670049433,
+      "arrival_descent_deg": 49.33530568687556,
+      "approach_angle_deg": 33.5758027852907,
+      "reach_min_distance_m": 0.8675979690130542,
+      "reach_last_s": 0.9902189420020473,
+      "lead_available_s": 0.8402189420020473,
+      "body_distance_m": 0.5841943327789234,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 9460,
+      "kind": "pass_point",
+      "pos": [
+        1.532088886237956,
+        1.2855752193730785,
+        1.0
+      ],
+      "vel": [
+        -2.3836744202139024,
+        -2.277409951159032,
+        4.708233785984801
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.0,
+      "azimuth_deg": 40.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 55.0,
+      "speed_m_s": 5.747692163878389,
+      "aim_deviation_deg": 3.6939839358178035,
+      "aim_azimuth_deg": -136.30601606418222,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.8187510598796154,
+      "pass_error_m": 3.050961705497457e-10,
+      "pass_vz_m_s": -3.3790052034403835,
+      "apex_height_m": 2.0952753889576425,
+      "apex_margin_m": 0.5932756990160066,
+      "apex_flag": false,
+      "flight_time_s": 0.711351589174933,
+      "terminal_speed_m_s": 3.903480752061829,
+      "closest_distance_m": 0.3860167863679103,
+      "arrival_descent_deg": 37.055824625811084,
+      "approach_angle_deg": 39.92965816405294,
+      "reach_min_distance_m": 0.891390704694206,
+      "reach_last_s": 0.9840942864618256,
+      "lead_available_s": 0.8340942864618256,
+      "body_distance_m": 0.5841943327789234,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 9878,
+      "kind": "pass_point",
+      "pos": [
+        1.532088886237956,
+        1.2855752193730785,
+        1.4
+      ],
+      "vel": [
+        -2.476388589786194,
+        -2.646786276903908,
+        3.6246348841269658
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.0,
+      "azimuth_deg": 40.0,
+      "release_height_m": 1.4,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 45.0,
+      "speed_m_s": 5.126007811782987,
+      "aim_deviation_deg": 6.904965349816657,
+      "aim_azimuth_deg": -133.09503465018335,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.7006793152061617,
+      "pass_error_m": 7.991074468804982e-11,
+      "pass_vz_m_s": -3.2608511862927223,
+      "apex_height_m": 2.0546811107095846,
+      "apex_margin_m": 0.5526814207679487,
+      "apex_flag": false,
+      "flight_time_s": 0.6234716361547807,
+      "terminal_speed_m_s": 4.271339374862576,
+      "closest_distance_m": 0.30471690497263787,
+      "arrival_descent_deg": 36.22269034484439,
+      "approach_angle_deg": 42.45105498097342,
+      "reach_min_distance_m": 0.8287434195048441,
+      "reach_last_s": 0.8817942083832061,
+      "lead_available_s": 0.7317942083832061,
+      "body_distance_m": 0.4648710872817999,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 11560,
+      "kind": "pass_point",
+      "pos": [
+        2.3492315519647713,
+        -0.8550503583141718,
+        1.0
+      ],
+      "vel": [
+        -3.3356988223953823,
+        0.41902141566218554,
+        4.801310743341994
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.5,
+      "azimuth_deg": -20.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 55.0,
+      "speed_m_s": 5.861318148219284,
+      "aim_deviation_deg": 12.840162832475489,
+      "aim_azimuth_deg": 172.8401628324755,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.8399684479016808,
+      "pass_error_m": 4.0384051658293174e-10,
+      "pass_vz_m_s": -3.495522693455636,
+      "apex_height_m": 2.1376365167439437,
+      "apex_margin_m": 0.6356368268023078,
+      "apex_flag": false,
+      "flight_time_s": 0.7837905808836784,
+      "terminal_speed_m_s": 4.326296415528579,
+      "closest_distance_m": 0.511342037814882,
+      "arrival_descent_deg": 43.19334712267592,
+      "approach_angle_deg": 19.190455350295373,
+      "reach_min_distance_m": 0.8377291744596035,
+      "reach_last_s": 1.048758981698755,
+      "lead_available_s": 0.898758981698755,
+      "body_distance_m": 0.5841943327789234,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 12650,
+      "kind": "pass_point",
+      "pos": [
+        2.5,
+        0.0,
+        1.0
+      ],
+      "vel": [
+        -4.218331979812116,
+        0.12480218210648857,
+        4.220177754143081
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.5,
+      "azimuth_deg": 0.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": 0.2,
+      "elevation_deg": 45.0,
+      "speed_m_s": 5.968232615534375,
+      "aim_deviation_deg": -1.6946397513610403,
+      "aim_azimuth_deg": 178.30536024863898,
+      "pass_x": -0.3531176487155026,
+      "pass_y": 0.08441140006768463,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.6997992701639483,
+      "pass_error_m": 1.8489254571818492e-10,
+      "pass_vz_m_s": -2.7022557551146225,
+      "apex_height_m": 1.8805921818529339,
+      "apex_margin_m": 0.37859249191129796,
+      "apex_flag": false,
+      "flight_time_s": 0.620209225628482,
+      "terminal_speed_m_s": 4.429391283398542,
+      "closest_distance_m": 0.2785593459400909,
+      "arrival_descent_deg": 25.959781547649236,
+      "approach_angle_deg": 1.4193177840966094,
+      "reach_min_distance_m": 0.7312260359719546,
+      "reach_last_s": 0.8955554660470519,
+      "lead_available_s": 0.7455554660470519,
+      "body_distance_m": 0.4083089474696829,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 14079,
+      "kind": "pass_point",
+      "pos": [
+        2.3492315519647713,
+        0.8550503583141718,
+        1.4
+      ],
+      "vel": [
+        -3.127480374821167,
+        -1.713048858934586,
+        4.249678660674377
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.5,
+      "azimuth_deg": 20.0,
+      "release_height_m": 1.4,
+      "pass_dx_m": -0.2,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 50.0,
+      "speed_m_s": 5.547561500964166,
+      "aim_deviation_deg": 8.711322425113003,
+      "aim_azimuth_deg": -151.288677574887,
+      "pass_x": -0.1531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.8289929543781284,
+      "pass_error_m": 3.311688701046478e-10,
+      "pass_vz_m_s": -3.8964036223860252,
+      "apex_height_m": 2.2952193712558975,
+      "apex_margin_m": 0.7932196813142616,
+      "apex_flag": false,
+      "flight_time_s": 0.776871337248014,
+      "terminal_speed_m_s": 4.770707652380826,
+      "closest_distance_m": 0.3723816999103187,
+      "arrival_descent_deg": 45.52854298375172,
+      "approach_angle_deg": 31.717141883549292,
+      "reach_min_distance_m": 0.7941209514624971,
+      "reach_last_s": 1.0229408716227495,
+      "lead_available_s": 0.8729408716227495,
+      "body_distance_m": 0.4648710872817999,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 14708,
+      "kind": "pass_point",
+      "pos": [
+        1.915111107797445,
+        1.6069690242163481,
+        1.0
+      ],
+      "vel": [
+        -3.193749455822104,
+        -2.9886391474453364,
+        4.374014122085886
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.5,
+      "azimuth_deg": 40.0,
+      "release_height_m": 1.0,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 45.0,
+      "speed_m_s": 6.185790093465307,
+      "aim_deviation_deg": 3.0998208173419086,
+      "aim_azimuth_deg": -136.9001791826581,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.7370217495587633,
+      "pass_error_m": 3.1994518145950224e-10,
+      "pass_vz_m_s": -2.916309821245832,
+      "apex_height_m": 1.9438951819303625,
+      "apex_margin_m": 0.4418954919887266,
+      "apex_flag": false,
+      "flight_time_s": 0.6279616450865578,
+      "terminal_speed_m_s": 4.52179872176476,
+      "closest_distance_m": 0.2875865947858787,
+      "arrival_descent_deg": 24.455238394072172,
+      "approach_angle_deg": 39.95367009400444,
+      "reach_min_distance_m": 0.8820258700963577,
+      "reach_last_s": 0.8569996142983272,
+      "lead_available_s": 0.7069996142983271,
+      "body_distance_m": 0.5841943327789234,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    },
+    {
+      "throw_id": 15408,
+      "kind": "pass_point",
+      "pos": [
+        1.915111107797445,
+        1.6069690242163481,
+        1.7
+      ],
+      "vel": [
+        -2.833989480463363,
+        -2.651983827134891,
+        3.881303208300277
+      ],
+      "omega": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance_m": 2.5,
+      "azimuth_deg": 40.0,
+      "release_height_m": 1.7,
+      "pass_dx_m": -0.4,
+      "pass_dy_m": -0.4,
+      "elevation_deg": 45.0,
+      "speed_m_s": 5.488991636860458,
+      "aim_deviation_deg": 3.0998208173419086,
+      "aim_azimuth_deg": -136.9001791826581,
+      "pass_x": -0.3531176487155026,
+      "pass_y": -0.5155885999323154,
+      "pass_z": 1.501999689941636,
+      "pass_time_s": 0.8304351816857677,
+      "pass_error_m": 3.8634051513497525e-10,
+      "pass_vz_m_s": -4.245775614262437,
+      "apex_height_m": 2.448261521649536,
+      "apex_margin_m": 0.9462618317079001,
+      "apex_flag": false,
+      "flight_time_s": 0.7539659505654827,
+      "terminal_speed_m_s": 5.063578335839763,
+      "closest_distance_m": 0.41486125201474944,
+      "arrival_descent_deg": 44.16612072931952,
+      "approach_angle_deg": 40.64613647652302,
+      "reach_min_distance_m": 0.8882628471136466,
+      "reach_last_s": 0.9722015175538045,
+      "lead_available_s": 0.8222015175538044,
+      "body_distance_m": 0.5841943327789234,
+      "body_flag": false,
+      "screen": "",
+      "limit": "",
+      "caught_seeds": [
+        8210
+      ],
+      "thrown_seeds": [
+        8210
+      ]
+    }
+  ]
+}

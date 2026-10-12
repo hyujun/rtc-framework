@@ -53,7 +53,7 @@ before #798 — ``reference`` (the S3.5b throw repeated, then perturbed) and
 ``s35b`` (iid draws from a per-robot gate-map box) — were values of the old
 layout (the arm base at the floor) and are gone; a list file holds what they
 held, with its throws fixed and labelled (``integrated_bringup/config/<robot>/
-throw_sets/``).
+throw_sets/`` — since #821 the catch sets of the robot's throw population).
 
 * ``hand_cliff`` / ``hand_lob`` / ``hand_lhs`` (dynamic_catching S8-F): throws
   specified by their ARRIVAL state at the catch frame of the wait pose the
