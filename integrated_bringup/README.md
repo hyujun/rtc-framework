@@ -1185,7 +1185,7 @@ ros2 run integrated_bringup catch_population_trials --config <파일> --out <결
 |---|---|
 | `--config` · `--out` | 설정 파일과 1 단계의 결과 폴더 (필수). 결과 폴더의 `config.yaml` (1 단계가 남긴 사본) 과 `sim` 절 밖이 다르면 거부한다 |
 | `--estimator-ws` | 추정기 (`ball_perception`) 의 colcon workspace. 기본은 `BALL_SIM_WS`. 그 workspace 는 추정기를 띄우는 셸에서만 source 한다 |
-| `--profile` | 추정기의 profile. 기본은 `PROFILE`, 없으면 그 workspace 의 출하 catching profile |
+| `--profile` | 추정기의 profile. 기본은 `PROFILE`, 없으면 그 workspace 의 출하 catching profile. profile 은 이 저장소 밖의 파일이다 — 그 `prediction.horizon_s` 가 설정의 `timing.prediction_horizon_s` (1 단계가 판정에 쓴 값) 와 다르면 던지기 전에 거부한다 |
 | `--arms` · `--seeds` | 던질 조합 (`<search>_<segment>`) 과 추정기 seed. 기본은 설정의 전부 · `sim.estimator_seeds` |
 | `--max-chunks N` · `--throws-limit N` | 조합마다 묶음 0 … N−1 만 · 묶음마다 앞 N 발만 (smoke) |
 | `--viewer on\|off` | MuJoCo viewer. 기본은 설정의 `sim.viewer` |

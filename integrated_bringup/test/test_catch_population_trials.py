@@ -233,6 +233,29 @@ def test_the_estimators_shipped_profile_is_found_in_either_install(tmp_path):
     assert cpt.estimator_profile(tmp_path) == merged / "sim_profile.catching.json"
 
 
+def test_a_profile_is_the_judged_estimator_only_with_the_judged_horizon(tmp_path):
+    timing = SimpleNamespace(prediction_horizon_s=1.0)
+    profile = tmp_path / "profile.json"
+    profile.write_text('{"prediction": {"horizon_s": 1.0, "step_s": 0.05}}')
+    assert cpt.profile_refusal(profile, timing) is None
+    profile.write_text('{"prediction": {"horizon_s": 1}}')  # an integer is the same horizon
+    assert cpt.profile_refusal(profile, timing) is None
+    for text, said in (
+        ('{"prediction": {"horizon_s": 1.2}}', "predicts 1.2 s ahead"),
+        ('{"prediction": {"horizon_s": "1.0"}}', "predicts '1.0' s ahead"),
+        ('{"prediction": {"horizon_s": true}}', "predicts True s ahead"),
+        ('{"other": 1}', "states no prediction.horizon_s"),
+        ("[1, 2]", "states no prediction.horizon_s"),
+    ):
+        profile.write_text(text)
+        reason = cpt.profile_refusal(profile, timing)
+        assert said in reason and str(profile) in reason, text
+    profile.write_text('{"prediction": {"horizon_s": 1.2}}')
+    assert "timing.prediction_horizon_s 1.0" in cpt.profile_refusal(profile, timing)
+    missing = cpt.profile_refusal(tmp_path / "no_such.json", timing)
+    assert "states no prediction.horizon_s" in missing
+
+
 def test_the_driver_throws_the_chunk_file_under_the_configured_rules():
     command = cpt.driver_command(
         Path("/out/trials"),

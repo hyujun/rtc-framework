@@ -36,7 +36,9 @@ whose header is the history of why:
    OWN workspace, sourced in the shell that starts it (two workspaces, MD-17);
    the seed is the estimator's alone — the sim takes none and the throws are a
    file, so two units of one chunk under two seeds differ in the estimator's
-   noise only.
+   noise only. Its profile is a file of that workspace, not of this repository:
+   a profile whose prediction horizon is not the one stage 1 judged with is
+   refused before any bringup (:func:`profile_refusal`).
 6. **Controller switch**, then ``catching_sim_trials --throws-file <chunk>``.
    While it throws, the unit is watched (:func:`watch_verdict`): the driver's
    time limit, an abnormal start (``catching_startup``), a sim that left.
@@ -93,6 +95,8 @@ import argparse
 import contextlib
 import dataclasses
 import datetime
+import json
+import math
 import os
 import re
 import shutil
@@ -590,6 +594,34 @@ def estimator_profile(workspace: Path) -> Path:
     isolated = install.joinpath(ESTIMATOR_PACKAGE, *ESTIMATOR_PROFILE)
     merged = install.joinpath(*ESTIMATOR_PROFILE)
     return merged if merged.is_file() and not isolated.is_file() else isolated
+
+
+def profile_refusal(profile: Path, timing) -> str | None:
+    """Why ``profile`` is not the estimator the population was judged for; None when it is.
+
+    Stage 1 judges every throw with the configuration's ``timing``. Of its values the
+    estimator's profile states one: how far ahead it predicts (``prediction.horizon_s``).
+    The profile lives in the estimator's workspace, not in this repository, so the two
+    can drift apart without a word — and a unit thrown under another horizon is a
+    catch test of sets that were judged for a different estimator."""
+    try:
+        horizon = json.loads(Path(profile).read_text(encoding="utf-8"))["prediction"]["horizon_s"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return f"the estimator profile {profile} states no prediction.horizon_s"
+    judged = timing.prediction_horizon_s
+    same = (
+        isinstance(horizon, (int, float))
+        and not isinstance(horizon, bool)
+        and math.isclose(horizon, judged, rel_tol=0.0, abs_tol=1e-9)
+    )
+    if same:
+        return None
+    return (
+        f"the estimator profile {profile} predicts {horizon!r} s ahead "
+        f"(prediction.horizon_s) and the population was judged with "
+        f"timing.prediction_horizon_s {judged!r}: use the profile the configuration names "
+        "as its source, or change timing and run stage 1 again"
+    )
 
 
 def switch_command() -> list[str]:
@@ -1572,13 +1604,16 @@ def main(argv=None) -> int:
         max_chunks=args.max_chunks,
         throws_limit=args.throws_limit,
     )
+    estimator = _estimator(args)
+    if reason := profile_refusal(estimator[1], config.timing):
+        _refuse(reason)
     ctx = _context(
         config,
         layout,
         args,
         share_config_dir=share_config_dir,
         viewer=config.sim.viewer if args.viewer is None else args.viewer == "on",
-        estimator=_estimator(args),
+        estimator=estimator,
         state_logs=state_log_names(controller),
     )
     if args.dry_run:

@@ -95,7 +95,7 @@ class Rig:
         (self.ball_ws / "install").mkdir(parents=True)
         (self.ball_ws / "install" / "local_setup.bash").write_text("")
         self.profile = tmp_path / "profile.json"
-        self.profile.write_text("{}")
+        self.profile.write_text('{"prediction": {"horizon_s": 1.0}}')
         self.logging_root = tmp_path / "logging_data"
         self.session = self.logging_root / "261011_2332"
         self.expect, self.mirror, log = _unit_state("ur5e_p1b", arm)
@@ -752,6 +752,27 @@ def test_a_run_that_cannot_be_what_it_says_is_refused_before_a_bringup(
     with pytest.raises(SystemExit) as refused:
         command.main(*change)  # the later argument is the one argparse keeps
     assert refused.value.code == 2 and message in capsys.readouterr().err
+    assert not command.unit_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("profile", "message"),
+    [
+        ('{"prediction": {"horizon_s": 0.8}}', "predicts 0.8 s ahead"),
+        ('{"prediction": {}}', "states no prediction.horizon_s"),
+        ("not json", "states no prediction.horizon_s"),
+    ],
+)
+def test_a_profile_the_population_was_not_judged_for_is_refused_before_a_bringup(
+    command, capsys, rig, profile, message
+):
+    # The profile is the estimator workspace's file, not this repository's: its horizon
+    # and the configuration's timing.prediction_horizon_s can drift apart silently.
+    rig.profile.write_text(profile)
+    with pytest.raises(SystemExit) as refused:
+        command.main()
+    err = capsys.readouterr().err
+    assert refused.value.code == 2 and message in err and str(rig.profile) in err
     assert not command.unit_dir.exists()
 
 
