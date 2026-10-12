@@ -279,7 +279,7 @@
 | D-S7-3 | 접촉 판정은 `\|F − b\| > max(f_min, k_sigma·σ̂)` 가 `n_debounce` 샘플 연속이고 `m_min` 개 손끝이 합의하면 잡은 것이다 | `par` (`supervisor_contact_*`), `rtc_controllers/test/test_catching_params.cpp` / L7 §4.4·§6 |
 | D-S7-4 | `REF_SATURATED` 는 연속 `supervisor.sat_ticks` tick 이면 승격하고 코드 기본은 60 이다 | `par` (`supervisor_sat_ticks`) / L7 §4.2·§6 |
 | D-S8-1 | sim 서보 지연은 L5 선행 보상을 sim overlay 로 보상한다 (출하 YAML 불변; 정확 역보상은 기각) | — / L5 §4.5 |
-| D-S8-2 | 은퇴 (#798, 2026-10-10): 동결 분포 (`s35b`) 와 회귀 세트 (`reference`) 는 옛 배치의 값이라 지웠다. 평가는 로봇별 투척 목록 (`IB/config/<robot>/throw_sets/`) 을 던지고, 두 unit 의 시행은 (목록의 sha256, `throw_id`) 로 짝짓는다 | `tools/catching_throw_list.py` (`throw_key`), `IB/test/test_catching_throw_sets.py` / L8 §12 |
+| D-S8-2 | 은퇴 (#798, 2026-10-10): 동결 분포 (`s35b`) 와 회귀 세트 (`reference`) 는 옛 배치의 값이라 지웠다. 평가는 로봇별 투척 목록 (`IB/config/<robot>/throw_sets/` — #821 부터 투척 모집단의 조합별 catch 집단; #798 의 D-1 · D-2 · 후보 상자는 git 이력) 을 던지고, 두 unit 의 시행은 (목록의 sha256, `throw_id`) 로 짝짓는다 | `tools/catching_throw_list.py` (`throw_key`), `IB/test/test_catching_throw_sets.py` / L8 §12 |
 | D-S8-3 | 판정 하한 floor 는 0.35, n_valid 는 200 이고 짧은 표본으로는 판정하지 않는다 | `tools/catching_trials.py`, `tools/catching_pool.py` (`DEFAULT_N_VALID_TARGET`) / L8 §9.1 |
 | D-S8-4 | (c) D-3 δ 는 판정이 아니라 공변량이고 무효는 rig 실패만이다 | `tools/catching_trials.py` / L8 §4.5 |
 | D-S8-5 | 램프 연속 (⑦) 은 조건부이고 S8-B 에서 조건을 못 채워 하지 않는다 | — / L3 §4.7 |
@@ -291,7 +291,7 @@
 | D-S8-11 | 공 arm 은 `beanbag` preset 그대로 쓴다 (`tennis_soft` 는 없다) | — / — |
 | D-S8-12 | 손 근처 투척은 S8-F 탐색이고 게이트 밖이다 | `IB/integrated_bringup/catching_sim_trials.py` 의 `hand_*` 투척 (overlay `s8f_reach_first` 는 2026-10-09 에 정리 — git 이력) / — |
 | D-S8-13 | sim 팔 플랜트는 τ 0.05 s 로 서보 게인을 정하고 `joint_cmd.lag.{T_arm, lead_enable}` + `T_freeze` overlay 로 돈다 (sim 플랜트는 선택이다) | `IB/config/ur5e_p1b/controllers/demo_catching_controller.yaml`, `life`, `IB/test/test_catching_tracking.cpp` / L5 §4.5 |
-| D-S8-14 | leap 묶음: 팔 서보 τ 0.05, 지도 라운드 최다 열림 자세가 출하 `planner.wait_pose`, overlay `catch_lead_on` | `IB/config/iiwa7_leap/sim_overlays/catch_lead_on.yaml`, `IB/config/iiwa7_leap/controllers/demo_catching_controller.yaml` / — |
+| D-S8-14 | leap 묶음: 팔 서보 τ 0.05, 지도 라운드 최다 열림 자세가 출하 `planner.wait_pose`, overlay `catch_lead_on` (#821 에서 값이 출하 컨트롤러 YAML 로 들어가고 파일은 지웠다) | `IB/config/iiwa7_leap/controllers/demo_catching_controller.yaml` / — |
 | D-S8-15 | leap 상자는 p1b 폭 상자 중 열림 비율 최대이고, 유효성 조건은 상승 구간에 대기 자세 로봇과 2 cm 이상 떨어진 투척이다 | `IB/integrated_bringup/catching_sim_trials.py` (iiwa7_leap 상자 주석) / — |
 | D-S8-16 | S8-E 본 평가 계획: floor 0.35 동결, 튜닝 데이터 비합산, 사전 선언한 top-up | `tools/catching_pool.py`, `tools/catching_trials.py`, `tools/catching_vision.py` / L8 §9.1 |
 | D-S8-17 | `rtf_trial_min` < 0.95 시행이 있는 unit 은 rig 실패라 같은 seed 로 재실행한다 (원 판정과 재실행 판정을 둘 다 기록) | `IB/integrated_bringup/catching_sim_trials.py` (host 부하 감시), `IB/test/test_catching_sim_trials_host_watch.py` / L8 §9.1·§10 |
