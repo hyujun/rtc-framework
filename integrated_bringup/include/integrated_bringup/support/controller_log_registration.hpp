@@ -23,7 +23,6 @@
 //   - fingertip / sensor-layout parsing
 //   - arm + hand model initialisation
 //   - virtual-TCP setup
-// See agent_docs handoff: `~/.claude/plans/demo-controller-refactor.md`.
 
 #include "integrated_bringup/logging/catching_diag_log_pod.hpp"
 #include "integrated_bringup/logging/compliance_diag_log_pod.hpp"
