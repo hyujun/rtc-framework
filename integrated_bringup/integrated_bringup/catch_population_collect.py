@@ -137,6 +137,33 @@ def units_present(units_root: Path, arm: str) -> list[UnitRef]:
     return sorted(units, key=lambda u: (u.seed, u.chunk))
 
 
+# What every unit of one seed must have been thrown under for their throws to be one
+# seed's: the estimator's profile and the rules that end and void a throw. (The
+# revisions and the date differ from unit to unit by design — ``meta.runs`` says them.)
+SAME_WITHIN_SEED = ("profile_sha256", "end_on_ball_low", "host_watch")
+
+
+def mixed_conditions(units: Sequence[UnitRef]) -> list[str]:
+    """The seeds whose DONE units were not thrown under one set of conditions, each as a
+    line naming the key and which units say what; empty when every seed is one run's."""
+    lines = []
+    by_seed: dict[int, list[UnitRef]] = {}
+    for unit in units:
+        by_seed.setdefault(unit.seed, []).append(unit)
+    for seed, of_seed in sorted(by_seed.items()):
+        conditions = {unit.chunk: read_conditions(unit.path) for unit in of_seed}
+        for key in SAME_WITHIN_SEED:
+            said: dict[str, list[str]] = {}
+            for chunk, cond in conditions.items():
+                said.setdefault(cond.get(key) or "(not recorded)", []).append(chunk)
+            if len(said) > 1:
+                parts = "; ".join(
+                    f"{value}: {', '.join(chunks)}" for value, chunks in said.items()
+                )
+                lines.append(f"seed {seed}, {key} — {parts}")
+    return lines
+
+
 def unit_refusal(unit: UnitRef, chunk_file: Path, *, robot: str, search: str, segment: str):
     """Why a DONE unit is not one of this result folder's, or None.
 
@@ -417,6 +444,13 @@ def collect_arm(
         raise CollectError(
             f"{len(refused)} unit(s) under {units_root / arm} are not this result folder's "
             "(move them out):\n  " + "\n  ".join(refused)
+        )
+    mixed = mixed_conditions(done)
+    if mixed:
+        raise CollectError(
+            f"{arm}: the units of a seed were not thrown under one set of conditions — their "
+            "throws are not one run's (move the units of one kind out, or throw them again):"
+            "\n  " + "\n  ".join(mixed)
         )
 
     sim_throws, catch_set = layout.sim_throws(arm), layout.set_file(arm, "catch")

@@ -366,6 +366,35 @@ def test_a_unit_that_threw_another_file_is_refused_by_name(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("key", "values"),
+    [
+        ("profile_sha256", ("aa" * 32, "bb" * 32)),
+        ("end_on_ball_low", ("1 margin_m=default grace_s=default", "")),
+        ("host_watch", ("abort", "warn")),
+    ],
+)
+def test_the_units_of_a_seed_thrown_under_two_conditions_are_refused(tmp_path, key, values):
+    """A resumed run skips its DONE units: chunks thrown before and after a change of the
+    estimator's profile or of the rules that end a throw must not become one seed."""
+    layout = _folder(tmp_path)
+    _unit(layout, 8210, "chunk_000", [(1, "published", True)], conditions={key: values[0]})
+    _unit(layout, 8210, "chunk_001", [(4, "published", True)], conditions={key: values[1]})
+    with pytest.raises(cpc.CollectError) as refused:
+        _collect(layout)
+    message = str(refused.value)
+    assert f"seed 8210, {key}" in message
+    assert "chunk_000" in message and "chunk_001" in message
+    assert not layout.sim_throws(ARM["arm"]).exists()
+
+
+def test_two_seeds_may_differ_in_their_conditions(tmp_path):
+    layout = _folder(tmp_path)
+    _unit(layout, 8210, "chunk_000", [(1, "published", True)], conditions={"host_watch": "abort"})
+    _unit(layout, 8211, "chunk_000", [(1, "published", True)], conditions={"host_watch": "warn"})
+    assert not cpc.mixed_conditions(cpc.units_present(cpc.sim_root(layout), ARM["arm"]))
+
+
+@pytest.mark.parametrize(
     ("conditions", "why"),
     [
         ({"seed": 9999}, "its conditions.txt says seed 9999, its directory seed_8210"),

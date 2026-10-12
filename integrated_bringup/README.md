@@ -1203,6 +1203,7 @@ ros2 run integrated_bringup catch_population_trials --config <파일> --out <결
 6. 종료 — 드라이버 · 추정기 · sim 순서로 SIGINT 뒤 기다렸다가 SIGKILL, 그 뒤 남은 세 실행 파일 (이 workspace 의 sim · RT 노드, 추정기 workspace 의 추정기) 을 정리한다
 7. 세션 기록의 오염 검사 (같은 분에 시작한 테스트가 같은 세션 디렉토리에 쓴 파일) 뒤 세션을 unit 으로 복사하고 원본을 지운다. 실패한 unit 은 세션을 `session_failed` 로 갖는다
 8. 분석 (`catching_tc_vector` — `analyse_unit.sh` 가 돌리는 것) 은 **unit 이 끝난 뒤, sim 이 없을 때** 돈다. sim 옆에서는 돌리지 않는다. 설치된 `catching_trials` 의 인터프리터 (배포판 python) 로 돌린다 — venv 의 pandas 로 낸 수와 섞이지 않게
+9. 수집 — 한 seed 의 unit 들은 한 조건에서 던진 것이어야 한다: `conditions.txt` 의 `profile_sha256` · `end_on_ball_low` · `host_watch` 가 unit 사이에 다르면 그 키와 묶음을 대며 거부한다 (이어 돌린 실행은 DONE 인 unit 을 건너뛰므로, 조건을 바꾸기 전후의 묶음이 한 seed 로 합쳐질 수 있다)
 
 **이어 던지기와 재시도** (`run_all.sh` 의 규칙). `DONE` 인 unit 은 건너뛴다. 실패한 unit 은 `<chunk>.failN` 으로 치우고 다시 던진다 — 명령을 띄울 때 한 번 (사람의 결정), 그 뒤로는 **rig 실패**일 때만 `sim.retries` 번의 기동까지: `host_busy` · `estimator not activated` · `startup` · `abnormal_start`. 그 밖의 실패 (`FAIL:mirror …` · `FAIL:trials rc=…` · `FAIL:switch` · `FAIL:sim exited` · `FAIL:contaminated …` · `FAIL:signal`) 는 실패한 자리에 남고 실행은 다음 unit 으로 간다. 순서는 seed 별로, 그 안에서 모든 조합의 묶음 k 뒤에 묶음 k+1 이다 — 일찍 끝난 실행에도 모든 조합이 있다. `<결과 폴더>/STOP` 파일이 있으면 다음 기동 전에 멈춘다. SIGINT · SIGTERM · SIGHUP 은 도는 unit 과 그것이 띄운 것을 끝낸다 (`FAIL:signal`). 진행은 `<결과 폴더>/sim/progress.log` 에 남는다.
 

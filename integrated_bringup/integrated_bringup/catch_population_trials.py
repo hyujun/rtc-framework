@@ -314,12 +314,12 @@ def stage1_mismatch(config, copy_path: Path) -> list[str]:
     """The sections of ``config`` that differ from the copy stage 1 left in the result
     folder (``config.yaml``), ``sim`` apart — that one is this stage's, and a PC may
     throw other seeds. Empty when there is no copy to compare with."""
-    from rtc_tools.utils.catch_population import ConfigError, parse_config
+    from rtc_tools.utils.catch_population import ConfigError, parse_config, read_document
 
     if not copy_path.is_file():
         return []
     try:
-        document = yaml.safe_load(copy_path.read_text(encoding="utf-8"))
+        document = read_document(copy_path.read_text(encoding="utf-8"))
         judged = parse_config(document, config.path)
     except (OSError, yaml.YAMLError, ConfigError) as exc:
         return [f"{copy_path.name} cannot be read as a configuration ({exc})"]
