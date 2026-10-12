@@ -19,6 +19,10 @@ the git history), and what that test file held is held here for the new ones:
 A catch set is one run's outcome (``meta.runs``): the meta must say what was
 thrown, of which set, and what each seed did with it, so that "not in the set"
 is not read as "missed".
+
+The sets and the robot's ``catch_population.yaml`` ship side by side: a set must be a
+set OF the population that file defines (its grid, its limits, its arms, its sample),
+or the file says one thing and the data beside it another.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ import re
 import pytest
 
 from rtc_tools.analysis import catching_throw_list as ctl
+from rtc_tools.utils.catch_population import axis_values, load_config
 
 CONFIG = os.path.join(os.path.dirname(__file__), "..", "config")
 # robot → arm → (throws caught, throws thrown, throws of the set that was sampled)
@@ -150,6 +155,54 @@ def test_the_meta_says_what_was_thrown_of_which_set_and_what_each_seed_caught(ro
         for run in meta["runs"]:
             assert run["rtc_framework_rev"] and run["date_start"] and run["viewer"] == "on", arm
         assert "not being here is not a miss" in meta["note"]
+
+
+@pytest.mark.parametrize("robot", ROBOTS)
+def test_every_set_is_a_set_of_the_population_the_robots_configuration_defines(robot):
+    config = load_config(os.path.join(CONFIG, robot, "catch_population.yaml"))
+    population = config.population
+    # an arm of the configuration has a set, and a set is an arm of the configuration
+    assert sorted(arm.name for arm in config.arms) == sorted(SETS[robot])
+    axes = {
+        "distance_m": axis_values(population.distance_m),
+        "azimuth_deg": axis_values(population.azimuth_deg),
+        "release_height_m": axis_values(population.release_height_m),
+        "pass_dx_m": axis_values(population.pass_dx_m),
+        "pass_dy_m": axis_values(population.pass_dy_m),
+    }
+    for arm, listed in _sets(robot).items():
+        meta, design = listed.meta, listed.meta["design"]
+        # the grid: the configuration's axes, and its elevation ladder
+        grid = design["grid"]["axes"]
+        for axis, values in axes.items():
+            assert grid[axis] == pytest.approx(values), (arm, axis)
+        elevation = design["elevation"]
+        assert (elevation["max_deg"], elevation["min_deg"], elevation["step_deg"]) == (
+            population.elevation_max_deg,
+            population.elevation_min_deg,
+            population.elevation_step_deg,
+        ), arm
+        assert max(grid["elevation_deg"]) == population.elevation_max_deg
+        assert min(grid["elevation_deg"]) >= population.elevation_min_deg
+        # the limits of the population, the ball and the delay it was judged with
+        assert design["speed"]["max_m_s"] == population.speed_max_m_s, arm
+        assert meta["limit"]["min_pass_time_s"] == population.min_pass_time_s, arm
+        assert design["lead"]["detection_delay_s"] == config.timing.detection_delay_s, arm
+        assert design["ball"]["drag_coefficient"] == config.ball.drag_coefficient.value, arm
+        assert design["ball"]["air_density_kg_m3"] == config.ball.air_density.value, arm
+        # the sample: which set the arm throws, how many at most, drawn how
+        configured, sample = config.arm(arm), meta["sample"]
+        assert meta["thrown_set"] == configured.throw_set, arm
+        assert sample["seed"] == config.sample.seed, arm
+        assert sample["strata_axes"] == list(config.sample.strata), arm
+        if sample["whole_set"]:
+            assert configured.max_throws is None or sample["of"] <= configured.max_throws, arm
+        else:
+            assert sample["n_throws"] == sample["max_throws"] == configured.max_throws, arm
+        # and every throw is a point of that grid
+        for t in listed.throws:
+            for axis in DESIGN_AXES:
+                assert any(abs(t[axis] - v) < 1e-9 for v in grid[axis]), (arm, t["throw_id"], axis)
 
 
 def test_the_shipped_file_is_what_the_loader_reads_bit_for_bit():
