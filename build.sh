@@ -419,6 +419,18 @@ if [[ "$BUILD_RC" -ne 0 ]]; then
   error "Build failed!"
 fi
 
+# ── 지운 소스 파일의 install 링크 정리 ────────────────────────────────────────
+# --symlink-install 은 소스에서 지운 파일의 링크를 남긴다 (rt_common.sh
+# prune_dangling_install_links). 방금 빌드한 패키지에서만, 이 repo 를 가리키던
+# 끊긴 링크만 지운다.
+if [[ "$NO_SYMLINK" -eq 0 ]]; then
+  for _pkg in "${PACKAGES[@]}"; do
+    while IFS= read -r _pruned; do
+      info "Removed a stale install link (its source file is gone): ${_pruned}"
+    done < <(prune_dangling_install_links "${WORKSPACE}/install/${_pkg}" "$_SCRIPT_DIR_BUILD")
+  done
+fi
+
 # 빌드 후 최신 overlay 소싱 (check_rt_setup.sh 등 후속 작업용)
 source "${WORKSPACE}/install/setup.bash" || true
 
