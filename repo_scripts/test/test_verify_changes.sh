@@ -3278,5 +3278,46 @@ out=$(run_hook "$dir")
 expect_contains "81e: only the packages above are routed" "$out" "BUILD_PKGS=[demo_app demo_top]"
 rm -rf "$dir"
 
+# ── Phase 3: a deleted file that install/ still holds ────────────────────────
+#
+# colcon --symlink-install installs a config file as a LINK and does not remove
+# it when the source file is deleted. Phase 3 looked for the name with
+# `-type f`, which a link never is: the phase could not see the case it exists
+# for (2026-10-12, #821 -- two deleted sim overlays surfaced as a failing
+# share-scanning test). 82a-82c went red against that hook; 82d-82e are the
+# absences, and hold because a LIVE link of the same name (another robot's
+# file) and a kept file's link are present in the same tree.
+echo "Case 82: a deleted config file whose install link dangles is reported"
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd)
+mkdir -p "$dir/rtc_demo/config/robot_a" "$dir/rtc_demo/config/robot_b"
+for f in robot_a/overlay.yaml robot_b/overlay.yaml robot_a/kept.yaml robot_a/throws.json; do
+  echo "k: 1" >"$dir/rtc_demo/config/$f"
+done
+git -C "$dir" add -A && git -C "$dir" commit -qm "config"
+share="$ws/install/rtc_demo/share/rtc_demo/config"
+mkdir -p "$share/robot_a" "$share/robot_b"
+for f in robot_a/overlay.yaml robot_b/overlay.yaml robot_a/kept.yaml robot_a/throws.json; do
+  ln -s "$dir/rtc_demo/config/$f" "$share/$f"
+done
+out=$(run_hook "$dir")
+expect_not_contains "82-pre: nothing deleted, nothing stale" "$out" "Stale install/"
+git -C "$dir" rm -q rtc_demo/config/robot_a/overlay.yaml rtc_demo/config/robot_a/throws.json
+out=$(run_hook "$dir")
+expect_contains "82a: the dangling link of a deleted YAML is reported" "$out" "robot_a/overlay.yaml deleted from src but still in install/"
+expect_contains "82b: it names the link" "$out" "install/rtc_demo/share/rtc_demo/config/robot_a/overlay.yaml"
+expect_contains "82c: a deleted non-YAML config file is reported too" "$out" "robot_a/throws.json deleted from src but still in install/"
+expect_not_contains "82d: the other robot's live link of that name is not" "$out" "config/robot_b/overlay.yaml"
+expect_not_contains "82e: a kept file is not" "$out" "kept.yaml"
+# The link gone (what build.sh does), the report goes with it.
+rm -f "$share/robot_a/overlay.yaml" "$share/robot_a/throws.json"
+out=$(run_hook "$dir")
+expect_not_contains "82f: pruned links are no longer reported" "$out" "Stale install/"
+# A COPIED file of that name is still reported (the pre-existing behaviour).
+cp "$dir/rtc_demo/config/robot_a/kept.yaml" "$share/robot_a/overlay.yaml"
+out=$(run_hook "$dir")
+expect_contains "82g: a copied file of a deleted name is reported" "$out" "robot_a/overlay.yaml deleted from src but still in install/"
+rm -rf "$ws"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
