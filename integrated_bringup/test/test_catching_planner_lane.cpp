@@ -452,6 +452,23 @@ TEST(PlannerEventsCsv, TheCutSiteIsWrittenByNameForTheSegmentAndForEachCandidate
   EXPECT_EQ(from_memory_of(rec), "0");
   rec.segment.start_from_memory = true;
   EXPECT_EQ(from_memory_of(rec), "1");
+  // ... and next to that: whether it started from the search's solution of a
+  // chain, widened (E3-F01). A column of its own — the other does not move.
+  ASSERT_NE(memory_at + 1, names.end());
+  EXPECT_EQ(*(memory_at + 1), "segment_start_from_search");
+  const auto from_search_of = [&](const rtc::catching::PlannerCycleRecord& record) {
+    std::ostringstream row;
+    integrated_bringup::WritePlannerEventsRow(row, record);
+    const std::vector<std::string> cells = split(lines(row.str()).at(0));
+    return memory_column + 1 < cells.size() ? cells[memory_column + 1] : std::string("<short row>");
+  };
+  rec.segment.start_from_memory = false;
+  EXPECT_EQ(from_search_of(rec), "0");
+  rec.segment.start_from_search = true;
+  EXPECT_EQ(from_search_of(rec), "1");
+  EXPECT_EQ(from_memory_of(rec), "0");
+  rec.segment.start_from_search = false;
+  rec.segment.start_from_memory = true;
 
   // nlp_candidates.csv: one row per candidate, the name last.
   std::ostringstream cand_header;
