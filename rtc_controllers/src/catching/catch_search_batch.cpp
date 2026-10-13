@@ -647,8 +647,9 @@ SearchBatchSearch MakeSearchBatchSearch(const std::shared_ptr<const pinocchio::M
     return out;
   }
 
-  if (nv > kMaxSegmentNv) {
-    out.error = "the nlp search plans arms of at most " + std::to_string(kMaxSegmentNv) + " joints";
+  if (nv > kNlpMaxSearchNv) {
+    out.error =
+        "the nlp search plans arms of at most " + std::to_string(kNlpMaxSearchNv) + " joints";
     return out;
   }
   const HandDockingParams hand = ParseHandDockingParams(catching);

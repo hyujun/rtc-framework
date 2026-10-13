@@ -159,7 +159,8 @@ enum RankGateBit : std::uint16_t {
 class GridCatchSearch final : public CatchSearch {
  public:
   /// Non-RT. Size every buffer. False (and unconfigured) if the model binding
-  /// is unusable — no handle, nv outside (0, kMaxPlanNv], a wait pose that is
+  /// is unusable — no handle, nv outside (0, kMaxPlanNv] or wider than the
+  /// catch-pose IK can be sized for (rtc::kMaxRobotDOF), a wait pose that is
   /// not one entry per arm joint.
   bool Configure(const GridCatchSearchModel& model, const GridCatchSearchConstants& constants,
                  const PlannerParams& params, const CatchPoseIkOptions& ik, ClockFn clock);

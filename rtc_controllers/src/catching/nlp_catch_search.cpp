@@ -82,16 +82,10 @@ bool NlpCatchSearch::Configure(const NlpCatchSearchModel& model,
     return fail("nlp search: no arm model, no IK handle or no clock");
   }
   const int nv = model.nv;
-  if (nv < 1 || nv > kMaxSegmentNv || model.arm->nv != nv || model.arm->nq != nv) {
+  if (nv < 1 || nv > kNlpMaxSearchNv || model.arm->nv != nv || model.arm->nq != nv) {
     return fail("nlp search: nv must be the arm model's and at most " +
-                std::to_string(kMaxSegmentNv));
-  }
-  // The catch-pose IK has a capacity of its own, below the payload's:
-  // CatchPoseIk::Resize leaves a wider model unsized and every Solve() then
-  // answers kModelInvalid — a search that could seed no candidate.
-  if (nv > rtc::kMaxRobotDOF) {
-    return fail("nlp search: the catch-pose IK takes at most " + std::to_string(rtc::kMaxRobotDOF) +
-                " joints (kMaxRobotDOF), the search model has " + std::to_string(nv));
+                std::to_string(kNlpMaxSearchNv) +
+                " (kNlpMaxSearchNv: the segment payload's and the catch-pose IK's capacity)");
   }
   if (model.handle->nv() != nv) {
     return fail("nlp search: the IK handle is on a model of another joint count than the arm");
@@ -291,6 +285,12 @@ bool NlpCatchSearch::Configure(const NlpCatchSearchModel& model,
   v_zero_ = Eigen::VectorXd::Zero(nv);
 
   ik_.Resize(nv);
+  // The IK's own verdict on the width (kNlpMaxSearchNv restates its capacity;
+  // an unsized IK answers kModelInvalid to every candidate).
+  if (ik_.nv() != nv) {
+    return fail("nlp search: the catch-pose IK cannot be sized for " + std::to_string(nv) +
+                " joints");
+  }
   reach_ = ComputeReachBound(model.handle->GetModel(), model.catch_frame);
   seed_yaml_ = Eigen::VectorXd::Zero(nv);
   for (int m = 0; m < nv; ++m) {

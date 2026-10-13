@@ -171,6 +171,7 @@
 #include <pinocchio/multibody/data.hpp>
 #include <pinocchio/multibody/model.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -187,6 +188,11 @@ static_assert(kNlpMaxSolves <= kNlpCandidateStatCount,
               "every solved candidate of a wake has a record (search_stats.hpp)");
 /// Most lattice instants one wake may look at (the bound on `cand_capacity`).
 inline constexpr int kNlpMaxCandidates = 256;
+/// The widest model the search takes. Two capacities bound it and the smaller
+/// one is the limit: its solutions are segment payloads (kMaxSegmentNv), and
+/// its candidates are seeded by the catch-pose IK (rtc::kMaxRobotDOF —
+/// CatchPoseIk::Resize leaves a wider model unsized).
+inline constexpr int kNlpMaxSearchNv = std::min(kMaxSegmentNv, rtc::kMaxRobotDOF);
 
 /// The arm model the search plans in (configure time, owned by the binding).
 struct NlpCatchSearchModel {
@@ -292,9 +298,8 @@ class NlpCatchSearch final : public CatchSearch {
   /// @param clock steady clock for the budget and the solves' deadlines [ns]
   /// @param[out] error why it failed, when it did
   /// @return false, and unconfigured, on an unusable binding (a model wider
-  ///         than the segment payload's kMaxSegmentNv or than the catch-pose
-  ///         IK's kMaxRobotDOF included), a parameter out of range, a grid a
-  ///         core refuses, or a warm-up solve that never reached its QP.
+  ///         than kNlpMaxSearchNv included), a parameter out of range, a grid
+  ///         a core refuses, or a warm-up solve that never reached its QP.
   [[nodiscard]] bool Configure(const NlpCatchSearchModel& model,
                                const NlpCatchSearchConstants& constants,
                                const NlpCatchSearchParams& params, const CatchPoseIkOptions& ik,
