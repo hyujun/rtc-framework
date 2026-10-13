@@ -157,7 +157,9 @@ struct SearchBatchRow {
 /// segment's solve did, under the planner event log's names: `outcome`
 /// (CycleOutcomeName), `segment_outcome`, `segment_kind`,
 /// `segment_core_reason` (names), `segment_k`, `segment_n_nodes`,
-/// `segment_iterations`, `segment_from_search`, `segment_ref_scaled`,
+/// `segment_iterations`, `segment_from_search`, `segment_start_from_search`
+/// (the solve started from the search's solution of a chain, widened —
+/// SegmentRecord::start_from_search), `segment_ref_scaled`,
 /// `segment_ref_scale`, `segment_slack_max`, `segment_slack_terminal_max`,
 /// `segment_catch_pos_err`, `segment_catch_axis_err`,
 /// `segment_speed_ratio_max`, `segment_tau_ratio_max`.

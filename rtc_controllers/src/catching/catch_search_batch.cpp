@@ -409,7 +409,8 @@ namespace {
 // What a whole-wake row adds, before `wall_us` (PlanBatchCsvHeader).
 constexpr const char* kCycleColumns =
     ",outcome,segment_outcome,segment_kind,segment_core_reason,segment_k,segment_n_nodes,"
-    "segment_iterations,segment_from_search,segment_ref_scaled,segment_ref_scale,"
+    "segment_iterations,segment_from_search,segment_start_from_search,segment_ref_scaled,"
+    "segment_ref_scale,"
     "segment_slack_max,segment_slack_terminal_max,segment_catch_pos_err,segment_catch_axis_err,"
     "segment_speed_ratio_max,segment_tau_ratio_max";
 
@@ -482,9 +483,10 @@ constexpr const char* kCycleColumns =
     out += std::string(",") + CycleOutcomeName(row.outcome) + ',' + SegmentOutcomeName(g.outcome) +
            ',' + SegmentKindName(g.kind) + ',' + g.core_reason_name + ',' + std::to_string(g.k) +
            ',' + std::to_string(g.n_nodes) + ',' + std::to_string(g.iterations) + ',' +
-           Flag(g.from_search) + ',' + Flag(g.ref_scaled) + ',' + Num(g.ref_scale) + ',' +
-           Num(g.slack_max) + ',' + Num(g.slack_terminal_max) + ',' + Num(g.catch_pos_err) + ',' +
-           Num(g.catch_axis_err) + ',' + Num(g.speed_ratio_max) + ',' + Num(g.tau_ratio_max);
+           Flag(g.from_search) + ',' + Flag(g.start_from_search) + ',' + Flag(g.ref_scaled) + ',' +
+           Num(g.ref_scale) + ',' + Num(g.slack_max) + ',' + Num(g.slack_terminal_max) + ',' +
+           Num(g.catch_pos_err) + ',' + Num(g.catch_axis_err) + ',' + Num(g.speed_ratio_max) + ',' +
+           Num(g.tau_ratio_max);
   }
   out += ',' + Num(row.wall_us);
   return out;

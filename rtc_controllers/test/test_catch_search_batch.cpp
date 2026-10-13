@@ -964,6 +964,31 @@ TEST(CatchPlanBatch, TheCsvKeepsTheSearchColumnsAndEndsWithWallUs) {
   }
 }
 
+// A first segment solved from the search's solution of a chain, widened
+// (E3-F01): the batch says so beside `segment_from_search`, which stays 0 for
+// it — the segment is the planner's own solve.
+TEST(CatchPlanBatch, TheCsvSaysWhenTheSegmentStartedFromTheSearchsSolution) {
+  const int nv = 6;
+  const auto names = Split(PlanBatchCsvHeader(nv));
+  const auto from = std::find(names.begin(), names.end(), "segment_from_search");
+  ASSERT_NE(from, names.end());
+  ASSERT_NE(from + 1, names.end());
+  EXPECT_EQ(*(from + 1), "segment_start_from_search");
+  SearchBatchRow row{};
+  row.cycle = true;
+  EXPECT_EQ(CycleCells(row, nv).at("segment_start_from_search"), "0");
+  row.segment.start_from_search = true;
+  const auto cells = CycleCells(row, nv);
+  EXPECT_EQ(cells.at("segment_start_from_search"), "1");
+  EXPECT_EQ(cells.at("segment_from_search"), "0");
+  // ... and the other flag is still its own column.
+  row.segment.start_from_search = false;
+  row.segment.from_search = true;
+  const auto adopted = CycleCells(row, nv);
+  EXPECT_EQ(adopted.at("segment_from_search"), "1");
+  EXPECT_EQ(adopted.at("segment_start_from_search"), "0");
+}
+
 TEST(CatchPlanBatchBinding, ReadsBothSegmentPlanners) {
   const CycleRig rig;
   const SearchBatchBinding mpc = ParseSearchBatchBinding(rig.BindingFile(), rig.nv);
