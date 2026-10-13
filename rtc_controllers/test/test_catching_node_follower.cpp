@@ -172,8 +172,9 @@ class NodeFollowerTest : public ::testing::Test {
 // ── 1. Payload and sampling ──────────────────────────────────────────────────
 
 TEST(SegmentPayload, PayloadFitsItsBudget) {
-  // MD-27: 3 node blocks × 8 joints × 25 nodes × 8 B = 4.8 KB plus a header.
-  EXPECT_LT(sizeof(SegmentSnapshot), 5U * 1024U);
+  // MD-27: 3 node blocks × 20 joints × 25 nodes × 8 B = 12.0 KB plus a header
+  // (#827 raised the joint capacity from 8, where the budget was 5 KB).
+  EXPECT_LT(sizeof(SegmentSnapshot), 12U * 1024U);
   EXPECT_GE(sizeof(SegmentSnapshot), 3U * kMaxSegmentNv * (kMaxSegmentNodes + 1) * sizeof(double));
   // The core and the payload share one capacity (the constant moved to
   // trajectory.hpp; the core's block array is sized by it).
@@ -469,7 +470,7 @@ TEST_F(NodeFollowerTest, ContendedCopyNeverTearsAndIsRecorded) {
   // writer cadences (G1-C form: the numbers are recorded, not bounded):
   //   • back-to-back stores — the strongest tearing probe. It also shows why
   //     the planner must never store in a loop: SeqLock::Load has no retry
-  //     bound (L1 G1-8), and against a 4.9 KB back-to-back writer the reader
+  //     bound (L1 G1-8), and against a 12 KB back-to-back writer the reader
   //     completes only a few hundred copies in 300 ms on the development PC.
   //     So the read count is recorded here, and only required to be nonzero;
   //   • one store per millisecond — still 20× the planner's real rate (one per

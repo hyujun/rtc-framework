@@ -44,11 +44,14 @@ inline constexpr int kMaxPlanNv = 32;
 /// horizon, pre-catch nodes included, is bounded by its kMaxMpcNodes.
 inline constexpr int kMaxSegmentNodes = 24;
 
-/// Joint capacity of SegmentSnapshot (E1 arms have 6 and 7). Deliberately
-/// NOT kMaxPlanNv: at 32 the payload would be 19.2 KB and the RT's SeqLock
-/// copy (and its retry window against the planner's store) four times longer
-/// for joints no E1 robot has (MD-27). Checked against the arm at configure.
-inline constexpr int kMaxSegmentNv = 8;
+/// Joint capacity of SegmentSnapshot: the widest model a segment planner may
+/// be configured on (a single arm, or a tree of a torso and two arms). It is a
+/// supported maximum, not a robot's joint count — the model's nv is checked
+/// against it at configure. Deliberately NOT kMaxPlanNv: the payload is copied
+/// whole by the RT's SeqLock read every tick, so this constant is that copy's
+/// cost and its retry window against the planner's store (MD-27). At 20 the
+/// payload is about 12.2 KB (measured: #827); at 32 it would be 19.4 KB.
+inline constexpr int kMaxSegmentNv = 20;
 
 /// One predicted ball sample. The ball instant is absolute steady ns (BallTime
 /// axis, converted once on receipt by ConvertRemoteStamp + SampleBallTime).
@@ -321,7 +324,9 @@ static_assert(std::is_trivially_copyable_v<ProvenanceToken>);
 static_assert(std::is_trivially_copyable_v<TrajectorySnapshot>);
 static_assert(std::is_trivially_copyable_v<PlanSnapshot>);
 static_assert(std::is_trivially_copyable_v<SegmentSnapshot>);
-// The size MD-27 budgets: three node blocks of kMaxSegmentNv × (kMaxSegmentNodes + 1).
-static_assert(sizeof(SegmentSnapshot) < 5 * 1024);
+// The size MD-27 budgets: three node blocks of kMaxSegmentNv × (kMaxSegmentNodes + 1)
+// and a header. Raising a capacity fails here on purpose — the RT copies this
+// payload every tick, so a larger one is a copy cost to measure first (#827).
+static_assert(sizeof(SegmentSnapshot) < 12 * 1024);
 
 }  // namespace rtc::catching
