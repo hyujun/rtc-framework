@@ -731,6 +731,18 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_node_follower PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
+  # dynamic_catching #827: the segment payload's joint capacity — a model wider
+  # than one arm (a tree built in code, 17 joints) through the payload, the RT
+  # sampler and both segment planners' Configure, and the nlp search on the
+  # 10-joint chain. No URDF: the joint count is the test's to choose.
+  ament_add_gtest(test_catching_segment_capacity test/test_catching_segment_capacity.cpp
+    TIMEOUT 300)
+  target_link_libraries(test_catching_segment_capacity rtc_controllers)
+  target_include_directories(test_catching_segment_capacity PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_definitions(test_catching_segment_capacity PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
   # dynamic_catching MPC E1-F03 (#629): the planner.segment.mpc keys, and (the
   # second target) the RT's segment admission / switch rules. Pure functions —
   # no model, no solver. The MPC segment planner itself is
