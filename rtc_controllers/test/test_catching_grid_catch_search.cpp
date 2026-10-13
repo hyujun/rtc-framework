@@ -1433,4 +1433,289 @@ TEST(GridCatchSearchTiming, RecordsIkAndCycleTimesOnThisHost) {
   EXPECT_GT(ik_total, 0);
 }
 
+// ── 7. A chain inside a wider device (E3-F01, #640) ──────────────────────────
+// The same arm, as six of the joints of a device three joints wider — the
+// model of a search that runs on one chain of a tree. What the search reads of
+// the RT's report, of the wait pose and of a reported segment is its own
+// joints' entries, through `device_of_model`; what it writes is those entries
+// of q_star and the set that names them.
+
+constexpr int kOutsideJoints = 3;
+
+// Device index of model joint j: descending, with gaps — neither the device's
+// order nor a block of it. For six joints: 8, 6, 5, 3, 1, 0 (7, 4 and 2 are no
+// model joint's).
+[[nodiscard]] int ChainDeviceOf(int j, int nv) {
+  return (nv + kOutsideJoints - 1) - (j + (j >= 1 ? 1 : 0) + (j >= 3 ? 1 : 0) + (j >= 4 ? 1 : 0));
+}
+
+[[nodiscard]] bool OwnedByTheChain(int d, int nv) {
+  for (int j = 0; j < nv; ++j) {
+    if (ChainDeviceOf(j, nv) == d) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// A clock that only counts its calls: two searches that do the same work read
+// the same instants, so a wake's record does not depend on the host.
+std::int64_t CountingClock() noexcept {
+  static std::int64_t t = 0;
+  t += 1000;
+  return t;
+}
+
+// Rig's arm on the wider device. `outside` seeds every value of a joint the
+// model does not have (wait pose, command, adopted pose): 0 writes zeros
+// there, anything else a distinct non-zero value per joint.
+[[nodiscard]] std::unique_ptr<Rig> ChainRig(double outside) {
+  auto rig = std::make_unique<Rig>();
+  const int nv = rig->arm.nv;
+  const int n_dev = nv + kOutsideJoints;
+  const auto wait_model = rig->params.wait_pose;  // Rig: device order = model order
+  rig->params.wait_pose.fill(0.0);
+  for (int d = 0; d < n_dev; ++d) {
+    rig->params.wait_pose[static_cast<std::size_t>(d)] = outside * (d + 1);
+  }
+  for (int j = 0; j < nv; ++j) {
+    const auto d = static_cast<std::size_t>(ChainDeviceOf(j, nv));
+    rig->model.device_of_model[static_cast<std::size_t>(j)] = static_cast<int>(d);
+    rig->params.wait_pose[d] = wait_model[static_cast<std::size_t>(j)];
+  }
+  rig->params.wait_pose_n = n_dev;
+  rig->model.n_dev = n_dev;
+  rig->constants.t_arm_s = static_cast<double>(kArmLagNs) * 1e-9;
+  return rig;
+}
+
+// The device's report: the chain's joints on the wait pose (moved a little, so
+// that the adopted pose is not the configured one), the others at `outside`.
+[[nodiscard]] PlannerRtState ChainRt(const Rig& rig, double outside, bool adopted) {
+  const int nv = rig.arm.nv;
+  const int n_dev = rig.model.n_dev;
+  PlannerRtState rt = rtc::testing::TrackingRtState(
+      3, std::span<const double>(rig.params.wait_pose.data(), static_cast<std::size_t>(n_dev)));
+  rt.wait_pose_adopted = adopted;
+  for (int d = 0; d < n_dev; ++d) {
+    const auto u = static_cast<std::size_t>(d);
+    if (OwnedByTheChain(d, nv)) {
+      rt.qd_cmd[u] = 0.011 * (d + 1);
+      rt.wait_pose[u] = rig.params.wait_pose[u] + 0.02;
+    } else {
+      rt.q_cmd[u] = -0.7 * outside * (d + 2);
+      rt.qd_cmd[u] = 1.3 * outside * (d + 1);
+      rt.wait_pose[u] = 0.9 * outside * (d + 3);
+    }
+  }
+  return rt;
+}
+
+// MovingSegment over the whole device, the columns of the joints outside the
+// chain moved by `outside`.
+[[nodiscard]] SegmentSnapshot ChainSegment(const Rig& rig, std::uint32_t seq, std::int64_t t0_ns,
+                                           double outside) {
+  SegmentSnapshot s = MovingSegment(rig.model.n_dev, seq, t0_ns, 0.1);
+  for (int k = 0; k <= s.n_nodes; ++k) {
+    for (int d = 0; d < rig.model.n_dev; ++d) {
+      if (!OwnedByTheChain(d, rig.arm.nv)) {
+        const auto e = static_cast<std::size_t>(k * kMaxSegmentNv + d);
+        s.q[e] += outside;
+        s.qd[e] -= 2.0 * outside;
+        s.qdd[e] += 3.0 * outside;
+      }
+    }
+  }
+  return s;
+}
+
+struct ChainWake {
+  PlanSnapshot plan{};
+  SearchStats stats{};
+  std::uint64_t digest{0};
+};
+
+// One wake of a chain search: everything it leaves but its timings.
+[[nodiscard]] ChainWake RunChainWake(double outside, bool on_segment) {
+  ChainWake w;
+  auto rig = ChainRig(outside);
+  if (!rig->Configure(&CountingClock)) {
+    ADD_FAILURE() << "the chain rig did not configure";
+    return w;
+  }
+  const PlannerRtState rt = ChainRt(*rig, outside, /*adopted=*/true);
+  auto arm = std::make_unique<ReportedSegments>();
+  if (on_segment) {
+    arm->has_following = true;
+    arm->following = ChainSegment(*rig, 5, kNowLead - 20 * kMs, outside);
+  }
+  const auto traj = rig->Traj();
+  w.plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, *arm, NowReal{kNow}, 0, w.stats);
+  rtc::testing::ValueDigest h;
+  rtc::testing::AddPlan(h, w.plan);
+  h.Add(w.plan.joint_set);
+  rtc::testing::AddSearchStats(h, w.stats);
+  for (const double v : rig->search.ReachStartPositionForTesting()) {
+    h.Add(v);
+  }
+  for (const double v : rig->search.ReachStartVelocityForTesting()) {
+    h.Add(v);
+  }
+  w.digest = h.Value();
+  return w;
+}
+
+// Sprint Contract 2 (#640): the joints outside the chain do not reach the
+// search. Their command, their velocity, their wait pose (configured and
+// adopted) and their columns of the followed segment all change between the
+// two wakes; the plan, the wake's record and the reach start do not, to the bit.
+TEST(GridCatchSearchChain, NothingOfTheJointsOutsideTheChainReachesTheSearch) {
+  for (const bool on_segment : {false, true}) {
+    SCOPED_TRACE(on_segment ? "following a segment" : "nothing followed");
+    const ChainWake zeros = RunChainWake(0.0, on_segment);
+    const ChainWake moved = RunChainWake(0.37, on_segment);
+    EXPECT_EQ(zeros.digest, moved.digest);
+    // Non-vacuous: the wake judged candidates, and with nothing followed it
+    // chose one.
+    EXPECT_GT(zeros.stats.n_ik, 0);
+    if (!on_segment) {
+      EXPECT_TRUE(zeros.plan.valid);
+    }
+  }
+}
+
+// The plan says whose it is, and is the plan the same arm gets as a device of
+// its own — its joints' entries moved to their device indices, nothing in the
+// others.
+TEST(GridCatchSearchChain, ThePlanIsTheArmsOwnAtItsJointsDeviceEntries) {
+  auto plain = std::make_unique<Rig>();
+  plain->constants.t_arm_s = static_cast<double>(kArmLagNs) * 1e-9;
+  ASSERT_TRUE(plain->Configure(&CountingClock));
+  const int nv = plain->arm.nv;
+  PlannerRtState plain_rt = plain->Rt();
+  for (int j = 0; j < nv; ++j) {
+    // ChainRt's command velocity of the same joints.
+    plain_rt.qd_cmd[static_cast<std::size_t>(j)] = 0.011 * (ChainDeviceOf(j, nv) + 1);
+  }
+  const auto traj = plain->Traj();
+  SearchStats plain_stats;
+  const PlanSnapshot own = plain->search.Plan(traj, Rig::Cov(traj, 0.002), true, plain_rt,
+                                              kNoSegments, NowReal{kNow}, 0, plain_stats);
+  ASSERT_TRUE(own.valid);
+  EXPECT_EQ(own.nv, nv);
+  EXPECT_EQ(own.joint_set, rtc::catching::FullJointSet(nv));
+
+  auto rig = ChainRig(0.37);
+  ASSERT_TRUE(rig->Configure(&CountingClock));
+  SearchStats stats;
+  const PlanSnapshot plan =
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, ChainRt(*rig, 0.37, /*adopted=*/false),
+                       kNoSegments, NowReal{kNow}, 0, stats);
+  ASSERT_TRUE(plan.valid);
+  EXPECT_EQ(plan.nv, nv);
+  rtc::catching::JointSet expected = 0;
+  for (int j = 0; j < nv; ++j) {
+    expected |= rtc::catching::JointSet{1} << ChainDeviceOf(j, nv);
+  }
+  EXPECT_EQ(plan.joint_set, expected);
+  EXPECT_EQ(rtc::catching::JointSetSize(plan.joint_set), plan.nv);
+  EXPECT_EQ(plan.t_c_ns, own.t_c_ns);
+  EXPECT_TRUE(rtc::testing::BitsEqual(plan.score, own.score));
+  EXPECT_TRUE(rtc::testing::BitsEqual(plan.w5, own.w5));
+  EXPECT_TRUE(rtc::testing::BitsEqual(plan.gamma_gf, own.gamma_gf));
+  EXPECT_EQ(stats.n_ik, plain_stats.n_ik);
+  EXPECT_EQ(stats.n_pass, plain_stats.n_pass);
+  for (int j = 0; j < nv; ++j) {
+    EXPECT_TRUE(rtc::testing::BitsEqual(plan.q_star[static_cast<std::size_t>(ChainDeviceOf(j, nv))],
+                                        own.q_star[static_cast<std::size_t>(j)]))
+        << "model joint " << j;
+  }
+  for (int d = 0; d < static_cast<int>(plan.q_star.size()); ++d) {
+    if (!OwnedByTheChain(d, nv)) {
+      EXPECT_EQ(plan.q_star[static_cast<std::size_t>(d)], 0.0) << "device joint " << d;
+    }
+  }
+}
+
+// The report and a reported segment are the DEVICE's: one as wide as the chain
+// is another device's and is not read — the seed stays the configured wait
+// pose and the reach starts on nothing but the command.
+TEST(GridCatchSearchChain, AReportOrASegmentOfTheChainsWidthIsNotTheDevices) {
+  auto rig = ChainRig(0.37);
+  ASSERT_TRUE(rig->Configure(&CountingClock));
+  const int nv = rig->arm.nv;
+  const PlannerRtState rt = ChainRt(*rig, 0.37, /*adopted=*/true);
+  const auto traj = rig->Traj();
+  const auto plan_with = [&](const PlannerRtState& report, const ReportedSegments& arm) {
+    SearchStats stats;
+    return rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, report, arm, NowReal{kNow}, 0,
+                            stats);
+  };
+  // A segment of the chain's width: not the device's, so the start is the command.
+  auto narrow = std::make_unique<ReportedSegments>();
+  narrow->has_following = true;
+  narrow->following = MovingSegment(nv, 5, kNowLead - 20 * kMs, 0.1);
+  static_cast<void>(plan_with(rt, *narrow));
+  const std::span<const double> q0 = rig->search.ReachStartPositionForTesting();
+  ASSERT_EQ(q0.size(), static_cast<std::size_t>(nv));
+  for (int j = 0; j < nv; ++j) {
+    EXPECT_TRUE(rtc::testing::BitsEqual(q0[static_cast<std::size_t>(j)],
+                                        rt.q_cmd[static_cast<std::size_t>(ChainDeviceOf(j, nv))]))
+        << j;
+  }
+  // The device's segment IS read, through the map.
+  auto wide = std::make_unique<ReportedSegments>();
+  wide->has_following = true;
+  wide->following = ChainSegment(*rig, 5, kNowLead - 20 * kMs, 0.37);
+  static_cast<void>(plan_with(rt, *wide));
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
+  ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(wide->following, kNowLead, q, qd, qdd));
+  const std::span<const double> q0_wide = rig->search.ReachStartPositionForTesting();
+  for (int j = 0; j < nv; ++j) {
+    EXPECT_TRUE(rtc::testing::BitsEqual(q0_wide[static_cast<std::size_t>(j)],
+                                        q[static_cast<std::size_t>(ChainDeviceOf(j, nv))]))
+        << j;
+  }
+  // An adopted wait pose in a report of the chain's width is not adopted: the
+  // plan is the one of a report that adopted nothing.
+  PlannerRtState narrow_rt = rt;
+  narrow_rt.nv = nv;
+  PlannerRtState none_rt = rt;
+  none_rt.wait_pose_adopted = false;
+  const PlanSnapshot a = plan_with(narrow_rt, kNoSegments);
+  const PlanSnapshot b = plan_with(none_rt, kNoSegments);
+  const PlanSnapshot c = plan_with(rt, kNoSegments);
+  ASSERT_TRUE(a.valid);
+  ASSERT_TRUE(b.valid);
+  ASSERT_TRUE(c.valid);
+  bool adopted_differs = false;
+  for (int j = 0; j < nv; ++j) {
+    const auto d = static_cast<std::size_t>(ChainDeviceOf(j, nv));
+    EXPECT_TRUE(rtc::testing::BitsEqual(a.q_star[d], b.q_star[d])) << j;
+    adopted_differs = adopted_differs || a.q_star[d] != c.q_star[d];
+  }
+  EXPECT_TRUE(adopted_differs) << "the adopted pose changed nothing: the comparison is vacuous";
+}
+
+TEST(GridCatchSearchChain, ConfigureRefusesADeviceMapThatIsNotAnInjection) {
+  const auto configures = [](auto&& edit) {
+    auto rig = ChainRig(0.0);
+    edit(*rig);
+    return rig->Configure(&CountingClock);
+  };
+  EXPECT_TRUE(configures([](Rig&) {}));
+  // Two model joints on one device joint.
+  EXPECT_FALSE(configures([](Rig& r) { r.model.device_of_model[1] = r.model.device_of_model[0]; }));
+  // A device index past the device.
+  EXPECT_FALSE(configures([](Rig& r) { r.model.device_of_model[0] = r.model.n_dev; }));
+  EXPECT_FALSE(configures([](Rig& r) { r.model.device_of_model[0] = -1; }));
+  // A device narrower than the model, or wider than a plan can name.
+  EXPECT_FALSE(configures([](Rig& r) { r.model.n_dev = r.arm.nv - 1; }));
+  EXPECT_FALSE(configures([](Rig& r) { r.model.n_dev = rtc::catching::kMaxPlanNv + 1; }));
+  // The wait pose is the device's: one entry per chain joint is not it.
+  EXPECT_FALSE(configures([](Rig& r) { r.params.wait_pose_n = r.arm.nv; }));
+}
+
 }  // namespace

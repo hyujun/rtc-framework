@@ -57,6 +57,7 @@
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <set>
 #include <span>
 #include <sstream>
@@ -161,9 +162,48 @@ template <typename V>
   return out;
 }
 
+// ── The same arm as a CHAIN inside a wider device (E3-F01, #640) ─────────────
+// Nine device joints, six of them the model's: {0, 2, 3, 5, 6, 8}. Device
+// joints 1, 4 and 7 are no model joint's. The map is chosen so that the RANK
+// of a model joint's device index in that set is kDeviceOfModel — the column
+// a solution of the chain search carries the joint in (CatchSolution's note)
+// is then the column the plain rig's solution carries it in, and the two
+// rigs' wakes can be compared to the bit.
+constexpr int kChainNDev = 9;
+constexpr std::array<int, 6> kChainDeviceOfModel{3, 0, 2, 8, 5, 6};
+constexpr rtc::catching::JointSet kChainSet = 0b1'0110'1101;
+
+[[nodiscard]] constexpr bool OwnedByTheChain(int d) {
+  return rtc::catching::InJointSet(kChainSet, d);
+}
+
+// What a test writes into an entry of a joint outside the chain: zero for
+// `outside` = 0, else a value of its own per joint and per `salt`.
+[[nodiscard]] constexpr double OutsideValue(double outside, int d, int salt) {
+  return outside * static_cast<double>(d + salt);
+}
+
+// `q_model` on the chain's device entries; the others at OutsideValue.
+template <typename V>
+[[nodiscard]] std::array<double, kChainNDev> ToChainDevice(const V& q_model, double outside,
+                                                           int salt) {
+  std::array<double, kChainNDev> out{};
+  for (int d = 0; d < kChainNDev; ++d) {
+    out[static_cast<std::size_t>(d)] = OutsideValue(outside, d, salt);
+  }
+  for (std::size_t m = 0; m < 6; ++m) {
+    out[static_cast<std::size_t>(kChainDeviceOfModel[m])] = q_model[static_cast<Eigen::Index>(m)];
+  }
+  return out;
+}
+
 struct Rig {
   rtc::testing::Arm arm = rtc::testing::Arm6R();
   dk::Rig dock = dk::MakeRig(fx::Synthetic6R());
+  // Set by MakeChain: the model is a chain of a wider device, and every entry
+  // of a joint outside it holds OutsideValue(outside, …).
+  bool chain{false};
+  double outside{0.0};
   NlpCatchSearchModel model{};
   NlpCatchSearchConstants constants{};
   NlpCatchSearchParams params{};
@@ -216,14 +256,40 @@ struct Rig {
     ik.manipulability_min = 0.0;
   }
 
+  // Before Configure: the model becomes the chain of kChainDeviceOfModel in a
+  // device of kChainNDev joints. The wait pose, the RT's report (RestingRt,
+  // FollowingRt) and a followed segment (WidenToTheDevice) are then the
+  // device's, with OutsideValue in what the chain does not own.
+  void MakeChain(double outside_value) {
+    chain = true;
+    outside = outside_value;
+    model.n_dev = kChainNDev;
+    for (std::size_t m = 0; m < 6; ++m) {
+      model.device_of_model[m] = kChainDeviceOfModel[m];
+    }
+    params.wait_pose.fill(0.0);
+    const auto wait_dev = ToChainDevice(q_wait, outside, 1);
+    std::copy(wait_dev.begin(), wait_dev.end(), params.wait_pose.begin());
+    params.wait_pose_n = kChainNDev;
+  }
+
   [[nodiscard]] bool Configure(std::string* error = nullptr) {
     SetClockStep(1000);
     return search.Configure(model, constants, params, ik, &StepClock, error);
   }
 
-  // The arm at rest on its wait pose, following no plan.
+  // The arm at rest on its wait pose, following no plan. On the chain rig the
+  // joints outside the chain are NOT at rest and not on the wait pose.
   [[nodiscard]] PlannerRtState RestingRt(std::int64_t now) const {
-    PlannerRtState rt = rtc::testing::TrackingRtState(kActivation, ToDevice(q_wait));
+    PlannerRtState rt =
+        chain ? rtc::testing::TrackingRtState(kActivation, ToChainDevice(q_wait, outside, 2))
+              : rtc::testing::TrackingRtState(kActivation, ToDevice(q_wait));
+    for (int d = 0; chain && d < kChainNDev; ++d) {
+      if (!OwnedByTheChain(d)) {
+        rt.qd_cmd[static_cast<std::size_t>(d)] = OutsideValue(outside, d, 3);
+        rt.wait_pose[static_cast<std::size_t>(d)] = OutsideValue(outside, d, 4);
+      }
+    }
     rt.rt_iteration = 500 + static_cast<std::uint64_t>((now - kNow) / kMs);
     rt.rt_state_ns = now - kMs;
     return rt;
@@ -545,6 +611,53 @@ template <typename StartFn>
 
 // A first wake at kNow on the off-axis throw. Returns the chosen candidate's
 // solution as the segment the RT then follows — a segment that moves.
+// A chain search's solution as the segment a planner on the whole device would
+// publish of it: the chain's columns moved to their device indices, the other
+// joints' columns at OutsideValue (a different one per node and derivative).
+[[nodiscard]] SegmentSnapshot WidenToTheDevice(const SegmentSnapshot& chain_seg, double outside) {
+  SegmentSnapshot wide = chain_seg;
+  wide.nv = kChainNDev;
+  wide.q.fill(0.0);
+  wide.qd.fill(0.0);
+  wide.qdd.fill(0.0);
+  for (int k = 0; k <= chain_seg.n_nodes; ++k) {
+    for (int d = 0; d < kChainNDev; ++d) {
+      const auto e = static_cast<std::size_t>(k * kMaxSegmentNv + d);
+      if (OwnedByTheChain(d)) {
+        const auto from =
+            static_cast<std::size_t>(k * kMaxSegmentNv + rtc::catching::JointSetSlot(kChainSet, d));
+        wide.q[e] = chain_seg.q[from];
+        wide.qd[e] = chain_seg.qd[from];
+        wide.qdd[e] = chain_seg.qdd[from];
+      } else if (k < chain_seg.n_nodes) {
+        // (Node N stays at rest: a published segment's last node is.)
+        wide.q[e] = OutsideValue(outside, d, 5 + k);
+        wide.qd[e] = OutsideValue(outside, d, 6 + k);
+        wide.qdd[e] = OutsideValue(outside, d, 7 + k);
+      } else {
+        wide.q[e] = OutsideValue(outside, d, 5 + k);
+      }
+    }
+  }
+  return wide;
+}
+
+// A chain rig's wake with its plan's catch posture moved back to the plain
+// rig's device entries — what the plain rig's wake digests. (The plan's own
+// account of whose joints it is of is checked where the chain is, not here.)
+[[nodiscard]] Wake AsThePlainRigs(const Rig& rig, const Wake& w) {
+  if (!rig.chain) {
+    return w;
+  }
+  Wake out = w;
+  out.plan.q_star.fill(0.0);
+  for (std::size_t m = 0; m < 6; ++m) {
+    out.plan.q_star[static_cast<std::size_t>(kDeviceOfModel[m])] =
+        w.plan.q_star[static_cast<std::size_t>(kChainDeviceOfModel[m])];
+  }
+  return out;
+}
+
 struct Adopted {
   Throw ball;
   Wake first;
@@ -562,7 +675,7 @@ struct Adopted {
   const CatchSolution* sol = rig.search.Solution();
   EXPECT_NE(sol, nullptr);
   if (sol != nullptr) {
-    a->followed = sol->seg;
+    a->followed = rig.chain ? WidenToTheDevice(sol->seg, rig.outside) : sol->seg;
     a->followed.segment_seq = 11;
     a->followed.plan_id = 4;
     a->followed.publish_ns = kNow + kMs;
@@ -3360,7 +3473,10 @@ struct PinnedSearch {
 };
 
 // Sequences of wakes on which the RT follows no plan, each on a rig of its own.
-[[nodiscard]] std::vector<PinnedSearch> PinnedSearches(int follow_window = -1) {
+// `chain`: every rig is the chain rig (MakeChain) with that `outside` value —
+// the wakes are then digested as the plain rig's (AsThePlainRigs).
+[[nodiscard]] std::vector<PinnedSearch> PinnedSearches(int follow_window = -1,
+                                                       std::optional<double> chain = std::nullopt) {
   std::vector<PinnedSearch> all;
 
   struct Step {
@@ -3368,11 +3484,14 @@ struct PinnedSearch {
     std::int64_t clock_step_ns;
   };
 
-  const auto run = [&all, follow_window](const std::string& name, auto&& edit, auto&& make_throw,
-                                         std::span<const Step> steps) {
+  const auto run = [&all, follow_window, chain](const std::string& name, auto&& edit,
+                                                auto&& make_throw, std::span<const Step> steps) {
     auto rig = std::make_unique<Rig>();
     rig->params.follow_window = follow_window;
     edit(*rig);
+    if (chain.has_value()) {
+      rig->MakeChain(*chain);
+    }
     std::string err;
     if (!rig->Configure(&err)) {
       ADD_FAILURE() << name << ": " << err;
@@ -3386,7 +3505,7 @@ struct PinnedSearch {
       SetClockStep(step.clock_step_ns);
       const std::int64_t now = kNow + step.after_ns;
       const Wake w = RunWake(*rig, ball, rig->RestingRt(now), NoSegments(), now);
-      h.Add(PinnedWakeDigest(rig->search, w));
+      h.Add(PinnedWakeDigest(rig->search, AsThePlainRigs(*rig, w)));
       ++rec.wakes;
       rec.plans += w.plan.valid ? 1 : 0;
       rec.solved += w.stats.nlp.n_solved;
@@ -3530,10 +3649,13 @@ TEST(NlpCatchSearchPinned, AWakeWithoutAFollowedPlanIsUnchangedBitForBit) {
 
 // The wakes after adoption, on the off-axis throw: +41 ms and +82 ms with the
 // RT following the first wake's solution.
-[[nodiscard]] std::vector<std::uint64_t> FollowingScreeningDigests(int follow_window,
-                                                                   int* window_rejects = nullptr) {
+[[nodiscard]] std::vector<std::uint64_t> FollowingScreeningDigests(
+    int follow_window, int* window_rejects = nullptr, std::optional<double> chain = std::nullopt) {
   auto rig = std::make_unique<Rig>();
   rig->params.follow_window = follow_window;
+  if (chain.has_value()) {
+    rig->MakeChain(*chain);
+  }
   std::string err;
   EXPECT_TRUE(rig->Configure(&err)) << err;
   const auto adopted = AdoptFirst(*rig, 0.36);
@@ -4846,6 +4968,133 @@ TEST(NlpCatchSearchContinuous, AWakeAllocatesNothingOutsideTheQpSolvers) {
   EXPECT_GT(moves, 4);
   EXPECT_GT(log.solver_calls, 30);
   EXPECT_GT(log.stages, 100);
+}
+
+// ── 12. A chain inside a wider device (E3-F01, #640) ─────────────────────────
+// The search's model is six of a device's nine joints. Sprint Contract 2: what
+// the other three hold — command, velocity, wait pose (configured and
+// reported), their columns of the followed segment — does not reach the
+// search. The statement here is stronger than "two wakes agree": with ANY
+// value there, the chain rig leaves the wakes the plain rig is pinned to.
+
+// The pinned wakes (no plan followed): solves from memory, solves past their
+// share, a budget that cuts — every path a wake has.
+TEST(NlpCatchSearchChain, WhateverTheOtherJointsHoldTheWakesAreThePinnedOnes) {
+  for (const double outside : {0.0, 0.37}) {
+    SCOPED_TRACE("outside = " + std::to_string(outside));
+    const std::vector<PinnedSearch> runs = PinnedSearches(-1, outside);
+    ASSERT_EQ(runs.size(), kPinnedSearchDigest.size());
+    for (std::size_t i = 0; i < runs.size(); ++i) {
+      EXPECT_EQ(runs[i].name, kPinnedSearchDigest[i].name);
+      EXPECT_EQ(runs[i].digest, kPinnedSearchDigest[i].digest) << runs[i].name;
+      EXPECT_EQ(runs[i].plans, runs[i].wakes) << runs[i].name;
+    }
+  }
+}
+
+// After adoption the start state is the DEVICE's segment, read through the
+// map: its other columns hold anything.
+TEST(NlpCatchSearchChain, WhateverTheOtherColumnsOfTheFollowedSegmentHoldScreeningIsThePinnedOne) {
+  for (const double outside : {0.0, 0.37}) {
+    SCOPED_TRACE("outside = " + std::to_string(outside));
+    const std::vector<std::uint64_t> got = FollowingScreeningDigests(-1, nullptr, outside);
+    ASSERT_EQ(got.size(), kPinnedFollowingScreening.size());
+    for (std::size_t i = 0; i < got.size(); ++i) {
+      EXPECT_EQ(got[i], kPinnedFollowingScreening[i]) << i;
+    }
+  }
+}
+
+// The plan and the solution name the joints they are of: device entries of
+// q_star for those joints and zeros elsewhere, and a solution as wide as the
+// chain whose column of a joint is that joint's rank in the set.
+TEST(NlpCatchSearchChain, ThePlanAndTheSolutionSayWhoseJointsTheyAreOf) {
+  auto plain = std::make_unique<Rig>();
+  ASSERT_TRUE(plain->Configure());
+  const Wake own =
+      RunWake(*plain, OffAxisThrow(*plain, 0.28), plain->RestingRt(kNow), NoSegments(), kNow);
+  ASSERT_TRUE(own.plan.valid) << Table(plain->search, own.stats);
+  EXPECT_EQ(own.plan.joint_set, rtc::catching::FullJointSet(6));
+  ASSERT_NE(plain->search.Solution(), nullptr);
+  EXPECT_EQ(plain->search.Solution()->joint_set, rtc::catching::FullJointSet(6));
+
+  auto rig = std::make_unique<Rig>();
+  rig->MakeChain(0.37);
+  std::string err;
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const Wake w = RunWake(*rig, OffAxisThrow(*rig, 0.28), rig->RestingRt(kNow), NoSegments(), kNow);
+  ASSERT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+  EXPECT_EQ(w.plan.nv, 6);
+  EXPECT_EQ(w.plan.joint_set, kChainSet);
+  EXPECT_EQ(rtc::catching::JointSetSize(w.plan.joint_set), w.plan.nv);
+  const CatchSolution* sol = rig->search.Solution();
+  ASSERT_NE(sol, nullptr);
+  EXPECT_EQ(sol->joint_set, kChainSet);
+  EXPECT_EQ(sol->seg.nv, 6);
+  for (int d = 0; d < static_cast<int>(w.plan.q_star.size()); ++d) {
+    const auto u = static_cast<std::size_t>(d);
+    if (!OwnedByTheChain(d)) {
+      EXPECT_EQ(w.plan.q_star[u], 0.0) << "device joint " << d;
+      continue;
+    }
+    // The catch node of the solution, at the joint's column.
+    const auto e = static_cast<std::size_t>(sol->seg.n_pre * kMaxSegmentNv +
+                                            rtc::catching::JointSetSlot(kChainSet, d));
+    EXPECT_TRUE(BitsEqual(w.plan.q_star[u], sol->seg.q[e])) << "device joint " << d;
+  }
+  // … and it is the plain rig's plan, joint for joint.
+  for (std::size_t m = 0; m < 6; ++m) {
+    EXPECT_TRUE(BitsEqual(w.plan.q_star[static_cast<std::size_t>(kChainDeviceOfModel[m])],
+                          own.plan.q_star[static_cast<std::size_t>(kDeviceOfModel[m])]))
+        << "model joint " << m;
+  }
+}
+
+// The report is the device's. One as wide as the chain is another arm's.
+TEST(NlpCatchSearchChain, AReportOfTheChainsWidthIsNotTheDevices) {
+  auto rig = std::make_unique<Rig>();
+  rig->MakeChain(0.37);
+  ASSERT_TRUE(rig->Configure());
+  const Throw ball = OffAxisThrow(*rig, 0.28);
+  PlannerRtState rt = rig->RestingRt(kNow);
+  rt.nv = 6;
+  const Wake narrow = RunWake(*rig, ball, rt, NoSegments(), kNow);
+  EXPECT_FALSE(narrow.plan.valid);
+  EXPECT_EQ(narrow.stats.nlp.reason, NlpReject::kRtInvalid);
+  // A joint of the chain off its rest is "not at rest"; one outside it moving
+  // (RestingRt's report of the chain rig) is not the search's to judge.
+  rt = rig->RestingRt(kNow);
+  ASSERT_GT(std::fabs(rt.qd_cmd[1]), 0.1) << "device joint 1 is outside the chain and moving";
+  EXPECT_TRUE(RunWake(*rig, ball, rt, NoSegments(), kNow).plan.valid);
+  rt.qd_cmd[static_cast<std::size_t>(kChainDeviceOfModel[2])] = 0.2;
+  const Wake moving = RunWake(*rig, ball, rt, NoSegments(), kNow);
+  EXPECT_FALSE(moving.plan.valid);
+  EXPECT_EQ(moving.stats.nlp.reason, NlpReject::kNotAtRest);
+}
+
+TEST(NlpCatchSearchChain, ConfigureRefusesADeviceMapThatIsNotAnInjection) {
+  const auto configures = [](auto&& edit) {
+    auto rig = std::make_unique<Rig>();
+    rig->MakeChain(0.0);
+    edit(*rig);
+    return rig->Configure();
+  };
+  EXPECT_TRUE(configures([](Rig&) {}));
+  EXPECT_FALSE(configures([](Rig& r) { r.model.device_of_model[1] = r.model.device_of_model[0]; }));
+  EXPECT_FALSE(configures([](Rig& r) { r.model.device_of_model[0] = kChainNDev; }));
+  EXPECT_FALSE(configures([](Rig& r) { r.model.device_of_model[0] = -1; }));
+  EXPECT_FALSE(configures([](Rig& r) { r.model.n_dev = 5; }));
+  EXPECT_FALSE(configures([](Rig& r) { r.model.n_dev = rtc::catching::kMaxPlanNv + 1; }));
+  // The wait pose is the device's: one entry per chain joint is not it.
+  EXPECT_FALSE(configures([](Rig& r) { r.params.wait_pose_n = 6; }));
+  // An entry of a joint outside the chain is never read — not even for
+  // finiteness; one of the chain's is.
+  EXPECT_TRUE(
+      configures([](Rig& r) { r.params.wait_pose[1] = std::numeric_limits<double>::quiet_NaN(); }));
+  EXPECT_FALSE(configures([](Rig& r) {
+    r.params.wait_pose[static_cast<std::size_t>(kChainDeviceOfModel[0])] =
+        std::numeric_limits<double>::quiet_NaN();
+  }));
 }
 
 }  // namespace
