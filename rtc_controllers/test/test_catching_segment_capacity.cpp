@@ -8,20 +8,30 @@
 //      runs FK on the 17-joint model;
 //   2. both segment planners configure on it (cores built and warmed up), and
 //      refuse a model one joint past the capacity;
-//   3. the nlp search configures on the chain the catch is searched on (the
+//   3. the mpc planner PRODUCES a 17-joint segment — a first solve from rest
+//      and a replan from the published one — that validates and that the RT's
+//      sampler reads back (the writer's side of the capacity: Pack and the
+//      start state read from a reported segment);
+//   4. both searches configure on the chain the catch is searched on (the
 //      trunk and one arm, 10 joints — wider than the old capacity), and
-//      refuses a chain its catch-pose IK cannot be sized for.
-// The grid search has no check against this constant (its model is bounded by
-// kMaxPlanNv and its IK), so it has no case here.
+//      refuse a chain their catch-pose IK cannot be sized for.
+// Not here: a first segment of the docking planner at 17 joints. It adopts a
+// search's solution or is solved from rest, and what it starts from when the
+// search ran on a narrower model is E3-F01's to define (#640).
 //
 // Mutation: with kMaxSegmentNv at 16 every "17 joints" case here fails.
 #include "rtc_base/types/types.hpp"
 #include "rtc_controllers/catching/catch_pose_ik.hpp"
+#include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/mpc_docking_segment_planner.hpp"
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/nlp_catch_search.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
+#include "rtc_controllers/catching/planner_io.hpp"
+#include "rtc_controllers/catching/planner_params.hpp"
+#include "rtc_controllers/catching/segment_planner.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
+#include "rtc_controllers/catching/transition_table.hpp"
 #include "rtc_controllers/testing/mpc_docking_fixture.hpp"
 #include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
 #include "rtc_controllers/testing/synthetic_tree_fixture.hpp"
@@ -35,6 +45,7 @@
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -43,13 +54,18 @@
 
 namespace {
 
+using rtc::catching::GridCatchSearch;
+using rtc::catching::GridCatchSearchConstants;
+using rtc::catching::GridCatchSearchModel;
 using rtc::catching::kMaxPlanNv;
 using rtc::catching::kMaxSegmentNodes;
 using rtc::catching::kMaxSegmentNv;
+using rtc::catching::kNlpMaxSearchNv;
 using rtc::catching::MpcDockingSegmentPlanner;
 using rtc::catching::MpcDockingSegmentPlannerConstants;
 using rtc::catching::MpcDockingSegmentPlannerModel;
 using rtc::catching::MpcDockingSegmentPlannerParams;
+using rtc::catching::MpcSegmentBallTarget;
 using rtc::catching::MpcSegmentPlanner;
 using rtc::catching::MpcSegmentPlannerConstants;
 using rtc::catching::MpcSegmentPlannerModel;
@@ -59,7 +75,12 @@ using rtc::catching::NlpCatchSearchConstants;
 using rtc::catching::NlpCatchSearchModel;
 using rtc::catching::NlpCatchSearchParams;
 using rtc::catching::NodeTrajectoryFollower;
+using rtc::catching::PlannerParams;
+using rtc::catching::PlannerRtState;
+using rtc::catching::PlanSnapshot;
 using rtc::catching::SegmentNodeSample;
+using rtc::catching::SegmentOutcomeName;
+using rtc::catching::SegmentRecord;
 using rtc::catching::SegmentSnapshot;
 using rtc::catching::ValidateSegmentNodes;
 using rtc::testing::SyntheticTree;
@@ -72,14 +93,30 @@ constexpr int kTrunk = 3;
 constexpr int kArm = 7;
 constexpr int kChainNv = kTrunk + kArm;     // 10
 constexpr int kTreeNv = kTrunk + 2 * kArm;  // 17
+// The chain is a model the searches take: a suite built on another chain
+// would have to say so here, at compile time.
+static_assert(kChainNv <= kNlpMaxSearchNv);
+static_assert(kChainNv <= rtc::kMaxRobotDOF);
 
 constexpr std::int64_t kDtNs = 25'000'000;
 constexpr std::int64_t kTc = 1'727'000'000'123'456'789LL;
+
+constexpr std::int64_t kMs = 1'000'000;
+constexpr std::int64_t kT0 = 1'727'000'000'000'000'000LL;
+constexpr std::int64_t kTArm = 30 * kMs;  // T_arm
+constexpr std::int64_t kH = 2 * kMs;      // control_dt
 
 std::atomic<std::int64_t> g_clock{0};
 
 std::int64_t StepClock() noexcept {
   return g_clock.fetch_add(1000, std::memory_order_relaxed) + 1000;
+}
+
+// A clock that stands where a test put it (the planners' deadlines read it).
+std::atomic<std::int64_t> g_now{kT0};
+
+std::int64_t FixedClock() noexcept {
+  return g_now.load(std::memory_order_relaxed);
 }
 
 std::size_t U(int i) {
@@ -218,8 +255,8 @@ MpcSegmentPlannerParams MpcParams() {
 MpcSegmentPlannerConstants MpcConsts() {
   MpcSegmentPlannerConstants c;
   c.eta_v = 0.9;
-  c.t_arm_s = 0.02;
-  c.control_dt = 0.002;
+  c.t_arm_s = static_cast<double>(kTArm) * 1e-9;
+  c.control_dt = static_cast<double>(kH) * 1e-9;
   c.v_eps = 1e-6;
   return c;
 }
@@ -243,6 +280,145 @@ TEST(SegmentCapacity, TheMpcPlannerRefusesAModelPastTheCapacity) {
   EXPECT_FALSE(planner.Configure(MpcModelOf(wide), MpcConsts(), MpcParams(), &StepClock, &err));
   EXPECT_NE(err.find("kMaxSegmentNv"), std::string::npos) << err;
   EXPECT_FALSE(planner.Configured());
+}
+
+// The frame's position at node `k` of a planner's segment (device → model).
+Eigen::Vector3d NodeFramePos(const fx::ArmModel& a, const SegmentSnapshot& p, int k) {
+  const int nv = a.model->nv;
+  Eigen::VectorXd q(nv);
+  for (int m = 0; m < nv; ++m) {
+    q[m] = p.q[U(k * kMaxSegmentNv + DeviceOf(m, nv))];
+  }
+  pinocchio::Data data(*a.model);
+  pinocchio::forwardKinematics(*a.model, data, q);
+  pinocchio::updateFramePlacement(*a.model, data, a.frame);
+  return data.oMf[a.frame].translation();
+}
+
+TEST(SegmentCapacity, TheMpcPlannerProducesASeventeenJointSegmentAndReplansFromIt) {
+  const fx::ArmModel tree = SyntheticTree(kTrunk, kArm, 2);
+  ASSERT_EQ(tree.model->nv, kTreeNv);
+  ASSERT_GE(kMaxSegmentNv, kTreeNv) << "the payload cannot carry the segment model";
+  MpcSegmentPlanner planner;
+  std::string err;
+  g_now.store(kT0);
+  ASSERT_TRUE(planner.Configure(MpcModelOf(tree), MpcConsts(), MpcParams(), &FixedClock, &err))
+      << err;
+
+  // A catch the tree reaches a little away from where it rests: the ball
+  // passes the catch frame's position along the frame's −z.
+  Eigen::VectorXd q_catch = tree.q_nominal;
+  for (int m = 0; m < kTreeNv; ++m) {
+    q_catch[m] += m % 2 == 0 ? 0.04 : -0.04;
+  }
+  pinocchio::Data data(*tree.model);
+  pinocchio::forwardKinematics(*tree.model, data, q_catch);
+  pinocchio::updateFramePlacement(*tree.model, data, tree.frame);
+  const Eigen::Vector3d p_c = data.oMf[tree.frame].translation();
+  const Eigen::Vector3d a_d = data.oMf[tree.frame].rotation().col(2);
+  const Eigen::Vector3d v_c = -5.0 * a_d;
+  const std::int64_t t_c = kT0 + kTArm + 800 * kMs;
+
+  PlanSnapshot plan{};
+  plan.valid = true;
+  plan.plan_id = 7;
+  plan.t_c_ns = t_c;
+  plan.token.activation_generation = 3;
+  plan.token.generation = 5;
+  plan.nv = kTreeNv;
+  PlannerRtState rt{};
+  rt.valid = true;
+  rt.activation_generation = 3;
+  rt.rt_iteration = 1000;
+  rt.rt_state_ns = kT0 - kH;
+  rt.reset_epoch = 1;
+  rt.mode = static_cast<std::uint8_t>(rtc::catching::Mode::kTracking);
+  rt.nv = kTreeNv;
+  rt.cmd_seeded = true;
+  rt.track_seen = true;
+  rt.track_generation = 5;
+  for (int m = 0; m < kTreeNv; ++m) {
+    plan.q_star[U(DeviceOf(m, kTreeNv))] = q_catch[m];
+    rt.q_cmd[U(DeviceOf(m, kTreeNv))] = tree.q_nominal[m];
+  }
+  for (int i = 0; i < 3; ++i) {
+    plan.p_c[U(i)] = p_c[i];
+    plan.v_c[U(i)] = v_c[i];
+    plan.a_d[U(i)] = a_d[i];
+  }
+  MpcSegmentBallTarget ball;
+  ball.valid = true;
+  ball.p_b = p_c;
+  ball.v_b = v_c;
+  ball.a_d = a_d;
+  ball.sigma_p = 1e-4 * Eigen::Matrix3d::Identity();
+  ball.sigma_valid = true;
+
+  // ── The first segment, from rest ──
+  SegmentSnapshot first{};
+  SegmentRecord rec{};
+  ASSERT_TRUE(planner.PlanFirst(rt, plan, ball, first, rec))
+      << SegmentOutcomeName(rec.outcome) << " / " << rec.core_reason_name;
+  first.segment_seq = 1;
+  first.publish_ns = kT0;
+  EXPECT_EQ(first.nv, kTreeNv);
+  ASSERT_TRUE(ValidateSegmentNodes(first));
+  ASSERT_GE(first.n_pre, 1);
+  // Node 0 is the command of all 17 joints, in DEVICE order; node N rests.
+  for (int m = 0; m < kTreeNv; ++m) {
+    const int d = DeviceOf(m, kTreeNv);
+    EXPECT_NEAR(first.q[U(d)], tree.q_nominal[m], 1e-12) << m;
+    EXPECT_NEAR(first.qd[U(d)], 0.0, 1e-9) << m;
+    EXPECT_LE(std::fabs(first.qd[U(first.n_nodes * kMaxSegmentNv + d)]), 1e-4) << m;
+  }
+  // The catch node reaches the ball (the planner's own gate).
+  EXPECT_LE((NodeFramePos(tree, first, first.n_pre) - p_c).norm(), 0.02);
+  // The RT's sampler reads the planner's payload at every node.
+  std::array<int, kMaxPlanNv> device_of_model{};
+  for (int m = 0; m < kTreeNv; ++m) {
+    device_of_model[U(m)] = DeviceOf(m, kTreeNv);
+  }
+  NodeTrajectoryFollower follower;
+  ASSERT_TRUE(follower.Init(tree.model, tree.frame,
+                            std::span<const int>(device_of_model.data(), U(kTreeNv))));
+  SegmentNodeSample s{};
+  for (int k = 0; k <= first.n_nodes; ++k) {
+    ASSERT_TRUE(follower.Sample(first, rtc::catching::SegmentNodeTimeNs(first, k), s)) << k;
+    for (int d = 0; d < kTreeNv; ++d) {
+      EXPECT_NEAR(s.q[U(d)], first.q[U(k * kMaxSegmentNv + d)], 1e-9) << k << " " << d;
+    }
+  }
+
+  // ── A replan from the published segment: its start is that segment, read
+  //    back at 17 joints ──
+  planner.NotePublished(first);
+  const std::int64_t now = kT0 + 20 * kMs;
+  g_now.store(now);
+  PlannerRtState following = rt;
+  following.rt_state_ns = now - kH;
+  following.mode = static_cast<std::uint8_t>(rtc::catching::Mode::kApproach);
+  following.plan_active = true;
+  following.plan_id = plan.plan_id;
+  following.plan_t_c_ns = t_c;
+  following.segment_pending = true;
+  following.segment_pending_seq = first.segment_seq;
+  SegmentSnapshot second{};
+  ASSERT_TRUE(planner.Replan(following, ball, second, rec))
+      << SegmentOutcomeName(rec.outcome) << " / " << rec.core_reason_name;
+  EXPECT_EQ(second.nv, kTreeNv);
+  second.segment_seq = 2;
+  second.publish_ns = now;
+  ASSERT_TRUE(ValidateSegmentNodes(second));
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
+  ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(first, second.t0_ns, q, qd, qdd));
+  for (int d = 0; d < kTreeNv; ++d) {
+    EXPECT_NEAR(second.q[U(d)], q[U(d)], 1e-9) << d;
+    EXPECT_NEAR(second.qd[U(d)], qd[U(d)], 1e-9) << d;
+    EXPECT_NEAR(second.qdd[U(d)], qdd[U(d)], 1e-9) << d;
+  }
+  EXPECT_LE((NodeFramePos(tree, second, second.n_pre) - p_c).norm(), 0.02);
 }
 
 // The docking planner's inputs for a model: the cores' box and parameters are
@@ -299,7 +475,7 @@ TEST(SegmentCapacity, TheDockingPlannerRefusesAModelPastTheCapacity) {
   EXPECT_FALSE(planner.Configured());
 }
 
-// ── 3. The nlp search, on the chain a catch is searched on ───────────────────
+// ── 3. The searches, on the chain a catch is searched on ─────────────────────
 
 // The search's inputs for a chain: the docking fixture's cores, the suites'
 // lattice and grid.
@@ -361,7 +537,6 @@ TEST(SegmentCapacity, TheNlpSearchConfiguresOnATenJointChain) {
   // above (8), within its catch-pose IK's.
   const fx::ArmModel chain = SyntheticTree(kTrunk, kArm, 1);
   ASSERT_EQ(chain.model->nv, kChainNv);
-  ASSERT_LE(kChainNv, rtc::kMaxRobotDOF);
   const SearchConfig c = SearchConfigOf(chain);
   NlpCatchSearch search;
   std::string err;
@@ -369,19 +544,93 @@ TEST(SegmentCapacity, TheNlpSearchConfiguresOnATenJointChain) {
   EXPECT_TRUE(search.Configured());
 }
 
-TEST(SegmentCapacity, TheNlpSearchRefusesAChainItsIkCannotBeSizedFor) {
-  // Within the payload's capacity but past the catch-pose IK's: CatchPoseIk
-  // would stay unsized and answer kModelInvalid to every candidate, so the
-  // search refuses at configure, by name, instead of never finding a catch.
-  const int nv = rtc::kMaxRobotDOF + 1;
-  ASSERT_LE(nv, kMaxSegmentNv) << "this case needs a payload wider than the IK";
+TEST(SegmentCapacity, TheNlpSearchRefusesAChainPastItsLimit) {
+  // One joint past kNlpMaxSearchNv — the smaller of the payload's capacity
+  // and the catch-pose IK's. Past the IK's, CatchPoseIk would stay unsized and
+  // answer kModelInvalid to every candidate: the search refuses at configure,
+  // naming its limit, instead of never finding a catch.
+  const int nv = kNlpMaxSearchNv + 1;
   const fx::ArmModel chain = SyntheticTree(nv - kArm, kArm, 1);
   ASSERT_EQ(chain.model->nv, nv);
   const SearchConfig c = SearchConfigOf(chain);
   NlpCatchSearch search;
   std::string err;
   EXPECT_FALSE(search.Configure(c.model, c.constants, c.params, c.ik, &StepClock, &err));
-  EXPECT_NE(err.find("kMaxRobotDOF"), std::string::npos) << err;
+  EXPECT_NE(err.find("kNlpMaxSearchNv"), std::string::npos) << err;
+  EXPECT_NE(err.find(std::to_string(kNlpMaxSearchNv)), std::string::npos) << err;
+  EXPECT_FALSE(search.Configured());
+}
+
+// The grid search's inputs for a chain (the suites' values).
+struct GridConfig {
+  std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle;
+  GridCatchSearchModel model{};
+  GridCatchSearchConstants constants{};
+  PlannerParams params{};
+  rtc::catching::CatchPoseIkOptions ik{};
+};
+
+GridConfig GridConfigOf(const fx::ArmModel& a) {
+  GridConfig c;
+  c.handle = std::make_unique<rtc_urdf_bridge::RtModelHandle>(a.model);
+  const int nv = a.model->nv;
+  c.model.handle = c.handle.get();
+  c.model.catch_frame = a.frame;
+  c.model.nv = nv;
+  c.model.accel_box = true;
+  c.params.enabled = true;
+  c.params.wait_pose_n = nv;
+  for (int m = 0; m < nv; ++m) {
+    c.model.device_of_model[U(m)] = DeviceOf(m, nv);
+    c.model.qdot_max[U(m)] = 3.14;
+    c.model.qddot_max[U(m)] = 20.0;
+    c.params.wait_pose[U(DeviceOf(m, nv))] = a.q_nominal[m];
+  }
+  c.constants.eta_v = 0.9;
+  c.constants.v_max = 3.0;
+  c.constants.a_dec = 10.0;
+  c.constants.t_arm_s = 0.0;
+  c.constants.t_close_lead = 0.1;
+  c.constants.t_close_total = 0.101;
+  c.constants.ball_mass = 0.057;
+  c.constants.ref_omega = 10.0;
+  c.constants.ref_zeta = 1.0;
+  c.constants.ref_a_max = 21.0;
+  c.constants.control_dt = 0.002;
+  c.params.t_freeze = 0.2;
+  c.params.slice_t_max = 0.95;
+  c.params.n_settle = 0;
+  c.params.d_eff = 0.2;
+  c.params.r_cap = 0.03;
+  c.params.max_ik = 8;
+  c.params.budget_s = 0.05;
+  c.ik.max_iter = 60;
+  c.ik.manipulability_min = 0.0;
+  return c;
+}
+
+TEST(SegmentCapacity, TheGridSearchConfiguresOnATenJointChain) {
+  const fx::ArmModel chain = SyntheticTree(kTrunk, kArm, 1);
+  ASSERT_EQ(chain.model->nv, kChainNv);
+  const GridConfig c = GridConfigOf(chain);
+  GridCatchSearch search;
+  EXPECT_TRUE(search.Configure(c.model, c.constants, c.params, c.ik, &StepClock));
+  EXPECT_TRUE(search.Configured());
+}
+
+TEST(SegmentCapacity, TheGridSearchRefusesAChainItsIkCannotBeSizedFor) {
+  // The grid search's own bound is kMaxPlanNv; its catch-pose IK's is lower.
+  // A chain between the two used to configure and then fail every candidate's
+  // IK — it is refused at configure.
+  const int nv = rtc::kMaxRobotDOF + 1;
+  if (nv > kMaxPlanNv) {
+    GTEST_SKIP() << "the IK takes every model the search does: nothing to refuse";
+  }
+  const fx::ArmModel chain = SyntheticTree(nv - kArm, kArm, 1);
+  ASSERT_EQ(chain.model->nv, nv);
+  const GridConfig c = GridConfigOf(chain);
+  GridCatchSearch search;
+  EXPECT_FALSE(search.Configure(c.model, c.constants, c.params, c.ik, &StepClock));
   EXPECT_FALSE(search.Configured());
 }
 
