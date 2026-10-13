@@ -2290,8 +2290,9 @@ bool DemoCatchingController::SetupGridCatchSearch(const PlannerArm& arm) {
   if (search == nullptr) {
     RCLCPP_ERROR(logger_,
                  "planner: the search refused its model (nv %d, wait pose %d entries — "
-                 "planner.wait_pose must give one per arm joint)",
-                 pm.nv, planner_params_.wait_pose_n);
+                 "planner.wait_pose must give one per arm joint, and the catch-pose IK takes "
+                 "at most %d joints)",
+                 pm.nv, planner_params_.wait_pose_n, rtc::kMaxRobotDOF);
     return false;
   }
   grid_search_ = search.get();
@@ -2457,11 +2458,12 @@ bool DemoCatchingController::BuildDockingLimits(const PlannerArm& arm, double et
 }
 
 bool DemoCatchingController::SetupNlpCatchSearch(const PlannerArm& arm) {
-  if (arm.nv > rtc::catching::kMaxSegmentNv) {
+  if (arm.nv > rtc::catching::kNlpMaxSearchNv) {
     RCLCPP_ERROR(logger_,
-                 "planner.search.nlp: the arm has %d joints but a segment carries at most %d "
-                 "(kMaxSegmentNv) — select the grid search or raise the capacity",
-                 arm.nv, rtc::catching::kMaxSegmentNv);
+                 "planner.search.nlp: the search model has %d joints but the search takes at "
+                 "most %d (kNlpMaxSearchNv — the segment payload's and the catch-pose IK's "
+                 "capacity)",
+                 arm.nv, rtc::catching::kNlpMaxSearchNv);
     return false;
   }
   const auto val = [](const rtc::catching::TbdDouble& v) {
