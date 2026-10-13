@@ -170,6 +170,17 @@ demo_catching_controller:
             rows:
               accel_box: false
               jerk_box: false
+              # `torque` (not written: the default, true, is what this arm
+              # needs) switches the torque rows — not the torque cost,
+              # cost.r_tau — of the search's cores. On this arm the search's
+              # model is the arm and its solution is the first segment the arm
+              # follows (mpc_docking publishes it as it is), so the rows stay.
+              # `torque: false` takes the rows and their elastics out of the
+              # QP, for a search model whose inverse dynamics is not the
+              # robot's (a chain of a wider device, the other bodies locked).
+              # A key of THIS block only — under
+              # planner.segment.mpc_docking.core `false` is refused — which is
+              # also why it is not written here: the two cores ship equal.
             sqp:
               max_iterations: 50
               tol_violation: 1.0e-6

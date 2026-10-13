@@ -59,12 +59,25 @@ struct SearchStats;  // search_stats.hpp
 /// a published segment. `seg.publish_ns`, `seg.segment_seq` and `seg.plan_id`
 /// are the cycle's to fill and are zero here.
 ///
+/// WHOSE JOINTS. `joint_set` is the set of device joints the search's model
+/// has (PlanSnapshot::joint_set of the plan it belongs to). `seg` is as wide as
+/// that set — `seg.nv == JointSetSize(joint_set)` — and its column of device
+/// joint d is JointSetSlot(joint_set, d): the set's device indices, ascending.
+/// When the search's model is the whole device that is plain device order, the
+/// order a published segment is in; when it is a chain inside a wider device
+/// the solution is NOT a publishable segment, and a planner on the wider model
+/// widens it (the joints outside the set are the planner's to fill).
+///
 /// A receiver uses it for a plan only when it is that plan's and of the same
 /// RT report: `seg.t_c_ns == plan.t_c_ns && seg.rt_iteration == rt.rt_iteration`
 /// — and, to publish it, when node 0 started on the segment the RT reports for
 /// that instant: `source_seq` equal to SegmentPlanner::SourceSeq(rt, seg.t0_ns).
 struct CatchSolution {
   SegmentSnapshot seg{};
+  /// The device joints `seg`'s columns are of (above). 0 is "no joints": a
+  /// solution that leaves it unset is no planner's model's, so it is neither
+  /// published as it is nor widened — the planner solves the plan itself.
+  JointSet joint_set{0};
   /// The `segment_seq` of the reported segment node 0's state was evaluated
   /// on; 0 when the arm started at rest on its command.
   std::uint32_t source_seq{0};

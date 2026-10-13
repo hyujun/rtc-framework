@@ -141,6 +141,10 @@ void ApplyHandDocking(const HandDockingParams& hand, double t_close_e2e_s, doubl
 /// `w_q_nom` leaves that vector EMPTY (the core's "off"). `face_eps` and
 /// `mu_init` are one scalar for every face / row group.
 ///
+/// `rows.torque` (default true) switches the torque rows — not the torque
+/// cost — off: for a core on a model whose inverse dynamics is not the
+/// robot's, which then judges kinematics alone.
+///
 /// Not keys: `catch_time_variable` (the search sets it per core), the grid
 /// fields, `q_nom`, `manip_d_q`, and what ApplyHandDocking writes. `TBD` is
 /// refused for every key (tuning has defaults; it is not a decision).
@@ -217,7 +221,10 @@ struct MpcDockingSegmentPlannerParams {
 /// @brief `catching.planner.segment.mpc_docking.*`; the map absent = the
 ///        defaults. Unknown keys under it and its sub-maps are refused.
 /// @throws std::invalid_argument as ParseNlpSearchParams (for the keys it
-///         shares), and n_pre_max + n_stop above kMaxSegmentNodes.
+///         shares), n_pre_max + n_stop above kMaxSegmentNodes, and
+///         `core.rows.torque: false` — the one `core:` key the two maps do not
+///         share: a segment is what the arm follows and keeps its torque rows,
+///         the switch is the search's (`planner.search.nlp.core.rows.torque`).
 [[nodiscard]] MpcDockingSegmentPlannerParams ParseMpcDockingSegmentParams(
     const YAML::Node& catching, int nv);
 

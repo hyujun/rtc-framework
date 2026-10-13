@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "integrated_bringup/support/model_config_lookup.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/logging/session_dir.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
@@ -1065,7 +1066,7 @@ void DemoCatchingController::SetupTrajInput() {
       params_.io_track_eval_offset.tbd ? 0 : to_ns(params_.io_track_eval_offset.value);
   cfg.j_warn_m = params_.io_track_j_warn.tbd ? -1.0 : params_.io_track_j_warn.value;
   cfg.expected_frame = expected_frame_;
-  AcquireModelBuilder();
+  // The vision-frame transform reads the model (on_configure acquired it).
   if (!ResolveVisionFrame(cfg)) {
     throw std::runtime_error("DemoCatchingController: the vision frame could not be resolved");
   }
@@ -1353,6 +1354,11 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // A malformed key throws (the catch below refuses the configure, as for
     // every other parser); a profile on which a selected docking function
     // cannot run is a profile mistake — park, name the key, keep the robot up.
+    //
+    // The model first: the nlp search's per-joint keys are sized by the search
+    // model, which may be a chain of the arm (`planner.search.sub_model`) —
+    // a width only the system model knows.
+    AcquireModelBuilder();
     ParseDockingConfig();
     if (planner_params_.enabled) {
       if (const char* why = DockingConfigInvalid(); why != nullptr) {
@@ -2132,12 +2138,27 @@ bool DemoCatchingController::SetupPlanner() {
         "(it publishes \"no plan\")%s",
         rtc::catching::FollowsSegments(segment_mode_) ? " and no segment planner runs" : "");
   } else {
+    // Two models (E3-F01): the segment model is the whole arm device; the
+    // search's is that same model unless `planner.search.sub_model` names a
+    // chain inside it — the search then ranks candidates on the chain alone
+    // and the segment planner widens what it chose. A chain's joints are the
+    // device's, so they are the segment model's too.
     PlannerArm arm;
-    if (!ResolvePlannerArm(arm)) {
+    if (!ResolvePlannerArm(planner_params_.sub_model, /*chain=*/false, arm)) {
       return false;
     }
+    PlannerArm search_arm = arm;
+    const std::string& search_name = SearchSubModelName();
+    if (search_name != planner_params_.sub_model &&
+        !ResolvePlannerArm(search_name, /*chain=*/true, search_arm)) {
+      return false;
+    }
+    // No SetJointOrder on this handle: CatchPoseIk refuses a reordered one (its
+    // Jacobian columns and box rows are model order). The model↔device mapping
+    // is carried explicitly instead.
+    planner_handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(search_arm.model);
     const bool grid = search_mode_ == rtc::catching::CatchingSearchMode::kGrid;
-    if (!(grid ? SetupGridCatchSearch(arm) : SetupNlpCatchSearch(arm))) {
+    if (!(grid ? SetupGridCatchSearch(search_arm) : SetupNlpCatchSearch(search_arm))) {
       return false;
     }
     // MD-44: a segment planner exists only for a configuration that follows
@@ -2167,21 +2188,56 @@ bool DemoCatchingController::SetupPlanner() {
   return true;
 }
 
+const std::string& DemoCatchingController::SearchSubModelName() const noexcept {
+  return planner_params_.search_sub_model.empty() ? planner_params_.sub_model
+                                                  : planner_params_.search_sub_model;
+}
+
+int DemoCatchingController::SearchModelNv() const {
+  const std::string& name = SearchSubModelName();
+  if (!builder_ || name == planner_params_.sub_model) {
+    return arm_dof_;
+  }
+  if (FindSubModel(builder_->GetConfig(), name) == nullptr) {
+    return arm_dof_;
+  }
+  const auto model = builder_->GetReducedModel(name);
+  return model && model->nv > 0 && model->nv <= arm_dof_ ? model->nv : arm_dof_;
+}
+
 bool DemoCatchingController::ResolveCatchSubModel(
-    const char* who, std::shared_ptr<const pinocchio::Model>& model, pinocchio::FrameIndex& frame,
+    const char* who, const std::string& name, bool chain,
+    std::shared_ptr<const pinocchio::Model>& model, pinocchio::FrameIndex& frame,
     std::array<int, rtc::catching::kMaxPlanNv>& device_of_model) {
-  const std::string& name = planner_params_.sub_model;
   if (!builder_) {
     RCLCPP_ERROR(logger_, "%s: no system model to take sub-model '%s' from", who, name.c_str());
     return false;
   }
+  // By the declared names, not by a lookup that fails: the builder logs an
+  // error of its own for a name it does not have.
+  const auto& cfg = builder_->GetConfig();
+  const bool is_sub = FindSubModel(cfg, name) != nullptr;
+  const bool is_tree = !chain && !is_sub && FindTreeModel(cfg, name) != nullptr;
+  if (!is_sub && !is_tree) {
+    if (chain) {
+      RCLCPP_ERROR(logger_,
+                   "%s: urdf.sub_models has no '%s' — planner.search.sub_model names a chain "
+                   "(root link → the catch frame's parent link) declared in the robot config",
+                   who, name.c_str());
+    } else {
+      RCLCPP_ERROR(logger_,
+                   "%s: neither urdf.sub_models nor urdf.tree_models has '%s' — declare the "
+                   "catch sub-model in the robot config (arm root → the catch frame's parent "
+                   "link, R-3)",
+                   who, name.c_str());
+    }
+    return false;
+  }
   try {
-    model = builder_->GetReducedModel(name);
+    model = is_sub ? builder_->GetReducedModel(name) : builder_->GetTreeModel(name);
   } catch (const std::exception& e) {
-    RCLCPP_ERROR(logger_,
-                 "%s: urdf.sub_models has no '%s' (%s) — declare the catch sub-model in the "
-                 "robot config (arm root → the catch frame's parent link, R-3)",
-                 who, name.c_str(), e.what());
+    RCLCPP_ERROR(logger_, "%s: model '%s' could not be taken from the system model: %s", who,
+                 name.c_str(), e.what());
     return false;
   }
   if (!model || model->nq != model->nv || model->nv <= 0 ||
@@ -2198,6 +2254,21 @@ bool DemoCatchingController::ResolveCatchSubModel(
                  catch_frame_name_.c_str(), name.c_str(), e.what());
     return false;
   }
+  if (chain) {
+    // The search's base, end-effector and catch frame are the robot config's:
+    // the chain's root and tip, and a catch frame fixed to that tip.
+    const auto ef = std::find_if(cfg.extra_frames.begin(), cfg.extra_frames.end(),
+                                 [this](const auto& e) { return e.name == catch_frame_name_; });
+    const std::string& tip = builder_->GetSubModelDefinition(name).tip_link;
+    if (ef == cfg.extra_frames.end() || ef->parent != tip) {
+      RCLCPP_ERROR(logger_,
+                   "%s: the catch frame '%s' must be a urdf.extra_frames entry whose parent is "
+                   "urdf.sub_models.%s.tip_link ('%s'), got parent '%s'",
+                   who, catch_frame_name_.c_str(), name.c_str(), tip.c_str(),
+                   ef == cfg.extra_frames.end() ? "<not an extra frame>" : ef->parent.c_str());
+      return false;
+    }
+  }
   for (pinocchio::JointIndex jid = 1; jid < static_cast<pinocchio::JointIndex>(model->njoints);
        ++jid) {
     const int qi = model->joints[jid].idx_q();
@@ -2213,7 +2284,9 @@ bool DemoCatchingController::ResolveCatchSubModel(
     device_of_model[static_cast<std::size_t>(qi)] =
         static_cast<int>(std::distance(arm_joint_names_.begin(), it));
   }
-  if (model->nv != arm_dof_) {
+  // The whole device, or — a chain — some of it (each model joint is one arm
+  // joint by name, so the map above is an injection either way).
+  if (chain ? model->nv > arm_dof_ : model->nv != arm_dof_) {
     RCLCPP_ERROR(logger_, "%s: sub-model '%s' has %d joints, the arm %d", who, name.c_str(),
                  model->nv, arm_dof_);
     return false;
@@ -2221,8 +2294,10 @@ bool DemoCatchingController::ResolveCatchSubModel(
   return true;
 }
 
-bool DemoCatchingController::ResolvePlannerArm(PlannerArm& arm) {
-  if (!ResolveCatchSubModel("planner", arm.model, arm.frame, arm.device_of_model)) {
+bool DemoCatchingController::ResolvePlannerArm(const std::string& name, bool chain,
+                                               PlannerArm& arm) {
+  if (!ResolveCatchSubModel(chain ? "planner.search" : "planner", name, chain, arm.model, arm.frame,
+                            arm.device_of_model)) {
     return false;
   }
   arm.nv = arm.model->nv;
@@ -2234,20 +2309,17 @@ bool DemoCatchingController::ResolvePlannerArm(PlannerArm& arm) {
     arm.qddot_max[u] = d < arm_qdd_max_.size() ? arm_qdd_max_[d] : 0.0;
   }
   arm.accel_box = static_cast<int>(arm_qdd_max_.size()) == arm_dof_;
-  // No SetJointOrder on this handle: CatchPoseIk refuses a reordered one (its
-  // Jacobian columns and box rows are model order). The model↔device mapping
-  // is carried explicitly instead.
-  planner_handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(arm.model);
   return true;
 }
 
 bool DemoCatchingController::SetupGridCatchSearch(const PlannerArm& arm) {
-  const std::string& name = planner_params_.sub_model;
+  const std::string& name = SearchSubModelName();
   rtc::catching::GridCatchSearchModel pm;
   pm.device_of_model = arm.device_of_model;
   pm.handle = planner_handle_.get();
   pm.catch_frame = arm.frame;
   pm.nv = arm.nv;
+  pm.n_dev = arm_dof_;  // the RT reports the arm device, whatever the search's model
   pm.qdot_max = arm.qdot_max;
   pm.qddot_max = arm.qddot_max;
   pm.accel_box = arm.accel_box;
@@ -2370,7 +2442,9 @@ void DemoCatchingController::ParseDockingConfig() {
   // every selection; the two functions' maps only when they run.
   hand_docking_ = rtc::catching::ParseHandDockingParams(catching_node_);
   if (search_mode_ == rtc::catching::CatchingSearchMode::kNlp) {
-    nlp_search_params_ = rtc::catching::ParseNlpSearchParams(catching_node_, arm_dof_);
+    // Per-joint keys are sized by the model of the block they are under: the
+    // search's here, the segment model's (the whole arm) below.
+    nlp_search_params_ = rtc::catching::ParseNlpSearchParams(catching_node_, SearchModelNv());
   }
   if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking) {
     mpc_docking_params_ = rtc::catching::ParseMpcDockingSegmentParams(catching_node_, arm_dof_);
@@ -2406,11 +2480,13 @@ bool DemoCatchingController::BuildDockingLimits(const PlannerArm& arm, double et
   if (arm_cfg != nullptr && arm_cfg->joint_limits.has_value()) {
     torque = &arm_cfg->joint_limits->max_torque;
   }
-  if (torque == nullptr || static_cast<int>(torque->size()) < arm.nv) {
+  // Indexed by DEVICE joint below: one rating per joint of the device, however
+  // many of them `arm`'s model has.
+  if (torque == nullptr || static_cast<int>(torque->size()) < arm_dof_) {
     RCLCPP_ERROR(logger_,
                  "%s: the arm device has no joint_limits.max_torque for its %d joints — the "
                  "docking core's torque rows need them",
-                 who, arm.nv);
+                 who, arm_dof_);
     return false;
   }
   const Eigen::Index n = arm.nv;
@@ -2474,6 +2550,7 @@ bool DemoCatchingController::SetupNlpCatchSearch(const PlannerArm& arm) {
   nm.handle = planner_handle_.get();
   nm.catch_frame = arm.frame;
   nm.nv = arm.nv;
+  nm.n_dev = arm_dof_;  // the RT reports the arm device, whatever the search's model
   nm.device_of_model = arm.device_of_model;
   rtc::catching::NlpCatchSearchConstants nc;
   nc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
@@ -2688,13 +2765,15 @@ void DemoCatchingController::SetupSegmentFollower() {
                 "MPC segment planner is built and no segment is followed (MD-44)");
     return;
   }
-  // The planner's catch sub-model — resolved whether or not the planner runs:
-  // the oracle profile follows segments a test writes, on the same model.
+  // The planner's SEGMENT model (the whole arm; the search may run on a chain
+  // of it) — resolved whether or not the planner runs: the oracle profile
+  // follows segments a test writes, on the same model.
   std::shared_ptr<const pinocchio::Model> model;
   pinocchio::FrameIndex frame = 0;
   std::array<int, rtc::catching::kMaxPlanNv> device_of_model{};
   const char* const mode_name = rtc::catching::SegmentModeName(segment_mode_);
-  if (!ResolveCatchSubModel("planner.segment.mode", model, frame, device_of_model)) {
+  if (!ResolveCatchSubModel("planner.segment.mode", planner_params_.sub_model, /*chain=*/false,
+                            model, frame, device_of_model)) {
     return;
   }
   if (model->nv > rtc::catching::kMaxSegmentNv ||

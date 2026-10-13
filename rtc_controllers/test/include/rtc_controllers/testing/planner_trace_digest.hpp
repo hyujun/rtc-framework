@@ -170,6 +170,10 @@ inline void AddCycleRecord(ValueDigest& h, const catching::PlannerCycleRecord& r
   AddSegmentRecord(h, r.segment);
 }
 
+// `joint_set` is NOT digested: the recorded constants were taken before a plan
+// named its joints, and for a model that is its whole device the set is a
+// function of `nv`. The suites that run a chain inside a wider device assert
+// the set directly.
 inline void AddPlan(ValueDigest& h, const catching::PlanSnapshot& p) noexcept {
   h.Add(p.token);
   h.Add(p.rt_iteration);

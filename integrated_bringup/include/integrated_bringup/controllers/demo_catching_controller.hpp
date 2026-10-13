@@ -879,7 +879,10 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Fill and store this tick's PlannerRtState. RT only, every tick.
   void StorePlannerRtState(const ControllerState& state, rtc::catching::NowReal now) noexcept;
 
-  /// The catch sub-model and the arm's ratings on it, MODEL order.
+  /// One of the planner's models and the arm's ratings on it, MODEL order: the
+  /// segment model (`planner.sub_model`, every joint of the arm device) or the
+  /// search model (`planner.search.sub_model`, a chain of some of them — the
+  /// same model when that key is absent).
   struct PlannerArm {
     std::shared_ptr<const pinocchio::Model> model;
     pinocchio::FrameIndex frame{0};
@@ -967,18 +970,34 @@ class DemoCatchingController final : public RTControllerInterface {
   /// rating the cores refuse.
   [[nodiscard]] bool SetupMpcSegmentPlanner(const PlannerArm& arm);
 
-  /// The catch sub-model on `planner.sub_model`, its catch frame and the
-  /// model→device joint map — what the planner search and the segment follower
-  /// both stand on. Non-RT; false (and logged under `who`) when the model is
-  /// missing or is not exactly the arm's joints.
+  /// `planner.search.sub_model`, or `planner.sub_model` when that key is
+  /// absent (one model for the search and the segments).
+  [[nodiscard]] const std::string& SearchSubModelName() const noexcept;
+
+  /// The joint count the search's per-joint keys are sized by: the search
+  /// model's when it is its own and the system model has it, else the arm's
+  /// (a name the model lacks is SetupPlanner's to report; without a system
+  /// model the search is the stub and reads none of them). Reads the model
+  /// builder, so it is called after AcquireModelBuilder. Non-RT.
+  [[nodiscard]] int SearchModelNv() const;
+
+  /// Model `name` of the system model, its catch frame and the model→device
+  /// joint map. Non-RT; false (and logged under `who`) when it cannot be used.
+  ///
+  /// `chain` false — a model of the WHOLE arm device (the segment model, and
+  /// the search's when it has none of its own): `urdf.sub_models.<name>`, else
+  /// `urdf.tree_models.<name>`, with exactly the arm's joints.
+  /// `chain` true — the search's own model (`planner.search.sub_model`):
+  /// `urdf.sub_models.<name>` only, its joints SOME of the arm's, and the catch
+  /// frame an `urdf.extra_frames` entry whose parent is the chain's tip link.
   [[nodiscard]] bool ResolveCatchSubModel(
-      const char* who, std::shared_ptr<const pinocchio::Model>& model, pinocchio::FrameIndex& frame,
+      const char* who, const std::string& name, bool chain,
+      std::shared_ptr<const pinocchio::Model>& model, pinocchio::FrameIndex& frame,
       std::array<int, rtc::catching::kMaxPlanNv>& device_of_model);
 
-  /// The catch sub-model with the arm's ratings on it — what every search and
-  /// segment planner is built from, resolved once per configure. Non-RT; false
-  /// (logged) as ResolveCatchSubModel.
-  [[nodiscard]] bool ResolvePlannerArm(PlannerArm& arm);
+  /// ResolveCatchSubModel with the arm's ratings on the model — what a search
+  /// or a segment planner is built from. Non-RT; false (logged) as that.
+  [[nodiscard]] bool ResolvePlannerArm(const std::string& name, bool chain, PlannerArm& arm);
 
   /// `planner.segment.mode: mpc` (MPC E1-F04): bind the RT's segment
   /// sampler to the catch sub-model and cache what the switch gate reads.
@@ -1023,9 +1042,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Create the prediction subscription and configure the ingress. Non-RT.
   void SetupTrajInput();
   /// The model builder: CM's shared one, else one of our own (fixtures). Left
-  /// null (logged) without a system model config. Acquired at the start of the
-  /// ingress setup, because the vision-frame transform needs the model BEFORE
-  /// the subscription exists.
+  /// null (logged) without a system model config. on_configure acquires it
+  /// once per configure, before the first step that reads the model: the
+  /// docking parse (the nlp search's per-joint keys are sized by the search
+  /// model's joint count) — and so before the ingress setup, whose
+  /// vision-frame transform needs it before the subscription exists.
   void AcquireModelBuilder();
   /// Fills `cfg`'s vision → model-world transform (L3 §4.2). False (logged)
   /// on a named frame the model lacks or that is not rigid to its root.
@@ -1963,7 +1984,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// `planner.search.grid.ik.*` / `planner.search.grid.catchability.*` — the same parser and keys
   /// the offline catchability map uses (S3.5a), so map and runtime solve alike.
   rtc::catching::CatchPoseIkConfig catch_pose_ik_config_{};
-  /// The planner thread's OWN model handle on `planner.sub_model` (R-3,
+  /// The planner thread's OWN model handle on the search's model (R-3,
   /// thread-per-handle). Replaced only while no planner thread exists.
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> planner_handle_;
   /// `planner.freeze.T_freeze` in ns (0 = no freeze), the RT's own defence

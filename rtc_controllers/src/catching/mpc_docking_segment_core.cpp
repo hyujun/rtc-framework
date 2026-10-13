@@ -465,13 +465,17 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   nw_ = nu_ + (tc_on_ ? 1 : 0);
   n_post_ = tc_on_ ? n_nodes_ - n_pre_ + 1 : 0;
   n_pbox_ = n_post_ * n * (p.accel_box ? 3 : 2);
-  n_elastic_ = n_nodes_ + n_app_ + 5 + (tc_on_ ? n_post_ + 1 : 0);
+  // Without torque rows the group has neither rows nor elastics, and every
+  // offset after them moves up.
+  n_tau_rows_ = p.torque_rows ? 2 * nN : 0;
+  n_tau_e_ = p.torque_rows ? n_nodes_ : 0;
+  n_elastic_ = n_tau_e_ + n_app_ + 5 + (tc_on_ ? n_post_ + 1 : 0);
   o_sc_ = nw_;
   o_sv_ = o_sc_ + n_app_;
   o_e_ = o_sv_ + n_app_;
   nx_ = o_e_ + n_elastic_;
   e_torque_ = 0;
-  e_gap_ = n_nodes_;
+  e_gap_ = n_tau_e_;
   e_ent_ = e_gap_ + n_app_;
   e_lat_ = e_ent_ + 1;
   e_tim_ = e_lat_ + 1;
@@ -486,7 +490,7 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   row_a_ = row_v_ + nN;
   row_u_ = row_a_ + (p.accel_box ? nN : 0);
   row_tau_ = row_u_ + (p.jerk_box ? nu_ : 0);
-  row_e_ = row_tau_ + 2 * nN;
+  row_e_ = row_tau_ + n_tau_rows_;
   row_s_ = row_e_ + n_elastic_;
   row_app_ = row_s_ + 2 * n_app_;
   row_ent_ = row_app_ + 3 * n_app_;
@@ -564,7 +568,7 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
         }
       }
     }
-    for (Eigen::Index j = 0; j < nn; ++j) {
+    for (Eigen::Index j = 0; p.torque_rows && j < nn; ++j) {
       qp_.C(row_tau_ + o + j, o_e_ + e_torque_ + (k - 1)) = -1.0;      // upper: … − e ≤ hi
       qp_.C(row_tau_ + nN + o + j, o_e_ + e_torque_ + (k - 1)) = 1.0;  // lower: … + e ≥ lo
     }
@@ -621,7 +625,7 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
       row_group_[static_cast<std::size_t>(i)] = static_cast<int>(g);
     }
   };
-  tag_rows(row_tau_, 2 * nN, DockingRowGroup::kTorque);
+  tag_rows(row_tau_, n_tau_rows_, DockingRowGroup::kTorque);
   for (int i = 0; i < n_app_; ++i) {
     tag_rows(row_app_ + 3 * i, 1, DockingRowGroup::kGap);
   }
@@ -821,7 +825,7 @@ int MpcDockingSegmentCore::GroupRowBegin(DockingRowGroup group) const noexcept {
 int MpcDockingSegmentCore::GroupRowCount(DockingRowGroup group) const noexcept {
   switch (group) {
     case DockingRowGroup::kTorque:
-      return 2 * n_ * n_nodes_;
+      return n_tau_rows_;
     case DockingRowGroup::kGap:
       return 3 * n_app_;  // gap, corridor, envelope per approach node
     case DockingRowGroup::kEntrance:
@@ -1282,8 +1286,10 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
   };
 
   // ── Torque (rows on nodes 1..N; cost on stages 0..k_c−1) ──
+  // A node neither reads is not evaluated: its τ and ∂τ stay what Init left.
   for (Eigen::Index k = 0; k <= N; ++k) {
-    if (k == 0 && !torque_cost_) {
+    const bool row_node = p.torque_rows && k >= 1;
+    if (!row_node && !(torque_cost_ && k < kc)) {
       continue;
     }
     if (with_jacobians && k >= 1) {
@@ -1295,7 +1301,7 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
       pinocchio::rnea(model_, data_, q_.col(k), v_.col(k), a_.col(k));
       tau_.col(k) = data_.tau;
     }
-    if (k >= 1) {
+    if (row_node) {
       double node = 0.0;
       for (Eigen::Index j = 0; j < nn; ++j) {
         const double t = seen(tau_(j, k) * inv_tau_[j]);
@@ -1648,6 +1654,9 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
 
   // ── Torque: cost on nodes 1..k_c−1, rows on nodes 1..N ──
   for (Eigen::Index k = 1; k <= N; ++k) {
+    if (!p.torque_rows && !(torque_cost_ && k < kc)) {
+      continue;  // not evaluated either (EvaluateTrajectory)
+    }
     const Eigen::Index col = 3 * nn * k;
     const Eigen::Index o = (k - 1) * nn;
     const Eigen::Index last = block_of_node_[static_cast<std::size_t>(k - 1)];
@@ -1669,6 +1678,9 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
       qp_.H.topLeftCorner(nw_, nw_).noalias() += t_node_jac_.transpose() * wt_;
       work_n_ = tau_.col(k);
       qp_.g.head(nw_).noalias() += wt_.transpose() * work_n_;
+    }
+    if (!p.torque_rows) {
+      continue;
     }
     qp_.C.block(row_tau_ + o, 0, nn, nw_) = inv_tau_.asDiagonal() * t_node_jac_;
     qp_.C.block(row_tau_ + nN + o, 0, nn, nw_) = qp_.C.block(row_tau_ + o, 0, nn, nw_);
@@ -2027,7 +2039,7 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
 
 void MpcDockingSegmentCore::SetPenaltyGradient() noexcept {
   const auto mu = [this](DockingRowGroup g) noexcept { return mu_[static_cast<std::size_t>(g)]; };
-  for (Eigen::Index k = 0; k < n_nodes_; ++k) {
+  for (Eigen::Index k = 0; k < n_tau_e_; ++k) {
     qp_.g[o_e_ + e_torque_ + k] = mu(DockingRowGroup::kTorque);
   }
   for (Eigen::Index i = 0; i < n_app_; ++i) {
@@ -2059,7 +2071,7 @@ void MpcDockingSegmentCore::ElasticByGroup(
       sum_out[gi] += e;
     }
   };
-  take(DockingRowGroup::kTorque, e_torque_, n_nodes_);
+  take(DockingRowGroup::kTorque, e_torque_, n_tau_e_);
   take(DockingRowGroup::kGap, e_gap_, n_app_);
   take(DockingRowGroup::kEntrance, e_ent_, 1);
   take(DockingRowGroup::kLateral, e_lat_, 1);
@@ -2313,7 +2325,8 @@ void MpcDockingSegmentCore::Finish(const Evaluation& ev, MpcDockingReason reason
     out.slack_c[static_cast<std::size_t>(i)] = slack_c_[static_cast<std::size_t>(i)];
     out.slack_v[static_cast<std::size_t>(i)] = slack_v_[static_cast<std::size_t>(i)];
   }
-  out.tau_ratio_max = ev.tau_ratio_max;
+  out.tau_ratio_max =
+      params_.torque_rows ? ev.tau_ratio_max : std::numeric_limits<double>::quiet_NaN();
   out.lateral_margin = ev.lateral_margin;
   out.timing_margin = ev.timing_margin;
   out.approach_nodes = n_app_;

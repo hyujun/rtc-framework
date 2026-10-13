@@ -1524,6 +1524,45 @@ def _setup_args(config: Path, *extra: str):
     )  # fmt: skip
 
 
+def test_a_profile_whose_search_names_a_model_of_its_own_is_refused(tmp_path):
+    """`planner.search.sub_model` (a chain of the segment model): the binding this tool writes
+    is of one model, so it says so instead of mapping the search on the segments' model."""
+    pytest.importorskip("pinocchio")
+    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    if not config.is_dir():
+        pytest.skip("integrated_bringup config is not beside this checkout")
+
+    def overlay(name: str, search_sub_model: str) -> Path:
+        path = tmp_path / name
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "node": {
+                        "ros__parameters": {
+                            "demo_catching_controller": {
+                                "catching": {
+                                    "planner": {"search": {"sub_model": search_sub_model}}
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        return path
+
+    shipped = m.load_setup(_setup_args(config), tmp_path, ()).sub_model
+    # Naming the segments' own model is the single-model configuration.
+    same = m.load_setup(
+        _setup_args(config, "--overlay", str(overlay("same.yaml", shipped))), tmp_path, ()
+    )
+    assert same.sub_model == shipped
+    with pytest.raises(SystemExit, match="binds one model for both"):
+        m.load_setup(
+            _setup_args(config, "--overlay", str(overlay("chain.yaml", "a_chain"))), tmp_path, ()
+        )
+
+
 def test_segment_mode_overrides_that_one_value_after_the_overlays_and_is_recorded(tmp_path):
     pytest.importorskip("pinocchio")
     config = _REPO / "integrated_bringup/config/ur5e_p1b"

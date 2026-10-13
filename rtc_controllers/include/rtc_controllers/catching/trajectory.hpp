@@ -17,8 +17,10 @@
 #pragma once
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
+#include <span>
 #include <type_traits>
 
 namespace rtc::catching {
@@ -37,6 +39,55 @@ inline constexpr int kCap = 40;
 /// planner's control model). Checked against the model nv at configure time.
 /// Separate from kCap, which counts trajectory points, not joints.
 inline constexpr int kMaxPlanNv = 32;
+
+/// A set of an arm device's joints: bit d = the device's joint d (DEVICE
+/// order, the order PlannerRtState speaks). What a plan or a search's solution
+/// says about WHICH joints it is of, when the model it was computed on is a
+/// chain inside a wider device (a search on one arm of a tree, a segment
+/// planner on the whole tree). kMaxPlanNv bounds a device index.
+using JointSet = std::uint32_t;
+static_assert(kMaxPlanNv <= 32, "JointSet holds one bit per device index");
+
+/// The whole of a device of `n` joints: indices 0..n−1 (0 for n ≤ 0).
+[[nodiscard]] constexpr JointSet FullJointSet(int n) noexcept {
+  return n <= 0 ? JointSet{0} : n >= 32 ? ~JointSet{0} : (JointSet{1} << n) - 1U;
+}
+
+[[nodiscard]] constexpr bool InJointSet(JointSet set, int d) noexcept {
+  return d >= 0 && d < 32 && ((set >> d) & 1U) != 0U;
+}
+
+[[nodiscard]] constexpr int JointSetSize(JointSet set) noexcept {
+  return std::popcount(set);
+}
+
+/// The column of device joint `d` in a solution over `set`: its rank among the
+/// set's device indices, ascending. For the whole device that is `d` itself.
+/// @pre InJointSet(set, d)
+[[nodiscard]] constexpr int JointSetSlot(JointSet set, int d) noexcept {
+  return std::popcount(set & ((JointSet{1} << d) - 1U));
+}
+
+/// The set a model's joints make in a device of `n_dev` joints, through
+/// `device_of_model[m]` = the device index of model joint m.
+/// @return false (and `out` 0) unless the map is an injection into
+///         [0, n_dev): every index inside, none twice, n_dev ≤ kMaxPlanNv.
+[[nodiscard]] constexpr bool MakeJointSet(std::span<const int> device_of_model, int n_dev,
+                                          JointSet& out) noexcept {
+  out = 0;
+  if (n_dev < 0 || n_dev > kMaxPlanNv) {
+    return false;
+  }
+  JointSet set = 0;
+  for (const int d : device_of_model) {
+    if (d < 0 || d >= n_dev || InJointSet(set, d)) {
+      return false;
+    }
+    set |= JointSet{1} << d;
+  }
+  out = set;
+  return true;
+}
 
 /// Node capacity of a published segment: N ≤ kMaxSegmentNodes, so a payload holds
 /// N + 1 node columns. The MPC segment core (mpc_segment_core.hpp, which includes this
@@ -128,8 +179,21 @@ struct PlanSnapshot {
   std::int64_t gamma_t1_ns{0};
   double gamma_min{0.0};  // γ-window lower bound (diagnostic, D-8)
 
+  /// The catch posture, DEVICE order: entry d is device joint d's, and means
+  /// something only for the joints of `joint_set` (the others are zero).
   std::array<double, kMaxPlanNv> q_star{};
-  std::int32_t nv{0};
+  std::int32_t nv{0};  ///< the number of joints the plan is of: JointSetSize(joint_set)
+  /// WHICH device joints the plan is of — the model the search ran on. A
+  /// receiver whose model is wider (a segment planner on the whole tree) reads
+  /// q_star for these joints and holds the others; one whose model does not
+  /// contain the set refuses the plan. The RT does not read it.
+  ///
+  /// 0 is "no joints", NOT "every joint": whoever fills `nv` fills this too.
+  /// There is no reading of an empty set that is safe on a wider device — "the
+  /// first nv device joints" would move the wrong joints for a chain — so a
+  /// segment planner refuses a plan whose set is empty or disagrees with `nv`
+  /// (PlanJointsWithin; SegmentOutcome::kNoState).
+  JointSet joint_set{0};
   double w5{0.0};  // catchability manipulability, gate definition (D-18)
   double w6{0.0};  // 6-row variant, always recorded alongside (C-3)
 
@@ -141,6 +205,18 @@ struct PlanSnapshot {
   PlanReason reason{PlanReason::kNone};
   bool valid{false};
 };
+
+/// Whether a plan is one a planner whose model has the device joints
+/// `model_set` can take: it names its joints (`nv` is its set's size — a plan
+/// that names none, or whose count disagrees with its set, is malformed) and
+/// every one of them is the planner's. A planner whose model is wider holds
+/// the joints the plan is not of; one that lacks a joint of the plan cannot
+/// follow it.
+[[nodiscard]] constexpr bool PlanJointsWithin(const PlanSnapshot& plan,
+                                              JointSet model_set) noexcept {
+  return plan.nv >= 1 && plan.nv == JointSetSize(plan.joint_set) &&
+         (plan.joint_set & ~model_set) == 0U;
+}
 
 /// Planner → RT: the segment MPC's stop segment (MPC plan E1-F02, MD-27). A
 /// SIBLING of PlanSnapshot on its own SeqLock, not a field of it: the RT stops

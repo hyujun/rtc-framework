@@ -426,6 +426,12 @@ struct MpcDockingSegmentCoreParams {
   // ── Rows ──
   bool accel_box{false};  ///< |q̈_k| ≤ q̈_max rows
   bool jerk_box{false};   ///< |u_k| ≤ j_max rows
+  /// τ_lo ≤ τ_k ≤ τ_hi rows on nodes 1..N. false: the rows and their elastics
+  /// do not exist and the result's `tau_ratio_max` is NaN (not evaluated) — a
+  /// core that judges kinematics alone, on a model whose inverse dynamics is
+  /// not the robot's (bodies locked out of it still load its joints). The
+  /// torque COST (`r_tau`) is a separate switch and stays as it is set.
+  bool torque_rows{true};
 
   // ── The catch instant as a variable (header note) ──
   bool catch_time_variable{false};
@@ -617,8 +623,9 @@ struct MpcDockingSegmentCoreResult {
   /// NaN without a face / with the timing row off, and before any iterate.
   double lateral_margin{std::numeric_limits<double>::quiet_NaN()};
   double timing_margin{std::numeric_limits<double>::quiet_NaN()};
-  double tau_ratio_max{0.0};  ///< max |τ/τ_max| over nodes 1..N (RNEA)
-  int approach_nodes{0};      ///< |A|
+  /// max |τ/τ_max| over nodes 1..N (RNEA); NaN when `torque_rows` is off.
+  double tau_ratio_max{0.0};
+  int approach_nodes{0};  ///< |A|
   // ── With catch_time_variable (zero otherwise) ──
   /// δt_c of the returned iterate [ns] — the catch node is at t̂ + delta_ns.
   std::int64_t delta_ns{0};
@@ -895,11 +902,13 @@ class MpcDockingSegmentCore {
   int n_blocks_{0};
   int n_app_{0};
   int nu_{0};         // n·B
-  int n_elastic_{0};  // N + |A| + 5
+  int n_elastic_{0};  // N (0 without torque rows) + |A| + 5
   int nx_{0};         // nu + 2|A| + n_elastic
   int n_eq_{0};       // 2n
   int n_in_{0};
-  int n_in_init_{0};  // the linear rows alone (the leading rows of the main QP)
+  int n_in_init_{0};   // the linear rows alone (the leading rows of the main QP)
+  int n_tau_rows_{0};  // 2nN, or 0 without torque rows
+  int n_tau_e_{0};     // the torque group's elastics: N, or 0
   int terminal_rank_{0};
   // Variable offsets in x, and elastic indices inside the e block.
   int o_sc_{0}, o_sv_{0}, o_e_{0};

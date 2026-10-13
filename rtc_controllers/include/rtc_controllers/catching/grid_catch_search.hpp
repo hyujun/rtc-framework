@@ -82,9 +82,15 @@ struct GridCatchSearchModel {
   rtc_urdf_bridge::RtModelHandle* handle{nullptr};
   pinocchio::FrameIndex catch_frame{0};
   int nv{0};
-  /// `device_of_model[j]` = the arm device's index of model joint j. The RT
-  /// speaks device order (PlannerRtState, PlanSnapshot::q_star); the model
-  /// speaks its own.
+  /// Joint count of the arm DEVICE the RT reports (PlannerRtState::nv, the
+  /// width of a reported segment and of `planner.wait_pose`). 0 = `nv`: the
+  /// model is the whole device. Larger when the model is a chain inside a
+  /// wider device — the search then reads and writes its own joints' entries
+  /// only, and nothing it decides depends on the others.
+  int n_dev{0};
+  /// `device_of_model[j]` = the arm device's index of model joint j: an
+  /// injection into [0, n_dev). The RT speaks device order (PlannerRtState,
+  /// PlanSnapshot::q_star); the model speaks its own.
   std::array<int, kMaxPlanNv> device_of_model{};
   std::array<double, kMaxPlanNv> qdot_max{};   ///< model order [rad/s], device ratings
   std::array<double, kMaxPlanNv> qddot_max{};  ///< model order [rad/s²], the D-16 box
@@ -160,8 +166,10 @@ class GridCatchSearch final : public CatchSearch {
  public:
   /// Non-RT. Size every buffer. False (and unconfigured) if the model binding
   /// is unusable — no handle, nv outside (0, kMaxPlanNv] or wider than the
-  /// catch-pose IK can be sized for (rtc::kMaxRobotDOF), a wait pose that is
-  /// not one entry per arm joint.
+  /// catch-pose IK can be sized for (rtc::kMaxRobotDOF), a device narrower than
+  /// the model or wider than kMaxPlanNv, a `device_of_model` that is not an
+  /// injection into the device, a wait pose that is not one entry per DEVICE
+  /// joint.
   bool Configure(const GridCatchSearchModel& model, const GridCatchSearchConstants& constants,
                  const PlannerParams& params, const CatchPoseIkOptions& ik, ClockFn clock);
 
@@ -215,6 +223,11 @@ class GridCatchSearch final : public CatchSearch {
   /// position tolerance from its centre is refused before the IK.
   [[nodiscard]] const ReachBound& Reach() const noexcept { return reach_; }
 
+  /// The joints this search plans, as device indices: every joint of the
+  /// device, or — on a chain of it — the chain's (`PlanSnapshot::joint_set` of
+  /// the plans it publishes). 0 before Configure.
+  [[nodiscard]] JointSet Joints() const noexcept { return joint_set_; }
+
   /// The IK seed in force after the last `Plan` call, model order (tests).
   [[nodiscard]] const Eigen::VectorXd& IkSeedForTesting() const noexcept { return seed_; }
 
@@ -265,6 +278,8 @@ class GridCatchSearch final : public CatchSearch {
   /// that does not adopt (refused, or source `yaml`) never inherits the
   /// pose an earlier activation adopted.
   Eigen::VectorXd seed_yaml_;
+  int n_dev_{0};           // the device's joint count (model_.n_dev resolved)
+  JointSet joint_set_{0};  // the model's joints, as device indices
   std::array<double, kMaxPlanNv> q_star_{};
   std::array<double, kMaxPlanNv> qdot_u_{};
   std::array<double, kMaxPlanNv> q0_{};

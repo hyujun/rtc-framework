@@ -128,11 +128,15 @@ bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& mo
         "mpc_docking planner: the arm model is absent, or its joint count is not within "
         "the segment payload's capacity");
   }
+  // A permutation of the device: every index inside, none twice (the payload
+  // is device order, and a repeated index would publish one joint's nodes
+  // over another's).
+  JointSet model_set = 0;
+  if (!MakeJointSet(std::span<const int>(model.device_of_model.data(), U(model.nv)), model.nv,
+                    model_set)) {
+    return fail("mpc_docking planner: device_of_model is not a permutation of the arm's joints");
+  }
   for (int m = 0; m < model.nv; ++m) {
-    const int d = model.device_of_model[U(m)];
-    if (d < 0 || d >= model.nv) {
-      return fail("mpc_docking planner: device_of_model is not a permutation of the arm's joints");
-    }
     const double rating = model.qd_rating[U(m)];
     if (!std::isfinite(rating) || !(rating > 0.0)) {
       return fail("mpc_docking planner: a joint has no positive velocity rating");
@@ -168,6 +172,7 @@ bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& mo
   clock_ = clock;
   nv_ = model.nv;
   device_of_model_ = model.device_of_model;
+  model_set_ = model_set;
   qd_rating_ = model.qd_rating;
   dt_pre_ns_ = dt_pre_ns;
   dt_stop_ns_ = dt_stop_ns;
@@ -520,7 +525,9 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   if (!CheckState(rt, start, /*need_command=*/following, rec)) {
     return false;
   }
-  if (!plan.valid || plan.t_c_ns <= 0 || plan.nv != nv_) {
+  // A plan of SOME of this model's joints is taken (a search on a chain of a
+  // wider device): the others are held where they are — below.
+  if (!plan.valid || plan.t_c_ns <= 0 || !PlanJointsWithin(plan, model_set_)) {
     rec.outcome = SegmentOutcome::kNoState;
     return false;
   }
@@ -549,8 +556,10 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   // ── The search's own solution, when it is this plan's ─────────────────────
   // ... and started where this planner would start it: on the segment the RT
   // reports for the solution's node 0 (none, for an arm that follows no
-  // plan). A solution that started anywhere else is not published.
-  if (solution != nullptr && solution->seg.t_c_ns == t_c &&
+  // plan). A solution that started anywhere else is not published. Nor is one
+  // of another model: only a solution of exactly this model's joints is a
+  // segment of this planner's (a chain's is widened into a start, below).
+  if (solution != nullptr && solution->joint_set == model_set_ && solution->seg.t_c_ns == t_c &&
       solution->seg.rt_iteration == rt.rt_iteration && OnGrid(solution->seg) &&
       StartsOnTheReport(rt, *solution)) {
     const SegmentSnapshot& seg = solution->seg;
@@ -613,8 +622,15 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
     rec.outcome = SegmentOutcome::kTooLate;
     return false;
   }
-  const int n_pre =
+  int n_pre =
       static_cast<int>(std::min<std::int64_t>(params_.n_pre_max, (t_c - earliest) / dt_pre_ns_));
+  // The search's solution of this plan on a CHAIN of this model: not a segment
+  // this planner can publish, but the start of its solve. Its grid when that
+  // begins later than this planner's could — the same nodes, fewer of them.
+  const CatchSolution* const chain = ChainSolutionOf(plan, solution, rt);
+  if (chain != nullptr) {
+    n_pre = std::min(n_pre, chain->seg.n_pre);
+  }
   const int n_total = n_pre + params_.n_stop;
   const std::int64_t t_eff = t_c - static_cast<std::int64_t>(n_pre) * dt_pre_ns_;
   rec.k = -n_pre;
@@ -647,21 +663,22 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
     double speed = 0.0;
     for (int m = 0; m < nv_; ++m) {
       const std::size_t d = U(device_of_model_[U(m)]);
+      // q_star says nothing of a joint the plan is not of.
+      const bool planned = InJointSet(plan.joint_set, device_of_model_[U(m)]);
       q0[U(m)] = q[d];
       qd0[U(m)] = qd[d];
       qdd0[U(m)] = qdd[d];
       finite = finite && std::isfinite(q[d]) && std::isfinite(qd[d]) && std::isfinite(qdd[d]) &&
-               std::isfinite(plan.q_star[d]);
+               (!planned || std::isfinite(plan.q_star[d]));
       speed = std::max(speed, std::fabs(qd[d]));
-      in.q_catch_target[m] = plan.q_star[d];
     }
     rec.x0_speed = finite ? speed : std::numeric_limits<double>::quiet_NaN();
   } else {
     for (int m = 0; m < nv_; ++m) {
       const std::size_t d = U(device_of_model_[U(m)]);
+      const bool planned = InJointSet(plan.joint_set, device_of_model_[U(m)]);
       q0[U(m)] = rt.q_cmd[d];
-      finite = finite && std::isfinite(rt.q_cmd[d]) && std::isfinite(plan.q_star[d]);
-      in.q_catch_target[m] = plan.q_star[d];
+      finite = finite && std::isfinite(rt.q_cmd[d]) && (!planned || std::isfinite(plan.q_star[d]));
     }
   }
   if (!finite) {
@@ -680,13 +697,41 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
     in.q0[m] = q0[U(m)];
     in.qd0[m] = following ? qd0[U(m)] : 0.0;
     in.qdd0[m] = following ? qdd0[U(m)] : 0.0;
+    // The catch posture target: the plan's for its joints; a joint the plan is
+    // not of is held on its start, as the core takes it (after the projection).
+    const int d = device_of_model_[U(m)];
+    in.q_catch_target[m] = InJointSet(plan.joint_set, d) ? plan.q_star[U(d)] : in.q0[m];
   }
   in.initial_valid = false;
   in.catch_target_valid = true;
-  // The previous wake's solve of this same first segment, when it left an
-  // iterate: the same activation, track, plan id and catch instant, on a grid
-  // this one continues (header note).
-  if (first_memory_.valid &&
+  if (chain != nullptr) {
+    // The chain's joints on the search's nodes (the ones that have passed
+    // dropped), every other joint resting on its start; node 0 is the start
+    // state itself. The search's solution is this wake's, of this prediction:
+    // it goes before a remembered iterate of an earlier one.
+    const SegmentSnapshot& seg = chain->seg;
+    const int shift = seg.n_pre - n_pre;
+    for (int m = 0; m < nv_; ++m) {
+      const int d = device_of_model_[U(m)];
+      const bool planned = InJointSet(chain->joint_set, d);
+      const int slot = planned ? JointSetSlot(chain->joint_set, d) : 0;
+      for (int k = 0; k <= n_total; ++k) {
+        const std::size_t e = U((k + shift) * kMaxSegmentNv + slot);
+        in.q_init(m, k) = planned ? seg.q[e] : in.q0[m];
+        in.qd_init(m, k) = planned ? seg.qd[e] : 0.0;
+        in.qdd_init(m, k) = planned ? seg.qdd[e] : 0.0;
+      }
+      in.q_init(m, 0) = in.q0[m];
+      in.qd_init(m, 0) = in.qd0[m];
+      in.qdd_init(m, 0) = in.qdd0[m];
+    }
+    in.initial_valid = true;
+    rec.start_from_search = true;
+  } else if (
+      // The previous wake's solve of this same first segment, when it left an
+      // iterate: the same activation, track, plan id and catch instant, on a
+      // grid this one continues (header note).
+      first_memory_.valid &&
       first_memory_.token.activation_generation == rt.activation_generation &&
       first_memory_.token.generation == plan.token.generation &&
       first_memory_.plan_id == plan.plan_id && first_memory_.t_c_ns == t_c &&
@@ -746,6 +791,28 @@ void MpcDockingSegmentPlanner::RememberFirst(const PlannerRtState& rt, const Pla
   }
   Pack(rt, plan.token.generation, plan.plan_id, plan.t_c_ns, t_eff, n_pre, rec.x0_clamped, res,
        first_memory_);
+}
+
+const CatchSolution* MpcDockingSegmentPlanner::ChainSolutionOf(
+    const PlanSnapshot& plan, const CatchSolution* solution,
+    const PlannerRtState& rt) const noexcept {
+  if (solution == nullptr) {
+    return nullptr;
+  }
+  const SegmentSnapshot& seg = solution->seg;
+  // This plan's, of this report, on SOME of this model's joints — and as wide
+  // as it says.
+  const bool chain = solution->joint_set != model_set_ && solution->joint_set == plan.joint_set &&
+                     PlanJointsWithin(plan, model_set_) && seg.valid && seg.nv == plan.nv &&
+                     seg.t_c_ns == plan.t_c_ns && seg.rt_iteration == rt.rt_iteration;
+  // On this planner's grid: its two spacings, its stop part, a catch instant
+  // that is the lattice's (a catch interval of its own length is another
+  // grid's nodes), node 0 a whole number of pre-catch intervals before t_c.
+  const bool on_grid = seg.n_pre >= 1 && seg.k0 == 0 && seg.n_nodes == seg.n_pre + params_.n_stop &&
+                       seg.n_nodes <= kMaxSegmentNodes && seg.dt_ns == dt_stop_ns_ &&
+                       seg.dt_pre_ns == dt_pre_ns_ && seg.dt_catch_ns == 0 &&
+                       seg.t0_ns == seg.t_c_ns - static_cast<std::int64_t>(seg.n_pre) * dt_pre_ns_;
+  return chain && on_grid ? solution : nullptr;
 }
 
 bool MpcDockingSegmentPlanner::StartsOnTheReport(const PlannerRtState& rt,

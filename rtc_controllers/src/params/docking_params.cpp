@@ -657,9 +657,10 @@ void ReadCore(const Reader& rd, const YAML::Node& m, const std::string& path, in
   core.w_perp = rd.Number(stop, "w_perp", ps, core.w_perp, NonNegative());
 
   const std::string pr = Join(path, "rows");
-  const YAML::Node rows = sub("rows", {"accel_box", "jerk_box"});
+  const YAML::Node rows = sub("rows", {"accel_box", "jerk_box", "torque"});
   core.accel_box = rd.Bool(rows, "accel_box", pr, core.accel_box);
   core.jerk_box = rd.Bool(rows, "jerk_box", pr, core.jerk_box);
+  core.torque_rows = rd.Bool(rows, "torque", pr, core.torque_rows);
 
   const std::string pk = Join(path, "catch_time");
   const YAML::Node catch_time =
@@ -887,6 +888,13 @@ MpcDockingSegmentPlannerParams ParseMpcDockingSegmentParams(const YAML::Node& ca
   out.slack_v_max = rd.Number(publish, "slack_v_max", pu, out.slack_v_max, NonNegative());
 
   ReadDockingCoreParams(mpc.IsMap() ? mpc["core"] : YAML::Node(), Join(b, "core"), nv, out.core);
+  // A segment is what the arm follows: its torque rows are not a switch. The
+  // key is the search's (a search may judge kinematics alone).
+  if (!out.core.torque_rows) {
+    rd.Reject(Quote(Join(b, "core.rows.torque")) +
+              " = false: a published segment keeps its torque rows — the switch is "
+              "planner.search.nlp.core.rows.torque");
+  }
   return out;
 }
 

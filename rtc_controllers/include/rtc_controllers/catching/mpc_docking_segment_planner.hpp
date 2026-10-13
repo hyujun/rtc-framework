@@ -39,6 +39,18 @@
 //        published as they are, bit for bit. Whether the solve that produced
 //        them converged is the search's statement (CatchSolution::converged):
 //        an evaluation does not converge.
+//        This is for a solution of THIS model's joints (CatchSolution::
+//        joint_set) only: a segment is of every joint of the model.
+//      – A search that ran on a CHAIN of this model (its solution's joint set
+//        a proper subset — the search on one arm of a tree, this planner on
+//        the tree) hands in a solution that is not a segment of this model.
+//        It is not published; it is WIDENED into the start of a solve: the
+//        chain's joints on the search's nodes, every other joint resting on
+//        its start state, x₀ over node 0, and the catch pose the plan's
+//        q_star for the chain's joints and the start for the others. The
+//        solve then runs on the search's grid when that starts later than
+//        this planner's own would. The record says so (start_from_search) and
+//        `from_search` stays false: the segment is this solve's.
 //      – Otherwise the core solves from x₀. Its start is the iterate the
 //        previous wake's solve of THIS first segment ended on, when there is
 //        one — the same track, plan id and catch instant, withheld then —
@@ -243,6 +255,12 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
                MpcDockingSegmentCoreInput& in) const noexcept;
   // Whether `seg` is on this planner's grid for its own n_pre.
   [[nodiscard]] bool OnGrid(const SegmentSnapshot& seg) const noexcept;
+  // `solution` when it is `plan`'s, of `rt`'s report, of a CHAIN of this
+  // model (some of its joints, not all) and on this planner's grid — the start
+  // of a first solve (header note); else nullptr.
+  [[nodiscard]] const CatchSolution* ChainSolutionOf(const PlanSnapshot& plan,
+                                                     const CatchSolution* solution,
+                                                     const PlannerRtState& rt) const noexcept;
   // Whether a search's solution started where a first segment of this report
   // starts: on the segment the RT reports for the solution's node 0 — and on
   // none when the RT follows no plan.
@@ -273,6 +291,7 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
   ClockFn clock_{nullptr};
   int nv_{0};
   std::array<int, kMaxPlanNv> device_of_model_{};
+  JointSet model_set_{0};  // the model's joints, as device indices: the whole device
   std::array<double, kMaxPlanNv> qd_rating_{};
   std::int64_t dt_pre_ns_{0};
   std::int64_t dt_stop_ns_{0};

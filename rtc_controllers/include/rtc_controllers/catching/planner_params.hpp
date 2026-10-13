@@ -274,9 +274,18 @@ struct PlannerParams {
   bool provisional{true};
 
   // ── Search (S6-B) ──────────────────────────────────────────────────────────
-  /// `planner.sub_model` — the robot config's `urdf.sub_models` entry that
-  /// reaches the catch frame's parent (R-3). Empty = unset.
+  /// `planner.sub_model` — the model the SEGMENTS are planned and followed on:
+  /// every joint of the arm device, with the catch frame in it (R-3). The robot
+  /// config's `urdf.sub_models` entry of that name, else its `urdf.tree_models`
+  /// entry (a device that is a tree, not a chain). Empty = unset.
   std::string sub_model;
+  /// `planner.search.sub_model` — the model the SEARCH runs on, when that is
+  /// not `sub_model`: a `urdf.sub_models` entry (a chain, root link → tip link)
+  /// whose joints are some of the arm device's and whose tip link is the
+  /// parent of the catch frame. The search then ranks candidates on that chain
+  /// alone and a segment planner on `sub_model` widens what it chose. Empty
+  /// (the key absent) = `sub_model`: one model for both.
+  std::string search_sub_model;
   /// `planner.search.grid.max_ik` — IK candidates per cycle after the pre-filter (R-2).
   int max_ik{8};
   /// `planner.search.grid.slice.dt` [s] — candidate spacing; the vision grid is thinned to

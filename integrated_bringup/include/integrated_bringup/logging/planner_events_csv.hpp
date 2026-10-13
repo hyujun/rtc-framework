@@ -60,7 +60,11 @@
 // iterate the previous wake's solve of the same plan ended on (0: the
 // search's catch pose, and every other solve; the core still runs its
 // initialisation QP toward that iterate when the start state has moved —
-// `segment_qp_solves` − `segment_iterations` says so). These two are written
+// `segment_qp_solves` − `segment_iterations` says so).
+// `segment_start_from_search` is 1 on a first solve started from the search's
+// solution of a chain, widened to the planner's model (0: every other solve —
+// a segment that IS the search's solution, published as it is, is not a solve
+// and is 0 too). These three are written
 // for a solve without an iterate too: cut before its initialisation QP
 // (`init_qp`) a solve has none, and the rest of the block is NaN (0 for a
 // count). The last-QP columns (`segment_kkt_residual`, `segment_grad_norm`,
@@ -165,7 +169,7 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "nlp_sigma_c_cell,"
         "nlp_screen_us,nlp_solve_us_max,nlp_cmd_gap_q,nlp_cmd_gap_qd,"
         "segment_qp_solves,segment_qp_iterations,segment_backtracks,segment_mu_updates,"
-        "segment_cut_site,segment_start_from_memory,"
+        "segment_cut_site,segment_start_from_memory,segment_start_from_search,"
         "segment_start_us,segment_linearize_us,segment_assemble_us,segment_qp_us,segment_merit_us,"
         "segment_kkt_residual,segment_grad_norm,segment_complementarity,segment_infeasible_group,"
         "segment_viol_torque,segment_viol_gap,segment_viol_entrance,segment_viol_lateral,"
@@ -349,7 +353,8 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   // ── The mpc_docking core's account of the solve ──
   const rtc::catching::DockingSolveStats& k = d.docking;
   os << k.qp_solves << ',' << k.qp_iterations << ',' << k.backtracks << ',' << k.mu_updates << ','
-     << k.cut_site_name << ',' << (d.start_from_memory ? 1 : 0) << ',';
+     << k.cut_site_name << ',' << (d.start_from_memory ? 1 : 0) << ','
+     << (d.start_from_search ? 1 : 0) << ',';
   num(k.ran, k.start_us);
   num(k.ran, k.linearize_us);
   num(k.ran, k.assemble_us);

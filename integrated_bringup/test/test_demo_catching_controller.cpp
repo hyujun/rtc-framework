@@ -2854,6 +2854,195 @@ INSTANTIATE_TEST_SUITE_P(BothCatchingRobots, ShippedCatchingProfile,
                                            std::pair<std::string, int>{"iiwa7_leap", 16}),
                          [](const auto& info) { return info.param.first; });
 
+// ── E3-F01 (#640): the search on a chain of the arm device ──────────────────
+//
+// No shipped profile names `planner.search.sub_model` yet (the G1 catching
+// profile is E3-F05's), so the configure path that resolves a second model
+// would run nowhere. These cases run it on the shipped ur5e_p1b profile with
+// one sub-model added to its model config: the arm from `shoulder_link` to
+// the catch frame's parent — the shipped catch sub-model with its first joint
+// locked, a chain of the arm device as G1's waist + right arm is of its 17
+// joints. What is judged is the configure — which model each part of the
+// planner is built on, and what is refused — not a catch: nothing here says a
+// five-joint search suits this arm.
+
+constexpr const char* kChainProfile = "ur5e_p1b";
+constexpr const char* kChainName = "ur5e_catch_chain";
+constexpr const char* kChainLockedJoint = "shoulder_pan_joint";
+
+rtc_urdf_bridge::ModelConfig ModelWithSearchChain(const std::string& root, const std::string& tip) {
+  rtc_urdf_bridge::ModelConfig cfg = integrated_bringup::testfx::ShippedModelConfig(kChainProfile);
+  cfg.sub_models.push_back({kChainName, root, tip});
+  return cfg;
+}
+
+// A controller of the shipped profile on `cfg`, the planner on, with
+// `planner.search.sub_model` set to `search_sub_model` (left absent when empty).
+// `selection` is the profile's tree when the case selects a search and a
+// segment mode of its own (ShippedWithSelection); the shipped pair otherwise.
+struct SearchChainBringUp {
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node;
+  DemoCatchingController ctrl{""};
+  std::vector<std::string> arm_joints;
+  YAML::Node yaml;
+
+  DemoCatchingController::CallbackReturn Configure(const rtc_urdf_bridge::ModelConfig& cfg,
+                                                   const std::string& search_sub_model,
+                                                   const std::string& node_name,
+                                                   const YAML::Node& selection = YAML::Node()) {
+    yaml = selection.IsDefined() && selection.IsMap()
+               ? YAML::Clone(selection)
+               : ShippedWithPlanner(kChainProfile, /*planner=*/true, /*oracle=*/false);
+    if (!search_sub_model.empty()) {
+      yaml["catching"]["planner"]["search"]["sub_model"] = search_sub_model;
+    }
+    const auto configs = ShippedSimConfigs(kChainProfile, yaml);
+    for (const auto& [group, device] : configs) {
+      const auto& names = device.joint_state_names;
+      if (std::find(names.begin(), names.end(), kChainLockedJoint) != names.end()) {
+        arm_joints = names;
+      }
+    }
+    node = NodeWithProfile(node_name, "mpc_on");
+    ctrl.SetSystemModelConfig(cfg);
+    ctrl.SetSharedModelBuilder(std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(cfg));
+    ctrl.SetControlRate(kShippedControlRateHz);
+    ctrl.SetDeviceNameConfigs(configs);
+    return ctrl.on_configure(rclcpp_lifecycle::State{}, node, yaml);
+  }
+
+  // The same configuration again, on the same controller and node.
+  DemoCatchingController::CallbackReturn ConfigureAgain() {
+    return ctrl.on_configure(rclcpp_lifecycle::State{}, node, yaml);
+  }
+
+  // The arm device's joints but the one the chain locks, as device indices.
+  [[nodiscard]] rtc::catching::JointSet ChainJoints() const {
+    rtc::catching::JointSet set = 0;
+    for (std::size_t d = 0; d < arm_joints.size(); ++d) {
+      if (arm_joints[d] != kChainLockedJoint) {
+        set |= rtc::catching::JointSet{1} << d;
+      }
+    }
+    return set;
+  }
+};
+
+TEST(CatchingSearchChainConfigure, TheSearchIsBuiltOnTheChainAndTheSegmentsOnTheDevice) {
+  const rtc_urdf_bridge::ModelConfig cfg = ModelWithSearchChain("shoulder_link", "l_palm_link");
+  const rclcpp_lifecycle::State prev;
+  // The control: without the key the search plans every joint of the device.
+  {
+    SearchChainBringUp whole;
+    ASSERT_EQ(whole.Configure(cfg, "", "catching_search_chain_absent"),
+              DemoCatchingController::CallbackReturn::SUCCESS);
+    ASSERT_FALSE(whole.ctrl.IsSimOnlyDisabled());
+    ASSERT_NE(whole.ctrl.GetGridCatchSearchForTesting(), nullptr);
+    const int n = static_cast<int>(whole.arm_joints.size());
+    ASSERT_GT(n, 1);
+    EXPECT_EQ(whole.ctrl.GetGridCatchSearchForTesting()->Joints(), rtc::catching::FullJointSet(n));
+    ASSERT_EQ(whole.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+  SearchChainBringUp chain;
+  ASSERT_EQ(chain.Configure(cfg, kChainName, "catching_search_chain"),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_FALSE(chain.ctrl.IsSimOnlyDisabled());
+  EXPECT_EQ(chain.ctrl.GetPlannerParams().search_sub_model, kChainName);
+  const int n_dev = static_cast<int>(chain.arm_joints.size());
+  // The search: the chain's joints, one fewer than the device's.
+  ASSERT_NE(chain.ctrl.GetGridCatchSearchForTesting(), nullptr);
+  const rtc::catching::JointSet joints = chain.ctrl.GetGridCatchSearchForTesting()->Joints();
+  EXPECT_EQ(joints, chain.ChainJoints());
+  EXPECT_EQ(rtc::catching::JointSetSize(joints), n_dev - 1);
+  // The segment planner: the whole device, as without the key.
+  ASSERT_EQ(chain.ctrl.GetSegmentMode(), rtc::catching::CatchingSegmentMode::kMpc)
+      << "precondition — the shipped law";
+  ASSERT_NE(chain.ctrl.GetMpcSegmentPlannerForTesting(), nullptr);
+  EXPECT_EQ(chain.ctrl.GetMpcSegmentPlannerForTesting()->Nv(), n_dev);
+  // ... and the pair runs through the lifecycle.
+  ASSERT_EQ(chain.ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_NE(chain.ctrl.GetPlannerThread(), nullptr);
+  EXPECT_TRUE(chain.ctrl.GetPlannerThread()->Running());
+  ASSERT_EQ(chain.ctrl.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(chain.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+// The nlp search on the chain. Its per-joint keys (`core.cost.r_tau`, …) are
+// sized by the SEARCH model's joint count, which only the system model knows —
+// so the configure has the model before it parses them. Sized by the device's
+// count instead, a core of the chain's width refuses them and the controller
+// parks; and it must not matter whether this is the controller's first
+// configure or one after a cleanup.
+TEST(CatchingSearchChainConfigure, TheNlpSearchsKeysAreSizedByTheChain) {
+  const rtc_urdf_bridge::ModelConfig cfg = ModelWithSearchChain("shoulder_link", "l_palm_link");
+  const rclcpp_lifecycle::State prev;
+  for (const char* segment : {"mpc", "mpc_docking"}) {
+    SCOPED_TRACE(segment);
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    ASSERT_EQ(c.Configure(cfg, kChainName, std::string("catching_search_chain_nlp_") + segment,
+                          ShippedWithSelection(kChainProfile, "nlp", segment, {})),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+    const int n_dev = static_cast<int>(c.arm_joints.size());
+    const auto built_on_the_chain = [&](const char* when) {
+      SCOPED_TRACE(when);
+      EXPECT_FALSE(c.ctrl.IsSimOnlyDisabled()) << ConfigureLog::All();
+      ASSERT_EQ(c.ctrl.GetSearchMode(), rtc::catching::CatchingSearchMode::kNlp);
+      ASSERT_NE(c.ctrl.GetNlpCatchSearchForTesting(), nullptr) << ConfigureLog::All();
+      EXPECT_EQ(c.ctrl.GetNlpCatchSearchForTesting()->Joints(), c.ChainJoints());
+      // The segment planner is of the whole device, whichever it is.
+      if (std::string(segment) == "mpc") {
+        ASSERT_NE(c.ctrl.GetMpcSegmentPlannerForTesting(), nullptr);
+        EXPECT_EQ(c.ctrl.GetMpcSegmentPlannerForTesting()->Nv(), n_dev);
+      } else {
+        EXPECT_NE(c.ctrl.GetMpcDockingSegmentPlannerForTesting(), nullptr) << ConfigureLog::All();
+      }
+    };
+    ASSERT_NO_FATAL_FAILURE(built_on_the_chain("the first configure"));
+    ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+    ASSERT_EQ(c.ConfigureAgain(), DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+    ASSERT_NO_FATAL_FAILURE(built_on_the_chain("a configure after a cleanup"));
+    ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+}
+
+TEST(CatchingSearchChainConfigure, RefusesASearchModelThatIsNotADeclaredChain) {
+  const rtc_urdf_bridge::ModelConfig cfg = ModelWithSearchChain("shoulder_link", "l_palm_link");
+  const ConfigureLog log;
+  // A name the robot config does not declare.
+  {
+    SearchChainBringUp c;
+    EXPECT_EQ(c.Configure(cfg, "no_such_chain", "catching_search_chain_undeclared"),
+              DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_TRUE(ConfigureLog::Said("urdf.sub_models has no 'no_such_chain'"))
+        << ConfigureLog::All();
+  }
+  // A TREE model: the segments may be planned on one (the whole device), a
+  // search may not — its base, end-effector and catch frame are a chain's.
+  {
+    ASSERT_FALSE(cfg.tree_models.empty()) << "precondition — the profile declares a tree model";
+    const std::string tree = cfg.tree_models.front().name;
+    SearchChainBringUp c;
+    EXPECT_EQ(c.Configure(cfg, tree, "catching_search_chain_tree"),
+              DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_TRUE(ConfigureLog::Said("urdf.sub_models has no '" + tree + "'")) << ConfigureLog::All();
+  }
+}
+
+TEST(CatchingSearchChainConfigure, RefusesAChainThatDoesNotEndOnTheCatchFramesParent) {
+  // The chain ends on the flange; the catch frame is fixed to the palm past it.
+  // The frame is still in the reduced model (so its lookup alone would pass),
+  // but the chain's tip is not the link the robot config fixes it to.
+  const rtc_urdf_bridge::ModelConfig cfg = ModelWithSearchChain("shoulder_link", "tool0");
+  const ConfigureLog log;
+  SearchChainBringUp c;
+  EXPECT_EQ(c.Configure(cfg, kChainName, "catching_search_chain_short"),
+            DemoCatchingController::CallbackReturn::FAILURE);
+  EXPECT_TRUE(ConfigureLog::Said("tip_link ('tool0')")) << ConfigureLog::All();
+}
+
 // ── 5. S5.1: the P-1 minimum E-STOP/fault contract (E-8) ────────────────────
 //
 // The four parts are tested separately because they fail separately: (a) is

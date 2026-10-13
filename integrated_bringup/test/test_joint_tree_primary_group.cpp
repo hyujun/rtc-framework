@@ -8,7 +8,9 @@
 //
 // What the controller does about it, and what this file pins:
 //   - the primary group's model is the `urdf.tree_models` entry named after the
-//     device (no sub_models at all here);
+//     device (this fixture declares no sub_models at all; a profile may declare
+//     chains under other names beside the tree — g1_p1b's catch search chain —
+//     and the lookup is by the device's name, so they do not change it);
 //   - the "arm tip" is the link the hand is mounted on, read off the secondary
 //     tree's root_link — NOT the last link of the branch, and not a tip of the
 //     primary tree;

@@ -159,7 +159,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 **남은 feature 의 결정**
 
-- [#641](https://github.com/hyujun/rtc-framework/issues/641) — E3-F02: "전신 항은 catch 에 거의 영향 없음" 을 무엇으로 지킬지 (가중 · 사전적 처리 · 사슬 관절을 탐색의 해에 묶기), 사슬에만 의존하는 항을 탐색에도 켤지, 안 B (`nlp` 에 전신 항) 로 옮길지의 판정 문턱 (시행 전에 고정)
+- [#641](https://github.com/hyujun/rtc-framework/issues/641) — E3-F02: "전신 항은 catch 에 거의 영향 없음" 을 무엇으로 지킬지 (가중 · 사전적 처리 · 사슬 관절을 탐색의 해에 묶기), 사슬에만 의존하는 항을 탐색에도 켤지, 안 B (`nlp` 에 전신 항) 로 옮길지의 판정 문턱 (시행 전에 고정), G1 의 `mpc_docking` 구간이 토크 비용 (`r_tau`) 을 어떻게 둘지 — tree 모델 위에서 그 비용은 사슬 밖 관절을 읽어 그 자체로 전신 항이다 (E3-F01 의 일치 검사에서 나온 것, 측정은 [#641 의 코멘트](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6149142886))
 - [#642](https://github.com/hyujun/rtc-framework/issues/642) — E3-F03: 충돌 제약 — capsule 모델 · 자기충돌 · 공–왼팔 거리
 - [#645](https://github.com/hyujun/rtc-framework/issues/645) — E3-F06: 로그 · plot_rtc_log · demo_controller_gui (dual arm 열) — G1 포구 컨트롤러의 상태를 GUI 에 무엇으로 보일지 (E2-F06 은 상태 토픽 없이 세션 CSV 의 꼬리를 읽었다 — GUI 가 컨트롤러와 같은 머신에 있어야 한다. `rtc_msgs/CatchingState` 에 열을 더하면 E-3)
 

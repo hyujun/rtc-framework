@@ -90,23 +90,26 @@ bool NlpCatchSearch::Configure(const NlpCatchSearchModel& model,
   if (model.handle->nv() != nv) {
     return fail("nlp search: the IK handle is on a model of another joint count than the arm");
   }
-  std::array<bool, kMaxSegmentNv> seen{};
-  for (int m = 0; m < nv; ++m) {
-    const int d = model.device_of_model[U(m)];
-    if (d < 0 || d >= nv || seen[U(d)]) {
-      return fail("nlp search: device_of_model is not a permutation of the arm's joints");
-    }
-    seen[U(d)] = true;
+  // The device the RT reports in: the model's joints are an injection into it
+  // (a permutation of it when n_dev is left 0).
+  const int n_dev = model.n_dev > 0 ? model.n_dev : nv;
+  JointSet joint_set = 0;
+  if (n_dev < nv ||
+      !MakeJointSet(std::span<const int>(model.device_of_model.data(), U(nv)), n_dev, joint_set)) {
+    return fail(
+        "nlp search: device_of_model is not a permutation of the arm's joints (an injection "
+        "into the device's, when the model is a chain inside a wider device)");
   }
   if (model.catch_frame >= model.handle->GetModel().frames.size()) {
     return fail("nlp search: the catch frame is not a frame of the handle's model");
   }
   const NlpCatchSearchParams& p = params;
-  if (p.wait_pose_n != nv) {
+  if (p.wait_pose_n != n_dev) {
     return fail("nlp search: wait_pose must have one entry per arm joint");
   }
-  for (int d = 0; d < nv; ++d) {
-    if (!std::isfinite(p.wait_pose[U(d)])) {
+  // Only the model's joints' entries: the others are never read.
+  for (int m = 0; m < nv; ++m) {
+    if (!std::isfinite(p.wait_pose[U(model.device_of_model[U(m)])])) {
       return fail("nlp search: wait_pose is not finite");
     }
   }
@@ -212,6 +215,12 @@ bool NlpCatchSearch::Configure(const NlpCatchSearchModel& model,
   ik_options_ = ik;
   clock_ = clock;
   nv_ = nv;
+  n_dev_ = n_dev;
+  joint_set_ = joint_set;
+  slot_of_model_.fill(0);
+  for (int m = 0; m < nv; ++m) {
+    slot_of_model_[U(m)] = JointSetSlot(joint_set, model.device_of_model[U(m)]);
+  }
 
   // ── One core per pre-catch count ──────────────────────────────────────────
   const int n_cores = p.n_pre_max - p.n_pre_min + 1;
@@ -567,8 +576,10 @@ bool NlpCatchSearch::StartState(const PlannerRtState& rt, const ReportedSegments
     c.source_seq = 0;
   } else {
     // The segment the RT will be on at t_s, evaluated by the RT's own sampler.
+    // A reported segment is the DEVICE's (the segment planner's model), read
+    // through the device map: the joints outside this model are not looked at.
     const SegmentSnapshot* src = SourceSegmentAt(arm, c.t_s_ns);
-    if (src == nullptr || src->nv != nv_) {
+    if (src == nullptr || src->nv != n_dev_ || n_dev_ > kMaxSegmentNv) {
       return false;
     }
     std::array<double, kMaxSegmentNv> q{};
@@ -819,7 +830,7 @@ void NlpCatchSearch::Pack(const PlannerRtState& rt, std::uint64_t track_generati
   out.n_pre = c.n_pre;
   for (int k = 0; k <= n_total; ++k) {
     for (int m = 0; m < nv_; ++m) {
-      const std::size_t e = U(k * kMaxSegmentNv + model_.device_of_model[U(m)]);
+      const std::size_t e = U(k * kMaxSegmentNv + slot_of_model_[U(m)]);
       out.q[e] = r.q(m, k);
       out.qd[e] = r.qd(m, k);
       out.qdd[e] = r.qdd(m, k);
@@ -835,7 +846,7 @@ void NlpCatchSearch::Pack(const PlannerRtState& rt, std::uint64_t track_generati
 void NlpCatchSearch::StartFromOwn(const SegmentSnapshot& mine, const CandidateRecord& c,
                                   MpcDockingSegmentCoreInput& in) const noexcept {
   StartFromDockingSolution(mine, c.n_pre, params_.n_stop,
-                           std::span<const int>(model_.device_of_model.data(), U(nv_)), in);
+                           std::span<const int>(slot_of_model_.data(), U(nv_)), in);
 }
 
 // A new candidate: the nearest remembered solution as a function of absolute
@@ -857,7 +868,7 @@ bool NlpCatchSearch::StartFromNeighbour(const SegmentSnapshot& prev, const Candi
     const std::int64_t sigma_ns = c.t_s_ns + static_cast<std::int64_t>(std::llround(since));
     ok = NodeTrajectoryFollower::SampleJoints(prev, std::min(sigma_ns, prev.t_c_ns), q, qd, qdd);
     for (int m = 0; ok && m < nv_; ++m) {
-      const std::size_t d = U(model_.device_of_model[U(m)]);
+      const std::size_t d = U(slot_of_model_[U(m)]);  // `prev` is a solution of this search
       in.q_init(m, k) = q[d];
       in.qd_init(m, k) = alpha * qd[d];
       in.qdd_init(m, k) = alpha * alpha * qdd[d];
@@ -866,8 +877,7 @@ bool NlpCatchSearch::StartFromNeighbour(const SegmentSnapshot& prev, const Candi
   for (int k = c.n_pre; ok && k <= n_total; ++k) {
     const double scale_v = k == c.n_pre ? alpha : 1.0;
     for (int m = 0; m < nv_; ++m) {
-      const std::size_t e =
-          U((prev.n_pre + k - c.n_pre) * kMaxSegmentNv + model_.device_of_model[U(m)]);
+      const std::size_t e = U((prev.n_pre + k - c.n_pre) * kMaxSegmentNv + slot_of_model_[U(m)]);
       in.q_init(m, k) = prev.q[e];
       in.qd_init(m, k) = scale_v * prev.qd[e];
       in.qdd_init(m, k) = scale_v * scale_v * prev.qdd[e];
@@ -1356,11 +1366,14 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
 
   // ── The RT's report ───────────────────────────────────────────────────────
   const std::int64_t age_ns = now.ns - rt.rt_state_ns;
-  bool rt_ok = rt.valid && rt.nv == nv_ && age_ns >= 0 && age_ns <= age_max_ns_;
+  // The report is the DEVICE's; what is read of it is this model's joints —
+  // nothing below depends on a joint outside the model.
+  bool rt_ok = rt.valid && rt.nv == n_dev_ && age_ns >= 0 && age_ns <= age_max_ns_;
   double speed_cmd = 0.0;
-  for (int d = 0; rt_ok && d < nv_; ++d) {
-    rt_ok = std::isfinite(rt.q_cmd[U(d)]) && std::isfinite(rt.qd_cmd[U(d)]);
-    speed_cmd = std::max(speed_cmd, std::fabs(rt.qd_cmd[U(d)]));
+  for (int m = 0; rt_ok && m < nv_; ++m) {
+    const std::size_t d = U(model_.device_of_model[U(m)]);
+    rt_ok = std::isfinite(rt.q_cmd[d]) && std::isfinite(rt.qd_cmd[d]);
+    speed_cmd = std::max(speed_cmd, std::fabs(rt.qd_cmd[d]));
   }
   if (!rt_ok) {
     return none(NlpReject::kRtInvalid);
@@ -1376,7 +1389,7 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   }
   // What the command and the followed segment disagree by, where the RT read
   // the segment for that command (the lead instant plus one period).
-  if (following && arm.has_following && arm.following.nv == nv_) {
+  if (following && arm.has_following && arm.following.nv == n_dev_ && n_dev_ <= kMaxSegmentNv) {
     std::array<double, kMaxSegmentNv> q{};
     std::array<double, kMaxSegmentNv> qd{};
     std::array<double, kMaxSegmentNv> qdd{};
@@ -1384,9 +1397,10 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
             arm.following, rt.rt_state_ns + t_arm_ns_ + control_dt_ns_, q, qd, qdd)) {
       double gap_q = 0.0;
       double gap_qd = 0.0;
-      for (int d = 0; d < nv_; ++d) {
-        gap_q = std::max(gap_q, std::fabs(rt.q_cmd[U(d)] - q[U(d)]));
-        gap_qd = std::max(gap_qd, std::fabs(rt.qd_cmd[U(d)] - qd[U(d)]));
+      for (int m = 0; m < nv_; ++m) {
+        const std::size_t d = U(model_.device_of_model[U(m)]);
+        gap_q = std::max(gap_q, std::fabs(rt.q_cmd[d] - q[d]));
+        gap_qd = std::max(gap_qd, std::fabs(rt.qd_cmd[d] - qd[d]));
       }
       stats.nlp.cmd_gap_q = gap_q;
       stats.nlp.cmd_gap_qd = gap_qd;
@@ -1619,6 +1633,7 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   if (best_rank >= 0) {
     const bool continuous = cands_[U(ranked_[U(best_rank)])].continuous_used;
     solution_ = (continuous ? fresh_tc_ : fresh_)[U(best_rank)].sol;
+    solution_.joint_set = joint_set_;
     solution_valid_ = true;
   }
   // This wake's solutions become the next wake's memory — only now, so that no
@@ -1661,9 +1676,13 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   plan.v_c = {ball.v.x(), ball.v.y(), ball.v.z()};
   plan.a_d = {-ball.v.x() / speed, -ball.v.y() / speed, -ball.v.z() / speed};
   plan.nv = nv_;
+  plan.joint_set = joint_set_;
+  // The solved catch node: the solution's column of a joint, to that joint's
+  // device entry.
   const SegmentSnapshot& seg = solution_.seg;
-  for (int d = 0; d < nv_; ++d) {
-    plan.q_star[U(d)] = seg.q[U(c.n_pre * kMaxSegmentNv + d)];
+  for (int m = 0; m < nv_; ++m) {
+    plan.q_star[U(model_.device_of_model[U(m)])] =
+        seg.q[U(c.n_pre * kMaxSegmentNv + slot_of_model_[U(m)])];
   }
   // At the pose the plan carries — the solved one, not the IK's.
   CatchPoseManipulability(plan.q_star, plan.w5, plan.w6);

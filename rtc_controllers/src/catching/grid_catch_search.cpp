@@ -107,7 +107,16 @@ bool GridCatchSearch::Configure(const GridCatchSearchModel& model,
       clock == nullptr) {
     return false;
   }
-  if (params.wait_pose_n != model.nv) {
+  // The device the RT reports in: the model's joints are an injection into it
+  // (the whole of it when n_dev is left 0).
+  const int n_dev = model.n_dev > 0 ? model.n_dev : model.nv;
+  JointSet joint_set = 0;
+  if (n_dev < model.nv || !MakeJointSet(std::span<const int>(model.device_of_model.data(),
+                                                             static_cast<std::size_t>(model.nv)),
+                                        n_dev, joint_set)) {
+    return false;
+  }
+  if (params.wait_pose_n != n_dev) {
     return false;
   }
   // The reach bound reads the frame's chain off the model: a frame that is
@@ -126,6 +135,8 @@ bool GridCatchSearch::Configure(const GridCatchSearchModel& model,
   params_ = params;
   ik_options_ = ik;
   clock_ = clock;
+  n_dev_ = n_dev;
+  joint_set_ = joint_set;
   ik_.Resize(model.nv);
   // The catch-pose IK has a capacity below kMaxPlanNv (rtc::kMaxRobotDOF):
   // Resize leaves a wider model unsized and every Solve() then answers
@@ -261,7 +272,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   // mismatch) does not keep the pose an earlier one adopted. Same size, no
   // allocation.
   seed_ = seed_yaml_;
-  if (rt.wait_pose_adopted && rt.nv == model_.nv) {
+  if (rt.wait_pose_adopted && rt.nv == n_dev_) {
     for (int j = 0; j < model_.nv; ++j) {
       seed_[j] = rt.wait_pose[static_cast<std::size_t>(
           model_.device_of_model[static_cast<std::size_t>(j)])];
@@ -400,8 +411,10 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   std::array<double, kMaxSegmentNv> seg_qd{};
   std::array<double, kMaxSegmentNv> seg_qdd{};
   const SegmentSnapshot* const source = SourceSegmentAt(arm, now_lead.ns);
+  // A reported segment is the DEVICE's (the segment planner's model), read
+  // through the device map: the joints outside this model are never looked at.
   bool on_segment =
-      source != nullptr && source->nv == nv &&
+      source != nullptr && source->nv == n_dev_ &&
       NodeTrajectoryFollower::SampleJoints(*source, now_lead.ns, seg_q, seg_qd, seg_qdd);
   for (int j = 0; on_segment && j < nv; ++j) {
     const auto d = static_cast<std::size_t>(model_.device_of_model[static_cast<std::size_t>(j)]);
@@ -723,6 +736,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   plan.gamma_t1_ns = bs.t_ns;
   plan.gamma_min = best_gmin;
   plan.nv = nv;
+  plan.joint_set = joint_set_;
   for (int j = 0; j < nv; ++j) {
     plan.q_star[static_cast<std::size_t>(model_.device_of_model[static_cast<std::size_t>(j)])] =
         best_q[static_cast<std::size_t>(j)];

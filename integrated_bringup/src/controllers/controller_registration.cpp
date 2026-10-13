@@ -20,11 +20,13 @@ RTC_REGISTER_CONTROLLER(demo_joint_controller, "", "integrated_bringup",
                         std::make_unique<integrated_bringup::DemoJointController>(urdf))
 
 // REQUIRING_CONFIG for the three arm-chain controllers below (task / wbc /
-// compliance). Each builds its arm model as ONE serial chain — a
-// `urdf.sub_models` entry, root → tip — and has no defaults that make sense
-// without one. A robot whose first device group is a kinematic tree (g1_p1b:
-// waist + both arms in one group, no sub_models at all) cannot give them that
-// chain, so their LoadConfig throws out of model construction — and one
+// compliance). Each builds its arm model as ONE serial chain — the
+// `urdf.sub_models` entry of its first device group, root → tip — and has no
+// defaults that make sense without one. A robot whose first device group is a
+// kinematic tree (g1_p1b: waist + both arms in one group, declared under
+// `urdf.tree_models`; the one sub-model it declares is the catch search's
+// chain, not that group's model) cannot give them that chain, so their
+// LoadConfig throws out of model construction — and one
 // controller failing PreConfigure refuses the WHOLE bring-up, taking
 // demo_joint_controller down with it. With the flag, "this profile ships no
 // YAML for it" means "this robot does not run it". Nothing changes for the

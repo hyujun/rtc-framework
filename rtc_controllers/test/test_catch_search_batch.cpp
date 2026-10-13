@@ -562,6 +562,82 @@ TEST(CatchSearchBatchBinding, ReadsBothSearches) {
   EXPECT_EQ(nlp.limits.armature.cwiseAbs().maxCoeff(), 0.0);
 }
 
+// A search on a CHAIN of a wider device (E3-F01, #640): `n_dev` is the
+// device's joint count, `device_of_model` an injection into it; the segment
+// planner's map is sized by ITS model (`segment_nv`) and may give its own
+// device map — a permutation of the whole device.
+TEST(CatchSearchBatchBinding, ASearchModelMayBeAChainOfAWiderDevice) {
+  const std::string chain = std::string("n_dev: 5\n") + kNlpBinding;
+  const std::string at = "device_of_model: [1, 0, 2]";
+  const auto with_map = [&](const std::string& map) {
+    std::string s = chain;
+    s.replace(s.find(at), at.size(), "device_of_model: " + map);
+    return s;
+  };
+  const SearchBatchBinding b = ParseSearchBatchBinding(YAML::Load(with_map("[4, 0, 2]")), 3);
+  EXPECT_EQ(b.n_dev, 5);
+  EXPECT_EQ(b.device_of_model, (std::vector<int>{4, 0, 2}));
+  // Without `n_dev` the model is the whole device: 0 = "the model's".
+  EXPECT_EQ(ParseSearchBatchBinding(YAML::Load(kNlpBinding), 3).n_dev, 0);
+  const auto refused = [](const std::string& text, int nv, int segment_nv = 0) {
+    try {
+      static_cast<void>(ParseSearchBatchBinding(YAML::Load(text), nv, segment_nv));
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  EXPECT_FALSE(refused(with_map("[4, 0, 2]"), 3));
+  EXPECT_TRUE(refused(with_map("[5, 0, 2]"), 3)) << "an index past the device";
+  EXPECT_TRUE(refused(with_map("[4, 4, 2]"), 3)) << "one device joint twice";
+  EXPECT_TRUE(refused(with_map("[4, 0]"), 3)) << "not one entry per model joint";
+  EXPECT_TRUE(refused(std::string("n_dev: 2\n") + kNlpBinding, 3)) << "narrower than the model";
+  EXPECT_TRUE(refused(std::string("n_dev: 33\n") + kNlpBinding, 3)) << "wider than a plan names";
+  // Without `n_dev` an index past the model is still refused.
+  std::string no_dev = kNlpBinding;
+  no_dev.replace(no_dev.find(at), at.size(), "device_of_model: [4, 0, 2]");
+  EXPECT_TRUE(refused(no_dev, 3));
+
+  // The segment planner's map: vectors of the SEGMENT model's width, and its
+  // own device map.
+  const std::string segment =
+      "segment:\n  mode: mpc\n  device_of_model: [0, 1, 2, 3, 4]\n  mpc:\n"
+      "    q_min: [-1, -1, -1, -1, -1]\n    q_max: [1, 1, 1, 1, 1]\n"
+      "    qdot_max: [2, 2, 2, 2, 2]\n    tau_max: [9, 9, 9, 9, 9]\n"
+      "    eta_v: 0.9\n    t_arm_s: 0.0\n    control_dt: 0.002\n";
+  const SearchBatchBinding two =
+      ParseSearchBatchBinding(YAML::Load(with_map("[4, 0, 2]") + segment), 3, 5);
+  ASSERT_TRUE(two.segment.has_value());
+  EXPECT_EQ(two.segment->device_of_model, (std::vector<int>{0, 1, 2, 3, 4}));
+  EXPECT_EQ(two.segment->q_min.size(), 5U);
+  EXPECT_TRUE(refused(with_map("[4, 0, 2]") + segment, 3))
+      << "segment vectors of five joints against a segment model of three";
+  std::string repeated = segment;
+  repeated.replace(repeated.find("[0, 1, 2, 3, 4]"), 15, "[0, 1, 2, 3, 3]");
+  EXPECT_TRUE(refused(with_map("[4, 0, 2]") + repeated, 3, 5));
+  EXPECT_TRUE(refused(with_map("[4, 0, 2]") + segment, 3, 2))
+      << "a segment model below the search's";
+  // A segment model wider than the search's is the device: the binding has to
+  // give `n_dev`, and the refusal names that key — not a device-wide value
+  // (the wait pose) that would then be judged against the search's width.
+  const auto why = [](const std::string& text, int nv, int segment_nv) {
+    try {
+      static_cast<void>(ParseSearchBatchBinding(YAML::Load(text), nv, segment_nv));
+    } catch (const std::invalid_argument& e) {
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  const std::string absent = why(std::string(kNlpBinding) + segment, 3, 5);
+  EXPECT_NE(absent.find("'n_dev' must be 5"), std::string::npos) << absent;
+  EXPECT_NE(absent.find("absent"), std::string::npos) << absent;
+  std::string narrower = with_map("[3, 0, 2]") + segment;
+  narrower.replace(narrower.find("n_dev: 5"), 8, "n_dev: 4");
+  const std::string four = why(narrower, 3, 5);
+  EXPECT_NE(four.find("'n_dev' must be 5"), std::string::npos) << four;
+  EXPECT_NE(four.find("got 4"), std::string::npos) << four;
+}
+
 TEST(CatchSearchBatchBinding, IsFailClosed) {
   Rig rig;
   const auto refused = [&](const std::string& edit_from, const std::string& edit_to) {
@@ -905,6 +981,31 @@ TEST(CatchPlanBatch, TheCsvKeepsTheSearchColumnsAndEndsWithWallUs) {
        {"segment_outcome", "segment_kind", "segment_core_reason", "segment_catch_pos_err"}) {
     EXPECT_NE(std::find(names.begin(), names.end(), name), names.end()) << name;
   }
+}
+
+// A first segment solved from the search's solution of a chain, widened
+// (E3-F01): the batch says so beside `segment_from_search`, which stays 0 for
+// it — the segment is the planner's own solve.
+TEST(CatchPlanBatch, TheCsvSaysWhenTheSegmentStartedFromTheSearchsSolution) {
+  const int nv = 6;
+  const auto names = Split(PlanBatchCsvHeader(nv));
+  const auto from = std::find(names.begin(), names.end(), "segment_from_search");
+  ASSERT_NE(from, names.end());
+  ASSERT_NE(from + 1, names.end());
+  EXPECT_EQ(*(from + 1), "segment_start_from_search");
+  SearchBatchRow row{};
+  row.cycle = true;
+  EXPECT_EQ(CycleCells(row, nv).at("segment_start_from_search"), "0");
+  row.segment.start_from_search = true;
+  const auto cells = CycleCells(row, nv);
+  EXPECT_EQ(cells.at("segment_start_from_search"), "1");
+  EXPECT_EQ(cells.at("segment_from_search"), "0");
+  // ... and the other flag is still its own column.
+  row.segment.start_from_search = false;
+  row.segment.from_search = true;
+  const auto adopted = CycleCells(row, nv);
+  EXPECT_EQ(adopted.at("segment_from_search"), "1");
+  EXPECT_EQ(adopted.at("segment_start_from_search"), "0");
 }
 
 TEST(CatchPlanBatchBinding, ReadsBothSegmentPlanners) {

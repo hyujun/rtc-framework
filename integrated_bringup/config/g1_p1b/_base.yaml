@@ -9,8 +9,9 @@
 #     in the fixed-base model)
 #   - waist (3) + left arm (7) + right arm (7) are ONE device group, `g1`.
 #     That group is a kinematic TREE (two branches off the torso), not a serial
-#     chain, so it is declared under `tree_models`, and there is no
-#     `sub_models` block at all
+#     chain, so it is declared under `tree_models`. The one `sub_models` entry,
+#     `g1_catch`, is not a device group: it is the chain the catching search
+#     runs on (see `urdf.sub_models` below)
 #   - the hand, `p1b`, is the same proto_1b as ur5e_p1b's, mounted on the right
 #     wrist. A second hand would make a third group; nothing here assumes it
 /**:
@@ -41,6 +42,20 @@
       # Loaded model: 37 joints, 27 actuated (17 + 10), 10 loop-passive.
       extended: true
       closure_path: "robots/unitree_g1_p1b/urdf/g1_with_proto_1b_fixed_base.closure.yaml"
+      sub_models:
+        # The catching SEARCH's model (dynamic_catching E3-F01): the chain
+        # pelvis → the right palm — waist 3 + right arm 7, 10 DoF, the left arm
+        # locked. Its tip, `l_palm_link`, is the parent of `catch_frame` below
+        # and is upstream of the hand's joints, so the catch frame's FK and
+        # Jacobian on this chain depend on neither the hand nor the left arm.
+        # Named by a catching profile's `planner.search.sub_model`; the segments
+        # are planned on the whole device, `tree_models.g1`
+        # (`planner.sub_model`). No device group is called `g1_catch`, so the
+        # two controllers this profile ships do not look it up — to them it is
+        # one more reduced model built at start.
+        g1_catch:
+          root_link: "pelvis"
+          tip_link: "l_palm_link"
       tree_models:
         # Device group `g1`: pelvis → both arm ends, 17 DoF. Model joint order
         # is waist, left arm, right arm — the URDF's, the MJCF's, and the

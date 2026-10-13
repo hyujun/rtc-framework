@@ -204,7 +204,15 @@ struct NlpCatchSearchModel {
   rtc_urdf_bridge::RtModelHandle* handle{nullptr};
   pinocchio::FrameIndex catch_frame{0};  ///< in both; its +z is the approach axis
   int nv{0};
-  /// `device_of_model[j]` = the arm device's index of model joint j.
+  /// Joint count of the arm DEVICE the RT reports (PlannerRtState::nv, the
+  /// width of a reported segment and of `wait_pose`). 0 = `nv`: the model is
+  /// the whole device. Larger when the model is a chain inside a wider device:
+  /// the search reads and writes its own joints' entries only, nothing it
+  /// decides depends on the others, and its solution is as wide as the chain
+  /// (CatchSolution::joint_set).
+  int n_dev{0};
+  /// `device_of_model[j]` = the arm device's index of model joint j: an
+  /// injection into [0, n_dev).
   std::array<int, kMaxPlanNv> device_of_model{};
 };
 
@@ -225,9 +233,10 @@ struct NlpCatchSearchParams {
   double t_lead_min{0.2};  ///< T_min: smallest t_c − t_0 [s]; ≥ n_pre_min·dt_pre
   double t_max{0.6};       ///< T_max: largest t_c − t_0 [s]; ≤ n_pre_max·dt_pre
   int cand_capacity{64};   ///< candidates a wake can hold; ≥ ⌊t_max/cand_dt⌋ + 1
-  /// The IK seed, DEVICE order, `wait_pose_n` = nv entries — the wait pose,
-  /// the same for every candidate and every wake (the RT's adopted wait pose
-  /// replaces it when it reports one).
+  /// The IK seed, DEVICE order, `wait_pose_n` = one entry per DEVICE joint
+  /// (the model's `n_dev`) — the wait pose, the same for every candidate and
+  /// every wake (the RT's adopted wait pose replaces it when it reports one).
+  /// Only the model's joints' entries are read.
   std::array<double, kMaxPlanNv> wait_pose{};
   int wait_pose_n{0};
 
@@ -311,6 +320,11 @@ class NlpCatchSearch final : public CatchSearch {
   /// candidate whose IK target is farther than its radius plus the IK's
   /// position tolerance from its centre is refused before the IK.
   [[nodiscard]] const ReachBound& Reach() const noexcept { return reach_; }
+
+  /// The joints this search plans, as device indices: every joint of the
+  /// device, or — on a chain of it — the chain's (`PlanSnapshot::joint_set` of
+  /// the plans it publishes). 0 before Configure.
+  [[nodiscard]] JointSet Joints() const noexcept { return joint_set_; }
 
   /// Replace the steady clock the budget and the solves' deadlines are read
   /// on (non-RT; the planner thread is not running). A null `clock` is
@@ -592,6 +606,12 @@ class NlpCatchSearch final : public CatchSearch {
   CatchPoseIkOptions ik_options_{};
   ClockFn clock_{nullptr};
   int nv_{0};
+  int n_dev_{0};           // the device's joint count (model_.n_dev resolved)
+  JointSet joint_set_{0};  // the model's joints, as device indices
+  // Column of model joint m in a solution of this search: the rank of its
+  // device index in joint_set_ (CatchSolution's note). Device order itself
+  // when the model is the whole device.
+  std::array<int, kMaxPlanNv> slot_of_model_{};
 
   // Integer forms of the keys (the arithmetic of the lattice and the grid).
   std::int64_t h_ns_{0}, dt_pre_ns_{0}, dt_stop_ns_{0};

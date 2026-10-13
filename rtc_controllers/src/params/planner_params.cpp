@@ -242,6 +242,15 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
     }
     out.sub_model = v.Scalar();
   }
+  // The model the search runs on, when it is not the one above.
+  if (search.IsMap()) {
+    if (const YAML::Node v = search["sub_model"]; v) {
+      if (!v.IsScalar() || v.Scalar().empty() || v.Scalar() == "TBD") {
+        Reject(Key("search.sub_model") + " must name a urdf.sub_models entry, got " + Spelling(v));
+      }
+      out.search_sub_model = v.Scalar();
+    }
+  }
   out.max_ik = ReadInt(grid, "max_ik", "search.grid.max_ik", out.max_ik, 1, kPlannerMaxIkCapacity);
   out.n_settle = ReadInt(grid, "n_settle", "search.grid.n_settle", out.n_settle, 0, 20);
 
