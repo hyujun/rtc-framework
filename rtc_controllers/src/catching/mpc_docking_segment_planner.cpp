@@ -663,8 +663,7 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
     double speed = 0.0;
     for (int m = 0; m < nv_; ++m) {
       const std::size_t d = U(device_of_model_[U(m)]);
-      // q_star says nothing of a joint the plan is not of: its target is its
-      // start, written after the projection below.
+      // q_star says nothing of a joint the plan is not of.
       const bool planned = InJointSet(plan.joint_set, device_of_model_[U(m)]);
       q0[U(m)] = q[d];
       qd0[U(m)] = qd[d];
@@ -672,9 +671,6 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
       finite = finite && std::isfinite(q[d]) && std::isfinite(qd[d]) && std::isfinite(qdd[d]) &&
                (!planned || std::isfinite(plan.q_star[d]));
       speed = std::max(speed, std::fabs(qd[d]));
-      if (planned) {
-        in.q_catch_target[m] = plan.q_star[d];
-      }
     }
     rec.x0_speed = finite ? speed : std::numeric_limits<double>::quiet_NaN();
   } else {
@@ -683,9 +679,6 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
       const bool planned = InJointSet(plan.joint_set, device_of_model_[U(m)]);
       q0[U(m)] = rt.q_cmd[d];
       finite = finite && std::isfinite(rt.q_cmd[d]) && (!planned || std::isfinite(plan.q_star[d]));
-      if (planned) {
-        in.q_catch_target[m] = plan.q_star[d];
-      }
     }
   }
   if (!finite) {
@@ -704,9 +697,10 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
     in.q0[m] = q0[U(m)];
     in.qd0[m] = following ? qd0[U(m)] : 0.0;
     in.qdd0[m] = following ? qdd0[U(m)] : 0.0;
-    if (!InJointSet(plan.joint_set, device_of_model_[U(m)])) {
-      in.q_catch_target[m] = in.q0[m];  // held: the start, as the core takes it
-    }
+    // The catch posture target: the plan's for its joints; a joint the plan is
+    // not of is held on its start, as the core takes it (after the projection).
+    const int d = device_of_model_[U(m)];
+    in.q_catch_target[m] = InJointSet(plan.joint_set, d) ? plan.q_star[U(d)] : in.q0[m];
   }
   in.initial_valid = false;
   in.catch_target_valid = true;

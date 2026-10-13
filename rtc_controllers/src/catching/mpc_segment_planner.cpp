@@ -134,14 +134,13 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   if (params.k_max < 0 || params.k_max > kMaxMpcSegmentReplans || params.DtNs() <= 0) {
     return fail("k_max or dt_s is outside its range");
   }
-  // Device order must be a permutation (the payload is device order).
-  std::array<bool, kMaxPlanNv> seen{};
-  for (int m = 0; m < model.nv; ++m) {
-    const int d = model.device_of_model[U(m)];
-    if (d < 0 || d >= model.nv || seen[U(d)]) {
-      return fail("device_of_model is not a permutation of the arm joints");
-    }
-    seen[U(d)] = true;
+  // Device order must be a permutation (the payload is device order): the
+  // model's joints are then the whole device, and that set is what a plan's
+  // joints are checked against.
+  JointSet model_set = 0;
+  if (!MakeJointSet(std::span<const int>(model.device_of_model.data(), U(model.nv)), model.nv,
+                    model_set)) {
+    return fail("device_of_model is not a permutation of the arm joints");
   }
   const int n = model.nv;
   // `cost.jerk_weight` is one entry per ARM joint in device order; the core
@@ -213,7 +212,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   clock_ = clock;
   nv_ = n;
   device_of_model_ = model.device_of_model;
-  model_set_ = FullJointSet(n);  // a permutation of the device (checked above)
+  model_set_ = model_set;
   dt_ns_ = params.DtNs();
   t_arm_ns_ = SecondsToNs(consts.t_arm_s);
   consts_ = consts;
