@@ -84,11 +84,10 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| — | [#827](https://github.com/hyujun/rtc-framework/issues/827) | 구간 payload 의 관절 용량 (`kMaxSegmentNv`) 을 G1 의 17 관절 이상으로 — E3-F04 에서 떼어 낸 단독 이슈. 단일 팔에서 복사 · SeqLock 재시도 비용을 잰다 (기능 동등) | 없음 | 대기 |
-| E3-F01 | [#640](https://github.com/hyujun/rtc-framework/issues/640) | 탐색 모델 (waist + 오른팔 사슬, `urdf.sub_models` 의 root · tip 과 `extra_frames` 의 catch frame — 기준은 end-effector frame) 과 구간 모델 (전체 관절) 을 가르고 잇는다 — G1 구성에서도 후보는 탐색이 사슬 위에서 고르고 전신 항은 구간에만 (안 A, D7). 탐색이 낸 것 ($q^\ast$ · `nlp` 의 해) 을 구간 폭으로 넓히는 규칙은 $x_0$ 기준 · 노드 상태 전체. 계획기 interface · search 선택 키 · 단일 팔의 바깥 루프는 E1-F12 · F14 · F16 이 했다 | #827, E1-F12 (끝) · F14 (끝), #821 (끝) | 대기 |
+| E3-F01 | [#640](https://github.com/hyujun/rtc-framework/issues/640) | 탐색 모델 (waist + 오른팔 사슬, `urdf.sub_models` 의 root · tip 과 `extra_frames` 의 catch frame — 기준은 end-effector frame) 과 구간 모델 (전체 관절) 을 가르고 잇는다 — G1 구성에서도 후보는 탐색이 사슬 위에서 고르고 전신 항은 구간에만 (안 A, D7). 탐색이 낸 것 ($q^\ast$ · `nlp` 의 해) 을 구간 폭으로 넓히는 규칙은 $x_0$ 기준 · 노드 상태 전체. 계획기 interface · search 선택 키 · 단일 팔의 바깥 루프는 E1-F12 · F14 · F16 이 했다 | #827 (끝), E1-F12 (끝) · F14 (끝), #821 (끝) | 다음 |
 | E3-F02 | [#641](https://github.com/hyujun/rtc-framework/issues/641) | 전신 항을 두 구간 코어 (`mpc` · `mpc_docking`) 에 추가 — 왼팔 rest · waist 억제 · 각운동량 · waist 토크 행 · counter-swing, 관절군별 move blocking. 탐색에는 넣지 않는다. 설계 조건 "전신 항은 catch 에 거의 영향 없음" 과 안 B 로 옮길지의 문턱은 이 feature 가 시행 전에 고정한다 | E3-F01, E1-F07 (끝), E2-F01 (끝) | 대기 |
 | E3-F03 | [#642](https://github.com/hyujun/rtc-framework/issues/642) | 충돌 제약 — capsule 모델 (신규 코어) 과 MPC 제약 행 (자기충돌 · 공–왼팔 거리) | E3-F02 | 대기 |
-| E3-F04 | [#643](https://github.com/hyujun/rtc-framework/issues/643) | MPC ↔ CLIK 계약의 전신 확장 — 왼손 FK, 한계 여유, 17 관절 구간의 RT 평가 (payload 관절 용량은 #827 로 옮겼다). 구간이 만든 desired value 의 소비자는 `demo_dualarm_controller` 다. 단일 팔 계약은 `ID_INDEX.md` MD-36 · `ref/L7_supervisor.md` §4.3a. E2-F04 가 넣은 것: CLIK 의 자세 속도 feedforward (`qd_posture_ff`) 와 관절군별 자세 과제 — 전신 구간의 $\dot q_{ref}$ 는 그 입력으로 간다 | E1-F08 (끝), E2-F04 (끝) | 대기 |
+| E3-F04 | [#643](https://github.com/hyujun/rtc-framework/issues/643) | MPC ↔ CLIK 계약의 전신 확장 — 왼손 FK, 한계 여유, 17 관절 구간의 RT 평가 (payload 관절 용량은 #827 이 올렸다 — 끝). 구간이 만든 desired value 의 소비자는 `demo_dualarm_controller` 다. 단일 팔 계약은 `ID_INDEX.md` MD-36 · `ref/L7_supervisor.md` §4.3a. E2-F04 가 넣은 것: CLIK 의 자세 속도 feedforward (`qd_posture_ff`) 와 관절군별 자세 과제 — 전신 구간의 $\dot q_{ref}$ 는 그 입력으로 간다 | E1-F08 (끝), E2-F04 (끝) | 대기 |
 | E3-F05 | [#644](https://github.com/hyujun/rtc-framework/issues/644) | G1 통합 — supervisor · 손 시퀀서 · vision sim profile (`mode: mpc` 의 확장) | E3-F03, E3-F04, E2-F05 (끝) | 대기 |
 | E3-F06 | [#645](https://github.com/hyujun/rtc-framework/issues/645) | 로그 · plot_rtc_log · demo_controller_gui — dual arm 열. 항별 비용 분해는 코어 변경이라 아직 없다. E2-F06 · F07 에서 넘어온 것: GUI 의 `g1_p1b` profile 과 tree 군의 관절 묶음, 컨트롤러 YAML 에서 만드는 gain 행, CSV 꼬리로 읽는 상태 줄 (`demo_dualarm_controller` 에는 상태 토픽이 없다 — G1 포구 컨트롤러의 상태를 무엇으로 보일지는 이 feature 가 정한다. `rtc_msgs` 를 고치면 E-3), 열 이름에서 과제 · 관절을 읽는 plot 의 helper 는 [#645 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/645#issuecomment-6054618892) | E3-F05 | 대기 |
 | E3-F07 | [#646](https://github.com/hyujun/rtc-framework/issues/646) | 평가 — G1 sim 포구 시행 · 예측 격자 sweep · waist · 왼팔 고정 대조 · 기존 로봇 회귀 | E3-F06 | 대기 |
@@ -120,7 +119,6 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `refactor/catching-segment-nv-capacity` | #827 | 계획기 → RT 의 payload 계약을 바꾼다 — 기능 동등성을 이 PR 만으로 판정한다 ("따로 둔다") |
 | `feat/catching-mpc-candidate-select` | E3-F01 | 탐색 모델과 구간 모델의 분리 · 넓히는 규칙. 단일 팔에서 기능 동등. interface 는 E1-F12 가 넣었다 |
 | `feat/catching-mpc-wholebody` | E3-F02, E3-F04 | 전신 항과 MPC ↔ CLIK 계약. 둘 다 17 관절 구간을 다루는 작업이고 계약의 sanity check 가 전신 해를 입력으로 쓴다 |
 | `feat/collision-capsule-core` | E3-F03 | 신규 수치 코어. code review 단위 |
@@ -129,14 +127,13 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 **순서 — E1.** 남은 feature 브랜치는 없다 (§1). feature 번호 없는 남은 단독 이슈와 그 순서는 §5 의 "mpc planner · catching 의 남은 일" 이 갖는다.
 
-**순서 — E3.** #827 (#819 와 병행) → E3-F01 → `feat/catching-mpc-wholebody` (E3-F02 · F04) → E3-F03 → E3-F05 → E3-F06 · F07 (착수 조건인 E2 와 E1-F07 은 끝났다, MD-47). 병행은 서로 다른 파일을 고치는 브랜치끼리만 한다. `mpc` 코어의 법칙을 고치는 단독 이슈 (#716 · #819 — §5 의 순서표) 는 같은 코어를 고치는 E3-F02 와 병행하지 않고, #716 은 E3-F01 뒤다.
+**순서 — E3.** E3-F01 (선행이던 #827 은 끝났다 — `ID_INDEX.md` §3) → `feat/catching-mpc-wholebody` (E3-F02 · F04) → E3-F03 → E3-F05 → E3-F06 · F07 (착수 조건인 E2 와 E1-F07 은 끝났다, MD-47). 병행은 서로 다른 파일을 고치는 브랜치끼리만 한다. `mpc` 코어의 법칙을 고치는 단독 이슈 (#716 · #819 — §5 의 순서표) 는 같은 코어를 고치는 E3-F02 와 병행하지 않고, #716 은 E3-F01 뒤다. #819 는 E3-F01 과도 병행하지 않는다 — 둘 다 `MpcSegmentPlanner` 의 첫 기준을 고친다 (선후는 §5 의 순서표).
 
 ### 게이트 · escalation
 
 | Feature | 사유 | 효력 |
 |---|---|---|
 | docking 기능의 실기 선택 (feature 를 열 때) | 실기 configuration 이 두 docking 기능 (`nlp` · `mpc_docking`) 가운데 하나를 고르면 `robot.hand.docking.provisional` 이 참인 동안 configure 가 park 한다 (E1-F16) — 손의 포획 집합이 sim 식별값이다. solver 의 heap 할당은 이 조건이 아니다: 기록된 RT-1 위반이다 (`agent_docs/invariants.md`, 사용자 결정 2026-10-10 · #654) | Critical — 그 flag 를 내리거나 그 park 를 풀려면 착수 전 `[CONCERN]` 과 컨펌. flag 를 내릴 때 GUI 의 `sim only` 표시와 두 조각 머리의 SIM ONLY 를 같이 고친다 |
-| #827 | RT 가 tick 마다 복사하는 구간 payload 의 크기가 바뀐다 (RT 경로, 할당 없음). 복사 · SeqLock 재시도 비용의 기준을 그 PR 의 Sprint Contract 가 시행 전에 고정한다 | Sprint Contract (§6.5) |
 | E3-F01 | `ref/mpc_multiframe_clik_formulation.md` 의 "바깥 루프 (G1 구성)" 문구를 고친다 — 수학이 달라지는 문서 수정 (D1′, 사용자 확인 2026-10-13: 바깥 루프 문단은 구현하지 않은 설계로 남기고 G1 구성의 후보 선택은 탐색의 일로 적는다) | 승인된 문구로만 |
 | E3-F05 | E-STOP 경로를 건드리면 E-8 | Critical |
 | 실기 (HW) | `mpc` 의 정지 구간과 작업셀 경계 (RT 도 탐색도 포구점 · 정지점의 위치를 판정하지 않는다 — MD-73 · L3 §4.9), `mpc` 구간의 샘플 시각을 바꾸는 RT 법칙 변경 — 둘 다 E-8 (#613) | Critical — 착수 전 `[CONCERN]` 과 컨펌 |
@@ -212,14 +209,12 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 - [#716](https://github.com/hyujun/rtc-framework/issues/716) — catching: formulation 의 포구 구간 다중 노드 (K_c) 와 그 위의 경로 이탈 항 `w_path` 가 구현에 없다
 - [#715](https://github.com/hyujun/rtc-framework/issues/715) — integrated_bringup: 세 군 (두 번째 손) 지원 — 보류
 - [#822](https://github.com/hyujun/rtc-framework/issues/822) — 투척 모집단 도구 (#821) 의 후속 — 리뷰에서 남긴 항목과 확인하지 못한 것
-- [#827](https://github.com/hyujun/rtc-framework/issues/827) — catching: 구간 payload 의 관절 용량 (`kMaxSegmentNv` 8) 을 G1 의 17 관절 이상으로 — E3-F01 의 선행
 
-**`mpc planner · catching 의 남은 일` 다섯의 순서 (권장).** 이 문서에서 다섯 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이다. 이슈에 정해진 시기 (#716 은 E1-F20 뒤, #819 는 #710 의 기록 뒤 — 그 조건은 이제 충족됐다) 안에서 고른 순서이고, "착수 때 정할 것" 은 아직 열려 있다.
+**`mpc planner · catching 의 남은 일` 넷의 순서 (권장).** 이 문서에서 네 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이다. 이슈에 정해진 시기 (#716 은 E1-F20 뒤, #819 는 #710 의 기록 뒤 — 그 조건은 이제 충족됐다) 안에서 고른 순서이고, "착수 때 정할 것" 은 아직 열려 있다.
 
 | 순서 | 이슈 | 착수 조건 | 브랜치 | 착수 때 정할 것 |
 |---|---|---|---|---|
-| 1 | #827 | 없다 — E3-F01 의 선행이라 E3 의 첫 브랜치다 (§3 "순서 — E3"). **착수 가능** (사용자 확인 2026-10-13) | 단독 — payload 계약 | Sprint Contract 가 정한다 (사용자 결정 2026-10-13 — 권고대로): 용량은 로봇의 관절 수를 박지 않는 "지원 최대" 하나 (권고 20), 복사 비용의 기준은 단일 팔에서 지금 값을 잰 뒤 고정. digest 는 필드 단위 (FNV-1a over values — `planner_trace_digest.hpp`) 라 "digest 불변" 이 판정이 된다 |
-| 1 | #819 | 충족됐다 — #710 의 단계 0 의 기록 (코어 단위 테스트와 overlay unit) 이 있다. #713 은 끝났다. **#827 과 병행한다** (사용자 결정 2026-10-13 — 파일이 다르다; E3-F02 앞에 끝나야 G1 의 측정이 그 법칙 위에서 시작한다) | 단독 — 계획기의 첫 풀이 | 닫는 기준과 확인 unit, velocity box 근처에서 QP 가 안 풀릴 때의 대비의 형태, `linearization.ref_speed_fraction` 키를 남길지. 방향은 정해졌다 — 첫 기준을 자르지 않고, `delta_tr` 은 그 뒤에 다시 재고, 선형화를 더하는 것은 보류한다 (#710 의 결정 2). 첫 기준의 끝을 포구 노드의 정지가 아니라 $(q^\ast,\dot q^\ast)$ 로 둘지 ([#710 의 보충 코멘트](https://github.com/hyujun/rtc-framework/issues/710#issuecomment-6139520482) — 같은 "첫 풀이의 기준의 형태" 라 여기서 함께 정한다) |
+| 1 | #819 | 충족됐다 — #710 의 단계 0 의 기록 (코어 단위 테스트와 overlay unit) 이 있다. #713 은 끝났다. E3-F02 앞에 끝나야 G1 의 측정이 그 법칙 위에서 시작한다. **E3-F01 과의 선후는 정하지 않았다** — #827 과 병행하기로 했으나 (사용자 결정 2026-10-13) 착수하지 않은 채 #827 이 끝났고, E3-F01 과는 같은 함수 (`MpcSegmentPlanner` 의 첫 기준 — 자르는 식과 넓히는 규칙) 를 고쳐 병행할 수 없다 | 단독 — 계획기의 첫 풀이 | 닫는 기준과 확인 unit, velocity box 근처에서 QP 가 안 풀릴 때의 대비의 형태, `linearization.ref_speed_fraction` 키를 남길지. 방향은 정해졌다 — 첫 기준을 자르지 않고, `delta_tr` 은 그 뒤에 다시 재고, 선형화를 더하는 것은 보류한다 (#710 의 결정 2). 첫 기준의 끝을 포구 노드의 정지가 아니라 $(q^\ast,\dot q^\ast)$ 로 둘지 ([#710 의 보충 코멘트](https://github.com/hyujun/rtc-framework/issues/710#issuecomment-6139520482) — 같은 "첫 풀이의 기준의 형태" 라 여기서 함께 정한다) |
 | 2 | #716 | **E3-F01 뒤** (사용자 결정 2026-10-13, D5) — E3-F01 은 `mpc` 코어를 고치지 않게 되어 (D7) 이슈 본문의 "E3-F01 과 맞춘다" 는 연결이 없어졌고, `mpc` 의 법칙 변경은 PR 하나에 하나다. 폐기한 선택지 (E3-F02 에 묶기 · E3-F01 앞에 단일 팔에서) 와 대가는 [#640 의 코멘트 §3](https://github.com/hyujun/rtc-framework/issues/640#issuecomment-6139958674) | 단독 | E3-F02 와의 선후 (같은 코어 — 병행하지 않는다), 범위 (단일 팔에서 잰다) |
 | — | #715 | 보류 — 착수 조건이 없다 | — | — |
 | — | #822 | 없다 — 평가 도구의 후속이고 다른 이슈의 선행이 아니다 | 정하지 않았다 | 어느 항목을 할지. 값 하나를 sweep 하는 평가를 도구가 받게 할지는 #819 가 그것을 필요로 할 때 정한다 (#713 은 repo 밖의 스크립트로 했다 — 이슈의 코멘트) |
