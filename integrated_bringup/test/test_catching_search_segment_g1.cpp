@@ -16,24 +16,28 @@
 //   agreement  G1SearchSegmentAgreement.* — "two solves of the same problem at
 //              two widths differ only by solver convergence". With the joints
 //              the chain lacks at rest ON THE POSE THE CHAIN MODEL LOCKS THEM
-//              AT and no torque row active, the chain's joints of the 17-joint
-//              solution are the 10-joint solution's: 1e-4 rad at every node and
-//              0.1 mm of the catch frame at the catch node (decision D10 — the
-//              two numbers were fixed before this was run and are not tuned to
-//              it), and the mpc_docking solve that starts from the widened
-//              chain solution ends in one SQP iteration. Three tests:
+//              AT, no torque row active and NO TORQUE COST, the chain's joints
+//              of the 17-joint solution are the 10-joint solution's: 1e-4 rad
+//              at every node and 0.1 mm of the catch frame at the catch node
+//              (decision D10 — the two numbers were fixed before this was run
+//              and are not tuned to it), and the mpc_docking solve that starts
+//              from the widened chain solution ends in one SQP iteration. Two
+//              tests:
 //                MpcOnTheTreeSolvesTheChainsProblem — the mpc planner on each
-//                  model;
-//                DISABLED_MpcDockingOnTheTreeEndsOnTheChainsSolutionInOne-
-//                  Iteration — the docking cores with the cost the fixture
-//                  gives them, which weighs the torque of every joint of each
-//                  model. It does NOT hold (the note at the test says why)
-//                  and is kept, disabled, with the contract's assertions;
+//                  model (its cost has no torque term);
 //                WithNoTorqueCostMpcDockingOnTheTreeIsTheChainsProblem — the
-//                  control: the same with no torque cost in either model, so
-//                  that no term reads a joint the chain lacks. It is what says
-//                  the widening and the joint maps are right independently of
-//                  what the cost makes of the other joints.
+//                  docking cores with their torque cost off, so that no term
+//                  reads a joint the chain lacks.
+//              "No torque cost" is part of the premise, not a convenience
+//              (user decision, 2026-10-14): a torque cost on the tree weighs
+//              the torque of the joints the chain lacks, and the chain's own
+//              torque depends on where those joints are, so the tree's
+//              optimum moves them and the two problems differ. Measured with
+//              the docking fixture's cost (`r_tau` 1e-4 on every joint of each
+//              model) on this scene: the joints the chain lacks move 5e-2 rad,
+//              the chain's 3e-3 rad against 1e-4, three SQP iterations against
+//              one — the torque rows inactive all the while. Where G1's torque
+//              cost goes is E3-F02's (#641) to decide.
 //              With no torque row active and no torque cost, the dynamics is in
 //              neither problem: that the chain model IS the tree with its other
 //              joints on the locked pose is checked directly, by the two
@@ -411,27 +415,17 @@ std::unique_ptr<GridCatchSearch> MakeGrid(const Scene& s, Budget budget) {
                                             s.borrowed.grid_ik, &SuiteClock);
 }
 
-// Which joints' torque the docking cores' cost weighs (`r_tau`; the fixture's
+// Whether the docking cores' cost weighs torque (`r_tau`; the fixture's
 // BaseParams weighs every joint of the model it is sized for). The torque
 // ROWS are another switch (`torque_rows`).
 enum class TorqueCost {
   kEveryJoint,  // the fixture's: every joint of each model
-  kChainOnly,   // the tree's cost leaves out the joints the chain lacks
-  kNone,        // no torque cost in either model
+  kNone,        // no torque cost — the agreement's premise
 };
 
-void ApplyTorqueCost(TorqueCost mode, JointSet chain, std::span<const int> device_of_model,
-                     rtc::catching::MpcDockingSegmentCoreParams& core) {
+void ApplyTorqueCost(TorqueCost mode, rtc::catching::MpcDockingSegmentCoreParams& core) {
   if (mode == TorqueCost::kNone) {
     core.r_tau.resize(0);  // empty = off
-    return;
-  }
-  if (mode == TorqueCost::kChainOnly) {
-    for (std::size_t m = 0; m < device_of_model.size(); ++m) {
-      if (!InJointSet(chain, device_of_model[m])) {
-        core.r_tau[static_cast<Eigen::Index>(m)] = 0.0;
-      }
-    }
   }
 }
 
@@ -465,7 +459,7 @@ std::unique_ptr<NlpCatchSearch> MakeNlp(const Scene& s, Budget budget, std::stri
   params.core = arm.rig.params;  // BaseParams(10), q_nom = the wait pose
   // The G1 decision: the search judges kinematics only.
   params.core.torque_rows = false;
-  ApplyTorqueCost(torque_cost, s.chain, arm.device_of_model, params.core);
+  ApplyTorqueCost(torque_cost, params.core);
   params.limits = arm.rig.limits;
   auto search = std::make_unique<NlpCatchSearch>();
   if (!search->Configure(model, constants, params, s.borrowed.nlp_ik, &SuiteClock, error)) {
@@ -529,7 +523,7 @@ std::unique_ptr<MpcDockingSegmentPlanner> MakeDocking(
   }
   // BaseParams(17), q_nom = the command; a segment keeps its torque rows.
   params.core = arm.rig.params;
-  ApplyTorqueCost(torque_cost, s.chain, arm.device_of_model, params.core);
+  ApplyTorqueCost(torque_cost, params.core);
   return rtc::catching::MakeMpcDockingSegmentPlanner(model, consts, params, &SuiteClock, error);
 }
 
@@ -1007,10 +1001,10 @@ void ExpectWithinD10(const ChainGap& gap, const char* what) {
   EXPECT_LE(gap.catch_m, kAgreeCatchM) << what;
 }
 
-// mpc_docking at the two widths: the nlp search's solve of its one candidate on
-// the chain (10 joints, no torque rows), and the planner's solves of that plan
-// on the tree (17 joints, torque rows on) — started from the chain's solution
-// widened, and from the plan alone.
+// mpc_docking at the two widths, with no torque cost in either: the nlp
+// search's solve of its one candidate on the chain (10 joints, no torque rows),
+// and the planner's solves of that plan on the tree (17 joints, torque rows
+// on) — started from the chain's solution widened, and from the plan alone.
 struct DockingAtBothWidths {
   int chain_iterations{-1};    // the search's solve
   SegmentRecord from_chain{};  // the tree's solve started from the widened chain solution
@@ -1021,10 +1015,9 @@ struct DockingAtBothWidths {
 };
 
 // gtest ASSERTs (the preconditions): call inside ASSERT_NO_FATAL_FAILURE.
-// Every property it records is named `tag`_…
-void SolveDockingAtBothWidths(const Scene& s, TorqueCost torque_cost, const std::string& tag,
-                              DockingAtBothWidths& out) {
-  SCOPED_TRACE(tag);
+void SolveDockingAtBothWidths(const Scene& s, DockingAtBothWidths& out) {
+  const TorqueCost torque_cost = TorqueCost::kNone;
+  const std::string tag = "no_torque_cost";
   // ── The 10-joint solve: the search's one candidate ──
   std::string err;
   const std::unique_ptr<NlpCatchSearch> search = MakeNlp(s, Budget::kShipped, &err, torque_cost);
@@ -1113,55 +1106,20 @@ void ExpectTheChainsProblem(const DockingAtBothWidths& r) {
   ExpectWithinD10(r.from_plan_gap, "the tree's solve from the plan alone");
 }
 
-// The contract's input as it is written: the joints the chain lacks at rest on
-// the locked pose, the chain's torque rows off, the tree's on and inactive —
-// and the cost the docking fixture gives each model, which weighs the torque
-// of EVERY joint of that model (`r_tau`).
-//
-// Beside it, recorded and not judged: the same with the tree's torque weight
-// of the seven joints the chain lacks at zero — what is left of the difference
-// when those joints' own torque is out of the cost but the chain's torque,
-// which their motion changes, is still in it.
-//
-// DISABLED BECAUSE IT DOES NOT HOLD, with its assertions as the contract wrote
-// them (the D10 tolerances are not loosened to fit): with a torque COST in the
-// two cores the tree's problem is not the chain's — the cost weighs the torque
-// of the joints the chain lacks, and the chain's own torque depends on where
-// those joints are, so the tree's optimum moves them (5e-2 rad here) and the
-// chain's joints with them (3e-3 rad against 1e-4; three SQP iterations
-// against one). The torque rows being inactive does not make it so: the
-// control below, without the cost, agrees to 2e-16 in one iteration. Whether
-// the contract's premise becomes "no torque cost on the search and the
-// segment", or the cost is to be kept off the joints a search does not have,
-// is a decision of the feature that adds the whole-body terms — until it is
-// made this runs with --gtest_also_run_disabled_tests and records what it
-// finds.
-TEST(G1SearchSegmentAgreement, DISABLED_MpcDockingOnTheTreeEndsOnTheChainsSolutionInOneIteration) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
-  const PinnedClock pin(kPinnedNow);
-  auto s = std::make_unique<Scene>();
-  ASSERT_NO_FATAL_FAILURE(BuildAgreementScene(*s));
-  auto every_joint = std::make_unique<DockingAtBothWidths>();
-  ASSERT_NO_FATAL_FAILURE(SolveDockingAtBothWidths(*s, TorqueCost::kEveryJoint,
-                                                   "torque_cost_every_joint", *every_joint));
-  auto chain_only = std::make_unique<DockingAtBothWidths>();
-  ASSERT_NO_FATAL_FAILURE(
-      SolveDockingAtBothWidths(*s, TorqueCost::kChainOnly, "torque_cost_chain_only", *chain_only));
-  ExpectTheChainsProblem(*every_joint);
-}
-
-// The control: the same two models, the same throw, and NO torque cost in
-// either. Then no term of the tree's problem reads a joint the chain lacks —
-// its own torque, or the chain's torque through it — and the two problems are
-// one: this is what says the widening and the joint maps are right, whatever
-// the test above finds of the cost.
+// The premise: the joints the chain lacks at rest on the locked pose, the
+// chain's torque rows off, the tree's on and inactive, and NO torque cost in
+// either model. Then no term of the tree's problem reads a joint the chain
+// lacks — its own torque, or the chain's torque through it — and the two
+// problems are one: this is what says the widening and the joint maps are
+// right. (With a torque cost they are not one — the file's header has the
+// measurement.)
 TEST(G1SearchSegmentAgreement, WithNoTorqueCostMpcDockingOnTheTreeIsTheChainsProblem) {
   RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   const PinnedClock pin(kPinnedNow);
   auto s = std::make_unique<Scene>();
   ASSERT_NO_FATAL_FAILURE(BuildAgreementScene(*s));
   auto r = std::make_unique<DockingAtBothWidths>();
-  ASSERT_NO_FATAL_FAILURE(SolveDockingAtBothWidths(*s, TorqueCost::kNone, "no_torque_cost", *r));
+  ASSERT_NO_FATAL_FAILURE(SolveDockingAtBothWidths(*s, *r));
   ExpectTheChainsProblem(*r);
   // Nothing moves a joint the chain lacks.
   EXPECT_LE(r->from_chain_gap.outside_q, 1e-9);
