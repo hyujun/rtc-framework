@@ -9,8 +9,9 @@
 #     in the fixed-base model)
 #   - waist (3) + left arm (7) + right arm (7) are ONE device group, `g1`.
 #     That group is a kinematic TREE (two branches off the torso), not a serial
-#     chain, so it is declared under `tree_models`, and there is no
-#     `sub_models` block at all
+#     chain, so it is declared under `tree_models`. The one `sub_models` entry,
+#     `g1_catch`, is not a device group: it is the chain the catching search
+#     runs on (see `urdf.sub_models` below)
 #   - the hand, `p1b`, is the same proto_1b as ur5e_p1b's, mounted on the right
 #     wrist. A second hand would make a third group; nothing here assumes it
 /**:

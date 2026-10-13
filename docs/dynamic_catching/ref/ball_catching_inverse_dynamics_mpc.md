@@ -1519,8 +1519,8 @@ $$
 2. 격자의 모든 노드에서 공을 읽을 수 있고 $\Vert\hat v_b(t_c)\Vert$ 가 하한 이상이다.
 3. 확률 제약을 쓰면 포구 노드의 공분산이 있다.
 4. 출발 상태를 얻을 수 있다 (17.12).
-5. 팔이 닿을 수 있다. 6 의 IK 목표 $\hat p_b(t_c)+s_{\mathrm{ent}}\hat v$ 가 기준점 $c_1$ 에서 $R+\varepsilon_{pos}$ 보다 멀면 IK 를 돌리지 않고 거른다 ($\varepsilon_{pos}$ 는 IK 의 위치 허용오차). $c_1$ 과 도달 반경 $R$ 은 팔 모델에서 Configure 때 한 번 구하고 (YAML 키 없음), 격자 탐색이 쓰는 것과 같은 값이다 — 식은 L3 부록 B.
-6. (S4) 포구 자세의 IK 해 $q^c$ 가 있다. 목표는 capture frame 의 원점 $\hat p_b(t_c)+s_{\mathrm{ent}}\hat v$ ($\hat v=\hat v_b/\Vert\hat v_b\Vert$) 와 접근축 $e_3=-\hat v$ 이고, seed 는 대기 자세 — 후보 · 탐색 · 팔의 상태와 무관하게 같다. 해는 하나이고 IK 의 조작성 gate 를 같이 지난다.
+5. 팔이 닿을 수 있다. 6 의 IK 목표 $\hat p_b(t_c)+s_{\mathrm{ent}}\hat v$ 가 기준점 $c_1$ 에서 $R+\varepsilon_{pos}$ 보다 멀면 IK 를 돌리지 않고 거른다 ($\varepsilon_{pos}$ 는 IK 의 위치 허용오차). $c_1$ 과 도달 반경 $R$ 은 탐색의 모델 (아래 "탐색의 모델과 관절 집합") 에서 Configure 때 한 번 구하고 (YAML 키 없음), 격자 탐색이 쓰는 것과 같은 값이다 — 식은 L3 부록 B.
+6. (S4) 포구 자세의 IK 해 $q^c$ 가 있다. 목표는 capture frame 의 원점 $\hat p_b(t_c)+s_{\mathrm{ent}}\hat v$ ($\hat v=\hat v_b/\Vert\hat v_b\Vert$) 와 접근축 $e_3=-\hat v$ 이고, seed 는 대기 자세 — 후보 · 탐색 · 팔의 상태와 무관하게 같다. 해는 하나이고 IK 의 조작성 gate 를 같이 지난다. IK 는 탐색의 모델에서 풀고, 대기 자세 (device 관절마다 한 칸) 에서는 그 모델의 관절 칸만 읽는다.
 7. (S4) 관절마다
 
 포구점이 놓일 영역을 보는 조건은 없다 — 5 의 반경은 팔의 운동학적 필요조건이지 투척을 고르는 상자가 아니다 (L3 §4.9).
@@ -1584,6 +1584,10 @@ $$
 이 가장 작은 것을 고른다 (같으면 index 가 작은 쪽). $J^\star$ 는 17.9 의 $J$ 에서 **정지 구간의 항 (마지막 줄) 을 뺀 것**이다 — 코어가 최소화한 것은 둘의 합이고, 고르는 값은 그 최소점에서 잰 §9 의 비용이다. 정지 구간의 값은 기록한다. $t_{c,\mathrm{prev}}$ 는 RT 가 plan 을 따르고 있으면 그 plan 의 $t_c$, 아니면 이 시도에서 탐색이 직전에 고른 $t_c$ 이고, 둘 다 없으면 $J_{\mathrm{switch}}=0$ 이다.
 
 고른 후보에서 내는 것은 $t_c$, $p_{\mathrm{catch}}=\hat p_b(t_c)$, $\hat v_b(t_c)$, 접근축 $-\hat v$, 해의 포구 노드 자세 $q_{k_c}^\star$, 그 자세에서의 조작성 (IK 의 gate 가 쓰는 두 값 — IK 의 자세 $q^c$ 가 아니라 $q_{k_c}^\star$ 에서 다시 계산한다), $\Phi$, $\sqrt{\lambda_{\max}(\Sigma_p(t_c))}$, 예상 충격량 $m_b\,\hat c_{k_c}$ 그리고 해 전체 (노드 궤적) 다.
+
+**탐색의 모델과 관절 집합.** 탐색의 모델은 구간 계획기의 모델 (팔 device 의 관절 전부) 이거나 그 일부 관절의 사슬이다 (`planner.search.sub_model` — L3 §6). 사슬이면 필요조건 · IK · 후보마다의 풀이 · 순위가 전부 그 사슬 위의 것이다. RT 의 보고 · 대기 자세 · 보고된 구간은 device 폭이고 탐색은 자기 관절의 칸만 읽는다 — 사슬 밖 칸에 무엇이 있든 탐색이 정하는 것은 같다. plan 과 해는 자기 관절의 집합을 싣는다 (`PlanSnapshot::joint_set` · `CatchSolution::joint_set` — device index 의 bit 집합 `JointSet`). plan 의 $q^\ast$ 는 device 칸에 쓰고 집합의 관절에서만 뜻이 있다 (나머지 칸은 0, `nv` 는 집합의 크기). 해의 구간은 집합만큼의 폭이고 device 관절 $d$ 의 열은 집합의 index 를 오름차순으로 세운 순위다 (`JointSetSlot`) — 모델이 device 전체면 device 순서 그대로라 게시할 수 있는 구간이고, 사슬이면 게시할 구간이 아니라서 구간 계획기가 넓힌다 (17.12, [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) §12). RT 는 `joint_set` 을 읽지 않는다.
+
+**탐색 코어의 토크 행** (`planner.search.nlp.core.rows.torque`, 기본 참). 거짓이면 탐색의 코어에 17.4 의 토크 행과 그 elastic 이 없다 — 열어 둔 행이 아니라 QP 에 없는 행이다. 토크 비용 (`cost.r_tau`) 은 따로이고 그대로 조립되며, 결과의 `tau_ratio_max` 는 NaN 이다 (평가하지 않음). 다른 body 를 잠근 사슬처럼 역동역학이 로봇의 것이 아닌 탐색 모델을 위한 스위치다 — 그 코어는 운동학만으로 판정한다. 단일 팔 구성은 참으로 둔다: `nlp` 의 해가 그대로 게시되는 구간이기 때문이다. 키는 탐색 block 에만 있다 — `planner.segment.mpc_docking.core.rows.torque: false` 는 파서가 거부한다 (구간은 팔이 따르는 것이다).
 
 **RT 가 plan 을 따르고 있을 때의 보고.** 고른 $t_c$ 가 따르는 plan 의 것과 ns 단위로 같으면 "같은 포구 — 갱신", 다르면 "교체" 다. 유효한 후보가 없으면 아무것도 내지 않는다 (RT 는 가진 것을 따른다).
 
@@ -1754,7 +1758,8 @@ $$
   - *RT 가 plan 을 따르지 않을 때* (첫 쌍). $x_0=(q_{\mathrm{cmd}},0,0)$ 이다. RT 가 아직 명령을 seed 하지 않은 보고 (plan 을 받기 전 — 측정 자세와 영속도) 에서도 푼다: RT 는 쌍을 받을 때 그 자세에 명령을 seed 한다. 팔이 명령 위에서 정지해 있을 때만 푼다 ($\max_j\vert\dot q_{\mathrm{cmd},j}\vert\le$ `approach.rest_tol`, 아니면 `kNotAtRest`).
   - *RT 가 plan 을 따를 때* (교체 쌍). 팔은 RT 가 노드 0 에서 전환할 때까지 옛 plan 의 구간 위에 있으므로 $x_0=(q,\dot q,\ddot q)$ 는 RT 가 보고한 구간 (대기 구간의 노드 0 이 새 구간의 노드 0 이전이면 그것, 아니면 추종 구간 — `SourceSeq`) 을 새 구간의 노드 0 시각에서 `NodeTrajectoryFollower::SampleJoints` 로 평가한 값이다 — 재계획의 $x_0$ 와 같은 규칙이고 코어의 box 로 사영한다. 보고된 구간이 없으면 `kNotFollowed`, 명령이 seed 되지 않은 보고는 받지 않는다. 정지 검사는 없다. 풀이는 출발한 구간의 `segment_seq` 를 기록에 남기고 (`source_seq`) 계획기의 한 주기가 게시 직전에 그것을 다시 묻는다.
   - 어느 쪽이든 노드 0 은 **새** plan 의 $t_c$ 에 닻 내린 격자 위에 있고 (풀이 시작 $+T_{\mathrm{arm}}+T_{\mathrm{first}}+2h$ 뒤에 드는 가장 이른 격자점 — 포구 전 구간은 $n_{\mathrm{pre,max}}$ 개까지), 구간은 새 plan 의 id · $t_c$ · track 을 싣는다.
-  - 탐색의 해 (`CatchSolution`) 가 이 plan 의 것이면 (같은 $t_c$ · 같은 RT 보고 · 이 계획기의 격자 · `dt_catch_ns == 0` · **해가 출발한 구간이 RT 가 그 노드 0 시각에 보고하는 구간과 같다** — 따르는 plan 이 없으면 둘 다 "없음") 다시 풀지 않고 노드를 이 계획기의 코어에서 **평가**해 (hard 행의 위반 · slack · 토크) 그대로 게시한다 — 노드는 bit 단위로 탐색의 것이고 `converged` 는 `CatchSolution` 의 것이다 (평가는 수렴하지 않는다). 아니면 $x_0$ 에서 푼다.
+  - 탐색의 해 (`CatchSolution`) 가 이 plan 의 것이면 (같은 $t_c$ · 같은 RT 보고 · 이 계획기의 격자 · `dt_catch_ns == 0` · **해가 출발한 구간이 RT 가 그 노드 0 시각에 보고하는 구간과 같다** — 따르는 plan 이 없으면 둘 다 "없음" · **해의 관절 집합이 이 계획기의 모델의 관절 전부다** — 탐색이 푼 모델이 이 계획기의 모델이다, `CatchSolution::joint_set`) 다시 풀지 않고 노드를 이 계획기의 코어에서 **평가**해 (hard 행의 위반 · slack · 토크) 그대로 게시한다 — 노드는 bit 단위로 탐색의 것이고 `converged` 는 `CatchSolution` 의 것이다 (평가는 수렴하지 않는다). 아니면 $x_0$ 에서 푼다.
+  - 탐색이 이 모델의 **일부 관절의 사슬**에서 돌았으면 (해의 관절 집합이 plan 의 것이고 이 모델의 진부분집합) 해는 이 모델의 구간이 아니다. 게시하지 않고 **넓혀서 풀이의 시작 궤적으로** 쓴다 — 같은 $t_c$ · 같은 RT 보고 · 이 계획기의 격자 (`dt_catch_ns == 0`) 의 해일 때. 사슬의 관절은 탐색의 해의 노드 위에 (지난 노드는 버린다), 그 밖의 관절은 모든 노드에서 출발 위치에 정지해 있고, 노드 0 은 $x_0$ 다. 포구 자세 목표는 사슬의 관절이 plan 의 $q^\ast$, 그 밖의 관절이 출발 위치다. 탐색의 격자가 이 계획기 자신의 것보다 늦게 시작하면 그 격자에서 푼다. 기록은 `start_from_search` 이고 `from_search` 는 거짓이다 — 구간은 이 풀이의 것이다. 쓸 수 있는 해가 없으면 (해가 없다 · 다른 격자의 것이다 — 포구 구간의 길이가 따로인 해 · plan 과 다른 관절의 것이다) 아래의 시작점에서 풀고, plan 밖 관절의 포구 자세 목표는 그때도 출발 위치다. plan 의 관절 집합이 이 모델 안에 있지 않으면 받지 않는다 (`kNoState`).
   - 그 풀이의 시작점은 **앞선 wake 가 같은 첫 구간을 풀다 끝난 점**이 있으면 그것이다: 같은 track · plan id · $t_c$ 의 첫 풀이가 반복값을 내고도 게시되지 않았을 때, 그 점에서 지난 노드를 버리고 노드 0 을 $x_0$ 로 바꾼다 — 17.11 이 같은 후보의 기억에 쓰는 규칙이고 구현도 한 함수다. 없으면 plan 의 $q^\ast$ 를 포구 자세 목표로 시작 궤적 없이 푼다 (17.10 의 시작점). 기억은 계획기에 하나다. 첫 풀이가 반복값을 내면 — 수렴했으나 보류된 것, 기한에 끊긴 것, 행을 맞추지 못한 것 — 그 점으로 바꾸고, 그 plan 이 게시되거나 trial 이 새로 시작하거나 기억에서 출발한 풀이를 코어가 기한 아닌 사유로 거부하거나 solver 가 실패하면 지운다 (초기화 QP 앞에서 기한에 끊긴 풀이는 기억을 그대로 둔다). 탐색의 해를 평가해 낸 구간은 기억하지 않는다. 코어가 기한으로 끝낸 풀이는 반복값이 있든 없든 `kBudget` 으로 보류한다.
 - **재계획 (`Replan`).** 같은 $t_c$ 를 두고, 재계획 예산이 닿는 첫 격자점에서 다시 푼다. $x_0$ 와 시작 궤적은 RT 가 보고한 구간 (`SourceSeq`) 에서 `NodeTrajectoryFollower::SampleJoints` 로 평가한다. 포구 전 구간이 하나도 남지 않으면 (`kPastReplanWindow`) 풀지 않는다 — **포구 뒤에는 아무것도 게시하지 않는다.** 마지막으로 게시한 구간이 팔을 포구를 지나 정지까지 데려간다.
 - **게시 조건.** 예산 (`budget.first_s` · `budget.replan_s`, 코어의 기한이기도 하다) 안에서 끝남, `StartsInTime`, 실행 가능하고 수렴, 포구 구간과 속도 envelope 의 slack 이 상한 (`publish.slack_c_max` · `slack_v_max`) 안, 노드 사이의 관절 속도가 정격 안, `ValidateSegmentNodes` 통과. 어느 하나라도 아니면 구간은 보류되고 plan 도 게시되지 않는다 (쌍 게시, MD-56).
@@ -1773,6 +1778,8 @@ $$
 
 포구 노드부터는 $(q^\ast,0,0)$ 을 든다. 정지 출발의 기준 (최소 jerk 도달) 은 이 식에서 $\dot q_0=\ddot q_0=0$ 인 경우다. 정지 출발에서 하는 기준의 속력 축소 (최고 속력이 한계를 넘지 않게 변위를 줄이는 것) 는 움직이는 출발에는 하지 않는다 — 그 상한은 경계 속도가 0 인 곡선의 것이고, 이 곡선의 속력은 QP 의 행과 노드 사이 속도 판정이 본다.
 
+plan 이 이 계획기의 모델의 일부 관절의 것이면 (`PlanSnapshot::joint_set` — 17.11) 그 밖의 관절에는 $q^\ast$ 가 없다. 그 관절의 기준은 정지 출발에서는 변위 0 (명령에 정지) 이고, 움직이는 출발에서는 위 식에서 $d=0$ 이다 — 보고된 구간의 $(q_0,\dot q_0,\ddot q_0)$ 에서 그 위치에 정지한다. 집합의 관절의 기준은 그대로다. 관절을 하나도 들지 않았거나, 모델에 없는 관절을 들었거나, `nv` 가 집합의 크기와 다른 plan 은 받지 않는다 (`PlanJointsWithin`, `kNoState`).
+
 구현하지 않은 것: $\tau_{\mathrm{react}}$ 로 정하는 바깥 루프의 정지 (설계 키 `t_stop_plan` 이 처음 채택한 $t_c$ 에서 그것을 대신한다), real-time iteration 과 preparation / feedback 의 분리, P1 · P2 의 병렬 실행, 채택 뒤에 따르는 셀 안에서 포구 시각을 옮기는 것, commit 에 따라 포구 시각을 묶는 것, 계획기의 한 주기가 격자 밖 포구 시각의 plan 을 게시하는 것, `mpc_docking` 의 포구 뒤 정지 재풀이, 추종 오차가 클 때 측정 상태에서 다시 출발하는 것 (17.16 의 §12.7).
 
 ### 17.15 검증
@@ -1788,6 +1795,13 @@ $$
 - 출하 모델: `integrated_bringup/test/test_catching_docking_core_shipped.cpp` 가 손을 잠근 출하 sub-model 과 출하 catch frame · 관절 정격으로 짧은 lead 의 격자와 실제 투척 조건을 푼다. 판정이 아니라 기록이다 — 포획 집합의 값이 합성값이라, 단언하는 것은 모델이 출하된 것이라는 점과 풀이마다 결과가 나온다는 점뿐이다.
 
 나머지 (3 · 4 · 6 · 7 · 9 – 15) 는 이 코어의 범위가 아니다.
+
+**탐색 모델과 구간 모델** (17.11 "탐색의 모델과 관절 집합" · "탐색 코어의 토크 행", 17.12 의 넓히는 규칙) 은 다음이 본다. 이름은 `Suite.Case` 다.
+
+- 토크 행의 스위치: `MpcDockingSegmentCore.WithoutTorqueRows*` — 행과 그 elastic 이 QP 에 없고 비율은 평가되지 않는다, 토크 비용은 조립된다, 토크 행이 걸리지 않던 투척은 solver 의 수렴 오차 안에서 같은 궤적으로 풀린다, 토크 한계가 실행 불가로 만들던 투척은 그 한계를 넘는 궤적으로 수렴한다. `DockingParamsCore.TheTorqueRowSwitchIsTheSearchsAlone` — 구간 계획기의 `core` 에서는 거부한다.
+- 무관성과 관절 집합: `GridCatchSearchChain.*` · `NlpCatchSearchChain.*` — 더 넓은 device 안의 사슬에서 돈 탐색의 결과가 사슬 밖 칸 (명령 · 속도 · 대기 자세 · 따르는 구간의 열) 의 값에 bit 단위로 무관하다, plan 과 해가 자기 관절 집합을 싣는다, 사슬 폭의 보고와 단사가 아닌 device map 은 거부한다.
+- 넓히는 규칙: `ApproachPlannerChain.*` (`mpc`) — plan 밖 관절의 기준은 정지 출발에서 모든 노드가 명령에, 교체 쌍에서 그 위치에 정지하고, 나머지 관절의 기준은 전체 plan 의 것과 bit 단위로 같다. `MpcDockingPlannerChain.*` (`mpc_docking`) — 사슬의 해는 게시되지 않고 풀이의 시작 궤적이 된다, 쓸 수 있는 해가 없어도 plan 밖 관절의 목표는 출발 위치다, 늦게 시작하는 탐색의 격자에서 푼다. 둘 다 자기 모델에 없는 관절의 plan 을 거부한다.
+- G1 모델: `integrated_bringup/test/test_catch_frame_models.cpp` 의 `CatchFrameModels.G1P1bTheSearchChainAndTheDeviceTreeCarryTheSameCatchFrame` — 사슬 (10 관절) 과 tree (17 관절) 가 catch frame 을 같은 배치로 갖고 tree 에서 왼팔의 Jacobian 열이 0 이다. 같은 디렉토리의 `test_catching_search_segment_g1.cpp` 는 그 두 모델에서 탐색 · 구간의 네 조합을 계획기의 한 wake 로 돌리고, 일치 검사를 하고 ([mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) §12 "일치 조건" — 기준은 사슬 관절의 노드 값 $10^{-4}$ rad, 포구 노드의 catch frame 위치 0.1 mm), 풀이 시간을 기록한다. 일치 검사는 `mpc` 코어와, 토크 비용이 없는 `mpc_docking` 코어의 것이다. 토크 비용이 있는 `mpc_docking` 의 같은 검사는 성립하지 않아 꺼 둔 테스트 (`DISABLED_…`) 로 남아 있다 — 단언은 그 기준 그대로다.
 
 ### 17.16 실행 구조 — RT tick 과 §12 의 대응
 
