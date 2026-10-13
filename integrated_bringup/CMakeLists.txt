@@ -1582,6 +1582,35 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
+  # ── The search on a chain, the segments on the device: g1_p1b (E3-F01, #640) ─
+  # The catch search runs on `g1_catch` (10 joints) and the segments are
+  # planned on `g1` (17): the four combinations publish a pair in one planner
+  # wake, the 17-joint solve agrees with the 10-joint one where the joints the
+  # chain lacks stand on the pose the chain model locks them at (D10), and the
+  # solve times on the two models are recorded. The G1 model is
+  # hand_description's (not a dependency): every test skips without it.
+  ament_add_gtest(test_catching_search_segment_g1
+    test/test_catching_search_segment_g1.cpp TIMEOUT 600)
+  target_include_directories(test_catching_search_segment_g1 PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_compile_definitions(test_catching_search_segment_g1 PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
+    RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+  target_link_libraries(test_catching_search_segment_g1
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_catching_search_segment_g1
+    rclcpp
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    ament_index_cpp
+  )
+
   # ── The reach bound on the shipped catch sub-models (L3 §4.1) ──────────────
   # The searches refuse a target beyond the bound without the IK: on the models
   # the planner is handed, no posture leaves the bound and a target it refuses
