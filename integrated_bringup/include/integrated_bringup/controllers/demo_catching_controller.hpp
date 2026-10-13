@@ -976,7 +976,9 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// The joint count the search's per-joint keys are sized by: the search
   /// model's when it is its own and the system model has it, else the arm's
-  /// (a name the model lacks is SetupPlanner's to report). Non-RT.
+  /// (a name the model lacks is SetupPlanner's to report; without a system
+  /// model the search is the stub and reads none of them). Reads the model
+  /// builder, so it is called after AcquireModelBuilder. Non-RT.
   [[nodiscard]] int SearchModelNv() const;
 
   /// Model `name` of the system model, its catch frame and the model→device
@@ -1040,9 +1042,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Create the prediction subscription and configure the ingress. Non-RT.
   void SetupTrajInput();
   /// The model builder: CM's shared one, else one of our own (fixtures). Left
-  /// null (logged) without a system model config. Acquired at the start of the
-  /// ingress setup, because the vision-frame transform needs the model BEFORE
-  /// the subscription exists.
+  /// null (logged) without a system model config. on_configure acquires it
+  /// once per configure, before the first step that reads the model: the
+  /// docking parse (the nlp search's per-joint keys are sized by the search
+  /// model's joint count) — and so before the ingress setup, whose
+  /// vision-frame transform needs it before the subscription exists.
   void AcquireModelBuilder();
   /// Fills `cfg`'s vision → model-world transform (L3 §4.2). False (logged)
   /// on a named frame the model lacks or that is not rigid to its root.

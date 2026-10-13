@@ -1065,7 +1065,7 @@ void DemoCatchingController::SetupTrajInput() {
       params_.io_track_eval_offset.tbd ? 0 : to_ns(params_.io_track_eval_offset.value);
   cfg.j_warn_m = params_.io_track_j_warn.tbd ? -1.0 : params_.io_track_j_warn.value;
   cfg.expected_frame = expected_frame_;
-  AcquireModelBuilder();
+  // The vision-frame transform reads the model (on_configure acquired it).
   if (!ResolveVisionFrame(cfg)) {
     throw std::runtime_error("DemoCatchingController: the vision frame could not be resolved");
   }
@@ -1353,6 +1353,11 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // A malformed key throws (the catch below refuses the configure, as for
     // every other parser); a profile on which a selected docking function
     // cannot run is a profile mistake — park, name the key, keep the robot up.
+    //
+    // The model first: the nlp search's per-joint keys are sized by the search
+    // model, which may be a chain of the arm (`planner.search.sub_model`) —
+    // a width only the system model knows.
+    AcquireModelBuilder();
     ParseDockingConfig();
     if (planner_params_.enabled) {
       if (const char* why = DockingConfigInvalid(); why != nullptr) {
