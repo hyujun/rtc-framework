@@ -617,6 +617,25 @@ TEST(CatchSearchBatchBinding, ASearchModelMayBeAChainOfAWiderDevice) {
   EXPECT_TRUE(refused(with_map("[4, 0, 2]") + repeated, 3, 5));
   EXPECT_TRUE(refused(with_map("[4, 0, 2]") + segment, 3, 2))
       << "a segment model below the search's";
+  // A segment model wider than the search's is the device: the binding has to
+  // give `n_dev`, and the refusal names that key — not a device-wide value
+  // (the wait pose) that would then be judged against the search's width.
+  const auto why = [](const std::string& text, int nv, int segment_nv) {
+    try {
+      static_cast<void>(ParseSearchBatchBinding(YAML::Load(text), nv, segment_nv));
+    } catch (const std::invalid_argument& e) {
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  const std::string absent = why(std::string(kNlpBinding) + segment, 3, 5);
+  EXPECT_NE(absent.find("'n_dev' must be 5"), std::string::npos) << absent;
+  EXPECT_NE(absent.find("absent"), std::string::npos) << absent;
+  std::string narrower = with_map("[3, 0, 2]") + segment;
+  narrower.replace(narrower.find("n_dev: 5"), 8, "n_dev: 4");
+  const std::string four = why(narrower, 3, 5);
+  EXPECT_NE(four.find("'n_dev' must be 5"), std::string::npos) << four;
+  EXPECT_NE(four.find("got 4"), std::string::npos) << four;
 }
 
 TEST(CatchSearchBatchBinding, IsFailClosed) {

@@ -261,7 +261,9 @@ struct SearchBatchBinding {
 /// and, with a segment model of its own, `segment.device_of_model` (a
 /// permutation of 0…segment_nv−1; absent = the search's map).
 /// Every key of a selected map is required and no other key is accepted
-/// (`n_dev` and `segment.device_of_model` are the two optional ones).
+/// (`n_dev` and `segment.device_of_model` are the two optional ones — and
+/// `n_dev` is required, equal to `segment_nv`, once the segment model is wider
+/// than the search's: that model is the whole device).
 /// `qddot_max` / `limits.qdd_max` may be empty (no acceleration box); every
 /// other joint vector has one entry per joint of ITS model — `nv` for the
 /// search's map, `segment_nv` for the segment planner's. Scalars may be `.nan`.
@@ -269,8 +271,9 @@ struct SearchBatchBinding {
 /// @param segment_nv the segment model's, 0 = `nv` (one model)
 /// @throws std::invalid_argument naming the key on anything else, including a
 ///         `device_of_model` that is not a permutation of 0…nv−1 (an injection
-///         into 0…n_dev−1 with `n_dev`), and an `n_dev` below `nv` or above
-///         kMaxPlanNv.
+///         into 0…n_dev−1 with `n_dev`), an `n_dev` below `nv` or above
+///         kMaxPlanNv, and — `segment_nv` above `nv` — an `n_dev` that is
+///         absent or not `segment_nv`.
 [[nodiscard]] SearchBatchBinding ParseSearchBatchBinding(const YAML::Node& root, int nv,
                                                          int segment_nv = 0);
 

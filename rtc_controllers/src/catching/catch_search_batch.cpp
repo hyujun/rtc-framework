@@ -566,6 +566,16 @@ SearchBatchBinding ParseSearchBatchBinding(const YAML::Node& root, int nv, int s
                                   " (the search model's) to " + std::to_string(kMaxPlanNv));
     }
   }
+  // A segment model wider than the search's is the whole device, so the
+  // binding has to say how wide the device is: without it every device-wide
+  // value (the wait pose) would be judged against the search model's width.
+  if (segment_nv > nv && b.n_dev != segment_nv) {
+    throw std::invalid_argument(
+        "binding: the segment model has " + std::to_string(segment_nv) + " joints, the search's " +
+        std::to_string(nv) + " — 'n_dev' must be " + std::to_string(segment_nv) +
+        " (the device's joint count), " +
+        (b.n_dev > 0 ? "got " + std::to_string(b.n_dev) : std::string("and it is absent")));
+  }
 
   try {
     b.device_of_model = root["device_of_model"].as<std::vector<int>>();
