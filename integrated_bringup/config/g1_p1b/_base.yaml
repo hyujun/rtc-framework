@@ -41,6 +41,20 @@
       # Loaded model: 37 joints, 27 actuated (17 + 10), 10 loop-passive.
       extended: true
       closure_path: "robots/unitree_g1_p1b/urdf/g1_with_proto_1b_fixed_base.closure.yaml"
+      sub_models:
+        # The catching SEARCH's model (dynamic_catching E3-F01): the chain
+        # pelvis → the right palm — waist 3 + right arm 7, 10 DoF, the left arm
+        # locked. Its tip, `l_palm_link`, is the parent of `catch_frame` below
+        # and is upstream of the hand's joints, so the catch frame's FK and
+        # Jacobian on this chain depend on neither the hand nor the left arm.
+        # Named by a catching profile's `planner.search.sub_model`; the segments
+        # are planned on the whole device, `tree_models.g1`
+        # (`planner.sub_model`). No device group is called `g1_catch`, so the
+        # two controllers this profile ships do not look it up — to them it is
+        # one more reduced model built at start.
+        g1_catch:
+          root_link: "pelvis"
+          tip_link: "l_palm_link"
       tree_models:
         # Device group `g1`: pelvis → both arm ends, 17 DoF. Model joint order
         # is waist, left arm, right arm — the URDF's, the MJCF's, and the
