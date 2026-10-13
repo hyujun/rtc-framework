@@ -1293,4 +1293,43 @@ TEST(SegmentPayload, ThePinnedPayloadDigestSeesASingleBit) {
   EXPECT_NE(PayloadDigest(p, 16), base);
 }
 
+// The segment digest reads the node arrays at the width its constants were
+// recorded with (planner_trace_digest.hpp). The entries past that width are
+// not out of its sight: a clean payload digests as recorded, and a value left
+// in ANY entry no joint uses — by its bits, so −0.0 and NaN count — moves it.
+TEST(SegmentPayload, TheSegmentDigestSeesAStrayValueInAnyUnusedEntry) {
+  const Eigen::VectorXd q0 = Eigen::VectorXd::Constant(6, 0.3);
+  const SegmentSnapshot good = MakeMixedPlan(q0, 56, 6, 7).p;
+  const auto digest = [](const SegmentSnapshot& p) {
+    rtc::testing::ValueDigest h;
+    rtc::testing::AddSegment(h, p);
+    return h.Value();
+  };
+  const std::uint64_t base = digest(good);
+  for (const int j : {good.nv, rtc::testing::kRecordedSegmentNv - 1,
+                      rtc::testing::kRecordedSegmentNv, kMaxSegmentNv - 1}) {
+    for (const int k : {0, good.n_nodes, kMaxSegmentNodes}) {
+      for (const double stray : {1e-300, -0.0, kNan}) {
+        SegmentSnapshot p = good;
+        p.qd[Idx(k, j)] = stray;
+        EXPECT_NE(digest(p), base) << "column " << j << ", node " << k << ", value " << stray;
+      }
+    }
+  }
+  // The same for one capacity-wide joint vector (a sample, a candidate's start).
+  const auto joints = [](const std::array<double, kMaxSegmentNv>& a, int nv) {
+    rtc::testing::ValueDigest h;
+    rtc::testing::AddSegmentJoints(h, a, nv);
+    return h.Value();
+  };
+  std::array<double, kMaxSegmentNv> a{};
+  a[0] = 0.1;
+  const std::uint64_t base_joints = joints(a, 6);
+  for (std::size_t j = 6; j < a.size(); ++j) {
+    std::array<double, kMaxSegmentNv> b = a;
+    b[j] = -0.0;
+    EXPECT_NE(joints(b, 6), base_joints) << j;
+  }
+}
+
 }  // namespace

@@ -204,25 +204,42 @@ inline void AddPlan(ValueDigest& h, const catching::PlanSnapshot& p) noexcept {
 /// that did not change. The two functions below read the entries in the order
 /// and the width they had then; at that capacity it is the same byte sequence
 /// `Add(array)` gave, so every recorded constant stands (#827).
+///
+/// Past that width: a joint the segment HAS (j < nv) is always digested. An
+/// entry no joint uses is digested only when it is not the zero it must be —
+/// by its bit pattern, so a NaN or a −0.0 written there counts. A clean
+/// payload therefore digests as it was recorded, and one with a stray value
+/// in any unused entry does not.
 inline constexpr int kRecordedSegmentNv = 8;
 static_assert(catching::kMaxSegmentNv >= kRecordedSegmentNv);
 
+namespace digest_detail {
+
+inline void AddPastRecordedWidth(ValueDigest& h, double v, bool used) noexcept {
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &v, sizeof(bits));
+  if (used || bits != 0) {
+    h.Add(v);
+  }
+}
+
+}  // namespace digest_detail
+
 /// One joint vector of capacity width (a sample, a node), DEVICE order: the
-/// recorded width first — entries past `nv` are the zeros they were — then the
-/// joints that width had no room for.
+/// recorded width first — entries past `nv` are the zeros they were — then
+/// the rest (kRecordedSegmentNv's note).
 inline void AddSegmentJoints(ValueDigest& h, const std::array<double, catching::kMaxSegmentNv>& a,
                              int nv) noexcept {
   for (int j = 0; j < kRecordedSegmentNv; ++j) {
     h.Add(a[static_cast<std::size_t>(j)]);
   }
-  for (int j = kRecordedSegmentNv; j < nv && j < catching::kMaxSegmentNv; ++j) {
-    h.Add(a[static_cast<std::size_t>(j)]);
+  for (int j = kRecordedSegmentNv; j < catching::kMaxSegmentNv; ++j) {
+    digest_detail::AddPastRecordedWidth(h, a[static_cast<std::size_t>(j)], j < nv);
   }
 }
 
 /// A segment's node array: every node column of the recorded width, in
-/// storage order, then (for a segment wider than that) the remaining joints
-/// of every node.
+/// storage order, then the rest of every node (kRecordedSegmentNv's note).
 inline void AddSegmentNodes(ValueDigest& h, const decltype(catching::SegmentSnapshot::q)& a,
                             int nv) noexcept {
   const auto at = [&a](int k, int j) {
@@ -234,8 +251,8 @@ inline void AddSegmentNodes(ValueDigest& h, const decltype(catching::SegmentSnap
     }
   }
   for (int k = 0; k <= catching::kMaxSegmentNodes; ++k) {
-    for (int j = kRecordedSegmentNv; j < nv && j < catching::kMaxSegmentNv; ++j) {
-      h.Add(at(k, j));
+    for (int j = kRecordedSegmentNv; j < catching::kMaxSegmentNv; ++j) {
+      digest_detail::AddPastRecordedWidth(h, at(k, j), j < nv);
     }
   }
 }
