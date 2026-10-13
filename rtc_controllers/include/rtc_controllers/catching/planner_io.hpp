@@ -163,7 +163,8 @@ static_assert(std::is_trivially_copyable_v<PlannerRtState>);
 ///
 /// Copies, not pointers: a planner keeps its published segments in a ring it
 /// compacts on the next publish, so a pointer into it names another segment
-/// one publish later. Two snapshots (~10 KB) are nothing beside one solve.
+/// one publish later. Two snapshots (2 × sizeof(SegmentSnapshot), ~24 KB) are
+/// nothing beside one solve.
 ///
 /// `following` is a segment of the plan the RT follows. `pending` is one of
 /// that plan too, or — while the RT holds a replacement plan
