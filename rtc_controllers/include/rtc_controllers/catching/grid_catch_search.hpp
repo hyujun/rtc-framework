@@ -223,6 +223,11 @@ class GridCatchSearch final : public CatchSearch {
   /// position tolerance from its centre is refused before the IK.
   [[nodiscard]] const ReachBound& Reach() const noexcept { return reach_; }
 
+  /// The joints this search plans, as device indices: every joint of the
+  /// device, or — on a chain of it — the chain's (`PlanSnapshot::joint_set` of
+  /// the plans it publishes). 0 before Configure.
+  [[nodiscard]] JointSet Joints() const noexcept { return joint_set_; }
+
   /// The IK seed in force after the last `Plan` call, model order (tests).
   [[nodiscard]] const Eigen::VectorXd& IkSeedForTesting() const noexcept { return seed_; }
 
