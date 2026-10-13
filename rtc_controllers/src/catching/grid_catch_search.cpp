@@ -127,6 +127,12 @@ bool GridCatchSearch::Configure(const GridCatchSearchModel& model,
   ik_options_ = ik;
   clock_ = clock;
   ik_.Resize(model.nv);
+  // The catch-pose IK has a capacity below kMaxPlanNv (rtc::kMaxRobotDOF):
+  // Resize leaves a wider model unsized and every Solve() then answers
+  // kModelInvalid — a search that configures and never finds a catch.
+  if (ik_.nv() != model.nv) {
+    return false;
+  }
   reach_ = ComputeReachBound(model.handle->GetModel(), model.catch_frame);
   unit_speed_.Resize(model.nv);
   // The rollout's reference: the profile's ω and ζ, NO saturation (§4.8 —

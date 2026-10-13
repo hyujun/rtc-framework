@@ -120,7 +120,7 @@
 | MD-24 | 출하 지평은 정지 시간 0.35 s 로 맞춘다 (격자는 MD-54 가 바꿈 — 정지 7 노드 × 0.05 s, 블록 {1,1,2,3}). 계획기의 $\dot q_{\max}$ 는 팔 device 의 `max_velocity` 다. | `cfg` `horizon`, `RCI/mpc_segment_planner.hpp` / f §1.6 |
 | MD-25 | armature 는 제어에 쓰지 않는다 — 계획기는 코어에 0 벡터를 넘기고 코어의 `MpcSegmentCoreLimits::armature` 입력은 남는다. | `RCS/catching/mpc_segment_planner.cpp` (armature 0), `RCI/mpc_segment_planner.hpp` / f §1.1 |
 | MD-26 | 기준 없는 첫 풀이의 시점 규칙 (pre-solve + 본 solve) 은 MD-56 · MD-58 의 "plan 과 첫 구간을 한 wake 에 푼다" 로 바뀌었다 (MD-56 이 바꿈). | `RCS/catching/planner_cycle.cpp` / L3 §5.3 |
-| MD-27 | 구간 payload 는 `PlanSnapshot` 이 아니라 형제 POD `SegmentSnapshot` 과 자기 SeqLock 으로 보낸다 (관절 용량 8, 노드 용량 `kMaxSegmentNodes`). | `RCI/trajectory.hpp` (`kMaxSegmentNodes`), `IB/include/integrated_bringup/controllers/demo_catching_controller.hpp` / L0 (`kMaxSegmentNodes`), L3 §5.2 |
+| MD-27 | 구간 payload 는 `PlanSnapshot` 이 아니라 형제 POD `SegmentSnapshot` 과 자기 SeqLock 으로 보낸다 (관절 용량 `kMaxSegmentNv` — 지원 최대이고 로봇의 관절 수가 아니다, #827; 노드 용량 `kMaxSegmentNodes`). | `RCI/trajectory.hpp` (`kMaxSegmentNv` · `kMaxSegmentNodes`), `IB/include/integrated_bringup/controllers/demo_catching_controller.hpp` / L0 (`kMaxSegmentNodes`), L3 §5.2 |
 | MD-28 | 계획기의 초기 상태 $x_0$ 는 RT 가 보고한 구간에서 평가한다 (MD-58 이 바꿈 — 명령 외삽과 $\ddot q$ 차분 경로는 MD-70 이 지움). | `RCI/jerk_segment.hpp` (구간 평가) / f §1.5, L7 §4.3a |
 | MD-29 | 구간 재계획만 한 wake 의 `CycleOutcome` 은 idle 로 남고 구간 결과는 기록의 별도 필드로 낸다 (탐색도 돈 wake 의 `CycleOutcome` 은 탐색과 쌍의 것 — `held` · `published` · `superseded`). | `RCI/planner_cycle.hpp`, `RCS/catching/planner_cycle.cpp` / L3 §5.3 |
 | MD-30 | `NodeFollower` 의 검증은 FK 일관성 ($T(q_{ref})=T^d$, $J\dot q_{ref}=V^{ff}$) 이고 CLIK 속도 잔차는 정보용이다. | `RCI/node_follower.hpp` / L7 §4.3a |

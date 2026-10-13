@@ -373,16 +373,18 @@ struct Wake {
   return ms / 40;
 }
 
+// A segment's node array — the payload's own type, so a capacity change is
+// followed here rather than pinned by a literal.
+using NodeArray = decltype(SegmentSnapshot::q);
+
 // Node k of a segment's node array, in MODEL order.
-[[nodiscard]] std::array<double, 6> NodeModelOrder(const std::array<double, 200>& nodes, int k) {
+[[nodiscard]] std::array<double, 6> NodeModelOrder(const NodeArray& nodes, int k) {
   std::array<double, 6> out{};
   for (std::size_t m = 0; m < 6; ++m) {
     out[m] = nodes[static_cast<std::size_t>(k * kMaxSegmentNv + kDeviceOfModel[m])];
   }
   return out;
 }
-
-static_assert(sizeof(SegmentSnapshot::q) == 200 * sizeof(double));
 
 // ── The oracle: the candidates of a wake, solved one by one on cores built
 //    here ─────────────────────────────────────────────────────────────────────
@@ -2312,7 +2314,7 @@ TEST(NlpCatchSearchFollowing, TheStartStateIsTheReportedSegmentAtNodeZero) {
   const int drop = static_cast<int>((t_0 - arm->pending.t0_ns) / arm->pending.dt_pre_ns) + 1;
   ASSERT_GE(drop, 1);
   ASSERT_GT(arm->pending.n_pre, drop);
-  const auto shift_nodes = [&](std::array<double, 200>& a) {
+  const auto shift_nodes = [&](NodeArray& a) {
     std::copy(a.begin() + drop * kMaxSegmentNv, a.end(), a.begin());
   };
   shift_nodes(arm->pending.q);
@@ -3256,6 +3258,10 @@ TEST(NlpCatchSearchAllocation, AWakeAllocatesNothingOutsideTheQpSolvers) {
 // RT follows no plan must be the wake it was. These digests were taken BEFORE
 // either existed.
 
+// The pinned searches' joint count: a candidate's joint arrays are digested at
+// the width they were recorded with (planner_trace_digest.hpp).
+constexpr int kPinnedNv = static_cast<int>(kDeviceOfModel.size());
+
 // WakeDigest's values, with every reason by its NAME: a reason added to
 // NlpReject moves the numbers of the ones after it, and that is not a wake
 // behaving differently.
@@ -3303,10 +3309,10 @@ TEST(NlpCatchSearchAllocation, AWakeAllocatesNothingOutsideTheQpSolvers) {
     h.Add(c.ik_reason);
     h.Add(c.rank);
     h.Add(c.rank_key);
-    h.Add(c.q0);
-    h.Add(c.qd0);
-    h.Add(c.qdd0);
-    h.Add(c.q_ik);
+    rtc::testing::AddSegmentJoints(h, c.q0, kPinnedNv);
+    rtc::testing::AddSegmentJoints(h, c.qd0, kPinnedNv);
+    rtc::testing::AddSegmentJoints(h, c.qdd0, kPinnedNv);
+    rtc::testing::AddSegmentJoints(h, c.q_ik, kPinnedNv);
     h.Add(c.start);
     h.Add(c.start_index);
     h.Add(c.core_reason);
@@ -3512,10 +3518,10 @@ TEST(NlpCatchSearchPinned, AWakeWithoutAFollowedPlanIsUnchangedBitForBit) {
     }
     h.Add(c.ik_run);
     h.Add(c.ik_reason);
-    h.Add(c.q0);
-    h.Add(c.qd0);
-    h.Add(c.qdd0);
-    h.Add(c.q_ik);
+    rtc::testing::AddSegmentJoints(h, c.q0, kPinnedNv);
+    rtc::testing::AddSegmentJoints(h, c.qd0, kPinnedNv);
+    rtc::testing::AddSegmentJoints(h, c.qdd0, kPinnedNv);
+    rtc::testing::AddSegmentJoints(h, c.q_ik, kPinnedNv);
     h.Add(c.source_seq);
     h.Add(c.rank_key);
   }

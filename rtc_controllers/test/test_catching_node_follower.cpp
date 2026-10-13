@@ -172,8 +172,9 @@ class NodeFollowerTest : public ::testing::Test {
 // ── 1. Payload and sampling ──────────────────────────────────────────────────
 
 TEST(SegmentPayload, PayloadFitsItsBudget) {
-  // MD-27: 3 node blocks × 8 joints × 25 nodes × 8 B = 4.8 KB plus a header.
-  EXPECT_LT(sizeof(SegmentSnapshot), 5U * 1024U);
+  // MD-27: 3 node blocks × 20 joints × 25 nodes × 8 B = 12.0 KB plus a header
+  // (#827 raised the joint capacity from 8, where the budget was 5 KB).
+  EXPECT_LT(sizeof(SegmentSnapshot), 12U * 1024U);
   EXPECT_GE(sizeof(SegmentSnapshot), 3U * kMaxSegmentNv * (kMaxSegmentNodes + 1) * sizeof(double));
   // The core and the payload share one capacity (the constant moved to
   // trajectory.hpp; the core's block array is sized by it).
@@ -469,7 +470,7 @@ TEST_F(NodeFollowerTest, ContendedCopyNeverTearsAndIsRecorded) {
   // writer cadences (G1-C form: the numbers are recorded, not bounded):
   //   • back-to-back stores — the strongest tearing probe. It also shows why
   //     the planner must never store in a loop: SeqLock::Load has no retry
-  //     bound (L1 G1-8), and against a 4.9 KB back-to-back writer the reader
+  //     bound (L1 G1-8), and against a 12 KB back-to-back writer the reader
   //     completes only a few hundred copies in 300 ms on the development PC.
   //     So the read count is recorded here, and only required to be nonzero;
   //   • one store per millisecond — still 20× the planner's real rate (one per
@@ -1187,9 +1188,9 @@ std::uint64_t PayloadDigest(const SegmentSnapshot& p, std::uint64_t seed) {
     std::array<double, kMaxSegmentNv> qdd{};
     bool held = false;
     h.Add(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd, &held));
-    h.Add(q);
-    h.Add(qd);
-    h.Add(qdd);
+    rtc::testing::AddSegmentJoints(h, q, p.nv);
+    rtc::testing::AddSegmentJoints(h, qd, p.nv);
+    rtc::testing::AddSegmentJoints(h, qdd, p.nv);
     h.Add(held);
   }
   return h.Value();
@@ -1208,7 +1209,7 @@ std::uint64_t MalformedDigest(const SegmentSnapshot& good) {
     std::array<double, kMaxSegmentNv> qdd{};
     h.Add(ValidateSegmentNodes(p));
     h.Add(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd));
-    h.Add(q);
+    rtc::testing::AddSegmentJoints(h, q, good.nv);
   };
   add([](SegmentSnapshot&) {});
   add([](SegmentSnapshot& p) { p.valid = false; });
@@ -1290,6 +1291,45 @@ TEST(SegmentPayload, ThePinnedPayloadDigestSeesASingleBit) {
   p = good;
   p.t0_ns += 1;  // now malformed for the validator; the sampler still reads it
   EXPECT_NE(PayloadDigest(p, 16), base);
+}
+
+// The segment digest reads the node arrays at the width its constants were
+// recorded with (planner_trace_digest.hpp). The entries past that width are
+// not out of its sight: a clean payload digests as recorded, and a value left
+// in ANY entry no joint uses — by its bits, so −0.0 and NaN count — moves it.
+TEST(SegmentPayload, TheSegmentDigestSeesAStrayValueInAnyUnusedEntry) {
+  const Eigen::VectorXd q0 = Eigen::VectorXd::Constant(6, 0.3);
+  const SegmentSnapshot good = MakeMixedPlan(q0, 56, 6, 7).p;
+  const auto digest = [](const SegmentSnapshot& p) {
+    rtc::testing::ValueDigest h;
+    rtc::testing::AddSegment(h, p);
+    return h.Value();
+  };
+  const std::uint64_t base = digest(good);
+  for (const int j : {good.nv, rtc::testing::kRecordedSegmentNv - 1,
+                      rtc::testing::kRecordedSegmentNv, kMaxSegmentNv - 1}) {
+    for (const int k : {0, good.n_nodes, kMaxSegmentNodes}) {
+      for (const double stray : {1e-300, -0.0, kNan}) {
+        SegmentSnapshot p = good;
+        p.qd[Idx(k, j)] = stray;
+        EXPECT_NE(digest(p), base) << "column " << j << ", node " << k << ", value " << stray;
+      }
+    }
+  }
+  // The same for one capacity-wide joint vector (a sample, a candidate's start).
+  const auto joints = [](const std::array<double, kMaxSegmentNv>& a, int nv) {
+    rtc::testing::ValueDigest h;
+    rtc::testing::AddSegmentJoints(h, a, nv);
+    return h.Value();
+  };
+  std::array<double, kMaxSegmentNv> a{};
+  a[0] = 0.1;
+  const std::uint64_t base_joints = joints(a, 6);
+  for (std::size_t j = 6; j < a.size(); ++j) {
+    std::array<double, kMaxSegmentNv> b = a;
+    b[j] = -0.0;
+    EXPECT_NE(joints(b, 6), base_joints) << j;
+  }
 }
 
 }  // namespace
