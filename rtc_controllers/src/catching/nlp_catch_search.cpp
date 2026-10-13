@@ -86,6 +86,13 @@ bool NlpCatchSearch::Configure(const NlpCatchSearchModel& model,
     return fail("nlp search: nv must be the arm model's and at most " +
                 std::to_string(kMaxSegmentNv));
   }
+  // The catch-pose IK has a capacity of its own, below the payload's:
+  // CatchPoseIk::Resize leaves a wider model unsized and every Solve() then
+  // answers kModelInvalid — a search that could seed no candidate.
+  if (nv > rtc::kMaxRobotDOF) {
+    return fail("nlp search: the catch-pose IK takes at most " + std::to_string(rtc::kMaxRobotDOF) +
+                " joints (kMaxRobotDOF), the search model has " + std::to_string(nv));
+  }
   if (model.handle->nv() != nv) {
     return fail("nlp search: the IK handle is on a model of another joint count than the arm");
   }

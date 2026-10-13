@@ -291,9 +291,10 @@ class NlpCatchSearch final : public CatchSearch {
   ///        scratch.
   /// @param clock steady clock for the budget and the solves' deadlines [ns]
   /// @param[out] error why it failed, when it did
-  /// @return false, and unconfigured, on an unusable binding, a parameter out
-  ///         of range, a grid a core refuses, or a warm-up solve that never
-  ///         reached its QP.
+  /// @return false, and unconfigured, on an unusable binding (a model wider
+  ///         than the segment payload's kMaxSegmentNv or than the catch-pose
+  ///         IK's kMaxRobotDOF included), a parameter out of range, a grid a
+  ///         core refuses, or a warm-up solve that never reached its QP.
   [[nodiscard]] bool Configure(const NlpCatchSearchModel& model,
                                const NlpCatchSearchConstants& constants,
                                const NlpCatchSearchParams& params, const CatchPoseIkOptions& ik,
