@@ -242,6 +242,12 @@ struct SegmentRecord {
   /// its initialisation QP — toward that trajectory — when the start state
   /// has moved off it.
   bool start_from_memory{false};
+  /// A first solve started from the SEARCH's solution of this plan, widened
+  /// from the chain the search ran on to this planner's model: the chain's
+  /// joints on the search's nodes, every other joint resting on its start.
+  /// Never with `from_search` — a solution of another model is not published
+  /// as it is; the segment is this solve's.
+  bool start_from_search{false};
   bool cold_retry{false};  ///< a stop core's reference was refused, re-solved without it
   std::int32_t iterations{0};
   std::int32_t qp_status{-1};

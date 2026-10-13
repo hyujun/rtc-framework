@@ -1493,6 +1493,8 @@ TEST(MpcDockingPlannerReplacement, TheSourceIsThePendingSegmentFromItsNodeZeroOn
   sol->seg.rt_iteration = rt.rt_iteration;
   sol->seg.rt_state_ns = rt.rt_state_ns;
   sol->source_seq = source_seq;
+  // A search's solution names the joints it is of (#640): this model's.
+  sol->joint_set = rtc::catching::FullJointSet(sol->seg.nv);
   sol->feasible = true;
   sol->converged = true;
   return sol;
@@ -2293,6 +2295,258 @@ TEST(MpcDockingPlannerCycle, AWholeWakeAllocatesNothingOutsideTheQpSolvers) {
   EXPECT_EQ(counted, 0U) << "a wake allocated outside the QP solvers";
   EXPECT_GT(log.solver_calls, 2);
   EXPECT_GT(log.stages, 3);
+}
+
+// ── 9. A search on a CHAIN of this planner's model (E3-F01, #640) ────────────
+// The search's plan and solution name the joints they are of. When those are
+// some of this model's joints and not all, the solution is not a segment of
+// this model: it is not published — it is widened into the start of a solve.
+//
+// The rig's search runs on the planner's own six joints. What a search WITHOUT
+// one of them would hand in is made from its hand-in: the plan's set and count
+// without the joint, and the solution narrowed to the other five, each in the
+// column of its rank in the set.
+
+constexpr int kHeldModel = 3;                            // the model joint the chain lacks
+constexpr int kHeldDevice = kDeviceOfModel[kHeldModel];  // its device index
+
+struct ChainHandIn {
+  PlanSnapshot plan{};
+  CatchSolution solution{};
+};
+
+// `junk` goes where nothing may read: q_star's entry of the held joint.
+[[nodiscard]] std::unique_ptr<ChainHandIn> WithoutTheHeldJoint(const Scene& s, double junk) {
+  auto out = std::make_unique<ChainHandIn>();
+  out->plan = s.plan;
+  out->plan.joint_set &= ~(rtc::catching::JointSet{1} << kHeldDevice);
+  out->plan.nv = rtc::catching::JointSetSize(out->plan.joint_set);
+  out->plan.q_star[static_cast<std::size_t>(kHeldDevice)] = junk;
+  out->solution = s.solution;
+  out->solution.joint_set = out->plan.joint_set;
+  SegmentSnapshot& seg = out->solution.seg;
+  const SegmentSnapshot& whole = s.solution.seg;
+  seg.nv = out->plan.nv;
+  seg.q.fill(0.0);
+  seg.qd.fill(0.0);
+  seg.qdd.fill(0.0);
+  for (int k = 0; k <= whole.n_nodes; ++k) {
+    for (int d = 0; d < whole.nv; ++d) {
+      if (d == kHeldDevice) {
+        continue;
+      }
+      const auto from = static_cast<std::size_t>(k * kMaxSegmentNv + d);
+      const auto to = static_cast<std::size_t>(k * kMaxSegmentNv +
+                                               rtc::catching::JointSetSlot(out->plan.joint_set, d));
+      seg.q[to] = whole.q[from];
+      seg.qd[to] = whole.qd[from];
+      seg.qdd[to] = whole.qdd[from];
+    }
+  }
+  return out;
+}
+
+// Node k of a chain solution, for model joint m (not the held one).
+[[nodiscard]] std::size_t ChainEntry(const ChainHandIn& c, int k, int m) {
+  return static_cast<std::size_t>(
+      k * kMaxSegmentNv + rtc::catching::JointSetSlot(c.solution.joint_set,
+                                                      kDeviceOfModel[static_cast<std::size_t>(m)]));
+}
+
+TEST(MpcDockingPlannerChain, AChainsSolutionIsNotPublishedItIsTheStartOfTheSolve) {
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  const auto c = WithoutTheHeldJoint(*s, 0.9);
+  const SegmentSnapshot& seg = c->solution.seg;
+  auto r = RunFirst(*s->planner, s->rt, c->plan, s->Ball(), &c->solution, kNow);
+  EXPECT_FALSE(r->rec.from_search) << Describe(r->rec);
+  EXPECT_TRUE(r->rec.start_from_search) << Describe(r->rec);
+  EXPECT_FALSE(r->rec.start_from_memory);
+  EXPECT_EQ(r->rec.kind, SegmentKind::kFirst);
+  // The solve ran on a grid the solution covers.
+  const int n_pre = -r->rec.k;
+  ASSERT_GE(n_pre, 1);
+  ASSERT_LE(n_pre, seg.n_pre);
+  const int shift = seg.n_pre - n_pre;
+  const MpcDockingSegmentCoreInput* in = s->planner->LastInputForTesting(n_pre);
+  ASSERT_NE(in, nullptr);
+  EXPECT_TRUE(in->initial_valid);
+  EXPECT_TRUE(in->catch_target_valid);
+  const int n_total = n_pre + s->rig.params.n_stop;
+  bool whole_moves_it = false;
+  for (int m = 0; m < 6; ++m) {
+    const auto d = static_cast<std::size_t>(kDeviceOfModel[static_cast<std::size_t>(m)]);
+    // Node 0 is the start state: the command, at rest.
+    EXPECT_TRUE(BitsEqual(in->q_init(m, 0), in->q0[m])) << m;
+    EXPECT_TRUE(BitsEqual(in->q0[m], s->rt.q_cmd[d])) << m;
+    EXPECT_EQ(in->qd_init(m, 0), 0.0) << m;
+    if (m == kHeldModel) {
+      // Held: its start at every node, and that — not q_star — as its target.
+      for (int k = 0; k <= n_total; ++k) {
+        EXPECT_TRUE(BitsEqual(in->q_init(m, k), in->q0[m])) << k;
+        EXPECT_EQ(in->qd_init(m, k), 0.0) << k;
+        EXPECT_EQ(in->qdd_init(m, k), 0.0) << k;
+        whole_moves_it =
+            whole_moves_it ||
+            s->solution.seg
+                    .q[static_cast<std::size_t>((k + shift) * kMaxSegmentNv + kHeldDevice)] !=
+                in->q0[m];
+      }
+      EXPECT_TRUE(BitsEqual(in->q_catch_target[m], in->q0[m]));
+      continue;
+    }
+    // The chain's joints: the search's nodes, the passed ones dropped.
+    for (int k = 1; k <= n_total; ++k) {
+      EXPECT_TRUE(BitsEqual(in->q_init(m, k), seg.q[ChainEntry(*c, k + shift, m)]))
+          << "joint " << m << " node " << k;
+      EXPECT_TRUE(BitsEqual(in->qd_init(m, k), seg.qd[ChainEntry(*c, k + shift, m)]))
+          << "joint " << m << " node " << k;
+      EXPECT_TRUE(BitsEqual(in->qdd_init(m, k), seg.qdd[ChainEntry(*c, k + shift, m)]))
+          << "joint " << m << " node " << k;
+    }
+    EXPECT_TRUE(BitsEqual(in->q_catch_target[m], c->plan.q_star[d])) << m;
+  }
+  EXPECT_TRUE(whole_moves_it) << "the search's own solution holds that joint: this shows nothing";
+
+  // What it publishes is its own solve's: every joint of the model.
+  ASSERT_TRUE(r->ok) << Describe(r->rec);
+  EXPECT_EQ(r->rec.outcome, SegmentOutcome::kReady);
+  EXPECT_EQ(r->out.nv, 6);
+  EXPECT_EQ(r->out.plan_id, c->plan.plan_id);
+  EXPECT_EQ(r->out.t_c_ns, c->plan.t_c_ns);
+  EXPECT_TRUE(ValidateSegmentNodes(r->out));
+  // Node 0 of the held joint is where the arm is.
+  EXPECT_TRUE(BitsEqual(r->out.q[static_cast<std::size_t>(kHeldDevice)],
+                        s->rt.q_cmd[static_cast<std::size_t>(kHeldDevice)]));
+
+  // The same hand-in with anything else in q_star's unread entry: the same
+  // segment, to the bit.
+  auto s2 = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s2->Setup());
+  const auto c2 = WithoutTheHeldJoint(*s2, -1.7);
+  auto r2 = RunFirst(*s2->planner, s2->rt, c2->plan, s2->Ball(), &c2->solution, kNow);
+  ASSERT_TRUE(r2->ok) << Describe(r2->rec);
+  EXPECT_EQ(FirstDifference(r2->out.q, r->out.q), -1);
+  EXPECT_EQ(FirstDifference(r2->out.qd, r->out.qd), -1);
+  EXPECT_EQ(FirstDifference(r2->out.qdd, r->out.qdd), -1);
+}
+
+// Without a usable solution the solve starts cold — and the held joint's
+// target is still its start, not what q_star happens to hold there.
+TEST(MpcDockingPlannerChain, WithoutAUsableSolutionTheHeldJointsTargetIsStillItsStart) {
+  const char* const names[] = {"no solution", "a catch interval of its own length",
+                               "a solution of other joints than the plan's",
+                               "a solution narrower than it says"};
+  for (int i = 0; i < 4; ++i) {
+    SCOPED_TRACE(names[i]);
+    auto s = std::make_unique<Scene>();
+    ASSERT_NO_FATAL_FAILURE(s->Setup());
+    const auto c = WithoutTheHeldJoint(*s, 0.9);
+    CatchSolution sol = c->solution;
+    const CatchSolution* use = &sol;
+    switch (i) {
+      case 0:
+        use = nullptr;
+        break;
+      case 1:
+        sol.seg.dt_catch_ns = 10 * kMs;
+        break;
+      case 2:
+        sol.joint_set = rtc::catching::FullJointSet(6) & ~rtc::catching::JointSet{1};
+        break;
+      case 3:
+        sol.seg.nv = 4;
+        break;
+      default:
+        break;
+    }
+    auto r = RunFirst(*s->planner, s->rt, c->plan, s->Ball(), use, kNow);
+    EXPECT_FALSE(r->rec.from_search) << Describe(r->rec);
+    EXPECT_FALSE(r->rec.start_from_search) << Describe(r->rec);
+    ASSERT_NE(r->rec.outcome, SegmentOutcome::kNoState) << Describe(r->rec);
+    const MpcDockingSegmentCoreInput* in = s->planner->LastInputForTesting(-r->rec.k);
+    ASSERT_NE(in, nullptr);
+    EXPECT_FALSE(in->initial_valid);
+    EXPECT_TRUE(BitsEqual(in->q_catch_target[kHeldModel], in->q0[kHeldModel]));
+    EXPECT_TRUE(BitsEqual(in->q0[kHeldModel], s->rt.q_cmd[static_cast<std::size_t>(kHeldDevice)]));
+    for (int m = 0; m < 6; ++m) {
+      if (m != kHeldModel) {
+        EXPECT_TRUE(BitsEqual(
+            in->q_catch_target[m],
+            c->plan.q_star[static_cast<std::size_t>(kDeviceOfModel[static_cast<std::size_t>(m)])]))
+            << m;
+      }
+    }
+  }
+}
+
+// The search's grid begins later than this planner's own would: the solve runs
+// on the search's — the nodes it has, not one it lacks.
+TEST(MpcDockingPlannerChain, TheSolveRunsOnTheSearchsGridWhenThatBeginsLater) {
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  // What the planner picks on its own for this plan.
+  auto own =
+      RunFirst(*s->planner, s->rt, WithoutTheHeldJoint(*s, 0.0)->plan, s->Ball(), nullptr, kNow);
+  const int n_own = -own->rec.k;
+  ASSERT_GE(n_own, 2) << Describe(own->rec);
+  // The search's solution with its first pre-catch nodes dropped: node 0 one
+  // interval before the catch more than the planner needs to give up.
+  auto s2 = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s2->Setup());
+  const auto c = WithoutTheHeldJoint(*s2, 0.0);
+  CatchSolution late = c->solution;
+  const int drop = late.seg.n_pre - (n_own - 1);
+  ASSERT_GE(drop, 1);
+  for (int k = 0; k + drop <= late.seg.n_nodes; ++k) {
+    for (int j = 0; j < late.seg.nv; ++j) {
+      const auto to = static_cast<std::size_t>(k * kMaxSegmentNv + j);
+      const auto from = static_cast<std::size_t>((k + drop) * kMaxSegmentNv + j);
+      late.seg.q[to] = c->solution.seg.q[from];
+      late.seg.qd[to] = c->solution.seg.qd[from];
+      late.seg.qdd[to] = c->solution.seg.qdd[from];
+    }
+  }
+  late.seg.n_pre -= drop;
+  late.seg.n_nodes -= drop;
+  late.seg.t0_ns += static_cast<std::int64_t>(drop) * kDtPreNs;
+  auto r = RunFirst(*s2->planner, s2->rt, c->plan, s2->Ball(), &late, kNow);
+  EXPECT_TRUE(r->rec.start_from_search) << Describe(r->rec);
+  EXPECT_EQ(-r->rec.k, n_own - 1) << Describe(r->rec);
+}
+
+// A plan of the chain's joints is this planner's to take; one that names a
+// joint the model lacks, or whose count is not its set's, is not.
+TEST(MpcDockingPlannerChain, APlanMustNameJointsOfThisModel) {
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  const auto refused = [&](const char* what, const PlanSnapshot& plan) {
+    auto r = RunFirst(*s->planner, s->rt, plan, s->Ball(), nullptr, kNow);
+    EXPECT_FALSE(r->ok) << what;
+    EXPECT_EQ(r->rec.outcome, SegmentOutcome::kNoState) << what << Describe(r->rec);
+  };
+  PlanSnapshot plan = s->plan;
+  plan.joint_set = 0;
+  refused("names no joint", plan);
+  plan = s->plan;
+  plan.joint_set |= rtc::catching::JointSet{1} << 6;
+  plan.nv = 7;
+  refused("a joint this model does not have", plan);
+  plan = WithoutTheHeldJoint(*s, 0.0)->plan;
+  plan.nv = 6;
+  refused("more joints counted than named", plan);
+}
+
+TEST(MpcDockingPlannerChain, ConfigureRefusesADeviceMapThatRepeatsAJoint) {
+  Rig rig;
+  std::string err;
+  SetClockStep(1000);
+  MpcDockingSegmentPlannerModel model = rig.PlannerModel();
+  model.device_of_model[1] = model.device_of_model[0];
+  MpcDockingSegmentPlanner planner;
+  EXPECT_FALSE(
+      planner.Configure(model, rig.PlannerConstants(), rig.PlannerParams(), &StepClock, &err));
+  EXPECT_NE(err.find("device_of_model"), std::string::npos) << err;
 }
 
 }  // namespace
