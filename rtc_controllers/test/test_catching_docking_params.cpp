@@ -1131,6 +1131,29 @@ TEST(DockingParamsCore, TheNlpAndMpcMapsCarryTheSameCoreSubSchema) {
   EXPECT_EQ(a.core.r_tau.size(), kNv);
 }
 
+// The torque rows are a switch of the SEARCH's core. A segment is what the arm
+// follows: under the segment planner's core `false` is refused, naming both
+// keys, and the default of both is on.
+TEST(DockingParamsCore, TheTorqueRowSwitchIsTheSearchsAlone) {
+  EXPECT_TRUE(kParseNlp(Make({})).core.torque_rows);
+  EXPECT_TRUE(kParseMpc(Make({})).core.torque_rows);
+  const std::string nlp_key = std::string(kNlpRoot) + "core.rows.torque";
+  const std::string mpc_key = std::string(kMpcRoot) + "core.rows.torque";
+  EXPECT_FALSE(kParseNlp(Make({{nlp_key, "false"}})).core.torque_rows);
+  // (The key is not in CoreTable — the two maps do not share it — so what the
+  // table would run for it is here: a malformed value and `TBD` are refused.)
+  for (const char* bad : {"maybe", "TBD"}) {
+    const std::string refused =
+        ThrownMessage([&] { static_cast<void>(kParseNlp(Make({{nlp_key, bad}}))); });
+    EXPECT_TRUE(Contains(refused, nlp_key)) << bad << " -> " << refused;
+  }
+  EXPECT_TRUE(kParseMpc(Make({{mpc_key, "true"}})).core.torque_rows);
+  const std::string m =
+      ThrownMessage([&] { static_cast<void>(kParseMpc(Make({{mpc_key, "false"}}))); });
+  EXPECT_TRUE(Contains(m, mpc_key)) << m;
+  EXPECT_TRUE(Contains(m, nlp_key)) << m;
+}
+
 // ── DockingGridMismatch ─────────────────────────────────────────────────────────
 
 // A planner whose grid extent is set (the default is unset: a decision) to the

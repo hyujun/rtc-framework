@@ -1646,6 +1646,179 @@ TEST(MpcDockingSegmentCore, OptionalRowsAndTermsStillConverge) {
   }
 }
 
+// ── The torque rows as a switch (`torque_rows`) ──────────────────────────────
+
+// Off means GONE: 2nN rows and the group's N elastics (with their sign rows)
+// leave the QP, every other group keeps its row count, and the result says the
+// ratio was not evaluated.
+TEST(MpcDockingSegmentCore, WithoutTorqueRowsTheGroupHasNeitherRowsNorElastics) {
+  for (const dk::Rig& on_rig : Rigs()) {
+    dk::Rig off_rig = on_rig;
+    off_rig.params.torque_rows = false;
+    MpcDockingSegmentCore on;
+    MpcDockingSegmentCore off;
+    ASSERT_EQ(on.Init(on_rig.model, on_rig.arm.frame, on_rig.params, on_rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    ASSERT_EQ(off.Init(off_rig.model, off_rig.arm.frame, off_rig.params, off_rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    const int n = static_cast<int>(on.Nv());
+    const int N = on.NumNodes();
+    EXPECT_EQ(on.GroupRowCount(DockingRowGroup::kTorque), 2 * n * N);
+    EXPECT_EQ(off.GroupRowCount(DockingRowGroup::kTorque), 0);
+    for (int g = 0; g < kNumDockingRowGroups; ++g) {
+      const auto group = static_cast<DockingRowGroup>(g);
+      if (group != DockingRowGroup::kTorque) {
+        EXPECT_EQ(off.GroupRowCount(group), on.GroupRowCount(group)) << DockingRowGroupName(group);
+      }
+    }
+    // The groups after the torque rows start 2nN rows (the torque rows) + N
+    // rows (their elastics' sign rows) earlier.
+    EXPECT_EQ(on.GroupRowBegin(DockingRowGroup::kEntrance) -
+                  off.GroupRowBegin(DockingRowGroup::kEntrance),
+              2 * n * N + N);
+
+    MpcDockingSegmentCoreResult out_on;
+    MpcDockingSegmentCoreResult out_off;
+    on.ResizeResult(out_on);
+    off.ResizeResult(out_off);
+    std::vector<Case> cases = FeasibleCases(on_rig, on, 1);
+    ASSERT_EQ(cases.size(), 1U);
+    ASSERT_TRUE(on.Solve(cases[0].in, out_on));
+    ASSERT_TRUE(off.Solve(cases[0].in, out_off));
+    EXPECT_TRUE(out_off.converged) << Describe(out_off);
+    EXPECT_EQ(on.LastQp().C.rows() - off.LastQp().C.rows(), 2 * n * N + N);
+    EXPECT_EQ(on.LastQp().C.cols() - off.LastQp().C.cols(), N);
+    EXPECT_GT(out_on.tau_ratio_max, 0.0);
+    EXPECT_TRUE(std::isnan(out_off.tau_ratio_max));
+    EXPECT_EQ(out_off.violation[G(DockingRowGroup::kTorque)], 0.0);
+    EXPECT_EQ(out_off.elastic[G(DockingRowGroup::kTorque)], 0.0);
+  }
+}
+
+// The switch takes the ROWS, not the torque cost: on a start taken as given the
+// two cores assemble the same objective (H and g on the jerk variables) and
+// report the same torque cost — and that cost is not zero.
+TEST(MpcDockingSegmentCore, WithoutTorqueRowsTheTorqueCostIsStillAssembled) {
+  for (const fx::ArmModel& arm : {fx::RealArm6(), fx::RealArm7()}) {
+    const dk::Rig on_rig = FullCostRig(arm);
+    dk::Rig off_rig = on_rig;
+    off_rig.params.torque_rows = false;
+    dk::Rig bare_rig = off_rig;
+    bare_rig.params.r_tau = Eigen::VectorXd();
+    MpcDockingSegmentCore on;
+    MpcDockingSegmentCore off;
+    MpcDockingSegmentCore bare;
+    ASSERT_EQ(on.Init(on_rig.model, on_rig.arm.frame, on_rig.params, on_rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    ASSERT_EQ(off.Init(off_rig.model, off_rig.arm.frame, off_rig.params, off_rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    ASSERT_EQ(
+        bare.Init(bare_rig.model, bare_rig.arm.frame, bare_rig.params, bare_rig.limits, &NoClock),
+        MpcDockingReason::kNone);
+    dk::Throw th;
+    MpcDockingSegmentCoreInput in;
+    ASSERT_TRUE(dk::MakeThrow(on_rig, on, 3, 0.0, th, in));
+    in.initial_valid = true;
+    in.q_init = th.known.q;
+    in.qd_init = th.known.qd;
+    in.qdd_init = th.known.qdd;
+    MpcDockingSegmentCoreResult out_on;
+    MpcDockingSegmentCoreResult out_off;
+    MpcDockingSegmentCoreResult out_bare;
+    on.ResizeResult(out_on);
+    off.ResizeResult(out_off);
+    bare.ResizeResult(out_bare);
+    ASSERT_TRUE(on.Solve(in, out_on)) << Describe(out_on);
+    ASSERT_TRUE(off.Solve(in, out_off)) << Describe(out_off);
+    ASSERT_TRUE(bare.Solve(in, out_bare)) << Describe(out_bare);
+    ASSERT_FALSE(out_on.init_qp_used);
+    ASSERT_FALSE(out_off.init_qp_used);
+    const Eigen::Index nu = on.NumJerkVariables();
+    ASSERT_EQ(off.NumJerkVariables(), nu);
+    EXPECT_EQ(on.LastQp().g.head(nu), off.LastQp().g.head(nu)) << arm.name;
+    EXPECT_EQ(on.LastQp().H.topLeftCorner(nu, nu), off.LastQp().H.topLeftCorner(nu, nu))
+        << arm.name;
+    // … and the torque term is in it: without the cost the gradient differs.
+    EXPECT_GT((off.LastQp().g.head(nu) - bare.LastQp().g.head(nu)).cwiseAbs().maxCoeff(), 1e-6)
+        << arm.name;
+
+    ASSERT_TRUE(on.Evaluate(in, out_on));
+    ASSERT_TRUE(off.Evaluate(in, out_off));
+    ASSERT_TRUE(bare.Evaluate(in, out_bare));
+    EXPECT_GT(out_on.cost.tau, 0.0);
+    EXPECT_EQ(out_off.cost.tau, out_on.cost.tau) << arm.name;
+    EXPECT_EQ(out_bare.cost.tau, 0.0);
+  }
+}
+
+// Where the rows do not bind they change nothing: the two cores solve the same
+// problem and land on the same trajectory, to the solver's convergence.
+TEST(MpcDockingSegmentCore, WithoutTorqueRowsAThrowTheyDidNotBindSolvesToTheSameTrajectory) {
+  for (const dk::Rig& on_rig : Rigs()) {
+    dk::Rig off_rig = on_rig;
+    off_rig.params.torque_rows = false;
+    MpcDockingSegmentCore on;
+    MpcDockingSegmentCore off;
+    ASSERT_EQ(on.Init(on_rig.model, on_rig.arm.frame, on_rig.params, on_rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    ASSERT_EQ(off.Init(off_rig.model, off_rig.arm.frame, off_rig.params, off_rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult out_on;
+    MpcDockingSegmentCoreResult out_off;
+    on.ResizeResult(out_on);
+    off.ResizeResult(out_off);
+    int compared = 0;
+    double worst = 0.0;
+    for (Case& c : FeasibleCases(on_rig, on, 5)) {
+      dk::PerturbTarget(c.in, c.seed);
+      ASSERT_TRUE(on.Solve(c.in, out_on));
+      ASSERT_TRUE(off.Solve(c.in, out_off));
+      const std::string where = on_rig.arm.name + " seed " + std::to_string(c.seed);
+      ASSERT_TRUE(out_on.converged) << where << " " << Describe(out_on);
+      ASSERT_TRUE(out_off.converged) << where << " " << Describe(out_off);
+      if (!(out_on.tau_ratio_max < 0.99)) {
+        continue;  // the rows bind here: not this test's input
+      }
+      ++compared;
+      const double diff = (out_on.q - out_off.q).cwiseAbs().maxCoeff();
+      worst = std::max(worst, diff);
+      EXPECT_LT(diff, 1e-7) << where;  // measured 3e-10 on both arms
+    }
+    EXPECT_GT(compared, 0) << on_rig.arm.name;
+    RecordSci(on_rig.arm.name + "_torque_rows_off_max_q_diff_rad", worst);
+  }
+}
+
+// Where they do bind, the switch is what lets the motion through: the throw the
+// torque bounds make infeasible converges without the rows, on a trajectory
+// that breaks those bounds.
+TEST(MpcDockingSegmentCore, WithoutTorqueRowsATorqueBoundIsNotHeld) {
+  for (const fx::ArmModel& arm : {fx::RealArm6(), fx::RealArm7()}) {
+    int found = 0;
+    for (const InfeasibleCase& c : InfeasibleCases(arm)) {
+      if (c.name != "torque_exceeded") {
+        continue;
+      }
+      ++found;
+      dk::Rig rig = c.rig;
+      rig.params.torque_rows = false;
+      MpcDockingSegmentCore core;
+      ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+                MpcDockingReason::kNone);
+      MpcDockingSegmentCoreResult out;
+      core.ResizeResult(out);
+      MpcDockingSegmentCoreInput in;
+      c.fill(rig, core, in);
+      ASSERT_TRUE(core.Solve(in, out)) << arm.name << " " << Describe(out);
+      EXPECT_TRUE(out.feasible) << arm.name << " " << Describe(out);
+      EXPECT_TRUE(out.converged) << arm.name << " " << Describe(out);
+      const auto viol = dk::HardRowViolations(rig, core, NodesOf(out), in);
+      EXPECT_GT(viol[G(DockingRowGroup::kTorque)], 100.0 * kViolationTol) << arm.name;
+    }
+    EXPECT_EQ(found, 1) << arm.name;
+  }
+}
+
 TEST(MpcDockingSegmentCore, WithoutChanceRowsNoCovarianceIsNeeded) {
   dk::Rig rig = dk::MakeRig(fx::RealArm6());
   MpcDockingSegmentCore with_chance;
