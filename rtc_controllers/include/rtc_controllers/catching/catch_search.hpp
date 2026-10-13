@@ -74,7 +74,10 @@ struct SearchStats;  // search_stats.hpp
 /// that instant: `source_seq` equal to SegmentPlanner::SourceSeq(rt, seg.t0_ns).
 struct CatchSolution {
   SegmentSnapshot seg{};
-  JointSet joint_set{0};  ///< the device joints `seg`'s columns are of (above)
+  /// The device joints `seg`'s columns are of (above). 0 is "no joints": a
+  /// solution that leaves it unset is no planner's model's, so it is neither
+  /// published as it is nor widened — the planner solves the plan itself.
+  JointSet joint_set{0};
   /// The `segment_seq` of the reported segment node 0's state was evaluated
   /// on; 0 when the arm started at rest on its command.
   std::uint32_t source_seq{0};

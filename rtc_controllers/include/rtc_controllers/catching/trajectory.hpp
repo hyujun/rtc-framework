@@ -187,6 +187,12 @@ struct PlanSnapshot {
   /// receiver whose model is wider (a segment planner on the whole tree) reads
   /// q_star for these joints and holds the others; one whose model does not
   /// contain the set refuses the plan. The RT does not read it.
+  ///
+  /// 0 is "no joints", NOT "every joint": whoever fills `nv` fills this too.
+  /// There is no reading of an empty set that is safe on a wider device — "the
+  /// first nv device joints" would move the wrong joints for a chain — so a
+  /// segment planner refuses a plan whose set is empty or disagrees with `nv`
+  /// (PlanJointsWithin; SegmentOutcome::kNoState).
   JointSet joint_set{0};
   double w5{0.0};  // catchability manipulability, gate definition (D-18)
   double w6{0.0};  // 6-row variant, always recorded alongside (C-3)

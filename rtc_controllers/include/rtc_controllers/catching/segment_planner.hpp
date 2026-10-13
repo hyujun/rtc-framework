@@ -57,7 +57,11 @@ struct CatchSolution;  // catch_search.hpp
 /// meaning outside a build and move when an enumerator is added or removed.
 enum class SegmentOutcome : std::uint8_t {
   kOff = 0,  ///< not attempted: not configured, or not a mode that plans a segment
-  kNoState,  ///< no followed plan / t_c, unseeded command, or a size mismatch
+  /// No followed plan / t_c, unseeded command, or a size mismatch — the RT
+  /// report's width, or a plan whose joints are not this planner's: its joint
+  /// set empty, miscounted against `nv`, or not within the model
+  /// (PlanJointsWithin).
+  kNoState,
   /// The RT's report is older than the planner's age limit (or from the
   /// future): what it reports may no longer be what the arm does (an RT stall).
   kStaleState,
@@ -246,7 +250,8 @@ struct SegmentRecord {
   /// from the chain the search ran on to this planner's model: the chain's
   /// joints on the search's nodes, every other joint resting on its start.
   /// Never with `from_search` — a solution of another model is not published
-  /// as it is; the segment is this solve's.
+  /// as it is; the segment is this solve's (the CSV's
+  /// segment_start_from_search).
   bool start_from_search{false};
   bool cold_retry{false};  ///< a stop core's reference was refused, re-solved without it
   std::int32_t iterations{0};
