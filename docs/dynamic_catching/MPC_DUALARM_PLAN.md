@@ -84,8 +84,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E3-F01 | [#640](https://github.com/hyujun/rtc-framework/issues/640) | 탐색 모델 (waist + 오른팔 사슬, `urdf.sub_models` 의 root · tip 과 `extra_frames` 의 catch frame — 기준은 end-effector frame) 과 구간 모델 (전체 관절) 을 가르고 잇는다 — G1 구성에서도 후보는 탐색이 사슬 위에서 고르고 전신 항은 구간에만 (안 A, D7). 탐색이 낸 것 ($q^\ast$ · `nlp` 의 해) 을 구간 폭으로 넓히는 규칙은 $x_0$ 기준 · 노드 상태 전체이고, plan 과 해는 자기 관절 집합 (device index 의 bit 집합) 을 싣는다 (D9). 탐색의 토크 행은 `core.rows.torque` 로 끈다 (D8 — 코어의 행 배치를 고친다). 구현 대조표 · Sprint Contract (확정 2026-10-13): [#640 의 코멘트](https://github.com/hyujun/rtc-framework/issues/640#issuecomment-6145967018). 계획기 interface · search 선택 키 · 단일 팔의 바깥 루프는 E1-F12 · F14 · F16 이 했다 | #827 (끝), E1-F12 (끝) · F14 (끝), #821 (끝) | 다음 — 계획 확정, 구현은 지시 뒤 |
-| E3-F02 | [#641](https://github.com/hyujun/rtc-framework/issues/641) | 전신 항을 두 구간 코어 (`mpc` · `mpc_docking`) 에 추가 — 왼팔 rest · waist 억제 · 각운동량 · waist 토크 행 · counter-swing, 관절군별 move blocking. 탐색에는 넣지 않는다. 설계 조건 "전신 항은 catch 에 거의 영향 없음" 과 안 B 로 옮길지의 문턱은 이 feature 가 시행 전에 고정한다 | E3-F01, E1-F07 (끝), E2-F01 (끝) | 대기 |
+| E3-F02 | [#641](https://github.com/hyujun/rtc-framework/issues/641) | 전신 항을 두 구간 코어 (`mpc` · `mpc_docking`) 에 추가 — 왼팔 rest · waist 억제 · 각운동량 · waist 토크 행 · counter-swing, 관절군별 move blocking. 탐색에는 넣지 않는다. 설계 조건 "전신 항은 catch 에 거의 영향 없음" 과 안 B 로 옮길지의 문턱은 이 feature 가 시행 전에 고정한다 | E3-F01 (끝), #819, E1-F07 (끝), E2-F01 (끝) | 대기 |
 | E3-F03 | [#642](https://github.com/hyujun/rtc-framework/issues/642) | 충돌 제약 — capsule 모델 (신규 코어) 과 MPC 제약 행 (자기충돌 · 공–왼팔 거리) | E3-F02 | 대기 |
 | E3-F04 | [#643](https://github.com/hyujun/rtc-framework/issues/643) | MPC ↔ CLIK 계약의 전신 확장 — 왼손 FK, 한계 여유, 17 관절 구간의 RT 평가 (payload 관절 용량은 #827 이 올렸다 — 끝). 구간이 만든 desired value 의 소비자는 `demo_dualarm_controller` 다. 단일 팔 계약은 `ID_INDEX.md` MD-36 · `ref/L7_supervisor.md` §4.3a. E2-F04 가 넣은 것: CLIK 의 자세 속도 feedforward (`qd_posture_ff`) 와 관절군별 자세 과제 — 전신 구간의 $\dot q_{ref}$ 는 그 입력으로 간다 | E1-F08 (끝), E2-F04 (끝) | 대기 |
 | E3-F05 | [#644](https://github.com/hyujun/rtc-framework/issues/644) | G1 통합 — supervisor · 손 시퀀서 · vision sim profile (`mode: mpc` 의 확장) | E3-F03, E3-F04, E2-F05 (끝) | 대기 |
@@ -119,7 +118,6 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `feat/catching-search-segment-models` | E3-F01 | 탐색 모델과 구간 모델의 분리 · 넓히는 규칙. 단일 팔에서 기능 동등. interface 는 E1-F12 가 넣었다 |
 | `feat/catching-mpc-wholebody` | E3-F02, E3-F04 | 전신 항과 MPC ↔ CLIK 계약. 둘 다 17 관절 구간을 다루는 작업이고 계약의 sanity check 가 전신 해를 입력으로 쓴다 |
 | `feat/collision-capsule-core` | E3-F03 | 신규 수치 코어. code review 단위 |
 | `feat/g1-catch-controller` | E3-F05 | supervisor · 손 시퀀서 통합. E-STOP 경로를 건드리면 E-8 |
@@ -127,14 +125,13 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 **순서 — E1.** 남은 feature 브랜치는 없다 (§1). feature 번호 없는 남은 단독 이슈와 그 순서는 §5 의 "mpc planner · catching 의 남은 일" 이 갖는다.
 
-**순서 — E3.** E3-F01 → `feat/catching-mpc-wholebody` (E3-F02 · F04) → E3-F03 → E3-F05 → E3-F06 · F07 (착수 조건인 E2 · E1-F07 · #827 은 끝났다 — MD-47, `ID_INDEX.md` §3). 병행은 서로 다른 파일을 고치는 브랜치끼리만 한다. `mpc` 의 법칙을 고치는 단독 이슈 (#716 · #819) 는 같은 코드를 고치는 feature 와 병행하지 않는다 — 어느 feature 사이에 드는지는 §5 의 순서표가 갖는다.
+**순서 — E3.** `feat/catching-mpc-wholebody` (E3-F02 · F04) → E3-F03 → E3-F05 → E3-F06 · F07 (착수 조건인 E2 · E1-F07 · #827 과 E3-F01 은 끝났다 — MD-47, `ID_INDEX.md` §3). E3-F02 앞에 #819 가 든다 (§5 의 순서표). 병행은 서로 다른 파일을 고치는 브랜치끼리만 한다. `mpc` 의 법칙을 고치는 단독 이슈 (#716 · #819) 는 같은 코드를 고치는 feature 와 병행하지 않는다 — 어느 feature 사이에 드는지는 §5 의 순서표가 갖는다.
 
 ### 게이트 · escalation
 
 | Feature | 사유 | 효력 |
 |---|---|---|
 | docking 기능의 실기 선택 (feature 를 열 때) | 실기 configuration 이 두 docking 기능 (`nlp` · `mpc_docking`) 가운데 하나를 고르면 `robot.hand.docking.provisional` 이 참인 동안 configure 가 park 한다 (E1-F16) — 손의 포획 집합이 sim 식별값이다. solver 의 heap 할당은 이 조건이 아니다: 기록된 RT-1 위반이다 (`agent_docs/invariants.md`, 사용자 결정 2026-10-10 · #654) | Critical — 그 flag 를 내리거나 그 park 를 풀려면 착수 전 `[CONCERN]` 과 컨펌. flag 를 내릴 때 GUI 의 `sim only` 표시와 두 조각 머리의 SIM ONLY 를 같이 고친다 |
-| E3-F01 | `ref/mpc_multiframe_clik_formulation.md` 의 "바깥 루프 (G1 구성)" 문구를 고친다 — 수학이 달라지는 문서 수정 (D1′, 사용자 확인 2026-10-13: 바깥 루프 문단은 구현하지 않은 설계로 남기고 G1 구성의 후보 선택은 탐색의 일로 적는다) | 승인된 문구로만 |
 | E3-F05 | E-STOP 경로를 건드리면 E-8 | Critical |
 | 실기 (HW) | `mpc` 의 정지 구간과 작업셀 경계 (RT 도 탐색도 포구점 · 정지점의 위치를 판정하지 않는다 — MD-73 · L3 §4.9), `mpc` 구간의 샘플 시각을 바꾸는 RT 법칙 변경 — 둘 다 E-8 (#613) | Critical — 착수 전 `[CONCERN]` 과 컨펌 |
 | E3-F03 | 신규 수치 코어 (100+ 줄) | code review |
@@ -149,7 +146,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | MD-86 | `sim_g1_p1b` 의 `enable_mpc` 는 CPU layout 만 고른다. G1 의 포구 컨트롤러가 오면 그 기본값을 그 feature 에서 다시 정한다 (E2-F05 는 바꾸지 않았다) | E3-F05 |
 | MD-12 | 각운동량 항은 유지한다 — 목적은 왼팔의 운동 생성과 floating base 확장이고, 효과는 포구 성공률이 아니라 각운동량 변화율의 크기로 판정한다 | E3-F02 |
 | MD-13 | 토크는 1차까지 선형화하고 토크 · 자기충돌 행에는 slack 을 둔다. 위치 · 속도 한계, 종단 등식, trust region, 공–왼팔 행은 hard 다. 동역학은 손을 기준 자세로 잠근 축소 모델로 계산한다 | E3-F02 · F03 |
-| MD-46 | 설계는 formulation §1.3 하나다. g1_p1b 는 같은 코어에 dual arm · waist 전용 항 (waist 억제, 왼팔 rest, 각운동량, 자기충돌, 공–왼팔, waist 토크 행 · counter-swing, 관절군별 move blocking) 을 더한다. **편차의 뜻이 바뀌었다 (D7, 2026-10-13)**: 포구 후보 ($t_c$) 는 G1 구성에서도 탐색이 고른다 — 탐색 모델은 waist + 오른팔 사슬이고 전신 항은 구간에만 들어가 후보의 순위에 들어가지 않는다. formulation 의 "후보마다 §1.3 의 QP 를 푸는 바깥 루프" 는 구현하지 않는 설계로 남긴다 (D1′) | E1-F14 (탐색 코어 — 끝) · F16 (계획기가 부른다 — 끝) · E3-F01 (모델 둘) · F02 (전신 항) |
+| MD-46 | 설계는 formulation §1.3 하나다. g1_p1b 는 같은 코어에 dual arm · waist 전용 항 (waist 억제, 왼팔 rest, 각운동량, 자기충돌, 공–왼팔, waist 토크 행 · counter-swing, 관절군별 move blocking) 을 더한다. **편차의 뜻이 바뀌었다 (D7, 2026-10-13)**: 포구 후보 ($t_c$) 는 G1 구성에서도 탐색이 고른다 — 탐색 모델은 waist + 오른팔 사슬이고 전신 항은 구간에만 들어가 후보의 순위에 들어가지 않는다. formulation 의 "후보마다 §1.3 의 QP 를 푸는 바깥 루프" 는 구현하지 않는 설계로 남긴다 (D1′) | E1-F14 (탐색 코어 — 끝) · F16 (계획기가 부른다 — 끝) · E3-F01 (모델 둘 — 끝) · F02 (전신 항) |
 | MD-47 | E3 의 착수 조건은 E2 (g1_p1b 준비) 와 E1-F07 (코어) 이다. G-1 은 조건이 아니다 | E3 |
 | MD-49 | 코어는 비용 · 제약을 항 단위로 조립하고 관절군별 move blocking 행렬 $E$ 의 자리만 둔다. 다관절군 일반화는 E3 에서 한다 | E3-F02 |
 
@@ -214,8 +211,8 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | 순서 | 이슈 | 착수 조건 | 브랜치 | 착수 때 정할 것 |
 |---|---|---|---|---|
-| 1 | #819 | **E3-F01 뒤 · E3-F02 앞** (사용자 결정 2026-10-13, D11). E3-F01 과 같은 loop (`MpcSegmentPlanner` 의 첫 기준 — 자르는 식과 넓히는 규칙) 를 고쳐 병행하지 못한다. E3-F01 은 그 구조만 바꾸고 (digest 로 판정) 이 이슈는 법칙을 바꾼다 (두 로봇의 sim) — 반대 순서면 E3 가 그 sim 을 기다린다. E3-F02 앞인 이유: G1 의 측정이 그 법칙 위에서 시작해야 한다. 이슈의 착수 조건 (#710 의 단계 0 의 기록, #713) 은 충족됐다 | 단독 — 계획기의 첫 풀이 | 닫는 기준과 확인 unit, velocity box 근처에서 QP 가 안 풀릴 때의 대비의 형태, `linearization.ref_speed_fraction` 키를 남길지. 방향은 정해졌다 — 첫 기준을 자르지 않고, `delta_tr` 은 그 뒤에 다시 재고, 선형화를 더하는 것은 보류한다 (#710 의 결정 2). 첫 기준의 끝을 포구 노드의 정지가 아니라 $(q^\ast,\dot q^\ast)$ 로 둘지 ([#710 의 보충 코멘트](https://github.com/hyujun/rtc-framework/issues/710#issuecomment-6139520482) — 같은 "첫 풀이의 기준의 형태" 라 여기서 함께 정한다) |
-| 2 | #716 | **E3-F01 뒤** (사용자 결정 2026-10-13, D5) — E3-F01 은 `mpc` 코어를 고치지 않게 되어 (D7) 이슈 본문의 "E3-F01 과 맞춘다" 는 연결이 없어졌고, `mpc` 의 법칙 변경은 PR 하나에 하나다. 폐기한 선택지 (E3-F02 에 묶기 · E3-F01 앞에 단일 팔에서) 와 대가는 [#640 의 코멘트 §3](https://github.com/hyujun/rtc-framework/issues/640#issuecomment-6139958674) | 단독 | E3-F02 와의 선후 (같은 코어 — 병행하지 않는다), 범위 (단일 팔에서 잰다) |
+| 1 | #819 | **다음 — E3-F02 앞** (사용자 결정 2026-10-13, D11). 앞에 두기로 한 E3-F01 은 끝났다 — 같은 loop (`MpcSegmentPlanner` 의 첫 기준) 의 구조를 바꿨고 (plan 밖 관절을 잡아 두는 가지), 이 이슈는 그 위에서 법칙을 바꾼다 (두 로봇의 sim). E3-F02 앞인 이유: G1 의 측정이 그 법칙 위에서 시작해야 한다. 이슈의 착수 조건 (#710 의 단계 0 의 기록, #713) 은 충족됐다 | 단독 — 계획기의 첫 풀이 | 닫는 기준과 확인 unit, velocity box 근처에서 QP 가 안 풀릴 때의 대비의 형태, `linearization.ref_speed_fraction` 키를 남길지. 방향은 정해졌다 — 첫 기준을 자르지 않고, `delta_tr` 은 그 뒤에 다시 재고, 선형화를 더하는 것은 보류한다 (#710 의 결정 2). 첫 기준의 끝을 포구 노드의 정지가 아니라 $(q^\ast,\dot q^\ast)$ 로 둘지 ([#710 의 보충 코멘트](https://github.com/hyujun/rtc-framework/issues/710#issuecomment-6139520482) — 같은 "첫 풀이의 기준의 형태" 라 여기서 함께 정한다) |
+| 2 | #716 | **E3-F01 뒤** (사용자 결정 2026-10-13, D5 — E3-F01 은 끝났다) — E3-F01 은 `mpc` 코어를 고치지 않아 (D7) 이슈 본문의 "E3-F01 과 맞춘다" 는 연결이 없어졌고, `mpc` 의 법칙 변경은 PR 하나에 하나다. 폐기한 선택지 (E3-F02 에 묶기 · E3-F01 앞에 단일 팔에서) 와 대가는 [#640 의 코멘트 §3](https://github.com/hyujun/rtc-framework/issues/640#issuecomment-6139958674) | 단독 | E3-F02 와의 선후 (같은 코어 — 병행하지 않는다), 범위 (단일 팔에서 잰다) |
 | — | #715 | 보류 — 착수 조건이 없다 | — | — |
 | — | #822 | 없다 — 평가 도구의 후속이고 다른 이슈의 선행이 아니다 | 정하지 않았다 | 어느 항목을 할지. 값 하나를 sweep 하는 평가를 도구가 받게 할지는 #819 가 그것을 필요로 할 때 정한다 (#713 은 repo 밖의 스크립트로 했다 — 이슈의 코멘트) |
 
