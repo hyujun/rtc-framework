@@ -1251,7 +1251,7 @@ $$
 | 채택 뒤 commit 전 | 계획이 정한다. 구현은 따르는 plan 의 셀을 그 plan 의 $t_c$ 에 묶고 (그 $\delta t_c$ 는 0 이 아닐 수 있다) 다른 셀은 자유로 둔다 — 다른 셀을 고르는 것이 교체다 | RT 는 따르는 구간을 plan 의 id · $t_c$ 와 대조하고 (MD-35), 손 시퀀서는 plan 의 $t_{cmd}$ 를 쓴다. $t_c$ 를 바꾸려면 plan 과 구간을 함께 바꾸는 경로가 필요하다 |
 | commit ($t_c-T_{freeze}$) 뒤 | 고정 (그 plan 의 값) | 손 폐쇄 명령 $t_{cmd}$ 가 나가기 전에 $t_c$ 가 고정돼야 한다. $T_{freeze}$ 는 손 폐쇄의 끝에서 끝 시간 + $T_{arm}$ + $h$ 이상이다 (컨트롤러의 설정 검사) |
 
-- 따라서 $t_c$ 가 실제로 움직이는 곳은 계획기 안의 후보 탐색이다 — 바깥 루프가 후보마다 팔 문제를 푸는 구성 (단일 팔의 NLP 탐색, G1) 이다.
+- 따라서 $t_c$ 가 실제로 움직이는 곳은 계획기 안의 후보 탐색이다 — 후보마다 팔 문제를 푸는 탐색 (`nlp` — 단일 팔과 G1 의 사슬) 이다.
 - 단일 팔 구성의 `mpc` planner 는 탐색이 $t_c$ 를 고르고 MPC 는 plan 채택 때부터 돈다. APPROACH 에서 $t_c$ 가 바뀌는 길은 plan 과 그 첫 구간을 함께 바꾸는 교체 쌍뿐이고 (L7 §4.3a) 한 plan 의 구간 안에서는 $t_c$ 가 움직이지 않는다 ([#660](https://github.com/hyujun/rtc-framework/issues/660) 결정 9, 기능 [#661](https://github.com/hyujun/rtc-framework/issues/661)). 그래서 $\delta t_c=0$ 이다 (§1.6).
 - 채택 전 첫 풀이 ([#660](https://github.com/hyujun/rtc-framework/issues/660) 의 결정 8) 에서 $t_c$ 를 한 번 보정하는 것은 `[선택]` 이다. 그러면 plan 의 $t_c$ · $t_{cmd}$ · $p_c$ · $a_d$ 를 보정된 $t_c$ 에서 다시 채워 구간과 함께 게시해야 한다. 이 경우 탐색의 $q^\ast$ 와 $\gamma_f$ 는 옛 $t_c$ 의 값으로 남는다.
 
@@ -1281,7 +1281,7 @@ $$
 - $t_c$ 는 해의 값이고 $t_{cmd}$ 는 그것에서 나온다 (§9.5). 노드 시각은 $t_s$ · $\Delta$ · $k_c$ · $t_c$ 로 정해진다 — 포구 노드 앞 구간만 길이가 $\Delta+\delta t_c$ 이고 (§9.2), RT 는 구간마다 $\Delta_k$ 로 평가한다. $\delta t_c=0$ 이면 모든 $\Delta_k=\Delta$ 다.
 - 구현에서 plan 과 구간의 $t_c$ 는 $\bar t_c+\delta t_c$ 이고 plan 의 $p_c$ · $a_d$ · $t_{cmd}$ 는 그 시각의 값이다. 구간 payload 는 포구 노드 앞 구간의 길이 하나를 싣는다 — `dt_catch_ns` $=\Delta+\delta t_c$ 이고 $\delta t_c=0$ 이면 0 이다 (0 이 "다른 포구 전 구간과 같다" 의 유일한 표기다). RT 샘플러는 그런 구간을 포구 전 · 포구 구간 · 포구 뒤의 세 부분으로 평가한다.
 
-**단일 팔 구성** (§1.6). `mpc` planner 의 코어는 포구 시각 결정변수 $\delta t_c$ 를 0 으로 고정하고 plan 의 $t_c$ 를 쓴다 (§1.3 에 대한 편차) — 그 planner 가 내는 구간의 `dt_catch_ns` 는 늘 0 이다. 바깥 루프를 MPC 가 돌면 셀 안에서 자유다 (§9.5 "움직일 수 있는 구간"). 채택 전 첫 풀이의 한 번 보정은 `[선택]` 이다. plan 채택 뒤에는 RT · 손 시퀀서가 plan 의 $t_c$ 를 쓴다. $t_c$ 열을 가진 코어는 NLP 탐색이 쓰는 `MpcDockingSegmentCore` 이고, `mpc` planner 의 코어에 언제 둘지는 정해지지 않았다 (§9.8).
+**단일 팔 구성** (§1.6). `mpc` planner 의 코어는 포구 시각 결정변수 $\delta t_c$ 를 0 으로 고정하고 plan 의 $t_c$ 를 쓴다 (§1.3 에 대한 편차) — 그 planner 가 내는 구간의 `dt_catch_ns` 는 늘 0 이다. 후보마다 팔 문제를 푸는 탐색 (`nlp`) 에서는 셀 안에서 자유다 (§9.5 "움직일 수 있는 구간"). 채택 전 첫 풀이의 한 번 보정은 `[선택]` 이다. plan 채택 뒤에는 RT · 손 시퀀서가 plan 의 $t_c$ 를 쓴다. $t_c$ 열을 가진 코어는 NLP 탐색이 쓰는 `MpcDockingSegmentCore` 이고, `mpc` planner 의 코어에 언제 둘지는 정해지지 않았다 (§9.8).
 
 **MPC ↔ CLIK 계약** (§3). 시간 행에서 포구 노드 앞 구간만 $\Delta+\delta t_c$ 이고 $t_c$ 는 해의 값이다 (§9.2). CLIK 쪽은 구간 길이 $\Delta_k$ 로 평가한다.
 
