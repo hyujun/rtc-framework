@@ -213,6 +213,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   clock_ = clock;
   nv_ = n;
   device_of_model_ = model.device_of_model;
+  model_set_ = FullJointSet(n);  // a permutation of the device (checked above)
   dt_ns_ = params.DtNs();
   t_arm_ns_ = SecondsToNs(consts.t_arm_s);
   consts_ = consts;
@@ -770,7 +771,9 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
   if (!CheckState(rt, start, /*need_command=*/following, rec)) {
     return false;
   }
-  if (!plan.valid || plan.t_c_ns <= 0 || plan.nv != nv_) {
+  // A plan of SOME of this model's joints is taken (a search on a chain of a
+  // wider device): the others are held where they are — below.
+  if (!plan.valid || plan.t_c_ns <= 0 || !PlanJointsWithin(plan, model_set_)) {
     rec.outcome = SegmentOutcome::kNoState;
     return false;
   }
@@ -816,7 +819,8 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
     // the core's position box (the IK clamps to the limits themselves) and the
     // reach shortened where its peak speed 1.875·|d|/T would pass
     // 0.9·η_v·q̇_max — a reference the box cannot follow would only be refused
-    // by the trust region.
+    // by the trust region. A joint the plan is not of has no reach: its
+    // reference is its start, at rest (q_star says nothing of it).
     std::array<double, kMaxPlanNv> dq{};
     bool finite = true;
     double scale_min = 1.0;
@@ -824,7 +828,8 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
     for (int m = 0; m < nv_; ++m) {
       const auto d = U(device_of_model_[U(m)]);
       const double reported = rt.q_cmd[d];
-      const double target = plan.q_star[d];
+      const bool planned = InJointSet(plan.joint_set, device_of_model_[U(m)]);
+      const double target = planned ? plan.q_star[d] : reported;
       if (!std::isfinite(reported) || !std::isfinite(target)) {
         finite = false;
         break;
@@ -837,6 +842,10 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
       in.q0[m] = q0;
       in.qd0[m] = 0.0;
       in.qdd0[m] = 0.0;
+      if (!planned) {
+        dq[U(m)] = 0.0;
+        continue;
+      }
       const double clamped = std::clamp(target, q_lo_[U(m)], q_hi_[U(m)]);
       rec.ref_clamped = rec.ref_clamped || clamped != target;
       double step = clamped - q0;
@@ -976,11 +985,14 @@ bool MpcSegmentPlanner::StartOnSource(const PlannerRtState& rt, const PlanSnapsh
   // is clamped into the core's position box. The reach is NOT shortened to a
   // peak speed: that bound is the zero-boundary curve's, and the speed of this
   // one is the QP's rows and the between-node check's to judge.
+  // A joint the plan is not of stops where the source has it: the same
+  // quintic, from its (q₀, q̇₀, q̈₀) to (q₀, 0, 0).
   rec.ref_scale = 1.0;
   rec.ref_shortfall = 0.0;
   const double t2 = t_span * t_span;
   for (int m = 0; m < nv_; ++m) {
-    const double target = plan.q_star[U(device_of_model_[U(m)])];
+    const int d_m = device_of_model_[U(m)];
+    const double target = InJointSet(plan.joint_set, d_m) ? plan.q_star[U(d_m)] : in.q0[m];
     if (!std::isfinite(target)) {
       rec.outcome = SegmentOutcome::kInputNonFinite;
       return false;

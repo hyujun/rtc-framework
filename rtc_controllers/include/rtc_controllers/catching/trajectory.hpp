@@ -200,6 +200,18 @@ struct PlanSnapshot {
   bool valid{false};
 };
 
+/// Whether a plan is one a planner whose model has the device joints
+/// `model_set` can take: it names its joints (`nv` is its set's size — a plan
+/// that names none, or whose count disagrees with its set, is malformed) and
+/// every one of them is the planner's. A planner whose model is wider holds
+/// the joints the plan is not of; one that lacks a joint of the plan cannot
+/// follow it.
+[[nodiscard]] constexpr bool PlanJointsWithin(const PlanSnapshot& plan,
+                                              JointSet model_set) noexcept {
+  return plan.nv >= 1 && plan.nv == JointSetSize(plan.joint_set) &&
+         (plan.joint_set & ~model_set) == 0U;
+}
+
 /// Planner → RT: the segment MPC's stop segment (MPC plan E1-F02, MD-27). A
 /// SIBLING of PlanSnapshot on its own SeqLock, not a field of it: the RT stops
 /// taking PlanSnapshots once it has committed (JudgePlan too_late / repeat),

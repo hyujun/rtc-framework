@@ -222,6 +222,7 @@ PlanSnapshot PlanFor(const Arm& a, const Catch& c, std::int64_t t_c, std::uint32
   p.token.activation_generation = 3;
   p.token.generation = 5;
   p.nv = a.model->nv;
+  p.joint_set = rtc::catching::FullJointSet(p.nv);  // a plan names its joints (#640)
   for (int m = 0; m < p.nv; ++m) {
     p.q_star[Dev(a, m)] = c.q_catch[m];
   }
@@ -2615,6 +2616,182 @@ TEST(ApproachPlannerReplacement, TheFirstSegmentStartsOnTheFollowedSegmentAtNode
     EXPECT_NE(r.rec.outcome, SegmentOutcome::kNotFollowed) << Why(r.rec);
     EXPECT_EQ(r.rec.source_seq, x.first.seq);
   }
+}
+
+// ── A plan of SOME of the model's joints (E3-F01, #640) ──────────────────────
+// A search that ran on a chain of this planner's device hands in a plan of the
+// chain's joints: q_star names their catch pose and says nothing of the
+// others. The planner holds those where they are.
+
+// `plan` as a search without device joint `held` would hand it in: the set and
+// the count without it, and — nothing reads it — `junk` in its q_star entry.
+PlanSnapshot WithoutJoint(PlanSnapshot plan, int held, double junk) {
+  plan.joint_set &= ~(rtc::catching::JointSet{1} << held);
+  plan.nv = rtc::catching::JointSetSize(plan.joint_set);
+  plan.q_star[static_cast<std::size_t>(held)] = junk;
+  return plan;
+}
+
+std::uint64_t SegmentDigestOf(const SegmentSnapshot& seg) {
+  rtc::testing::ValueDigest h;
+  rtc::testing::AddSegment(h, seg);
+  return h.Value();
+}
+
+// From rest: the held joint's reference is its command at every node, at rest;
+// every other joint's is the one the whole plan gives it, to the bit.
+TEST(ApproachPlannerChain, AJointThePlanIsNotOfIsHeldAtItsCommand) {
+  for (Arm arm : {Arm6(), Arm7()}) {
+    SCOPED_TRACE(std::to_string(arm.model->nv) + " joints");
+    constexpr int kHeldModel = 1;
+    const int held = static_cast<int>(Dev(arm, kHeldModel));
+    Rig whole(arm);
+    Rig chain(arm);
+    const Catch c = CatchAt(arm, Offset(arm, 0.04));
+    const std::int64_t t_c = kT0 + kTArm + 800 * kMs;
+    const PlanSnapshot plan = PlanFor(arm, c, t_c);
+    const PlannerRtState rt = RestingRt(arm, arm.q_nominal, kT0 - kH);
+    SetClock(kT0);
+    ASSERT_TRUE(whole.planner.PlanFirst(rt, plan, BallFor(c), whole.out, whole.rec))
+        << Why(whole.rec);
+    SetClock(kT0);
+    static_cast<void>(chain.planner.PlanFirst(rt, WithoutJoint(plan, held, 0.9), BallFor(c),
+                                              chain.out, chain.rec));
+    ASSERT_NE(chain.rec.outcome, SegmentOutcome::kNoState) << Why(chain.rec);
+    ASSERT_EQ(chain.rec.k, whole.rec.k);
+    const int n_pre = -chain.rec.k;
+    const auto& in = chain.planner.ApproachCoreInput(n_pre);
+    const auto& in_whole = whole.planner.ApproachCoreInput(n_pre);
+    bool whole_moves_it = false;
+    for (Eigen::Index k = 0; k < in.q_ref.cols(); ++k) {
+      for (int m = 0; m < arm.model->nv; ++m) {
+        if (m == kHeldModel) {
+          EXPECT_TRUE(rtc::testing::BitsEqual(in.q_ref(m, k), rt.q_cmd[Dev(arm, m)])) << k;
+          EXPECT_EQ(in.qd_ref(m, k), 0.0) << k;
+          EXPECT_EQ(in.qdd_ref(m, k), 0.0) << k;
+          whole_moves_it = whole_moves_it || in_whole.q_ref(m, k) != in.q_ref(m, k);
+        } else {
+          EXPECT_TRUE(rtc::testing::BitsEqual(in.q_ref(m, k), in_whole.q_ref(m, k)))
+              << "joint " << m << " node " << k;
+          EXPECT_TRUE(rtc::testing::BitsEqual(in.qd_ref(m, k), in_whole.qd_ref(m, k)))
+              << "joint " << m << " node " << k;
+          EXPECT_TRUE(rtc::testing::BitsEqual(in.qdd_ref(m, k), in_whole.qdd_ref(m, k)))
+              << "joint " << m << " node " << k;
+        }
+      }
+    }
+    EXPECT_TRUE(whole_moves_it) << "the whole plan holds that joint too: this shows nothing";
+    EXPECT_FALSE(chain.rec.ref_clamped);
+
+    // What q_star holds for the held joint reaches nothing.
+    Rig other(arm);
+    SetClock(kT0);
+    static_cast<void>(other.planner.PlanFirst(rt, WithoutJoint(plan, held, -1.7), BallFor(c),
+                                              other.out, other.rec));
+    EXPECT_EQ(other.rec.outcome, chain.rec.outcome);
+    EXPECT_EQ(SegmentDigestOf(other.out), SegmentDigestOf(chain.out));
+    const auto& in_other = other.planner.ApproachCoreInput(n_pre);
+    EXPECT_EQ(in_other.q_ref, in.q_ref);
+  }
+}
+
+// A replacement: the held joint's reference is the quintic from the state the
+// followed segment has it in to rest at THAT position — d = 0 in the formula
+// the other joints run on their own displacement.
+TEST(ApproachPlannerChain, WhileFollowingAJointThePlanIsNotOfStopsWhereItIs) {
+  for (Arm arm : {Arm6(), Arm7()}) {
+    SCOPED_TRACE(std::to_string(arm.model->nv) + " joints");
+    constexpr int kHeldModel = 2;
+    const int held = static_cast<int>(Dev(arm, kHeldModel));
+    Rig whole(arm);
+    Rig chain(arm);
+    const Replacement xw = Replace(whole, 330 * kMs, 40 * kMs);
+    const Replacement x = Replace(chain, 330 * kMs, 40 * kMs);
+    ASSERT_NE(x.first.seq, 0U);
+    const PlannerRtState rt =
+        FollowingRt(arm, arm.q_nominal, x.now - kH, x.first.t_c, 0, x.first.seq);
+    SetClock(xw.now);
+    static_cast<void>(whole.planner.PlanFirst(rt, xw.plan, BallFor(xw.c), whole.out, whole.rec));
+    SetClock(x.now);
+    static_cast<void>(chain.planner.PlanFirst(rt, WithoutJoint(x.plan, held, 0.9), BallFor(x.c),
+                                              chain.out, chain.rec));
+    ASSERT_EQ(chain.rec.k, -4) << Why(chain.rec);
+    ASSERT_EQ(whole.rec.k, -4) << Why(whole.rec);
+    ASSERT_TRUE(chain.rec.x0_from_segment);
+    const auto& in = chain.planner.ApproachCoreInput(4);
+    const auto& in_whole = whole.planner.ApproachCoreInput(4);
+    const int n_pre = 4;
+    const double t_span = static_cast<double>(n_pre) * static_cast<double>(kDtPre) * 1e-9;
+    const double q0 = in.q0[kHeldModel];
+    const double v0t = in.qd0[kHeldModel] * t_span;
+    const double a0t2 = in.qdd0[kHeldModel] * t_span * t_span;
+    ASSERT_GT(std::fabs(in.qd0[kHeldModel]), 1e-4) << "the held joint is at rest on the source";
+    // Node 0 is the start state; from the catch node on it rests at q0.
+    EXPECT_TRUE(rtc::testing::BitsEqual(in.q_ref(kHeldModel, 0), q0));
+    EXPECT_TRUE(rtc::testing::BitsEqual(in.qd_ref(kHeldModel, 0), in.qd0[kHeldModel]));
+    for (Eigen::Index k = n_pre; k < in.q_ref.cols(); ++k) {
+      EXPECT_TRUE(rtc::testing::BitsEqual(in.q_ref(kHeldModel, k), q0)) << k;
+      EXPECT_EQ(in.qd_ref(kHeldModel, k), 0.0) << k;
+      EXPECT_EQ(in.qdd_ref(kHeldModel, k), 0.0) << k;
+    }
+    // In between: the quintic with zero displacement.
+    for (int k = 1; k < n_pre; ++k) {
+      const double sk = static_cast<double>(k) / n_pre;
+      const double c3 = -6.0 * v0t - 1.5 * a0t2;
+      const double c4 = 8.0 * v0t + 1.5 * a0t2;
+      const double c5 = -3.0 * v0t - 0.5 * a0t2;
+      const double want = q0 + v0t * sk + 0.5 * a0t2 * sk * sk + c3 * sk * sk * sk +
+                          c4 * sk * sk * sk * sk + c5 * sk * sk * sk * sk * sk;
+      EXPECT_NEAR(in.q_ref(kHeldModel, k), want, 1e-12) << k;
+    }
+    // The whole plan sends that joint to its catch pose instead …
+    EXPECT_GT(std::fabs(in_whole.q_ref(kHeldModel, n_pre) - q0), 1e-3);
+    // … and every other joint's reference is the whole plan's, to the bit.
+    for (int m = 0; m < arm.model->nv; ++m) {
+      if (m == kHeldModel) {
+        continue;
+      }
+      for (Eigen::Index k = 0; k < in.q_ref.cols(); ++k) {
+        EXPECT_TRUE(rtc::testing::BitsEqual(in.q_ref(m, k), in_whole.q_ref(m, k)))
+            << "joint " << m << " node " << k;
+      }
+    }
+  }
+}
+
+// What a plan must say for this planner to take it: its joints, all of them
+// this model's, and as many as it counts.
+TEST(ApproachPlannerChain, APlanMustNameJointsOfThisModel) {
+  Rig r(Arm6());
+  const Catch c = CatchAt(r.arm, Offset(r.arm, 0.04));
+  const PlanSnapshot plan = PlanFor(r.arm, c, kT0 + kTArm + 800 * kMs);
+  const PlannerRtState rt = RestingRt(r.arm, r.arm.q_nominal, kT0 - kH);
+  const auto refused = [&](const char* what, const PlanSnapshot& p) {
+    SetClock(kT0);
+    EXPECT_FALSE(r.planner.PlanFirst(rt, p, BallFor(c), r.out, r.rec)) << what;
+    EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNoState) << what;
+  };
+  PlanSnapshot p = plan;
+  p.joint_set = 0;
+  refused("names no joint", p);
+  p = plan;
+  p.joint_set |= rtc::catching::JointSet{1} << 6;
+  p.nv = 7;
+  refused("a joint this model does not have", p);
+  p = plan;
+  p.nv = 5;
+  refused("fewer joints counted than named", p);
+  p = WithoutJoint(plan, 3, 0.0);
+  p.nv = 6;
+  refused("more joints counted than named", p);
+  // The whole plan, and a plan of five of the six joints, are taken.
+  SetClock(kT0);
+  EXPECT_TRUE(r.planner.PlanFirst(rt, plan, BallFor(c), r.out, r.rec)) << Why(r.rec);
+  Rig five(Arm6());
+  SetClock(kT0);
+  static_cast<void>(
+      five.planner.PlanFirst(rt, WithoutJoint(plan, 3, 0.0), BallFor(c), five.out, five.rec));
+  EXPECT_NE(five.rec.outcome, SegmentOutcome::kNoState) << Why(five.rec);
 }
 
 TEST(ApproachPlannerReplacement, WithoutAReportedSegmentItIsNotFollowed) {

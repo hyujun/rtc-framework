@@ -429,6 +429,7 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   ClockFn clock_{nullptr};
   int nv_{0};
   std::array<int, kMaxPlanNv> device_of_model_{};
+  JointSet model_set_{0};  // the model's joints, as device indices: the whole device
   std::array<double, kMaxPlanNv> v_box_{};  // η_v · q̇_max, model order
   std::int64_t dt_ns_{0};
   std::int64_t t_arm_ns_{0};

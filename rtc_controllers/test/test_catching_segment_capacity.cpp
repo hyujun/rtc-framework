@@ -326,6 +326,7 @@ TEST(SegmentCapacity, TheMpcPlannerProducesASeventeenJointSegmentAndReplansFromI
   plan.token.activation_generation = 3;
   plan.token.generation = 5;
   plan.nv = kTreeNv;
+  plan.joint_set = rtc::catching::FullJointSet(kTreeNv);  // a plan names its joints (#640)
   PlannerRtState rt{};
   rt.valid = true;
   rt.activation_generation = 3;
