@@ -664,7 +664,7 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
     for (int m = 0; m < nv_; ++m) {
       const std::size_t d = U(device_of_model_[U(m)]);
       // q_star says nothing of a joint the plan is not of: its target is its
-      // start (written after the projection below).
+      // start, written after the projection below.
       const bool planned = InJointSet(plan.joint_set, device_of_model_[U(m)]);
       q0[U(m)] = q[d];
       qd0[U(m)] = qd[d];
@@ -672,7 +672,9 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
       finite = finite && std::isfinite(q[d]) && std::isfinite(qd[d]) && std::isfinite(qdd[d]) &&
                (!planned || std::isfinite(plan.q_star[d]));
       speed = std::max(speed, std::fabs(qd[d]));
-      in.q_catch_target[m] = planned ? plan.q_star[d] : q[d];
+      if (planned) {
+        in.q_catch_target[m] = plan.q_star[d];
+      }
     }
     rec.x0_speed = finite ? speed : std::numeric_limits<double>::quiet_NaN();
   } else {
@@ -681,7 +683,9 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
       const bool planned = InJointSet(plan.joint_set, device_of_model_[U(m)]);
       q0[U(m)] = rt.q_cmd[d];
       finite = finite && std::isfinite(rt.q_cmd[d]) && (!planned || std::isfinite(plan.q_star[d]));
-      in.q_catch_target[m] = planned ? plan.q_star[d] : rt.q_cmd[d];
+      if (planned) {
+        in.q_catch_target[m] = plan.q_star[d];
+      }
     }
   }
   if (!finite) {

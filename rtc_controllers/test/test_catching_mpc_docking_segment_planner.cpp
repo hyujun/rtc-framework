@@ -2353,9 +2353,28 @@ struct ChainHandIn {
                                                       kDeviceOfModel[static_cast<std::size_t>(m)]));
 }
 
+// A solve of the WHOLE plan first, so that the cores' inputs hold the held
+// joint's q_star as its target: what a later call leaves there is then that
+// call's doing, not a value that happened to be the start already (the cores
+// are warmed on the wait pose, which is where this arm rests). Another plan id:
+// the planner's memory of this solve is not the chain plan's.
+void LeaveTheWholePlansTargetBehind(Scene& s) {
+  PlanSnapshot whole = s.plan;
+  whole.plan_id = kPlanId + 7;
+  auto r = RunFirst(*s.planner, s.rt, whole, s.Ball(), nullptr, kNow);
+  ASSERT_NE(r->rec.outcome, SegmentOutcome::kNoState) << Describe(r->rec);
+  const MpcDockingSegmentCoreInput* in = s.planner->LastInputForTesting(-r->rec.k);
+  ASSERT_NE(in, nullptr);
+  ASSERT_TRUE(BitsEqual(in->q_catch_target[kHeldModel],
+                        s.plan.q_star[static_cast<std::size_t>(kHeldDevice)]));
+  ASSERT_GT(std::fabs(in->q_catch_target[kHeldModel] - in->q0[kHeldModel]), 1e-4)
+      << "the whole plan leaves that joint where it is: the target shows nothing";
+}
+
 TEST(MpcDockingPlannerChain, AChainsSolutionIsNotPublishedItIsTheStartOfTheSolve) {
   auto s = std::make_unique<Scene>();
   ASSERT_NO_FATAL_FAILURE(s->Setup());
+  ASSERT_NO_FATAL_FAILURE(LeaveTheWholePlansTargetBehind(*s));
   const auto c = WithoutTheHeldJoint(*s, 0.9);
   const SegmentSnapshot& seg = c->solution.seg;
   auto r = RunFirst(*s->planner, s->rt, c->plan, s->Ball(), &c->solution, kNow);
@@ -2441,6 +2460,7 @@ TEST(MpcDockingPlannerChain, WithoutAUsableSolutionTheHeldJointsTargetIsStillIts
     SCOPED_TRACE(names[i]);
     auto s = std::make_unique<Scene>();
     ASSERT_NO_FATAL_FAILURE(s->Setup());
+    ASSERT_NO_FATAL_FAILURE(LeaveTheWholePlansTargetBehind(*s));
     const auto c = WithoutTheHeldJoint(*s, 0.9);
     CatchSolution sol = c->solution;
     const CatchSolution* use = &sol;
