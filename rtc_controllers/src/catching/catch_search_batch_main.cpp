@@ -50,7 +50,15 @@ the segment planner did (outcome, segment_outcome, segment_core_reason, ...).
 
   --model-config PATH   ModelConfig YAML (PinocchioModelBuilder::LoadModelConfig
                         schema). Must declare the catch frame under `extra_frames`.
-  --sub-model NAME      the catch sub-model (planner.sub_model of the profile)
+  --sub-model NAME      the catch sub-model (planner.sub_model of the profile):
+                        a `sub_models` entry of the model config, else a
+                        `tree_models` entry
+  --search-sub-model NAME
+                        the search's own model (planner.search.sub_model of the
+                        profile), when it is a chain of --sub-model: a
+                        `sub_models` entry. The search runs on it and — in a
+                        whole wake — the segment planner on --sub-model; the
+                        binding then gives `n_dev` and `segment.device_of_model`
   --catch-frame NAME    frame name (default: catch_frame)
   --params PATH         YAML holding the COMPOSED `catching:` tree — includes and
                         overlays already merged. Accepted shapes: a top-level
@@ -83,6 +91,7 @@ the segment planner did (outcome, segment_outcome, segment_core_reason, ...).
 struct Args {
   std::string model_config;
   std::string sub_model;
+  std::string search_sub_model;  // empty: --sub-model for the search too
   std::string catch_frame{"catch_frame"};
   std::string params;
   std::string binding;
@@ -108,6 +117,8 @@ struct Args {
       a.model_config = value(i, f);
     } else if (f == "--sub-model") {
       a.sub_model = value(i, f);
+    } else if (f == "--search-sub-model") {
+      a.search_sub_model = value(i, f);
     } else if (f == "--catch-frame") {
       a.catch_frame = value(i, f);
     } else if (f == "--params") {
@@ -146,20 +157,49 @@ int main(int argc, char** argv) {
     const Args args = ParseArgs(argc, argv);
     const rub::ModelConfig cfg = rub::PinocchioModelBuilder::LoadModelConfig(args.model_config);
     const rub::PinocchioModelBuilder builder(cfg);
-    std::shared_ptr<const pinocchio::Model> model;
-    try {
-      model = builder.GetReducedModel(args.sub_model);
-    } catch (const std::out_of_range&) {
+    // --sub-model: a chain (`sub_models`) or, for a device that is a tree, a
+    // `tree_models` entry — the order a controller's configure looks it up in.
+    const auto declared = [](const auto& entries, const std::string& name) {
+      for (const auto& e : entries) {
+        if (e.name == name) {
+          return true;
+        }
+      }
+      return false;
+    };
+    std::shared_ptr<const pinocchio::Model> whole;
+    if (declared(cfg.sub_models, args.sub_model)) {
+      whole = builder.GetReducedModel(args.sub_model);
+    } else if (declared(cfg.tree_models, args.sub_model)) {
+      whole = builder.GetTreeModel(args.sub_model);
+    } else {
       Die("--sub-model '" + args.sub_model + "' is not a sub-model of the model config");
     }
+    // The search's model: its own chain, or --sub-model.
+    const bool two_models =
+        !args.search_sub_model.empty() && args.search_sub_model != args.sub_model;
+    std::shared_ptr<const pinocchio::Model> model = whole;
+    if (two_models) {
+      if (!declared(cfg.sub_models, args.search_sub_model)) {
+        Die("--search-sub-model '" + args.search_sub_model +
+            "' is not a `sub_models` entry of the model config");
+      }
+      model = builder.GetReducedModel(args.search_sub_model);
+    }
+    const std::string& search_name = two_models ? args.search_sub_model : args.sub_model;
     // Built from the model alone: the catch-pose IK refuses a handle that
     // carries a device joint order.
     rub::RtModelHandle handle(model);
     // Before any input is read: an unknown frame name would otherwise resolve
     // to the universe frame and the run would write a map of nothing.
     pinocchio::FrameIndex frame = 0;
+    rtc::catching::SegmentBatchModel segment_model;
     try {
       frame = rtc::catching::ResolveCatchFrame(handle.GetModel(), args.catch_frame);
+      if (two_models) {
+        segment_model.arm = whole;
+        segment_model.catch_frame = rtc::catching::ResolveCatchFrame(*whole, args.catch_frame);
+      }
     } catch (const std::invalid_argument& e) {
       Die(std::string("--catch-frame: ") + e.what() + " [--sub-model " + args.sub_model + "]");
     }
@@ -171,20 +211,21 @@ int main(int argc, char** argv) {
       // iterations on the same model and frame) and the tolerance they test it with.
       const rtc::catching::ReachBound bound =
           rtc::catching::ComputeReachBound(handle.GetModel(), frame);
-      std::cout << rtc::catching::ReachBoundJson(bound, args.catch_frame, args.sub_model,
+      std::cout << rtc::catching::ReachBoundJson(bound, args.catch_frame, search_name,
                                                  rtc::catching::SearchReachTolerances(tree.node))
                 << '\n';
       return 0;
     }
     const rtc::catching::SearchBatchBinding binding =
-        rtc::catching::ParseSearchBatchBinding(YAML::LoadFile(args.binding), model->nv);
+        rtc::catching::ParseSearchBatchBinding(YAML::LoadFile(args.binding), model->nv, whole->nv);
     // A profile a function cannot run on is an answer, not a broken run — but
     // there is no map to write from it.
     const bool whole_wake = binding.segment.has_value();
     rtc::catching::SearchBatchSearch built;
     rtc::catching::PlanBatchBuild cycle;
     if (whole_wake) {
-      cycle = rtc::catching::MakePlanBatch(model, handle, frame, tree.node, binding);
+      cycle = rtc::catching::MakePlanBatch(model, handle, frame, tree.node, binding,
+                                           two_models ? &segment_model : nullptr);
       if (cycle.batch == nullptr) {
         std::cerr << "catch_search_batch: the planner refused its configuration — " << cycle.error
                   << '\n';
@@ -221,7 +262,8 @@ int main(int argc, char** argv) {
       }
     }
     std::ostream& os = args.out.empty() ? std::cout : file;
-    const int nv = model->nv;
+    // q_star is written per DEVICE joint.
+    const int nv = binding.n_dev > 0 ? binding.n_dev : model->nv;
     os << (whole_wake ? rtc::catching::PlanBatchCsvHeader(nv)
                       : rtc::catching::SearchBatchCsvHeader(nv))
        << '\n';

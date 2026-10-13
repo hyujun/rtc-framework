@@ -334,6 +334,28 @@ TEST(PlannerParams, ADecisionLeftOutOrTbdIsUnsetNotDefaulted) {
   }
 }
 
+// `planner.search.sub_model` (E3-F01, #640): the search's own model. Absent is
+// "the segment model for both" — an empty string, never a copy of `sub_model`
+// (the binding decides what one model means) — and it is a NAME like
+// `sub_model`: TBD and the empty string are refused.
+TEST(PlannerParams, TheSearchMayNameAModelOfItsOwn) {
+  const auto both =
+      ParsePlannerParams(YAML::Load("planner: {sub_model: body, search: {sub_model: body_catch}}"));
+  EXPECT_EQ(both.sub_model, "body");
+  EXPECT_EQ(both.search_sub_model, "body_catch");
+  const auto one = ParsePlannerParams(YAML::Load("planner: {sub_model: arm_catch}"));
+  EXPECT_EQ(one.sub_model, "arm_catch");
+  EXPECT_TRUE(one.search_sub_model.empty());
+  EXPECT_TRUE(ParsePlannerParams(YAML::Load("planner: {sub_model: a, search: {mode: grid}}"))
+                  .search_sub_model.empty());
+  for (const char* bad :
+       {"planner: {search: {sub_model: TBD}}", "planner: {search: {sub_model: ''}}",
+        "planner: {search: {sub_model: [a, b]}}"}) {
+    EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
+        << bad;
+  }
+}
+
 TEST(PlannerParams, AMalformedSearchKeyIsRefused) {
   for (const char* bad : {
            "planner: {sub_model: TBD}",

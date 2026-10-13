@@ -150,6 +150,7 @@ template <typename T>
 }
 
 /// The `segment` map of a binding file.
+/// `nv` is the SEGMENT model's joint count.
 [[nodiscard]] SegmentBatchBinding ParseSegmentBinding(const YAML::Node& root, int nv) {
   const std::string path = "segment";
   const YAML::Node segment = RequireMap(root, path, path);
@@ -165,7 +166,21 @@ template <typename T>
     throw std::invalid_argument("binding: 'segment.mode' must be 'mpc' or 'mpc_docking', got '" +
                                 mode + "'");
   }
-  RefuseUnknownKeys(segment, path, {"mode", mode});
+  RefuseUnknownKeys(segment, path, {"mode", mode}, {"device_of_model"});
+  if (segment["device_of_model"]) {
+    try {
+      b.device_of_model = segment["device_of_model"].as<std::vector<int>>();
+    } catch (const std::exception&) {
+      throw std::invalid_argument("binding: 'segment.device_of_model' must be a list of integers");
+    }
+    JointSet set = 0;
+    if (b.device_of_model.size() != static_cast<std::size_t>(nv) ||
+        !MakeJointSet(b.device_of_model, nv, set)) {
+      throw std::invalid_argument(
+          "binding: 'segment.device_of_model' must be a permutation of 0.." +
+          std::to_string(nv - 1) + " (the segment model is the whole device)");
+    }
+  }
   const std::string own = path + "." + mode;
   const YAML::Node map = RequireMap(segment, mode, own);
   if (b.kind == SegmentBatchKind::kMpc) {
@@ -511,7 +526,15 @@ std::vector<SearchBatchRow> RunSearchBatch(CatchSearch& search, std::span<const 
 
 // ── The binding ──────────────────────────────────────────────────────────────
 
-SearchBatchBinding ParseSearchBatchBinding(const YAML::Node& root, int nv) {
+SearchBatchBinding ParseSearchBatchBinding(const YAML::Node& root, int nv, int segment_nv) {
+  if (segment_nv == 0) {
+    segment_nv = nv;
+  }
+  if (segment_nv < nv || segment_nv > kMaxPlanNv) {
+    throw std::invalid_argument("binding: the segment model has " + std::to_string(segment_nv) +
+                                " joints (the search's " + std::to_string(nv) + " to " +
+                                std::to_string(kMaxPlanNv) + ")");
+  }
   if (nv <= 0 || nv > kMaxPlanNv) {
     throw std::invalid_argument("binding: the arm has " + std::to_string(nv) + " joints (1 to " +
                                 std::to_string(kMaxPlanNv) + ")");
@@ -529,9 +552,17 @@ SearchBatchBinding ParseSearchBatchBinding(const YAML::Node& root, int nv) {
   } else {
     throw std::invalid_argument("binding: 'search' must be 'grid' or 'nlp', got '" + kind + "'");
   }
-  RefuseUnknownKeys(root, "", {"search", "device_of_model", kind}, {"segment"});
+  RefuseUnknownKeys(root, "", {"search", "device_of_model", kind}, {"segment", "n_dev"});
   if (root["segment"]) {
-    b.segment = ParseSegmentBinding(root, nv);
+    b.segment = ParseSegmentBinding(root, segment_nv);
+  }
+  if (root["n_dev"]) {
+    b.n_dev = Value<int>(root, "n_dev", "");
+    if (b.n_dev < nv || b.n_dev > kMaxPlanNv) {
+      throw std::invalid_argument("binding: 'n_dev' = " + std::to_string(b.n_dev) +
+                                  " must be the device's joint count: " + std::to_string(nv) +
+                                  " (the search model's) to " + std::to_string(kMaxPlanNv));
+    }
   }
 
   try {
@@ -539,15 +570,17 @@ SearchBatchBinding ParseSearchBatchBinding(const YAML::Node& root, int nv) {
   } catch (const std::exception&) {
     throw std::invalid_argument("binding: 'device_of_model' must be a list of integers");
   }
-  std::vector<int> sorted = b.device_of_model;
-  std::sort(sorted.begin(), sorted.end());
-  bool permutation = sorted.size() == static_cast<std::size_t>(nv);
-  for (int i = 0; permutation && i < nv; ++i) {
-    permutation = sorted[static_cast<std::size_t>(i)] == i;
-  }
-  if (!permutation) {
-    throw std::invalid_argument("binding: 'device_of_model' must be a permutation of 0.." +
-                                std::to_string(nv - 1));
+  // One entry per model joint, each a device joint, none twice: a permutation
+  // of the device when the model is all of it.
+  const int n_dev = b.n_dev > 0 ? b.n_dev : nv;
+  JointSet set = 0;
+  if (b.device_of_model.size() != static_cast<std::size_t>(nv) ||
+      !MakeJointSet(b.device_of_model, n_dev, set)) {
+    throw std::invalid_argument(
+        b.n_dev > 0
+            ? "binding: 'device_of_model' must be " + std::to_string(nv) +
+                  " distinct indices of 0.." + std::to_string(n_dev - 1) + " ('n_dev')"
+            : "binding: 'device_of_model' must be a permutation of 0.." + std::to_string(nv - 1));
   }
 
   const YAML::Node map = RequireMap(root, kind, kind);
@@ -616,15 +649,17 @@ SearchBatchSearch MakeSearchBatchSearch(const std::shared_ptr<const pinocchio::M
                                 " map — the selected search would run on compiled-in values");
   }
   const PlannerParams planner = ParsePlannerParams(catching, keys);
-  if (planner.wait_pose_n != nv) {
+  // The wait pose — and the RT's report made from it — is the DEVICE's.
+  const int n_dev = binding.n_dev > 0 ? binding.n_dev : nv;
+  if (planner.wait_pose_n != n_dev) {
     throw std::invalid_argument("planner.wait_pose has " + std::to_string(planner.wait_pose_n) +
-                                " entries, the arm " + std::to_string(nv) + " joints");
+                                " entries, the arm " + std::to_string(n_dev) + " joints");
   }
   const CatchPoseIkConfig ik = ParseCatchPoseIkParams(catching, nullptr, kind);
 
   SearchBatchSearch out;
   out.q_rest.assign(planner.wait_pose.begin(),
-                    planner.wait_pose.begin() + static_cast<std::ptrdiff_t>(n));
+                    planner.wait_pose.begin() + static_cast<std::ptrdiff_t>(n_dev));
   const std::array<int, kMaxPlanNv> device_of_model = DeviceOfModel(binding);
 
   if (grid) {
@@ -636,6 +671,7 @@ SearchBatchSearch MakeSearchBatchSearch(const std::shared_ptr<const pinocchio::M
     model.handle = &handle;
     model.catch_frame = catch_frame;
     model.nv = nv;
+    model.n_dev = n_dev;
     model.device_of_model = device_of_model;
     std::copy(binding.qdot_max.begin(), binding.qdot_max.end(), model.qdot_max.begin());
     std::copy(binding.qddot_max.begin(), binding.qddot_max.end(), model.qddot_max.begin());
@@ -662,6 +698,7 @@ SearchBatchSearch MakeSearchBatchSearch(const std::shared_ptr<const pinocchio::M
   model.handle = &handle;
   model.catch_frame = catch_frame;
   model.nv = nv;
+  model.n_dev = n_dev;
   model.device_of_model = device_of_model;
   NlpCatchSearchParams params = ParseNlpSearchParams(catching, nv);
   params.wait_pose = planner.wait_pose;
@@ -713,7 +750,8 @@ std::vector<SearchBatchRow> PlanBatch::Run(const std::vector<SearchBatchWake>& w
 PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
                              rtc_urdf_bridge::RtModelHandle& handle,
                              pinocchio::FrameIndex catch_frame, const YAML::Node& catching,
-                             const SearchBatchBinding& binding) {
+                             const SearchBatchBinding& binding,
+                             const SegmentBatchModel* segment_model) {
   if (!binding.segment.has_value()) {
     throw std::invalid_argument("binding: a whole-wake batch needs 'segment'");
   }
@@ -724,8 +762,33 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     out.error = built.error;
     return out;
   }
-  const int nv = arm->nv;
+  // The segment planner's model: the search's, or — the search on a chain —
+  // the whole device. `nv`, `n` and `device_of_model` below are ITS.
+  const int search_nv = arm->nv;
+  const std::shared_ptr<const pinocchio::Model>& seg_arm =
+      segment_model != nullptr ? segment_model->arm : arm;
+  const pinocchio::FrameIndex seg_frame =
+      segment_model != nullptr ? segment_model->catch_frame : catch_frame;
+  if (!seg_arm || seg_arm->nv <= 0 || seg_arm->nv > kMaxPlanNv) {
+    throw std::invalid_argument("the segment model has no joints or more than " +
+                                std::to_string(kMaxPlanNv));
+  }
+  const int nv = seg_arm->nv;
   const auto n = static_cast<std::size_t>(nv);
+  if (nv != (binding.n_dev > 0 ? binding.n_dev : search_nv)) {
+    throw std::invalid_argument("the segment model has " + std::to_string(nv) +
+                                " joints but the device " +
+                                std::to_string(binding.n_dev > 0 ? binding.n_dev : search_nv) +
+                                " — a segment is of the whole device (binding: 'n_dev')");
+  }
+  const std::vector<int>& seg_map =
+      sb.device_of_model.empty() ? binding.device_of_model : sb.device_of_model;
+  if (seg_map.size() != n) {
+    throw std::invalid_argument(
+        "binding: 'segment.device_of_model' must give the segment "
+        "model's " +
+        std::to_string(nv) + " joints");
+  }
   if (nv > kMaxSegmentNv) {
     out.error = "a segment carries at most " + std::to_string(kMaxSegmentNv) + " joints";
     return out;
@@ -744,7 +807,8 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
   keys.search_grid = binding.kind == SearchBatchKind::kGrid;
   keys.segment_mpc = mpc;
   const PlannerParams planner = ParsePlannerParams(catching, keys);
-  const std::array<int, kMaxPlanNv> device_of_model = DeviceOfModel(binding);
+  std::array<int, kMaxPlanNv> device_of_model{};
+  std::copy(seg_map.begin(), seg_map.end(), device_of_model.begin());
 
   // What a controller's configure refuses of the docking functions' profile
   // (docking_config.hpp): the batch judges no profile that controller parks.
@@ -755,7 +819,7 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
   if (nlp || !mpc) {
     hand = ParseHandDockingParams(catching);
     if (nlp) {
-      nlp_params = ParseNlpSearchParams(catching, nv);
+      nlp_params = ParseNlpSearchParams(catching, search_nv);
     }
     if (!mpc) {
       docking_params = ParseMpcDockingSegmentParams(catching, nv);
@@ -784,8 +848,8 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
       throw std::invalid_argument("binding: the segment.mpc vectors do not match the arm");
     }
     MpcSegmentPlannerModel model;
-    model.arm = arm;
-    model.catch_frame = catch_frame;
+    model.arm = seg_arm;
+    model.catch_frame = seg_frame;
     model.nv = nv;
     model.device_of_model = device_of_model;
     std::copy(sb.q_min.begin(), sb.q_min.end(), model.q_min.begin());
@@ -804,8 +868,8 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     }
     MpcDockingSegmentPlannerParams params = docking_params;
     MpcDockingSegmentPlannerModel model;
-    model.arm = arm;
-    model.catch_frame = catch_frame;
+    model.arm = seg_arm;
+    model.catch_frame = seg_frame;
     model.nv = nv;
     model.device_of_model = device_of_model;
     model.limits = sb.limits;

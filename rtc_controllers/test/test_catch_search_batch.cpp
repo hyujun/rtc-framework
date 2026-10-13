@@ -562,6 +562,63 @@ TEST(CatchSearchBatchBinding, ReadsBothSearches) {
   EXPECT_EQ(nlp.limits.armature.cwiseAbs().maxCoeff(), 0.0);
 }
 
+// A search on a CHAIN of a wider device (E3-F01, #640): `n_dev` is the
+// device's joint count, `device_of_model` an injection into it; the segment
+// planner's map is sized by ITS model (`segment_nv`) and may give its own
+// device map — a permutation of the whole device.
+TEST(CatchSearchBatchBinding, ASearchModelMayBeAChainOfAWiderDevice) {
+  const std::string chain = std::string("n_dev: 5\n") + kNlpBinding;
+  const std::string at = "device_of_model: [1, 0, 2]";
+  const auto with_map = [&](const std::string& map) {
+    std::string s = chain;
+    s.replace(s.find(at), at.size(), "device_of_model: " + map);
+    return s;
+  };
+  const SearchBatchBinding b = ParseSearchBatchBinding(YAML::Load(with_map("[4, 0, 2]")), 3);
+  EXPECT_EQ(b.n_dev, 5);
+  EXPECT_EQ(b.device_of_model, (std::vector<int>{4, 0, 2}));
+  // Without `n_dev` the model is the whole device: 0 = "the model's".
+  EXPECT_EQ(ParseSearchBatchBinding(YAML::Load(kNlpBinding), 3).n_dev, 0);
+  const auto refused = [](const std::string& text, int nv, int segment_nv = 0) {
+    try {
+      static_cast<void>(ParseSearchBatchBinding(YAML::Load(text), nv, segment_nv));
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  EXPECT_FALSE(refused(with_map("[4, 0, 2]"), 3));
+  EXPECT_TRUE(refused(with_map("[5, 0, 2]"), 3)) << "an index past the device";
+  EXPECT_TRUE(refused(with_map("[4, 4, 2]"), 3)) << "one device joint twice";
+  EXPECT_TRUE(refused(with_map("[4, 0]"), 3)) << "not one entry per model joint";
+  EXPECT_TRUE(refused(std::string("n_dev: 2\n") + kNlpBinding, 3)) << "narrower than the model";
+  EXPECT_TRUE(refused(std::string("n_dev: 33\n") + kNlpBinding, 3)) << "wider than a plan names";
+  // Without `n_dev` an index past the model is still refused.
+  std::string no_dev = kNlpBinding;
+  no_dev.replace(no_dev.find(at), at.size(), "device_of_model: [4, 0, 2]");
+  EXPECT_TRUE(refused(no_dev, 3));
+
+  // The segment planner's map: vectors of the SEGMENT model's width, and its
+  // own device map.
+  const std::string segment =
+      "segment:\n  mode: mpc\n  device_of_model: [0, 1, 2, 3, 4]\n  mpc:\n"
+      "    q_min: [-1, -1, -1, -1, -1]\n    q_max: [1, 1, 1, 1, 1]\n"
+      "    qdot_max: [2, 2, 2, 2, 2]\n    tau_max: [9, 9, 9, 9, 9]\n"
+      "    eta_v: 0.9\n    t_arm_s: 0.0\n    control_dt: 0.002\n";
+  const SearchBatchBinding two =
+      ParseSearchBatchBinding(YAML::Load(with_map("[4, 0, 2]") + segment), 3, 5);
+  ASSERT_TRUE(two.segment.has_value());
+  EXPECT_EQ(two.segment->device_of_model, (std::vector<int>{0, 1, 2, 3, 4}));
+  EXPECT_EQ(two.segment->q_min.size(), 5U);
+  EXPECT_TRUE(refused(with_map("[4, 0, 2]") + segment, 3))
+      << "segment vectors of five joints against a segment model of three";
+  std::string repeated = segment;
+  repeated.replace(repeated.find("[0, 1, 2, 3, 4]"), 15, "[0, 1, 2, 3, 3]");
+  EXPECT_TRUE(refused(with_map("[4, 0, 2]") + repeated, 3, 5));
+  EXPECT_TRUE(refused(with_map("[4, 0, 2]") + segment, 3, 2))
+      << "a segment model below the search's";
+}
+
 TEST(CatchSearchBatchBinding, IsFailClosed) {
   Rig rig;
   const auto refused = [&](const std::string& edit_from, const std::string& edit_to) {

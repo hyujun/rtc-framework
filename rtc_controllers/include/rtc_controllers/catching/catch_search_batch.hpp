@@ -192,6 +192,10 @@ enum class SegmentBatchKind : std::uint8_t { kMpc, kMpcDocking };
 /// joint vectors are in MODEL order, NaN is a value.
 struct SegmentBatchBinding {
   SegmentBatchKind kind{SegmentBatchKind::kMpc};
+  /// The SEGMENT model's device map, when the segment planner has a model of
+  /// its own (the whole device, the search on a chain of it): a permutation of
+  /// the device's joints. Empty = the search's `device_of_model` (one model).
+  std::vector<int> device_of_model;
   double t_arm_s{0.0};     ///< the arm lag the lead axis runs on [s]
   double control_dt{0.0};  ///< the RT period [s]
   // ── mpc ──
@@ -216,6 +220,11 @@ struct SegmentBatchBinding {
 struct SearchBatchBinding {
   SearchBatchKind kind{SearchBatchKind::kGrid};
   std::vector<int> device_of_model;  ///< the arm device's index of model joint j
+  /// The arm device's joint count, when it is more than the search model's (a
+  /// search on a chain of a wider device): `device_of_model` is then an
+  /// injection into it, and `planner.wait_pose` has one entry per device joint.
+  /// 0 = the search model's (the model is the whole device).
+  int n_dev{0};
   // ── grid ──
   std::vector<double> qdot_max;   ///< device ratings [rad/s]
   std::vector<double> qddot_max;  ///< the acceleration box [rad/s²]; empty = none
@@ -232,7 +241,9 @@ struct SearchBatchBinding {
 };
 
 /// Read a binding file. Top level: `search` (`grid` | `nlp`),
-/// `device_of_model`, and the map of that search:
+/// `device_of_model`, optionally `n_dev` (the device's joint count when the
+/// search model is a chain of a wider device — `device_of_model` is then an
+/// injection into 0…n_dev−1), and the map of that search:
 ///   grid: qdot_max, qddot_max, eta_v, v_max, a_dec, t_arm_s, t_close_lead,
 ///         t_close_total, ball_mass, ref_omega, ref_zeta, ref_a_max,
 ///         control_dt, follows_segments
@@ -245,12 +256,21 @@ struct SearchBatchBinding {
 ///   mpc_docking: t_arm_s, control_dt, qd_rating, hand_t_close_e2e,
 ///                hand_t_close_lead, ball_mass,
 ///                limits: {q_min, q_max, qd_max, qdd_max, tau_max, tau_lo, tau_hi}
-/// Every key of a selected map is required and no other key is accepted.
+/// and, with a segment model of its own, `segment.device_of_model` (a
+/// permutation of 0…segment_nv−1; absent = the search's map).
+/// Every key of a selected map is required and no other key is accepted
+/// (`n_dev` and `segment.device_of_model` are the two optional ones).
 /// `qddot_max` / `limits.qdd_max` may be empty (no acceleration box); every
-/// other joint vector has `nv` entries. Scalars may be `.nan`.
+/// other joint vector has one entry per joint of ITS model — `nv` for the
+/// search's map, `segment_nv` for the segment planner's. Scalars may be `.nan`.
+/// @param nv the search model's joint count
+/// @param segment_nv the segment model's, 0 = `nv` (one model)
 /// @throws std::invalid_argument naming the key on anything else, including a
-///         `device_of_model` that is not a permutation of 0…nv−1.
-[[nodiscard]] SearchBatchBinding ParseSearchBatchBinding(const YAML::Node& root, int nv);
+///         `device_of_model` that is not a permutation of 0…nv−1 (an injection
+///         into 0…n_dev−1 with `n_dev`), and an `n_dev` below `nv` or above
+///         kMaxPlanNv.
+[[nodiscard]] SearchBatchBinding ParseSearchBatchBinding(const YAML::Node& root, int nv,
+                                                         int segment_nv = 0);
 
 /// A configured search and what it stands on.
 struct SearchBatchSearch {
@@ -263,12 +283,13 @@ struct SearchBatchSearch {
 /// the parsers read `catching` (the composed `catching:` tree) for everything
 /// that is a key of it, `binding` gives the rest, and the search is configured
 /// on StoppedClock.
-/// @param arm the catch sub-model; `handle` is a reorder-free handle on it and
-///        outlives the returned search
+/// @param arm the search's model (the catch sub-model, or a chain of a wider
+///        device with `binding.n_dev`); `handle` is a reorder-free handle on
+///        it and outlives the returned search
 /// @throws std::invalid_argument what the parsers throw, a tree without the
 ///         selected search's `planner.search.<kind>` map (the parsers would
 ///         default it), and a `planner.wait_pose` that is not one entry per
-///         arm joint
+///         joint of the arm DEVICE
 [[nodiscard]] SearchBatchSearch MakeSearchBatchSearch(
     const std::shared_ptr<const pinocchio::Model>& arm, rtc_urdf_bridge::RtModelHandle& handle,
     pinocchio::FrameIndex catch_frame, const YAML::Node& catching,
@@ -277,6 +298,14 @@ struct SearchBatchSearch {
 // ── The whole wake ───────────────────────────────────────────────────────────
 
 struct PlanBatchBuild;
+
+/// The segment planner's model, when it is not the search's: the whole arm
+/// device (`planner.sub_model`), the search on a chain of it
+/// (`planner.search.sub_model`).
+struct SegmentBatchModel {
+  std::shared_ptr<const pinocchio::Model> arm;
+  pinocchio::FrameIndex catch_frame{0};
+};
 
 /// A planner cycle with a search and a segment planner installed, and the
 /// boxes it reads and writes (header: "THE WHOLE WAKE").
@@ -298,7 +327,8 @@ class PlanBatch {
  private:
   friend PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>&,
                                       rtc_urdf_bridge::RtModelHandle&, pinocchio::FrameIndex,
-                                      const YAML::Node&, const SearchBatchBinding&);
+                                      const YAML::Node&, const SearchBatchBinding&,
+                                      const SegmentBatchModel*);
 
   rtc::SeqLock<TrajectorySnapshot> traj_{};
   rtc::SeqLock<CovarianceSnapshot> cov_{};
@@ -323,14 +353,18 @@ struct PlanBatchBuild {
 /// cycle configured with the tree's `planner.*` and timed on WakeClock. A
 /// profile on which that controller would park its docking functions is
 /// reported in `error`, in the controller's words (DockingConfigRefusal).
+/// @param segment_model the segment planner's model when it has one of its
+///        own (the search's `arm` is then a chain of it); null = `arm` for both
 /// @throws std::invalid_argument what MakeSearchBatchSearch and the parsers
-///         throw, a binding without `segment`, a segment vector that does not
-///         match the arm, and a tree without the selected planner's map
+///         throw, a binding without `segment`, a segment vector or device map
+///         that does not match the segment model, a segment model that is not
+///         the whole device, and a tree without the selected planner's map
 [[nodiscard]] PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
                                            rtc_urdf_bridge::RtModelHandle& handle,
                                            pinocchio::FrameIndex catch_frame,
                                            const YAML::Node& catching,
-                                           const SearchBatchBinding& binding);
+                                           const SearchBatchBinding& binding,
+                                           const SegmentBatchModel* segment_model = nullptr);
 
 // ── The reach bound ──────────────────────────────────────────────────────────
 
