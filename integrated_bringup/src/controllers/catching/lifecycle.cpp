@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "integrated_bringup/support/model_config_lookup.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/logging/session_dir.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
@@ -2197,8 +2198,7 @@ int DemoCatchingController::SearchModelNv() const {
   if (!builder_ || name == planner_params_.sub_model) {
     return arm_dof_;
   }
-  const auto& subs = builder_->GetConfig().sub_models;
-  if (std::none_of(subs.begin(), subs.end(), [&name](const auto& s) { return s.name == name; })) {
+  if (FindSubModel(builder_->GetConfig(), name) == nullptr) {
     return arm_dof_;
   }
   const auto model = builder_->GetReducedModel(name);
@@ -2216,11 +2216,8 @@ bool DemoCatchingController::ResolveCatchSubModel(
   // By the declared names, not by a lookup that fails: the builder logs an
   // error of its own for a name it does not have.
   const auto& cfg = builder_->GetConfig();
-  const bool is_sub = std::any_of(cfg.sub_models.begin(), cfg.sub_models.end(),
-                                  [&name](const auto& s) { return s.name == name; });
-  const bool is_tree = !chain && !is_sub &&
-                       std::any_of(cfg.tree_models.begin(), cfg.tree_models.end(),
-                                   [&name](const auto& t) { return t.name == name; });
+  const bool is_sub = FindSubModel(cfg, name) != nullptr;
+  const bool is_tree = !chain && !is_sub && FindTreeModel(cfg, name) != nullptr;
   if (!is_sub && !is_tree) {
     if (chain) {
       RCLCPP_ERROR(logger_,
