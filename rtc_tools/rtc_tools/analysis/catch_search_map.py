@@ -2581,6 +2581,16 @@ def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str])
         return value
 
     sub_model = str(tree_value("planner.sub_model", "the catch sub-model the search plans in"))
+    # One model for the search and the segments. A profile whose search runs on
+    # a chain of the segment model (`planner.search.sub_model`) needs a binding
+    # with `n_dev` and `segment.device_of_model`, which this tool does not write.
+    search_sub_model = _lookup(catching, "planner.search.sub_model")
+    if search_sub_model is not _ABSENT and str(search_sub_model) != sub_model:
+        raise SystemExit(
+            f"catching.planner.search.sub_model is '{search_sub_model}' and "
+            f"catching.planner.sub_model '{sub_model}': the search plans in a chain of the "
+            "segment model, and this tool binds one model for both"
+        )
     wait_pose = _floats(tree_value("planner.wait_pose", "the arm's rest posture"))
     catch_frame = str(catching.get("catch_frame", DEFAULT_CATCH_FRAME))
     sub_models = (robot_params.get("urdf") or {}).get("sub_models") or {}
