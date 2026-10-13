@@ -1187,9 +1187,9 @@ std::uint64_t PayloadDigest(const SegmentSnapshot& p, std::uint64_t seed) {
     std::array<double, kMaxSegmentNv> qdd{};
     bool held = false;
     h.Add(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd, &held));
-    h.Add(q);
-    h.Add(qd);
-    h.Add(qdd);
+    rtc::testing::AddSegmentJoints(h, q, p.nv);
+    rtc::testing::AddSegmentJoints(h, qd, p.nv);
+    rtc::testing::AddSegmentJoints(h, qdd, p.nv);
     h.Add(held);
   }
   return h.Value();
@@ -1208,7 +1208,7 @@ std::uint64_t MalformedDigest(const SegmentSnapshot& good) {
     std::array<double, kMaxSegmentNv> qdd{};
     h.Add(ValidateSegmentNodes(p));
     h.Add(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd));
-    h.Add(q);
+    rtc::testing::AddSegmentJoints(h, q, good.nv);
   };
   add([](SegmentSnapshot&) {});
   add([](SegmentSnapshot& p) { p.valid = false; });

@@ -198,6 +198,48 @@ inline void AddPlan(ValueDigest& h, const catching::PlanSnapshot& p) noexcept {
   h.Add(p.valid);
 }
 
+/// The joint capacity (kMaxSegmentNv) the recorded constants were taken with.
+/// A node array is stored node-major with the capacity as its stride, so a
+/// digest over the array as stored moves with the capacity — for a segment
+/// that did not change. The two functions below read the entries in the order
+/// and the width they had then; at that capacity it is the same byte sequence
+/// `Add(array)` gave, so every recorded constant stands (#827).
+inline constexpr int kRecordedSegmentNv = 8;
+static_assert(catching::kMaxSegmentNv >= kRecordedSegmentNv);
+
+/// One joint vector of capacity width (a sample, a node), DEVICE order: the
+/// recorded width first — entries past `nv` are the zeros they were — then the
+/// joints that width had no room for.
+inline void AddSegmentJoints(ValueDigest& h, const std::array<double, catching::kMaxSegmentNv>& a,
+                             int nv) noexcept {
+  for (int j = 0; j < kRecordedSegmentNv; ++j) {
+    h.Add(a[static_cast<std::size_t>(j)]);
+  }
+  for (int j = kRecordedSegmentNv; j < nv && j < catching::kMaxSegmentNv; ++j) {
+    h.Add(a[static_cast<std::size_t>(j)]);
+  }
+}
+
+/// A segment's node array: every node column of the recorded width, in
+/// storage order, then (for a segment wider than that) the remaining joints
+/// of every node.
+inline void AddSegmentNodes(ValueDigest& h, const decltype(catching::SegmentSnapshot::q)& a,
+                            int nv) noexcept {
+  const auto at = [&a](int k, int j) {
+    return a[static_cast<std::size_t>(k * catching::kMaxSegmentNv + j)];
+  };
+  for (int k = 0; k <= catching::kMaxSegmentNodes; ++k) {
+    for (int j = 0; j < kRecordedSegmentNv; ++j) {
+      h.Add(at(k, j));
+    }
+  }
+  for (int k = 0; k <= catching::kMaxSegmentNodes; ++k) {
+    for (int j = kRecordedSegmentNv; j < nv && j < catching::kMaxSegmentNv; ++j) {
+      h.Add(at(k, j));
+    }
+  }
+}
+
 inline void AddSegment(ValueDigest& h, const catching::SegmentSnapshot& p) noexcept {
   h.Add(p.token);
   h.Add(p.rt_iteration);
@@ -213,9 +255,9 @@ inline void AddSegment(ValueDigest& h, const catching::SegmentSnapshot& p) noexc
   h.Add(p.n_nodes);
   h.Add(p.nv);
   h.Add(p.n_pre);
-  h.Add(p.q);
-  h.Add(p.qd);
-  h.Add(p.qdd);
+  AddSegmentNodes(h, p.q, p.nv);
+  AddSegmentNodes(h, p.qd, p.nv);
+  AddSegmentNodes(h, p.qdd, p.nv);
   h.Add(p.slack_max);
   h.Add(p.slack_terminal_max);
   h.Add(p.tau_ratio_max);
