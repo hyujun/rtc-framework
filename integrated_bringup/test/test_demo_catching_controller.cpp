@@ -2011,6 +2011,9 @@ TEST_P(ShippedCatchingProfile, ShipsTheFirstReferenceFractionMeasured) {
   ASSERT_TRUE(lin["ref_speed_fraction"].IsDefined())
       << profile << ": linearization.ref_speed_fraction is not written";
   const double written = lin["ref_speed_fraction"].as<double>();
+  // The measured value, 1.2 on both profiles: above 1, so the first solve's
+  // reference may pass the velocity box and is not cut short of the catch pose.
+  EXPECT_EQ(written, 1.2) << profile;
   const std::string fragment = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
                                "/controllers/catching/segment_mpc.yaml";
   const YAML::Node in_fragment =

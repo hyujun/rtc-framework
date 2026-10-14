@@ -164,8 +164,13 @@ demo_catching_controller:
             # it back, while a reference cut short of the catch pose is what
             # withholds a reachable catch (#819). At 1.875 (the minimum-jerk
             # peak factor) a reach is cut only where the box cannot make it in
-            # the span at all. Joint by joint.
-            ref_speed_fraction: 0.9
+            # the span at all. Joint by joint. The code default stays 0.9.
+            # 1.2 is measured (#819): offline, the last value whose cut references
+            # still solve (published first solves 893 -> 2,593 of 14,565); from 1.4
+            # the cut references are withheld on torque slack, from 1.6 the QP is
+            # infeasible. In the sim (three chunks) published throws 213 -> 439,
+            # catches 66 -> 135.
+            ref_speed_fraction: 1.2
           solver:
             # ProxQP: outer and inner iteration caps (>= 1) and tolerances. The
             # preconditioner update and the KKT backend are not keys (the RT
