@@ -226,7 +226,7 @@ def test_the_estimator_is_started_from_its_own_workspace():
     assert command[:2] == ["bash", "-c"]
     script = command[2]
     # Sourced in that shell only, and the package must then come from that workspace.
-    assert 'source "$1/install/local_setup.bash"' in script
+    assert 'source "$1/install/setup.bash"' in script
     assert "ros2 pkg prefix ball_perception_sim" in script and "WRONG_PREFIX" in script
     assert 'exec ros2 launch ball_perception_sim sim_estimator.launch.py "${@:2}"' in script
     assert command[3:] == [
@@ -246,11 +246,12 @@ def test_the_estimators_shell_drops_this_workspace_before_it_sources_its_own():
         Path("/ws/ball"), Path("/p.json"), 1, producer_revision="x", simulator_revision="y"
     )[2]
     unset = script.index("unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH")
-    underlay = script.index('source "/opt/ros/$ROS_DISTRO/setup.bash"')
+    # Its setup.bash chains the underlays it was built on: no other is named here.
+    own = script.index('source "$1/install/setup.bash"')
+    assert "/opt/ros" not in script
+    # The caller's PATH goes back in front of the underlays' bin.
     path_back = script.index('PATH="$P0:$PATH"')
-    own = script.index('source "$1/install/local_setup.bash"')
-    # The caller's PATH goes back in front of the underlay's bin, before the workspace's.
-    assert script.index("P0=$PATH") < unset < underlay < path_back < own
+    assert script.index("P0=$PATH") < unset < own < path_back
 
 
 def test_a_viewer_banner_printed_after_the_mirror_is_waited_for(tmp_path, monkeypatch):
