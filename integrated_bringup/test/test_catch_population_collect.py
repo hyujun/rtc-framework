@@ -247,6 +247,32 @@ def test_the_meta_says_what_was_thrown_and_what_each_seed_did_with_it(tmp_path):
     assert meta["axes"] == {"discrete": ["distance_m"]} and meta["design"] == {"grid": "…"}
 
 
+def test_a_chunk_thrown_in_part_is_collected_and_said(tmp_path):
+    """A smoke's limit or a driver that ended early: the unit is DONE, its chunk is not
+    thrown whole, and a throw left out of it is not a missed one."""
+    layout = _folder(tmp_path)
+    _unit(layout, 8210, "chunk_000", [(1, "published", True)])  # of 1, 2, 3
+    _unit(layout, 8210, "chunk_001", [(4, "published", False), (5, "published", True)])
+    result = _collect(layout)
+    assert result.seeds[0].partial_chunks == ["chunk_000"]
+    assert result.lines()[1].endswith("caught 2 (2 chunks, 1 partial)")
+    seed = read_throw_list_file(layout.set_file(ARM["arm"], "catch")).meta["seeds"][0]
+    assert seed["chunks"] == ["chunk_000", "chunk_001"]
+    assert seed["partial_chunks"] == ["chunk_000"]
+    assert "partial_chunks" in cpc.CATCH_SET_NOTE
+
+
+def test_a_seed_thrown_whole_has_no_partial_chunks(tmp_path):
+    layout = _folder(tmp_path)
+    _unit(layout, 8210, "chunk_001", [(4, "published", False), (5, "published", True)])
+    result = _collect(layout)
+    assert "partial" not in result.lines()[1]
+    assert (
+        "partial_chunks"
+        not in read_throw_list_file(layout.set_file(ARM["arm"], "catch")).meta["seeds"][0]
+    )
+
+
 def test_the_catch_set_says_which_run_each_unit_was(tmp_path):
     # A catch is one run's outcome: the set carries each collected unit's date, the two
     # revisions and whether the viewer was on, as its conditions.txt recorded them.

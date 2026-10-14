@@ -17,8 +17,9 @@ carries ``caught_seeds`` and ``thrown_seeds``, and the meta carries, per seed,
 how many throws were thrown / invalid / had their plan–segment pair published /
 were caught. **A throw that was not thrown is not a missed throw**: the meta
 says which set was thrown (``search`` | ``segment``), whether all of it or a
-sample (``sample``: n drawn of N), and which chunks each seed threw, so a reader
-can tell "not in the catch set" three ways — not drawn, not thrown yet, thrown
+sample (``sample``: n drawn of N), and which chunks each seed threw (and which of
+them only in part — ``partial_chunks``), so a reader can tell "not in the catch
+set" three ways — not drawn, not thrown yet, thrown
 and missed. The offline segment set and "the pair was published in the sim" are
 not the same thing either, which is why the published count stands beside the
 thrown one.
@@ -63,7 +64,9 @@ CATCH_SET_NOTE = (
     "throw_catch_set: the thrown throws the sim caught (truth_success) on at least one "
     "estimator seed. A catch is 'caught on that seed' (caught_seeds); thrown_seeds are the "
     "seeds the throw was thrown on. A throw that is not here was not drawn into the sample, "
-    "or not thrown yet (seeds[].chunks of chunks_total), or thrown and missed — not being "
+    "or not thrown yet (seeds[].chunks of chunks_total; a chunk in seeds[].partial_chunks "
+    "was thrown only in part — a smoke's limit, a driver that ended early), or thrown and "
+    "missed — not being "
     "here is not a miss. pair_published counts the throws whose plan and first segment were "
     "published in the sim, which the offline segment set does not decide. A catch is ONE "
     "run's outcome (runs: each unit's date, revisions and viewer): the same chunk thrown "
@@ -298,6 +301,8 @@ class SeedCounts:
 
     seed: int
     chunks: list[str] = field(default_factory=list)
+    # The chunks of ``chunks`` whose unit threw fewer throws than the chunk lists.
+    partial_chunks: list[str] = field(default_factory=list)
     thrown: int = 0
     invalid: int = 0
     pair_published: int = 0
@@ -318,7 +323,7 @@ class SeedCounts:
         return False
 
     def as_record(self) -> dict:
-        return {
+        record = {
             "seed": self.seed,
             "chunks": list(self.chunks),
             "thrown": self.thrown,
@@ -326,6 +331,9 @@ class SeedCounts:
             "pair_published": self.pair_published,
             "caught": self.caught,
         }
+        if self.partial_chunks:  # a seed whose chunks were thrown whole has no such key
+            record["partial_chunks"] = list(self.partial_chunks)
+        return record
 
 
 @dataclass
@@ -351,7 +359,9 @@ class ArmCollection:
         for seed in self.seeds:
             out.append(
                 f"  seed {seed.seed}: thrown {seed.thrown}, invalid {seed.invalid}, pair "
-                f"published {seed.pair_published}, caught {seed.caught} ({len(seed.chunks)} chunks)"
+                f"published {seed.pair_published}, caught {seed.caught} ({len(seed.chunks)} chunks"
+                + (f", {len(seed.partial_chunks)} partial" if seed.partial_chunks else "")
+                + ")"
             )
         if self.seeds:
             out.append(
@@ -518,6 +528,10 @@ def collect_arm(
             if counts.add(row):
                 caught_seeds.setdefault(throw_id, []).append(unit.seed)
             out_rows.append((unit, row))
+        # What the unit threw, not what it was told to (n): a smoke's limit and a
+        # driver that ended early with status DONE both leave throws of the chunk out.
+        if len(rows) < len(listed):
+            counts.partial_chunks.append(unit.chunk)
         result.units_done.append(unit.name)
 
     clash = [name for name in LEADING_COLUMNS if name != "seed" and name in header]
