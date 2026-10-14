@@ -253,6 +253,21 @@ def test_the_estimators_shell_drops_this_workspace_before_it_sources_its_own():
     assert script.index("P0=$PATH") < unset < underlay < path_back < own
 
 
+def test_a_viewer_banner_printed_after_the_mirror_is_waited_for(tmp_path, monkeypatch):
+    """The viewer's thread prints it once its window is up, not when the controller is
+    ready (#822 review): a slow display once lost a unit to FAIL:mirror viewer_banner."""
+    log = tmp_path / "launch.log"
+    log.write_text("ready\n")
+    late = "ready\n" + cpt.VIEWER_INPUT_BANNER + "\n"
+    monkeypatch.setattr(cpt, "time", SimpleNamespace(sleep=lambda s: log.write_text(late)))
+    assert cpt.wait_for_text(log, cpt.VIEWER_INPUT_BANNER, 5) == late
+    log.write_text("ready\n")
+    slept = []
+    monkeypatch.setattr(cpt, "time", SimpleNamespace(sleep=slept.append))
+    assert cpt.wait_for_text(log, cpt.VIEWER_INPUT_BANNER, 3) == "ready\n"
+    assert slept == [1, 1, 1]
+
+
 def test_the_estimators_shipped_profile_is_found_in_either_install(tmp_path):
     isolated = tmp_path / "install" / "ball_perception_sim" / "share" / "ball_perception_sim"
     assert cpt.estimator_profile(tmp_path) == isolated / "config" / "sim_profile.catching.json"

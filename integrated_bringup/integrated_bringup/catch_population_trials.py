@@ -142,6 +142,9 @@ BALL_TYPE_PARAMETER = "projectile_ball.ball_type"
 # runs with it off, and its viewer, when open, says so in its ready banner.
 VIEWER_INPUT_PARAMETER = "viewer_input_enabled"
 VIEWER_INPUT_BANNER = "[Viewer] Input: world-changing keys DISABLED"
+# The viewer prints that banner from its own thread once its window is up — not tied to
+# the controller's readiness, so a slow display may print it after the mirror is read.
+VIEWER_BANNER_TIMEOUT_S = 15
 ESTIMATOR_PACKAGE = "ball_perception_sim"
 ESTIMATOR_PROFILE = ("share", ESTIMATOR_PACKAGE, "config", "sim_profile.catching.json")
 ESTIMATOR_SOURCE = ("src", "ball_perception")
@@ -612,17 +615,17 @@ def launch_command(robot: str, arm, viewer: bool) -> list[str]:
 # install root of a merged install) — an estimator found elsewhere on the path is
 # another build. $1 is the workspace; the rest are the launch arguments.
 # The shell inherits THIS workspace's environment: its prefixes are dropped first and
-# the ROS underlay sourced again (a workspace's local_setup does not source it), so
-# the estimator resolves nothing of this workspace. The caller's PATH is put back in
-# front — the underlay prepends its own bin, and what the caller put first (a venv)
-# stays first. LD_LIBRARY_PATH is left as it is.
+# the workspace's setup.bash sourced — it chains the underlays that workspace was built
+# on (/opt/ros, or an overlay between) before itself — so the estimator resolves
+# nothing of this workspace. The caller's PATH is put back in front — the underlays
+# prepend their own bin, and what the caller put first (a venv) stays first.
+# LD_LIBRARY_PATH is left as it is.
 _ESTIMATOR_SCRIPT = f"""
 P0=$PATH
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH \\
   AMENT_CURRENT_PREFIX COLCON_CURRENT_PREFIX
-[ -f "/opt/ros/$ROS_DISTRO/setup.bash" ] && source "/opt/ros/$ROS_DISTRO/setup.bash"
+source "$1/install/setup.bash"
 PATH="$P0:$PATH"
-source "$1/install/local_setup.bash"
 prefix=$(ros2 pkg prefix {ESTIMATOR_PACKAGE})
 [ "$prefix" == "$1/install/{ESTIMATOR_PACKAGE}" ] || [ "$prefix" == "$1/install" ] \\
   || {{ echo "WRONG_PREFIX $prefix"; exit 1; }}
@@ -1077,20 +1080,31 @@ def viewer_input_failures(viewer_input, launch_log: str, *, viewer: bool) -> lis
     return why
 
 
-def read_mirror(timeout_s: float = 10.0) -> tuple[dict, object]:
-    """The running controller's mirror (``{name: value | None}`` over ``MIRROR_NAMES``)
-    and the simulator's ball type. ``RuntimeError`` when a node does not answer."""
+def read_mirror(timeout_s: float = 10.0) -> tuple[dict, object, object]:
+    """The running controller's mirror (``{name: value | None}`` over ``MIRROR_NAMES``),
+    the simulator's ball type and its ``viewer_input_enabled`` (None when it does not
+    declare it), in one read. ``RuntimeError`` when a node does not answer."""
     read = _read_parameters(
-        {CONTROLLER_NODE: MIRROR_NAMES, SIMULATOR_NODE: [BALL_TYPE_PARAMETER]}, timeout_s
+        {
+            CONTROLLER_NODE: MIRROR_NAMES,
+            SIMULATOR_NODE: [BALL_TYPE_PARAMETER, VIEWER_INPUT_PARAMETER],
+        },
+        timeout_s,
     )
-    return read[CONTROLLER_NODE], read[SIMULATOR_NODE][BALL_TYPE_PARAMETER]
+    simulator = read[SIMULATOR_NODE]
+    return read[CONTROLLER_NODE], simulator[BALL_TYPE_PARAMETER], simulator[VIEWER_INPUT_PARAMETER]
 
 
-def read_viewer_input(timeout_s: float = 10.0):
-    """The simulator's ``viewer_input_enabled`` (None when it does not declare it).
-    ``RuntimeError`` when the node does not answer."""
-    read = _read_parameters({SIMULATOR_NODE: [VIEWER_INPUT_PARAMETER]}, timeout_s)
-    return read[SIMULATOR_NODE][VIEWER_INPUT_PARAMETER]
+def wait_for_text(path: Path, text: str, timeout_s: int) -> str:
+    """``path``'s text once it holds ``text``, or as it is after ``timeout_s`` seconds
+    without it."""
+    content = _read_text(path)
+    for _ in range(timeout_s):
+        if text in content:
+            break
+        time.sleep(1)
+        content = _read_text(path)
+    return content
 
 
 def _read_parameters(requests: Mapping[str, Sequence[str]], timeout_s: float = 10.0) -> dict:
@@ -1353,8 +1367,7 @@ class UnitRun:
         log = _read_text(log_path)
         self._note("commit.txt", commit_line(log) + "\n")
         try:
-            mirror, ball_type = read_mirror()
-            viewer_input = read_viewer_input()
+            mirror, ball_type, viewer_input = read_mirror()
         except RuntimeError as exc:
             self._note("mirror.txt", f"unread: {exc}\n")
             return self._stop("FAIL:mirror unread")
@@ -1364,6 +1377,8 @@ class UnitRun:
             planner_budget_s=planner_budget(log) or "", viewer_input_enabled=viewer_input
         )
         why = mirror_failures(mirror, ball_type, log, self.expect)
+        if ctx.viewer:
+            log = wait_for_text(log_path, VIEWER_INPUT_BANNER, VIEWER_BANNER_TIMEOUT_S)
         why += viewer_input_failures(viewer_input, log, viewer=ctx.viewer)
         if why:
             return self._stop("FAIL:mirror " + " ".join(why))
@@ -1633,8 +1648,8 @@ def _estimator(args) -> tuple[Path, Path]:
     if not args.estimator_ws:
         _refuse("name the estimator's colcon workspace: --estimator-ws or BALL_SIM_WS")
     workspace = Path(args.estimator_ws).resolve()
-    if not (workspace / "install" / "local_setup.bash").is_file():
-        _refuse(f"no colcon workspace at {workspace} (no install/local_setup.bash)")
+    if not (workspace / "install" / "setup.bash").is_file():
+        _refuse(f"no colcon workspace at {workspace} (no install/setup.bash)")
     profile = Path(args.profile).resolve() if args.profile else estimator_profile(workspace)
     if not profile.is_file():
         _refuse(f"no estimator profile {profile}")

@@ -99,7 +99,7 @@ class Rig:
         self.fake.mkdir()
         self.ball_ws = tmp_path / "ball_ws"
         (self.ball_ws / "install").mkdir(parents=True)
-        (self.ball_ws / "install" / "local_setup.bash").write_text("")
+        (self.ball_ws / "install" / "setup.bash").write_text("")
         self.profile = tmp_path / "profile.json"
         self.profile.write_text('{"prediction": {"horizon_s": 1.0}}')
         self.logging_root = tmp_path / "logging_data"
@@ -149,9 +149,8 @@ class Rig:
         monkeypatch.setattr(cpt, "STARTUP_TIMEOUT_S", 5 * cpt.STARTUP_TIMEOUT_S)
         monkeypatch.setattr(cpt, "ESTIMATOR_TIMEOUT_S", 5 * cpt.ESTIMATOR_TIMEOUT_S)
         monkeypatch.setattr(cpt, "wait_for_free_minute", lambda *a, **k: "261011_2332")
-        monkeypatch.setattr(cpt, "read_mirror", lambda: (self.mirror, "tennis"))
         self.viewer_input = False
-        monkeypatch.setattr(cpt, "read_viewer_input", lambda: self.viewer_input)
+        monkeypatch.setattr(cpt, "read_mirror", lambda: (self.mirror, "tennis", self.viewer_input))
         self.units: list[cpt.UnitRun] = []
 
     def set(self, **values):
