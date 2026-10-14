@@ -1563,6 +1563,36 @@ def test_a_profile_whose_search_names_a_model_of_its_own_is_refused(tmp_path):
         )
 
 
+def test_a_source_in_the_configuration_folder_is_labelled_relative_to_it(tmp_path):
+    """The label once carried the PC's absolute path into every set file (#822)."""
+    config = tmp_path / "robot_a"
+    (config / "sub").mkdir(parents=True)
+    other = tmp_path / "elsewhere.yaml"
+    sources = {
+        "radius_m": f"{config}/mujoco_simulator.yaml:projectile_ball.radius_m",
+        "mass_kg": f"{config}/sub/x.yaml:projectile_ball.mass_kg",
+        "outside": f"{other}:projectile_ball.radius_m",
+        "drag_coefficient": "rtc_mujoco_sim/src/projectile_ball.cpp:30",
+    }
+    assert m.config_relative_sources(sources, config) == {
+        "radius_m": "robot_a/mujoco_simulator.yaml:projectile_ball.radius_m",
+        "mass_kg": "robot_a/sub/x.yaml:projectile_ball.mass_kg",
+        "outside": f"{other}:projectile_ball.radius_m",
+        "drag_coefficient": "rtc_mujoco_sim/src/projectile_ball.cpp:30",
+    }
+
+
+def test_the_setups_ball_names_its_file_in_the_robots_folder(tmp_path):
+    pytest.importorskip("pinocchio")
+    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    if not config.is_dir():
+        pytest.skip("integrated_bringup config is not beside this checkout")
+    ball = m.load_setup(_setup_args(config), tmp_path, ()).ball
+    assert ball.sources["radius_m"] == "ur5e_p1b/mujoco_simulator.yaml:projectile_ball.radius_m"
+    assert ball.sources["mass_kg"] == "ur5e_p1b/mujoco_simulator.yaml:projectile_ball.mass_kg"
+    assert not any(str(tmp_path) in label or "/home/" in label for label in ball.sources.values())
+
+
 def test_segment_mode_overrides_that_one_value_after_the_overlays_and_is_recorded(tmp_path):
     pytest.importorskip("pinocchio")
     config = _REPO / "integrated_bringup/config/ur5e_p1b"

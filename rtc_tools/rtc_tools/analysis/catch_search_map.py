@@ -2542,6 +2542,32 @@ class MapSetup:
     overrides: Mapping = field(default_factory=dict)
 
 
+def config_relative_sources(sources: Mapping[str, str], config_dir: Path) -> dict[str, str]:
+    """``sources`` (``<path>:<key>`` labels) with a path inside ``config_dir`` written
+    as ``<config folder name>/<path relative to it>``.
+
+    The ball's shape is read from the robot's simulator YAML, and its label once carried
+    that file's absolute path — the PC it was judged on, in every set file it reached.
+    Relative to the configuration folder the label is the same from a source tree and
+    from an install, and still names the robot (the folder). A path outside the folder,
+    and a label that is not an absolute path (the repository-relative ``file:line`` of
+    a C++ constant), is kept as it is.
+    """
+    root = Path(config_dir).resolve()
+    out = {}
+    for name, label in sources.items():
+        path, sep, key = label.rpartition(":")
+        if sep and Path(path).is_absolute():
+            try:
+                relative = Path(path).resolve().relative_to(root)
+            except ValueError:
+                relative = None
+            if relative is not None:
+                label = f"{root.name}/{relative.as_posix()}:{key}"
+        out[name] = label
+    return out
+
+
 def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str]) -> MapSetup:
     """Compose the profile ``args`` names and write its model config into ``out_dir``.
 
@@ -2643,6 +2669,7 @@ def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str])
         air_density_kg_m3=args.air_density_kg_m3,
         air_density_source=args.air_density_source,
     )
+    ball = dataclasses.replace(ball, sources=config_relative_sources(ball.sources, config_dir))
     return MapSetup(
         config_dir=config_dir,
         profile=profile,

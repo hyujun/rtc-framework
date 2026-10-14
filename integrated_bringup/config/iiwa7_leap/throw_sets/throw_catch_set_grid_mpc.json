@@ -413,8 +413,8 @@
         "drag_coefficient": 0.55,
         "air_density_kg_m3": 1.204,
         "sources": {
-          "radius_m": "/home/junho/ros2_ws/rtc_ws/src/rtc-framework/integrated_bringup/config/iiwa7_leap/mujoco_simulator.yaml:projectile_ball.radius_m",
-          "mass_kg": "/home/junho/ros2_ws/rtc_ws/src/rtc-framework/integrated_bringup/config/iiwa7_leap/mujoco_simulator.yaml:projectile_ball.mass_kg",
+          "radius_m": "iiwa7_leap/mujoco_simulator.yaml:projectile_ball.radius_m",
+          "mass_kg": "iiwa7_leap/mujoco_simulator.yaml:projectile_ball.mass_kg",
           "drag_coefficient": "rtc_mujoco_sim/src/projectile_ball.cpp:30",
           "air_density_kg_m3": "rtc_mujoco_sim/include/rtc_mujoco_sim/projectile_ball.hpp:98"
         }

@@ -205,6 +205,21 @@ def test_every_set_is_a_set_of_the_population_the_robots_configuration_defines(r
                 assert any(abs(t[axis] - v) < 1e-9 for v in grid[axis]), (arm, t["throw_id"], axis)
 
 
+@pytest.mark.parametrize("robot", ROBOTS)
+def test_a_shipped_set_names_no_path_of_the_pc_it_was_judged_on(robot):
+    """The ball's sources are relative to the configuration folder (#822): the label
+    names a file of this robot's folder, the same from a source tree and an install."""
+    for arm, listed in _sets(robot).items():
+        with open(_path(robot, arm), encoding="utf-8") as handle:
+            assert "/home/" not in handle.read(), arm
+        for key in ("radius_m", "mass_kg"):
+            label = listed.meta["design"]["ball"]["sources"][key]
+            file, _, field = label.rpartition(":")
+            assert field == f"projectile_ball.{key}", (arm, label)
+            assert file.startswith(f"{robot}/"), (arm, label)
+            assert os.path.isfile(os.path.join(CONFIG, file)), (arm, label)
+
+
 def test_the_shipped_file_is_what_the_loader_reads_bit_for_bit():
     # The pairing key is the file's sha256: the file on disk must be the document the
     # loader validates — no trailing edits, one JSON document, UTF-8.
