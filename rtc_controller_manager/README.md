@@ -650,6 +650,7 @@ Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleN
 - **YAML 에 없는 경로는 WARN 한 줄을 낸 뒤 그대로 쓴다.** 문구에는 파라미터 이름, YAML 에 있는 가장 긴 접두, 그리고 그 경로로 끝나는 기존 키가 후보로 최대 3개 나온다. 판정은 쓰기 전의 트리로 하므로, 앞 override 가 만든 노드는 뒤 override 의 "있는 접두" 로 세지 않는다.
 - **거부하지 않는 이유.** 컨트롤러는 YAML 에 없는 키를 내장 기본값과 함께 읽을 수 있고, 그런 키의 override 는 정당하다. CM 은 그것과 오타를 구별할 수 없다.
 - **출하 bring-up 은 이 경고가 0건이어야 한다.** launch 가 쓰는 키는 Python 쪽 검사가 출하 YAML 의 키임을 미리 고정한다 (`rtc_tools.utils.controller_config` 와 `integrated_bringup` 의 pytest). 런타임 경고는 그 검사 밖에서 들어온 override 를 위한 것이다.
+- **config 파일이 없는 컨트롤러에 온 override 는 적용하지 않고 WARN 한 줄로 이름을 알린다.** 그 컨트롤러는 위 첫째 갈래대로 내장 기본값으로 돈다. override 가 "파일 없음" 을 일부만 채운 트리로 바꾸지 않게 하기 위해서다.
 
 ### 컨트롤러 YAML 을 여러 파일로 나누기 — `include:`
 

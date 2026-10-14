@@ -259,6 +259,27 @@ void WarnOverridesAbsentFromYaml(const rclcpp::Logger& logger, const YAML::Node&
   }
 }
 
+// The controller's config file is absent, so nothing receives @p names.
+void WarnOverridesWithoutConfigFile(const rclcpp::Logger& logger, const std::string& config_key,
+                                    const std::string& variant,
+                                    const std::vector<std::string>& names) {
+  if (names.empty()) {
+    return;
+  }
+  constexpr std::size_t kMaxListed = 5;
+  std::string listed;
+  for (std::size_t i = 0; i < names.size() && i < kMaxListed; ++i) {
+    listed.append(i == 0 ? "'" : ", '").append(names[i]).append("'");
+  }
+  if (names.size() > kMaxListed) {
+    listed.append(" (+").append(std::to_string(names.size() - kMaxListed)).append(" more)");
+  }
+  RCLCPP_WARN(logger,
+              "[param-override] '%s' has no config file in config_variant '%s', so %zu "
+              "override(s) aimed at it are not applied: %s",
+              config_key.c_str(), variant.c_str(), names.size(), listed.c_str());
+}
+
 // Walk ROS parameter names under `<config_key>.` and apply each as a nested
 // write into @p ctrl_node, treating `.` as the YAML path separator.
 //
@@ -790,6 +811,12 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       config_file_absent = true;
       RCLCPP_INFO(get_logger(), "No config file for '%s' (pkg=%s) — using built-in defaults",
                   ctrl->Name().data(), entry.config_package.c_str());
+      // The throw came before ApplyControllerParamOverrides, so overrides aimed
+      // at this controller go nowhere. They stay unapplied — an override must
+      // not turn "no file, built-in defaults" (D2) into a partial tree — but
+      // they are named, since the operator set them expecting an effect.
+      WarnOverridesWithoutConfigFile(get_logger(), entry.config_key, variant,
+                                     ListControllerOverrideNames(*this, entry.config_key));
     } catch (const std::exception& e) {
       RCLCPP_ERROR(get_logger(), "Config load failed for '%s' (pkg=%s): %s", ctrl->Name().data(),
                    entry.config_package.c_str(), e.what());
