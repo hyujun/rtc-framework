@@ -416,6 +416,7 @@ ros2 run rtc_tools catching_trials <session> <trials_dir> --config-dir <install>
 - `solve_table` 은 로그의 풀이를 한 행씩 편다 — wake 의 구간 풀이와, 교체가 보류된 wake 에서는 그 교체의 첫 풀이 (`replacement_*` 열, 종류 `repl_first`; 로그에 outcome · 사유 · 반복 · 시간만 있다). `first_solves_cut` 은 행마다 기한에 끊긴 첫 풀이의 수다 (둘 다 센다).
 - `solve_groups` 는 그 풀이를 종류 · outcome · 코어 사유 · 불능 행 그룹으로 묶어 건수, 반복과 QP 수의 중앙값, 위의 시간 요약, QP solver 가 단계별 시간에서 차지하는 비중, 그룹별 위반 (어떤 풀이든 위반한 그룹만) 을 낸다. 로그에 없는 열에서 나오는 값은 `None` 이다 — 옛 78 열 로그는 묶음이 거칠 뿐 그대로 읽힌다. `format_solve_groups` 가 텍스트 표다.
 - `nlp_summary` (`nlp` 탐색의 wake 사유 · 후보 수 · 검사별 탈락 수 · 가장 느린 후보 풀이 — 기한 사유로 후보를 거부한 wake 는 따로 세고 끊겼다고 단정하지 않는다) · `replace_summary` (교체 시도가 끝난 자리).
+- `first_wake_rows` · `first_wake_summary` (#822): 투척의 **첫 wake** — 정지에서 출발한 첫 풀이의 행 (`segment_kind` `first`, `segment_x0_from_segment` 0) 가운데 투척 (`track_generation`) 마다 가장 이른 것 (게시되지 않은 첫 풀이 뒤의 wake 도 다시 첫 풀이를 푼다). 요약은 투척 수 · 게시 수 · `n_pre` (= −`segment_k`) 분포와 `n_pre_max` 에 닿은 수 · 첫 풀이의 시간 (`summarise_times`, p99 는 하한인지와 함께) 과 주어진 예산이다.
 - 열 이름의 접미 (`DOCKING_ROW_GROUPS` · `NLP_REJECT_REASONS` · `REPLACE_STEPS`) 는 C++ 의 이름 함수와 테스트로 대조한다 (`test/test_planner_solves.py`).
 
 ### `catching_pool.py` — S8-E arm 합산 판정 (dynamic_catching S8-E)
@@ -1020,7 +1021,10 @@ ros2 run rtc_tools catch_gate_map \
   `wall` 열만 빼고 비교한다). shard 가 둘 이상이면 `wakes.csv` 는 남기지 않는다 (`--keep-shards` 로 `shards/` 를 둔다)
 - **출처**: 요약의 `provenance` — 합성 트리 (`catching_tree.yaml`) 의 sha256, 합성에 쓴 파일과 그 sha256, checkout 의
   commit · dirty 여부, batch 바이너리의 경로 · sha256, 도달 구 (`catch_search_batch --print-reach-bound`),
-  `--estimator-profile` 의 `prediction.horizon_s` 와 `--prediction-horizon-s` 가 같은지. `verdicts_*.csv` 의
+  `--estimator-profile` 의 `prediction.horizon_s` 와 `--prediction-horizon-s` 가 같은지. 공의 반지름 · 질량의 출처 라벨은
+  설정 폴더 안의 파일이면 `<설정 폴더 이름>/<상대 경로>:<key>` 다 (`ur5e_p1b/mujoco_simulator.yaml:projectile_ball.radius_m` —
+  `config_relative_sources`, `load_setup` 에서 한 번; source tree 와 install 이 같은 바이트를 쓴다). 폴더 밖의 경로와 C++ 상수의
+  `file:line` 은 그대로다. `verdicts_*.csv` 의
   `search_wall_us` 는 그 투척의 `Plan` 호출 벽시계 합이다 (실행마다 다르다)
 - **sim 표의 층**: 수용 · 미게시 행은 plan 을 붙든 층으로 한 번 더 나뉜다 (`not_published_by_layer` — `plan_reject` 의
   `:` 앞: `segment` · `cycle` · `search`)
@@ -1170,8 +1174,11 @@ ascending 인 칸, 출처) · `catching_tree.yaml` · `model_config.yaml`.
   조합을 계속한다
 - **`inputs.json`**: 판정에 쓴 설정 폴더의 YAML 전부 (설정 파일 자신은 `config.yaml` 이 묶는다) 의 sha256. 첫 실행이 적고,
   그 뒤의 실행은 파일이 바뀌었으면 **바뀐 파일의 이름을 대며 거부한다** — 컨트롤러 YAML 을 고친 뒤 같은 `--out` 으로 다시
-  돌리면 "이미 있는" 지도와 집단이 새 설정의 것으로 넘어가기 때문이다. 판정기의 바이너리는 여기 묶지 않는다 (조합마다
-  manifest 의 provenance 에 적힌다)
+  돌리면 "이미 있는" 지도와 집단이 새 설정의 것으로 넘어가기 때문이다. 판정기 (`catch_search_batch`) 바이너리의 sha256 도
+  `judge_sha256` 으로 적는다 (경로는 PC 의 것이라 적지 않고, 판정기를 찾지 못하면 그 key 가 없다). 판정기는 **거부하지 않고
+  경고한다**: 적힌 것과 다른 바이너리로 이어 돌리면 stderr 에 `WARNING` 을 내고 `inputs.json` 은 그대로 둔다 — 지금 도는
+  단계는 새 판정기의 판정이고 건너뛴 단계는 옛 판정을 지닌다 (판정기의 동작이 바뀌었으면 새 `--out`). 그 key 가 없는 옛
+  `inputs.json` 에는 경고하지 않는다. 조합마다의 판정기는 지도 요약의 provenance 가 갖는다
 - **설정 파일은 쓴 대로 읽거나 거부한다**: 따옴표 없는 `-40:40:20` 은 YAML 이 60 진수 정수로 읽으므로 거부하고 (범위는
   따옴표를 친 문자열 `'lo:hi:step'` 이다), 같은 키를 두 번 쓴 파일도 거부한다
 - **던질 목록은 지금 있는 집단의 것이어야 한다**: `sample.json` 이 적은 집단의 sha256 이 집단 파일과 다르면 다시 뽑는다.
@@ -1182,7 +1189,8 @@ ascending 인 칸, 출처) · `catching_tree.yaml` · `model_config.yaml`.
 - **`catch_population_report`** 는 폴더의 파일만 읽는다 (판정하지 않고, 로봇의 설정 폴더도 필요 없다). `report/` 에
   `population_report.txt` (같은 내용을 터미널에) — 설정 (격자 · 발사각 범위 · 제한), 집단의 크기 (설계점 → 발사 불가 ·
   제한으로 빠진 수 → 모집단 → 조합별 search · segment → 던질 수), 거부 사유 (지도 요약의 것), 조합끼리의 겹침, 여섯 축의
-  값별 · 속력 · 통과 시간 · 정점 높이의 구간별 수와 모집단 대비 비율. 판정하지 않은 집단은 `not judged` 다. 통계는 있는 함수다:
+  값별 · 속력 · 통과 시간 · 정점 높이의 구간별 수와 모집단 대비 비율. 판정하지 않은 집단은 `not judged` 다. 조합들의 지도를
+  서로 다른 판정기 바이너리가 판정했으면 머리에 `judge binaries: N different — <조합> <sha12>, …` 줄이 붙는다. 통계는 있는 함수다:
   축별 비율은 `catch_search_map.acceptance_by_axis`, 겹침은 `search_disagreement`, 구간은 `catching_trials.wilson_interval`
 - **3D plot** (PNG, `--show` 면 창도): 집단마다 `set_<이름>.png` (발사점 → 통과점의 비행을 발사각 색으로, 대기 자세의 팔과
   포구점), 조합마다 `sets_<조합>.png` (집단마다 한 색). 그리는 비행은 집단당 `--max-flights` 개까지이고 (`throw_id` 의 해시로
@@ -1523,6 +1531,7 @@ tree = doc["demo_x_controller"]      # 주 파일 + 조각이 합쳐진 트리
 | `load_controller_config(path, *, config_key=None, loader=yaml.SafeLoader)` | 문서를 조각과 합쳐 `{<config_key>: 트리}` 로 돌려준다. `include` 가 없는 파일은 읽은 그대로. key 를 아는 호출자는 `config_key` 를 넘긴다 — CM 처럼 파일의 key 가 다르면 거부한다 |
 | `controller_config_leaf_lines(tree)` | leaf 마다 한 줄 (`경로\t값`). C++ `ControllerConfigLeafLines` 와 같은 줄을 낸다 — scalar 의 글자까지 비교하려면 `loader=yaml.BaseLoader` 로 읽는다 |
 | `ControllerConfigIncludeError` | 없는 조각 · 중복 leaf · 형식 오류. 주 파일이 없으면 `OSError` 가 그대로 올라간다 |
+| `unread_leaves(tree, shipped)` · `tree_leaves` · `yaml_kind` | override 트리의 leaf 가운데 합성된 출하 트리에 없는 key 이거나 다른 YAML 타입 (`bool` · `int` · `float` · `str` · `list[…]`) 인 것 — 런타임은 없는 key 를 만들기만 하고 읽지 않는다. overlay 를 쓰는 도구 (`integrated_bringup/tools/catching_eval` 의 `mk_overlay.py --set` · `make_conditions.py`) 와 테스트가 같이 쓴다 |
 
 C++ 로더의 mirror 다. 규칙을 바꾸면 `rtc_controller_manager/src/controller_config_loader.cpp` 와 함께 바꾼다 (PROC-5).
 
