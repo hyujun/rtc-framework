@@ -17,6 +17,7 @@
 // every one of those configures would start failing. One TU, one command-type
 // shape.
 
+#include "rt_cm_log_sink.hpp"
 #include "rt_cm_pipeline_fixtures.hpp"
 #include "rt_cm_test_access.hpp"
 
@@ -26,13 +27,8 @@
 #include <gtest/gtest.h>
 #include <rcutils/logging.h>
 
-#include <array>
-#include <cstdarg>
-#include <cstdio>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace rtc {
@@ -97,98 +93,6 @@ RTC_REGISTER_CONTROLLER(rtc_cm_pd_feedforward_test, "", "rtc_controller_manager"
                         std::make_unique<PdFeedforwardTestController>())
 RTC_REGISTER_DEVICE_BACKEND(cm_position_only_backend, std::make_unique<PositionOnlyBackend>())
 RTC_REGISTER_DEVICE_BACKEND(cm_any_type_backend, std::make_unique<AnyCommandTypeBackend>())
-
-// ── Log capture ─────────────────────────────────────────────────────────────
-//
-// The advisory's only observable is the log line. It deliberately does not
-// refuse, does not change the CallbackReturn, and adds no member to the node —
-// inventing a counter on RtControllerNode purely so a test could read it would
-// put test-only state in the RT node, so the assertion goes to the sink the
-// message actually reaches.
-//
-// No other test in this tree captures logs. The handler is process-global, and
-// this binary is already a single-TU island (see the file header) precisely so
-// that command-type shapes cannot leak into unrelated fixtures — which makes it
-// the one place such a handler can be installed without that reach.
-class LogSink {
- public:
-  static void Install() {
-    {
-      const std::lock_guard<std::mutex> lock(Mutex());
-      Lines().clear();
-    }
-    Previous() = rcutils_logging_get_output_handler();
-    rcutils_logging_set_output_handler(&LogSink::Handler);
-  }
-
-  static void Restore() {
-    if (Previous() != nullptr) {
-      rcutils_logging_set_output_handler(Previous());
-      Previous() = nullptr;
-    }
-  }
-
-  // Captured lines at `severity` containing every needle. Matching on
-  // substrings rather than the whole message keeps the assertions from pinning
-  // wording that carries no contract — but each needle below is a claim the
-  // operator has to receive, not decoration.
-  static std::vector<std::string> Matching(int severity, const std::vector<std::string>& needles) {
-    const std::lock_guard<std::mutex> lock(Mutex());
-    std::vector<std::string> hits;
-    for (const auto& [sev, text] : Lines()) {
-      if (sev != severity) {
-        continue;
-      }
-      bool all = true;
-      for (const auto& needle : needles) {
-        if (text.find(needle) == std::string::npos) {
-          all = false;
-          break;
-        }
-      }
-      if (all) {
-        hits.push_back(text);
-      }
-    }
-    return hits;
-  }
-
- private:
-  // Longer than any message this suite asserts on; vsnprintf truncates and
-  // NUL-terminates regardless, so an overlong line degrades to a shorter
-  // capture rather than corrupting the sink.
-  static constexpr std::size_t kLineBufferSize = 1024;
-
-  static void Handler(const rcutils_log_location_t* /*location*/, int severity,
-                      const char* /*name*/, rcutils_time_point_value_t /*timestamp*/,
-                      const char* format, va_list* args) {
-    std::array<char, kLineBufferSize> buf{};
-    va_list copy;
-    va_copy(copy, *args);
-    (void)std::vsnprintf(buf.data(), buf.size(), format, copy);
-    va_end(copy);
-    const std::lock_guard<std::mutex> lock(Mutex());
-    Lines().emplace_back(severity, std::string(buf.data()));
-  }
-
-  // Function-local statics rather than data members: the handler is a plain C
-  // function pointer with no user-data slot, so the sink has to be reachable
-  // without an instance.
-  static std::mutex& Mutex() {
-    static std::mutex m;
-    return m;
-  }
-
-  static std::vector<std::pair<int, std::string>>& Lines() {
-    static std::vector<std::pair<int, std::string>> lines;
-    return lines;
-  }
-
-  static rcutils_logging_output_handler_t& Previous() {
-    static rcutils_logging_output_handler_t handler{nullptr};
-    return handler;
-  }
-};
 
 rclcpp_lifecycle::State StateUnconfigured() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,

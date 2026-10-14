@@ -15,6 +15,7 @@
 // share dir (ament runtime lookup, ARCH-5 compliant — see <test_depend>).
 
 #include "rclcpp_suite_fixture.hpp"
+#include "rt_cm_log_sink.hpp"
 #include "rt_cm_test_access.hpp"
 #include "rtc_controller_interface/controller_registry.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
@@ -24,6 +25,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <gtest/gtest.h>
+#include <rcutils/logging.h>
 
 #include <chrono>
 #include <memory>
@@ -86,10 +88,12 @@ class OnConfigureTest : public RclcppSuiteTest {
  protected:
   void SetUp() override {
     OnConfigureTestController::fail_load_config.store(false, std::memory_order_relaxed);
+    LogSink::Install();
   }
 
   void TearDown() override {
     OnConfigureTestController::fail_load_config.store(false, std::memory_order_relaxed);
+    LogSink::Restore();
   }
 
   // Builds a node and pre-declares low-side-effect parameters so the bring-up
@@ -290,6 +294,37 @@ TEST_F(OnConfigureTest, MissingControllerConfigFileFallsBackToDefaults) {
   auto node = MakeNode();
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
   EXPECT_EQ(1U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OnConfigureTest, OverridesForAControllerWithoutAConfigFileAreNamedNotApplied) {
+  // Same absent file, now with overrides aimed at the controller. LoadFile
+  // throws before the overrides are applied, so they used to vanish without a
+  // word (issue #574). They are still not applied — the controller runs on its
+  // built-in defaults exactly as above — but the configure names them.
+  auto node = MakeNode();
+  node->declare_parameter("rtc_cm_test_ctrl.gains.kp", 3.0);
+  node->declare_parameter("rtc_cm_test_ctrl.mode", std::string("fast"));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+
+  EXPECT_EQ(1U, LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN,
+                                  {"[param-override]", "'rtc_cm_test_ctrl'", "no config file",
+                                   "'rtc_cm_test_ctrl.gains.kp'", "'rtc_cm_test_ctrl.mode'"})
+                    .size());
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OnConfigureTest, AControllerWithoutAConfigFileAndNoOverridesIsNotWarnedAbout) {
+  // The D2 default path itself is not a warning — only overrides with nowhere
+  // to go are. Paired with the case above so this absence check cannot pass on
+  // a sink that captures nothing.
+  auto node = MakeNode();
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_TRUE(LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, {"[param-override]"}).empty());
+  EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"No config file for"}).empty())
+      << "the sink saw nothing — the absence above proves nothing";
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 

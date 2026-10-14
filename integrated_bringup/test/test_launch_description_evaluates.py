@@ -651,10 +651,10 @@ def test_no_viewer_input_enabled_leaves_it_to_the_yaml(filename):
 # given as launch arguments instead of an overlay file. The path they take —
 # a `demo_catching_controller.*` parameter poked into the controller's YAML —
 # CREATES whatever key it is given (test_catch_lead_overlays.py's docstring has
-# the measured case), so what is pinned here is exactly what would otherwise be
-# silent: the two keys the launch writes are keys the shipped controller YAML
-# has, with its type; nothing is written without the arguments; and a value that
-# is not a mode stops the launch.
+# the measured case), so what is pinned here is what would otherwise surface
+# only as a configure-time warning once the sim is up: the two keys the launch
+# writes are keys the shipped controller YAML has, with its type; nothing is
+# written without the arguments; and a value that is not a mode stops the launch.
 CATCH_SIMS = (P1B_SIM, LEAP_SIM)
 CATCH_KEYS = {
     "demo_catching_controller.catching.planner.search.mode": "nlp",
@@ -707,7 +707,7 @@ def test_no_catch_mode_argument_leaves_the_controller_to_its_yaml(filename):
 def test_the_keys_the_catch_mode_arguments_write_are_shipped_controller_keys(filename):
     """The read-back a throw driver does (the controller's mirror) is the runtime half;
     this is the half that needs no sim: a key one level off would be created, never
-    read, and the unit would silently be the shipped pair."""
+    read, and the unit would be the shipped pair with only a configure warning to say so."""
     from test_catch_lead_overlays import CONTROLLER, _shipped_tree, _unread_leaves
 
     robot, name = SHIPPED_CONTROLLER[filename]

@@ -5,7 +5,8 @@
 // config_variant=test_fixtures) declares an "arm" device group. Covers the
 // paths test_on_configure.cpp (group-less controller) cannot reach:
 //   - params.cpp: config_variant YAML path, ApplyControllerParamOverrides +
-//     SetYamlScalarFromParam (all scalar/array kinds), matched device-timeout
+//     SetYamlScalarFromParam (all scalar/array kinds) and the warning for an
+//     override whose path the YAML lacks (issue #574), matched device-timeout
 //     parsing, initial_controller found-branch, logging block with log_dir,
 //     urdf.closure_path explicit override
 //   - device_config.cpp: ParseSubModels/ParseTreeModels, LoadDeviceNameConfigs
@@ -17,6 +18,7 @@
 // configure-time fixture, same as test_on_configure.cpp).
 
 #include "rclcpp_suite_fixture.hpp"
+#include "rt_cm_log_sink.hpp"
 #include "rt_cm_pipeline_fixtures.hpp"
 #include "rt_cm_test_access.hpp"
 
@@ -24,6 +26,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <gtest/gtest.h>
+#include <rcutils/logging.h>
 
 #include <filesystem>
 #include <memory>
@@ -50,7 +53,18 @@ rclcpp_lifecycle::State StateInactive() {
 
 class CmConfigPipelineTest : public RclcppSuiteTest {
  protected:
-  void SetUp() override { PipelineTestController::ResetCaptured(); }
+  void SetUp() override {
+    PipelineTestController::ResetCaptured();
+    LogSink::Install();
+  }
+
+  void TearDown() override { LogSink::Restore(); }
+
+  static std::vector<std::string> OverrideWarnings(const std::vector<std::string>& needles) {
+    std::vector<std::string> all{"[param-override]"};
+    all.insert(all.end(), needles.begin(), needles.end());
+    return LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, all);
+  }
 
   // Node with the test_fixtures config variant active and low-side-effect
   // defaults. Individual tests declare devices.* / urdf.* parameters on top.
@@ -109,6 +123,134 @@ TEST_F(CmConfigPipelineTest, ParamOverridesReachControllerYaml) {
   EXPECT_DOUBLE_EQ(4.25, PipelineTestController::captured_deep_b);
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── Param overrides naming a path the YAML lacks (issue #574) ───────────────
+//
+// The write creates whatever path it is handed, so a key one level off used to
+// be written, never read, and the run silently used the shipped value. The
+// configure now warns about such a path — and still writes it, because a
+// controller may read a key with a built-in default that its YAML omits (this
+// fixture's gains.vals is one: absent from the YAML, read by LoadConfig).
+
+TEST_F(CmConfigPipelineTest, AnOverrideOfAPathTheYamlLacksWarnsAndIsStillWritten) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.gains.kp", 9.5);   // in the YAML
+  node->declare_parameter("rtc_cm_cfg_test.deep.a.b", 4.25);  // in the YAML, 3 levels
+  node->declare_parameter("rtc_cm_cfg_test.gains.vals", std::vector<double>{1.5, 2.5});  // not
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  // Exactly one warning, for the absent path, naming the part that does exist.
+  // The presence check sits beside the absence checks on purpose: on its own,
+  // "no warning" would also pass with the sink capturing nothing.
+  EXPECT_EQ(1U, OverrideWarnings({"'rtc_cm_cfg_test.gains.vals'", "prefix: 'gains'"}).size());
+  EXPECT_EQ(1U, OverrideWarnings({}).size()) << "an override of a present path was warned about";
+
+  EXPECT_EQ((std::vector<double>{1.5, 2.5}), PipelineTestController::captured_vals);
+  EXPECT_DOUBLE_EQ(9.5, PipelineTestController::captured_kp);
+  EXPECT_DOUBLE_EQ(4.25, PipelineTestController::captured_deep_b);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(CmConfigPipelineTest, AShallowOverrideNamesTheKeyItProbablyMeant) {
+  // `a.b` for the YAML's `deep.a.b`: the mistake #574 is about. The value never
+  // reaches the controller — it keeps the YAML's 0.0 — so the warning is the
+  // operator's only signal, and it has to point at the real key.
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.a.b", 4.25);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  EXPECT_EQ(1U, OverrideWarnings({"'rtc_cm_cfg_test.a.b'", "prefix: none", "'deep.a.b'"}).size());
+  EXPECT_DOUBLE_EQ(0.0, PipelineTestController::captured_deep_b);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(CmConfigPipelineTest, ANodeAnEarlierOverrideCreatedIsNotAnExistingPrefix) {
+  // Two siblings under a block the YAML does not have. Overrides are visited in
+  // name order, so newblock.x is written before newblock.y is judged; a check
+  // made between writes would see the `newblock` map x created and report it
+  // as an existing prefix of y. Both are judged on the tree as loaded.
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.newblock.x", 1.0);
+  node->declare_parameter("rtc_cm_cfg_test.newblock.y", 2.0);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  EXPECT_EQ(1U, OverrideWarnings({"'rtc_cm_cfg_test.newblock.x'", "prefix: none"}).size());
+  EXPECT_EQ(1U, OverrideWarnings({"'rtc_cm_cfg_test.newblock.y'", "prefix: none"}).size());
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// An override that cannot be written without breaking the YAML's structure is
+// a bad override, and a bad override refuses the configure (#196 D1). Each of
+// these used to fail differently: through a scalar it threw a bare
+// BadSubscript right after a WARN that called it harmless, through a sequence
+// it turned the list into a map, onto a map it replaced every key under it,
+// and an override beside its own parent key broke whichever came second.
+
+class CmOverrideRefusalTest : public CmConfigPipelineTest {
+ protected:
+  static std::vector<std::string> RefusalErrors(const std::vector<std::string>& needles) {
+    std::vector<std::string> all{"[param-override]", "cannot be written"};
+    all.insert(all.end(), needles.begin(), needles.end());
+    return LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, all);
+  }
+};
+
+TEST_F(CmOverrideRefusalTest, AnOverrideThroughAScalarRefusesAndSaysWhy) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.gains.kp.x", 1.0);
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, RefusalErrors({"'rtc_cm_cfg_test.gains.kp.x'", "scalar 'gains.kp'"}).size());
+  // Not also announced as "written anyway" — the refusal above is non-empty,
+  // so this absence is not a dead sink.
+  EXPECT_TRUE(OverrideWarnings({"'rtc_cm_cfg_test.gains.kp.x'"}).empty());
+}
+
+TEST_F(CmOverrideRefusalTest, AnOverrideThroughASequenceRefuses) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.topics.arm.subscribe.extra", 1.0);
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, RefusalErrors({"'rtc_cm_cfg_test.topics.arm.subscribe.extra'",
+                               "sequence 'topics.arm.subscribe'"})
+                    .size());
+}
+
+TEST_F(CmOverrideRefusalTest, AnOverrideNamingAMapRefuses) {
+  // `gains` for `gains.kp`: the shallow mistake in the other direction. Written,
+  // the value would replace kp, label, enabled and count at once.
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.gains", 2.0);
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, RefusalErrors({"'rtc_cm_cfg_test.gains'", "names the map 'gains'"}).size());
+}
+
+TEST_F(CmOverrideRefusalTest, AnOverrideBesideItsOwnParentKeyRefuses) {
+  // `newblock-x` sorts between `newblock` and `newblock.x` ('-' < '.'), so the
+  // pair is not adjacent in name order and a neighbour-only check misses it.
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.newblock", 1.0);
+  node->declare_parameter("rtc_cm_cfg_test.newblock-x", 0.5);
+  node->declare_parameter("rtc_cm_cfg_test.newblock.x", 2.0);
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U,
+            RefusalErrors({"'rtc_cm_cfg_test.newblock' and 'rtc_cm_cfg_test.newblock.x'"}).size());
 }
 
 // Issue #350's profile reaches each controller's OWN node. The launches set it

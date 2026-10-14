@@ -21,6 +21,7 @@
 // index is still in range.
 
 #include "rclcpp_suite_fixture.hpp"
+#include "rt_cm_log_sink.hpp"
 #include "rt_cm_test_access.hpp"
 #include "rtc_controller_interface/controller_registry.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
@@ -30,6 +31,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <gtest/gtest.h>
+#include <rcutils/logging.h>
 
 #include <memory>
 #include <span>
@@ -93,7 +95,12 @@ rclcpp_lifecycle::State StateUnconfigured() {
 
 class RequiredConfigTest : public RclcppSuiteTest {
  protected:
-  void SetUp() override { RequiredConfigController::load_config_calls.store(0); }
+  void SetUp() override {
+    RequiredConfigController::load_config_calls.store(0);
+    LogSink::Install();
+  }
+
+  void TearDown() override { LogSink::Restore(); }
 
   static std::shared_ptr<RtControllerNode> MakeNode() {
     auto node = std::make_shared<RtControllerNode>("test_cm_required_config_node");
@@ -161,6 +168,24 @@ TEST_F(RequiredConfigTest, APresentButMisspelledConfigStillRefuses) {
   EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
   EXPECT_EQ(1, RequiredConfigController::load_config_calls.load())
       << "the file was found, so LoadConfig must have been reached and thrown";
+}
+
+TEST_F(RequiredConfigTest, AMisspelledConfigStillRefusesWithAnOverrideAimedAtIt) {
+  // The same typo'd file, now with an override for the controller. Written into
+  // the undefined node, the override would make it a defined map holding only
+  // `kp` — and the controller would accept that and configure on one override.
+  // The override is named and not applied, so the node stays empty and the
+  // refusal above still happens.
+  auto node = MakeNode();
+  node->declare_parameter("config_variant", std::string("test_required_cfg_typo"));
+  node->declare_parameter("rtc_cm_required_cfg_test.kp", 2.0);
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1, RequiredConfigController::load_config_calls.load());
+  EXPECT_EQ(1U, LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN,
+                                  {"[param-override]", "'rtc_cm_required_cfg_test'", "not applied",
+                                   "'rtc_cm_required_cfg_test.kp'"})
+                    .size());
 }
 
 TEST_F(RequiredConfigTest, AMissingIncludeFragmentRefusesRatherThanSkips) {

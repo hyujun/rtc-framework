@@ -20,8 +20,10 @@
 #include <algorithm>
 #include <cmath>  // std::lround
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>  // std::as_const
 #include <vector>
 
 namespace urtc = rtc;
@@ -109,6 +111,255 @@ void SetYamlScalarFromParam(YAML::Node node, const std::string& key,
   }
 }
 
+// Names of the ROS parameters aimed at one controller's YAML: everything under
+// `<config_key>.` with at least one path segment after it. rclcpp happens to
+// return them in name order (its store is a std::map); they are sorted here so
+// the warning order, the write order and the conflict check below do not rest
+// on that implementation detail.
+std::vector<std::string> ListControllerOverrideNames(rclcpp_lifecycle::LifecycleNode& node,
+                                                     const std::string& config_key) {
+  // list_parameters depth counts `.`-separated segments from the root; we
+  // set a generous cap to cover any reasonable nested YAML.
+  constexpr uint64_t kMaxDepth = 20;
+  const auto params = node.list_parameters({config_key}, kMaxDepth);
+  const std::string prefix = config_key + ".";
+  std::vector<std::string> names;
+  for (const auto& pname : params.names) {
+    if (pname.rfind(prefix, 0) == 0 && !SplitDotPath(pname.substr(prefix.size())).empty()) {
+      names.push_back(pname);
+    }
+  }
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+std::string JoinDotPath(const std::vector<std::string>& parts, std::size_t count) {
+  std::string out;
+  for (std::size_t i = 0; i < count && i < parts.size(); ++i) {
+    out.append(i == 0 ? "" : ".").append(parts[i]);
+  }
+  return out;
+}
+
+// `'a', 'b', 'c' (+N more)` — at most @p max_listed of @p items, quoted, and
+// the count of the rest when @p total exceeds what is listed.
+std::string QuotedList(const std::vector<std::string>& items, std::size_t max_listed,
+                       std::size_t total) {
+  std::string out;
+  const std::size_t listed = std::min(items.size(), max_listed);
+  for (std::size_t i = 0; i < listed; ++i) {
+    out.append(i == 0 ? "'" : ", '").append(items[i]).append("'");
+  }
+  if (total > listed) {
+    out.append(" (+").append(std::to_string(total - listed)).append(" more)");
+  }
+  return out;
+}
+
+// What writing an override at @p parts would do to the loaded tree.
+struct OverridePathProbe {
+  enum class Kind {
+    kLeaf,      // the path exists and ends at a leaf: an ordinary override
+    kAbsent,    // the path leaves the YAML at `depth`: the write creates the rest
+    kBlocked,   // a scalar or sequence sits at `depth - 1` with the path going on
+    kNamesMap,  // the path ends at a non-empty map: a value would replace it whole
+  };
+  Kind kind{Kind::kLeaf};
+  std::size_t depth{0};  // leading segments of the path that exist in the YAML
+  const char* blocker{""};
+};
+
+// Classify the path an override names against @p root, a defined map.
+//
+// Read-only, and it cannot throw — both properties are load-bearing, because
+// yaml-cpp 0.8 makes either easy to lose:
+//   - every subscript goes through the CONST overload (`std::as_const`): the
+//     non-const one creates the key it is asked for;
+//   - a node is subscripted only once it is known to be a map. A const
+//     subscript that misses returns a zombie node on which IsMap() / Type()
+//     throw InvalidNode (IsDefined() is the one safe query), and subscripting a
+//     scalar throws BadSubscript even through the const overload.
+// A null on the way counts as absent: the write turns it into a map, which is
+// what an override under a key left empty means.
+OverridePathProbe ProbeOverridePath(const YAML::Node& root, const std::vector<std::string>& parts) {
+  using Kind = OverridePathProbe::Kind;
+  YAML::Node cur;
+  cur.reset(root);
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    const YAML::Node child = std::as_const(cur)[parts[i]];
+    if (!child.IsDefined()) {
+      return {Kind::kAbsent, i, ""};
+    }
+    const bool last = i + 1 == parts.size();
+    if (last) {
+      return child.IsMap() && child.size() > 0 ? OverridePathProbe{Kind::kNamesMap, i + 1, ""}
+                                               : OverridePathProbe{Kind::kLeaf, i + 1, ""};
+    }
+    if (child.IsNull()) {
+      return {Kind::kAbsent, i + 1, ""};
+    }
+    if (!child.IsMap()) {
+      return {Kind::kBlocked, i + 1, child.IsSequence() ? "sequence" : "scalar"};
+    }
+    cur.reset(child);
+  }
+  return {Kind::kLeaf, parts.size(), ""};
+}
+
+// Every leaf path of @p node, in tree order: a key whose value is not a
+// non-empty map (a sequence is one leaf — the loader's rule, and the one an
+// override follows, since it replaces a sequence whole).
+void CollectLeafPaths(const YAML::Node& node, std::vector<std::string>& path,
+                      std::vector<std::vector<std::string>>& out) {
+  for (const auto& kv : node) {
+    path.push_back(kv.first.Scalar());
+    if (kv.second.IsMap() && kv.second.size() > 0) {
+      CollectLeafPaths(kv.second, path, out);
+    } else {
+      out.push_back(path);
+    }
+    path.pop_back();
+  }
+}
+
+// Pass 1 of ApplyControllerParamOverrides: judge every override against the
+// tree EXACTLY as loaded, before any write — judged after (or between) writes,
+// a node an earlier override created would count as an existing prefix for a
+// later sibling. Returns whether pass 2 may write.
+//
+//   - A path the YAML lacks is WARNed about and written. The write creates
+//     whatever path it is handed, so a key one level off is written and never
+//     read and the run silently uses the shipped value — but an override may
+//     also target a key the controller reads with a built-in default that its
+//     YAML omits, which is legitimate and indistinguishable from here.
+//   - A path that cannot be written without breaking the YAML's structure
+//     refuses the configure (a bad override, #196 D1): one through a scalar
+//     (the write throws BadSubscript), one through a sequence (the write turns
+//     the list into a map), one ending at a non-empty map (the value replaces
+//     every key under it), and two overrides of which one is the other's
+//     ancestor (whichever is written second breaks the first).
+//   - A tree that is undefined (file present, top-level key missing or
+//     misspelled) or null receives no override. Written into, it would become
+//     an override-only partial tree, and an undefined one would stop being the
+//     empty node the controller refuses — the registry's promise for a
+//     misspelled key (ControllerEntry::config_required).
+bool CheckOverridePaths(const rclcpp::Logger& logger, const YAML::Node& tree,
+                        const std::string& config_key, const std::vector<std::string>& names) {
+  using Kind = OverridePathProbe::Kind;
+  if (names.empty()) {
+    return true;
+  }
+  constexpr std::size_t kMaxListed = 5;
+  if (!tree.IsDefined() || tree.IsNull()) {
+    RCLCPP_WARN(logger,
+                "[param-override] the config file for '%s' has no tree under that key (top-level "
+                "key missing or misspelled?), so %zu override(s) aimed at it are not applied: %s",
+                config_key.c_str(), names.size(),
+                QuotedList(names, kMaxListed, names.size()).c_str());
+    return false;
+  }
+  if (!tree.IsMap()) {
+    throw std::runtime_error("[param-override] the config tree for '" + config_key +
+                             "' is not a map, so no override can be written into it: " +
+                             QuotedList(names, kMaxListed, names.size()));
+  }
+
+  constexpr std::size_t kMaxCandidates = 3;
+  const std::string prefix = config_key + ".";
+  std::vector<std::vector<std::string>> leaves;
+  bool leaves_collected = false;
+  std::vector<std::string> refusals;
+
+  for (std::size_t n = 0; n < names.size(); ++n) {
+    const std::string& pname = names[n];
+    // Sorted, so every name that starts with `pname` follows it in one run
+    // (not necessarily adjacent to it: `a-x` sorts between `a` and `a.b`).
+    // Writing an ancestor and its descendant breaks one of them: the
+    // ancestor's value is replaced by the map the descendant needs, or the
+    // descendant's walk hits the ancestor's scalar.
+    for (std::size_t m = n + 1; m < names.size() && names[m].rfind(pname, 0) == 0; ++m) {
+      if (names[m].rfind(pname + ".", 0) == 0) {
+        refusals.push_back("'" + pname + "' and '" + names[m] +
+                           "' are both set, and one is the other's parent key");
+        break;
+      }
+    }
+
+    const auto parts = SplitDotPath(pname.substr(prefix.size()));
+    const auto probe = ProbeOverridePath(tree, parts);
+    if (probe.kind == Kind::kLeaf) {
+      continue;
+    }
+    if (probe.kind == Kind::kBlocked) {
+      refusals.push_back("'" + pname + "' goes through the " + probe.blocker + " '" +
+                         JoinDotPath(parts, probe.depth) + "'");
+      continue;
+    }
+    if (probe.kind == Kind::kNamesMap) {
+      refusals.push_back("'" + pname + "' names the map '" + JoinDotPath(parts, probe.depth) +
+                         "' (a value would replace every key under it)");
+      continue;
+    }
+
+    if (!leaves_collected) {
+      std::vector<std::string> path;
+      CollectLeafPaths(tree, path, leaves);
+      leaves_collected = true;
+    }
+    // Candidates: existing leaves the override path is a strict tail of — the
+    // shape of "the right key, written one or more levels too shallow".
+    std::vector<std::string> candidates;
+    std::size_t candidate_count = 0;
+    for (const auto& leaf : leaves) {
+      if (leaf.size() <= parts.size() ||
+          !std::equal(parts.begin(), parts.end(),
+                      leaf.end() - static_cast<std::ptrdiff_t>(parts.size()))) {
+        continue;
+      }
+      ++candidate_count;
+      if (candidates.size() < kMaxCandidates) {
+        candidates.push_back(JoinDotPath(leaf, leaf.size()));
+      }
+    }
+    const std::string hint =
+        candidates.empty()
+            ? ""
+            : "; did you mean " + QuotedList(candidates, kMaxCandidates, candidate_count);
+    const std::string existing =
+        probe.depth == 0 ? "none" : "'" + JoinDotPath(parts, probe.depth) + "'";
+    RCLCPP_WARN(logger,
+                "[param-override] '%s' names a path the controller YAML does not have (longest "
+                "existing prefix: %s). It is written anyway, and takes effect only if the "
+                "controller reads that path with a built-in default — otherwise it is ignored%s",
+                pname.c_str(), existing.c_str(), hint.c_str());
+  }
+
+  if (!refusals.empty()) {
+    std::string what = "[param-override] " + std::to_string(refusals.size()) +
+                       " override(s) cannot be written without breaking the YAML's structure";
+    for (const auto& refusal : refusals) {
+      what.append("; ").append(refusal);
+    }
+    throw std::runtime_error(what);
+  }
+  return true;
+}
+
+// The controller's config file is absent, so nothing receives @p names.
+void WarnOverridesWithoutConfigFile(const rclcpp::Logger& logger, const std::string& config_key,
+                                    const std::string& variant,
+                                    const std::vector<std::string>& names) {
+  if (names.empty()) {
+    return;
+  }
+  constexpr std::size_t kMaxListed = 5;
+  RCLCPP_WARN(logger,
+              "[param-override] '%s' has no config file in config_variant '%s', so %zu "
+              "override(s) aimed at it are not applied: %s",
+              config_key.c_str(), variant.c_str(), names.size(),
+              QuotedList(names, kMaxListed, names.size()).c_str());
+}
+
 // Walk ROS parameter names under `<config_key>.` and apply each as a nested
 // write into @p ctrl_node, treating `.` as the YAML path separator.
 //
@@ -120,22 +371,21 @@ void SetYamlScalarFromParam(YAML::Node node, const std::string& key,
 // does NOT participate in the ROS parameter tree, so launch-arg overrides
 // (e.g. sim_ur5e_p1a.launch.py's `enable_mpc` / `mpc_engine` flags) would otherwise
 // be silently discarded. This helper is the single bridge between the two.
+// Every path is judged before anything is written — see CheckOverridePaths
+// for what is warned about, what refuses the configure, and when nothing is
+// written at all.
 void ApplyControllerParamOverrides(rclcpp_lifecycle::LifecycleNode& node, YAML::Node ctrl_node,
                                    const std::string& config_key) {
-  // list_parameters depth counts `.`-separated segments from the root; we
-  // set a generous cap to cover any reasonable nested YAML.
-  constexpr uint64_t kMaxDepth = 20;
-  const auto params = node.list_parameters({config_key}, kMaxDepth);
-  const std::string prefix = config_key + ".";
+  const auto names = ListControllerOverrideNames(node, config_key);
+  if (!CheckOverridePaths(node.get_logger(), ctrl_node, config_key, names)) {
+    return;
+  }
 
-  for (const auto& pname : params.names) {
-    if (pname.rfind(prefix, 0) != 0) {
-      continue;
-    }
+  // Pass 2: write. Pass 1 let through only paths that run over maps and nulls,
+  // so the non-const walk below can neither throw nor convert a sequence.
+  const std::string prefix = config_key + ".";
+  for (const auto& pname : names) {
     const auto parts = SplitDotPath(pname.substr(prefix.size()));
-    if (parts.empty()) {
-      continue;
-    }
 
     // Walk to the parent map. CRITICAL: `Node::operator=` in yaml-cpp is a
     // VALUE COPY that overwrites the left-hand node's data — using it here
@@ -645,6 +895,12 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       config_file_absent = true;
       RCLCPP_INFO(get_logger(), "No config file for '%s' (pkg=%s) — using built-in defaults",
                   ctrl->Name().data(), entry.config_package.c_str());
+      // The throw came before ApplyControllerParamOverrides, so overrides aimed
+      // at this controller go nowhere. They stay unapplied — an override must
+      // not turn "no file, built-in defaults" (D2) into a partial tree — but
+      // they are named, since the operator set them expecting an effect.
+      WarnOverridesWithoutConfigFile(get_logger(), entry.config_key, variant,
+                                     ListControllerOverrideNames(*this, entry.config_key));
     } catch (const std::exception& e) {
       RCLCPP_ERROR(get_logger(), "Config load failed for '%s' (pkg=%s): %s", ctrl->Name().data(),
                    entry.config_package.c_str(), e.what());

@@ -8,7 +8,8 @@ loaded, and creates whatever key is not there. An override path one level short
 to a key nothing reads, the controller configures, and the run is the shipped
 profile — measured 2026-09-24: the startup log read ``commit at t_c − 0.360 s``
 (shipped) with no warning anywhere. Every number from such a run would describe
-the wrong arm.
+the wrong arm. Since #574 the configure warns about such a path
+(``[param-override]``) but does not refuse it, so this check stays the gate.
 
 So every leaf an override writes must name a key the shipped
 ``demo_catching_controller.yaml`` already has, with the same YAML type
