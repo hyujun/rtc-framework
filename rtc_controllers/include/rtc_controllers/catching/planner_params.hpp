@@ -219,7 +219,13 @@ struct MpcSegmentPlannerParams {
   /// trust region lets the QP bend it back, and a reference that stops short
   /// of the catch pose is what withholds a reachable catch (#819). At the
   /// upper bound the reach is never shortened while the box can make it at
-  /// all (T_v ≤ t_span).
+  /// all (T_v ≤ t_span). How far above 1 still solves is bounded by
+  /// `delta_tr`, not by this range: the bend-back needs the reference's area
+  /// over the box within 2·delta_tr, which grows with the joint's box and the
+  /// span — the parser cannot check it (it knows neither the span nor the
+  /// joint). A value past it turns the long reaches into failed solves
+  /// (#819, offline, δ 0.1 and a 0.6 s span: most first solves fail from 1.3
+  /// on one shipped arm and from 1.6 on the other).
   double ref_speed_fraction{0.9};
   /// `solver.max_iter` · `max_iter_in` (≥ 1) · `eps_abs` (> 0) · `eps_rel`
   /// (≥ 0): the QP's tolerances. Preconditioner and backend stay in code.

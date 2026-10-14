@@ -266,9 +266,9 @@ struct SegmentRecord {
   bool cold_start{false};      ///< the core's main QP started from zero
   bool solver_retried{false};  ///< the core's own warm → cold re-run (cold_retried)
   /// First solve: the reference's target was outside the core's position
-  /// box (clamped), or — from an arm at rest — its minimum-jerk speed over
-  /// 0.9·η_v·q̇_max (scaled). A reference that starts on a moving arm is never
-  /// scaled.
+  /// box (clamped), or — from an arm at rest — its minimum-jerk peak speed
+  /// over `linearization.ref_speed_fraction`·η_v·q̇_max (scaled). A reference
+  /// that starts on a moving arm is never scaled.
   bool ref_clamped{false};
   bool ref_scaled{false};
   double ref_scale{std::numeric_limits<double>::quiet_NaN()};      ///< smallest per-joint factor
