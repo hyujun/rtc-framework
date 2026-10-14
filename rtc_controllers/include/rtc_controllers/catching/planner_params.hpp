@@ -44,6 +44,13 @@
 
 namespace rtc::catching {
 
+/// Peak speed of a rest-to-rest minimum-jerk reach over displacement d in time
+/// T: 1.875·|d|/T (the quintic's 30 s²(1−s)² at s = ½). The first solve's
+/// reference is cut against it (MpcSegmentPlanner::PlanFirst), and it bounds
+/// `linearization.ref_speed_fraction`: at that value a reach is cut only when
+/// the box could not make it in the span at any speed profile.
+inline constexpr double kMinJerkPeakFactor = 1.875;
+
 /// Range bounds (L3 §6). Exposed so the tests and the doc table cite the same
 /// numbers the parser enforces.
 inline constexpr double kPlannerWakeTimeoutMinS = 0.005;
@@ -205,8 +212,20 @@ struct MpcSegmentPlannerParams {
   /// `linearization.reference_rest_tol` — |q̇̄_N|, |q̈̄_N| bound of a supplied
   /// reference; above `solver.eps_abs`.
   double reference_rest_tol{1e-4};
-  /// `linearization.ref_speed_fraction` ∈ (0, 1] — the first solve's reference
-  /// reaches its target at this fraction of the velocity box η_v·q̇_max (MD-62).
+  /// `linearization.ref_speed_fraction` ∈ (0, kMinJerkPeakFactor] — the first
+  /// solve's reference (a rest-to-rest minimum-jerk reach per joint, MD-62) is
+  /// shortened where its peak speed would pass this fraction of the velocity
+  /// box η_v·q̇_max. Above 1 the reference may run faster than the box: the
+  /// trust region lets the QP bend it back, and a reference that stops short
+  /// of the catch pose is what withholds a reachable catch (#819). At the
+  /// upper bound the reach is never shortened while the box can make it at
+  /// all (T_v ≤ t_span). How far above 1 still solves is bounded by
+  /// `delta_tr`, not by this range: the bend-back needs the reference's area
+  /// over the box within 2·delta_tr, which grows with the joint's box and the
+  /// span — the parser cannot check it (it knows neither the span nor the
+  /// joint). A value past it turns the long reaches into failed solves
+  /// (#819, offline, δ 0.1 and a 0.6 s span: most first solves fail from 1.3
+  /// on one shipped arm and from 1.6 on the other).
   double ref_speed_fraction{0.9};
   /// `solver.max_iter` · `max_iter_in` (≥ 1) · `eps_abs` (> 0) · `eps_rel`
   /// (≥ 0): the QP's tolerances. Preconditioner and backend stay in code.

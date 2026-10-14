@@ -817,8 +817,12 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
     // pre-catch part, held from the catch node on. The target is clamped into
     // the core's position box (the IK clamps to the limits themselves) and the
     // reach shortened where its peak speed 1.875·|d|/T would pass
-    // 0.9·η_v·q̇_max — a reference the box cannot follow would only be refused
-    // by the trust region. A joint the plan is not of has no reach: its
+    // ref_speed_fraction·η_v·q̇_max. The fraction may exceed 1: the trust
+    // region absorbs a reference that runs over the box for a while, and a
+    // reference cut short of the catch pose is what makes the solve miss it
+    // (#819) — but one far over the box leaves no solution inside both the
+    // box and ±δ of it. Joint by joint, so a wrist that cannot make it does
+    // not cut the shoulder. A joint the plan is not of has no reach: its
     // reference is its start, at rest (q_star says nothing of it).
     std::array<double, kMaxPlanNv> dq{};
     bool finite = true;
@@ -848,7 +852,8 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
       const double clamped = std::clamp(target, q_lo_[U(m)], q_hi_[U(m)]);
       rec.ref_clamped = rec.ref_clamped || clamped != target;
       double step = clamped - q0;
-      const double allowed = params_.ref_speed_fraction * v_box_[U(m)] * t_span / 1.875;
+      const double allowed =
+          params_.ref_speed_fraction * v_box_[U(m)] * t_span / kMinJerkPeakFactor;
       if (!(std::fabs(step) <= allowed)) {
         rec.ref_scaled = true;
         scale_min = std::min(scale_min, allowed / std::fabs(step));

@@ -1881,8 +1881,10 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
   EXPECT_EQ(d.solver_max_iter_in, core.solver.max_iter_in) << profile;
   EXPECT_EQ(d.solver_eps_abs, core.solver.eps_abs) << profile;
   EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel) << profile;
-  EXPECT_EQ(d.ref_speed_fraction, 0.9) << profile;  // the planner's former constant
-  EXPECT_EQ(core.w_perp, 0.0);                      // the default; `cost.w_perp` is tested below
+  // `linearization.ref_speed_fraction` is written (the key list above) but not
+  // compared here: #819 moves it off the planner's former constant 0.9, and
+  // ShipsTheFirstReferenceFractionMeasured pins it.
+  EXPECT_EQ(core.w_perp, 0.0);  // the default; `cost.w_perp` is tested below
 
   // The search: the IK options equal CatchPoseIkOptions{} field by field —
   // except the two the profile has always set (k_manip, max_iter) and the
@@ -1993,6 +1995,35 @@ TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOn) {
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
   EXPECT_EQ(planner.mpc_segment.w_perp, 100.0) << profile;
   EXPECT_EQ(rtc::catching::MpcSegmentCoreParams{}.w_perp, 0.0) << "the code default stays off";
+}
+
+TEST_P(ShippedCatchingProfile, ShipsTheFirstReferenceFractionMeasured) {
+  // #819: `linearization.ref_speed_fraction` is WRITTEN in
+  // catching/segment_mpc.yaml, at a value #819 measured rather than at the
+  // code default, and the parse runs what is written. The code default stays
+  // the planner's former constant 0.9; a profile that lost the key would run it.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const YAML::Node lin = node["catching"]["planner"]["segment"]["mpc"]["linearization"];
+  ASSERT_TRUE(lin.IsMap()) << profile;
+  ASSERT_TRUE(lin["ref_speed_fraction"].IsDefined())
+      << profile << ": linearization.ref_speed_fraction is not written";
+  const double written = lin["ref_speed_fraction"].as<double>();
+  // The measured value, 1.2 on both profiles: above 1, so the first solve's
+  // reference may pass the velocity box and is not cut short of the catch pose.
+  EXPECT_EQ(written, 1.2) << profile;
+  const std::string fragment = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                               "/controllers/catching/segment_mpc.yaml";
+  const YAML::Node in_fragment =
+      YAML::LoadFile(fragment)["demo_catching_controller"]["catching"]["planner"]["segment"]["mpc"]
+                              ["linearization"]["ref_speed_fraction"];
+  EXPECT_TRUE(in_fragment.IsDefined()) << profile << ": the key belongs to segment_mpc.yaml";
+  const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  EXPECT_EQ(planner.mpc_segment.ref_speed_fraction, written) << profile;
+  EXPECT_EQ(rtc::catching::MpcSegmentPlannerParams{}.ref_speed_fraction, 0.9)
+      << "the code default stays the planner's former constant";
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {

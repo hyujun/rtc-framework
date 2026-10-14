@@ -68,8 +68,10 @@
 // The catch terms need a reference: the kinematic pre-solve below is a STOP
 // problem and knows no catch point, so Solve() rejects reference_valid = false
 // (kReferenceRequired) instead of linearising a reach around "stay where you
-// are". Building the first reference (wait pose → the plan's posture at t_c,
-// inside the velocity box) is the caller's job.
+// are". Building the first reference (wait pose → the plan's posture at t_c)
+// is the caller's job. It need not be inside the velocity box: the box rows
+// and the trust region bend a reference that runs over it back (#819), as long
+// as its area over the box stays within 2·delta_tr of reach.
 // Limits are checked at the nodes only; between nodes of the coarse part the
 // velocity is a quadratic and may overshoot the box by a little.
 //

@@ -34,7 +34,8 @@
 //        pose with no command behind it (cmd_seeded false), which is where it
 //        seeds the command on adoption. x₀ = (q_cmd, 0, 0); the reference is a
 //        per-joint minimum-jerk reach to q_star (clamped to the core's box,
-//        slowed to 0.9·η_v·q̇_max), held from the catch node on.
+//        its peak capped at ref_speed_fraction·η_v·q̇_max — may be over the
+//        box, #819), held from the catch node on.
 //      – A PLAN FOLLOWED (rt.plan_active): the segment is the first of that
 //        plan's REPLACEMENT, and the arm is moving. x₀ = (q, q̇, q̈) is the
 //        segment the RT reports pending or following (SourceSeq at node 0's

@@ -1776,7 +1776,7 @@ q_{\mathrm{ref}}(s)=q_0+\dot q_0T\,s+\tfrac12\ddot q_0T^2s^2+c_3s^3+c_4s^4+c_5s^
 \begin{aligned}c_3&=10d-6\dot q_0T-\tfrac32\ddot q_0T^2\\ c_4&=-15d+8\dot q_0T+\tfrac32\ddot q_0T^2\\ c_5&=6d-3\dot q_0T-\tfrac12\ddot q_0T^2\end{aligned}
 $$
 
-포구 노드부터는 $(q^\ast,0,0)$ 을 든다. 정지 출발의 기준 (최소 jerk 도달) 은 이 식에서 $\dot q_0=\ddot q_0=0$ 인 경우다. 정지 출발에서 하는 기준의 속력 축소 (최고 속력이 한계를 넘지 않게 변위를 줄이는 것) 는 움직이는 출발에는 하지 않는다 — 그 상한은 경계 속도가 0 인 곡선의 것이고, 이 곡선의 속력은 QP 의 행과 노드 사이 속도 판정이 본다.
+포구 노드부터는 $(q^\ast,0,0)$ 을 든다. 정지 출발의 기준 (최소 jerk 도달) 은 이 식에서 $\dot q_0=\ddot q_0=0$ 인 경우다. 정지 출발에서 하는 기준의 속력 축소 (최고 속력이 `linearization.ref_speed_fraction` 배의 속도 box 를 넘지 않게 변위를 줄이는 것 — 1 위면 기준이 box 를 넘을 수 있다, [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) §13) 는 움직이는 출발에는 하지 않는다 — 그 상한은 경계 속도가 0 인 곡선의 것이고, 이 곡선의 속력은 QP 의 행과 노드 사이 속도 판정이 본다.
 
 plan 이 이 계획기의 모델의 일부 관절의 것이면 (`PlanSnapshot::joint_set` — 17.11) 그 밖의 관절에는 $q^\ast$ 가 없다. 그 관절의 기준은 정지 출발에서는 변위 0 (명령에 정지) 이고, 움직이는 출발에서는 위 식에서 $d=0$ 이다 — 보고된 구간의 $(q_0,\dot q_0,\ddot q_0)$ 에서 그 위치에 정지한다. 집합의 관절의 기준은 그대로다. 관절을 하나도 들지 않았거나, 모델에 없는 관절을 들었거나, `nv` 가 집합의 크기와 다른 plan 은 받지 않는다 (`PlanJointsWithin`, `kNoState`).
 

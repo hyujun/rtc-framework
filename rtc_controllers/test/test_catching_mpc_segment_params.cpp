@@ -411,14 +411,17 @@ planner:
   EXPECT_EQ(d.solver_max_iter_in, 150);
   EXPECT_EQ(d.solver_eps_abs, 2.0e-7);
   EXPECT_EQ(d.solver_eps_rel, 1.0e-5);
-  // Valid edges: rho_tau 0 (torque rows off), w_delta 0, ref_speed_fraction 1.
+  // Valid edges: rho_tau 0 (torque rows off), w_delta 0, ref_speed_fraction at
+  // the minimum-jerk peak factor (above 1 the reference may run over the
+  // velocity box, #819).
   const auto edge =
       ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {rho_tau: 0.0, w_delta: "
-                                    "0.0}, linearization: {ref_speed_fraction: 1.0}}}}"))
+                                    "0.0}, linearization: {ref_speed_fraction: 1.875}}}}"))
           .mpc_segment;
   EXPECT_EQ(edge.rho_tau, 0.0);
   EXPECT_EQ(edge.w_delta, 0.0);
-  EXPECT_EQ(edge.ref_speed_fraction, 1.0);
+  EXPECT_EQ(edge.ref_speed_fraction, rtc::catching::kMinJerkPeakFactor);
+  EXPECT_EQ(edge.ref_speed_fraction, 1.875);
 }
 
 // Each rejection names the key the profile has to fix. The message is looked
@@ -467,7 +470,10 @@ TEST(MpcSegmentParams, RejectsADesignKeyByName) {
        "planner.segment.mpc.linearization.reference_rest_tol'"},
       {"linearization: {ref_speed_fraction: 0.0}",
        "planner.segment.mpc.linearization.ref_speed_fraction'"},
-      {"linearization: {ref_speed_fraction: 1.01}",
+      // Above kMinJerkPeakFactor the reach would be cut only where the box
+      // cannot make it in the span at all — the key stops meaning anything
+      // (the bound was 1 before #819, a reference inside the box).
+      {"linearization: {ref_speed_fraction: 1.876}",
        "planner.segment.mpc.linearization.ref_speed_fraction'"},
       {"linearization: {ref_speed_fraction: .nan}",
        "planner.segment.mpc.linearization.ref_speed_fraction'"},

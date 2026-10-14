@@ -449,7 +449,7 @@ $\mathcal K_c$ 가 $\lbrace k_c\rbrace$ 로 줄어드는 이유: 손 폐쇄 명�
 
 - 비용의 2차 항은 모두 $\tfrac12\Vert\cdot\Vert^2_W$ 다 (§1.3 과 같은 관례).
 - $e_a$ · $J_a$ 는 `rtc_math` 의 축 정렬 오차다. 그 함수는 정렬 근방 ($\sin\theta\lt10^{-6}$) 에서 $J_a=0$ 을 돌려주므로 코어는 극한 $[a_d] _ \times[z] _ \times$ 를 쓴다 — 0 이면 그 주기에 접근축의 곡률이 사라진다. 기준의 축 오차가 상한 (`catch.axis_theta_max`) 을 넘으면 풀지 않는다 ($\Vert J_a\Vert$ 가 $\theta/\sin\theta$ 로 커져 선형화 반경이 trust region 보다 작아진다).
-- 포구 항이 있는 풀이는 기준 $\bar x$ 를 반드시 받는다. 코어의 pre-solve 는 포구점을 모르는 정지 문제다. 첫 기준 (대기 자세 → plan 의 자세) 은 계획기가 만들고, 속도 box 안이어야 한다.
+- 포구 항이 있는 풀이는 기준 $\bar x$ 를 반드시 받는다. 코어의 pre-solve 는 포구점을 모르는 정지 문제다. 첫 기준 (대기 자세 → plan 의 자세) 은 계획기가 만든다. 그 기준은 속도 box 를 넘을 수 있고 (trust region 이 되돌린다), 식과 속력 규칙은 §13 이 적는다.
 - 경로 이탈 $w_{path}$ 는 구현하지 않은 항이다. $W_p$ 는 공분산에서 만든 가중뿐이고 (`CatchPositionWeight`) $w_{path}P_\perp$ 를 더하지 않는다.
 - $w_\Delta$ 와 $\rho_\tau$ 는 노드마다 같은 가중이다 (구간 길이로 가중하지 않는다). 간격이 다른 격자 사이에서는 같은 값이 다른 세기다.
 - 한계는 노드에서만 건다. 노드 사이의 속도는 2 차식이라 box 를 조금 넘을 수 있다.
@@ -1453,7 +1453,7 @@ G1 구성에서 포구 후보는 탐색이 고르고 (§1.3 "포구 시각"), �
 
 | | $j\in\mathcal S$ | $j\notin\mathcal S$ |
 |---|---|---|
-| `mpc` 의 첫 기준 — 정지 출발 | $q_{0,j}$ 에서 $q^\ast_j$ 로 가는 최소 jerk 도달 (속도 box 에 맞춰 줄인다) | 변위 0 — $q_{0,j}$ 에 정지 |
+| `mpc` 의 첫 기준 — 정지 출발 | $q_{0,j}$ 에서 $q^\ast_j$ 로 가는 최소 jerk 도달 (최고 속력이 `ref_speed_fraction` 배의 box 를 넘으면 줄인다 — §13) | 변위 0 — $q_{0,j}$ 에 정지 |
 | `mpc` 의 첫 기준 — 교체 쌍 | $(q_{0,j},\dot q_{0,j},\ddot q_{0,j})$ 에서 $(q^\ast_j,0,0)$ 까지의 5 차 다항식 | 같은 다항식을 $(q_{0,j},0,0)$ 까지 |
 | `mpc_docking` 의 포구 자세 목표 | $q^\ast_j$ | $q_{0,j}$ |
 | `mpc_docking` 의 시작 궤적 — 탐색의 해가 사슬의 것일 때 | 탐색의 해의 노드 | 모든 노드에서 $q_{0,j}$ 에 정지 |
@@ -1463,3 +1463,42 @@ G1 구성에서 포구 후보는 탐색이 고르고 (§1.3 "포구 시각"), �
 **일치 조건** (§4 항목 16). $\mathcal S$ 밖의 관절이 사슬 모델이 그 관절을 잠근 자세에 정지해 있어 그 관절의 행이 비활성이고, 토크 행이 활성이 아니며, 비용에 토크 항이 없으면, 구간 모델의 문제를 푼 해의 사슬 관절 성분은 사슬 문제의 해와 solver 의 수렴 오차 안에서 같다. 그때 넓힌 사슬의 해에서 출발한 `mpc_docking` 의 풀이는 SQP 반복 한 번으로 끝난다. 토크 행이 비활성인 것만으로는 부족하다: 토크 비용 ($r_\tau$) 은 구간 모델에서 $\mathcal S$ 밖 관절의 토크를 재고, 사슬 관절의 토크도 그 관절들의 자세에 의존하므로, 그 비용이 있으면 구간 문제의 최적해는 $\mathcal S$ 밖 관절을 움직이고 사슬 관절의 해도 사슬 문제의 것에서 벗어난다 — 구간 모델 위의 토크 비용은 그 자체로 전신 항이다. `mpc` 코어는 토크를 행으로만 갖고 비용으로 갖지 않아 이 일치가 그대로 성립한다. 판정 기준은 [ball_catching_inverse_dynamics_mpc.md](ball_catching_inverse_dynamics_mpc.md) §17.15 가 갖는다.
 
 **탐색의 토크 행.** 다른 body 를 잠근 사슬 모델의 역동역학은 로봇의 것이 아니다. 그런 탐색 모델에서는 `nlp` 탐색의 코어가 토크 행 없이 풀 수 있다 (`planner.search.nlp.core.rows.torque` — [ball_catching_inverse_dynamics_mpc.md](ball_catching_inverse_dynamics_mpc.md) §17.11). 구간의 코어는 토크 행을 끄지 못한다 — 구간은 팔이 따르는 것이다.
+
+## 13. `mpc` 의 첫 풀이 — 기준 궤적과 게시 판정 (#819)
+
+`mpc` planner (`MpcSegmentPlanner`) 가 plan 의 첫 구간을 풀 때 코어에 주는 기준 $\bar x$ 와, 풀린 구간을 게시할지의 판정이다. 교체 쌍 (움직이는 출발) 의 기준 식은 [ball_catching_inverse_dynamics_mpc.md](ball_catching_inverse_dynamics_mpc.md) §17.12 가 갖고, 여기서는 정지 출발의 기준과 그 속력 규칙, 게시 판정을 식으로 적는다. 경위는 #819 (착수 분석 · 측정) 가 갖는다.
+
+### 13.1 정지 출발의 기준
+
+팔이 대기 자세의 명령 $q_{\mathrm{cmd}}$ 에 정지해 있을 때 ($\max_j\vert\dot q_{\mathrm{cmd},j}\vert\le$ `approach.rest_tol`) 첫 구간의 격자는 $t_c$ 에 닻 내린 포구 전 $n_{\mathrm{pre}}$ 구간 (간격 $\Delta_{\mathrm{pre}}$, $T=n_{\mathrm{pre}}\Delta_{\mathrm{pre}}$) 과 정지 구간이고, $x_0=(q_0,0,0)$, $q_{0,j}=\mathrm{clamp}(q_{\mathrm{cmd},j},\,[q^{\mathrm{lo}}_j,q^{\mathrm{hi}}_j])$ (코어의 위치 box — URDF 한계 ∩ CLIK box 에 `m_q` 여유) 다. 관절 $j$ 의 변위는
+
+$$d_j=\mathrm{clamp}\big(q^\ast_j,\,[q^{\mathrm{lo}}_j,q^{\mathrm{hi}}_j]\big)-q_{0,j}\quad(j\in\mathcal S),\qquad d_j=0\quad(j\notin\mathcal S)$$
+
+($\mathcal S$ 는 plan 의 관절 집합 — §12). 기준은 관절마다 정지에서 정지로 가는 최소 jerk 도달이고 포구 노드부터는 $(q_{0,j}+\tilde d_j,0,0)$ 을 든다 ($s=t/T\in[0,1]$):
+
+$$q_{\mathrm{ref},j}(s)=q_{0,j}+\tilde d_j\,(10s^3-15s^4+6s^5),\qquad \dot q_{\mathrm{ref},j}(s)=\frac{\tilde d_j}{T}\,30s^2(1-s)^2,\qquad \ddot q_{\mathrm{ref},j}(s)=\frac{\tilde d_j}{T^2}\,(60s-180s^2+120s^3).$$
+
+**속력 규칙.** 이 곡선의 최고 속력은 $s=\tfrac12$ 에서 $1.875\,\vert\tilde d_j\vert/T$ 다 (`kMinJerkPeakFactor`). 변위는 관절마다 따로, 그 최고 속력이 $\varphi\,\eta_v\dot q_{\max,j}$ 를 넘지 않는 데까지 자른다:
+
+$$\tilde d_j=\mathrm{sign}(d_j)\,\min\!\Big(\vert d_j\vert,\ \frac{\varphi\,\eta_v\dot q_{\max,j}\,T}{1.875}\Big),\qquad \varphi=\texttt{linearization.ref\_speed\_fraction}\in(0,\,1.875].$$
+
+- $\varphi\le1$ 이면 기준이 속도 box 안이다. $\varphi>1$ 이면 기준이 box 위로 넘는 구간이 생기고, 코어는 그것을 노드마다 $\pm\delta$ (`delta_tr`) 의 trust region 과 속도 box 의 hard 행으로 되돌린다. 해가 존재하려면 기준이 box 위로 넘는 면적 $E_j=\int\max(0,\vert\dot q_{\mathrm{ref},j}\vert-\eta_v\dot q_{\max,j})\,dt$ 가 $2\delta$ 를 넘지 않아야 한다 (운동학의 필요조건 — 노드 사이의 해는 box 안의 속력으로 기준보다 $2\delta$ 이상 뒤질 수 없다). $\varphi=1.875$ 는 $T_v=T$ ($T_v=\max_j\vert d_j\vert/(\eta_v\dot q_{\max,j})$ — box 로 가는 데 드는 시간) 로, 그 위는 box 안의 어떤 궤적도 닿지 않아 파서가 거부한다.
+- 자른 관절이 있으면 기록은 `ref_scaled` 와 $\min_j\vert\tilde d_j\vert/\vert d_j\vert$ (`ref_scale`), $\max_j(\vert d_j\vert-\vert\tilde d_j\vert)$ (`ref_shortfall` [rad]) 를 남긴다. $\mathcal S$ 밖 관절은 자르는 대상이 아니다 (변위 0).
+- 왜 자르는가, 왜 1 위인가: 자르지 않은 기준이 box 를 크게 넘으면 QP 가 실행 불가이고 (위 $E_j>2\delta$), 잘린 기준은 포구 자세에 못 미친 곳에 선형화되어 포구 위치 오차로 보류된다 — 두 로봇의 sim 에서 첫 wake 의 보류의 주된 사유였다 (#819). 출하 값은 로봇별 `segment_mpc.yaml` 이 갖고 두 로봇 모두 1.2 다 — #819 의 측정: 오프라인 구간 판정에서 1.2 는 잘린 기준이 아직 풀리는 마지막 값이고 (`ur5e_p1b` 게시 893 → 2,593 / 14,565), 1.4 부터 잘린 기준이 토크 slack 으로 보류되며 1.6 부터 QP 가 실행 불가다. sim (묶음 셋) 의 게시는 `ur5e_p1b` 213 → 439, `iiwa7_leap` 611 → 681.
+
+### 13.2 게시 판정
+
+풀린 구간 (노드 $0\ldots N_{\mathrm{tot}}$, $k_c=n_{\mathrm{pre}}$) 은 다음을 모두 만족할 때만 게시되고, 하나라도 아니면 구간과 plan 이 함께 보류된다 (MD-56 · MD-62). 순서대로 보고 처음 걸린 사유를 `segment_outcome` 에 남긴다.
+
+| 조건 | 식 | 사유 |
+|---|---|---|
+| 풀이 성공 | 코어가 해를 냈다 | `solve_failed` (+ 코어 사유) |
+| 예산 | $t_{\mathrm{end}}-t_{\mathrm{start}}\le$ `budget.first_s` (재계획은 `budget.replan_s`) | `budget` |
+| 효력 시각 | 풀이가 끝난 시각 $+T_{\mathrm{arm}}+2h\lt t_{\mathrm{eff}}$ (노드 0 의 시각) | `late` |
+| 토크 slack | $\max s\le$ `publish.slack_max`, 종단 블록의 $\max s\le$ `publish.slack_terminal_max` (둘 다 유한) | `slack` |
+| 포구 위치 | $\Vert p_C(q_{k_c})-\hat p_b\Vert\le$ `publish.catch_pos_err_max` (포구 코어만) | `catch_error` |
+| 노드 사이 속도 | 모든 노드와, $\ddot q$ 의 부호가 바뀌는 구간의 내부 극값에서 $\vert\dot q_j\vert\le\dot q_{\max,j}$ (정격 — box 가 아니다) | `speed` |
+| 종단 정지 | $\vert\dot q_{j,N_{\mathrm{tot}}}\vert,\ \vert\ddot q_{j,N_{\mathrm{tot}}}\vert\le$ `linearization.reference_rest_tol` (게시된 구간은 다음 풀이의 기준이 된다) | `solve_failed` |
+| payload | `ValidateSegmentNodes` (노드 수 · 유한성 · `kSegmentRestTol`) | `solve_failed` |
+
+풀이마다 남는 기록 (`planner_events.csv` 의 `segment_*`): 위 사유와 그 값 (`catch_pos_err` · `slack_max` · `speed_ratio_max` · `solve_us` 등), 기준의 `ref_clamped` · `ref_scaled` · `ref_scale` · `ref_shortfall`, 정지 직선과 이탈 (`segment_stop_*`).

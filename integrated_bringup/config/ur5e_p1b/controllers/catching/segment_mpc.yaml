@@ -157,10 +157,20 @@ demo_catching_controller:
             # published node N that rests looser than that). The third "rest tol" beside approach.rest_tol and
             # the planner's own admission tolerance.
             reference_rest_tol: 1.0e-4
-            # The first solve's reference reaches its target at this fraction of
-            # eta_v * qdot_max, in (0, 1] (MD-62): the minimum-jerk peak is held
-            # below the velocity box, so the QP can bend the reach.
-            ref_speed_fraction: 0.9
+            # The first solve's reference (a rest-to-rest minimum-jerk reach per
+            # joint, MD-62) is shortened where its peak speed would pass this
+            # fraction of eta_v * qdot_max, in (0, 1.875]. Above 1 the reference
+            # may run over the velocity box: the trust region (delta_tr) bends
+            # it back, while a reference cut short of the catch pose is what
+            # withholds a reachable catch (#819). At 1.875 (the minimum-jerk
+            # peak factor) a reach is cut only where the box cannot make it in
+            # the span at all. Joint by joint. The code default stays 0.9.
+            # 1.2 is measured (#819): offline, the last value whose cut references
+            # still solve (published first solves 893 -> 2,593 of 14,565); from 1.4
+            # the cut references are withheld on torque slack, from 1.6 the QP is
+            # infeasible. In the sim (three chunks) published throws 213 -> 439,
+            # catches 66 -> 135.
+            ref_speed_fraction: 1.2
           solver:
             # ProxQP: outer and inner iteration caps (>= 1) and tolerances. The
             # preconditioner update and the KKT backend are not keys (the RT

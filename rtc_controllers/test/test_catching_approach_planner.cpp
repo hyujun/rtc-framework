@@ -313,6 +313,9 @@ struct Rig {
   }
 };
 
+// Defined with the chain tests below (E3-F01): `plan` without device joint `held`.
+PlanSnapshot WithoutJoint(PlanSnapshot plan, int held, double junk);
+
 std::string Why(const SegmentRecord& r) {
   return std::string(SegmentOutcomeName(r.outcome)) + " / " + r.core_reason_name;
 }
@@ -857,6 +860,91 @@ TEST(ApproachPlanner, TheReferenceSpeedFractionIsTheProfilesOwn) {
     const double allowed = fraction * 0.9 * 2.0 * 0.6 / 1.875;
     EXPECT_NEAR(r.rec.ref_scale, allowed / 1.5, 1e-12) << fraction;
   }
+}
+
+// Above 1 the fraction lets the reference run over the velocity box (#819):
+// a reach whose minimum-jerk peak is between the box and the fraction's cap
+// is handed to the core whole — the trust region bends it back — where the
+// shipped 0.9 cut it; one past the cap is still cut, to the cap; a joint the
+// plan is not of still has no reach.
+TEST(ApproachPlanner, AboveOneTheFractionLetsTheReferencePassTheVelocityBox) {
+  constexpr double kFraction = 1.5;
+  constexpr double kSpan = 0.6;        // n_pre 6 at this t_c
+  constexpr double kVBox = 0.9 * 2.0;  // η_v · q̇_max of model joint 0
+  const double cap = kFraction * kVBox * kSpan / rtc::catching::kMinJerkPeakFactor;  // 0.864
+  // Joint 0 moves 0.8 rad: its peak 1.875·0.8/0.6 = 2.5 rad/s is over the box
+  // (1.8) and under the cap (2.7).
+  constexpr double kMid = 0.8;
+  ASSERT_LT(kVBox * kSpan / rtc::catching::kMinJerkPeakFactor, kMid);
+  ASSERT_LT(kMid, cap);
+  const std::int64_t t_c = kT0 + 800 * kMs;
+  for (const bool chain : {false, true}) {
+    SCOPED_TRACE(chain ? "a plan without model joint 1" : "a plan of every joint");
+    MpcSegmentPlannerParams p = ApproachParams();
+    p.ref_speed_fraction = kFraction;
+    Rig r(Arm6(), p);
+    const Catch c = CatchAt(r.arm, Offset(r.arm, 0.02));
+    Catch mid = c;
+    mid.q_catch = r.arm.q_nominal;
+    mid.q_catch[0] += kMid;
+    mid.q_catch[1] += kMid;  // the same reach on joint 1, held when `chain`
+    const int held = static_cast<int>(Dev(r.arm, 1));
+    PlanSnapshot plan = PlanFor(r.arm, mid, t_c);
+    if (chain) {
+      plan = WithoutJoint(plan, held, 0.9);
+    }
+    SetClock(kT0);
+    static_cast<void>(r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH), plan,
+                                          BallFor(c), r.out, r.rec));
+    ASSERT_EQ(r.rec.k, -6) << Why(r.rec);
+    // The core solved the over-box reference — the box rows and the trust
+    // region bent it back — whatever the judge says next (this catch pose is
+    // not at the ball).
+    EXPECT_NE(r.rec.outcome, SegmentOutcome::kSolveFailed) << Why(r.rec);
+    EXPECT_GT(r.rec.iterations, 0) << Why(r.rec);
+    EXPECT_FALSE(r.rec.ref_scaled);
+    EXPECT_EQ(r.rec.ref_scale, 1.0);
+    EXPECT_EQ(r.rec.ref_shortfall, 0.0);
+    const rtc::catching::MpcSegmentCoreInput& in = r.planner.ApproachCoreInput(6);
+    ASSERT_TRUE(in.reference_valid);
+    // The whole reach, and its peak at the middle node is over the box.
+    EXPECT_NEAR(in.q_ref(0, 6) - in.q_ref(0, 0), kMid, 1e-12);
+    EXPECT_NEAR(in.qd_ref(0, 3), rtc::catching::kMinJerkPeakFactor * kMid / kSpan, 1e-9);
+    EXPECT_GT(in.qd_ref.row(0).cwiseAbs().maxCoeff(), kVBox);
+    // Joint 1: the same reach when the plan is of it, no reach when it is not.
+    EXPECT_NEAR(in.q_ref(1, 6) - in.q_ref(1, 0), chain ? 0.0 : kMid, 1e-12);
+    EXPECT_EQ(in.qd_ref.row(1).cwiseAbs().maxCoeff() > 0.0, !chain);
+    // Past the cap the reach is cut to the cap, and the record says by how much.
+    Catch far = c;
+    far.q_catch = r.arm.q_nominal;
+    far.q_catch[0] += 1.5;
+    plan = PlanFor(r.arm, far, t_c);
+    if (chain) {
+      plan = WithoutJoint(plan, held, 0.9);
+    }
+    SetClock(kT0);
+    static_cast<void>(r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH), plan,
+                                          BallFor(c), r.out, r.rec));
+    ASSERT_EQ(r.rec.k, -6) << Why(r.rec);
+    EXPECT_NE(r.rec.outcome, SegmentOutcome::kSolveFailed) << Why(r.rec);
+    EXPECT_TRUE(r.rec.ref_scaled);
+    EXPECT_NEAR(r.rec.ref_scale, cap / 1.5, 1e-12);
+    EXPECT_NEAR(r.rec.ref_shortfall, 1.5 - cap, 1e-12);
+    EXPECT_NEAR(in.q_ref(0, 6) - in.q_ref(0, 0), cap, 1e-12);
+  }
+  // The control: at the code default (0.9) the same middle reach is cut.
+  Rig shipped(Arm6());
+  const Catch c = CatchAt(shipped.arm, Offset(shipped.arm, 0.02));
+  Catch mid = c;
+  mid.q_catch = shipped.arm.q_nominal;
+  mid.q_catch[0] += kMid;
+  SetClock(kT0);
+  static_cast<void>(shipped.planner.PlanFirst(
+      RestingRt(shipped.arm, shipped.arm.q_nominal, kT0 - kH), PlanFor(shipped.arm, mid, t_c),
+      BallFor(c), shipped.out, shipped.rec));
+  EXPECT_TRUE(shipped.rec.ref_scaled);
+  EXPECT_NEAR(shipped.rec.ref_scale,
+              (0.9 * kVBox * kSpan / rtc::catching::kMinJerkPeakFactor) / kMid, 1e-12);
 }
 
 // `linearization.reference_rest_tol` is also the planner's own judgement: a

@@ -540,9 +540,13 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
       ReadInterval(lin, "reference_rest_tol", "segment.mpc.linearization.reference_rest_tol",
                    d.reference_rest_tol, 0.0, true, kSegmentRestTol, false,
                    "(0, 1e-3] (kSegmentRestTol, the bound the RT admits a published node N by)");
+  // Upper bound: the minimum-jerk peak factor — at it the reference is cut only
+  // where the velocity box cannot reach the catch pose in the span at all
+  // (T_v > t_span); above it the key would stop meaning anything.
   d.ref_speed_fraction =
       ReadInterval(lin, "ref_speed_fraction", "segment.mpc.linearization.ref_speed_fraction",
-                   d.ref_speed_fraction, 0.0, true, 1.0, false, "(0, 1]");
+                   d.ref_speed_fraction, 0.0, true, kMinJerkPeakFactor, false,
+                   "(0, 1.875] (kMinJerkPeakFactor, the minimum-jerk peak over the box)");
   const YAML::Node solver = Section(mpc, "solver", "segment.mpc.solver");
   d.solver_max_iter = ReadInt(solver, "max_iter", "segment.mpc.solver.max_iter", d.solver_max_iter,
                               1, std::numeric_limits<int>::max());
