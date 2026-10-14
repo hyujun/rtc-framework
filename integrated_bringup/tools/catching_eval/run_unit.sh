@@ -72,6 +72,14 @@
 # (expect_search, expect_ball) beside expect_mode — an arm is search x segment x ball, and
 # summarize.py --unit reads the arm off the mirror and refuses a unit whose conditions say
 # another. The NLP search's budget (planner.search.nlp.budget.*) joins the recorded mirrors.
+# #822 additions: an environment in which integrated_bringup does not import (an unsourced or
+# half-built workspace) ends the unit as FAIL:env before anything is launched (env_failure.txt
+# says why) — check_startup.py would otherwise fail on the import and read as FAIL:startup. The
+# residuals the cleanup kills are those in the sessions of this unit's own groups (LPG/EPG/PPG
+# lead their sessions: setsid): another sim of this workspace, on another domain, is not the
+# unit's. The session is the RT node's `Session dir:` line; without it (the RT node left before it
+# configured) the first `logging_data/<name>` of the log is taken only when it is not older than
+# the unit's minute — an older session is another run's, and is not moved (session_refused.txt).
 # Leaves <out_dir>/status = DONE | FAIL:<why>. Never set -u (setup_env.sh is sourced).
 OUT=$1; SHORT=$2; OV=$3; NT=$4; SEED=$5
 COND=${ARM:-mpc}
@@ -114,6 +122,10 @@ case "$(readlink -f "$REPO")" in
 esac
 cd "$WS" || { echo "FAIL:no workspace $WS" > "$OUT/status"; exit 1; }
 source "$REPO/repo_scripts/scripts/setup_env.sh" >/dev/null 2>&1
+if ! python3 -c 'import integrated_bringup.catching_startup' > "$OUT/env_failure.txt" 2>&1; then
+  echo "FAIL:env" > "$OUT/status"; exit 1
+fi
+rm -f "$OUT/env_failure.txt"
 export ROS_DOMAIN_ID=${EVAL_DOMAIN:-88}
 [ -f "$PROFILE" ] || { echo "FAIL:no profile $PROFILE" > "$OUT/status"; exit 1; }
 
@@ -121,7 +133,8 @@ export ROS_DOMAIN_ID=${EVAL_DOMAIN:-88}
 mkdir -p "$DATA"
 LAST=$(cat "$DATA/.last_minute" 2>/dev/null)
 while [ "$(date +%y%m%d_%H%M)" == "$LAST" ]; do sleep 2; done
-date +%y%m%d_%H%M > "$DATA/.last_minute"
+MINUTE=$(date +%y%m%d_%H%M)
+echo "$MINUTE" > "$DATA/.last_minute"
 
 stop_group() {  # stop_group <pgid> <seconds to wait before KILL>
   [ -z "$1" ] && return
@@ -136,9 +149,13 @@ cleanup() {
   stop_group "$LPG" 20
   sleep 2
   # Residuals by bracket pattern (never pgrep -f in this shell), these two
-  # workspaces only: another workspace may run its own ball_perception.
+  # workspaces only: another workspace may run its own ball_perception. And only
+  # in this unit's sessions: the same workspace's sim on another domain matches
+  # the patterns too. No group started: no session, nothing is killed.
+  local SIDS=" $LPG $EPG $PPG "
   for PAT in "$WS/[^ ]*[m]ujoco_simulator_node" "$WS/[^ ]*[i]ntegrated_rt_controller" "$BWS/[^ ]*[b]all_perception"; do
-    ps -eo pid,args | grep "$PAT" | awk '{print $1}' | xargs -r kill -KILL 2>/dev/null
+    ps -eo pid,sid,args | grep "$PAT" | awk -v sids="$SIDS" 'index(sids, " " $2 " ") { print $1 }' \
+      | xargs -r kill -KILL 2>/dev/null
   done
   sleep 1
 }
@@ -200,7 +217,15 @@ for i in $(seq 1 120); do
   [ $rc -eq 1 ] && { echo "$line" > "$OUT/startup_failure.txt"; break; }
   sleep 1
 done
-grep -o 'logging_data/[0-9_]*' "$OUT/launch.log" | head -1 > "$OUT/session.txt"
+SREL=$(grep -o 'Session dir: [^ ]*logging_data/[0-9_]*' "$OUT/launch.log" | head -1 | grep -o 'logging_data/[0-9_]*')
+if [ -z "$SREL" ]; then
+  SREL=$(grep -o 'logging_data/[0-9_]*' "$OUT/launch.log" | head -1)
+  if [ -n "$SREL" ] && [[ "${SREL#logging_data/}" < "$MINUTE" ]]; then
+    echo "the log names ${SREL#logging_data/}, older than this unit's minute $MINUTE: another run's session, not taken" > "$OUT/session_refused.txt"
+    SREL=""
+  fi
+fi
+echo "$SREL" > "$OUT/session.txt"
 if [ $ok -ne 1 ]; then cleanup; echo "FAIL:startup" > "$OUT/status"; exit 1; fi
 sleep 3
 grep -o 'commit at t_c − [0-9.]* s' "$OUT/launch.log" | head -1 > "$OUT/commit.txt"
