@@ -2,7 +2,7 @@
 """What a unit's EXPECT_KV says of the approach grid it must start with (#822).
 
     expect_kv.py grid <expect_mode> <expect_kv> <expect_npre|-> <expect_dtpre|->
-    expect_kv.py overlay <overlay.yaml>
+    expect_kv.py overlay <overlay.yaml> [<expect_kv>]
 
 ``run_unit.sh`` checks the segment planner's approach grid twice: the mirror's
 ``approach.n_pre_max`` against EXPECT_NPRE, and the startup line "… up to <n> x
@@ -17,8 +17,11 @@ sets for the planner of ``<expect_mode>`` (``planner.segment.<mode>.approach.n_p
 planner says nothing of this unit's grid and is not read. An EXPECT_* given that
 EXPECT_KV contradicts is refused (exit 2): the unit could not pass both checks.
 
-``overlay`` prints the EXPECT_KV ``mk_overlay.py --set`` wrote into the overlay's
-header (``# EXPECT_KV=…``), or nothing.
+``overlay`` prints the EXPECT_KV the unit checks: the caller's items, then those
+``mk_overlay.py --set`` wrote into the overlay's header (``# EXPECT_KV=…``) that the
+caller does not name. Both are checked: a caller's EXPECT_KV that only added a key
+once left the overlay's own values unread and unrecorded. A key both set to other
+values is refused (exit 2).
 """
 
 import sys
@@ -64,6 +67,27 @@ def approach_grid(
     return n, dt
 
 
+def same_value(a: str, b: str) -> bool:
+    """Two EXPECT_KV values for one key: equal as numbers when both are, else as text."""
+    try:
+        return float(a) == float(b)
+    except ValueError:
+        return a == b
+
+
+def merged(caller: str, header: str) -> str:
+    """The caller's EXPECT_KV with the overlay header's items it does not name
+    appended. ``ValueError`` for a key the two set to other values."""
+    mine = parse(caller)
+    theirs = parse(header)
+    for key, value in theirs.items():
+        if key in mine and not same_value(mine[key], value):
+            raise ValueError(f"EXPECT_KV sets {key}={mine[key]}, the overlay's header {value}")
+    items = [f"{k}={v}" for k, v in mine.items()]
+    items += [f"{k}={v}" for k, v in theirs.items() if k not in mine]
+    return ";".join(items)
+
+
 def overlay_expect_kv(path: Path) -> str:
     """The EXPECT_KV an overlay's header states, or ``""``."""
     for line in Path(path).read_text(encoding="utf-8").splitlines():
@@ -75,8 +99,13 @@ def overlay_expect_kv(path: Path) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if argv[:1] == ["overlay"] and len(argv) == 2:
-        print(overlay_expect_kv(Path(argv[1])))
+    if argv[:1] == ["overlay"] and len(argv) in (2, 3):
+        caller = argv[2] if len(argv) == 3 else ""
+        try:
+            print(merged(caller, overlay_expect_kv(Path(argv[1]))))
+        except ValueError as exc:
+            print(f"expect_kv: {exc}", file=sys.stderr)
+            return 2
         return 0
     if argv[:1] == ["grid"] and len(argv) == 5:
         mode, expect_kv, npre, dtpre = argv[1:]

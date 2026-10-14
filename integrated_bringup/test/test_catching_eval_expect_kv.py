@@ -44,6 +44,22 @@ def test_an_expect_that_agrees_is_kept_and_one_that_contradicts_is_refused():
         ek.approach_grid("mpc", kv, None, "0.100")
 
 
+def test_the_overlays_header_is_checked_beside_the_callers_expect_kv():
+    """A caller's EXPECT_KV that only added a key once left the overlay's own values
+    unread and unrecorded (#822 review)."""
+    header = f"{GRID}.n_pre_max=8;{GRID}.dt_pre_s=0.15"
+    assert ek.merged("", header) == header
+    assert ek.merged("x.y=1", "") == "x.y=1"
+    assert ek.merged("x.y=1", header) == f"x.y=1;{header}"
+    # the same value, written either way, is one item
+    assert (
+        ek.merged(f"{GRID}.dt_pre_s=1.5e-1", header)
+        == f"{GRID}.dt_pre_s=1.5e-1;{GRID}.n_pre_max=8"
+    )
+    with pytest.raises(ValueError, match=r"n_pre_max=6, the overlay's header 8"):
+        ek.merged(f"{GRID}.n_pre_max=6", header)
+
+
 def test_the_command_line_is_what_run_unit_sh_reads(tmp_path):
     def run(*args):
         return subprocess.run(
@@ -61,6 +77,10 @@ def test_the_command_line_is_what_run_unit_sh_reads(tmp_path):
     plain = tmp_path / "plain.yaml"
     plain.write_text("# catching eval overlay: x\na: 1\n# EXPECT_KV=not in the header\n")
     assert run("overlay", str(plain)).stdout == "\n"
+    both = run("overlay", str(overlay), "x.y=1")
+    assert (both.returncode, both.stdout) == (0, f"x.y=1;{GRID}.n_pre_max=8\n")
+    clash = run("overlay", str(overlay), f"{GRID}.n_pre_max=6")
+    assert clash.returncode == 2 and "the overlay's header 8" in clash.stderr
 
 
 # ── run_unit.sh ──────────────────────────────────────────────────────────────

@@ -81,12 +81,14 @@
 # configured) the first `logging_data/<name>` of the log is taken only when it is not older than
 # the unit's minute — an older session is another run's, and is not moved (session_refused.txt).
 # #822 additions, for a unit that measures a value: an overlay written by `mk_overlay.py --set`
-# states its EXPECT_KV in its header, taken when EXPECT_KV is empty; the approach grid's
+# states its EXPECT_KV in its header, checked with the caller's EXPECT_KV (expect_kv.py overlay —
+# a key the two set to other values fails the unit as FAIL:expect_kv); the approach grid's
 # EXPECT_NPRE / EXPECT_DTPRE follow from EXPECT_KV when it sets this unit's planner's grid
 # (expect_kv.py — an EXPECT_* it contradicts fails the unit as FAIL:expect_kv before a launch).
 # conditions.txt records overlay_sha256, and after the startup the sha256 of the RUNNING
 # controller's and sim's executable images (controller_bin_sha256 / sim_bin_sha256, from
-# /proc/<pid>/exe of this unit's session — a rebuild after the launch does not change them; the
+# /proc/<pid>/exe of this unit's session — a rebuild after the launch does not change them, the
+# link of a replaced binary only gains " (deleted)"; the
 # installed file with *_bin_src: file when the process is not found). A busy host (rc 3) leaves
 # the processes that used the CPU most in host_busy_top.txt.
 # #822 D7: the sim starts with viewer_input_enabled:=false — with the viewer open, a key that
@@ -138,8 +140,8 @@ if ! python3 -c 'import integrated_bringup.catching_startup' > "$OUT/env_failure
   echo "FAIL:env" > "$OUT/status"; exit 1
 fi
 rm -f "$OUT/env_failure.txt"
-[ -n "$EXPECT_KV" ] || EXPECT_KV=$(python3 "$D/expect_kv.py" overlay "$OV")
-if ! GRID=$(python3 "$D/expect_kv.py" grid "${EXPECT_MODE:-mpc}" "${EXPECT_KV:-}" "${EXPECT_NPRE:--}" "${EXPECT_DTPRE:--}" 2> "$OUT/expect_kv_failure.txt"); then
+if ! EXPECT_KV=$(python3 "$D/expect_kv.py" overlay "$OV" "${EXPECT_KV:-}" 2> "$OUT/expect_kv_failure.txt") \
+  || ! GRID=$(python3 "$D/expect_kv.py" grid "${EXPECT_MODE:-mpc}" "${EXPECT_KV:-}" "${EXPECT_NPRE:--}" "${EXPECT_DTPRE:--}" 2> "$OUT/expect_kv_failure.txt"); then
   echo "FAIL:expect_kv" > "$OUT/status"; exit 1
 fi
 rm -f "$OUT/expect_kv_failure.txt"
@@ -340,11 +342,12 @@ echo "planner_budget_s: ${BUDGET}" >> "$OUT/conditions.txt"
 [ -n "$BUDGET" ] || why="$why no_budget_line"
 if [ -n "$why" ]; then cleanup; echo "FAIL:overlay$why" > "$OUT/status"; exit 1; fi
 bin_sha() {  # bin_sha <executable name> <conditions key> <installed file>
-  local p
-  for p in /proc/[0-9]*; do
-    [ "$(basename "$(readlink "$p/exe" 2>/dev/null)")" == "$1" ] || continue
-    [ "$(sed 's/.*) //' "$p/stat" 2>/dev/null | awk '{print $4}')" == "$LPG" ] || continue
-    echo "$2: $(sha256sum "$p/exe" 2>/dev/null | cut -d' ' -f1)"
+  local p exe
+  for p in $(ps -s "$LPG" -o pid= 2>/dev/null); do  # this unit's session only
+    exe=$(readlink "/proc/$p/exe" 2>/dev/null) || continue
+    exe=${exe% (deleted)}
+    [ "${exe##*/}" == "$1" ] || continue
+    echo "$2: $(sha256sum "/proc/$p/exe" 2>/dev/null | cut -d' ' -f1)"
     return
   done
   echo "$2: $(sha256sum "$3" 2>/dev/null | cut -d' ' -f1)"
