@@ -105,7 +105,8 @@ class Rig:
         self.logging_root = tmp_path / "logging_data"
         self.session = self.logging_root / "261011_2332"
         self.expect, self.mirror, log = _unit_state("ur5e_p1b", arm)
-        (self.fake / "launch.log").write_text(log)
+        # The sim's viewer input is off, and its open viewer says so (#822 D7).
+        (self.fake / "launch.log").write_text(log + cpt.VIEWER_INPUT_BANNER + "\n")
         (self.fake / "trials.log").write_text(_throws(*[CYCLE] * 6))
         self.set(
             FAKE_DIR=self.fake,
@@ -149,6 +150,8 @@ class Rig:
         monkeypatch.setattr(cpt, "ESTIMATOR_TIMEOUT_S", 5 * cpt.ESTIMATOR_TIMEOUT_S)
         monkeypatch.setattr(cpt, "wait_for_free_minute", lambda *a, **k: "261011_2332")
         monkeypatch.setattr(cpt, "read_mirror", lambda: (self.mirror, "tennis"))
+        self.viewer_input = False
+        monkeypatch.setattr(cpt, "read_viewer_input", lambda: self.viewer_input)
         self.units: list[cpt.UnitRun] = []
 
     def set(self, **values):
@@ -310,6 +313,26 @@ def test_a_controller_that_did_not_load_the_arm_is_refused_before_a_throw(rig):
 def test_a_shipped_value_that_is_off_is_named(rig):
     rig.mirror["planner.freeze.T_freeze"] = 0.36
     assert rig.run() == "FAIL:mirror T_freeze"
+
+
+def test_a_sim_whose_viewer_takes_world_keys_is_refused_before_a_throw(rig):
+    rig.viewer_input = True
+    assert rig.run() == "FAIL:mirror viewer_input"
+    assert not (rig.unit_dir / "est.log").exists()
+
+
+def test_an_open_viewer_that_does_not_say_its_input_is_off_is_refused(rig):
+    rig.ctx = cpt.dataclasses.replace(rig.ctx, viewer=True)
+    (rig.fake / "launch.log").write_text(
+        (rig.fake / "launch.log").read_text().replace(cpt.VIEWER_INPUT_BANNER, "")
+    )
+    assert rig.run() == "FAIL:mirror viewer_banner"
+
+
+def test_a_unit_records_that_its_sims_viewer_input_was_off(rig):
+    assert rig.run() == "DONE"
+    assert rig.conditions()["viewer_input_enabled"] == "False"
+    assert "viewer_input_enabled:=false" in rig.read("launch.log").splitlines()[0]
 
 
 def test_a_controller_that_does_not_answer_is_a_failure_of_its_own(rig, monkeypatch):

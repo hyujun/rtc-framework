@@ -19,7 +19,8 @@ whose header is the history of why:
    would share it.
 2. **Bringup**: ``ros2 launch integrated_bringup sim_<robot>.launch.py`` with the
    arm's two modes as launch arguments (``integrated_bringup.catch_modes`` — no
-   overlay file), the viewer per ``sim.viewer``, the sim lanes on, no CPU shield
+   overlay file), the viewer per ``sim.viewer`` with its world-changing keys off
+   (``viewer_input_enabled:=false``, #822), the sim lanes on, no CPU shield
    and ``max_log_sessions:=60`` (the launch prunes the session tree; a long run
    must not lose the session of the unit before).
 3. **Readiness** (``catching_startup.startup_state``), up to 120 s.
@@ -29,9 +30,10 @@ whose header is the history of why:
    values that must be the SHIPPED ones — the lead (``T_arm``, ``lead_enable``),
    the commit window (``T_freeze``), the CLIK form, the arm's segment grid
    (``n_pre_max``; the docking planner's stop ``n_nodes`` / ``dt_s``) and the
-   sim's ball. What "shipped" is comes from the installed configuration
-   (:func:`shipped_expectation`), not from a table in this file. The startup
-   lines must say the same modes and grid (:func:`mirror_failures`).
+   sim's ball and viewer input (off; an open viewer's banner says so too —
+   :func:`viewer_input_failures`). What "shipped" is comes from the installed
+   configuration (:func:`shipped_expectation`), not from a table in this file.
+   The startup lines must say the same modes and grid (:func:`mirror_failures`).
 5. **Estimator**: ``ball_perception_sim``'s ``sim_estimator.launch.py`` from its
    OWN workspace, sourced in the shell that starts it (two workspaces, MD-17);
    the seed is the estimator's alone — the sim takes none and the throws are a
@@ -136,6 +138,10 @@ JOINT = "demo_joint_controller"
 CONTROLLER_NODE = f"/{CATCHING}/{CATCHING}"
 SIMULATOR_NODE = "/mujoco_simulator"
 BALL_TYPE_PARAMETER = "projectile_ball.ball_type"
+# The simulator's viewer ignores the keys that change the world (#822 D7): a unit's sim
+# runs with it off, and its viewer, when open, says so in its ready banner.
+VIEWER_INPUT_PARAMETER = "viewer_input_enabled"
+VIEWER_INPUT_BANNER = "[Viewer] Input: world-changing keys DISABLED"
 ESTIMATOR_PACKAGE = "ball_perception_sim"
 ESTIMATOR_PROFILE = ("share", ESTIMATOR_PACKAGE, "config", "sim_profile.catching.json")
 ESTIMATOR_SOURCE = ("src", "ball_perception")
@@ -591,6 +597,7 @@ def launch_command(robot: str, arm, viewer: bool) -> list[str]:
         PACKAGE,
         launch_file(robot),
         f"enable_viewer:={'true' if viewer else 'false'}",
+        f"{VIEWER_INPUT_PARAMETER}:=false",
         "use_cpu_affinity:=false",
         "enable_mpc:=true",
         "sim_lanes:=true",
@@ -1058,9 +1065,37 @@ def loadavg() -> str:
     return " ".join(_read_text(Path("/proc/loadavg")).split()[:3])
 
 
+def viewer_input_failures(viewer_input, launch_log: str, *, viewer: bool) -> list[str]:
+    """What of the viewer's input switch the running sim does not show: ``viewer_input``
+    (its parameter must be False) and, with the viewer open, ``viewer_banner`` (the
+    ready banner's line). Empty for a unit that may throw."""
+    why = []
+    if viewer_input is not False:
+        why.append("viewer_input")
+    if viewer and VIEWER_INPUT_BANNER not in launch_log:
+        why.append("viewer_banner")
+    return why
+
+
 def read_mirror(timeout_s: float = 10.0) -> tuple[dict, object]:
     """The running controller's mirror (``{name: value | None}`` over ``MIRROR_NAMES``)
     and the simulator's ball type. ``RuntimeError`` when a node does not answer."""
+    read = _read_parameters(
+        {CONTROLLER_NODE: MIRROR_NAMES, SIMULATOR_NODE: [BALL_TYPE_PARAMETER]}, timeout_s
+    )
+    return read[CONTROLLER_NODE], read[SIMULATOR_NODE][BALL_TYPE_PARAMETER]
+
+
+def read_viewer_input(timeout_s: float = 10.0):
+    """The simulator's ``viewer_input_enabled`` (None when it does not declare it).
+    ``RuntimeError`` when the node does not answer."""
+    read = _read_parameters({SIMULATOR_NODE: [VIEWER_INPUT_PARAMETER]}, timeout_s)
+    return read[SIMULATOR_NODE][VIEWER_INPUT_PARAMETER]
+
+
+def _read_parameters(requests: Mapping[str, Sequence[str]], timeout_s: float = 10.0) -> dict:
+    """``{node: {name: value | None}}`` of the running nodes' parameters.
+    ``RuntimeError`` when a node does not answer."""
     # ROS imports stay here so everything above is importable without a ROS graph.
     import rclpy
     from rcl_interfaces.srv import GetParameters
@@ -1094,11 +1129,10 @@ def read_mirror(timeout_s: float = 10.0) -> tuple[dict, object]:
 
             return mirror_from_replies(names, ask)
 
-        mirror = parameters(CONTROLLER_NODE, MIRROR_NAMES)
-        ball = parameters(SIMULATOR_NODE, [BALL_TYPE_PARAMETER])[BALL_TYPE_PARAMETER]
+        read = {target: parameters(target, names) for target, names in requests.items()}
         executor.shutdown()
         node.destroy_node()
-        return mirror, ball
+        return read
     finally:
         rclpy.shutdown(context=context)
 
@@ -1320,13 +1354,17 @@ class UnitRun:
         self._note("commit.txt", commit_line(log) + "\n")
         try:
             mirror, ball_type = read_mirror()
+            viewer_input = read_viewer_input()
         except RuntimeError as exc:
             self._note("mirror.txt", f"unread: {exc}\n")
             return self._stop("FAIL:mirror unread")
         self._note("mirror.txt", mirror_text(mirror, ball_type))
         self._note("segment_startup.txt", "".join(f"{x}\n" for x in segment_startup_lines(log)))
-        self._condition(planner_budget_s=planner_budget(log) or "")
+        self._condition(
+            planner_budget_s=planner_budget(log) or "", viewer_input_enabled=viewer_input
+        )
         why = mirror_failures(mirror, ball_type, log, self.expect)
+        why += viewer_input_failures(viewer_input, log, viewer=ctx.viewer)
         if why:
             return self._stop("FAIL:mirror " + " ".join(why))
 

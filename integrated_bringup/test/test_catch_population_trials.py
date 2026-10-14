@@ -180,6 +180,7 @@ def test_the_bringup_takes_the_arm_as_launch_arguments_and_no_overlay():
     assert command[:4] == ["ros2", "launch", "integrated_bringup", "sim_ur5e_p1b.launch.py"]
     assert set(command[4:]) == {
         "enable_viewer:=true",
+        "viewer_input_enabled:=false",
         "use_cpu_affinity:=false",
         "enable_mpc:=true",
         "sim_lanes:=true",
@@ -192,6 +193,16 @@ def test_the_bringup_takes_the_arm_as_launch_arguments_and_no_overlay():
     assert headless[3] == "sim_iiwa7_leap.launch.py"
     assert "enable_viewer:=false" in headless
     assert {"catch_search_mode:=grid", "catch_segment_mode:=mpc"} <= set(headless)
+
+
+def test_a_unit_whose_sim_takes_world_keys_from_its_viewer_may_not_throw():
+    """#822 D7: the parameter is read off the sim; the banner only says it with a viewer."""
+    banner = cpt.VIEWER_INPUT_BANNER + "\n"
+    assert cpt.viewer_input_failures(False, banner, viewer=True) == []
+    assert cpt.viewer_input_failures(False, "", viewer=False) == []
+    assert cpt.viewer_input_failures(True, banner, viewer=True) == ["viewer_input"]
+    assert cpt.viewer_input_failures(None, "", viewer=False) == ["viewer_input"]  # undeclared
+    assert cpt.viewer_input_failures(False, "", viewer=True) == ["viewer_banner"]
 
 
 @pytest.mark.parametrize("robot", ROBOTS)
