@@ -162,9 +162,15 @@ def kv_file(path):
     return normalize_mirror(out, source=str(path))
 
 
-def mirror_value(mirror, key):
+def mirror_raw(mirror, key):
+    """A mirror's value as ``ros2 param get`` printed it (``6``, ``0.15``, ``True``), or None."""
     m = re.search(r"value is: (\S+)$", mirror.get(key, ""))
-    return float(m.group(1)) if m else None
+    return m.group(1) if m else None
+
+
+def mirror_value(mirror, key):
+    raw = mirror_raw(mirror, key)
+    return None if raw is None else float(raw)
 
 
 # ── one trial's windows ──────────────────────────────────────────────────────
@@ -844,12 +850,6 @@ def format_first_wake(fw):
     )
 
 
-def mirror_raw(mirror, key):
-    """A mirror's value as ``ros2 param get`` printed it (``6``, ``0.15``, ``True``), or None."""
-    m = re.search(r"value is: (\S+)$", mirror.get(key, ""))
-    return m.group(1) if m else None
-
-
 def list_tag(sha):
     """A throw list's name in a record: its sha256 prefix (``series`` for a seeded run)."""
     return f"list:{sha[:12]}" if sha else "series"
@@ -1121,16 +1121,19 @@ def arm_catch_frame(units):
     return out
 
 
-def _mirror_number(units, key, recorded_later=False):
+def _mirror_number(units, key, recorded_later=False, informational=False):
     """A numeric mirror the arm's units agree on; None when no unit has it (the
     parameter of another planner); refused when they differ. ``recorded_later`` is for
     a mirror ``run_unit.sh`` began to record at some revision: a unit from before it
-    says nothing, and the units that do say it have to agree."""
+    says nothing, and the units that do say it have to agree. ``informational`` is for
+    a value a block only shows: units that differ give None, not a refused record."""
     values = {mirror_value(u["mirror"], key) for u in units}
     if recorded_later:
         values.discard(None)
         if not values:
             return None
+    if len(values) != 1 and informational:
+        return None
     if len(values) != 1:
         raise SystemExit(f"{key} differs across the units of one arm: {sorted(map(str, values))}")
     return values.pop()
@@ -1178,11 +1181,18 @@ def arm_solves(units, arm):
         or [pe.iloc[0:0]],
         ignore_index=True,
     )
+    # The first-wake block only shows the cap and the budget: an arm whose units were
+    # thrown under two values of either has the block without it, not no record.
     n_pre_max = _mirror_number(
-        units, f"planner.segment.{arm.segment}.approach.n_pre_max", recorded_later=True
+        units,
+        f"planner.segment.{arm.segment}.approach.n_pre_max",
+        recorded_later=True,
+        informational=True,
     )
     first_budget_s = (
-        _mirror_number(units, keys["first"], recorded_later=True) if "first" in keys else None
+        _mirror_number(units, keys["first"], recorded_later=True, informational=True)
+        if "first" in keys
+        else None
     )
     out["first_wake"] = ps.first_wake_summary(
         by_throw,

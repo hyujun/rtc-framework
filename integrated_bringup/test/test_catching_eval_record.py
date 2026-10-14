@@ -219,6 +219,22 @@ def test_an_arms_first_wakes_are_counted_unit_by_unit():
     assert "first wake: 3 throws · published 1" in sm.format_first_wake(fw)
 
 
+def test_an_arm_thrown_under_two_caps_has_its_first_wakes_without_one():
+    """The block only shows the cap: two values of it once refused the whole record."""
+    rows = [
+        _event("first", "published", "converged", 20_000, track_generation=1,
+               segment_x0_from_segment=0, segment_k=-6)
+    ]  # fmt: skip
+    units = []
+    for cap in ("6", "8"):
+        u = _solve_unit(rows, **_BUDGETS)
+        u["mirror"]["planner.segment.mpc.approach.n_pre_max"] = f"Integer value is: {cap}"
+        units.append(u)
+    fw = sm.arm_solves(units, B)["first_wake"]
+    assert fw["throws"] == 2 and fw["n_pre_at_cap"] is None
+    assert "at n_pre_max" not in sm.format_first_wake(fw)
+
+
 # ── a table, described ───────────────────────────────────────────────────────
 def test_a_table_is_described_not_judged():
     tab = {"n": 180, "both": 4, "a_only": 12, "b_only": 3, "neither": 161}
