@@ -798,3 +798,14 @@ def test_run_unit_records_the_arm_it_was_told_to_expect():
     assert text.index("EXPECT_BALL=${EXPECT_BALL:-tennis}") < text.index('echo "date_start:')
     for key in ("budget_s", "solve_s", "max_solves"):
         assert f"planner.search.nlp.budget.{key}" in text
+
+
+def test_run_unit_starts_the_sim_with_viewer_input_off_and_reads_it_back():
+    """#822 D7: with the viewer open, a key that changes the world is ignored."""
+    text = (TOOLS / "run_unit.sh").read_text()
+    launch = text[text.index("setsid ros2 launch integrated_bringup") :]
+    assert "viewer_input_enabled:=false" in launch[: launch.index('> "$OUT/launch.log"')]
+    assert "ros2 param get /mujoco_simulator viewer_input_enabled" in text
+    check = "grep -q '^viewer_input_enabled: Boolean value is: False$' \"$OUT/mirror.txt\""
+    assert f'{check} || why="$why viewer_input"' in text
+    assert text.index(check) < text.index('echo "FAIL:overlay$why"')

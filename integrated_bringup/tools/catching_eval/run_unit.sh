@@ -89,6 +89,9 @@
 # /proc/<pid>/exe of this unit's session — a rebuild after the launch does not change them; the
 # installed file with *_bin_src: file when the process is not found). A busy host (rc 3) leaves
 # the processes that used the CPU most in host_busy_top.txt.
+# #822 D7: the sim starts with viewer_input_enabled:=false — with the viewer open, a key that
+# changes the world (G once landed as the viewer opened) is ignored and logged instead; the
+# simulator's parameter is read back with the mirror (viewer_input: FAIL:overlay unless False).
 # Leaves <out_dir>/status = DONE | FAIL:<why>. Never set -u (setup_env.sh is sourced).
 OUT=$1; SHORT=$2; OV=$3; NT=$4; SEED=$5
 COND=${ARM:-mpc}
@@ -224,8 +227,9 @@ if [ "${ALLOW_DIRTY:-0}" != "1" ] && [ -n "$(git -C "$REPO" status --porcelain)"
   echo "FAIL:dirty tree" > "$OUT/status"; exit 1
 fi
 
-setsid ros2 launch integrated_bringup $LAUNCH enable_viewer:=$VIEWER use_cpu_affinity:=false \
-  enable_mpc:=true sim_lanes:=true sim_overlay:=$OV max_log_sessions:=60 > "$OUT/launch.log" 2>&1 &
+setsid ros2 launch integrated_bringup $LAUNCH enable_viewer:=$VIEWER viewer_input_enabled:=false \
+  use_cpu_affinity:=false enable_mpc:=true sim_lanes:=true sim_overlay:=$OV max_log_sessions:=60 \
+  > "$OUT/launch.log" 2>&1 &
 LPG=$!
 ok=0
 for i in $(seq 1 120); do
@@ -281,12 +285,14 @@ for kv in "${KVS[@]}"; do
   grep -q "^$K: " "$OUT/mirror.txt" || echo "$K: $(ros2 param get $CN $K 2>&1)" >> "$OUT/mirror.txt"
 done
 echo "ball_type: $(ros2 param get /mujoco_simulator projectile_ball.ball_type 2>&1)" >> "$OUT/mirror.txt"
+echo "viewer_input_enabled: $(ros2 param get /mujoco_simulator viewer_input_enabled 2>&1)" >> "$OUT/mirror.txt"
 why=""
 # The commit lead from the mirror, not the startup log: two processes share that
 # log and once split the "−" of its commit line (E0-F04 M-50_p1b_601.fail1).
 grep -q "T_arm: Double value is: ${EXPECT_TARM}\$" "$OUT/mirror.txt" || why="$why T_arm"
 grep -q 'lead_enable: Boolean value is: True' "$OUT/mirror.txt" || why="$why lead"
 grep -q "ball_type: String value is: ${EXPECT_BALL}\$" "$OUT/mirror.txt" || why="$why ball_type"
+grep -q '^viewer_input_enabled: Boolean value is: False$' "$OUT/mirror.txt" || why="$why viewer_input"
 grep -q "T_freeze: Double value is: ${EXPECT_COMMIT%0}\$\|T_freeze: Double value is: ${EXPECT_COMMIT}\$" "$OUT/mirror.txt" || why="$why T_freeze"
 grep -q "^joint_cmd.accel_constraint: String value is: ${EXPECT_CLIK:-dynamic}\$" "$OUT/mirror.txt" || why="$why clik_form"
 grep -q "^planner.segment.mode: String value is: ${EXPECT_MODE:-mpc}\$" "$OUT/mirror.txt" || why="$why mode_mirror"
