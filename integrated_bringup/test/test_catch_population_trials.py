@@ -126,6 +126,11 @@ def test_any_other_failure_stays_where_it_failed(status):
     assert cpt.next_step(status, 2) == "stay"
 
 
+def test_a_launch_that_had_to_be_killed_stays_where_it_failed():
+    """The RT node's CSVs may end mid-row: a record of the unit, not a rig failure."""
+    assert cpt.next_step("FAIL:launch killed", 2) == "stay"
+
+
 def test_the_first_look_throws_whatever_is_not_done():
     """Starting the command again is a person's decision to throw a failed unit anew."""
     assert cpt.next_step(None, 1) == "run"
@@ -222,6 +227,19 @@ def test_the_estimator_is_started_from_its_own_workspace():
         "simulator_seed:=8210",
     ]
     assert subprocess.run(["bash", "-n", "-c", script], check=False).returncode == 0
+
+
+def test_the_estimators_shell_drops_this_workspace_before_it_sources_its_own():
+    """The shell inherits this workspace's prefixes; a package of both would resolve here."""
+    script = cpt.estimator_command(
+        Path("/ws/ball"), Path("/p.json"), 1, producer_revision="x", simulator_revision="y"
+    )[2]
+    unset = script.index("unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH")
+    underlay = script.index('source "/opt/ros/$ROS_DISTRO/setup.bash"')
+    path_back = script.index('PATH="$P0:$PATH"')
+    own = script.index('source "$1/install/local_setup.bash"')
+    # The caller's PATH goes back in front of the underlay's bin, before the workspace's.
+    assert script.index("P0=$PATH") < unset < underlay < path_back < own
 
 
 def test_the_estimators_shipped_profile_is_found_in_either_install(tmp_path):
@@ -549,6 +567,27 @@ def test_without_that_line_the_session_is_under_the_launchs_logging_root():
     )
 
 
+def test_a_fallback_name_older_than_the_units_minute_is_not_taken():
+    """Older than the minute the launch was started in: another run's session."""
+    session, why = cpt.unit_session(_LANE, "/root/logging_data", "261011_2333")
+    assert session is None
+    assert "261011_2332, older than this unit's minute 261011_2333" in why
+
+
+@pytest.mark.parametrize("minute", ["261011_2332", "261011_2331"])
+def test_a_fallback_name_of_the_units_minute_or_later_is_taken(minute):
+    """The launch may open its session in the minute after the one it was started in."""
+    assert cpt.unit_session(_LANE, "/root/logging_data", minute) == (
+        "/root/logging_data/261011_2332",
+        "",
+    )
+
+
+def test_the_rt_nodes_line_is_taken_whatever_the_minute():
+    log = _LANE + "Session dir: /ws/logging_data/261011_2330 (max_sessions=60)\n"
+    assert cpt.unit_session(log, "/root", "261011_2359") == ("/ws/logging_data/261011_2330", "")
+
+
 def test_a_log_that_names_no_session_gives_none():
     """An empty session path once made the workspace root the "session" to copy."""
     assert cpt.session_dir_from_log("", "/root/logging_data") is None
@@ -741,6 +780,25 @@ def test_the_commands_own_family_is_spared():
         (6, 5, f"{BALL}/install/ball_perception_sim/lib/ball_perception_sim/sim_estimator_node"),
     ]
     assert cpt.residual_pids(table, PATTERNS, {5}) == [6]
+
+
+def test_only_the_units_own_sessions_are_left_to_kill():
+    """Another sim of this workspace (another domain, a person's) runs the same path."""
+    path = f"{WS}/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node"
+    table = [(10, 1, path), (11, 1, path), (12, 1, path)]
+    sessions = {10: 100, 11: 200, 12: 300}
+    kill = cpt.residual_pids(table, PATTERNS, set(), sessions=sessions, only_sessions={100, 300})
+    assert kill == [10, 12]
+    # No group of the unit: no session is the unit's, nothing is killed.
+    assert cpt.residual_pids(table, PATTERNS, set(), sessions=sessions, only_sessions=set()) == []
+
+
+def test_a_process_is_read_in_its_session():
+    import os
+
+    from integrated_bringup.catching_sim_trials import process_sessions
+
+    assert process_sessions()[os.getpid()] == os.getsid(0)
 
 
 # ── the free minute, the revisions, the configuration ────────────────────────

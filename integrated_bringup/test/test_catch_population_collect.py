@@ -323,6 +323,24 @@ def test_with_no_done_unit_a_stale_result_is_removed(tmp_path):
     assert not layout.set_file(ARM["arm"], "catch").exists()
 
 
+@pytest.mark.parametrize("refusal", ["another file", "two conditions"])
+def test_a_refused_collection_leaves_no_earlier_result(tmp_path, refusal):
+    """An earlier collection's files would be read as this one's."""
+    layout = _folder(tmp_path)
+    _unit(layout, 8210, "chunk_000", [(1, "published", True)])
+    _collect(layout)
+    assert layout.sim_throws(ARM["arm"]).exists()
+    if refusal == "another file":
+        changed = {"throws_file_sha256": "ab" * 32}
+    else:
+        changed = {"profile_sha256": "other"}
+    _unit(layout, 8210, "chunk_001", [(4, "published", True)], conditions=changed)
+    with pytest.raises(cpc.CollectError):
+        _collect(layout)
+    assert not layout.sim_throws(ARM["arm"]).exists()
+    assert not layout.set_file(ARM["arm"], "catch").exists()
+
+
 def test_a_run_that_caught_nothing_writes_its_throws_and_no_set(tmp_path):
     """The throw-list format has no empty list; a stale set must not stand for this run."""
     layout = _folder(tmp_path)
@@ -550,6 +568,16 @@ def test_a_failed_analysis_leaves_its_output_in_the_units_log(tmp_path):
     assert not cpc.analyse_unit(unit, tmp_path, sys.executable)  # no session to read
     assert (unit / "ct" / "log.txt").read_text() != ""
     assert not (unit / "ct" / "vec.csv").exists()
+
+
+def test_an_analysis_that_does_not_end_is_killed_and_says_so(tmp_path):
+    unit = tmp_path / "unit"
+    unit.mkdir()
+    stuck = tmp_path / "python"
+    stuck.write_text("#!/bin/bash\nsleep 30\n")
+    stuck.chmod(0o755)
+    assert not cpc.analyse_unit(unit, tmp_path, str(stuck), timeout_s=0.2)
+    assert "analysis killed: it ran past 0.2 s" in (unit / "ct" / "log.txt").read_text()
 
 
 def test_the_analysis_runs_under_the_installed_analysers_interpreter(tmp_path):

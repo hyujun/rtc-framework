@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
 import re
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -52,6 +53,9 @@ DONE = "DONE"
 TOOL = "integrated_bringup.catch_population_trials"
 CATCH_SET_KIND = "catch_set"
 LEADING_COLUMNS = ("arm", "seed", "chunk")
+# How long one unit's analysis may run: it took 1 – 100 s over the 19 units of #821
+# (median 87 s); one that runs ten times as long is stuck, and the run waits on it.
+ANALYSIS_TIMEOUT_S = 900
 # The sample meta a set carries on (catch_throw_design's _CARRIED_META): the axes and the
 # design the throws were drawn in, so that a set file describes its own throws.
 CARRIED_META = ("axes", "design", "limit")
@@ -214,19 +218,29 @@ def needs_analysis(unit: Path) -> bool:
     return unit_status(unit) == DONE and not (Path(unit) / "ct" / "vec.csv").is_file()
 
 
-def analyse_unit(unit: Path, config_dir: Path | str, python: str) -> bool:
+def analyse_unit(
+    unit: Path, config_dir: Path | str, python: str, *, timeout_s: float = ANALYSIS_TIMEOUT_S
+) -> bool:
     """Run the analysis of one unit into ``<unit>/ct/`` (its output in ``ct/log.txt``).
-    True when it wrote ``vec.csv``."""
+    True when it wrote ``vec.csv``. An analysis that runs past ``timeout_s`` is killed
+    and has failed — ``ct/log.txt`` says so; the unit stays DONE without an analysis,
+    which the collection refuses."""
     ct = Path(unit) / "ct"
     ct.mkdir(exist_ok=True)
     with open(ct / "log.txt", "w", encoding="utf-8") as log:
-        done = subprocess.run(
-            analysis_command(python, unit, config_dir),
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+        try:
+            done = subprocess.run(
+                analysis_command(python, unit, config_dir),
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            log.write(f"\nanalysis killed: it ran past {timeout_s:g} s\n")
+            (ct / "vec.csv").unlink(missing_ok=True)
+            return False
     return done.returncode == 0 and (ct / "vec.csv").is_file()
 
 
@@ -427,6 +441,11 @@ def collect_arm(
     result = ArmCollection(arm)
     units_root = sim_root(layout)
     chunk_files = {path.stem: path for path in layout.chunks(arm)}
+    # Whatever this collection ends in, the files of an earlier one are not its result:
+    # a refused collection must not leave them to be read as this one's.
+    sim_throws, catch_set = layout.sim_throws(arm), layout.set_file(arm, "catch")
+    sim_throws.unlink(missing_ok=True)
+    catch_set.unlink(missing_ok=True)
     done: list[UnitRef] = []
     refused = []
     for unit in units_present(units_root, arm):
@@ -453,10 +472,7 @@ def collect_arm(
             "\n  " + "\n  ".join(mixed)
         )
 
-    sim_throws, catch_set = layout.sim_throws(arm), layout.set_file(arm, "catch")
     if not done:
-        sim_throws.unlink(missing_ok=True)
-        catch_set.unlink(missing_ok=True)
         return result
 
     sample_path = layout.throws_dir(arm) / "sample.json"
@@ -511,17 +527,19 @@ def collect_arm(
     # leading one is the estimator's. The analyser's is kept under its tool's name.
     columns = [*LEADING_COLUMNS, *("series_seed" if name == "seed" else name for name in header)]
     sim_throws.parent.mkdir(parents=True, exist_ok=True)
-    with open(sim_throws, "w", newline="", encoding="utf-8") as handle:
+    # Written aside and renamed: a run ended while it writes leaves no half file.
+    partial = sim_throws.with_name(sim_throws.name + ".partial")
+    with open(partial, "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(columns)
         for unit, row in out_rows:
             writer.writerow([arm, unit.seed, unit.chunk, *(row.get(name, "") for name in header)])
+    os.replace(partial, sim_throws)
     result.sim_throws = sim_throws
 
     result.seeds = [seeds[seed] for seed in sorted(seeds)]
     result.thrown_ids, result.caught_ids = len(thrown_seeds), len(caught_seeds)
     if not caught_seeds:
-        catch_set.unlink(missing_ok=True)
         return result
     caught = [
         {
