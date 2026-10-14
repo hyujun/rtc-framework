@@ -420,3 +420,56 @@ def test_the_name_tables_match_the_cpp_headers():
     for reason in ps.NLP_REJECT_REASONS:
         assert f"nlp_rej_{reason}" in header
     assert np.all([f"segment_elastic_{g}" not in header for g in ps.DOCKING_ROW_GROUPS[7:]])
+
+
+# ── a throw's first wake ──────────────────────────────────────────────────────────
+def _wakes(rows):
+    """``(throw, kind, from_segment, outcome, k, solve_us[, core_reason])`` rows."""
+    return pd.DataFrame(
+        [
+            {
+                "track_generation": throw,
+                "segment_kind": kind,
+                "segment_x0_from_segment": from_segment,
+                "segment_outcome": outcome,
+                "segment_k": k,
+                "segment_solve_us": us,
+                "segment_core_reason": reason[0] if reason else "converged",
+            }
+            for throw, kind, from_segment, outcome, k, us, *reason in rows
+        ]
+    )
+
+
+class TestFirstWake:
+    ROWS = [
+        (1, "first", 0, "catch_error", -6, 20_000),  # throw 1: its first wake, withheld
+        (1, "first", 0, "published", -5, 18_000),  # still from rest: not its first wake
+        (1, "same", 1, "published", -4, 5_000),
+        (2, "first", 1, "published", -3, 9_000),  # a replacement pair: not from rest
+        (2, "first", 0, "published", -6, 31_000),  # throw 2's first wake
+        (3, "first", 0, "budget", -4, 35_050, "deadline"),  # cut at its deadline
+        (4, "stop", 0, "published", 2, 1_000),  # no first solve: no first wake
+    ]
+
+    def test_a_throw_has_one_first_wake_the_earliest_first_solve_from_rest(self):
+        rows = ps.first_wake_rows(_wakes(self.ROWS))
+        assert list(rows["track_generation"]) == [1, 2, 3]
+        assert list(rows["segment_k"]) == [-6, -6, -4]
+
+    def test_the_summary_counts_the_first_wakes(self):
+        summary = ps.first_wake_summary(_wakes(self.ROWS), n_pre_max=6, budget_ms=35.0)
+        assert (summary["throws"], summary["published"]) == (3, 1)
+        assert summary["n_pre"] == {"4": 1, "6": 2}
+        assert summary["n_pre_at_cap"] == 2
+        assert summary["solve_ms"]["n_cut"] == 1
+        # The cut solve is the slowest: the p99 is only a lower bound.
+        assert summary["solve_p99_ms"] == [35.05, True]
+        assert summary["budget_ms"] == 35.0
+
+    def test_without_a_cap_the_share_at_it_is_not_said(self):
+        assert ps.first_wake_summary(_wakes(self.ROWS))["n_pre_at_cap"] is None
+
+    def test_a_log_without_the_columns_has_no_first_wake(self):
+        assert ps.first_wake_rows(pd.DataFrame({"segment_kind": ["first"]})).empty
+        assert ps.first_wake_summary(_wakes(self.ROWS[-1:])) is None
