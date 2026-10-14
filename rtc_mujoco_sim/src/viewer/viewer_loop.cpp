@@ -136,6 +136,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   vs.contact_wrench = &wrench_snapshot;
   vs.sim = this;
   vs.home_camera = cfg_.viewer_camera;
+  vs.input_enabled = cfg_.viewer_input_enabled;
   // Use body 1 (first non-world body) as default tracking target
   vs.track_body_id = (model_->nbody > 1) ? 1 : 0;
   mjv_defaultPerturb(&vs.pert);
@@ -165,6 +166,9 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
           "  Overlays   : F3=profiler  F9=sensors  F10=modelinfo\n"
           "  Perturb    : Dbl-click=select  Ctrl+Left=torque  Ctrl+Right=force\n"
           "  Other      : P=screenshot  Backspace=reset vis\n");
+  if (!vs.input_enabled) {
+    fprintf(stdout, "[Viewer] Input: world-changing keys DISABLED\n");
+  }
 
   // ── Render loop ────────────────────────────────────────────────────────────
   while (!stop.stop_requested() && running_.load() && !glfwWindowShouldClose(window)) {

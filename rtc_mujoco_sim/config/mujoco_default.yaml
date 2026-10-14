@@ -30,6 +30,9 @@ mujoco_simulator:
     # ── Viewer ───────────────────────────────────────────────────────────────
     enable_viewer: true
     viewer_refresh_rate: 60.0  # Hz
+    # false: viewer ignores world-changing keys (pause/step/speed/reset/spawn/
+    # physics/solver) and Ctrl+drag perturbation; camera/display keys still work.
+    viewer_input_enabled: true
     # Free camera the viewer opens on and ESC returns to. The viewer reads no
     # <statistic> / <visual><global> from the MJCF, so a scene whose robot is
     # not at the world origin frames it here.

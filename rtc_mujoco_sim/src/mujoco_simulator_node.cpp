@@ -316,6 +316,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter("physics_timestep", 0.0);
     declare_parameter("n_substeps", 1);
     declare_parameter("viewer_refresh_rate", 60.0);
+    declare_parameter("viewer_input_enabled", true);
     declare_parameter("viewer_camera.lookat", std::vector<double>{0.0, 0.0, 0.0});
     declare_parameter("viewer_camera.distance", 2.5);
     declare_parameter("viewer_camera.azimuth_deg", 90.0);
@@ -406,6 +407,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     physics_timestep_ = get_parameter("physics_timestep").as_double();
     n_substeps_ = get_parameter("n_substeps").as_int();
     viewer_refresh_rate_ = get_parameter("viewer_refresh_rate").as_double();
+    viewer_input_enabled_ = get_parameter("viewer_input_enabled").as_bool();
     viewer_camera_.lookat = LoadVec3Param("viewer_camera.lookat");
     viewer_camera_.distance = get_parameter("viewer_camera.distance").as_double();
     viewer_camera_.azimuth_deg = get_parameter("viewer_camera.azimuth_deg").as_double();
@@ -827,6 +829,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         .physics_timestep = physics_timestep_,
         .n_substeps = static_cast<int>(n_substeps_),
         .viewer_refresh_rate = viewer_refresh_rate_,
+        .viewer_input_enabled = viewer_input_enabled_,
         .viewer_camera = viewer_camera_,
         .use_yaml_servo_gains = use_yaml_servo_gains_,
         .servo_kp = servo_kp_,
@@ -1683,6 +1686,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   double physics_timestep_{0.0};
   int64_t n_substeps_{1};
   double viewer_refresh_rate_{60.0};
+  bool viewer_input_enabled_{true};
   urtc::MuJoCoSimulator::Config::ViewerCamera viewer_camera_{};
   bool use_yaml_servo_gains_{false};
   std::vector<double> servo_kp_;

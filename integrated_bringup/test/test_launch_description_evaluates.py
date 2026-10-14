@@ -90,6 +90,7 @@ SIM_COMBOS: list[tuple[str, dict[str, str]]] = [
         "all_overrides",
         {
             "enable_viewer": "false",
+            "viewer_input_enabled": "false",
             "model_path": "/nonexistent/scene.xml",
             "sync_timeout_ms": "50.0",
             "max_rtf": "10.0",
@@ -621,6 +622,28 @@ def test_no_sim_lanes_leaves_the_lanes_to_the_yaml(filename):
 def test_a_misspelled_sim_lanes_value_is_rejected(filename):
     with pytest.raises(RuntimeError, match="sim_lanes must be true or false"):
         _evaluate(filename, {"sim_lanes": "ture"})
+
+
+# ── viewer_input_enabled (#822) ──────────────────────────────────────────────
+# An evaluation sim may run with the viewer open; `viewer_input_enabled:=false`
+# makes that viewer ignore every world-changing key. Pinned here: the argument
+# reaches the sim node as a bool (not the launch string), and without it the
+# sim node is handed no such key, so the YAML / node default (true) stands.
+@pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)
+@pytest.mark.parametrize(("value", "expected"), [("false", False), ("true", True)])
+def test_viewer_input_enabled_reaches_the_sim_node_as_a_bool(filename, value, expected):
+    nodes, context = _nodes_by_name(
+        {"viewer_input_enabled": value, "use_cpu_affinity": "false"}, filename
+    )
+    values = _override_values(nodes["mujoco_simulator"], context)
+    assert values.get("viewer_input_enabled") is expected, sorted(values)
+
+
+@pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)
+def test_no_viewer_input_enabled_leaves_it_to_the_yaml(filename):
+    nodes, context = _nodes_by_name({"use_cpu_affinity": "false"}, filename)
+    values = _override_values(nodes["mujoco_simulator"], context)
+    assert "viewer_input_enabled" not in values, sorted(values)
 
 
 # ── catch_search_mode / catch_segment_mode (#821) ────────────────────────────

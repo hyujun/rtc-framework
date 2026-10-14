@@ -972,6 +972,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 |------|--------|------|
 | `model_path` | `""` (YAML 사용) | MuJoCo scene 경로 오버라이드. `ur5e_p1b` 기본값은 `scene_pedestal.xml` (팔 base 가 0.7 m 받침대 위, 바닥 z=0, 작업대 없음); 작업대 씬 (`scene.xml` + 상판 z=0.05 — `object_pool` 의 스폰 높이가 전제하는 씬) 은 `model_path:=package://hand_description/robots/ur5e_p1b/mjcf/scene_with_table.xml`, 맨바닥 씬은 같은 디렉토리의 `scene.xml`. `iiwa7_leap` 기본값도 받침대 씬 `scene_right_pedestal.xml` 이고 테이블 · 물체 씬은 `scene_right_with_object.xml` |
 | `enable_viewer` | `""` (YAML 사용) | MuJoCo 뷰어 활성화 |
+| `viewer_input_enabled` | `""` (YAML 사용) | `false` 면 뷰어가 world 를 바꾸는 키 (일시정지 · step · 속도 · 리셋 · 스폰 · 물리 · solver) 와 Ctrl+drag 퍼튜베이션을 무시한다 — 뷰어를 띄운 평가 실행이 실수로 누른 키에 흔들리지 않게. 카메라 · 표시 키는 동작 ([rtc_mujoco_sim §뷰어 단축키](../rtc_mujoco_sim/README.md#뷰어-단축키)) |
 | `sync_timeout_ms` | `""` (YAML 사용) | sync 커맨드 타임아웃 (ms) |
 | `max_rtf` | `""` (YAML 사용) | 최대 실시간 배율 (0.0 = 무제한) |
 | `use_yaml_servo_gains` | `""` (YAML 사용) | YAML vs XML 서보 게인 사용 |

@@ -16,8 +16,9 @@ rtc_mujoco_sim/
 ├── src/
 │   ├── mujoco_simulator.cpp       ← Initialize, 양방향 XML 검증, 이름 기반 매핑
 │   ├── mujoco_sim_loop.cpp        ← SimLoop: 동기식 물리 루프 (그룹 순회)
-│   ├── viewer/                    ← GLFW 뷰어 (4-파일 구조)
+│   ├── viewer/                    ← GLFW 뷰어
 │   │   ├── viewer_state.hpp       ←   공유 상태 + 함수 선언 (내부 헤더)
+│   │   ├── viewer_input_policy.hpp ←  world 를 바꾸는 키 집합 (`viewer_input_enabled`, GLFW 비의존)
 │   │   ├── viewer_loop.cpp        ←   ViewerLoop 멤버 함수 (~60Hz)
 │   │   ├── viewer_callbacks.cpp   ←   GLFW 입력 콜백 (키/마우스)
 │   │   └── viewer_overlays.cpp    ←   mjr_overlay/mjr_figure 렌더 함수
@@ -512,6 +513,7 @@ mujoco_simulator:
 | `model_path` | string | `""` | MJCF 모델 경로 (필수). 빈 값이면 노드 configure 시 `runtime_error`. robot-specific bringup이 `package://<pkg>/path/to/scene.xml` 형태로 전달. |
 | `enable_viewer` | bool | `true` | GLFW 3D 뷰어 활성화 |
 | `viewer_refresh_rate` | double | `60.0` | 뷰어 목표 refresh rate (Hz) |
+| `viewer_input_enabled` | bool | `true` | `false` 면 뷰어가 world 를 바꾸는 키 (일시정지 · step · 속도 · 리셋 · 스폰 · 물리 · solver) 와 Ctrl+drag 퍼튜베이션을 무시한다. 카메라 · 표시 키는 그대로 동작 ([§뷰어 단축키](#뷰어-단축키)). 뷰어 스레드 시작 시 1 회 읽는다 |
 | `viewer_camera.lookat` | double[3] | `[0, 0, 0]` | 뷰어가 열릴 때 (그리고 ESC 로 돌아갈 때) 의 free camera 가 바라보는 점 (m, world). 뷰어는 MJCF 의 `<statistic>` · `<visual><global>` 을 읽지 않으므로, 로봇이 world 원점에 서 있지 않은 씬은 여기서 맞춘다. 3 원소가 아니거나 유한하지 않으면 노드 생성이 실패한다 |
 | `viewer_camera.distance` | double | `2.5` | `lookat` 에서 카메라까지의 거리 (m, > 0) |
 | `viewer_camera.azimuth_deg` | double | `90.0` | 방위각. 90 이면 카메라가 −y 쪽에 서서 +x 를 오른쪽에 둔다 |
@@ -1014,6 +1016,7 @@ ros2 launch rtc_mujoco_sim mujoco_sim.launch.py model_path:=... enable_viewer:=f
 | `params_file` | `""` | `solver_param.yaml` 위에 오버레이할 YAML (robot 그룹 설정 등) |
 | `model_path` | `""` | MJCF scene 경로 (빈값 = YAML) |
 | `enable_viewer` | `""` | GLFW 3D 뷰어 활성화 (빈값 = YAML) |
+| `viewer_input_enabled` | `""` | `false` 면 world 를 바꾸는 뷰어 입력 무시 (빈값 = YAML, [§뷰어 단축키](#뷰어-단축키)) |
 | `max_rtf` | `""` | 최대 실시간 비율 (빈값 = YAML, 0.0 = 무제한) |
 | `max_log_sessions` | (robot config) | 최대 보관 세션 폴더 수. default 는 그 변종의 노드 config YAML (`_base.yaml` / `sim.yaml`) 에서 읽고, 값은 RT 노드 파라미터로도 전달된다 — launch 와 노드가 같은 트리를 각자 정리하기 때문 |
 
@@ -1075,52 +1078,54 @@ ros2 topic hz /hand/joint_states
 
 ## 뷰어 단축키
 
+`viewer_input_enabled: false` (launch 인자 `viewer_input_enabled:=false`) 이면 뷰어는 **world 를 바꾸는 입력**을 무시한다 — 아래 표에서 "입력 차단" 이 `차단` 인 키와 Ctrl+drag 퍼튜베이션. 카메라 · 시각화 · 오버레이 · 스크린샷은 그대로 동작한다. 뷰어를 띄운 채 돌리는 평가 sim 이 실수로 누른 키 하나에 흔들리지 않게 하려는 것이다. 무시된 키는 누를 때 한 번 `[Viewer] Input disabled: key <name> ignored` 를 남기고, 뷰어 기동 배너에 `[Viewer] Input: world-changing keys DISABLED` 가 붙는다. 차단 대상 집합의 SSoT 는 [src/viewer/viewer_input_policy.hpp](src/viewer/viewer_input_policy.hpp) 다.
+
 ### 키보드
 
-| 키 | 기능 |
-|---|---|
-| **F1** | 도움말 오버레이 순환 (off → page1 → page2 → off) |
-| Space | 일시정지 / 재개 |
-| Right (일시정지 중) | 한 스텝 진행 |
-| + / - | RTF 속도 2배 / 0.5배 |
-| R | 초기 자세로 리셋 (pool object 는 같은 자세로 다시 놓임) |
-| O | pool object 교체 — 기존 object 를 park 하고 설정 범위에서 새로 스폰 ([Object Pool](#object-pool-랜덤-object-스폰)) |
-| K | projectile ball 발사 (`/sim/launch_ball` 과 같음, [Projectile Ball](#projectile-ball-발사-공)) |
-| TAB | 카메라 모드 순환 (Free → Tracking → Fixed[0..N-1] → Free) |
-| Esc | 카메라 초기화 (Free 모드, 기본 거리/방위각) |
-| Backspace | 시각화 옵션 초기화 |
-| G | 전역 중력 ON/OFF (디버깅용; 로봇 gravcomp 와 무관) |
-| B | link frame overlay ON/OFF (`mjFRAME_BODY`) |
-| N | 접촉 제약 ON/OFF |
-| I | integrator 순환 (Euler → RK4 → Implicit → ImplFast) |
-| S | solver 순환 (PGS → CG → Newton) |
-| ] / [ | solver 반복 횟수 x2 / /2 |
-| C / F | 접촉점 / 접촉력 표시 |
-| T | 투명 시각화 |
-| J / U | 관절 / 액추에이터 시각화 |
-| E / W | 관성 / CoM 시각화 |
-| L / A / X | 조명 / 텐던 / 볼록 껍질 시각화 |
-| 0-5 / V | 지오메트리 그룹 토글 (V = 그룹 0 별칭) |
-| F3 | RTF 프로파일러 그래프 |
-| F4 | Solver 통계 오버레이 |
-| F5 / F6 / F7 / F8 | 와이어프레임 / 그림자 / 스카이박스 / 반사 |
-| F9 | 센서 값 오버레이 |
-| F10 | 모델 정보 오버레이 |
-| P | 스크린샷 저장 (PPM) |
+| 키 | 기능 | 입력 차단 |
+|---|---|---|
+| **F1** | 도움말 오버레이 순환 (off → page1 → page2 → off) |  |
+| Space | 일시정지 / 재개 | 차단 |
+| Right (일시정지 중) | 한 스텝 진행 | 차단 |
+| + / - | RTF 속도 2배 / 0.5배 | 차단 |
+| R | 초기 자세로 리셋 (pool object 는 같은 자세로 다시 놓임) | 차단 |
+| O | pool object 교체 — 기존 object 를 park 하고 설정 범위에서 새로 스폰 ([Object Pool](#object-pool-랜덤-object-스폰)) | 차단 |
+| K | projectile ball 발사 (`/sim/launch_ball` 과 같음, [Projectile Ball](#projectile-ball-발사-공)) | 차단 |
+| TAB | 카메라 모드 순환 (Free → Tracking → Fixed[0..N-1] → Free) |  |
+| Esc | 카메라 초기화 (Free 모드, 기본 거리/방위각) |  |
+| Backspace | 시각화 옵션 초기화 |  |
+| G | 전역 중력 ON/OFF (디버깅용; 로봇 gravcomp 와 무관) | 차단 |
+| B | link frame overlay ON/OFF (`mjFRAME_BODY`) |  |
+| N | 접촉 제약 ON/OFF | 차단 |
+| I | integrator 순환 (Euler → RK4 → Implicit → ImplFast) | 차단 |
+| S | solver 순환 (PGS → CG → Newton) | 차단 |
+| ] / [ | solver 반복 횟수 x2 / /2 | 차단 |
+| C / F | 접촉점 / 접촉력 표시 |  |
+| T | 투명 시각화 |  |
+| J / U | 관절 / 액추에이터 시각화 |  |
+| E / W | 관성 / CoM 시각화 |  |
+| L / A / X | 조명 / 텐던 / 볼록 껍질 시각화 |  |
+| 0-5 / V | 지오메트리 그룹 토글 (V = 그룹 0 별칭) |  |
+| F3 | RTF 프로파일러 그래프 |  |
+| F4 | Solver 통계 오버레이 |  |
+| F5 / F6 / F7 / F8 | 와이어프레임 / 그림자 / 스카이박스 / 반사 |  |
+| F9 | 센서 값 오버레이 |  |
+| F10 | 모델 정보 오버레이 |  |
+| P | 스크린샷 저장 (PPM) |  |
 
 ### 마우스
 
-| 조작 | 기능 |
-|---|---|
-| Left drag | 카메라 궤도 |
-| Shift + Left drag | 수평축 회전 |
-| Right drag | 카메라 패닝 |
-| Shift + Right drag | 수평 평면 패닝 |
-| Scroll / Middle drag | 줌 인/아웃 |
-| Dbl-click | 물체 선택 |
-| Ctrl + Left drag | 퍼튜베이션 (토크) — 마우스 방향이 곧 회전 축, status 패널의 `|t|` 가 실제 인가 토크 (N·m) |
-| Ctrl + Right drag | 퍼튜베이션 (힘, 카메라 수직 평면 = MOVE_V) — 드래그 방향과 인가 force 방향이 일치, status 의 `|F|` (N) |
-| Ctrl + Shift + Right drag | 퍼튜베이션 (힘, 월드 수평 평면 = MOVE_H) |
+| 조작 | 기능 | 입력 차단 |
+|---|---|---|
+| Left drag | 카메라 궤도 |  |
+| Shift + Left drag | 수평축 회전 |  |
+| Right drag | 카메라 패닝 |  |
+| Shift + Right drag | 수평 평면 패닝 |  |
+| Scroll / Middle drag | 줌 인/아웃 |  |
+| Dbl-click | 물체 선택 |  |
+| Ctrl + Left drag | 퍼튜베이션 (토크) — 마우스 방향이 곧 회전 축, status 패널의 `|t|` 가 실제 인가 토크 (N·m) | 차단 |
+| Ctrl + Right drag | 퍼튜베이션 (힘, 카메라 수직 평면 = MOVE_V) — 드래그 방향과 인가 force 방향이 일치, status 의 `|F|` (N) | 차단 |
+| Ctrl + Shift + Right drag | 퍼튜베이션 (힘, 월드 수평 평면 = MOVE_H) | 차단 |
 
 ---
 
@@ -1256,6 +1261,7 @@ GTest 스위트 (`test/` 디렉토리, 표는 파일 이름). 최신 케이스 �
 | `test_resource_provider` | `ResolveModelPath` — package:// URI 해석 (순수 문자열 + ament, MJCF fixture 불필요) |
 | `test_initial_qpos` | `robot_response.<group>.initial_qpos` — 시작·reset 자세 |
 | `test_shipped_config` | 이 패키지가 출하하는 모든 params YAML 이 rclcpp 파라미터 로더를 통과하는지 |
+| `test_viewer_input_gate` | `viewer_input_enabled: false` 가 막는 키 집합 — world 를 바꾸는 키는 전부 차단, 카메라 · 표시 · 수정키는 통과, 전체 GLFW 키 코드 sweep 으로 집합이 정확히 그 15 개인지, `Config` 기본값 `true` (GLFW 없이 돈다; 키 코드 ↔ `GLFW_KEY_*` 일치는 `viewer_callbacks.cpp` 의 `static_assert`) |
 | `test_simulator_init` | `Initialize` happy/실패 경로, joint/sensor 디스커버리, 검증 |
 | `test_solver_config` | XML `<option>`/`<flag>` 우선순위, YAML fallback, ContactOverride |
 | `test_command_state_io` | `SetCommand`/`SetControlMode`/`SetFakeTarget` 정합성 (스레드 미사용) |

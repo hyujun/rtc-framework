@@ -6,6 +6,7 @@
 // is retrieved via glfwGetWindowUserPointer() which returns a ViewerState*.
 // ──────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
+#include "viewer/viewer_input_policy.hpp"
 #include "viewer/viewer_state.hpp"
 
 #ifdef MUJOCO_HAVE_GLFW
@@ -14,6 +15,24 @@
 #include <cstdio>
 
 namespace rtc {
+
+// viewer_input_policy.hpp carries raw key codes so it can stay GLFW-free; pin
+// each one to the GLFW name OnKey switches on.
+static_assert(viewer::kKeySpace == GLFW_KEY_SPACE);
+static_assert(viewer::kKeyRight == GLFW_KEY_RIGHT);
+static_assert(viewer::kKeyEqual == GLFW_KEY_EQUAL);
+static_assert(viewer::kKeyKpAdd == GLFW_KEY_KP_ADD);
+static_assert(viewer::kKeyMinus == GLFW_KEY_MINUS);
+static_assert(viewer::kKeyKpSubtract == GLFW_KEY_KP_SUBTRACT);
+static_assert(viewer::kKeyR == GLFW_KEY_R);
+static_assert(viewer::kKeyK == GLFW_KEY_K);
+static_assert(viewer::kKeyO == GLFW_KEY_O);
+static_assert(viewer::kKeyG == GLFW_KEY_G);
+static_assert(viewer::kKeyN == GLFW_KEY_N);
+static_assert(viewer::kKeyI == GLFW_KEY_I);
+static_assert(viewer::kKeyS == GLFW_KEY_S);
+static_assert(viewer::kKeyRightBracket == GLFW_KEY_RIGHT_BRACKET);
+static_assert(viewer::kKeyLeftBracket == GLFW_KEY_LEFT_BRACKET);
 
 // ── Helper: ray-cast to select a body under the cursor ────────────────────────
 static void SelectBody(GLFWwindow* w, ViewerState* s) noexcept {
@@ -70,6 +89,15 @@ void OnKey(GLFWwindow* w, int key, int /*scan*/, int action, int /*mods*/) noexc
   }
 
   if (action == GLFW_RELEASE) {
+    return;
+  }
+
+  // ── viewer_input_enabled=false: drop every world-changing key ──────────────
+  // Logged on the press only — a held key would otherwise repeat the line.
+  if (!s->input_enabled && viewer::IsWorldKey(key)) {
+    if (action == GLFW_PRESS) {
+      fprintf(stdout, "[Viewer] Input disabled: key %s ignored\n", viewer::WorldKeyName(key));
+    }
     return;
   }
 
@@ -361,8 +389,20 @@ void OnMouseButton(GLFWwindow* w, int button, int action, int /*mods*/) noexcept
     s->last_click_time = now;
   }
 
+  // ── viewer_input_enabled=false: no perturbation can start ───────────────
+  // Only the two Ctrl+press branches below start one (pert.active is set
+  // nowhere else), so gating them keeps OnCursorPos from ever pushing a
+  // perturbation to the sim either.
+  const bool perturb_press =
+      s->ctrl_held && pressed &&
+      (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_RIGHT);
+  if (!s->input_enabled && perturb_press) {
+    fprintf(stdout, "[Viewer] Input disabled: Ctrl+%s perturbation ignored\n",
+            button == GLFW_MOUSE_BUTTON_LEFT ? "Left" : "Right");
+  }
+
   // ── Ctrl+Left press: select body + begin torque perturbation ────────────
-  if (s->ctrl_held && button == GLFW_MOUSE_BUTTON_LEFT && pressed) {
+  if (s->input_enabled && s->ctrl_held && button == GLFW_MOUSE_BUTTON_LEFT && pressed) {
     SelectBody(w, s);
     if (s->pert.select > 0) {
       s->pert.active = mjPERT_ROTATE;
@@ -371,7 +411,7 @@ void OnMouseButton(GLFWwindow* w, int button, int action, int /*mods*/) noexcept
   }
 
   // ── Ctrl+Right press: begin force perturbation ──────────────────────────
-  if (s->ctrl_held && button == GLFW_MOUSE_BUTTON_RIGHT && pressed) {
+  if (s->input_enabled && s->ctrl_held && button == GLFW_MOUSE_BUTTON_RIGHT && pressed) {
     if (s->pert.select <= 0) {
       SelectBody(w, s);
     }  // auto-select if none

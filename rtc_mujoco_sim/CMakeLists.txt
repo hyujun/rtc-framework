@@ -209,6 +209,14 @@ if(mujoco_FOUND)
         SHIPPED_CONFIG_SCRATCH_DIR="${CMAKE_CURRENT_BINARY_DIR}/shipped_config_scratch")
     endif()
 
+    # viewer_input_enabled key gate: GLFW-free header under src/viewer/, so the
+    # test needs the private src/ include path; no MJCF fixture, no window.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_viewer_input_gate.cpp")
+      ament_add_gtest(test_viewer_input_gate test/test_viewer_input_gate.cpp)
+      target_link_libraries(test_viewer_input_gate mujoco_simulator_lib)
+      target_include_directories(test_viewer_input_gate PRIVATE src)
+    endif()
+
     # ResolveModelPath: pure string + ament, no MJCF fixture needed.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_resource_provider.cpp")
       ament_add_gtest(test_resource_provider test/test_resource_provider.cpp)
