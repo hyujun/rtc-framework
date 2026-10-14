@@ -8,12 +8,15 @@
 //
 // The rcutils output handler is process-global. A fixture installs the sink in
 // SetUp and restores the previous handler in TearDown, so the capture covers
-// one test case and cannot reach a test in another gtest binary.
+// one test case and cannot reach a test in another gtest binary. Every line is
+// still handed on to the handler the sink replaced, so a failing case keeps
+// its log (the ERROR that explains a refused configure) on the console.
 #pragma once
 
 #include <rcutils/logging.h>
 
 #include <array>
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
@@ -25,20 +28,26 @@ namespace rtc {
 
 class LogSink {
  public:
-  // Clears what an earlier case captured, then takes over the handler.
+  // Clears what an earlier case captured, then takes over the handler. A
+  // second Install before Restore keeps the handler the first one replaced —
+  // recording the sink as its own predecessor would leave Restore unable to
+  // give the original back, and every later case's log would vanish into it.
   static void Install() {
     {
       const std::lock_guard<std::mutex> lock(Mutex());
       Lines().clear();
     }
-    Previous() = rcutils_logging_get_output_handler();
+    const rcutils_logging_output_handler_t current = rcutils_logging_get_output_handler();
+    if (current != &LogSink::Handler) {
+      Previous().store(current);
+    }
     rcutils_logging_set_output_handler(&LogSink::Handler);
   }
 
   static void Restore() {
-    if (Previous() != nullptr) {
-      rcutils_logging_set_output_handler(Previous());
-      Previous() = nullptr;
+    const rcutils_logging_output_handler_t previous = Previous().exchange(nullptr);
+    if (previous != nullptr) {
+      rcutils_logging_set_output_handler(previous);
     }
   }
 
@@ -73,16 +82,21 @@ class LogSink {
   // capture rather than corrupting the sink.
   static constexpr std::size_t kLineBufferSize = 1024;
 
-  static void Handler(const rcutils_log_location_t* /*location*/, int severity,
-                      const char* /*name*/, rcutils_time_point_value_t /*timestamp*/,
-                      const char* format, va_list* args) {
+  static void Handler(const rcutils_log_location_t* location, int severity, const char* name,
+                      rcutils_time_point_value_t timestamp, const char* format, va_list* args) {
     std::array<char, kLineBufferSize> buf{};
     va_list copy;
     va_copy(copy, *args);
     (void)std::vsnprintf(buf.data(), buf.size(), format, copy);
     va_end(copy);
-    const std::lock_guard<std::mutex> lock(Mutex());
-    Lines().emplace_back(severity, std::string(buf.data()));
+    {
+      const std::lock_guard<std::mutex> lock(Mutex());
+      Lines().emplace_back(severity, std::string(buf.data()));
+    }
+    // Outside the lock: the previous handler (rclcpp's) takes its own.
+    if (const rcutils_logging_output_handler_t previous = Previous().load(); previous != nullptr) {
+      previous(location, severity, name, timestamp, format, args);
+    }
   }
 
   // Function-local statics rather than data members: the handler is a plain C
@@ -98,8 +112,10 @@ class LogSink {
     return lines;
   }
 
-  static rcutils_logging_output_handler_t& Previous() {
-    static rcutils_logging_output_handler_t handler{nullptr};
+  // Atomic: Handler reads it on whichever thread logs, while the test thread
+  // installs and restores.
+  static std::atomic<rcutils_logging_output_handler_t>& Previous() {
+    static std::atomic<rcutils_logging_output_handler_t> handler{nullptr};
     return handler;
   }
 };
