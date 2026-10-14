@@ -647,8 +647,10 @@ Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleN
 컨트롤러 YAML 은 ROS 파라미터 트리 밖에서 읽힌다. 그래서 CM 노드에 걸린 `<config_key>.<yaml.경로>` 파라미터 (launch 인자, sim overlay) 를 CM 이 configure 때 그 컨트롤러의 YAML 트리에 써 넣는다. `.` 이 YAML 경로의 구분자다. 예를 들어 `demo_x_controller.gains.kp: 2.0` 은 `demo_x_controller.yaml` 의 `gains.kp` 를 2.0 으로 바꾼다.
 
 - **경로는 YAML 그대로여야 한다.** 쓰기는 받은 경로를 그대로 만든다. 한 단계 어긋난 키는 만들어지기만 하고 컨트롤러가 읽지 않아, 출하값으로 돈다.
-- **YAML 에 없는 경로는 WARN 한 줄을 낸 뒤 그대로 쓴다.** 문구에는 파라미터 이름, YAML 에 있는 가장 긴 접두, 그리고 그 경로로 끝나는 기존 키가 후보로 최대 3개 나온다. 판정은 쓰기 전의 트리로 하므로, 앞 override 가 만든 노드는 뒤 override 의 "있는 접두" 로 세지 않는다.
-- **거부하지 않는 이유.** 컨트롤러는 YAML 에 없는 키를 내장 기본값과 함께 읽을 수 있고, 그런 키의 override 는 정당하다. CM 은 그것과 오타를 구별할 수 없다.
+- **모든 경로를 쓰기 전에 판정한다.** 판정은 막 읽은 트리로 하므로, 앞 override 가 만든 노드는 뒤 override 의 "있는 접두" 로 세지 않는다.
+- **YAML 에 없는 경로는 WARN 한 줄을 낸 뒤 그대로 쓴다.** 문구에는 파라미터 이름, YAML 에 있는 가장 긴 접두, 그리고 그 경로로 끝나는 기존 키가 후보로 최대 3개 나온다. 거부하지 않는 이유는, 컨트롤러가 YAML 에 없는 키를 내장 기본값과 함께 읽을 수 있고 그런 override 는 정당하기 때문이다. CM 은 그것과 오타를 구별할 수 없다.
+- **YAML 구조를 깨야만 쓸 수 있는 override 는 configure 를 거부한다** (D1 의 "bad override"). 경로가 scalar 나 sequence 를 지나는 경우, 비어 있지 않은 map 을 가리키는 경우, 그리고 한 override 가 다른 override 의 부모 키인 경우다. 그대로 쓰면 각각 예외가 나거나, 목록이 map 으로 바뀌거나, map 아래 키가 모두 사라진다. ERROR 문구가 막힌 경로를 모두 적는다.
+- **파일은 있는데 그 키 아래 트리가 없으면 override 를 적용하지 않고 WARN 한 줄로 이름을 알린다.** top-level 키 오타가 대표적이다. 적용하면 override 만 든 트리가 생겨, 오타가 configure 를 거부한다는 위 셋째 갈래가 무너진다.
 - **출하 bring-up 은 이 경고가 0건이어야 한다.** launch 가 쓰는 키는 Python 쪽 검사가 출하 YAML 의 키임을 미리 고정한다 (`rtc_tools.utils.controller_config` 와 `integrated_bringup` 의 pytest). 런타임 경고는 그 검사 밖에서 들어온 override 를 위한 것이다.
 - **config 파일이 없는 컨트롤러에 온 override 는 적용하지 않고 WARN 한 줄로 이름을 알린다.** 그 컨트롤러는 위 첫째 갈래대로 내장 기본값으로 돈다. override 가 "파일 없음" 을 일부만 채운 트리로 바꾸지 않게 하기 위해서다.
 

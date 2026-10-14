@@ -189,6 +189,70 @@ TEST_F(CmConfigPipelineTest, ANodeAnEarlierOverrideCreatedIsNotAnExistingPrefix)
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// An override that cannot be written without breaking the YAML's structure is
+// a bad override, and a bad override refuses the configure (#196 D1). Each of
+// these used to fail differently: through a scalar it threw a bare
+// BadSubscript right after a WARN that called it harmless, through a sequence
+// it turned the list into a map, onto a map it replaced every key under it,
+// and an override beside its own parent key broke whichever came second.
+
+class CmOverrideRefusalTest : public CmConfigPipelineTest {
+ protected:
+  static std::vector<std::string> RefusalErrors(const std::vector<std::string>& needles) {
+    std::vector<std::string> all{"[param-override]", "cannot be written"};
+    all.insert(all.end(), needles.begin(), needles.end());
+    return LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, all);
+  }
+};
+
+TEST_F(CmOverrideRefusalTest, AnOverrideThroughAScalarRefusesAndSaysWhy) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.gains.kp.x", 1.0);
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, RefusalErrors({"'rtc_cm_cfg_test.gains.kp.x'", "scalar 'gains.kp'"}).size());
+  // Not also announced as "written anyway" — the refusal above is non-empty,
+  // so this absence is not a dead sink.
+  EXPECT_TRUE(OverrideWarnings({"'rtc_cm_cfg_test.gains.kp.x'"}).empty());
+}
+
+TEST_F(CmOverrideRefusalTest, AnOverrideThroughASequenceRefuses) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.topics.arm.subscribe.extra", 1.0);
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, RefusalErrors({"'rtc_cm_cfg_test.topics.arm.subscribe.extra'",
+                               "sequence 'topics.arm.subscribe'"})
+                    .size());
+}
+
+TEST_F(CmOverrideRefusalTest, AnOverrideNamingAMapRefuses) {
+  // `gains` for `gains.kp`: the shallow mistake in the other direction. Written,
+  // the value would replace kp, label, enabled and count at once.
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.gains", 2.0);
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, RefusalErrors({"'rtc_cm_cfg_test.gains'", "names the map 'gains'"}).size());
+}
+
+TEST_F(CmOverrideRefusalTest, AnOverrideBesideItsOwnParentKeyRefuses) {
+  // `newblock-x` sorts between `newblock` and `newblock.x` ('-' < '.'), so the
+  // pair is not adjacent in name order and a neighbour-only check misses it.
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.newblock", 1.0);
+  node->declare_parameter("rtc_cm_cfg_test.newblock-x", 0.5);
+  node->declare_parameter("rtc_cm_cfg_test.newblock.x", 2.0);
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U,
+            RefusalErrors({"'rtc_cm_cfg_test.newblock' and 'rtc_cm_cfg_test.newblock.x'"}).size());
+}
+
 // Issue #350's profile reaches each controller's OWN node. The launches set it
 // on the CM node, and controller LifecycleNodes ignore the process's global
 // arguments, so without an explicit forward every profile-keyed activation
