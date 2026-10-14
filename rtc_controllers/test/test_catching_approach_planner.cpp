@@ -897,6 +897,11 @@ TEST(ApproachPlanner, AboveOneTheFractionLetsTheReferencePassTheVelocityBox) {
     static_cast<void>(r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH), plan,
                                           BallFor(c), r.out, r.rec));
     ASSERT_EQ(r.rec.k, -6) << Why(r.rec);
+    // The core solved the over-box reference — the box rows and the trust
+    // region bent it back — whatever the judge says next (this catch pose is
+    // not at the ball).
+    EXPECT_NE(r.rec.outcome, SegmentOutcome::kSolveFailed) << Why(r.rec);
+    EXPECT_GT(r.rec.iterations, 0) << Why(r.rec);
     EXPECT_FALSE(r.rec.ref_scaled);
     EXPECT_EQ(r.rec.ref_scale, 1.0);
     EXPECT_EQ(r.rec.ref_shortfall, 0.0);
@@ -921,12 +926,13 @@ TEST(ApproachPlanner, AboveOneTheFractionLetsTheReferencePassTheVelocityBox) {
     static_cast<void>(r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH), plan,
                                           BallFor(c), r.out, r.rec));
     ASSERT_EQ(r.rec.k, -6) << Why(r.rec);
+    EXPECT_NE(r.rec.outcome, SegmentOutcome::kSolveFailed) << Why(r.rec);
     EXPECT_TRUE(r.rec.ref_scaled);
     EXPECT_NEAR(r.rec.ref_scale, cap / 1.5, 1e-12);
     EXPECT_NEAR(r.rec.ref_shortfall, 1.5 - cap, 1e-12);
     EXPECT_NEAR(in.q_ref(0, 6) - in.q_ref(0, 0), cap, 1e-12);
   }
-  // The control: at the shipped fraction the same middle reach is cut.
+  // The control: at the code default (0.9) the same middle reach is cut.
   Rig shipped(Arm6());
   const Catch c = CatchAt(shipped.arm, Offset(shipped.arm, 0.02));
   Catch mid = c;
