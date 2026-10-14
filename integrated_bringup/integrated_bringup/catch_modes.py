@@ -9,9 +9,10 @@ overlay file is written per arm.
 **The path these overrides take creates whatever key it is given.** The RT node
 hands every ``demo_catching_controller.*`` parameter to
 ``ApplyControllerParamOverrides``, which pokes it into the YAML the controller
-loads: a key one level off is written, never read, and the run is silently the
-shipped pair. So the keys are spelled once, here (``test_launch_description_
-evaluates.py`` holds them against the shipped controller YAML), a value that is
+loads: a key one level off is written, never read, and the run is the shipped
+pair — the configure logs a ``[param-override]`` warning and goes on. So the
+keys are spelled once, here (``test_launch_description_evaluates.py`` holds
+them against the shipped controller YAML), a value that is
 not a mode is refused before a node starts, and the caller still reads the
 controller's mirror back (``planner.search.mode`` / ``planner.segment.mode``)
 before it throws — ``catch_population_trials`` does.

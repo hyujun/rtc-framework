@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <string>
 #include <unordered_map>
+#include <utility>  // std::as_const
 #include <vector>
 
 namespace urtc = rtc;
@@ -109,6 +110,155 @@ void SetYamlScalarFromParam(YAML::Node node, const std::string& key,
   }
 }
 
+// Names of the ROS parameters aimed at one controller's YAML: everything under
+// `<config_key>.` with at least one path segment after it, sorted so the
+// warnings below come out in a stable order.
+std::vector<std::string> ListControllerOverrideNames(rclcpp_lifecycle::LifecycleNode& node,
+                                                     const std::string& config_key) {
+  // list_parameters depth counts `.`-separated segments from the root; we
+  // set a generous cap to cover any reasonable nested YAML.
+  constexpr uint64_t kMaxDepth = 20;
+  const auto params = node.list_parameters({config_key}, kMaxDepth);
+  const std::string prefix = config_key + ".";
+  std::vector<std::string> names;
+  for (const auto& pname : params.names) {
+    if (pname.rfind(prefix, 0) == 0 && !SplitDotPath(pname.substr(prefix.size())).empty()) {
+      names.push_back(pname);
+    }
+  }
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+std::string JoinDotPath(const std::vector<std::string>& parts, std::size_t count) {
+  std::string out;
+  for (std::size_t i = 0; i < count && i < parts.size(); ++i) {
+    out.append(i == 0 ? "" : ".").append(parts[i]);
+  }
+  return out;
+}
+
+// How many leading segments of @p parts name a path that exists in @p root.
+//
+// Read-only, and it cannot throw — both properties are load-bearing, because
+// yaml-cpp 0.8 makes either easy to lose:
+//   - every subscript goes through the CONST overload (`std::as_const`): the
+//     non-const one creates the key it is asked for;
+//   - a node is subscripted only once it is known to be a defined map. A const
+//     subscript that misses returns a zombie node on which IsMap() / Type()
+//     throw InvalidNode (IsDefined() is the one safe query), and subscripting a
+//     scalar throws BadSubscript even through the const overload. A sequence
+//     is not a map, so a path through one stops there.
+std::size_t ExistingDepth(const YAML::Node& root, const std::vector<std::string>& parts) {
+  YAML::Node cur;
+  cur.reset(root);
+  std::size_t depth = 0;
+  for (const auto& part : parts) {
+    if (!cur.IsDefined() || !cur.IsMap()) {
+      break;
+    }
+    const YAML::Node child = std::as_const(cur)[part];
+    if (!child.IsDefined()) {
+      break;
+    }
+    cur.reset(child);
+    ++depth;
+  }
+  return depth;
+}
+
+// Every leaf path of @p tree, split into segments. The leaf rule — a key whose
+// value is not a non-empty map, a sequence being one leaf — is the loader's
+// (ControllerConfigLeafLines), which is also the rule an override follows: it
+// replaces a sequence whole.
+std::vector<std::vector<std::string>> LeafPaths(const YAML::Node& tree) {
+  std::vector<std::vector<std::string>> out;
+  for (const auto& line : urtc::ControllerConfigLeafLines(tree)) {
+    out.push_back(SplitDotPath(line.substr(0, line.find('\t'))));
+  }
+  return out;
+}
+
+// Pass 1 of ApplyControllerParamOverrides: report each override whose path the
+// controller YAML does not have.
+//
+// The write path (pass 2) creates whatever path it is handed, so a key one
+// level off is written and never read — the run silently uses the shipped
+// value. This does not refuse: an override may target a key the controller
+// reads with a built-in default and that its YAML deliberately omits, which is
+// legitimate and indistinguishable from here. It runs on the tree EXACTLY as
+// loaded, before any write: judged after (or between) writes, a node an earlier
+// override created would count as an existing prefix for a later sibling.
+void WarnOverridesAbsentFromYaml(const rclcpp::Logger& logger, const YAML::Node& tree,
+                                 const std::string& config_key,
+                                 const std::vector<std::string>& names) {
+  if (names.empty()) {
+    return;
+  }
+  if (!tree.IsDefined() || !tree.IsMap()) {
+    // A file whose top-level key is missing or misspelled. Every override
+    // would report "no existing prefix", which says nothing the one line
+    // below does not.
+    RCLCPP_WARN(logger,
+                "[param-override] the config tree for '%s' is not a map (top-level key missing "
+                "or misspelled?) — %zu override(s) cannot be checked against it, first '%s'",
+                config_key.c_str(), names.size(), names.front().c_str());
+    return;
+  }
+
+  constexpr std::size_t kMaxCandidates = 3;
+  const std::string prefix = config_key + ".";
+  std::vector<std::vector<std::string>> leaves;
+  bool leaves_collected = false;
+
+  for (const auto& pname : names) {
+    const auto parts = SplitDotPath(pname.substr(prefix.size()));
+    const std::size_t depth = ExistingDepth(tree, parts);
+    if (depth == parts.size()) {
+      continue;
+    }
+
+    if (!leaves_collected) {
+      leaves = LeafPaths(tree);
+      leaves_collected = true;
+    }
+    // Candidates: existing leaves the override path is a strict tail of — the
+    // shape of "the right key, written one or more levels too shallow".
+    std::vector<std::string> candidates;
+    std::size_t candidate_count = 0;
+    for (const auto& leaf : leaves) {
+      if (leaf.size() <= parts.size() ||
+          !std::equal(parts.begin(), parts.end(),
+                      leaf.end() - static_cast<std::ptrdiff_t>(parts.size()))) {
+        continue;
+      }
+      ++candidate_count;
+      if (candidates.size() < kMaxCandidates) {
+        candidates.push_back(JoinDotPath(leaf, leaf.size()));
+      }
+    }
+
+    std::string hint;
+    if (!candidates.empty()) {
+      hint = "; did you mean ";
+      for (std::size_t i = 0; i < candidates.size(); ++i) {
+        hint.append(i == 0 ? "'" : ", '").append(candidates[i]).append("'");
+      }
+      if (candidate_count > candidates.size()) {
+        hint.append(" (+")
+            .append(std::to_string(candidate_count - candidates.size()))
+            .append(" more)");
+      }
+    }
+    const std::string existing = depth == 0 ? "none" : "'" + JoinDotPath(parts, depth) + "'";
+    RCLCPP_WARN(logger,
+                "[param-override] '%s' names a path the controller YAML does not have (longest "
+                "existing prefix: %s). It is written anyway, and takes effect only if the "
+                "controller reads that path with a built-in default — otherwise it is ignored%s",
+                pname.c_str(), existing.c_str(), hint.c_str());
+  }
+}
+
 // Walk ROS parameter names under `<config_key>.` and apply each as a nested
 // write into @p ctrl_node, treating `.` as the YAML path separator.
 //
@@ -120,22 +270,17 @@ void SetYamlScalarFromParam(YAML::Node node, const std::string& key,
 // does NOT participate in the ROS parameter tree, so launch-arg overrides
 // (e.g. sim_ur5e_p1a.launch.py's `enable_mpc` / `mpc_engine` flags) would otherwise
 // be silently discarded. This helper is the single bridge between the two.
+// A path absent from the YAML is still written (a controller may read it with
+// a built-in default) but warned about first — see WarnOverridesAbsentFromYaml.
 void ApplyControllerParamOverrides(rclcpp_lifecycle::LifecycleNode& node, YAML::Node ctrl_node,
                                    const std::string& config_key) {
-  // list_parameters depth counts `.`-separated segments from the root; we
-  // set a generous cap to cover any reasonable nested YAML.
-  constexpr uint64_t kMaxDepth = 20;
-  const auto params = node.list_parameters({config_key}, kMaxDepth);
-  const std::string prefix = config_key + ".";
+  const auto names = ListControllerOverrideNames(node, config_key);
+  WarnOverridesAbsentFromYaml(node.get_logger(), ctrl_node, config_key, names);
 
-  for (const auto& pname : params.names) {
-    if (pname.rfind(prefix, 0) != 0) {
-      continue;
-    }
+  // Pass 2: write.
+  const std::string prefix = config_key + ".";
+  for (const auto& pname : names) {
     const auto parts = SplitDotPath(pname.substr(prefix.size()));
-    if (parts.empty()) {
-      continue;
-    }
 
     // Walk to the parent map. CRITICAL: `Node::operator=` in yaml-cpp is a
     // VALUE COPY that overwrites the left-hand node's data — using it here

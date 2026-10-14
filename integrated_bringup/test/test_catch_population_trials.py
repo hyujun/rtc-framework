@@ -506,7 +506,7 @@ def test_a_mirror_value_that_is_off_is_named_in_run_unit_shs_word(name, value, w
 
 def test_the_arms_key_misspelled_in_the_launch_shows_as_the_shipped_modes():
     """The failure the read-back exists for: a key one level off is created, never
-    read, and the controller runs the shipped pair with no warning anywhere."""
+    read, and the controller runs the shipped pair; the configure only warns."""
     expect, _, _ = _unit_state("ur5e_p1b", NLP)
     _, mirror, log = _unit_state("ur5e_p1b", GRID)  # what the controller then runs
     why = cpt.mirror_failures(mirror, "tennis", log, expect)
