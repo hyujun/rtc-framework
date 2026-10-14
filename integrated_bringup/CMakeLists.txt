@@ -1825,6 +1825,10 @@ if(BUILD_TESTING)
   # repetition and described without a verdict, run_all.sh's plan columns and
   # its rig-failure-only retry, mk_overlay.py's ball.
   ament_add_pytest_test(test_catching_eval_record test/test_catching_eval_record.py)
+  # tools/catching_eval (same): a unit that measures a value (#822) — the approach
+  # grid run_unit.sh checks follows from EXPECT_KV (expect_kv.py), and what it records
+  # for summarize.py --vary.
+  ament_add_pytest_test(test_catching_eval_expect_kv test/test_catching_eval_expect_kv.py)
   # The eval tools and the trial runner load a catching profile or a recorded
   # mirror: an old key is refused, an old mirror name is read through the alias
   # table (#711).

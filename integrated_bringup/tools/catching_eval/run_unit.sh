@@ -80,6 +80,15 @@
 # unit's. The session is the RT node's `Session dir:` line; without it (the RT node left before it
 # configured) the first `logging_data/<name>` of the log is taken only when it is not older than
 # the unit's minute — an older session is another run's, and is not moved (session_refused.txt).
+# #822 additions, for a unit that measures a value: an overlay written by `mk_overlay.py --set`
+# states its EXPECT_KV in its header, taken when EXPECT_KV is empty; the approach grid's
+# EXPECT_NPRE / EXPECT_DTPRE follow from EXPECT_KV when it sets this unit's planner's grid
+# (expect_kv.py — an EXPECT_* it contradicts fails the unit as FAIL:expect_kv before a launch).
+# conditions.txt records overlay_sha256, and after the startup the sha256 of the RUNNING
+# controller's and sim's executable images (controller_bin_sha256 / sim_bin_sha256, from
+# /proc/<pid>/exe of this unit's session — a rebuild after the launch does not change them; the
+# installed file with *_bin_src: file when the process is not found). A busy host (rc 3) leaves
+# the processes that used the CPU most in host_busy_top.txt.
 # Leaves <out_dir>/status = DONE | FAIL:<why>. Never set -u (setup_env.sh is sourced).
 OUT=$1; SHORT=$2; OV=$3; NT=$4; SEED=$5
 COND=${ARM:-mpc}
@@ -126,6 +135,14 @@ if ! python3 -c 'import integrated_bringup.catching_startup' > "$OUT/env_failure
   echo "FAIL:env" > "$OUT/status"; exit 1
 fi
 rm -f "$OUT/env_failure.txt"
+[ -n "$EXPECT_KV" ] || EXPECT_KV=$(python3 "$D/expect_kv.py" overlay "$OV")
+if ! GRID=$(python3 "$D/expect_kv.py" grid "${EXPECT_MODE:-mpc}" "${EXPECT_KV:-}" "${EXPECT_NPRE:--}" "${EXPECT_DTPRE:--}" 2> "$OUT/expect_kv_failure.txt"); then
+  echo "FAIL:expect_kv" > "$OUT/status"; exit 1
+fi
+rm -f "$OUT/expect_kv_failure.txt"
+read -r G_NPRE G_DTPRE <<< "$GRID"
+[ "$G_NPRE" != "-" ] && EXPECT_NPRE=$G_NPRE
+[ "$G_DTPRE" != "-" ] && EXPECT_DTPRE=$G_DTPRE
 export ROS_DOMAIN_ID=${EVAL_DOMAIN:-88}
 [ -f "$PROFILE" ] || { echo "FAIL:no profile $PROFILE" > "$OUT/status"; exit 1; }
 
@@ -186,6 +203,7 @@ trap on_signal INT TERM HUP
 {
   echo "date_start: $(date -Is)"
   echo "robot: $ROBOT"; echo "condition: $COND"; echo "overlay: $OV"; echo "n: $NT"; echo "seed: $SEED"
+  echo "overlay_sha256: $(sha256sum "$OV" | cut -d' ' -f1)"
   echo "throws_file: $THROWS_FILE"; echo "throws_file_sha256: $(sha256sum "$THROWS_FILE" | cut -d' ' -f1)"
   [ -n "$THROWS_LIMIT" ] && echo "throws_limit: $THROWS_LIMIT"
   [ "${END_ON_BALL_LOW:-0}" == "1" ] && echo "end_on_ball_low: 1 margin_m=${BALL_LOW_MARGIN_M:-default} grace_s=${BALL_LOW_GRACE_S:-default}"
@@ -315,6 +333,23 @@ BUDGET=$(grep -o 'planner enabled: wake timeout [0-9.]* s, budget [0-9.]* s' "$O
 echo "planner_budget_s: ${BUDGET}" >> "$OUT/conditions.txt"
 [ -n "$BUDGET" ] || why="$why no_budget_line"
 if [ -n "$why" ]; then cleanup; echo "FAIL:overlay$why" > "$OUT/status"; exit 1; fi
+bin_sha() {  # bin_sha <executable name> <conditions key> <installed file>
+  local p
+  for p in /proc/[0-9]*; do
+    [ "$(basename "$(readlink "$p/exe" 2>/dev/null)")" == "$1" ] || continue
+    [ "$(sed 's/.*) //' "$p/stat" 2>/dev/null | awk '{print $4}')" == "$LPG" ] || continue
+    echo "$2: $(sha256sum "$p/exe" 2>/dev/null | cut -d' ' -f1)"
+    return
+  done
+  echo "$2: $(sha256sum "$3" 2>/dev/null | cut -d' ' -f1)"
+  echo "${2%_sha256}_src: file"
+}
+{
+  bin_sha integrated_rt_controller controller_bin_sha256 \
+    "$WS/install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller"
+  bin_sha mujoco_simulator_node sim_bin_sha256 \
+    "$WS/install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node"
+} >> "$OUT/conditions.txt"
 
 REV=$(git -C "$REPO" rev-parse --short HEAD)
 BREV=$(git -C $BWS/src/ball_perception rev-parse --short HEAD)
@@ -351,6 +386,7 @@ timeout $((NT * 30 + 120)) ros2 run integrated_bringup catching_sim_trials "$OUT
 rc=$?
 echo "loadavg_end: $(cut -d' ' -f1-3 /proc/loadavg)" >> "$OUT/conditions.txt"
 echo "date_end: $(date -Is)" >> "$OUT/conditions.txt"
+[ $rc -eq 3 ] && ps -eo pid,pcpu,etimes,args --sort=-pcpu | head -16 > "$OUT/host_busy_top.txt"
 cleanup
 if [ $rc -eq 3 ]; then echo "FAIL:host_busy" > "$OUT/status"; exit 1; fi
 if [ $rc -ne 0 ]; then echo "FAIL:trials rc=$rc" > "$OUT/status"; exit 1; fi

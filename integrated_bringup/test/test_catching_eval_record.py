@@ -106,6 +106,119 @@ def test_the_pairs_differ_in_the_planner_or_in_the_ball_never_in_both():
     assert (A, C2, "planner+ball") in everything and (B, C2, "planner+ball") in everything
 
 
+# ── a record of values (#822) ─────────────────────────────────────────────────
+_NPRE = "planner.segment.mpc.approach.n_pre_max"
+_DTPRE = "planner.segment.mpc.approach.dt_pre_s"
+
+
+def _valued(tmp_path, name, values, *, seed="3011", cond=None):
+    """A unit of arm B whose mirror also says ``values`` (as ros2 param get prints them)."""
+    unit = _unit(tmp_path, name, B, seed=seed)
+    with open(unit / "mirror.txt", "a") as mirror:
+        for key, (kind, value) in values.items():
+            mirror.write(f"{key}: {kind} value is: {value}\n")
+    with open(unit / "conditions.txt", "a") as conditions:
+        for key, value in (cond or {}).items():
+            conditions.write(f"{key}: {value}\n")
+    return unit
+
+
+def test_a_varied_value_is_part_of_the_arm_and_its_label():
+    shipped = sm.Arm("grid", "mpc", "tennis", ((_NPRE, "6"), (_DTPRE, "0.1")))
+    moved = sm.Arm("grid", "mpc", "tennis", ((_NPRE, "8"), (_DTPRE, "0.15")))
+    assert sm.arm_label(moved) == f"grid×mpc·tennis[{_NPRE}=8,{_DTPRE}=0.15]"
+    assert sm.arm_label(B) == "grid×mpc·tennis"  # a record without --vary is as it was
+    assert sm.record_pairs([moved, shipped]) == [(shipped, moved, "param")]
+    # a value and a planner apart: two axes, tabled only with --all-pairs
+    other = sm.Arm("grid", "closed_form", "tennis", ((_NPRE, "8"), (_DTPRE, "0.15")))
+    assert (shipped, other) not in [(a, b) for a, b, _ in sm.record_pairs([shipped, other])]
+    assert sm.record_pairs([shipped, other], all_pairs=True)[0][2] == "planner+param"
+
+
+def test_a_unit_says_its_varied_value_as_its_mirror_prints_it(tmp_path):
+    unit = _valued(tmp_path, "u", {_NPRE: ("Integer", "8"), _DTPRE: ("Double", "0.15")})
+    got = sm.unit_identity(unit, (_NPRE, _DTPRE))
+    assert got["arm"].vary == ((_NPRE, "8"), (_DTPRE, "0.15"))
+    with pytest.raises(SystemExit, match="mirror.txt has no planner.x — --vary cannot read it"):
+        sm.unit_identity(unit, ("planner.x",))
+    told = _valued(
+        tmp_path, "t", {_NPRE: ("Integer", "6")}, cond={"expect_kv": f"{_NPRE}=8;{_DTPRE}=0.15"}
+    )
+    with pytest.raises(SystemExit, match=f"expect_kv {_NPRE}=8, the mirror 6"):
+        sm.unit_identity(told, (_NPRE,))
+
+
+def _gates(tmp_path, monkeypatch, units, **kwargs):
+    """``record`` up to its first read of a unit's session: the gates before it."""
+
+    class Passed(Exception):
+        pass
+
+    def loaded(*args):
+        raise Passed
+
+    monkeypatch.setattr(sm, "load_unit", loaded)
+    overlay = tmp_path / "o.yaml"
+    overlay.write_text("x: 1\n")
+    for unit in units:
+        text = (unit / "conditions.txt").read_text().replace("/x/o.yaml", str(overlay))
+        (unit / "conditions.txt").write_text(text)
+    try:
+        sm.record(tmp_path, [str(u) for u in units], **kwargs)
+    except Passed:
+        return "passed"
+    return "returned"
+
+
+def test_two_values_under_one_seed_are_two_arms_with_vary(tmp_path, monkeypatch):
+    units = [
+        _valued(tmp_path, "shipped", {_NPRE: ("Integer", "6")}),
+        _valued(tmp_path, "moved", {_NPRE: ("Integer", "8")}),
+    ]
+    with pytest.raises(SystemExit, match="name it with --vary"):
+        _gates(tmp_path, monkeypatch, units)
+    assert _gates(tmp_path, monkeypatch, units, vary=(_NPRE,)) == "passed"
+
+
+def test_an_overlay_changed_since_the_unit_ran_is_refused(tmp_path, monkeypatch):
+    unit = _valued(tmp_path, "u", {}, cond={"overlay_sha256": "00" * 32})
+    with pytest.raises(SystemExit, match="was changed since the unit ran"):
+        _gates(tmp_path, monkeypatch, [unit])
+    # a unit from before #822 records none: its overlay is taken as it is
+    older = _valued(tmp_path, "older", {}, seed="3012")
+    assert _gates(tmp_path, monkeypatch, [older]) == "passed"
+
+
+def test_units_of_two_builds_are_refused_unless_allowed(tmp_path, monkeypatch):
+    units = [
+        _valued(tmp_path, "a", {}, cond={"controller_bin_sha256": "aa" * 32}),
+        _valued(tmp_path, "b", {}, seed="3012", cond={"controller_bin_sha256": "bb" * 32}),
+    ]
+    with pytest.raises(SystemExit, match="2 controller builds"):
+        _gates(tmp_path, monkeypatch, units)
+    assert _gates(tmp_path, monkeypatch, units, allow_mixed_build=True) == "passed"
+
+
+def test_an_arms_first_wakes_are_counted_unit_by_unit():
+    def unit(events):
+        rows = [
+            _event("first", outcome, "converged", us, track_generation=gen,
+                   segment_x0_from_segment=0, segment_k=-npre)
+            for gen, outcome, us, npre in events
+        ]  # fmt: skip
+        u = _solve_unit(rows, **_BUDGETS)
+        u["mirror"]["planner.segment.mpc.approach.n_pre_max"] = "Integer value is: 6"
+        return u
+
+    # generation 1 is in both units: two throws, not one
+    first = unit([(1, "published", 20_000, 6), (2, "catch_error", 30_000, 4)])
+    second = unit([(1, "catch_error", 25_000, 6)])
+    fw = sm.arm_solves([first, second], B)["first_wake"]
+    assert (fw["throws"], fw["published"], fw["n_pre_at_cap"]) == (3, 1, 2)
+    assert fw["n_pre"] == {"4": 1, "6": 2} and fw["budget_ms"] == 200.0
+    assert "first wake: 3 throws · published 1" in sm.format_first_wake(fw)
+
+
 # ── a table, described ───────────────────────────────────────────────────────
 def test_a_table_is_described_not_judged():
     tab = {"n": 180, "both": 4, "a_only": 12, "b_only": 3, "neither": 161}
