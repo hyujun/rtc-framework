@@ -908,6 +908,25 @@ def process_table() -> list[tuple[int, int, str]]:
     return table
 
 
+def process_sessions() -> dict[int, int]:
+    """``{pid: session id}`` of every process readable in /proc.
+
+    A process keeps its session when its parent leaves (``ros2 launch`` starts its
+    nodes without a session of their own), so the session says whose a process is
+    after the process tree no longer does."""
+    sessions = {}
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat") as f:
+                # After the LAST ')': state, ppid, pgrp, session.
+                sessions[int(name)] = int(f.read().rsplit(")", 1)[1].split()[3])
+        except (OSError, ValueError, IndexError):
+            continue  # gone between listdir and open
+    return sessions
+
+
 def process_family(table: Sequence[tuple[int, int, str]], pid: int) -> set[int]:
     """``pid``, its ancestors and its descendants."""
     parent = {p: pp for p, pp, _ in table}

@@ -19,7 +19,8 @@ whose header is the history of why:
    would share it.
 2. **Bringup**: ``ros2 launch integrated_bringup sim_<robot>.launch.py`` with the
    arm's two modes as launch arguments (``integrated_bringup.catch_modes`` — no
-   overlay file), the viewer per ``sim.viewer``, the sim lanes on, no CPU shield
+   overlay file), the viewer per ``sim.viewer`` with its world-changing keys off
+   (``viewer_input_enabled:=false``, #822), the sim lanes on, no CPU shield
    and ``max_log_sessions:=60`` (the launch prunes the session tree; a long run
    must not lose the session of the unit before).
 3. **Readiness** (``catching_startup.startup_state``), up to 120 s.
@@ -29,9 +30,10 @@ whose header is the history of why:
    values that must be the SHIPPED ones — the lead (``T_arm``, ``lead_enable``),
    the commit window (``T_freeze``), the CLIK form, the arm's segment grid
    (``n_pre_max``; the docking planner's stop ``n_nodes`` / ``dt_s``) and the
-   sim's ball. What "shipped" is comes from the installed configuration
-   (:func:`shipped_expectation`), not from a table in this file. The startup
-   lines must say the same modes and grid (:func:`mirror_failures`).
+   sim's ball and viewer input (off; an open viewer's banner says so too —
+   :func:`viewer_input_failures`). What "shipped" is comes from the installed
+   configuration (:func:`shipped_expectation`), not from a table in this file.
+   The startup lines must say the same modes and grid (:func:`mirror_failures`).
 5. **Estimator**: ``ball_perception_sim``'s ``sim_estimator.launch.py`` from its
    OWN workspace, sourced in the shell that starts it (two workspaces, MD-17);
    the seed is the estimator's alone — the sim takes none and the throws are a
@@ -44,7 +46,9 @@ whose header is the history of why:
    time limit, an abnormal start (``catching_startup``), a sim that left.
 7. **Shutdown** in a fixed order — driver, estimator, sim — each group with
    SIGINT and a wait before SIGKILL, then whatever of the three executables is
-   left (:func:`residual_pids`).
+   left in the unit's own sessions (:func:`residual_pids` — another sim of this
+   workspace is not the unit's). A launch that had to be SIGKILLed fails the unit
+   (``FAIL:launch killed``): the RT node's CSVs may end mid-row.
 8. **The session** the sim wrote is checked for foreign files (a test run that
    started in the launch's minute writes fixture CSVs into the same directory),
    copied into the unit and removed. A unit that fails keeps its session as
@@ -134,6 +138,13 @@ JOINT = "demo_joint_controller"
 CONTROLLER_NODE = f"/{CATCHING}/{CATCHING}"
 SIMULATOR_NODE = "/mujoco_simulator"
 BALL_TYPE_PARAMETER = "projectile_ball.ball_type"
+# The simulator's viewer ignores the keys that change the world (#822 D7): a unit's sim
+# runs with it off, and its viewer, when open, says so in its ready banner.
+VIEWER_INPUT_PARAMETER = "viewer_input_enabled"
+VIEWER_INPUT_BANNER = "[Viewer] Input: world-changing keys DISABLED"
+# The viewer prints that banner from its own thread once its window is up — not tied to
+# the controller's readiness, so a slow display may print it after the mirror is read.
+VIEWER_BANNER_TIMEOUT_S = 15
 ESTIMATOR_PACKAGE = "ball_perception_sim"
 ESTIMATOR_PROFILE = ("share", ESTIMATOR_PACKAGE, "config", "sim_profile.catching.json")
 ESTIMATOR_SOURCE = ("src", "ball_perception")
@@ -214,6 +225,49 @@ MIRROR_NAMES = (
 
 class Interrupted(BaseException):
     """A signal ended the run (raised from the handler, in the main thread)."""
+
+
+_held_signals: list[int] | None = None  # the signals of the deferring stretch, if one runs
+
+
+@contextlib.contextmanager
+def signals_deferred():
+    """A stretch a signal must not cut: the run's signal that falls in it is held and
+    raised as :class:`Interrupted` when the stretch ends.
+
+    Two stretches need it. A group being started: a signal between ``Popen`` and the
+    assignment of its :class:`Group` would leave a launch nobody holds — and with no
+    group there is no session to sweep either, so nothing would stop it. A failed
+    unit being shut down (:meth:`UnitRun._fail`): a signal there would cut the
+    shutdown short. The signals are not masked instead: a mask is inherited through
+    ``fork``, and the launch would start with SIGINT blocked. A signal that lands in
+    ``Popen``'s own wait for the child is retried there (PEP 475): the handler
+    returns.
+    """
+    global _held_signals
+    if _held_signals is not None:  # inside another stretch: that one raises
+        yield
+        return
+    _held_signals = []
+    try:
+        yield
+    finally:
+        held, _held_signals = _held_signals, None
+        if held:
+            # Raised over an exception in flight, that exception is kept only as this
+            # one's __context__: the signal ends the run either way.
+            raise Interrupted(held[0])
+
+
+def on_signal(signum, _frame):
+    """The run's handler of SIGINT / SIGTERM / SIGHUP."""
+    # Once: the unit's shutdown must not be cut by a second Ctrl-C.
+    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, signal.SIG_IGN)
+    if _held_signals is not None:
+        _held_signals.append(signum)
+        return
+    raise Interrupted(signum)
 
 
 # ── the plan ─────────────────────────────────────────────────────────────────
@@ -546,6 +600,7 @@ def launch_command(robot: str, arm, viewer: bool) -> list[str]:
         PACKAGE,
         launch_file(robot),
         f"enable_viewer:={'true' if viewer else 'false'}",
+        f"{VIEWER_INPUT_PARAMETER}:=false",
         "use_cpu_affinity:=false",
         "enable_mpc:=true",
         "sim_lanes:=true",
@@ -559,8 +614,18 @@ def launch_command(robot: str, arm, viewer: bool) -> list[str]:
 # else. `ros2 pkg prefix` must then name that workspace (its package folder, or the
 # install root of a merged install) — an estimator found elsewhere on the path is
 # another build. $1 is the workspace; the rest are the launch arguments.
+# The shell inherits THIS workspace's environment: its prefixes are dropped first and
+# the workspace's setup.bash sourced — it chains the underlays that workspace was built
+# on (/opt/ros, or an overlay between) before itself — so the estimator resolves
+# nothing of this workspace. The caller's PATH is put back in front — the underlays
+# prepend their own bin, and what the caller put first (a venv) stays first.
+# LD_LIBRARY_PATH is left as it is.
 _ESTIMATOR_SCRIPT = f"""
-source "$1/install/local_setup.bash"
+P0=$PATH
+unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH \\
+  AMENT_CURRENT_PREFIX COLCON_CURRENT_PREFIX
+source "$1/install/setup.bash"
+PATH="$P0:$PATH"
 prefix=$(ros2 pkg prefix {ESTIMATOR_PACKAGE})
 [ "$prefix" == "$1/install/{ESTIMATOR_PACKAGE}" ] || [ "$prefix" == "$1/install" ] \\
   || {{ echo "WRONG_PREFIX $prefix"; exit 1; }}
@@ -708,6 +773,30 @@ def session_dir_from_log(log_text: str, logging_root: str) -> str | None:
     return None
 
 
+def unit_session(log_text: str, logging_root: str, minute: str) -> tuple[str | None, str]:
+    """The session of a unit launched in ``minute`` (``YYMMDD_HHMM``, what
+    :func:`wait_for_free_minute` waited for) and, when it is not taken, why.
+
+    :func:`session_dir_from_log`, but a name the fallback reads is only taken when it
+    is not older than ``minute``. The fallback is used when the RT node wrote no
+    ``Session dir:`` line — it left before it configured (``FAIL:startup``) — and then
+    reads the first session name any line of the log names (the sim's lane paths).
+    A session older than the unit's minute was there before this launch opened one,
+    so it is another run's, whatever line named it: it is not moved. Names sort as
+    times (``list_session_dirs``).
+    """
+    session = session_dir_from_log(log_text, logging_root)
+    if session is None or _SESSION_LINE.search(log_text):
+        return session, ""
+    name = os.path.basename(session)
+    if name < minute:
+        return None, (
+            f"the log names {name}, older than this unit's minute {minute}: "
+            "another run's session, not taken"
+        )
+    return session, ""
+
+
 def commit_line(log_text: str) -> str:
     match = _COMMIT_LINE.search(log_text)
     return match.group(0) if match else ""
@@ -796,17 +885,30 @@ def watch_verdict(
 
 
 def residual_pids(
-    table: Sequence[tuple[int, int, str]], patterns: Sequence[str], spare: set[int]
+    table: Sequence[tuple[int, int, str]],
+    patterns: Sequence[str],
+    spare: set[int],
+    *,
+    sessions: Mapping[int, int] | None = None,
+    only_sessions: set[int] | None = None,
 ) -> list[int]:
     """The processes of ``table`` (``catching_sim_trials.process_table`` rows) whose
     command line STARTS with one of ``patterns`` (regular expressions: an executable
     under a workspace) and that are not in ``spare`` — this command's own family,
-    whose arguments may name the same paths."""
+    whose arguments may name the same paths.
+
+    With ``only_sessions``, a process must also be in one of those sessions
+    (``sessions``: ``catching_sim_trials.process_sessions``) — the unit's own groups.
+    The patterns name a workspace, not a run: another sim of this workspace (another
+    ``ROS_DOMAIN_ID``, a person's) matches them too, and is not the unit's to kill.
+    An empty ``only_sessions`` kills nothing."""
     compiled = [re.compile(pattern) for pattern in patterns]
     return [
         pid
         for pid, _, line in table
-        if pid not in spare and any(rx.match(line) for rx in compiled)
+        if pid not in spare
+        and any(rx.match(line) for rx in compiled)
+        and (only_sessions is None or (sessions or {}).get(pid) in only_sessions)
     ]
 
 
@@ -966,9 +1068,48 @@ def loadavg() -> str:
     return " ".join(_read_text(Path("/proc/loadavg")).split()[:3])
 
 
-def read_mirror(timeout_s: float = 10.0) -> tuple[dict, object]:
-    """The running controller's mirror (``{name: value | None}`` over ``MIRROR_NAMES``)
-    and the simulator's ball type. ``RuntimeError`` when a node does not answer."""
+def viewer_input_failures(viewer_input, launch_log: str, *, viewer: bool) -> list[str]:
+    """What of the viewer's input switch the running sim does not show: ``viewer_input``
+    (its parameter must be False) and, with the viewer open, ``viewer_banner`` (the
+    ready banner's line). Empty for a unit that may throw."""
+    why = []
+    if viewer_input is not False:
+        why.append("viewer_input")
+    if viewer and VIEWER_INPUT_BANNER not in launch_log:
+        why.append("viewer_banner")
+    return why
+
+
+def read_mirror(timeout_s: float = 10.0) -> tuple[dict, object, object]:
+    """The running controller's mirror (``{name: value | None}`` over ``MIRROR_NAMES``),
+    the simulator's ball type and its ``viewer_input_enabled`` (None when it does not
+    declare it), in one read. ``RuntimeError`` when a node does not answer."""
+    read = _read_parameters(
+        {
+            CONTROLLER_NODE: MIRROR_NAMES,
+            SIMULATOR_NODE: [BALL_TYPE_PARAMETER, VIEWER_INPUT_PARAMETER],
+        },
+        timeout_s,
+    )
+    simulator = read[SIMULATOR_NODE]
+    return read[CONTROLLER_NODE], simulator[BALL_TYPE_PARAMETER], simulator[VIEWER_INPUT_PARAMETER]
+
+
+def wait_for_text(path: Path, text: str, timeout_s: int) -> str:
+    """``path``'s text once it holds ``text``, or as it is after ``timeout_s`` seconds
+    without it."""
+    content = _read_text(path)
+    for _ in range(timeout_s):
+        if text in content:
+            break
+        time.sleep(1)
+        content = _read_text(path)
+    return content
+
+
+def _read_parameters(requests: Mapping[str, Sequence[str]], timeout_s: float = 10.0) -> dict:
+    """``{node: {name: value | None}}`` of the running nodes' parameters.
+    ``RuntimeError`` when a node does not answer."""
     # ROS imports stay here so everything above is importable without a ROS graph.
     import rclpy
     from rcl_interfaces.srv import GetParameters
@@ -1002,11 +1143,10 @@ def read_mirror(timeout_s: float = 10.0) -> tuple[dict, object]:
 
             return mirror_from_replies(names, ask)
 
-        mirror = parameters(CONTROLLER_NODE, MIRROR_NAMES)
-        ball = parameters(SIMULATOR_NODE, [BALL_TYPE_PARAMETER])[BALL_TYPE_PARAMETER]
+        read = {target: parameters(target, names) for target, names in requests.items()}
         executor.shutdown()
         node.destroy_node()
-        return mirror, ball
+        return read
     finally:
         rclpy.shutdown(context=context)
 
@@ -1044,6 +1184,8 @@ class UnitRun:
         self.driver: Group | None = None
         self.launch_tail: LogTail | None = None
         self.session: str | None = None
+        self.minute = ""  # the minute the unit's launch was started in
+        self.launch_killed = False  # the launch had to be SIGKILLed (its CSVs may be cut)
 
     # ── records ──────────────────────────────────────────────────────────
     def _note(self, name: str, text: str) -> None:
@@ -1110,8 +1252,13 @@ class UnitRun:
     # ── shutdown ─────────────────────────────────────────────────────────
     def cleanup(self) -> None:
         """Stop what the unit started, in order, then kill what is left of it."""
-        from integrated_bringup.catching_sim_trials import process_family, process_table
+        from integrated_bringup.catching_sim_trials import (
+            process_family,
+            process_sessions,
+            process_table,
+        )
 
+        groups = [g for g in (self.driver, self.estimator, self.launch) if g is not None]
         for group, wait_s in (
             (self.driver, DRIVER_STOP_S),
             (self.estimator, ESTIMATOR_STOP_S),
@@ -1120,11 +1267,22 @@ class UnitRun:
             if group is not None and group.stop(wait_s):
                 with open(self.out / "cleanup.log", "a", encoding="utf-8") as handle:
                     handle.write(f"killed group {group.pgid} after {wait_s} s\n")
+                # Accumulated: a second shutdown (after a signal) finds the group gone.
+                self.launch_killed |= group is self.launch
         if self.launch is None:
             return
         time.sleep(2)
         table = process_table()
-        for pid in residual_pids(table, self.ctx.residual, process_family(table, os.getpid())):
+        # Each group is a session of its own (its leader's pid): what is left of the
+        # unit is in one of them, whoever its parent is now.
+        residual = residual_pids(
+            table,
+            self.ctx.residual,
+            process_family(table, os.getpid()),
+            sessions=process_sessions(),
+            only_sessions={group.pgid for group in groups},
+        )
+        for pid in residual:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGKILL)
         time.sleep(1)
@@ -1162,9 +1320,10 @@ class UnitRun:
             raise
 
     def _fail(self, status: str) -> None:
-        self.cleanup()
-        self._note("status", status + "\n")
-        self.keep_failed_session()
+        with signals_deferred():
+            self.cleanup()
+            self._note("status", status + "\n")
+            self.keep_failed_session()
 
     def _stop(self, status: str) -> str:
         self.cleanup()
@@ -1174,11 +1333,12 @@ class UnitRun:
         spec, ctx, out = self.spec, self.ctx, self.out
         if (out / "trials").exists():
             return "FAIL:trials dir exists (move the old unit aside)"
-        wait_for_free_minute(ctx.sim_root / ".last_minute", ctx.logging_root)
+        self.minute = wait_for_free_minute(ctx.sim_root / ".last_minute", ctx.logging_root)
         self._write_conditions()
 
         log_path = out / "launch.log"
-        self.launch = Group(launch_command(ctx.robot, spec.arm, ctx.viewer), log_path)
+        with signals_deferred():
+            self.launch = Group(launch_command(ctx.robot, spec.arm, ctx.viewer), log_path)
         state = startup.WAITING
         for _ in range(STARTUP_TIMEOUT_S):
             state = startup.startup_state(_read_text(log_path))
@@ -1186,8 +1346,10 @@ class UnitRun:
                 break
             time.sleep(1)
         log = _read_text(log_path)
-        self.session = session_dir_from_log(log, ctx.logging_root)
+        self.session, not_taken = unit_session(log, ctx.logging_root, self.minute)
         self._note("session.txt", (self.session or "") + "\n")
+        if not_taken:
+            self._note("session_refused.txt", not_taken + "\n")
         if state != startup.READY:
             failures = startup.failure_lines(log)
             if failures:
@@ -1205,28 +1367,34 @@ class UnitRun:
         log = _read_text(log_path)
         self._note("commit.txt", commit_line(log) + "\n")
         try:
-            mirror, ball_type = read_mirror()
+            mirror, ball_type, viewer_input = read_mirror()
         except RuntimeError as exc:
             self._note("mirror.txt", f"unread: {exc}\n")
             return self._stop("FAIL:mirror unread")
         self._note("mirror.txt", mirror_text(mirror, ball_type))
         self._note("segment_startup.txt", "".join(f"{x}\n" for x in segment_startup_lines(log)))
-        self._condition(planner_budget_s=planner_budget(log) or "")
+        self._condition(
+            planner_budget_s=planner_budget(log) or "", viewer_input_enabled=viewer_input
+        )
         why = mirror_failures(mirror, ball_type, log, self.expect)
+        if ctx.viewer:
+            log = wait_for_text(log_path, VIEWER_INPUT_BANNER, VIEWER_BANNER_TIMEOUT_S)
+        why += viewer_input_failures(viewer_input, log, viewer=ctx.viewer)
         if why:
             return self._stop("FAIL:mirror " + " ".join(why))
 
         est_log = out / "est.log"
-        self.estimator = Group(
-            estimator_command(
-                ctx.estimator_ws,
-                ctx.profile,
-                spec.seed,
-                producer_revision=ctx.revisions["ball_perception"][0],
-                simulator_revision=ctx.revisions["rtc_framework"][0],
-            ),
-            est_log,
-        )
+        with signals_deferred():
+            self.estimator = Group(
+                estimator_command(
+                    ctx.estimator_ws,
+                    ctx.profile,
+                    spec.seed,
+                    producer_revision=ctx.revisions["ball_perception"][0],
+                    simulator_revision=ctx.revisions["rtc_framework"][0],
+                ),
+                est_log,
+            )
         for _ in range(ESTIMATOR_TIMEOUT_S):
             if ESTIMATOR_ACTIVE in _read_text(est_log) or self.estimator.poll() is not None:
                 break
@@ -1272,6 +1440,14 @@ class UnitRun:
             return "FAIL:host_busy"
         if rc != 0:
             return f"FAIL:trials rc={rc}"
+        if self.launch_killed:
+            # Not thrown again: the RT node's CSVs may end mid-row, which is a record of
+            # this unit, not a rig failure to throw over (run_unit.sh's `probe killed`).
+            self._note(
+                "launch_killed.txt",
+                f"the launch did not leave {LAUNCH_STOP_S} s after SIGINT and was killed\n",
+            )
+            return "FAIL:launch killed"
         return self._keep_session()
 
     def _throw(self) -> tuple[str, str | None]:
@@ -1279,18 +1455,19 @@ class UnitRun:
         (:func:`watch_verdict`'s ``(what, why)`` of the look that ended it)."""
         spec, ctx, out = self.spec, self.ctx, self.out
         trials_log = out / "trials.log"
-        self.driver = Group(
-            driver_command(
-                out / "trials",
-                ctx.robot,
-                spec.chunk,
-                spec.arm.name,
-                limit=ctx.throws_limit,
-                end_on_ball_low=ctx.end_on_ball_low,
-                host_watch=ctx.host_watch,
-            ),
-            trials_log,
-        )
+        with signals_deferred():
+            self.driver = Group(
+                driver_command(
+                    out / "trials",
+                    ctx.robot,
+                    spec.chunk,
+                    spec.arm.name,
+                    limit=ctx.throws_limit,
+                    end_on_ball_low=ctx.end_on_ball_low,
+                    host_watch=ctx.host_watch,
+                ),
+                trials_log,
+            )
         began = time.monotonic()
         keys: list[str] = []
         start: tuple[str, str | None] = (startup.WAITING, None)
@@ -1471,8 +1648,8 @@ def _estimator(args) -> tuple[Path, Path]:
     if not args.estimator_ws:
         _refuse("name the estimator's colcon workspace: --estimator-ws or BALL_SIM_WS")
     workspace = Path(args.estimator_ws).resolve()
-    if not (workspace / "install" / "local_setup.bash").is_file():
-        _refuse(f"no colcon workspace at {workspace} (no install/local_setup.bash)")
+    if not (workspace / "install" / "setup.bash").is_file():
+        _refuse(f"no colcon workspace at {workspace} (no install/setup.bash)")
     profile = Path(args.profile).resolve() if args.profile else estimator_profile(workspace)
     if not profile.is_file():
         _refuse(f"no estimator profile {profile}")
@@ -1622,12 +1799,6 @@ def main(argv=None) -> int:
 
     os.environ["ROS_DOMAIN_ID"] = str(args.domain_id)
 
-    def on_signal(signum, _frame):
-        # Once: the unit's shutdown must not be cut by a second Ctrl-C.
-        for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            signal.signal(number, signal.SIG_IGN)
-        raise Interrupted(signum)
-
     for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(number, on_signal)
 
@@ -1647,10 +1818,11 @@ def main(argv=None) -> int:
                 complete = False
             # Between two units no sim is up: the one moment the analysis may run.
             analyse_pending(run, layout, [spec.arm], share_config_dir)
+        collected = collect(run, config, layout, arms)
     except Interrupted as exc:
         run.say(f"signal {exc.args[0]}: the running unit was ended, nothing is collected")
         return 130
-    return 0 if collect(run, config, layout, arms) and complete else 1
+    return 0 if collected and complete else 1
 
 
 def throw_unit(run: Run, spec: UnitSpec, expect: Expectation, ctx: RunContext, retries: int):

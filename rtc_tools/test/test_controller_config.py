@@ -306,3 +306,35 @@ def test_leaf_lines_keep_scalar_text_and_render_nulls_alike(tmp_path):
         "f\t{}",
         "g\t[]",
     ]
+
+
+# ── the leaf rule of an override (tree_leaves / yaml_kind / unread_leaves) ──────────
+def test_the_leaves_of_a_tree_are_its_key_paths():
+    from rtc_tools.utils.controller_config import tree_leaves
+
+    tree = {"a": {"b": 1, "c": {"d": [1, 2]}}, "e": "x"}
+    assert tree_leaves(tree) == {("a", "b"): 1, ("a", "c", "d"): [1, 2], ("e",): "x"}
+
+
+@pytest.mark.parametrize(
+    ("value", "kind"),
+    [(True, "bool"), (6, "int"), (0.1, "float"), ("1e-3", "str"), ([1, 2.0], "list[float,int]")],
+)
+def test_a_value_has_the_kind_yaml_read_it_as(value, kind):
+    from rtc_tools.utils.controller_config import yaml_kind
+
+    assert yaml_kind(value) == kind
+
+
+def test_an_override_leaf_must_be_a_shipped_key_of_the_same_kind():
+    from rtc_tools.utils.controller_config import unread_leaves
+
+    shipped = {"catching": {"n_pre_max": 6, "dt_pre_s": 0.1, "on": True}}
+    assert unread_leaves({"catching": {"n_pre_max": 8, "dt_pre_s": 0.15}}, shipped) == []
+    assert unread_leaves({"catching": {"dt_pre_s": 1, "on": 1, "x": 2}}, shipped) == [
+        "catching.dt_pre_s: shipped float, overlay int",
+        "catching.on: shipped bool, overlay int",
+        "catching.x: not in the shipped YAML",
+    ]
+    # One level short: the key would be created, and never read.
+    assert unread_leaves({"n_pre_max": 8}, shipped) == ["n_pre_max: not in the shipped YAML"]

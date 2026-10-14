@@ -62,6 +62,9 @@ mujoco_simulator:
     # ── Viewer ───────────────────────────────────────────────────────────────
     enable_viewer: true
     viewer_refresh_rate: 60.0  # Hz
+    # false: viewer ignores world-changing keys (pause/step/speed/reset/spawn/
+    # physics/solver) and Ctrl+drag perturbation; camera/display keys still work.
+    viewer_input_enabled: true
 
     # ── Physics timestep ─────────────────────────────────────────────────────
     physics_timestep: 0.002  # seconds (control period)

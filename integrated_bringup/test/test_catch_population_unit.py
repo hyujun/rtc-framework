@@ -12,6 +12,7 @@ What a real sim adds — that the launch arguments reach the controller, that th
 real processes stop on SIGINT, the real session — is checked in real runs.
 """
 
+import contextlib
 import os
 import signal
 import stat
@@ -26,7 +27,10 @@ from integrated_bringup import catch_population_trials as cpt
 
 # What `ros2 <verb> <what>` does in a unit. The scenario is in FAKE_* variables.
 STUB = r"""#!/bin/bash
-hold() { trap 'exit 0' INT TERM; while true; do sleep 0.02; "$@"; done; }
+hold() {
+  if [ -n "$DEAF" ]; then trap '' INT TERM; else trap 'exit 0' INT TERM; fi
+  while true; do sleep 0.02; "$@"; done
+}
 case "$1 $2" in
   "launch integrated_bringup")
     echo "ros2 $*"
@@ -34,13 +38,15 @@ case "$1 $2" in
     mkdir -p "$log" "$FAKE_SESSION/sim"
     printf 't,mode\n0.0,1\n' > "$log/catching_diag.csv"
     [ -n "$FAKE_FOREIGN" ] && echo x > "$log/$FAKE_FOREIGN"
-    echo "[integrated_rt_controller-2] [INFO] [1.0] [integrated_rt_controller]: Session dir: $FAKE_SESSION (max_sessions=60)"
+    [ -n "$FAKE_NO_SESSION_LINE" ] || echo "[integrated_rt_controller-2] [INFO] [1.0] [integrated_rt_controller]: Session dir: $FAKE_SESSION (max_sessions=60)"
     cat "$FAKE_LAUNCH_LOG"
+    # A process of the launch's session that left its process group.
+    [ -n "$FAKE_ESCAPE" ] && ( set -m; exec -a "$FAKE_ESCAPE" sleep 30 & echo $! > "$FAKE_DIR/escaped" )
     later() {
       [ -f "$FAKE_DIR/key" ] && { cat "$FAKE_DIR/key"; rm "$FAKE_DIR/key"; }
       [ -f "$FAKE_DIR/sim_leaves" ] && exit 0
     }
-    hold later ;;
+    DEAF=$FAKE_LAUNCH_DEAF hold later ;;
   "pkg prefix") echo "$FAKE_PREFIX" ;;
   "launch ball_perception_sim")
     echo "ros2 $*"
@@ -93,13 +99,14 @@ class Rig:
         self.fake.mkdir()
         self.ball_ws = tmp_path / "ball_ws"
         (self.ball_ws / "install").mkdir(parents=True)
-        (self.ball_ws / "install" / "local_setup.bash").write_text("")
+        (self.ball_ws / "install" / "setup.bash").write_text("")
         self.profile = tmp_path / "profile.json"
         self.profile.write_text('{"prediction": {"horizon_s": 1.0}}')
         self.logging_root = tmp_path / "logging_data"
         self.session = self.logging_root / "261011_2332"
         self.expect, self.mirror, log = _unit_state("ur5e_p1b", arm)
-        (self.fake / "launch.log").write_text(log)
+        # The sim's viewer input is off, and its open viewer says so (#822 D7).
+        (self.fake / "launch.log").write_text(log + cpt.VIEWER_INPUT_BANNER + "\n")
         (self.fake / "trials.log").write_text(_throws(*[CYCLE] * 6))
         self.set(
             FAKE_DIR=self.fake,
@@ -142,7 +149,8 @@ class Rig:
         monkeypatch.setattr(cpt, "STARTUP_TIMEOUT_S", 5 * cpt.STARTUP_TIMEOUT_S)
         monkeypatch.setattr(cpt, "ESTIMATOR_TIMEOUT_S", 5 * cpt.ESTIMATOR_TIMEOUT_S)
         monkeypatch.setattr(cpt, "wait_for_free_minute", lambda *a, **k: "261011_2332")
-        monkeypatch.setattr(cpt, "read_mirror", lambda: (self.mirror, "tennis"))
+        self.viewer_input = False
+        monkeypatch.setattr(cpt, "read_mirror", lambda: (self.mirror, "tennis", self.viewer_input))
         self.units: list[cpt.UnitRun] = []
 
     def set(self, **values):
@@ -306,6 +314,26 @@ def test_a_shipped_value_that_is_off_is_named(rig):
     assert rig.run() == "FAIL:mirror T_freeze"
 
 
+def test_a_sim_whose_viewer_takes_world_keys_is_refused_before_a_throw(rig):
+    rig.viewer_input = True
+    assert rig.run() == "FAIL:mirror viewer_input"
+    assert not (rig.unit_dir / "est.log").exists()
+
+
+def test_an_open_viewer_that_does_not_say_its_input_is_off_is_refused(rig):
+    rig.ctx = cpt.dataclasses.replace(rig.ctx, viewer=True)
+    (rig.fake / "launch.log").write_text(
+        (rig.fake / "launch.log").read_text().replace(cpt.VIEWER_INPUT_BANNER, "")
+    )
+    assert rig.run() == "FAIL:mirror viewer_banner"
+
+
+def test_a_unit_records_that_its_sims_viewer_input_was_off(rig):
+    assert rig.run() == "DONE"
+    assert rig.conditions()["viewer_input_enabled"] == "False"
+    assert "viewer_input_enabled:=false" in rig.read("launch.log").splitlines()[0]
+
+
 def test_a_controller_that_does_not_answer_is_a_failure_of_its_own(rig, monkeypatch):
     def unread():
         raise RuntimeError("/demo_catching_controller/get_parameters is not there")
@@ -440,7 +468,125 @@ def test_a_bringup_that_names_no_session_copies_and_removes_nothing(rig):
     assert (rig.tmp / "not_a_session" / "sim").is_dir()  # left where it is
 
 
+def test_a_fallback_session_older_than_the_units_minute_is_not_moved(rig):
+    """No `Session dir:` line: the first session name of the log is the fallback, and a
+    session older than the minute the unit was started in is another run's."""
+    older = rig.logging_root / "261011_2300"
+    (older / "sim").mkdir(parents=True)
+    rig.set(FAKE_NO_SESSION_LINE=1)
+    with open(rig.fake / "launch.log", "a") as log:
+        log.write(f"[mujoco_simulator_node-1] lane -> {older}/sim/ball_contact_lane.csv\n")
+    assert rig.run() == "FAIL:no session directory in the launch log"
+    assert rig.read("session.txt") == "\n"
+    assert rig.read("session_refused.txt").startswith("the log names 261011_2300, older than")
+    assert (older / "sim").is_dir() and not (rig.unit_dir / "session_failed").exists()
+
+
+# ── what is left of a unit ───────────────────────────────────────────────────
+def _alive(pid: int) -> bool:
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return False
+    return state != "Z"
+
+
+def test_a_launch_that_must_be_killed_fails_the_unit(rig, monkeypatch):
+    rig.set(FAKE_LAUNCH_DEAF=1)  # SIGINT does nothing
+    monkeypatch.setattr(cpt, "LAUNCH_STOP_S", 1)
+    assert rig.run() == "FAIL:launch killed"
+    assert "did not leave 1 s after SIGINT" in rig.read("launch_killed.txt")
+    assert "killed group" in rig.read("cleanup.log")
+    assert rig.nothing_left_running() and (rig.unit_dir / "session_failed").is_dir()
+
+
+def test_what_left_the_launchs_group_is_killed_by_its_session(rig):
+    executable = rig.tmp / "ws" / "lib" / "mujoco_simulator_node"
+    rig.ctx = cpt.dataclasses.replace(
+        rig.ctx, residual=(rf"{rig.tmp}/[^ ]*mujoco_simulator_node",)
+    )
+    rig.set(FAKE_ESCAPE=executable)
+    assert rig.run() == "DONE"
+    escaped = int((rig.fake / "escaped").read_text())
+    assert not _alive(escaped)
+
+
+def test_another_sim_of_the_workspace_outlives_the_unit(rig):
+    """The same executable in a session that is not the unit's: another domain's sim.
+    Not this test's child either (``setsid -f``) — the command's own family is spared."""
+    import subprocess
+
+    executable = rig.tmp / "ws" / "lib" / "mujoco_simulator_node"
+    rig.ctx = cpt.dataclasses.replace(
+        rig.ctx, residual=(rf"{rig.tmp}/[^ ]*mujoco_simulator_node",)
+    )
+    pid_file = rig.fake / "other"
+    script = f'echo $$ > "{pid_file}"; exec -a "{executable}" sleep 30'
+    subprocess.run(["setsid", "-f", "bash", "-c", script], check=True)
+    for _ in range(100):
+        if pid_file.exists() and pid_file.read_text().strip():
+            break
+        time.sleep(0.02)
+    other = int(pid_file.read_text())
+    try:
+        assert rig.run() == "DONE"
+        assert _alive(other)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(other, signal.SIGKILL)
+
+
 # ── a signal ─────────────────────────────────────────────────────────────────
+@pytest.fixture
+def handler():
+    """The run's signal handler, as ``main`` installs it."""
+    saved = {number: signal.getsignal(number) for number in SIGNALS}
+    for number in SIGNALS:
+        signal.signal(number, cpt.on_signal)
+    yield
+    for number, saved_handler in saved.items():
+        signal.signal(number, saved_handler)
+
+
+def test_a_signal_as_the_launch_is_started_leaves_no_launch_behind(rig, handler):
+    """Between ``Popen`` and the assignment of its group a signal would orphan the launch."""
+    started = []
+    original = cpt.Group.__init__
+
+    def start_then_signal(self, command, log):
+        original(self, command, log)
+        started.append(self)
+        if command[:2] == ["ros2", "launch"]:
+            os.kill(os.getpid(), signal.SIGINT)
+
+    rig.env.setattr(cpt.Group, "__init__", start_then_signal)
+    unit = rig.unit()
+    with pytest.raises(cpt.Interrupted):
+        unit.run()
+    assert unit.launch is started[0] and not started[0].alive()
+    assert rig.read("status") == "FAIL:signal\n" and len(started) == 1
+
+
+def test_a_signal_under_a_failed_units_shutdown_does_not_cut_it(rig, handler, monkeypatch):
+    def broken():
+        raise KeyError("planner.search.mode")
+
+    monkeypatch.setattr(cpt, "read_mirror", broken)
+    original = cpt.UnitRun.cleanup
+
+    def signal_then_clean(self):
+        os.kill(os.getpid(), signal.SIGTERM)
+        original(self)
+
+    monkeypatch.setattr(cpt.UnitRun, "cleanup", signal_then_clean)
+    with pytest.raises(cpt.Interrupted) as ended:
+        rig.run()
+    # The shutdown ran to its end, and the defect is still there to read.
+    assert rig.read("status").startswith("FAIL:error KeyError")
+    assert rig.nothing_left_running() and (rig.unit_dir / "session_failed").is_dir()
+    assert isinstance(ended.value.__context__, KeyError)
+
+
 def test_a_signal_ends_the_unit_and_everything_it_started(rig, monkeypatch):
     unit = rig.unit()
 
@@ -694,6 +840,21 @@ def test_a_signal_ends_the_run_and_collects_nothing(command):
     assert "signal 2: the running unit was ended" in command.progress()
     # A second Ctrl-C does not cut the shutdown: the handler lets one signal in.
     assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+
+
+def test_a_signal_while_collecting_ends_the_run_without_a_half_file(command):
+    original = cpt.collect_arm
+
+    def signalled(*args, **kwargs):
+        os.kill(os.getpid(), signal.SIGINT)
+        return original(*args, **kwargs)
+
+    command.rig.env.setattr(cpt, "collect_arm", signalled)
+    assert command.main() == 130
+    arm = command.result / "nlp_mpc_docking"
+    assert not (arm / "sim_throws.csv").exists()
+    assert not (arm / "sim_throws.csv.partial").exists()
+    assert (command.unit_dir / "status").read_text() == "DONE\n"
 
 
 def test_a_stop_file_ends_the_run_before_the_next_bringup(command):

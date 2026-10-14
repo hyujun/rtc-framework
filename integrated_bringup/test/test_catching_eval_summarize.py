@@ -3,6 +3,7 @@
 Every input is built in the test — no recorded unit is read.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -280,6 +281,63 @@ def test_run_unit_asks_the_startup_check_and_no_longer_greps_for_refus():
     text = (TOOLS / "run_unit.sh").read_text()
     assert 'check_startup.py" "$OUT/launch.log"' in text
     assert "bring_up_failed\\|refus" not in text
+
+
+def test_run_unit_refuses_an_environment_that_cannot_import_the_package_before_a_launch():
+    """#822: check_startup.py would fail on the import and read as FAIL:startup."""
+    text = (TOOLS / "run_unit.sh").read_text()
+    check = text.index("python3 -c 'import integrated_bringup.catching_startup'")
+    assert text.index("setup_env.sh") < check < text.index('echo "FAIL:env"')
+    assert text.index('echo "FAIL:env"') < text.index("setsid ros2 launch")
+
+
+def _run_unit_block(start: str, end: str) -> str:
+    text = (TOOLS / "run_unit.sh").read_text()
+    return text[text.index(start) : text.index(end) + len(end)]
+
+
+def test_run_unit_kills_residuals_in_its_own_sessions_only(tmp_path):
+    """#822 D13: the same workspace's sim on another domain matches the patterns too."""
+    cleanup = _run_unit_block("cleanup() {", "keep_failed_session() {")
+    assert "ps -eo pid,sid,args" in cleanup and 'SIDS=" $LPG $EPG $PPG "' in cleanup
+    awk = cleanup[cleanup.index("awk -v") : cleanup.index("\\\n")].strip()
+    table = "  10  100 /ws/install/x/mujoco_simulator_node\n  11  200 /ws/install/x/mujoco_simulator_node\n"
+
+    def killed(sids: str) -> list[str]:
+        script = f'SIDS="{sids}"; printf "{table}" | {awk}'
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+        return out.stdout.split()
+
+    assert killed(" 100 300  ") == ["10"]
+    assert killed("    ") == []  # no group started: nothing is the unit's
+    assert killed(" 10 ") == []  # a pid is not a session
+
+
+@pytest.mark.parametrize(
+    ("log", "taken", "refused"),
+    [
+        # the RT node's line, whatever the minute
+        (
+            "lane -> /w/logging_data/261011_2333/x\nSession dir: /w/logging_data/261011_2330 (\n",
+            "logging_data/261011_2330",
+            False,
+        ),
+        # the fallback at the unit's minute or later
+        ("lane -> /w/logging_data/261011_2332/x\n", "logging_data/261011_2332", False),
+        ("lane -> /w/logging_data/261011_2333/x\n", "logging_data/261011_2333", False),
+        # an older one is another run's
+        ("lane -> /w/logging_data/261011_2300/x\n", "", True),
+        ("no session at all\n", "", False),
+    ],
+)
+def test_run_unit_binds_the_session_fallback_to_its_minute(tmp_path, log, taken, refused):
+    """#822 D13: the fallback name is moved with a failed unit (keep_failed_session)."""
+    block = _run_unit_block("SREL=$(grep -o 'Session dir: ", 'echo "$SREL" > "$OUT/session.txt"')
+    (tmp_path / "launch.log").write_text(log)
+    script = f'OUT="{tmp_path}"; MINUTE=261011_2332\n{block}'
+    subprocess.run(["bash", "-c", script], check=True)
+    assert (tmp_path / "session.txt").read_text() == taken + "\n"
+    assert (tmp_path / "session_refused.txt").exists() == refused
 
 
 def test_a_unit_that_asks_for_the_probe_dump_gets_it_flushed_and_handed_on():

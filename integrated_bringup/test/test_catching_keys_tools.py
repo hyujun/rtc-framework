@@ -149,3 +149,69 @@ def test_run_unit_mirrors_and_checks_the_search_mode():
     text = (TOOLS / "catching_eval" / "run_unit.sh").read_text()
     assert text.count("planner.search.mode") >= 2  # recorded in the mirror list, and checked
     assert "EXPECT_SEARCH:-grid" in text and "search_mirror" in text
+
+
+# ── mk_overlay.py --set (#822): one controller value, checked against the shipped tree ──
+_GRID = "planner.segment.mpc.approach"
+
+
+def _planner(path):
+    doc = yaml.safe_load(path.read_text())
+    return doc["integrated_rt_controller"]["ros__parameters"][CONTROLLER]["catching"]
+
+
+@pytest.mark.parametrize("short", ["p1b", "leap"])
+def test_mk_overlay_sets_a_value_of_the_shipped_type_and_says_its_expect_kv(
+    tmp_path, capsys, short
+):
+    out = tmp_path / "o.yaml"
+    mk_overlay.main(
+        [str(out), short, "mpc", "--set", f"{_GRID}.n_pre_max=8", f"--set={_GRID}.dt_pre_s=0.150"]
+    )
+    approach = _planner(out)["planner"]["segment"]["mpc"]["approach"]
+    assert approach == {"n_pre_max": 8, "dt_pre_s": 0.15}
+    assert type(approach["n_pre_max"]) is int and type(approach["dt_pre_s"]) is float
+    expect_kv = f"{_GRID}.n_pre_max=8;{_GRID}.dt_pre_s=0.15"
+    assert out.read_text().splitlines()[1] == f"# EXPECT_KV={expect_kv}"
+    assert capsys.readouterr().out.splitlines()[-1] == f"EXPECT_KV={expect_kv}"
+
+
+def test_mk_overlay_reads_a_value_as_yaml_1_2_and_prints_it_as_ros2_param_get(tmp_path, capsys):
+    out = tmp_path / "o.yaml"
+    mk_overlay.main(
+        [
+            str(out),
+            "p1b",
+            "mpc",
+            "--set",
+            "planner.segment.mpc.budget.first_s=1e-3",
+            "--set",
+            "joint_cmd.lag.lead_enable=true",
+        ]
+    )
+    catching = _planner(out)
+    assert catching["planner"]["segment"]["mpc"]["budget"]["first_s"] == 0.001
+    assert catching["joint_cmd"]["lag"]["lead_enable"] is True
+    said = capsys.readouterr().out.splitlines()[-1]
+    assert said == (
+        "EXPECT_KV=planner.segment.mpc.budget.first_s=0.001;joint_cmd.lag.lead_enable=True"
+    )
+
+
+@pytest.mark.parametrize(
+    ("item", "why"),
+    [
+        (f"{_GRID}.dt_pre_s=1", "shipped float, overlay int"),  # a ROS double refuses an int
+        ("planner.segment.mpc.approach.no_such_key=1", "not in the shipped YAML"),
+        ("approach.n_pre_max=8", "not in the shipped YAML"),  # a path one level short
+        ("planner.segment.mpc_docking.approach.n_pre_max=9", "docking planner's keys"),
+        ("planner.segment.mode=mpc_docking", "a mode"),
+        (f"{_GRID}.n_pre_max=25", "over the payload's 24"),
+        (f"{_GRID}.n_pre_max", "takes <key>=<value>"),
+    ],
+)
+def test_mk_overlay_refuses_a_value_the_controller_would_not_read_as_given(tmp_path, item, why):
+    out = tmp_path / "o.yaml"
+    with pytest.raises(SystemExit, match=why):
+        mk_overlay.main([str(out), "p1b", "mpc", "--set", item])
+    assert not out.exists()

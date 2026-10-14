@@ -13,6 +13,9 @@ Usage:
   # Headless
   ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_viewer:=false
 
+  # Viewer on, but world-changing keys / Ctrl+drag ignored (evaluation runs)
+  ros2 launch integrated_bringup sim_iiwa7_leap.launch.py viewer_input_enabled:=false
+
   # Scene overlay: a params file layered on top of mujoco_simulator.yaml
   # (bare name = config/iiwa7_leap/sim_overlays/<name>.yaml, or a path). This
   # profile ships none: write one outside the repo and pass its path
@@ -121,6 +124,14 @@ def launch_setup(context, *args, **kwargs):
     enable_viewer = LaunchConfiguration("enable_viewer").perform(context)
     if enable_viewer != "":
         sim_overrides["enable_viewer"] = enable_viewer.lower() in ("true", "1", "yes")
+
+    viewer_input_enabled = LaunchConfiguration("viewer_input_enabled").perform(context)
+    if viewer_input_enabled != "":
+        sim_overrides["viewer_input_enabled"] = viewer_input_enabled.lower() in (
+            "true",
+            "1",
+            "yes",
+        )
 
     sync_timeout_ms = LaunchConfiguration("sync_timeout_ms").perform(context)
     if sync_timeout_ms != "":
@@ -438,6 +449,17 @@ def generate_launch_description():
         ),
     )
 
+    viewer_input_enabled_arg = DeclareLaunchArgument(
+        "viewer_input_enabled",
+        default_value="",
+        description=(
+            "Override viewer_input_enabled from YAML. "
+            "Empty -> use YAML value (true). "
+            'Set to "false" so the viewer ignores every world-changing '
+            "key and Ctrl+drag perturbation (camera / display keys still work)"
+        ),
+    )
+
     sync_timeout_ms_arg = DeclareLaunchArgument(
         "sync_timeout_ms",
         default_value="",
@@ -606,6 +628,7 @@ def generate_launch_description():
             model_path_arg,
             sim_overlay_arg,
             enable_viewer_arg,
+            viewer_input_enabled_arg,
             sync_timeout_ms_arg,
             max_rtf_arg,
             use_yaml_servo_gains_arg,

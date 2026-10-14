@@ -20,6 +20,10 @@ Usage:
   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \\
       model_path:=/path/to/scene.xml enable_viewer:=false
 
+  # Viewer on, but world-changing keys / Ctrl+drag ignored
+  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \\
+      model_path:=/path/to/scene.xml viewer_input_enabled:=false
+
   # Override params file (must define robot_response.* groups)
   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \\
       params_file:=/path/to/my_robot_sim.yaml
@@ -75,6 +79,10 @@ def launch_setup(context, *args, **kwargs):
     enable_viewer = LaunchConfiguration("enable_viewer").perform(context)
     if enable_viewer != "":
         overrides["enable_viewer"] = enable_viewer.lower() in ("true", "1", "yes")
+
+    viewer_input_enabled = LaunchConfiguration("viewer_input_enabled").perform(context)
+    if viewer_input_enabled != "":
+        overrides["viewer_input_enabled"] = viewer_input_enabled.lower() in ("true", "1", "yes")
 
     max_rtf = LaunchConfiguration("max_rtf").perform(context)
     if max_rtf != "":
@@ -143,6 +151,14 @@ def generate_launch_description():
                 "enable_viewer",
                 default_value="",
                 description="Override enable_viewer. Empty -> use YAML value.",
+            ),
+            DeclareLaunchArgument(
+                "viewer_input_enabled",
+                default_value="",
+                description=(
+                    "Override viewer_input_enabled. Empty -> use YAML value. "
+                    '"false" -> the viewer ignores world-changing keys and Ctrl+drag.'
+                ),
             ),
             DeclareLaunchArgument(
                 "max_rtf",

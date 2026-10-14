@@ -119,6 +119,7 @@ import heapq
 import json
 import math
 import multiprocessing
+import os
 import random
 import shutil
 import subprocess
@@ -2542,6 +2543,49 @@ class MapSetup:
     overrides: Mapping = field(default_factory=dict)
 
 
+def config_relative_sources(sources: Mapping[str, str], config_dir: Path) -> dict[str, str]:
+    """``sources`` (``<path>:<key>`` labels) with a path inside ``config_dir`` written
+    as ``<config folder name>/<path relative to it>``.
+
+    The ball's shape is read from the robot's simulator YAML, and its label once carried
+    that file's absolute path — the PC it was judged on, in every set file it reached.
+    Relative to the configuration folder the label is the same from a source tree and
+    from an install, and still names the robot (the folder). A path outside the folder,
+    and a label that is not an absolute path (the repository-relative ``file:line`` of
+    a C++ constant), is kept as it is.
+
+    The path is compared as it is written first: under ``--symlink-install`` an
+    installed YAML is a link into the source tree, so the file resolved is outside the
+    install's folder. Resolved on both sides second: a folder named through a link.
+    """
+    out = {}
+    for name, label in sources.items():
+        path, sep, key = label.rpartition(":")
+        if sep and Path(path).is_absolute():
+            label = next(
+                (
+                    f"{root.name}/{relative.as_posix()}:{key}"
+                    for root, relative in _relative_paths(Path(path), Path(config_dir))
+                ),
+                label,
+            )
+        out[name] = label
+    return out
+
+
+def _relative_paths(path: Path, root: Path):
+    """``(root, path relative to it)`` for each way of writing both — as written
+    (normalized, not resolved), then resolved — under which ``path`` is inside ``root``."""
+    for file, folder in (
+        (Path(os.path.normpath(path)), Path(os.path.normpath(root.absolute()))),
+        (path.resolve(), root.resolve()),
+    ):
+        try:
+            yield folder, file.relative_to(folder)
+        except ValueError:
+            continue
+
+
 def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str]) -> MapSetup:
     """Compose the profile ``args`` names and write its model config into ``out_dir``.
 
@@ -2643,6 +2687,7 @@ def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str])
         air_density_kg_m3=args.air_density_kg_m3,
         air_density_source=args.air_density_source,
     )
+    ball = dataclasses.replace(ball, sources=config_relative_sources(ball.sources, config_dir))
     return MapSetup(
         config_dir=config_dir,
         profile=profile,

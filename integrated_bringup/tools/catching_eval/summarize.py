@@ -36,10 +36,26 @@ ended ones as a distribution, the ones the core cut at its deadline as a count
 and a share (``rtc_tools.analysis.planner_solves``) — against the budget of
 that arm's own planner, the limits, and the same seed-to-seed table of one arm
 with itself (how much a repetition moves the numbers).
+
+A record of VALUES (#822) — units of one arm that differ in a controller value:
+
+    summarize.py --cfg <dir> --unit <unit>... --vary <mirror name> [--vary ...]
+
+``--vary`` makes the named mirrors part of the arm (``search×segment·ball[k=v,…]``,
+the values as the mirror prints them; one ``--vary`` per key, the keys together one
+axis). A unit whose mirror lacks one, or whose ``expect_kv`` set another value, is
+refused. Arms that differ in exactly one of planner, ball and these values
+(``param``) are tabled against each other. A unit's ``overlay_sha256`` is held
+against its overlay file, and the units of one record must have run one build
+(``controller_bin_sha256``) unless ``--allow-mixed-build``. Per arm, the throws'
+first wakes (``planner_solves.first_wake_summary``): how many were published, the
+grid's ``n_pre`` and how many were at ``n_pre_max``, the first solves' p99 against
+the first-solve budget.
 """
 
 import argparse
 import collections
+import hashlib
 import itertools
 import json
 import math
@@ -146,9 +162,15 @@ def kv_file(path):
     return normalize_mirror(out, source=str(path))
 
 
-def mirror_value(mirror, key):
+def mirror_raw(mirror, key):
+    """A mirror's value as ``ros2 param get`` printed it (``6``, ``0.15``, ``True``), or None."""
     m = re.search(r"value is: (\S+)$", mirror.get(key, ""))
-    return float(m.group(1)) if m else None
+    return m.group(1) if m else None
+
+
+def mirror_value(mirror, key):
+    raw = mirror_raw(mirror, key)
+    return None if raw is None else float(raw)
 
 
 # ── one trial's windows ──────────────────────────────────────────────────────
@@ -742,7 +764,8 @@ def refuse_shared_names(units):
 # What each arm did on the same throws. Nothing is judged: no arm is the control,
 # no margin decides, and the Tango row is printed as a reference beside the
 # descriptive numbers.
-Arm = collections.namedtuple("Arm", "search segment ball")
+# ``vary``: ``((mirror name, value), ...)`` of ``--vary`` — empty in a record without it.
+Arm = collections.namedtuple("Arm", "search segment ball vary", defaults=((),))
 # (field, the mirror that says it, what conditions.txt was told to expect)
 ARM_FIELDS = (
     ("search", "planner.search.mode", "expect_search"),
@@ -799,12 +822,32 @@ def mirror_text(mirror, key):
 
 
 def arm_label(arm):
-    return f"{arm.search}×{arm.segment}·{arm.ball}"
+    values = ",".join(f"{key}={value}" for key, value in arm.vary)
+    return f"{arm.search}×{arm.segment}·{arm.ball}" + (f"[{values}]" if values else "")
 
 
 def arm_order(arm):
-    """Tennis first, then by search and segment name: A, B, C, C′ of #746 in that order."""
-    return (arm.ball != "tennis", arm.ball, arm.search, arm.segment)
+    """Tennis first, then by search and segment name: A, B, C, C′ of #746 in that order;
+    then by the values ``--vary`` names."""
+    return (arm.ball != "tennis", arm.ball, arm.search, arm.segment, arm.vary)
+
+
+def sha256_of(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def format_first_wake(fw):
+    """The first-wake block as one line (``planner_solves.first_wake_summary``)."""
+    if fw is None:
+        return "  first wake: none (no first solve from rest)"
+    p99, bound = fw["solve_p99_ms"]
+    p99_text = "–" if p99 != p99 else f"{p99:.2f} ms" + (" (a lower bound)" if bound else "")
+    cap = "" if fw["n_pre_at_cap"] is None else f" · at n_pre_max {fw['n_pre_at_cap']}"
+    budget = "–" if fw["budget_ms"] is None else f"{fw['budget_ms']:.1f} ms"
+    return (
+        f"  first wake: {fw['throws']} throws · published {fw['published']} · "
+        f"n_pre {fw['n_pre']}{cap} · first solve p99 {p99_text} · budget {budget}"
+    )
 
 
 def list_tag(sha):
@@ -812,12 +855,13 @@ def list_tag(sha):
     return f"list:{sha[:12]}" if sha else "series"
 
 
-def unit_identity(unit):
+def unit_identity(unit, vary=()):
     """A unit's arm, repetition and overlay, read off the unit (``mirror.txt`` and
     ``conditions.txt``) — never off a flag or its directory name. Refused when a mirror
     does not say the arm, when ``conditions.txt`` was told to expect another (a unit from
     before #746 has no ``expect_search`` / ``expect_ball``: the mirror alone then says
-    it), or when it has no seed."""
+    it), or when it has no seed. ``vary`` (mirror names, ``--vary``) are part of the arm:
+    refused when the mirror lacks one or its ``expect_kv`` set another value."""
     unit = Path(unit)
     cond, mirror = kv_file(unit / "conditions.txt"), kv_file(unit / "mirror.txt")
     values = {}
@@ -833,29 +877,46 @@ def unit_identity(unit):
                 f"{unit}: conditions.txt says {expect}: {told}, the mirror says {key}: {got}"
             )
         values[field] = got
+    told_kv = dict(
+        item.split("=", 1) for item in cond.get("expect_kv", "").split(";") if "=" in item
+    )
+    varied = []
+    for key in vary:
+        got = mirror_raw(mirror, key)
+        if got is None:
+            raise SystemExit(f"{unit}: mirror.txt has no {key} — --vary cannot read it")
+        if told_kv.get(key, got) != got:
+            raise SystemExit(
+                f"{unit}: conditions.txt says expect_kv {key}={told_kv[key]}, the mirror {got}"
+            )
+        varied.append((key, got))
     if not cond.get("seed"):
         raise SystemExit(f"{unit}: conditions.txt has no seed — the repetition is not known")
     return {
-        "arm": Arm(**values),
+        "arm": Arm(**values, vary=tuple(varied)),
         "seed": cond["seed"],
         "list": cond.get("throws_file_sha256", ""),
         "overlay": cond.get("overlay", ""),
+        "overlay_sha256": cond.get("overlay_sha256", ""),
+        "build": cond.get("controller_bin_sha256", ""),
         "robot": cond.get("robot", ""),
     }
 
 
 def record_pairs(arms, all_pairs=False):
-    """Which arms are tabled against each other, and what the two differ in: the planner
-    (search or segment) with the ball the same, or the ball with the planner the same.
-    ``all_pairs`` adds the pairs that differ in both."""
+    """Which arms are tabled against each other, and what the two differ in: exactly one
+    of the planner (search or segment), the ball and the ``--vary`` values (``param``).
+    ``all_pairs`` adds the pairs that differ in more than one."""
     out = []
     for a, b in itertools.combinations(sorted(arms, key=arm_order), 2):
-        planner = (a.search, a.segment) != (b.search, b.segment)
-        ball = a.ball != b.ball
-        if all_pairs or planner != ball:
-            out.append(
-                (a, b, "planner+ball" if planner and ball else "planner" if planner else "ball")
-            )
+        axes = {
+            "planner": (a.search, a.segment) != (b.search, b.segment),
+            "ball": a.ball != b.ball,
+            "param": a.vary != b.vary,
+        }
+        differs = [name for name, differ in axes.items() if differ]
+        if all_pairs or len(differs) == 1:
+            out.append((a, b, "+".join(differs)))
     return out
 
 
@@ -1060,16 +1121,19 @@ def arm_catch_frame(units):
     return out
 
 
-def _mirror_number(units, key, recorded_later=False):
+def _mirror_number(units, key, recorded_later=False, informational=False):
     """A numeric mirror the arm's units agree on; None when no unit has it (the
     parameter of another planner); refused when they differ. ``recorded_later`` is for
     a mirror ``run_unit.sh`` began to record at some revision: a unit from before it
-    says nothing, and the units that do say it have to agree."""
+    says nothing, and the units that do say it have to agree. ``informational`` is for
+    a value a block only shows: units that differ give None, not a refused record."""
     values = {mirror_value(u["mirror"], key) for u in units}
     if recorded_later:
         values.discard(None)
         if not values:
             return None
+    if len(values) != 1 and informational:
+        return None
     if len(values) != 1:
         raise SystemExit(f"{key} differs across the units of one arm: {sorted(map(str, values))}")
     return values.pop()
@@ -1107,6 +1171,34 @@ def arm_solves(units, arm):
         )
         segment[name] = blk
     out["segment"] = segment
+    # Each unit's throws apart: track generations restart with every session.
+    by_throw = pd.concat(
+        [
+            u["pe"].assign(track_generation=f"{k}:" + u["pe"]["track_generation"].astype(str))
+            for k, u in enumerate(units)
+            if "track_generation" in u["pe"].columns
+        ]
+        or [pe.iloc[0:0]],
+        ignore_index=True,
+    )
+    # The first-wake block only shows the cap and the budget: an arm whose units were
+    # thrown under two values of either has the block without it, not no record.
+    n_pre_max = _mirror_number(
+        units,
+        f"planner.segment.{arm.segment}.approach.n_pre_max",
+        recorded_later=True,
+        informational=True,
+    )
+    first_budget_s = (
+        _mirror_number(units, keys["first"], recorded_later=True, informational=True)
+        if "first" in keys
+        else None
+    )
+    out["first_wake"] = ps.first_wake_summary(
+        by_throw,
+        n_pre_max=None if n_pre_max is None else int(n_pre_max),
+        budget_ms=None if first_budget_s is None else first_budget_s * 1e3,
+    )
     nlp = ps.nlp_summary(pe)
     if nlp is not None:
         nlp["budget"] = {
@@ -1131,6 +1223,7 @@ def arm_record(arm, units, rows):
         "search": arm.search,
         "segment": arm.segment,
         "ball": arm.ball,
+        **({"vary": dict(arm.vary)} if arm.vary else {}),
         "units": {f"seed {k[0]} · {list_tag(k[1])}": units[k]["name"] for k in sorted(units)},
         "rates": {
             "all": rates(arm_rows),
@@ -1157,6 +1250,9 @@ def arm_record(arm, units, rows):
             ),
             "loadavg_start": {u["name"]: u["cond"].get("loadavg_start") for u in loaded},
             "overlay": sorted({u["cond"].get("overlay", "") for u in loaded}),
+            "controller_bin_sha256": sorted(
+                {u["cond"].get("controller_bin_sha256") or "not recorded" for u in loaded}
+            ),
             **{
                 k: sorted({u["cond"].get(k, "") for u in loaded})
                 for k in (
@@ -1171,12 +1267,14 @@ def arm_record(arm, units, rows):
     }
 
 
-def record(cfg, unit_dirs, all_pairs=False, regression="unknown"):
+def record(
+    cfg, unit_dirs, all_pairs=False, regression="unknown", vary=(), allow_mixed_build=False
+):
     """The record of N arms as a dict (module docstring)."""
     from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text
 
     refuse_shared_names(unit_dirs)
-    ids = {Path(u).name: unit_identity(u) for u in unit_dirs}
+    ids = {Path(u).name: unit_identity(u, vary) for u in unit_dirs}
     robots = sorted({i["robot"] for i in ids.values()})
     if len(robots) != 1:
         raise SystemExit(f"a record is one robot's: the units say {robots}")
@@ -1188,6 +1286,8 @@ def record(cfg, unit_dirs, all_pairs=False, regression="unknown"):
             raise SystemExit(
                 f"{arm_label(i['arm'])}: two units of seed {key[0]} · {list_tag(key[1])} "
                 f"({by_arm[i['arm']][key]} and {Path(u).name}) — one unit per arm, seed and list"
+                " (units that differ in a controller value: name it with --vary; the same value "
+                "again is a repetition, thrown under another seed)"
             )
         by_arm[i["arm"]][key] = Path(u).name
     for name, i in ids.items():
@@ -1195,6 +1295,19 @@ def record(cfg, unit_dirs, all_pairs=False, regression="unknown"):
             raise SystemExit(
                 f"{name}: the overlay its conditions.txt names is gone: {i['overlay']!r}"
             )
+        # A unit from before #822 records no overlay_sha256: its overlay is taken as it is.
+        if i["overlay_sha256"] and i["overlay_sha256"] != sha256_of(i["overlay"]):
+            raise SystemExit(
+                f"{name}: the overlay its conditions.txt names was changed since the unit ran: "
+                f"{i['overlay']!r}"
+            )
+    builds = sorted({i["build"] for i in ids.values() if i["build"]})
+    if len(builds) > 1 and not allow_mixed_build:
+        raise SystemExit(
+            f"the units ran {len(builds)} controller builds (controller_bin_sha256 "
+            f"{', '.join(b[:12] for b in builds)}): a difference may be the build's — "
+            "--allow-mixed-build to record them anyway"
+        )
     loaded = {Path(u).name: load_unit(u, cfg, ids[Path(u).name]["overlay"]) for u in unit_dirs}
     first = next(iter(loaded.values()))
     profile = ct.load_profile(cfg, None, first["unit"] / "session")
@@ -1289,6 +1402,8 @@ def format_record(res):
                 f"({blk['cut_share']:.1%}) · budget {budget} · ended p99 within budget "
                 f"{blk['done_p99_within_budget']} · outcomes {blk['outcomes']}"
             )
+        if "first_wake" in s:
+            lines.append(format_first_wake(s["first_wake"]))
         if "nlp" in s:
             n = s["nlp"]
             lines.append(
@@ -1352,6 +1467,18 @@ def main():
         action="store_true",
         help="with --unit: also table the arms that differ in the planner AND the ball",
     )
+    ap.add_argument(
+        "--vary",
+        action="append",
+        default=[],
+        metavar="MIRROR",
+        help="with --unit: this controller value is part of the arm (repeatable; #822)",
+    )
+    ap.add_argument(
+        "--allow-mixed-build",
+        action="store_true",
+        help="with --unit: record units that ran different controller builds",
+    )
     ap.add_argument("--regression", choices=("pass", "fail", "unknown"), default="unknown")
     ap.add_argument("--json", type=Path)
     a = ap.parse_args()
@@ -1365,16 +1492,23 @@ def main():
         given = [k for k, v in verdict_flags.items() if v]
         if given:
             ap.error(f"--unit is the record of N arms: it takes no {' / '.join(given)}")
-        res = record(a.cfg, a.unit, a.all_pairs, a.regression)
+        res = record(
+            a.cfg,
+            a.unit,
+            a.all_pairs,
+            a.regression,
+            vary=tuple(a.vary),
+            allow_mixed_build=a.allow_mixed_build,
+        )
         if a.json:
             a.json.write_text(json.dumps(res, indent=1, default=_json))
         print("\n".join(format_record(res)))
         return
     missing = [k for k, v in verdict_flags.items() if not v]
-    if missing or a.all_pairs:
+    if missing or a.all_pairs or a.vary or a.allow_mixed_build:
         ap.error(
             f"the G-1 verdict needs {' '.join(verdict_flags)} (missing: {' '.join(missing) or '-'}) "
-            "and no --all-pairs; a record of N arms is --unit"
+            "and no --all-pairs / --vary / --allow-mixed-build; a record of N arms is --unit"
         )
     from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text
 

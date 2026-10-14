@@ -252,36 +252,47 @@ def claim_folder(config: PopulationConfig, layout: ResultLayout) -> None:
     shutil.copyfile(config.path, layout.config)
 
 
-def judged_inputs(config: PopulationConfig) -> dict:
+def judged_inputs(config: PopulationConfig, judge: Path | None = None) -> dict:
     """What the verdicts of a result folder are verdicts OF, beside the population file
     itself: every YAML of the robot's configuration folder — the controller tree the
-    judge is handed is composed from them — by sha256. (The judge's binary is not held
-    here: each arm's map records the one it was judged with, in the manifest.)"""
+    judge is handed is composed from them — by sha256, and the judge's binary
+    (``judge_sha256``; its path is not kept — it is the PC's). Without a ``judge`` (none
+    found) there is no such key."""
     folder = config.config_dir
-    return {
+    inputs: dict = {
         "config_dir": {
             str(path.relative_to(folder)): _sha256(path)
             for path in sorted(folder.rglob("*.yaml"))
             if path.is_file() and path != config.path
         }
     }
+    if judge is not None:
+        inputs["judge_sha256"] = _sha256(judge)
+    return inputs
 
 
-def claim_inputs(config: PopulationConfig, layout: ResultLayout) -> None:
+def claim_inputs(
+    config: PopulationConfig, layout: ResultLayout, judge: Path | None = None
+) -> None:
     """Hold the folder to the files its verdicts were judged with, or refuse it.
 
     The population file's hash (:func:`claim_folder`) does not cover the controller
     configuration beside it: with one of those files changed, a step that is skipped
     because its output exists would hand the OLD verdicts on as this configuration's.
     The first run records them (``inputs.json``); a later run whose files differ is
-    refused by the names that changed."""
-    now = judged_inputs(config)
+    refused by the names that changed.
+
+    The judge's binary is warned of, not refused: a rebuild of the workspace that
+    changes nothing it judges is the common case, and the arms judged before it keep
+    their own record of the binary (each map's provenance). A run with another binary
+    than the one recorded says so on stderr and leaves ``inputs.json`` as it was. A
+    record without the binary (a folder from before it was recorded, or one first run
+    without a judge) takes this run's, so the next binary is compared with it."""
+    now = judged_inputs(config, judge)
     if not layout.inputs.is_file():
         if (layout.design / "design_meta.json").is_file():
             _say(f"{layout.inputs.name}: not recorded when this folder was judged — recorded now")
-        partial = layout.inputs.with_name(f".{layout.inputs.name}.partial")
-        partial.write_text(json.dumps(now, indent=2) + "\n", encoding="utf-8")
-        partial.replace(layout.inputs)
+        _write_inputs(layout, now)
         return
     try:
         files = dict(json.loads(layout.inputs.read_text(encoding="utf-8"))["config_dir"])
@@ -297,6 +308,25 @@ def claim_inputs(config: PopulationConfig, layout: ResultLayout) -> None:
             f"{layout.root} was judged with other files than are here now — changed since: "
             f"{', '.join(changed)}. Its verdicts are not this configuration's: use a new --out"
         )
+    document = json.loads(layout.inputs.read_text(encoding="utf-8"))
+    recorded = document.get("judge_sha256")
+    if not recorded and "judge_sha256" in now:
+        _write_inputs(layout, {**document, "judge_sha256": now["judge_sha256"]})
+    elif recorded and "judge_sha256" in now and recorded != now["judge_sha256"]:
+        # stderr, not _say: the steps' own output is what stdout carries.
+        print(
+            f"catch_population: WARNING the judge is another binary than {layout.root} was "
+            f"judged with (sha256 {now['judge_sha256'][:12]}, recorded {recorded[:12]}): the "
+            "steps that run now are judged by it, the steps skipped keep their verdicts — "
+            "use a new --out if the judge's behaviour changed",
+            file=sys.stderr,
+        )
+
+
+def _write_inputs(layout: ResultLayout, document: dict) -> None:
+    partial = layout.inputs.with_name(f".{layout.inputs.name}.partial")
+    partial.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    partial.replace(layout.inputs)
 
 
 def sample_is_complete(layout: ResultLayout, arm: Arm) -> bool:
@@ -509,7 +539,11 @@ def main(argv: list[str] | None = None) -> int:
         return report(layout.root, show=args.show, max_flights=args.max_flights)
 
     claim_folder(config, layout)
-    claim_inputs(config, layout)
+    try:
+        judge_binary = csm.find_judge(args.judge, csm.SEARCH_EXECUTABLE)
+    except SystemExit:
+        judge_binary = None  # the step that needs it says why; a resumed run may not
+    claim_inputs(config, layout, judge_binary)
     judge = ["--judge", str(args.judge)] if args.judge is not None else []
     started = time.monotonic()
     if (layout.design / "design_meta.json").is_file():

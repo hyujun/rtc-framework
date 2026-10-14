@@ -498,3 +498,52 @@ def replace_summary(df: pd.DataFrame) -> dict | None:
     steps = df["replace_step"].astype(str)
     counts = steps[steps != "none"].value_counts()
     return {str(k): int(v) for k, v in counts.items()}
+
+
+def first_wake_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Each throw's FIRST WAKE: of the rows whose segment step was a first solve from
+    rest (``segment_kind`` ``first``, ``segment_x0_from_segment`` 0), the earliest of
+    each throw (``track_generation``), in log order.
+
+    A throw can have several such rows — a first solve that was not published leaves
+    the arm at rest, and the next wake solves a first again — and only the earliest
+    is the throw's first wake: the one whose grid the lead to the catch decided.
+    Empty on a log without the three columns.
+    """
+    needed = ("segment_kind", "segment_x0_from_segment", "track_generation")
+    if any(name not in df.columns for name in needed):
+        return df.iloc[0:0]
+    rest = pd.to_numeric(df["segment_x0_from_segment"], errors="coerce") == 0
+    rows = df[(df["segment_kind"].astype(str) == "first") & rest]
+    return rows.groupby("track_generation", sort=False).head(1)
+
+
+def first_wake_summary(
+    df: pd.DataFrame, *, n_pre_max: int | None = None, budget_ms: float | None = None
+) -> dict | None:
+    """What the throws' first wakes (:func:`first_wake_rows`) did; ``None`` with none.
+
+    ``throws`` — throws with a first wake; ``published`` — of them, the ones whose
+    first wake was published; ``n_pre`` — the grid's pre-catch nodes (``−segment_k``)
+    per count; ``n_pre_at_cap`` — of them, at ``n_pre_max`` (``None`` when it is not
+    given); ``solve_ms`` — the first solves' times (:func:`summarise_times`, so a cut
+    one is kept apart) and ``solve_p99_ms`` its p99 over both kinds with whether it is
+    a lower bound; ``budget_ms`` as given — the first solve's budget it is read against.
+    """
+    rows = first_wake_rows(df)
+    if rows.empty:
+        return None
+    n_pre = pd.Series(-_numeric(rows, "segment_k")).dropna().astype(int)
+    solved = solved_rows(rows)
+    ms = _numeric(rows, "segment_solve_us")[solved] / 1000.0
+    cut = cut_at_deadline(rows)[solved]
+    times = summarise_times(ms, cut)
+    return {
+        "throws": int(len(rows)),
+        "published": int((_text(rows, "segment_outcome") == "published").sum()),
+        "n_pre": {str(n): int(c) for n, c in sorted(n_pre.value_counts().items())},
+        "n_pre_at_cap": None if n_pre_max is None else int((n_pre == int(n_pre_max)).sum()),
+        "solve_ms": times,
+        "solve_p99_ms": list(times["p99"]),
+        "budget_ms": budget_ms,
+    }

@@ -596,6 +596,12 @@ class MuJoCoSimulator {
     double physics_timestep{0.0};
     int n_substeps{1};                 // substeps per control cycle (1 = legacy)
     double viewer_refresh_rate{60.0};  // viewer target refresh rate (Hz)
+    /// false: the viewer ignores every input that changes the world (pause,
+    /// step, speed, reset, spawn, physics / solver keys and the Ctrl+drag
+    /// perturbation) so an evaluation run with the viewer open cannot be
+    /// perturbed by a stray key press. Camera / display / overlay keys still
+    /// work. Read once when the viewer thread starts.
+    bool viewer_input_enabled{true};
 
     /// The free camera the viewer opens on and ESC returns to. A scene whose
     /// robot does not stand at the world origin frames it here: the viewer

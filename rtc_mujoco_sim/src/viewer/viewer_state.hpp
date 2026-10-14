@@ -84,6 +84,11 @@ struct ViewerState {
   // when no group enabled the lane.
   const std::vector<ContactWrenchVizSample>* contact_wrench{nullptr};
 
+  // ── viewer_input_enabled (Config): false ignores world-changing input ─────
+  // Set once before the callbacks are registered and never written again, so
+  // the callbacks (same thread) read it without synchronisation.
+  bool input_enabled{true};
+
   // ── Home view: what the viewer opens on and ESC returns to ────────────────
   MuJoCoSimulator::Config::ViewerCamera home_camera{};
 
