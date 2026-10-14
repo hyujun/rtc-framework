@@ -467,7 +467,10 @@ TEST(MpcSegmentParams, RejectsADesignKeyByName) {
        "planner.segment.mpc.linearization.reference_rest_tol'"},
       {"linearization: {ref_speed_fraction: 0.0}",
        "planner.segment.mpc.linearization.ref_speed_fraction'"},
-      {"linearization: {ref_speed_fraction: 1.01}",
+      // Above kMinJerkPeakFactor the reach would be cut only where the box
+      // cannot make it in the span at all — the key stops meaning anything
+      // (the bound was 1 before #819, a reference inside the box).
+      {"linearization: {ref_speed_fraction: 1.876}",
        "planner.segment.mpc.linearization.ref_speed_fraction'"},
       {"linearization: {ref_speed_fraction: .nan}",
        "planner.segment.mpc.linearization.ref_speed_fraction'"},
