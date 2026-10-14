@@ -90,7 +90,7 @@ def _text():
 
 def test_run_unit_takes_the_grid_from_expect_kv_before_it_writes_or_launches():
     text = _text()
-    header = text.index('EXPECT_KV=$(python3 "$D/expect_kv.py" overlay "$OV")')
+    header = text.index('EXPECT_KV=$(python3 "$D/expect_kv.py" overlay "$OV" "${EXPECT_KV:-}"')
     grid = text.index('GRID=$(python3 "$D/expect_kv.py" grid "${EXPECT_MODE:-mpc}"')
     assert header < grid < text.index('echo "FAIL:expect_kv"')
     assert grid < text.index('echo "date_start:') < text.index("setsid ros2 launch")
@@ -107,7 +107,8 @@ def test_run_unit_records_the_overlay_and_the_running_builds():
     assert text.index('echo "FAIL:overlay$why"') < shas < estimator
     assert "bin_sha mujoco_simulator_node sim_bin_sha256" in text
     bin_sha = text[text.index("bin_sha() {") : text.index("bin_sha integrated_rt_controller")]
-    assert 'readlink "$p/exe"' in bin_sha and '== "$LPG"' in bin_sha  # this unit's session
+    assert 'ps -s "$LPG" -o pid=' in bin_sha  # this unit's session
+    assert "exe=${exe% (deleted)}" in bin_sha  # a binary rebuilt since the launch
 
 
 def test_run_unit_keeps_the_busiest_processes_of_a_busy_host():
