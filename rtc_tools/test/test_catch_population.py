@@ -908,6 +908,23 @@ def test_a_folder_that_recorded_no_judge_is_not_warned_of(tmp_path, capsys):
     assert "WARNING" not in capsys.readouterr().err
 
 
+def test_a_folder_that_recorded_no_judge_takes_this_runs_and_warns_of_the_next(tmp_path, capsys):
+    """Without the backfill such a folder could never warn of a changed judge (#822 review)."""
+    config = _robot_folder(tmp_path)
+    judge = _fake_judge(tmp_path)
+    layout = ResultLayout(tmp_path / "result")
+    assert _run(config, layout.root, judge) == 0
+    older = json.loads(layout.inputs.read_text())
+    del older["judge_sha256"]
+    layout.inputs.write_text(json.dumps(older, indent=2) + "\n")
+    assert _run(config, layout.root, judge) == 0
+    assert json.loads(layout.inputs.read_text()) == {**older, "judge_sha256": _sha(judge)}
+    capsys.readouterr()
+    shutil.rmtree(layout.map_dir("nlp_mpc_docking"))
+    assert _run(config, layout.root, _rebuilt(judge)) == 0
+    assert "WARNING the judge is another binary" in capsys.readouterr().err
+
+
 def test_a_sample_of_a_set_that_is_no_longer_there_is_drawn_again(tmp_path):
     config = _robot_folder(tmp_path)
     judge = _fake_judge(tmp_path)

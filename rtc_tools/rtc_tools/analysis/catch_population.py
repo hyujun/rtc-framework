@@ -285,14 +285,14 @@ def claim_inputs(
     The judge's binary is warned of, not refused: a rebuild of the workspace that
     changes nothing it judges is the common case, and the arms judged before it keep
     their own record of the binary (each map's provenance). A run with another binary
-    than the one recorded says so on stderr and leaves ``inputs.json`` as it was."""
+    than the one recorded says so on stderr and leaves ``inputs.json`` as it was. A
+    record without the binary (a folder from before it was recorded, or one first run
+    without a judge) takes this run's, so the next binary is compared with it."""
     now = judged_inputs(config, judge)
     if not layout.inputs.is_file():
         if (layout.design / "design_meta.json").is_file():
             _say(f"{layout.inputs.name}: not recorded when this folder was judged — recorded now")
-        partial = layout.inputs.with_name(f".{layout.inputs.name}.partial")
-        partial.write_text(json.dumps(now, indent=2) + "\n", encoding="utf-8")
-        partial.replace(layout.inputs)
+        _write_inputs(layout, now)
         return
     try:
         files = dict(json.loads(layout.inputs.read_text(encoding="utf-8"))["config_dir"])
@@ -308,8 +308,11 @@ def claim_inputs(
             f"{layout.root} was judged with other files than are here now — changed since: "
             f"{', '.join(changed)}. Its verdicts are not this configuration's: use a new --out"
         )
-    recorded = json.loads(layout.inputs.read_text(encoding="utf-8")).get("judge_sha256")
-    if recorded and "judge_sha256" in now and recorded != now["judge_sha256"]:
+    document = json.loads(layout.inputs.read_text(encoding="utf-8"))
+    recorded = document.get("judge_sha256")
+    if not recorded and "judge_sha256" in now:
+        _write_inputs(layout, {**document, "judge_sha256": now["judge_sha256"]})
+    elif recorded and "judge_sha256" in now and recorded != now["judge_sha256"]:
         # stderr, not _say: the steps' own output is what stdout carries.
         print(
             f"catch_population: WARNING the judge is another binary than {layout.root} was "
@@ -318,6 +321,12 @@ def claim_inputs(
             "use a new --out if the judge's behaviour changed",
             file=sys.stderr,
         )
+
+
+def _write_inputs(layout: ResultLayout, document: dict) -> None:
+    partial = layout.inputs.with_name(f".{layout.inputs.name}.partial")
+    partial.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    partial.replace(layout.inputs)
 
 
 def sample_is_complete(layout: ResultLayout, arm: Arm) -> bool:
