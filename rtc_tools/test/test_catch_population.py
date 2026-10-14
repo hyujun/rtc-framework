@@ -862,6 +862,52 @@ def test_a_folder_judged_with_other_files_is_refused_by_their_names(tmp_path):
     assert _run(config, layout.root, judge) == 0  # the files as they were: a resume
 
 
+def _rebuilt(judge: Path) -> Path:
+    """The same judge as another binary (a rebuild): other bytes, the same behaviour."""
+    other = judge.parent / "rebuilt"
+    other.mkdir(exist_ok=True)
+    path = other / judge.name
+    path.write_text(judge.read_text() + "# rebuilt\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_the_judges_binary_is_recorded_by_its_sha256_alone(finished):
+    _, judge, layout = finished
+    recorded = json.loads(layout.inputs.read_text())
+    assert recorded["judge_sha256"] == _sha(judge)
+    assert judge.name not in layout.inputs.read_text()  # its path is the PC's
+
+
+def test_another_judge_binary_is_warned_of_and_the_record_is_kept(tmp_path, capsys):
+    config = _robot_folder(tmp_path)
+    judge = _fake_judge(tmp_path)
+    layout = ResultLayout(tmp_path / "result")
+    assert _run(config, layout.root, judge) == 0
+    recorded = layout.inputs.read_bytes()
+    capsys.readouterr()
+    # One arm is judged again — by the new binary; the other keeps its verdicts.
+    shutil.rmtree(layout.map_dir("nlp_mpc_docking"))
+    assert _run(config, layout.root, _rebuilt(judge)) == 0
+    said = capsys.readouterr()
+    assert "WARNING the judge is another binary" in said.err
+    assert layout.inputs.read_bytes() == recorded
+    assert "judge binaries: 2 different — grid_mpc " in said.out
+
+
+def test_a_folder_that_recorded_no_judge_is_not_warned_of(tmp_path, capsys):
+    config = _robot_folder(tmp_path)
+    judge = _fake_judge(tmp_path)
+    layout = ResultLayout(tmp_path / "result")
+    assert _run(config, layout.root, judge) == 0
+    older = json.loads(layout.inputs.read_text())
+    del older["judge_sha256"]  # what a folder judged before #822 holds
+    layout.inputs.write_text(json.dumps(older, indent=2) + "\n")
+    capsys.readouterr()
+    assert _run(config, layout.root, _rebuilt(judge)) == 0
+    assert "WARNING" not in capsys.readouterr().err
+
+
 def test_a_sample_of_a_set_that_is_no_longer_there_is_drawn_again(tmp_path):
     config = _robot_folder(tmp_path)
     judge = _fake_judge(tmp_path)

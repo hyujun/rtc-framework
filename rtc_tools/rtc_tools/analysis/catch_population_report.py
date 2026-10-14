@@ -691,6 +691,21 @@ def _sim_lines(arm: ArmResult) -> list[str]:
     return lines
 
 
+def judge_binaries_line(result: PopulationResult) -> str | None:
+    """The line saying that the arms were judged by different binaries (each map records
+    the one it was judged with); None when they were one, or when none says."""
+    judges = {
+        arm.arm.name: sha
+        for arm in result.arms
+        if arm.summary is not None
+        and (sha := ((arm.summary.get("provenance") or {}).get("judge") or {}).get("sha256"))
+    }
+    if len(set(judges.values())) < 2:
+        return None
+    named = ", ".join(f"{name} {sha[:12]}" for name, sha in judges.items())
+    return f"judge binaries: {len(set(judges.values()))} different — {named}"
+
+
 def report_text(result: PopulationResult) -> str:
     """The statistics text of a result folder."""
     design, manifest = result.design, result.manifest
@@ -706,6 +721,7 @@ def report_text(result: PopulationResult) -> str:
         f"(sha256 {result.config.sha256[:12]})",
         "revision      : "
         + (f"{repo['commit']} (dirty: {repo['dirty']})" if repo else "not recorded"),
+        *([judges] if (judges := judge_binaries_line(result)) else []),
         "",
         *_configuration_lines(result),
         "",
