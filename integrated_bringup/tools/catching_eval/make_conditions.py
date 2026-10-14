@@ -11,8 +11,7 @@ evaluation, outside the repository):
 The shipped profile is read from $BALL_SIM_WS (the estimator's colcon
 workspace), the shipped controller config from the source tree this file is in. The plan lines name CONDITIONS (`<dir> <robot> <cond> <n>
 <seed>`): they are not run_all.sh's plan format, which names an overlay path.
-The leaf rule is test_catch_lead_overlays' `_unread_leaves`, loaded from
-integrated_bringup/test by path — renaming that test breaks this script.
+The leaf rule is rtc_tools.utils.controller_config's `unread_leaves`.
 
 L-50 IS the shipped configuration: the installed profile itself, and an overlay
 whose three grid keys are refused unless they are the shipped values — so L-50
@@ -21,11 +20,10 @@ the `catch_lead_on` overlay's leaves plus the grid keys; that overlay's values
 are in the shipped controller YAML now and the file is gone.)
 Refuses to write anything that fails: horizon an exact ns multiple of the step,
 n_min = ceil(horizon_min / dt) + 1 <= points <= kCap, every overlay leaf a
-shipped controller key of the same type (test_catch_lead_overlays' rule).
+shipped controller key of the same type (`unread_leaves`).
 """
 
 import copy
-import importlib.util
 import json
 import math
 import os
@@ -36,7 +34,7 @@ from pathlib import Path
 import yaml
 
 from rtc_tools.utils.catching_keys import reject_renamed_keys
-from rtc_tools.utils.controller_config import load_controller_config
+from rtc_tools.utils.controller_config import load_controller_config, unread_leaves
 
 REPO = str(Path(__file__).resolve().parents[3])
 BWS = os.environ.get("BALL_SIM_WS", "")
@@ -86,20 +84,12 @@ def n_min_for(horizon_min_s, step_s, points):
     return n_min
 
 
-def leaf_checker():
-    path = f"{REPO}/integrated_bringup/test/test_catch_lead_overlays.py"
-    spec = importlib.util.spec_from_file_location("lead_overlays", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod._unread_leaves
-
-
 def main():
     if not DATA or not BWS:
         sys.exit(
             "DATA (the evaluation's data directory) and BALL_SIM_WS (the estimator's workspace) must be set"
         )
-    unread = leaf_checker()
+    unread = unread_leaves
     with open(SHIPPED_PROFILE) as f:
         shipped_profile = json.load(f)
     rows = []

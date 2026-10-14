@@ -12,8 +12,8 @@ the wrong arm.
 
 So every leaf an override writes must name a key the shipped
 ``demo_catching_controller.yaml`` already has, with the same YAML type
-(:func:`_unread_leaves` — ``make_conditions.py`` and the launch-argument test
-load it from this file by path). What ships of that kind is one thing: the sim
+(``rtc_tools.utils.controller_config.unread_leaves`` — ``make_conditions.py`` uses
+the same rule). What ships of that kind is one thing: the sim
 robot config's controller override (the planner's envelope box, S8-G R2), pinned
 here.
 
@@ -33,7 +33,12 @@ import os
 import pytest
 import yaml
 
-from rtc_tools.utils.controller_config import load_controller_config
+from rtc_tools.utils.controller_config import (
+    load_controller_config,
+    tree_leaves,
+    unread_leaves,
+    yaml_kind,
+)
 
 CONFIG_ROOT = os.path.join(os.path.dirname(__file__), "..", "config")
 CONFIG_DIR = os.path.join(CONFIG_ROOT, "ur5e_p1b")
@@ -56,47 +61,11 @@ def _shipped_tree(path: str) -> dict:
     return load_controller_config(path, config_key=CONTROLLER)[CONTROLLER]
 
 
-def _leaves(tree: dict, prefix: tuple[str, ...] = ()) -> dict[tuple[str, ...], object]:
-    out: dict[tuple[str, ...], object] = {}
-    for key, value in tree.items():
-        path = prefix + (str(key),)
-        if isinstance(value, dict):
-            out.update(_leaves(value, path))
-        else:
-            out[path] = value
-    return out
-
-
-def _yaml_kind(value: object) -> str:
-    # bool first: bool is an int subclass, and a bool written as 1 is exactly
-    # the kind of type drift a params file can carry.
-    if isinstance(value, bool):
-        return "bool"
-    if isinstance(value, int):
-        return "int"
-    if isinstance(value, float):
-        return "float"
-    if isinstance(value, list):
-        return "list[" + ",".join(sorted({_yaml_kind(v) for v in value})) + "]"
-    return type(value).__name__
-
-
-def _unread_leaves(tree: dict, shipped: dict) -> list[str]:
-    """Overlay leaves that name no shipped key, or a key of a different type."""
-    problems = []
-    for path, value in _leaves(tree).items():
-        node = shipped
-        for part in path:
-            if not isinstance(node, dict) or part not in node:
-                problems.append(".".join(path) + ": not in the shipped YAML")
-                break
-            node = node[part]
-        else:
-            if _yaml_kind(node) != _yaml_kind(value):
-                problems.append(
-                    f"{'.'.join(path)}: shipped {_yaml_kind(node)}, overlay {_yaml_kind(value)}"
-                )
-    return problems
+# The leaf rule lives in rtc_tools (make_conditions.py uses it too);
+# the names below are what this file's tests and the launch-argument test call it.
+_leaves = tree_leaves
+_yaml_kind = yaml_kind
+_unread_leaves = unread_leaves
 
 
 @pytest.fixture(scope="module")

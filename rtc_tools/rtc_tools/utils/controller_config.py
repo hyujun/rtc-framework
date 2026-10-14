@@ -266,6 +266,58 @@ def deep_merge(base: Mapping, over: Mapping) -> dict:
     return out
 
 
+def tree_leaves(tree: Mapping, prefix: tuple[str, ...] = ()) -> dict[tuple[str, ...], object]:
+    """``{key path: value}`` of every leaf of ``tree`` (a sequence is one leaf)."""
+    out: dict[tuple[str, ...], object] = {}
+    for key, value in tree.items():
+        path = prefix + (str(key),)
+        if isinstance(value, Mapping):
+            out.update(tree_leaves(value, path))
+        else:
+            out[path] = value
+    return out
+
+
+def yaml_kind(value: object) -> str:
+    """The YAML type a value was read as (``bool`` · ``int`` · ``float`` · ``str`` ·
+    ``list[...]``) — what a ROS parameter's type follows."""
+    # bool first: bool is an int subclass, and a bool written as 1 is exactly
+    # the kind of type drift a params file can carry.
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, list):
+        return "list[" + ",".join(sorted({yaml_kind(v) for v in value})) + "]"
+    return type(value).__name__
+
+
+def unread_leaves(tree: Mapping, shipped: Mapping) -> list[str]:
+    """The leaves of an override ``tree`` that name no key of ``shipped`` (the composed
+    controller tree, :func:`load_controller_config`), or a key of another YAML type.
+
+    The runtime lays an override over the loaded YAML key by key and CREATES a key it
+    does not find, so an override one level off configures silently and is never
+    read; a value of another type fails the parameter, or reads as another number.
+    """
+    problems = []
+    for path, value in tree_leaves(tree).items():
+        node = shipped
+        for part in path:
+            if not isinstance(node, Mapping) or part not in node:
+                problems.append(".".join(path) + ": not in the shipped YAML")
+                break
+            node = node[part]
+        else:
+            if yaml_kind(node) != yaml_kind(value):
+                problems.append(
+                    f"{'.'.join(path)}: shipped {yaml_kind(node)}, overlay {yaml_kind(value)}"
+                )
+    return problems
+
+
 def overlay_catching(path: Path, controller: str) -> dict:
     """The ``catching`` subtree a node-level YAML writes for ``controller`` ({} if none).
 
