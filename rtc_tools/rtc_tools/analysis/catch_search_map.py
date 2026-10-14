@@ -119,6 +119,7 @@ import heapq
 import json
 import math
 import multiprocessing
+import os
 import random
 import shutil
 import subprocess
@@ -2552,20 +2553,37 @@ def config_relative_sources(sources: Mapping[str, str], config_dir: Path) -> dic
     from an install, and still names the robot (the folder). A path outside the folder,
     and a label that is not an absolute path (the repository-relative ``file:line`` of
     a C++ constant), is kept as it is.
+
+    The path is compared as it is written first: under ``--symlink-install`` an
+    installed YAML is a link into the source tree, so the file resolved is outside the
+    install's folder. Resolved on both sides second: a folder named through a link.
     """
-    root = Path(config_dir).resolve()
     out = {}
     for name, label in sources.items():
         path, sep, key = label.rpartition(":")
         if sep and Path(path).is_absolute():
-            try:
-                relative = Path(path).resolve().relative_to(root)
-            except ValueError:
-                relative = None
-            if relative is not None:
-                label = f"{root.name}/{relative.as_posix()}:{key}"
+            label = next(
+                (
+                    f"{root.name}/{relative.as_posix()}:{key}"
+                    for root, relative in _relative_paths(Path(path), Path(config_dir))
+                ),
+                label,
+            )
         out[name] = label
     return out
+
+
+def _relative_paths(path: Path, root: Path):
+    """``(root, path relative to it)`` for each way of writing both — as written
+    (normalized, not resolved), then resolved — under which ``path`` is inside ``root``."""
+    for file, folder in (
+        (Path(os.path.normpath(path)), Path(os.path.normpath(root.absolute()))),
+        (path.resolve(), root.resolve()),
+    ):
+        try:
+            yield folder, file.relative_to(folder)
+        except ValueError:
+            continue
 
 
 def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str]) -> MapSetup:

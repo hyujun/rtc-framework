@@ -1582,6 +1582,28 @@ def test_a_source_in_the_configuration_folder_is_labelled_relative_to_it(tmp_pat
     }
 
 
+def test_a_linked_source_is_labelled_relative_to_the_folder_it_was_read_in(tmp_path):
+    """``--symlink-install``: the installed YAML is a link into the source tree, so the
+    file it resolves to is outside the install's configuration folder (#822 review)."""
+    source = tmp_path / "src" / "robot_a"
+    source.mkdir(parents=True)
+    (source / "mujoco_simulator.yaml").write_text("{}")
+    installed = tmp_path / "install" / "robot_a"
+    installed.mkdir(parents=True)
+    (installed / "mujoco_simulator.yaml").symlink_to(source / "mujoco_simulator.yaml")
+    label = f"{installed}/mujoco_simulator.yaml:projectile_ball.radius_m"
+    assert m.config_relative_sources({"radius_m": label}, installed) == {
+        "radius_m": "robot_a/mujoco_simulator.yaml:projectile_ball.radius_m"
+    }
+    # … and a folder named through a link to it is the folder it links to
+    linked = tmp_path / "robot_link"
+    linked.symlink_to(source)
+    label = f"{source}/mujoco_simulator.yaml:projectile_ball.radius_m"
+    assert m.config_relative_sources({"radius_m": label}, linked) == {
+        "radius_m": "robot_a/mujoco_simulator.yaml:projectile_ball.radius_m"
+    }
+
+
 def test_the_setups_ball_names_its_file_in_the_robots_folder(tmp_path):
     pytest.importorskip("pinocchio")
     config = _REPO / "integrated_bringup/config/ur5e_p1b"
