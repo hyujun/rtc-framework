@@ -23,7 +23,7 @@
 | **E3** | **필수** (선행 E2 는 끝났다) | 같은 MPC 에 dual arm · waist 항 추가 — g1_p1b |
 | 실기 (HW) | 필수 · sim 전용이 아니다 | 실기 단계 — 1차 목표 로봇은 `ur5e_p1b` ([#613](https://github.com/hyujun/rtc-framework/issues/613)) |
 
-- **E1 은 끝났다.** 마지막 feature 인 비교 평가 E1-F20 은 판정이 아니라 지금 상태의 기록으로 끝났고 (2026-10-11, 넘어온 일은 §5), 그 기록을 본 뒤 **출하 기본값은 두 로봇 모두 `grid` × `mpc` 로 두었다** (사용자 결정, [#813](https://github.com/hyujun/rtc-framework/issues/813) — MD-89 를 잇는다). 그 앞의 단독 이슈 T ([#803](https://github.com/hyujun/rtc-framework/issues/803)) · [#807](https://github.com/hyujun/rtc-framework/issues/807) 은 끝났고, S ([#804](https://github.com/hyujun/rtc-framework/issues/804)) · R ([#805](https://github.com/hyujun/rtc-framework/issues/805)) 는 보류로 닫았다 (재개 조건은 각 이슈의 닫는 코멘트). E1 뒤에 남은 단독 이슈와 그 순서는 §5 의 순서표가 갖는다.
+- **E1 은 끝났다.** 마지막 feature 인 비교 평가 E1-F20 은 판정이 아니라 지금 상태의 기록으로 끝났고 (2026-10-11, 남은 일은 §5 의 "E1 에서 넘어온 남은 일"), 그 기록을 본 뒤 **출하 기본값은 두 로봇 모두 `grid` × `mpc` 로 두었다** (사용자 결정, [#813](https://github.com/hyujun/rtc-framework/issues/813) — MD-89 를 잇는다). 그 앞의 단독 이슈 T ([#803](https://github.com/hyujun/rtc-framework/issues/803)) · [#807](https://github.com/hyujun/rtc-framework/issues/807) 은 끝났고, S ([#804](https://github.com/hyujun/rtc-framework/issues/804)) · R ([#805](https://github.com/hyujun/rtc-framework/issues/805)) 는 보류로 닫았다 (재개 조건은 각 이슈의 닫는 코멘트). E1 뒤에 남은 단독 이슈와 그 순서는 §5 의 순서표가 갖는다.
 - **설계 (MD-46 · MD-47).** MPC 는 waist + dual arm (G1) 용으로 설계한다 (formulation §1.3). 단일 팔은 같은 MPC 에서 dual arm · waist 전용 항과 제약만 뺀 구성이었고, g1_p1b 는 같은 코어에 그 항을 더한다 (E3). closed_form 과 mpc 는 입력 (추정기의 공 미래 궤적) 과 출력 (CLIK 입력) 이 같은 두 planner 이고 추정기 · supervisor · 손 시퀀서 · CLIK · `ABORT_SAFE` · E-STOP 은 공통이다.
 - **E1 이 넣은 것.** 탐색 하나 (`nlp`) 와 planner 하나 (`mpc_docking`) 는 코어 · 계획기 배선 (E1-F16) 과 RT 쪽 (E1-F17) 까지 들어왔다 — 로그 (E1-F18) · 판정 지도 (E1-F21) · 튜닝 (E1-F19) · 같은 투척으로 잰 기록 (E1-F20) 도 끝났다. 설계 자료는 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) 다 (§10 이 planner, §11 이 탐색 — 구현한 것은 그 문서의 §17 에 적는다). 수치 코어는 하나이고 이미 있다 (`MpcDockingSegmentCore`, E1-F13): `mpc_docking` 은 그 코어로 구간을 풀고 `nlp` 는 같은 코어로 후보를 평가한다. 탐색 코어도 있고 (`NlpCatchSearch`, E1-F14) 계획기의 한 주기가 부른다 (E1-F16). 둘 다 계획기 스레드 안에서 돌고, 위의 공통부와 계획기 → RT 계약의 payload, 출하 기본값 (선택 키의 값) 은 바꾸지 않는다. **탐색은 RT 가 plan 을 채택한 뒤에도 돈다** — 처음 채택한 plan 의 $t_c$ 에서 `t_stop_plan` 앞까지, 공을 잡기 직전까지만이고 모든 조합에서다 (사용자 결정, §4). 그래서 출하 조합 `grid` × `mpc` 의 동작도 바뀐다: 채택 뒤의 wake 는 탐색을 먼저 돌리고, 탐색이 다른 plan 을 고르면 그 plan 과 첫 구간을 쌍으로 게시해 RT 가 APPROACH 중에 둘을 함께 바꾸며 (아니면 구간을 재계획한다), 손의 폐쇄 지령 시각은 commit 뒤에도 지령 전까지 다시 맞춰진다 (E1-F16 · F17 — L3 §5.3, L7 §4.3a, L6 §4.3). 코드는 로봇을 모르게 쓰고 시험은 `ur5e_p1b` · `iiwa7_leap` 둘에서 한다. 새 구현의 이름은 값 + interface 의 순서다 — 구간 계획기는 `<값>SegmentPlanner` · `<값>SegmentCore` (`MpcSegmentPlanner` · `MpcSegmentCore` 와 같다), 탐색은 `<값>CatchSearch` (`GridCatchSearch` 와 같다). `Decel*` 이름을 새로 쓰지 않는다 (MD-48).
 - 실기와 E2 · E3 의 선후는 이 문서가 정하지 않았다 (§5).
@@ -49,7 +49,7 @@
 - feature 를 끝내면 이슈의 Done when 을 항목별로 갱신한다. **결정의 이유는 코드 주석과 `ref/` 에, 경위는 이슈에 적는다. 새 `MD-n` 을 만들지 않는다.**
 - **상태는 한 곳에만 적는다.** feature 의 상태 (다음 · 대기, PR, 결과 한 줄) 는 §3 feature 표의 상태 열이, epic 의 상태는 문서 머리의 상태줄이 (feature 를 세지 않는다), **순서는 feature 면 §3 의 "순서" 줄이, feature 번호 없는 단독 이슈면 §5 의 순서표가** 갖는다 — 다른 절은 그 자리를 가리키고 다시 적지 않는다. 브랜치 계획과 순서 표, epic 이슈의 본문, project 의 readme, 그리고 **`ref/` 문서의 머리와 [README.md](README.md) 의 문서 표** 에는 상태를 적지 않는다 (그 둘은 어느 feature 가 무엇을 구현했는가만 적는다 — 남은 feature 와 그 상태를 적으면 feature 가 끝날 때 어긋난다. 문서 자신의 구현 범위, 곧 어느 절이 구현됐는가는 그 문서의 내용이다) — epic 의 feature 목록과 열림 · 닫힘은 sub-issue 가 보여 주고, 보드의 Done 은 이슈가 닫힐 때 자동으로 옮겨진다. feature 를 끝낼 때 손으로 고치는 곳은 넷이다: §3 의 그 행을 지우고 (끝난 feature 는 표에 없다) [ID_INDEX.md](ID_INDEX.md) §3 에 행을 더한다, 남긴 일이 있으면 §5, 그 feature 이슈의 Done when, epic 이슈의 머지 코멘트. 순서가 바뀌면 그 한 곳을 고친다.
 - feature 착수 전에 Sprint Contract 를 제시하고 컨펌받는다 (AGENTS.md §6.5). 브랜치는 비슷한 feature 를 묶어 만든다 (§3 "브랜치 계획").
-- 수치로 판정하는 게이트는 기준과 N 을 시행 전에 고정하고, 기준을 본 뒤에 바꾸지 않는다. 미정인 값으로 판정하면 `PASS(provisional)` 로 표기한다.
+- 수치로 판정하는 게이트는 기준과 N 을 시행 전에 고정하고, 기준을 본 뒤에 바꾸지 않는다. 포구 수로 arm 을 가를 때는 seed 하나로 가르지 않는다 — 같은 arm 도 추정기 seed 에 따라 잡는 투척이 바뀐다 (E1-F20: `ur5e_p1b` 의 `closed_form` 이 seed 둘에서 29 · 31 발을 잡았고 겹침은 5 발). 미정인 값으로 판정하면 `PASS(provisional)` 로 표기한다.
 - **구현 원칙 (사용자 결정).** 가장 우선은 계획한 알고리즘을 정확하게 구현하는 것이다. spec 을 바꿀 필요는 정확히 구현한 뒤 테스트 · 측정에서 드러날 때 정한다 — 구현 중에 시간이나 성공률을 추정해 spec 을 미리 줄이지 않는다.
 - **참고 문서를 구현하는 feature 는 구현 대조표를 낸다 (사용자 결정).** `ref/` 의 설계 자료를 구현하는 feature (끝난 E1-F13 · F14 · F16 · F17 의 표는 #739 · #740 · #742 · #743 에 있다) 는 사용자가 "정확하게 구현됐는가" 를 직접 확인할 수 있게, 참고 문서의 수학 · 구현할 알고리즘 · 구현한 것을 나란히 놓은 표를 그 feature 이슈의 코멘트로 낸다.
   - 행은 참고 문서의 식 · 제약 · 비용 항 하나씩이다. 그 feature 가 맡은 절의 식은 빠짐없이 행으로 둔다 — 구현하지 않는 것도 "구현하지 않음" 과 이유를 적어 남긴다.
@@ -64,7 +64,7 @@
 
 ### E1. 단일 팔 — NLP search · mpc_docking — [#621](https://github.com/hyujun/rtc-framework/issues/621) · 필수
 
-sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으로 잰 기록이 나고 (E1-F20 — 판정이 아니다: 대조군 · 한계 · PASS 가 없다), 그 기록을 보고 출하 기본값을 바꿀지 정한다. **결과: 기록이 났고 기본값은 바꾸지 않았다** (2026-10-11 — 두 로봇 모두 `grid` × `mpc`, [#813](https://github.com/hyujun/rtc-framework/issues/813)). 기록에서 읽히는 것은 §5 의 "E1-F20 에서 넘어온 일" 이 갖는다. feature 는 모두 끝났다 — [ID_INDEX.md](ID_INDEX.md) §3.
+sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으로 잰 기록이 나고 (E1-F20 — 판정이 아니다: 대조군 · 한계 · PASS 가 없다), 그 기록을 보고 출하 기본값을 바꿀지 정한다. **결과: 기록이 났고 기본값은 바꾸지 않았다** (2026-10-11 — 두 로봇 모두 `grid` × `mpc`, [#813](https://github.com/hyujun/rtc-framework/issues/813)). 기록은 [#746](https://github.com/hyujun/rtc-framework/issues/746) 이 갖고, 남은 일은 §5 의 "E1 에서 넘어온 남은 일" 이 갖는다. feature 는 모두 끝났다 — [ID_INDEX.md](ID_INDEX.md) §3.
 
 ### E2. G1 + proto_1b bring-up — [#622](https://github.com/hyujun/rtc-framework/issues/622) · 필수
 
@@ -102,7 +102,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | HW-F03 | — | 단계 F — 실투척 (저속 → 상향). 게이트 G8-G ("원인 분해" 는 항목별 수치 기록으로 판정) | HW-F02 | 대기 |
 | HW-F04 | — | GUI · plot 의 실기 항목 (실기 모드 표시, 실기 세션 CSV 의 plot). #613 이 순서를 정하지 않았다 | — | 대기 |
 
-**실기 planner (선행 조건).** 사용자 결정: 지금은 planner 를 정하지 않는다. 실기 기본 측정 (단계 D) 은 planner 와 무관하게 진행하고, **단계 E 앞에서** `closed_form` 과 `mpc` 중 어느 쪽으로 갈지 정한다. 지금 실기 config 는 planner 를 덮지 않아 출하값 `planner.segment.mode: mpc` 가 그대로 실기에 간다. `mpc` 로 가려면 먼저 닫아야 하는 것 셋 (정지 구간과 작업셀 경계 — E-8 에 걸린다, G8-F 에 mpc 의 abort 경로, `mpc` 를 실기에서 잰 적이 없다는 것) 은 #613 의 "planner" 절이 갖는다. 첫째의 재료로, `mpc` 의 정지 구간이 어디인지는 sim 에서 쟀다 (#713 — 손은 공의 직선 위에서 멈춘다; 수는 #613 의 코멘트). 경계의 검사는 여전히 없다. ProxQP 의 heap 할당은 선행이 아니다 — 기록된 RT-1 위반으로 정해졌다 (사용자 결정 2026-10-10, #654).
+**실기 planner (선행 조건).** 사용자 결정: 지금은 planner 를 정하지 않는다. 실기 기본 측정 (단계 D) 은 planner 와 무관하게 진행하고, **단계 E 앞에서** `closed_form` 과 `mpc` 중 어느 쪽으로 갈지 정한다. 지금 실기 config 는 planner 를 덮지 않아 출하값 `planner.segment.mode: mpc` 가 그대로 실기에 간다. `mpc` 로 가려면 먼저 닫아야 하는 것 셋 (정지 구간과 작업셀 경계 — E-8 에 걸린다, G8-F 에 mpc 의 abort 경로, `mpc` 를 실기에서 잰 적이 없다는 것) 은 #613 의 "planner" 절이 갖는다. 첫째의 재료로, `mpc` 의 정지 구간이 어디인지는 sim 에서 쟀다 (#713 — 손은 공의 직선 위에서 멈춘다; 수는 #613 의 코멘트). 경계의 검사는 여전히 없다. 결정의 재료로, E1-F20 에서 속도 한계 위반과 `ABORT_SAFE` 는 `closed_form` 에 몰려 있었다 (`ur5e_p1b` 47 · 69 발, `iiwa7_leap` 209 · 34 발; `mpc` 는 0 – 2 발 — [#746](https://github.com/hyujun/rtc-framework/issues/746)). ProxQP 의 heap 할당은 선행이 아니다 — 기록된 RT-1 위반으로 정해졌다 (사용자 결정 2026-10-10, #654).
 
 ### 브랜치 계획
 
@@ -160,45 +160,29 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 - [#642](https://github.com/hyujun/rtc-framework/issues/642) — E3-F03: 충돌 제약 — capsule 모델 · 자기충돌 · 공–왼팔 거리
 - [#645](https://github.com/hyujun/rtc-framework/issues/645) — E3-F06: 로그 · plot_rtc_log · demo_controller_gui (dual arm 열) — G1 포구 컨트롤러의 상태를 GUI 에 무엇으로 보일지 (E2-F06 은 상태 토픽 없이 세션 CSV 의 꼬리를 읽었다 — GUI 가 컨트롤러와 같은 머신에 있어야 한다. `rtc_msgs/CatchingState` 에 열을 더하면 E-3)
 
-**E1-F20 에서 넘어온 일**
+**E1 에서 넘어온 남은 일**
 
-로봇당 16 unit (arm 넷 × 목록 둘 × seed 둘 — A `grid` × `closed_form` · B `grid` × `mpc` · C `nlp` × `mpc_docking`, C 는 tennis · beanbag), rev `40256d72`, 재시도 · 무효 투척 0. 수는 포구 / 투척이고 표 · 구간 · 조건은 이슈의 기록 코멘트가 갖는다 ([ID_INDEX.md](ID_INDEX.md) §3 의 E1-F20 행).. 아래의 D-1 · D-2 · 후보 상자는 #798 의 출하 세트다 — #821 에서 투척 모집단의 catch 집단으로 바꾸며 지웠고 git 이력에 있다 (L8 §12)
+E1 의 끝난 일 (E1-F19 · F20 · F21, T [#803](https://github.com/hyujun/rtc-framework/issues/803), [#807](https://github.com/hyujun/rtc-framework/issues/807)) 이 남긴 것만 적는다. 기록과 수는 각 이슈가 갖는다 ([ID_INDEX.md](ID_INDEX.md) §3 의 feature 행). 이슈는 열지 않았다.
 
-- **출하 기본값은 바꾸지 않는다** — 두 로봇 모두 `grid` × `mpc` (사용자 결정 2026-10-11, [#813](https://github.com/hyujun/rtc-framework/issues/813)). `iiwa7_leap` 이 그 기본값으로 계획을 내지 못하던 것은 탐색의 IK 값으로 풀었다 (#710).
-- **D-1 세트는 어느 arm 도 거의 못 잡는다** — `ur5e_p1b` A 5 · B 0 · C 0 / 260, `iiwa7_leap` A 18 · B 0 · C 0 / 260. C 는 D-1 에서 계획을 거의 게시하지 않는다 (15 · 1 / 260, 주된 사유 `search:too_far`).
-- **후보 상자는 로봇마다 순서가 다르다.** `ur5e_p1b`: A 60 · B 64 · C 4 / 360. `iiwa7_leap`: A 111 · B 0 · C 196 / 360. `nlp` × `mpc_docking` 은 `iiwa7_leap` 에서 가장 많이 잡고 `ur5e_p1b` 에서 가장 적게 잡는다.
-- **`ur5e_p1b` 의 C** 는 탐색이 받아들이는 투척이 적고 (191 / 620) 게시한 99 발 가운데 4 발을 잡는다 — 게시된 발의 입구 통과점은 `ρ_ref` 에서 중앙값 19 mm, 10 mm 안은 11 발이다 (#807 의 lateral 그대로). B 의 게시 101 발은 10 mm 안이 55 발이고 그중 48 발을 잡는다.
-- **`ρ_ref` 에서 10 mm 라는 기준은 `iiwa7_leap` 에 옮겨지지 않는다** — C 의 게시 280 발 가운데 10 mm 안은 56 발인데 포구는 196 발이다 (통과점 중앙값 18.5 mm).
-- **같은 수를 잡는 두 arm 이 다른 투척을 잡는다** — `ur5e_p1b` 상자의 A · B 는 360 쌍 가운데 둘 다 10, A 만 50, B 만 54. 그리고 **A 는 추정기 seed 에 따라 잡는 투척이 바뀐다** (`ur5e_p1b` 상자: seed 둘에서 29 · 31 발, 겹침 5; B 는 32 · 32 에 겹침 20; `iiwa7_leap` 의 C 는 99 · 97 에 겹침 65). 한 seed 의 포구 수로 arm 을 가르면 안 된다.
-- **한계 위반과 `ABORT_SAFE` 는 A 에 몰려 있다** — 속도 한계를 넘는 투척이 `ur5e_p1b` 47 · `iiwa7_leap` 209 (최대 1.245 · 1.023 배), abort 69 · 34. B · C 는 0 – 2 발이다.
-- **공** — `iiwa7_leap` 상자에서 beanbag 이 tennis 보다 많이 잡혔다 (229 대 196 / 360, 게시는 277 대 279; 컨트롤러 · 추정기 · 손의 값은 tennis 로 식별한 그대로). `ur5e_p1b` 는 차이가 없다 (3 대 4 / 620).
-- **풀이 시간** — 끝난 풀이의 p99 는 두 로봇 · 세 arm 모두 그 계획기의 예산 안이다 (예외: `ur5e_p1b` B 의 보류된 교체의 첫 풀이 18 건, p99 211 ms). C 의 `replan` 이 기한에 끊기는 몫은 8.3 % · 2.9 %, `nlp` 의 후보를 푼 wake 가운데 기한으로 거부된 후보가 있는 몫은 86 % · 27 % 다 (`ur5e_p1b` · `iiwa7_leap`).
-- **이 기록이 고친 전제** — 분석 단계는 B 가 `catch_error` 로 보류만 해 포구가 0 이라고 보았다 (D-2 튜닝 세트의 unit). `ur5e_p1b` 의 후보 상자에서는 그렇지 않다. 또 `iiwa7_leap` 의 `nlp` × `mpc_docking` 을 2 / 25 로 적은 앞선 수 (다른 목록 · 앞선 rev) 와 이번 196 / 360 이 왜 다른지는 따지지 않았다.
+- **포구 순간의 lateral 오차를 줄이는 자리 (#807).** 공이 손의 입구 평면을 `ρ_ref` 에서 10 mm 안으로 지나면 잡고 15 mm 밖이면 못 잡는다 (`ur5e_p1b`; `iiwa7_leap` 에는 그 기준이 옮겨지지 않는다). lateral 의 몫은 추정기의 예측과 추종이 반반이고 계획은 아니다. 줄일 자리는 셋이다.
+  - 마지막 풀이를 t_c 에 가깝게 한다 (재계획의 격자 · 예산 · 채택). 예측의 오차는 그 풀이가 앞을 본 거리를 따라간다 — 350 ms 안이면 5 mm, 450 ms 밖이면 33 mm 다.
+  - 추정기의 0.3 – 0.5 s 예측과 자료 나이 (ball_perception).
+  - 서보 지연 보상 (lateral 11 mm, 접근축 +5 – 11 mm).
 
-**E1-F21 에서 넘어온 일**
-
-- `grid` 의 교체 규칙이 plan 을 유지하는 동작 ([#793 의 merge 코멘트](https://github.com/hyujun/rtc-framework/issues/793#issuecomment-6077965184)) 은 볼지 정하지 않았다 — plan 이 게시되는 조합이 생기기 전에는 sim 에서 보이지 않는다
-
-**E1-F19 에서 넘어온 일**
-
-- **종료 기준의 미충족.** D-2 튜닝 세트의 확인 unit (로봇 · 조합마다 2 개) 에서 탐색 수용 (≥ 70 %) 은 `ur5e_p1b` 16 / 28 · `iiwa7_leap` 8 / 14, plan 게시 (≥ 80 %) 는 `nlp` × `mpc_docking` 9 / 18 · 0 / 14 와 `grid` × `mpc_docking` 3 / 51 · 0 / 45, 끊긴 풀이 (≤ 5 %) 는 39 – 70 % 다. 추종 (HOLD · `ABORT_SAFE`) 은 게시된 `ur5e_p1b` 의 12 발에서 채웠고 `iiwa7_leap` 은 확인 unit 에서 게시가 없어 판정할 표본이 없다 (2 부의 다른 unit 을 다 합쳐 게시 7 발). 기준은 바꾸지 않았고 값은 사용자 결정으로 넣었다 — [#745 의 결과 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6093512941) · [결정](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6093537834)
-- **값으로 더 움직이지 않은 셋.** 풀이 시간 (끊긴 풀이가 어느 값의 unit 에서도 31 % 아래로 내려가지 않았다 — T 뒤에도 그 몫은 그대로이고 100 ms 를 넘기는 꼬리만 없어졌다, 아래 "T 에서 넘어온 일"), plan 의 게시 관문과 `grid` 가 고른 포구점 (S [#804](https://github.com/hyujun/rtc-framework/issues/804) 는 그래서 보류로 닫았다 — velocity-set 만으로 거부된 후보는 0 건이다), 포구 순간의 위치 오차 ([#807](https://github.com/hyujun/rtc-framework/issues/807) — 게시된 `ur5e_p1b` 의 66 발 가운데 포구 4, 손이 공에서 p50 34 mm; 몫으로 갈랐다 — 아래 "#807 에서 넘어온 일")
-- **확인하지 못한 값.** `iiwa7_leap` 의 `publish.slack_c_max` 0.06 m 는 통로 입구 반지름의 2.7 배라 통로 관문을 사실상 여는데, 2 부에서 이 로봇이 게시한 구간 (7 unit 의 26 개) 은 모두 통로 slack 이 0 이었다. 0 으로 돌린 unit 하나에서는 통로를 6.4 mm 벗어난 (다른 관문은 지난) 첫 풀이 하나가 보류됐다 — 두 값 사이는 재지 않았고, 게시가 열리는 S 에서 다시 본다. `core.sqp.mu_max` 1e2 (벌점 probe 없음) 가 `grid` × `mpc_docking` 에서 풀리는 문제를 거부하는지는 같은 seed 의 unit 한 쌍씩으로만 보았다 (게시 1 대 1 · 0 대 0 — 차이 없음)
-- **`T_close_lead` 를 옮긴 것의 여파 (`ur5e_p1b`) 는 정리했다.** lead 에서 유도되는 값 둘을 새 lead 로 다시 유도했다 — 평가 overlay `catch_lead_on` (#821 에서 출하 컨트롤러 YAML 로 옮기고 지웠다) 의 `T_freeze` 0.37 → 0.39 s, `io.horizon_min` 0.51 → 0.53 s ([#746 의 코멘트](https://github.com/hyujun/rtc-framework/issues/746#issuecomment-6096971643)). `grid` 탐색의 commit-lead 순위 게이트의 문턱 (0.383 s) 이 후보 창의 하한 아래에 있어, 창 안의 후보는 그 벌점 비트를 받지 않는다. `test_catch_lead_overlays.py` 는 하한을 `T_close_e2e` 와 lead 둘 다로 검사한다. sim 의 포구 시행에서는 lead 를 옮긴 효과를 확인하지 못했다 ([ref/L6_hand.md](ref/L6_hand.md) §4.6)
-- 교체 쌍의 채택 · 전환은 여전히 sim 에서 실행되지 않았다 (확인 unit 에서 시도 2, 풀이 0)
-- **1 부가 남긴 "값으로 풀리지 않은 것"** 은 그대로다 — 포구 시각의 가속 (손이 접근축으로 앞선다 — #807: 그 축의 12 mm 는 2/3 가 추종이고 포구를 가르지 않는다), 확률 행과 함께 꺼지는 공분산 유효성 검사 (2 부 뒤로는 두 로봇 모두 확률 행이 꺼져 있다), 마지막 구간의 교체 풀이, `nlp` 의 `solve_s` 상한을 configure 가 검사하지 않는 것, `iiwa7_leap` 의 `speed` 보류: [#745 의 머지 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6062693925). 그 목록의 "폐쇄 창의 축 (0.55 m/s 기준)" 은 2 부가 출하 기준 속력에서 다시 잰 창으로 바꿨다 ([ref/L6_hand.md](ref/L6_hand.md) §4.6)
-
-**#807 에서 넘어온 일**
-
-- **놓치는 것은 lateral 이다.** 공이 손의 입구 평면을 `ρ_ref` 에서 10 mm 안으로 지나면 잡고 (`ur5e_p1b` 세 표본 230 / 321) 15 mm 밖이면 못 잡는다 (15 / 302). D-2 튜닝 세트에서 게시된 89 발 가운데 10 mm 안은 15 발이다. 접근축 (공이 t_c 에 입구 평면의 12 – 19 mm 바깥 = 6 – 10 ms 늦음) 은 포구한 발과 놓친 발에서 같다 ([단계 1](https://github.com/hyujun/rtc-framework/issues/807#issuecomment-6097796506))
-- **lateral 의 몫은 추정기의 예측과 추종이 반반이고, 계획은 아니다** (probe unit 38 발, `nlp` × `mpc_docking`, rms: 예측 20.9 · 계획 5.3 · 추종 11.5 mm — 마지막 풀이가 t_c 의 350 ms 안인 33 발에서는 10.3 · 5.6 · 11.6). 풀이는 공을 lateral 집합 안에 둔다. 예측의 오차는 그 풀이가 얼마나 앞을 봤는가를 따라간다 (350 ms 안 5 mm → 450 ms 밖 33 mm) — 마지막으로 채택된 풀이는 가장 젊어도 t_c 의 182 ms 앞이고, 그것이 읽은 예측의 자료는 100 ms 더 낡았다. D-2 의 27 % 는 마지막 풀이가 350 ms 넘게 앞이다 (재계획이 채택되지 않은 발, 포구 0) ([단계 3](https://github.com/hyujun/rtc-framework/issues/807#issuecomment-6098255382))
-- **줄이는 일의 자리** (이슈는 열지 않았다 — E1-F20 은 고치지 않은 상태로 쟀다): 마지막 풀이를 t_c 에 가깝게 (재계획의 격자 · 예산, 재계획의 채택) · 추정기의 0.3 – 0.5 s 예측과 자료 나이 (ball_perception) · 서보 지연 보상 (lateral 11 mm, 접근축 +5 – 11 mm). 측정 자세 · 재시각화 (R #805) 를 다시 열 근거는 없다
-- 도구: `catching_trials` 의 `cf_*` · `ent_*` · `last_seg_*` · `pred_wake_*` · `plan_wake_*` (`rtc_tools/README.md`), `run_unit.sh` 의 `PROBE_DUMP=1`. 1 부의 unit 을 다시 분석할 때는 **그 rev 의 config** 를 준다 (지금 config 로는 frame 이 0.56 m 어긋난다)
-
-**T 에서 넘어온 일**
-
-- **풀이 시간의 꼬리는 warm start 한 QP 의 것이었고, 그 QP 에 반복 상한을 따로 두어 없앴다.** T 의 기한 검사 (QP 를 시작하기 전마다) 만으로는 100 ms 를 넘긴 풀이의 수가 E1-F19 의 확인 unit 과 갈리지 않았다 — 그 풀이는 거의 전부, 앞 QP 의 반복값에서 출발한 QP 하나가 `solver.max_iter` 까지 돌고 수렴하지 못한 것이었다 (약 200 ms). `core.solver.max_iter_warm` 10 (두 로봇의 `segment_mpc_docking.yaml` · `search_nlp.yaml`) 을 둔 뒤 D-2 튜닝 세트의 확인 unit (로봇 · 조합마다 2 개) 에서 100 ms 를 넘긴 풀이는 `grid` 의 첫 풀이 42 · 30 건 → 0 · 0 건, `nlp` 의 후보 8 · 6 건 → 0 · 0 건이고, 끊긴 풀이가 기한을 넘긴 시간의 합은 `grid` 10.8 · 10.1 s → 0.8 · 0.7 s 다 (`ur5e_p1b` · `iiwa7_leap` 순). **끊긴 풀이의 몫은 그대로다** (`grid` 62 · 38 % → 57 · 31 %, `nlp` 80 · 37 % → 78 · 37 % — unit 사이의 흔들림 안): 이제 끊긴 풀이는 중앙값으로 예산 (35 · 24 ms) 을 1 – 3 ms 넘겨 끝나고 (가장 긴 것 67 ms), 몫을 줄이는 것은 반복 수와 예산의 문제로 남는다 (E1-F19 의 "끊긴 풀이 5 % 이하" 는 미충족). 상한은 잰 결과이지 QP 길이의 보장이 아니다 — 테스트 rig 에는 cold 재풀이가 155 ms 걸린 예가 있고 (sim 의 재풀이 126 건은 최대 17 ms), 10 밖의 값은 20 을 unit 하나로만 보았으며, ProxQP 가 warm start 에서 proximal 상태까지 잇는 것을 바꾸는 길 (반복값만 잇기) 은 시험하지 않았다 — [#803 의 F-1 결과 코멘트](https://github.com/hyujun/rtc-framework/issues/803#issuecomment-6097153277) (값의 근거는 [그 앞 코멘트](https://github.com/hyujun/rtc-framework/issues/803#issuecomment-6096774671))
-- **첫 풀이의 wake 사이 기억은 `grid` 에서 거의 쓰이지 않는다** — T 의 확인 unit (상한을 두기 전) 가운데 `grid` × `mpc_docking` 넷의 첫 풀이 572 건 가운데 12 건. 열쇠가 $t_c$ 의 일치인데 `grid` 탐색이 고르는 $t_c$ 가 wake 마다 달라진다. 기억에서 출발한 풀이가 실행 불가로 끝난 점에 머무는지는 그 12 건으로는 알 수 없다 ([#803 의 T 결과 코멘트](https://github.com/hyujun/rtc-framework/issues/803#issuecomment-6095998706))
+  측정 자세 · 재시각화 (R #805) 를 다시 열 근거는 없다 — [단계 3](https://github.com/hyujun/rtc-framework/issues/807#issuecomment-6098255382).
+- **`mpc_docking` · `nlp` 의 끊긴 풀이 몫 (E1-F19 의 "≤ 5 %" 미충족).** T 가 100 ms 넘는 꼬리를 없앤 뒤에도 몫은 31 – 78 % 다. 끊긴 풀이는 예산을 1 – 3 ms 넘겨 끝난다. 남은 수단은 반복 수와 예산이다. 시험하지 않은 것: `core.solver.max_iter_warm` 의 10 밖 값 (20 은 unit 하나로만 봤다), ProxQP warm start 에서 반복값만 잇기 — [#803 F-1](https://github.com/hyujun/rtc-framework/issues/803#issuecomment-6097153277).
+- **값으로 풀리지 않은 것 (E1-F19 1 부).** 아래 넷은 그대로다 — [#745 의 머지 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6062693925).
+  - 포구 시각에 손이 접근축으로 앞선다. 다만 #807 이 보니 그 축은 포구를 가르지 않는다.
+  - 공분산 유효성 검사가 확률 행과 함께 꺼진다 (두 로봇 모두 확률 행이 꺼져 있다).
+  - 마지막 구간의 교체 풀이.
+  - `iiwa7_leap` 의 `speed` 보류.
+- **sim 에서 아직 확인하지 않은 것.**
+  - `grid` 의 교체 규칙이 plan 을 유지하는 동작 ([#793 의 merge 코멘트](https://github.com/hyujun/rtc-framework/issues/793#issuecomment-6077965184)).
+  - `T_close_lead` 를 옮긴 효과 (`ur5e_p1b` — [L6 §4.6](ref/L6_hand.md)).
+  - `iiwa7_leap` 의 `publish.slack_c_max` 0.06 m 가 통로 관문을 사실상 여는 것 (통로 입구 반지름의 2.7 배). 게시가 열리는 S (#804) 에서 다시 본다.
+  - `core.sqp.mu_max` 1e2 가 `grid` × `mpc_docking` 에서 풀리는 문제를 거부하는지. 같은 seed 의 unit 한 쌍씩으로만 봤다.
+  - 첫 풀이의 wake 사이 기억에서 출발한 풀이가 실행 불가로 끝난 점에 머무는지. `grid` 에서는 그 기억이 거의 쓰이지 않는다 (572 건 가운데 12 건, [#803 T](https://github.com/hyujun/rtc-framework/issues/803#issuecomment-6095998706)).
+  - `iiwa7_leap` 의 `nlp` × `mpc_docking` 을 2 / 25 로 적은 앞선 수와 E1-F20 의 196 / 360 이 왜 다른지.
 
 **mpc planner · catching 의 남은 일**
 
@@ -212,7 +196,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | 1 | #716 | **#834 뒤 — 착수할 수 있다** ([D3](https://github.com/hyujun/rtc-framework/issues/716#issuecomment-6170932409), 사용자 결정 2026-10-14 — #834 는 끝났다, 아래; 포구 전 격자는 `ur5e_p1b` 7 × 0.1 · `iiwa7_leap` 6 × 0.1 s 이고 `dt_pre_s` 가 그대로라 [분석 §1](https://github.com/hyujun/rtc-framework/issues/716#issuecomment-6170332041) 의 폐쇄 창 노드 표는 그대로다). E3-F01 뒤라는 앞 조건 (사용자 결정 2026-10-13, D5) 은 채워졌다 — E3-F01 은 `mpc` 코어를 고치지 않아 (D7) 이슈 본문의 "E3-F01 과 맞춘다" 는 연결이 없어졌고, `mpc` 의 법칙 변경은 PR 하나에 하나다. 폐기한 선택지 (E3-F02 에 묶기 · E3-F01 앞에 단일 팔에서) 와 대가는 [#640 의 코멘트 §3](https://github.com/hyujun/rtc-framework/issues/640#issuecomment-6139958674). E3-F02 는 이 이슈 뒤에 한다 (같은 코어 — 병행하지 않는다) | 단독 | 범위 (단일 팔에서 잰다), D3 밖의 결정 — 이슈의 [착수 전 분석](https://github.com/hyujun/rtc-framework/issues/716#issuecomment-6170332041). **#834 에서 넘어온 풀이 시간 예산**도 여기서 다룬다 (사용자 결정 2026-10-15): 노드 14 의 풀이가 예산을 넘는다 — `ur5e_p1b` `advance` 재계획 p99 25.5 – 28 ms (25 ms), `iiwa7_leap` 첫 풀이 37 ms (35 ms). 포구 구간에 노드를 더하는 이 이슈의 안은 그 시간 위에 선다 ([#716 의 코멘트](https://github.com/hyujun/rtc-framework/issues/716#issuecomment-6182137954)) |
 | — | #715 | 보류 — 착수 조건이 없다 | — | — |
 
-- **묶지 않는 이유.** #716 의 범위는 E1-F20 의 결과 (§5 의 "E1-F20 에서 넘어온 일") 를 보고 정하고, #819 의 범위는 #710 의 기록이 정했다. `mpc` 의 법칙을 한 PR 에서 두 곳 바꾸면 측정이 원인을 가르지 못한다 (#819 는 첫 풀이의 게시율을 본다 — 정지 구간의 직선 이탈은 #713 이 따로 쟀다). PR 을 쌓지 않으므로 같은 파일을 고친다는 것은 묶을 이유가 아니다.
+- **묶지 않는 이유.** #716 의 범위는 E1-F20 의 결과 ([#746](https://github.com/hyujun/rtc-framework/issues/746) 의 기록) 를 보고 정하고, #819 의 범위는 #710 의 기록이 정했다. `mpc` 의 법칙을 한 PR 에서 두 곳 바꾸면 측정이 원인을 가르지 못한다 (#819 는 첫 풀이의 게시율을 본다 — 정지 구간의 직선 이탈은 #713 이 따로 쟀다). PR 을 쌓지 않으므로 같은 파일을 고친다는 것은 묶을 이유가 아니다.
 - **#710 은 끝났다 (2026-10-11).** `iiwa7_leap` 에서 `grid` × `mpc` 가 계획을 못 내던 까닭은 첫 풀이의 기준이 아니라 `grid` IK 의 두 값이었다 — 수락된 후보 가운데 속도 한계로 닿는 것이 없었다. `k_manip` 을 0 으로, 하한을 0.1 로 두었고 (사용자 결정, 확인 unit 은 더 던지지 않았다), 근거와 남은 것은 L3 부록 D 와 이슈의 기록이 갖는다 ([0-A](https://github.com/hyujun/rtc-framework/issues/710#issuecomment-6105029085) · [0-B](https://github.com/hyujun/rtc-framework/issues/710#issuecomment-6105097576) · [0-C](https://github.com/hyujun/rtc-framework/issues/710#issuecomment-6105692143)). 재지 않은 채로 둔 것: 출하 값 (하한 0.1) 의 sim unit, `grid` × `closed_form` 에서의 결과, leap 의 throw set 라벨 (옛 값의 것이다). 첫 풀이의 기준을 자르는 법칙은 두 로봇에 공통인 별개의 문제여서 #819 로 옮겼다.
 - **끝난 단독 이슈** — 측정과 결정의 기록은 각 이슈가 갖는다. 남긴 일만 적는다.
   - [#834](https://github.com/hyujun/rtc-framework/issues/834) (2026-10-15, PR [#839](https://github.com/hyujun/rtc-framework/pull/839)) — 포구 전 격자의 상한 `approach.n_pre_max` 를 `ur5e_p1b` 7 로 올렸다 (`iiwa7_leap` 6, `dt_pre_s` 0.1 그대로). 남긴 일: 풀이 시간 예산 (→ #716 의 행), 아래 #819 의 `delta_tr` 재측정 · `n_pre` 하한은 이 격자를 기준선으로 잰다. 탐색의 도달 게이트를 격자 시간에 견주는 안은 판단하지 않았다 — [닫는 코멘트](https://github.com/hyujun/rtc-framework/issues/834#issuecomment-6182203068)
