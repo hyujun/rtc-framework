@@ -147,8 +147,8 @@
 | MD-51 | 격자는 코어의 파라미터이고 노드별 간격을 받는다 (확정 값은 MD-54). | `RC/test/test_catching_mpc_segment_core_approach.cpp` / f §1.6 |
 | MD-52 | 상대속도 slack $s_v$ 는 구현되어 있고 기본 꺼짐 (`catch.rho_v` 0) 이며 포구 위치 가중 $W_p$ 는 코어 입력이다. 경로 이탈 항은 별도로 두지 않는다. | `cfg` `catch.rho_v` · `v_rel_allow`, `RCI/mpc_segment_core_catch.hpp` / f §1.3, §1.6 |
 | MD-53 | 코어는 $\hat v_b$ 와 $\gamma_{ref}$ 를 받아 상대속도 목표를 $\gamma_{ref}\hat v_b$ 로 두고 slack 행은 늘 $\hat v_b$ 기준이다. | `RCI/mpc_segment_core.hpp` (`gamma_ref`), `IB/src/controllers/catching/lifecycle.cpp` (`catch.gamma_ref`) / f §1.3, §1.6 |
-| MD-54 | 출하 격자는 포구 전 $\Delta_{pre}$ 0.1 s (최대 6 노드) + 정지 $\Delta_s$ 0.05 s × 7 (블록 {1,1,2,3}) 이다. | `cfg` `horizon` · `approach` / f §1.6 |
-| MD-55 | 포구 전 격자는 `planner.segment.mpc.approach.n_pre_max` 가 켠다 (코드 기본 0, 출하 6). 출하의 `enabled`/`closed_form` 조합은 MD-89 가 바꿈. | `cfg` `approach.n_pre_max`, `IB/test/test_demo_catching_controller.cpp` / f §1.6, L3 §6 |
+| MD-54 | 출하 격자는 포구 전 $\Delta_{pre}$ 0.1 s (최대 노드 수는 로봇마다 — `approach.n_pre_max`) + 정지 $\Delta_s$ 0.05 s × 7 (블록 {1,1,2,3}) 이다. | `cfg` `horizon` · `approach` / f §1.6 |
+| MD-55 | 포구 전 격자는 `planner.segment.mpc.approach.n_pre_max` 가 켠다 (코드 기본 0, 출하 값은 로봇마다 6 · 7). 출하의 `enabled`/`closed_form` 조합은 MD-89 가 바꿈. | `cfg` `approach.n_pre_max`, `IB/test/test_demo_catching_controller.cpp` / f §1.6, L3 §6 |
 | MD-56 | 첫 구간은 탐색과 같은 wake 에서 풀어 plan 과 쌍으로 (구간을 먼저, 같은 `publish_ns`) 게시한다. 구간이 게시 조건을 못 넘으면 plan 도 게시하지 않고 예산 키는 `budget.first_s` · `budget.replan_s` 다. RT 가 plan 을 따르는 동안 탐색이 낸 교체도 같은 방식의 쌍으로 게시한다. | `IB/src/controllers/catching/controller.cpp`, `lifecycle.cpp` (`budget.*`) / L3 §5.3, L7 §4.3a |
 | MD-58 | 재계획과 교체 쌍의 첫 구간의 $x_0$ 는 RT 가 보고한 구간 (node 0 에 닿은 대기 구간, 아니면 따르는 구간) 에서 평가하고 같은 포구 전 격자점은 새 예측으로 다시 푼다 (`replan.same_point`). 대기 슬롯의 교체는 node 0 시각이 같을 때다. | `IB/include/integrated_bringup/logging/catching_diag_log_pod.hpp` (`kReplaced`), `demo_catching_controller.hpp` (`segment_pending`), `RCI/segment_ring.hpp` (ring 의 8 개 · 따르는 plan 과 들고 있는 교체의 구간 · 보고된 둘을 지킨다) / L7 §4.3a, L3 §5.3 |
 | MD-59 | 폐기 — 측정 전용 키 `planner.segment.mpc.shadow` 는 지워졌다. | — / — |

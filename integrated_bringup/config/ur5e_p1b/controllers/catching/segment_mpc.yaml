@@ -44,7 +44,11 @@ demo_catching_controller:
           approach:
             # The pre-catch part (MD-54): up to n_pre_max intervals of dt_pre_s
             # before t_c. 0 = no MPC segment planner — mode: mpc then parks (MD-70).
-            n_pre_max: 6
+            # 7 on THIS arm (#834): over the sim chunks the first wakes the 6 x 0.1
+            # grid capped published 68 % instead of 44 %, and 510 of 750 throws
+            # instead of 439. 8 publishes more but its 14-node advance replan
+            # passes the 0.025 s budget (p99 25.5 – 28 ms); 7 keeps it at 22.9 ms.
+            n_pre_max: 7
             dt_pre_s: 0.1
             # The first solve assumes the arm rests at its wait pose; above this
             # max |q_dot_cmd| [rad/s] it withholds. Provisional.
