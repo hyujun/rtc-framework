@@ -649,6 +649,79 @@ TEST(ApproachPlanner, EachGateWithholdsOnItsOwn) {
   EXPECT_EQ(first(p, 0).outcome, SegmentOutcome::kCatchError);
 }
 
+// #716: the record carries where the core spent each solve — its pre-solve,
+// linearising, condensing and QP times, on the core's own clock. A record no
+// solve filled has them NaN; a catch solve and a stop solve fill all four. On
+// a real clock the four fit inside the planner's solve_ns, which brackets the
+// core's Solve.
+std::int64_t SteadyFromT0() noexcept {
+  // The steady clock, shifted so that its first read is kT0: the fixture's
+  // instants keep their meaning and a solve's time is real.
+  static const auto start = std::chrono::steady_clock::now();
+  return kT0 + std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now() - start)
+                   .count();
+}
+
+TEST(ApproachPlanner, TheRecordCarriesTheCoresSplitOfEachSolve) {
+  const auto split_of = [](const SegmentRecord& rec) {
+    return std::array<double, 4>{rec.mpc_presolve_us, rec.mpc_linearize_us, rec.mpc_condense_us,
+                                 rec.mpc_qp_us};
+  };
+  const auto expect_filled = [&](const SegmentRecord& rec, const char* what) {
+    for (const double us : split_of(rec)) {
+      EXPECT_TRUE(std::isfinite(us)) << what;
+      EXPECT_GE(us, 0.0) << what;
+    }
+    // A solve without the pre-solve spends nothing there; every solve
+    // linearises (the catch terms, or the torque rows), condenses and solves.
+    EXPECT_EQ(rec.mpc_presolve_us > 0.0, rec.presolved) << what;
+    EXPECT_GT(rec.mpc_linearize_us, 0.0) << what;
+    EXPECT_GT(rec.mpc_condense_us, 0.0) << what;
+    EXPECT_GT(rec.mpc_qp_us, 0.0) << what;
+  };
+  for (const double us : split_of(SegmentRecord{})) {
+    EXPECT_TRUE(std::isnan(us));
+  }
+
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    SCOPED_TRACE(std::to_string(arm.model->nv) + " joints");
+    Rig r(arm);
+    const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+    ASSERT_NE(s.seq, 0U) << Why(r.rec);
+    expect_filled(r.rec, "first solve");
+    // The stop core at the catch node, on the segment the RT follows.
+    const std::int64_t now = s.t_c - kTArm - kReplan - 2 * kH - 1 * kMs;
+    SetClock(now);
+    ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
+                                 BallFor(s.c), r.out, r.rec))
+        << Why(r.rec);
+    ASSERT_EQ(r.rec.kind, SegmentKind::kStop);
+    expect_filled(r.rec, "stop solve");
+    SetClock(kT0);
+
+    // A real clock: whatever the outcome (a slow build may overrun the
+    // budget), the split was measured inside the planner's interval.
+    MpcSegmentPlanner real;
+    std::string err;
+    ASSERT_TRUE(real.Configure(MpcSegmentPlannerModelOf(arm), Consts(), ApproachParams(),
+                               &SteadyFromT0, &err))
+        << err;
+    const Catch c = CatchAt(arm, Offset(arm, 0.04));
+    const std::int64_t t0 = SteadyFromT0();
+    SegmentSnapshot out{};
+    SegmentRecord rec{};
+    static_cast<void>(real.PlanFirst(RestingRt(arm, arm.q_nominal, t0 - kH),
+                                     PlanFor(arm, c, t0 + kTArm + 800 * kMs), BallFor(c), out,
+                                     rec));
+    ASSERT_GT(rec.solve_ns, 0) << Why(rec);
+    expect_filled(rec, "first solve, real clock");
+    const std::array<double, 4> split = split_of(rec);
+    EXPECT_LE(split[0] + split[1] + split[2] + split[3],
+              static_cast<double>(rec.solve_ns) * 1e-3 + 1e-3);
+  }
+}
+
 // MPC MD-91: `catch.rho_v` / `catch.v_rel_allow`, from the YAML to the cores.
 // The slack row sits at the catch node, so the catch cores get it — one more
 // variable and seven more rows each — and the stop cores stay as they were.

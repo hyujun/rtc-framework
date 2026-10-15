@@ -602,6 +602,10 @@ SegmentOutcome MpcSegmentPlanner::Judge(const MpcSegmentCoreResult& r, bool ok, 
   rec.iterations = r.iterations + r.presolve_iterations;
   rec.qp_status = r.qp_status;
   rec.solver_retried = r.cold_retried;
+  rec.mpc_presolve_us = r.presolve_us;
+  rec.mpc_linearize_us = r.linearize_us;
+  rec.mpc_condense_us = r.condense_us;
+  rec.mpc_qp_us = r.solve_us;
   if (!ok) {
     return SegmentOutcome::kSolveFailed;
   }

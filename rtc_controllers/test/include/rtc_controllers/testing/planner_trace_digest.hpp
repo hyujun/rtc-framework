@@ -72,7 +72,8 @@ class ValueDigest {
 // constants were recorded: SearchStats::nlp (the NLP search's block, E1-F14),
 // SegmentRecord::docking (the mpc_docking planner's block, E1-F18),
 // SegmentRecord's stop_line_* / stop_dev_* / stop_along_end (the stop against
-// the ball's line, #713), and
+// the ball's line, #713), its mpc_*_us (the mpc core's split of a solve on a
+// real clock, #716), and
 // PlannerCycleRecord's `replacement` and `replace_step`. A digest is a pin on
 // the behaviour of the searches and planners it was recorded from, and a
 // block those leave at its default would move every recorded constant without

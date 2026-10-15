@@ -309,6 +309,17 @@ struct SegmentRecord {
   /// The last node's catch frame along the line, from the line's point [m]
   /// (signed: positive is the line's direction).
   double stop_along_end{std::numeric_limits<double>::quiet_NaN()};
+  /// Where the mpc planner's core spent the solve, on the core's own clock
+  /// [µs]: the kinematic pre-solve (0 when it did not run), linearising,
+  /// condensing, and the QP solver (both runs when the core re-ran a failed
+  /// warm QP cold). A stop solve re-solved without its reference (`cold_retry`)
+  /// has the second solve's only. Together at most `solve_ns`, which adds the
+  /// planner's own work around the core. NaN for every other planner and for a
+  /// solve withheld before the core ran. Not fields of the trace digest.
+  double mpc_presolve_us{std::numeric_limits<double>::quiet_NaN()};
+  double mpc_linearize_us{std::numeric_limits<double>::quiet_NaN()};
+  double mpc_condense_us{std::numeric_limits<double>::quiet_NaN()};
+  double mpc_qp_us{std::numeric_limits<double>::quiet_NaN()};
   /// The mpc_docking planner's own account of the solve (E1-F18). Not a field
   /// of the trace digest.
   DockingSolveStats docking{};

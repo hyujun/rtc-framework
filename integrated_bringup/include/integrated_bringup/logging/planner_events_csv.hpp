@@ -101,6 +101,16 @@
 // solve withheld AFTER it ran (budget, slack, …) is measured like a published
 // one.
 //
+// The `segment_mpc_*_us` columns (#716, after the stop columns) are where the
+// mpc planner's core spent the wake's own solve, on the core's clock [µs]: the
+// kinematic pre-solve (0 when it did not run), linearising, condensing, and
+// the QP solver (both runs when the core re-ran a failed warm QP cold).
+// Together at most `segment_solve_us`, which adds the planner's own work. A
+// stop solve re-solved without its reference (`segment_cold_retry` 1) has the
+// second solve's only. NaN for every other planner (the mpc_docking core's
+// split is `segment_start_us` … `segment_merit_us`) and for a solve withheld
+// before the core ran.
+//
 // nlp_candidates.csv (same directory, #798 — E1-F19 part 2's instrument):
 // one row per candidate the NLP search SOLVED on a wake, drained from the same
 // record by the same timer. `wake_ns` and `snapshot_sequence` join it to the
@@ -184,7 +194,9 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "replacement_solve_us,cov_n,chosen_sigma_c,"
         "segment_stop_line_p_x,segment_stop_line_p_y,segment_stop_line_p_z,"
         "segment_stop_line_d_x,segment_stop_line_d_y,segment_stop_line_d_z,"
-        "segment_stop_dev_max,segment_stop_dev_end,segment_stop_along_end\n";
+        "segment_stop_dev_max,segment_stop_dev_end,segment_stop_along_end,"
+        "segment_mpc_presolve_us,segment_mpc_linearize_us,segment_mpc_condense_us,"
+        "segment_mpc_qp_us\n";
 }
 
 /// nlp_candidates.csv — one row per solved candidate of a wake (header note).
@@ -391,7 +403,10 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   for (const double v : d.stop_line_d) {
     os << ',' << v;
   }
-  os << ',' << d.stop_dev_max << ',' << d.stop_dev_end << ',' << d.stop_along_end << '\n';
+  os << ',' << d.stop_dev_max << ',' << d.stop_dev_end << ',' << d.stop_along_end;
+  // ── Where the mpc core spent the wake's own solve ──
+  os << ',' << d.mpc_presolve_us << ',' << d.mpc_linearize_us << ',' << d.mpc_condense_us << ','
+     << d.mpc_qp_us << '\n';
 }
 
 }  // namespace integrated_bringup

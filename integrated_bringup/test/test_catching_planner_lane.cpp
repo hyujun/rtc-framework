@@ -720,6 +720,48 @@ TEST(PlannerEventsCsv, TheStopColumnsCarryTheSegmentRecordByName) {
                                                     "0.125", "0.0625", "-0.25"}));
 }
 
+// #716: where the mpc core spent the wake's own solve — four columns after the
+// stop columns, read back by NAME. A record nothing filled writes them as NaN,
+// and the withheld replacement's are not written.
+TEST(PlannerEventsCsv, TheMpcSplitColumnsCarryTheSegmentRecordByName) {
+  const auto split = [](std::string s) {
+    while (!s.empty() && s.back() == '\n') {
+      s.pop_back();
+    }
+    std::vector<std::string> out;
+    std::istringstream in(s);
+    for (std::string cell; std::getline(in, cell, ',');) {
+      out.push_back(cell);
+    }
+    return out;
+  };
+  std::ostringstream header;
+  integrated_bringup::WritePlannerEventsHeader(header);
+  const std::vector<std::string> names = split(header.str());
+  const std::vector<std::string> mpc = {"segment_mpc_presolve_us", "segment_mpc_linearize_us",
+                                        "segment_mpc_condense_us", "segment_mpc_qp_us"};
+  ASSERT_GE(names.size(), mpc.size() + 1);
+  EXPECT_EQ(std::vector<std::string>(names.end() - 4, names.end()), mpc);
+  EXPECT_EQ(names[names.size() - 5], "segment_stop_along_end");
+  const auto tail_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
+    std::ostringstream row;
+    integrated_bringup::WritePlannerEventsRow(row, rec);
+    const std::vector<std::string> cells = split(row.str());
+    EXPECT_EQ(cells.size(), names.size());
+    return cells.size() < 4 ? cells : std::vector<std::string>(cells.end() - 4, cells.end());
+  };
+
+  rtc::catching::PlannerCycleRecord rec{};
+  EXPECT_EQ(tail_of(rec), std::vector<std::string>(4, "nan"));
+  rec.replacement.mpc_qp_us = 9.0;
+  EXPECT_EQ(tail_of(rec), std::vector<std::string>(4, "nan"));
+  rec.segment.mpc_presolve_us = 0.0;
+  rec.segment.mpc_linearize_us = 125.5;
+  rec.segment.mpc_condense_us = 2048.25;
+  rec.segment.mpc_qp_us = 21000.5;
+  EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"0", "125.5", "2048.25", "21000.5"}));
+}
+
 // ── The lane ────────────────────────────────────────────────────────────────
 
 class CatchingPlanLaneTest : public ::testing::Test {
