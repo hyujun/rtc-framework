@@ -1052,6 +1052,10 @@ void MpcSegmentCore::TrajectoryFromZ() noexcept {
 
 bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& out) noexcept {
   using Clock = std::chrono::steady_clock;
+  // PathActive reports this solve: one that stops before reading its inputs
+  // carries no path node, not the previous solve's.
+  path_active_.fill(false);
+  path_solve_on_ = false;
   out.valid = false;
   out.presolved = false;
   out.presolve_us = 0.0;

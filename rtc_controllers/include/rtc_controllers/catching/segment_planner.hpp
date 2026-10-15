@@ -314,8 +314,9 @@ struct SegmentRecord {
   /// condensing, and the QP solver (both runs when the core re-ran a failed
   /// warm QP cold). A stop solve re-solved without its reference (`cold_retry`)
   /// has the second solve's only. Together at most `solve_ns`, which adds the
-  /// planner's own work around the core. NaN for every other planner and for a
-  /// solve withheld before the core ran. Not fields of the trace digest.
+  /// planner's own work around the core, when the planner runs on a real clock
+  /// (the offline batch's wake clock stands still in a wake: `solve_ns` 0). NaN for every other
+  /// planner and for a solve withheld before the core ran. Not fields of the trace digest.
   double mpc_presolve_us{std::numeric_limits<double>::quiet_NaN()};
   double mpc_linearize_us{std::numeric_limits<double>::quiet_NaN()};
   double mpc_condense_us{std::numeric_limits<double>::quiet_NaN()};

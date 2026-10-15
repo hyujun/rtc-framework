@@ -105,7 +105,8 @@
 // mpc planner's core spent the wake's own solve, on the core's clock [µs]: the
 // kinematic pre-solve (0 when it did not run), linearising, condensing, and
 // the QP solver (both runs when the core re-ran a failed warm QP cold).
-// Together at most `segment_solve_us`, which adds the planner's own work. A
+// Together at most `segment_solve_us`, which adds the planner's own work (the
+// controller's planner clock is a real one; the offline batch's is not). A
 // stop solve re-solved without its reference (`segment_cold_retry` 1) has the
 // second solve's only. NaN for every other planner (the mpc_docking core's
 // split is `segment_start_us` … `segment_merit_us`) and for a solve withheld

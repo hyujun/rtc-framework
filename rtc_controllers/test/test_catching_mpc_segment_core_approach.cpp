@@ -1939,6 +1939,14 @@ TEST(MpcSegmentCorePath, ChecksOnlyTheNodesItReads) {
   EXPECT_FALSE(mpc.Solve(bad, res));
   EXPECT_EQ(res.reason, MpcSegmentCoreReason::kDirectionNotUnit);
   EXPECT_TRUE(mpc.Solve(in, res)) << "the core recovers on the next good input";
+  EXPECT_TRUE(mpc.PathActive(1));
+  bad = in;  // a failed solve reports no node, not the previous solve's
+  bad.q0[0] = kNan;
+  EXPECT_FALSE(mpc.Solve(bad, res));
+  EXPECT_EQ(res.reason, MpcSegmentCoreReason::kNonFinite);
+  for (int k = 0; k <= rtc::catching::kMaxMpcNodes; ++k) {
+    EXPECT_FALSE(mpc.PathActive(k)) << "node " << k;
+  }
 }
 
 TEST(MpcSegmentCorePath, StructuredAssemblyMatchesDense) {

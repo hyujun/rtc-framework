@@ -65,6 +65,7 @@
 
 #include <cstdint>
 #include <iosfwd>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -208,8 +209,8 @@ struct SegmentBatchBinding {
   double eta_v{0.0};             ///< the velocity row's margin
   /// The hand's close lead from t_c and T_close,tot = T_close_e2e + h/2 [s]
   /// (MpcSegmentPlannerConstants; NaN = TBD).
-  double t_close_lead{0.0};
-  double t_close_total{0.0};
+  double t_close_lead{std::numeric_limits<double>::quiet_NaN()};
+  double t_close_total{std::numeric_limits<double>::quiet_NaN()};
   // ── mpc_docking ──
   MpcDockingSegmentCoreLimits limits{};  ///< `armature` is zero
   std::vector<double> qd_rating;         ///< device ratings [rad/s]

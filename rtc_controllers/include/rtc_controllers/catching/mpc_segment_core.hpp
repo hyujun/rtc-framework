@@ -354,7 +354,8 @@ class MpcSegmentCore {
 
   [[nodiscard]] int Nv() const noexcept { return n_; }
 
-  /// The path term sits on node k on this solve (the last one).
+  /// The path term sits on node k on this solve (the last one, a failed one
+  /// included: a solve that stopped before reading its inputs has none).
   [[nodiscard]] bool PathActive(int k) const noexcept {
     return k >= 0 && k <= kMaxMpcNodes && path_active_[static_cast<std::size_t>(k)];
   }
