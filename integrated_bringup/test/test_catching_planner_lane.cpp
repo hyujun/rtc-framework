@@ -263,10 +263,17 @@ TEST(CatchingPlannerThread, TheTimeoutWakesThePlannerWithoutASignal) {
   CatchingPlannerThread thread(rig->cycle, rig->fd, /*wake_timeout_s=*/0.01, rig->timing,
                                rig->events);
   thread.StartWith(PlainThread());
-  ASSERT_TRUE(WaitUntil([&] { return thread.TimeoutWakeCount() >= 3; }));
+  // Wait on the published count, not the timeout count: a wake is counted in
+  // WaitForNextTick, before its OnTick publishes, so the timeout count can
+  // run one tick ahead of the published one.
+  ASSERT_TRUE(WaitUntil([&] { return thread.PublishedCount() >= 3; }));
   EXPECT_EQ(thread.SignalWakeCount(), 0U);
-  // A timeout wake re-plans against the current RT state: it publishes.
-  EXPECT_GE(thread.PublishedCount(), 3U);
+  // A timeout wake re-plans against the current RT state: it publishes. Every
+  // counted wake but the one still in flight has published. The published
+  // count is read after the timeout count, so the bound holds without a race.
+  const std::uint64_t timeouts = thread.TimeoutWakeCount();
+  EXPECT_GE(timeouts, 3U);
+  EXPECT_GE(thread.PublishedCount() + 1U, timeouts);
 }
 
 struct ResetDuringSearch {
