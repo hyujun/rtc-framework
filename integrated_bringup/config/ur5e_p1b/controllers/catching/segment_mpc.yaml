@@ -173,6 +173,11 @@ demo_catching_controller:
             # window and the distance are recorded for every solve
             # (planner_events.csv segment_path_*), at 0 too. Above 0 the
             # hand's timing must be known (configure refuses a TBD one).
+            # 0 is measured (#716, sim): 10 / 100 / 1000 cut the largest
+            # distance over the actual closing window (median 233 -> 127 / 48
+            # / 33 mm) but not the catches. The distance at the window's end
+            # is ~10 mm at 0 already, and 100 and above lost published plans
+            # and catches.
             w_path: 0.0
           linearization:
             # Trust-region half-width around the reference [rad], finite > 0.
