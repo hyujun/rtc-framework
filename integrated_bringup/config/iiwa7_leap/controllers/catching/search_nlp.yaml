@@ -62,7 +62,9 @@ demo_catching_controller:
           # solves of 0.018 s and 19 of 54 with one of 0.024 s (a unit each;
           # 31 of 80 over the two confirmation units). solve_s has the ceiling
           # the other arm's file describes: prediction.dt_expected - the
-          # segment planner's budget.replan_s = 0.025 s.
+          # segment planner's budget.replan_s = 0.025 s under mpc_docking, 0.020
+          # s under planner.segment.mode mpc (#716) — below this solve_s, so
+          # that pairing runs no solve while a plan is followed.
           budget:
             budget_s: 0.040
             solve_s: 0.024

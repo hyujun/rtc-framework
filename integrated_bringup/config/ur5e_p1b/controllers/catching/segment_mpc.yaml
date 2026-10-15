@@ -47,7 +47,8 @@ demo_catching_controller:
             # 7 on THIS arm (#834): over the sim chunks the first wakes the 6 x 0.1
             # grid capped published 68 % instead of 44 %, and 510 of 750 throws
             # instead of 439. 8 publishes more but its 14-node advance replan
-            # passes the 0.025 s budget (p99 25.5 – 28 ms); 7 keeps it at 22.9 ms.
+            # passed the then 0.025 s budget (p99 25.5 – 28 ms); 7 kept it at
+            # 22.9 ms. Raising the cap again is outside #716 (budget.* below).
             n_pre_max: 7
             dt_pre_s: 0.1
             # The first solve assumes the arm rests at its wait pose; above this
@@ -56,9 +57,20 @@ demo_catching_controller:
           budget:
             # A solve's ceiling, which is also the lead it is planned with [s]:
             # the first segment (same wake as the search) and every later one
-            # (MD-56). Confirmed from the sim wall-clock run (2026-10-02).
-            first_s: 0.035
-            replan_s: 0.025
+            # (MD-56). 0.040 / 0.030 since #716 (the code defaults keep 0.035 /
+            # 0.025). The solve time is set by the cost of one ProxQP
+            # iteration, which doubles from 8 to 14 nodes, and the old replan
+            # budget sat within a few ms of the shipped grids' replan p99.
+            # On this arm, over the sim chunks 000 - 002 (advance p99 22.4 -
+            # 22.9 ms before): published 510 -> 496 (not inferior), every
+            # first-solve p99 <= 28.5 ms and replan p99 <= 22.8 ms, no solve
+            # withheld for its budget (0.26 % at most before).
+            # The budget is also the lead: a first wake not at the grid's cap
+            # lost a node as often as it gained one. Keep replan_s + 3 ticks
+            # under the RT's segment admission age (50 ms). Measured on the sim
+            # host; the hardware PC measures again (#613).
+            first_s: 0.040
+            replan_s: 0.030
           replan:
             # Post-catch replans up to k_max grid points past t_c, stop end
             # fixed (MD-31, MD-61). same_point: re-solve a pre-catch grid point
