@@ -1135,3 +1135,25 @@ def test_the_mirror_value_is_nan_when_absent_or_tbd():
     assert ct.mirror_value(meta, "hand.T_close_e2e") == 0.278
     assert all(math.isnan(ct.mirror_value(meta, k)) for k in ("x", "y", "z"))
     assert math.isnan(ct.mirror_value({}, "hand.T_close_e2e"))
+
+
+def test_the_closure_time_is_the_mirrors_and_the_profile_only_without_one():
+    """A runner before #716 did not mirror ``hand.T_close_e2e``: the profile fills in, and
+    the summary says which. A mirror that has the name decides, TBD included."""
+    profile = SimpleNamespace(hand_yaml={"T_close_e2e": 0.25})
+    mirrored = {"controller_mirror": {"hand.T_close_e2e": 0.278}}
+    assert ct.close_window_t_close_e2e(mirrored, profile) == (
+        0.278,
+        "runner mirror hand.T_close_e2e",
+    )
+    value, source = ct.close_window_t_close_e2e(
+        {"controller_mirror": {"control.dt": 0.002}}, profile
+    )
+    assert value == 0.25 and source.startswith("profile")
+    tbd = {"controller_mirror": {"hand.T_close_e2e": "TBD"}}
+    value, source = ct.close_window_t_close_e2e(tbd, profile)
+    assert math.isnan(value) and source.startswith("runner mirror")
+    value, source = ct.close_window_t_close_e2e(
+        {}, SimpleNamespace(hand_yaml={"T_close_e2e": "TBD"})
+    )
+    assert math.isnan(value) and source.startswith("none")

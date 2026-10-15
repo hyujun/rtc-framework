@@ -2904,6 +2904,28 @@ def mirror_value(meta: Mapping, key: str) -> float:
         return math.nan
 
 
+def close_window_t_close_e2e(meta: Mapping, profile: CatchingProfile) -> tuple[float, str]:
+    """``T_close_e2e`` [s] for :func:`close_window_columns` and where it came from.
+
+    The runner's mirror ``hand.T_close_e2e`` is what the controller ran, so a
+    mirror that has the name decides — a TBD there stays NaN. A session whose
+    runner did not mirror the name (before #716) takes the profile's
+    ``catching.robot.hand.T_close_e2e``: the closure time is the hand's
+    measured constant, read from the same profile the rest of the analysis
+    uses. NaN when neither gives a number.
+    """
+    mirror = meta.get("controller_mirror")
+    if isinstance(mirror, Mapping) and "hand.T_close_e2e" in mirror:
+        return mirror_value(meta, "hand.T_close_e2e"), "runner mirror hand.T_close_e2e"
+    try:
+        value = float(profile.hand_yaml.get("T_close_e2e"))
+    except (TypeError, ValueError):
+        value = math.nan
+    if math.isfinite(value):
+        return value, "profile robot.hand.T_close_e2e (no runner mirror)"
+    return math.nan, "none (no runner mirror, profile TBD or absent)"
+
+
 def _polyline_distance(points: np.ndarray, poly: np.ndarray) -> np.ndarray:
     """Distance from each of ``points`` (n, 3) to the polyline ``poly`` (m, 3), m >= 2."""
     a, ab = poly[:-1], np.diff(poly, axis=0)
@@ -3399,7 +3421,7 @@ def analyse_session(
     if hold_radius is None:
         hold_radius = profile.ball_diameter_m
     docking = hand_docking(profile)
-    t_close_e2e = mirror_value(doc["meta"], "hand.T_close_e2e")
+    t_close_e2e, t_close_e2e_source = close_window_t_close_e2e(doc["meta"], profile)
 
     rows, hand_window_rows = [], []
     lag_t, lag_cmd, lag_meas, lag_moving, lag_cluster = [], [], [], [], []
@@ -3674,6 +3696,8 @@ def analyse_session(
         summary["c2"] = cv.c2_summary(valid, settings.n_boot, settings.seed)
     summary["t_lead_s_range"] = _range(rows, "t_lead_s")
     summary["t_lead_source"] = lead_source
+    summary["t_close_e2e_s"] = t_close_e2e
+    summary["t_close_e2e_source"] = t_close_e2e_source
     summary["planner_events"] = _planner_events(ctl)
     return SessionResult(rows, lag, summary, hand_window_rows)
 

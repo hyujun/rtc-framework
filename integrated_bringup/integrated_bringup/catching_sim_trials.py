@@ -150,6 +150,10 @@ MIRROR_COMMON = (
     # controller was told to expect.
     "prediction.dt_expected",
     "io.n_min",
+    # The closure time the closing-window columns span (#716,
+    # catching_trials.close_window_columns): a hand value, declared under
+    # every selection like control.dt.
+    "hand.T_close_e2e",
 )
 # The arm-budget layers (S8-G, #537): the reference's ω / a_max / v_max, the
 # grid search's speed margin, the D-16 box its reach time judges with and its
