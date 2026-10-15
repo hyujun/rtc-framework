@@ -136,6 +136,7 @@ MODE_HOLD = 7
 MODE_RETREAT = 8
 MODE_ABORT_SAFE = 9
 HAND_PHASE_PRESHAPE = 1
+HAND_PHASE_CLOSE = 2
 HAND_PHASE_RELEASE = 4
 MOVING_MODES = (MODE_APPROACH, MODE_COMMITTED, MODE_CLOSING, MODE_DECEL)
 
@@ -2887,6 +2888,95 @@ def stop_line_columns(
     return rec
 
 
+CLOSE_WINDOW_KEYS = ("win_t_cmd_ms", "win_exec_dev_max_mm", "win_exec_dev_end_mm")
+# Free-flight path sampling and the margin either side of the window it covers.
+CLOSE_WINDOW_PATH_STEP_S = 0.001
+CLOSE_WINDOW_PATH_MARGIN_S = 0.3
+
+
+def mirror_value(meta: Mapping, key: str) -> float:
+    """A profile parameter the runner mirrored (``controller_mirror``); NaN when absent or TBD."""
+    mirror = meta.get("controller_mirror")
+    value = mirror.get(key) if isinstance(mirror, Mapping) else None
+    try:
+        return math.nan if value is None else float(value)
+    except (TypeError, ValueError):
+        return math.nan
+
+
+def _polyline_distance(points: np.ndarray, poly: np.ndarray) -> np.ndarray:
+    """Distance from each of ``points`` (n, 3) to the polyline ``poly`` (m, 3), m >= 2."""
+    a, ab = poly[:-1], np.diff(poly, axis=0)
+    len2 = np.einsum("ij,ij->i", ab, ab)
+    rel = points[:, None, :] - a[None, :, :]
+    u = np.einsum("nmj,mj->nm", rel, ab) / np.where(len2 > 0.0, len2, 1.0)
+    u = np.clip(u, 0.0, 1.0)
+    return np.linalg.norm(rel - u[:, :, None] * ab[None, :, :], axis=2).min(axis=1)
+
+
+def close_window_columns(
+    ctx: TrialContext,
+    truth: Truth | None,
+    t_c: float,
+    t_close_e2e: float,
+    t_impact: float = math.inf,
+) -> dict:
+    """How far the measured catch frame is from the ball's path while the hand closes (#716).
+
+    The close is commanded at ``t_c - T_close_lead`` — but the hand sequencer
+    may retime it after the commit, so the instant is READ from the log: the
+    first tick of the diag's ``hand_phase`` lane that enters ``HAND_PHASE_CLOSE``
+    (the rising edge nearest ``t_c``; a lane already closing on its first row has
+    no edge to read). The closure then takes ``T_close_e2e`` (the mirrored
+    ``hand.T_close_e2e``, passed in).
+
+    - ``win_t_cmd_ms`` — that command tick − ``t_c`` [ms];
+    - ``win_exec_dev_max_mm`` / ``win_exec_dev_end_mm`` — over the ticks in
+      ``[t_cmd, t_cmd + T_close_e2e]``, the largest distance of the measured
+      catch frame from the ball's free-flight PATH (:meth:`Truth.free_flight`),
+      and the one at the last tick. The path is the curve of free-flight
+      positions, sampled every :data:`CLOSE_WINDOW_PATH_STEP_S` over the window
+      +- :data:`CLOSE_WINDOW_PATH_MARGIN_S`; the distance is to that polyline
+      (point-to-segment), so it does not depend on WHEN the ball is where —
+      the along-path error is not penalised, only the departure from the curve.
+
+    All NaN without a truth record, a commit, a close command in the lane, a
+    finite ``T_close_e2e``, a tick in the window, or when the window ends after
+    the recording. Unlike :data:`STOP_TC_KEYS` these are anchored at the
+    COMMAND instant read off the lane, not at the ``t_c`` column, so a row whose
+    ``t_c`` column is off the catch instant (``tc_axis`` ``shifted``, #602) moves
+    only ``win_t_cmd_ms`` (by the shift) and not the distances: they are not
+    excluded from the medians.
+    """
+    rec = dict.fromkeys(CLOSE_WINDOW_KEYS, math.nan)
+    if truth is None or not (math.isfinite(t_c) and math.isfinite(t_close_e2e)):
+        return rec
+    closing = ctx.hand_phase == HAND_PHASE_CLOSE
+    edges = np.nonzero(closing[1:] & ~closing[:-1])[0] + 1
+    if not edges.size:
+        return rec
+    k_cmd = int(edges[np.argmin(np.abs(ctx.t[edges] - t_c))])
+    t_cmd = float(ctx.t[k_cmd])
+    rec["win_t_cmd_ms"] = (t_cmd - t_c) * 1e3
+    t_stop = t_cmd + t_close_e2e
+    if not t_stop <= ctx.t[-1]:
+        return rec
+    ticks = np.nonzero((ctx.t >= t_cmd) & (ctx.t <= t_stop))[0]
+    if not ticks.size:
+        return rec
+    m = CLOSE_WINDOW_PATH_MARGIN_S
+    times = np.arange(t_cmd - m, t_stop + m, CLOSE_WINDOW_PATH_STEP_S)
+    path_w, _, _, _ = truth.free_flight(times, t_impact)
+    path = ctx.fk.to_model(path_w)
+    path = path[np.all(np.isfinite(path), axis=1)]
+    if len(path) < 2:
+        return rec
+    dev = _polyline_distance(ctx.fk_meas(ticks), path)
+    rec["win_exec_dev_max_mm"] = float(dev.max()) * 1e3
+    rec["win_exec_dev_end_mm"] = float(dev[-1]) * 1e3
+    return rec
+
+
 def _runs(mask: np.ndarray) -> tuple[int, int]:
     """``(count, longest)`` of the runs of consecutive true rows."""
     m = np.asarray(mask, dtype=bool)
@@ -3309,6 +3399,7 @@ def analyse_session(
     if hold_radius is None:
         hold_radius = profile.ball_diameter_m
     docking = hand_docking(profile)
+    t_close_e2e = mirror_value(doc["meta"], "hand.T_close_e2e")
 
     rows, hand_window_rows = [], []
     lag_t, lag_cmd, lag_meas, lag_moving, lag_cluster = [], [], [], [], []
@@ -3462,6 +3553,7 @@ def analyse_session(
                 )
         row.update(last_segment_columns(ctx, t_c_row, t_lead_row, wakes_t, segment_events))
         row.update(stop_line_columns(ctx, t_c_row, wakes_t, segment_events))
+        row.update(close_window_columns(ctx, truth, t_c_row, t_close_e2e, t_impact))
         row["ref_saturated_max_streak"] = max_streak(ctx.ref_valid & ctx.ref_saturated)
 
         def fk_world(ticks, ctx=ctx):
@@ -4960,6 +5052,7 @@ def _summarise(
                 "segment_wait_node0_ms",
                 "segment_rho_replan_max",
                 *STOP_LINE_KEYS[1:],
+                *CLOSE_WINDOW_KEYS,
             )
         },
         # Which law's reference the t_c decomposition read, per valid trial

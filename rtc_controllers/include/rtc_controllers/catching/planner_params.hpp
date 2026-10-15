@@ -69,7 +69,7 @@ inline constexpr std::size_t kPlannerMaxWindowGrid = 8;
 /// count is a cost on the cycle budget, not only a resolution (default 9).
 inline constexpr int kSwitchSamplesMax = 64;
 
-/// Upper bound of `planner.segment.mpc.cost.w_perp` [1/m²]: the largest
+/// Upper bound of `planner.segment.mpc.cost.w_perp` and `cost.w_path` [1/m²]: the largest
 /// stop-path weight the cores are tested to solve with (a stop core alone in
 /// test_catching_mpc_segment_core.cpp, the planner's catch and stop cores on both
 /// test arms in test_catching_approach_planner.cpp). The weight raises the
@@ -204,6 +204,14 @@ struct MpcSegmentPlannerParams {
   /// cannot be built is withheld (MpcSegmentPlanner, mpc_segment_planner.hpp), never run
   /// on a default line.
   double w_perp{0.0};
+  /// `cost.w_path` [1/m²], in [0, kMpcSegmentStopPathWeightMax] — the
+  /// closing-window path term (#716): on the pre-catch nodes inside the hand's
+  /// closing window [t_cmd − h/2, t_cmd + T_close,tot], the catch frame's
+  /// distance from the ball's predicted path near where the reference puts the
+  /// hand there is penalised (MpcSegmentPlanner, mpc_segment_planner.hpp).
+  /// 0 (the default) = off; above 0 the planner needs the hand's closing
+  /// timing and refuses to configure without it.
+  double w_path{0.0};
   /// `catch.axis_theta_max` [rad], in (0, π) — the largest axis error of the
   /// reference the approach-axis term is linearised at.
   double axis_theta_max{1.5707963267948966};

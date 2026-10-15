@@ -527,6 +527,13 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
                    kMpcSegmentStopPathWeightMax, false,
                    "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
                    "tested with)");
+  // The closing-window path weight (#716; 0 = off): the same form as w_perp
+  // on other nodes, so the same tested bound.
+  d.w_path =
+      ReadInterval(cost, "w_path", "segment.mpc.cost.w_path", d.w_path, 0.0, false,
+                   kMpcSegmentStopPathWeightMax, false,
+                   "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
+                   "tested with)");
   d.axis_theta_max =
       ReadInterval(dcatch, "axis_theta_max", "segment.mpc.catch.axis_theta_max", d.axis_theta_max,
                    0.0, true, 3.14159265358979323846, true, "(0, pi)");

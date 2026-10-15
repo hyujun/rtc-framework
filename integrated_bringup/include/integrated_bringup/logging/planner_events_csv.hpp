@@ -111,6 +111,15 @@
 // split is `segment_start_us` … `segment_merit_us`) and for a solve withheld
 // before the core ran.
 //
+// The `segment_path_*` columns (#716, at the tail) are the mpc planner's
+// closing-window path, whatever `cost.w_path` is: `segment_path_window` the
+// catch core's pre-catch nodes inside the hand's closing window,
+// `segment_path_nodes` how many of them had a line from the prediction on this
+// solve (the term is off on the others), and `segment_path_dev_max` /
+// `segment_path_dev_mean` [m] the solution's catch frame (FK) against those
+// lines. 0 / NaN on a stop solve, another planner's row and a solve withheld
+// before the core ran; the distances NaN on a solve that reached no solution.
+//
 // nlp_candidates.csv (same directory, #798 — E1-F19 part 2's instrument):
 // one row per candidate the NLP search SOLVED on a wake, drained from the same
 // record by the same timer. `wake_ns` and `snapshot_sequence` join it to the
@@ -196,7 +205,8 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "segment_stop_line_d_x,segment_stop_line_d_y,segment_stop_line_d_z,"
         "segment_stop_dev_max,segment_stop_dev_end,segment_stop_along_end,"
         "segment_mpc_presolve_us,segment_mpc_linearize_us,segment_mpc_condense_us,"
-        "segment_mpc_qp_us\n";
+        "segment_mpc_qp_us,segment_path_window,segment_path_nodes,segment_path_dev_max,"
+        "segment_path_dev_mean\n";
 }
 
 /// nlp_candidates.csv — one row per solved candidate of a wake (header note).
@@ -406,7 +416,10 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   os << ',' << d.stop_dev_max << ',' << d.stop_dev_end << ',' << d.stop_along_end;
   // ── Where the mpc core spent the wake's own solve ──
   os << ',' << d.mpc_presolve_us << ',' << d.mpc_linearize_us << ',' << d.mpc_condense_us << ','
-     << d.mpc_qp_us << '\n';
+     << d.mpc_qp_us;
+  // ── The closing-window path of the wake's own solve ──
+  os << ',' << d.path_window << ',' << d.path_nodes << ',' << d.path_dev_max << ','
+     << d.path_dev_mean << '\n';
 }
 
 }  // namespace integrated_bringup

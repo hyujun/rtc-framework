@@ -768,6 +768,49 @@ TEST(PlannerEventsCsv, TheMpcSplitColumnsCarryTheSegmentRecordByName) {
   EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"0", "125.5", "2048.25", "21000.5"}));
 }
 
+// #716: the closing window's path — four columns at the tail, read back by
+// NAME. A record nothing filled writes the counts as 0 and the distances as
+// NaN, and the withheld replacement's are not written.
+TEST(PlannerEventsCsv, ThePathColumnsCarryTheSegmentRecordByName) {
+  const auto split = [](std::string s) {
+    while (!s.empty() && s.back() == '\n') {
+      s.pop_back();
+    }
+    std::vector<std::string> out;
+    std::istringstream in(s);
+    for (std::string cell; std::getline(in, cell, ',');) {
+      out.push_back(cell);
+    }
+    return out;
+  };
+  std::ostringstream header;
+  integrated_bringup::WritePlannerEventsHeader(header);
+  const std::vector<std::string> names = split(header.str());
+  const std::vector<std::string> path = {"segment_path_window", "segment_path_nodes",
+                                         "segment_path_dev_max", "segment_path_dev_mean"};
+  ASSERT_GE(names.size(), path.size() + 1);
+  EXPECT_EQ(std::vector<std::string>(names.end() - 4, names.end()), path);
+  EXPECT_EQ(names[names.size() - 5], "segment_mpc_qp_us");
+  const auto tail_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
+    std::ostringstream row;
+    integrated_bringup::WritePlannerEventsRow(row, rec);
+    const std::vector<std::string> cells = split(row.str());
+    EXPECT_EQ(cells.size(), names.size());
+    return cells.size() < 4 ? cells : std::vector<std::string>(cells.end() - 4, cells.end());
+  };
+
+  rtc::catching::PlannerCycleRecord rec{};
+  EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"0", "0", "nan", "nan"}));
+  rec.replacement.path_window = 9;
+  rec.replacement.path_dev_max = 9.0;
+  EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"0", "0", "nan", "nan"}));
+  rec.segment.path_window = 3;
+  rec.segment.path_nodes = 2;
+  rec.segment.path_dev_max = 0.0125;
+  rec.segment.path_dev_mean = 0.00625;
+  EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"3", "2", "0.0125", "0.00625"}));
+}
+
 // ── The lane ────────────────────────────────────────────────────────────────
 
 class CatchingPlanLaneTest : public ::testing::Test {

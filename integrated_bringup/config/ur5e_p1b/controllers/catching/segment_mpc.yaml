@@ -163,6 +163,17 @@ demo_catching_controller:
             # and the distance are recorded for every solve (planner_events.csv
             # segment_stop_*), at 0 too.
             w_perp: 100.0
+            # Closing-window path weight [1/m^2], in [0, 1e4] (#716): on the
+            # pre-catch nodes inside the hand's closing window [t_cmd - h/2,
+            # t_cmd + T_close_e2e + h/2], t_cmd = t_c - T_close_lead, the
+            # catch frame's distance from the ball's predicted path near where
+            # the reference puts the hand. On this profile's hand (lead 0.302
+            # s, closure 0.278 s) the window holds the pre-catch nodes t_c -
+            # 0.3, - 0.2, - 0.1 s (fewer when n_pre is below 4). 0 = off; the
+            # window and the distance are recorded for every solve
+            # (planner_events.csv segment_path_*), at 0 too. Above 0 the
+            # hand's timing must be known (configure refuses a TBD one).
+            w_path: 0.0
           linearization:
             # Trust-region half-width around the reference [rad], finite > 0.
             # m_q must stay below it.

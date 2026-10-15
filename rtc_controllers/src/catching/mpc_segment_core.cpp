@@ -200,6 +200,22 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   if (params.catch_terms && (n_pre < 1 || (params.rho_v > 0.0 && !(params.v_rel_allow > 0.0)))) {
     return MpcSegmentCoreReason::kParamsInvalid;
   }
+  // The path term's nodes: pre-catch nodes 1..n_pre − 1 only — node 0 is the
+  // fixed x_0 (no term there has a variable to act on), and from k_c on the
+  // stop path w_⊥ holds the hand on the catch line (header note).
+  if (!rtc::IsFiniteNonNegative(params.w_path)) {
+    return MpcSegmentCoreReason::kParamsInvalid;
+  }
+  bool any_path_node = false;
+  for (int k = 0; k <= kMaxMpcNodes; ++k) {
+    if (!params.path_nodes[static_cast<std::size_t>(k)]) {
+      continue;
+    }
+    if (k < 1 || k >= n_pre) {
+      return MpcSegmentCoreReason::kParamsInvalid;
+    }
+    any_path_node = true;
+  }
 
   // Limits (finite first — max/min below would launder a NaN, NUM-7).
   const auto sized = [nn](const Eigen::VectorXd& x) { return x.size() == nn && x.allFinite(); };
@@ -221,6 +237,9 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   n_blocks_ = params.n_blocks;
   frame_ = catch_frame;
   w_perp_on_ = params.w_perp > 0.0;
+  path_on_ = params.w_path > 0.0 && any_path_node;
+  path_active_.fill(false);
+  path_solve_on_ = false;
   torque_on_ = params.rho_tau > 0.0;
   catch_on_ = params.catch_terms;
   vel_on_ = catch_on_ && (params.w_v_par > 0.0 || params.w_v_perp > 0.0);
@@ -574,6 +593,22 @@ bool MpcSegmentCore::Linearize() noexcept {
       work_row_.noalias() += j6_.topRows(3) * work_n_;
       r_perp_.segment(3 * k, 3).noalias() = p_perp_ * work_row_;
     }
+    // The closing-window path, on the pre-catch nodes this solve switched on
+    // (never k ≥ k_c — Init — so the columns are not w_⊥'s): the same form
+    // against node k's own line.
+    if (path_active_[static_cast<std::size_t>(k)]) {
+      j6_.setZero();
+      pinocchio::computeFrameJacobian(model_, data_, qr_.col(k), frame_,
+                                      pinocchio::LOCAL_WORLD_ALIGNED, j6_);
+      const Eigen::Vector3d d = path_d_.col(k);
+      const Eigen::Matrix3d p_k = Eigen::Matrix3d::Identity() - d * d.transpose();  // fixed size
+      // L_k = P_k J_v,  r_k = P_k (p(q̄_k) + J_v (Φ_k x_0 − q̄_k)_q − p_k)
+      l_perp_.middleCols(nn * k, nn).noalias() = p_k * j6_.topRows(3);
+      work_n_ = qf_.col(k) - qr_.col(k);
+      work_row_ = data_.oMf[frame_].translation() - path_p_.col(k);
+      work_row_.noalias() += j6_.topRows(3) * work_n_;
+      r_perp_.segment(3 * k, 3).noalias() = p_k * work_row_;
+    }
   }
   return true;
 }
@@ -620,6 +655,26 @@ void MpcSegmentCore::AssemblePerp() noexcept {
   const Eigen::Index nn = n_;
   const Eigen::Matrix3d w = params_.w_perp * Eigen::Matrix3d::Identity();
   for (Eigen::Index k = std::max<Eigen::Index>(1, n_pre_); k <= n_nodes_; ++k) {
+    perp_l_ = l_perp_.middleCols(nn * k, nn);
+    const Eigen::Vector3d r = r_perp_.segment<3>(3 * k);
+    if (params_.reference_assembly) {
+      AccumulateNodeTermDense(k, perp_l_, nullptr, w, r);
+    } else {
+      AccumulateNodeTerm(k, perp_l_, nullptr, w, r);
+    }
+  }
+}
+
+void MpcSegmentCore::AssemblePath() noexcept {
+  // ½ w_path Σ_k ‖r_k + L_k (ĝ_{q,k}ᵀ ⊗ I) z‖² on this solve's window nodes
+  // (#716), through the routine w_⊥ and the catch terms use; L_k and r_k are
+  // node k's own line's (Linearize).
+  const Eigen::Index nn = n_;
+  const Eigen::Matrix3d w = params_.w_path * Eigen::Matrix3d::Identity();
+  for (Eigen::Index k = 1; k < n_pre_; ++k) {
+    if (!path_active_[static_cast<std::size_t>(k)]) {
+      continue;
+    }
     perp_l_ = l_perp_.middleCols(nn * k, nn);
     const Eigen::Vector3d r = r_perp_.segment<3>(3 * k);
     if (params_.reference_assembly) {
@@ -1053,6 +1108,22 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
     }
   }
 
+  // A node the input switches off is not read, so it is not checked either.
+  if (path_on_) {
+    for (Eigen::Index k = 1; k < n_pre_; ++k) {
+      const auto u = static_cast<std::size_t>(k);
+      if (!params_.path_nodes[u] || !in.path_on[u]) {
+        continue;
+      }
+      if (!in.path_p.col(k).allFinite() || !in.path_d.col(k).allFinite()) {
+        return fail(MpcSegmentCoreReason::kNonFinite);
+      }
+      if (!(std::abs(in.path_d.col(k).norm() - 1.0) <= kUnitTolerance)) {
+        return fail(MpcSegmentCoreReason::kDirectionNotUnit);
+      }
+    }
+  }
+
   if (!std::isfinite(in.w_delta_scale)) {
     return fail(MpcSegmentCoreReason::kNonFinite);
   }
@@ -1125,6 +1196,16 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
     p_c_ = in.p_c;
     p_perp_ = Eigen::Matrix3d::Identity() - in.d_hat * in.d_hat.transpose();  // fixed size
   }
+  path_solve_on_ = false;
+  for (Eigen::Index k = 0; k <= kMaxMpcNodes; ++k) {
+    const auto u = static_cast<std::size_t>(k);
+    path_active_[u] = path_on_ && params_.path_nodes[u] && in.path_on[u];
+    path_solve_on_ = path_solve_on_ || path_active_[u];
+  }
+  if (path_solve_on_) {
+    path_p_ = in.path_p;  // fixed size
+    path_d_ = in.path_d;
+  }
   w_delta_scale_ = in.w_delta_scale;
   if (catch_on_) {
     p_b_ = in.p_b;
@@ -1174,7 +1255,7 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
   // Linearise at x̄ (torque derivatives, and FK for w_⊥).
   {
     const auto t0 = Clock::now();
-    const bool ok = (torque_on_ || w_perp_on_) ? Linearize() : true;
+    const bool ok = (torque_on_ || w_perp_on_ || path_solve_on_) ? Linearize() : true;
     const MpcSegmentCoreReason catch_why =
         (ok && catch_on_) ? LinearizeCatch() : MpcSegmentCoreReason::kNone;
     out.linearize_us = MicrosSince(t0);
@@ -1208,7 +1289,7 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
           qp_main_.H = h_main_;
         }
       }
-      h_modified_ = w_perp_on_ || catch_on_ || scaled;
+      h_modified_ = w_perp_on_ || path_solve_on_ || catch_on_ || scaled;
       if (torque_on_) {
         AssembleTorqueRows();
       }
@@ -1219,6 +1300,9 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
     AssembleGradient(qp_main_, true);
     if (w_perp_on_) {
       AssemblePerp();
+    }
+    if (path_solve_on_) {
+      AssemblePath();
     }
     if (catch_on_) {
       AssembleCatch();

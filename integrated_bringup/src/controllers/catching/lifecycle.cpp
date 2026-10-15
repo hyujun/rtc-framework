@@ -458,6 +458,10 @@ void DemoCatchingController::DeclareProfileParameters() {
         "catch on, "
         "from the line through the ball's predicted catch position along its travel; 0 = off, at "
         "most 1e4");
+    declare("planner.segment.mpc.cost.w_path", mpc_segment.w_path,
+            "MPC segment planner closing-window path weight [1/m^2]: distance of the catch frame, "
+            "on the pre-catch nodes inside the hand's closing window, from the ball's predicted "
+            "path; 0 = off, at most 1e4");
     declare("planner.segment.mpc.catch.axis_theta_max", mpc_segment.axis_theta_max,
             "MPC segment planner largest axis error of the reference the approach-axis term "
             "linearises at "
@@ -2715,6 +2719,14 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(const PlannerArm& pm) {
   dc.control_dt = GetDefaultDt();
   // The ball's direction of travel is undefined below this floor.
   dc.v_eps = planner_params_.mpc_segment.v_eps;
+  // The closing window of `cost.w_path` (#716): the hand's lead and closure
+  // time, read from the profile here — the supervisor that otherwise resolves
+  // them is set up after the planner. NaN (TBD) leaves the window empty, and
+  // the planner refuses w_path > 0 then.
+  dc.t_close_lead = ResolvedCloseLead();
+  dc.t_close_total = params_.hand.T_close_e2e.tbd
+                         ? std::numeric_limits<double>::quiet_NaN()
+                         : params_.hand.T_close_e2e.value + 0.5 * GetDefaultDt();
   mpc_segment_planner_constants_ = dc;
   std::string error;
   auto planner = rtc::catching::MakeMpcSegmentPlanner(dm, dc, planner_params_.mpc_segment,

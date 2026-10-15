@@ -29,7 +29,9 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <random>
 #include <string>
@@ -1768,6 +1770,417 @@ TEST(MpcSegmentCoreApproach, CatchPathAllocatesNothingOutsideTheQpSolver) {
     EXPECT_EQ(new_gate.count() + malloc_gate.count(), 0U) << "CatchPositionWeight";
   }
   EXPECT_TRUE(built);
+}
+
+// ── 6b. The closing-window path term w_path (#716) ───────────────────────────
+
+void MarkPathNodes(MpcSegmentCoreParams& p, std::initializer_list<int> nodes) {
+  p.path_nodes.fill(false);
+  for (const int k : nodes) {
+    p.path_nodes[static_cast<std::size_t>(k)] = true;
+  }
+}
+
+// Node k's line: through the reference's catch frame at k moved by `offset`,
+// along `dir`; switched on.
+void SetPathLine(const ArmModel& arm, pinocchio::Data& data, int k, const Eigen::Vector3d& offset,
+                 const Eigen::Vector3d& dir, MpcSegmentCoreInput& in) {
+  const Eigen::VectorXd q = in.q_ref.col(k);
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(arm.model->nv);
+  in.path_on[static_cast<std::size_t>(k)] = true;
+  in.path_p.col(k) = CatchPoseAt(arm, data, q, zero).p + offset;
+  in.path_d.col(k) = dir.normalized();
+}
+
+double LineDistance(const Eigen::Vector3d& p, const Eigen::Vector3d& p_k,
+                    const Eigen::Vector3d& d) {
+  const Eigen::Vector3d r = p - p_k;
+  return (r - r.dot(d) * d).norm();
+}
+
+bool SameBits(const Eigen::MatrixXd& x, const Eigen::MatrixXd& y) {
+  return x.rows() == y.rows() && x.cols() == y.cols() &&
+         (x.size() == 0 || std::memcmp(x.data(), y.data(),
+                                       sizeof(double) * static_cast<std::size_t>(x.size())) == 0);
+}
+
+void ExpectSameQp(const rtc::tsid::QPData& a, const rtc::tsid::QPData& b, const char* what) {
+  EXPECT_TRUE(SameBits(a.H, b.H)) << what << ": H";
+  EXPECT_TRUE(SameBits(a.g, b.g)) << what << ": g";
+  EXPECT_TRUE(SameBits(a.A, b.A)) << what << ": A";
+  EXPECT_TRUE(SameBits(a.b, b.b)) << what << ": b";
+  EXPECT_TRUE(SameBits(a.C, b.C)) << what << ": C";
+  EXPECT_TRUE(SameBits(a.l, b.l)) << what << ": l";
+  EXPECT_TRUE(SameBits(a.u, b.u)) << what << ": u";
+}
+
+TEST(MpcSegmentCorePath, InitValidatesTheNodesAndTheWeight) {
+  const ArmModel arm = Synthetic6R();
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model);
+  const auto init = [&](const MpcSegmentCoreParams& p) {
+    MpcSegmentCore mpc;
+    return mpc.Init(*arm.model, arm.frame, p, lim);
+  };
+  MpcSegmentCoreParams p = GridParams(kSmallGrid);  // n_pre = 4
+  p.w_path = 40.0;
+  MarkPathNodes(p, {1, 2, 3});
+  EXPECT_EQ(init(p), MpcSegmentCoreReason::kNone);
+  for (const int k : {1, 2, 3}) {
+    MarkPathNodes(p, {k});
+    EXPECT_EQ(init(p), MpcSegmentCoreReason::kNone) << "node " << k;
+  }
+  // Node 0 is x_0, k_c and later are w_perp's, and the array has one slot per
+  // node up to kMaxMpcNodes.
+  for (const int k : {0, kSmallGrid.n_pre, kSmallGrid.n_pre + 1, rtc::catching::kMaxMpcNodes}) {
+    MarkPathNodes(p, {1, k});
+    EXPECT_EQ(init(p), MpcSegmentCoreReason::kParamsInvalid) << "node " << k;
+  }
+  p.w_path = 0.0;  // the nodes are checked whatever the weight
+  MarkPathNodes(p, {0});
+  EXPECT_EQ(init(p), MpcSegmentCoreReason::kParamsInvalid) << "node 0, w_path = 0";
+  MarkPathNodes(p, {1, 2, 3});
+  EXPECT_EQ(init(p), MpcSegmentCoreReason::kNone) << "w_path = 0 with a mask";
+  for (const double bad : {-1.0, kNan, kInf}) {
+    p.w_path = bad;
+    EXPECT_EQ(init(p), MpcSegmentCoreReason::kParamsInvalid) << "w_path " << bad;
+  }
+  MpcSegmentCoreParams none;  // n_pre = 0: no node can carry the term
+  MarkPathNodes(none, {1});
+  EXPECT_EQ(init(none), MpcSegmentCoreReason::kParamsInvalid) << "n_pre = 0";
+}
+
+TEST(MpcSegmentCorePath, OffMeansTheQpIsTheOneWithoutTheTerm) {
+  ReachFixture f = MakeReach7();
+  MpcSegmentCoreParams masked = f.params;
+  MarkPathNodes(masked, {1, 2, 3});  // w_path = 0
+  MpcSegmentCoreParams weighted = masked;
+  weighted.w_path = 40.0;
+  MpcSegmentCore plain, zero_weight, all_off;
+  ASSERT_EQ(plain.Init(*f.arm.model, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(zero_weight.Init(*f.arm.model, f.arm.frame, masked, f.limits),
+            MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(all_off.Init(*f.arm.model, f.arm.frame, weighted, f.limits),
+            MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult r_plain, r_zero, r_off;
+  plain.ResizeResult(r_plain);
+  zero_weight.ResizeResult(r_zero);
+  all_off.ResizeResult(r_off);
+
+  MpcSegmentCoreInput in = f.input;
+  ReachReference(plain, f.arm.q_nominal, f.q_target, in);
+  // With w_path = 0 nothing of the path input is read: poison it.
+  MpcSegmentCoreInput poisoned = in;
+  poisoned.path_on.fill(true);
+  poisoned.path_p.setConstant(kNan);
+  poisoned.path_d.setZero();
+  // Every marked node switched off: not read either, wherever the values lie.
+  MpcSegmentCoreInput off = in;
+  off.path_on.fill(false);
+  off.path_p.setConstant(kNan);
+  off.path_d.setConstant(kNan);
+
+  ASSERT_TRUE(plain.Solve(in, r_plain)) << MpcSegmentCoreReasonName(r_plain.reason);
+  ASSERT_TRUE(zero_weight.Solve(poisoned, r_zero)) << MpcSegmentCoreReasonName(r_zero.reason);
+  ASSERT_TRUE(all_off.Solve(off, r_off)) << MpcSegmentCoreReasonName(r_off.reason);
+  ExpectSameQp(plain.MainQp(), zero_weight.MainQp(), "w_path = 0, main");
+  ExpectSameQp(plain.PresolveQp(), zero_weight.PresolveQp(), "w_path = 0, presolve");
+  ExpectSameQp(plain.MainQp(), all_off.MainQp(), "all nodes off, main");
+  ExpectSameQp(plain.PresolveQp(), all_off.PresolveQp(), "all nodes off, presolve");
+  for (int k = 0; k <= rtc::catching::kMaxMpcNodes; ++k) {
+    EXPECT_FALSE(zero_weight.PathActive(k)) << "node " << k;
+    EXPECT_FALSE(all_off.PathActive(k)) << "node " << k;
+  }
+}
+
+TEST(MpcSegmentCorePath, ChecksOnlyTheNodesItReads) {
+  ReachFixture f = MakeReach7();
+  f.params.w_path = 40.0;
+  MarkPathNodes(f.params, {1, 2, 3});
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
+  mpc.ResizeResult(res);
+  MpcSegmentCoreInput in = f.input;
+  ReachReference(mpc, f.arm.q_nominal, f.q_target, in);
+  pinocchio::Data data(*f.arm.model);
+  for (const int k : {1, 2, 3}) {
+    SetPathLine(f.arm, data, k, Eigen::Vector3d(0.01, -0.02, 0.015),
+                Eigen::Vector3d(0.3, -0.5, 0.8), in);
+  }
+  ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);
+
+  MpcSegmentCoreInput off = in;  // NaN on a node the input switches off
+  off.path_on[2] = false;
+  off.path_p.col(2).setConstant(kNan);
+  off.path_d.col(2).setConstant(kNan);
+  EXPECT_TRUE(mpc.Solve(off, res)) << MpcSegmentCoreReasonName(res.reason);
+  EXPECT_FALSE(mpc.PathActive(2));
+
+  MpcSegmentCoreInput unmarked = in;  // switched on, but the core does not carry the node
+  unmarked.path_on[4] = true;
+  unmarked.path_p.col(4).setConstant(kNan);
+  EXPECT_TRUE(mpc.Solve(unmarked, res)) << MpcSegmentCoreReasonName(res.reason);
+  EXPECT_FALSE(mpc.PathActive(4));
+
+  MpcSegmentCoreInput bad = in;  // the same on an active node
+  bad.path_p(1, 2) = kNan;
+  EXPECT_FALSE(mpc.Solve(bad, res));
+  EXPECT_EQ(res.reason, MpcSegmentCoreReason::kNonFinite);
+  bad = in;
+  bad.path_d(0, 1) = kInf;
+  EXPECT_FALSE(mpc.Solve(bad, res));
+  EXPECT_EQ(res.reason, MpcSegmentCoreReason::kNonFinite);
+  bad = in;
+  bad.path_d.col(3) *= 2.0;
+  EXPECT_FALSE(mpc.Solve(bad, res));
+  EXPECT_EQ(res.reason, MpcSegmentCoreReason::kDirectionNotUnit);
+  bad = in;
+  bad.path_d.col(3).setZero();
+  EXPECT_FALSE(mpc.Solve(bad, res));
+  EXPECT_EQ(res.reason, MpcSegmentCoreReason::kDirectionNotUnit);
+  EXPECT_TRUE(mpc.Solve(in, res)) << "the core recovers on the next good input";
+}
+
+TEST(MpcSegmentCorePath, StructuredAssemblyMatchesDense) {
+  ReachFixture f = MakeReach7();
+  f.params.w_perp = 10.0;
+  f.params.w_path = 30.0;
+  MarkPathNodes(f.params, {1, 2, 3});
+  MpcSegmentCoreParams pd = f.params;
+  pd.reference_assembly = true;
+  MpcSegmentCore fast, dense;
+  ASSERT_EQ(fast.Init(*f.arm.model, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(dense.Init(*f.arm.model, f.arm.frame, pd, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult rf, rd;
+  fast.ResizeResult(rf);
+  dense.ResizeResult(rd);
+  MpcSegmentCoreInput in = f.input;
+  in.p_c = in.p_b;
+  in.d_hat = Eigen::Vector3d(1.0, 2.0, -0.5).normalized();
+  ReachReference(fast, f.arm.q_nominal, f.q_target, in);
+  pinocchio::Data data(*f.arm.model);
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    if (cycle == 1) {
+      UseAsReference(rf, in);
+      in.w_delta_scale = 0.6;
+      in.cold_start = false;
+      in.path_on[3] = false;  // a marked node off on a later solve
+    }
+    for (const int k : {1, 2, 3}) {
+      if (cycle == 1 && k == 3) {
+        continue;
+      }
+      SetPathLine(f.arm, data, k, Eigen::Vector3d(0.012 * k, -0.02, 0.01 * k),
+                  Eigen::Vector3d(0.3 + 0.2 * k, -0.5, 0.8 - 0.1 * k), in);
+    }
+    ASSERT_TRUE(fast.Solve(in, rf)) << MpcSegmentCoreReasonName(rf.reason);
+    ASSERT_TRUE(dense.Solve(in, rd)) << MpcSegmentCoreReasonName(rd.reason);
+    const rtc::tsid::QPData& a = fast.MainQp();
+    const rtc::tsid::QPData& b = dense.MainQp();
+    EXPECT_TRUE(MatricesClose(a.H, b.H)) << "H cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.g, b.g)) << "g cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.A, b.A)) << "A cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.b, b.b)) << "b cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.C, b.C)) << "C cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.l, b.l)) << "l cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.u, b.u)) << "u cycle " << cycle;
+    EXPECT_EQ((a.H - a.H.transpose()).cwiseAbs().maxCoeff(), 0.0) << "H symmetric, cycle " << cycle;
+    EXPECT_LE((rf.u - rd.u).cwiseAbs().maxCoeff(), 1e-6 * (1.0 + rd.u.cwiseAbs().maxCoeff()));
+    for (int k = 0; k <= rtc::catching::kMaxMpcNodes; ++k) {
+      EXPECT_EQ(fast.PathActive(k), dense.PathActive(k)) << "node " << k;
+    }
+  }
+}
+
+// The term pulls the node it sits on toward that node's line, and PathActive
+// says exactly which nodes carried it.
+TEST(MpcSegmentCorePath, PullsTheActiveNodesTowardTheirLines) {
+  ReachFixture f = MakeReach7();
+  MpcSegmentCoreParams off_params = f.params;
+  MarkPathNodes(off_params, {1, 2, 3});
+  MpcSegmentCoreParams on_params = off_params;
+  on_params.w_path = 3000.0;
+  MpcSegmentCore off_core, on_core;
+  ASSERT_EQ(off_core.Init(*f.arm.model, f.arm.frame, off_params, f.limits),
+            MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(on_core.Init(*f.arm.model, f.arm.frame, on_params, f.limits),
+            MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult r_off, r_on;
+  off_core.ResizeResult(r_off);
+  on_core.ResizeResult(r_on);
+  MpcSegmentCoreInput in = f.input;
+  ReachReference(on_core, f.arm.q_nominal, f.q_target, in);
+  pinocchio::Data data(*f.arm.model);
+  const Eigen::Vector3d dir(0.3, -0.5, 0.8);
+  const Eigen::Vector3d offset(0.02, -0.015, 0.01);
+  for (const int k : {2, 3}) {  // node 1 stays switched off
+    SetPathLine(f.arm, data, k, offset, dir, in);
+  }
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(f.arm.model->nv);
+  for (const int k : {2, 3}) {
+    const Eigen::VectorXd q_ref = in.q_ref.col(k);
+    ASSERT_GT(
+        LineDistance(CatchPoseAt(f.arm, data, q_ref, zero).p, in.path_p.col(k), in.path_d.col(k)),
+        5e-3)
+        << "the line must be off the reference for the term to have work to do";
+  }
+  ASSERT_TRUE(off_core.Solve(in, r_off)) << MpcSegmentCoreReasonName(r_off.reason);
+  ASSERT_TRUE(on_core.Solve(in, r_on)) << MpcSegmentCoreReasonName(r_on.reason);
+  for (const int k : {2, 3}) {
+    const Eigen::VectorXd q_off = r_off.q.col(k);
+    const Eigen::VectorXd q_on = r_on.q.col(k);
+    const double d_off =
+        LineDistance(CatchPoseAt(f.arm, data, q_off, zero).p, in.path_p.col(k), in.path_d.col(k));
+    const double d_on =
+        LineDistance(CatchPoseAt(f.arm, data, q_on, zero).p, in.path_p.col(k), in.path_d.col(k));
+    EXPECT_LT(d_on, 0.8 * d_off) << "node " << k << " off " << d_off << " on " << d_on;
+  }
+  for (int k = 0; k <= rtc::catching::kMaxMpcNodes; ++k) {
+    EXPECT_EQ(on_core.PathActive(k), k == 2 || k == 3) << "node " << k;
+    EXPECT_FALSE(off_core.PathActive(k)) << "node " << k;
+  }
+}
+
+// Same construction as StopPathTermCoversTheStopSegmentOnly: the reference is
+// the trajectory of z* itself, so every node's linear model is exact there and
+// the term's QP contribution differs from the nonlinear cost by O(h²) only. A
+// wrong line, projector, weight or node set leaves an O(h) error. Node 4 is
+// marked and switched off, and carries nothing.
+TEST(MpcSegmentCorePath, MatchesTheNonlinearCostToSecondOrder) {
+  const ArmModel arm = Synthetic6R();
+  const int n = arm.model->nv;
+  MpcSegmentCoreParams off = GridParams(Grid{6, 0.1, 4, 0.05, 1, {1, 1, 2}});
+  off.rho_tau = 0.0;
+  off.w_delta = 0.0;
+  off.delta_tr = kInf;
+  MpcSegmentCoreParams on = off;
+  on.w_path = 300.0;
+  MarkPathNodes(on, {1, 2, 3, 4, 5});
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model);
+  MpcSegmentCore with, without;
+  ASSERT_EQ(with.Init(*arm.model, arm.frame, on, lim), MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(without.Init(*arm.model, arm.frame, off, lim), MpcSegmentCoreReason::kNone);
+  const int N = with.NumNodes();
+  const int nb = with.NumBlocks();
+  const int nu = n * nb;
+
+  MpcSegmentCoreInput in = RestInput(arm.q_nominal);
+  in.qd0 << 0.20, -0.10, 0.15, -0.20, 0.10, 0.05;
+  in.qdd0 << 0.5, -0.3, 0.4, 0.2, -0.5, 0.3;
+  const auto node_q = [&](const Eigen::VectorXd& z, int k) {
+    const double t = with.NodeTime(k);
+    Eigen::VectorXd q = in.q0 + t * in.qd0 + 0.5 * t * t * in.qdd0;
+    for (int b = 0; b < nb; ++b) {
+      q += with.StageGain(0, k, b) * z.segment(b * n, n);
+    }
+    return q;
+  };
+  Eigen::VectorXd z_star(nu), z_dir(nu);
+  for (int b = 0; b < nb; ++b) {
+    for (int j = 0; j < n; ++j) {
+      z_star[b * n + j] = 0.004 * std::sin(0.9 * b + 0.5 * j + 0.3);
+      z_dir[b * n + j] = 4e-6 * std::cos(1.7 * b + 0.8 * j + 0.1);
+    }
+  }
+  in.q_ref.resize(n, N + 1);
+  for (int k = 0; k <= N; ++k) {
+    in.q_ref.col(k) = node_q(z_star, k);
+  }
+  in.qd_ref.setZero(n, N + 1);
+  in.qdd_ref.setZero(n, N + 1);
+  in.reference_valid = true;
+
+  pinocchio::Data data(*arm.model);
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(n);
+  const std::vector<int> active = {1, 2, 3, 5};
+  for (const int k : active) {
+    SetPathLine(arm, data, k, Eigen::Vector3d(0.03, -0.02, 0.04) * (1.0 + 0.1 * k),
+                Eigen::Vector3d(0.3 + 0.1 * k, -0.5, 0.8 - 0.05 * k), in);
+  }
+  in.path_p.col(4).setConstant(kNan);
+  in.path_d.col(4).setConstant(kNan);
+
+  MpcSegmentCoreResult r_on, r_off;
+  with.ResizeResult(r_on);
+  without.ResizeResult(r_off);
+  // The QP itself is not the subject; both are assembled before it runs.
+  (void)with.Solve(in, r_on);
+  (void)without.Solve(in, r_off);
+  const Eigen::MatrixXd h_c =
+      with.MainQp().H.topLeftCorner(nu, nu) - without.MainQp().H.topLeftCorner(nu, nu);
+  const Eigen::VectorXd g_c = with.MainQp().g.head(nu) - without.MainQp().g.head(nu);
+  ASSERT_GT(h_c.norm(), 0.0) << "the path term added nothing";
+
+  const auto f_nl = [&](const Eigen::VectorXd& z) {
+    double f = 0.0;
+    for (const int k : active) {
+      const Eigen::Vector3d d = in.path_d.col(k);
+      const Eigen::Matrix3d p_k = Eigen::Matrix3d::Identity() - d * d.transpose();
+      const Eigen::Vector3d r =
+          p_k * (CatchPoseAt(arm, data, node_q(z, k), zero).p - in.path_p.col(k));
+      f += 0.5 * on.w_path * r.squaredNorm();
+    }
+    return f;
+  };
+  const auto f_lin = [&](const Eigen::VectorXd& z) { return 0.5 * z.dot(h_c * z) + g_c.dot(z); };
+  double change = 0.0;
+  const auto error_at = [&](double h) {
+    const Eigen::VectorXd z = z_star + h * z_dir;
+    change = f_nl(z) - f_nl(z_star);
+    return std::abs((f_lin(z) - f_lin(z_star)) - change);
+  };
+  const double e1 = error_at(1.0);
+  const double change1 = std::abs(change);
+  const double e2 = error_at(0.5);
+  ASSERT_GT(change1, 1e-6) << "the cost did not move — nothing is being compared";
+  ASSERT_GT(e1, 1e-10) << "the error is below what can be measured";
+  EXPECT_LT(e1, 0.1 * change1) << "first-order mismatch: e(h)=" << e1 << " change=" << change1;
+  const double ratio = e1 / e2;
+  EXPECT_GT(ratio, 3.0) << "e(h)=" << e1 << " e(h/2)=" << e2;
+  EXPECT_LT(ratio, 5.5) << "e(h)=" << e1 << " e(h/2)=" << e2;
+}
+
+TEST(MpcSegmentCorePath, AllocatesNothingOutsideTheQpSolver) {
+  ReachFixture f = MakeReach7();
+  f.params.w_perp = 10.0;
+  f.params.w_path = 20.0;
+  MarkPathNodes(f.params, {1, 2, 3});
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
+  mpc.ResizeResult(res);
+  MpcSegmentCoreInput in = f.input;
+  in.p_c = in.p_b;
+  in.d_hat = Eigen::Vector3d(0.3, -0.4, 0.2).normalized();
+  ReachReference(mpc, f.arm.q_nominal, f.q_target, in);
+  pinocchio::Data data(*f.arm.model);
+  for (const int k : {1, 2, 3}) {
+    SetPathLine(f.arm, data, k, Eigen::Vector3d(0.01, -0.015, 0.02),
+                Eigen::Vector3d(0.3, -0.5, 0.8), in);
+  }
+  ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);
+  UseAsReference(res, in);
+  in.cold_start = false;
+  in.w_delta_scale = 0.5;
+  ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);  // warm-up
+  UseAsReference(res, in);
+  MpcSegmentCoreInput outside = in;
+  for (int k = mpc.CatchNode() + 1; k <= mpc.NumNodes(); ++k) {
+    outside.q_ref(2, k) = f.limits.q_max[2] + 3.0 * f.params.delta_tr;
+  }
+
+  bool ok = false;
+  const AllocCounts full = GatedSolve(mpc, in, res, ok);
+  EXPECT_TRUE(ok) << MpcSegmentCoreReasonName(res.reason);
+  EXPECT_TRUE(mpc.PathActive(1) && mpc.PathActive(2) && mpc.PathActive(3));
+  EXPECT_EQ(full.op_new, 0U) << "operator new inside Solve";
+
+  const AllocCounts core = GatedSolve(mpc, outside, res, ok);
+  EXPECT_FALSE(ok);
+  ASSERT_EQ(res.reason, MpcSegmentCoreReason::kTrustRegionConflict);
+  EXPECT_GT(res.linearize_us, 0.0) << "the rejection must come after linearisation";
+  EXPECT_EQ(core.op_new, 0U);
+  EXPECT_EQ(core.c_malloc, 0U) << "C-level allocation in the path linearisation / condensing";
 }
 
 // ── 7. Fail-closed ───────────────────────────────────────────────────────────

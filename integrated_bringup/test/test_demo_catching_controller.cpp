@@ -1887,6 +1887,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
   // compared here: #819 moves it off the planner's former constant 0.9, and
   // ShipsTheFirstReferenceFractionMeasured pins it.
   EXPECT_EQ(core.w_perp, 0.0);  // the default; `cost.w_perp` is tested below
+  EXPECT_EQ(core.w_path, 0.0);  // the default; `cost.w_path` is tested below
 
   // The search: the IK options equal CatchPoseIkOptions{} field by field —
   // except the two the profile has always set (k_manip, max_iter) and the
@@ -2053,6 +2054,55 @@ TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
   EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.w_perp, 40.0) << profile;
   // Read-only, like every other mirror of the profile.
   EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.segment.mpc.cost.w_perp", 0.0))
+                   .successful);
+}
+
+TEST_P(ShippedCatchingProfile, ShipsTheClosingWindowPathWeightWrittenAndOff) {
+  // #716: `cost.w_path` is WRITTEN in catching/segment_mpc.yaml, at 0 (off)
+  // until a measurement turns it on — a profile that lost the key would run
+  // the code default, which is the same 0 but unwritten.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const YAML::Node cost = node["catching"]["planner"]["segment"]["mpc"]["cost"];
+  ASSERT_TRUE(cost.IsMap()) << profile;
+  ASSERT_TRUE(cost["w_path"].IsDefined()) << profile << ": cost.w_path is not written";
+  EXPECT_EQ(cost["w_path"].as<double>(), 0.0) << profile;
+  const std::string fragment = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                               "/controllers/catching/segment_mpc.yaml";
+  const YAML::Node in_fragment =
+      YAML::LoadFile(fragment)["demo_catching_controller"]["catching"]["planner"]["segment"]["mpc"]
+                              ["cost"]["w_path"];
+  EXPECT_TRUE(in_fragment.IsDefined()) << profile << ": the key belongs to segment_mpc.yaml";
+  const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  EXPECT_EQ(planner.mpc_segment.w_path, 0.0) << profile;
+  EXPECT_EQ(rtc::catching::MpcSegmentCoreParams{}.w_path, 0.0) << "the code default stays off";
+}
+
+TEST_P(ShippedCatchingProfile, MirrorsTheClosingWindowPathWeightItRunsWith) {
+  // As the stop-path weight's mirror: the key moved in the composed tree
+  // reaches the controller, and the planner configures with the term ON — the
+  // hand's closing timing the controller fills into the planner's constants is
+  // known on both shipped hands (a TBD one would refuse here), and every
+  // catch core's warm-up ran with its window nodes.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  node["catching"]["planner"]["segment"]["mpc"]["cost"]["w_path"] = 40.0;
+
+  auto node_handle = NodeWithProfile("catching_shipped_w_path_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile;
+  EXPECT_TRUE(ctrl.IsSegmentPlannerConfigured()) << profile;
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.segment.mpc.cost.w_path").as_double(), 40.0)
+      << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.w_path, 40.0) << profile;
+  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.segment.mpc.cost.w_path", 0.0))
                    .successful);
 }
 

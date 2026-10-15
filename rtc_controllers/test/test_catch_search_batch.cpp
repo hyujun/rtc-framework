@@ -604,7 +604,8 @@ TEST(CatchSearchBatchBinding, ASearchModelMayBeAChainOfAWiderDevice) {
       "segment:\n  mode: mpc\n  device_of_model: [0, 1, 2, 3, 4]\n  mpc:\n"
       "    q_min: [-1, -1, -1, -1, -1]\n    q_max: [1, 1, 1, 1, 1]\n"
       "    qdot_max: [2, 2, 2, 2, 2]\n    tau_max: [9, 9, 9, 9, 9]\n"
-      "    eta_v: 0.9\n    t_arm_s: 0.0\n    control_dt: 0.002\n";
+      "    eta_v: 0.9\n    t_arm_s: 0.0\n    control_dt: 0.002\n"
+      "    t_close_lead: .nan\n    t_close_total: .nan\n";
   const SearchBatchBinding two =
       ParseSearchBatchBinding(YAML::Load(with_map("[4, 0, 2]") + segment), 3, 5);
   ASSERT_TRUE(two.segment.has_value());
@@ -810,7 +811,8 @@ struct CycleRig {
       s << "segment:\n  mode: mpc\n  mpc:\n    q_min: " << List(q_min)
         << "\n    q_max: " << List(q_max)
         << "\n    qdot_max: [2, 2, 3, 3, 3, 3]\n    tau_max: [150, 150, 150, 28, 28, 28]\n"
-           "    eta_v: 0.9\n    t_arm_s: 0.0\n    control_dt: 0.002\n";
+           "    eta_v: 0.9\n    t_arm_s: 0.0\n    control_dt: 0.002\n"
+           "    t_close_lead: 0.1\n    t_close_total: 0.125\n";
     }
     return YAML::Load(s.str());
   }
@@ -1017,6 +1019,9 @@ TEST(CatchPlanBatchBinding, ReadsBothSegmentPlanners) {
   EXPECT_EQ(mpc.segment->tau_max[3], 28.0);
   EXPECT_EQ(mpc.segment->eta_v, 0.9);
   EXPECT_EQ(mpc.segment->control_dt, 0.002);
+  // #716: the hand's closing timing the mpc planner's window is built from.
+  EXPECT_EQ(mpc.segment->t_close_lead, 0.1);
+  EXPECT_EQ(mpc.segment->t_close_total, 0.125);
   EXPECT_FALSE(ParseSearchBatchBinding(rig.BindingFile(false), rig.nv).segment.has_value());
 
   const SearchBatchBinding docking =
@@ -1057,6 +1062,11 @@ TEST(CatchPlanBatchBinding, TheSegmentMapIsFailClosed) {
   EXPECT_TRUE(refused("eta_v: 0.9", "eta_vv: 0.9")) << "an unknown key, and a missing one";
   EXPECT_TRUE(refused("tau_max: [150, ", "tau_max: ["));
   EXPECT_TRUE(refused("tau_max: [150, ", "tau_max: [.nan, "));
+  // #716: the closing timing is required — a batch without it would solve
+  // with no window where the controller has one. TBD is a value.
+  EXPECT_TRUE(refused("    t_close_lead: 0.1\n", ""));
+  EXPECT_TRUE(refused("    t_close_total: 0.125", ""));
+  EXPECT_FALSE(refused("t_close_total: 0.125", "t_close_total: .nan"));
   EXPECT_TRUE(refused("segment:", "segmentt:")) << "an unknown top-level key";
 }
 

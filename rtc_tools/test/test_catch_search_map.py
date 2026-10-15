@@ -1704,6 +1704,11 @@ def test_segment_binding_mpc_formulas():
     assert mpc["tau_max"] == [20.0, 100.0, 50.0]
     assert mpc["eta_v"] == 0.7  # planner.segment.mpc.eta_v, not the docking planner's
     assert mpc["t_arm_s"] == 0.05 and mpc["control_dt"] == 0.002
+    # #716: the closing window — the lead from t_c as written (not the docking
+    # planner's entrance lead) and T_close,tot = T_close_e2e + h/2.
+    assert mpc["t_close_lead"] == 0.25
+    assert mpc["t_close_total"] == 0.3 + 0.5 * 0.002
+    assert b.sources["mpc.t_close_lead"]["mirror_param"] == "hand.T_close_lead_from_t_c"
     assert set(b.sources) == {f"mpc.{k}" for k in mpc}
     for key, entry in b.sources.items():
         assert entry["source"] and "::" in entry["mirrors"], key

@@ -206,6 +206,10 @@ struct SegmentBatchBinding {
   std::vector<double> qdot_max;  ///< device ratings [rad/s]
   std::vector<double> tau_max;   ///< device ratings [N·m]
   double eta_v{0.0};             ///< the velocity row's margin
+  /// The hand's close lead from t_c and T_close,tot = T_close_e2e + h/2 [s]
+  /// (MpcSegmentPlannerConstants; NaN = TBD).
+  double t_close_lead{0.0};
+  double t_close_total{0.0};
   // ── mpc_docking ──
   MpcDockingSegmentCoreLimits limits{};  ///< `armature` is zero
   std::vector<double> qd_rating;         ///< device ratings [rad/s]

@@ -24,6 +24,7 @@
 //   min  ½ Σ_k Σ_j R_j (u_kj/u_scale)²                        jerk
 //      + ½ w_Δ Σ_k ‖q_k − q̄_k‖²                               stay near x̄
 //      + ½ w_⊥ Σ_k ‖P_⊥(p_C(q̄_k) + J_C(q̄_k)(q_k − q̄_k) − p_c)‖²   optional
+//      + ½ w_path Σ_k ‖P_k(p_C(q̄_k) + J_C(q̄_k)(q_k − q̄_k) − p_k)‖²  optional
 //      + ρ_τ Σ s                                              torque slack
 //   s.t. q̇_N = q̈_N = 0                                         (2n, hard)
 //        max(q_min+m, q̄_k−δ) ≤ q_k ≤ min(q_max−m, q̄_k+δ)       (hard)
@@ -52,6 +53,15 @@
 //    it (the terminal equality takes two; formulation §1.1).
 //  • the stop-path term w_⊥ covers the stop segment only, nodes k_c..N: the
 //    line through p_c is where the hand stops, not how it approaches.
+//  • the closing-window path term w_path (#716, formulation §1.6) covers the
+//    pre-catch nodes the caller marks (params.path_nodes, 1..n_pre − 1 only:
+//    node 0 is x_0, and from k_c on w_⊥ holds the hand on the catch line),
+//    each against ITS OWN line (p_k, d̂_k; P_k = I − d̂_k d̂_kᵀ) — the caller's
+//    choice is the ball path near where the reference puts the hand at that
+//    node. Same form as w_⊥, same storage (the two node sets are disjoint).
+//    A marked node the input switches off (path_on) carries no term on that
+//    solve. With w_path = 0 no path input is read and the QP is the one
+//    without the term, bit for bit.
 // With catch_terms the cost gains three terms AT the catch node, linearised at
 // the reference x̄ (the same ½-weighted least-squares convention as above —
 // formulation §1.3 puts them inside the same ½[…]):
@@ -196,6 +206,13 @@ struct MpcSegmentCoreParams {
   /// Catch-frame off-line error weight [1/m²]; 0 = off. Tested up to 1e4;
   /// large values raise H's condition number (more ProxQP iterations).
   double w_perp{0.0};
+  /// Closing-window path weight [1/m²]; 0 = off (header note, #716). Tested
+  /// up to 1e4, like w_perp.
+  double w_path{0.0};
+  /// The nodes the path term may sit on, indexed by node k. Only
+  /// 1..n_pre − 1 may be set (Init: kParamsInvalid otherwise); read only with
+  /// w_path > 0.
+  std::array<bool, kMaxMpcNodes + 1> path_nodes{};
   /// Catch terms at node k_c = n_pre (header note). Needs n_pre ≥ 1; false
   /// ignores every catch field below and every catch input.
   bool catch_terms{false};
@@ -269,6 +286,14 @@ struct MpcSegmentCoreInput {
   Eigen::Vector3d a_d{Eigen::Vector3d::UnitZ()};  ///< desired approach axis (unit, world)
   Eigen::Vector3d v_b{Eigen::Vector3d::Zero()};   ///< predicted ball velocity at t_c [m/s]
   double gamma_ref{1.0};  ///< velocity cost target γ_ref·v̂_b, in (0, 1] (MD-53)
+  // ── Closing-window path: read (and validated) only with params.w_path > 0,
+  //    and only at a node params.path_nodes marks AND path_on turns on ──
+  std::array<bool, kMaxMpcNodes + 1> path_on{};
+  /// Column k: a point of node k's line [m] and its unit direction, model world.
+  Eigen::Matrix<double, 3, kMaxMpcNodes + 1> path_p{
+      Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
+  Eigen::Matrix<double, 3, kMaxMpcNodes + 1> path_d{
+      Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
 };
 
 struct MpcSegmentCoreResult {
@@ -329,6 +354,11 @@ class MpcSegmentCore {
 
   [[nodiscard]] int Nv() const noexcept { return n_; }
 
+  /// The path term sits on node k on this solve (the last one).
+  [[nodiscard]] bool PathActive(int k) const noexcept {
+    return k >= 0 && k <= kMaxMpcNodes && path_active_[static_cast<std::size_t>(k)];
+  }
+
   /// N = n_pre + n_nodes: results hold N + 1 node columns.
   [[nodiscard]] int NumNodes() const noexcept { return n_nodes_; }
 
@@ -368,6 +398,7 @@ class MpcSegmentCore {
   void AssembleTorqueRows() noexcept;
   void AssembleTorqueRowsDense() noexcept;
   void AssemblePerp() noexcept;
+  void AssemblePath() noexcept;
   [[nodiscard]] MpcSegmentCoreReason LinearizeCatch() noexcept;
   void AssembleCatch() noexcept;
   void AccumulateNodeTerm(Eigen::Index k, const Eigen::Matrix<double, 3, Eigen::Dynamic>& a_q,
@@ -443,6 +474,15 @@ class MpcSegmentCore {
   Eigen::VectorXd tau_lin_;  // n·N
   bool w_perp_on_{false};
   bool torque_on_{false};
+  // Closing-window path (#716): w_path > 0 and a node marked; this solve's
+  // nodes (marked and switched on), whether any is, and their lines.
+  bool path_on_{false};
+  std::array<bool, kMaxMpcNodes + 1> path_active_{};
+  bool path_solve_on_{false};
+  Eigen::Matrix<double, 3, kMaxMpcNodes + 1> path_p_{
+      Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
+  Eigen::Matrix<double, 3, kMaxMpcNodes + 1> path_d_{
+      Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
   Eigen::Vector3d p_c_{Eigen::Vector3d::Zero()};
 
   // Catch terms (E1-F07).

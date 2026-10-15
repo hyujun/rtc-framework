@@ -320,6 +320,16 @@ struct SegmentRecord {
   double mpc_linearize_us{std::numeric_limits<double>::quiet_NaN()};
   double mpc_condense_us{std::numeric_limits<double>::quiet_NaN()};
   double mpc_qp_us{std::numeric_limits<double>::quiet_NaN()};
+  /// The mpc planner's closing-window path (#716), whatever `cost.w_path` is:
+  /// the catch core's window nodes, how many of them had a line on this solve,
+  /// and the solution's catch frame against those lines [m] (FK) — the largest
+  /// and the mean distance. 0 / NaN for every other solve and planner, and the
+  /// distances NaN for a solve that reached no solution. Not fields of the
+  /// trace digest.
+  std::int32_t path_window{0};
+  std::int32_t path_nodes{0};
+  double path_dev_max{std::numeric_limits<double>::quiet_NaN()};
+  double path_dev_mean{std::numeric_limits<double>::quiet_NaN()};
   /// The mpc_docking planner's own account of the solve (E1-F18). Not a field
   /// of the trace digest.
   DockingSolveStats docking{};

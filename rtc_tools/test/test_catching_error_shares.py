@@ -1041,3 +1041,97 @@ def test_a_session_with_segments_and_a_capture_set_is_wired_through(tmp_path):
     assert block["crossed_entrance"] == len(crossed)
     assert all(math.isfinite(r["ent_lateral_margin_mm"]) for r in crossed)
     assert math.isfinite(block["medians"]["last_seg_wake_to_tc_ms"])
+
+
+# ── The closing window's distance from the ball's path (#716) ────────────────
+
+T_CLOSE = 0.278
+CLOSE_LEAD = 0.3  # the close is commanded this long before t_c
+CLOSE_SIDE = np.cross(V_BALL, [0.0, 0.0, 1.0]) / np.linalg.norm(np.cross(V_BALL, [0.0, 0.0, 1.0]))
+
+
+def _close_ctx(offset_m=0.0, *, cmd_at=T_X - CLOSE_LEAD, lag_s=0.0):
+    """A hand on the ball's line (``lag_s`` behind it in time) offset sideways, closing from ``cmd_at``."""
+    ctx = _static_ctx()
+    t = ctx.t
+    ctx.q_meas = P_CATCH + np.outer(t - T_X - lag_s, V_BALL) + offset_m * CLOSE_SIDE
+    ctx.hand_phase = np.where(t >= cmd_at - 1e-9, ct.HAND_PHASE_CLOSE, 0)
+    return ctx
+
+
+def test_a_hand_on_the_balls_path_through_the_closing_window_is_zero_mm_off():
+    rec = ct.close_window_columns(_close_ctx(), _line_truth(), T_X, T_CLOSE)
+    assert set(rec) == set(ct.CLOSE_WINDOW_KEYS)
+    assert rec["win_t_cmd_ms"] == pytest.approx(-CLOSE_LEAD * 1e3, abs=1e-6)
+    assert rec["win_exec_dev_max_mm"] == pytest.approx(0.0, abs=1e-3)
+    assert rec["win_exec_dev_end_mm"] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_a_sideways_offset_is_read_in_mm_and_time_lag_along_the_path_is_not():
+    rec = ct.close_window_columns(_close_ctx(0.010), _line_truth(), T_X, T_CLOSE)
+    assert rec["win_exec_dev_max_mm"] == pytest.approx(10.0, abs=1e-3)
+    assert rec["win_exec_dev_end_mm"] == pytest.approx(10.0, abs=1e-3)
+    # Positive control: 30 ms behind the ball ON the path is still on the path.
+    lag = ct.close_window_columns(_close_ctx(0.0, lag_s=0.03), _line_truth(), T_X, T_CLOSE)
+    assert lag["win_exec_dev_max_mm"] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_the_largest_and_the_last_distance_are_different_ticks():
+    ctx = _close_ctx()
+    t_cmd = T_X - CLOSE_LEAD
+    bump = np.maximum(0.0, 1.0 - np.abs(ctx.t - (t_cmd + 0.1)) / 0.05)
+    ctx.q_meas = ctx.q_meas + np.outer(0.02 * bump, CLOSE_SIDE)
+    rec = ct.close_window_columns(ctx, _line_truth(), T_X, T_CLOSE)
+    assert rec["win_exec_dev_max_mm"] == pytest.approx(20.0, abs=1e-3)
+    assert rec["win_exec_dev_end_mm"] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_the_command_is_read_from_the_lane_not_from_the_nominal_lead():
+    # The sequencer retimed the close 40 ms later than t_c - lead.
+    ctx = _close_ctx(cmd_at=T_X - CLOSE_LEAD + 0.04)
+    ctx.q_meas = ctx.q_meas + np.outer(
+        np.where(ctx.t < T_X - CLOSE_LEAD + 0.04, 0.05, 0.004), CLOSE_SIDE
+    )
+    rec = ct.close_window_columns(ctx, _line_truth(), T_X, T_CLOSE)
+    assert rec["win_t_cmd_ms"] == pytest.approx((-CLOSE_LEAD + 0.04) * 1e3, abs=1e-6)
+    # The 50 mm before the command is outside the window.
+    assert rec["win_exec_dev_max_mm"] == pytest.approx(4.0, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    "case", ["no_truth", "no_commit", "no_close", "tbd_e2e", "no_tick", "window_past_end"]
+)
+def test_without_a_closing_window_the_columns_are_empty(case):
+    ctx, truth, t_c, t_close = _close_ctx(0.010), _line_truth(), T_X, T_CLOSE
+    if case == "no_truth":
+        truth = None
+    elif case == "no_commit":
+        t_c = math.nan
+    elif case == "no_close":
+        ctx.hand_phase[:] = 0
+    elif case == "tbd_e2e":
+        t_close = math.nan
+    elif case == "no_tick":  # the lane records a close but no tick falls in the window
+        t_close = -0.001
+    elif case == "window_past_end":
+        keep = ctx.t <= T_X - CLOSE_LEAD + T_CLOSE - 0.01
+        for name in ("t", "q_meas", "q_cmd", "hand_phase"):
+            setattr(ctx, name, getattr(ctx, name)[keep])
+    rec = ct.close_window_columns(ctx, truth, t_c, t_close)
+    assert set(rec) == set(ct.CLOSE_WINDOW_KEYS)
+    assert all(math.isnan(rec[k]) for k in ct.CLOSE_WINDOW_KEYS if k != "win_t_cmd_ms")
+    if case in ("no_truth", "no_commit", "no_close", "tbd_e2e"):
+        assert math.isnan(rec["win_t_cmd_ms"])
+
+
+def test_a_lane_already_closing_on_its_first_row_has_no_command():
+    ctx = _close_ctx(cmd_at=-1.0)
+    rec = ct.close_window_columns(ctx, _line_truth(), T_X, T_CLOSE)
+    assert all(math.isnan(v) for v in rec.values())
+
+
+def test_the_mirror_value_is_nan_when_absent_or_tbd():
+    meta = {"controller_mirror": {"hand.T_close_e2e": 0.278, "x": "TBD", "y": None}}
+    assert ct.mirror_value(meta, "hand.T_close_e2e") == 0.278
+    assert all(math.isnan(ct.mirror_value(meta, k)) for k in ("x", "y", "z"))
+    assert math.isnan(ct.mirror_value({}, "hand.T_close_e2e"))

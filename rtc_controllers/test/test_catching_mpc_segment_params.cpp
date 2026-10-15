@@ -604,4 +604,60 @@ TEST(MpcSegmentParams, RejectsTheStopPathWeightByName) {
   EXPECT_TRUE(has(message("cost: {w_perp: [1.0]}"), key + " must be a number"));
 }
 
+// #716: `cost.w_path`, the closing-window path weight. Off by default, the
+// core's own default, like w_perp.
+TEST(MpcSegmentParams, TheClosingWindowPathWeightDefaultsOffAndParses) {
+  const MpcSegmentCoreParams core{};
+  const MpcSegmentPlannerParams d = rtc::catching::PlannerParams{}.mpc_segment;
+  EXPECT_EQ(d.w_path, 0.0);
+  EXPECT_EQ(d.w_path, core.w_path);
+  EXPECT_EQ(
+      ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {m_q: 0.05}}}")).mpc_segment.w_path,
+      0.0);
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_delta: 2.5}}}}"))
+                .mpc_segment.w_path,
+            0.0);
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_path: 0.0}}}}"))
+                .mpc_segment.w_path,
+            0.0);
+  // Beside w_perp, each with a value of its own: one wired to the other shows.
+  const auto on = ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_delta: 2.5, "
+                                                "w_perp: 70.0, w_path: 40.0}}}}"))
+                      .mpc_segment;
+  EXPECT_EQ(on.w_path, 40.0);
+  EXPECT_EQ(on.w_perp, 70.0);
+  EXPECT_EQ(on.w_delta, 2.5);
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_path: 1.0e+4}}}}"))
+                .mpc_segment.w_path,
+            rtc::catching::kMpcSegmentStopPathWeightMax);
+}
+
+TEST(MpcSegmentParams, RejectsTheClosingWindowPathWeightByName) {
+  const std::string key = "'planner.segment.mpc.cost.w_path'";
+  const auto message = [](const std::string& body) -> std::string {
+    try {
+      static_cast<void>(
+          ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {" + body + "}}}")));
+    } catch (const std::invalid_argument& e) {
+      return e.what();
+    }
+    return {};
+  };
+  const auto has = [](const std::string& text, const std::string& part) {
+    return text.find(part) != std::string::npos;
+  };
+  for (const char* bad :
+       {"-0.1", "-1.0e-12", "-1.0", ".nan", ".inf", "-.inf", "10000.001", "1.0e+5", "1.0e+9"}) {
+    const std::string why =
+        message(std::string("cost: {w_delta: 1.0, rho_tau: 10.0, w_path: ") + bad + "}");
+    ASSERT_FALSE(why.empty()) << "w_path: " << bad << " was accepted";
+    EXPECT_TRUE(has(why, key)) << why;
+    EXPECT_TRUE(has(why, "must be a finite number in [0, 1e4]")) << why;
+    EXPECT_FALSE(has(why, "w_delta")) << why;
+    EXPECT_FALSE(has(why, "rho_tau")) << why;
+  }
+  EXPECT_TRUE(has(message("cost: {w_path: strong}"), key + " must be a number"));
+  EXPECT_TRUE(has(message("cost: {w_path: [1.0]}"), key + " must be a number"));
+}
+
 }  // namespace
