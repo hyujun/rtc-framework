@@ -1682,11 +1682,12 @@ std::vector<double> ArmPositionsOf(const ControllerState& s) {
 
 TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   // MPC E1-F08 (#661, MD-54 · MD-55): the shipped profiles carry the
-  // APPROACH–stop grid — 7 x 0.05 s after the catch, up to 6 x 0.1 s before
-  // it. Since MD-89 (2026-10-03) they also ship the segment MPC on and DECEL
-  // on `mpc` — the law the grid serves; before it they shipped both off and
-  // the closed form. The CODE defaults are neither (14 x 0.025, n_pre_max 0,
-  // `closed_form`), so only reading the file shows what a robot runs.
+  // APPROACH–stop grid — 7 x 0.05 s after the catch, up to n x 0.1 s before
+  // it (n = 7 on ur5e_p1b, 6 on iiwa7_leap — #834). Since MD-89 (2026-10-03)
+  // they also ship the segment MPC on and DECEL on `mpc` — the law the grid
+  // serves; before it they shipped both off and the closed form. The CODE
+  // defaults are neither (14 x 0.025, n_pre_max 0, `closed_form`), so only
+  // reading the file shows what a robot runs.
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
   const YAML::Node node =
@@ -1701,7 +1702,8 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
             (std::array<int, 4>{1, 1, 2, 3}))
       << profile;
   EXPECT_EQ(d.k_max, 2) << profile;
-  EXPECT_EQ(d.n_pre_max, 6) << profile;
+  // #834: each robot ships the most pre-catch nodes its solve budgets carry.
+  EXPECT_EQ(d.n_pre_max, profile == "ur5e_p1b" ? 7 : 6) << profile;
   EXPECT_EQ(d.DtPreNs(), 100'000'000) << profile;
   EXPECT_TRUE(d.replan_same_point) << profile;
   // The budgets must leave the planner's wake inside the segment admission age

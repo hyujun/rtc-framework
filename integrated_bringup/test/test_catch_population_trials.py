@@ -390,17 +390,19 @@ def _expect(robot, arm):
 
 
 # run_unit.sh's defaults: EXPECT_COMMIT per robot, EXPECT_TARM, the literal `True` of
-# the lead, EXPECT_CLIK, EXPECT_BALL, EXPECT_NPRE per mode (6 / 9), EXPECT_DTPRE, the
-# mpc planner's `n_nodes: 7`.
-@pytest.mark.parametrize(("robot", "commit"), [("ur5e_p1b", 0.39), ("iiwa7_leap", 0.19)])
-def test_the_shipped_expectation_is_run_unit_shs_defaults(robot, commit):
+# the lead, EXPECT_CLIK, EXPECT_BALL, EXPECT_NPRE (mpc: per robot, 7 / 6 — #834;
+# mpc_docking: 9), EXPECT_DTPRE, the mpc planner's `n_nodes: 7`.
+@pytest.mark.parametrize(
+    ("robot", "commit", "npre"), [("ur5e_p1b", 0.39, 7), ("iiwa7_leap", 0.19, 6)]
+)
+def test_the_shipped_expectation_is_run_unit_shs_defaults(robot, commit, npre):
     grid = _expect(robot, GRID)
     assert (grid.search, grid.segment) == ("grid", "mpc")
     assert grid.t_freeze == commit
     assert (grid.t_arm, grid.lead_enable, grid.accel_constraint) == (0.05, True, "dynamic")
     assert grid.ball_type == "tennis"
-    assert (grid.n_pre_max, grid.dt_pre_s, grid.n_nodes, grid.stop_dt_s) == (6, 0.1, 7, None)
-    assert grid.grid_line == "MPC segment planner approach grid: up to 6 x 0.100 s"
+    assert (grid.n_pre_max, grid.dt_pre_s, grid.n_nodes, grid.stop_dt_s) == (npre, 0.1, 7, None)
+    assert grid.grid_line == f"MPC segment planner approach grid: up to {npre} x 0.100 s"
     assert grid.n_nodes_mirror == "planner.segment.mpc.horizon.n_nodes"
     nlp = _expect(robot, NLP)
     assert (nlp.t_freeze, nlp.t_arm, nlp.lead_enable) == (commit, 0.05, True)

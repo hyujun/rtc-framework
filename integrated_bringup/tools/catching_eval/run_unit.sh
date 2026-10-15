@@ -120,8 +120,8 @@ if [ -n "$THROWS_LIMIT" ]; then
 fi
 case $SHORT in p1b) ROBOT=ur5e_p1b ;; leap) ROBOT=iiwa7_leap ;; esac
 case $ROBOT in
-  ur5e_p1b)   LAUNCH=sim_ur5e_p1b.launch.py;   EXPECT_COMMIT=${EXPECT_COMMIT:-0.390}; STATE_RE='ur5e_state\|p1b_state' ;;
-  iiwa7_leap) LAUNCH=sim_iiwa7_leap.launch.py; EXPECT_COMMIT=${EXPECT_COMMIT:-0.190}; STATE_RE='iiwa7_state\|leap_state' ;;
+  ur5e_p1b)   LAUNCH=sim_ur5e_p1b.launch.py;   EXPECT_COMMIT=${EXPECT_COMMIT:-0.390}; MPC_NPRE=7; STATE_RE='ur5e_state\|p1b_state' ;;
+  iiwa7_leap) LAUNCH=sim_iiwa7_leap.launch.py; EXPECT_COMMIT=${EXPECT_COMMIT:-0.190}; MPC_NPRE=6; STATE_RE='iiwa7_state\|leap_state' ;;
   *) echo "FAIL:unknown robot $ROBOT" > "$OUT/status"; exit 1 ;;
 esac
 EXPECT_TARM=${EXPECT_TARM:-0.05}
@@ -319,9 +319,9 @@ python3 "$D/check_segment_mode.py" "$OUT/launch.log" "${EXPECT_MODE:-mpc}" --sea
 # Each segment planner mirrors and logs its own grid: the mpc planner under
 # planner.segment.mpc.*, the docking planner under planner.segment.mpc_docking.*.
 if [ "${EXPECT_MODE:-mpc}" == "mpc" ]; then
-grep -q "planner.segment.mpc.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-6}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
+grep -q "planner.segment.mpc.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-$MPC_NPRE}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
 grep -q 'planner.segment.mpc.horizon.n_nodes: Integer value is: 7$' "$OUT/mirror.txt" || why="$why n_nodes"
-grep -q "MPC segment planner approach grid: up to ${EXPECT_NPRE:-6} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
+grep -q "MPC segment planner approach grid: up to ${EXPECT_NPRE:-$MPC_NPRE} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
 grep -q 'takes a plan with its first segment' "$OUT/launch.log" || why="$why not_e1f09_binary"
 fi
 if [ "${EXPECT_MODE:-mpc}" == "mpc_docking" ]; then
