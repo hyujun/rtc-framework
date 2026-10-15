@@ -131,10 +131,11 @@ struct MpcSegmentPlannerParams {
   // All PROVISIONAL (#663 tunes them).
 
   /// `approach.n_pre_max` — the most pre-catch intervals a segment may start
-  /// with (MD-54: 6). One catch core per count 1..n_pre_max is built at
-  /// configure time (MD-64). 0 = no pre-catch grid: a plan is published only
-  /// with a segment that starts before t_c, so the MPC segment planner refuses to
-  /// configure and `planner.segment.mode: mpc` parks (MD-70).
+  /// with (MD-54; the shipped value is per robot). One catch core per count
+  /// 1..n_pre_max is built at configure time (MD-64). 0 = no pre-catch grid: a
+  /// plan is published only with a segment that starts before t_c, so the MPC
+  /// segment planner refuses to configure and `planner.segment.mode: mpc` parks
+  /// (MD-70).
   int n_pre_max{0};
   /// `approach.dt_pre_s` [s] — the pre-catch spacing Δ_pre (MD-54), a whole
   /// number of nanoseconds.
