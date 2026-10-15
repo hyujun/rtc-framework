@@ -41,6 +41,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -519,8 +520,8 @@ TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
   integrated_bringup::WritePlannerEventsHeader(header);
   const std::vector<std::string> names = split(header.str());
   // #798 appended cov_n and chosen_sigma_c after the replacement columns, #713
-  // the stop columns after those.
-  EXPECT_EQ(names.back(), "segment_stop_along_end");
+  // the stop columns after those, #716 the mpc core's split after those.
+  EXPECT_EQ(names.back(), "segment_mpc_qp_us");
   // No name twice: a reader that selects by name would take one of them.
   EXPECT_EQ(std::set<std::string>(names.begin(), names.end()).size(), names.size());
   const auto row_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
@@ -669,9 +670,9 @@ TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
   }
 }
 
-// #713: the stop against the ball's line — nine columns at the tail, read back
-// by NAME. They are the wake's own solve's (`segment`), never the withheld
-// replacement's, and a record nothing filled writes them as NaN.
+// #713: the stop against the ball's line — nine columns after chosen_sigma_c
+// (the tail until #716 appended four), read back by NAME. They are the wake's own solve's
+// (`segment`), never the withheld replacement's, and a record nothing filled writes them as NaN.
 TEST(PlannerEventsCsv, TheStopColumnsCarryTheSegmentRecordByName) {
   const auto split = [](std::string s) {
     while (!s.empty() && s.back() == '\n') {
@@ -691,15 +692,20 @@ TEST(PlannerEventsCsv, TheStopColumnsCarryTheSegmentRecordByName) {
       "segment_stop_line_p_x", "segment_stop_line_p_y", "segment_stop_line_p_z",
       "segment_stop_line_d_x", "segment_stop_line_d_y", "segment_stop_line_d_z",
       "segment_stop_dev_max",  "segment_stop_dev_end",  "segment_stop_along_end"};
-  ASSERT_GE(names.size(), stop.size());
-  EXPECT_EQ(std::vector<std::string>(names.end() - 9, names.end()), stop);
-  EXPECT_EQ(names[names.size() - 10], "chosen_sigma_c");
+  const auto first = std::find(names.begin(), names.end(), stop.front());
+  ASSERT_LE(first - names.begin() + 9, static_cast<std::ptrdiff_t>(names.size()));
+  ASSERT_NE(first, names.begin());
+  EXPECT_EQ(std::vector<std::string>(first, first + 9), stop);
+  EXPECT_EQ(*(first - 1), "chosen_sigma_c");
+  const std::ptrdiff_t at = first - names.begin();
   const auto tail_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
     std::ostringstream row;
     integrated_bringup::WritePlannerEventsRow(row, rec);
     const std::vector<std::string> cells = split(row.str());
     EXPECT_EQ(cells.size(), names.size());
-    return cells.size() < 9 ? cells : std::vector<std::string>(cells.end() - 9, cells.end());
+    return cells.size() < names.size()
+               ? cells
+               : std::vector<std::string>(cells.begin() + at, cells.begin() + at + 9);
   };
 
   rtc::catching::PlannerCycleRecord rec{};
