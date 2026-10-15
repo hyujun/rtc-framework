@@ -1454,6 +1454,7 @@ def segment_binding(catching: Mapping, robot: RobotFacts) -> SearchBinding:
     rating_text = _RATING_TEXT.format(device=arm.device)
 
     if mode == "mpc":
+        t_close_e2e, close_lead, lead_key, _ = _hand_lead(catching)
         setup = "DemoCatchingController::SetupMpcSegmentPlanner"
         # MpcSegmentPlannerConstants::eta_v = ResolvedSegmentMpcEtaV: its own key; a TBD or
         # absent one runs a value compiled into the controller.
@@ -1471,6 +1472,10 @@ def segment_binding(catching: Mapping, robot: RobotFacts) -> SearchBinding:
                 "eta_v": eta_v,
                 "t_arm_s": t_arm_s,
                 "control_dt": control_dt,
+                # The closing window of cost.w_path (#716): the lead from t_c
+                # (ResolvedCloseLead — not mpc_docking here) and T_close,tot.
+                "t_close_lead": close_lead,
+                "t_close_total": t_close_e2e + 0.5 * control_dt,
             },
         }
         clik = f"{setup}, DemoCatchingController::BuildClikBoxes"
@@ -1492,6 +1497,20 @@ def segment_binding(catching: Mapping, robot: RobotFacts) -> SearchBinding:
         )
         _note(sources, "mpc.t_arm_s", *_T_ARM_SOURCE)
         _note(sources, "mpc.control_dt", *_DT_SOURCE, "control.dt")
+        _note(
+            sources,
+            "mpc.t_close_lead",
+            f"{lead_key} (planner.segment.mode mpc)",
+            "DemoCatchingController::ResolvedCloseLead",
+            "hand.T_close_lead_from_t_c",
+        )
+        _note(
+            sources,
+            "mpc.t_close_total",
+            "robot.hand.T_close_e2e + control_dt / 2 (TBD → NaN)",
+            setup,
+            "hand.T_close_e2e, control.dt",
+        )
         return SearchBinding(mode, document, sources)
 
     # ── mpc_docking ──

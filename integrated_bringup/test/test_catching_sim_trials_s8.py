@@ -61,6 +61,7 @@ def _mirror(wait_pose):
         "prediction.dt_expected": 0.05,
         "io.n_min": 12,
         "planner.search.grid.slice.dt": 0.05,
+        "hand.T_close_e2e": 0.278,
     }
 
 

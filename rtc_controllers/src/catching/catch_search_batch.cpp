@@ -185,12 +185,17 @@ template <typename T>
   const YAML::Node map = RequireMap(segment, mode, own);
   if (b.kind == SegmentBatchKind::kMpc) {
     RefuseUnknownKeys(map, own,
-                      {"q_min", "q_max", "qdot_max", "tau_max", "eta_v", "t_arm_s", "control_dt"});
+                      {"q_min", "q_max", "qdot_max", "tau_max", "eta_v", "t_arm_s", "control_dt",
+                       "t_close_lead", "t_close_total"});
     b.q_min = JointVector(map, "q_min", own, nv, false);
     b.q_max = JointVector(map, "q_max", own, nv, false);
     b.qdot_max = JointVector(map, "qdot_max", own, nv, false);
     b.tau_max = JointVector(map, "tau_max", own, nv, false);
     b.eta_v = Value<double>(map, "eta_v", own);
+    // The closing window of cost.w_path (#716): without them the batch would
+    // solve with no window where the controller has one.
+    b.t_close_lead = Value<double>(map, "t_close_lead", own);
+    b.t_close_total = Value<double>(map, "t_close_total", own);
   } else {
     RefuseUnknownKeys(map, own,
                       {"t_arm_s", "control_dt", "qd_rating", "hand_t_close_e2e",
@@ -873,6 +878,8 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     consts.t_arm_s = sb.t_arm_s;
     consts.control_dt = sb.control_dt;
     consts.v_eps = planner.mpc_segment.v_eps;
+    consts.t_close_lead = sb.t_close_lead;
+    consts.t_close_total = sb.t_close_total;
     segment_planner = MakeMpcSegmentPlanner(model, consts, planner.mpc_segment, &WakeClock, &error);
   } else {
     if (sb.qd_rating.size() != n) {

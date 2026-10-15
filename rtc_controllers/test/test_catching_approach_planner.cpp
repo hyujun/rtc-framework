@@ -649,6 +649,79 @@ TEST(ApproachPlanner, EachGateWithholdsOnItsOwn) {
   EXPECT_EQ(first(p, 0).outcome, SegmentOutcome::kCatchError);
 }
 
+// #716: the record carries where the core spent each solve — its pre-solve,
+// linearising, condensing and QP times, on the core's own clock. A record no
+// solve filled has them NaN; a catch solve and a stop solve fill all four. On
+// a real clock the four fit inside the planner's solve_ns, which brackets the
+// core's Solve.
+std::int64_t SteadyFromT0() noexcept {
+  // The steady clock, shifted so that its first read is kT0: the fixture's
+  // instants keep their meaning and a solve's time is real.
+  static const auto start = std::chrono::steady_clock::now();
+  return kT0 + std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now() - start)
+                   .count();
+}
+
+TEST(ApproachPlanner, TheRecordCarriesTheCoresSplitOfEachSolve) {
+  const auto split_of = [](const SegmentRecord& rec) {
+    return std::array<double, 4>{rec.mpc_presolve_us, rec.mpc_linearize_us, rec.mpc_condense_us,
+                                 rec.mpc_qp_us};
+  };
+  const auto expect_filled = [&](const SegmentRecord& rec, const char* what) {
+    for (const double us : split_of(rec)) {
+      EXPECT_TRUE(std::isfinite(us)) << what;
+      EXPECT_GE(us, 0.0) << what;
+    }
+    // A solve without the pre-solve spends nothing there; every solve
+    // linearises (the catch terms, or the torque rows), condenses and solves.
+    EXPECT_EQ(rec.mpc_presolve_us > 0.0, rec.presolved) << what;
+    EXPECT_GT(rec.mpc_linearize_us, 0.0) << what;
+    EXPECT_GT(rec.mpc_condense_us, 0.0) << what;
+    EXPECT_GT(rec.mpc_qp_us, 0.0) << what;
+  };
+  for (const double us : split_of(SegmentRecord{})) {
+    EXPECT_TRUE(std::isnan(us));
+  }
+
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    SCOPED_TRACE(std::to_string(arm.model->nv) + " joints");
+    Rig r(arm);
+    const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+    ASSERT_NE(s.seq, 0U) << Why(r.rec);
+    expect_filled(r.rec, "first solve");
+    // The stop core at the catch node, on the segment the RT follows.
+    const std::int64_t now = s.t_c - kTArm - kReplan - 2 * kH - 1 * kMs;
+    SetClock(now);
+    ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
+                                 BallFor(s.c), r.out, r.rec))
+        << Why(r.rec);
+    ASSERT_EQ(r.rec.kind, SegmentKind::kStop);
+    expect_filled(r.rec, "stop solve");
+    SetClock(kT0);
+
+    // A real clock: whatever the outcome (a slow build may overrun the
+    // budget), the split was measured inside the planner's interval.
+    MpcSegmentPlanner real;
+    std::string err;
+    ASSERT_TRUE(real.Configure(MpcSegmentPlannerModelOf(arm), Consts(), ApproachParams(),
+                               &SteadyFromT0, &err))
+        << err;
+    const Catch c = CatchAt(arm, Offset(arm, 0.04));
+    const std::int64_t t0 = SteadyFromT0();
+    SegmentSnapshot out{};
+    SegmentRecord rec{};
+    static_cast<void>(real.PlanFirst(RestingRt(arm, arm.q_nominal, t0 - kH),
+                                     PlanFor(arm, c, t0 + kTArm + 800 * kMs), BallFor(c), out,
+                                     rec));
+    ASSERT_GT(rec.solve_ns, 0) << Why(rec);
+    expect_filled(rec, "first solve, real clock");
+    const std::array<double, 4> split = split_of(rec);
+    EXPECT_LE(split[0] + split[1] + split[2] + split[3],
+              static_cast<double>(rec.solve_ns) * 1e-3 + 1e-3);
+  }
+}
+
 // MPC MD-91: `catch.rho_v` / `catch.v_rel_allow`, from the YAML to the cores.
 // The slack row sits at the catch node, so the catch cores get it — one more
 // variable and seven more rows each — and the stop cores stay as they were.
@@ -2341,6 +2414,316 @@ std::uint64_t SolveSequenceDigest(Rig& r, double reach) {
   }
   SetClock(kT0);
   return h.Value();
+}
+
+// ── The closing-window path (`cost.w_path`; #716) ────────────────────────────
+
+// The hand's closing timing as the binding resolves it: the shipped UR5e-class
+// hand (lead 0.302 s, T_close_e2e 0.278 s + h/2) and a fast one (iiwa7_leap's:
+// lead 0.0577 s, e2e 0.098 s + h/2).
+MpcSegmentPlannerConstants CloseConsts(double lead, double total) {
+  MpcSegmentPlannerConstants c = Consts();
+  c.t_close_lead = lead;
+  c.t_close_total = total;
+  return c;
+}
+
+MpcSegmentPlannerConstants SlowHand() {
+  return CloseConsts(0.302, 0.279);
+}
+
+MpcSegmentPlannerConstants FastHand() {
+  return CloseConsts(0.0577, 0.099);
+}
+
+MpcSegmentPlannerParams PathParams(double w_path) {
+  MpcSegmentPlannerParams p = ApproachParams();
+  p.w_path = w_path;
+  return p;
+}
+
+// A ball under gravity: sample `at` (14) passes `p_c` at `t_c` with `v_c`.
+rtc::catching::TrajectorySnapshot ParabolaTrajectory(const Eigen::Vector3d& p_c,
+                                                     const Eigen::Vector3d& v_c,
+                                                     const Eigen::Vector3d& g, std::int64_t t_c,
+                                                     std::int64_t recv_ns) {
+  constexpr int kAt = 14;
+  auto t = rtc::testing::LineTrajectory(p_c, v_c, t_c - kAt * 50 * kMs, 50 * kMs, 20, kAt,
+                                        /*seq=*/1, /*gen=*/5, /*activation=*/3, recv_ns);
+  for (int k = 0; k < t.n; ++k) {
+    auto& s = t.s[static_cast<std::size_t>(k)];
+    const double dt = (k - kAt) * 0.05;
+    const Eigen::Vector3d p = p_c + v_c * dt + 0.5 * g * dt * dt;
+    const Eigen::Vector3d v = v_c + g * dt;
+    s.p = {p.x(), p.y(), p.z()};
+    s.v = {v.x(), v.y(), v.z()};
+    s.a = {g.x(), g.y(), g.z()};
+  }
+  return t;
+}
+
+bool SameBits(const Eigen::MatrixXd& x, const Eigen::MatrixXd& y) {
+  if (x.rows() != y.rows() || x.cols() != y.cols()) {
+    return false;
+  }
+  for (Eigen::Index i = 0; i < x.size(); ++i) {
+    if (!rtc::testing::BitsEqual(x.data()[i], y.data()[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool SameQp(const rtc::tsid::QPData& a, const rtc::tsid::QPData& b) {
+  return SameBits(a.H, b.H) && SameBits(a.g, b.g) && SameBits(a.A, b.A) && SameBits(a.b, b.b) &&
+         SameBits(a.C, b.C) && SameBits(a.l, b.l) && SameBits(a.u, b.u);
+}
+
+TEST(ApproachPlannerPath, WindowNodesComeFromTheHandsTiming) {
+  for (const double w_path : {0.0, 40.0}) {
+    SCOPED_TRACE("w_path " + std::to_string(w_path));
+    Rig slow(Arm6(), PathParams(w_path), SlowHand());
+    ASSERT_TRUE(slow.planner.Configured());
+    for (int j = 1; j <= 6; ++j) {
+      const auto& mask = slow.planner.ApproachCoreParams(j).path_nodes;
+      for (int k = 0; k < static_cast<int>(mask.size()); ++k) {
+        // t_c − (j − k)·Δ_pre in [t_c − lead − h/2, t_c − lead + total], in ms.
+        const double off_ms = -(j - k) * 100.0;
+        const bool expected = k >= 1 && k < j && off_ms >= -302.0 - 1.0 && off_ms <= -302.0 + 279.0;
+        EXPECT_EQ(mask[static_cast<std::size_t>(k)], expected) << "core " << j << " node " << k;
+      }
+    }
+    const auto nodes_of = [&](int j) {
+      std::vector<int> v;
+      const auto& mask = slow.planner.ApproachCoreParams(j).path_nodes;
+      for (int k = 0; k < static_cast<int>(mask.size()); ++k) {
+        if (mask[static_cast<std::size_t>(k)]) {
+          v.push_back(k);
+        }
+      }
+      return v;
+    };
+    EXPECT_EQ(nodes_of(6), (std::vector<int>{3, 4, 5}));
+    EXPECT_EQ(nodes_of(4), (std::vector<int>{1, 2, 3}));
+    EXPECT_EQ(nodes_of(3), (std::vector<int>{1, 2}));
+    EXPECT_EQ(nodes_of(2), (std::vector<int>{1}));
+    EXPECT_TRUE(nodes_of(1).empty());
+
+    // A hand that closes in less than one pre-catch interval has no node in it.
+    Rig fast(Arm6(), PathParams(w_path), FastHand());
+    ASSERT_TRUE(fast.planner.Configured());
+    for (int j = 1; j <= 6; ++j) {
+      for (const bool b : fast.planner.ApproachCoreParams(j).path_nodes) {
+        EXPECT_FALSE(b) << "fast hand, core " << j;
+      }
+    }
+    if (w_path == 0.0) {
+      // Unknown timing (the default) has none either.
+      Rig unknown(Arm6(), PathParams(w_path));
+      ASSERT_TRUE(unknown.planner.Configured());
+      for (int j = 1; j <= 6; ++j) {
+        for (const bool b : unknown.planner.ApproachCoreParams(j).path_nodes) {
+          EXPECT_FALSE(b) << "unknown timing, core " << j;
+        }
+      }
+    }
+  }
+}
+
+TEST(ApproachPlannerPath, TheTermNeedsTheHandsTimingOnlyWhenItIsOn) {
+  const Arm arm = Arm6();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const auto configure = [&](double w_path, const MpcSegmentPlannerConstants& consts,
+                             std::string& err) {
+    MpcSegmentPlanner planner;
+    const bool ok = planner.Configure(MpcSegmentPlannerModelOf(arm), consts, PathParams(w_path),
+                                      &FakeClock, &err);
+    EXPECT_EQ(ok, planner.Configured());
+    return ok;
+  };
+  std::string err;
+  EXPECT_FALSE(configure(40.0, Consts(), err)) << "NaN timing";
+  EXPECT_NE(err.find("w_path"), std::string::npos) << err;
+  err.clear();
+  EXPECT_FALSE(configure(40.0, CloseConsts(0.302, nan), err)) << "NaN total";
+  EXPECT_NE(err.find("w_path"), std::string::npos) << err;
+  err.clear();
+  EXPECT_FALSE(configure(40.0, CloseConsts(nan, 0.279), err)) << "NaN lead";
+  EXPECT_NE(err.find("w_path"), std::string::npos) << err;
+  err.clear();
+  EXPECT_FALSE(configure(40.0, CloseConsts(0.302, 0.0), err)) << "zero closing time";
+  EXPECT_FALSE(configure(40.0, CloseConsts(-0.1, 0.279), err)) << "negative lead";
+  EXPECT_FALSE(configure(40.0, CloseConsts(60.0, 0.279), err)) << "absurd lead";
+  err.clear();
+  EXPECT_TRUE(configure(0.0, Consts(), err)) << err;
+  EXPECT_TRUE(configure(0.0, CloseConsts(nan, nan), err)) << err;
+  EXPECT_TRUE(configure(40.0, SlowHand(), err)) << err;
+  EXPECT_TRUE(configure(40.0, FastHand(), err)) << err;
+}
+
+TEST(ApproachPlannerPath, TheWarmUpsRunTheTermOnTheirWindowNodes) {
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig r(arm, PathParams(40.0), SlowHand());
+    ASSERT_TRUE(r.planner.Configured());  // every warm-up solved with the term on
+    for (int j = 1; j <= 6; ++j) {
+      const auto& core = r.planner.ApproachCore(j);
+      const auto& mask = r.planner.ApproachCoreParams(j).path_nodes;
+      EXPECT_EQ(r.planner.ApproachCoreParams(j).w_path, 40.0);
+      for (int k = 0; k <= rtc::catching::kMaxMpcNodes; ++k) {
+        EXPECT_EQ(core.PathActive(k), mask[static_cast<std::size_t>(k)])
+            << "core " << j << " node " << k;
+      }
+    }
+    for (int k = 0; k <= 2; ++k) {
+      EXPECT_EQ(r.planner.StopCoreParams(k).w_path, 40.0);
+      for (const bool b : r.planner.StopCoreParams(k).path_nodes) {
+        EXPECT_FALSE(b) << "stop core " << k;
+      }
+    }
+  }
+}
+
+TEST(ApproachPlannerPath, ThePredictionGivesEachWindowNodeALineOnTheBallsPath) {
+  const Arm arm = Arm6();
+  Rig r(arm, PathParams(40.0), SlowHand());
+  ASSERT_TRUE(r.planner.Configured());
+  const std::int64_t now = kT0;
+  const double speed = 10.0;
+  const Catch c = CatchAt(arm, Offset(arm, 0.03), speed);
+  const std::int64_t t_c = now + kTArm + 800 * kMs;
+  const Eigen::Vector3d g(0.0, 0.0, -9.81);
+  const auto traj = ParabolaTrajectory(c.p, c.v, g, t_c, now - 5 * kMs);
+  const auto cov = rtc::testing::IsotropicCovariance(traj, 0.01);
+  const rtc::catching::BallPrediction view{&traj, &cov, true};
+  rtc::catching::SegmentPlanner& iface = r.planner;
+  SetClock(now);
+  ASSERT_TRUE(iface.PlanFirst(RestingRt(arm, arm.q_nominal, now - kH), PlanFor(arm, c, t_c), view,
+                              nullptr, r.out, r.rec))
+      << Why(r.rec);
+  ASSERT_EQ(r.out.n_pre, 6);
+  EXPECT_EQ(r.rec.path_window, 3);
+  EXPECT_EQ(r.rec.path_nodes, 3);
+
+  const auto& in = r.planner.ApproachCoreInput(6);
+  const auto& mask = r.planner.ApproachCoreParams(6).path_nodes;
+  int on = 0;
+  for (int k = 0; k <= rtc::catching::kMaxMpcNodes; ++k) {
+    const auto u = static_cast<std::size_t>(k);
+    EXPECT_EQ(in.path_on[u], mask[u]) << "node " << k;
+    if (!in.path_on[u]) {
+      continue;
+    }
+    ++on;
+    EXPECT_NEAR(in.path_d.col(k).norm(), 1.0, 1e-12) << "node " << k;
+    const Eigen::VectorXd q_ref = in.q_ref.col(k);
+    const Eigen::Vector3d hand = FkPos(arm, q_ref);
+    // D2 a: two Newton steps reach the foot of the perpendicular from the
+    // hand to the ball's path (a ≈ 0) on every window node — the hand is far
+    // ahead of the ball at the node's own instant, not beside it.
+    const double along = (hand - in.path_p.col(k)).dot(in.path_d.col(k));
+    EXPECT_LT(std::abs(along), 8e-3) << "node " << k;
+    const double dt = -(6 - k) * 0.1;
+    const Eigen::Vector3d p_node = c.p + c.v * dt + 0.5 * g * dt * dt;
+    EXPECT_LT((hand - in.path_p.col(k)).norm(), (hand - p_node).norm()) << "node " << k;
+  }
+  EXPECT_EQ(on, 3);
+  EXPECT_TRUE(std::isfinite(r.rec.path_dev_max));
+  EXPECT_TRUE(std::isfinite(r.rec.path_dev_mean));
+  EXPECT_GE(r.rec.path_dev_mean, 0.0);
+  EXPECT_GE(r.rec.path_dev_max, r.rec.path_dev_mean);
+
+  // The newer prediction reaches a pre-catch replan the same way.
+  r.Publish(now);
+  const std::int64_t later = now + 20 * kMs;
+  SetClock(later);
+  ASSERT_TRUE(iface.Replan(FollowingRt(arm, arm.q_nominal, later - kH, t_c, /*pending=*/1, 0), view,
+                           r.out, r.rec))
+      << Why(r.rec);
+  EXPECT_EQ(r.rec.path_window, 3);
+  EXPECT_EQ(r.rec.path_nodes, 3);
+  EXPECT_TRUE(std::isfinite(r.rec.path_dev_max));
+  SetClock(kT0);
+}
+
+TEST(ApproachPlannerPath, WithoutAPredictionTheWindowHasNoLineAndTheSolveStillRuns) {
+  const Arm arm = Arm6();
+  Rig r(arm, PathParams(40.0), SlowHand());
+  const Catch c = CatchAt(arm, Offset(arm, 0.03));
+  const std::int64_t t_c = kT0 + kTArm + 800 * kMs;
+  SetClock(kT0);
+  ASSERT_TRUE(r.planner.PlanFirst(RestingRt(arm, arm.q_nominal, kT0 - kH), PlanFor(arm, c, t_c),
+                                  BallFor(c), r.out, r.rec))
+      << Why(r.rec);
+  ASSERT_EQ(r.out.n_pre, 6);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kReady);
+  EXPECT_EQ(r.rec.path_window, 3);
+  EXPECT_EQ(r.rec.path_nodes, 0);
+  EXPECT_TRUE(std::isnan(r.rec.path_dev_max));
+  EXPECT_TRUE(std::isnan(r.rec.path_dev_mean));
+  for (const bool b : r.planner.ApproachCoreInput(6).path_on) {
+    EXPECT_FALSE(b);
+  }
+  for (int k = 0; k <= rtc::catching::kMaxMpcNodes; ++k) {
+    EXPECT_FALSE(r.planner.ApproachCore(6).PathActive(k)) << k;
+  }
+  // The same through a prediction the planner cannot use: no covariance.
+  const auto traj = ParabolaTrajectory(c.p, c.v, Eigen::Vector3d(0.0, 0.0, -9.81), t_c, kT0);
+  const rtc::catching::BallPrediction no_cov{&traj, nullptr, false};
+  EXPECT_TRUE(no_cov.Empty());
+  SetClock(kT0);
+  ASSERT_TRUE(r.planner.PlanFirst(RestingRt(arm, arm.q_nominal, kT0 - kH), PlanFor(arm, c, t_c),
+                                  BallFor(c), r.out, r.rec, no_cov))
+      << Why(r.rec);
+  EXPECT_EQ(r.rec.path_nodes, 0);
+  EXPECT_TRUE(std::isnan(r.rec.path_dev_max));
+  SetClock(kT0);
+}
+
+TEST(ApproachPlannerPath, AHandThatClosesInsideOneIntervalMakesTheWeightANoOp) {
+  // iiwa7_leap's timing has no window node: w_path > 0 must leave every catch
+  // core's QP the one without the term, warm-up and a real solve alike.
+  const Arm arm = Arm6();
+  Rig off(arm, PathParams(0.0), FastHand());
+  Rig on(arm, PathParams(40.0), FastHand());
+  ASSERT_TRUE(off.planner.Configured());
+  ASSERT_TRUE(on.planner.Configured());
+  for (int j = 1; j <= 6; ++j) {
+    EXPECT_TRUE(SameQp(off.planner.ApproachCore(j).MainQp(), on.planner.ApproachCore(j).MainQp()))
+        << "warm-up, core " << j;
+  }
+  const Catch c = CatchAt(arm, Offset(arm, 0.03), 10.0);
+  const std::int64_t t_c = kT0 + kTArm + 800 * kMs;
+  const auto traj =
+      ParabolaTrajectory(c.p, c.v, Eigen::Vector3d(0.0, 0.0, -9.81), t_c, kT0 - 5 * kMs);
+  const auto cov = rtc::testing::IsotropicCovariance(traj, 0.01);
+  const rtc::catching::BallPrediction view{&traj, &cov, true};
+  for (Rig* r : {&off, &on}) {
+    SetClock(kT0);
+    rtc::catching::SegmentPlanner& iface = r->planner;
+    ASSERT_TRUE(iface.PlanFirst(RestingRt(arm, arm.q_nominal, kT0 - kH), PlanFor(arm, c, t_c), view,
+                                nullptr, r->out, r->rec))
+        << Why(r->rec);
+    EXPECT_EQ(r->rec.path_window, 0);
+    EXPECT_EQ(r->rec.path_nodes, 0);
+  }
+  ASSERT_EQ(off.out.n_pre, on.out.n_pre);
+  EXPECT_TRUE(SameQp(off.planner.ApproachCore(on.out.n_pre).MainQp(),
+                     on.planner.ApproachCore(on.out.n_pre).MainQp()));
+  // Non-vacuity: with the slow hand the same weight does change the QP.
+  Rig slow_off(arm, PathParams(0.0), SlowHand());
+  Rig slow_on(arm, PathParams(40.0), SlowHand());
+  for (Rig* r : {&slow_off, &slow_on}) {
+    SetClock(kT0);
+    rtc::catching::SegmentPlanner& iface = r->planner;
+    ASSERT_TRUE(iface.PlanFirst(RestingRt(arm, arm.q_nominal, kT0 - kH), PlanFor(arm, c, t_c), view,
+                                nullptr, r->out, r->rec))
+        << Why(r->rec);
+  }
+  ASSERT_EQ(slow_on.out.n_pre, 6);
+  ASSERT_EQ(slow_on.rec.path_nodes, 3);
+  EXPECT_FALSE(SameBits(slow_off.planner.ApproachCore(6).MainQp().H,
+                        slow_on.planner.ApproachCore(6).MainQp().H));
+  SetClock(kT0);
 }
 
 TEST(ApproachPlanner, AReconfiguredPlannerIsANewOne) {

@@ -110,6 +110,32 @@
 // A solve without a line (no direction; a stop core whose source carries none)
 // records NaN and, with w_⊥ = 0, solves as it always did.
 //
+// ── The closing-window path (`cost.w_path`; #716, formulation §1.6) ───────────
+// The hand closes over [t_cmd, t_cmd + T_close,tot], t_cmd = t_c − T_close_lead
+// (the hand sequencer's rule, unchanged), and the hand should be on the ball's
+// path while it does. A catch core's pre-catch node k (1..n_pre − 1) is in that
+// window when t_c − (n_pre − k)·Δ_pre lies in [t_cmd − h/2, t_cmd + T_close,tot]
+// (T_close,tot = T_close_e2e + h/2, the search's convention), counted in whole
+// nanoseconds from the plan's t_c. The grid is anchored at t_c, so each catch
+// core's window nodes are fixed: Configure builds them from the constants'
+// t_close_lead / t_close_total (NaN — the hand's timing unknown — gives none,
+// and with w_path > 0 refuses to configure). The catch node itself is w_⊥'s.
+//  • Each window node gets its own line: the ball's predicted path near where
+//    the REFERENCE puts the hand at that node — τ_k from t_k by two Newton
+//    steps on (p_C(q̄_k) − p̂_b(τ))·v̂_b(τ) = 0, τ kept between the segment's
+//    node 0 and one interval past t_c, the line through p̂_b(τ_k) along
+//    v̂_b(τ_k). The prediction is the wake's
+//    (BallPrediction): on a first solve the catch terms take the plan's p_c,
+//    v_c while the path takes the newest prediction — the two sources can
+//    differ by the prediction's update since the search.
+//  • A node whose τ_k cannot be found — no prediction, a sample that is not
+//    valid or past the horizon, a ball slower than v_eps — has the term off on
+//    that solve; the solve is not withheld (SegmentRecord::path_nodes says how
+//    many were on, path_window how many the core has).
+//  • This work is inside the solve's budget clock. The record measures the
+//    solution's catch frame against each node's line (path_dev_max /
+//    path_dev_mean), whatever w_path is, as the stop line is (#713).
+//
 // ── Contracts ─────────────────────────────────────────────────────────────────
 //  • Configure() is non-RT: it Inits the k_max + 1 stop cores and the
 //    n_pre_max catch cores (armature ZERO — MD-25: armature is not used in
@@ -184,6 +210,12 @@ struct MpcSegmentPlannerConstants {
   /// `planner.segment.mpc.v_eps` [m/s] — the ball speed below which its direction of
   /// travel (and so a_d) is undefined (MakeMpcSegmentBallTarget).
   double v_eps{1e-6};
+  /// `robot.hand.T_close_lead` as the binding resolves it [s]: the close is
+  /// commanded at t_cmd = t_c − this. NaN: unknown (header note).
+  double t_close_lead{std::numeric_limits<double>::quiet_NaN()};
+  /// T_close,tot = `robot.hand.T_close_e2e` + h/2 [s]: how long the close
+  /// takes from t_cmd. NaN: unknown.
+  double t_close_total{std::numeric_limits<double>::quiet_NaN()};
 };
 
 /// The ball at a plan's catch instant as the solves take it
@@ -309,9 +341,12 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   /// @param ball the ball at plan.t_c_ns (Σ_p only — p, v, a_d are the plan's)
   /// @return true when `out` holds a publishable segment (kReady); its
   ///         publish_ns and segment_seq are the caller's.
+  /// @param prediction the wake's prediction, for the closing-window path
+  ///        (header note); empty: no window node has a line
   [[nodiscard]] bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
                                const MpcSegmentBallTarget& ball, SegmentSnapshot& out,
-                               SegmentRecord& rec) noexcept;
+                               SegmentRecord& rec,
+                               const BallPrediction& prediction = BallPrediction{}) noexcept;
 
   /// @brief The same solve from the wake's prediction (the SegmentPlanner
   ///        entry; RT-safe): the ball target is `ball` at `plan.t_c_ns`
@@ -329,8 +364,10 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   ///        RT reports pending or following (SourceSeq).
   /// @param ball the ball at rt.plan_t_c_ns; read at pre-catch grid points
   ///        only (a stop core's stop-path line is its source segment's)
+  /// @param prediction as PlanFirst's (pre-catch grid points only)
   [[nodiscard]] bool Replan(const PlannerRtState& rt, const MpcSegmentBallTarget& ball,
-                            SegmentSnapshot& out, SegmentRecord& rec) noexcept;
+                            SegmentSnapshot& out, SegmentRecord& rec,
+                            const BallPrediction& prediction = BallPrediction{}) noexcept;
 
   /// @brief The same solve from the wake's prediction (the SegmentPlanner
   ///        entry; RT-safe): the ball target is `ball` at `rt.plan_t_c_ns`, an
@@ -525,6 +562,15 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   // (FK on fk_data_). Nothing is written without a line.
   void RecordStop(const StopLine& line, const MpcSegmentCoreResult& r, bool solved, int k_first,
                   int n_total, SegmentRecord& rec) noexcept;
+  // The closing-window path (header note): each window node's line from
+  // `prediction` into `in` (path_on, path_p, path_d), and the counts into
+  // `rec`. The reference must already be in `in`.
+  void SetPathInputs(const BallPrediction& prediction, std::int64_t t_c, int n_pre,
+                     MpcSegmentCoreInput& in, SegmentRecord& rec) noexcept;
+  // The solution's catch frame against the lines SetPathInputs gave (FK on
+  // fk_data_); nothing without a solution or a line.
+  void RecordPath(const MpcSegmentCoreInput& in, const MpcSegmentCoreResult& r, bool solved,
+                  int n_pre, SegmentRecord& rec) noexcept;
 
   // `cost.w_perp` > 0: the cores read the line, and a solve without one is
   // withheld.

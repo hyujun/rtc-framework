@@ -25,6 +25,13 @@ namespace {
   return static_cast<std::size_t>(i);
 }
 
+// The closing window's τ_k (header note): a fixed number of Newton steps, no
+// open-ended iteration on the planner thread.
+constexpr int kPathNewtonSteps = 2;
+// Upper bound on the hand's lead and closure time [s]: keeps the ns
+// conversion far from overflow; a real hand's are a fraction of a second.
+constexpr double kMaxCloseTimingS = 5.0;
+
 // The core's design values, all YAML keys, from `planner.segment.mpc.*`: the cost
 // scalars (the stop-path weight among them — both core kinds carry that term,
 // on their nodes from the catch on), the axis and trust-region limits, the
@@ -38,6 +45,7 @@ void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
   mp.w_delta = p.w_delta;
   mp.rho_tau = p.rho_tau;
   mp.w_perp = p.w_perp;
+  mp.w_path = p.w_path;
   mp.axis_theta_max = p.axis_theta_max;
   mp.delta_tr = p.delta_tr;
   mp.reference_rest_tol = p.reference_rest_tol;
@@ -267,6 +275,22 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
       return false;
     }
   }
+  // The closing window (header note): fixed per catch core, from the hand's
+  // timing. Unknown timing leaves every core without window nodes — and is a
+  // configuration error only when the term is asked for.
+  const double lead = consts_.t_close_lead;
+  const double total = consts_.t_close_total;
+  const bool timing_known = std::isfinite(lead) && lead >= 0.0 && lead <= kMaxCloseTimingS &&
+                            std::isfinite(total) && total > 0.0 && total <= kMaxCloseTimingS;
+  if (params.w_path > 0.0 && !timing_known) {
+    why =
+        "planner.segment.mpc.cost.w_path > 0 needs the hand's closing timing "
+        "(robot.hand.T_close_lead and T_close_e2e, each in [0, " +
+        std::to_string(kMaxCloseTimingS) + "] s)";
+    return false;
+  }
+  const std::int64_t lead_ns = timing_known ? SecondsToNs(lead) : 0;
+  const std::int64_t total_ns = timing_known ? SecondsToNs(total) : 0;
   rest_tol_ref_ = params.reference_rest_tol;
   MpcSegmentCoreLimits limits;
   limits.q_min.resize(n);
@@ -313,6 +337,14 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
     mp.eta_v = consts_.eta_v;
     mp.eta_tau = params.eta_tau;
     mp.m_q = params.m_q;
+    // Node k sits (j − k)·Δ_pre before t_c; it is in the closing window when
+    // that instant lies in [t_cmd − h/2, t_cmd + T_close,tot], t_cmd = t_c − lead
+    // — whole nanoseconds from t_c, so a node 2 ms inside the edge stays in.
+    mp.path_nodes = {};
+    for (int k = 1; timing_known && k < j; ++k) {
+      const std::int64_t off = -static_cast<std::int64_t>(j - k) * dt_pre_ns_;
+      mp.path_nodes[U(k)] = off >= -lead_ns - h_ns_ / 2 && off <= -lead_ns + total_ns;
+    }
     auto core = std::make_unique<MpcSegmentCore>();
     const MpcSegmentCoreReason r = core->Init(*model.arm, model.catch_frame, mp, limits);
     if (r != MpcSegmentCoreReason::kNone) {
@@ -410,6 +442,13 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
       in.p_c = in.p_b;
       in.d_hat = d_ball;
     }
+    // The path term on every window node, on the same synthetic line, so a
+    // core with window nodes warms up with the term it will run.
+    in.path_on = catch_params_[j].path_nodes;
+    for (Eigen::Index k = 0; k < in.path_p.cols(); ++k) {
+      in.path_p.col(k) = p;
+      in.path_d.col(k) = d_ball;
+    }
     if (!timed(*catch_cores_[j], in, catch_results_[j])) {
       why = "warm-up solve of the catch core n_pre = " + std::to_string(j + 1) + ": " +
             MpcSegmentCoreReasonName(catch_results_[j].reason);
@@ -417,6 +456,7 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
     }
     in.reference_valid = false;
     in.cold_start = false;
+    in.path_on = {};
   }
   return true;
 }
@@ -521,6 +561,101 @@ void MpcSegmentPlanner::RecordStop(const StopLine& line, const MpcSegmentCoreRes
   rec.stop_along_end = m.along_end;
 }
 
+void MpcSegmentPlanner::SetPathInputs(const BallPrediction& prediction, std::int64_t t_c, int n_pre,
+                                      MpcSegmentCoreInput& in, SegmentRecord& rec) noexcept {
+  in.path_on = {};
+  const MpcSegmentCoreParams& mp = catch_params_[U(n_pre - 1)];
+  int window = 0;
+  for (int k = 1; k < n_pre; ++k) {
+    window += mp.path_nodes[U(k)] ? 1 : 0;
+  }
+  rec.path_window = window;
+  rec.path_nodes = 0;
+  if (window == 0 || prediction.Empty()) {
+    return;
+  }
+  const TrajectorySnapshot& traj = *prediction.traj;
+  const double v_eps2 = consts_.v_eps * consts_.v_eps;
+  // τ stays on the segment's pre-catch span, one interval past t_c at most: a
+  // hand far off the path must not send it out where the prediction says
+  // nothing of this catch.
+  const std::int64_t tau_lo = t_c - static_cast<std::int64_t>(n_pre) * dt_pre_ns_;
+  const std::int64_t tau_hi = t_c + dt_pre_ns_;
+  int hint = 0;
+  int on = 0;
+  for (int k = 1; k < n_pre; ++k) {
+    if (!mp.path_nodes[U(k)]) {
+      continue;
+    }
+    // Where the reference puts the hand at node k.
+    pinocchio::forwardKinematics(*arm_, fk_data_, in.q_ref.col(k));
+    pinocchio::updateFramePlacement(*arm_, fk_data_, catch_frame_);
+    const Eigen::Vector3d hand = fk_data_.oMf[catch_frame_].translation();
+    if (!hand.allFinite()) {
+      continue;
+    }
+    // τ_k: the ball's instant nearest the hand, by Newton on
+    // (hand − p̂_b(τ))·v̂_b(τ) = 0 from the node's own instant — a fixed number
+    // of steps (on a straight path the first one lands on the foot of the
+    // perpendicular; gravity's curvature takes the second), τ kept on
+    // [tau_lo, tau_hi].
+    std::int64_t tau = t_c - static_cast<std::int64_t>(n_pre - k) * dt_pre_ns_;
+    bool ok = true;
+    for (int it = 0; ok && it < kPathNewtonSteps; ++it) {
+      const SampleEval b = SampleAt(traj, NowLead{tau}, hint);
+      const double v2 = b.v.squaredNorm();
+      // NUM-2: a ball too slow to have a direction has no path to step along.
+      ok = b.valid && std::isfinite(v2) && v2 > v_eps2;
+      if (ok) {
+        const double step = (hand - b.p).dot(b.v) / v2;
+        // Finite and within the span before it becomes nanoseconds.
+        const double span = static_cast<double>(tau_hi - tau_lo) * 1e-9;
+        ok = std::isfinite(step);
+        tau =
+            std::clamp(tau + SecondsToNs(std::clamp(ok ? step : 0.0, -span, span)), tau_lo, tau_hi);
+      }
+    }
+    const SampleEval b = SampleAt(traj, NowLead{tau}, hint);
+    const double speed = b.v.norm();
+    if (!ok || !b.valid || b.after_horizon || !b.p.allFinite() || !std::isfinite(speed) ||
+        !(speed > consts_.v_eps)) {
+      continue;
+    }
+    in.path_on[U(k)] = true;
+    in.path_p.col(k) = b.p;
+    in.path_d.col(k) = b.v / speed;
+    ++on;
+  }
+  rec.path_nodes = on;
+}
+
+void MpcSegmentPlanner::RecordPath(const MpcSegmentCoreInput& in, const MpcSegmentCoreResult& r,
+                                   bool solved, int n_pre, SegmentRecord& rec) noexcept {
+  if (!solved || rec.path_nodes == 0) {
+    return;
+  }
+  // std::max drops a NaN, so a distance that is not a number is kept as one.
+  double worst = 0.0;
+  double sum = 0.0;
+  int count = 0;
+  for (int k = 1; k < n_pre; ++k) {
+    if (!in.path_on[U(k)]) {
+      continue;
+    }
+    pinocchio::forwardKinematics(*arm_, fk_data_, r.q.col(k));
+    pinocchio::updateFramePlacement(*arm_, fk_data_, catch_frame_);
+    const Eigen::Vector3d e = fk_data_.oMf[catch_frame_].translation() - in.path_p.col(k);
+    const Eigen::Vector3d d = in.path_d.col(k);
+    const double dev = (e - d.dot(e) * d).norm();
+    worst = std::isfinite(dev) && std::isfinite(worst) ? std::max(worst, dev)
+                                                       : std::numeric_limits<double>::quiet_NaN();
+    sum += dev;
+    ++count;
+  }
+  rec.path_dev_max = worst;
+  rec.path_dev_mean = sum / static_cast<double>(count);
+}
+
 MpcSegmentStopDeviation MeasureMpcSegmentStop(const pinocchio::Model& arm, pinocchio::Data& data,
                                               pinocchio::FrameIndex frame,
                                               const Eigen::Ref<const Eigen::MatrixXd>& q,
@@ -602,6 +737,10 @@ SegmentOutcome MpcSegmentPlanner::Judge(const MpcSegmentCoreResult& r, bool ok, 
   rec.iterations = r.iterations + r.presolve_iterations;
   rec.qp_status = r.qp_status;
   rec.solver_retried = r.cold_retried;
+  rec.mpc_presolve_us = r.presolve_us;
+  rec.mpc_linearize_us = r.linearize_us;
+  rec.mpc_condense_us = r.condense_us;
+  rec.mpc_qp_us = r.solve_us;
   if (!ok) {
     return SegmentOutcome::kSolveFailed;
   }
@@ -742,17 +881,17 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
                                   SegmentSnapshot& out, SegmentRecord& rec) noexcept {
   // A search's solution is another problem's (see the header): not read.
   static_cast<void>(solution);
-  return PlanFirst(rt, plan, TargetAt(ball, plan.t_c_ns), out, rec);
+  return PlanFirst(rt, plan, TargetAt(ball, plan.t_c_ns), out, rec, ball);
 }
 
 bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const BallPrediction& ball,
                                SegmentSnapshot& out, SegmentRecord& rec) noexcept {
-  return Replan(rt, TargetAt(ball, rt.plan_t_c_ns), out, rec);
+  return Replan(rt, TargetAt(ball, rt.plan_t_c_ns), out, rec, ball);
 }
 
 bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
                                   const MpcSegmentBallTarget& ball, SegmentSnapshot& out,
-                                  SegmentRecord& rec) noexcept {
+                                  SegmentRecord& rec, const BallPrediction& prediction) noexcept {
   rec = SegmentRecord{};
   ready_line_.valid = false;  // a line belongs to the solve that built it
   if (!configured_) {
@@ -907,11 +1046,15 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
     in.p_c = line.p_c;
     in.d_hat = line.d_hat;
   }
+  // The closing-window path from the newest prediction (header note) — the
+  // catch terms above are the plan's.
+  SetPathInputs(prediction, plan.t_c_ns, n_pre, in, rec);
   // No retry: a catch core cannot be solved without its reference.
   const bool ok = core.Solve(in, res);
   const std::int64_t end = clock_();
   NoteSolve(ok, true, n_pre, t_eff, plan.plan_id, plan.t_c_ns);
   RecordStop(line, res, ok, n_pre, n_total, rec);
+  RecordPath(in, res, ok, n_pre, rec);
   rec.outcome = Judge(res, ok, n_pre, n_total, true, start, end, first_ns_, t_eff, rec);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;
@@ -1033,7 +1176,8 @@ bool MpcSegmentPlanner::StartOnSource(const PlannerRtState& rt, const PlanSnapsh
 }
 
 bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTarget& ball,
-                               SegmentSnapshot& out, SegmentRecord& rec) noexcept {
+                               SegmentSnapshot& out, SegmentRecord& rec,
+                               const BallPrediction& prediction) noexcept {
   rec = SegmentRecord{};
   ready_line_.valid = false;  // a line belongs to the solve that built it
   if (!configured_) {
@@ -1182,6 +1326,11 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
     in.p_c = line.p_c;
     in.d_hat = line.d_hat;
   }
+  // A catch core's closing-window path from the wake's prediction; a stop
+  // core has no window node.
+  if (pre) {
+    SetPathInputs(prediction, t_c, n_pre, in, rec);
+  }
   bool ok = core.Solve(in, res);
   if (!ok && !pre &&
       (res.reason == MpcSegmentCoreReason::kTrustRegionConflict ||
@@ -1199,6 +1348,9 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   const std::int64_t end = clock_();
   NoteSolve(ok, pre, index, t_eff, rt.plan_id, t_c);
   RecordStop(line, res, ok, n_pre, n_total, rec);
+  if (pre) {
+    RecordPath(in, res, ok, n_pre, rec);
+  }
   rec.outcome = Judge(res, ok, n_pre, n_total, pre, start, end, replan_ns_, t_eff, rec);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;

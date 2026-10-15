@@ -41,6 +41,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -262,10 +263,17 @@ TEST(CatchingPlannerThread, TheTimeoutWakesThePlannerWithoutASignal) {
   CatchingPlannerThread thread(rig->cycle, rig->fd, /*wake_timeout_s=*/0.01, rig->timing,
                                rig->events);
   thread.StartWith(PlainThread());
-  ASSERT_TRUE(WaitUntil([&] { return thread.TimeoutWakeCount() >= 3; }));
+  // Wait on the published count, not the timeout count: a wake is counted in
+  // WaitForNextTick, before its OnTick publishes, so the timeout count can
+  // run one tick ahead of the published one.
+  ASSERT_TRUE(WaitUntil([&] { return thread.PublishedCount() >= 3; }));
   EXPECT_EQ(thread.SignalWakeCount(), 0U);
-  // A timeout wake re-plans against the current RT state: it publishes.
-  EXPECT_GE(thread.PublishedCount(), 3U);
+  // A timeout wake re-plans against the current RT state: it publishes. Every
+  // counted wake but the one still in flight has published. The published
+  // count is read after the timeout count, so the bound holds without a race.
+  const std::uint64_t timeouts = thread.TimeoutWakeCount();
+  EXPECT_GE(timeouts, 3U);
+  EXPECT_GE(thread.PublishedCount() + 1U, timeouts);
 }
 
 struct ResetDuringSearch {
@@ -519,8 +527,9 @@ TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
   integrated_bringup::WritePlannerEventsHeader(header);
   const std::vector<std::string> names = split(header.str());
   // #798 appended cov_n and chosen_sigma_c after the replacement columns, #713
-  // the stop columns after those.
-  EXPECT_EQ(names.back(), "segment_stop_along_end");
+  // the stop columns after those, #716 the mpc core's split and the closing
+  // window's path after those.
+  EXPECT_EQ(names.back(), "segment_path_dev_mean");
   // No name twice: a reader that selects by name would take one of them.
   EXPECT_EQ(std::set<std::string>(names.begin(), names.end()).size(), names.size());
   const auto row_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
@@ -669,9 +678,9 @@ TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
   }
 }
 
-// #713: the stop against the ball's line — nine columns at the tail, read back
-// by NAME. They are the wake's own solve's (`segment`), never the withheld
-// replacement's, and a record nothing filled writes them as NaN.
+// #713: the stop against the ball's line — nine columns after chosen_sigma_c
+// (the tail until #716 appended four), read back by NAME. They are the wake's own solve's
+// (`segment`), never the withheld replacement's, and a record nothing filled writes them as NaN.
 TEST(PlannerEventsCsv, TheStopColumnsCarryTheSegmentRecordByName) {
   const auto split = [](std::string s) {
     while (!s.empty() && s.back() == '\n') {
@@ -691,15 +700,20 @@ TEST(PlannerEventsCsv, TheStopColumnsCarryTheSegmentRecordByName) {
       "segment_stop_line_p_x", "segment_stop_line_p_y", "segment_stop_line_p_z",
       "segment_stop_line_d_x", "segment_stop_line_d_y", "segment_stop_line_d_z",
       "segment_stop_dev_max",  "segment_stop_dev_end",  "segment_stop_along_end"};
-  ASSERT_GE(names.size(), stop.size());
-  EXPECT_EQ(std::vector<std::string>(names.end() - 9, names.end()), stop);
-  EXPECT_EQ(names[names.size() - 10], "chosen_sigma_c");
+  const auto first = std::find(names.begin(), names.end(), stop.front());
+  ASSERT_LE(first - names.begin() + 9, static_cast<std::ptrdiff_t>(names.size()));
+  ASSERT_NE(first, names.begin());
+  EXPECT_EQ(std::vector<std::string>(first, first + 9), stop);
+  EXPECT_EQ(*(first - 1), "chosen_sigma_c");
+  const std::ptrdiff_t at = first - names.begin();
   const auto tail_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
     std::ostringstream row;
     integrated_bringup::WritePlannerEventsRow(row, rec);
     const std::vector<std::string> cells = split(row.str());
     EXPECT_EQ(cells.size(), names.size());
-    return cells.size() < 9 ? cells : std::vector<std::string>(cells.end() - 9, cells.end());
+    return cells.size() < names.size()
+               ? cells
+               : std::vector<std::string>(cells.begin() + at, cells.begin() + at + 9);
   };
 
   rtc::catching::PlannerCycleRecord rec{};
@@ -718,6 +732,96 @@ TEST(PlannerEventsCsv, TheStopColumnsCarryTheSegmentRecordByName) {
   rec.segment.stop_along_end = -0.25;
   EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"0.5", "-0.25", "1.5", "0", "0.5", "-0.75",
                                                     "0.125", "0.0625", "-0.25"}));
+}
+
+// #716: where the mpc core spent the wake's own solve — four columns right
+// after the stop columns, read back by NAME. A record nothing filled writes
+// them as NaN, and the withheld replacement's are not written.
+TEST(PlannerEventsCsv, TheMpcSplitColumnsCarryTheSegmentRecordByName) {
+  const auto split = [](std::string s) {
+    while (!s.empty() && s.back() == '\n') {
+      s.pop_back();
+    }
+    std::vector<std::string> out;
+    std::istringstream in(s);
+    for (std::string cell; std::getline(in, cell, ',');) {
+      out.push_back(cell);
+    }
+    return out;
+  };
+  std::ostringstream header;
+  integrated_bringup::WritePlannerEventsHeader(header);
+  const std::vector<std::string> names = split(header.str());
+  const std::vector<std::string> mpc = {"segment_mpc_presolve_us", "segment_mpc_linearize_us",
+                                        "segment_mpc_condense_us", "segment_mpc_qp_us"};
+  const auto first = std::find(names.begin(), names.end(), mpc.front());
+  ASSERT_LE(first - names.begin() + 4, static_cast<std::ptrdiff_t>(names.size()));
+  ASSERT_NE(first, names.begin());
+  EXPECT_EQ(std::vector<std::string>(first, first + 4), mpc);
+  EXPECT_EQ(*(first - 1), "segment_stop_along_end");
+  const std::ptrdiff_t at = first - names.begin();
+  const auto tail_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
+    std::ostringstream row;
+    integrated_bringup::WritePlannerEventsRow(row, rec);
+    const std::vector<std::string> cells = split(row.str());
+    EXPECT_EQ(cells.size(), names.size());
+    return cells.size() < names.size()
+               ? cells
+               : std::vector<std::string>(cells.begin() + at, cells.begin() + at + 4);
+  };
+
+  rtc::catching::PlannerCycleRecord rec{};
+  EXPECT_EQ(tail_of(rec), std::vector<std::string>(4, "nan"));
+  rec.replacement.mpc_qp_us = 9.0;
+  EXPECT_EQ(tail_of(rec), std::vector<std::string>(4, "nan"));
+  rec.segment.mpc_presolve_us = 0.0;
+  rec.segment.mpc_linearize_us = 125.5;
+  rec.segment.mpc_condense_us = 2048.25;
+  rec.segment.mpc_qp_us = 21000.5;
+  EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"0", "125.5", "2048.25", "21000.5"}));
+}
+
+// #716: the closing window's path — four columns at the tail, read back by
+// NAME. A record nothing filled writes the counts as 0 and the distances as
+// NaN, and the withheld replacement's are not written.
+TEST(PlannerEventsCsv, ThePathColumnsCarryTheSegmentRecordByName) {
+  const auto split = [](std::string s) {
+    while (!s.empty() && s.back() == '\n') {
+      s.pop_back();
+    }
+    std::vector<std::string> out;
+    std::istringstream in(s);
+    for (std::string cell; std::getline(in, cell, ',');) {
+      out.push_back(cell);
+    }
+    return out;
+  };
+  std::ostringstream header;
+  integrated_bringup::WritePlannerEventsHeader(header);
+  const std::vector<std::string> names = split(header.str());
+  const std::vector<std::string> path = {"segment_path_window", "segment_path_nodes",
+                                         "segment_path_dev_max", "segment_path_dev_mean"};
+  ASSERT_GE(names.size(), path.size() + 1);
+  EXPECT_EQ(std::vector<std::string>(names.end() - 4, names.end()), path);
+  EXPECT_EQ(names[names.size() - 5], "segment_mpc_qp_us");
+  const auto tail_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
+    std::ostringstream row;
+    integrated_bringup::WritePlannerEventsRow(row, rec);
+    const std::vector<std::string> cells = split(row.str());
+    EXPECT_EQ(cells.size(), names.size());
+    return cells.size() < 4 ? cells : std::vector<std::string>(cells.end() - 4, cells.end());
+  };
+
+  rtc::catching::PlannerCycleRecord rec{};
+  EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"0", "0", "nan", "nan"}));
+  rec.replacement.path_window = 9;
+  rec.replacement.path_dev_max = 9.0;
+  EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"0", "0", "nan", "nan"}));
+  rec.segment.path_window = 3;
+  rec.segment.path_nodes = 2;
+  rec.segment.path_dev_max = 0.0125;
+  rec.segment.path_dev_mean = 0.00625;
+  EXPECT_EQ(tail_of(rec), (std::vector<std::string>{"3", "2", "0.0125", "0.00625"}));
 }
 
 // ── The lane ────────────────────────────────────────────────────────────────

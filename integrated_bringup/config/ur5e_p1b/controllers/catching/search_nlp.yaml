@@ -66,9 +66,12 @@ demo_catching_controller:
           # plan in 50 of 50 throws.
           # solve_s has a CEILING no check enforces: while a plan is followed
           # a wake's budget is prediction.dt_expected - the segment planner's
-          # budget.replan_s (0.05 - 0.025 = 0.025 s), and a share above it
-          # fits no solve there — 0.028 s ran 0 solves while following
-          # (0.024 s: 192 of 216 wakes).
+          # budget.replan_s (0.05 - 0.025 = 0.025 s under mpc_docking, the
+          # planner this search ships with), and a share above it fits no
+          # solve there — 0.028 s ran 0 solves while following (0.024 s: 192
+          # of 216 wakes). Under planner.segment.mode mpc the ceiling is
+          # 0.05 - 0.030 = 0.020 s (#716): this solve_s would run no solve
+          # while a plan is followed.
           # On the D-2 tuning set (E1-F19 part 2, the stop grid and the SQP
           # values below) 180 of 257 candidate solves still ended at the
           # deadline: with no deadline a solve the search accepts needs 18.1 ms
