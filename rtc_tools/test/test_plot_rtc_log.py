@@ -3754,6 +3754,10 @@ _PLANNER_EVENTS_COLUMNS = [
     "segment_mpc_linearize_us",
     "segment_mpc_condense_us",
     "segment_mpc_qp_us",
+    "segment_path_window",
+    "segment_path_nodes",
+    "segment_path_dev_max",
+    "segment_path_dev_mean",
 ]
 
 # What a recording from before E1-F18 has: the header up to `segment_source_seq`.

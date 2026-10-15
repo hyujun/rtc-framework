@@ -205,7 +205,7 @@ def _cpp_segment_columns() -> tuple[list[str], list[str]]:
 
 # `segment_*` columns added AFTER the rename (E1-F18, #744: the docking core's
 # account of a solve; #713: the stop against the ball's line; #716: the mpc
-# core's split of a solve). They were never
+# core's split of a solve and the closing window's path). They were never
 # written under a `decel_*` name, so they have no alias — and a `segment_*`
 # column added from here on has to be named here for the test below to pass.
 _SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME = (
@@ -262,6 +262,10 @@ _SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME = (
     "segment_mpc_linearize_us",
     "segment_mpc_condense_us",
     "segment_mpc_qp_us",
+    "segment_path_window",
+    "segment_path_nodes",
+    "segment_path_dev_max",
+    "segment_path_dev_mean",
 )
 
 
@@ -269,16 +273,16 @@ def test_the_column_alias_targets_are_the_segment_columns_the_cpp_headers_write(
     diag, events = _cpp_segment_columns()
     cpp_new = {c for c in [*diag, *events] if c.startswith("segment_")}
     added = set(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME)
-    assert len(added) == len(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME) == 53
+    assert len(added) == len(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME) == 57
     assert added <= cpp_new
     assert len(ck.RENAMED_COLUMNS) == 49
     # Every renamed column, and nothing else: what the headers write beyond the
     # alias targets is exactly the columns added after the rename.
     assert set(ck.RENAMED_COLUMNS.values()) == cpp_new - added
     # 17 + 33 renamed columns, `segment_seq` is in both files; the events file
-    # has the 53 added ones as well.
+    # has the 57 added ones as well.
     assert len([c for c in diag if c.startswith("segment_")]) == 17
-    assert len([c for c in events if c.startswith("segment_")]) == 33 + 53
+    assert len([c for c in events if c.startswith("segment_")]) == 33 + 57
     # No header writes an old name any more; no old name is also a new one.
     assert not [c for c in [*diag, *events] if c in ck.RENAMED_COLUMNS]
     assert not set(ck.RENAMED_COLUMNS) & set(ck.RENAMED_COLUMNS.values())

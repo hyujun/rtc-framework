@@ -520,8 +520,9 @@ TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
   integrated_bringup::WritePlannerEventsHeader(header);
   const std::vector<std::string> names = split(header.str());
   // #798 appended cov_n and chosen_sigma_c after the replacement columns, #713
-  // the stop columns after those, #716 the mpc core's split after those.
-  EXPECT_EQ(names.back(), "segment_mpc_qp_us");
+  // the stop columns after those, #716 the mpc core's split and the closing
+  // window's path after those.
+  EXPECT_EQ(names.back(), "segment_path_dev_mean");
   // No name twice: a reader that selects by name would take one of them.
   EXPECT_EQ(std::set<std::string>(names.begin(), names.end()).size(), names.size());
   const auto row_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
@@ -726,9 +727,9 @@ TEST(PlannerEventsCsv, TheStopColumnsCarryTheSegmentRecordByName) {
                                                     "0.125", "0.0625", "-0.25"}));
 }
 
-// #716: where the mpc core spent the wake's own solve — four columns after the
-// stop columns, read back by NAME. A record nothing filled writes them as NaN,
-// and the withheld replacement's are not written.
+// #716: where the mpc core spent the wake's own solve — four columns right
+// after the stop columns, read back by NAME. A record nothing filled writes
+// them as NaN, and the withheld replacement's are not written.
 TEST(PlannerEventsCsv, TheMpcSplitColumnsCarryTheSegmentRecordByName) {
   const auto split = [](std::string s) {
     while (!s.empty() && s.back() == '\n') {
@@ -746,15 +747,20 @@ TEST(PlannerEventsCsv, TheMpcSplitColumnsCarryTheSegmentRecordByName) {
   const std::vector<std::string> names = split(header.str());
   const std::vector<std::string> mpc = {"segment_mpc_presolve_us", "segment_mpc_linearize_us",
                                         "segment_mpc_condense_us", "segment_mpc_qp_us"};
-  ASSERT_GE(names.size(), mpc.size() + 1);
-  EXPECT_EQ(std::vector<std::string>(names.end() - 4, names.end()), mpc);
-  EXPECT_EQ(names[names.size() - 5], "segment_stop_along_end");
+  const auto first = std::find(names.begin(), names.end(), mpc.front());
+  ASSERT_LE(first - names.begin() + 4, static_cast<std::ptrdiff_t>(names.size()));
+  ASSERT_NE(first, names.begin());
+  EXPECT_EQ(std::vector<std::string>(first, first + 4), mpc);
+  EXPECT_EQ(*(first - 1), "segment_stop_along_end");
+  const std::ptrdiff_t at = first - names.begin();
   const auto tail_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
     std::ostringstream row;
     integrated_bringup::WritePlannerEventsRow(row, rec);
     const std::vector<std::string> cells = split(row.str());
     EXPECT_EQ(cells.size(), names.size());
-    return cells.size() < 4 ? cells : std::vector<std::string>(cells.end() - 4, cells.end());
+    return cells.size() < names.size()
+               ? cells
+               : std::vector<std::string>(cells.begin() + at, cells.begin() + at + 4);
   };
 
   rtc::catching::PlannerCycleRecord rec{};
