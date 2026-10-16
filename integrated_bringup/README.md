@@ -585,22 +585,55 @@ hand URDF 가 **loop closure** 를 가지면 (`urdf.extended: true` + `<stem>.cl
 
 ### DemoWbcController (Index 6)
 
-UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 6-단계 FSM (slots 2 & 5 reserved) 이 phase별 task 가중치/contact 활성화를 자동 전환한다. Kinematic WBC(CLIK-QP position backbone)/Dynamic WBC(hand τ_ff overlay) 구조와 TSID task/constraint 세부는 [docs/controllers.md](../docs/controllers.md) (계약은 [agent_docs/controllers.md](../agent_docs/controllers.md)) — 본 절은 bringup 관점(YAML 위치·launch 사용법·GUI 연동)만 다룬다.
+UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. 6-단계 FSM (slots 2 & 5 reserved) 이 phase별 task 가중치/contact 활성화를 자동 전환한다. 본 절은 제어 구조 요약과 bringup 관점(YAML 위치·launch 사용법·GUI 연동)을 다룬다. 계약은 [agent_docs/controllers.md](../agent_docs/controllers.md), Kinematic / Dynamic 분리의 근거는 [controllers-rationale.md](../docs/reference/controllers-rationale.md#demowbccontroller-의-kinematic--dynamic-분리).
+
+#### 제어 구조: CLIK-QP 가 위치를 만들고 TSID 는 해석한다
+
+position command 의 유일한 백본은 CLIK-QP(`rtc::tsid::ClikReferenceGenerator`, [clik_reference.hpp](../rtc_tsid/include/rtc_tsid/kinematics/clik_reference.hpp)) 다. 관절속도를 결정변수로 하는 box QP 가 TCP 추종 항과 arm/hand posture null-space 항을 함께 풀어 `v_ref` 를 만들고, `q_ref = q_anchor + v_ref·dt` 로 한 스텝 적분해 arm/hand 위치 명령으로 쓴다. TSID inverse-dynamics QP(`a`, 접촉력 `λ` 를 푸는 WQP)는 위치 명령을 만들지 않는다 — 접촉력·토크 해석과 진단, 그리고 선택적 hand feedforward torque(`hand_tauff_enable`, 기본 false) 의 출처로만 쓰인다. TSID `a*` 를 적분해 위치를 만드는 구조가 아니다.
+
+```text
+device state + fingertip inference + target
+  ├─ ReadState / DrainTargetSlot (non-RT target → RT snapshot) / UpdatePhase (FSM)
+  └─ 정상 phase
+       ├─ Common stage: Pinocchio M/h/g/J, contact activation, grasp matrix G,
+       │                posture ref (MPC 또는 phase hold), force PI → λ_des, TCP quintic ref
+       ├─ Kinematic WBC (CLIK-QP) ──► q_ref, v_ref ──► position command
+       └─ Dynamic WBC (TSID WQP)  ──► a_opt, λ_opt, τ ──► 진단 + 선택적 hand τ_ff
+```
+
+- **두 QP 는 직렬이 아니다.** 같은 measured state·cache·reference 를 각각 소비한다.
+- **CLIK 실패**: 이번 tick 은 이전 command 를 유지하고, 연속 `max_qp_fail_before_fallback` 번 실패하면 `kFallback` 으로 전환한다.
+- **TSID 실패**: position 은 그대로이고 이번 tick 의 hand τ_ff 만 0 으로 돌아간다 (plain position-PD).
+- hand τ_ff 는 `kClosure`/`kHold` 에서만 켜지며 source 는 `gravity_comp`(hand 관절의 중력 성분) 또는 `tsid_tau`(TSID 가 복원한 토크의 hand 성분)다. arm 은 torque mode 로 바뀌지 않는다.
+
+#### MPC 범위
+
+MPC 는 별도 thread 에서 돌며 RT 는 보간된 `q_ref,v_ref` 를 posture reference 로 소비한다. MPC 도 CLIK 의 위치 매핑을 대체하지 않는다. object-level task 는 plumbing 수준이다 — 물체 pose estimator 가 없고(object frame 은 static seed), `object_mass` 기본값 0 이면 중력 reference 도 0 이며, internal squeeze reference 는 0 이다. 완전한 object manipulation planner 가 아니다.
+
+#### YAML 함정과 운영 유의
+
+- phase preset 은 reset-style 이다. 이전 phase 에서 켠 task 를 끄려면 생략이 아니라 명시적 `active: false` 가 필요하다.
+- `se3_tcp.name` 은 YAML key 와 동일하게 `se3_tcp` 여야 한다 (task lookup 과 phase preset 이 이 이름을 쓴다).
+- friction face 수는 constraint 블록이 아니라 각 contact 의 `n_faces`/`friction_faces` 에서 읽는다.
+- 기본 config 에서 hard `contact_constraint` 는 꺼져 있다. 강체 no-slip 을 hard 로 바꾸려면 명시적으로 추가하고 feasibility 를 검증한다.
+- Hold slip 감지는 `d|F|/dt` 단일 threshold 다 — noisy tactile 에서는 filter/threshold 와 fallback 민감도를 함께 조정한다.
+- TSID 는 `tau_ff` 가 꺼져 있어도 정상 phase 마다 풀린다. RT 예산 평가에는 이 비용이 포함된다.
+- E-STOP 은 FSM 보다 우선하며 tick 시작에서 stale hand feedforward 활성 플래그를 지운다.
 
 > Extended (closed-chain) 손에서는 제어 모델을 `PinocchioModelBuilder::GetActuatedModel()` 우선으로 선택하고 EOM은 `WbcReducedDynamicsProvider`가 loop-consistent 값으로 대체한다 (위 "Closed-chain hand FK" 절 참조). 비-extended 손은 기존 `GetTreeModel("wbc")` fallback 경로로 byte-for-byte 동일하게 동작한다.
 
 #### 6-Phase FSM (slots 2 & 5 reserved)
 
-모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2`(RELEASE)는 active grasp phase(`kApproach`/`kClosure`/`kHold`)에서 즉시 `kRelease`로 preempt, `grasp_cmd=0`(abort)도 동일하게 `kIdle`로 복귀. 슬롯 2·5는 reserved(publish 안 됨). GUI의 arm SE3 target / hand joint target은 `kRelease`/`kFallback`을 제외한 모든 phase에서 매 tick 상시 반영된다(phase-entry edge 대기 없음).
+모든 비-fallback phase 에서 위치는 CLIK-QP 가 만들고 TSID QP 는 해석·hand τ_ff 용으로 함께 돈다 (아래 "제어 모드" 의 TSID 항목은 task/contact 구성을 뜻한다). `grasp_cmd=2`(RELEASE)는 active grasp phase(`kApproach`/`kClosure`/`kHold`)에서 즉시 `kRelease`로 preempt, `grasp_cmd=0`(abort)도 동일하게 `kIdle`로 복귀. 슬롯 2·5는 reserved(publish 안 됨). GUI의 arm SE3 target / hand joint target은 `kRelease`/`kFallback`을 제외한 모든 phase에서 매 tick 상시 반영된다(phase-entry edge 대기 없음).
 
 | Phase | 제어 모드 | 진입 조건 | 종료 조건 |
 |-------|----------|----------|----------|
-| `kIdle` (0) | TSID QP (SE3 hold @ current TCP + posture regulate @ init snapshot). 진입 시 `SeedHoldFromMeasured` 가 측정 config 를 `q_des_target_full_`(posture ref) + joint_goal mirror + `tcp_goal_` 로 스냅샷 → 외란 시 init 으로 복원하는 stiff hold (InitPositionHold). 진입 edge 없는 첫 enable 은 first-tick self-init 에서 동일 시드 — 단 이 self-init 은 **모든 구성 device (arm+hand) 가 valid 측정 상태를 스트림할 때까지 defer** 되고 그동안 passthrough hold 를 명령한다 (hand device 가 늦게 올라오는 startup race 에서 posture ref hand block 이 zero 로 고정돼 손가락을 0 으로 붕괴시키는 것을 방지; joint/task 컨트롤러는 arm 즉시 시드 + hand 시드만 per-device 플래그로 defer). | 초기 / `grasp_cmd=0` / `release_done_` | `grasp_cmd=1` + `robot_new_target` |
-| `kApproach` (1) | TSID QP (SE3 quintic ramp → grasp pose) | kIdle 종료 | `tcp_goal_valid && ||tcp_err|| < epsilon_pregrasp` |
-| `kClosure` (3) | TSID QP + contact + ForceTask | kApproach 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |
-| `kHold` (4) | TSID QP + contact + ForceTask | kClosure 종료 | slip 감지 시 `kFallback` (RELEASE preempt 는 top-level guard) |
-| `kRelease` (6) | TSID QP (SE3 hold) + 2-stage overlay (contact ramp `release_ramp_sec` → finger open) | `grasp_cmd=2` from active grasp phase (`kApproach`/`kClosure`/`kHold`) | `release_done_` (stage 1 hand trajectory 완료) |
-| `kFallback` (7) | Position hold | QP 연속 실패 N회, slip/deformation | `grasp_cmd=0` (수동 복구; top-level abort guard 면제) |
+| `kIdle` (0) | CLIK-QP 위치 + TSID 해석 (SE3 hold @ current TCP + posture regulate @ init snapshot). 진입 시 `SeedHoldFromMeasured` 가 측정 config 를 `q_des_target_full_`(posture ref) + joint_goal mirror + `tcp_goal_` 로 스냅샷 → 외란 시 init 으로 복원하는 stiff hold (InitPositionHold). 진입 edge 없는 첫 enable 은 first-tick self-init 에서 동일 시드 — 단 이 self-init 은 **모든 구성 device (arm+hand) 가 valid 측정 상태를 스트림할 때까지 defer** 되고 그동안 passthrough hold 를 명령한다 (hand device 가 늦게 올라오는 startup race 에서 posture ref hand block 이 zero 로 고정돼 손가락을 0 으로 붕괴시키는 것을 방지; joint/task 컨트롤러는 arm 즉시 시드 + hand 시드만 per-device 플래그로 defer). | 초기 / `grasp_cmd=0` / `release_done_` | `grasp_cmd=1` + `robot_new_target` |
+| `kApproach` (1) | CLIK-QP 위치 + TSID 해석 (SE3 quintic ramp → grasp pose) | kIdle 종료 | `tcp_goal_valid && ||tcp_err|| < epsilon_pregrasp` |
+| `kClosure` (3) | CLIK-QP 위치 + TSID (contact + ForceTask, hand τ_ff 후보) | kApproach 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |
+| `kHold` (4) | CLIK-QP 위치 + TSID (contact + ForceTask, hand τ_ff 후보) | kClosure 종료 | slip 감지 시 `kFallback` (RELEASE preempt 는 top-level guard) |
+| `kRelease` (6) | CLIK-QP 위치 + TSID 해석 (SE3 hold) + 2-stage overlay (contact ramp `release_ramp_sec` → finger open) | `grasp_cmd=2` from active grasp phase (`kApproach`/`kClosure`/`kHold`) | `release_done_` (stage 1 hand trajectory 완료) |
+| `kFallback` (7) | Position hold | QP 연속 실패 N회, slip | `grasp_cmd=0` (수동 복구; top-level abort guard 면제) |
 
 #### Runtime Gains (per-controller ROS 2 parameters)
 
@@ -608,7 +641,7 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 
 | Parameter | 타입 | 범위 / 비고 |
 |-----------|------|-------------|
-| `arm_trajectory_speed` | double | `[1e-6, ∞)` (clamp). 현재는 hand quintic 외 미사용 (TSID-everywhere) — 향후 fallback path 가 부활하면 활성. |
+| `arm_trajectory_speed` | double | `[1e-6, ∞)` (clamp). 현재는 hand quintic 외 미사용. |
 | `hand_trajectory_speed` | double | `[1e-6, ∞)` (clamp). `kRelease` stage 1 finger-open quintic duration 산출 |
 | `arm_max_traj_velocity` | double (read-only) | trajectory 진행 중 arm 관절 최대 속도 [rad/s] |
 | `hand_max_traj_velocity` | double (read-only) | trajectory 진행 중 hand 모터 최대 속도 [rad/s] |
