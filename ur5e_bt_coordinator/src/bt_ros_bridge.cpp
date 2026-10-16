@@ -22,7 +22,20 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
     : node_(std::move(node)),
       topic_namer_(std::move(profile.topics)),
       arm_dof_(profile.arm_dof),
-      hand_dof_(profile.hand_dof) {
+      hand_dof_(profile.hand_dof),
+      tf_parent_frame_(profile.base_frame) {
+  // #779: /world_target_info carries a position only, and the tree pairs it
+  // with the current TCP orientation, which is in the base frame. A position in
+  // another frame cannot be sent as one goal without a transform the
+  // coordinator does not have — refuse it loudly instead of commanding it in
+  // the wrong frame.
+  if (!profile.world_target_frame.empty() && profile.world_target_frame != tf_parent_frame_) {
+    world_target_frame_refused_ = true;
+    RCLCPP_ERROR(node_->get_logger(),
+                 "world_target_frame '%s' is not base_frame '%s': /world_target_info positions "
+                 "must be in the arm's base frame — the topic is ignored",
+                 profile.world_target_frame.c_str(), tf_parent_frame_.c_str());
+  }
   // Seed compile-time default poses only for the default variant. A non-default
   // group (e.g. hand_group=p1b) carries robot-specific joint semantics, so it
   // must supply its own poses via YAML (hand_pose.* / arm_pose.*); LoadPose
@@ -153,7 +166,7 @@ void BtRosBridge::OnWorldTarget(geometry_msgs::msg::Polygon::SharedPtr msg) {
 
   {
     std::lock_guard lock(state_mutex_);
-    if (all_zero) {
+    if (all_zero || world_target_frame_refused_) {
       world_target_valid_ = false;
     } else {
       // points[0] = position (x, y, z) only
@@ -499,6 +512,8 @@ void BtRosBridge::PublishArmTarget(const Pose6D& target) {
   }
   rtc_msgs::msg::RobotTarget msg;
   msg.header.stamp = node_->now();
+  // The pose is in the frame the TCP was read in (#779 target-frame contract).
+  msg.header.frame_id = tf_parent_frame_;
   msg.goal_type = "task";
   msg.task_target = {target.x, target.y, target.z, target.roll, target.pitch, target.yaw};
   arm_target_pub_->publish(msg);

@@ -368,7 +368,12 @@ class BtRosBridge {
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr transforms_sub_;
+  // = RobotProfile::base_frame: TF parent of the TCP lookup AND the
+  // header.frame_id of every task goal (#779).
   std::string tf_parent_frame_{"base"};
+  // /world_target_info positions are in a frame other than tf_parent_frame_
+  // (RobotProfile::world_target_frame): the topic is ignored.
+  bool world_target_frame_refused_{false};
 
   // ── Task-frame selection (#292) ───────────────────────────────────────────
   // Which control point the active controller is actually using, decided from

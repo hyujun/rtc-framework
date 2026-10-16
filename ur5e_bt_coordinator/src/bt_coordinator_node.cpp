@@ -62,7 +62,8 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
   try {
     auto self = std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this());
     bridge_ = std::make_shared<BtRosBridge>(
-        self, RobotProfile{TopicNamer{arm_group_, hand_group_}, arm_dof_, hand_dof_});
+        self, RobotProfile{TopicNamer{arm_group_, hand_group_}, arm_dof_, hand_dof_, base_frame_,
+                           world_target_frame_});
 
     bridge_->LoadPoseOverrides(self);
 
@@ -249,6 +250,10 @@ void BtCoordinatorNode::DeclareParameters() {
   hand_group_ = safe_declare("hand_group", std::string(""));
   arm_dof_ = safe_declare("arm_dof", kDefaultArmDof);
   hand_dof_ = safe_declare("hand_dof", kDefaultHandDof);
+  // #779: the frame task goals are sent in (= the arm's root_link) and the
+  // frame /world_target_info positions are in (empty = base_frame).
+  base_frame_ = safe_declare("base_frame", std::string("base"));
+  world_target_frame_ = safe_declare("world_target_frame", std::string(""));
   // Optional-sensor capabilities (Seam D): false skips registering the node
   // group that reads that sensor. Default true = every group registered.
   has_grasp_sensing_ = safe_declare("has_grasp_sensing", true);
