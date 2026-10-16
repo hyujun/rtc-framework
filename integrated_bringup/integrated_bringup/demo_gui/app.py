@@ -299,6 +299,9 @@ class DemoControllerGUI(Node):
         # ctrl-agnostic /rtc_cm/<group>/joint_states 로 처리되나, TCP pose 의
         # {ns}/transforms 는 controller-owned 이라 rewire 대상 (_transforms_sub).
         self._active_ctrl: str = ""
+        # Controller a Switch click asked for, until the switch is settled: the
+        # Active line says "switching" meanwhile, whatever repaints it.
+        self._switch_pending: str = ""
         # (arm_group, hand_group) the controller-owned topics are currently
         # wired to. Resolved from the active controller's claimed_groups
         # (see _active_groups); ("", "") means "not yet wired". Tracked so a
@@ -622,9 +625,8 @@ class DemoControllerGUI(Node):
 
         def _on_tk(ctrl: str = name) -> None:
             # Separately from the sync for the same reason as the gate below: the
-            # sync returns early when the selection already is `ctrl`, and the
-            # label may still say "switching" from the click.
-            self._paint_active_status()
+            # sync returns early when the selection already is `ctrl`.
+            self._on_active_reported(ctrl)
             self._sync_selected_to_active_controller(ctrl)
             # Separately from the sync: it returns early when the selection
             # already IS the newly active controller (select X, then Switch), and
@@ -1169,12 +1171,18 @@ class DemoControllerGUI(Node):
                 # set_parameters_atomically answers with a single SetParametersResult.
                 result = fut.result().result
                 ok = bool(result.successful)
-                message = (
-                    f"{GRASP_MODE_PARAM} → {requested}" if ok else f"refused: {result.reason}"
-                )
+                if ok:
+                    message = f"{GRASP_MODE_PARAM} → {requested}"
+                    self.get_logger().info(f"/{ctrl} {GRASP_MODE_PARAM} set to {requested}")
+                else:
+                    message = f"refused: {result.reason}"
+                    self.get_logger().warn(
+                        f"/{ctrl} {GRASP_MODE_PARAM}={requested} refused: {result.reason}"
+                    )
             except Exception as exc:  # noqa: BLE001 — surfaced in the label
                 # A failed call goes the same way as a refusal: the set may or
                 # may not have landed.
+                self.get_logger().error(f"{GRASP_MODE_PARAM} set exception: {exc}")
                 ok, message = False, f"set failed: {exc}"
             self.root.after(0, self._after_grasp_mode_set, ctrl, ok, message)
 
@@ -1194,12 +1202,10 @@ class DemoControllerGUI(Node):
         that lands before the answer repaints the cached mode — not the unknown
         state, which would blank the combobox and lose the operator's pick.
         """
-        # Logged unconditionally, painted only for the current selection — the same
-        # late-callback rule _apply_grasp_mode follows. If the user moved to another
-        # controller while this set was in flight, painting would put one
-        # controller's refusal next to another controller's widgets.
-        log = self.get_logger().info if ok else self.get_logger().warn
-        log(f"/{ctrl} {message}")
+        # Painted only for the current selection (logged by the done-callback) —
+        # the same late-callback rule _apply_grasp_mode follows. If the user moved
+        # to another controller while this set was in flight, painting would put
+        # one controller's refusal next to another controller's widgets.
         if ctrl == self.selected_ctrl.get():
             self._set_grasp_mode_result(message, ok=ok)
         # Not gated on the selection: this is about `ctrl`'s state, not about
@@ -1911,6 +1917,12 @@ class DemoControllerGUI(Node):
         self._switchable_keys: tuple[str, ...] = self._profile.switchable_controllers(
             self._known_schema_keys
         )
+        # Every parameter client the GUI can use, created now rather than at the
+        # first click: the buttons check readiness without waiting, and a client
+        # made at the click has not discovered its services yet, so that first
+        # click would always fail.
+        for key in (*self._switchable_keys, CATCHING_CONFIG_KEY):
+            self._get_param_client(key)
 
         # Pick a default selection: first GAIN_DEFS key, or empty if none.
         default_ctrl = self._known_schema_keys[0] if self._known_schema_keys else ""
@@ -4491,10 +4503,42 @@ class DemoControllerGUI(Node):
         radio selection: the two differ whenever the operator has picked a
         controller without switching to it, and that is when the line is read.
         """
+        if self._switch_pending:
+            # Not "Active:" yet — the name on the topic is what makes it so.
+            self._ctrl_status.set(
+                f"switching → {self._catalog.display_label(self._switch_pending)} …"
+            )
+            return
         name = self._active_ctrl
         label = self._catalog.display_label(name) if name else "— (not reported)"
         suffix = " (controllers offline)" if self._catalog.is_offline() else ""
         self._ctrl_status.set(f"{prefix}Active: {label}{suffix}")
+
+    def _on_active_reported(self, ctrl: str) -> None:
+        """/rtc_cm/active_controller_name named ``ctrl``. Tk thread only."""
+        if self._switch_pending == ctrl:
+            self._switch_pending = ""
+        self._paint_active_status()
+
+    def _on_switch_settled(self, ctrl: str, ok: bool | None) -> None:
+        """The switch to ``ctrl`` was answered; ``ok`` None = the call failed.
+        Tk thread only.
+
+        An accepted switch stays "switching" until the topic names ``ctrl`` —
+        unless it already has, which is also the case of switching to the
+        controller that is already active (no new name ever arrives). A later
+        click owns the line, so an older answer leaves it alone.
+        """
+        if self._switch_pending != ctrl:
+            return
+        prefix = ""
+        if ok is None:
+            prefix = "(switch failed) "
+        elif not ok:
+            prefix = "(switch rejected) "
+        if not ok or self._active_ctrl == ctrl:
+            self._switch_pending = ""
+        self._paint_active_status(prefix=prefix)
 
     # ---- Gains UI helpers ----------------------------------------------------
 
@@ -4909,8 +4953,6 @@ class DemoControllerGUI(Node):
         # runs: it is what re-attempts the fetch once the CM comes up, and what
         # fills the label on startup when no radio has been clicked yet.
         if current:
-            # Startup selects without a radio click; same reason as there.
-            self._get_param_client(current)
             self._refresh_grasp_mode(current)
             # Same reasons, same path: retries the read once the CM is up.
             self._refresh_vtcp(current)
@@ -4928,10 +4970,6 @@ class DemoControllerGUI(Node):
             return
         self._show_gains_panel(idx)
         self._update_target_inputs_state(idx)
-        # Create the client now, not on the first Load/Apply: the buttons check
-        # readiness without waiting, and a client made at the click has not
-        # discovered its services yet, so that first click would always fail.
-        self._get_param_client(idx)
         # The Grasp tab's buttons dispatch to the *selected* controller
         # (_send_grasp_command reads selected_ctrl), so the mode shown there has
         # to follow the same selection, not the active controller.
@@ -4947,7 +4985,7 @@ class DemoControllerGUI(Node):
         # Async send via /rtc_cm/switch_controller. UI updates happen
         # immediately (the switch-back flag /rtc_cm/active_controller_name
         # subscription drives the controller-owned topic rebinding); the
-        # done-callback logs success/failure and repaints the Active line.
+        # done-callback logs success/failure and settles the Active line.
         if not self.switch_controller_client.service_is_ready():
             self.get_logger().warn("/rtc_cm/switch_controller not ready — request dropped")
             self._paint_active_status(prefix="(srv unavailable) ")
@@ -4963,17 +5001,15 @@ class DemoControllerGUI(Node):
         future = self.switch_controller_client.call_async(req)
 
         def _on_switch_done(fut):
-            # Every outcome takes the "switching" line down. A switch to the
-            # controller that is already active brings no new name on
-            # /rtc_cm/active_controller_name, so the topic alone would leave it up.
-            self.root.after(0, self._paint_active_status)
             try:
                 resp = fut.result()
             except Exception as exc:  # pragma: no cover — rclpy executor error
                 self.get_logger().error(f"switch_controller srv exception: {exc}")
+                self.root.after(0, self._on_switch_settled, idx, None)
                 if on_complete is not None:
                     self.root.after(0, lambda: on_complete(False))
                 return
+            self.root.after(0, self._on_switch_settled, idx, bool(resp.ok))
             if resp.ok:
                 self.get_logger().info(
                     f"Switched to {self._catalog.display_label(idx)}: {resp.message}"
@@ -4985,8 +5021,8 @@ class DemoControllerGUI(Node):
 
         future.add_done_callback(_on_switch_done)
 
-        # Not "Active:" yet — the name on the topic is what makes it so.
-        self._ctrl_status.set(f"switching → {self._catalog.display_label(idx)} …")
+        self._switch_pending = idx
+        self._paint_active_status()
         self._show_gains_panel(idx)
         self._update_target_inputs_state(idx)
 

@@ -208,6 +208,7 @@ def test_active_controller_resynchronizes_radio_selection():
         selected_ctrl=selected,
         # The sync runs once the topic has reported this name.
         _active_ctrl="demo_joint_controller",
+        _switch_pending="",
         _switchable_keys=("demo_joint_controller", "demo_task_controller"),
         _on_ctrl_radio_change=lambda: None,
         _ctrl_status=SimpleNamespace(set=statuses.append),
@@ -221,13 +222,15 @@ def test_active_controller_resynchronizes_radio_selection():
     assert statuses == ["Active: demo_joint_controller"]
 
 
-def _status_state(active, *, offline=False):
+def _status_state(active, *, offline=False, pending=""):
     statuses = []
     gui = SimpleNamespace(
         _active_ctrl=active,
+        _switch_pending=pending,
         _ctrl_status=SimpleNamespace(set=statuses.append),
         _catalog=SimpleNamespace(display_label=lambda key: key, is_offline=lambda: offline),
     )
+    gui._paint_active_status = MethodType(DemoControllerGUI._paint_active_status, gui)
     return gui, statuses
 
 
@@ -252,19 +255,62 @@ def test_active_status_keeps_a_prefix_in_front():
     assert statuses == ["(srv unavailable) Active: demo_task_controller"]
 
 
-def test_a_switch_click_does_not_claim_the_switch_happened():
-    """The click paints "switching", and every response takes it down again — a
-    switch to the controller that is already active brings no new name on the
-    topic, so the topic alone would leave "switching" up for good."""
+TASK = "demo_task_controller"
+WBC = "demo_wbc_controller"
+
+
+def test_a_pending_switch_survives_a_poll_repaint():
+    """The click says "switching", not "Active:" — the name on the topic is what
+    makes a switch real. The 5 s catalog poll repaints the line; it must not put
+    the old controller back as active while the switch is still in flight."""
+    gui, statuses = _status_state(WBC, pending=TASK)
+    gui._paint_active_status()  # the poll
+    assert statuses == [f"switching → {TASK} …"]
+
+
+def test_an_accepted_switch_waits_for_the_topic():
+    """The answer can land before the topic does; painting then would name the
+    controller that was just deactivated."""
+    gui, statuses = _status_state(WBC, pending=TASK)
+    DemoControllerGUI._on_switch_settled(gui, TASK, True)
+    assert statuses[-1] == f"switching → {TASK} …"
+
+    gui._active_ctrl = TASK  # the executor stores the name, then marshals
+    DemoControllerGUI._on_active_reported(gui, TASK)
+    assert statuses[-1] == f"Active: {TASK}"
+    assert gui._switch_pending == ""
+
+
+def test_a_switch_to_the_active_controller_settles_on_the_answer():
+    """No new name arrives on the topic for this one, so the answer alone has to
+    take "switching" down."""
+    gui, statuses = _status_state(TASK, pending=TASK)
+    DemoControllerGUI._on_switch_settled(gui, TASK, True)
+    assert statuses[-1] == f"Active: {TASK}"
+    assert gui._switch_pending == ""
+
+
+@pytest.mark.parametrize("ok, prefix", [(False, "(switch rejected) "), (None, "(switch failed) ")])
+def test_a_switch_that_did_not_happen_says_so(ok, prefix):
+    gui, statuses = _status_state(WBC, pending=TASK)
+    DemoControllerGUI._on_switch_settled(gui, TASK, ok)
+    assert statuses[-1] == f"{prefix}Active: {WBC}"
+    assert gui._switch_pending == ""
+
+
+def test_an_older_switch_answer_leaves_a_newer_click_alone():
+    gui, statuses = _status_state(WBC, pending=TASK)
+    DemoControllerGUI._on_switch_settled(gui, "demo_joint_controller", False)
+    assert statuses == []
+    assert gui._switch_pending == TASK
+
+
+def test_the_switch_click_and_every_answer_go_through_the_pending_line():
     source = inspect.getsource(DemoControllerGUI._on_switch_controller)
     assert 'set(f"Active: ' not in source
-    assert "switching →" in source
+    assert "self._switch_pending = idx" in source
     done = source.split("def _on_switch_done")[1].split("future.add_done_callback")[0]
-    # Scheduled before the result is read, so no outcome — the exception path
-    # returns early — can skip it.
-    assert done.index("self._paint_active_status") < done.index("fut.result()"), (
-        "a response path skips the repaint"
-    )
+    assert done.count("self._on_switch_settled") == 2, "a response path skips settling"
 
 
 def test_same_preset_for_both_roles_is_flagged():

@@ -1434,7 +1434,7 @@ GUI 시작 시:
 2. CM 의 `/rtc_cm/list_controllers` 가 응답하면 catalog 가 수신 → Tk 스레드로 marshalling → 라디오 / preset combo / 상태 라벨이 *live* 데이터로 재구성. 5 s 마다 재조회 (controller hot-swap 자동 감지).
 3. 응답된 controller 중 그 switchable 집합에 있는 것만 라디오에 노출. 나머지는 catalog 에 보존되지만 GUI 에서 선택 불가.
 
-상태 라벨의 `Active:` 는 라디오 선택이 아니라 CM 이 `/rtc_cm/active_controller_name` 으로 알린 컨트롤러입니다 (아직 못 받았으면 `Active: — (not reported)`). `Switch Controller` 를 누르면 응답이 올 때까지 `switching → <선택> …` 을 보입니다.
+상태 라벨의 `Active:` 는 라디오 선택이 아니라 CM 이 `/rtc_cm/active_controller_name` 으로 알린 컨트롤러입니다 (아직 못 받았으면 `Active: — (not reported)`). `Switch Controller` 를 누르면 topic 이 그 이름을 알릴 때까지 (이미 활성인 컨트롤러로의 전환은 응답이 올 때까지) `switching → <선택> …` 을 보이고, 거부되거나 호출이 실패하면 `(switch rejected) ` · `(switch failed) ` 를 앞에 붙여 그대로 남은 active 컨트롤러를 보입니다.
 
 **switchable ≠ tunable.** 라디오 집합은 `GAIN_DEFS` 키 (= GUI 에 게인 패널이 있는 컨트롤러) 에 `RobotProfile.extra_switchable_controllers` 를 더한 것입니다 (`RobotProfile.switchable_controllers()`). 두 축이 갈라진 이유는 `demo_inference_controller` 입니다 — 전환은 되지만 ROS 파라미터를 하나도 선언하지 않아 튜닝할 게 없습니다.
 
