@@ -39,7 +39,8 @@ namespace rtc::tsid {
 // 소오차서 e_pos→(p_d−p) / e_vel→(v_des − J·v) 로 환원된다. "LWA" 는 base 가
 // universe 면 world 축, registered 면 base 축이다.
 //
-// mask: 6D 중 제어할 축 선택 [vx,vy,vz,wx,wy,wz]
+// mask: 6D 중 제어할 축 선택 [vx,vy,vz,wx,wy,wz] — 축별 kp/kd 와 같이 registered
+// base 면 base 축, universe 면 world 축이다
 // residual_dim = mask에서 활성 축 수
 // ────────────────────────────────────────────────
 class SE3Task final : public TaskBase {

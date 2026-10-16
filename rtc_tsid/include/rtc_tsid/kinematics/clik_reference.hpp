@@ -72,9 +72,11 @@ namespace rtc::tsid {
 // not in the rows): exact for a base upstream of every task joint (a fixed
 // arm base), an approximation for a base that moves with the joints. The
 // universe base (base_frame_idx < 0) skips the rotation, bit for bit. The
-// kKinematic acceleration rows bound the task acceleration per WORLD axis, so
-// their box is unchanged by a base rotation only when that rotation is a
-// multiple of 90° about z. No separate FK —
+// kKinematic acceleration rows bound the task acceleration per WORLD axis
+// (one bound for the three linear rows, one for the three angular rows), so
+// the limits a base-frame motion sees are unchanged by the base's rotation
+// only when that rotation maps axes onto axes (a signed permutation, e.g.
+// 90° steps about coordinate axes). No separate FK —
 // the caller registers tip/base frames on the shared PinocchioCache and
 // calls cache.Update() once per tick.
 //
