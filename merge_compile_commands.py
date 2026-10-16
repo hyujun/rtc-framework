@@ -7,7 +7,7 @@ whenever CMake is invoked). We copy that aggregate to repo-root, next to
 ``.clangd`` (which sets ``CompilationDatabase: .``). Keeping the DB at repo-root
 — rather than pointing clangd at ``<ws>/build`` — avoids creating a ``build/``
 folder here, which would falsely signal that ``colcon build`` in the repo is
-fine. colcon must always run from ws-root (see .claude/rules/colcon-cwd.md).
+fine. colcon must always run from ws-root (AGENTS.md §9.1).
 
 Fallback: if the colcon aggregate is absent (older colcon, or a build that
 never invoked CMake), merge the per-package ``build/<pkg>/compile_commands.json``

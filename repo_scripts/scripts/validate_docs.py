@@ -54,7 +54,9 @@ D12 the two constitutions (``CLAUDE.md`` / ``AGENTS.md``) stay inside a size
     pushed out of the constitution landed one directory down, ungated.  A file
     over its budget, a corpus file with no entry, and an entry whose file is
     gone all fail.  The numbers live in a data file rather than here so that
-    lowering one as a document shrinks does not mark this package as changed.
+    lowering one as a document shrinks is a config edit, not a validator edit
+    (the Stop hook still keys repo_scripts on its whole tree, so the edit owes
+    that package's verdict like any other).
     Given ``--budget-base REV``, a budget higher than it is at REV also fails
     unless its line says ``# raised from <old>: <why>`` -- one tree cannot show
     that a number was raised to make a finding go away; the base can.
