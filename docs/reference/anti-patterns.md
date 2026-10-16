@@ -1,93 +1,69 @@
 # Anti-Patterns — 사례집
 
-> **이 문서는 헌법이 아니다.** 재발 패턴에서 나온 **규범**은 [agent_docs/invariants.md](../../agent_docs/invariants.md) 가 갖는다 — invariant 을 위반한 패턴은 그 invariant 행이, 대응 invariant 가 없는 패턴은 §Anti-pattern 규범 표가 AP ID 로 갖는다. 여기는 그 규범이 생긴 사례 · 증상 · 원인 · 복구 상세다. 둘이 어긋나면 invariants.md 가 옳다. **AP ID 의 정의는 이 문서의 헤더**이며 (validate_docs.py D11), ID 는 재사용하지 않는다.
+> **이 문서는 헌법이 아니다.** 재발 패턴에서 나온 **규범**은 [agent_docs/invariants.md](../../agent_docs/invariants.md) 가 갖는다 — invariant 을 위반한 패턴은 그 invariant 행이, 대응 invariant 가 없는 패턴은 §Anti-pattern 규범 표가 AP ID 로 갖는다. 여기는 그 규범이 생긴 사례 · 증상 · 원인 · 복구 상세다. 둘이 어긋나면 invariants.md 가 옳다. **AP ID 의 정의는 이 문서의 헤더와 아래 흡수 표의 행**이며 (validate_docs.py D11), ID 는 재사용하지 않는다.
 
-재발을 방지해야 할 실수 패턴. 각 항목은 동일 구조:
-- **증상**: 무엇이 일어나는가
-- **원인**: 왜 일어나는가
-- **탐지**: grep/test 명령 (가능한 경우)
-- **복구**: 올바른 방법
+규범 행에 이미 있는 내용은 되풀이하지 않고, 그 행에 없는 증상 · 사례 · 탐지 명령만 둔다. 근거는 git log 의 fix-commit 이다.
 
-근거는 git log 의 historical fix-commit 이다. 절대 카운트·commit SHA·시점 의존 status (`현 baseline 0건`, `Phase X ✅`) 는 박제하지 않는다 (AP-DOC-1) — 패턴 자체가 핵심이고 측정값은 측정 시점에 의존한다.
+## 흡수 · 결번
+
+본문이 규범 행과 같아 남길 사례가 없는 ID 는 그 행으로 흡수했다 (ID 는 이력 참조용으로 유지).
+
+| ID | 흡수처 |
+|---|---|
+| AP-RT-2 | invariants.md RT-6 행 (quaternion 선형 보간) |
+| AP-RT-3 | invariants.md RT-5 행 (Eigen expression 의 타입 추론) |
+| AP-RT-4 | invariants.md RT-4 행 (RT 경로의 mutex) |
+| AP-RT-5 | AP-RT-1 · invariants.md RT-3 세부 스펙 (throttle 없이 tick 마다 반복되는 로그) |
+| AP-ARCH-1 | invariants.md ARCH-1 행 — 탐지와 오탐 제외 이유는 verify-changes.sh Phase 0 주석 |
+| AP-ARCH-2 | invariants.md ARCH-3 행 (interface 없는 두 번째 구현) |
+| AP-ARCH-3 | invariants.md ARCH-4 행 — 대상 integration 패키지 집합 도출은 verify-changes.sh Phase 0 |
+| AP-ARCH-5 | invariants.md ARCH-6 행과 ARCH-6 세부 스펙 (QoS depth 1) |
+| AP-PROC-2 | invariants.md PROC-1 행 (코드 변경 시 YAML · README · CMake 동기화) |
+| AP-PROC-3 | AP-DOC-1 (숫자 하드코딩 후 drift) |
+| AP-PROC-4 | invariants.md PROC-6 행 (test assertion 약화) |
+| AP-CTRL-3 | invariants.md NUM-4 행 (trajectory speed 0 클램프) — 1/v 가 INF 가 되어 crash 가 아니라 trajectory hang 으로 나타난다 |
+
+> **결번**: AP-RTT-3 · AP-RTT-4 · AP-CTRL-2 · AP-CTRL-4 (은퇴 사유 미기록) · **AP-PROC-10** (2026-09-19 은퇴 — 판독 대상이던 C++ 빌드·테스트 CI `ros2-advanced-ci` 가 제거됐다; 사례는 git history). AP-RTT-5 는 `realtime_tools` 예방 항목이 아니라 in-tree affinity 라이브 결함이라 AP-THREAD-1 로 재분류됐다.
 
 ## RT Safety
 
 ### AP-RT-1: 정기 tick에서 `RCLCPP_*` 직접 호출 ([invariants.md](../../agent_docs/invariants.md) RT-3 위반)
 
-- **증상**: 정기 tick (`control_rate`) 루프에서 지터 스파이크, rosout queue 포화 시 RT overrun → E-STOP. Rate 가 높을수록 폭주가 빠름 (rate-proportional)
-- **원인**: `RCLCPP_*` 매크로가 내부적으로 string format + rosout IPC publish → heap + blocking
-- **탐지**: [invariants.md](../../agent_docs/invariants.md) §위반 탐지 패턴 의 `detect id=RT-3` 블록 — 단 one-shot init / THROTTLE 변종은 제외
-- **복구**:
-  - one-shot init: 현상 유지 (lifecycle 콜백 / 한 번만 실행되는 fatal 경로)
-  - 정기 tick: SPSC → `DrainLog()` aux thread 패턴 (참조: `rtc_controller_manager/src/rt_controller_node_estop.cpp`)
-  - throttle 필요: `RCLCPP_*_THROTTLE` + RT-safe msg (단순 format + 기본 타입만)
-
-### AP-RT-2: Quaternion `lerp` ([invariants.md](../../agent_docs/invariants.md) RT-6 위반)
-
-- **증상**: Non-unit quaternion → 회전축 축소/왜곡, 누적 drift
-- **원인**: `Eigen::Quaterniond::slerp`가 아닌 선형 보간 오용
-- **탐지**: [invariants.md](../../agent_docs/invariants.md) §위반 탐지 패턴 의 `detect id=RT-6` 블록
-- **복구**: `q_a.slerp(t, q_b)` 명시
-
-### AP-RT-3: Eigen expression에 `auto` ([invariants.md](../../agent_docs/invariants.md) RT-5 위반)
-
-- **증상**: Expression template lazy-eval + aliasing → 같은 메모리 읽고 쓰기 → 결과 쓰레기
-- **원인**: `auto M = A * B;` 는 `Eigen::Product` 를 담고 나중 평가 시 aliasing 가능
-- **탐지**: [invariants.md](../../agent_docs/invariants.md) §위반 탐지 패턴 의 `detect id=RT-5` 블록
-- **복구**: 명시 타입 `Eigen::MatrixXd M = A * B;` 또는 `A.noalias()` 명시
-
-### AP-RT-4: RT 경로 `std::lock_guard` ([invariants.md](../../agent_docs/invariants.md) RT-4 위반)
-
-- **증상**: Aux thread가 holding 중이면 RT blocks → 100 µs+ stall
-- **원인**: Priority inheritance 없는 일반 mutex는 RT 태스크가 non-RT를 기다림
-- **복구**: `SeqLock<T>` (single-writer/multi-reader, trivially copyable만), `SpscQueue<T,N>` / `SpscPublishBuffer<N>`, atomic, `std::try_to_lock`
-
-### AP-RT-5: 정기 tick에서 unguarded log (AP-RT-1 과 같은 RT-3 축 — AP-RT-1 은 `RCLCPP_*` 호출 자체, 여기는 throttle 없이 반복되는 형태)
-
-- **증상**: 1 tick당 여러 줄 로그 × 정기 tick 주파수 = rate-proportional 폭증
-- **복구**: `RCLCPP_*_THROTTLE(logger, clock, period_ms, "fmt", args...)` — msg는 [invariants.md](../../agent_docs/invariants.md) RT-3 세부 스펙 준수
+- 규칙 · 허용 범위 · 탐지는 invariants.md RT-3 행 · RT-3 세부 스펙 · `detect id=RT-3` 블록. 고유 증상: 매크로가 string format + rosout IPC publish (heap + blocking) 를 하므로 rosout queue 가 차면 RT overrun → E-STOP 까지 가고, rate 가 높을수록 빨리 폭주한다. throttle 없이 tick 마다 반복되는 형태 (구 AP-RT-5) 도 같은 축이다
+- 정기 tick 의 SPSC → `DrainLog()` 구현 예: `rtc_controller_manager/src/rt_controller_node_estop.cpp`
 
 ### AP-RT-6: torn-read snapshot
 
-- **증상**: multi-field 구조체를 atomic 없이 복사 → 중간에 writer가 업데이트 → torn
-- **원인**: `memcpy(&out, &shared, sizeof)` 도중 writer 개입
-- **복구**: `SeqLock<T>` Load (reader-side retry loop), 또는 `std::atomic<T>` (POD만)
+- 규범은 invariants.md §Anti-pattern 규범 AP-RT-6 행. 메커니즘: multi-field 구조체를 `memcpy` 로 복사하는 도중 writer 가 끼어들면 두 세대가 섞인 값이 나온다 — `SeqLock<T>` 의 reader-side retry 가 그 경우를 다시 읽는다
 
 ### AP-RT-7: RT path 에서 `std::condition_variable` notify/wait ([invariants.md](../../agent_docs/invariants.md) RT-10 위반)
 
 - **증상**: RT producer 가 `cv.notify_one` 시 내부 mutex 보유 → 우선순위 역전 + 비결정 wake latency. wait side 는 명시 mutex lock 보유 (RT-4 결합)
 - **원인**: producer-consumer 통지를 cv 로 구현. 직관적이나 RT 우선순위 보장 안 됨
-- **본 repo 사례**: `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp` (eventfd 로 교체되기 전) 의 `event_mutex_ + event_cv_ + event_pending_ + staged_cmd_` 패턴. `SendCommandAndRequestStates` 의 RT producer 가 `lock_guard + notify_one`, `EventLoop` 가 `unique_lock + cv.wait_for`
+- **본 repo 사례**: `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp` (eventfd 를 거쳐 현행 SeqLock + release flag 로 바뀌기 전) 의 `event_mutex_ + event_cv_ + event_pending_ + staged_cmd_` 패턴. `SendCommandAndRequestStates` 의 RT producer 가 `lock_guard + notify_one`, `EventLoop` 가 `unique_lock + cv.wait_for`
 - **탐지**: [invariants.md](../../agent_docs/invariants.md) §위반 탐지 패턴 의 `detect id=RT-10` 블록
 - **복구**:
-  - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM 의 nrt-publish lane (`RtControllerNode` 의 `nrt_publish_eventfd_` 생성부) + `UdpHandController` (eventfd 전환 후 현행) 가 표준 패턴
+  - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM 의 nrt-publish lane (`RtControllerNode` 의 `nrt_publish_eventfd_` 생성부) 가 표준 패턴
   - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
-  - `std::atomic<bool>` release/acquire flag + self-clocked consumer — 고정주기 loop 이 매 tick latch 한다 (busy-spin 이 아니다; 규범은 invariants.md RT-10 (c))
+  - `std::atomic<bool>` release/acquire flag + self-clocked consumer — 고정주기 loop 이 매 tick latch 한다 (busy-spin 이 아니다; 규범은 invariants.md RT-10 (c)). 현행 `UdpHandController` 가 이 형태다 — command 를 SeqLock 에 stage 하고 `event_pending_` 을 release store, CommLoop 이 매 cycle latch
 
 ### AP-RT-8: RT tick 에서 `std::string` 을 값으로 반환하는 접근자 호출 ([invariants.md](../../agent_docs/invariants.md) §Anti-pattern 규범 AP-RT-8 — RT-1 의 할당이 SSO 뒤에 숨는 형태)
 
 - **증상**: 없다. 이것이 이 항목의 요점이다 — 짧은 이름은 SSO(small-string optimization) 버퍼에 들어가 힙을 안 건드리므로 alloc 게이트도 green 이고 코드도 평범해 보인다. 이름이 SSO 임계(libstdc++ 15 자)를 넘는 순간 RT tick 이 `operator new` 를 부르기 시작하는데, 그때 바뀐 것은 **YAML 의 device group 이름 한 줄**뿐이라 원인이 코드에 없다
 - **원인**: `RTControllerInterface::GetPrimaryDeviceName()` / `GetSecondaryDeviceName()` 은 `std::string` 을 **값으로** 반환한다 (`topic_config_.groups[i].first` 의 복사). 이름으로만 보면 조회 같아 tick 안에서 부르기 쉽다. `GetDeviceNameConfig(name)` 도 그 문자열을 인자로 받으므로 둘은 대개 붙어 다닌다
-- **본 repo 사례**: `DemoInferenceController::PackObservation` 이 fingertip stride 를 tick 마다 `GetDeviceNameConfig(GetSecondaryDeviceName())` 로 읽었다 (stride 를 configure-time 에 캐시하기 전). 현재 그룹 이름이 `p1b` 라 실측 allocation 은 0 이었고 게이트도 통과했다 — 결함이 아니라 **잠복**이었다
+- **본 repo 사례**: `DemoInferenceController::PackObservation` 이 fingertip stride 를 tick 마다 `GetDeviceNameConfig(GetSecondaryDeviceName())` 로 읽었다 (stride 를 configure-time 에 캐시하기 전). 당시 그룹 이름이 SSO 임계보다 짧아 실측 allocation 은 0 이었고 게이트도 통과했다 — 결함이 아니라 **잠복**이었다
 - **탐지**: RT tick 함수 본문에서 `Get*DeviceName()` 호출을 grep. 값 반환 접근자 일반으로 넓히려면 시그니처가 `std::string` (참조 아님) 인 것을 본다
 - **복구**: configure(비-RT)에서 필요한 값을 **해석해 POD 멤버로 캐시**한다 (위 사례는 `fingertip_stride_` 하나). 문자열 자체가 tick 에 필요하면 `std::string_view` 또는 인덱스로 바꾼다. tick 에서 이름으로 map 을 조회하는 형태 자체가 이미 신호다 — device 인덱스는 `topic_config_.groups` 순서로 configure 때 고정된다
 
-> **AP-RTT-3 · AP-RTT-4 는 결번**이다 (은퇴 사유는 기록되지 않았다). AP-RTT-5 는 AP-THREAD-1 로 재분류됐다. ID 는 재사용하지 않는다.
-
 ### AP-RTT-1: `realtime_tools` primitive 도입 시 예방 규칙 (dedicated thread / ctor heap / drop 추적)
 
-> **도입 시 적용** — `realtime_tools` 를 쓰지 않는 동안은 아래 grep 이 0건이고, 채택하는 순간부터 이 블록이 구속한다. primitive 선택·금지 기준의 SSoT 는 [invariants.md](../../agent_docs/invariants.md) §RT pub/sub primitive catalog (`RealtimePublisher::try_publish` / `RealtimeBuffer` 행) 이며, 이 블록은 도입 시 검토할 세 함정만 요약한다.
-
-- **`RealtimePublisher` dedicated thread → layout 파괴**: instance 당 `publishingLoop` 전용 thread 1개 생성 → `thread_config.hpp` `cpu_affinity` layout 초과, RT core 공유 시 cache pollution/선점. 탐지 `ps -eLf | grep <process> | wc -l` 이 `SystemThreadConfigs` 초과. 복구: (a) 토픽 N개를 SPSC + 단일 publish_thread 멀티플렉싱 (본 repo 기존 패턴), (b) 채택 시 `get_thread()` 로 priority/affinity 명시 ([AGENTS.md](../../AGENTS.md) §6 E-7)
-- **`RealtimeBuffer` ctor/reset 을 lifecycle 밖에서 호출**: ctor·`reset()` 가 double buffer 를 `new T()` 2회 → RT-1 위반. ctor/`reset` 은 `on_configure`/`on_cleanup` 에서만. RT path 재구성은 `SeqLock<T>` + writer `Store`
-- **`try_publish` drop 미추적**: `try_publish` 가 false (lock 실패) 반환 시 silent drop. 호출 site 마다 `std::atomic<uint64_t> drop_count_` 증가 + aux thread 주기 publish/log (본 repo SPSC drain 은 logger 가 이미 drop counter 추적)
+- **도입 시 적용** — 세 함정 (dedicated thread · ctor/`reset` heap · `try_publish` silent drop) 의 규범은 invariants.md §Anti-pattern 규범 AP-RTT-1 행, primitive 선택은 invariants.md §RT pub/sub primitive catalog. `realtime_tools` 를 쓰지 않는 동안 대상이 0건이다
+- 행에 없는 탐지: `RealtimePublisher` 는 instance 당 `publishingLoop` thread 를 하나 만들므로, `ps -eLf | grep <process> | wc -l` 이 `SystemThreadConfigs` 를 넘으면 `thread_config.hpp` layout 이 깨진 것이다. 본 repo 의 SPSC drain 경로는 logger 가 drop counter 를 이미 센다
 
 ### AP-RTT-2: 외부 라이브러리 thread 의 priority / affinity 가 thread_config.hpp 와 불일치
 
-- **증상**: 외부 thread 가 default policy (`SCHED_OTHER`) 로 생성되어 RT thread 와 동일 core 에 묶이면 RT thread 가 선점 받음
-- **원인**: 외부 라이브러리는 thread 생성 시 priority/affinity 설정 없음 — 호출자 책임. 실제 소비자는 DDS 스레드 (#163/#164); `realtime_tools::RealtimePublisher` 는 도입 시 동일 클래스의 예시
-- **탐지**: `verify_rt_runtime.sh` 의 thread 별 sched policy / affinity 검사에서 `SCHED_OTHER` thread 가 RT core 에 매핑
-- **복구**: 외부 thread 의 native handle 로 `pthread_setschedparam` + `pthread_setaffinity_np` 명시 호출. RT-HOST-2/3 정합 보장
+- 규범은 invariants.md §RT Host / Runtime Preconditions 의 외부 라이브러리 thread 불릿 (RT-HOST-2/3). 실제 소비자는 DDS thread (#163/#164) 이고 `realtime_tools::RealtimePublisher` 는 도입 시 같은 부류다
+- 탐지: `verify_rt_runtime.sh` 의 thread 별 sched policy / affinity 검사에서 `SCHED_OTHER` thread 가 RT core 에 매핑돼 보인다. 복구는 native handle 로 `pthread_setschedparam` + `pthread_setaffinity_np`
 
 ### AP-THREAD-1: `ThreadConfig::cpu_core` 를 kernel logical CPU id 로 가정
 
@@ -95,77 +71,27 @@
 - **원인**: `ThreadConfig::cpu_core` 는 *slot index* (physical core 번호), `CPU_SET(n, ...)` 의 `n` 은 *logical CPU id*. SMT-off 환경에서만 두 값이 일치하므로 4-core CI mock 만으로는 회귀를 잡을 수 없음
 - **탐지**: `ApplyThreadConfig` / `ApplyThreadConfigWithFallback` / `CheckThreadHealth*` 가 `SlotToLogicalCpu()` 없이 `cfg.cpu_core` 를 `CPU_SET` / `CPU_ISSET` 에 직접 전달하는지 — 패턴은 [invariants.md](../../agent_docs/invariants.md) §Anti-pattern 규범 의 `detect id=AP-THREAD-slot-mapping` 블록 (사본을 여기 두지 않는다)
 - **복구**: 새 affinity 호출 site 가 추가되면 반드시 `SlotToLogicalCpu(slot)` 또는 `SlotToLogicalCpu(slot, topology)` 를 거쳐 변환. unit test 는 `CpuTopology` mock 으로 직접 주입 (overload 사용)
-- **비고**: 구 AP-RTT-5 (`realtime_tools` 미사용 예방 항목이 아니라 in-tree thread affinity 라이브 결함이라 재분류). detect id `AP-THREAD-slot-mapping` 는 CI (validate_docs.py D7) 가 검증하는 load-bearing 문자열이라 개명해도 유지. 같은 slot→logical 축의 GRUB 설정 통일은 #152
+- **비고**: detect id `AP-THREAD-slot-mapping` 는 CI (validate_docs.py D7) 가 검증하는 load-bearing 문자열이라 이름을 바꾸지 않는다. 같은 slot→logical 축의 GRUB 설정 통일은 #152
 
 ## Design / Architecture
 
-### AP-ARCH-1: `rtc_*` 패키지에 robot-specific 상수 하드코딩 ([invariants.md](../../agent_docs/invariants.md) ARCH-1 위반)
-
-- **증상**: 다른 로봇에서 재사용 불가 → 패키지 fork 압력
-- **탐지**: [.claude/hooks/verify-changes.sh](../../.claude/hooks/verify-changes.sh) Phase 0 의 ARCH-1 검사 (탐지 SSoT — `6.?dof`/`10.?dof` 가 SE(3) task-space 차원 오탐이라 제외된 이유도 거기 주석에 있다)
-- **복구**: YAML 주입 또는 template parameter
-
-### AP-ARCH-2: Interface 없이 두 번째 구현 추가 ([invariants.md](../../agent_docs/invariants.md) ARCH-3 위반)
-
-- **증상**: 세 번째 구현 시 `#ifdef` / switch 지옥
-- **복구**: 첫 두 구현 리팩터 → abstract base + `RTC_REGISTER_*` factory 패턴
-
-### AP-ARCH-3: 역방향 include ([invariants.md](../../agent_docs/invariants.md) ARCH-4 위반)
-
-- **증상**: `rtc_*` robot-agnostic 훼손
-- **탐지**: [.claude/hooks/verify-changes.sh](../../.claude/hooks/verify-changes.sh) Phase 0 의 ARCH-4 검사 (대상 integration 패키지 집합을 `package.xml` 에서 자동 도출하므로 패키지 rename 에 따라가지 못하는 하드코딩 glob 이 없다)
-- **복구**: 공개 API만 사용, interface injection
-
 ### AP-ARCH-4: Device boundary 누설 (대응 invariant 없음 — device group 경계는 표로 규정되지 않았다)
 
-- **증상**: Hand/ToF state가 robot arm state로 새거나 그 반대 → GUI 혼선, digital twin 틀림
-- **원인**: 장치 그룹 경계 무시한 공용 버퍼 / state publisher
-- **탐지**: device_group별 publisher 분리 여부, `SetDeviceTarget(device_idx)` 호출자에서 인덱스 정합
-- **복구**: device_group당 별도 publisher, state/target 모두 `device_idx` tagging
-
-### AP-ARCH-5: Topic QoS depth ≠ 1 ([invariants.md](../../agent_docs/invariants.md) ARCH-6 위반)
-
-- **증상**: `create_publisher`/`create_subscription` 에 depth 10 (rclcpp 기본값) 또는 `SensorDataQoS()` (기본 depth 5) 를 무심코 사용 → stale 샘플 큐잉
-- **탐지**: [.claude/hooks/verify-changes.sh](../../.claude/hooks/verify-changes.sh) Phase 0b 의 ARCH-6 검사 (non-blocking). 인자 없는 `SensorDataQoS()` 도 대상
-- **복구**: depth 를 1 로. reliability/durability 는 유지하고 depth 필드만 이동 (`SensorDataQoS().keep_last(1)`). 다중 샘플 누적이 정당하면 [invariants.md](../../agent_docs/invariants.md) §Escalation Triggers 의 E-1 로 예외 기록
+- 규범은 invariants.md §Anti-pattern 규범 AP-ARCH-4 행. 증상: Hand/ToF state 가 arm state 로 새거나 그 반대 → GUI 혼선, digital twin 오표시. 탐지: device group 별 publisher 분리 여부와 `SetDeviceTarget(device_idx)` 호출자의 인덱스 정합
 
 ## Process / Drift
 
 ### AP-PROC-1: "✅ complete" 주장 후 실제 미완료
 
-- **증상**: 문서에는 complete, 코드는 일부만 마이그레이션
-- **원인**: PR 리뷰에서 grep 기반 verification 누락
-- **탐지**: `grep -c <new_pattern>` 예상치 vs 실측 — 대상 파일 목록 명시 후 전수 grep
-- **복구**: complete 체크 전 전수 grep, 대상 파일 목록 명시 후 체크
-
-### AP-PROC-2: Code-only without YAML/README/CMake 동기화 ([invariants.md](../../agent_docs/invariants.md) PROC-1 위반)
-
-- **증상**: 빌드 실패, 파라미터 ParameterUninitializedException, 런타임 NotFound
-- **복구**: [modification-guide.md](../../agent_docs/modification-guide.md) Completion Checklist 전항목
-
-### AP-PROC-3: 숫자 하드코딩 후 drift
-
-- **증상**: 문서 A = N, 문서 B = N+1, 실측 = N+k (mesh count / 테스트 수 / 패키지 수 등 historical 사례 다수)
-- **복구**: 단일 출처 (코드/YAML/git) + 측정 명령 박제. 문서엔 수치 자체를 넣지 말 것
-
-### AP-PROC-4: 기존 test assertion을 통과시키려 수정 ([invariants.md](../../agent_docs/invariants.md) PROC-6 위반)
-
-- **증상**: 회귀 은폐
-- **탐지**: `git diff test/` 에서 `EXPECT_*` / `ASSERT_*` 상수 변경
-- **복구**: 새 코드를 고쳐라. assertion이 진짜 틀렸거나 spec 이 바뀐 경우는 정당한 변경 — 새 코드 fix 와 **별도 commit** 으로 근거 제시 + regression test 갱신, 착수 전 E-6 escalate. ("절대 못 고친다" 가 아니라 "몰래 약화 금지")
+- 규범은 invariants.md §Anti-pattern 규범 AP-PROC-1 행. 증상: 문서는 complete 인데 코드는 일부만 마이그레이션됐다 — PR 리뷰가 대상 파일 목록 없이 grep 검증을 건너뛴 결과다
 
 ### AP-PROC-5: ROS 2 Jazzy 파라미터 타입·launch 호환
 
-- **증상**: `ParameterUninitializedException`, `namespace='/'` Jazzy 거부, CycloneDDS domain 실패
-- **원인**: Humble→Jazzy 전환 시 파라미터 선언 API 변경 미반영
-- **복구**: `ParameterDescriptor` 명시, `declare_parameter<T>(name, default, descriptor)` 타입 파라미터 사용, LifecycleNode는 `namespace=''` (empty string)
+- 규범은 invariants.md §Anti-pattern 규범 AP-PROC-5 행. 증상: `ParameterUninitializedException`, Jazzy 의 `namespace='/'` 거부, CycloneDDS domain 실패 — Humble→Jazzy 전환 때 파라미터 선언 API 변경을 반영하지 않은 결과다
 
 ### AP-PROC-6: BT coordinator 등록 누락
 
-- **증상**: 런타임에 BT 노드 not found, 테스트 중복 등록, validation fail
-- **원인**: `BT::BehaviorTreeFactory::registerNodeType<>` 호출 누락 또는 `validate_tree()`에 새 노드 미추가
-- **탐지**: `grep -l registerNodeType ur5e_bt_coordinator/` 에 새 노드 포함 확인
-- **복구**: validate_tree / registerNodeType 양쪽 업데이트 — BT 노드 신설 시 체크리스트
+- 규범은 invariants.md §Anti-pattern 규범 AP-PROC-6 행. 증상: 런타임 BT 노드 not found, 테스트 중복 등록, validation fail. 탐지: `grep -l registerNodeType ur5e_bt_coordinator/` 결과에 새 노드가 있는지
 
 ### AP-PROC-7: **추가** 변경에서 "회귀 0 fail" 을 커버리지로 읽기
 
@@ -236,23 +162,11 @@
   거부하지 않는다. 옮긴 뒤 mutation 으로 확인 — 게이트를 무력화했을 때 red 가 나야 그 테스트가
   게이트를 잡고 있는 것이다 ([invariants.md](../../agent_docs/invariants.md) PROC-6)
 
-### AP-PROC-10: *(은퇴 — 2026-09-19)*
-
-C++ 빌드·테스트 CI (`ros2-advanced-ci`) 가 제거되어, 그 게이트 job 의 `skipped`·`cancelled` 를 판독하던 이 항목은 대상이 없다. 사례·판독 절차는 이 줄을 추가한 커밋 이전의 git history 에 있다. 남은 CI 는 `docs-validate` 하나이며 빌드·테스트의 게이트는 로컬 검증뿐이다 ([AGENTS.md](../../AGENTS.md) §4).
-
 ## Controller-Specific
-
-> **AP-CTRL-2 · AP-CTRL-4 는 결번**이다 (은퇴 사유는 기록되지 않았다). ID 는 이력 참조를 위해 재사용하지 않는다.
 
 ### AP-CTRL-1: Mid-tick gains branch 불일치
 
-- **증상**: `Compute()` 중간에 aux thread 의 게인 writer (parameter callback) 실행 → bool flag 절반만 업데이트된 상태로 분기
-- **복구**: `Compute()` 진입 시 `const auto gains = gains_lock_.Load();` 단일 snapshot
-
-### AP-CTRL-3: `trajectory_speed = 0` → 1/v = INF ([invariants.md](../../agent_docs/invariants.md) NUM-4 근거)
-
-- **증상**: IEEE 754 `1/0 = INF` → trajectory hang (crash 아님)
-- **복구**: `std::max(1e-6, val)` 클램프
+- 규범은 invariants.md §Anti-pattern 규범 AP-CTRL-1 행. 메커니즘: aux thread 의 게인 writer (parameter callback) 가 `Compute()` 중간에 끼어들면 bool flag 가 절반만 갱신된 상태로 분기한다. 표준형은 진입 시 `const auto gains = gains_lock_.Load();` 한 번
 
 ### AP-CTRL-5: Joint reorder / device index off-by-one
 
@@ -290,16 +204,13 @@ C++ 빌드·테스트 CI (`ros2-advanced-ci`) 가 제거되어, 그 게이트 jo
 ### AP-DOC-2: 판단의 *근거*를 두 번째 위치에 복사한다 (주석 포함)
 
 - **증상**: 같은 설계 판단의 근거가 두 곳 이상에 서술돼 있고, **틀릴 때 같이 틀린다**. AP-DOC-1
-  이 값의 박제라면 이건 *이유*의 박제다. 값과 달리 근거는 검증기가 없어서, 코드가 그 근거를
-  배신해도 두 사본 모두 조용히 남는다. 실측: `command_divergence` 를 배선하지 않은 이유가
-  `compliance/compute.cpp` fault 블록 · `compliance_diag_log_pod.hpp` 헤더 · lane plan 세 곳에
-  적혀 있었고, 셋 다 "이 바인딩은 `integrate_from_measured: false` 를 제공하지 않는다" 고 했다 —
-  `WriteArmJointCommand` 는 `desired_q_ += dq_·dt` 로 명령을 적분하므로 **그게 바로 그 모드**다
-  (#469 리뷰). 한 곳만 있었으면 코드 옆에서 반증됐을 문장이다.
-  **후속이 처방을 검증했다**: 그 리뷰가 세 사본을 소유자 한 곳(fault 블록)으로 접은 뒤, 같은
-  판단이 3판을 필요로 했다 — 모드 주장은 맞았지만 결론("real gap")이 틀렸고, task 축 바인딩의
-  대응물은 `pose_error_limit` 이었다 (#478). 소유자가 하나였으므로 **편집도 한 번**이었다;
-  사본이 셋이었으면 세 번이었고, 경험칙상 그중 둘은 안 고쳐진다
+  이 값의 박제라면 이건 *이유*의 박제이고, 근거에는 검증기가 없어서 코드가 그 근거를 배신해도 사본이
+  모두 조용히 남는다. 실측: `command_divergence` 를 배선하지 않은 이유를 `compliance/compute.cpp`
+  fault 블록 · `compliance_diag_log_pod.hpp` 헤더 · lane plan 세 곳이 똑같이 "이 바인딩은
+  `integrate_from_measured: false` 를 제공하지 않는다" 고 적었지만, `WriteArmJointCommand` 가
+  `desired_q_ += dq_·dt` 로 명령을 적분하므로 **그게 바로 그 모드**였다 (#469 리뷰). 소유자 한 곳
+  (fault 블록) 으로 접은 뒤 그 판단이 다시 고쳐졌을 때 (#478 — 결론 "real gap" 이 틀렸고 대응물은
+  `pose_error_limit`) **편집도 한 번**이었다
 - **원인**: 인접 파일이 같은 주제를 다루면 "여기서도 설명해 두면 친절하다" 가 자연스럽다. 그런데
   근거를 고치는 사람은 **자기가 편집 중인 파일 하나만** 고친다 — 두 번 쓰는 사람은 있어도 두 번
   고치는 사람은 없다
@@ -311,16 +222,12 @@ C++ 빌드·테스트 CI (`ros2-advanced-ci`) 가 제거되어, 그 게이트 jo
   나눈다" 기법의 전개형은 [conventions.md](../../agent_docs/conventions.md#documentation-requirements) 의
   **서비스·메시지 계약의 소유자** 항목이 이미 갖고 있다 (`.srv` / README / `.cpp` 헤더 4축).
   거기는 wire 계약, 여기는 **설계 판단** — 같은 처방, 다른 대상
-- **두 번째 실측 — 축을 나눈 결과가 어떻게 생겼는가**: compliance `joint_limit_margin` 게이트가
-  *왜 파서가 아니라 바인딩에 있는가* 를 `compliance/lifecycle.cpp` 블록과 `ComplianceMarginGate`
-  fixture 가 **각각 유도**해, 그 규칙을 소유한 AP-PROC-9 까지 3중이 돼 있었다. 접은 뒤의 배치가
-  이 항목의 처방 그대로다 — lifecycle 블록은 *무엇을 왜 거부하는가*(δ 가 밴드에 하는 일, RT tail
-  과 같은 fallback), fixture 는 *무엇을 단언하는가*(sibling 과의 범위 분할, CallbackReturn 을 쌍으로
-  단언), **pass 선택 규칙 자체는 AP-PROC-9 한 곳**. 유도가 아니라 포인터만 남기면 다음에 그 규칙이
-  바뀔 때 고칠 곳이 하나다
-- **세 번째 실측 — 규칙이 바뀌는 날 사본 수만큼 고친다**: 손의 폐쇄 lead 를 어느 축의 값으로
-  실행하는가 (`mpc_docking` 아래의 환산) 가 [L6_hand.md](../dynamic_catching/ref/L6_hand.md) §4.3 외에 L3_planner.md §4.11 · integrated_bringup README ·
-  두 로봇 YAML 주석에 산문으로, YAML 에는 환산한 수치까지 다섯 번 적혀 있었다. 리뷰가 규칙을 바꾸자
-  (환산은 `mpc_docking` 아래에서만) 다섯 곳을 전부 고쳐야 했고, 다 고쳤는지는 grep 으로만 알 수
-  있었다 (#742). 접은 뒤: 규칙과 식은 L6_hand.md §4.3, 환산한 수치는 L6_hand.md §4.6 의 측정 표 한 곳, 나머지는
-  자기 축 (L3 는 $t_{cmd}$ 식, README 는 키와 미러, YAML 은 그 손의 창) 만 적고 가리킨다
+- **두 번째 실측 — 축을 나눈 결과 (#488)**: `joint_limit_margin` 게이트가 왜 파서가 아니라 바인딩에
+  있는가를 `compliance/lifecycle.cpp` 블록 · `ComplianceMarginGate` fixture · AP-PROC-9 가 3중으로
+  유도하던 것을 접어, lifecycle 블록은 *무엇을 왜 거부하는가*, fixture 는 *무엇을 단언하는가*, pass
+  선택 규칙은 **AP-PROC-9 한 곳**이 갖게 됐다
+- **세 번째 실측 — 규칙이 바뀌는 날 사본 수만큼 고친다 (#742)**: 손의 폐쇄 lead 를 어느 축의 값으로
+  실행하는가 (`mpc_docking` 아래의 환산) 가 L6_hand.md §4.3 · L3_planner.md §4.11 · integrated_bringup
+  README · 두 로봇 YAML 주석 (YAML 은 환산 수치까지) 다섯 곳에 있어, 규칙이 바뀌자 다섯 곳을 고치고
+  완료는 grep 으로만 확인할 수 있었다. 접은 뒤 규칙과 식은 [L6_hand.md](../dynamic_catching/ref/L6_hand.md) §4.3,
+  환산 수치는 L6_hand.md §4.6 측정 표 한 곳이 갖고 나머지는 자기 축만 적고 가리킨다
