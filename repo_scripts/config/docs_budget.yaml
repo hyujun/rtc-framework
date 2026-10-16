@@ -23,7 +23,7 @@
 AGENTS.md: 17408
 CLAUDE.md: 4096
 
-agent_docs/architecture.md: 17391
+agent_docs/architecture.md: 17569  # raised from 17391: helper threads of processes outside the CM inherit affinity (cpu_core = -1) -- stated only in rt-setup-rationale before (docs/reference prune, #851)
 agent_docs/controllers.md: 15612
 agent_docs/conventions.md: 9964  # raised from 9800: two rules the rationale doc alone had stated — the output-field consumer comment and per-lane QoS (2026-10-16)
 agent_docs/design-principles.md: 15387

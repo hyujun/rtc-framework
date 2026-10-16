@@ -25,7 +25,7 @@ SMT 가 켜져 있으면 `setup_grub_rt.sh` 가 형제 logical CPU 를 합집합
 
 cset 은 *프로세스* 를 cpuset 에 가두므로 (모든 스레드 포함), cpuset 은 RT 스레드 코어뿐 아니라 같은 프로세스의 non-RT lane 코어까지 덮어야 한다. 덮지 않으면 non-RT lane 의 self-pin 이 EINVAL 이 되고, `ApplyThreadConfig` 는 affinity 실패 시 SCHED_FIFO 설정 *전에* return 한다. 현재 레이아웃에서는 non-RT lane 이 RT 범위 안 (slot 2) 에 들어와 합집합이 RT 집합과 같지만, 그 포함은 **레이아웃의 우연이지 계산의 전제가 아니다.** 그래서 코드는 합집합을 유지한다 (`rt_common.sh` 의 `get_cm_shield_cpus` = RT 집합 합집합 non-RT lane, OS slot 제외).
 
-cset exclusive cpuset 은 코어를 한 cpuset 에만 넣는다. non-RT lane 코어가 shield 에 들어가면 그 코어에 pin 하려는 *다른 프로세스* 의 스레드는 EINVAL 이다. 따라서 CM 밖 프로세스 (예: `udp_hand_driver` 의 failure detector) 의 보조 스레드는 non-RT lane 코어에 pin 하지 않고 `cpu_core = -1` 로 자기 프로세스 affinity 를 상속한다.
+cset exclusive cpuset 은 코어를 한 cpuset 에만 넣는다. non-RT lane 코어가 shield 에 들어가면 그 코어에 pin 하려는 *다른 프로세스* 의 스레드는 EINVAL 이다. `udp_hand_driver` 의 failure detector 가 그 예라서 `cpu_core = -1` 규칙 ([architecture.md](../../agent_docs/architecture.md) §Threading Model) 이 생겼다.
 
 driver 프로세스 (`arm_driver` · `hand_driver`) 는 CM 스레드가 아니라서 shield 대상이 아니다. 그래서 driver 슬롯이 옮겨 가도 shield 범위가 변하지 않는다. `hand_driver` 는 프로세스가 스스로 자기 스레드를 핀하고, launch 는 그 self-pin 이 닿지 못하는 DDS 스레드만 밖에서 핀한다. 예전 `taskset -a` 스윕은 `-a` 때문에 보조 I/O 스레드를 도로 hand 코어로 끌어왔다 (#345).
 
