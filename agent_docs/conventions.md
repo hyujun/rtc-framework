@@ -14,7 +14,7 @@
 - **Variable naming**: Paper notation — `J_b` (body Jacobian), `q_d` (desired joint), `x_e` (EE pose), `K_d` (stiffness)
 - **Singularity**: compliance §6.5 σ_min-적응형 damped pseudoinverse (`max_damping` = λ_max, `singularity_threshold` = σ₀ via YAML), near-zero division guard (NUM-1)
 <!-- validate-docs: allow D10 -->
-- **`§N.M` 표기**: 숫자 절번호는 헌법 (`AGENTS.md §6` 처럼 파일명과 함께), compliance 명세 (`compliance §6.5` 처럼 접두사 필수), 파일 내부 명명 섹션 (`§RT Path Invariants`) 세 네임스페이스에 쓰인다. 접두사 없는 맨 번호는 쓰지 않는다.
+- **`§N.M` 표기**: 숫자 절번호는 헌법 (`AGENTS.md §6`), compliance 명세 (`compliance §6.5`), 파일 내부 명명 섹션 (`§RT Path Invariants`) 세 네임스페이스에 쓰인다. 접두사 없는 맨 번호는 쓰지 않는다.
 
 ## Code Conventions
 
@@ -73,6 +73,7 @@
 - **Math formulas**: LaTeX in Doxygen, paper reference (author, year, eq number), units + frame per parameter
 - **FSM**: Document valid transitions, entry/exit conditions, timeout behaviors
 - **Thread safety**: 공유 data member 는 sync 메커니즘을 명시한다 (SeqLock, SPSC, atomic, mutex)
+- **md 파일명**: kebab-case 소문자. 예외는 관례인 README · AGENTS · CLAUDE · SKILL
 - **서비스·메시지 계약의 소유자** (AP-DOC-1 · AP-DOC-2): 같은 문장을 여러 곳에 쓰지 말고 **축을 나눈다**:
   - `.srv` / `.msg` 주석 = **wire 계약 SSoT** (필드 의미, 판정 기준, 거부 조건, 권한) — 호출자가 알아야 하는 전부
   - 소비 패키지 README = 그 패키지 쪽 메커니즘과 수치의 근거. 계약은 `.srv` 를 링크
@@ -87,4 +88,4 @@ Follow **Conventional Commits**: `type(scope): subject` + optional body + option
 - **Scope**: package name or broad tag (`multi-pkg`, `launch`) when the change spans packages. One scope per commit — split unrelated changes.
 - **Subject**: English, imperative mood, capitalized first letter, no trailing period, <= 50 chars counted after `type(scope): `.
 - **Body / footer** (optional, blank line before each, wrap at 72): explain *what* and *why*, not *how*. Reference issues as `Refs: #N` (PR body: `For #N`), never with a closing keyword (`close`/`fix`/`resolve` + `#N`, even across a line break) — GitHub closes the issue on merge, and an issue closes only when the user says so. PR merge commits keep GitHub's default subject.
-- **Merge method**: 기본은 **no-ff merge commit** (`gh pr merge --merge`) 이다 — 브랜치 커밋 본문 (PROC-6 근거 같은 감사 기록) 이 `main` 에 보존된다. squash · rebase 는 사용자가 명시 지시할 때만 쓴다. 머지할 때 `--delete-branch` 로 로컬·원격 브랜치를 함께 정리한다.
+- **Merge method**: 기본은 **no-ff merge commit** (`gh pr merge --merge`) 이다 — 커밋 본문 (PROC-6 근거 등) 이 `main` 에 남는다. squash · rebase 는 사용자 지시 때만. 머지할 때 `--delete-branch` 로 로컬·원격 브랜치를 함께 정리한다.
