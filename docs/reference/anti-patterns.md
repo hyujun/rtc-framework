@@ -62,9 +62,9 @@
 - **복구**:
   - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM 의 nrt-publish lane (`RtControllerNode` 의 `nrt_publish_eventfd_` 생성부) + `UdpHandController` (eventfd 전환 후 현행) 가 표준 패턴
   - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
-  - atomic_flag + busy-spin (very-low-latency consumer 만; CPU 낭비)
+  - `std::atomic<bool>` release/acquire flag + self-clocked consumer — 고정주기 loop 이 매 tick latch 한다 (busy-spin 이 아니다; 규범은 invariants.md RT-10 (c))
 
-### AP-RT-8: RT tick 에서 `std::string` 을 값으로 반환하는 접근자 호출 ([invariants.md](../../agent_docs/invariants.md) RT-1 위반)
+### AP-RT-8: RT tick 에서 `std::string` 을 값으로 반환하는 접근자 호출 ([invariants.md](../../agent_docs/invariants.md) §Anti-pattern 규범 AP-RT-8 — RT-1 의 할당이 SSO 뒤에 숨는 형태)
 
 - **증상**: 없다. 이것이 이 항목의 요점이다 — 짧은 이름은 SSO(small-string optimization) 버퍼에 들어가 힙을 안 건드리므로 alloc 게이트도 green 이고 코드도 평범해 보인다. 이름이 SSO 임계(libstdc++ 15 자)를 넘는 순간 RT tick 이 `operator new` 를 부르기 시작하는데, 그때 바뀐 것은 **YAML 의 device group 이름 한 줄**뿐이라 원인이 코드에 없다
 - **원인**: `RTControllerInterface::GetPrimaryDeviceName()` / `GetSecondaryDeviceName()` 은 `std::string` 을 **값으로** 반환한다 (`topic_config_.groups[i].first` 의 복사). 이름으로만 보면 조회 같아 tick 안에서 부르기 쉽다. `GetDeviceNameConfig(name)` 도 그 문자열을 인자로 받으므로 둘은 대개 붙어 다닌다

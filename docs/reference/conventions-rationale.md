@@ -74,7 +74,7 @@
 | `DEBUG` | 개발자 진단용 (기본 꺼짐) — 고빈도 경로는 전용 서브-로거로 격리 |
 
 **공통 규칙:**
-- 주기 경로 (RT tick · 고빈도 폴링 · 센서 콜백) 에서 반복될 수 있는 `INFO`/`WARN`/`ERROR` 는 `*_THROTTLE` 로만 찍는다. 주기는 매직넘버가 아니라 그 패키지 logging 헤더의 표준 상수를 쓴다 (값은 헤더가 SSoT)
+- 주기 경로 (RT tick · 고빈도 폴링 · 센서 콜백) 에서 반복될 수 있는 로그는 레벨과 무관하게 `*_THROTTLE` 로만 찍는다. 주기는 매직넘버가 아니라 그 패키지 logging 헤더의 표준 상수를 쓴다 (값은 헤더가 SSoT)
 - 핫패스 로그는 포맷 인자 수를 최소화하고, 상세 데이터는 상태 구조체·CSV 로 넘긴다
 - non-RT 경로 (init/shutdown, YAML 로더, 서비스 콜백) 의 `INFO` 는 grep 한 줄로 진단 가능하도록 풍부하게 쓴다
 - 메시지 본문에 클래스·노드 이름을 박지 않는다 — logger 이름이 식별자다. `[grasp]` 같은 짧은 기능 영역 태그는 허용
@@ -123,18 +123,10 @@ RT path logging 금지 규칙과 SPSC 우회 패턴은 [invariants.md](../../age
 
 ## Commit Message Conventions
 
-Follow **Conventional Commits**: `type(scope): subject` + optional body + optional footer.
+규범 (type · scope · subject · body · issue 참조 · merge 방식) 은 [conventions.md](../../agent_docs/conventions.md) §Commit Message Conventions 가 갖는다 — 여기는 근거와 예시만 둔다.
 
-**Types**: `feat` | `fix` | `docs` | `style` | `refactor` | `perf` | `test` | `chore`
-
-**Scope**: package name (`rtc_base`, `integrated_bringup`, ...) or broad tag (`multi-pkg`, `launch`, `isolation`) when the change spans packages. One scope per commit — split unrelated changes.
-
-**Subject**: English, imperative mood, capitalized first letter, no trailing period, <= 50 chars.
-
-**Body / footer** (optional, blank line before each, wrap at 72):
-- Explain *what* and *why*, not *how*. Omit when the subject is self-explanatory.
-- Reference issues as `Refs: #N` in the footer — no closing keyword (rule: conventions.md). Issues here often carry post-merge work in their Done criteria, and a project item moved to Done closes its issue too (#791, #822, #716).
-- PR merge commits keep GitHub's default `Merge pull request #N from ...` — do not rewrite.
+- **subject 의 50 자는 `type(scope): ` 뒤부터 센다** — `main` 의 관행이 그렇다: 최근 300 개 중 205 개가 줄 전체로는 50 자를 넘고 subject 부분으로는 지킨다.
+- **issue 참조에 closing keyword 를 쓰지 않는다** — 이 저장소의 이슈는 merge 뒤 정리 · 결과 코멘트까지 Done 기준에 넣는 경우가 많아, keyword 가 merge 순간 이슈를 닫으면 남은 일이 추적에서 빠진다. 줄을 넘겨 이어진 keyword 도, project item 을 Done 으로 옮기는 것도 이슈를 닫았다 (#716, #822, #791).
 - **Merge method** — **기본은 no-ff merge commit** (`gh pr merge --merge`, 사용자 확정 2026-08-16): 머지 커밋이 PR 단위를 히스토리에 남기고, 브랜치 커밋 본문(PROC-6 spec-change 근거 같은 감사 기록)이 `main` 에 그대로 보존된다. **squash 는 커밋 본문을 PR 본문으로 덮어쓰므로** rebase 와 함께 사용자가 명시 지시할 때만 쓴다 (선례: #442 rebase · #450 no-ff; #464 까지는 squash 관례였고 `(#N)` 접미사가 그 흔적). `delete_branch_on_merge=false` 이므로 `gh pr merge --delete-branch` 로 로컬·원격 브랜치를 함께 정리한다.
 
 Example with body + footer:

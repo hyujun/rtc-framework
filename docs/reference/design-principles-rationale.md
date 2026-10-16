@@ -31,7 +31,7 @@
 | Belongs in `rtc_*` | Belongs in an integration package |
 |--------------------|---------------------|
 | Abstract interfaces, concepts, base classes | Concrete implementations via `RTC_REGISTER_CONTROLLER` |
-| **제어 법칙 코어** — Eigen/span in-out, `RTControllerInterface` 를 모름 | **바인딩** — `RTControllerInterface` 구체 구현, mailbox 소비, `ControllerOutput` 조립, 등록 (아래 §`rtc_controllers` Controllers Are Pure Control Algorithms 가 이 행의 SSoT — 3계층 배치표·전이 상태 포함) |
+| **제어 법칙 코어** — Eigen/span in-out, `RTControllerInterface` 를 모름 | **바인딩** — `RTControllerInterface` 구체 구현, mailbox 소비, `ControllerOutput` 조립, 등록 (이 행의 규범은 [design-principles.md](../../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 가 갖고 근거는 아래 같은 이름의 절이다 — 3계층 배치표·전이 상태 포함) |
 | DOF-generic algorithms (variable `n_joints`) | Fixed-DOF launch files, URDF, MJCF, meshes |
 | Transport/codec templates (`Transceiver<T,C>`) | Robot-specific packet structs as template args |
 | YAML-driven parameter schemas | YAML files with actual robot values |
@@ -46,7 +46,7 @@
 - **Example 실행 파일** — `rtc_urdf_bridge` 의 `example_*` 4종, `rtc_math` 의 `se3_error_compare`. API 사용법 데모이며 bringup chain 에 등장하지 않는다.
 - **오프라인 검사 도구** — `rtc_inference` 의 `rtc_inference_check` (#511). argv 로 받은 `.onnx` 경로와 shape 만 보고 표를 찍고 끝나는 일회성 프로세스다: 로봇을 모르고, RT 루프도 ROS 노드도 없으며, 어떤 launch 에도 등장하지 않는다. 런타임 정체성이 아니라 **개발 도구**라서 예외다 — 이 범주는 exec 를 만들되 *실행 중인 시스템의 일부가 되지 않는* 것을 뜻하고, 그 판정 기준은 "bringup chain 에 등장하는가" 다.
 
-예외에 해당하지 않는 신규 `add_executable` 을 `rtc_*` 에 추가하려면 [invariants.md](../../agent_docs/invariants.md) §Escalation Triggers 의 `[CONCERN]` (E-1 / Critical — ARCH-7 전용 E-번호는 없다) 으로 보고한다. 이 규칙은 오랫동안 예외 서술 없이 "금지" 로만 적혀 있었고, 그 사이 7개 타깃이 축적되는 동안 아무 신호도 없었다 (#213) — 지금은 hook 이 `rtc_*/CMakeLists.txt` 의 신규 `add_executable` **타깃 이름** 을 검사한다. 면제 경로는 셋이다 — (1) HEAD 에 이미 있는 기존 타깃은 재발화하지 않고(**grandfathered** — 개수는 hook 이 세는 값이므로 박제하지 않는다; `mujoco_simulator_node`·`closure_state_publisher`·`se3_error_compare` 는 이 경로로만 통과한다), (2) `example_*` 는 이름으로 면제되며, (3) **그 밖의 신규 agnostic 노드** 는 `add_executable` 라인 위 또는 옆에 `ARCH-7-exempt` 주석을 달아 면제한다. 즉 hook 이 지금 마커를 강제하는 대상은 (3) 뿐이고 (1)의 세 노드에는 아직 마커가 없다 — 이들을 rename·재추가하면 name diff 가 신규 타깃으로 보므로, 그때 `ARCH-7-exempt` 주석을 함께 붙여 (3) 경로로 옮긴다.
+예외에 해당하지 않는 신규 `add_executable` 을 `rtc_*` 에 추가하려면 [invariants.md](../../agent_docs/invariants.md) §Escalation Triggers 의 `[CONCERN]` (E-1 / Critical — ARCH-7 전용 E-번호는 없다) 으로 보고한다. 이 규칙은 오랫동안 예외 서술 없이 "금지" 로만 적혀 있었고, 그 사이 7개 타깃이 축적되는 동안 아무 신호도 없었다 (#213) — 지금은 hook 이 `rtc_*/CMakeLists.txt` 의 신규 `add_executable` **타깃 이름** 을 검사한다. 면제 경로는 셋이다 — (1) HEAD 에 이미 있는 기존 타깃은 재발화하지 않고(**grandfathered** — 개수는 hook 이 세는 값이므로 박제하지 않는다; `mujoco_simulator_node`·`closure_state_publisher`·`se3_error_compare` 는 이 경로로만 통과한다), (2) `example_*` 는 이름으로 면제되며, (3) **그 밖의 신규 agnostic 노드** 는 `add_executable` 줄 또는 그 위에 붙은 주석 블록의 `ARCH-7-exempt` 주석으로 면제한다. 즉 hook 이 지금 마커를 강제하는 대상은 (3) 뿐이고 (1)의 세 노드에는 아직 마커가 없다 — 이들을 rename·재추가하면 name diff 가 신규 타깃으로 보므로, 그때 `ARCH-7-exempt` 주석을 함께 붙여 (3) 경로로 옮긴다.
 
 **Runtime identity rule** (위 마지막 두 행의 근거): exec ↔ ROS 노드 ↔ pgrep ↔ logger 식별자가 모두 같은 이름으로 정렬되어야 디버깅·검증·로그 추적 비용이 일정하게 유지됨. agnostic 패키지가 자체 exec를 가지면 robot-specific identity와 혼선이 생김(어느 launch에서 띄운 어느 instance인지 구분 불가). 따라서 agnostic은 library만 export.
 
