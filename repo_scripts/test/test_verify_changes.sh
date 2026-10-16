@@ -1864,6 +1864,14 @@ if [ "$log" = "pass pass-unchanged blocked " ]; then
 else
   fail "the timing log reads [$log]"
 fi
+# 58b. The seventh column says WHICH gate blocked, as codes, so a run of
+#      blocks can be read without the stderr text; a pass has none.
+log=$(cut -f7 "$dir/.git/rtc-verify-timing.log" 2>/dev/null | tr '\n' ' ')
+if [ "$log" = "reason=- reason=- reason=meta " ]; then
+  pass "the timing log names the blocking gate"
+else
+  fail "the timing log's reason column reads [$log]"
+fi
 rm -rf "$dir" "$bstub" "$tstub"
 
 # 61. A package that was built WITHOUT tests is UNVERIFIED, whatever the test

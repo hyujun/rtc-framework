@@ -251,7 +251,9 @@ advance_verify_base() {
 #   rtc-verify-pass-pkgs   "<pkg> <content key>" per package that built and
 #                          tested green
 #   rtc-verify-timing.log  one line per run: when, verdict, seconds, packages,
-#                          mode (stop = the turn-end call, run = --run)
+#                          mode (stop = the turn-end call, run = --run), and
+#                          reason= the gates that blocked (`arch+build`; `-` on
+#                          a pass) -- codes: block_reasons
 # RTC_VERIFY_NO_REUSE=1 switches both reuses off (every gate runs, nothing is
 # read from the two pass files; a pass is still recorded).
 GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null || echo .git)"
@@ -555,9 +557,9 @@ work_tree_id() {
 # trimmed to the last 500 runs, and never allowed to fail the hook.
 log_timing() {
   {
-    printf '%s\t%s\t%ss\tbuilt=[%s]\treused=[%s]\tmode=%s\n' \
+    printf '%s\t%s\t%ss\tbuilt=[%s]\treused=[%s]\tmode=%s\treason=%s\n' \
       "$(date -Is 2>/dev/null || date)" "$1" "$SECONDS" "${2# }" "${3# }" \
-      "$([ -n "$RUN_MODE" ] && echo run || echo stop)" >> "$TIMING_LOG"
+      "$([ -n "$RUN_MODE" ] && echo run || echo stop)" "${4:--}" >> "$TIMING_LOG"
     if [ "$(wc -l < "$TIMING_LOG")" -gt 600 ]; then
       tail -n 500 "$TIMING_LOG" > "$TIMING_LOG.tmp" && mv "$TIMING_LOG.tmp" "$TIMING_LOG"
     fi
@@ -2225,7 +2227,25 @@ if [ -n "$FORMAT_UNGRADED" ]; then
 fi
 
 # --- Report ---
+# Which gates blocked, as short codes for the timing log's reason column
+# (`arch+build`), so a run of blocks can be read without the stderr text.
+block_reasons() {
+  local r=""
+  [ -n "$ARCH_VIOLATIONS" ] && r="$r+arch"
+  [ -n "$WARNINGS" ] && r="$r+meta"
+  [ -n "$DOC_FAILURES" ] && r="$r+docs"
+  [ -n "$YAML_FAILURES" ] && r="$r+yaml"
+  [ -n "$RULES_FAILURES" ] && r="$r+rules"
+  [ -n "$TESTGATE_FAILURES" ] && r="$r+testgate"
+  [ -n "$TEST_FAILURES" ] && r="$r+build"
+  [ -n "$STALE_INSTALL" ] && r="$r+stale"
+  [ -n "$SHELLCHECK_FAILURES" ] && r="$r+shellcheck"
+  [ -n "$FORMAT_FAILURES" ] && r="$r+format"
+  [ -n "$IMPORT_MISSING" ] && r="$r+import"
+  printf '%s' "${r#+}"
+}
 REPORT=""
+IMPORT_MISSING=""
 if [ -n "$ARCH_VIOLATIONS" ]; then
   REPORT="Architecture-fitness violations (agent_docs/invariants.md):\n${ARCH_VIOLATIONS}\n"
 fi
@@ -2267,8 +2287,10 @@ fi
 if git show "$VERIFY_BASE:CLAUDE.md" 2>/dev/null | grep -qx '@AGENTS.md'; then
   if [ ! -f CLAUDE.md ] || ! grep -qx '@AGENTS.md' CLAUDE.md; then
     REPORT="${REPORT}Constitution import missing:\n  - CLAUDE.md is gone or no longer has the line '@AGENTS.md' -- Claude Code would load none of AGENTS.md; restore it\n\n"
+    IMPORT_MISSING=1
   elif [ ! -f AGENTS.md ]; then
     REPORT="${REPORT}Constitution import missing:\n  - CLAUDE.md imports '@AGENTS.md' but AGENTS.md is gone from the repository root -- Claude Code would load no constitution; restore it\n\n"
+    IMPORT_MISSING=1
   fi
 fi
 if echo "$CHANGED_TRACKED" | grep -qx 'CLAUDE.md' && [ -f CLAUDE.md ]; then
@@ -2294,7 +2316,7 @@ if [ -n "$REPORT" ]; then
     REPORT="${REPORT}Doc checklist (reminder — not itself blocking):\n${CHECKLIST}\n"
   fi
   echo -e "${REPORT}See agent_docs/modification-guide.md for the full checklist." >&2
-  log_timing "blocked" "$BUILT_PKGS" "$REUSED_PKGS"
+  log_timing "blocked" "$BUILT_PKGS" "$REUSED_PKGS" "$(block_reasons)"
   exit 2
 fi
 
