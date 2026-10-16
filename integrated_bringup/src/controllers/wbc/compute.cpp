@@ -1,5 +1,6 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/controllers/fingertip_counts.hpp"
+#include "integrated_bringup/controllers/wbc/se3_feedforward.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
@@ -437,9 +438,13 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
     tcp_traj_state_ =
         tcp_trajectory_.compute(std::min(tcp_trajectory_time_, tcp_trajectory_.duration()), dt);
     if (auto* se3 = tsid_controller_.Formulation().GetTask("se3_tcp"); se3) {
-      static_cast<rtc::tsid::SE3Task*>(se3)->SetSe3Reference(
-          tcp_traj_state_.pose, tcp_traj_state_.velocity.toVector(),
-          tcp_traj_state_.acceleration.toVector());
+      // The trajectory's velocity / acceleration are LOCAL (body) motions;
+      // SE3Task takes them in its base frame's axes, the acceleration as the
+      // classical one (se3_feedforward.hpp).
+      const wbc::AlignedFeedForward ff = wbc::LocalToAlignedFeedForward(
+          tcp_traj_state_.pose, tcp_traj_state_.velocity, tcp_traj_state_.acceleration);
+      static_cast<rtc::tsid::SE3Task*>(se3)->SetSe3Reference(tcp_traj_state_.pose, ff.velocity,
+                                                             ff.acceleration);
     }
   }
 
@@ -1289,18 +1294,24 @@ void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexc
 }
 
 double DemoWbcController::ComputeTcpError(const pinocchio::SE3& target) noexcept {
-  // #unified-kindyn Phase 2: world tip from the shared cache clik_tcp oMf — the
-  // exact value arm_handle_->GetFramePlacement(tip_frame_id_) produced. UpdatePhase
+  // #unified-kindyn Phase 2: tip from the shared cache clik_tcp oMf — the exact
+  // value arm_handle_->GetFramePlacement(tip_frame_id_) produced. UpdatePhase
   // (this caller) runs before the same-tick cache.Update, so it reads the previous
   // tick's oMf — the SAME one-tick lag the old path had (it read arm_handle_ FK
-  // last refreshed by the previous tick's FillLogOutput). target (tcp_goal_) is
-  // compared in the same world frame as before (no base actInv here).
+  // last refreshed by the previous tick's FillLogOutput). target (tcp_goal_) is a
+  // pose in the base frame (root_link), so the tip is brought into the base
+  // first (#779 — comparing the world tip with it was off by the base's pose).
   if (clik_tcp_frame_idx_ < 0) {
     return 1e10;
   }
-  const pinocchio::SE3& tcp =
-      combined_cache_.cache().registered_frames[static_cast<std::size_t>(clik_tcp_frame_idx_)].oMf;
-  return (tcp.translation() - target.translation()).norm();
+  const auto& frames = combined_cache_.cache().registered_frames;
+  const pinocchio::SE3& tcp_world = frames[static_cast<std::size_t>(clik_tcp_frame_idx_)].oMf;
+  if (clik_base_frame_idx_ < 0) {
+    return (tcp_world.translation() - target.translation()).norm();
+  }
+  const pinocchio::SE3 tcp_in_base =
+      frames[static_cast<std::size_t>(clik_base_frame_idx_)].oMf.actInv(tcp_world);
+  return (tcp_in_base.translation() - target.translation()).norm();
 }
 
 // ── Controller-owned topic lifecycle ──────────────────────────────────────

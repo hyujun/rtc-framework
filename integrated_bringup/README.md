@@ -37,7 +37,8 @@ integrated_bringup/
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더
 │   │       ├── grasp_target.hpp           <- grasp 목표 pose 구조체 + 외부 명령 enum
 │   │       ├── grasp_phase_manager.hpp    <- 5-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)
-│   │       └── force_reference_updater.hpp <- Stage A-3 per-contact normal-force PI helper
+│   │       ├── force_reference_updater.hpp <- Stage A-3 per-contact normal-force PI helper
+│   │       └── se3_feedforward.hpp     <- TCP ramp 의 LOCAL 속도 · 가속도 → SE3Task 의 base 축 · classical 가속도 (#779)
 │   ├── support/                        <- controller 인프라 (로깅 매크로, owned topics, vTCP, log 등록 헬퍼, momentum-observer 배선, compliance §7.3 관절 tail 통계)
 │   │   ├── bringup_logging.hpp
 │   │   ├── controller_log_registration.hpp
@@ -646,7 +647,7 @@ MPC 는 별도 thread 에서 돌며 RT 는 보간된 `q_ref,v_ref` 를 posture r
 | Phase | 제어 모드 | 진입 조건 | 종료 조건 |
 |-------|----------|----------|----------|
 | `kIdle` (0) | CLIK-QP 위치 + TSID 해석 (SE3 hold @ current TCP + posture regulate @ init snapshot). 진입 시 `SeedHoldFromMeasured` 가 측정 config 를 `q_des_target_full_`(posture ref) + joint_goal mirror + `tcp_goal_` 로 스냅샷 → 외란 시 init 으로 복원하는 stiff hold (InitPositionHold). 진입 edge 없는 첫 enable 은 first-tick self-init 에서 동일 시드 — 단 이 self-init 은 **모든 구성 device (arm+hand) 가 valid 측정 상태를 스트림할 때까지 defer** 되고 그동안 passthrough hold 를 명령한다 (hand device 가 늦게 올라오는 startup race 에서 posture ref hand block 이 zero 로 고정돼 손가락을 0 으로 붕괴시키는 것을 방지; joint/task 컨트롤러는 arm 즉시 시드 + hand 시드만 per-device 플래그로 defer). | 초기 / `grasp_cmd=0` / `release_done_` | `grasp_cmd=1` + `robot_new_target` |
-| `kApproach` (1) | CLIK-QP 위치 + TSID 해석 (SE3 quintic ramp → grasp pose) | kIdle 종료 | `tcp_goal_valid && ||tcp_err|| < epsilon_pregrasp` |
+| `kApproach` (1) | CLIK-QP 위치 + TSID 해석 (SE3 quintic ramp → grasp pose) | kIdle 종료 | `tcp_goal_valid && ||tcp_err|| < epsilon_pregrasp` (TCP 와 목표 모두 `root_link` 기준) |
 | `kClosure` (3) | CLIK-QP 위치 + TSID (contact + ForceTask, hand τ_ff 후보) | kApproach 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |
 | `kHold` (4) | CLIK-QP 위치 + TSID (contact + ForceTask, hand τ_ff 후보) | kClosure 종료 | slip 감지 시 `kFallback` (RELEASE preempt 는 top-level guard) |
 | `kRelease` (6) | CLIK-QP 위치 + TSID 해석 (SE3 hold) + 2-stage overlay (contact ramp `release_ramp_sec` → finger open) | `grasp_cmd=2` from active grasp phase (`kApproach`/`kClosure`/`kHold`) | `release_done_` (stage 1 hand trajectory 완료) |
@@ -662,7 +663,7 @@ MPC 는 별도 thread 에서 돌며 RT 는 보간된 `q_ref,v_ref` 를 posture r
 | `hand_trajectory_speed` | double | `[1e-6, ∞)` (clamp). `kRelease` stage 1 finger-open quintic duration 산출 |
 | `arm_max_traj_velocity` | double (read-only) | trajectory 진행 중 arm 관절 최대 속도 [rad/s] |
 | `hand_max_traj_velocity` | double (read-only) | trajectory 진행 중 hand 모터 최대 속도 [rad/s] |
-| `tcp_trajectory_speed` | double | `[1e-6, ∞)` (clamp). MPC-disabled SE3 ramp 의 TCP 병진 속도 [m/s]. SE3-task active 한 phase 진입 edge 에서 `InitTcpTrajectory` 가 quintic rest-to-rest segment 를 구성 |
+| `tcp_trajectory_speed` | double | `[1e-6, ∞)` (clamp). MPC-disabled SE3 ramp 의 TCP 병진 속도 [m/s]. SE3-task active 한 phase 진입 edge 에서 `InitTcpTrajectory` 가 quintic rest-to-rest segment 를 구성. ramp 의 속도 · 가속도는 LOCAL (body) 표현이라 SE3Task 에는 `root_link` 축의 원점 속도 · classical 가속도로 바꿔 넘긴다 (`wbc/se3_feedforward.hpp`) |
 | `tcp_trajectory_angular_speed` | double | `[1e-6, ∞)` (clamp). MPC-disabled SE3 ramp 의 TCP 각속도 [rad/s] |
 | `tcp_max_traj_velocity` | double | TCP 병진 속도 cap [m/s] (quintic peak = `1.875·d/T`) |
 | `tcp_max_traj_angular_velocity` | double | TCP 각속도 cap [rad/s] (quintic peak = `1.875·d/T`) |
