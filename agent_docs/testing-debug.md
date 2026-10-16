@@ -19,6 +19,8 @@
 - **픽스처는 표현의 대칭을 깨야 판별력이 있다** — pinocchio order ≠ device order, 직교하지 않는 축, 0 이 아닌 offset, LOCAL ≠ LWA 인 프레임. 두 순서가 같은 픽스처에서는 뒤섞어도 통과한다. 픽스처의 기하를 고칠 때 그 비대칭을 유지한다.
 - **positive control 은 합성 입력으로 만든다.** 지금 던지는 테스트나 코퍼스에 남은 실제 위반을 대조군으로 삼으면 그 결함이 고쳐질 때 대조군이 조용히 사라진다 — 게이트의 발화 증명은 `--self-test` 의 합성 코퍼스가 갖는다.
 - **비교 헬퍼는 비유한 값에서 실패로 단락한다** — `max(m, |a−b|)` 누적은 양쪽이 NaN 이면 0 을 낸다. NaN fault 테스트는 오염원별로 나눈다 (속도 NaN 은 J(q)·M(q) 를 유한하게 둬 위치 NaN 의 가드를 우회한다).
+- **거부 케이스마다 같은 rig 의 통과 대조군을 붙인다.** bring-up 순서가 둘 이상이면 모두 돌리고, 순서가 섞일 수 있는 입력 (손 관절 등) 에는 원소마다 다른 값을 준다 — 전부 같은 값이면 순서가 뒤바뀌어도 출력이 같다.
+- 검사기·비교기에 규칙을 더하면 **그 규칙을 어긴 mutant 가 red 인지** 확인한다 — 규칙을 가르지 못하는 입력 (직교 축, 대칭 범위) 은 조용히 통과한다.
 - 실세계 negative fixture (`schunk_svh_hand_*` 의 관성) 는 통과 대상이 아니다 — 값을 지어내 고치지 않는다.
 - URDF → Model 진입점을 새로 열면 `EnforceInertialGate` 호출을 함께 넣는다.
 - 추정·잔차 통계는 `valid=1` 행만 쓴다 (held 행은 직전 값이 동결된 것이라 측정이 아니다).
@@ -87,6 +89,9 @@ RT tick 이 heap 을 안 만진다는 주장을 재는 sensor 는 셋이고, 선
 - flake 는 재현하기 전에 `build/<pkg>/Testing/Temporary/` 의 `LastTest_*.log` 부터 연다.
 - 한 gtest 바이너리가 ctest 에 여러 번 등록될 수 있다 — ctest 밖에서 돌릴 때는 `ctest -N` 으로 등록을 확인하고 `GTEST_FILTER` 를 등록대로 준다.
 - 판정은 "실패 0건" 이 아니라 **이번 호출이 만든 산출물** 로 한다 — 읽기 전에 지우고, 없으면 실패다. 막는 경로: [계측 함정](../docs/reference/testing-rationale.md#계측-함정).
+- 범위 없는 ws root `colcon build` 는 형제 저장소의 configure 실패로 이 저장소 패키지를 `Aborted` 시키고, 뒤이은 `colcon test` 는 직전 바이너리로 green 을 낸다 — 전체 검증은 `--base-paths src/rtc-framework` 로 하고 `aborted` 줄부터 본다.
+- `setup_env.sh` 를 source 하지 않은 셸에서 자작 게이트가 낸 빈 출력은 green 이 아니다.
+- 쓰는 중인 결과 XML 은 false RED (`1 test, 1 error` · `missing_result`) 를 낸다 — mtime 이 실행 종료 뒤인지와 루트의 `tests` 속성을 확인한 뒤 읽고, flake 로 넘기기 전에 그 테스트만 다시 돌린다.
 - 신규 테스트 개수는 총계 차이가 아니라 `grep -c '^TEST(' <파일>` 또는 per-target XML 의 `tests="N"` 으로 교차검증한다.
 
 ### Coverage · sanitizer 빌드
@@ -114,3 +119,8 @@ RT tick 이 heap 을 안 만진다는 주장을 재는 sensor 는 셋이고, 선
 ## Tracing
 
 timing CSV 는 per-tick 총 시간만 기록한다. thread × core 타임라인이나 callback 별 시간이 필요하면 LTTng trace 를 캡처한다 — 절차는 [docs/tracing.md](../docs/tracing.md).
+
+- 주기 스레드는 tick 전체 (raw `clock_nanosleep` 또는 `jthread` 의 한 iteration) 를 덮는 **L1 root span 1개** 와 phase 별 **L2 span** (read / compute / publish / write) 으로 계측한다. L3 이상은 비용·분기가 큰 경로의 의도된 [예외](../docs/reference/tracing-rationale.md#2-layer-span-계약) 다 — 새 계측점은 먼저 L2 인지, 예외에 드는 L3 인지 판정한다.
+- executor 콜백은 ros2_tracing 의 `callback_start/end` 가 이미 L1 이다 — 본문에는 이름 붙은 L2 span 만 더한다.
+- 주기성은 L1 root span 의 **begin-to-begin 간격** 으로 판정한다 (duration 이 아니다). 같은 세션의 CSV 를 보조 근거로 병기하고, tick period 가 어긋나면 계측 경계나 event loss 부터 의심한다.
+- `sim_step` 의 duration 을 physics 시간으로 단독 해석하지 않는다 — command 대기 (`sim_wait_command`) 와 throttle 이 섞여 있고, `sim_wait_command` 가 길면 느린 쪽은 controller 의 RT tick 이다.

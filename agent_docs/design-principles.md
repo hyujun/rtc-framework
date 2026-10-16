@@ -4,7 +4,7 @@
 
 > **이 파일의 규칙 위반은 [invariants.md](invariants.md) ARCH-1~4 의 escalation 대상이다.** 위반이 불가피해 보이면 코드를 쓰기 **전에** `[CONCERN]` 을 보고한다 ([AGENTS.md](../AGENTS.md) §6).
 
-각 원칙의 근거 · 판정이 내려진 사례와 실측 · 예시는 헌법 밖 [design-principles-rationale.md](../docs/reference/design-principles-rationale.md) 가 갖는다.
+각 원칙의 근거 · 판정이 내려진 사례와 실측은 헌법 밖 [design-principles-rationale.md](../docs/reference/design-principles-rationale.md) 가 갖는다.
 
 ## Five Principles
 

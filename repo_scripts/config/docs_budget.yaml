@@ -6,10 +6,13 @@
 # document is gone all fail the docs gate (repo_scripts/scripts/validate_docs.py).
 #
 # A budget goes DOWN, in the change that shrinks its document. It does not go up
-# to make room for an edit: content that does not fit is not a rule, and belongs
-# in the document that owns it (package README, docs/, a hook header, an issue).
-# When a rule really was added and nothing can come out, the raise is stated on
-# the entry's own line:
+# to make room for an edit: content that does not fit is usually not a rule, and
+# belongs in the document that owns it (package README, docs/, a hook header, an
+# issue). A judgement an agent must apply IS a rule, though, and does not move
+# out to save bytes -- docs/reference/ keeps the why of a rule, not the rule, and
+# agents are not told to obey it (#851 moved such rules back). When a
+# rule really was added and nothing can come out, the raise is stated on the
+# entry's own line:
 #
 #     agent_docs/x.md: 9200  # raised from 9000: <why>
 #
@@ -23,14 +26,14 @@
 AGENTS.md: 17408
 CLAUDE.md: 4096
 
-agent_docs/architecture.md: 17391
+agent_docs/architecture.md: 17574  # raised from 17391: helper threads of processes outside the CM inherit affinity (cpu_core = -1) -- stated only in rt-setup-rationale before (docs/reference prune, #851)
 agent_docs/controllers.md: 15612
-agent_docs/conventions.md: 9964  # raised from 9800: two rules the rationale doc alone had stated — the output-field consumer comment and per-lane QoS (2026-10-16)
-agent_docs/design-principles.md: 15387
+agent_docs/conventions.md: 9962  # raised from 9800: two rules the rationale doc alone had stated — the output-field consumer comment and per-lane QoS (2026-10-16)
+agent_docs/design-principles.md: 15377
 agent_docs/handoff.md: 5045
-agent_docs/invariants.md: 38043  # raised from 37777: NUM-7 covers std::clamp and fallbacks computed from the rejected input (user decision 2026-10-16)
+agent_docs/invariants.md: 38289  # raised from 38043: RT-9 lifecycle exemption, the RT-HOST-3 missing-thread FAIL and the ARCH-3 review signal -- stated only in the rationale docs before (docs/reference prune, #851)
 agent_docs/modification-guide.md: 15230
-agent_docs/testing-debug.md: 14610  # raised from 14140: judge a run by the artifacts it produced; NaN comparison helpers and per-source fault tests (user decision 2026-10-16)
+agent_docs/testing-debug.md: 16772  # raised from 14610: L1/L2 span, executor-callback L2 and begin-to-begin cadence rules, pass controls and mutant checks in test design, three false-green paths in test measurement -- stated only in testing/tracing rationale before (docs/reference prune, #851)
 
 .claude/rules/arch-build-meta.md: 2799
 .claude/rules/arch-source.md: 3833

@@ -145,7 +145,7 @@ nvidia-smi
 dkms status nvidia    # 현재 커널에 installed
 ```
 
-스크립트는 사전 점검 · modprobe 설정 · IRQ affinity 서비스 · persistence mode · nouveau 블랙리스트 · DKMS 빌드 · 요약 순서로 진행하고, 끝에서 GRUB · 디스플레이 · CPU governor 스크립트를 이어 부른다. 우회 방식의 근거는 [rt-setup-rationale.md](reference/rt-setup-rationale.md).
+스크립트는 사전 점검 · modprobe 설정 · IRQ affinity 서비스 · persistence mode · nouveau 블랙리스트 · DKMS 빌드 · 요약 순서로 진행하고, 끝에서 GRUB · 디스플레이 · CPU governor 스크립트를 이어 부른다. DKMS 빌드가 막히는 세 층과 우회는 [setup_nvidia_rt.sh](../repo_scripts/scripts/setup_nvidia_rt.sh) 의 DKMS 단계 주석이 갖는다.
 
 ## 3. 코어 배치
 
@@ -219,6 +219,10 @@ sudo cyclictest --mlockall --smp --priority=90 --policy=fifo --interval=2000 --l
 
 PREEMPT_RT + cset shield 에서 Max 가 50 µs 미만이면 정상이다. `check_rt_setup.sh --benchmark` 가 같은 측정을 감싼다.
 
+**rtla (커널 노이즈 분해, Ubuntu 24.04 기본)** : `rtla osnoise top -P F:1 -c <격리 코어>` 는 OS noise 를, `rtla hwnoise hist` 는 IRQ 를 끈 상태의 hardware noise 를 본다. cyclictest 와 함께 배포 전 1회 · 환경을 바꾼 뒤 다시 재고, 결과는 timing CSV 와 같은 세션 디렉토리에 둔다.
+
+**6 코어 tier** 는 arm 과 hand 가 slot 4 를 공유하고 hand 의 UDP 수신 루프 (FIFO 65) 가 arm 루프 (FIFO 50) 보다 높다. 그 tier 의 지터는 반드시 **arm + hand 동시 구동** 에서 잰다.
+
 **그 밖에**: 제어 주파수는 `ros2 topic hz <명령 토픽>`, 마이그레이션은 `sudo perf stat -e context-switches,cpu-migrations -p $PID sleep 10` (cpu-migrations 가 0 이어야 한다). 스레드 × 코어 타임라인은 [tracing.md](tracing.md).
 
 ## 5. 문제 해결
@@ -269,6 +273,7 @@ hybrid 감지 확인:
 
 ## 7. 고급·참고
 
+- 컨테이너 배포: `--cap-add=sys_nice --ulimit rtprio=99 --ulimit memlock=-1` 이 없으면 memlock (RT-HOST-1) 과 SCHED_FIFO (RT-HOST-2) 가 조용히 실패한다
 - UDP 버퍼·NIC: `sudo ./repo_scripts/scripts/setup_udp_optimization.sh [NIC]` (`install.sh --rt` 가 이미 호출)
 - 사용자 정의 지터 추적: `trace-cmd` (ftrace), LTTng 는 [tracing.md](tracing.md)
 - 이 설정의 근거 (cset adopt fail-closed, degraded 격리 예외, RT 코어 집합이 전 tier 에서 같은 이유): [rt-setup-rationale.md](reference/rt-setup-rationale.md)

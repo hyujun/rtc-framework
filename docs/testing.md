@@ -14,9 +14,11 @@ colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_control
 colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser     # Python 테스트 하나
 ```
 
+`colcon.pkg` 로 패키지 안 병렬 (`ctest-args: ["-j", n]`) 을 켠 패키지는 CLI 의 `-j 1` 로 직렬이 되지 않는다 (`colcon.pkg` 의 `-j` 가 뒤에 붙는다). 직렬로 돌리려면 `COLCON_EXTENSION_BLOCKLIST=colcon_core.package_augmentation.colcon_pkg colcon test …` 로 `colcon.pkg` 를 읽지 않게 한다. `ament_python` 패키지의 병렬 (pytest-xdist) 과 xdist 가 없는 호스트의 처리는 `rtc_tools/colcon.pkg` 주석이 갖는다.
+
 ## Sensor Matrix
 
-변경 위치를 찾아 **필수 + 추가** 를 모두 돌린다 ([AGENTS.md](../AGENTS.md) §5). 기본형은 `colcon test --packages-select <pkg>` 이고, 표의 "필수" 는 그 안에서 반드시 봐야 하는 테스트와 추가 명령이다. 각 테스트가 무엇을 왜 pin 하는지는 [testing-rationale.md](reference/testing-rationale.md) §Sensor Matrix 보충.
+변경 위치를 찾아 **필수 + 추가** 를 모두 돌린다 ([AGENTS.md](../AGENTS.md) §5). 기본형은 `colcon test --packages-select <pkg>` 이고, 표의 "필수" 는 그 안에서 반드시 봐야 하는 테스트와 추가 명령이다. 각 테스트가 무엇을 판별하는지는 그 테스트 파일의 머리 주석이 갖고, 행에 걸친 설계 원칙과 sanitizer 빌드의 예외는 [testing-rationale.md](reference/testing-rationale.md#sensor-matrix-보충) 에 있다.
 
 | 변경 위치 | 필수 | 추가 |
 |---|---|---|
@@ -60,7 +62,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `/rtc_cm/active_controller_name` | 동일 (TRANSIENT_LOCAL) | 컨트롤러 전환 확인. BT · GUI · digital_twin 이 이 토픽으로 다시 연결한다 |
 | `/forward_position_controller/commands` | robot 모드 + `ur_driver_native` 전용 | `ros2 topic hz` 로 `control_rate` 확인. **sim 에는 없다** — sim 은 `devices.<group>.backend.command_topic` (예: `/ur5e/joint_command`) 을 본다 |
 | `<session>/timing/cm_timing_log.csv` | CM RT loop | tick 별 8열 timing (`run_id`, `t_state_us` … `jitter_us`). p50/p99 는 후처리. `run_id` 로 먼저 묶는다. sim 에서는 `jitter_us` 가 항상 0 |
-| `<session>/timing/mpc_timing_log.csv` · `rt_callback_timing_log.csv` | MPC thread · rt_callback thread | 같은 8열. MPC tick 당 1행 · device state 콜백당 1행 |
+| `<session>/timing/mpc_timing_log.csv` · `rt_callback_timing_log.csv` | MPC thread · rt_callback thread | 같은 8열. MPC tick 당 1행 · device state 콜백당 1행. `rt_callback` 은 열 의미가 lane 고유다 (`t_state_us` = decode, `t_publish_us` = mailbox hand-off, `t_total_us` = slot 2 duty 분자) — dispatch 간격은 연속 행의 `t_wall_ns` 차분 |
 | `/rtc_cm/{group}/joint_states` | CM (그룹별) | 그룹별 건강성 |
 | `/sim/status` | `rtc_mujoco_sim` 1 Hz | sim 건강성 |
 | `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `rtc_mujoco_sim` | 손끝 접촉 힘/토크 (그룹 YAML `contact_wrench.enabled: true` + MJCF contact sensor 필요) |
@@ -133,19 +135,13 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true   # �
 테스트 카운트는 문서에 적지 않고 직접 잰다.
 
 ```bash
-rm -rf build/<pkg>/test_results            # 누적 XML 제거
-colcon test --packages-select <pkg> --event-handlers console_direct+
-colcon test-result --verbose
+rm -rf build/<pkg>/test_results                                    # 누적 XML 제거
+colcon test --packages-select <pkg> --event-handlers console_direct+ --return-code-on-test-failure
+colcon test-result --verbose --test-result-base build/<pkg>       # 패키지 하나 (--packages-select 는 없다)
+( cd build/<pkg> && ctest -N )                                     # 등록 확인 — 새 테스트는 재빌드 뒤에 보인다
 ```
 
-- `colcon test-result` 는 남아 있는 XML 을 전부 합산한다. 타깃을 지웠거나 브랜치를 바꿨으면 먼저 `test_results` 를 지운다.
-- 체인(`lint && build && test; test-result`)의 앞이 실패하면 이전 결과가 요약된다. 같은 출력에 `Summary: … packages finished` 가 있는지 확인한다.
-- `colcon test` 의 종료 코드는 테스트 실패를 반영하지 않는다. 필요하면 `--return-code-on-test-failure`. `colcon test-result` 에는 `--packages-select` 가 없다 (패키지 하나는 `--test-result-base build/<pkg>`).
-- 총계는 `--test-result-base` 의 범위와 단위(gtest case / ctest entry / lint)에 따라 달라진다. 비교는 같은 범위·단위로 한다.
-- 새로 등록한 테스트는 재빌드해야 보인다 (`ctest -N` 으로 확인).
-- timeout · crash 는 gtest XML 에 `<failure>` 로 남지 않는다. 판정은 `colcon test-result` 요약이나 `build/<pkg>/Testing/*/Test.xml` 로 한다.
-
-각 항의 근거와 사례는 [testing-rationale.md](reference/testing-rationale.md) §계측 함정.
+결과를 어떻게 판정하는지 (누적 XML · 종료 코드 · 범위와 단위 · timeout 과 crash) 는 [testing-debug.md](../agent_docs/testing-debug.md#test-측정) 가 갖고, 각 항이 실제로 잘못된 보고를 낳은 사례는 [testing-rationale.md](reference/testing-rationale.md) §계측 함정 에 있다.
 
 ### 커버리지
 
