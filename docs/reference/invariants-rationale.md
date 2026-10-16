@@ -30,7 +30,7 @@ RT / 비-RT 진입점 판정표: [architecture.md](../../agent_docs/architecture
 | RT-5 | Expression template lazy-eval → aliasing 버그 (같은 메모리 r/w) |
 | RT-6 | Non-unit 결과 → 회전축 변형, drift |
 | RT-8 | Atomic ref-count contention |
-| RT-9 | 내부 state machine 동기화 (mutex 또는 atomic load + 분기). ros2_control jazzy 공식 wording: "Avoid using the `get_lifecycle_state()` method in the real-time control loop of the controllers and the hardware components as it is not real-time safe." 기록 시점의 호출부는 `RtControllerMain` 의 활성화 폴링과 `UdpHandNode::on_shutdown` 등 lifecycle 경로뿐이라 면제 대상이다 — RT-9 는 선제적 차단이다 |
+| RT-9 | 내부 state machine 동기화 (mutex 또는 atomic load + 분기). ros2_control jazzy 공식 wording: "Avoid using the `get_lifecycle_state()` method in the real-time control loop of the controllers and the hardware components as it is not real-time safe." 기록 시점의 호출부는 `RtControllerMain` 의 활성화 폴링과 `UdpHandNode::on_shutdown` 등 lifecycle 경로뿐이다 |
 | RT-10 | `notify_one/all` 자체가 내부 mutex 를 잡고 thread 를 깨운다 — 우선순위 역전 + 비결정 latency. `wait` 은 명시 mutex lock 보유 (RT-4 결합) |
 
 ### RT-10 대안의 in-tree 실례
@@ -107,7 +107,7 @@ System-level 조건 (커널·`@realtime` 권한·core 격리): [invariants.md](.
 |---|------|
 | ARCH-1 | robot-agnostic 훼손 ([design-principles.md](../../agent_docs/design-principles.md) §Five Principles (2. Generality)) |
 | ARCH-2 | Cyclic dep / abstraction leak. 전형: `rtc_base/` 가 `rtc_controllers/` include, `rtc_*/` 가 integration 패키지 include |
-| ARCH-3 | 확장성 훼손 → 세 번째 impl 에서 `#ifdef` 지옥. 신호: 새 `.cpp` 에 대응하는 pure-virtual base 부재 |
+| ARCH-3 | 확장성 훼손 → 세 번째 impl 에서 `#ifdef` 지옥 |
 | ARCH-4 | 경계 훼손, robot-specific leak |
 | ARCH-5 | 빌드 토폴로지 부담 + "share 만 있으면 OK" 모델 훼손 |
 | ARCH-6 | 항상 최신 샘플 소비 — stale 큐잉 방지, RT freshness. depth 는 pub/sub 매칭 호환성과 무관하므로 안전 |

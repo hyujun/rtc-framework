@@ -73,7 +73,7 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 | RT-6 | Quaternion `lerp` / `nlerp` | `Eigen::Quaterniond::slerp(t, q_b)` only |
 | RT-7 | *(은퇴 — [PROC-6](#process-invariants) 으로 이동)* | — |
 | RT-8 | `std::shared_ptr` 복사 | Raw ref 또는 `const std::shared_ptr<T>&` |
-| RT-9 | RT tick 또는 RT callback 에서 `get_lifecycle_state()` / `get_current_state()` 호출 | `on_activate` 종료 직전 `std::atomic<uint8_t>` 캐시에 `store(..., memory_order_release)`, RT loop 는 `load(memory_order_acquire)` |
+| RT-9 | RT tick 또는 RT callback 에서 `get_lifecycle_state()` / `get_current_state()` 호출 | `on_activate` 종료 직전 `std::atomic<uint8_t>` 캐시에 `store(..., memory_order_release)`, RT loop 는 `load(memory_order_acquire)`. lifecycle 경로의 호출은 면제다 — RT-9 는 선제 차단이다 |
 | RT-10 | `std::condition_variable` / `std::condition_variable_any` 의 `notify_*` / `wait*` (RT path 의 producer 든 consumer 든) | (a) eventfd + non-blocking write/poll, (b) `SpscQueue<T,N>` + consumer polling, (c) `std::atomic<bool>` flag + self-clocked consumer (고정주기 loop 이 매 tick latch) |
 
 - **RT-10 은 self-termination 에도 적용된다** — RT 핫패스에서 자기 loop 을 끝낼 때 (E-STOP 등) mutex + `notify` 를 잡는 `RequestStop()` 을 부르지 않고 `PeriodicRtThread::RequestLoopExit()` (순수 atomic store) 로 예약한다. 종료 시 부수 작업은 loop unwind 뒤 1회 호출되는 `OnLoopAborted()` 에서 한다.
@@ -174,7 +174,7 @@ RT controller 가 운영·배포 모드로 실행될 때 host 가 만족시켜�
 |---|------|------|
 | RT-HOST-1 | RT 프로세스는 main 진입 또는 `on_configure` 종료 시점에 `mlockall(MCL_CURRENT \| MCL_FUTURE)` 를 1회 호출한다 | `repo_scripts/scripts/verify_rt_runtime.sh` (`VmLck>0`) |
 | RT-HOST-2 | RT thread 는 SCHED_FIFO priority ∈ [50, 95] 로 `on_activate` 시점에 설정한다. **99 금지** (kernel watchdog 영역). 값은 `rtc_base/threading/thread_config.hpp` 의 `SystemThreadConfigs` 가 SSoT | `verify_rt_runtime.sh` |
-| RT-HOST-3 | RT thread 는 `thread_config.hpp` + `cpu_shield.sh` 가 정의한 CPU core 에 affinity 를 고정한다 | `verify_rt_runtime.sh` |
+| RT-HOST-3 | RT thread 는 `thread_config.hpp` + `cpu_shield.sh` 가 정의한 CPU core 에 affinity 를 고정한다 | `verify_rt_runtime.sh` — 필수 스레드를 못 찾으면 FAIL 이다 (통과가 "검사 대상 없음" 이면 안 된다) |
 
 - **외부 라이브러리가 만드는 thread** (`realtime_tools`, DDS 등) 도 같은 layout 에 맞춘다 — 라이브러리는 priority/affinity 를 설정하지 않으므로 호출자가 native handle 로 명시한다 (RT-HOST-2/3, AP-RTT-2).
 - **System-level 조건** (PREEMPT_RT 또는 lowlatency 커널, `@realtime` 그룹의 `rtprio`·`memlock`, isolated RT core 에 non-RT 작업 미공유) 은 배포 환경 책임이다. 수치·명령은 여기 박제하지 않고 [check_rt_setup.sh](../repo_scripts/scripts/check_rt_setup.sh) · [verify_rt_runtime.sh](../repo_scripts/scripts/verify_rt_runtime.sh) 에 위임한다.
@@ -185,7 +185,7 @@ RT controller 가 운영·배포 모드로 실행될 때 host 가 만족시켜�
 |---|------|---|-----------|
 | ARCH-1 | `rtc_*` 패키지에 로봇 이름·joint 수·HW ID 하드코딩 금지 | **Critical** (E-2) | 자동 — hook Phase 0 |
 | ARCH-2 | 의존성 그래프 상향 의존 금지 ([architecture.md](architecture.md) §Dependency Graph) | **Critical** (E-1) | 수동 리뷰 |
-| ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | Warning (E-4) | 수동 리뷰 |
+| ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | Warning (E-4) | 수동 리뷰 — 신호: 새 `.cpp` 에 대응하는 pure-virtual base 가 없다 |
 | ARCH-4 | integration 패키지가 `rtc_*` private 헤더 (`rtc_*/src/`) include 금지 | **Critical** (E-1) | 자동 — hook Phase 0 |
 | ARCH-5 | `robot_descriptions` 는 data-only — build-time 의존 금지 | Warning (E-10) | 수동 리뷰 |
 | ARCH-6 | 모든 ROS 2 topic 은 QoS history `KEEP_LAST`, depth **1** (reliability/durability 는 lane 별 유지 — depth 필드만 강제) | Warning (sensor) / E-1 (규칙 변경) | 자동 (non-blocking) — hook Phase 0b |
