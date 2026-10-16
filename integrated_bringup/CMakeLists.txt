@@ -102,6 +102,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/support/hand_fk_wiring.cpp
   src/support/wbc_reduced_dynamics_provider.cpp
   src/support/owned_topics.cpp
+  src/support/task_target_frames.cpp
   src/support/virtual_tcp_params.cpp
   src/backends/mujoco_native_backend.cpp
   src/backends/ur_driver_native_backend.cpp
@@ -1381,6 +1382,12 @@ if(BUILD_TESTING)
   # the verdict's wording (support/arm_tip_resolution.hpp) and the four
   # controllers that report an arm tip pose, on iiwa7_leap, in both bring-up
   # orders. on_configure runs on a real LifecycleNode, hence the domain.
+  # #779: the frames a task goal may name (root_link / scene_world) and the
+  # conversion into root_link — synthetic model, no ROS.
+  ament_add_gtest(test_task_target_frames test/test_task_target_frames.cpp)
+  target_link_libraries(test_task_target_frames ${PROJECT_NAME}_demo_controllers)
+  ament_target_dependencies(test_task_target_frames pinocchio Eigen3 rtc_math)
+
   ament_add_gtest(test_arm_tip_resolution
     test/test_arm_tip_resolution.cpp
     TIMEOUT 180
