@@ -1745,6 +1745,103 @@ TEST(TargetIngressValidation, RejectCounterAccumulatesAcrossMessages) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Task-goal reference frame and goal kinds (#779)
+//
+// A task goal reaches the three-argument SetDeviceTaskTarget with the message's
+// header.frame_id; a non-null return is a refusal and is counted like the
+// validation above. AcceptedGoalKinds screens a goal's kind before anything
+// else. Defaults (no override): every frame and both kinds pass — the cases
+// above already run on them.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Records the frame and answers with `verdict`.
+class FrameAwareController : public TargetRecordingController {
+ public:
+  using TargetRecordingController::SetDeviceTaskTarget;  // keeps the 2-argument form visible
+
+  [[nodiscard]] const char* SetDeviceTaskTarget(int device_idx, std::span<const double> task6,
+                                                std::string_view frame_id) noexcept override {
+    last_frame = std::string(frame_id);
+    ++frame_aware_count;
+    if (verdict == nullptr) {
+      SetDeviceTarget(device_idx, task6);
+    }
+    return verdict;
+  }
+
+  [[nodiscard]] GoalKinds AcceptedGoalKinds(int device_idx) const noexcept override {
+    (void)device_idx;
+    return kinds;
+  }
+
+  const char* verdict{nullptr};
+  GoalKinds kinds{};
+  std::string last_frame;
+  int frame_aware_count{0};
+};
+
+TEST(TargetFrameContract, ATaskGoalCarriesItsFrameToTheFrameAwareOverload) {
+  FrameAwareController ctrl;
+  ConfigureArmDevice(ctrl);
+  auto msg = MakeTaskTarget({0.1, 0.2, 0.3, 0.0, 0.0, 0.0});
+  msg.header.frame_id = "scene_world";
+  ctrl.DeliverTargetMessage("arm", 0, msg);
+
+  EXPECT_EQ(1, ctrl.frame_aware_count);
+  EXPECT_EQ("scene_world", ctrl.last_frame);
+  EXPECT_EQ(1, ctrl.set_target_count);
+  EXPECT_EQ(0U, ctrl.GetTargetRejectCount());
+}
+
+TEST(TargetFrameContract, ARefusalFromTheOverloadIsCounted) {
+  FrameAwareController ctrl;
+  ConfigureArmDevice(ctrl);
+  ctrl.verdict = "frame_id is not a frame this controller takes";
+  ExpectRejected(ctrl, MakeTaskTarget({0.1, 0.2, 0.3, 0.0, 0.0, 0.0}));
+  EXPECT_EQ(1, ctrl.frame_aware_count);
+  EXPECT_EQ("", ctrl.last_frame);  // empty header.frame_id arrives empty
+}
+
+TEST(TargetFrameContract, TheTwoArgumentFormStaysCallableThroughTheUsing) {
+  FrameAwareController ctrl;
+  const std::array<double, 6> pose{0.1, 0.2, 0.3, 0.0, 0.0, 0.0};
+  ctrl.SetDeviceTaskTarget(0, std::span<const double>(pose));  // the 2-argument default
+  EXPECT_EQ(1, ctrl.set_target_count);
+  EXPECT_EQ(0, ctrl.frame_aware_count);
+}
+
+TEST(TargetFrameContract, AJointGoalToADeviceThatTakesNoneIsRefusedAndCounted) {
+  FrameAwareController ctrl;
+  ConfigureArmDevice(ctrl);
+  ctrl.kinds.joint = false;
+  ExpectRejected(ctrl, MakeJointTarget({1.0, 2.0, 3.0}));
+  // The other kind still passes.
+  ctrl.DeliverTargetMessage("arm", 0, MakeTaskTarget({0.1, 0.2, 0.3, 0.0, 0.0, 0.0}));
+  EXPECT_EQ(1, ctrl.set_target_count);
+}
+
+TEST(TargetFrameContract, ATaskGoalToADeviceThatTakesNoneIsRefusedBeforeTheOverload) {
+  FrameAwareController ctrl;
+  ConfigureArmDevice(ctrl);
+  ctrl.kinds.task = false;
+  ExpectRejected(ctrl, MakeTaskTarget({0.1, 0.2, 0.3, 0.0, 0.0, 0.0}));
+  EXPECT_EQ(0, ctrl.frame_aware_count);
+  ctrl.DeliverTargetMessage("arm", 0, MakeJointTarget({1.0, 2.0, 3.0}));
+  EXPECT_EQ(1, ctrl.set_target_count);
+}
+
+TEST(TargetFrameContract, TheDefaultTakesEveryFrameAndBothKinds) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  auto msg = MakeTaskTarget({0.1, 0.2, 0.3, 0.0, 0.0, 0.0});
+  msg.header.frame_id = "anything";
+  ctrl.DeliverTargetMessage("arm", 0, msg);
+  ctrl.DeliverTargetMessage("arm", 0, MakeJointTarget({1.0, 2.0, 3.0}));
+  EXPECT_EQ(2, ctrl.set_target_count);
+  EXPECT_EQ(0U, ctrl.GetTargetRejectCount());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Fail-closed configure (issue #196 §1)
 //
 // PreConfigure() used to store node_ before LoadConfig(), so a throwing

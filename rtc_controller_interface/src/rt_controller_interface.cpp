@@ -532,6 +532,12 @@ void RTControllerInterface::DeliverTargetMessage(const std::string& group_name, 
     RejectTarget(group_name, "unknown goal_type (expected \"joint\" or \"task\")");
     return;
   }
+  const GoalKinds kinds = AcceptedGoalKinds(device_idx);
+  if (is_task ? !kinds.task : !kinds.joint) {
+    RejectTarget(group_name, is_task ? "this controller takes no task goal on this device"
+                                     : "this controller takes no joint goal on this device");
+    return;
+  }
 
   // ── task goal ────────────────────────────────────────────────────────────
   if (is_task) {
@@ -544,9 +550,14 @@ void RTControllerInterface::DeliverTargetMessage(const std::string& group_name, 
       RejectTarget(group_name, "task_target contains a non-finite value");
       return;
     }
-    // Routes to the SE3 slot; the default override forwards to
-    // SetDeviceTarget, so task controllers are unchanged.
-    SetDeviceTaskTarget(device_idx, task_span);
+    // The frame-aware form: a controller with a frame contract converts or
+    // refuses here; the default ignores the frame and forwards to the
+    // two-argument form (→ SetDeviceTarget), so other controllers are
+    // unchanged. frame_id is a std::string — viewing it allocates nothing.
+    if (const char* refused = SetDeviceTaskTarget(device_idx, task_span, msg.header.frame_id);
+        refused != nullptr) {
+      RejectTarget(group_name, refused);
+    }
     return;
   }
 
