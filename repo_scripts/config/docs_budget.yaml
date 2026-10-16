@@ -6,10 +6,13 @@
 # document is gone all fail the docs gate (repo_scripts/scripts/validate_docs.py).
 #
 # A budget goes DOWN, in the change that shrinks its document. It does not go up
-# to make room for an edit: content that does not fit is not a rule, and belongs
-# in the document that owns it (package README, docs/, a hook header, an issue).
-# When a rule really was added and nothing can come out, the raise is stated on
-# the entry's own line:
+# to make room for an edit: content that does not fit is usually not a rule, and
+# belongs in the document that owns it (package README, docs/, a hook header, an
+# issue). A judgement an agent must apply IS a rule, though, and does not move
+# out to save bytes -- docs/reference/ keeps the why of a rule, not the rule, and
+# agents are not told to obey it (#851 moved eleven such rules back). When a
+# rule really was added and nothing can come out, the raise is stated on the
+# entry's own line:
 #
 #     agent_docs/x.md: 9200  # raised from 9000: <why>
 #
