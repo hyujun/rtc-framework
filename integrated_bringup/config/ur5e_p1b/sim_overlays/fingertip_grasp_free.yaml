@@ -86,3 +86,15 @@ mujoco_simulator:
       rpy_variation: [0.0, 0.0, 0.0]
       avoid_repeat: false
       seed: 1
+
+# The scene this overlay loads puts the arm base at the world origin,
+# world-aligned — the RT node's scene_world follows it (#779; sim.yaml's is
+# the pedestal's, 0.7 m off). An overlay that swaps the scene states its own.
+integrated_rt_controller:
+  ros__parameters:
+    urdf:
+      extra_frames:
+        scene_world:
+          parent: "base"
+          xyz: [0.0, 0.0, 0.0]
+          rpy: [0.0, 0.0, 0.0]

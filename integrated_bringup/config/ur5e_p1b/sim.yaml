@@ -20,6 +20,22 @@
     enable_estop: false # Disabled for simulation
     device_timeout_values: [10000.0, 10000.0] # Relaxed for sim startup
 
+    # ── Scene world ──────────────────────────────────────────────────────────
+    urdf:
+      extra_frames:
+        scene_world:
+          # The scene's world (#779): the frame a task goal names with
+          # header.frame_id "scene_world" (the other name taken is the arm's
+          # root_link). Placement of the MuJoCo world in the arm root,
+          # p_root = R(rpy)·p_world + xyz — the urdf.extra_frames convention.
+          # Sim only: robot.yaml has none, so a real arm refuses world goals
+          # until a calibrated value is added there. Every sim overlay that
+          # swaps the scene defines its own (test_shipped_scene_world).
+          # scene_pedestal.xml: `base` 0.7 m above the world origin, world-aligned.
+          parent: "base"
+          xyz: [0.0, 0.0, -0.7]
+          rpy: [0.0, 0.0, 0.0]
+
     # ── Device backends (MuJoCo bridge) ───────────────────────────────────────
     devices:
       ur5e:

@@ -1805,6 +1805,9 @@ if(BUILD_TESTING)
   # base: float types (always) + the compiled scene's base position (skips
   # without the mujoco pip module, like the keyframe lane above).
   ament_add_pytest_test(test_shipped_base_T_world test/test_shipped_base_T_world.py)
+  # #779: where each profile defines the scene's world (sim.yaml, overlays, never
+  # _base / robot.yaml).
+  ament_add_pytest_test(test_shipped_scene_world test/test_shipped_scene_world.py)
   # Shipped mujoco_simulator.yaml keys vs the node's declare_parameter list. An
   # undeclared key is read as its compiled default with no error anywhere, so
   # this is the cheap stand-in for the runtime launch that would otherwise be
