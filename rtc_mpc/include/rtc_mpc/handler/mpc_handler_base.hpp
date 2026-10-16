@@ -33,11 +33,11 @@
 ///
 /// Cross-phase invariants upheld:
 /// - Robot-agnostic: no robot identifiers touched here; everything flows
-///   via `RobotModelHandler` + `PhaseContext` + `OCPLimits` (CLAUDE.md
-///   rtc_* rule).
+///   via `RobotModelHandler` + `PhaseContext` + `OCPLimits` (AGENTS.md §3
+///   ARCH-1).
 /// - RT-safety on `Solve`: no heap alloc, no throw, no mutex after first
-///   tick on steady-state topology (CLAUDE.md Hard Rules +
-///   `.claude/rules/rt-safety.md`).
+///   tick on steady-state topology (AGENTS.md §3 RT-1 · RT-2 · RT-4;
+///   `.claude/rules/rt-path.md`).
 
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/ocp/ocp_handler_base.hpp"

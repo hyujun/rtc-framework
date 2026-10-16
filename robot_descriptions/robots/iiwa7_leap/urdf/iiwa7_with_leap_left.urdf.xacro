@@ -8,7 +8,7 @@
 
   <!-- MuJoCo-specific compiler hints (ignored by URDF parsers).
        fusestatic/discardvisual disabled so MuJoCo retains every link and visual
-       mesh (see agent_docs memory feedback_mujoco_urdf_extension).
+       mesh.
        balanceinertia=true is harmless on LEAP (point-mass placeholders) and
        guards against future inertia tweaks that violate the triangle
        inequality. -->
