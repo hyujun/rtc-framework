@@ -8,7 +8,7 @@ RT 스레드는 `rt_control` · `rt_callback` · `mpc_main` 세 개다. 한때 �
 
 non-RT lane (`nrt_callback` · `nrt_publish` · `nrt_logging`) 은 aux slot 2 로 접혀 `rt_callback` 과 동거한다 (#349). FIFO 가 CFS 를 무조건 선점하므로 `rt_callback` 의 지연 계약은 유지되고, 반납된 슬롯은 system cpuset 으로 돌아간다. 실측치는 `repo_scripts/config/thread_layout.yaml` 의 v5 주석에 있다.
 
-결과로 `nohz_full` / `rcu_nocbs` 는 4 코어 degraded 부터 16+ 까지 전부 `1-3` 이다 (SMT 면 `setup_grub_rt.sh` 가 형제 logical CPU 를 더한다). tier 별 기대값은 `repo_scripts/test/test_rt_common.sh` 의 `test_get_rt_cores_with_siblings_non_smt` 가 갖는다. 10 코어 이상이 `1-4` · `1-5` 로 되돌아오면 아무도 실행하지 않는 코어를 다시 격리하고 있다는 뜻이다. 그 테스트의 기대값이 손으로 쓴 리터럴인 것은 일부러다 — 생성물끼리 대조하면 잘못된 표가 세 언어에서 일치해 버려 잡히지 않는다.
+결과로 `nohz_full` / `rcu_nocbs` 는 4 코어 degraded 부터 16+ 까지 전부 `1-3` 이다 (SMT 면 `setup_grub_rt.sh` 가 형제 logical CPU 를 더한다). tier 별 `nohz_full` 기대값은 `repo_scripts/test/test_rt_common.sh` 의 `test_get_rt_cores_with_siblings_non_smt` 리터럴이, tier 별 thread × core 배치 (driver slot 포함) 는 [rtc_base/README.md](../../rtc_base/README.md) 의 생성 매트릭스가 갖는다. 10 코어 이상이 `1-4` · `1-5` 로 되돌아오면 아무도 실행하지 않는 코어를 다시 격리하고 있다는 뜻이다. 그 테스트의 기대값이 손으로 쓴 리터럴인 것은 일부러다 — 생성물끼리 대조하면 잘못된 표가 세 언어에서 일치해 버려 잡히지 않는다.
 
 ## CM cpuset 은 RT 스레드 코어보다 넓다
 

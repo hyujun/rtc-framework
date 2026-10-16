@@ -1,6 +1,6 @@
-# Design Principles — 근거 · 판정 사례 · 예시
+# Design Principles — 근거 · 판정 사례
 
-> **이 문서는 헌법이 아니다.** 설계 원칙의 **규범** 은 [agent_docs/design-principles.md](../../agent_docs/design-principles.md) 가 갖는다 (P1~P5 의 정의도 거기다). 여기는 각 원칙의 근거, 그 판정이 내려진 실제 사례와 실측, 예시만 둔다. 규칙 문장은 여기 다시 적지 않는다 — 두 곳에 있던 규칙이 어긋난 것이 두 번이다 (2026-10-16 정리). 둘이 어긋나면 agent_docs 쪽이 옳다. 본문의 클래스명·파일 위치는 기록 시점의 것이다.
+> **이 문서는 헌법이 아니다.** 설계 원칙의 **규범** 은 [agent_docs/design-principles.md](../../agent_docs/design-principles.md) 가 갖는다 (P1~P5 의 정의도 거기다). 여기는 각 원칙의 근거, 그 판정이 내려진 실제 사례와 실측만 둔다. 규칙 문장은 여기 다시 적지 않는다 — 두 곳에 있던 규칙이 어긋난 것이 두 번이다 (2026-10-16 정리). 둘이 어긋나면 agent_docs 쪽이 옳다. 본문의 클래스명·파일 위치는 기록 시점의 것이다.
 
 ## Five Principles
 

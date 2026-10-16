@@ -37,7 +37,7 @@
 
 **프로세스 · 패키지 로컬 스레드**:
 
-- CM 밖 프로세스의 보조 스레드는 non-RT lane 코어에 pin 하지 않고 `cpu_core = -1` 로 프로세스 affinity 를 상속한다 (exclusive cpuset 이라 EINVAL).
+- CM 밖 프로세스의 보조 스레드는 CM shield 안의 코어에 pin 하지 않고 `cpu_core = -1` 로 프로세스 affinity 를 상속한다 (exclusive cpuset 이라 EINVAL).
 - 한 패키지 안에서만 쓰는 thread config 는 package-local 로 둔다 — `SystemThreadConfigs` (`rtc_base`) 확장은 PROC-3 전면 rebuild 를 부른다. 일반 `rtc_communication::Transceiver` 는 기본이 no-pin 이고 caller 가 명시적으로 핀한다.
 - `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 는 process-level 배치다. `taskset -a` 전-스레드 스윕을 쓰지 않는다 — 프로세스가 의도적으로 다른 slot 에 둔 스레드를 도로 끌어온다. 제어 루프가 main thread 가 아닌 프로세스는 그 프로세스의 affinity 파라미터로 그 루프만 핀한다.
 

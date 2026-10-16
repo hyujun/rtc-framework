@@ -37,7 +37,7 @@
 
 - **손으로 번호를 고르는 방식은 실패했다.** `udp_hand_driver` 가 "44-52 are taken" 주석을 근거로 53 을 골랐는데 `integrated_bringup` 이 이미 쓰고 있었다. 지금 배정은 `validate_test_domains.py --list` 가 소스에서 파생한다.
 - **"아무것도 주장하지 않은" 테스트도 잡는다.** 예전 게이트는 주장된 번호의 중복만 봐서, 노드를 만드는 타깃 15개가 5개 패키지에 걸쳐 도메인 0 에 남아 있었다.
-- **패키지 안 병렬 (`colcon.pkg` `-j`).** 실측 (6C/12T, `-j 4`): `rtc_controllers` 48 s → 23 s, `integrated_bringup` 61 s → 27 s. 켜면 "패키지 안은 직렬" 전제가 사라지므로 도메인을 주장하는 테스트는 `RESOURCE_LOCK ros_domain_<n>` 에, wall-clock 을 단언하는 테스트 (planner p99, solve-time 최대값) 는 `RUN_SERIAL TRUE` 에 올린다. 직렬 복귀·`ament_python` 의 pytest-xdist (`rtc_tools` 105 s → 37 s) 는 [docs/testing.md](../testing.md#test-commands).
+- **패키지 안 병렬 (`colcon.pkg` `-j`).** 실측 (6C/12T, `-j 4`): `rtc_controllers` 48 s → 23 s, `integrated_bringup` 61 s → 27 s. 켜면 "패키지 안은 직렬" 전제가 사라진다 — 그에 따른 규칙은 [testing-debug.md](../../agent_docs/testing-debug.md) §테스트 격리. `ament_python` 의 pytest-xdist 는 `rtc_tools` 105 s → 37 s (설정은 `rtc_tools/colcon.pkg` 주석), 직렬 복귀는 [docs/testing.md](../testing.md#test-commands).
 
 ## 세션 디렉토리 격리
 
