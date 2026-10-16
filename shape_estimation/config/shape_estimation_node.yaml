@@ -12,6 +12,9 @@ shape_estimation_node:
     publish_rate_hz: 10.0            # [Hz] 추정 결과 publish 주기
     viz_rate_hz: 5.0                 # [Hz] 시각화 publish 주기
     frame_id: "base"
+    # 팔의 base frame (컨트롤러의 root_link, #779): TCP pose 를 읽는 TF 부모이자
+    # 보내는 task 목표의 header.frame_id. root_link 와 다르면 컨트롤러가 목표를 거부한다.
+    base_frame: "base"
 
     # ── 돌출 구조 탐지 ─────────────────────────────────────────────────────────
     protuberance:
