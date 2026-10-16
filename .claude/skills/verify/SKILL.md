@@ -67,6 +67,8 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
 
 ## Gotchas
 
+- **launch 는 기동할 때 `logging_data/` 를 `max_log_sessions` (출하 10) 로 잘라 오래된 세션을 지운다.** 평가 세션이 쌓여 있으면 확인용으로 한 번 띄우는 것도 그 원시 로그를 지운다 (두 번 일어났다). 그동안에는 모든 기동에 `max_log_sessions:=<현재 개수 + 여유>` 를 주고 (rig · 드라이버의 launch 줄에 박아 둔다), 판정에 쓸 세션은 unit 이 끝나는 즉시 unit 폴더로 복사한다.
+- **켜 둔 sim 은 디스크를 채운다.** 무장된 catching 컨트롤러는 ARMED 대기 중에도 tick 마다 CSV 를 쓴다 (약 3.4 GB/h — 6.5 시간에 22 GB). 육안 확인용으로 넘길 때 이것을 알리고, 확인이 끝나면 바로 내린다. plot 은 투척 직후의 짧은 세션에서 뽑는다. 정리할 때는 `YYMMDD_HHMM` 세션만 지운다 — 옆의 `*.json` · `stats/` · `ur_plot/` 은 사용자 파일이다.
 - `pkill -f "ros2 topic pub"` 은 자기 쉘 커맨드라인도 매칭해 self-kill (exit 144) — PID 지정 kill 사용.
 - **`pkill -f "<launch>.launch.py"` 는 launch 만 죽이고 노드는 살려 둔다** — `mujoco_simulator_node` 와 `integrated_rt_controller` 가 그대로 남아 계속 발행한다. 그 상태로 다시 launch 하면 **새 씬을 띄운 줄 알면서 옛 sim 과 이야기한다**. 재기동은 세 단계다: launch 를 죽이고 → `pgrep -f "<node> --ros-args"` 로 남은 노드를 **PID 로** 죽이고 → SIGKILL 이 흘린 `/dev/shm/fastrtps_*` 를 지운다 (Fast DDS 참가자는 **정상 종료할 때만** 자기 세그먼트를 지운다 — SIGKILL 뒤엔 남는다).
 - idle sim (무접촉) 은 grasp/pull 값 전부 0, `ft_*` inference 컬럼 NaN — 데이터 없는 figure 는 정상.

@@ -85,6 +85,6 @@ Follow **Conventional Commits**: `type(scope): subject` + optional body + option
 
 - **Types**: `feat` | `fix` | `docs` | `style` | `refactor` | `perf` | `test` | `chore`
 - **Scope**: package name or broad tag (`multi-pkg`, `launch`) when the change spans packages. One scope per commit — split unrelated changes.
-- **Subject**: English, imperative mood, capitalized first letter, no trailing period, <= 50 chars.
-- **Body / footer** (optional, blank line before each, wrap at 72): explain *what* and *why*, not *how*. Reference issues as `Closes: #N` / `Refs: #N`. PR merge commits keep GitHub's default subject.
+- **Subject**: English, imperative mood, capitalized first letter, no trailing period, <= 50 chars counted after `type(scope): `.
+- **Body / footer** (optional, blank line before each, wrap at 72): explain *what* and *why*, not *how*. Reference issues as `Refs: #N` (PR body: `For #N`), never with a closing keyword (`close`/`fix`/`resolve` + `#N`, even across a line break) — GitHub closes the issue on merge, and an issue closes only when the user says so. PR merge commits keep GitHub's default subject.
 - **Merge method**: 기본은 **no-ff merge commit** (`gh pr merge --merge`) 이다 — 브랜치 커밋 본문 (PROC-6 근거 같은 감사 기록) 이 `main` 에 보존된다. squash · rebase 는 사용자가 명시 지시할 때만 쓴다. 머지할 때 `--delete-branch` 로 로컬·원격 브랜치를 함께 정리한다.

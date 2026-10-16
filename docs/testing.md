@@ -178,6 +178,11 @@ colcon test-result --verbose
 
 - **등록되지 않은 test 파일은 어떤 수치에도 나타나지 않는다.** `ament_cmake` 패키지의 `test/test_*.{cpp,cc,py,sh}` 는 그 패키지 `CMakeLists.txt` 가 이름으로 부르지 않으면 `colcon test` 가 돌리지 않는다 — 빌드는 통과하고, 총계는 줄지 않으며 (늘어난 적이 없다), 직접 돌리면 통과한다. #711 에서 `integrated_bringup/test/test_catching_keys_tools.py` 는 추가되고 commit 7 개 뒤에야 등록됐고, 그 사이의 테스트 실행은 그 파일 없이 green 이었다. `repo_scripts/scripts/validate_test_registration.py` 가 repo 전체에서 차단한다 (`repo_scripts` 의 `test_registration`, Stop hook, CI; `--list` 로 파일별 판정을 본다). `ament_python` 패키지는 pytest 가 스스로 수집하므로 대상이 아니다. 판정은 토큰 읽기이고 CMake 를 평가하지 않는다 — 어느 머신에서도 거짓인 `if()` 안의 등록은 통과한다. `colcon test` 가 아닌 것이 돌리는 파일은 그 `CMakeLists.txt` 에 `# test-registration-exempt: <파일 이름> -- <누가 대신 돌리는가>` 로 적는다 (사유 필수, 파일이 사라진 면제는 그 자체로 차단).
 
+- **새로 등록한 테스트는 그 패키지를 다시 빌드하기 전에는 없다.** `colcon test` 는 CMake 를 reconfigure 하지 않으므로 `CMakeLists.txt` 에 방금 더한 테스트는 ctest 목록에 없고, 요약은 `0 failures` 다. 등록은 `build/<pkg>` 에서 `ctest -N` 에 그 이름이 있는지로 확인한다.
+- **범위 없는 ws root `colcon build` 의 실패는 이 저장소의 패키지를 `Aborted` 시킨다.** `src/` 의 형제 저장소가 configure 에 실패하면 이쪽 패키지도 빌드되지 않고, 이어 돈 `colcon test` 는 직전 바이너리로 green 을 낸다. 전체 검증은 `--base-paths src/rtc-framework` 로 돌리고 빌드 요약의 `aborted` 줄부터 본다.
+- **환경이 없는 게이트는 아무것도 하지 않고 성공한다.** `setup_env.sh` 를 source 하지 않은 셸에서 자작 게이트는 빈 stdout 을 green 으로 읽고, `set -u` 래퍼는 source 전의 미정의 변수 참조로 출력 없이 exit 1 해 no-op 이 된다 (판정 규범: [testing-debug.md](../agent_docs/testing-debug.md) §Test 측정).
+- **쓰는 중인 결과 XML 은 false RED 를 낸다.** `colcon test-result` 나 직접 읽기가 아직 기록 중인 XML 을 잡으면 `1 test, 1 error` · `missing_result` 같은 부분 기록이 재현되지 않는 에러로 뜬다 (한 세션에 3 회). 프로세스 부재만 보지 말고 mtime 이 실행 종료 뒤인지와 루트의 `tests` 속성까지 본 뒤 읽고, flake 로 넘기기 전에 그 테스트만 다시 돌린다.
+
 신규 테스트 개수를 주장할 땐 총계 차이가 아니라 `grep -c '^TEST(' <파일>` 또는 per-target XML 의 `tests="N"` 으로 교차검증한다.
 
 대표 suite 명은 `<pkg>/CMakeLists.txt` 에서 `ament_add_gtest()` / `ament_add_pytest_test()` grep — 코드 자체가 SSoT 이므로 문서 박제 불필요.

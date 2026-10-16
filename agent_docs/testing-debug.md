@@ -18,6 +18,7 @@
 - **oracle 은 검사 대상과 독립이어야 한다.** 자코비안 계약은 자코비안을 전혀 쓰지 않는 중심차분 oracle 로, 역산기는 원하는 물리량에서 입력을 **정방향으로** 조립한 oracle 로 검사한다 (역방향으로 쓰면 부호가 뒤집혀도 green 이다).
 - **픽스처는 표현의 대칭을 깨야 판별력이 있다** — pinocchio order ≠ device order, 직교하지 않는 축, 0 이 아닌 offset, LOCAL ≠ LWA 인 프레임. 두 순서가 같은 픽스처에서는 뒤섞어도 통과한다. 픽스처의 기하를 고칠 때 그 비대칭을 유지한다.
 - **positive control 은 합성 입력으로 만든다.** 지금 던지는 테스트나 코퍼스에 남은 실제 위반을 대조군으로 삼으면 그 결함이 고쳐질 때 대조군이 조용히 사라진다 — 게이트의 발화 증명은 `--self-test` 의 합성 코퍼스가 갖는다.
+- **비교 헬퍼는 비유한 값에서 실패로 단락한다** — `max(m, |a−b|)` 누적은 양쪽이 NaN 이면 0 을 낸다. NaN fault 테스트는 오염원별로 나눈다 (속도 NaN 은 J(q)·M(q) 를 유한하게 둬 위치 NaN 의 가드를 우회한다).
 - 실세계 negative fixture (`schunk_svh_hand_*` 의 관성) 는 통과 대상이 아니다 — 값을 지어내 고치지 않는다.
 - URDF → Model 진입점을 새로 열면 `EnforceInertialGate` 호출을 함께 넣는다.
 - 추정·잔차 통계는 `valid=1` 행만 쓴다 (held 행은 직전 값이 동결된 것이라 측정이 아니다).
@@ -85,6 +86,7 @@ RT tick 이 heap 을 안 만진다는 주장을 재는 sensor 는 셋이고, 선
 - **timeout · crash 는 gtest XML 에 `<failure>` 로 남지 않는다.** 판정은 `colcon test-result` 의 요약 (errors 포함) 이나 `build/<pkg>/Testing/*/Test.xml` 로 하고, gtest XML grep 을 유일한 센서로 쓰지 않는다.
 - flake 는 재현하기 전에 `build/<pkg>/Testing/Temporary/` 의 `LastTest_*.log` 부터 연다.
 - 한 gtest 바이너리가 ctest 에 여러 번 등록될 수 있다 — ctest 밖에서 돌릴 때는 `ctest -N` 으로 등록을 확인하고 `GTEST_FILTER` 를 등록대로 준다.
+- 판정은 "실패 0건" 이 아니라 **이번 호출이 만든 산출물** 로 한다 — 읽기 전에 지우고, 없으면 실패다. 이것이 막는 경로는 [docs/testing.md](../docs/testing.md) §계측 함정.
 - 신규 테스트 개수는 총계 차이가 아니라 `grep -c '^TEST(' <파일>` 또는 per-target XML 의 `tests="N"` 으로 교차검증한다.
 
 ### Coverage · sanitizer 빌드
