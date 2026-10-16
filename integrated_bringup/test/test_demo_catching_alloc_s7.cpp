@@ -813,8 +813,9 @@ TEST_P(DemoCatchingAllocS7SegmentTest,
 
 INSTANTIATE_TEST_SUITE_P(SegmentPlanners, DemoCatchingAllocS7SegmentTest,
                          ::testing::Values("mpc", "mpc_docking"),
-                         [](const ::testing::TestParamInfo<const char*>& info) {
-                           return std::string(info.param) == "mpc_docking" ? "MpcDocking" : "Mpc";
+                         [](const ::testing::TestParamInfo<const char*>& param_info) {
+                           return std::string(param_info.param) == "mpc_docking" ? "MpcDocking"
+                                                                                 : "Mpc";
                          });
 
 /// The second robot of the replacement-and-M2 gate (decision D7): the shipped
@@ -997,8 +998,9 @@ TEST_P(DemoCatchingAllocS7LeapTest,
 
 INSTANTIATE_TEST_SUITE_P(SegmentPlanners, DemoCatchingAllocS7LeapTest,
                          ::testing::Values("mpc", "mpc_docking"),
-                         [](const ::testing::TestParamInfo<const char*>& info) {
-                           return std::string(info.param) == "mpc_docking" ? "MpcDocking" : "Mpc";
+                         [](const ::testing::TestParamInfo<const char*>& param_info) {
+                           return std::string(param_info.param) == "mpc_docking" ? "MpcDocking"
+                                                                                 : "Mpc";
                          });
 
 }  // namespace

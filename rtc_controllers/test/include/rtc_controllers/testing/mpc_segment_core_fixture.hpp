@@ -83,8 +83,8 @@ inline rtc::catching::MpcSegmentCoreLimits LimitsFromModel(const pinocchio::Mode
   rtc::catching::MpcSegmentCoreLimits lim;
   lim.q_min = m.lowerPositionLimit;
   lim.q_max = m.upperPositionLimit;
-  lim.qd_max = m.velocityLimit;
-  lim.tau_max = m.effortLimit;
+  lim.qd_max = m.upperVelocityLimit;
+  lim.tau_max = m.upperEffortLimit;
   lim.armature = Eigen::VectorXd::Constant(m.nv, armature);
   return lim;
 }

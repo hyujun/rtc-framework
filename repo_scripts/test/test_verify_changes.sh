@@ -2510,10 +2510,12 @@ out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "a missing verdict beside a running --run blocks the turn end" "$rc" 2
 expect_contains "...naming the --run by pid" "$out" "$holder: verify-changes.sh --run"
 expect_contains "...and saying to wait for it" "$out" "wait for it to finish"
+expect_contains "...in the foreground, with a command that does" "$out" "in the foreground -- \`tail --pid=<its pid> -f /dev/null\`"
 expect_not_contains "...not to start another" "$out" "the turn end does not build or test"
 out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "a second --run refuses to start" "$rc" 2
 expect_contains "...and says which one is running" "$out" "another --run is already running in this checkout ($holder: verify-changes.sh --run)"
+expect_contains "...and how to wait for it" "$out" "\`tail --pid=<its pid> -f /dev/null\` in the foreground"
 if [ "$(calls "$bcount")" = 0 ]; then pass "the second --run builds nothing"; else fail "the second --run built beside the first"; fi
 if [ "$(cat "$dir/.git/rtc-verify-run.lock")" = "$(lock_line "$holder")" ]; then
   pass "the second --run leaves the first one's lock alone"
@@ -2526,6 +2528,7 @@ wait "$holder" 2>/dev/null
 #      nothing, --run takes its place and removes its own lock when it ends.
 out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
 expect_contains "a stale lock does not make the turn end wait" "$out" "the turn end does not build or test"
+expect_contains "...and says where the pid to wait on is" "$out" "the pid being the first field of .git/rtc-verify-run.lock)"
 out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "--run starts over a stale lock" "$rc" 0
 if [ "$(calls "$bcount")" = 1 ]; then pass "...and builds"; else fail "--run over a stale lock built $(calls "$bcount") times"; fi

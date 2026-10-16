@@ -2438,7 +2438,10 @@ void DemoCatchingController::RunContactLane(const ControllerState& state) noexce
     return;
   }
   const auto& dev = state.devices[kCatchingHandDeviceIdx];
-  tip_count_ = std::clamp(dev.num_inference_groups, 0, static_cast<int>(kTips));
+  // The clamped local is the loop bound (not the member re-read through the
+  // debounce calls) so the compiler sees [0, kTips] for the tip indices.
+  const int n_tips = std::clamp(dev.num_inference_groups, 0, static_cast<int>(kTips));
+  tip_count_ = n_tips;
   const bool contact_mode = mode_ == Mode::kCommitted || mode_ == Mode::kClosing ||
                             mode_ == Mode::kDecel || mode_ == Mode::kHold;
   // The baseline is learned from a hand that is AT q_pre and not moving
@@ -2447,7 +2450,7 @@ void DemoCatchingController::RunContactLane(const ControllerState& state) noexce
   const bool learning = (mode_ == Mode::kArmed || mode_ == Mode::kTracking) && hand_out_.active &&
                         hand_out_.phase == rtc::catching::HandPhase::kPreshape &&
                         hand_out_.at_target;
-  for (int g = 0; g < tip_count_; ++g) {
+  for (int g = 0; g < n_tips; ++g) {
     const auto u = static_cast<std::size_t>(g);
     // BOTH the backend's flag and this controller's deadline (D-24):
     // IsSensorGroupFresh requires each.
@@ -3227,7 +3230,7 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
   if (state.num_devices > kCatchingHandDeviceIdx) {
     const auto& hand = state.devices[kCatchingHandDeviceIdx];
     const auto n_tip = static_cast<std::size_t>(
-        std::min<int>(hand.num_inference_groups, static_cast<int>(CatchingDiagLogPod::kMaxTips)));
+        std::clamp(hand.num_inference_groups, 0, static_cast<int>(CatchingDiagLogPod::kMaxTips)));
     tick_record_.num_tips = static_cast<std::uint8_t>(n_tip);
     for (std::size_t i = 0; i < n_tip; ++i) {
       const std::int64_t age = rtc::SensorGroupAgeNs(hand, static_cast<int>(i), now_ns);

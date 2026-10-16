@@ -187,7 +187,7 @@ TEST(RtModelHandleCoriolisTest, CoriolisMatrixReconstructsNle) {
   // Rigid-body identity: nle(q,v) == C(q,v) v + g(q).
   Eigen::VectorXd v_eig(10);
   for (int i = 0; i < 10; ++i) {
-    v_eig[i] = v[i];
+    v_eig[i] = v[static_cast<std::size_t>(i)];
   }
   Eigen::VectorXd reconstructed = C * v_eig + g;
   for (Eigen::Index i = 0; i < nle.size(); ++i) {

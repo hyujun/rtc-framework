@@ -105,6 +105,11 @@ std::vector<ToFSnapshot> MakeSnapshotSeries(const std::vector<double>& distances
   snaps.reserve(distances.size());
   for (size_t i = 0; i < distances.size(); ++i) {
     ToFSnapshot snap;
+    // Eigen's default constructor leaves the vectors uninitialized; zero them so
+    // copying the snapshot below never reads indeterminate memory.
+    snap.sensor_positions_world.fill(Eigen::Vector3d::Zero());
+    snap.beam_directions_world.fill(Eigen::Vector3d::Zero());
+    snap.surface_points_world.fill(Eigen::Vector3d::Zero());
     snap.timestamp_ns = (i + 1) * 10'000'000ULL;  // 10ms 간격
     snap.readings[0].distance_m = distances[i];
     snap.readings[0].valid = valid_flags[i];

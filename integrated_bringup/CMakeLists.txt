@@ -445,6 +445,9 @@ if(BUILD_TESTING)
     TIMEOUT 300)
   target_include_directories(test_demo_inference_alloc PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  # alloc_gate.hpp pairs new→malloc with delete→free, which makes GCC
+  # false-positive -Wmismatched-new-delete program-wide (alloc_gate.hpp item 2).
+  target_compile_options(test_demo_inference_alloc PRIVATE -Wno-mismatched-new-delete)
   target_link_libraries(test_demo_inference_alloc
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
@@ -1399,6 +1402,9 @@ if(BUILD_TESTING)
   target_include_directories(test_joint_state_reorder PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
+  # The test's TU-global new/delete pair routes through malloc/free, which
+  # makes GCC false-positive -Wmismatched-new-delete program-wide.
+  target_compile_options(test_joint_state_reorder PRIVATE -Wno-mismatched-new-delete)
   ament_target_dependencies(test_joint_state_reorder
     rtc_controller_manager
     rtc_controller_interface

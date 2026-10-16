@@ -354,7 +354,8 @@ TEST(InertialValidation, ClosedChainEntryPointIsGatedBeforeSidecarParse) {
   // 발사되면 관성 사유로 죽고, 파싱 뒤로 밀리면 sidecar 오류로 죽는다 — 메시지로
   // 둘을 가르므로 "다른 이유로 throw 해서 green" 이 되지 않는다.
   try {
-    rub::BuildClosedChainModelFromExtendedUrdf(probe.string(), "/nonexistent.closure.yaml");
+    static_cast<void>(
+        rub::BuildClosedChainModelFromExtendedUrdf(probe.string(), "/nonexistent.closure.yaml"));
     ADD_FAILURE() << "폐쇄 체인 진입점이 V6 모델을 그대로 열었다";
   } catch (const std::runtime_error& e) {
     const std::string msg = e.what();

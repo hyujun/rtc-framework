@@ -16,7 +16,12 @@
 #          --run          called by hand, during the turn. Runs every gate AND
 #                         builds and tests the changed packages, and records
 #                         the verdicts the turn-end call looks for. Reads no
-#                         stdin. Long runs: background it and wait for it.
+#                         stdin. Long runs: background it, then wait for it in
+#                         the FOREGROUND (`tail --pid=<pid> -f /dev/null`, the
+#                         pid being the first field of the run lock) before
+#                         ending the turn. Ending the turn to await the tool's
+#                         completion notice gets a block whose only way out --
+#                         the stop_hook_active re-entry -- grades nothing.
 #          The turn end stopped building on 2026-10-01. Measured over the two
 #          days before (18 turn ends that built, 1,769 s): 78% of that time was
 #          tests, about 70% of the test time re-ran a full suite the agent had
@@ -745,7 +750,7 @@ if [ -n "$RUN_MODE" ]; then
     fi
   fi
   if [ -z "$RUN_LOCK_HELD" ]; then
-    echo "verify-changes --run: NOT run — another --run is already running in this checkout (${RUN_RIVAL}). Two of them would build into the same build/ and install/ trees. Wait for it to finish (if it is your own background task, wait on that task); its verdict is the one the turn end reads." >&2
+    echo "verify-changes --run: NOT run — another --run is already running in this checkout (${RUN_RIVAL}). Two of them would build into the same build/ and install/ trees. Wait for it to finish (your own background task: \`tail --pid=<its pid> -f /dev/null\` in the foreground); its verdict is the one the turn end reads." >&2
     exit 2
   fi
 fi
@@ -2551,14 +2556,14 @@ report_unverified_tests() {
 if [ -z "$PROC3$BUILD_PKGS" ]; then
   : # nothing owed: no package changed, or every verdict stands
 elif [ -z "$RUN_MODE" ] && [ -n "$RIVALS" ]; then
-  TEST_FAILURES="${TEST_FAILURES}  - build/test verdict missing for: ${OWED} — and a build is running in this colcon workspace (${WORKSPACE}):\n$(report_procs "$RIVALS")\n    If it is your '${RUN_CMD}', wait for it to finish (wait on that task), then end the turn again. If it is another build, run '${RUN_CMD}' once it is over.\n"
+  TEST_FAILURES="${TEST_FAILURES}  - build/test verdict missing for: ${OWED} — and a build is running in this colcon workspace (${WORKSPACE}):\n$(report_procs "$RIVALS")\n    If it is your '${RUN_CMD}', wait for it to finish in the foreground -- \`tail --pid=<its pid> -f /dev/null\`, again if the tool times out -- then end the turn again. Ending the turn to await its completion notice is what lands here, and the stop after this block grades nothing. If it is another build, run '${RUN_CMD}' once it is over.\n"
 elif [ -z "$RUN_MODE" ] && [ -n "$SIM_RIVALS" ]; then
   # Deferred, not failed: reported at the end (see workspace_sim_rivals).
   SIM_DEFERRED=1
 elif [ -z "$RUN_MODE" ]; then
-  TEST_FAILURES="${TEST_FAILURES}  - build/test verdict missing for: ${OWED} — the turn end does not build or test. Run '${RUN_CMD}' (it builds with --tests, runs colcon test and records the verdict; if it will take long, background it and wait for it), then end the turn again. An edit inside any package after that run voids the verdict (a *.md does not).\n"
+  TEST_FAILURES="${TEST_FAILURES}  - build/test verdict missing for: ${OWED} — the turn end does not build or test. Run '${RUN_CMD}' (it builds with --tests, runs colcon test and records the verdict; if it will take long, background it and wait for it in the foreground with \`tail --pid=<pid> -f /dev/null\`, the pid being the first field of ${RUN_LOCK}), then end the turn again. An edit inside any package after that run voids the verdict (a *.md does not).\n"
 elif [ -n "$RIVALS" ]; then
-  TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(report_procs "$RIVALS")\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (if it is your own background task, wait on that task), then run this again.\n"
+  TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(report_procs "$RIVALS")\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (your own background task: \`tail --pid=<its pid> -f /dev/null\` in the foreground), then run this again.\n"
 elif [ -n "$SIM_RIVALS" ]; then
   TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a simulator from this colcon workspace (${WORKSPACE}) is running, or a measurement holds the host (${HOLD_FILE}):\n$(report_procs "$SIM_RIVALS")\n    Building beside it would slow the sim below real time and corrupt what it measures (ball input goes stale, catches fail). Run this again once it is over; do not stop a sim or a measurement that is not yours to get past this.\n"
 elif [ -n "$PROC3" ]; then

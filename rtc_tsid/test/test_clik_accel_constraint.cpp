@@ -133,7 +133,7 @@ class ClikAccelTest : public ::testing::Test {
     ASSERT_GE(tcp_idx_, 0);
     q_home_.resize(kNv);
     q_home_ << 0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785, 0.02, 0.02;
-    tau_max_ = model_->effortLimit;
+    tau_max_ = model_->upperEffortLimit;
     ASSERT_EQ(tau_max_.size(), kNv);
     for (int i = 0; i < kArm; ++i) {
       ASSERT_GT(tau_max_(i), 0.0) << "the Panda URDF carries effort limits";
