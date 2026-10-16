@@ -412,6 +412,15 @@ class DemoTaskController final : public RTControllerInterface {
     return active_.load(std::memory_order_acquire);
   }
 
+  /// Test-only: the set-parameters callback, called directly (#847). Production
+  /// reaches it through the on-set hook on_configure registers; the URDF fixtures
+  /// have no node, so this is how they assert the inactive gate and the gains a
+  /// virtual_tcp_* set stores.
+  rcl_interfaces::msg::SetParametersResult OnGainParametersSetForTesting(
+      const std::vector<rclcpp::Parameter>& params) noexcept {
+    return OnGainParametersSet(params);
+  }
+
   /// The §7.3 tail's activation totals (#484), on the same terms as the sibling
   /// compliance binding's seam of the same name — which owns the note on why the
   /// counters are asserted rather than the WARN line.

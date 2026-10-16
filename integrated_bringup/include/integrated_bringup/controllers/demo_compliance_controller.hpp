@@ -591,6 +591,15 @@ class DemoComplianceController final : public RTControllerInterface {
     return active_.load(std::memory_order_acquire);
   }
 
+  /// Test-only: the set-parameters callback, called directly (#847). Production
+  /// reaches it through the on-set hook on_configure registers; the URDF fixtures
+  /// have no node, so this is how they assert the inactive gate and the gains a
+  /// virtual_tcp_* set stores.
+  rcl_interfaces::msg::SetParametersResult OnGainParametersSetForTesting(
+      const std::vector<rclcpp::Parameter>& params) noexcept {
+    return OnGainParametersSet(params);
+  }
+
   /// Test-only: the latch value the non-RT quiet gate would read right now.
   /// Distinct from observing the freeze in the command: a tick that freezes the
   /// hand but never mirrors the latch leaves the gate believing the hand is

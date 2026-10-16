@@ -25,6 +25,7 @@
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
+#include "integrated_bringup/support/virtual_tcp_params.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"  // kMinMaxDamping
 
 #include <lifecycle_msgs/msg/state.hpp>
@@ -1781,6 +1782,100 @@ TEST_F(TaskControllerUrdfTest, ControlFrameIdReportsMemberMaskPerMode) {
   id = ctrl_->GetControlFrameIdForTesting();
   EXPECT_FALSE(id.is_vtcp);
   EXPECT_EQ(id.member_mask, 0);
+}
+
+// ── virtual_tcp_* parameters (#847) ─────────────────────────────────────────
+//
+// The set-parameters callback is the only runtime writer of gains.vtcp. This
+// fixture has no node, so the callback is driven directly; the node half is
+// pinned by the compliance suite's real-node test. Together the two tests below
+// are the inactive-only contract: a value stored while inactive is the frame the
+// hold seed is taken in after activation, and a set while active is refused
+// without touching the gains.
+
+TEST_F(TaskControllerUrdfTest, VtcpParamSetInactiveSeedsAfterActivate) {
+  const rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                         "inactive");
+  ASSERT_FALSE(ctrl_->IsActiveForTesting());
+  ASSERT_EQ(ctrl_->get_gains().vtcp.mode, VirtualTcpMode::kDisabled)
+      << "the fixture must start on tool0 for the set to move the control point";
+
+  // One batch, as the GUI sends it (set_parameters_atomically → one callback).
+  const auto r = ctrl_->OnGainParametersSetForTesting({
+      rclcpp::Parameter(integrated_bringup::kVirtualTcpModeParam, "constant"),
+      rclcpp::Parameter(integrated_bringup::kVirtualTcpOffsetParam,
+                        std::vector<double>{0.0, 0.0, 0.05}),
+      rclcpp::Parameter(integrated_bringup::kVirtualTcpOrientationParam,
+                        std::vector<double>{0.0, 0.0, 0.0}),
+  });
+  ASSERT_TRUE(r.successful) << r.reason;
+  const auto vtcp = ctrl_->get_gains().vtcp;
+  ASSERT_EQ(vtcp.mode, VirtualTcpMode::kConstant);
+  ASSERT_EQ(vtcp.offset, (std::array<double, 3>{0.0, 0.0, 0.05}));
+
+  ASSERT_EQ(ctrl_->on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+
+  // Same tolerances as VtcpFirstValidDoesNotInjectArmMotion: the first tick
+  // after activation is the seed tick, and it must not spend the 5 cm as error.
+  auto out = RunTicks(1);
+  ASSERT_TRUE(out.virtual_tcp_pose_valid);
+  ASSERT_TRUE(out.arm_tip_pose_valid);
+  const double dx = out.virtual_tcp_pose.position[0] - out.arm_tip_pose.position[0];
+  const double dy = out.virtual_tcp_pose.position[1] - out.arm_tip_pose.position[1];
+  const double dz = out.virtual_tcp_pose.position[2] - out.arm_tip_pose.position[2];
+  EXPECT_NEAR(std::sqrt(dx * dx + dy * dy + dz * dz), 0.05, 1e-6)
+      << "the stored offset is not the one the controller runs with";
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                kArmHome[static_cast<std::size_t>(i)], 1e-9)
+        << "arm joint " << i << " moved on the first tick after activation";
+  }
+  out = RunTicks(20);
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                kArmHome[static_cast<std::size_t>(i)], 1e-6)
+        << "arm joint " << i << " drifted after activation";
+  }
+}
+
+TEST_F(TaskControllerUrdfTest, VtcpParamSetRefusedWhileActive) {
+  const rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                         "inactive");
+  ASSERT_EQ(ctrl_->on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  const auto before = ctrl_->get_gains();
+
+  // Each key alone, each with a value that would be accepted while inactive.
+  for (const auto& p : {
+           rclcpp::Parameter(integrated_bringup::kVirtualTcpModeParam, "constant"),
+           rclcpp::Parameter(integrated_bringup::kVirtualTcpOffsetParam,
+                             std::vector<double>{0.0, 0.0, 0.05}),
+           rclcpp::Parameter(integrated_bringup::kVirtualTcpOrientationParam,
+                             std::vector<double>{0.0, 0.0, 0.1}),
+       }) {
+    const auto r = ctrl_->OnGainParametersSetForTesting({p});
+    EXPECT_FALSE(r.successful) << p.get_name() << " accepted while active";
+    EXPECT_EQ(r.reason, integrated_bringup::kVtcpRefusedActiveReason);
+  }
+  // A batch that also carries an ordinary gain stores neither: one refusal
+  // aborts the whole set before the single Store.
+  const auto r = ctrl_->OnGainParametersSetForTesting({
+      rclcpp::Parameter("null_kp", before.null_kp + 1.0),
+      rclcpp::Parameter(integrated_bringup::kVirtualTcpOffsetParam,
+                        std::vector<double>{0.0, 0.0, 0.05}),
+  });
+  EXPECT_FALSE(r.successful);
+
+  const auto after = ctrl_->get_gains();
+  EXPECT_EQ(after.vtcp.mode, before.vtcp.mode);
+  EXPECT_EQ(after.vtcp.offset, before.vtcp.offset);
+  EXPECT_EQ(after.vtcp.orientation, before.vtcp.orientation);
+  EXPECT_EQ(after.null_kp, before.null_kp);
+
+  // The gate is the activity flag, not a latch: deactivation reopens it.
+  ASSERT_EQ(ctrl_->on_deactivate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  const auto reopened = ctrl_->OnGainParametersSetForTesting({rclcpp::Parameter(
+      integrated_bringup::kVirtualTcpOffsetParam, std::vector<double>{0.0, 0.0, 0.05})});
+  EXPECT_TRUE(reopened.successful) << reopened.reason;
 }
 
 // ── E-STOP ───────────────────────────────────────────────────────────────────

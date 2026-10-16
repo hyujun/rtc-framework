@@ -102,6 +102,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/support/hand_fk_wiring.cpp
   src/support/wbc_reduced_dynamics_provider.cpp
   src/support/owned_topics.cpp
+  src/support/virtual_tcp_params.cpp
   src/backends/mujoco_native_backend.cpp
   src/backends/ur_driver_native_backend.cpp
   src/backends/udp_hand_native_backend.cpp
@@ -1018,6 +1019,20 @@ if(BUILD_TESTING)
     rclcpp
     rtc_controllers
     rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # ── virtual_tcp_* runtime parameters, node-free half (#847) ──────────────
+  # Links the controllers library for the helper's .cpp; rclcpp for
+  # rclcpp::Parameter only — no rclcpp::init, no node, no DDS.
+  ament_add_gtest(test_virtual_tcp_params test/test_virtual_tcp_params.cpp)
+  target_link_libraries(test_virtual_tcp_params
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_virtual_tcp_params
+    rclcpp
+    rclcpp_lifecycle
     pinocchio
     Eigen3
   )

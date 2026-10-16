@@ -34,6 +34,7 @@
 // no shipped config reaches that path any more, which is #497's subject.
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"
+#include "integrated_bringup/support/virtual_tcp_params.hpp"
 #include "shipped_config_test_fixture.hpp"
 
 #include <lifecycle_msgs/msg/state.hpp>
@@ -55,6 +56,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -1410,6 +1412,34 @@ TEST(ComplianceJointTail, AClampThatWidensTheStepIsCountedAsARebound) {
   EXPECT_GE(stats.rebound_joint_events.load(), stats.rebound_ticks.load());
 }
 
+// ── virtual_tcp_* parameters (#847) ─────────────────────────────────────────
+//
+// The compliance binding shares the task binding's inactive-only contract, and
+// here the virtual TCP is also the wrench application point, so a mid-run move
+// would shift where the measured force acts as well as the control point.
+// BringUp() leaves the controller active, which is the case under test.
+TEST(ComplianceVtcpParams, VtcpParamSetRefusedWhileActive) {
+  auto ctrl = BringUp(ComplianceConfig());
+  ASSERT_TRUE(ctrl->IsActiveForTesting());
+  const auto before = ctrl->get_gains().vtcp;
+
+  for (const auto& p : {
+           rclcpp::Parameter(integrated_bringup::kVirtualTcpModeParam, "centroid"),
+           rclcpp::Parameter(integrated_bringup::kVirtualTcpOffsetParam,
+                             std::vector<double>{0.0, 0.0, 0.05}),
+           rclcpp::Parameter(integrated_bringup::kVirtualTcpOrientationParam,
+                             std::vector<double>{0.0, 0.0, 0.1}),
+       }) {
+    const auto r = ctrl->OnGainParametersSetForTesting({p});
+    EXPECT_FALSE(r.successful) << p.get_name() << " accepted while active";
+    EXPECT_EQ(r.reason, integrated_bringup::kVtcpRefusedActiveReason);
+  }
+  const auto after = ctrl->get_gains().vtcp;
+  EXPECT_EQ(after.mode, before.mode);
+  EXPECT_EQ(after.offset, before.offset);
+  EXPECT_EQ(after.orientation, before.orientation);
+}
+
 // Scope split with the sibling sensor: a negative or non-finite δ is the
 // parser's (NUM-6b); an inverted band is this fixture's. What the gate rejects
 // and why — including why it runs in the pass it does — is owned by the block in
@@ -1473,6 +1503,124 @@ TEST_F(ComplianceMarginGate, AMarginThatInvertsAJointBandIsRejected) {
             rtc::RTControllerInterface::CallbackReturn::FAILURE)
       << "a margin of " << (narrowest / 2.0 + 1e-3) << " rad inverted a " << narrowest
       << " rad band and was accepted";
+}
+
+// The node half of #847, on a real LifecycleNode driven through the same
+// Pass 1 → 3 order as ComplianceMarginGate. The URDF suites call the callback
+// directly; only here does a set travel through rclcpp's own parameter path —
+// declaration, static typing, the registered hook — and only here can a value
+// be stored while the hook is gone (cleaned up), which is the one way a
+// virtual_tcp_* value reaches the gains without being validated on the way in.
+class ComplianceVtcpParamsNode : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+    }
+  }
+
+  static void TearDownTestSuite() {
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+  }
+
+  void SetUp() override {
+    rclcpp::NodeOptions opts;
+    opts.use_global_arguments(false);
+    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("compliance_vtcp_params", "", opts);
+    ctrl_ = std::make_unique<DemoComplianceController>("", DemoComplianceController::Gains{});
+    ctrl_->SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+    ctrl_->SetSharedModelBuilder(SharedIiwa7LeapBuilder());
+    ctrl_->SetControlRate(1.0 / kDt);
+    cfg_ = ComplianceConfig();
+    ctrl_->LoadConfig(cfg_);
+    ctrl_->SetDeviceNameConfigs(MakeIiwa7LeapDeviceConfigs());
+    ASSERT_EQ(ctrl_->on_configure(rclcpp_lifecycle::State{}, node_, cfg_),
+              rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+    seed_ = ctrl_->get_gains().vtcp;
+  }
+
+  std::vector<double> NodeArray(const char* name) const {
+    return node_->get_parameter(name).as_double_array();
+  }
+
+  static std::vector<double> AsVector(const std::array<double, 3>& a) {
+    return {a.begin(), a.end()};
+  }
+
+  const rclcpp_lifecycle::State inactive_{lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                          "inactive"};
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+  std::unique_ptr<DemoComplianceController> ctrl_;
+  YAML::Node cfg_;
+  integrated_bringup::VirtualTcpConfig seed_;
+};
+
+TEST_F(ComplianceVtcpParamsNode, DeclaresTheYamlSeedAndGatesTheRealHookOnActivity) {
+  EXPECT_EQ(node_->get_parameter(integrated_bringup::kVirtualTcpModeParam).as_string(),
+            integrated_bringup::VirtualTcpModeName(seed_.mode));
+  EXPECT_EQ(NodeArray(integrated_bringup::kVirtualTcpOffsetParam), AsVector(seed_.offset));
+  EXPECT_EQ(NodeArray(integrated_bringup::kVirtualTcpOrientationParam),
+            AsVector(seed_.orientation));
+
+  // Inactive: one atomic set reaches the gains.
+  const std::vector<double> moved{0.0, 0.0, 0.05};
+  auto r = node_->set_parameters_atomically(
+      {rclcpp::Parameter(integrated_bringup::kVirtualTcpOffsetParam, moved)});
+  ASSERT_TRUE(r.successful) << r.reason;
+  EXPECT_EQ(AsVector(ctrl_->get_gains().vtcp.offset), moved);
+
+  // `ros2 param set … "[0, 0, 1]"` is an integer array; the declared type
+  // refuses it before it could be read as anything.
+  r = node_->set_parameters_atomically({rclcpp::Parameter(
+      integrated_bringup::kVirtualTcpOffsetParam, std::vector<int64_t>{0, 0, 1})});
+  EXPECT_FALSE(r.successful);
+  EXPECT_EQ(AsVector(ctrl_->get_gains().vtcp.offset), moved);
+
+  // Active: the registered hook refuses with the shared reason, and neither the
+  // gains nor the parameter server moves.
+  ASSERT_EQ(ctrl_->on_activate(inactive_), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  r = node_->set_parameters_atomically({rclcpp::Parameter(
+      integrated_bringup::kVirtualTcpOffsetParam, std::vector<double>{0.0, 0.0, 0.09})});
+  EXPECT_FALSE(r.successful);
+  EXPECT_EQ(r.reason, integrated_bringup::kVtcpRefusedActiveReason);
+  EXPECT_EQ(AsVector(ctrl_->get_gains().vtcp.offset), moved);
+  EXPECT_EQ(NodeArray(integrated_bringup::kVirtualTcpOffsetParam), moved);
+}
+
+// on_cleanup drops the hook but leaves the parameters declared, so a set issued
+// then is stored unchecked. The next configure must treat it as untrusted: a
+// valid value persists (the documented node-lifetime behaviour, same as every
+// other gain), an invalid one falls back to the YAML seed on BOTH the gains and
+// the server instead of reaching the RT tick or terminating the noexcept
+// declaration frame.
+TEST_F(ComplianceVtcpParamsNode, AValueStoredWhileCleanedUpIsCheckedAtTheNextConfigure) {
+  ASSERT_EQ(ctrl_->on_cleanup(inactive_), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+
+  const std::vector<double> kept{0.0, 0.0, 0.07};
+  ASSERT_TRUE(
+      node_->set_parameter(rclcpp::Parameter(integrated_bringup::kVirtualTcpOffsetParam, kept))
+          .successful);
+  ASSERT_TRUE(
+      node_->set_parameter(rclcpp::Parameter(integrated_bringup::kVirtualTcpModeParam, "bogus"))
+          .successful)
+      << "the hook is still registered after cleanup, so this test no longer reaches the "
+         "configure-time check";
+
+  // The same Pass 1 → 3 order SetUp used.
+  ctrl_->LoadConfig(cfg_);
+  ctrl_->SetDeviceNameConfigs(MakeIiwa7LeapDeviceConfigs());
+  ASSERT_EQ(ctrl_->on_configure(rclcpp_lifecycle::State{}, node_, cfg_),
+            rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+
+  const auto g = ctrl_->get_gains().vtcp;
+  EXPECT_EQ(g.mode, seed_.mode) << "an off-whitelist stored mode reached the gains";
+  EXPECT_EQ(node_->get_parameter(integrated_bringup::kVirtualTcpModeParam).as_string(),
+            integrated_bringup::VirtualTcpModeName(seed_.mode))
+      << "the server still holds the refused mode, so a later get reports a frame not in use";
+  EXPECT_EQ(AsVector(g.offset), kept) << "a valid stored offset did not survive reconfigure";
+  EXPECT_EQ(NodeArray(integrated_bringup::kVirtualTcpOffsetParam), kept);
 }
 
 }  // namespace

@@ -1,4 +1,5 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
+#include "integrated_bringup/support/virtual_tcp_params.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"  // FloorMaxDamping, kMinSigma0
 #include "rtc_controllers/gain_floor.hpp"
 
@@ -181,6 +182,11 @@ void DemoTaskController::DeclareGainParameters() noexcept {
                  GraspHandModeName(g.grasp_hand_mode));
   }
 
+  // #847: virtual_tcp_* (inactive-only, persistence and single-writer contract
+  // in virtual_tcp_params.hpp). Last, so the stored-value check sees the hand
+  // model LoadConfig built.
+  DeclareVirtualTcpParameters(*node_, hand_handle_ != nullptr, logger_, g.vtcp);
+
   gains_lock_.Store(g);
 }
 
@@ -298,6 +304,22 @@ rcl_interfaces::msg::SetParametersResult DemoTaskController::OnGainParametersSet
           return result;
         }
         g.grasp_hand_mode = requested;
+        gains_dirty = true;
+      } else if (IsVirtualTcpParameter(name)) {
+        // #847. Refused while active: the hold seed is taken on the first tick
+        // after activation, so only a value stored while inactive moves the
+        // control point without a jump (the active case is #472's).
+        if (active_.load(std::memory_order_acquire)) {
+          result.successful = false;
+          result.reason = kVtcpRefusedActiveReason;
+          return result;
+        }
+        if (const char* why = ApplyVirtualTcpParameter(p, hand_handle_ != nullptr, g.vtcp);
+            why != nullptr) {
+          result.successful = false;
+          result.reason = why;
+          return result;
+        }
         gains_dirty = true;
       }
       // Unknown parameter names are silently allowed — other callbacks
