@@ -8,6 +8,7 @@
 - **RT 탐지는 hook 이 구현하지 않는다** — RT 금지는 정기 tick 경로에만 구속되는데 hook 은 파일 단위로만 보므로, blocking gate 로 만들면 `on_configure` 의 정당한 `push_back` 을 막는다. RT 패턴은 invariants.md 의 detect 블록에 남기고 CI 가 유효성을 검증한다.
 - **detect 패턴은 표 셀이 아니라 fenced 블록에** — 표 셀은 `|` 를 이스케이프 없이 담지 못하고, ERE 에서 `\|` 는 alternation 이 아니라 *리터럴 파이프* 다. 문법은 성해서 exit 1 + 무출력, 즉 "위반 없음" 과 구분되지 않는다. 2026-07 감사에서 표의 패턴 10개가 전부 그 상태였다 (#213). `# probe:` / `# antiprobe:` 는 [validate_docs.py](../../repo_scripts/scripts/validate_docs.py) 가 CI 에서 검증한다.
 - **빈 alternation 금지** (`.wait(|_for|_until)\(`) — 에이전트 샌드박스의 `grep` 은 ugrep 으로 resolve 되고 거기서는 `empty (sub)expression` hard error 다 (GNU grep 은 관대).
+- **Escalation 표의 SSoT 는 invariants.md 한 곳** — 이전에는 AGENTS.md §6 과 양쪽이 전체 목록을 인라인 복제했고, 그 구조가 handoff 섹션 목록에서 실제 drift 를 냈다 (AP-DOC-1).
 - **RT-7 은퇴** — assertion 무결성은 timing-safety 가 아니라 process 규칙이라 PROC-6 으로 옮겼다.
 
 ## RT Path
