@@ -77,7 +77,7 @@ backup_file() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [1/11] Pre-flight Checks
+# [1/7] Pre-flight Checks
 # ══════════════════════════════════════════════════════════════════════════════
 echo -e "${BOLD}━━━ [1/7] Pre-flight Checks ━━━${NC}"
 echo ""
@@ -180,7 +180,7 @@ NOUVEAU_ACTIVE=0
 if lsmod 2>/dev/null | grep -q nouveau; then
   NOUVEAU_ACTIVE=1
   warn "nouveau 모듈이 활성 상태입니다!"
-  warn "NVIDIA 독점 드라이버와 충돌합니다. [6/11] 단계에서 블랙리스트를 설정합니다."
+  warn "NVIDIA 독점 드라이버와 충돌합니다. nouveau 블랙리스트 단계에서 설정합니다."
   WARNINGS+=("nouveau 모듈 활성 — 블랙리스트 적용 예정")
 else
   success "nouveau 비활성 확인"

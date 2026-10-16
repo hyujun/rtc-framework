@@ -8,7 +8,8 @@
 # RT 패치 없이 CONFIG_PREEMPT_RT=y 만으로 RT 활성. 본 스크립트는 vanilla 커널을
 # 받아 (GPG 서명 검증 후) CPU profile 별 config 를 적용해 빌드한다.
 #
-# Profile: --profile auto (기본) 가 CPU 를 감지해 분기 —
+# Profile: --profile auto|desktop|nuc (기본 auto — CPU 감지). config 는 실효
+# profile 로 분기한다 (desktop 은 vendor 로 다시 갈린다) —
 #   desktop-amd   : AMD Ryzen (amd_pstate)
 #   desktop-intel : 일반 Intel (intel_pstate, non-hybrid)
 #   nuc           : Intel hybrid NUC 13/14/15 (SCHED_MC_PRIO / HFI / cluster)
@@ -174,7 +175,7 @@ _kv_major="${KERNEL_VERSION%%.*}"
 _kv_minor="${KERNEL_VERSION#*.}"; _kv_minor="${_kv_minor%%.*}"
 if [[ "$_kv_major" -lt 6 || ( "$_kv_major" -eq 6 && "$_kv_minor" -lt 12 ) ]]; then
   error "no-patch 모드는 커널 6.12+ 가 필요합니다 (PREEMPT_RT mainline 병합: 6.12). \
-구버전 RT 는 외부 패치가 필요 — docs/rt-optimization.md §5 참조 (given: ${KERNEL_VERSION})"
+구버전 RT 는 외부 패치가 필요 — docs/rt-optimization.md §구버전 커널은 외부 RT 패치가 필요 참조 (given: ${KERNEL_VERSION})"
 fi
 
 KERNEL_URL="https://mirrors.edge.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"

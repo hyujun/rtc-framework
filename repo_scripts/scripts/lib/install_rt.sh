@@ -180,7 +180,7 @@ install_cset_tools() {
 
 # ── [RT] GRUB 커널 파라미터 + sysctl (NVIDIA 무관, robot + full) ──────────────
 # clocksource=tsc, nmi_watchdog=0, sched_rt_runtime_us=-1 등 RT 필수 설정.
-# NVIDIA 시스템은 setup_nvidia_rt.sh [3/11]에서도 같은 GRUB 파라미터를 설정하지만,
+# NVIDIA 시스템은 setup_nvidia_rt.sh 의 연관 스크립트 단계에서도 setup_grub_rt.sh 를 부르지만,
 # "이미 존재" 로 건너뛰므로 중복 문제는 없다.
 setup_rt_kernel_params() {
   # || true: bare 호출이라 set -e 중단을 막는다 (실패는 RT_SETUP_FAILURES 에 기록됨).
@@ -233,7 +233,7 @@ setup_nvidia_rt() {
 }
 
 # ── CPU Governor → performance (비-NVIDIA 시스템용) ───────────────────────────
-# NVIDIA GPU가 있는 시스템은 setup_nvidia_rt.sh [10/11]에서 처리.
+# NVIDIA GPU가 있는 시스템은 setup_nvidia_rt.sh 의 연관 스크립트 단계에서 처리.
 # NVIDIA가 없는 시스템에서도 powersave → performance 전환이 필요하다.
 setup_cpu_governor() {
   # NVIDIA GPU가 있는 시스템은 setup_nvidia_rt.sh에서 호출됨 (분기는 wrapper 호출 전)
