@@ -11,6 +11,7 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "integrated_bringup/support/virtual_tcp_params.hpp"
 
 #include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp_lifecycle/state.hpp>
@@ -833,6 +834,44 @@ TEST_F(JointContactStopWithPiBuiltTest, QuietSwitchKeepsTheOperatorsGoal) {
   EXPECT_NEAR(out.devices[1].goal_positions[0], kHandGoal, 1e-9)
       << "quiet switch discarded the goal";
   EXPECT_NEAR(out.devices[1].commands[0], kHandGoal, 1e-3);
+}
+
+// ── virtual_tcp_* parameters (#847) ─────────────────────────────────────────
+//
+// The joint controller only observes the virtual TCP (it publishes the TF and
+// never controls in it), so a mid-run change would move no joint. It carries
+// the same inactive gate anyway: one helper, one contract for the three
+// controllers that declare these keys. This fixture has no URDF and therefore
+// no hand model, which also pins the hand flag the callback passes in.
+TEST_F(JointGraspTest, VtcpParamSetRefusedWhileActive) {
+  const rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                         "inactive");
+  ASSERT_FALSE(ctrl_.IsActiveForTesting());
+  auto r = ctrl_.OnGainParametersSetForTesting({rclcpp::Parameter(
+      integrated_bringup::kVirtualTcpOffsetParam, std::vector<double>{0.0, 0.0, 0.05})});
+  EXPECT_TRUE(r.successful) << r.reason;
+  r = ctrl_.OnGainParametersSetForTesting(
+      {rclcpp::Parameter(integrated_bringup::kVirtualTcpModeParam, "constant")});
+  EXPECT_FALSE(r.successful) << "a hand-less controller accepted a mode it skips";
+  EXPECT_NE(r.reason, integrated_bringup::kVtcpRefusedActiveReason);
+
+  ASSERT_EQ(ctrl_.on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  const auto before = ctrl_.get_gains().vtcp;
+  for (const auto& p : {
+           rclcpp::Parameter(integrated_bringup::kVirtualTcpModeParam, "disabled"),
+           rclcpp::Parameter(integrated_bringup::kVirtualTcpOffsetParam,
+                             std::vector<double>{0.0, 0.0, 0.09}),
+           rclcpp::Parameter(integrated_bringup::kVirtualTcpOrientationParam,
+                             std::vector<double>{0.0, 0.0, 0.1}),
+       }) {
+    r = ctrl_.OnGainParametersSetForTesting({p});
+    EXPECT_FALSE(r.successful) << p.get_name() << " accepted while active";
+    EXPECT_EQ(r.reason, integrated_bringup::kVtcpRefusedActiveReason);
+  }
+  const auto after = ctrl_.get_gains().vtcp;
+  EXPECT_EQ(after.mode, before.mode);
+  EXPECT_EQ(after.offset, before.offset);
+  EXPECT_EQ(after.orientation, before.orientation);
 }
 
 // ── Deferred hand hold-seed (device-1 startup race) ─────────────────────────

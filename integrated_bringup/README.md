@@ -46,7 +46,8 @@ integrated_bringup/
 │   │   ├── arm_tip_resolution.hpp      <- 팔 끝 frame 의 configure 판정 (joint/task/compliance/wbc 공용): 팔 모델이 있는데 팔 끝이 풀리지 않으면 거부 사유를 낸다
 │   │   ├── hand_fk_wiring.hpp          <- 손끝 FK 의 배선 (joint/task/compliance/wbc 공용): 손 handle 에 device 관절 순서를 걸고, 팔 끝 → 손 root 의 상수 변환을 구한다. 풀 수 없으면 configure 거부 사유를 낸다
 │   │   ├── layout_profile.hpp          <- launch layout profile (#350) 공용 정의: `LayoutProfileDropsMpc` · `ReadLayoutProfile`. `mpc` role 에 스레드를 올리는 두 컨트롤러 (DemoWbc MPC · 포구 계획기) 가 같은 규칙으로 읽는다
-│   │   └── virtual_tcp.hpp
+│   │   ├── virtual_tcp.hpp
+│   │   └── virtual_tcp_params.hpp      <- `virtual_tcp_*` 런타임 파라미터 (joint/task/compliance 공용): 이름·모드 표·검증·선언, Inactive 전용 계약 (#847)
 │   ├── backends/                       <- DeviceBackend 구현 (sim/robot HW 어댑터, ARCH-3 부합)
 │   │   ├── mujoco_native_backend.hpp     <- sim 공용 (JointState in+out, fingertip WrenchStamped in) ◇
 │   │   ├── ur_driver_native_backend.hpp  <- UR5e robot (JointState in, Float64MultiArray out)
@@ -311,7 +312,7 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
 
 | 파라미터 | 설명 |
 |---------|------|
-| `virtual_tcp_mode` / `virtual_tcp_offset` / `virtual_tcp_orientation` | Virtual TCP 설정 (아래 DemoTask 섹션 참조) |
+| `virtual_tcp_mode` / `virtual_tcp_offset` / `virtual_tcp_orientation` | Virtual TCP 설정 (아래 DemoTask 섹션 참조). DemoJoint · DemoTask · DemoCompliance 는 ROS 파라미터로도 선언하며 **Inactive 일 때만** set 을 받는다 (아래 "런타임 변경") |
 | `grasp_contact_threshold` / `grasp_force_threshold` / `grasp_min_fingertips` | Grasp 감지 임계값 (capability-aware — 아래 표 참조) |
 | `grasp_controller_type` | `"contact_stop"` · `"force_pi"` · `"none"` (hand 무개입, GraspState 발행은 유지). 화이트리스트 검증 — YAML 값이 그 외면 `on_configure` FAILURE, **파라미터로 들어온 값이면 ERROR 로그 + YAML 값 유지** (선언 경로는 noexcept 라 전이를 실패시킬 수 없다). 파라미터 경로는 capability 게이트도 거친다 |
 | `force_pi_grasp.*` | Force-PI grasp 파라미터 + 핑거별 q_open/q_close. `fingers.finger_names` 는 슬롯 순서와 함께 **transition 의 thumb 슬롯**을 정한다 — Approaching → Contact 는 thumb + `f_contact_threshold` 를 넘은 **아무 손가락 하나**를 요구하며, 목록에 `"thumb"` 이 없으면 슬롯 0 + WARN 으로 낙하한다. 재정렬로 판정 쌍을 바꿀 수는 없다 (자세·센서 레인·`hand_finger_joint_map` 이 3중으로 어긋난다 — [grasp_tuning_guide.md](../rtc_controllers/docs/grasp_tuning_guide.md) §1.2) |
@@ -521,6 +522,7 @@ q_cmd  = q_des
 | `hand_max_traj_velocity` | `2.0` rad/s | 핸드 최대 속도 |
 | `virtual_tcp_mode` | `"disabled"` | Virtual TCP 모드 (아래 참조) |
 | `virtual_tcp_offset` | `[0, 0, 0]` | Constant 모드 오프셋 [x,y,z] (TCP 프레임, m) |
+| `virtual_tcp_orientation` | `[0, 0, 0]` | Virtual TCP 자세 [roll, pitch, yaw] (TCP 프레임, rad). `disabled` 외 모든 모드에 적용 |
 | `fsm.pi_rotation_margin` | `0.15` rad | π 근처 quintic 궤적 분할 임계값. 범위 [0, π/2] (필수 키) |
 | `fsm.contact_stop_release_eps` | `0.005` rad | contact_stop release 히스테리시스. 범위 [0, 0.1] (필수 키) |
 | `fsm.contact_stop_lpf_cutoff_hz` | `20.0` Hz | contact_stop latch hold 위치 Bessel LPF cutoff. 범위 (0, control_rate/2) (선택 키, 기본 Gains 값) |
@@ -572,6 +574,21 @@ Virtual TCP 는 **매 tick 유효한 것이 아니다** — hand FK 가 fingerti
 | 참여 fingertip 집합 변화 (centroid/weighted) | hold seed 는 재-seed, 외부 목표는 새 제어점에서 재계획 |
 
 목표는 컨트롤러의 *의도된* frame (mode ≠ disabled) 에서 authoring 된 것으로 간주한다 — walk-in 중 잠깐 tool0 인 것을 tool0 목표로 재해석하지 않는다. GUI 는 frame 확정 전 task target 입력을 비활성화해 이 가정을 성립시킨다.
+
+##### 런타임 변경 (ROS 파라미터)
+
+세 키는 DemoJoint · DemoTask · DemoCompliance 의 ROS 파라미터로도 선언되고, 초기값은 `demo_shared.yaml` 이다. 이름·검증·계약의 SSoT 는 [support/virtual_tcp_params.hpp](include/integrated_bringup/support/virtual_tcp_params.hpp) 헤더 주석이다.
+
+- **Inactive 일 때만 set 된다.** Active 컨트롤러는 `successful=false` 와 사유 `virtual_tcp_* can only be set while this controller is inactive; switch to another controller first` 로 거부하고 gains 를 건드리지 않는다. hold seed 는 활성화 후 첫 tick 에 잡히므로 Inactive 에서 바꾼 값은 그 frame 으로 seed 되어 arm 이 움직이지 않는다. Active 중에 constant 오프셋을 옮기면 vtcp 여부·mask 가 같아 위 표의 어느 전이로도 잡히지 않으므로 열지 않았다 (#472). DemoJoint 는 vtcp 를 TF 관측에만 쓰지만 같은 게이트를 둔다.
+- **검증**: 모드 화이트리스트 (`disabled` · `centroid` · `weighted` · `constant`, YAML 파서와 달리 모르는 이름을 disabled 로 접지 않고 거부), 배열 길이 3 과 유한값. hand 모델이 없는 컨트롤러는 `disabled` 가 아닌 모드로 **바꾸는** set 을 거부한다 (hand 가 없으면 모든 모드에서 vtcp 계산을 건너뛴다) — 현재 모드를 다시 보내는 것은 받으므로, 세 키를 함께 보내는 클라이언트도 offset 만 바꿀 수 있다.
+- 셋을 함께 바꿀 때는 `set_parameters_atomically` 로 한 번에 보낸다 — 콜백 1회가 gains Store 1회다. GUI 의 Virtual TCP 패널 (아래 "GUI 도구") 이 이렇게 보낸다.
+- CLI 의 배열은 **double 로** 쓴다. `"[0, 0, 1]"` 은 정수 배열이라 선언 타입과 맞지 않아 거부된다:
+
+```bash
+ros2 param set /demo_task_controller/demo_task_controller virtual_tcp_offset "[0.0, 0.0, 0.15]"
+```
+
+- **영속성**: set 한 값은 노드 수명 동안 유지된다. `on_cleanup` 은 파라미터를 지우지 않으므로 재configure 해도 남고, `demo_shared.yaml` 은 프로세스 재시작 때만 다시 seed 한다 — 다른 게인과 같다. cleanup 상태에서 set 한 값은 콜백을 거치지 않으므로 다음 configure 에서 같은 검증을 받고, 통과하지 못하면 ERROR 로그와 함께 YAML 값으로 되돌아간다.
 
 #### Closed-chain hand FK (extended-URDF 전용)
 
@@ -1406,6 +1423,7 @@ GUI 는 `integrated_bringup/integrated_bringup/demo_gui/` 패키지로 구성됩
 | `demo_gui/pull.py` | Pull Force Estimate 패널의 상태기계 — `PullSnapshot` (immutable) / `PullPeakHold` / `badge_state` / `build_render`. Tk·rclpy 비의존이라 `test/test_demo_gui_pull.py` 가 디스플레이 없이 검증. |
 | `demo_gui/task_frame.py` | `TaskFrameSelector` — active controller 가 **실제로 제어 중인** task frame 선택. `virtual_tcp_actual` 을 한 번이라도 관측하면 즉시 latch, 없이 fallback (`RobotProfile.tcp_child`) 만 `settle_msgs` 건이면 fallback latch. 컨트롤러 이름 하드코딩 없이 **availability** 로만 판정하며, settle window 는 closed-chain hand FK walk-in 동안 tool0 만 발행되는 창을 넘기기 위한 것이다. Tk·rclpy 비의존 (`test/test_demo_gui_task_frame.py`). |
 | `demo_gui/preset_toggle.py` | preset 단축키의 순수 로직 — `PresetToggleState` (close 우선, **dispatch 성공 시에만** close↔open 전진, key-repeat 억제용 arm/rearm), keysym 정규화, preset 쌍 해석, 설정 JSON 의 검증·atomic 저장. Tk·rclpy 비의존 (`test/test_demo_gui_preset_toggle.py`). |
+| `demo_gui/vtcp.py` | Virtual TCP 패널의 순수 로직 — 파라미터 이름·모드 표, 소유 컨트롤러 집합 `VTCP_OWNERS` (Python 쪽 유일한 정의), `get_parameters` 응답 해석, 입력 검증, 입력 칸 재-seed 규칙, Apply 게이트 (`apply_enabled`, active 컨트롤러 미확인 시 닫힘). Tk·rclpy 비의존 (`test/test_demo_gui_vtcp.py` — 이름·모드·소유 집합을 C++ 소스와 대조) |
 
 #### 동적 controller 발견 (`/rtc_cm/list_controllers`)
 
@@ -1448,6 +1466,8 @@ preset combo 는 라디오 집합에서 **목표를 받지 않는 컨트롤러�
 | `demo_dualarm_controller` | Trajectory speed | `trajectory.linear_speed`, `trajectory.angular_speed`, `trajectory.hand_speed` | `trajectory.linear_speed_max`, `trajectory.angular_speed_max`, `trajectory.hand_speed_max` |
 
 WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mpc.enabled` flag 와 AND 됩니다. YAML 에서 `mpc.enabled: false` 로 설정된 경우 GUI toggle 은 no-op 입니다 (MPC 스레드가 spawn 되지 않음). 자세한 의미는 `config/ur5e_p1a/controllers/demo_wbc_controller.yaml` 의 `mpc:` 블록 주석 참조.
+
+**Virtual TCP 패널 (Control 탭, Gains 아래):** 선택된 컨트롤러의 `virtual_tcp_mode` · `virtual_tcp_offset` · `virtual_tcp_orientation` 을 읽고 고칩니다 (`demo_joint` · `demo_task` · `demo_compliance` 만 선언 — 그 외 컨트롤러에서는 패널 전체가 비활성). 컨트롤러는 **Inactive 일 때만** set 을 받으므로 (위 "런타임 변경"), `Apply VTCP` 는 선택된 컨트롤러가 `/rtc_cm/active_controller_name` 의 active 컨트롤러가 아닐 때만 열리고, 그 메시지를 아직 못 받았으면 닫힙니다. 이 게이트는 안내일 뿐 판정은 컨트롤러가 하며, 거부되면 그 사유가 `refused: ` 뒤에 **그대로** 표시됩니다. Apply 는 세 값을 `set_parameters_atomically` 한 번으로 보내고, 결과와 무관하게 다시 읽어 `current:` 줄을 컨트롤러가 확인한 값으로 바꿉니다. 입력 칸은 읽은 값이 바뀔 때만 다시 채워지므로 거부된 Apply 뒤에도 편집 중인 값이 남습니다. `Load VTCP` 는 캐시를 무시하고 다시 읽어 입력 칸을 덮어씁니다 — `ros2 param set` 이나 재configure 로 바뀐 값은 Load 전에는 보이지 않을 수 있습니다. 쓰는 흐름은 대상 컨트롤러를 선택 → 값 편집 → `Apply VTCP` → `Switch Controller` 이며, 새 값은 그 활성화의 첫 tick 에 hold seed 와 함께 적용됩니다.
 
 **Target 패널 (관절 vs task):** `demo_joint_controller` 는 관절 목표만, `demo_task_controller` 는 task-space (EE SE3) 목표만 입력 패널이 활성화됩니다. `demo_wbc_controller` 는 **둘 다 활성화** — 암 posture (nullspace reference) 와 commanded EE SE3 jog 를 독립적으로 받기 때문 (`demo_gui/config.py` `DUAL_TARGET_SPACE`). WBC 에서 `Send Command` 는 두 `RobotTarget` (goal_type `joint` + `task`) 을 모두 publish 하며, controller `DeliverTargetMessage` 가 goal_type 별로 라우팅합니다. EE SE3 패널 값은 TF (`virtual_tcp`/`ee_link`) 가 wiring 되어 있어야 current pose 로 seed 됩니다.
 

@@ -1,4 +1,5 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
+#include "integrated_bringup/support/virtual_tcp_params.hpp"
 
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
@@ -128,6 +129,9 @@ void DemoJointController::DeclareGainParameters() noexcept {
                  GraspHandModeName(g.grasp_hand_mode));
   }
 
+  // #847 — contract in virtual_tcp_params.hpp.
+  DeclareVirtualTcpParameters(*node_, hand_handle_ != nullptr, logger_, g.vtcp);
+
   gains_lock_.Store(g);
 }
 
@@ -190,6 +194,16 @@ rcl_interfaces::msg::SetParametersResult DemoJointController::OnGainParametersSe
           return result;
         }
         g.grasp_hand_mode = requested;
+        gains_dirty = true;
+      } else if (IsVirtualTcpParameter(name)) {
+        // #847: inactive only — the gate and why are in virtual_tcp_params.hpp.
+        if (const char* why = ApplyVirtualTcpSet(p, active_.load(std::memory_order_acquire),
+                                                 hand_handle_ != nullptr, g.vtcp);
+            why != nullptr) {
+          result.successful = false;
+          result.reason = why;
+          return result;
+        }
         gains_dirty = true;
       }
       // Unknown names: silently allowed (other callbacks may own them).

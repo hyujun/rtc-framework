@@ -16,6 +16,10 @@ their own modules.
                        Grasp tab readout and writable via Set Mode; the
                        controller refuses the switch unless the hand is quiet
                        and the reason is shown verbatim
+- Virtual TCP        → `virtual_tcp_{mode,offset,orientation}` parameters,
+                       read for the Control tab's Virtual TCP panel and
+                       writable there while the selected controller is
+                       inactive; a refusal's reason is shown verbatim
 - E-STOP status      → /system/estop_status (subscribe)
 - Clear E-STOP       → /rtc_cm/clear_estop srv, two calls: an empty ack to learn
                        the latched reason, then the operator-confirmed echo
@@ -201,6 +205,21 @@ from .pull import (
     build_render,
 )
 from .task_frame import TaskFrameSelector
+from .vtcp import (
+    VTCP_MODE_PARAM,
+    VTCP_MODES,
+    VTCP_OFFSET_PARAM,
+    VTCP_ORIENTATION_PARAM,
+    VTCP_OWNERS,
+    VTCP_PARAMS,
+    VtcpConfigView,
+    apply_enabled,
+    format_readout,
+    format_value,
+    parse_entries,
+    parse_inputs,
+    seed_due,
+)
 
 
 def _quat_to_rpy(qw: float, qx: float, qy: float, qz: float) -> tuple[float, float, float]:
@@ -393,6 +412,17 @@ class DemoControllerGUI(Node):
         # operator has made but not yet applied.
         self._grasp_mode_seeded: tuple[str, str] | None = None
 
+        # config_key -> the controller's virtual_tcp_* values (#847), cached on
+        # the same terms as _grasp_modes: a failed read is never cached, and the
+        # GUI's own Apply drops the entry and re-reads. Unlike the grasp mode,
+        # Load VTCP ignores this cache — the values also change through
+        # `ros2 param set` and through a re-configure that keeps a value set
+        # earlier, and Load is the operator asking what is there now.
+        self._vtcp_configs: dict[str, VtcpConfigView] = {}
+        # (config_key, values) last written into the panel's input widgets; see
+        # vtcp.seed_due.
+        self._vtcp_seeded: tuple[str, VtcpConfigView | None] | None = None
+
         # Sensor calibration (Control tab). The driver namespaces these under the
         # hand device group (/<hand_group>/calibration/*), so derive the prefix
         # from the --robot profile — hard-wiring /p1a/ here would send p1b's GUI
@@ -584,7 +614,15 @@ class DemoControllerGUI(Node):
         # point _on_catalog_update re-wires to the real group names.
         self._wired_groups = ("", "")
         self._rewire_if_groups_changed()
-        self.root.after(0, lambda: self._sync_selected_to_active_controller(name))
+
+        def _on_tk(ctrl: str = name) -> None:
+            self._sync_selected_to_active_controller(ctrl)
+            # Separately from the sync: it returns early when the selection
+            # already IS the newly active controller (select X, then Switch), and
+            # that is exactly the case whose Virtual TCP Apply must now close.
+            self._apply_vtcp_state()
+
+        self.root.after(0, _on_tk)
 
     def _active_groups(self) -> tuple[str, str]:
         """(arm_group, hand_group) for the active controller, taken from the
@@ -1221,6 +1259,289 @@ class DemoControllerGUI(Node):
             fg = GRASP_MODE_FG_ACTIVE if ok else GRASP_MODE_FG_BLOCKED
         self._grasp_mode_result_label.config(fg=fg)
 
+    # ── Virtual TCP panel (#847) ──────────────────────────────────────────
+
+    def _build_vtcp_panel(self, parent) -> None:
+        """Control tab: read and edit the selected controller's virtual TCP.
+
+        Two rows so it fits the 1000 px window: mode + offset, then rpy + the
+        buttons. Below them three lines: the controller's confirmed values, the
+        Apply gate (why it is open or closed), and the last Apply's outcome. The
+        gate and the outcome are separate lines because the gate is repainted on
+        every catalog poll and would otherwise wipe a refusal before it is read.
+        """
+        frame = ttk.LabelFrame(parent, text="Virtual TCP", padding=4)
+        frame.pack(fill="x", padx=8, pady=2)
+
+        def _label(row, text):
+            tk.Label(row, text=text, bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8)).pack(
+                side="left", padx=(6, 2)
+            )
+
+        def _triple(row):
+            entries = []
+            for _ in range(3):
+                ent = ttk.Entry(row, width=9, justify="center")
+                ent.pack(side="left", padx=1)
+                entries.append(ent)
+            return entries
+
+        row1 = tk.Frame(frame, bg="#1e1e2e")
+        row1.pack(fill="x")
+        _label(row1, "Mode:")
+        self._vtcp_mode_combo = ttk.Combobox(
+            row1, values=list(VTCP_MODES), width=10, state="readonly"
+        )
+        # Blank until read, like the grasp mode box: an empty box means "not
+        # read yet" rather than a mode the GUI has not seen.
+        self._vtcp_mode_combo.set("")
+        self._vtcp_mode_combo.pack(side="left", padx=2)
+        _label(row1, "Offset x y z [m]:")
+        self._vtcp_offset_entries = _triple(row1)
+
+        row2 = tk.Frame(frame, bg="#1e1e2e")
+        row2.pack(fill="x", pady=(2, 0))
+        _label(row2, "RPY r p y [rad]:")
+        self._vtcp_rpy_entries = _triple(row2)
+        self._vtcp_apply_btn = ttk.Button(row2, text="Apply VTCP", command=self._send_vtcp)
+        self._vtcp_apply_btn.pack(side="left", padx=(8, 2))
+        self._vtcp_load_btn = ttk.Button(row2, text="Load VTCP", command=self._request_load_vtcp)
+        self._vtcp_load_btn.pack(side="left", padx=2)
+
+        self._vtcp_readout_var = tk.StringVar(value=format_readout(None))
+        tk.Label(
+            frame,
+            textvariable=self._vtcp_readout_var,
+            bg="#1e1e2e",
+            fg="#a6e3a1",
+            font=("Segoe UI", 8),
+            anchor="w",
+        ).pack(fill="x", padx=6, pady=(2, 0))
+        self._vtcp_hint_var = tk.StringVar(value="")
+        self._vtcp_hint_label = tk.Label(
+            frame,
+            textvariable=self._vtcp_hint_var,
+            bg="#1e1e2e",
+            fg=GRASP_MODE_FG_UNKNOWN,
+            font=("Segoe UI", 7, "italic"),
+            anchor="w",
+        )
+        self._vtcp_hint_label.pack(fill="x", padx=6)
+        self._vtcp_result_var = tk.StringVar(value="")
+        self._vtcp_result_label = tk.Label(
+            frame,
+            textvariable=self._vtcp_result_var,
+            bg="#1e1e2e",
+            fg=GRASP_MODE_FG_UNKNOWN,
+            font=("Segoe UI", 7),
+            anchor="w",
+        )
+        self._vtcp_result_label.pack(fill="x", padx=6)
+        # Controller the outcome line speaks about; cleared when the selection
+        # moves so one controller's refusal never sits under another's values.
+        self._vtcp_result_ctrl = ""
+
+    def _vtcp_input_widgets(self) -> list:
+        return [self._vtcp_mode_combo, *self._vtcp_offset_entries, *self._vtcp_rpy_entries]
+
+    def _apply_vtcp_state(self) -> None:
+        """Open or close the panel for the selected controller. Tk thread only.
+
+        Called on every event that can change the answer: a selection change, a
+        catalog poll, and an active-controller change. The gate is a hint — the
+        controller refuses a set while active whatever this shows.
+        """
+        if not hasattr(self, "_vtcp_load_btn"):
+            return  # panel not built yet (startup ordering)
+        ctrl = self.selected_ctrl.get()
+        enabled, hint = apply_enabled(ctrl, self._active_ctrl, VTCP_OWNERS)
+        self._vtcp_apply_btn.config(state="normal" if enabled else "disabled")
+        self._vtcp_load_btn.config(state="normal" if ctrl in VTCP_OWNERS else "disabled")
+        self._vtcp_mode_combo.config(state="readonly" if enabled else "disabled")
+        for ent in self._vtcp_input_widgets()[1:]:
+            ent.config(state="normal" if enabled else "disabled")
+        self._vtcp_hint_var.set(hint)
+        self._vtcp_hint_label.config(fg=GRASP_MODE_FG_ACTIVE if enabled else GRASP_MODE_FG_UNKNOWN)
+        if self._vtcp_result_ctrl != ctrl:
+            self._vtcp_result_ctrl = ""
+            self._vtcp_result_var.set("")
+
+    def _refresh_vtcp(self, ctrl: str, *, force: bool = False) -> None:
+        """Show ``ctrl``'s virtual TCP, reading it once if not already cached.
+
+        Same shape as _refresh_grasp_mode, including the non-blocking readiness
+        check (this runs on the Tk thread and from the catalog poll).
+
+        ``force`` re-reads past the cache (after an Apply, and for Load). The
+        cached view stays on screen until the answer replaces it, so there is no
+        "unknown" window for a catalog poll to paint into the inputs.
+        """
+        if not ctrl:
+            return
+        cached = None if force else self._vtcp_configs.get(ctrl)
+        if cached is not None:
+            self._paint_vtcp(ctrl, cached)
+            return
+        if not force:
+            self._paint_vtcp(ctrl, None)
+        if ctrl not in VTCP_OWNERS:
+            return
+
+        client = self._get_param_client(ctrl)
+        if not client.services_are_ready():
+            return
+
+        future = client.get_parameters(list(VTCP_PARAMS))
+
+        def _on_done(fut):
+            try:
+                resp = fut.result()
+            except Exception as exc:  # noqa: BLE001 — any failure = unknown
+                self.get_logger().debug(f"virtual_tcp_* query failed for /{ctrl}: {exc}")
+                # A forced read follows a change, so the cached view may be the
+                # one that changed; stop claiming it.
+                self._vtcp_configs.pop(ctrl, None)
+                return
+            view = parse_entries(list(resp.values))
+            if view is None:
+                # Not declared (a controller older than #847) or not the declared
+                # shape. Indistinguishable from "unknown", and cached as neither.
+                self.get_logger().debug(f"/{ctrl} virtual_tcp_* unreadable: {resp.values}")
+                return
+            self._vtcp_configs[ctrl] = view
+            self.root.after(0, self._paint_vtcp, ctrl, view)
+
+        future.add_done_callback(_on_done)
+
+    def _paint_vtcp(self, ctrl: str, view: VtcpConfigView | None) -> None:
+        """Show ``view`` as ``ctrl``'s current values. Tk thread only.
+
+        Late callbacks for a deselected controller are dropped. The input
+        widgets are re-seeded only when seed_due says so, so a re-read that
+        returns the same values keeps an edit the operator has not applied.
+        """
+        if ctrl != self.selected_ctrl.get():
+            return
+        if not hasattr(self, "_vtcp_readout_var"):
+            return  # panel not built yet (startup ordering)
+        if ctrl not in VTCP_OWNERS:
+            self._vtcp_readout_var.set("current: —")
+        else:
+            self._vtcp_readout_var.set(format_readout(view))
+        if seed_due(self._vtcp_seeded, ctrl, view):
+            self._vtcp_seeded = (ctrl, view)
+            self._fill_vtcp_inputs(view)
+
+    def _fill_vtcp_inputs(self, view: VtcpConfigView | None) -> None:
+        """Write ``view`` into the input widgets (None blanks them). Tk drops a
+        write into a disabled widget, so they are opened for it and the gate
+        then closes them again."""
+        for w in self._vtcp_input_widgets():
+            w.config(state="normal")
+        self._vtcp_mode_combo.set(view.mode if view is not None else "")
+        texts = (
+            [format_value(v) for v in (*view.offset, *view.orientation)]
+            if view is not None
+            else [""] * 6
+        )
+        for ent, text in zip(
+            [*self._vtcp_offset_entries, *self._vtcp_rpy_entries], texts, strict=True
+        ):
+            ent.delete(0, tk.END)
+            ent.insert(0, text)
+        self._apply_vtcp_state()
+
+    def _request_load_vtcp(self) -> None:
+        """Load VTCP: re-read the selected controller and overwrite the inputs."""
+        ctrl = self.selected_ctrl.get()
+        self._vtcp_seeded = None
+        self._refresh_vtcp(ctrl, force=True)
+
+    def _send_vtcp(self) -> None:
+        """Apply VTCP: send all three parameters in ONE set_parameters_atomically.
+
+        One request is one callback on the controller and one gains Store. A
+        refusal comes back as SetParametersResult.reason and is shown verbatim
+        — the controller's reason, not a sentence invented here.
+        """
+        ctrl = self.selected_ctrl.get()
+        enabled, hint = apply_enabled(ctrl, self._active_ctrl, VTCP_OWNERS)
+        if not enabled:
+            self._set_vtcp_result(hint, ok=False)
+            return
+        view, why = parse_inputs(
+            self._vtcp_mode_combo.get(),
+            [e.get() for e in self._vtcp_offset_entries],
+            [e.get() for e in self._vtcp_rpy_entries],
+        )
+        if view is None:
+            self._set_vtcp_result(why, ok=False)
+            return
+
+        client = self._get_param_client(ctrl)
+        # Non-blocking, like the reads: a dead controller must not freeze the window.
+        if not client.services_are_ready():
+            self._set_vtcp_result(f"parameter services for /{ctrl} unavailable", ok=False)
+            return
+
+        params = [Parameter(name=VTCP_MODE_PARAM, type_=Parameter.Type.STRING, value=view.mode)]
+        for name, triple in (
+            (VTCP_OFFSET_PARAM, view.offset),
+            (VTCP_ORIENTATION_PARAM, view.orientation),
+        ):
+            type_, value = _set_double_array(list(triple))
+            params.append(Parameter(name=name, type_=type_, value=value))
+        future = client.set_parameters_atomically(params)
+        self._set_vtcp_result("applying …", ok=None)
+
+        def _on_set_done(fut):
+            try:
+                result = fut.result().result
+                ok = bool(result.successful)
+                message = (
+                    "applied — takes effect on the next activation"
+                    if ok
+                    else f"refused: {result.reason}"
+                )
+            except Exception as exc:  # noqa: BLE001 — surfaced in the label
+                # A failed call goes the same way as a refusal: the set may or
+                # may not have landed.
+                ok, message = False, f"set failed: {exc}"
+            self.root.after(0, self._after_vtcp_set, ctrl, ok, message)
+
+        future.add_done_callback(_on_set_done)
+
+    def _after_vtcp_set(self, ctrl: str, ok: bool, message: str) -> None:
+        """Report the outcome and re-read. Tk thread only.
+
+        The outcome is painted only while ``ctrl`` is still selected. The forced
+        re-read runs on every outcome, so the readout shows what the controller
+        confirmed. A refusal also repaints the Apply gate: the likely cause is a
+        switch that landed after the GUI last heard the active controller's name.
+        """
+        selected = ctrl == self.selected_ctrl.get()
+        log = self.get_logger().info if ok else self.get_logger().warn
+        log(f"/{ctrl} virtual_tcp_* {message}")
+        if selected:
+            self._set_vtcp_result(message, ok=ok)
+        self._refresh_vtcp(ctrl, force=True)
+        if selected:
+            self._apply_vtcp_state()
+
+    def _set_vtcp_result(self, text: str, ok: bool | None) -> None:
+        """Write the panel's outcome line for the selected controller. Tk thread
+        only. ``ok=None`` is in flight: a request that has left the GUI is not a
+        change that happened."""
+        if not hasattr(self, "_vtcp_result_var"):
+            return  # panel not built yet (startup ordering)
+        self._vtcp_result_ctrl = self.selected_ctrl.get()
+        self._vtcp_result_var.set(text)
+        if ok is None:
+            fg = GRASP_MODE_FG_UNKNOWN
+        else:
+            fg = GRASP_MODE_FG_ACTIVE if ok else GRASP_MODE_FG_BLOCKED
+        self._vtcp_result_label.config(fg=fg)
+
     def _schedule_refresh(self):
         """Periodic GUI refresh scheduled on the Tk event loop (thread-safe)."""
         self._refresh_current_display()
@@ -1731,6 +2052,8 @@ class DemoControllerGUI(Node):
         ).pack(anchor="w", padx=2)
         self._gains_applied_inner = tk.Frame(self._gains_frame, bg="#1e1e2e")
         self._gains_applied_inner.pack(fill="x", padx=2, pady=(0, 2))
+
+        self._build_vtcp_panel(control_tab)
 
         # Target Inputs
         pos_frame = ttk.LabelFrame(control_tab, text="Target Inputs", padding=4)
@@ -4654,6 +4977,9 @@ class DemoControllerGUI(Node):
         # fills the label on startup when no radio has been clicked yet.
         if current:
             self._refresh_grasp_mode(current)
+            # Same reasons, same path: retries the read once the CM is up.
+            self._refresh_vtcp(current)
+        self._apply_vtcp_state()
 
         # Status label reflects offline vs live state.
         suffix = " (controllers offline)" if offline else ""
@@ -4672,6 +4998,10 @@ class DemoControllerGUI(Node):
         # (_send_grasp_command reads selected_ctrl), so the mode shown there has
         # to follow the same selection, not the active controller.
         self._refresh_grasp_mode(idx)
+        # The Virtual TCP panel edits the *selected* controller too, and its
+        # Apply depends on whether that one is the active controller.
+        self._refresh_vtcp(idx)
+        self._apply_vtcp_state()
 
     def _on_switch_controller(self, on_complete=None):
         idx = self.selected_ctrl.get()

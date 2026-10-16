@@ -102,6 +102,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/support/hand_fk_wiring.cpp
   src/support/wbc_reduced_dynamics_provider.cpp
   src/support/owned_topics.cpp
+  src/support/virtual_tcp_params.cpp
   src/backends/mujoco_native_backend.cpp
   src/backends/ur_driver_native_backend.cpp
   src/backends/udp_hand_native_backend.cpp
@@ -1022,6 +1023,20 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── virtual_tcp_* runtime parameters, node-free half (#847) ──────────────
+  # Links the controllers library for the helper's .cpp; rclcpp for
+  # rclcpp::Parameter only — no rclcpp::init, no node, no DDS.
+  ament_add_gtest(test_virtual_tcp_params test/test_virtual_tcp_params.cpp)
+  target_link_libraries(test_virtual_tcp_params
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_virtual_tcp_params
+    rclcpp
+    rclcpp_lifecycle
+    pinocchio
+    Eigen3
+  )
+
   # ── Pull estimator + compliance wrench source, one binary ─────────────────
   #   test_pull_estimator_wiring         wiring (#167 P3).
   #   test_pull_estimator_known_wrench   shipped-profile estimator vs a known
@@ -1813,6 +1828,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_ball_launch test/test_demo_gui_ball_launch.py)
   ament_add_pytest_test(test_demo_gui_grasp_mode test/test_demo_gui_grasp_mode.py)
   ament_add_pytest_test(test_demo_gui_hand_step test/test_demo_gui_hand_step.py)
+  ament_add_pytest_test(test_demo_gui_vtcp test/test_demo_gui_vtcp.py)
   ament_add_pytest_test(test_demo_gui_catching test/test_demo_gui_catching.py)
   ament_add_pytest_test(test_demo_gui_latch_clear test/test_demo_gui_latch_clear.py)
   ament_add_pytest_test(test_demo_gui_dualarm test/test_demo_gui_dualarm.py)
