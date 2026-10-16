@@ -27,11 +27,17 @@ namespace rtc::tsid {
 //   bMf = oMb⁻¹·oMf 로 변환 후 비교한다. base_frame이 universe(frame_id 0)이면
 //   기존 world-기준 동작과 동일 (fast-path). YAML에서 키가 누락되면 init은
 //   std::runtime_error를 throw 한다.
+//   registered base 에서는 오차 · v_des · a_ff 와 QP 행이 모두 **base 축**이다:
+//   J_block = blockdiag(R_wbᵀ, R_wbᵀ)·J, r_block 의 drift 도 R_wbᵀ·J̇v, 현재
+//   트위스트도 R_wbᵀ·(J·v) (R_wb = oMb 의 회전). base 는 한 tick 안에서 world 에
+//   고정된 것으로 본다 — base 자신의 속도·가속도 항은 행에 없다 (고정 base
+//   팔에서는 정확, 움직이는 base 에서는 근사).
 //
 // 오차 규약: kinematics/se3_error.hpp 의 공용 helper (U1 통일, LWA frame).
 //   e_pos = ComputeTaskPoseError(tip_in_base, placement_des) = LWA BodyLog6.
 //   e_vel = ComputeTaskVelocityError(...) = e_pos 의 정확한 시간미분 ė (Jlog6).
-// 소오차서 e_pos→(p_d−p) / e_vel→(v_des − J·v) 로 환원된다.
+// 소오차서 e_pos→(p_d−p) / e_vel→(v_des − J·v) 로 환원된다. "LWA" 는 base 가
+// universe 면 world 축, registered 면 base 축이다.
 //
 // mask: 6D 중 제어할 축 선택 [vx,vy,vz,wx,wy,wz]
 // residual_dim = mask에서 활성 축 수
@@ -65,6 +71,13 @@ class SE3Task final : public TaskBase {
                 const Eigen::Matrix<double, 6, 1>& kd) noexcept;
 
  private:
+  // ComputeResidual for a registered base_frame: error, velocity, feed-forward
+  // and rows all in the base frame's axes (header "Frame contract").
+  void ComputeRegisteredBaseResidual(const PinocchioCache& cache,
+                                     const PinocchioCache::RegisteredFrame& rf,
+                                     Eigen::Ref<Eigen::MatrixXd> J_block,
+                                     Eigen::Ref<Eigen::VectorXd> r_block) noexcept;
+
   std::string name_{"se3"};
   int nv_{0};
   int registered_frame_idx_{-1};  // PinocchioCache registered_frames 인덱스 (tip)

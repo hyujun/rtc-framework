@@ -122,13 +122,14 @@ void SE3Task::ComputeResidual(const PinocchioCache& cache, const ControlReferenc
                               Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
   const auto& rf = cache.registered_frames[static_cast<size_t>(registered_frame_idx_)];
 
-  // 현재 tip pose를 base_frame 기준으로 변환: tip_in_base = oMb⁻¹ · oMf.
-  // base가 universe면 oMb = Identity → tip_in_base = oMf (fast path).
-  // placement_des_ 는 base_frame 기준으로 해석된다 (set_se3_reference 계약).
-  const pinocchio::SE3 tip_in_base =
-      base_is_universe_
-          ? rf.oMf
-          : cache.registered_frames[static_cast<size_t>(base_frame_idx_)].oMf.actInv(rf.oMf);
+  if (!base_is_universe_) {
+    ComputeRegisteredBaseResidual(cache, rf, J_block, r_block);
+    return;
+  }
+
+  // ── universe fast path: tip_in_base = oMf, every quantity in world axes ──
+  // placement_des_ 는 world 기준 (set_se3_reference 계약, base = universe).
+  const pinocchio::SE3& tip_in_base = rf.oMf;
 
   // ── 위치 + 자세 오차 (LWA frame, BodyLog6) — kinematics/dynamics WBC 공용 ──
   // ComputeTaskPoseError = twistLocalToWorld(log6(T⁻¹T_d)); ClikReferenceGenerator
@@ -153,6 +154,50 @@ void SE3Task::ComputeResidual(const PinocchioCache& cache, const ControlReferenc
       continue;
     J_block.row(row).head(nv_) = rf.J.row(i).head(nv_);
     r_block(row) = a_des_full_(i) - rf.dJv(i);
+    ++row;
+  }
+}
+
+void SE3Task::ComputeRegisteredBaseResidual(const PinocchioCache& cache,
+                                            const PinocchioCache::RegisteredFrame& rf,
+                                            Eigen::Ref<Eigen::MatrixXd> J_block,
+                                            Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
+  const auto& rb = cache.registered_frames[static_cast<size_t>(base_frame_idx_)];
+  // R_wb: base axes → world axes. The base is taken as fixed in the world for
+  // this tick (its own velocity and acceleration are not in the rows).
+  const Eigen::Matrix3d& R_wb = rb.oMf.rotation();
+
+  // tip_in_base = oMb⁻¹ · oMf. The pose error of this pose is in the base's
+  // axes (LWA of tip_in_base), so every row the QP sees has to be in the
+  // base's axes too: J, J̇·v and J·v are rotated by blockdiag(R_wbᵀ, R_wbᵀ).
+  const pinocchio::SE3 tip_in_base = rb.oMf.actInv(rf.oMf);
+  error_full_ = ComputeTaskPoseError(tip_in_base, placement_des_);
+
+  // nu_cur in the base's axes: R_wbᵀ·(J·v), per 3-block.
+  Eigen::Matrix<double, 6, 1> nu_world;
+  nu_world.noalias() = rf.J * cache.v;
+  Eigen::Matrix<double, 6, 1> nu_cur;
+  nu_cur.head<3>().noalias() = R_wb.transpose() * nu_world.head<3>();
+  nu_cur.tail<3>().noalias() = R_wb.transpose() * nu_world.tail<3>();
+  v_error_full_ = ComputeTaskVelocityError(tip_in_base, placement_des_, nu_cur, v_des_);
+
+  a_des_full_ = a_ff_ + kp_.cwiseProduct(error_full_) + kd_.cwiseProduct(v_error_full_);
+
+  // Row i of blockdiag(R_wbᵀ, R_wbᵀ)·X is R_wb.col(i % 3) · (the 3 rows of X's
+  // block i / 3), written as a sum of scaled rows so no temporary is made.
+  int row = 0;
+  for (int i = 0; i < 6; ++i) {
+    if (!mask_[static_cast<size_t>(i)])
+      continue;
+    const Eigen::Index blk = (i < 3) ? 0 : 3;
+    const Eigen::Index axis = i - blk;
+    const double c0 = R_wb(0, axis);
+    const double c1 = R_wb(1, axis);
+    const double c2 = R_wb(2, axis);
+    J_block.row(row).head(nv_) = c0 * rf.J.row(blk).head(nv_) + c1 * rf.J.row(blk + 1).head(nv_) +
+                                 c2 * rf.J.row(blk + 2).head(nv_);
+    const double dJv_base = c0 * rf.dJv(blk) + c1 * rf.dJv(blk + 1) + c2 * rf.dJv(blk + 2);
+    r_block(row) = a_des_full_(i) - dJv_base;
     ++row;
   }
 }

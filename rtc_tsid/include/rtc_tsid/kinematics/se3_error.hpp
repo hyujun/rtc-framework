@@ -16,6 +16,11 @@
 // `rf.J` (pinocchio::getFrameJacobian(..., LOCAL_WORLD_ALIGNED, ...)). rtc_math
 // returns BodyLog6 errors in the LOCAL (body) frame, so we transport them with
 // twistLocalToWorld (blockdiag(R,R) — rotation only, NOT the full adjoint).
+// "World" here is the reference frame of the poses passed in: when T and T_d
+// are poses in a registered base frame (tip_in_base), the error is in the
+// BASE's axes, and the caller must bring the world-aligned rf.J into the same
+// axes (SE3Task rotates the rows by R_wbᵀ, ClikReferenceGenerator rotates the
+// reference by R_wb) — pairing the two unrotated is the #779 axis mismatch.
 //
 // All functions are header-only inline, RT-safe (fixed-size Eigen, noexcept,
 // zero heap), and delegate the numeric core to rtc_math (rtc::math::se3).

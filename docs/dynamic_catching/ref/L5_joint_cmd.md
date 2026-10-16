@@ -70,7 +70,7 @@ $$J_a=S\,R_{WC}^\top J_\omega^{LWA}(q_c)\in\mathbb R^{2\times n_v},\qquad r_a=S\
 
 $e_a=\theta\hat u$ 는 회전벡터 오차다 (L4 §4.5, `rtc_math` se3 의 `AxisAlignError`). $e_a\perp z_C$ 이므로 $R_{WC}^\top e_a$ 의 $z$ 성분이 0 이고 $S$ 가 정보를 버리지 않는다. 무효 · 반평행 데드밴드 분기는 `LastAxisRegion()` 으로 호출자에게 노출된다. 입력이 비유한이거나 축이 단위가 아니면 solve 전에 실패한다.
 
-위치 + 접근축 경로는 오차 · Jacobian 을 모두 world 정렬 (LWA) 로 쓰고 base frame 은 목표를 world 로 옮기는 데만 쓴다. SE3 경로는 base 정렬 오차와 world 정렬 `rf.J` 를 곱한다 (base 의 축이 world 와 같을 때만 맞다 — #779). 다중 frame 호출 (§5.1) 의 base frame 은 뜻이 다르다: 과제를 그 frame 기준의 상대 과제로 만들고, 오차와 행이 모두 base 의 축이다.
+위치 + 접근축 경로는 오차 · Jacobian 을 모두 world 정렬 (LWA) 로 쓰고 base frame 은 목표를 world 로 옮기는 데만 쓴다. SE3 경로는 base 정렬 오차를 재고, registered base 면 기준 ($K_x\odot e_x$ + `twist_ff`) 을 $\mathrm{blockdiag}(R_{WB},R_{WB})$ 로 world 에 돌린 뒤 world 정렬 `rf.J` 와 만난다 (#779). base 는 한 tick 안에서 world 에 고정된 것으로 본다. 다중 frame 호출 (§5.1) 의 base frame 은 뜻이 다르다: 과제를 그 frame 기준의 상대 과제로 만들고, 오차와 행이 모두 base 의 축이다.
 
 기존 SE3 포즈 오차 헬퍼 (`ComputeTaskPoseError`) 는 전체 SO(3) 오차라 roll 기준이 없는 이 과제에 쓰지 않는다. $J_a=f'(c)mm^\top+f(c)[a_d]_\times[z]_\times$ 를 $J_\omega^{W}$ 에 곱하는 동치 표현 (L4 §4.5) 은 $\theta\to\pi$ 에서 발산하므로 채택하지 않는다.
 

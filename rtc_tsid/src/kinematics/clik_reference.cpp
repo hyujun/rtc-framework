@@ -444,6 +444,18 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   if (twist_ff != nullptr) {
     r_task_ += *twist_ff;
   }
+  // A registered base: e_x and twist_ff are in the base's axes, the rows below
+  // (rf.J) in the world's. Rotate the reference into the world,
+  // r_task ← blockdiag(R_wb, R_wb)·r_task, so the two share axes. The base is
+  // taken as fixed in the world for this tick (header "Frame contract").
+  if (base_frame_idx >= 0) {
+    const Eigen::Matrix3d& R_wb =
+        cache.registered_frames[static_cast<size_t>(base_frame_idx)].oMf.rotation();
+    const Eigen::Vector3d r_lin = R_wb * r_task_.head<3>();
+    const Eigen::Vector3d r_ang = R_wb * r_task_.tail<3>();
+    r_task_.head<3>() = r_lin;
+    r_task_.tail<3>() = r_ang;
+  }
 
   const int N = nv_;
 

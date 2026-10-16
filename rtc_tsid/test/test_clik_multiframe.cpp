@@ -18,9 +18,11 @@
 ///      equivalent uncapped problem, the input checks against untouched
 ///      outputs.
 ///
-/// The registered-base scenarios of the golden table are NOT replayed: the SE3
-/// overload pairs a base-aligned error with the world-aligned Jacobian there,
-/// and the multi-frame overload deliberately does not.
+/// The registered-base scenarios of the golden table are NOT replayed: their
+/// base (panda_link1) moves with joint 1, and the SE3 overload takes its base
+/// as fixed in the world for the tick (it rotates the reference into the world
+/// and keeps rf.J), where the relative task's J_rel carries the base's motion.
+/// On a world-fixed base the two agree — test_rotated_base_frame.
 
 #include <gtest/gtest.h>
 

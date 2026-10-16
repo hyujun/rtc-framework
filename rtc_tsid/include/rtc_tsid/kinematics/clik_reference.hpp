@@ -33,7 +33,8 @@ namespace rtc::tsid {
 // with
 //   J_task ∈ R⁶ˣᴺ : rf.J's arm columns (hand columns 0; an arm-tip frame's
 //                   hand columns are ~0 by kinematics, zeroed for safety),
-//   r_task = Kx ⊙ e_x (6-vec SE(3) error, base-frame aligned — see below),
+//   r_task = Kx ⊙ e_x (6-vec SE(3) error; with a registered base rotated
+//            into the world's axes — see "Frame contract" below),
 //   S_arm / S_hand   : index-selection of the arm / hand velocity components,
 //   v_post = K·(q_des − q) on the respective index set.
 // Assembled as a fixed-dim QP (n_vars = N, n_eq = 0, n_ineq = N, C = Iₙ):
@@ -60,7 +61,20 @@ namespace rtc::tsid {
 // twistLocalToWorld(log6(T⁻¹T_d)), matching the registered-frame
 // LOCAL_WORLD_ALIGNED Jacobian rf.J. rtc_math's quaternion+atan2 log3 is robust
 // at θ=π (no explicit clamp). The velocity law stays first-order (U1):
-// r_task = Kx ⊙ e_x — no Jlog6⁻¹ on this kinematic path. No separate FK —
+// r_task = Kx ⊙ e_x — no Jlog6⁻¹ on this kinematic path.
+//
+// Frame contract (SE3 overload). The target and twist_ff are in the base
+// frame; e_x is the LWA error of the TCP in the base, so it is in the base's
+// axes. rf.J is in the world's axes, so with a registered base the reference
+// is rotated into the world before it meets the rows:
+//   r_task = blockdiag(R_wb, R_wb)·(Kx ⊙ e_x + twist_ff),   R_wb = oMb rotation.
+// The base is taken as fixed in the world for the tick (its own velocity is
+// not in the rows): exact for a base upstream of every task joint (a fixed
+// arm base), an approximation for a base that moves with the joints. The
+// universe base (base_frame_idx < 0) skips the rotation, bit for bit. The
+// kKinematic acceleration rows bound the task acceleration per WORLD axis, so
+// their box is unchanged by a base rotation only when that rotation is a
+// multiple of 90° about z. No separate FK —
 // the caller registers tip/base frames on the shared PinocchioCache and
 // calls cache.Update() once per tick.
 //
@@ -157,10 +171,11 @@ namespace rtc::tsid {
 // base frame's pose), so the error — taken in the base frame — and the rows
 // share their axes, and a joint upstream of both frames gets a zero column:
 // it cannot be asked to serve that task. With one universe-base task the call
-// reproduces the matching single-task overload bit for bit. That is NOT so
-// for a registered base: the SE3 overload pairs its base-aligned error with
-// the world-aligned Jacobian (exact only while the base frame's axes are the
-// world's), where this overload uses J_rel.
+// reproduces the matching single-task overload bit for bit. For a registered
+// base the two agree only while the base is fixed in the world: the SE3
+// overload rotates its reference into the world and keeps rf.J, where this
+// overload uses J_rel (which also carries the base's own motion); with
+// J_b = 0, J_rel = R_bᵀ·J_t and the two cost the same.
 //
 // All allocations happen in Init(); Compute() is RT-safe and noexcept.
 // ────────────────────────────────────────────────
@@ -356,7 +371,8 @@ class ClikReferenceGenerator {
   // regardless, so the integrator never starts from an undefined anchor.
   // twist_ff (optional, D-5): desired TCP twist [linear; angular] in the same
   // axes as the pose error (base-frame aligned), added as
-  // r_task = Kx ⊙ e_x + twist_ff. nullptr → the legacy law. A non-finite
+  // r_task = Kx ⊙ e_x + twist_ff, then rotated into the world with the error
+  // (file header "Frame contract"). nullptr → the legacy law. A non-finite
   // twist_ff fails the call before the solve.
   [[nodiscard]] bool Compute(const PinocchioCache& cache, int tcp_frame_idx, int base_frame_idx,
                              const pinocchio::SE3& placement_des,
@@ -370,8 +386,9 @@ class ClikReferenceGenerator {
   //   J_a = S·R_WCᵀ·rf.J rows 3–5,                r_a = S·R_WCᵀ·(K_a·e_a + ω_ff)
   // with S = [I₂ 0] (LOCAL x, y), e_a = rtc::math::se3::AxisAlignError(z_C, a)
   // and everything expressed in world-aligned axes: base_frame_idx only moves
-  // the target into the world (unlike the SE3 overload, whose error stays in
-  // base-aligned axes). Cost w_task‖J_p v − r_p‖² + w_axis‖J_a v − r_a‖² plus
+  // the target into the world (the SE3 overload measures its error in the
+  // base and rotates the reference into the world — the same axes in the
+  // end). Cost w_task‖J_p v − r_p‖² + w_axis‖J_a v − r_a‖² plus
   // the same posture, damping, smoothing and boxes as the SE3 overload.
   // Fails before the solve on a non-finite target or an axis that is not
   // unit (AxisAlignError invalid); LastAxisRegion() reports the branch.
@@ -678,7 +695,7 @@ class ClikReferenceGenerator {
   // Pre-allocated workspace
   Eigen::MatrixXd j_task_;              // [6 × nv] arm columns of rf.J (hand cols 0)
   Eigen::Matrix<double, 6, 1> e_x_;     // SE(3) error
-  Eigen::Matrix<double, 6, 1> r_task_;  // Kx ⊙ e_x (L1 task-velocity reference)
+  Eigen::Matrix<double, 6, 1> r_task_;  // L1 task-velocity reference, world axes
   // Manipulability-only 6×6 (diag continuity; J♯ no longer used for the solve).
   Eigen::MatrixXd j_arm_;           // [6 × n_arm] gathered arm columns
   Eigen::Matrix<double, 6, 6> m6_;  // J_a·J_aᵀ + μ²·I
