@@ -581,7 +581,7 @@ Virtual TCP 는 **매 tick 유효한 것이 아니다** — hand FK 가 fingerti
 
 - **Inactive 일 때만 set 된다.** Active 컨트롤러는 `successful=false` 와 사유 `virtual_tcp_* can only be set while this controller is inactive; switch to another controller first` 로 거부하고 gains 를 건드리지 않는다. hold seed 는 활성화 후 첫 tick 에 잡히므로 Inactive 에서 바꾼 값은 그 frame 으로 seed 되어 arm 이 움직이지 않는다. Active 중에 constant 오프셋을 옮기면 vtcp 여부·mask 가 같아 위 표의 어느 전이로도 잡히지 않으므로 열지 않았다 (#472). DemoJoint 는 vtcp 를 TF 관측에만 쓰지만 같은 게이트를 둔다.
 - **검증**: 모드 화이트리스트 (`disabled` · `centroid` · `weighted` · `constant`, YAML 파서와 달리 모르는 이름을 disabled 로 접지 않고 거부), 배열 길이 3 과 유한값, hand 모델이 없는 컨트롤러는 `disabled` 만 받는다 (hand 가 없으면 모든 모드에서 vtcp 계산을 건너뛴다).
-- 셋을 함께 바꿀 때는 `set_parameters_atomically` 로 한 번에 보낸다 — 콜백 1회가 gains Store 1회다.
+- 셋을 함께 바꿀 때는 `set_parameters_atomically` 로 한 번에 보낸다 — 콜백 1회가 gains Store 1회다. GUI 의 Virtual TCP 패널 (아래 "GUI 도구") 이 이렇게 보낸다.
 - CLI 의 배열은 **double 로** 쓴다. `"[0, 0, 1]"` 은 정수 배열이라 선언 타입과 맞지 않아 거부된다:
 
 ```bash
@@ -1423,6 +1423,7 @@ GUI 는 `integrated_bringup/integrated_bringup/demo_gui/` 패키지로 구성됩
 | `demo_gui/pull.py` | Pull Force Estimate 패널의 상태기계 — `PullSnapshot` (immutable) / `PullPeakHold` / `badge_state` / `build_render`. Tk·rclpy 비의존이라 `test/test_demo_gui_pull.py` 가 디스플레이 없이 검증. |
 | `demo_gui/task_frame.py` | `TaskFrameSelector` — active controller 가 **실제로 제어 중인** task frame 선택. `virtual_tcp_actual` 을 한 번이라도 관측하면 즉시 latch, 없이 fallback (`RobotProfile.tcp_child`) 만 `settle_msgs` 건이면 fallback latch. 컨트롤러 이름 하드코딩 없이 **availability** 로만 판정하며, settle window 는 closed-chain hand FK walk-in 동안 tool0 만 발행되는 창을 넘기기 위한 것이다. Tk·rclpy 비의존 (`test/test_demo_gui_task_frame.py`). |
 | `demo_gui/preset_toggle.py` | preset 단축키의 순수 로직 — `PresetToggleState` (close 우선, **dispatch 성공 시에만** close↔open 전진, key-repeat 억제용 arm/rearm), keysym 정규화, preset 쌍 해석, 설정 JSON 의 검증·atomic 저장. Tk·rclpy 비의존 (`test/test_demo_gui_preset_toggle.py`). |
+| `demo_gui/vtcp.py` | Virtual TCP 패널의 순수 로직 — 파라미터 이름·모드 표, 소유 컨트롤러 집합 `VTCP_OWNERS` (Python 쪽 유일한 정의), `get_parameters` 응답 해석, 입력 검증, 입력 칸 재-seed 규칙, Apply 게이트 (`apply_enabled`, active 컨트롤러 미확인 시 닫힘). Tk·rclpy 비의존 (`test/test_demo_gui_vtcp.py` — 이름·모드·소유 집합을 C++ 소스와 대조) |
 
 #### 동적 controller 발견 (`/rtc_cm/list_controllers`)
 
@@ -1465,6 +1466,8 @@ preset combo 는 라디오 집합에서 **목표를 받지 않는 컨트롤러�
 | `demo_dualarm_controller` | Trajectory speed | `trajectory.linear_speed`, `trajectory.angular_speed`, `trajectory.hand_speed` | `trajectory.linear_speed_max`, `trajectory.angular_speed_max`, `trajectory.hand_speed_max` |
 
 WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mpc.enabled` flag 와 AND 됩니다. YAML 에서 `mpc.enabled: false` 로 설정된 경우 GUI toggle 은 no-op 입니다 (MPC 스레드가 spawn 되지 않음). 자세한 의미는 `config/ur5e_p1a/controllers/demo_wbc_controller.yaml` 의 `mpc:` 블록 주석 참조.
+
+**Virtual TCP 패널 (Control 탭, Gains 아래):** 선택된 컨트롤러의 `virtual_tcp_mode` · `virtual_tcp_offset` · `virtual_tcp_orientation` 을 읽고 고칩니다 (`demo_joint` · `demo_task` · `demo_compliance` 만 선언 — 그 외 컨트롤러에서는 패널 전체가 비활성). 컨트롤러는 **Inactive 일 때만** set 을 받으므로 (위 "런타임 변경"), `Apply VTCP` 는 선택된 컨트롤러가 `/rtc_cm/active_controller_name` 의 active 컨트롤러가 아닐 때만 열리고, 그 메시지를 아직 못 받았으면 닫힙니다. 이 게이트는 안내일 뿐 판정은 컨트롤러가 하며, 거부되면 그 사유가 `refused: ` 뒤에 **그대로** 표시됩니다. Apply 는 세 값을 `set_parameters_atomically` 한 번으로 보내고, 결과와 무관하게 다시 읽어 `current:` 줄을 컨트롤러가 확인한 값으로 바꿉니다. 입력 칸은 읽은 값이 바뀔 때만 다시 채워지므로 거부된 Apply 뒤에도 편집 중인 값이 남습니다. `Load VTCP` 는 캐시를 무시하고 다시 읽어 입력 칸을 덮어씁니다 — `ros2 param set` 이나 재configure 로 바뀐 값은 Load 전에는 보이지 않을 수 있습니다. 쓰는 흐름은 대상 컨트롤러를 선택 → 값 편집 → `Apply VTCP` → `Switch Controller` 이며, 새 값은 그 활성화의 첫 tick 에 hold seed 와 함께 적용됩니다.
 
 **Target 패널 (관절 vs task):** `demo_joint_controller` 는 관절 목표만, `demo_task_controller` 는 task-space (EE SE3) 목표만 입력 패널이 활성화됩니다. `demo_wbc_controller` 는 **둘 다 활성화** — 암 posture (nullspace reference) 와 commanded EE SE3 jog 를 독립적으로 받기 때문 (`demo_gui/config.py` `DUAL_TARGET_SPACE`). WBC 에서 `Send Command` 는 두 `RobotTarget` (goal_type `joint` + `task`) 을 모두 publish 하며, controller `DeliverTargetMessage` 가 goal_type 별로 라우팅합니다. EE SE3 패널 값은 TF (`virtual_tcp`/`ee_link`) 가 wiring 되어 있어야 current pose 로 seed 됩니다.
 
