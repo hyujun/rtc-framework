@@ -340,20 +340,35 @@ pkg_tree_lines() {  # $1 = a tree id
           if ((top in keep) && path !~ /\.md$/) print
         }' || true
 }
+# The package-route predicates, for every awk below that reads a path as
+# fields split on "/" (prepended to the program: "$AWK_ROUTE"'...').
+#   installed_src_dir(d, pkg)  the dirs whose files, untracked or not, are
+#     built as part of <pkg>: src/ and include/ (ament_cmake source), test/
+#     (gtest sources and test-only headers), <pkg>/<pkg>/ (ament_python
+#     modules), launch/ and scripts/ (DIRECTORY-installed: a new file reaches
+#     install/ with no metadata edit, #360 -- the build validates nothing
+#     there, it buys a matching install tree and a rerun of the tests).
+#     config/ is deliberately absent (no source; it would make this "any
+#     directory"): its YAML is data, below.
+#   config_yaml(d, f)  a YAML under config/, loaded by the tests from the
+#     install tree.
+#   test_data(d, f)    anything under test/ but Markdown: a fixture the tests
+#     read (a URDF, an MJCF, a golden table).
+AWK_ROUTE='
+  function installed_src_dir(d, pkg) {
+    return d == "src" || d == "include" || d == "test" || d == "launch" \
+           || d == "scripts" || d == pkg
+  }
+  function config_yaml(d, f) { return d == "config" && f ~ /\.(yaml|yml)$/ }
+  function test_data(d, f) { return d == "test" && f !~ /\.md$/ }'
 # The untracked files the build route takes as part of their package (stdin to
-# stdout, one path per line): new source or a new shell script in an installed
-# source dir, a new YAML under config/, anything under test/ but Markdown --
-# what CHANGED_SRC_UNTRACKED, CHANGED_SH_BUILD and CHANGED_DATA_BUILD route to
-# a build. Those three lists keep their own patterns; a class added to one of
-# them is added here (case 76l of the suite holds one file of each class to
-# both). Every other untracked file is scratch.
+# stdout, one path per line): the union of what CHANGED_SRC_UNTRACKED,
+# CHANGED_SH_BUILD and CHANGED_DATA_BUILD route (case 76l of the suite holds
+# one file of each class to both). Every other untracked file is scratch.
 untracked_routed() {
-  awk -F/ '
-    NF >= 3 && ( ($NF ~ /\.(cpp|hpp|h|cc|py|sh)$/ \
-                  && ($2 == "src" || $2 == "include" || $2 == "test" \
-                      || $2 == "launch" || $2 == "scripts" || $2 == $1)) \
-                 || ($2 == "config" && $NF ~ /\.(yaml|yml)$/) \
-                 || ($2 == "test" && $NF !~ /\.md$/) )' || true
+  awk -F/ "$AWK_ROUTE"'
+    NF >= 3 && ( ($NF ~ /\.(cpp|hpp|h|cc|py|sh)$/ && installed_src_dir($2, $1)) \
+                 || config_yaml($2, $NF) || test_data($2, $NF) )' || true
 }
 # "<pkg> <id> <scratch>" per package directory of tree $1: the hash of its
 # files by blob (pkg_tree_lines), untracked scratch left out, and whether the
@@ -657,7 +672,7 @@ CHANGED_PKG_FILES=$(echo "$CHANGED_TRACKED" | awk -F/ 'NF >= 2 && $NF !~ /\.md$/
     done || true)
 # ...and an UNTRACKED file under a package's test/, its Markdown aside: a new
 # fixture the tests read (a URDF, an MJCF, a golden table).
-CHANGED_TEST_DATA=$(echo "$CHANGED_UNTRACKED" | awk -F/ 'NF >= 3 && $2 == "test" && $NF !~ /\.md$/' \
+CHANGED_TEST_DATA=$(echo "$CHANGED_UNTRACKED" | awk -F/ "$AWK_ROUTE"'NF >= 3 && test_data($2, $NF)' \
   | while IFS= read -r f; do
       if [ -f "${f%%/*}/package.xml" ]; then printf '%s\n' "$f"; fi
     done || true)
@@ -728,24 +743,10 @@ fi
 # note, probe or log anywhere else is not, and must not trigger PROC-3.
 CHANGED_SRC_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '\.(cpp|hpp|h|cc|py)$' || true)
 CHANGED_META_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' || true)
-# Untracked source that belongs to a package, so it is built rather than
-# treated as scratch. The allowlist of installed-source dirs (SSoT):
-#   <pkg>/src/, <pkg>/include/   ament_cmake source;
-#   <pkg>/test/                  gtest sources and the test-only headers
-#                                (<pkg>/test/include/) siblings use by path;
-#   <pkg>/<pkg>/                 ament_python modules;
-#   <pkg>/launch/, <pkg>/scripts/  DIRECTORY-installed: a new file reaches
-#                                install/ with no metadata edit (#360).
-# For launch/scripts the build validates nothing (install(DIRECTORY) copies);
-# it buys a matching install tree and a rerun of the package's tests. config/
-# is deliberately absent (no source; it would make this "any directory"): its
-# YAML is routed by CHANGED_DATA_BUILD below.
-# A backreference is not portable across grep flavours, so match with awk.
-CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" | awk -F/ '
-  NF >= 3 && $NF ~ /\.(cpp|hpp|h|cc|py)$/ \
-    && ($2 == "src" || $2 == "include" || $2 == "test" \
-        || $2 == "launch" || $2 == "scripts" || $2 == $1)' \
-  || true)
+# Untracked source that belongs to a package (installed_src_dir, AWK_ROUTE),
+# so it is built rather than treated as scratch.
+CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" | awk -F/ "$AWK_ROUTE"'
+  NF >= 3 && $NF ~ /\.(cpp|hpp|h|cc|py)$/ && installed_src_dir($2, $1)' || true)
 CHANGED_SRC_BUILD=$(printf '%s\n%s\n' "$CHANGED_SRC_TRACKED" "$CHANGED_SRC_UNTRACKED" \
   | grep -v '^[[:space:]]*$' | sort -u || true)
 # A shell script in one of those directories routes its package to build/test
@@ -753,11 +754,8 @@ CHANGED_SRC_BUILD=$(printf '%s\n%s\n' "$CHANGED_SRC_TRACKED" "$CHANGED_SRC_UNTRA
 # must run them for an edit of the script under test. Kept out of
 # CHANGED_SRC_BUILD, which also feeds the pure-format check and knows no
 # formatter for a shell script.
-CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
-  NF >= 3 && $NF ~ /\.sh$/ \
-    && ($2 == "src" || $2 == "include" || $2 == "test" \
-        || $2 == "launch" || $2 == "scripts" || $2 == $1)' \
-  || true)
+CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ "$AWK_ROUTE"'
+  NF >= 3 && $NF ~ /\.sh$/ && installed_src_dir($2, $1)' || true)
 # Every other TRACKED file of a package routes it to build/test as well, its
 # Markdown aside -- the set its verdict is keyed on (pkg_content_key), so an
 # edit that voids a verdict also owes a build (a shipped YAML is graded by the
@@ -773,7 +771,7 @@ CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
 # out is rtc_base / rtc_msgs (PROC-3) and a changed header (PROC-2, below).
 CHANGED_DATA_BUILD=$( {
     echo "$CHANGED_PKG_FILES"
-    echo "$CHANGED_UNTRACKED" | awk -F/ 'NF >= 3 && $2 == "config" && $NF ~ /\.(yaml|yml)$/'
+    echo "$CHANGED_UNTRACKED" | awk -F/ "$AWK_ROUTE"'NF >= 3 && config_yaml($2, $NF)'
     echo "$CHANGED_TEST_DATA"
   } || true)
 
