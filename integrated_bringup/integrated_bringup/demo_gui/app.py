@@ -4913,6 +4913,8 @@ class DemoControllerGUI(Node):
         # runs: it is what re-attempts the fetch once the CM comes up, and what
         # fills the label on startup when no radio has been clicked yet.
         if current:
+            # Startup selects without a radio click; same reason as there.
+            self._get_param_client(current)
             self._refresh_grasp_mode(current)
             # Same reasons, same path: retries the read once the CM is up.
             self._refresh_vtcp(current)
@@ -4930,6 +4932,10 @@ class DemoControllerGUI(Node):
             return
         self._show_gains_panel(idx)
         self._update_target_inputs_state(idx)
+        # Create the client now, not on the first Load/Apply: the buttons check
+        # readiness without waiting, and a client made at the click has not
+        # discovered its services yet, so that first click would always fail.
+        self._get_param_client(idx)
         # The Grasp tab's buttons dispatch to the *selected* controller
         # (_send_grasp_command reads selected_ctrl), so the mode shown there has
         # to follow the same selection, not the active controller.
