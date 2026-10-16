@@ -90,7 +90,7 @@ const char* ApplyVirtualTcpParameter(const rclcpp::Parameter& p, bool has_hand,
     if (!mode) {
       return "virtual_tcp_mode must be one of 'disabled', 'centroid', 'weighted', 'constant'";
     }
-    if (*mode != VirtualTcpMode::kDisabled && !has_hand) {
+    if (*mode != VirtualTcpMode::kDisabled && *mode != vtcp.mode && !has_hand) {
       return "virtual_tcp_mode other than 'disabled' needs a hand model, and this controller "
              "has none";
     }
@@ -108,6 +108,14 @@ const char* ApplyVirtualTcpParameter(const rclcpp::Parameter& p, bool has_hand,
                        "virtual_tcp_orientation must be finite", vtcp.orientation);
   }
   return "not a virtual_tcp_* parameter";
+}
+
+const char* ApplyVirtualTcpSet(const rclcpp::Parameter& p, bool active, bool has_hand,
+                               VirtualTcpConfig& vtcp) noexcept {
+  if (active) {
+    return kVtcpRefusedActiveReason;
+  }
+  return ApplyVirtualTcpParameter(p, has_hand, vtcp);
 }
 
 void DeclareVirtualTcpParameters(rclcpp_lifecycle::LifecycleNode& node, bool has_hand,
@@ -140,16 +148,16 @@ void DeclareVirtualTcpParameters(rclcpp_lifecycle::LifecycleNode& node, bool has
       }
     }
   } catch (const std::exception& e) {
+    // No reset to the seed here: a key handled before the throw already agrees
+    // with the server, and overwriting it would split the two.
     RCLCPP_ERROR(logger,
-                 "virtual_tcp_* parameter declaration failed (%s); keeping the demo_shared.yaml "
-                 "values",
+                 "virtual_tcp_* parameter declaration failed part way (%s); keys not reached keep "
+                 "the demo_shared.yaml value",
                  e.what());
-    vtcp = seed;
   } catch (...) {
     RCLCPP_ERROR(logger,
-                 "virtual_tcp_* parameter declaration failed; keeping the "
-                 "demo_shared.yaml values");
-    vtcp = seed;
+                 "virtual_tcp_* parameter declaration failed part way; keys not reached "
+                 "keep the demo_shared.yaml value");
   }
 }
 

@@ -23,6 +23,8 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from rcl_interfaces.msg import ParameterType
+
 VTCP_MODE_PARAM = "virtual_tcp_mode"
 VTCP_OFFSET_PARAM = "virtual_tcp_offset"
 VTCP_ORIENTATION_PARAM = "virtual_tcp_orientation"
@@ -39,10 +41,6 @@ VTCP_MODES: tuple[str, ...] = ("disabled", "centroid", "weighted", "constant")
 VTCP_OWNERS: frozenset[str] = frozenset(
     {"demo_joint_controller", "demo_task_controller", "demo_compliance_controller"}
 )
-
-# rcl_interfaces/msg/ParameterType values the panel reads.
-_PARAMETER_STRING = 4
-_PARAMETER_DOUBLE_ARRAY = 8
 
 HINT_NOT_OWNER = "no virtual TCP parameters on this controller"
 HINT_ACTIVE_UNKNOWN = "active controller not known yet — Apply waits for it"
@@ -80,9 +78,10 @@ def parse_entries(values: Sequence) -> VtcpConfigView | None:
     if len(values) != len(VTCP_PARAMS):
         return None
     mode_v, offset_v, rpy_v = values
-    if mode_v.type != _PARAMETER_STRING or mode_v.string_value not in VTCP_MODES:
+    if mode_v.type != ParameterType.PARAMETER_STRING or mode_v.string_value not in VTCP_MODES:
         return None
-    if offset_v.type != _PARAMETER_DOUBLE_ARRAY or rpy_v.type != _PARAMETER_DOUBLE_ARRAY:
+    double_array = ParameterType.PARAMETER_DOUBLE_ARRAY
+    if offset_v.type != double_array or rpy_v.type != double_array:
         return None
     offset = _triple(offset_v.double_array_value)
     rpy = _triple(rpy_v.double_array_value)
@@ -114,12 +113,23 @@ def parse_inputs(
     return VtcpConfigView(mode=mode, offset=parsed[0], orientation=parsed[1]), ""
 
 
+def format_value(v: float) -> str:
+    """Text for one value, exact on the way back.
+
+    ``repr`` is the shortest string that parses to the same double. Apply sends
+    all three keys from the input widgets, so a rounded seed would rewrite the
+    values the operator did not touch (0.12345 → 0.1235) and move the control
+    point on a mode-only edit.
+    """
+    return repr(float(v))
+
+
 def format_readout(view: VtcpConfigView | None) -> str:
     """One line for the panel's readout of the controller's current values."""
     if view is None:
         return "current: unknown"
-    off = ", ".join(f"{v:.4f}" for v in view.offset)
-    rpy = ", ".join(f"{v:.4f}" for v in view.orientation)
+    off = ", ".join(format_value(v) for v in view.offset)
+    rpy = ", ".join(format_value(v) for v in view.orientation)
     return f"current: {view.mode} · offset [{off}] m · rpy [{rpy}] rad"
 
 
@@ -129,7 +139,15 @@ def seed_due(seeded: tuple[str, VtcpConfigView | None] | None, ctrl: str, view) 
     Only when the controller's values (or the selected controller) changed since
     the last seed, so a re-read that returns the same values — the one after a
     refused Apply — leaves an unapplied edit in place.
+
+    "Unknown" for the controller already seeded is not a change: it is the
+    window between dropping the cache and the re-read landing, and a catalog
+    poll that paints it there must not blank the inputs (the re-read would then
+    refill them and the edit would be lost). Unknown still blanks the inputs
+    when the selection moved to another controller.
     """
+    if view is None and seeded is not None and seeded[0] == ctrl:
+        return False
     return seeded != (ctrl, view)
 
 

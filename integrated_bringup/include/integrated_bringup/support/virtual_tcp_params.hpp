@@ -5,14 +5,16 @@
 // demo_controller_gui) can read them and change them without a restart.
 //
 // Split in two on purpose:
-//   - ApplyVirtualTcpParameter() is node-free and pure: it validates one
-//     rclcpp::Parameter and writes it into a VirtualTcpConfig. Each controller's
-//     set-parameters callback calls it, and test_virtual_tcp_params pins it.
+//   - ApplyVirtualTcpSet() / ApplyVirtualTcpParameter() are node-free and pure:
+//     they validate one rclcpp::Parameter and write it into a VirtualTcpConfig.
+//     Each controller's set-parameters callback makes the one ApplyVirtualTcpSet
+//     call, so the inactive gate lives here and not in three callbacks.
+//     test_virtual_tcp_params pins both.
 //   - DeclareVirtualTcpParameters() is the thin node wiring that on_configure
 //     runs through DeclareGainParameters().
 //
-// Contract the callers own (not checked here):
-//   - Inactive only. Each callback refuses every virtual_tcp_* entry with
+// Contract:
+//   - Inactive only. ApplyVirtualTcpSet refuses every virtual_tcp_* entry with
 //     kVtcpRefusedActiveReason while the controller is active. The hold seed is
 //     taken on the first RT tick after activation, so a value stored while
 //     inactive is the frame the arm is seeded in and nothing jumps. Changing the
@@ -28,9 +30,11 @@
 //     value back instead of the YAML seed. demo_shared.yaml seeds them again only
 //     when the process restarts. This is the same lifetime every other gain has.
 //
-// Mode names live in three places: the YAML parser (demo_shared_config.cpp),
-// its configure-time log line, and kVirtualTcpModeNames below. The parser maps
-// an unknown name to kDisabled; the runtime path refuses it instead.
+// kVirtualTcpModeNames below is the one C++ spelling of the modes: the YAML
+// parser and its configure-time log line (demo_shared_config.cpp) use it too.
+// The parser folds an unknown name into kDisabled; the runtime path refuses it.
+// The GUI's copy (demo_gui/vtcp.py) and the refusal text are checked against
+// the table by tests.
 #pragma once
 
 #include "integrated_bringup/support/virtual_tcp.hpp"
@@ -85,16 +89,31 @@ inline constexpr std::array<std::pair<VirtualTcpMode, std::string_view>, 4> kVir
 /// Validate one virtual_tcp_* parameter and write it into @p vtcp.
 ///
 /// Checks the type, the whitelist (mode), the length 3 and finiteness (offset,
-/// orientation), and that a mode other than disabled has a hand model to compute
-/// against: without one the controller skips the virtual TCP in every mode, so
-/// accepting it would report a frame that never takes effect.
+/// orientation), and that a change to a mode other than disabled has a hand
+/// model to compute against: without one the controller skips the virtual TCP
+/// in every mode, so switching into one would report a frame that never takes
+/// effect. Re-sending the current mode is accepted with or without a hand — a
+/// client that sends all three keys at once must be able to change only the
+/// offset on a hand-less controller whose YAML names a non-disabled mode.
 ///
 /// @param p        Parameter named kVirtualTcp*Param; any other name is refused
 /// @param has_hand Whether the controller built a hand model
-/// @param vtcp     Written only on success
+/// @param vtcp     In: the current values. Written only on success
 /// @return nullptr on success, otherwise a static reason string
 [[nodiscard]] const char* ApplyVirtualTcpParameter(const rclcpp::Parameter& p, bool has_hand,
                                                    VirtualTcpConfig& vtcp) noexcept;
+
+/// The set-parameters callback's whole virtual_tcp_* branch: the inactive gate,
+/// then ApplyVirtualTcpParameter.
+///
+/// @param p        Parameter named kVirtualTcp*Param
+/// @param active   The controller's activity flag at the time of the set
+/// @param has_hand Whether the controller built a hand model
+/// @param vtcp     In: the current values. Written only on success
+/// @return nullptr on success; kVtcpRefusedActiveReason while @p active;
+///         otherwise ApplyVirtualTcpParameter's reason
+[[nodiscard]] const char* ApplyVirtualTcpSet(const rclcpp::Parameter& p, bool active, bool has_hand,
+                                             VirtualTcpConfig& vtcp) noexcept;
 
 /// Declare the three parameters on @p node, seeded from @p vtcp (the values
 /// LoadConfig resolved from demo_shared.yaml).
@@ -106,6 +125,9 @@ inline constexpr std::array<std::pair<VirtualTcpMode, std::string_view>, 4> kVir
 /// ApplyVirtualTcpParameter. On refusal the YAML seed is kept, the parameter is
 /// set back to it so the server and the gains agree, and the reason is logged
 /// as an error. Never throws: it runs inside the noexcept DeclareGainParameters.
+/// If rclcpp throws part way, each key keeps what was resolved for it so far
+/// (the seed for any key not reached), which is what the server holds for every
+/// key except one whose reset failed — that one is logged.
 ///
 /// @param node     The controller's LifecycleNode
 /// @param has_hand Whether the controller built a hand model

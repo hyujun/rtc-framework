@@ -26,6 +26,7 @@ import types
 from pathlib import Path
 
 import pytest
+from rcl_interfaces.msg import ParameterType
 
 from integrated_bringup.demo_gui.vtcp import (
     HINT_ACTIVE,
@@ -41,6 +42,7 @@ from integrated_bringup.demo_gui.vtcp import (
     VtcpConfigView,
     apply_enabled,
     format_readout,
+    format_value,
     parse_entries,
     parse_inputs,
     seed_due,
@@ -55,8 +57,8 @@ _PKG = Path(__file__).resolve().parents[1]
 _HELPER_HEADER = _PKG / "include" / "integrated_bringup" / "support" / "virtual_tcp_params.hpp"
 _CONTROLLERS = _PKG / "src" / "controllers"
 
-_STRING = 4  # rcl_interfaces/msg/ParameterType.PARAMETER_STRING
-_DOUBLE_ARRAY = 8  # rcl_interfaces/msg/ParameterType.PARAMETER_DOUBLE_ARRAY
+_STRING = ParameterType.PARAMETER_STRING
+_DOUBLE_ARRAY = ParameterType.PARAMETER_DOUBLE_ARRAY
 
 
 def _value(type_: int, string_value: str = "", double_array_value=()):
@@ -74,13 +76,6 @@ def _answer(mode="constant", offset=(0.0, 0.0, 0.1), rpy=(0.0, 0.0, 0.0)):
 
 
 # ── the C++ side is the owner — pin the copies here to it ────────────────────
-
-
-def test_parameter_type_codes_match_rcl_interfaces():
-    from rcl_interfaces.msg import ParameterType
-
-    assert ParameterType.PARAMETER_STRING == _STRING
-    assert ParameterType.PARAMETER_DOUBLE_ARRAY == _DOUBLE_ARRAY
 
 
 def test_parameter_names_match_the_cpp_helper():
@@ -162,9 +157,18 @@ def test_parse_inputs_refuses_before_a_round_trip(mode, offset, rpy, fragment):
 
 
 def test_readout_names_every_value_and_admits_unknown():
-    text = format_readout(VtcpConfigView("constant", (0.0, 0.0, 0.1), (1.5708, 0.0, -1.5708)))
-    assert "constant" in text and "0.1000" in text and "1.5708" in text and "-1.5708" in text
+    text = format_readout(VtcpConfigView("constant", (0.0, 0.0, 0.12345), (1.5708, 0.0, -1.5708)))
+    assert "constant" in text and "0.12345" in text and "1.5708" in text and "-1.5708" in text
     assert "unknown" in format_readout(None)
+
+
+@pytest.mark.parametrize(
+    "v", [0.12345, math.pi / 2, -math.pi / 2, 1e-9, 0.1, -0.0, 123.456789012345]
+)
+def test_a_shown_value_parses_back_to_the_same_double(v):
+    """Apply sends all three keys from the inputs, so whatever the panel shows
+    for a value the operator did not touch is what the controller gets back."""
+    assert float(format_value(v)) == v
 
 
 def test_seed_due_only_when_the_values_or_the_controller_changed():
@@ -174,6 +178,17 @@ def test_seed_due_only_when_the_values_or_the_controller_changed():
     assert not seed_due((TASK, a), TASK, a), "a repeat read must keep an unapplied edit"
     assert seed_due((TASK, a), TASK, b)
     assert seed_due((TASK, a), JOINT, a)
+
+
+def test_unknown_for_the_seeded_controller_is_not_a_change():
+    """The window between dropping the cache and the re-read landing paints
+    unknown; that must not blank the inputs of the controller being edited. For
+    another controller it still must, or its values would sit under the new
+    selection."""
+    a = VtcpConfigView("constant", (0.0, 0.0, 0.1), (0.0, 0.0, 0.0))
+    assert not seed_due((TASK, a), TASK, None)
+    assert seed_due((TASK, a), JOINT, None)
+    assert seed_due(None, TASK, None)
 
 
 def test_apply_gate():
@@ -275,7 +290,16 @@ class _FakeLogger:
         return lambda msg: self.lines.append((level, msg))
 
 
-def _state(selected: str, active: str, *, successful=True, reason="", inputs=None):
+def _state(
+    selected: str,
+    active: str,
+    *,
+    successful=True,
+    reason="",
+    inputs=None,
+    raises: Exception | None = None,
+    defer: bool = False,
+):
     """Duck-typed GUI with the real panel methods bound to it. Only the
     collaborators outside the panel are faked: the parameter client, the
     logger and the Tk root."""
@@ -326,15 +350,25 @@ def _state(selected: str, active: str, *, successful=True, reason="", inputs=Non
 
     state._refresh_vtcp = _fake_refresh
 
+    state.pending = []
+    state.fire = lambda: [cb() for cb in state.pending]
+
     class _Future:
         def __init__(self, resp):
             self._resp = resp
 
         def result(self):
+            if raises is not None:
+                raise raises
             return self._resp
 
         def add_done_callback(self, cb):
-            cb(self)
+            # `defer` models the response landing on the executor thread later,
+            # the only way to put a selection change between press and outcome.
+            if defer:
+                state.pending.append(lambda: cb(self))
+            else:
+                cb(self)
 
     class _Client:
         def wait_for_services(self, timeout_sec=0.0):
@@ -455,7 +489,7 @@ def test_a_repeat_read_keeps_an_unapplied_edit_even_on_a_closed_panel():
     state = _state(TASK, TASK)
     state._apply_vtcp_state()  # active: every input disabled
     state._paint_vtcp(TASK, view)
-    assert state._vtcp_offset_entries[2].get() == "0.1000", "seeding a disabled panel failed"
+    assert state._vtcp_offset_entries[2].get() == "0.1", "seeding a disabled panel failed"
     assert state._vtcp_offset_entries[2].kwargs["state"] == "disabled", "seeding reopened it"
 
     state._vtcp_offset_entries[2].text = "0.2"  # an edit not applied
@@ -473,7 +507,7 @@ def test_load_overwrites_an_edit_with_a_fresh_read():
     state._request_load_vtcp()
     assert state.refreshes == [(TASK, {}, {"paint_unknown": False})], "Load must bypass the cache"
     state._paint_vtcp(TASK, view)  # the read lands
-    assert state._vtcp_offset_entries[2].get() == "0.1000"
+    assert state._vtcp_offset_entries[2].get() == "0.1"
 
 
 def test_a_late_read_for_a_deselected_controller_is_dropped():
@@ -481,3 +515,57 @@ def test_a_late_read_for_a_deselected_controller_is_dropped():
     state._paint_vtcp(TASK, VtcpConfigView("constant", (0.0, 0.0, 0.1), (0.0, 0.0, 0.0)))
     assert state._vtcp_readout_var.get() == ""
     assert state._vtcp_seeded is None
+
+
+def test_a_failed_call_is_reported_only_for_its_controller_and_still_rereads():
+    """The exception path used to write its line straight into the outcome label,
+    so a failure that landed after the operator moved on was shown under the
+    newly selected controller, and the stale cache of the one that failed was
+    kept."""
+    state = _state(TASK, JOINT, inputs=_GOOD, raises=RuntimeError("service died"), defer=True)
+    state._vtcp_configs[TASK] = VtcpConfigView("disabled", (0.0,) * 3, (0.0,) * 3)
+    state._send_vtcp()
+    state.selected_ctrl.set(COMPLIANCE)
+    state._apply_vtcp_state()
+    state.fire()
+
+    assert state._vtcp_result_var.get() == "", "TASK's failure painted under COMPLIANCE"
+    assert TASK not in state._vtcp_configs
+    assert state.refreshes == [(TASK, {}, {"paint_unknown": False})]
+    assert any("service died" in msg for _, msg in state._logger.lines)
+
+
+def test_a_failed_call_for_the_selected_controller_says_so():
+    state = _state(TASK, JOINT, inputs=_GOOD, raises=RuntimeError("service died"))
+    state._send_vtcp()
+    assert state._vtcp_result_var.get() == "set failed: service died"
+
+
+def test_a_poll_between_cache_drop_and_reread_keeps_the_edit():
+    """After a refused Apply the cache is gone until the re-read lands. A catalog
+    poll in that window paints unknown for the same controller; the inputs must
+    survive it, or the re-read (same values as before) refills them and the
+    operator's edit is lost."""
+    view = VtcpConfigView("constant", (0.0, 0.0, 0.1), (0.0, 0.0, 0.0))
+    state = _state(TASK, JOINT)
+    state._paint_vtcp(TASK, view)
+    state._vtcp_offset_entries[2].text = "0.2"  # the edit the refused Apply carried
+
+    state._paint_vtcp(TASK, None)  # the poll, cache empty
+    assert state._vtcp_offset_entries[2].get() == "0.2"
+    state._paint_vtcp(TASK, view)  # the re-read lands, values unchanged
+    assert state._vtcp_offset_entries[2].get() == "0.2"
+
+
+def test_a_mode_only_edit_sends_the_untouched_values_exactly():
+    view = VtcpConfigView("constant", (0.0, 0.0, 0.12345), (math.pi / 2, 0.0, -math.pi / 2))
+    state = _state(TASK, JOINT)
+    state._apply_vtcp_state()
+    state._paint_vtcp(TASK, view)
+    state._vtcp_mode_combo.text = "centroid"
+    state._send_vtcp()
+
+    (_, params) = state.sent[0]
+    by_name = {p.name: p for p in params}
+    assert list(by_name[VTCP_OFFSET_PARAM].value) == list(view.offset)
+    assert list(by_name[VTCP_ORIENTATION_PARAM].value) == list(view.orientation)

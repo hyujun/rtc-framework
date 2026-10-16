@@ -1,6 +1,7 @@
 #include "integrated_bringup/support/demo_shared_config.hpp"
 
 #include "integrated_bringup/support/bringup_logging.hpp"
+#include "integrated_bringup/support/virtual_tcp_params.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rclcpp/logging.hpp>
@@ -69,16 +70,10 @@ constexpr const char* kSharedYamlRootKey = "demo_shared";
 
 void ApplyVirtualTcp(const YAML::Node& node, VirtualTcpConfig& vtcp) {
   if (node["virtual_tcp_mode"]) {
-    const auto mode_str = node["virtual_tcp_mode"].as<std::string>();
-    if (mode_str == "centroid") {
-      vtcp.mode = VirtualTcpMode::kCentroid;
-    } else if (mode_str == "weighted") {
-      vtcp.mode = VirtualTcpMode::kWeighted;
-    } else if (mode_str == "constant") {
-      vtcp.mode = VirtualTcpMode::kConstant;
-    } else {
-      vtcp.mode = VirtualTcpMode::kDisabled;
-    }
+    // Lenient on purpose (an unknown name means disabled); the runtime
+    // parameter path refuses one instead. Same table either way.
+    vtcp.mode = ParseVirtualTcpMode(node["virtual_tcp_mode"].as<std::string>())
+                    .value_or(VirtualTcpMode::kDisabled);
   }
   if (node["virtual_tcp_offset"] && node["virtual_tcp_offset"].IsSequence()) {
     const auto seq = node["virtual_tcp_offset"];
@@ -557,21 +552,7 @@ void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_var
   // Success path: record which knobs actually took effect. This is the
   // single line to grep when the operator suspects a controller is picking
   // up stale or unexpected shared defaults.
-  const char* vtcp_mode_str = "disabled";
-  switch (cfg.vtcp.mode) {
-    case VirtualTcpMode::kCentroid:
-      vtcp_mode_str = "centroid";
-      break;
-    case VirtualTcpMode::kWeighted:
-      vtcp_mode_str = "weighted";
-      break;
-    case VirtualTcpMode::kConstant:
-      vtcp_mode_str = "constant";
-      break;
-    case VirtualTcpMode::kDisabled:
-      vtcp_mode_str = "disabled";
-      break;
-  }
+  const char* vtcp_mode_str = VirtualTcpModeName(cfg.vtcp.mode);
   RCLCPP_INFO(::integrated_bringup::logging::SharedConfigLogger(),
               "demo_shared.yaml loaded: vtcp=%s grasp_type=%s force_pi_block=%s "
               "contact_thresh=%.2fN force_thresh=%.2fN min_fingers=%d",

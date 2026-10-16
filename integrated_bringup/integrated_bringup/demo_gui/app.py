@@ -215,6 +215,7 @@ from .vtcp import (
     VtcpConfigView,
     apply_enabled,
     format_readout,
+    format_value,
     parse_entries,
     parse_inputs,
     seed_due,
@@ -1433,7 +1434,7 @@ class DemoControllerGUI(Node):
             w.config(state="normal")
         self._vtcp_mode_combo.set(view.mode if view is not None else "")
         texts = (
-            [f"{v:.4f}" for v in (*view.offset, *view.orientation)]
+            [format_value(v) for v in (*view.offset, *view.orientation)]
             if view is not None
             else [""] * 6
         )
@@ -1492,8 +1493,9 @@ class DemoControllerGUI(Node):
             try:
                 resp = fut.result()
             except Exception as exc:  # noqa: BLE001 — surfaced in the label
-                self.get_logger().error(f"virtual_tcp_* set exception: {exc}")
-                self.root.after(0, self._set_vtcp_result, f"set failed: {exc}", False)
+                # Same path as a refusal: the selection check, the re-read and
+                # the gate repaint all apply — the set may or may not have landed.
+                self.root.after(0, self._after_vtcp_set, ctrl, False, str(exc), "set failed")
                 return
             result = resp.result
             self.root.after(
@@ -1502,13 +1504,16 @@ class DemoControllerGUI(Node):
 
         future.add_done_callback(_on_set_done)
 
-    def _after_vtcp_set(self, ctrl: str, ok: bool, reason: str) -> None:
+    def _after_vtcp_set(self, ctrl: str, ok: bool, reason: str, prefix: str = "refused") -> None:
         """Report the outcome and re-read. Tk thread only.
 
-        The cache goes on both outcomes and the re-read is what paints the
+        The cache goes on every outcome and the re-read is what paints the
         readout, so it shows what the controller confirmed. A refusal also
         repaints the Apply gate: the likely cause is a switch that landed after
-        the GUI last heard the active controller's name.
+        the GUI last heard the active controller's name. ``prefix`` tells a
+        refusal (the controller's reason) from a failed call (rclpy's
+        exception), which comes through here too so that its outcome is painted
+        only for the controller it belongs to.
         """
         selected = ctrl == self.selected_ctrl.get()
         if ok:
@@ -1516,9 +1521,9 @@ class DemoControllerGUI(Node):
             if selected:
                 self._set_vtcp_result("applied — takes effect on the next activation", ok=True)
         else:
-            self.get_logger().warn(f"/{ctrl} virtual_tcp_* refused: {reason}")
+            self.get_logger().warn(f"/{ctrl} virtual_tcp_* {prefix}: {reason}")
             if selected:
-                self._set_vtcp_result(f"refused: {reason}", ok=False)
+                self._set_vtcp_result(f"{prefix}: {reason}", ok=False)
         self._vtcp_configs.pop(ctrl, None)
         self._refresh_vtcp(ctrl, paint_unknown=False)
         if selected:

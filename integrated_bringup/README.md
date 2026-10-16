@@ -580,7 +580,7 @@ Virtual TCP 는 **매 tick 유효한 것이 아니다** — hand FK 가 fingerti
 세 키는 DemoJoint · DemoTask · DemoCompliance 의 ROS 파라미터로도 선언되고, 초기값은 `demo_shared.yaml` 이다. 이름·검증·계약의 SSoT 는 [support/virtual_tcp_params.hpp](include/integrated_bringup/support/virtual_tcp_params.hpp) 헤더 주석이다.
 
 - **Inactive 일 때만 set 된다.** Active 컨트롤러는 `successful=false` 와 사유 `virtual_tcp_* can only be set while this controller is inactive; switch to another controller first` 로 거부하고 gains 를 건드리지 않는다. hold seed 는 활성화 후 첫 tick 에 잡히므로 Inactive 에서 바꾼 값은 그 frame 으로 seed 되어 arm 이 움직이지 않는다. Active 중에 constant 오프셋을 옮기면 vtcp 여부·mask 가 같아 위 표의 어느 전이로도 잡히지 않으므로 열지 않았다 (#472). DemoJoint 는 vtcp 를 TF 관측에만 쓰지만 같은 게이트를 둔다.
-- **검증**: 모드 화이트리스트 (`disabled` · `centroid` · `weighted` · `constant`, YAML 파서와 달리 모르는 이름을 disabled 로 접지 않고 거부), 배열 길이 3 과 유한값, hand 모델이 없는 컨트롤러는 `disabled` 만 받는다 (hand 가 없으면 모든 모드에서 vtcp 계산을 건너뛴다).
+- **검증**: 모드 화이트리스트 (`disabled` · `centroid` · `weighted` · `constant`, YAML 파서와 달리 모르는 이름을 disabled 로 접지 않고 거부), 배열 길이 3 과 유한값. hand 모델이 없는 컨트롤러는 `disabled` 가 아닌 모드로 **바꾸는** set 을 거부한다 (hand 가 없으면 모든 모드에서 vtcp 계산을 건너뛴다) — 현재 모드를 다시 보내는 것은 받으므로, 세 키를 함께 보내는 클라이언트도 offset 만 바꿀 수 있다.
 - 셋을 함께 바꿀 때는 `set_parameters_atomically` 로 한 번에 보낸다 — 콜백 1회가 gains Store 1회다. GUI 의 Virtual TCP 패널 (아래 "GUI 도구") 이 이렇게 보낸다.
 - CLI 의 배열은 **double 로** 쓴다. `"[0, 0, 1]"` 은 정수 배열이라 선언 타입과 맞지 않아 거부된다:
 

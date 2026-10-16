@@ -19,11 +19,13 @@
 namespace {
 
 using integrated_bringup::ApplyVirtualTcpParameter;
+using integrated_bringup::ApplyVirtualTcpSet;
 using integrated_bringup::IsVirtualTcpParameter;
 using integrated_bringup::kVirtualTcpModeNames;
 using integrated_bringup::kVirtualTcpModeParam;
 using integrated_bringup::kVirtualTcpOffsetParam;
 using integrated_bringup::kVirtualTcpOrientationParam;
+using integrated_bringup::kVtcpRefusedActiveReason;
 using integrated_bringup::ParseVirtualTcpMode;
 using integrated_bringup::VirtualTcpConfig;
 using integrated_bringup::VirtualTcpMode;
@@ -80,20 +82,66 @@ TEST(VirtualTcpParams, EveryModeIsAcceptedWithAHand) {
   }
 }
 
-TEST(VirtualTcpParams, WithoutAHandOnlyDisabledIsAccepted) {
+// Without a hand the controller skips the virtual TCP in every mode, so a set
+// that SWITCHES into a non-disabled mode would report a frame that never takes
+// effect. Re-sending the current mode is not a switch: a client that sends all
+// three keys together (the GUI does) must still be able to change only the
+// offset on a hand-less controller whose YAML names a non-disabled mode.
+TEST(VirtualTcpParams, WithoutAHandOnlyDisabledOrTheCurrentModeIsAccepted) {
   for (const auto& [mode, name] : kVirtualTcpModeNames) {
-    auto c = Sentinel();
+    auto c = Sentinel();  // current mode: kCentroid
     const char* why =
         ApplyVirtualTcpParameter(rclcpp::Parameter(kVirtualTcpModeParam, std::string(name)),
                                  /*has_hand=*/false, c);
-    if (mode == VirtualTcpMode::kDisabled) {
-      EXPECT_EQ(why, nullptr) << why;
-      EXPECT_EQ(c.mode, VirtualTcpMode::kDisabled);
+    if (mode == VirtualTcpMode::kDisabled || mode == Sentinel().mode) {
+      EXPECT_EQ(why, nullptr) << name << ": " << why;
+      EXPECT_EQ(c.mode, mode);
     } else {
       EXPECT_NE(why, nullptr) << name << " accepted without a hand model";
       ExpectUntouched(c);
     }
   }
+}
+
+TEST(VirtualTcpParams, WithoutAHandAnOffsetEditBesideTheCurrentModeIsAccepted) {
+  auto c = Sentinel();
+  for (const auto& p :
+       {rclcpp::Parameter(kVirtualTcpModeParam, "centroid"),
+        rclcpp::Parameter(kVirtualTcpOffsetParam, std::vector<double>{0.0, 0.0, 0.2})}) {
+    EXPECT_EQ(ApplyVirtualTcpParameter(p, /*has_hand=*/false, c), nullptr) << p.get_name();
+  }
+  EXPECT_EQ(c.offset, (std::array<double, 3>{0.0, 0.0, 0.2}));
+}
+
+// The refusal is the operator's only list of what to type, so it must name every
+// mode the table accepts — the text is a literal and would otherwise drift.
+TEST(VirtualTcpParams, TheUnknownModeReasonNamesEveryMode) {
+  auto c = Sentinel();
+  const std::string why =
+      ApplyVirtualTcpParameter(rclcpp::Parameter(kVirtualTcpModeParam, "fixed"), true, c);
+  for (const auto& [mode, name] : kVirtualTcpModeNames) {
+    EXPECT_NE(why.find("'" + std::string(name) + "'"), std::string::npos) << name;
+  }
+}
+
+// The callbacks' one call. The gate comes first, so an active controller answers
+// with the activity reason even for a value it would refuse anyway — the
+// operator learns the thing to fix first.
+TEST(VirtualTcpParams, TheSetPathRefusesWhileActiveBeforeLookingAtTheValue) {
+  for (const auto& p :
+       {rclcpp::Parameter(kVirtualTcpOffsetParam, std::vector<double>{0.0, 0.0, 0.05}),
+        rclcpp::Parameter(kVirtualTcpModeParam, "fixed")}) {
+    auto c = Sentinel();
+    const char* why = ApplyVirtualTcpSet(p, /*active=*/true, /*has_hand=*/true, c);
+    EXPECT_STREQ(why, kVtcpRefusedActiveReason) << p.get_name();
+    ExpectUntouched(c);
+  }
+  auto c = Sentinel();
+  EXPECT_EQ(ApplyVirtualTcpSet(
+                rclcpp::Parameter(kVirtualTcpOffsetParam, std::vector<double>{0.0, 0.0, 0.05}),
+                /*active=*/false, /*has_hand=*/true, c),
+            nullptr);
+  EXPECT_EQ(c.offset, (std::array<double, 3>{0.0, 0.0, 0.05}));
 }
 
 TEST(VirtualTcpParams, ModeRefusesAnUnknownNameAndAWrongType) {

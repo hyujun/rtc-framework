@@ -306,15 +306,9 @@ rcl_interfaces::msg::SetParametersResult DemoTaskController::OnGainParametersSet
         g.grasp_hand_mode = requested;
         gains_dirty = true;
       } else if (IsVirtualTcpParameter(name)) {
-        // #847. Refused while active: the hold seed is taken on the first tick
-        // after activation, so only a value stored while inactive moves the
-        // control point without a jump (the active case is #472's).
-        if (active_.load(std::memory_order_acquire)) {
-          result.successful = false;
-          result.reason = kVtcpRefusedActiveReason;
-          return result;
-        }
-        if (const char* why = ApplyVirtualTcpParameter(p, hand_handle_ != nullptr, g.vtcp);
+        // #847: inactive only — the gate and why are in virtual_tcp_params.hpp.
+        if (const char* why = ApplyVirtualTcpSet(p, active_.load(std::memory_order_acquire),
+                                                 hand_handle_ != nullptr, g.vtcp);
             why != nullptr) {
           result.successful = false;
           result.reason = why;
