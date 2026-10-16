@@ -1864,6 +1864,14 @@ if [ "$log" = "pass pass-unchanged blocked " ]; then
 else
   fail "the timing log reads [$log]"
 fi
+# 58b. The seventh column says WHICH gate blocked, as codes, so a run of
+#      blocks can be read without the stderr text; a pass has none.
+log=$(cut -f7 "$dir/.git/rtc-verify-timing.log" 2>/dev/null | tr '\n' ' ')
+if [ "$log" = "reason=- reason=- reason=meta " ]; then
+  pass "the timing log names the blocking gate"
+else
+  fail "the timing log's reason column reads [$log]"
+fi
 rm -rf "$dir" "$bstub" "$tstub"
 
 # 61. A package that was built WITHOUT tests is UNVERIFIED, whatever the test
@@ -3309,6 +3317,7 @@ git -C "$dir" rm -q rtc_demo/config/robot_a/overlay.yaml rtc_demo/config/robot_a
 out=$(run_hook "$dir")
 expect_contains "82a: the dangling link of a deleted YAML is reported" "$out" "robot_a/overlay.yaml deleted from src but still in install/"
 expect_contains "82b: it names the link" "$out" "install/rtc_demo/share/rtc_demo/config/robot_a/overlay.yaml"
+expect_contains "82b2: by the workspace's absolute path, not a ../../ relative one" "$out" "  $ws/install/rtc_demo/share/rtc_demo/config/robot_a/overlay.yaml"
 expect_contains "82c: a deleted non-YAML config file is reported too" "$out" "robot_a/throws.json deleted from src but still in install/"
 expect_not_contains "82d: the other robot's live link of that name is not" "$out" "config/robot_b/overlay.yaml"
 expect_not_contains "82e: a kept file is not" "$out" "kept.yaml"
