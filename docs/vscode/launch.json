@@ -1,0 +1,181 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C++: Launch integrated_rt_controller (Debug)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/../../install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller",
+      "args": [
+        "--ros-args",
+        "--params-file",
+        "${workspaceFolder}/integrated_bringup/config/ur5e_p1a/sim.yaml"
+      ],
+      "cwd": "${workspaceFolder}/../..",
+      "MIMode": "gdb",
+      "preLaunchTask": "colcon: Build All (Debug)",
+      "setupCommands": [
+        {
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        },
+        {
+          "text": "set print pretty on"
+        },
+        {
+          "text": "set print object on"
+        }
+      ]
+    },
+    {
+      "name": "C++: Launch mujoco_simulator_node (Debug)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/../../install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node",
+      "args": [
+        "--ros-args",
+        "--params-file",
+        "${workspaceFolder}/integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml"
+      ],
+      "cwd": "${workspaceFolder}/../..",
+      "MIMode": "gdb",
+      "preLaunchTask": "colcon: Build All (Debug)",
+      "setupCommands": [
+        {
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        },
+        {
+          "text": "set print pretty on"
+        },
+        {
+          "text": "set print object on"
+        }
+      ]
+    },
+    {
+      "name": "C++: Launch udp_hand_node (Debug)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/../../install/udp_hand_driver/lib/udp_hand_driver/udp_hand_node",
+      "args": [
+        "--ros-args",
+        "--params-file",
+        "${workspaceFolder}/udp_hand_driver/config/udp_hand_node.yaml"
+      ],
+      "cwd": "${workspaceFolder}/../..",
+      "MIMode": "gdb",
+      "preLaunchTask": "colcon: Build All (Debug)",
+      "setupCommands": [
+        {
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        },
+        {
+          "text": "set print pretty on"
+        },
+        {
+          "text": "set print object on"
+        }
+      ]
+    },
+    {
+      "name": "C++: Launch bt_coordinator_node (Debug)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/../../install/ur5e_bt_coordinator/lib/ur5e_bt_coordinator/bt_coordinator_node",
+      "args": [
+        "--ros-args",
+        "--params-file",
+        "${workspaceFolder}/ur5e_bt_coordinator/config/bt_coordinator_p1a.yaml"
+      ],
+      "cwd": "${workspaceFolder}/../..",
+      "MIMode": "gdb",
+      "preLaunchTask": "colcon: Build All (Debug)",
+      "setupCommands": [
+        {
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        },
+        {
+          "text": "set print pretty on"
+        },
+        {
+          "text": "set print object on"
+        }
+      ]
+    },
+    {
+      "name": "C++: Launch shape_estimation_node (Debug)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/../../install/shape_estimation/lib/shape_estimation/shape_estimation_node",
+      "args": [
+        "--ros-args",
+        "--params-file",
+        "${workspaceFolder}/shape_estimation/config/shape_estimation_node.yaml"
+      ],
+      "cwd": "${workspaceFolder}/../..",
+      "MIMode": "gdb",
+      "preLaunchTask": "colcon: Build All (Debug)",
+      "setupCommands": [
+        {
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        },
+        {
+          "text": "set print pretty on"
+        },
+        {
+          "text": "set print object on"
+        }
+      ]
+    },
+    {
+      "name": "C++: Attach to Node (Pick Process)",
+      "type": "cppdbg",
+      "request": "attach",
+      "program": "${workspaceFolder}/../../install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller",
+      "processId": "${command:pickProcess}",
+      "MIMode": "gdb",
+      "setupCommands": [
+        {
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        },
+        {
+          "text": "set print pretty on"
+        }
+      ]
+    },
+    {
+      "name": "C++: Run GTest (Selected Package)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${input:gtestBinary}",
+      "args": [],
+      "cwd": "${workspaceFolder}/../..",
+      "MIMode": "gdb",
+      "setupCommands": [
+        {
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        },
+        {
+          "text": "set print pretty on"
+        },
+        {
+          "text": "set print object on"
+        }
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "gtestBinary",
+      "type": "promptString",
+      "description": "GTest binary path",
+      "default": "${workspaceFolder}/../../build/rtc_base/test_seqlock"
+    }
+  ]
+}

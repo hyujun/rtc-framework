@@ -1,0 +1,23 @@
+{
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "clangd.arguments": ["--compile-commands-dir=${workspaceFolder}"],
+  "[cpp]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+  },
+  "python.analysis.extraPaths": ["/opt/ros/jazzy/lib/python3.12/dist-packages"],
+  "ros.distro": "jazzy",
+  "files.exclude": {
+    "**/build": true,
+    "**/install": true,
+    "**/log": true,
+    "**/logging_data": true,
+    "**/.cache": true
+  },
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/install/**": true,
+    "**/log/**": true,
+    "**/logging_data/**": true,
+    "**/.cache/**": true
+  }
+}

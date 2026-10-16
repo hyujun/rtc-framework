@@ -342,7 +342,8 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 | 문서 | 설명 |
 |------|------|
 | [docs/rt-optimization.md](docs/rt-optimization.md) | 실기 PC 의 RT 설정 — `install.sh robot --rt` 한 번에 / 단계별 수동 (RT 커널 · GRUB · CPU shield · IRQ · NVIDIA) / 확인 / 문제 해결 / hybrid CPU (NUC) |
-| [docs/vscode-debugging.md](docs/vscode-debugging.md) | VS Code + GDB 디버깅 가이드 |
+| [docs/vscode-debugging.md](docs/vscode-debugging.md) | VS Code + GDB 디버깅 가이드 — 설정 템플릿은 [docs/vscode/](docs/vscode/) (`cp -r docs/vscode .vscode`) |
+| [docs/tracing.md](docs/tracing.md) | LTTng trace 캡처와 Perfetto 로 보기 — 스레드 × 코어 타임라인, RT tick 내부 span |
 | [AGENTS.md](AGENTS.md) | **AI 에이전트 헌법 (tool-neutral)** — invariants, workflow, escalation, build hard rules. Codex · Copilot · Antigravity 등이 읽는다 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 진입점 — `@AGENTS.md` import 로 위 헌법을 그대로 싣고, hook · slash command · rule 자동 로드 등 Claude 전용 메커니즘만 덧붙인다 (규칙은 AGENTS.md 에만 있다) |
 | [agent_docs/](agent_docs/) | 헌법이 위임하는 세부 규칙의 SSoT (invariants, architecture, controllers, testing, conventions, handoff) |

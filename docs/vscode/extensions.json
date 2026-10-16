@@ -1,0 +1,14 @@
+{
+  "recommendations": [
+    "llvm-vs-code-extensions.vscode-clangd",
+    "ms-vscode.cpptools",
+    "ms-python.python",
+    "ms-python.debugpy",
+    "ms-vscode.cmake-tools",
+    "twxs.cmake",
+    "redhat.vscode-yaml",
+    "redhat.vscode-xml",
+    "ms-iot.vscode-ros",
+    "smilerobotics.urdf"
+  ]
+}

@@ -1,493 +1,145 @@
 # VS Code Debugging Guide
 
-이 문서는 `rtc-framework` 프로젝트에서 VS Code + GDB를 사용하여 C++ 노드를 디버깅하는 방법을 설명합니다.
+VS Code + GDB 로 `rtc-framework` 의 C++ 노드를 디버깅하는 방법이다. 설정 파일 템플릿은 [docs/vscode/](vscode/) 에 있다.
 
-> [!IMPORTANT]
-> **`.vscode/` 는 리포에 체크인되지 않습니다.** `.gitignore` 에 `.vscode/` 가 등록되어 있어 (에디터 설정은 개발자 로컬 영역), 이 디렉토리는 **각자 생성**해야 합니다. 본 문서의 [§VS Code 설정 파일 구조](#vs-code-설정-파일-구조) 가 네 파일(`settings.json` / `tasks.json` / `launch.json` / `extensions.json`)의 복붙용 템플릿을 제공합니다 — VS Code 워크스페이스로 **repo 루트(`src/rtc-framework`)** 를 연다는 전제이며, colcon `build/` · `install/` 은 `${workspaceFolder}/../../` (ws 루트 `~/ros2_ws/rtc_ws`) 에 있습니다 (AGENTS.md §9.1). `.clangd` 와 `merge_compile_commands.py` 는 repo 에 체크인되어 있습니다.
+## 시작 전
 
----
+`.vscode/` 는 `.gitignore` 대상이라 repo 에 체크인되지 않는다. 템플릿을 복사해서 쓴다:
 
-## 목차
+```bash
+cd ~/ros2_ws/rtc_ws/src/rtc-framework
+cp -r docs/vscode .vscode
+```
 
-1. [사전 요구사항](#1-사전-요구사항)
-2. [디버그 빌드](#2-디버그-빌드)
-3. [Launch 디버거 — 노드 직접 실행](#3-launch-디버거--노드-직접-실행)
-4. [Attach 디버거 — 실행 중인 노드에 연결](#4-attach-디버거--실행-중인-노드에-연결)
-5. [Breakpoint 사용법](#5-breakpoint-사용법)
-6. [변수 및 메모리 검사](#6-변수-및-메모리-검사)
-7. [GDB 콘솔 직접 사용](#7-gdb-콘솔-직접-사용)
-8. [자주 발생하는 문제](#8-자주-발생하는-문제)
-9. [VS Code 설정 파일 구조](#vs-code-설정-파일-구조)
+VS Code 로 **repo root (`src/rtc-framework`) 를 연다.** 그러면 `${workspaceFolder}` 가 repo root 이고 colcon `build/` · `install/` 은 `${workspaceFolder}/../../` (ws root `~/ros2_ws/rtc_ws`) 에 있다. 템플릿은 이 전제로 작성되어 있다.
 
----
+| 파일 | 내용 |
+|------|------|
+| `settings.json` | clangd 를 IntelliSense 로, cpptools 는 디버거 전용. ROS distro (`jazzy`), 탐색 제외 |
+| `tasks.json` | 빌드·테스트·launch task 12개 (아래 표) |
+| `launch.json` | 노드 5종 launch + Attach + GTest (모두 `cppdbg`, GDB) |
+| `extensions.json` | 권장 확장 |
 
-## 1. 사전 요구사항
-
-### 필수 패키지 설치
+## 준비
 
 ```bash
 sudo apt install gdb clangd libomp-dev
 ```
 
-`install.sh` 는 `--skip-debug` 를 주지 않는 한 위 셋을 자동 설치합니다 (GDB/ptrace 정책 = `install_vscode_debug_tools`, clangd/OpenMP 헤더 = `install_code_intelligence_tools` — 둘 다 같은 `--skip-debug` 게이트).
+`install.sh` 는 `--skip-debug` 를 주지 않는 한 셋 다 설치한다. `libomp-dev` 는 필수다: pinocchio/proxsuite 헤더가 `<omp.h>` 를 include 하는데, 없으면 clangd preamble 이 실패해서 `no member` · `aka int` 같은 연쇄 진단이 쏟아진다.
 
-> [!IMPORTANT]
-> `libomp-dev` 는 선택 사항이 아닙니다. pinocchio/proxsuite 헤더가 `<omp.h>` 를 include 하는데 clangd 자체 resource-dir 에는 `omp.h` 가 없어, 없으면 preamble 이 실패하고 `omp.h file not found` → `no member` → `Eigen::MatrixXd (aka int)` 연쇄 진단이 발생합니다 (issue #193).
-> `libomp-dev` 는 `clangd` 메타 패키지와 같은 LLVM major 로 해석되어 (Noble: 18) `omp.h` 를 clangd resource-dir 에 정확히 설치하므로, `.clangd` 에 추가 플래그가 필요 없습니다.
-> VS Code 는 PATH 의 system `clangd` 를 사용합니다. 비표준 clangd 바이너리를 쓴다면 그 resource-dir 에 `omp.h` 가 있는지 직접 확인하세요.
->
-> ```bash
-> # 실행 중인 clangd major 기준 resource-dir 확인
-> ls /usr/lib/llvm-"$(clangd --version | grep -oP 'version \K[0-9]+')"/lib/clang/*/include/omp.h
-> ```
->
-> GCC 의 compiler-internal include 디렉토리 (`/usr/lib/gcc/x86_64-linux-gnu/13/include`) 를 `.clangd` 에 추가해 `omp.h` 를 해결하려 하지 마세요 — GCC 의 `xmmintrin.h`/`mmintrin.h` 가 clang 것보다 앞에 놓여 `conflicting types for '_mm_prefetch'` 가 발생합니다. 같은 이유로 `BuiltinHeaders: QueryDriver` 도 채택하지 않습니다.
-
-### VS Code 확장 설치
-
-아래 [§VS Code 설정 파일 구조](#vs-code-설정-파일-구조)의 `extensions.json` 템플릿을 만들면 VS Code에서 `Ctrl+Shift+P` → `Show Recommended Extensions` → 일괄 설치할 수 있습니다.
+확장은 `Ctrl+Shift+P` → `Show Recommended Extensions` 로 일괄 설치한다. 핵심 둘은 역할이 다르다.
 
 | 확장 | 역할 |
 |------|------|
-| `llvm-vs-code-extensions.vscode-clangd` | **기본 IntelliSense**(cpptools 대신 사용) |
-| `ms-vscode.cpptools` | **GDB 디버거** (IntelliSense는 비활성) |
-| `ms-python.python` / `ms-python.debugpy` | Python 디버거 (launch 파일용) |
-| `ms-vscode.cmake-tools` / `twxs.cmake` | CMake 지원 |
-| `redhat.vscode-yaml` / `redhat.vscode-xml` | YAML/URDF/MJCF |
-| `ms-iot.vscode-ros` | ROS 2 통합 |
-| `smilerobotics.urdf` | URDF 뷰어 |
+| `llvm-vs-code-extensions.vscode-clangd` | IntelliSense · 저장 시 포맷 |
+| `ms-vscode.cpptools` | GDB 디버거 (IntelliSense 는 비활성) |
 
-> [!NOTE]
-> 본 프로젝트는 clangd를 기본 IntelliSense로 사용합니다(`C_Cpp.intelliSenseEngine: "disabled"`).
-> cpptools는 **디버거 목적**으로만 활성화됩니다.
+## Debug 빌드
 
-### GDB 실행 권한 확인
+디버거가 소스와 바이너리를 매핑하려면 **Debug 모드**로 빌드해야 한다. Release 는 최적화 때문에 변수가 `optimized out` 이 되거나 실행 순서가 바뀐다.
 
-일부 시스템에서는 ptrace 보안 정책으로 인해 attach가 거부됩니다. 아래 명령으로 확인·해제합니다:
+`Ctrl+Shift+B` → **`colcon: Build All (Debug)`** (내부적으로 `./build.sh -d`). 터미널에서는 repo root 에서 같은 명령을 쓴다:
 
 ```bash
-# 현재 설정 확인 (0=허용, 1=제한, 2=관리자만, 3=금지)
-cat /proc/sys/kernel/yama/ptrace_scope
-
-# 세션 내 임시 허용 (재부팅 후 원상복구)
-echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
+./build.sh -d
 ```
 
-> [!WARNING]
-> `ptrace_scope=0`은 보안 수준을 낮춥니다. 개발 환경에서만 사용하고, 운영 환경에서는 복구하세요.
+`build.sh` 는 빌드가 끝나면 `merge_compile_commands.py` 를 자동 실행해 clangd 용 `compile_commands.json` 을 repo root 에 둔다. 테스트는 기본 빌드에 포함되지 않는다 — 단일 패키지는 `colcon: Build Selected Package` (`--tests` 포함) 로 먼저 빌드한다.
 
----
-
-## 2. 디버그 빌드
-
-디버거가 소스 코드와 실행 파일을 매핑하려면 반드시 **Debug 모드**로 빌드해야 합니다.
-
-### 방법 A — VS Code Task 사용 (권장)
-
-`Ctrl+Shift+B` → **`colcon: Build All (Debug)`** 선택
-
-또는 `Ctrl+Shift+P` → `Run Task` → `colcon: Build All (Debug)`
-
-### 방법 B — 터미널 직접 실행
-
-```bash
-cd "${RTC_WS:-$HOME/ros2_ws/rtc_ws}"
-source /opt/ros/${ROS_DISTRO}/setup.bash   # Humble 또는 Jazzy
-colcon build --symlink-install \
-  --cmake-args -DCMAKE_BUILD_TYPE=Debug \
-               -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-# clangd가 읽을 수 있도록 compile_commands.json을 워크스페이스에 병합
-python3 src/rtc-framework/merge_compile_commands.py
-```
-
-> [!IMPORTANT]
-> Release 빌드된 바이너리는 최적화(`-O2`/`-O3`)로 인해 **변수가 사라지거나 순서가 바뀌어** 디버깅이 부정확합니다. 반드시 Debug 빌드(`-g -O0`)로 사용하세요.
-
-> [!TIP]
-> `.vscode/tasks.json`의 **모든 빌드 태스크는 빌드 후 자동으로** `merge_compile_commands.py`를 실행합니다.
-> 수동 빌드 시에만 위 파이썬 커맨드를 직접 실행하면 됩니다.
-
----
-
-## 3. Launch 디버거 — 노드 직접 실행
-
-VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 아래 구성을 [§VS Code 설정 파일 구조](#vs-code-설정-파일-구조)의 `launch.json` 템플릿에 정의합니다:
-
-| 구성 | 대상 바이너리 | 기본 `--params-file` |
-|------|---------------|----------------------|
-| `C++: Launch integrated_rt_controller (Debug)` | `install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller` | `integrated_bringup/config/ur5e_p1a/sim.yaml` |
-| `C++: Launch mujoco_simulator_node (Debug)` | `install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node` | `integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml` |
-| `C++: Launch udp_hand_node (Debug)` | `install/udp_hand_driver/lib/udp_hand_driver/udp_hand_node` | `udp_hand_driver/config/udp_hand_node.yaml` |
-| `C++: Launch bt_coordinator_node (Debug)` | `install/ur5e_bt_coordinator/lib/ur5e_bt_coordinator/bt_coordinator_node` | — |
-| `C++: Launch shape_estimation_node (Debug)` | `install/shape_estimation/lib/shape_estimation/shape_estimation_node` | — |
-| `C++: Attach to Node (Pick Process)` | (실행 중인 프로세스 선택) | — |
-| `C++: Run GTest (Selected Package)` | 프롬프트로 GTest 바이너리 경로 입력 | — |
-| `Python: Launch File (sim_ur5e_p1a.launch.py)` | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` | — |
-| `Python: Current File` | 현재 편집 중인 `.py` | — |
-
-> [!NOTE]
-> 위 표의 `--params-file` · launch 파일은 **기본 로봇 `ur5e_p1a`** 기준입니다. 다른 로봇은 `sim_<robot>.launch.py` / `robot_<robot>.launch.py` (예: `sim_iiwa7_leap.launch.py`, `sim_ur5e_p1b.launch.py`) 를 쓰고 각자의 `config/<robot>/` 파라미터를 전달합니다 — 사용 가능한 조합은 [`integrated_bringup/launch/`](../integrated_bringup/launch/) 를 확인하세요.
-
-### 3-1. `integrated_rt_controller` 노드 디버깅
-
-1. **`F5`** 키 또는 사이드바 `Run and Debug` (▷ 아이콘) 클릭
-2. 드롭다운에서 **`C++: Launch integrated_rt_controller (Debug)`** 선택
-3. **`F5`** 눌러 시작
-
-```
-실행 흐름:
-  preLaunchTask 실행 (colcon: Build All (Debug))
-    → 빌드 완료
-      → GDB가 integrated_rt_controller 프로세스 시작
-        → Breakpoint에서 일시 정지
-```
-
-> [!NOTE]
-> 이 설정은 `ros2 launch`를 우회하고 바이너리를 **직접** 실행합니다.
-> 기본값으로 `integrated_bringup/config/ur5e_p1a/sim.yaml`이 `--params-file`로 전달됩니다.
-> 실로봇 설정(`ur5e_p1a/robot.yaml`)으로 디버깅하려면 `launch.json`의 `args` 항목을 편집하세요.
-
-### 3-2. `mujoco_simulator_node` 디버깅
-
-동일한 방법으로 **`C++: Launch mujoco_simulator_node (Debug)`** 선택 후 `F5`.
-
-### 3-3. GTest 단일 실행
-
-`C++: Run GTest (Selected Package)`를 선택하면 GTest 바이너리 경로를 입력받아 그 테스트만 GDB로 실행합니다. 경로 예시:
-
-```
-${workspaceFolder}/../../build/rtc_base/test_seqlock
-${workspaceFolder}/../../build/rtc_controllers/test_grasp_controller
-${workspaceFolder}/../../build/rtc_tsid/test_tsid_formulations
-```
-
-전체 테스트 실행은 `Ctrl+Shift+P` → `Run Task` → **`colcon: Test All`** 또는 **`colcon: Test Selected Package`**.
-
----
-
-## 4. Attach 디버거 — 실행 중인 노드에 연결
-
-이미 `ros2 launch`로 실행 중인 노드에 디버거를 붙이는 방법입니다.
-**실시간 로봇 시스템**에서 프로세스를 재시작하지 않고 디버깅할 때 특히 유용합니다.
-
-### 4-1. 노드 실행
-
-먼저 터미널에서 노드를 정상적으로 실행합니다:
-
-```bash
-cd "${RTC_WS:-$HOME/ros2_ws/rtc_ws}"
-source /opt/ros/${ROS_DISTRO}/setup.bash && source install/setup.bash  # Humble 또는 Jazzy
-ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
-```
-
-### 4-2. VS Code에서 Attach
-
-1. 사이드바 `Run and Debug` → **`C++: Attach to Node (Pick Process)`** 선택
-2. **`F5`** 또는 ▷ 버튼 클릭
-3. 프로세스 선택 팝업에서 **`integrated_rt_controller`** 검색 후 선택
-
-```
-Tip: 팝업에서 프로세스 이름을 타이핑하면 필터링됩니다.
-예) "ur5e" 입력 → integrated_rt_controller 프로세스만 표시
-```
-
-### 4-3. 프로세스 ID로 직접 Attach (CLI)
-
-프로세스 ID를 알고 있다면 터미널에서도 가능합니다:
-
-```bash
-# PID 확인
-ros2 node list
-ps aux | grep integrated_rt_controller
-
-# GDB attach (참고용)
-sudo gdb -p <PID>
-```
-
-> [!NOTE]
-> Attach 모드는 프로세스가 이미 실행 중이므로, `preLaunchTask` (빌드)가 실행되지 않습니다.
-> Attach 전에 노드가 **Debug 빌드**로 실행 중인지 확인하세요.
-
----
-
-## 5. Breakpoint 사용법
-
-Breakpoint 토글·Step/Continue 등 기본 조작(`F9` / `F5` / `F10` / `F11` / `Shift+F11`)과 우클릭 → `Edit Breakpoint` 로 여는 **조건부 Breakpoint**(`loop_count == 100`, `joint_pos[0] > 1.5` 같은 표현식)·**Hit Count**(N회 실행 후 정지)는 VS Code 표준 기능이므로 [공식 문서](https://code.visualstudio.com/docs/editor/debugging)를 참고하세요. 여기서는 **RT 제어에 특화된 주의점**만 다룹니다.
-
-> [!WARNING]
-> **실시간 루프(`control_rate`, 기본 500 Hz~최대 5 kHz)에서 Breakpoint 로 멈추는 것은 위험합니다.** 정지 동안 ROS 타이머가 쌓이거나 WatchDog / E-STOP 이 트리거되고, 재개 후 타이밍이 완전히 깨집니다. 특정 순간만 포착해야 할 때도 Hit Count/조건부 Breakpoint 로 멈추기보다 아래 **Logpoint** 를 우선하세요.
-
-### Logpoint — 멈추지 않고 값 관찰 (RT 루프 권장)
-
-Breakpoint 처럼 멈추지 않고 메시지만 출력하므로 루프 타이밍을 유지합니다.
-
-1. 줄 번호 여백 우클릭 → `Add Logpoint`
-2. 메시지 입력: `"joint_pos[0] = {joint_pos[0]}, time = {t}"` (`{}` 안에 변수)
-
-> [!TIP]
-> Logpoint 로도 부족하면 코드에 `RCLCPP_DEBUG` 추가 후 `rqt_console` 관찰, 또는 `data_logger` 로 파일 기록 후 오프라인 분석을 사용하세요 (§8 참고).
-
----
-
-## 6. 변수 및 메모리 검사
-
-Breakpoint 에서 멈췄을 때 `Run and Debug` 사이드바의 **Variables**(Locals/Globals/Registers)·**Watch**(표현식 등록)·**Call Stack** 패널과 변수 Hover 는 VS Code 표준 기능입니다. Watch 에는 `joint_pos[2]`, `*controller_ptr`, `state.q[0]` 같은 인덱싱·역참조·멤버 접근은 물론 `state.q[0] * (180.0 / 3.14159)`(rad→degree) 같은 수식도 넣을 수 있습니다.
-
----
-
-## 7. GDB 콘솔 직접 사용
-
-VS Code 하단 `DEBUG CONSOLE` 은 GDB MI 위에서 동작하므로, 순수 GDB 명령은 앞에 **`-exec`** 를 붙입니다 (`-exec print joint_pos[0]`, `-exec ptype state`, `-exec bt`, `-exec info threads` / `thread 2` 등 표준 GDB 명령 전체 사용 가능).
-
-### Eigen / STL pretty-printing
-
-모든 C++ launch 구성의 `setupCommands` 에 `-enable-pretty-printing` + `set print pretty on` 이 포함되어 있어(§launch.json) `std::vector` / `std::array` 및 Eigen 타입이 가독성 있게 표시됩니다. pretty-printer 가 안 붙는 raw 버퍼는 `-exec print q.data()@7`(포인터 + 개수)로 펼쳐 볼 수 있습니다.
-
----
-
-## 8. 자주 발생하는 문제
-
-### ❌ `Unable to open 'xxx.cpp': File not found`
-
-소스 파일 경로를 찾지 못하는 경우입니다.
-
-**원인**: 빌드 디렉토리와 소스 디렉토리 경로가 다르거나, Debug 빌드가 아닌 경우
-
-**해결**:
-```bash
-# Debug 빌드 재실행
-colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Debug
-
-# GDB에 소스 경로 수동 등록 (DEBUG CONSOLE)
--exec set substitute-path /old/path /new/path
-```
-
----
-
-### ❌ `Operation not permitted` (Attach 실패)
-
-ptrace 권한 문제입니다.
-
-```bash
-echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
-```
-
----
-
-### ❌ 변수 값이 `optimized out`으로 표시
-
-Release 빌드 또는 최적화 레벨 문제입니다.
-
-**해결**: Debug 빌드로 재빌드 (`-DCMAKE_BUILD_TYPE=Debug`)
-
----
-
-### ❌ Breakpoint에 빨간 원에 경고(⚠️) 표시
-
-바이너리와 소스 파일이 불일치합니다. 소스 수정 후 빌드를 안 했을 때 발생합니다.
-
-**해결**: `Ctrl+Shift+B` → `colcon: Build All (Debug)` 재실행
-
----
-
-### ❌ `integrated_rt_controller` 노드가 팝업 목록에 없음 (Attach 시)
-
-노드가 실행 중이지 않거나 이름이 다릅니다.
-
-```bash
-# 실행 중인 프로세스 확인
-ps aux | grep -E "integrated_rt_controller|mujoco_simulator"
-
-# ROS 2 노드 목록
-ros2 node list
-```
-
----
-
-### ❌ Breakpoint에서 멈추면 RT 정기 tick 타이밍 깨짐
-
-**실시간 루프** 디버깅 특이사항입니다. Breakpoint에서 멈추는 동안 ROS 타이머가 쌓이거나 WatchDog가 트리거될 수 있습니다.
-
-**대안**:
-1. **Logpoint** 사용 (멈추지 않고 로그 출력)
-2. 코드에 `RCLCPP_DEBUG` 로그 추가 후 `ros2 run rqt_console rqt_console`로 관찰
-3. `data_logger`를 활용해 파일로 기록 후 오프라인 분석
-
----
-
-### ❌ clangd가 존재하는 member에 `no member named ...` / Eigen 타입이 `aka int`
-
-거의 항상 **실제 API 문제가 아니라 preamble 실패에서 파생된 recovery 진단**입니다. 로그의 **첫 번째** `file not found` / preamble 오류부터 해결하세요 — 그 하나가 뒤따르는 수십 개를 만듭니다.
-
-**리팩터 후 refresh 순서** (CMake target/include 변경, 새 파일, header 추가·이동 시):
-
-```text
-ws 루트에서 build  →  repo 루트 compile_commands.json merge  →  clangd restart  →  대표 파일 clangd --check
-```
-
-`build.sh` 는 빌드 성공 후 `merge_compile_commands.py` 를 자동 실행하므로 이것이 기본 경로입니다. VS Code 에서는 그 다음 `Ctrl+Shift+P` → **`clangd: Restart language server`** 를 실행해야 실행 중인 clangd 가 새 command/preamble 을 집습니다.
-
-증상이 남으면 다음 순서로 좁힙니다.
-
-1. 첫 `file not found` / preamble 오류 해결 (대부분 `omp.h` — §1 필수 패키지)
-2. clangd restart
-3. semantic diagnostic 은 사라졌는데 **references/completion 만** stale 할 때만 `.cache/clangd/index` 재생성
-
-> [!WARNING]
-> `.cache/clangd/index` 삭제를 `no member` 진단의 기본 해결책으로 쓰지 마세요. 열린 translation unit 의 semantic diagnostic 은 background symbol index 가 아니라 현재 AST/preamble 이 결정합니다.
-
-**CLI 로 직접 확인** (VS Code 없이 재현·검증):
-
-```bash
-clangd --check=rtc_controller_manager/src/rt_controller_node.cpp
-clangd --check=rtc_urdf_bridge/src/closure_state_publisher.cpp
-clangd --check=integrated_bringup/src/controllers/wbc/compute.cpp
-```
-
-> [!NOTE]
-> 판정 기준은 **전체 error count 0 이 아닙니다.** `clangd --check` 는 기능 self-test 결과 (`tweak: ExtractFunction ==> FAIL` 등) 도 error 로 세므로 정상 코드에서도 0 이 되지 않습니다. `pp_file_not_found` · `conflicting_types` (`_mm_prefetch`) · `no_member` · `aka int` · `fatal_too_many_errors` 가 **없으면** 정상입니다.
-
----
-
-## VS Code 설정 파일 구조
-
-`.vscode/` 는 `.gitignore` 로 추적되지 않는 **개발자 로컬 디렉토리**입니다 (에디터 설정을 팀에 강제하지 않기 위함). 아래 네 파일을 **직접 생성**하세요 — 각 subsection 에 복붙용 템플릿이 있습니다.
-
-> [!NOTE]
-> 템플릿의 전제: VS Code 워크스페이스로 **repo 루트** (`src/rtc-framework`) 를 엽니다. 따라서 `${workspaceFolder}` = repo 루트이고, colcon `build/` · `install/` 은 `${workspaceFolder}/../../` (ws 루트 `~/ros2_ws/rtc_ws`) 에 위치합니다.
-
-```
-.vscode/
-├── settings.json       # clangd, 에디터, Python, ROS 설정
-├── tasks.json          # colcon 빌드/테스트, compile_commands 병합, ros2 launch
-├── launch.json         # GDB launch/attach 구성 (노드 5종 + GTest + Python)
-└── extensions.json     # 권장 확장 목록
-```
-
-### `settings.json` 핵심 항목
-
-| 키 | 값 | 의도 |
-|----|-----|------|
-| `C_Cpp.intelliSenseEngine` | `"disabled"` | cpptools IntelliSense 비활성 (clangd와 충돌 방지) |
-| `clangd.arguments[--compile-commands-dir]` | `${workspaceFolder}` | `merge_compile_commands.py` 는 merged `compile_commands.json` 을 **repo 루트** (`.clangd` 옆) 에 출력 — `build/` 아님 |
-| `editor.defaultFormatter` (C++) | `llvm-vs-code-extensions.vscode-clangd` | 저장 시 clang-format 적용 |
-| `python.analysis.extraPaths` | `/opt/ros/jazzy/lib/python3.12/dist-packages` 외 | Pylance에서 `rclpy`/`rtc_tools` 인식 |
-| `ros.distro` | `"jazzy"` | ROS 확장 기본 디스트로 |
-| `files.exclude` / `files.watcherExclude` | `build`, `install`, `log`, `logging_data`, `.cache` | 탐색·워처 성능 |
-
-```jsonc
-// .vscode/settings.json
-{
-  "C_Cpp.intelliSenseEngine": "disabled",            // clangd 가 IntelliSense, cpptools 는 디버거 전용
-  "clangd.arguments": ["--compile-commands-dir=${workspaceFolder}"],
-  "[cpp]": { "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd" },
-  "python.analysis.extraPaths": ["/opt/ros/jazzy/lib/python3.12/dist-packages"],
-  "ros.distro": "jazzy",
-  "files.exclude":        { "**/build": true, "**/install": true, "**/log": true, "**/logging_data": true, "**/.cache": true },
-  "files.watcherExclude": { "**/build/**": true, "**/install/**": true, "**/log/**": true, "**/logging_data/**": true, "**/.cache/**": true }
-}
-```
-
-> [!NOTE]
-> `c_cpp_properties.json`은 **의도적으로 생성하지 않습니다**.
-> clangd가 `.clangd` (`CompilationDatabase: .`) + repo 루트 `compile_commands.json`을 직접 사용하므로 cpptools IntelliSense 설정은 불필요합니다.
-
-### `tasks.json` 태스크 목록
+### Task 목록
 
 | Label | 역할 |
 |-------|------|
-| `colcon: Build All (Debug)` | 전체 Debug 빌드 + `merge_compile_commands.py` 자동 실행 (**기본 빌드**, `Ctrl+Shift+B`) |
+| `colcon: Build All (Debug)` | 전체 Debug 빌드 (기본 빌드, launch 의 `preLaunchTask`) |
 | `colcon: Build All (Release)` | 전체 Release 빌드 |
-| `colcon: Build Selected Package` | `build.sh -p <pkg>`로 단일 패키지 빌드 (드롭다운 선택) |
-| `colcon: Build Sim` / `Build Robot` | `build.sh sim` / `robot` |
-| `colcon: Test All` / `Test Selected Package` | 전체 또는 단일 패키지 테스트 (`console_direct+`). 테스트는 기본 빌드에 없다 — 먼저 `./build.sh -d --tests -p <pkg>` 로 빌드하지 않으면 실패가 아니라 테스트 0개가 보고된다 |
+| `colcon: Build Selected Package` | `./build.sh -d --tests -p <pkg>` |
+| `colcon: Build Sim` / `Build Robot` | `./build.sh sim -d` / `./build.sh robot -d` |
+| `colcon: Test All` / `Test Selected Package` | `colcon test` (ws root 에서 실행) |
 | `rtc: Merge compile_commands.json` | 병합만 수동 실행 |
-| `rtc: Clean Build Artifacts` | `rm -rf build install log` |
-| `rtc: Check RT Setup` | `repo_scripts/scripts/check_rt_setup.sh --summary` |
-| `ros2 launch: sim` / `robot` | MuJoCo 시뮬 / 실로봇 런치 (`robot_ip` 프롬프트) |
+| `rtc: Clean Build Artifacts` | `rm -rf build install log` (ws root) |
+| `rtc: Check RT Setup` | `check_rt_setup.sh --summary` |
+| `ros2 launch: sim` / `robot` | `sim_ur5e_p1a` / `robot_ur5e_p1a` launch (`robot_ip` 를 묻는다) |
 
-```jsonc
-// .vscode/tasks.json (대표 태스크 — 위 표의 나머지는 동일 패턴으로 추가)
-{
-  "version": "2.0.0",
-  "tasks": [
-    { "label": "colcon: Build All (Debug)", "type": "shell",
-      "command": "./build.sh -d",                  // full debug build; merge_compile_commands.py 자동 실행
-      "options": { "cwd": "${workspaceFolder}" },
-      "group": { "kind": "build", "isDefault": true }, "problemMatcher": ["$gcc"] },
-    { "label": "colcon: Build All (Release)", "type": "shell", "command": "./build.sh -r",
-      "options": { "cwd": "${workspaceFolder}" }, "problemMatcher": ["$gcc"] },
-    { "label": "colcon: Build Selected Package", "type": "shell", "command": "./build.sh -d -p ${input:pkg}",
-      "options": { "cwd": "${workspaceFolder}" }, "problemMatcher": ["$gcc"] },
-    { "label": "rtc: Merge compile_commands.json", "type": "shell", "command": "python3 merge_compile_commands.py",
-      "options": { "cwd": "${workspaceFolder}" } },
-    { "label": "rtc: Check RT Setup", "type": "shell",
-      "command": "./repo_scripts/scripts/check_rt_setup.sh --summary",
-      "options": { "cwd": "${workspaceFolder}" } },
-    { "label": "colcon: Test Selected Package", "type": "shell",
-      "command": "colcon test --packages-select ${input:pkg} --event-handlers console_direct+",
-      "options": { "cwd": "${workspaceFolder}/../.." } }   // colcon 은 반드시 ws 루트에서 (AGENTS.md §9.1)
-  ],
-  "inputs": [ { "id": "pkg", "type": "promptString", "description": "Package name (e.g. rtc_base)" } ]
-}
-```
+## Launch 구성
 
-### `launch.json` 디버그 구성
+`F5` (또는 `Run and Debug`) 로 구성을 고르면 VS Code 가 `preLaunchTask` 로 Debug 빌드를 한 뒤 GDB 로 바이너리를 **직접** 실행한다 (`ros2 launch` 를 거치지 않는다).
 
-[3. Launch 디버거](#3-launch-디버거--노드-직접-실행) 표 참고. 모든 C++ 구성은 `preLaunchTask: "colcon: Build All (Debug)"`로 빌드 후 실행되며, `setupCommands`에 `-enable-pretty-printing` / `set print pretty on` / `set print object on`이 포함되어 STL 및 Eigen 타입이 가독성 있게 표시됩니다.
+| 구성 | 바이너리 (`install/<pkg>/lib/<pkg>/`) | `--params-file` (repo root 기준) |
+|------|------|------|
+| `C++: Launch integrated_rt_controller (Debug)` | `integrated_rt_controller` | `integrated_bringup/config/ur5e_p1a/sim.yaml` |
+| `C++: Launch mujoco_simulator_node (Debug)` | `mujoco_simulator_node` (`rtc_mujoco_sim`) | `integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml` |
+| `C++: Launch udp_hand_node (Debug)` | `udp_hand_node` (`udp_hand_driver`) | `udp_hand_driver/config/udp_hand_node.yaml` |
+| `C++: Launch bt_coordinator_node (Debug)` | `bt_coordinator_node` (`ur5e_bt_coordinator`) | `ur5e_bt_coordinator/config/bt_coordinator_p1a.yaml` |
+| `C++: Launch shape_estimation_node (Debug)` | `shape_estimation_node` (`shape_estimation`) | `shape_estimation/config/shape_estimation_node.yaml` |
+| `C++: Attach to Node (Pick Process)` | 실행 중인 프로세스 선택 | — |
+| `C++: Run GTest (Selected Package)` | GTest 바이너리 경로를 입력받아 실행 | — |
 
-```jsonc
-// .vscode/launch.json (main 노드 + attach — 나머지 노드는 §3 표의 program/params 값을 같은 패턴에 대입)
-{
-  "version": "0.2.0",
-  "configurations": [
-    { "name": "C++: Launch integrated_rt_controller (Debug)", "type": "cppdbg", "request": "launch",
-      "program": "${workspaceFolder}/../../install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller",
-      "args": ["--ros-args", "--params-file", "${workspaceFolder}/integrated_bringup/config/ur5e_p1a/sim.yaml"],
-      "cwd": "${workspaceFolder}/../..", "MIMode": "gdb", "preLaunchTask": "colcon: Build All (Debug)",
-      "setupCommands": [
-        { "text": "-enable-pretty-printing", "ignoreFailures": true },
-        { "text": "set print pretty on" },
-        { "text": "set print object on" } ] },
-    { "name": "C++: Attach to Node (Pick Process)", "type": "cppdbg", "request": "attach",
-      "program": "${workspaceFolder}/../../install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller",
-      "processId": "${command:pickProcess}", "MIMode": "gdb",
-      "setupCommands": [ { "text": "-enable-pretty-printing", "ignoreFailures": true } ] }
-  ]
-}
+params 는 기본 로봇 `ur5e_p1a` 기준이다. 실로봇 설정이나 다른 로봇으로 디버깅하려면 `launch.json` 의 `args` 를 `config/<robot>/` 의 파일로 바꾼다. 가능한 조합은 [integrated_bringup/launch/](../integrated_bringup/launch/) 를 본다.
+
+GTest 경로 예시 (`colcon: Build Selected Package` 로 먼저 빌드):
+
+```text
+${workspaceFolder}/../../build/rtc_base/test_seqlock
 ```
 
 > [!IMPORTANT]
-> GDB 가 RT 노드의 공유 라이브러리를 찾으려면 **`source install/setup.bash` 된 터미널에서 VS Code 를 실행**하거나, launch 구성에 `environment` 로 `LD_LIBRARY_PATH` 를 주입해야 합니다 (ROS 환경 미설정 시 `error while loading shared libraries`).
+> GDB 가 공유 라이브러리를 찾으려면 **`setup_env.sh` 를 source 한 터미널에서 VS Code 를 실행**해야 한다 (`code .`). 안 그러면 `error while loading shared libraries` 가 난다.
 
-### `extensions.json`
+## Attach — 실행 중인 노드에 연결
 
-권장 확장: clangd, cpptools(디버거용), Python+debugpy+Pylance, CMake, YAML/XML/URDF, ROS. 아래 템플릿을 만들면 `Ctrl+Shift+P` → `Show Recommended Extensions`에서 일괄 설치 가능.
+프로세스를 재시작하지 않고 붙이고 싶을 때 쓴다. 먼저 터미널에서 평소처럼 띄운다. 노드는 **Debug 빌드**여야 한다 (Attach 는 `preLaunchTask` 를 실행하지 않는다).
 
-```jsonc
-// .vscode/extensions.json
-{
-  "recommendations": [
-    "llvm-vs-code-extensions.vscode-clangd",
-    "ms-vscode.cpptools",
-    "ms-python.python", "ms-python.debugpy",
-    "ms-vscode.cmake-tools", "twxs.cmake",
-    "redhat.vscode-yaml", "redhat.vscode-xml",
-    "ms-iot.vscode-ros", "smilerobotics.urdf"
-  ]
-}
+```bash
+ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
 ```
 
----
+`Run and Debug` → **`C++: Attach to Node (Pick Process)`** → `F5` → 팝업에서 `integrated_rt_controller` 를 입력해 고른다.
 
-## 관련 파일
+### 변수 표시
 
-| 파일 | 역할 | 추적 |
-|------|------|:--:|
-| `.vscode/settings.json` | clangd, 에디터, Python, exclusion 설정 | 로컬 (gitignored) |
-| `.vscode/tasks.json` | 빌드/테스트/런치 태스크 | 로컬 (gitignored) |
-| `.vscode/launch.json` | GDB launch/attach 구성 | 로컬 (gitignored) |
-| `.vscode/extensions.json` | 권장 확장 목록 | 로컬 (gitignored) |
-| [.clangd](../.clangd) | clangd 컴파일 플래그 + `CompilationDatabase: .` (repo 루트 DB) | ✅ |
-| [merge_compile_commands.py](../merge_compile_commands.py) | 패키지별 `compile_commands.json`을 repo 루트로 병합 | ✅ |
+모든 C++ launch 구성은 `setupCommands` 에 `-enable-pretty-printing` · `set print pretty on` · `set print object on` 을 넣어 두어서 `std::vector` · `std::array` · Eigen 타입이 읽기 좋게 표시된다. pretty-printer 가 안 붙는 raw 버퍼는 DEBUG CONSOLE 에서 `-exec print q.data()@7` (포인터@개수) 로 펼쳐 본다.
+
+`c_cpp_properties.json` 은 일부러 만들지 않았다. clangd 가 `.clangd` 와 repo root 의 `compile_commands.json` 을 직접 읽기 때문이다.
+
+## RT 루프 주의 · Logpoint
+
+> [!WARNING]
+> RT 루프 (`control_rate`) 에서 Breakpoint 로 멈추면 ROS 타이머가 쌓이고 WatchDog / E-STOP 이 걸리며, 재개 후 타이밍이 깨진다. 조건부 Breakpoint 나 Hit Count 보다 **Logpoint** 를 우선한다.
+
+Logpoint 는 멈추지 않고 메시지만 출력한다. 줄 번호 여백 우클릭 → `Add Logpoint` → `"joint_pos[0] = {joint_pos[0]}"` 처럼 `{}` 안에 변수를 쓴다. 부족하면 `RCLCPP_DEBUG` + `rqt_console`, 또는 `data_logger` 로 파일에 남겨 오프라인 분석한다.
+
+Breakpoint 가 필요한 코드는 RT 가 아닌 lifecycle · init · 테스트 경로에서 잡는다. DEBUG CONSOLE 에서는 GDB 명령 앞에 `-exec` 를 붙인다 (`-exec bt`, `-exec info threads`).
+
+## 문제 해결
+
+| 증상 | 해결 |
+|------|------|
+| `Unable to open 'x.cpp'`, `optimized out`, 빨간 원에 경고 표시 | Debug 로 다시 빌드한다 (`Ctrl+Shift+B`). Release 바이너리이거나 소스를 고치고 빌드하지 않은 경우다. 경로가 다르면 DEBUG CONSOLE 에서 `-exec set substitute-path <old> <new>` |
+| Attach 시 `Operation not permitted` | ptrace 정책 때문이다. 확인: `cat /proc/sys/kernel/yama/ptrace_scope`. 세션 동안만 허용: `echo 0 \| sudo tee /proc/sys/kernel/yama/ptrace_scope` (재부팅 시 복구; 개발 PC 에서만) |
+| Attach 팝업에 노드가 없음 | 노드가 떠 있는지 `ps aux \| grep integrated_rt_controller` 와 `ros2 node list` 로 확인한다 |
+| clangd 가 있는 member 에 `no member` · `aka int` | API 문제가 아니라 preamble 실패의 연쇄 진단이다. 로그의 **첫** `file not found` 부터 해결한다 (대부분 `omp.h` → `libomp-dev`) |
+
+clangd 가 새 header · target 을 못 보면 `./build.sh -d` (자동 merge) → `Ctrl+Shift+P` → **`clangd: Restart language server`** 순서로 갱신한다. `.cache/clangd/index` 삭제는 completion 만 stale 할 때의 마지막 수단이다. VS Code 없이 확인하려면 repo root 에서:
+
+```bash
+clangd --check=rtc_controller_manager/src/rt_controller_node.cpp
+```
+
+`pp_file_not_found` · `conflicting_types` · `no_member` · `aka int` 가 **없으면** 정상이다 (`clangd --check` 는 기능 self-test 실패도 error 로 세므로 error 수가 0 일 필요는 없다).
+
+## 다음에 볼 곳
+
+- 빌드 옵션 전체: `./build.sh --help` · [repo_scripts/README.md](../repo_scripts/README.md)
+- 테스트 종류와 실행 순서: [testing.md](testing.md)
+- RT 환경 (shield · 권한) 확인: `rtc: Check RT Setup` task
+
+## 부록 — 핵심 키
+
+| 키 | 동작 |
+|----|------|
+| `F5` | 시작 · Continue |
+| `F9` | Breakpoint 토글 |
+| `F10` / `F11` / `Shift+F11` | Step Over / Into / Out |
+| `Ctrl+Shift+B` | 기본 빌드 (`Build All (Debug)`) |
+| `Ctrl+Shift+P` → `Run Task` | task 목록 |
