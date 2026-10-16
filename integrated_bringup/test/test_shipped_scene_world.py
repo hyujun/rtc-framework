@@ -14,6 +14,11 @@ world goals at all:
   which belongs to a different scene.
 - ``g1_p1b`` — none (its dual-arm targets name model frames, not this one).
 
+The other frame a goal may name is the arm's ``root_link``. The producers that
+send task goals (``ur5e_bt_coordinator``, ``shape_estimation``) stamp their
+``base_frame`` parameter, so its shipped default has to be the root_link of the
+profiles they run with (read from the source tree: neither is a dependency).
+
 Structural only. The values themselves were checked against each scene when
 they were written: MuJoCo body positions against Pinocchio frames mapped
 through the placement, over random arm poses (#779).
@@ -115,3 +120,28 @@ def test_every_overlay_states_its_own_world(profile: str) -> None:
 def test_profiles_without_a_world_define_none(profile: str) -> None:
     for path in sorted(_config_dir(profile).glob("*.yaml")):
         assert _scene_world(_rt_params(path)) is None, f"{profile}/{path.name}"
+
+
+# The producers run with the UR5e profiles; their configs live in sibling
+# packages of the source tree.
+PRODUCERS = {
+    "ur5e_bt_coordinator": ("config/bt_coordinator.yaml", "bt_coordinator"),
+    "shape_estimation": ("config/shape_estimation_node.yaml", "shape_estimation_node"),
+}
+PRODUCER_PROFILES = ["ur5e_p1a", "ur5e_p1b"]
+
+
+@pytest.mark.parametrize("package", sorted(PRODUCERS))
+def test_producers_stamp_the_arm_root(package: str) -> None:
+    rel, node = PRODUCERS[package]
+    path = Path(__file__).resolve().parents[2] / package / rel
+    if not path.exists():
+        pytest.skip(f"{path} not in this checkout")
+    with open(path) as handle:
+        params = (yaml.safe_load(handle).get(node) or {}).get("ros__parameters") or {}
+    assert "base_frame" in params, f"{package}: {rel} ships no base_frame"
+    for profile in PRODUCER_PROFILES:
+        assert params["base_frame"] == _arm_root(profile), (
+            f"{package}: base_frame {params['base_frame']!r} is not {profile}'s root_link "
+            f"{_arm_root(profile)!r} — every task goal it sends would be refused"
+        )

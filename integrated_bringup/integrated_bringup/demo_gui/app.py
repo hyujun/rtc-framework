@@ -5396,6 +5396,9 @@ class DemoControllerGUI(Node):
                 )
             if task_on:
                 task_msg = RobotTarget()
+                # The panel is seeded from TF in tcp_parent (the arm's root_link),
+                # so its numbers are in that frame (#779 target-frame contract).
+                task_msg.header.frame_id = self._profile.tcp_parent
                 task_msg.goal_type = "task"
                 task_msg.joint_names = list(self._shape.arm_joint_names)
                 task_values = []
@@ -5525,6 +5528,8 @@ class DemoControllerGUI(Node):
                     self._set_joint_target_entries(robot_msg.joint_target)
                 else:
                     robot_msg.goal_type = "task"
+                    # Presets are captured from the same base-frame panel (#779).
+                    robot_msg.header.frame_id = self._profile.tcp_parent
                     task_values = [
                         math.radians(v) if i >= 3 else v for i, v in enumerate(robot_target_vals)
                     ]
