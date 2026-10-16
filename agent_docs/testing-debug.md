@@ -120,6 +120,7 @@ RT tick 이 heap 을 안 만진다는 주장을 재는 sensor 는 셋이고, 선
 
 timing CSV 는 per-tick 총 시간만 기록한다. thread × core 타임라인이나 callback 별 시간이 필요하면 LTTng trace 를 캡처한다 — 절차는 [docs/tracing.md](../docs/tracing.md).
 
-- 주기 스레드는 tick 전체를 덮는 **L1 root span 1개** 와 phase 별 **L2 span** (read / compute / publish / write) 으로 계측한다. L3 이상은 비용·분기가 큰 경로의 의도된 [예외](../docs/reference/tracing-rationale.md#2-layer-span-계약) 다 — 새 계측점은 먼저 L2 인지, 예외에 드는 L3 인지 판정한다.
+- 주기 스레드는 tick 전체 (raw `clock_nanosleep` 또는 `jthread` 의 한 iteration) 를 덮는 **L1 root span 1개** 와 phase 별 **L2 span** (read / compute / publish / write) 으로 계측한다. L3 이상은 비용·분기가 큰 경로의 의도된 [예외](../docs/reference/tracing-rationale.md#2-layer-span-계약) 다 — 새 계측점은 먼저 L2 인지, 예외에 드는 L3 인지 판정한다.
+- executor 콜백은 ros2_tracing 의 `callback_start/end` 가 이미 L1 이다 — 본문에는 이름 붙은 L2 span 만 더한다.
 - 주기성은 L1 root span 의 **begin-to-begin 간격** 으로 판정한다 (duration 이 아니다). 같은 세션의 CSV 를 보조 근거로 병기하고, tick period 가 어긋나면 계측 경계나 event loss 부터 의심한다.
 - `sim_step` 의 duration 을 physics 시간으로 단독 해석하지 않는다 — command 대기 (`sim_wait_command`) 와 throttle 이 섞여 있고, `sim_wait_command` 가 길면 느린 쪽은 controller 의 RT tick 이다.

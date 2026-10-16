@@ -4,7 +4,7 @@
 
 ## 2-layer span 계약
 
-규칙은 [testing-debug.md](../../agent_docs/testing-debug.md) §Tracing 이 갖는다. L1 은 raw `clock_nanosleep` 또는 `jthread` 의 한 iteration 경계와 일치시킨다. L3 이상은 비용·분기가 큰 경로에만 두는 의도된 예외다:
+규칙 (L1 경계 · executor 콜백의 L2) 은 [testing-debug.md](../../agent_docs/testing-debug.md) §Tracing 이 갖는다. L3 이상은 비용·분기가 큰 경로에만 두는 의도된 예외다:
 
 | 예외 L3 | 위치 |
 |---|---|
@@ -14,8 +14,6 @@
 | backend RT I/O | `CM::ReadDeviceState` / `CM::WriteCommand` 아래 per-backend `ReadState` / `WriteCommand` |
 
 예외 근거 없이 2-layer 밖으로 깊이 내려가지 않는 이유는, span 하나가 RT hot path 에서 비용이고 flame 스택이 깊어질수록 사람이 읽을 수 없게 되기 때문이다.
-
-executor 콜백은 ros2_tracing 의 `ros2:callback_start/end` 가 이미 바깥을 L1 으로 감싼다. 그래서 콜백 **본문**에는 이름 붙은 L2 span 만 더한다.
 
 ## Cadence 판정
 

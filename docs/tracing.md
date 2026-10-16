@@ -84,7 +84,7 @@ colcon build --cmake-args -DRTC_ENABLE_TRACING=ON   # 직접 빌드할 때 (colc
 | `viewer` (같은 노드) | `viewer_frame` | `viewer_sync` · `viewer_render` · `viewer_swap` |
 | CommLoop · `failure_detector` (`udp_hand_node`) | `hand_comm_tick` · `hand_detector_tick` | `hand_read_*` · `hand_write_echo` · `hand_detector_check` |
 
-executor 콜백 본문에도 L2 span 이 있다. 새 계측점은 함수 첫 줄에 `RTC_TRACE_SCOPE("Name");` 한 줄이면 된다 (RAII 라 early-return 에도 닫힘). 계약·cadence 판정 방법·계측 제외 대상은 [tracing-rationale.md](reference/tracing-rationale.md).
+executor 콜백 본문에도 L2 span 이 있다. 새 계측점은 함수 첫 줄에 `RTC_TRACE_SCOPE("Name");` 한 줄이면 된다 (RAII 라 early-return 에도 닫힘). span 계층과 cadence 판정의 규칙은 [testing-debug.md](../agent_docs/testing-debug.md#tracing), 그 근거와 계측 제외 대상은 [tracing-rationale.md](reference/tracing-rationale.md).
 
 `enable_tracing:=false` 로 실행하면 span 이 컴파일돼 있어도 기록되지 않는다.
 
