@@ -279,6 +279,18 @@ void DemoComplianceController::OnDeviceConfigsSet() {
     }
   }
 
+  // #779: the frames a task goal may name — root_link and, when the model has
+  // one, scene_world (urdf.extra_frames). No resolved root (no model, or none
+  // configured): every task goal is refused, as there is no base to read it in.
+  // A malformed scene_world is kept for on_configure to fail on.
+  task_target_frames_ = TaskTargetFrames{};
+  task_target_frames_error_.clear();
+  if (const auto* root_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+      arm_handle_ && root_frame_id_ != 0 && root_cfg != nullptr && root_cfg->urdf) {
+    task_target_frames_error_ =
+        task_target_frames_.Configure(arm_handle_->GetModel(), root_cfg->urdf->root_link);
+  }
+
   // ── Unified kin&dyn (Phase 4): reorder map + arm TCP frame registration ──
   // full_dof_ / reorder need the device configs resolved above; RegisterFrame
   // must run here (configure) — before the first RT cache.Update() locks
@@ -637,6 +649,29 @@ void DemoComplianceController::SetDeviceTarget(int device_idx,
   // index and the width, and queues; the RT thread drains inside Compute() and
   // is the SOLE writer of target_seqlock_.
   PushPendingTarget(device_idx, target, /*is_task=*/false);
+}
+
+const char* DemoComplianceController::SetDeviceTaskTarget(int device_idx,
+                                                          std::span<const double> task6,
+                                                          std::string_view frame_id) noexcept {
+  if (device_idx != 0) {
+    SetDeviceTaskTarget(device_idx, task6);
+    return nullptr;
+  }
+  // Without control_6dof entries 3..5 are null-space posture, not RPY
+  // (ApplyPendingTarget), and only x, y, z are converted. The layout comes from
+  // the gains the RT apply reads; a control_6dof switch between this ingress
+  // and that apply reads the goal in the other layout — the same window any
+  // goal already has against a gain change in flight.
+  const auto layout = gains_lock_.Load().control_6dof ? TaskTargetFrames::Layout::kPose6d
+                                                      : TaskTargetFrames::Layout::kPositionOnly;
+  std::array<double, 6> in_root{};
+  if (const char* refused = task_target_frames_.ToRoot(frame_id, task6, layout, in_root);
+      refused != nullptr) {
+    return refused;
+  }
+  SetDeviceTaskTarget(device_idx, std::span<const double>(in_root));
+  return nullptr;
 }
 
 // RT-thread-only. Refreshes current_target_slot_, drains off-RT pending

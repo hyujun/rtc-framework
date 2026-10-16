@@ -1410,6 +1410,32 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # #779: WBC / Task / Compliance take a task goal only in root_link or
+  # scene_world (refused otherwise, counted), and refuse a configure whose root
+  # link does not resolve or whose world is not rigid to it. iiwa7_leap rig.
+  ament_add_gtest(test_task_goal_frames
+    test/test_task_goal_frames.cpp
+    TIMEOUT 180
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_task_goal_frames
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_task_goal_frames
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    rtc_math
+    rtc_tsid
+    rtc_mpc
+    pinocchio
+    Eigen3
+  )
+
   # FindTreeModel (support/model_config_lookup.hpp): the one lookup every demo
   # controller makes for a group's tree model. Header-only, no node.
   ament_add_gtest(test_model_config_lookup
@@ -1942,6 +1968,7 @@ if(BUILD_TESTING)
     test_demo_dualarm_controller
     test_hand_fk_wiring
     test_arm_tip_resolution
+    test_task_goal_frames
     test_mujoco_native_backend
     test_catching_traj_input
     test_catching_tracking

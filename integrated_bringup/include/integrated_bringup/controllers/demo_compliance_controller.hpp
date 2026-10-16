@@ -62,6 +62,7 @@
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
+#include "integrated_bringup/support/task_target_frames.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
 #include "rtc_base/threading/seqlock.hpp"
@@ -306,6 +307,13 @@ class DemoComplianceController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
+  // #779 target-frame contract: a task goal for the arm (device 0) names its
+  // frame — root_link or scene_world — and is converted into root_link here,
+  // on the ingress, before it is queued. Anything else is refused (counted by
+  // the base). Other devices keep the two-argument path.
+  using RTControllerInterface::SetDeviceTaskTarget;
+  [[nodiscard]] const char* SetDeviceTaskTarget(int device_idx, std::span<const double> task6,
+                                                std::string_view frame_id) noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override;
 
@@ -557,6 +565,25 @@ class DemoComplianceController final : public RTControllerInterface {
     const auto primary = GetPrimaryDeviceName();
     return ArmTipUnresolvedReason(arm_handle_ != nullptr, tip_frame_id_ != 0, primary,
                                   GetDeviceNameConfig(primary));
+  }
+
+  [[nodiscard]] std::string ArmRootConfigError() const {
+    const auto primary = GetPrimaryDeviceName();
+    return ArmRootUnresolvedReason(arm_handle_ != nullptr, root_frame_id_ != 0, primary,
+                                   GetDeviceNameConfig(primary));
+  }
+
+  /// The frames a task goal may name and their conversion into root_link
+  /// (#779). Filled in OnDeviceConfigsSet; read-only afterwards.
+  [[nodiscard]] const TaskTargetFrames& TaskTargetFramesForTesting() const noexcept {
+    return task_target_frames_;
+  }
+
+  /// Parent frame of the published poses: the base frame they are computed in
+  /// (the device's root_link, #779), else `fallback` (the arm sub-model's root
+  /// — the two are the same link whenever the root resolved).
+  [[nodiscard]] const std::string& PoseParentFrame(const std::string& fallback) const noexcept {
+    return task_target_frames_.Configured() ? task_target_frames_.RootLink() : fallback;
   }
 
   /// Test-only: lift the shipped K_est_max pin so the stiffness estimate can
@@ -817,6 +844,12 @@ class DemoComplianceController final : public RTControllerInterface {
   // ── Controller state (gains before urdf_path to match constructor init
   // order) ─
   rtc::SeqLock<Gains> gains_lock_;
+  // #779: root_link / scene_world → root_link for task goals. Configured in
+  // OnDeviceConfigsSet (before CreateOwnedTopics creates the target
+  // subscription) and not written after; task_target_frames_error_ is a
+  // malformed scene_world, which on_configure turns into a failure.
+  TaskTargetFrames task_target_frames_;
+  std::string task_target_frames_error_;
 
   // ── rtc_urdf_bridge ────────────────────────────────────────────
   std::string urdf_path_;  // stored from constructor, used in LoadConfig

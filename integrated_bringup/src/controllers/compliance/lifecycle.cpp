@@ -94,7 +94,8 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
       const auto* sys_cfg = GetSystemModelConfig();
       if (sys_cfg && !sys_cfg->sub_models.empty()) {
         const auto& submodel = sys_cfg->sub_models.front();
-        AppendArmTipSlot(owned_topics_, submodel.root_link, submodel.tip_link, /*group_idx=*/0);
+        AppendArmTipSlot(owned_topics_, PoseParentFrame(submodel.root_link), submodel.tip_link,
+                         /*group_idx=*/0);
       }
       // Parent = ARM root (sub_models[0].root_link, e.g. base), NOT the hand tree
       // root: ComputeHandFingertipFk composes each fingertip pose to the arm base
@@ -104,13 +105,14 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
       if (sys_cfg && !sys_cfg->sub_models.empty()) {
         if (const auto* tm = FindTreeModel(*sys_cfg, GetSecondaryDeviceName())) {
           // Cap slots to the fingertip count the compute side fills (#125 F4).
-          AppendHandTipSlots(owned_topics_, sys_cfg->sub_models.front().root_link, tm->tip_links,
+          AppendHandTipSlots(owned_topics_, PoseParentFrame(sys_cfg->sub_models.front().root_link),
+                             tm->tip_links,
                              /*group_idx=*/1,
                              /*max_tips=*/kNumFingertips);
         }
       }
       if (sys_cfg && !sys_cfg->sub_models.empty()) {
-        AppendVirtualTcpSlot(owned_topics_, sys_cfg->sub_models.front().root_link,
+        AppendVirtualTcpSlot(owned_topics_, PoseParentFrame(sys_cfg->sub_models.front().root_link),
                              /*group_idx=*/0);
       }
     }
@@ -130,6 +132,24 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
     if (const std::string arm_tip_error = ArmTipConfigError(); !arm_tip_error.empty()) {
       RCLCPP_ERROR(logger_, "arm tip unresolved: %s", arm_tip_error.c_str());
       return CallbackReturn::FAILURE;
+    }
+
+    // #779: a root link that is named but not a frame used to fall back to the
+    // world in silence; a malformed scene_world would read world goals wrong.
+    if (const std::string arm_root_error = ArmRootConfigError(); !arm_root_error.empty()) {
+      RCLCPP_ERROR(logger_, "arm root unresolved: %s", arm_root_error.c_str());
+      return CallbackReturn::FAILURE;
+    }
+    if (!task_target_frames_error_.empty()) {
+      RCLCPP_ERROR(logger_, "task goal frames: %s", task_target_frames_error_.c_str());
+      return CallbackReturn::FAILURE;
+    }
+    if (task_target_frames_.Configured()) {
+      RCLCPP_INFO(logger_, "task goals: header.frame_id '%s'%s",
+                  task_target_frames_.RootLink().c_str(),
+                  task_target_frames_.WorldDefined()
+                      ? " or 'scene_world'"
+                      : " only (no urdf.extra_frames.scene_world: world goals are refused)");
     }
 
     // The hand fingertip FK could not be tied to its device group or to the arm

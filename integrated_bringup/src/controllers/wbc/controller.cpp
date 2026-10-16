@@ -12,6 +12,7 @@
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -1345,6 +1346,18 @@ void DemoWbcController::OnDeviceConfigsSet() {
     }
   }
 
+  // #779: the frames a task goal may name — root_link and, when the model has
+  // one, scene_world (urdf.extra_frames). No resolved root (no model, or none
+  // configured): every task goal is refused, as there is no base to read it in.
+  // A malformed scene_world is kept for on_configure to fail on.
+  task_target_frames_ = TaskTargetFrames{};
+  task_target_frames_error_.clear();
+  if (const auto* root_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+      arm_handle_ && root_frame_id_ != 0 && root_cfg != nullptr && root_cfg->urdf) {
+    task_target_frames_error_ =
+        task_target_frames_.Configure(arm_handle_->GetModel(), root_cfg->urdf->root_link);
+  }
+
   // F-2: validate that every captured SE3/MPC `base_frame` YAML value
   // matches the primary arm device's `urdf.root_link`. A mismatch means
   // the user edited one knob but not the other — silently lifting the
@@ -1754,6 +1767,22 @@ void DemoWbcController::SetDeviceTaskTarget(int device_idx,
   // Off-RT marshal — same mailbox as joint targets, tagged so the RT side
   // converts it to a commanded SE3 instead of overwriting the joint slot.
   PushPendingTarget(device_idx, task6, /*is_task=*/true);
+}
+
+const char* DemoWbcController::SetDeviceTaskTarget(int device_idx, std::span<const double> task6,
+                                                   std::string_view frame_id) noexcept {
+  if (device_idx != 0) {
+    SetDeviceTaskTarget(device_idx, task6);  // no SE3 slot: ignored on the RT side
+    return nullptr;
+  }
+  std::array<double, 6> in_root{};
+  if (const char* refused =
+          task_target_frames_.ToRoot(frame_id, task6, TaskTargetFrames::Layout::kPose6d, in_root);
+      refused != nullptr) {
+    return refused;
+  }
+  SetDeviceTaskTarget(device_idx, std::span<const double>(in_root));
+  return nullptr;
 }
 
 // RT-thread-only. Refreshes current_target_slot_, drains pending entries,

@@ -35,8 +35,35 @@ std::vector<ConfigCase> ShippedConfigs() {
   const std::string dir = RTC_WBC_CONFIG_DIR;
   return {
       {"ur5e_p1a", dir + "/ur5e_p1a/controllers/demo_wbc_controller.yaml"},
+      {"ur5e_p1b", dir + "/ur5e_p1b/controllers/demo_wbc_controller.yaml"},
       {"iiwa7_leap", dir + "/iiwa7_leap/controllers/demo_wbc_controller.yaml"},
   };
+}
+
+// The arm's root_link / tip_link: the first urdf.sub_models entry of the
+// profile's system config (_base.yaml when the profile has one, else sim.yaml)
+// — the entry the controllers take as the arm.
+struct ArmLinks {
+  std::string root;
+  std::string tip;
+};
+
+ArmLinks ShippedArmLinks(const std::string& robot) {
+  const std::string dir = std::string(RTC_WBC_CONFIG_DIR) + "/" + robot + "/";
+  for (const char* name : {"_base.yaml", "sim.yaml"}) {
+    YAML::Node root;
+    try {
+      root = YAML::LoadFile(dir + name);
+    } catch (const YAML::BadFile&) {
+      continue;
+    }
+    const YAML::Node sub_models = root["/**"]["ros__parameters"]["urdf"]["sub_models"];
+    if (sub_models && sub_models.IsMap() && sub_models.size() > 0) {
+      const YAML::Node arm = sub_models.begin()->second;
+      return {arm["root_link"].as<std::string>(), arm["tip_link"].as<std::string>()};
+    }
+  }
+  return {};
 }
 
 // Resolve a task block's effective SE3Task identity, mirroring SE3Task::Init:
@@ -189,3 +216,44 @@ TEST(DemoWbcConfigLint, ClikBlockWellFormed) {
 }
 
 }  // namespace
+
+// F3 (#779): the device's urdf.root_link / tip_link are the SSoT of the arm's
+// base and EE frames. The WBC's SE3 tasks and the MPC models name those frames
+// again in their own YAML; a copy that drifts from the device makes the
+// controller track one frame while goals are converted into another. The F-2
+// gate catches a base_frame mismatch at configure; this catches both frames on
+// every shipped profile without a model.
+TEST(DemoWbcConfigLint, ArmFramesMatchTheDeviceRootAndTip) {
+  for (const auto& cfg : ShippedConfigs()) {
+    const ArmLinks arm = ShippedArmLinks(cfg.robot);
+    ASSERT_FALSE(arm.root.empty()) << cfg.robot << ": no urdf.sub_models";
+    ASSERT_FALSE(arm.tip.empty()) << cfg.robot << ": no urdf.sub_models";
+
+    const YAML::Node tasks = YAML::LoadFile(cfg.path)["demo_wbc_controller"]["tsid"]["tasks"];
+    int se3_tasks = 0;
+    for (const auto& kv : tasks) {
+      const YAML::Node task = kv.second;
+      if (!task["type"] || task["type"].as<std::string>() != "se3") {
+        continue;
+      }
+      ++se3_tasks;
+      const auto key = kv.first.as<std::string>();
+      EXPECT_EQ(task["frame"].as<std::string>(), arm.tip) << cfg.robot << " tsid.tasks." << key;
+      EXPECT_EQ(task["base_frame"].as<std::string>(), arm.root)
+          << cfg.robot << " tsid.tasks." << key;
+    }
+    EXPECT_GT(se3_tasks, 0) << cfg.robot << ": no se3 task — nothing was checked";
+
+    const std::string mpc_dir =
+        std::string(RTC_WBC_CONFIG_DIR) + "/" + cfg.robot + "/controllers/mpc/";
+    for (const char* ocp : {"contact_light.yaml", "contact_rich.yaml"}) {
+      const YAML::Node model = YAML::LoadFile(mpc_dir + ocp)["mpc"]["model"];
+      ASSERT_TRUE(model) << cfg.robot << " mpc/" << ocp << ": no mpc.model";
+      EXPECT_EQ(model["end_effector_frame"].as<std::string>(), arm.tip)
+          << cfg.robot << " mpc/" << ocp;
+      if (model["base_frame"]) {
+        EXPECT_EQ(model["base_frame"].as<std::string>(), arm.root) << cfg.robot << " mpc/" << ocp;
+      }
+    }
+  }
+}
