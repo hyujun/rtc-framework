@@ -4,11 +4,7 @@
 
 ## 2-layer span 계약
 
-모든 주기 스레드는 **L1 root span 1개**와 그 하위 **L2 span** 으로 계측한다.
-
-* L1 은 tick 전체다. raw `clock_nanosleep` 또는 `jthread` 의 한 iteration 경계와 일치시킨다.
-* L2 는 주요 phase 다 (read / compute / publish / write).
-* L3 이상의 깊은 분해는 **의도된 예외**이며 비용·분기가 큰 경로에만 허용한다.
+규칙은 [testing-debug.md](../../agent_docs/testing-debug.md) §Tracing 이 갖는다. L1 은 raw `clock_nanosleep` 또는 `jthread` 의 한 iteration 경계와 일치시킨다. L3 이상은 비용·분기가 큰 경로에만 두는 의도된 예외다:
 
 | 예외 L3 | 위치 |
 |---|---|
@@ -17,16 +13,11 @@
 | MuJoCo | `sim_step` 아래 `sim_substep` → `mj_step` (외부 physics solver), one-shot `HandleReset` |
 | backend RT I/O | `CM::ReadDeviceState` / `CM::WriteCommand` 아래 per-backend `ReadState` / `WriteCommand` |
 
-새 계측점은 먼저 "L2 인가, 위 예외에 드는 L3 인가" 를 판정한다. 예외 근거 없이 2-layer 밖으로 깊이 내려가지 않는 이유는, span 하나가 RT hot path 에서 비용이고 flame 스택이 깊어질수록 사람이 읽을 수 없게 되기 때문이다. 트리의 들여쓰기가 곧 계층이다.
+예외 근거 없이 2-layer 밖으로 깊이 내려가지 않는 이유는, span 하나가 RT hot path 에서 비용이고 flame 스택이 깊어질수록 사람이 읽을 수 없게 되기 때문이다. 트리의 들여쓰기가 곧 계층이다.
 
 ## Cadence 판정
 
-주기성은 각 L1 root span (`rt_control_tick`, `sim_step`, `hand_comm_tick`, `mpc_tick`) 의 **begin timestamp 간격 (begin-to-begin)** 으로 판정한다. span *duration* 이 아니라 *시작 시각* 의 주기성이 기준이다.
-
-* 지표는 목표 주기 (`control_rate` YAML 등) 대비 간격의 평균 · 분산 · 최댓값 (worst overrun) 이다.
-* 같은 session_dir 의 CSV timing/overrun 로그는 **보조 근거**로 병기한다. trace 의 begin-to-begin 과 CSV 의 tick period 가 어긋나면 계측 경계나 캡처 결손 (event loss) 을 먼저 의심한다.
-* `sim_step` 은 duration 에 command 대기 (`sim_wait_command`) 와 throttle (`ThrottleIfNeeded`) 이 섞인다. cadence 는 begin-to-begin 으로만 보고, physics 비용은 그 두 span 을 뺀 나머지로 해석한다. `sim_step` duration 을 physics 실행 시간으로 단독 해석하지 않는다.
-* `sim_wait_command` 가 길면 sim 물리가 느린 것이 아니라 controller 의 RT tick 이 느린 것이다 (sim lock-step 이라 controller 명령을 기다린다).
+판정 규칙 (begin-to-begin · CSV 대조 · `sim_step` 해석) 은 [testing-debug.md](../../agent_docs/testing-debug.md) §Tracing 이 갖는다. 지표는 목표 주기 대비 간격의 평균 · 분산 · 최댓값 (worst overrun) 이고, `sim_step` 의 physics 비용은 `sim_wait_command` 와 `ThrottleIfNeeded` 를 뺀 나머지로 해석한다 (sim 은 lock-step 이라 controller 명령을 기다린다).
 
 ## 스레드별 span 트리 (기록 시점)
 
