@@ -1,11 +1,11 @@
 # NUC Hybrid CPU Support
 
-> **Status**: hybrid 식별 + slot 매핑 landed. Layout v4.1 이 `CpuTopology::physical_core_slots` 추상화 (P/E/LP-E asc) 를 통해 hybrid 분기를 우회 — 별도 `Make_NucHybrid_*` config 없이 모든 tier 가 P-core primary logical 에 자동 핀 ([RT_OPTIMIZATION.md:117](RT_OPTIMIZATION.md#cpu-코어-할당)).
+> **Status**: hybrid 식별 + slot 매핑 landed. Layout v4.1 이 `CpuTopology::physical_core_slots` 추상화 (P/E/LP-E asc) 를 통해 hybrid 분기를 우회 — 별도 `Make_NucHybrid_*` config 없이 모든 tier 가 P-core primary logical 에 자동 핀 ([rt-optimization.md:117](rt-optimization.md#cpu-코어-할당)).
 >
 > **Entry points**:
 > - C++: [`rtc_base/include/rtc_base/threading/thread_utils.hpp`](../rtc_base/include/rtc_base/threading/thread_utils.hpp) (`SlotToLogicalCpu` — 슬롯→logical 변환) · [`rtc_base/include/rtc_base/threading/cpu_topology.hpp`](../rtc_base/include/rtc_base/threading/cpu_topology.hpp) (`DetectCpuTopology`, `ReadCpuVendorFamilyModel` — CPUID family/model fallback, `physical_core_slots`)
 > - Shell: [`repo_scripts/scripts/lib/rt_common.sh`](../repo_scripts/scripts/lib/rt_common.sh) (`detect_hybrid_capability`, `get_nuc_generation`, `get_cpu_vendor`)
-> - Kernel build: [`repo_scripts/scripts/build_rt_kernel.sh`](../repo_scripts/scripts/build_rt_kernel.sh) 가 `detect_hybrid_capability` 로 profile (`nuc` / `desktop-amd` / `desktop-intel`) 을 분기 — `nuc` 만 SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL 를 enable ([RT_OPTIMIZATION.md §5](RT_OPTIMIZATION.md)).
+> - Kernel build: [`repo_scripts/scripts/build_rt_kernel.sh`](../repo_scripts/scripts/build_rt_kernel.sh) 가 `detect_hybrid_capability` 로 profile (`nuc` / `desktop-amd` / `desktop-intel`) 을 분기 — `nuc` 만 SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL 를 enable ([rt-optimization.md §5](rt-optimization.md)).
 
 ## 지원 현황
 

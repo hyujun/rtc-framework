@@ -2,7 +2,7 @@
 # build_rt_kernel.sh — PREEMPT_RT 커널 빌드 및 설치
 #
 # Ubuntu 22.04 / 24.04 에서 mainline PREEMPT_RT 커널 (6.12+) 을 소스 빌드한다.
-# Option B (최대 성능) — docs/RT_OPTIMIZATION.md 참조.
+# Option B (최대 성능) — docs/rt-optimization.md 참조.
 #
 # PREEMPT_RT 는 Linux 6.12 에서 mainline 병합 (x86_64/arm64/riscv) — 6.12+ 는 외부
 # RT 패치 없이 CONFIG_PREEMPT_RT=y 만으로 RT 활성. 본 스크립트는 vanilla 커널을
@@ -174,7 +174,7 @@ _kv_major="${KERNEL_VERSION%%.*}"
 _kv_minor="${KERNEL_VERSION#*.}"; _kv_minor="${_kv_minor%%.*}"
 if [[ "$_kv_major" -lt 6 || ( "$_kv_major" -eq 6 && "$_kv_minor" -lt 12 ) ]]; then
   error "no-patch 모드는 커널 6.12+ 가 필요합니다 (PREEMPT_RT mainline 병합: 6.12). \
-구버전 RT 는 외부 패치가 필요 — docs/RT_OPTIMIZATION.md §5 참조 (given: ${KERNEL_VERSION})"
+구버전 RT 는 외부 패치가 필요 — docs/rt-optimization.md §5 참조 (given: ${KERNEL_VERSION})"
 fi
 
 KERNEL_URL="https://mirrors.edge.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
@@ -1257,7 +1257,7 @@ info "    1. 재부팅 시 GRUB 메뉴에서 'Advanced options' → RT 커널 �
 info "    2. 또는: sudo grep menuentry /boot/grub/grub.cfg  (RT 항목 확인)"
 info "    3. sudo grub-set-default '<RT 커널 항목>'  →  sudo update-grub"
 echo ""
-info "RT 최적화 가이드: docs/RT_OPTIMIZATION.md"
+info "RT 최적화 가이드: docs/rt-optimization.md"
 info "IRQ affinity:     sudo ./setup_irq_affinity.sh"
 info "UDP 최적화:       sudo ./setup_udp_optimization.sh"
 echo ""

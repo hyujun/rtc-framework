@@ -432,7 +432,7 @@ print_summary() {
   echo "  AGENTS.md                — agent constitution (invariants, workflow, escalation)"
   echo "  CLAUDE.md                — Claude Code entry (@AGENTS.md import + hooks/rules)"
   echo "  docs/VSCODE_DEBUGGING.md — VS Code GDB debugging guide"
-  echo "  docs/RT_OPTIMIZATION.md  — RT tuning guide"
+  echo "  docs/rt-optimization.md  — RT tuning guide"
   echo "  repo_scripts/README.md   — shell scripts usage guide (RT setup, env, build)"
   echo ""
 }

@@ -347,7 +347,7 @@ sudo update-grub && sudo reboot
 
 | 문서 | 설명 |
 |------|------|
-| [docs/RT_OPTIMIZATION.md](docs/RT_OPTIMIZATION.md) | 실시간 최적화 가이드 (CPU 코어 할당, 커널 설정) |
+| [docs/rt-optimization.md](docs/rt-optimization.md) | 실시간 최적화 가이드 (CPU 코어 할당, 커널 설정) |
 | [docs/VSCODE_DEBUGGING.md](docs/VSCODE_DEBUGGING.md) | VS Code + GDB 디버깅 가이드 |
 | [docs/NUC_HYBRID_SUPPORT.md](docs/NUC_HYBRID_SUPPORT.md) | NUC 13/14/15 Pro hybrid CPU (P/E core) 감지 + BIOS 체크리스트. Layout 분기는 `thread_layout.yaml` slot 매핑이 처리 |
 | [AGENTS.md](AGENTS.md) | **AI 에이전트 헌법 (tool-neutral)** — invariants, workflow, escalation, build hard rules. Codex · Copilot · Antigravity 등이 읽는다 |
