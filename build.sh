@@ -497,7 +497,7 @@ if [[ "$BUILD_TYPE" == "Debug" ]]; then
   echo "  If attach fails with 'Operation not permitted', run:"
   echo "    echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope"
   echo ""
-  echo "  See: docs/VSCODE_DEBUGGING.md"
+  echo "  See: docs/vscode-debugging.md"
 fi
 
 success "Build complete [mode: $MODE, type: $BUILD_TYPE]"
