@@ -23,7 +23,7 @@ v4.1 이후 (v4.1 · v5 #349 · v6 #383) 는 `thread_layout.yaml` 의 버전 주
 
 - **v3 → v4**: 별도 `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 를 제거하고 `rt_control` 이 tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출한다.
 
-mpc_worker 슬롯 회수 (#380) 는 [rt-setup-rationale.md](rt-setup-rationale.md) 가, `DegradationMode` 삭제 (#379) 는 `cpu_topology.hpp` 주석이 갖는다.
+mpc_worker 슬롯 회수 (#380) 는 [rt-setup-rationale.md](rt-setup-rationale.md) 가, `DegradationMode` 삭제 (#379) 는 `cpu_topology.hpp` 주석이 갖는다. 거기 없는 한 가지 — "MPC 를 돌리되 전용 코어 없이" 같은 제3 상태는 profile 이 role 을 drop 만 하므로 role 을 *수정*하는 신규 manifest 기능이고 E-7 이다.
 
 - **`mpc` role 의 두 tenant (dynamic_catching S6, E-7 결정 J)**: 포구 계획기 스레드 (`CatchingPlannerThread`, `DemoCatchingController` 소유) 가 `SelectThreadConfigs().mpc.main` 을 그대로 받는다. 한 코어에서 하나만 돈다는 것은 R-1 switch 테스트 `test_catching_mpc_role_switch` + sim 실측으로 확인했다. Aligator 의 OpenMP 워커도 생성 스레드 이름 `mpc_main` 을 물려받으므로 `verify_rt_runtime.sh` 가 고른 TID 가 유휴 워커일 수 있다.
 - **Launch profile (issue #350)**: `enable_mpc:=false` 로 띄우면 profile `mpc_off` 가 된다. 런타임 자동 감지가 불가능한 이유 — `mpc.enabled` 는 controller YAML 이고 스레드는 `on_activate` 에서 뜨므로 세션 중 controller switch 로 켜질 수 있다. profile 불일치를 첫 side effect 전에 거부하는 이유 — controller manager 는 실패한 target 에 `on_deactivate` 를 부르지 않으므로 그 앞에서 활성화된 것은 영구히 반쪽으로 남는다. tier 표 자체는 profile 과 무관하므로 C++ 상수·Python 미러는 불변이다. GRUB `nohz_full`/`rcu_nocbs` 가 profile 을 타지 않는 이유 — boot-static 이라 반영하려면 재부팅이 필요하고, 그러면 재부팅 없는 profile 전환이 깨진다 (결정 D11(a)).
