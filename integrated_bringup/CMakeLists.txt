@@ -948,9 +948,9 @@ if(BUILD_TESTING)
   )
 
   # ── #779: the WBC on a base turned against the world ──────────────────────
-  # The trajectory feed-forward conversion (header-only) and the controller on
-  # the shipped ur5e_p1b config, whose root_link "base" is Rz(pi) from the
-  # world: a task goal along +x of the base and the approach -> closure guard.
+  # The controller on the shipped ur5e_p1b config, whose root_link "base" is
+  # Rz(pi) from the world: a task goal along +x of the base and the approach ->
+  # closure guard.
   ament_add_gtest(test_wbc_rotated_base
     test/test_wbc_rotated_base.cpp
     ENV ROS_DOMAIN_ID=52

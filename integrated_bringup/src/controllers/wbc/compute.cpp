@@ -1,6 +1,5 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/controllers/fingertip_counts.hpp"
-#include "integrated_bringup/controllers/wbc/se3_feedforward.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
@@ -163,15 +162,7 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
   // these flags, not on ComputeHandFingertipFk's return).
   fingertip_pose_valid_.fill(false);
   if (clik_tcp_frame_idx_ >= 0) {
-    pinocchio::SE3 tcp = combined_cache_.cache()
-                             .registered_frames[static_cast<std::size_t>(clik_tcp_frame_idx_)]
-                             .oMf;
-    if (clik_base_frame_idx_ >= 0) {
-      tcp = combined_cache_.cache()
-                .registered_frames[static_cast<std::size_t>(clik_base_frame_idx_)]
-                .oMf.actInv(tcp);
-    }
-    (void)ComputeHandFingertipFk(state, tcp);
+    (void)ComputeHandFingertipFk(state, TcpInBaseFromCache());
   }
 }
 
@@ -440,11 +431,10 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
     if (auto* se3 = tsid_controller_.Formulation().GetTask("se3_tcp"); se3) {
       // The trajectory's velocity / acceleration are LOCAL (body) motions;
       // SE3Task takes them in its base frame's axes, the acceleration as the
-      // classical one (se3_feedforward.hpp).
-      const wbc::AlignedFeedForward ff = wbc::LocalToAlignedFeedForward(
-          tcp_traj_state_.pose, tcp_traj_state_.velocity, tcp_traj_state_.acceleration);
-      static_cast<rtc::tsid::SE3Task*>(se3)->SetSe3Reference(tcp_traj_state_.pose, ff.velocity,
-                                                             ff.acceleration);
+      // classical one.
+      static_cast<rtc::tsid::SE3Task*>(se3)->SetSe3Reference(
+          tcp_traj_state_.pose, tcp_traj_state_.AlignedVelocity(),
+          tcp_traj_state_.AlignedClassicalAcceleration());
     }
   }
 
@@ -842,13 +832,7 @@ void DemoWbcController::FillDeviceTrajectoryPods(rtc::DeviceOutput& out, int num
 // so the publish path can reuse it for arm_tip_pose.
 pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::FillTaskPosePods");
-  pinocchio::SE3 tcp =
-      combined_cache_.cache().registered_frames[static_cast<std::size_t>(clik_tcp_frame_idx_)].oMf;
-  if (clik_base_frame_idx_ >= 0) {
-    tcp = combined_cache_.cache()
-              .registered_frames[static_cast<std::size_t>(clik_base_frame_idx_)]
-              .oMf.actInv(tcp);
-  }
+  const pinocchio::SE3 tcp = TcpInBaseFromCache();
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
   output.actual_task_positions[1] = tcp.translation().y();
@@ -1293,6 +1277,15 @@ void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexc
   }
 }
 
+pinocchio::SE3 DemoWbcController::TcpInBaseFromCache() const noexcept {
+  const auto& frames = combined_cache_.cache().registered_frames;
+  const pinocchio::SE3& tcp = frames[static_cast<std::size_t>(clik_tcp_frame_idx_)].oMf;
+  if (clik_base_frame_idx_ < 0) {
+    return tcp;
+  }
+  return frames[static_cast<std::size_t>(clik_base_frame_idx_)].oMf.actInv(tcp);
+}
+
 double DemoWbcController::ComputeTcpError(const pinocchio::SE3& target) noexcept {
   // #unified-kindyn Phase 2: tip from the shared cache clik_tcp oMf — the exact
   // value arm_handle_->GetFramePlacement(tip_frame_id_) produced. UpdatePhase
@@ -1304,13 +1297,7 @@ double DemoWbcController::ComputeTcpError(const pinocchio::SE3& target) noexcept
   if (clik_tcp_frame_idx_ < 0) {
     return 1e10;
   }
-  const auto& frames = combined_cache_.cache().registered_frames;
-  const pinocchio::SE3& tcp_world = frames[static_cast<std::size_t>(clik_tcp_frame_idx_)].oMf;
-  if (clik_base_frame_idx_ < 0) {
-    return (tcp_world.translation() - target.translation()).norm();
-  }
-  const pinocchio::SE3 tcp_in_base =
-      frames[static_cast<std::size_t>(clik_base_frame_idx_)].oMf.actInv(tcp_world);
+  const pinocchio::SE3 tcp_in_base = TcpInBaseFromCache();
   return (tcp_in_base.translation() - target.translation()).norm();
 }
 
@@ -1441,7 +1428,8 @@ void DemoWbcController::FillDeviceWbcLogPod(
     pod.trajectory_task_positions[3] = rpy[0];
     pod.trajectory_task_positions[4] = rpy[1];
     pod.trajectory_task_positions[5] = rpy[2];
-    const auto tvel = tcp_traj_state_.velocity.toVector();
+    // What SE3Task is fed (base axes), not the trajectory's LOCAL twist.
+    const Eigen::Matrix<double, 6, 1> tvel = tcp_traj_state_.AlignedVelocity();
     for (std::size_t i = 0; i < ::integrated_bringup::DeviceWbcLogPod::kTaskDim; ++i) {
       pod.trajectory_task_velocities[i] = tvel[static_cast<Eigen::Index>(i)];
     }

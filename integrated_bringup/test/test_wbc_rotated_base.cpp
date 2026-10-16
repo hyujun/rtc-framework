@@ -1,20 +1,13 @@
 // ── DemoWbcController on a base turned against the world (#779) ──────────────
 //
 // UR's root_link "base" is Rz(π) from base_link, so on ur5e_p1b every task
-// quantity in the base points the other way in the world in x and y. Two
-// suites:
-//
-//  1. LocalToAlignedFeedForward (se3_feedforward.hpp) against finite
-//     differences of a TaskSpaceTrajectory: the trajectory reports LOCAL
-//     motions, SE3Task takes origin velocity and classical acceleration in the
-//     base's axes.
-//  2. The real controller on the shipped ur5e_p1b config, closed loop: a task
-//     goal 3 cm along +x of the base moves the TCP along +x of the base, and
-//     GRASP reaches kClosure — the approach → closure guard compares the TCP
-//     with the goal in the base (ComputeTcpError).
+// quantity in the base points the other way in the world in x and y. The real
+// controller on the shipped ur5e_p1b config, closed loop: a task goal 3 cm
+// along +x of the base moves the TCP along +x of the base, and GRASP reaches
+// kClosure — the approach → closure guard compares the TCP with the goal in
+// the base (ComputeTcpError). The ramp feed-forward's axes are judged in
+// rtc_controllers' test_task_space_trajectory.
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
-#include "integrated_bringup/controllers/wbc/se3_feedforward.hpp"
-#include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -29,13 +22,6 @@
 #include <span>
 #include <string>
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/spatial/explog.hpp>
-#pragma GCC diagnostic pop
-
 #ifndef RTC_WBC_CONFIG_DIR
 #error "RTC_WBC_CONFIG_DIR must be defined by CMake"
 #endif
@@ -48,53 +34,7 @@ using rtc::ControllerOutput;
 using rtc::ControllerState;
 namespace fx = integrated_bringup::testfx;
 
-// ── 1. Feed-forward axes ────────────────────────────────────────────────────
-
-TEST(WbcSe3FeedForward, MatchesFiniteDifferencesOfTheTrajectory) {
-  // A segment that turns about two axes while it moves, so v_b, ω_b and the
-  // ω_b × v_b term are all non-zero mid-way.
-  const pinocchio::SE3 start(Eigen::AngleAxisd(0.4, Eigen::Vector3d::UnitZ()).toRotationMatrix(),
-                             Eigen::Vector3d(0.3, -0.2, 0.5));
-  const pinocchio::SE3 goal((Eigen::AngleAxisd(-0.6, Eigen::Vector3d::UnitX()) *
-                             Eigen::AngleAxisd(1.1, Eigen::Vector3d::UnitZ()))
-                                .toRotationMatrix(),
-                            Eigen::Vector3d(0.6, 0.1, 0.2));
-  rtc::trajectory::TaskSpaceTrajectory traj;
-  traj.initialize(start, pinocchio::Motion::Zero(), goal, pinocchio::Motion::Zero(), 1.0);
-
-  constexpr double kH = 1e-5;
-  for (const double t : {0.3, 0.5, 0.7}) {
-    const auto s = traj.compute(t, kH);
-    const auto sm = traj.compute(t - kH, kH);
-    const auto sp = traj.compute(t + kH, kH);
-    const auto ff =
-        integrated_bringup::wbc::LocalToAlignedFeedForward(s.pose, s.velocity, s.acceleration);
-
-    // Origin velocity / acceleration by central differences of p(t).
-    const Eigen::Vector3d p_dot = (sp.pose.translation() - sm.pose.translation()) / (2.0 * kH);
-    const Eigen::Vector3d p_ddot =
-        (sp.pose.translation() - 2.0 * s.pose.translation() + sm.pose.translation()) / (kH * kH);
-    // Angular velocity in the pose's frame of reference, and its derivative.
-    auto omega = [](const pinocchio::SE3& a, const pinocchio::SE3& b, double dt) {
-      return Eigen::Vector3d(a.rotation() *
-                             pinocchio::log3(a.rotation().transpose() * b.rotation()) / dt);
-    };
-    const Eigen::Vector3d w = omega(sm.pose, sp.pose, 2.0 * kH);
-    const auto smm = traj.compute(t - 2.0 * kH, kH);
-    const auto spp = traj.compute(t + 2.0 * kH, kH);
-    const Eigen::Vector3d w_dot =
-        (omega(s.pose, spp.pose, 2.0 * kH) - omega(smm.pose, s.pose, 2.0 * kH)) / (2.0 * kH);
-
-    ASSERT_GT(s.velocity.linear().norm(), 1e-2) << t;
-    ASSERT_GT(s.velocity.angular().cross(s.velocity.linear()).norm(), 1e-3) << t;
-    EXPECT_LT((ff.velocity.head<3>() - p_dot).norm(), 1e-6) << t;
-    EXPECT_LT((ff.velocity.tail<3>() - w).norm(), 1e-6) << t;
-    EXPECT_LT((ff.acceleration.head<3>() - p_ddot).norm(), 1e-3) << t;
-    EXPECT_LT((ff.acceleration.tail<3>() - w_dot).norm(), 1e-3) << t;
-  }
-}
-
-// ── 2. The controller on ur5e_p1b ───────────────────────────────────────────
+// ── The controller on ur5e_p1b ──────────────────────────────────────────────
 
 YAML::Node ShippedWbcConfig(const char* robot) {
   const std::string path =
