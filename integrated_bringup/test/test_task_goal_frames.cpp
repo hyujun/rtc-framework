@@ -53,14 +53,15 @@ constexpr const char* kArmGroup = "iiwa7";
 const Eigen::Vector3d kWorldXyz(0.12, -0.08, -0.7);
 const Eigen::Vector3d kWorldRpy(0.3, -0.2, 0.7);
 
-std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> BuilderWithWorld(const char* parent) {
+std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> BuilderWithWorld(const char* parent,
+                                                                         bool provisional = false) {
   rtc_urdf_bridge::ModelConfig cfg = fx::MakeIiwa7LeapModelConfig();
   rtc_urdf_bridge::ExtraFrameConfig world;
   world.name = kWorld;
   world.parent = parent;
   world.xyz = kWorldXyz;
   world.rpy = kWorldRpy;
-  world.provisional = false;
+  world.provisional = provisional;
   cfg.extra_frames.push_back(world);
   return std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(cfg);
 }
@@ -203,6 +204,26 @@ TEST_F(TaskGoalFrames, ComplianceRefusesAMovingWorldAndAnUnresolvedRoot) {
   ExpectTheConfigureRefusals<DemoComplianceController>();
 }
 
+// A world marked provisional (not yet confirmed) is not used: configure goes
+// on, world goals are refused as if it were absent.
+template <class Ctrl>
+void ExpectAProvisionalWorldUnused() {
+  const std::string who = fx::ControllerFixture<Ctrl>::kName;
+  auto up = Configure<Ctrl>("provisional", BuilderWithWorld(kRoot, /*provisional=*/true));
+  ASSERT_EQ(up.rc, Ctrl::CallbackReturn::SUCCESS) << who;
+  EXPECT_FALSE(up.ctrl->TaskTargetFramesForTesting().WorldDefined()) << who;
+  EXPECT_TRUE(up.ctrl->TaskTargetFramesForTesting().WorldProvisional()) << who;
+  const auto before = up.ctrl->GetTargetRejectCount();
+  up.ctrl->DeliverTargetMessage(kArmGroup, 0, TaskGoal(kWorld, kPose));
+  EXPECT_EQ(up.ctrl->GetTargetRejectCount() - before, 1U) << who;
+}
+
+TEST_F(TaskGoalFrames, AProvisionalWorldIsNotUsed) {
+  ExpectAProvisionalWorldUnused<DemoWbcController>();
+  ExpectAProvisionalWorldUnused<DemoTaskController>();
+  ExpectAProvisionalWorldUnused<DemoComplianceController>();
+}
+
 // ── Goal kinds (V5) ─────────────────────────────────────────────────────────
 //
 // A joint-space controller would command a task goal's x, y, z, r, p, y as
@@ -247,6 +268,16 @@ TEST_F(TaskGoalFrames, TaskTakesNoJointGoalForTheArm) {
 
 TEST_F(TaskGoalFrames, ComplianceTakesNoJointGoalForTheArm) {
   ExpectTaskSpaceArmKinds<DemoComplianceController>();
+}
+
+TEST_F(TaskGoalFrames, WbcTakesNoTaskGoalForTheHand) {
+  const auto devices = fx::MakeIiwa7LeapDeviceConfigs();
+  auto up = Configure<DemoWbcController>("kinds", nullptr);
+  ASSERT_EQ(up.rc, DemoWbcController::CallbackReturn::SUCCESS);
+  const std::string hand = up.ctrl->GetSecondaryDeviceName();
+  EXPECT_EQ(RejectsOn(*up.ctrl, hand, 1, TaskGoal(kRoot, kPose)), 1U);
+  EXPECT_EQ(RejectsOn(*up.ctrl, hand, 1, JointGoal(devices.at(hand))), 0U);
+  EXPECT_EQ(RejectsOn(*up.ctrl, kArmGroup, 0, JointGoal(devices.at(kArmGroup))), 0U);
 }
 
 TEST_F(TaskGoalFrames, JointTakesNoTaskGoal) {

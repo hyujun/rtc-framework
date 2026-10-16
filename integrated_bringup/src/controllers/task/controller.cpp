@@ -280,13 +280,9 @@ void DemoTaskController::OnDeviceConfigsSet() {
   // one, scene_world (urdf.extra_frames). No resolved root (no model, or none
   // configured): every task goal is refused, as there is no base to read it in.
   // A malformed scene_world is kept for on_configure to fail on.
-  task_target_frames_ = TaskTargetFrames{};
-  task_target_frames_error_.clear();
-  if (const auto* root_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
-      arm_handle_ && root_frame_id_ != 0 && root_cfg != nullptr && root_cfg->urdf) {
-    task_target_frames_error_ =
-        task_target_frames_.Configure(arm_handle_->GetModel(), root_cfg->urdf->root_link);
-  }
+  task_target_frames_.ConfigureForArm(
+      arm_handle_ ? &arm_handle_->GetModel() : nullptr, root_frame_id_ != 0,
+      GetDeviceNameConfig(GetPrimaryDeviceName()), GetSystemModelConfig());
 
   // ── Unified kin&dyn (Phase 4): reorder map + arm TCP frame registration ──
   // full_dof_ / reorder need the device configs resolved above; RegisterFrame
@@ -629,7 +625,7 @@ const char* DemoTaskController::SetDeviceTaskTarget(int device_idx, std::span<co
   const auto layout = gains_lock_.Load().control_6dof ? TaskTargetFrames::Layout::kPose6d
                                                       : TaskTargetFrames::Layout::kPositionOnly;
   std::array<double, 6> in_root{};
-  if (const char* refused = task_target_frames_.ToRoot(frame_id, task6, layout, in_root);
+  if (const char* refused = task_target_frames_.frames.ToRoot(frame_id, task6, layout, in_root);
       refused != nullptr) {
     return refused;
   }

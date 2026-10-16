@@ -72,6 +72,10 @@ def _assert_well_formed(frame: dict, where: str, root: str) -> None:
         f"{where}: scene_world.parent is {frame.get('parent')!r}, not the arm root {root!r} — "
         "the controllers convert a world goal into their root_link through this frame"
     )
+    assert frame.get("provisional") is False, (
+        f"{where}: scene_world.provisional is {frame.get('provisional')!r} — an unset flag parses "
+        "as provisional, and the controllers do not use a provisional world"
+    )
     for key in ("xyz", "rpy"):
         values = frame.get(key)
         assert isinstance(values, list) and len(values) == 3, f"{where}: scene_world.{key}"

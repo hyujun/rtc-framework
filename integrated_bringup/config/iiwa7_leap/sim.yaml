@@ -132,6 +132,8 @@
           parent: "link_0"
           xyz: [0.0, 0.0, -0.7]
           rpy: [0.0, 0.0, 0.0]
+          # Checked against the scene (FK, #779) — not a placeholder.
+          provisional: false
 
     # ── Device configuration ──────────────────────────────────────────────────
     # Phase 4: devices.<group>.backend is the SSoT for HW/sim adapter type +

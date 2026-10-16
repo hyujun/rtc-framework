@@ -70,7 +70,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     {
       const auto* sys_cfg = GetSystemModelConfig();
       if (sys_cfg != nullptr && !sys_cfg->sub_models.empty()) {
-        SetOwnedStateFrameId(owned_topics_, sys_cfg->sub_models.front().root_link);
+        SetOwnedStateFrameId(owned_topics_, PoseParentFrame(sys_cfg->sub_models.front().root_link));
       }
     }
 
@@ -141,16 +141,11 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
       RCLCPP_ERROR(logger_, "arm root unresolved: %s", arm_root_error.c_str());
       return CallbackReturn::FAILURE;
     }
-    if (!task_target_frames_error_.empty()) {
-      RCLCPP_ERROR(logger_, "task goal frames: %s", task_target_frames_error_.c_str());
+    if (const std::string frames_error =
+            task_target_frames_.Report(arm_handle_ != nullptr, logger_);
+        !frames_error.empty()) {
+      RCLCPP_ERROR(logger_, "task goal frames: %s", frames_error.c_str());
       return CallbackReturn::FAILURE;
-    }
-    if (task_target_frames_.Configured()) {
-      RCLCPP_INFO(logger_, "task goals: header.frame_id '%s'%s",
-                  task_target_frames_.RootLink().c_str(),
-                  task_target_frames_.WorldDefined()
-                      ? " or 'scene_world'"
-                      : " only (no urdf.extra_frames.scene_world: world goals are refused)");
     }
 
     // The hand fingertip FK could not be tied to its device group or to the arm

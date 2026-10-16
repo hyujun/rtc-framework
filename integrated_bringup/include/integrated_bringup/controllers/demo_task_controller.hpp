@@ -385,14 +385,15 @@ class DemoTaskController final : public RTControllerInterface {
   /// The frames a task goal may name and their conversion into root_link
   /// (#779). Filled in OnDeviceConfigsSet; read-only afterwards.
   [[nodiscard]] const TaskTargetFrames& TaskTargetFramesForTesting() const noexcept {
-    return task_target_frames_;
+    return task_target_frames_.frames;
   }
 
   /// Parent frame of the published poses: the base frame they are computed in
   /// (the device's root_link, #779), else `fallback` (the arm sub-model's root
   /// — the two are the same link whenever the root resolved).
   [[nodiscard]] const std::string& PoseParentFrame(const std::string& fallback) const noexcept {
-    return task_target_frames_.Configured() ? task_target_frames_.RootLink() : fallback;
+    return task_target_frames_.frames.Configured() ? task_target_frames_.frames.RootLink()
+                                                   : fallback;
   }
 
   /// Test-only: lift the shipped K_est_max pin so the stiffness estimate can
@@ -636,10 +637,8 @@ class DemoTaskController final : public RTControllerInterface {
   rtc::SeqLock<Gains> gains_lock_;
   // #779: root_link / scene_world → root_link for task goals. Configured in
   // OnDeviceConfigsSet (before CreateOwnedTopics creates the target
-  // subscription) and not written after; task_target_frames_error_ is a
-  // malformed scene_world, which on_configure turns into a failure.
-  TaskTargetFrames task_target_frames_;
-  std::string task_target_frames_error_;
+  // subscription) and not written after; on_configure fails on its error.
+  ArmTaskTargetFrames task_target_frames_;
 
   // ── rtc_urdf_bridge ────────────────────────────────────────────
   std::string urdf_path_;  // stored from constructor, used in LoadConfig

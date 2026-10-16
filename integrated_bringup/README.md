@@ -379,7 +379,8 @@ demo_task_controller:
 | `demo_dualarm` | 자기 `<task>/task_goal` lane 의 `clik.target_frames` (빈 값 = 과제 base) | 이 계약 밖. 그쪽 `"world"` 는 model frame 이지 `scene_world` 가 아니다 (R6, E-9) |
 
 - **`scene_world`** 는 model frame 입니다: `urdf.extra_frames.scene_world {parent: <root_link>, xyz, rpy}` (규약 `p_root = R(rpy)·p_world + xyz`) 를 CM 이 모든 모델에 더합니다. 출하 정의는 `sim.yaml` (p1a · p1b · iiwa7_leap) 과 장면을 바꾸는 sim overlay 마다 있고, `_base.yaml` · `robot.yaml` 에는 **없습니다** — 실기는 calibration 값을 넣기 전까지 world 목표를 거부합니다. g1_p1b 에도 없습니다. 배치 규칙은 `test_shipped_scene_world.py` 가 지킵니다.
-- **세 상태.** 없음 → configure 성공, world 목표 거부 (configure INFO 한 줄이 받는 frame 을 말한다). `root_link` 에 rigid 하지 않거나 비유한 → `on_configure` 실패. CM 이 파싱하지 못하는 항목 → 기동 전체 거부 (CM 의 기존 fail-closed).
+- **세 상태.** 없음 (또는 `provisional: true` — 확인되지 않은 자리표시) → configure 성공, world 목표 거부 (configure INFO 한 줄이 받는 frame 을 말한다). `root_link` 에 rigid 하지 않거나 비유한 → `on_configure` 실패. CM 이 파싱하지 못하는 항목 → 기동 전체 거부 (CM 의 기존 fail-closed). 출하 값은 장면과 대조했으므로 `provisional: false` 다 — 키를 빼면 provisional 로 파싱된다.
+- **장면을 바꿀 때.** `scene_world` 는 파라미터일 뿐 장면에서 읽지 않는다. 명령줄 `model_path:=` 로 장면만 바꾸면 `sim.yaml` 의 world 가 그대로 남으니, 그 장면의 `scene_world` 를 함께 주는 overlay 를 쓴다.
 - **변환 위치.** 비-RT target ingress (`SetDeviceTaskTarget(idx, task6, frame_id)`) 에서 공용 `support/task_target_frames.hpp` 로 변환한 뒤 mailbox 에 넣습니다. `root_link` 목표는 비트 그대로입니다. `control_6dof: false` (Task · Compliance) 에서는 x, y, z 만 변환하고 3..5 (null-space 자세) 는 건드리지 않습니다.
 - **거부는 센다.** `/rtc_cm/list_controllers` 의 `target_reject_count` 가 오르고 throttled WARN 이 사유를 말합니다 (`rtc_controller_interface` README §기준 frame 과 goal 종류).
 - **configure 거부.** `root_link` 가 이름은 있는데 모델 frame 이 아니면 실패합니다 (전에는 조용히 world 로 갔다). 설정이 아예 없으면 지금처럼 world 에서 동작하고 task 목표는 전부 거부됩니다.
@@ -391,9 +392,9 @@ demo_task_controller:
 |---|---|---|
 | `demo_joint` | 받음 | **거부** (x,y,z,r,p,y 를 관절 rad 로 명령했다) |
 | `demo_task` · `demo_compliance` | 팔: **거부** (rad 를 pose 로 읽었다) · 손: 받음 | 팔: 받음 · 손: **거부** |
-| `demo_wbc` | 받음 (팔 posture) | 팔: 받음 |
+| `demo_wbc` | 받음 (팔 posture · 손) | 팔: 받음 · 손: **거부** (SE3 slot 이 없어 조용히 버려졌다) |
 
-출하 경로 중 이것에 걸리던 두 곳을 고쳤습니다: BT `FullDemo` 는 `demo_joint_controller` 로 바꾼 **뒤** 팔 자세를 보내고, motion editor 는 Task · Compliance 가 활성이면 팔 joint 자세를 보내지 않고 이유를 로그로 남깁니다.
+출하 경로 중 이것에 걸리던 곳을 고쳤습니다: BT `FullDemo` 는 `demo_joint_controller` 로 바꾼 **뒤** 팔 자세를 보내고, motion editor 는 Task · Compliance 가 활성이면 팔 joint 자세를 보내지 않으며, demo GUI 프리셋은 활성 컨트롤러가 받지 않는 종류의 팔 목표를 보내지 않습니다 (셋 다 이유를 로그로 남긴다). 남는 한계: 7-DoF 팔 (iiwa7) 의 Task · Compliance position-only 모드에서 null-space 자세 `null_target[6]` 는 이제 외부에서 줄 수 없습니다 — 6 값 task 목표에는 자리가 없고, 그 값을 싣던 팔 joint lane 은 위 이유로 막혔습니다 (seed 값 유지).
 
 ### DemoJointController (Index 4)
 
@@ -1164,7 +1165,7 @@ ros2 topic pub --once /demo_dualarm_controller/p1b/joint_goal rtc_msgs/RobotTarg
 
 S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장되면 팔을 `planner.wait_pose` 로 관절공간 homing 하고 손을 q_pre 에 둔 채 기다린다 (IDLE → ARMED). 러너는 미러 `planner.wait_pose` 로 조준·정렬하므로 **`planner.wait_pose_source: yaml` 전제**다 — `current` 로 띄우면 채택 자세와 미러가 달라 ARMED 정렬 gate 가 거부한다; 자세 실험은 overlay `planner.wait_pose` 로 한다 (S8-I). 시행이 끝나면 다시 그 자세로 돌아간다 (RETREAT → ARMED).
 
-**switch 시점 자세를 대기 자세로 (S8-I, `planner.wait_pose_source: current` — 출하 overlay 는 없다. 이 키 하나를 적은 overlay 를 경로로 넘긴다).** 러너 없이 손으로 쓰는 흐름이다: `demo_joint_controller` 에 관절 목표 (`/demo_joint_controller/ur5e/joint_goal`, `goal_type: joint`) 나 `demo_task_controller` 에 TCP 목표 (`/demo_task_controller/ur5e/joint_goal`, `goal_type: task`, `base` 프레임 (x, y, z, roll, pitch, yaw) ZYX — 출하 `trajectory_speed` 0.01 m/s 라 0.1 m 에 10 s) 를 보내 팔을 두고, `/rtc_cm/switch_controller` 로 포구 컨트롤러를 활성화한다. 팔이 **정지한** 첫 판독 tick 이 그 자세를 채택하고 (기동 로그 `wait pose adopted from the arm's switched-in pose: [...]`, diag `wait_pose_adopted`·`q_wait_<joint>`), `catching.enable` 은 homing 없이 곧 ARMED 다. 팔이 아직 움직이거나 팔 속도 lane 을 읽을 수 없으면 결정을 미루고, 그 상태에서 무장하거나 E-STOP 아래에서 switch 했거나 자세가 margined 관절 상자 밖이면 **거부** — YAML 자세가 남고 WARN `switched-in wait pose REFUSED ... <사유> [arm joint i, reading x]` 한 줄이 나온다 (무장 시 YAML 자세까지 homing). 2026-09-27 headless sim 검증: 관절 목표 3 자세 + TCP 목표 2 자세 (출하 자세에서 최대 0.35 rad · 8–11 cm) + 출하 복귀 재채택 — 채택 오차 ≤ 1.2e-4 rad, 채택 로그 0.11 s, 무장 시 팔 이동 ≤ 1e-4 rad, 각 자세에서 손 근처 투척 한 발이 plan → HOLD → RETREAT 로 채택 자세에 복귀 (6/6, 포획 2); wrist_3 6.25 rad (margined box 밖) 은 거부되어 YAML 자세로 12.8 s homing. 미러 `planner.wait_pose` 는 YAML 값이므로 채택 자세는 로그·diag 로만 읽는다. 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
+**switch 시점 자세를 대기 자세로 (S8-I, `planner.wait_pose_source: current` — 출하 overlay 는 없다. 이 키 하나를 적은 overlay 를 경로로 넘긴다).** 러너 없이 손으로 쓰는 흐름이다: `demo_joint_controller` 에 관절 목표 (`/demo_joint_controller/ur5e/joint_goal`, `goal_type: joint`) 나 `demo_task_controller` 에 TCP 목표 (`/demo_task_controller/ur5e/joint_goal`, `goal_type: task`, `header.frame_id: base` (§Task 목표의 기준 frame — 비우면 거부된다), `base` 프레임 (x, y, z, roll, pitch, yaw) ZYX — 출하 `trajectory_speed` 0.01 m/s 라 0.1 m 에 10 s) 를 보내 팔을 두고, `/rtc_cm/switch_controller` 로 포구 컨트롤러를 활성화한다. 팔이 **정지한** 첫 판독 tick 이 그 자세를 채택하고 (기동 로그 `wait pose adopted from the arm's switched-in pose: [...]`, diag `wait_pose_adopted`·`q_wait_<joint>`), `catching.enable` 은 homing 없이 곧 ARMED 다. 팔이 아직 움직이거나 팔 속도 lane 을 읽을 수 없으면 결정을 미루고, 그 상태에서 무장하거나 E-STOP 아래에서 switch 했거나 자세가 margined 관절 상자 밖이면 **거부** — YAML 자세가 남고 WARN `switched-in wait pose REFUSED ... <사유> [arm joint i, reading x]` 한 줄이 나온다 (무장 시 YAML 자세까지 homing). 2026-09-27 headless sim 검증: 관절 목표 3 자세 + TCP 목표 2 자세 (출하 자세에서 최대 0.35 rad · 8–11 cm) + 출하 복귀 재채택 — 채택 오차 ≤ 1.2e-4 rad, 채택 로그 0.11 s, 무장 시 팔 이동 ≤ 1e-4 rad, 각 자세에서 손 근처 투척 한 발이 plan → HOLD → RETREAT 로 채택 자세에 복귀 (6/6, 포획 2); wrist_3 6.25 rad (margined box 밖) 은 거부되어 YAML 자세로 12.8 s homing. 미러 `planner.wait_pose` 는 YAML 값이므로 채택 자세는 로그·diag 로만 읽는다. 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
 
 `catching_sim_trials` 는 떠 있는 sim 을 구동만 한다. 투척마다 다음을 한다.
 

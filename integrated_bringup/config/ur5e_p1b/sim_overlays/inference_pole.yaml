@@ -79,3 +79,5 @@ integrated_rt_controller:
           parent: "base"
           xyz: [0.0, 0.0, 0.0]
           rpy: [0.0, 0.0, 0.0]
+          # Checked against the scene (FK, #779) — not a placeholder.
+          provisional: false

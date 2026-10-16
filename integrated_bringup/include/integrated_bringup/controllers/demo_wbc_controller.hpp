@@ -218,6 +218,14 @@ class DemoWbcController final : public RTControllerInterface {
   [[nodiscard]] const char* SetDeviceTaskTarget(int device_idx, std::span<const double> task6,
                                                 std::string_view frame_id) noexcept override;
 
+  // V5 (#779): the arm (device 0) takes both kinds — posture and commanded
+  // SE3 live in separate slots. The other devices have no SE3 slot: a task
+  // goal there used to be dropped on the RT side without a word; it is refused
+  // and counted instead.
+  [[nodiscard]] GoalKinds AcceptedGoalKinds(int device_idx) const noexcept override {
+    return device_idx == 0 ? GoalKinds{} : GoalKinds{.joint = true, .task = false};
+  }
+
   [[nodiscard]] std::string_view Name() const noexcept override { return "DemoWbcController"; }
 
   void TriggerEstop() noexcept override;
@@ -313,14 +321,15 @@ class DemoWbcController final : public RTControllerInterface {
   /// The frames a task goal may name and their conversion into root_link
   /// (#779). Filled in OnDeviceConfigsSet; read-only afterwards.
   [[nodiscard]] const TaskTargetFrames& TaskTargetFramesForTesting() const noexcept {
-    return task_target_frames_;
+    return task_target_frames_.frames;
   }
 
   /// Parent frame of the published poses: the base frame they are computed in
   /// (the device's root_link, #779), else `fallback` (the arm sub-model's root
   /// — the two are the same link whenever the root resolved).
   [[nodiscard]] const std::string& PoseParentFrame(const std::string& fallback) const noexcept {
-    return task_target_frames_.Configured() ? task_target_frames_.RootLink() : fallback;
+    return task_target_frames_.frames.Configured() ? task_target_frames_.frames.RootLink()
+                                                   : fallback;
   }
 
   [[nodiscard]] bool IsTcpCmdValidForTesting() const noexcept {
@@ -695,10 +704,8 @@ class DemoWbcController final : public RTControllerInterface {
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> arm_handle_;
   // #779: root_link / scene_world → root_link for task goals. Configured in
   // OnDeviceConfigsSet (before CreateOwnedTopics creates the target
-  // subscription) and not written after; task_target_frames_error_ is a
-  // malformed scene_world, which on_configure turns into a failure.
-  TaskTargetFrames task_target_frames_;
-  std::string task_target_frames_error_;
+  // subscription) and not written after; on_configure fails on its error.
+  ArmTaskTargetFrames task_target_frames_;
   // The same arm sub-model, kept as a shared_ptr so the momentum observer can
   // build its OWN handle over it (RtModelHandle::GetModel() hands back a
   // reference, not ownership).

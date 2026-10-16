@@ -1,6 +1,9 @@
 #include "integrated_bringup/support/task_target_frames.hpp"
 
 #include <rtc_math/se3/so3.hpp>
+#include <rtc_urdf_bridge/types.hpp>
+
+#include <rclcpp/logging.hpp>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -26,10 +29,11 @@ namespace {
 
 }  // namespace
 
-std::string TaskTargetFrames::Configure(const pinocchio::Model& model,
-                                        const std::string& root_link) {
+std::string TaskTargetFrames::Configure(const pinocchio::Model& model, const std::string& root_link,
+                                        bool world_provisional) {
   root_link_.clear();
   world_defined_ = false;
+  world_provisional_ = false;
   root_T_world_.setIdentity();
 
   if (root_link.empty() || !model.existFrame(root_link)) {
@@ -40,6 +44,10 @@ std::string TaskTargetFrames::Configure(const pinocchio::Model& model,
   const std::string world(kSceneWorld);
   if (!model.existFrame(world)) {
     return {};  // absent: world goals are refused at ingress
+  }
+  if (world_provisional) {
+    world_provisional_ = true;  // not confirmed: as if absent
+    return {};
   }
   const auto& root = model.frames[model.getFrameId(root_link)];
   const auto& sw = model.frames[model.getFrameId(world)];
@@ -62,6 +70,7 @@ std::string TaskTargetFrames::Configure(const pinocchio::Model& model,
 void TaskTargetFrames::ConfigureWithoutWorld(const std::string& root_link) {
   root_link_ = root_link;
   world_defined_ = false;
+  world_provisional_ = false;
   root_T_world_.setIdentity();
 }
 
@@ -86,7 +95,10 @@ const char* TaskTargetFrames::ToRoot(std::string_view frame_id, std::span<const 
     return "header.frame_id is neither the arm's root_link nor scene_world";
   }
   if (!world_defined_) {
-    return "scene_world is not defined on this bring-up (no urdf.extra_frames.scene_world)";
+    return world_provisional_
+               ? "scene_world is provisional on this bring-up (urdf.extra_frames.scene_world."
+                 "provisional) — not used until it is confirmed"
+               : "scene_world is not defined on this bring-up (no urdf.extra_frames.scene_world)";
   }
 
   const Eigen::Vector3d p_world(task6[0], task6[1], task6[2]);
@@ -114,6 +126,44 @@ const char* TaskTargetFrames::ToRoot(std::string_view frame_id, std::span<const 
     return "task goal converted from scene_world is not finite";
   }
   return nullptr;
+}
+
+void ArmTaskTargetFrames::ConfigureForArm(const pinocchio::Model* arm_model, bool root_resolved,
+                                          const rtc::DeviceNameConfig* device,
+                                          const rtc_urdf_bridge::ModelConfig* system) {
+  frames = TaskTargetFrames{};
+  error.clear();
+  if (arm_model == nullptr || !root_resolved || device == nullptr || !device->urdf) {
+    return;
+  }
+  bool provisional = false;
+  if (system != nullptr) {
+    for (const auto& ef : system->extra_frames) {
+      if (ef.name == TaskTargetFrames::kSceneWorld) {
+        provisional = ef.provisional;
+      }
+    }
+  }
+  error = frames.Configure(*arm_model, device->urdf->root_link, provisional);
+}
+
+std::string ArmTaskTargetFrames::Report(bool has_arm_model, const rclcpp::Logger& logger) const {
+  if (!error.empty()) {
+    return error;
+  }
+  if (frames.Configured()) {
+    RCLCPP_INFO(logger, "task goals: header.frame_id '%s'%s", frames.RootLink().c_str(),
+                frames.WorldDefined()       ? " or 'scene_world'"
+                : frames.WorldProvisional() ? " only (scene_world is provisional: world goals are "
+                                              "refused until it is confirmed)"
+                                            : " only (no urdf.extra_frames.scene_world: world "
+                                              "goals are refused)");
+  } else if (has_arm_model) {
+    RCLCPP_WARN(logger,
+                "task goals: none can be taken — the primary device configures no arm "
+                "root_link, so there is no base frame to read one in (set urdf.root_link)");
+  }
+  return {};
 }
 
 }  // namespace integrated_bringup
