@@ -227,7 +227,7 @@ $\delta=0$ 행의 1.1 mm는 오차가 아니라 **DS 자체의 잔여 수렴 오
 
 ## 5. C++ 구현
 
-### 5.1 `soft_catch_reference.hpp` (S1.4·S2.1 이식 완료)
+### 5.1 `soft_catch.hpp` (참고 구현 `soft_catch_reference.hpp` 의 이식 — S1.4·S2.1)
 
 정의는 `rtc_controllers/include/rtc_controllers/catching/soft_catch.hpp` (병진 기준·γ 프로파일) 와 `rtc_math/include/rtc_math/se3/axis_align.hpp` (축 정렬) 다 — 문서에 코드를 복제하지 않는다.
 
