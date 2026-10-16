@@ -75,7 +75,7 @@ timing CSV 는 `ros2 run rtc_tools plot_rtc_log <csv> --stats` 로 읽는다.
 |---|---|
 | `ApplyThreadConfig()` 경고 | `sudo usermod -aG realtime $USER` 후 재로그인 |
 | 시작하자마자 E-STOP | sim 이면 `init_timeout_sec: 0.0` |
-| Jitter 큼 (> 200 us) | `taskset` pinning, `isolcpus`, `check_rt_setup.sh --summary` 확인 |
+| Jitter 큼 (> 200 us) | `check_rt_setup.sh --summary` → `cpu_shield.sh status` (격리는 `isolcpus` 가 아니라 cset shield). 단계별 점검은 [rt-optimization.md](rt-optimization.md#5-문제-해결) |
 | Hand timeout E-STOP | UDP 링크 확인. `recv_timeout_ms` 는 로봇별 값이니 `integrated_bringup/config/<robot>/udp_hand_node_*.yaml` 을 본다 |
 | 관절 궤적이 "정착" 인지 "밴드에 pin" 인지 모르겠다 | 컨트롤러 로그의 `joint band engaged:` WARN 구간은 pin 이다. Ctrl-C 로 끝내면 요약이 없다 |
 | `ament_cmake_test` missing | `.venv` overlay 가 system site-packages 를 가림. 재활성화 후 ROS 환경 재로드 |
@@ -100,7 +100,7 @@ ros2 topic echo /system/estop_status
 sudo groupadd realtime && sudo usermod -aG realtime $USER
 echo "@realtime - rtprio 99" | sudo tee -a /etc/security/limits.conf
 echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
-# 재로그인 필요. 선택: isolcpus, nohz_full, cpu_shield.sh
+# 재로그인 필요. 나머지 RT 설정 (GRUB nohz_full · cpu_shield · IRQ) 은 ./install.sh robot --rt
 ```
 
 ### CPU Shield 검증

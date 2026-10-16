@@ -842,7 +842,7 @@ Ubuntu 22.04 (Humble, systemd 249) 에서는 실행해 확인하지 못했다. �
 | 항목 | 개발 PC | 실 RT PC |
 |------|--------|---------|
 | 커널 | vanilla `6.x-generic` | `linux-image-rt-generic` (`-rt` 접미사 필수) |
-| CPU 격리 | 해제 | `isolcpus=...` + `nohz_full=...` (setup_grub_rt.sh) |
+| CPU 격리 | 해제 | `nohz_full=...` · `rcu_nocbs=...` (setup_grub_rt.sh) + cset shield (`cpu_shield.sh`) |
 | IRQ affinity | 기본 | `setup_irq_affinity.sh` 실행 |
 | 지터 기준 | 수~수십 us | 수 us (cyclictest 99.99 %ile) |
 | GPU / Python 패키지 | CUDA+GPU 휠 | `+cpu` 휠로 재컴파일 (`requirements.in` 에 `--extra-index-url https://download.pytorch.org/whl/cpu` 추가 후 `uv pip compile` 재실행) |
