@@ -644,6 +644,7 @@ SE(3) 태스크 공간 궤적 -- log6 기반 tangent space에서 6-DOF에 각각
 | `initialize(start_pose, start_velocity, goal_pose, goal_velocity, duration)` | SE(3) 궤적 초기화 |
 | `compute(t)` | 시간 t에서의 SE(3) pose, Motion velocity, Motion acceleration 반환 |
 | `duration()` | 궤적 지속 시간 |
+| `State::AlignedVelocity()` · `State::AlignedClassicalAcceleration()` | `velocity` · `acceleration` 은 LOCAL (body) 표현이다. 이 둘은 pose 가 표현된 frame 의 축으로 바꾼 원점 속도 `[R v; R ω]` 와 classical 가속도 `[R (v̇ + ω×v); R ω̇]` — LOCAL_WORLD_ALIGNED Jacobian 으로 추종하는 소비자 (`rtc_tsid` SE3Task) 의 feedforward 형식 (#779) |
 
 **보간 방식:**
 1. `delta_X = log6(start_pose^{-1} * goal_pose)` -- tangent space 변위 계산

@@ -187,4 +187,57 @@ TEST(TaskSpaceTrajectory, DefaultStateIsIdentityPoseZeroMotion) {
   EXPECT_EQ(state.acceleration.toVector().norm(), 0.0);
 }
 
+// --- Aligned velocity / classical acceleration (#779) ---
+// AlignedVelocity() and AlignedClassicalAcceleration() against central
+// differences of the pose: origin velocity, angular velocity in the pose's
+// reference axes, and their time derivatives. The segment starts moving and
+// turns about two axes, so ω×v and the dJexp/dt correction are both non-zero.
+// The acceleration comes from its own trajectory instance stepped forward in
+// time (compute() differences Jexp against the previous call).
+TEST(TaskSpaceTrajectory, AlignedFeedForwardMatchesFiniteDifferencesOfThePose) {
+  const pinocchio::SE3 start = make_pose(0.3, -0.2, 0.5, 0.0, 0.0, 0.4);
+  const pinocchio::SE3 goal = make_pose(0.6, 0.1, 0.2, -0.6, 0.2, 1.1);
+  pinocchio::Motion v0;
+  v0.linear() << 0.2, -0.1, 0.05;
+  v0.angular() << 0.3, 0.1, -0.2;
+  auto make = [&] {
+    TaskSpaceTrajectory traj;
+    traj.initialize(start, v0, goal, pinocchio::Motion::Zero(), 1.0);
+    return traj;
+  };
+
+  constexpr double kH = 1e-5;
+  // ω at the midpoint of [a, b], in the reference axes.
+  auto omega = [](const pinocchio::SE3& a, const pinocchio::SE3& b, double dt) {
+    return Eigen::Vector3d(a.rotation() * pinocchio::log3(a.rotation().transpose() * b.rotation()) /
+                           dt);
+  };
+  for (const double t : {0.3, 0.5, 0.7}) {
+    TaskSpaceTrajectory poses = make();
+    const auto smm = poses.compute(t - 2.0 * kH);
+    const auto sm = poses.compute(t - kH);
+    const auto s0 = poses.compute(t);
+    const auto sp = poses.compute(t + kH);
+    const auto spp = poses.compute(t + 2.0 * kH);
+    TaskSpaceTrajectory stepped = make();
+    (void)stepped.compute(t - kH, kH);
+    const auto s = stepped.compute(t, kH);  // acceleration with the dJexp/dt term
+
+    const Eigen::Vector3d p_dot = (sp.pose.translation() - sm.pose.translation()) / (2.0 * kH);
+    const Eigen::Vector3d p_ddot =
+        (sp.pose.translation() - 2.0 * s0.pose.translation() + sm.pose.translation()) / (kH * kH);
+    const Eigen::Vector3d w = omega(sm.pose, sp.pose, 2.0 * kH);
+    const Eigen::Vector3d w_dot =
+        (omega(s0.pose, spp.pose, 2.0 * kH) - omega(smm.pose, s0.pose, 2.0 * kH)) / (2.0 * kH);
+
+    ASSERT_GT(s.velocity.angular().cross(s.velocity.linear()).norm(), 1e-3) << t;
+    const Eigen::Matrix<double, 6, 1> v = s.AlignedVelocity();
+    const Eigen::Matrix<double, 6, 1> a = s.AlignedClassicalAcceleration();
+    EXPECT_LT((v.head<3>() - p_dot).norm(), 1e-6) << t;
+    EXPECT_LT((v.tail<3>() - w).norm(), 1e-6) << t;
+    EXPECT_LT((a.head<3>() - p_ddot).norm(), 1e-3) << t;
+    EXPECT_LT((a.tail<3>() - w_dot).norm(), 1e-3) << t;
+  }
+}
+
 }  // namespace rtc::trajectory
