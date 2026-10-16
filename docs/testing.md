@@ -135,19 +135,13 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true   # �
 테스트 카운트는 문서에 적지 않고 직접 잰다.
 
 ```bash
-rm -rf build/<pkg>/test_results            # 누적 XML 제거
-colcon test --packages-select <pkg> --event-handlers console_direct+
-colcon test-result --verbose
+rm -rf build/<pkg>/test_results                                    # 누적 XML 제거
+colcon test --packages-select <pkg> --event-handlers console_direct+ --return-code-on-test-failure
+colcon test-result --verbose --test-result-base build/<pkg>       # 패키지 하나 (--packages-select 는 없다)
+( cd build/<pkg> && ctest -N )                                     # 등록 확인 — 새 테스트는 재빌드 뒤에 보인다
 ```
 
-- `colcon test-result` 는 남아 있는 XML 을 전부 합산한다. 타깃을 지웠거나 브랜치를 바꿨으면 먼저 `test_results` 를 지운다.
-- 체인(`lint && build && test; test-result`)의 앞이 실패하면 이전 결과가 요약된다. 같은 출력에 `Summary: … packages finished` 가 있는지 확인한다.
-- `colcon test` 의 종료 코드는 테스트 실패를 반영하지 않는다. 필요하면 `--return-code-on-test-failure`. `colcon test-result` 에는 `--packages-select` 가 없다 (패키지 하나는 `--test-result-base build/<pkg>`).
-- 총계는 `--test-result-base` 의 범위와 단위(gtest case / ctest entry / lint)에 따라 달라진다. 비교는 같은 범위·단위로 한다.
-- 새로 등록한 테스트는 재빌드해야 보인다 (`ctest -N` 으로 확인).
-- timeout · crash 는 gtest XML 에 `<failure>` 로 남지 않는다. 판정은 `colcon test-result` 요약이나 `build/<pkg>/Testing/*/Test.xml` 로 한다.
-
-각 항의 근거와 사례는 [testing-rationale.md](reference/testing-rationale.md) §계측 함정.
+결과를 어떻게 판정하는지 (누적 XML · 종료 코드 · 범위와 단위 · timeout 과 crash) 는 [testing-debug.md](../agent_docs/testing-debug.md#test-측정) 가 갖고, 각 항이 실제로 잘못된 보고를 낳은 사례는 [testing-rationale.md](reference/testing-rationale.md) §계측 함정 에 있다.
 
 ### 커버리지
 
