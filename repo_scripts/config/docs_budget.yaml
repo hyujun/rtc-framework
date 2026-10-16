@@ -35,6 +35,6 @@ agent_docs/invariants.md: 38289  # raised from 38043: RT-9 lifecycle exemption, 
 agent_docs/modification-guide.md: 15230
 agent_docs/testing-debug.md: 16772  # raised from 14610: L1/L2 span, executor-callback L2 and begin-to-begin cadence rules, pass controls and mutant checks in test design, three false-green paths in test measurement -- stated only in testing/tracing rationale before (docs/reference prune, #851)
 
-.claude/rules/arch-build-meta.md: 2799
-.claude/rules/arch-source.md: 3833
-.claude/rules/rt-path.md: 3916
+.claude/rules/arch-build-meta.md: 2632
+.claude/rules/arch-source.md: 3701
+.claude/rules/rt-path.md: 3472

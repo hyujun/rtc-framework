@@ -18,9 +18,9 @@ paths:
   - "**/integrated_bringup/**/*.cc"
 ---
 
-# RT path 절대 금지 (정기 tick — `control_rate` YAML; rate 범위·default 는 [invariants.md](../../agent_docs/invariants.md) §RT Path Invariants 가 SSoT)
+# RT path 절대 금지 (정기 tick — `control_rate` YAML)
 
-`rtc_*` · `integrated_bringup` C++ 파일을 읽거나 편집할 때 로드되는 reminder 다. **구속 대상은 RT 정기 tick / SCHED_FIFO dedicated-core 경로뿐**이다 (`integrated_bringup` 에서는 device backend 의 rt_callback lane 과 controller `Compute()`) — 비-RT 코드 (`on_configure`/`on_activate` 등 lifecycle 콜백, `DrainLog()` aux thread, 1 Hz aux 타이머, 파라미터 콜백, **test / init 코드**) 는 면제. RT path 정의·전체 목록·탐지 패턴·복구·false-positive 판정 절차는 [invariants.md](../../agent_docs/invariants.md) §RT Path Invariants 가 SSoT. RT tick 경로에서 다음을 쓰지 않는다 (위반이 필요하면 AGENTS.md §6 의 `[CONCERN]`):
+**구속 대상은 RT 정기 tick / SCHED_FIFO dedicated-core 경로뿐**이다 (`integrated_bringup` 에서는 device backend 의 rt_callback lane 과 controller `Compute()`) — 비-RT 코드 (`on_configure`/`on_activate` 등 lifecycle 콜백, `DrainLog()` aux thread, 1 Hz aux 타이머, 파라미터 콜백, **test / init 코드**) 는 면제. RT path 정의·전체 목록·탐지 패턴·복구·false-positive 판정 절차는 [invariants.md](../../agent_docs/invariants.md) §RT Path Invariants 가 SSoT. RT tick 경로에서 다음을 쓰지 않는다 (위반이 필요하면 AGENTS.md §6 의 `[CONCERN]`):
 
 - **RT-1** `new` / `malloc` / `push_back` / `emplace_back` / `resize` — pre-allocated fixed-size 사용. invariants.md 에 기록된 알려진 위반은 새 RT 코드의 할당 근거가 아니다
 - **RT-2** `throw` / `catch` — error code, `std::optional`, `std::expected`
@@ -41,5 +41,3 @@ glob 은 파일 단위라 여기 로드됐다는 사실만으로는 아무것도
 3. 여전히 애매하면 비-RT 로 가정하지 말고 AGENTS.md §6 의 `[CONCERN]` 으로 보고한다.
 
 흔한 오판 두 가지: `PublishNonRtSnapshot()` 은 이름과 달리 **비-RT** (전용 jthread, SCHED_OTHER) 이고, `on_configure` 안의 `push_back` 은 **위반이 아니다** (lifecycle = 비-RT).
-
-기존 test assertion 수정은 RT 규칙이 아니라 process 규칙이다 ([invariants.md](../../agent_docs/invariants.md) PROC-6 · AGENTS.md §6 E-6). ARCH · PROC · NUM invariant 은 RT 코드 밖에서도 적용된다 (AGENTS.md §3).
