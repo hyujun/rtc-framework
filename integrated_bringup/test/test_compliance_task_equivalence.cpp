@@ -16,14 +16,20 @@
 // value: all of those ship green. When this controller was added, the
 // package's existing tests executed none of its lines.
 //
-// WHY NOT DUPLICATE THOSE FIVE SUITES INSTEAD. Because equivalence composes with
-// them for free. Each of those suites asserts, absolutely, that DemoTaskController
-// does the right thing in scenario S; this file asserts that DemoCompliance-
-// Controller does the SAME thing in scenario S. The conjunction is the absolute
-// property, for every S this file replays — which is why the tick programs below
-// are not a happy path but a transcription of those suites' scenarios: a narrow
-// device, an invalid device, an E-STOP ramp, a target applied mid-flight, a
-// fingertip in contact.
+// WHY EQUIVALENCE RATHER THAN A COPY OF EACH OF THOSE FIVE SUITES. Because
+// equivalence composes with them for free. Each of those suites asserts,
+// absolutely, that DemoTaskController does the right thing in scenario S; this
+// file asserts that DemoComplianceController does the SAME thing in scenario S.
+// The conjunction is the absolute property, for every S this file replays —
+// which is why the tick programs below are not a happy path but a transcription
+// of those suites' scenarios: a narrow device, an invalid device, an E-STOP
+// ramp, a target applied mid-flight, a fingertip in contact.
+//
+// Those suites also list demo_compliance by hand, for a different job: the
+// places where the copy is not a copy — a lane the law makes this controller's
+// own, or a contract that must hold whatever the law does to the arm — and
+// each such case's comment says which. They are not duplicates of this file,
+// and this file does not cover what they watch.
 //
 // WHAT IS COMPARED. The law (#469 S3) narrowed this file rather than retiring
 // it — the copy would otherwise go unobserved:
@@ -38,11 +44,14 @@
 //     a pull estimate. Without that assertion this file would go quietly
 //     vacuous the day someone gives the fixture a grasp.
 //
-// What the law itself does lives in test_compliance_admittance_coupling.cpp;
-// the five per-controller suites carry their own demo_compliance entries.
+// What the law itself does lives in test_compliance_admittance_coupling.cpp.
 //
-// COMPARISON IS BITWISE, not near-equal. Both controllers run the same code on
-// the same input, so every double must match to the last bit; a tolerance would
+// COMPARISON IS BITWISE, not near-equal. On the replayed programs the lanes
+// this controller owns are inert — the wrench is withheld, the shipped
+// `joint_limit_margin` is the core default 0, and no §7 fault is raised — so
+// both controllers compute the same values from the same input, and every
+// double must match to the last bit. That makes those lanes a precondition
+// here, not something this file tests (their own suites do). A tolerance would
 // silently absorb exactly the small divergence a bad rename produces. Bitwise
 // also makes NaN == NaN, which matters because "both produce NaN here" is a
 // legitimate equivalence and `==` would call it a difference.

@@ -364,9 +364,8 @@ topics:
 /// shared builder → control rate → LoadConfig → SetDeviceNameConfigs (the hook
 /// that builds the observer wiring).
 /// DemoTaskController and DemoComplianceController (its #469 rename-copy) are
-/// the ones whose constructor
-/// also takes a Gains struct; the default-constructed one is what their own URDF
-/// fixtures use.
+/// the ones whose constructor also takes a Gains struct; the default-constructed
+/// one is what their own URDF fixtures use.
 template <class Ctrl>
 std::unique_ptr<Ctrl> MakeController() {
   return std::make_unique<Ctrl>("");

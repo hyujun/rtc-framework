@@ -1552,12 +1552,14 @@ void DemoComplianceController::ComputeSecondary(const ControllerState& state, do
 
 // ── Phase 3a: Write joint command (wire-bound only) ──────────────────────────
 //
-// Wire pipeline (DemoTaskController's, unchanged):
-//   1. Clamp dq_ in-place by per-joint velocity limits (dq_ is the canonical
-//      clamped velocity; both log and publish read it back).
-//   2. Integrate desired_q_ ← desired_q_ + dq_ * dt (member, persists across
-//      ticks; the integrator state).
-//   3. commands ← desired_q_.
+// Wire pipeline (DemoTaskController's shape; the joint band differs — its
+// margin is §7's `joint_limit_margin`, where DemoTaskController's is 0):
+//   1. §7.3 joint tail (IntegrateAndBoundJointCommand): integrate
+//      desired_q_ ← desired_q_ + dq_ * dt (member, persists across ticks; the
+//      integrator state), clamp it to the margin-shrunk joint band, rate-rebound
+//      it to the per-joint velocity limit, and rewrite dq_ to the velocity the
+//      bounded command represents (dq_ is what both log and publish read back).
+//   2. commands ← desired_q_.
 // E-STOP early-return preserved here so ComputeEstop's output is the wire
 // command and the caller still gets log/publish fills via FillLogOutput/
 // FillPublishOutput in normal ticks (E-STOP path runs its own log push in the

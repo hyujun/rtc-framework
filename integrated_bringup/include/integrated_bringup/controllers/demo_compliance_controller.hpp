@@ -3,11 +3,13 @@
 // DemoTaskController's arm and hand lanes plus the task-space admittance law
 // (compliance-conventions.md §7): the CLIK tracks the compliant frame
 // X_c = X_d ⊕ x̃ instead of X_d, and the lanes that serve the law — its fault
-// classification, the diagnostic CSV lane, the §7-schema gain spellings — are
-// this class's own. Everything else began as a copy of DemoTaskController
-// (#469 S2), made so that the law could land as a diff against a controller
-// that already registered, configured, activated and drove the arm. The
-// shared hand lane is still duplicated; extracting it is tracked in #855.
+// classification and the controller-local fault latch (ResetFault /
+// HasLatchedFault), the §7.3 joint-band margin, the diagnostic CSV lane, the
+// §7-schema gain spellings — are this class's own. Everything else began as a
+// copy of DemoTaskController (#469 S2), made so that the law could land as a
+// diff against a controller that already registered, configured, activated and
+// drove the arm. The shared hand lane is still duplicated; extracting it is
+// tracked in #855.
 //
 // WHY A COPY. Three cheaper-looking shapes were considered and none of them was
 // available:
@@ -156,9 +158,12 @@ inline constexpr std::uint32_t kComplianceVtcpFrameWaitTicks = 1000;
 ///
 /// The §7 law enters the CLIK below through two inputs: the pose
 /// error is taken against the compliant frame X_c = X_d ⊕ x̃, and the compliant
-/// frame's own twist ν_c rides the feedforward (§7.3 row 13). With the wrench
-/// withheld x̃ = 0 and ν_c = 0, and the command is bit-identical to
-/// DemoTaskController's.
+/// frame's own twist ν_c rides the feedforward (§7.3 row 13). The one other
+/// place the arm lane differs from DemoTaskController's is the joint tail, whose
+/// band is shrunk by §7's `joint_limit_margin` δ (DemoTaskController's is the
+/// raw device band). With the wrench withheld x̃ = 0 and ν_c = 0, so the command
+/// is bit-identical to DemoTaskController's whenever δ = 0 — the core default,
+/// which the shipped profiles keep.
 /// @code
 ///   X_c          = X_d ⊕ x̃                  [x̃, ν_c from the admittance step]
 ///   pos_error    = X_c ⊖ FK(q)
@@ -166,9 +171,15 @@ inline constexpr std::uint32_t kComplianceVtcpFrameWaitTicks = 1000;
 ///                = λ_max²(1 − (σ_min/σ₀)²) if σ_min(J) < σ₀
 ///   J^#          = J^T (J J^T + λ²I)^{−1}         [damped least squares]
 ///   N            = I − J^# J                        [null-space projector]
-///   dq           = J^# · (kp ⊙ pos_error + ν_ff + ν_c) + N · (nullspace_kp · (q_null − q))
-///   q_des       += clamp(dq, ±v_max) * dt        [q_des = q_actual at
-///   trajectory init] q_cmd        = q_des
+///   ν            = ν_ff + ν_c            [both rotated into the Jacobian frame]
+///   6-DOF:  dq   = J^# · (kp ⊙ pos_error + ν)                 [no posture term]
+///   3-DOF:  dq   = J^# · (ik_kp_pos ⊙ p_err + ν_lin)
+///                  + N · (nullspace_kp · (q_null − q))   [if enable_null_space]
+///                                         [ν_c's angular half has nowhere to go]
+///   q_cmd        = q_des + dq · dt → clamp to [q_min + δ, q_max − δ]
+///                  → rate rebound to q_des ± v_max · dt         [§7.3 order]
+///   q_des        = q_cmd        [persists across ticks; q_actual at trajectory
+///                                init]
 /// @endcode
 ///
 /// ### Hand control law (same as DemoJointController)
