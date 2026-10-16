@@ -92,7 +92,7 @@ struct ComplianceDiagLogPod {
   /// `ComplianceWrenchSource` wire value (0 = pull_estimator). Configure-time
   /// and exclusive, so it is constant for the file — carried anyway because the
   /// question "which measurement moved the arm" is the first one asked of a
-  /// stored session, and S6 adds a second legal value.
+  /// stored session, and a second legal value needs no schema change.
   std::uint8_t wrench_source{0};
 
   // ── FSM / ramp ────────────────────────────────────────────────────────────

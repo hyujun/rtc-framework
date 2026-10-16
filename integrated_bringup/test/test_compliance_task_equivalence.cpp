@@ -1,19 +1,20 @@
-// ── DemoComplianceController ≡ DemoTaskController (#469 S2) ──────────────────
+// ── DemoComplianceController ≡ DemoTaskController while the wrench is withheld
 //
-// Until the §7 admittance law lands (S3), the compliance controller has no
-// behaviour of its own: it is DemoTaskController with renamed identifiers, and
-// "identical output on identical input" is its ENTIRE specification. This file
-// is the only place that specification is checked.
+// Outside the §7 admittance lane the compliance controller is DemoTaskController
+// with renamed identifiers (#469 S2 made it as a copy), and while the external
+// wrench is withheld the law contributes nothing. On that input "identical
+// output on identical input" is the specification of everything it copied, and
+// this file is the only place that specification is checked.
 //
 // WHY IT HAS TO EXIST AT ALL. Adding a controller to this package breaks
 // nothing. Every per-controller suite here — the device-readability gate, the
 // gate-closure diagnostic, the activation-generation gate, the momentum-observer
-// embedding, the shipped-config lint — enumerates the three shipped controller
-// names by hand, so a fourth is not covered, not counted, and not failed. A
-// rename that silently changed which YAML key is read, a source file left out of
-// CMakeLists, a constant that kept pointing at the sibling's value: all of those
-// ship green. The 941 tests that passed when this controller was added executed
-// none of its lines.
+// embedding, the shipped-config lint — enumerates its controller names by hand,
+// so a new controller is not covered, not counted, and not failed until someone
+// lists it. A rename that silently changed which YAML key is read, a source
+// file left out of CMakeLists, a constant that kept pointing at the sibling's
+// value: all of those ship green. When this controller was added, the
+// package's existing tests executed none of its lines.
 //
 // WHY NOT DUPLICATE THOSE FIVE SUITES INSTEAD. Because equivalence composes with
 // them for free. Each of those suites asserts, absolutely, that DemoTaskController
@@ -24,22 +25,21 @@
 // device, an invalid device, an E-STOP ramp, a target applied mid-flight, a
 // fingertip in contact.
 //
-// #469 S3 HAS NOW HAPPENED, and this file was re-scoped rather than deleted —
-// the copy would otherwise go unobserved again. What survives:
+// WHAT IS COMPARED. The law (#469 S3) narrowed this file rather than retiring
+// it — the copy would otherwise go unobserved:
 //
 //   * the config comparison, minus the blocks and the three renamed gains the
 //     compliance controller owns, each of which has its own assertion here;
-//   * the behavioural comparison, narrowed to "WHILE THE WRENCH IS WITHHELD".
+//   * the behavioural comparison, restricted to "WHILE THE WRENCH IS WITHHELD".
 //     The admittance integrator is a no-op on a zero wrench and the tick skips
 //     the pose composition entirely when the law contributes nothing, so those
-//     programs must still be bit-identical — and RunAndCompare now ASSERTS the
+//     programs must be bit-identical — and RunAndCompare ASSERTS the
 //     withholding rather than relying on a fixture that happens not to produce
 //     a pull estimate. Without that assertion this file would go quietly
 //     vacuous the day someone gives the fixture a grasp.
 //
 // What the law itself does lives in test_compliance_admittance_coupling.cpp;
-// the five per-controller suites got their own demo_compliance entries in the
-// commit before this one.
+// the five per-controller suites carry their own demo_compliance entries.
 //
 // COMPARISON IS BITWISE, not near-equal. Both controllers run the same code on
 // the same input, so every double must match to the last bit; a tolerance would
@@ -107,8 +107,8 @@ constexpr std::size_t kExpectedControllerOutputSize = 29656;
 // The three shipped profiles. Only iiwa7_leap gets the behavioural half — it is
 // the profile the URDF fixture models — so the other two are held by the config
 // comparison alone. That asymmetry is deliberate and stated rather than hidden:
-// a ur5e-shaped fixture would be a second model harness for a controller that
-// does not yet have a law to exercise.
+// a ur5e-shaped fixture would be a second model harness for a comparison that,
+// by construction, never exercises the law.
 constexpr std::array<const char*, 3> kProfiles = {"iiwa7_leap", "ur5e_p1a", "ur5e_p1b"};
 
 // ── Bitwise field-by-field output comparison ─────────────────────────────────
@@ -482,9 +482,9 @@ TEST(ComplianceTaskEquivalence, ShippedConfigsAreTheSameConfig) {
               YAML::Dump(WithoutComplianceOwnedKeys(task, /*is_compliance=*/false)))
         << profile
         << ": demo_compliance_controller.yaml has drifted from its sibling outside the blocks it "
-           "owns. Until #469 S3 gives it a law the rest must stay identical — if this IS the S3 "
-           "divergence, move the newly-owned block into kComplianceOwnedKeys and give it its own "
-           "assertion, rather than deleting this test.";
+           "owns. Everything else must stay identical — if this divergence is deliberate, move the "
+           "newly-owned block into kComplianceOwnedKeys and give it its own assertion, rather "
+           "than deleting this test.";
   }
 }
 
@@ -515,8 +515,8 @@ TEST(ComplianceTaskEquivalence, RenamedGainsCarryTheSiblingsValues) {
 }
 
 // The `logs:` half of the exclusion (#469 S4). Both directions again: the entry
-// must be here (without it the channel registers on no profile and the S5
-// hardware session ships with no compliance_diag.csv at all — a failure whose
+// must be here (without it the channel registers on no profile and a hardware
+// session ships with no compliance_diag.csv at all — a failure whose
 // only symptom is an absent file), and it must NOT be on the sibling, which has
 // no §7 law to describe and whose LoadConfig rejects the msg_type outright.
 TEST(ComplianceTaskEquivalence, EveryProfileOwnsTheDiagLaneAndTheSiblingDoesNot) {
@@ -563,7 +563,7 @@ TEST(ComplianceTaskEquivalence, EveryProfileNamesTheOnlyImplementedWrenchSource)
   }
 }
 
-// #469 D-A8. The pull estimate this controller will integrate must be a DELTA,
+// #469 D-A8. The pull estimate this controller integrates must be a DELTA,
 // on every profile, however that profile configures the measurement lane for the
 // other three controllers.
 //

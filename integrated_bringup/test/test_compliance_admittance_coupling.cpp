@@ -92,7 +92,7 @@ constexpr int kResponseTicks = 800;
 // zero would invite someone to "retune" the law by editing it; K_d, Λ_d and the
 // §7.5 bounds are READ BACK from the controller under test
 // (GetAdmittanceParamsForTesting) because the YAML ships K_p^a and leaves those
-// at the core defaults ON PURPOSE — S5 still owes a tuning against hardware. A
+// at the core defaults ON PURPOSE — they are untuned against hardware. A
 // mirrored `40.0` would go stale the day a profile writes `damping:`, and it
 // would fail with "the frame did not settle at F/K_d", pointing at the law
 // instead of at the constant.
@@ -505,7 +505,7 @@ TEST(ComplianceAdmittanceCoupling, AWithheldWrenchGoesStaleAndDegradesRatherThan
   // one, then coasts on its momentum with τ = Λ_d/K_d; ẋ̃ never exceeds the
   // settled F/K_d, and two τ takes the tail to under a part in a thousand. The
   // remembered 10 mm this replaces sat only 27% above the actual 7.3 mm — inside
-  // the noise of the K_d retune the header says S5 still owes (K_d = 28 N·s/m
+  // the noise of the hardware K_d retune the header anticipates (K_d = 28 N·s/m
   // turns it red on correct code), while the held-wrench mutant is 20 mm and
   // stays outside this bound through the same retunes.
   const double settled_speed = kProbeForceX / law.damping[0];

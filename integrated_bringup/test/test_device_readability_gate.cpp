@@ -343,11 +343,12 @@ TEST_F(DemoJointGateTest, AWideDeviceIsNotTreatedAsAFault) {
 // early-returns without a registered TCP frame — which is precisely the state
 // in which the tail policy has to be right anyway.
 //
-// ONE parametrised fixture rather than two transcriptions. demo_compliance is
-// demo_task's rename-copy today, and a copied block of assertions drifts from
+// ONE parametrised fixture rather than two transcriptions. demo_compliance
+// began as demo_task's rename-copy, and a copied block of assertions drifts from
 // its original silently — the failure mode is that the copy keeps passing an
 // older contract. Parametrising also states the actual claim: these bindings
-// must answer identically, whatever S3 does to the arm lane of one of them.
+// must answer identically, whatever the §7 law does to the arm lane of one of
+// them.
 
 std::string MinimalTaskYaml() {
   std::string yaml = "arm_dof: " + std::to_string(kArmDof) + "\nestop:\n  arm_safe_position: [";

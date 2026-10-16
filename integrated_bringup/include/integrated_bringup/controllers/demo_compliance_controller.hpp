@@ -1,37 +1,40 @@
-// ── DemoComplianceController: the binding that will carry task-space admittance
+// ── DemoComplianceController: the binding that carries task-space admittance
 //
-// AT THIS COMMIT IT IS A COPY OF DemoTaskController AND NOTHING ELSE. The
-// admittance law (compliance-conventions.md §7) lands in #469 S3; S2 exists so
-// that landing is a diff against a controller that already registers,
-// configures, activates and drives the arm, instead of a diff that has to do
-// all of that at once.
+// DemoTaskController's arm and hand lanes plus the task-space admittance law
+// (compliance-conventions.md §7): the CLIK tracks the compliant frame
+// X_c = X_d ⊕ x̃ instead of X_d, and the lanes that serve the law — its fault
+// classification, the diagnostic CSV lane, the §7-schema gain spellings — are
+// this class's own. Everything else began as a copy of DemoTaskController
+// (#469 S2), made so that the law could land as a diff against a controller
+// that already registered, configured, activated and drove the arm. The
+// shared hand lane is still duplicated; extracting it is tracked in #855.
 //
-// WHY A COPY. Three cheaper-looking shapes were considered and none of them is
-// available here:
+// WHY A COPY. Three cheaper-looking shapes were considered and none of them was
+// available:
 //   - Register the same class under a second config_key. The CM puts Name() and
 //     config_key in ONE lookup namespace and refuses the whole bring-up on a
 //     collision, so a class cannot answer to two keys
 //     (modification-guide.md §Adding a New Controller, the Name() rule).
 //   - Subclass DemoTaskController and override Compute(). Every member it would
 //     need is private, so this means editing a shipped controller's header to
-//     widen access — a PROC-6 regression surface on three deployed profiles for
-//     the benefit of the one controller that does not ship yet.
+//     widen access — a PROC-6 regression surface on every deployed profile for
+//     the benefit of a controller that had not shipped.
 //   - Extract the shared hand/arm lane into support/ first. That is the right
-//     end state and it is a sprint of its own (#469 D-A6): joint, task and wbc
-//     already hold three copies of that lane, so the extraction has to satisfy
-//     all four callers, not one.
-// The copy's cost is 4.6k duplicated lines. The cost is paid, deliberately, and
-// what keeps it from silently rotting is test_compliance_task_equivalence.cpp:
-// for as long as this controller has no law of its own, "identical output to
-// DemoTaskController on identical input" is the whole specification, and that
-// test is the only sensor that reads it. Adding a controller breaks no existing
-// test in this package — every per-controller suite here enumerates the three
-// shipped names by hand — so a divergence introduced by a bad rename would
-// otherwise ship green.
+//     end state and it is a sprint of its own (#469 D-A6, tracked in #855): the
+//     shipped controllers already held copies of that lane, so the extraction
+//     has to satisfy every caller, not one.
+// The duplication is paid deliberately, and what keeps it from silently
+// rotting is test_compliance_task_equivalence.cpp: while the external wrench
+// is withheld the law contributes nothing, and on that input "identical output
+// to DemoTaskController" is the specification of everything copied. Adding a
+// controller breaks no existing test in this package — the per-controller
+// suites here enumerate their controller names by hand — so a divergence
+// introduced in the copied lanes would otherwise ship green.
 //
-// Everything below this banner is DemoTaskController with its identifiers
-// renamed. Read the reasoning there as authoritative for the arm and hand
-// lanes; read it here for how they will be driven.
+// Outside the §7 lane and what serves it, everything below this banner is
+// DemoTaskController with its identifiers renamed. Read the reasoning there as
+// authoritative for the arm and hand lanes; read it here for the admittance
+// law and how it drives them.
 // ─────────────────────────────────────────────────────────────────────────────
 // ── Includes: project header first, then third-party, then C++ stdlib
 // ──────────
@@ -127,9 +130,9 @@ inline constexpr int kDemoComplianceMaxFullDof =
 /// rate-dependent for no reason. A measured p1b walk-in is ~93 ticks.
 inline constexpr std::uint32_t kComplianceVtcpFrameWaitTicks = 1000;
 
-/// Demo Compliance Controller: CLIK (arm) + P control (hand). Identical to
-/// DemoTaskController until the §7 admittance law lands (#469 S3) — see the banner
-/// at the top of this file for why it is a copy and what pins it.
+/// Demo Compliance Controller: admittance-shaped CLIK (arm) + P control (hand).
+/// DemoTaskController plus the §7 admittance law (#469 S3) — see the banner at
+/// the top of this file for why the rest is a copy and what pins it.
 ///
 /// Controls the end-effector in Cartesian space via damped Jacobian
 /// pseudoinverse, while simultaneously running proportional position
@@ -150,13 +153,20 @@ inline constexpr std::uint32_t kComplianceVtcpFrameWaitTicks = 1000;
 ///     THIS side is the frame transport: ν_ff is rotated into the Jacobian frame
 ///     here, because which frame that is (vtcp or world-aligned) is a binding
 ///     concern the core law does not know about.
+///
+/// The §7 law enters the CLIK below through two inputs: the pose
+/// error is taken against the compliant frame X_c = X_d ⊕ x̃, and the compliant
+/// frame's own twist ν_c rides the feedforward (§7.3 row 13). With the wrench
+/// withheld x̃ = 0 and ν_c = 0, and the command is bit-identical to
+/// DemoTaskController's.
 /// @code
-///   pos_error    = x_des − FK(q)
+///   X_c          = X_d ⊕ x̃                  [x̃, ν_c from the admittance step]
+///   pos_error    = X_c ⊖ FK(q)
 ///   λ²           = 0                       if σ_min(J) ≥ σ₀       [§6.5 ramp]
 ///                = λ_max²(1 − (σ_min/σ₀)²) if σ_min(J) < σ₀
 ///   J^#          = J^T (J J^T + λ²I)^{−1}         [damped least squares]
 ///   N            = I − J^# J                        [null-space projector]
-///   dq           = J^# · (kp ⊙ pos_error + ν_ff) + N · (nullspace_kp · (q_null − q))
+///   dq           = J^# · (kp ⊙ pos_error + ν_ff + ν_c) + N · (nullspace_kp · (q_null − q))
 ///   q_des       += clamp(dq, ±v_max) * dt        [q_des = q_actual at
 ///   trajectory init] q_cmd        = q_des
 /// @endcode
@@ -295,8 +305,8 @@ class DemoComplianceController final : public RTControllerInterface {
 
   // ── Controller-local fault latch (#260, §10.6) ───────────────────────────
   //
-  // This is the ONE controller family that latches a fault of its own, so the
-  // base no-ops are not an answer here: with them, `/rtc_cm/reset_fault` would
+  // This controller latches a fault of its own, so the base no-ops are not an
+  // answer here: with them, `/rtc_cm/reset_fault` would
   // report "nothing latched" at a SAFE_STOP that has frozen the arm, and the
   // latch would have no exit at all. DELIBERATELY SEPARATE from the E-STOP pair
   // above (E-8) — `ClearEstop()` must not release this, and this must not
@@ -356,9 +366,10 @@ class DemoComplianceController final : public RTControllerInterface {
     return grasp_state_;
   }
 
-  /// Test-only: the configure-time `external_wrench.source` selection. Until S3
-  /// wires it into the tick this accessor is the ONLY reader, which is exactly
-  /// why the parse is asserted against the shipped profiles rather than trusted.
+  /// Test-only: the configure-time `external_wrench.source` selection. The parse
+  /// is asserted against the shipped profiles through this accessor rather than
+  /// inferred from the tick, where a wrong source shows up only as a wrong
+  /// estimate.
   [[nodiscard]] ComplianceWrenchSource GetWrenchSourceForTesting() const noexcept {
     return wrench_source_;
   }

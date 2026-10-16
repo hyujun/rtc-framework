@@ -1552,7 +1552,7 @@ void DemoComplianceController::ComputeSecondary(const ControllerState& state, do
 
 // ── Phase 3a: Write joint command (wire-bound only) ──────────────────────────
 //
-// Task controller wire pipeline:
+// Wire pipeline (DemoTaskController's, unchanged):
 //   1. Clamp dq_ in-place by per-joint velocity limits (dq_ is the canonical
 //      clamped velocity; both log and publish read it back).
 //   2. Integrate desired_q_ ← desired_q_ + dq_ * dt (member, persists across

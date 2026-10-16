@@ -136,11 +136,11 @@ TEST(IntegratedActivationGenerationGate, DemoWbcActivationDelegatesToBase) {
   ExpectActivationDelegatesToBase(ctrl);
 }
 
-// #469 S2 shipped this binding as a rename-copy of demo_task, so today this
-// case asserts what its twin above does. It is listed by hand anyway because
-// S3 gives the copy its own on_activate work (the admittance deviation has to
-// be reset there, §7), and that is exactly the edit that can forget to call
-// down — at which point this case is the only one that fails.
+// This binding began as a rename-copy of demo_task (#469 S2), so this case
+// asserts what its twin above does. It is listed by hand anyway because its
+// on_activate does work the twin's does not (the admittance deviation is reset
+// there, §7), and that is exactly the edit that can forget to call down — at
+// which point this case is the only one that fails.
 TEST(IntegratedActivationGenerationGate, DemoComplianceActivationDelegatesToBase) {
   integrated_bringup::DemoComplianceController ctrl{
       "", integrated_bringup::DemoComplianceController::Gains{}};
