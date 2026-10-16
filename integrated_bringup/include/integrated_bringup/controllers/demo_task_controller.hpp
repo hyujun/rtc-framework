@@ -229,6 +229,16 @@ class DemoTaskController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
+
+  // V5 (#779): the arm (device 0) takes task goals only — its target buffer
+  // IS the pose, so a joint goal's radians would be read as x, y, z, r, p, y.
+  // The other devices take joint goals only (a task goal there would be six
+  // joint values). DeliverTargetMessage refuses and counts the rest.
+  [[nodiscard]] GoalKinds AcceptedGoalKinds(int device_idx) const noexcept override {
+    return device_idx == 0 ? GoalKinds{.joint = false, .task = true}
+                           : GoalKinds{.joint = true, .task = false};
+  }
+
   // #779 target-frame contract: a task goal for the arm (device 0) names its
   // frame — root_link or scene_world — and is converted into root_link here,
   // on the ingress, before it is queued. Anything else is refused (counted by

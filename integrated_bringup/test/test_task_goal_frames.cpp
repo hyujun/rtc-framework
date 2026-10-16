@@ -13,6 +13,7 @@
 #include "iiwa7_leap_controller_yamls.hpp"
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"
+#include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include <rtc_math/se3/so3.hpp>
@@ -39,6 +40,7 @@
 namespace {
 
 using integrated_bringup::DemoComplianceController;
+using integrated_bringup::DemoJointController;
 using integrated_bringup::DemoTaskController;
 using integrated_bringup::DemoWbcController;
 namespace fx = integrated_bringup::testfx;
@@ -199,6 +201,60 @@ TEST_F(TaskGoalFrames, TaskRefusesAMovingWorldAndAnUnresolvedRoot) {
 
 TEST_F(TaskGoalFrames, ComplianceRefusesAMovingWorldAndAnUnresolvedRoot) {
   ExpectTheConfigureRefusals<DemoComplianceController>();
+}
+
+// ── Goal kinds (V5) ─────────────────────────────────────────────────────────
+//
+// A joint-space controller would command a task goal's x, y, z, r, p, y as
+// joint radians; a task-space one would read a joint goal's radians as a pose.
+// Each refuses — counted — the kind it would misread.
+
+rtc_msgs::msg::RobotTarget JointGoal(const rtc::DeviceNameConfig& device) {
+  rtc_msgs::msg::RobotTarget msg;
+  msg.goal_type = "joint";
+  msg.joint_names = device.joint_state_names;
+  msg.joint_target.assign(device.joint_state_names.size(), 0.1);
+  return msg;
+}
+
+template <class Ctrl>
+std::uint64_t RejectsOn(Ctrl& ctrl, const std::string& group, int idx,
+                        const rtc_msgs::msg::RobotTarget& msg) {
+  const auto before = ctrl.GetTargetRejectCount();
+  ctrl.DeliverTargetMessage(group, idx, msg);
+  return ctrl.GetTargetRejectCount() - before;
+}
+
+template <class Ctrl>
+void ExpectTaskSpaceArmKinds() {
+  const std::string who = fx::ControllerFixture<Ctrl>::kName;
+  const auto devices = fx::MakeIiwa7LeapDeviceConfigs();
+  auto up = Configure<Ctrl>("kinds", nullptr);
+  ASSERT_EQ(up.rc, Ctrl::CallbackReturn::SUCCESS) << who;
+  const std::string hand = up.ctrl->GetSecondaryDeviceName();
+  ASSERT_FALSE(hand.empty()) << who;
+  EXPECT_EQ(RejectsOn(*up.ctrl, kArmGroup, 0, JointGoal(devices.at(kArmGroup))), 1U)
+      << who << ": a joint goal for the arm";
+  EXPECT_EQ(RejectsOn(*up.ctrl, kArmGroup, 0, TaskGoal(kRoot, kPose)), 0U) << who;
+  EXPECT_EQ(RejectsOn(*up.ctrl, hand, 1, TaskGoal(kRoot, kPose)), 1U)
+      << who << ": a task goal for the hand";
+  EXPECT_EQ(RejectsOn(*up.ctrl, hand, 1, JointGoal(devices.at(hand))), 0U) << who;
+}
+
+TEST_F(TaskGoalFrames, TaskTakesNoJointGoalForTheArm) {
+  ExpectTaskSpaceArmKinds<DemoTaskController>();
+}
+
+TEST_F(TaskGoalFrames, ComplianceTakesNoJointGoalForTheArm) {
+  ExpectTaskSpaceArmKinds<DemoComplianceController>();
+}
+
+TEST_F(TaskGoalFrames, JointTakesNoTaskGoal) {
+  const auto devices = fx::MakeIiwa7LeapDeviceConfigs();
+  auto up = Configure<DemoJointController>("kinds", nullptr);
+  ASSERT_EQ(up.rc, DemoJointController::CallbackReturn::SUCCESS);
+  EXPECT_EQ(RejectsOn(*up.ctrl, kArmGroup, 0, TaskGoal(kRoot, kPose)), 1U);
+  EXPECT_EQ(RejectsOn(*up.ctrl, kArmGroup, 0, JointGoal(devices.at(kArmGroup))), 0U);
 }
 
 // The WBC end to end: a goal stated in the world reaches the commanded SE3 as
