@@ -59,11 +59,22 @@ virtual void SetDeviceTaskTarget(int device_idx, std::span<const double> task6) 
 
 `device_idx`용 6-DoF 태스크 공간(SE3) 목표 `(x, y, z, r, p, y)`를 전달합니다. 순수 가상이 아니라 **기본 구현이 `SetDeviceTarget`로 forwarding** 하는 default-virtual — joint 슬롯과 SE3 슬롯을 분리하지 않는 기존 태스크 컨트롤러(예: DemoTask는 device-0 버퍼를 이미 SE3 pose로 해석)는 override 없이 동작이 그대로 유지됩니다. joint 목표와 태스크 목표를 별도 슬롯에 보관해야 하는 컨트롤러(예: DemoWbc — arm joint posture 슬롯과 commanded SE3 슬롯이 분리)는 이 메서드를 override해 SE3 슬롯에만 쓰고 joint 슬롯을 clobber하지 않도록 합니다. `SetDeviceTarget`과 동일하게 `noexcept` + RT-marshal-safe (SPSC 큐 경유)여야 합니다.
 
+#### 기준 frame 과 goal 종류 (#779)
+
+```cpp
+[[nodiscard]] virtual const char* SetDeviceTaskTarget(int device_idx, std::span<const double> task6,
+                                                      std::string_view frame_id) noexcept;
+[[nodiscard]] virtual GoalKinds AcceptedGoalKinds(int device_idx) const noexcept;  // {joint, task}
+```
+
+- **3-인자 `SetDeviceTaskTarget`** — task 목표와 그 기준 frame (`RobotTarget.header.frame_id`) 을 받는다. 반환값 `nullptr` 은 수락, 그 밖의 문자열 리터럴은 거부 사유다. `DeliverTargetMessage` 는 거부를 자기 검증과 똑같이 `GetTargetRejectCount()` 에 세고 경고한다. 기본 구현은 frame 을 읽지 않고 2-인자 형식으로 넘긴다 (수락) — frame 계약이 없는 컨트롤러는 그대로다. frame 계약을 갖는 컨트롤러는 이것을 override 해 목표를 자기 base frame 으로 바꾼 뒤 mailbox 에 넣는다. 3-인자만 override 하면 파생 클래스에서 2-인자가 가려지므로 `using RTControllerInterface::SetDeviceTaskTarget;` 를 함께 둔다. 비-RT ingress 에서 불리며 `noexcept` · 할당 없음이다.
+- **`AcceptedGoalKinds`** — device 가 받는 goal 종류. `DeliverTargetMessage` 는 다른 검사보다 먼저 이것을 보고, 받지 않는 종류를 거부·count 한다. 한 종류를 다른 종류로 잘못 읽는 컨트롤러 (task 목표의 x,y,z,r,p,y 를 관절 rad 로 명령하는 관절 공간 컨트롤러, 관절 rad 를 pose 로 읽는 task 공간 컨트롤러) 가 override 한다. 기본은 둘 다 받는다. `SetDeviceTarget` · `SetDeviceTaskTarget` 직접 호출은 검사하지 않는다.
+
 `RTControllerInterface::DeliverTargetMessage()`(`rt_controller_interface.cpp`)는 컨트롤러-owned target 구독 콜백에서 호출되며, 수신한 `RobotTarget.goal_type`에 따라 디스패치를 분기합니다.
 
 | `goal_type` | 데이터 소스 | 리오더링 | 디스패치 |
 |---|---|---|---|
-| `"task"` | `msg.task_target` | 없음 (그대로 전달) | `SetDeviceTaskTarget(device_idx, ordered_span)` |
+| `"task"` | `msg.task_target` | 없음 (그대로 전달) | `SetDeviceTaskTarget(device_idx, task_span, msg.header.frame_id)` — 거부면 count |
 | 그 외 (joint) | `msg.joint_target` | `msg.joint_names` → `device_name_configs_[group_name].joint_state_names` 순서로 재정렬 | `SetDeviceTarget(device_idx, ordered_span)` |
 
 #### Joint 목표 limit 스크리닝 (warn-only)

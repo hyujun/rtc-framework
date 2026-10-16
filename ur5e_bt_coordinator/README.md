@@ -69,7 +69,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `<ns>/<hand_group>/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 1 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
 | `<ns>/tof/snapshot` | `rtc_msgs/ToFSnapshot` | BEST_EFFORT, depth 100 | ToF + 핑거팁 pose snapshot (controller-owned) |
 | `<ns>/transforms` | `tf2_msgs/TFMessage` | RELIABLE, depth 1 | active controller의 FK `base → tool0_actual` (controller-owned, rewire). `tf_buffer_`에 직접 feed → TCP pose lookup 소스 |
-| `/world_target_info` | `geometry_msgs/Polygon` | RELIABLE, depth 1 | 비전 물체 위치 (`points[0]` = x,y,z, orientation 없음). `IsObjectDetected`/`IsVisionTargetReady`가 출력 시 orientation 을 현재 TCP pose 로 채운다 |
+| `/world_target_info` | `geometry_msgs/Polygon` | RELIABLE, depth 1 | 비전 물체 위치 (`points[0]` = x,y,z, orientation 없음). `IsObjectDetected`/`IsVisionTargetReady`가 출력 시 orientation 을 현재 TCP pose 로 채운다. 위치는 파라미터 `world_target_frame` (비우면 `base_frame`) 의 frame 이어야 하고, `base_frame` 과 다른 값이면 기동 때 ERROR 를 내고 토픽을 무시한다 (#779) |
 | `/rtc_cm/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
 | `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 1, transient_local | E-STOP 상태 — CM 발행자와 같은 durability 라 E-STOP 뒤에 떠도 현재 값을 받는다 (#588) |
 | `/shape/estimate` | `shape_estimation_msgs/ShapeEstimate` | RELIABLE, depth 1 | shape estimation 결과 (`WaitShapeResult` / `CheckShapeType` 가 소비) |
@@ -234,6 +234,8 @@ Blackboard 문자열 포맷 (`BT::convertFromString` 특수화, [bt_types.hpp](i
 | `hand_group` | *(default 없음)* | Hand device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<hand_group>/joint_states`, `<ns>/<hand_group>/{joint_goal,grasp_state,wbc_state}`). variant delta 가 공급 (p1a→`p1a`, p1b→`p1b`); 미공급(빈 문자열)이면 `on_configure` FAILURE — 존재하지 않는 legacy `hand` 그룹 silent 구독 방지 |
 | `arm_dof` | `6` | Arm 관절 폭 (arm pose 길이 검증 + 패딩). DoF 는 컴파일타임 상수가 아닌 이 파라미터가 SSoT. `<= 0`이면 `on_configure` FAILURE |
 | `hand_dof` | `10` | Hand 관절 폭 (hand pose 길이 검증 + 패딩). assm_v1·proto_1b 모두 10. `<= 0`이면 `on_configure` FAILURE |
+| `base_frame` | `"base"` | 팔의 base frame = 컨트롤러의 `root_link` (#779). TCP pose 를 읽는 TF 부모이자 모든 task 목표의 `header.frame_id`. 둘에 같은 값을 쓰므로 `root_link` 와 다르면 목표가 거부로 드러난다 |
+| `world_target_frame` | `""` | `/world_target_info` 위치의 frame. 비우면 `base_frame`. 다른 값이면 ERROR 후 토픽 무시 |
 | `has_grasp_sensing` | `true` | Grasp-force 센싱 노드군 (`GraspControl`/`IsForceAbove`/`IsGraspPhase`/`IsGrasped`) 등록 여부 (Seam D) |
 | `has_tof` | `true` | ToF 근접센싱 노드군 (`StartToFCollection`/`StopToFCollection`/`ProcessSearchData`) 등록 여부 (Seam D) |
 | `has_shape` | `true` | Shape estimation 노드군 (`TriggerShapeEstimation`/`WaitShapeResult`/`CheckShapeType`) 등록 여부 (Seam D) |

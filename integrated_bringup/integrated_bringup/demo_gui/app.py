@@ -5396,6 +5396,9 @@ class DemoControllerGUI(Node):
                 )
             if task_on:
                 task_msg = RobotTarget()
+                # The panel is seeded from TF in tcp_parent (the arm's root_link),
+                # so its numbers are in that frame (#779 target-frame contract).
+                task_msg.header.frame_id = self._profile.tcp_parent
                 task_msg.goal_type = "task"
                 task_msg.joint_names = list(self._shape.arm_joint_names)
                 task_values = []
@@ -5516,7 +5519,23 @@ class DemoControllerGUI(Node):
                     "frame has not settled yet. Re-send once the task state shows a live pose."
                 )
 
-            if not frame_blocked and len(robot_target_vals) == self._shape.arm_dof:
+            # #779 (V5): a controller refuses the goal kind it would misread
+            # (a task-space arm takes no joint goal, demo_joint no task goal).
+            # The preset's kind is free text from the file, so withhold the
+            # robot half instead of logging "sent" for a goal that is refused.
+            joint_on, task_on = target_panel_states(ctrl_name)
+            kind_blocked = not (joint_on if goal_type == "joint" else task_on)
+            if kind_blocked:
+                self.get_logger().warn(
+                    f"Preset '{name}': robot goal withheld — {ctrl_name} takes no "
+                    f"{goal_type} goal for the arm."
+                )
+
+            if (
+                not frame_blocked
+                and not kind_blocked
+                and len(robot_target_vals) == self._shape.arm_dof
+            ):
                 robot_msg = RobotTarget()
                 robot_msg.joint_names = list(self._shape.arm_joint_names)
                 if goal_type == "joint":
@@ -5525,6 +5544,8 @@ class DemoControllerGUI(Node):
                     self._set_joint_target_entries(robot_msg.joint_target)
                 else:
                     robot_msg.goal_type = "task"
+                    # Presets are captured from the same base-frame panel (#779).
+                    robot_msg.header.frame_id = self._profile.tcp_parent
                     task_values = [
                         math.radians(v) if i >= 3 else v for i, v in enumerate(robot_target_vals)
                     ]

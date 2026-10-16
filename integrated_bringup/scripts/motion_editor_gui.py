@@ -73,6 +73,11 @@ ROBOT_JOINT_NAMES = [
 
 # Lookup tables for joint_names → display index mapping
 _ROBOT_NAME_TO_IDX = {n: i for i, n in enumerate(ROBOT_JOINT_NAMES)}
+
+# Controllers whose arm device takes TASK goals only: they refuse an arm joint
+# goal (AcceptedGoalKinds, #779), so the editor does not send one to them — it
+# says why instead of leaving the operator to find a reject counter.
+_TASK_SPACE_ARM_CONTROLLERS = frozenset({"demo_task_controller", "demo_compliance_controller"})
 _HAND_NAME_TO_IDX = {n: i for i, n in enumerate(HAND_MOTOR_NAMES)}
 
 # 컬럼 인덱스
@@ -1595,6 +1600,12 @@ class ROSNode(Node):
         self.gui.update_estop(msg.data)
 
     def publish_pose(self, pose):
+        if self._active_ctrl in _TASK_SPACE_ARM_CONTROLLERS:
+            self.get_logger().warn(
+                f"UR5e pose not sent: '{self._active_ctrl}' takes task-space arm goals only — "
+                "switch to demo_joint_controller (or demo_wbc_controller) to play joint poses"
+            )
+            return
         msg = RobotTarget()
         msg.goal_type = "joint"
         msg.joint_names = ROBOT_JOINT_NAMES

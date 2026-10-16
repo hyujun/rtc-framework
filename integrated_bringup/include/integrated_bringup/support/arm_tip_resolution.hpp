@@ -65,6 +65,36 @@ namespace integrated_bringup {
          "' is not a frame of the model" + how_to_fix;
 }
 
+/// @brief Why the arm root is not usable, or an empty string when it is.
+///
+/// The root link is the controller's base frame: task goals are converted into
+/// it and its poses are published in it (#779). Unlike the tip, a root link
+/// that is not CONFIGURED is not an error — the controller then works in the
+/// model's world, as it always has. One that is named and is not a frame of
+/// the model is: the controller used to fall back to the world without a word,
+/// so every goal meant for the base was read in another frame.
+///
+/// @param has_arm_model   the controller built an arm model handle
+/// @param root_resolved   its root frame id is a real frame (non-zero)
+/// @param primary_device  the primary device group's name
+/// @param primary_config  that group's device config (may be null)
+[[nodiscard]] inline std::string ArmRootUnresolvedReason(
+    bool has_arm_model, bool root_resolved, std::string_view primary_device,
+    const rtc::DeviceNameConfig* primary_config) {
+  if (!has_arm_model || root_resolved) {
+    return {};
+  }
+  const std::string root_link =
+      (primary_config != nullptr && primary_config->urdf) ? primary_config->urdf->root_link : "";
+  if (root_link.empty()) {
+    return {};
+  }
+  const std::string device(primary_device);
+  return "primary device '" + device + "': arm root link '" + root_link +
+         "' is not a frame of the model (urdf.sub_models." + device + ".root_link or devices." +
+         device + ".urdf.root_link)";
+}
+
 }  // namespace integrated_bringup
 
 #endif  // INTEGRATED_BRINGUP_SUPPORT_ARM_TIP_RESOLUTION_HPP_

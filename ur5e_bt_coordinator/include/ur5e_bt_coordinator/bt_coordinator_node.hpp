@@ -168,6 +168,8 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   std::string hand_group_{"hand"};
   int arm_dof_{kDefaultArmDof};
   int hand_dof_{kDefaultHandDof};
+  std::string base_frame_{"base"};
+  std::string world_target_frame_{};
   // Optional-sensor capabilities (Seam D) — false skips that node group's
   // registration. Default true reproduces the legacy register-everything path.
   bool has_grasp_sensing_{true};

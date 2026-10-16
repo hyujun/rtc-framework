@@ -67,3 +67,17 @@ mujoco_simulator:
         initial_qpos:
           [1.426097, -0.429778, 0.049478, -0.609149, -0.064476, -0.557459, -0.440156, -0.529181,
            -0.511366, -0.45242]
+
+# The scene this overlay loads puts the arm base at the world origin,
+# world-aligned — the RT node's scene_world follows it (#779; sim.yaml's is
+# the pedestal's, 0.7 m off). An overlay that swaps the scene states its own.
+integrated_rt_controller:
+  ros__parameters:
+    urdf:
+      extra_frames:
+        scene_world:
+          parent: "base"
+          xyz: [0.0, 0.0, 0.0]
+          rpy: [0.0, 0.0, 0.0]
+          # Checked against the scene (FK, #779) — not a placeholder.
+          provisional: false

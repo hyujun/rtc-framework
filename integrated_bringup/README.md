@@ -241,7 +241,7 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false   # h
 
 `sim_ur5e_p1b.launch.py` 는 `config/ur5e_p1b/mujoco_simulator.yaml` **뒤**, 그리고 자기 명령줄
 인자 (`model_path:=` 등) **앞**에 params 파일 하나를 더 끼울 수 있습니다. 두 노드에 모두 전달되고
-각 노드는 자기 섹션만 읽습니다. 이름만 주면 `config/ur5e_p1b/sim_overlays/<name>.yaml`, `/` 를
+각 노드는 자기 섹션만 읽습니다. 장면을 바꾸는 overlay 는 RT 노드 (`integrated_rt_controller`) 섹션에 그 장면의 `urdf.extra_frames.scene_world` 도 둡니다 — 파라미터는 키 단위로 덮이므로, 말하지 않으면 `sim.yaml` 의 (다른 장면의) world 가 남습니다 (§Task 목표의 기준 frame). 이름만 주면 `config/ur5e_p1b/sim_overlays/<name>.yaml`, `/` 를
 포함하거나 `.yaml` 로 끝나면 경로로 해석하며, **해석되지 않는 값은 launch 를 실패**시킵니다
 (에러에 출하 overlay 이름 목록이 실립니다). fallback 하지 않는 이유는 launch 파일의
 `resolve_sim_overlay` docstring 이 갖습니다.
@@ -368,6 +368,33 @@ demo_task_controller:
 | `dualarm_diag_log` (CSV, DemoDualArm 전용) | `DemoDualArmController` (`ControllerLogSet`) | per-tick `dualarm_diag.csv` (`msg_type: integrated_bringup/DualArmDiagLog`, instance 고정 `dualarm_diag`) — 열 묶음과 pose 의 뜻은 §DemoDualArmController "로그와 TF 판독" |
 
 **외부 도구는 `/active_controller_name` (TRANSIENT_LOCAL) 구독해서 런타임에 rewire**하십시오 (BT bridge / GUI / digital_twin / shape_estimation 포함). 컨트롤러 전환 시 각 소유 토픽은 이전 네임스페이스에서 silent 되고 새 네임스페이스에서 라이브됩니다.
+
+### Task 목표의 기준 frame (#779)
+
+`rtc_msgs/RobotTarget` 의 task 목표 (`goal_type: task`) 는 `header.frame_id` 에 자기 기준 frame 을 싣습니다. `.msg` 는 바꾸지 않았고 계약은 여기가 갖습니다.
+
+| 컨트롤러 | 받는 `frame_id` | 그 밖 |
+|---|---|---|
+| `demo_wbc` · `demo_task` · `demo_compliance` (팔, device 0) | 팔의 `root_link` (device `urdf.root_link`) — 그대로 · `scene_world` — `root_link` 로 변환 | 빈 값 · 다른 이름 · 정의되지 않은 `scene_world` 는 **거부** |
+| `demo_dualarm` | 자기 `<task>/task_goal` lane 의 `clik.target_frames` (빈 값 = 과제 base) | 이 계약 밖. 그쪽 `"world"` 는 model frame 이지 `scene_world` 가 아니다 (R6, E-9) |
+
+- **`scene_world`** 는 model frame 입니다: `urdf.extra_frames.scene_world {parent: <root_link>, xyz, rpy}` (규약 `p_root = R(rpy)·p_world + xyz`) 를 CM 이 모든 모델에 더합니다. 출하 정의는 `sim.yaml` (p1a · p1b · iiwa7_leap) 과 장면을 바꾸는 sim overlay 마다 있고, `_base.yaml` · `robot.yaml` 에는 **없습니다** — 실기는 calibration 값을 넣기 전까지 world 목표를 거부합니다. g1_p1b 에도 없습니다. 배치 규칙은 `test_shipped_scene_world.py` 가 지킵니다.
+- **세 상태.** 없음 (또는 `provisional: true` — 확인되지 않은 자리표시) → configure 성공, world 목표 거부 (configure INFO 한 줄이 받는 frame 을 말한다). `root_link` 에 rigid 하지 않거나 비유한 → `on_configure` 실패. CM 이 파싱하지 못하는 항목 → 기동 전체 거부 (CM 의 기존 fail-closed). 출하 값은 장면과 대조했으므로 `provisional: false` 다 — 키를 빼면 provisional 로 파싱된다.
+- **장면을 바꿀 때.** `scene_world` 는 파라미터일 뿐 장면에서 읽지 않는다. 명령줄 `model_path:=` 로 장면만 바꾸면 `sim.yaml` 의 world 가 그대로 남으니, 그 장면의 `scene_world` 를 함께 주는 overlay 를 쓴다.
+- **변환 위치.** 비-RT target ingress (`SetDeviceTaskTarget(idx, task6, frame_id)`) 에서 공용 `support/task_target_frames.hpp` 로 변환한 뒤 mailbox 에 넣습니다. `root_link` 목표는 비트 그대로입니다. `control_6dof: false` (Task · Compliance) 에서는 x, y, z 만 변환하고 3..5 (null-space 자세) 는 건드리지 않습니다.
+- **거부는 센다.** `/rtc_cm/list_controllers` 의 `target_reject_count` 가 오르고 throttled WARN 이 사유를 말합니다 (`rtc_controller_interface` README §기준 frame 과 goal 종류).
+- **configure 거부.** `root_link` 가 이름은 있는데 모델 frame 이 아니면 실패합니다 (전에는 조용히 world 로 갔다). 설정이 아예 없으면 지금처럼 world 에서 동작하고 task 목표는 전부 거부됩니다.
+- **생산자.** BT coordinator · shape_estimation 은 파라미터 `base_frame` (기본 `"base"`) 을 TF 조회 부모와 `frame_id` 에 함께 씁니다 — `root_link` 와 다르면 목표가 거부로 드러납니다. demo GUI 는 profile 의 `tcp_parent` 를 싣습니다. 출하 기본값이 UR5e profile 의 `root_link` 와 같은지는 `test_shipped_scene_world.py` 가 봅니다.
+
+**goal 종류 (V5).** 한 종류를 다른 종류로 잘못 읽는 컨트롤러는 그 종류를 거부·count 합니다 (`AcceptedGoalKinds`):
+
+| 컨트롤러 | joint 목표 | task 목표 |
+|---|---|---|
+| `demo_joint` | 받음 | **거부** (x,y,z,r,p,y 를 관절 rad 로 명령했다) |
+| `demo_task` · `demo_compliance` | 팔: **거부** (rad 를 pose 로 읽었다) · 손: 받음 | 팔: 받음 · 손: **거부** |
+| `demo_wbc` | 받음 (팔 posture · 손) | 팔: 받음 · 손: **거부** (SE3 slot 이 없어 조용히 버려졌다) |
+
+출하 경로 중 이것에 걸리던 곳을 고쳤습니다: BT `FullDemo` 는 `demo_joint_controller` 로 바꾼 **뒤** 팔 자세를 보내고, motion editor 는 Task · Compliance 가 활성이면 팔 joint 자세를 보내지 않으며, demo GUI 프리셋은 활성 컨트롤러가 받지 않는 종류의 팔 목표를 보내지 않습니다 (셋 다 이유를 로그로 남긴다). 남는 한계: 7-DoF 팔 (iiwa7) 의 Task · Compliance position-only 모드에서 null-space 자세 `null_target[6]` 는 이제 외부에서 줄 수 없습니다 — 6 값 task 목표에는 자리가 없고, 그 값을 싣던 팔 joint lane 은 위 이유로 막혔습니다 (seed 값 유지).
 
 ### DemoJointController (Index 4)
 
@@ -1138,7 +1165,7 @@ ros2 topic pub --once /demo_dualarm_controller/p1b/joint_goal rtc_msgs/RobotTarg
 
 S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장되면 팔을 `planner.wait_pose` 로 관절공간 homing 하고 손을 q_pre 에 둔 채 기다린다 (IDLE → ARMED). 러너는 미러 `planner.wait_pose` 로 조준·정렬하므로 **`planner.wait_pose_source: yaml` 전제**다 — `current` 로 띄우면 채택 자세와 미러가 달라 ARMED 정렬 gate 가 거부한다; 자세 실험은 overlay `planner.wait_pose` 로 한다 (S8-I). 시행이 끝나면 다시 그 자세로 돌아간다 (RETREAT → ARMED).
 
-**switch 시점 자세를 대기 자세로 (S8-I, `planner.wait_pose_source: current` — 출하 overlay 는 없다. 이 키 하나를 적은 overlay 를 경로로 넘긴다).** 러너 없이 손으로 쓰는 흐름이다: `demo_joint_controller` 에 관절 목표 (`/demo_joint_controller/ur5e/joint_goal`, `goal_type: joint`) 나 `demo_task_controller` 에 TCP 목표 (`/demo_task_controller/ur5e/joint_goal`, `goal_type: task`, `base` 프레임 (x, y, z, roll, pitch, yaw) ZYX — 출하 `trajectory_speed` 0.01 m/s 라 0.1 m 에 10 s) 를 보내 팔을 두고, `/rtc_cm/switch_controller` 로 포구 컨트롤러를 활성화한다. 팔이 **정지한** 첫 판독 tick 이 그 자세를 채택하고 (기동 로그 `wait pose adopted from the arm's switched-in pose: [...]`, diag `wait_pose_adopted`·`q_wait_<joint>`), `catching.enable` 은 homing 없이 곧 ARMED 다. 팔이 아직 움직이거나 팔 속도 lane 을 읽을 수 없으면 결정을 미루고, 그 상태에서 무장하거나 E-STOP 아래에서 switch 했거나 자세가 margined 관절 상자 밖이면 **거부** — YAML 자세가 남고 WARN `switched-in wait pose REFUSED ... <사유> [arm joint i, reading x]` 한 줄이 나온다 (무장 시 YAML 자세까지 homing). 2026-09-27 headless sim 검증: 관절 목표 3 자세 + TCP 목표 2 자세 (출하 자세에서 최대 0.35 rad · 8–11 cm) + 출하 복귀 재채택 — 채택 오차 ≤ 1.2e-4 rad, 채택 로그 0.11 s, 무장 시 팔 이동 ≤ 1e-4 rad, 각 자세에서 손 근처 투척 한 발이 plan → HOLD → RETREAT 로 채택 자세에 복귀 (6/6, 포획 2); wrist_3 6.25 rad (margined box 밖) 은 거부되어 YAML 자세로 12.8 s homing. 미러 `planner.wait_pose` 는 YAML 값이므로 채택 자세는 로그·diag 로만 읽는다. 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
+**switch 시점 자세를 대기 자세로 (S8-I, `planner.wait_pose_source: current` — 출하 overlay 는 없다. 이 키 하나를 적은 overlay 를 경로로 넘긴다).** 러너 없이 손으로 쓰는 흐름이다: `demo_joint_controller` 에 관절 목표 (`/demo_joint_controller/ur5e/joint_goal`, `goal_type: joint`) 나 `demo_task_controller` 에 TCP 목표 (`/demo_task_controller/ur5e/joint_goal`, `goal_type: task`, `header.frame_id: base` (§Task 목표의 기준 frame — 비우면 거부된다), `base` 프레임 (x, y, z, roll, pitch, yaw) ZYX — 출하 `trajectory_speed` 0.01 m/s 라 0.1 m 에 10 s) 를 보내 팔을 두고, `/rtc_cm/switch_controller` 로 포구 컨트롤러를 활성화한다. 팔이 **정지한** 첫 판독 tick 이 그 자세를 채택하고 (기동 로그 `wait pose adopted from the arm's switched-in pose: [...]`, diag `wait_pose_adopted`·`q_wait_<joint>`), `catching.enable` 은 homing 없이 곧 ARMED 다. 팔이 아직 움직이거나 팔 속도 lane 을 읽을 수 없으면 결정을 미루고, 그 상태에서 무장하거나 E-STOP 아래에서 switch 했거나 자세가 margined 관절 상자 밖이면 **거부** — YAML 자세가 남고 WARN `switched-in wait pose REFUSED ... <사유> [arm joint i, reading x]` 한 줄이 나온다 (무장 시 YAML 자세까지 homing). 2026-09-27 headless sim 검증: 관절 목표 3 자세 + TCP 목표 2 자세 (출하 자세에서 최대 0.35 rad · 8–11 cm) + 출하 복귀 재채택 — 채택 오차 ≤ 1.2e-4 rad, 채택 로그 0.11 s, 무장 시 팔 이동 ≤ 1e-4 rad, 각 자세에서 손 근처 투척 한 발이 plan → HOLD → RETREAT 로 채택 자세에 복귀 (6/6, 포획 2); wrist_3 6.25 rad (margined box 밖) 은 거부되어 YAML 자세로 12.8 s homing. 미러 `planner.wait_pose` 는 YAML 값이므로 채택 자세는 로그·diag 로만 읽는다. 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
 
 `catching_sim_trials` 는 떠 있는 sim 을 구동만 한다. 투척마다 다음을 한다.
 
@@ -1472,7 +1499,7 @@ WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mp
 
 **Virtual TCP 패널 (Control 탭, Gains 아래):** 선택된 컨트롤러의 `virtual_tcp_mode` · `virtual_tcp_offset` · `virtual_tcp_orientation` 을 읽고 고칩니다 (`demo_joint` · `demo_task` · `demo_compliance` 만 선언 — 그 외 컨트롤러에서는 패널 전체가 비활성). 컨트롤러는 **Inactive 일 때만** set 을 받으므로 (위 "런타임 변경"), `Apply VTCP` 는 선택된 컨트롤러가 `/rtc_cm/active_controller_name` 의 active 컨트롤러가 아닐 때만 열리고, 그 메시지를 아직 못 받았으면 닫힙니다. 이 게이트는 안내일 뿐 판정은 컨트롤러가 하며, 거부되면 그 사유가 `refused: ` 뒤에 **그대로** 표시됩니다. Apply 는 세 값을 `set_parameters_atomically` 한 번으로 보내고, 결과와 무관하게 다시 읽어 `current:` 줄을 컨트롤러가 확인한 값으로 바꿉니다. 입력 칸은 읽은 값이 바뀔 때만 다시 채워지므로 거부된 Apply 뒤에도 편집 중인 값이 남습니다. `Load VTCP` 는 캐시를 무시하고 다시 읽어 입력 칸을 덮어씁니다 — `ros2 param set` 이나 재configure 로 바뀐 값은 Load 전에는 보이지 않을 수 있습니다. 쓰는 흐름은 대상 컨트롤러를 선택 → 값 편집 → `Apply VTCP` → `Switch Controller` 이며, 새 값은 그 활성화의 첫 tick 에 hold seed 와 함께 적용됩니다.
 
-**Target 패널 (관절 vs task):** `demo_joint_controller` 는 관절 목표만, `demo_task_controller` 는 task-space (EE SE3) 목표만 입력 패널이 활성화됩니다. `demo_wbc_controller` 는 **둘 다 활성화** — 암 posture (nullspace reference) 와 commanded EE SE3 jog 를 독립적으로 받기 때문 (`demo_gui/config.py` `DUAL_TARGET_SPACE`). WBC 에서 `Send Command` 는 두 `RobotTarget` (goal_type `joint` + `task`) 을 모두 publish 하며, controller `DeliverTargetMessage` 가 goal_type 별로 라우팅합니다. EE SE3 패널 값은 TF (`virtual_tcp`/`ee_link`) 가 wiring 되어 있어야 current pose 로 seed 됩니다.
+**Target 패널 (관절 vs task):** task 목표는 `header.frame_id` = profile 의 `tcp_parent` (팔의 `root_link`) 로 나갑니다 — 패널이 그 frame 의 TF 로 seed 되기 때문입니다 (§Task 목표의 기준 frame). `demo_joint_controller` 는 관절 목표만, `demo_task_controller` 는 task-space (EE SE3) 목표만 입력 패널이 활성화됩니다. `demo_wbc_controller` 는 **둘 다 활성화** — 암 posture (nullspace reference) 와 commanded EE SE3 jog 를 독립적으로 받기 때문 (`demo_gui/config.py` `DUAL_TARGET_SPACE`). WBC 에서 `Send Command` 는 두 `RobotTarget` (goal_type `joint` + `task`) 을 모두 publish 하며, controller `DeliverTargetMessage` 가 goal_type 별로 라우팅합니다. EE SE3 패널 값은 TF (`virtual_tcp`/`ee_link`) 가 wiring 되어 있어야 current pose 로 seed 됩니다.
 
 **`demo_inference_controller` — 외부 명령 경로가 없는 컨트롤러:** 이 컨트롤러는 라디오에서 선택하고 `Switch Controller` 로 활성화할 수 있지만 (`--robot ur5e_p1b` 한정), **어떤 authoring 위젯도 동작하지 않습니다**. 정책이 팔과 손 명령을 모두 소유하므로 (a) `CreateOwnedTopics` 를 호출하지 않아 `joint_goal` **구독 자체가 없고** — YAML 의 `topics:` 블록은 device 그룹 *순서*를 세우는 용도입니다 — (b) `grasp_command` srv 를 선언하지 않으며 (c) ROS 파라미터가 0개라 게인 패널이 비어 있습니다. 그래서 GUI 는 관절·task 목표 패널과 `▶ Grasp` / `■ Release` 를 **비활성화하고 사유를 표시**합니다 (`demo_gui/config.py` `NO_EXTERNAL_COMMAND_CONTROLLERS`). 구독자가 없는 토픽으로의 publish 는 조용히 성공하므로, 버튼을 살려두면 "Sent hand cmd" 로그만 남고 로봇은 안 움직이는 상태와 구별되지 않습니다 — `Send Command` 와 `Send Preset` 의 hand 절반도 같은 이유로 차단됩니다. 관절 상태 readout 은 CM 소유 토픽(`/rtc_cm/<group>/joint_states`)이라 정상 동작하고, 진단(hold 사유·reach gate)은 토픽이 아니라 세션 CSV (`inference_diag.csv`) 로만 나옵니다.
 
@@ -1569,6 +1596,7 @@ ros2 run integrated_bringup motion_editor_gui
 - JSON 모션 파일 로드/저장
 - 포즈 삽입/삭제/복사/붙여넣기
 - 선택 모션 재생
+- 팔 자세는 joint 목표다: Task · Compliance 가 활성이면 보내지 않고 이유를 로그로 남긴다 (그 컨트롤러는 팔 joint 목표를 거부한다, §Task 목표의 기준 frame)
 
 ---
 

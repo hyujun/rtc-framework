@@ -55,6 +55,7 @@ ShapeEstimationNode::CallbackReturn ShapeEstimationNode::on_configure(
   protuberance_detector_ = ProtuberanceDetector(prot_config);
 
   frame_id_ = get_parameter("frame_id").as_string();
+  tf_parent_frame_ = get_parameter("base_frame").as_string();
   min_points_for_fitting_ = static_cast<int>(get_parameter("min_points_for_fitting").as_int());
   publish_rate_hz_ = get_parameter("publish_rate_hz").as_double();
   const double viz_rate_hz = get_parameter("viz_rate_hz").as_double();
@@ -246,6 +247,9 @@ void ShapeEstimationNode::DeclareParameters() {
   declare_parameter("publish_rate_hz", 10.0);
   declare_parameter("viz_rate_hz", 5.0);
   declare_parameter("frame_id", "base_link");
+  // The arm's base frame (the controllers' root_link, #779): the TF parent the
+  // TCP pose is read in AND the header.frame_id of every task goal sent.
+  declare_parameter("base_frame", "base");
 
   // 돌출 구조 탐지 파라미터
   declare_parameter("protuberance.residual_threshold", -0.005);
@@ -672,6 +676,8 @@ void ShapeEstimationNode::ExploreLoopCallback() {
   if (result.goal.valid) {
     rtc_msgs::msg::RobotTarget target;
     target.header.stamp = now();
+    // The goal is built from the TCP pose read in tf_parent_frame_ (#779).
+    target.header.frame_id = tf_parent_frame_;
     target.goal_type = "task";
     for (int i = 0; i < 6; ++i) {
       target.task_target[static_cast<size_t>(i)] = result.goal.pose[static_cast<size_t>(i)];

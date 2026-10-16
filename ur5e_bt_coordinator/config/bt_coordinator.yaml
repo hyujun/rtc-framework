@@ -16,6 +16,16 @@ bt_coordinator:
     arm_dof: 6                       # arm joint width (pose length; default 6)
     hand_dof: 10                     # hand joint width (pose length; default 10 — assm/p1b)
 
+    # ── Target frame (#779) ──────────────────────────────────────────────────
+    # 팔의 base frame = 컨트롤러의 root_link. TCP pose 를 읽는 TF 부모이자 모든
+    # task 목표의 header.frame_id 다. root_link 와 다르면 컨트롤러가 목표를
+    # 거부한다 (조용히 다른 frame 으로 읽히지 않는다).
+    base_frame: "base"
+    # /world_target_info 위치의 frame. 비우면 base_frame. tree 가 이 위치를 현재
+    # TCP 자세 (base 축) 와 묶어 목표로 보내므로 base_frame 과 다른 값은 기동 때
+    # ERROR 를 내고 토픽을 무시한다 — vision 쪽이 base frame 으로 바꿔 보낸다.
+    world_target_frame: ""
+
     # Finger→joint 매핑 전략 (Seam C). 기본은 joint 이름 prefix 매칭
     # (PrefixFingerResolver) — ur5e assm_v1/proto_1b 처럼 joint 이름에 finger
     # prefix 가 있으면 설정 불필요. joint 이름에 prefix 가 없는 hand (예: LEAP

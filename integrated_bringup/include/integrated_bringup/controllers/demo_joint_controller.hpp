@@ -136,6 +136,12 @@ class DemoJointController final : public RTControllerInterface {
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
+  // V5 (#779): joint goals only. A task goal's x, y, z, r, p, y would be
+  // commanded as joint radians; DeliverTargetMessage refuses and counts it.
+  [[nodiscard]] GoalKinds AcceptedGoalKinds(int /*device_idx*/) const noexcept override {
+    return {.joint = true, .task = false};
+  }
+
   [[nodiscard]] std::string_view Name() const noexcept override { return "DemoJointController"; }
 
   void TriggerEstop() noexcept override;

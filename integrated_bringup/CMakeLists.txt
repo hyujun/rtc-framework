@@ -102,6 +102,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/support/hand_fk_wiring.cpp
   src/support/wbc_reduced_dynamics_provider.cpp
   src/support/owned_topics.cpp
+  src/support/task_target_frames.cpp
   src/support/virtual_tcp_params.cpp
   src/backends/mujoco_native_backend.cpp
   src/backends/ur_driver_native_backend.cpp
@@ -1381,6 +1382,12 @@ if(BUILD_TESTING)
   # the verdict's wording (support/arm_tip_resolution.hpp) and the four
   # controllers that report an arm tip pose, on iiwa7_leap, in both bring-up
   # orders. on_configure runs on a real LifecycleNode, hence the domain.
+  # #779: the frames a task goal may name (root_link / scene_world) and the
+  # conversion into root_link — synthetic model, no ROS.
+  ament_add_gtest(test_task_target_frames test/test_task_target_frames.cpp)
+  target_link_libraries(test_task_target_frames ${PROJECT_NAME}_demo_controllers)
+  ament_target_dependencies(test_task_target_frames pinocchio Eigen3 rtc_math)
+
   ament_add_gtest(test_arm_tip_resolution
     test/test_arm_tip_resolution.cpp
     TIMEOUT 180
@@ -1397,6 +1404,32 @@ if(BUILD_TESTING)
     rtc_controllers
     rtc_controller_interface
     rtc_base
+    rtc_tsid
+    rtc_mpc
+    pinocchio
+    Eigen3
+  )
+
+  # #779: WBC / Task / Compliance take a task goal only in root_link or
+  # scene_world (refused otherwise, counted), and refuse a configure whose root
+  # link does not resolve or whose world is not rigid to it. iiwa7_leap rig.
+  ament_add_gtest(test_task_goal_frames
+    test/test_task_goal_frames.cpp
+    TIMEOUT 180
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_task_goal_frames
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_task_goal_frames
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    rtc_math
     rtc_tsid
     rtc_mpc
     pinocchio
@@ -1805,6 +1838,9 @@ if(BUILD_TESTING)
   # base: float types (always) + the compiled scene's base position (skips
   # without the mujoco pip module, like the keyframe lane above).
   ament_add_pytest_test(test_shipped_base_T_world test/test_shipped_base_T_world.py)
+  # #779: where each profile defines the scene's world (sim.yaml, overlays, never
+  # _base / robot.yaml).
+  ament_add_pytest_test(test_shipped_scene_world test/test_shipped_scene_world.py)
   # Shipped mujoco_simulator.yaml keys vs the node's declare_parameter list. An
   # undeclared key is read as its compiled default with no error anywhere, so
   # this is the cheap stand-in for the runtime launch that would otherwise be
@@ -1932,6 +1968,7 @@ if(BUILD_TESTING)
     test_demo_dualarm_controller
     test_hand_fk_wiring
     test_arm_tip_resolution
+    test_task_goal_frames
     test_mujoco_native_backend
     test_catching_traj_input
     test_catching_tracking

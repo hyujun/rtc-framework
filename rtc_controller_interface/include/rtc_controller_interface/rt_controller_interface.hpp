@@ -259,6 +259,47 @@ class RTControllerInterface {
     SetDeviceTarget(device_idx, task6);
   }
 
+  // SetDeviceTaskTarget(device_idx, task6, frame_id)
+  //   The task goal together with the frame it is expressed in — the inbound
+  //   RobotTarget's header.frame_id, as DeliverTargetMessage passes it. Returns
+  //   nullptr when the goal is taken, otherwise a string literal naming why it
+  //   was refused; DeliverTargetMessage then counts it in
+  //   GetTargetRejectCount() and warns, exactly like its own validation.
+  //   Default: frame_id is not read and the goal goes to the two-argument form
+  //   (accepted) — controllers without a frame contract are unchanged. A
+  //   controller with one overrides this and converts the pose into its base
+  //   frame before queueing it; an override hides the two-argument overload in
+  //   the derived class, so it also declares
+  //   `using RTControllerInterface::SetDeviceTaskTarget;`.
+  //   Called on the non-RT target ingress (DeliverTargetMessage's callback
+  //   group): noexcept and allocation-free, and it reaches RT state only
+  //   through the target mailbox.
+  [[nodiscard]] virtual const char* SetDeviceTaskTarget(int device_idx,
+                                                        std::span<const double> task6,
+                                                        std::string_view frame_id) noexcept {
+    (void)frame_id;
+    SetDeviceTaskTarget(device_idx, task6);
+    return nullptr;
+  }
+
+  // Which goal kinds device `device_idx` takes on its RobotTarget lane.
+  struct GoalKinds {
+    bool joint{true};
+    bool task{true};
+  };
+
+  // AcceptedGoalKinds()
+  //   DeliverTargetMessage refuses — and counts — a goal of a kind the device
+  //   does not take, before any other check. A controller that would read the
+  //   wrong kind as the other (a joint-space controller commanding x,y,z,r,p,y
+  //   as joint radians; a task-space one reading joint radians as a pose)
+  //   overrides this. Default: both kinds, the historical behaviour. Direct
+  //   SetDeviceTarget / SetDeviceTaskTarget calls are not screened.
+  [[nodiscard]] virtual GoalKinds AcceptedGoalKinds(int device_idx) const noexcept {
+    (void)device_idx;
+    return {};
+  }
+
   [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 
   // E-STOP interface — default no-ops for controllers that do not need it.
@@ -375,6 +416,11 @@ class RTControllerInterface {
   //       joints the sender omitted, which used to command them to 0 rad;
   //     - unnamed joint goal: positional, and no longer than the device's
   //       channel count (it used to be silently truncated).
+  //
+  //   Before those: the goal's kind must be one AcceptedGoalKinds(device_idx)
+  //   takes. After them, a task goal goes to the three-argument
+  //   SetDeviceTaskTarget with header.frame_id, which may still refuse it
+  //   (non-null return — counted the same way).
   //
   //   Anything else is dropped without calling SetDeviceTarget /
   //   SetDeviceTaskTarget, bumps GetTargetRejectCount(), and emits one

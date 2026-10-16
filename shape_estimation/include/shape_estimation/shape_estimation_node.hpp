@@ -157,7 +157,7 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
   // tf2 listener 가 모든 controller's TFMessage 를 수집한다.
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-  std::string tf_parent_frame_{"base"};
+  std::string tf_parent_frame_{"base"};  // ROS param base_frame (#779)
   std::string tf_child_frame_{"tool0_actual"};
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_estop_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_object_pose_;
