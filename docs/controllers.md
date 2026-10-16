@@ -110,7 +110,7 @@ ros2 param set /demo_task_controller/demo_task_controller grasp_controller_type 
 ## ROS2 Topics
 
 **Controller Manager**
-- 서비스: `/rtc_cm/switch_controller` (single-active, sync) · `/rtc_cm/list_controllers` · `/rtc_cm/reset_fault` (래치된 컨트롤러 fault 해제. 활성 컨트롤러 이름을 명시해야 하고 전역 E-STOP 과 별개다).
+- 서비스: `/rtc_cm/switch_controller` (single-active, sync) · `/rtc_cm/list_controllers` · `/rtc_cm/reset_fault` (래치된 컨트롤러 fault 해제. 활성 컨트롤러 이름을 명시해야 하고 전역 E-STOP 과 별개다) · `/rtc_cm/clear_estop` (전역 E-STOP 래치 해제 — E-STOP 중에는 컨트롤러 전환도 거부되므로 먼저 이것으로 푼다. 계약: [ClearEstop.srv](../rtc_msgs/srv/ClearEstop.srv), 절차: [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) "글로벌 E-STOP 해제").
 - 발행: `/rtc_cm/active_controller_name` (latched), `/system/estop_status`, `/rtc_cm/{group}/joint_states` (RELIABLE, depth 1 → `rtc_digital_twin` → RViz2).
 
 **토픽의 소유자**
