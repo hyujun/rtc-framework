@@ -438,7 +438,7 @@ source "${WORKSPACE}/install/setup.bash" || true
 # colcon 은 <ws>/build/<pkg>/compile_commands.json 을 패키지별로 생성한다. clangd
 # 는 단일 DB 를 기대하므로 merge_compile_commands.py 로 합쳐 repo-root 에 둔다
 # (.clangd 의 CompilationDatabase: . 와 매칭). repo-root 에 build/ 디렉토리를
-# 만들지 않는 것이 핵심 — colcon build 는 ws-root 에서만 (colcon-cwd.md).
+# 만들지 않는 것이 핵심 — colcon build 는 ws-root 에서만 (AGENTS.md §9.1).
 # Use _SCRIPT_DIR_BUILD (bootstrap-resolved absolute path to this script's dir);
 # `dirname "${BASH_SOURCE[0]}"` here would resolve relative to cwd and silently
 # point at ws-root when build.sh is invoked as `./build.sh` from <ws>.

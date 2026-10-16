@@ -14,7 +14,7 @@ paths:
 
 # Architecture invariants — 소스 편집 시 (ARCH-1 · ARCH-2 · ARCH-3 · ARCH-4 · ARCH-6)
 
-소스 파일을 읽거나 편집할 때 로드되는 reminder 이며, 이 파일이 갖는 것은 **판정**이다. 규칙 전문·severity·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants, 탐지 패턴·스코프·면제는 [.claude/hooks/verify-changes.sh](../hooks/verify-changes.sh) 가 SSoT 이고, build metadata 축 (ARCH-5 · ARCH-7) 은 [arch-build-meta.md](arch-build-meta.md) 가 갖는다. frontmatter 의 glob 형태는 줄이지 않는다 — 이유와 확인 절차는 `repo_scripts/scripts/validate_claude_rules.py` 헤더.
+이 파일이 갖는 것은 **판정**이다. 규칙 전문·severity·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants, 탐지 패턴·스코프·면제는 [verify-changes.sh](../hooks/verify-changes.sh), build metadata 축 (ARCH-5 · ARCH-7) 은 [arch-build-meta.md](arch-build-meta.md). frontmatter 의 glob 형태는 줄이지 않는다 — 이유는 `repo_scripts/scripts/validate_claude_rules.py` 헤더.
 
 | # | 규칙 | 구속 대상 | Severity |
 |---|---|---|---|

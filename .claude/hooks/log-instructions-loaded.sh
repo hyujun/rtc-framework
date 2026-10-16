@@ -13,18 +13,12 @@
 #
 # WHY THIS EXISTS
 #
-# Path-scoped rules (.claude/rules/*.md with `paths:` frontmatter) are the
-# repo's only channel that fires *automatically* while editing a matching file.
-# But the injection is invisible from inside a session in the one case that
-# matters: after authoring a NEW rule, an agent cannot tell "my glob is wrong"
-# from "the rule loaded before I created it". Observed in the #229 migration —
-# rt-path.md was seen firing once, and two rules added in the same session were
-# never observed at all, which forced the constitution de-duplication to be
-# deferred to a fresh session purely for lack of a sensor.
-#
-# This hook is that sensor. `InstructionsLoaded` fires at session start AND on
-# lazy load during a session, and its matcher distinguishes the load reason
-# (session_start / nested_traversal / path_glob_match / include / compact).
+# A path-scoped rule (.claude/rules/*.md with `paths:`) that does not load has
+# no symptom from inside a session, and after authoring a NEW rule an agent
+# cannot tell "my glob is wrong" from "it loaded before I created it" (#229).
+# This hook is the sensor: `InstructionsLoaded` fires at session start AND on
+# lazy load, and the payload names the reason (session_start /
+# nested_traversal / path_glob_match / include / compact).
 #
 # CONTRACT (why this script looks the way it does)
 #
@@ -51,11 +45,8 @@
 #      the rule did not load, and the glob (not the channel) is the suspect.
 #
 #   A rule written or re-globbed in THIS session is checked from the NEXT one:
-#   the rule set is a snapshot taken at session start. A probe rule created
-#   mid-session did not fire even with a glob form already seen firing (#229),
-#   so "no hit" in the session that made the change says nothing about the glob.
-#   Two sessions independently logging a rule on a matching Read is what closed
-#   #229 (2026-08-04) for the forms the three rules carry today.
+#   the rule set is a snapshot taken at session start, so "no hit" in the
+#   session that made the change says nothing about the glob (#229).
 #   The validator (repo_scripts/scripts/validate_claude_rules.py) answers only
 #   "could it fire"; this log is the ground truth for "did it".
 #

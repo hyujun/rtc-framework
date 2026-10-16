@@ -10,7 +10,7 @@ paths:
 
 # Architecture invariants — build metadata 편집 시 (ARCH-2 · ARCH-5 · ARCH-7)
 
-`CMakeLists.txt` · `package.xml` · `setup.py` 를 읽거나 편집할 때 로드되는 reminder 이며, 이 파일이 갖는 것은 **판정**이다. 규칙 전문·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants, 탐지 패턴은 [.claude/hooks/verify-changes.sh](../hooks/verify-changes.sh) (ARCH-5 · ARCH-7 은 Phase 0a) 가 SSoT 이고, 소스 축 (ARCH-1 · ARCH-3 · ARCH-4 · ARCH-6) 은 [arch-source.md](arch-source.md) 가 갖는다. frontmatter 의 glob 형태는 줄이지 않는다 — 이유와 확인 절차는 `repo_scripts/scripts/validate_claude_rules.py` 헤더.
+이 파일이 갖는 것은 **판정**이다. 규칙 전문·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants, 탐지 패턴은 [verify-changes.sh](../hooks/verify-changes.sh) (ARCH-5 · ARCH-7 은 Phase 0a), 소스 축 (ARCH-1 · ARCH-3 · ARCH-4 · ARCH-6) 은 [arch-source.md](arch-source.md). frontmatter 의 glob 형태는 줄이지 않는다 — 이유는 `repo_scripts/scripts/validate_claude_rules.py` 헤더.
 
 | # | 규칙 | Severity |
 |---|---|---|

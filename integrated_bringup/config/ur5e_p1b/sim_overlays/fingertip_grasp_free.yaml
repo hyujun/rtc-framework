@@ -31,7 +31,8 @@
 # Everything else about running it — the order (activate compliance BEFORE
 # closing, #504), closing on a FORCE BAND rather than an angle (over
 # `force_saturation` 15 N a fingertip drops OUT of the contact set), and not
-# re-publishing a held target — is in `.claude/skills/verify/SKILL.md` (p1b).
+# re-publishing a held target — is in `.claude/skills/verify/SKILL.md` (p1b),
+# with the measurements behind each rule in `.claude/skills/verify/references/p1b-fingertip-fixture.md`.
 
 mujoco_simulator:
   ros__parameters:

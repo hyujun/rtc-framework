@@ -26,7 +26,8 @@
 // the true load (measured 0 -> 1.09 N across one ladder) and without the spring
 // the disk cannot be grasped at all (measured 0.00 N through full closure), so
 // "true load held constant" and "grip force sweepable" are not simultaneously
-// obtainable in that fixture (2026-09-12; .claude/skills/verify/SKILL.md p1b).
+// obtainable in that fixture (2026-09-12;
+// .claude/skills/verify/references/p1b-fingertip-fixture.md).
 //
 // THE ORACLE IS ON PAPER, not a second copy of the implementation. An exactly
 // opposed squeeze cancels in the sum and leaks nothing for ANY delta, so it

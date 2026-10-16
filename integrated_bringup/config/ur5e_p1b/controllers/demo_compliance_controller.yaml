@@ -314,7 +314,8 @@ demo_compliance_controller:
     # and this controller publishes `quality_low` with `reason != 0`. Because the
     # fingers are position-commanded they still LOOK closed, which is why
     # 260904_1023 presented as "the arm did not move for 16.8 s" instead.
-    # Procedure: `.claude/skills/verify/SKILL.md` (p1b).
+    # Procedure: `.claude/skills/verify/SKILL.md` (p1b); measurements in
+    # `.claude/skills/verify/references/p1b-fingertip-fixture.md`.
     source: "pull_estimator"
     # ── D-A5: the bias is removed in EXACTLY ONE PLACE ────────────────────────
     # THIS FILE IS WHERE THAT REASONING LIVES — p1a and iiwa7_leap ship the same
