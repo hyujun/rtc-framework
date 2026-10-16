@@ -7,13 +7,9 @@
 #          from stdin JSON.
 # Format : C++ (.cpp/.hpp/.h/.cc)  -> clang-format -i (uses repo .clang-format)
 #          Python (.py)            -> ruff check --fix (F401 unfixable), THEN ruff format
-# Lookup : clang-format prefers a system binary; if absent, falls back to the
-#          repo-pinned version via `uvx` (so environments without a system
-#          clang-format — e.g. fresh dev boxes / CI — still auto-format instead
-#          of silently skipping). ruff is searched venv-first:
-#            1. $VIRTUAL_ENV/bin/ruff           (active venv)
-#            2. <workspace>/.venv/bin/ruff      (rtc_ws/.venv created by install.sh)
-#            3. `command -v ruff`               (PATH fallback)
+# Lookup : lib/formatters.sh (shared with verify-changes.sh Phase 5, so the
+#          file written here is the file graded there): clang-format system
+#          binary, else the repo-pinned version via `uvx`; ruff venv-first.
 # Limits : silent on tool absence (no clang-format AND no uvx / no ruff -> skip).
 #          Edit / Write only: a file written through Bash (heredoc, sed -i, a
 #          rewrite script) never passes here. verify-changes.sh Phase 5 blocks
@@ -22,10 +18,8 @@
 # Exit   : always 0; never blocks. clang-format / ruff stderr is suppressed.
 set -euo pipefail
 
-# Pin the uvx fallback to the .clang-format baseline version (header says
-# "clang-format 18+ assumed"). A floating default would pull a newer release
-# whose style evolution reflows pre-existing lines.
-CLANG_FORMAT_PIN="18.1.8"
+# shellcheck source=.claude/hooks/lib/formatters.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/formatters.sh"
 
 INPUT=$(cat)
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
@@ -33,35 +27,10 @@ FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 [ -z "$FILE_PATH" ] && exit 0
 [ -f "$FILE_PATH" ] || exit 0
 
-# Resolve ruff binary (prefer venv).
-find_ruff() {
-  if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/ruff" ]]; then
-    echo "${VIRTUAL_ENV}/bin/ruff"
-    return 0
-  fi
-  # Hook runs at unknown CWD; locate workspace via this script's path
-  # (.claude/hooks/format-code.sh → ../../ = repo root → ../../ = rtc_ws).
-  local script_dir
-  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  local ws_venv="${script_dir}/../../../../.venv/bin/ruff"
-  if [[ -x "$ws_venv" ]]; then
-    echo "$ws_venv"
-    return 0
-  fi
-  command -v ruff 2>/dev/null && return 0
-  return 1
-}
-
 case "$FILE_PATH" in
   *.cpp|*.hpp|*.h|*.cc)
-    if command -v clang-format &>/dev/null; then
-      clang-format -i "$FILE_PATH" 2>/dev/null
-    elif command -v uvx &>/dev/null; then
-      # No system clang-format: run the repo-pinned version ephemerally via uvx
-      # (downloaded once, then cached). Pin to ${CLANG_FORMAT_PIN} — the
-      # .clang-format baseline — so a newer default (e.g. 22.x) does not reflow
-      # pre-existing lines and create churn beyond the file being edited.
-      uvx --from "clang-format==${CLANG_FORMAT_PIN}" clang-format -i "$FILE_PATH" 2>/dev/null || true
+    if [ "${#CLANG_FORMAT_CMD[@]}" -gt 0 ]; then
+      "${CLANG_FORMAT_CMD[@]}" -i "$FILE_PATH" 2>/dev/null || true
     fi
     ;;
   *.py)

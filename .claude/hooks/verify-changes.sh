@@ -159,8 +159,9 @@ fi
 
 # By hand the shell's cwd is wherever the last command left it, so --run
 # falls back to the checkout this script sits in rather than to $(pwd).
+HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if [ -n "$RUN_MODE" ]; then
-  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)}"
+  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd)}"
 else
   PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 fi
@@ -782,38 +783,12 @@ CHANGED_DATA_BUILD=$( {
 # blob) or a missing formatter cannot prove pure-format -> fail closed and run
 # full checks.
 #
-# ruff binary lookup mirrors .claude/hooks/format-code.sh: prefer venv,
-# fall back to PATH.
-find_ruff() {
-  if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/ruff" ]]; then
-    echo "${VIRTUAL_ENV}/bin/ruff"; return 0
-  fi
-  local script_dir
-  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  local ws_venv="${script_dir}/../../../../.venv/bin/ruff"
-  [[ -x "$ws_venv" ]] && { echo "$ws_venv"; return 0; }
-  command -v ruff 2>/dev/null && return 0
-  return 1
-}
-
-# Resolve a clang-format invocation: prefer a system binary, else the
-# repo-pinned version via uvx (as format-code.sh does, so the fast path works
-# on boxes without a system clang-format). Populates CLANG_FORMAT_CMD as an
-# argv array; the pin matches format-code.sh so the two agree.
-CLANG_FORMAT_PIN="18.1.8"
-CLANG_FORMAT_CMD=()
-resolve_clang_format() {
-  if command -v clang-format >/dev/null 2>&1; then
-    CLANG_FORMAT_CMD=(clang-format)
-    return 0
-  fi
-  if command -v uvx >/dev/null 2>&1; then
-    CLANG_FORMAT_CMD=(uvx --from "clang-format==${CLANG_FORMAT_PIN}" clang-format)
-    return 0
-  fi
-  return 1
-}
-resolve_clang_format && HAVE_CLANG_FORMAT=1 || HAVE_CLANG_FORMAT=0
+# The formatters, resolved the way format-code.sh resolves them (one pin, one
+# search order: lib/formatters.sh), so what that hook wrote is what this one
+# accepts.
+# shellcheck source=.claude/hooks/lib/formatters.sh
+. "$HOOK_DIR/lib/formatters.sh"
+[ "${#CLANG_FORMAT_CMD[@]}" -gt 0 ] && HAVE_CLANG_FORMAT=1 || HAVE_CLANG_FORMAT=0
 RUFF_BIN=$(find_ruff) || RUFF_BIN=""
 
 # The one formatter dispatch, shared by the pure-format fast path and Phase 5 so
@@ -1321,7 +1296,6 @@ done <<< "$CHANGED_DOCS"
 # Resolved relative to this hook, not to PROJECT_DIR: the script ships in the
 # same repository as the hook, so this works when the two point at different
 # trees (as the routing tests do).
-HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VALIDATE_DOCS="$HOOK_DIR/../../repo_scripts/scripts/validate_docs.py"
 [ -f "$VALIDATE_DOCS" ] || VALIDATE_DOCS="$PROJECT_DIR/repo_scripts/scripts/validate_docs.py"
 if [ "${#DOC_FILES[@]}" -gt 0 ]; then
@@ -1438,7 +1412,6 @@ if [ -n "$CHANGED_RULES" ]; then
   if [ "${#RULE_FILES[@]}" -gt 0 ]; then
     # Resolved relative to this hook first, like validate_docs.py above, so the
     # routing tests can point PROJECT_DIR at a fixture that has no scripts.
-    HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
     VALIDATE_RULES="$HOOK_DIR/../../repo_scripts/scripts/validate_claude_rules.py"
     [ -f "$VALIDATE_RULES" ] || VALIDATE_RULES="$PROJECT_DIR/repo_scripts/scripts/validate_claude_rules.py"
     if [ -f "$VALIDATE_RULES" ]; then
