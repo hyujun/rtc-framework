@@ -41,6 +41,9 @@ struct Scenario {
   bool position_box;
   double anchor_drift_max;
   bool registered_base;
+  // The registered base is kRotatedBaseFrame (fixed in the world, turned
+  // about two axes) instead of panda_link1 (which turns with joint 1).
+  bool world_fixed_base{false};
 };
 
 // Fixed order; the table is the concatenation of these runs.
@@ -56,6 +59,10 @@ inline constexpr Scenario kScenarios[] = {
     // Position box off: velocity box only, carry-forward, and a dt = +inf tick
     // (non-finite output branch → forced measured re-anchor).
     {"no_position_box", 20, 1.5, false, 0.0, false},
+    // A base fixed in the world and turned against it (#779): the target is
+    // in that base, and the multi-frame overload's relative task on it is the
+    // same problem (test_clik_multiframe cross-checks).
+    {"world_fixed_rotated_base", 40, 1.5, true, 0.0, true, true},
 };
 
 /// What one tick hands to the Compute() call under test.
@@ -73,6 +80,11 @@ class ClikGoldenScenarioTest : public PandaTest {
  protected:
   void SetUp() override {
     PandaTest::SetUp();
+    // The Panda plus kRotatedBaseFrame. Adding a frame leaves every other
+    // frame's index and kinematics as they were.
+    model_ = SharedPandaWithRotatedBase();
+    robot_info_ = RobotModelInfo{};
+    robot_info_.Build(*model_, YAML::Node{});
     ASSERT_EQ(robot_info_.nq, kNv);
     ASSERT_EQ(robot_info_.nv, kNv);
 
@@ -83,8 +95,11 @@ class ClikGoldenScenarioTest : public PandaTest {
     // panda_link1, not panda_link0: link0 sits at the world origin, so a base
     // transform bug (e.g. ignoring base_frame_idx) would be invisible.
     base_idx_ = cache_.RegisterFrame("panda_link1", model_->getFrameId("panda_link1"));
+    fixed_base_idx_ =
+        cache_.RegisterFrame(kRotatedBaseFrame, model_->getFrameId(kRotatedBaseFrame));
     ASSERT_GE(tcp_idx_, 0);
     ASSERT_GE(base_idx_, 0);
+    ASSERT_GE(fixed_base_idx_, 0);
 
     q_home_.resize(kNv);
     q_home_ << 0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785, 0.02, 0.02;
@@ -132,6 +147,7 @@ class ClikGoldenScenarioTest : public PandaTest {
     cfg.damping_sq = 1e-4;
     cfg.v_limit = sc.v_limit;
     cfg.anchor_drift_max = sc.anchor_drift_max;
+    cfg.relative_tasks = sc.world_fixed_base;  // lets the multi-frame replay take it
     if (sc.position_box) {
       cfg.q_min = q_min_;
       cfg.q_max = q_max_;
@@ -143,7 +159,8 @@ class ClikGoldenScenarioTest : public PandaTest {
     // Target: home TCP pose shifted and rotated, then swept along a circle.
     cache_.Update(q_home_, Eigen::VectorXd::Zero(kNv));
     const auto& tip = cache_.registered_frames[static_cast<size_t>(tcp_idx_)];
-    const auto& base = cache_.registered_frames[static_cast<size_t>(base_idx_)];
+    const int base_idx = sc.world_fixed_base ? fixed_base_idx_ : base_idx_;
+    const auto& base = cache_.registered_frames[static_cast<size_t>(base_idx)];
     const pinocchio::SE3 home_in_base = sc.registered_base ? base.oMf.actInv(tip.oMf) : tip.oMf;
 
     Eigen::VectorXd q_posture = q_home_;
@@ -171,7 +188,7 @@ class ClikGoldenScenarioTest : public PandaTest {
       const bool reseed = (s == 1) ? (k == 0 || k == 18) : (s == 3) ? (k == 0) : true;
 
       cache_.Update(MeasuredQ(s, k), MeasuredV(k));
-      const bool ok = compute(gen, Tick{cache_, tcp_idx_, sc.registered_base ? base_idx_ : -1, des,
+      const bool ok = compute(gen, Tick{cache_, tcp_idx_, sc.registered_base ? base_idx : -1, des,
                                         q_posture, dt, reseed});
       out.push_back(ok ? 1.0 : 0.0);
       for (int i = 0; i < kNv; ++i) {
@@ -189,6 +206,7 @@ class ClikGoldenScenarioTest : public PandaTest {
   PinocchioCache cache_;
   int tcp_idx_{-1};
   int base_idx_{-1};
+  int fixed_base_idx_{-1};
   Eigen::VectorXd q_home_;
   Eigen::VectorXd q_min_;
   Eigen::VectorXd q_max_;
