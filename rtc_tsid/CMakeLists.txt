@@ -194,6 +194,10 @@ if(BUILD_TESTING)
   # Stage C-1: ClikReferenceGenerator (velocity-level CLIK reference).
   add_tsid_gtest(test_clik_reference)
 
+  # #779: SE3Task and the CLIK SE3 overload on a base frame turned against the
+  # world, judged against the same task stated in the world / as a relative task.
+  add_tsid_gtest(test_rotated_base_frame)
+
   # dynamic_catching S2.2a: golden-vector regression of the default CLIK path.
   # Bit-exact only in the configuration the table was recorded in (Release, no
   # sanitizer); other builds compare with a relative tolerance (see the test

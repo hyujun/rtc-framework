@@ -1255,6 +1255,11 @@ class DemoWbcController final : public RTControllerInterface {
 
   // ── Utility ─────────────────────────────────────────────────────────────
   [[nodiscard]] double ComputeTcpError(const pinocchio::SE3& target) noexcept;
+  // The arm TCP in the base frame (root_link) from the shared cache: clik_tcp's
+  // oMf, brought into clik_base when that is registered (a universe base → the
+  // world pose). No freshness gate — the cache's last Update. Precondition:
+  // clik_tcp_frame_idx_ >= 0.
+  [[nodiscard]] pinocchio::SE3 TcpInBaseFromCache() const noexcept;
 
   // ── Logging ─────────────────────────────────────────────────────────────
   rclcpp::Logger logger_{integrated_bringup::logging::DemoWbcLogger()};

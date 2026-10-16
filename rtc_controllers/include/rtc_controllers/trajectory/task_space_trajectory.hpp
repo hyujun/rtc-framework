@@ -30,6 +30,33 @@ class TaskSpaceTrajectory {
     pinocchio::Motion velocity{pinocchio::Motion::Zero()};  // spatial velocity in LOCAL frame
     pinocchio::Motion acceleration{
         pinocchio::Motion::Zero()};  // spatial acceleration in LOCAL frame
+
+    /// `velocity` in the axes `pose` is expressed in, at the pose's origin
+    /// (LOCAL_WORLD_ALIGNED of the pose): [R·v; R·ω], [linear; angular]. What a
+    /// consumer that tracks the pose with a LOCAL_WORLD_ALIGNED Jacobian
+    /// (e.g. rtc_tsid's SE3Task) takes as its velocity feed-forward.
+    [[nodiscard]] Eigen::Matrix<double, 6, 1> AlignedVelocity() const noexcept {
+      const Eigen::Matrix3d& R = pose.rotation();
+      Eigen::Matrix<double, 6, 1> out;
+      out.head<3>().noalias() = R * velocity.linear();
+      out.tail<3>().noalias() = R * velocity.angular();
+      return out;
+    }
+
+    /// `acceleration` as the CLASSICAL acceleration of the pose's origin and
+    /// the angular acceleration, in the axes `pose` is expressed in:
+    /// [R·(v̇ + ω×v); R·ω̇] — the time derivative of AlignedVelocity()
+    /// (d/dt(R·ω) = R·ω̇ since ω×ω = 0). The form a classical-drift task
+    /// (J·a + J̇·v, pinocchio's classical J̇·v) takes as feed-forward.
+    [[nodiscard]] Eigen::Matrix<double, 6, 1> AlignedClassicalAcceleration() const noexcept {
+      const Eigen::Matrix3d& R = pose.rotation();
+      const Eigen::Vector3d lin =
+          acceleration.linear() + velocity.angular().cross(velocity.linear());
+      Eigen::Matrix<double, 6, 1> out;
+      out.head<3>().noalias() = R * lin;
+      out.tail<3>().noalias() = R * acceleration.angular();
+      return out;
+    }
   };
 
   TaskSpaceTrajectory() {

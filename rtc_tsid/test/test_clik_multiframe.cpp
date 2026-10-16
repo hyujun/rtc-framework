@@ -18,9 +18,11 @@
 ///      equivalent uncapped problem, the input checks against untouched
 ///      outputs.
 ///
-/// The registered-base scenarios of the golden table are NOT replayed: the SE3
-/// overload pairs a base-aligned error with the world-aligned Jacobian there,
-/// and the multi-frame overload deliberately does not.
+/// The registered-base scenarios of the golden table are NOT replayed: their
+/// base (panda_link1) moves with joint 1, and the SE3 overload takes its base
+/// as fixed in the world for the tick (it rotates the reference into the world
+/// and keeps rf.J), where the relative task's J_rel carries the base's motion.
+/// On a world-fixed base the two agree — test_rotated_base_frame.
 
 #include <gtest/gtest.h>
 
@@ -125,6 +127,55 @@ TEST_F(ClikMultiFrameGoldenTest, OneUniverseSe3TaskReplaysTheGoldenScenariosBitF
     ++replayed;
   }
   EXPECT_EQ(replayed, 2) << "carry_forward_drift and no_position_box";
+}
+
+// The golden scenario on a base fixed in the world and turned against it
+// (#779): the SE3 overload's answer is the relative task's. Not bit for bit —
+// the two build the rows in different operation orders (R_wb on the reference
+// against R_bᵀ on the Jacobian).
+TEST_F(ClikMultiFrameGoldenTest, AWorldFixedRotatedBaseScenarioIsTheRelativeTask) {
+  using test::clik_golden::kRecordWidth;
+  using test::clik_golden::kScenarios;
+  using test::clik_golden::Tick;
+  int replayed = 0;
+  for (int s = 0; s < static_cast<int>(std::size(kScenarios)); ++s) {
+    if (!kScenarios[s].world_fixed_base) {
+      continue;
+    }
+    const std::vector<double> single = RunScenario(s, [](Clik& gen, const Tick& t) {
+      return gen.Compute(t.cache, t.tcp_idx, t.base_idx, t.des, t.q_posture, t.dt, t.reseed);
+    });
+    const std::vector<double> multi = RunScenario(s, [](Clik& gen, const Tick& t) {
+      Clik::FrameTask task;
+      task.kind = Clik::TaskKind::kSe3;
+      task.frame_idx = t.tcp_idx;
+      task.base_frame_idx = t.base_idx;
+      task.placement_des = t.des;
+      task.gain = Vec6::Constant(test::clik_golden::kTaskGain);
+      Clik::MultiFrameInput in =
+          Input(std::span<const Clik::FrameTask>(&task, 1), t.q_posture, t.dt);
+      in.reseed_anchor = t.reseed;
+      return gen.Compute(t.cache, in);
+    });
+    ASSERT_EQ(single.size(), multi.size());
+    double worst = 0.0;
+    size_t worst_i = 0;
+    for (size_t i = 0; i < single.size(); ++i) {
+      const double d = std::abs(single[i] - multi[i]) / std::max(1.0, std::abs(single[i]));
+      if (!(d <= worst)) {
+        worst = std::isnan(d) ? std::numeric_limits<double>::infinity() : d;
+        worst_i = i;
+      }
+      if (i % kRecordWidth == 0) {
+        EXPECT_EQ(single[i], 1.0) << kScenarios[s].name << " tick " << i / kRecordWidth;
+      }
+    }
+    RecordProperty("worst_relative_difference", test::Sci(worst));
+    EXPECT_LE(worst, 1e-9) << kScenarios[s].name << " value " << worst_i << " (tick "
+                           << worst_i / kRecordWidth << ", field " << worst_i % kRecordWidth << ")";
+    ++replayed;
+  }
+  EXPECT_EQ(replayed, 1) << "world_fixed_rotated_base";
 }
 
 // ── 1b. One task against the single-task overloads, closed loop ─────────────

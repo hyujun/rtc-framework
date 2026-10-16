@@ -19,6 +19,7 @@
 #include "rtc_tsid/types/wbc_types.hpp"
 
 #include <memory>
+#include <utility>
 
 namespace rtc::tsid::test {
 
@@ -32,6 +33,33 @@ inline std::shared_ptr<pinocchio::Model> LoadPandaModel() {
 /// One Panda model per process, read-only — what PandaTest cases share.
 inline std::shared_ptr<const pinocchio::Model> SharedPandaModel() {
   static const std::shared_ptr<const pinocchio::Model> model = LoadPandaModel();
+  return model;
+}
+
+/// Name of the frame SharedPandaWithRotatedBase() adds.
+inline constexpr const char* kRotatedBaseFrame = "rotated_base";
+
+/// The rotation of kRotatedBaseFrame in the world: about two axes, so R, Rᵀ
+/// and I are three different matrices and a suite that ignores the base's
+/// rotation, or applies it the wrong way round, gets a different answer.
+inline Eigen::Matrix3d RotatedBaseRotation() {
+  return (Eigen::AngleAxisd(0.7, Eigen::Vector3d::UnitZ()) *
+          Eigen::AngleAxisd(0.3, Eigen::Vector3d::UnitX()))
+      .toRotationMatrix();
+}
+
+/// The Panda model plus kRotatedBaseFrame: a frame fixed to the universe at a
+/// non-zero offset, turned by RotatedBaseRotation(). One per process,
+/// read-only.
+inline std::shared_ptr<const pinocchio::Model> SharedPandaWithRotatedBase() {
+  static const std::shared_ptr<const pinocchio::Model> model = [] {
+    auto m = LoadPandaModel();
+    m->addFrame(
+        pinocchio::Frame(kRotatedBaseFrame, 0, 0,
+                         pinocchio::SE3(RotatedBaseRotation(), Eigen::Vector3d(0.12, -0.08, 0.05)),
+                         pinocchio::OP_FRAME));
+    return std::shared_ptr<const pinocchio::Model>(std::move(m));
+  }();
   return model;
 }
 

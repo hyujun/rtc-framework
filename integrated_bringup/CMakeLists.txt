@@ -947,6 +947,32 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── #779: the WBC on a base turned against the world ──────────────────────
+  # The controller on the shipped ur5e_p1b config, whose root_link "base" is
+  # Rz(pi) from the world: a task goal along +x of the base and the approach ->
+  # closure guard.
+  ament_add_gtest(test_wbc_rotated_base
+    test/test_wbc_rotated_base.cpp
+    ENV ROS_DOMAIN_ID=52
+    TIMEOUT 300)
+  target_link_libraries(test_wbc_rotated_base
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_wbc_rotated_base PRIVATE
+    RTC_WBC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_wbc_rotated_base
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    rtc_tsid
+    pinocchio
+    Eigen3
+  )
+
   # ── GraspPhaseManager FSM tests (Phase 7a) ─────────────────────────────────
 
   ament_add_gtest(test_grasp_phase_manager test/test_grasp_phase_manager.cpp)
@@ -1899,6 +1925,7 @@ if(BUILD_TESTING)
     test_catching_cm_services
     test_demo_wbc_tsid_path
     test_wbc_closed_chain_projection_sharing
+    test_wbc_rotated_base
     test_momentum_observer_embedding
     test_joint_tf_slot_frames
     test_joint_tree_primary_group
