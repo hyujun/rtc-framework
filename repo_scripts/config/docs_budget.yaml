@@ -25,7 +25,7 @@ CLAUDE.md: 4096
 
 agent_docs/architecture.md: 17391
 agent_docs/controllers.md: 15612
-agent_docs/conventions.md: 9967  # raised from 9800: two rules the rationale doc alone had stated — the output-field consumer comment and per-lane QoS (2026-10-16)
+agent_docs/conventions.md: 9964  # raised from 9800: two rules the rationale doc alone had stated — the output-field consumer comment and per-lane QoS (2026-10-16)
 agent_docs/design-principles.md: 15387
 agent_docs/handoff.md: 5045
 agent_docs/invariants.md: 38043  # raised from 37777: NUM-7 covers std::clamp and fallbacks computed from the rejected input (user decision 2026-10-16)

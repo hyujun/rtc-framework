@@ -14,7 +14,7 @@
 - **Variable naming**: Paper notation — `J_b` (body Jacobian), `q_d` (desired joint), `x_e` (EE pose), `K_d` (stiffness)
 - **Singularity**: compliance §6.5 σ_min-적응형 damped pseudoinverse (`max_damping` = λ_max, `singularity_threshold` = σ₀ via YAML), near-zero division guard (NUM-1)
 <!-- validate-docs: allow D10 -->
-- **`§N.M` 표기**: 숫자 절번호는 헌법 (`AGENTS.md §6`), compliance 명세 (`compliance §6.5`), 파일 내부 명명 섹션 (`§RT Path Invariants`) 세 네임스페이스에 쓰인다. 접두사 없는 맨 번호는 쓰지 않는다.
+- **`§N.M` 표기**: 숫자 절번호는 헌법 (`AGENTS.md §6`), compliance 명세 (`compliance §6.5`), 파일 내부 명명 섹션 (`§RT Path Invariants`) 세 네임스페이스에 쓴다. 맨 번호는 쓰지 않는다.
 
 ## Code Conventions
 
@@ -24,7 +24,7 @@
 - **RAII**: 모든 리소스 획득은 RAII. Raw `new` / `delete` 금지
 - **`noexcept`** on all RT paths. **`[[nodiscard]]`** on status-returning functions. **`static_assert`** on template params
 - **Include order**: project → ROS 2 / third-party → C++ stdlib (alphabetical)
-- **Method split 은 consumer 이름으로**: 한 method 가 여러 downstream (RT wire / CSV log / ROS publish) 을 채우고 있어 쪼갤 때는 각 조각을 그것이 섬기는 consumer 이름으로 짓는다 (`WriteJointCommand()` / `FillLogOutput()` / `FillPublishOutput()`). stage · 순서 이름 (`Phase3a`, `Step2`) 이나 데이터 source 이름은 쓰지 않는다. 두 consumer 가 같은 필드를 읽으면 공유 helper 로 빼지 말고 양쪽에서 독립적으로 write 한다. RT / wire-bound method 를 가장 앞에 가장 짧게 둔다. 어느 출력 필드를 어느 consumer 가 읽는지는 그 method 선언 위의 주석이 밝힌다
+- **Method split 은 consumer 이름으로**: 여러 downstream (RT wire / CSV log / ROS publish) 을 채우는 method 를 쪼갤 때는 조각마다 그것이 섬기는 consumer 이름을 쓴다 (`WriteJointCommand()` / `FillLogOutput()` / `FillPublishOutput()`). stage · 순서 이름 (`Phase3a`, `Step2`) 이나 데이터 source 이름은 쓰지 않는다. 두 consumer 가 같은 필드를 읽으면 공유 helper 로 빼지 말고 양쪽에서 독립적으로 write 한다. RT / wire-bound method 를 가장 앞에 가장 짧게 둔다. 어느 출력 필드를 어느 consumer 가 읽는지는 그 method 선언 위의 주석이 밝힌다
 - **Eigen**: pre-allocated buffers, `noalias()`, zero heap on the RT path. `auto` 로 Eigen expression 을 받지 않는다 (RT-5)
 - **Lifecycle**: 핵심 C++ 노드는 `rclcpp_lifecycle::LifecycleNode`. Empty constructor; `on_configure` (Tier 1) / `on_activate` (Tier 2). Safety publisher 는 standalone `rclcpp::create_publisher`
     - **Tier 0 예외**: 어떤 lifecycle transition 보다 먼저 확정돼야 하는 것만 생성자에 둘 수 있다 — ① executor 에 넘길 callback group, ② 그 스레드를 어디에 pin 할지 정하는 파라미터 declare. 판정 기준은 "configure 가 오기 전에 이미 필요한가" 다. 리소스 (publisher / subscription / timer / 디바이스 핸들) 는 여전히 금지이고, 이 예외를 쓰는 노드는 생성자에 그 이유를 한 줄로 남긴다
@@ -73,7 +73,7 @@
 - **Math formulas**: LaTeX in Doxygen, paper reference (author, year, eq number), units + frame per parameter
 - **FSM**: Document valid transitions, entry/exit conditions, timeout behaviors
 - **Thread safety**: 공유 data member 는 sync 메커니즘을 명시한다 (SeqLock, SPSC, atomic, mutex)
-- **md 파일명**: kebab-case 소문자. 예외는 관례인 README · AGENTS · CLAUDE · SKILL
+- **새 md 파일명**: kebab-case 소문자 (예외 README·AGENTS·CLAUDE·SKILL). 기존 파일 rename 은 전용 변경에서만
 - **서비스·메시지 계약의 소유자** (AP-DOC-1 · AP-DOC-2): 같은 문장을 여러 곳에 쓰지 말고 **축을 나눈다**:
   - `.srv` / `.msg` 주석 = **wire 계약 SSoT** (필드 의미, 판정 기준, 거부 조건, 권한) — 호출자가 알아야 하는 전부
   - 소비 패키지 README = 그 패키지 쪽 메커니즘과 수치의 근거. 계약은 `.srv` 를 링크
