@@ -77,5 +77,5 @@ colcon test-result --verbose
 
 ### PR 전 리뷰와 정리
 
-- 100줄 이상 변경 · 신규 패키지 · `rtc_base`/`rtc_msgs` 변경 · abstract interface 추가는 PR 전에 별도 리뷰를 받는다 (트리거: [modification-guide.md](../agent_docs/modification-guide.md) §Inferential review 트리거).
+- PR 을 열기 전에 [Inferential review 트리거](../agent_docs/modification-guide.md#inferential-review-트리거-llm-as-judge-수동-trigger) 표에서 이번 변경이 어느 review (code · security · 재사용·단순화) 에 걸리는지 보고 그 review 를 받는다. 목록은 그 표에만 있다.
 - merge 된 로컬 branch 는 `git branch -d <branch>`, stale remote-tracking ref 는 `git fetch --prune`. 원격 branch 는 merge 확인 후에만 지운다.
