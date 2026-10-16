@@ -22,7 +22,6 @@
     - **P2** ROS 2 — `<rclcpp/*>`, `<std_msgs/*>` 등
     - **P3** third-party — Eigen, pinocchio, fmt, MuJoCo, BehaviorTree 등
     - **P4** stdlib — `<algorithm>` 등
-    - **같은 P1 의 빈 줄 제거 사례** — own header (`"foo.hpp"`) 와 `<rtc_base/...>` 가 같은 P1 이라 둘 사이 빈 줄 제거는 **의도된 동작** — `/code-review` 가 "include grouping 부족" 으로 지적하면 거절 정당.
     - **예외**: `#ifdef ... #endif` 사이에 낀 include 는 clang-format 이 grouping 못 해 blank line 이 살아 있다.
 
 ## Logging
