@@ -8,6 +8,10 @@ repo has already paid for the same shape once (a constitution copy that stopped
 at 7 of 9 RT rules, #213), which is why a rule that matches zero files is an
 error here rather than a warning.
 
+A rule with no `paths:` is an error too (R2), though Claude Code loads it: it
+loads every session, at the same cost as CLAUDE.md itself, so its content
+belongs in CLAUDE.md or AGENTS.md -- CLAUDE.md requires `paths:` on every rule.
+
 This is the *computational* half of the sensor pair. It answers "could this
 rule ever fire" without a session. The other half is the InstructionsLoaded
 hook (`.claude/hooks/log-instructions-loaded.sh`), which answers "did it
@@ -130,16 +134,15 @@ def check_rule(root: Path, rule_path: Path) -> list[str]:
     text = rule_path.read_text(encoding="utf-8", errors="replace")
 
     fm, had_fm = parse_frontmatter(text)
-    if not had_fm:
-        # Legal and documented: a rule with no frontmatter loads unconditionally
-        # every session. That is a context-budget decision, not a defect, so it
-        # is reported at info level only.
-        print(f"{rel}: [info] no frontmatter — loads unconditionally every session")
-        return findings
-
     patterns = fm.get("paths") or []
     if not patterns:
-        print(f"{rel}: [info] no `paths:` — loads unconditionally every session")
+        # Claude Code loads such a rule every session -- mechanically the same as
+        # putting it in CLAUDE.md -- so the repo requires `paths:` (CLAUDE.md).
+        what = "no `paths:`" if had_fm else "no frontmatter"
+        findings.append(
+            f"{rel}: [R2] {what} — loads unconditionally every session. Add a `paths:` "
+            "glob list, or move the content to CLAUDE.md / AGENTS.md"
+        )
         return findings
 
     dead: list[str] = []
