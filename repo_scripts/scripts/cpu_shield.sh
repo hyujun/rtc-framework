@@ -9,10 +9,13 @@
 #   sudo cpu_shield.sh off                 # 격리 해제
 #   cpu_shield.sh status                   # 상태 확인 (sudo 불필요)
 #
-# Shield model (slots from repo_scripts/config/thread_layout.yaml):
-#   shielded = RT controller cores + MPC core (rt_control, rt_callback,
-#              mpc_main; "1-3" on a non-SMT box of any tier)
-#   released = OS/DDS (Core 0), nrt_*, arm_driver, hand_driver,
+# Shield model (slots from repo_scripts/config/thread_layout.yaml; mask from
+# get_cm_shield_cpus in rt_common.sh):
+#   shielded = RT cores (rt_control, rt_callback, mpc_main) ∪ nrt_* cores,
+#              OS slot excluded, SMT siblings added. The nrt lanes share the
+#              rt_callback slot, so this is "1-3" on a non-SMT box of any tier;
+#              a launch profile without MPC (mpc_off) drops the mpc_main core.
+#   released = OS/DDS (Core 0), arm_driver, hand_driver,
 #              sim_thread/viewer (cpu_core=-1, no pin), spare
 #
 # Modes:
@@ -46,7 +49,8 @@ make_logger "SHIELD"
 # ── Compute shield cores based on mode and core count ─────────────────────
 #
 # The "user" cpuset shields the RT controller threads (rt_control,
-# rt_callback) plus mpc_main — slots per thread_layout.yaml, no MPC worker slots.
+# rt_callback) plus mpc_main, and the nrt cores of the same process (below) —
+# slots per thread_layout.yaml, no MPC worker slots.
 # Process-level driver cores (arm_driver, hand_driver) are *not* shielded —
 # the driver processes themselves run there under SCHED_OTHER, so isolating
 # them from "user" tasks gains nothing and wastes a core. The one RT thread on
