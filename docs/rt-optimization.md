@@ -1,1081 +1,277 @@
 # 실시간 최적화 가이드
 
-**RTC (Real-Time Controller) 병렬 컴퓨팅 아키텍처 상세 문서**
-
-> **Layout 기준**: thread-layout-v4.1. 본 문서의 thread roster · core/priority 표 · 코드 인용은 모두 v4.1 기준이다.
->
-> **Thread layout SSoT**:
-> - [agent_docs/architecture.md](../agent_docs/architecture.md) §Threading Model (priority hierarchy) · §Execution Contexts (RT 정의) · §RtControllerNode (callback_group↔executor binding 표)
-> - [rtc_base/README.md](../rtc_base/README.md) §스레드 구성 — 코어 수별 tier 표 (4/6/8/10/12/14/16)
-> - [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) — **레이아웃 값의 SSoT** (선언형 manifest). C++ tier 상수 + `SelectThreadConfigsForCoreCount()`, shell 헬퍼, Python launch 미러가 전부 여기서 생성된다 (issue #153 M1)
-> - [rtc_base/include/rtc_base/threading/thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) — `ThreadConfig` / `MpcThreadConfig` / `SystemThreadConfigs` 구조체 + 설계 산문 (생성된 `thread_config_generated.hpp` 를 include)
-> - [rtc_base/include/rtc_base/threading/thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) — `ValidateSystemThreadConfigs()` + 런타임 wrapper `SelectThreadConfigs()`
-> - 본 문서는 *왜* (rationale + 시스템 설정 + 검증 + 튜닝 가이드) 를 담는다. *무엇* (필드/상수 값) 은 SSoT 가 단일 출처.
-
----
+RT 제어 루프 (기본 500 Hz) 가 지터 없이 돌도록 **호스트 PC 를 설정하고 확인하는 방법**이다. 스레드·코어 배치의 설계 근거는 [architecture.md](../agent_docs/architecture.md), 이 문서가 권하는 설정의 근거·사건은 [rt-setup-rationale.md](reference/rt-setup-rationale.md) 에 있다.
 
 ## 목차
 
-- [개요](#개요)
-- [아키텍처](#아키텍처)
-- [CPU-코어-할당](#cpu-코어-할당)
-- [시스템-설정](#시스템-설정)
-- [코드-구조](#코드-구조)
-- [검증-방법](#검증-방법)
-- [문제-해결](#문제-해결)
-- [고급-튜닝](#고급-튜닝)
+- [0. 전체 흐름](#0-전체-흐름)
+- [1. install.sh 로 한 번에](#1-installsh-로-한-번에)
+- [2. 단계별 수동 설정](#2-단계별-수동-설정)
+- [3. 코어 배치](#3-코어-배치)
+- [4. 확인](#4-확인)
+- [5. 문제 해결](#5-문제-해결)
+- [6. Hybrid CPU (NUC)](#6-hybrid-cpu-nuc)
+- [7. 고급·참고](#7-고급참고)
 
----
+## 0. 전체 흐름
 
-## 개요
+RT 루프는 `clock_nanosleep` 절대시간으로 직접 돈다. 이 루프가 OS 의 방해를 받지 않게 하려면 **커널 · 부팅 옵션 · 런타임 격리 · 인터럽트 · 전원 정책** 을 맞춰야 한다.
 
-본 저장소는 **clock_nanosleep RT 루프 + inline actuator publish + 1 non-RT publish lane + 다중 callback_group/executor** 아키텍처를 사용한다. RT 제어 루프는 ROS 2 executor 를 거치지 않고 `clock_nanosleep(TIMER_ABSTIME)` 절대시간 루프로 직접 실행되어 executor dispatch 지터가 제거된다.
-
-**RT 정의 (v4)**: "RT thread" = controller ↔ hardware/sim 경계의 결정적 tick 만. 구체적으로 `rt_control` (정기 tick + inline actuator publish) · `rt_callback` (backend state sub 처리) 둘이 SCHED_FIFO 그룹. `nrt_callback` / `nrt_logging` / `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 는 RT 가 아니다 (`mpc_main` 은 별도 RT 그룹 — #380 이후 MPC solve 는 단일 스레드다).
-
-> **v4 아키텍처 변경 (SSoT — 본 문서의 이하 "v4 변경" 언급은 모두 이 노트를 가리킨다)**:
-> - **v3 → v4**: `rt_outbound` (FIFO 65) jthread + actuator `publish_buffer_` SPSC + eventfd **제거**. actuator publish 는 `rt_control` 이 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 **inline 호출** (RT-safe contract). cross-core hand-off / eventfd wake / jthread 한 세트가 사라져 latency·자원 동시 감소. `rt_inbound` + `rt_outbound` 필드는 `rt_callback` (FIFO 70) 으로 통합. controller-owned non-RT 토픽만 `nrt_publish_buffer_` (cap 16) → `nrt_publish_thread` lane 으로 유지.
-> - **v4 → v4.1**: RT cluster 가 **Core 1 부터 시작** (Core 0 은 OS / DDS / IRQ 전용). DDS receive thread 가 `rt_callback` (Core 2) 와 same-core co-pin (CFS, SCHED_FIFO 가 무조건 선점하므로 RT 결정성 무영향). `sim_thread` / `viewer` 는 모든 tier 에서 `cpu_core=-1`.
-
-### 핵심 설계 원칙
-
-1. **clock_nanosleep RT 루프**: `create_wall_timer()` 대신 `clock_nanosleep(TIMER_ABSTIME)` 절대시간 루프 — executor dispatch 지터 제거
-2. **Inline actuator publish + 1 non-RT lane**: `rt_control` thread (Core 1 FIFO 90) 가 rt_loop tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract). controller-owned non-RT 토픽 (Transforms · grasp_state · wbc_state · tof_snapshot) 만 `nrt_publish_buffer_` (cap 16) → `nrt_publish_thread` (CFS) → `controller.PublishNonRtSnapshot` 로 비동기 송출. (v3 의 actuator SPSC lane `publish_buffer_` 제거 — §개요 "v4 아키텍처 변경" 노트)
-3. **DeviceBackend cb_group injection**: 모든 backend (UR / udp_hand / mujoco) 의 state/motor/sensor subscription 이 `Configure(node, cfg, state_cb_group)` 로 받은 `cb_group_rt_callback_` 에 attach — `SubscriptionOptions.callback_group` 으로 RT 경계 subs 가 `rt_callback_executor` (FIFO 70) 에서 dispatch. MutuallyExclusive 그룹 강제 (SeqLock single-writer 보호)
-4. **3 executor 모델**: `rt_callback_executor` (RT 경계 subs) · `nrt_callback_executor` (controller-owned subs · services · nrt_publish drain) · `nrt_logging_executor` (CSV drain · 지연 E-STOP log). RT loop · nrt_publish 는 `std::jthread` + eventfd
-5. **Overrun recovery**: 놓친 tick skip + 다음 경계 재정렬, 연속 10회 시 E-STOP
-6. **CPU Affinity**: 각 스레드를 전용 CPU 코어에 고정. `rt_callback` (Core 2 FIFO 70) 는 DDS receive thread (CFS) 와 **같은 Core 2 공유** — launch-time taskset 으로 controller process 의 비-RT thread 를 Core 2 로 다시 핀해 cache locality 확보. `hand_driver` 는 process-level taskset, `arm_driver` 는 CM 파라미터 (내부 RT 루프만, issue #343) 로 분리 코어. Core 0 은 OS / DDS / IRQ 전용 (user-space thread 금지, v4.1)
-7. **RT 스케줄링**: SCHED_FIFO (RT thread), SCHED_OTHER (non-RT) 명시 설정. priority hierarchy `90 > 70 > 60 > 55` 강제 (`ValidateSystemThreadConfigs` invariant)
-8. **메모리 잠금**: `mlockall(MCL_CURRENT | MCL_FUTURE)` 로 페이지 폴트 방지 (rclcpp::init 이전)
-9. **시뮬레이션 동기 모드**: CV 기반 wakeup 으로 시뮬레이터 step 과 1:1 동기화 (sim_thread → ControlLoop)
-
----
-
-## 아키텍처
-
-### 스레드 모델 (layout v4.1, 6-core 기준)
-
-아래는 **6-core dev box** 기준 thread roster. 4/8/10/12/14/16-core tier 는 §CPU 코어 할당 참조. `SelectThreadConfigs()` 가 `GetPhysicalCpuCount()` 로 물리 코어 수를 감지해 적절한 `SystemThreadConfigs` 를 반환한다.
-
-```
-── RT 경계 (controller ↔ hardware/sim) ───────────────────────────────
-rt_control (Core 1, SCHED_FIFO prio 90) ← std::jthread, clock_nanosleep
-  ├─ ControlLoop() (500Hz default, TIMER_ABSTIME 절대시간)
-  ├─ CheckTimeouts() (매 10 tick = 50Hz, inline)
-  ├─ producer → nrt_publish_buffer_ (cap 16, SPSC)
-  ├─ inline actuator publish: DeviceBackend.WriteCommand (v4)
-  └─ overrun recovery (skip + 재정렬, 연속 10회 → E-STOP)
-
-rt_callback_executor (Core 2, SCHED_FIFO prio 70) ← rclcpp::Executor + jthread
-  └─ cb_group_rt_callback_ (MutuallyExclusive)
-      ├─ DeviceBackend state subs: /joint_states · hand/{joint,motor,sensor}_states
-      └─ ※ 모든 backend (UR/udp_hand/mujoco) 가 Configure(node, cfg, state_cb_group)
-         로 cb_group_rt_callback_ 를 받아 SubscriptionOptions 에 박는다 (v3 invariant)
-  ※ DDS receive thread (CFS) 가 launch-time taskset 으로 같은 Core 2 에 co-pin
-
-── MPC 그룹 (controller producer / consumer) ────────────────────────
-mpc_main (Core 3, SCHED_FIFO prio 60) ← std::jthread, 20-100Hz
-  ├─ ReadState() ← rtc::SeqLock<MPCStateSnapshot>::Load()
-  ├─ Solve() ← Aligator-based handler
-  └─ PublishSolution() → rtc::mpc::TripleBuffer (zero-copy publish)
-
-── Non-RT executor 그룹 ──────────────────────────────────────────────
-nrt_callback_executor (aux slot Core 2 — rt_callback 과 동거, v5/#349;
-                       4코어 fallback 만 Core 0.  SCHED_OTHER nice 0)
-                       ← rclcpp::Executor + jthread
-  ├─ cb_group_nrt_callback_ (CM-owned: lifecycle services 등)
-  ├─ CM 노드 default group (CM-owned target_sub_ — RobotTarget 은 외부 의도
-  │     입력이므로 RT 경계 밖)
-  └─ controller LifecycleNode default group (controller-owned RobotTarget subs,
-        /<active>/grasp_command service)
-
-nrt_publish_thread (std::jthread, eventfd wakeup, nrt_callback core 공유 — 별도 executor 아님)
-  └─ drain nrt_publish_buffer_ → controller.PublishNonRtSnapshot
-       — Transforms / grasp_state / wbc_state / tof_snapshot
-
-nrt_logging_executor (aux slot Core 2 — 위와 같은 코어, v5/#349;
-                      4코어 fallback 만 Core 0.  SCHED_OTHER nice -5)
-                      ← rclcpp::Executor + jthread
-  ├─ cm_timing_log.csv drain (ThreadCsvProducer<RtTickTimingPayload, 4096>)
-  └─ deferred E-STOP log
-
-── Hardware/sim driver (process-level pin) ──────────────────────────
-arm_driver (Core 4 — 6c 는 hand 와 공유, 8c 이상 전용. SCHED_OTHER) — UR ros2_control driver
-  └─ 내부 controller_manager RT 루프 (FIFO 50, 500 Hz) — 프로세스 taskset 이 아니라
-     launch 가 생성하는 CM 파라미터 (cpu_affinity/thread_priority) 로 핀 (issue #343)
-hand_driver (6c 는 Core 4 공유, 8c 이상 Core 5 — v6/#383. SCHED_OTHER) — udp_hand_node 프로세스
-  └─ 내부 kHandUdpRecvConfig (FIFO 65, cpu_core=-1 sentinel — 프로세스 affinity 상속)
-
-sim_thread (cpu_core=-1, SCHED_OTHER) — MuJoCo physics, 모든 tier 에서 cpu_shield 해제된 코어 roam
-viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공유
+```text
+권한 (realtime 그룹)        RT 스레드를 SCHED_FIFO / mlockall 로 띄울 자격
+  -> RT 커널                PREEMPT_RT 또는 lowlatency (선택, 최대 성능)
+  -> GRUB 옵션 (재부팅)     nohz_full / rcu_nocbs 로 RT 코어의 tick 제거
+  -> cpu_shield (런치마다)  cset 으로 RT 코어에서 다른 프로세스 쫓아냄
+  -> IRQ affinity           하드웨어 인터럽트를 OS 코어로 모음
+  -> governor = performance 주파수 변동 제거
+  -> (NVIDIA 만) DKMS       RT 커널에서 드라이버 빌드
+  -> check_rt_setup.sh -> verify_rt_runtime.sh -> 지터 측정
 ```
 
-> - **RT priority hierarchy (v4)**: `90 (rt_control) > 70 (rt_callback) > 60 (mpc_main)`. `ValidateSystemThreadConfigs()` invariant 가 강제. (v4 의 `55 mpc_workers` 는 #380 이 제거 — 아래 표 참조.) (v3 `rt_outbound` FIFO 65 제거 — §개요 "v4 아키텍처 변경" 노트)
-> - **rt_callback + DDS co-pin on Core 2 (v4.1)**: launch-time taskset 이 controller process 의 비-RT thread (DDS receive 등) 를 Core 2 로 다시 핀해 `rt_callback` (FIFO 70) 와 cache locality 공유. SCHED_FIFO 가 CFS 를 무조건 선점하므로 RT 결정성은 영향 없음. v4 의 Core 3 → v4.1 의 Core 2 로 이동 (RT cluster 가 Core 1 부터 시작).
-> - **Core 0 은 OS / DDS / IRQ 전용 (v4.1)**: ≥ 6-core 모든 tier 에서 nrt_logging / nrt_callback 은 Core 0 와 분리. user-space thread 가 Core 0 에 들어가지 않음.
-> - **6-core 는 degraded mode**: arm/hand_driver 가 Core 4 공유, sim_thread cpu_core=-1. 결정적 RT 보장은 ≥ 8-core tier 부터. (nrt 3 레인이 Core 2 인 것은 6코어 특례가 아니라 v5 부터 모든 ≥6c tier 공통이다.)
+처음이면 [1절](#1-installsh-로-한-번에) 한 줄로 끝내고 [4절](#4-확인)으로 검증한다. 2절은 한 단계만 다시 하거나 원인을 파고들 때 쓴다.
 
----
-
-## CPU 코어 할당
-
-`SelectThreadConfigs()` 가 `GetPhysicalCpuCount()` 로 물리 코어 수를 감지해 7-tier (`4 / 6 / 8 / 10 / 12 / 14 / 16+`) 중 적합한 `SystemThreadConfigs` 를 반환한다. 값의 SSoT 는 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) — 본 표는 그 미러이고, 생성된 정본 매트릭스는 [rtc_base/README.md](../rtc_base/README.md) 에 있다.
-
-> **"Core N" 은 *slot index* — kernel logical CPU id 가 아님**. `ApplyThreadConfig` 가 `CpuTopology::physical_core_slots` 룩업으로 slot → 실제 logical id 를 변환한다. slot 은 항상 physical core 의 *primary* logical 만 가리켜 SMT sibling 회피를 보장한다. Slot ordering: **hybrid** → P-physical (asc) → E-core (asc) → LP-E (asc); **non-hybrid** → physical core first-logicals (asc); **SMT off** → identity. 예: NUC13 Pro (4P+8E, HT on) 의 Core 1 = logical cpu 2 (P-core 1 의 primary), 사이블링 cpu 3 회피. i9-13900K (8P+16E) 의 Core 3 = logical cpu 6. 자세한 정의: [rtc_base/include/rtc_base/threading/thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) `SlotToLogicalCpu()`.
-
-| 스레드 | 4-core¹ | 6-core² | 8-core | 10-core | 12-core | 14-core | 16-core |
-|---|---|---|---|---|---|---|---|
-| **rt_control** (FIFO 90) | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 |
-| **rt_callback** (FIFO 70) | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
-| **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
-| **arm_driver** (CFS 0⁴) | Core 0 | Core 4 | Core 4 | Core 4 | Core 4 | Core 4 | Core 4 |
-| **hand_driver** (CFS 0) | Core 0 | Core 4 | Core 5 | Core 5 | Core 5 | Core 5 | Core 5 |
-| **nrt_callback** (CFS 0) | Core 0 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
-| **nrt_publish** (CFS 0) | Core 0 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
-| **nrt_logging** (CFS -5) | Core 0 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
-| **sim_thread** (CFS 0) | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ |
-| **viewer** (CFS 0) | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ |
-
-> ¹ **4-core 는 degraded mode** — `mpc_main` 이 CFS 로 강등 (RT 자원 부족). 결정적 RT 보장 X, demo / smoke 용도만 권장. Core 0 에 nrt + driver 가 모두 합쳐짐 (capacity 한계).
-> ² **6-core 는 degraded mode** — `arm_driver` / `hand_driver` 가 Core 4 공유, `sim_thread` `cpu_core=-1` (cpu_shield 해제된 코어에서 roam). nrt 3 레인이 Core 2 인 것은 6코어 특례가 아니라 v5 부터 전 tier 공통이다.
-> ³ **`cpu_core = -1` sentinel** — pthread affinity 호출 skip, scheduler/priority/nice/name 만 적용. process-level taskset (launch script) 가 박은 affinity 를 상속. v4.1 부터 모든 tier 에서 `sim_thread` / `viewer` 가 -1.
-> ⁴ **`arm_driver` 의 CFS 0 은 *프로세스* 모델이다** — `SystemThreadConfigs.arm_driver` 는 `ApplyThreadConfig` 대상이 아니라 launch 가 소비하는 코어 배치 값이고, 그 프로세스의 main/executor 는 실제로 CFS 다. 다만 그 안에서 도는 upstream `controller_manager` 제어 루프는 **FIFO 50** 이며, 이 표의 코어에 핀되는 것은 (프로세스가 아니라) 그 루프다 — `taskset` 은 main thread 밖에 못 옮기기 때문 (issue #343). 핀·우선순위는 launch 가 생성하는 CM 파라미터 파일이 정하고 (`rtc_tools.launch.cm_rt_params`), `verify_rt_runtime.sh` 가 그 우선순위의 FIFO 스레드를 찾아 검증한다.
->
-> **v5 (#349) / v6 (#383)**:
-> - **nrt 3 레인이 aux slot Core 2 로 접힘** (v5) — `rt_callback` 과 동거. FIFO 가 CFS 를 무조건 선점하므로 latency 계약은 유지되고, 반납된 슬롯은 system cpuset 으로 돌아간다. 4-core fallback 은 이미 nrt 가 OS 슬롯이라 불변.
-> - **arm/hand_driver 가 슬롯 4·5 로 내려옴** (v6) — #380 이 비운 `mpc_worker` 슬롯이다. **8코어 이상 전 tier 가 같은 쌍**을 쓰므로 tier 가 올라가도 드라이버가 움직이지 않는다. cset shield 와 `nohz_full` 은 영향 없음 — 드라이버는 `get_cm_shield_cpus` 의 union 에서 애초에 제외된다.
->
-> **v4.1 의 핵심 변화**:
-> - **RT cluster 가 Core 1 부터 시작** (Core 0 은 OS / DDS / IRQ 전용). 모든 tier 에서 `rt_control = Core 1`, `rt_callback = Core 2`, `mpc_main = Core 3` 으로 통일.
-> - **nrt_logging / nrt_callback 이 OS 코어와 분리** (≥ 6-core). Core 0 에 user-space thread 가 들어가지 않음.
-> - **arm_driver / hand_driver 알파벳 순** — 8-core 이상에서 `arm` 이 항상 더 낮은 코어 번호.
-> - **sim_thread / viewer 항상 cpu_core = -1** — tier 마다 다르게 해석되는 모호성 제거. cpu_shield --sim 이 모든 tier 에서 동일한 의미.
-> - **16-core 의 cset shield "user" (Core 4-8) 제거** — RT cluster 가 10-14c 와 동일 패턴으로 응집되어 cache locality 회복.
->
-> **v4 의 핵심 변화 (참고)**: `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 제거, DDS co-pin on Core 2 — §개요 "v4 아키텍처 변경" 노트 참조.
-> - `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 가 `SystemThreadConfigs` 의 1급 필드. Python helper (`rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core() / get_sim_core() / get_viewer_core() / get_rt_callback_core()`) 가 동일 tier dispatch 미러링 — launch script 가 process-level pin 으로 사용 (arm 만 taskset 대신 CM 파라미터, issue #343).
->
-> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `rtc_base/test/test_mpc_thread_config.cpp` 의 `DedicatedTiersDoNotShareWithNrtLanes` · `LayoutV4RtCallbackPinning` · `LayoutV4ArmHandDriverDisjoint` · `LayoutV3ValidatorCatchesArmHandCollision` · `CpuCoreSentinelValidatesAsRtConfig` 가 tier 별 배치 + sentinel 처리를 강제한다 (tier *쌍* 을 걷던 단조성 루프는 worker 개수와 함께 사라졌다 — #380). drift gate: 세 언어(C++/shell/Python)가 같은 manifest 에서 생성되고 `gen_thread_layout.py --check` 가 stale/수동편집을 차단하며, 의미 등가성은 `repo_scripts/test/test_thread_layout_equivalence.py` 가 ncpu 1..17·24 로 확인한다. 각 언어의 값 oracle 은 손으로 쓴 리터럴이다 (`test_thread_layout_tiers.cpp` · `test_rt_common.sh` · `test_thread_layout.py`) — 생성물끼리 대조하면 잘못된 표가 세 언어에서 일치하므로 잡히지 않기 때문.
-
-### cset shield 범위 + CM adopt (cpu_shield.sh, issue #151)
-
-`repo_scripts/scripts/cpu_shield.sh` 의 `user` cpuset 은 **integrated_rt_controller
-프로세스 전체가 들어갈 크기** 여야 한다. cset 은 *프로세스* 를 cpuset 에 가두므로
-(모든 스레드 포함), cpuset 은 RT 스레드 코어뿐 아니라 같은 프로세스의
-`nrt_logging` / `nrt_callback` 코어까지 덮어야 한다. NUC13 12c 에서 RT 스레드는 logical `{2,4,6}`
-에 pin 된다. layout v5 (#349) 부터 nrt 세 lane 은 aux slot 2 (logical 4) 를 타므로
-RT span 안에 들어오지만, 그 포함은 **레이아웃의 우연이지 계산의 전제가 아니다** —
-nrt 가 RT-only shield 밖으로 나가는 tier 가 다시 생기면 nrt self-pin 이 EINVAL →
-`thread_utils.hpp` 가 SCHED_FIFO 설정 전 return 한다. 그래서 union 은 유지된다.
-SSoT: `rt_common.sh::get_cm_shield_cpus` = `get_rt_shield_cpus` ∪ `get_nrt_cores`
-(OS slot 제외).
-
-RT 그룹이 `rt_control + rt_callback + mpc_main` 셋으로 평평해지고 (v5 의 aux 병합 +
-#380 의 worker 슬롯 회수) nrt 가 그 안의 slot 2 를 타면서, **slot 표기 cpuset 은 모든
-tier 에서 `1-3`** 이다. tier 마다 다른 것은 driver 슬롯과 그래서 풀려나는 코어 범위뿐이다.
-
-| 물리 코어 | CM cpuset — slot 표기 (RT ∪ nrt) | logical (NUC13 hybrid) | 격리 해제 영역 |
-|---|---|---|---|
-| 4 (degraded) | `1-3` (nrt slot 0 = OS, 제외) | — | Core 0 — OS · driver |
-| 6–7 | `1-3` (nrt = aux slot 2) | — | Core 0, 4-5 (4 = driver) |
-| 8–9 | `1-3` | — | Core 0, 4-7 (4·5 = driver) |
-| 10–11 | `1-3` | — | Core 0, 4-9 (4·5 = driver) |
-| 12–15 | `1-3` | `2-7` | Core 0, 4-11 (4·5 = driver) |
-| 16+ | `1-3` | — | Core 0, 4+ (4·5 = driver) |
-
-driver core (`arm_driver` / `hand_driver`) 는 **별도 프로세스** 이며 slot 4·5
-(v6/#383; NUC13 에서 logical 8,9 = system cpuset) 에 pin 된다 — CM 스레드가 아니라
-cset 보호 대상이 아니다. 그래서 v6 의 이동이 shield 를 넓히거나 좁히지 않는다.
-`hand_driver` 는 프로세스가 **스스로** 자기 스레드를 핀하고 (main 은 hand 코어,
-`hand_aux_io` 는 aux 로 — #345 가 `taskset -a` 스윕을 없앴다. 그 스윕은 `-a` 때문에
-`hand_aux_io` 를 도로 hand 코어로 끌어왔다), launch 는 in-process self-pin 이 닿지 못하는
-DDS 스레드만 밖에서 핀한다. `arm_driver` 는 프로세스 자체는 SCHED_OTHER 이되 그 안의 CM
-제어 루프만 CM 파라미터로 FIFO 50 + 해당 코어에 핀된다 (issue #343). 나머지 UR 스레드
-(executor, RTDE 워커, DDS) 는 핀되지 않는다.
-
-> **RT-HOST-3 격리의 degraded 예외 (arm RT 루프).** driver core 는 shield 밖
-> (`system` cpuset) 이므로 이 루프는 affinity + FIFO 만 보장받고 다른 system
-> task / IRQ 로부터 격리되지는 않는다. cpuset 을 재설계해 arm 코어까지 보호하는
-> 대신 **degraded 예외로 인정하고 실측 게이트를 두는 쪽을 택했다** — RTDE 는
-> 어차피 커널 네트워크 스택과 소켓을 공유하므로 코어 격리만으로 닫히지 않고,
-> shield 를 arm 코어까지 넓히면 CM adopt 계약 (`cset shield` 는 user/system 2분할)
-> 과 충돌한다. 게이트: NUC13 에서 `verify_rt_runtime.sh` 통과 + `cm_timing_log.csv`
-> 지터 회귀 없음. 6코어 tier 는 arm 과 hand 가 slot 4 를 공유하고 hand `CommLoop`
-> (FIFO 65) 가 arm 루프 (FIFO 50) 보다 높으므로, 그 tier 의 측정은 반드시
-> **arm + hand 동시 구동**에서 한다.
-
-> **nrt 코어(slot 8,9)는 CM 전용이다 (issue #151).** cset exclusive cpuset 은 코어를
-> 한 cpuset 에만 넣으므로, nrt 코어가 shield 에 들어가면 그 코어에 pin 하려는 *다른
-> 프로세스* 스레드는 EINVAL 이 난다. 따라서 CM 밖 프로세스(예: `udp_hand_driver` 의
-> `UdpHandFailureDetector`)의 aux 스레드는 nrt 코어에 pin 하지 말고 `cpu_core = -1`
-> 로 자기 프로세스 affinity(=system, 자기 driver 코어)를 상속해야 한다 —
-> nrt_logging 의 SCHED_OTHER/nice 정책만 재사용하고 코어는 물려받지 않는다.
-
-**핵심: shield 는 cpuset 을 *만들기만* 한다 — CM 을 그 안으로 넣어야 pin 이 산다.**
-`cset shield --cpu` 는 기존 태스크를 `system` 으로 쓸어내고, 이후 런치되는 CM 은
-`system` 을 상속해 RT 코어에 접근 불가(EINVAL) 다. 그래서 런치는 CM 의
-configure 완료 후 · activate(=RT 스레드 생성) *전* 에 `cpu_shield.sh adopt <pid>`
-(= `cset shield --shield --pid <pid> --threads`) 로 CM 을 `user` cpuset 으로 옮기고,
-ACTIVATE 를 그 adopt 프로세스의 **종료 코드**에 게이트한다 (async sudo vs 스레드 생성
-race 제거). shield-off / no-sudo / cset-미설치 런은 adopt 가 no-op(exit 0) 이고 CM 은
-full affinity 로 기존 self-pin 경로를 그대로 탄다.
-
-> **fail-closed (issue #344).** adopt 가 *필요했는데 실패*하면 (active shield +
-> passwordless sudo 부재, 또는 `cset shield --shield` 자체 실패) 런치는 ACTIVATE 를
-> **emit 하지 않고** 컨트롤러를 `inactive` 에 둔다. 그대로 활성화하면 실기 500 Hz
-> 모션 제어가 CFS 로, 핀 없이 도는데 — `ApplyThreadConfig` 가 affinity 실패 시
-> SCHED_FIFO 설정 *전에* return 하기 때문 — 그 상태가 조용했다. 조용한 이유가
-> 핵심이다: 이름 설정(`pthread_setname_np`)도 그 return 뒤에 있어 **RT 스레드에
-> 이름이 안 붙고**, 이름으로 스레드를 찾는 `verify_rt_runtime.sh` 가 정책·affinity
-> 검사를 통째로 건너뛰었다. 그래서 검증기도 함께 고쳤다 — **필수 스레드 미발견은
-> 이제 FAIL** 이다.
->
-> 이 배선(감지·adopt·게이트)의 단일 구현은 `rtc_tools.launch.cpu_shield` 이며
-> real 2 + sim 3, 다섯 런치가 공유한다. 예전에는 런치마다 복붙돼 있었고 #151 →
-> #233 → cset 감지 세 번의 수정이 `robot_ur5e_p1b` 에만 들어갔다. 배선을 고정하는
-> 테스트는 `integrated_bringup/test/test_launch_shield_wiring.py`.
-
-### 우선순위 계층
-
-```
-SCHED_FIFO prio 90  rt_control          ← controller tick (정기)
-                     ↓ preempt
-SCHED_FIFO prio 70  rt_callback          ← backend state subs (joint/motor/sensor)
-                     ↓ preempt
-SCHED_FIFO prio 60  mpc_main            ← MPC solve (rt_callback 미만, 단일 스레드)
-─────────────────────── RT / NRT 경계 ───────────────────────
-SCHED_FIFO prio 65  kHandUdpRecvConfig  ← hand_driver 프로세스 내부 (분리 프로세스)
-SCHED_OTHER nice -5 nrt_logging         ← CSV drain (I/O bound)
-SCHED_OTHER nice  0 nrt_callback        ← controller subs · services (executor)
-SCHED_OTHER nice  0 nrt_publish         ← controller-owned publish jthread; nrt_callback 과 같은 코어, comm 이름은 별개 (#349 D15)
-SCHED_OTHER nice  0 arm/hand_driver     ← process-level (taskset only)
-SCHED_OTHER nice  0 sim_thread · viewer ← MuJoCo physics · GLFW
-```
-
-**설계 원칙**:
-
-- **RT thread = controller↔hardware/sim 경계만**: rt_control · rt_callback · mpc_*. 다른 thread 는 NRT.
-- **priority 간격 10**: `90/70/60` — `cgroup.cpu.rt_runtime_us` 가 압박해도 hierarchy 유지. 우선순위 inflation 금지 (AGENTS.md §6 E-7 — thread model 변경은 Critical escalation). v3 의 priority 65 슬롯 (rt_outbound) 은 v4 에서 빈 채로 두어 hand_driver 내부 UDP recv (FIFO 65) 가 유일.
-- **`mpc_main < rt_callback` 강제** (`ValidateSystemThreadConfigs`): 긴 MPC solve 가 sensor callback latency 를 늘리지 않도록 보장.
-- **`arm_driver` / `hand_driver` vs RT controller core disjoint** 강제 (v3 신규): 같은 코어에 배치 시 ValidateSystemThreadConfigs 가 reject. driver 프로세스가 RT thread 코어를 침범하지 못하도록.
-
----
-
-## 시스템 설정
-
-### 1. RT 권한 설정 (필수)
+## 1. install.sh 로 한 번에
 
 ```bash
-# realtime 그룹 생성
-sudo groupadd realtime
-
-# 현재 사용자를 realtime 그룹에 추가
-sudo usermod -aG realtime $USER
-
-# limits.conf 설정
-echo "@realtime - rtprio 99" | sudo tee -a /etc/security/limits.conf
-echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
-
-# 로그아웃 후 재로그인 필수
-# 또는
-newgrp realtime
-
-# 확인
-ulimit -r  # 출력: 99 (RT priority limit)
-ulimit -l  # 출력: unlimited (memlock)
+cd ~/ros2_ws/rtc_ws/src/rtc-framework
+./install.sh robot --rt        # RT 설정만 (의존성·빌드 생략)
+./install.sh --all --skip-rt   # 반대로 RT 설정만 빼고 설치
 ```
 
-### 2. CPU Isolation (권장 — cpu_shield + setup_grub_rt 자동화)
+`--rt` 는 realtime 그룹·limits·sudoers, cset 도구, GRUB 옵션, IRQ affinity, UDP 버퍼, NVIDIA (GPU 가 있을 때), CPU governor 를 순서대로 적용한다. 단계가 실패해도 설치는 계속되고 마지막에 실패 목록을 보여준다. sim 모드는 RT 설정을 하지 않는다.
 
-v4.1 기준 권장 흐름은 **`isolcpus` 직접 편집 없이** 두 도구로 분리되어 있습니다:
+**`--rt` 가 하지 않는 것**: RT 커널 설치 ([2.2](#22-rt-커널))와 재부팅. 그룹 변경은 재로그인, GRUB 변경은 재부팅 후에 적용된다.
 
-- **`sudo ./repo_scripts/scripts/setup_grub_rt.sh`** — `nohz_full` / `rcu_nocbs` 자동 산출
-  (`get_rt_cores_with_siblings()` SSoT). RT thread 가 실행되는 코어 (rt_control,
-  rt_callback, mpc_main) 만 tickless 로 만들고, SMT 시 HT 시블링은 자동 포함하여
-  cache invalidation 을 방지합니다. nrt / arm_driver / hand_driver (CFS) 는 RT 코어가
-  아니므로 nohz_full 에서 제외 — 정기 tick 이 정상 작동.
-- **`sudo ./repo_scripts/scripts/cpu_shield.sh on --robot`** — 런타임에 cset shield 로
-  CM 스레드 코어(RT ∪ nrt)를 격리 (`compute_shield_cores()` → `get_cm_shield_cpus()`
-  SSoT). shield 는 cpuset 을 만들 뿐이며 CM 은 런치가 `cpu_shield.sh adopt <pid>` 로
-  그 안에 넣는다 (issue #151, 위 "cset shield 범위 + CM adopt" 참조). 기존
-  `isolcpus` GRUB 파라미터를 대체하므로 빌드 시 `cpu_shield.sh off` 로 전체 코어를
-  되돌려 사용할 수 있습니다.
+## 2. 단계별 수동 설정
 
-| 코어 수 | `nohz_full` / `rcu_nocbs` (non-SMT) | cset shield |
-|---------|--------------------------------------|-------------|
-| 전 tier | `1-3`                                | `1-3`       |
+`sudo` 로 도는 스크립트는 모두 멱등이라 다시 실행해도 된다.
 
-10-11c 가 `1-4`, 12c+ 가 `1-5` 이던 시절의 두 행은 **#380 이 회수**했다 — 그 상위
-슬롯에 앉아 있던 것은 `mpc_worker_0/1` 뿐이었고, 그 스레드들은 아무것도 실행하지
-않았다. 코어가 늘어도 RT 그룹은 `rt_control + rt_callback + mpc_main` 셋이므로 격리
-범위는 tier 와 무관하다 (오라클: `test_rt_common.sh::test_get_rt_cores_with_siblings_non_smt`).
+### 2.1 RT 권한
 
-SMT 가 켜져 있으면 `setup_grub_rt.sh` 가 시블링 logical CPU 까지 자동으로 합집합에
-포함합니다. 예: 6C/12T 시스템에서 RT 물리 코어 1-3 → `nohz_full=1-3,7-9`.
-
-> **레거시 (v3) 흐름**: 과거에는 `/etc/default/grub` 에 직접 `isolcpus=2-5
-> nohz_full=2-5 rcu_nocbs=2-5` 를 박았으나, 이 방식은 (a) 빌드 시에도 코어가 격리되어
-> 빌드 속도 저하, (b) 재부팅 없이 해제 불가, (c) nrt / driver 까지 tickless 로 만들어
-> `nohz_full` 의 RT-only 의도와 불일치 — v4.1 에서 폐기되었습니다.
+`install.sh` 가 `realtime` 그룹을 만들고 사용자를 넣고 `/etc/security/limits.conf` 에 `rtprio 99` · `memlock unlimited` 를 쓴다. 적용은 재로그인 후:
 
 ```bash
-# /etc/default/grub 직접 수정이 필요한 경우 (수동 fallback):
-sudo nano /etc/default/grub
+groups | grep realtime
+ulimit -r   # 99
+ulimit -l   # unlimited
+```
 
-# 6-core 시스템 예시 (cpu_shield 로 격리하지 않고 부팅 시 고정 격리하려면)
-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nohz_full=1-3 rcu_nocbs=1-3"
-# 코어 수가 늘어도 동일: RT 클러스터는 전 tier 에서 Core 1-3 이다 (#380)
-# (isolcpus 는 cpu_shield 로 대체되어 비권장)
+런치가 cset 을 비밀번호 없이 부르도록 `/etc/sudoers.d/` 항목도 `install.sh --rt` 가 만든다 (없으면 컨트롤러가 격리 영역으로 옮겨지지 못해 `inactive` 에 머문다).
 
-sudo update-grub
+### 2.2 RT 커널
+
+최대 성능을 원할 때만 필요하다. 둘 중 하나를 고른다.
+
+**A. lowlatency 커널 (쉬움)**
+
+```bash
+sudo apt install linux-lowlatency-hwe-24.04
 sudo reboot
-
-# 확인
-cat /proc/cmdline | grep -E "nohz_full|rcu_nocbs"
-# 출력: ... nohz_full=1-3 rcu_nocbs=1-3 ...
+uname -v    # ...~24.04... PREEMPT_DYNAMIC ... lowlatency
 ```
 
-**파라미터 의미**:
-- `nohz_full=<RT_CORES>`: SCHED_FIFO 스레드가 실행되는 코어에서 정기 타이머 틱 제거 (tickless)
-- `rcu_nocbs=<RT_CORES>`: RCU 콜백을 다른 코어에서 처리하여 RT 코어 지터 제거
-- `isolcpus`: **v4.1 비권장** — `cpu_shield.sh` (cset) 로 런타임 동적 격리 사용
+**B. PREEMPT_RT 커널 (빌드, 최대 성능)**
 
-### 3. CPU 성능 모드
-
-> **중요**: RT 코어뿐 아니라 **모든 CPU 코어** (OS 코어 포함)의 governor를 `performance`로
-> 설정해야 합니다. OS 코어가 `powersave`이면 compositor 프레임 드롭이 발생합니다.
-
-#### 자동 설정 (권장)
+PREEMPT_RT 는 Linux 6.12 부터 mainline 이라 외부 패치 없이 빌드된다. 스크립트가 vanilla 6.12.x 를 받아 서명을 검증하고 CPU 에 맞는 config 로 빌드·설치한다. 30분~2시간 걸린다.
 
 ```bash
-# 전용 스크립트 (governor 설정 + systemd 서비스 등록을 한 번에)
-sudo ./repo_scripts/scripts/setup_cpu_governor.sh
-
-# install.sh 가 setup_cpu_governor 를 자동 호출 (별도 실행 불요)
-./install.sh robot   # 또는 full
-
-# NVIDIA 시스템: setup_nvidia_rt.sh [10/11] 단계가 동일 스크립트를 호출
-sudo ./repo_scripts/scripts/setup_nvidia_rt.sh
-```
-
-`setup_cpu_governor.sh` (install.sh · setup_nvidia_rt.sh 가 공통으로 호출하는 SSoT) 는 다음을 수행합니다:
-1. sysfs 를 통해 즉시 모든 코어를 `performance` 로 변경 (`cpupower` 사용 가능하면 사용, 아니면 sysfs fallback)
-2. `cpu-governor-performance.service` (systemd oneshot) 생성 및 활성화 → 재부팅 시 자동 적용
-3. Intel P-state 드라이버 / Turbo Boost 상태 보고
-
-#### 수동 설정
-
-```bash
-# cpufrequtils 설치
-sudo apt install cpufrequtils
-
-# 모든 코어를 performance 모드로 설정
-sudo cpupower frequency-set -g performance
-
-# 확인
-cpupower frequency-info | grep "current policy"
-# 출력: current policy: frequency should be within ... (performance)
-
-# 부팅 시 자동 적용 (방법 1: cpufrequtils)
-echo 'GOVERNOR="performance"' | sudo tee /etc/default/cpufrequtils
-sudo systemctl restart cpufrequtils
-
-# 부팅 시 자동 적용 (방법 2: systemd service -- setup_nvidia_rt.sh가 생성하는 방식)
-sudo systemctl status cpu-governor-performance.service
-```
-
-#### 확인
-
-```bash
-# 모든 코어의 governor 확인 (powersave가 있으면 문제)
-for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-  echo "$(basename $(dirname $(dirname $f))): $(cat $f)"
-done
-
-# systemd service 상태 확인
-sudo systemctl status cpu-governor-performance.service
-```
-
-### 4. NVIDIA + RT 커널 공존 (NVIDIA GPU 사용 시)
-
-NVIDIA 드라이버는 기본적으로 `CONFIG_PREEMPT_RT` 커널에서 빌드를 거부합니다. 커스텀 RT 커널에서
-NVIDIA DKMS 모듈을 빌드하려면 **3가지 차단 레이어**를 모두 우회해야 합니다:
-
-| 차단 레이어 | 원인 | 해결 |
-|-------------|------|------|
-| `dkms autoinstall` apport 검증 | 커스텀 커널명 거부 (`linux-headers-*-rt-custom` 미지원) | `dkms build -m nvidia -v VERSION -k KERNEL` 직접 호출 |
-| `conftest.sh` RT 감지 | `CONFIG_PREEMPT_RT` 감지 -> 빌드 거부 | `IGNORE_PREEMPT_RT_PRESENCE=1` 환경변수 |
-| `dkms.conf` BUILD_EXCLUSIVE | `BUILD_EXCLUSIVE_CONFIG="!CONFIG_PREEMPT_RT"` | sed로 주석 처리 |
-
-#### 자동 설정 (권장)
-
-```bash
-# setup_nvidia_rt.sh [9/11] 단계에서 자동 처리
-sudo ./repo_scripts/scripts/setup_nvidia_rt.sh
-
-# 또는 RT 커널 빌드 시 자동 처리
-sudo ./repo_scripts/scripts/build_rt_kernel.sh
-```
-
-#### 수동 설정
-
-```bash
-# 1. NVIDIA DKMS 버전 확인
-NVIDIA_DKMS_VER=$(dkms status nvidia 2>/dev/null | head -1 | awk -F'[,/]' '{print $2}' | tr -d ' ')
-KERNEL_VER=$(uname -r)
-
-# 2. dkms.conf의 BUILD_EXCLUSIVE_CONFIG 주석 처리
-sudo sed -i 's/^\(BUILD_EXCLUSIVE_CONFIG=.*PREEMPT_RT\)/#\1/' \
-  /usr/src/nvidia-${NVIDIA_DKMS_VER}/dkms.conf
-
-# 3. RT 감지 우회 + 빌드
-sudo IGNORE_PREEMPT_RT_PRESENCE=1 IGNORE_CC_MISMATCH=1 \
-  dkms build -m nvidia -v ${NVIDIA_DKMS_VER} -k ${KERNEL_VER}
-sudo dkms install -m nvidia -v ${NVIDIA_DKMS_VER} -k ${KERNEL_VER}
-
-# 4. 모듈 로드
-sudo modprobe nvidia
-
-# 5. 영구 설정 (/etc/environment에 추가)
-echo "IGNORE_PREEMPT_RT_PRESENCE=1" | sudo tee -a /etc/environment
-```
-
-#### 검증
-
-```bash
-nvidia-smi                        # GPU 인식 확인
-dkms status nvidia                # 현재 커널에 installed 확인
-grep IGNORE_PREEMPT_RT /etc/environment  # 영구 설정 확인
-```
-
-### 5. PREEMPT_RT 커널 (선택, 최대 성능)
-
-#### Option A: LowLatency 커널 (더 쉬운 방법)
-```bash
-sudo apt install linux-lowlatency-hwe-22.04
+sudo ./repo_scripts/scripts/build_rt_kernel.sh              # 대화형 (menuconfig 포함)
+sudo ./repo_scripts/scripts/build_rt_kernel.sh --batch      # 비대화형
+sudo ./repo_scripts/scripts/build_rt_kernel.sh --batch --with-nvidia   # NVIDIA 모듈까지
+sudo ./repo_scripts/scripts/build_rt_kernel.sh --dry-run    # 다운로드·설정까지만
+sudo ./repo_scripts/scripts/build_rt_kernel.sh --status     # 진행 상태 확인
 sudo reboot
-
-# 확인
-uname -v
-# 출력: #XX~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC ... lowlatency
-```
-
-#### Option B: PREEMPT_RT 커널 (최대 성능, 빌드 필요)
-
-PREEMPT_RT 는 **Linux 6.12 에서 mainline 병합** (x86_64/arm64/riscv) — 6.12+ 는 외부 RT
-패치 없이 `CONFIG_PREEMPT_RT=y` 만으로 RT 활성. `build_rt_kernel.sh` 는 vanilla 6.12.x
-LTS 커널을 받아 (GPG 서명 검증 후) CPU profile 별 config 를 적용해 빌드한다.
-
-자동화 스크립트 제공:
-```bash
-# 대화형 (menuconfig 포함, CPU profile 자동 감지)
-sudo ./repo_scripts/scripts/build_rt_kernel.sh
-
-# 비대화형 (CI/자동화용)
-sudo ./repo_scripts/scripts/build_rt_kernel.sh --batch
-
-# 데스크탑 (NVIDIA DKMS 모듈까지 RT 커널에 빌드)
-sudo ./repo_scripts/scripts/build_rt_kernel.sh --batch --with-nvidia
-
-# 다운로드·검증·압축해제·설정까지만 (빌드 전 확인용)
-sudo ./repo_scripts/scripts/build_rt_kernel.sh --dry-run
-```
-
-지원 버전 / profile:
-- **커널**: 6.12.x LTS (mainline PREEMPT_RT, **외부 패치 불요**) — Ubuntu 22.04 / 24.04 공통,
-  OS 독립. 기본 `6.12.91`, `--kernel-version V` 로 override (6.12+ 강제, 미만은 error).
-  두 머신(데스크탑/NUC) 재현성을 위해 pin — bump 시 kernel.org `v6.x` 최신 6.12.x 확인.
-- **profile** (`--profile auto` 가 rt_common `detect_hybrid_capability` 로 분기):
-  - `desktop-amd` — AMD Ryzen (`amd_pstate`, SCHED_CLUSTER)
-  - `desktop-intel` — 일반 Intel (`intel_pstate`, non-hybrid)
-  - `nuc` — Intel hybrid NUC 13/14/15 (SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL)
-- **검증**: 다운로드 후 kernel.org GPG `.sign` 서명 검증 (warn-and-proceed; `--skip-verify` 로 생략).
-- **NVIDIA**: 기본 분리 — `setup_nvidia_rt.sh` 가 담당. `--with-nvidia` 일 때만 빌드 단계에서 DKMS 직접 빌드.
-- **Secure Boot**: 활성 시 미서명 custom 커널 부팅 차단 경고 (`mokutil --sb-state` 감지만).
-
-```bash
-# 재부팅 후 확인
 uname -v | grep PREEMPT_RT
 ```
 
-참고: PREEMPT_RT 는 Linux 6.12 부터 mainline (별도 패치 불요).
-https://wiki.linuxfoundation.org/realtime/documentation/howto/applications/start ·
-https://www.kernel.org/doc/html/latest/core-api/real-time/index.html
+- `--profile auto|desktop|nuc` : 기본 `auto` 가 CPU 를 감지한다 (hybrid Intel -> `nuc`, AMD · 일반 Intel -> 데스크탑 config). `nuc` 만 hybrid 스케줄링 옵션 (SCHED_MC_PRIO · SCHED_CLUSTER · INTEL_HFI_THERMAL) 을 켠다.
+- `--kernel-version V` : 기본값은 스크립트에 pin 되어 있다. 6.12 미만은 거부한다.
+- 이미 끝난 단계는 건너뛰고, `--force-step N` 으로 N 단계부터 다시 한다.
+- Secure Boot 가 켜져 있으면 미서명 커널이 부팅되지 않는다 (스크립트가 경고만 한다).
 
-### 6. IRQ Affinity (고급)
+#### 구버전 커널은 외부 RT 패치가 필요
 
-자동화 스크립트 제공:
-```bash
-# 자동 설정 (NIC IRQ를 Core 0-1로 pin)
-sudo ./repo_scripts/scripts/setup_irq_affinity.sh
-```
+6.12 미만 커널에는 PREEMPT_RT 가 들어 있지 않다. `build_rt_kernel.sh` 는 이 경우를 지원하지 않고 `--kernel-version` 을 거부한다. 선택지는 둘이다.
 
-수동 설정:
-```bash
-# 모든 IRQ를 Core 0-1로 제한 (RT 코어 1-3 을 보호)
-for irq in $(ls /proc/irq/); do
-    [ -d "/proc/irq/$irq" ] && echo 3 | sudo tee /proc/irq/$irq/smp_affinity > /dev/null 2>&1
-done
-# 0x3 = 0b0011 = Core 0, 1
+1. **6.12 이상으로 올린다** (권장). 위 B 절차를 그대로 쓴다.
+2. 구버전을 꼭 써야 하면 해당 버전의 외부 PREEMPT_RT 패치를 직접 적용해 빌드한다. 이 경우 스크립트·NVIDIA 자동 처리·검증은 보장되지 않는다.
 
-# 확인
-cat /proc/interrupts | grep -E "(CPU0|CPU1)"  # 대부분의 IRQ가 Core 0-1에 집중
-```
-
----
-
-## 코드 구조
-
-본 절은 v3 의 핵심 진입점·패턴만 발췌. 코드 자체의 SSoT 는 인용된 파일 — 본 문서가 코드 line / 시그니처 / 상수값을 박제하지 않는다.
-
-### CallbackGroup 생성 ([rt_controller_node.cpp](../rtc_controller_manager/src/rt_controller_node.cpp))
-
-```cpp
-void RtControllerNode::CreateCallbackGroups() {
-  // cb_group_rt_ 없음 — ControlLoop() + CheckTimeouts() 는 jthread + clock_nanosleep
-  // 으로 직접 실행 (executor 미사용)
-  cb_group_rt_callback_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  cb_group_nrt_logging_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  cb_group_nrt_callback_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-}
-```
-
-- **MutuallyExclusive 그룹**: 같은 그룹 내 콜백은 순차 실행 — `rt_callback_executor` 가 보장하는 SeqLock single-writer 불변식의 근거 (Reentrant 그룹 금지).
-- **cb_group → executor binding 매트릭스**는 [agent_docs/architecture.md](../agent_docs/architecture.md) §RtControllerNode 표 참조.
-
-### DeviceBackend cb_group injection ([device_backend.hpp](../rtc_controller_manager/include/rtc_controller_manager/device_backend.hpp))
-
-```cpp
-class DeviceBackend {
- public:
-  // 모든 backend (UR / udp_hand / mujoco) 구현이 이 시그니처를 따른다.
-  // state_cb_group 은 CM 이 만든 cb_group_rt_callback_ (MutuallyExclusive, FIFO 70 executor).
-  virtual void Configure(rclcpp_lifecycle::LifecycleNode* node,
-                         const DeviceBackendConfig& config,
-                         rclcpp::CallbackGroup::SharedPtr state_cb_group) = 0;
-};
-```
-
-각 backend 의 `Configure()` 구현은 받은 cb_group 을 자신이 만드는 모든 state/motor/sensor `SubscriptionOptions.callback_group` 에 박는다:
-
-```cpp
-// 예: integrated_bringup/src/backends/ur_driver_native_backend.cpp
-void UrDriverNativeBackend::Configure(LifecycleNode* node, const DeviceBackendConfig& config,
-                                      rclcpp::CallbackGroup::SharedPtr state_cb_group) {
-  rclcpp::SubscriptionOptions sub_opts;
-  sub_opts.callback_group = state_cb_group;   // ← rt_callback 로 라우팅
-
-  state_sub_ = node->create_subscription<sensor_msgs::msg::JointState>(
-      config.state_topic, state_qos,
-      [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); },
-      sub_opts);
-}
-```
-
-- **v3 핵심 invariant**: 모든 backend state-lane sub 은 `cb_group_rt_callback_` 에 attach. 잊으면 RCL 이 silently 노드 default group (= nrt_callback) 으로 fallback — build 와 unit test 는 통과하지만 RT 경계가 nrt 로 떨어진다.
-- **회귀 차단 test**: [test_device_backend_cb_group_injection.cpp](../rtc_controller_manager/test/test_device_backend_cb_group_injection.cpp) 가 `CallbackGroup::find_subscription_ptrs_if` reverse-lookup 으로 sub 가 주입된 group 에 등록됐는지 ABI 수준에서 검증. 새 backend 추가 시 본 test 의 parametrised case 에도 추가할 것.
-- ARCH-3 강제: `Configure()` 시그니처 변경이 모든 backend 를 build break — 새 backend 가 cb_group plumbing 을 잊을 수 없다.
-
-### RT 루프 ([rt_controller_node_rt_loop.cpp](../rtc_controller_manager/src/rt_controller_node_rt_loop.cpp))
-
-```cpp
-void RtControllerNode::RtLoopEntry(const ThreadConfig& cfg) {
-  ApplyThreadConfig(cfg);  // Core 1, SCHED_FIFO 90 (layout v4.1)
-  // ... (clock_nanosleep TIMER_ABSTIME 절대시간 루프, sim CV wakeup branch, overrun recovery)
-
-  // 매 tick 끝: actuator 는 inline (v4 RT-safe contract), non-RT 토픽만 SPSC fan-out
-  for (auto& slot : active_slots) {
-    slot.backend->WriteCommand(slot.cmd);                 // inline actuator publish (RT-safe by contract)
-  }
-  static_cast<void>(nrt_publish_buffer_.Push(snap));       // → nrt_publish_thread
-  if (nrt_publish_eventfd_ >= 0) static_cast<void>(eventfd_write(nrt_publish_eventfd_, 1));
-}
-```
-
-- **Inline actuator publish (v4)**: `rt_control` thread (Core 1 FIFO 90) 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract) — §개요 "v4 아키텍처 변경" 노트.
-- **Non-RT lane only**: `snap` (≈6 KB) 을 cap 16 의 `nrt_publish_buffer_` 에만 push. saturate 시 drop 은 `nrt_pub_drops` counter 로 관측.
-- **RT-safe push**: `Push` 와 `eventfd_write` 둘 다 nothrow + 결과 `static_cast<void>` 무시. push 실패 (full) = silent drop.
-- **1 drain thread (nrt only)**:
-  - `nrt_publish_thread` (nrt_callback core, CFS) → `controller.PublishNonRtSnapshot` (controller-owned non-RT topic)
-- Drain 측 by-value invariant 는 [publish_buffer.hpp](../rtc_base/include/rtc_base/threading/publish_buffer.hpp) header doc 참조.
-- Sim CV wakeup · overrun recovery · 연속 10회 → E-STOP 메커니즘은 별도.
-
-### 스레드 설정 ([thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp))
-
-`SystemThreadConfigs` struct 는 [thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) 에, 런타임 selector `SelectThreadConfigs()` 는 [thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) 에 있다. per-tier 값 (`k*Config*` inline const) 과 순수 dispatch `SelectThreadConfigsForCoreCount()` 는 manifest 에서 생성된 `thread_config_generated.hpp` 에 있다. struct 는 아래 1급 필드로 각 thread 를 표현한다 (필드 주석·값은 헤더 직접 참조 — 본 문서는 박제하지 않는다):
-
-- `rt_control` (FIFO 90) · `rt_callback` (FIFO 70, DDS recv co-pin) — RT 경계
-- `nrt_logging` (CFS -5) · `nrt_callback` (CFS 0)
-- `arm_driver` (CM 파라미터로 내부 RT 루프 pin) · `hand_driver` (process-level taskset) · `sim_thread` · `viewer` (`cpu_core=-1` sentinel, 모든 tier)
-- `mpc` (`MpcThreadConfig` — 필드는 `main` 하나. worker 슬롯은 #380 이 제거했다)
-
-`SelectThreadConfigs()` 는 `GetPhysicalCpuCount()` 를 `SelectThreadConfigsForCoreCount()` 에 넘기고, 그쪽이 7-tier (≥16 / 14 / 12 / 10 / 8 / 6 / else 4-core fallback) 를 dispatch 한다 (core 수를 인자로 받으므로 호스트에 없는 tier 도 테스트가 훑을 수 있다). 각 tier 상수는 `kRtControlConfig*` / `kRtCallbackConfig*` / `kNrtCallbackConfig*` / `kNrtLoggingConfig*` / `kArmDriverConfig*` / `kHandDriverConfig*` / `kSimThreadConfig*` / `kViewerConfig*`.
-
-- **v4 단일화**: v3 의 `rt_inbound` + `rt_outbound` 필드는 `rt_callback` 으로 통합 (§개요 "v4 아키텍처 변경" 노트 참조).
-- **`udp_recv` 필드 / `kUdpRecvConfig*` 상수 완전 삭제** (v3 부터). 대체:
-  - `udp_hand_driver` 내부 private 상수 [`kHandUdpRecvConfig`](../udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp) (FIFO 65, `cpu_core=-1` sentinel — `hand_driver` 프로세스의 taskset affinity 상속).
-  - 일반 `rtc_communication::Transceiver` default 는 [`kRtUdpRecvConfig`](../rtc_communication/include/rtc_communication/transceiver.hpp) (FIFO 65, `cpu_core=-1`) — caller 가 명시 핀 필요시 override.
-  - `SystemThreadConfigs` 에는 UDP receive 가 보이지 않는다 — hand UDP receive 는 별도 프로세스 (`udp_hand_node`) 의 *내부* thread 이므로 single-process 의 SSoT 표현 대상이 아님.
-- **`cpu_core = -1` sentinel**: `ValidateThreadConfig` 가 통과시키고 `ApplyThreadConfig` 가 affinity step 만 skip (scheduler/priority/nice/name 은 정상 적용). 처리 함정은 에이전트 memory `feedback_sentinel_introduction_validator_audit` 참조.
-
-### 스레드 적용 ([thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp))
-
-`[[nodiscard]] bool ApplyThreadConfig(const ThreadConfig& cfg) noexcept` 는 3단계로 현재 thread 를 구성한다 (구현·정확한 syscall 은 헤더 직접 참조 — 본 문서는 박제하지 않는다):
-
-1. **CPU affinity** — `cfg.cpu_core >= 0` 일 때만 `pthread_setaffinity_np` (`-1` sentinel 은 skip).
-2. **Scheduler + priority/nice** — SCHED_FIFO/RR 이면 `pthread_setschedparam(sched_priority)`, 아니면 `setpriority(nice_value)`.
-3. **Thread name** — `pthread_setname_np` (15자 제한 truncate).
-
-`ApplyThreadConfigWithFallback()` 은 RT 권한 부족 시 SCHED_OTHER 로 자동 강등 — degraded mode (4-core / 권한 없음) 에서도 prog 가 죽지 않도록.
-
-### main() 함수 ([rt_controller_main_impl.cpp](../rtc_controller_manager/src/rt_controller_main_impl.cpp))
-
-```cpp
-int RtControllerMain(int argc, char** argv, const std::string& node_name) {
-  // 1. mlockall — rclcpp::init 이전 (page fault 방지)
-  if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) { /* WARN */ }
-
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<rtc::RtControllerNode>(node_name);
-  // (실제 main 은 lifecycle_executor 로 configure/activate 까지 spin 한 뒤 dedicated
-  // executor 로 switch 한다 — 3-phase pattern. 자세한 흐름은 위 파일 참조.)
-
-  const auto cfgs = rtc::SelectThreadConfigs();
-
-  // 2. RT loop + nrt_publish_thread (jthread, executor 미사용)
-  // on_activate 가 StartRtLoop(cfgs.rt_control) / StartNrtPublishLoop(cfgs.nrt_callback)
-  // 를 호출 (v3 StartPublishLoop / rt_outbound jthread 는 v4 에서 제거 — actuator 는 inline).
-
-  // 3. 3 executor 생성 + cb_group binding
-  rclcpp::executors::SingleThreadedExecutor rt_callback_executor;
-  rclcpp::executors::SingleThreadedExecutor nrt_logging_executor;
-  rclcpp::executors::SingleThreadedExecutor nrt_callback_executor;
-
-  rt_callback_executor.add_callback_group(node->GetRtInboundGroup(), node->get_node_base_interface());
-  nrt_logging_executor.add_callback_group(node->GetNrtLoggingGroup(), node->get_node_base_interface());
-  nrt_callback_executor.add_callback_group(node->GetNrtCallbackGroup(), node->get_node_base_interface());
-  // 추가로 nrt_callback_executor 에 CM/controller LifecycleNode default group 도 add_node — 본
-  // matrix 는 architecture.md §RtControllerNode 표 참조.
-
-  // 4. Executor 스레드 spawn + ApplyThreadConfig
-  std::jthread t_rt_callback  = make_thread(rt_callback_executor,  cfgs.rt_callback);   // FIFO 70 Core 2
-  std::jthread t_nrt_logging = make_thread(nrt_logging_executor, cfgs.nrt_logging);   // CFS -5 (tier-aware)
-  std::jthread t_nrt_callback= make_thread(nrt_callback_executor,cfgs.nrt_callback);  // CFS  0 (tier-aware)
-
-  // 5. Join + lifecycle shutdown (on_deactivate / on_cleanup 가 jthread 들 join + reset)
-  rclcpp::shutdown();
-  return 0;
-}
-```
-
-- 본 함수 자체는 `cm_executable` 별 wrapper 가 `RtControllerMain(argc, argv, "integrated_rt_controller")` 처럼 호출. 실제 시그니처와 lifecycle wiring 은 [rt_controller_main_impl.cpp](../rtc_controller_manager/src/rt_controller_main_impl.cpp) 참조.
-- **rt_control jthread 의 시작/종료** 는 RtControllerNode 의 lifecycle 콜백 (`on_activate` / `on_deactivate`) 에서 — main 이 직접 spawn 하지 않는다 (v3 rt_outbound jthread 제거는 §개요 "v4 아키텍처 변경" 노트).
-
----
-
-## 검증 방법
-
-### 0. 자동 런타임 검증 (verify_rt_runtime.sh — 권장 시작점)
-
-컨트롤러가 구동 중일 때, 각 live thread 의 RT 설정 (scheduling policy · priority · CPU affinity · memory lock · context switch · CPU migration · RT throttling) 을 `thread_config.hpp` 의 tier 기대값과 자동 대조한다. `arm_driver` / `hand_driver` 는 컨트롤러 내부 스레드가 아니라 별도 프로세스(`ros2_control_node` / `udp_hand_node`)이므로 process comm 으로 발견해 검증한다 (sim 은 driver 프로세스가 없어 SKIP; comm override 는 `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM`). `hand_driver` 는 전-스레드 affinity, `arm_driver` 는 **RT 루프 축**으로 본다 — 설정된 우선순위(50)의 SCHED_FIFO 스레드가 존재하고 그 스레드가 arm 코어에 있는지. FIFO 스레드 부재는 FAIL 이다: FIFO 요청이 거부돼도 affinity 는 적용되므로 위치만 보는 검사는 강등된 루프를 통과시킨다 (issue #343). 정적 시스템 설정을 보는 `check_rt_setup.sh` 와 달리 *실행 중 프로세스의 런타임 상태* 를 검증하므로, 아래 수동 `ps -T` / `taskset` 절차 (§1–§2) 를 돌리기 전에 먼저 실행한다.
+### 2.3 GRUB 옵션
 
 ```bash
-./repo_scripts/scripts/verify_rt_runtime.sh              # 상세 출력
-./repo_scripts/scripts/verify_rt_runtime.sh --summary    # 카테고리당 1줄 요약
-./repo_scripts/scripts/verify_rt_runtime.sh --json       # CI용 JSON
-./repo_scripts/scripts/verify_rt_runtime.sh --watch 5    # 5초 간격 모니터링
+sudo ./repo_scripts/scripts/setup_grub_rt.sh
+sudo reboot
+cat /proc/cmdline    # nohz_full=... rcu_nocbs=... 가 보여야 한다
 ```
 
-Exit code: `0`=all pass, `1`=warnings only, `2`=failures, `3`=controller 미실행. 특정 thread 를 파고들거나 자동 검증이 실패할 때 아래 수동 절차로 확인한다.
+스크립트가 `/etc/default/grub` 을 백업한 뒤 `nohz_full` · `rcu_nocbs` (RT 코어, SMT 면 형제 포함) 와 `processor.max_cstate=1` · `clocksource=tsc` · `nmi_watchdog=0` · `threadirqs` 등을 넣고 `update-grub` 을 돈다. `sched_rt_runtime_us=-1` sysctl 도 같이 영구 등록한다. 값은 코어 수에서 계산되므로 직접 편집하지 않는다.
 
-### 1. 스레드 설정 확인 (ps -T)
+`isolcpus` 는 쓰지 않는다. 빌드 중에도 코어가 묶이고 재부팅 없이 풀 수 없어서, 대신 2.4 의 `cpu_shield` 로 런타임에 격리한다.
+
+### 2.4 cpu_shield (런타임 격리)
+
+```bash
+sudo ./repo_scripts/scripts/cpu_shield.sh on --robot   # 격리 켜기 (--sim 도 범위 동일)
+./repo_scripts/scripts/cpu_shield.sh status            # 상태 + 이 PC 의 코어 배치 (sudo 불필요)
+sudo ./repo_scripts/scripts/cpu_shield.sh off          # 해제
+```
+
+보통 직접 부를 일이 없다. 런치 파일이 켜고, 컨트롤러를 격리 영역 안으로 옮긴 뒤에야 activate 한다. 옮기지 못하면 컨트롤러는 `inactive` 에 머문다 (조용히 RT 없이 도는 것을 막기 위함). 빌드 전에는 `build.sh` / `install.sh` 가 자동 해제한다.
+
+### 2.5 IRQ affinity
+
+```bash
+sudo ./repo_scripts/scripts/setup_irq_affinity.sh          # NIC 자동 감지
+sudo ./repo_scripts/scripts/setup_irq_affinity.sh enp3s0   # NIC 지정
+```
+
+하드웨어 IRQ 를 OS 코어로 모아 RT 코어를 인터럽트에서 보호한다. 어느 코어가 OS 코어인지는 스크립트가 계산해 마지막에 배치를 출력한다. 마스크를 직접 `/proc/irq/*/smp_affinity` 에 쓰지 않는다.
+
+### 2.6 CPU governor
+
+```bash
+sudo ./repo_scripts/scripts/setup_cpu_governor.sh
+```
+
+**모든** 코어를 `performance` 로 바꾸고 재부팅 후에도 유지되게 systemd 서비스 (`cpu-governor-performance.service`) 를 등록한다. OS 코어가 `powersave` 면 화면 프레임이 떨어지므로 RT 코어만 바꾸면 안 된다. NVIDIA 시스템은 2.7 이 이 스크립트를 이어서 부른다.
+
+### 2.7 NVIDIA (GPU 가 있을 때)
+
+NVIDIA 드라이버는 PREEMPT_RT 커널에서 빌드를 거부한다. 스크립트가 이를 우회하고 modprobe · IRQ · persistence mode · nouveau 블랙리스트까지 한 번에 처리한다.
+
+```bash
+sudo ./repo_scripts/scripts/setup_nvidia_rt.sh
+nvidia-smi
+dkms status nvidia    # 현재 커널에 installed
+```
+
+스크립트는 사전 점검 · modprobe 설정 · IRQ affinity 서비스 · persistence mode · nouveau 블랙리스트 · DKMS 빌드 · 요약 순서로 진행하고, 끝에서 GRUB · 디스플레이 · CPU governor 스크립트를 이어 부른다. 우회 방식의 근거는 [rt-setup-rationale.md](reference/rt-setup-rationale.md).
+
+## 3. 코어 배치
+
+- 코어 번호는 **slot** 이다. 커널 logical CPU 번호가 아니며, SMT 형제와 hybrid 의 E-core 를 피하도록 실제 CPU 로 변환된다.
+- OS · DDS · IRQ 는 slot 0 하나를 쓴다. RT 스레드 (`rt_control` · `rt_callback` · `mpc_main`) 는 그 위의 연속 코어에 고정되고, 드라이버 프로세스와 non-RT 스레드는 그 밖에 놓인다.
+- 코어 수가 늘어도 RT 클러스터는 같고, 달라지는 것은 드라이버 쪽 배치뿐이다. 4 · 6 코어는 일부 스레드가 코어를 공유하는 degraded 구성이다.
+- 값의 SSoT 는 [thread_layout.yaml](../repo_scripts/config/thread_layout.yaml), tier 별 표는 [rtc_base/README.md](../rtc_base/README.md). **이 PC 에 실제로 적용되는 배치**는 `cpu_shield.sh status` 가 출력한다. 스크립트에서 한 역할의 slot 만 보려면:
+
+```bash
+source repo_scripts/scripts/lib/rt_common.sh
+get_role_slot rt_control "$(get_physical_cores)"
+```
+
+## 4. 확인
+
+순서대로 본다. 앞 단계가 FAIL 이면 뒤는 의미가 없다.
+
+### 4.1 정적 설정: check_rt_setup.sh
+
+```bash
+./repo_scripts/scripts/check_rt_setup.sh            # 상세
+./repo_scripts/scripts/check_rt_setup.sh --fix      # 실패 항목의 수정 명령 제안
+./repo_scripts/scripts/check_rt_setup.sh --summary  # 카테고리당 1줄
+./repo_scripts/scripts/check_rt_setup.sh --benchmark   # cyclictest 지터 실측 (sudo)
+```
+
+RT 커널 · CPU isolation · scheduler/메모리 · GRUB · 권한 · IRQ · 네트워크 · NVIDIA · governor 를 점검한다. 컨트롤러가 꺼져 있어도 된다.
+
+### 4.2 실행 중 상태: verify_rt_runtime.sh
+
+컨트롤러를 띄운 뒤 각 스레드의 정책 · priority · affinity · memlock · migration 을 기대값과 대조한다.
+
+```bash
+./repo_scripts/scripts/verify_rt_runtime.sh              # 상세
+./repo_scripts/scripts/verify_rt_runtime.sh --summary    # 1줄 요약
+./repo_scripts/scripts/verify_rt_runtime.sh --json       # CI 용
+./repo_scripts/scripts/verify_rt_runtime.sh --watch 5    # 5초 간격
+```
+
+종료 코드: 0 모두 통과 / 1 경고만 / 2 실패 / 3 컨트롤러 미실행. 필수 스레드를 못 찾으면 FAIL 이다. sim 에서는 driver 프로세스 검사를 건너뛴다.
+
+특정 스레드를 직접 보려면:
 
 ```bash
 PID=$(pgrep -f integrated_rt_controller)
-ps -T -p $PID -o tid,comm,rtprio,psr,cls,pri
-```
-
-**v4.1 layout 6-core 정상 출력**:
-
-```
-    TID COMMAND         RTPRIO PSR CLS PRI
-   ... rt_control          90   1  FF 130   ← Core 1, FIFO 90 (clock_nanosleep jthread)
-   ... rt_callback          70   2  FF 110   ← Core 2, FIFO 70 (rt_callback_executor)
-   ... mpc_main            60   3  FF 100   ← Core 3, FIFO 60
-   ... nrt_callback         -   5  TS   0   ← Core 5 (degraded 6c: shared with nrt_logging), CFS
-   ... nrt_logging          -   5  TS   0   ← Core 5, CFS nice -5
-   ... dds.shm.*            -   2  TS   0   ← DDS recv (co-pinned to rt_callback Core 2)
-   ... integrated-ust       -   - …          ← LTTng UST (있을 때만)
-   ... integrated_rt_c      -   -  TS   0   ← 메인 thread (rclcpp main, idle)
-```
-
-**CLS**: `FF`=SCHED_FIFO, `RR`=SCHED_RR, `TS`=SCHED_OTHER (CFS). **RTPRIO**: RT priority (`-` = non-RT). **PSR**: 현재 실행 코어.
-
-**v4.1 invariant 체크**:
-- `rt_control` priority 90 > `rt_callback` 70 > `mpc_main` 60
-- `rt_control.PSR == 1`, `rt_callback.PSR == 2`, `mpc_main.PSR == 3` (모든 tier 공통)
-- DDS recv thread (CLS=TS) 의 PSR 이 `rt_callback.PSR` 과 같아야 함 (Core 2 co-pin)
-- `nrt_callback` / `nrt_logging` 은 CLS=TS (RTPRIO=-), Core 0 가 아니어야 함 (≥ 6c)
-- 어느 thread 도 pre-v4 명칭 (`rt_inbound` / `rt_outbound` / `sensor_io` / `publish_thread` / `aux` / `logger` / `udp_recv`) 이면 안 됨 — drift 회귀 grep sentinel
-
-`udp_hand_node` 는 별도 프로세스이므로 그 PID 로 별도 `ps -T`:
-```bash
-ps -T -p $(pgrep -f udp_hand_node) -o tid,comm,rtprio,psr,cls
-# 내부에 kHandUdpRecvConfig 가 만든 FIFO 65 thread 가 있음 (이름 컨벤션은
-# udp_hand_driver/udp_hand_constants.hpp 참조)
-```
-
-### 2. CPU Affinity 확인
-
-```bash
-# 특정 thread 의 affinity (TID 는 위 ps -T 출력)
+ps -T -p $PID -o tid,comm,rtprio,psr,cls,pri   # CLS: FF=SCHED_FIFO, TS=CFS
 taskset -cp <TID>
-# 예: rt_callback TID → "current affinity list: 2"
-
-# 프로세스 전체 (hand_driver process-level pin 검증)
-taskset -cp $(pgrep -nx udp_hand_node)
-
-# arm_driver 는 프로세스 affinity 를 봐서는 안 된다 (issue #343): main thread 는
-# executor 이고 500 Hz 루프는 별도 스레드다. 그 스레드는 pthread 이름이 없어
-# (전 TID 가 comm 'ros2_control_no') SCHED_FIFO 로만 골라낼 수 있다.
-PID=$(pgrep -nx ros2_control_no)
-for t in /proc/$PID/task/*/; do
-  tid=$(basename "$t")
-  chrt -p "$tid" 2>/dev/null | grep -q SCHED_FIFO &&
-    printf "%s %s %s\n" "$tid" "$(chrt -p "$tid" | tail -1)" "$(taskset -cp "$tid")"
-done
 ```
 
-### 3. 실시간 지터 측정
+`rt_control` > `rt_callback` > `mpc_main` 순으로 priority 가 높고 모두 `FF` 여야 한다 (4 코어 fallback 만 `mpc_main` 이 CFS). 기대 코어는 3절의 방법으로 조회해 비교한다.
 
-#### 3a. cm_timing_log.csv (in-process, RT loop 직접 측정 — 권장)
+### 4.3 지터 측정
 
-`<session>/timing/cm_timing_log.csv` 에 RT loop 의 per-tick `t_state_us` / `t_compute_us` / `t_publish_us` / `t_total_us` / `jitter_us` 가 SPSC drain 으로 기록된다.
+**cm_timing_log.csv (권장)** : RT 루프가 매 tick 기록하는 값이다.
 
-**측정 방법**:
 ```bash
-ros2 launch integrated_bringup sim_ur5e_p1a.launch.py  # 또는 robot_ur5e_p1a.launch.py
-# 충분한 샘플 (≥ 30s @ 500 Hz = 15k tick) 후 종료
-# 결과는 logging_data/<session_id>/timing/cm_timing_log.csv
-ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --stats   # 통계만 (plot 생략)
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py    # 실기는 robot_ur5e_p1a.launch.py
+# 30초 이상 (500 Hz 면 15k tick) 돌린 뒤 종료
+ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --stats   # 통계만
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv           # plot + 통계
 ```
 
-`plot_rtc_log` 의 cm_timing 파이프라인 (`rtc_tools/plotting/plotters/timing.py`) 이 first-tick init spike (mlockall page touch + 첫 RCLCPP_INFO) 와 outlier 를 `detect_outlier_indices()` (median 기반) 로 **자동 제외**해 p99 / max 가 한 tick 스파이크에 왜곡되지 않는다. `--stats` 는 plot 없이 mean / p50 / p95 / p99 / max + counter 만 출력. **레이트를 볼 때는 `run_id` 를 먼저 본다** — 같은 분에 재기동하면 두 런이 한 CSV 에 append 되고, 파일 전체로 `n / span` 을 내면 어느 런에도 없던 값이 나온다 (#349 에서 500 Hz 루프가 413 Hz 로 보였다). 로더가 마지막 런을 자동 선택하고 버린 런을 출력하며, `--run-id` 로 다른 런을 고른다 (#376). (구 `rtc_tools.utils.cm_timing_analysis` 모듈은 plotting 파이프라인으로 통합되어 폐기됨.)
+파일은 `logging_data/<session_id>/timing/` 에 생긴다. 같은 분에 재기동하면 두 런이 한 CSV 에 이어 붙으므로 도구가 마지막 런만 고른다 (`--run-id` 로 변경). 목표는 `t_total_us` 의 p99 가 주기 (500 Hz 면 2 ms) 의 절반 이하, overrun · skip · drop 카운터가 모두 0, 첫 tick 을 뺀 max 가 p99 의 10 배 이내이다.
 
-**목표** (500 Hz @ 2 ms budget):
-- `t_total_us` p99 ≪ 2000 µs (헤드룸 50% 이상)
-- `overruns` / `skips` / `pub_drops` / `nrt_pub_drops` 모두 0
-- post-warm `max` 가 p99 의 10× 이내 (튀는 spike 없음)
-
-#### 3b. cyclictest (OS jitter 독립 측정 — 보조)
+**cyclictest (OS 지터만 보는 보조 측정)** :
 
 ```bash
 sudo apt install rt-tests
-
-# 500Hz (2ms 주기) 테스트, RT 코어 2 에서 실행
-sudo cyclictest --mlockall --smp --priority=90 --policy=fifo \
-    --interval=2000 --loops=100000 --affinity=2 --histogram=200
+sudo cyclictest --mlockall --smp --priority=90 --policy=fifo --interval=2000 --loops=100000 --histogram=200
 ```
 
-목표: PREEMPT_RT 커널 + cset shield 적용 시 Max < 50 µs.
+PREEMPT_RT + cset shield 에서 Max 가 50 µs 미만이면 정상이다. `check_rt_setup.sh --benchmark` 가 같은 측정을 감싼다.
 
-### 4. ROS 2 제어 주파수
+**그 밖에**: 제어 주파수는 `ros2 topic hz <명령 토픽>`, 마이그레이션은 `sudo perf stat -e context-switches,cpu-migrations -p $PID sleep 10` (cpu-migrations 가 0 이어야 한다). 스레드 × 코어 타임라인은 [tracing.md](tracing.md).
+
+## 5. 문제 해결
+
+먼저 `check_rt_setup.sh --fix` 를 돌리면 대부분 원인이 나온다.
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| `Thread config failed for 'rt_control' (need realtime permissions)` | realtime 그룹·limits 미적용 | `groups \| grep realtime`, `ulimit -r` 이 99 인지 확인. 안 맞으면 `./install.sh robot --rt` 후 **재로그인** |
+| 컨트롤러가 `inactive` 에서 안 넘어감 | cset 격리로 옮기기 실패 (sudoers 없음 · cset 미설치) | `./install.sh robot --rt` 로 sudoers · cset 설치, `cpu_shield.sh status` 확인 |
+| RT 스레드의 PSR 이 RT 코어 밖으로 움직임 | 격리 미적용 | `/proc/cmdline` 에 `nohz_full` 이 없으면 `setup_grub_rt.sh` + 재부팅. `cpu_shield.sh status` 로 shield 활성 확인 |
+| 지터가 큼 | 일반 커널 | `uname -v \| grep -iE 'lowlatency\|PREEMPT_RT'` 가 비면 2.2 |
+| 지터가 큼 | RT 코어로 IRQ 유입 | `/proc/interrupts` 에서 RT 코어 열을 본다. 많으면 `setup_irq_affinity.sh` |
+| 지터가 큼 | DDS 스레드가 RT 코어에 있음 | 런치가 DDS 스레드를 `taskset` 으로 고정한다. 스레드별 `chrt -p` · `taskset -cp` 로 확인 |
+| 500 Hz 미달 | governor 가 `powersave` | `setup_cpu_governor.sh` (모든 코어가 `performance` 여야 함) |
+| `nvidia-smi` 불가 / DKMS `apport` 오류 | RT 커널에서 NVIDIA 빌드 거부 | `setup_nvidia_rt.sh` 재실행 |
+
+DDS 는 CycloneDDS 를 권장한다: `export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, 튜닝은 [cyclone_dds.xml](../rtc_controller_manager/config/cyclone_dds.xml) (SPDP-only 멀티캐스트, discovery · NACK · heartbeat 주기). CycloneDDS 자체에는 CPU affinity 설정이 없어 고정은 런치의 `taskset` 이 맡는다.
+
+## 6. Hybrid CPU (NUC)
+
+P-core / E-core 가 섞인 Intel CPU 에서는 코어 slot 이 **P-core 의 primary logical CPU** 로 변환된다 (P -> E -> LP-E 순). 별도 설정 없이 RT 스레드가 P-core 에 고정되고 SMT 형제는 피한다. 감지는 [rt_common.sh](../repo_scripts/scripts/lib/rt_common.sh) 의 `detect_hybrid_capability` 와 [cpu_topology.hpp](../rtc_base/include/rtc_base/threading/cpu_topology.hpp) 가 맡는다.
+
+| 세대 | 대표 모델 | 동작 |
+|---|---|---|
+| Raptor Lake-P | NUC 13 Pro (i5-1340P · i7-1360P · i7-1370P) | 감지 OK, P-core 자동 고정 |
+| Meteor Lake | NUC 14 Pro (Core Ultra 7 155H / 165H) | 감지 OK. `check_rt_setup.sh` 의 "지원 예정" WARN 은 감지 단계 안내이며 실패가 아니다 |
+| Arrow Lake-H | NUC 15 Pro+ (Core Ultra 7 265H / 9 285H) | 위와 동일 |
+| NUC 13 Pro, BIOS HT off | - | `check_rt_setup.sh` FAIL. HT 를 켠다 |
+| AMD · 일반 Intel | - | hybrid 분기 없이 물리 코어 순서 |
+
+**BIOS 체크리스트 (Intel NUC)**
+
+- [ ] **Hyper-Threading: Enabled** - slot 변환이 P-core 의 primary / sibling 구분에 의존한다. 설계상 HT 가 없는 CPU (Arrow Lake-S/H/U · Lunar Lake) 는 해당 없고 PASS 로 처리된다.
+- [ ] **Intel Turbo Boost: Enabled**
+- [ ] **C-states: C1/C2 이하로 제한** (또는 GRUB 에 `intel_idle.max_cstate=1 processor.max_cstate=1`)
+- [ ] **Speed Shift (HWP): Enabled** (`intel_pstate=active`)
+- [ ] **VT-d / IOMMU: 가능하면 Disabled** (실측 후 결정)
+- [ ] **E-core / LP E-core: Enabled 유지** - OS · IRQ 가 쓴다
+
+**`RTC_FORCE_HYBRID_GENERATION`** 은 컨테이너처럼 sysfs 를 못 읽는 환경에서 세대 판정만 덮어쓰는 테스트·CI 용 환경변수다 (`raptor_lake_p` · `meteor_lake` · `arrow_lake_h` · `raptor_lake_p_ht_off` · `none`). **production 에서는 반드시 unset** 한다. 값이 남아 있으면 `check_rt_setup.sh` 가 WARN 한다.
+
+hybrid 감지 확인:
 
 ```bash
-# UR 의 forward_position_controller 명령 (rt_control inline → DDS, v4)
-ros2 topic hz /forward_position_controller/commands
-
-# Hand UDP joint_command (rt_control inline → UDP via udp_hand_node, v4; ur5e_p1a)
-ros2 topic hz /p1a/joint_command
-
-# 출력:
-# average rate: 500.012
-#        min: 0.001996s max: 0.002005s std dev: 0.000001s window: 503
-#                                       ^ std dev < 5 µs 목표
+./repo_scripts/scripts/check_rt_setup.sh    # "Hybrid CPU Detection" 항목
 ```
 
-### 5. Context Switch / CPU migration
-
-```bash
-sudo perf stat -e context-switches,cpu-migrations -p $PID sleep 10
-
-# 목표:
-#   context-switches: < 1000/sec   (jthread sleep 외 거의 없음)
-#   cpu-migrations:   = 0          (affinity 고정 ⇒ 마이그레이션 0)
-```
-
-### 6. ros2_tracing (thread × core × callback timeline)
-
-본 저장소의 RT loop 가 30-90 µs 로 매우 짧아 perf sampling 으로는 hotpath 를 못 잡는다. 대신 LTTng event-driven tracing 으로 callback B/E + sched_switch 정확한 타이밍을 본다:
-
-```bash
-./install.sh --tracing                                              # 1회 setup
-ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true   # 캡처
-./repo_scripts/scripts/timeline.sh                                  # Perfetto JSON 변환
-```
-
-세부 사용은 [tracing.md](tracing.md) 참조 (event 선택, permission, viewer 가이드).
-
----
-
-## 문제 해결
-
-> **자동 진단**: `check_rt_setup.sh`를 실행하면 9개 카테고리의 RT 설정을 자동 점검합니다.
-> ```bash
-> ./repo_scripts/scripts/check_rt_setup.sh           # 상세 출력
-> ./repo_scripts/scripts/check_rt_setup.sh --fix     # 수정 명령 제안
-> ./repo_scripts/scripts/check_rt_setup.sh --summary # 1줄 요약
-> ```
->
-> 검증 카테고리: RT Kernel, CPU Isolation, Scheduler & Memory (clocksource · `sched_rt_runtime_us` · THP),
-> GRUB Parameters, RT Permissions, IRQ Affinity, Network/UDP,
-> NVIDIA (DKMS 상태 + persistence mode + `IGNORE_PREEMPT_RT_PRESENCE` 영구 설정),
-> CPU Frequency (모든 코어 governor + `cpu-governor-performance.service`)
-
-### 권한 부족 에러
-
-**증상**:
-```
-[WARN] Thread config failed for 'rt_control' (need realtime permissions)
-```
-
-**원인**: RT priority 설정 권한 없음
-
-**해결**:
-```bash
-# 1. realtime 그룹 확인
-groups | grep realtime
-
-# 2. limits.conf 확인
-cat /etc/security/limits.conf | grep realtime
-# 출력:
-# @realtime - rtprio 99
-# @realtime - memlock unlimited
-
-# 3. 로그아웃 후 재로그인 (필수)
-
-# 4. 확인
-ulimit -r  # 99 출력되어야 함
-```
-
-### CPU Isolation 미적용
-
-**증상**: PSR 값이 RT 코어 밖 (0 또는 nrt/driver 코어) 으로 계속 변경됨
-
-**확인**:
-```bash
-# nohz_full / rcu_nocbs 가 RT 코어로 설정됐는지
-cat /proc/cmdline | grep -E "nohz_full|rcu_nocbs"
-# 출력 없음 -> setup_grub_rt.sh 미실행
-
-# cset shield 가 활성 상태인지 (런타임 격리)
-cpu_shield.sh status
-```
-
-**해결** (v4.1 권장 흐름):
-```bash
-# 1. GRUB nohz_full / rcu_nocbs 자동 설정 (한 번만, 재부팅 필요)
-sudo ./repo_scripts/scripts/setup_grub_rt.sh
-sudo reboot
-
-# 2. 매 부팅 후 또는 launch 시 자동으로 호출되는 런타임 격리
-sudo ./repo_scripts/scripts/cpu_shield.sh on --robot
-```
-
-### 여전히 높은 지터
-
-**원인 1**: LowLatency 커널 미사용
-```bash
-uname -v | grep -i low
-# 출력 없음 -> 일반 커널
-
-# 해결
-sudo apt install linux-lowlatency-hwe-22.04
-sudo reboot
-```
-
-**원인 2**: IRQ가 RT 코어에서 발생
-```bash
-cat /proc/interrupts | grep -E "(CPU1|CPU2|CPU3|CPU4|CPU5)"
-# 많은 IRQ -> 문제
-
-# 해결: IRQ를 Core 0-1로 이동
-for irq in $(ls /proc/irq/); do
-    [ -d "/proc/irq/$irq" ] && echo 3 | sudo tee /proc/irq/$irq/smp_affinity > /dev/null 2>&1
-done
-```
-
-**원인 3**: DDS 스레드가 RT 코어 사용
-```bash
-# CycloneDDS 에는 CPU affinity 설정 자체가 없다 (0.10.5 의 <Threads> 는 StackSize/scheduling 전용).
-# 그래서 taskset 으로 DDS 스레드를 고정한다 (robot_ur5e_p1a.launch.py 에서 자동 처리, #164).
-# 수동 확인:
-PID=$(pgrep -nf "integrated_rt_controller")
-for TID in $(ls /proc/$PID/task/); do
-  COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null)
-  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo "OTHER")
-  CPUS=$(taskset -cp $TID 2>/dev/null | awk -F: '{print $2}')
-  echo "  TID=$TID  comm=$COMM  policy=$POLICY  cpus=$CPUS"
-done
-
-# CycloneDDS XML 설정은 rtc_controller_manager/config/cyclone_dds.xml 참조
-# (SPDP-only 멀티캐스트, discovery/NACK/heartbeat 튜닝 등 성능 최적화 포함)
-export CYCLONEDDS_URI=file://$(ros2 pkg prefix rtc_controller_manager)/share/rtc_controller_manager/config/cyclone_dds.xml
-```
-
-### NVIDIA DKMS 빌드 실패 (RT 커널)
-
-**증상**:
-```
-ERROR (dkms apport): kernel package linux-headers-6.12.91-rt-custom is not supported
-```
-또는 `nvidia-smi` 실행 불가 (NVIDIA 모듈 미로드)
-
-**원인**: NVIDIA DKMS가 커스텀 RT 커널에서 빌드를 거부 (3가지 차단 레이어)
-
-**해결**:
-```bash
-# 자동 해결 (권장)
-sudo ./repo_scripts/scripts/setup_nvidia_rt.sh
-
-# 검증
-nvidia-smi
-dkms status nvidia
-```
-
-자세한 내용: [NVIDIA + RT 커널 공존](#4-nvidia--rt-커널-공존-nvidia-gpu-사용-시)
-
-### 500Hz 미달성
-
-**원인**: CPU frequency scaling (powersave governor)
-```bash
-# 모든 코어의 governor 확인
-for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-  echo "$(basename $(dirname $(dirname $f))): $(cat $f)"
-done
-# 어떤 코어든 powersave -> 문제
-
-# 해결 (자동)
-sudo ./repo_scripts/scripts/setup_nvidia_rt.sh  # [10/11] CPU governor 설정
-
-# 해결 (수동)
-sudo cpupower frequency-set -g performance
-```
-
----
-
-## 고급 튜닝
-
-### 1. DDS 최적화
-
-#### CycloneDDS (권장)
-```bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export CYCLONEDDS_URI=file://$(ros2 pkg prefix rtc_controller_manager)/share/rtc_controller_manager/config/cyclone_dds.xml
-```
-
-**`cyclone_dds.xml`** 주요 최적화 항목 (전체 설정: `rtc_controller_manager/config/cyclone_dds.xml`):
-
-| 설정 | 값 | 효과 |
-|------|-----|------|
-| `AllowMulticast` | `spdp` | SPDP discovery 만 멀티캐스트, 데이터 전달은 유니캐스트 (multi-host 발견 유지 + 데이터 오버헤드 제거) |
-| `LeaseDuration` | `5s` | 죽은 participant 빠른 감지 (기본 10s) |
-| `SPDPInterval` | `1s` | 시작 시 빠른 discovery (기본 30s) |
-| `NackDelay` | `10 ms` | 재전송 속도 10x 향상 (기본 100ms) |
-| `PreEmptiveAckDelay` | `10 ms` | 갭 감지 시 빠른 응답 |
-| `HeartbeatInterval` | `100 ms` | 안정적 손실 감지 |
-| `SynchronousDeliveryLatencyBound` | `inf` | subscriber 콜백 wake-up 지연 제거 |
-| `MaxQueuedRexmitMessages` | `256` | 버스트 퍼블리시 시 패킷 병합 |
-
-> **NOTE**: CycloneDDS 에는 CPU affinity 설정이 없다 — `<Threads><Thread>` 는 0.10.5 에 존재하지만
-> `StackSize` 와 scheduling 만 담는다. 따라서 affinity 는 `taskset` 소관이다
-> (`robot_ur5e_p1a.launch.py` 참조). "0.11+ 에서 제거됨" 이라는 이전 서술은 틀렸다 (#164).
-
-#### Fast DDS
-```xml
-<!-- fastdds_profile.xml -->
-<profiles>
-  <participant profile_name="rt_profile">
-    <rtps>
-      <builtin>
-        <discovery_config>
-          <leaseDuration>
-            <sec>1</sec>
-            <nanosec>0</nanosec>
-          </leaseDuration>
-        </discovery_config>
-      </builtin>
-    </rtps>
-  </participant>
-</profiles>
-```
-
-### 2. 커널 파라미터 튜닝
-
-```bash
-# /etc/sysctl.d/99-realtime.conf 생성
-sudo tee /etc/sysctl.d/99-realtime.conf << 'EOF'
-# RT 스케줄러 설정
-kernel.sched_rt_runtime_us = -1  # RT 스케줄러 CPU 시간 제한 해제
-
-# 페이지 스왈 비활성화
-vm.swappiness = 0
-
-# 커널 타이머 주파수 증가 (선택)
-kernel.timer_migration = 0
-EOF
-
-sudo sysctl -p /etc/sysctl.d/99-realtime.conf
-```
-
-### 3. 네트워크 튜닝
-
-```bash
-# UDP 버퍼 크기 증가 (ROS 2 DDS + 핸드 UDP 통신)
-# setup_udp_optimization.sh에서 자동 설정됨 (/etc/sysctl.d/99-ros2-udp.conf)
-sudo sysctl -w net.core.rmem_max=2147483647     # DDS가 setsockopt으로 필요한 만큼 확보
-sudo sysctl -w net.core.rmem_default=212992      # Linux 기본값 유지 (모든 소켓에 거대 버퍼 할당 방지)
-sudo sysctl -w net.core.wmem_max=2147483647
-sudo sysctl -w net.core.wmem_default=212992
-sudo sysctl -w net.core.netdev_max_backlog=5000
-```
-
-### 4. 지터 프로파일링
-
-```bash
-# ftrace로 지터 원인 추적
-sudo trace-cmd record -e sched:sched_switch -e sched:sched_wakeup \
-    -p function_graph -g ControlLoop \
-    -P 1235  # rt_control 스레드 TID
-
-sudo trace-cmd report > trace.txt
-
-# trace.txt에서 긴 실행 시간 함수 찾기
-grep -E "[0-9]{3,}\.[0-9]{3} us" trace.txt
-```
-
----
-
-## 참고 문서
-
-### 공식 문서
-- [ROS2 Executors & Callback Groups](https://docs.ros.org/en/humble/Concepts/Intermediate/About-Executors.html)
-- [Linux RT Application Development (PDF)](https://linutronix.de/PDF/2009_Kuhberg_Linux-RT.pdf)
-- [PREEMPT_RT Wiki](https://wiki.linuxfoundation.org/realtime/documentation/start)
-
-### 튜토리얼
-- [Linux Realtime Tuning Guide (Red Hat)](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_real_time/8/html/tuning_guide/index)
-- [ROS2 Real-Time Working Group](https://github.com/ros-realtime/ros-realtime-rpi4-image)
-
-### 도구
-- `cyclictest`: 지터 측정 (`rt-tests` 패키지)
-- `perf`: 성능 프로파일링 (`linux-tools-common`)
-- `trace-cmd`: ftrace 프론트엔드
-- `cpupower`: CPU 주파수 제어
-
----
-
-**SSoT** (drift 방지 — 본 문서가 박제하지 않는 사실의 단일 출처):
-- Thread roster · core/priority 매트릭스: [rtc_base/README.md](../rtc_base/README.md) §스레드 구성 + [thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) (`SystemThreadConfigs` / `SelectThreadConfigs()`) + [thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) (tier 상수)
-- callback_group → executor binding · RT 정의: [agent_docs/architecture.md](../agent_docs/architecture.md) §RtControllerNode · §Execution Contexts
+## 7. 고급·참고
+
+- UDP 버퍼·NIC: `sudo ./repo_scripts/scripts/setup_udp_optimization.sh [NIC]` (`install.sh --rt` 가 이미 호출)
+- 사용자 정의 지터 추적: `trace-cmd` (ftrace), LTTng 는 [tracing.md](tracing.md)
+- 이 설정의 근거 (cset adopt fail-closed, degraded 격리 예외, RT 코어 집합이 전 tier 에서 같은 이유): [rt-setup-rationale.md](reference/rt-setup-rationale.md)
+- 대응 규범 (RT-HOST-1~3): [invariants.md](../agent_docs/invariants.md#rt-host--runtime-preconditions)
+- 스레드 모델·실행 컨텍스트: [architecture.md](../agent_docs/architecture.md)
+- 외부: [PREEMPT_RT Wiki](https://wiki.linuxfoundation.org/realtime/documentation/start) · [Red Hat RT Tuning Guide](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_real_time/8/html/tuning_guide/index)

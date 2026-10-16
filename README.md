@@ -333,13 +333,7 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 # 로그아웃 후 재로그인 필요
 ```
 
-최대 RT 성능을 위한 CPU 격리:
-```bash
-# /etc/default/grub의 GRUB_CMDLINE_LINUX_DEFAULT에 추가
-# isolcpus=1-3 nohz_full=1-3 rcu_nocbs=1-3  # RT cluster = Core 1-3, 전 tier 동일
-# 값 산출은 repo_scripts/scripts/setup_grub_rt.sh 가 자동으로 한다 (SMT 시블링 포함)
-sudo update-grub && sudo reboot
-```
+위 권한을 포함한 RT 설정 전체 (GRUB 파라미터 · CPU shield · IRQ · governor · NVIDIA) 는 `./install.sh robot --rt` 가 한 번에 한다 — `isolcpus` 는 쓰지 않는다 (CPU 격리는 `cpu_shield.sh` 가 맡는다). 단계별 설명과 확인 방법: [docs/rt-optimization.md](docs/rt-optimization.md).
 
 ---
 
@@ -347,9 +341,8 @@ sudo update-grub && sudo reboot
 
 | 문서 | 설명 |
 |------|------|
-| [docs/rt-optimization.md](docs/rt-optimization.md) | 실시간 최적화 가이드 (CPU 코어 할당, 커널 설정) |
+| [docs/rt-optimization.md](docs/rt-optimization.md) | 실기 PC 의 RT 설정 — `install.sh robot --rt` 한 번에 / 단계별 수동 (RT 커널 · GRUB · CPU shield · IRQ · NVIDIA) / 확인 / 문제 해결 / hybrid CPU (NUC) |
 | [docs/vscode-debugging.md](docs/vscode-debugging.md) | VS Code + GDB 디버깅 가이드 |
-| [docs/NUC_HYBRID_SUPPORT.md](docs/NUC_HYBRID_SUPPORT.md) | NUC 13/14/15 Pro hybrid CPU (P/E core) 감지 + BIOS 체크리스트. Layout 분기는 `thread_layout.yaml` slot 매핑이 처리 |
 | [AGENTS.md](AGENTS.md) | **AI 에이전트 헌법 (tool-neutral)** — invariants, workflow, escalation, build hard rules. Codex · Copilot · Antigravity 등이 읽는다 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 진입점 — `@AGENTS.md` import 로 위 헌법을 그대로 싣고, hook · slash command · rule 자동 로드 등 Claude 전용 메커니즘만 덧붙인다 (규칙은 AGENTS.md 에만 있다) |
 | [agent_docs/](agent_docs/) | 헌법이 위임하는 세부 규칙의 SSoT (invariants, architecture, controllers, testing, conventions, handoff) |
