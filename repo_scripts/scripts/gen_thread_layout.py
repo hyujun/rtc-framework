@@ -998,7 +998,7 @@ def build_targets(m: Manifest) -> tuple[dict[Path, str], list[str]]:
 # to the pinned clang-format through uvx and finds ruff inside the workspace
 # venv -- so a generator that only consulted PATH would stop gating precisely
 # the files the hook keeps rewriting.
-_CLANG_FORMAT_PIN = "18.1.8"  # keep in sync with .claude/hooks/format-code.sh
+_CLANG_FORMAT_PIN = "18.1.8"  # keep in sync with .claude/hooks/lib/formatters.sh
 
 
 def _clang_format_candidates(path: Path) -> list[list[str]]:

@@ -159,8 +159,9 @@ fi
 
 # By hand the shell's cwd is wherever the last command left it, so --run
 # falls back to the checkout this script sits in rather than to $(pwd).
+HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if [ -n "$RUN_MODE" ]; then
-  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)}"
+  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd)}"
 else
   PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 fi
@@ -339,20 +340,35 @@ pkg_tree_lines() {  # $1 = a tree id
           if ((top in keep) && path !~ /\.md$/) print
         }' || true
 }
+# The package-route predicates, for every awk below that reads a path as
+# fields split on "/" (prepended to the program: "$AWK_ROUTE"'...').
+#   installed_src_dir(d, pkg)  the dirs whose files, untracked or not, are
+#     built as part of <pkg>: src/ and include/ (ament_cmake source), test/
+#     (gtest sources and test-only headers), <pkg>/<pkg>/ (ament_python
+#     modules), launch/ and scripts/ (DIRECTORY-installed: a new file reaches
+#     install/ with no metadata edit, #360 -- the build validates nothing
+#     there, it buys a matching install tree and a rerun of the tests).
+#     config/ is deliberately absent (no source; it would make this "any
+#     directory"): its YAML is data, below.
+#   config_yaml(d, f)  a YAML under config/, loaded by the tests from the
+#     install tree.
+#   test_data(d, f)    anything under test/ but Markdown: a fixture the tests
+#     read (a URDF, an MJCF, a golden table).
+AWK_ROUTE='
+  function installed_src_dir(d, pkg) {
+    return d == "src" || d == "include" || d == "test" || d == "launch" \
+           || d == "scripts" || d == pkg
+  }
+  function config_yaml(d, f) { return d == "config" && f ~ /\.(yaml|yml)$/ }
+  function test_data(d, f) { return d == "test" && f !~ /\.md$/ }'
 # The untracked files the build route takes as part of their package (stdin to
-# stdout, one path per line): new source or a new shell script in an installed
-# source dir, a new YAML under config/, anything under test/ but Markdown --
-# what CHANGED_SRC_UNTRACKED, CHANGED_SH_BUILD and CHANGED_DATA_BUILD route to
-# a build. Those three lists keep their own patterns; a class added to one of
-# them is added here (case 76l of the suite holds one file of each class to
-# both). Every other untracked file is scratch.
+# stdout, one path per line): the union of what CHANGED_SRC_UNTRACKED,
+# CHANGED_SH_BUILD and CHANGED_DATA_BUILD route (case 76l of the suite holds
+# one file of each class to both). Every other untracked file is scratch.
 untracked_routed() {
-  awk -F/ '
-    NF >= 3 && ( ($NF ~ /\.(cpp|hpp|h|cc|py|sh)$/ \
-                  && ($2 == "src" || $2 == "include" || $2 == "test" \
-                      || $2 == "launch" || $2 == "scripts" || $2 == $1)) \
-                 || ($2 == "config" && $NF ~ /\.(yaml|yml)$/) \
-                 || ($2 == "test" && $NF !~ /\.md$/) )' || true
+  awk -F/ "$AWK_ROUTE"'
+    NF >= 3 && ( ($NF ~ /\.(cpp|hpp|h|cc|py|sh)$/ && installed_src_dir($2, $1)) \
+                 || config_yaml($2, $NF) || test_data($2, $NF) )' || true
 }
 # "<pkg> <id> <scratch>" per package directory of tree $1: the hash of its
 # files by blob (pkg_tree_lines), untracked scratch left out, and whether the
@@ -487,6 +503,13 @@ VERDICT_TAG="t2:"
 # same trees. Prints "<pid>: verify-changes.sh --run" for a LIVE holder other
 # than this process; a line left by a killed --run (pid gone or reused) reads
 # as no holder.
+# Start time of pid $1 (field 22 of /proc/<pid>/stat, clock ticks since boot):
+# with the pid, what tells a live process from a reused number. comm may hold
+# spaces; what follows the LAST ')' starts at field 3.
+proc_start_time() { sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
+# Command line of pid $1, argv joined by spaces and cut to a report line.
+proc_cmdline() { tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | cut -c1-120; }
+
 run_lock_holder() {
   local pid="" start="" now
   [ -f "$RUN_LOCK" ] || return 0
@@ -494,8 +517,7 @@ run_lock_holder() {
   case "$pid" in '' | *[!0-9]*) return 0 ;; esac
   [ "$pid" != "$$" ] || return 0
   [ -r "/proc/$pid/stat" ] || return 0
-  # comm may hold spaces; what follows the LAST ')' starts at field 3.
-  now=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20)
+  now=$(proc_start_time "$pid")
   [ -n "$start" ] && [ "$now" = "$start" ] || return 0
   printf '%s: verify-changes.sh --run\n' "$pid"
 }
@@ -528,7 +550,7 @@ if [ -n "$RUN_MODE" ]; then
     # --run started together, one finds the file already made.
     rm -f "$RUN_LOCK"
     if (set -o noclobber; printf '%s %s\n' "$$" \
-          "$(sed 's/^.*) //' "/proc/$$/stat" 2>/dev/null | cut -d' ' -f20)" >"$RUN_LOCK") 2>/dev/null; then
+          "$(proc_start_time "$$")" >"$RUN_LOCK") 2>/dev/null; then
       RUN_LOCK_HELD=1
     else
       RUN_RIVAL=$(run_lock_holder)
@@ -650,7 +672,7 @@ CHANGED_PKG_FILES=$(echo "$CHANGED_TRACKED" | awk -F/ 'NF >= 2 && $NF !~ /\.md$/
     done || true)
 # ...and an UNTRACKED file under a package's test/, its Markdown aside: a new
 # fixture the tests read (a URDF, an MJCF, a golden table).
-CHANGED_TEST_DATA=$(echo "$CHANGED_UNTRACKED" | awk -F/ 'NF >= 3 && $2 == "test" && $NF !~ /\.md$/' \
+CHANGED_TEST_DATA=$(echo "$CHANGED_UNTRACKED" | awk -F/ "$AWK_ROUTE"'NF >= 3 && test_data($2, $NF)' \
   | while IFS= read -r f; do
       if [ -f "${f%%/*}/package.xml" ]; then printf '%s\n' "$f"; fi
     done || true)
@@ -721,24 +743,10 @@ fi
 # note, probe or log anywhere else is not, and must not trigger PROC-3.
 CHANGED_SRC_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '\.(cpp|hpp|h|cc|py)$' || true)
 CHANGED_META_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' || true)
-# Untracked source that belongs to a package, so it is built rather than
-# treated as scratch. The allowlist of installed-source dirs (SSoT):
-#   <pkg>/src/, <pkg>/include/   ament_cmake source;
-#   <pkg>/test/                  gtest sources and the test-only headers
-#                                (<pkg>/test/include/) siblings use by path;
-#   <pkg>/<pkg>/                 ament_python modules;
-#   <pkg>/launch/, <pkg>/scripts/  DIRECTORY-installed: a new file reaches
-#                                install/ with no metadata edit (#360).
-# For launch/scripts the build validates nothing (install(DIRECTORY) copies);
-# it buys a matching install tree and a rerun of the package's tests. config/
-# is deliberately absent (no source; it would make this "any directory"): its
-# YAML is routed by CHANGED_DATA_BUILD below.
-# A backreference is not portable across grep flavours, so match with awk.
-CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" | awk -F/ '
-  NF >= 3 && $NF ~ /\.(cpp|hpp|h|cc|py)$/ \
-    && ($2 == "src" || $2 == "include" || $2 == "test" \
-        || $2 == "launch" || $2 == "scripts" || $2 == $1)' \
-  || true)
+# Untracked source that belongs to a package (installed_src_dir, AWK_ROUTE),
+# so it is built rather than treated as scratch.
+CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" | awk -F/ "$AWK_ROUTE"'
+  NF >= 3 && $NF ~ /\.(cpp|hpp|h|cc|py)$/ && installed_src_dir($2, $1)' || true)
 CHANGED_SRC_BUILD=$(printf '%s\n%s\n' "$CHANGED_SRC_TRACKED" "$CHANGED_SRC_UNTRACKED" \
   | grep -v '^[[:space:]]*$' | sort -u || true)
 # A shell script in one of those directories routes its package to build/test
@@ -746,11 +754,8 @@ CHANGED_SRC_BUILD=$(printf '%s\n%s\n' "$CHANGED_SRC_TRACKED" "$CHANGED_SRC_UNTRA
 # must run them for an edit of the script under test. Kept out of
 # CHANGED_SRC_BUILD, which also feeds the pure-format check and knows no
 # formatter for a shell script.
-CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
-  NF >= 3 && $NF ~ /\.sh$/ \
-    && ($2 == "src" || $2 == "include" || $2 == "test" \
-        || $2 == "launch" || $2 == "scripts" || $2 == $1)' \
-  || true)
+CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ "$AWK_ROUTE"'
+  NF >= 3 && $NF ~ /\.sh$/ && installed_src_dir($2, $1)' || true)
 # Every other TRACKED file of a package routes it to build/test as well, its
 # Markdown aside -- the set its verdict is keyed on (pkg_content_key), so an
 # edit that voids a verdict also owes a build (a shipped YAML is graded by the
@@ -766,7 +771,7 @@ CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
 # out is rtc_base / rtc_msgs (PROC-3) and a changed header (PROC-2, below).
 CHANGED_DATA_BUILD=$( {
     echo "$CHANGED_PKG_FILES"
-    echo "$CHANGED_UNTRACKED" | awk -F/ 'NF >= 3 && $2 == "config" && $NF ~ /\.(yaml|yml)$/'
+    echo "$CHANGED_UNTRACKED" | awk -F/ "$AWK_ROUTE"'NF >= 3 && config_yaml($2, $NF)'
     echo "$CHANGED_TEST_DATA"
   } || true)
 
@@ -776,38 +781,12 @@ CHANGED_DATA_BUILD=$( {
 # blob) or a missing formatter cannot prove pure-format -> fail closed and run
 # full checks.
 #
-# ruff binary lookup mirrors .claude/hooks/format-code.sh: prefer venv,
-# fall back to PATH.
-find_ruff() {
-  if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/ruff" ]]; then
-    echo "${VIRTUAL_ENV}/bin/ruff"; return 0
-  fi
-  local script_dir
-  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  local ws_venv="${script_dir}/../../../../.venv/bin/ruff"
-  [[ -x "$ws_venv" ]] && { echo "$ws_venv"; return 0; }
-  command -v ruff 2>/dev/null && return 0
-  return 1
-}
-
-# Resolve a clang-format invocation: prefer a system binary, else the
-# repo-pinned version via uvx (as format-code.sh does, so the fast path works
-# on boxes without a system clang-format). Populates CLANG_FORMAT_CMD as an
-# argv array; the pin matches format-code.sh so the two agree.
-CLANG_FORMAT_PIN="18.1.8"
-CLANG_FORMAT_CMD=()
-resolve_clang_format() {
-  if command -v clang-format >/dev/null 2>&1; then
-    CLANG_FORMAT_CMD=(clang-format)
-    return 0
-  fi
-  if command -v uvx >/dev/null 2>&1; then
-    CLANG_FORMAT_CMD=(uvx --from "clang-format==${CLANG_FORMAT_PIN}" clang-format)
-    return 0
-  fi
-  return 1
-}
-resolve_clang_format && HAVE_CLANG_FORMAT=1 || HAVE_CLANG_FORMAT=0
+# The formatters, resolved the way format-code.sh resolves them (one pin, one
+# search order: lib/formatters.sh), so what that hook wrote is what this one
+# accepts.
+# shellcheck source=.claude/hooks/lib/formatters.sh
+. "$HOOK_DIR/lib/formatters.sh"
+[ "${#CLANG_FORMAT_CMD[@]}" -gt 0 ] && HAVE_CLANG_FORMAT=1 || HAVE_CLANG_FORMAT=0
 RUFF_BIN=$(find_ruff) || RUFF_BIN=""
 
 # The one formatter dispatch, shared by the pure-format fast path and Phase 5 so
@@ -1010,6 +989,21 @@ exe_targets() {
     }'
 }
 
+# Real file line numbers of the lines a TRACKED file $1 gained since the
+# baseline, from the `+c,d` side of each hunk header -- numbers rather than
+# the '+' text, so a report can point at a line the agent can open. One per
+# line. (An untracked file is new in its entirety; its callers say so.)
+diff_added_line_numbers() {
+  git diff -U0 "$VERIFY_BASE" -- "$1" 2>/dev/null | awk '
+    /^@@/ {
+      match($0, /\+[0-9]+(,[0-9]+)?/)
+      spec = substr($0, RSTART + 1, RLENGTH - 1)
+      split(spec, p, ",")
+      count = (p[2] == "" ? 1 : p[2])
+      for (i = 0; i < count; i++) print p[1] + i
+    }' || true
+}
+
 # --- Phase 0: Architecture-fitness grep (ARCH-1, ARCH-4) ---
 # Only run if a CHANGED rtc_* file or a changed file in the integration package
 # set matched, to bound cost (the set is derived from package.xml below).
@@ -1078,18 +1072,8 @@ if [ -n "$RTC_TOUCHED" ]; then
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ -f "$f" ] || continue
-    # Real file line numbers of added lines, from the `+c,d` side of each hunk
-    # header. Kept as line numbers rather than grepping the raw '+' text so the
-    # report still points at a location the agent can open.
     if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-      ADDED_LINES=$(git diff -U0 "$VERIFY_BASE" -- "$f" 2>/dev/null | awk '
-        /^@@/ {
-          match($0, /\+[0-9]+(,[0-9]+)?/)
-          spec = substr($0, RSTART + 1, RLENGTH - 1)
-          split(spec, p, ",")
-          count = (p[2] == "" ? 1 : p[2])
-          for (i = 0; i < count; i++) print p[1] + i
-        }' || true)
+      ADDED_LINES=$(diff_added_line_numbers "$f")
     else
       # Untracked: every line is new, so the whole file is in scope.
       ADDED_LINES=$(awk '{ print NR }' "$f" 2>/dev/null || true)
@@ -1310,7 +1294,6 @@ done <<< "$CHANGED_DOCS"
 # Resolved relative to this hook, not to PROJECT_DIR: the script ships in the
 # same repository as the hook, so this works when the two point at different
 # trees (as the routing tests do).
-HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VALIDATE_DOCS="$HOOK_DIR/../../repo_scripts/scripts/validate_docs.py"
 [ -f "$VALIDATE_DOCS" ] || VALIDATE_DOCS="$PROJECT_DIR/repo_scripts/scripts/validate_docs.py"
 if [ "${#DOC_FILES[@]}" -gt 0 ]; then
@@ -1326,14 +1309,7 @@ if [ "${#DOC_FILES[@]}" -gt 0 ]; then
       DOC_ALLOW=$(mktemp)
       for d in "${DOC_FILES[@]}"; do
         if git ls-files --error-unmatch "$d" >/dev/null 2>&1; then
-          git diff -U0 "$VERIFY_BASE" -- "$d" 2>/dev/null | awk -v F="$d" '
-            /^@@/ {
-              match($0, /\+[0-9]+(,[0-9]+)?/)
-              spec = substr($0, RSTART + 1, RLENGTH - 1)
-              split(spec, p, ",")
-              count = (p[2] == "" ? 1 : p[2])
-              for (i = 0; i < count; i++) print F ":" p[1] + i
-            }' >> "$DOC_ALLOW" || true
+          diff_added_line_numbers "$d" | awk -v F="$d" '{ print F ":" $0 }' >> "$DOC_ALLOW" || true
         else
           printf '%s:*\n' "$d" >> "$DOC_ALLOW"
         fi
@@ -1434,7 +1410,6 @@ if [ -n "$CHANGED_RULES" ]; then
   if [ "${#RULE_FILES[@]}" -gt 0 ]; then
     # Resolved relative to this hook first, like validate_docs.py above, so the
     # routing tests can point PROJECT_DIR at a fixture that has no scripts.
-    HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
     VALIDATE_RULES="$HOOK_DIR/../../repo_scripts/scripts/validate_claude_rules.py"
     [ -f "$VALIDATE_RULES" ] || VALIDATE_RULES="$PROJECT_DIR/repo_scripts/scripts/validate_claude_rules.py"
     if [ -f "$VALIDATE_RULES" ]; then
@@ -1732,7 +1707,7 @@ workspace_build_rivals() {
   for pid in $(pgrep -x '(colcon|build\.sh)' 2>/dev/null || true); do
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
     [ "$cwd" = "$ws" ] || continue
-    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120) || cmd="?"
+    cmd=$(proc_cmdline "$pid") || cmd="?"
     printf '%s: %s\n' "$pid" "$cmd"
   done
 }
@@ -1790,11 +1765,10 @@ workspace_holds() {
     case "$pid" in '' | *[!0-9]*) continue ;; esac
     [ -r "/proc/$pid/stat" ] || continue
     if [ -n "${start:-}" ]; then
-      # comm may hold spaces; what follows the LAST ')' starts at field 3.
-      now=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20)
+      now=$(proc_start_time "$pid")
       [ "$now" = "$start" ] || continue
     fi
-    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120) || cmd="?"
+    cmd=$(proc_cmdline "$pid") || cmd="?"
     printf '%s: %s\n' "$pid" "${cmd% }"
   done < "$HOLD_FILE"
 }
