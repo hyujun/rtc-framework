@@ -347,7 +347,7 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 | [AGENTS.md](AGENTS.md) | **AI 에이전트 헌법 (tool-neutral)** — invariants, workflow, escalation, build hard rules. Codex · Copilot · Antigravity 등이 읽는다 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 진입점 — `@AGENTS.md` import 로 위 헌법을 그대로 싣고, hook · slash command · rule 자동 로드 등 Claude 전용 메커니즘만 덧붙인다 (규칙은 AGENTS.md 에만 있다) |
 | [agent_docs/](agent_docs/) | 헌법이 위임하는 세부 규칙의 SSoT (invariants, architecture, controllers, testing, conventions, handoff) |
-| [docs/controllers.md](docs/controllers.md) | 컨트롤러 카탈로그 — 제어 법칙별 코어 위치, 배선된 컨트롤러의 계약 상세, 게인·토픽·설정 사용법 (규범은 `agent_docs/controllers.md`) |
+| [docs/controllers.md](docs/controllers.md) | 컨트롤러 카탈로그 — 배선된 컨트롤러와 제어 법칙별 코어, 전환·게인·토픽·설정 사용법 (규범은 `agent_docs/controllers.md`) |
 | [docs/modification-procedures.md](docs/modification-procedures.md) | 수정·추가 작업의 단계별 절차 — 컨트롤러 / 메시지 / device group / 스레드 / 패키지 추가 (규범은 `agent_docs/modification-guide.md`) |
 | [docs/testing.md](docs/testing.md) | 테스트·디버깅 가이드 — 테스트 명령, 바꾼 곳별로 돌릴 테스트 (sensor matrix), 런타임 디버그 토픽, 증상별 처방 (규범은 `agent_docs/testing-debug.md`) |
 | [docs/reference/](docs/reference/README.md) | 헌법 밖 참고 자료 — 규칙의 근거 · 실측 · 사고 이력 · 사례집 (규범이 아니다) |
