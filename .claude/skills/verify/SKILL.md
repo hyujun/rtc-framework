@@ -58,6 +58,24 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
 - **팔 lag 은 접촉이 지배한다**: 자유 운동 구간의 하한은 sim 위치 서보의 kd/kp × 명령 속도이고 (`ur5e_p1b` 는 `mujoco_simulator.yaml` 서보 게인으로 0.05 s — 2026-09-24 전 세션은 MJCF 게인 0.2 s), 물체에 막히면 그 3 배까지 포화한다. lag 수치를 인용할 땐 첫 접촉 시각으로 구간을 갈라 보고한다.
 - 종료는 자식 노드에 SIGINT (`pkill -INT -f integrated_rt_controller; pkill -INT -f mujoco_simulator_node`) — `ros2 launch` 에 한 번 보낸 SIGINT 가 45 s 안에 안 끝난 적이 있다. `-9` 는 CSV flush 를 날린다.
 
+## Inactive 컨트롤러 파라미터 set → switch → TF
+
+`virtual_tcp_*` 처럼 **Inactive 에서만** set 을 받는 파라미터의 확인 순서 (`demo_joint` · `demo_task` · `demo_compliance`). 기본 활성은 `demo_wbc_controller` 라 그 셋은 처음에 Inactive 다.
+
+```bash
+C=/demo_task_controller/demo_task_controller
+ros2 param get $C virtual_tcp_offset                       # demo_shared.yaml 값
+ros2 param set $C virtual_tcp_offset "[0.0, 0.0, 0.15]"    # Inactive → successful
+# 위 Controller switch 로 demo_task_controller 활성화
+ros2 param set $C virtual_tcp_offset "[0.0, 0.0, 0.1]"     # Active → "can only be set while this controller is inactive"
+```
+
+- 판정: `/demo_task_controller/transforms` 의 `virtual_tcp_actual` 과 `tool0_actual` 의 거리가 set 한 offset 크기다 (constant 모드). `ros2 topic echo` 는 6 frame 을 다 찍으므로 한 메시지를 받아 두 translation 의 거리를 계산한다.
+- 배열은 double 로 쓴다 — `"[0, 0, 1]"` 은 정수 배열이라 rclpy 가 타입 불일치로 거부한다.
+- set 한 값은 노드 수명 동안 남는다. 확인 뒤 원래 값으로 되돌리거나 sim 을 내린다.
+- 활성화 순간 팔이 튀지 않는다는 판정은 이 레시피가 아니라 gtest (`VtcpParamSetInactiveSeedsAfterActivate`) 가 갖는다.
+- GUI 는 Control 탭의 Virtual TCP 패널이다: active 컨트롤러를 고르면 `Apply VTCP` 가 닫히고, Inactive 컨트롤러에서 Apply 하면 `current:` 줄이 다시 읽은 값으로 바뀐다.
+
 ## Session CSV / plots
 
 - 세션 루트: `~/ros2_ws/rtc_ws/logging_data/<YYMMDD_HHMM>/` (`rtc_tools.utils.session_dir.resolve_logging_root`).
