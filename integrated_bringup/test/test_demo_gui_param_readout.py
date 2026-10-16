@@ -261,3 +261,45 @@ def test_an_empty_controller_key_is_ignored(case):
 
     assert painted == []
     assert client.requests == []
+
+
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_a_forced_read_that_was_never_sent_is_sent_by_the_next_poll(case):
+    """The forced read after a set returns early while the services are not
+    ready. The cache still holds the value from before the set, so without this
+    every later poll would hit it and keep painting the old value for good."""
+    reader, client, painted, _ = _reader(case.spec, ready=False, answer=case.answer)
+    reader.cache[case.owner] = case.other
+    reader.refresh(case.owner, force=True)
+    assert client.requests == []
+
+    client._ready = True
+    reader.refresh(case.owner)  # the poll
+    assert painted == [(case.owner, case.other)], "the cached value stays on screen"
+    assert client.requests == [list(case.spec.params)]
+
+
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_an_unanswered_forced_read_is_asked_again_until_one_lands(case):
+    reader, client, painted, _ = _reader(case.spec, answer=case.answer)
+    reader.cache[case.owner] = case.other
+    reader.refresh(case.owner, force=True)  # never answered
+    reader.refresh(case.owner)  # the poll asks again
+    assert len(client.requests) == 2
+
+    client.futures[1].land()
+    reader.refresh(case.owner)  # trusted again: a plain cache hit
+    assert len(client.requests) == 2
+    assert painted[-1] == (case.owner, case.value)
+
+
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_only_a_changed_value_is_logged_at_info(case):
+    reader, client, _, _ = _reader(case.spec, answer=case.answer)
+    reader.refresh(case.owner)
+    client.futures[0].land()
+    reader.refresh(case.owner, force=True)  # the same value read again
+    client.futures[1].land()
+
+    infos = [msg for level, msg in reader._logger().lines if level == "info"]
+    assert len(infos) == 1, infos

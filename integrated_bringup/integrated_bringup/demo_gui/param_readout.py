@@ -11,7 +11,10 @@ drift apart again (#852 was the grasp mode keeping an older copy of it):
   showing the *previous* controller's value while the read is in flight;
 - ``force`` re-reads past the cache (after a set, and for an explicit Load)
   and paints nothing until the answer lands — the cached value stays on
-  screen, so a poll in between repaints it rather than unknown;
+  screen, so a poll in between repaints it rather than unknown. Until an
+  answer lands the cached value is stale: a poll repaints it *and* asks
+  again, so a forced read that was never sent (services not ready) or never
+  answered cannot leave the old value trusted for good;
 - readiness is checked without blocking (this runs on the Tk thread), and a
   not-ready service leaves the panel as it is for the next poll to retry;
 - an answer that does not parse is cached as nothing, and a failed read drops
@@ -65,6 +68,8 @@ class CachedParamReadout[T]:
         self._paint = paint
         self._defer = defer
         self._logger = logger
+        # Controllers whose forced read has not been answered yet.
+        self._stale: set[str] = set()
 
     def refresh(self, ctrl: str, *, force: bool = False) -> None:
         """Show ``ctrl``'s value, reading it if not cached or if ``force``. Tk thread."""
@@ -73,12 +78,15 @@ class CachedParamReadout[T]:
         cached = None if force else self.cache.get(ctrl)
         if cached is not None:
             self._paint(ctrl, cached)
-            return
-        if not force:
+            if ctrl not in self._stale:
+                return
+        elif not force:
             self._paint(ctrl, self.spec.unknown)
         if ctrl not in self.spec.owners:
             # No parameter to read — the unknown paint is already the answer.
             return
+        if force:
+            self._stale.add(ctrl)
 
         client = self._get_client(ctrl)
         # Non-blocking, NOT a timed wait: any timeout here would freeze the
@@ -90,6 +98,7 @@ class CachedParamReadout[T]:
         label = self.spec.label
 
         def _on_done(fut):
+            self._stale.discard(ctrl)
             try:
                 resp = fut.result()
             except Exception as exc:  # noqa: BLE001 — any failure = unknown
@@ -104,8 +113,9 @@ class CachedParamReadout[T]:
                 # Indistinguishable from unknown, and cached as neither.
                 self._logger().debug(f"/{ctrl} {label} unreadable: {resp.values}")
                 return
+            if self.cache.get(ctrl) != value:
+                self._logger().info(f"/{ctrl} {label}={value}")
             self.cache[ctrl] = value
-            self._logger().info(f"/{ctrl} {label}={value}")
             self._defer(self._paint, ctrl, value)
 
         future.add_done_callback(_on_done)
