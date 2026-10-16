@@ -15,7 +15,7 @@ Public surface (imported by app.py):
   NO_GRASP_COMMAND_CONTROLLERS, target_panel_states
 - FINGERTIP_NAMES, FORCE_PI_FINGER_NAMES, GRASP_PHASE_NAMES
 - GRASP_MODE_PARAM, GRASP_MODE_UNKNOWN, GRASP_MODE_OWNERS, GRASP_MODES,
-  grasp_command_enabled, grasp_mode_fg
+  grasp_command_enabled, grasp_mode_fg, GRASP_MODE_READOUT
 - _DEFAULT_PRESETS, default_presets_for, preset_hand_targets, _resolve_preset_path
 - GAIN_DEFS, GAIN_ROW_NAMES, GAIN_PARAM_DISPATCH,
   GAIN_GROUP_LAYOUT, GAIN_GROUP_PARENT_GRASP, GROUP_SCALARS_PER_ROW
@@ -32,6 +32,8 @@ import os
 from rclpy.parameter import Parameter
 
 from rtc_msgs.msg import CalibrationCommand, CalibrationStatus
+
+from .param_readout import ReadoutSpec
 
 TARGET_LABELS = {
     "demo_joint_controller": [
@@ -622,6 +624,27 @@ GAIN_PARAM_DISPATCH["demo_compliance_controller"] = {
 # once. It IS a grasp-mode owner — the hand lane is duplicated verbatim, so it
 # declares grasp_controller_type exactly as its sibling does.
 GRASP_MODE_OWNERS = GRASP_MODE_OWNERS | {"demo_compliance_controller"}
+
+
+def parse_grasp_mode(values) -> str | None:
+    """A ``get_parameters([GRASP_MODE_PARAM])`` answer -> the mode, or None.
+
+    PARAMETER_NOT_SET comes back as an empty string — a controller older than
+    the read-only mirror. Indistinguishable from unknown, so it is None too.
+    """
+    if not values:
+        return None
+    return values[0].string_value or None
+
+
+# After the owner set is complete: the spec holds the set it was built with.
+GRASP_MODE_READOUT = ReadoutSpec(
+    params=(GRASP_MODE_PARAM,),
+    owners=GRASP_MODE_OWNERS,
+    parse=parse_grasp_mode,
+    unknown=GRASP_MODE_UNKNOWN,
+    label=GRASP_MODE_PARAM,
+)
 
 # Groups whose editable widgets are rendered in the Grasp tab's
 # "Grasp Detection" section instead of the Control tab's Gains panel.

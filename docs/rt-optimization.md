@@ -190,7 +190,7 @@ RT 커널 · CPU isolation · scheduler/메모리 · GRUB · 권한 · IRQ · �
 특정 스레드를 직접 보려면:
 
 ```bash
-PID=$(pgrep -f integrated_rt_controller)
+PID=$(pidof -s integrated_rt_controller)
 ps -T -p $PID -o tid,comm,rtprio,psr,cls,pri   # CLS: FF=SCHED_FIFO, TS=CFS
 taskset -cp <TID>
 ```

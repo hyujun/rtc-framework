@@ -259,7 +259,7 @@ ros2 topic echo /sim/status                           # MuJoCo: [step, time, rtf
 ros2 param list /integrated_rt_controller | grep controllers  # 토픽 파라미터 확인
 
 # RT 스레드 상태 확인 (exec 이름 = 노드 이름 = integrated_rt_controller)
-PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
+PID=$(pidof -s integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ```
 
 ---

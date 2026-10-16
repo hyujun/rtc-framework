@@ -25,6 +25,8 @@ from dataclasses import dataclass
 
 from rcl_interfaces.msg import ParameterType
 
+from .param_readout import ReadoutSpec
+
 VTCP_MODE_PARAM = "virtual_tcp_mode"
 VTCP_OFFSET_PARAM = "virtual_tcp_offset"
 VTCP_ORIENTATION_PARAM = "virtual_tcp_orientation"
@@ -88,6 +90,17 @@ def parse_entries(values: Sequence) -> VtcpConfigView | None:
     if offset is None or rpy is None:
         return None
     return VtcpConfigView(mode=mode_v.string_value, offset=offset, orientation=rpy)
+
+
+# The panel's unknown is None: format_readout and the input seeding both read
+# it as "not read yet".
+VTCP_READOUT = ReadoutSpec(
+    params=VTCP_PARAMS,
+    owners=VTCP_OWNERS,
+    parse=parse_entries,
+    unknown=None,
+    label="virtual_tcp_*",
+)
 
 
 def parse_inputs(

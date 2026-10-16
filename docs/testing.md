@@ -88,7 +88,7 @@ timing CSV 는 `ros2 run rtc_tools plot_rtc_log <csv> --stats` 로 읽는다.
 
 ```bash
 # exec 이름 = 노드 이름 = integrated_rt_controller (integrated_bringup 의 유일한 실행파일)
-PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
+PID=$(pidof -s integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ros2 lifecycle list /integrated_rt_controller
 ros2 topic echo /system/estop_status
 ./repo_scripts/scripts/check_rt_setup.sh --summary
@@ -112,7 +112,7 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 ```bash
 sudo ./repo_scripts/scripts/cpu_shield.sh on --robot
 cset shield -s                                   # user 집합 == get_cm_shield_cpus 출력
-CM=$(pgrep -nf integrated_rt_controller)         # 런치(shield-on) 후
+CM=$(pidof -s integrated_rt_controller)          # 런치(shield-on) 후
 grep Cpus_allowed_list /proc/$CM/status          # 위와 동일해야 함
 ps -eLo comm,psr,cls,rtprio -p $CM | grep -E "rt_control|rt_callback|nrt_"   # pin · FIFO (nrt_* 는 TS 가 정상)
 grep -rE "rc=22|setaffinity failed|Thread config failed" ~/.ros/log/<run>/   # 결과 없어야 (EINVAL 회귀)

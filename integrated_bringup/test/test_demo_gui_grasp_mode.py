@@ -13,7 +13,7 @@ but a throttled WARN on ``/rosout``.
 The controllers publish the resolved mode as a parameter, and the GUI gates on
 it. That parameter is now also *writable* while the hand is quiet, so the tab
 carries a mode combobox + ``Set Mode``: the second half of these tests covers
-the request path, the reason a refusal carries, and the cache invalidation that
+the request path, the reason a refusal carries, and the forced re-read that
 keeps the readout from asserting a mode the GUI only asked for.
 
 The decision itself lives in ``demo_gui.config`` as a pure function so it is
@@ -251,70 +251,6 @@ def test_apply_ignores_a_result_for_a_deselected_controller():
     assert "contact_stop" in state._grasp_mode_var.get()
 
 
-def _refresh_state(selected: str, services_ready: bool = False):
-    state = _gui_state(selected)
-    state.applied = []
-    state._apply_grasp_mode = lambda c, m: state.applied.append((c, m))
-    state.client_requests = []
-
-    class _Client:
-        def services_are_ready(self):
-            return services_ready
-
-        def get_parameters(self, names):
-            state.client_requests.append(names)
-            raise AssertionError("should not be reached when services are down")
-
-    state._get_param_client = lambda c: _Client()
-    return state
-
-
-def test_refresh_uses_the_cache_without_a_round_trip():
-    """A cache hit must not hit the parameter service — that is what keeps the
-    5 s catalog poll and every radio click off it.
-
-    The original rationale here was "the mode is a configure-time constant, so
-    one read holds for the CM's lifetime". That is no longer true: the parameter
-    is writable at runtime. The assertion survives unchanged because the cache
-    is still authoritative between invalidations, and what used to be an
-    immutability argument is now an explicit invalidation contract — pinned by
-    ``test_a_successful_set_invalidates_the_cache_before_refetching`` and its
-    refusal counterpart rather than by this test.
-    """
-    from integrated_bringup.demo_gui.app import DemoControllerGUI
-
-    state = _refresh_state(JOINT)
-    state._grasp_modes[JOINT] = "contact_stop"
-    DemoControllerGUI._refresh_grasp_mode(state, JOINT)
-
-    assert state.applied == [(JOINT, "contact_stop")]
-    assert state.client_requests == []
-
-
-def test_refresh_skips_the_query_for_a_non_owner():
-    from integrated_bringup.demo_gui.app import DemoControllerGUI
-
-    state = _refresh_state(WBC)
-    DemoControllerGUI._refresh_grasp_mode(state, WBC)
-
-    assert state.applied == [(WBC, GRASP_MODE_UNKNOWN)]
-    assert state.client_requests == []
-
-
-def test_refresh_paints_unknown_and_caches_nothing_when_services_are_down():
-    """Two properties at once: the label must drop to unknown rather than keep
-    showing the previous controller's mode while a fetch is pending, and a
-    failed read must not be cached — that is what makes the next catalog poll
-    retry after the CM comes up."""
-    from integrated_bringup.demo_gui.app import DemoControllerGUI
-
-    state = _refresh_state(JOINT, services_ready=False)
-    DemoControllerGUI._refresh_grasp_mode(state, JOINT)
-
-    assert state.applied == [(JOINT, GRASP_MODE_UNKNOWN)]
-    assert state._grasp_modes == {}
-
-
 def test_the_static_yaml_hint_is_gone():
     """The old label claimed the same thing on every run. If it comes back
     alongside the live readout the tab states the rule twice and the run once."""
@@ -476,6 +412,7 @@ def _send_state(
     services_ready: bool = True,
     pick: str = "force_pi",
     defer: bool = False,
+    raises: Exception | None = None,
 ):
     """State for the Set Mode path. The fake future fires its done-callback
     synchronously, so one _send_grasp_mode call exercises the whole chain.
@@ -501,9 +438,9 @@ def _send_state(
     state.refresh_kwargs = []
     state.pending = []
 
-    # Record the cache *as seen by the refetch*: invalidating after the refetch
-    # would leave the refetch reading the value it was meant to replace. The
-    # kwargs are recorded separately so the unknown-paint decision is observable.
+    # Record the cache *as seen by the refetch*, so a test can tell a bypassed
+    # cache from a dropped one. The kwargs are recorded separately so the
+    # force decision is observable.
     def _fake_refresh(c, **kwargs):
         state.refreshes.append((c, dict(state._grasp_modes)))
         state.refresh_kwargs.append(kwargs)
@@ -515,6 +452,8 @@ def _send_state(
             self._resp = resp
 
         def result(self):
+            if raises is not None:
+                raise raises
             return self._resp
 
         def add_done_callback(self, cb):
@@ -535,9 +474,24 @@ def _send_state(
     class _Response:
         pass
 
+    class _NeverAnswered:
+        """A read still in flight — for a test that binds the real refetch."""
+
+        def add_done_callback(self, cb):
+            pass
+
+    state.reads = []
+
     class _Client:
-        def wait_for_services(self, timeout_sec=0.0):
+        def services_are_ready(self):
             return services_ready
+
+        def wait_for_services(self, timeout_sec=0.0):
+            raise AssertionError("blocks the Tk thread for up to the timeout")
+
+        def get_parameters(self, names):
+            state.reads.append(names)
+            return _NeverAnswered()
 
         def set_parameters_atomically(self, params):
             state.sent_params.append(params)
@@ -602,12 +556,12 @@ def test_send_transmits_the_selected_mode_as_a_string_parameter(ctrl):
     assert param.value == "contact_stop"
 
 
-def test_a_successful_set_invalidates_the_cache_before_refetching():
+def test_a_successful_set_rereads_past_the_cache():
     """The switch is only real once the controller confirms it, so the readout
-    is repainted from a fresh read rather than from the request. Invalidating
-    *before* the refetch is the load-bearing half: the refetch short-circuits on
-    a cache hit, so the wrong order would leave the tab showing the mode the
-    controller just moved away from."""
+    is repainted from a fresh read rather than from the request. The refetch has
+    to bypass the cache: a cache hit would leave the tab showing the mode the
+    controller just moved away from. Bypassing, not dropping — the cached mode
+    stays on screen until the answer replaces it."""
     from integrated_bringup.demo_gui.app import DemoControllerGUI
 
     state = _send_state(JOINT, pick="force_pi")
@@ -615,8 +569,8 @@ def test_a_successful_set_invalidates_the_cache_before_refetching():
 
     DemoControllerGUI._send_grasp_mode(state)
 
-    assert JOINT not in state._grasp_modes
-    assert state.refreshes == [(JOINT, {})]
+    assert state.refreshes == [(JOINT, {JOINT: "contact_stop"})]
+    assert state.refresh_kwargs == [{"force": True}]
     assert "force_pi" in state._grasp_mode_result_var.get()
     assert state._grasp_mode_result_label.kwargs["fg"] == GRASP_MODE_FG_ACTIVE
 
@@ -636,15 +590,17 @@ def test_a_refusal_shows_the_controller_reason_verbatim_and_still_refetches():
 
     assert reason in state._grasp_mode_result_var.get()
     assert state._grasp_mode_result_label.kwargs["fg"] == GRASP_MODE_FG_BLOCKED
-    assert state.refreshes == [(JOINT, {})]
+    assert state.refreshes == [(JOINT, {JOINT: "contact_stop"})]
+    assert state.refresh_kwargs == [{"force": True}]
 
 
 def test_a_refusal_keeps_the_operators_pick_in_the_combobox():
     """The refusal is the case where the pick matters most: the operator opens the
     hand and presses Set Mode again. Blanking the box on the way back — which is
-    what the refetch's unknown paint did — makes them re-choose the mode they
-    already chose, and the tab briefly claims it does not know the current mode
-    either."""
+    what an unknown paint does — makes them re-choose the mode they already
+    chose, and the tab briefly claims it does not know the current mode either.
+    The forced refetch skips that paint; test_a_poll_before_the_reread_lands_
+    keeps_the_pick covers the poll that lands while it is in flight."""
     from integrated_bringup.demo_gui.app import DemoControllerGUI
 
     state = _send_state(JOINT, successful=False, reason="hand is holding", pick="contact_stop")
@@ -652,42 +608,16 @@ def test_a_refusal_keeps_the_operators_pick_in_the_combobox():
     DemoControllerGUI._send_grasp_mode(state)
 
     assert state._grasp_mode_combo.get() == "contact_stop"
-    assert state.refresh_kwargs == [{"paint_unknown": False}], (
-        "the refetch repainted unknown, which blanks the combobox"
+    assert state.refresh_kwargs == [{"force": True}], (
+        "the refetch is not forced, so it repaints unknown, which blanks the combobox"
     )
-
-
-def test_the_unknown_paint_is_kept_where_it_is_load_bearing():
-    """Companion to the test above: the unknown paint is skipped only for the
-    post-set refetch. The selection-change path must keep it — that is the case it
-    exists for, so the label cannot go on showing the previous controller's mode
-    while a fetch is in flight."""
-    from integrated_bringup.demo_gui.app import DemoControllerGUI
-
-    state = _refresh_state(JOINT, services_ready=False)
-    DemoControllerGUI._refresh_grasp_mode(state, JOINT)
-
-    assert state.applied == [(JOINT, GRASP_MODE_UNKNOWN)]
-
-
-def test_refresh_skips_the_unknown_paint_when_asked():
-    """The flag has to be honoured by the real method, not merely passed to it —
-    the caller-side test above drives a stubbed refetch, so on its own it would
-    still pass if _refresh_grasp_mode ignored the argument entirely."""
-    from integrated_bringup.demo_gui.app import DemoControllerGUI
-
-    state = _refresh_state(JOINT, services_ready=False)
-    DemoControllerGUI._refresh_grasp_mode(state, JOINT, paint_unknown=False)
-
-    assert state.applied == [], "painted unknown despite paint_unknown=False"
-    assert state._grasp_modes == {}, "a failed read must still not be cached"
 
 
 def test_an_outcome_for_a_deselected_controller_is_not_painted():
     """Late-callback rule, same as _apply_grasp_mode's. The set is async: if the
     response lands after the user moved on, the refusal belongs to a controller
-    whose widgets are no longer on screen. The cache drop and re-read still run —
-    those are about that controller's state, not about what is displayed."""
+    whose widgets are no longer on screen. The forced re-read still runs — it is
+    about that controller's state, not about what is displayed."""
     from integrated_bringup.demo_gui.app import DemoControllerGUI
 
     state = _send_state(JOINT, successful=False, reason="hand is holding", defer=True)
@@ -699,8 +629,10 @@ def test_an_outcome_for_a_deselected_controller_is_not_painted():
     state.fire()
 
     assert state._grasp_mode_result_var.get() == "", "painted another controller's refusal"
-    assert JOINT not in state._grasp_modes, "cache drop skipped for the deselected controller"
-    assert state.refreshes == [(JOINT, {})], "re-read skipped for the deselected controller"
+    assert state.refreshes == [(JOINT, {JOINT: "contact_stop"})], (
+        "re-read skipped for the deselected controller"
+    )
+    assert state.refresh_kwargs == [{"force": True}]
 
 
 def test_the_apply_guard_names_a_widget_the_method_drives():
@@ -731,6 +663,80 @@ def test_the_refusal_reason_survives_a_catalog_poll_repaint():
     DemoControllerGUI._apply_grasp_mode(state, JOINT, "contact_stop")  # poll
 
     assert reason in state._grasp_mode_result_var.get()
+
+
+def test_a_failed_call_is_reported_only_for_its_controller_and_still_rereads():
+    """The exception path used to write its line straight into the outcome label,
+    so a failure that landed after the operator moved on was shown under the
+    newly selected controller, and the controller that failed was never re-read —
+    though a failed call may or may not have landed."""
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _send_state(JOINT, raises=RuntimeError("service died"), defer=True)
+    state._grasp_modes[JOINT] = "contact_stop"
+    DemoControllerGUI._send_grasp_mode(state)
+    state._grasp_mode_result_var.set("")  # drop the in-flight line
+
+    state.selected_ctrl.set(TASK)  # the user navigates away, then the failure lands
+    state.fire()
+
+    assert state._grasp_mode_result_var.get() == "", "JOINT's failure painted under TASK"
+    assert state.refreshes == [(JOINT, {JOINT: "contact_stop"})]
+    assert state.refresh_kwargs == [{"force": True}]
+    assert any("service died" in msg for _, msg in state._logger.lines)
+
+
+def test_a_failed_call_for_the_selected_controller_says_so():
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _send_state(JOINT, raises=RuntimeError("service died"))
+    DemoControllerGUI._send_grasp_mode(state)
+
+    assert state._grasp_mode_result_var.get() == "set failed: service died"
+    assert state._grasp_mode_result_label.kwargs["fg"] == GRASP_MODE_FG_BLOCKED
+
+
+def test_a_poll_before_the_reread_lands_keeps_the_pick():
+    """The race from #852: a refused set used to drop the cache and re-read, so a
+    catalog poll that landed before the answer found no cache, painted unknown
+    and blanked the combobox — taking the pick the operator was about to re-apply
+    with it. The real refetch is bound here, with a read that never answers."""
+    import types
+
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+    from integrated_bringup.demo_gui.config import GRASP_MODE_READOUT
+    from integrated_bringup.demo_gui.param_readout import CachedParamReadout
+
+    state = _send_state(JOINT, successful=False, reason="hand is holding")
+    for name in ("_refresh_grasp_mode", "_apply_grasp_mode"):
+        setattr(state, name, types.MethodType(getattr(DemoControllerGUI, name), state))
+    state._grasp_mode_reader = CachedParamReadout(
+        GRASP_MODE_READOUT,
+        state._grasp_modes,
+        get_client=state._get_param_client,
+        paint=state._apply_grasp_mode,
+        defer=lambda fn, *args: state.root.after(0, fn, *args),
+        logger=state.get_logger,
+    )
+    state._grasp_modes[JOINT] = "contact_stop"
+    state._apply_grasp_mode(JOINT, "contact_stop")
+    state._grasp_mode_combo.set("force_pi")  # the operator's pick
+
+    DemoControllerGUI._send_grasp_mode(state)
+    assert state.reads == [[GRASP_MODE_PARAM]], "the refused set must still re-read"
+
+    state._refresh_grasp_mode(JOINT)  # the poll, while that read is in flight
+    assert state._grasp_mode_combo.get() == "force_pi"
+
+
+def test_no_service_wait_blocks_the_tk_thread():
+    """Every parameter-service call in the GUI is made from the Tk thread, where a
+    timed wait freezes the window for its whole timeout whenever the CM is down.
+    The readiness check is non-blocking; a not-ready service is reported and the
+    operator presses again."""
+    from integrated_bringup.demo_gui import app
+
+    assert "wait_for_services" not in inspect.getsource(app)
 
 
 def test_an_in_flight_request_is_not_painted_as_accepted():

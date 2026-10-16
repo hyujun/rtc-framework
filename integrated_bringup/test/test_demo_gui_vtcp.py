@@ -11,7 +11,8 @@ selected controller is the active one. What these tests hold:
   from its source rather than copied,
 - the ``app.py`` wiring that pytest can see: the three places the Apply gate is
   repainted, a single ``set_parameters_atomically`` per Apply, the controller's
-  refusal shown verbatim, and the cache dropped before the re-read.
+  refusal shown verbatim, and the re-read past the cache. The read rules
+  themselves are ``test_demo_gui_param_readout``'s.
 
 Tk layout and the buttons on a live screen are checked at runtime (verify
 skill), as for every other panel.
@@ -28,6 +29,7 @@ from pathlib import Path
 import pytest
 from rcl_interfaces.msg import ParameterType
 
+from integrated_bringup.demo_gui.param_readout import CachedParamReadout
 from integrated_bringup.demo_gui.vtcp import (
     HINT_ACTIVE,
     HINT_ACTIVE_UNKNOWN,
@@ -39,6 +41,7 @@ from integrated_bringup.demo_gui.vtcp import (
     VTCP_ORIENTATION_PARAM,
     VTCP_OWNERS,
     VTCP_PARAMS,
+    VTCP_READOUT,
     VtcpConfigView,
     apply_enabled,
     format_readout,
@@ -378,6 +381,15 @@ def _state(
             raise AssertionError("three separate sets are three callbacks and three Stores")
 
     state._get_param_client = lambda c: _Client()
+    # For the one test that binds the real _refresh_vtcp.
+    state._vtcp_reader = CachedParamReadout(
+        VTCP_READOUT,
+        state._vtcp_configs,
+        get_client=state._get_param_client,
+        paint=state._paint_vtcp,
+        defer=lambda fn, *args: state.root.after(0, fn, *args),
+        logger=state.get_logger,
+    )
     return state
 
 
