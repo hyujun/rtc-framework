@@ -260,8 +260,11 @@ def test_a_switch_click_does_not_claim_the_switch_happened():
     assert 'set(f"Active: ' not in source
     assert "switching →" in source
     done = source.split("def _on_switch_done")[1].split("future.add_done_callback")[0]
-    first = done.split("try:")[0]
-    assert "self._paint_active_status" in first, "a response path skips the repaint"
+    # Scheduled before the result is read, so no outcome — the exception path
+    # returns early — can skip it.
+    assert done.index("self._paint_active_status") < done.index("fut.result()"), (
+        "a response path skips the repaint"
+    )
 
 
 def test_same_preset_for_both_roles_is_flagged():

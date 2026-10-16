@@ -13,6 +13,7 @@ and ``test_demo_gui_vtcp``.
 from __future__ import annotations
 
 import types
+from typing import Any, NamedTuple
 
 import pytest
 from rcl_interfaces.msg import ParameterType
@@ -45,10 +46,18 @@ _DOUBLE_ARRAY = ParameterType.PARAMETER_DOUBLE_ARRAY
 
 _VIEW = VtcpConfigView("constant", (0.0, 0.0, 0.1), (0.0, 0.0, 0.0))
 
-# (spec, an owner, a good answer, its parsed value, a different parsed value,
-#  an answer that does not parse)
+
+class _Case(NamedTuple):
+    spec: Any
+    owner: str
+    answer: list  # a good get_parameters answer ...
+    value: Any  # ... and what it parses to
+    other: Any  # a different parsed value, for the cache
+    unreadable: list  # an answer that does not parse
+
+
 _CASES = [
-    pytest.param(
+    _Case(
         GRASP_MODE_READOUT,
         "demo_joint_controller",
         [_value(_STRING, string_value="force_pi")],
@@ -56,9 +65,8 @@ _CASES = [
         "contact_stop",
         # PARAMETER_NOT_SET: a controller older than the read-only mirror.
         [_value(ParameterType.PARAMETER_NOT_SET)],
-        id="grasp_mode",
     ),
-    pytest.param(
+    _Case(
         VTCP_READOUT,
         "demo_task_controller",
         [
@@ -70,10 +78,9 @@ _CASES = [
         VtcpConfigView("disabled", (0.0,) * 3, (0.0,) * 3),
         # A controller older than #847: nothing declared.
         [_value(ParameterType.PARAMETER_NOT_SET)] * 3,
-        id="vtcp",
     ),
 ]
-_ARGS = "spec, owner, answer, value, other, unreadable"
+_IDS = ["grasp_mode", "vtcp"]
 
 
 class _Future:
@@ -153,110 +160,102 @@ def test_each_spec_covers_its_panels_full_owner_set():
     assert VTCP_READOUT.unknown is None
 
 
-@pytest.mark.parametrize(_ARGS, _CASES)
-def test_a_cache_hit_paints_without_a_round_trip(spec, owner, answer, value, other, unreadable):
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_a_cache_hit_paints_without_a_round_trip(case):
     """A cache hit must not reach the parameter service — that is what keeps the
     5 s catalog poll and every radio click off it."""
-    reader, client, painted, _ = _reader(spec, answer=answer)
-    reader.cache[owner] = value
-    reader.refresh(owner)
+    reader, client, painted, _ = _reader(case.spec, answer=case.answer)
+    reader.cache[case.owner] = case.value
+    reader.refresh(case.owner)
 
-    assert painted == [(owner, value)]
+    assert painted == [(case.owner, case.value)]
     assert client.requests == []
 
 
-@pytest.mark.parametrize(_ARGS, _CASES)
-def test_a_non_owner_is_painted_unknown_and_not_queried(
-    spec, owner, answer, value, other, unreadable
-):
-    reader, client, painted, _ = _reader(spec, answer=answer)
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_a_non_owner_is_painted_unknown_and_not_queried(case):
+    reader, client, painted, _ = _reader(case.spec, answer=case.answer)
     reader.refresh(WBC)
 
-    assert painted == [(WBC, spec.unknown)]
+    assert painted == [(WBC, case.spec.unknown)]
     assert client.requests == []
 
 
-@pytest.mark.parametrize(_ARGS, _CASES)
-def test_a_miss_paints_unknown_and_caches_nothing_while_services_are_down(
-    spec, owner, answer, value, other, unreadable
-):
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_a_miss_paints_unknown_and_caches_nothing_while_services_are_down(case):
     """Two properties at once: the panel drops to unknown rather than keep
     showing the previous controller's value while a read is pending, and a
     read that never happened is not cached — that is what makes the next
     catalog poll retry once the CM comes up."""
-    reader, client, painted, _ = _reader(spec, ready=False, answer=answer)
-    reader.refresh(owner)
+    reader, client, painted, _ = _reader(case.spec, ready=False, answer=case.answer)
+    reader.refresh(case.owner)
 
-    assert painted == [(owner, spec.unknown)]
+    assert painted == [(case.owner, case.spec.unknown)]
     assert client.requests == []
     assert reader.cache == {}
 
 
-@pytest.mark.parametrize(_ARGS, _CASES)
-def test_a_forced_refresh_paints_nothing_until_its_answer_lands(
-    spec, owner, answer, value, other, unreadable
-):
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_a_forced_refresh_paints_nothing_until_its_answer_lands(case):
     """Neither the cached value (the one being re-checked) nor unknown, which
     would blank the panel's request widgets. The cache stays, so a poll that
     lands before the answer repaints it."""
-    reader, client, painted, deferred = _reader(spec, answer=answer)
-    reader.cache[owner] = other
-    reader.refresh(owner, force=True)
+    reader, client, painted, deferred = _reader(case.spec, answer=case.answer)
+    reader.cache[case.owner] = case.other
+    reader.refresh(case.owner, force=True)
 
     assert painted == []
-    assert client.requests == [list(spec.params)]
-    reader.refresh(owner)  # the poll
-    assert painted == [(owner, other)]
+    assert client.requests == [list(case.spec.params)]
+    reader.refresh(case.owner)  # the poll
+    assert painted == [(case.owner, case.other)]
 
     client.futures[0].land()
-    assert reader.cache == {owner: value}
-    assert deferred == [(reader._paint, (owner, value))], "the answer must reach Tk via defer"
+    assert reader.cache == {case.owner: case.value}
+    assert deferred == [(reader._paint, (case.owner, case.value))], (
+        "the answer must reach Tk via defer"
+    )
 
 
-@pytest.mark.parametrize(_ARGS, _CASES)
-def test_an_answer_is_cached_and_painted_on_the_tk_thread(
-    spec, owner, answer, value, other, unreadable
-):
-    reader, client, painted, deferred = _reader(spec, answer=answer)
-    reader.refresh(owner)
-    assert painted == [(owner, spec.unknown)]
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_an_answer_is_cached_and_painted_on_the_tk_thread(case):
+    reader, client, painted, deferred = _reader(case.spec, answer=case.answer)
+    reader.refresh(case.owner)
+    assert painted == [(case.owner, case.spec.unknown)]
 
     client.futures[0].land()
-    assert reader.cache == {owner: value}
-    assert painted == [(owner, spec.unknown)], "painted from the executor thread"
+    assert reader.cache == {case.owner: case.value}
+    assert painted == [(case.owner, case.spec.unknown)], "painted from the executor thread"
     fn, args = deferred[0]
     fn(*args)
-    assert painted[-1] == (owner, value)
+    assert painted[-1] == (case.owner, case.value)
 
 
-@pytest.mark.parametrize(_ARGS, _CASES)
-def test_an_unreadable_answer_is_cached_as_nothing(spec, owner, answer, value, other, unreadable):
-    reader, client, _, deferred = _reader(spec, answer=unreadable)
-    reader.refresh(owner)
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_an_unreadable_answer_is_cached_as_nothing(case):
+    reader, client, _, deferred = _reader(case.spec, answer=case.unreadable)
+    reader.refresh(case.owner)
     client.futures[0].land()
 
     assert reader.cache == {}
     assert deferred == []
 
 
-@pytest.mark.parametrize(_ARGS, _CASES)
-def test_a_failed_forced_read_stops_claiming_the_cached_value(
-    spec, owner, answer, value, other, unreadable
-):
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_a_failed_forced_read_stops_claiming_the_cached_value(case):
     """A forced read follows a change, so the cached value may be the one that
     changed."""
-    reader, client, _, deferred = _reader(spec, raises=RuntimeError("service died"))
-    reader.cache[owner] = other
-    reader.refresh(owner, force=True)
+    reader, client, _, deferred = _reader(case.spec, raises=RuntimeError("service died"))
+    reader.cache[case.owner] = case.other
+    reader.refresh(case.owner, force=True)
     client.futures[0].land()
 
     assert reader.cache == {}
     assert deferred == []
 
 
-@pytest.mark.parametrize(_ARGS, _CASES)
-def test_an_empty_controller_key_is_ignored(spec, owner, answer, value, other, unreadable):
-    reader, client, painted, _ = _reader(spec, answer=answer)
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_an_empty_controller_key_is_ignored(case):
+    reader, client, painted, _ = _reader(case.spec, answer=case.answer)
     reader.refresh("")
     reader.refresh("", force=True)
 

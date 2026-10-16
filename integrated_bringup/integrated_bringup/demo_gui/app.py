@@ -405,13 +405,8 @@ class DemoControllerGUI(Node):
         # after a CM restart or a query issued before the controller finished
         # configuring. param_readout.py holds these read rules for both panels.
         self._grasp_modes: dict[str, str] = {}
-        self._grasp_mode_reader = CachedParamReadout(
-            GRASP_MODE_READOUT,
-            self._grasp_modes,
-            get_client=self._get_param_client,
-            paint=self._apply_grasp_mode,
-            defer=self._defer_to_tk,
-            logger=self.get_logger,
+        self._grasp_mode_reader = self._make_reader(
+            GRASP_MODE_READOUT, self._grasp_modes, self._apply_grasp_mode
         )
 
         # (config_key, mode) last seeded into the Grasp tab's mode combobox.
@@ -428,14 +423,7 @@ class DemoControllerGUI(Node):
         # through `ros2 param set` and through a re-configure that keeps a value
         # set earlier, and Load is the operator asking what is there now.
         self._vtcp_configs: dict[str, VtcpConfigView] = {}
-        self._vtcp_reader = CachedParamReadout(
-            VTCP_READOUT,
-            self._vtcp_configs,
-            get_client=self._get_param_client,
-            paint=self._paint_vtcp,
-            defer=self._defer_to_tk,
-            logger=self.get_logger,
-        )
+        self._vtcp_reader = self._make_reader(VTCP_READOUT, self._vtcp_configs, self._paint_vtcp)
         # (config_key, values) last written into the panel's input widgets; see
         # vtcp.seed_due.
         self._vtcp_seeded: tuple[str, VtcpConfigView | None] | None = None
@@ -1072,6 +1060,16 @@ class DemoControllerGUI(Node):
             client = self.create_client(GraspCommand, f"/{ctrl}/grasp_command")
             self._grasp_clients[ctrl] = client
         return client
+
+    def _make_reader(self, spec, cache, paint) -> CachedParamReadout:
+        return CachedParamReadout(
+            spec,
+            cache,
+            get_client=self._get_param_client,
+            paint=paint,
+            defer=self._defer_to_tk,
+            logger=self.get_logger,
+        )
 
     def _defer_to_tk(self, fn, *args) -> None:
         """Run ``fn(*args)`` on the Tk thread — the readers' answers arrive on
@@ -4869,10 +4867,8 @@ class DemoControllerGUI(Node):
             )
             if not radio_keys:
                 radio_keys = self._switchable_keys
-            offline = False
         else:
             radio_keys = self._switchable_keys
-            offline = self._catalog.is_offline()
 
         # Tear down old radios and rebuild from scratch — Tk doesn't have
         # a clean "update values" path for Radiobutton variant, and the
@@ -4923,7 +4919,7 @@ class DemoControllerGUI(Node):
         if current:
             self._paint_active_status()
         else:
-            suffix = " (controllers offline)" if offline else ""
+            suffix = " (controllers offline)" if self._catalog.is_offline() else ""
             self._ctrl_status.set(f"(no controllers available){suffix}")
 
     def _on_ctrl_radio_change(self):
