@@ -487,6 +487,13 @@ VERDICT_TAG="t2:"
 # same trees. Prints "<pid>: verify-changes.sh --run" for a LIVE holder other
 # than this process; a line left by a killed --run (pid gone or reused) reads
 # as no holder.
+# Start time of pid $1 (field 22 of /proc/<pid>/stat, clock ticks since boot):
+# with the pid, what tells a live process from a reused number. comm may hold
+# spaces; what follows the LAST ')' starts at field 3.
+proc_start_time() { sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
+# Command line of pid $1, argv joined by spaces and cut to a report line.
+proc_cmdline() { tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | cut -c1-120; }
+
 run_lock_holder() {
   local pid="" start="" now
   [ -f "$RUN_LOCK" ] || return 0
@@ -494,8 +501,7 @@ run_lock_holder() {
   case "$pid" in '' | *[!0-9]*) return 0 ;; esac
   [ "$pid" != "$$" ] || return 0
   [ -r "/proc/$pid/stat" ] || return 0
-  # comm may hold spaces; what follows the LAST ')' starts at field 3.
-  now=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20)
+  now=$(proc_start_time "$pid")
   [ -n "$start" ] && [ "$now" = "$start" ] || return 0
   printf '%s: verify-changes.sh --run\n' "$pid"
 }
@@ -528,7 +534,7 @@ if [ -n "$RUN_MODE" ]; then
     # --run started together, one finds the file already made.
     rm -f "$RUN_LOCK"
     if (set -o noclobber; printf '%s %s\n' "$$" \
-          "$(sed 's/^.*) //' "/proc/$$/stat" 2>/dev/null | cut -d' ' -f20)" >"$RUN_LOCK") 2>/dev/null; then
+          "$(proc_start_time "$$")" >"$RUN_LOCK") 2>/dev/null; then
       RUN_LOCK_HELD=1
     else
       RUN_RIVAL=$(run_lock_holder)
@@ -1730,7 +1736,7 @@ workspace_build_rivals() {
   for pid in $(pgrep -x '(colcon|build\.sh)' 2>/dev/null || true); do
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
     [ "$cwd" = "$ws" ] || continue
-    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120) || cmd="?"
+    cmd=$(proc_cmdline "$pid") || cmd="?"
     printf '%s: %s\n' "$pid" "$cmd"
   done
 }
@@ -1788,11 +1794,10 @@ workspace_holds() {
     case "$pid" in '' | *[!0-9]*) continue ;; esac
     [ -r "/proc/$pid/stat" ] || continue
     if [ -n "${start:-}" ]; then
-      # comm may hold spaces; what follows the LAST ')' starts at field 3.
-      now=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20)
+      now=$(proc_start_time "$pid")
       [ "$now" = "$start" ] || continue
     fi
-    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120) || cmd="?"
+    cmd=$(proc_cmdline "$pid") || cmd="?"
     printf '%s: %s\n' "$pid" "${cmd% }"
   done < "$HOLD_FILE"
 }
