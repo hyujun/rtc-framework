@@ -64,6 +64,7 @@
 
 **자기기술 계약** — 소비자가 다른 메시지나 시간 정렬 없이 해석할 수 있어야 한다:
 
+- **`RobotTarget` task 목표**: 기준 frame 은 `header.frame_id` 다. frame 계약을 갖는 컨트롤러는 팔의 `root_link` 와 `scene_world` (sim 만 정의) 만 받고, 빈 값을 포함한 그 밖은 거부·count 한다 — 기본값으로 해석하지 않는다. 생산자는 pose 를 읽은 frame 을 싣는다. 한 goal 종류를 다른 종류로 읽게 되는 컨트롤러는 그 종류를 `AcceptedGoalKinds` 로 거부한다. 상세: [integrated_bringup README](../integrated_bringup/README.md#task-목표의-기준-frame-779).
 - **`PullEstimate`**: `force_inplane` 은 매 tick 재구성되는 기저의 좌표이므로 같은 tick 의 `plane_normal` + `basis_x` 를 함께 싣고, 어느 분기가 그 기저를 만들었는지 `basis_source` 로 밝힌다. 벡터의 기준 frame 은 `header.frame_id` — 각 컨트롤러가 `SetOwnedStateFrameId()` 로 system URDF 의 arm root link 를 넣는다 (robot-agnostic). 실패한 게이트는 `invalid_reason` 이 지목한다. `contact_mask` (힘 합에 들어간 집합) 와 `touch_mask` (축 선택용 집합) 는 다른 집합이다. `valid` 는 pull 벡터 유효성 전용이고 per-contact 양은 그 게이트 밖에서 평가한다.
 - **`PayloadEstimate`**: 잔차와 그것을 역산한 payload 를 한 메시지에 싣는다. `residual` 은 device order 이므로 `joint_names` 를 함께 싣는다. 프레임은 둘이다 — `header.frame_id` (wrench 축이 정렬된 프레임) 와 `payload_frame` (wrench 가 작용하는 점). **staleness 는 `header.stamp` 가 아니라 `tick` 으로 판정한다** (stamp 는 publish thread 의 wall clock 이다). 발행 조건은 관측기 활성이다. 관성 파라미터는 4개 (`inertial_mass` / `first_moment` / `com` + rank 진단) 이고 `I` 는 싣지 않는다 — `inertial_rank` 가 차기 전의 `inertial_valid=false` 는 정상 상태다.
 
