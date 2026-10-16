@@ -1010,6 +1010,21 @@ exe_targets() {
     }'
 }
 
+# Real file line numbers of the lines a TRACKED file $1 gained since the
+# baseline, from the `+c,d` side of each hunk header -- numbers rather than
+# the '+' text, so a report can point at a line the agent can open. One per
+# line. (An untracked file is new in its entirety; its callers say so.)
+diff_added_line_numbers() {
+  git diff -U0 "$VERIFY_BASE" -- "$1" 2>/dev/null | awk '
+    /^@@/ {
+      match($0, /\+[0-9]+(,[0-9]+)?/)
+      spec = substr($0, RSTART + 1, RLENGTH - 1)
+      split(spec, p, ",")
+      count = (p[2] == "" ? 1 : p[2])
+      for (i = 0; i < count; i++) print p[1] + i
+    }' || true
+}
+
 # --- Phase 0: Architecture-fitness grep (ARCH-1, ARCH-4) ---
 # Only run if a CHANGED rtc_* file or a changed file in the integration package
 # set matched, to bound cost (the set is derived from package.xml below).
@@ -1078,18 +1093,8 @@ if [ -n "$RTC_TOUCHED" ]; then
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ -f "$f" ] || continue
-    # Real file line numbers of added lines, from the `+c,d` side of each hunk
-    # header. Kept as line numbers rather than grepping the raw '+' text so the
-    # report still points at a location the agent can open.
     if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-      ADDED_LINES=$(git diff -U0 "$VERIFY_BASE" -- "$f" 2>/dev/null | awk '
-        /^@@/ {
-          match($0, /\+[0-9]+(,[0-9]+)?/)
-          spec = substr($0, RSTART + 1, RLENGTH - 1)
-          split(spec, p, ",")
-          count = (p[2] == "" ? 1 : p[2])
-          for (i = 0; i < count; i++) print p[1] + i
-        }' || true)
+      ADDED_LINES=$(diff_added_line_numbers "$f")
     else
       # Untracked: every line is new, so the whole file is in scope.
       ADDED_LINES=$(awk '{ print NR }' "$f" 2>/dev/null || true)
@@ -1326,14 +1331,7 @@ if [ "${#DOC_FILES[@]}" -gt 0 ]; then
       DOC_ALLOW=$(mktemp)
       for d in "${DOC_FILES[@]}"; do
         if git ls-files --error-unmatch "$d" >/dev/null 2>&1; then
-          git diff -U0 "$VERIFY_BASE" -- "$d" 2>/dev/null | awk -v F="$d" '
-            /^@@/ {
-              match($0, /\+[0-9]+(,[0-9]+)?/)
-              spec = substr($0, RSTART + 1, RLENGTH - 1)
-              split(spec, p, ",")
-              count = (p[2] == "" ? 1 : p[2])
-              for (i = 0; i < count; i++) print F ":" p[1] + i
-            }' >> "$DOC_ALLOW" || true
+          diff_added_line_numbers "$d" | awk -v F="$d" '{ print F ":" $0 }' >> "$DOC_ALLOW" || true
         else
           printf '%s:*\n' "$d" >> "$DOC_ALLOW"
         fi
