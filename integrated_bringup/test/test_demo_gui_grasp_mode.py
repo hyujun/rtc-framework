@@ -476,6 +476,7 @@ def _send_state(
     services_ready: bool = True,
     pick: str = "force_pi",
     defer: bool = False,
+    raises: Exception | None = None,
 ):
     """State for the Set Mode path. The fake future fires its done-callback
     synchronously, so one _send_grasp_mode call exercises the whole chain.
@@ -515,6 +516,8 @@ def _send_state(
             self._resp = resp
 
         def result(self):
+            if raises is not None:
+                raise raises
             return self._resp
 
         def add_done_callback(self, cb):
@@ -535,9 +538,24 @@ def _send_state(
     class _Response:
         pass
 
+    class _NeverAnswered:
+        """A read still in flight — for a test that binds the real refetch."""
+
+        def add_done_callback(self, cb):
+            pass
+
+    state.reads = []
+
     class _Client:
-        def wait_for_services(self, timeout_sec=0.0):
+        def services_are_ready(self):
             return services_ready
+
+        def wait_for_services(self, timeout_sec=0.0):
+            raise AssertionError("blocks the Tk thread for up to the timeout")
+
+        def get_parameters(self, names):
+            state.reads.append(names)
+            return _NeverAnswered()
 
         def set_parameters_atomically(self, params):
             state.sent_params.append(params)
@@ -731,6 +749,70 @@ def test_the_refusal_reason_survives_a_catalog_poll_repaint():
     DemoControllerGUI._apply_grasp_mode(state, JOINT, "contact_stop")  # poll
 
     assert reason in state._grasp_mode_result_var.get()
+
+
+def test_a_failed_call_is_reported_only_for_its_controller_and_still_rereads():
+    """The exception path used to write its line straight into the outcome label,
+    so a failure that landed after the operator moved on was shown under the
+    newly selected controller, and the controller that failed was never re-read —
+    though a failed call may or may not have landed."""
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _send_state(JOINT, raises=RuntimeError("service died"), defer=True)
+    state._grasp_modes[JOINT] = "contact_stop"
+    DemoControllerGUI._send_grasp_mode(state)
+    state._grasp_mode_result_var.set("")  # drop the in-flight line
+
+    state.selected_ctrl.set(TASK)  # the user navigates away, then the failure lands
+    state.fire()
+
+    assert state._grasp_mode_result_var.get() == "", "JOINT's failure painted under TASK"
+    assert state.refreshes == [(JOINT, {JOINT: "contact_stop"})]
+    assert state.refresh_kwargs == [{"force": True}]
+    assert any("service died" in msg for _, msg in state._logger.lines)
+
+
+def test_a_failed_call_for_the_selected_controller_says_so():
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _send_state(JOINT, raises=RuntimeError("service died"))
+    DemoControllerGUI._send_grasp_mode(state)
+
+    assert state._grasp_mode_result_var.get() == "set failed: service died"
+    assert state._grasp_mode_result_label.kwargs["fg"] == GRASP_MODE_FG_BLOCKED
+
+
+def test_a_poll_before_the_reread_lands_keeps_the_pick():
+    """The race from #852: a refused set used to drop the cache and re-read, so a
+    catalog poll that landed before the answer found no cache, painted unknown
+    and blanked the combobox — taking the pick the operator was about to re-apply
+    with it. The real refetch is bound here, with a read that never answers."""
+    import types
+
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _send_state(JOINT, successful=False, reason="hand is holding")
+    for name in ("_refresh_grasp_mode", "_apply_grasp_mode"):
+        setattr(state, name, types.MethodType(getattr(DemoControllerGUI, name), state))
+    state._grasp_modes[JOINT] = "contact_stop"
+    state._apply_grasp_mode(JOINT, "contact_stop")
+    state._grasp_mode_combo.set("force_pi")  # the operator's pick
+
+    DemoControllerGUI._send_grasp_mode(state)
+    assert state.reads == [[GRASP_MODE_PARAM]], "the refused set must still re-read"
+
+    state._refresh_grasp_mode(JOINT)  # the poll, while that read is in flight
+    assert state._grasp_mode_combo.get() == "force_pi"
+
+
+def test_no_service_wait_blocks_the_tk_thread():
+    """Every parameter-service call in the GUI is made from the Tk thread, where a
+    timed wait freezes the window for its whole timeout whenever the CM is down.
+    The readiness check is non-blocking; a not-ready service is reported and the
+    operator presses again."""
+    from integrated_bringup.demo_gui import app
+
+    assert "wait_for_services" not in inspect.getsource(app)
 
 
 def test_an_in_flight_request_is_not_painted_as_accepted():

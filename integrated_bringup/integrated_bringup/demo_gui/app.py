@@ -616,6 +616,10 @@ class DemoControllerGUI(Node):
         self._rewire_if_groups_changed()
 
         def _on_tk(ctrl: str = name) -> None:
+            # Separately from the sync for the same reason as the gate below: the
+            # sync returns early when the selection already is `ctrl`, and the
+            # label may still say "switching" from the click.
+            self._paint_active_status()
             self._sync_selected_to_active_controller(ctrl)
             # Separately from the sync: it returns early when the selection
             # already IS the newly active controller (select X, then Switch), and
@@ -1052,7 +1056,7 @@ class DemoControllerGUI(Node):
             self._grasp_clients[ctrl] = client
         return client
 
-    def _refresh_grasp_mode(self, ctrl: str, *, paint_unknown: bool = True) -> None:
+    def _refresh_grasp_mode(self, ctrl: str, *, force: bool = False) -> None:
         """Show ``ctrl``'s grasp mode, fetching it once if not already cached.
 
         Runs on the Tk thread (selection change). The cached path paints
@@ -1060,20 +1064,20 @@ class DemoControllerGUI(Node):
         never keeps showing the *previous* controller's mode while the
         round-trip is in flight.
 
-        ``paint_unknown=False`` skips that intermediate paint, for the one caller
-        where the previous controller's mode is not the risk: the re-read after a
-        set attempt, where the selection has not moved and the unknown paint would
-        blank the combobox — throwing away the pick the operator would otherwise
-        just re-apply after a refusal.
+        ``force`` re-reads past the cache (after a set attempt), the same contract
+        as _refresh_vtcp. The cached mode stays on screen until the answer
+        replaces it, so there is no unknown window for a catalog poll to paint
+        into — that paint would blank the combobox and throw away the pick the
+        operator is about to re-apply after a refusal.
         """
         if not ctrl:
             return
-        cached = self._grasp_modes.get(ctrl)
+        cached = None if force else self._grasp_modes.get(ctrl)
         if cached is not None:
             self._apply_grasp_mode(ctrl, cached)
             return
 
-        if paint_unknown:
+        if not force:
             self._apply_grasp_mode(ctrl, GRASP_MODE_UNKNOWN)
         if ctrl not in GRASP_MODE_OWNERS:
             # No parameter to fetch — the label is already correct and a query
@@ -1081,7 +1085,7 @@ class DemoControllerGUI(Node):
             return
 
         client = self._get_param_client(ctrl)
-        # Non-blocking readiness check, NOT wait_for_services: this runs on the
+        # Non-blocking readiness check, NOT a timed wait: this runs on the
         # Tk thread and is also driven by the catalog poll, so any timeout here
         # would freeze the window on every poll for as long as the CM is down.
         # Not-ready just leaves the label unknown; the next poll retries.
@@ -1095,6 +1099,9 @@ class DemoControllerGUI(Node):
                 resp = fut.result()
             except Exception as exc:  # noqa: BLE001 — any failure = unknown
                 self.get_logger().debug(f"{GRASP_MODE_PARAM} query failed for /{ctrl}: {exc}")
+                # A forced read follows a set attempt, so the cached mode may be
+                # the one that changed; stop claiming it.
+                self._grasp_modes.pop(ctrl, None)
                 return
             if not resp.values:
                 return
@@ -1178,7 +1185,8 @@ class DemoControllerGUI(Node):
             return
 
         client = self._get_param_client(ctrl)
-        if not client.wait_for_services(timeout_sec=1.0):
+        # Non-blocking, like the reads: a dead controller must not freeze the window.
+        if not client.services_are_ready():
             self._set_grasp_mode_result(f"parameter services for /{ctrl} unavailable", ok=False)
             return
 
@@ -1189,59 +1197,45 @@ class DemoControllerGUI(Node):
 
         def _on_set_done(fut):
             try:
-                resp = fut.result()
+                # set_parameters_atomically answers with a single SetParametersResult.
+                result = fut.result().result
+                ok = bool(result.successful)
+                message = (
+                    f"{GRASP_MODE_PARAM} → {requested}" if ok else f"refused: {result.reason}"
+                )
             except Exception as exc:  # noqa: BLE001 — surfaced in the label
-                self.get_logger().error(f"{GRASP_MODE_PARAM} set exception: {exc}")
-                self.root.after(0, self._set_grasp_mode_result, f"set failed: {exc}", False)
-                return
-            # set_parameters_atomically answers with a single SetParametersResult.
-            result = resp.result
-            self.root.after(
-                0,
-                self._after_grasp_mode_set,
-                ctrl,
-                requested,
-                bool(result.successful),
-                str(result.reason),
-            )
+                # A failed call goes the same way as a refusal: the set may or
+                # may not have landed.
+                ok, message = False, f"set failed: {exc}"
+            self.root.after(0, self._after_grasp_mode_set, ctrl, ok, message)
 
         future.add_done_callback(_on_set_done)
 
-    def _after_grasp_mode_set(self, ctrl: str, requested: str, ok: bool, reason: str) -> None:
+    def _after_grasp_mode_set(self, ctrl: str, ok: bool, message: str) -> None:
         """Report the outcome and re-read the mode. Tk thread only.
 
-        The cache is dropped on *both* outcomes, and the re-read is what paints
-        the label. On success that is the difference between showing the mode
-        the controller confirmed and showing the one the GUI asked for. On a
-        refusal it matters too: the gate decided against the controller's
-        current mode, which is not necessarily the one this cache holds.
+        The forced re-read runs on every outcome, and it is what paints the
+        label. On success that is the difference between showing the mode the
+        controller confirmed and showing the one the GUI asked for. On a refusal
+        or a failed call it matters too: the gate decided against the
+        controller's current mode, which is not necessarily the one this cache
+        holds, and a failed call may or may not have landed.
 
-        Invalidate and refetch in the same Tk callback so no catalog poll can
-        slip in between and re-cache the stale value it just read.
+        The re-read bypasses the cache instead of dropping it, so a catalog poll
+        that lands before the answer repaints the cached mode — not the unknown
+        state, which would blank the combobox and lose the operator's pick.
         """
         # Logged unconditionally, painted only for the current selection — the same
         # late-callback rule _apply_grasp_mode follows. If the user moved to another
         # controller while this set was in flight, painting would put one
         # controller's refusal next to another controller's widgets.
-        selected = ctrl == self.selected_ctrl.get()
-        if ok:
-            self.get_logger().info(f"/{ctrl} {GRASP_MODE_PARAM} set to {requested}")
-            if selected:
-                self._set_grasp_mode_result(f"{GRASP_MODE_PARAM} → {requested}", ok=True)
-        else:
-            self.get_logger().warn(f"/{ctrl} {GRASP_MODE_PARAM}={requested} refused: {reason}")
-            if selected:
-                self._set_grasp_mode_result(f"refused: {reason}", ok=False)
-
-        # Not gated on the selection: these are about `ctrl`'s state, not about
-        # what is on screen. Dropping the entry keeps the next visit to that
-        # controller honest, and the re-read is what confirms the mode.
-        self._grasp_modes.pop(ctrl, None)
-        # paint_unknown=False: the selection has not moved, so there is no previous
-        # controller's mode to clear — and the unknown paint would blank the
-        # combobox, discarding a pick the operator is about to re-apply after a
-        # refusal. The fetch's own callback paints the confirmed value.
-        self._refresh_grasp_mode(ctrl, paint_unknown=False)
+        log = self.get_logger().info if ok else self.get_logger().warn
+        log(f"/{ctrl} {message}")
+        if ctrl == self.selected_ctrl.get():
+            self._set_grasp_mode_result(message, ok=ok)
+        # Not gated on the selection: this is about `ctrl`'s state, not about
+        # what is on screen; the fetch's own callback paints only if selected.
+        self._refresh_grasp_mode(ctrl, force=True)
 
     def _set_grasp_mode_result(self, text: str, ok: bool | None) -> None:
         """Write the mode-switch outcome line. Tk thread only.
@@ -2006,11 +2000,10 @@ class DemoControllerGUI(Node):
         )
         switch_btn.pack(pady=(3, 0))
 
-        # Initial status reflects the offline fallback. Replaced on first
-        # catalog response.
-        self._ctrl_status = tk.StringVar(
-            value=f"Active: {self._catalog.display_label(default_ctrl)} (controllers offline)"
-        )
+        # Says what the CM reported as active, which is not the default
+        # selection — nothing has been reported yet at this point.
+        self._ctrl_status = tk.StringVar()
+        self._paint_active_status()
         tk.Label(
             ctrl_frame,
             textvariable=self._ctrl_status,
@@ -3374,7 +3367,7 @@ class DemoControllerGUI(Node):
         topic until the two agree, rather than painting what was asked for.
         """
         client = self._get_param_client(CATCHING_CONFIG_KEY)
-        if not client.wait_for_services(timeout_sec=1.0):
+        if not client.services_are_ready():
             self._catching.last_error = (
                 f"/{CATCHING_CONFIG_KEY} parameter services unavailable — is the "
                 "catching controller configured on this profile?"
@@ -3463,7 +3456,7 @@ class DemoControllerGUI(Node):
 
     def _load_hand_step_profile(self) -> None:
         client = self._get_param_client(CATCHING_CONFIG_KEY)
-        if not client.wait_for_services(timeout_sec=1.0):
+        if not client.services_are_ready():
             self._hand_step.last_error = (
                 f"/{CATCHING_CONFIG_KEY} parameter services unavailable — the catching "
                 "controller is sim-only and is skipped where no YAML ships"
@@ -4559,7 +4552,19 @@ class DemoControllerGUI(Node):
             return
         self.selected_ctrl.set(ctrl_name)
         self._on_ctrl_radio_change()
-        self._ctrl_status.set(f"Active: {self._catalog.display_label(ctrl_name)}")
+        self._paint_active_status()
+
+    def _paint_active_status(self, prefix: str = "") -> None:
+        """Write the Controller frame's ``Active:`` line. Tk thread only.
+
+        Reads only the name /rtc_cm/active_controller_name reported, never the
+        radio selection: the two differ whenever the operator has picked a
+        controller without switching to it, and that is when the line is read.
+        """
+        name = self._active_ctrl
+        label = self._catalog.display_label(name) if name else "— (not reported)"
+        suffix = " (controllers offline)" if self._catalog.is_offline() else ""
+        self._ctrl_status.set(f"{prefix}Active: {label}{suffix}")
 
     # ---- Gains UI helpers ----------------------------------------------------
 
@@ -4981,11 +4986,10 @@ class DemoControllerGUI(Node):
             self._refresh_vtcp(current)
         self._apply_vtcp_state()
 
-        # Status label reflects offline vs live state.
-        suffix = " (controllers offline)" if offline else ""
         if current:
-            self._ctrl_status.set(f"Active: {self._catalog.display_label(current)}{suffix}")
+            self._paint_active_status()
         else:
+            suffix = " (controllers offline)" if offline else ""
             self._ctrl_status.set(f"(no controllers available){suffix}")
 
     def _on_ctrl_radio_change(self):
@@ -5009,10 +5013,10 @@ class DemoControllerGUI(Node):
         # Async send via /rtc_cm/switch_controller. UI updates happen
         # immediately (the switch-back flag /rtc_cm/active_controller_name
         # subscription drives the controller-owned topic rebinding); the
-        # done-callback only logs success/failure.
+        # done-callback logs success/failure and repaints the Active line.
         if not self.switch_controller_client.service_is_ready():
             self.get_logger().warn("/rtc_cm/switch_controller not ready — request dropped")
-            self._ctrl_status.set(f"(srv unavailable) Active: {self._catalog.display_label(idx)}")
+            self._paint_active_status(prefix="(srv unavailable) ")
             if on_complete is not None:
                 on_complete(False)
             return
@@ -5025,6 +5029,10 @@ class DemoControllerGUI(Node):
         future = self.switch_controller_client.call_async(req)
 
         def _on_switch_done(fut):
+            # Every outcome takes the "switching" line down. A switch to the
+            # controller that is already active brings no new name on
+            # /rtc_cm/active_controller_name, so the topic alone would leave it up.
+            self.root.after(0, self._paint_active_status)
             try:
                 resp = fut.result()
             except Exception as exc:  # pragma: no cover — rclpy executor error
@@ -5043,7 +5051,8 @@ class DemoControllerGUI(Node):
 
         future.add_done_callback(_on_switch_done)
 
-        self._ctrl_status.set(f"Active: {self._catalog.display_label(idx)}")
+        # Not "Active:" yet — the name on the topic is what makes it so.
+        self._ctrl_status.set(f"switching → {self._catalog.display_label(idx)} …")
         self._show_gains_panel(idx)
         self._update_target_inputs_state(idx)
 
@@ -5099,7 +5108,7 @@ class DemoControllerGUI(Node):
         if combo is not None:
             param_names.append(HAND_TAUFF_SOURCE_PARAM)
         client = self._get_param_client(ctrl)
-        if not client.wait_for_services(timeout_sec=1.0):
+        if not client.services_are_ready():
             self.get_logger().error(f"parameter services for /{ctrl} unavailable")
             return
 
@@ -5248,7 +5257,7 @@ class DemoControllerGUI(Node):
             return
 
         client = self._get_param_client(ctrl)
-        if not client.wait_for_services(timeout_sec=1.0):
+        if not client.services_are_ready():
             self.get_logger().error(f"parameter services for /{ctrl} unavailable")
             return
 
@@ -5608,7 +5617,7 @@ class DemoControllerGUI(Node):
         # publish that used `_HAND_TRAJ_SPEED_IDX` to find the right slot.
         ctrl = self.selected_ctrl.get()
         client = self._get_param_client(ctrl)
-        if client.wait_for_services(timeout_sec=0.5):
+        if client.services_are_ready():
             param = Parameter(
                 name="hand_trajectory_speed",
                 type_=Parameter.Type.DOUBLE,

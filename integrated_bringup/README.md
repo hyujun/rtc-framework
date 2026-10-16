@@ -466,7 +466,7 @@ CSV (`<device>_sensor.csv`) 는 같은 tick 에서 raw (`ft_<f>_fx`) → guarded
 
 GUI 는 이 상태를 **버튼 아래 줄에 표시하고 직접 게이트**합니다 (패널이 Grasp 탭의 절반 폭 컬럼이라 버튼 옆에 두면 문장이 잘립니다). joint/task 컨트롤러는 활성 모드를 `grasp_controller_type` ROS 파라미터로 노출하므로 (`ros2 param get /demo_joint_controller/demo_joint_controller grasp_controller_type`), GUI 가 선택된 컨트롤러의 실제 모드를 읽어 `mode: force_pi` (녹색, 버튼 활성) 또는 `mode: contact_stop — Grasp/Release 는 force_pi 에서만 동작` (노랑, 버튼 비활성) 을 띄웁니다. 파라미터 서비스가 아직 안 뜬 경우에는 `mode: unknown` (회색) 으로 두고 버튼은 **활성 유지** — GUI 가 컨트롤러가 받아들일 명령을 막는 두 번째 게이트가 되면 안 되기 때문입니다. `demo_wbc_controller` 는 이 파라미터를 선언하지 않으며 (자체 FSM) 항상 활성입니다.
 
-모드는 **같은 탭에서 바꿀 수도 있습니다**: readout 아래 `Grasp mode:` 콤보박스에서 값을 고르고 `Set Mode` 를 누르면 선택된 컨트롤러의 `grasp_controller_type` 을 set 합니다. 거부되면 컨트롤러가 돌려준 사유(`SetParametersResult::reason`)가 그 아래 줄에 **그대로** 표시됩니다 — 문구를 다시 쓰지 않는 이유는 그것이 "손을 펴라" 와 "PI grasp 를 놓아라" 를 가르는 유일한 정보이기 때문입니다. 사유 줄은 모드 readout 과 **별도 라벨**입니다 (readout 은 5초 catalog 폴링이 매번 덮어쓰므로 거기 두면 읽기 전에 사라집니다). 시도 후에는 성공·거부 **양쪽 모두** 파라미터를 다시 읽으므로, readout 은 GUI 가 *요청한* 모드가 아니라 컨트롤러가 *확인한* 모드입니다. 콤보박스는 실제 모드가 변할 때만 다시 seed 됩니다 — 5초 폴링도, **거부된 set 도** 조작자의 미적용 선택을 지우지 않습니다 (거부는 손을 펴고 다시 누르는 경우가 대부분이라 선택이 남아 있어야 합니다). `demo_wbc_controller` 선택 시에는 콤보박스와 `Set Mode` 가 비활성입니다 (파라미터 자체가 없음). GUI 밖에서 (`ros2 param set`) 바꾼 모드는 다음 무효화 시점까지 readout 에 반영되지 않을 수 있습니다 — 명령을 실제로 게이트하는 것은 이 표시가 아니라 컨트롤러입니다.
+모드는 **같은 탭에서 바꿀 수도 있습니다**: readout 아래 `Grasp mode:` 콤보박스에서 값을 고르고 `Set Mode` 를 누르면 선택된 컨트롤러의 `grasp_controller_type` 을 set 합니다. 거부되면 컨트롤러가 돌려준 사유(`SetParametersResult::reason`)가 그 아래 줄에 **그대로** 표시됩니다 — 문구를 다시 쓰지 않는 이유는 그것이 "손을 펴라" 와 "PI grasp 를 놓아라" 를 가르는 유일한 정보이기 때문입니다. 사유 줄은 모드 readout 과 **별도 라벨**입니다 (readout 은 5초 catalog 폴링이 매번 덮어쓰므로 거기 두면 읽기 전에 사라집니다). 시도 후에는 성공·거부·**호출 자체의 실패** (`set failed: …` — set 이 들어갔는지 알 수 없다) 모두 캐시를 건너뛰고 파라미터를 다시 읽으므로, readout 은 GUI 가 *요청한* 모드가 아니라 컨트롤러가 *확인한* 모드입니다. 콤보박스는 실제 모드가 변할 때만 다시 seed 됩니다 — 5초 폴링도, **거부된 set 도**, 그 재읽기가 돌아오기 전의 폴링도 (그동안은 캐시된 모드가 그대로 보입니다) 조작자의 미적용 선택을 지우지 않습니다 (거부는 손을 펴고 다시 누르는 경우가 대부분이라 선택이 남아 있어야 합니다). `demo_wbc_controller` 선택 시에는 콤보박스와 `Set Mode` 가 비활성입니다 (파라미터 자체가 없음). GUI 밖에서 (`ros2 param set`) 바꾼 모드는 다음 무효화 시점까지 readout 에 반영되지 않을 수 있습니다 — 명령을 실제로 게이트하는 것은 이 표시가 아니라 컨트롤러입니다.
 
 **모드는 런타임에 바꿀 수 있습니다.** CLI 도 같은 경로입니다:
 
@@ -1432,6 +1432,8 @@ GUI 시작 시:
 1. 선택된 프로파일의 *switchable* 키 집합을 오프라인 fallback 으로 라디오에 표시. 상태 라벨에 `(controllers offline)` 접미사.
 2. CM 의 `/rtc_cm/list_controllers` 가 응답하면 catalog 가 수신 → Tk 스레드로 marshalling → 라디오 / preset combo / 상태 라벨이 *live* 데이터로 재구성. 5 s 마다 재조회 (controller hot-swap 자동 감지).
 3. 응답된 controller 중 그 switchable 집합에 있는 것만 라디오에 노출. 나머지는 catalog 에 보존되지만 GUI 에서 선택 불가.
+
+상태 라벨의 `Active:` 는 라디오 선택이 아니라 CM 이 `/rtc_cm/active_controller_name` 으로 알린 컨트롤러입니다 (아직 못 받았으면 `Active: — (not reported)`). `Switch Controller` 를 누르면 응답이 올 때까지 `switching → <선택> …` 을 보입니다.
 
 **switchable ≠ tunable.** 라디오 집합은 `GAIN_DEFS` 키 (= GUI 에 게인 패널이 있는 컨트롤러) 에 `RobotProfile.extra_switchable_controllers` 를 더한 것입니다 (`RobotProfile.switchable_controllers()`). 두 축이 갈라진 이유는 `demo_inference_controller` 입니다 — 전환은 되지만 ROS 파라미터를 하나도 선언하지 않아 튜닝할 게 없습니다.
 
