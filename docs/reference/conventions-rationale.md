@@ -133,7 +133,7 @@ Follow **Conventional Commits**: `type(scope): subject` + optional body + option
 
 **Body / footer** (optional, blank line before each, wrap at 72):
 - Explain *what* and *why*, not *how*. Omit when the subject is self-explanatory.
-- Reference issues as `Closes: #N` / `Refs: #N` in the footer.
+- Reference issues as `Refs: #N` in the footer — no closing keyword (rule: conventions.md). Issues here often carry post-merge work in their Done criteria, and a project item moved to Done closes its issue too (#791, #822, #716).
 - PR merge commits keep GitHub's default `Merge pull request #N from ...` — do not rewrite.
 - **Merge method** — **기본은 no-ff merge commit** (`gh pr merge --merge`, 사용자 확정 2026-08-16): 머지 커밋이 PR 단위를 히스토리에 남기고, 브랜치 커밋 본문(PROC-6 spec-change 근거 같은 감사 기록)이 `main` 에 그대로 보존된다. **squash 는 커밋 본문을 PR 본문으로 덮어쓰므로** rebase 와 함께 사용자가 명시 지시할 때만 쓴다 (선례: #442 rebase · #450 no-ff; #464 까지는 squash 관례였고 `(#N)` 접미사가 그 흔적). `delete_branch_on_merge=false` 이므로 `gh pr merge --delete-branch` 로 로컬·원격 브랜치를 함께 정리한다.
 
@@ -146,5 +146,5 @@ regressions during long runs. Emit a count=0 sentinel plus a
 rate-limited warning so operators see repeated failures without
 flooding the console.
 
-Closes: #92
+Refs: #92
 ```
