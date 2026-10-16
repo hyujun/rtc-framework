@@ -58,8 +58,6 @@ Hybrid-CPU 감지 + BIOS 체크리스트: [NUC_HYBRID_SUPPORT.md](../NUC_HYBRID_
 
 ## RtControllerNode
 
-- **on_cleanup 의 eventfd 순서 (issue #224)**: backend 의 state-lane sub 은 `on_deactivate` 뒤에도 살아 있고 그 state-ready 콜백이 eventfd 에 쓴다 — 그래서 eventfd 는 device backend 보다 **뒤에** 닫는다.
-- **state-ready 콜백이 mailbox 전용이 된 것 (issue #198 Phase 2)**: slot 별 dirty bit + eventfd write 만 하고 digital-twin republish 는 `nrt_publish_thread` 의 `DrainDigitalTwin()` 이 수행한다.
 - **E-STOP log · status publish 의 defer (#198 Phase 3)**: `TriggerGlobalEstop` / `ClearGlobalEstop` 은 RT loop 에서 도달 가능하므로 atomic flag 만 세우고 `nrt_logging` 의 `DrainLog()` 가 실제 publish 를 한다. lifecycle 콜백은 `FlushEstopStatus()` 로 간접 요청한다.
 - **CM 은 RobotTarget sub 을 만들지 않는다 (issue #138)** — manager-target 경로는 폐기됐다. controller YAML 에 `ownership:` field 가 없는 것도 같은 이슈다.
 - **output validation (#196 Phase 2b)** 과 **E-STOP substitution (#198 Phase 3)** 은 카운터를 따로 둔다.
@@ -67,7 +65,7 @@ Hybrid-CPU 감지 + BIOS 체크리스트: [NUC_HYBRID_SUPPORT.md](../NUC_HYBRID_
 
 ## TF `_actual` 프레임
 
-bare `tf2_ros::TransformListener` 가 `_actual` 프레임을 못 받는 함정은 digital_twin tcp_viz · bt_coordinator 두 곳에서 각각 silent-fail 버그로 발현했다. 기록 시점의 소비자: self-feed 는 ur5e_bt_coordinator `transforms_sub_`, demo_gui `_transforms_cb`; `/tf` 재발행은 `rtc_digital_twin` 의 `controller_tf` (`<active>/transforms` → restamp → `/tf`, default on).
+기록 시점의 소비자: self-feed 는 ur5e_bt_coordinator `transforms_sub_`, demo_gui `_transforms_cb`; `/tf` 재발행은 `rtc_digital_twin` 의 `controller_tf` (`<active>/transforms` → restamp → `/tf`, default on).
 
 ## Session logs
 
@@ -77,4 +75,3 @@ bare `tf2_ros::TransformListener` 가 `_actual` 프레임을 못 받는 함정�
 
 - **`rtc_controllers` → `rtc_tsid` (2026-09-20, dynamic_catching D-26)**: catch-pose IK task step 이 `QPSolverWrapper` 경유 box-constrained QP 다. `rtc_tsid` 는 `rtc_controllers` 를 의존하지 않으므로 순환은 없지만, `rtc_controller_manager` 를 포함한 `rtc_controllers` 의 모든 소비자가 ProxSuite 를 끌어온다.
 - **`rtc_tools` → `rtc_controllers` exec_depend (2026-09-21)**: `catchability_map` 이 `rtc_controllers` 의 `catch_pose_ik_batch` 를 subprocess 로 부른다 — 오프라인 지도 (S3.5a) 와 런타임 계획기 (S6.2) 가 같은 판정 함수를 써야 하기 때문이다. exec 전용이고 `rtc_controllers` 는 `rtc_tools` 를 의존하지 않으므로 순환은 없다. 2026-09-22: `catch_gate_map` 도 같은 이유로 `catch_gate_batch` (S3.5b) 를 부른다.
-- **`rtc_mpc`**: CMake-only 의존 (fmt >= 10, aligator — source-installed) 은 `package.xml` 에 선언돼 있지 않다.
