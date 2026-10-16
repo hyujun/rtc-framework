@@ -2128,8 +2128,12 @@ fi
 STALE_INSTALL=""
 INSTALL_ROOTS=""
 if [ "$PURE_FORMAT" -eq 0 ]; then
-  # Probe likely install/ locations: workspace root sibling of repo, plus repo-local
-  for cand in "../../install" "../../../install" "./install"; do
+  # The colcon workspace's install/ by absolute path (so the report names a
+  # path that works from any cwd), plus a repo-local install/ -- an AGENTS.md
+  # §9.1 slip, still worth looking into.
+  INSTALL_CANDS="./install"
+  [ -n "$WORKSPACE" ] && INSTALL_CANDS="$WORKSPACE/install $INSTALL_CANDS"
+  for cand in $INSTALL_CANDS; do
     [ -d "$cand" ] && INSTALL_ROOTS="${INSTALL_ROOTS} ${cand}"
   done
   if [ -n "$INSTALL_ROOTS" ]; then
