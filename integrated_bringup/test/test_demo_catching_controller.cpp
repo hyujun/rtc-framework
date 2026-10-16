@@ -1674,10 +1674,6 @@ struct WaitPoseRig {
   const rclcpp_lifecycle::State prev;
 };
 
-std::vector<double> ArmPositionsOf(const ControllerState& s) {
-  return {s.devices[0].positions.begin(), s.devices[0].positions.begin() + kArmDof};
-}
-
 }  // namespace
 
 TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {

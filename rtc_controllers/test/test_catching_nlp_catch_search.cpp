@@ -760,7 +760,8 @@ TEST(NlpCatchSearchScreening, TheIkVerdictIsCatchPoseIksOwn) {
     // is beyond the reach bound, before it.
     EXPECT_EQ(ik_fail + too_far > 0, tc.expect_ik) << Table(rig->search, w.stats);
     EXPECT_EQ(manip_fail > 0, tc.expect_manip) << Table(rig->search, w.stats);
-    EXPECT_EQ(w.stats.n_ik, static_cast<std::uint16_t>(oracle.size() - too_far));
+    EXPECT_EQ(w.stats.n_ik,
+              static_cast<std::uint16_t>(oracle.size() - static_cast<std::size_t>(too_far)));
     EXPECT_EQ(Count(rig->search, NlpReject::kTooFar), too_far);
   }
 }

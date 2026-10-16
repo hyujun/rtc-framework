@@ -345,7 +345,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
     backend.reset();
   }
   for (std::size_t slot = 0; slot < digital_twin_by_slot_.size(); ++slot) {
-    digital_twin_by_slot_[slot] = DigitalTwinEntry{};
+    digital_twin_by_slot_[slot] = DigitalTwinEntry();
     dt_dirty_[slot].store(false, std::memory_order_relaxed);
   }
   estop_pub_.reset();
@@ -449,7 +449,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
     backend.reset();
   }
   for (std::size_t slot = 0; slot < digital_twin_by_slot_.size(); ++slot) {
-    digital_twin_by_slot_[slot] = DigitalTwinEntry{};
+    digital_twin_by_slot_[slot] = DigitalTwinEntry();
     dt_dirty_[slot].store(false, std::memory_order_relaxed);
   }
   estop_pub_.reset();

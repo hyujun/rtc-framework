@@ -32,7 +32,7 @@
 namespace rtc::mpc::internal {
 
 using RigidConstraintModel = pinocchio::RigidConstraintModel;
-using RigidConstraintVec = PINOCCHIO_ALIGNED_STD_VECTOR(RigidConstraintModel);
+using RigidConstraintVec = std::vector<RigidConstraintModel>;
 
 /// @brief Build the rigid-contact models vector for a given active-contact
 ///        set. Each entry references a frame from the Pinocchio model;

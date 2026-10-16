@@ -231,8 +231,8 @@ MpcSegmentPlannerModel MpcModelOf(const fx::ArmModel& a) {
     pm.device_of_model[U(m)] = DeviceOf(m, pm.nv);
     pm.q_min[U(m)] = a.model->lowerPositionLimit[m];
     pm.q_max[U(m)] = a.model->upperPositionLimit[m];
-    pm.qdot_max[U(m)] = a.model->velocityLimit[m];
-    pm.tau_max[U(m)] = a.model->effortLimit[m];
+    pm.qdot_max[U(m)] = a.model->upperVelocityLimit[m];
+    pm.tau_max[U(m)] = a.model->upperEffortLimit[m];
   }
   return pm;
 }

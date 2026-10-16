@@ -469,12 +469,6 @@ struct InfeasibleCase {
   void (*fill)(const dk::Rig&, const MpcDockingSegmentCore&, MpcDockingSegmentCoreInput&);
 };
 
-void FillFeasibleSeed(const dk::Rig& rig, const MpcDockingSegmentCore& core,
-                      MpcDockingSegmentCoreInput& in) {
-  dk::Throw th;
-  (void)dk::MakeThrow(rig, core, 2, 0.0, th, in);
-}
-
 // Which group an infeasible problem leaves its residual in is decided by the
 // RATIO of the penalties (the core grows them together, so the ratio is the
 // caller's): "the ball is not in the capture set" can be paid as an axial gap
@@ -3024,7 +3018,7 @@ TEST(MpcDockingSegmentCoreCatchTime, TheBoxIsHeldAndAMoveIsAtMostTheStepLimit) {
     ASSERT_TRUE(core.Solve(boxed, held));
     EXPECT_TRUE(held.converged) << DescribeTc(held);
     EXPECT_EQ(held.delta_ns, toward * 1'500'017) << DescribeTc(held);
-    EXPECT_GT(-toward * held.catch_time_gradient,
+    EXPECT_GT(-static_cast<double>(toward) * held.catch_time_gradient,
               c->rig.params.tol_kkt * std::max(1.0, held.grad_norm))
         << "the derivative must still point out of the box";
     EXPECT_LE(held.kkt_residual, c->rig.params.tol_kkt * std::max(1.0, held.grad_norm));

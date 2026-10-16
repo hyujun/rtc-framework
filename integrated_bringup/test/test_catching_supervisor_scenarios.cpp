@@ -1500,8 +1500,8 @@ class SegmentScenarioBase : public SupervisorScenarioTest {
   /// A ball that is `speed` m/s down the catch frame's z axis and on the
   /// plane s = 0 of the hand (as the segment puts it) at `t_cross_ns`.
   BallLine CrossingBall(std::int64_t t_cross_ns, double speed) const {
-    Eigen::Matrix3d R;
-    Eigen::Vector3d p;
+    Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d p = Eigen::Vector3d::Zero();
     EXPECT_TRUE(HandAt(first_seg_, t_cross_ns, R, p));
     const Eigen::Vector3d v = -speed * R.col(2);
     BallLine b;

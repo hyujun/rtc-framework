@@ -59,8 +59,10 @@ rtc::DeviceState GateViewOf(const rtc::DeviceStateCache& ds) {
 
 // ── TU-global allocation counter ─────────────────────────────────────────────
 // Replaces the global plain (non-aligned) new/delete pair. All overloads
-// route through std::malloc/std::free so new/delete stay a matched pair
-// (GCC -Wmismatched-new-delete fires on mixed default/custom pairs).
+// route through std::malloc/std::free so new/delete stay a matched pair.
+// GCC still reports the malloc-backed pair as -Wmismatched-new-delete
+// program-wide (a false positive), so the target carries
+// -Wno-mismatched-new-delete in CMakeLists.txt.
 namespace {
 std::atomic<std::size_t> g_alloc_count{0};
 }  // namespace

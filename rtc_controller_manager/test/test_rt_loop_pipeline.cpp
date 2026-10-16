@@ -450,8 +450,8 @@ INSTANTIATE_TEST_SUITE_P(AllRejectShapes, OutputFaultParamTest,
                          ::testing::Values(OutputFault::kInvalidFlag, OutputFault::kDeviceCount,
                                            OutputFault::kChannelCount,
                                            OutputFault::kNonFiniteCommand),
-                         [](const ::testing::TestParamInfo<OutputFault>& info) {
-                           switch (info.param) {
+                         [](const ::testing::TestParamInfo<OutputFault>& param_info) {
+                           switch (param_info.param) {
                              case OutputFault::kInvalidFlag:
                                return "InvalidFlag";
                              case OutputFault::kDeviceCount:
