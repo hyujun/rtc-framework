@@ -180,17 +180,6 @@ def test_seed_due_only_when_the_values_or_the_controller_changed():
     assert seed_due((TASK, a), JOINT, a)
 
 
-def test_unknown_for_the_seeded_controller_is_not_a_change():
-    """The window between dropping the cache and the re-read landing paints
-    unknown; that must not blank the inputs of the controller being edited. For
-    another controller it still must, or its values would sit under the new
-    selection."""
-    a = VtcpConfigView("constant", (0.0, 0.0, 0.1), (0.0, 0.0, 0.0))
-    assert not seed_due((TASK, a), TASK, None)
-    assert seed_due((TASK, a), JOINT, None)
-    assert seed_due(None, TASK, None)
-
-
 def test_apply_gate():
     assert apply_enabled(TASK, JOINT, VTCP_OWNERS) == (True, HINT_INACTIVE)
     assert apply_enabled(TASK, TASK, VTCP_OWNERS) == (False, HINT_ACTIVE)
@@ -371,8 +360,11 @@ def _state(
                 cb(self)
 
     class _Client:
-        def wait_for_services(self, timeout_sec=0.0):
+        def services_are_ready(self):
             return True
+
+        def wait_for_services(self, timeout_sec=0.0):
+            raise AssertionError("blocks the Tk thread for up to the timeout")
 
         def set_parameters_atomically(self, params):
             state.sent.append(("atomically", params))
@@ -390,6 +382,7 @@ def _state(
 
 
 _GOOD = ("constant", ["0.0", "0.0", "0.15"], ["0.0", "0.0", "0.1"])
+_OLD = VtcpConfigView("disabled", (0.0,) * 3, (0.0,) * 3)
 
 
 @pytest.mark.parametrize("ctrl", sorted(VTCP_OWNERS))
@@ -433,13 +426,12 @@ def test_a_refusal_is_shown_verbatim_and_the_gate_repainted():
     constant — the GUI is not allowed to depend on its wording."""
     reason = "an arbitrary reason the GUI has never seen: 42"
     state = _state(TASK, JOINT, successful=False, reason=reason, inputs=_GOOD)
-    state._vtcp_configs[TASK] = VtcpConfigView("disabled", (0.0,) * 3, (0.0,) * 3)
+    state._vtcp_configs[TASK] = _OLD
     state._send_vtcp()
 
     assert state._vtcp_result_var.get() == f"refused: {reason}"
-    assert TASK not in state._vtcp_configs
-    assert state.refreshes == [(TASK, {}, {"paint_unknown": False})], (
-        "the cache must be dropped BEFORE the re-read, or the re-read hits it"
+    assert state.refreshes == [(TASK, {TASK: _OLD}, {"force": True})], (
+        "the re-read must bypass the cache, or it returns the value just changed"
     )
     assert state._vtcp_hint_var.get() == HINT_INACTIVE
     assert state._vtcp_result_var.get() == f"refused: {reason}", "the gate repaint wiped it"
@@ -447,11 +439,11 @@ def test_a_refusal_is_shown_verbatim_and_the_gate_repainted():
 
 def test_a_success_also_invalidates_and_rereads():
     state = _state(TASK, JOINT, inputs=_GOOD)
-    state._vtcp_configs[TASK] = VtcpConfigView("disabled", (0.0,) * 3, (0.0,) * 3)
+    state._vtcp_configs[TASK] = _OLD
     state._send_vtcp()
 
     assert "applied" in state._vtcp_result_var.get()
-    assert state.refreshes == [(TASK, {}, {"paint_unknown": False})]
+    assert state.refreshes == [(TASK, {TASK: _OLD}, {"force": True})]
 
 
 def test_the_gate_closes_every_input_on_the_active_controller():
@@ -505,7 +497,7 @@ def test_load_overwrites_an_edit_with_a_fresh_read():
     state._vtcp_offset_entries[2].text = "0.2"
 
     state._request_load_vtcp()
-    assert state.refreshes == [(TASK, {}, {"paint_unknown": False})], "Load must bypass the cache"
+    assert state.refreshes == [(TASK, {TASK: view}, {"force": True})], "Load must bypass the cache"
     state._paint_vtcp(TASK, view)  # the read lands
     assert state._vtcp_offset_entries[2].get() == "0.1"
 
@@ -520,18 +512,16 @@ def test_a_late_read_for_a_deselected_controller_is_dropped():
 def test_a_failed_call_is_reported_only_for_its_controller_and_still_rereads():
     """The exception path used to write its line straight into the outcome label,
     so a failure that landed after the operator moved on was shown under the
-    newly selected controller, and the stale cache of the one that failed was
-    kept."""
+    newly selected controller, and the one that failed was never re-read."""
     state = _state(TASK, JOINT, inputs=_GOOD, raises=RuntimeError("service died"), defer=True)
-    state._vtcp_configs[TASK] = VtcpConfigView("disabled", (0.0,) * 3, (0.0,) * 3)
+    state._vtcp_configs[TASK] = _OLD
     state._send_vtcp()
     state.selected_ctrl.set(COMPLIANCE)
     state._apply_vtcp_state()
     state.fire()
 
     assert state._vtcp_result_var.get() == "", "TASK's failure painted under COMPLIANCE"
-    assert TASK not in state._vtcp_configs
-    assert state.refreshes == [(TASK, {}, {"paint_unknown": False})]
+    assert state.refreshes == [(TASK, {TASK: _OLD}, {"force": True})]
     assert any("service died" in msg for _, msg in state._logger.lines)
 
 
@@ -541,17 +531,19 @@ def test_a_failed_call_for_the_selected_controller_says_so():
     assert state._vtcp_result_var.get() == "set failed: service died"
 
 
-def test_a_poll_between_cache_drop_and_reread_keeps_the_edit():
-    """After a refused Apply the cache is gone until the re-read lands. A catalog
-    poll in that window paints unknown for the same controller; the inputs must
-    survive it, or the re-read (same values as before) refills them and the
-    operator's edit is lost."""
+def test_a_poll_before_the_reread_lands_keeps_the_edit():
+    """A refused Apply re-reads past the cache instead of dropping it, so a
+    catalog poll before the answer lands repaints the cached values rather than
+    "unknown" — the inputs keep the edit the refused Apply carried."""
     view = VtcpConfigView("constant", (0.0, 0.0, 0.1), (0.0, 0.0, 0.0))
-    state = _state(TASK, JOINT)
+    state = _state(TASK, JOINT, successful=False, reason="r", inputs=_GOOD)
+    state._vtcp_configs[TASK] = view
     state._paint_vtcp(TASK, view)
-    state._vtcp_offset_entries[2].text = "0.2"  # the edit the refused Apply carried
+    state._vtcp_offset_entries[2].text = "0.2"
+    state._send_vtcp()
 
-    state._paint_vtcp(TASK, None)  # the poll, cache empty
+    real_refresh = types.MethodType(_gui()._refresh_vtcp, state)
+    real_refresh(TASK)  # the poll: a cache hit, no query
     assert state._vtcp_offset_entries[2].get() == "0.2"
     state._paint_vtcp(TASK, view)  # the re-read lands, values unchanged
     assert state._vtcp_offset_entries[2].get() == "0.2"

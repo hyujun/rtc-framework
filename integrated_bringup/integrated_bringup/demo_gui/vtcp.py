@@ -139,15 +139,7 @@ def seed_due(seeded: tuple[str, VtcpConfigView | None] | None, ctrl: str, view) 
     Only when the controller's values (or the selected controller) changed since
     the last seed, so a re-read that returns the same values — the one after a
     refused Apply — leaves an unapplied edit in place.
-
-    "Unknown" for the controller already seeded is not a change: it is the
-    window between dropping the cache and the re-read landing, and a catalog
-    poll that paints it there must not blank the inputs (the re-read would then
-    refill them and the edit would be lost). Unknown still blanks the inputs
-    when the selection moved to another controller.
     """
-    if view is None and seeded is not None and seeded[0] == ctrl:
-        return False
     return seeded != (ctrl, view)
 
 

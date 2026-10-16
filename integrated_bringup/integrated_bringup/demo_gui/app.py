@@ -1358,7 +1358,7 @@ class DemoControllerGUI(Node):
         self._vtcp_apply_btn.config(state="normal" if enabled else "disabled")
         self._vtcp_load_btn.config(state="normal" if ctrl in VTCP_OWNERS else "disabled")
         self._vtcp_mode_combo.config(state="readonly" if enabled else "disabled")
-        for ent in [*self._vtcp_offset_entries, *self._vtcp_rpy_entries]:
+        for ent in self._vtcp_input_widgets()[1:]:
             ent.config(state="normal" if enabled else "disabled")
         self._vtcp_hint_var.set(hint)
         self._vtcp_hint_label.config(fg=GRASP_MODE_FG_ACTIVE if enabled else GRASP_MODE_FG_UNKNOWN)
@@ -1366,19 +1366,23 @@ class DemoControllerGUI(Node):
             self._vtcp_result_ctrl = ""
             self._vtcp_result_var.set("")
 
-    def _refresh_vtcp(self, ctrl: str, *, paint_unknown: bool = True) -> None:
+    def _refresh_vtcp(self, ctrl: str, *, force: bool = False) -> None:
         """Show ``ctrl``'s virtual TCP, reading it once if not already cached.
 
         Same shape as _refresh_grasp_mode, including the non-blocking readiness
         check (this runs on the Tk thread and from the catalog poll).
+
+        ``force`` re-reads past the cache (after an Apply, and for Load). The
+        cached view stays on screen until the answer replaces it, so there is no
+        "unknown" window for a catalog poll to paint into the inputs.
         """
         if not ctrl:
             return
-        cached = self._vtcp_configs.get(ctrl)
+        cached = None if force else self._vtcp_configs.get(ctrl)
         if cached is not None:
             self._paint_vtcp(ctrl, cached)
             return
-        if paint_unknown:
+        if not force:
             self._paint_vtcp(ctrl, None)
         if ctrl not in VTCP_OWNERS:
             return
@@ -1394,6 +1398,9 @@ class DemoControllerGUI(Node):
                 resp = fut.result()
             except Exception as exc:  # noqa: BLE001 — any failure = unknown
                 self.get_logger().debug(f"virtual_tcp_* query failed for /{ctrl}: {exc}")
+                # A forced read follows a change, so the cached view may be the
+                # one that changed; stop claiming it.
+                self._vtcp_configs.pop(ctrl, None)
                 return
             view = parse_entries(list(resp.values))
             if view is None:
@@ -1426,11 +1433,10 @@ class DemoControllerGUI(Node):
             self._fill_vtcp_inputs(view)
 
     def _fill_vtcp_inputs(self, view: VtcpConfigView | None) -> None:
-        """Write ``view`` into the input widgets (None blanks them). The widgets
-        may be disabled; writing needs them open for the duration."""
-        widgets = self._vtcp_input_widgets()
-        states = [w.cget("state") for w in widgets]
-        for w in widgets:
+        """Write ``view`` into the input widgets (None blanks them). Tk drops a
+        write into a disabled widget, so they are opened for it and the gate
+        then closes them again."""
+        for w in self._vtcp_input_widgets():
             w.config(state="normal")
         self._vtcp_mode_combo.set(view.mode if view is not None else "")
         texts = (
@@ -1443,15 +1449,13 @@ class DemoControllerGUI(Node):
         ):
             ent.delete(0, tk.END)
             ent.insert(0, text)
-        for w, st in zip(widgets, states, strict=True):
-            w.config(state=st)
+        self._apply_vtcp_state()
 
     def _request_load_vtcp(self) -> None:
         """Load VTCP: re-read the selected controller and overwrite the inputs."""
         ctrl = self.selected_ctrl.get()
-        self._vtcp_configs.pop(ctrl, None)
         self._vtcp_seeded = None
-        self._refresh_vtcp(ctrl, paint_unknown=False)
+        self._refresh_vtcp(ctrl, force=True)
 
     def _send_vtcp(self) -> None:
         """Apply VTCP: send all three parameters in ONE set_parameters_atomically.
@@ -1475,7 +1479,8 @@ class DemoControllerGUI(Node):
             return
 
         client = self._get_param_client(ctrl)
-        if not client.wait_for_services(timeout_sec=1.0):
+        # Non-blocking, like the reads: a dead controller must not freeze the window.
+        if not client.services_are_ready():
             self._set_vtcp_result(f"parameter services for /{ctrl} unavailable", ok=False)
             return
 
@@ -1491,41 +1496,35 @@ class DemoControllerGUI(Node):
 
         def _on_set_done(fut):
             try:
-                resp = fut.result()
+                result = fut.result().result
+                ok = bool(result.successful)
+                message = (
+                    "applied — takes effect on the next activation"
+                    if ok
+                    else f"refused: {result.reason}"
+                )
             except Exception as exc:  # noqa: BLE001 — surfaced in the label
-                # Same path as a refusal: the selection check, the re-read and
-                # the gate repaint all apply — the set may or may not have landed.
-                self.root.after(0, self._after_vtcp_set, ctrl, False, str(exc), "set failed")
-                return
-            result = resp.result
-            self.root.after(
-                0, self._after_vtcp_set, ctrl, bool(result.successful), str(result.reason)
-            )
+                # A failed call goes the same way as a refusal: the set may or
+                # may not have landed.
+                ok, message = False, f"set failed: {exc}"
+            self.root.after(0, self._after_vtcp_set, ctrl, ok, message)
 
         future.add_done_callback(_on_set_done)
 
-    def _after_vtcp_set(self, ctrl: str, ok: bool, reason: str, prefix: str = "refused") -> None:
+    def _after_vtcp_set(self, ctrl: str, ok: bool, message: str) -> None:
         """Report the outcome and re-read. Tk thread only.
 
-        The cache goes on every outcome and the re-read is what paints the
-        readout, so it shows what the controller confirmed. A refusal also
-        repaints the Apply gate: the likely cause is a switch that landed after
-        the GUI last heard the active controller's name. ``prefix`` tells a
-        refusal (the controller's reason) from a failed call (rclpy's
-        exception), which comes through here too so that its outcome is painted
-        only for the controller it belongs to.
+        The outcome is painted only while ``ctrl`` is still selected. The forced
+        re-read runs on every outcome, so the readout shows what the controller
+        confirmed. A refusal also repaints the Apply gate: the likely cause is a
+        switch that landed after the GUI last heard the active controller's name.
         """
         selected = ctrl == self.selected_ctrl.get()
-        if ok:
-            self.get_logger().info(f"/{ctrl} virtual_tcp_* applied")
-            if selected:
-                self._set_vtcp_result("applied — takes effect on the next activation", ok=True)
-        else:
-            self.get_logger().warn(f"/{ctrl} virtual_tcp_* {prefix}: {reason}")
-            if selected:
-                self._set_vtcp_result(f"{prefix}: {reason}", ok=False)
-        self._vtcp_configs.pop(ctrl, None)
-        self._refresh_vtcp(ctrl, paint_unknown=False)
+        log = self.get_logger().info if ok else self.get_logger().warn
+        log(f"/{ctrl} virtual_tcp_* {message}")
+        if selected:
+            self._set_vtcp_result(message, ok=ok)
+        self._refresh_vtcp(ctrl, force=True)
         if selected:
             self._apply_vtcp_state()
 

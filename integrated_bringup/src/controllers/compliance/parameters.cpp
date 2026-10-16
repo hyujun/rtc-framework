@@ -183,9 +183,7 @@ void DemoComplianceController::DeclareGainParameters() noexcept {
                  GraspHandModeName(g.grasp_hand_mode));
   }
 
-  // #847: virtual_tcp_* (inactive-only, persistence and single-writer contract
-  // in virtual_tcp_params.hpp). Last, so the stored-value check sees the hand
-  // model LoadConfig built.
+  // #847 — contract in virtual_tcp_params.hpp.
   DeclareVirtualTcpParameters(*node_, hand_handle_ != nullptr, logger_, g.vtcp);
 
   gains_lock_.Store(g);
