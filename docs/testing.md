@@ -14,9 +14,11 @@ colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_control
 colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser     # Python 테스트 하나
 ```
 
+`colcon.pkg` 로 패키지 안 병렬 (`ctest-args: ["-j", n]`) 을 켠 패키지는 CLI 의 `-j 1` 로 직렬이 되지 않는다 (`colcon.pkg` 의 `-j` 가 뒤에 붙는다). 직렬로 돌리려면 `COLCON_EXTENSION_BLOCKLIST=colcon_core.package_augmentation.colcon_pkg colcon test …` 로 `colcon.pkg` 를 읽지 않게 한다.
+
 ## Sensor Matrix
 
-변경 위치를 찾아 **필수 + 추가** 를 모두 돌린다 ([AGENTS.md](../AGENTS.md) §5). 기본형은 `colcon test --packages-select <pkg>` 이고, 표의 "필수" 는 그 안에서 반드시 봐야 하는 테스트와 추가 명령이다. 각 테스트가 무엇을 왜 pin 하는지는 [testing-rationale.md](reference/testing-rationale.md) §Sensor Matrix 보충.
+변경 위치를 찾아 **필수 + 추가** 를 모두 돌린다 ([AGENTS.md](../AGENTS.md) §5). 기본형은 `colcon test --packages-select <pkg>` 이고, 표의 "필수" 는 그 안에서 반드시 봐야 하는 테스트와 추가 명령이다. 각 테스트가 무엇을 판별하는지는 그 테스트 파일의 머리 주석이 갖고, 행에 걸친 설계 원칙과 sanitizer 빌드의 예외는 [testing-rationale.md](reference/testing-rationale.md#sensor-matrix-보충) 에 있다.
 
 | 변경 위치 | 필수 | 추가 |
 |---|---|---|
@@ -32,7 +34,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `rtc_mujoco_sim/` | 패키지 전체 + `test_motor_servo_gains` · `test_torque_mode_ctrl_range` | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` smoke |
 | `rtc_urdf_bridge/` | 패키지 전체 + `test_frame_jacobian_fd_oracle` · `test_inertial_validation` · `test_real_model_inertial_gate` | 실제 robot 모델 로드 smoke |
 | `rtc_communication/` · `rtc_inference/` · `rtc_digital_twin/` | UDP · CAN (vcan0 없으면 skip) · RS485 PTY · ONNX · pytest | vcan0 설정 후 CAN, 실제 모델 · RViz2 smoke |
-| `rtc_tools/` | pytest. MJCF/URDF 를 고쳤으면 `test_real_model_pairs.py` 가 게이트 (colcon 에서 skip 될 수 있음) | `.venv/bin/python -m pytest rtc_tools/test` |
+| `rtc_tools/` | pytest. MJCF/URDF 를 고쳤으면 `test_real_model_pairs.py` 가 게이트 (colcon 에서 skip 될 수 있음) | `PYTHONPATH=rtc_tools:$PYTHONPATH .venv/bin/python -m pytest rtc_tools/test` |
 | `repo_scripts/` | `test_rt_common` · `test_install_deps` · `test_install_python` · `test_build_jobs` + shell unit test | `check_rt_setup.sh --summary` |
 | `shape_estimation*/` | ToF + exploration gtest | `/shape/estimate` echo, `/shape/explore` 액션 |
 | `integrated_bringup/` demo FSM | demo_wbc · demo_joint · demo_task · grasp_phase_manager · virtual_tcp gtest | BT coordinator 통합 |
@@ -60,7 +62,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `/rtc_cm/active_controller_name` | 동일 (TRANSIENT_LOCAL) | 컨트롤러 전환 확인. BT · GUI · digital_twin 이 이 토픽으로 다시 연결한다 |
 | `/forward_position_controller/commands` | robot 모드 + `ur_driver_native` 전용 | `ros2 topic hz` 로 `control_rate` 확인. **sim 에는 없다** — sim 은 `devices.<group>.backend.command_topic` (예: `/ur5e/joint_command`) 을 본다 |
 | `<session>/timing/cm_timing_log.csv` | CM RT loop | tick 별 8열 timing (`run_id`, `t_state_us` … `jitter_us`). p50/p99 는 후처리. `run_id` 로 먼저 묶는다. sim 에서는 `jitter_us` 가 항상 0 |
-| `<session>/timing/mpc_timing_log.csv` · `rt_callback_timing_log.csv` | MPC thread · rt_callback thread | 같은 8열. MPC tick 당 1행 · device state 콜백당 1행 |
+| `<session>/timing/mpc_timing_log.csv` · `rt_callback_timing_log.csv` | MPC thread · rt_callback thread | 같은 8열. MPC tick 당 1행 · device state 콜백당 1행. `rt_callback` 은 열 의미가 lane 고유다 (`t_state_us` = decode, `t_publish_us` = mailbox hand-off, `t_total_us` = slot 2 duty 분자) — dispatch 간격은 연속 행의 `t_wall_ns` 차분 |
 | `/rtc_cm/{group}/joint_states` | CM (그룹별) | 그룹별 건강성 |
 | `/sim/status` | `rtc_mujoco_sim` 1 Hz | sim 건강성 |
 | `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `rtc_mujoco_sim` | 손끝 접촉 힘/토크 (그룹 YAML `contact_wrench.enabled: true` + MJCF contact sensor 필요) |

@@ -41,7 +41,7 @@ driver 프로세스 (`arm_driver` · `hand_driver`) 는 CM 스레드가 아니�
 
 `arm_driver` 프로세스는 SCHED_OTHER 이되 그 안의 `controller_manager` 제어 루프만 FIFO 50 으로 올라가 arm 코어에 핀된다. 그 핀은 `taskset` 이 아니라 launch 가 만드는 CM 파라미터가 건다 — `taskset` 은 main thread 밖을 못 옮기고, 500 Hz 루프는 main 이 아닌 별도 스레드이기 때문이다 (#343). arm 코어는 shield 밖 (`system` cpuset) 이라 이 루프는 affinity + FIFO 만 보장받고 다른 system task · IRQ 로부터 격리되지는 않는다.
 
-cpuset 을 재설계해 arm 코어까지 보호하는 대신 **degraded 예외로 인정하고 실측 게이트를 두는 쪽을 택했다.** 이유는 둘이다. RTDE 는 어차피 커널 네트워크 스택과 소켓을 공유하므로 코어 격리만으로 닫히지 않는다. shield 를 arm 코어까지 넓히면 CM adopt 계약 (cset shield 는 user / system 2 분할) 과 충돌한다. 게이트는 NUC13 에서 `verify_rt_runtime.sh` 통과 + `cm_timing_log.csv` 지터 회귀 없음이다. 6 코어 tier 는 arm 과 hand 가 slot 4 를 공유하고 hand 의 UDP 수신 루프 (FIFO 65) 가 arm 루프 (FIFO 50) 보다 높으므로, 그 tier 의 측정은 반드시 **arm + hand 동시 구동** 에서 한다.
+cpuset 을 재설계해 arm 코어까지 보호하는 대신 **degraded 예외로 인정하고 실측 게이트를 두는 쪽을 택했다.** 이유는 둘이다. RTDE 는 어차피 커널 네트워크 스택과 소켓을 공유하므로 코어 격리만으로 닫히지 않는다. shield 를 arm 코어까지 넓히면 CM adopt 계약 (cset shield 는 user / system 2 분할) 과 충돌한다. 게이트는 NUC13 에서 `verify_rt_runtime.sh` 통과 + `cm_timing_log.csv` 지터 회귀 없음이다. 6 코어 tier 의 측정 조건 (arm + hand 동시 구동) 은 [rt-optimization.md](../rt-optimization.md) §4.3.
 
 `verify_rt_runtime.sh` 가 arm 을 RT 루프 축으로 보는 이유도 같다. FIFO 요청이 거부돼도 affinity 는 적용되므로 위치만 보는 검사는 강등된 루프를 통과시킨다. 설정된 우선순위의 SCHED_FIFO 스레드가 없으면 FAIL 이다. 그 스레드는 pthread 이름이 없어 (전 TID 가 같은 `comm`) FIFO 여부로만 골라낼 수 있다.
 

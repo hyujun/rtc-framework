@@ -93,13 +93,7 @@ System-level 조건 (커널·`@realtime` 권한·core 격리): [invariants.md](.
 
 세부 검증 명령은 [check_rt_setup.sh](../../repo_scripts/scripts/check_rt_setup.sh) 와 [verify_rt_runtime.sh](../../repo_scripts/scripts/verify_rt_runtime.sh) 가 갖는다. 설정 절차는 [rt-optimization.md](../rt-optimization.md).
 
-**권장 sensor** (배포 전 1회, 환경 변경 시 재실행; 결과는 timing CSV 와 같은 디렉토리에 저장):
-
-- `cyclictest --mlockall --smp --priority=80 --interval=200` — baseline kernel jitter
-- `rtla osnoise top -P F:1 -c <iso_cores>` — Ubuntu 24.04 기본 제공
-- `rtla hwnoise hist` — IRQ 비활성 시 hardware-induced noise
-
-**Docker 배포 노트**: 컨테이너 배포 시 `--cap-add=sys_nice --ulimit rtprio=99 --ulimit memlock=-1` 누락 시 RT-HOST-1, RT-HOST-2 가 silent fail 한다.
+권장 sensor (`cyclictest` · `rtla`) 와 컨테이너 플래그는 [rt-optimization.md](../rt-optimization.md) §4.3 · §7.
 
 ## Architecture
 
