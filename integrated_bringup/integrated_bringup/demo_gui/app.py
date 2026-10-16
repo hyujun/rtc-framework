@@ -109,6 +109,7 @@ from .config import (
     GRASP_MODE_FG_UNKNOWN,
     GRASP_MODE_OWNERS,
     GRASP_MODE_PARAM,
+    GRASP_MODE_READOUT,
     GRASP_MODE_UNKNOWN,
     GRASP_MODES,
     GRASP_PHASE_NAMES,
@@ -185,6 +186,7 @@ from .latch_clear import (
     reset_fault_target,
     summarize_reply,
 )
+from .param_readout import CachedParamReadout
 from .preset_toggle import (
     PresetToggleState,
     format_keysym,
@@ -211,12 +213,11 @@ from .vtcp import (
     VTCP_OFFSET_PARAM,
     VTCP_ORIENTATION_PARAM,
     VTCP_OWNERS,
-    VTCP_PARAMS,
+    VTCP_READOUT,
     VtcpConfigView,
     apply_enabled,
     format_readout,
     format_value,
-    parse_entries,
     parse_inputs,
     seed_due,
 )
@@ -395,15 +396,23 @@ class DemoControllerGUI(Node):
         # the 5 s catalog poll and every radio click off the parameter service;
         # controller switching only activates/deactivates, never re-configures,
         # so nothing changes this value except a `set_parameters` — and the one
-        # writer the GUI knows about is its own Set Mode button, which drops the
-        # entry and re-reads (_after_grasp_mode_set). A mode set from elsewhere
-        # (`ros2 param set`) is therefore not observed until the next
-        # invalidation; the readout can lag, and the controller — not this
-        # cache — is what gates the command.
+        # writer the GUI knows about is its own Set Mode button, which re-reads
+        # past it (_after_grasp_mode_set). A mode set from elsewhere
+        # (`ros2 param set`) is therefore not observed until the next forced
+        # read; the readout can lag, and the controller — not this cache — is
+        # what gates the command.
         # A *failed* read is never cached, which is what makes the fetch retry
         # after a CM restart or a query issued before the controller finished
-        # configuring.
+        # configuring. param_readout.py holds these read rules for both panels.
         self._grasp_modes: dict[str, str] = {}
+        self._grasp_mode_reader = CachedParamReadout(
+            GRASP_MODE_READOUT,
+            self._grasp_modes,
+            get_client=self._get_param_client,
+            paint=self._apply_grasp_mode,
+            defer=self._defer_to_tk,
+            logger=self.get_logger,
+        )
 
         # (config_key, mode) last seeded into the Grasp tab's mode combobox.
         # The combobox is a *request* widget: it is seeded from the live mode
@@ -413,12 +422,20 @@ class DemoControllerGUI(Node):
         self._grasp_mode_seeded: tuple[str, str] | None = None
 
         # config_key -> the controller's virtual_tcp_* values (#847), cached on
-        # the same terms as _grasp_modes: a failed read is never cached, and the
-        # GUI's own Apply drops the entry and re-reads. Unlike the grasp mode,
-        # Load VTCP ignores this cache — the values also change through
-        # `ros2 param set` and through a re-configure that keeps a value set
-        # earlier, and Load is the operator asking what is there now.
+        # the same terms as _grasp_modes (the same reader): a failed read is
+        # never cached, and the GUI's own Apply re-reads past it. Unlike the
+        # grasp mode, Load VTCP re-reads past it too — the values also change
+        # through `ros2 param set` and through a re-configure that keeps a value
+        # set earlier, and Load is the operator asking what is there now.
         self._vtcp_configs: dict[str, VtcpConfigView] = {}
+        self._vtcp_reader = CachedParamReadout(
+            VTCP_READOUT,
+            self._vtcp_configs,
+            get_client=self._get_param_client,
+            paint=self._paint_vtcp,
+            defer=self._defer_to_tk,
+            logger=self.get_logger,
+        )
         # (config_key, values) last written into the panel's input widgets; see
         # vtcp.seed_due.
         self._vtcp_seeded: tuple[str, VtcpConfigView | None] | None = None
@@ -1056,66 +1073,20 @@ class DemoControllerGUI(Node):
             self._grasp_clients[ctrl] = client
         return client
 
+    def _defer_to_tk(self, fn, *args) -> None:
+        """Run ``fn(*args)`` on the Tk thread — the readers' answers arrive on
+        the executor thread. Looked up per call: the readers are built before
+        the Tk root exists."""
+        self.root.after(0, fn, *args)
+
     def _refresh_grasp_mode(self, ctrl: str, *, force: bool = False) -> None:
         """Show ``ctrl``'s grasp mode, fetching it once if not already cached.
 
-        Runs on the Tk thread (selection change). The cached path paints
-        immediately; the fetch path paints the unknown state first so the label
-        never keeps showing the *previous* controller's mode while the
-        round-trip is in flight.
-
-        ``force`` re-reads past the cache (after a set attempt), the same contract
-        as _refresh_vtcp. The cached mode stays on screen until the answer
-        replaces it, so there is no unknown window for a catalog poll to paint
-        into — that paint would blank the combobox and throw away the pick the
-        operator is about to re-apply after a refusal.
+        Runs on the Tk thread (selection change and catalog poll). ``force``
+        re-reads past the cache after a set attempt; the read rules are
+        CachedParamReadout's, shared with the Virtual TCP panel.
         """
-        if not ctrl:
-            return
-        cached = None if force else self._grasp_modes.get(ctrl)
-        if cached is not None:
-            self._apply_grasp_mode(ctrl, cached)
-            return
-
-        if not force:
-            self._apply_grasp_mode(ctrl, GRASP_MODE_UNKNOWN)
-        if ctrl not in GRASP_MODE_OWNERS:
-            # No parameter to fetch — the label is already correct and a query
-            # would only wait out the service timeout.
-            return
-
-        client = self._get_param_client(ctrl)
-        # Non-blocking readiness check, NOT a timed wait: this runs on the
-        # Tk thread and is also driven by the catalog poll, so any timeout here
-        # would freeze the window on every poll for as long as the CM is down.
-        # Not-ready just leaves the label unknown; the next poll retries.
-        if not client.services_are_ready():
-            return
-
-        future = client.get_parameters([GRASP_MODE_PARAM])
-
-        def _on_done(fut):
-            try:
-                resp = fut.result()
-            except Exception as exc:  # noqa: BLE001 — any failure = unknown
-                self.get_logger().debug(f"{GRASP_MODE_PARAM} query failed for /{ctrl}: {exc}")
-                # A forced read follows a set attempt, so the cached mode may be
-                # the one that changed; stop claiming it.
-                self._grasp_modes.pop(ctrl, None)
-                return
-            if not resp.values:
-                return
-            mode = resp.values[0].string_value
-            if not mode:
-                # PARAMETER_NOT_SET comes back as an empty string — a controller
-                # older than the read-only mirror. Indistinguishable from
-                # "unknown", and cached as neither.
-                return
-            self._grasp_modes[ctrl] = mode
-            self.get_logger().info(f"/{ctrl} {GRASP_MODE_PARAM}={mode}")
-            self.root.after(0, self._apply_grasp_mode, ctrl, mode)
-
-        future.add_done_callback(_on_done)
+        self._grasp_mode_reader.refresh(ctrl, force=force)
 
     def _apply_grasp_mode(self, ctrl: str, mode: str) -> None:
         """Paint the Grasp tab's mode readout, button state and mode combobox.
@@ -1363,49 +1334,10 @@ class DemoControllerGUI(Node):
     def _refresh_vtcp(self, ctrl: str, *, force: bool = False) -> None:
         """Show ``ctrl``'s virtual TCP, reading it once if not already cached.
 
-        Same shape as _refresh_grasp_mode, including the non-blocking readiness
-        check (this runs on the Tk thread and from the catalog poll).
-
-        ``force`` re-reads past the cache (after an Apply, and for Load). The
-        cached view stays on screen until the answer replaces it, so there is no
-        "unknown" window for a catalog poll to paint into the inputs.
+        ``force`` re-reads past the cache (after an Apply, and for Load); the
+        read rules are CachedParamReadout's, shared with the grasp mode.
         """
-        if not ctrl:
-            return
-        cached = None if force else self._vtcp_configs.get(ctrl)
-        if cached is not None:
-            self._paint_vtcp(ctrl, cached)
-            return
-        if not force:
-            self._paint_vtcp(ctrl, None)
-        if ctrl not in VTCP_OWNERS:
-            return
-
-        client = self._get_param_client(ctrl)
-        if not client.services_are_ready():
-            return
-
-        future = client.get_parameters(list(VTCP_PARAMS))
-
-        def _on_done(fut):
-            try:
-                resp = fut.result()
-            except Exception as exc:  # noqa: BLE001 — any failure = unknown
-                self.get_logger().debug(f"virtual_tcp_* query failed for /{ctrl}: {exc}")
-                # A forced read follows a change, so the cached view may be the
-                # one that changed; stop claiming it.
-                self._vtcp_configs.pop(ctrl, None)
-                return
-            view = parse_entries(list(resp.values))
-            if view is None:
-                # Not declared (a controller older than #847) or not the declared
-                # shape. Indistinguishable from "unknown", and cached as neither.
-                self.get_logger().debug(f"/{ctrl} virtual_tcp_* unreadable: {resp.values}")
-                return
-            self._vtcp_configs[ctrl] = view
-            self.root.after(0, self._paint_vtcp, ctrl, view)
-
-        future.add_done_callback(_on_done)
+        self._vtcp_reader.refresh(ctrl, force=force)
 
     def _paint_vtcp(self, ctrl: str, view: VtcpConfigView | None) -> None:
         """Show ``view`` as ``ctrl``'s current values. Tk thread only.
