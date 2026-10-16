@@ -660,11 +660,11 @@ Force-PI grasp는 별도 `/<config_key>/grasp_command` srv ([rtc_msgs/srv/GraspC
 
 #### YAML 구조 (`config/ur5e_p1a/controllers/demo_wbc_controller.yaml`)
 
-주요 최상위 키: `tsid.tasks` (posture/se3_tcp/force/contact_consistency/object_wrench/internal_force/object_se3), `tsid.constraints` (eom/joint_limit/friction_cone/torque_limit), `tsid.contacts.*`/`tsid.force_pi`/`tsid.object_frame` (contact·force-PI·object 옵션), `tsid.phase_presets`, `tsid.wqp.solver`, `integration` (`force_rate_alpha` 등 필수 키), `fsm`, **`arm_dof`** (필수 — 런타임 arm DoF), **`estop.arm_safe_position`** (필수 — 길이가 `arm_dof`와 일치해야 하며 불일치 시 configure 에서 throw), **`mpc`** (`enabled`/`engine`/`max_stale_solutions`/`phase_config_path`+`contact_light_path`+`contact_rich_path`/`riccati.*`). `mpc.enabled: false`가 기본값이라 MPC는 inert이고 TSID가 self-hold한다. 각 키의 의미·기본값·제약은 YAML 자체의 인라인 주석 + [docs/controllers.md](../docs/controllers.md) 참조.
+주요 최상위 키: `tsid.tasks` (posture/se3_tcp/force/contact_consistency/object_wrench/internal_force/object_se3), `tsid.constraints` (eom/joint_limit/friction_cone/torque_limit), `tsid.contacts.*`/`tsid.force_pi`/`tsid.object_frame` (contact·force-PI·object 옵션), `tsid.phase_presets`, `tsid.wqp.solver`, `integration` (`force_rate_alpha` 등 필수 키), `fsm`, **`arm_dof`** (필수 — 런타임 arm DoF), **`estop.arm_safe_position`** (필수 — 길이가 `arm_dof`와 일치해야 하며 불일치 시 configure 에서 throw), **`mpc`** (`enabled`/`engine`/`max_stale_solutions`/`phase_config_path`+`contact_light_path`+`contact_rich_path`/`riccati.*`). `mpc.enabled: false`가 기본값이라 MPC는 inert이고 posture reference 는 현재 자세를 유지한다 (self-hold). 각 키의 의미·기본값·제약은 YAML 자체의 인라인 주석이 SSoT 다.
 
 #### MPC 통합 동작
 
-`mpc.enabled: true`일 때 `on_activate`에서 aux 스레드로 MPC 스레드가 기동되며, `mpc.engine`이 `"mock"`(`MockMPCThread` placeholder — 선형 trajectory + identity Riccati gain, TSID self-hold와 bit-identical) 또는 `"handler"`(`HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` — 실제 Aligator ProxDDP solve, 초기화 실패 시 mock으로 자동 폴백)를 선택한다. `rtc::mpc::MPCThread`는 CM RT loop과 같은 `PeriodicRtThread` 기반 timing 인프라를 공유하며, per-MPC-tick 샘플이 `<session>/timing/mpc_timing_log.csv`에 쌓인다. 매 RT tick `ComputeTSIDPosition`이 최신 `(q, v)`를 MPC 스레드에 WriteState하고, MPC solution을 cubic-Hermite 보간한 `q_ref/v_ref/a_ff` + Riccati 피드백을 TSID reference로 주입한다 — solution 부재/stale 시 TSID self-hold로 자동 폴백. Shutdown 순서·dim-mismatch gate 등 구현 세부는 `src/controllers/wbc/` 소스와 [docs/controllers.md](../docs/controllers.md) 참조.
+`mpc.enabled: true`일 때 `on_activate`에서 aux 스레드로 MPC 스레드가 기동되며, `mpc.engine`이 `"mock"`(`MockMPCThread` placeholder — 선형 trajectory + identity Riccati gain, self-hold와 bit-identical) 또는 `"handler"`(`HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` — 실제 Aligator ProxDDP solve, 초기화 실패 시 mock으로 자동 폴백)를 선택한다. `rtc::mpc::MPCThread`는 CM RT loop과 같은 `PeriodicRtThread` 기반 timing 인프라를 공유하며, per-MPC-tick 샘플이 `<session>/timing/mpc_timing_log.csv`에 쌓인다. 매 RT tick 공통 단계 (`ComputeWbcCommon`) 가 최신 `(q, v)`를 MPC 스레드에 WriteState하고, MPC solution을 cubic-Hermite 보간한 `q_ref/v_ref/a_ff` + Riccati 피드백을 **posture reference** 로 넣는다 — 위 "제어 구조" 대로 이 reference 를 CLIK-QP 와 TSID QP 가 각자 소비하며, 위치 명령은 여전히 CLIK-QP 가 만든다. solution 부재/stale 시 posture reference 는 현재 자세 유지 (self-hold) 로 자동 폴백. Shutdown 순서·dim-mismatch gate 등 구현 세부는 `src/controllers/wbc/` 소스 참조.
 
 ##### GraspPhaseManager 연동
 
@@ -673,7 +673,7 @@ Force-PI grasp는 별도 `/<config_key>/grasp_command` srv ([rtc_msgs/srv/GraspC
 #### 사용법 (시뮬레이션)
 
 ```bash
-# MPC 비활성 (TSID self-hold만)
+# MPC 비활성 (posture self-hold)
 ros2 launch integrated_bringup sim_ur5e_p1a.launch.py initial_controller:=demo_wbc_controller
 
 # MPC 활성 (sim_ur5e_p1a.launch.py는 launch arg 오버라이드 지원)
