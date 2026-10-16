@@ -17,11 +17,7 @@
 
 ### RT path 의 대표 진입점 (기록 시점)
 
-판정의 SSoT 는 [architecture.md](../../agent_docs/architecture.md) §Execution Contexts 표다. 아래는 그 표를 읽을 때 참고할 실례다.
-
-- **RT**: `RtControllerNode::ControlLoop()`, `RTControllerInterface::Compute()` / `DrainPendingTargets()` 의 tick 경로, DeviceBackend 의 state/motor/sensor 구독 콜백, UDP receive 콜백, `CheckTimeouts` 50 Hz 분기, MPC thread (`MPCThread::OnTick` → 파생 `Solve()` — dedicated SCHED_FIFO core), `UdpHandController::RunCommCycle` (self-clocked UDP send/recv cycle — `rtc::PeriodicRtThread` 기반 CommLoop, 별도 SCHED_FIFO thread).
-- **비-RT**: lifecycle 콜백, `DrainLog()` aux thread, controller LifecycleNode 의 1 Hz aux 타이머 (timing CSV drain 등), ROS 파라미터 콜백, controller-owned RobotTarget 구독과 grasp_command 서비스 핸들러, target marshal 쪽 `SetDeviceTarget()` (controller LifecycleNode default group), `PublishNonRtSnapshot()` (`NrtPublishLoopEntry` 의 전용 `std::jthread`, SCHED_OTHER, SPSC drain).
-- **"구독 콜백" 이라는 이름으로는 갈리지 않는 실례**: backend 의 sensor/state 구독 콜백은 `cb_group_rt_callback_` → SCHED_FIFO 라 RT 지만, controller 의 RobotTarget 구독 콜백은 controller LifecycleNode 의 default group → `nrt_callback_executor` → SCHED_OTHER 라 비-RT 다.
+RT / 비-RT 진입점 판정표: [architecture.md](../../agent_docs/architecture.md) §Execution Contexts
 
 ### RT-1 ~ RT-10 의 이유
 
@@ -41,7 +37,7 @@
 
 - **eventfd + non-blocking write/poll** — CM 의 `nrt_publish_eventfd_` (`RtControllerNode::StartNrtPublishLoop` / `NrtPublishLoopEntry`), `UdpHandController::event_fd_`.
 - **`std::atomic<bool>` release/acquire flag + self-clocked consumer** — `UdpHandController` 의 `event_pending_` 를 `rtc::PeriodicRtThread` 기반 CommLoop 이 매 tick latch 한다 (별도 wake 없음; 명령 없으면 read-only). busy-spin 이 아니다 — loop 가 이미 고정주기 tick 이다.
-- **RT 핫패스 self-termination** — `RequestStop()` 은 pause-mutex + `pause_cv_.notify_all()` 을 보유하므로 E-Stop 같은 핫패스에서 못 쓴다. `PeriodicRtThread::RequestLoopExit()` (순수 `atomic<bool>` store) 로 예약하고, 종료 시 부수 작업은 loop unwind 후 base 가 1회 호출하는 `OnLoopAborted()` 에서 한다. 실례: `UdpHandController::OnCommLoopAborted()` 의 zero-write.
+- **RT 핫패스 self-termination** — `PeriodicRtThread::RequestLoopExit()` (순수 `atomic<bool>` store) 로 예약하고, 종료 시 부수 작업은 loop unwind 후 base 가 1회 호출하는 `OnLoopAborted()` 에서 한다. 실례: `UdpHandController::OnCommLoopAborted()` 의 zero-write.
 
 ### RT pub/sub primitive 의 메커니즘
 
@@ -83,7 +79,7 @@ ros2_control jazzy controller_manager default 인용 (`control_rate=500Hz` / `dt
 
 `control_rate` ≠ 500Hz 일 경우 execution time 항목은 dt 비례 재계산 (예: 2 kHz, dt=500µs → warn=250µs, error=500µs).
 
-RT loop 안에서 허용되는 통계의 형태: loop period error (`now - last_tick`, fixed-size ring buffer write), compute / device read·write time 누적, activation 이후 max latency (`std::max` 갱신), missed deadline 카운트 (`std::atomic<uint64_t>` increment).
+허용되는 RT 내 통계 형태: [invariants.md](../../agent_docs/invariants.md) §RT telemetry rule
 
 ## RT Host / Runtime Preconditions
 
@@ -93,11 +89,7 @@ RT loop 안에서 허용되는 통계의 형태: loop period error (`now - last_
 | RT-HOST-2 | CFS 비결정성 제거. 99 는 kernel watchdog 영역 | `rtc_base/threading/thread_config.hpp` 의 `SystemThreadConfigs`. 기록 시점 layout 은 60~90 을 쓴다 (mpc_main 60 이 하한 — 외부 thread 를 아래에 끼우려면 이 하한부터 확인; #380 이 FIFO 55 의 mpc_workers 를 제거했다) |
 | RT-HOST-3 | DDS receive thread / ROS executor / IRQ 와 동일 core 공유 시 cache pollution + 선점 jitter | `thread_config.hpp` 의 `SystemThreadConfigs::cpu_affinity` 또는 `cpu_shield.sh` runtime 격리 |
 
-**System-level 확인** (배포 환경 책임, controller 시작 시 sensor 로 확인하고 timing log 헤더에 기록):
-
-- PREEMPT_RT 커널 또는 lowlatency 커널 — `uname -a`
-- `/etc/security/limits.conf` 의 `@realtime` 그룹 권한 (`rtprio`, `memlock unlimited`) — `ulimit -r`, `ulimit -l`
-- Isolated RT core 에 non-RT 작업 미공유 — `taskset`, `/proc/interrupts`
+System-level 조건 (커널·`@realtime` 권한·core 격리): [invariants.md](../../agent_docs/invariants.md) §RT Host / Runtime Preconditions
 
 세부 검증 명령은 [check_rt_setup.sh](../../repo_scripts/scripts/check_rt_setup.sh) 와 [verify_rt_runtime.sh](../../repo_scripts/scripts/verify_rt_runtime.sh) 가 갖는다. 설정 절차는 [RT_OPTIMIZATION.md](../RT_OPTIMIZATION.md).
 
@@ -131,7 +123,7 @@ RT loop 안에서 허용되는 통계의 형태: loop period error (`now - last_
 
 ### ARCH-5
 
-`robot_descriptions` 는 C++ target / 헤더 / 라이브러리 export 가 0건인 data-only 패키지다 ([robot_descriptions/CMakeLists.txt](../../robot_descriptions/CMakeLists.txt) 는 `install(DIRECTORY)` 세 벌뿐 — `robots/` · `object_sim/` · `objects/`; 파일 수는 늘어도 **빌드되는 것은 여전히 0** 이라는 것이 이 규칙의 전제다).
+[robot_descriptions/CMakeLists.txt](../../robot_descriptions/CMakeLists.txt) 는 `install(DIRECTORY)` 세 벌뿐 — `robots/` · `object_sim/` · `objects/`; 파일 수는 늘어도 **빌드되는 것은 여전히 0** 이라는 것이 이 규칙의 전제다.
 
 **근거**: 빌드 시점에 link 할 artifact 가 0개이므로 build-dep 효과는 0. 그러나 build-dep 을 걸면 colcon 이 강제 토폴로지 엣지를 만들어 "이 디렉토리를 워크스페이스 어디 두든 — 형제 디렉토리든 별도 overlay 든 — `install/robot_descriptions/share/` 만 있으면 동작" 모델이 깨진다 (사용자 정책).
 
@@ -175,7 +167,7 @@ RT loop 안에서 허용되는 통계의 형태: loop period error (`now - last_
 
 ### NUM floor 규약의 근거
 
-- `max(하한, NaN) == 하한` 이라 손수 `std::max` 는 비유한 게인·λ_max 를 *그럴듯한* 값으로 세탁해 fail-loud 를 fail-silent 로 바꾼다. σ₀ 는 어떤 도달 가능한 자세도 안 들어오는 셸이 되어 compliance §6.5 가 전 자세에서 꺼지고, NUM-6 은 기존 `nan_inf` SAFE_STOP 이 지워진다. 하류 finite 검사는 토크 레인 `compliance::AllFinite` (compliance §10.5), 위치 레인 actuator 경계의 `urtc::ValidateControllerOutput` — 후자는 tick 을 hold 로 대체하고 연속 거부 ~100 ms 후 E-STOP 으로 올린다.
+- **손수 `std::max` 를 금지하는 근거** — 비유한 게인·λ_max 가 하한으로 세탁되면 σ₀ 는 어떤 도달 가능한 자세도 안 들어오는 셸이 되어 compliance §6.5 가 전 자세에서 꺼지고, NUM-6 은 기존 `nan_inf` SAFE_STOP 이 지워진다. 하류 finite 검사는 토크 레인 `compliance::AllFinite` (compliance §10.5), 위치 레인 actuator 경계의 `urtc::ValidateControllerOutput` — 후자는 tick 을 hold 로 대체하고 연속 거부 ~100 ms 후 E-STOP 으로 올린다.
 - 사용 지점 하한이 바인딩 몫이 된 것은 어댑터 삭제 (#298 S7c-2) 뒤다. in-tree 준수 사례는 `integrated_bringup` task 컨트롤러 (#282); doc 표 한 줄 대신 grep 되는 심볼 (`compliance::FloorMaxDamping` 등) 로 만든 결정은 #301.
 - `AdaptiveDampingSquared` 안에 floor 를 넣으면 자기 성질 λ² ≤ λ_max² 가 하한 아래에서 거짓이 되는데, 기존 oracle 은 그 영역을 안 써 어떤 테스트도 못 본다 (감지기: `TaskDynamics.AdaptiveDampingDoesNotFloorItsOwnArgument`; oracle 전수 실측: #301).
 
