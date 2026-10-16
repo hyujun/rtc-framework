@@ -187,7 +187,7 @@ RT controller 가 운영·배포 모드로 실행될 때 host 가 만족시켜�
 | ARCH-2 | 의존성 그래프 상향 의존 금지 ([architecture.md](architecture.md) §Dependency Graph) | **Critical** (E-1) | 수동 리뷰 |
 | ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | Warning (E-4) | 수동 리뷰 — 신호: 새 `.cpp` 에 대응하는 pure-virtual base 가 없다 |
 | ARCH-4 | integration 패키지가 `rtc_*` private 헤더 (`rtc_*/src/`) include 금지 | **Critical** (E-1) | 자동 — hook Phase 0 |
-| ARCH-5 | `robot_descriptions` 는 data-only — build-time 의존 금지 | Warning (E-10) | 수동 리뷰 |
+| ARCH-5 | `robot_descriptions` 는 data-only — build-time 의존 금지 | Warning (E-10) | 자동 — hook Phase 0a |
 | ARCH-6 | 모든 ROS 2 topic 은 QoS history `KEEP_LAST`, depth **1** (reliability/durability 는 lane 별 유지 — depth 필드만 강제) | Warning (sensor) / E-1 (규칙 변경) | 자동 (non-blocking) — hook Phase 0b |
 | ARCH-7 | `rtc_*` 는 control-framework runtime identity (RT 제어 루프를 구동하는 exec) 를 소유하지 않는다 | Warning (sensor) / E-1 (규칙 변경) | 자동 — hook Phase 0a |
 
@@ -217,7 +217,7 @@ RT controller 가 운영·배포 모드로 실행될 때 host 가 만족시켜�
 - `find_package(robot_descriptions ...)`, `<depend>` / `<build_depend>`, `ament_target_dependencies(... robot_descriptions)`, `ament_export_dependencies(... robot_descriptions)`
 - 소스 트리 상대경로 (`${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/...`) 로 configure 시점에 경로를 박는 것
 
-**복구**: build-dep 줄 제거 + `<exec_depend>` 로 강등. `robot_descriptions` 가 C++ 라이브러리를 export 해야 하게 되면 별도 패키지 (`robot_descriptions_utils` 등) 로 split 하고 이 invariant 는 유지한다.
+**복구**: build-dep 줄 제거 + `<exec_depend>` 로 강등. `robot_descriptions` 가 C++ 라이브러리를 export 해야 하게 되면 별도 패키지로 split 하고 이 invariant 는 유지한다.
 
 ## Process Invariants
 
