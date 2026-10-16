@@ -29,7 +29,7 @@
 
 ## DemoComplianceController 근거
 
-`demo_task` 사본에서 출발해(#469 S2) 외부 렌치 admittance 가 결합됐다(S3). 사본인 이유와 상속·추출을 기각한 근거는 `demo_compliance_controller.hpp` 배너에 있다 (배너 첫 줄의 "AT THIS COMMIT … lands in #469 S3" 는 S3 가 들어온 뒤로 낡았다).
+`demo_task` 사본에서 출발해(#469 S2) 외부 렌치 admittance 가 결합됐다(S3). 사본인 이유와 상속·추출을 기각한 근거는 `demo_compliance_controller.hpp` 배너에 있다.
 
 - **렌치 소스는 hand 레인의 pull 추정치이고 한 tick 뒤에 발행된다** — 추정기가 같은 tick 의 grasp 판정을 필요로 하기 때문이다. 필터 시상수 대비 lag 는 무시할 만하고 어떤 토픽 소스보다 신선하다.
 - **X_d 재시드는 x̃ 도 함께 붕괴** (D-A15) — 측정 자세가 이미 X_c 를 실현하므로 남기면 두 번 더해져 최대 0.15 m 계단이 된다. 프레임 종류가 바뀐 재시드가 wrench 샘플까지 버리는 이유는 apply point 가 다른 프레임에서 측정된 것이라 vTCP offset 전체가 레버암이 되고 `K_p^a_rot=0` 이라 안 돌아오기 때문이다.

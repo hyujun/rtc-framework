@@ -62,8 +62,8 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/task/compute.cpp
   src/controllers/task/lifecycle.cpp
   src/controllers/task/parameters.cpp
-  # #469 S2: task-space admittance binding. Currently a rename-only copy of
-  # src/controllers/task/ — the law lands in S3.
+  # Task-space admittance binding: src/controllers/task/ copied at #469 S2, plus
+  # the §7 law (S3) — see the demo_compliance_controller.hpp banner.
   src/controllers/compliance/controller.cpp
   src/controllers/compliance/compute.cpp
   src/controllers/compliance/lifecycle.cpp
@@ -645,10 +645,10 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # ── demo_compliance_controller ≡ demo_task_controller (#469 S2) ────────────
-  # The only sensor that executes the copied controller: every other
-  # per-controller suite in this package enumerates the three shipped names by
-  # hand, so a fourth controller is otherwise never run. Needs the same URDF
+  # ── demo_compliance_controller ≡ demo_task_controller, wrench withheld ─────
+  # The only sensor that compares the copied lanes against their original: the
+  # per-controller suites in this package enumerate controller names by hand
+  # and check each binding on its own. Needs the same URDF
   # fixture as test_demo_task_controller (both controllers gate ComputeControl
   # behind the combined-model cache) plus the shipped config dir, because the
   # config half compares the deployed YAMLs rather than inline strings.

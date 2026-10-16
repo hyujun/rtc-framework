@@ -12,8 +12,8 @@
 // §10.7 ramp was still fading the wrench in, whether the sample was stale, or
 // whether the FSM had dropped to DEGRADED. `task_diag.csv` carries σ/λ² and
 // `pull_estimator.csv` carries the source's own numbers, so the whole span
-// BETWEEN the source and the law was empty — which is exactly the span S5 has
-// to tune on hardware.
+// BETWEEN the source and the law was empty — which is exactly the span a
+// hardware tuning of the law has to read.
 //
 // THE ONE-TICK SKEW, AND WHY THIS FILE DOES NOT PAPER OVER IT. The wrench is
 // published from ComputeSecondary and consumed by the NEXT tick's
@@ -92,7 +92,7 @@ struct ComplianceDiagLogPod {
   /// `ComplianceWrenchSource` wire value (0 = pull_estimator). Configure-time
   /// and exclusive, so it is constant for the file — carried anyway because the
   /// question "which measurement moved the arm" is the first one asked of a
-  /// stored session, and S6 adds a second legal value.
+  /// stored session, and a second legal value needs no schema change.
   std::uint8_t wrench_source{0};
 
   // ── FSM / ramp ────────────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ struct ComplianceDiagLogPod {
   std::array<float, 6> x_tilde{};  ///< x̃ = [p̃ ; log3(R̃)] deviation from X_d [m, rad]
   std::array<float, 6> nu_c{};     ///< ν_c — the compliant frame's own twist [m/s, rad/s]
   /// Control-frame origin, world. The lever-arm base the wrench was transported
-  /// to, and the column S5's 15 cm envelope is measured against.
+  /// to, and the column the §7.4 deviation envelope is measured against.
   std::array<float, 3> task_origin{};
 
   /// §7.5 guards as the integrator reported them THIS step — not inferred from

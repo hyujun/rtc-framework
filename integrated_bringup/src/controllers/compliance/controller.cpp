@@ -1260,18 +1260,14 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
     LogPullEstimatorWiring(logger_, pull_wiring_, shared);
   }
 
-  // ── #469 S2: which estimate will drive the admittance law ────────────────
+  // ── Which estimate drives the admittance law (#469 D-A4) ─────────────────
   //
   // Required, with no default: see ParseComplianceWrenchSource. The key is read
-  // here — right after the wiring it selects — so a profile that asks for a
-  // source whose lane is not configured is refusable in one place later, and so
-  // this controller's identity ("driven by ONE named measurement") is visible in
-  // its config rather than only in S3's tick.
-  //
-  // The value is not consumed yet. That is deliberate: parsing it a sprint early
-  // costs nothing and means the three shipped profiles are already known-good
-  // when S3 starts reading it, instead of S3 discovering a typo in a config it
-  // did not write.
+  // here — right after the wiring it selects — so a check that the selected
+  // source's lane is configured has one place to go (none is made yet: only a
+  // missing key and an unknown spelling are refused), and so this controller's
+  // identity ("driven by ONE named measurement") is visible in its config rather
+  // than only in the tick.
   {
     const YAML::Node ext = cfg["external_wrench"];
     if (!ext || !ext["source"]) {

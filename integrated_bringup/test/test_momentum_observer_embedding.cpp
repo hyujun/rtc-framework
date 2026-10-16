@@ -363,9 +363,9 @@ topics:
 /// Bring one controller up the way CM does, short of the node: system model →
 /// shared builder → control rate → LoadConfig → SetDeviceNameConfigs (the hook
 /// that builds the observer wiring).
-/// DemoTaskController and its #469 rename-copy are the ones whose constructor
-/// also takes a Gains struct; the default-constructed one is what their own URDF
-/// fixtures use.
+/// DemoTaskController and DemoComplianceController (its #469 rename-copy) are
+/// the ones whose constructor also takes a Gains struct; the default-constructed
+/// one is what their own URDF fixtures use.
 template <class Ctrl>
 std::unique_ptr<Ctrl> MakeController() {
   return std::make_unique<Ctrl>("");
@@ -503,9 +503,9 @@ TEST(MomentumObserverEmbedding, WbcControllerLogsAConvergedResidualAndHoldsOnEst
   CheckEmbedding<integrated_bringup::DemoWbcController>(kWbcYaml, "wbc");
 }
 
-// #469 S2 shipped demo_compliance as a rename-copy, so today this asserts what
-// the task case above does. It is enumerated by hand because S3 puts an
-// admittance law between the model and the arm command, and the observer's
+// demo_compliance began as a rename-copy of demo_task (#469 S2), so this
+// asserts what the task case above does. It is enumerated by hand because the
+// §7 admittance law sits between the model and the arm command, and the observer's
 // residual is computed from the commanded torque — a lane that stops being the
 // task binding's is a lane this case is the only one watching.
 TEST(MomentumObserverEmbedding, ComplianceControllerLogsAConvergedResidualAndHoldsOnEstop) {

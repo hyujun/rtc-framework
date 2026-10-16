@@ -399,7 +399,7 @@ demo_compliance_controller:
   # have been fail-closed and wrong: one controller's configure failure latches
   # bring_up_failed and the D1 checkpoint refuses the WHOLE bring-up
   # (rt_controller_node_params.cpp), so p1b would lose joint, task and wbc too —
-  # over a controller that is not even coupled yet. Editing demo_shared.yaml
+  # over one controller's pull-lane tuning. Editing demo_shared.yaml
   # instead would silently retune the pull lane of those same three shipped
   # controllers and break the crit#4 rung. LoadConfig applies a controller's own
   # keys through the same ApplyDemoSharedConfig entry point as the shared file,

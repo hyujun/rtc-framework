@@ -77,9 +77,9 @@ TEST(DemoWbcConfigLint, Se3TaskNameMatchesMapKey) {
 // `arm_dof` became a required key with no fallback, so a shipped YAML that
 // misses it does not degrade — the controller throws at configure. Almost every
 // controller fixture in this package is an inline YAML string, so without this
-// the migration is asserted only by whoever ran it. (The one other reader of the
-// shipped files is test_compliance_task_equivalence, and it compares two of them
-// to each other rather than checking either against the schema.)
+// the migration is asserted only by whoever ran it. (test_compliance_task_equivalence
+// also reads the shipped files, but it compares two of them to each other rather
+// than checking either against the schema.)
 //
 // Scope is every shipped controller, not just wbc — this file is where shipped-YAML
 // parsing already lives, and forking a second lint harness for the same corpus
