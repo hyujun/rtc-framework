@@ -13,4 +13,8 @@
 | [design-principles-rationale.md](design-principles-rationale.md) | 설계 원칙별 근거 · 판정이 내려진 사례와 실측 · `[CONCERN]` 예시 | [design-principles.md](../../agent_docs/design-principles.md) |
 | [conventions-rationale.md](conventions-rationale.md) | 규약의 근거 · 위반 사례 · 예시 (uncrustify 충돌, Tier 0 예외의 배경, merge method 선례, commit 예시) | [conventions.md](../../agent_docs/conventions.md) |
 | [harness-rationale.md](harness-rationale.md) | 하네스 5구성요소 조직과 헌법 크기 규율의 출처·문헌 | [AGENTS.md](../../AGENTS.md) §2 |
+| [rt-setup-rationale.md](rt-setup-rationale.md) | RT 호스트 설정의 근거 — 전 tier RT 코어 집합 · cset adopt fail-closed · degraded 격리 예외 · isolcpus 폐기 · NVIDIA DKMS 차단 | [invariants.md](../../agent_docs/invariants.md#rt-host--runtime-preconditions) (RT-HOST-1~3) |
+| [tracing-rationale.md](tracing-rationale.md) | tracing 계측 계약의 근거 — 2-layer span 계약 · cadence 판정 · executor L2 · 계측 제외 | [testing-debug.md](../../agent_docs/testing-debug.md#tracing) |
+| [testing-rationale.md](testing-rationale.md) | 테스트 규범의 근거와 사례 — revert-verification · fixtures CI · ROS_DOMAIN_ID 격리 · 계측 함정 · RT-1 게이트 · coverage 함정 | [testing-debug.md](../../agent_docs/testing-debug.md) |
+| [controllers-rationale.md](controllers-rationale.md) | 컨트롤러 설계의 근거와 실측 — 알고리즘 코어 추출 이력 · 바인딩 구조 · Compliance · Inference · GraspController 결정 | [controllers.md](../../agent_docs/controllers.md) |
 | [anti-patterns.md](anti-patterns.md) | 재발한 실수의 사례 · 증상 · 원인 · 복구 (AP ID 의 정의) | [invariants.md](../../agent_docs/invariants.md) — 위반한 invariant 행 또는 §Anti-pattern 규범 |

@@ -781,7 +781,7 @@ _force_physical_cores() {
 test_get_rt_cores_with_siblings_non_smt() {
   local root="$TMP/rtcs_nonsmt"
   local n
-  # tier → expected output (matches docs/RT_OPTIMIZATION.md table).
+  # tier → expected output (docs/reference/rt-setup-rationale.md "RT 코어 집합이 모든 tier 에서 1-3 인 이유").
   # #380 이 mpc_worker 슬롯 4·5 를 회수한 뒤로 RT 집합은 tier 와 무관하게
   # slot 1-3 이다. 10+ 가 "1-4"/"1-5" 로 되돌아오면 아무도 실행하지 않는
   # 코어를 다시 격리하고 있다는 뜻이다.

@@ -9,7 +9,7 @@
 - 패키지 구성·count·역할: [README.md](README.md#패키지-구성) · [architecture.md](agent_docs/architecture.md)
 - 로봇 데이터 (URDF/MJCF/mesh): [robot_descriptions/README.md](robot_descriptions/README.md)
 - 언어·OS·의존성 버전: [README.md](README.md#빠른-시작) · [repo_scripts/README.md](repo_scripts/README.md)
-- test 카운트·실측: [docs/testing.md](docs/testing.md)
+- test 명령·sensor matrix: [docs/testing.md](docs/testing.md)
 
 ## 2. Harness Overview
 

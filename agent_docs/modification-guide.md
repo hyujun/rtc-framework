@@ -1,6 +1,6 @@
 # Modification Guide
 
-수정·추가 작업의 **규범** 이다 — 어떤 순서로 하고, 어떤 게이트를 지나며, 무엇이 성립해야 완료인가. 단계별 절차와 각 단계의 이유는 헌법 밖 [docs/modification-procedures.md](../docs/modification-procedures.md) 가 갖는다 (같은 절 이름으로 찾는다).
+수정·추가 작업의 **규범** 이다 — 어떤 순서로 하고, 어떤 게이트를 지나며, 무엇이 성립해야 완료인가. 단계별 절차는 헌법 밖 [docs/modification-procedures.md](../docs/modification-procedures.md) 가 갖는다 (같은 절 이름으로 찾는다).
 
 ## Workflow Loop
 

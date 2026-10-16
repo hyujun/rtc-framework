@@ -333,13 +333,7 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 # 로그아웃 후 재로그인 필요
 ```
 
-최대 RT 성능을 위한 CPU 격리:
-```bash
-# /etc/default/grub의 GRUB_CMDLINE_LINUX_DEFAULT에 추가
-# isolcpus=1-3 nohz_full=1-3 rcu_nocbs=1-3  # RT cluster = Core 1-3, 전 tier 동일
-# 값 산출은 repo_scripts/scripts/setup_grub_rt.sh 가 자동으로 한다 (SMT 시블링 포함)
-sudo update-grub && sudo reboot
-```
+위 권한을 포함한 RT 설정 전체 (GRUB 파라미터 · CPU shield · IRQ · governor · NVIDIA) 는 `./install.sh robot --rt` 가 한 번에 한다 — `isolcpus` 는 쓰지 않는다 (CPU 격리는 `cpu_shield.sh` 가 맡는다). 단계별 설명과 확인 방법: [docs/rt-optimization.md](docs/rt-optimization.md).
 
 ---
 
@@ -347,15 +341,15 @@ sudo update-grub && sudo reboot
 
 | 문서 | 설명 |
 |------|------|
-| [docs/RT_OPTIMIZATION.md](docs/RT_OPTIMIZATION.md) | 실시간 최적화 가이드 (CPU 코어 할당, 커널 설정) |
-| [docs/VSCODE_DEBUGGING.md](docs/VSCODE_DEBUGGING.md) | VS Code + GDB 디버깅 가이드 |
-| [docs/NUC_HYBRID_SUPPORT.md](docs/NUC_HYBRID_SUPPORT.md) | NUC 13/14/15 Pro hybrid CPU (P/E core) 감지 + BIOS 체크리스트. Layout 분기는 `thread_layout.yaml` slot 매핑이 처리 |
+| [docs/rt-optimization.md](docs/rt-optimization.md) | 실기 PC 의 RT 설정 — `install.sh robot --rt` 한 번에 / 단계별 수동 (RT 커널 · GRUB · CPU shield · IRQ · NVIDIA) / 확인 / 문제 해결 / hybrid CPU (NUC) |
+| [docs/vscode-debugging.md](docs/vscode-debugging.md) | VS Code + GDB 디버깅 가이드 — 설정 템플릿은 [docs/vscode/](docs/vscode/) (`cp -r docs/vscode .vscode`) |
+| [docs/tracing.md](docs/tracing.md) | LTTng trace 캡처와 Perfetto 로 보기 — 스레드 × 코어 타임라인, RT tick 내부 span |
 | [AGENTS.md](AGENTS.md) | **AI 에이전트 헌법 (tool-neutral)** — invariants, workflow, escalation, build hard rules. Codex · Copilot · Antigravity 등이 읽는다 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 진입점 — `@AGENTS.md` import 로 위 헌법을 그대로 싣고, hook · slash command · rule 자동 로드 등 Claude 전용 메커니즘만 덧붙인다 (규칙은 AGENTS.md 에만 있다) |
 | [agent_docs/](agent_docs/) | 헌법이 위임하는 세부 규칙의 SSoT (invariants, architecture, controllers, testing, conventions, handoff) |
-| [docs/controllers.md](docs/controllers.md) | 컨트롤러 카탈로그 — 제어 법칙별 코어 위치, 배선된 컨트롤러의 계약 상세, 게인·토픽·설정 사용법 (규범은 `agent_docs/controllers.md`) |
+| [docs/controllers.md](docs/controllers.md) | 컨트롤러 카탈로그 — 배선된 컨트롤러와 제어 법칙별 코어, 전환·게인·토픽·설정 사용법 (규범은 `agent_docs/controllers.md`) |
 | [docs/modification-procedures.md](docs/modification-procedures.md) | 수정·추가 작업의 단계별 절차 — 컨트롤러 / 메시지 / device group / 스레드 / 패키지 추가 (규범은 `agent_docs/modification-guide.md`) |
-| [docs/testing.md](docs/testing.md) | 테스트·디버깅 가이드 — 패키지별 sensor 표, 명령, 측정 레시피와 함정, 런타임 디버그 토픽 (규범은 `agent_docs/testing-debug.md`) |
+| [docs/testing.md](docs/testing.md) | 테스트·디버깅 가이드 — 테스트 명령, 바꾼 곳별로 돌릴 테스트 (sensor matrix), 런타임 디버그 토픽, 증상별 처방 (규범은 `agent_docs/testing-debug.md`) |
 | [docs/reference/](docs/reference/README.md) | 헌법 밖 참고 자료 — 규칙의 근거 · 실측 · 사고 이력 · 사례집 (규범이 아니다) |
 | [docs/wbc_humanoid/](docs/wbc_humanoid/ALGORITHM_ANALYSIS.md) | 외부 저장소 `wb_humanoid_mpc` (G1 centroidal · whole-body MPC) 의 알고리즘 분석과, 그것을 Aligator + ProxSuite 로 옮기는 구현 가이드. 이 저장소의 코드를 서술하지 않는다 |
 | [repo_scripts/README.md](repo_scripts/README.md) | RT 설정 / 빌드 / 환경 셋업 쉘 스크립트 가이드 (PREEMPT_RT, CPU shield, IRQ affinity, `setup_env.sh`) |

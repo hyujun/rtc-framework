@@ -14,7 +14,7 @@
 # 실행 시점: 부팅 후, ROS2 실행 전
 # 검증:
 #   cat /proc/interrupts | grep eth    # 해당 NIC의 IRQ 번호 확인
-#   cat /proc/irq/<NUM>/smp_affinity   # 출력이 "3" = Core 0,1
+#   cat /proc/irq/<NUM>/smp_affinity   # OS 코어 (rt_common.sh OS_CORES_DESC) 의 mask
 
 set -euo pipefail
 

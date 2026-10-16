@@ -45,7 +45,7 @@ SSoT 는 `repo_scripts/config/thread_layout.yaml` 이고 C++ tier 상수 + `Sele
 - **hand-private thread (issue #345)**: `hand_udp_recv` 는 `SystemThreadConfigs` 에 필드가 없고 package-local `kHandUdpRecvConfig` 다. 같은 프로세스는 blocking 파일 I/O 전용 `hand_aux_io` executor 스레드를 aux slot (OS slot) 에 따로 두며, 그 slot 은 ROS param `aux_cpu_slot` (기본 0, shell SSoT `get_os_cores()`) 이다. 옛 `taskset -a` 전-스레드 스윕은 `hand_aux_io` 를 도로 끌어오므로 제거됐다 — `hand_driver` 는 프로세스가 스스로 main 스레드를 핀하고 (`use_cpu_affinity` param 이 그것까지 끈다) launch 는 `rclcpp::init()` 이 노드 생성 전에 만드는 DDS 스레드만 co-pin 한다.
 - **arm_driver (issue #343)**: 그 프로세스 (`ros2_control_node`) 의 제어 루프는 main thread 가 아닌 별도 스레드라 taskset 이 닿지 않으므로, upstream `controller_manager` 의 `cpu_affinity`/`thread_priority` 파라미터로 그 루프만 핀한다. 이 값은 `SystemThreadConfigs.arm_driver` 가 아니라 launch 가 생성하는 CM 파라미터 파일이 나른다.
 
-Hybrid-CPU 감지 + BIOS 체크리스트: [NUC_HYBRID_SUPPORT.md](../NUC_HYBRID_SUPPORT.md).
+Hybrid-CPU 감지 + BIOS 체크리스트: [rt-optimization.md](../rt-optimization.md#6-hybrid-cpu-nuc).
 
 ### Per-thread timing CSV — 구성 파일
 

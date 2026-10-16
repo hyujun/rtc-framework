@@ -1,6 +1,6 @@
 # Controllers
 
-컨트롤러가 지켜야 하는 **계약**이다. 제어 법칙별 코어 위치 · 배선된 컨트롤러별 상세 · 결정 근거와 실측 · 게인 / 토픽 / 설정 사용법은 헌법 밖 [docs/controllers.md](../docs/controllers.md) 가 갖는다 (같은 절 이름으로 찾는다).
+컨트롤러가 지켜야 하는 **계약**이다. 코어 위치 · 배선된 컨트롤러 · 게인 / 토픽 / 설정 사용법은 헌법 밖 [docs/controllers.md](../docs/controllers.md), 결정 근거와 실측은 [controllers-rationale.md](../docs/reference/controllers-rationale.md) 가 갖는다.
 
 ## Controller Table
 
@@ -76,7 +76,7 @@
 
 ## 컨트롤러별 계약
 
-배선된 컨트롤러 각각의 상세는 [docs/controllers.md](../docs/controllers.md) §배선된 컨트롤러. 아래는 그중 **깨면 조용히 틀리는** 것이다.
+배선된 컨트롤러 목록은 [docs/controllers.md](../docs/controllers.md#배선된-컨트롤러). 아래는 그중 **깨면 조용히 틀리는** 것이다.
 
 **DemoComplianceController** (task-space admittance):
 

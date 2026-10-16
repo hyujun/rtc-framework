@@ -1,0 +1,125 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "colcon: Build All (Debug)",
+      "type": "shell",
+      "command": "./build.sh -d",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "colcon: Build All (Release)",
+      "type": "shell",
+      "command": "./build.sh -r",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "colcon: Build Selected Package",
+      "type": "shell",
+      "command": "./build.sh -d --tests -p ${input:pkg}",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "colcon: Build Sim",
+      "type": "shell",
+      "command": "./build.sh sim -d",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "colcon: Build Robot",
+      "type": "shell",
+      "command": "./build.sh robot -d",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "colcon: Test All",
+      "type": "shell",
+      "command": "source ${workspaceFolder}/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 && colcon test --base-paths src/rtc-framework --event-handlers console_direct+",
+      "options": {
+        "cwd": "${workspaceFolder}/../.."
+      }
+    },
+    {
+      "label": "colcon: Test Selected Package",
+      "type": "shell",
+      "command": "source ${workspaceFolder}/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 && colcon test --packages-select ${input:pkg} --event-handlers console_direct+",
+      "options": {
+        "cwd": "${workspaceFolder}/../.."
+      }
+    },
+    {
+      "label": "rtc: Merge compile_commands.json",
+      "type": "shell",
+      "command": "python3 merge_compile_commands.py",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    },
+    {
+      "label": "rtc: Check RT Setup",
+      "type": "shell",
+      "command": "./repo_scripts/scripts/check_rt_setup.sh --summary",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    },
+    {
+      "label": "ros2 launch: sim",
+      "type": "shell",
+      "command": "source ${workspaceFolder}/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 && ros2 launch integrated_bringup sim_ur5e_p1a.launch.py",
+      "options": {
+        "cwd": "${workspaceFolder}/../.."
+      }
+    },
+    {
+      "label": "ros2 launch: robot",
+      "type": "shell",
+      "command": "source ${workspaceFolder}/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 && ros2 launch integrated_bringup robot_ur5e_p1a.launch.py robot_ip:=${input:robotIp}",
+      "options": {
+        "cwd": "${workspaceFolder}/../.."
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "pkg",
+      "type": "promptString",
+      "description": "Package name (e.g. rtc_base)"
+    },
+    {
+      "id": "robotIp",
+      "type": "promptString",
+      "description": "UR robot IP",
+      "default": "192.168.1.10"
+    }
+  ]
+}

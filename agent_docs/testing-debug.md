@@ -1,10 +1,10 @@
 # Testing & Debugging
 
-테스트·검증의 **규범**이다 — 무엇을 반드시 돌리고, 결과를 무엇으로 판정하며, 어떤 green 을 믿지 않는가. 패키지별 sensor 표 · 명령 · 측정 레시피 · 함정이 발현한 사례 · 런타임 디버그 토픽은 헌법 밖 [docs/testing.md](../docs/testing.md) 가 갖는다 (같은 절 이름으로 찾는다).
+테스트·검증의 **규범**이다 — 무엇을 반드시 돌리고, 결과를 무엇으로 판정하며, 어떤 green 을 믿지 않는가. sensor 표 · 명령 · 런타임 디버그 토픽은 헌법 밖 [docs/testing.md](../docs/testing.md), 함정이 발현한 사례는 [testing-rationale.md](../docs/reference/testing-rationale.md) 가 갖는다.
 
 ## Sensor Matrix
 
-- 변경한 위치의 행을 [docs/testing.md](../docs/testing.md) §Sensor Matrix 에서 찾아 **필수 sensor + 추가 sensor** 를 모두 실행한다 ([AGENTS.md](../AGENTS.md) §5). 패키지나 테스트 구성을 바꾸면 그 행을 같은 변경에서 갱신한다 (PROC-1).
+- 변경한 위치의 행을 [Sensor Matrix](../docs/testing.md#sensor-matrix) 에서 찾아 **필수 sensor + 추가 sensor** 를 모두 실행한다 ([AGENTS.md](../AGENTS.md) §5). 패키지나 테스트 구성을 바꾸면 그 행을 같은 변경에서 갱신한다 (PROC-1).
 - 테스트는 기본으로 빌드되지 않는다 — `./build.sh --tests [-p <pkg>]` 가 먼저다. 테스트 없이 빌드한 패키지는 실패가 아니라 "0 tests" 를 보고한다.
 - `rtc_base` / `rtc_msgs` 변경은 전체 downstream 이다 (PROC-3).
 - **skip 은 통과가 아니라 미검증이다.** 정책 파일 · optional dep · HW 가 있어야 도는 테스트가 skip 됐으면 그 사실을 보고한다.
@@ -86,7 +86,7 @@ RT tick 이 heap 을 안 만진다는 주장을 재는 sensor 는 셋이고, 선
 - **timeout · crash 는 gtest XML 에 `<failure>` 로 남지 않는다.** 판정은 `colcon test-result` 의 요약 (errors 포함) 이나 `build/<pkg>/Testing/*/Test.xml` 로 하고, gtest XML grep 을 유일한 센서로 쓰지 않는다.
 - flake 는 재현하기 전에 `build/<pkg>/Testing/Temporary/` 의 `LastTest_*.log` 부터 연다.
 - 한 gtest 바이너리가 ctest 에 여러 번 등록될 수 있다 — ctest 밖에서 돌릴 때는 `ctest -N` 으로 등록을 확인하고 `GTEST_FILTER` 를 등록대로 준다.
-- 판정은 "실패 0건" 이 아니라 **이번 호출이 만든 산출물** 로 한다 — 읽기 전에 지우고, 없으면 실패다. 이것이 막는 경로는 [docs/testing.md](../docs/testing.md) §계측 함정.
+- 판정은 "실패 0건" 이 아니라 **이번 호출이 만든 산출물** 로 한다 — 읽기 전에 지우고, 없으면 실패다. 막는 경로: [계측 함정](../docs/reference/testing-rationale.md#계측-함정).
 - 신규 테스트 개수는 총계 차이가 아니라 `grep -c '^TEST(' <파일>` 또는 per-target XML 의 `tests="N"` 으로 교차검증한다.
 
 ### Coverage · sanitizer 빌드
@@ -103,7 +103,7 @@ RT tick 이 heap 을 안 만진다는 주장을 재는 sensor 는 셋이고, 선
 
 ## 런타임 판독
 
-토픽·CSV 컬럼·증상별 처방은 [docs/testing.md](../docs/testing.md) §Live Debug Topics · §Debugging. 판독할 때:
+토픽·CSV 컬럼·증상별 처방은 [Live Debug Topics](../docs/testing.md#live-debug-topics) · [Debugging](../docs/testing.md#debugging). 판독할 때:
 
 - timing CSV 는 **`run_id` 로 먼저 그룹핑** 한다 — 같은 분의 재기동이 같은 파일에 append 된다.
 - sim 모드 (`use_sim_time_sync=true`) 의 `jitter_us` 는 RT 지표가 아니다.
@@ -113,4 +113,4 @@ RT tick 이 heap 을 안 만진다는 주장을 재는 sensor 는 셋이고, 선
 
 ## Tracing
 
-timing CSV 는 per-tick 총 시간만 기록한다. 어느 thread 가 어느 core 에서 언제 돌았는지, 어떤 callback 이 시간을 쓰는지가 필요하면 LTTng trace 를 캡처한다 — 절차는 [docs/tracing.md](../docs/tracing.md).
+timing CSV 는 per-tick 총 시간만 기록한다. thread × core 타임라인이나 callback 별 시간이 필요하면 LTTng trace 를 캡처한다 — 절차는 [docs/tracing.md](../docs/tracing.md).

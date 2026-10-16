@@ -91,7 +91,7 @@ ros2_control jazzy controller_manager default 인용 (`control_rate=500Hz` / `dt
 
 System-level 조건 (커널·`@realtime` 권한·core 격리): [invariants.md](../../agent_docs/invariants.md) §RT Host / Runtime Preconditions
 
-세부 검증 명령은 [check_rt_setup.sh](../../repo_scripts/scripts/check_rt_setup.sh) 와 [verify_rt_runtime.sh](../../repo_scripts/scripts/verify_rt_runtime.sh) 가 갖는다. 설정 절차는 [RT_OPTIMIZATION.md](../RT_OPTIMIZATION.md).
+세부 검증 명령은 [check_rt_setup.sh](../../repo_scripts/scripts/check_rt_setup.sh) 와 [verify_rt_runtime.sh](../../repo_scripts/scripts/verify_rt_runtime.sh) 가 갖는다. 설정 절차는 [rt-optimization.md](../rt-optimization.md).
 
 **권장 sensor** (배포 전 1회, 환경 변경 시 재실행; 결과는 timing CSV 와 같은 디렉토리에 저장):
 
