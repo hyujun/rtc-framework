@@ -23,7 +23,7 @@
 # `mujoco.mj_geomDistance` grid search over every robot collision geom. The
 # maintenance cost of one overlay plus one object is smaller than doing that
 # again. Geometry rationale lives in the object file; the search constraints live
-# in `.claude/skills/verify/SKILL.md` (p1b).
+# in `.claude/skills/verify/references/p1b-fingertip-fixture.md`.
 #
 # HOW IT IS USED. The arm never moves. Leave the shipped palm-down
 # `initial_qpos` alone, let the disk spawn at fingertip height, and close index
