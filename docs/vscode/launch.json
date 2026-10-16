@@ -9,6 +9,8 @@
       "args": [
         "--ros-args",
         "--params-file",
+        "${workspaceFolder}/integrated_bringup/config/ur5e_p1a/_base.yaml",
+        "--params-file",
         "${workspaceFolder}/integrated_bringup/config/ur5e_p1a/sim.yaml"
       ],
       "cwd": "${workspaceFolder}/../..",
@@ -25,6 +27,12 @@
         {
           "text": "set print object on"
         }
+      ],
+      "environment": [
+        {
+          "name": "LD_PRELOAD",
+          "value": "libmimalloc.so.2"
+        }
       ]
     },
     {
@@ -34,6 +42,8 @@
       "program": "${workspaceFolder}/../../install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node",
       "args": [
         "--ros-args",
+        "--params-file",
+        "${workspaceFolder}/rtc_mujoco_sim/config/solver_param.yaml",
         "--params-file",
         "${workspaceFolder}/integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml"
       ],
@@ -145,6 +155,9 @@
         },
         {
           "text": "set print pretty on"
+        },
+        {
+          "text": "set print object on"
         }
       ]
     },
@@ -152,7 +165,7 @@
       "name": "C++: Run GTest (Selected Package)",
       "type": "cppdbg",
       "request": "launch",
-      "program": "${input:gtestBinary}",
+      "program": "${workspaceFolder}/../../build/${input:gtestBinary}",
       "args": [],
       "cwd": "${workspaceFolder}/../..",
       "MIMode": "gdb",
@@ -174,8 +187,8 @@
     {
       "id": "gtestBinary",
       "type": "promptString",
-      "description": "GTest binary path",
-      "default": "${workspaceFolder}/../../build/rtc_base/test_seqlock"
+      "description": "GTest binary, relative to <ws>/build (e.g. rtc_base/test_seqlock)",
+      "default": "rtc_base/test_seqlock"
     }
   ]
 }

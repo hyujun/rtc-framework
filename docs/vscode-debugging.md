@@ -16,7 +16,7 @@ VS Code 로 **repo root (`src/rtc-framework`) 를 연다.** 그러면 `${workspa
 | 파일 | 내용 |
 |------|------|
 | `settings.json` | clangd 를 IntelliSense 로, cpptools 는 디버거 전용. ROS distro (`jazzy`), 탐색 제외 |
-| `tasks.json` | 빌드·테스트·launch task 12개 (아래 표) |
+| `tasks.json` | 빌드·테스트·launch task 11개 (아래 표) |
 | `launch.json` | 노드 5종 launch + Attach + GTest (모두 `cppdbg`, GDB) |
 | `extensions.json` | 권장 확장 |
 
@@ -55,9 +55,8 @@ sudo apt install gdb clangd libomp-dev
 | `colcon: Build All (Release)` | 전체 Release 빌드 |
 | `colcon: Build Selected Package` | `./build.sh -d --tests -p <pkg>` |
 | `colcon: Build Sim` / `Build Robot` | `./build.sh sim -d` / `./build.sh robot -d` |
-| `colcon: Test All` / `Test Selected Package` | `colcon test` (ws root 에서 실행) |
+| `colcon: Test All` / `Test Selected Package` | `colcon test` (ws root 에서, All 은 `--base-paths src/rtc-framework` 로 이 repo 만) |
 | `rtc: Merge compile_commands.json` | 병합만 수동 실행 |
-| `rtc: Clean Build Artifacts` | `rm -rf build install log` (ws root) |
 | `rtc: Check RT Setup` | `check_rt_setup.sh --summary` |
 | `ros2 launch: sim` / `robot` | `sim_ur5e_p1a` / `robot_ur5e_p1a` launch (`robot_ip` 를 묻는다) |
 
@@ -65,23 +64,31 @@ sudo apt install gdb clangd libomp-dev
 
 `F5` (또는 `Run and Debug`) 로 구성을 고르면 VS Code 가 `preLaunchTask` 로 Debug 빌드를 한 뒤 GDB 로 바이너리를 **직접** 실행한다 (`ros2 launch` 를 거치지 않는다).
 
+> [!IMPORTANT]
+> **sim · robot 전체를 디버깅할 때는 `ros2 launch` 로 띄우고 [Attach](#attach--실행-중인-노드에-연결) 한다** (권장). launch 는 노드 간 lifecycle 순서 (mujoco → controller), cset shield 편입, 세션 디렉토리, launch 인자 override 를 맡는데 직접 실행은 그중 아무것도 하지 않는다. 직접 실행은 노드 하나의 `on_configure` · `on_activate` 를 처음부터 밟아 볼 때 쓴다.
+
+모든 노드가 lifecycle 노드라 직접 띄우면 `unconfigured` 에 멈춘다. 다른 터미널에서 전환을 직접 건다 (controller 는 mujoco 가 active 가 된 뒤):
+
+```bash
+ros2 lifecycle nodes                              # 노드 이름 확인
+ros2 lifecycle set /mujoco_simulator configure && ros2 lifecycle set /mujoco_simulator activate
+ros2 lifecycle set /integrated_rt_controller configure && ros2 lifecycle set /integrated_rt_controller activate
+```
+
+
 | 구성 | 바이너리 (`install/<pkg>/lib/<pkg>/`) | `--params-file` (repo root 기준) |
 |------|------|------|
-| `C++: Launch integrated_rt_controller (Debug)` | `integrated_rt_controller` | `integrated_bringup/config/ur5e_p1a/sim.yaml` |
-| `C++: Launch mujoco_simulator_node (Debug)` | `mujoco_simulator_node` (`rtc_mujoco_sim`) | `integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml` |
+| `C++: Launch integrated_rt_controller (Debug)` | `integrated_rt_controller` | `integrated_bringup/config/ur5e_p1a/_base.yaml` → `sim.yaml` (launch 와 같은 순서, `LD_PRELOAD=libmimalloc.so.2` 포함) |
+| `C++: Launch mujoco_simulator_node (Debug)` | `mujoco_simulator_node` (`rtc_mujoco_sim`) | `rtc_mujoco_sim/config/solver_param.yaml` → `integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml` |
 | `C++: Launch udp_hand_node (Debug)` | `udp_hand_node` (`udp_hand_driver`) | `udp_hand_driver/config/udp_hand_node.yaml` |
 | `C++: Launch bt_coordinator_node (Debug)` | `bt_coordinator_node` (`ur5e_bt_coordinator`) | `ur5e_bt_coordinator/config/bt_coordinator_p1a.yaml` |
 | `C++: Launch shape_estimation_node (Debug)` | `shape_estimation_node` (`shape_estimation`) | `shape_estimation/config/shape_estimation_node.yaml` |
 | `C++: Attach to Node (Pick Process)` | 실행 중인 프로세스 선택 | — |
-| `C++: Run GTest (Selected Package)` | GTest 바이너리 경로를 입력받아 실행 | — |
+| `C++: Run GTest (Selected Package)` | `<ws>/build/` 기준 GTest 경로를 입력받아 실행 | — |
 
-params 는 기본 로봇 `ur5e_p1a` 기준이다. 실로봇 설정이나 다른 로봇으로 디버깅하려면 `launch.json` 의 `args` 를 `config/<robot>/` 의 파일로 바꾼다. 가능한 조합은 [integrated_bringup/launch/](../integrated_bringup/launch/) 를 본다.
+params 는 기본 로봇 `ur5e_p1a` 기준이다. 실로봇 설정이나 다른 로봇으로 디버깅하려면 `launch.json` 의 `args` 를 `config/<robot>/` 의 파일로 바꾼다. 어떤 파일을 어떤 순서로 겹치는지는 그 로봇의 launch 파일 ([integrated_bringup/launch/](../integrated_bringup/launch/)) 이 정한다.
 
-GTest 경로 예시 (`colcon: Build Selected Package` 로 먼저 빌드):
-
-```text
-${workspaceFolder}/../../build/rtc_base/test_seqlock
-```
+GTest 는 `colcon: Build Selected Package` 로 먼저 빌드하고, 입력창에 `<ws>/build/` 아래 경로를 넣는다 (기본값 `rtc_base/test_seqlock`).
 
 > [!IMPORTANT]
 > GDB 가 공유 라이브러리를 찾으려면 **`setup_env.sh` 를 source 한 터미널에서 VS Code 를 실행**해야 한다 (`code .`). 안 그러면 `error while loading shared libraries` 가 난다.
@@ -98,7 +105,7 @@ ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
 
 ### 변수 표시
 
-모든 C++ launch 구성은 `setupCommands` 에 `-enable-pretty-printing` · `set print pretty on` · `set print object on` 을 넣어 두어서 `std::vector` · `std::array` · Eigen 타입이 읽기 좋게 표시된다. pretty-printer 가 안 붙는 raw 버퍼는 DEBUG CONSOLE 에서 `-exec print q.data()@7` (포인터@개수) 로 펼쳐 본다.
+모든 C++ 구성 (Attach 포함) 은 `setupCommands` 에 `-enable-pretty-printing` · `set print pretty on` · `set print object on` 을 넣어 두어서 `std::vector` · `std::array` · Eigen 타입이 읽기 좋게 표시된다. pretty-printer 가 안 붙는 raw 버퍼는 DEBUG CONSOLE 에서 `-exec print q.data()@7` (포인터@개수) 로 펼쳐 본다.
 
 `c_cpp_properties.json` 은 일부러 만들지 않았다. clangd 가 `.clangd` 와 repo root 의 `compile_commands.json` 을 직접 읽기 때문이다.
 

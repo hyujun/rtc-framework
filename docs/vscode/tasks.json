@@ -63,7 +63,7 @@
     {
       "label": "colcon: Test All",
       "type": "shell",
-      "command": "source ${workspaceFolder}/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 && colcon test --event-handlers console_direct+",
+      "command": "source ${workspaceFolder}/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 && colcon test --base-paths src/rtc-framework --event-handlers console_direct+",
       "options": {
         "cwd": "${workspaceFolder}/../.."
       }
@@ -82,14 +82,6 @@
       "command": "python3 merge_compile_commands.py",
       "options": {
         "cwd": "${workspaceFolder}"
-      }
-    },
-    {
-      "label": "rtc: Clean Build Artifacts",
-      "type": "shell",
-      "command": "rm -rf build install log",
-      "options": {
-        "cwd": "${workspaceFolder}/../.."
       }
     },
     {
