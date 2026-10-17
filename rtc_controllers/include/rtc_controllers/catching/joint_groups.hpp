@@ -28,6 +28,11 @@ namespace rtc::catching {
 /// Most groups a profile may declare.
 inline constexpr int kMaxJointGroups = 4;
 
+/// Largest weight of a whole-body term (a group's velocity or rest weight,
+/// the angular-momentum weights) the segment cores take: the largest they are
+/// tested with — beyond it the QP's conditioning is untested.
+inline constexpr double kWholeBodyWeightMax = 1e4;
+
 /// One `planner.groups` entry as written: a name the segment blocks refer to
 /// and device joint names.
 struct JointGroupSpec {

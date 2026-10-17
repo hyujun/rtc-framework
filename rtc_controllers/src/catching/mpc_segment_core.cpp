@@ -245,6 +245,37 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
     }
   }
 
+  // Whole-body weights (E3-F02): per joint, bounded; the rest posture is read
+  // only where its weight is positive.
+  const auto weights_ok = [nn](const Eigen::VectorXd& w) {
+    if (w.size() == 0) {
+      return true;
+    }
+    if (w.size() != nn) {
+      return false;
+    }
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      if (!(std::isfinite(w[j]) && w[j] >= 0.0 && w[j] <= kWholeBodyWeightMax)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!weights_ok(params.w_vel) || !weights_ok(params.w_rest)) {
+    return MpcSegmentCoreReason::kParamsInvalid;
+  }
+  bool any_vel = false;
+  bool any_rest = false;
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    any_vel = any_vel || (params.w_vel.size() != 0 && params.w_vel[j] > 0.0);
+    if (params.w_rest.size() != 0 && params.w_rest[j] > 0.0) {
+      if (params.q_rest.size() != nn || !std::isfinite(params.q_rest[j])) {
+        return MpcSegmentCoreReason::kParamsInvalid;
+      }
+      any_rest = true;
+    }
+  }
+
   params_ = params;
   n_ = n;
   n_nodes_ = n_nodes;
@@ -257,6 +288,20 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   path_active_.fill(false);
   path_solve_on_ = false;
   torque_on_ = params.rho_tau > 0.0;
+  vel_wb_on_ = any_vel;
+  rest_on_ = any_rest;
+  w_vel_.setZero(nn);
+  w_rest_.setZero(nn);
+  q_rest_.setZero(nn);
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    if (any_vel) {
+      w_vel_[j] = params.w_vel[j];
+    }
+    if (any_rest && params.w_rest[j] > 0.0) {
+      w_rest_[j] = params.w_rest[j];
+      q_rest_[j] = params.q_rest[j];
+    }
+  }
   catch_on_ = params.catch_terms;
   vel_on_ = catch_on_ && (params.w_v_par > 0.0 || params.w_v_perp > 0.0);
   slack_v_on_ = catch_on_ && params.rho_v > 0.0;
@@ -361,6 +406,31 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
         }
       }
     }
+  }
+
+  // The whole-body terms' constant Hessian (header note): every path of the
+  // full problem adds it, none of the pre-solve's.
+  h_wb_.resize(0, 0);
+  if (vel_wb_on_ || rest_on_) {
+    h_wb_.setZero(nz_, nz_);
+    for (Eigen::Index k = 1; k < N1; ++k) {
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        const double wv = w_vel_[j];
+        const double wr = w_rest_[j];
+        if (wv == 0.0 && wr == 0.0) {
+          continue;
+        }
+        const ClassStages& st = stage_[ClassOf(j)];
+        const Eigen::Index nb = st.gq.cols();
+        for (Eigen::Index b = 0; b < nb; ++b) {
+          for (Eigen::Index c = 0; c < nb; ++c) {
+            h_wb_(Col(j, b), Col(j, c)) +=
+                wv * st.gv(k, b) * st.gv(k, c) + wr * st.gq(k, b) * st.gq(k, c);
+          }
+        }
+      }
+    }
+    h_main_ += h_wb_;
   }
 
   // QP storage: both problems keep their constant parts from here on.
@@ -548,6 +618,21 @@ void MpcSegmentCore::AssembleConstantDense(tsid::QPData& qp, bool main) noexcept
     for (Eigen::Index k = 1; k <= N; ++k) {
       work_dg_ = g_dense_.middleRows(3 * nn * k, nn);
       work_dg_ *= sw;
+      qp.H.topLeftCorner(nu_, nu_).noalias() += work_dg_.transpose() * work_dg_;
+    }
+  }
+  // The whole-body terms: diag(w)^½ times the velocity / position rows.
+  for (int term = 0; main && term < 2; ++term) {
+    const bool vel = term == 0;
+    if (vel ? !vel_wb_on_ : !rest_on_) {
+      continue;
+    }
+    const Eigen::VectorXd& w = vel ? w_vel_ : w_rest_;
+    for (Eigen::Index k = 1; k <= N; ++k) {
+      work_dg_ = g_dense_.middleRows(3 * nn * k + (vel ? nn : 0), nn);
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        work_dg_.row(j) *= std::sqrt(w[j]);
+      }
       qp.H.topLeftCorner(nu_, nu_).noalias() += work_dg_.transpose() * work_dg_;
     }
   }
@@ -1007,6 +1092,30 @@ void MpcSegmentCore::EvaluateCatch(MpcSegmentCoreResult& out) noexcept {
   out.catch_evaluated = true;
 }
 
+void MpcSegmentCore::EvaluateWholeBody(MpcSegmentCoreResult& out) const noexcept {
+  // ½ Σ_{k=1..N} w (·)² at the solution's nodes — exact: both terms are
+  // quadratic in the variables.
+  out.whole_body = MpcSegmentWholeBodyCost{};
+  if (!vel_wb_on_ && !rest_on_) {
+    return;
+  }
+  const Eigen::Index nn = n_;
+  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const auto g = static_cast<std::size_t>(params_.n_groups > 1 ? params_.joint_group[U(j)]
+                                                                   : std::int8_t{0});
+      const double v = v_out_(j, k);
+      const double dq = q_out_(j, k) - q_rest_[j];
+      const double cv = 0.5 * w_vel_[j] * v * v;
+      const double cr = 0.5 * w_rest_[j] * dq * dq;
+      out.whole_body.vel += cv;
+      out.whole_body.rest += cr;
+      out.whole_body.vel_group[g] += cv;
+      out.whole_body.rest_group[g] += cr;
+    }
+  }
+}
+
 bool MpcSegmentCore::AssembleBounds(tsid::QPData& qp, bool main) noexcept {
   const Eigen::Index nn = n_;
   const Eigen::Index nN = nn * n_nodes_;
@@ -1098,6 +1207,23 @@ void MpcSegmentCore::AssembleGradient(tsid::QPData& qp, bool main) noexcept {
         for (Eigen::Index b = 0; b <= last_block && b < nb; ++b) {
           const double w = w_delta * st.gq(k, b);
           qp.g[Col(j, b)] += w * (qf_(j, k) - qr_(j, k));
+        }
+      }
+    }
+  }
+  // The whole-body terms' gradient: w_vel·ĝ_v·q̇_f and w_rest·ĝ_q·(q_f − q_rest).
+  if (vel_wb_on_ || rest_on_) {
+    for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        const double rv = w_vel_[j] * vf_(j, k);
+        const double rq = w_rest_[j] * (qf_(j, k) - q_rest_[j]);
+        if (rv == 0.0 && rq == 0.0) {
+          continue;
+        }
+        const ClassStages& st = stage_[ClassOf(j)];
+        const Eigen::Index last_block = st.block_of_node[U(k - 1)];
+        for (Eigen::Index b = 0; b <= last_block; ++b) {
+          qp.g[Col(j, b)] += st.gv(k, b) * rv + st.gq(k, b) * rq;
         }
       }
     }
@@ -1395,6 +1521,9 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
       if (h_modified_ || scaled) {
         if (scaled) {
           qp_main_.H = h_kin_;
+          if (vel_wb_on_ || rest_on_) {
+            qp_main_.H += h_wb_;  // constant, so on this path too (header note)
+          }
           qp_main_.H += w_delta_scale_ * h_delta_;
         } else {
           qp_main_.H = h_main_;
@@ -1488,6 +1617,7 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
   if (catch_on_) {
     EvaluateCatch(out);
   }
+  EvaluateWholeBody(out);
   out.reason = MpcSegmentCoreReason::kNone;
   out.valid = true;
   return true;

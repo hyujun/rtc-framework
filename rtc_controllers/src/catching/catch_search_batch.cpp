@@ -889,6 +889,8 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     model.nv = nv;
     model.device_of_model = device_of_model;
     model.groups = groups;
+    model.rest_pose = planner.wait_pose;
+    model.rest_pose_n = planner.wait_pose_n;
     std::copy(sb.q_min.begin(), sb.q_min.end(), model.q_min.begin());
     std::copy(sb.q_max.begin(), sb.q_max.end(), model.q_max.begin());
     std::copy(sb.qdot_max.begin(), sb.qdot_max.end(), model.qdot_max.begin());

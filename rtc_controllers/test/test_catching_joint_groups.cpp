@@ -146,7 +146,12 @@ TEST(JointGroupsMpcKeys, RejectsAGroupKeyByName) {
            Case{"3", "'planner.segment.mpc.groups' must be a map"},
            Case{"{c: {}}", "'planner.segment.mpc.groups.c' names no group of 'planner.groups'"},
            Case{"{a: 1}", "'planner.segment.mpc.groups.a' must be a map"},
-           Case{"{a: {w_rest: 1}}", "'planner.segment.mpc.groups.a.w_rest' is not a key"},
+           Case{"{a: {w_acc: 1}}", "'planner.segment.mpc.groups.a.w_acc' is not a key"},
+           Case{"{a: {w_vel: -1}}", "'planner.segment.mpc.groups.a.w_vel'"},
+           Case{"{a: {w_vel: 1.0e5}}", "'planner.segment.mpc.groups.a.w_vel'"},
+           Case{"{a: {w_rest: 1}}",
+                "'planner.segment.mpc.groups.a.w_rest' > 0 holds the group near its rest "
+                "posture, 'planner.wait_pose', which is not given"},
            Case{"{a: {blocks: {mid: 1}}}",
                 "'planner.segment.mpc.groups.a.blocks.mid' is not a key"},
            Case{"{a: {blocks: {pre: 0}}}", "'planner.segment.mpc.groups.a.blocks.pre'"},
@@ -164,6 +169,11 @@ TEST(JointGroupsMpcKeys, RejectsAGroupKeyByName) {
       EXPECT_NE(what.find(c.says), std::string::npos) << what;
     }
   }
+  // With the wait pose the rest weight parses.
+  EXPECT_EQ(ParseError(std::string("planner: {") + kTwoGroups +
+                       ", wait_pose: [0, 0, 0, 0, 0, 0, 0], segment: {mpc: {groups: {a: {w_rest: "
+                       "1, w_vel: 0.5}}}}}"),
+            "");
   // Groups' keys need groups.
   EXPECT_NE(ParseError("planner: {segment: {mpc: {groups: {a: {}}}}}")
                 .find("'planner.segment.mpc.groups.a' names no group of 'planner.groups'"),

@@ -204,6 +204,10 @@ struct MpcSegmentPlannerModel {
   /// `planner.groups` resolved on the arm device (E3-F02); its group count
   /// must be the profile's (params.n_groups). No group = n_groups 0.
   JointGroups groups{};
+  /// `planner.wait_pose` [rad], DEVICE order, rest_pose_n entries (0 = not
+  /// given): the posture a group's `w_rest` holds its joints near (E3-F02).
+  std::array<double, kMaxPlanNv> rest_pose{};
+  int rest_pose_n{0};
 };
 
 struct MpcSegmentPlannerConstants {
@@ -541,6 +545,9 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   std::int64_t h_ns_{0};               // control_dt
   double rest_tol_ref_{1e-4};          // the profile's linearization.reference_rest_tol
   Eigen::VectorXd jerk_weight_model_;  // cost.jerk_weight in model order; empty = all 1
+  // The groups' w_vel / w_rest spread over their joints and the rest posture,
+  // model order (E3-F02); empty when every group's weight is 0.
+  Eigen::VectorXd w_vel_model_, w_rest_model_, q_rest_model_;
   std::int64_t warmup_max_ns_{0};
   std::int64_t warmup_total_ns_{0};
 

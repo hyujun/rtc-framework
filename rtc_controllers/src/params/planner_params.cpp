@@ -520,11 +520,24 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
       }
       for (const auto& e : entry) {
         const std::string k = e.first.as<std::string>();
-        if (k != "blocks") {
-          Reject(Key(path + "." + k) + " is not a key of a group's segment.mpc entry (blocks)");
+        if (k != "blocks" && k != "w_vel" && k != "w_rest") {
+          Reject(Key(path + "." + k) +
+                 " is not a key of a group's segment.mpc entry (blocks, w_vel, w_rest)");
         }
       }
       MpcSegmentGroupParams& gp = d.groups[static_cast<std::size_t>(g)];
+      gp.w_vel = ReadInterval(entry, "w_vel", path + ".w_vel", gp.w_vel, 0.0, false,
+                              kWholeBodyWeightMax, false,
+                              "[0, 1e4] (kWholeBodyWeightMax, the largest weight the "
+                              "core is tested with)");
+      gp.w_rest = ReadInterval(entry, "w_rest", path + ".w_rest", gp.w_rest, 0.0, false,
+                               kWholeBodyWeightMax, false,
+                               "[0, 1e4] (kWholeBodyWeightMax, the largest weight the "
+                               "core is tested with)");
+      if (gp.w_rest > 0.0 && out.wait_pose_n == 0) {
+        Reject(Key(path + ".w_rest") + " > 0 holds the group near its rest posture, " +
+               Key("wait_pose") + ", which is not given");
+      }
       const YAML::Node blocks = Section(entry, "blocks", path + ".blocks");
       for (const auto& e : blocks) {
         const std::string k = e.first.as<std::string>();

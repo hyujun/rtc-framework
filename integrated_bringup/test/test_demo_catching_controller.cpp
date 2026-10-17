@@ -3205,9 +3205,13 @@ TEST(CatchingJointGroupsConfigure, GroupsResolveOnTheDeviceAndAreMirroredAcrossA
   const YAML::Node groups = YAML::Load(
       "[{name: wrist, joints: [wrist_3_joint, wrist_1_joint, wrist_2_joint]},"
       " {name: base, joints: [elbow_joint, shoulder_pan_joint, shoulder_lift_joint]}]");
+  // Each group's keys of the mpc segment planner, by name.
+  YAML::Node yaml = ShippedWithGroups(groups);
+  yaml["catching"]["planner"]["segment"]["mpc"]["groups"] =
+      YAML::Load("{wrist: {w_vel: 0.2, blocks: {pre: 2}}, base: {w_rest: 1.5}}");
   SearchChainBringUp c;
   const ConfigureLog log;
-  ASSERT_EQ(c.Configure(cfg, "", "catching_groups", ShippedWithGroups(groups)),
+  ASSERT_EQ(c.Configure(cfg, "", "catching_groups", yaml),
             DemoCatchingController::CallbackReturn::SUCCESS)
       << ConfigureLog::All();
   const auto resolved = [&c](const char* when) {
@@ -3225,6 +3229,21 @@ TEST(CatchingJointGroupsConfigure, GroupsResolveOnTheDeviceAndAreMirroredAcrossA
     EXPECT_EQ(
         c.node->get_parameter("planner.groups.base.joints").as_string_array(),
         (std::vector<std::string>{"elbow_joint", "shoulder_pan_joint", "shoulder_lift_joint"}));
+    EXPECT_EQ(c.node->get_parameter("planner.segment.mpc.groups.wrist.w_vel").as_double(), 0.2);
+    EXPECT_EQ(c.node->get_parameter("planner.segment.mpc.groups.wrist.blocks.pre").as_int(), 2);
+    EXPECT_EQ(c.node->get_parameter("planner.segment.mpc.groups.base.w_rest").as_double(), 1.5);
+    EXPECT_EQ(c.node->get_parameter("planner.segment.mpc.groups.base.w_vel").as_double(), 0.0);
+    // The planner's cores: each model joint its group's weights.
+    const rtc::catching::MpcSegmentPlanner* mpc = c.ctrl.GetMpcSegmentPlannerForTesting();
+    ASSERT_NE(mpc, nullptr) << ConfigureLog::All();
+    const rtc::catching::MpcSegmentCoreParams& cp = mpc->ApproachCoreParams(1);
+    ASSERT_EQ(cp.w_rest.size(), mpc->Nv());
+    for (int m = 0; m < mpc->Nv(); ++m) {
+      const bool wrist = mpc->GroupOfModel(m) == 0;
+      EXPECT_EQ(cp.w_vel[m], wrist ? 0.2 : 0.0) << m;
+      EXPECT_EQ(cp.w_rest[m], wrist ? 0.0 : 1.5) << m;
+    }
+    EXPECT_TRUE(mpc->ApproachCore(1).RestTermActive());
   };
   ASSERT_NO_FATAL_FAILURE(resolved("the first configure"));
   ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);

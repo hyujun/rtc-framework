@@ -113,6 +113,12 @@ struct MpcSegmentGroupParams {
   /// n_stop_blocks 0 = `horizon.blocks`.
   std::array<int, kMaxSegmentNodes> stop_blocks{};
   int n_stop_blocks{0};
+  /// `w_vel` [(rad/s)⁻²] — the group's joint velocities damped on every node
+  /// (½ w Σ_k ‖q̇_g,k‖²); 0 = off. In [0, kWholeBodyWeightMax].
+  double w_vel{0.0};
+  /// `w_rest` [rad⁻²] — the group's joints held near `planner.wait_pose` on
+  /// every node (½ w Σ_k ‖q_g,k − q_g^rest‖²); 0 = off. Needs `wait_pose`.
+  double w_rest{0.0};
 };
 
 struct MpcSegmentPlannerParams {

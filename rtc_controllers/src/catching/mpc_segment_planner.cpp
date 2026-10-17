@@ -39,8 +39,12 @@ constexpr double kMaxCloseTimingS = 5.0;
 // model order (empty = the core's all-ones); the preconditioner and the KKT
 // backend are not design values and keep the core's own setting.
 void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
-                     const Eigen::VectorXd& jerk_weight_model) {
+                     const Eigen::VectorXd& jerk_weight_model, const Eigen::VectorXd& w_vel,
+                     const Eigen::VectorXd& w_rest, const Eigen::VectorXd& q_rest) {
   mp.jerk_weight = jerk_weight_model;
+  mp.w_vel = w_vel;
+  mp.w_rest = w_rest;
+  mp.q_rest = q_rest;
   mp.u_scale = p.u_scale;
   mp.w_delta = p.w_delta;
   mp.rho_tau = p.rho_tau;
@@ -220,6 +224,35 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
       jerk_weight_model_[m] = params.jerk_weight[U(model.device_of_model[U(m)])];
     }
   }
+  // The groups' whole-body weights, spread over their joints (E3-F02); the
+  // rest posture is the wait pose's (device order).
+  w_vel_model_.resize(0);
+  w_rest_model_.resize(0);
+  q_rest_model_.resize(0);
+  bool any_vel = false;
+  bool any_rest = false;
+  for (int g = 0; g < params.n_groups; ++g) {
+    any_vel = any_vel || params.groups[U(g)].w_vel > 0.0;
+    any_rest = any_rest || params.groups[U(g)].w_rest > 0.0;
+  }
+  if (any_rest && model.rest_pose_n != n) {
+    return fail("a group's planner.segment.mpc.groups.*.w_rest > 0 needs planner.wait_pose (" +
+                std::to_string(model.rest_pose_n) + " entries, the arm has " + std::to_string(n) +
+                ")");
+  }
+  if (any_vel || any_rest) {
+    w_vel_model_.setZero(n);
+    w_rest_model_.setZero(n);
+    q_rest_model_.setZero(n);
+    for (int m = 0; m < n; ++m) {
+      const MpcSegmentGroupParams& gp = params.groups[U(group_of_model_[U(m)])];
+      w_vel_model_[m] = gp.w_vel;
+      w_rest_model_[m] = gp.w_rest;
+      if (any_rest) {
+        q_rest_model_[m] = model.rest_pose[U(model.device_of_model[U(m)])];
+      }
+    }
+  }
   MpcSegmentCoreLimits limits;
   limits.q_min.resize(n);
   limits.q_max.resize(n);
@@ -240,7 +273,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   results_.resize(U(params.k_max + 1));
   for (int k = 0; k <= params.k_max; ++k) {
     MpcSegmentCoreParams mp;
-    ApplyCoreDesign(mp, params, jerk_weight_model_);
+    ApplyCoreDesign(mp, params, jerk_weight_model_, w_vel_model_, w_rest_model_, q_rest_model_);
     mp.n_nodes = params.n_nodes - k;
     mp.dt = static_cast<double>(params.DtNs()) * 1e-9;
     if (!MpcSegmentBlocksFor(params, k, mp.block_sizes, mp.n_blocks) ||
@@ -367,7 +400,7 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
   catch_params_.reserve(count);
   for (int j = 1; j <= params.n_pre_max; ++j) {
     MpcSegmentCoreParams mp;
-    ApplyCoreDesign(mp, params, jerk_weight_model_);
+    ApplyCoreDesign(mp, params, jerk_weight_model_, w_vel_model_, w_rest_model_, q_rest_model_);
     mp.n_pre = j;
     mp.dt_pre = static_cast<double>(dt_pre_ns_) * 1e-9;
     mp.n_nodes = params.n_nodes;

@@ -30,6 +30,8 @@
 //      + ½ w_Δ Σ_k ‖q_k − q̄_k‖²                               stay near x̄
 //      + ½ w_⊥ Σ_k ‖P_⊥(p_C(q̄_k) + J_C(q̄_k)(q_k − q̄_k) − p_c)‖²   optional
 //      + ½ w_path Σ_k ‖P_k(p_C(q̄_k) + J_C(q̄_k)(q_k − q̄_k) − p_k)‖²  optional
+//      + ½ Σ_k Σ_j w_vel,j q̇_kj²                              optional (E3-F02)
+//      + ½ Σ_k Σ_j w_rest,j (q_kj − q_rest,j)²                 optional (E3-F02)
 //      + ρ_τ Σ s                                              torque slack
 //   s.t. q̇_N = q̈_N = 0                                         (2n, hard)
 //        max(q_min+m, q̄_k−δ) ≤ q_k ≤ min(q_max−m, q̄_k+δ)       (hard)
@@ -43,6 +45,17 @@
 // (unit-norm scaling), chosen here so the slack reads directly as "how far past
 // the limit". The penalty is exact (s = 0 whenever the hard problem is
 // feasible) only while ρ_τ exceeds the torque rows' multipliers.
+//
+// ── Per-joint velocity and rest terms (E3-F02, #641; formulation §1.3) ────────
+// w_vel and w_rest are weights per joint (the planner spreads a joint group's
+// value over its joints), on every node k = 1..N, per node like w_Δ — no
+// interval-length weight. Both are quadratic in z with a CONSTANT Hessian:
+// that part is built at Init and enters H on every path, the w_delta_scale
+// one (H = h_kin + h_wb + scale·h_delta) included; the pre-solve (a kinematic
+// stop problem that only builds a reference) has neither. q_rest is read only
+// where w_rest > 0. Off (empty, or all zero) the QP is the one without the
+// term, bit for bit; the result's `whole_body` reports the terms' values at
+// the solution.
 //
 // ── The pre-catch grid and the catch terms (E1-F07) ───────────────────────────
 // With n_pre > 0 the horizon has n_pre nodes of spacing Δ_a (dt_pre) BEFORE the
@@ -261,6 +274,14 @@ struct MpcSegmentCoreParams {
   tsid::QPSolverConfig solver{.max_iter = 200,
                               .update_preconditioner = true,
                               .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT};
+  /// Joint velocity weight w_vel,j [(rad/s)⁻²] per joint (header note); empty
+  /// or all zero = off. Each entry in [0, kWholeBodyWeightMax].
+  Eigen::VectorXd w_vel;
+  /// Rest weight w_rest,j [rad⁻²] per joint; empty or all zero = off. Each
+  /// entry in [0, kWholeBodyWeightMax].
+  Eigen::VectorXd w_rest;
+  /// Rest posture [rad] (n), read where w_rest > 0 (finite there).
+  Eigen::VectorXd q_rest;
   /// Test / benchmark only: rebuild every QP matrix densely each Solve
   /// (Γ_k products instead of the Kronecker form, nothing cached). Same
   /// problem, same answer to rounding — the oracle for the structured path
@@ -313,6 +334,16 @@ struct MpcSegmentCoreInput {
       Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
 };
 
+/// The whole-body terms at the returned solution (E3-F02), each with the
+/// cost's ½: their total and their sum over each joint group (index =
+/// params.joint_group; group 0 holds every joint without groups).
+struct MpcSegmentWholeBodyCost {
+  double vel{0.0};
+  double rest{0.0};
+  std::array<double, kMaxJointGroups> vel_group{};
+  std::array<double, kMaxJointGroups> rest_group{};
+};
+
 struct MpcSegmentCoreResult {
   Eigen::MatrixXd q, qd, qdd;  ///< nodes, n × (N+1)
   Eigen::MatrixXd u;           ///< jerk, n × N [rad/s³]
@@ -340,6 +371,8 @@ struct MpcSegmentCoreResult {
   Eigen::Vector3d catch_v_rel{Eigen::Vector3d::Zero()};  ///< v̂_b − J_v(q_kc) q̇_kc [m/s]
   double catch_gamma{0.0};  ///< v̂_bᵀ v_C / ‖v̂_b‖² (0 when the ball is at rest)
   double slack_v{0.0};      ///< s_v, fraction of v_rel_allow (linear model)
+  /// Written by every valid Solve (zeros for the terms that are off).
+  MpcSegmentWholeBodyCost whole_body;
   double presolve_us{0.0};
   double linearize_us{0.0};
   double condense_us{0.0};
@@ -376,6 +409,11 @@ class MpcSegmentCore {
   [[nodiscard]] bool PathActive(int k) const noexcept {
     return k >= 0 && k <= kMaxMpcNodes && path_active_[static_cast<std::size_t>(k)];
   }
+
+  /// The velocity / rest term is on (a positive weight on some joint).
+  [[nodiscard]] bool VelocityTermActive() const noexcept { return vel_wb_on_; }
+
+  [[nodiscard]] bool RestTermActive() const noexcept { return rest_on_; }
 
   /// N = n_pre + n_nodes: results hold N + 1 node columns.
   [[nodiscard]] int NumNodes() const noexcept { return n_nodes_; }
@@ -433,6 +471,7 @@ class MpcSegmentCore {
                                const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
                                const Eigen::Matrix3d& w, const Eigen::Vector3d& r) noexcept;
   void AssembleSlackVRows() noexcept;
+  void EvaluateWholeBody(MpcSegmentCoreResult& out) const noexcept;
   void EvaluateCatch(MpcSegmentCoreResult& out) noexcept;
   [[nodiscard]] bool AssembleBounds(tsid::QPData& qp, bool main) noexcept;
   void AssembleGradient(tsid::QPData& qp, bool main) noexcept;
@@ -490,6 +529,7 @@ class MpcSegmentCore {
   Eigen::MatrixXd h_kin_;    // jerk only (pre-solve)
   Eigen::MatrixXd h_main_;   // jerk + w_Δ (full problem, before w_⊥ and the catch terms)
   Eigen::MatrixXd h_delta_;  // the w_Δ part alone at scale 1 (used when w_delta_scale ≠ 1)
+  Eigen::MatrixXd h_wb_;     // the w_vel and w_rest parts (E3-F02); built only when one is on
 
   tsid::QPSolverWrapper solver_;
   tsid::QPData qp_pre_;
@@ -513,6 +553,9 @@ class MpcSegmentCore {
   Eigen::VectorXd tau_lin_;  // n·N
   bool w_perp_on_{false};
   bool torque_on_{false};
+  bool vel_wb_on_{false};                    // w_vel > 0 on some joint
+  bool rest_on_{false};                      // w_rest > 0 on some joint
+  Eigen::VectorXd w_vel_, w_rest_, q_rest_;  // n; zeros where off (q_rest_ 0 where w_rest = 0)
   // Closing-window path (#716): w_path > 0 and a node marked; this solve's
   // nodes (marked and switched on), whether any is, and their lines.
   bool path_on_{false};

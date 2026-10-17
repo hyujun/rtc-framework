@@ -414,6 +414,11 @@ void DemoCatchingController::DeclareProfileParameters() {
               "E3-F02 pre-catch nodes per block of this joint group");
       declare(key + ".blocks.stop", std::vector<std::int64_t>(stop.begin(), stop.begin() + n_stop),
               "E3-F02 this joint group's move-blocking pattern of the stop part (sum = n_nodes)");
+      declare(key + ".w_vel", gp.w_vel,
+              "E3-F02 this joint group's velocity damping on every node [(rad/s)^-2]; 0 = off");
+      declare(key + ".w_rest", gp.w_rest,
+              "E3-F02 this joint group's pull toward planner.wait_pose on every node [rad^-2]; "
+              "0 = off");
     }
     declare("planner.segment.mpc.m_q", mpc_segment.m_q,
             "MPC segment planner position margin inside the limits [rad]");
@@ -2742,6 +2747,8 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(const PlannerArm& pm) {
   dm.nv = pm.nv;
   dm.device_of_model = pm.device_of_model;
   dm.groups = joint_groups_;
+  dm.rest_pose = planner_params_.wait_pose;
+  dm.rest_pose_n = planner_params_.wait_pose_n;
   // MD-42: the stop must be executable by the CLIK, so its position box is
   // the URDF's AND the CLIK's margined device box (m_q then sits inside it).
   // URDF limits alone let a published node reach past the CLIK's box (iiwa7

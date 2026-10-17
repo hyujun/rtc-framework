@@ -339,4 +339,61 @@ TEST(SegmentGroupsMpc, PlansASeventeenJointSegmentWithPerGroupPartitions) {
   EXPECT_LE((data.oMf[tree.frame].translation() - p_c).norm(), 0.02);
 }
 
+// ── The velocity and rest weights, spread over the groups' joints ───────────
+
+TEST(SegmentGroupsMpc, EachJointTakesItsGroupsWeightsAndTheWaitPosesEntry) {
+  const fx::ArmModel tree = SyntheticTree(kTrunk, kArm, 2);
+  MpcSegmentPlannerModel model = ModelOf(tree, true);
+  for (int d = 0; d < kNv; ++d) {
+    model.rest_pose[U(d)] = 0.3 + 0.01 * d;  // per DEVICE joint, all different
+  }
+  model.rest_pose_n = kNv;
+  MpcSegmentPlannerParams p = GroupedParams();
+  p.groups[0].w_rest = 2.0;  // the other arm
+  p.groups[1].w_vel = 0.3;   // the trunk
+  p.groups[2].w_vel = 0.05;  // the catch arm
+  MpcSegmentPlanner planner;
+  std::string err;
+  ASSERT_TRUE(planner.Configure(model, Consts(), p, &FixedClock, &err)) << err;
+  const std::array<double, 3> w_vel = {0.0, 0.3, 0.05};
+  const std::array<double, 3> w_rest = {2.0, 0.0, 0.0};
+  for (const rtc::catching::MpcSegmentCoreParams* cp :
+       {&planner.ApproachCoreParams(1), &planner.ApproachCoreParams(6),
+        &planner.StopCoreParams(2)}) {
+    ASSERT_EQ(cp->w_vel.size(), kNv);
+    ASSERT_EQ(cp->w_rest.size(), kNv);
+    ASSERT_EQ(cp->q_rest.size(), kNv);
+    for (int m = 0; m < kNv; ++m) {
+      const auto g = U(GroupOfModelJoint(m));
+      EXPECT_EQ(cp->w_vel[m], w_vel[g]) << "model joint " << m;
+      EXPECT_EQ(cp->w_rest[m], w_rest[g]) << "model joint " << m;
+      EXPECT_EQ(cp->q_rest[m], model.rest_pose[U(DeviceOf(m))]) << "model joint " << m;
+    }
+  }
+  EXPECT_TRUE(planner.ApproachCore(3).RestTermActive());
+  EXPECT_TRUE(planner.ApproachCore(3).VelocityTermActive());
+}
+
+TEST(SegmentGroupsMpc, NoWeightLeavesTheCoresWithoutTheTermsAndARestWeightNeedsTheWaitPose) {
+  const fx::ArmModel tree = SyntheticTree(kTrunk, kArm, 2);
+  std::string err;
+  {
+    MpcSegmentPlanner planner;
+    ASSERT_TRUE(
+        planner.Configure(ModelOf(tree, true), Consts(), GroupedParams(), &FixedClock, &err))
+        << err;
+    EXPECT_EQ(planner.ApproachCoreParams(2).w_vel.size(), 0);
+    EXPECT_EQ(planner.ApproachCoreParams(2).w_rest.size(), 0);
+    EXPECT_FALSE(planner.ApproachCore(2).RestTermActive());
+    EXPECT_FALSE(planner.ApproachCore(2).VelocityTermActive());
+  }
+  MpcSegmentPlannerParams p = GroupedParams();
+  p.groups[0].w_rest = 1.0;
+  MpcSegmentPlanner planner;
+  EXPECT_FALSE(planner.Configure(ModelOf(tree, true), Consts(), p, &FixedClock, &err));
+  EXPECT_NE(err.find("w_rest > 0 needs planner.wait_pose (0 entries, the arm has 17)"),
+            std::string::npos)
+      << err;
+}
+
 }  // namespace
