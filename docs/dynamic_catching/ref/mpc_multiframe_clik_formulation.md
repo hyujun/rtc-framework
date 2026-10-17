@@ -35,7 +35,7 @@ markdown 이 수식 안의 문자를 먼저 해석하므로 (GitHub 기준 — �
 | 구현됨 | 지금의 CLIK — frame 과제 하나 (포구 컨트롤러는 catch frame 의 위치 3 행과 접근축 2 행), 팔 · 손 자세 과제, 평활 항, 위치 ∩ 속도 box, 팔 관절의 토크 행 (`dynamic`). 자세 과제의 속도 feedforward 는 CLIK 의 자세 feedforward 입력으로 넣는다 (§1.5) | §2.3, §2.1 · §2.2 의 단일 frame 극한 (§4 항목 4) |
 | 구현됨 (`rtc_tsid` 의 QP 와 그것을 부르는 바인딩 `demo_dualarm_controller` (§11) — 포구 컨트롤러는 아직 단일 frame 호출을 쓴다) | 다중 frame CLIK — frame 과제 목록, 몸통 기준 (상대) 과제, 전체 관절의 자세 과제 $\dot q_n$, 되먹임 상한, 제동 거리 한계. 구현이 §2 의 식과 다른 곳은 §10 | §2, §10 |
 | 구현됨 (계획기의 탐색과 두 구간 계획기 — g1_p1b 는 사슬의 선언까지이고 포구 컨트롤러의 설정은 아직 없다) | G1 구성의 포구 후보 선택 — 탐색이 고른다. 탐색 모델 (waist + 오른팔 사슬) 과 구간 모델 (전체 관절) 을 가르고, 구간 계획기가 탐색이 고른 것을 구간 모델로 넓힌다 | §1.3 "포구 시각", §12 |
-| 아직 구현하지 않음 | §1.3 의 dual-arm · waist 전용 항 — waist 억제, 왼팔 자세 유지, 각운동량 항, 관절군별 $E$ | §1.1, §1.3, §1.4 |
+| 구현됨 (두 구간 코어 `mpc` · `mpc_docking` 과 그 계획기 — g1_p1b 의 포구 config 는 아직 없다, E3-F05) | §1.3 의 dual-arm · waist 전용 항 — 관절군 (`planner.groups`), 군별 속도 억제 (waist 억제) · 군별 rest (왼팔 자세 유지), 각운동량 변화율과 그 위상 스케줄, 관절군별 $E$. 구현이 §1 의 식과 다른 곳은 §14 | §1.1, §1.3, §1.4, §14 |
 | 아직 구현하지 않음 | 충돌 — 자기충돌 행과 공–왼팔 행, 노드 사이 여유, CLIK 의 충돌 damper | §0.3, §1.2, §1.3, §2.2 |
 | 아직 구현하지 않음 | 포구 뒤 노드로 뻗는 포구 구간 $\mathcal K_c$ (상대속도 항을 여러 노드에 거는 것). 경로 이탈 항 $w_{path}$ 는 손의 폐쇄 창에 드는 포구 **전** 노드에 구현했다 (§1.6, #716) | §1.3, §1.6 |
 | 검토안 — 이 문서의 MPC 에는 구현하지 않음 | 포구 시각 $t_c$ 를 결정변수로 두는 것. 단일 팔의 NLP 탐색 경로에는 구현돼 있다 (§9 의 "구현 상태") | §9 |
@@ -1450,7 +1450,7 @@ G1 구성에서 포구 후보는 탐색이 고르고 (§1.3 "포구 시각"), �
 | 관절 | 사슬 $(q_w,q_R)$ — 10 관절. 왼팔과 손은 잠근다 | 팔 device 의 전체 관절 $q=(q_w,q_L,q_R)$, $n=17$ (§0.1) |
 | g1_p1b 의 선언 | `urdf.sub_models.g1_catch` (`pelvis` → `l_palm_link`) | `urdf.tree_models.g1` |
 | 그 위에서 하는 것 | 두 탐색 (`grid` · `nlp`) 의 전부 — IK, manipulability, 도달 판정, 순위, `nlp` 의 후보마다의 풀이 | 구간의 풀이 (`mpc` · `mpc_docking`) 와 RT 의 구간 추종 |
-| 전신 항 (§1.3 의 waist 억제 · 왼팔 자세 유지 · 각운동량 · 충돌) | 없다 — 후보의 순위에 들어가지 않는다 | 구간의 코어에만 넣는다 (아직 구현하지 않았다 — §0 "구현 범위") |
+| 전신 항 (§1.3 의 waist 억제 · 왼팔 자세 유지 · 각운동량 · 충돌) | 없다 — 후보의 순위에 들어가지 않는다 (`nlp` 의 map 은 그 키를 거부한다, §14) | 구간의 코어에만 넣는다 (§14; 충돌은 아직 — E3-F03) |
 
 **catch frame.** $C_R$ 은 두 모델에 같은 배치로 있다 (부모가 사슬의 끝 link). 같은 $(q_w,q_R)$ 에서 $p_{C_R}$ 과 Jacobian 의 사슬 관절 열이 두 모델에서 같고, 구간 모델에서 $q_L$ 의 열은 0 이다.
 
@@ -1509,3 +1509,63 @@ $$\tilde d_j=\mathrm{sign}(d_j)\,\min\!\Big(\vert d_j\vert,\ \frac{\varphi\,\eta
 | payload | `ValidateSegmentNodes` (노드 수 · 유한성 · `kSegmentRestTol`) | `solve_failed` |
 
 풀이마다 남는 기록 (`planner_events.csv` 의 `segment_*`): 위 사유와 그 값 (`catch_pos_err` · `slack_max` · `speed_ratio_max` · `solve_us` 등), 기준의 `ref_clamped` · `ref_scaled` · `ref_scale` · `ref_shortfall`, 정지 직선과 이탈 (`segment_stop_*`).
+
+## 14. 전신 항의 구현 (E3-F02)
+
+§1.3 의 dual-arm · waist 전용 항을 두 구간 코어 (`mpc` = `MpcSegmentCore`, `mpc_docking` = `MpcDockingSegmentCore`) 에 더한 구현이다. 결정과 판정 기록은 [#641](https://github.com/hyujun/rtc-framework/issues/641) (D1 – D16) 이 갖는다. 코어는 군의 **역할** 을 모른다 — 어느 군이 waist 이고 왼팔인지는 YAML 의 가중 배치가 정한다.
+
+### 14.1 관절군
+
+`planner.groups` (planner 수준, `wait_pose` 의 자리) 가 군을 한 번 선언한다: 항목마다 `name` (토큰) 과 `joints` (팔 device 의 관절 이름). 군은 device 의 관절을 **분할** 한다 — 모든 관절이 정확히 한 군에 든다; 이름이 device 에 없거나 두 군에 들거나 어느 군에도 없으면 configure 가 그 이름으로 거부한다. 군은 넷까지 (`kMaxJointGroups`). 키가 없으면 전 관절 한 군 — 지금까지의 문제다. 구간 block 의 군별 키 (`planner.segment.mpc.groups.<name>`, `planner.segment.mpc_docking.groups.<name>`) 는 이름으로 군을 참조하고, 계획기가 device → 모델 사상 (`device_of_model`) 으로 관절별 값으로 편다. 탐색은 군을 읽지 않는다 — `planner.search.nlp.groups` 와 `planner.search.nlp.core.cost.angular_momentum` 은 거부한다 (D10′).
+
+### 14.2 관절군별 move blocking $E$ (§1.1)
+
+군마다 `blocks: {pre, stop}` — 포구 전 구간을 `pre` 개 노드씩 묶고 (남는 노드는 마지막 블록에), 정지 구간은 그 군의 분할 (`stop`, 없으면 block 의 것; `mpc` 의 재계획 $k$ 는 `MpcSegmentBlocksFor` 의 규칙을 군마다). **분할이 같은 군은 한 블록 class 로 접는다** (`BlockLayout`): 변수는 class 순으로, class 안에서는 지금처럼 block-major ($z_{b\cdot n_c+i}$) 로 놓이고, class 하나 — 군이 없거나 모든 군의 분할이 같으면 — 는 지금의 배치 · 연산 순서 그대로라 해가 비트 단위로 같다. 항은 class 사이를 각 class 의 단계 이득으로 잇는다. $n_u=\sum_c n_cB_c$.
+
+| §1.1 과 다른 곳 | 이유 |
+|---|---|
+| 어느 군의 블록도 포구 노드 $k_c$ 를 넘지 않는다 — "왼팔은 전 구간 2 – 3 블록" 은 구현하지 않는다 | 두 쪽의 구간 길이 · 비용이 다르고, 블록 규칙 (`CheckBlockGrid`) 을 군마다 그대로 쓴다 |
+| docking 의 군별 분할은 포구 시각을 변수로 하는 코어 (`catch_time_variable`) 와 함께 쓸 수 없다 | 그 기계는 class 하나의 이득만 다시 짓는다. 그 코어는 탐색 (`nlp`) 의 것이고 탐색은 군을 읽지 않는다 |
+
+### 14.3 `mpc` 의 항
+
+$$\tfrac12\sum_{k=1}^{N}\Big[\sum_j w_{vel,j}\dot q_{k,j}^2+\sum_j w_{rest,j}(q_{k,j}-q^{rest}_j)^2+\frac{W(k)}{s_{\dot k}^2}\big\Vert A_k\ddot q_k+d_k\big\Vert^2\Big],\qquad W(k)=\begin{cases}W^-&k<k_c\\W^+&k\ge k_c\end{cases}$$
+
+- 노드당 가중 (구간 길이 가중 없음 — $w_\Delta$ · $\rho_\tau$ 와 같다), $\tfrac12$ 관례, 노드 $1..N$ ($x_0$ 은 고정). `n_pre` 0 (정지 코어) 이면 전 노드가 $W^+$.
+- $w_{vel}$ · $w_{rest}$ 는 군의 값을 그 관절들에 편 것이고 $q^{rest}$ 는 `planner.wait_pose` 의 그 관절 값이다 (`wait_pose_source: current` 여도 YAML 값). 두 항의 Hessian 은 상수라 `Init` 에서 짓고 H 의 **모든** 경로에 더한다 — `w_delta_scale ≠ 1` 의 경로 ($H=h_{kin}+h_{wb}+\text{scale}\cdot h_\Delta$, 계획의 첫 풀이) 포함. 운동학 pre-solve (`reference_valid = false`) 에는 넣지 않는다.
+- 각운동량: $A_k=A^\omega_G(\bar q_k)$, $d_k=\dot A^\omega_G(\bar q_k,\bar{\dot q}_k)\bar{\dot q}_k$ 를 선형화 점에서 노드마다 pinocchio `dccrba` 하나로 (코어 자신의 `Model` · `Data`). 항은 $\ddot q_k$ 에 affine 이라 가속도 이득의 3 행 누적기로 넣는다 (`AccumulateNodeTerm` 은 바꾸지 않았다). 이 항만 켜져도 선형화가 돈다. $q$ · $\dot q$ 의 1 차 항은 넣지 않았다 (§1.4 의 계수 고정 그대로).
+- 결과의 `whole_body` 묶음: 두 항의 군별 값, $J_{\dot k}$, 가중된 노드의 $\max\Vert\dot k_G\Vert$ — **QP 가 최소화한 선형 모델의 값**이다 (QP 뒤 pinocchio 호출 없음).
+
+### 14.4 `mpc_docking` 의 항
+
+$$\Delta_a\sum_{k<k_c}\Big[\Vert\dot q_k\Vert^2_{W_v}+\frac{W^-}{s^2}\Vert A_k\ddot q_k+d_k\Vert^2\Big]+\Delta_s\sum_{k\ge k_c}\Big[\Vert\dot q_k\Vert^2_{W_v}+\Vert q_k-q_{nom}\Vert^2_{W_r}+\frac{W^+}{s^2}\Vert A_k\ddot q_k+d_k\Vert^2\Big]$$
+
+- 설계 자료의 관례 (½ 없음, running sum 마다 구간 길이) 를 따른다. 포구 전의 rest 는 기존 자세 비용 `w_q_nom` 의 군별 값이고, 정지 구간의 rest $W_r$ 는 기본 0 인 별도 가중 (`w_rest_stop`) 이다 — `w_q_nom` 을 정지 구간으로 넓히면 단일 팔의 해가 바뀐다.
+- **각운동량 계수는 Solve 의 시작점에서 한 번 잡고 SQP 반복과 merit 평가 내내 둔다** (D12) — 한 Solve 안에서 $J$ 가 $z$ 의 정확한 2 차식이라 QP 의 기울기가 merit 의 것이고 `converged` 의 뜻이 그대로다. `Evaluate()` 는 마지막 Solve 가 잡은 계수를 쓴다 (Solve 전이면 자기 궤적의 것). 그래서 자기 해에서 다시 풀면 다른 계수의 문제를 푼다: 연속 재시작은 계수의 고정점으로 수축하고 거기서는 한 번에 수렴한다 (D14).
+- 값은 `MpcDockingCost::whole_body` (와 `vel` · `rest_stop` · `ang` · `ang_rate_max`) — `total` 에 들고 `reference` (탐색의 순위 값) · `stop` 에는 들지 않는다. 포구 시각을 변수로 하는 코어에서는 쓸 수 없다.
+- 군별 키는 `core:` 의 관절별 가중 (`r_tau` · `r_jerk` · `r_jerk_stop` · `w_q_nom` — 군이 값을 주지 않으면 `core:` 의 것) 과 `w_vel` · `w_rest_stop` · 블록이다. `r_acc` 는 군별로 두지 않는다 (§1.3 에 없다). `groups` 를 선언하고 가중을 주지 않으면 벡터는 지금처럼 비어 있다 (끔).
+
+### 14.5 계획기와 configure 의 규칙
+
+- **D9′**: 사슬 밖 관절을 읽는 항 — 각운동량, 그 관절에 걸린 `r_tau` — 이 켜지면, 그 항이 걸리는 노드 범위마다 탐색의 plan 이 빼는 관절의 군에 rest 가중이 있어야 한다 (`mpc`: `w_rest`; docking: 포구 전 `w_q_nom`, 정지 구간 `w_rest_stop`). 없으면 configure 가 그 군의 이름으로 거부한다 — 되돌리는 항이 없으면 재계획마다 그 관절이 흘러간다 (연속 wake 의 음성 대조가 그것을 보인다).
+- 가중에는 상한 `kWholeBodyWeightMax` (1e4 — 시험한 가장 큰 값), $s_{\dot k}$ 는 양수 (NUM-2) 다.
+
+### 14.6 §1.3 · §4 와의 대응 (구현 대조표)
+
+| §1.3 · §4 | 구현 | 확인 |
+|---|---|---|
+| $\Vert u\Vert^2_R$ (왼팔 블록 크게) | `mpc` `cost.jerk_weight` (관절별, 이미), docking `groups.<g>.r_jerk` · `r_jerk_stop` | `SegmentGroupsDocking.EachJointTakesItsGroupsWeights` |
+| $w_w\Vert\dot q_w\Vert^2$ | 군별 `w_vel` (두 코어) | `MpcSegmentCoreWholeBody.*`, `MpcDockingWholeBody.TheRestHoldsItsJoints…` |
+| $\Vert q_L-q_L^{rest}\Vert^2_{W}$ | `mpc` `w_rest`; docking `w_q_nom` (포구 전) + `w_rest_stop` (정지) | 같은 곳, `…ReportedValuesAreTheDirectSums…` |
+| $J_{\dot k}$, $W^\pm$ (§1.4) | 두 코어 — `mpc` 는 선형화 점, docking 은 시작점에서 고정 | `MpcSegmentCoreAngularMomentum.*`, `MpcDockingWholeBody.TheAssembledGradientIsTheMerits…` |
+| 관절군별 $E$ (§1.1) | `BlockLayout`, 두 코어 | `MpcSegmentCoreGroups.*`, `MpcDockingGroups.*` |
+| 토크 행 (waist 행의 반력) | 바꾸지 않았다 — 이미 전 관절 | `MpcSegmentCoreJudgement.TheTrunksTorqueRowsCarryTheOtherArmsReaction` |
+| 토크 slack | (관절 × 노드) 그대로 | 노드당 slack 은 #857 |
+| waist 토크 비용 `[선택]` | docking `r_tau` 의 군별 값 | — |
+| 사전적 처리 `[선택]`, centroidal 1 차 항 `[선택]` | 구현하지 않음 | — |
+| 자기충돌 · 공–왼팔 | 구현하지 않음 | E3-F03 |
+| §4 항목 3 (고정 극한) | `w_rest` 를 키운 해가 box 폭 0 의 해로 수렴 | `MpcSegmentCoreJudgement.ALargeRestWeightIsTheOtherArmLocked` |
+| §4 항목 5 (정지 정확) | 전신 항 on 에서 $u\equiv0$ · $\max\Vert\dot k_G\Vert=0$ | `MpcSegmentCoreWholeBody.AnExactStopStaysAtZeroWithTheTermsOn` |
+| §4 항목 7 (counter-swing) | 두 코어 — 풀린 팔이 움직이고 $J_{\dot k}$ 가 줄고 포구 노드가 D2 의 허용 폭 안 (위치 1 mm · 축 1° · 상대속도 0.02 m/s, $W^-/W^+$ = 0.001 / 0.1) | `MpcSegmentCoreJudgement.TheOtherArmSwings…`, `MpcDockingJudgement.TheOtherArmSwings…` |
+| 연속 wake | 계획기 cycle 위의 포구 전체 — 각운동량 변화율이 첫 wake 의 1.1 배 안, 다른 팔이 rest 의 1e-2 rad 안 | `WholeBodyCycle.*`, `G1WholeBodyCycle.*` |
+

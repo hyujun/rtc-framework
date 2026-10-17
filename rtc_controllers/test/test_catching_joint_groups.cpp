@@ -315,4 +315,32 @@ TEST(JointGroupsOfModel, ReadsTheGroupThroughDeviceOfModel) {
   EXPECT_FALSE(GroupsOfModel(g, reversed, 0, of_model));
 }
 
+// ── D9′: the groups a plan leaves free ───────────────────────────────────────
+
+TEST(JointGroupsLeftFree, NamesTheFirstGroupWithAJointOutsideThePlanAndNoRestWeight) {
+  const std::vector<JointGroupSpec> specs = {
+      {"a", {"j0", "j1", "j2"}}, {"b", {"j3", "j4"}}, {"c", {"j5", "j6"}}};
+  JointGroups g;
+  std::string why;
+  ASSERT_TRUE(ResolveJointGroups(specs, kDevice, g, &why)) << why;
+  using rtc::catching::FirstGroupLeftFree;
+  using rtc::catching::JointSet;
+  const JointSet plan = 0b0011111;  // j0..j4: the plan leaves j5, j6 (group c) out
+  const std::array<double, 3> held = {0.0, 0.0, 1.0};
+  const std::array<double, 3> c_free = {1.0, 1.0, 0.0};
+  EXPECT_EQ(FirstGroupLeftFree(g, 7, plan, held), -1) << "c is held";
+  EXPECT_EQ(FirstGroupLeftFree(g, 7, plan, c_free), 2);
+  // A plan of every joint leaves nothing out, whatever the weights.
+  EXPECT_EQ(FirstGroupLeftFree(g, 7, 0b1111111, c_free), -1);
+  // A joint of b out too, and b without its weight: b is named first (device
+  // order); with its weight, c is.
+  const std::array<double, 3> b_c_free = {1.0, 0.0, 0.0};
+  EXPECT_EQ(FirstGroupLeftFree(g, 7, 0b0001111, b_c_free), 1);
+  EXPECT_EQ(FirstGroupLeftFree(g, 7, 0b0001111, c_free), 2);
+  // No groups declared: one group without any rest weight.
+  const std::array<double, 1> none = {5.0};
+  EXPECT_EQ(FirstGroupLeftFree(JointGroups{}, 7, plan, none), 0);
+  EXPECT_EQ(FirstGroupLeftFree(JointGroups{}, 7, 0b1111111, none), -1);
+}
+
 }  // namespace
