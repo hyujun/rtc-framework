@@ -29,7 +29,8 @@ class OnnxEngine : public InferenceEngine {
   OnnxEngine(OnnxEngine&&) = delete;
   OnnxEngine& operator=(OnnxEngine&&) = delete;
 
-  /// Register one model (single input, N output heads). Call once per model.
+  /// Register one model with the inputs and output heads `config` lists.
+  /// Call once per model.
   /// Element addresses are stable (models held via unique_ptr), so the tensors
   /// and IoBindings created here keep referencing the right buffers/sessions.
   /// Throws std::runtime_error if the model's actual I/O arity/shape does not

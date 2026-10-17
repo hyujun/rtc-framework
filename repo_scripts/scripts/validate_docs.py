@@ -824,16 +824,30 @@ def compile_pattern(flavor: str, pattern: str) -> tuple[re.Pattern | None, str |
 # --------------------------------------------------------------------------
 
 
+def scanned_files(root: Path) -> list[str]:
+    """The files a scan sees: tracked or untracked-but-not-ignored, minus deleted.
+
+    Tracked files alone missed every document written in the change being
+    checked -- a new page is untracked until it is committed, so the full scan
+    reported a clean tree while fourteen new pages went unchecked (#869).  CI
+    checks out a clean tree, where this is the tracked set.  A tracked file
+    deleted in the working tree is gone: a citation of it is not satisfied.
+    """
+    out = subprocess.run(
+        ["git", "-C", str(root), "-c", "core.quotePath=false"]
+        + ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    seen = dict.fromkeys(f for f in out.split("\0") if f)
+    return [f for f in seen if (root / f).is_file()]
+
+
 class Repo:
     def __init__(self, root: Path):
         self.root = root
-        out = subprocess.run(
-            ["git", "-C", str(root), "-c", "core.quotePath=false", "ls-files", "-z"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-        self.files = [f for f in out.split("\0") if f]
+        self.files = scanned_files(root)
         self.fileset = set(self.files)
         # Path-component suffix index: an include-style shorthand such as
         # `rtc_base/types/types.hpp` must resolve to the real
@@ -3096,6 +3110,7 @@ def self_test() -> int:
     )
     if wired_codes != ["D15"]:
         failures.append(f"check_markdown does not apply D15: codes={wired_codes}")
+    failures.extend(scanned_files_failures())
 
     if failures:
         print("SELF-TEST FAILURES:", file=sys.stderr)
@@ -3125,9 +3140,37 @@ def self_test() -> int:
         + len(SECTION_NAME_CASES)
         + len(SECTION_NAME_SOURCE_CASES)
         + 1  # D15 wiring
+        + 1  # scanned_files
     )
     print(f"self-test: {total} fixtures passed")
     return 0
+
+
+def scanned_files_failures() -> list[str]:
+    """scanned_files on a throwaway repository: tracked, new, ignored, deleted."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", "-C", tmp, *args], check=True, capture_output=True)
+
+        git("init", "-q")
+        for rel, body in (
+            ("kept.md", "x"),
+            ("gone.md", "x"),
+            (".gitignore", "ignored.md\n"),
+        ):
+            (root / rel).write_text(body)
+        git("add", ".")
+        git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fixture")
+        (root / "gone.md").unlink()
+        (root / "new.md").write_text("x")
+        (root / "ignored.md").write_text("x")
+        got = sorted(scanned_files(root))
+    want = [".gitignore", "kept.md", "new.md"]
+    return [] if got == want else [f"scanned_files: {got}, want {want}"]
 
 
 def repo_root() -> Path:

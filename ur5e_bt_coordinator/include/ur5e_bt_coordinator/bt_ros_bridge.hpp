@@ -135,7 +135,7 @@ class BtRosBridge {
   /// WBC controller is active — use GetWbcState() instead.
   CachedGraspState GetGraspState() const;
 
-  /// Cached WBC state from /<ctrl>/hand/wbc_state (500Hz pre-computed).
+  /// Cached WBC state from /<ctrl>/<hand_group>/wbc_state (500Hz pre-computed).
   /// Populated only when the active controller is a TSID-based WBC
   /// controller (DemoWbcController). Empty/stale when a Force-PI grasp
   /// controller is active — use GetGraspState() instead.
