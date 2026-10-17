@@ -92,6 +92,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <span>
 #include <sstream>
@@ -278,6 +279,9 @@ struct Scene {
   double wb_rest_left{0.0};
   double wb_ang_pre{0.0};
   double wb_ang_post{0.0};
+  // ... and the left arm's own move blocking: two pre-catch intervals per
+  // block (the mpc planner's stop part in [2, 2, 3] too).
+  bool wb_coarse_left{false};
 
   [[nodiscard]] rtc::catching::JointGroups DeclaredGroups() const {
     rtc::catching::JointGroups g;
@@ -518,6 +522,11 @@ std::unique_ptr<MpcSegmentPlanner> MakeMpcOn(const Scene& s, const fx::ShippedAr
       params.ang_scale = 10.0;
       std::copy(s.command.begin(), s.command.end(), model.rest_pose.begin());
       model.rest_pose_n = fx::kG1Dof;
+      if (s.wb_coarse_left) {
+        params.groups[1].pre_block = 2;
+        params.groups[1].stop_blocks = {2, 2, 3};
+        params.groups[1].n_stop_blocks = 3;
+      }
     }
   }
   MpcSegmentPlannerConstants consts;
@@ -558,6 +567,15 @@ std::unique_ptr<MpcDockingSegmentPlanner> MakeDocking(
   params.core = arm.rig.params;
   model.groups = s.DeclaredGroups();
   params.n_groups = model.groups.n_groups;
+  if (s.groups_declared) {
+    params.groups[1].w_rest_stop = s.wb_rest_left;
+    params.core.w_ang_pre = s.wb_ang_pre;
+    params.core.w_ang_post = s.wb_ang_post;
+    params.core.ang_scale = 10.0;
+    if (s.wb_coarse_left) {
+      params.groups[1].pre_block = 2;
+    }
+  }
   ApplyTorqueCost(torque_cost, params.core);
   return rtc::catching::MakeMpcDockingSegmentPlanner(model, consts, params, &SuiteClock, error);
 }
@@ -1556,6 +1574,215 @@ TEST(G1SearchSegmentTimes, RecordsTheSearchsCandidateAndTheFirstSolvesOnTheTree)
 #ifdef RTC_TEST_BUILD_TYPE
   ::testing::Test::RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
 #endif
+}
+
+// ── E3-F02 (#641): the 17-joint time baseline (a record, not a verdict) ──────
+// Run only with RTC_WHOLEBODY_TIMING set, alone (ctest -j1). Four variants of
+// the tree's planners — the whole-body terms off / on × no own blocking / the
+// left arm's — solve the same plan and the same chain solution, in turns
+// (ABCD, DCBA, …), on three throws (the catch 0.55, 0.65, 0.75 s past the
+// search's earliest start), 1 + 20 times each (the first is warm-up). Per
+// variant and solve: the median and the max of the solve time, the
+// iterations, the time per QP iteration, the QP's dimensions, the cold
+// retries, and the same wake's search + first solve.
+
+struct TimingColumn {
+  std::vector<std::int64_t> ns;
+  std::vector<int> iterations, qp_iterations, n_pre;
+  std::vector<double> qp_us;
+  int cold{0}, init_qp{0};
+  int nz{0}, n_eq{0}, n_in{0}, active{0};
+};
+
+void PrintColumn(const std::string& name, TimingColumn c) {
+  if (c.ns.empty()) {
+    std::printf("[timing] %-36s (no solve)\n", name.c_str());
+    return;
+  }
+  std::vector<double> per_it;
+  for (std::size_t i = 0; i < c.ns.size(); ++i) {
+    const int it = c.qp_iterations[i] > 0 ? c.qp_iterations[i] : c.iterations[i];
+    per_it.push_back(it > 0 ? c.qp_us[i] / it : 0.0);
+  }
+  std::sort(c.ns.begin(), c.ns.end());
+  std::sort(per_it.begin(), per_it.end());
+  std::printf(
+      "[timing] %-36s n=%zu median=%.1f ms max=%.1f ms it_med=%d qp_it_med=%d us/it_med=%.1f "
+      "nz=%d n_eq=%d n_in=%d active=%d cold=%d init_qp=%d n_pre_med=%d\n",
+      name.c_str(), c.ns.size(), static_cast<double>(c.ns[c.ns.size() / 2]) * 1e-6,
+      static_cast<double>(c.ns.back()) * 1e-6, MedianOf(c.iterations), MedianOf(c.qp_iterations),
+      per_it[per_it.size() / 2], c.nz, c.n_eq, c.n_in, c.active, c.cold, c.init_qp,
+      MedianOf(c.n_pre));
+  RecordUs(name, c.ns);
+}
+
+// Rows of `qp` at a bound at `x` (finite bounds, to 1e-7).
+int ActiveRows(const rtc::tsid::QPData& qp, const Eigen::VectorXd& x) {
+  if (x.size() < qp.C.cols()) {
+    return -1;
+  }
+  const Eigen::VectorXd cx = qp.C * x.head(qp.C.cols());
+  int active = 0;
+  for (Eigen::Index r = 0; r < cx.size(); ++r) {
+    const bool lo = std::isfinite(qp.l[r]) && std::abs(cx[r] - qp.l[r]) <= 1e-7;
+    const bool hi = std::isfinite(qp.u[r]) && std::abs(cx[r] - qp.u[r]) <= 1e-7;
+    active += lo || hi ? 1 : 0;
+  }
+  return active;
+}
+
+TEST(G1WholeBodyTimes, RecordsTheBaselineWithAndWithoutTheTerms) {
+  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
+  if (std::getenv("RTC_WHOLEBODY_TIMING") == nullptr) {
+    GTEST_SKIP() << "a record: set RTC_WHOLEBODY_TIMING and run alone (ctest -j1)";
+  }
+
+  struct Variant {
+    const char* name;
+    bool terms;
+    bool coarse;
+    std::unique_ptr<Scene> scene;
+    std::unique_ptr<MpcSegmentPlanner> mpc;
+    std::unique_ptr<MpcDockingSegmentPlanner> dock_chain, dock_cold;
+    std::array<TimingColumn, 4> col;  // mpc first, mpc replan, docking from chain, docking cold
+  };
+
+  std::array<Variant, 4> v{Variant{"off", false, false, {}, {}, {}, {}, {}},
+                           Variant{"terms", true, false, {}, {}, {}, {}, {}},
+                           Variant{"blocks", false, true, {}, {}, {}, {}, {}},
+                           Variant{"terms_blocks", true, true, {}, {}, {}, {}, {}}};
+  std::string err;
+  for (Variant& x : v) {
+    x.scene = std::make_unique<Scene>();
+    ASSERT_NO_FATAL_FAILURE(x.scene->Build(fx::kG1Home));
+    x.scene->groups_declared = true;
+    x.scene->wb_coarse_left = x.coarse;
+    if (x.terms) {
+      x.scene->wb_rest_left = 1.0;
+      x.scene->wb_ang_pre = 0.001;
+      x.scene->wb_ang_post = 0.1;
+    }
+    x.mpc = MakeMpc(*x.scene, Budget::kGenerous, &err);
+    ASSERT_NE(x.mpc, nullptr) << x.name << ": " << err;
+    x.dock_chain = MakeDocking(*x.scene, Budget::kGenerous, &err);
+    ASSERT_NE(x.dock_chain, nullptr) << x.name << ": " << err;
+    x.dock_cold = MakeDocking(*x.scene, Budget::kGenerous, &err);
+    ASSERT_NE(x.dock_cold, nullptr) << x.name << ": " << err;
+  }
+  Scene& s0 = *v[0].scene;
+  const std::unique_ptr<NlpCatchSearch> search = MakeNlp(s0, Budget::kGenerous, &err);
+  ASSERT_NE(search, nullptr) << err;
+  std::vector<std::int64_t> same_wake;
+  auto out = std::make_unique<SegmentSnapshot>();
+  auto stats = std::make_unique<SearchStats>();
+  std::uint32_t plan_id = 0;
+  constexpr int kRepeats = 20;
+  for (const double star_after : {0.55, 0.65, 0.75}) {
+    for (int rep = 0; rep <= kRepeats; ++rep) {
+      const bool warm_up = rep == 0;
+      for (int turn = 0; turn < 4; ++turn) {
+        Variant& x = v[static_cast<std::size_t>(rep % 2 == 0 ? turn : 3 - turn)];
+        // A new throw on the real clock, the search's one candidate, then
+        // the variant's four solves on that plan.
+        const std::int64_t now = rtc::SteadyNowNs();
+        const std::int64_t star = s0.SearchStartNs(now, Budget::kGenerous) +
+                                  static_cast<std::int64_t>(std::llround(star_after * 1e9));
+        const std::unique_ptr<Throw> ball = s0.AimedThrow(now, star, 100 * kMs);
+        PlannerRtState rt = s0.RestingRt(now, 500);
+        search->ResetTrial();
+        PlanSnapshot plan =
+            search->Plan(ball->traj, ball->cov, true, rt, NoSegments(), NowReal{now}, 0, *stats);
+        ASSERT_TRUE(plan.valid) << NlpRejectName(stats->nlp.reason);
+        const CatchSolution* solution = search->Solution();
+        std::int64_t search_ns = 0;
+        for (const NlpCatchSearch::CandidateRecord& c : search->Candidates()) {
+          search_ns += c.solved ? c.solve_ns : 0;
+        }
+        plan.plan_id = ++plan_id;
+        const auto note = [&](TimingColumn& c, const SegmentRecord& rec, bool ok) {
+          EXPECT_TRUE(ok) << x.name << " " << Describe(rec);
+          if (warm_up || !ok) {
+            return;
+          }
+          c.ns.push_back(rec.solve_ns);
+          c.iterations.push_back(rec.iterations);
+          c.qp_iterations.push_back(rec.docking.ran ? rec.docking.qp_iterations : rec.iterations);
+          c.qp_us.push_back(rec.docking.ran ? rec.docking.qp_us : rec.mpc_qp_us);
+          c.n_pre.push_back(-rec.k);
+          c.cold += rec.solver_retried ? 1 : 0;
+          c.init_qp += rec.start_from_search ? 0 : (rec.docking.ran ? 1 : 0);
+        };
+        // mpc: the first solve, then a re-solve of its grid point on a newer
+        // snapshot (the replan the RT following it asks for).
+        {
+          SegmentRecord rec{};
+          x.mpc->ResetTrial();
+          rt.rt_state_ns = rtc::SteadyNowNs() - kMs;
+          const bool ok = x.mpc->PlanFirst(rt, plan, BallOf(*ball), solution, *out, rec);
+          note(x.col[0], rec, ok);
+          if (!warm_up && ok) {
+            same_wake.push_back(search_ns + rec.solve_ns);
+            const int n_pre = out->n_pre;
+            const rtc::tsid::QPData& qp = x.mpc->ApproachCore(n_pre).MainQp();
+            x.col[0].nz = static_cast<int>(qp.H.rows());
+            x.col[0].n_eq = static_cast<int>(qp.A.rows());
+            x.col[0].n_in = static_cast<int>(qp.C.rows());
+          }
+          if (ok) {
+            out->segment_seq = 1;
+            out->publish_ns = rtc::SteadyNowNs();
+            x.mpc->NotePublished(*out);
+            PlannerRtState following = s0.RestingRt(rtc::SteadyNowNs(), 501);
+            following.mode = static_cast<std::uint8_t>(rtc::catching::Mode::kApproach);
+            following.plan_active = true;
+            following.plan_id = plan.plan_id;
+            following.plan_t_c_ns = plan.t_c_ns;
+            following.segment_active = true;
+            following.segment_seq = 1;
+            following.rt_state_ns = rtc::SteadyNowNs() - kMs;
+            const std::unique_ptr<Throw> newer = s0.AimedThrow(now, star, 100 * kMs, 2);
+            SegmentRecord again{};
+            const bool replanned = x.mpc->Replan(following, BallOf(*newer), *out, again);
+            note(x.col[1], again, replanned);
+          }
+        }
+        {
+          SegmentRecord rec{};
+          x.dock_chain->ResetTrial();
+          rt.rt_state_ns = rtc::SteadyNowNs() - kMs;
+          const bool ok = x.dock_chain->PlanFirst(rt, plan, BallOf(*ball), solution, *out, rec);
+          note(x.col[2], rec, ok);
+          if (!warm_up && ok) {
+            const auto& core = x.dock_chain->CoreFor(out->n_pre);
+            x.col[2].nz = static_cast<int>(core.LastQp().H.rows());
+            x.col[2].n_eq = static_cast<int>(core.LastQp().A.rows());
+            x.col[2].n_in = static_cast<int>(core.LastQp().C.rows());
+            x.col[2].active = ActiveRows(core.LastQp(), core.LastQpSolution());
+          }
+        }
+        {
+          SegmentRecord rec{};
+          x.dock_cold->ResetTrial();
+          rt.rt_state_ns = rtc::SteadyNowNs() - kMs;
+          const bool ok = x.dock_cold->PlanFirst(rt, plan, BallOf(*ball), nullptr, *out, rec);
+          note(x.col[3], rec, ok);
+        }
+      }
+    }
+  }
+  for (Variant& x : v) {
+    PrintColumn(std::string("mpc_first_") + x.name, x.col[0]);
+    PrintColumn(std::string("mpc_replan_") + x.name, x.col[1]);
+    PrintColumn(std::string("docking_from_chain_") + x.name, x.col[2]);
+    PrintColumn(std::string("docking_cold_") + x.name, x.col[3]);
+  }
+  RecordUs("search_plus_mpc_first_same_wake", same_wake);
+  std::sort(same_wake.begin(), same_wake.end());
+  if (!same_wake.empty()) {
+    std::printf("[timing] search + mpc first, same wake: median %.1f ms, max %.1f ms\n",
+                static_cast<double>(same_wake[same_wake.size() / 2]) * 1e-6,
+                static_cast<double>(same_wake.back()) * 1e-6);
+  }
 }
 
 }  // namespace
