@@ -1,0 +1,58 @@
+# Byte budgets for the README corpus -- validate_docs.py D14.
+#
+# One "path: bytes" entry per git-tracked file named exactly README.md. A README
+# over its budget, a tracked README with no entry, and an entry whose README is
+# gone all fail the docs gate (repo_scripts/scripts/validate_docs.py).
+#
+# A budget goes DOWN, in the change that shrinks its README. It does not go up
+# to make room for an edit: a README is the front door for a human reader, and
+# content that does not fit usually belongs in the document that owns it
+# (docs/, agent_docs/, a header or hook comment, an issue, git log). When a
+# section really was added and nothing can come out, the raise is stated on the
+# entry's own line:
+#
+#     rtc_base/README.md: 20480  # raised from 20000: <why>
+#
+# The docs gate compares this file against the pull request's base and fails a
+# raise that lacks that note (validate_docs.py --budget-base <rev>; before
+# pushing: --budget-base origin/main).
+#
+# An entry may be followed by the word `strict`:
+#
+#     rtc_base/README.md: 20480 strict  # <comment>
+#
+# `strict` turns on the shape checks for that README (table cell and prose line
+# length, file-tree width and depth, heading skeleton, no issue numbers in the
+# body). A README is marked strict in the change that rewrites it to that shape;
+# it does not go back.
+#
+# Keep the "path: bytes" shape, one per line: the validator reads this file by
+# regex so that it runs on a host without PyYAML.
+
+README.md: 33381
+docs/dynamic_catching/README.md: 7615
+docs/reference/README.md: 5924
+integrated_bringup/README.md: 312486
+repo_scripts/README.md: 72305
+robot_descriptions/README.md: 22406
+robot_descriptions/robots/panda/README.md: 1058
+robot_descriptions/robots/ur5e_p1b/README.md: 4834
+rtc_base/README.md: 50803
+rtc_communication/README.md: 28726
+rtc_controller_interface/README.md: 54183
+rtc_controller_manager/README.md: 95123
+rtc_controllers/README.md: 148165
+rtc_digital_twin/README.md: 24708
+rtc_inference/README.md: 18580
+rtc_math/README.md: 2571
+rtc_math/include/rtc_math/se3/README.md: 10026
+rtc_mpc/README.md: 9759
+rtc_msgs/README.md: 46967
+rtc_mujoco_sim/README.md: 99118
+rtc_tools/README.md: 223286
+rtc_tsid/README.md: 40706
+rtc_urdf_bridge/README.md: 36726
+shape_estimation/README.md: 10767
+shape_estimation_msgs/README.md: 4077
+udp_hand_driver/README.md: 53752
+ur5e_bt_coordinator/README.md: 52532

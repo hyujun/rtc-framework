@@ -7,8 +7,8 @@
 #
 # A budget goes DOWN, in the change that shrinks its document. It does not go up
 # to make room for an edit: content that does not fit is usually not a rule, and
-# belongs in the document that owns it (package README, docs/, a hook header, an
-# issue). A judgement an agent must apply IS a rule, though, and does not move
+# belongs in the document that owns it (docs/, docs/reference/, a header or hook
+# comment, an issue; a package README only for what its user runs or sets). A judgement an agent must apply IS a rule, though, and does not move
 # out to save bytes -- docs/reference/ keeps the why of a rule, not the rule, and
 # agents are not told to obey it (#851 moved such rules back). When a
 # rule really was added and nothing can come out, the raise is stated on the
@@ -28,7 +28,7 @@ CLAUDE.md: 4096
 
 agent_docs/architecture.md: 17977  # raised from 17574: #779 one external world (scene_world) shared by every consumer, no per-consumer copy; before: 17391 -> 17574 helper-thread affinity (#851)
 agent_docs/controllers.md: 16157  # raised from 15612: #779 RobotTarget task-goal frame rule (producers and frame-contract controllers apply it)
-agent_docs/conventions.md: 9962  # raised from 9800: two rules the rationale doc alone had stated — the output-field consumer comment and per-lane QoS (2026-10-16)
+agent_docs/conventions.md: 11512  # raised from 9962: README contract (reader, content in/out, H2 skeleton, shape, language) -- READMEs had become every doc update's default destination (#869); before: 9800 -> 9962 output-field consumer comment and per-lane QoS
 agent_docs/design-principles.md: 15377
 agent_docs/handoff.md: 5045
 agent_docs/invariants.md: 38266  # raised from 38043: RT-9 lifecycle exemption, the RT-HOST-3 missing-thread FAIL and the ARCH-3 review signal -- stated only in the rationale docs before (docs/reference prune, #851)
@@ -36,5 +36,5 @@ agent_docs/modification-guide.md: 15230
 agent_docs/testing-debug.md: 16772  # raised from 14610: L1/L2 span, executor-callback L2 and begin-to-begin cadence rules, pass controls and mutant checks in test design, three false-green paths in test measurement -- stated only in testing/tracing rationale before (docs/reference prune, #851)
 
 .claude/rules/arch-build-meta.md: 2632
-.claude/rules/arch-source.md: 3701
+.claude/rules/arch-source.md: 3693
 .claude/rules/rt-path.md: 3472

@@ -1,6 +1,6 @@
 # docs/reference — 헌법 밖의 참고 자료
 
-여기 있는 문서는 **헌법이 아니다**. 에이전트가 지켜야 할 규범은 [AGENTS.md](../../AGENTS.md) · [agent_docs/](../../agent_docs/) · `.claude/rules/` 가 갖고, 이 디렉토리는 그 규범에서 덜어낸 것 — 규칙의 근거 · 실측 · 사고 이력 · 사례집 · 기록 시점의 구현 위치 — 을 보관한다.
+여기 있는 문서는 **헌법이 아니다**. 에이전트가 지켜야 할 규범은 [AGENTS.md](../../AGENTS.md) · [agent_docs/](../../agent_docs/) · `.claude/rules/` 가 갖고, 이 디렉토리는 그 규범에서 덜어낸 것 — 규칙의 근거 · 실측 · 사고 이력 · 사례집 · 기록 시점의 구현 위치 — 과 규범을 적용하는 작성 가이드를 보관한다. `docs/` 에서 에이전트를 위한 폴더는 여기 하나다 (사람이 따라가는 how-to 는 `docs/` 바로 아래).
 
 - 규범과 여기 내용이 어긋나면 **규범이 옳다**. 여기 문장을 근거로 규칙을 우회하지 않는다.
 - 여기에 규칙 (에이전트가 적용해야 하는 판정 기준) 을 새로 두지 않는다 — 규범 문서의 예산이 모자라도 그렇다. 예산은 `docs_budget.yaml` 에 사유를 적고 올린다. 여기서 규칙을 발견해 규범으로 올릴 때는 강도 ("해도 된다" · "한다" · "금지") 와 범위를 바꾸지 않는다.
@@ -17,6 +17,7 @@
 | [tracing-rationale.md](tracing-rationale.md) | tracing 계측의 근거 — 예외 L3 · cadence 지표 · span 이 없거나 따로 놓인 자리의 의도 · 계측 제외 | [testing-debug.md](../../agent_docs/testing-debug.md#tracing) |
 | [testing-rationale.md](testing-rationale.md) | 테스트 규범의 사례와 실측 — false green 3형 · fixtures CI · ROS_DOMAIN_ID 격리 · 계측 함정 표 · 할당 게이트 사건 · coverage 함정 | [testing-debug.md](../../agent_docs/testing-debug.md) |
 | [controllers-rationale.md](controllers-rationale.md) | 컨트롤러 설계의 실측과 기각 대안 — 코어 추출 이력 · 바인딩 함정 · Compliance · Inference · GraspController | [controllers.md](../../agent_docs/controllers.md) |
+| [readme-guide.md](readme-guide.md) | README 유형별 골격 · 목적지 표 · 샘플 · 체크리스트 · 외부 출처 | [conventions.md](../../agent_docs/conventions.md#readme) |
 | [anti-patterns.md](anti-patterns.md) | 재발한 실수의 사례 · 증상 · 원인 · 복구 (AP ID 의 정의) | [invariants.md](../../agent_docs/invariants.md) — 위반한 invariant 행 또는 §Anti-pattern 규범 |
 
 ## 헌법 구조의 출처

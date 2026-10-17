@@ -101,9 +101,9 @@ Group 이름은 config YAML 밖에도 박혀 있어서 `devices:` 블록만 고�
 
 - **Tests** — affected suite 갱신 + 신규 동작의 test 추가 (기존 assertion 을 건드려야 하면 PROC-6 을 먼저 편다)
 - **CMakeLists.txt** — source / install / `find_package` / test 등록의 일관성
-- **package.xml** — `find_package` 와 1:1 매칭. 예외: rosdep 이 해결할 수 없는 source-install 의존은 CMake 에만 두고 `package.xml` 에 사유를 주석으로 남긴다. `<buildtool_depend>ament_python</buildtool_depend>` 은 넣지 않는다 (`<export><build_type>` 만으로 충분하다). test 전용 결합은 `<depend>` 가 아니라 `<test_depend>` 다
+- **package.xml** — `find_package` 와 1:1 매칭. 예외: rosdep 이 해결할 수 없는 source-install 의존은 CMake 에만 두고 `package.xml` 에 사유를 주석으로 남긴다. `<buildtool_depend>ament_python</buildtool_depend>` 은 넣지 않는다 (`<export><build_type>` 로 충분). test 전용 결합은 `<depend>` 가 아니라 `<test_depend>` 다
 - **YAML config** — 추가 / 제거 / 이름변경된 parameter, `topics:` 섹션, valid range · unit 주석. robot-specific 값은 integration 패키지에, 기본값은 agnostic 패키지에
-- **Doc** — package README (API / parameter / usage), inline Doxygen, cross-package 변경이면 root README + `docs/*.md`
+- **Doc** — package README 의 사용자 표면 (conventions.md §README), inline Doxygen, cross-package 면 root README + `docs/*.md`
 
 `rtc_base` / `rtc_msgs` 변경은 전체 downstream 빌드·테스트다 (PROC-3).
 

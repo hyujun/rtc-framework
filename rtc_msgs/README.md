@@ -320,7 +320,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | `target_reject_count` | `uint64` | ingress 에서 거부된 goal 수 (`GetTargetRejectCount()`) -- 형식 불량 또는 `device_idx` 범위 밖. producer 의 **payload** 가 문제 |
 | `target_unhandled_count` | `uint64` | base default `ApplyPendingTarget` 에 도달한 entry 수 (`GetTargetUnhandledCount()`). 0 이 아니면 그 **컨트롤러 자신**이 mailbox 에 push 하면서 override 를 안 한 것 |
 
-진단 4필드는 넷 다 `RTControllerInterface` 가 이미 추적하는 값을 CM 이 base 접근자에서 직접 읽어 채운다 -- 컨트롤러별 override 를 요구하지 않는다. 카운터 3종은 생성 시점부터 monotonic 이고 조회가 값을 소비하지 않으므로, 포화 진단은 두 번의 폴링 사이 **증가 여부**로 한다. 한 응답 안의 네 값은 서로 다른 tick 에서 왔을 수 있는 **스냅샷**이다 (각각 독립 atomic load). 필드별 배경은 [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) §진단 필드.
+진단 4필드는 넷 다 `RTControllerInterface` 가 이미 추적하는 값을 CM 이 base 접근자에서 직접 읽어 채운다 -- 컨트롤러별 override 를 요구하지 않는다. 카운터 3종은 생성 시점부터 monotonic 이고 조회가 값을 소비하지 않으므로, 포화 진단은 두 번의 폴링 사이 **증가 여부**로 한다. 한 응답 안의 네 값은 서로 다른 tick 에서 왔을 수 있는 **스냅샷**이다 (각각 독립 atomic load). 필드별 배경은 [rtc_controller_manager/README.md](../rtc_controller_manager/README.md#rtc_cmlist_controllers-진단-필드).
 
 ---
 
