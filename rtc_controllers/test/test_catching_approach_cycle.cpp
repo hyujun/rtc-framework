@@ -52,6 +52,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -750,7 +751,20 @@ struct CatchTrace {
 CatchTrace RunCatch(Rig& r, FakeTime& time, bool rt_takes_replans) {
   CatchTrace t;
   rtc::testing::ValueDigest h;
+  // RTC_WHOLE_CATCH_TRACE set: one line per wake of its discrete fields — what
+  // a digest change is read against (#857 S11).
+  const bool trace = std::getenv("RTC_WHOLE_CATCH_TRACE") != nullptr;
   const auto note = [&](const PlannerCycleRecord& rec) {
+    if (trace) {
+      std::printf(
+          "[wake] %d outcome %d plan %d | seg outcome %d kind %d core %s n_nodes %d seq %u "
+          "presolved %d retried %d it %d slack %.3g\n",
+          t.wakes, static_cast<int>(rec.outcome), rec.plan_valid ? 1 : 0,
+          static_cast<int>(rec.segment.outcome), static_cast<int>(rec.segment.kind),
+          rec.segment.core_reason_name, rec.segment.n_nodes, rec.segment.segment_seq,
+          rec.segment.presolved ? 1 : 0, rec.segment.solver_retried ? 1 : 0, rec.segment.iterations,
+          rec.segment.slack_max);
+    }
     rtc::testing::AddCycleRecord(h, rec);
     rtc::testing::AddPlan(h, r.boxes.plan.Load());
     rtc::testing::AddSegment(h, r.boxes.segment.Load());
@@ -803,7 +817,12 @@ enum class RigHistory : std::uint8_t {
 /// (measured). Those six were taken on the code BEFORE the search and the MPC
 /// segment planner moved behind CatchSearch / SegmentPlanner (E1-F12 #738),
 /// when the cycle held both by value and a re-configure re-used the same two
-/// objects, so the chain back to that code is unbroken.
+/// objects, so the chain back to that code is unbroken — up to #857, which
+/// replaced the six below on purpose (one torque slack per node: the QPs'
+/// iterates moved — 1542 → 1452 iterations over the 168 solves of the six
+/// catches — while every wake's discrete fields stayed: outcome, plan, segment
+/// outcome and kind, core reason, node count, segment_seq, pre-solve, retry;
+/// RTC_WHOLE_CATCH_TRACE prints them). The six numbers above predate it.
 /// The two re-configured columns are the cycle-level half of "building NEW
 /// objects on a re-configure changes nothing" — the last one without a trial
 /// reset in between. They are NOT what shows that Configure alone clears what
@@ -827,8 +846,8 @@ enum class RigHistory : std::uint8_t {
 ///    take the same commit's numbers on the recording host before concluding
 ///    anything, and replace them the same way if the environment is what moved.
 constexpr std::array<std::array<std::uint64_t, 3>, 2> kWholeCatchDigest{{
-    {{0x91a20aca9ce5b403ULL, 0x82f9e0e20f1536a1ULL, 0x49cbf1109994a450ULL}},
-    {{0xe8ad81ae9e7b5646ULL, 0xd8064fbfa6a34ba8ULL, 0x550ccd6a187300c8ULL}},
+    {{0xb9ab592e7395741aULL, 0xf7697c15bb637ae8ULL, 0x0e054bc191559325ULL}},
+    {{0x03fbc3c92e0c7bd1ULL, 0xfa3f8e220d1a46f7ULL, 0xe92939bdeff982b3ULL}},
 }};
 
 TEST(ApproachCycle, AWholeCatchOnThePinnedClockIsUnchangedBitForBit) {
