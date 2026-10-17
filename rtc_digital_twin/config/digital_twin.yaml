@@ -121,7 +121,7 @@
     # 빈 문자열 또는 슬래시("/")가 포함되면 기본값 "tool0_actual" 적용.
     tcp_viz.source_topic: ""                        # e.g. "tool0_actual"
     tcp_viz.marker_topic: "/digital_twin/tcp_markers"
-    tcp_viz.frame_id: "base"                        # parent TF frame
+    tcp_viz.frame_id: "base"                        # parent TF frame: the arm's root link
     tcp_viz.broadcast_tf: true                      # broadcast virtual_tcp TF
     tcp_viz.tf_child_frame: "virtual_tcp"           # TF child frame name
 

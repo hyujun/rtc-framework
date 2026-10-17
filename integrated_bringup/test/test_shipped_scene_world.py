@@ -18,6 +18,10 @@ The other frame a goal may name is the arm's ``root_link``. The producers that
 send task goals (``ur5e_bt_coordinator``, ``shape_estimation``) stamp their
 ``base_frame`` parameter, so its shipped default has to be the root_link of the
 profiles they run with (read from the source tree: neither is a dependency).
+The controllers publish their poses under that root_link too, and the digital
+twin looks its TCP marker up from ``tcp_viz.frame_id`` — so that is the
+root_link of every profile as well (its default ``base`` is not a frame of the
+arm on every URDF).
 
 Structural only. The values themselves were checked against each scene when
 they were written: MuJoCo body positions against Pinocchio frames mapped
@@ -149,3 +153,37 @@ def test_producers_stamp_the_arm_root(package: str) -> None:
             f"{package}: base_frame {params['base_frame']!r} is not {profile}'s root_link "
             f"{_arm_root(profile)!r} — every task goal it sends would be refused"
         )
+
+
+# The twin's own default for tcp_viz.frame_id (a sibling package of the source tree).
+TWIN_DEFAULTS = (
+    Path(__file__).resolve().parents[2] / "rtc_digital_twin" / "config" / "digital_twin.yaml"
+)
+
+
+def _twin_params(path: Path) -> dict:
+    with open(path) as handle:
+        doc = yaml.safe_load(handle) or {}
+    return (doc.get("/**") or {}).get("ros__parameters") or {}
+
+
+@pytest.mark.parametrize("profile", [*PROFILES, *NO_WORLD])
+def test_the_twins_tcp_marker_hangs_off_the_arm_root(profile: str) -> None:
+    path = _config_dir(profile) / "digital_twin.yaml"
+    if not path.exists():
+        pytest.skip(f"{profile} ships no digital_twin.yaml")
+    params = _twin_params(path)
+    if not params.get("tcp_viz.source_topic"):
+        pytest.skip(f"{profile}: the twin draws no TCP marker")
+    frame = params.get("tcp_viz.frame_id")
+    where = f"{profile}/digital_twin.yaml"
+    if frame is None:
+        if not TWIN_DEFAULTS.exists():
+            pytest.skip(f"{TWIN_DEFAULTS} not in this checkout")
+        frame = _twin_params(TWIN_DEFAULTS)["tcp_viz.frame_id"]
+        where += " (rtc_digital_twin default)"
+    assert frame == _arm_root(profile), (
+        f"{where}: tcp_viz.frame_id is {frame!r}, not the arm root {_arm_root(profile)!r} — the "
+        "marker and the virtual_tcp TF would hang off another frame than the one the "
+        "controllers publish the pose under"
+    )
