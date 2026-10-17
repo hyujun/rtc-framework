@@ -40,7 +40,7 @@ robot_descriptions/robots/ur5e_p1b/README.md: 4834
 rtc_base/README.md: 24945 strict
 rtc_communication/README.md: 28726
 rtc_controller_interface/README.md: 25717 strict
-rtc_controller_manager/README.md: 95123
+rtc_controller_manager/README.md: 43205 strict
 rtc_controllers/README.md: 148165
 rtc_digital_twin/README.md: 24708
 rtc_inference/README.md: 18580
