@@ -1,4 +1,11 @@
-"""Pure state and persistence helpers for the GUI preset hotkey."""
+"""Pure state and persistence helpers for the GUI preset hotkey.
+
+Hotkey rules (user-facing summary: docs/demo-controller-gui.md): the first
+press is always ``close``; the role advances to ``open`` only after a dispatch
+was accepted, so a rejected close is retried by the next press. Presses are
+ignored while a text-input widget has focus or a previous toggle is still in
+flight, and key auto-repeat counts as one press.
+"""
 
 from __future__ import annotations
 

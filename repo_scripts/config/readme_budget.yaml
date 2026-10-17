@@ -32,7 +32,7 @@
 README.md: 33381
 docs/dynamic_catching/README.md: 7615
 docs/reference/README.md: 6198  # raised from 5924: index row for sim-rationale.md
-integrated_bringup/README.md: 312486
+integrated_bringup/README.md: 37635 strict
 repo_scripts/README.md: 72305
 robot_descriptions/README.md: 6491 strict
 robot_descriptions/robots/panda/README.md: 1129 strict  # raised from 1058: skeleton headings (개요 · 디렉토리 · 문제 해결) the old README lacked

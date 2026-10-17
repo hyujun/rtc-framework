@@ -470,7 +470,7 @@ Force-PI 그래스프의 **one-shot 이벤트** 채널입니다 (`/{active_confi
 - `demo_joint_controller` / `demo_task_controller` / `demo_compliance_controller`: `grasp_controller_` (Force-PI
   FSM) 가 있을 때만 적용. 없으면 `ok=false, message="grasp_controller unavailable"`.
 - `demo_wbc_controller`: GRASP/RELEASE 는 WBC 6-state FSM 전이로 매핑된다 — 전이 규칙은
-  [integrated_bringup/README.md](../integrated_bringup/README.md) §6-Phase FSM (slots 2 & 5 reserved) 가 SSoT.
+  [WBC 문서](../integrated_bringup/docs/demo-wbc-controller.md) §6-Phase FSM (slots 2 & 5 reserved) 가 SSoT.
 - E-STOP 활성 시 모든 호출이 `ok=false, message="E-STOP active"`.
 
 Caller: grasp coordinator (예: BehaviorTree action node) 또는 `ros2 service call`.
