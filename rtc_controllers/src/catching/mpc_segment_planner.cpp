@@ -45,6 +45,9 @@ void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
   mp.w_vel = w_vel;
   mp.w_rest = w_rest;
   mp.q_rest = q_rest;
+  mp.w_ang_pre = p.ang_w_pre;
+  mp.w_ang_post = p.ang_w_post;
+  mp.ang_scale = p.ang_scale;
   mp.u_scale = p.u_scale;
   mp.w_delta = p.w_delta;
   mp.rho_tau = p.rho_tau;

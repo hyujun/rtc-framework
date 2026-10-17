@@ -241,6 +241,15 @@ struct MpcSegmentPlannerParams {
   /// 0 (the default) = off; above 0 the planner needs the hand's closing
   /// timing and refuses to configure without it.
   double w_path{0.0};
+  /// `cost.angular_momentum.{w_pre, w_post, scale}` (E3-F02): the centroidal
+  /// angular-momentum rate, ½ Σ_k W(k)/s² ‖k̇_G,k‖², with W = w_pre before
+  /// the catch node and w_post from it on (formulation §1.4's schedule), s
+  /// [N·m] > 0. Both weights 0 (the default) = off. It reads every joint of
+  /// the segment model, so a group a plan may leave out needs a rest weight
+  /// (the binding checks, D9′).
+  double ang_w_pre{0.0};
+  double ang_w_post{0.0};
+  double ang_scale{1.0};
   /// `catch.axis_theta_max` [rad], in (0, π) — the largest axis error of the
   /// reference the approach-axis term is linearised at.
   double axis_theta_max{1.5707963267948966};

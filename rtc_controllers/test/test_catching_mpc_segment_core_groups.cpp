@@ -10,14 +10,23 @@
 //   • the per-joint velocity and rest terms: off is the QP without them, their
 //     constant Hessian is on every path of H (w_delta_scale 0, between, 1),
 //     their reported value is the direct sum at the solution, they leave an
-//     exact stop at zero and do not depend on what was solved before.
+//     exact stop at zero and do not depend on what was solved before;
+//   • the angular-momentum rate: its linearisation against pinocchio's other
+//     centroidal algorithm and a finite difference (after a second
+//     linearisation of the same core), its schedule and reported value
+//     against a direct sum, its rate against the time derivative of the
+//     solution's angular momentum, the condition that linearises for it
+//     alone, and no allocation.
+#include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_controllers/catching/mpc_block_grid.hpp"
 #include "rtc_controllers/catching/mpc_segment_core.hpp"
+#include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
 #include "rtc_controllers/testing/synthetic_tree_fixture.hpp"
 
 #include <Eigen/Core>
 #include <gtest/gtest.h>
+#include <pinocchio/algorithm/centroidal.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 
@@ -26,7 +35,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <vector>
 
@@ -604,6 +615,9 @@ TEST(MpcSegmentCoreWholeBody, AnExactStopStaysAtZeroWithTheTermsOn) {
   MpcSegmentCoreParams p = ThreePartitions();
   SetWholeBody(p, 0.1, 1.0, f.arm.q_nominal);
   p.q_rest = f.arm.q_nominal;
+  p.w_ang_pre = 0.01;
+  p.w_ang_post = 1.0;
+  p.ang_scale = 10.0;
   MpcSegmentCore core;
   ASSERT_EQ(core.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
   pinocchio::Data data(*f.arm.model);
@@ -626,6 +640,8 @@ TEST(MpcSegmentCoreWholeBody, AnExactStopStaysAtZeroWithTheTermsOn) {
     EXPECT_LE(r.u.cwiseAbs().maxCoeff(), 10.0 * p.solver.eps_abs * p.u_scale);
     EXPECT_LE(r.whole_body.vel, 1e-12);
     EXPECT_LE(r.whole_body.rest, 1e-12);
+    // Zero to the QP's tolerance, like u: the rate is A·q̈ of that u.
+    EXPECT_LE(r.whole_body.ang_rate_max, 1e-6);
   }
 }
 
@@ -680,6 +696,9 @@ TEST(MpcSegmentCoreWholeBody, SameInputGivesTheSameAnswerWhateverWasSolvedBefore
   const Fixture f = MakeFixture();
   MpcSegmentCoreParams p = ThreePartitions();
   SetWholeBody(p, 0.1, 1.0, f.arm.q_nominal);
+  p.w_ang_pre = 0.01;
+  p.w_ang_post = 1.0;
+  p.ang_scale = 10.0;
   MpcSegmentCore core;
   ASSERT_EQ(core.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
   MpcSegmentCoreInput a = f.input;
@@ -707,6 +726,313 @@ TEST(MpcSegmentCoreWholeBody, SameInputGivesTheSameAnswerWhateverWasSolvedBefore
   EXPECT_TRUE(SameBits(qp_first.u, core.MainQp().u));
   EXPECT_TRUE(SameBits(first.u, again.u));
   EXPECT_EQ(first.whole_body.rest, again.whole_body.rest);
+  EXPECT_EQ(first.whole_body.ang, again.whole_body.ang);
+  EXPECT_GT(first.whole_body.ang, 0.0);
+}
+
+// ── 5. Angular-momentum rate ─────────────────────────────────────────────────
+
+// The fixture's values (#641 stage 0): s = 10 N·m, W⁻ / W⁺ = 0.01 / 1.
+constexpr double kAngScale = 10.0;
+constexpr double kAngPre = 0.01;
+constexpr double kAngPost = 1.0;
+
+void SetAngular(MpcSegmentCoreParams& p, double pre = kAngPre, double post = kAngPost) {
+  p.w_ang_pre = pre;
+  p.w_ang_post = post;
+  p.ang_scale = kAngScale;
+}
+
+TEST(MpcSegmentCoreAngularMomentum, OffIsTheQpWithoutTheTermAndInitChecksTheKeys) {
+  const Fixture f = MakeFixture();
+  const MpcSegmentCoreParams without = ThreePartitions();
+  MpcSegmentCoreParams zero = without;
+  zero.ang_scale = 0.0;  // not read while both weights are 0
+  MpcSegmentCore core;
+  ASSERT_EQ(core.Init(*f.arm.model, f.arm.frame, zero, f.limits), MpcSegmentCoreReason::kNone);
+  EXPECT_FALSE(core.AngularMomentumTermActive());
+  const TwoCycles a = SolveTwice(f, without);
+  const TwoCycles b = SolveTwice(f, zero);
+  for (std::size_t c = 0; c < 2; ++c) {
+    EXPECT_TRUE(SameBits(a.qp[c].H, b.qp[c].H)) << c;
+    EXPECT_TRUE(SameBits(a.qp[c].g, b.qp[c].g)) << c;
+    EXPECT_EQ(b.result[c].whole_body.ang, 0.0);
+    EXPECT_EQ(b.result[c].whole_body.ang_rate_max, 0.0);
+  }
+  MpcSegmentCoreParams on = without;
+  SetAngular(on);
+  ASSERT_EQ(core.Init(*f.arm.model, f.arm.frame, on, f.limits), MpcSegmentCoreReason::kNone);
+  EXPECT_TRUE(core.AngularMomentumTermActive());
+  for (const auto& bad : std::vector<std::function<void(MpcSegmentCoreParams&)>>{
+           [](MpcSegmentCoreParams& p) { p.ang_scale = 0.0; },
+           [](MpcSegmentCoreParams& p) { p.ang_scale = -1.0; },
+           [](MpcSegmentCoreParams& p) { p.ang_scale = std::numeric_limits<double>::infinity(); },
+           [](MpcSegmentCoreParams& p) { p.w_ang_pre = -1e-9; },
+           [](MpcSegmentCoreParams& p) { p.w_ang_post = std::numeric_limits<double>::quiet_NaN(); },
+           [](MpcSegmentCoreParams& p) {
+             p.w_ang_post = std::nextafter(rtc::catching::kWholeBodyWeightMax, 1e300);
+           },
+       }) {
+    MpcSegmentCoreParams p = on;
+    bad(p);
+    EXPECT_EQ(core.Init(*f.arm.model, f.arm.frame, p, f.limits),
+              MpcSegmentCoreReason::kParamsInvalid);
+  }
+}
+
+// What the term is at reference x̄, from pinocchio's centroidal map (not the
+// core's dccrba) and a central difference of it along q̄̇ for Ȧ q̄̇.
+struct AngularOracle {
+  Eigen::Matrix<double, 3, Eigen::Dynamic> a;  // A^ω_G(q̄)
+  Eigen::Vector3d d;                           // Ȧ^ω_G(q̄, q̄̇) q̄̇
+};
+
+AngularOracle AngularAt(const pinocchio::Model& model, const Eigen::VectorXd& q,
+                        const Eigen::VectorXd& v) {
+  pinocchio::Data data(model);
+  AngularOracle o;
+  o.a = pinocchio::computeCentroidalMap(model, data, q).bottomRows<3>();
+  const double eps = 1e-6;
+  const Eigen::MatrixXd ap =
+      pinocchio::computeCentroidalMap(model, data, q + eps * v).bottomRows<3>();
+  const Eigen::MatrixXd am =
+      pinocchio::computeCentroidalMap(model, data, q - eps * v).bottomRows<3>();
+  o.d = (ap - am) / (2.0 * eps) * v;
+  return o;
+}
+
+// The term's z-space operator at node k, from the core's stage gains and
+// layout (not its assembly): L(:, Col(j, b)) = ĝ_a[b] A(:, j).
+Eigen::MatrixXd StageOperator(const MpcSegmentCore& core, int k,
+                              const Eigen::Matrix<double, 3, Eigen::Dynamic>& a, int nz) {
+  const rtc::catching::BlockLayout& l = core.Layout();
+  Eigen::MatrixXd op = Eigen::MatrixXd::Zero(3, nz);
+  for (int j = 0; j < kNv; ++j) {
+    const int c = l.class_of[static_cast<std::size_t>(j)];
+    for (int b = 0; b < l.pattern[static_cast<std::size_t>(c)].n_blocks; ++b) {
+      op.col(l.Col(j, b)) = core.StageGain(2, k, b, c) * a.col(j);
+    }
+  }
+  return op;
+}
+
+double WeightAt(int k, double pre, double post) {
+  return (k < kNPre ? pre : post) / (kAngScale * kAngScale);
+}
+
+TEST(MpcSegmentCoreAngularMomentum, TheAssembledTermIsTheCentroidalMapsAfterASecondLinearisation) {
+  const Fixture f = MakeFixture();
+  const MpcSegmentCoreParams off = ThreePartitions();
+  MpcSegmentCoreParams on = off;
+  SetAngular(on);
+  MpcSegmentCore core_off, core_on;
+  ASSERT_EQ(core_off.Init(*f.arm.model, f.arm.frame, off, f.limits), MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(core_on.Init(*f.arm.model, f.arm.frame, on, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult r_off, r_on;
+  core_off.ResizeResult(r_off);
+  core_on.ResizeResult(r_on);
+  // First at the reach, then both at ONE other x̄ (the off core's solution):
+  // the second linearisation of the same core, so a stale Data or a stale
+  // A_k shows; the two QPs differ by the term alone.
+  MpcSegmentCoreInput in = f.input;
+  ReachReference(core_off, f.arm.q_nominal, f.q_target, in);
+  ASSERT_TRUE(core_off.Solve(in, r_off)) << MpcSegmentCoreReasonName(r_off.reason);
+  ASSERT_TRUE(core_on.Solve(in, r_on)) << MpcSegmentCoreReasonName(r_on.reason);
+  const MpcSegmentCoreResult ref = r_off;
+  UseAsReference(ref, in);
+  in.w_delta_scale = 0.6;
+  ASSERT_TRUE(core_off.Solve(in, r_off)) << MpcSegmentCoreReasonName(r_off.reason);
+  ASSERT_TRUE(core_on.Solve(in, r_on)) << MpcSegmentCoreReasonName(r_on.reason);
+  const int nz = static_cast<int>(core_on.MainQp().H.rows());
+  Eigen::MatrixXd dh = Eigen::MatrixXd::Zero(nz, nz);
+  Eigen::VectorXd dg = Eigen::VectorXd::Zero(nz);
+  for (int k = 1; k <= kNPre + kNStop; ++k) {
+    const AngularOracle o = AngularAt(*f.arm.model, ref.q.col(k), ref.qd.col(k));
+    const Eigen::MatrixXd op = StageOperator(core_on, k, o.a, nz);
+    // x_0 rests, so the free response has no acceleration: r_k = d_k.
+    const Eigen::Vector3d r = o.a * in.qdd0 + o.d;
+    const double w = WeightAt(k, kAngPre, kAngPost);
+    dh += w * op.transpose() * op;
+    dg += w * op.transpose() * r;
+  }
+  const Eigen::MatrixXd got_h = core_on.MainQp().H - core_off.MainQp().H;
+  const Eigen::VectorXd got_g = core_on.MainQp().g - core_off.MainQp().g;
+  EXPECT_GT(dh.cwiseAbs().maxCoeff(), 0.0);
+  EXPECT_GT(dg.cwiseAbs().maxCoeff(), 0.0) << "the reference moves: the drift is not zero";
+  EXPECT_LE((got_h - dh).cwiseAbs().maxCoeff(), 1e-6 * dh.cwiseAbs().maxCoeff());
+  EXPECT_LE((got_g - dg).cwiseAbs().maxCoeff(), 1e-6 * dg.cwiseAbs().maxCoeff());
+}
+
+// The value and the schedule: ½ Σ_k W(k)/s² ‖A(q̄_k) q̈_k + d_k‖² over the
+// solution's accelerations, W⁻ before the catch node and W⁺ from it on — and
+// the largest rate over the nodes the term weights.
+TEST(MpcSegmentCoreAngularMomentum, TheReportedValueFollowsTheScheduleOnTheSolution) {
+  const Fixture f = MakeFixture();
+  for (const std::array<double, 2>& w :
+       {std::array<double, 2>{kAngPre, kAngPost}, std::array<double, 2>{0.0, kAngPost},
+        std::array<double, 2>{kAngPost, 0.0}}) {
+    SCOPED_TRACE(w[0]);
+    MpcSegmentCoreParams p = ThreePartitions();
+    SetAngular(p, w[0], w[1]);
+    MpcSegmentCore core;
+    ASSERT_EQ(core.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
+    MpcSegmentCoreInput in = f.input;
+    ReachReference(core, f.arm.q_nominal, f.q_target, in);
+    MpcSegmentCoreResult r;
+    core.ResizeResult(r);
+    ASSERT_TRUE(core.Solve(in, r)) << MpcSegmentCoreReasonName(r.reason);
+    double value = 0.0;
+    double rate_max = 0.0;
+    for (int k = 1; k <= kNPre + kNStop; ++k) {
+      const double wk = WeightAt(k, w[0], w[1]);
+      if (wk == 0.0) {
+        continue;
+      }
+      const AngularOracle o = AngularAt(*f.arm.model, in.q_ref.col(k), in.qd_ref.col(k));
+      const Eigen::Vector3d kd = o.a * r.qdd.col(k) + o.d;
+      value += 0.5 * wk * kd.squaredNorm();
+      rate_max = std::max(rate_max, kd.norm());
+    }
+    EXPECT_GT(value, 0.0);
+    EXPECT_NEAR(r.whole_body.ang, value, 1e-6 * value);
+    EXPECT_NEAR(r.whole_body.ang_rate_max, rate_max, 1e-6 * rate_max);
+  }
+}
+
+// h^ω(t) = A^ω_G(q(t)) q̇(t) along the solution's cubic pieces, nothing of the core.
+Eigen::Vector3d AngularMomentumAt(const pinocchio::Model& model, const MpcSegmentCoreResult& r,
+                                  int k, double tau) {
+  // Within interval [k, k+1] (τ ≥ 0) or [k−1, k] (τ < 0), from node k.
+  const int i = tau >= 0.0 ? k : k - 1;
+  const Eigen::VectorXd u = r.u.col(i);
+  const Eigen::VectorXd q =
+      r.q.col(k) + tau * r.qd.col(k) + 0.5 * tau * tau * r.qdd.col(k) + tau * tau * tau / 6.0 * u;
+  const Eigen::VectorXd v = r.qd.col(k) + tau * r.qdd.col(k) + 0.5 * tau * tau * u;
+  pinocchio::Data data(model);
+  return pinocchio::computeCentroidalMap(model, data, q).bottomRows<3>() * v;
+}
+
+// At an RTI fixed point (the reference is the solution) the linear model is
+// the trajectory's own: the reported largest rate is the time derivative of
+// the solution's angular momentum.
+TEST(MpcSegmentCoreAngularMomentum, AtAFixedPointTheRateIsTheSolutionsTimeDerivative) {
+  const Fixture f = MakeFixture();
+  MpcSegmentCoreParams p = ThreePartitions();
+  SetAngular(p, kAngPost, kAngPost);  // every node weighted
+  MpcSegmentCore core;
+  ASSERT_EQ(core.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreInput in = f.input;
+  ReachReference(core, f.arm.q_nominal, f.q_target, in);
+  in.w_delta_scale = 1.0;
+  MpcSegmentCoreResult r;
+  core.ResizeResult(r);
+  // Settled to the QP's own tolerance (the iterates stop moving at ~eps_abs).
+  double step = 1.0;
+  for (int it = 0; it < 30 && step > 1e-6; ++it) {
+    ASSERT_TRUE(core.Solve(in, r)) << MpcSegmentCoreReasonName(r.reason) << " iteration " << it;
+    step = (r.q - in.q_ref).cwiseAbs().maxCoeff();
+    UseAsReference(r, in);
+    in.cold_start = false;
+  }
+  ASSERT_LE(step, 1e-6) << "the RTI did not settle";
+  const int N = kNPre + kNStop;
+  // The jerk jumps at a node, so h is smooth only within an interval: a
+  // second-order difference on ONE side of the node (forward, backward at N)
+  // — a central one would carry δ/4 times the jump of ḧ.
+  const double delta = 1e-5;
+  double rate_max = 0.0;
+  for (int k = 1; k <= N; ++k) {
+    const double sgn = k < N ? 1.0 : -1.0;
+    const Eigen::Vector3d h0 = AngularMomentumAt(*f.arm.model, r, k, 0.0);
+    const Eigen::Vector3d h1 = AngularMomentumAt(*f.arm.model, r, k, sgn * delta);
+    const Eigen::Vector3d h2 = AngularMomentumAt(*f.arm.model, r, k, sgn * 2.0 * delta);
+    const Eigen::Vector3d rate = sgn * (-3.0 * h0 + 4.0 * h1 - h2) / (2.0 * delta);
+    rate_max = std::max(rate_max, rate.norm());
+  }
+  EXPECT_GT(rate_max, 0.0);
+  EXPECT_NEAR(r.whole_body.ang_rate_max, rate_max, 1e-4 * rate_max);
+}
+
+// The term alone must linearise: no torque rows, no line, no catch node.
+TEST(MpcSegmentCoreAngularMomentum, TheTermAloneLinearisesAndAllocatesNothing) {
+  const Fixture f = MakeFixture();
+  MpcSegmentCoreParams off;
+  off.n_nodes = kNStop;
+  off.dt = kDt;
+  off.n_blocks = 3;
+  off.block_sizes = {1, 2, 3};
+  off.rho_tau = 0.0;
+  off.w_perp = 0.0;
+  MpcSegmentCoreParams on = off;
+  SetAngular(on, 0.0, kAngPost);  // W⁺ covers every node without a pre-catch grid
+  // A moving entry state: the stop has something to do and the drift is not 0.
+  MpcSegmentCoreInput in = RestInput(f.arm.q_nominal);
+  for (int m = 0; m < kNv; ++m) {
+    in.qd0[m] = 0.2 * std::sin(0.7 * m + 0.3);
+  }
+  rtc::tsid::QPData qp_off, qp_on;
+  MpcSegmentCoreResult r;
+  for (const bool term : {false, true}) {
+    MpcSegmentCore core;
+    ASSERT_EQ(core.Init(*f.arm.model, f.arm.frame, term ? on : off, f.limits),
+              MpcSegmentCoreReason::kNone);
+    core.ResizeResult(r);
+    ASSERT_TRUE(core.Solve(in, r)) << MpcSegmentCoreReasonName(r.reason);  // the pre-solve path
+    MpcSegmentCoreInput warm = in;
+    UseAsReference(r, warm);
+    ASSERT_TRUE(core.Solve(warm, r)) << MpcSegmentCoreReasonName(r.reason);  // warm-up
+    (term ? qp_on : qp_off) = core.MainQp();
+    if (!term) {
+      continue;
+    }
+    EXPECT_GT(r.whole_body.ang_rate_max, 0.0);
+    // No allocation: the whole Solve by operator new; up to the QP — the
+    // linearisation (dccrba) and the condensing — by the C-level gate, on a
+    // trust-region rejection that comes after both.
+    {
+      rtc::testing::ScopedAllocGate new_gate;
+      rtc::testing::ScopedMallocGate malloc_gate;
+      const bool ok = core.Solve(warm, r);
+      EXPECT_TRUE(ok);
+      EXPECT_EQ(new_gate.count(), 0U) << "operator new inside Solve";
+      (void)malloc_gate.count();  // ProxQP's own C mallocs (#654) — counted, not asserted
+    }
+    MpcSegmentCoreInput outside = warm;
+    for (int k = 2; k <= kNStop; ++k) {
+      outside.q_ref(kNv - 1, k) = f.limits.q_max[kNv - 1] + 3.0 * on.delta_tr;
+    }
+    {
+      rtc::testing::ScopedAllocGate new_gate;
+      rtc::testing::ScopedMallocGate malloc_gate;
+      const bool ok = core.Solve(outside, r);
+      EXPECT_FALSE(ok);
+      EXPECT_EQ(r.reason, MpcSegmentCoreReason::kTrustRegionConflict);
+      EXPECT_GT(r.linearize_us, 0.0) << "the rejection must come after the linearisation";
+      EXPECT_EQ(new_gate.count(), 0U);
+      EXPECT_EQ(malloc_gate.count(), 0U) << "C-level allocation up to the QP";
+    }
+  }
+  EXPECT_GT((qp_on.H - qp_off.H).cwiseAbs().maxCoeff(), 0.0)
+      << "the term must be in H with no other linearised term on";
+}
+
+// ── 6. Record: the QP's iterations with and without the terms ────────────────
+// The stop rule of #641 (D13): the terms on may not more than double the
+// ProxQP iterations of the same input. Recorded here; judged in the issue.
+TEST(MpcSegmentCoreWholeBodyRecord, IterationsWithAndWithoutTheTerms) {
+  const Fixture f = MakeFixture();
+  const MpcSegmentCoreParams off = ThreePartitions();
+  MpcSegmentCoreParams on = off;
+  SetWholeBody(on, 0.1, 1.0, f.arm.q_nominal);
+  SetAngular(on);
+  const TwoCycles a = SolveTwice(f, off);
+  const TwoCycles b = SolveTwice(f, on);
+  for (std::size_t c = 0; c < 2; ++c) {
+    RecordProperty("iterations_off_" + std::to_string(c), a.result[c].iterations);
+    RecordProperty("iterations_on_" + std::to_string(c), b.result[c].iterations);
+    std::printf("[iterations] cycle %zu: off %d, on %d\n", c, a.result[c].iterations,
+                b.result[c].iterations);
+  }
 }
 
 }  // namespace

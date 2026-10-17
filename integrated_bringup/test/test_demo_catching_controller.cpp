@@ -3281,6 +3281,67 @@ TEST(CatchingJointGroupsConfigure, RefusesAJointOfNoGroupAndOneTheDeviceLacks) {
   }
 }
 
+// D9′: the angular-momentum term reads every joint of the segment model, so a
+// joint the search's plan leaves out (the chain locks shoulder_pan_joint) needs
+// its group's rest weight — refused by the group's name without one.
+TEST(CatchingJointGroupsConfigure, TheAngularTermNeedsARestWeightOnAGroupAPlanLeavesOut) {
+  const rtc_urdf_bridge::ModelConfig chain_cfg =
+      ModelWithSearchChain("shoulder_link", "l_palm_link");
+  const YAML::Node groups = YAML::Load(
+      "[{name: base, joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint]},"
+      " {name: wrist, joints: [wrist_1_joint, wrist_2_joint, wrist_3_joint]}]");
+  const auto profile = [&groups](bool with_groups, double w_rest_base) {
+    YAML::Node yaml =
+        with_groups ? ShippedWithGroups(groups) : ShippedWithPlanner(kChainProfile, true, false);
+    YAML::Node mpc = yaml["catching"]["planner"]["segment"]["mpc"];
+    mpc["cost"]["angular_momentum"] = YAML::Load("{w_pre: 0.01, w_post: 1.0, scale: 10.0}");
+    if (with_groups && w_rest_base > 0.0) {
+      mpc["groups"]["base"]["w_rest"] = w_rest_base;
+    }
+    return yaml;
+  };
+  const rclcpp_lifecycle::State prev;
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    EXPECT_EQ(c.Configure(chain_cfg, kChainName, "catching_d9_unheld", profile(true, 0.0)),
+              DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_TRUE(ConfigureLog::Said("leaves out joints of group 'base' with no rest weight"))
+        << ConfigureLog::All();
+  }
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    EXPECT_EQ(c.Configure(chain_cfg, kChainName, "catching_d9_no_groups", profile(false, 0.0)),
+              DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_TRUE(ConfigureLog::Said("leaves out joints of the arm (no planner.groups)"))
+        << ConfigureLog::All();
+  }
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    ASSERT_EQ(c.Configure(chain_cfg, kChainName, "catching_d9_held", profile(true, 1.0)),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+    const rtc::catching::MpcSegmentPlanner* mpc = c.ctrl.GetMpcSegmentPlannerForTesting();
+    ASSERT_NE(mpc, nullptr) << ConfigureLog::All();
+    EXPECT_TRUE(mpc->ApproachCore(1).AngularMomentumTermActive());
+    EXPECT_TRUE(mpc->ApproachCore(1).RestTermActive());
+    EXPECT_EQ(c.node->get_parameter("planner.segment.mpc.cost.angular_momentum.w_post").as_double(),
+              1.0);
+    ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+  // The control: one model for both — a plan holds every joint.
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    EXPECT_EQ(c.Configure(integrated_bringup::testfx::ShippedModelConfig(kChainProfile), "",
+                          "catching_d9_whole", profile(false, 0.0)),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+  }
+}
+
 // ── 5. S5.1: the P-1 minimum E-STOP/fault contract (E-8) ────────────────────
 //
 // The four parts are tested separately because they fail separately: (a) is

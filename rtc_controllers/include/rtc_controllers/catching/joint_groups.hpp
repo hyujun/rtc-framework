@@ -75,6 +75,19 @@ struct JointGroups {
 [[nodiscard]] bool GroupsOfModel(const JointGroups& groups, std::span<const int> device_of_model,
                                  int nv, std::array<std::int8_t, kMaxPlanNv>& group_of_model);
 
+/// @brief The first group a plan may leave a joint of out — a joint outside
+///        `plan_joints` — whose rest weight is 0; −1 when there is none (RT-safe).
+///
+/// A term that reads every joint of the segment model (the angular-momentum
+/// rate, a torque cost on such a joint) moves the joints a plan leaves out,
+/// and only a rest weight brings them back: without one they drift from
+/// solve to solve (#641 D9′). No group declared is one group, of rest weight 0.
+/// @param n_dev            the device's joint count
+/// @param plan_joints      the joints a plan holds (device indices)
+/// @param w_rest_of_group  each group's rest weight (Count() entries)
+[[nodiscard]] int FirstGroupLeftFree(const JointGroups& groups, int n_dev, JointSet plan_joints,
+                                     std::span<const double> w_rest_of_group) noexcept;
+
 /// Index of the group named `name` in `specs`, −1 when none is.
 [[nodiscard]] int FindJointGroup(std::span<const JointGroupSpec> specs,
                                  const std::string& name) noexcept;

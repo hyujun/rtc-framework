@@ -656,6 +656,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_catching_mpc_segment_core_groups rtc_controllers)
   target_include_directories(test_catching_mpc_segment_core_groups PRIVATE
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_mpc_segment_core_groups PRIVATE -Wno-mismatched-new-delete)
   target_compile_definitions(test_catching_mpc_segment_core_groups PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 

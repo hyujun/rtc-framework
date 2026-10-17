@@ -8,6 +8,7 @@
 
 #include <Eigen/Eigenvalues>
 #include <Eigen/QR>
+#include <pinocchio/algorithm/centroidal.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics-derivatives.hpp>
 #include <pinocchio/algorithm/rnea-derivatives.hpp>
@@ -264,6 +265,14 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   if (!weights_ok(params.w_vel) || !weights_ok(params.w_rest)) {
     return MpcSegmentCoreReason::kParamsInvalid;
   }
+  const auto weight_ok = [](double w) {
+    return rtc::IsFiniteNonNegative(w) && w <= kWholeBodyWeightMax;
+  };
+  const bool any_ang = params.w_ang_pre > 0.0 || params.w_ang_post > 0.0;
+  if (!weight_ok(params.w_ang_pre) || !weight_ok(params.w_ang_post) ||
+      (any_ang && !FinitePositive(params.ang_scale))) {
+    return MpcSegmentCoreReason::kParamsInvalid;
+  }
   bool any_vel = false;
   bool any_rest = false;
   for (Eigen::Index j = 0; j < nn; ++j) {
@@ -290,6 +299,7 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   torque_on_ = params.rho_tau > 0.0;
   vel_wb_on_ = any_vel;
   rest_on_ = any_rest;
+  ang_on_ = any_ang;
   w_vel_.setZero(nn);
   w_rest_.setZero(nn);
   q_rest_.setZero(nn);
@@ -496,6 +506,9 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   c_q_.setZero(nn);
   c_v_.setZero(nn);
   l_dense_.setZero(3, nu_);
+  ag_.setZero(3, ang_on_ ? nn * N1 : 0);
+  dag_v_.setZero(3, ang_on_ ? N1 : 0);
+  ag_k_.setZero(3, nn);
   wl_dense_.setZero(3, nu_);
   perp_l_.setZero(3, nn);
 
@@ -715,6 +728,13 @@ bool MpcSegmentCore::Linearize() noexcept {
       work_row_ = data_.oMf[frame_].translation() - path_p_.col(k);
       work_row_.noalias() += j6_.topRows(3) * work_n_;
       r_perp_.segment(3 * k, 3).noalias() = p_k * work_row_;
+    }
+    // The angular-momentum rate on the nodes it weights: A_k and d_k from
+    // one dccrba at x̄_k (Ag, dAg and the CoM velocity it needs together).
+    if (ang_on_ && AngularWeight(k) > 0.0) {
+      pinocchio::dccrba(model_, data_, qr_.col(k), vr_.col(k));
+      ag_.middleCols(nn * k, nn) = data_.Ag.middleRows<3>(pinocchio::Force::ANGULAR);
+      dag_v_.col(k).noalias() = data_.dAg.middleRows<3>(pinocchio::Force::ANGULAR) * vr_.col(k);
     }
   }
   return true;
@@ -1006,6 +1026,88 @@ void MpcSegmentCore::AccumulateNodeTermClasses(Eigen::Index k, bool with_v) noex
   }
 }
 
+double MpcSegmentCore::AngularWeight(Eigen::Index k) const noexcept {
+  const double w = k < n_pre_ ? params_.w_ang_pre : params_.w_ang_post;
+  return w / (params_.ang_scale * params_.ang_scale);
+}
+
+void MpcSegmentCore::AssembleAngularMomentum() noexcept {
+  // ½ Σ_k W(k)/s² ‖r_k + A_k (ĝ_{a,k}ᵀ ⊗ I) z‖²,  r_k = A_k q̈_f,k + d_k.
+  const Eigen::Index nn = n_;
+  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    const double w = AngularWeight(k);
+    if (w == 0.0) {
+      continue;
+    }
+    ag_k_ = ag_.middleCols(nn * k, nn);
+    Eigen::Vector3d r = dag_v_.col(k);
+    r.noalias() += ag_k_ * af_.col(k);
+    if (params_.reference_assembly) {
+      l_dense_.noalias() = ag_k_ * g_dense_.middleRows(3 * nn * k + 2 * nn, nn);
+      wl_dense_ = w * l_dense_;
+      qp_main_.H.topLeftCorner(nu_, nu_).noalias() += l_dense_.transpose() * wl_dense_;
+      qp_main_.g.head(nu_).noalias() += wl_dense_.transpose() * r;
+    } else {
+      AccumulateAccelNodeTerm(k, w, r);
+    }
+  }
+}
+
+void MpcSegmentCore::AccumulateAccelNodeTerm(Eigen::Index k, double w,
+                                             const Eigen::Vector3d& r) noexcept {
+  // AccumulateNodeTerm's sums with the acceleration gains: with M = w A_kᵀA_k,
+  //   H(b,c) += ĝ_a[b] ĝ_a[c] M,   g(b) += ĝ_a[b] w A_kᵀ r.
+  const Eigen::Index nn = n_;
+  m_qq_.noalias() = ag_k_.transpose() * ag_k_;
+  m_qq_ *= w;
+  for (Eigen::Index c = 0; c < nn; ++c) {
+    for (Eigen::Index row = c + 1; row < nn; ++row) {
+      m_qq_(c, row) = m_qq_(row, c);
+    }
+  }
+  c_q_.noalias() = ag_k_.transpose() * r;
+  c_q_ *= w;
+  if (layout_.Single()) {
+    const ClassStages& st = stage_[0];
+    const Eigen::Index last_block = st.block_of_node[U(k - 1)];
+    for (Eigen::Index b = 0; b <= last_block; ++b) {
+      const double gab = st.ga(k, b);
+      qp_main_.H.block(b * nn, b * nn, nn, nn) += (gab * gab) * m_qq_;
+      for (Eigen::Index c = b + 1; c <= last_block; ++c) {
+        blk_ = (gab * st.ga(k, c)) * m_qq_;
+        qp_main_.H.block(b * nn, c * nn, nn, nn) += blk_;
+        qp_main_.H.block(c * nn, b * nn, nn, nn) += blk_.transpose();
+      }
+      qp_main_.g.segment(b * nn, nn) += gab * c_q_;
+    }
+    return;
+  }
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    const ClassStages& sj = stage_[ClassOf(j)];
+    const Eigen::Index last_j = sj.block_of_node[U(k - 1)];
+    for (Eigen::Index b = 0; b <= last_j; ++b) {
+      const double gab = sj.ga(k, b);
+      const Eigen::Index row = Col(j, b);
+      for (Eigen::Index l = 0; l < nn; ++l) {
+        const ClassStages& sl = stage_[ClassOf(l)];
+        const Eigen::Index last_l = sl.block_of_node[U(k - 1)];
+        for (Eigen::Index c = 0; c <= last_l; ++c) {
+          const Eigen::Index col = Col(l, c);
+          if (col < row) {
+            continue;
+          }
+          const double h = (gab * sl.ga(k, c)) * m_qq_(j, l);
+          qp_main_.H(row, col) += h;
+          if (col != row) {
+            qp_main_.H(col, row) += h;
+          }
+        }
+      }
+      qp_main_.g[row] += gab * c_q_[j];
+    }
+  }
+}
+
 void MpcSegmentCore::AccumulateNodeTermDense(Eigen::Index k,
                                              const Eigen::Matrix<double, 3, Eigen::Dynamic>& a_q,
                                              const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
@@ -1096,10 +1198,22 @@ void MpcSegmentCore::EvaluateWholeBody(MpcSegmentCoreResult& out) const noexcept
   // ½ Σ_{k=1..N} w (·)² at the solution's nodes — exact: both terms are
   // quadratic in the variables.
   out.whole_body = MpcSegmentWholeBodyCost{};
+  const Eigen::Index nn = n_;
+  // The angular-momentum rate on the linear model the QP minimised, on the
+  // nodes the term weights.
+  for (Eigen::Index k = 1; ang_on_ && k <= n_nodes_; ++k) {
+    const double w = AngularWeight(k);
+    if (w == 0.0) {
+      continue;
+    }
+    Eigen::Vector3d kd = dag_v_.col(k);
+    kd.noalias() += ag_.middleCols(nn * k, nn) * a_out_.col(k);
+    out.whole_body.ang += 0.5 * w * kd.squaredNorm();
+    out.whole_body.ang_rate_max = std::max(out.whole_body.ang_rate_max, kd.norm());
+  }
   if (!vel_wb_on_ && !rest_on_) {
     return;
   }
-  const Eigen::Index nn = n_;
   for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
     for (Eigen::Index j = 0; j < nn; ++j) {
       const auto g = static_cast<std::size_t>(params_.n_groups > 1 ? params_.joint_group[U(j)]
@@ -1492,7 +1606,7 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
   // Linearise at x̄ (torque derivatives, and FK for w_⊥).
   {
     const auto t0 = Clock::now();
-    const bool ok = (torque_on_ || w_perp_on_ || path_solve_on_) ? Linearize() : true;
+    const bool ok = (torque_on_ || w_perp_on_ || path_solve_on_ || ang_on_) ? Linearize() : true;
     const MpcSegmentCoreReason catch_why =
         (ok && catch_on_) ? LinearizeCatch() : MpcSegmentCoreReason::kNone;
     out.linearize_us = MicrosSince(t0);
@@ -1529,7 +1643,7 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
           qp_main_.H = h_main_;
         }
       }
-      h_modified_ = w_perp_on_ || path_solve_on_ || catch_on_ || scaled;
+      h_modified_ = w_perp_on_ || path_solve_on_ || catch_on_ || ang_on_ || scaled;
       if (torque_on_) {
         AssembleTorqueRows();
       }
@@ -1546,6 +1660,9 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
     }
     if (catch_on_) {
       AssembleCatch();
+    }
+    if (ang_on_) {
+      AssembleAngularMomentum();
     }
     // Last, so that a trust-region rejection has run the WHOLE condensing — the
     // path the allocation gate measures up to the QP. The price is one

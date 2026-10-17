@@ -180,6 +180,39 @@ TEST(JointGroupsMpcKeys, RejectsAGroupKeyByName) {
             std::string::npos);
 }
 
+TEST(JointGroupsMpcKeys, TheAngularMomentumKeysDefaultOffParseAndAreCheckedByName) {
+  const auto d0 = ParsePlannerParams(YAML::Load("planner: {}")).mpc_segment;
+  EXPECT_EQ(d0.ang_w_pre, 0.0);
+  EXPECT_EQ(d0.ang_w_post, 0.0);
+  EXPECT_EQ(d0.ang_scale, 1.0);
+  const auto d = ParsePlannerParams(
+                     YAML::Load("planner: {segment: {mpc: {cost: {angular_momentum: {w_pre: 0.01, "
+                                "w_post: 1, scale: 10}}}}}"))
+                     .mpc_segment;
+  EXPECT_EQ(d.ang_w_pre, 0.01);
+  EXPECT_EQ(d.ang_w_post, 1.0);
+  EXPECT_EQ(d.ang_scale, 10.0);
+
+  struct Case {
+    const char* map;
+    const char* says;
+  };
+
+  for (const Case& c : {
+           Case{"{w: 1}", "'planner.segment.mpc.cost.angular_momentum.w' is not a key"},
+           Case{"{w_pre: -1}", "'planner.segment.mpc.cost.angular_momentum.w_pre'"},
+           Case{"{w_post: 2.0e4}", "'planner.segment.mpc.cost.angular_momentum.w_post'"},
+           Case{"{scale: 0}", "'planner.segment.mpc.cost.angular_momentum.scale'"},
+           Case{"{scale: -10}", "'planner.segment.mpc.cost.angular_momentum.scale'"},
+           Case{"3", "'planner.segment.mpc.cost.angular_momentum' must be a map"},
+       }) {
+    SCOPED_TRACE(c.map);
+    const std::string what = ParseError(
+        std::string("planner: {segment: {mpc: {cost: {angular_momentum: ") + c.map + "}}}}");
+    EXPECT_NE(what.find(c.says), std::string::npos) << what;
+  }
+}
+
 // ── Resolution against the device ────────────────────────────────────────────
 
 TEST(JointGroupsResolve, NoGroupIsOneGroupOfEveryJoint) {

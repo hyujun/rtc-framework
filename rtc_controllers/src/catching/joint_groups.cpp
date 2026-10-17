@@ -71,6 +71,22 @@ bool GroupsOfModel(const JointGroups& groups, std::span<const int> device_of_mod
   return true;
 }
 
+int FirstGroupLeftFree(const JointGroups& groups, int n_dev, JointSet plan_joints,
+                       std::span<const double> w_rest_of_group) noexcept {
+  for (int d = 0; d < n_dev && d < kMaxPlanNv; ++d) {
+    if (InJointSet(plan_joints, d)) {
+      continue;
+    }
+    const int g = groups.GroupOf(d);
+    const bool held = groups.n_groups > 0 && static_cast<std::size_t>(g) < w_rest_of_group.size() &&
+                      w_rest_of_group[static_cast<std::size_t>(g)] > 0.0;
+    if (!held) {
+      return g;
+    }
+  }
+  return -1;
+}
+
 int FindJointGroup(std::span<const JointGroupSpec> specs, const std::string& name) noexcept {
   for (std::size_t i = 0; i < specs.size(); ++i) {
     if (specs[i].name == name) {

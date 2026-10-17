@@ -684,6 +684,24 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
                    kMpcSegmentStopPathWeightMax, false,
                    "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
                    "tested with)");
+  const YAML::Node ang = Section(cost, "angular_momentum", "segment.mpc.cost.angular_momentum");
+  for (const auto& e : ang) {
+    const std::string k = e.first.as<std::string>();
+    if (k != "w_pre" && k != "w_post" && k != "scale") {
+      Reject(Key("segment.mpc.cost.angular_momentum." + k) +
+             " is not a key of the angular-momentum term (w_pre, w_post, scale)");
+    }
+  }
+  d.ang_w_pre = ReadInterval(ang, "w_pre", "segment.mpc.cost.angular_momentum.w_pre", d.ang_w_pre,
+                             0.0, false, kWholeBodyWeightMax, false,
+                             "[0, 1e4] (kWholeBodyWeightMax, the largest weight the core is "
+                             "tested with)");
+  d.ang_w_post =
+      ReadInterval(ang, "w_post", "segment.mpc.cost.angular_momentum.w_post", d.ang_w_post, 0.0,
+                   false, kWholeBodyWeightMax, false,
+                   "[0, 1e4] (kWholeBodyWeightMax, the largest weight the core is tested with)");
+  // NUM-2: the weight is divided by s², so s is a positive finite number.
+  d.ang_scale = ReadPositive(ang, "scale", "segment.mpc.cost.angular_momentum.scale", d.ang_scale);
   d.axis_theta_max =
       ReadInterval(dcatch, "axis_theta_max", "segment.mpc.catch.axis_theta_max", d.axis_theta_max,
                    0.0, true, 3.14159265358979323846, true, "(0, pi)");

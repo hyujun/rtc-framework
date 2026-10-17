@@ -32,6 +32,7 @@
 //      + ½ w_path Σ_k ‖P_k(p_C(q̄_k) + J_C(q̄_k)(q_k − q̄_k) − p_k)‖²  optional
 //      + ½ Σ_k Σ_j w_vel,j q̇_kj²                              optional (E3-F02)
 //      + ½ Σ_k Σ_j w_rest,j (q_kj − q_rest,j)²                 optional (E3-F02)
+//      + ½ Σ_k W(k)/s² ‖A_k q̈_k + d_k‖²                      optional (E3-F02)
 //      + ρ_τ Σ s                                              torque slack
 //   s.t. q̇_N = q̈_N = 0                                         (2n, hard)
 //        max(q_min+m, q̄_k−δ) ≤ q_k ≤ min(q_max−m, q̄_k+δ)       (hard)
@@ -56,6 +57,19 @@
 // where w_rest > 0. Off (empty, or all zero) the QP is the one without the
 // term, bit for bit; the result's `whole_body` reports the terms' values at
 // the solution.
+//
+// The centroidal angular-momentum rate (formulation §1.3, §1.4) is linearised
+// at the reference like the torque rows: k̇_G,k ≈ A_k q̈_k + d_k with
+// A_k = A^ω_G(q̄_k) (the angular rows of the centroidal momentum matrix) and
+// the constant d_k = Ȧ^ω_G(q̄_k, q̄̇_k) q̄̇_k, both from one pinocchio dccrba at
+// x̄_k on the core's own model. It reads EVERY joint of the model. Its weight
+// is W(k)/s²: W = w_ang_pre on the nodes before the catch node, w_ang_post
+// from it on (all of 1..N without a pre-catch grid), s = ang_scale [N·m] —
+// per node, ½-weighted, like the terms above. The q / q̇ dependence of A_k
+// beyond the reference (the first-order centroidal derivatives) is not
+// modelled. The result's `whole_body` reports the term and max ‖k̇_G,k‖ over
+// the nodes it weights, on this LINEAR model at the solution (no evaluation
+// after the QP).
 //
 // ── The pre-catch grid and the catch terms (E1-F07) ───────────────────────────
 // With n_pre > 0 the horizon has n_pre nodes of spacing Δ_a (dt_pre) BEFORE the
@@ -282,6 +296,13 @@ struct MpcSegmentCoreParams {
   Eigen::VectorXd w_rest;
   /// Rest posture [rad] (n), read where w_rest > 0 (finite there).
   Eigen::VectorXd q_rest;
+  /// Angular-momentum rate weights W⁻ (nodes before the catch node) and W⁺
+  /// (from it on), each in [0, kWholeBodyWeightMax]; both 0 = off.
+  double w_ang_pre{0.0};
+  double w_ang_post{0.0};
+  /// s_k̇ [N·m], > 0 (read when the term is on): the rate the weight is
+  /// measured against.
+  double ang_scale{1.0};
   /// Test / benchmark only: rebuild every QP matrix densely each Solve
   /// (Γ_k products instead of the Kronecker form, nothing cached). Same
   /// problem, same answer to rounding — the oracle for the structured path
@@ -342,6 +363,8 @@ struct MpcSegmentWholeBodyCost {
   double rest{0.0};
   std::array<double, kMaxJointGroups> vel_group{};
   std::array<double, kMaxJointGroups> rest_group{};
+  double ang{0.0};           ///< ½ Σ_k W(k)/s² ‖k̇_G,k‖² (linear model)
+  double ang_rate_max{0.0};  ///< max ‖k̇_G,k‖ over the weighted nodes [N·m] (linear model)
 };
 
 struct MpcSegmentCoreResult {
@@ -415,6 +438,8 @@ class MpcSegmentCore {
 
   [[nodiscard]] bool RestTermActive() const noexcept { return rest_on_; }
 
+  [[nodiscard]] bool AngularMomentumTermActive() const noexcept { return ang_on_; }
+
   /// N = n_pre + n_nodes: results hold N + 1 node columns.
   [[nodiscard]] int NumNodes() const noexcept { return n_nodes_; }
 
@@ -471,6 +496,9 @@ class MpcSegmentCore {
                                const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
                                const Eigen::Matrix3d& w, const Eigen::Vector3d& r) noexcept;
   void AssembleSlackVRows() noexcept;
+  [[nodiscard]] double AngularWeight(Eigen::Index k) const noexcept;
+  void AssembleAngularMomentum() noexcept;
+  void AccumulateAccelNodeTerm(Eigen::Index k, double w, const Eigen::Vector3d& r) noexcept;
   void EvaluateWholeBody(MpcSegmentCoreResult& out) const noexcept;
   void EvaluateCatch(MpcSegmentCoreResult& out) noexcept;
   [[nodiscard]] bool AssembleBounds(tsid::QPData& qp, bool main) noexcept;
@@ -553,8 +581,13 @@ class MpcSegmentCore {
   Eigen::VectorXd tau_lin_;  // n·N
   bool w_perp_on_{false};
   bool torque_on_{false};
-  bool vel_wb_on_{false};                    // w_vel > 0 on some joint
-  bool rest_on_{false};                      // w_rest > 0 on some joint
+  bool vel_wb_on_{false};  // w_vel > 0 on some joint
+  bool rest_on_{false};    // w_rest > 0 on some joint
+  bool ang_on_{false};     // w_ang_pre or w_ang_post > 0
+  // A_k (3 × n per node, column block k) and d_k at the reference; node 0 unused.
+  Eigen::Matrix<double, 3, Eigen::Dynamic> ag_;
+  Eigen::Matrix<double, 3, Eigen::Dynamic> dag_v_;
+  Eigen::Matrix<double, 3, Eigen::Dynamic> ag_k_;  // one node's A_k (workspace)
   Eigen::VectorXd w_vel_, w_rest_, q_rest_;  // n; zeros where off (q_rest_ 0 where w_rest = 0)
   // Closing-window path (#716): w_path > 0 and a node marked; this solve's
   // nodes (marked and switched on), whether any is, and their lines.

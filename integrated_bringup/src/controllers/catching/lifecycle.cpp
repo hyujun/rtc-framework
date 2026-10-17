@@ -497,6 +497,12 @@ void DemoCatchingController::DeclareProfileParameters() {
             "MPC segment planner closing-window path weight [1/m^2]: distance of the catch frame, "
             "on the pre-catch nodes inside the hand's closing window, from the ball's predicted "
             "path; 0 = off, at most 1e4");
+    declare("planner.segment.mpc.cost.angular_momentum.w_pre", mpc_segment.ang_w_pre,
+            "E3-F02 angular-momentum rate weight before the catch node; 0 with w_post = off");
+    declare("planner.segment.mpc.cost.angular_momentum.w_post", mpc_segment.ang_w_post,
+            "E3-F02 angular-momentum rate weight from the catch node on");
+    declare("planner.segment.mpc.cost.angular_momentum.scale", mpc_segment.ang_scale,
+            "E3-F02 the angular-momentum rate the weights are measured against [N*m]");
     declare("planner.segment.mpc.catch.axis_theta_max", mpc_segment.axis_theta_max,
             "MPC segment planner largest axis error of the reference the approach-axis term "
             "linearises at "
@@ -2209,6 +2215,41 @@ bool DemoCatchingController::SetupPlanner() {
     if (search_name != planner_params_.sub_model &&
         !ResolvePlannerArm(search_name, /*chain=*/true, search_arm)) {
       return false;
+    }
+    // D9′ (#641): the mpc segment planner's angular-momentum term reads every
+    // joint of the segment model, so the joints a plan (the search's) leaves
+    // out need a rest weight, or nothing brings them back between solves.
+    const auto& mpc = planner_params_.mpc_segment;
+    if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc &&
+        (mpc.ang_w_pre > 0.0 || mpc.ang_w_post > 0.0)) {
+      rtc::catching::JointSet plan_joints = 0;
+      if (!rtc::catching::MakeJointSet(
+              std::span<const int>(search_arm.device_of_model.data(),
+                                   static_cast<std::size_t>(search_arm.nv)),
+              arm_dof_, plan_joints)) {
+        RCLCPP_ERROR(logger_, "planner: the search model's joints are not the arm device's");
+        return false;
+      }
+      std::array<double, rtc::catching::kMaxJointGroups> w_rest{};
+      for (int g = 0; g < rtc::catching::kMaxJointGroups; ++g) {
+        w_rest[static_cast<std::size_t>(g)] = mpc.groups[static_cast<std::size_t>(g)].w_rest;
+      }
+      const int free = rtc::catching::FirstGroupLeftFree(
+          joint_groups_, arm_dof_, plan_joints,
+          std::span<const double>(w_rest.data(), static_cast<std::size_t>(joint_groups_.Count())));
+      if (free >= 0) {
+        RCLCPP_ERROR(logger_,
+                     "planner.segment.mpc.cost.angular_momentum reads every joint of the segment "
+                     "model, but a plan of the search model leaves out joints of %s%s%s with no "
+                     "rest weight — give planner.segment.mpc.groups.<that group>.w_rest > 0 "
+                     "(#641 D9')",
+                     joint_groups_.n_groups == 0 ? "the arm (no planner.groups)" : "group '",
+                     joint_groups_.n_groups == 0
+                         ? ""
+                         : planner_params_.groups[static_cast<std::size_t>(free)].name.c_str(),
+                     joint_groups_.n_groups == 0 ? "" : "'");
+        return false;
+      }
     }
     // No SetJointOrder on this handle: CatchPoseIk refuses a reordered one (its
     // Jacobian columns and box rows are model order). The model↔device mapping
