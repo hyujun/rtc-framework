@@ -492,9 +492,11 @@ void ReachReference(const MpcSegmentCore& mpc, const Eigen::VectorXd& q0, const 
 // over the jerk columns, b, the position / velocity / torque rows' jerk
 // columns with their bounds, the velocity slack's rows and column — is the
 // same whether the torque slack is one per joint and node or one per node
-// (#857 (a)). The input is a reference no solve made (ReachReference), so no
-// pre-solve feeds the main QP. Pinned as a golden: the law change leaves it
-// alone. Regenerating it is a change of an existing assertion (PROC-6).
+// (#857 (a)): the golden was captured with one per joint, both layouts
+// matched it to the bit (#857 stage 1), and the per-node core is held to it.
+// The input is a reference no solve made (ReachReference), so no pre-solve
+// feeds the main QP. Regenerating it is a change of an existing assertion
+// (PROC-6).
 
 void AddJerkBlock(Probe& p, const rtc::tsid::QPData& qp, Eigen::Index nu, Eigen::Index nN) {
   constexpr Eigen::Index kSvRows = 7;  // this case has the velocity slack
@@ -554,12 +556,10 @@ TEST(MpcSegmentCoreGolden, JerkBlockIsTheSameForBothSlackLayouts) {
   const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
   const int n = arm.model->nv;
   pinocchio::Data data(*arm.model);
-  std::array<Probe, 2> probes;
-  for (const bool per_node : {false, true}) {
-    SCOPED_TRACE(per_node ? "torque slack per node" : "torque slack per joint");
+  Probe probe;
+  {
     // The shipped-like grid (C1 of the timing table) with every term on.
     MpcSegmentCoreParams p = GridParams({6, 0.1, 7, 0.05, 1, {1, 1, 2, 3}});
-    p.torque_slack_per_node = per_node;
     p.w_perp = 10.0;
     p.catch_terms = true;
     p.w_axis = 100.0;
@@ -591,17 +591,17 @@ TEST(MpcSegmentCoreGolden, JerkBlockIsTheSameForBothSlackLayouts) {
     const Eigen::Index N = mpc.NumNodes();
     const Eigen::Index nN = static_cast<Eigen::Index>(n) * N;
     const Eigen::Index nu = mpc.Layout().nu;
-    const Eigen::Index n_s = per_node ? N : nN;
+    const Eigen::Index n_s = N;
     const Eigen::Index sv = nu + n_s;  // the velocity slack's column
     ASSERT_EQ(qp.H.rows(), nu + n_s + 1);
     ASSERT_EQ(qp.C.rows(), 4 * nN + n_s + 7);
-    AddJerkBlock(probes[per_node ? 1 : 0], qp, nu, nN);
-    // The slack block: −1 / +1 on the torque rows of its node (and joint),
+    AddJerkBlock(probe, qp, nu, nN);
+    // The slack block: −1 / +1 on the torque rows of its node,
     // nothing on the other rows but its own s ≥ 0 row, ρ_τ in g, no H or A.
     for (Eigen::Index k0 = 0; k0 < N; ++k0) {
       for (Eigen::Index j = 0; j < n; ++j) {
         const Eigen::Index r = k0 * n + j;
-        const Eigen::Index own = nu + (per_node ? k0 : r);
+        const Eigen::Index own = nu + k0;
         for (Eigen::Index c = nu; c < sv; ++c) {
           const double e = c == own ? 1.0 : 0.0;
           ASSERT_EQ(qp.C(2 * nN + r, c), -e) << "upper torque row " << r << " col " << c;
@@ -623,12 +623,7 @@ TEST(MpcSegmentCoreGolden, JerkBlockIsTheSameForBothSlackLayouts) {
     EXPECT_TRUE(qp.H.middleCols(nu, n_s).isZero(0.0));
     EXPECT_TRUE(qp.A.middleCols(nu, n_s).isZero(0.0));
   }
-  // The same jerk block, to the bit.
-  ASSERT_EQ(probes[0].tight.size(), probes[1].tight.size());
-  for (std::size_t i = 0; i < probes[0].tight.size(); ++i) {
-    EXPECT_EQ(probes[0].tight[i], probes[1].tight[i]) << "fingerprint " << i;
-  }
-  ExpectGolden("jerk_block_7r_catch", probes[0], kGolden_jerk_block_7r_catch_tight, {});
+  ExpectGolden("jerk_block_7r_catch", probe, kGolden_jerk_block_7r_catch_tight, {});
 }
 
 // ── 1. Grid ──────────────────────────────────────────────────────────────────
@@ -2339,7 +2334,9 @@ TEST(MpcSegmentCorePath, AllocatesNothingOutsideTheQpSolver) {
 // ── 7. Fail-closed ───────────────────────────────────────────────────────────
 
 struct Snapshot {
-  Eigen::MatrixXd q, qd, qdd, u, slack, tau_ratio;
+  Eigen::MatrixXd q, qd, qdd, u;
+  Eigen::VectorXd slack;  // one per node (#857)
+  Eigen::MatrixXd tau_ratio;
   Eigen::Vector3d pos, v_rel;
   double axis, gamma, slack_v;
   bool evaluated;
@@ -2828,192 +2825,6 @@ void RunGridTiming(const ArmModel& arm, const MpcSegmentCoreLimits& lim, const T
       Percentile(pos_err_mm, 0.99), slack_active, cold.total_us.size(), Percentile(overshoot, 1.0));
 }
 
-// ── #857 stage 1 (temporary — removed with the flag): the two torque slack
-// layouts on the same throws ──────────────────────────────────────────────────
-// One sampler; every random number of a sample is drawn before either layout
-// solves; which layout solves first alternates per sample. Per series: each
-// layout's own table (ReportSeries), the ratio of the p99 totals, and the
-// per-sample ratio of µs per QP iteration (samples where neither run was
-// retried). Rows at a bound are counted on the cold solve right after it (to
-// 10·eps_abs), the s ≥ 0 rows apart; ‖Δq‖∞ is the cold solves' difference.
-
-struct LayoutSide {
-  MpcSegmentCore mpc, adv_cold, adv_stale;
-  MpcSegmentCoreResult res, res_same, res_adv;
-  std::array<Series, 4> series;                  // cold, warm_same, adv_cold, adv_stale
-  std::array<std::vector<double>, 4> us_per_it;  // per sample; NaN = failed or retried
-  std::vector<double> active_rows, active_slack_rows;
-  int slack_active{0};
-};
-
-void CountActiveRows(const rtc::tsid::QPData& qp, const Eigen::VectorXd& z, Eigen::Index nN,
-                     Eigen::Index n_s, double tol, LayoutSide& side) {
-  const Eigen::VectorXd cz = qp.C * z;
-  int rows = 0;
-  int slack_rows = 0;
-  for (Eigen::Index r = 0; r < cz.size(); ++r) {
-    const bool at = (std::isfinite(qp.l[r]) && std::abs(cz[r] - qp.l[r]) <= tol) ||
-                    (std::isfinite(qp.u[r]) && std::abs(cz[r] - qp.u[r]) <= tol);
-    if (!at) {
-      continue;
-    }
-    (r >= 4 * nN && r < 4 * nN + n_s ? slack_rows : rows) += 1;
-  }
-  side.active_rows.push_back(rows);
-  side.active_slack_rows.push_back(slack_rows);
-}
-
-void RunGridTimingPair(const ArmModel& arm, const MpcSegmentCoreLimits& lim, const TimingGrid& tg,
-                       const std::string& key, int n_samples, bool b_per_node) {
-  using rtc::testing::mpc_segment_core::Percentile;
-  const int n = arm.model->nv;
-  std::array<LayoutSide, 2> side;
-  const std::array<bool, 2> per_node{false, b_per_node};
-  const std::array<std::string, 2> name{"joint", b_per_node ? "node" : "joint_b"};
-  MpcSegmentCoreParams p0;
-  for (std::size_t a = 0; a < 2; ++a) {
-    MpcSegmentCoreParams p = GridParams(tg.grid);
-    TimingCatchParams(p, false);
-    p.torque_slack_per_node = per_node[a];
-    Grid next_grid = tg.grid;
-    next_grid.n_pre -= 1;
-    MpcSegmentCoreParams p_next = GridParams(next_grid);
-    TimingCatchParams(p_next, false);
-    p_next.torque_slack_per_node = per_node[a];
-    LayoutSide& s = side[a];
-    ASSERT_EQ(s.mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone) << key;
-    ASSERT_EQ(s.adv_cold.Init(*arm.model, arm.frame, p_next, lim), MpcSegmentCoreReason::kNone);
-    ASSERT_EQ(s.adv_stale.Init(*arm.model, arm.frame, p_next, lim), MpcSegmentCoreReason::kNone);
-    s.mpc.ResizeResult(s.res);
-    s.mpc.ResizeResult(s.res_same);
-    s.adv_cold.ResizeResult(s.res_adv);
-    for (std::vector<double>& v : s.us_per_it) {
-      v.assign(static_cast<std::size_t>(n_samples), std::numeric_limits<double>::quiet_NaN());
-    }
-    p0 = p;
-  }
-  const int N = side[0].mpc.NumNodes();
-  const Eigen::Index nN = static_cast<Eigen::Index>(n) * N;
-  const double tol = 10.0 * p0.solver.eps_abs;
-
-  Eigen::Matrix3d w_p;
-  ASSERT_TRUE(
-      rtc::catching::CatchPositionWeight(SkewWeight(1e-4, 4e-4, 2.5e-5), 1.0, 0.01, 1e4, w_p));
-  ThrowSampler sampler;
-  std::mt19937& rng = sampler.rng;
-  std::uniform_real_distribution<double>& uni = sampler.uni;
-  pinocchio::Data data(*arm.model);
-  std::vector<double> dq;
-  const auto note = [](LayoutSide& s, int series, int i, bool ok, const MpcSegmentCoreResult& r) {
-    if (!ok) {
-      s.series[static_cast<std::size_t>(series)].Fail(r);
-      return;
-    }
-    s.series[static_cast<std::size_t>(series)].Add(r);
-    if (!r.cold_retried && r.iterations > 0) {
-      s.us_per_it[static_cast<std::size_t>(series)][static_cast<std::size_t>(i)] =
-          r.solve_us / r.iterations;
-    }
-  };
-  for (int i = 0; i < n_samples; ++i) {
-    // Every random number of this sample, before any solve.
-    const MpcSegmentCoreInput in = sampler.Next(arm, lim, p0, side[0].mpc, data, w_p);
-    const Eigen::Vector3d moved =
-        in.p_b + 0.01 * Eigen::Vector3d(uni(rng), uni(rng), uni(rng)).normalized();
-    std::array<bool, 2> cold_ok{false, false};
-    for (int turn = 0; turn < 2; ++turn) {
-      const std::size_t a = static_cast<std::size_t>(i % 2 == 0 ? turn : 1 - turn);
-      LayoutSide& s = side[a];
-      cold_ok[a] = s.mpc.Solve(in, s.res);
-      note(s, 0, i, cold_ok[a], s.res);
-      if (!cold_ok[a]) {
-        continue;
-      }
-      CountActiveRows(s.mpc.MainQp(), s.mpc.LastSolution(), nN,
-                      s.mpc.MainQp().H.rows() - s.mpc.Layout().nu, tol, s);
-      s.slack_active += s.res.slack_max > 1e-6 ? 1 : 0;
-      MpcSegmentCoreInput same = in;
-      UseAsReference(s.res, same);
-      same.p_b = moved;
-      same.w_delta_scale = 1.0;
-      same.cold_start = false;
-      note(s, 1, i, s.mpc.Solve(same, s.res_same), s.res_same);
-      MpcSegmentCoreInput adv = in;
-      adv.q_ref = s.res.q.rightCols(N);
-      adv.qd_ref = s.res.qd.rightCols(N);
-      adv.qdd_ref = s.res.qdd.rightCols(N);
-      adv.q0 = s.res.q.col(1);
-      adv.qd0 = s.res.qd.col(1);
-      adv.qdd0 = s.res.qdd.col(1);
-      adv.p_b = moved;
-      adv.w_delta_scale = 1.0;
-      adv.cold_start = true;
-      note(s, 2, i, s.adv_cold.Solve(adv, s.res_adv), s.res_adv);
-      adv.cold_start = false;
-      note(s, 3, i, s.adv_stale.Solve(adv, s.res_adv), s.res_adv);
-    }
-    if (cold_ok[0] && cold_ok[1]) {
-      dq.push_back((side[0].res.q - side[1].res.q).cwiseAbs().maxCoeff());
-    }
-  }
-  const std::array<const char*, 4> series_name{"cold", "warm_same", "adv_cold", "adv_stale"};
-  for (std::size_t a = 0; a < 2; ++a) {
-    const LayoutSide& s = side[a];
-    const std::string k = key + "." + name[a];
-    for (std::size_t m = 0; m < 4; ++m) {
-      ReportSeries(k + "." + series_name[m], s.series[m]);
-    }
-    ::testing::Test::RecordProperty(k + ".n_vars", static_cast<int>(s.mpc.MainQp().H.rows()));
-    ::testing::Test::RecordProperty(k + ".n_eq", static_cast<int>(s.mpc.MainQp().A.rows()));
-    ::testing::Test::RecordProperty(k + ".n_ineq", static_cast<int>(s.mpc.MainQp().C.rows()));
-    ::testing::Test::RecordProperty(k + ".cold.active_rows.p50",
-                                    static_cast<int>(Percentile(s.active_rows, 0.5)));
-    ::testing::Test::RecordProperty(k + ".cold.active_slack_rows.p50",
-                                    static_cast<int>(Percentile(s.active_slack_rows, 0.5)));
-    ::testing::Test::RecordProperty(k + ".cold.torque_slack_active", s.slack_active);
-    std::printf(
-        "[layout] %-24s vars %ld eq %ld rows %ld | cold active rows p50 %.0f (+ s>=0 rows p50 "
-        "%.0f) | torque slack active %d\n",
-        k.c_str(), static_cast<long>(s.mpc.MainQp().H.rows()),
-        static_cast<long>(s.mpc.MainQp().A.rows()), static_cast<long>(s.mpc.MainQp().C.rows()),
-        Percentile(s.active_rows, 0.5), Percentile(s.active_slack_rows, 0.5), s.slack_active);
-  }
-  for (std::size_t m = 0; m < 4; ++m) {
-    const Series& a = side[0].series[m];
-    const Series& b = side[1].series[m];
-    std::vector<double> ratio;
-    for (std::size_t i = 0; i < side[0].us_per_it[m].size(); ++i) {
-      const double x = side[0].us_per_it[m][i];
-      const double y = side[1].us_per_it[m][i];
-      if (std::isfinite(x) && std::isfinite(y) && x > 0.0) {
-        ratio.push_back(y / x);
-      }
-    }
-    const double p99_a = Percentile(a.total_us, 0.99);
-    const double p99_b = Percentile(b.total_us, 0.99);
-    const double p50_a = Percentile(a.total_us, 0.5);
-    const double p50_b = Percentile(b.total_us, 0.5);
-    const std::string k = key + "." + series_name[m];
-    ::testing::Test::RecordProperty(k + ".total_p99_ratio_permille",
-                                    static_cast<int>(std::lround(1e3 * p99_b / p99_a)));
-    ::testing::Test::RecordProperty(k + ".total_p50_ratio_permille",
-                                    static_cast<int>(std::lround(1e3 * p50_b / p50_a)));
-    ::testing::Test::RecordProperty(k + ".us_per_iter_ratio_p50_permille",
-                                    static_cast<int>(std::lround(1e3 * Percentile(ratio, 0.5))));
-    std::printf(
-        "[layout] %-24s %s/%s: total p50 %.3f p99 %.3f | us/iter ratio p10 %.3f p50 %.3f p90 "
-        "%.3f (n=%zu) | iter p50 %.0f/%.0f | fail %d/%d | retried %d/%d\n",
-        k.c_str(), name[1].c_str(), name[0].c_str(), p50_b / p50_a, p99_b / p99_a,
-        Percentile(ratio, 0.1), Percentile(ratio, 0.5), Percentile(ratio, 0.9), ratio.size(),
-        Percentile(a.iters, 0.5), Percentile(b.iters, 0.5), a.failures, b.failures, a.retried,
-        b.retried);
-  }
-  ::testing::Test::RecordProperty(key + ".cold.dq_max_urad",
-                                  static_cast<int>(std::lround(1e6 * Percentile(dq, 1.0))));
-  std::printf("[layout] %-24s cold |dq|inf p50 %.3g max %.3g rad (n=%zu)\n", key.c_str(),
-              Percentile(dq, 0.5), Percentile(dq, 1.0), dq.size());
-}
-
 // A warm solve from ANOTHER problem's iterates: ProxQP calls a feasible QP
 // infeasible on about a quarter of these (formulation §1.6; measured in E1-F07,
 // #660). The core retries from zero, so a caller that left cold_start off on a
@@ -3098,48 +2909,6 @@ TEST(MpcSegmentCoreApproachTiming, GridTable6R) {
   RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
   for (const TimingGrid& tg : kTimingGrids) {
     RunGridTiming(arm, lim, tg, std::string("real_6dof.") + tg.name, n_samples, false);
-  }
-}
-
-// #857 stage 1 (temporary — removed with the flag). The full tables need
-// RTC_MPC_SEGMENT_CORE_TIMING_FULL=1 in a Release build, run alone; the null
-// pair (one layout against itself) shows how far the ratio moves by noise.
-[[nodiscard]] bool TimingFull() {
-  const char* e = std::getenv("RTC_MPC_SEGMENT_CORE_TIMING_FULL");
-  return e != nullptr && e[0] != '\0' && e[0] != '0';
-}
-
-TEST(MpcSegmentCoreApproachTiming, SlackLayoutNullPair7R) {
-  const ArmModel arm = RealArm7();
-  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
-  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
-  if (TimingFull()) {
-    ASSERT_TRUE(OptimisedBuild()) << "a timing table from a " << RTC_TEST_BUILD_TYPE << " build";
-  }
-  RunGridTimingPair(arm, lim, kTimingGrids[4], "null_7dof.C1", TimingSamples(), false);
-}
-
-TEST(MpcSegmentCoreApproachTiming, SlackLayoutPair7R) {
-  const ArmModel arm = RealArm7();
-  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
-  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
-  if (TimingFull()) {
-    ASSERT_TRUE(OptimisedBuild()) << "a timing table from a " << RTC_TEST_BUILD_TYPE << " build";
-  }
-  for (const TimingGrid& tg : kTimingGrids) {
-    RunGridTimingPair(arm, lim, tg, std::string("layout_7dof.") + tg.name, TimingSamples(), true);
-  }
-}
-
-TEST(MpcSegmentCoreApproachTiming, SlackLayoutPair6R) {
-  const ArmModel arm = RealArm6();
-  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.1);
-  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
-  if (TimingFull()) {
-    ASSERT_TRUE(OptimisedBuild()) << "a timing table from a " << RTC_TEST_BUILD_TYPE << " build";
-  }
-  for (const TimingGrid& tg : kTimingGrids) {
-    RunGridTimingPair(arm, lim, tg, std::string("layout_6dof.") + tg.name, TimingSamples(), true);
   }
 }
 

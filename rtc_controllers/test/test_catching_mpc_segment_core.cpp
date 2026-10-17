@@ -609,32 +609,24 @@ bool SameQp(const rtc::tsid::QPData& a, const rtc::tsid::QPData& b) {
          a.g == b.g && a.A == b.A && a.b == b.b && a.C == b.C && a.l == b.l && a.u == b.u;
 }
 
-// The oracle's relay of the core's own layout IS the core's QP, bit for bit:
-// the slack block is −1 / +1 on the torque rows of its node (and joint),
-// identity on the s ≥ 0 rows, ρ_τ in g, [0, ∞) bounds; nothing else touches it.
+// The oracle's relay of the core's layout IS the core's QP, bit for bit: the
+// slack block is −1 / +1 on the torque rows of its node, identity on the
+// s ≥ 0 rows, ρ_τ in g, [0, ∞) bounds; nothing else touches it.
 TEST(MpcSegmentCoreSlackLayout, TheOracleRelayReproducesTheCoreQp) {
   const TorqueFixture f = MakeTorqueFixture();
-  for (const bool per_node : {false, true}) {
-    SCOPED_TRACE(per_node ? "torque slack per node" : "torque slack per joint");
-    MpcSegmentCoreParams p = f.params;
-    p.torque_slack_per_node = per_node;
-    MpcSegmentCore mpc;
-    ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
-    MpcSegmentCoreResult res;
-    mpc.ResizeResult(res);
-    ASSERT_TRUE(mpc.Solve(f.input, res)) << MpcSegmentCoreReasonName(res.reason);
-    const Eigen::Index nN = static_cast<Eigen::Index>(mpc.Nv()) * mpc.NumNodes();
-    const Eigen::Index n_s = per_node ? mpc.NumNodes() : nN;
-    EXPECT_EQ(mpc.MainQp().H.rows(), mpc.Layout().nu + n_s);
-    EXPECT_EQ(mpc.MainQp().C.rows(), 4 * nN + n_s);
-    EXPECT_TRUE(SameQp(RelaySlack(mpc, mpc.MainQp(), per_node, p.rho_tau), mpc.MainQp()));
-    // The result's slack is n × N either way; per node, s_k fills its column.
-    if (per_node) {
-      for (Eigen::Index k = 0; k < mpc.NumNodes(); ++k) {
-        EXPECT_EQ(res.slack.col(k).minCoeff(), res.slack.col(k).maxCoeff()) << "node " << k + 1;
-        EXPECT_EQ(res.slack(0, k), mpc.LastSolution()[mpc.Layout().nu + k]) << "node " << k + 1;
-      }
-    }
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
+  mpc.ResizeResult(res);
+  ASSERT_TRUE(mpc.Solve(f.input, res)) << MpcSegmentCoreReasonName(res.reason);
+  const Eigen::Index N = mpc.NumNodes();
+  const Eigen::Index nN = static_cast<Eigen::Index>(mpc.Nv()) * N;
+  EXPECT_EQ(mpc.MainQp().H.rows(), mpc.Layout().nu + N);
+  EXPECT_EQ(mpc.MainQp().C.rows(), 4 * nN + N);
+  EXPECT_TRUE(SameQp(RelaySlack(mpc, mpc.MainQp(), true, f.params.rho_tau), mpc.MainQp()));
+  ASSERT_EQ(res.slack.size(), N);
+  for (Eigen::Index k = 0; k < N; ++k) {
+    EXPECT_EQ(res.slack[k], mpc.LastSolution()[mpc.Layout().nu + k]) << "node " << k + 1;
   }
 }
 
@@ -643,7 +635,6 @@ TEST(MpcSegmentCoreSlackLayout, TheOracleRelayReproducesTheCoreQp) {
 TEST(MpcSegmentCoreSlackLayout, PerNodeAgreesWithPerJointWhenTheSlackIsZero) {
   const TorqueFixture f = MakeTorqueFixture();
   MpcSegmentCoreParams p = f.params;
-  p.torque_slack_per_node = true;
   MpcSegmentCore mpc;
   ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
   MpcSegmentCoreResult res;
@@ -690,7 +681,6 @@ TEST(MpcSegmentCoreSlackLayout, PerNodeSlackIsTheWorstExcessOfItsNode) {
   tight.tau_max[2] = 0.7 * std::abs(g[2]) / f.params.eta_tau;
   ASSERT_GT(std::abs(g[2]), 1.0) << "the second joint carries no static torque here";
   MpcSegmentCoreParams p = f.params;
-  p.torque_slack_per_node = true;
   MpcSegmentCore mpc;
   ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, p, tight), MpcSegmentCoreReason::kNone);
   MpcSegmentCoreResult res;
@@ -740,7 +730,6 @@ TEST(MpcSegmentCoreSlackLayout, PerNodeNeedsTheSumOfItsNodesMultipliers) {
   const TorqueFixture f = MakeTorqueFixture();
   const int n = f.arm.model->nv;
   MpcSegmentCoreParams p = f.params;
-  p.torque_slack_per_node = true;
   MpcSegmentCoreLimits lim = f.limits;
   lim.tau_max[0] *= 10.0;  // loose: no torque row active at the optimum
   MpcSegmentCore mpc;
@@ -1012,66 +1001,61 @@ TEST(MpcSegmentCore, PerpendicularTermReducesOffLineError) {
 
 TEST(MpcSegmentCore, StructuredAssemblyMatchesDense) {
   const TorqueFixture f = MakeTorqueFixture(0.1);
-  // #857 stage 1: both torque slack layouts (the per-node one is temporary).
-  for (const bool per_node : {false, true}) {
-    SCOPED_TRACE(per_node ? "torque slack per node" : "torque slack per joint");
-    MpcSegmentCoreParams p = f.params;
-    p.torque_slack_per_node = per_node;
-    p.w_perp = 10.0;
-    MpcSegmentCoreInput in = f.input;
-    pinocchio::Data data(*f.arm.model);
-    pinocchio::framesForwardKinematics(*f.arm.model, data, f.arm.q_nominal);
-    in.p_c = data.oMf[f.arm.frame].translation();
-    in.d_hat = Eigen::Vector3d(1.0, 2.0, -0.5).normalized();
+  MpcSegmentCoreParams p = f.params;
+  p.w_perp = 10.0;
+  MpcSegmentCoreInput in = f.input;
+  pinocchio::Data data(*f.arm.model);
+  pinocchio::framesForwardKinematics(*f.arm.model, data, f.arm.q_nominal);
+  in.p_c = data.oMf[f.arm.frame].translation();
+  in.d_hat = Eigen::Vector3d(1.0, 2.0, -0.5).normalized();
 
-    MpcSegmentCore fast, dense;
-    MpcSegmentCoreParams pd = p;
-    pd.reference_assembly = true;
-    ASSERT_EQ(fast.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
-    ASSERT_EQ(dense.Init(*f.arm.model, f.arm.frame, pd, f.limits), MpcSegmentCoreReason::kNone);
-    MpcSegmentCoreResult rf, rd;
-    fast.ResizeResult(rf);
-    dense.ResizeResult(rd);
-    // Two cycles: pre-solve path, then a shifted warm cycle.
-    for (int cycle = 0; cycle < 2; ++cycle) {
-      MpcSegmentCoreInput ci = in;
-      if (cycle == 1) {
-        ShiftReference(rf, p.dt, 0.02, ci);
-      }
-      ASSERT_TRUE(fast.Solve(ci, rf)) << MpcSegmentCoreReasonName(rf.reason);
-      ASSERT_TRUE(dense.Solve(ci, rd)) << MpcSegmentCoreReasonName(rd.reason);
-      const rtc::tsid::QPData& a = fast.MainQp();
-      const rtc::tsid::QPData& b = dense.MainQp();
-      // Equal to rounding; infinite bounds must match exactly.
-      const auto close = [](const Eigen::MatrixXd& x, const Eigen::MatrixXd& y) {
-        if (x.rows() != y.rows() || x.cols() != y.cols()) {
-          return false;
-        }
-        double scale = 1.0;
-        double diff = 0.0;
-        for (Eigen::Index i = 0; i < x.size(); ++i) {
-          const double xi = x.data()[i];
-          const double yi = y.data()[i];
-          if (!std::isfinite(xi) || !std::isfinite(yi)) {
-            if (xi != yi) {
-              return false;
-            }
-            continue;
-          }
-          scale = std::max(scale, std::abs(xi));
-          diff = std::max(diff, std::abs(xi - yi));
-        }
-        return diff <= 1e-9 * scale;
-      };
-      EXPECT_TRUE(close(a.H, b.H)) << "H cycle " << cycle;
-      EXPECT_TRUE(close(a.g, b.g)) << "g cycle " << cycle;
-      EXPECT_TRUE(close(a.A, b.A)) << "A cycle " << cycle;
-      EXPECT_TRUE(close(a.b, b.b)) << "b cycle " << cycle;
-      EXPECT_TRUE(close(a.C, b.C)) << "C cycle " << cycle;
-      EXPECT_TRUE(close(a.l, b.l)) << "l cycle " << cycle;
-      EXPECT_TRUE(close(a.u, b.u)) << "u cycle " << cycle;
-      EXPECT_LE((rf.u - rd.u).cwiseAbs().maxCoeff(), 1e-6 * (1.0 + rd.u.cwiseAbs().maxCoeff()));
+  MpcSegmentCore fast, dense;
+  MpcSegmentCoreParams pd = p;
+  pd.reference_assembly = true;
+  ASSERT_EQ(fast.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(dense.Init(*f.arm.model, f.arm.frame, pd, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult rf, rd;
+  fast.ResizeResult(rf);
+  dense.ResizeResult(rd);
+  // Two cycles: pre-solve path, then a shifted warm cycle.
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    MpcSegmentCoreInput ci = in;
+    if (cycle == 1) {
+      ShiftReference(rf, p.dt, 0.02, ci);
     }
+    ASSERT_TRUE(fast.Solve(ci, rf)) << MpcSegmentCoreReasonName(rf.reason);
+    ASSERT_TRUE(dense.Solve(ci, rd)) << MpcSegmentCoreReasonName(rd.reason);
+    const rtc::tsid::QPData& a = fast.MainQp();
+    const rtc::tsid::QPData& b = dense.MainQp();
+    // Equal to rounding; infinite bounds must match exactly.
+    const auto close = [](const Eigen::MatrixXd& x, const Eigen::MatrixXd& y) {
+      if (x.rows() != y.rows() || x.cols() != y.cols()) {
+        return false;
+      }
+      double scale = 1.0;
+      double diff = 0.0;
+      for (Eigen::Index i = 0; i < x.size(); ++i) {
+        const double xi = x.data()[i];
+        const double yi = y.data()[i];
+        if (!std::isfinite(xi) || !std::isfinite(yi)) {
+          if (xi != yi) {
+            return false;
+          }
+          continue;
+        }
+        scale = std::max(scale, std::abs(xi));
+        diff = std::max(diff, std::abs(xi - yi));
+      }
+      return diff <= 1e-9 * scale;
+    };
+    EXPECT_TRUE(close(a.H, b.H)) << "H cycle " << cycle;
+    EXPECT_TRUE(close(a.g, b.g)) << "g cycle " << cycle;
+    EXPECT_TRUE(close(a.A, b.A)) << "A cycle " << cycle;
+    EXPECT_TRUE(close(a.b, b.b)) << "b cycle " << cycle;
+    EXPECT_TRUE(close(a.C, b.C)) << "C cycle " << cycle;
+    EXPECT_TRUE(close(a.l, b.l)) << "l cycle " << cycle;
+    EXPECT_TRUE(close(a.u, b.u)) << "u cycle " << cycle;
+    EXPECT_LE((rf.u - rd.u).cwiseAbs().maxCoeff(), 1e-6 * (1.0 + rd.u.cwiseAbs().maxCoeff()));
   }
 }
 
@@ -1144,47 +1128,40 @@ MpcSegmentCoreInput PerpInput(const ArmModel& arm, const MpcSegmentCoreInput& ba
 //     so the follow-up has a baseline.
 TEST(MpcSegmentCore, CoreAllocatesNothingOutsideTheQpSolver) {
   const ArmModel arm = RealArm7();
-  // #857 stage 1: both torque slack layouts (the per-node one is temporary).
-  for (const bool per_node : {false, true}) {
-    SCOPED_TRACE(per_node ? "torque slack per node" : "torque slack per joint");
-    MpcSegmentCoreParams p;
-    p.torque_slack_per_node = per_node;
-    p.w_perp = 10.0;  // the FK / frame-Jacobian path is measured too
-    const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
-    MpcSegmentCore mpc;
-    ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone);
-    MpcSegmentCoreResult res;
-    mpc.ResizeResult(res);
-    MpcSegmentCoreInput in = PerpInput(arm, RestInput(arm.q_nominal));
-    in.qd0 << 0.6, -0.4, 0.5, 0.7, -0.3, 0.4, 0.2;
-    ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);
-    MpcSegmentCoreInput warm = in;
-    ShiftReference(res, p.dt, 0.02, warm);
-    ASSERT_TRUE(mpc.Solve(warm, res)) << MpcSegmentCoreReasonName(res.reason);  // warm-up
-    MpcSegmentCoreInput next = warm;
-    ShiftReference(res, p.dt, 0.02, next);  // prepared outside the gate
-    MpcSegmentCoreInput outside = next;     // reference leaves the box by > δ
-    for (int k = 1; k <= p.n_nodes; ++k) {
-      outside.q_ref(2, k) = lim.q_max[2] + 3.0 * p.delta_tr;
-    }
-
-    bool ok = false;
-    const AllocCounts full = GatedSolve(mpc, next, res, ok);
-    EXPECT_TRUE(ok) << MpcSegmentCoreReasonName(res.reason);
-    EXPECT_EQ(full.op_new, 0U) << "operator new inside Solve";
-    RecordProperty(
-        per_node ? "warm_solve_qp_solver_mallocs_per_node" : "warm_solve_qp_solver_mallocs",
-        static_cast<int>(full.c_malloc));
-    std::printf("[alloc] warm Solve: %zu C mallocs (ProxQP, known limitation)\n", full.c_malloc);
-
-    const AllocCounts core = GatedSolve(mpc, outside, res, ok);
-    EXPECT_FALSE(ok);
-    ASSERT_EQ(res.reason, MpcSegmentCoreReason::kTrustRegionConflict);
-    EXPECT_GT(res.linearize_us, 0.0) << "the rejection must come after linearisation";
-    EXPECT_GT(res.condense_us, 0.0) << "the rejection must come after condensing";
-    EXPECT_EQ(core.op_new, 0U);
-    EXPECT_EQ(core.c_malloc, 0U) << "C-level allocation in linearisation / condensing";
+  MpcSegmentCoreParams p;
+  p.w_perp = 10.0;  // the FK / frame-Jacobian path is measured too
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
+  mpc.ResizeResult(res);
+  MpcSegmentCoreInput in = PerpInput(arm, RestInput(arm.q_nominal));
+  in.qd0 << 0.6, -0.4, 0.5, 0.7, -0.3, 0.4, 0.2;
+  ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);
+  MpcSegmentCoreInput warm = in;
+  ShiftReference(res, p.dt, 0.02, warm);
+  ASSERT_TRUE(mpc.Solve(warm, res)) << MpcSegmentCoreReasonName(res.reason);  // warm-up
+  MpcSegmentCoreInput next = warm;
+  ShiftReference(res, p.dt, 0.02, next);  // prepared outside the gate
+  MpcSegmentCoreInput outside = next;     // reference leaves the box by > δ
+  for (int k = 1; k <= p.n_nodes; ++k) {
+    outside.q_ref(2, k) = lim.q_max[2] + 3.0 * p.delta_tr;
   }
+
+  bool ok = false;
+  const AllocCounts full = GatedSolve(mpc, next, res, ok);
+  EXPECT_TRUE(ok) << MpcSegmentCoreReasonName(res.reason);
+  EXPECT_EQ(full.op_new, 0U) << "operator new inside Solve";
+  RecordProperty("warm_solve_qp_solver_mallocs", static_cast<int>(full.c_malloc));
+  std::printf("[alloc] warm Solve: %zu C mallocs (ProxQP, known limitation)\n", full.c_malloc);
+
+  const AllocCounts core = GatedSolve(mpc, outside, res, ok);
+  EXPECT_FALSE(ok);
+  ASSERT_EQ(res.reason, MpcSegmentCoreReason::kTrustRegionConflict);
+  EXPECT_GT(res.linearize_us, 0.0) << "the rejection must come after linearisation";
+  EXPECT_GT(res.condense_us, 0.0) << "the rejection must come after condensing";
+  EXPECT_EQ(core.op_new, 0U);
+  EXPECT_EQ(core.c_malloc, 0U) << "C-level allocation in linearisation / condensing";
 }
 
 TEST(MpcSegmentCore, PresolveAndRejectionPathsAllocateNothing) {
@@ -1239,7 +1216,9 @@ TEST(MpcSegmentCore, PresolveAndRejectionPathsAllocateNothing) {
 // ── 6. Fail-closed ───────────────────────────────────────────────────────────
 
 struct Snapshot {
-  Eigen::MatrixXd q, qd, qdd, u, slack, tau_ratio;
+  Eigen::MatrixXd q, qd, qdd, u;
+  Eigen::VectorXd slack;  // one per node (#857)
+  Eigen::MatrixXd tau_ratio;
 
   explicit Snapshot(const MpcSegmentCoreResult& r)
       : q(r.q), qd(r.qd), qdd(r.qdd), u(r.u), slack(r.slack), tau_ratio(r.tau_ratio) {}

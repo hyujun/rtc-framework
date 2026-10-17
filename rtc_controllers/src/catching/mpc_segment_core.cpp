@@ -325,10 +325,7 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   h_modified_ = false;
   w_delta_scale_ = 1.0;
   nu_ = layout_.nu;
-  const bool per_node = params.torque_slack_per_node;
-  n_s_ = per_node ? n_nodes_ : n * n_nodes_;
-  slack_node_stride_ = per_node ? 1 : n;
-  slack_joint_stride_ = per_node ? 0 : 1;
+  n_s_ = n_nodes_;
   nz_ = nu_ + n_s_ + (slack_v_on_ ? 1 : 0);
   n_eq_ = 2 * n;
   sv_row_ = 4 * n * n_nodes_ + n_s_;
@@ -534,7 +531,7 @@ void MpcSegmentCore::ResizeResult(MpcSegmentCoreResult& result) const {
   result.qd.setZero(nn, n_nodes_ + 1);
   result.qdd.setZero(nn, n_nodes_ + 1);
   result.u.setZero(nn, n_nodes_);
-  result.slack.setZero(nn, n_nodes_);
+  result.slack.setZero(n_nodes_);
   result.tau_ratio.setZero(nn, n_nodes_);
   result.valid = false;
   result.reason =
@@ -572,7 +569,7 @@ double MpcSegmentCore::StageGain(int m, int k, int b, int block_class) const noe
 //   [nN, 2nN)  velocity                      G_{q̇,k}
 //   [2nN,3nN)  torque upper  D̃_k G_k z − s ≤ η − c̃
 //   [3nN,4nN)  torque lower  D̃_k G_k z + s ≥ −η − c̃
-//   [4nN,4nN+n_s)  slack     s ≥ 0  (n_s = nN, or N with one slack per node — #857)
+//   [4nN,4nN+N)  slack       s_k ≥ 0  (one per node, shared by its joints — #857)
 // and, with the velocity slack (the last variable s_v, rows scaled by 1/v_allow),
 // from sv = 4nN + n_s:
 //   [sv,   +3)  −L̃ z − s_v ≤ 1 − d̃      L̃ = (ĝ_q⊗H_v + ĝ_v⊗J_v)/v_allow at k_c
@@ -605,8 +602,8 @@ void MpcSegmentCore::AssembleConstant(tsid::QPData& qp, bool main) noexcept {
       }
     }
     for (Eigen::Index j = 0; j < nn; ++j) {
-      qp.C(2 * nN + o + j, SlackIdx(k - 1, j)) = -1.0;
-      qp.C(3 * nN + o + j, SlackIdx(k - 1, j)) = 1.0;
+      qp.C(2 * nN + o + j, SlackIdx(k - 1)) = -1.0;
+      qp.C(3 * nN + o + j, SlackIdx(k - 1)) = 1.0;
     }
   }
   for (Eigen::Index s = 0; s < n_s_; ++s) {
@@ -674,8 +671,8 @@ void MpcSegmentCore::AssembleConstantDense(tsid::QPData& qp, bool main) noexcept
     qp.C.block(o, 0, nn, nu_) = g_dense_.middleRows(3 * nn * k, nn);
     qp.C.block(nN + o, 0, nn, nu_) = g_dense_.middleRows(3 * nn * k + nn, nn);
     for (Eigen::Index j = 0; j < nn; ++j) {
-      qp.C(2 * nN + o + j, SlackIdx(k - 1, j)) = -1.0;
-      qp.C(3 * nN + o + j, SlackIdx(k - 1, j)) = 1.0;
+      qp.C(2 * nN + o + j, SlackIdx(k - 1)) = -1.0;
+      qp.C(3 * nN + o + j, SlackIdx(k - 1)) = 1.0;
     }
   }
   for (Eigen::Index s = 0; s < n_s_; ++s) {
@@ -1447,8 +1444,7 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
   // Shapes.
   if (out.q.rows() != nn || out.q.cols() != N1 || out.qd.rows() != nn || out.qd.cols() != N1 ||
       out.qdd.rows() != nn || out.qdd.cols() != N1 || out.u.rows() != nn || out.u.cols() != N ||
-      out.slack.rows() != nn || out.slack.cols() != N || out.tau_ratio.rows() != nn ||
-      out.tau_ratio.cols() != N) {
+      out.slack.size() != N || out.tau_ratio.rows() != nn || out.tau_ratio.cols() != N) {
     return fail(MpcSegmentCoreReason::kDimMismatch);
   }
   if (in.q0.size() != nn || in.qd0.size() != nn || in.qdd0.size() != nn) {
@@ -1727,14 +1723,14 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
   for (Eigen::Index k = 0; k < N; ++k) {
     for (Eigen::Index j = 0; j < nn; ++j) {
       out.u(j, k) = us * z_[Col(j, stage_[ClassOf(j)].block_of_node[U(k)])];
-      out.slack(j, k) = z_[SlackIdx(k, j)];
     }
+    out.slack[k] = z_[SlackIdx(k)];
   }
   out.q = q_out_;
   out.qd = v_out_;
   out.qdd = a_out_;
   out.slack_max = out.slack.maxCoeff();
-  out.slack_terminal_max = out.slack.col(N - 1).maxCoeff();
+  out.slack_terminal_max = out.slack[N - 1];
   out.torque_evaluated = torque_on_;
   if (torque_on_) {
     tau_lin_ = c_tilde_;
