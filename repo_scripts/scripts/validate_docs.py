@@ -48,7 +48,8 @@ D12 the two constitutions (``CLAUDE.md`` / ``AGENTS.md``) stay inside a size
     line length are gated as well.  Honours ``allow D12`` for a single line.
     The same code carries a per-file byte budget for the whole constitutional
     corpus -- the two constitutions, ``agent_docs/*.md`` and
-    ``.claude/rules/*.md`` -- read from ``repo_scripts/config/docs_budget.yaml``.
+    ``.claude/rules/*.md`` -- and for every ``.claude/skills/**.md``, read from
+    ``repo_scripts/config/docs_budget.yaml``.
     The caps above never covered ``agent_docs/``, which more than doubled in
     ten weeks while the constitutions sat pinned at theirs: the content the cap
     pushed out of the constitution landed one directory down, ungated.  A file
@@ -403,11 +404,14 @@ CONSTITUTION_MAX_LINES = 200
 CONSTITUTION_MAX_BYTES = 18 * 1024
 CONSTITUTION_MAX_LINE_CHARS = 500
 # D12, per-file budgets: every document an agent is told to treat as a rule
-# source has a byte budget in SIZE_BUDGET_FILE.  One "path: bytes" mapping per
-# line -- valid YAML, parsed here by regex so the validator keeps running on a
-# host without PyYAML (the CI job installs nothing for it).
+# source has a byte budget in SIZE_BUDGET_FILE, and so does every skill file:
+# a skill is loaded whole when invoked and routes to the documents that own
+# its steps, and unbudgeted, one grew from 3 KB into a 34 KB copy of them
+# (issue comments and package docs) with nothing firing.  One "path: bytes"
+# mapping per line -- valid YAML, parsed here by regex so the validator keeps
+# running on a host without PyYAML (the CI job installs nothing for it).
 SIZE_BUDGET_FILE = "repo_scripts/config/docs_budget.yaml"
-SIZE_BUDGET_DIRS = ("agent_docs/", ".claude/rules/")
+SIZE_BUDGET_DIRS = ("agent_docs/", ".claude/rules/", ".claude/skills/")
 SIZE_BUDGET_LINE_RE = re.compile(r"^([^\s#:][^:]*?)\s*:\s*(\d+)(?:\s+(strict))?\s*(?:#.*)?$")
 # D12, the ratchet: raising the number is the cheapest way to make a budget
 # finding go away, and a scan of one tree cannot tell a raised number from an
@@ -1200,7 +1204,7 @@ def check_line_shape(rel: str, text: str) -> list[Finding]:
 
 
 def is_budgeted(rel: str) -> bool:
-    """Is ``rel`` part of the constitutional corpus that D12 budgets per file?"""
+    """Is ``rel`` one of the documents D12 budgets per file (corpus and skills)?"""
     return rel in CONSTITUTION_DOCS or (rel.endswith(".md") and rel.startswith(SIZE_BUDGET_DIRS))
 
 
@@ -2627,7 +2631,9 @@ BUDGET_SCOPE_CASES: list[tuple[str, bool]] = [
     (".claude/rules/rt-path.md", True),
     ("README.md", False),
     ("docs/tracing.md", False),
-    (".claude/skills/verify/SKILL.md", False),
+    (".claude/skills/adding-component/SKILL.md", True),
+    (".claude/skills/x/references/y.md", True),
+    (".claude/skills/x/run.sh", False),
     ("agent_docs/budget.yaml", False),
 ]
 

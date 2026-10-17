@@ -31,7 +31,7 @@
 
 README.md: 12431 strict
 docs/dynamic_catching/README.md: 5524 strict
-docs/reference/README.md: 6563  # raised from 6289: index row for sim-rationale.md; before: 5924 -> 6289 build-rationale.md
+docs/reference/README.md: 6815  # raised from 6563: why skills are D12-budgeted (verify skill removal); before: 6289 -> 6563 sim-rationale.md, 5924 -> 6289 build-rationale.md
 integrated_bringup/README.md: 37791 strict  # raised from 37635: per-robot initial_controller default and the startup log line (moved in when the verify skill was removed)
 repo_scripts/README.md: 25904 strict
 robot_descriptions/README.md: 6491 strict

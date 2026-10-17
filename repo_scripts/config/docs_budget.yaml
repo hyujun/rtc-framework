@@ -1,7 +1,8 @@
 # Byte budgets for the constitutional corpus -- validate_docs.py D12.
 #
 # One "path: bytes" entry per document an agent is told to treat as a rule
-# source: the two constitutions, agent_docs/*.md and .claude/rules/*.md. A
+# source: the two constitutions, agent_docs/*.md and .claude/rules/*.md -- and
+# one per .claude/skills/**.md, since a skill is loaded whole when invoked. A
 # document over its budget, a corpus document with no entry, and an entry whose
 # document is gone all fail the docs gate (repo_scripts/scripts/validate_docs.py).
 #
@@ -38,3 +39,5 @@ agent_docs/testing-debug.md: 16772  # raised from 14610: L1/L2 span, executor-ca
 .claude/rules/arch-build-meta.md: 2632
 .claude/rules/arch-source.md: 3693
 .claude/rules/rt-path.md: 3472
+
+.claude/skills/adding-component/SKILL.md: 5315
