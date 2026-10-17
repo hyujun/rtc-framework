@@ -417,13 +417,17 @@ TorqueFixture MakeTorqueFixture(double armature = 0.0) {
 }
 
 // Solve the fixture's last main QP with the slack pinned to 0 (the hard
-// problem). Returns false when it is infeasible. Either torque slack layout
-// (#857): the slack variables follow the jerk ones and their s ≥ 0 rows are
-// the last rows (these fixtures have no velocity slack).
+// problem). Returns false when it is infeasible. The N slack variables (#857)
+// follow the jerk ones and their s ≥ 0 rows are the last rows — true only
+// without a velocity slack, whose column and rows would be pinned instead.
 bool SolveHard(const MpcSegmentCore& mpc, const MpcSegmentCoreParams& p, Eigen::VectorXd& z) {
   rtc::tsid::QPData hard = mpc.MainQp();
   const Eigen::Index n_in = hard.C.rows();
   const Eigen::Index n_s = hard.H.rows() - mpc.Layout().nu;
+  EXPECT_EQ(n_s, mpc.NumNodes()) << "SolveHard assumes no velocity slack";
+  if (n_s != mpc.NumNodes()) {
+    return false;
+  }
   hard.u.tail(n_s).setZero();
   hard.g.tail(n_s).setZero();
   rtc::tsid::QPSolverWrapper solver;
@@ -520,6 +524,9 @@ rtc::tsid::QPData RelaySlack(const MpcSegmentCore& mpc, const rtc::tsid::QPData&
   const Eigen::Index nz = nu + n_s;
   const Eigen::Index n_eq = src.A.rows();
   const Eigen::Index n_in = 4 * nN + n_s;
+  // src is either layout; a velocity slack would be one column more.
+  EXPECT_TRUE(src.H.rows() == nu + N || src.H.rows() == nu + nN)
+      << "RelaySlack assumes no velocity slack";
   rtc::tsid::QPData qp;
   qp.Init(static_cast<int>(nz), static_cast<int>(n_eq), static_cast<int>(n_in));
   qp.n_vars = static_cast<int>(nz);
