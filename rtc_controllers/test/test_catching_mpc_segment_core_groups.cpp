@@ -1042,8 +1042,15 @@ TEST(MpcSegmentCoreWholeBodyRecord, IterationsWithAndWithoutTheTerms) {
 // posture by w_rest, moved only by the angular-momentum term. Its x_0 is its
 // rest posture, at rest.
 
-constexpr double kWBig = 100.0;
+// The judgement's values (#641 stage 0, revised by D15 and D16 on
+// 2026-10-17): W⁻ / W⁺ = 0.001 / 0.1, W_big = 100·W⁺ for the negative
+// control; the rest weight 1 for the arm a plan leaves out, 100 for the
+// locked limit's comparison.
+constexpr double kJudgePre = 0.001;
+constexpr double kJudgePost = 0.1;
+constexpr double kWBig = 100.0 * kJudgePost;
 constexpr double kRestWeight = 1.0;
+constexpr double kRestBig = 100.0;
 
 bool OtherArm(int m) {
   return GroupOf(m) == 2;
@@ -1214,6 +1221,64 @@ TEST(MpcSegmentCoreJudgement, TheTrunksTorqueRowsCarryTheOtherArmsReaction) {
   }
   EXPECT_GT(largest, 1e-6) << "the reaction must be there";
   EXPECT_LE(worst, 1e-6 * std::max(1.0, largest));
+}
+
+// formulation §4 item 3: a large rest weight is the arm locked.
+TEST(MpcSegmentCoreJudgement, ALargeRestWeightIsTheOtherArmLocked) {
+  const Fixture f = MakeFixture();
+  ASSERT_TRUE(f.input.qd0.isZero(0.0));
+  const JudgeRun held = Judge(f, kRestBig, kJudgePre, kJudgePost, false);
+  const JudgeRun locked = Judge(f, 0.0, kJudgePre, kJudgePost, true);
+  const JudgeRun free = Judge(f, 0.0, kJudgePre, kJudgePost, false);
+  ASSERT_TRUE(held.ok && locked.ok && free.ok);
+  // The same chain solution, to #640 D10's tolerance …
+  EXPECT_LE(ChainDifference(held.r, locked.r), 1e-4);
+  EXPECT_LE((held.r.catch_pos_err - locked.r.catch_pos_err).norm(), 1e-4);
+  EXPECT_LE(OtherArmOffRest(f, locked.r), 1e-6) << "locked: to the QP's tolerance";
+  // … the arm converging on the locked one as its weight grows (D16: the
+  // limit, measured as a monotone fall to ≤ 1e-4 rad at the weight bound) …
+  double last = std::numeric_limits<double>::infinity();
+  for (const double w : {1.0, 10.0, 100.0, 1e3, rtc::catching::kWholeBodyWeightMax}) {
+    const JudgeRun r = Judge(f, w, kJudgePre, kJudgePost, false);
+    ASSERT_TRUE(r.ok) << w;
+    const double off = OtherArmOffRest(f, r.r);
+    RecordProperty("other_arm_off_rest_at_" + std::to_string(static_cast<int>(w)),
+                   std::to_string(off));
+    EXPECT_LT(off, last) << "w_rest " << w;
+    last = off;
+  }
+  EXPECT_LE(last, 1e-4) << "at the weight bound";
+  // … and without the weight the term does move it: the case can tell.
+  EXPECT_GT(OtherArmOffRest(f, free.r), 1e-3);
+}
+
+// formulation §4 item 7: with the other arm free the angular term swings it
+// against the reach, and the catch hardly notices; locked and weighted
+// heavily, the reach itself has to give.
+TEST(MpcSegmentCoreJudgement, TheOtherArmSwingsAgainstTheReachAndTheCatchHardlyNotices) {
+  const Fixture f = MakeFixture();
+  ASSERT_TRUE(f.input.qd0.isZero(0.0));  // the premise: the other arm at rest at its rest posture
+  const JudgeRun off = Judge(f, kRestWeight, 0.0, 0.0, false);
+  const JudgeRun swing = Judge(f, kRestWeight, kJudgePre, kJudgePost, false);
+  const JudgeRun locked = Judge(f, kRestWeight, kJudgePre, kJudgePost, true);
+  const JudgeRun locked_big = Judge(f, kRestWeight, kWBig, kWBig, true);
+  ASSERT_TRUE(off.ok && swing.ok && locked.ok && locked_big.ok);
+  std::string why;
+  // The control: no angular term, nothing moves the other arm.
+  EXPECT_LE(OtherArmOffRest(f, off.r), 1e-6);
+  // Positive: it swings, within the trust region per node …
+  EXPECT_GT(OtherArmOffRest(f, swing.r), 1e-3);
+  EXPECT_LT(swing.r.whole_body.ang, locked.r.whole_body.ang)
+      << "free, the arm must lower the term the core minimises";
+  RecordProperty("swing_ang_rate_max", std::to_string(swing.r.whole_body.ang_rate_max));
+  RecordProperty("locked_ang_rate_max", std::to_string(locked.r.whole_body.ang_rate_max));
+  // … and the catch node is within D2's tolerance of the solve without it.
+  EXPECT_TRUE(WithinD2(CatchOf(swing.r), CatchOf(off.r), &why)) << why;
+  RecordProperty("swing_catch_difference", why);
+  // Negative: locked, with the term weighted heavily on both phases, the
+  // reach gives — the tolerance is not met.
+  EXPECT_FALSE(WithinD2(CatchOf(locked_big.r), CatchOf(off.r), &why)) << why;
+  RecordProperty("locked_big_catch_difference", why);
 }
 
 }  // namespace

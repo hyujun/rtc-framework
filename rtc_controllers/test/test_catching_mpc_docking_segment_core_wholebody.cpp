@@ -20,6 +20,7 @@
 #include "rtc_controllers/catching/mpc_docking_segment_core.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/mpc_docking_fixture.hpp"
+#include "rtc_controllers/testing/synthetic_tree_fixture.hpp"
 
 #include <Eigen/Core>
 #include <gtest/gtest.h>
@@ -32,6 +33,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -786,6 +788,117 @@ TEST(MpcDockingGroups, NoStageAllocatesWithThreePartitionsAndTheTermsOn) {
   for (std::size_t st = 0; st < rec.mallocs.size(); ++st) {
     EXPECT_EQ(rec.mallocs[st], 0U) << "stage " << st;
   }
+}
+
+// ── 6. Judgement: counter-swing on the tree (#641 D2, D15) ──────────────────
+// A trunk and two arms; the second arm (model joints 10..16) is the group a
+// plan leaves out, at rest on its rest posture q_nom at x_0. Values: W⁻ / W⁺ =
+// 0.001 / 0.1, W_big = 100·W⁺, the stop rest 1 on that arm. No torque cost:
+// through the trunk's reaction it moves the other arm too (E3-F01's
+// observation, #641 D9′), and the control below must see the angular term
+// alone.
+
+constexpr int kTreeOther = 10;
+
+struct TreeJudge {
+  fx::ArmModel tree = rtc::testing::SyntheticTree(3, 7, 2);
+  dk::Rig rig = dk::MakeRig(tree);
+  MpcDockingSegmentCoreInput in;
+  int kc{0};
+};
+
+std::unique_ptr<TreeJudge> MakeTreeJudge() {
+  auto t = std::make_unique<TreeJudge>();
+  MpcDockingSegmentCore probe;
+  EXPECT_EQ(probe.Init(t->rig.model, t->rig.arm.frame, t->rig.params, t->rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  t->kc = probe.CatchNode();
+  for (unsigned seed = 1; seed < 2000; ++seed) {
+    Case c;
+    if (dk::MakeThrow(t->rig, probe, seed, 1e-3, c.th, c.in)) {
+      t->in = c.in;
+      break;
+    }
+  }
+  for (int m = kTreeOther; m < t->rig.model.nv; ++m) {
+    t->in.q0[m] = t->tree.q_nominal[m];
+    t->in.q_catch_target[m] = t->tree.q_nominal[m];
+  }
+  return t;
+}
+
+MpcDockingSegmentCoreResult SolveTree(const TreeJudge& t, double pre, double post, bool locked) {
+  const int n = t.rig.model.nv;
+  MpcDockingSegmentCoreParams p = t.rig.params;
+  p.r_tau.resize(0);
+  p.q_nom = t.tree.q_nominal;
+  p.w_rest_stop = Eigen::VectorXd::Zero(n);
+  p.w_rest_stop.tail(n - kTreeOther).setConstant(1.0);
+  p.w_ang_pre = pre;
+  p.w_ang_post = post;
+  p.ang_scale = 10.0;
+  auto lim = t.rig.limits;
+  if (locked) {
+    for (int m = kTreeOther; m < n; ++m) {
+      lim.q_min[m] = lim.q_max[m] = t.tree.q_nominal[m];
+    }
+  }
+  MpcDockingSegmentCore core;
+  EXPECT_EQ(core.Init(t.rig.model, t.rig.arm.frame, p, lim, &NoClock), MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult r;
+  core.ResizeResult(r);
+  EXPECT_TRUE(core.Solve(t.in, r));
+  return r;
+}
+
+double TreeOtherOffRest(const TreeJudge& t, const MpcDockingSegmentCoreResult& r) {
+  return (r.q.bottomRows(t.rig.model.nv - kTreeOther).colwise() -
+          t.tree.q_nominal.tail(t.rig.model.nv - kTreeOther))
+      .cwiseAbs()
+      .maxCoeff();
+}
+
+// D2: the catch node's frame position, approach axis and velocity against
+// the solve without the angular term (the test's own FK).
+bool TreeWithinD2(const TreeJudge& t, const MpcDockingSegmentCoreResult& a,
+                  const MpcDockingSegmentCoreResult& b, std::string* why) {
+  const dk::HandState ha = dk::HandAt(t.rig, a.q.col(t.kc), a.qd.col(t.kc));
+  const dk::HandState hb = dk::HandAt(t.rig, b.q.col(t.kc), b.qd.col(t.kc));
+  const double dp = (ha.p - hb.p).norm();
+  const double da = std::acos(std::clamp(ha.R.col(2).dot(hb.R.col(2)), -1.0, 1.0));
+  const double dv = (ha.R * ha.v_local - hb.R * hb.v_local).norm();
+  *why = "position " + std::to_string(dp) + " m, axis " + std::to_string(da) + " rad, velocity " +
+         std::to_string(dv) + " m/s";
+  return dp <= 1e-3 && da <= 0.0175 && dv <= 0.02;
+}
+
+TEST(MpcDockingJudgement, TheOtherArmSwingsAgainstTheReachAndTheCatchHardlyNotices) {
+  const auto t = MakeTreeJudge();
+  ASSERT_EQ(t->in.q0.size(), t->rig.model.nv);
+  ASSERT_TRUE(t->in.qd0.size() == 0 || t->in.qd0.isZero(0.0)) << "the premise: at rest";
+  const MpcDockingSegmentCoreResult off = SolveTree(*t, 0.0, 0.0, false);
+  const MpcDockingSegmentCoreResult swing = SolveTree(*t, 0.001, 0.1, false);
+  const MpcDockingSegmentCoreResult locked = SolveTree(*t, 0.001, 0.1, true);
+  const MpcDockingSegmentCoreResult locked_big = SolveTree(*t, 10.0, 10.0, true);
+  for (const MpcDockingSegmentCoreResult* r : {&off, &swing, &locked, &locked_big}) {
+    EXPECT_TRUE(r->feasible && r->converged) << Describe(*r);
+  }
+  std::string why;
+  // The control: without the angular term nothing moves the other arm.
+  EXPECT_LE(TreeOtherOffRest(*t, off), 1e-6);
+  // Positive: the free arm moves and lowers the term the core minimises …
+  EXPECT_GT(TreeOtherOffRest(*t, swing), 1e-3);
+  EXPECT_LT(swing.cost.ang, locked.cost.ang);
+  RecordProperty("swing_ang_rate_max", std::to_string(swing.cost.ang_rate_max));
+  RecordProperty("locked_ang_rate_max", std::to_string(locked.cost.ang_rate_max));
+  // … and the catch node is within D2's tolerance of the solve without it.
+  EXPECT_TRUE(TreeWithinD2(*t, swing, off, &why)) << why;
+  RecordProperty("swing_catch_difference", why);
+  // Negative: locked, with the term weighted heavily on both phases, the
+  // reach gives.
+  EXPECT_FALSE(TreeWithinD2(*t, locked_big, off, &why)) << why;
+  RecordProperty("locked_big_catch_difference", why);
+  EXPECT_LE(TreeOtherOffRest(*t, locked), 1e-9);
 }
 
 }  // namespace
