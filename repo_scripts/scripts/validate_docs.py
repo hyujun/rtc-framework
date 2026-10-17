@@ -86,12 +86,50 @@ D8  no detection pattern parked in a markdown table cell.  A cell cannot hold
     an unescaped ``|``, so a regex put in one gets escaped into something
     inert; the table is the root cause, not the individual typos.
 D9  no hardcoded package count in the constitution / README that disagrees with
-    the tree (AP-DOC-1).  ``21개 ROS 2 패키지`` in ``README.md`` is accurate
-    today but rots silently when a package is added or removed; the check
+    the tree (AP-DOC-1).  A phrase like ``21개 ROS 2 패키지`` is accurate the
+    day it is written but rots silently when a package is added or removed; the check
     compares the claimed number against the tracked ``package.xml`` count and
     fails on drift.  Scoped to root ``README.md`` / ``CLAUDE.md`` (per-package
     READMEs legitimately describe their own contents) and honours the inline
     ``allow D9`` marker for a genuine sub-total.
+D14 every git-tracked ``README.md`` has a byte budget in
+    ``repo_scripts/config/readme_budget.yaml``, and stays inside it.  READMEs had
+    become the default destination for every doc update: 1.46 MB over 27 files,
+    one 148 KB README carrying a 94 KB annotated file tree, one table cell holding
+    a paragraph.  D12 budgets only the constitutional corpus and exempts fenced
+    blocks, so none of that was gated.  The file has the same ``path: bytes`` shape
+    and the same ratchet as ``docs_budget.yaml`` -- a README over budget, a tracked
+    README with no entry and an entry whose README is gone fail, and under
+    ``--budget-base REV`` a raise needs ``# raised from <old>: <why>`` on its line
+    (one implementation, :func:`check_budget_raises`, for both files).
+    An entry may end in the word ``strict``; only those READMEs get the shape
+    checks, because 155 table cells over 200 characters and 140 prose lines over
+    500 exist today and are rewritten phase by phase (#869) -- a README is marked
+    strict in the change that brings it into shape.  Strict means: no table cell
+    over 200 characters, no prose line over 500, every file-tree fence at most 60
+    columns wide and 2 levels deep, exactly one H1 and it comes first, the H2s
+    drawn from README_H2_ORDER without repeats and in that order, and no bare
+    issue number (``#123``) in the body outside ``## 더 읽기`` and headings (a
+    heading may keep one because anchors cite it).  Honours ``allow D14`` for a
+    single line.
+D15 a README section cited BY NAME resolves.  ``repo_scripts/README.md "빌드
+    병렬도와 메모리"``, ``README §흔한 실패와 감별``, ``integrated_bringup README
+    §Scene overlay``, ``[x](../rtc_tools/README.md) §포구 평가 도구`` and
+    ``se3/README "Limits"`` name a section by its title; D2 only follows ``#anchor``
+    links, so renaming or moving the heading breaks them without a sound.  The
+    cited README's heading texts (H1-H6) and bold spans are the names a ref may
+    use.  After ``§`` the extent of the name is unknown (prose continues), so it
+    resolves when some name is a prefix of the rest of the line (cut at ``|`` in a
+    table); a quoted ref resolves when it equals a name or extends one.  A ref
+    that starts with a digit is a numbered ref (D10 / D13).  The cited README is
+    found relative to the citing file, then the repo root, then by unique suffix
+    among tracked READMEs; a bare ``README`` means the nearest ancestor README;
+    what cannot be resolved is D1's business and is skipped.  Scanned: tracked
+    markdown (outside fences) and the same non-markdown files as D13, whole text.
+    Only README targets are in scope (README_REF_TARGET_RE, the one place to widen
+    it -- issue #849).  Honours ``allow D15``.  ``--files`` checks the refs FROM
+    the given files; a heading rename that breaks refs in files nobody touched is
+    caught by the full scan in CI.
 
 Both a static lint *and* a probe are required, and neither subsumes the other.
 A doubled backslash (``\\\\b``) makes grep exit 2 -- loud.  But ``\\|`` inside
@@ -370,7 +408,7 @@ CONSTITUTION_MAX_LINE_CHARS = 500
 # host without PyYAML (the CI job installs nothing for it).
 SIZE_BUDGET_FILE = "repo_scripts/config/docs_budget.yaml"
 SIZE_BUDGET_DIRS = ("agent_docs/", ".claude/rules/")
-SIZE_BUDGET_LINE_RE = re.compile(r"^([^\s#:][^:]*?)\s*:\s*(\d+)\s*(?:#.*)?$")
+SIZE_BUDGET_LINE_RE = re.compile(r"^([^\s#:][^:]*?)\s*:\s*(\d+)(?:\s+(strict))?\s*(?:#.*)?$")
 # D12, the ratchet: raising the number is the cheapest way to make a budget
 # finding go away, and a scan of one tree cannot tell a raised number from an
 # original one.  Against a base revision (--budget-base) a raise passes only
@@ -384,6 +422,51 @@ BUDGET_RAISE_NOTE_RE = re.compile(r"#\s*raised from (\d+):\s*\S")
 LINE_CAP_DIRS = ("agent_docs/",)
 MAX_CELL_CHARS = 500
 TABLE_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
+
+# D14: the README corpus.  Same "path: bytes" file shape and the same raise
+# ratchet as D12, one entry per tracked file whose basename is exactly README.md;
+# an entry ending in `strict` also gets the shape checks below.  The caps are
+# deliberately tighter than the rule documents' (README_MAX_CELL_CHARS vs
+# MAX_CELL_CHARS): a README is read by a person scanning for one fact.
+README_BUDGET_FILE = "repo_scripts/config/readme_budget.yaml"
+README_NAME = "README.md"
+README_MAX_CELL_CHARS = 200
+README_MAX_PROSE_CHARS = 500
+README_TREE_MAX_COLS = 60
+README_TREE_MAX_DEPTH = 2
+# The H2 skeleton of a strict README: any subset, this order, no repeats.
+README_H2_ORDER = (
+    "개요",
+    "빠른 시작",
+    "패키지 구성",
+    "인터페이스",
+    "설정",
+    "디렉토리",
+    "문제 해결",
+    "더 읽기",
+    "의존성",
+)
+README_REFS_H2 = "더 읽기"  # the one section that may carry issue numbers
+TREE_MARKER_RE = re.compile(r"[├└]──")
+README_ISSUE_NUMBER_RE = re.compile(r"(?<![\w&/#])#\d{2,5}\b")
+MD_LINK_DEST_RE = re.compile(r"(?<=\]\()[^)\s]*")
+
+# D15: a README section cited by name.  README_REF_TARGET_RE is the one place that
+# says which files a named-section ref may point at -- widen it (to docs/*.md, ...)
+# when issue #849 extends this beyond READMEs.
+README_REF_TARGET_RE = re.compile(r"(?:^|/)README\.md$")
+# `<path>README(.md)?` (path optional, optional closing backtick) then `§<text>`,
+# a straight-quoted "<text>" or a curly-quoted “<text>”.  A straight quote must be
+# separated from README by whitespace: `"README.md"` closing a string literal is
+# not an opening quote.
+README_NAMED_REF_RE = re.compile(
+    r"(?<![\w.-])(?P<path>(?:[\w.-]+/)*)README(?P<ext>\.md)?`?"
+    r"(?:(?=\s*§\s*(?P<sec>[^\n]*))\s*§|\s+\"(?P<q1>[^\"\s][^\"]*)\"|\s*“(?P<q2>[^”]+)”)"
+)
+README_LINK_REF_RE = re.compile(
+    r"\[(?:[^\]\\]|\\.)*\]\((?P<path>[^)\s#]*README\.md)\)\s*§\s*(?P<sec>[^\n]*)"
+)
+README_WORD_BEFORE_RE = re.compile(r"`?([\w.-]+)`?\s+$")
 
 # D13: a section ref that names its target constitution.  Accepts the plain
 # form ("AGENTS.md §6.5"), the link form ("[AGENTS.md](../AGENTS.md) §6.5") and the
@@ -771,6 +854,34 @@ class Repo:
         self.toplevel |= {p.name for p in self.root.iterdir()}
         self._anchor_cache: dict[str, set[str]] = {}
         self._budgets: dict[str, tuple[int, int]] | None = None
+        # D14: (budgets, strict paths) of README_BUDGET_FILE, loaded on first use.
+        self._readme: tuple[dict[str, tuple[int, int]], set[str]] | None = None
+        # D15: normalised section names per README, keyed by repo-relative path.
+        self._names_cache: dict[str, set[str]] = {}
+
+    def readme_budgets(self) -> tuple[dict[str, tuple[int, int]], set[str]]:
+        """D14 per-README byte budgets and the set of ``strict`` entries."""
+        if self._readme is None:
+            try:
+                text = (self.root / README_BUDGET_FILE).read_text(encoding="utf-8")
+            except OSError:
+                text = ""
+            self._readme = (parse_budgets(text), parse_strict(text))
+        return self._readme
+
+    def has_readme_budget_file(self) -> bool:
+        """Same guard as :meth:`has_budget_file`, for the README budget file."""
+        return (self.root / README_BUDGET_FILE).is_file()
+
+    def readme_section_names(self, rel: str) -> set[str]:
+        """D15: the names a ref to README ``rel`` may use (cached)."""
+        if rel not in self._names_cache:
+            try:
+                text = (self.root / rel).read_text(encoding="utf-8")
+            except OSError:
+                text = ""
+            self._names_cache[rel] = section_names(text)
+        return self._names_cache[rel]
 
     def budgets(self) -> dict[str, tuple[int, int]]:
         """D12 per-file byte budgets: ``path -> (bytes, line in the budget file)``."""
@@ -862,8 +973,11 @@ def check_file(repo: Repo, rel: str) -> list[Finding]:
         return check_markdown(repo, rel, text)
     if rel.startswith(".github/workflows/"):
         return check_workflow(repo, rel, text)
-    # Sources / scripts / configs: only the constitution section refs (D13).
-    return check_section_resolution(repo, rel, text, markdown=False)
+    # Sources / scripts / configs: only the section refs (D13, D15).
+    return [
+        *check_section_resolution(repo, rel, text, markdown=False),
+        *check_readme_section_refs(repo, rel, text, markdown=False),
+    ]
 
 
 def check_file_section_refs(repo: Repo, rel: str) -> list[Finding]:
@@ -972,6 +1086,8 @@ def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
     findings.extend(check_constitution_size(rel, text))
     findings.extend(check_line_shape(rel, text))
     findings.extend(check_size_budget(rel, text, repo.budgets()))
+    findings.extend(check_readme(repo, rel, text))
+    findings.extend(check_readme_section_refs(repo, rel, text))
     if rel in COUNT_SCOPED_DOCS:
         findings.extend(check_package_count(rel, text, repo.package_count(), allowed))
     return findings
@@ -1084,8 +1200,26 @@ def parse_budgets(text: str) -> dict[str, tuple[int, int]]:
     return out
 
 
-def check_size_budget(rel: str, text: str, budgets: dict[str, tuple[int, int]]) -> list[Finding]:
-    """D12 -- a budgeted document stays inside its own byte budget.
+def parse_strict(text: str) -> set[str]:
+    """The paths of a budget file whose entry is marked ``strict``."""
+    out: set[str] = set()
+    for raw in text.splitlines():
+        m = SIZE_BUDGET_LINE_RE.match(raw)
+        if m and m.group(3):
+            out.add(m.group(1))
+    return out
+
+
+def check_size_budget(
+    rel: str,
+    text: str,
+    budgets: dict[str, tuple[int, int]],
+    *,
+    code: str = "D12",
+    budget_file: str = SIZE_BUDGET_FILE,
+    hint: str = "state the rule and point at the document that owns the detail",
+) -> list[Finding]:
+    """D12 / D14 -- a budgeted document stays inside its own byte budget.
 
     The message keeps the ``<n> bytes > <cap>`` shape of the constitution cap on
     purpose: the Stop hook narrows doc findings to the lines a change added and
@@ -1102,9 +1236,9 @@ def check_size_budget(rel: str, text: str, budgets: dict[str, tuple[int, int]]) 
         Finding(
             rel,
             1,
-            "D12",
-            f"{nbytes} bytes > {budget} -- over this file's budget in {SIZE_BUDGET_FILE}; "
-            "state the rule and point at the document that owns the detail "
+            code,
+            f"{nbytes} bytes > {budget} -- over this file's budget in {budget_file}; "
+            f"{hint} "
             "(a budget goes down as its file shrinks, not up to fit an edit)",
         )
     ]
@@ -1114,8 +1248,12 @@ def check_budget_coverage(
     sizes: dict[str, int],
     budgets: dict[str, tuple[int, int]],
     existing: set[str] | None,
+    *,
+    code: str = "D12",
+    budget_file: str = SIZE_BUDGET_FILE,
+    noun: str = "constitutional document",
 ) -> list[Finding]:
-    """D12 -- every budgeted document has an entry, and every entry has a document.
+    """D12 / D14 -- every budgeted document has an entry, and every entry has a document.
 
     ``sizes`` maps the budgeted documents under scan to their byte size.  Pass
     ``existing`` (the tracked budgeted documents) only for a full-corpus scan:
@@ -1125,9 +1263,9 @@ def check_budget_coverage(
         Finding(
             rel,
             1,
-            "D12",
-            f"{nbytes} bytes > 0 -- no entry in {SIZE_BUDGET_FILE}; a new constitutional "
-            "document declares its byte budget in the change that adds it",
+            code,
+            f"{nbytes} bytes > 0 -- no entry in {budget_file}; a new {noun} "
+            "declares its byte budget in the change that adds it",
         )
         for rel, nbytes in sorted(sizes.items())
         if rel not in budgets
@@ -1135,10 +1273,10 @@ def check_budget_coverage(
     if existing is not None:
         findings.extend(
             Finding(
-                SIZE_BUDGET_FILE,
+                budget_file,
                 lineno,
-                "D12",
-                f"budget entry for '{path}', which is not a tracked constitutional document "
+                code,
+                f"budget entry for '{path}', which is not a tracked {noun} "
                 "-- remove the entry or fix the path",
             )
             for path, (_, lineno) in sorted(budgets.items())
@@ -1147,8 +1285,10 @@ def check_budget_coverage(
     return findings
 
 
-def check_budget_raises(text: str, base_text: str) -> list[Finding]:
-    """D12 -- a budget above its value in the base revision carries a raise note.
+def check_budget_raises(
+    text: str, base_text: str, *, code: str = "D12", budget_file: str = SIZE_BUDGET_FILE
+) -> list[Finding]:
+    """D12 / D14 -- a budget above its value in the base revision carries a raise note.
 
     An entry the base does not have is a new document declaring its budget, not
     a raise; so is every entry when the base has no budget file at all.
@@ -1165,9 +1305,9 @@ def check_budget_raises(text: str, base_text: str) -> list[Finding]:
             continue
         findings.append(
             Finding(
-                SIZE_BUDGET_FILE,
+                budget_file,
                 lineno,
-                "D12",
+                code,
                 f"budget for '{path}' raised {was} -> {value} -- a budget goes down, not up "
                 "to fit an edit; move the content to the document that owns it, or if a "
                 f"rule was added, say so on this line: '# raised from {was}: <why>'",
@@ -1176,7 +1316,7 @@ def check_budget_raises(text: str, base_text: str) -> list[Finding]:
     return findings
 
 
-def base_budget_text(repo: Repo, rev: str) -> str | None:
+def base_budget_text(repo: Repo, rev: str, budget_file: str = SIZE_BUDGET_FILE) -> str | None:
     """The budget file as of ``rev``: "" when it has none, None when ``rev`` is not a commit.
 
     The two must not collapse: a base that never had the file has nothing to
@@ -1191,8 +1331,291 @@ def base_budget_text(repo: Repo, rev: str) -> str | None:
 
     if git("cat-file", "-e", f"{rev}^{{commit}}").returncode != 0:
         return None
-    shown = git("show", f"{rev}:{SIZE_BUDGET_FILE}")
+    shown = git("show", f"{rev}:{budget_file}")
     return shown.stdout if shown.returncode == 0 else ""
+
+
+def is_readme(rel: str) -> bool:
+    """Is ``rel`` a file D14 budgets -- basename exactly ``README.md``?"""
+    return Path(rel).name == README_NAME
+
+
+def check_readme(repo: Repo, rel: str, text: str) -> list[Finding]:
+    """D14 -- a tracked README stays inside its byte budget; a ``strict`` one keeps its shape."""
+    if not is_readme(rel):
+        return []
+    budgets, strict = repo.readme_budgets()
+    findings = check_size_budget(
+        rel,
+        text,
+        budgets,
+        code="D14",
+        budget_file=README_BUDGET_FILE,
+        hint="move the detail to the document that owns it (docs/, a header comment, an issue)",
+    )
+    if rel in strict:
+        findings.extend(check_readme_shape(rel, text))
+    return findings
+
+
+def check_readme_shape(rel: str, text: str) -> list[Finding]:
+    """D14 -- the shape contract of a ``strict`` README.
+
+    Cell and prose caps, file-tree width and depth, the heading skeleton, and no
+    issue numbers in the body.  Fenced blocks are exempt from everything except
+    the file-tree rule, which is about them.  ``allow D14`` covers a line (for a
+    tree block: the line the marker sits on and the next).
+    """
+    findings: list[Finding] = []
+    allowed = suppressions(text)
+
+    def ok(lineno: int) -> bool:
+        return "D14" in allowed.get(lineno, frozenset())
+
+    def add(lineno: int, msg: str) -> None:
+        findings.append(Finding(rel, lineno, "D14", msg))
+
+    headings: list[tuple[int, int, str]] = []  # (lineno, level, text)
+    block: list[tuple[int, str]] = []  # the fenced block being collected
+    in_refs = False  # inside the `## 더 읽기` section
+    for lineno, (raw, in_fence) in enumerate(iter_lines_with_fence_state(text), 1):
+        if in_fence:
+            block.append((lineno, raw))
+            continue
+        if block:
+            findings.extend(_check_tree_block(rel, block, allowed))
+            block = []
+        m = HEADING_RE.match(raw)
+        if m:
+            level = len(m.group(1))
+            headings.append((lineno, level, raw.lstrip("#").strip()))
+            if level <= 2:
+                in_refs = level == 2 and headings[-1][2] == README_REFS_H2
+        if ok(lineno):
+            continue
+        if raw.lstrip().startswith("|"):
+            longest = max(len(cell.strip()) for cell in TABLE_CELL_SPLIT_RE.split(raw))
+            if longest > README_MAX_CELL_CHARS:
+                add(
+                    lineno,
+                    f"{longest}-char table cell > {README_MAX_CELL_CHARS} -- a cell holds one "
+                    "fact; lift the rest into prose or bullets under the table",
+                )
+        elif len(raw) > README_MAX_PROSE_CHARS:
+            add(
+                lineno,
+                f"{len(raw)}-char line > {README_MAX_PROSE_CHARS} -- split into bullets or "
+                "move the detail to the document that owns it",
+            )
+        if not m and not in_refs:
+            body = MD_LINK_DEST_RE.sub("", mask_code_spans(raw))
+            for im in README_ISSUE_NUMBER_RE.finditer(body):
+                add(
+                    lineno,
+                    f"issue number '{im.group(0)}' in the body -- issue numbers go in "
+                    f"'## {README_REFS_H2}' or git log",
+                )
+    if block:
+        findings.extend(_check_tree_block(rel, block, allowed))
+
+    h1s = [h for h in headings if h[1] == 1]
+    if len(h1s) != 1 or (headings and headings[0][1] != 1):
+        add(
+            h1s[1][0] if len(h1s) > 1 else 1,
+            f"{len(h1s)} H1 headings (first heading is "
+            f"{f'H{headings[0][1]}' if headings else 'absent'}) -- a README has exactly one "
+            "H1 and it is the first heading",
+        )
+    last = -1
+    seen: set[str] = set()
+    for lineno, level, title in headings:
+        if level != 2 or ok(lineno):
+            continue
+        if title not in README_H2_ORDER:
+            add(
+                lineno,
+                f"H2 '{title}' is not in the README skeleton ({' / '.join(README_H2_ORDER)}) "
+                "-- make it an H3 under a skeleton section, or move it to the doc that owns it",
+            )
+        elif title in seen:
+            add(lineno, f"duplicate H2 '{title}' -- merge it into the first one")
+        elif README_H2_ORDER.index(title) < last:
+            add(
+                lineno,
+                f"H2 '{title}' is out of order -- the skeleton order is {' / '.join(README_H2_ORDER)}",
+            )
+        if title in README_H2_ORDER:
+            seen.add(title)
+            last = max(last, README_H2_ORDER.index(title))
+    return findings
+
+
+def _check_tree_block(
+    rel: str, block: list[tuple[int, str]], allowed: dict[int, set[str]]
+) -> list[Finding]:
+    """D14 -- a fenced file tree is at most 60 columns wide and 2 levels deep.
+
+    One finding per rule per block (the first offending line, plus a count): an
+    annotated tree that is wrong is wrong on hundreds of lines.
+    """
+    if not any(TREE_MARKER_RE.search(raw) for _, raw in block):
+        return []
+    wide = [n for n, raw in block if len(raw) > README_TREE_MAX_COLS]
+    deep = [
+        n
+        for n, raw in block
+        if (mk := TREE_MARKER_RE.search(raw)) and mk.start() // 4 + 1 > README_TREE_MAX_DEPTH
+    ]
+    out: list[Finding] = []
+    for lines, msg in (
+        (
+            wide,
+            f"file tree line longer than {README_TREE_MAX_COLS} columns -- keep the tree to "
+            "directories and move per-file notes into the file's header comment",
+        ),
+        (
+            deep,
+            f"file tree deeper than {README_TREE_MAX_DEPTH} levels -- show the top "
+            f"{README_TREE_MAX_DEPTH} levels and point at the directory for the rest",
+        ),
+    ):
+        lines = [n for n in lines if "D14" not in allowed.get(n, frozenset())]
+        if lines:
+            more = f" (+{len(lines) - 1} more lines)" if len(lines) > 1 else ""
+            out.append(Finding(rel, lines[0], "D14", msg + more))
+    return out
+
+
+# --------------------------------------------------------------------------
+# D15 -- README sections cited by name
+# --------------------------------------------------------------------------
+
+
+def norm_section_name(text: str) -> str:
+    """Normalise a heading / bold span / cited name so they compare equal.
+
+    Backticks and ``*`` dropped, surrounding quotes and whitespace stripped,
+    whitespace collapsed, case folded.
+    """
+    text = text.replace("`", "").replace("*", "")
+    text = text.strip().strip("\"'“”‘’").strip()
+    return " ".join(text.split()).casefold()
+
+
+def section_names(text: str) -> set[str]:
+    """Every name a ref may use for a document: its headings (H1-H6) and bold spans."""
+    names: set[str] = set()
+    for raw, in_fence in iter_lines_with_fence_state(text):
+        if in_fence:
+            continue
+        m = HEADING_RE.match(raw)
+        if m:
+            names.add(norm_section_name(m.group(2)))
+        names.update(norm_section_name(b) for b in BOLD_SPAN_RE.findall(raw))
+    # A heading often carries a gloss after its title ("흔한 실패와 감별 (colcon
+    # cwd · ...)", "Scene overlay (`sim_overlay:=`) -- ...") and a ref cites the
+    # title alone, so the title before the first " (" / dash is a name as well.
+    names.update(HEADING_GLOSS_RE.split(n, maxsplit=1)[0] for n in list(names))
+    names.discard("")
+    return names
+
+
+HEADING_GLOSS_RE = re.compile(r"\s+(?:\(|[\u2014\u2013])")
+
+
+BOLD_SPAN_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _resolve_readme(repo: Repo, rel: str, path: str) -> str | None:
+    """The tracked README that a ref in ``rel`` means by ``path`` (``""`` = bare README).
+
+    Relative to the citing file, then the repo root, then a unique suffix among the
+    tracked READMEs; a bare README is the nearest ancestor.  ``None`` = unresolvable
+    (D1's business, not D15's).
+    """
+    if path in ("", README_NAME):
+        d = Path(rel).parent
+        while True:
+            cand = (d / README_NAME).as_posix().removeprefix("./")
+            if cand in repo.fileset:
+                return cand
+            if d.as_posix() in (".", ""):
+                return None
+            d = d.parent
+    if not path.endswith(".md"):
+        path += ".md"
+    for cand in ((Path(rel).parent / path).as_posix(), path):
+        norm = normalise(cand)
+        if norm and norm in repo.fileset and README_REF_TARGET_RE.search(norm):
+            return norm
+    hits = [f for f in repo.files if (f == path or f.endswith("/" + path)) and is_readme(f)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def check_readme_section_refs(
+    repo: Repo, rel: str, text: str, *, markdown: bool = True
+) -> list[Finding]:
+    """D15 -- a README section cited by name names a heading or bold span that exists."""
+    findings: list[Finding] = []
+    allowed = suppressions(text)
+    lines = (
+        iter_lines_with_fence_state(text) if markdown else ((r, False) for r in text.splitlines())
+    )
+    for lineno, (raw, in_fence) in enumerate(lines, 1):
+        if in_fence or "D15" in allowed.get(lineno, frozenset()) or "README" not in raw:
+            continue
+        # (readme path as cited, cited text) per ref on the line
+        refs: list[tuple[str, str]] = []
+        links = [
+            (lm.start(), lm.end(), lm.group(1).split("#")[0]) for lm in MD_LINK_RE.finditer(raw)
+        ]
+        for m in README_NAMED_REF_RE.finditer(raw):
+            path = m.group("path") + README_NAME if m.group("path") else ""
+            # Inside a link label the link's own target says which README is meant
+            # (a label that names README and quotes a title, linking to the root one).
+            label_target = next(
+                (
+                    t
+                    for a, b, t in links
+                    if a < m.start() < b and README_REF_TARGET_RE.search(t) and not m.group("path")
+                ),
+                None,
+            )
+            if label_target:
+                path = label_target
+            elif not m.group("path"):
+                # A bare README preceded by a directory name (a package, say) is
+                # that directory's README.
+                w = README_WORD_BEFORE_RE.search(raw[: m.start()])
+                if w and _resolve_readme(repo, rel, f"{w.group(1)}/README.md"):
+                    path = f"{w.group(1)}/README.md"
+            cited = (
+                m.group("sec") if m.group("sec") is not None else m.group("q1") or m.group("q2")
+            )
+            refs.append((path, cited.split("|")[0] if m.group("sec") is not None else cited))
+        for m in README_LINK_REF_RE.finditer(raw):
+            refs.append((m.group("path"), m.group("sec").split("|")[0]))
+        for path, cited in refs:
+            target = _resolve_readme(repo, rel, path)
+            wanted = norm_section_name(cited)
+            if target is None or not wanted or wanted[0].isdigit():
+                continue
+            # `§` form: some name is a prefix of the rest of the line (the name's
+            # extent is unknown).  Quoted form: equals a name or extends one.  Both
+            # reduce to the same prefix test.
+            if not any(wanted.startswith(n) for n in repo.readme_section_names(target)):
+                shown = " ".join(cited.split())[:60]
+                findings.append(
+                    Finding(
+                        rel,
+                        lineno,
+                        "D15",
+                        f"'{target}' has no heading or bold span matching '{shown}' -- keep the "
+                        "section, or re-point every citing line in the same change and delete "
+                        "the heading (no stub headings)",
+                    )
+                )
+    return findings
 
 
 def check_section_resolution(
@@ -2194,6 +2617,281 @@ BUDGET_SCOPE_CASES: list[tuple[str, bool]] = [
     ("agent_docs/budget.yaml", False),
 ]
 
+# D14 README shape.  (name, rel, markdown, readme_budget.yaml text, codes) through
+# check_markdown.  The budget text carries the `strict` flag, so each case also
+# exercises the entry format; the near-miss of every cap sits beside it.
+_STRICT = "pkg/README.md: 99999 strict\n"
+_LAX = "pkg/README.md: 99999\n"
+_TREE3 = "```\npkg/\n├── a\n│   ├── b\n│   │   ├── c\n```\n"
+
+
+def _readme(*body: str) -> str:
+    return "# Title\n\n" + "\n".join(body) + "\n"
+
+
+README_FIXTURES: list[tuple[str, str, str, str, list[str]]] = [
+    (
+        "strict skeleton is clean",
+        "pkg/README.md",
+        _readme("## 개요", "text", "## 설정", "| a | b |", "## 더 읽기", "- 이슈 #123"),
+        _STRICT,
+        [],
+    ),
+    ("over the byte budget", "pkg/README.md", "# T\n" + "a" * 20, "pkg/README.md: 10\n", ["D14"]),
+    ("at the byte budget", "pkg/README.md", "a" * 10, "pkg/README.md: 10\n", []),
+    (
+        "bytes, not characters",
+        "pkg/README.md",
+        "가" * 4,
+        "pkg/README.md: 10\n",
+        ["D14"],
+    ),
+    ("only the exact basename", "pkg/MY_README.md", "a" * 600, _STRICT, []),
+    ("no entry, no gate", "pkg/README.md", "a" * 600, "", []),
+    (
+        "shape checks need strict",
+        "pkg/README.md",
+        _readme("| a | " + "b" * 300 + " |", "a" * 600, "## 임의"),
+        _LAX,
+        [],
+    ),
+    (
+        "table cell over the cap",
+        "pkg/README.md",
+        _readme("| a | " + "b" * 201 + " |"),
+        _STRICT,
+        ["D14"],
+    ),
+    (
+        "table cell at the cap",
+        "pkg/README.md",
+        _readme("| a | " + "b" * 200 + " |"),
+        _STRICT,
+        [],
+    ),
+    ("prose line over the cap", "pkg/README.md", _readme("a" * 501), _STRICT, ["D14"]),
+    ("prose line at the cap", "pkg/README.md", _readme("a" * 500), _STRICT, []),
+    (
+        "a fenced prose line is exempt",
+        "pkg/README.md",
+        _readme("```bash", "a" * 600, "```"),
+        _STRICT,
+        [],
+    ),
+    (
+        "file tree line over 60 columns",
+        "pkg/README.md",
+        _readme("```", "├── " + "a" * 57, "```"),
+        _STRICT,
+        ["D14"],
+    ),
+    (
+        "file tree line at 60 columns",
+        "pkg/README.md",
+        _readme("```", "├── " + "a" * 56, "```"),
+        _STRICT,
+        [],
+    ),
+    ("file tree three levels deep", "pkg/README.md", _readme(_TREE3), _STRICT, ["D14"]),
+    (
+        "file tree two levels deep",
+        "pkg/README.md",
+        _readme("```", "pkg/", "├── a", "│   ├── b", "└── c", "```"),
+        _STRICT,
+        [],
+    ),
+    (
+        "a wide fence without a tree is exempt",
+        "pkg/README.md",
+        _readme("```", "x" * 90, "```"),
+        _STRICT,
+        [],
+    ),
+    (
+        "a long tree is one finding",
+        "pkg/README.md",
+        _readme("```", *["├── " + "a" * 60] * 5, "```"),
+        _STRICT,
+        ["D14"],
+    ),
+    ("two H1s", "pkg/README.md", "# A\n## 개요\n# B\n", _STRICT, ["D14"]),
+    ("H1 not first", "pkg/README.md", "## 개요\n# A\n", _STRICT, ["D14"]),
+    ("no H1", "pkg/README.md", "## 개요\n", _STRICT, ["D14"]),
+    ("H1 inside a fence is not a heading", "pkg/README.md", "# A\n```\n# B\n```\n", _STRICT, []),
+    ("H2 outside the skeleton", "pkg/README.md", _readme("## 잡담"), _STRICT, ["D14"]),
+    ("duplicate H2", "pkg/README.md", _readme("## 개요", "## 개요"), _STRICT, ["D14"]),
+    ("H2 out of order", "pkg/README.md", _readme("## 설정", "## 개요"), _STRICT, ["D14"]),
+    (
+        "H2 subset in order",
+        "pkg/README.md",
+        _readme("## 개요", "## 인터페이스", "## 의존성"),
+        _STRICT,
+        [],
+    ),
+    (
+        "H3 is free",
+        "pkg/README.md",
+        _readme("## 개요", "### 아무 제목 #123", "#### 더 깊이"),
+        _STRICT,
+        [],
+    ),
+    (
+        "H2 compared with trailing spaces stripped only",
+        "pkg/README.md",
+        _readme("## 개요  "),
+        _STRICT,
+        [],
+    ),
+    ("issue number in the body", "pkg/README.md", _readme("회귀 (#123) 때문"), _STRICT, ["D14"]),
+    (
+        "issue number in a table cell",
+        "pkg/README.md",
+        _readme("| a | #4567 |"),
+        _STRICT,
+        ["D14"],
+    ),
+    (
+        "issue number in a code span",
+        "pkg/README.md",
+        _readme("`#123` 는 색상이 아니다"),
+        _STRICT,
+        [],
+    ),
+    (
+        "issue number in an H3 heading",
+        "pkg/README.md",
+        _readme("## 개요", "### 배경 #123"),
+        _STRICT,
+        [],
+    ),
+    (
+        "issue number in a link anchor",
+        "pkg/README.md",
+        _readme("[x](#123-title)", "[y](a.md#45-t)", "a&#123;", "foo#789", "한 자리 #1"),
+        _STRICT,
+        [],
+    ),
+    (
+        "issue number under 더 읽기 only until the next H2",
+        "pkg/README.md",
+        _readme("## 더 읽기", "- #123", "### 하위", "- #124", "## 의존성", "- #125"),
+        _STRICT,
+        ["D14"],
+    ),
+    (
+        "allow marker covers its line",
+        "pkg/README.md",
+        _readme("<!-- validate-docs: allow D14 -->", "a" * 501, "| a | " + "b" * 300 + " |"),
+        _STRICT,
+        ["D14"],  # the marker covers the next line only: the table row still fires
+    ),
+    (
+        "allow marker covers a tree block line",
+        "pkg/README.md",
+        _readme("```", "<!-- validate-docs: allow D14 -->", "├── " + "a" * 60, "```"),
+        _STRICT,
+        [],
+    ),
+]
+# D15 over a hermetic corpus: README texts that are added to a scratch Repo, then
+# (name, citing file, body, codes) through check_readme_section_refs.
+SECTION_NAME_READMES = {
+    "fx/README.md": (
+        "# Pkg\n\n## 흔한 실패와 감별 (colcon · venv)\n\n**Limits and units**\n\n"
+        "### Scene overlay (`sim_overlay:=`) — gloss\n\n```\n## Fenced heading\n```\n"
+    ),
+    "fx/sub/README.md": "# Sub\n\n## Inner topic\n",
+    "other/lib/qq/README.md": "# QQ\n\n### Limits\n",
+}
+SECTION_NAME_CASES: list[tuple[str, str, str, list[str]]] = [
+    ("resolves to a heading", "docs/a.md", "see fx/README.md §Scene overlay\n", []),
+    ("resolves to the heading's full text", "docs/a.md", "fx/README §Pkg\n", []),
+    ("resolves to a bold paragraph", "docs/a.md", "`fx/README.md` §Limits and units\n", []),
+    (
+        "prefix with trailing prose",
+        "docs/a.md",
+        "fx/README.md §흔한 실패와 감별 이 소유한다.\n",
+        [],
+    ),
+    ("case and backticks are normalised", "docs/a.md", "fx/README.md §`scene OVERLAY`\n", []),
+    ("numeric ref is skipped", "docs/a.md", "fx/README.md §2 table, fx/README.md §7.3\n", []),
+    ("unresolved fires", "docs/a.md", "fx/README.md §Nope here\n", ["D15"]),
+    ("a longer cited name than the heading", "docs/a.md", "fx/README.md §Pk\n", ["D15"]),
+    ("a fenced heading is no name", "docs/a.md", "fx/README.md §Fenced heading\n", ["D15"]),
+    ("quoted form equals a name", "docs/a.md", 'fx/README.md "Scene overlay"\n', []),
+    ("curly quoted form", "docs/a.md", "fx/README.md “Limits and units”\n", []),
+    ("quoted form unresolved", "docs/a.md", 'fx/README "Nope"\n', ["D15"]),
+    ("a closing string quote is not a ref", "docs/a.md", 'files = ["README.md", "x"]\n', []),
+    ("path may be wrapped in backticks", "docs/a.md", '`fx/README.md` "Nope"\n', ["D15"]),
+    (
+        "bare README resolves to the nearest ancestor",
+        "fx/sub/deep/doc.md",
+        'README \u00a7Inner topic and "Nope"\n',
+        [],
+    ),
+    ("bare README, unresolved", "fx/sub/deep/doc.md", "README \u00a7Scene overlay\n", ["D15"]),
+    ("bare README in a README refers to itself", "fx/README.md", "README \u00a7Pkg\n", []),
+    ("directory word form", "docs/a.md", "fx README \u00a7Scene overlay\n", []),
+    ("directory word form in backticks", "docs/a.md", "`fx` README \u00a7Nope\n", ["D15"]),
+    ("link form", "docs/a.md", "[L8](../fx/README.md) §Scene overlay\n", []),
+    ("link form unresolved", "docs/a.md", "[L8](../fx/README.md) §Nope\n", ["D15"]),
+    ("link with an anchor is not form c", "docs/a.md", "[L8](../fx/README.md#x) §Nope\n", []),
+    (
+        "link label quoting a title uses the link target",
+        "fx/sub/doc.md",
+        '[루트 README \u0022Scene overlay"](../README.md)\n',
+        [],  # without the target this would be fx/sub/README.md, which lacks it
+    ),
+    (
+        "link label quoting a missing title",
+        "fx/sub/doc.md",
+        '[루트 README \u0022Nope"](../README.md)\n',
+        ["D15"],
+    ),
+    ("unique suffix match", "docs/a.md", 'qq/README "Limits"\n', []),
+    ("unique suffix match, unresolved", "docs/a.md", 'qq/README "Nope"\n', ["D15"]),
+    ("unresolvable path is skipped", "docs/a.md", "nowhere/README.md §x\n", []),
+    ("table cell is cut at the pipe", "docs/a.md", "| fx/README.md §Scene overlay | Nope |\n", []),
+    (
+        "two refs on a line",
+        "docs/a.md",
+        "fx/README §Limits and units; fx/README.md §Nope\n",
+        ["D15"],
+    ),
+    (
+        "allow marker",
+        "docs/a.md",
+        "<!-- validate-docs: allow D15 -->\nfx/README.md §Nope\n",
+        [],
+    ),
+    ("fenced block is skipped", "docs/a.md", "```\nfx/README.md §Nope\n```\n", []),
+]
+SECTION_NAME_SOURCE_CASES: list[tuple[str, str, str, list[str]]] = [
+    ("source comment unresolved", "fx/src/x.cpp", "// see README \u00a7Nope\n", ["D15"]),
+    ("source comment resolved", "fx/src/x.cpp", "// see README \u00a7Pkg\n", []),
+    ("source: fence markers mean nothing", "fx/x.py", "```\n# fx/README.md §Nope\n", ["D15"]),
+]
+# (name, readme_budget.yaml text, base text, want codes) through check_budget_raises
+# with the D14 arguments; and the parse of the `strict` flag.
+README_RAISE_CASES: list[tuple[str, str, str, list[str]]] = [
+    ("raised without a note", "pkg/README.md: 11\n", "pkg/README.md: 10\n", ["D14"]),
+    (
+        "raised with its note, strict flag in between",
+        "pkg/README.md: 11 strict  # raised from 10: new section\n",
+        "pkg/README.md: 10\n",
+        [],
+    ),
+    ("marking strict is not a raise", "pkg/README.md: 10 strict\n", "pkg/README.md: 10\n", []),
+    ("lowered", "pkg/README.md: 9 strict\n", "pkg/README.md: 10 strict\n", []),
+]
+README_STRICT_CASES: list[tuple[str, set[str]]] = [
+    (
+        "a.md: 1\nb/README.md: 2 strict\nc/README.md: 3 strict  # x\n",
+        {"b/README.md", "c/README.md"},
+    ),
+    ("a/README.md: 1  # strict\n# b/README.md: 2 strict\n", set()),
+]
+
 
 def self_test() -> int:
     failures: list[str] = []
@@ -2204,9 +2902,10 @@ def self_test() -> int:
     # for a known one where the wiring is tested.  Nothing below reads the live
     # budget file -- whether it matches the tracked documents is a fact about
     # the repository, which the corpus scan reports (check_budget_coverage),
-    # not about this checker.
+    # not about this checker.  Same for the README budgets (D14).
     repo_for_docs = Repo(repo_root())
     repo_for_docs._budgets = {}
+    repo_for_docs._readme = ({}, set())
     for name, rel, body, want_codes in DOC_FIXTURES:
         got_codes = sorted(f.code for f in check_markdown(repo_for_docs, rel, body))
         if got_codes != sorted(want_codes):
@@ -2329,6 +3028,75 @@ def self_test() -> int:
     if not repo.exists("integrated_bringup/src/support/owned_topics.cpp"):
         failures.append("real path integrated_bringup/src/support/owned_topics.cpp not found")
 
+    # D14: README shape and size.  The cache is pinned per case from the case's own
+    # budget text, so the live readme_budget.yaml cannot move any of these answers.
+    for name, rel, body, budget_text, want in README_FIXTURES:
+        repo_for_docs._readme = (parse_budgets(budget_text), parse_strict(budget_text))
+        got_codes = sorted(f.code for f in check_readme(repo_for_docs, rel, body))
+        if got_codes != sorted(want):
+            failures.append(f"README fixture {name!r}: codes={got_codes}, want {sorted(want)}")
+    # The wiring: severing the one check_readme call in check_markdown leaves the
+    # cases above green and every README ungated.
+    repo_for_docs._readme = ({"pkg/README.md": (10, 1)}, {"pkg/README.md"})
+    wired_codes = sorted(
+        {f.code for f in check_markdown(repo_for_docs, "pkg/README.md", "a" * 11)}
+    )
+    if wired_codes != ["D14"]:
+        failures.append(f"check_markdown does not apply the README gate: codes={wired_codes}")
+    repo_for_docs._readme = ({}, set())
+    for name, budget_text, base_text, want in README_RAISE_CASES:
+        got_codes = sorted(
+            f.code
+            for f in check_budget_raises(
+                budget_text, base_text, code="D14", budget_file=README_BUDGET_FILE
+            )
+        )
+        if got_codes != sorted(want):
+            failures.append(f"README raise {name!r}: codes={got_codes}, want {sorted(want)}")
+    for budget_text, want_strict in README_STRICT_CASES:
+        if parse_strict(budget_text) != want_strict:
+            failures.append(f"parse_strict({budget_text!r}) = {parse_strict(budget_text)}")
+    coverage = sorted(
+        (f.path, f.code)
+        for f in check_budget_coverage(
+            {"pkg/README.md": 5},
+            parse_budgets("gone/README.md: 9\n"),
+            set(),
+            code="D14",
+            budget_file=README_BUDGET_FILE,
+            noun="README",
+        )
+    )
+    if coverage != [("pkg/README.md", "D14"), (README_BUDGET_FILE, "D14")]:
+        failures.append(f"README coverage: {coverage}")
+    for rel, want in (("README.md", True), ("a/b/README.md", True), ("a/README.mdx", False)):
+        if is_readme(rel) != want:
+            failures.append(f"is_readme({rel!r}) != {want}")
+
+    # D15: a scratch Repo whose tracked set gains the fixture READMEs.
+    repo_names = Repo(repo_root())
+    for rel, readme_text in SECTION_NAME_READMES.items():
+        repo_names.files.append(rel)
+        repo_names.fileset.add(rel)
+        repo_names._names_cache[rel] = section_names(readme_text)
+    for name, rel, body, want in SECTION_NAME_CASES:
+        got_codes = sorted(f.code for f in check_readme_section_refs(repo_names, rel, body))
+        if got_codes != sorted(want):
+            failures.append(f"README ref {name!r}: codes={got_codes}, want {sorted(want)}")
+    for name, rel, body, want in SECTION_NAME_SOURCE_CASES:
+        got_codes = sorted(
+            f.code for f in check_readme_section_refs(repo_names, rel, body, markdown=False)
+        )
+        if got_codes != sorted(want):
+            failures.append(f"README ref source {name!r}: codes={got_codes}, want {sorted(want)}")
+    repo_names._budgets = {}
+    repo_names._readme = ({}, set())
+    wired_codes = sorted(
+        f.code for f in check_markdown(repo_names, "docs/a.md", "fx/README.md \u00a7Nope\n")
+    )
+    if wired_codes != ["D15"]:
+        failures.append(f"check_markdown does not apply D15: codes={wired_codes}")
+
     if failures:
         print("SELF-TEST FAILURES:", file=sys.stderr)
         for f in failures:
@@ -2350,6 +3118,13 @@ def self_test() -> int:
         + len(PARKED_PATTERN_CASES)
         + len(SETEXT_CASES)
         + 4
+        + len(README_FIXTURES)
+        + len(README_RAISE_CASES)
+        + len(README_STRICT_CASES)
+        + 3  # README wiring, coverage, is_readme
+        + len(SECTION_NAME_CASES)
+        + len(SECTION_NAME_SOURCE_CASES)
+        + 1  # D15 wiring
     )
     print(f"self-test: {total} fixtures passed")
     return 0
@@ -2393,13 +3168,14 @@ def main(argv: list[str] | None = None) -> int:
         return self_test()
 
     repo = Repo(repo_root())
-    base_text = ""
+    base_text = readme_base_text = ""
     if args.budget_base is not None:
         fetched = base_budget_text(repo, args.budget_base)
         if fetched is None:
             print(f"--budget-base: '{args.budget_base}' is not a commit here", file=sys.stderr)
             return 2
         base_text = fetched
+        readme_base_text = base_budget_text(repo, args.budget_base, README_BUDGET_FILE) or ""
     if args.files is not None:
         # `is not None`, not truthiness: `--files` with no operands means "no
         # files to check", and falling through to the full corpus scan there
@@ -2444,12 +3220,33 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
-    if base_text:
-        try:
-            current = (repo.root / SIZE_BUDGET_FILE).read_text(encoding="utf-8")
-        except OSError:
-            current = ""
-        findings.extend(check_budget_raises(current, base_text))
+    if not args.section_refs and repo.has_readme_budget_file():
+        full_scan = args.files is None
+        findings.extend(
+            check_budget_coverage(
+                {
+                    rel: (repo.root / rel).stat().st_size
+                    for rel in targets
+                    if is_readme(rel) and (repo.root / rel).is_file()
+                },
+                repo.readme_budgets()[0],
+                {f for f in repo.files if is_readme(f)} if full_scan else None,
+                code="D14",
+                budget_file=README_BUDGET_FILE,
+                noun="README",
+            )
+        )
+
+    for budget_file, base, code in (
+        (SIZE_BUDGET_FILE, base_text, "D12"),
+        (README_BUDGET_FILE, readme_base_text, "D14"),
+    ):
+        if base:
+            try:
+                current = (repo.root / budget_file).read_text(encoding="utf-8")
+            except OSError:
+                current = ""
+            findings.extend(check_budget_raises(current, base, code=code, budget_file=budget_file))
 
     findings.sort(key=lambda f: (f.path, f.line, f.code))
     for f in findings:
