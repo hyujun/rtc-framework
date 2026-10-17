@@ -49,7 +49,7 @@ rtc_math/include/rtc_math/se3/README.md: 10026
 rtc_mpc/README.md: 9759
 rtc_msgs/README.md: 46967
 rtc_mujoco_sim/README.md: 42500 strict
-rtc_tools/README.md: 223286
+rtc_tools/README.md: 37498 strict
 rtc_tsid/README.md: 40706
 rtc_urdf_bridge/README.md: 36726
 shape_estimation/README.md: 10767
