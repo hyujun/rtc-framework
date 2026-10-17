@@ -75,9 +75,21 @@
 - **새 md 파일명**: kebab-case 소문자 (예외 README·AGENTS·CLAUDE·SKILL). 기존 파일 rename 은 전용 변경에서만
 - **서비스·메시지 계약의 소유자** (AP-DOC-1 · AP-DOC-2): 같은 문장을 여러 곳에 쓰지 말고 **축을 나눈다**:
   - `.srv` / `.msg` 주석 = **wire 계약 SSoT** (필드 의미, 판정 기준, 거부 조건, 권한) — 호출자가 알아야 하는 전부
-  - 소비 패키지 README = 그 패키지 쪽 메커니즘과 수치의 근거. 계약은 `.srv` 를 링크
-  - `rtc_msgs/README.md` = 색인 (필드 표 + SSoT 포인터). 근거 산문 금지
+  - 소비 패키지 README = 그 패키지를 쓰는 방법 (명령 · 토픽 · 설정). 계약은 `.srv` 를, 수치의 근거는 `docs/reference/` 를 링크
+  - `rtc_msgs/README.md` = 색인 (타입 · 용도 · 토픽/서비스 이름 · 발행 노드 + SSoT 링크). 필드 표 · 근거 산문 금지
   - `.cpp` 파일 헤더 = 구현 선택. 계약 재서술 금지
+
+## README
+
+독자는 이 workspace 를 쓰는 사람 · 처음 보는 사람이다. 골격 예시 · 목적지 표: [readme-guide.md](../docs/reference/readme-guide.md).
+
+- **담는 것**: 무엇인지 · 누가 쓰는지 · 복사해 실행할 수 있는 명령 (경로 · 실행파일 · 인자가 실재) · 인터페이스 · 설정 위치
+- **담지 않는 것**: 규칙 (ID 링크) · 근거 · 실측 · 이력 (`docs/reference/` · git log) · 구현 내부 · 테스트 설계 (헤더 · 테스트 파일) · `.msg` · YAML · 헤더의 사본 (링크). agent_docs 가 SSoT 로 링크하는 절은 남기고 압축한다
+- **H2**: `개요` · `빠른 시작` · `패키지 구성` · `인터페이스` · `설정` · `디렉토리` · `문제 해결` · `더 읽기` · `의존성` 에서 골라 이 순서로 (세부는 H3)
+- **형태**: 표 셀 ≤200자 · 산문 줄 ≤500자 · 트리는 디렉토리 2단계 · 한 줄 ≤60자 (파일 설명은 헤더 주석) · 이슈 번호는 `더 읽기` 에만
+- **언어**: 한국어. 제어 · 로봇 technical 용어는 영어 (Jacobian · impedance · lifecycle), 식별자 · 명령 · 경로는 원문
+- **인용된 절**: 내용을 남기거나 (압축 허용), 옮기면 같은 변경에서 인용 쪽을 모두 고치고 heading 을 지운다 — stub heading 금지
+- **크기**: `readme_budget.yaml` (D14). 다시 쓴 README 는 `strict` 를 달고 예산을 내린다
 
 ## Commit Message Conventions
 

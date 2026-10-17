@@ -1,6 +1,6 @@
 # AGENTS.md
 
-이 파일은 본 저장소의 **헌법 (constitution)** 이다 — tool-neutral 단일본이며, Claude Code 는 [CLAUDE.md](CLAUDE.md) 가 이 파일을 import 한 뒤 Claude 전용 절만 덧붙인다. 안정적인 원칙·게이트·지표만 둔다. **`agent_docs/` 와 `.claude/rules/` 도 헌법의 일부이며 같은 규율로 쓴다** — 규범 (무엇이 성립해야 하는가 · 구속 범위 · 판정 기준 · severity) 만 둔다. 자주 변하는 사실·현황 (패키지 수, robot 목록, 의존성 버전, 명령 detail) 은 README·YAML·헤더가 (AP-DOC-1), 절차·레시피는 skill·`docs/` 가, 규칙의 *근거·실측·사례* 는 `docs/reference/`·issue·커밋·hook 헤더·코드 주석이 갖는다 (AP-DOC-2). 문서별 크기 예산: `repo_scripts/config/docs_budget.yaml`.
+이 파일은 본 저장소의 **헌법 (constitution)** 이다 — tool-neutral 단일본이며, Claude Code 는 [CLAUDE.md](CLAUDE.md) 가 이 파일을 import 한 뒤 Claude 전용 절만 덧붙인다. 안정적인 원칙·게이트·지표만 둔다. **`agent_docs/` 와 `.claude/rules/` 도 헌법의 일부이며 같은 규율로 쓴다** — 규범 (무엇이 성립해야 하는가 · 구속 범위 · 판정 기준 · severity) 만 둔다. 자주 변하는 사실·현황 (패키지 수·robot 목록·의존성 버전·명령 detail) 은 YAML·헤더·사용자용 README 가 (AP-DOC-1), 절차·레시피는 skill·`docs/` 가, 규칙의 *근거·실측·사례* 는 `docs/reference/`·issue·커밋·hook 헤더·코드 주석이 갖는다 (AP-DOC-2). 문서별 크기 예산: `repo_scripts/config/docs_budget.yaml`.
 
 ## 1. Snapshot
 
@@ -50,7 +50,7 @@
 
 - **포매팅** — C/C++ 는 `clang-format` (루트 `.clang-format`), Python 은 `ruff format` + `ruff check` (루트 `pyproject.toml`). 변경한 파일에 적용
 - **빌드·테스트** — 변경한 패키지를 빌드 (`--tests` 필수)·테스트한다 (§9 hard rule 준수). `rtc_base`/`rtc_msgs` 를 건드렸으면 전체 downstream (PROC-3), 다른 패키지의 헤더를 바꿨으면 그것으로 컴파일하는 패키지도 (PROC-2)
-- **문서·메타데이터** — `.md` 를 고쳤으면 `python3 repo_scripts/scripts/validate_docs.py --files <파일들>`; 고친 YAML 의 parse·default·범위·단위; public header 의 Doxygen; public surface (header/launch/config/파일 add·del/dep) 변경 시 README; `CMakeLists.txt`·`package.xml` 동기화는 필수
+- **문서·메타데이터** — `.md` 를 고쳤으면 `python3 repo_scripts/scripts/validate_docs.py --files <파일들>`; 고친 YAML 의 parse·default·범위·단위; public header 의 Doxygen; public surface (header/launch/config/디렉토리 add·del/dep) 변경 시 README 의 사용자 표면; `CMakeLists.txt`·`package.xml` 동기화는 필수
 - CI 는 `docs-validate` (문서·생성물·셸 검사) 뿐이다 — **빌드·테스트·포매팅의 게이트는 위 로컬 검증뿐이다**
 
 게이트·Completion Checklist: [modification-guide.md](agent_docs/modification-guide.md) · 절차: [docs/modification-procedures.md](docs/modification-procedures.md).

@@ -33,7 +33,7 @@ description: Pre-flight and gate map for ADDING a new controller, message type /
 
 - **`rtc_*` 에 추가**한다면 robot 이름·joint 수·HW ID 가 들어가면 ARCH-1 (**Critical**, E-2) 이고, exec 를 소유하면 ARCH-7 이다. 두 rule 은 파일을 열 때 자동 로드된다 ([.claude/rules/arch-source.md](../../rules/arch-source.md) · [arch-build-meta.md](../../rules/arch-build-meta.md)).
 - **RT tick 경로**에 코드가 생기면 [.claude/rules/rt-path.md](../../rules/rt-path.md) 가 구속한다 — 새 스레드·새 `Compute()` 는 거의 항상 여기 해당한다.
-- **PROC-1 은 blocking 이다** — 새 파일을 add 했으면 같은 turn 에 `CMakeLists.txt` / `package.xml` 을 맞춘다. README 는 public surface 가 바뀌었을 때 non-blocking checklist.
+- **PROC-1 은 blocking 이다** — 새 파일을 add 했으면 같은 turn 에 `CMakeLists.txt` / `package.xml` 을 맞춘다. README 는 public surface (header · launch · config · 디렉토리 · dep) 가 바뀌었을 때 non-blocking checklist 이고, 사용자 표면만 고친다 ([conventions.md](../../../agent_docs/conventions.md) §README).
 - **새 test 파일·새 launch 파일도 build 축에 들어간다** (#358 · #360) — 즉 추가한 turn 이 곧 검증되는 turn 이다. 반대로 그 축 밖(`config/` 등)에 놓인 신규 파일은 빌드되지 않는다.
 
 ## 4. 끝났다고 말하기 전
