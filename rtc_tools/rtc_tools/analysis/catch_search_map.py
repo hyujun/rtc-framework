@@ -152,6 +152,7 @@ from rtc_tools.analysis.catchability_map import (
     throw_to_launch_request,
     transform_direction,
     transform_point,
+    vision_frame_from_params,
     write_model_config,
 )
 
@@ -178,7 +179,6 @@ from rtc_tools.analysis.catching_trials import (
     load_throw_grid_axes,
     most_frequent_reason,
     reject_retired_io_frame_keys,
-    vision_frame_from_params,
 )
 from rtc_tools.analysis.derive_accel_limits import _git_dirty, _git_head, load_robot_params
 

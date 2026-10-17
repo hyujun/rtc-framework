@@ -107,8 +107,6 @@ from rtc_tools.analysis.catch_speed_budget import (
     ExtraFrame,
     extra_frame_from_params,
 )
-
-# SCENE_WORLD and vision_frame_from_params are re-exported: their callers import them here.
 from rtc_tools.analysis.catchability_map import (
     SCENE_WORLD,
     as_transform,

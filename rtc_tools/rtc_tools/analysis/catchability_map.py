@@ -85,6 +85,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as _dt
+import functools
 import hashlib
 import io
 import itertools
@@ -1141,6 +1142,11 @@ class MapFrames:
         """The arm base origin in the model world — the centre of the reach sphere."""
         return self.model_world_t_base[:3, 3].copy()
 
+    @functools.cached_property
+    def world_t_model(self) -> np.ndarray:
+        """``model_world_t_world`` inverted once (read per candidate row)."""
+        return invert_transform(self.model_world_t_world)
+
     @property
     def world_up(self) -> np.ndarray:
         """World +z in model-world coordinates: ``d(world z) = world_up · d(p_model)``.
@@ -1148,11 +1154,11 @@ class MapFrames:
         Not the model's +z in general — the scene world may be tilted against the
         model root (``scene_world.rpy``), and a floor is level in the WORLD.
         """
-        return invert_transform(self.model_world_t_world)[2, :3].copy()
+        return self.world_t_model[2, :3].copy()
 
     def world_z(self, p_model: np.ndarray) -> float:
         """World height of a model-world point."""
-        return float(transform_point(p_model, invert_transform(self.model_world_t_world))[2])
+        return float(transform_point(p_model, self.world_t_model)[2])
 
 
 def read_map_frames(map_dir: Path) -> MapFrames:
@@ -1176,17 +1182,23 @@ def read_map_frames(map_dir: Path) -> MapFrames:
 def check_map_world_heights(
     frames: MapFrames, rows: Iterable[Mapping[str, str]], tolerance_m: float = 1e-6
 ) -> None:
-    """Refuse candidate rows whose ``p_world_z`` is not ``p_model`` through ``frames``.
+    """Refuse candidate rows whose ``p_world`` is not ``p_model`` through ``frames``.
 
     The map writes both from one transform, so a mismatch means the rows and the
-    provenance come from different runs.
+    provenance come from different runs. All three axes: a run with another yaw or
+    another horizontal offset keeps every height. What this cannot see is the
+    reach centre (``model_world_t_base``) — no column carries it.
     """
     for row in rows:
-        p_model = np.array([float(row[f"p_model_{a}"]) for a in "xyz"])
-        miss = abs(frames.world_z(p_model) - float(row["p_world_z"]))
+        try:
+            p_model = np.array([float(row[f"p_model_{a}"]) for a in "xyz"])
+            p_world = np.array([float(row[f"p_world_{a}"]) for a in "xyz"])
+        except KeyError as exc:
+            raise SystemExit(f"the map's candidates carry no {exc.args[0]} column") from exc
+        miss = float(np.linalg.norm(transform_point(p_model, frames.world_t_model) - p_world))
         if not miss <= tolerance_m:
             raise SystemExit(
-                f"candidate {row.get('id', '?')}: p_world_z is {miss * 1e3:.3f} mm off p_model "
+                f"candidate {row.get('id', '?')}: p_world is {miss * 1e3:.3f} mm off p_model "
                 "through the map's provenance.frames — the CSV and the provenance are not one run"
             )
 
@@ -4043,7 +4055,7 @@ def main(argv: list[str] | None = None) -> int:
                 throws,
                 outcomes,
                 headline,
-                base_frame=args.arm_base_frame,
+                base_frame=arm_base_frame,
                 wait_pose_seed_id=headline_seed_id,
                 wait_pose_q=None
                 if headline_seed_id is None

@@ -2076,6 +2076,8 @@ def test_the_world_is_the_scene_world_of_the_robot_config_layers(tmp_path: Path,
     assert np.allclose(frames["base_t_world"], base_t_world, atol=1e-12)
     assert np.allclose(frames["model_world_t_world"], expected, atol=1e-12)
     assert str(overlay) in frames["world_source"]
+    region = yaml.safe_load((out_dir / "throw_region.yaml").read_text())["sim"]["throw_region"]
+    assert region["base_frame"] == "mount"  # the scene_world parent, not a flag
     rows = [r for r in _read_csv(out_dir / "candidates.csv") if r["p_world_x"] != "nan"]
     assert rows, "the grid must produce candidates"
     for row in rows:
@@ -2140,11 +2142,20 @@ def test_map_frames_take_heights_through_a_tilted_world():
     # The tilt is what this is about: the model's own z is not the world's.
     assert b_model[2] - a_model[2] != pytest.approx(0.6 - 1.3, abs=1e-3)
 
-    row = {"id": "3", "p_world_z": repr(1.3)}
+    row = {"id": "3"}
+    row.update({f"p_world_{a}": repr(float(v)) for a, v in zip("xyz", a_world, strict=True)})
     row.update({f"p_model_{a}": repr(float(v)) for a, v in zip("xyz", a_model, strict=True)})
     cm.check_map_world_heights(frames, [row])
-    with pytest.raises(SystemExit, match=r"candidate 3: p_world_z is 1\.000 mm off"):
+    with pytest.raises(SystemExit, match=r"candidate 3: p_world is 1\.000 mm off"):
         cm.check_map_world_heights(frames, [{**row, "p_world_z": repr(1.301)}])
+    # Another run's yaw keeps every height: still refused.
+    turned = cm.rotation_z(0.1) @ a_world
+    other = {**row, **{f"p_world_{a}": repr(float(v)) for a, v in zip("xyz", turned, strict=True)}}
+    assert float(other["p_world_z"]) == pytest.approx(1.3, abs=1e-12)
+    with pytest.raises(SystemExit, match="not one run"):
+        cm.check_map_world_heights(frames, [other])
+    with pytest.raises(SystemExit, match="no p_world_x column"):
+        cm.check_map_world_heights(frames, [{k: v for k, v in row.items() if k != "p_world_x"}])
 
 
 def test_reading_map_frames_from_a_dir_that_is_not_a_map_is_refused(tmp_path: Path):

@@ -419,7 +419,16 @@ def _write_run(tmp_path: Path, arm: csb.ArmKinematics, *, shift_m: float = 0.0) 
     map_dir = tmp_path / "map"
     map_dir.mkdir()
     rng = np.random.default_rng(7)
-    header = ["id", "throw_index", "t_c_s", "p_world_z", "accepted", "nv"]
+    header = [
+        "id",
+        "throw_index",
+        "t_c_s",
+        "p_world_x",
+        "p_world_y",
+        "p_world_z",
+        "accepted",
+        "nv",
+    ]
     header += [f"p_model_{a}" for a in "xyz"] + [f"v_model_{a}" for a in "xyz"]
     header += [f"q{i}" for i in range(6)]
     with (map_dir / "candidates.csv").open("w", newline="") as handle:
@@ -429,8 +438,8 @@ def _write_run(tmp_path: Path, arm: csb.ArmKinematics, *, shift_m: float = 0.0) 
             q = Q_GENERIC + rng.uniform(-0.2, 0.2, size=6)
             p = arm.frame_position(q) + np.array([shift_m, 0.0, 0.0])
             v = -2.5 * arm.frame_axis(q)
-            writer.writerow([i, i % 2, 0.7, p[2] + 0.9, "1", 6, *p, *v, *q])
-        writer.writerow([9, 1, 0.7, 1.0, "0", 6, 0, 0, 0, 1, 0, 0, *np.zeros(6)])  # rejected
+            writer.writerow([i, i % 2, 0.7, p[0], p[1], p[2] + 0.9, "1", 6, *p, *v, *q])
+        writer.writerow([9, 1, 0.7, 0, 0, 1.0, "0", 6, 0, 0, 0, 1, 0, 0, *np.zeros(6)])  # rejected
     with (map_dir / "throw_summary.csv").open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["throw_index", "release_height_m", "distance_m"])
@@ -483,7 +492,7 @@ def test_cli_refuses_a_map_whose_heights_are_not_its_frames(tmp_path, arm):
         cm.frame_placement_in_model_world(arm_urdf(), "base"),
         cm.make_transform(np.eye(3), (0.0, 0.0, -0.8)),  # the CSV says 0.9
     )
-    with pytest.raises(SystemExit, match=r"p_world_z is 100\.000 mm off"):
+    with pytest.raises(SystemExit, match=r"p_world is 100\.000 mm off"):
         csb.main(argv)
 
 

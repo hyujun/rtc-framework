@@ -75,6 +75,7 @@ from rtc_tools.analysis.catchability_map import (
     add_retired_flags,
     check_map_world_heights,
     distribution,
+    find_judge,
     read_map_frames,
 )
 from rtc_tools.analysis.derive_accel_limits import (
@@ -596,8 +597,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--fk-tolerance-m", type=float, default=DEFAULT_FK_TOLERANCE_M)
     args = ap.parse_args(argv)
-
-    from rtc_tools.analysis.catchability_map import find_judge  # noqa: PLC0415
 
     params = load_robot_params(list(args.robot_config))
     spec = arm_spec_from_params(params, args.group)
