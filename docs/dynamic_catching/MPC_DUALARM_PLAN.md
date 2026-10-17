@@ -84,9 +84,9 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E3-F02 | [#641](https://github.com/hyujun/rtc-framework/issues/641) | 전신 항을 두 구간 코어 (`mpc` · `mpc_docking`) 에 추가 — 왼팔 rest · waist 억제 · 각운동량 · waist 토크 행 · counter-swing, 관절군별 move blocking. 탐색에는 넣지 않는다. 설계 조건 "전신 항은 catch 에 거의 영향 없음" 과 안 B 로 옮길지의 문턱은 이 feature 가 시행 전에 고정한다 | #716 · E3-F01 (끝), #819 · #834 (끝), E1-F07 (끝), E2-F01 (끝) | 대기 |
+| E3-F02 | [#641](https://github.com/hyujun/rtc-framework/issues/641) | 전신 항을 두 구간 코어 (`mpc` · `mpc_docking`) 에 추가 — 왼팔 rest · waist 억제 · 각운동량 변화율 (위상 스케줄) · 관절군별 move blocking, 관절군 선언 (`planner.groups`) 과 군별 가중 (`mpc_docking` 의 `r_tau` · `r_jerk` 포함). 탐색에는 넣지 않는다. waist 토크 행은 17 관절 모델 위에서 이미 전 관절에 걸린다 — 왼팔 반력을 담는지는 테스트로 확인한다. 착수 전 결정 D1 – D13 은 끝났다 ([착수 분석](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6216709591) · [계획 검토](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6217491550) · [계획 검토 2](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6229412753) 와 그 아래 결정 코멘트, 2026-10-16 · 17; 검토가 고친 것 — docking 의 전신 항은 정지 구간에도, 항은 군별 `w_vel` · `w_rest` 로 역할 이름 없이, 사슬 밖 관절을 읽는 항은 plan 밖 군의 rest 가중을 요구, `nlp.core` 는 전신 키를 거부, docking 의 각운동량 계수는 시작 궤적에서 고정 (SQP 의 수렴 계약), 군별 $E$ 의 키 · 생성 · 배치 규칙, 단계 순서는 배선 → 군별 $E$ → 항, 판별 논리는 `SyntheticTree` 위에): "거의 영향 없음" 은 가중 + 위상 스케줄로 지키고 (사전적 처리는 `[선택]` 그대로 미구현), 판정은 같은 입력에서 전신 가중 0 대비 포구 노드 값의 차 — 위치 ≤ 1 mm · 접근축 ≤ 1° · 상대속도 ≤ 0.02 m/s, 각운동량은 왼팔 고정 대비 줄어든다 (크기는 기록). 17 관절 시간은 기록만 한다 (판정은 E3-F07). 노드당 토크 slack 은 이 feature 밖 ([#857](https://github.com/hyujun/rtc-framework/issues/857)) | 선행 모두 끝 | 다음 — 착수 지시 대기 |
 | E3-F03 | [#642](https://github.com/hyujun/rtc-framework/issues/642) | 충돌 제약 — capsule 모델 (신규 코어) 과 MPC 제약 행 (자기충돌 · 공–왼팔 거리) | E3-F02 | 대기 |
-| E3-F04 | [#643](https://github.com/hyujun/rtc-framework/issues/643) | MPC ↔ CLIK 계약의 전신 확장 — 왼손 FK, 한계 여유, 17 관절 구간의 RT 평가 (payload 관절 용량은 #827 이 올렸다 — 끝). 구간이 만든 desired value 의 소비자는 `demo_dualarm_controller` 다. 단일 팔 계약은 `ID_INDEX.md` MD-36 · `ref/L7_supervisor.md` §4.3a. E2-F04 가 넣은 것: CLIK 의 자세 속도 feedforward (`qd_posture_ff`) 와 관절군별 자세 과제 — 전신 구간의 $\dot q_{ref}$ 는 그 입력으로 간다 | E1-F08 (끝), E2-F04 (끝) | 대기 |
+| E3-F04 | [#643](https://github.com/hyujun/rtc-framework/issues/643) | MPC ↔ CLIK 계약의 전신 확장 — 왼손 FK, 한계 여유, 17 관절 구간의 RT 평가 (payload 관절 용량은 #827 이 올렸다 — 끝). 구간이 만든 desired value 의 소비자는 `demo_dualarm_controller` 다. 단일 팔 계약은 `ID_INDEX.md` MD-36 · `ref/L7_supervisor.md` §4.3a. E2-F04 가 넣은 것: CLIK 의 자세 속도 feedforward (`qd_posture_ff`) 와 관절군별 자세 과제 — 전신 구간의 $\dot q_{ref}$ 는 그 입력으로 간다 | E1-F08 (끝), E2-F04 (끝), E3-F02 (브랜치를 나눴다 — [#641 D8](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6216709591)) | 대기 |
 | E3-F05 | [#644](https://github.com/hyujun/rtc-framework/issues/644) | G1 통합 — supervisor · 손 시퀀서 · vision sim profile (`mode: mpc` 의 확장) | E3-F03, E3-F04, E2-F05 (끝) | 대기 |
 | E3-F06 | [#645](https://github.com/hyujun/rtc-framework/issues/645) | 로그 · plot_rtc_log · demo_controller_gui — dual arm 열. 항별 비용 분해는 코어 변경이라 아직 없다. E2-F06 · F07 에서 넘어온 것: GUI 의 `g1_p1b` profile 과 tree 군의 관절 묶음, 컨트롤러 YAML 에서 만드는 gain 행, CSV 꼬리로 읽는 상태 줄 (`demo_dualarm_controller` 에는 상태 토픽이 없다 — G1 포구 컨트롤러의 상태를 무엇으로 보일지는 이 feature 가 정한다. `rtc_msgs` 를 고치면 E-3), 열 이름에서 과제 · 관절을 읽는 plot 의 helper 는 [#645 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/645#issuecomment-6054618892) | E3-F05 | 대기 |
 | E3-F07 | [#646](https://github.com/hyujun/rtc-framework/issues/646) | 평가 — G1 sim 포구 시행 · 예측 격자 sweep · waist · 왼팔 고정 대조 · 기존 로봇 회귀 | E3-F06 | 대기 |
@@ -118,14 +118,15 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `feat/catching-mpc-wholebody` | E3-F02, E3-F04 | 전신 항과 MPC ↔ CLIK 계약. 둘 다 17 관절 구간을 다루는 작업이고 계약의 sanity check 가 전신 해를 입력으로 쓴다 |
+| `feat/catching-mpc-wholebody-terms` | E3-F02 | 두 코어의 전신 항 — 코어 둘을 각각 100 줄 넘게 고치는 code review 단위. E3-F04 와 묶지 않는다 ([#641 D8](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6216709591), 2026-10-16): 고치는 파일이 겹치지 않고, 계약의 sanity check 는 merge 된 코어의 해를 입력으로 쓰면 된다 |
+| `feat/catching-mpc-clik-contract` | E3-F04 | MPC ↔ CLIK 계약의 전신 확장 — `integrated_bringup` 의 RT · 왼손 FK · 한계 여유. E3-F02 가 `main` 에 들어간 뒤 |
 | `feat/collision-capsule-core` | E3-F03 | 신규 수치 코어. code review 단위 |
 | `feat/g1-catch-controller` | E3-F05 | supervisor · 손 시퀀서 통합. E-STOP 경로를 건드리면 E-8 |
 | `feat/g1-catch-tooling-eval` | E3-F06, E3-F07 | 로그 · plot · GUI 와 평가. 평가가 새 로그 컬럼을 쓴다. **나누는 조건**: 평가 결과가 설계 결정을 바꾸면 결과 기록을 `docs/` 브랜치로 분리한다 |
 
 **순서 — E1.** 남은 feature 브랜치는 없다 (§1). feature 번호 없는 남은 단독 이슈는 보류 중인 #715 하나다 (§5 의 "mpc planner · catching 의 남은 일").
 
-**순서 — E3.** `feat/catching-mpc-wholebody` (E3-F02 · F04) → E3-F03 → E3-F05 → E3-F06 · F07 (착수 조건인 E2 · E1-F07 · #827 과 E3-F01 은 끝났다 — MD-47, `ID_INDEX.md` §3). E3-F02 앞에 두었던 #819 는 끝났다 (§5). 병행은 서로 다른 파일을 고치는 브랜치끼리만 한다. 그 앞에 두었던 `mpc` 의 법칙을 고치는 단독 이슈 (#834 · #716) 도 끝났다 (§5).
+**순서 — E3.** E3-F02 (`feat/catching-mpc-wholebody-terms`) → E3-F04 (`feat/catching-mpc-clik-contract`) → E3-F03 → E3-F05 → E3-F06 · F07 (착수 조건인 E2 · E1-F07 · #827 과 E3-F01 은 끝났다 — MD-47, `ID_INDEX.md` §3). E3-F02 앞에 두었던 #819 는 끝났다 (§5). 병행은 서로 다른 파일을 고치는 브랜치끼리만 한다. 그 앞에 두었던 `mpc` 의 법칙을 고치는 단독 이슈 (#834 · #716) 도 끝났다 (§5).
 
 ### 게이트 · escalation
 
@@ -156,7 +157,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 **남은 feature 의 결정**
 
-- [#641](https://github.com/hyujun/rtc-framework/issues/641) — E3-F02: "전신 항은 catch 에 거의 영향 없음" 을 무엇으로 지킬지 (가중 · 사전적 처리 · 사슬 관절을 탐색의 해에 묶기), 사슬에만 의존하는 항을 탐색에도 켤지, 안 B (`nlp` 에 전신 항) 로 옮길지의 판정 문턱 (시행 전에 고정), G1 의 `mpc_docking` 구간이 토크 비용 (`r_tau`) 을 어떻게 둘지 — tree 모델 위에서 그 비용은 사슬 밖 관절을 읽어 그 자체로 전신 항이다 (E3-F01 의 일치 검사에서 나온 것, 측정은 [#641 의 코멘트](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6149142886))
+- [#641](https://github.com/hyujun/rtc-framework/issues/641) — E3-F02: 남은 것은 안 B (`nlp` 에 전신 항) 로 옮길지의 **문턱** 하나다 — E3-F02 의 완료 코멘트에서 잰 $t_{17}$ 을 들고 제안해 확정하고 (초안: 탐색 수용 후보의 첫 구간이 전신 쪽 사유로 보류되는 몫 ≤ 10 %, 포구 노드의 벗어남 ≤ 허용 폭, $t_{10}+t_{17}\le\Delta_m$), E3-F07 이 잰다. 메커니즘 · 허용 폭 · G1 의 `r_tau` (군별 가중, G1 탐색 block 은 0) · 관절군 선언 · 군별 $E$ 의 범위 (두 코어) · 시간 항 (기록) · 브랜치 (E3-F04 와 분리) 는 2026-10-16 에 정했다 — [착수 분석](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6216709591) 과 그 아래 결정 코멘트. 사슬에만 의존하는 항을 탐색에도 켜는 것은 하지 않는다 (탐색은 운동학만 — #640 D8 과 같은 뜻)
 - [#642](https://github.com/hyujun/rtc-framework/issues/642) — E3-F03: 충돌 제약 — capsule 모델 · 자기충돌 · 공–왼팔 거리
 - [#645](https://github.com/hyujun/rtc-framework/issues/645) — E3-F06: 로그 · plot_rtc_log · demo_controller_gui (dual arm 열) — G1 포구 컨트롤러의 상태를 GUI 에 무엇으로 보일지 (E2-F06 은 상태 토픽 없이 세션 CSV 의 꼬리를 읽었다 — GUI 가 컨트롤러와 같은 머신에 있어야 한다. `rtc_msgs/CatchingState` 에 열을 더하면 E-3)
 
@@ -187,16 +188,18 @@ E1 의 끝난 일 (E1-F19 · F20 · F21, T [#803](https://github.com/hyujun/rtc-
 **mpc planner · catching 의 남은 일**
 
 - [#715](https://github.com/hyujun/rtc-framework/issues/715) — integrated_bringup: 세 군 (두 번째 손) 지원 — 보류
+- [#857](https://github.com/hyujun/rtc-framework/issues/857) — rtc_controllers: `mpc` 의 토크 slack 을 노드당 하나로 (#716 D6 b) — 착수 조건: E3-F02 의 17 관절 시간 기준선; slack 차원의 변형 측정은 그 이슈의 1 단계
 
 **`mpc planner · catching 의 남은 일` 의 순서 (권장).** 이 문서에서 남은 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이다. 이슈에 정해진 시기 안에서 고른 순서다.
 
 | 순서 | 이슈 | 착수 조건 | 브랜치 | 착수 때 정할 것 |
 |---|---|---|---|---|
+| 1 | #857 | E3-F02 의 17 관절 시간 기준선 (차원 · 활성 행 · 반복당 비용, 재현 명세) 이 #641 에 적힌 뒤 — slack 차원을 줄인 변형은 #857 자신의 1 단계다 (`mpc` 의 `rho_tau = 0` 은 차원을 바꾸지 않는다). E3-F02 와 같은 코어 (`MpcSegmentCore`) 를 고치므로 병행하지 않는다 | 착수 때 확정 | 측정의 판정 기준 (timing fixture · sim 의 가드) 을 던지기 전에 고정 |
 | — | #715 | 보류 — 착수 조건이 없다 | — | — |
 
 - **묶지 않는 이유.** `mpc` 의 법칙을 한 PR 에서 두 곳 바꾸면 측정이 원인을 가르지 못한다. PR 을 쌓지 않으므로 같은 파일을 고친다는 것은 묶을 이유가 아니다.
 - **끝난 단독 이슈** — 측정과 결정의 기록은 각 이슈가 갖는다. 남긴 일만 적는다.
-  - [#716](https://github.com/hyujun/rtc-framework/issues/716) (2026-10-16) — `mpc` 의 풀이 시간 예산을 `budget.first_s` 0.040 · `replan_s` 0.030 s 로 올렸다 (두 로봇, #834 에서 넘어온 것 — [측정 ①](https://github.com/hyujun/rtc-framework/issues/716#issuecomment-6188682991)). 폐쇄 창의 경로 이탈 항 `cost.w_path` (formulation §1.6 — 포구 구간 $\mathcal K_c$ 대신 손이 닫히는 창의 포구 전 노드) 를 구현하고 0 으로 출하한다 — `ur5e_p1b` sim 에서 창의 이탈은 줄었지만 포구로 이어지지 않았다 ([측정 ②](https://github.com/hyujun/rtc-framework/issues/716#issuecomment-6200092609), 사용자 결정 D10 a). 남긴 일: 노드당 토크 slack (→ E3-F02 · F04 의 착수 분석), `n_pre_max` 를 다시 올리는 판정 (측정 ① 의 기록이 근거가 될 수 있다), 실기 PC 에서의 예산 재측정 (#613 의 단계). 포구 구간을 여러 노드로 두는 것 ($\mathcal K_c$) 은 하지 않았다 — formulation §1.6 은 단일 팔의 포구 구간이 한 노드인 것을 손 폐쇄 명령 시각의 귀결로 적고, 여러 노드로 두려면 세 planner 가 함께 쓰는 그 규칙이 바뀐다 (이슈 없음)
+  - [#716](https://github.com/hyujun/rtc-framework/issues/716) (2026-10-16) — `mpc` 의 풀이 시간 예산을 `budget.first_s` 0.040 · `replan_s` 0.030 s 로 올렸다 (두 로봇, #834 에서 넘어온 것 — [측정 ①](https://github.com/hyujun/rtc-framework/issues/716#issuecomment-6188682991)). 폐쇄 창의 경로 이탈 항 `cost.w_path` (formulation §1.6 — 포구 구간 $\mathcal K_c$ 대신 손이 닫히는 창의 포구 전 노드) 를 구현하고 0 으로 출하한다 — `ur5e_p1b` sim 에서 창의 이탈은 줄었지만 포구로 이어지지 않았다 ([측정 ②](https://github.com/hyujun/rtc-framework/issues/716#issuecomment-6200092609), 사용자 결정 D10 a). 남긴 일: 노드당 토크 slack (→ #857, 착수 조건은 E3-F02 의 변형 측정 — [#641 D6](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6216709591)), `n_pre_max` 를 다시 올리는 판정 (측정 ① 의 기록이 근거가 될 수 있다), 실기 PC 에서의 예산 재측정 (#613 의 단계). 포구 구간을 여러 노드로 두는 것 ($\mathcal K_c$) 은 하지 않았다 — formulation §1.6 은 단일 팔의 포구 구간이 한 노드인 것을 손 폐쇄 명령 시각의 귀결로 적고, 여러 노드로 두려면 세 planner 가 함께 쓰는 그 규칙이 바뀐다 (이슈 없음)
   - [#834](https://github.com/hyujun/rtc-framework/issues/834) (2026-10-15, PR [#839](https://github.com/hyujun/rtc-framework/pull/839)) — 포구 전 격자의 상한 `approach.n_pre_max` 를 `ur5e_p1b` 7 로 올렸다 (`iiwa7_leap` 6, `dt_pre_s` 0.1 그대로). 남긴 일: 풀이 시간 예산 (#716 이 올렸다, 위), 아래 #819 의 `delta_tr` 재측정 · `n_pre` 하한은 이 격자를 기준선으로 잰다. 탐색의 도달 게이트를 격자 시간에 견주는 안은 판단하지 않았다 — [닫는 코멘트](https://github.com/hyujun/rtc-framework/issues/834#issuecomment-6182203068)
   - [#819](https://github.com/hyujun/rtc-framework/issues/819) (2026-10-14, PR [#835](https://github.com/hyujun/rtc-framework/pull/835)) — 첫 풀이의 기준을 자르는 문턱 `linearization.ref_speed_fraction` 를 두 로봇 모두 1.2 로 출하한다 (식은 formulation §13; 실제 상한은 `delta_tr` — 기준이 box 를 넘는 면적 ≤ 2·`delta_tr`). 남긴 일: 남은 `catch_error` 보류의 다음 수단 (첫 기준의 끝을 $(q^\ast,\dot q^\ast)$ 로 · 초기화 QP), `delta_tr` 재측정 · `n_pre` 하한, 도달을 $E\le2\delta$ 로 닫힌 형태로 묶는 것 (법칙 변경) — [출하와 검증](https://github.com/hyujun/rtc-framework/issues/819#issuecomment-6165060436)
   - [#822](https://github.com/hyujun/rtc-framework/issues/822) (2026-10-14, PR [#837](https://github.com/hyujun/rtc-framework/pull/837)) — 값 sweep 도구 (`mk_overlay.py --set`, `run_unit.sh` 의 `EXPECT_KV` · 실행 이미지 sha256, `summarize.py --vary`). 남긴 일: sweep 의 재시도 루프 · 분석 호출을 도구로 올릴지 — #834 는 repo 밖 드라이버 (`~/rtc_eval/i834/tools/`) 로 돌렸다 — [계획 확정 2](https://github.com/hyujun/rtc-framework/issues/822#issuecomment-6166798318)
