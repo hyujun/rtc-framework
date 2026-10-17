@@ -18,7 +18,7 @@
     #   * robot_description_file                              (absolute path)
     # The launch file raises a friendly error if neither is provided.
     robot_description_package: ""               # e.g. "robot_descriptions"
-    robot_description_path: ""                  # e.g. "robots/ur5e/urdf/ur5e_with_hand.urdf.xacro"
+    robot_description_path: ""                  # e.g. "robots/<robot>/urdf/<robot>.urdf.xacro"
     robot_description_file: ""                  # e.g. "/path/to/robot.urdf"
 
     display_rate: 60.0                          # Hz — combined JointState publish rate

@@ -17,7 +17,7 @@ find_package(ament_cmake REQUIRED)
 #            when the two files name the same link differently
 #            (compare_mjcf_urdf --link-map; see robots/ur5e/ for the case)
 #
-# The shipped robot list lives in README.md (§2 table) -- an enumeration here
+# The shipped robot list lives in README.md ("현재 입주한 robots" table) -- an enumeration here
 # goes stale the moment a directory is added, and this one had already lost
 # five robots by the time #457 added the sixth.
 #

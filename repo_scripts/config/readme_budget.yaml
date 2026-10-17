@@ -34,15 +34,15 @@ docs/dynamic_catching/README.md: 7615
 docs/reference/README.md: 6198  # raised from 5924: index row for sim-rationale.md
 integrated_bringup/README.md: 312486
 repo_scripts/README.md: 72305
-robot_descriptions/README.md: 22406
-robot_descriptions/robots/panda/README.md: 1058
-robot_descriptions/robots/ur5e_p1b/README.md: 4834
+robot_descriptions/README.md: 6491 strict
+robot_descriptions/robots/panda/README.md: 1129 strict  # raised from 1058: skeleton headings (개요 · 디렉토리 · 문제 해결) the old README lacked
+robot_descriptions/robots/ur5e_p1b/README.md: 3047 strict
 rtc_base/README.md: 50803
 rtc_communication/README.md: 28726
 rtc_controller_interface/README.md: 54183
 rtc_controller_manager/README.md: 95123
 rtc_controllers/README.md: 14350 strict
-rtc_digital_twin/README.md: 24708
+rtc_digital_twin/README.md: 11829 strict
 rtc_inference/README.md: 18580
 rtc_math/README.md: 2571
 rtc_math/include/rtc_math/se3/README.md: 10026
