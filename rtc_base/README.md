@@ -1,357 +1,156 @@
 # rtc_base
 
+RTC 프레임워크의 헤더 전용 실시간 인프라 라이브러리. **유형**: 라이브러리 패키지
 
-> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
-> 설치/빌드: [Root README](../README.md) | RT 최적화: [rt-optimization.md](../docs/rt-optimization.md)
+> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다. RT 최적화: [rt-optimization.md](../docs/rt-optimization.md)
 
 ## 개요
 
-RTC 프레임워크의 **헤더 전용(header-only) 실시간 인프라 라이브러리**입니다. 결정론적 정기 tick 제어 루프 (rate-agnostic; `control_rate` YAML — default·설계 범위는 [invariants.md](../agent_docs/invariants.md) §RT Path Invariants 참조) 에서 안전하게 사용할 수 있도록 설계되었으며, 공유 데이터 타입, 락-프리 동기화 프리미티브, 신호 처리 필터, 스레드 구성, 타이밍 프로파일링, 로깅 인프라를 제공합니다.
+정기 tick 제어 루프 (rate-agnostic; `control_rate` YAML — default·설계 범위는 [invariants.md](../agent_docs/invariants.md) §RT Path Invariants) 에서 쓸 수 있는 공유 데이터 타입, 락-프리 동기화 프리미티브, 신호 처리 필터, 스레드 구성, 타이밍 프로파일링, 로깅 인프라를 제공합니다. 거의 모든 `rtc_*` 패키지가 의존하므로 이 패키지의 변경은 전체 빌드·테스트 대상입니다 (PROC-3).
 
-**핵심 설계 원칙:**
-- 헤더 전용 -- 링크 타임 의존성 없음
-- RT 경로에서 힙 할당 및 시스템 콜 금지
-- 모든 RT-safe 함수에 `noexcept` 보장
-- 캐시 라인 정렬로 false sharing 방지
-- C++20 필수 -- `std::concepts`, `std::numbers`, `[[likely]]/[[unlikely]]`, `constexpr` 강화
+- 헤더 전용 -- 링크 타임 의존성 없음 (예외: 트레이싱 opt-in 시 `rtc_tracing` 공유 라이브러리)
+- RT 경로에서 힙 할당·시스템 콜 금지, RT-safe 함수는 `noexcept`
+- 캐시 라인 정렬 (`kCacheLineSize`) 로 false sharing 방지
+- C++20 필수 (GCC 10+, Clang 13+)
 
----
+## 빠른 시작
 
-## 패키지 구조
+소비 패키지의 `package.xml` 에 `<depend>rtc_base</depend>`, `CMakeLists.txt` 에 다음을 추가합니다.
 
-```
-rtc_base/
-├── CMakeLists.txt
-├── package.xml
-└── include/rtc_base/
-    ├── types/
-    │   └── types.hpp              <- 공유 데이터 타입, 상수, 열거형, 캐시 라인 상수
-    ├── logging/
-    │   ├── thread_csv_producer.hpp  <- ThreadCsvProducer<Payload,N>: payload-owns-row SPSC
-    │   ├── thread_csv_logger.hpp    <- ThreadCsvLogger<Payload>: 헤더/행 writer 모두 caller가 결정
-    │   └── session_dir.hpp          <- 세션 디렉토리 관리
-    ├── filters/
-    │   ├── bessel_filter.hpp          <- 4차 Bessel 저역통과 필터
-    │   ├── kalman_filter.hpp          <- 이산시간 칼만 필터
-    │   ├── sensor_rate_estimator.hpp  <- EMA 기반 센서 샘플링 레이트 추정
-    │   └── sliding_trend_detector.hpp <- O(1) 슬라이딩 윈도우 OLS 드리프트 감지
-    ├── concurrency/
-    │   └── spsc_queue.hpp             <- 락-프리 SPSC 링 버퍼 (POD payload 템플릿)
-    ├── timing/
-    │   ├── timing_profiler_base.hpp   <- 락-프리 히스토그램 기반 타이밍 프로파일러
-    │   ├── thread_timing_sample.hpp   <- ThreadTimingSample<Payload> POD (per-tick 샘플)
-    │   ├── thread_timing_producer.hpp <- ThreadTimingProducer<Payload,N> SPSC + tick counter
-    │   ├── thread_timing_csv_logger.hpp <- ThreadTimingCsvLogger<Payload> CSV writer
-    │   └── rt_tick_timing_sample.hpp  <- RtTickTimingPayload (CM/MPC 공용) + 버퍼 alias
-    ├── threading/
-    │   ├── thread_config.hpp      <- CPU 코어별 스레드 레이아웃 프리셋
-    │   ├── thread_utils.hpp       <- 스레드 구성/검증 유틸리티
-    │   ├── cpu_topology.hpp       <- 하이브리드(P/E-core) CPU 토폴로지 감지 (NucGeneration)
-    │   ├── periodic_rt_thread.hpp <- 고정 주파수 RT 루프 base (CM/MPC 공유)
-    │   ├── publish_buffer.hpp     <- 락-프리 SPSC 퍼블리시 버퍼
-    │   ├── rt_heap.hpp            <- RT 프로세스 heap 정책 (ConfigureRtHeap: mallopt 2개)
-    │   └── seqlock.hpp            <- 락-프리 단일 쓰기/다중 읽기 동기화
-    └── utils/
-        ├── clamp_commands.hpp     <- ClampSymmetric/ClampRange: RT-safe 커맨드 클램프
-        └── device_passthrough.hpp <- PassthroughSecondaryDevices: secondary device joint passthrough
-
-rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
-└── testing/
-    ├── malloc_gate.hpp            <- ScopedMallocGate: C malloc 계열 계수 (라이브러리 안 포함)
-    ├── no_malloc_scope.hpp        <- ScopedNoMalloc: RT 경로 zero-allocation 게이트 (Eigen)
-    └── wait_until.hpp             <- WaitUntil: sleep-poll 조건 대기 (형제 패키지 공용)
+```cmake
+find_package(rtc_base REQUIRED)
+ament_target_dependencies(my_target rtc_base)
 ```
 
-> `test/include/` 아래 헤더는 **test 전용**이며 런타임 install 트리에 실리지 않는다
-> (`install(DIRECTORY include/ ...)` 만 돈다 — ament 의 symlink install 은
-> `install(PATTERN EXCLUDE)` 를 무시하므로 `include/` 에 두면 그대로 배포된다).
-> 형제 패키지는 소스 트리 경로 `../rtc_base/test/include` 로 소비한다.
->
-> - `testing/no_malloc_scope.hpp` — Eigen 의 `set_is_malloc_allowed` 로 RT tick 의 heap
->   할당(RT-1)을 위반으로 기록한다. Eigen 은 rtc_base 의 **test_depend** 일 뿐 런타임
->   라이브러리는 Eigen-free 로 유지된다. 사용 계약(모든 Eigen include 보다 먼저 include,
->   Release/-DNDEBUG 에서도 fail-closed, 동일 TU 한정)은 헤더 상단 주석이 SSoT.
-> - `testing/malloc_gate.hpp` — 실행 파일이 `malloc` 계열을 **정의**해 glibc `__libc_*` 로
->   넘기며 센다. 동적 링커가 실행 파일의 정의를 먼저 잡으므로 공유 라이브러리 (Pinocchio,
->   QP solver) 안의 C 할당까지 보인다 — `no_malloc_scope.hpp` 와 `operator new` 카운터가 못
->   보는 범위다. 계약 (바이너리당 TU 하나, glibc 전용, positive control 은 라이브러리 안의
->   할당으로) 은 헤더 상단 주석이 SSoT. ASan 과 함께 쓸 수 없다 (docs/testing.md).
-> - `testing/wait_until.hpp` — 술어가 참이 될 때까지 sleep 하며 폴링한다 (기본 1 ms 간격,
->   2 s 상한; 둘 다 인자로 조정 가능). 고정 sleep 을 동기화 수단으로 쓰는 flakiness 를
->   대체한다. **오직 sleep 만 한다** — executor 를 돌리지 않으며, spin 이 필요한 대기는
->   다른 primitive 이므로 그 fixture 가 자기 헬퍼를 갖는다 (근거는 헤더 상단 주석).
+```cpp
+#include "rtc_base/filters/bessel_filter.hpp"
+#include "rtc_base/threading/seqlock.hpp"
 
----
+rtc::BesselFilterN<6> filter;                 // 6채널
+filter.Init(30.0, 500.0);                     // 차단 30 Hz, 샘플링 500 Hz
+auto filtered = filter.Apply(raw_positions);  // RT-safe
 
-## 모듈 상세
+rtc::SeqLock<rtc::ControllerState> state_lock;
+state_lock.Store(new_state);                  // 단일 writer (RT tick), wait-free
+auto snapshot = state_lock.Load();            // 다른 스레드, lock-free
+```
+
+빌드·테스트는 [루트 README](../README.md#빠른-시작) 를 따릅니다. 이 패키지만: `./build.sh --tests -p rtc_base`. 컴파일러 경고는 `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` 입니다.
+
+## 인터페이스
+
+공개 헤더는 `include/rtc_base/<영역>/` 아래에 있고 시그니처·사전조건은 각 헤더의 Doxygen 이 SSoT 입니다.
+
+| 영역 | 헤더 | 주요 타입 |
+|------|------|----------|
+| `types/` | `types.hpp` | 상수 (`kMax*`), `DeviceState`, `ControllerState`, `ControllerOutput`, 열거형, `TopicConfig` |
+| `concurrency/` | `spsc_queue.hpp` | `SpscQueue<T, N>` |
+| `threading/` | `seqlock.hpp` | `SeqLock<T>` |
+| | `publish_buffer.hpp` | `PublishSnapshot`, `ControlPublishBuffer` |
+| | `thread_config.hpp`, `thread_config_generated.hpp` | `ThreadConfig`, `SystemThreadConfigs`, `MpcThreadConfig` (tier 상수는 생성물) |
+| | `thread_utils.hpp`, `cpu_topology.hpp` | `ApplyThreadConfig*`, `SelectThreadConfigs`, `NucGeneration` |
+| | `periodic_rt_thread.hpp` | `PeriodicRtThread` (CM/MPC 공용 고정 주기 루프 base) |
+| | `rt_heap.hpp` | `ConfigureRtHeap` |
+| `filters/` | `bessel_filter.hpp`, `kalman_filter.hpp` | `BesselFilterN<N>`, `KalmanFilterN<N>` (`KalmanFilter6/11/1`) |
+| | `sensor_rate_estimator.hpp`, `sliding_trend_detector.hpp` | `SensorRateEstimator`, `SlidingTrendDetector<N, S>` |
+| `timing/` | `timing_profiler_base.hpp` | `TimingProfilerBase<Buckets, BucketWidthUs, BudgetUs>` |
+| | `thread_timing_{sample,producer,csv_logger}.hpp`, `rt_tick_timing_sample.hpp` | `ThreadTimingProducer<Payload, N>`, `RtTickTimingPayload` |
+| `logging/` | `thread_csv_{producer,logger}.hpp` | `ThreadCsvProducer<Payload, N>`, `ThreadCsvLogger<Payload>` |
+| | `session_dir.hpp`, `run_id.hpp` | `ResolveSessionDir`, `EnsureSessionSubdirs` |
+| `tracing/` | `trace_scope.hpp`, `rtc_tracepoints.hpp` | `RTC_TRACE_SCOPE` (opt-in) |
+| `utils/` | `clamp_commands.hpp`, `device_passthrough.hpp` | `ClampSymmetric`, `ClampRange`, `PassthroughSecondaryDevices` |
+
+`test/include/rtc_base/testing/` 의 `malloc_gate.hpp` · `no_malloc_scope.hpp` · `wait_until.hpp` 는 **test 전용**이라 install 되지 않습니다 (형제 패키지는 `../rtc_base/test/include` 로 소비). 사용 계약은 각 헤더 상단 주석이 SSoT 이고 ASan 과의 제약은 [docs/testing.md](../docs/testing.md) 에 있습니다.
 
 ### 타입 (`types/types.hpp`)
 
-프레임워크 전체에서 공유하는 컴파일 타임 상수, 데이터 구조, 열거형을 정의합니다.
+프레임워크 전체가 공유하는 컴파일 타임 상수, 데이터 구조, 열거형입니다. `rtc_base` 에는 robot/sensor-agnostic 타입만 둡니다 (hand 전용 상수·`UdpHandState` 는 `udp_hand_driver`, grasp/wbc/ToF POD 는 각 controller 패키지).
 
-#### 주요 상수
+> **trivially copyable 계약** — `DeviceState`, `ControllerState`, `DeviceOutput`, `ControllerOutput`, `Pose` (기본 zero-initialized) 와 controller 의 gains struct 는 trivially copyable 이어야 합니다 (`std::string` / `std::vector` / virtual 금지). `SeqLock<T>` 와 `SpscQueue<T, N>` 이 `static_assert` 로 요구하며, 개념은 `rtc::TriviallyCopyableType` 입니다.
 
-> **명명 규약 (capacity vs default)** — 프레임워크의 robot-agnostic 성질을 유지하기 위한 핵심 구분입니다.
->
-> - `kNum*` : YAML이 해당 필드를 생략했을 때 사용하는 **기본값**. 실제 채널 수는 런타임에 `DeviceState::num_channels` (또는 유사 필드)로 결정됩니다. 코드는 실제 카운트가 `kNum*` 기본값과 같다고 가정해서는 안 됩니다.
-> - `kMax*` : 컴파일 타임 **상한 용량**. `DeviceState`/`ControllerState` 등의 `std::array` 멤버가 trivially copyable (SeqLock 호환) 상태를 유지하고 RT 경로에서 힙 할당을 회피하도록 정해진 크기. 새로운 로봇/디바이스는 이 상한 안에 들어와야 하며, 초과해야 한다면 상한 자체를 올리되 코드에서 분기는 추가하지 마세요.
+> **명명 규약 (capacity vs default)** — `kNum*` 는 YAML 이 필드를 생략했을 때의 **기본값**이고 실제 채널 수는 런타임 `DeviceState::num_channels` 가 정합니다. `kMax*` 는 `std::array` 멤버의 컴파일 타임 **상한 용량**입니다. 코드는 실제 카운트가 `kNum*` 와 같다고 가정하지 않고, 상한을 넘는 로봇은 상한을 올리되 코드에 분기를 추가하지 않습니다.
 
-| 상수 | 값 | 분류 | 설명 |
-|------|---|------|------|
-| `kCacheLineSize` | 64 | HW const | 캐시 라인 크기 -- 모든 threading 프리미티브에서 공유 |
-| `kNumRobotJoints` | 6 | default | YAML 미설정 시 기본 채널 수 (UR5/Franka 등 6/7-DOF 매니퓰레이터 가정). 알고리즘은 런타임 `num_channels` 사용 필수 |
-| `kMaxRobotDOF` | 12 | capacity | DOF 상한 (7-DOF 암 + 리던던시까지 커버) |
-| `kMaxDeviceChannels` | 64 | capacity | DeviceState 배열 상한 |
-| `kMaxSensorChannels` | 128 | capacity | 디바이스 당 센서 채널 상한 |
-| `kMaxInferenceValues` | 64 | capacity | ONNX 출력 값 상한 |
-| `kTaskSpaceDim` | 6 | HW const | SE(3) DOF — 기하학 상수, 설정 불가 |
-| `kMaxSensorGroups` | 8 | capacity | `DeviceState::inference_enable[]` 등 grouped sensor block 의 컴파일타임 상한 |
-| `kMaxTaskLinks` | 8 | capacity | `ControllerOutput::task_link_poses[]` 의 컴파일타임 상한 — controller 가 publish 하는 임의 FK frame (fingertip/TCP/elbow/mounting plate 등) |
-| `kDefaultMaxJointVelocity` | 2.0 | 기본 최대 관절 속도 (rad/s) |
-| `kDefaultMaxJointTorque` | 150.0 | 기본 최대 관절 토크 (N-m) |
-| `ControllerState::kMaxDevices` / `ControllerOutput::kMaxDevices` | 8 | capacity | 구조체 스코프 상수 — `devices[]` 배열 상한 (컨트롤러 당 디바이스 그룹 수) |
-| `PublishSnapshot::kMaxGroups` | 8 | capacity | `threading/publish_buffer.hpp` 스코프 상수 — `group_commands[]` 배열 상한 |
+| 상수 | 값 | 분류 |
+|------|---|------|
+| `kCacheLineSize` | 64 | HW const |
+| `kTaskSpaceDim` | 6 | HW const (SE(3), 설정 불가) |
+| `kNumRobotJoints` | 6 | default |
+| `kMaxRobotDOF` | 12 | capacity |
+| `kMaxDeviceChannels` / `kMaxSensorChannels` / `kMaxInferenceValues` | 64 / 128 / 64 | capacity |
+| `kMaxSensorGroups` / `kMaxTaskLinks` | 8 / 8 | capacity |
+| `ControllerState::kMaxDevices` · `ControllerOutput::kMaxDevices` · `PublishSnapshot::kMaxGroups` | 8 | capacity (구조체 스코프) |
+| `kDefaultMaxJointVelocity` / `kDefaultMaxJointTorque` | 2.0 rad/s / 150.0 N·m | default |
 
-> **참고:** assm_v1 hand 전용 packet/model layout 상수 (`kBarometerCount`, `kReservedCount`, `kTofCount`, `kSensorDataPerPacket`, `kSensorValuesPerFingertip`, `kMaxHandSensors`, `kNumFingertips`, `kNumHandSensors`, `kFTValuesPerFingertip`, `kFTInputSize`, `kFTHistoryLength`, `kDefaultNumFingertips`, `kMaxBaroChannels`, `kMaxTofChannels`)와 `FingertipFTState`, `BesselFilterBaro`/`BesselFilterTof`/`BarometerTrendDetector` alias 들은 `udp_hand_driver/udp_hand_constants.hpp` 로 이주했습니다. `BesselFilter6/11/1` dead alias 는 삭제. rtc_* 패키지는 robot/sensor agnostic — 디바이스별 stride 는 YAML `devices.<name>.sensor_layout` 으로 런타임 주입 (`rtc::DeviceSensorLayout`).
+| 열거형 · 헬퍼 | 값 / 역할 |
+|--------------|----------|
+| `CommandType` | `kPosition`, `kTorque`, `kPdFeedforward` (PD 위치 서보 + `DeviceOutput::feedforward` 오버레이) |
+| `GoalType` | `kJoint`, `kTask` |
+| `PublishRole` | `kRobotTransforms` (`tf2_msgs/TFMessage`). 구독 역할은 `target` 하나뿐이라 enum 이 없다 |
+| `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference` (비트마스크) |
+| `StateLane` · `IsLaneReadable` · `IsDeviceReadable` | lane 별 hole_mask 로 슬롯 freshness 판정 |
+| `SteadyNowNs` · `SensorGroupAgeNs` · `IsSensorGroupFresh` | 수신축 (`steady_clock`) 나이·freshness. 판정 규범은 [invariants.md](../agent_docs/invariants.md) |
 
-#### C++20 Concepts
+`GoalTypeToString()` / `CommandTypeToString()` / `PublishRoleToString()` 는 `constexpr` 이고, `CommandTypeToString()` 은 `JointCommand.command_type` 와 같은 와이어 문자열 (`"position"` / `"torque"` / `"pd_feedforward"`) 을 반환합니다.
 
-| Concept | 설명 |
-|---------|------|
-| `FloatingPointType` | `std::floating_point<T>` -- 필터 계수, 게인 파라미터 타입 제약 |
-| `TriviallyCopyableType` | `std::is_trivially_copyable_v<T>` -- SeqLock/SPSC 버퍼 호환 타입 제약 |
-
-#### 열거형
-
-| 열거형 | 값 | 설명 |
-|--------|---|------|
-| `StateLane` | `kPosition`, `kVelocity`, `kEffort` | `DeviceState` 의 세 조인트공간 lane 중 어느 것의 freshness 를 묻는지. 짝 헬퍼 `LaneHoleMask(dev, lane)` 가 lane→필드 매핑의 유일한 소유자이고, 판정은 `rtc::IsLaneReadable` 이 한다 |
-| `SteadyNowNs` | (열거형 아님 — 수신축 읽기) | `*_recv_steady_ns` 와 아래 나이 헬퍼가 재는 **그 clock** 을 한 곳에서 읽는다. `steady_clock` 고정 (wall 시각이 점프해도 안 움직여야 freshness 가 수신축에서 성립한다), RT-safe (vDSO). 생산자마다 `std::chrono` 세 줄을 다시 쓰면 "backend 와 같은 시계" 라는 주석이 우연으로만 참이 되고, 축을 바꿀 때 사본을 전부 찾아야 한다 |
-| `SensorGroupAgeNs` / `IsSensorGroupFresh` | (열거형 아님 — `DeviceState` 짝 헬퍼) | fingertip lane 의 그룹별 나이와 freshness. 나이는 미수신을 음수로 구분해 돌려주고, `IsSensorGroupFresh` 는 backend 의 `inference_enable` **와** 호출자 deadline 을 **둘 다** 요구한다 (앞은 값의 유효성, 뒤는 소비자의 시한이라 서로를 대신하지 못한다) |
-| `CommandType` | `kPosition`, `kTorque`, `kPdFeedforward` | 커맨드 모드. `kPdFeedforward`는 PD 위치 서보(`values`) + per-joint feedforward 토크(`DeviceOutput::feedforward`) 오버레이 — arm=kPosition, hand=kPdFeedforward 같은 mixed-command 출력에 사용 |
-| `GoalType` | `kJoint`, `kTask` | 목표 공간 타입 (uint8_t 기반) |
-| `PublishRole` | `kRobotTransforms` | YAML 로 선언하는 controller-owned 퍼블리시 역할. `kRobotTransforms`=`tf2_msgs/TFMessage` (controller가 사용하는 frame들을 묶어 발행). Device-wire 명령 발행은 `devices.<group>.backend`가, grasp/wbc/tof 상태는 각 controller가 소유하는 `SeqLock<T>` + `Setup*Publisher` 헬퍼가 담당하며 `PublishRole`을 거치지 않는다 |
-| `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference` | 디바이스 기능 비트마스크 (RT 루프 선택적 데이터 복사) |
-
-`GoalTypeToString()`, `CommandTypeToString()`, `PublishRoleToString()` -- `constexpr` 문자열 변환 함수. `CommandTypeToString()`은 `JointCommand.command_type`와 동일한 와이어 문자열(`"position"`/`"torque"`/`"pd_feedforward"`)을 반환한다.
-구독 역할은 singleton(`target`)만 남아 있어 enum이 없고, YAML parser가 `role:` 문자열(`target` / 호환용 `goal`)만 validate 한다.
-
-#### 주요 구조체
-
-> **참고:** `UdpHandState`는 `udp_hand_driver/udp_hand_state.hpp`에 있습니다 -- `rtc_base`에는 robot-agnostic 타입만 둡니다.
-
-**일반화된 디바이스 타입 (가변 DOF):**
-
-| 구조체 | 설명 |
+| 구조체 | 역할 |
 |--------|------|
-| `DeviceState` | 가변 채널 디바이스 상태 -- `positions[64]`, `velocities[64]`, `efforts[64]`, `hole_mask` · `velocity_hole_mask` · `effort_hole_mask` (lane 별 per-slot freshness — 비트 set = 그 슬롯이 직전 state 메시지에서 안 써짐; **0 = 구멍 주장 없음**이라 채우지 않는 생산자의 판정이 불변이다. `positions` 는 `rtc::IsDeviceReadable` 이 소비하고, 나머지 둘은 `rtc::IsLaneReadable` 이 소비한다 — `JointState` 가 두 lane 을 optional 로 두므로 빈 lane 은 정상 입력이고 `num_channels` 는 그걸 말해주지 못한다), 모터 공간 (`motor_positions[64]`, `motor_velocities[64]`, `motor_efforts[64]`), 센서 (`sensor_data[128]`, `sensor_data_raw[128]`), 추론 (`inference_data[64]`, `inference_enable[8]`, `num_inference_groups`, `inference_recv_steady_ns[8]` · `inference_sequence[8]` — 그룹별 수신 steady 시각과 표본 카운터. **0 = 미수신**이라 채우지 않는 생산자의 판정이 불변이고, `inference_enable` (backend 자신의 판정) 과 달리 소비자가 **자기 deadline** 으로 나이를 재게 해 준다. 판정 헬퍼는 `SensorGroupAgeNs` · `IsSensorGroupFresh`) |
-| `ControllerState` | `devices[8]` (DeviceState 배열, `kMaxDevices`) + `num_devices`, `dt`, `iteration`, `t_relative_s` (CM 가 매 tick 채워주는 session-wide 상대 시간 — 실기는 첫 tick 이후 steady 시간, sim (`use_sim_time_sync`) 은 `iteration × dt` (#566); controller 는 `chrono::*::now()` 대신 이 값을 읽어 로그 timestamp 으로 사용) |
-| `DeviceOutput` | 가변 채널 출력 -- `commands[64]`, `goal_positions[64]`, `target_positions[64]`, `target_velocities[64]`, `trajectory_positions[64]`, `trajectory_velocities[64]`, `feedforward[64]` (per-joint feedforward 토크 Nm, `kPdFeedforward` 전용, 그 외 모드는 무시), `goal_type`, `command_type` (`std::optional<CommandType>` — per-device override; `nullopt` 이면 `ControllerOutput::command_type` 전역 기본값을 상속) |
-| `ControllerOutput` | `devices[8]` (DeviceOutput 배열, `kMaxDevices`) + `actual_task_positions[6]`, `task_goal_positions[6]`, `trajectory_task_positions[6]`, `trajectory_task_velocities[6]`, `valid`, `command_type` (전역 기본 `CommandType`), **TF 발행용 SE3** (`arm_tip_pose` + valid, `virtual_tcp_pose` + valid, `task_link_poses[8]` + valid). `grasp_state`/`wbc_state`/`tof_snapshot` 는 controller 별 SeqLock 으로 분리되어 ControllerOutput 에서 제거됨. |
-| `Pose` | RT-safe SE3 carrier — `position[3]`, `quaternion[4]` (Hamilton w,x,y,z; identity = (1,0,0,0)). free-standing struct, `PublishSnapshot::GroupCommandSlot::{arm_tip,virtual_tcp,task_link}_pose` 가 공유 |
+| `DeviceState` / `ControllerState` | 가변 채널 디바이스 상태 (position·velocity·effort, motor, sensor, inference) / `devices[8]` + `dt`, `iteration`, `t_relative_s` |
+| `DeviceOutput` / `ControllerOutput` | 디바이스별 command·goal·target·trajectory·feedforward / `devices[8]` + task-space 값 + TF 발행용 SE3 |
+| `Pose` | RT-safe SE3 (`position[3]`, Hamilton quaternion w,x,y,z) |
+| `DeviceNameConfig` | 디바이스 이름·joint/sensor 이름·`DeviceUrdfConfig`·`DeviceJointLimits`·`DeviceSensorLayout`·`safe_position` |
+| `TopicConfig` | 디바이스 그룹별 구독/퍼블리시 토픽 (YAML 삽입 순서 보존). `GetFirstSubscribeTopic()` 은 `std::string` 반환이라 초기화 시에만 |
 
-> **참고:** domain-specific POD (`rtc::grasp::GraspStateData`, `integrated_bringup::WbcStateData`, `integrated_bringup::ToFSnapshotData`)는 각각의 자연스러운 owner 패키지에 있습니다 -- `rtc_base`는 robot-agnostic primitive (`Pose`, `DeviceState`, `DeviceOutput`)만 보유합니다.
-
-**설정 타입:**
-
-| 구조체 | 설명 |
-|--------|------|
-| `DeviceUrdfConfig` | URDF 파싱용 -- `package`, `path`, `root_link`, `tip_link` |
-| `DeviceJointLimits` | 관절 한계 -- `max_velocity`, `max_torque`, `position_lower`, `position_upper` |
-| `DeviceSensorLayout` | 센서 패킹 layout -- `primary_count_per_group`, `secondary_count_per_group`, `values_per_group`, `inference_values_per_group`, `has_native_contact`, `has_native_displacement`. 앞 4개는 stride/offset 계산용; 뒤 2개 bool 은 backend capability advertisement (consumer 가 native vs derived signal 경로 분기) — rtc_* 는 두 bool 의 의미를 모르고 전달만 |
-| `DeviceNameConfig` | 디바이스 이름, `joint_state_names`, `joint_command_names`, `motor_state_names`, `sensor_names`, URDF 설정(`DeviceUrdfConfig`), 관절 한계(`DeviceJointLimits`), 센서 layout(`DeviceSensorLayout`, optional), 안전 위치(`safe_position`) |
-| `TopicConfig` | 디바이스 그룹별 구독/퍼블리시 토픽 라우팅 (`std::vector<std::pair>` 기반, YAML 삽입 순서 보존) |
-
-**토픽 설정 보조 구조체:**
-
-| 구조체 | 설명 |
-|--------|------|
-| `SubscribeTopicEntry` | `topic_name` (구독 role은 singleton이라 enum 없음; controller-owned only) |
-| `PublishTopicEntry` | `topic_name` + `PublishRole` |
-| `DeviceTopicGroup` | `subscribe` + `publish` 토픽 엔트리 벡터 |
-
-`TopicConfig` 주요 메서드:
-
-| 메서드 | 설명 |
-|--------|------|
-| `operator[](name)` | 삽입 순서 보존 접근/생성 |
-| `HasGroup(name)` | 그룹 존재 및 토픽 보유 여부 확인 (`noexcept`) |
-| `HasSubscribeTopic(group)` | 그룹에 구독 엔트리가 1개 이상 존재하는지 확인 (`noexcept`) |
-| `GetFirstSubscribeTopic(group)` | 그룹의 첫 구독 토픽 이름 반환 (RT-unsafe, 초기화 시에만 호출) |
-
-> **RT 안전 설계:** 모든 구조체는 zero-initialized, trivially copyable로 설계되어 SeqLock/SPSC 버퍼와 호환됩니다.
-> **주의:** `TopicConfig::GetFirstSubscribeTopic()`은 `std::string`을 반환하므로 RT 경로에서 호출 금지 -- 초기화 시에만 사용.
-
----
+`ControllerState::t_relative_s` 는 CM 이 매 tick 채우는 세션 상대 시간입니다. controller 는 `chrono::*::now()` 대신 이 값을 로그 timestamp 로 씁니다.
 
 ### 필터 (`filters/`)
 
-#### Bessel 필터 (`bessel_filter.hpp`)
+모두 `noexcept`, 할당 없음, 채널 수 `N` 은 템플릿 인자 (`static_assert(N > 0)`) 입니다. 디바이스·센서별 alias 는 사용 패키지에서 선언합니다 (rtc_base 에는 `KalmanFilter6/11/1` 만).
 
-4차 Bessel 저역통과 필터 -- 최대 평탄 군지연 특성으로 신호 형상을 보존합니다.
-
-- 2개 연속 biquad 섹션 (bilinear transform + 주파수 prewarping, Direct Form II Transposed)
-- N개 독립 채널 동시 필터링 (`static_assert(N > 0)` 컴파일 타임 검증)
-- RT-safe: `Apply()`, `ApplyScalar()` 함수는 `noexcept`, 할당 없음
-- `ComputeBiquad()` -- `constexpr` 지원 (고정 차단 주파수 시 컴파일 타임 계산 가능)
-
-디바이스/센서 종류별 alias 는 사용 패키지 안에서 `BesselFilterN<N>` 로 선언합니다 (예: `udp_hand_driver` 의 `BesselFilterBaro`/`BesselFilterTof`). rtc_base 자체에는 alias 없음.
-
-**API:**
-
-| 메서드 | 시그니처 | 설명 |
-|--------|---------|------|
-| `Init` | `void Init(double cutoff_hz, double sample_rate_hz)` | 차단 주파수 + 샘플링 레이트로 계수 계산 (Nyquist 미만 필수) |
-| `Apply` | `[[nodiscard]] array<double,N> Apply(const array<double,N>&) noexcept` | N채널 동시 필터링 |
-| `ApplyScalar` | `[[nodiscard]] double ApplyScalar(double x, size_t ch) noexcept` | 단일 채널 필터링 |
-| `Reset` | `void Reset() noexcept` | 내부 상태 초기화 |
-
-```cpp
-rtc::BesselFilterN<6> filter;       // 6채널 (예: 6-DOF 로봇 관절)
-filter.Init(30.0, 500.0);           // 30 Hz 차단, 500 Hz 샘플링
-auto filtered = filter.Apply(raw_positions);  // RT-safe
-```
-
-#### 칼만 필터 (`kalman_filter.hpp`)
-
-이산시간 칼만 필터 -- 등속 운동 모델 기반 위치/속도 추정기입니다.
-
-- 상태: [position, velocity]^T (채널당)
-- 관측: 위치만 관측 (H = [1, 0])
-- `static_assert(N > 0)` -- 컴파일 타임 채널 수 검증
-- RT-safe: `Predict()`, `Update()`, `PredictAndUpdate()` 함수는 `noexcept`, 할당 없음
-- 접근자 사전 조건: `position(i)`, `velocity(i)` -- `i < N` 필수 (범위 검사 미수행, 성능 우선)
-
-| 타입 별칭 | N | 용도 |
-|-----------|---|------|
-| `KalmanFilter6` | 6 | 로봇 관절 |
-| `KalmanFilter11` | 11 | 핑거팁 센서 |
-| `KalmanFilter1` | 1 | 스칼라 |
-
-**API:**
-
-| 메서드 | 시그니처 | 설명 |
-|--------|---------|------|
-| `Init` | `void Init(double q_pos, double q_vel, double r, double dt)` | 노이즈 파라미터 + 시간 간격 설정 |
-| `Init` | `void Init(const Params& p)` | Params 구조체 오버로드 |
-| `Predict` | `void Predict() noexcept` | 예측 단계만 수행 |
-| `Update` | `[[nodiscard]] array<double,N> Update(const array<double,N>&) noexcept` | 갱신 단계만 수행 |
-| `UpdateScalar` | `[[nodiscard]] double UpdateScalar(double z, size_t ch) noexcept` | 단일 채널 갱신 |
-| `PredictAndUpdate` | `[[nodiscard]] array<double,N> PredictAndUpdate(const array<double,N>&) noexcept` | 예측+갱신 통합 |
-| `SetInitialPositions` | `void SetInitialPositions(const array<double,N>&) noexcept` | 초기 위치 설정 |
-| `positions` | `[[nodiscard]] array<double,N> positions() const noexcept` | 추정 위치 배열 반환 |
-| `velocities` | `[[nodiscard]] array<double,N> velocities() const noexcept` | 추정 속도 배열 반환 |
-| `position` | `[[nodiscard]] double position(size_t i) const noexcept` | 채널별 추정 위치 |
-| `velocity` | `[[nodiscard]] double velocity(size_t i) const noexcept` | 채널별 추정 속도 |
-| `position_variance` | `[[nodiscard]] double position_variance(size_t i) const noexcept` | 위치 분산 (불확실성) |
-| `kalman_gain` | `[[nodiscard]] double kalman_gain(size_t i) const noexcept` | 마지막 칼만 게인 |
-| `Reset` | `void Reset() noexcept` | 내부 상태 초기화 |
+| 클래스 | 용도 | 주요 API |
+|--------|------|---------|
+| `BesselFilterN<N>` | 4차 Bessel 저역통과 (최대 평탄 군지연) | `Init(cutoff_hz, sample_rate_hz)` (Nyquist 미만), `Apply`, `ApplyScalar`, `Reset` |
+| `KalmanFilterN<N>` | 등속 모델 위치/속도 칼만 필터 (위치만 관측) | `Init(q_pos, q_vel, r, dt)`, `PredictAndUpdate`, `positions`, `velocities`, `Reset` |
+| `SensorRateEstimator` | EMA 센서 샘플링 레이트 추정 (이상치 제거) | `Init(nominal_hz)`, `Tick` (단일 스레드), `rate_hz`, `warmed_up`, `deviation_warning` |
+| `SlidingTrendDetector<N, S>` | O(1) 슬라이딩 윈도우 OLS 드리프트 감지 | `Init(window, threshold, rate_hz)`, `Update` → `Result{slopes, drift_flags, window_full}` |
 
 ```cpp
 KalmanFilter6 kf;
-kf.Init(1e-3, 1e-2, 1e-1, 0.002);  // q_pos, q_vel, r, dt
-auto filtered = kf.PredictAndUpdate(measurements);  // RT-safe
-auto vels = kf.velocities();  // 추정 속도
+kf.Init(1e-3, 1e-2, 1e-1, 0.002);                  // q_pos, q_vel, r, dt
+auto filtered = kf.PredictAndUpdate(measurements);
+auto vels = kf.velocities();
 ```
 
-#### 센서 레이트 추정기 (`sensor_rate_estimator.hpp`)
-
-EMA(지수 이동 평균) 기반 실시간 센서 샘플링 레이트 추정기입니다.
-
-- `steady_clock::now()`는 Linux에서 vDSO 기반 -- syscall 없음
-- Tick()당 3개 double 연산 (약 5ns 소요)
-- 이상치 제거: EMA의 3배를 벗어나는 dt 값 자동 필터링
-- 워밍업 단계(기본 50샘플)에서는 빠른 수렴용 alpha=0.1 사용
-
-**API:**
-
-| 메서드 | 시그니처 | 설명 |
-|--------|---------|------|
-| `Init` | `void Init(double nominal_rate_hz, double alpha=0.01, int warmup=50) noexcept` | 공칭 레이트 + EMA 파라미터 설정 |
-| `Tick` | `void Tick() noexcept` | 센서 사이클마다 1회 호출 (단일 스레드 전용) |
-| `rate_hz` | `[[nodiscard]] double rate_hz() const noexcept` | 추정 샘플링 레이트 (Hz) |
-| `dt_sec` | `[[nodiscard]] double dt_sec() const noexcept` | 추정 샘플링 주기 (초) |
-| `warmed_up` | `[[nodiscard]] bool warmed_up() const noexcept` | 워밍업 완료 여부 |
-| `deviation_warning` | `[[nodiscard]] bool deviation_warning(double tol=10.0) const noexcept` | 공칭 레이트 대비 편차 경고 (기본 10%) |
-| `Reset` | `void Reset() noexcept` | 내부 상태 초기화 |
-
-```cpp
-SensorRateEstimator rate_est;
-rate_est.Init(500.0);           // 공칭 500 Hz
-rate_est.Tick();                // 센서 사이클마다 호출
-double actual = rate_est.rate_hz();  // 추정 레이트
-```
-
-#### 슬라이딩 트렌드 감지기 (`sliding_trend_detector.hpp`)
-
-O(1) 슬라이딩 윈도우 OLS(최소자승법) 기반 실시간 드리프트 감지기입니다.
-
-- 틱당 약 10 FLOP/채널 (O(1) 시간 복잡도)
-- `std::array` 기반 순환 버퍼 -- 동적 할당 없음
-- 워밍업 후 윈도우가 가득 차면 기울기/드리프트 플래그 반환
-- 런타임 `sample_rate_hz` 설정 시 기울기를 [단위/초]로 변환
-
-디바이스/센서 종류별 alias 는 사용 패키지 안에서 `SlidingTrendDetector<N, S>` 로 선언합니다 (예: `udp_hand_driver` 의 `BarometerTrendDetector = SlidingTrendDetector<8, 2500>`). rtc_base 자체에는 alias 없음.
-
-**API:**
-
-| 메서드 | 시그니처 | 설명 |
-|--------|---------|------|
-| `Init` | `void Init(size_t window_size, double threshold, double rate_hz=0.0) noexcept` | 윈도우 크기, 드리프트 임계값, 샘플레이트 설정 |
-| `Update` | `[[nodiscard]] Result Update(const array<double,N>&) noexcept` | 샘플 입력 + 기울기/드리프트 결과 반환 (O(1)) |
-| `Reset` | `void Reset() noexcept` | 내부 상태 초기화 |
-| `set_drift_threshold` | `void set_drift_threshold(double) noexcept` | 런타임 임계값 변경 |
-| `set_sample_rate_hz` | `void set_sample_rate_hz(double) noexcept` | 런타임 샘플레이트 변경 |
-
-`Result` 구조체는 `slopes[N]`, `drift_flags[N]`, `window_full` 필드를 포함합니다.
-
----
+접근자 `position(i)` · `velocity(i)` 는 `i < N` 이 사전조건입니다 (범위 검사 없음).
 
 ### 타이밍 (`timing/`)
 
-#### 타이밍 프로파일러 (`timing_profiler_base.hpp`)
+`TimingProfilerBase<Buckets, BucketWidthUs, BudgetUs>` 는 락-프리 단일 프로듀서 프로파일러입니다. 히스토그램 기반 p95/p99, count/sum/min/max/last/mean/stddev, over-budget 카운터를 제공합니다. 기본 `<20, 100, 2000>` 이며 백분위 해상도가 모자라면 `Buckets × BucketWidthUs` 를 유지한 채 폭을 줄입니다 (예: `ControllerTimingProfiler` `<200, 10, 2000>`).
 
-락-프리, 단일 프로듀서 타이밍 프로파일러 기반 클래스입니다. 히스토그램 기반 백분위수를 제공합니다.
+| 메서드 | 설명 |
+|--------|------|
+| `UpdateTotal(double us)` | 샘플 기록 (프로듀서 스레드 하나) |
+| `GetBaseStats()` | `BaseStats` 스냅샷 (어느 스레드에서나) |
+| `LastUs()` / `ResetBase()` | 마지막 값 / 통계 초기화 |
 
-- 실행 통계: count / sum / min / max / last / mean / stddev
-- 고정 폭 히스토그램 + 선형 보간 백분위수 (p95, p99)
-- 오버 버짓 카운터
-- 단일 프로듀서 스레드에서 `UpdateTotal()` 호출, `GetBaseStats()`는 어느 스레드에서나 호출 가능
-- 서브클래스에서 히스토그램 범위를 커스터마이징하는 템플릿 파라미터: `Buckets` (기본 20), `BucketWidthUs` (기본 100us), `BudgetUs` (기본 2000us). 서브클래스에서 백분위 해상도가 부족하면 `Buckets` × `BucketWidthUs`를 같게 유지하면서 `BucketWidthUs`를 줄이세요 (예: `ControllerTimingProfiler`는 `<200, 10, 2000>`로 10 µs 해상도, `UdpHandTimingProfiler`는 `<250, 20, 2000>`로 20 µs 해상도)
+백분위수는 `ResetBase()` 이후 **누적** 값입니다 -- "최근 N개" 가 필요하면 호출자가 주기적으로 `ResetBase()` 합니다. 스냅샷 일관성·오버플로 버킷 보간·max clamp 는 헤더 Doxygen 이 설명합니다.
 
-**정확도 주의사항:**
+**Per-thread timing 채널** (`thread_timing_sample.hpp` · `thread_timing_producer.hpp` · `thread_timing_csv_logger.hpp`): 임의 RT/soft-RT 스레드의 per-tick CSV 로깅입니다. 접두 3열 `t_wall_ns,tick_count,run_id` 는 logger 가 emit 하므로 RT producer 는 비용을 내지 않습니다. 새 채널은 다음 세 가지로 추가합니다.
 
-- **스냅샷 일관성**: `UpdateTotal()`은 histogram 등 모든 필드를 `relaxed`로 갱신한 뒤 마지막에 `count_`를 `release`로 증가시킵니다. `GetBaseStats()`는 `count_`를 `acquire`로 먼저 읽어 `sum(histogram) ≥ count` 불변식을 보장 — `p95/p99`가 `0.0`으로 보고되는 torn-read 블립을 방지합니다.
-- **오버플로 버킷 처리**: 샘플이 `kBuckets * kBucketWidthUs` (= `BudgetUs`)를 초과하면 마지막(오버플로) 버킷에 적재됩니다. p95/p99가 이 버킷에 떨어지면 `[bucket_lo, max_us]` 구간에서 선형 보간 — 단순 clip(bucket_lo 반환) 대신 관측된 `max_us`를 상한으로 사용합니다. `max_us`가 오버플로 바닥보다 훨씬 큰 경우 (예: 2000µs vs 5000µs) p99가 정확한 꼬리 위치를 반영합니다.
-- **Max clamp**: `InterpolateBucket()`은 결과를 `max_us`로 clamp합니다. 정의상 p95 ≤ max, p99 ≤ max이지만, 선형 보간이 bucket 내 균등 분포를 가정하기 때문에 샘플이 bucket 하단에 클러스터된 경우 (예: 14–60 µs 샘플이 100 µs 폭 bucket에 모인 경우) clamp 없이는 추정값이 max를 초과할 수 있습니다.
-- **누적 vs 최근**: 백분위수는 `ResetBase()` 이후 관측된 모든 샘플에 대해 계산됩니다. "최근 N개" 백분위를 원하면 호출자가 주기적으로 `ResetBase()`를 호출해야 합니다 (참고: `rt_controller_node`는 Summary 출력 직후 리셋).
+1. trivially copyable `Payload` struct
+2. header/row writer 자유 함수
+3. `using MyBuffer = ThreadTimingProducer<Payload, N>;`
 
-**API:**
-
-| 메서드 | 시그니처 | 설명 |
-|--------|---------|------|
-| `UpdateTotal` | `void UpdateTotal(double us) noexcept` | 타이밍 샘플 기록 (단일 프로듀서) |
-| `GetBaseStats` | `[[nodiscard]] BaseStats GetBaseStats() const noexcept` | 전체 통계 스냅샷 반환 |
-| `LastUs` | `[[nodiscard]] double LastUs() const noexcept` | 마지막 기록 값 |
-| `ResetBase` | `void ResetBase() noexcept` | 모든 통계 초기화 |
-
-`BaseStats` 구조체: `count`, `min_us`, `max_us`, `mean_us`, `stddev_us`, `p95_us`, `p99_us`, `last_us`, `over_budget`, `histogram[]`.
-
-`PhaseStats` 구조체: `mean_us`, `min_us`, `max_us` -- 서브클래스에서 단계별 추적에 사용.
-
----
+CM (`CmTimingBuffer`), MPC (`MpcTimingBuffer`), hand UDP (`HandUdpTimingBuffer`) 가 `RtTickTimingPayload` (`t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 로 쓰는 사용처입니다.
 
 ### 스레딩 (`threading/`)
 
 #### 스레드 구성 (`thread_config.hpp`)
 
-`ThreadConfig` 구조체는 CPU 어피니티, 스케줄러 정책, 우선순위, nice 값, 스레드 이름을 정의합니다.
+`ThreadConfig` 는 CPU 어피니티, 스케줄러 정책, 우선순위, nice, 스레드 이름을 정의하고, 코어 수별 프리셋 (4, 6, 8, 10, 12, 14, 16코어) 을 제공합니다.
 
-> **레이아웃 값의 SSoT 는 이 헤더가 아니라 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 입니다.** tier 상수 (`k*Config*`) 와 `SelectThreadConfigsForCoreCount()` 는 `thread_config_generated.hpp` 로 생성되고, 이 헤더는 구조체 정의와 설계 산문을 갖습니다. 같은 manifest 가 shell 헬퍼 (`repo_scripts/scripts/lib/thread_layout_generated.sh`) 와 Python launch 미러 (`rtc_tools/rtc_tools/launch/thread_layout_generated.py`), 그리고 아래 매트릭스까지 생성합니다.
+> **레이아웃 값의 SSoT 는 이 헤더가 아니라 [thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 입니다.** tier 상수 (`k*Config*`) 와 `SelectThreadConfigsForCoreCount()` 는 `thread_config_generated.hpp` 로 생성됩니다. 같은 manifest 가 shell 헬퍼 (`repo_scripts/scripts/lib/thread_layout_generated.sh`), Python launch 미러 (`rtc_tools/rtc_tools/launch/thread_layout_generated.py`), 아래 매트릭스를 생성합니다. tier 를 바꾸려면 manifest 를 고치고 `gen_thread_layout.py --write` 를 돌립니다.
 
-CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4, 6, 8, 10, 12, 14, 16코어).
-
-> **헤더 내 선언 순서**: tier 블록은 코어 수 오름차순 (4 → 6 → 8 → 10 → 12 → 14 → 16), 각 tier 내부는 `sched_priority` 내림차순 (rt_control 90 → rt_callback 70 → mpc 60/55 → SCHED_OTHER 0 그룹), priority 동률 시 심볼명 알파벳 순 (Arm → Hand → NrtCallback → NrtLogging → SimThread → Viewer).
+> **선언 순서 규약** (manifest 의 role 순서가 곧 emission 순서): tier 블록은 코어 수 오름차순, 각 tier 내부는 `sched_priority` 내림차순 (rt_control 90 → rt_callback 70 → mpc 60/55 → SCHED_OTHER 0 그룹), priority 동률은 심볼명 알파벳 순 (Arm → Hand → NrtCallback → NrtLogging → SimThread → Viewer).
 
 **코어 수별 스레드 레이아웃:**
 
@@ -376,234 +175,128 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 > ¹ 4코어는 degraded mode — mpc 가 CFS 로 강등 (RT 자원 부족). Core 0 에 nrt + driver 모두 합쳐짐.
 > ² 6코어는 degraded mode — arm/hand_driver 가 Core 4 공유. (nrt 3 레인이 Core 2 인 것은 모든 ≥6c tier 공통이며 6코어 특례가 아니다.)
 > ³ `cpu_core = -1` sentinel: pin 없음. sim_thread / viewer 는 모든 tier 에서 cpu_shield 가 해제한 코어에서 CFS 로 roam.
-> ⁴ `arm_driver` 의 CFS 0 은 *프로세스* 모델이다 — `ApplyThreadConfig` 대상이 아니라 launch 가 소비하는 코어 배치 값이고, 프로세스의 main/executor 는 실제로 CFS 다. 그 안의 upstream `controller_manager` 제어 루프는 FIFO 50 이며, 이 표의 코어에 핀되는 것은 프로세스가 아니라 그 루프다 (`taskset` 은 main thread 밖에 못 옮긴다). 핀은 launch 가 생성하는 CM 파라미터 파일이 나른다.
+> ⁴ `arm_driver` 의 CFS 0 은 *프로세스* 모델이다 — `ApplyThreadConfig` 대상이 아니라 launch 가 소비하는 코어 배치 값이고, 프로세스의 main/executor 는 실제로 CFS 다.
+>   그 안의 upstream `controller_manager` 제어 루프는 FIFO 50 이며, 이 표의 코어에 핀되는 것은 프로세스가 아니라 그 루프다 (`taskset` 은 main thread 밖에 못 옮긴다). 핀은 launch 가 생성하는 CM 파라미터 파일이 나른다.
 >
-> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `test/test_mpc_thread_config.cpp` 의 tier 쌍 + cpu_core=-1 sentinel 강제 테스트가 보장.
+> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다 (`test/test_mpc_thread_config.cpp` 가 보장).
 
-**MuJoCo 시뮬레이션 코어 레이아웃:**
+`SystemThreadConfigs` 는 `rt_control`, `rt_callback`, `nrt_logging`, `nrt_callback`, `nrt_publish`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`) 를 가집니다. actuator publish 는 `rt_control` 이 tick 안에서 inline 으로 하고, hand UDP receive thread 는 `udp_hand_driver` 내부 (`kHandUdpRecvConfig`) 에 있습니다. 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (`cpu_core=-1`) 를 호출자가 명시적으로 씁니다.
 
-`SystemThreadConfigs.sim_thread` / `.viewer` 가 SSoT 입니다 (`SelectThreadConfigs()` 가 반환). 모든 tier 에서 `sim_thread.cpu_core = -1` / `viewer.cpu_core = -1` — MuJoCo physics 와 GLFW viewer 는 모두 caller-controlled (no pin). 같은 값이 `rtc_tools.launch.thread_layout.get_sim_core() / get_viewer_core()` 로도 미러링됩니다.
+`MpcThreadConfig` 의 필드는 `main` (MPC solve 스레드의 `ThreadConfig`) 하나입니다. Aligator 의 병렬화는 OpenMP 이고 자기 스레드를 직접 소유하므로 외부 핸들을 받지 않습니다. `ValidateSystemThreadConfigs()` 는 (1) MPC main priority < rt_callback priority, (2) `arm_driver` / `hand_driver` 의 `cpu_core` 가 모든 RT controller thread (rt_control/rt_callback/mpc_main) 와 disjoint, (3) `cpu_core=-1` 은 disjointness 검사에서 제외를 검증합니다.
 
-`cpu_shield.sh --sim` 모드는 RT cluster 코어 (Core 1-5) 만 격리하고 나머지 코어를 해제하므로, MuJoCo physics + GLFW viewer 는 해제된 코어에서 CFS 로 자유롭게 roam 합니다.
+**MuJoCo 시뮬레이션:** 모든 tier 에서 `sim_thread` / `viewer` 의 `cpu_core = -1` (no pin) 입니다. `cpu_shield.sh --sim` 은 RT cluster 코어 (Core 1-5) 만 격리하고 나머지를 해제하므로 physics 와 GLFW viewer 는 해제된 코어에서 CFS 로 roam 합니다. 같은 값이 `rtc_tools.launch.thread_layout.get_sim_core()` / `get_viewer_core()` 로 미러링됩니다.
 
 #### 스레드 유틸리티 (`thread_utils.hpp`)
 
-| 함수 | 설명 | RT-safe | `[[nodiscard]]` |
-|------|------|---------|-----------------|
-| `ApplyThreadConfig()` | 스레드 이름 → CPU 어피니티 → 스케줄러·우선순위. **이름을 먼저** 붙이므로 어피니티(EINVAL)·스케줄러(EPERM) 가 실패해도 `ps -L`·검증기가 그 스레드를 이름으로 찾는다 | N/A (초기화) | Yes |
-| `ApplyThreadConfigWithFallback()` | RT 실패 시 SCHED_OTHER 폴백 | N/A (초기화) | Yes |
-| `ApplyThreadConfigVerbose()` | `ApplyThreadConfig()` + 표준 성공/실패 로그 1줄 — 런타임 스레드 진입점의 기동 announce 단일 출처 | N/A (초기화) | No (반환값 discard 허용) |
-| `ValidateThreadConfig()` | 단일 ThreadConfig 유효성 검증 (코어 범위, 정책, 우선순위, 이름) | No | - |
-| `ValidateSystemThreadConfigs()` | 전체 시스템 스레드 설정 검증 (동일 코어 동일 RT 우선순위 충돌 감지) | No | - |
-| `CheckThreadHealthFast()` | 비트필드 기반 스레드 상태 검증 | **Yes** | - |
-| `CheckThreadHealth()` | 문자열 기반 스레드 건강 검사 | No | - |
-| `VerifyThreadConfig()` | 현재 스레드 설정 문자열 반환 | No | - |
-| `GetPhysicalCpuCount()` | 물리 코어 수 (SMT 제외, sysfs 토폴로지 기반) | No | - |
-| `GetOnlineCpuCount()` | 논리 CPU 수 (SMT 포함) | No | - |
-| `SelectThreadConfigs()` | 코어 수 기반 레이아웃 자동 선택 (`SystemThreadConfigs` 반환) | No | - |
-| `GetThreadStats()` | 레이턴시 기본 통계 (min/max/avg) | No | - |
-| `GetThreadMetrics()` | 레이턴시 포괄 통계 (min/max/avg/jitter/p95/p99) | No | - |
-| `SafeStrerror()` | 스레드 안전 `strerror_r()` 래퍼 | No | - |
+| 함수 | 설명 |
+|------|------|
+| `ApplyThreadConfig()` | 스레드 이름 → CPU 어피니티 → 스케줄러·우선순위 (`[[nodiscard]]`). 이름을 먼저 붙이므로 어피니티(EINVAL)·스케줄러(EPERM) 가 실패해도 `ps -L`·검증기가 이름으로 찾는다 |
+| `ApplyThreadConfigWithFallback()` | RT 실패 시 SCHED_OTHER 폴백 |
+| `ApplyThreadConfigVerbose()` | `ApplyThreadConfig()` + 표준 성공/실패 로그 1줄 (런타임 스레드 진입점의 announce 단일 출처) |
+| `ValidateThreadConfig()` / `ValidateSystemThreadConfigs()` | 단일 / 전체 설정 검증 (코어 범위, 정책, 우선순위, 이름, 코어·우선순위 충돌) |
+| `CheckThreadHealthFast()` | 비트필드 기반 상태 검증 -- **RT-safe** (`ThreadHealthFlag`: `kOk`, `kWrongCore`, `kPolicyChanged`, `kPriorityChanged`, `kNiceChanged`) |
+| `CheckThreadHealth()` / `VerifyThreadConfig()` | 문자열 기반 검사 / 현재 설정 문자열 (RT 불가) |
+| `GetPhysicalCpuCount()` / `GetOnlineCpuCount()` | 물리 코어 수 (SMT 제외, sysfs) / 논리 CPU 수 |
+| `SelectThreadConfigs()` | 코어 수 기반 레이아웃 자동 선택 (`>=` 계단식) |
+| `GetThreadStats()` / `GetThreadMetrics()` | 레이턴시 통계 (min/max/avg) / 포괄 통계 (jitter, p95, p99 포함) |
 
-`ThreadHealthFlag` 비트 플래그: `kOk`, `kWrongCore`, `kPolicyChanged`, `kPriorityChanged`, `kNiceChanged`.
-
-`SystemThreadConfigs` 구조체: `rt_control`, `rt_callback`, `nrt_logging`, `nrt_callback`, `nrt_publish` (controller-owned publish jthread — `nrt_callback` 과 같은 slot, 이름만 별개), `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`). `rt_outbound`/`udp_recv` 필드는 없음 — actuator publish 는 `rt_control` 이 rt_loop tick 안에서 inline 으로 수행하고, hand UDP receive thread 는 hand_driver 프로세스 내부 (`udp_hand_driver/udp_hand_constants.hpp::kHandUdpRecvConfig`) 에 있으며, 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1 sentinel) 을 caller 가 명시적으로 사용한다.
-
-`MpcThreadConfig` 구조체:
-- `main`: MPC solve 스레드의 `ThreadConfig`. **필드는 이것 하나다** — Aligator 의 병렬화는 OpenMP 이며 자기 스레드를 직접 소유·생성하므로 외부 핸들을 받지 않는다. 병렬 MPC 를 되살린다면 `SolverProxDDP::setNumThreads` + 그 OpenMP 풀의 pinning 이지 여기 `ThreadConfig` 를 추가하는 것이 아니다.
-- `SelectThreadConfigs()`가 물리 코어 수에 맞는 `kMpcConfig{4,6,8,10,12,14,16}Core` 프리셋을 채워 반환 (tier dispatch는 `>=` 계단식). 상수와 dispatch 는 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 에서 생성되므로 tier 를 바꾸려면 manifest 를 고치고 `gen_thread_layout.py --write` 를 돌린다.
-- `ValidateSystemThreadConfigs()`는 (1) MPC main priority < rt_callback priority, (2) `arm_driver` / `hand_driver` cpu_core 가 모든 RT controller thread (rt_control/rt_callback/mpc_main) 와 disjoint, (3) cpu_core=-1 sentinel 은 disjointness sweep 에서 skip 등의 불변식을 검증.
-
-`ThreadMetrics` 구조체: `min_latency_us`, `max_latency_us`, `avg_latency_us`, `jitter_us`, `percentile_95_us`, `percentile_99_us`.
-
-#### RT 프로세스 heap 정책 (`rt_heap.hpp`)
-
-`[[nodiscard]] bool ConfigureRtHeap() noexcept` — glibc `mallopt(M_TRIM_THRESHOLD, -1)` + `mallopt(M_MMAP_MAX, 0)`. 해제한 메모리를 커널에 돌려주지 않고 큰 블록도 heap arena 에서 받게 해, warmup 이후의 할당·해제가 syscall 이 되지 않는다. `mlockall` (RT-HOST-1) 과 함께 RT 프로세스 main 진입 직후 1회 부른다 — 설정은 프로세스 전역이다. 대가는 RSS 가 최대치에 머무는 것. RT 경로에서 할당이 수용된 유일한 신규 경로 (ONNX Runtime `Run()`) 의 수용 조건 1 이다 ([invariants.md](../agent_docs/invariants.md) RT 절). 실패 (glibc 가 아니거나 설정 거부) 는 false — 호출자가 경고하고 계속 돈다. 효과는 `test_rt_heap` (64 MiB probe 가 mmap 되지 않고, 해제 후 arena 가 줄지 않음) 이 고정한다.
+`ConfigureRtHeap()` (`rt_heap.hpp`) 는 glibc `mallopt(M_TRIM_THRESHOLD, -1)` + `mallopt(M_MMAP_MAX, 0)` 로 warmup 이후의 할당·해제가 syscall 이 되지 않게 합니다. `mlockall` (RT-HOST-1) 과 함께 RT 프로세스 main 진입 직후 1회 부르며 (프로세스 전역), 실패는 `false` 이고 호출자가 경고하고 계속 돕니다. 대가는 RSS 가 최대치에 머무는 것입니다 ([invariants.md](../agent_docs/invariants.md) RT 절의 ONNX Runtime 수용 조건 1).
 
 #### SeqLock (`seqlock.hpp`)
 
-락-프리 단일 쓰기 / 다중 읽기 동기화 프리미티브입니다.
+락-프리 단일 쓰기 / 다중 읽기 프리미티브입니다. **`T` 는 trivially copyable** (`static_assert`) 이어야 하고, **writer 는 하나**여야 합니다 -- `Store` 는 seq 를 RMW 없이 읽고 쓰므로 두 writer 가 겹치면 payload 가 찢기거나 seq 가 홀수로 남아 이후 모든 `Load` 가 영원히 재시도합니다.
 
-- **Writer**: Wait-free (2개 atomic store + memcpy), 홀수 시퀀스 = 쓰기 진행 중
-- **Reader**: Lock-free (contention 시 재시도, torn read 감지)
-- 요구사항: `T`는 `std::is_trivially_copyable_v<T>` 만족 필수 (`static_assert`)
-- 캐시 라인 정렬 (`kCacheLineSize` -- `types.hpp`에서 통합 정의)
+| 메서드 | 설명 |
+|--------|------|
+| `Store(const T&) noexcept` | Wait-free 쓰기 (홀수 시퀀스 = 쓰기 진행 중) |
+| `Load() const noexcept` | Lock-free 읽기 (torn read 시 재시도) |
+| `LoadInto(T& out) const noexcept` | 호출자 저장소로 직접 읽기 -- 큰 payload 의 스택 사본 제거. 재시도 중 `out` 이 잠시 torn 일 수 있으므로 다른 스레드가 읽는 저장소면 안 된다 |
+| `sequence() const noexcept` | 현재 시퀀스 번호 |
 
-**API:**
+#### SPSC 버퍼 (`concurrency/spsc_queue.hpp`)
 
-| 메서드 | 시그니처 | 설명 |
-|--------|---------|------|
-| `Store` | `void Store(const T& val) noexcept` | Wait-free 쓰기 (단일 producer) |
-| `Load` | `[[nodiscard]] T Load() const noexcept` | Lock-free 읽기 (torn read 시 재시도) |
-| `LoadInto` | `void LoadInto(T& out) const noexcept` | 같은 읽기를 호출자 저장소로 직접 — 큰 payload 를 멤버로 받을 때 `Load()` 의 스택 사본을 없앤다. 재시도 중 `out` 이 잠시 torn 일 수 있으므로 다른 스레드가 읽는 저장소면 안 된다 |
-| (주의) | — | **writer 는 하나**여야 한다. `Store` 는 seq 를 RMW 없이 읽고 쓰므로 두 writer 가 겹치면 payload 가 찢기거나 seq 가 홀수로 남아 이후 모든 `Load` 가 영원히 재시도한다 |
-| `sequence` | `[[nodiscard]] uint32_t sequence() const noexcept` | 현재 시퀀스 번호 조회 |
+RT 스레드 (producer) 에서 비-RT 스레드 (consumer) 로 데이터를 넘기는 락-프리 링 버퍼 `SpscQueue<T, N>` 입니다. `T` 는 trivially copyable POD, 용량 `N` 은 2의 거듭제곱 (`static_assert`) 입니다.
 
-```cpp
-SeqLock<ControllerState> state_lock;
-state_lock.Store(new_state);           // RT 스레드 (정기 tick @ control_rate, wait-free)
-auto snapshot = state_lock.Load();     // 다른 스레드 (lock-free, 재시도 가능)
-```
+| 메서드 | 설명 |
+|--------|------|
+| `Push(const T&)` | RT-safe, wait-free. 가득 차면 `false` + `drop_count` 증가 |
+| `Pop(T&)` | 비-RT consumer. 비었으면 `false` |
+| `drop_count()` | 드롭된 항목 수 |
 
-#### SPSC 버퍼 (`concurrency/spsc_queue.hpp` + 도메인별 alias)
+| 버퍼 | 용량 | 용도 |
+|------|------|------|
+| `ControlPublishBuffer` (`PublishSnapshot`) | 512 | ROS 2 퍼블리시 오프로드 |
+| `CmTimingBuffer` / `HandUdpTimingBuffer` | 512 | CM RT loop / hand UDP EventLoop per-tick timing CSV |
+| `MpcTimingBuffer` | 128 | MPC per-tick timing CSV |
 
-RT 스레드(producer)에서 비-RT 스레드(consumer)로 데이터를 전달하는 락-프리 링 버퍼입니다. 모든 buffer는 `SpscQueue<T, N>` 템플릿의 alias이며, `T` 는 trivially copyable POD 이어야 합니다.
-
-| 버퍼 | 데이터 | 용량 | 용도 |
-|------|--------|------|------|
-| `ControlPublishBuffer` | `PublishSnapshot` | 512 (~1초 @ default 500 Hz; ratio 1024/control_rate) | ROS2 퍼블리시 오프로드 |
-| `CmTimingBuffer` (`ThreadTimingProducer<RtTickTimingPayload, 512>`) | `ThreadTimingSample<RtTickTimingPayload>` | 512 (~1초 @ default 500 Hz) | CM RT loop per-tick timing CSV |
-| `MpcTimingBuffer` (`ThreadTimingProducer<RtTickTimingPayload, 128>`) | `ThreadTimingSample<RtTickTimingPayload>` | 128 (~6초 @20Hz) | MPC per-tick timing CSV |
-| `HandUdpTimingBuffer` (`ThreadTimingProducer<RtTickTimingPayload, 512>`) | `ThreadTimingSample<RtTickTimingPayload>` | 512 (~1초 @ default 500 Hz) | hand UDP EventLoop per-tick timing CSV |
-
-#### Per-thread timing 인프라 (`timing/thread_timing_*`)
-
-`timing/thread_timing_sample.hpp` + `thread_timing_producer.hpp` + `thread_timing_csv_logger.hpp` 3개 헤더가 임의 RT/soft-RT thread에 대한 per-tick CSV 로깅을 일반화한다 (`t_wall_ns,tick_count,run_id` 접두 3열은 logger 가 자동 emit — payload 가 아니므로 RT producer 는 비용을 내지 않는다). 새 timing 채널을 추가하려면:
-
-1. `Payload` POD struct 정의 (trivially copyable).
-2. header writer (`",col1,col2"`) + row writer (`",<v1>,<v2>"`) 자유 함수.
-3. `using MyBuffer = ThreadTimingProducer<Payload, N>;` alias.
-
-CM, MPC, udp_hand_driver의 hand UDP EventLoop가 이 패턴의 세 사용처. 향후 ONNX inference 등 새 thread는 동일 인프라를 재사용한다 — `RTControllerInterface` 변경 없음.
-
-**공통 API:**
-
-| 메서드 | 시그니처 | 설명 |
-|--------|---------|------|
-| `Push` | `[[nodiscard]] bool Push(const T& entry) noexcept` | RT-safe, wait-free (가득 차면 `false` + `drop_count_++`) |
-| `Pop` | `[[nodiscard]] bool Pop(T& out) noexcept` | 비-RT consumer (비었으면 `false`) |
-| `drop_count` | `[[nodiscard]] uint64_t drop_count() const noexcept` | 드롭된 항목 수 |
-
-- 용량 N은 반드시 2의 거듭제곱 (`static_assert`)
-- 캐시 라인 정렬로 producer/consumer 인덱스 false sharing 방지
-- `memory_order_acquire/release`로 동기화
-- `[[unlikely]]` 분기 힌트로 hot path 최적화 (버퍼 풀 경로)
-- cached head/tail 인덱스로 atomic 연산 최소화
-
-#### PublishSnapshot 주요 필드
-
-| 카테고리 | 필드 |
-|---------|------|
-| 디바이스별 (`GroupCommandSlot[8]`, `kMaxGroups`) | `num_channels`, `actual_num_channels`, `stamp_ns` (per-group wall-clock ns, snapshot-level `stamp_ns`에서 미러; backend가 `JointCommand` header stamp에 사용), `commands[]`, `goal_positions[]`, `target_positions[]`, `target_velocities[]`, `trajectory_positions[]`, `trajectory_velocities[]`, `feedforward[]` (per-joint feedforward 토크 Nm, `DeviceOutput::feedforward` 미러), `command_type` (resolved per-group `CommandType` — mixed-command 디스패치는 이 필드를 읽고 공유 필드는 없음), `actual_positions[]`, `actual_velocities[]`, `efforts[]`, `motor_positions[]`, `motor_velocities[]`, `motor_efforts[]`, `sensor_data[]`, `sensor_data_raw[]`, `inference_output[]`, `goal_type`, **TF source poses** (`arm_tip_pose` + valid, `virtual_tcp_pose` + valid, `task_link_poses[8]` + valid — `kRobotTransforms` publish role 용). `grasp_state`/`wbc_state`/`tof_snapshot` 는 controller 별 SeqLock 으로 이관되어 슬롯에 없음. |
-| 공유 | `actual_task_positions[6]`, `stamp_ns` (헤더 스탬프 원본; grasp/wbc/transforms header.stamp 및 각 그룹 `stamp_ns`의 소스), `active_controller_idx`, `num_groups` |
-
----
+`PublishSnapshot` 은 디바이스별 `GroupCommandSlot[8]` (command·goal·target·trajectory·feedforward·actual·motor·sensor·inference 배열, resolved `command_type`, 그룹별 `stamp_ns`, TF source pose) 과 공유 필드 (`actual_task_positions[6]`, `stamp_ns`, `active_controller_idx`, `num_groups`) 로 구성됩니다.
 
 ### 로깅 (`logging/`)
 
-CM-side 컨트롤러 데이터 CSV 는 `rtc_controller_interface/controller_log_set.hpp` 의 `ControllerLogSet` + 각 컨트롤러가 소유한 POD 미러 (예: `integrated_bringup/include/integrated_bringup/logging/`) 가 담당한다. CM 자신은 `cm_timing_log.csv` (per-tick scheduling timing) 만 소유하며, schema 는 `t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` — MPC / hand_udp 와 동일한 8-col (접두 3열 + `RtTickTimingPayload` 5열) 을 사용한다 (`rtc_base/timing/rt_tick_timing_sample.hpp`). `run_id` 는 로거가 `Open()` 에서 한 번 해석해 (`logging/run_id.hpp`) 매 행에 찍으며, 같은 분에 재기동해 한 세션 디렉토리를 공유한 두 런을 분석이 합쳐 읽지 못하게 한다.
+**CM per-tick timing** -- `cm_timing_log.csv` 의 스키마는 `t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` 입니다 (MPC / hand_udp 와 같은 8열). `run_id` 는 `logging/run_id.hpp` 가 `Open()` 에서 한 번 정해 매 행에 찍으므로, 같은 분에 재기동해 한 세션 디렉토리를 공유한 두 런을 분석이 합쳐 읽지 못합니다. controller 데이터 CSV 는 `rtc_controller_interface` 의 `ControllerLogSet` 과 각 controller 의 POD 미러가 맡습니다.
 
-**세 phase 열은 `t_total_us` 로 합산되지 않는다.** `PeriodicRtThread::MarkPublishDone()` 을 부르는 producer (CM RT loop) 는 `t_publish_us` 를 publish 작업이 끝나는 지점에서 끊고, 남는 `t_total_us − (t_state_us + t_compute_us + t_publish_us)` 가 그 tick 의 **post-publish tail** — 뒤따르는 per-tick 작업 + 스레드가 돌지 못한 시간 — 이다. 긴 tick 을 "publish 때문" 이라 읽기 전에 이 잔차를 본다. 마지막에 publish 하는 producer (MPC / hand_udp) 는 이 stamp 를 부르지 않으므로 잔차가 정확히 0 이다. 분석 쪽 파생 열은 `rtc_tools` `plotting/plotters/timing.py` 의 `add_tail_column` (`t_tail_us`).
-
-`PeriodicRtThread::JitterMeaningful()` 가상 함수로 producer가 자기 wakeup이 deadline-driven 인지 선언한다. CM `ControlLoopThread` 는 `use_sim_time_sync=true` 일 때 `false` 를 반환해 `jitter_us` 를 0.0 으로 고정한다 (CV cadence 대비 budget 차이는 RT 잡음 지표가 아니므로). MPC / hand_udp 는 default `true` 유지. 나머지 6개 컬럼은 두 모드 동일.
-
-`PeriodicRtThread` 는 두 개의 RT-safe protected 훅을 제공한다. `RequestLoopExit()` 는 OnTick 내부(loop 스레드)에서 호출하는 **순수 `atomic<bool>` store** 로, 루프가 현재 tick 후 종료하도록 예약하고 unwind 시 `OnLoopAborted()` 를 1회 호출한다 — `RequestStop()`(pause-mutex + `pause_cv_.notify_all()`)과 달리 mutex/CV 를 잡지 않아 RT 핫패스에서 안전하다. `Start()` 가 `exit_from_loop_` 를 리셋하므로 종료 후 재시작 가능. `SuppressTimingThisTick()` 은 해당 tick 의 `RtTickTimingPayload` push 를 건너뛰어(매 tick 초기화) skip / terminal cycle 의 degenerate timing 이 CSV 를 오염시키지 않게 한다. 소비 예: `UdpHandController` 의 E-Stop self-exit (zero-write 는 `OnLoopAborted` 로 이동) 및 comm-decimation skip cycle. CM / MPC 는 두 훅을 사용하지 않는다.
+세 phase 열은 `t_total_us` 로 합산되지 않습니다. `PeriodicRtThread::MarkPublishDone()` 을 부르는 producer (CM) 는 남는 `t_total_us − (t_state_us + t_compute_us + t_publish_us)` 가 post-publish tail 입니다 (분석 쪽 파생 열은 `rtc_tools` `plotting/plotters/timing.py` 의 `add_tail_column`). 훅 `JitterMeaningful()` · `RequestLoopExit()` · `SuppressTimingThisTick()` 의 계약은 `periodic_rt_thread.hpp` Doxygen 을 봅니다.
 
 #### Generic CSV 인프라 (`thread_csv_producer.hpp` + `thread_csv_logger.hpp`)
 
-Controller-owned 데이터 CSV 를 위한 generic 페어. `timing/thread_timing_*` 와 의도적으로 분리되어 있다 — 차이점:
-
-| 항목 | `timing/thread_timing_*` | `logging/thread_csv_*` |
-|------|-------------------------|------------------------|
-| 자동 컬럼 | `t_wall_ns, tick_count` 두 개 emit | 없음 — payload 가 행 전체 소유 |
-| 용도 | per-tick timing CSV (CM/MPC/hand_udp) | controller-owned data CSV (state/sensor/inference 등) |
-| Schema 결정 | `WriteRtTickTimingHeader/Row` 단일 schema | caller 가 매 payload 마다 자유롭게 결정 |
-| Timestamp | `t_wall_ns` (steady_clock) | `state.t_relative_s` 를 payload 안에 embed |
-
-API:
+controller-owned 데이터 CSV 용 페어입니다. `timing/thread_timing_*` 와 달리 자동 컬럼이 없고 payload 가 행 전체를 소유하며, 스키마는 caller 가 정합니다.
 
 | 클래스 | 메서드 | 설명 |
 |--------|--------|------|
-| `ThreadCsvProducer<Payload, N>` | `Push(payload)` | RT thread 에서 SPSC 에 push (wait-free, drop-on-full) |
-| | `Drain(fn)` | 비-RT consumer 에서 FIFO 드레인 |
-| | `DropCount()` | 누적 drop count |
+| `ThreadCsvProducer<Payload, N>` | `Push(payload)` | RT 스레드에서 SPSC push (wait-free, drop-on-full) |
+| | `Drain(fn)` / `DropCount()` | 비-RT consumer 의 FIFO 드레인 / 누적 drop |
 | `ThreadCsvLogger<Payload>` | `Open(path, hdr, row)` | 헤더/행 writer 와 함께 파일 열기 (append-on-reopen) |
 | | `Log(payload)` | row writer 호출 + flush |
 
-전형적 사용 패턴 (`ControllerLogSet` 가 묶어 제공할 예정):
-
 ```cpp
-struct StateLogPod {
-  double t_relative_s{0.0};
-  std::array<double, 16> actual_positions{};
-  // … (rest mirrors rtc_msgs/DeviceStateLog)
-};
-static_assert(std::is_trivially_copyable_v<StateLogPod>);
-
-void WriteHeader(std::ostream &os) { os << "t_relative_s,actual_pos_0,…"; }
-void WriteRow(std::ostream &os, const StateLogPod &p) {
-  os << p.t_relative_s << ',' << p.actual_positions[0] /*…*/;
-}
-
-rtc::ThreadCsvProducer<StateLogPod, 512> producer;
+rtc::ThreadCsvProducer<StateLogPod, 512> producer;   // StateLogPod: trivially copyable
 rtc::ThreadCsvLogger<StateLogPod> logger;
-logger.Open(path, &WriteHeader, &WriteRow);
+logger.Open(path, &WriteHeader, &WriteRow);          // void(std::ostream&), void(std::ostream&, const Pod&)
 
-// RT tick:
-producer.Push(pod);
-
-// non-RT drain timer:
-producer.Drain([&](const StateLogPod &p) { logger.Log(p); });
+producer.Push(pod);                                  // RT tick
+producer.Drain([&](const StateLogPod& p) { logger.Log(p); });  // non-RT timer
 ```
 
 #### 세션 디렉토리 (`session_dir.hpp`)
 
-세션 기반 로깅 디렉토리 관리 유틸리티입니다.
+세션 로그는 `logging_data/YYMMDD_HHMM/` 아래에 쌓입니다.
 
-세션 디렉토리 구조:
 ```
 logging_data/YYMMDD_HHMM/
-  controllers/<config_key>/  -- 개별 controller LifecycleNode 가 자체 기록하는 데이터 CSV
-  timing/                    -- per-tick 스레드 타이밍 CSV (cm_timing_log,
-                                mpc_timing_log, hand_udp_timing_log)
-  device/                    -- device 통신 통계
-  sim/                       -- mujoco 스크린샷
-  plots/                     -- 플롯 출력
-  motions/                   -- 모션 에디터 JSON
-  tracing/                   -- ros2_tracing LTTng CTF 트레이스 (timeline.sh 로 Perfetto JSON 변환; 자세한 사용은 docs/tracing.md)
+├── controllers/   # controller 별 데이터 CSV (config_key 하위)
+├── timing/        # cm/mpc/hand_udp per-tick timing CSV
+├── monitor/
+├── device/        # device 통신 통계
+├── sim/           # mujoco 스크린샷
+├── plots/
+├── motions/       # 모션 에디터 JSON
+└── tracing/       # LTTng CTF 트레이스
 ```
+
+`EnsureSessionSubdirs()` 가 만드는 하위 폴더는 `timing`, `monitor`, `device`, `sim`, `plots`, `motions`, `tracing` 입니다 (`controllers/` 는 각 controller 가 만듭니다).
 
 | 함수 | 설명 |
 |------|------|
-| `GenerateSessionTimestamp()` | `YYMMDD_HHMM` 형식 타임스탬프 생성 |
-| `ResolveLoggingRoot()` | 3단 체인으로 `logging_data` 루트 경로 결정 (아래 참고) |
-| `ResolveSessionDir()` | env → `ResolveLoggingRoot()` → `YYMMDD_HHMM` 세션 디렉토리 생성 |
-| `EnsureSessionSubdirs(session_dir)` | controller, timing, monitor, device, sim, plots, motions, tracing 하위 폴더 생성 |
-| `TimingDir(session_dir)` | per-tick timing CSV 들이 모이는 `<session>/timing/` 경로 반환 |
-| `ListSessionDirs(logging_root)` | `YYMMDD_HHMM` 패턴 디렉토리 정렬 목록 반환 |
-| `CleanupOldSessions(logging_root, max)` | 최대 세션 수 초과 시 오래된 세션 삭제 |
+| `GenerateSessionTimestamp()` | `YYMMDD_HHMM` 타임스탬프 |
+| `ResolveLoggingRoot()` | `logging_data` 루트 결정 (아래 체인) |
+| `ResolveSessionDir()` | `$RTC_SESSION_DIR`, 없으면 루트 아래 새 세션 디렉토리 생성 |
+| `EnsureSessionSubdirs(dir)` / `TimingDir(dir)` | 하위 폴더 생성 / `<session>/timing/` 경로 |
+| `ListSessionDirs(root)` / `CleanupOldSessions(root, max)` | 세션 목록 / 초과분 삭제 |
 
-**`ResolveLoggingRoot()` 결정 체인** (위에서 아래로):
+`ResolveLoggingRoot()` 결정 체인: (1) `$COLCON_PREFIX_PATH` 첫 entry 가 쓰기 가능한 디렉토리이면 그 `parent / "logging_data"`, (2) cwd 에서 상위로 올라가며 `install/` + `src/` 쌍이 있는 디렉토리의 `logging_data`, (3) 폴백 `cwd / "logging_data"`.
 
-1. `$COLCON_PREFIX_PATH` 의 첫 entry 가 쓰기 가능한 디렉토리이면 그 `parent / "logging_data"`
-2. cwd 에서 상위로 올라가며 `install/` + `src/` 쌍이 발견되면 그 디렉토리 `/ "logging_data"`
-3. 최종 폴백: `cwd / "logging_data"`
-
-**`ResolveSessionDir()` 결정 체인**:
-
-1. `$RTC_SESSION_DIR`
-2. `ResolveLoggingRoot() / YYMMDD_HHMM` 을 새로 생성
-
-> **주의:** `ResolveSessionDir()`은 `std::filesystem::filesystem_error`를 throw할 수 있습니다. 초기화 시에만 호출하세요.
-> Python 측 동일 로직은 `rtc_tools.utils.session_dir.resolve_logging_root()` 참고.
+`ResolveSessionDir()` 은 `std::filesystem::filesystem_error` 를 throw 할 수 있으므로 초기화 시에만 호출합니다. Python 측 동일 로직은 `rtc_tools.utils.session_dir.resolve_logging_root()` 입니다.
 
 ### 트레이싱 (`tracing/`)
 
-RT hot-path 를 Perfetto 로 관찰하기 위한 LTTng UST scoped span. **컴파일타임 opt-in** —
-CMake 옵션 `RTC_ENABLE_TRACING` (default OFF) 이 켜져야만 존재하며, 꺼진 빌드는
-완전 no-op (RT 비용 0, lttng-ust 의존성 0).
+RT hot-path 를 Perfetto 로 관찰하는 LTTng UST scoped span 입니다. **컴파일타임 opt-in** -- CMake 옵션 `RTC_ENABLE_TRACING` (default OFF) 이 켜져야만 존재하며, 꺼진 빌드는 완전 no-op (RT 비용 0, lttng-ust 의존성 0) 입니다. `RTC_TRACE_SCOPE("Name")` 이 RAII span 매크로이고, ON 빌드는 `rtc:*` probe 를 shared lib `rtc_tracing` (export target `rtc_base::rtc_tracing`) 로 컴파일합니다. 소비 패키지는 이 target 을 링크해 `RTC_TRACING_ENABLED` define 과 lttng include 를 상속받습니다. 사용법은 [docs/tracing.md](../docs/tracing.md) §RT trace spans 입니다.
 
-| 헤더 | 역할 |
-|------|------|
-| `tracing/trace_scope.hpp` | `RTC_TRACE_SCOPE("Name")` — RAII scoped span 매크로. OFF 빌드에선 no-op |
-| `tracing/rtc_tracepoints.hpp` | LTTng `rtc:span_begin/end` provider 정의 (double-include 레이아웃) |
+## 더 읽기
 
-`RTC_ENABLE_TRACING=ON` 빌드는 `rtc:*` probe 를 shared lib `rtc_tracing` (export
-target `rtc_base::rtc_tracing`) 로 컴파일한다. 소비 패키지는 이 target 을 링크해
-`RTC_TRACING_ENABLED` define + lttng include 를 상속받는다. 사용법·flame 스택
-예시는 [docs/tracing.md](../docs/tracing.md) §RT trace spans.
-
----
+- [architecture.md](../agent_docs/architecture.md) -- threading, data flow, Execution Contexts 판정표
+- [invariants.md](../agent_docs/invariants.md) -- RT / ARCH 규범 (이 패키지의 헤더가 따르는 RT-1 ~ RT-10)
+- [rt-optimization.md](../docs/rt-optimization.md) · [tracing.md](../docs/tracing.md) · [testing.md](../docs/testing.md)
+- [thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) -- 스레드 레이아웃 SSoT
 
 ## 의존성
 
@@ -612,27 +305,4 @@ target `rtc_base::rtc_tracing`) 로 컴파일한다. 소비 패키지는 이 tar
 | `ament_cmake` | 빌드 시스템 |
 | `lttng-ust` *(optional)* | `RTC_ENABLE_TRACING=ON` 일 때만. `install.sh --tracing` 이 제공 (apt `liblttng-ust-dev`) |
 
-> **기본 빌드는 외부 의존성 없음** -- 표준 C++ 라이브러리와 POSIX API만 사용합니다. lttng-ust 는 트레이싱 opt-in 시에만.
-
----
-
-## 빌드
-
-```bash
-./build.sh --tests -p rtc_base
-colcon test --packages-select rtc_base
-```
-
-설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조. 헤더 전용 라이브러리이므로 컴파일되는 바이너리는 없습니다 — 소비자 패키지에서 `#include`하여 사용합니다.
-
-**컴파일러 요구사항:** C++20 호환 컴파일러 (GCC 10+, Clang 13+).
-
-**컴파일러 경고 플래그:** `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`
-
-> Build hygiene: `thread_utils.hpp`의 `fscanf` 호출은 반환값을 검사하여 `-Wunused-result`를 제거했습니다. 실패 시 sentinel value (`quota=-1`, `period=0`)가 그대로 남아 다음 fallback stage로 진행 — behavior 동일. `SlotToLogicalCpu(slot, topology)` 의 벡터 인덱스도 `static_cast<size_t>(slot)` 으로 `-Wsign-conversion` 제거 — 범위 가드는 상위 라인에 이미 존재.
-
----
-
-## 라이선스
-
-MIT License -- 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.
+기본 빌드는 표준 C++ 라이브러리와 POSIX API 만 씁니다. 라이선스: MIT ([LICENSE](../LICENSE)). 의존성 목록은 [package.xml](package.xml).

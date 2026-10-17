@@ -1,662 +1,383 @@
 # rtc_controller_manager
 
-
-> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
-> 설치/빌드: [Root README](../README.md) | RT 최적화: [rt-optimization.md](../docs/rt-optimization.md)
+설정 가능한 RT 제어 루프 · 컨트롤러 lifecycle · 글로벌 E-STOP · DeviceBackend 를 소유하는 라이브러리. **유형**: 노드 패키지 (라이브러리 형태)
 
 ## 개요
 
-RTC 프레임워크의 **설정 가능한 RT 제어 루프 매니저** 패키지입니다 (`control_rate` YAML — 범위·default 는 [agent_docs/invariants.md](../agent_docs/invariants.md) §RT Path Invariants 가 SSoT). 컨트롤러 수명 관리, 결정론적 제어 루프, 퍼블리시 오프로드, CSV 로깅, E-STOP 안전 메커니즘을 robot-agnostic 하게 통합 관리합니다.
+`RtControllerNode` (`rclcpp_lifecycle::LifecycleNode`) 가 `control_rate` YAML 주기로 `clock_nanosleep` 제어 루프를 돌리고, 등록된 컨트롤러를 수명 관리하며, 디바이스 워치독과 글로벌 E-STOP 을 맡는다. 범위·default 는 [invariants.md](../agent_docs/invariants.md) §RT Path Invariants 가 SSoT 다. 퍼블리시·CSV 로깅은 락-프리 SPSC 로 non-RT 스레드에 넘긴다.
 
-**핵심 기능:**
-- `clock_nanosleep` 기반 결정론적 제어 루프 — 주기는 `control_rate` YAML 파라미터로 설정 (실제 로봇) / CV 기반 동기 루프 (시뮬레이션)
-- 락-프리 SPSC 버퍼를 통한 퍼블리시/로깅 오프로드
-- 런타임 컨트롤러 전환 (atomic index swap, 컨트롤러 이름 문자열 기반)
-- 멀티 코어 스레드 분리 (5개 스레드, CPU 어피니티)
-- 글로벌 E-STOP + 연속 오버런 감지
-- 컨트롤러별 TopicConfig YAML 기반 동적 토픽 라우팅
-- `rclcpp_lifecycle::LifecycleNode` 기반 관리된 상태 전환 (Unconfigured → Inactive → Active → Finalized)
+**이 패키지에는 실행 파일이 없다.** 정적 라이브러리 `librtc_controller_manager_lib.a` 를 export 하고, 로봇별 bringup 패키지가 `rtc::RtControllerMain(argc, argv, node_name)` 을 호출해 자기 실행 파일을 만든다. 이 workspace 의 실행 파일은 `integrated_bringup` 의 `integrated_rt_controller` 이며 ROS 노드 이름도 같다 (`/integrated_rt_controller`). 로봇 데이터 (`control_rate` · `devices` · `urdf`) 와 launch 는 [integrated_bringup](../integrated_bringup/README.md) 이 소유한다.
 
----
+## 빠른 시작
 
-## 패키지 구조
+빌드는 [루트 README](../README.md#빠른-시작) 를 따른다. 실행은 bringup 의 launch 로 한다.
 
-```
-rtc_controller_manager/
-├── CMakeLists.txt
-├── package.xml
-├── include/rtc_controller_manager/
-│   ├── rt_controller_node.hpp             <- 메인 노드 클래스
-│   ├── rt_controller_main.hpp             <- 재사용 가능 진입점 함수
-│   ├── controller_timing_profiler.hpp     <- 락-프리 타이밍 프로파일러
-│   ├── controller_config_loader.hpp       <- 컨트롤러 YAML + `include:` 조각의 합성 (`LoadControllerConfig`)
-│   ├── device_state_cache.hpp             <- `DeviceStateCache` POD (SeqLock payload, backend-shared)
-│   ├── device_backend.hpp                 <- `DeviceBackend` 추상 인터페이스 + `DeviceBackendConfig`
-│   └── device_backend_registry.hpp        <- 백엔드 type_tag 레지스트리 + `RTC_REGISTER_DEVICE_BACKEND` 매크로
-├── src/
-│   ├── rt_controller_node.cpp             <- 생성자/소멸자, 콜백 그룹, 타이머, Lifecycle 콜백
-│   ├── rt_controller_node_params.cpp      <- 파라미터 선언/로딩, 디바이스 설정
-│   ├── controller_config_loader.cpp       <- `LoadControllerConfig` · `ControllerConfigLeafLines` 구현
-│   ├── rt_controller_node_device_config.cpp <- URDF/모델 파싱, 디바이스 이름 설정
-│   ├── rt_controller_node_publishers.cpp    <- CM 고정 퍼블리셔 생성 (per-group JointState republish, E-STOP 상태)
-│   ├── rt_controller_node_services.cpp      <- 서비스 (LoadController, SwitchController 등)
-│   ├── rt_controller_node_switch.cpp        <- 컨트롤러 전환 로직 + active_controller_name latched publish
-│   ├── rt_controller_node_rt_loop.cpp       <- RT 루프 (@ control_rate), 워치독, 로그 드레인
-│   ├── rt_controller_node_publish.cpp       <- SPSC 드레인 → ROS2 publish (eventfd wakeup)
-│   ├── rt_controller_node_estop.cpp         <- E-STOP 트리거/클리어/퍼블리시
-│   ├── rt_controller_main_impl.cpp          <- RtControllerMain() 구현 (라이브러리)
-│   └── device_backend_registry.cpp          <- 레지스트리 싱글톤 + duplicate-tag warn
-└── config/
-    ├── cyclone_dds.xml                      <- CycloneDDS RT 성능 최적화 설정 (실제 control_rate / devices / urdf 는 `<robot>_bringup/config/<robot>/{sim,robot}.yaml` 의 `devices.<group>.backend:` 등으로 선언)
-    ├── test_fixtures/controllers/           <- unit test 전용 controller YAML (config_variant=test_fixtures 로만 로드 — production bring-up 은 참조하지 않음)
-    └── test_include/                        <- unit test 전용. `include:` 로 나뉜 config 와 그 합성 결과 (`expected_leaves.txt` — C++ 로더와 `rtc_tools` 의 Python 로더가 같은 파일에 대조된다)
+```bash
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
 ```
 
----
+다른 터미널에서 컨트롤러 목록과 전환:
 
-## 스레딩 아키텍처
+```bash
+ros2 service call /rtc_cm/list_controllers rtc_msgs/srv/ListControllers "{}"
+ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
+  "{activate_controllers: ['demo_joint_controller'], deactivate_controllers: [], strictness: 1, timeout: {sec: 1}}"
+```
 
-`SelectThreadConfigs()`가 물리 코어 수에 따라 스레드 레이아웃을 자동 선택합니다. **값의 SSoT 는 선언형 manifest [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml)** 이며, C++ tier 상수와 dispatch 는 거기서 생성됩니다. tier 별 코어 배치는 [rtc_base/README.md](../rtc_base/README.md) 의 생성된 매트릭스를 봅니다.
+컨트롤러 이름은 `Name()` 또는 `config_key` 둘 다 쓸 수 있다. 응답 `ok=false` 이면 `message` 가 사유를 말한다.
+
+## 인터페이스
+
+### 라이브러리 헤더
+
+| 헤더 | 내용 |
+|---|---|
+| `rt_controller_node.hpp` | `RtControllerNode` — 노드 본체 |
+| `rt_controller_main.hpp` | `RtControllerMain()` — bringup 이 부르는 진입점 |
+| `device_backend.hpp` | `DeviceBackend` 추상 인터페이스 · `DeviceBackendConfig` |
+| `device_backend_registry.hpp` | type_tag 레지스트리 · `RTC_REGISTER_DEVICE_BACKEND` |
+| `device_state_cache.hpp` | `DeviceStateCache` POD (backend SeqLock payload) |
+| `controller_config_loader.hpp` | `rtc::LoadControllerConfig` — 컨트롤러 YAML + `include:` 합성 |
+| `controller_timing_profiler.hpp` | 락-프리 `Compute()` 타이밍 통계 |
+
+### 서비스 (`/rtc_cm/...`)
+
+| 서비스 | 타입 | 설명 |
+|---|---|---|
+| `/rtc_cm/switch_controller` | `rtc_msgs/srv/SwitchController` | 활성 컨트롤러 전환 (sync, single-active). E-STOP 중에는 거부 |
+| `/rtc_cm/list_controllers` | `rtc_msgs/srv/ListControllers` | 모든 컨트롤러의 state 와 진단 4필드 |
+| `/rtc_cm/reset_fault` | `rtc_msgs/srv/ResetFault` | 래치된 **컨트롤러-local** fault 해제 (active 컨트롤러 이름 명시 필수) |
+| `/rtc_cm/clear_estop` | `rtc_msgs/srv/ClearEstop` | **글로벌** E-STOP 래치 해제 (`reason_ack` 필수) |
+
+컨트롤러를 따로 load 하는 서비스는 없다. 등록된 컨트롤러는 시작 때 전부 인스턴스화되고 `switch_controller` 가 활성만 고른다. 요청·응답 필드는 각 `.srv` 주석이 SSoT 다. 서비스는 RT 경로와 분리된 `cb_group_nrt_callback_` 에서 처리된다.
+
+#### `/rtc_cm/list_controllers` 진단 필드
+
+응답의 각 `ControllerState` 는 lifecycle 메타데이터 (`name` · `state` · `type` · `is_active` · `claimed_groups`) 외에 진단 4필드를 싣는다. 넷 다 오퍼레이터에게는 "goal 을 보냈는데 안 움직인다" 로만 보이므로 이 필드로 구분한다.
+
+| 필드 | 의미 |
+|---|---|
+| `has_latched_fault` | controller-local fault 래치가 올라가 있다 → `/rtc_cm/reset_fault` 로 해제 |
+| `target_drop_count` | 유효한 goal 이 큐 포화로 유실 — producer 의 **rate** 문제 |
+| `target_reject_count` | 형식 불량 · `device_idx` 범위 밖으로 ingress 에서 거부 — producer 의 **payload** 문제 |
+| `target_unhandled_count` | 컨트롤러가 mailbox 에 push 하고 `ApplyPendingTarget` 을 override 하지 않았다 — 컨트롤러 **배선 결함** |
+
+- 컨트롤러별 override 는 필요 없다. CM 이 `RTControllerInterface` 의 접근자를 직접 읽는다.
+- 카운터 3종은 monotonic 이고 조회가 소비하지 않는다. 진단은 두 번의 폴링 사이에 값이 **움직이는지**로 한다.
+- 응답은 스냅샷이다. 한 응답 안의 두 카운터는 서로 다른 tick 에서 왔을 수 있다.
+- `has_latched_fault` 는 비활성 컨트롤러도 보고한다. `reset_fault` 는 active 만 받으므로 어느 컨트롤러가 잠겼는지 먼저 알아야 이름을 댈 수 있다.
+
+#### `/rtc_cm/reset_fault`
+
+```bash
+ros2 service call /rtc_cm/reset_fault rtc_msgs/srv/ResetFault "{controller_name: 'demo_compliance_controller'}"
+```
+
+compliance 계열은 critical fault 에서 `SAFE_STOP` 을 래치하고 자동 복귀하지 않는다. 이 서비스가 그 래치의 유일한 외부 탈출구다. 응답은 "전달됨" 이 아니라 **실제 결과**다: 해제 · no-op (래치 없음) · 재래치 (원인 잔존) · tick 미관측 (RT 루프 정지 · overrun) 을 `message` 로 구분한다. 글로벌 E-STOP 은 풀지 않는다 (아래).
+
+### 토픽
+
+| 토픽 | 타입 | QoS | 설명 |
+|---|---|---|---|
+| `/system/estop_status` (pub) | `std_msgs/Bool` | RELIABLE/1, transient_local | 글로벌 E-STOP 상태 (래치 또는 해제 검증 창) |
+| `/rtc_cm/active_controller_name` (pub) | `std_msgs/String` | TRANSIENT_LOCAL/1 | 활성 컨트롤러의 `config_key`. 외부 소비자가 `/<config_key>/...` 를 조립하는 prefix 다 (`Name()` 아님) |
+| `/rtc_cm/<group>/joint_states` (pub) | `sensor_msgs/JointState` | RELIABLE/1 | 그룹별 측정 상태 — 아래 §Per-group JointState 자동 퍼블리셔 |
+| `<state_topic>` (sub) | `JointState` | BEST_EFFORT/2 | `devices.<group>.backend.state_topic` — 디바이스 관절 상태 (필수) |
+| `<command_topic>` (pub) | `JointCommand` · `Float64MultiArray` | BEST_EFFORT/1 · RELIABLE/1 | `backend.command_topic` — backend 별 페이로드 |
+| `<motor_topic>` · `<sensor_topic>` (sub) | `JointState` · `HandSensorState` | BEST_EFFORT/2 | 선택. `udp_hand_native` 전용 |
+
+CM 은 device-wire 토픽을 직접 만들지 않는다. `DeviceBackend` 구현체 (`mujoco_native` · `ur_driver_native` · `udp_hand_native`) 가 `devices.<group>.backend:` 블록의 type 과 topic 으로 자기 sub/pub 을 만든다. 토픽 소유는 세 갈래다:
+
+| 소유 | 생성 주체 | 예 |
+|---|---|---|
+| DeviceBackend | CM 이 그룹마다 1 instance 보유 | `state` · `joint_command` 등 HW/sim 경계 트래픽 |
+| CM 고정 | `RtControllerNode` (YAML 무관) | 위 표의 `/system/estop_status` · `/rtc_cm/*` |
+| controller-owned | 컨트롤러별 `LifecycleNode` (YAML `topics:` 전부) | `target` · `grasp_state` · `wbc_state` · `tof_snapshot` · `<config_key>/transforms` |
+
+controller YAML 에는 `ownership:` 필드가 없고 `topics:` entry 는 전부 controller-owned 다. CM 은 controller sub/pub 을 만들지 않고 SPSC snapshot 만 운반한다 (유효한 role 문자열은 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §퍼블리시 역할). 각 컨트롤러는 `/<config_key>` 네임스페이스의 자기 노드에서 gain 파라미터를 노출한다 ([agent_docs/controllers.md](../agent_docs/controllers.md) §Gains).
+
+**명령 순서 규약**: `WriteCommand` 의 `slot.commands` 와 발행 메시지는 항상 `joint_command_names` 순서이며 backend 는 command-side reorder 를 하지 않는다. wire 순서가 다른 디바이스는 수신자가 메시지의 `joint_names` 로 재정렬한다. state-side 는 반대로 backend 가 첫 named 메시지에서 reorder map 을 만든다.
+
+#### Per-group JointState 자동 퍼블리셔
+
+각 디바이스 그룹마다 `/rtc_cm/{group}/joint_states` (RELIABLE/1) 를 자동 발행한다. `joint_state_names` 순서로 재정렬한 측정 상태이며 active controller 와 무관하게 항상 나가는 단일 소스다. `rtc_digital_twin` 이 이를 merge 해 `robot_state_publisher` / RViz 로 공급한다.
+
+발행은 `nrt_publish` 스레드 (SCHED_OTHER) 가 한다. RT 쪽 backend state-ready 콜백은 slot 별 dirty bit 와 eventfd write 만 하므로, twin 이 밀리면 샘플이 합쳐져 줄 뿐 stale 값을 보이지 않는다. `on_configure` 중 노드가 아직 Inactive 일 때 오는 상태는 LifecyclePublisher `is_activated()` 가드로 건너뛴다.
+
+### 스레드와 lifecycle
+
+`SelectThreadConfigs()` 가 물리 코어 수에 따라 레이아웃을 고른다. 값의 SSoT 는 [thread_layout.yaml](../repo_scripts/config/thread_layout.yaml), tier 별 코어 배치는 [rtc_base/README.md](../rtc_base/README.md) 의 생성 매트릭스다. 표는 `ps -L` 판독용이다.
 
 | 스레드 | 스케줄러 | 주파수 | 역할 |
-|--------|----------|--------|------|
-| **rt_loop** (rt_control) | SCHED_FIFO 90 | `control_rate` Hz + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독. tick 종료 시점에 `DeviceBackend.WriteCommand` 를 inline 호출 (actuator publish) + `nrt_publish_buffer_` push. 그 push/eventfd 인계 직후 publish phase 를 끊으므로 (`StampPublishDone`), `cm_timing_log.csv` 의 `t_total_us − (t_state+t_compute+t_publish)` 잔차가 **그 tick 의 post-publish tail** 이다 — 긴 tick 을 "publish 때문" 이라 읽기 전에 이 잔차를 먼저 본다 |
-| **rt_callback_executor** | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState 구독 (`cb_group_rt_callback_`, MutuallyExclusive). DDS receive thread 가 launch 에서 같은 코어로 co-pin (CFS 유지) |
-| **nrt_logging_executor** | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` + `rt_callback_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 |
-| **nrt_publish** | SCHED_OTHER 0 | 이벤트 | `nrt_publish_buffer_` SPSC 드레인 → `controller.PublishNonRtSnapshot` + per-group JointState republish. std::jthread + eventfd wakeup. `cfgs.nrt_publish` 를 쓴다 — 배치는 `nrt_callback` 과 같고 **이름만 다르다** (같은 이름이면 `verify_rt_runtime.sh` 가 이름당 TID 하나만 검사) |
-| **nrt_callback_executor** | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, E-STOP 상태 퍼블리시, RobotTarget 외부 입력, lifecycle services, 컨트롤러 LifecycleNode default group (owned subs) |
-
-> `mlockall(MCL_CURRENT | MCL_FUTURE)`를 `rclcpp::init()` 전에 호출하여 페이지 폴트를 방지합니다.
-
-### Lifecycle 상태 전환
-
-`RtControllerNode`는 `rclcpp_lifecycle::LifecycleNode`를 상속하며, 관리된 상태 전환을 지원합니다.
-
-| 콜백 | 리소스 티어 | 역할 |
-|------|-----------|------|
-| `on_configure` | Tier 1 | 콜백 그룹, 파라미터, 컨트롤러, 퍼블리셔/구독, 타이머, eventfd |
-| `on_activate` | Tier 2 | RT 루프 + 퍼블리시 오프로드 스레드 시작 |
-| `on_deactivate` | — | RT 루프/퍼블리시 스레드 중지, E-STOP 클리어, 상태 초기화 |
-| `on_cleanup` | — | `on_configure` 역순 리소스 해제. 단 eventfd 는 예외로 device backend **해제 후** close — backend 의 state-lane sub 은 `on_deactivate` 로 죽지 않고 그 state-ready 콜백이 이 fd 를 쓰기 때문 |
-| `on_error` | — | E-STOP 트리거, 스레드 중지, 전체 정리 → SUCCESS (Unconfigured 복구) |
-
-**안전 퍼블리셔:** `estop_pub_`, `active_ctrl_name_pub_`는 `rclcpp::create_publisher` standalone으로 생성되어 lifecycle 상태와 무관하게 동작합니다.
-
-런타임 상태 제어:
-```bash
-ros2 lifecycle get /rtc_controller_manager
-ros2 lifecycle set /rtc_controller_manager deactivate   # RT 루프 중지
-ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
-```
-
-**초기화 순서 (`RtControllerMain()` — 3-Phase Lifecycle Executor):**
-1. `mlockall()` → `rclcpp::init()` → 노드 생성 (Unconfigured 상태)
-2. **Phase 1:** `lifecycle_executor` spin → Launch event handler가 configure/activate 트리거
-   - `on_configure`: 콜백 그룹, 파라미터, 구독/퍼블리셔, 타이머, eventfd 생성
-   - `on_activate`: `SelectThreadConfigs()` → `StartRtLoop()` + `StartNrtPublishLoop()` 시작
-3. **Phase 2:** Active 상태 대기 (polling)
-4. **Phase 3:** rt_callback / nrt_logging / nrt_callback 전용 executor 전환 (lifecycle services는 nrt_callback_executor에서 처리)
-
----
-
-## 제어 루프 흐름 (정기 tick @ `control_rate`; 예: 500 Hz → 2 ms/tick, 1 kHz → 1 ms, 2 kHz → 0.5 ms)
-
-### Phase 0: 준비 검사
-- **디바이스 준비 게이트** — 설정된 **모든** 디바이스 그룹이 timeout 안에 state 를 한 번 이상 보고했는지 확인. 하나라도 미보고면 tick 은 그대로 반환하고 `Compute()` / `WriteCommand()` 는 실행되지 않는다. `init_timeout_sec` 경과 시 `{group}_init_timeout` E-STOP + 노드 종료 (미보고 그룹 이름 포함). 준비 여부는 `backends_[slot]->LastStateStamp()` 가 단일 출처 — CM 은 별도 플래그/타임스탬프를 두지 않는다
-- CM 은 hold 타겟을 만들지 않는다 — 각 컨트롤러가 첫 `Compute()` 에서 현재 device state 로 자체 seed 한다
-- `init_complete_` 이후 정상 루프 진입
-
-### Phase 1: 비차단 상태 획득
-- 활성 컨트롤러의 TopicConfig.groups 순서대로 `backends_[slot]->ReadState/ReadMotorState/ReadSensorState(cache)` → `ControllerState.devices[]` 복사 (RT-safe, 락-프리)
-- 각 backend는 내부에 `SeqLock<DeviceStateCache>`를 보유 — 센서 callback (writer) + RT loop (reader) 분리
-
-### Phase 2: 제어 연산
-- `timing_profiler_.MeasuredCompute(controller, state)`
-- 활성 컨트롤러의 `Compute()` 호출 -> `ControllerOutput` 반환
-- 벽시계 시간 히스토그램 자동 수집 (20 버킷, 100us 간격)
-
-### Phase 3: 퍼블리시 (inline actuator + non-RT 오프로드)
-- `PublishSnapshot` 생성
-- **Actuator publish (inline, RT-safe)**: rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 그룹별로 직접 호출 (RT-safe contract)
-- **Controller-owned non-RT publish (오프로드)**: `nrt_publish_buffer_.Push()` (SPSC cap 16) → `nrt_publish_thread` 가 드레인하여 `controller.PublishNonRtSnapshot` 호출 (Transforms / grasp_state / wbc_state / tof_snapshot)
-- 그룹별 commands, actual, motor, sensor, inference 데이터 포함
-- **Per-group command type 해석 (`CommandType::kPdFeedforward`)**: `DeviceOutput::command_type` (per-device `std::optional<CommandType>`, nullopt = 상속) 이 설정돼 있으면 `ControllerOutput::command_type` (글로벌 기본값) 을 override 한다 — `gc.command_type = dout.command_type.value_or(output.command_type)`. `DeviceOutput::feedforward[]` (per-joint Nm) 도 `GroupCommandSlot::feedforward[]` 로 그대로 복사된다. RT loop 는 그룹별로 resolve 된 `gc.command_type` 을 `WriteCommand(slot, gc.command_type)` 에 전달 — snapshot-global `command_type` 이 아니다. Mixed-command 컨트롤러(예: WBC — arm=`kPosition`, hand=`kPdFeedforward`)가 그룹마다 다른 command type 을 낼 수 있는 이유. `kPdFeedforward` = PD position-servo backbone(`values`=position target) + per-joint feedforward torque overlay; wire 상 `JointCommand.command_type = "pd_feedforward"` 문자열로 인코딩되며, feedforward 채널을 모르는 backend 는 position tracking 으로 폴백한다.
-
-### Phase 4: 타이밍 & 로깅
-- 위상별 소요 시간 계산 (state_acquire, compute, publish) + 지터 측정
-- `LogEntry` -> `log_buffer_.Push()` (SPSC)
-- 1000 이터레이션마다 타이밍 서머리 출력 신호 (실제 출력은 nrt_logging_executor에서)
-
-### 워치독 (50 Hz — divisor = `control_rate` / 50, rate 무관 고정)
-- **설정된 모든 디바이스 그룹**이 감시 대상이다. `device_timeout_names` 는 그룹별 timeout **값**만 공급하며, 목록에 없는 그룹은 `device_timeout_default_ms` 로 감시된다
-- 각 그룹의 state 수신 간격이 timeout 초과 시 E-STOP
-- 한 번도 보고하지 않은 그룹은 워치독이 아니라 **준비 게이트**가 담당한다 (Phase 0)
-- Phase 4 이후 워치독은 `devices.<group>.backend.state_topic` 만 추적 (motor/sensor lane은 backend 내부의 `NotifyStateReady` 콜백 한 곳에서 합쳐서 트리거)
-
----
-
-## 컨트롤러 관리
-
-### 시스템 URDF + ModelConfig 파싱
-
-노드 초기화 시 최상위 `urdf:` 파라미터 섹션에서 시스템 레벨 URDF 경로와 모델 토폴로지를 파싱합니다.
-
-```
-urdf.package + urdf.path → ament resolve → 절대 URDF 경로
-urdf.root_joint_type     → "fixed" | "floating"
-urdf.extended            → bool. true 면 sidecar <stem>.closure.yaml 로드 (loop closure)
-urdf.closure_path        → sidecar 명시 override (pkg 상대). 미지정 시 URDF 경로에서 유도
-urdf.sub_models.<name>   → {root_link, tip_link}                (직렬 체인, map 키 = 모델명)
-urdf.tree_models.<name>  → {root_link, tip_links[]}             (분기 체인, map 키 = 모델명)
-urdf.passive_joints      → [string, ...]                         (잠금 관절)
-```
-
-- `sub_models`/`tree_models`의 map 키(모델명)는 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다
-- 디바이스별 `root_link`/`tip_link` 미지정 시 시스템 `sub_models`/`tree_models`에서 자동 해석
-- `tip_link` 가 URDF 의 frame 이 아니어도 이 노드는 WARN 만 찍고 그 이름을 그대로 컨트롤러에 넘깁니다. 받을지 말지는 컨트롤러가 정합니다 — `integrated_bringup` 의 joint · task · compliance · wbc 컨트롤러는 팔 모델이 있는데 팔 끝 frame 이 풀리지 않으면 `on_configure` 를 거부하고, 한 컨트롤러의 거부는 이 노드의 configure 전체를 실패시킵니다
-- 디바이스별 URDF 경로 미지정 시 시스템 URDF 경로를 폴백으로 사용
-- **Extended-URDF**: `urdf.extended: true` 면 URDF 옆 `<stem>.closure.yaml` sidecar(예: `foo.urdf.xacro` → `foo.closure.yaml`)를 로드해 공유 `PinocchioModelBuilder`가 loop closure constraint + `q_ref`를 build (`GetConstraintModels()` 등으로 노출) **하고, sidecar `actuated_joints` 외의 모든 movable 관절을 loop-passive 로 간주해 reduced/tree 서브모델에서 잠근다** — 따라서 `actuated_joints` 는 그 URDF 의 완전한 active 집합이어야 한다 (arm + closed-chain hand 병합 시 arm 관절 포함; 상세 계약·locked-count 로그는 [rtc_urdf_bridge/README.md](../rtc_urdf_bridge/README.md#extended-urdf-closed-chain-sidecar-nameclosureyaml)). closure 해석은 최상위 `urdf.path` 경로든 아래 devices-fallback 경로든 **동일하게** 실행되며, `extended: true` 인데 sidecar 미발견 시 loud `RCLCPP_ERROR` 후 loop constraint 없이 진행(plain URDF).
-- **하위 호환**: 최상위 `urdf:` 없으면 기존 `devices.{group}.urdf` 에서 읽고(fallback), 이 경로도 최상위 `urdf.extended`/`urdf.closure_path` 를 그대로 적용한다
-
-### 로딩 (시작 시)
-
-1. `ControllerRegistry::Instance().GetEntries()` 조회
-2. 시스템 `PinocchioModelBuilder` 한 번 빌드 (`std::shared_ptr`) — `system_model_config_`로 URDF 파싱 + full/sub/tree 모델 구축을 1회만 수행. 빌드 실패 시 컨트롤러는 자기 builder를 만드는 폴백 경로로 동작
-3. **컨트롤러 bring-up은 3-pass 구조** (`on_configure` 시점에 `device_name_configs_` 가 이미 채워져 있도록 보장):
-   * **Pass 1 — 인스턴스화 + PreConfigure**: 팩토리 생성 → `SetSystemModelConfig()` → `SetSharedModelBuilder(shared)` → 전용 `rclcpp_lifecycle::LifecycleNode`(이름 = `config_key`, 네임스페이스 = `/<config_key>`, `NodeOptions().use_global_arguments(false)`) 생성 → `PreConfigure(node, yaml)` 호출 (base가 `LoadConfig(yaml)` 만 실행 → `topic_config_` 채움; **RegisterLog / 리소스 할당 없음**) → `controllers_` + `controller_nodes_` + 임시 `controller_yamls` 보관
-   * **Pass 2 — device-name 해석**: 모든 컨트롤러의 `GetTopicConfig()` 로 `controller_topic_configs_` / `active_groups_` / `group_slot_map_` 빌드 → `LoadDeviceNameConfigs()` (yaml `devices.<group>.{joint_state_names, motor_state_names, sensor_names, joint_limits, ...}` 파싱) → 각 컨트롤러에 `SetControlRate(...)` + `SetDeviceNameConfigs(map)` (후자가 `OnDeviceConfigsSet()` 훅을 트리거 → 컨트롤러가 `joint_names`/`motor_names` 등을 자기 멤버에 캐시)
-   * **Pass 3 — on_configure**: 보관해 둔 `(node, yaml)` 로 `on_configure(unconfigured, node, yaml)` 호출. 멱등 가드 덕분에 base는 yaml 재파싱 안 함. 이 시점에 컨트롤러가 `RegisterLog<>(...)` 람다에 `joint_names_copy = joint_state_names` 를 capture 하므로 CSV header writer 가 정확한 폭으로 출력
-   * **세부 사항**: `use_global_arguments(false)` 는 필수 — 부모 프로세스의 CLI remap (`--ros-args -r __node:=...`) 이 글로벌 컨텍스트에 살아 있어, default `NodeOptions` 으로 만들면 자식 노드 이름·네임스페이스가 부모로 덮어씌워지고 launch_ros 가 부모에 spurious lifecycle ACTIVATE 를 또 보내는 부작용까지 발생. `SetSharedModelBuilder` 는 `GetSharedModelBuilder()` 로 컨트롤러가 가져가는 공유 핸들 — 데모 컨트롤러는 `InitArmModel` / `InitModels` 진입 시 이 핸들을 우선 사용하므로 동일한 ModelConfig로 `xacro → tinyxml2 → Pinocchio` 파이프라인을 컨트롤러 수만큼 반복하는 비용을 제거
-4. 컨트롤러 `Name()` 과 `config_key` 양쪽을 `controller_name_to_idx_` 맵에 등록 — 이 맵은 **하나의 네임스페이스**이고 `switch_controller` / `initial_controller` 가 둘 중 어느 문자열로도 해석된다. 따라서 **두 식별자 모두 전역 유일해야 한다** (아래 가드 참조)
-5. `initial_controller` 파라미터로 초기 활성 컨트롤러 선택
-6. `main()`에서 모든 `controller_nodes_`를 `nrt_callback_executor`에 attach — 컨트롤러가 자체 소유한 sub/pub 콜백이 non-RT 스레드에서 처리됨
-7. CM `on_activate` -> 각 컨트롤러 `on_activate(active)` 호출(LifecyclePublisher 활성화 후) -> RT 루프 + publish 스레드 시작
-8. CM `on_deactivate` -> RT/publish 스레드 정지 후 각 컨트롤러 `on_deactivate(inactive)` 호출
-9. CM `on_cleanup` 진입 시 각 컨트롤러에 `on_cleanup(inactive)` 호출 후 `controller_nodes_`/`controllers_` 해제
-
-#### 식별자 충돌 가드 (2-tier)
-
-`controller_name_to_idx_` 가 단일 네임스페이스이므로, 식별자가 겹치면 오퍼레이터가 선택하지 않은 컨트롤러가 조용히 도는 결과가 된다. CM 은 이를 두 단계로 거부한다 — 둘 다 **경고가 아니라 configure 실패**다.
-
-| Tier | 시점 | 검사 대상 | 왜 거기인가 |
 |---|---|---|---|
-| 1 | Pass 1 **이전** | `config_key` vs `config_key` | 팩토리 호출 전이라 컨트롤러·LifecycleNode 가 하나도 안 만들어진 채 거부 |
-| 2 | Pass 1 안 | `Name()` 과 `config_key` 를 이미 등록된 모든 식별자와 대조 | `Name()` 은 인스턴스의 virtual 이라 `factory()` 전에는 알 수 없다. 대신 latch 후 D1 체크포인트에서 거부 — publisher / device backend / log channel / service / timer / RT thread 는 전부 D1 이후라 아직 없다 |
+| **rt_loop** (rt_control) | SCHED_FIFO 90 | `control_rate` Hz (+ 워치독 50 Hz) | 제어 루프. tick 끝에 `DeviceBackend.WriteCommand` 를 inline 호출하고 `nrt_publish_buffer_` 에 push |
+| **rt_callback_executor** | SCHED_FIFO 70 | 이벤트 | 디바이스 JointState · MotorState · SensorState 구독 (`cb_group_rt_callback_`) |
+| **nrt_logging_executor** | SCHED_OTHER -5 | 100 Hz | 타이밍 CSV 드레인 · 1초 서머리 · deferred E-STOP 로그 |
+| **nrt_publish** | SCHED_OTHER 0 | 이벤트 | SPSC 드레인 → `PublishNonRtSnapshot` + per-group JointState. eventfd wakeup. `nrt_callback` 과 배치가 같고 이름만 다르다 |
+| **nrt_callback_executor** | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환 · E-STOP 상태 · lifecycle 서비스 · 컨트롤러 LifecycleNode 의 구독 |
 
-**대가 — 한 컨트롤러 클래스를 두 config_key 로 등록할 수 없다.** `Name()` 은 모든 구현에서 클래스 상수이므로 같은 클래스의 두 번째 등록은 항상 첫 번째의 `Name()` 과 충돌해 bring-up 전체가 거부된다. "같은 클래스, 두 YAML 설정" 이 필요하면 인스턴스별로 `Name()` 을 다르게 돌려주는 서브클래스를 만들어야 한다. 컨트롤러 클래스를 복사한 뒤 `Name()` 문자열을 안 고치는 실수가 바로 이 경로로 잡힌다.
+`mlockall(MCL_CURRENT | MCL_FUTURE)` 을 `rclcpp::init()` 전에 호출한다. 프로세스 시작은 `RtControllerMain()` 이 순서대로 처리한다: 노드 생성 (Unconfigured) → launch 가 configure/activate → Active 확인 → 전용 executor 로 전환.
 
-> Lifecycle 훅 규약은 [`rtc_controller_interface/README.md`](../rtc_controller_interface/README.md#lifecycle-훅-ros2_control-정렬-기본-구현-제공) 참조. 컨트롤러는 per-node topic 소유권을 가지며(`/<config_key>/<topic>`), RT 경로에서 `node_` 접근은 금지입니다.
+| 콜백 | 하는 일 |
+|---|---|
+| `on_configure` | 콜백 그룹 · 파라미터 · 컨트롤러 · 퍼블리셔/구독 · 타이머 · eventfd 생성 |
+| `on_activate` | RT 루프와 publish 스레드 시작 |
+| `on_deactivate` | 스레드 중지, E-STOP 클리어, 상태 초기화 |
+| `on_cleanup` | `on_configure` 역순 해제 (eventfd 만 backend 해제 **후** close) |
+| `on_error` | E-STOP 트리거 후 정리 → Unconfigured 복구 |
 
-### 토픽 소유 lane
+```bash
+ros2 lifecycle get /integrated_rt_controller
+ros2 lifecycle set /integrated_rt_controller deactivate   # RT 루프 중지
+ros2 lifecycle set /integrated_rt_controller activate     # 재시작
+```
 
-토픽 소유는 3개 lane 으로 나뉜다 (controller YAML 에는 `ownership:` field 가 없다 — YAML `topics:` entry 는 전부 controller-owned):
+`/system/estop_status` 와 `/rtc_cm/active_controller_name` 퍼블리셔는 lifecycle 상태와 무관하게 동작한다.
 
-| 소유 lane | 생성 주체 | 역할 예시 | QoS 경로 |
-|-----------|-----------|-----------|---------|
-| DeviceBackend | `DeviceBackend` (CM이 group마다 1 instance 보유) | HW/sim ↔ controller 경계 트래픽: `state`, `motor_state`, `sensor_state`, `joint_command`, `ros2_command` (`devices.<group>.backend:` 선언) | Backend 자체 sub/pub + SeqLock state cache. RT loop → `WriteCommand(slot, cmd_type)` |
-| CM 고정 | `RtControllerNode` (hardcode, YAML 무관) | digital twin republish (`/rtc_cm/<group>/joint_states`), `/system/estop_status`, `/rtc_cm/active_controller_name`, `/rtc_cm/list_controllers`, `/rtc_cm/switch_controller`, `/rtc_cm/reset_fault`, `/rtc_cm/clear_estop` | CM 직접 publish / service |
-| controller-owned | 컨트롤러별 `LifecycleNode` (YAML `topics:` entry 전부) | 컨트롤러 입력/출력: `target`, `grasp_state`, `wbc_state`, `tof_snapshot`, `robot_transforms` | 컨트롤러가 on_configure에서 sub/pub 생성, publish 스레드가 SPSC 소비 후 `controllers_[active]->PublishNonRtSnapshot(snap)` 호출 |
+### 제어 루프
 
-원칙: CM은 **CM 고정 토픽** + **controller-node 관리** (switch / active / E-STOP) 만 소유하고, controller YAML 의 sub/pub 은 만들지 않는다. 컨트롤러가 생산하거나 소비하는 의미적 데이터(목표·GUI·grasp·wbc·tof) 는 컨트롤러 LifecycleNode가 직접 sub/pub. Target topic은 controller가 자체 sub하고 그 콜백에서 `DeliverTargetMessage` → `SetDeviceTarget`을 호출 — SetDeviceTarget은 SPSC 큐로 marshal한 뒤 RT thread가 `Compute()` 안에서 drain한다 (single-writer SeqLock invariant, RT-4).
+한 tick (`control_rate` 주기; 500 Hz 면 2 ms) 의 흐름이다.
 
-### 런타임 전환 (`/rtc_cm/switch_controller` 서비스, sync)
+1. **준비 게이트** — 설정된 **모든** 디바이스 그룹이 state 를 한 번 이상 보고해야 한다. 미보고면 `Compute()` / `WriteCommand()` 없이 tick 을 반환하고, `init_timeout_sec` 이 지나면 `{group}_init_timeout` E-STOP 후 노드가 종료한다.
+2. **상태 획득** — 활성 컨트롤러의 `TopicConfig.groups` 순서로 각 backend 의 SeqLock cache 를 락-프리로 읽는다.
+3. **연산** — 활성 컨트롤러의 `Compute()` → `ControllerOutput`. CM 은 hold 타깃을 만들지 않고 컨트롤러가 첫 `Compute()` 에서 현재 state 로 자체 seed 한다.
+4. **퍼블리시** — actuator 는 RT tick 안에서 그룹별로 `WriteCommand` inline 호출, controller-owned 토픽은 SPSC (cap 16) 로 `nrt_publish` 에 넘긴다.
+5. **타이밍** — 위상별 시간 · 지터를 SPSC 로 로깅 스레드에 보낸다.
 
-호출자(BT, CLI 등)가 `rtc_msgs/srv/SwitchController` 요청을 보내면, `strictness`(STRICT/BEST_EFFORT)에 따라 activate/deactivate 목록을 단일 대상으로 정리한 뒤 aux 스레드의
-`SwitchActiveController(name, message)` 헬퍼가 다음 sync 시퀀스를 실행한다. 요청/응답 필드 의미(`strictness`, `timeout` 등)는 [`rtc_msgs/srv/SwitchController.srv`](../rtc_msgs/srv/SwitchController.srv) 가 SSoT — 아래는 CM 쪽 실행 순서만 다룬다.
+**워치독 (50 Hz)** 은 설정된 모든 그룹을 감시한다. `device_timeout_names` / `device_timeout_values` 는 그룹별 timeout **값**만 주고, 목록에 없는 그룹은 `device_timeout_default_ms` 로 감시된다. 초과하면 `{group}_timeout` E-STOP 이다. 한 번도 보고 않은 그룹은 워치독이 아니라 준비 게이트 몫이다. 오버런한 tick 은 건너뛰고 주기를 재정렬하며 (burst 없음) 연속 10회면 E-STOP 이다.
 
-1. precondition: E-STOP idle, single-active → 위반 시 `ok=false`
-2. `controller_name_to_idx_` 맵에서 이름/config_key로 인덱스 조회 (`Unknown`이면 거부)
-3. target controller `on_activate(prev_state)` 호출 — base는 no-op SUCCESS; controller가 첫 `Compute()` tick에서 현재 device state로 자체 seed (RT-4 controller-internal init policy)
-4. `active_controller_idx_.store(idx, release)` — RT loop dispatch atomic 전환
-5. RT tick 1회 대기 (`sleep_for(1.5 × dt)`) — race benign
-6. previous controller `on_deactivate(prev_state)` 호출
-7. `/rtc_cm/active_controller_name` 퍼블리시 (TRANSIENT_LOCAL, rewire trigger 영구 유지)
-8. response `ok=true, message="ok"` (또는 "switched -> name")
+**Per-group command type**: `DeviceOutput::command_type` (per-device, nullopt = 상속) 이 있으면 `ControllerOutput::command_type` 을 override 한다. Mixed-command 컨트롤러 (예: WBC — arm `kPosition`, hand `kPdFeedforward`) 가 그룹마다 다른 타입을 낼 수 있는 이유다. `kPdFeedforward` 는 position target 에 per-joint feedforward torque 를 얹으며 wire 에는 `"pd_feedforward"` 로 인코딩된다. feedforward 채널을 모르는 backend 는 position tracking 으로 폴백한다.
 
-조회용 `/rtc_cm/list_controllers` (`ListControllers.srv`) — empty request, response =
-`ControllerState[]` (name/state="active|inactive"/type/is_active/claimed_groups + 진단 4필드,
-아래 §진단 필드). 두 srv 모두 `cb_group_nrt_callback_` (RT path와 분리),
-`rmw_qos_profile_services_default`.
+**Sim 모드** (`use_sim_time_sync=true`): tick 을 시계가 아니라 sim step 완료로 깨운다. step 이 `sim_sync_timeout_sec` 안에 완성되지 않으면 `sim_sync_timeout` E-STOP 후 노드가 종료한다. tick 은 `sim_sync_tick_devices` 의 모든 그룹이 새 state 를 낸 뒤에만 한 번 돈다.
 
-### 게인 채널 (per-controller ROS 2 parameter)
+### 컨트롤러 관리
 
-게인 채널은 **CM 소유가 아니다**. 각 컨트롤러 LifecycleNode (`/<config_key>`) 가 자체 `declare_parameter` + `add_on_set_parameters_callback`로 노출하며, parameter 콜백은 `nrt_callback_executor` 위에서 실행되어 SeqLock writer로 mutate→Store 한다 (RT path는 `Load()` 스냅샷만 사용). 계약은 [agent_docs/controllers.md](../agent_docs/controllers.md) §Gains, 배경·제거된 legacy 토픽·사용 예는 [docs/controllers.md](../docs/controllers.md) §Gains.
+#### 시스템 URDF + ModelConfig
 
-Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트롤러가 `/<config_key>/grasp_command` ([rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv)) srv server로 별도 advertise 한다 (active controller만). 컨트롤러는 **상대 이름** `grasp_command` 로 만든다 — `~/` 를 붙이면 이름이 한 번 더 중첩된다.
+최상위 `urdf:` 섹션 (파라미터 표는 §설정) 의 경로와 `sub_models` / `tree_models` 로 시스템 `PinocchioModelBuilder` 를 한 번 빌드해 컨트롤러에 공유한다. 빌드가 실패하면 컨트롤러가 자기 builder 를 만든다.
 
----
+- `sub_models` / `tree_models` 의 map 키(모델명)는 `devices` 의 그룹 이름과 매칭되어, 디바이스별 `root_link` / `tip_link` 를 자동 해석한다. 디바이스별 URDF 경로가 없으면 시스템 URDF 를 쓴다
+- `tip_link` 가 URDF frame 이 아니면 이 노드는 WARN 만 찍고 이름을 컨트롤러에 넘긴다. 받을지는 컨트롤러가 정한다 — 팔 끝 frame 이 풀리지 않는 joint · task · compliance · wbc 컨트롤러는 `on_configure` 를 거부하고, 한 컨트롤러의 거부는 configure 전체를 실패시킨다
+- `urdf.extended: true` 면 `<stem>.closure.yaml` sidecar 로 loop closure 를 만든다. sidecar `actuated_joints` 외의 movable 관절은 loop-passive 로 잠기므로 `actuated_joints` 는 그 URDF 의 완전한 active 집합이어야 한다 ([rtc_urdf_bridge/README.md](../rtc_urdf_bridge/README.md#extended-urdf-closed-chain-sidecar-nameclosureyaml)). sidecar 가 없으면 ERROR 후 plain URDF 로 진행한다
+- 최상위 `urdf:` 가 없으면 `devices.{group}.urdf` 에서 읽는다 (`extended` / `closure_path` 는 최상위 값을 그대로 적용)
 
-## E-STOP 및 안전 메커니즘
+#### 로딩과 컨트롤러 생성
 
-### E-STOP 트리거
+시작 때 `ControllerRegistry` 의 등록 컨트롤러를 모두 3-pass 로 만든다. Pass 1 은 팩토리 생성 · 전용 `LifecycleNode` (이름 = `config_key`, 네임스페이스 = `/<config_key>`) · `PreConfigure(yaml)`, Pass 2 는 device-name 해석, Pass 3 은 `on_configure` 다.
 
-| 트리거 | 조건 | 결과 |
-|--------|------|------|
-| `{group}_init_timeout` | `init_timeout_sec` 내 해당 그룹이 state 미보고 | `TriggerGlobalEstop("{group}_init_timeout")` + 노드 종료 |
-| `{group}_timeout` | 디바이스 그룹의 state 토픽이 설정된 ms 초과 미갱신 (50Hz 워치독) | `TriggerGlobalEstop("{group}_timeout")` |
-| `consecutive_overrun` | >= 10회 연속 RT 루프 오버런 | `TriggerGlobalEstop("consecutive_overrun")` |
-| `sim_sync_timeout` | 시뮬레이션 모드에서 `sim_wake_eventfd_` 타임아웃 (state 미수신) | `TriggerGlobalEstop("sim_sync_timeout")` + 노드 종료 |
-| `invalid_controller_output_*` / `unholdable_controller_output_*` | ControllerOutput 이 actuator-boundary validation 을 연속 `invalid_output_estop_ticks_` 회 실패 (hold 를 만들 수 없으면 첫 tick) | `TriggerGlobalEstop` + 접미사에 `OutputRejectReason` |
-| `unhonoured_command_type_*` / `unholdable_unhonoured_command_type_*` | 해소된 per-device command type 을 그 slot 의 backend 가 받지 않음 — 같은 consecutive 창 | `TriggerGlobalEstop` + 접미사에 거부된 mode |
+- `main()` 이 컨트롤러 노드를 `nrt_callback_executor` 에 attach 하므로 컨트롤러 소유 sub/pub 콜백은 non-RT 스레드에서 돈다
+- 컨트롤러는 `Name()` 과 `config_key` 양쪽으로 한 네임스페이스 (`controller_name_to_idx_`) 에 등록되어, `switch_controller` / `initial_controller` 가 둘 중 아무 문자열로나 해석한다
+- `initial_controller` 파라미터가 시작 컨트롤러를 고른다. Lifecycle 훅 규약은 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md#lifecycle-훅-ros2_control-정렬-기본-구현-제공) 를 본다
 
-### 글로벌 E-STOP 동작
+##### 식별자 충돌 가드 (2-tier)
 
-- `TriggerGlobalEstop()`: 멱등(idempotent), `compare_exchange_strong`으로 1회만 실행
-- 모든 컨트롤러에 `TriggerEstop()` + `SetHandEstop(true)` 전파
-- **actuator 로 나가는 command 를 CM 이 차단** — 아래 절 참조
-- `/system/estop_status`에 `true` 퍼블리시 (지연, 아래 참조). **transient_local** (#588) — 값이 바뀔 때만 발행되므로 volatile writer 로는 latch 뒤에 뜬 구독자가 다음 전이까지 "NORMAL" 을 봤다. 늦게 뜬 구독자가 현재 값을 받으려면 **구독자도 transient_local** 이어야 한다 (volatile 구독자는 매칭은 되지만 이력을 받지 않는다) — in-tree 구독자 (demo GUI · motion editor · BT bridge · shape_estimation) 는 모두 transient_local 이다. 발행자는 **만들어질 때 현재 값을 한 번 발행한다** (#607): transient_local 이 보관하는 것은 마지막으로 발행한 표본이라, `on_error` (latch 를 올린 채 발행자를 없앤다) 뒤의 configure 가 만든 새 발행자는 그러지 않으면 아무것도 갖고 있지 않다
-- RT 루프는 E-STOP 후에도 계속 실행 (타이밍/로깅 유지)
-- **RT 안전:** `estop_reason_`은 `std::array<char, 128>` 고정 크기 버퍼 (힙 할당 없음). RCLCPP 로깅은 `estop_log_pending_`, `/system/estop_status` publish 는 `estop_status_pending_` atomic 플래그를 통해 non-RT `DrainLog()` (100 Hz) 에서 지연 수행 — `TriggerGlobalEstop` / `ClearGlobalEstop` 은 RT 루프에서 도달 가능하므로 plain publisher 를 그 자리에서 호출하면 RT-10 위반이다. 드레인은 *드레인 시점의* 보고값 (`global_estop_` ∨ 해제 검증 창 — 아래 해제 절) 을 발행하므로 두 드레인 사이의 trigger/clear 쌍은 stale 값이 아니라 최종 상태로 수렴한다. lifecycle teardown 은 `drain_timer_` 를 없애므로 `FlushEstopStatus()` 가 마지막 전이를 직접 흘린다
+네임스페이스가 하나라서 식별자가 겹치면 오퍼레이터가 고르지 않은 컨트롤러가 조용히 돈다. CM 은 이를 둘 다 **경고가 아니라 configure 실패**로 거부한다.
 
-### 글로벌 E-STOP 해제 (`/rtc_cm/clear_estop` 서비스)
+| Tier | 시점 | 검사 대상 |
+|---|---|---|
+| 1 | Pass 1 **이전** | `config_key` 끼리 — 팩토리 호출 전이라 컨트롤러가 하나도 안 만들어진 채 거부 |
+| 2 | Pass 1 안 | `Name()` 과 `config_key` 를 이미 등록된 모든 식별자와 대조 (`Name()` 은 인스턴스를 만든 뒤에야 알 수 있다) |
 
-걸린 래치를 밖에서 내리는 유일한 경로다. `/rtc_cm/reset_fault` 의 글로벌 판 대응물이며 **양방향으로 분리돼 있다 (E-8)**.
+**한 컨트롤러 클래스를 두 `config_key` 로 등록할 수 없다.** `Name()` 은 클래스 상수라 같은 클래스의 두 번째 등록은 항상 첫 번째와 충돌한다. "같은 클래스, 두 YAML" 이 필요하면 인스턴스별로 `Name()` 이 다른 서브클래스를 만든다. 클래스를 복사하고 `Name()` 문자열을 안 고친 실수가 이 경로로 잡힌다.
 
-> **wire 계약** — 요청 `reason_ack` 의 의미, `ok` 의 판정 기준, 거부 4종의 구분은 [`rtc_msgs/srv/ClearEstop.srv`](../rtc_msgs/srv/ClearEstop.srv) 주석이 SSoT. 아래는 **CM 쪽 메커니즘**만 다룬다 ([conventions.md](../agent_docs/conventions.md) §Documentation Requirements).
+#### 런타임 전환 (`/rtc_cm/switch_controller`)
 
-**검증 창 = `EstopVerifyWindowTicks()` = `watchdog_check_divisor_ + 2` tick** (서비스 deadline 은 그 4배). 해제 후 원인 detector 가 한 번은 돌아야 해제가 검증되는데, 가장 느린 detector 가 디바이스 워치독이고 그것은 `watchdog_check_divisor_` tick 마다만 돈다 (위 워치독 절). `reset_fault` 의 2-tick 을 그대로 쓰면 **워치독이 아직 안 돌아** 죽은 디바이스가 "복구됨" 으로 보고된다. default 500 Hz 기준 창 12 tick (24 ms), deadline (10+2)×4×2 ms ≈ 96 ms.
+요청의 `strictness` (STRICT / BEST_EFFORT) 로 activate/deactivate 목록을 단일 대상으로 정리한 뒤 sync 로 전환한다. 순서는 이렇다: 사전 조건 (E-STOP idle · single-active) → 이름/`config_key` 로 조회 (`Unknown` 이면 거부) → 대상 `on_activate` → 활성 index 를 atomic 으로 교체 → RT tick 1회 대기 → 이전 컨트롤러 `on_deactivate` → `/rtc_cm/active_controller_name` 발행 → `ok=true` 응답. 응답이 오면 새 컨트롤러가 이미 RT 루프에 보인다. 컨트롤러의 `on_activate` 는 base 가 no-op 이며 첫 `Compute()` tick 에서 현재 device state 로 자체 seed 한다.
 
-**창 동안 hold 는 그대로다 (#588 ③, 결정 Q2·Q12·Q13).** 래치를 먼저 내리고 창 안의 재 latch 를 기다리던 이전 구현은, 원인이 남아 있어 거부될 해제에서도 그 사이 tick (워치독 원인이면 ~12 tick) 동안 **컨트롤러 출력을 치환 없이 내보내고** `/system/estop_status` 에 false→true 토글을 남겼다. 지금은:
+#### 컨트롤러 YAML 이 없을 때 — 세 갈래
 
-- 서비스가 `BeginEstopClearVerification()` 으로 **래치를 내리기 전에** 검증 토큰 (`estop_verify_token_`, 호출마다 새 0 아닌 값) 을 세운다 — 래치가 내려간 tick 이 "창 없음" 을 보는 순간이 없다
-- RT loop 가 래치가 내려간 tick 을 세고 창을 채우면 **RT 가** 토큰을 CAS 로 내린다. 래치가 다시 서거나 토큰이 바뀌면 처음부터 센다. 서비스는 토큰을 내리지 않는다 — deadline 을 넘긴 응답 (`the latch is DOWN … but unverified`) 뒤에도 hold 는 RT 가 창을 돌 때까지 유지된다 (서비스 timeout·종료로 팔이 검증 없이 풀리는 경로가 없다). 창은 lifecycle 전이가 비워도 사라지므로 서비스는 "사라짐" 을 검증으로 읽지 않는다 (#608): RT loop 가 끝까지 돈 창의 토큰을 `estop_verified_token_` 에 남기고, 서비스는 그것이 자기 토큰일 때만 `ok=true` 로 답한다 — 아니면 `the latch is DOWN … but not verified`
-- 치환 조건 = 래치 ∨ 토큰. `IsGlobalEstopped()` 의 의미는 그대로라 "clear 직후 래치 down" (#299) 은 변하지 않는다. 창 동안의 치환은 `EstopVerifyHeldOutputCount` 로 따로 센다
-- `/system/estop_status` 보고값 = 래치 ∨ 토큰 — 거부된 해제는 false 를 내지 않고, 검증된 해제는 컨트롤러 출력이 실제로 다시 나가는 tick 에 false 를 낸다 (RT 가 창을 닫으며 발행 플래그를 세운다)
-- 창 동안 `/rtc_cm/switch_controller` 는 거부된다 (`E-STOP active (clear still being verified)`) — 밖에서 보면 아직 E-STOP 이다
-- `ClearGlobalEstop()` 직접 호출 (`on_deactivate`, 테스트) 은 토큰을 세우지 않으므로 창이 없다. lifecycle (`on_configure`·`on_activate`·`on_deactivate`·`on_error`) 은 RT 스레드가 멈춘 상태에서 토큰과 latch 를 비운다
-- 포구 컨트롤러 등의 CSV `estop_active` 는 **컨트롤러 자신의** latch 라 창 동안 이미 0 이다 — CM 이 hold 중인지는 CM 카운터로 본다
+등록된 컨트롤러는 로봇과 무관하게 전부 인스턴스화되므로, 그 variant 에 YAML 이 없을 때의 거동이 계약이다.
 
-**전파 중 재트리거 (`kRetriggered`)** — clear 는 래치를 든 채 전파하므로, 그 사이 도착한 trigger 는 CAS 실패로 early-return 하며 **사유도 전파도 남기지 않는다**. 그대로 래치를 내리면 그 안전 이벤트는 흔적 없이 사라진다. 그래서 `TriggerGlobalEstop` 은 **CAS 앞에서** `estop_trigger_requests_` 를 올리고, `ClearGlobalEstop` 은 전파 전후로 그 값을 대조해 달라졌으면 **해제를 포기하고 래치를 유지**한 뒤 컨트롤러를 다시 estop 상태로 되돌린다 (fail-closed). 되돌리는 이유는 "래치 up + 컨트롤러 cleared" 가 전파 루프 안의 안전한 *과도 상태*일 뿐, **머무는 상태로는 스스로 낫지 않기** 때문이다. 위 트리거 표에서 이 경로에 걸릴 수 있는 것은 **가드가 없는 `consecutive_overrun` / `sim_sync_timeout`** 뿐이다 — `{group}_timeout` 과 output validation·command-type 거부는 호출 전에 `IsGlobalEstopped()` 를 검사한다.
+| 상황 | 거동 |
+|---|---|
+| 파일 **없음**, `RTC_REGISTER_CONTROLLER` | 빈 노드로 `PreConfigure` → 내장 기본값으로 동작 |
+| 파일 **없음**, `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` | **인스턴스화하지 않고 건너뜀** — `list_controllers` 에도 없다. "이 로봇은 이 컨트롤러를 쓰지 않는다" 의 표현 |
+| 파일 **있음**, 파싱 실패 또는 최상위 키 불일치 | configure 전체 **거부**. 오타가 컨트롤러를 조용히 없애지 못하게 한다 |
 
-CAS 성공 시에만 세는 카운터로는 **원리적으로 못 잡는다** — 삼켜진 호출은 CAS 를 통과하지 못한다. 이것이 `estop_trigger_requests_` 를 진입 시점에서 올리는 이유다.
+두 번째 갈래는 기본값으로 돌 수 없는 컨트롤러용이다 (선택 기준: [rtc_controller_interface/README.md](../rtc_controller_interface/README.md#rtc_register_controller_requiring_config--config-가-없으면-건너뛴다)). 그런 컨트롤러를 일반 매크로로 등록하면 그 로봇의 모든 컨트롤러가 거부된다.
 
-### Backend command-type 선언
+### E-STOP 및 안전 메커니즘
 
-`DeviceBackend::AcceptsCommandType(CommandType)` — **기본값은 position-only** 다. 아무 선언도 하지 않은 backend 는 이 트리의 모든 actuator lane 이 하는 그 하나를 한다고 간주한다. 더 넓게 선언하는 것은 opt-in 이며, "`WriteCommand` 가 enum 을 받는다" 가 아니라 **wire format 이 그 구분을 실어 나른다** 는 뜻이다.
+#### E-STOP 트리거
 
-CM 은 `on_configure` 에서 (backend 생성 후 + controller `on_configure` 후 — 양쪽이 다 확정된 최초 시점) 등록된 **모든** controller 의 `GetCommandType()` 을 그 controller 가 구동하는 group 의 backend 와 대조하고, 불일치면 configure 를 거부한다 (`ValidateCommandTypePairing`).
+사유 토큰은 로그의 `GLOBAL E-STOP triggered: <reason>` 에 나온다.
 
-같은 walk 가 서로 다른 두 질문에 답한다 — 답이 독립이기 때문이다:
+| 트리거 | 조건 |
+|---|---|
+| `{group}_init_timeout` | `init_timeout_sec` 안에 해당 그룹이 state 미보고. 노드 종료 |
+| `{group}_timeout` | 그룹의 state 토픽이 설정 ms 초과 미갱신 (50 Hz 워치독) |
+| `consecutive_overrun` | 연속 10회 RT 루프 오버런 |
+| `sim_sync_timeout` | sim 모드에서 step 완료를 `sim_sync_timeout_sec` 안에 못 받음. 노드 종료 |
+| `invalid_controller_output_*` · `unholdable_controller_output_*` | `ControllerOutput` 이 actuator-boundary validation 을 연속 실패 (hold 를 못 만들면 첫 tick). 접미사가 `OutputRejectReason` |
+| `unhonoured_command_type_*` · `unholdable_unhonoured_command_type_*` | 해소된 per-device command type 을 그 slot 의 backend 가 받지 않음. 같은 consecutive 창. 접미사가 거부된 mode |
+
+#### 글로벌 E-STOP 동작
+
+- `TriggerGlobalEstop()` 은 멱등이다. 모든 컨트롤러에 `TriggerEstop()` + `SetHandEstop(true)` 를 전파한다
+- RT 루프는 E-STOP 후에도 계속 돌고 (타이밍 · 로깅 유지) **actuator 로 나가는 command 는 CM 이 차단**한다 (아래 §E-STOP 시 actuator command 차단)
+- `/system/estop_status` 는 `true` 를 non-RT `DrainLog()` (100 Hz) 에서 늦게 발행한다 — `TriggerGlobalEstop` 이 RT 에서 도달 가능해 plain publisher 호출은 RT-10 위반이기 때문이다
+- 늦게 뜬 구독자가 현재 값을 받으려면 구독자도 **transient_local** 이어야 한다 (volatile 구독자는 매칭되지만 이력을 못 받는다). in-tree 구독자는 모두 그렇다. 발행자는 만들어질 때 현재 값을 한 번 발행한다
+
+#### 글로벌 E-STOP 해제 (`/rtc_cm/clear_estop` 서비스)
+
+걸린 래치를 밖에서 내리는 유일한 경로다. `reset_fault` 의 글로벌 판 대응물이며 **양방향으로 분리돼 있다 (E-8)**: 둘 중 하나를 풀어도 다른 쪽은 그대로다. `message` 가 다른 쪽이 아직 걸려 있음을 알려 준다.
+
+> **wire 계약** — `reason_ack` 의미, `ok` 판정 기준, 거부 4종의 구분은 [`rtc_msgs/srv/ClearEstop.srv`](../rtc_msgs/srv/ClearEstop.srv) 주석이 SSoT 다. 아래는 CM 쪽 메커니즘만 다룬다.
+
+```bash
+# 1) 빈 ack 로 불러 거부 메시지에서 현재 사유를 읽는다 (또는 "GLOBAL E-STOP triggered: <reason>" 로그)
+ros2 service call /rtc_cm/clear_estop rtc_msgs/srv/ClearEstop "{reason_ack: ''}"
+# 2) 사유를 그대로 되돌려 해제 (예: 사유가 arm_timeout 일 때)
+ros2 service call /rtc_cm/clear_estop rtc_msgs/srv/ClearEstop "{reason_ack: 'arm_timeout'}"
+```
+
+- **검증 창** = `EstopVerifyWindowTicks()` = `watchdog_check_divisor_ + 2` tick (500 Hz 기준 12 tick, 24 ms). 서비스 deadline 은 그 4배다. 해제 뒤 원인 detector 가 한 번은 돌아야 해제가 검증된다
+- **창 동안 hold 는 그대로다.** 서비스가 래치를 내리기 **전에** 검증 토큰을 세우고, 창을 채우면 RT 가 토큰을 내린다. 서비스 timeout 이 나도 hold 는 RT 가 창을 돌 때까지 유지된다. `ok=true` 는 RT 가 끝까지 돈 창이 자기 토큰일 때만이다
+- 창 동안 `/system/estop_status` 는 true 를 유지하고 (거부된 해제는 false 를 내지 않는다) `switch_controller` 는 `E-STOP active (clear still being verified)` 로 거부된다
+- **전파 중 재트리거 (`kRetriggered`)**: clear 가 전파되는 사이 다른 trigger 가 도착하면 해제를 포기하고 래치를 유지한다 (fail-closed). 이 경로에 걸릴 수 있는 것은 가드 없는 `consecutive_overrun` · `sim_sync_timeout` 뿐이다
+- 컨트롤러 CSV 의 `estop_active` 는 **컨트롤러 자신의** latch 라 창 동안 이미 0 이다. CM 이 hold 중인지는 CM 카운터 `EstopVerifyHeldOutputCount` 로 본다
+- `on_configure` · `on_activate` · `on_deactivate` · `on_error` 는 RT 스레드가 멈춘 상태에서 토큰과 latch 를 비운다. `ClearGlobalEstop()` 직접 호출 (테스트) 은 창이 없다
+
+근거: [architecture-rationale.md](../docs/reference/architecture-rationale.md#controller-manager--e-stop--command-type-근거).
+
+#### E-STOP 시 actuator command 차단
+
+latch 가 서면 (또는 해제 검증 창 동안) 컨트롤러 output 은 `DeviceBackend::WriteCommand` 에 도달하지 않고 `BuildLatchedHoldOutput()` 로 치환된다.
+
+| command type | hold 값 | 물리적 의미 |
+|---|---|---|
+| `kPosition` · `kPdFeedforward` | **latch 한 위치** | 진짜 정지 — 드라이브가 그 자세를 잡는다 |
+| `kTorque` | `0 N·m` | 팔이 중력에 **sag** 한다 |
+
+- **hold 목표는 slot 별 첫 치환 tick 의 측정(없으면 마지막 판독값)을 latch 한 값**이고 매 tick 갱신하지 않는다. 이미 hold 중인 재 trigger 는 재캡처하지 않는다. 다음 E-STOP 은 새로 잡는다
+- 유한한 값이 하나도 없는 채널이 있으면 그 device 만 `WriteSafeCommand()` 를 부르고 다음 tick 에 다시 잡는다
+- 이 치환은 [`rtc_controller_interface`](../rtc_controller_interface/README.md) 의 actuator-boundary output validation **뒤에** 얹힌다. 카운터는 `RejectedOutputCount` (validation) · `EstopSubstitutedOutputCount` (E-STOP 치환) · `EstopVerifyHeldOutputCount` (해제 창 hold) 로 따로 센다
+- `kTorque` 의 sag 는 escalation 까지 `invalid_output_estop_ticks_` (rate 유도, 10-tick floor) 동안 이어지고 **설정으로 줄일 수 없다**. torque 페어링이 허용되면 configure 가 실측 노출 창을 WARN 으로 고지한다
+
+#### Backend command-type 선언
+
+`DeviceBackend::AcceptsCommandType(CommandType)` 의 **기본값은 position-only** 다. 더 넓게 선언하는 것은 opt-in 이고, "`WriteCommand` 가 enum 을 받는다" 가 아니라 **wire format 이 그 구분을 실어 나른다** 는 뜻이다. CM 은 `on_configure` 에서 등록된 모든 컨트롤러의 `GetCommandType()` 을 그 컨트롤러가 구동하는 그룹의 backend 와 대조하고 (`ValidateCommandTypePairing`), 불일치면 configure 를 거부한다.
 
 | 질문 | 판정 | 결과 |
 |---|---|---|
 | **전송** — 이 wire 가 그 모드를 실을 수 있나 | `CommandTypeIsHonoured(slot 마스크, ct)` | 거짓이면 **거부** (configure FAILURE) |
-| **안전** — 실을 수 있다면 E-STOP 치환이 여전히 "정지" 인가 | `kTorque` 여부 | 아니면 **경고** (아래 sag advisory) |
+| **안전** — E-STOP 치환이 여전히 "정지" 인가 | `kTorque` 여부 | 아니면 **경고** |
 
-전송 판정이 `AcceptsCommandType` **직접 호출이 아닌** 이유는 tick-path 검사와 같은 술어여야 하기 때문이다 — 근거는 아래 §해소된 per-device command type 의 tick-path 검사 §두 게이트는 한 술어다. backend 선언 자체의 의미는 그대로이고, 마스크는 그 선언을 slot 당 3비트로 캐시한 것이다.
+선언하지 않은 backend 는 torque 를 fail-closed 로 거부하므로 torque 구성은 "YAML 한 단어 + opt-in 한 backend" 다. in-tree 에서 opt-in 한 것은 `mujoco_native` (sim) 뿐이고, `integrated_bringup/config/**` 의 컨트롤러 config 는 전부 `command_type: "position"` 이다. 이 검사는 컨트롤러 단위 `GetCommandType()` 만 본다. 매 tick 정해지는 per-device 값은 아래 검사가 본다.
 
-backend 가 전송에 "예" 라고 답하는 것이 안전에 대해 아무것도 말해주지 않으므로, 두 번째를 capability 선언 안으로 접을 수 없다.
+#### 해소된 per-device command type 의 tick-path 검사
 
-왜 필요했나: `WriteCommand` 의 `command_type` 인자는 **권고**였다. `ur_driver_native` 는 그것을 무시하고 받은 값을 전부 `forward_position_controller` 의 `Float64MultiArray` 로 발행한다. 따라서 torque 모드 controller 가 거기 묶이면 **N·m 가 관절 각도로 wire 에 나가고**, CM 자신의 hold command 는 (동역학 모델이 없어 kTorque 를 0.0 으로 낸다) 팔을 **놓아주는 대신 zero configuration 으로 이동시킨다.** 그 backend 소스는 이 페어링이 "validated at YAML time" 이라고 적어 두었으나 실제로 검증하는 곳은 어디에도 없었다.
+`WriteCommand` 직전에 해소된 `devices[i].command_type` 을 backend 선언과 대조한다. `AcceptsCommandType` 은 configure 에서 한 번만 불러 slot 당 3비트 마스크로 캐시하므로 (`CacheSlotCommandTypeMasks`) tick 에서는 비트 테스트 하나다.
 
-`integrated_bringup/config/**` 의 shipped controller config 는 전부 `command_type: "position"` 이다. (`rtc_controllers/examples/controllers/direct/` 의 `joint_pd_controller.yaml` · `operational_space_controller.yaml` 은 `torque` 지만 둘 다 orphan 이다 — 대응 controller 가 삭제돼 `RTC_REGISTER_CONTROLLER` 가 없다.)
+- **통과 기준은 `commands[]` 값의 의미다.** `kPosition` 과 `kPdFeedforward` 는 둘 다 위치 목표를 싣고 feedforward 는 추가 채널이라, position-only backend 가 `kPdFeedforward` 를 받는 것은 허용되는 폴백이며 wire 의 `command_type` 문자열도 강등하지 않는다. `kTorque` 만 물리량이 다르다
+- 위 configure 게이트와 이 tick 검사는 **같은 술어**를 읽는다. 어느 축으로 도착했든 같은 wire 동작을 같게 판정하기 위해서다
+- `num_channels == 0` 인 device 는 판정 대상이 아니다 (`SilenceDeviceOutput` 의 "no update" 답이라 mode selector 가 길이 0 배열을 지칭한다)
+- **걸리면** 그 tick 출력은 output validation 과 **같은 hold 로 치환**되고, 같은 consecutive 창 (카운터 공유) 이 지속되면 `unhonoured_command_type_<mode>` E-STOP 으로 승격한다. 위반 tick 이 wire 에 도달하지 않는다. 카운터는 `RejectedCommandTypeCount`
+- 창 안에서 사라지는 거부는 사유 토큰을 남기지 않으므로 RT 가 고정 버퍼에 한 줄을 적고 `DrainLog()` 가 WARN 으로 낸다. 재출력은 약 1초 간격이고 억제된 tick 수가 다음 줄 꼬리에 실려 "지속" 과 "1회" 가 구별된다
 
-기본값이 position-only 라는 점이 실질적 효력이다: **선언하지 않은 backend 는 torque 를 fail-closed 로 거부**하므로, torque 구성은 YAML 한 단어가 아니라 *YAML 한 단어 + opt-in 한 backend* 를 요구한다. in-tree 에서 opt-in 한 것은 `mujoco_native` (sim) 하나뿐이다.
+#### Backend safe-output 계약
 
-**범위**: 이 configure 검사는 controller-level `GetCommandType()` 만 본다. RT loop 가 backend 에 실제로 넘기는 값은 `gc.command_type = dout.command_type.value_or(output.command_type)` 로 해소한 per-device override 이고, 그것은 tick 마다 정해지므로 configure 시점에 존재하지 않는다. 그 축은 아래 tick-path 검사가 갖는다.
+`DeviceBackend::WriteSafeCommand()` 는 pure virtual 이고 인자가 없다. CM 은 actuator 에 normal command 를 보낼 수 없고 **hold 도 못 만들 때** (device 가 non-finite 위치를 보고) 부른다. zero-length command 는 fail-closed 가 아니라 "하던 것을 계속하라" 는 침묵이다. 현재 backend 3종의 답은 "마지막 good command 재발행" 이므로 물리적으로는 침묵 경로와 같은 자리에 머문다. 달라지는 것은 의도가 wire 와 rosbag 에 명시된다는 것이다. 새 backend 는 `device_backend.hpp` 의 Doxygen 계약을 따른다.
 
-### 해소된 per-device command type 의 tick-path 검사
+### 타이밍과 로그
 
-configure 게이트가 볼 수 없는 값 — 컨트롤러가 매 tick 자유롭게 채우는 `ControllerOutput::devices[i].command_type` — 을 **`WriteCommand` 직전에** backend 선언과 대조한다. 이 구멍은 가설이 아니었다: WBC 가 hand 에 `kPdFeedforward` 를 per-device override 로 걸고 있고 (`wbc/compute.cpp`), 같은 경로로 per-device `kTorque` 가 지나가면 위 절이 닫은 결함이 그대로 재개봉된다.
+`ControllerTimingProfiler` 가 `Compute()` 의 락-프리 히스토그램 (200 버킷, 10 us 간격, 0-2000 us) 을 모은다. RT 루프가 1000 tick 마다 로깅 스레드에 요청해 서머리를 내고 리셋하므로 각 출력은 **직전 윈도우**의 값이다.
 
-**질의는 configure, 판정은 tick.** `AcceptsCommandType` 은 자기 doc 이 *"Not RT — called once during configure"* 로 못박으므로 tick 에서 부를 수 없다. `CommandType` 은 값이 3개뿐이라 slot 당 답 전체가 **3비트 마스크**이고 (`CacheSlotCommandTypeMasks`, `on_configure`), RT 쪽은 비트 테스트 하나가 된다 — 가상 호출도, 인터페이스 변경도 없다.
-
-**통과 기준은 backend 예외표가 아니라 `commands[]` 의 값 의미다.** `kPosition` 과 `kPdFeedforward` 는 둘 다 **위치 목표**를 싣고 feedforward 는 backend 가 전송하지 않아도 되는 *추가 채널*이므로, position-only backend 가 `kPdFeedforward` 를 받는 것은 위 §per-group command type 해석이 문서화한 graceful fallback 이다 — 계속 허용되고 **wire 의 `command_type` 문자열도 강등하지 않는다** (backend 가 그 값을 그대로 실으므로, 강등은 컨트롤러의 의도를 rosbag 에서 지운다). `kTorque` 만 `commands[]` 의 물리량이 다르고, 그것이 이 검사가 막는 위험 그 자체다. 이 구분은 enum 의 성질이라 out-of-tree 페어링에도 같이 적용된다.
-
-**두 게이트는 한 술어다.** enum 의 성질이라면 값이 *어느 축으로* 도착했는지에 따라 달라질 수 없으므로, `ValidateCommandTypePairing` 은 `CacheSlotCommandTypeMasks`(`on_configure`)가 캐시한 마스크를 tick-path 의 `CommandTypeIsHonoured` 와 같은 술어로 읽는다 — configure 와 tick 이 같은 wire 동작을 축에 따라 다르게 판정하지 않도록 하는 것이 목적이다. 부수 효과로 `AcceptsCommandType` 을 부르는 곳이 `CacheSlotCommandTypeMasks` **하나**가 되어, 그 함수가 순수하지 않은 backend (Configure 에서 세운 멤버를 참조하는 등) 가 두 호출자에게 다르게 답하는 경로도 없다. fail-closed 방향은 그대로다 — opt-in 하지 않은 backend 의 `kTorque` 는 양쪽에서 여전히 거부된다.
-
-**침묵된 device 는 판정 대상이 아니다.** `num_channels == 0` 은 `SilenceDeviceOutput` 의 "no update" 답 (F5) 이고 모든 backend 가 early-return 하므로, 그 device 의 mode selector 는 **길이 0인 배열의 물리량을 지칭**한다. `ValidateControllerOutput` 이 유한성 루프를 `num_channels` 로 이미 bound 하는 것과 같은 축이다. 판정했다면 비용이 로그 한 줄이 아니라 — 출력 **전체**가 hold 로 치환되고 창이 지나면 wire 에 아무것도 안 내보낸 device 때문에 글로벌 E-STOP 이다.
-
-**걸렸을 때**: 그 tick 의 출력은 actuator-boundary output validation 과 **같은 hold 로 치환**되고, 지속되면 **같은 consecutive 창**으로 E-STOP 에 승격한다 (사유 토큰 `unhonoured_command_type_<mode>`). hold 치환이 정답인 이유는 구성상이다 — `BuildHoldOutput` 은 per-device override 를 전부 지우고 controller-global 타입을 stamp 하는데, 그 값은 `ValidateCommandTypePairing` 이 이미 모든 backend 와 대조한 값이다. 즉 치환된 tick 은 **configure-검증된 봉투 안**이며, 창을 riding out 하는 근거인 "hold 가 그동안 안전하다" 가 여기서는 논증이 아니라 보장이다. 위반 tick 이 wire 에 도달하는 일은 없다.
-
-| 축 | 카운터 | 왜 따로 세는가 |
-|---|---|---|
-| output validation | `RejectedOutputCount` | 셋 다 **동일한 hold** 를 내므로, 카운터가 갈라지지 않으면 어느 가드가 막았는지 테스트가 구분할 수 없다 |
-| command-type | `RejectedCommandTypeCount` | |
-| E-STOP 치환 | `EstopSubstitutedOutputCount` | |
-| 해제 검증 창 | `EstopVerifyHeldOutputCount` | 래치가 내려간 뒤 창 동안의 hold (#588) |
-
-consecutive 카운터는 **공유**한다 — 두 사유 모두 "이 tick 의 출력은 보낼 수 없다" 이고, 사유가 번갈아 나타나며 지속되는 것도 똑같이 안전 이벤트이기 때문이다.
-
-**승격 아래 구간의 관측**: 창 안에서 자기 소멸하는 거부는 `TriggerGlobalEstop` 에 도달하지 않아 사유 토큰이 남지 않고, 카운터는 *어느 컨트롤러가 어느 group 에 어느 모드를* 냈는지 말하지 못한다 — 그래서 RT 쪽이 고정 버퍼에 한 줄을 적고 `DrainLog()` 가 WARN 으로 내보낸다 (E-STOP 사유와 같은 deferred lane). throttle 매크로가 아닌 이유: `RCLCPP_*_THROTTLE` 의 창은 **매크로 전개점의 static** 이라 프로세스 전역이고, 한 프로세스의 두 노드가 서로를 침묵시킨다. pending 플래그는 노드 멤버라 그 문제가 없다.
-
-**단, pending 플래그는 rate limit 이 아니다.** `DrainLog` 가 10 ms 마다 그것을 내리므로 플래그만으로는 초당 ~100줄이고, 그 상한은 **E-STOP 이 걸려도 유지된다** — 승격 후에도 검증과 이 검사는 설계대로 계속 돌고 `TriggerGlobalEstop` 만 래치로 막히기 때문이다. 그래서 `loop_count_` tick 으로 센 **재출력 deadline** (`kCommandTypeLogIntervalSeconds`, rate 유도) 을 둔다: 첫 위반 tick 은 절대 버려지지 않고, 그 사이 억제된 tick 수가 다음 줄 꼬리에 실려 "지속" 과 "1회" 가 구별된다. tick 을 시계로 쓰는 이유는 RT loop 이 이미 그것을 유지하고 있어 relaxed load 한 번이기 때문이다.
-
-**buffer 는 읽고 나서 재무장한다.** 플래그를 먼저 내리면 그 순간 RT writer 가 풀리므로, WARN 이 아직 그 배열을 포맷하는 중에 다음 tick (500 Hz 면 2 ms) 이 같은 배열에 `snprintf` 를 건다 — plain `char` 배열에 대한 data race 이고 증상은 controller 이름과 group 이 서로 다른 거부에서 온 **섞인 한 줄**이다. E-STOP lane 이 반대 순서로도 무사한 것은 그 writer 가 CAS 로 걸러져 래치 전이당 1회만 쓰기 때문이며, 이 lane 은 tick 마다 쓴다. 같은 이유로 lifecycle teardown (`on_deactivate` / `on_cleanup` / `on_error`) 은 `drain_timer_` 를 놓기 전에 이 lane 을 flush 한다 — 안 하면 세션 마지막 수 ms 에 포맷된 줄이 **다음 활성화의 첫 drain** 에서 출력돼, 그 세션에서 일어나지도 않은 거부를 이미 사라진 구성 이름으로 보고한다.
-
-### Backend safe-output 계약
-
-`DeviceBackend::WriteSafeCommand()` — **pure virtual, 인자 없음.**
-
-CM 이 호출하는 조건: actuator 에 normal command 를 보내면 안 된다고 판단했고 **hold 도 만들 수 없을 때** (device 가 non-finite 위치를 보고 → "네가 있는 곳으로 servo" 할 대상 값이 없음). zero-length command 를 내보내는 것은 fail-closed 가 아니다 — 세 backend 모두 zero-length 를 early-return 하므로, 하드웨어에 도달하는 것은 침묵이고 그 의미는 "하던 것을 계속하라, 모터는 물린 채" 다. 침묵은 안전 상태가 아니라 **결정의 부재**다.
-
-인자가 없는 이유: 그 순간 CM 의 device 관점이 신뢰 불가라는 것이 요점이다. 여전히 known-good 값을 들고 있는 유일한 당사자가 backend 다 (보통 마지막으로 성공 발행한 command). `SafetyMode` enum 을 두지 않은 이유도 같다 — 가장 안전한 동작은 backend 별로 다르고 backend 가 그것을 소유한다. 진짜 drive-disable 을 갖게 된 backend 는 여기 구현하면 되고, 상위가 새 mode 를 배울 필요가 없다.
-
-pure virtual 인 이유: 아무것도 안 하는 default 는 이것이 대체하려는 그 침묵을 그대로 재생산하고, 새 backend 작성자는 질문 자체를 받지 않게 된다.
-
-> **정직한 범위 고지**: 현재 shipped backend 3종이 낼 수 있는 답은 "마지막 good command 재발행" 뿐이며, 물리적으로는 침묵 경로가 남긴 자리에 그대로 있다. 달라지는 것은 (a) 의도가 wire 와 rosbag 에 **명시**된다, (b) actuator lane 이 살아 있어 이를 감시하는 receiver 가 구분할 수 있다, (c) 더 나은 동작이 가능한 backend 가 도착하기 전에 **계약이 먼저 존재한다** (ARCH-3). hand 는 UDP write opcode 가 `kWritePosition` 하나뿐이라 bounded position hold 외의 선택지가 없다.
-
-### E-STOP 시 actuator command 차단
-
-latch 가 서면 (또는 해제 검증 창 동안) controller 가 계산한 output 은 **`DeviceBackend::WriteCommand` 에 도달하지 않는다.** `BuildLatchedHoldOutput()` 로 치환되는데, **치환의 물리적 의미는 lane 마다 다르다**:
-
-| command type | hold 값 | 물리적 의미 |
-|---|---|---|
-| `kPosition` / `kPdFeedforward` | **latch 한 위치** (아래) | **진짜 정지** — 드라이브가 그 자세를 잡는다 |
-| `kTorque` | `0 N·m` | 팔이 중력에 **sag** 한다 |
-
-**hold 목표는 매 tick 의 측정이 아니라 latch 다 (#588 ①, 결정 Q1).** 매 tick 목표를 그 tick 의 측정으로 다시 잡으면 position servo 의 정상상태 오차 (중력·마찰·PD 지연) 만큼 목표가 측정 쪽으로 따라가 누적된다 — 강성 0 의 추종자다 (sim 실측: E-STOP 137 s 동안 손 thumb_mcp 0.46 rad, 팔 wrist_2 41 s 동안 0.049 rad; 컨트롤러 안의 같은 결함은 `6bbc4d22`). 규칙:
-
-- **slot 단위, slot 별 첫 치환 tick 에 캡처** — 채널마다 그 tick 의 측정 (hole 이 아니고 유한할 때), 아니면 RT 가 매 tick 갱신하는 **마지막 판독값**, 한 번도 읽힌 적 없으면 cache 값 (reorder map 의 영구 unmatched 채널이 여기에 온다). 유한한 값이 하나도 없는 채널이 있으면 그 device 만 `WriteSafeCommand()` 하고 다음 tick 에 다시 잡는다. device index 가 아니라 slot 으로 잡는 이유: switch 가 E-STOP 검사 직후 trigger 를 만나면 device index → slot 대응이 hold 도중 바뀐다
-- **이미 hold 중인 재 trigger 는 재캡처하지 않는다** — 검증 창 안의 재 trigger 포함 (hold 가 한 번도 멈추지 않았다)
-- **폐기**: latch 도 창도 아닌 첫 tick. 다음 E-STOP 은 새로 잡는다
-- 채널 수는 캡처 때와 지금 보고 폭 중 작은 쪽
-- Phase 2b (E-STOP 아닌 출력 거부) 의 hold 는 여전히 매 tick 측정이다 — 그 창은 `kOutputRejectEstopSeconds` 로 짧고 넘으면 E-STOP 으로 승격해 latch 로 넘어간다. E-STOP·창 중의 2b 거부는 latch hold 를 쓴다
-
-`kTorque` 에 등가물이 없는 이유: CM 은 동역학 모델을 들고 있지 않아 중력 보상 토크를 합성할 수 없고, `0 N·m` 이 정직하게 낼 수 있는 유일한 값이다.
-
-**노출 창과 그 고지** — sag 는 escalation 이 걸릴 때까지 이어지며 그 길이는 `invalid_output_estop_ticks_` 다 (rate 유도, 10-tick floor). **이 창은 설정으로 줄일 수 없다** — `kOutputRejectEstopSeconds` 는 compile-time 상수이고, tick floor 위에서는 `control_rate` 를 올려도 벽시계 길이가 그대로다. 그래서 `ValidateCommandTypePairing` 은 torque 페어링이 *허용될 때* configure 에서 WARN 을 낸다: 어느 controller / group / slot 인지, 치환이 `0 N·m` 라는 것, **실측 노출 창** (ms + tick + Hz), 그리고 그 창이 고정이라는 것. 거부된 페어링에는 내지 않는다 (허용되지 않는 조합에 대해 "허용되지만 위험" 으로 읽힌다).
-
-> 창을 tunable 로 만드는 것은 래치가 언제 걸리는지를 바꾸므로 **E-8 결정**이지 이 고지의 연장이 아니다. 진짜 해답은 drive-disable 을 선언하는 backend 의 `WriteSafeCommand()` 쪽이다 (위 backend safe-output 계약).
-
-- **왜 CM 이 하는가**: actuator 안전이 각 controller 의 E-STOP hook 구현 정확성에 의존해서는 안 된다. in-tree 바인딩이 전부 `SetHandEstop` 을 override 한다는 사실은 **오늘의 집합에 대한 관찰이지 계약이 아니다** — `RTControllerInterface` 는 레지스트리로 로드되는 out-of-tree 계약이고 `SetHandEstop` 의 base 는 여전히 no-op 이므로, 이 사실이 가드를 없앨 근거가 되지 못한다 (없애면 반례는 다음 바인딩과 함께 조용히 돌아온다)
-- **의도적으로 버리는 것**: in-tree `ComputeEstop` 은 전부 hold 가 아니라 설정된 `safe_position_` 으로의 slew 다. 그 후퇴는 controller 단위 정책이고 CM 은 검증할 모델이 없다. 복원은 위 backend safe-output 계약 (position / torque / hand 각각의 semantics) 소관이다
-- **합성 순서**: [`rtc_controller_interface`](../rtc_controller_interface/README.md) 의 actuator-boundary output validation **뒤에** 얹힌다 — 우회가 아니다. validator 는 terminal state 에서도 계속 돌고 (`rejected_output_count_`), E-STOP 치환은 `estop_substituted_outputs_` 로 따로 센다. 둘 다 같은 hold 를 내므로 **카운터가 갈라지지 않으면 어느 가드가 막았는지 테스트가 구분할 수 없다**
-
-### 오버런 복구
-
-- 누락된 tick 건너뛰기 (burst 없음, 주기 재정렬)
-- `overrun_count_`, `skip_count_`, `consecutive_overruns_` 원자적 카운트
-- 컴퓨트 자체가 예산을 초과한 tick은 `cm_timing_log.csv`의 `t_compute_us` 컬럼으로 사후 분석 (별도 in-memory 카운터 없음)
-
-### RT 루프 종료 (sim/robot 공통)
-
-- Robot 모드: `clock_nanosleep` 다음 tick에 `rclcpp::ok()` 검사 → 2 ms 내 종료
-- Sim 모드 (`use_sim_time_sync=true`): `WaitForNextTick()` 이 `sim_wake_eventfd_` 를 `sim_sync_timeout_sec` (기본 5 s) 만큼 `poll()` 한다. `OnRequestStop()` 이 그 fd 에 한 번 write 하므로 destructor / on_deactivate / on_shutdown 경로는 타임아웃을 기다리지 않고 즉시 join
-- producer 는 device state 콜백(rt_callback, FIFO 70), consumer 는 rt_control (FIFO 90) — 두 SCHED_FIFO 스레드가 mutex 를 공유하면 RT-4 위반이므로 wait-free write + fd wait 를 쓴다. eventfd 는 counter 라 wake edge 유실이 없다
-- **tick 은 state 메시지가 아니라 sim step 마다 한 번이다 (#566)**. sim 은 device group 마다 joint state 를 **따로** 발행하므로, 메시지마다 tick 하던 이전 구현은 group 이 2 개인 씬 (ur5e_p1b) 에서 한 step 에 tick 을 최대 2 회 돌렸다 (실측 838 Hz / 500 Hz step — `state.dt` 를 적분하는 법칙이 sim 보다 ~1.67× 빨리 흘렀다). eventfd 의 drain 은 **tick 중에** 도착한 메시지만 합칠 뿐, 대기 중에 따로 도착한 두 메시지는 두 wake 가 된다. 지금은 콜백이 slot 별 sequence 를 올리고 (eventfd write 전에), wait 는 wake 마다 `sim_sync_tick_devices` 의 모든 slot 이 직전 tick 이 소비한 값에서 전진했는지 보고 아니면 남은 timeout 으로 다시 `poll()` 한다. 원시 요소는 atomic + eventfd 뿐이다. stop nudge 는 step 을 완성하지 않는 wake 이므로 `OnRequestStop()` 이 플래그를 먼저 세워 재-`poll` 이 그것을 삼키지 않게 한다
-
-### SeqLock 기반 디바이스 상태 공유 (backend 내부)
-
-디바이스 상태는 `DeviceBackend` 구현체가 자체 보유한 `SeqLock<DeviceStateCache>`로 sensor callback (writer) ↔ RT loop (reader) 락-프리 공유:
-
-```cpp
-// Backend 내부 — sensor callback (cb_group_rt_callback_ MutuallyExclusive — 단일 writer)
-auto ds = state_cache_.Load();
-ds.positions = ...;            // 필드 수정 (wire-format → device-config 순서로 reorder 포함)
-state_cache_.Store(ds);
-NotifyStateReady();            // CM 등록 callback 호출 (watchdog/digital-twin/sim-sync)
-
-// CM RT loop (reader — 락-프리, 항상 최신 consistent snapshot)
-DeviceStateCache cache{};
-if (backends_[slot]) {
-  backends_[slot]->ReadState(cache);
-  if (backends_[slot]->HasMotorState()) backends_[slot]->ReadMotorState(cache);
-  if (backends_[slot]->HasSensorState()) backends_[slot]->ReadSensorState(cache);
-}
+```text
+<ctrl> timing: elapsed=Xs  mean=Yµs  max=Zµs  overruns=N  skips=N  nrt_pub_drops=N  timing_drops=N  rt_cb_timing_drops=N
 ```
 
-> `DeviceStateCache`는 trivially copyable (~4.3 KB). SeqLock writer는 wait-free (2회 atomic store + memcpy), reader는 writer 완료 시까지 spin-retry (writer ~1-2 µs). CM은 SeqLock을 직접 보유하지 않고 backend의 ReadState API를 통해 접근.
+누적 카운터 (`overruns` · `skips` · `*_drops`) 는 서머리 리셋과 무관하다. 예산은 `1e6 / control_rate` µs 다. sim 모드의 `elapsed` 는 `count × period` (가상 시간) 이고 robot 모드는 wall-clock 이다.
 
-> **`DeviceStateCache` → `DeviceState` 는 필드 열거 복사다** (`rt_controller_node_rt_loop.cpp`, `ReadDeviceState`). 두 POD 는 서로 다른 패키지가 소유하는 별개 타입이고 struct 대입이 아니므로, **한쪽에 필드를 추가하면 이 복사에도 한 줄을 넣어야 한다** — 빠뜨려도 빌드는 통과하고 ingress 테스트도 green 이며 컨트롤러만 영구 zero-init 값을 읽는다. `hole_mask` 처럼 zero 가 "이상 없음" 을 뜻하는 필드에서는 그 침묵이 곧 기능 소실이다. 이 이음매를 건너는 테스트는 `test_rt_loop_pipeline.cpp` 의 `PerSlotFreshnessReachesTheControllerUnclipped` · `PerLaneFreshnessReachesTheControllerUnclipped` (`velocity_hole_mask` · `effort_hole_mask`) · `SensorLaneReceiptReachesTheControllerPerGroup` (`inference_recv_steady_ns` · `inference_sequence` — 지문 센서 lane 의 그룹별 수신 시각·표본 카운터, dynamic_catching D-24) 뿐이므로, 새 필드를 추가하면 같은 모양의 단언을 함께 넣는다. 마지막 것이 **그룹 1** 을 읽는 이유도 같은 축이다 — 첫 원소만 채우거나 배열 대신 스칼라를 복사한 오구현은 그룹 0 단언을 통과한다. 이 두 필드에서는 zero 가 "미수신" 이라 누락이 fail-closed 로 (영원히 stale) 나타난다. 후자가 **세 lane 에 서로 다른 패턴**을 쓰는 것도 계약이다 — 값이 같으면 세 필드에 같은 소스를 대입한 오구현이 통과한다.
+타이밍 CSV 는 세션 디렉토리 `<session>/timing/` 아래에 쓰인다. 세 채널이 같은 5-컬럼 payload (`t_state_us` · `t_compute_us` · `t_publish_us` · `t_total_us` · `jitter_us`) 에 공통 컬럼 `t_wall_ns` · `tick_count` · `run_id` 를 붙인다.
 
-### eventfd 기반 Non-RT Publish Thread Wakeup
-
-Layout v4: actuator publish 는 RT loop 안에서 inline 호출되므로 별도 wakeup 메커니즘이 없다. controller-owned non-RT publish 만 SPSC + eventfd 를 통해 비동기 drain:
-
-```cpp
-// RT loop (after nrt_publish_buffer_.Push)
-eventfd_write(nrt_publish_eventfd_, 1);
-
-// nrt_publish_thread (대기)
-poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
-```
-
-> `sched_yield()` 대비 CPU 사용량 감소 + 즉시 wakeup으로 non-RT publish 지연 최소화.
-
----
-
-## 타이밍 프로파일러 (`controller_timing_profiler.hpp`)
-
-컨트롤러 `Compute()` 호출의 락-프리 타이밍 통계를 수집합니다. `TimingProfilerBase<200, 10, 2000>`을 상속합니다.
-
-| 항목 | 설명 |
-|------|------|
-| 히스토그램 | 200개 버킷 (10 us 간격, 0-2000 us) + 오버플로 버킷 |
-| 수집 통계 (`GetStats()`) | count, min, max, mean, stddev, p95, p99, over_budget — `cm_timing_log.csv`로도 복원 가능 |
-| 예산 | `1e6 / control_rate` µs (예: 500 Hz → 2000 µs) — sim 모드 `elapsed` 계산에 사용 |
-| `elapsed` 의미 | **robot**: 직전 print와의 wall-clock delta (CM 측정 실제 시간). **sim** (`use_sim_time_sync=true`): `count × period` (컨트롤러가 sim step과 lock-step이라 dt 기준 가상 시간이 컨트롤러 관점의 진실). 첫 print는 fallback으로 sim과 동일 식. 같은 이유로 sim 에서는 `ControllerState::t_relative_s` 도 `iteration × dt` 다 (#566) — 구간 측정 (phase timing·watchdog·메시지 나이) 은 두 모드 모두 steady clock |
-| 리셋 주기 | RT 루프가 1 000 tick(≈ 2 s @ 500 Hz)마다 로그 스레드에 Summary 출력 요청 → 로그 스레드는 `RCLCPP_INFO` 직후 `timing_profiler_.Reset()`을 호출. 따라서 각 출력은 **직전 윈도우**(elapsed로 표시)의 mean/max이며, 세션 시작 시점의 스파이크가 영구 반영되지 않음 |
-| Console summary 형식 | `<ctrl> timing: elapsed=Xs  mean=Yµs  max=Zµs  overruns=N  skips=N  nrt_pub_drops=N  timing_drops=N  rt_cb_timing_drops=N` — 의도적으로 슬림. 상세 percentile / over_budget / per-tick 값은 `cm_timing_log.csv`에서 사후 분석 |
-
-누적 over-run 카운터(`overruns`, `skips`, `nrt_pub_drops`, `timing_drops`, `rt_cb_timing_drops`)는 `rt_controller_node`가 별도 원자 변수로 관리 — Summary 리셋에 영향 없음. `rt_cb_timing_drops` 는 rt_callback lane 의 SPSC ring 이 넘친 횟수 — 그 lane 은 tick 당 1행이 아니라 **state 콜백 당 1행**이라 CM lane 보다 빠르게 채워질 수 있다.
-
-### Per-thread Timing CSV (generic infra)
-
-CM RT loop와 MPC thread 모두 두 가지 base 인프라를 공유한다: (1) [`rtc_base/threading/periodic_rt_thread.hpp`](../rtc_base/include/rtc_base/threading/periodic_rt_thread.hpp)의 `PeriodicRtThread` — 고정 주파수 jthread + `clock_nanosleep(TIMER_ABSTIME)` 스케줄 + overrun 검출 + Pause/Resume 골격, (2) [`rtc_base/timing/thread_timing_*`](../rtc_base/include/rtc_base/timing/) — `ThreadTimingProducer<Payload, N>` + `ThreadTimingCsvLogger<Payload>`. CM은 `RtControllerNode::ControlLoopThread` (composition), MPC는 `MPCThread` (inheritance)로 base를 사용. payload는 5-컬럼 `RtTickTimingPayload` 단일 타입이며 base가 t0~t3을 자동 capture해 SPSC ring에 push:
-
-| 채널 | Producer 멤버 | Logger | CSV 경로 | Schema (payload 컬럼) |
-|------|--------------|--------|----------|----------------------|
-| CM RT loop (@ `control_rate`) | `cm_timing_producer_` (`ThreadTimingProducer<RtTickTimingPayload, 512>`) | `cm_timing_logger_` | `<session>/timing/cm_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
-| MPC thread (≤ 100 Hz, per-controller) | `MPCThread::TimingProducer()` (`ThreadTimingProducer<RtTickTimingPayload, 128>`) | `MpcTimingLogger` (controller-owned) | `<session>/timing/mpc_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
-| rt_callback lane (state 콜백 당 1행) | `rt_callback_timing_producer_` (`ThreadTimingProducer<RtTickTimingPayload, 2048>`) | `rt_callback_timing_logger_` | `<session>/timing/rt_callback_timing_log.csv` | 동일 5컬럼, 단 의미가 lane-specific — 아래 |
-
-공통 컬럼 `t_wall_ns, tick_count, run_id`는 `ThreadTimingCsvLogger`가 자동으로 emit (CSV 는 8-col). `tick_count`는 producer-side monotonic 시퀀스 번호 (drop 검증용) 이고, `run_id`는 이번 기동의 식별자다 — 세션 디렉토리가 분 해상도라 같은 분의 재기동이 같은 파일에 append 되며, 그 경계가 없으면 `n / span` 레이트가 조용히 틀린다 (`rtc_base/logging/run_id.hpp`). 한 launch 의 모든 프로세스가 `$RTC_RUN_ID` 로 같은 값을 받으므로 채널 간 join 도 성립한다. 세 thread가 동일한 5-컬럼 payload schema (`rtc_base/timing/rt_tick_timing_sample.hpp`)를 공유하므로 cross-thread 분석 도구 한 세트가 모든 CSV를 처리한다.
-
-#### rt_callback lane
-
-slot 2 (`rt_callback`, SCHED_FIFO 70) 는 tick 이 아니라 **디바이스 state 콜백마다** 1행을 낸다 (arm joint + hand joint/motor/sensor). 계측 지점은 `DeviceBackend::StateLaneTimingScope` — 각 콜백 첫 줄의 RAII 스코프이며, 모든 backend 가 **같은 producer** 를 공유한다 (같은 MutuallyExclusive 그룹이 콜백을 한 스레드로 직렬화하므로 SPSC single-producer 계약이 성립).
-
-| 컬럼 | 이 lane 에서의 의미 |
+| 파일 | 한 행의 단위 |
 |---|---|
-| `t_state_us` | decode + SeqLock store (콜백 진입 → `NotifyStateReady()`) |
-| `t_compute_us` | 0 — 이 lane 은 제어 법칙을 돌리지 않는다 |
-| `t_publish_us` | mailbox hand-off (dirty bit + eventfd). **notify 하지 않는 lane (hand motor/sensor) 은 0** |
-| `t_total_us` | **콜백 본문 전체** — 아래 주의 참조 |
-| `jitter_us` | 0 — 이벤트 구동이라 deadline 이 없다. **dispatch 간격은 연속 행의 `t_wall_ns` 차분으로 복원**한다 |
+| `cm_timing_log.csv` | CM RT 루프 tick (`control_rate`) |
+| `mpc_timing_log.csv` | MPC 스레드 tick (≤ 100 Hz, 컨트롤러별 `<config_key>` 서브디렉토리) |
+| `rt_callback_timing_log.csv` | **디바이스 state 콜백** 1회 (tick 이 아니다) |
 
-**`t_total_us` 는 스레드 점유율이 아니라 콜백 본문 시간이다.** 스코프는 사용자 콜백의 첫 문장에서 열리므로 rclcpp executor 의 dispatch (rmw_wait · `take_type_erased` · 역직렬화) 는 span **밖**이다 — 그 비용은 같은 스레드에서 소모되지만 이 CSV 에 안 잡힌다. 따라서 `Σ t_total_us / 관측창` 은 slot 2 duty 의 **하한**이며, aux 통합 여유를 판정할 때는 `/proc/<rt_callback tid>/stat` 의 utime+stime 과 교차 검증한다. 계측 대상은 backend 의 state lane 콜백 전부 — arm joint, hand joint/motor/sensor, MuJoCo joint + fingertip wrench — 이며 같은 그룹의 콜백을 하나라도 빠뜨리면 분자가 그만큼 더 작아진다.
+- `tick_count` 는 drop 검증용 단조 번호다. `run_id` 는 기동 식별자다 — 세션 디렉토리가 분 해상도라 같은 분의 재기동이 같은 파일에 append 되는 경계를 가른다. 한 launch 의 프로세스는 `$RTC_RUN_ID` 를 공유하므로 채널 간 join 이 된다
+- `cm_timing_log.csv` 에서 `t_total_us − (t_state+t_compute+t_publish)` 잔차가 그 tick 의 post-publish tail 이다. 긴 tick 을 "publish 때문" 이라 읽기 전에 이 잔차를 먼저 본다
+- sim 모드에서는 `jitter_us` 가 0 이다 (wakeup 이 sim step 이라 jitter 는 RT 지표가 아니다)
+- `rt_callback` 행의 `t_compute_us` · `jitter_us` 는 0 이다. `t_total_us` 는 콜백 **본문** 시간이라 executor dispatch 는 빠지고, 합 / 관측창은 slot 2 duty 의 하한이다
 
-CM은 `StartRtLoop`에서 `rt_loop_.SetTimingProducer<>` 한 줄로 base에 ring을 위임 — base가 매 tick payload를 push한다. `ControlLoop()` 내부의 t1/t2 마킹은 `rt_loop_.StampStateAcquired()` / `StampComputeDone()` 두 줄. `DrainLog()`가 `cm_timing_producer_.Drain(...)`로 CSV에 기록. 윈도우 INFO summary에 `timing_drops` (producer overflow 카운터)가 `pub_drops`와 함께 출력된다.
+기반 인프라는 [`rtc_base/threading/periodic_rt_thread.hpp`](../rtc_base/include/rtc_base/threading/periodic_rt_thread.hpp) 와 [`rtc_base/timing/`](../rtc_base/include/rtc_base/timing/) 다. 새 RT thread 는 `PeriodicRtThread` 를 상속하거나 합성하고 `OnTick` 만 정의하면 된다.
 
-Sim 모드 (`use_sim_time_sync=true`) 에서는 `ControlLoopThread::JitterMeaningful()` 가 `false` 를 반환하여 base 가 `jitter_us` 를 0.0 으로 둔다 — wakeup 이 `sim_wake_eventfd_` (= MuJoCo step 완료) 이라 `|actual_period − 2 ms|` 는 sim cadence 잡음일 뿐 RT 지표가 아니다. 다른 6개 컬럼 (`t_state_us` / `t_compute_us` / `t_publish_us` / `t_total_us` / `t_wall_ns` / `tick_count`) 은 robot/sim 동일 의미 — body code path 가 wakeup 매커니즘과 무관하게 동일하기 때문. MPC / hand_udp producer 는 default `JitterMeaningful()=true` 유지.
+## 설정
 
-MPC 측은 컨트롤러가 자체 1 Hz aux 타이머에서 `mpc_thread_->TimingProducer().Drain(...)`을 호출. 컨트롤러별 `<config_key>` 서브디렉토리에 쓰므로 전환이 발생해도 stream이 섞이지 않는다. 같은 콜백이 `MPCSolutionManager::GetSolveStats()` (handler self-report `solve_duration_ns`의 256-sample sliding 윈도우)로 10초마다 aggregate INFO 라인을 출력 — 디스크에는 기록하지 않으며 percentile은 raw CSV에서 post-process로 계산.
+### 설정 파일
 
-새 RT/soft-RT thread (예: ONNX inference)를 추가하려면 `PeriodicRtThread` 상속/composition + `OnTick` body 정의면 끝. `RTControllerInterface` 변경 없음.
+이 패키지는 **default YAML 을 동봉하지 않는다.** 모든 파라미터는 robot-agnostic 코드 기본값으로 declare 되고 (`devices` · `urdf` 는 미선언), production 값은 `<robot>_bringup` 의 YAML 이 단독 소유한다 (ARCH-1). 예: `integrated_bringup/config/{ur5e_p1a,iiwa7_leap}/sim.yaml`. 새 robot 은 자체 YAML 을 만들어 launch 에서 주입한다.
 
----
+`config_variant` 파라미터가 컨트롤러 YAML 경로 `<pkg_share>/config/<config_variant>/controllers/<config_key>.yaml` 을 정한다 (빈 값이면 `config/controllers/`). 구성은 세 갈래다:
 
-## ROS2 인터페이스
+| 무엇 | 어디 |
+|---|---|
+| 노드 파라미터 (`control_rate` · `devices` · `urdf` · …) | `<robot>/{sim,robot}.yaml` 의 `/**: ros__parameters:` |
+| 컨트롤러 YAML | `config/<variant>/controllers/<config_key>.yaml` (이 절의 `include:`) |
+| 컨트롤러 파라미터 override | CM 노드의 `<config_key>.<yaml.경로>` 파라미터 (launch 인자 · overlay) |
 
-### 고정 구독
+#### 파라미터
 
-CM 자체는 고정 게인 토픽을 더 이상 구독하지 않는다 (게인 채널이 컨트롤러 LifecycleNode parameter로 이관됨, 위 §게인 채널 참조). 고정 구독은 `rclcpp_lifecycle::LifecycleNode` 자체 lifecycle 서비스(`change_state`, `get_state` 등)만 남는다.
+값은 코드 기본값이다. 로봇별 값은 위 bringup YAML 을 본다.
 
-### 고정 서비스
-
-| 서비스 | 타입 | 콜백 그룹 | 설명 |
-|--------|------|-----------|------|
-| `/rtc_cm/switch_controller` | `rtc_msgs/srv/SwitchController` | aux | 활성 컨트롤러 전환 (sync, single-active, E-STOP guard) |
-| `/rtc_cm/list_controllers` | `rtc_msgs/srv/ListControllers` | aux | 모든 컨트롤러 lifecycle state + 진단 4필드 조회 |
-| `/rtc_cm/reset_fault` | `rtc_msgs/srv/ResetFault` | aux | latched **controller-local** fault 해제 (sync, active 한정 + 이름 명시 필수) |
-
-#### `/rtc_cm/list_controllers` 진단 필드
-
-응답의 각 `ControllerState` 는 lifecycle 메타데이터 외에 컨트롤러별 진단 4필드를 싣는다. 넷은 구현이 아니라 **발현 형태**로 묶인다 — 전부 오퍼레이터에게 "goal 을 보냈는데 안 움직인다" 로만 보이고, 이 필드들이 없으면 넷 중 무엇이 일어났는지 구분할 수 없다.
-
-| 필드 | 접근자 | 의미 |
-|---|---|---|
-| `has_latched_fault` | `HasLatchedFault()` | controller-local fault 래치가 올라가 있다 → `/rtc_cm/reset_fault` 로 해제 |
-| `target_drop_count` | `GetTargetDropCount()` | goal 은 유효했으나 큐 포화로 유실 — producer 의 **rate** 문제 |
-| `target_reject_count` | `GetTargetRejectCount()` | 형식 불량 / `device_idx` 범위 밖으로 ingress 에서 거부 — producer 의 **payload** 문제 |
-| `target_unhandled_count` | `GetTargetUnhandledCount()` | 컨트롤러가 mailbox 에 push 하면서 `ApplyPendingTarget` 을 override 하지 않았다 — **컨트롤러 자신의 배선 결함** |
-
-- **컨트롤러별 override 를 요구하지 않는다.** 넷 다 `RTControllerInterface` 가 이미 모든 컨트롤러에 대해 추적하므로 CM 이 base 접근자에서 직접 읽는다. 새 컨트롤러는 아무것도 구현하지 않아도 이 네 칸이 정직하게 채워진다.
-- **카운터 3종은 monotonic** (생성 시점 누적, 조회가 소비하지 않는다). 포화 진단은 두 번의 폴링 사이에서 값이 **움직이는지**로 하며, 절대값 자체는 의미가 약하다.
-- **응답은 트랜잭션이 아니라 스냅샷**이다. 각 접근자는 독립적인 relaxed atomic load 라 한 응답 안의 두 카운터가 서로 다른 tick 에서 왔을 수 있다. 이보다 강한 보장은 RT tick 이 SeqLock 으로 진단을 publish 해야 하는데, 위 용법(연속 폴링의 순서만 필요)에는 monotonic 성질로 충분하다.
-- `has_latched_fault` 는 **비활성 컨트롤러에 대해서도 보고**된다. `/rtc_cm/reset_fault` 는 active 대상만 받으므로, 어느 컨트롤러가 잠겼는지 먼저 알아야 그 이름을 댈 수 있다.
-
-#### `/rtc_cm/reset_fault`
-
-> **wire 계약** — `controller_name` 요건, `ok`/`message` 의 판정 기준은 [`rtc_msgs/srv/ResetFault.srv`](../rtc_msgs/srv/ResetFault.srv) 주석이 SSoT. 아래는 **CM 쪽 타이밍 메커니즘**만 다룬다.
-
-compliance 계열은 critical fault (`nan_inf` · `pose_error_exceeded` · `sigma_below_critical` · `command_divergence`) 에서 `SAFE_STOP` 을 래치하고 **자동 복귀하지 않는다** (§10.6). 이 서비스가 그 래치의 유일한 외부 탈출구다.
-
-- **권한** — 요건·근거(이름 명시 필수, wildcard 없음, 비활성 대상은 큐잉 대신 거부)는 위 `.srv` 링크가 SSoT. CM 쪽 구현 디테일 하나: liveness 검사가 이름 검사보다 **먼저** 온다 — `active_controller_idx_` 의 초기값은 `-1` 이 아니라 `1` 이라, 아직 아무것도 활성화되지 않은 구간에서 이름 거부 메시지가 한 번도 돈 적 없는 컨트롤러를 "active" 로 지목하게 된다.
-- **응답** — "전달됨"이 아니라 **실제 결과**를 보고한다. 요청은 tick **머리**에서 소비되지만 `HasLatchedFault()` 가 읽는 스냅샷은 tick **끝**에서 저장되므로, `switch_controller` 의 고정 `1.5 × dt` (tick *시작* 시점의 store 를 관측하도록 잡힌 값) 는 여기 쓸 수 없다 — `Compute()` 에 `0.5 × dt` 밖에 남지 않는다. 대신 **RT tick 카운터**를 관측한다: 첫 증가를 만든 tick 은 우리 store 이전에 플래그를 읽었을 수 있으므로 **2회 증가**가 "store 이후에 시작해 진단까지 저장한 tick" 의 증거다 (관측 deadline `8 × dt`). 결과는 해제 / no-op(원래 래치 없음) / 재래치(원인 잔존) / **tick 미관측**(RT 루프 정지·overrun·startup gate — 아무것도 요청을 소비하지 않음) 4가지로 구분된다. 마지막 둘은 조치가 다르므로 같은 메시지로 뭉치지 않는다.
-- **E-8 분리** — global E-STOP 과 컨트롤러-로컬 fault 가 서로를 풀지 않는다는 계약은 위 `.srv` 링크가 SSoT. CM 쪽 디테일: 이 확인은 **응답 시점**에 다시 읽는다 — 대기 중에 device watchdog (50 Hz) 이나 actuator-boundary escalation 이 global latch 를 걸 수 있고, 요청 시점 스냅샷을 그대로 실으면 방금 정지한 팔을 "복구됨" 으로 보고하게 된다.
-
-### 고정 퍼블리셔
-
-| 토픽 | 타입 | QoS | 설명 |
-|------|------|-----|------|
-| `/system/estop_status` | `Bool` | RELIABLE/1, transient_local | 글로벌 E-STOP 상태 (래치 ∨ 해제 검증 창) |
-| `/rtc_cm/active_controller_name` | `String` | TRANSIENT_LOCAL/1 | 활성 컨트롤러의 `config_key` (snake_case). 외부 rewire 소비자가 이 페이로드를 그대로 prefix 로 사용해 `/<config_key>/...` 형태로 컨트롤러-owned 토픽 namespace 를 조립하므로, payload 는 컨트롤러 LifecycleNode 의 namespace (`/<config_key>`) 와 1:1 일치해야 한다. `RTControllerInterface::Name()` (클래스 라벨) 가 아님 |
-
-### DeviceBackend 토픽 (`devices.<group>.backend:` SSoT)
-
-CM은 device-wire 토픽을 직접 만들지 않습니다. `DeviceBackend` 구현체 (`mujoco_native` / `ur_driver_native` / `udp_hand_native`) 가 `devices.<group>.backend:` YAML 블록에서 type + topic 을 읽어 자기 LifecycleNode 에 sub/pub 을 등록합니다. 컨트롤러 YAML 의 `topics:` 섹션은 이 lane 들을 더 이상 갖지 않습니다.
-
-| 키 | 메시지 타입 | QoS | 설명 |
+| 파라미터 | 타입 | 기본값 | 설명 |
 |---|---|---|---|
-| `state_topic` | `JointState` | BEST_EFFORT/2 | 디바이스 관절 상태 (필수) |
-| `command_topic` | `JointCommand` 또는 `Float64MultiArray` | BEST_EFFORT/1 또는 RELIABLE/1 | 관절 커맨드 → HW/sim (필수, backend 별로 페이로드 형식 다름). `WriteCommand(slot, command_type)` 의 `command_type` 은 RT loop 가 그룹별로 resolve 한 값 (`kPosition`/`kTorque`/`kPdFeedforward`) — `JointCommand.command_type` 문자열 필드로 그대로 인코딩됨 |
-| `motor_topic` | `JointState` | BEST_EFFORT/2 | 모터 공간 상태 (선택, `udp_hand_native` 전용) |
-| `sensor_topic` | `HandSensorState` | BEST_EFFORT/2 | 촉각 센서 상태 (선택, `udp_hand_native` 전용) |
-
-**명령 순서 규약** (`DeviceBackendConfig::joint_command_names` doc 참조): `WriteCommand` 에 전달되는 `slot.commands` 와 발행 메시지는 **항상 `joint_command_names` 순서** — backend 는 direct-copy 하며 command-side reorder 를 하지 않습니다. wire 순서가 다른 디바이스는 **수신자** (udp_hand_node / mujoco_simulator_node) 가 메시지의 `joint_names` 로 재정렬해 흡수합니다. state-side 는 반대로 backend 가 수신자로서 첫 named 메시지에서 `msg->name` → `joint_command_names` reorder map 을 lazy build 합니다.
-
-### CM 동적 구독 (컨트롤러 TopicConfig 기반)
-
-| 역할 | 메시지 타입 | QoS | 설명 |
-|------|------------|-----|------|
-| `kTarget` | `RobotTarget` | RELIABLE/10 | 관절/태스크 목표 |
-
-### 컨트롤러-owned 퍼블리셔 (LifecycleNode 자체 보유)
-
-Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleNode가 `on_configure`에서 직접 퍼블리셔를 생성합니다. YAML role-mapped 채널은 `kRobotTransforms` 하나뿐입니다 — 유효한 role 문자열·enum 값은 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §퍼블리시 역할 이 SSoT. `PublishNonRtSnapshot()` 안에서 발행합니다 (CM은 SPSC snapshot 운반만 담당). controller YAML `topics:` entry 는 전부 controller-owned 이므로 CM은 이들에 대해 퍼블리셔를 만들지 않습니다. GUI/외부 도구는 ctrl-agnostic `/rtc_cm/<group>/joint_states` (`sensor_msgs/JointState`) + active controller's `<config_key>/transforms` (`tf2_msgs/TFMessage`) 두 표준 토픽 조합으로 동일 정보를 얻습니다.
-
-`GraspState` / `WbcState` / `ToFSnapshot` 은 더 이상 `PublishRole` enum / YAML role 매핑을 거치지 않습니다. 각 컨트롤러가 `Setup{Grasp,Wbc,ToF}*Publisher` 헬퍼 (integrated_bringup/support/owned_topics.hpp) 로 자체 LifecyclePublisher 를 만들고, RT compute 가 결과를 컨트롤러 멤버 `rtc::SeqLock<T>` (`grasp_state_lock_` / `wbc_state_lock_` / `tof_snapshot_lock_`) 에 Store 합니다. Publish thread 는 `PublishNonRtSnapshot()` 안에서 SeqLock 을 Load 하고 `PublishOwnedTopicsFromSnapshot` 에 `&loaded` 를 넘겨 발행합니다. CM 은 의미를 모르며 `PublishSnapshot` 도 이 세 payload 를 운반하지 않습니다 — single-producer / single-consumer 데이터에 적합한 wait-free SeqLock 핸드오프입니다.
-
-`kRobotTransforms` 는 controller당 1개 토픽 (`<config_key>/transforms`, `tf2_msgs/TFMessage`, RELIABLE/10) 으로 controller가 사용하는 frame 들을 묶어 발행합니다. RT loop는 `ControllerOutput::{arm_tip,virtual_tcp,fingertip}_pose*` (3D pose + valid flag) 를 매 tick 채우고, CM이 이를 모든 group slot에 복사합니다. Publish thread는 owner controller의 `ControllerTopicHandles::tf_slots[]` 정의 (on_configure 시 system YAML `urdf.{sub,tree}_models` 로 자동 빌드) 에 따라 valid한 slot만 TFMessage로 직렬화합니다. Active controller만 LifecyclePublisher가 활성화되므로 같은 frame_id를 다른 controller가 broadcast해도 cutover 시 정확히 1개만 발행됩니다.
-
-### Per-group JointState 자동 퍼블리셔
-
-각 디바이스 그룹에 대해 `/rtc_cm/{group}/joint_states` (RELIABLE/1) JointState를 자동 생성합니다. 설정 순서(joint_state_names)로 재정렬된 관절 데이터를 republish합니다. 이 토픽은 active controller와 무관하게 항상 발행되는 측정 상태의 단일 소스이며, `rtc_digital_twin` 같은 외부 노드가 이를 merge해 `robot_state_publisher` / RViz로 공급합니다.
-
-**어느 스레드가 발행하는가.** backend state-ready 콜백은 `cb_group_rt_callback_` (SCHED_FIFO 70, controller↔hardware RT 경계) 에서 돌므로 **mailbox 만** 수행한다 — slot 별 dirty bit 하나를 세우고 `nrt_publish_eventfd_` 에 write 한다. 실제 `ReadState` + RELIABLE publish 는 `nrt_publish_thread` 의 `DrainDigitalTwin()` 이 한다 (SCHED_OTHER nice 0). 상태 payload 는 backend 자신의 `SeqLock` 에 이미 들어 있으므로 큐가 필요 없다 — dirty bit 는 큐가 아니라 비트이며, 드레인보다 빨리 도착한 메시지는 **합쳐진다**. 즉 twin 이 밀리면 샘플 수가 줄 뿐 stale 한 값을 보이지는 않는다.
-
-`on_configure` 중(백엔드 sub 은 이미 활성, 그러나 노드는 아직 Inactive)에 상류가 상태를 흘리면 콜백이 조기 발화할 수 있다 — 이때는 드레인이 LifecyclePublisher `is_activated()` 로 가드해 노드 `on_activate` 이전 발행을 건너뛴다("publisher is not activated" 경고 방지). 비트는 그 경우에도 소비되므로 드레인이 발행 불가 slot 에서 spin 하지 않는다.
-
----
-
-## 파라미터 레퍼런스
-
-코드에서 `DeclareAndLoadParameters()`로 선언되는 모든 파라미터입니다.
-
-| 파라미터 | 타입 | 코드 기본값 | 설명 |
-|---------|------|------------|------|
 | `control_rate` | double | `500.0` | 제어 주파수 (Hz) |
-| `initial_controller` | string | `""` | 시작 컨트롤러 (이름 또는 config_key). 빈 값 = robot bringup yaml이 반드시 지정 |
-| `init_timeout_sec` | double | `5.0` | 초기화 타임아웃 (초). state 미수신 시 E-STOP |
+| `initial_controller` | string | `""` | 시작 컨트롤러 (이름 또는 config_key). 빈 값이면 bringup YAML 이 지정해야 한다 |
+| `init_timeout_sec` | double | `5.0` | 초기화 타임아웃 (초). state 미수신 시 E-STOP. sim 은 `0.0` 으로 끈다 |
 | `enable_estop` | bool | `true` | E-STOP 워치독 활성화 |
-| `device_timeout_names` | string[] | `[]` | 그룹별 timeout 값을 지정할 대상 이름 (감시 대상 자체는 설정된 모든 디바이스 그룹) |
-| `device_timeout_values` | double[] | `[]` | 각 그룹의 state 토픽 타임아웃 (ms) |
-| `device_timeout_default_ms` | double | `1000.0` | `device_timeout_names` 에 없는 그룹에 적용되는 timeout (ms) |
-| `enable_logging` | bool | `true` | CSV 로깅 활성화 |
-| `enable_timing_log` | bool | `true` | 타이밍 CSV 로깅 활성화 |
-| `enable_device_log` | bool | `true` | 디바이스별 CSV 로깅 활성화 |
-| `log_dir` | string | `""` | 로그 디렉토리 (빈 문자열이면 자동 생성) |
-| `max_log_sessions` | int | `10` | 최대 로그 세션 보관 수. `on_configure` 가 `log_dir` 의 부모를 루트로 삼아 정리한다. **bringup launch 도 같은 트리를 정리하므로** launch 는 이 값을 자기 `max_log_sessions` 인자의 default 로 읽어 노드에도 다시 넘긴다 — 두 정리 주체가 항상 같은 수를 보게 하기 위해서다. 따라서 이 YAML 값이 SSoT 이고, CLI `max_log_sessions:=N` 은 양쪽을 함께 움직인다 |
-| `use_sim_time_sync` | bool | `false` | MuJoCo lock-step 모드 — RT tick 을 시계가 아니라 sim step 완료로 깨운다 (eventfd wakeup) |
-| `sim_sync_timeout_sec` | double | `5.0` | 시뮬레이션 동기 타임아웃 (초) — step 이 이 시간 안에 완성되지 않으면 `sim_sync_timeout` E-STOP |
-| `sim_sync_tick_devices` | string[] | `[]` (= 모든 device group) | sim step 을 완성하는 device group (#566). tick 은 여기 든 group **전부**가 직전 tick 이후 새 joint state 를 냈을 때만 돈다. sim 이 decimated rate 로 발행하는 group 과 **`fake_response` group** (sim 의 100 Hz wall timer 로 발행 — step 과 무관) 은 빼야 한다 (넣으면 그 group 을 기다리느라 step 이 느려진다) — 빠진 group 은 sensor lane 처럼 latest-value 로 읽힌다. 한 주기 넘게 기다린 step 은 세어 두었다가 타이밍 요약 때 늦은 group 이름과 함께 WARN 하고, `sim_sync_timeout_sec` abort 는 끝내 안 온 group 을 FATAL 에 적는다. sim-sync 에서 모르는 이름은 configure 거부, `use_sim_time_sync: false` 면 키 전체를 읽지 않는다 (공유 overlay 에 sim 전용 이름이 있어도 실기 bring-up 은 통과) |
-| `config_variant` | string | `""` | 컨트롤러 YAML 탐색 디렉토리 — `<pkg_share>/config/<config_variant>/controllers/<config_key>.yaml`. 빈 값이면 `config/controllers/`. 파일이 **없을 때**의 거동 세 갈래는 아래 참조 |
-| `rt_layout_profile` | string | (미선언) | launch 의 thread-layout profile id (#350, `mpc_on`/`mpc_off`). CM 은 쓰지 않고 **각 컨트롤러의 LifecycleNode 로 전달만** 한다 — 컨트롤러 노드는 `use_global_arguments(false)` 라 launch 파라미터를 직접 못 본다. launch 가 설정했을 때만 전달하므로 미설정이면 컨트롤러 자신의 기본값이 적용된다 |
-| `kp` | double | `5.0` | (레거시) 기본 P 게인 |
-| `kd` | double | `0.5` | (레거시) 기본 D 게인 |
+| `device_timeout_names` | string[] | `[]` | 그룹별 timeout 을 줄 대상 이름 (감시 대상은 설정된 모든 그룹) |
+| `device_timeout_values` | double[] | `[]` | 각 그룹의 state 타임아웃 (ms) |
+| `device_timeout_default_ms` | double | `1000.0` | 위 목록에 없는 그룹의 timeout (ms) |
+| `enable_logging` · `enable_timing_log` · `enable_device_log` | bool | `true` | CSV 로깅 전체 · 타이밍 · 디바이스별 |
+| `log_dir` | string | `""` | 로그 디렉토리 (빈 값이면 자동 생성) |
+| `max_log_sessions` | int | `10` | 로그 세션 보관 수. bringup launch 도 같은 트리를 정리하므로 launch 가 이 값을 자기 인자의 default 로 읽는다 — YAML 이 SSoT 이고 CLI `max_log_sessions:=N` 은 양쪽을 함께 움직인다 |
+| `use_sim_time_sync` | bool | `false` | MuJoCo lock-step — RT tick 을 sim step 완료로 깨운다 |
+| `sim_sync_timeout_sec` | double | `5.0` | step 이 이 시간 안에 완성되지 않으면 `sim_sync_timeout` E-STOP |
+| `sim_sync_tick_devices` | string[] | `[]` (= 모든 그룹) | sim step 을 완성하는 그룹. decimated 로 발행하는 그룹과 `fake_response` 그룹은 뺀다 (넣으면 step 이 느려진다). sim-sync 에서 모르는 이름은 configure 거부, `use_sim_time_sync: false` 면 키를 읽지 않는다 |
+| `config_variant` | string | `""` | 컨트롤러 YAML 탐색 디렉토리 (위) |
+| `rt_layout_profile` | string | (미선언) | launch 의 thread-layout profile id (`mpc_on` / `mpc_off`). CM 은 쓰지 않고 각 컨트롤러 노드로 전달만 한다 |
+| `kp` · `kd` | double | `5.0` · `0.5` | (레거시) 기본 P/D 게인 |
 
-### urdf 블록 파라미터 (시스템 레벨 URDF 설정)
+**`urdf.*`** (시스템 URDF, 모두 선택):
 
-| 파라미터 | 타입 | 필수 | 설명 |
-|---------|------|------|------|
-| `urdf.package` | string | 선택 | URDF가 포함된 ament 패키지명 |
-| `urdf.path` | string | 선택 | 패키지 내 URDF 상대 경로 |
-| `urdf.root_joint_type` | string | 선택 | `"fixed"` 또는 `"floating"` (기본: `"fixed"`) |
-| `urdf.extended` | bool | 선택 | `true` 면 sidecar `<stem>.closure.yaml` 로드 (loop closure, 기본 `false`) |
-| `urdf.closure_path` | string | 선택 | sidecar 명시 경로 (패키지 상대). 미지정 시 URDF 경로에서 유도 |
-| `urdf.sub_models.<name>` | map | 선택 | 직렬 체인 모델 (root_link/tip_link). map 키가 모델명 |
-| `urdf.tree_models.<name>` | map | 선택 | 분기 체인 모델 (root_link/tip_links[]). map 키가 모델명 |
-| `urdf.passive_joints` | string[] | 선택 | 모든 모델에서 잠금할 관절 이름 |
-
-> `sub_models`/`tree_models`의 map 키(모델명)는 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다. 이를 통해 디바이스별 `root_link`/`tip_link`를 자동 해석할 수 있습니다.
-
-### devices 블록 파라미터 (devices.{group_name}.* )
-
-| 파라미터 | 타입 | 필수 | 설명 |
-|---------|------|------|------|
-| `joint_state_names` | string[] | 권장 | 관절 이름 (설정 순서 기준, 리오더링 기준). gains/limits 배열은 이 순서를 따릅니다. URDF (Pinocchio `model.names`) 와 *상대* 순서가 다르면 WARN + YAML/URDF 순서가 출력됩니다 (절대 인덱스 비교가 아니라 상대 순서 비교 — 디바이스가 시스템 URDF의 부분집합인 경우 false-positive 방지). |
-| `joint_command_names` | string[] | 선택 | 커맨드 관절 이름 (미지정 시 joint_state_names 사용) |
-| `motor_state_names` | string[] | 선택 | 모터 공간 관절 이름 |
-| `sensor_names` | string[] | 선택 | 센서 이름 (촉각 핑거팁 등) |
-| `safe_position` | double[] | 선택 | E-STOP 시 안전 위치 (관절 수와 동일) |
-| `urdf.package` | string | 선택 | URDF 패키지 이름 |
-| `urdf.path` | string | 선택 | 패키지 내 URDF 상대 경로 |
-| `urdf.root_link` | string | 선택 | URDF 루트 링크 |
-| `urdf.tip_link` | string | 선택 | URDF 엔드이펙터 링크 |
-| `joint_limits.max_velocity` | double[] | 선택 | 최대 관절 속도 (URDF와 병합: 더 작은 값 적용) |
-| `joint_limits.max_torque` | double[] | 선택 | 최대 관절 토크 (URDF와 병합) |
-| `joint_limits.position_lower` | double[] | 선택 | 관절 위치 하한 (URDF와 병합: 더 큰 값 적용) |
-| `joint_limits.position_upper` | double[] | 선택 | 관절 위치 상한 (URDF와 병합: 더 작은 값 적용) |
-| `sensor_layout.primary_count_per_group` | int | 선택 | 센서 그룹당 primary block 채널 수 (예: assm_v1 hand 의 fingertip 당 barometer 8). CM 은 stride 계산에만 사용 — 의미는 device-driver 패키지 책임. |
-| `sensor_layout.secondary_count_per_group` | int | 선택 | 센서 그룹당 secondary block 채널 수 (예: ToF 3) |
-| `sensor_layout.values_per_group` | int | 선택 | 그룹당 총 채널 수 (= primary + secondary 가 디폴트). 명시 시 stride 로 사용. |
-| `sensor_layout.inference_values_per_group` | int | 선택 | ML 추론 출력 그룹당 값 수 (예: contact(1)+F(3)+u(3) = 7) |
-| `sensor_layout.has_native_contact` | bool | 선택 (default false) | Backend 가 inference slot 0 에 native contact 신호 (e.g. ONNX sigmoid prob) 를 채우는지 advertise. 컨트롤러가 native vs derived contact decision 분기에 사용 (예: udp_hand+inferencer.enabled=true → true, mujoco wrench → false). CM 은 의미를 모르고 전달만. |
-| `sensor_layout.has_native_displacement` | bool | 선택 (default false) | Backend 가 inference slots 4..6 에 native displacement 를 채우는지 advertise. 위와 동일 패턴. |
-
-> URDF가 설정된 디바이스의 경우, YAML joint_limits와 URDF limits를 병합하여 더 보수적인 값을 적용합니다. YAML에 joint_limits가 없으면 URDF 값만 사용합니다.
-
-> `sensor_layout` 은 packed-sensor 토픽 (`HandSensorState` 등) 을 받는 디바이스 한정. CM 은 layout 의 의미를 모르고 stride/offset 계산만 수행 — robot/sensor-agnostic 원칙 유지. 미설정 디바이스의 packed-sensor 콜백은 throttled WARN 후 메시지 drop. capability bool (`has_native_*`) 은 stride 계산에는 무관하고 컨트롤러 행동 분기에만 영향.
-
----
-
-## 설정 파일
-
-### YAML 소유권 (ARCH-1)
-
-`rtc_controller_manager` 는 **default YAML을 동봉하지 않습니다**. 모든 파라미터는 `DeclareAndLoadParameters()` 가 robot-agnostic 코드 기본값(예: `initial_controller=""`, `device_timeout_names=[]`, `urdf` / `devices` 미선언)으로 declare 합니다. 실제 production 값은 `<robot>_bringup` 패키지의 YAML이 단독 소유 — 예: `integrated_bringup/config/{ur5e_p1a,iiwa7_leap}/sim.yaml`. 새 robot 도입 시 자체 YAML을 만들어 launch에서 주입하세요. `config_variant` ROS 파라미터(예: `"ur5e_p1a"`, `"iiwa7_leap"`)가 `config/<variant>/controllers/...` 경로 조회를 결정합니다.
-
-### 컨트롤러 YAML 이 없을 때 — 세 갈래 (issue #196 D2 + `config_required`)
-
-등록된 컨트롤러는 로봇과 무관하게 전부 인스턴스화되므로, 그 variant 에 YAML 이 없는 경우의 거동이 계약이다.
-
-| 상황 | 거동 |
+| 파라미터 | 설명 |
 |---|---|
-| 파일 **없음**, `RTC_REGISTER_CONTROLLER` | 빈 노드로 `PreConfigure` → 내장 기본값으로 동작 (D2) |
-| 파일 **없음**, `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` | **인스턴스화하지 않고 건너뜀** — `/rtc_cm/list_controllers` 에도 없다. "이 로봇은 이 컨트롤러를 쓰지 않는다" 의 표현 |
-| 파일 **있음**, 파싱 실패 또는 최상위 키 불일치 | configure 전체 **거부** (D1). 오타가 컨트롤러를 조용히 없애지 못하게 한다 |
+| `urdf.package` · `urdf.path` | URDF 의 ament 패키지와 상대 경로 |
+| `urdf.root_joint_type` | `"fixed"` (기본) 또는 `"floating"` |
+| `urdf.extended` · `urdf.closure_path` | `true` 면 closure sidecar 로드 (기본 `false`). 경로 미지정 시 URDF 경로에서 유도 |
+| `urdf.sub_models.<name>` | 직렬 체인 `{root_link, tip_link}`. map 키가 모델명 |
+| `urdf.tree_models.<name>` | 분기 체인 `{root_link, tip_links[]}` |
+| `urdf.passive_joints` | 모든 모델에서 잠글 관절 이름 |
 
-두 번째 갈래는 기본값으로 돌 수 없는 컨트롤러 (정책 컨트롤러, 그 로봇의 기구 구성에서 모델을 만들 수 없는 컨트롤러 등) 를 위한 것이다. 그런 컨트롤러를 일반 매크로로 등록하면 `LoadConfig` 거부 → `PreConfigure` 실패 → D1 이 **그 로봇의 모든 컨트롤러** 를 거부한다. 선택 기준과 게이트는 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md#rtc_register_controller_requiring_config--config-가-없으면-건너뛴다).
+**`devices.<group>.*`**:
 
-⚠️ 첫째와 셋째를 `LoadConfig` 안에서 구별하려 하지 말 것. yaml-cpp 에서 **기본 생성 노드(파일 부재)는 truthy·Null** 이고 **없는 키(파일 있음·키 오타)는 falsy·Undefined** 라, 흔한 `if (!cfg) return;` 가드는 의도와 반대로 오타 쪽에서 발동한다. CM 이 파일 존재 여부로 상류에서 가르는 이유다.
+| 파라미터 | 설명 |
+|---|---|
+| `joint_state_names` | 관절 이름 (reorder 기준, gains/limits 배열이 이 순서를 따른다). URDF 와 *상대* 순서가 다르면 WARN |
+| `joint_command_names` · `motor_state_names` · `sensor_names` | 선택. command 이름 (미지정 시 `joint_state_names`) · 모터 공간 · 센서 이름 |
+| `safe_position` | E-STOP 시 안전 위치 (관절 수와 동일) |
+| `urdf.{package,path,root_link,tip_link}` | 선택. 시스템 `sub_models` / `tree_models` 에서 자동 해석되지 않을 때 |
+| `joint_limits.{max_velocity,max_torque,position_lower,position_upper}` | URDF 와 병합해 더 보수적인 값을 쓴다. YAML 에 없으면 URDF 값만 |
+| `sensor_layout.{primary,secondary}_count_per_group` · `values_per_group` | packed-sensor 토픽의 stride. CM 은 의미를 모르고 stride 계산만 한다. 미설정이면 해당 콜백은 WARN 후 drop |
+| `sensor_layout.inference_values_per_group` | ML 추론 출력의 그룹당 값 수 |
+| `sensor_layout.has_native_{contact,displacement}` | backend 가 inference slot 에 native 신호를 채우는지 advertise (기본 `false`). 컨트롤러 행동 분기에만 영향 |
 
-### 컨트롤러 파라미터 override — `<config_key>.<yaml.경로>`
+#### 컨트롤러 파라미터 override — `<config_key>.<yaml.경로>`
 
 컨트롤러 YAML 은 ROS 파라미터 트리 밖에서 읽힌다. 그래서 CM 노드에 걸린 `<config_key>.<yaml.경로>` 파라미터 (launch 인자, sim overlay) 를 CM 이 configure 때 그 컨트롤러의 YAML 트리에 써 넣는다. `.` 이 YAML 경로의 구분자다. 예를 들어 `demo_x_controller.gains.kp: 2.0` 은 `demo_x_controller.yaml` 의 `gains.kp` 를 2.0 으로 바꾼다.
 
-- **경로는 YAML 그대로여야 한다.** 쓰기는 받은 경로를 그대로 만든다. 한 단계 어긋난 키는 만들어지기만 하고 컨트롤러가 읽지 않아, 출하값으로 돈다.
-- **모든 경로를 쓰기 전에 판정한다.** 판정은 막 읽은 트리로 하므로, 앞 override 가 만든 노드는 뒤 override 의 "있는 접두" 로 세지 않는다.
-- **YAML 에 없는 경로는 WARN 한 줄을 낸 뒤 그대로 쓴다.** 문구에는 파라미터 이름, YAML 에 있는 가장 긴 접두, 그리고 그 경로로 끝나는 기존 키가 후보로 최대 3개 나온다. 거부하지 않는 이유는, 컨트롤러가 YAML 에 없는 키를 내장 기본값과 함께 읽을 수 있고 그런 override 는 정당하기 때문이다. CM 은 그것과 오타를 구별할 수 없다.
-- **YAML 구조를 깨야만 쓸 수 있는 override 는 configure 를 거부한다** (D1 의 "bad override"). 경로가 scalar 나 sequence 를 지나는 경우, 비어 있지 않은 map 을 가리키는 경우, 그리고 한 override 가 다른 override 의 부모 키인 경우다. 그대로 쓰면 각각 예외가 나거나, 목록이 map 으로 바뀌거나, map 아래 키가 모두 사라진다. ERROR 문구가 막힌 경로를 모두 적는다.
-- **파일은 있는데 그 키 아래 트리가 없으면 override 를 적용하지 않고 WARN 한 줄로 이름을 알린다.** top-level 키 오타가 대표적이다. 적용하면 override 만 든 트리가 생겨, 오타가 configure 를 거부한다는 위 셋째 갈래가 무너진다.
-- **출하 bring-up 은 이 경고가 0건이어야 한다.** launch 가 쓰는 키는 Python 쪽 검사가 출하 YAML 의 키임을 미리 고정한다 (`rtc_tools.utils.controller_config` 와 `integrated_bringup` 의 pytest). 런타임 경고는 그 검사 밖에서 들어온 override 를 위한 것이다.
-- **config 파일이 없는 컨트롤러에 온 override 는 적용하지 않고 WARN 한 줄로 이름을 알린다.** 그 컨트롤러는 위 첫째 갈래대로 내장 기본값으로 돈다. override 가 "파일 없음" 을 일부만 채운 트리로 바꾸지 않게 하기 위해서다.
+- **경로는 YAML 그대로여야 한다.** 쓰기는 받은 경로를 그대로 만든다. 한 단계 어긋난 키는 만들어지기만 하고 컨트롤러가 읽지 않아, 출하값으로 돈다
+- **YAML 에 없는 경로는 WARN 한 줄 (`[param-override]`) 을 낸 뒤 그대로 쓴다.** 문구에 파라미터 이름, YAML 에 있는 가장 긴 접두, 그 경로로 끝나는 기존 키 후보 최대 3개가 나온다. 컨트롤러가 YAML 에 없는 키를 내장 기본값과 함께 읽을 수 있어 정당한 override 와 오타를 구별할 수 없기 때문이다
+- **YAML 구조를 깨야만 쓸 수 있는 override 는 configure 를 거부한다.** 경로가 scalar · sequence 를 지나는 경우, 비어 있지 않은 map 을 가리키는 경우, 한 override 가 다른 override 의 부모 키인 경우다. ERROR 문구가 막힌 경로를 모두 적는다
+- **파일은 있는데 그 키 아래 트리가 없으면 override 를 적용하지 않고 WARN** 한다 (top-level 키 오타). **config 파일이 없는 컨트롤러에 온 override 도 적용하지 않고 WARN** 한다
+- **출하 bring-up 은 이 경고가 0건이어야 한다.** launch 가 쓰는 키는 Python 쪽 검사가 출하 YAML 의 키임을 고정한다 (`rtc_tools.utils.controller_config` · `integrated_bringup` pytest)
 
-### 컨트롤러 YAML 을 여러 파일로 나누기 — `include:`
+#### 컨트롤러 YAML 을 여러 파일로 나누기 — `include:`
 
-컨트롤러 YAML 은 top-level 에 `include:` 목록을 둘 수 있다. 각 조각은 같은 트리의 일부를 `<config_key>:` 아래에 갖고, CM 이 하나의 노드로 합친 뒤에 파라미터 override 를 적용한다. 그래서 launch 인자와 sim overlay 의 override 는 조각의 키에도 주 파일의 키와 똑같이 먹는다.
+컨트롤러 YAML 은 top-level 에 `include:` 목록을 둘 수 있다. 각 조각은 같은 트리의 일부를 `<config_key>:` 아래에 갖고, CM 이 하나의 노드로 합친 뒤에 파라미터 override 를 적용한다. 그래서 override 는 조각의 키에도 주 파일의 키와 똑같이 먹는다.
 
 ```yaml
 # config/<variant>/controllers/demo_x_controller.yaml
@@ -682,118 +403,50 @@ demo_x_controller:
 | 병합 | map 은 재귀로 합친다. scalar · sequence · null 은 leaf 다 — sequence 는 이어 붙이지 않는다 |
 | 충돌 | 같은 leaf 를 두 파일이 적거나, 한쪽이 map 이고 다른 쪽이 leaf 면 에러 (값이 같아도) |
 | 순서 | 주 파일의 키가 먼저, 그 뒤 include 순서로 각 조각의 새 키 |
-| 파일 하나 | YAML 문서 하나여야 한다 (`---` 뒤의 둘째 문서는 거부). 한 map 에 같은 키를 두 번 적으면 거부 — yaml-cpp 는 첫 값을, PyYAML 은 마지막 값을 읽는다 |
+| 파일 하나 | YAML 문서 하나여야 한다 (`---` 뒤의 둘째 문서는 거부). 한 map 에 같은 키를 두 번 적으면 거부 |
 
-- **없는 조각은 "파일 없음" 이 아니다.** 위 표의 첫째 · 둘째 갈래는 주 파일이 없을 때만이다. 주 파일이 있고 조각이 없으면 `ControllerConfigIncludeError` 로 configure 전체를 거부한다 — `config_required` 컨트롤러도 건너뛰지 않는다. 모든 충돌과 형식 오류도 같은 예외이고, 문구에 파일 이름과 키 경로가 있다.
-- **`include` 가 없는 파일은 지금까지와 똑같이 읽힌다.**
-- **조각을 하위 폴더에 두게 하는 이유.** `controllers/*.yaml` 을 컨트롤러 목록으로 읽는 독자가 있어, 같은 폴더에 두면 조각이 컨트롤러로 세어진다. 그래서 로더가 거부한다.
-- **아직 다루지 않는 것.** YAML anchor · alias 가 걸린 map 에 조각을 합치면 alias 쪽도 함께 바뀐다. merge key (`<<`) 는 yaml-cpp 가 펼치지 않는다 (include 와 무관한 기존 제약). 나뉜 config 에는 둘 다 쓰지 않는다.
-- **CM 밖에서 컨트롤러 YAML 을 경로로 읽는 코드는 같은 로더를 써야 한다.** 주 파일만 `YAML::LoadFile` 하면 조각의 키가 조용히 빠진 트리를 본다.
-  - C++: `rtc::LoadControllerConfig(yaml_path, config_key)` ([controller_config_loader.hpp](include/rtc_controller_manager/controller_config_loader.hpp))
-  - Python: `rtc_tools.utils.controller_config.load_controller_config(path)` — 같은 규칙의 mirror 다. 한쪽을 바꾸면 함께 바꾼다
-  - 두 로더가 같은 트리를 낸다는 것은 `config/test_include/expected_leaves.txt` 가 고정한다. `ControllerConfigLeafLines` (C++) 와 `controller_config_leaf_lines` (Python) 가 leaf 마다 한 줄을 내고, 두 쪽의 테스트가 그 파일과 대조한다
+- **없는 조각은 "파일 없음" 이 아니다.** 주 파일이 있고 조각이 없으면 `ControllerConfigIncludeError` 로 configure 전체를 거부한다 — `config_required` 컨트롤러도 건너뛰지 않는다. 모든 충돌과 형식 오류가 같은 예외이고 문구에 파일 이름과 키 경로가 있다
+- `include` 가 없는 파일은 지금까지와 똑같이 읽힌다. 조각을 하위 폴더에 두는 것은 `controllers/*.yaml` 을 컨트롤러 목록으로 읽는 독자가 조각을 컨트롤러로 세지 않게 하기 위해서다
+- YAML anchor · alias 가 걸린 map 에 조각을 합치면 alias 쪽도 바뀌고 merge key (`<<`) 는 펼쳐지지 않는다. 나뉜 config 에는 쓰지 않는다
+- **CM 밖에서 컨트롤러 YAML 을 경로로 읽는 코드는 같은 로더를 써야 한다.** 주 파일만 읽으면 조각의 키가 빠진 트리를 본다. C++ 는 `rtc::LoadControllerConfig(yaml_path, config_key)`, Python 은 `rtc_tools.utils.controller_config.load_controller_config(path)` 다. 한쪽을 바꾸면 함께 바꾸고, 두 로더가 같은 트리를 낸다는 것은 `config/test_include/expected_leaves.txt` 가 고정한다
 
-UR5e bringup의 예시 YAML 구조 (`integrated_bringup/config/ur5e_p1a/sim.yaml`):
+#### cyclone_dds.xml
 
-```yaml
-/**:
-  ros__parameters:
-    control_rate: 500.0
-    initial_controller: "demo_wbc_controller"
-    init_timeout_sec: 0.0                 # sim — disable hardware init timeout
+[config/cyclone_dds.xml](config/cyclone_dds.xml) 은 CycloneDDS 의 RT 설정이며 `CYCLONEDDS_URI` 로 로드된다: SPDP 만 멀티캐스트 (`AllowMulticast=spdp`), 빠른 participant 감지 (`LeaseDuration=5s` · `SPDPInterval=1s`), 빠른 재전송 (`NackDelay=10ms` · `HeartbeatInterval=100ms`), 콜백 지연 제거 (`SynchronousDeliveryLatencyBound=inf`). CycloneDDS 에 CPU affinity 설정이 없어 (0.10.5 `<Thread>` 는 `StackSize` 와 scheduling 만) DDS 스레드 affinity 는 `taskset` 으로 처리한다.
 
-    enable_estop: true
-    device_timeout_names: ["ur5e", "hand"]
-    device_timeout_values: [100.0, 100.0] # ms
+## 디렉토리
 
-    # System URDF (shared by all controllers) — robot-specific
-    urdf:
-      package: "robot_descriptions"
-      path: "robots/ur5e/urdf/ur5e.urdf"
-      root_joint_type: "fixed"
-
-    devices:
-      ur5e:
-        joint_state_names:
-          - "shoulder_pan_joint"
-          - "shoulder_lift_joint"
-          - "elbow_joint"
-          - "wrist_1_joint"
-          - "wrist_2_joint"
-          - "wrist_3_joint"
-        safe_position: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
-        urdf:
-          root_link: "base_link"
-          tip_link: "wrist_3_link"
-        joint_limits:
-          max_velocity:     [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
-          # ...
+```text
+rtc_controller_manager/
+├── include/rtc_controller_manager/  # 공개 헤더
+├── src/                             # 노드 구현 · 로더
+├── config/                          # DDS 설정 · test fixture
+└── test/                            # gtest
 ```
 
-### cyclone_dds.xml
+`src/rt_controller_node_*.cpp` 는 기능별로 나뉜다 (`params` · `device_config` · `services` · `switch` · `rt_loop` · `publish` · `estop`). `config/test_*` 는 unit test 전용이며 production bring-up 은 참조하지 않는다.
 
-CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로 자동 로드됩니다.
+## 문제 해결
 
-| 최적화 | 설정 | 효과 |
-|--------|------|------|
-| 멀티캐스트 | `AllowMulticast=spdp` | SPDP discovery만 멀티캐스트 (데이터는 유니캐스트) |
-| Discovery 튜닝 | `LeaseDuration=5s`, `SPDPInterval=1s` | 빠른 participant 감지 |
-| NACK/Heartbeat | `NackDelay=10ms`, `HeartbeatInterval=100ms` | 빠른 재전송 |
-| 동기 전달 | `SynchronousDeliveryLatencyBound=inf` | 콜백 wake-up 지연 제거 |
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| configure 가 실패하고 식별자 충돌 로그 | 컨트롤러 클래스를 복사하고 `Name()` 을 안 고쳤거나 `config_key` 중복 | `Name()` 과 `config_key` 를 전역 유일하게 |
+| configure 가 `command_type` 불일치로 거부 | torque 컨트롤러가 position-only backend 에 묶임 | backend 가 `AcceptsCommandType` 을 opt-in 하는지 확인. 아니면 `command_type: "position"` |
+| 컨트롤러가 `list_controllers` 에 없다 | `REQUIRING_CONFIG` 컨트롤러인데 그 variant 에 YAML 이 없음 | 의도라면 정상. 아니면 `config_variant` 와 파일 경로 확인 |
+| 컨트롤러 override 가 안 먹는다 | 경로가 YAML 과 한 단계 어긋남 (`[param-override]` WARN) | WARN 의 접두 · 후보 키를 보고 경로를 고친다 |
+| `clear_estop` 이 거부된다 | `reason_ack` 가 현재 사유와 다름 | 빈 ack 로 불러 거부 메시지의 사유를 그대로 되돌린다. 컨트롤러 fault 는 `reset_fault` 로 따로 푼다 |
+| 해제 후에도 `estop_status` 가 true | 해제 검증 창 중이거나 원인이 남아 재 latch | 창은 수십 ms. 계속되면 사유 토큰으로 원인 확인 |
+| goal 을 보냈는데 컨트롤러가 안 움직인다 | 큐 포화 · payload 거부 · 배선 결함 · fault 래치 | `list_controllers` 진단 4필드를 두 번 폴링해 어느 카운터가 움직이는지 본다 |
+| sim 에서 `sim_sync_timeout` | step 이 늦거나 `sim_sync_tick_devices` 에 step 과 무관한 그룹이 있음 | 해당 그룹을 `sim_sync_tick_devices` 에서 뺀다 |
 
-> DDS 스레드 affinity는 `taskset`으로 처리한다 — CycloneDDS 에 **CPU affinity 설정이 없기 때문**이다.
-> `<Threads><Thread>` 엘리먼트는 0.10.5(사용 중 버전)에 존재하나 `StackSize` 와 scheduling 만 담는다
-> (`strings libddsc.so.0.10.5 | grep -i affinity` → 0건).
+## 더 읽기
 
----
+- E-STOP · command type · 3-pass 생성의 근거: [architecture-rationale.md](../docs/reference/architecture-rationale.md#controller-manager--e-stop--command-type-근거)
+- 스레드·데이터 흐름 규범: [architecture.md](../agent_docs/architecture.md) · RT 불변식: [invariants.md](../agent_docs/invariants.md)
+- RT 환경 설정: [rt-optimization.md](../docs/rt-optimization.md)
+- 컨트롤러 인터페이스·lifecycle 훅: [rtc_controller_interface/README.md](../rtc_controller_interface/README.md)
+- srv 계약: [rtc_msgs/README.md](../rtc_msgs/README.md) · 로봇별 YAML·launch: [integrated_bringup/README.md](../integrated_bringup/README.md)
 
 ## 의존성
 
-| 의존성 | 용도 |
-|--------|------|
-| `ament_cmake` | 빌드 시스템 |
-| `rclcpp` | ROS2 클라이언트 라이브러리 |
-| `rclcpp_lifecycle` | `RtControllerNode` 의 `LifecycleNode` 베이스 |
-| `sensor_msgs` | JointState 메시지 |
-| `std_msgs` | Bool (E-STOP), String (active controller name) — Float64MultiArray bridge lives in `ur_driver_native` DeviceBackend instead |
-| `rtc_controller_interface` | 컨트롤러 추상 인터페이스 + 레지스트리 |
-| `rtc_controllers` | 내장 컨트롤러 (팩토리 등록) |
-| `rtc_base` | 로깅, 스레딩, 타입, SPSC 버퍼, 세션 디렉토리 |
-| `rtc_communication` | 네트워크 통신 (UDP 트랜시버) |
-| `rtc_msgs` | JointCommand (HW/sim 경계 publish), RobotTarget + HandSensorState (boundary subscribe), ListControllers/SwitchController srv |
-| `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 + `ModelConfig` 타입 (시스템 모델 설정) |
-| `pinocchio` | URDF 기구학 검증 + joint limits 병합 |
-| `yaml-cpp` | YAML 설정 파싱 |
-| `ament_index_cpp` | 패키지 리소스 경로 탐색 |
-
----
-
-## 빌드
-
-```bash
-cd ~/ros2_ws/rtc_ws
-colcon build --packages-select rtc_controller_manager
-source install/setup.bash
-```
-
-**빌드 산출물:**
-- 정적 라이브러리: `librtc_controller_manager_lib.a` (export 됨, 외부에서 link)
-- 실행 파일 없음 — robot-specific bringup 패키지(예: `integrated_bringup`의 `integrated_rt_controller`)가 `rtc::RtControllerMain(argc, argv, node_name)`을 호출하여 자체 exec를 만든다. `node_name`은 robot bringup의 executable 이름과 일치시킨다 (exec ↔ ROS 노드 ↔ 로거 식별자 정렬). 자세한 원칙은 [agent_docs/design-principles.md](../agent_docs/design-principles.md) 참고.
-
----
-
-## 의존성 그래프 내 위치
-
-```
-rtc_base + rtc_controller_interface + rtc_controllers + rtc_communication
-    |
-rtc_controller_manager  <- RT 제어 실행 엔진 (@ control_rate)
-    ^
-    +-- integrated_bringup  (로봇별 진입점 + launch 파일)
-```
-
----
-
-## 라이선스
-
-MIT License -- 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.
+[package.xml](package.xml) 참조 (rclcpp_lifecycle · rtc_base · rtc_controller_interface · rtc_controllers · rtc_msgs · rtc_urdf_bridge · pinocchio · yaml-cpp 등). 라이선스: MIT
