@@ -347,6 +347,7 @@ struct Scene {
     p.mpc_segment.jerk_weight.assign(static_cast<std::size_t>(fx::kG1Dof), weight);
     if (budget == Budget::kGenerous) {
       p.mpc_segment.budget_first_s = kGenerousSolveS;
+      p.mpc_segment.budget_replan_s = kGenerousSolveS;
     }
     return p;
   }
