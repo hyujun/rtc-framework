@@ -14,14 +14,16 @@
      Anything about sustained pull — #504 AC 2's "stays valid", #177 crit#6's
      leakage regression — needs an object that goes where the hand goes.
 
-     WHY WEIGHTLESS RATHER THAN HANGING. #177 wants the true load on the grasp
-     held CONSTANT while grip force is swept, so that d|F̂|/dΣf_n isolates
-     leakage. A free body gives exactly that: it has no other support, so in
-     equilibrium the force it returns to the hand equals its weight, whatever
-     the fingers do. Setting `gravcomp="1"` makes that constant ZERO, which is
-     the cleanest version of the same premise and removes the part that is hard
-     to arrange in this scene — a disk at fingertip height has nowhere to hang
-     from that is not already occupied by the open hand.
+     WHY WEIGHTLESS RATHER THAN HANGING. The object was built so that the true
+     load on the grasp is a known constant: a free body has no other support,
+     so in equilibrium the force it returns to the hand equals its weight, and
+     `gravcomp="1"` makes that constant ZERO — which also removes the part that
+     is hard to arrange in this scene, since a disk at fingertip height has
+     nowhere to hang from that is not already occupied by the open hand. That
+     premise holds for a grasp that is HELD (#504 AC 2); it does not survive a
+     grip SWEEP, because the seating spring below becomes the load (see the
+     disk body). The #177 crit#6 ① leakage regression is therefore closed by a
+     unit test, not by this object, and no sweep fixture is built (#861).
 
      THE FLOATING PART HAS TO BE A CHILD BODY. object_pool's Activate() writes
      `body_gravcomp = 0` on the body it spawns, so `gravcomp` on `object` itself
@@ -77,10 +79,14 @@
            object. Damping is near-critical for 2 kg (c_crit = 2*sqrt(k*m) = 20)
            so a capture settles instead of ringing.
 
-           WHAT "TRUE LOAD" MEANS HERE, for #177 crit#6: with the arm HELD STILL
-           (run the grip sweep under DemoJointController — measured drift 0.0010
-           rad over 5 s) the disk sits at its rest pose and the spring returns
-           ~0 N, constant, whatever the fingers do. A known NON-zero load is
+           WHAT "TRUE LOAD" MEANS HERE: with the arm HELD STILL (DemoJointController,
+           measured drift 0.0010 rad over 5 s) and the grasp HELD, the disk sits
+           near its rest pose and the spring returns ~0 N. It is NOT constant
+           under a grip SWEEP — closing further drags the disk along the
+           fingertips' closure paths (7.3 mm over one ladder, 2026-09-12) and the
+           spring force grew 0 -> 1.09 N, while the settled grip barely moved
+           (0.9 -> 1.6 N). So this object cannot sweep grip at constant load; #861
+           decided not to build a fixture that can. A known NON-zero load is
            applied with `/sim/set_external_wrench` on this body rather than by
            re-tuning anything here. -->
       <body name="disk" pos="0 0 0.299" gravcomp="1">

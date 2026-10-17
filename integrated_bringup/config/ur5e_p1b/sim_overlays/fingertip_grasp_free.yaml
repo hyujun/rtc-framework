@@ -24,9 +24,14 @@
 #                           weightless, so the force it returns to the grasp is a
 #                           constant the experiment knows (zero) no matter how
 #                           hard the fingers squeeze. That is what "sustained
-#                           pull" (#504 AC 2) and the leakage regression
-#                           d|F̂|/dΣf_n <= sin(alignment_error_rad) (#177 crit#6 ①)
-#                           both need.
+#                           pull" (#504 AC 2) needs, and it is what this fixture
+#                           answers. It does NOT serve the #177 crit#6 ① grip
+#                           sweep: the settling grip force is pinned by the
+#                           seating spring, which then IS the load (measured
+#                           0 -> 1.09 N over one ladder, 2026-09-12). That
+#                           regression is closed by the unit test
+#                           test_pull_estimator_leakage_bound.cpp, and no sweep
+#                           fixture is built (#861, decided 2026-10-17).
 #
 # Everything else about running it — the order (activate compliance BEFORE
 # closing, #504), closing on a FORCE BAND rather than an angle (over
