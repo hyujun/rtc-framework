@@ -1,117 +1,29 @@
 # shape_estimation_msgs
 
-`ament_cmake` | ROS 2 메시지 패키지
+ToF 기반 형상 추정 노드가 쓰는 메시지 · action 정의. **유형**: 메시지 패키지
 
-ToF 기반 형상 추정 시스템용 커스텀 ROS 2 메시지 정의 패키지입니다. 핑거팁 ToF 센서 스냅샷, 자세 정보, 형상 프리미티브 추정 결과를 위한 3종의 메시지 타입과 1종의 액션을 제공합니다.
+## 개요
 
-> **Note:** 런타임 ToF 데이터(`ToFSnapshot`)는 로봇 독립성을 위해 `rtc_msgs` 패키지가 소유합니다.
+[shape_estimation](../shape_estimation/README.md) 노드의 추정 결과(`ShapeEstimate`)와 능동 탐색 action(`ExploreShape`)을 정의한다. 런타임 ToF 데이터(`ToFSnapshot`)는 로봇 독립성을 위해 `rtc_msgs` 가 갖는다. 필드의 의미 · 단위는 각 `.msg` / `.action` 주석이 SSoT 다.
 
----
+## 빠른 시작
 
-## 메시지 타입
+```bash
+ros2 interface show shape_estimation_msgs/msg/ShapeEstimate
+ros2 interface show shape_estimation_msgs/action/ExploreShape
+```
 
-필드 의미·단위 등 상세 계약은 각 `.msg` 파일이 SSoT다.
+빌드는 [루트 README](../README.md#빠른-시작) 를 따른다.
 
-### ToFReadings.msg (reserved — 현재 소비자 없음)
+## 인터페이스
 
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `stamp` | `builtin_interfaces/Time` | 타임스탬프 |
-| `distances` | `float64[6]` | 6개 센서 거리 [m] (thumb_A, thumb_B, index_A, index_B, middle_A, middle_B) |
-| `valid` | `bool[6]` | 6개 센서 유효성 플래그 |
-
-상세: [msg/ToFReadings.msg](msg/ToFReadings.msg)
-
-### TipPoses.msg (reserved — 현재 소비자 없음)
-
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `stamp` | `builtin_interfaces/Time` | 타임스탬프 |
-| `poses` | `geometry_msgs/Pose[3]` | thumb, index, middle 순서 |
-
-상세: [msg/TipPoses.msg](msg/TipPoses.msg)
-
-### ShapeEstimate.msg
-
-추정된 물체 형상 프리미티브 정보입니다.
-
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `stamp` | `builtin_interfaces/Time` | 타임스탬프 |
-| `shape_type` | `uint8` | 형상 타입 (0=UNKNOWN, 1=PLANE, 2=SPHERE, 3=CYLINDER, 4=BOX) |
-| `confidence` | `float64` | 추정 신뢰도 [0, 1] |
-| `center` | `geometry_msgs/Point` | 프리미티브 중심 위치 (월드 프레임) |
-| `axis` | `geometry_msgs/Vector3` | 주축 방향 (cylinder 축 / plane 법선) |
-| `radius` | `float64` | 반지름 [m] (sphere, cylinder) |
-| `dimensions` | `geometry_msgs/Vector3` | Box 치수 [m] (width, height, depth) |
-| `num_points_used` | `uint32` | 피팅에 사용된 포인트 수 |
-| `local_curvatures` | `float64[3]` | 3개 손가락의 로컬 곡률 |
-| `curvature_valid` | `bool[3]` | 곡률 유효성 플래그 |
-
-상세(protuberance 필드 포함): [msg/ShapeEstimate.msg](msg/ShapeEstimate.msg)
-
----
-
-## 액션 타입
-
-### ExploreShape.action
-
-탐색 모션 + 형상 추정 통합 액션 (`shape_estimation` 패키지의 `/shape/explore` 서버가 제공). 상세: [action/ExploreShape.action](action/ExploreShape.action)
-
-**Goal**
-
-| 필드 | 타입 | 기본값 | 설명 |
-|------|------|--------|------|
-| `object_position` | `geometry_msgs/Point` | — | `base_link` 기준 물체 위치 |
-| `use_current_object_pose` | `bool` | `false` | `true`면 `/object/pose_estimate` 토픽 사용 |
-| `confidence_threshold` | `float64` | `0.0` | `0`이면 YAML 기본값 사용 |
-| `max_time_sec` | `float64` | `0.0` | `0`이면 YAML 기본값 사용 |
-
-**Result**
-
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `success` | `bool` | 탐색 성공 여부 |
-| `message` | `string` | 결과 메시지 |
-| `estimate` | `shape_estimation_msgs/ShapeEstimate` | 최종 형상 추정 결과 |
-| `elapsed_sec` | `float64` | 경과 시간 [s] |
-| `total_snapshots_processed` | `uint32` | 처리된 ToF 스냅샷 수 |
-| `sweep_cycles_completed` | `uint8` | 완료된 sweep 사이클 수 |
-
-**Feedback**
-
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `current_phase` | `uint8` | `ExplorePhase` enum 값 |
-| `current_estimate` | `shape_estimation_msgs/ShapeEstimate` | 현재까지의 형상 추정 결과 |
-| `elapsed_sec` | `float64` | 경과 시간 [s] |
-| `num_points_collected` | `uint32` | 누적 포인트 수 |
-| `status_message` | `string` | 상태 메시지 |
-
----
+| 타입 | 용도 | 토픽 · action | 노드 |
+|---|---|---|---|
+| [`msg/ShapeEstimate`](msg/ShapeEstimate.msg) | 추정된 형상 프리미티브 (종류 · 신뢰도 · 중심 · 축 · 치수 · 곡률 · 돌출 구조) | `/shape/estimate` | `shape_estimation_node` (발행) |
+| [`action/ExploreShape`](action/ExploreShape.action) | 탐색 모션 + 형상 추정 통합 action. goal 의 `0` 값(`confidence_threshold` · `max_time_sec`)은 YAML 기본값을 쓴다 | `/shape/explore` | `shape_estimation_node` (server) |
+| [`msg/ToFReadings`](msg/ToFReadings.msg) | ToF 6개 거리 + 유효성. 예약 — 소비자 없음 | — | — |
+| [`msg/TipPoses`](msg/TipPoses.msg) | 핑거팁 3개 pose. 예약 — 소비자 없음 | — | — |
 
 ## 의존성
 
-| 패키지 | 용도 |
-|--------|------|
-| `std_msgs` | 표준 메시지 타입 |
-| `geometry_msgs` | Pose, Point, Vector3 |
-| `builtin_interfaces` | Time 타입 |
-| `action_msgs` | Action 타입 (`ExploreShape`) |
-
----
-
-## 빌드
-
-```bash
-cd ~/ros2_ws/rtc_ws
-./build.sh -p shape_estimation_msgs
-```
-
-설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조.
-
----
-
-## 라이선스
-
-MIT License
+[package.xml](package.xml) — `std_msgs` · `geometry_msgs` · `builtin_interfaces` · `action_msgs`. MIT License ([LICENSE](../LICENSE)).
