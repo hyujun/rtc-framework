@@ -479,7 +479,8 @@ class MpcSegmentCore {
 
   [[nodiscard]] const tsid::QPData& PresolveQp() const noexcept { return qp_pre_; }
 
-  /// The QP solution z of the last valid Solve() (tests; meaningless before one).
+  /// The QP solution z of the last converged QP (tests; meaningless before one). A
+  /// Solve() that fails after its pre-solve converged leaves the pre-solve's z here.
   [[nodiscard]] const Eigen::VectorXd& LastSolution() const noexcept { return z_; }
 
   /// Per-node scaled stage gains ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈) of
@@ -490,6 +491,7 @@ class MpcSegmentCore {
   void FreeResponse() noexcept;
   void AssembleConstant(tsid::QPData& qp, bool main) noexcept;
   void AssembleConstantDense(tsid::QPData& qp, bool main) noexcept;
+  void AssembleTorqueSlackConstant(tsid::QPData& qp) const noexcept;
   void AssembleSlackVConstant(tsid::QPData& qp) const noexcept;
   [[nodiscard]] bool Linearize() noexcept;
   void AssembleTorqueRows() noexcept;

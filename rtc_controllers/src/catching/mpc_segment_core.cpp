@@ -601,14 +601,8 @@ void MpcSegmentCore::AssembleConstant(tsid::QPData& qp, bool main) noexcept {
         qp.C(nN + o + j, Col(j, b)) = st.gv(k, b);
       }
     }
-    for (Eigen::Index j = 0; j < nn; ++j) {
-      qp.C(2 * nN + o + j, SlackIdx(k - 1)) = -1.0;
-      qp.C(3 * nN + o + j, SlackIdx(k - 1)) = 1.0;
-    }
   }
-  for (Eigen::Index s = 0; s < n_s_; ++s) {
-    qp.C(4 * nN + s, nu_ + s) = 1.0;
-  }
+  AssembleTorqueSlackConstant(qp);
   AssembleSlackVConstant(qp);
 }
 
@@ -623,6 +617,23 @@ void MpcSegmentCore::AssembleSlackVConstant(tsid::QPData& qp) const noexcept {
     qp.C(base + 3 + i, sv) = 1.0;
   }
   qp.C(base + 6, sv) = 1.0;
+}
+
+// The torque slack column of node k: −1 / +1 on that node's n upper / lower
+// torque rows, and the identity on its s ≥ 0 row. Shared by both assemblies.
+void MpcSegmentCore::AssembleTorqueSlackConstant(tsid::QPData& qp) const noexcept {
+  const Eigen::Index nn = n_;
+  const Eigen::Index nN = nn * n_nodes_;
+  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    const Eigen::Index o = (k - 1) * nn;
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      qp.C(2 * nN + o + j, SlackIdx(k - 1)) = -1.0;
+      qp.C(3 * nN + o + j, SlackIdx(k - 1)) = 1.0;
+    }
+  }
+  for (Eigen::Index s = 0; s < n_s_; ++s) {
+    qp.C(4 * nN + s, SlackIdx(s)) = 1.0;
+  }
 }
 
 void MpcSegmentCore::AssembleConstantDense(tsid::QPData& qp, bool main) noexcept {
@@ -670,14 +681,8 @@ void MpcSegmentCore::AssembleConstantDense(tsid::QPData& qp, bool main) noexcept
     const Eigen::Index o = (k - 1) * nn;
     qp.C.block(o, 0, nn, nu_) = g_dense_.middleRows(3 * nn * k, nn);
     qp.C.block(nN + o, 0, nn, nu_) = g_dense_.middleRows(3 * nn * k + nn, nn);
-    for (Eigen::Index j = 0; j < nn; ++j) {
-      qp.C(2 * nN + o + j, SlackIdx(k - 1)) = -1.0;
-      qp.C(3 * nN + o + j, SlackIdx(k - 1)) = 1.0;
-    }
   }
-  for (Eigen::Index s = 0; s < n_s_; ++s) {
-    qp.C(4 * nN + s, nu_ + s) = 1.0;
-  }
+  AssembleTorqueSlackConstant(qp);
   AssembleSlackVConstant(qp);
 }
 
