@@ -1,639 +1,249 @@
 # udp_hand_driver
 
-> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
-> 설치/빌드: [Root README](../README.md) | RT 최적화: [rt-optimization.md](../docs/rt-optimization.md)
-
-RTC 프레임워크의 **10-DOF 손 UDP 브리지 패키지**입니다. 외부 손 컨트롤러(하드웨어)와 ROS2 토픽 사이의 UDP request-response 통신을 담당합니다. LifecycleNode 기반으로 관리된 상태 전환을 지원합니다.
+외부 10-DOF 손 컨트롤러와 ROS 2 토픽 사이의 UDP request-response 브리지 (lifecycle 노드) + SIL 용 `fake_hand_firmware`. **유형**: 노드 패키지
 
 ## 개요
+
+`udp_hand_node` (`rclcpp_lifecycle::LifecycleNode`) 는 `CommLoop` (SCHED_FIFO 65) 가 `loop_rate_hz` 로 **자율 tick** 하며 손 펌웨어와 UDP 로 통신한다. read + state publish 는 명령과 무관하게 매 주기 수행하고, write 는 `/hand/joint_command` 가 도착한 주기에만 한다. 통합 구성에서는 [rtc_controller_manager](../rtc_controller_manager/README.md) 의 RT loop 가 active controller 가 있을 때만 명령을 publish 하므로 write 는 `control_rate` 로 돌고, deactivate 하면 write 만 멈춘다 (CM clock 과 hand clock 은 독립). 단독 실행에서는 토픽을 직접 구독한다.
+
+- 소비자: [integrated_bringup](../integrated_bringup/README.md) (robot launch), 센서 → grasp 컨트롤러
+- 첫 상태 read 가 끝나기 전에는 명령을 latch 만 하고 write 하지 않는다. activate 직후 손이 q=0 으로 끌려가지 않는다
+- E-Stop 은 매 tick 검사하며 활성이면 CommLoop 이 스스로 종료하고 loop unwind 시 zero-write 를 1회 보낸다. 재시작 (`deactivate→activate`) 은 링크 · 통계 카운터를 리셋한다
+
+### 스레드 모델
+
+| 스레드 | 스케줄러 | 하는 일 |
+|---|---|---|
+| `hand_udp_recv` (CommLoop) | **SCHED_FIFO 65**, `hand_driver` slot | UDP I/O · 센서 처리 · ONNX 추론 · SeqLock store |
+| main (executor) | CFS, `hand_driver` slot | publish (SeqLock 을 당겨서 발행), 명령 · calib 구독 |
+| failure detector | CFS nice −5, 상속 | 50 Hz 감시 |
+| `hand_aux_io` | CFS, aux slot (`aux_cpu_slot`) | 타이밍 CSV drain, stats JSON — blocking 파일 쓰기 |
+| DDS | CFS, `hand_driver` slot | launch `pin_dds_threads_to_slot` 이 co-pin (robot launch 전용) |
+
+publish 는 RT tick 이 호출하는 push 가 아니라 executor 가 `loop_rate_hz × 2` 로 SeqLock 을 폴링하는 pull 이다. mailbox 는 latest-wins 라 밀린 구간의 중간 샘플은 덮인다. `hand_udp_recv` 와 detector 는 `cpu_core=-1` 로 프로세스 affinity 를 상속하며, main 과 `hand_aux_io` 는 노드가 스스로 pin 한다.
+
+> ⚠️ **실기 RT 배포에서는 `use_cpu_affinity:=false` 를 쓰지 말 것.** 이 스위치는 프로세스 내부 pin 2개만 끄고 스케줄링 정책은 그대로 둔다. pin 없는 FIFO 65 CommLoop 은 아무 코어로나 이주할 수 있고, `mpc_main` (FIFO 60) 이 핀된 코어에 올라가면 우선순위가 더 높아 **그 solve 를 선점**한다 (`rt_control` 90 · `rt_callback` 70 은 영향 없음). 개발 노트북 · 컨테이너 · cpuset 없는 CI 처럼 격리가 아예 없는 환경 전용이다.
+
+이 패키지의 단독 launch 는 프로세스 내부 pin 만 하고 cset shield · DDS co-pin 은 하지 않는다. 실기 RT 구성은 `integrated_bringup` 의 robot launch 를 쓴다. 코어 배치 매트릭스는 [rtc_base/README.md](../rtc_base/README.md#스레딩-threading), 튜닝은 [rt-optimization.md](../docs/rt-optimization.md).
+
+## 빠른 시작
+
+빌드는 [루트 README](../README.md#빠른-시작) 를 따른다. 이 패키지와 직접 의존 패키지 (`rtc_base` · `rtc_communication` · `rtc_inference` · `rtc_msgs`) 를 `--tests` 로 빌드한 뒤 env 를 source 한다.
+
+```bash
+# 하드웨어 없이 (controller-side LPF 모델, 소켓 미오픈)
+ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=loopmodel
+ros2 topic echo /hand/joint_states --once
+
+# 실제 손 (IP 는 필요한 것만 override)
+ros2 launch udp_hand_driver udp_hand.launch.py target_ip:=192.168.0.100
+ros2 topic echo /hand/link_status --once        # data: true 면 링크 정상
+```
+
+launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 수동으로 다루려면 `ros2 lifecycle set /udp_hand_node deactivate` · `activate` 를 쓴다. 실제 손에 처음 붙일 때는 `/hand/link_status` 가 `true` 이고 `/hand/joint_states` 가 나오는지 먼저 확인하고, 안 되면 [문제 해결](#문제-해결) 의 표를 본다.
+
+## 인터페이스
+
+### launch 인자 (`udp_hand.launch.py`)
+
+모든 인자는 기본값이 빈 문자열인 **override 전용** 이다. 주지 않으면 [config/udp_hand_node.yaml](config/udp_hand_node.yaml) 값을 쓴다 (아래 표의 "YAML 값").
+
+| 인자 | YAML 값 | 설명 |
+|---|---|---|
+| `target_ip` | `192.168.0.100` | 손 컨트롤러 IP |
+| `target_port` | `55151` | 손 컨트롤러 포트 |
+| `local_ip` / `local_interface` | `""` / `""` | 제어 PC source address (bind) / egress NIC (`SO_BINDTODEVICE`) |
+| `communication_mode` | `bulk` | `bulk` \| `individual` |
+| `recv_timeout_ms` | `0.4` | ppoll 수신 타임아웃 [ms] |
+| `publish_rate` | `100.0` | `link_status` decimation 기준 [Hz]. `loop_rate_hz` 는 launch 인자가 아니다 |
+| `protocol_version` | `1a` | `1a` \| `1b`. 노드와 `fake_hand_firmware` 양쪽에 전파 |
+| `sil_mode` | `off` | `off` \| `loopmodel` \| `firmware` ([SIL 모드](#sil-모드-sil_mode)) |
+| `use_cpu_affinity` | `true` | 프로세스 내부 pin on/off ([스레드 모델](#스레드-모델) 의 경고). `aux_cpu_slot` 은 YAML 전용 |
+
+### 토픽
+
+| 방향 | 토픽 | 타입 | QoS | 설명 |
+|---|---|---|---|---|
+| pub | `/hand/joint_states` | `sensor_msgs/JointState` | BEST_EFFORT/1 | 관절 pos / vel / current (kJoint read) |
+| pub | `/hand/motor_states` | `sensor_msgs/JointState` | BEST_EFFORT/1 | 모터 pos / vel / current (kMotor read, `1a` 만) |
+| pub | `/hand/sensor_states` | `rtc_msgs/HandSensorState` | BEST_EFFORT/1 | 핑거팁 센서 + F/T 추론 (RT 구독자용) |
+| pub | `/hand/sensor_states/monitor` | `rtc_msgs/HandSensorState` | RELIABLE/10 | 같은 데이터, 비-RT 구독자용 (BT · GUI) |
+| pub | `/hand/link_status` | `std_msgs/Bool` | RELIABLE, TRANSIENT_LOCAL/1 | UDP 링크 상태 |
+| pub | `/hand/calibration/status` | `rtc_msgs/CalibrationStatus` | RELIABLE, TRANSIENT_LOCAL/1 | 캘리브레이션 진행 · 완료 (5 Hz) |
+| sub | `/hand/joint_command` | `rtc_msgs/JointCommand` | BEST_EFFORT/1 | 모터 명령 `values[10]`. 발행측 `joint_names` 순서를 firmware 슬롯 순서로 재정렬하고, 이름이 없거나 안 맞으면 positional |
+| sub | `/hand/calibration/command` | `rtc_msgs/CalibrationCommand` | RELIABLE/1 | 센서 캘리브레이션 트리거 (현재 barometer) |
+
+토픽 이름은 YAML 의 `command_topic` · `joint_state_topic` · `calibration_command_topic` 등으로 바꾼다. `sensor_states` 한 건의 센서 값과 F/T 값은 **같은 tick 이 보장되지 않는다** (F/T 가 최대 1 comm cycle 앞설 수 있음). 소비자는 `1 / loop_rate_hz` 의 pairing 허용오차를 둔다. `sensor_decimation > 1` 이면 F/T 가 마지막 센서 cycle 값이라 더 오래될 수 있다.
+
+#### 센서 캘리브레이션 재트리거
+
+```bash
+ros2 topic pub --once /hand/calibration/command rtc_msgs/msg/CalibrationCommand \
+    '{sensor_type: 0, action: 0, sample_count: 0}'    # barometer baseline 재측정 (기본 샘플 수)
+ros2 topic echo /hand/calibration/status
+```
+
+재측정 중에는 `baseline_offset` 이 0 으로 초기화돼 F/T 추론이 일시 중지된다. `demo_controller_gui.py` 의 Control 탭 → Sensor Calibration 에서도 트리거한다.
+
+### 통신 모드
+
+`communication_mode` 가 한 cycle 의 UDP 트랜잭션을 정한다 (괄호는 cmd byte).
+
+| 모드 | 순서 |
+|---|---|
+| `bulk` | write (0x01, kJoint) + echo → `ReadAllMotors` (0x10, kMotor) → `ReadAllMotors` (0x10, kJoint) → `ReadAllSensors` (0x19, `sensor_decimation` cycle 마다) |
+| `individual` | write + echo → `ReadPosition` (0x11, kMotor · kJoint) → `ReadVelocity` (0x12, kMotor) → `ReadSensor0-3` (0x14-0x17, `sensor_decimation` cycle 마다) |
+
+`1a` 는 motor 와 joint 공간을 모두 읽고 (`motor_states` + `joint_states`), write 는 kJoint 로 보낸다.
+
+### 센서 프로토콜 버전 (`protocol_version`)
+
+펌웨어 센서 응답의 wire 포맷 차이는 `SensorProtocol` (`protocol/sensor_protocol.hpp`) 로 격리된다. 사용자가 고를 것은 펌웨어에 맞는 버전이다.
+
+| | `1a` (기본) | `1b` |
+|---|---|---|
+| bulk sensor 응답 | 259B (4 × 16 int32: barometer 8 + ToF 3 + reserved) | 99B (3B 헤더 + 4 × 6 float32) |
+| 핑거당 데이터 | barometer[8] + ToF[3] | `[fx, fy, fz, Lx, Ly, Temp]` |
+| 후처리 | LPF · drift · F/T 추론 | 없음 (force 는 firmware 계산) |
+| joint I/O MODE | kJoint | **kMotor** (kJoint 요청에 joint 데이터 미응답) |
+| 응답 MODE byte 검증 | strict | off (펌웨어가 임의값을 echo) |
+| `motor_states` | 발행 | 미발행 (motor-space read 스킵) |
+| `sensor_states` | baro · tof + F/T `f` / `u` | `f={fx,fy,fz}` 만 (Lx · Ly · Temp 는 디코드만) |
+| 통신 모드 | individual / bulk | **bulk 전용** |
+
+`1b` + `individual` 조합은 `on_configure` 가 FAILURE 를 반환한다.
+
+### 통신 decimation (`comm_decimation`)
+
+UDP 부하를 강제로 줄여 보는 테스트용 knob 이다 (기본 `1`). `sensor_decimation` 이 센서 read 만 감쇠하는 것과 달리 `comm_decimation = N` 은 CommLoop N 사이클 중 1번만 **전체 트랜잭션 (write + 모든 read)** 을 수행한다. skip 사이클은 UDP 도 publish 도 없는 no-op 이라 downstream 이 감쇠된 rate 를 실제로 본다.
+
+- 첫 사이클은 항상 통신하고, E-Stop 은 skip 과 무관하게 매 사이클 검사한다. 명령은 유실 없이 다음 통신 사이클에 전송된다 (last-wins)
+- 유효 rate: 통신 `loop_rate_hz / comm_decimation`, 센서 `loop_rate_hz / (comm_decimation × sensor_decimation)`. `on_activate` 가 `min_rate_hz` 를 `comm_decimation` 으로 자동 스케일하므로 rate failure 오탐은 없다
+- 감쇠량은 `hand_udp_stats.json` 의 `comm_decimation` · `comm_decimation_skip_count`
+
+### ONNX F/T 추론
+
+`1a` 센서 cycle 에서 `FingertipFTInferencer` 가 핑거팁별 접촉 / 힘 추론을 한다: 시작 시 N 샘플로 barometer baseline 보정 → 정규화 + delta + FIFO history → per-fingertip ONNX (`rtc::OnnxEngine`) → contact probability, force(3), direction(3). 설정은 [config/fingertip_ft_inferencer.yaml](config/fingertip_ft_inferencer.yaml) (`ft_inferencer.*`). ORT `Run()` 의 heap 할당은 RT-1 조건부 수용이다 ([invariants-rationale.md](../docs/reference/invariants-rationale.md)).
+
+> ⚠️ **capability lockstep.** 컨슈머의 device YAML `devices.<hand_group>.sensor_layout.has_native_contact` · `has_native_displacement` 는 `ft_inferencer.enabled` 와 함께 켜고 꺼야 한다. 추론이 꺼진 채 capability=true 이면 컨트롤러가 항상 0 인 contact probability 를 native signal 로 오인해 grasp detection 이 조용히 무력화된다.
+
+> ⚠️ **텐서는 positional 로 바인딩된다.** `F` 와 `u` 는 둘 다 `[1,3]` 이라 head 순서가 바뀐 `.onnx` 를 검출하지 못한다 (힘과 방향이 조용히 뒤바뀜). 실모델을 받으면 `ros2 run rtc_inference rtc_inference_check <model>.onnx` 로 텐서 이름을 확인해 `fingertip_ft_inferencer.hpp` 의 `model_config.inputs` / `.outputs` 에 채운다 ([rtc_inference](../rtc_inference/README.md#텐서를-이름으로-바인딩하는-이유)). 현재 두 config 의 `model_paths` 는 전부 `""` 다.
+
+### SIL 모드 (`sil_mode`)
+
+하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 하나**로 고른다. `sil_mode` 는 노드 파라미터 (YAML) 이고 launch 인자 `sil_mode:=` 가 override 한다. 노드 `on_configure` 가 이를 해석해 내부 플래그 `use_fake_hand` 와 실효 endpoint 를 파생한다. `fake_hand_firmware` 프로세스는 노드가 못 띄우므로 launch 가 `sil_mode` 를 읽어 조건부로 띄운다. `integrated_bringup` 의 `robot_ur5e_p1a.launch.py` · `robot_ur5e_p1b.launch.py` 도 같은 `sil_mode:=` 를 지원한다.
+
+| `sil_mode` | 계층 | `use_fake_hand` | firmware | 네트워크 endpoint | 검증 대상 |
+|---|---|:---:|:---:|---|---|
+| `off` (기본) | 실 하드웨어 | false | 미실행 | YAML 그대로 | - |
+| `loopmodel` | controller-side loop-model | true | 미실행 | 소켓 미오픈 | thread · RT 구조 (실 모드와 같은 self-clock) |
+| `firmware` | device-side network SIL | false | 실행 | `target_ip`→`127.0.0.1`, `local_ip` · `local_interface` 해제 | 전체 UDP transport (framing · echo · MODE 검증 · decode · publish) |
+
+**`loopmodel`**: UDP 소켓을 우회하고 command 를 in-process 1차 LPF 로 통과시켜 read state 를 만든다. 튜닝은 `fake_lpf_time_constant_s` · `fake_effort_stiffness` · `fake_effort_damping`.
+
+**`firmware`**: `fake_hand_firmware` 가 hand 프로토콜의 디바이스 측을 흉내 내고, 수정하지 않은 `udp_hand_node` 가 loopback UDP 로 통신한다. firmware 의 bind 포트는 `target_port`, wire 포맷은 `protocol_version` 이다. 합성 튜닝 (LPF τ · effort 게인 · 센서 대역 · seed) 은 [config/fake_hand_firmware.yaml](config/fake_hand_firmware.yaml).
+
+```bash
+ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=firmware protocol_version:=1a
+ros2 topic echo /hand/link_status --once     # 별도 터미널. data: true 면 전체 경로 정상
+```
+
+한계: loopback latency 가 µs 라 timing 검증에는 부적합하다. firmware 는 driver decoder 의 거울상이라 실제 펌웨어와의 일치는 보장하지 못한다. commander 없이 단독 실행하면 모터가 LPF rest(0) 에 머물러 failure detector 의 all-zero / duplicate 경고가 뜨는데, 명령이 오면 해소되는 정상 동작이다.
+
+## 설정
+
+[config/udp_hand_node.yaml](config/udp_hand_node.yaml) 이 launch 가 읽는 파일이고 키 설명은 파일 주석이 갖는다. 아래는 **이 YAML 에 실제로 들어 있는 값** 이다 (YAML 에 없는 키는 노드 기본값).
+
+| 파라미터 | YAML 값 | 설명 |
+|---|---|---|
+| `target_ip` / `target_port` | `"192.168.0.100"` / `55151` | 핸드 컨트롤러 endpoint |
+| `local_ip` / `local_interface` | `""` / `""` | `""` = 커널 선택 / 라우팅 테이블에 위임. 같은 subnet 에 NIC 이 둘 이상일 때만 설정 |
+| `recv_timeout_ms` | `0.4` | ppoll 타임아웃. sub-ms 지원 |
+| `communication_mode` | `"bulk"` | `"individual"` 도 가능. 노드 C++ 기본값은 `individual` 이므로 YAML 없이 띄우면 달라진다 |
+| `loop_rate_hz` | `500.0` | CommLoop 주기 |
+| `publish_rate` | `100.0` | `link_status` decimation 기준 (`loop_rate_hz / publish_rate`) |
+| `comm_decimation` / `sensor_decimation` | `1` / `1` | 위 [통신 decimation](#통신-decimation-comm_decimation) · 센서 read 감쇠 |
+| `protocol_version` | `"1a"` | `"1a"` \| `"1b"` |
+| `baro_lpf_enabled` / `baro_lpf_cutoff_hz` | `true` / `100.0` | barometer 4차 Bessel LPF |
+| `tof_lpf_enabled` / `tof_lpf_cutoff_hz` | `true` / `15.0` | ToF LPF |
+| `drift_detection_enabled` | `false` | OLS 드리프트 감지 (`drift_threshold` 5.0, `drift_window_size` 2500) |
+| `joint_state_names` / `motor_state_names` / `hand_fingertip_names` | YAML 에 10 / 10 / 4개 | 비우면 기본 이름 |
+| `joint_position_offsets_deg` | (YAML 에 없음, 빈 배열 = 0) | `joint_state_names` 순서 10개 [deg]. 수신 시 `+offset`, 송신 시 `−offset`. 크기가 안 맞으면 무시 |
+| `enable_failure_detector` | `true` | `failure_threshold` 5, `check_motor` · `check_sensor` · `check_link` true |
+| `min_rate_hz` / `rate_fail_threshold` | `30.0` / `5` | polling rate 하한 / 연속 미달 횟수 |
+| `link_fail_timeout_ms` | `100.0` | link-down 시간 budget. cycle 수는 `ms/1000 × loop_rate_hz / comm_decimation` (센서는 `/ sensor_decimation` 추가) |
+| `startup_grace_ms` / `link_startup_grace_ms` / `sensor_startup_grace_ms` | `1000.0` / `100.0` / `0.0` | 기동 직후 rate / link / 센서 검사 유예 [ms] |
+| `sil_mode` | `"off"` | [SIL 모드](#sil-모드-sil_mode) |
+| `fake_lpf_time_constant_s` · `fake_effort_stiffness` · `fake_effort_damping` | `0.1` · `1.0` · `0.1` | `loopmodel` 전용 |
+| `aux_cpu_slot` / `use_cpu_affinity` | `0` / `true` | `hand_aux_io` 가 붙을 slot (`-1` = pin 안 함) / 프로세스 내부 pin on-off. 이 둘만 노드 생성자에서 declare 된다 |
+
+### `fingertip_ft_inferencer.yaml`
+
+`ft_inferencer.*` 네임스페이스로 읽는 F/T 추론 설정이다. 이 파일은 standalone launch 의 **예시 (`enabled: false`)** 이고 per-robot 튜닝본은 `integrated_bringup/config/ur5e_p1a/fingertip_ft_inferencer_p1a.yaml` 에 있다. p1b 는 이 파일을 넘기지 않아 `ft_inferencer.enabled=false` 기본값으로 비활성이다.
+
+| 파라미터 | 값 | 설명 |
+|---|---|---|
+| `ft_inferencer.enabled` | `false` | ONNX 추론 |
+| `ft_inferencer.num_fingertips` / `history_length` | `4` / `12` | 핑거팁 수 / FIFO history |
+| `ft_inferencer.model_paths` | `["","","",""]` | per-fingertip ONNX 경로. 상대 경로는 설치된 `share/udp_hand_driver/models/` 기준인데 현재 이 디렉토리는 저장소에 없으므로 **절대경로** 를 준다 |
+| `ft_inferencer.calibration_enabled` / `calibration_samples` | `true` / `500` | baseline 자동 보정 (센서 cycle 기준) |
+| `ft_inferencer.{thumb,index,middle,ring}_max` | `40000.0` × 16 | 핑거 정규화 최댓값 |
+
+## 디렉토리
 
 ```
 udp_hand_driver/
 ├── include/udp_hand_driver/
-│   ├── udp_hand_packets.hpp          -- 와이어 포맷 구조체, 인코딩/디코딩 헬퍼
-│   ├── udp_hand_codec.hpp        -- 공개 코덱 API (allocation-free, noexcept)
-│   ├── udp_hand_transport.hpp    -- 저수준 UDP 소켓 관리 + 프로토콜 요청
-│   ├── udp_hand_controller.hpp       -- 핵심 드라이버 (event-driven, busy skip, sensor decimation)
-│   ├── udp_hand_sensor_processor.hpp -- 센서 후처리 (Bessel LPF, rate estimation, drift)
-│   ├── udp_hand_failure_detector.hpp -- 손 통신 장애 감지기 (50Hz non-RT jthread)
-│   ├── udp_hand_timing_profiler.hpp  -- EventLoop 단계별 타이밍 프로파일러
-│   ├── udp_hand_timing_logger.hpp -- per-tick CSV writer (mpc_timing_log 패턴)
-│   ├── udp_hand_node.hpp         -- UdpHandNode 클래스 선언 (LifecycleNode)
-│   ├── udp_hand_constants.hpp    -- hand 전용 상수/타입 (kNumHandMotors 등), 필터 alias
-│   ├── udp_hand_state.hpp        -- UdpHandState 구조체 (SeqLock 공유 상태)
-│   ├── udp_hand_logging.hpp      -- 계층적 sub-logger 팩토리 + THROTTLE 상수
-│   ├── protocol/
-│   │   └── sensor_protocol.hpp   -- SensorProtocol version seam (1a/1b bulk-sensor 추상화)
-│   ├── fake_hand_firmware.hpp    -- full-SIL 루프백 firmware 시뮬레이터 (device-side, header-only)
-│   ├── fake_hand_lpf.hpp         -- fake-hand 1차 LPF joint step (controller/firmware 공유)
-│   └── fingertip_ft_inferencer.hpp -- ONNX 기반 핑거팁 F/T 추론
 ├── src/
-│   ├── udp_hand_node.cpp           -- main() (mlockall, CPU affinity, spin)
-│   ├── udp_hand_node_lifecycle.cpp -- 6 lifecycle 콜백 + dtor + Drain + teardown helper
-│   ├── udp_hand_node_publish.cpp   -- Preallocate / PollAndPublish / PublishState / PublishCalibrationStatus
-│   ├── udp_hand_node_stats.cpp     -- SaveCommStats (hand_udp_stats.json writer)
-│   ├── fake_hand_firmware_main.cpp -- fake_hand_firmware 실행파일 (socket/param/log 껍데기)
-│   └── protocol/
-│       └── sensor_protocol.cpp     -- SensorProtocol 구현 (정적 lib `udp_hand_protocol`)
 ├── config/
-│   ├── udp_hand_node.yaml        -- 노드 파라미터 설정 (ros__parameters)
-│   ├── fake_hand_firmware.yaml   -- SIL firmware 시뮬레이터 설정
-│   └── fingertip_ft_inferencer.yaml -- ONNX 모델 경로 + 캘리브레이션 설정
 ├── launch/
-│   └── udp_hand.launch.py        -- Hand UDP 런치 (sil_mode: off/loopmodel/firmware 단일 진입점)
-├── CMakeLists.txt
-└── package.xml
+└── test/
 ```
 
-**의존성:**
+include 의 헤더 (`udp_hand_transport.hpp` · `udp_hand_controller.hpp` · `fingertip_ft_inferencer.hpp` · `fake_hand_firmware.hpp` 등) 는 상단 주석에 역할과 동작 계약이 있다. `protocol/` 은 `SensorProtocol` 구현 (정적 lib `udp_hand_protocol`) 이다.
 
-```
-rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
-```
+## 문제 해결
 
----
-
-## 아키텍처
-
-### Self-Clocked 통신
-
-`UdpHandController`의 `CommLoop`(`rtc::PeriodicRtThread` 서브클래스)는 `loop_rate_hz`(기본 500Hz)로 **자율 tick**한다. read + state publish 는 명령 도착과 **무관하게** 매 주기 수행되고, write UDP 는 `SendCommandAndRequestStates()`로 명령이 stage 됐을 때만 실행된다. 통합 모드에서는 `rtc_controller_manager`의 `ControlLoop`가 active controller 있을 때만 `/hand/joint_command`를 publish → write 는 control_rate 로, deactivate 시 정지(read/publish 는 계속). 단독 실행(standalone) 시에는 `/hand/joint_command` 구독으로 명령을 수신한다. CM clock 과 hand clock 은 독립(topic 경유).
-
-```
-[명령 소스] ControlLoop(통합) 또는 /hand/joint_command sub(standalone)
-             |
-             | SendCommandAndRequestStates(cmd)
-             |   -> staged_cmd_seqlock_ store + event_pending_ set (release)
-             |      (RT-safe, lock-free, 별도 wake 없음)
-             v
-[hand_driver core] CommLoop -- clock_nanosleep(loop_rate_hz) 자율 tick
-                    -> [event_pending_ latch 시] WritePosition + recv echo (명령 있을 때만)
-                    -> ReadAllMotors(kMotor) -- motor pos/vel/cur
-                    -> ReadAllMotors(joint_io_mode) -- joint pos/vel/cur
-                    -> ReadSensors (sensor_decimation cycle마다)
-                    -> FT Inference (sensor cycle + calibrated)
-                    -> state_seqlock_ 갱신 (lock-free) — tick 종료
-
-[hand_driver core] main executor (CFS) -- publish_timer_ 폴링 (loop_rate_hz × 2)
-                    -> state_sequence() 가 전진했으면 snapshot 을 publish
-                    -> now() · 메시지 작성 · joint/motor/sensor/link publish
-                    -> joint/calib command 구독, calib status 5 Hz
-
-[aux core (OS slot)] hand_aux_io executor (CFS)
-                    -> 타이밍 CSV drain (1 Hz, 버스트당 최대 512행)
-                    -> stats JSON 저장 (10 s)
-```
-
-### 스레드 모델
-
-프로세스는 RTC 스레드 3개 + DDS 스레드를 가진다. 분리 축은 core 소속이 아니라 **연산량**이다 — 가벼운 CFS 레인은 CommLoop 과 같은 코어에 둬도 FIFO 65 가 항상 선점하므로 문제가 없고, blocking 파일 I/O 만 다른 코어로 뺀다.
-
-| 스레드 | core | 스케줄러 | 하는 일 |
-|---|---|---|---|
-| `hand_udp_recv` (CommLoop) | `hand_driver` slot | **SCHED_FIFO 65** | UDP I/O · 센서 처리 · ONNX 추론 · SeqLock store |
-| main = executor | `hand_driver` slot | CFS | NRT publish 소비자, command/calib 구독, calib status |
-| failure detector | `hand_driver` slot (상속) | CFS nice −5 | 50 Hz SeqLock 폴링 감시 |
-| `hand_aux_io` | **aux slot** (`aux_cpu_slot`, 기본 0) | CFS | 타이밍 CSV drain, stats JSON — blocking 파일 쓰기 |
-| DDS | `hand_driver` slot | CFS | launch `pin_dds_threads_to_slot` 이 co-pin |
-
-`hand_udp_recv` 와 detector 는 `cpu_core = -1` 로 **프로세스 affinity 를 상속**한다. `hand_udp_recv` 에 명시 slot 을 주지 않는 것은 의도적이다 — `ApplyThreadConfig` 는 affinity → 정책 → 이름 순서로 진행하고 affinity 실패 시 조기 반환하므로, 명시 pin 은 배치를 바꾸지 않으면서 **affinity 실패가 FIFO 65 와 스레드 이름을 함께 날리는 경로만** 새로 만든다 (이름 없는 스레드는 `verify_rt_runtime.sh` 가 찾지 못한다).
-
-`use_cpu_affinity:=false` 는 프로세스 안의 두 pin(main → `hand_driver`, `hand_aux_io` → aux)을 건너뛴다. **스케줄링 정책은 유지되므로** CommLoop 은 그대로 SCHED_FIFO 65 다 — 코어 confinement 만 사라진다.
-
-> ⚠️ **실기 RT 배포에서는 `use_cpu_affinity:=false` 를 쓰지 말 것.** 정책이 남는다는 바로 그 성질이 위험이다 — pin 이 없는 FIFO 65 CommLoop 은 스케줄러가 고르는 아무 코어로나 이주할 수 있고, `mpc_main`(FIFO 60)이 핀된 코어에 올라가면 **우선순위가 더 높으므로 그 solve 를 선점**한다 (`rt_control` 90 · `rt_callback` 70 은 65 보다 높아 영향 없음). 이 스위치는 격리가 아예 없는 환경 — 개발 노트북, 컨테이너, cpuset 없는 CI — 전용이다.
-
-### NRT publish mailbox
-
-publish 는 CommLoop 이 호출하는 콜백(push)이 아니라 executor 가 당겨가는 **pull** 이다. RT tick 은 `state_seqlock_` / `ft_seqlock_` 에 고정 크기 POD 를 store 만 하고, `now()` · 메시지 작성 · publish 는 전부 NRT 레인에서 일어난다.
-
-- **latest-wins / overwrite**: mailbox 는 큐가 아니다. 폴 한 번은 publish 한 번이며, 그 사이 여러 tick 이 지났다면 **가장 최신 snapshot 만** 나가고 중간 것은 덮인다. 손실은 카운터로 보이지 않는다 — 관측하려면 `state_sequence()` 증가분과 publish 수를 대조한다.
-- **폴링 주기 = `loop_rate_hz × kPublishPollOversampling(2.0)`**. 생산과 같은 레이트로 폴링하면 두 tick 이 두 폴 사이에 들어갈 때마다 한 샘플이 영구 손실돼 토픽 레이트가 `loop_rate_hz` 아래로 내려앉는다. 오버샘플링은 그 손실 꼬리를 wakeup 비용(새 데이터가 없으면 atomic load 1회)과 맞바꾼다.
-- **카운터는 호출 횟수가 아니라 cycle 수**. `SeqLock` 은 Store 당 sequence 를 2 증가시키므로 완료된 tick 수는 `(현재 − 직전) / 2` 이고, 홀수 값은 쓰기 진행 중이라는 뜻이라 baseline 으로 삼으면 이후 모든 차분이 한 스텝 어긋난다 (`LastCompletedWrite` 로 내림). `link_status` 감쇠와 주기 로그는 이 cycle 수를 누적하고 **나머지를 carry** 하므로, 폴이 밀린 구간에서도 유효 레이트가 떨어지지 않는다.
-- **state ↔ F/T 는 최대 1 cycle 어긋난다 (허용오차 계약)**. `/hand/sensor_states` 한 건 안의 barometer/ToF 값과 F/T 값은 **같은 tick 이 보장되지 않는다** — `PollAndPublish` 가 `state_seqlock_` 과 `ft_seqlock_` 을 **독립적으로** load 하기 때문이다. state 를 읽은 뒤 F/T 를 읽기 전에 CommLoop 이 다음 cycle 의 F/T store 를 끝내면 **F/T 가 state 보다 1 comm cycle 앞선다**. 반대 방향(F/T 가 tearing 으로 뒤처짐)은 없다 — 한 tick 안에서 `RunFTInference` 의 store 가 `state_seqlock_.Store` 보다 먼저다. 이와 별개로 `sensor_decimation > 1` 이면 F/T 는 마지막 센서 cycle 값이라 정상적으로 더 오래됐을 수 있고, 그건 tearing 이 아니라 감쇠 semantics 다. **소비자 계약: `1 / loop_rate_hz` 의 pairing 허용오차**. 현재 소비자 중 정확한 pairing 을 요구하는 곳은 없다. 필요해지면 두 payload 를 하나의 SeqLock 으로 합쳐야 하며, 그것은 controller API 변경이라 별도 이슈다.
-
-**Command-gated write**: write(`WritePosition`)는 **per-command** 게이트다 — `event_pending_`가 set 된 cycle 에서 `pending_cmd_`를 latch 하고 `has_pending_write_`를 세운 뒤, 1회 write 시도 후 성공/실패 무관 clear 한다. 명령이 끊긴 구간은 read-only cycle 만 돌고 펌웨어는 마지막 위치를 hold 한다.
-
-**Startup write-gate**: write 는 `state_read_once_`(첫 상태 read 완료) **및** `has_pending_write_`(pending 명령) 가 **둘 다** 참이어야 실행된다. 첫 상태 read 전에는 명령을 latch 만 하고 write 는 보류 → lifecycle activate 직후 hold 명령 publish 전 창에서 손을 q=0 으로 끌어내리지 않는다(no-jump 계약).
-
-**E-Stop self-exit**: E-Stop 은 매 tick(감쇠 skip 여부와 무관) 검사한다. 활성 시 CommLoop 은 RT 핫패스에서 **순수 atomic** `RequestLoopExit()`(mutex/condition_variable 미사용, RT-10 준수)로 자기 종료를 예약하고 `running_` 을 내린 뒤 return 한다. zero-write 는 핫패스가 아니라 loop unwind 시 base 가 1회 호출하는 `OnLoopAborted()`(→`OnCommLoopAborted()`)에서 수행된다. 재시작(`deactivate→activate`) 시 `Start()` 가 `exit_from_loop_` 및 link/telemetry 카운터(`consecutive_recv_failures_`, `cycle_count_`, `comm_skip_count_`, transport comm-stats)를 리셋하므로 정상 링크에서 오탐 link-down/rate E-STOP 이 발생하지 않는다.
-
-### 통신 모드
-
-**Bulk 모드** (기본값: `communication_mode: "bulk"`):
-
-```
-1. WritePosition  (0x01, kJoint) -> 43B 송신 + 43B echo 수신
-2. ReadAllMotors  (0x10, kMotor) -> 3B 송신 -> 123B 수신 -> pos[10]+vel[10]+cur[10]
-3. ReadAllMotors  (0x10, kJoint) -> 3B 송신 -> 123B 수신 -> pos[10]+vel[10]+cur[10]
-4. ReadAllSensors (0x19) -> sensor_decimation cycle마다
-   -> 3B 송신 -> 259B 수신 -> 4 fingertips x 16 int32
-```
-
-**Individual 모드** (`communication_mode: "individual"`):
-
-```
-1. WritePosition  (0x01, kJoint)  -> 43B 송신 + 43B echo 수신
-2. ReadPosition   (0x11, kMotor)  -> 3B 송신 -> 43B 수신
-3. ReadPosition   (0x11, kJoint)  -> 3B 송신 -> 43B 수신
-4. ReadVelocity   (0x12, kMotor)  -> 3B 송신 -> 43B 수신
-5. ReadSensor0-3  (0x14-0x17) -> sensor_decimation cycle마다
-   -> 3B 송신 -> 67B 수신 x 4 fingertips
-```
-
-### 센서 프로토콜 버전 (`protocol_version`)
-
-펌웨어 센서 응답의 wire 포맷은 버전마다 다르며, 이 차이는 abstract
-`SensorProtocol` (`protocol/sensor_protocol.hpp`) 로만 격리된다 — EventLoop 는
-버전 문자열이 아닌 polymorphic capability (`HasMotorSpaceRead`, `JointIoMode`,
-`RunsSensorPostProcess`, `VerifiesResponseMode`, `VerifiesBulkSensorResponseMode`) 로 분기한다 (ARCH-3). read·write 경로 골격은
-버전 공통이나, joint-space I/O 의 **MODE byte** 는 `JointIoMode()` 로 갈린다 (1a=kJoint, 1b=kMotor —
-1b 펌웨어는 kMotor 로만 joint state/command 를 서비스한다). bulk sensor **요청**(0x19)은 공통이고
-**응답 크기·디코드, 그리고 응답 MODE byte 검증 여부**가 갈린다 — 1b 펌웨어는 bulk sensor 응답의
-MODE byte 를 임의값으로 echo 하므로 그 경로만 검증을 끈다 (`VerifiesBulkSensorResponseMode()`).
-
-| | `"1a"` (기본) | `"1b"` |
+| 증상 | 원인 | 조치 |
 |---|---|---|
-| bulk sensor 응답 | 259B (4 × 16 int32 baro/reserved/tof) | 99B (3B 헤더 + 4 × 6 float32) |
-| 핑거당 데이터 | barometer[8] + tof[3] | [fx, fy, fz, Lx, Ly, Temp] |
-| 후처리 | LPF / drift / F-T 추론 | 없음 (force 는 firmware 계산) |
-| joint I/O MODE (`JointIoMode`, write + joint read) | `kJoint` (기어비 매핑) | `kMotor` (kJoint 요청 시 joint 데이터 미응답) |
-| joint/set-mode 응답 MODE 검증 (`VerifiesResponseMode`) | strict | **off** (모든 응답의 MODE byte 가 임의값) |
-| bulk sensor 응답 MODE 검증 (`VerifiesBulkSensorResponseMode`) | strict | **off** (`VerifiesResponseMode` 상속) |
-| motor-space read (0x10 kMotor) | 수행 → `motor_states` 발행 | 스킵 → `motor_states` 미발행 |
-| `sensor_states` 채움 | baro/tof + F-T `f`/`u` | `f`={fx,fy,fz}만 (Lx/Ly/Temp 는 디코드만·발행 보류) · `inference_enable`=`true` 고정 |
-| 지원 통신 모드 | individual / bulk | bulk 전용 |
+| `/hand/link_status` 가 `false`, recv timeout | IP · NIC 불일치, 포트 차단 | `target_ip` 확인 (YAML 은 `192.168.0.100`). `hand_udp_stats.json` 의 `recv_timeout` · `recv_error` 확인 |
+| `sil_mode:=firmware` 인데 timeout 만 반복 | YAML 의 `local_interface` 가 실 NIC 에 소켓을 고정 | 노드가 `firmware` 모드에서 binding 을 해제하고 INFO 로 원래 값을 남긴다. 해당 NIC 이 없는 PC 에서는 `Open()` 이 ENODEV 로 실패한다 |
+| failure detector 가 all-zero / duplicate 경고 | commander 없이 단독 실행 (SIL 모터가 0 에 머묾) | 명령을 보내면 해소된다 |
+| `1b` 에서 `on_configure` FAILURE | `communication_mode: individual` 과 조합 | `communication_mode:=bulk` |
+| F/T 가 항상 0, grasp 이 안 잡힘 | `ft_inferencer.enabled=false` 인데 capability=true | [capability lockstep](#onnx-ft-추론) |
+| `recv_error` 가 증가 | 손 쪽 포트 닫힘 (ICMP port-unreachable → `ECONNREFUSED`) | 펌웨어 · 전원 · 케이블 확인. timeout 과 구분되는 결정적 link-down 신호다 |
 
-1b 는 `communication_mode: "bulk"` 를 요구하며, individual 과 조합 시 `on_configure`
-가 FAILURE 를 반환한다. Lx/Ly/Temp 는 현재 펌웨어에서 placeholder 이므로 디코드는
-하되(`UdpHandState::sensor_force`) 토픽 발행은 보류한다 — 실제 데이터 도착 시
-`u`/신규 필드로 매핑하는 후속 작업이 필요하다.
+### 통계 (`hand_udp_stats.json`)
 
-### Dual Read (Motor + Joint 공간)
+`<session>/device/hand_udp_stats.json` 에 통신 · 타이밍 통계를 쓴다. 10 s 주기 저장 (SIGKILL 대비), failure 발생 즉시 1회, 정상 teardown 때 저장한다. `comm_stats` 에 cycle · recv ok / timeout / error · mismatch · `stale_drained` · `comm_decimation` 이 있고, `per_request` 는 request kind (`write_echo` · `motor_read` · `joint_read` · `sensor_read` · `bulk_sensor` · `set_mode`) 별 집계다.
 
-1a 는 매 사이클 모터 상태를 두 번 읽습니다:
-- **kMotor (0x00)**: 모터 엔코더 값 -> `motor_positions/velocities/currents`
-- **kJoint (0x01)**: 펌웨어 기어비 변환 -> `joint_positions/velocities/currents`
+`last_unexpected_cmd` 에 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처다. `timing_stats` 는 성공한 패킷의 latency 만 집계한다. per-tick 타이밍은 `<session>/timing/hand_udp_timing_log.csv`.
 
-1a 의 write 명령은 `kJoint` 모드로 전송됩니다.
+### 로깅 (Logging)
 
-**1b**: motor-space read (kMotor 스텝) 를 스킵하고 joint-space read 를 **kMotor** 로 한 번만
-수행합니다 (1b 펌웨어의 유일한 joint-serving 모드). write 도 kMotor 로 보냅니다. joint I/O MODE 는
-하드코딩이 아니라 `SensorProtocol::JointIoMode()` 로 주입되며, `Start()` 가 이를 한 번 hoist 해
-write / joint read / E-Stop zero-write 에 사용합니다.
+레벨 분류 · 공통 규칙은 [conventions.md §Logging](../agent_docs/conventions.md#logging). 패키지 규칙은 hot path (`RunCommCycle` · `UdpHandTransport::Send/Recv` · `PreFilter/ApplyFilters` · `FingertipFTInferencer::Infer`, 모두 `loop_rate_hz` 폴링) 에서 정상 경로의 직접 `INFO`/`WARN` 과 `RCLCPP_*_ONCE` 를 금지하고 `*_THROTTLE` 만 쓰는 것이다. THROTTLE 상수는 `udp_hand_logging.hpp` 가 SSoT.
 
-### Sensor Decimation
-
-`sensor_decimation` 값(ROS param, 기본 `1`)에 따라 comm 사이클 N번 중 1번만 센서를 읽습니다. motor/joint read 는 매 사이클 유지되며, 유효 센서 레이트 = `loop_rate_hz / (comm_decimation * sensor_decimation)` 입니다.
-
-### 통신 Decimation (`comm_decimation`)
-
-UDP 통신 부하를 강제로 줄여 테스트하기 위한 knob (ROS param, 기본 `1`). `sensor_decimation` 이 **센서 read 만** 감쇠하는 것과 달리, `comm_decimation` 은 CommLoop 사이클의 **전체 UDP 트랜잭션 (write + 모든 read)** 을 감쇠한다:
-
-- `1`: 매 사이클 통신 (기존 동작과 bit-identical, 회귀 0)
-- `2`: 1 사이클 통신, 1 사이클 skip (통신 안 함)
-- `3`: 1 사이클 통신, 2 사이클 skip
-
-skip 사이클의 동작:
-- UDP send/recv 없음, 상태 publish 없음, cycle 카운트에 포함 안 됨 (진짜 no-op tick). stale 상태를 재발행하지 않으므로 downstream 이 감쇠된 rate 를 실제로 관측한다 (부하 테스트의 목적).
-- **E-Stop 은 skip 여부와 무관하게 매 사이클 검사** (안전 불변).
-- **첫 사이클은 항상 통신** (초기 상태 read 보장 — `comm_cycle_counter_` 를 `comm_decimation_ - 1` 로 seed).
-- 최신 명령은 `event_pending_` 에 persist → skip 사이클이 삼키지 않고 다음 통신 사이클이 latch·전송 (명령 유실 없음, last-wins).
-- `any_recv_ok` / `consecutive_recv_failures` 를 건드리지 않아 link-down false-positive 없음.
-
-> ℹ️ **failure detector 상호작용** — 유효 통신 rate = `loop_rate_hz` / `comm_decimation` (rate 검사는 `cycle_count` 증가분을 보며, skip 사이클은 카운트되지 않는다). `on_activate` 가 `min_rate_hz` 를 `comm_decimation` 으로 **자동 스케일**(`min_rate_hz /= comm_decimation`)하므로, 높은 감쇠에서도 rate failure 오탐 → E-STOP 이 발생하지 않는다 (별도 수동 조정 불필요). 마찬가지로 `link_status` publish 감쇠도 유효 state-publish rate = `loop_rate_hz` / `comm_decimation` 기준으로 계산된다.
-
-감쇠량은 `hand_udp_stats.json` 의 `comm_decimation` / `comm_decimation_skip_count` 로 확인한다.
-
-### ONNX F/T 추론
-
-센서 사이클에서 `FingertipFTInferencer`를 통해 핑거팁별 접촉/힘 추론을 수행합니다:
-
-1. **캘리브레이션**: 시작 시 N 샘플로 barometer baseline offset 자동 측정
-2. **전처리**: barometer 정규화 + delta 계산 + FIFO history shift (12 row)
-3. **추론**: per-fingertip ONNX 모델. ONNX 실행은 `rtc::OnnxEngine` (single-input / 3-output) 에 위임. 전·후처리는 할당 없음이지만 ORT `Run()` 은 매 호출 heap 을 할당한다 — RT-1 조건부 수용이며 수용 조건은 [invariants.md](../agent_docs/invariants.md#rt-path-invariants) §알려진 위반 이, 이 경로에서 무엇이 미측정인지는 [invariants-rationale.md](../docs/reference/invariants-rationale.md) §알려진 RT-1 위반의 실측 이 갖는다
-4. **출력**: contact probability (sigmoid), force vector (3), direction vector (3)
-
-> ⚠️ **컨트롤러 capability 일치 의무** — 컨슈머 (integrated_bringup) 의 device YAML
-> `devices.<hand_group>.sensor_layout.has_native_contact` / `has_native_displacement`
-> 두 bool 은 본 inferencer 의 `ft_inferencer.enabled` 와 lockstep 유지해야 한다.
-> Inferencer 가 꺼진 채 capability=true 로 두면 컨트롤러가 항상 0 인 contact
-> probability 를 native signal 로 오인하여 grasp detection 이 silently 무력화된다.
-
----
-
-## 주요 컴포넌트
-
-### UdpHandController (`udp_hand_controller.hpp`)
-
-핵심 드라이버 클래스. Event-driven jthread (hand_driver core, SCHED_FIFO/65) 로 동작합니다. 코어 배치는 tier-aware (`rtc_base/threading/thread_config.hpp::SelectThreadConfigs().hand_driver.cpu_core`) — 코어 수별 실제 배치는 [rtc_base/README.md](../rtc_base/README.md#스레딩-threading) 의 생성 매트릭스가 SSoT. 프로세스가 **스스로** main 스레드를 그 코어에 pin 하고 내부 receive thread (priority 65) 가 affinity 상속. launch 는 `rclcpp::init()` 이 노드 생성 전에 만드는 DDS 스레드만 co-pin 한다.
-
-- **SeqLock** 기반 lock-free 상태 공유 (priority inversion 방지)
-- **per-command write gate**: `event_pending_`(release) → CommLoop latch(acquire); 1회 write 후 clear (stale 재전송 없음)
-- **Write echo 항상 수신**: 소켓 버퍼 오염 방지
-- **첫 사이클 read-only**: 초기 상태를 모르는 상태에서 zero 명령 전송 방지
-- **Fake hand 모드**: `sil_mode=loopmodel` (노드가 파생하는 내부 플래그 `use_fake_hand=true`) 시 UDP 소켓 없이 **CommLoop RT 스레드는 실제 모드와 동일하게** self-clock(`loop_rate_hz`)하고, command pose 를 1차 LPF 모델(`RunFakeCommCycle`/`StepFakeModel`)에 통과시켜 read joint state(pos/vel/effort)를 생성한다 (ros2_control `use_fake_hardware:=true` 등가 — 제어 PC 의 thread 할당/RT 구조 검증용). LPF/effort 는 `fake_lpf_time_constant_s`·`fake_effort_stiffness`·`fake_effort_damping` 로 튜닝
-
-### UdpHandTransport (`udp_hand_transport.hpp`)
-
-저수준 UDP 소켓 관리. `ppoll()` 기반 sub-ms 수신 타임아웃 (hrtimer on PREEMPT_RT). ppoll timeout timespec 은 `recv_timeout_ms_` 가 소켓 수명 동안 고정이므로 `Open()` 에서 1회 계산(`recv_timeout_ts_`)해 hot path `RecvWithTimeout` 의 per-call 연산을 없앤다.
-
-**Connected socket (sub-ms RTT 최적화)**: `Open()` 은 소켓을 단일 hand peer 로 `connect()` 한다. 이로써 (1) 전송이 `sendto`→`send` 로 바뀌어 커널이 라우트를 캐시하고 per-send destination lookup·주소 복사를 생략하며, (2) recv 큐가 해당 peer 발 datagram 으로 커널 레벨 필터링되어 잡음 source 가 `cmd_mismatch` 로 집계되지 않고, (3) dead peer 의 ICMP port-unreachable 이 다음 send/recv 에서 `ECONNREFUSED` 로 표면화되어 recv timeout 을 기다리지 않는 결정적 link-down 신호가 된다 (`CountRecvFail` 이 EAGAIN 이 아닌 이 errno 를 `recv_error` 로 분류 → timeout 과 구분). UDP `connect()` 는 handshake 없는 non-blocking 이라 off-RT `Open()` 에서 안전. 추가로 sub-ms 루프용 저지연 sockopt 을 best-effort(WARN-continue, `SO_RCVBUF` 와 동일 정책)로 설정: `SO_BUSY_POLL`(+`SO_PREFER_BUSY_POLL`) 로 recv 시 NIC busy-poll(IRQ/softirq+wakeup latency 제거, `CAP_NET_ADMIN` 필요), `IP_TOS=IPTOS_LOWDELAY`·`SO_PRIORITY` 로 공유 NIC egress 우선.
-
-**Mode 검증**: request-response 메서드(`RequestMotorRead`, `RequestAllMotorRead`, `RequestSensorRead`, `RequestBulkSensorRaw`)는 응답 패킷의 mode 필드가 요청한 mode와 일치하는지 검증합니다. 불일치 시 `comm_stats_.mode_mismatch` 카운터를 증가시키고 `false`(bulk raw 는 `-1`)를 반환합니다. 이 검증은 **두 개의 독립 gate** 로 나뉩니다: joint / motor / set-mode 경로는 `verify_response_mode_`(컨트롤러가 `SensorProtocol::VerifiesResponseMode()` 로 주입), bulk sensor(0x19) 경로는 `verify_bulk_sensor_mode_`(`SensorProtocol::VerifiesBulkSensorResponseMode()` 로 주입)로 gate 됩니다. 1a 는 두 gate 모두 strict(true). 1b 는 **두 gate 모두 off** — 1b 펌웨어가 bulk sensor 응답뿐 아니라 motor/joint read(`ReadAllMotors`) 응답에서도 MODE byte 를 임의값으로 echo 하기 때문입니다. joint read 만 strict 로 두면 kMotor joint read 가 매 사이클 mode_mismatch 로 폐기되어 `state.joint_valid=false` → `/hand/joint_states` 미발행 → 컨트롤러 device 1 이 valid 가 못 되고 InitPositionHold 의 deferred hand-seed 가 발화하지 못해 손가락이 0 으로 붕괴합니다. `VerifiesBulkSensorResponseMode` 는 default(`VerifiesResponseMode`)로 off 를 상속합니다. gate 와 무관하게 모든 read 경로는 cmd·length 검증이 유지됩니다(stale/wrong-command 패킷은 계속 거부). `RequestSetSensorMode` 도 MODE gate 와 무관하게 항상 cmd echo(`kSetSensorMode`)를 검증합니다 (cmd floor).
-
-**Per-request-kind 통계**: `UdpHandCommStats.per_kind[]` 가 request kind (`RequestKind` enum: write_echo / motor_read / joint_read / sensor_read / bulk_sensor / set_mode) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}` 를 기록한다. joint/motor read 는 같은 메서드·cmd byte 를 쓰므로 caller(controller) 가 `RequestKind` 파라미터로 명시한다. 거부된 최신 패킷의 `last_unexpected_cmd`(CMD byte)/`last_unexpected_len` 도 보존 — link-down 시 timeout vs stale-desync 판별용. hot path 에는 카운터 증가만 추가 (로깅/alloc 없음). 스키마 상세는 아래 "통계 저장" 절.
-
-**Cycle-start stale drain**: `DrainStaleDatagrams()` 는 매 comm cycle 첫 request 직전에 소켓에 남은 datagram 을 비운다. 1-cycle desync (직전 request 의 응답이 그 `RecvWithTimeout` 만료 후 도착) 로 큐에 남은 stale 패킷을 다음 cycle 첫 read 가 `cmd_mismatch` 로 소비하고 retry 를 소모하는 문제를 제거한다. RT hot path 이므로 `kMaxDrainPerCall`(8) 회 non-blocking `recv(MSG_DONTWAIT)` 로 **bounded** — 잔여 backlog 은 다음 cycle 이 회수한다. drain 개수는 `UdpHandCommStats.stale_drained` (aggregate — pre-request 단계라 `per_kind` 귀속 불가) 에만 누적되고 hot path 로깅은 없다. fake mode(소켓 미오픈) → no-op(0). controller `RunCommCycle` 은 decimation skip return 직후·command latch 직전에 호출한다.
-
-**Per-request cmd-mismatch blocking retry**: drain 이후에도 request 응답이 stale echo 로 밀려 도착할 수 있으므로, `RequestWithRetry`(및 `WritePositionWithEcho`)는 응답 CMD 가 요청 CMD 와 불일치(`cmd_mismatch`, = stale echo/1-cycle desync)하면 **1회 blocking `RecvWithTimeout` 을 더 수행**해 이 request 자신의 응답을 기다린 뒤, 그래도 불일치면 fail 한다 (`ValidateResult::kRetryBlocking`, `kMaxBlockingRetries=1`). stale 소비 → 신규 대기로 파이프라인 slip 이 1회에 재정렬된다. `short_or_decode`(부분 수신·codec 실패)는 desync 가 아니라 손상이므로 기존대로 `MSG_DONTWAIT` non-blocking drain(`kRetry`)만, MODE mismatch 는 즉시 fail(`kFail`, 재시도 없음). worst-case 는 mismatch 발생 request 당 recv_timeout 1회 추가(0.4ms @p1b)로 bounded — 펌웨어 응답 지연 < recv_timeout 인 정상 조건에서만 회복하고 그 이상이면 correctly fail 한다.
-
-### UdpHandSensorProcessor (`udp_hand_sensor_processor.hpp`)
-
-센서 후처리 파이프라인 (noexcept):
-- `PreFilter()`: Rate estimator tick + 지연 필터 재초기화
-- `ApplyFilters()`: Bessel 4차 LPF in-place (barometer + ToF)
-- `DetectDrift()`: OLS 기반 원-샷 드리프트 감지 (1Hz 스로틀 경고)
-
-### FingertipFTInferencer (`fingertip_ft_inferencer.hpp`)
-
-Per-fingertip ONNX 모델 기반 힘/토크 추론 (3-head output):
-- Input: `float32[1, H, 16]` (barometer 8ch + delta 8ch)
-- Output: contact logit(1) + F(3) + u(3)
-- ONNX session/IoBinding/tensor/warmup 은 `rtc::OnnxEngine` 이 소유 (이 클래스는 history/정규화/calibration/post-proc 만 담당)
-- `HAS_ONNXRUNTIME` 미정의 시 stub 구현 (추론 비활성)
-
-> **텐서가 positional 로 바인딩되어 있다 — head 1·2 가 뒤바뀐 모델을 검출하지 못한다.** `F` 와 `u` 는 둘 다 `[1,3]` 이라 shape 검사로는 구분이 불가능하므로, 그 둘을 반대 순서로 export 한 `.onnx` 를 물리면 **모든 검사를 통과한 채 힘과 방향이 조용히 뒤바뀐다**. 엔진은 텐서를 **이름으로** 바인딩할 수 있고 (`rtc_inference` README §텐서를 이름으로 바인딩하는 이유) 그러면 이 사각이 닫히지만, 이름을 채우려면 실제 `.onnx` 가 있어야 한다 — 현재 두 config 의 `model_paths` 는 전부 `""` 다.
->
-> **실모델을 받으면**: `ros2 run rtc_inference rtc_inference_check <model>.onnx` 로 텐서 이름을 확인하고 `fingertip_ft_inferencer.hpp` 의 `model_config.inputs`/`.outputs` 에 채운다. 한 side 는 전부 이름을 갖거나 전부 비어야 하며, 틀린 이름은 configure 에서 큰 소리로 실패하므로 안전하게 증분 적용할 수 있다.
-
-### UdpHandFailureDetector (`udp_hand_failure_detector.hpp`)
-
-50Hz non-RT jthread로 동작하는 장애 감지기:
-1. All-zero 데이터: N회 연속 감지
-2. Duplicate 데이터: N회 연속 반복
-3. Low rate: polling rate가 `min_rate_hz` 미만
-4. Link down: `consecutive_recv_failures` >= `link_fail_timeout_ms` 환산 cycle 수 (`ms/1000 × loop_rate_hz / comm_decimation`) — threshold 도달 시 **1회 forensic dump** (per-request-kind 통계 테이블 + 최근 64 cycle 의 attempted/ok mask ring 디코드) 를 WARN 으로 출력 후 RaiseFailure. 기동 직후 `startup_grace_ms`(ROS param, 기본 1000 ms) 구간에는 rate/link 판정을 유예해 ARP/부팅/첫 왕복 지연이 오탐 E-STOP 을 내지 않게 한다 (motor/sensor data-validity 검사는 유예 대상 아님)
-
-센서 검사 대상은 프로토콜 레이아웃에 따른다 (`sensor_force_layout` capability, 컨트롤러가 `sensor_uses_force_layout_` 주입). 1a 는 int32 `sensor_data` (barometer/ToF) 전체를, 1b 는 `sensor_force` 의 **fx,fy,fz 만** 검사한다 — Lx/Ly/Temp placeholder 는 제외해 상수 placeholder 가 all-zero 를 가리거나 duplicate 를 왜곡하지 못하게 한다. 펌웨어가 rest 에서 ADC 노이즈로 non-zero 를 내므로 exact-0 force = dead/단선 센서, bit-frozen fx,fy,fz = stalled feed 로 정상 무접촉과 구별된다. 모터 검사는 `state.motor_valid` 로 gate 되어 motor-space read 가 없는 1b (`motor_valid` 항상 false) 에서는 no-op 이다 (`check_motor: false` 권장).
-
-### UdpHandTimingProfiler (`udp_hand_timing_profiler.hpp`)
-
-EventLoop 단계별 소요시간 추적. 히스토그램 기반 p95/p99 백분위수, 예산(2000us) 초과 카운트. `TimingProfilerBase<250, 20, 2000>` 상속 — 250개 버킷 × 20 µs (= [0, 5000) µs 범위, 20 µs 백분위 해상도). 보간 결과는 `max_us`로 clamp되어 p95, p99 ≤ max를 보장.
-
-### UdpHandTimingLogger (`udp_hand_timing_logger.hpp`)
-
-CommLoop per-tick 타이밍을 `<session>/timing/hand_udp_timing_log.csv` 로 기록한다. CM (`cm_timing_log.csv`) 및 MPC (`mpc_timing_log.csv`) 와 동일한 통합 스키마 (`t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 를 사용 — `rtc_base/timing/rt_tick_timing_sample.hpp` 의 `RtTickTimingPayload` 직접 재사용. 접두 3열은 로거 소유이고 `run_id` 는 한 세션 디렉토리를 공유한 두 기동을 가른다.
-
-데이터 흐름:
-- producer: `RunCommCycle` 이 UDP read 직후 `MarkState()`, sensor 후처리+FT 직후 `MarkCompute()` 를 호출하면 `rtc::PeriodicRtThread` (CommLoop) 기반이 매 tick 1개 `RtTickTimingPayload` 를 `HandUdpTimingBuffer` 에 push (RT-safe, wait-free)
-- drain: `udp_hand_node` 가 1 Hz `wall_timer` 로 SPSC 버퍼를 비우고 `ThreadTimingCsvLogger<RtTickTimingPayload>` 에 row 추가
-- jitter: CommLoop 이 `loop_rate_hz` period budget 대비 `|actual_period − budget|` 을 자동 계산
-
-phase 매핑 (hand UDP loop, `MarkState()`/`MarkCompute()` 브레이크포인트):
-- bulk: `t_state = write+read (t0→t3)`, `t_compute = sensor 후처리+FT`, `t_publish = state store+callback`
-- individual: `t_state = write+read (t0→t4)`, `t_compute = sensor 후처리+FT`, `t_publish = state store+callback`
-- 내부 phase breakdown (`UdpHandTimingProfiler`) 은 별도 local t0~t5/t6 timestamps 로 유지 (write/read 세부 항목별).
-
-`UdpHandTimingProfiler` 와 공존 — Profiler 는 in-process p95/p99 텔레메트리, Logger 는 raw per-tick CSV 로그.
-
-### 통계 저장 (`hand_udp_stats.json`)
-
-`<session>/device/hand_udp_stats.json` 에 통신·타이밍 통계를 저장한다. 저장 시점:
-
-- **주기 저장**: activate 후 10 s 고정 상수 wall timer (ROS param 아님) — SIGKILL/전원 유실에도 최근 10 s 이내 상태 유지 (quiet, INFO 로그 없음)
-- **failure 시점**: failure detector 콜백에서 즉시 1회 (E-STOP teardown 전에 forensic 카운터 보존)
-- **정상 teardown**: deactivate/cleanup/error/소멸자
-
-스키마 (`comm_stats` 섹션):
-
-- 집계 필드: `total_cycles`, `recv_ok`, `recv_timeout`, `recv_error`, `cmd_mismatch`, `mode_mismatch`, `comm_decimation`, `comm_decimation_skip_count`, `stale_drained` (cycle-start drain 이 버린 datagram 누계), `avg_rate_hz`, `consecutive_recv_failures`, `link_ok`, `failure_detected` 등 (`total_cycles`/`avg_rate_hz` 는 통신 사이클만 카운트 — comm_decimation skip 은 제외)
-- **`per_request`**: request kind (`write_echo` / `motor_read` / `joint_read` / `sensor_read` / `bulk_sensor` / `set_mode`) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}`. `ok` 는 request-level 성공 (검증 통과), `short_or_decode` 는 short packet + codec decode 실패. joint/motor read 는 wire format 이 동일하므로 controller 가 `RequestKind` 파라미터로 명시 attribution
-- **`last_unexpected_cmd` / `last_unexpected_len`**: 가장 최근 거부된 패킷의 CMD byte / 수신 길이 — 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처
-
-`timing_stats` 섹션은 `UdpHandTimingProfiler` 요약 (mean/min/max/p95/p99, phase 별). **성공한 패킷의 latency 만 집계한다** — 어떤 phase (`write` / `read_pos` / `read_vel` / `read_sensor` / bulk 의 `read_all_*`) 의 request 가 timeout/error/mismatch 로 실패하면 그 phase 의 sample 은 제외되고 (recv-timeout 값이 분포를 오염시키지 않도록), `count` / `over_budget` / percentile 을 좌우하는 `total_us` 는 그 cycle 에서 **attempt 한 모든 채널이 성공했을 때만** 기록된다. 시도하지 않은 phase (pending write 없음, 1b motor-space read, 비-sensor cycle) 도 제외. 순수 연산 phase (`sensor_proc` / `ft_infer`) 는 packet 과 무관하므로 항상 집계. 제외된 실패 자체의 카운트는 위 `comm_stats.per_request` (RequestKind 단위) 에서 확인한다 (`timing_stats.count` < `comm_stats.total_cycles` 는 실패 cycle 존재를 의미).
-
----
-
-## ROS2 인터페이스
-
-### 퍼블리시
-
-| 토픽 | 타입 | QoS | 설명 |
-|------|------|-----|------|
-| `/hand/joint_states` | `sensor_msgs/JointState` | BEST_EFFORT/1 | 관절 위치/속도/전류 (kJoint read) |
-| `/hand/motor_states` | `sensor_msgs/JointState` | BEST_EFFORT/1 | 모터 위치/속도/전류 (kMotor read) |
-| `/hand/sensor_states` | `rtc_msgs/HandSensorState` | BEST_EFFORT/1 | 핑거팁 센서 + F/T 추론 결과 (RT 전용) |
-| `/hand/sensor_states/monitor` | `rtc_msgs/HandSensorState` | RELIABLE/10 | 동일 데이터, 비-RT 구독자용 (BT, GUI 등) |
-| `/hand/link_status` | `std_msgs/Bool` | RELIABLE/TRANSIENT_LOCAL/1 | UDP 링크 상태 (publish_rate 기반 decimation) |
-| `/hand/calibration/status` | `rtc_msgs/CalibrationStatus` | RELIABLE/TRANSIENT_LOCAL/1 | 센서 캘리브레이션 진행/완료 상태 (센서 타입당 1메시지) |
-
-### 구독
-
-| 토픽 | 타입 | QoS | 설명 |
-|------|------|-----|------|
-| `/hand/joint_command` | `rtc_msgs/JointCommand` | BEST_EFFORT/1 | 모터 명령 (values[10]). 발행측 `joint_names` 순서로 수신해 firmware 슬롯 순서(`joint_state_names`)로 재정렬 후 적용 — 이름 누락/미매칭 시 positional fallback |
-| `/hand/calibration/command` | `rtc_msgs/CalibrationCommand` | RELIABLE/1 | 센서 캘리브레이션 트리거 (현재 barometer 지원) |
-
-토픽 이름은 YAML 파라미터(`command_topic`, `joint_state_topic`, `calibration_command_topic` 등)로 변경 가능합니다.
-
-### 센서 캘리브레이션 재트리거
-
-`baseline_offset` 을 런타임에 재측정하고 싶을 때 `/hand/calibration/command` 에
-`CalibrationCommand` 를 publish 합니다. 드라이버는 CommLoop 스레드에서 요청을
-consume 하여 `FingertipFTInferencer::ResetCalibration()` 을 호출한 뒤 다음
-500 샘플(기본값) 동안 재누적합니다. 재누적 중에는 `baseline_offset_` 이 0 으로
-초기화되어 FT inference 가 일시적으로 중지됩니다 (`is_calibrated()==false`).
-
-예시:
+| 서브-로거 | 사용처 |
+|---|---|
+| `hand.node` | `UdpHandNode` (lifecycle · 토픽 · link 상태 전이) |
+| `hand.ctrl` | `UdpHandController` (CommLoop · 캘리브레이션 dispatch) |
+| `hand.udp` | `UdpHandTransport` (소켓 open/close · 센서모드 전환) |
+| `hand.sensor` | `UdpHandSensorProcessor` (LPF · drift) |
+| `hand.fail` | `UdpHandFailureDetector` (50 Hz 워치독) |
+| `hand.ft` | `FingertipFTInferencer` (모델 로드 · 캘리브레이션) |
 
 ```bash
-# Barometer bias 재측정 (기본 샘플 수 사용)
-ros2 topic pub --once /hand/calibration/command rtc_msgs/msg/CalibrationCommand \
-    '{sensor_type: 0, action: 0, sample_count: 0}'
-
-# 진행률 관찰
-ros2 topic echo /hand/calibration/status
+ros2 service call /udp_hand_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'hand.udp', level: 10}]}"
+export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"   # 콘솔에 logger 이름 표시
 ```
 
-또는 `integrated_bringup/scripts/demo_controller_gui.py` 의 **Control 탭 → Sensor
-Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리거할 수 있습니다.
+## 더 읽기
 
-**새 센서 추가 시** (확장성):
-1. `rtc_msgs/msg/CalibrationCommand.msg` 의 `SENSOR_*` enum 에 값 추가
-2. `UdpHandController::DispatchCalibrationRequest()` switch 에 case 추가
-3. `UdpHandController::GetCalibrationStatus()` 에 분기 추가
-4. `demo_controller_gui.py` 의 `SENSOR_CALIBRATIONS` 리스트에 dict 한 줄 추가
-
----
-
-## 설정
-
-### `config/udp_hand_node.yaml`
-
-노드가 선언하고 읽는 파라미터:
-
-| 파라미터 | 기본값 | 설명 |
-|----------|--------|------|
-| `target_ip` | `"192.168.1.2"` | 핸드 컨트롤러 IP |
-| `target_port` | `55151` | 핸드 컨트롤러 포트 |
-| `local_ip` | `""` | 제어 PC 쪽 source address (`bind`). `""` = 커널 선택 |
-| `local_interface` | `""` | egress NIC 이름 (`SO_BINDTODEVICE`). `""` = 라우팅 테이블에 위임 |
-| `recv_timeout_ms` | `10.0` | ppoll 수신 타임아웃 (ms, sub-ms 지원) |
-| `loop_rate_hz` | `500.0` | self-clocked CommLoop 주기 (Hz) — read/state publish 자율 tick rate |
-| `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율) |
-| `communication_mode` | `"individual"` | `"individual"` 또는 `"bulk"` |
-| `comm_decimation` | `1` | 전체 UDP 트랜잭션 감쇠 (위 "통신 Decimation" 참조) |
-| `sensor_decimation` | `1` | 센서 read 감쇠 (위 "Sensor Decimation" 참조) |
-| `protocol_version` | `"1a"` | 센서 프로토콜 버전 (`"1a"`/`"1b"`, 위 "센서 프로토콜 버전" 참조) |
-| `baro_lpf_enabled` | `false` | Barometer LPF 활성화 |
-| `baro_lpf_cutoff_hz` | `30.0` | Barometer LPF 차단 주파수 |
-| `tof_lpf_enabled` | `false` | ToF LPF 활성화 |
-| `tof_lpf_cutoff_hz` | `15.0` | ToF LPF 차단 주파수 |
-| `drift_detection_enabled` | `false` | OLS 드리프트 감지 |
-| `drift_threshold` | `5.0` | 드리프트 기울기 임계값 |
-| `drift_window_size` | `2500` | 드리프트 윈도우 크기 |
-| `joint_state_names` | `[]` (기본 이름 사용) | 관절 이름 배열 (10개) |
-| `joint_position_offsets_deg` | `[]` (offset 0) | 관절 position offset (degree, `joint_state_names` 순서 10개). 수신 시 `+offset`(펌웨어→controller), 송신 시 `−offset`(controller→펌웨어). 크기 불일치 시 무시(0). position 전용 |
-| `motor_state_names` | `[]` (기본 이름 사용) | 모터 이름 배열 (10개) |
-| `hand_fingertip_names` | `[]` (기본 이름 사용) | 핑거팁 이름 배열 (4개) |
-| `calibration_command_topic` | `"/hand/calibration/command"` | 캘리브레이션 명령 구독 토픽 |
-| `calibration_status_topic` | `"/hand/calibration/status"` | 캘리브레이션 상태 퍼블리시 토픽 |
-| `calibration_status_rate_hz` | `5.0` | 캘리브레이션 상태 publish 주기 (Hz) |
-| `command_topic` | `"/hand/joint_command"` | 명령 구독 토픽 |
-| `joint_state_topic` | `"/hand/joint_states"` | 관절 상태 퍼블리시 토픽 |
-| `motor_state_topic` | `"/hand/motor_states"` | 모터 상태 퍼블리시 토픽 |
-| `sensor_topic` | `"/hand/sensor_states"` | 센서 상태 퍼블리시 토픽 |
-| `link_status_topic` | `"/hand/link_status"` | 링크 상태 퍼블리시 토픽 |
-| `enable_failure_detector` | `true` | 장애 감지기 활성화 |
-| `failure_threshold` | `5` | 연속 장애 판정 횟수 |
-| `check_motor` | `true` | 모터 데이터 검사 |
-| `check_sensor` | `true` | 센서 데이터 검사 |
-| `min_rate_hz` | `30.0` | 최소 허용 polling rate |
-| `rate_fail_threshold` | `5` | 연속 N회 미달 시 failure |
-| `check_link` | `true` | UDP 링크 검사 |
-| `link_fail_timeout_ms` | `100.0` | link-down 판정 시간 budget. cycles = ms/1000 × loop_rate_hz / comm_decimation 로 on_configure 에서 환산 |
-| `startup_grace_ms` | `1000.0` | 기동 직후 rate/link 판정 유예 시간 (ms, "UdpHandFailureDetector" 절 참조) |
-| `link_startup_grace_ms` | `100.0` | 기동 직후 link-down 검사 유예 (ms) — ARP/부팅 transient 만 넘기는 짧은 유예 |
-| `sil_mode` | `off` | SIL 진입점 (아래 "SIL 모드"). `off`=실 HW / `loopmodel`=controller-side in-process LPF (소켓 미오픈) / `firmware`=device-side loopback (노드가 `target_ip`→127.0.0.1 강제). 노드 `on_configure` 가 해석해 `use_fake_hand`·`target_ip` 파생; launch `sil_mode:=` 가 override |
-| `fake_lpf_time_constant_s` | `0.1` | (fake) 1차 LPF 시정수 τ [s] — read-back position 이 command 를 추종하는 지연 |
-| `fake_effort_stiffness` | `1.0` | (fake) effort kp: `kp·(cmd−pos)` |
-| `fake_effort_damping` | `0.1` | (fake) effort kd: `−kd·vel` (PD-torque placeholder) |
-| `aux_cpu_slot` | `0` | `hand_aux_io` 스레드가 붙을 slot (blocking 파일 I/O 레인, 위 "스레드 모델" 참조). slot 인덱스이며 shell SSoT 는 `rt_common.sh::get_os_cores()`. `-1` = 이 레인 pin 안 함 |
-| `use_cpu_affinity` | `true` | 프로세스 내부 pin 2개(main → `hand_driver` slot, `hand_aux_io` → aux slot) 활성화. 스케줄링 정책은 무관 — `false` 여도 CommLoop 은 SCHED_FIFO 65 |
-
-> 위 두 파라미터만 노드 **생성자**에서 declare 된다 — `main()` 이 spin 전에, 즉 어떤
-> lifecycle transition 보다 먼저 읽어야 하는 프로세스 스레드 배치이기 때문이다.
-> 나머지는 전부 `on_configure`(Tier 1) 에서 declare 된다.
-
-> 참고: `joint_mode`는 사용되지 않습니다 (코드에서 항상 write=kJoint, read=kMotor+kJoint dual read).
-
-### `config/fingertip_ft_inferencer.yaml`
-
-F/T 추론 설정. `udp_hand_node`에서 `ft_inferencer.*` 네임스페이스로 읽습니다.
-이 파일은 standalone `udp_hand.launch.py` 의 **예시(enabled:false)** 이며, per-robot
-튜닝본은 `integrated_bringup/config/ur5e_p1a/fingertip_ft_inferencer_p1a.yaml` 에 둔다.
-p1b 는 이 파일을 넘기지 않아 노드의 `ft_inferencer.enabled=false` 기본값으로 추론이
-자동 비활성된다.
-
-| 파라미터 | 기본값 | 설명 |
-|----------|--------|------|
-| `ft_inferencer.enabled` | `false` | ONNX 추론 활성화 |
-| `ft_inferencer.num_fingertips` | `4` | 추론 대상 핑거팁 수 |
-| `ft_inferencer.history_length` | `12` | FIFO history 길이 |
-| `ft_inferencer.model_paths` | `["", "", "", ""]` | per-fingertip ONNX 모델 경로 |
-| `ft_inferencer.calibration_enabled` | `true` | baseline offset 자동 보정 |
-| `ft_inferencer.calibration_samples` | `500` | 캘리브레이션 샘플 수 |
-| `ft_inferencer.thumb_max` | `[40000.0 x 16]` | thumb 정규화 최댓값 |
-| `ft_inferencer.index_max` | `[40000.0 x 16]` | index 정규화 최댓값 |
-| `ft_inferencer.middle_max` | `[40000.0 x 16]` | middle 정규화 최댓값 |
-| `ft_inferencer.ring_max` | `[40000.0 x 16]` | ring 정규화 최댓값 |
-
-모델 경로가 상대 경로인 경우 `udp_hand_driver` 패키지의 `models/` 디렉토리 기준으로 해석됩니다.
-
----
-
-## 실행
-
-### 단독 실행 (standalone)
-
-```bash
-ros2 launch udp_hand_driver udp_hand.launch.py \
-    target_ip:=192.168.1.2 \
-    target_port:=55151 \
-    communication_mode:=bulk \
-    recv_timeout_ms:=0.4
-```
-
-### Launch 파라미터
-
-| 파라미터 | 기본값 | 설명 |
-|----------|--------|------|
-| `target_ip` | `192.168.1.2` | 손 컨트롤러 IP |
-| `target_port` | `55151` | 손 컨트롤러 포트 |
-| `local_ip` | `""` (yaml) | 제어 PC source address override |
-| `local_interface` | `""` (yaml) | egress NIC override |
-| `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율). `loop_rate_hz` 는 launch 인자가 아니다 — 노드 YAML 의 ROS param (위 표) |
-| `communication_mode` | `bulk` | `"individual"` 또는 `"bulk"` |
-| `recv_timeout_ms` | `0.4` | ppoll 수신 타임아웃 (ms) |
-| `protocol_version` | `1a` | `"1a"` (int32 baro/ToF, bulk 259B) 또는 `"1b"` (float force, bulk 99B). 노드+firmware 양쪽 전파 |
-| `sil_mode` | `off` | SIL 진입점 (아래 "SIL 모드" 참조): `off` (실 HW) / `loopmodel` (controller-side LPF) / `firmware` (device-side loopback) |
-| `use_cpu_affinity` | `true` | 프로세스 내부 pin 2개(main → `hand_driver` slot, `hand_aux_io` → aux slot) 활성화. `false` 는 pin 만 끄고 SCHED_FIFO 65 는 유지 (위 "스레드 모델" 경고 참조). `aux_cpu_slot` 은 launch 인자가 아니라 yaml 전용 |
-
-> launch 인자는 모두 yaml 값의 **override** 다 — 값을 주지 않으면(빈 문자열) 해당
-> yaml 파라미터를 그대로 쓴다(입력 config 는 `config/udp_hand_node.yaml` 1개 + 예시
-> ft yaml). 위 '기본값' 은 generic yaml / 노드 C++ declare 기본값이다.
-
-### SIL 모드 (`sil_mode`)
-
-하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 하나**로 선택한다. `sil_mode` 는
-각 hand yaml(`udp_hand_node*.yaml`)의 정식 노드 파라미터(SSoT)이고, 노드
-`on_configure` 가 이를 해석해 아래 표의 `use_fake_hand`(컨트롤러 config 내부 플래그)
-와 실효 네트워크 endpoint(`target_ip` + local binding)를 파생한다. launch 인자 `sil_mode:=` 는 yaml 값을 override(우선).
-단, `firmware` 프로세스 spawn 은 노드가 못 하므로 launch 가 `sil_mode`(yaml+CLI)를
-읽어 `fake_hand_firmware` 노드를 조건부로 띄운다.
-
-standalone `udp_hand.launch.py` 뿐 아니라 `integrated_bringup` 의
-`robot_ur5e_p1a.launch.py` / `robot_ur5e_p1b.launch.py` 도 동일하게 `sil_mode:=` 를
-지원한다 (각자의 per-robot yaml 이 default).
-
-| `sil_mode` | 계층 | `use_fake_hand` (파생) | firmware | 네트워크 endpoint (파생) | 검증 대상 |
-|------------|------|:---:|:---:|------|-----------|
-| `off` (기본) | 실 하드웨어 | false | 미실행 | yaml 값 그대로 (`local_ip`/`local_interface` 포함) | — |
-| `loopmodel` | Mode A (controller-side loop-model SIL) | true | 미실행 | 무관 (소켓 미오픈) — yaml 값 유지 | thread/RT 구조 (실 모드와 동일 self-clock) |
-| `firmware` | Mode B (device-side network-level SIL) | false | 실행 | `target_ip` → `127.0.0.1`, `local_ip`/`local_interface` → 해제 (노드가 강제) | 전체 UDP transport (send/recv, framing, echo/MODE 검증, decode, publish) |
-
-**`loopmodel`** — UDP 소켓을 우회하고 command 를 노드 in-process 1차 LPF 모델에
-직접 통과시켜 read state(pos/vel/effort)를 생성한다. CommLoop RT 스레드는 실 모드와
-동일하게 self-clock 하므로 제어 PC 의 thread 할당/RT 구조를 검증한다.
-
-```bash
-ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=loopmodel
-ros2 topic echo /hand/joint_states --once     # LPF 추종 joint state 발행
-```
-
-**`firmware`** — `fake_hand_firmware` 실행파일이 hand 프로토콜의 *디바이스 측*
-(펌웨어)을 시뮬레이션하고, 수정하지 않은 실제 `udp_hand_node`(`use_fake_hand=false`,
-`target_ip=127.0.0.1`)가 loopback UDP 소켓으로 통신한다. firmware bind 포트는
-`target_port`, wire 포맷은 `protocol_version` 으로 노드와 공유된다.
-
-> yaml 이 `local_ip`/`local_interface` 로 소켓을 실 NIC 에 고정해 뒀더라도 이 모드에서는
-> 노드가 그 binding 을 **해제**한다. `SO_BINDTODEVICE` 로 egress 가 실 NIC 에 묶인 소켓은
-> `127.0.0.1` 에 도달하지 못하는데, `connect()`/`send()` 는 성공을 반환하고 데이터그램만
-> 사라지므로 "소켓 열림" 로그 뒤 원인 표시 없는 recv 타임아웃으로만 나타난다 (해당 NIC 이
-> 없는 개발 PC 에서는 반대로 `Open()` 이 ENODEV 로 즉시 실패). 해제 시 `on_configure` 가
-> INFO 로 원래 값을 남긴다.
-
-```bash
-ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=firmware protocol_version:=1a
-# 별도 터미널에서 링크/상태 확인
-ros2 topic echo /hand/link_status --once      # data: true 면 전체 경로 정상
-ros2 topic echo /hand/joint_states --once
-```
-
-firmware 합성 튜닝(LPF τ, effort 게인, 센서 base 대역/노이즈, seed)은
-`config/fake_hand_firmware.yaml` 참조. 핵심 로직은 헤더 전용
-`FakeHandFirmware` 클래스(`fake_hand_firmware.hpp`, 단위 test 대상)이고,
-`fake_hand_firmware_main.cpp` 는 socket/param/log 껍데기다.
-
-**한계:** loopback latency ~µs 라 `firmware` 모드는 timing 검증엔 부적합하다.
-firmware 는 driver decoder 의 거울상(self-consistency)이라 driver↔실제 firmware
-일치는 보장 못 하며 실기 Phase-5 가 ground truth. commander(controller/CM) 없이
-단독 실행하면 firmware 모터가 LPF rest(0)에 머물러 failure detector 의
-all-zero/duplicate 경고가 뜨는데, 이는 정상 동작(명령이 오면 해소)이다.
-
-### 빌드 & 테스트
-
-```bash
-cd ~/ros2_ws/rtc_ws
-./build.sh --tests -p rtc_base,rtc_communication,rtc_inference,rtc_msgs,udp_hand_driver
-colcon test --packages-select udp_hand_driver
-```
-
-설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조.
-
----
+- UDP 소켓 · stale drain · mode 검증 · retry 의 동작: [udp_hand_transport.hpp](include/udp_hand_driver/udp_hand_transport.hpp) 주석
+- mailbox · write gate · E-Stop self-exit: [udp_hand_controller.hpp](include/udp_hand_driver/udp_hand_controller.hpp) · [udp_hand_node.hpp](include/udp_hand_driver/udp_hand_node.hpp) 주석
+- RT 튜닝: [rt-optimization.md](../docs/rt-optimization.md)
 
 ## 의존성
 
-- `rclcpp` -- ROS2 C++ 클라이언트
-- `rclcpp_lifecycle` -- LifecycleNode 기반 관리 상태 전환
-- `sensor_msgs` -- JointState 메시지
-- `std_msgs` -- Bool 메시지
-- `rtc_base` -- types, threading (SeqLock, ThreadConfig), filters (BesselFilter, SensorRateEstimator, SlidingTrendDetector), timing
-- `rtc_communication` -- (의존성 선언)
-- `rtc_inference` -- OnnxEngine, HAS_ONNXRUNTIME 전파
-- `rtc_msgs` -- JointCommand, HandSensorState, FingertipSensor 메시지
-- `ament_index_cpp` -- 패키지 share 디렉토리 경로 조회
-
----
-
-## RT/안전 설계
-
-| 항목 | 값 |
-|------|-----|
-| CPU 코어 | hand_driver core (tier-aware, `SelectThreadConfigs().hand_driver.cpu_core`); 내부 receive thread 는 process taskset 으로 affinity 상속 (`kHandUdpRecvConfig`, cpu_core=-1 sentinel) |
-| 스케줄러 | `SCHED_FIFO` |
-| 우선순위 | **65** (rt_callback 의 70 보다 한 단계 낮게 두어 hand 수신이 controller state 수신을 절대 선점하지 않도록 설계) |
-| 메모리 잠금 | `mlockall(MCL_CURRENT \| MCL_FUTURE)` |
-
-- 모든 코덱 함수: `noexcept`, 힙 할당 없음
-- 고정 크기 배열만 사용 (`std::array`)
-- `trivially_copyable` 패킷 구조체 (`#pragma pack`, `static_assert` 검증)
-- **SeqLock** 기반 lock-free 상태 공유
-- **printf 제거** -- CommLoop (SCHED_FIFO) 스레드에서 stdout 출력 없음
-- **ppoll** 기반 sub-ms 수신 타임아웃 (hrtimer on PREEMPT_RT)
-
----
-
-## 로깅 (Logging)
-
-레벨 분류·공통 규칙: [conventions.md §Logging](../agent_docs/conventions.md#logging).
-
-**패키지 규칙**:
-
-- `UdpHandController::RunCommCycle`, `UdpHandTransport::Send/Recv`, `UdpHandSensorProcessor::PreFilter/ApplyFilters`, `FingertipFTInferencer::Infer` 는 모두 **`loop_rate_hz` (기본 500 Hz) UDP 폴링 hot path** 다. 정상 경로의 `INFO`/`WARN` 직접 호출은 **금지** — 반복될 수 있는 메시지는 반드시 `*_THROTTLE` 매크로를 사용한다.
-- **`RCLCPP_*_ONCE` 금지**. `_ONCE` 도 첫 호출에서는 동일한 fmt 포맷 할당을 수행하므로 RT 안전이 아니며, 조건이 다시 참이 될 때 침묵해 버린다. 대신 `*_THROTTLE` 을 `kThrottleIdleMs` 와 함께 사용한다 (예: `UdpHandSensorProcessor::PreFilter` 의 BesselFilter 재초기화 실패 경고).
-- **루프 기반 per-element 로그 금지.** RT 스레드에서 `for` 로 돌며 per-channel 로그를 내보내는 패턴은 1초 주기 throttle 을 만족하더라도 집계 1회로 축소해야 한다. 예: `UdpHandSensorProcessor::ThrottledDriftWarning` 은 플래그된 채널 수 + 첫 위반 id/slope 를 **단 1 개의 `WARN_THROTTLE`** 로만 내보낸다 (최대 길이 고정 → 절단 없음).
-- Non-RT 경로(init/shutdown, `UdpHandFailureDetector`, `udp_hand_node` 콜백, `SaveCommStats`) 의 INFO/WARN 은 그렙 한 줄로 세션 결과를 진단할 수 있도록 cycle/rate/ok%/timeout%/err% 등 비율과 실패 원인을 한 줄에 담는다 (`SaveCommStats` 요약 참고).
-
-### 서브-로거 네임스페이스
-
-| 서브-로거 | 사용처 |
-|-----------|--------|
-| `hand.node` | `UdpHandNode` (ROS2 노드 lifecycle, 토픽 구독/발행, link 상태 전이) |
-| `hand.ctrl` | `UdpHandController` (lifecycle + CommLoop, 캘리브레이션 dispatch) |
-| `hand.udp` | `UdpHandTransport` (소켓 open/close, 센서모드 전환) |
-| `hand.sensor` | `UdpHandSensorProcessor` (LPF init, drift detection, BesselFilter 재초기화) |
-| `hand.fail` | `UdpHandFailureDetector` (50 Hz 워치독 스레드) |
-| `hand.ft` | `FingertipFTInferencer` (ONNX 모델 로드, 캘리브레이션, inference 예외) |
-
-### THROTTLE 상수
-
-`udp_hand_driver::logging` 네임스페이스 (`udp_hand_logging.hpp`) 가 SSoT — 매직넘버 대신 아래 이름을 사용한다.
-
-| 상수 | 용도 |
-|------|------|
-| `kThrottleFastMs` | UDP recv 실패 누적 등 빠른 진행 표시 |
-| `kThrottleSlowMs` | 캘리브레이션 dispatch, 일반 반복 경고 |
-| `kThrottleIdleMs` | BesselFilter 재초기화 실패, one-shot 전이 안전 그물 |
-| `kThrottleHotMs` | RT 핫패스 예외 경로 (FT inference exception) |
-
-### 실시간 필터링 예시
-
-```bash
-# UDP 트랜스포트 레이어만 DEBUG 활성화
-ros2 service call /udp_hand_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
-  "{levels: [{name: 'hand.udp', level: 10}]}"
-```
-
-콘솔 출력에 로거 이름을 표시하려면:
-
-```bash
-export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
-```
-
----
-
-## 라이선스
-
-MIT License -- [LICENSE](../LICENSE)
+[package.xml](package.xml) · MIT. rclcpp · rclcpp_lifecycle · lifecycle_msgs · sensor_msgs · std_msgs · rtc_base · rtc_communication · rtc_inference · rtc_msgs · ament_index_cpp.
