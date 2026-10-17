@@ -447,8 +447,9 @@ demo_catching_controller:
     # ── Sim-only overrides (active iff every claimed device is the simulator)
     # The sim ball lane's stamps ride the SIM time axis anchored at launch, so
     # they lead wall by the in-flight phase error — two orders of magnitude
-    # above any clock-sync budget (D-3, `rtc_mujoco_sim` README §Projectile
-    # Ball stamp). 0.1 s is the same width the sim vision profile allows with
+    # above any clock-sync budget (D-3,
+    # rtc_mujoco_sim/README.md §Projectile Ball stamp). 0.1 s is the same
+    # width the sim vision profile allows with
     # `time.max_future_skew_s`. On hardware this key is not read and
     # `io.future_tol` above applies.
     sim:
