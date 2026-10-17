@@ -3331,5 +3331,55 @@ out=$(run_hook "$dir")
 expect_contains "82g: a copied file of a deleted name is reported" "$out" "robot_a/overlay.yaml deleted from src but still in install/"
 rm -rf "$ws"
 
+# 83. The README reminder asks about directories, not files (#869 D4): a
+#     file-level trigger taught agents to keep per-file trees in READMEs. Only
+#     a directory <= 2 levels below the package appearing or disappearing is
+#     structure. Each fixture adds the .cpp to CMakeLists.txt so the blocking
+#     "missing from CMakeLists.txt" check stays out of the way; the controls
+#     (83b, 83c) keep the absences from holding just because it never fires.
+dir=$(make_fixture)
+echo 'int more() { return 1; }' >"$dir/rtc_demo/src/more.cpp"
+echo 'add_library(rtc_more src/more.cpp)' >>"$dir/rtc_demo/CMakeLists.txt"
+out=$(run_hook "$dir")
+expect_not_contains "83a: a new .cpp in an existing src/ raises no README reminder" "$out" "public surface changed"
+rm -rf "$dir"
+
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/src/newdir"
+echo 'int nd() { return 1; }' >"$dir/rtc_demo/src/newdir/nd.cpp"
+echo 'add_library(rtc_nd src/newdir/nd.cpp)' >>"$dir/rtc_demo/CMakeLists.txt"
+out=$(run_hook "$dir")
+expect_contains "83b: a file in a new directory raises the reminder" "$out" "public surface changed"
+git -C "$dir" add -A
+out=$(run_hook "$dir")
+expect_contains "83b2: ...staged too" "$out" "public surface changed"
+rm -rf "$dir"
+
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/src/solo"
+echo 'int s() { return 1; }' >"$dir/rtc_demo/src/solo/solo.cpp"
+git -C "$dir" add -A && git -C "$dir" commit -qm "solo dir"
+git -C "$dir" rm -q rtc_demo/src/solo/solo.cpp
+out=$(run_hook "$dir")
+expect_contains "83c: deleting the only file of a directory raises the reminder" "$out" "public surface changed"
+rm -rf "$dir"
+
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/src/existing"
+echo 'int e() { return 1; }' >"$dir/rtc_demo/src/existing/e.cpp"
+git -C "$dir" add -A && git -C "$dir" commit -qm "two-level dir"
+git -C "$dir" rm -q rtc_demo/src/existing/e.cpp
+mkdir -p "$dir/rtc_demo/src/existing"
+echo 'int e() { return 1; }' >"$dir/rtc_demo/src/existing/e2.cpp"
+echo 'add_library(rtc_e2 src/existing/e2.cpp)' >>"$dir/rtc_demo/CMakeLists.txt"
+out=$(run_hook "$dir")
+expect_not_contains "83d: swapping files inside a kept directory raises none" "$out" "public surface changed"
+mkdir -p "$dir/rtc_demo/src/existing/deeper"
+echo 'int d() { return 1; }' >"$dir/rtc_demo/src/existing/deeper/x.cpp"
+echo 'add_library(rtc_x src/existing/deeper/x.cpp)' >>"$dir/rtc_demo/CMakeLists.txt"
+out=$(run_hook "$dir")
+expect_not_contains "83e: a third-level directory under an existing one raises none" "$out" "public surface changed"
+rm -rf "$dir"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

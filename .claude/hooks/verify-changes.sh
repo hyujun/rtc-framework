@@ -32,7 +32,10 @@
 #       lines of rtc_* production code, negation lines dropped · ARCH-4 no
 #       rtc_*/src/ include from an integration package · 0b ARCH-6 QoS depth
 #       (NON-BLOCKING) · 0c PROC-8 test wait helpers stay sleep-only.
-#   1.  README reminder on a public-surface change (NON-BLOCKING); a new .cpp
+#   1.  README reminder on a public-surface change -- header / launch / config,
+#       a directory (<= 2 levels below the package) added or removed, package.xml
+#       (NON-BLOCKING; a file add/del inside an existing directory is not one,
+#       so READMEs stop growing per-file trees, #869 D4); a new .cpp
 #       must be in CMakeLists.txt, a new find_package() in package.xml
 #       (blocking).
 #   1b. changed *.md -> validate_docs.py --files, findings narrowed to added
@@ -1225,22 +1228,44 @@ fi
 # the CMake/package.xml triggers cannot fire (pure-format excludes file adds).
 if [ "$PURE_FORMAT" -eq 0 ]; then
 # Hoisted out of the per-package loop: these two git queries are repo-wide.
-STRUCT_AD=$(git diff --diff-filter=AD --name-only "$VERIFY_BASE" 2>/dev/null || true)
+# --no-renames: a file moved into a new directory is an add there and a delete
+# of the old one, which is what the directory trigger asks about.
+STRUCT_AD=$(git diff --diff-filter=AD --no-renames --name-status "$VERIFY_BASE" 2>/dev/null || true)
+STRUCT_ADDED=$(printf '%s\n%s\n' "$(echo "$STRUCT_AD" | sed -n 's/^A\t//p')" "$CHANGED_UNTRACKED" \
+                 | grep -v '^[[:space:]]*$' | sort -u || true)
+STRUCT_DELETED=$(echo "$STRUCT_AD" | sed -n 's/^D\t//p')
 ADDED_A=$(git diff --diff-filter=A --name-only "$VERIFY_BASE" 2>/dev/null || true)
 for pkg_dir in $CHANGED_PKGS; do
   # README.md co-update -- NON-BLOCKING checklist, and only for public-surface
-  # changes: a public header (include/), launch/ or config/, a source file
-  # add/delete (structural), or package.xml (deps/exec surface). A src/-only
-  # edit carries no doc-visible delta. A doc kept beside the headers
+  # changes: a public header (include/), launch/ or config/, a DIRECTORY (at
+  # most two levels below the package) appearing or disappearing, or package.xml
+  # (deps/exec surface). A src/-only edit carries no doc-visible delta, and a
+  # file add/delete inside an existing directory does not either: a file-level
+  # trigger made per-file README trees the habit (#869 D4) -- file roles live in
+  # header comments. A doc kept beside the headers
   # (rtc_math/include/rtc_math/se3/README.md) is not surface.
   PKG_PUBLIC=$(echo "$CHANGED" | grep -E "^${pkg_dir}/(include|launch|config)/" \
                  | grep -vE '\.md$' || true)
-  PKG_STRUCT=$(echo "$STRUCT_AD" \
-                 | grep -E "^${pkg_dir}/(src|include)/.*\.(cpp|hpp|h|cc|py)$" || true)
+  # Directory = the file's dir cut to <pkg>/a/ or <pkg>/a/b/ (package-root files
+  # have none). New: nothing under it at the baseline. Removed: nothing tracked
+  # or untracked left under it. One git call per candidate directory, not file.
+  PKG_STRUCT=""
+  for sd in $(echo "$STRUCT_ADDED" | awk -F/ -v p="$pkg_dir" '$1 == p && NF >= 3 && $NF !~ /\.md$/ {
+                 d = $1 "/" $2 "/"; if (NF >= 4) d = d $3 "/"; print d }' | sort -u); do
+    if [ -z "$(git ls-tree -r --name-only "$VERIFY_BASE" -- "$sd" 2>/dev/null | head -n 1)" ]; then
+      PKG_STRUCT="${PKG_STRUCT}${sd}\n"
+    fi
+  done
+  for sd in $(echo "$STRUCT_DELETED" | awk -F/ -v p="$pkg_dir" '$1 == p && NF >= 3 && $NF !~ /\.md$/ {
+                 d = $1 "/" $2 "/"; if (NF >= 4) d = d $3 "/"; print d }' | sort -u); do
+    if [ -z "$(git ls-files -c -o --exclude-standard -- "$sd" 2>/dev/null | head -n 1)" ]; then
+      PKG_STRUCT="${PKG_STRUCT}${sd}\n"
+    fi
+  done
   PKG_PKGXML=$(echo "$CHANGED" | grep -E "^${pkg_dir}/package.xml$" || true)
   if [ -n "$PKG_PUBLIC" ] || [ -n "$PKG_STRUCT" ] || [ -n "$PKG_PKGXML" ]; then
     if ! echo "$CHANGED" | grep -q "^${pkg_dir}/README.md$"; then
-      CHECKLIST="${CHECKLIST}  - ${pkg_dir}: public surface changed (header / launch / config / file add-del / dep) — confirm README.md reflects it, or note in your report why no doc change is needed\n"
+      CHECKLIST="${CHECKLIST}  - ${pkg_dir}: public surface changed (header / launch / config / directory add-del / dep) — confirm README.md's user-facing parts (interface · config · directory) reflect it, or note in your report why no doc change is needed\n"
     fi
   fi
 
