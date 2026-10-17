@@ -522,7 +522,7 @@ class MpcSegmentCore {
   int n_pre_{0};     // k_c
   int n_blocks_{0};  // B of block class 0
   int nu_{0};        // Σ_c n_c·B_c (n·B with one class)
-  int nz_{0};        // n·(B + N) (+ 1 with the velocity slack)
+  int nz_{0};        // nu_ + n·N (+ 1 with the velocity slack)
   int n_eq_{0};      // 2n
   int n_in_{0};      // 5·n·N (+ 7 with the velocity slack)
   int terminal_rank_{0};

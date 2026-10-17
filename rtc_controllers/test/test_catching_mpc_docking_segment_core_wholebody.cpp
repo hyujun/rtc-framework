@@ -165,6 +165,12 @@ TEST(MpcDockingWholeBody, InitRefusesWhatItCannotSolve) {
   p.ang_scale = 0.0;
   EXPECT_TRUE(refused(p));
   p = on;
+  p.ang_scale = 1e-160;
+  EXPECT_TRUE(refused(p)) << "W/s² = inf";
+  p = on;
+  p.ang_scale = 1e160;
+  EXPECT_TRUE(refused(p)) << "W/s² = 0";
+  p = on;
   p.w_ang_post = std::nextafter(kWholeBodyWeightMax, 1e300);
   EXPECT_TRUE(refused(p));
   p = on;
@@ -259,6 +265,7 @@ TEST(MpcDockingWholeBody, TheAssembledGradientIsTheMeritsWithTheTermsOn) {
   ASSERT_TRUE(core.Solve(s.in, out)) << Describe(out);
   ASSERT_FALSE(out.init_qp_used) << "the start must be taken as given";
   const rtc::tsid::QPData base = core.LastQp();
+  EXPECT_EQ((base.H - base.H.transpose()).cwiseAbs().maxCoeff(), 0.0) << "H symmetric";
   const Eigen::Index nu = core.NumJerkVariables();
   // The merit's smooth part, on the coefficients the Solve held (Evaluate
   // reads the last Solve's).
@@ -284,6 +291,66 @@ TEST(MpcDockingWholeBody, TheAssembledGradientIsTheMeritsWithTheTermsOn) {
     wb_slope = std::max(wb_slope, std::abs(wp - wm) / (2.0 * h));
   }
   EXPECT_GT(wb_slope, 1e-3) << "the whole-body terms must carry part of the gradient";
+}
+
+// The velocity and stop-rest sums are quadratic in z, so the QP's Hessian
+// carries them exactly: on − off at one start is their second difference, on
+// every node either sum weights (the catch node's rest among them).
+TEST(MpcDockingWholeBody, TheAssembledHessianIsTheQuadraticTermsSecondDifference) {
+  dk::Rig off_rig = GradientRig();
+  const int n = off_rig.model.nv;
+  off_rig.params.w_vel = Eigen::VectorXd::Zero(n);
+  off_rig.params.w_rest_stop = Eigen::VectorXd::Zero(n);
+  off_rig.params.w_ang_pre = off_rig.params.w_ang_post = 0.0;
+  dk::Rig on_rig = GradientRig();
+  on_rig.params.w_ang_pre = on_rig.params.w_ang_post = 0.0;
+  MpcDockingSegmentCore off, on;
+  ASSERT_EQ(off.Init(off_rig.model, off_rig.arm.frame, off_rig.params, off_rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  ASSERT_EQ(on.Init(on_rig.model, on_rig.arm.frame, on_rig.params, on_rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  ASSERT_TRUE(on.VelocityTermActive() && on.StopRestTermActive());
+  ASSERT_FALSE(on.AngularMomentumTermActive());
+  MpcDockingSegmentCoreResult out;
+  on.ResizeResult(out);
+  Start s = PushedStart(on_rig, on);
+  SetStart(on, s.th, s.z0, s.in);
+  ASSERT_TRUE(on.Solve(s.in, out)) << Describe(out);
+  ASSERT_FALSE(out.init_qp_used);
+  const Eigen::MatrixXd h_on = on.LastQp().H;
+  ASSERT_TRUE(off.Solve(s.in, out)) << Describe(out);
+  ASSERT_FALSE(out.init_qp_used);
+  const Eigen::MatrixXd dh = h_on - off.LastQp().H;
+  const Eigen::Index nu = on.NumJerkVariables();
+  EXPECT_EQ(dh.bottomRows(dh.rows() - nu).cwiseAbs().maxCoeff(), 0.0) << "the slacks hold none";
+  const auto sums = [&](const Eigen::VectorXd& z) {
+    SetStart(on, s.th, z, s.in);
+    EXPECT_TRUE(on.Evaluate(s.in, out));
+    return out.cost.vel + out.cost.rest_stop;
+  };
+  const double h = 1e-2;
+  const double f0 = sums(s.z0);
+  double largest = 0.0;
+  for (Eigen::Index i = 0; i < nu; ++i) {
+    Eigen::VectorXd zp = s.z0;
+    Eigen::VectorXd zm = s.z0;
+    zp[i] += h;
+    zm[i] -= h;
+    const double second = (sums(zp) - 2.0 * f0 + sums(zm)) / (h * h);
+    EXPECT_NEAR(dh(i, i), second, 1e-6 * std::max(1.0, std::abs(second))) << "variable " << i;
+    largest = std::max(largest, std::abs(second));
+  }
+  // Off the diagonal, along a few directions mixing every variable.
+  for (int r = 0; r < 4; ++r) {
+    Eigen::VectorXd d(nu);
+    for (Eigen::Index i = 0; i < nu; ++i) {
+      d[i] = std::sin(0.7 * static_cast<double>(i) + 1.9 * r + 0.3);
+    }
+    const double second = (sums(s.z0 + h * d) - 2.0 * f0 + sums(s.z0 - h * d)) / (h * h);
+    const double form = d.dot(dh.topLeftCorner(nu, nu) * d);
+    EXPECT_NEAR(form, second, 1e-6 * std::max(1.0, std::abs(second))) << "direction " << r;
+  }
+  EXPECT_GT(largest, 1e-3) << "the terms must carry part of the Hessian";
 }
 
 // D14 (#641, 2026-10-17): a Solve takes the angular coefficients at ITS start

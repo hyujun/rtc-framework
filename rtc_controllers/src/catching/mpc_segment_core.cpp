@@ -269,8 +269,14 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
     return rtc::IsFiniteNonNegative(w) && w <= kWholeBodyWeightMax;
   };
   const bool any_ang = params.w_ang_pre > 0.0 || params.w_ang_post > 0.0;
+  // W/s² is what the QP holds: a scale whose square leaves the doubles makes
+  // it 0 or ∞ (the key's bounds are the parser's).
+  const auto ang_weight_ok = [&](double w) {
+    return w == 0.0 || FinitePositive(w / (params.ang_scale * params.ang_scale));
+  };
   if (!weight_ok(params.w_ang_pre) || !weight_ok(params.w_ang_post) ||
-      (any_ang && !FinitePositive(params.ang_scale))) {
+      (any_ang && (!FinitePositive(params.ang_scale) || !ang_weight_ok(params.w_ang_pre) ||
+                   !ang_weight_ok(params.w_ang_post)))) {
     return MpcSegmentCoreReason::kParamsInvalid;
   }
   bool any_vel = false;
@@ -434,8 +440,9 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
         const Eigen::Index nb = st.gq.cols();
         for (Eigen::Index b = 0; b < nb; ++b) {
           for (Eigen::Index c = 0; c < nb; ++c) {
+            // The gains' product first: (b, c) and (c, b) get the same bits.
             h_wb_(Col(j, b), Col(j, c)) +=
-                wv * st.gv(k, b) * st.gv(k, c) + wr * st.gq(k, b) * st.gq(k, c);
+                wv * (st.gv(k, b) * st.gv(k, c)) + wr * (st.gq(k, b) * st.gq(k, c));
           }
         }
       }

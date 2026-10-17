@@ -769,6 +769,8 @@ TEST(MpcSegmentCoreAngularMomentum, OffIsTheQpWithoutTheTermAndInitChecksTheKeys
            [](MpcSegmentCoreParams& p) { p.ang_scale = 0.0; },
            [](MpcSegmentCoreParams& p) { p.ang_scale = -1.0; },
            [](MpcSegmentCoreParams& p) { p.ang_scale = std::numeric_limits<double>::infinity(); },
+           [](MpcSegmentCoreParams& p) { p.ang_scale = 1e-160; },  // W/s² = ∞
+           [](MpcSegmentCoreParams& p) { p.ang_scale = 1e160; },   // W/s² = 0
            [](MpcSegmentCoreParams& p) { p.w_ang_pre = -1e-9; },
            [](MpcSegmentCoreParams& p) { p.w_ang_post = std::numeric_limits<double>::quiet_NaN(); },
            [](MpcSegmentCoreParams& p) {
@@ -824,45 +826,50 @@ double WeightAt(int k, double pre, double post) {
 
 TEST(MpcSegmentCoreAngularMomentum, TheAssembledTermIsTheCentroidalMapsAfterASecondLinearisation) {
   const Fixture f = MakeFixture();
-  const MpcSegmentCoreParams off = ThreePartitions();
-  MpcSegmentCoreParams on = off;
-  SetAngular(on);
-  MpcSegmentCore core_off, core_on;
-  ASSERT_EQ(core_off.Init(*f.arm.model, f.arm.frame, off, f.limits), MpcSegmentCoreReason::kNone);
-  ASSERT_EQ(core_on.Init(*f.arm.model, f.arm.frame, on, f.limits), MpcSegmentCoreReason::kNone);
-  MpcSegmentCoreResult r_off, r_on;
-  core_off.ResizeResult(r_off);
-  core_on.ResizeResult(r_on);
-  // First at the reach, then both at ONE other x̄ (the off core's solution):
-  // the second linearisation of the same core, so a stale Data or a stale
-  // A_k shows; the two QPs differ by the term alone.
-  MpcSegmentCoreInput in = f.input;
-  ReachReference(core_off, f.arm.q_nominal, f.q_target, in);
-  ASSERT_TRUE(core_off.Solve(in, r_off)) << MpcSegmentCoreReasonName(r_off.reason);
-  ASSERT_TRUE(core_on.Solve(in, r_on)) << MpcSegmentCoreReasonName(r_on.reason);
-  const MpcSegmentCoreResult ref = r_off;
-  UseAsReference(ref, in);
-  in.w_delta_scale = 0.6;
-  ASSERT_TRUE(core_off.Solve(in, r_off)) << MpcSegmentCoreReasonName(r_off.reason);
-  ASSERT_TRUE(core_on.Solve(in, r_on)) << MpcSegmentCoreReasonName(r_on.reason);
-  const int nz = static_cast<int>(core_on.MainQp().H.rows());
-  Eigen::MatrixXd dh = Eigen::MatrixXd::Zero(nz, nz);
-  Eigen::VectorXd dg = Eigen::VectorXd::Zero(nz);
-  for (int k = 1; k <= kNPre + kNStop; ++k) {
-    const AngularOracle o = AngularAt(*f.arm.model, ref.q.col(k), ref.qd.col(k));
-    const Eigen::MatrixXd op = StageOperator(core_on, k, o.a, nz);
-    // x_0 rests, so the free response has no acceleration: r_k = d_k.
-    const Eigen::Vector3d r = o.a * in.qdd0 + o.d;
-    const double w = WeightAt(k, kAngPre, kAngPost);
-    dh += w * op.transpose() * op;
-    dg += w * op.transpose() * r;
+  // Both assemblies: the one block class (no groups) and three.
+  for (const MpcSegmentCoreParams& off : {BaseParams(), ThreePartitions()}) {
+    SCOPED_TRACE(off.n_groups);
+    MpcSegmentCoreParams on = off;
+    SetAngular(on);
+    MpcSegmentCore core_off, core_on;
+    ASSERT_EQ(core_off.Init(*f.arm.model, f.arm.frame, off, f.limits), MpcSegmentCoreReason::kNone);
+    ASSERT_EQ(core_on.Init(*f.arm.model, f.arm.frame, on, f.limits), MpcSegmentCoreReason::kNone);
+    MpcSegmentCoreResult r_off, r_on;
+    core_off.ResizeResult(r_off);
+    core_on.ResizeResult(r_on);
+    // First at the reach, then both at ONE other x̄ (the off core's solution):
+    // the second linearisation of the same core, so a stale Data or a stale
+    // A_k shows; the two QPs differ by the term alone.
+    MpcSegmentCoreInput in = f.input;
+    ReachReference(core_off, f.arm.q_nominal, f.q_target, in);
+    ASSERT_TRUE(core_off.Solve(in, r_off)) << MpcSegmentCoreReasonName(r_off.reason);
+    ASSERT_TRUE(core_on.Solve(in, r_on)) << MpcSegmentCoreReasonName(r_on.reason);
+    const MpcSegmentCoreResult ref = r_off;
+    UseAsReference(ref, in);
+    in.w_delta_scale = 0.6;
+    ASSERT_TRUE(core_off.Solve(in, r_off)) << MpcSegmentCoreReasonName(r_off.reason);
+    ASSERT_TRUE(core_on.Solve(in, r_on)) << MpcSegmentCoreReasonName(r_on.reason);
+    const int nz = static_cast<int>(core_on.MainQp().H.rows());
+    Eigen::MatrixXd dh = Eigen::MatrixXd::Zero(nz, nz);
+    Eigen::VectorXd dg = Eigen::VectorXd::Zero(nz);
+    for (int k = 1; k <= kNPre + kNStop; ++k) {
+      const AngularOracle o = AngularAt(*f.arm.model, ref.q.col(k), ref.qd.col(k));
+      const Eigen::MatrixXd op = StageOperator(core_on, k, o.a, nz);
+      // x_0 rests, so the free response has no acceleration: r_k = d_k.
+      const Eigen::Vector3d r = o.a * in.qdd0 + o.d;
+      const double w = WeightAt(k, kAngPre, kAngPost);
+      dh += w * op.transpose() * op;
+      dg += w * op.transpose() * r;
+    }
+    const Eigen::MatrixXd got_h = core_on.MainQp().H - core_off.MainQp().H;
+    const Eigen::VectorXd got_g = core_on.MainQp().g - core_off.MainQp().g;
+    EXPECT_GT(dh.cwiseAbs().maxCoeff(), 0.0);
+    EXPECT_GT(dg.cwiseAbs().maxCoeff(), 0.0) << "the reference moves: the drift is not zero";
+    EXPECT_LE((got_h - dh).cwiseAbs().maxCoeff(), 1e-6 * dh.cwiseAbs().maxCoeff());
+    EXPECT_LE((got_g - dg).cwiseAbs().maxCoeff(), 1e-6 * dg.cwiseAbs().maxCoeff());
+    const Eigen::MatrixXd& h = core_on.MainQp().H;
+    EXPECT_EQ((h - h.transpose()).cwiseAbs().maxCoeff(), 0.0) << "H symmetric";
   }
-  const Eigen::MatrixXd got_h = core_on.MainQp().H - core_off.MainQp().H;
-  const Eigen::VectorXd got_g = core_on.MainQp().g - core_off.MainQp().g;
-  EXPECT_GT(dh.cwiseAbs().maxCoeff(), 0.0);
-  EXPECT_GT(dg.cwiseAbs().maxCoeff(), 0.0) << "the reference moves: the drift is not zero";
-  EXPECT_LE((got_h - dh).cwiseAbs().maxCoeff(), 1e-6 * dh.cwiseAbs().maxCoeff());
-  EXPECT_LE((got_g - dg).cwiseAbs().maxCoeff(), 1e-6 * dg.cwiseAbs().maxCoeff());
 }
 
 // The value and the schedule: ½ Σ_k W(k)/s² ‖A(q̄_k) q̈_k + d_k‖² over the
@@ -999,6 +1006,9 @@ TEST(MpcSegmentCoreAngularMomentum, TheTermAloneLinearisesAndAllocatesNothing) {
       EXPECT_EQ(new_gate.count(), 0U) << "operator new inside Solve";
       (void)malloc_gate.count();  // ProxQP's own C mallocs (#654) — counted, not asserted
     }
+    // The same input again, with no other term that rebuilds H: the angular
+    // term is rebuilt on h_main_, not added to the last solve's.
+    EXPECT_TRUE(SameBits(core.MainQp().H, qp_on.H));
     MpcSegmentCoreInput outside = warm;
     for (int k = 2; k <= kNStop; ++k) {
       outside.q_ref(kNv - 1, k) = f.limits.q_max[kNv - 1] + 3.0 * on.delta_tr;

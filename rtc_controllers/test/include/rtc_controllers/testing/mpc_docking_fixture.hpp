@@ -253,12 +253,14 @@ inline Nodes NodesFromJerkAt(const MpcDockingSegmentCoreParams& p, const Eigen::
   const Eigen::Index n = q0.size();
   const int N = p.n_pre + p.n_stop;
   rtc::catching::BlockLayout l;
-  (void)rtc::catching::BuildBlockLayout(
-      static_cast<int>(n), p.n_groups,
-      std::span<const std::int8_t>(p.joint_group).first(static_cast<std::size_t>(n)),
-      std::span<const rtc::catching::BlockPattern>(p.group_blocks)
-          .first(static_cast<std::size_t>(p.n_groups)),
-      p.n_pre, N, l);
+  EXPECT_EQ(rtc::catching::BuildBlockLayout(
+                static_cast<int>(n), p.n_groups,
+                std::span<const std::int8_t>(p.joint_group).first(static_cast<std::size_t>(n)),
+                std::span<const rtc::catching::BlockPattern>(p.group_blocks)
+                    .first(static_cast<std::size_t>(p.n_groups)),
+                p.n_pre, N, l),
+            rtc::catching::BlockGridCheck::kOk)
+      << "the fixture's groups must be a layout the core accepts";
   Nodes out;
   out.q.resize(n, N + 1);
   out.qd.resize(n, N + 1);

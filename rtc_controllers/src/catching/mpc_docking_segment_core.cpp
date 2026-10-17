@@ -252,8 +252,15 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   const bool rest_stop_on =
       p.w_rest_stop.size() != 0 && p.w_rest_stop.allFinite() && p.w_rest_stop.maxCoeff() > 0.0;
   const bool ang_on = p.w_ang_pre > 0.0 || p.w_ang_post > 0.0;
+  // W/s² is what the QP holds: a scale whose square leaves the doubles makes
+  // it 0 or ∞.
+  const auto ang_weight_ok = [&](double w) {
+    return w == 0.0 || FinitePositive(w / (p.ang_scale * p.ang_scale));
+  };
   if (!optional_bounded(p.w_vel) || !optional_bounded(p.w_rest_stop) || !bounded(p.w_ang_pre) ||
-      !bounded(p.w_ang_post) || (ang_on && !FinitePositive(p.ang_scale)) ||
+      !bounded(p.w_ang_post) ||
+      (ang_on && (!FinitePositive(p.ang_scale) || !ang_weight_ok(p.w_ang_pre) ||
+                  !ang_weight_ok(p.w_ang_post))) ||
       (rest_stop_on && (p.q_nom.size() != nn || !p.q_nom.allFinite())) ||
       (p.catch_time_variable && (vel_on || rest_stop_on || ang_on))) {
     return MpcDockingReason::kParamsInvalid;
@@ -480,7 +487,6 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   // to jerk u_scale held over block b (all others zero), from rest — the one
   // recursion MpcSegmentCore uses too (mpc_block_grid.hpp).
   const Eigen::Index N1 = n_nodes_ + 1;
-  const Eigen::Index nb = n_blocks_;
   const auto n_intervals = static_cast<std::size_t>(n_nodes_);
   ComputeBlockStageGains(std::span<const double>(dt_node_).first(n_intervals),
                          std::span<const int>(block_of_node_).first(n_intervals), n_blocks_,
@@ -1220,7 +1226,6 @@ bool MpcDockingSegmentCore::LinearRowsHold() const noexcept {
 MpcDockingReason MpcDockingSegmentCore::RunInitQp(const MpcDockingSegmentCoreInput& in,
                                                   MpcDockingSegmentCoreResult& out) noexcept {
   const Eigen::Index nn = n_;
-  const Eigen::Index nb = n_blocks_;
   const Eigen::Index N = n_nodes_;
   const double us = params_.u_scale;
   StageBegin(MpcDockingStage::kStart);
@@ -1728,7 +1733,8 @@ void MpcDockingSegmentCore::FreezeAngular() noexcept {
       const Eigen::Index last = block_of_node_[static_cast<std::size_t>(k - 1)];
       for (Eigen::Index b = 0; b <= last; ++b) {
         for (Eigen::Index c = 0; c <= last; ++c) {
-          h_ang_.block(b * nn, c * nn, nn, nn) += (2.0 * w * ga_(k, b) * ga_(k, c)) * m_ang_;
+          // The gains' product first: blocks (b, c) and (c, b) get the same bits.
+          h_ang_.block(b * nn, c * nn, nn, nn) += ((2.0 * w) * (ga_(k, b) * ga_(k, c))) * m_ang_;
         }
       }
       continue;
@@ -1738,11 +1744,11 @@ void MpcDockingSegmentCore::FreezeAngular() noexcept {
     for (Eigen::Index j = 0; j < nn; ++j) {
       const int cj = ClassOf(j);
       for (Eigen::Index b = 0; b <= LastBlock(cj, k); ++b) {
-        const double gb = 2.0 * w * Gain(2, cj)(k, b);
+        const double gb = Gain(2, cj)(k, b);
         for (Eigen::Index l = 0; l < nn; ++l) {
           const int cl = ClassOf(l);
           for (Eigen::Index c = 0; c <= LastBlock(cl, k); ++c) {
-            h_ang_(Col(j, b), Col(l, c)) += gb * Gain(2, cl)(k, c) * m_ang_(j, l);
+            h_ang_(Col(j, b), Col(l, c)) += ((2.0 * w) * (gb * Gain(2, cl)(k, c))) * m_ang_(j, l);
           }
         }
       }
