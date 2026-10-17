@@ -1331,7 +1331,7 @@ $$
 
 ## 10. 다중 frame CLIK 의 구현 (E2-F04)
 
-§2 의 QP 를 `rtc_tsid` 의 `ClikReferenceGenerator` 에 구현한 것과, 구현이 §2 의 식과 다른 곳이다. 호출 형태 · 옵션 · 진단의 서술은 `rtc_tsid/README.md` 와 `clik_reference.hpp` 의 머리 주석이 갖는다. 이 QP 를 부르는 컨트롤러는 `demo_dualarm_controller` 다 (§11).
+§2 의 QP 를 `rtc_tsid` 의 `ClikReferenceGenerator` 에 구현한 것과, 구현이 §2 의 식과 다른 곳이다. 호출 형태 · 옵션 · 진단의 서술은 `clik_reference.hpp` 의 머리 주석이 갖는다. 이 QP 를 부르는 컨트롤러는 `demo_dualarm_controller` 다 (§11).
 
 ### 10.1 §2 와의 대응
 

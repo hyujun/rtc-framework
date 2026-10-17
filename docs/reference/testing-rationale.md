@@ -73,10 +73,14 @@
 - **ProxQP 는 malloc 게이트가 처음 잡았다.** `test_catching_mpc_segment_core` 에서 wrapper 경유 ProxQP `update()`·`solve()` 의 호출당 할당을 `ScopedMallocGate` 가 잡았다 (operator-new 게이트는 같은 구간에서 0).
 - **gcc `-O3` 가 mutation 을 지웠다.** `malloc(상수)` + `memset` + `free` 는 volatile 전역에 포인터를 저장해도 통째로 사라졌고, 계측기 self-test 가 그래서 "할당 0" 을 보고했다. 크기도 volatile 로 두고 `asm volatile("" ::: "memory")` 를 건다. 확인은 `nm -D <binary> | grep -w malloc` — 참조가 0 이면 재려던 호출이 바이너리에 없다.
 
+## CLIK 제동 거리 한계의 실측
+
+`test_clik_multiframe` (17-DoF tree) 에서 `Config::brake_from_torque` 를 켜고 끈 비교다. 5 관절을 위치 한계 사이로 1000 tick 왕복하면 끄면 실패 4 회, 켜면 0 회. 한 관절만 풀고 나머지를 잠근 접근 20 회에서는 끄면 한계 직전의 실패 132 회, 켜면 `brake_margin` 1.0 · 0.9 · 0.8 모두 0 회. 한계에서 0.15 – 0.2 rad 떨어진 가속 → 제동 전환 tick 의 실패는 `brake_margin` 1.0 에서 2 회, 0.9 에서 0 회, 0.8 에서 1 회 남는다. 앞의 것은 상태에 따라 `a` 가 변하는 효과이고, 뒤의 것은 그 fixture 에서 토크 행이 자기 box 행과 평행해 ProxQP 가 실행 가능한 문제에 PRIMAL_INFEASIBLE 을 내는 것이다 (#654). 식과 휴리스틱의 한계는 `clik_reference.hpp` 머리 주석.
+
 ## Coverage 함정
 
 - **도구.** runtime PC 에는 `lcov`/`gcovr` 가 없을 수 있다 (`gcov` 만 존재). gcovr 은 venv 에 `uv pip install gcovr` 로 설치한다. `ENABLE_COVERAGE` 는 패키지 CMakeLists 마다 개별 정의이고, header-only 패키지는 `--filter "$SRC/include/"`, src 기반은 `--filter "$SRC/src/"`. 측정 전 `*.gcda` 를 지운다. `gcov` 만 있으면 확장자 포함 `*.cpp.gcno` 를 직접 넘긴다. 빌드 트리 분리는 [testing-debug.md](../../agent_docs/testing-debug.md) §Coverage · sanitizer 빌드.
 - **Python (`ament_python`) 은 `coverage`.** gcovr 은 C++ 전용이다. `cd <pkg> && python3 -m coverage run --source=<module> -m pytest test/ -q && python3 -m coverage report -m` 후 `.coverage` 를 지운다.
-- **`rtc_mpc` 는 Debug 로 재면 안 된다.** Debug 가 proxsuite all-zero-C assert 를 표면화하고, aligator 0.19.0 의 contact_rich MPC 는 `LD_PRELOAD=$DEPS/install/lib/libmimalloc.so` 없이 `free(): invalid pointer` 로 죽는다 (`rtc_mpc/README.md`).
+- **`rtc_mpc` 는 Debug 로 재면 안 된다.** Debug 가 proxsuite all-zero-C assert 를 표면화하고, aligator 0.19.0 의 contact_rich MPC 는 `LD_PRELOAD=$DEPS/install/lib/libmimalloc.so` 없이 `free(): invalid pointer` 로 죽는다 ([rtc_mpc/README.md](../../rtc_mpc/README.md) §문제 해결).
 - **`integrated_bringup` 은 Debug 에서 `test_demo_task_controller` 가 abort 한다.** 의도적으로 non-finite Jacobian 을 주입하는 케이스가 회전행렬을 비유니터리로 만들어 pinocchio 의 `assert(R.isUnitary())` 가 발동한다 (Release 는 NDEBUG). 총계가 그 바이너리의 케이스 수만큼 줄고 gcda 도 안 남는다. 회귀가 아니니 판정은 Release 재실행으로 한다.
 - **LifecycleNode 유닛 커버리지.** `on_configure` 와 private RT 헬퍼는 friend accessor (`rtc::ControllerLifecycleTestAccess`) 로 주입·호출해 실 robot / RT 권한 없이 구동한다.

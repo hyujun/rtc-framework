@@ -54,6 +54,7 @@ namespace rtc::tsid {
 // above q_max). v_limit ≤ 0 disables the velocity bound, which also leaves the
 // collapsed recovery unbounded; an empty q_min/q_max disables the position
 // bound (±∞).
+// The QP honours the box only to within ProxQP's eps_abs (1e-6).
 //
 // Error convention: the SHARED helper kinematics/se3_error.hpp
 // (ComputeTaskPoseError) — identical to SE3Task / ObjectSE3Task (dynamics WBC),

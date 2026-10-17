@@ -46,11 +46,11 @@ rtc_digital_twin/README.md: 24708
 rtc_inference/README.md: 18580
 rtc_math/README.md: 2571
 rtc_math/include/rtc_math/se3/README.md: 10026
-rtc_mpc/README.md: 9759
+rtc_mpc/README.md: 7651 strict
 rtc_msgs/README.md: 46967
 rtc_mujoco_sim/README.md: 99118
 rtc_tools/README.md: 223286
-rtc_tsid/README.md: 40706
+rtc_tsid/README.md: 11550 strict
 rtc_urdf_bridge/README.md: 36726
 shape_estimation/README.md: 10767
 shape_estimation_msgs/README.md: 4077
