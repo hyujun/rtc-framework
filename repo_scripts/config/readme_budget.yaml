@@ -29,11 +29,11 @@
 # Keep the "path: bytes" shape, one per line: the validator reads this file by
 # regex so that it runs on a host without PyYAML.
 
-README.md: 33381
+README.md: 12431 strict
 docs/dynamic_catching/README.md: 7615
-docs/reference/README.md: 5924
+docs/reference/README.md: 6289  # raised from 5924: index row for build-rationale.md
 integrated_bringup/README.md: 312486
-repo_scripts/README.md: 72305
+repo_scripts/README.md: 25904 strict
 robot_descriptions/README.md: 22406
 robot_descriptions/robots/panda/README.md: 1058
 robot_descriptions/robots/ur5e_p1b/README.md: 4834

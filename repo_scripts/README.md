@@ -1,230 +1,229 @@
 # repo_scripts
 
-
-> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
-> 설치/빌드: [Root README](../README.md) | RT 최적화: [rt-optimization.md](../docs/rt-optimization.md)
+RT 호스트 구성·검증, 개발 쉘 환경, 의존성 격리를 맡는 셸 스크립트 모음. **유형**: 스크립트 폴더
 
 ## 개요
 
-RTC 프레임워크의 **로봇 비의존(robot-agnostic) RT 시스템 구성·검증 + 의존성 격리 스크립트 모음**입니다. PREEMPT_RT 커널 빌드, CPU 격리, IRQ 어피니티, 네트워크 최적화, NVIDIA 공존 설정, 환경 검증, LTTng 트레이싱, 그리고 ABI 민감 C++ 의존성(fmt/mimalloc/aligator) 소스 빌드 및 격리 관리를 위한 스크립트 모음과 공유 라이브러리를 제공합니다 (전체 목록·개수는 아래 "패키지 구조"의 실제 트리를 참조 — README에 개수를 박제하지 않음, `CMakeLists.txt`의 `install(PROGRAMS ...)`가 SSoT).
+PREEMPT_RT 커널 빌드, CPU 격리, IRQ affinity, 네트워크 최적화, NVIDIA 공존, 환경 검증, 그리고 ABI 에 민감한 C++ 의존성 (fmt · mimalloc · aligator) 의 소스 빌드·격리 검증을 로봇에 의존하지 않고 제공한다. 모든 `setup_*.sh` 는 멱등이다.
 
-**설계 목표:**
-- 500 Hz 실시간 제어에서 200 us 이하 지터 달성
-- 2코어 VM부터 16코어+ 시스템까지 자동 적응
-- 멱등(idempotent) -- 재실행 시 이미 적용된 설정 건너뜀
-- 설정과 검증 분리 (setup vs. check/verify)
-- 관심사 분리 -- 각 스크립트가 단일 책임 수행
-- 시스템 의존성과 격리 (Level 3 -- `../deps.repos` + `<rtc_ws>/deps/install/`; 상세 배포 가이드는 본 문서 하단 참조)
+**대부분의 사용자는 이 폴더를 직접 만질 일이 없다. [`setup_env.sh`](scripts/setup_env.sh) 와 [`check_rt_setup.sh`](scripts/check_rt_setup.sh) 두 개만 알면 된다.** 나머지는 `install.sh` · `build.sh` · launch 가 부르거나 RT PC 를 처음 세울 때 한 번 쓴다.
 
----
+소비자: 루트의 [`build.sh`](../build.sh) · [`install.sh`](../install.sh) (`rt_common.sh` 공유), `integrated_bringup` 의 launch (`cpu_shield.sh` 호출).
 
-## 패키지 구조
+## 빠른 시작
 
-```
-repo_scripts/
-├── CMakeLists.txt
-├── package.xml
-├── config/
-│   ├── docs_budget.yaml                 <- 헌법 corpus (AGENTS.md·CLAUDE.md·agent_docs·.claude/rules) 문서별 바이트 예산 — `validate_docs.py` D12 가 읽는다 (올림은 그 줄에 `# raised from <old>: <why>` 가 있어야 PR 게이트를 통과)
-│   └── thread_layout.yaml               <- **CPU 레이아웃 SSoT** (선언형 manifest)
-└── scripts/
-    ├── gen_thread_layout.py             <- manifest -> C++/shell/Python/README 생성 + --check 드리프트 게이트
-    ├── lib/
-    │   ├── rt_common.sh                  <- 공유 유틸리티 라이브러리 (모든 스크립트가 source)
-    │   ├── thread_layout_generated.sh    <- **생성물** (직접 편집 금지) — tier -> slot/policy/priority 표
-    │   ├── rt_report.sh                  <- check_rt_setup.sh / verify_rt_runtime.sh 공유 PASS/WARN/FAIL 리포트 인프라
-    │   ├── bootstrap.sh                  <- build.sh/install.sh 공통 entry-script 초기화 (setup_env.sh 자동 source)
-    │   │
-    │   │   # ── install.sh 모듈형 helper (install.sh가 source) ──────
-    │   ├── install_ros2.sh               <- ROS2/Ubuntu prerequisites + workspace 셋업
-    │   ├── install_python.sh             <- .venv 생성 + requirements.lock 동기화 (uv pip sync)
-    │   ├── install_uv.sh                 <- uv 부트스트랩 (Astral installer)
-    │   ├── install_deps.sh               <- C++ 외부 의존성 (ur_driver/pinocchio/proxsuite/behaviortree/ONNX Runtime (sha256 pin — 버전은 install.sh `ONNXRT_VERSION`, 다른 버전 트리는 정리)/MuJoCo 3.7.0 tarball installer)
-    │   ├── install_dev.sh                <- VS Code GDB 디버그 툴 + clangd code intelligence (clangd/libomp-dev) + LTTng 트레이싱 툴체인 설치
-    │   └── install_rt.sh                 <- 7개 setup_*.sh RT 스크립트 sudo wrapper + RT 권한/sudoers/cset
-    │
-    │   # ── RT 시스템 구성/검증 ─────────────────────────────────────
-    ├── build_rt_kernel.sh                <- PREEMPT_RT 커널 빌드/설치
-    ├── setup_grub_rt.sh                  <- GRUB RT 커널 파라미터 관리
-    ├── setup_irq_affinity.sh             <- IRQ 어피니티 설정
-    ├── setup_udp_optimization.sh         <- NIC/네트워크 스택 최적화
-    ├── setup_cpu_governor.sh             <- CPU governor performance 설정
-    ├── setup_nvidia_rt.sh                <- NVIDIA GPU + RT 공존 설정
-    ├── setup_display_rt.sh               <- RT 환경 디스플레이 최적화
-    ├── cpu_shield.sh                     <- 동적 CPU 격리 (cset/cgroup)
-    ├── check_rt_setup.sh                 <- 정적 RT 환경 검증 (9개 카테고리)
-    ├── verify_rt_runtime.sh              <- 런타임 스레드 검증 (7개 카테고리)
-    ├── with_verify_hold.sh               <- 측정이 도는 동안 Stop hook 의 빌드·테스트 요구를 미룬다
-    │
-    │   # ── LTTng 트레이싱 ──────────────────────────────────────────
-    ├── timeline.sh                       <- LTTng CTF trace -> Chrome Trace JSON 변환 (스레드/CPU swimlane)
-    ├── enroll_lttng_mok.sh               <- Secure Boot 환경에서 lttng-modules DKMS 빌드에 MOK 서명
-    │
-    │   # ── 의존성 격리 (배포 가이드 참조) ────────────────────────
-    ├── setup_env.sh                      <- 개발 쉘 env 활성화 (ROS + deps/install + venv + overlay)
-    ├── build_deps.sh                     <- fmt/mimalloc/aligator 소스 빌드 -> deps/install/
-    └── verify_isolation.sh               <- ELF RPATH/ldd 격리 검증
+아래 `./` 로 시작하는 명령은 전부 `repo_scripts/scripts/` 안에서 실행한다고 본다.
+
+```bash
+cd ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts
 ```
 
-`scripts/lib/` 중 `install(PROGRAMS ...)`로 배포되는 것은 `CMakeLists.txt` 기준 SSoT — 정확한 install 대상 목록은 `CMakeLists.txt`를 직접 참조.
+### 개발 쉘 준비
 
----
+`build.sh` · `install.sh` 는 `setup_env.sh` 를 자동으로 source 한다. `ros2 launch` · `colcon test` 같은 대화형 명령은 쉘마다 직접 source 해야 한다.
 
-## 스크립트 분류
+```bash
+source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
+./check_rt_setup.sh --summary     # RT 환경 점검 (카테고리별 한 줄)
+```
 
-### 설정 스크립트 (Setup) -- 1회 실행
+### RT PC 처음 세우기
+
+한 번에 끝내려면 저장소 루트에서 `./install.sh robot --rt` ([docs/rt-optimization.md](../docs/rt-optimization.md) §1, 커널 설치와 재부팅은 제외) 를 쓰고, 한 단계씩 하려면 아래 순서로 실행한다.
+
+```text
+[1회 설정 -- 순서대로]
+  1. sudo ./build_rt_kernel.sh --batch   # PREEMPT_RT 커널 빌드/설치 -> 재부팅
+  2. sudo ./setup_grub_rt.sh             # GRUB RT 파라미터          -> 재부팅
+  3. sudo ./setup_irq_affinity.sh        # IRQ 를 OS 코어에 고정
+  4. sudo ./setup_udp_optimization.sh    # NIC/네트워크 최적화
+  5. sudo ./setup_cpu_governor.sh        # governor -> performance
+  (NVIDIA GPU 가 있으면 -- 2 · 5 와 display 설정을 자동 호출, 재부팅)
+  6. sudo ./setup_nvidia_rt.sh
+  (선택)
+  7. sudo ./setup_display_rt.sh          # 디스플레이 최적화
+
+[빌드 전 검증]   ./check_rt_setup.sh --summary
+[실행]           ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
+                 ./verify_rt_runtime.sh --watch 3   # 실행 중 스레드 모니터링
+```
+
+`cpu_shield.sh` 는 launch 가 먼저 알아서 무장하므로 따로 켤 필요가 없다 (수동: `sudo ./cpu_shield.sh on --robot` / `off`).
+
+### 격리 환경 배포 가이드
+
+개발 PC 이외의 머신 (신규 개발용 · 실 RT 제어 PC · CI runner) 에 같은 격리 환경을 재현할 때 쓴다.
+
+```bash
+# 1. 저장소 clone
+mkdir -p ~/ros2_ws/rtc_ws/src
+cd ~/ros2_ws/rtc_ws
+git clone <repo-url> src/rtc-framework
+
+# 2. apt 의존성 + deps/install + .venv 생성·sync (빌드 제외)
+#    venv 를 손으로 만들 때: README.md "Python 의존성 sync"
+./src/rtc-framework/install.sh --skip-build
+
+# 3. workspace 빌드 (테스트 제외가 기본 — 개발용이면 --tests)
+./src/rtc-framework/build.sh sim        # 또는 robot / full
+```
+
+`--skip-build` 를 빼면 단계 2-3 은 `install.sh` 하나로 끝난다. `./install.sh verify` 는 이 호스트의 job 수 · 메모리 상한 · ccache 를 알린다.
+
+**빌드가 기대는 시스템 패키지** — 없으면 해당 장치만 꺼지고 빌드는 된다. 메모리 상한은 `systemd-run` + user session (`systemd` · `libpam-systemd` · `dbus-user-session`) 이 필요하고 없으면 `Memory cap: unavailable` 경고 후 상한 없이 빌드한다. ccache 와 `python3-pytest-xdist` 는 `install.sh` 가 설치한다.
+
+**실 RT 제어 PC** 는 커널이 `linux-image-rt-generic` (`-rt` 접미사 필수) 이고 위 RT 설정 전부가 필요하며, 지터 기준이 개발 PC 의 수~수십 us 에서 수 us (cyclictest 99.99 %ile) 로 올라간다. Python 은 GPU 휠 대신 `+cpu` 휠로 다시 컴파일한다 (`requirements.in` 에 `--extra-index-url https://download.pytorch.org/whl/cpu` 추가 후 `uv pip compile` 재실행). 준비가 끝나면 `cyclictest -p 90 -t 1 -n -i 1000 -D 300s` 로 지터 기준선을 잡는다.
+
+## 인터페이스
+
+### 스크립트 목록
+
+RT 호스트 설정의 절차와 근거는 [docs/rt-optimization.md](../docs/rt-optimization.md) §2 가 갖는다. `setup_grub_rt.sh` · `setup_cpu_governor.sh` · `setup_nvidia_rt.sh` · `setup_display_rt.sh` 는 `--help` 를 받는다.
+
+**RT 호스트 설정 (1회, 전부 sudo)**
+
+| 스크립트 | 용도 |
+|---------|------|
+| `build_rt_kernel.sh` | PREEMPT_RT 커널 (6.12+) 빌드·설치. `--batch` · `--profile <auto·desktop-amd·desktop-intel·nuc>` · `--status` · `--force-step N` · `--with-nvidia`. [§2.2](../docs/rt-optimization.md#22-rt-커널) |
+| `setup_grub_rt.sh` | GRUB RT 파라미터의 단일 출처 (`nohz_full` 값은 `get_rt_cores_with_siblings()` 가 정한다. `isolcpus` 는 쓰지 않고 `cpu_shield.sh` 가 대체). [§2.3](../docs/rt-optimization.md#23-grub-옵션) |
+| `setup_irq_affinity.sh [NIC]` | 하드웨어 IRQ 를 OS 코어에 고정하고 RT 코어에 잔여 IRQ 가 없는지 검증. [§2.5](../docs/rt-optimization.md#25-irq-affinity) |
+| `setup_udp_optimization.sh [NIC]` | 코얼레싱 · GRO/LRO/TSO/GSO 끔, 링 버퍼 1024, `rmem_max`/`wmem_max`=2GB, `rtc-udp-optimization.service` 로 재적용. CycloneDDS `SocketReceiveBufferSize` (8MB) 는 `rmem_max` 이하여야 한다 |
+| `setup_cpu_governor.sh` | governor 를 performance 로 (`cpu-governor-performance.service`). [§2.6](../docs/rt-optimization.md#26-cpu-governor) |
+| `setup_nvidia_rt.sh` | NVIDIA 와 RT 커널의 공존 (7단계). 마지막에 `setup_grub_rt.sh` · `setup_display_rt.sh` · `setup_cpu_governor.sh` 를 자동 호출. [§2.7](../docs/rt-optimization.md#27-nvidia-gpu-가-있을-때) |
+| `setup_display_rt.sh` | X11 안티 티어링 (`/etc/X11/xorg.conf.d/20-nvidia-antitear.conf`) + compositor renice -10 서비스. headless 에서도 설정 파일을 설치 |
+
+**런타임 · 검증**
 
 | 스크립트 | 용도 | sudo |
 |---------|------|------|
-| `build_rt_kernel.sh` | mainline PREEMPT_RT 커널(6.12+) 다운로드/검증/빌드/설치 (7단계, profile 분기) | 필수 |
-| `setup_grub_rt.sh` | GRUB RT 커널 파라미터 관리 + sched_rt_runtime_us 설정 | 필수 |
-| `setup_irq_affinity.sh` | 하드웨어 IRQ를 OS 코어에 고정 (SMT-aware) | 필수 |
-| `setup_udp_optimization.sh` | NIC 코얼레싱, 오프로드 비활성화, sysctl 최적화 + systemd 서비스 | 필수 |
-| `setup_cpu_governor.sh` | CPU governor -> performance 모드 + systemd 서비스 | 필수 |
-| `setup_nvidia_rt.sh` | NVIDIA GPU DKMS, modprobe, IRQ, persistence (7단계) | 필수 |
-| `setup_display_rt.sh` | X11 안티 티어링 + compositor 우선순위 부스트 | 필수 |
+| `cpu_shield.sh` | 런타임 CPU 격리 (`on` · `off` · `status` · `adopt <pid>`) | `status` 외 필수 |
+| `check_rt_setup.sh` | 정적 RT 환경 검증 (9개 카테고리, read-only) | `--benchmark` 만 |
+| `verify_rt_runtime.sh` | 실행 중 스레드의 스케줄링 · affinity · 메모리 잠금 검증 (7개 카테고리) | 선택 |
+| `with_verify_hold.sh <명령> [인자…]` | 명령이 도는 동안 Stop hook 의 빌드·테스트 요구를 미룬다 (Claude Code 전용 보조, install 대상 아님) | 불필요 |
 
-### 런타임 스크립트 (Runtime) -- 실행 시마다
+**개발 쉘 · 의존성 격리 (sudo 불필요)**
 
-| 스크립트 | 용도 | sudo |
-|---------|------|------|
-| `cpu_shield.sh` | 런타임 CPU 격리 (Tier 1/2, robot/sim 모드) | on/off 시 필수 |
-| `with_verify_hold.sh <명령> [인자…]` | 명령이 도는 동안 `<workspace>/.rtc-verify-hold` 에 자기 줄을 두어 Claude Code Stop hook 의 빌드·테스트 verdict 요구를 미루고 `verify-changes.sh --run` 이 빌드하지 않게 한다. unit 마다 sim 을 새로 띄우는 평가는 unit 사이에 sim 이 없는 틈이 있고, 그 틈에서 끝난 턴이 verdict 를 요구받아 `colcon test` 를 다음 unit 옆에서 돌리게 되기 때문이다. 명령의 exit code 를 그대로 돌려주고, 끝나면 자기 줄만 지운다. 죽은 wrapper 의 줄은 hook 이 stale 로 읽는다 (install 대상 아님 — 소스 트리에서 실행) | 불필요 |
+| 스크립트 | 용도 |
+|---------|------|
+| `setup_env.sh` | 쉘 활성화: ROS + `deps/install` + `.venv` + `install/` overlay + colcon defaults |
+| `build_deps.sh` | `../deps.repos` 의 fmt · mimalloc · aligator 를 `<rtc_ws>/deps/install/` 로 소스 빌드 |
+| `verify_isolation.sh` | `install/` 의 모든 ELF 가 격리 밖 경로를 참조하지 않는지 검사 |
 
-### 검증 스크립트 (Verification) -- 필요 시
+**트레이싱.** `timeline.sh` (LTTng CTF → Chrome Trace JSON) 와 `enroll_lttng_mok.sh` (Secure Boot 에서 lttng-modules DKMS 서명) 의 사용법은 [docs/tracing.md](../docs/tracing.md).
 
-| 스크립트 | 용도 | sudo |
-|---------|------|------|
-| `check_rt_setup.sh` | 정적 환경 검증 -- 커널, CPU, IRQ, 네트워크 등 (9개 카테고리) | 선택 |
-| `verify_rt_runtime.sh` | 실행 중 스레드 스케줄링/어피니티/메모리 검증 (7개 카테고리) | 선택 |
 
-> **External driver 프로세스 검증 (`arm_driver` / `hand_driver`).** 이 둘은 컨트롤러 내부 스레드가 아니라 launch 가 taskset 으로 pin 하는 **별도 프로세스**다 (`arm_driver`=`ros2_control_node`, `hand_driver`=`udp_hand_node`; thread_config.hpp §process-level threads). `verify_rt_runtime.sh` 는 이들을 process comm 으로 발견해 검증하되 **축이 다르다**: `arm_driver` 는 **RT 루프** — 설정된 우선순위(50)의 SCHED_FIFO 스레드가 존재하고 그것이 arm 코어에 있는지. `hand_driver` 는 **per-thread layout** — `hand_udp_recv` 는 hand 코어에 SCHED_FIFO 65, `hand_aux_io` 는 aux 코어(= OS slot)에 CFS, 그 외 TID(executor, DDS)는 hand 코어에 있어야 한다. 이름별 policy/priority 를 보는 것은 external driver 에 대해 이 검사가 처음이다 — `check_scheduling_policy` 는 컨트롤러 *내부* 스레드만 순회한다. 판정 우선순위는 `MISSING` > `WRONG_SCHED` > `WRONG_CPU` 이며, 스레드가 아예 없거나 스케줄러가 틀린 것이 코어 오배치보다 나쁜 발견이다. aux slot 은 `RTC_HAND_AUX_SLOT` 로 override 하며 기본값은 `get_os_cores()`(= 0) 로 노드의 `aux_cpu_slot` 기본값과 같다. ≤5코어 tier 에서는 hand slot 과 OS slot 이 둘 다 0 이라 두 기대가 같은 논리 CPU 로 풀려 그대로 통과한다(예외 처리 아님). hand 는 프로세스 전체에 균일 affinity 검사를 적용하지 않는다 — 프로세스 안에서 스레드마다 다른 코어에 붙으므로 균일 검사는 정상 배치를 FAIL 로 만든다. arm 은 프로세스 affinity 를 봐서는 안 된다 — main thread 는 executor 이고 500 Hz 루프는 별도 스레드이므로 프로세스 affinity 는 그 루프의 실제 배치를 반영하지 않는다. FIFO 스레드 부재는 WARN 이 아니라 FAIL 이다 — FIFO 요청이 EPERM 으로 거부돼도 affinity 는 적용되므로, 위치만 보는 검사는 CFS 로 강등된 제어 루프를 통과시킨다. 우선순위 기대값은 `RTC_ARM_DRIVER_RT_PRIO` 로 override. sim launch 는 mujoco 만 pin 하고 driver 프로세스가 없으므로 **SKIP** 처리된다. 다른 로봇/드라이버는 `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM` env (공백 구분 comm 후보 리스트) 로 override.
+### cpu_shield.sh
 
-> **Intel hybrid 감지 (`[2.5/9]`) 전제조건 — `cpuid` 패키지 (`sudo apt install -y cpuid`).**
-> Raptor/Meteor/Arrow Lake 등 P+E 하이브리드는 3-path 캐스케이드로 감지한다: ① primary = `/sys/.../cpu/types/` sysfs (**커널 >= 6.9 + `nuc` 프로파일 재빌드** 필요 — `build_rt_kernel.sh` 참조), ② fallback = CPUID leaf 0x1A (**`cpuid` 툴 필요**), ③ fallback = cpuinfo_max_freq 클러스터링. 세 경로가 모두 실패하면 hybrid CPU가 "homogeneous" 로 **오검출**된다. `cpuid` 는 재이미징 시 누락되기 쉬운 필수 도구이므로 신규/재설치 머신 프로비저닝에 반드시 포함한다 (미설치 시 `check_rt_setup.sh` 가 Intel CPU 에 한해 오검출 경고를 출력한다).
+`isolcpus` 없이 재부팅 없이 RT 코어를 격리한다 (cset shield 필수 — `cset` 이 없으면 실패한다: `sudo apt-get install -y cpuset`).
 
-#### invariants 연관 매핑
+```bash
+sudo ./cpu_shield.sh on --robot [--profile <id>]   # 활성화 (--sim 도 범위는 같다)
+sudo ./cpu_shield.sh off                           # 해제
+./cpu_shield.sh status                             # 상태 (sudo 불필요)
+```
 
-[agent_docs/invariants.md](../agent_docs/invariants.md) §RT Host / Runtime Preconditions RT-HOST-1~3 은 본 패키지 스크립트가 검증한다:
+- 범위는 `get_cm_shield_cpus()` (RT ∪ nrt, OS 코어 제외) 이고 non-SMT 는 전 tier `1-3` 이다. `arm_driver` · `hand_driver` 는 shield 밖 전용 코어의 별도 프로세스다.
+- `integrated_bringup` 의 launch 5개 (`robot_ur5e_p1a` · `robot_ur5e_p1b` · `sim_ur5e_p1a` · `sim_ur5e_p1b` · `sim_iiwa7_leap`) 가 노드 기동 **전에** 자동 호출하므로 launch 시작이 cset 소요만큼 늦다 (정상). `rtc_mujoco_sim` 단독 launch 는 호출하지 않고, `build.sh` · `install.sh` 는 빌드 전에 shield 를 푼다.
+- `adopt <pid>` (launch 가 CM 을 shield 안으로 옮길 때) 의 종료 코드가 계약이다: 양성 no-op (cset 미설치 · shield 비활성 · PID 부재) 은 0, 필요했는데 실패하면 non-zero 이며 launch 는 ACTIVATE 를 거부한다.
 
-- RT-HOST-1 (`mlockall`) ↔ `verify_rt_runtime.sh` (`VmLck` 검증)
-- RT-HOST-2 (SCHED_FIFO priority) ↔ `verify_rt_runtime.sh` (thread sched policy 검증)
-- RT-HOST-3 (CPU affinity) ↔ `cpu_shield.sh` (런타임 격리) + `setup_irq_affinity.sh` (IRQ 격리)
-- System-level (PREEMPT_RT kernel, `@realtime` group, isolated cores) ↔ `check_rt_setup.sh` (9 카테고리 정적 검증)
+### check_rt_setup.sh · verify_rt_runtime.sh
 
-세부 invariant 본문 / grep 패턴 / 복구는 [invariants.md](../agent_docs/invariants.md) 가 SSoT.
+```bash
+./check_rt_setup.sh --summary    # 카테고리별 한 줄 (--json: CI용, --fix: 수정 명령, --benchmark: cyclictest)
+./verify_rt_runtime.sh --watch 5 # 5초 간격 연속 모니터링 (--summary · --json 도 가능)
+```
 
-### 의존성 격리 스크립트 (Isolation) -- Level 3
+| 스크립트 | 검증 | 종료 코드 |
+|---|---|---|
+| `check_rt_setup.sh` (정적, read-only) | 커널 · CPU 격리 · 스케줄러 · GRUB · RT 권한 · IRQ · 네트워크 · NVIDIA · 주파수 (9개) | 0 PASS · 1 경고 · 2 실패 |
+| `verify_rt_runtime.sh` (실행 중) | 프로세스 · 스케줄링 정책 · affinity · 메모리 잠금 · 컨텍스트 스위치 · 마이그레이션 · 스로틀링 (7개) | 0 · 1 · 2 · 3 컨트롤러 미실행 |
 
-| 스크립트 | 용도 | sudo |
-|---------|------|------|
-| `setup_env.sh` | 매 쉘 활성화 -- ROS Jazzy + `deps/install` (fmt/mimalloc/aligator) + `.venv` + `install/` overlay. `COLCON_DEFAULTS_FILE` 도 주입 | 불필요 |
-| `build_deps.sh` | `../deps.repos` 기반으로 fmt 11.1.4 / mimalloc 2.1.7 / aligator 0.19.0 을 `<rtc_ws>/deps/install/` 로 소스 빌드. deps/src 가 비어있으면 `vcs import` 자동 실행 | 불필요 |
-| `verify_isolation.sh` | `install/` 의 모든 ELF 를 훑어 `/usr/local` · `/opt/openrobots` 등 격리 외부 경로 누수 검사 | 불필요 |
+`arm_driver` · `hand_driver` 는 별도 프로세스라 process comm 으로 찾아 따로 검증한다 (sim 은 driver 가 없어 SKIP). 기대값 override: `RTC_ARM_DRIVER_RT_PRIO` (기본 50) · `RTC_HAND_AUX_SLOT` · `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM` (다른 드라이버의 comm 후보, 공백 구분). 판정 로직은 `rt_common.sh` 의 `rt_classify_external_*` 주석, 해석은 [rt-optimization.md §4](../docs/rt-optimization.md#4-확인).
 
-`build.sh` / `install.sh` 는 `RTC_DEPS_PREFIX` 미설정 시 `setup_env.sh` 를 자동으로 source 하므로, 수동 실행 없이 바로 동작합니다. 그러나 `ros2 launch` · `colcon test` 등 대화형 커맨드에서는 각자 `source setup_env.sh` 필요.
+### setup_env.sh
 
----
+```bash
+source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
+```
 
-## 공유 라이브러리 (`rt_common.sh`)
+Source 순서는 ROS Jazzy → `deps/install` (+ ONNX Runtime) → `.venv` → workspace overlay (있을 때만) 다.
 
-모든 스크립트에서 `source`하는 핵심 유틸리티입니다. `build.sh`, `install.sh`에서도 공유됩니다. 직접 실행할 수 없으며, 중복 source 방지 가드가 포함되어 있습니다.
+| export | 값 | 용도 |
+|------|-----|-----|
+| `RTC_DEPS_PREFIX` | `<rtc_ws>/deps/install` | aligator · fmt · mimalloc 격리 prefix |
+| `CMAKE_PREFIX_PATH` · `LD_LIBRARY_PATH` · `PKG_CONFIG_PATH` | `$RTC_DEPS_PREFIX` 하위 + `/opt/onnxruntime` | 의존성 검색 |
+| `MUJOCO_DIR` · `mujoco_ROOT` | `/opt/mujoco-3.x.x` (자동 탐색) | `find_package(mujoco)` |
+| `COLCON_DEFAULTS_FILE` | `<repo>/.colcon/defaults.yaml` | cwd 와 무관하게 colcon 기본 옵션 적용 |
+| `MAKEFLAGS` | `-j<N>` (이미 `-j` 가 있으면 그대로) | plain `colcon build` 의 make job 수 — "빌드 병렬도와 메모리" |
+| `VIRTUAL_ENV` | `<rtc_ws>/.venv` | Python venv 활성화 |
 
-### CPU 감지 함수
+**Plain `colcon build` 호환성** (`build.sh` 우회 워크플로). `setup_env.sh` 만 source 하면 `colcon build --symlink-install` 로 단독 빌드할 수 있다. `.colcon/defaults.yaml` 이 `--symlink-install` · Release · `compile_commands` · 테스트 제외 (`-DBUILD_TESTING=OFF`) 를 자동 적용한다. 단 CMake 가 쓸 인터프리터는 venv 유무와 무관하게 고정해야 한다 (`build.sh` 는 `append_cmake_python_args` 로 자동 처리).
+
+CLI 의 `--cmake-args` 는 defaults 의 `cmake-args` 목록에 덧붙지 않고 **그 목록을 통째로 대체**한다. 그래서 `-DPython3_EXECUTABLE` 만 넘기면 새 빌드 트리가 `CMAKE_BUILD_TYPE` 없이 (최적화 없이) configure 된다. defaults 목록을 함께 적는다 (`.colcon/defaults.yaml` 과 같게 유지):
+
+```bash
+( cd ~/ros2_ws/rtc_ws && source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 && \
+  colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON -DBUILD_TESTING=OFF -DPython3_EXECUTABLE=/usr/bin/python3 )
+```
+
+`build.sh` 의 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · `check_rt_setup.sh` 호출은 colcon 단독에서는 빠진다. 근거는 [build-rationale.md](../docs/reference/build-rationale.md).
+
+#### workspace 에 다른 저장소가 함께 있을 때
+
+이 저장소의 빌드 스크립트는 다른 저장소의 패키지 이름을 갖지 않는다. `<rtc_ws>/src` 에 함께 둔 저장소는 경로에 따라 다르게 다뤄진다.
+
+| 경로 | 빌드 대상 | 다른 저장소의 패키지 |
+|---|---|---|
+| `build.sh` | `rt_common.sh` 의 고정 목록 (`--packages-select`) | 빌드하지 않는다 |
+| ws root 의 plain `colcon build` | `src/` 아래의 모든 패키지 | 함께 빌드한다 |
+
+- ws root 의 첫 빌드는 plain `colcon build` 로 한다. `build.sh -c` 는 ws root 의 `build/` · `install/` · `log/` 를 **통째로** 지워 다른 저장소의 설치본도 사라지므로, 그 뒤에는 plain `colcon build` 로 전체를 다시 빌드한다.
+- 한 저장소만 고르려면 `--base-paths src/<저장소>` 를 쓴다 (`colcon test` · `test-result` 도 같다). 패키지 이름을 적지 않으므로 패키지가 늘거나 줄어도 명령이 바뀌지 않는다.
+- 자기 빌드 절차와 환경을 가진 저장소는 별도 workspace 에 두고, 그 패키지를 쓰는 터미널에서만 그 `install/setup.bash` 를 이 workspace 다음에 source 한다. 같은 workspace 에서 빌드하면 colcon defaults 와 `.venv` 가 섞인다.
+- 로봇 config 가 `package://<패키지>/...` 로 가리키는 패키지가 없으면 launch 가 `package '<패키지>' not found` 로 멈춘다 ([integrated_bringup/README.md](../integrated_bringup/README.md)).
+
+### build_deps.sh · verify_isolation.sh
+
+```bash
+source setup_env.sh
+./build_deps.sh          # fmt 11.1.4 · mimalloc 2.1.7 · aligator 0.19.0 -> <rtc_ws>/deps/install/
+./verify_isolation.sh    # install/ 의 ELF RPATH/ldd 누수 검사 (0 통과 · 1 누수)
+```
+
+`build_deps.sh` 는 `deps/src` 가 비어 있으면 `vcs import` 를 자동으로 하고, RPATH 는 시스템 `/usr/local` 을 보지 않게 잡는다. 처음은 15~20분 (aligator 가 병목) 이고 job 수는 `build.sh` 와 같은 knob 을 쓴다. `verify_isolation.sh` 는 ROS · `deps/install` · `install/` · 시스템 lib · `/opt/onnxruntime*` · `/opt/mujoco-*` 밖을 참조하면 누수로 본다.
+
+### rt_common.sh
+
+모든 스크립트가 `source` 하는 라이브러리 (`build.sh` · `install.sh` 포함) 이며 직접 실행할 수 없다. 함수마다의 계약은 파일 안 주석이 갖는다. 개발 쉘에서 직접 부를 만한 것은 아래와 같다.
+
+예: `source repo_scripts/scripts/lib/rt_common.sh; get_role_slot rt_control "$(get_physical_cores)"`
+
+| 함수 | 용도 |
+|------|------|
+| `get_physical_cores` · `detect_physical_nic` | 물리 코어 수 (SMT 제외) · 물리 NIC 자동 탐색 |
+| `get_default_build_jobs` · `resolve_build_makeflags [N]` | 기본 make job 수 · export 할 `MAKEFLAGS` (CLI `-j` > `RTC_BUILD_JOBS` > 기존 `-j` > 기본값) |
+| `get_build_mem_max` · `print_build_host_summary` | 빌드 RAM 상한 · job 수 / 메모리 상한 / ccache 가용성 보고 |
+| `get_system_python` | CMake 와 `.venv` 가 쓰는 배포판 python (`RTC_SYSTEM_PYTHON` 으로 덮어씀) |
+| `shield_isolation_method` | 지금 격리를 거는 것: `cset <cpus>` / `isolcpus <cpus>` / `none` |
+| `get_base_packages` · `get_robot_packages` · `print_thread_layout` | `build.sh` · `install.sh` 공유 패키지 목록 · 이 호스트의 코어별 스레드 레이아웃 출력 |
+
+#### RT/MPC 코어 레이아웃 함수
+
+값의 SSoT 는 [config/thread_layout.yaml](config/thread_layout.yaml) 이고 tier 의존 헬퍼는 그 manifest 에서 [thread_layout_generated.sh](scripts/lib/thread_layout_generated.sh) 로 **생성**된다 (직접 고치면 `gen_thread_layout.py --check` 가 막는다). 모두 `$1` 로 물리 코어 수를 받아 이 머신에 없는 tier 도 출력할 수 있고, 반환값은 kernel logical CPU 가 아니라 **slot** 이다 (`slot_to_logical_cpu` 로 변환). launch profile 의 이력은 [architecture-rationale.md](../docs/reference/architecture-rationale.md).
 
 | 함수 | 설명 |
 |------|------|
-| `get_physical_cores()` | 물리 코어 수 감지 (SMT/HT 제외). lscpu -> sysfs -> nproc 순 |
-| `compute_cpu_layout()` | 코어 수 기반 RT 레이아웃 계산 (OS/RT 코어 범위, IRQ 마스크) — 내부에서 IRQ affinity bitmask도 함께 산출 |
-| `compute_expected_isolated()` | 비-OS 코어 전체 범위 (RT + nrt + driver, SMT 시블링 포함). cset shield 검증 (`check_rt_setup.sh`) 에 사용 — nohz_full / rcu_nocbs 는 `get_rt_cores_with_siblings()` 를 사용 (좁은 범위) |
-| `get_os_logical_cpus()` | OS 물리 코어에 속하는 논리 CPU 번호 목록 |
+| `get_role_slot` · `get_role_policy` · `get_role_priority` | `<role> [ncpu]` 로 한 role 의 배치 조회 (그 tier 에 없는 role 은 **비0 종료**) |
+| `get_rt_cores` · `get_mpc_cores` · `get_nrt_cores` · `get_os_cores` · `get_arm_driver_slot` · `get_hand_driver_slot` | RT 그룹 · MPC · nrt lane · OS/DDS/IRQ 코어 (Core 0) · 외부 driver 프로세스의 slot |
+| `rtc_expected_threads` · `rtc_forbidden_threads` | `verify_rt_runtime.sh` 의 기대 스레드 · profile 이 떨어뜨려 존재하면 FAIL 인 스레드 |
+| `rtc_layout_profiles` · `rtc_default_profile` · `rtc_is_layout_profile` | launch profile 목록 · 기본값 (`mpc_on`) · 유효성 (모르는 id 는 비0) |
+| `get_rt_cores_with_siblings` | `nohz_full` / `rcu_nocbs` 값 (SMT 형제 포함, profile 을 타지 않는 최광 집합) |
+| `get_rt_shield_cpus` · `get_cm_shield_cpus` | RT 만 / CM 프로세스 전체 (RT ∪ nrt) 의 **logical CPU** 격리 범위 |
 
-### 격리 상태 탐지 함수
+profile 은 `get_rt_cores` · `get_mpc_cores` · `rtc_*_threads` 에서 `$2`, shield 계열에서 `$1` 로 받는다. 표의 `(mpc_off)` 열은 MPC 를 쓰지 않는 launch 에서 `mpc_main` 코어가 빠진 결과다.
 
-`cpu_shield.sh` (stale-shield 판정 · `status`) 와 `check_rt_setup.sh` (CPU Isolation 카테고리) 가 공유하는 유틸리티입니다 — `/sys/devices/system/cpu/isolated` 는 isolcpus 만 반영하므로, 이 함수들이 cset shield 유무를 별도로 판정합니다.
-
-| 함수 | 설명 |
-|------|------|
-| `normalise_cpu_set()` | `"2-9,12-13"` / `" 2 3 "` → 정렬·중복제거된 공백 구분 id 목록. 순수 문자열 변환 (I/O 없음) |
-| `shield_actual_user_cpus()` | 활성 user cpuset 의 실제 mask. cgroup cpuset 파일 우선, 실패 시 `cset shield -s` 파싱. 읽기 실패는 "일치" 가 아니라 **"모름"** (non-zero) |
-| `isolcpus_isolated_cpus()` | 부팅 시 `isolcpus=` 가 뺀 코어. `$RTC_SYSFS_ROOT` 존중 |
-| `shield_isolation_method()` | **지금 무엇이 격리를 걸고 있는가** — `cset <cpus>` / `isolcpus <cpus>` / `none`. cset 을 **먼저** 묻는 순서가 계약이며 `test_cpu_shield_mask.sh` 가 "둘 다 활성" 케이스로 고정한다 |
-
-### NIC/네트워크 함수
-
-| 함수 | 설명 |
-|------|------|
-| `detect_physical_nic()` | 물리 NIC 자동 탐색 (가상 인터페이스 제외, UP 상태 우선) |
-
-### 로깅 함수
-
-| 함수 | 설명 |
-|------|------|
-| `setup_colors()` | 터미널 색상 변수 초기화 (비-TTY 환경에서는 빈 문자열). source 시 자동 호출되므로 보통 직접 호출 불필요 |
-| `make_logger PREFIX [STYLE]` | 로깅 프리픽스+스타일 설정. `bracket` (기본): `[PREFIX] msg`, `emoji`: 이모지 형식 |
-| `info()` / `warn()` / `error()` / `success()` / `section()` | 색상별 로깅 |
-| `fatal()` | 에러 메시지 출력 후 `exit 1` (error + exit 통합) |
-
-### 파일/시스템 유틸리티
-
-| 함수 | 설명 |
-|------|------|
-| `require_root()` | root 권한 확인 (실패 시 `fatal`) |
-| `write_file_if_changed()` | 멱등 atomic 파일 쓰기 (same-dir `mktemp` + `mv`, 기존 mode 보존, 다를 시 백업) |
-| `with_temporary_disable()` | postinst hook 일시 비활성화 후 명령 실행, `trap EXIT` 으로 실패해도 hook 복원 (e.g. DKMS hook + `dpkg -i`) |
-| `auto_release_cpu_shield()` | 빌드 전 CPU shield 자동 해제 (cset 감지 시 해제, isolcpus는 경고만) |
-| `check_workspace_structure()` | ROS2 워크스페이스 디렉토리 구조 검증 (`src/` 하위 확인) |
-| `ensure_ros2_sourced()` | ROS2 환경 자동 탐색 및 소싱 (jazzy 우선, humble fallback — setup_env.sh와 동일 priority) |
-| `is_venv_active()` | `VIRTUAL_ENV` 설정 여부 |
-| `get_system_python()` | venv base · CMake 가 쓰는 배포판 python. 기본 `readlink -f /usr/bin/python3` (venv 링크·PATH 를 따라가지 않는다), `RTC_SYSTEM_PYTHON` 으로 덮어씀 |
-| `venv_uses_system_python()` | venv 가 `get_system_python` 을 base 로 system-site-packages 를 켜고 만들어졌는지 (uv-managed base · 사라진 base 는 무효). `ensure_venv` 의 재생성 판정 |
-| `append_cmake_python_args()` | build.sh: `-DPython3_EXECUTABLE` 를 venv 유무와 무관하게 `CMAKE_ARGS` 에 붙이고 `catkin_pkg`·`ament_package` import 를 사전 확인 (실패 시 1), 활성 venv base 가 틀리면 경고 |
-| `get_default_build_jobs()` | 이 호스트의 기본 make job 수 = `min(물리 코어, RAM / 4 GB)` (최소 1; 메모리를 못 읽으면 2). 순수 산정식은 `build_jobs_for <cores> <mem_kB>` |
-| `resolve_build_makeflags [N]` | export 할 `MAKEFLAGS` 를 출력. job 수 우선순위: 인자 (CLI `-j`) > `RTC_BUILD_JOBS` > 기존 `MAKEFLAGS` 의 `-j` > 기본값. knob 이 양의 정수가 아니면 출력 없이 2 반환. `build.sh` · `setup_env.sh` · `build_deps.sh` 공유 |
-| `get_build_mem_max()` | 빌드 RAM 상한 (systemd 크기 표기). 기본은 `MemTotal` 의 75% 와 `MemAvailable` 의 90% 중 작은 쪽, `RTC_BUILD_MEM_MAX` (`24G` · `20000M` · `60%` / `off`) 로 덮어씀. 단위 없는 수 (systemd 에서는 바이트) · K 단위 · 100% 초과 · 64M 미만은 거부 (2). 꺼졌거나 메모리를 못 읽으면 빈 문자열 |
-| `get_build_swap_max()` | 그 상한과 함께 허용할 swap — 기본 상한이면 `MemTotal` 의 25%, `RTC_BUILD_MEM_MAX` 를 직접 줬으면 0 |
-| `build_mem_scope_prefix()` | 그 상한이 걸린 systemd user scope 로 명령을 감쌀 prefix 를 `BUILD_MEM_SCOPE_PREFIX` 배열에 채운다 (`MemoryMax` + `MemorySwapMax`). probe 가 scope 안에서 `memory.max` 를 읽어 한도가 실제로 걸리는지 확인하고, 못 걸면 prefix 는 비고 `BUILD_MEM_SCOPE_WHY` 에 이유를 남긴다 (`no-session` / `not-enforced`) |
-| `build_mem_scope_end()` | scope 안의 명령이 끝난 뒤 부른다. scope 가 OOM 으로 프로세스를 잃었으면 `BUILD_MEM_SCOPE_OOM=1` — unit 의 `Result=oom-kill` (systemd ≥ 253) 또는 cgroup `memory.events` 의 `oom_kill` (그 이전) 로 판정해 컴파일 에러와 메모리 부족을 가른다. failed unit · 기록 파일도 지운다 |
-| `prune_dangling_install_links <install 의 패키지 dir> <소스 루트>` | `--symlink-install` 이 남긴 잔재를 지운다: 그 디렉토리에서 **대상이 소스 루트 아래였던 끊긴 링크**만 지우고 지운 경로를 한 줄씩 출력. 살아 있는 링크와 다른 곳 (`build/` · `/opt`) 을 가리키는 끊긴 링크는 그대로 둔다. `build.sh` 가 빌드에 성공한 뒤 빌드한 패키지마다 부른다 (`--no-symlink` 면 부르지 않는다). 항상 0 반환 |
-| `print_build_host_summary()` | 이 호스트의 기본 job 수 · 메모리 상한 가용성 · ccache 유무를 한 줄씩 보고 (`install.sh` 의 설치 뒤 · `verify` 모드). 항상 0 반환 |
-| `normalize_on_off()` | on/off knob 정규화 (`on`·`1`·`true`·`yes` / `off`·`0`·`false`·`no`, 대소문자 무시). 그 밖은 1 |
-
-### 패키지 리스트 함수
-
-| 함수 | 설명 |
-|------|------|
-| `get_base_packages()` | 기본 RTC 패키지 리스트 (build.sh/install.sh 공유, `rtc_mpc` 포함) |
-| `get_robot_packages()` | 로봇 전용 패키지 리스트 |
-
-### RT/MPC 코어 레이아웃 함수 (Layout SSoT)
-
-**값의 SSoT 는 [config/thread_layout.yaml](config/thread_layout.yaml)** 이고, 아래 tier 의존 헬퍼들은 그 manifest 에서 [scripts/lib/thread_layout_generated.sh](scripts/lib/thread_layout_generated.sh) 로 **생성**됩니다. `rt_common.sh` 가 그 파일을 source 하므로 호출부는 달라진 게 없고, 생성 파일을 직접 편집하면 `gen_thread_layout.py --check` 가 CI 와 `colcon test` 에서 차단합니다. 이 파일들은 순수 함수(코어 수 in, slot out)라 `install.sh` 가 workspace 빌드 **전에** source 할 수 있습니다.
-
-각 함수는 `$1` 로 물리 코어 수를 받을 수 있습니다 (미지정 시 `get_physical_cores`) — 이 머신에 없는 tier 를 테스트·출력할 때 씁니다.
-
-- `cpu_shield.sh::compute_shield_cores()` 는 `get_cm_shield_cpus()` 를 호출 (자체 tier 분기 없음). CM 프로세스 전체가 cpuset 에 들어가야 하므로 shield 는 RT ∪ nrt span 을 덮는다. shield 는 cpuset 만 만들고, 런치가 `cpu_shield.sh adopt <pid>` 로 CM 을 그 안에 넣는다. **`adopt` 의 종료 코드가 계약이다**: 양성 no-op(cset 미설치 / shield 비활성 / PID 부재)은 0, *필요했는데 실패*하면 non-zero 이고 런치는 그때 ACTIVATE 를 거부한다 — 그대로 활성화하면 RT 스레드가 affinity 와 SCHED_FIFO 를 함께 잃은 채 돈다.
-- `setup_grub_rt.sh` 는 `get_rt_cores_with_siblings()` 를 호출하여 `nohz_full` / `rcu_nocbs` 값으로 RT thread 가 실행되는 코어만 (SMT 시 sibling 포함) 한정.
-- `setup_irq_affinity.sh` / `check_rt_setup.sh` / `verify_rt_runtime.sh` 는 `compute_cpu_layout()` 기반으로 동작하여 tier 분기가 없습니다 (OS/RT 코어 범위가 모든 tier 공통: OS=0, RT=1..N-1).
-
-| 함수 | 출처 | 설명 |
-|------|------|------|
-| `get_role_spec()` / `get_role_slot()` / `get_role_policy()` / `get_role_priority()` / `get_role_nice()` | 생성 | `<role> [ncpu]` 로 임의 role 의 배치를 조회. 그 tier 에 없는 role 은 **비0 종료** — 없는 스레드를 기대 목록에 넣지 않기 위한 계약이다 |
-| `get_mpc_cores()` | 생성 | MPC 슬롯 CSV. 항목은 `mpc_main` 하나이며, MPC 를 떨어뜨리는 profile 에서는 빈 목록 |
-| `get_mpc_main_core()` | 파생 | MPC main 코어만 (`get_mpc_cores` 의 첫 항목) |
-| `get_rt_cores()` | 생성 | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). `get_rt_cores_with_siblings()` / `get_rt_shield_cpus()` 의 base |
-| `get_nrt_cores()` | 생성 | nrt_logging + nrt_callback + nrt_publish 슬롯 (중복 제거, 오름차순). `get_cm_shield_cpus()` 가 RT 와 union. tier ≥ 6 은 aux slot (= rt_callback slot 2) 이라 RT 의 부분집합이고, degraded tier 는 Core 0 공유 — 어느 쪽이든 union 이 RT span 을 넘지 않는다 |
-| `get_arm_driver_slot()` / `get_hand_driver_slot()` | 생성 | 외부 driver 프로세스의 slot (launch taskset / in-process self-pin 대상) |
-| `get_os_cores()` | 생성 | OS/DDS/IRQ 코어 (Core 0 단일). `get_cm_shield_cpus()` 가 shield 에서 제외할 slot 판정에 사용 |
-| `rtc_expected_threads()` | 생성 | `verify_rt_runtime.sh` 의 기대 표 (`name:slot:policy:priority[:optional]`). 컨트롤러 **in-process 스레드만** — arm/hand 는 별도 프로세스라 여기 있으면 항상 false-WARN 이다 |
-| `rtc_forbidden_threads()` | 생성 | 이번 profile 이 떨어뜨린 in-process 스레드 이름 (존재하면 FAIL). default profile 에서는 비어 있다 |
-| `rtc_layout_profiles()` / `rtc_default_profile()` / `rtc_is_layout_profile()` | 생성 | 선언된 launch profile 목록 · 기본값 · 유효성 검사 |
-| `get_rt_cores_with_siblings()` | 파생 | `get_rt_cores()` 출력에 SMT HT 시블링까지 포함, range-collapse. `setup_grub_rt.sh` 의 `nohz_full` / `rcu_nocbs` 값. non-SMT 시 입력과 동일 cpu 집합 (range 표기) |
-| `get_rt_shield_cpus()` | 파생 | RT 슬롯 → **logical cpu** (slot→logical) + HT 시블링. RT-only 격리/검증 (verify_rt_runtime) |
-| `get_cm_shield_cpus()` | 파생 | CM 프로세스 전체 span = `get_rt_shield_cpus()` ∪ nrt (logical + 시블링, OS slot 제외). `cpu_shield.sh` 의 cset "user" cpuset 범위. 예: non-SMT 는 전 tier `1-3` · NUC13 12c hybrid `2-7` |
-
-**"생성"** = manifest 에서 나온다 (직접 편집 금지). **"파생"** = `rt_common.sh` 에 손으로 쓰여 있고 위 생성 함수를 호출한다. tier 별 반환값은 아래 생성된 표가 SSoT 이므로 여기 중복해 적지 않는다.
-
-Tier별 매핑 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는 그 manifest 에서 생성된다):
+tier 별 값 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는 그 manifest 에서 생성된다):
 
 <!-- BEGIN GENERATED: thread-layout-tiers -->
 <!-- Generated from repo_scripts/config/thread_layout.yaml by repo_scripts/scripts/gen_thread_layout.py. Do not edit by hand. -->
@@ -241,620 +240,78 @@ Tier별 매핑 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는
 
 <!-- END GENERATED: thread-layout-tiers -->
 
-- **≤5코어 / 6–7코어는 degraded** — RT 결정성 보장 X. 전자는 nrt·driver 가 전부 OS Core 0 으로 접히고 mpc 가 CFS 로 강등되며, 후자는 arm/hand 가 한 코어를, nrt_logging + nrt_callback 이 또 한 코어를 공유한다.
-- **8코어 이상**에서 arm_driver / hand_driver 가 전용 슬롯(**4·5**)을 얻고, 그 위 tier 는 **전부 같은 쌍**을 쓴다 — tier 가 올라가도 드라이버 슬롯은 움직이지 않고, spare 는 슬롯 6 부터 연속 블록이 된다. cset shield 와 `nohz_full` 은 이 배치와 무관하다 — 드라이버는 `get_cm_shield_cpus` 의 union 에서 애초에 제외돼 있다.
+≤5코어 / 6–7코어는 degraded 라 RT 결정성을 보장하지 않는다 (nrt · driver 가 Core 0 이나 서로의 코어를 공유하고 mpc 가 CFS 로 강등된다). 8코어 이상부터 arm_driver / hand_driver 가 전용 슬롯 (**4 · 5**) 을 얻고, 드라이버는 shield 에서 제외돼 있어 `nohz_full` 과 무관하다. Core 0 은 OS/DDS/IRQ 전용이고 RT cluster 는 Core 1 부터 시작한다.
 
-**launch profile** — 위 표의 `(mpc_off)` 열은 **두 번째 축**이다. tier 는 "어느 role 이 어느 슬롯에 앉는가", profile 은 "이번 실행에서 어느 role 이 도는가" 를 정한다. MPC 활성은 host 속성이 아니라 controller YAML (`mpc.enabled`) 이고 스레드는 `on_activate` 에서 뜨므로 런타임 자동 감지가 불가능하다 — 그래서 launch 단계의 **명시적 opt-out** 이다.
+## 설정
 
-- profile 축을 받는 함수는 `get_rt_cores` · `get_mpc_cores` · `rtc_expected_threads` · `rtc_forbidden_threads` 넷이며, 전부 **`$2`** 로 받고 기본값은 `rtc_default_profile()` (= `mpc_on`) 이다. 인자를 안 주는 기존 호출자는 종전 레이아웃을 그대로 받는다. 선언된 profile 목록은 `rtc_layout_profiles()`, 검사는 `rtc_is_layout_profile <id>` — 알 수 없는 id 는 조용히 default 로 떨어지지 않고 **비0** 이다.
-- `mpc_off` 는 MPC role (`mpc_main`) 만 떨어뜨린다. `get_nrt_cores` / `get_arm_driver_slot` / `get_hand_driver_slot` 은 profile 축을 받지 않으므로 값이 변하지 않는다 — 이들이 함께 좁아지면 그 스레드의 self-pin 이 EINVAL 로 죽는다.
-- `rtc_forbidden_threads()` 는 `rtc_expected_threads()` 의 거울이다. off 에서 mpc 행을 기대 표에서 빼기만 하면 "MPC 꺼짐" 과 "MPC 가 방금 반환한 코어에서 돌고 있음" 이 검증기에 똑같이 보이므로 (둘 다 행이 없다), 떨어뜨린 role 은 **존재하면 FAIL** 인 목록으로 옮겨간다.
-- **`cpu_shield.sh status` 는 shield 를 먼저 묻는다** — `/sys/devices/system/cpu/isolated` 는 isolcpus 만 반영하고 cset shield 는 그 파일에 아무것도 안 쓰므로, `shield_isolation_method()` 가 실제 cpuset → isolcpus 순으로 판정해 두 소비자(`cpu_shield.sh`, `check_rt_setup.sh`)가 같은 답을 쓴다.
-- **GRUB 은 profile 을 타지 않는다** — `get_rt_cores_with_siblings()` 는 `$2` 를 무시하고 항상 default profile 기준 최광 집합을 낸다. `nohz_full` / `rcu_nocbs` 는 boot-static 이라 profile 을 반영하려면 재부팅이 필요하고, 그러면 "재부팅 없는 profile 전환" 이 깨진다. 반환된 코어에 `nohz_full` 마킹이 남는 비용은 공짜가 아니다 (runnable task 가 둘 이상이면 scheduler tick 이 재개되고 RCU/housekeeping 이 offload 된다) — 다만 커널 커맨드라인과 런타임 레이아웃이 어긋나는 것보다 싸다.
+### `thread_layout.yaml`
 
-**hand aux lane**: `udp_hand_node` 는 위 `hand_driver` 코어에 더해 **OS slot(Core 0)에 `hand_aux_io` 스레드 하나**를 둔다 — 타이밍 CSV drain(1 Hz, 버스트당 최대 512행)과 stats JSON 저장 같은 blocking 파일 I/O 전용 CFS 레인이다. shield 밖 `system` cpuset 안이라 cpuset 재설계가 필요 없고 `cset shield` 활성 상태에서도 EINVAL 이 나지 않는다. slot 은 노드 param `aux_cpu_slot`(기본 0) 이며 shell 쪽 SSoT 는 `get_os_cores()` 다. ≤5코어 tier 에서는 `hand_driver` slot 도 0 이라 두 레인이 같은 코어로 합쳐진다 (그 tier 는 원래 Core 0 에 전부 모이는 degraded 배치다).
+CPU 레이아웃의 선언형 manifest ([config/thread_layout.yaml](config/thread_layout.yaml)). tier → slot / policy / priority 와 launch profile 을 정하고, `python3 repo_scripts/scripts/gen_thread_layout.py --write` 가 C++ · shell · Python · 이 README 의 생성 블록을 만든다 (`--check` 는 드리프트 게이트).
 
-**공통 배치 규칙**: RT cluster 는 Core 1 부터 시작 (Core 0 = OS/DDS/IRQ 전용), nrt_logging / nrt_callback 은 모든 ≥ 6c tier 에서 Core 0 와 분리, arm/hand 는 알파벳 순, sim_thread / viewer 는 모든 tier 에서 `cpu_core = -1`. 단조성 불변식은 `rtc_base/test/test_mpc_thread_config.cpp` 의 tier 쌍 + sentinel 처리 테스트가 회귀를 방지한다.
+### 빌드 병렬도와 메모리
 
----
-
-## 스크립트 상세
-
-### build_rt_kernel.sh
-
-mainline PREEMPT_RT 커널(6.12+)을 소스에서 빌드/검증/설치합니다. 7단계 파이프라인으로 체크포인트 기반 재개를 지원합니다. PREEMPT_RT 는 Linux 6.12 에서 mainline 병합되어 외부 RT 패치 없이 `CONFIG_PREEMPT_RT=y` 만으로 RT 활성화됩니다.
-
-```bash
-sudo ./build_rt_kernel.sh                  # 대화형 빌드 (완료 단계 자동 스킵)
-sudo ./build_rt_kernel.sh --batch          # 비대화형 (menuconfig 건너뜀)
-sudo ./build_rt_kernel.sh --batch --with-nvidia   # 데스크탑 (NVIDIA DKMS 포함)
-sudo ./build_rt_kernel.sh --profile nuc --batch   # Intel NUC hybrid config 강제
-sudo ./build_rt_kernel.sh --kernel-version 6.12.91  # 커널 버전 지정 (6.12+)
-sudo ./build_rt_kernel.sh --dry-run        # 다운로드·검증·압축해제·설정까지만
-sudo ./build_rt_kernel.sh --status         # 진행 상태만 확인
-sudo ./build_rt_kernel.sh --verify         # 각 단계별 세부 적용 상태 진단
-sudo ./build_rt_kernel.sh --skip-verify    # GPG 서명 검증 건너뜀
-sudo ./build_rt_kernel.sh --force-step 5   # 5단계부터 강제 재시작
-sudo ./build_rt_kernel.sh --clean          # 빌드 소스 정리 후 처음부터
-sudo ./build_rt_kernel.sh --build-dir /path  # 빌드 디렉토리 지정
-```
-
-**7단계 구성:**
-
-| 단계 | 내용 |
-|------|------|
-| 1/7 | 필수 빌드 패키지 설치 |
-| 2/7 | 커널 소스 다운로드 + GPG 서명 검증 |
-| 3/7 | 압축 해제 |
-| 4/7 | 커널 설정 (PREEMPT_RT + profile별 config) |
-| 5/7 | 커널 빌드 (`make bindeb-pkg`) |
-| 6/7 | .deb 패키지 설치 |
-| 7/7 | GRUB 등록 확인 및 기본 부팅 설정 |
-
-**커널 / profile:**
-
-- **커널**: 6.12.x LTS (mainline PREEMPT_RT, 외부 패치 불요) — Ubuntu 22.04 / 24.04 공통, OS 독립. 기본 `6.12.91`, `--kernel-version` 으로 override (6.12+). 두 머신 재현성을 위해 pin.
-- **profile** (`--profile auto`, CPU 자동 감지 — rt_common `detect_hybrid_capability`):
-  - `desktop-amd` — AMD Ryzen (`amd_pstate`, SCHED_CLUSTER)
-  - `desktop-intel` — 일반 Intel (`intel_pstate`, non-hybrid)
-  - `nuc` — Intel hybrid NUC 13/14/15 (SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL)
-- **NVIDIA**: 기본 분리 — `setup_nvidia_rt.sh` 가 담당. `--with-nvidia` 일 때만 커널 빌드 단계에서 DKMS 직접 빌드.
-- **Secure Boot**: 활성 시 미서명 custom 커널 부팅 차단 경고 (감지만).
-
----
-
-### setup_grub_rt.sh
-
-GRUB RT 커널 파라미터의 **단일 진실 원천(single source of truth)**입니다. `install.sh`와 `setup_nvidia_rt.sh`에서 호출됩니다.
-
-```bash
-sudo ./setup_grub_rt.sh
-sudo ./setup_grub_rt.sh --help
-```
-
-**관리하는 GRUB 파라미터:**
-
-| 파라미터 | 값 | 효과 |
-|---------|-----|------|
-| `nohz_full` | RT thread core (SMT sibling 포함) | SCHED_FIFO 가 실제로 실행되는 코어에서 타이머 틱 제거. 값은 `get_rt_cores_with_siblings()` SSoT — 예: non-SMT 는 전 tier "1-3", SMT 6C/12T 시 "1-3,7-9", SMT 12C/24T 시 "1-3,13-15". nrt / driver (CFS) 는 제외. |
-| `rcu_nocbs` | RT thread core (SMT sibling 포함) | RCU 콜백을 RT 코어 밖으로 오프로드 (동일 범위). |
-| `processor.max_cstate` | 1 | 깊은 C-state 진입 방지 |
-| `clocksource` | tsc | HPET 대비 50-100x 빠른 타이머 |
-| `tsc` | reliable | TSC 불안정 감지 비활성화 |
-| `nmi_watchdog` | 0 | NMI 인터럽트 제거 |
-| `threadirqs` | (없음) | IRQ 핸들러 스레드화 |
-| `nosoftlockup` | (없음) | soft lockup 경고 방지 |
-
-**sysctl 설정:** `kernel.sched_rt_runtime_us=-1` 즉시 + `/etc/sysctl.d/99-rt-sched.conf`로 영구 적용
-
-참고: `isolcpus`는 포함하지 않습니다. 런타임 동적 격리를 위해 `cpu_shield.sh`(cset shield)로 대체되었습니다. SMT 시 RT 물리 코어의 HT 시블링은 `nohz_full` / `rcu_nocbs` 에 자동 포함되어 (sibling tick → RT 코어 L1/L2 invalidation 방지) cache 일관성을 유지합니다.
-
----
-
-### setup_irq_affinity.sh
-
-하드웨어 IRQ를 OS 코어에 고정하여 RT 코어를 인터럽트 지터로부터 보호합니다.
-
-```bash
-sudo ./setup_irq_affinity.sh              # NIC 자동 감지
-sudo ./setup_irq_affinity.sh enp3s0       # NIC 지정
-```
-
-- **SMT-aware**: HT 시블링까지 포함한 IRQ affinity mask 계산
-- NIC 전용 IRQ 우선 고정 후, 나머지 모든 하드웨어 IRQ도 OS 코어에 고정
-- 타이머 IRQ 0은 제외
-- 적용 후 RT 코어에 잔여 IRQ가 없는지 자동 검증
-- 적용 후 코어별 스레드 레이아웃(thread_config.hpp 기준) 출력
-
----
-
-### setup_udp_optimization.sh
-
-NIC 하드웨어 및 커널 네트워크 스택을 실시간 UDP/DDS 통신에 최적화합니다.
-
-```bash
-sudo ./setup_udp_optimization.sh          # NIC 자동 감지
-sudo ./setup_udp_optimization.sh enp1s0   # NIC 지정
-```
-
-| 단계 | 설정 | 효과 |
-|------|------|------|
-| 1 | 인터럽트 코얼레싱 비활성화 (rx-usecs=0, adaptive=off) | 즉시 인터럽트 전달 |
-| 2 | GRO/LRO/TSO/GSO 비활성화 | 패킷 병합 방지, 지연 시간 감소 |
-| 3 | RX/TX 링 버퍼 1024 | DDS 패킷에 적합한 균형 |
-| 4 | sysctl rmem_max/wmem_max=2GB, default=212992, backlog=5000 | DDS 소켓 버퍼 상한 확대 |
-| 5 | systemd oneshot 서비스 생성 (`rtc-udp-optimization.service`) | 부팅 시 ethtool 설정 자동 재적용 |
-
-- sysctl 설정: `/etc/sysctl.d/99-ros2-udp.conf`로 영구 적용
-- ethtool 설정: `/usr/local/bin/rtc-udp-optimization.sh` 스크립트 + systemd 서비스로 부팅 시 자동 재적용
-
-> CycloneDDS `SocketReceiveBufferSize`(8MB)는 `rmem_max`(2GB) 이하여야 합니다.
-
----
-
-### setup_cpu_governor.sh
-
-CPU governor를 performance 모드로 설정합니다.
-
-```bash
-sudo ./setup_cpu_governor.sh
-sudo ./setup_cpu_governor.sh --help
-```
-
-| 단계 | 내용 |
-|------|------|
-| 1 | 모든 CPU governor 상태 확인 및 performance로 즉시 변경 (sysfs 직접 설정) |
-| 2 | cpupower 도구 자동 설치 시도 (미설치 시) |
-| 3 | systemd 서비스 생성 (`cpu-governor-performance.service`) -- 부팅 시 자동 적용 |
-| 4 | Intel P-state 드라이버 및 Turbo Boost 상태 리포팅 |
-
-검증: `cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor`
-
----
-
-### setup_nvidia_rt.sh
-
-NVIDIA GPU와 PREEMPT_RT 커널의 안정적 공존을 설정합니다 (7단계). Ubuntu 22.04/24.04 지원.
-
-```bash
-sudo ./setup_nvidia_rt.sh
-sudo ./setup_nvidia_rt.sh --help
-```
-
-**7단계 프로세스:**
-
-| 단계 | 내용 |
-|------|------|
-| 1/7 | Pre-flight checks (Ubuntu 버전, RT 커널, NVIDIA GPU, CPU 레이아웃) |
-| 2/7 | NVIDIA modprobe 설정 (`NVreg_EnableGpuFirmware=0` 등) |
-| 3/7 | NVIDIA IRQ affinity systemd 서비스 |
-| 4/7 | nvidia-smi persistence mode 활성화 |
-| 5/7 | nouveau 블랙리스트 (활성 시) |
-| 6/7 | NVIDIA DKMS 모듈 빌드 (RT 커널용) |
-| 7/7 | 연관 스크립트 호출 + 검증 요약 |
-
-> Stage 7에서 `setup_grub_rt.sh`, `setup_display_rt.sh`, `setup_cpu_governor.sh`를 자동 호출합니다.
-
----
-
-### setup_display_rt.sh
-
-RT 환경에서 디스플레이 안정성을 확보합니다.
-
-```bash
-sudo ./setup_display_rt.sh
-sudo ./setup_display_rt.sh --help
-```
-
-| 단계 | 내용 |
-|------|------|
-| 1/2 | X11 안티 티어링 (`ForceFullCompositionPipeline`, TripleBuffer) -- `/etc/X11/xorg.conf.d/20-nvidia-antitear.conf` |
-| 2/2 | Compositor 우선순위 부스트 (Xorg/Xwayland/gnome-shell/kwin을 renice -10) -- systemd 서비스 등록 |
-
-- Wayland/X11/headless 자동 감지
-- headless 환경에서도 설정 파일 설치 (다음 GUI 부팅 시 적용)
-- Wayland 환경에서는 XWayland 창에만 anti-tearing 적용
-
----
-
-### cpu_shield.sh
-
-런타임 CPU 격리를 동적으로 관리합니다. `isolcpus` GRUB 파라미터 없이 재부팅 불필요합니다.
-
-```bash
-sudo cpu_shield.sh on --robot    # 격리 활성화 (robot 모드)
-sudo cpu_shield.sh on --sim      # 격리 활성화 (sim 모드 — 범위는 --robot 과 동일)
-sudo cpu_shield.sh off           # 격리 해제
-cpu_shield.sh status             # 상태 확인 (sudo 불필요)
-```
-
-**격리 방식:** cset shield (필수). 과거 cgroup v2/v1 cpuset fallback 은 태스크 이주·complement cpuset 없이 빈 `rt_shield` 만 만들어 **실질 격리를 제공하지 못했으므로 비활성화**되었다 — `cset` 미설치 시 shield 는 허상 success 대신 명확히 실패한다 (`sudo apt-get install -y cpuset` 로 설치; `install_cset_tools` 가 robot/full 설치 시 자동 처리).
-
-**Tier 모델:**
-
-| Tier | 스레드 | 격리 |
-|------|--------|------|
-| Tier 1 (RT-critical) | rt_control + rt_callback (FIFO 70) + mpc_main. nrt_logging / nrt_callback / nrt_publish (SCHED_OTHER) 는 ≥ 6c 에서 rt_callback 과 같은 aux slot 에 동거 | 항상 |
-| Tier 2 (driver / IO) | arm_driver, hand_driver, hand_aux_io | SCHED_OTHER — shield 밖 dedicated core. arm 은 CM 파라미터로 내부 RT 루프만 FIFO 50 + pin. hand 는 프로세스가 스스로 pin 하고 (`use_cpu_affinity` param) 내부 `hand_udp_recv` 만 FIFO 65, `hand_aux_io` 는 OS slot 으로 분리; launch 는 DDS 스레드만 co-pin 한다. sim 은 taskset |
-| Tier 3 (Flexible) | sim_thread, viewer, monitoring, build | 격리 안 함 (`cpu_core = -1`, no pin) |
-
-> `--robot` / `--sim` 두 모드는 shield 범위가 동일하다 (RT + MPC only). driver / IO 코어는 shield 밖에서 SCHED_OTHER 로 직접 핀 — 별도 tier 격리 불필요. 두 옵션은 forward-compat 용으로 유지.
-
-**코어 수별 격리 범위 (`--robot` / `--sim` 동일):**
-
-전 tier 동일하게 **`1-3`** 이다 — RT 그룹은 `rt_control`(1) + `rt_callback`(2) +
-`mpc_main`(3) 셋이고 코어가 늘어도 늘지 않는다 (검증: `test_rt_common.sh::test_get_rt_shield_cpus_non_smt`).
-물리 코어가 슬롯보다 적은 박스(예: 2코어)에서는 존재하지 않는 코어가 떨어져 `1` 로
-좁혀진다 — cset/taskset 에 없는 core id 를 넘기지 않기 위한 phantom drop 이다.
-
-> `integrated_bringup` 의 launch 파일 다섯 개가 `rtc_tools.launch.cpu_shield` 를 통해 자동
-> 호출합니다 (`robot_ur5e_p1a` · `robot_ur5e_p1b` · `sim_ur5e_p1a` · `sim_ur5e_p1b` ·
-> `sim_iiwa7_leap`). `rtc_mujoco_sim/launch/mujoco_sim.launch.py` 는 agnostic 단독 launch 라
-> 호출하지 **않습니다** (design-principles P1). `build.sh` / `install.sh` 는 빌드 전 자동 해제합니다.
->
-> 무장은 **노드 기동보다 먼저 끝난다** — 핀을 거는 액션이 전부 이 프로세스의 `OnProcessExit`
-> 에 걸려 있습니다. 선언 순서만으로는 부족합니다 — `ExecuteProcess` 는 병렬로 시작되므로,
-> `cset` 이 태스크를 옮기는 동안 먼저 뜬 프로세스가 `system` cpuset 에 붙어 그 RT 루프의
-> `cpu_affinity` 가 cpuset mask 로 덮일 수 있습니다. 그래서 launch 시작이 cset 소요만큼
-> 늦어집니다 — 정상입니다.
-
----
-
-### check_rt_setup.sh
-
-실시간 환경의 정적 검증을 수행합니다 (컨트롤러 실행 전, read-only).
-
-```bash
-./check_rt_setup.sh              # 상세 출력
-./check_rt_setup.sh --summary    # 카테고리별 한 줄 요약
-./check_rt_setup.sh --json       # CI/CD용 JSON 출력
-./check_rt_setup.sh --fix        # 실패 항목별 수정 명령 표시
-./check_rt_setup.sh --benchmark  # cyclictest 지터 측정 (sudo 필요)
-```
-
-**9개 검증 카테고리:**
-
-| # | 카테고리 | 검증 내용 |
-|---|---------|----------|
-| 1 | RT 커널 | `PREEMPT_RT` 활성 (`uname -v`) |
-| 2 | CPU 격리 | `isolcpus` 또는 cset shield 상태 |
-| 3 | 스케줄러 & 메모리 | clocksource=tsc, sched_rt_runtime_us=-1, THP=never |
-| 4 | GRUB 파라미터 | nohz_full, rcu_nocbs, processor.max_cstate, nmi_watchdog |
-| 5 | RT 권한 | ulimit -r >= 90, ulimit -l=unlimited, realtime 그룹 |
-| 6 | IRQ 어피니티 | 모든 IRQ가 OS 코어에 고정 |
-| 7 | 네트워크/UDP | rmem_max=2GB, 코얼레싱=0 |
-| 8 | NVIDIA | persistence 모드, IRQ 어피니티, nouveau 차단 |
-| 9 | CPU 주파수 | governor=performance |
-
-`--benchmark` 옵션 사용 시 cyclictest를 통한 RT 지터 실측을 추가 수행합니다 (sudo 필요).
-
-**종료 코드:** 0=PASS, 1=경고, 2=실패
-
----
-
-### verify_rt_runtime.sh
-
-RT 컨트롤러 실행 중 스레드 상태를 검증합니다.
-
-```bash
-./verify_rt_runtime.sh              # 상세 출력
-./verify_rt_runtime.sh --summary    # 카테고리별 요약
-./verify_rt_runtime.sh --json       # JSON 출력
-./verify_rt_runtime.sh --watch      # 3초 간격 연속 모니터링
-./verify_rt_runtime.sh --watch 5    # 5초 간격 연속 모니터링
-```
-
-**7개 검증 카테고리:**
-
-| # | 카테고리 | 검증 내용 |
-|---|---------|----------|
-| 1 | 프로세스 탐색 | robot bringup exec (예: `integrated_rt_controller`) PID, 스레드 이름 매칭 |
-| 2 | 스케줄링 정책 | SCHED_FIFO/OTHER + 우선순위 (`chrt -p`) |
-| 3 | CPU 어피니티 | 예상 코어에 고정 (`taskset -p`) |
-| 4 | 메모리 잠금 | `mlockall()` 적용 (VmLck > 0) |
-| 5 | 컨텍스트 스위치 | 비자발적 전환 빈도 |
-| 6 | CPU 마이그레이션 | RT 스레드 코어 이동 없음 |
-| 7 | RT 스로틀링 | `sched_rt_runtime_us=-1`, 스로틀링 누적 없음 |
-
-**종료 코드:** 0=PASS, 1=경고, 2=실패, 3=컨트롤러 미실행
-
----
-
-### setup_env.sh
-
-개발 쉘 1회 활성화. `build.sh`/`install.sh` 에서는 자동으로 source 되지만, `ros2 launch`, `colcon test` 등 대화형 커맨드에서는 매 쉘마다 명시적으로 source 필요.
-
-```bash
-source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
-```
-
-**환경 변수 export:**
-
-| 변수 | 값 | 용도 |
-|------|-----|-----|
-| `RTC_DEPS_PREFIX` | `<rtc_ws>/deps/install` | aligator/fmt/mimalloc 격리 prefix |
-| `CMAKE_PREFIX_PATH` | `$RTC_DEPS_PREFIX:...:/opt/onnxruntime` | CMake 의존성 검색 순서 (ONNX Runtime 포함) |
-| `LD_LIBRARY_PATH` | `$RTC_DEPS_PREFIX/lib:...` | 런타임 lib resolve |
-| `PKG_CONFIG_PATH` | `$RTC_DEPS_PREFIX/lib/pkgconfig:...` | .pc 기반 설정 |
-| `MUJOCO_DIR` | `/opt/mujoco-3.x.x` (자동 탐색) | `rtc_mujoco_sim` 의 fallback |
-| `mujoco_ROOT` | `$MUJOCO_DIR` | `find_package(mujoco)` cmake hint (build.sh 와 동등) |
-| `COLCON_DEFAULTS_FILE` | `<repo>/.colcon/defaults.yaml` | cwd 와 무관하게 colcon 기본 옵션 적용 |
-| `MAKEFLAGS` | `-j<N>` (이미 `-j` 가 있으면 그대로) | plain `colcon build` 의 make job 수 — 아래 "빌드 병렬도와 메모리" |
-| `VIRTUAL_ENV` | `<rtc_ws>/.venv` | Python venv 활성화 |
-
-**Source 순서**: ROS Jazzy → deps/install (+ ONNX Runtime) → .venv → workspace overlay (`install/setup.bash`, 있을 때만).
-
-**Plain `colcon build` 호환성** (build.sh 우회 워크플로): `setup_env.sh` 만 source 하면 `cd <rtc_ws> && colcon build --symlink-install` 로 단독 빌드가 가능하다. ONNX Runtime · MuJoCo · deps/install prefix 모두 환경변수로 주입되며, `.colcon/defaults.yaml` 이 `--symlink-install` / `Release` / `compile_commands` / 테스트 제외 (`-DBUILD_TESTING=OFF`) 를 자동 적용한다. 단 CMake 가 쓸 인터프리터는 venv 유무와 무관하게 고정한다 (build.sh 는 이를 자동 처리 — `append_cmake_python_args`). `.venv` 가 활성이면 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio configure 가 깨질 수 있고, venv 가 없어도 FindPython 은 PATH 디렉토리 순서로 찾으므로 PATH 앞의 다른 `python3.X` (예: `uv python install` 의 `~/.local/bin/python3.12`) 를 잡아 `catkin_pkg` 를 못 본다. `deactivate` 는 앞의 경우만 막는다.
-
-이때 **CLI 의 `--cmake-args` 는 defaults 의 `cmake-args` 목록에 덧붙지 않고 그 목록을 통째로 대체한다** (`symlink-install` · `parallel-workers` 는 유지). 그래서 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 만 넘기면 새 빌드 트리가 `CMAKE_BUILD_TYPE` 없이 — 최적화 없이 — configure 되고 `compile_commands.json` 도 안 나온다. 기존 트리는 CMakeCache 가 옛 값을 기억해 차이가 드러나지 않는다. defaults 목록을 함께 적는다 (목록은 `.colcon/defaults.yaml` 과 같게 유지):
-
-```bash
-colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON -DBUILD_TESTING=OFF -DPython3_EXECUTABLE=/usr/bin/python3
-```
-
-build.sh 가 추가로 수행하는 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · `check_rt_setup.sh` 호출은 colcon 단독에서는 빠진다.
-
-#### workspace 에 다른 저장소가 함께 있을 때
-
-이 저장소의 빌드 스크립트와 manifest 는 다른 저장소의 패키지 이름을 갖지 않는다. 그래서 `<rtc_ws>/src` 에 함께 둔 저장소는 두 경로에서 다르게 다뤄진다.
-
-| 경로 | 빌드 대상 | 다른 저장소의 패키지 |
-|---|---|---|
-| `build.sh` | `rt_common.sh` 의 고정 목록 (`--packages-select`) | 빌드하지 않는다 |
-| ws root 의 plain `colcon build` | `src/` 아래의 모든 패키지 | 함께 빌드한다 |
-
-- **ws root 의 첫 빌드는 plain `colcon build` 로 한다** — 위 명령 형태 그대로다. `src/` 의 저장소가 한 번에 빌드된다. `build.sh` 를 쓰면 나머지 저장소를 `colcon build --base-paths src/<저장소>` 로 따로 빌드한다.
-- **`build.sh -c` 는 ws root 의 `build/` · `install/` · `log/` 를 통째로 지운다.** 다른 저장소의 설치본도 함께 사라지므로, 그 뒤에는 plain `colcon build` 로 전체를 다시 빌드한다.
-- **한 저장소만 고르려면 `--base-paths src/<저장소>` 를 쓴다.** 패키지 이름을 적지 않으므로 그 저장소의 패키지가 늘거나 줄어도 명령이 바뀌지 않는다. `colcon test` · `colcon test-result` 에도 같게 적용한다.
-- **자기 빌드 절차와 환경을 가진 저장소는 별도 workspace 에 둔다.** 이 workspace 에서 빌드하면 `setup_env.sh` 의 colcon defaults 와 `.venv` 가 그 빌드에 섞인다. 그 패키지를 쓰는 터미널에서만 그 workspace 의 `install/setup.bash` 를 이 workspace 다음에 source 한다.
-
-로봇 config 가 `package://<패키지>/...` 로 가리키는 패키지는 런타임 선행조건이다 — 설치돼 있지 않으면 launch 가 `package '<패키지>' not found` 로 멈춘다. 어느 config 가 어느 패키지를 가리키는지는 [integrated_bringup/README.md](../integrated_bringup/README.md) 가 갖는다.
-
----
-
-#### 빌드 병렬도와 메모리
-
-colcon 의 병렬도는 두 층이다 — 동시에 빌드하는 **패키지 수** (`--parallel-workers`) 와 패키지 안의 **make job 수**. colcon-cmake 는 `MAKEFLAGS` 에 `-j`/`-l` 이 없으면 패키지마다 `-j<논리 코어> -l<논리 코어>` 를 붙이고, `-l` 은 loadavg 만 볼 뿐 메모리는 보지 않는다. 그래서 colcon 기본값의 동시 컴파일 수 상한은 *패키지 수 × 논리 코어* 이고, 코어가 많고 RAM 이 그만큼 크지 않은 호스트는 그것만으로 메모리가 바닥난다 (물리 16코어 / 32 GB 호스트가 빌드 중 섰다).
-
-이 repo 는 **패키지를 한 번에 하나씩** 빌드하고 (`.colcon/defaults.yaml` 의 `parallel-workers: 1`, `build.sh` 도 명시적으로 넘긴다) 병렬도를 **make job 수 하나**로 정한다:
+이 repo 는 패키지를 **한 번에 하나씩** 빌드하고 (`.colcon/defaults.yaml` 의 `parallel-workers: 1`) 병렬도를 make job 수 하나로 정한다. 기본값은 `min(물리 코어, RAM / 4 GB)` 다 (6C/32GB → 6, 16C/32GB → 8).
 
 | knob | 적용 범위 |
 |------|-----------|
-| `./build.sh -j N` · `./install.sh -j N` | 그 실행 (install.sh 는 `build_deps.sh` 에도 건다) |
-| `RTC_BUILD_JOBS=N` | `build.sh` · `build_deps.sh` 는 실행 시점에, plain `colcon` 은 `setup_env.sh` 를 source 하는 시점에 읽는다 — 이미 source 한 셸에서 plain `colcon` 의 값을 바꾸려면 `MAKEFLAGS=-jN colcon build …` |
-| `MAKEFLAGS` 에 직접 넣은 `-j` | 위 둘이 없으면 그대로 존중한다 — 그 값이 **전체** 병렬도다 (패키지는 하나씩). 이전 `defaults.yaml` 주석을 따라 `MAKEFLAGS=-j2` 를 셸 rc 에 둔 경우 빌드가 2 job 으로 돈다; `build.sh` 가 `Parallelism:` 줄에 출처와 이 호스트의 기본값을 함께 찍는다 |
-| 기본값 | `min(물리 코어, RAM / 4 GB)` — 6C/32GB → 6, 16C/32GB → 8 |
+| `./build.sh -j N` · `./install.sh -j N` | 그 실행 (`install.sh` 는 `build_deps.sh` 에도 건다) |
+| `RTC_BUILD_JOBS=N` | `build.sh` · `build_deps.sh` 는 실행 시점에, plain `colcon` 은 `setup_env.sh` 를 source 하는 시점에 읽는다. 이미 source 한 셸은 `MAKEFLAGS=-jN colcon build …` |
+| `MAKEFLAGS` 의 `-j` | 위 둘이 없으면 그대로 존중하며 그 값이 **전체** 병렬도다 (셸 rc 에 `MAKEFLAGS=-j2` 가 남아 있으면 2 job) |
+| `RTC_BUILD_MEM_MAX` | 빌드 RAM 상한: `24G` · `20000M` · `60%` / `off`. 직접 주면 swap 없이 엄격하다. 단위 없는 수 · K 단위 · 100% 초과 · 64M 미만은 거부 |
+| 기본 메모리 상한 | RAM 의 75% 와 시작 시점 `MemAvailable` 의 90% 중 작은 쪽 + RAM 25% 의 swap |
 
-기본값의 근거는 실측이다 (6C/12T · 32 GB, Release, 이 repo 의 21개 패키지 클린 빌드; 컴파일러·링커 RSS 합의 최대):
+- `build.sh` · `build_deps.sh` 는 빌드를 `MemoryMax` 가 걸린 systemd user scope 안에서 돌려, 한도를 넘으면 호스트가 아니라 **그 빌드만** 끝난다. 상한을 걸 수 없는 호스트는 이유를 알리고 상한 없이 빌드한다.
+- plain `colcon` 에는 상한이 없다: `systemd-run --user --scope -p MemoryMax=75% -p MemorySwapMax=8G colcon build …` (`MemorySwapMax` 의 % 는 swap 크기 대비라 크기로 적는다). 실제 값은 `build.sh` 의 `Parallelism:` · `Memory cap:` 줄, plain `colcon` 은 `echo $MAKEFLAGS` 로 본다.
+- 기본값의 근거 (실측 표 · job 당 4 GB · OOM 판정) 는 [build-rationale.md](../docs/reference/build-rationale.md).
 
-| 패키지 × make job | 시간 | 빌드 메모리 최대 |
-|---|---|---|
-| 1 × `-j6` | 18분 49초 | 11.0 GB |
-| 2 × `-j3` | 20분 51초 | 8.7 GB |
-| 1 × `-j8` | 17분 23초 | 14.4 GB |
-| 2 × `-j4` | 17분 11초 | 11.5 GB |
+### 빌드 시간 줄이기
 
-- **패키지를 나누지 않는 이유**: 같은 예산을 두 패키지로 나눠도 클린 빌드는 빨라지지 않고 (무거운 패키지들이 의존성 사슬로 이어져 혼자 빌드되는 구간이 길다), 평소 하는 패키지 하나 재빌드는 job 이 절반이라 훨씬 느리다 (`integrated_bringup`: 1×`-j6` 5분 18초, 2×`-j3` 8분 30초).
-- **SMT 형제를 세지 않는 이유**: `-j8` 은 `-j6` 보다 8% 빠르고 31% 더 쓴다.
-- **job 당 4 GB 인 이유**: TU 하나의 컴파일러 메모리는 대부분 2 GB 아래지만 2 GB 를 넘는 TU 가 51개, 최악은 3.5 GB 다 (`rtc_urdf_bridge/src/rt_model_handle.cpp`). 비용은 최적화가 아니라 템플릿 인스턴스화에서 나온다 — `-fsyntax-only` 만으로도 메모리의 90% 이상이 든다 — 그래서 `-O` 수준을 낮춰도 줄지 않는다.
-- **knob 은 빌드 전에 전부 검증한다**: `build.sh` 는 `-c` 가 트리를 지우고 CPU shield 를 풀기 **전에** 모든 knob (`RTC_BUILD_TESTS` · `RTC_CCACHE` · `RTC_BUILD_JOBS` · `RTC_BUILD_MEM_MAX`) 을 해석한다 — 쓸 수 없는 값이 설치본 없는 워크스페이스를 남기지 않게.
-- **`--no-warn-unused-cli`**: `build.sh` 는 한 인자 묶음을 모든 패키지에 넘기므로 C/C++ target 이 없는 패키지 (`repo_scripts` · `robot_descriptions`) 는 reconfigure 마다 `Manually-specified variables were not used` 를 냈다. 구조적으로 잡음이라 끈다.
-- **`-l` 을 넣지 않는 이유**: load 제한은 빌드와 무관한 시스템 부하까지 예산에서 깎는다 (1×`-j6 -l6` 은 20분 44초).
-- **패키지 하나 재빌드의 비용** (`.claude/hooks/verify-changes.sh --run` 이 치르는 경로, `-p integrated_bringup --tests`): 변경 없음 3초, TU 하나 수정 24초 (`-j6` 과 `-j12` 가 같다 — 링크가 지배한다), 패키지 전체 재컴파일 279초 (`-j12` 는 245초). 마지막 경우는 Stop hook 이 turn 끝에서 빌드하던 때의 180초 상한을 넘었다 — 그래서 빌드·테스트를 turn 끝에서 빼고 `--run` 으로 옮겼고, 그 상한은 900초다 (hook 헤더 Limits).
+**테스트는 기본으로 빌드하지 않는다.** 컴파일 시간의 절반 이상이 테스트라서 `./build.sh` · `./install.sh` · plain `colcon build` 모두 `-DBUILD_TESTING=OFF` 가 기본이다 (6C/12T 클린 빌드 18분 49초 → 9분 44초). 켜는 법은 다음과 같다.
 
-**메모리 상한.** job 수는 평균을 맞추는 장치다 — job 당 4 GB 는 최악 TU 하나가 들어가는 값이지, 모든 job 이 동시에 최악인 경우의 합 (8 × 3.5 GB = 28 GB) 이 아니고, 빌드 밖에서 메모리를 쓰는 프로그램도 계산에 없다. 그 꼬리는 상한으로 막는다. `build.sh` 와 `build_deps.sh` 는 빌드를 `MemoryMax` 가 걸린 systemd user scope 안에서 돌린다 (`rt_common.sh` `build_mem_scope_prefix`):
+- `build.sh` · `install.sh` — `--tests` (한 번), 또는 개발 셸에서 `export RTC_BUILD_TESTS=on`
+- plain `colcon` — `--cmake-args … -DBUILD_TESTING=ON`. defaults 목록을 대체하므로 "Plain `colcon build` 호환성" 의 목록을 함께 적는다
 
-- **기본 RAM 상한은 두 값 중 작은 쪽이다**: RAM 의 75%, 그리고 빌드를 시작하는 순간 비어 있는 메모리 (`MemAvailable`) 의 90%. sim · IDE · 브라우저가 이미 10 GB 를 쓰는 32 GB 호스트에서 "RAM 의 75%" 는 빌드에 없는 24 GB 를 약속한다 — scope 한도에 닿기 전에 호스트가 먼저 swap 에 빠진다
-- **swap 은 RAM 의 25% 까지 허용한다.** 0 으로 막으면 RAM 이 작은 호스트의 기본 빌드가 성립하지 않는다 — 4 GB 호스트는 상한이 3 GB 인데 최악 TU 가 3.5 GB 다. RAM 상한 + swap 허용 = RAM 전체가 job 산정식이 가정한 예산 (job × 4 GB) 과 맞는다
-- **`RTC_BUILD_MEM_MAX`** (`24G` · `20000M` · `60%` / `off`) 로 직접 주면 그 값이 전부다 — swap 허용 없이 엄격하다. 단위 없는 수는 systemd 에서 바이트이므로 (`24` = 24 바이트) 거부하고, K 단위 · 100% 초과 · 64M 미만도 거부한다 (이전에는 통과해 probe 가 죽고 "user session 없음" 으로 오진된 채 상한 없이 빌드됐다)
-- 한도를 넘으면 **그 빌드만** 실패한다. `build.sh` 는 `Build stopped: it needed more than the memory cap (…)` 으로 원인과 knob 을 알리고, 컴파일 에러를 메모리 탓으로 돌리지 않는다 (`build_mem_scope_end`). 판정 근거는 systemd 버전에 따라 다르다:
-  - systemd ≥ 253 (Ubuntu 24.04): scope 의 `OOMPolicy=stop` 이 프로세스 하나가 죽는 순간 scope 전체 (colcon · make · 컴파일러) 를 정리하고 unit 의 `Result` 가 `oom-kill` 이 된다
-  - 그 이전 (Ubuntu 22.04 는 249): scope 에 `OOMPolicy` 가 없다 — 죽은 컴파일러 하나 때문에 make 가 `Killed signal terminated program cc1plus` 로 실패하고 scope 는 스스로 끝난다. `Result` 는 `oom-kill` 이 되지 않으므로 scope cgroup 의 `memory.events` (`oom_kill`) 로 판정한다. 22.04 호스트에서 돌려 보지는 못했다 — 24.04 에서 `OOMPolicy=continue` 로 같은 동작을 만들어 확인했다
-- 상한을 걸 수 없는 호스트에서는 이유를 알리고 상한 없이 빌드한다 — job 수 제한은 그대로다. 이유는 둘로 가른다: `no systemd user session` (컨테이너 · CI · lingering 없는 ssh) 과 `this host does not enforce it` (scope 는 만들어지지만 한도가 안 걸림 — cgroup v1/hybrid, memory controller 미위임)
-- plain `colcon` 에는 걸리지 않는다. 같은 보호를 원하면 직접 감싼다: `systemd-run --user --scope -p MemoryMax=75% -p MemorySwapMax=8G colcon build …` (`MemoryMax` 의 % 는 RAM 대비지만 `MemorySwapMax` 의 % 는 **swap 크기** 대비다 — 크기로 적는다)
+**`colcon test` 전에는 `--tests` 로 빌드한다.** 테스트 없이 빌드한 패키지의 `colcon test` 는 실패가 아니라 **테스트 0개**를 보고해 통과처럼 읽힌다 (증상이 이것이면 `./build.sh --tests` 로 다시 빌드한다). `build.sh` 는 매 빌드 `Tests:` 줄로 선택을 알리고 `-DBUILD_TESTING` 을 `ON`/`OFF` 로 명시한다 (`RTC_BUILD_TESTS` 는 `on`·`1`·`true` / `off`·`0`·`false`).
 
-**감별.** 빌드가 `Build stopped: … memory cap` 으로 끝나면 상한에 닿은 것이다 — 다른 프로그램이 쓰는 메모리를 비우거나 job 수를 낮춘다 (`-j N`). 상한은 빌드를 시작할 때의 여유 메모리로 정해지므로 `Memory cap:` 줄의 값이 평소보다 작으면 호스트가 이미 차 있는 것이다. 상한 없이 돈 빌드 (plain `colcon`, user session 없는 호스트) 가 화면을 멈추거나 `c++: fatal error: Killed signal terminated program cc1plus` 로 죽어도 메모리다. 그 빌드가 실제로 쓴 job 수와 상한은 `build.sh` 의 `Parallelism:` · `Memory cap:` 줄에 찍히고, plain `colcon` 이면 `echo $MAKEFLAGS` 로 본다 — 비어 있으면 `setup_env.sh` 를 source 하지 않은 셸이고 colcon 이 논리 코어 수를 그대로 쓴다.
+**ccache.** 깔려 있으면 `build.sh` 가 자동으로 쓴다 (`--no-ccache` · `RTC_CCACHE=off` 로 끈다). 이득은 `build.sh -c` · 브랜치 전환처럼 같은 TU 를 다시 컴파일할 때뿐이다.
 
----
-
-#### 빌드 시간 줄이기
-
-**테스트는 기본으로 빌드하지 않는다.** 컴파일 시간의 절반 이상이 테스트다 — 메시지 패키지를 뺀 597개 TU 중 362개가 테스트 코드이고 컴파일 시간의 58% 를 차지한다 (`integrated_bringup` 은 156개 중 115개). 그래서 `./build.sh` · `./install.sh` · plain `colcon build` (`.colcon/defaults.yaml`) 모두 `-DBUILD_TESTING=OFF` 가 기본이고, 테스트가 필요할 때 켠다:
-
-| | 켜는 법 |
-|---|---|
-| `build.sh` | `./build.sh --tests …` (한 번), 또는 개발 셸에서 `export RTC_BUILD_TESTS=on` |
-| `install.sh` | `./install.sh --tests …` |
-| plain `colcon` | `--cmake-args … -DBUILD_TESTING=ON` — CLI `--cmake-args` 는 defaults 목록을 통째로 대체하므로 위 "Plain `colcon build` 호환성" 의 목록을 함께 적는다 |
-
-| 클린 빌드 (6C/12T, 1 × `-j6`) | 시간 | 빌드 메모리 최대 |
-|---|---|---|
-| 테스트 포함 (`--tests`) | 18분 49초 | 11.0 GB |
-| 기본 | 9분 44초 | 10.7 GB |
-
-메모리 최대는 줄지 않는다 — 가장 무거운 TU 들은 제품 코드 쪽에 있다.
-
-**`colcon test` 전에는 `--tests` 로 빌드한다.** 테스트 없이 빌드한 패키지에 `colcon test` 를 돌리면 실패가 아니라 **테스트 0개**가 보고된다 — 통과처럼 읽힌다. `build.sh` 는 그 선택을 매 빌드 `Tests:` 줄로 알리고, `-DBUILD_TESTING` 을 **매번 `ON`/`OFF` 로 명시**한다 (`RTC_BUILD_TESTS` 는 `on`·`1`·`true` / `off`·`0`·`false` 를 대소문자 없이 받는다): CMake 가 이 값을 캐시하므로 한쪽을 생략하면 그 방향으로는 직전 빌드의 선택이 남는다. Stop hook 의 `--run` 은 `--tests` 로 빌드하고 (`verify-changes.sh` `run_build` — turn 끝의 호출은 빌드하지 않는다), 그와 별개로 빌드 뒤 CMake 캐시가 `BUILD_TESTING=OFF` 인 패키지는 테스트하지 않고 UNVERIFIED 로 막는다 (`pkgs_built_without_tests`) — 판정이 모든 빌드 경로가 플래그를 기억하는 데 기대지 않게. 켜고 끄는 것은 그 패키지의 reconfigure 만 일으킨다 — 이미 컴파일된 테스트 object 는 남아 있어, 소스가 그대로면 다시 켤 때 재컴파일하지 않는다.
-
-**ccache.** `build.sh` 는 ccache 가 깔려 있으면 자동으로 쓴다 (`--no-ccache` / `RTC_CCACHE=off` 로 끈다; `install.sh` 가 설치한다). 얻는 것은 **같은 TU 를 다시 컴파일하는 빌드** — `build.sh -c`, 브랜치를 오가는 재빌드, 별도 build base — 이고, 평소의 증분 빌드는 make 가 이미 건너뛰므로 달라지지 않는다. 공개 헤더를 고쳐 하위 TU 의 전처리 결과가 바뀌는 재컴파일도 캐시로 못 막는다.
-
-| 클린 빌드 (`rtc_tsid` 까지 5개 패키지, 128 TU, 1 × `-j6`) | 시간 | 캐시 적중 |
-|---|---|---|
-| ccache 없음 | 4분 36초 | — |
-| ccache, 빈 캐시 | 5분 2초 | 5% |
-| ccache, 채워진 캐시 | 18초 | 100% |
-
-빈 캐시의 첫 빌드는 9% 느리다 (해시 + 저장). launcher 도 `BUILD_TESTING` 처럼 매 빌드 명시한다 — 빈 값 포함: ccache 로 configure 한 트리는 `--no-ccache` 뒤에도, ccache 를 지운 뒤에도 (그때는 `ccache: not found` 로 실패하며) 계속 그것을 부른다. clangd 는 `compile_commands.json` 의 ccache prefix 를 스스로 걷어낸다 (clangd 18 `--check` 로 확인).
-
----
-
-### build_deps.sh
-
-`../deps.repos` 기반으로 fmt/mimalloc/aligator 를 소스 빌드하여 `<rtc_ws>/deps/install/` 에 설치합니다.
-
-```bash
-source setup_env.sh
-~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/build_deps.sh
-```
-
-**동작:**
-1. `deps/src/aligator/.git` 가 없으면 `vcs import deps/src < ../deps.repos` + `git submodule update` 자동 실행
-2. 위상 순서로 각각 cmake configure + build + install (make job 수는 `build.sh` 와 같은 knob — `PARALLEL_JOBS` > `RTC_BUILD_JOBS` > `MAKEFLAGS` 의 `-j` > `min(물리 코어, RAM/4GB)`):
-   - `fmt 11.1.4` (`-DFMT_TEST=OFF -DFMT_DOC=OFF`)
-   - `mimalloc 2.1.7` (`-DMI_BUILD_TESTS=OFF -DMI_BUILD_OBJECT=OFF`)
-   - `aligator 0.19.0` (`-DBUILD_TESTING=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF` + `-Dhpp-fcl_DIR=/opt/ros/.../hpp-fcl` + `-Dfmt_DIR=$DEPS_PREFIX/lib/cmake/fmt`)
-3. `RPATH`: `$ORIGIN/../lib:$DEPS_PREFIX/lib` — 시스템 `/usr/local` 참조 없음
-
-**소요 시간**: 처음 빌드 시 ~15-20분 (aligator 가 주 병목). 재실행 시 cmake configure 단계만 통과하며 빠르게 종료.
-
----
-
-### verify_isolation.sh
-
-`install/` 하위 모든 ELF 바이너리·공유 라이브러리가 격리된 경로로만 의존성을 해결하는지 검사합니다.
-
-```bash
-source setup_env.sh
-~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/verify_isolation.sh
-```
-
-**허용 경로:**
-- `/opt/ros/jazzy/` (ROS distribution)
-- `<rtc_ws>/deps/install/` (격리된 fmt/mimalloc/aligator)
-- `<rtc_ws>/install/` (workspace overlay)
-- `/lib/x86_64-linux-gnu`, `/usr/lib/x86_64-linux-gnu` (libc, libstdc++, libgomp 등)
-- `/opt/onnxruntime*`, `/opt/mujoco-*` (승인된 바이너리 drop)
-
-**종료 코드:** 0=모든 ELF 격리 통과, 1=하나 이상 누수 (상세 출력)
-
----
-
-## 권장 설정 워크플로
+## 디렉토리
 
 ```
-[1회 설정 -- 순서대로 실행]
-  1. sudo ./build_rt_kernel.sh --batch    # PREEMPT_RT 커널 빌드/설치
-     -> 재부팅 (RT 커널로 부팅)
-
-  2. sudo ./setup_grub_rt.sh              # GRUB RT 파라미터 + sched_rt_runtime_us
-     -> 재부팅 (GRUB 파라미터 적용)
-
-  3. sudo ./setup_irq_affinity.sh         # IRQ를 OS 코어에 고정
-  4. sudo ./setup_udp_optimization.sh     # NIC/네트워크 최적화
-
-  5. sudo ./setup_cpu_governor.sh         # CPU governor -> performance
-
-  (NVIDIA GPU가 있는 경우)
-  6. sudo ./setup_nvidia_rt.sh            # NVIDIA 설정 + 위 3/4/5 자동 호출
-     -> 재부팅 (DKMS 모듈 적용)
-
-  (선택사항)
-  7. sudo ./setup_display_rt.sh           # 디스플레이 최적화
-
-[빌드 전 검증]
-  ./check_rt_setup.sh --summary
-
-[로봇 실행]
-  sudo cpu_shield.sh on --robot           # 선택: launch 가 알아서 먼저 무장한다
-  ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
-  ./verify_rt_runtime.sh --watch 3        # 런타임 모니터링
-
-[시뮬레이션 실행]
-  sudo cpu_shield.sh on --sim             # 범위는 --robot 과 동일
-  ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
-
-[종료]
-  sudo cpu_shield.sh off                  # 격리 해제
+repo_scripts/
+├── config/    레이아웃 manifest · 문서/README 예산
+├── scripts/   실행 스크립트 (위 목록) · 검증기 · 생성기
+│   └── lib/   source 전용 라이브러리 · install.sh helper
+├── test/      셸 단위 테스트 · fixture
+├── CMakeLists.txt
+└── package.xml
 ```
 
-> `setup_nvidia_rt.sh`를 실행하면 Stage 7에서 `setup_grub_rt.sh`, `setup_display_rt.sh`, `setup_cpu_governor.sh`를 자동 호출하므로 별도 실행이 불필요합니다.
+스크립트마다의 설명은 각 파일 상단 주석이, 배포 대상은 `CMakeLists.txt` 의 `install(PROGRAMS …)` 가 갖는다.
 
----
-
-## 의존성
-
-| 의존성 | 용도 |
-|--------|------|
-| `ament_cmake` | ROS2 빌드 시스템 |
-
-**시스템 요구사항:** bash 4.0+, `ethtool`, `lscpu`, `sysctl`, `cset` (cpuset), `cyclictest` (rt-tests, 벤치마크 시). 빌드 보호 장치가 쓰는 것은 아래 "빌드가 기대는 시스템 패키지"
-
----
-
-## 빌드
-
-```bash
-cd ~/ros2_ws/rtc_ws
-colcon build --packages-select repo_scripts
-source install/setup.bash
-```
-
-스크립트만 포함된 패키지이므로 바이너리는 생성되지 않습니다. `colcon build` 시 스크립트가 `install/repo_scripts/lib/repo_scripts/`에 복사됩니다.
+## 문제 해결
 
 ### 흔한 실패와 감별 (colcon cwd · source · venv)
 
-[AGENTS.md](../AGENTS.md) §9 의 두 hard rule 이 실제로 깨지는 경로와 그 증상·감별이다. 규칙 자체는 헌법이, 재발 경로·근거는 여기가 소유한다 (AP-DOC-2).
+[AGENTS.md](../AGENTS.md) §9 의 두 hard rule 이 실제로 깨지는 경로다. 규칙은 헌법이, 재발 경로의 서술은 [build-rationale.md](../docs/reference/build-rationale.md) 가 갖는다.
 
-**colcon cwd drift.** 실제 위반은 룰을 몰라서가 아니라 cwd drift 로 재발한다 — 편집하러 패키지 dir 로 `cd` 한 shell 에서 그대로 colcon 을 치거나, `cd src/rtc-framework && source src/rtc-framework/...` 처럼 한 줄에 체이닝해 상대경로 source 가 silent fail 한 채 빌드가 repo 안에서 도는 경로다. 에이전트 shell 의 cwd 는 호출 간에 유지되므로 "독립 call 로 내면 된다" 는 오해다. `cd <rtc_ws> &&` 로 시작하기만 하면 규칙은 지켜지지만 그 다음 호출부터 cwd 가 ws root 에 남고, 그 부작용이 아래층에서 "cd 금지" 라는 반대 규율을 만들어 두 규칙이 충돌한 채 시작한 세션이 있었다 — 서브셸 표준형 `( cd <rtc_ws> && source … && colcon … )` 은 그 충돌 자체를 없앤다. 증상이 빌드 실패가 아니라는 점이 이 경로를 비싸게 만든다: repo 안에 별도 `build/`·`install/`·`log/` 트리가 생기고 (`.clangd` 의 CompilationDatabase 가 그 트리를 가리키며 ws-root incremental cache 와 분리되어 추적 불가한 stale state 가 누적된다) 그 뒤로는 호출마다 두 트리를 오가므로 같은 세션의 검증들이 서로 모순되는 결과를 낸다 — 한 test 는 수정 후 코드로, 다른 test 는 stale 바이너리로 도는 식이다. 코드에 없는 논리 버그를 쫓게 되니, 검증 결과가 설명 불가하게 엇갈리면 코드를 의심하기 전에 `ls src/rtc-framework/build` 부터 친다.
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| repo 안에 `build/` · `install/` · `log/` 가 생겼다. 검증 결과가 설명 불가하게 엇갈린다 | 패키지 dir 에서 colcon 을 쳤다 (cwd drift). 상대경로 source 가 조용히 실패한 경우도 있다 | `ls src/rtc-framework/{build,install,log}` 로 확인해 지운다. 항상 서브셸 표준형: `( cd ~/ros2_ws/rtc_ws && source <절대경로>/setup_env.sh >/dev/null 2>&1 && colcon … )` |
+| 빌드가 정상 시작했다가 CMake 에서 `No module named 'ament_package'` | `source setup_env.sh … \| tail` 처럼 `source` 를 파이프에 넣어 env 가 부모 셸에 안 남았다 | 출력은 `>/dev/null 2>&1` 로 줄이고 파이프는 뒤따르는 명령에만 건다. 감별: `/usr/bin/python3 -c "import ament_package"` |
+| configure 가 `No module named 'catkin_pkg'` 로 죽는다 | `FindPython` 이 venv 나 PATH 앞의 다른 `python3.X` 를 잡았다 | `-DPython3_EXECUTABLE=/usr/bin/python3` 로 고정 ("Plain `colcon build` 호환성"). `build.sh` 는 자동 |
+| venv 에서 `colcon test` / `ros2 run` / `ros2 launch` 가 실패한다 | `.venv` 의 sys.path · shebang · 의존성 해석 문제 | 근본 원인을 고친다. `deactivate` · gtest 직접 실행 · `PYTHONPATH` 우회는 금지 (예외는 configure 단계뿐) |
+| `Build stopped: it needed more than the memory cap (…)`. 상한 없는 빌드 (plain `colcon`) 라면 화면이 멈추거나 `Killed signal terminated program cc1plus` | 빌드가 메모리 상한에 닿았다 (또는 상한 없이 메모리가 바닥났다) | 다른 프로그램의 메모리를 비우거나 `-j N` 을 낮춘다. `Memory cap:` 줄이 평소보다 작으면 호스트가 이미 차 있다. `echo $MAKEFLAGS` 가 비면 `setup_env.sh` 를 source 하지 않은 셸이다 |
+| Intel CPU 인데 `check_rt_setup.sh` 가 hybrid 오검출을 경고한다 | `cpuid` 미설치로 CPUID 감지 경로가 막혔다 | `sudo apt install -y cpuid`. 다른 경로는 [rt-optimization.md §6](../docs/rt-optimization.md#6-hybrid-cpu-nuc) |
 
-**`source` 를 파이프라인에 넣는 것.** 출력을 줄이려 `source setup_env.sh 2>&1 | tail -2 && colcon build …` 처럼 쓰면 source 가 subshell 에서 실행돼 env 가 부모 셸에 반영되지 않는다. 조용히 성공한 것처럼 보이는 게 함정이다: `colcon` 자체는 profile PATH 에 있어 빌드가 정상 시작하고, 한참 뒤 CMake 안에서 `ModuleNotFoundError: No module named 'ament_package'` 같은 원인을 가리키지 않는 에러로 죽는다 (`ament_package` 는 dpkg 가 아니라 ROS distro 의 `site-packages` 에 있고 `PYTHONPATH` 로만 노출되므로). 출력을 줄이려면 리다이렉션(`source … >/dev/null 2>&1`)을 쓰고 파이프는 뒤따르는 명령에만 건다. 이 실패를 `-DPython3_EXECUTABLE` 탓으로 오진하기 쉬운데 (venv carve-out 은 정상이다), 감별은 `echo $VIRTUAL_ENV` 또는 `/usr/bin/python3 -c "import ament_package"` 한 줄이면 된다. 서브셸 표준형은 `source` 와 `colcon` 이 같은 서브셸 안에 있으므로 이 함정과 상충하지 않는다 — 문제는 서브셸이 아니라 *파이프*가 만드는 서브셸에 colcon 이 안 들어가는 것이다.
+## 더 읽기
 
-**venv carve-out 의 범위.** `.venv` 규칙은 self-contained 하다 — 실패 시 격리를 무력화(gtest 직접 실행 / venv deactivate / `PYTHONPATH` 우회)하지 말고 sys.path / shebang / wrapper / dep resolution 을 디버그한다. 유일한 예외는 `colcon build` 의 configure 단계 (`FindPython` 이 venv 의 python 을 잡아 eigenpy/pinocchio configure 가 깨지는 문제) 이며, 그때도 인터프리터 고정이 우선이다 — CLI `--cmake-args` 는 `.colcon/defaults.yaml` 의 Release 등을 통째로 대체하므로 명령 형태는 위 "Plain `colcon build` 호환성" 을 따르고, `build.sh` 를 쓰면 둘 다 불필요하다. `colcon test` / `ros2 run` / `ros2 launch` 실패를 덮는 deactivate 는 runtime PC 에서 재현될 결함을 숨기는 것이다. 근거·과거 위반 사례는 git log + auto-memory 참조 (머신 종속 절대경로는 박제하지 않는다).
+- [docs/rt-optimization.md](../docs/rt-optimization.md) — RT 호스트 설정 절차와 확인, [rt-setup-rationale.md](../docs/reference/rt-setup-rationale.md) 는 그 근거
+- [build-rationale.md](../docs/reference/build-rationale.md) — 빌드 병렬도 · 메모리 상한 · 테스트 · ccache 의 근거와 실측
+- [docs/tracing.md](../docs/tracing.md) — `timeline.sh` · `enroll_lttng_mok.sh`
+- [agent_docs/invariants.md](../agent_docs/invariants.md) §RT Host — RT-HOST-1~3 규범. `verify_rt_runtime.sh` 가 검증한다
+- [agent_docs/architecture.md](../agent_docs/architecture.md) — Execution Contexts · 스레드 모델
 
----
+## 의존성
 
-## 의존성 그래프 내 위치
-
-**독립 인프라 패키지** -- RT 환경을 구성하고 검증합니다.
-
-```
-repo_scripts  <- 독립 (ament_cmake만 의존)
-    ^
-    |-- build.sh / install.sh  (rt_common.sh 공유 함수 사용)
-    |-- integrated_bringup           (launch 파일에서 cpu_shield.sh 호출)
-    '-- 빌드 시스템            (build.sh에서 check_rt_setup.sh 호출)
-```
-
----
-
-## 격리 환경 배포 가이드
-
-개발 PC 이외의 머신(신규 개발용 / 실 RT 제어 PC / CI runner) 에 동일 격리 환경을 재현할 때 참고합니다.
-
-### 신규 머신 (수동) 재현 순서
-
-```bash
-# 1. 저장소 clone
-mkdir -p ~/ros2_ws/rtc_ws/src
-cd ~/ros2_ws/rtc_ws
-git clone <repo-url> src/rtc-framework
-
-# 2. apt 의존성 + deps/install 빌드 + .venv 생성·requirements.lock sync (빌드 제외)
-#    venv 를 손으로 만들 때의 명령과 주의점 (--python 은 버전이 아니라 경로):
-#    README.md "Python 의존성 sync"
-./src/rtc-framework/install.sh --skip-build
-
-# 3. workspace 빌드 (테스트 제외가 기본 — 개발용이면 --tests)
-./src/rtc-framework/build.sh sim        # 또는 robot / full
-```
-
-`install.sh` 가 `repo_scripts/scripts/setup_env.sh` 를 자동 source 하고 `repo_scripts/scripts/build_deps.sh` 를 호출하며 `.venv` 까지 만들므로, `--skip-build` 를 빼면 단계 2-3 은 명령 하나로 가능합니다.
-
-### 빌드가 기대는 시스템 패키지
-
-빌드 병렬도 · 메모리 상한 · ccache 가 fresh PC 에서도 같은 방식으로 걸리려면 아래가 있어야 한다. `install.sh` 가 직접 설치하는 것은 ccache 와 pytest-xdist 둘이고, 나머지는 Ubuntu 기본 설치에 들어 있다 (dpkg priority `required` / `important`) — 최소 컨테이너처럼 그것이 빠진 호스트에서는 해당 장치만 꺼지고 빌드는 된다.
-
-| 장치 | 쓰는 명령 | 패키지 | 없을 때 |
-|---|---|---|---|
-| make job 수 산정 | `lscpu` · `awk` · `nproc` | `util-linux` · `mawk` · `coreutils` (required) | `lscpu` 가 없으면 sysfs → `nproc` 순으로 떨어진다. `/proc/meminfo` 를 못 읽으면 job 2개 |
-| 메모리 상한 | `systemd-run` · `systemctl` + **user session** (`systemd --user`) | `systemd` · `libpam-systemd` · `dbus-user-session` (important) | `Memory cap: unavailable — <이유>` 경고 후 상한 없이 빌드. cgroup v2 + memory controller 의 user 위임이 필요하다 (Ubuntu 24.04 기본값에서 확인) |
-| ccache | `ccache` | `ccache` (universe, optional) — **`install.sh` 의 `setup_workspace` 가 설치** | 캐시 없이 빌드. universe 가 꺼져 설치가 실패해도 `install.sh` 는 경고만 하고 계속한다 |
-| 테스트 빌드 (`--tests`) | — | `ros-<distro>-ament-cmake-gtest` 등 (`setup_workspace`) | — |
-| `rtc_tools` 테스트 병렬 실행 | `pytest -n` | `python3-pytest-xdist` (universe, optional) — **`setup_workspace` 가 설치** | 테스트가 하나씩 돈다 (판정은 같다). `rtc_tools/test/conftest.py` 가 `-n` 을 받아 무시한다 |
-
-이 호스트에서 세 장치가 실제로 걸리는지는 `./install.sh verify` (설치 끝에도 자동) 의 `Build host:` · `Memory cap:` · `ccache:` 세 줄이 알린다 (`rt_common.sh` `print_build_host_summary`). 메모리 상한 줄은 scope 를 실제로 만들어 그 cgroup 의 `memory.max` 를 읽어 본 결과다 — `systemd-run` 이 성공해도 한도가 걸리지 않는 호스트 (cgroup v1/hybrid, 위임 없음) 를 걸러낸다.
-
-Ubuntu 22.04 (Humble, systemd 249) 에서는 실행해 확인하지 못했다. 쓰는 옵션 (`MemoryMax` · `MemorySwapMax` · `--collect` · `systemctl show --value`) 은 249 에 있지만 **scope 의 `OOMPolicy` 는 253 부터다** — 그래서 OOM 판정은 `Result` 에만 기대지 않고 cgroup `memory.events` 를 함께 본다 (위 "메모리 상한").
-
-### 실 RT 제어 PC 차이점
-
-| 항목 | 개발 PC | 실 RT PC |
-|------|--------|---------|
-| 커널 | vanilla `6.x-generic` | `linux-image-rt-generic` (`-rt` 접미사 필수) |
-| CPU 격리 | 해제 | `nohz_full=...` · `rcu_nocbs=...` (setup_grub_rt.sh) + cset shield (`cpu_shield.sh`) |
-| IRQ affinity | 기본 | `setup_irq_affinity.sh` 실행 |
-| 지터 기준 | 수~수십 us | 수 us (cyclictest 99.99 %ile) |
-| GPU / Python 패키지 | CUDA+GPU 휠 | `+cpu` 휠로 재컴파일 (`requirements.in` 에 `--extra-index-url https://download.pytorch.org/whl/cpu` 추가 후 `uv pip compile` 재실행) |
-
-RT PC 에서 위 RT 준비가 끝나면 `cyclictest -p 90 -t 1 -n -i 1000 -D 300s` 로 jitter 기준선을 잡은 뒤 워크스페이스 RT 루프 실행.
-
-### CI 파이프라인 (GitHub Actions)
-
-CI 는 [docs-validate.yml](../.github/workflows/docs-validate.yml) 하나입니다 — 문서 코퍼스, thread layout 생성물, Stop hook routing, 셸 코퍼스 shellcheck, repo_scripts 검사기처럼 ROS 없이 도는 검사만 합니다. C++/Python 빌드·테스트 CI (`ros2-advanced-ci`) 와 CodeQL 은 2026-09-19 에 제거했습니다 (소요 시간 대비 효용이 낮다는 사용자 판단). 따라서 빌드·테스트의 게이트는 로컬 `./build.sh` · `colcon test` 뿐입니다.
-
----
-
-## 라이선스
-
-MIT License -- 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.
+[package.xml](package.xml) — `ament_cmake` 만 의존한다. 시스템 요구사항은 bash 4.0+, `ethtool`, `lscpu`, `sysctl`, `cset` (cpuset), `cyclictest` (rt-tests, 벤치마크 시). MIT License ([LICENSE](../LICENSE)).

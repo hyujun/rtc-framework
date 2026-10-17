@@ -51,7 +51,7 @@ install_pinocchio() {
     success "Pinocchio installed via ${ROS_PKG_PREFIX}-pinocchio"
   else
     error "${ROS_PKG_PREFIX}-pinocchio not found — isolation plan requires ROS distribution pinocchio. \
-See repo_scripts/README.md for the reason robotpkg fallback was removed."
+There is no robotpkg fallback: the isolation plan takes pinocchio/proxsuite from the ROS distribution only."
   fi
 }
 
@@ -64,14 +64,14 @@ install_proxsuite() {
     success "ProxSuite installed via ${ROS_PKG_PREFIX}-proxsuite"
   else
     error "${ROS_PKG_PREFIX}-proxsuite not found — isolation plan requires ROS distribution proxsuite. \
-See repo_scripts/README.md for the reason robotpkg fallback was removed."
+There is no robotpkg fallback: the isolation plan takes pinocchio/proxsuite from the ROS distribution only."
   fi
 }
 
 # ── MPC deps: fmt / mimalloc / aligator ────────────────────────────────────────
 # Isolation landed 2026-04-21: source build lives in
 # repo_scripts/scripts/build_deps.sh with install prefix = $WS_ROOT/deps/install.
-# No more /usr/local or ~/libs/. See repo_scripts/README.md for details.
+# No more /usr/local or ~/libs/. Usage: repo_scripts/README.md (build_deps.sh).
 install_mpc_deps() {
   if [[ "$SKIP_MPC" -eq 1 ]]; then
     info "Skipping MPC source-built deps (--skip-mpc)"
