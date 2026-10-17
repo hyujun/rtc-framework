@@ -825,6 +825,15 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_approach_cycle PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
+  # dynamic_catching E3-F02 (#641): the whole-body terms through whole catches
+  # of the planner cycle (search on a chain, segments on the tree).
+  ament_add_gtest(test_catching_wholebody_cycle test/test_catching_wholebody_cycle.cpp TIMEOUT 600)
+  target_link_libraries(test_catching_wholebody_cycle rtc_controllers)
+  target_include_directories(test_catching_wholebody_cycle PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_definitions(test_catching_wholebody_cycle PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
   ament_add_gtest(test_catch_pose_ik_params test/test_catch_pose_ik_params.cpp)
   target_link_libraries(test_catch_pose_ik_params rtc_controllers)
 
