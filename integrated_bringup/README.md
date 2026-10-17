@@ -323,7 +323,7 @@ urdf:
   closure_path: "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml"
 ```
 
-- joint / task / compliance / wbc 컨트롤러는 loop-passive 하류 fingertip 을 loop-consistent 하게 FK 합니다. device `joint_state_names` 가 16 actuated (arm 6 + hand 10) 를 모두 덮으면 configure 시 `closed-chain hand FK active` 로그가 뜨고, 아니면 serial FK 입니다.
+- 손 FK 를 쓰는 컨트롤러는 loop-passive 하류 fingertip 을 loop-consistent 하게 FK 합니다. device `joint_state_names` 가 16 actuated 를 모두 덮으면 `closed-chain hand FK active` 로그가 뜨고, 아니면 serial FK 로 fallback 하거나 configure 를 거부합니다.
 - RViz 시각화는 `config/ur5e_p1b/digital_twin.yaml` 의 `closure_path` 를 `rtc_digital_twin` 의 `digital_twin.launch.py` 가 읽어 `closure_state_publisher` 를 띄웁니다. 사영 tolerance 는 `closure_tolerance` / `closure_acceptance_tolerance` 로 바꿉니다.
 
 ```bash

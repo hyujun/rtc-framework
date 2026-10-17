@@ -2,9 +2,9 @@
 //
 // Layer 1 proved the residual math and the coordinate contract against a real
 // arm sub-model (test_momentum_observer / test_momentum_observer_wiring). What
-// is new here is EMBEDDING: the controllers each build one wiring from a
-// `momentum_observer` YAML block, tick it before their control law, hold it on
-// E-STOP, and push a row to momentum_observer.csv every tick.
+// is new here is EMBEDDING: each controller builds one wiring from a
+// `momentum_observer` YAML block, ticks it before its control law, holds it on
+// E-STOP, and pushes a row to momentum_observer.csv every tick.
 //
 // The CSV is the surface these cases exercise, and every controller-level case
 // below goes through a real RegisterControllerLogs registration and reads the

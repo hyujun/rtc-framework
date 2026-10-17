@@ -149,7 +149,7 @@ struct TaskGoalSubscriptionRequest {
 inline constexpr std::size_t kMaxOwnedGroups = 2;
 
 // Upper bound on TFMessage transforms broadcast by a single controller, with
-// headroom over every frame list (docs/controller-logs.md lists them).
+// headroom over any one controller's frame list.
 inline constexpr std::size_t kMaxControllerTransforms = 16;
 
 // One transform slot — populated at on_configure from the system YAML
