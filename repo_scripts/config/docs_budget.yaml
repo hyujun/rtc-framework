@@ -26,7 +26,7 @@
 AGENTS.md: 17408
 CLAUDE.md: 4096
 
-agent_docs/architecture.md: 17574  # raised from 17391: helper threads of processes outside the CM inherit affinity (cpu_core = -1) -- stated only in rt-setup-rationale before (docs/reference prune, #851)
+agent_docs/architecture.md: 17977  # raised from 17574: #779 one external world (scene_world) shared by every consumer, no per-consumer copy; before: 17391 -> 17574 helper-thread affinity (#851)
 agent_docs/controllers.md: 16157  # raised from 15612: #779 RobotTarget task-goal frame rule (producers and frame-contract controllers apply it)
 agent_docs/conventions.md: 9962  # raised from 9800: two rules the rationale doc alone had stated — the output-field consumer comment and per-lane QoS (2026-10-16)
 agent_docs/design-principles.md: 15377
