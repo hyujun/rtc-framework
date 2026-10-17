@@ -32,6 +32,7 @@ from rtc_tools.analysis.catch_gate_map import LAYERS, REASON_NONE
 from rtc_tools.analysis.catch_search_map import gate_map_join, gate_throw_verdicts
 from rtc_tools.analysis.catching_throw_list import write_throw_list
 from rtc_tools.analysis.catching_trials import load_throw_grid_axes
+from rtc_tools.utils.rotations import rpy_matrix
 
 # The shipped tennis preset, with the file:line each value lives at. Mirrored
 # here on purpose: the point of the test is that the module makes the caller
@@ -493,8 +494,20 @@ TINY_URDF = """<?xml version="1.0"?>
 """
 
 
-def _shipped_style_config(tmp_path: Path) -> Path:
-    """A robot config in the SHIPPED schema: sub_models as a map, flange tip."""
+# The sim world on the arm base, world-aligned: the CLI's world (#779).
+IDENTITY_SCENE_WORLD = {
+    "parent": "mount",
+    "xyz": [0.0, 0.0, 0.0],
+    "rpy": [0.0, 0.0, 0.0],
+    "provisional": False,
+}
+
+
+def _shipped_style_config(tmp_path: Path, scene_world: dict | None = IDENTITY_SCENE_WORLD) -> Path:
+    """A robot config in the SHIPPED schema: sub_models as a map, flange tip.
+
+    ``scene_world`` is the sim world the CLI reads (None: the config has none).
+    """
     path = tmp_path / "robot.yaml"
     path.write_text(
         yaml.safe_dump(
@@ -514,7 +527,8 @@ def _shipped_style_config(tmp_path: Path) -> Path:
                                     "xyz": [0.01, 0.02, 0.03],
                                     "rpy": [0.0, 0.0, 0.0],
                                     "provisional": False,
-                                }
+                                },
+                                **({} if scene_world is None else {"scene_world": scene_world}),
                             },
                         }
                     }
@@ -1664,7 +1678,7 @@ def _run_cli(tmp_path: Path, judge: Path, params: Path, *extra: str) -> Path:
     out_dir = tmp_path / "map"
     argv = [
         *("--robot-config", str(config), "--ball-config", str(ball), "--out-dir", str(out_dir)),
-        *("--urdf", str(urdf), "--arm-base-frame", "mount", "--judge", str(judge)),
+        *("--urdf", str(urdf), "--judge", str(judge)),
         *("--params", str(params)),
         *("--drag-coefficient", str(CD_TENNIS), "--drag-coefficient-source", CD_SOURCE),
         *("--air-density", str(RHO_AIR), "--air-density-source", RHO_SOURCE),
@@ -1833,7 +1847,7 @@ def _throws_cli_argv(tmp_path: Path, judge: Path, params: Path, out_dir: Path) -
     )
     return [
         *("--robot-config", str(config), "--ball-config", str(ball), "--out-dir", str(out_dir)),
-        *("--urdf", str(urdf), "--arm-base-frame", "mount", "--judge", str(judge)),
+        *("--urdf", str(urdf), "--judge", str(judge)),
         *("--params", str(params)),
         *("--drag-coefficient", str(CD_TENNIS), "--drag-coefficient-source", CD_SOURCE),
         *("--air-density", str(RHO_AIR), "--air-density-source", RHO_SOURCE),
@@ -2009,6 +2023,147 @@ def test_a_malformed_throws_file_surfaces_the_formats_error(tmp_path: Path, stan
     with pytest.raises(SystemExit, match=r"--throws-file: .*absent\.json"):
         cm.main([*base, "--throws-file", str(missing)])
     assert _judge_calls(judge) == 0
+
+
+# ── The world is the robot config's scene_world (#779) ────────────────────────
+
+# Asymmetric on purpose (every rotation axis, every translation axis): a
+# transposed rotation or an inverted placement shows in every row.
+TILTED_SCENE_WORLD = {
+    "parent": "mount",
+    "xyz": [0.1, -0.2, -0.7],
+    "rpy": [0.3, 0.0, 0.7],
+    "provisional": False,
+}
+# TINY_URDF's mount joint: where the arm base frame sits in the model world.
+MODEL_WORLD_T_MOUNT = cm.make_transform(cm.rotation_z(math.pi), (0.1, 0.2, 0.3))
+
+
+def _scene_world_layer(tmp_path: Path, frame: dict, name: str = "overlay.yaml") -> Path:
+    """A sim overlay's RT-node section that states ``frame`` as the world."""
+    path = tmp_path / name
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "integrated_rt_controller": {
+                    "ros__parameters": {"urdf": {"extra_frames": {"scene_world": frame}}}
+                }
+            }
+        )
+    )
+    return path
+
+
+def _world_argv(tmp_path: Path, judge: Path, params: Path, out_dir: Path, *layers: Path):
+    """The grid run with ``layers`` laid over the robot config."""
+    argv = _throws_cli_argv(tmp_path, judge, params, out_dir)
+    i = argv.index("--robot-config") + 2
+    return [*argv[:i], *(str(p) for p in layers), *argv[i:], *_grid_cli_args()]
+
+
+def test_the_world_is_the_scene_world_of_the_robot_config_layers(tmp_path: Path, stand_in):
+    judge, params = stand_in
+    out_dir = tmp_path / "map"
+    overlay = _scene_world_layer(tmp_path, TILTED_SCENE_WORLD)
+    assert cm.main(_world_argv(tmp_path, judge, params, out_dir, overlay)) == 0
+
+    base_t_world = cm.make_transform(
+        rpy_matrix(TILTED_SCENE_WORLD["rpy"]), TILTED_SCENE_WORLD["xyz"]
+    )
+    expected = MODEL_WORLD_T_MOUNT @ base_t_world
+    frames = yaml.safe_load((out_dir / "provenance.yaml").read_text())["provenance"]["frames"]
+    assert frames["arm_base_frame"] == "mount"
+    assert np.allclose(frames["base_t_world"], base_t_world, atol=1e-12)
+    assert np.allclose(frames["model_world_t_world"], expected, atol=1e-12)
+    assert str(overlay) in frames["world_source"]
+    region = yaml.safe_load((out_dir / "throw_region.yaml").read_text())["sim"]["throw_region"]
+    assert region["base_frame"] == "mount"  # the scene_world parent, not a flag
+    rows = [r for r in _read_csv(out_dir / "candidates.csv") if r["p_world_x"] != "nan"]
+    assert rows, "the grid must produce candidates"
+    for row in rows:
+        p_world = np.array([float(row[f"p_world_{a}"]) for a in "xyz"])
+        p_model = np.array([float(row[f"p_model_{a}"]) for a in "xyz"])
+        assert np.allclose(p_model, cm.transform_point(p_world, expected), atol=1e-9)
+
+    # ... and the map's consumers read the same frames back.
+    read = cm.read_map_frames(out_dir)
+    assert read.arm_base_frame == "mount"
+    assert np.allclose(read.model_world_t_world, expected, atol=1e-12)
+    assert np.allclose(read.reach_centre, MODEL_WORLD_T_MOUNT[:3, 3], atol=1e-12)
+    cm.check_map_world_heights(read, rows)
+
+
+@pytest.mark.parametrize(
+    ("frame", "why"),
+    [
+        (None, r"no urdf\.extra_frames\.scene_world"),
+        ({**IDENTITY_SCENE_WORLD, "provisional": True}, "is provisional"),
+        ({k: v for k, v in IDENTITY_SCENE_WORLD.items() if k != "rpy"}, "lacks rpy"),
+    ],
+)
+def test_a_config_without_a_usable_scene_world_is_refused_before_judging(
+    tmp_path: Path, stand_in, frame, why
+):
+    judge, params = stand_in
+    out_dir = tmp_path / "map"
+    argv = _throws_cli_argv(tmp_path, judge, params, out_dir)
+    _shipped_style_config(tmp_path, frame)  # the config the argv names, rewritten
+    with pytest.raises(SystemExit, match=why):
+        cm.main([*argv, *_grid_cli_args()])
+    assert _judge_calls(judge) == 0
+    assert not out_dir.exists()
+
+
+@pytest.mark.parametrize("flag", sorted(cm.RETIRED_WORLD_FLAGS))
+def test_the_retired_frame_flags_are_refused_naming_the_replacement(
+    tmp_path: Path, stand_in, flag: str
+):
+    judge, params = stand_in
+    argv = _throws_cli_argv(tmp_path, judge, params, tmp_path / "map")
+    with pytest.raises(SystemExit, match=rf"{flag} is gone \(#779\) — .*scene_world"):
+        cm.main([*argv, *_grid_cli_args(), flag, "0"])
+    assert _judge_calls(judge) == 0
+
+
+def test_map_frames_take_heights_through_a_tilted_world():
+    base_t_world = cm.make_transform(
+        rpy_matrix(TILTED_SCENE_WORLD["rpy"]), TILTED_SCENE_WORLD["xyz"]
+    )
+    frames = cm.MapFrames(
+        arm_base_frame="mount",
+        model_world_t_base=MODEL_WORLD_T_MOUNT,
+        model_world_t_world=MODEL_WORLD_T_MOUNT @ base_t_world,
+    )
+    a_world, b_world = np.array([0.4, -0.1, 1.3]), np.array([-0.2, 0.5, 0.6])
+    a_model = cm.transform_point(a_world, frames.model_world_t_world)
+    b_model = cm.transform_point(b_world, frames.model_world_t_world)
+    assert frames.world_z(a_model) == pytest.approx(1.3, abs=1e-12)
+    assert float(frames.world_up @ (b_model - a_model)) == pytest.approx(0.6 - 1.3, abs=1e-12)
+    # The tilt is what this is about: the model's own z is not the world's.
+    assert b_model[2] - a_model[2] != pytest.approx(0.6 - 1.3, abs=1e-3)
+
+    row = {"id": "3"}
+    row.update({f"p_world_{a}": repr(float(v)) for a, v in zip("xyz", a_world, strict=True)})
+    row.update({f"p_model_{a}": repr(float(v)) for a, v in zip("xyz", a_model, strict=True)})
+    cm.check_map_world_heights(frames, [row])
+    with pytest.raises(SystemExit, match=r"candidate 3: p_world is 1\.000 mm off"):
+        cm.check_map_world_heights(frames, [{**row, "p_world_z": repr(1.301)}])
+    # Another run's yaw keeps every height: still refused.
+    turned = cm.rotation_z(0.1) @ a_world
+    other = {**row, **{f"p_world_{a}": repr(float(v)) for a, v in zip("xyz", turned, strict=True)}}
+    assert float(other["p_world_z"]) == pytest.approx(1.3, abs=1e-12)
+    with pytest.raises(SystemExit, match="not one run"):
+        cm.check_map_world_heights(frames, [other])
+    with pytest.raises(SystemExit, match="no p_world_x column"):
+        cm.check_map_world_heights(frames, [{k: v for k, v in row.items() if k != "p_world_x"}])
+
+
+def test_reading_map_frames_from_a_dir_that_is_not_a_map_is_refused(tmp_path: Path):
+    with pytest.raises(SystemExit, match="not a catchability_map output dir"):
+        cm.read_map_frames(tmp_path)
+    (tmp_path / "provenance.yaml").write_text(yaml.safe_dump({"provenance": {"frames": {}}}))
+    with pytest.raises(SystemExit, match="re-run catchability_map"):
+        cm.read_map_frames(tmp_path)
 
 
 def test_throws_from_list_refuses_some_but_not_all_grid_axes():

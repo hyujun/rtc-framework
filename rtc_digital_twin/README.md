@@ -157,12 +157,12 @@ TCP pose는 `GuiPosition` 메시지 구독이 아니라 tf2 조회로 얻습니�
 | RGB Axes | Arrow × 3 | TCP 자세 방향 (R=X, G=Y, B=Z) |
 
 - 선택적 TF 재브로드캐스팅: `broadcast_tf: true` 시 조회한 pose를 `tf_child_frame` (기본 `virtual_tcp`) 프레임으로 재발행
-- 마커 `header.frame_id` 및 tf2 lookup의 parent frame은 모두 `tcp_viz.frame_id` (기본 `"base"`)
+- 마커 `header.frame_id`, tf2 lookup 의 parent frame, `virtual_tcp` 의 부모는 모두 `tcp_viz.frame_id` 다. 기본 `""` 는 **활성 컨트롤러가 `source_topic` frame 을 발행하는 부모** (controller_tf 재발행이 받은 transform 의 `header.frame_id` — 컨트롤러가 pose 를 계산한 root link, #779) 를 쓴다. 그 transform 이 오기 전에는 마커를 내지 않는다. 값을 적으면 그 frame 이 우선한다 — frame 이름 기본값은 어느 로봇에서나 팔 root 가 아니다 (예: LEAP 손 URDF 의 `base` 는 손의 base)
 
 ```yaml
 # YAML tcp_viz 설정 예시
 tcp_viz.source_topic: "tool0_actual"   # TF child frame 이름 (토픽 아님)
-tcp_viz.frame_id: "base"               # TF parent frame + 마커 frame_id
+tcp_viz.frame_id: ""                   # "" = 컨트롤러가 발행하는 부모, 아니면 그 frame
 tcp_viz.marker_topic: "/digital_twin/tcp_markers"
 tcp_viz.broadcast_tf: true
 tcp_viz.tf_child_frame: "virtual_tcp"  # 재브로드캐스팅 시 child frame 이름

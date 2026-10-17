@@ -696,9 +696,8 @@ ros2 run rtc_tools catching_wait_pose_search --config-dir <config>/ur5e_p1b \
 
 ```bash
 ros2 run rtc_tools catchability_map \
-  --robot-config <config>/ur5e_p1b/_base.yaml \
+  --robot-config <config>/ur5e_p1b/_base.yaml <config>/ur5e_p1b/sim.yaml \
   --ball-config  <config>/ur5e_p1b/mujoco_simulator.yaml \
-  --arm-base-frame base \
   --drag-coefficient 0.55 --drag-coefficient-source 'rtc_mujoco_sim/src/projectile_ball.cpp:30' \
   --air-density 1.204 --air-density-source 'rtc_mujoco_sim/include/rtc_mujoco_sim/projectile_ball.hpp:95' \
   --distances-m 4.0 --azimuths-deg '180 190 200' --release-heights-m 1.8 \
@@ -727,8 +726,8 @@ ros2 run rtc_tools catchability_map \
 **`--throws-file <list.json>`** — grid 대신 `catching_throw_list/1` 파일 (SIM WORLD; 예: `catch_search_map` 의
 `throw_list.json`) 의 투척을 파일 순서대로 그대로 평가한다. 각 투척의 `throw_id` 가 `candidates.csv` /
 `throw_summary.csv` 의 `throw_index` 로 나가므로 `catch_gate_map --map-dir` 이 그 id 를 이어받는다. 프레임 변환은
-없다 — 파일의 world 는 이 도구의 `world` 와 같고 (`--world-yaw-deg` / `--world-translation-m` 은 리스트를 만든
-쪽과 같은 값을 준다), model world 로의 합성은 후보 단계 (`to_judge_candidates`) 가 한다. `omega` 가 0 이 아닌
+없다 — 파일의 world 는 이 도구의 `world` 와 같고 (리스트를 만든 쪽과 같은 `--robot-config` 층을 준다 — 그
+`scene_world` 가 리스트의 world 다), model world 로의 합성은 후보 단계 (`to_judge_candidates`) 가 한다. `omega` 가 0 이 아닌
 투척은 거부한다 (비행 모델에 스핀 항이 없다). grid 축 인자 (`--distances-m` 등) 와 함께 주면 오류다.
 `throw_summary.csv` 의 6 축은 항목이 6 개를 다 들고 있으면 그 값 그대로 (`catch_search_map` 리스트가 그렇다 —
 `catch_search_map --gate-map` 의 join 은 이 축 값으로 한다), 하나도 없으면 arm base 기준으로 유도, 일부만
@@ -765,10 +764,14 @@ outc = cm.summarize_throws(judged, seed_id=best.seed_id, throw_count=len(throws)
 - ⚠️ **judge 의 프레임은 arm base 가 아니라 Pinocchio MODEL WORLD (= URDF 모델 root) 다.**
   `ur5e_p1b` 에서 모델 root 는 `base_link` 이고 CLIK `base_frame` 은 `base` 로 z 축 180° 차이다
   (L3 §4.2 의 frame 규약). world→`base` 는 항등이므로 **world 좌표를 judge 에 그대로 넣으면 x·y 가 뒤집혀**
-  "공이 등 뒤에서 온다". 그래서 CLI 는 `base_T_world` 를 인자로 받고 (`--world-yaw-deg` /
-  `--world-translation-m`, 기본 항등 — 쓰인 값은 provenance 에 기록), `model_world_T_base` 는
-  `--arm-base-frame` 으로 지정된 프레임의 FK 에서 읽어 **합성**한다. 어느 쪽도 박제하지 않는다.
-  `iiwa7_leap` 은 모델 root = `link_0` = base 라 합성이 항등이다
+  "공이 등 뒤에서 온다". 그래서 CLI 는 `--robot-config` 층의 `urdf.extra_frames.scene_world` (#779) 를
+  world 로 읽는다 — 그 `parent` 가 arm base frame, 배치 (`p_parent = R(rpy)·p_world + xyz`) 가
+  `base_T_world` 이고, `model_world_T_base` 는 parent 의 FK 에서 읽어 **합성**한다. catching 컨트롤러의 vision
+  lane 과 같은 frame·같은 합성이다. 없거나 `provisional` 이면 판정 전에 거부한다 (그때 컨트롤러의 vision lane
+  도 inert). 손으로 world 를 적던 `--world-yaw-deg` · `--world-translation-m` · `--arm-base-frame` 은 이유를
+  말하며 거부한다. 쓰인 frame 은 `provenance.yaml` 의 `frames` 에 남고, 지도를 읽는 `catch_gate_map` ·
+  `catch_speed_budget` 은 reach 중심과 world 를 거기서 읽는다 (`read_map_frames`).
+  `iiwa7_leap` 은 모델 root = `link_0` = base 라 parent 쪽 합성이 항등이다
 - ⚠️ **출하 `urdf.sub_models.<arm>` 은 flange (`tool0`/`ee_link`) 에서 끝나 catch frame 이 그 sub-model
   에 없다.** `write_model_config` 가 arm root → `urdf.extra_frames.<catch_frame>.parent` 까지의
   sub-model `arm_catch` 를 **추가로** 선언한다. 그 뒤(손 전체)는 `buildReducedModel` 이 잠그는데,
@@ -844,7 +847,9 @@ outc = cm.summarize_throws(judged, seed_id=best.seed_id, throw_count=len(throws)
   역산·downrange 부호, provenance 출처 라벨·파생 k, 손으로 계산한 후보 샘플링 (비행시간 하한이 제거 +
   재-anchor 하는 것까지)·reach prefilter, **`q*` 공란 행과 정상 행이 섞인 결과 CSV**·절반만 찬 pose 거부,
   짧은 shard 탐지, 출하 스키마 → ModelConfig 번역 (`arm_catch` tip = catch frame 부모), 모델 world 변환
-  rigid 검사, seed 순위 tie-break (두 기준이 어긋나게 구성), `throw_region` 박스 (초과 포함 비율까지 손
+  rigid 검사, world = `scene_world` (기울어진 비대칭 world 를 overlay 층으로 — 모든 후보의 `p_model` 이
+  합성과 일치, 없음·`provisional`·rpy 누락은 판정 전 거부, 옛 world 인자 거부), 지도 frame 읽기 (기울어진
+  world 의 높이·`p_world_z` 불일치 거부), seed 순위 tie-break (두 기준이 어긋나게 구성), `throw_region` 박스 (초과 포함 비율까지 손
   계산), 사유 히스토그램, ε 경계 개수. **대역 judge** (같은 CLI·CSV, verdict 가 입력의 순수 함수라 stale 재사용이
   *틀린 verdict* 로 드러난다) 로 shard 재개 — 무변경 시 재사용 (같은 bytes 재기록 포함) · params 내용 / seed
   값 / 같은 id 의 좌표 / URDF / judge 정체 변경·sidecar 부재 시 재판정 —, **서로소인 두 seed 가 headline 에
@@ -873,7 +878,7 @@ ros2 run rtc_tools catch_speed_budget \
   --map-dir <catchability_map out-dir> --out-dir <out> \
   --velocity-source model --eta-v 0.9 --eta-tau 0.8 \
   --rotor-inertia '0.1 0.1 0.1 0.1 0.1 0.1' --rotor-inertia-source '<mjcf>:<line> armature' \
-  --arm-base-frame <base_frame> --max-reach-m 1.1 --floor-world-z-m 0.1 \
+  --max-reach-m 1.1 --floor-world-z-m 0.1 \
   --detection-s 0.10 --latency-s 0.14 --close-total-s 0.279 --arm-delay-s 0.05 --time-margin-s 0.02 \
   --relative-speed-m-s '0.34 1.0'
 ```
@@ -887,16 +892,21 @@ ros2 run rtc_tools catch_speed_budget \
   다섯 항. 최소 비행시간 `T_det + L + T_close,tot + T_arm + T_margin` (L1 §4.1 D-15) 에는 **손 폐쇄
   시간이 들어간다**; ramp 에 쓸 수 있는 시간은 `t_c − (T_det + L)` 다
 - **프레임.** judge 의 `p_model`·`v_model` 은 모델 world (URDF root) 이고 `LOCAL_WORLD_ALIGNED`
-  Jacobian 이 쓰는 프레임과 같아 그대로 쓴다. 바닥 높이만 world 열을 쓴다
+  Jacobian 이 쓰는 프레임과 같아 그대로 쓴다. 바닥은 world 에서 수평이다: 후보의 여유 높이는 `p_world_z` 열,
+  stroke 의 하강은 world +z 방향 (지도 `provenance.yaml` 의 `frames` — world 가 모델 root 에 기울어져 있을 수
+  있다) 으로 잰다. reach 구의 중심 (arm base 원점) 도 그 `frames` 에서 읽는다 — 인자가 아니다 (옛
+  `--arm-base-frame` 은 거부). `p_world_z` 가 그 frame 으로 옮긴 `p_model` 과 어긋나면 CSV 와 provenance 가
+  다른 실행이므로 종료한다
 - **자체 검증 (fail-closed).** 모든 수락 q\* 에서 catch frame FK 가 `p_model` 과
   `--fk-tolerance-m` (기본 2.5 mm = judge `eps_pos` + 여유) 안에 들어와야 한다. 벗어나면 관절 순서·
   frame·모델 중 하나가 judge 와 다른 것이므로 **보고하지 않고 종료**한다. 최소노름 속력이 LP 를 넘어도 종료
-- 테스트 `test/test_catch_speed_budget.py` (26 케이스): 2-관절 LP 닫힌해, LP ≥ 최소노름 (6·7 축),
+- 테스트 `test/test_catch_speed_budget.py` (29 케이스): 2-관절 LP 닫힌해, LP ≥ 최소노름 (6·7 축),
   LP 값 fast path = LP 최적값 (5·6·7 축, rank 부족 포함, fast path 사용 여부까지),
   투영 분자, 한계 무효 플래그, 속력 해의 유한차분 FK 대조 (접근축 고정 포함), **프레임 비대칭**
   (base 가 모델 root 에서 반 바퀴 돈 fixture), **관절 이름 순서 ≠ 모델 순서**, 가속 LP 의 RNEA·2차 FK
   재대입 (한계가 어딘가에서 tight), 회전자 관성 효과, 중력만으로 한계 초과 시 NaN, stroke·ramp 닫힌해,
-  전체 격자 분모, CLI end-to-end 와 FK 불일치 거부. pinocchio·scipy 가 없으면 skip
+  기울어진 world 에서 바닥까지의 stroke, 전체 격자 분모, CLI end-to-end 와 FK 불일치·지도 frame 불일치·옛
+  `--arm-base-frame` 거부. pinocchio·scipy 가 없으면 skip
 
 ### `catch_gate_map.py` — gate-catchable 지도 (dynamic_catching S3.5b)
 
@@ -939,7 +949,7 @@ ros2 run rtc_tools catch_gate_map \
   --close-total-s 0.279 --gamma-margin-m-s 0.1 \
   --a-dec-m-s2 10.0 --a-dec-source 'provisional' \
   --detection-s 0.10 --latency-s 0.14 --arm-delay-s 0.05 --time-margin-s 0.03 \
-  --arm-base-frame base --max-reach-m 1.1 --floor-world-z-m 0.1
+  --max-reach-m 1.1 --floor-world-z-m 0.1
 ```
 
 출력: `gate_candidates.csv` (judge 입력) · `gate_judged.csv` (judge 출력 그대로) · `gate_map.csv` (후보별 두
@@ -948,11 +958,15 @@ ros2 run rtc_tools catch_gate_map \
 수**, 층별 **열린 후보의 t_c(= 비행시간)·포구 속력과 투척별 포구 창 [min t_c, max t_c] 의 분포**
 (`open_candidates` — `catchability_map` 요약과 같은 n/min/p05/…/median/…/max/mean, S3.6 지평 요구의 입력;
 층이 아무것도 열지 않으면 `null`), 대기 자세 제안). FK(q\*) 가 `p_model` 과 어긋나면 보고하지 않고 종료한다 (`catch_speed_budget` 와 같은 검사).
+정지점의 workspace 판정 (reach 구 + 바닥) 은 지도의 frame (`provenance.yaml` 의 `frames`) 으로 한다 — 구의 중심은
+지도의 arm base 원점이고 (옛 `--arm-base-frame` 은 거부), 정지점의 높이는 world 로 옮겨 잰다 (world 가 기울어져
+있으면 모델 z 차이로 옮기는 근사가 틀린다). 지도 행의 `p_world_z` 와 그 frame 이 어긋나면 종료한다.
 
-- 테스트 `test/test_catch_gate_map.py` (26 케이스): 경로 프로파일, 토크 도달시간의 단일 관절 닫힌해
+- 테스트 `test/test_catch_gate_map.py` (37 케이스): 경로 프로파일, 토크 도달시간의 단일 관절 닫힌해
   (삼각·사다리꼴), **움직이는 관절의 한계만** 결과를 바꾸는지, 회전자 관성, 찾은 이동의 RNEA 재검사와
   더 빠른 이동의 위반, 중력만으로 한계 초과 시 NaN, 층별 사유의 순서, 전체 격자 분모, 열린 후보 통계
-  (열린 행만·투척별 창·비유한값 제외), 그리고 **실제
+  (열린 행만·투척별 창·비유한값 제외), 정지점 높이를 기울어진 world 로 재는지 (모델 z 차이로는 바닥 위로 보이는
+  경우), 옛 `--arm-base-frame` 거부, 그리고 **실제
   `catch_gate_batch` 를 부르는** CLI end-to-end — 상수 하나가 자기 게이트만 뒤집는지, 가속 box 가 box
   층만 구속하는지, seed 합집합 거부, FK 불일치 거부, judge 에 넘기는 `J_p q̇ᵘ` 가 요청값 v̂ 이 아니라
   달성값인지 (큰 damping 에서), 속도 0 인 수락 행 거부. 변이 18 종 전부 검출

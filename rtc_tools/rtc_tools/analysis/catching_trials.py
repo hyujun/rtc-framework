@@ -108,12 +108,13 @@ from rtc_tools.analysis.catch_speed_budget import (
     extra_frame_from_params,
 )
 from rtc_tools.analysis.catchability_map import (
+    SCENE_WORLD,
     as_transform,
     frame_placement_in_model_world,
     invert_transform,
-    make_transform,
     transform_direction,
     transform_point,
+    vision_frame_from_params,
 )
 from rtc_tools.analysis.derive_accel_limits import load_robot_params
 from rtc_tools.analysis.table_cells import is_true as _is_true, num as _num
@@ -124,7 +125,6 @@ from rtc_tools.utils.catching_keys import (
     reject_renamed_keys,
 )
 from rtc_tools.utils.controller_config import load_controller_config
-from rtc_tools.utils.rotations import rpy_matrix
 from rtc_tools.utils.smoothing import COMMAND_SMOOTH_ROWS, box_smooth
 
 # ── rtc_msgs/CatchingState ABI (framework message constants, not robot values) ─
@@ -587,10 +587,6 @@ def _catching_controllers(config_dir: Path) -> dict[str, dict]:
 # in ``_base.yaml``, its ``urdf.extra_frames.scene_world`` in ``sim.yaml``, #779).
 ROBOT_CONFIG_FILES = ("_base.yaml", "sim.yaml")
 
-# The model frame that is the sim scene's world (#779) — the catching
-# controller's vision world and the frame a ``scene_world`` task goal names.
-SCENE_WORLD = "scene_world"
-
 
 def robot_config_params(config_dir: Path, overlays: Sequence[Path] = ()) -> dict:
     """The robot config a sim bring-up of ``config_dir`` runs with.
@@ -607,41 +603,6 @@ def robot_config_params(config_dir: Path, overlays: Sequence[Path] = ()) -> dict
             "(urdf.extra_frames lives there)"
         )
     return params
-
-
-def vision_frame_from_params(params: Mapping, source: str) -> tuple[str, np.ndarray]:
-    """``(parent, parent_T_world 4×4)`` of the robot config's ``scene_world`` frame.
-
-    ``p_parent = R(rpy) p_world + xyz`` — the ``urdf.extra_frames`` convention,
-    ``R = Rz(yaw)·Ry(pitch)·Rx(roll)``. Composed with ``model_world_T_parent``
-    it is the transform the catching controller applies to every prediction.
-    A missing or provisional frame is refused: the controller's vision lane is
-    inert then (#779 V3), and guessing a world flips or shifts it silently.
-    ``source`` names the config in the refusal.
-    """
-    frames = (params.get("urdf") or {}).get("extra_frames") or {}
-    node = frames.get(SCENE_WORLD)
-    if not isinstance(node, Mapping):
-        raise SystemExit(
-            f"{source}: no urdf.extra_frames.{SCENE_WORLD} — the sim world → model world "
-            "composition cannot be read (the controller's vision lane is inert without it)"
-        )
-    # Absent means provisional, as the CM parses it.
-    if node.get("provisional", True) is not False:
-        raise SystemExit(
-            f"{source}: urdf.extra_frames.{SCENE_WORLD} is provisional — the controller does "
-            "not use it (its vision lane is inert), so neither does this tool"
-        )
-    try:
-        # Every key the CM requires (ParseExtraFrames refuses one without rpy).
-        parent = str(node["parent"])
-        xyz = [float(v) for v in node["xyz"]]
-        rpy = [float(v) for v in node["rpy"]]
-    except KeyError as exc:
-        raise SystemExit(f"{source}: urdf.extra_frames.{SCENE_WORLD} lacks {exc.args[0]}") from exc
-    if len(xyz) != 3 or len(rpy) != 3:
-        raise SystemExit(f"{source}: urdf.extra_frames.{SCENE_WORLD} xyz/rpy must be 3 values")
-    return parent, make_transform(rpy_matrix(rpy), xyz)
 
 
 # The catching.io keys the scene_world frame replaced (#779). Refused rather than

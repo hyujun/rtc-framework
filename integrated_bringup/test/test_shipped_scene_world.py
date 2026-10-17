@@ -18,6 +18,10 @@ The other frame a goal may name is the arm's ``root_link``. The producers that
 send task goals (``ur5e_bt_coordinator``, ``shape_estimation``) stamp their
 ``base_frame`` parameter, so its shipped default has to be the root_link of the
 profiles they run with (read from the source tree: neither is a dependency).
+The controllers publish their poses under that root_link too, and the digital
+twin hangs its TCP marker off the frame they publish under unless
+``tcp_viz.frame_id`` names one — which then has to be that root_link (``base``
+is not a frame of the arm on every URDF).
 
 Structural only. The values themselves were checked against each scene when
 they were written: MuJoCo body positions against Pinocchio frames mapped
@@ -149,3 +153,45 @@ def test_producers_stamp_the_arm_root(package: str) -> None:
             f"{package}: base_frame {params['base_frame']!r} is not {profile}'s root_link "
             f"{_arm_root(profile)!r} — every task goal it sends would be refused"
         )
+
+
+# The twin node's name in the launch (rtc_digital_twin digital_twin.launch.py).
+TWIN_NODE = "digital_twin_node"
+# The twin's own defaults (a sibling package of the source tree).
+TWIN_DEFAULTS = (
+    Path(__file__).resolve().parents[2] / "rtc_digital_twin" / "config" / "digital_twin.yaml"
+)
+
+
+def _twin_params(path: Path) -> dict:
+    """The twin's parameters in a params file (``/**`` or its own name)."""
+    with open(path) as handle:
+        doc = yaml.safe_load(handle) or {}
+    merged: dict = {}
+    for key in ("/**", TWIN_NODE):
+        merged.update((doc.get(key) or {}).get("ros__parameters") or {})
+    return merged
+
+
+def test_the_twin_takes_the_tcp_parent_from_the_controller_by_default() -> None:
+    if not TWIN_DEFAULTS.exists():
+        pytest.skip(f"{TWIN_DEFAULTS} not in this checkout")
+    assert _twin_params(TWIN_DEFAULTS)["tcp_viz.frame_id"] == "", (
+        "rtc_digital_twin's tcp_viz.frame_id default names a frame — no frame name is the arm "
+        "root on every URDF; empty takes the frame the controller publishes the pose under"
+    )
+
+
+@pytest.mark.parametrize("profile", [*PROFILES, *NO_WORLD])
+def test_a_twin_tcp_parent_a_profile_names_is_the_arm_root(profile: str) -> None:
+    path = _config_dir(profile) / "digital_twin.yaml"
+    if not path.exists():
+        pytest.skip(f"{profile} ships no digital_twin.yaml")
+    frame = _twin_params(path).get("tcp_viz.frame_id")
+    if not frame:
+        return  # the frame the controllers publish under: their root_link
+    assert frame == _arm_root(profile), (
+        f"{profile}/digital_twin.yaml: tcp_viz.frame_id is {frame!r}, not the arm root "
+        f"{_arm_root(profile)!r} — the marker and the virtual_tcp TF would hang off another "
+        "frame than the one the controllers publish the pose under"
+    )

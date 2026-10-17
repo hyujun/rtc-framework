@@ -20,7 +20,7 @@ import yaml
 pin = pytest.importorskip("pinocchio")
 pytest.importorskip("scipy")
 
-from rtc_tools.analysis import catch_speed_budget as csb  # noqa: E402
+from rtc_tools.analysis import catch_speed_budget as csb, catchability_map as cm  # noqa: E402
 
 JOINTS = ["j1", "j2", "j3", "j4", "j5", "j6"]
 AXES = ["0 0 1", "0 1 0", "0 1 0", "1 0 0", "0 1 0", "1 0 0"]
@@ -268,17 +268,47 @@ def test_accel_lp_reports_nan_when_gravity_alone_exceeds_the_limit(arm):
 # ── Stroke, ramp, lead ────────────────────────────────────────────────────────
 
 
+UP = np.array([0.0, 0.0, 1.0])  # a world level with the model root
+
+
 def test_stroke_is_the_chord_to_the_sphere_or_the_floor():
     centre = np.array([0.1, -0.2, 0.3])
     p = centre + np.array([0.3, 0.0, 0.0])
-    assert csb.stroke_to_boundary(p, unit([1, 0, 0]), centre, 1.0, 5.0) == pytest.approx(0.7)
-    assert csb.stroke_to_boundary(p, unit([-1, 0, 0]), centre, 1.0, 5.0) == pytest.approx(1.3)
+    assert csb.stroke_to_boundary(
+        p, unit([1, 0, 0]), centre, 1.0, 5.0, world_up=UP
+    ) == pytest.approx(0.7)
+    assert csb.stroke_to_boundary(
+        p, unit([-1, 0, 0]), centre, 1.0, 5.0, world_up=UP
+    ) == pytest.approx(1.3)
     # straight down: the floor comes first
-    assert csb.stroke_to_boundary(p, unit([0, 0, -1]), centre, 1.0, 0.25) == pytest.approx(0.25)
+    assert csb.stroke_to_boundary(
+        p, unit([0, 0, -1]), centre, 1.0, 0.25, world_up=UP
+    ) == pytest.approx(0.25)
     # already outside the sphere, or below the floor
     outside = centre + np.array([1.5, 0.0, 0.0])
-    assert csb.stroke_to_boundary(outside, unit([0, 1, 0]), centre, 1.0, 5.0) == 0.0
-    assert csb.stroke_to_boundary(p, unit([1, 0, 0]), centre, 1.0, -0.01) == 0.0
+    assert csb.stroke_to_boundary(outside, unit([0, 1, 0]), centre, 1.0, 5.0, world_up=UP) == 0.0
+    assert csb.stroke_to_boundary(p, unit([1, 0, 0]), centre, 1.0, -0.01, world_up=UP) == 0.0
+
+
+def test_the_floor_is_reached_along_world_up_not_model_z():
+    """A world tilted against the model root: the descent per metre is -up · d."""
+    tilt = 0.6
+    up = np.array([0.0, -math.sin(tilt), math.cos(tilt)])  # world +z, rolled about model x
+    centre = np.zeros(3)
+    p = np.array([0.0, 0.0, 0.2])
+    # level in the model, but descending in the world: the floor 0.1 m below ends it
+    d = unit([0.0, 1.0, 0.0])
+    assert csb.stroke_to_boundary(p, d, centre, 10.0, 0.1, world_up=UP) == pytest.approx(
+        math.sqrt(10.0**2 - 0.2**2)  # level world: the sphere ends it
+    )
+    assert csb.stroke_to_boundary(p, d, centre, 10.0, 0.1, world_up=up) == pytest.approx(
+        0.1 / math.sin(tilt)
+    )
+    # straight down the model's z descends only cos(tilt) per metre in the world
+    down = unit([0.0, 0.0, -1.0])
+    assert csb.stroke_to_boundary(p, down, centre, 10.0, 0.1, world_up=up) == pytest.approx(
+        0.1 / math.cos(tilt)
+    )
 
 
 def test_ramp_limit_matches_constant_acceleration_kinematics():
@@ -344,6 +374,16 @@ def test_drop_table_bins_by_drop_and_filters_by_flight_time():
 # ── CLI end to end ────────────────────────────────────────────────────────────
 
 
+def write_map_frames(map_dir: Path, base_frame: str, model_world_t_base, model_world_t_world):
+    """The ``provenance.frames`` block catchability_map writes, for a fixture map."""
+    frames = {
+        "arm_base_frame": base_frame,
+        "model_world_t_base": np.asarray(model_world_t_base).tolist(),
+        "model_world_t_world": np.asarray(model_world_t_world).tolist(),
+    }
+    (map_dir / "provenance.yaml").write_text(yaml.safe_dump({"provenance": {"frames": frames}}))
+
+
 def _write_run(tmp_path: Path, arm: csb.ArmKinematics, *, shift_m: float = 0.0) -> list[str]:
     urdf = tmp_path / "fixture.urdf"
     urdf.write_text(arm_urdf())
@@ -379,7 +419,16 @@ def _write_run(tmp_path: Path, arm: csb.ArmKinematics, *, shift_m: float = 0.0) 
     map_dir = tmp_path / "map"
     map_dir.mkdir()
     rng = np.random.default_rng(7)
-    header = ["id", "throw_index", "t_c_s", "p_world_z", "accepted", "nv"]
+    header = [
+        "id",
+        "throw_index",
+        "t_c_s",
+        "p_world_x",
+        "p_world_y",
+        "p_world_z",
+        "accepted",
+        "nv",
+    ]
     header += [f"p_model_{a}" for a in "xyz"] + [f"v_model_{a}" for a in "xyz"]
     header += [f"q{i}" for i in range(6)]
     with (map_dir / "candidates.csv").open("w", newline="") as handle:
@@ -389,17 +438,25 @@ def _write_run(tmp_path: Path, arm: csb.ArmKinematics, *, shift_m: float = 0.0) 
             q = Q_GENERIC + rng.uniform(-0.2, 0.2, size=6)
             p = arm.frame_position(q) + np.array([shift_m, 0.0, 0.0])
             v = -2.5 * arm.frame_axis(q)
-            writer.writerow([i, i % 2, 0.7, p[2] + 0.9, "1", 6, *p, *v, *q])
-        writer.writerow([9, 1, 0.7, 1.0, "0", 6, 0, 0, 0, 1, 0, 0, *np.zeros(6)])  # rejected
+            writer.writerow([i, i % 2, 0.7, p[0], p[1], p[2] + 0.9, "1", 6, *p, *v, *q])
+        writer.writerow([9, 1, 0.7, 0, 0, 1.0, "0", 6, 0, 0, 0, 1, 0, 0, *np.zeros(6)])  # rejected
     with (map_dir / "throw_summary.csv").open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["throw_index", "release_height_m", "distance_m"])
         writer.writerows([[0, 1.0, 1.5], [1, 1.0, 1.5], [2, 1.0, 1.5]])
+    # The frames the map was judged in: world-aligned, the model world 0.9 m below
+    # the world (p_world_z above), the reach sphere about the frame `base`.
+    write_map_frames(
+        map_dir,
+        "base",
+        cm.frame_placement_in_model_world(arm_urdf(), "base"),
+        cm.make_transform(np.eye(3), (0.0, 0.0, -0.9)),
+    )
     return [
         "--robot-config", str(config), "--group", "arm", "--map-dir", str(map_dir),
         "--out-dir", str(tmp_path / "out"), "--urdf", str(urdf), "--velocity-source", "model",
         "--eta-v", "0.9", "--eta-tau", "0.8", "--rotor-inertia", " ".join(map(str, ROTOR)),
-        "--rotor-inertia-source", "test fixture", "--arm-base-frame", "base",
+        "--rotor-inertia-source", "test fixture",
         "--max-reach-m", "1.6", "--floor-world-z-m", "0.0", "--detection-s", "0.10",
         "--latency-s", "0.14", "--close-total-s", "0.10", "--arm-delay-s", "0.05",
         "--time-margin-s", "0.02", "--relative-speed-m-s", "0.5 5.0",
@@ -425,6 +482,24 @@ def test_cli_config_velocity_source_reads_the_robot_config(tmp_path, arm):
     assert csb.main(argv) == 0
     summary = yaml.safe_load((tmp_path / "out" / "speed_budget_summary.yaml").read_text())
     assert summary["qd_max"] == pytest.approx((0.5 * QD_MAX).tolist())
+
+
+def test_cli_refuses_a_map_whose_heights_are_not_its_frames(tmp_path, arm):
+    argv = _write_run(tmp_path, arm)
+    write_map_frames(
+        tmp_path / "map",
+        "base",
+        cm.frame_placement_in_model_world(arm_urdf(), "base"),
+        cm.make_transform(np.eye(3), (0.0, 0.0, -0.8)),  # the CSV says 0.9
+    )
+    with pytest.raises(SystemExit, match=r"p_world is 100\.000 mm off"):
+        csb.main(argv)
+
+
+def test_cli_refuses_the_retired_reach_centre_flag(tmp_path, arm):
+    argv = _write_run(tmp_path, arm)
+    with pytest.raises(SystemExit, match=r"--arm-base-frame is gone \(#779\) — .*provenance"):
+        csb.main([*argv, "--arm-base-frame", "base"])
 
 
 def test_cli_refuses_a_map_whose_poses_do_not_match_this_model(tmp_path, arm):

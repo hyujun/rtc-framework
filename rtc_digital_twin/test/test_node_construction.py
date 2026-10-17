@@ -13,6 +13,8 @@ import contextlib
 import os
 
 import rclpy
+from geometry_msgs.msg import TransformStamped
+from tf2_msgs.msg import TFMessage
 
 from rtc_digital_twin.digital_twin_node import DigitalTwinNode
 
@@ -45,6 +47,18 @@ def running_node(args=None):
         if node is not None:
             node.destroy_node()
         rclpy.shutdown()
+
+
+def _tf_message(*pairs):
+    """A TFMessage of identity transforms, one per (parent, child)."""
+    msg = TFMessage()
+    for parent, child in pairs:
+        tf = TransformStamped()
+        tf.header.frame_id = parent
+        tf.child_frame_id = child
+        tf.transform.rotation.w = 1.0
+        msg.transforms.append(tf)
+    return msg
 
 
 class TestNodeConstruction:
@@ -84,6 +98,33 @@ class TestNodeConstruction:
             assert node._tcp_child_frame == "tool0_actual"
             # Empty tf2 buffer → lookup raises TransformException, caught → None.
             assert node._lookup_tcp_transform() is None
+
+    def test_tcp_parent_is_the_frame_the_controller_publishes_under(self):
+        # tcp_viz.frame_id unset: no lookup until the controller says which
+        # frame the TCP pose is in, then the marker and TF hang off that one.
+        args = ["--ros-args", "-p", "tcp_viz.source_topic:=ee_link_actual"]
+        with running_node(args) as node:
+            assert node._tcp_parent_frame == ""
+            assert node._lookup_tcp_transform() is None
+            node._controller_transforms_cb(_tf_message(("link_0", "ee_link_actual")))
+            assert node._tcp_parent_frame == "link_0"
+            assert node._tcp_viz.frame_id == "link_0"
+            # Other children say nothing about the TCP's parent.
+            node._controller_transforms_cb(_tf_message(("world", "elbow_actual")))
+            assert node._tcp_parent_frame == "link_0"
+
+    def test_a_named_tcp_parent_is_kept(self):
+        args = [
+            "--ros-args",
+            "-p",
+            "tcp_viz.source_topic:=ee_link_actual",
+            "-p",
+            "tcp_viz.frame_id:=pelvis",
+        ]
+        with running_node(args) as node:
+            node._controller_transforms_cb(_tf_message(("link_0", "ee_link_actual")))
+            assert node._tcp_parent_frame == "pelvis"
+            assert node._tcp_viz.frame_id == "pelvis"
 
     def test_static_source_creates_subscription(self):
         args = [

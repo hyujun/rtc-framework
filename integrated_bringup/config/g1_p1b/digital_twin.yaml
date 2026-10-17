@@ -48,4 +48,5 @@
     # tf2 lookup `pelvis → base_adapter_actual`: the frame
     # demo_joint_controller publishes for the right arm's end (the hand mount).
     tcp_viz.source_topic: "base_adapter_actual"
-    tcp_viz.frame_id: "pelvis"   # parent TF frame — this robot's root link (default is "base")
+    # tcp_viz.frame_id unset: the parent is the frame the controller publishes
+    # base_adapter_actual under (pelvis).

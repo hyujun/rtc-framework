@@ -243,13 +243,18 @@ class DigitalTwinNode(Node):
         self._tcp_tf_broadcaster = None
         self._tcp_task_positions = None  # cached [x, y, z, r, p, y]
         self._tcp_goal_positions = None  # cached goal (from RobotTarget)
+        # tcp_viz.frame_id unset: the parent is the frame the active controller
+        # publishes the TCP child frame under (_adopt_tcp_parent).
+        self._tcp_parent_from_controller = False
         tcp_source_topic = ""
         try:
             self.declare_parameter("tcp_viz.source_topic", "")
             tcp_source_topic = self.get_parameter("tcp_viz.source_topic").value
             if tcp_source_topic:
                 self.declare_parameter("tcp_viz.marker_topic", "/digital_twin/tcp_markers")
-                self.declare_parameter("tcp_viz.frame_id", "base")
+                # "" = the frame the active controller publishes the child under
+                # (its root link). No robot frame name as a default (ARCH-1).
+                self.declare_parameter("tcp_viz.frame_id", "")
                 self.declare_parameter("tcp_viz.broadcast_tf", True)
                 self.declare_parameter("tcp_viz.tf_child_frame", "virtual_tcp")
                 self.declare_parameter("tcp_viz.sphere_radius", 0.012)
@@ -272,7 +277,7 @@ class DigitalTwinNode(Node):
 
                 self._tcp_viz = TcpVisualizer(tcp_viz_config)
 
-                # Phase 4: TCP pose comes from tf2 (`base → tool0_actual`).
+                # Phase 4: TCP pose comes from tf2 (`<parent> → tool0_actual`).
                 # The active controller broadcasts <config_key>/transforms
                 # (tf2_msgs/TFMessage), NOT /tf — so this bare TransformListener
                 # only sees those frames because the controller_tf re-broadcast
@@ -287,6 +292,7 @@ class DigitalTwinNode(Node):
                 self._tcp_tf_buffer = Buffer()
                 self._tcp_tf_listener = TransformListener(self._tcp_tf_buffer, self)
                 self._tcp_parent_frame = self.get_parameter("tcp_viz.frame_id").value
+                self._tcp_parent_from_controller = not self._tcp_parent_frame
                 # Resolve child frame: explicit override beats source_topic
                 # (when source_topic legacy paths look like "<robot>/gui_position",
                 # default to base→tool0_actual).
@@ -422,7 +428,7 @@ class DigitalTwinNode(Node):
         Returns the latest TransformStamped or None when the lookup fails
         (e.g., before the active controller starts publishing).
         """
-        if not getattr(self, "_tcp_tf_buffer", None):
+        if not getattr(self, "_tcp_tf_buffer", None) or not self._tcp_parent_frame:
             return None
         try:
             return self._tcp_tf_buffer.lookup_transform(
@@ -463,12 +469,35 @@ class DigitalTwinNode(Node):
         extrapolation into the past; frame_id / child_frame_id / transform are
         forwarded unchanged.
         """
+        if self._tcp_parent_from_controller:
+            self._adopt_tcp_parent(msg)
         if self._ctf_broadcaster is None or not msg.transforms:
             return
         now = self.get_clock().now().to_msg()
         for tf in msg.transforms:
             tf.header.stamp = now
         self._ctf_broadcaster.sendTransform(list(msg.transforms))
+
+    def _adopt_tcp_parent(self, msg: "TFMessage"):
+        """With ``tcp_viz.frame_id`` unset, take the TCP parent from the controller.
+
+        The controllers publish each pose under the root link it is computed in
+        (#779), so the marker, the lookup and the ``virtual_tcp`` TF hang off the
+        frame the pose is actually stated in — not a frame name guessed per
+        robot, which on some URDFs is not a frame of the arm at all.
+        """
+        for tf in msg.transforms:
+            if tf.child_frame_id != self._tcp_child_frame:
+                continue
+            parent = tf.header.frame_id
+            if parent and parent != self._tcp_parent_frame:
+                self._tcp_parent_frame = parent
+                self._tcp_viz.frame_id = parent
+                self.get_logger().info(
+                    f"TCP visualization parent: '{parent}' (the frame the active controller "
+                    f"publishes '{self._tcp_child_frame}' under)"
+                )
+            return
 
     def _sensor_cb(self, msg: HandSensorState):
         """Cache latest fingertip sensor data from HandSensorState."""

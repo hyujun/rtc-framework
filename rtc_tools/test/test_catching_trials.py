@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import yaml
 
-from rtc_tools.analysis import catching_trials as ct
+from rtc_tools.analysis import catchability_map as cm, catching_trials as ct
 
 FIXTURE = Path(__file__).parent / "data" / "catching_pilot_260924_1218"
 MODULE = Path(ct.__file__)
@@ -1902,7 +1902,7 @@ def test_the_vision_world_composes_as_the_controller_does():
     # an inverted placement cannot pass (Rz(pi) is its own transpose, and the
     # shipped yaw is 0). The URDF is the pilot's ur5e_p1b, where `base` is
     # Rz(pi) from the model root.
-    parent, parent_t_world = ct.vision_frame_from_params(_scene_world(), "test")
+    parent, parent_t_world = cm.vision_frame_from_params(_scene_world(), "test")
     assert parent == "base"
     urdf = (FIXTURE / "robot.urdf").read_text()
     model_t_world = ct.frame_placement_in_model_world(urdf, parent) @ parent_t_world
@@ -1942,7 +1942,7 @@ def test_the_vision_world_composes_as_the_controller_does():
 )
 def test_a_vision_world_the_controller_would_not_use_is_refused(params, match):
     with pytest.raises(SystemExit, match=match):
-        ct.vision_frame_from_params(params, "test")
+        cm.vision_frame_from_params(params, "test")
 
 
 @pytest.mark.parametrize("key", ["arm_base_frame", "base_T_world"])
