@@ -1,5 +1,6 @@
 # WBC State — published by TSID-based whole-body controllers (e.g.
-# DemoWbcController). Per-controller topic: /<config_key>/hand/wbc_state
+# DemoWbcController). Per-controller topic: /<config_key>/<hand device>/wbc_state,
+# where <hand device> is the controller's secondary device group name
 # (500 Hz controller, ~50 Hz publish thread).
 #
 # Mirrors the role of GraspState for Force-PI grasp controllers, but the

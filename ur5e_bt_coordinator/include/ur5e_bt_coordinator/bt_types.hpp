@@ -72,7 +72,7 @@ struct CachedGraspState {
   std::chrono::steady_clock::time_point received_at{};
 };
 
-// ── Cached WBC state (from /<ctrl>/hand/wbc_state, computed at 500Hz) ───────
+// ── Cached WBC state (from /<ctrl>/<hand_group>/wbc_state, 500Hz) ──────────
 // Published by TSID-based whole-body controllers (DemoWbcController). Schema
 // parallels CachedGraspState but reflects WBC's TSID-based grasp algorithm
 // (no Force-PI fields). BtRosBridge subscribes to both grasp_state and
