@@ -41,7 +41,7 @@ rtc_base/README.md: 50803
 rtc_communication/README.md: 28726
 rtc_controller_interface/README.md: 54183
 rtc_controller_manager/README.md: 95123
-rtc_controllers/README.md: 148165
+rtc_controllers/README.md: 14350 strict
 rtc_digital_twin/README.md: 24708
 rtc_inference/README.md: 18580
 rtc_math/README.md: 2571

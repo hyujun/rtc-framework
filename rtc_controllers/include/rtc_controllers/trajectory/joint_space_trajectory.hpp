@@ -9,6 +9,9 @@
 namespace rtc {
 namespace trajectory {
 
+/// N-DOF joint-space point-to-point trajectory: one independent
+/// QuinticPolynomial per joint, from a start State to a goal State over a given
+/// duration. For via-points use QuinticBlendTrajectory / QuinticSplineTrajectory.
 template <std::size_t N>
 class JointSpaceTrajectory {
   static_assert(N > 0, "JointSpaceTrajectory: N must be at least 1");
