@@ -1,0 +1,19 @@
+# The pilot's vision world (S8, 260924_1218): the arm base at the world origin.
+# Migrated from the pilot's catching.io base_T_world (the identity on `base`)
+# when that pair became the model frame scene_world (#779) — same transform.
+# make_fixture.py writes this file from the profile's _base.yaml + sim.yaml.
+/**:
+  ros__parameters:
+    urdf:
+      extra_frames:
+        scene_world:
+          parent: base
+          xyz:
+          - 0.0
+          - 0.0
+          - 0.0
+          rpy:
+          - 0.0
+          - 0.0
+          - 0.0
+          provisional: false

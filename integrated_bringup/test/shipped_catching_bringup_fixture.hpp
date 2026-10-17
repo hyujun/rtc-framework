@@ -3,9 +3,10 @@
 // The CM's bring-up order for a controller of a shipped robot profile, read
 // from the shipped files rather than restated: the device configs of the
 // groups the controller's `topics:` claims (tagged as the simulator), the
-// profile's system model as the CM builds it, one builder per profile per
-// process. Shared by test_demo_catching_controller (the shipped-profile
-// suites) and the allocation gate's second robot (test_demo_catching_alloc_s7).
+// profile's system model as the CM builds it (`_base.yaml` + `sim.yaml`
+// merged, as the sim launch layers them), one builder per profile per process. Shared by
+// test_demo_catching_controller (the shipped-profile suites) and the allocation gate's second robot
+// (test_demo_catching_alloc_s7).
 #pragma once
 
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
@@ -16,6 +17,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -37,6 +39,40 @@ inline std::string ShippedProfilesDir() {
 #endif
 }
 
+/// Lays `src` onto `dst` key by key — a map merges, anything else replaces —
+/// the way the CM's parameter files overlay one another.
+inline void MergeParamsInto(YAML::Node& dst, const YAML::Node& src) {
+  for (auto it = src.begin(); it != src.end(); ++it) {
+    const auto key = it->first.as<std::string>();
+    YAML::Node slot = dst[key];
+    if (it->second.IsMap() && slot.IsDefined() && slot.IsMap()) {
+      MergeParamsInto(slot, it->second);
+    } else {
+      dst[key] = YAML::Clone(it->second);
+    }
+  }
+}
+
+/// The RT node's parameters of a shipped sim bring-up: `_base.yaml` then
+/// `sim.yaml`, merged as the launch hands them to the CM. A profile may split
+/// a block across the two — ur5e_p1b keeps `urdf` in `_base.yaml` and its
+/// `urdf.extra_frames.scene_world` in `sim.yaml` (#779) — so taking the first
+/// file that has a block would drop the other half.
+inline YAML::Node ShippedSimParams(const std::string& profile) {
+  const std::string base = ShippedProfilesDir() + "/" + profile + "/";
+  YAML::Node merged(YAML::NodeType::Map);
+  for (const char* file : {"_base.yaml", "sim.yaml"}) {
+    if (!std::filesystem::exists(base + file)) {
+      continue;
+    }
+    const YAML::Node params = YAML::LoadFile(base + file)["/**"]["ros__parameters"];
+    if (params && params.IsMap()) {
+      MergeParamsInto(merged, params);
+    }
+  }
+  return merged;
+}
+
 /// Device configs built FROM the shipped YAML for the two groups the
 /// controller's own `topics:` block claims, tagged as the simulator.
 ///
@@ -46,20 +82,9 @@ inline std::string ShippedProfilesDir() {
 inline std::map<std::string, rtc::DeviceNameConfig> ShippedSimConfigs(const std::string& profile,
                                                                       const YAML::Node& node) {
   std::map<std::string, rtc::DeviceNameConfig> configs;
-  const std::string base = ShippedProfilesDir() + "/" + profile + "/";
-  YAML::Node devices;
-  for (const char* candidate : {"_base.yaml", "sim.yaml"}) {
-    if (!std::filesystem::exists(base + candidate)) {
-      continue;
-    }
-    const YAML::Node root = YAML::LoadFile(base + candidate);
-    const YAML::Node d = root["/**"]["ros__parameters"]["devices"];
-    if (d && d.IsMap()) {
-      devices = d;
-      break;
-    }
-  }
-  if (!devices) {
+  const YAML::Node params = ShippedSimParams(profile);
+  const YAML::Node devices = params["devices"];
+  if (!devices || !devices.IsMap()) {
     return configs;
   }
   for (auto it = node["topics"].begin(); it != node["topics"].end(); ++it) {
@@ -103,20 +128,10 @@ inline std::map<std::string, rtc::DeviceNameConfig> ShippedSimConfigs(const std:
 /// test of the shipped file that left the model out would configure a
 /// controller production never builds.
 inline rtc_urdf_bridge::ModelConfig ShippedModelConfig(const std::string& profile) {
-  const std::string base = ShippedProfilesDir() + "/" + profile + "/";
-  YAML::Node urdf;
-  for (const char* candidate : {"_base.yaml", "sim.yaml"}) {
-    if (!std::filesystem::exists(base + candidate)) {
-      continue;
-    }
-    const YAML::Node u = YAML::LoadFile(base + candidate)["/**"]["ros__parameters"]["urdf"];
-    if (u && u.IsMap()) {
-      urdf = u;
-      break;
-    }
-  }
+  const YAML::Node params = ShippedSimParams(profile);
+  const YAML::Node urdf = params["urdf"];
   // Throws rather than ASSERT_: the callers would go on with no model.
-  if (!urdf) {
+  if (!urdf || !urdf.IsMap()) {
     throw std::runtime_error(profile + ": no shipped urdf block");
   }
   const std::string share = ament_index_cpp::get_package_share_directory("robot_descriptions");
@@ -165,12 +180,21 @@ inline std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> ShippedModelBuild
 
 /// The CM's bring-up order for a controller of the shipped profile: model,
 /// builder, rate, devices (iiwa7_leap_test_fixture.hpp). on_configure is the
-/// caller's.
-inline void BringUpShipped(integrated_bringup::DemoCatchingController& ctrl,
-                           const std::string& profile,
-                           const std::map<std::string, rtc::DeviceNameConfig>& configs) {
-  ctrl.SetSystemModelConfig(ShippedModelConfig(profile));
-  ctrl.SetSharedModelBuilder(ShippedModelBuilder(profile));
+/// caller's. `tweak_model` edits the shipped model config first (a scene
+/// other than the shipped one); the builder is then built for that config
+/// alone instead of shared.
+inline void BringUpShipped(
+    integrated_bringup::DemoCatchingController& ctrl, const std::string& profile,
+    const std::map<std::string, rtc::DeviceNameConfig>& configs,
+    const std::function<void(rtc_urdf_bridge::ModelConfig&)>& tweak_model = nullptr) {
+  rtc_urdf_bridge::ModelConfig cfg = ShippedModelConfig(profile);
+  if (tweak_model) {
+    tweak_model(cfg);
+    ctrl.SetSharedModelBuilder(std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(cfg));
+  } else {
+    ctrl.SetSharedModelBuilder(ShippedModelBuilder(profile));
+  }
+  ctrl.SetSystemModelConfig(cfg);
   ctrl.SetControlRate(kShippedProfileControlRateHz);
   ctrl.SetDeviceNameConfigs(configs);
 }

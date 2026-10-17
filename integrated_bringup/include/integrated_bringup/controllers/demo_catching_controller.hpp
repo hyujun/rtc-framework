@@ -495,13 +495,18 @@ class DemoCatchingController final : public RTControllerInterface {
         plan_refusal_observed_.load(std::memory_order_relaxed));
   }
 
-  /// Plans that replaced the one being followed in APPROACH (§4.7, S6-B).
   /// The vision → model-world transform the ingress applies (L3 §4.2),
-  /// resolved at configure from `catching.io.arm_base_frame` +
-  /// `catching.io.base_T_world` and the model.
+  /// resolved at configure from the model frame `scene_world` (#779).
   [[nodiscard]] const TrajInputConfig& GetTrajInputConfig() const noexcept {
     return traj_input_.Config();
   }
+
+  /// The vision lane takes no input: the model defines no `scene_world` (or
+  /// it is provisional), so there is no vision world to read a prediction in
+  /// (#779 V3). Decided at configure, with one ERROR; nothing subscribes.
+  [[nodiscard]] bool IsVisionInert() const noexcept { return vision_inert_; }
+
+  /// Plans that replaced the one being followed in APPROACH (§4.7, S6-B).
 
   [[nodiscard]] std::uint64_t GetPlanReplacedCount() const noexcept {
     return plan_replaced_count_.load(std::memory_order_relaxed);
@@ -1048,8 +1053,10 @@ class DemoCatchingController final : public RTControllerInterface {
   /// model's joint count) — and so before the ingress setup, whose
   /// vision-frame transform needs it before the subscription exists.
   void AcquireModelBuilder();
-  /// Fills `cfg`'s vision → model-world transform (L3 §4.2). False (logged)
-  /// on a named frame the model lacks or that is not rigid to its root.
+  /// Fills `cfg`'s vision → model-world transform (L3 §4.2) from the model
+  /// frame `scene_world`, or sets vision_inert_ when the model has none (or it
+  /// is provisional). False (logged) on a malformed one: not rigid to the
+  /// model root, or not finite.
   [[nodiscard]] bool ResolveVisionFrame(TrajInputConfig& cfg);
 
   /// The subscription callback (non-RT). Samples the receive instants, hands
@@ -1472,13 +1479,9 @@ class DemoCatchingController final : public RTControllerInterface {
   /// change rather than performing a conversion (L1 §4.3's transform is not
   /// implemented because nothing needs it).
   std::string expected_frame_{"world"};
-  /// `catching.io.arm_base_frame` — the URDF frame the vision world is
-  /// measured against — and `catching.io.base_T_world` (p_base = Rz(yaw)·p_world
-  /// + t, the map tool's `--world-yaw-deg` / `--world-translation-m`). Empty
-  /// frame ⇒ the vision frame is taken AS the model world (warned).
-  std::string vision_base_frame_;
-  double vision_yaw_deg_{0.0};
-  std::array<double, 3> vision_translation_{0.0, 0.0, 0.0};
+  /// No vision world on the model (IsVisionInert). Written by on_configure
+  /// alone, before the subscription it suppresses would exist.
+  bool vision_inert_{false};
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr traj_sub_;
   CatchingTrajInput traj_input_;
 

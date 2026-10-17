@@ -274,6 +274,10 @@ class DemoInferenceController final : public RTControllerInterface {
   /// True when configure accepted a missing model and every tick holds.
   [[nodiscard]] bool HoldModeForTesting() const noexcept { return hold_mode_; }
 
+  /// True when the object lane takes no input: its source frame is
+  /// `scene_world` and the model defines none (or it is provisional) — #779 V3.
+  [[nodiscard]] bool ObjectLaneInertForTesting() const noexcept { return object_lane_inert_; }
+
   /// Why the last tick held (kNone when it emitted an action).
   [[nodiscard]] InferenceHoldReason LastHoldReasonForTesting() const noexcept {
     return last_hold_reason_;
@@ -668,7 +672,13 @@ class DemoInferenceController final : public RTControllerInterface {
   /// publisher's frame names, the model speaks the URDF's; this key is the one
   /// place the two are joined, and it is what lets the model supply
   /// `pf_from_src_` instead of a hand-typed rotation.
+  /// `scene_world` (#779) is the scene's world, the model frame the sim
+  /// defines per scene; a model without one leaves the lane inert (below).
   std::string object_source_frame_link_;
+  /// The source frame is `scene_world` and the model has none: configure goes
+  /// on (one ERROR), nothing subscribes, and every tick holds on a missing
+  /// object — a real arm until its world is calibrated (#779 V3).
+  bool object_lane_inert_{false};
   /// Static transform policy_frame ← source frame, computed once at configure
   /// and applied in the (non-RT) callback. Identity-initialised (pinocchio 4's
   /// SE3 default constructor leaves the rotation uninitialised).

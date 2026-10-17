@@ -118,6 +118,8 @@ CM RT loop · MPC thread · hand UDP receiver · rt_callback 이 **같은** gene
 [BT coordinator]: subscribes grasp_state + /rtc_cm/<group>/joint_states + `<config_key>/transforms` (self-feed), publishes goals
 ```
 
+- **외부 world 는 모델 frame 하나다** (#779): `scene_world` (`urdf.extra_frames`, mode 파일이 정의). task 목표의 `frame_id`, catching vision, inference object lane, demo GUI, `rtc_tools` 가 같은 정의를 읽고, 소비자가 자기 world 사본을 두지 않는다. 상태·배치 규칙: [integrated_bringup README](../integrated_bringup/README.md#task-목표의-기준-frame-779)
+
 ## RT vs non-RT Topic Ownership
 
 토픽 소유는 3개 lane 이다.

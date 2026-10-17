@@ -14,7 +14,7 @@
 
 비범위:
 - 좌표 변환 조회를 RT에서 수행하는 것(금지 — RT 경로에 tf2 없음). `frame_id`→`world` 가 다르면 configure 에서 한 번 읽어 캐시한 정적 변환을 nrt 콜백에서 적용한다. sim 에서는 불필요 — `frame_id` = `world`; 실기 카메라 프로파일이 다른 frame 을 내면 그때 켠다.
-  - **`world` → 모델 world 는 별개이고 항상 필요하다 (L3 §4.2 의 frame 규약).** 계획기·CLIK 은 pinocchio universe (URDF 모델 root) 좌표를 쓰는데, ur5e_p1b 의 root 는 `base_link` 라 `world` (= `base`) 와 z 둘레 180° 다르다. 이 변환이 없으면 후보가 팔 뒤로 간다. nrt 수신 시 한 번 $p,v,a$ 와 6×6 공분산 ($R_6\Sigma R_6^\top$, 정확히 0 인 회전 계수는 건너뛰어 NaN(모름) 이 섞이지 않게) 에 적용하고, 그 뒤의 모든 소비자는 모델 world 를 본다. 변환은 `model_world_T_world` = (모델에서 읽은 `io.arm_base_frame` 배치) · `io.base_T_world` — 지도 도구의 `--arm-base-frame`·`--world-yaw-deg`·`--world-translation-m` 과 같은 분해. 항등이면 적용하지 않는다 (iiwa7_leap)
+  - **`world` → 모델 world 는 별개이고 항상 필요하다 (L3 §4.2 의 frame 규약).** 계획기·CLIK 은 pinocchio universe (URDF 모델 root) 좌표를 쓰는데, ur5e_p1b 의 root 는 `base_link` 라 `world` (= `base`) 와 z 둘레 180° 다르다. 이 변환이 없으면 후보가 팔 뒤로 간다. nrt 수신 시 한 번 $p,v,a$ 와 6×6 공분산 ($R_6\Sigma R_6^\top$, 정확히 0 인 회전 계수는 건너뛰어 NaN(모름) 이 섞이지 않게) 에 적용하고, 그 뒤의 모든 소비자는 모델 world 를 본다. 변환은 `model_world_T_world` = 모델 frame `scene_world` 의 universe 배치 (#779) — `urdf.extra_frames.scene_world {parent: <팔 root_link>, xyz, rpy}` ($p_{root}=R(rpy)\,p_{world}+xyz$) 를 CM 이 모델에 더하므로 (모델에서 읽은 parent 배치) · (그 frame 의 배치) 이고, task 목표의 `scene_world` 와 같은 world 다. 지도 도구의 `--arm-base-frame`·`--world-yaw-deg`·`--world-translation-m` 과 같은 분해. 항등이면 적용하지 않는다. world 는 sim.yaml 과 장면을 바꾸는 overlay 마다 정의되고 `_base.yaml`·`robot.yaml` 에는 없다 — 없거나 `provisional` 이면 configure 는 성공하고 vision lane 이 **inert** (구독하지 않음, ERROR 1 회), 모델 root 에 강체가 아니면 configure 거부
 - 궤적 예측·전파(vision 노드, 마스터 §5.2).
 - RT 원시형 구현 — `rtc::SeqLock`·`rtc::SpscQueue` 를 쓴다(G1-8).
 
@@ -189,8 +189,7 @@ $\bar\nu$ 가 쓰였다면 세 곳이다: L3의 $\kappa_\sigma$ 보정 근거(L3
 |---|---|---|---|---|
 | `io.traj_topic` | string | – | – | ball_perception debug 예측 궤적 토픽 (G1-2, D-4; stable ABI 아님) |
 | `io.expected_frame` | string | – | – | vision frame (마스터 §3). 다르면 §4.3 변환 |
-| `io.arm_base_frame` | string | – | 모델의 frame, root 에 강체 | 모델 world 변환의 팔 base frame (§1). 없으면 경고 후 vision frame 을 모델 world 로 취급. 모델에 없거나 움직이는 관절 뒤면 configure 거부 |
-| `io.base_T_world` | map | deg, m | 유한 | $p_{base}=R_z(\text{yaw})\,p_{world}+t$. 실기는 카메라 보정. `arm_base_frame` 없이 주면 거부 |
+| ~~`io.arm_base_frame`~~ · ~~`io.base_T_world`~~ | – | – | – | **없앴다 (#779)** — 모델 world 변환은 모델 frame `scene_world` (§1). 남아 있으면 configure 거부 |
 | `io.n_min` | int | – | 2–`kCap` | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다. 아래 유도 |
 | `io.t_stale` | double | s | 0.02–0.2 | steady 수신 나이 임계 |
 | `io.future_tol` | double | s | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2) |

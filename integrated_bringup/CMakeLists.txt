@@ -1834,9 +1834,10 @@ if(BUILD_TESTING)
   # Shipped initial_qpos: length/type (always) + MJCF keyframe agreement (skips
   # without the mujoco pip module, which CI installs and /usr/bin/python3 lacks).
   ament_add_pytest_test(test_shipped_initial_qpos test/test_shipped_initial_qpos.py)
-  # Shipped catching.io.base_T_world vs where the shipped scene puts the arm
-  # base: float types (always) + the compiled scene's base position (skips
-  # without the mujoco pip module, like the keyframe lane above).
+  # Shipped urdf.extra_frames.scene_world (sim.yaml + each overlay) vs where
+  # that bring-up's scene puts the arm root: no retired catching.io frame keys
+  # (always) + the compiled scene's root position (skips without the mujoco pip
+  # module, like the keyframe lane above).
   ament_add_pytest_test(test_shipped_base_T_world test/test_shipped_base_T_world.py)
   # #779: where each profile defines the scene's world (sim.yaml, overlays, never
   # _base / robot.yaml).
@@ -1887,6 +1888,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_preset_toggle test/test_demo_gui_preset_toggle.py)
   ament_add_pytest_test(test_demo_gui_pull test/test_demo_gui_pull.py)
   ament_add_pytest_test(test_demo_gui_task_frame test/test_demo_gui_task_frame.py)
+  ament_add_pytest_test(test_demo_gui_goal_frame test/test_demo_gui_goal_frame.py)
   ament_add_pytest_test(test_demo_gui_ball_launch test/test_demo_gui_ball_launch.py)
   ament_add_pytest_test(test_demo_gui_grasp_mode test/test_demo_gui_grasp_mode.py)
   ament_add_pytest_test(test_demo_gui_hand_step test/test_demo_gui_hand_step.py)

@@ -3,6 +3,7 @@
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/model_config_lookup.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "integrated_bringup/support/task_target_frames.hpp"
 #include "rtc_base/logging/session_dir.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/types/types.hpp"  // rtc::SteadyNowNs
@@ -982,50 +983,57 @@ void DemoCatchingController::AcquireModelBuilder() {
 
 bool DemoCatchingController::ResolveVisionFrame(TrajInputConfig& cfg) {
   cfg.to_model = false;
-  if (vision_base_frame_.empty()) {
-    RCLCPP_WARN(logger_,
-                "catching.io.arm_base_frame is not set: the vision frame '%s' is taken AS the "
-                "model world. That is wrong on a robot whose URDF root is not the frame vision "
-                "is measured against (L3 §4.2 — ur5e_p1b's root is base_link, 180° from base)",
-                expected_frame_.c_str());
-    return true;
+  vision_inert_ = false;
+  if (traj_topic_.empty()) {
+    return true;  // no vision lane: nothing reads a prediction, so no world to judge
   }
   if (!builder_) {
     // No model means no arm to drive (SetupArmCommand holds it) and no
     // planner model either — nothing downstream consumes model coordinates.
     RCLCPP_WARN(logger_,
-                "catching.io.arm_base_frame '%s' is set but there is no robot model: the vision "
-                "frame is left as is (the arm is held)",
-                vision_base_frame_.c_str());
+                "no robot model: the vision frame '%s' is taken as is (the arm is held, nothing "
+                "reads model coordinates)",
+                expected_frame_.c_str());
     return true;
   }
   const auto model =
       builder_->GetActuatedModel() ? builder_->GetActuatedModel() : builder_->GetFullModel();
-  if (!model || !model->existFrame(vision_base_frame_)) {
-    RCLCPP_ERROR(logger_, "catching.io.arm_base_frame '%s' is not a frame of the robot model",
-                 vision_base_frame_.c_str());
+  if (!model) {
+    RCLCPP_ERROR(logger_, "the model builder holds no model to read the vision world from");
     return false;
   }
-  const auto& frame = model->frames[model->getFrameId(vision_base_frame_)];
-  if (frame.parentJoint != 0) {
-    // A frame behind a moving joint would make the transform a function of q.
+  // The vision world is the scene's world, the model frame every task-goal
+  // controller converts `scene_world` goals through (#779) — read here with
+  // the model root as the base, since the planner and the CLIK work in the
+  // Pinocchio universe. Its placement there IS model_world_T_world.
+  TaskTargetFrames world;
+  const std::string error =
+      world.Configure(*model, model->frames[0].name, SceneWorldProvisional(GetSystemModelConfig()));
+  if (!error.empty()) {
+    // Read against the model root, so "not rigid" here means the frame moves
+    // with a joint relative to the universe — a planner constant it cannot be.
     RCLCPP_ERROR(logger_,
-                 "catching.io.arm_base_frame '%s' is not rigid to the model root (it hangs off "
-                 "joint %zu)",
-                 vision_base_frame_.c_str(), static_cast<std::size_t>(frame.parentJoint));
+                 "the vision world (model frame '%s') must be a constant of the model root: %s",
+                 std::string(TaskTargetFrames::kSceneWorld).c_str(), error.c_str());
     return false;
   }
-  // model_world_T_world = model_world_T_base · base_T_world. On the universe,
-  // a frame's placement IS model_world_T_frame.
-  const Eigen::Matrix3d r_mb = frame.placement.rotation();
-  const Eigen::Vector3d t_mb = frame.placement.translation();
-  const Eigen::Matrix3d r_bw =
-      Eigen::AngleAxisd(vision_yaw_deg_ * M_PI / 180.0, Eigen::Vector3d::UnitZ())
-          .toRotationMatrix();
-  const Eigen::Vector3d t_bw(vision_translation_[0], vision_translation_[1],
-                             vision_translation_[2]);
-  const Eigen::Matrix3d r = r_mb * r_bw;
-  const Eigen::Vector3d t = r_mb * t_bw + t_mb;
+  if (!world.WorldDefined()) {
+    // V3: configure goes on, the vision lane stays shut. A prediction read in
+    // a world nobody placed is a plausible ball somewhere else — on a real arm
+    // that is the sim scene's pedestal, until the camera is calibrated.
+    vision_inert_ = true;
+    RCLCPP_ERROR(logger_,
+                 "vision lane INERT: %s — no prediction is taken until the bring-up defines the "
+                 "vision world (urdf.extra_frames.scene_world {parent: <arm root_link>, xyz, rpy}"
+                 "%s)",
+                 world.WorldProvisional() ? "scene_world is provisional"
+                                          : "the model has no scene_world frame",
+                 world.WorldProvisional() ? ", provisional: false once confirmed" : "");
+    return true;
+  }
+  const pinocchio::SE3& model_T_world = world.RootFromWorld();
+  const Eigen::Matrix3d r = model_T_world.rotation();
+  const Eigen::Vector3d t = model_T_world.translation();
   for (int i = 0; i < 3; ++i) {
     for (int j = 0; j < 3; ++j) {
       cfg.r_model_world[static_cast<std::size_t>(i * 3 + j)] = r(i, j);
@@ -1036,8 +1044,8 @@ bool DemoCatchingController::ResolveVisionFrame(TrajInputConfig& cfg) {
   const double yaw = std::atan2(r(1, 0), r(0, 0)) * 180.0 / M_PI;
   RCLCPP_INFO(logger_,
               "vision frame '%s' → model world via '%s': yaw %.1f deg, t [%.3f %.3f %.3f] m%s",
-              expected_frame_.c_str(), vision_base_frame_.c_str(), yaw, t.x(), t.y(), t.z(),
-              cfg.to_model ? "" : " (identity — not applied)");
+              expected_frame_.c_str(), std::string(TaskTargetFrames::kSceneWorld).c_str(), yaw,
+              t.x(), t.y(), t.z(), cfg.to_model ? "" : " (identity — not applied)");
   return true;
 }
 
@@ -1090,7 +1098,7 @@ void DemoCatchingController::SetupTrajInput() {
     t_arm_ns_ = static_cast<std::int64_t>(params_.joint_cmd_lag_t_arm.value * 1e9);
   }
 
-  if (!node_ || traj_topic_.empty()) {
+  if (!node_ || traj_topic_.empty() || vision_inert_) {
     return;
   }
   // best_effort KEEP_LAST(1), measured rather than assumed: S3.4 compared a

@@ -54,6 +54,7 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -138,8 +139,63 @@ const auto* const kEnv = ::testing::AddGlobalTestEnvironment(new RclcppEnv);
 // IsolatedSessionDir (session_dir_test_env.cpp) keeps them out of the
 // workspace's real session tree, and fx::SessionDir() is where they land.
 
+/// The scene_world (#779) of a shipped params file's RT node, added to the
+/// fixture model — the frame the shipped object lane names. `file` is relative
+/// to config/ur5e_p1b.
+rtc_urdf_bridge::ModelConfig ModelWithSceneWorldOf(const std::string& file) {
+  rtc_urdf_bridge::ModelConfig cfg = fx::MakeUr5eP1bModelConfig();
+  const YAML::Node doc =
+      YAML::LoadFile(std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/ur5e_p1b/" + file);
+  YAML::Node sw;
+  for (const char* key : {"/**", "integrated_rt_controller"}) {
+    // Step by step: a const subscript that misses yields a node that throws
+    // on the next subscript. reset(), not operator= (which writes through).
+    YAML::Node cur;
+    cur.reset(doc);
+    for (const char* step : {key, "ros__parameters", "urdf", "extra_frames", "scene_world"}) {
+      const YAML::Node next = std::as_const(cur)[step];
+      if (!next.IsDefined() || !next.IsMap()) {
+        cur.reset();
+        break;
+      }
+      cur.reset(next);
+    }
+    if (cur.IsDefined() && cur.IsMap() && std::as_const(cur)["parent"]) {
+      sw.reset(cur);
+    }
+  }
+  if (!sw) {
+    throw std::runtime_error(file + ": no urdf.extra_frames.scene_world");
+  }
+  rtc_urdf_bridge::ExtraFrameConfig world;
+  world.name = "scene_world";
+  world.parent = sw["parent"].as<std::string>();
+  const auto xyz = sw["xyz"].as<std::vector<double>>();
+  const auto rpy = sw["rpy"].as<std::vector<double>>();
+  world.xyz = Eigen::Vector3d(xyz.at(0), xyz.at(1), xyz.at(2));
+  world.rpy = Eigen::Vector3d(rpy.at(0), rpy.at(1), rpy.at(2));
+  world.provisional = sw["provisional"].as<bool>(true);
+  cfg.extra_frames.push_back(world);
+  return cfg;
+}
+
+/// The scene the policy was trained in and the shipped object lane is run
+/// with (`sim_overlay:=inference_pole`): scene.xml, the arm base at the world
+/// origin. One builder per process, like fx::SharedUr5eP1bBuilder.
+const rtc_urdf_bridge::ModelConfig& PoleSceneModelConfig() {
+  static const rtc_urdf_bridge::ModelConfig cfg =
+      ModelWithSceneWorldOf("sim_overlays/inference_pole.yaml");
+  return cfg;
+}
+
+std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> PoleSceneBuilder() {
+  static const auto builder =
+      std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(PoleSceneModelConfig());
+  return builder;
+}
+
 /// The production bring-up order on the real model, driven with the SHIPPED
-/// controller config (model_path aside).
+/// controller config (model_path aside), in the scene the policy runs in.
 class ShippedInference : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -163,8 +219,8 @@ class ShippedInference : public ::testing::Test {
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
         "inference_urdf_" + std::to_string(seq++), "", opts);
 
-    ctrl_->SetSystemModelConfig(fx::SharedUr5eP1bModelConfig());
-    ctrl_->SetSharedModelBuilder(fx::SharedUr5eP1bBuilder());
+    ctrl_->SetSystemModelConfig(ModelConfig());
+    ctrl_->SetSharedModelBuilder(Builder());
     ctrl_->SetControlRate(1.0 / fx::kUr5eDt);
     ctrl_->LoadConfig(cfg_);
     ctrl_->SetDeviceNameConfigs(fx::MakeInferenceDeviceConfigs());
@@ -177,6 +233,16 @@ class ShippedInference : public ::testing::Test {
   /// moved (the object lane's source frame). Everything else in this suite runs
   /// the config exactly as it ships, which is the point of the suite.
   virtual void AdjustShippedConfig(YAML::Node& /*cfg*/) {}
+
+  /// The model the bring-up hands over: the policy's scene by default. A case
+  /// that runs the shipped config in another scene overrides both.
+  [[nodiscard]] virtual const rtc_urdf_bridge::ModelConfig& ModelConfig() const {
+    return PoleSceneModelConfig();
+  }
+
+  [[nodiscard]] virtual std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> Builder() const {
+    return PoleSceneBuilder();
+  }
 
   [[nodiscard]] std::size_t In(const std::string& name) const {
     const auto& ins = ctrl_->IoParamsForTesting().inputs;
@@ -315,9 +381,11 @@ TEST_F(ShippedInference, CarriesTheTrainedCadenceFrameAndModelLocation) {
   EXPECT_EQ(inf["policy_frame"].as<std::string>(), "base")
       << "shown base_link poses the policy anti-tracks the object and never reaches it";
   ASSERT_TRUE(inf["object_pose"]["source_frame_link"]);
-  // Same frame as policy_frame, so the shipped object lane applies no rotation.
-  // The rotation itself is pinned below, on a config whose source frame moves.
-  EXPECT_EQ(inf["object_pose"]["source_frame_link"].as<std::string>(), "base");
+  // The scene's world (#779): the model supplies the transform per scene —
+  // identity in the policy's scene, the pedestal's 0.7 m in sim.yaml's (both
+  // pinned below). The rotation is pinned below too, on a config whose source
+  // frame moves.
+  EXPECT_EQ(inf["object_pose"]["source_frame_link"].as<std::string>(), "scene_world");
   EXPECT_EQ(inf["object_pose"]["source_frame_id"].as<std::string>(), "world");
   EXPECT_EQ(shipped_model_path_, "${RTC_POLICY_DIR}/ObjectHandGraspDeployMulti5-Export-v0.onnx")
       << "the model stays out of the repo and is found through the environment";
@@ -532,6 +600,62 @@ TEST_F(ShippedInferenceWithObjectSourceInBaseLink,
   EXPECT_NEAR(p[2], 3.0F, 1e-5) << "z is unchanged by a yaw";
   const auto& q = Tensor("object_root_quat_w");
   EXPECT_NEAR(std::abs(q[2]), 1.0F, 1e-5) << "identity in world is a half turn about z here";
+}
+
+/// The shipped config in the shipped sim scene (sim.yaml: the arm on a 0.7 m
+/// pedestal) instead of the policy's. The object lane reads scene_world from
+/// the model, so the same world point is shown 0.7 m lower in the policy frame
+/// — before #779 the lane named `base` and took the world AS the policy frame,
+/// which the YAML itself warned was wrong in this scene.
+class ShippedInferenceInThePedestalScene : public ShippedInference {
+ protected:
+  [[nodiscard]] const rtc_urdf_bridge::ModelConfig& ModelConfig() const override {
+    static const rtc_urdf_bridge::ModelConfig cfg = ModelWithSceneWorldOf("sim.yaml");
+    return cfg;
+  }
+
+  [[nodiscard]] std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> Builder() const override {
+    static const auto builder =
+        std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(ModelConfig());
+    return builder;
+  }
+};
+
+TEST_F(ShippedInferenceInThePedestalScene, TheObjectPoseIsReadThroughTheScenesWorld) {
+  const auto state = MakePregraspState();
+  InjectObjectInWorld({0.4, -0.1, 0.8}, Eigen::Quaterniond::Identity());
+  ASSERT_TRUE(RunUntilAccepted(state));
+  const auto& p = Tensor("object_root_pos_w");
+  EXPECT_NEAR(p[0], 0.4F, 1e-5);
+  EXPECT_NEAR(p[1], -0.1F, 1e-5);
+  EXPECT_NEAR(p[2], 0.1F, 1e-5) << "the pedestal lifts the base 0.7 m above the world";
+}
+
+/// A bring-up without a scene world (the real arm: `_base.yaml` +
+/// `robot.yaml`). The shipped object lane cannot place the object, so it goes
+/// inert — and the controller still configures, because the CM refuses every
+/// controller when one fails (#779 V3).
+TEST(ShippedInferenceWithoutASceneWorld, ConfiguresWithTheObjectLaneInert) {
+  YAML::Node cfg = fx::ShippedControllerNode("ur5e_p1b", "demo_inference_controller");
+  cfg["inference"]["model_path"] = "fake_policy.onnx";
+  const auto in_sizes = Numels(cfg["inference"]["inputs"]);
+  const auto out_sizes = Numels(cfg["inference"]["outputs"]);
+  auto fake = std::make_unique<FakeEngine>(in_sizes, out_sizes);
+  for (const auto n : out_sizes) {
+    fake->next_output.emplace_back(n, 0.0F);
+  }
+  DemoInferenceController ctrl("", std::move(fake));
+  rclcpp::NodeOptions opts;
+  opts.use_global_arguments(false);
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("inference_urdf_noworld", "", opts);
+  ctrl.SetSystemModelConfig(fx::SharedUr5eP1bModelConfig());
+  ctrl.SetSharedModelBuilder(fx::SharedUr5eP1bBuilder());
+  ctrl.SetControlRate(1.0 / fx::kUr5eDt);
+  ctrl.LoadConfig(cfg);
+  ctrl.SetDeviceNameConfigs(fx::MakeInferenceDeviceConfigs());
+  ASSERT_EQ(ctrl.on_configure(rclcpp_lifecycle::State{}, node, cfg), CR::SUCCESS);
+  EXPECT_TRUE(ctrl.ObjectLaneInertForTesting());
+  ASSERT_EQ(ctrl.on_cleanup(rclcpp_lifecycle::State{}), CR::SUCCESS);
 }
 
 // ── §5 criterion 4 on the shipped heads ─────────────────────────────────────

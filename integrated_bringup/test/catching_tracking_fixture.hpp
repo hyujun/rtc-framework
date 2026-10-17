@@ -63,11 +63,27 @@ constexpr const char* kCatchFrame = "catch_frame";
 /// The shipped offset (config/ur5e_p1b/_base.yaml urdf.extra_frames).
 const Eigen::Vector3d kCatchXyz{0.015, 0.145, 0.052};
 
+/// The fixture model's root link: scene_world on it, at its origin, makes the
+/// vision world the model world.
+constexpr const char* kModelRootLink = "base_link";
+
 /// The fixture's model config plus the catch frame, which the shared fixture
 /// does not carry (it predates D-10). Built here rather than added to the
 /// shared fixture so the other suites keep the model they were written for.
-rtc_urdf_bridge::ModelConfig MakeConfigWithCatchFrame() {
+///
+/// `with_scene_world` adds the vision world (#779) at the model root, so the
+/// predictions these suites write in MODEL coordinates are read as written —
+/// without one the vision lane is inert (V3) and takes nothing.
+/// The catch frame stays the LAST entry (suites edit it as extra_frames.back()).
+rtc_urdf_bridge::ModelConfig MakeConfigWithCatchFrame(bool with_scene_world = true) {
   rtc_urdf_bridge::ModelConfig cfg = integrated_bringup::testfx::MakeUr5eP1bModelConfig();
+  if (with_scene_world) {
+    rtc_urdf_bridge::ExtraFrameConfig world;
+    world.name = "scene_world";
+    world.parent = kModelRootLink;
+    world.provisional = false;
+    cfg.extra_frames.push_back(world);
+  }
   rtc_urdf_bridge::ExtraFrameConfig frame;
   frame.name = kCatchFrame;
   frame.parent = "l_palm_link";

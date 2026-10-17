@@ -100,9 +100,6 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   // with the rest of the lane so the operator reads one block, not two.
   traj_topic_.clear();
   expected_frame_ = "world";
-  vision_base_frame_.clear();
-  vision_yaw_deg_ = 0.0;
-  vision_translation_ = {0.0, 0.0, 0.0};
   if (catching_section_present_) {
     if (const YAML::Node io = catching["io"]; io) {
       if (!io.IsMap()) {
@@ -114,32 +111,17 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
       if (const YAML::Node frame = io["expected_frame"]; frame) {
         expected_frame_ = frame.as<std::string>();
       }
-      // Vision world → model world (L3 §4.2). Two keys, the map tool's split:
-      // the frame is a property of the URDF, the transform a measurement.
-      if (const YAML::Node base = io["arm_base_frame"]; base) {
-        vision_base_frame_ = base.as<std::string>();
-      }
-      if (const YAML::Node btw = io["base_T_world"]; btw) {
-        if (!btw.IsMap() || vision_base_frame_.empty()) {
+      // Vision world → model world is the model frame `scene_world` now
+      // (#779, ResolveVisionFrame). A tree that still carries the old pair is
+      // refused rather than ignored: ignored, it would read as "this overlay
+      // moves the vision frame" while the frame came from elsewhere.
+      for (const char* gone : {"arm_base_frame", "base_T_world"}) {
+        if (io[gone]) {
           throw std::runtime_error(
-              "DemoCatchingController: 'catching.io.base_T_world' must be a map {yaw_deg, "
-              "translation} and needs 'catching.io.arm_base_frame'");
-        }
-        vision_yaw_deg_ = btw["yaw_deg"] ? btw["yaw_deg"].as<double>() : 0.0;
-        if (const YAML::Node tr = btw["translation"]; tr) {
-          if (!tr.IsSequence() || tr.size() != 3) {
-            throw std::runtime_error(
-                "DemoCatchingController: 'catching.io.base_T_world.translation' must be [x, y, "
-                "z]");
-          }
-          for (std::size_t k = 0; k < 3; ++k) {
-            vision_translation_[k] = tr[k].as<double>();
-          }
-        }
-        if (!std::isfinite(vision_yaw_deg_) || !std::isfinite(vision_translation_[0]) ||
-            !std::isfinite(vision_translation_[1]) || !std::isfinite(vision_translation_[2])) {
-          throw std::runtime_error(
-              "DemoCatchingController: 'catching.io.base_T_world' must be finite");
+              std::string("DemoCatchingController: 'catching.io.") + gone +
+              "' is gone (#779) — the vision world is the model frame 'scene_world': "
+              "urdf.extra_frames.scene_world {parent: <arm root_link>, xyz, rpy} in sim.yaml "
+              "or the overlay (p_root = R(rpy)·p_world + xyz)");
         }
       }
     }

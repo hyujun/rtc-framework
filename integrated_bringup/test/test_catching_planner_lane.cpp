@@ -850,7 +850,7 @@ class CatchingPlanLaneTest : public ::testing::Test {
   void BringUp(bool oracle, bool planner = false,
                const std::function<void(YAML::Node&)>& tweak = nullptr) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
-    ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
+    ctrl_->SetSystemModelConfig(model_cfg_);
     ctrl_->SetSharedModelBuilder(builder_);
     ctrl_->SetDeviceNameConfigs(sim_axis_ ? SimAxisConfigs()
                                           : integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
@@ -1076,6 +1076,9 @@ class CatchingPlanLaneTest : public ::testing::Test {
   }
 
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+  /// What BringUp hands the controller. A case that changes the model sets
+  /// both, the builder built from the config.
+  rtc_urdf_bridge::ModelConfig model_cfg_{MakeConfigWithCatchFrame()};
   std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
   std::unique_ptr<DemoCatchingController> ctrl_;
   rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
@@ -2039,14 +2042,34 @@ TEST_F(CatchingPlanLaneTest,
   RealClockPairCase(/*docking=*/true);
 }
 
-// ── Vision world → model world (L3 §4.2, S6-C sim finding) ──────────────────
+// ── Vision world → model world (L3 §4.2, S6-C sim finding, #779) ────────────
 
 class CatchingVisionFrameTest : public CatchingPlanLaneTest {
  protected:
+  /// The vision world as the model frame `scene_world` on `parent`, and the
+  /// builder for it — the bring-up the CM does from urdf.extra_frames.
+  void UseSceneWorld(const std::string& parent, const Eigen::Vector3d& xyz,
+                     const Eigen::Vector3d& rpy, bool provisional = false) {
+    model_cfg_ = MakeConfigWithCatchFrame(/*with_scene_world=*/false);
+    rtc_urdf_bridge::ExtraFrameConfig world;
+    world.name = "scene_world";
+    world.parent = parent;
+    world.xyz = xyz;
+    world.rpy = rpy;
+    world.provisional = provisional;
+    model_cfg_.extra_frames.push_back(world);
+    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(model_cfg_);
+  }
+
+  void UseNoSceneWorld() {
+    model_cfg_ = MakeConfigWithCatchFrame(/*with_scene_world=*/false);
+    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(model_cfg_);
+  }
+
   /// The reachable-throw case of the test above, with the prediction written
   /// in the VISION world the sim publishes in. On ur5e_p1b the model root is
-  /// `base_link`, a 180° turn about z from `base`, and `base` is the sim world
-  /// (§11): p_world = (−x, −y, z) of the model-world point.
+  /// `base_link`, a 180° turn about z from `base`; with scene_world on `base`
+  /// at its origin, p_world = (−x, −y, z) of the model-world point.
   void SetUpWorldFrameBall() {
     CatchFrameOracle oracle(*builder_);
     std::array<double, 64> home{};
@@ -2084,21 +2107,35 @@ class CatchingVisionFrameTest : public CatchingPlanLaneTest {
     return false;
   }
 
+  /// Configure only, on `model_cfg_` / `builder_`, with `tweak` on the YAML.
+  DemoCatchingController::CallbackReturn ConfigureOnly(
+      const std::function<void(YAML::Node&)>& tweak = nullptr) {
+    ctrl_ = std::make_unique<DemoCatchingController>("");
+    ctrl_->SetSystemModelConfig(model_cfg_);
+    ctrl_->SetSharedModelBuilder(builder_);
+    ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+    YAML::Node yaml = YAML::Load(
+        TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
+    if (tweak) {
+      tweak(yaml);
+    }
+    const rclcpp_lifecycle::State prev;
+    return ctrl_->on_configure(prev, node_, yaml);
+  }
+
   Eigen::Vector3d p0_model_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d vel_model_{Eigen::Vector3d::Zero()};
 };
 
 TEST_F(CatchingVisionFrameTest, AWorldFramePredictionReachesThePlannerInModelCoordinates) {
+  // The shipped ur5e_p1b frame: scene_world hangs off `base`, here with the
+  // base at the world origin (the identity the sim measured, §11).
+  UseSceneWorld("base", Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
   SetUpWorldFrameBall();
-  // The shipped ur5e_p1b keys: vision is measured against `base`, and
-  // base_T_world is the identity the sim measured (§11).
-  ASSERT_NO_FATAL_FAILURE(BringUp(false, true, [](YAML::Node& y) {
-    y["catching"]["io"]["arm_base_frame"] = "base";
-    y["catching"]["io"]["base_T_world"]["yaw_deg"] = 0.0;
-    y["catching"]["io"]["base_T_world"]["translation"] = std::vector<double>{0.0, 0.0, 0.0};
-  }));
+  ASSERT_NO_FATAL_FAILURE(BringUp(false, true));
   const auto& cfg = ctrl_->GetTrajInputConfig();
   ASSERT_TRUE(cfg.to_model);
+  EXPECT_FALSE(ctrl_->IsVisionInert());
   const std::array<double, 9> rz180{-1, 0, 0, 0, -1, 0, 0, 0, 1};
   for (std::size_t k = 0; k < 9; ++k) {
     EXPECT_NEAR(cfg.r_model_world[k], rz180[k], 1e-12) << k;
@@ -2115,27 +2152,98 @@ TEST_F(CatchingVisionFrameTest, AWorldFramePredictionReachesThePlannerInModelCoo
   EXPECT_LT((off - off.dot(dir) * dir).norm(), 1e-9) << "p_c is not on the MODEL-world line";
 }
 
-TEST_F(CatchingVisionFrameTest, WithoutTheFrameKeysTheSamePredictionIsBehindTheArm) {
-  // The premise of the case above, and the S6-C sim symptom: the same
-  // world-frame numbers read as model coordinates put every candidate on the
-  // far side of the robot, and no plan is ever adopted.
+// The mirror of rtc_tools (catching_trials.vision_frame_from_params, pinned in
+// rtc_tools/test/test_catching_trials.py with the SAME numbers): an
+// asymmetric scene_world — Rz(0.7)·Rx(0.3) and an offset on every axis — so a
+// transposed rotation or an inverted placement cannot pass (Rz(π) is its own
+// transpose, and the shipped yaw is 0). model_T_world = model_T_base ·
+// [R(rpy) | xyz], with model_T_base = Rz(π) on this URDF.
+TEST_F(CatchingVisionFrameTest, AnAsymmetricSceneWorldComposesAsTheToolsDo) {
+  UseSceneWorld("base", Eigen::Vector3d(0.1, -0.2, -0.7), Eigen::Vector3d(0.3, 0.0, 0.7));
+  ASSERT_EQ(ConfigureOnly(), DemoCatchingController::CallbackReturn::SUCCESS);
+  const auto& cfg = ctrl_->GetTrajInputConfig();
+  ASSERT_TRUE(cfg.to_model);
+  // Computed once, outside both implementations (python pinocchio:
+  // frames['base'].placement * SE3(rpyToMatrix(rpy), xyz) on this URDF).
+  const std::array<double, 9> r{-0.7648421872844885,
+                                0.6154446635582733,
+                                -0.19037934406737264,
+                                -0.6442176872376908,
+                                -0.7306816499355125,
+                                0.22602632124962302,
+                                0.0,
+                                0.29552020666133955,
+                                0.955336489125606};
+  const std::array<double, 3> t{-0.1, 0.2, -0.7};
+  for (std::size_t k = 0; k < 9; ++k) {
+    EXPECT_NEAR(cfg.r_model_world[k], r[k], 1e-12) << "r[" << k << "]";
+  }
+  for (std::size_t k = 0; k < 3; ++k) {
+    EXPECT_NEAR(cfg.t_model_world[k], t[k], 1e-12) << "t[" << k << "]";
+  }
+}
+
+TEST_F(CatchingVisionFrameTest, WithoutASceneWorldTheVisionLaneIsInert) {
+  // #779 V3, replacing "without the frame keys the prediction is read as
+  // model coordinates — behind the arm" (the S6-C symptom): no world, no
+  // prediction. Configure still succeeds (the CM refuses every controller
+  // when one fails), the lane never subscribes, and no plan is ever made.
+  UseNoSceneWorld();
   SetUpWorldFrameBall();
   ASSERT_NO_FATAL_FAILURE(BringUp(false, true));
+  EXPECT_TRUE(ctrl_->IsVisionInert());
   EXPECT_FALSE(ctrl_->GetTrajInputConfig().to_model);
   EXPECT_FALSE(RunUntilApproach());
 }
 
-TEST_F(CatchingVisionFrameTest, AFrameTheModelLacksRefusesTheConfiguration) {
-  ctrl_ = std::make_unique<DemoCatchingController>("");
-  ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
-  ctrl_->SetSharedModelBuilder(builder_);
-  ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
-  YAML::Node yaml = YAML::Load(
-      TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
-  yaml["catching"]["io"]["arm_base_frame"] = "no_such_frame";
-  const rclcpp_lifecycle::State prev;
-  EXPECT_EQ(ctrl_->on_configure(prev, node_, yaml),
-            DemoCatchingController::CallbackReturn::FAILURE);
+TEST_F(CatchingVisionFrameTest, AProvisionalSceneWorldIsNotUsed) {
+  UseSceneWorld("base", Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), /*provisional=*/true);
+  ASSERT_EQ(ConfigureOnly(), DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl_->IsVisionInert());
+  EXPECT_FALSE(ctrl_->GetTrajInputConfig().to_model);
+}
+
+TEST_F(CatchingVisionFrameTest, ASceneWorldThatMovesWithTheArmRefusesTheConfiguration) {
+  // Malformed, not absent: on a link behind a joint the transform would be a
+  // function of q, and the ingress applies one constant.
+  UseSceneWorld("wrist_3_link", Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+  EXPECT_EQ(ConfigureOnly(), DemoCatchingController::CallbackReturn::FAILURE);
+}
+
+TEST_F(CatchingVisionFrameTest, WithoutAVisionLaneTheWorldIsNotJudged) {
+  // No io.traj_topic: nothing reads a prediction, so neither a missing nor a
+  // malformed world is this controller's to refuse (the task-goal
+  // controllers judge scene_world for their own use).
+  UseSceneWorld("wrist_3_link", Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+  ASSERT_EQ(ConfigureOnly([](YAML::Node& y) { y["catching"]["io"]["traj_topic"] = ""; }),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl_->IsVisionInert());
+  EXPECT_FALSE(ctrl_->GetTrajInputConfig().to_model);
+}
+
+TEST_F(CatchingVisionFrameTest, ASceneWorldOnAFrameTheModelLacksRefusesTheModel) {
+  // #779 V3, replacing "an arm_base_frame the model lacks refuses the
+  // catching configure": the parent is now resolved where the model is built
+  // (the CM's urdf.extra_frames → builder), which refuses the whole bring-up
+  // before any controller configures.
+  rtc_urdf_bridge::ModelConfig cfg = MakeConfigWithCatchFrame(/*with_scene_world=*/false);
+  rtc_urdf_bridge::ExtraFrameConfig world;
+  world.name = "scene_world";
+  world.parent = "no_such_frame";
+  world.provisional = false;
+  cfg.extra_frames.push_back(world);
+  EXPECT_THROW(rtc_urdf_bridge::PinocchioModelBuilder{cfg}, std::runtime_error);
+}
+
+TEST_F(CatchingVisionFrameTest, TheRetiredFrameKeysRefuseTheConfiguration) {
+  // A tree that still carries the pre-#779 pair would otherwise be ignored
+  // while it reads as "this overlay moves the vision frame".
+  builder_ = SharedCatchFrameBuilder();
+  for (const char* key : {"arm_base_frame", "base_T_world"}) {
+    EXPECT_EQ(ConfigureOnly([key](YAML::Node& y) { y["catching"]["io"][key] = "base"; }),
+              DemoCatchingController::CallbackReturn::FAILURE)
+        << key;
+  }
 }
 
 // ── The thread lives for one configuration (/code-review 2026-09-23) ────────

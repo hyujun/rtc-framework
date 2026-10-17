@@ -108,7 +108,14 @@ def make_config(
                                 "parent": FRAME.parent,
                                 "xyz": list(FRAME.xyz),
                                 "rpy": list(FRAME.rpy),
-                            }
+                            },
+                            # The vision world (#779): the arm base at the world origin.
+                            "scene_world": {
+                                "parent": "base",
+                                "xyz": [0.0, 0.0, 0.0],
+                                "rpy": [0.0, 0.0, 0.0],
+                                "provisional": False,
+                            },
                         },
                     },
                     "devices": {
@@ -132,13 +139,7 @@ def make_config(
                 }
             },
         )
-    catching: dict = {
-        "io": {
-            "arm_base_frame": "base",
-            "base_T_world": {"yaw_deg": 0.0, "translation": [0, 0, 0]},
-        },
-        "planner": {},
-    }
+    catching: dict = {"planner": {}}
     if wait_pose is not None:
         catching["planner"]["wait_pose"] = list(wait_pose)
     if eta_v is not None:

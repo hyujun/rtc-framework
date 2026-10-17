@@ -69,10 +69,11 @@ a trial-cluster bootstrap (A⊥B, G8-C2) and an NEES summary (G8-B).
 
 Frames. Ground truth is in the SIM WORLD; the controller's ``ref``, ``p_c`` and
 FK are in the MODEL WORLD (the URDF root). They are composed exactly the way
-the catching controller composes them — ``model_world_T_base`` read from the
-URDF at ``catching.io.arm_base_frame`` (:func:`frame_placement_in_model_world`)
-times ``base_T_world`` from ``catching.io.base_T_world`` — so a gap is never a
-frame mismatch reported in metres.
+the catching controller composes them — the sim world is the model frame
+``scene_world`` (#779, ``urdf.extra_frames``): ``model_world_T_parent`` read
+from the URDF (:func:`frame_placement_in_model_world`) times the frame's own
+placement on its parent (:func:`vision_frame_from_params`) — so a gap is never
+a frame mismatch reported in metres.
 
 Nothing robot-specific is baked in (ARCH-1): the catch frame is the profile's
 ``urdf.extra_frames`` entry, the arm joints are the diag's ``q_cmd_*`` columns,
@@ -111,10 +112,10 @@ from rtc_tools.analysis.catchability_map import (
     frame_placement_in_model_world,
     invert_transform,
     make_transform,
-    rotation_z,
     transform_direction,
     transform_point,
 )
+from rtc_tools.analysis.derive_accel_limits import load_robot_params
 from rtc_tools.analysis.table_cells import is_true as _is_true, num as _num
 from rtc_tools.utils.catching_keys import (
     normalize_columns,
@@ -123,6 +124,7 @@ from rtc_tools.utils.catching_keys import (
     reject_renamed_keys,
 )
 from rtc_tools.utils.controller_config import load_controller_config
+from rtc_tools.utils.rotations import rpy_matrix
 from rtc_tools.utils.smoothing import COMMAND_SMOOTH_ROWS, box_smooth
 
 # ── rtc_msgs/CatchingState ABI (framework message constants, not robot values) ─
@@ -536,6 +538,8 @@ class CatchingProfile:
     devices: list[str]  # catching controller topic groups; [0] is the arm
     diag_log: str
     device_logs: dict[str, str]
+    # The sim world as the model frame ``scene_world`` (#779): the frame it
+    # hangs off (the arm root) and its placement there, ``p_parent = R p_world + t``.
     arm_base_frame: str
     base_t_world: np.ndarray
     catch_frame: ExtraFrame
@@ -576,46 +580,83 @@ def _catching_controllers(config_dir: Path) -> dict[str, dict]:
     return found
 
 
-# Where a profile keeps its robot config (``urdf``, ``urdf.extra_frames``): the
-# shared ``_base.yaml`` when the profile has one, else ``sim.yaml`` — a
-# sim-only profile has no hardware twin to share a base with.
+# The files a sim bring-up layers its robot config from (``urdf``,
+# ``urdf.extra_frames``), in launch order: the shared ``_base.yaml`` when the
+# profile has one, then ``sim.yaml``. Merged key by key, the way the launch
+# hands them to the CM — a profile may split a block across the two (``urdf``
+# in ``_base.yaml``, its ``urdf.extra_frames.scene_world`` in ``sim.yaml``, #779).
 ROBOT_CONFIG_FILES = ("_base.yaml", "sim.yaml")
 
-
-def robot_config_params(config_dir: Path) -> dict:
-    """The ``/**`` parameters of the first of :data:`ROBOT_CONFIG_FILES` that has ``urdf``."""
-    config_dir = Path(config_dir)
-    for name in ROBOT_CONFIG_FILES:
-        path = config_dir / name
-        if path.is_file():
-            params = _ros_params(_load_yaml(path))
-            if "urdf" in params:
-                return params
-    raise SystemExit(
-        f"{config_dir}: none of {', '.join(ROBOT_CONFIG_FILES)} carries a `urdf` block "
-        "(urdf.extra_frames lives there)"
-    )
+# The model frame that is the sim scene's world (#779) — the catching
+# controller's vision world and the frame a ``scene_world`` task goal names.
+SCENE_WORLD = "scene_world"
 
 
-def vision_frame_from_io(io: Mapping, source: str) -> tuple[str, np.ndarray]:
-    """``(arm_base_frame, base_T_world 4×4)`` of a ``catching.io`` tree.
+def robot_config_params(config_dir: Path, overlays: Sequence[Path] = ()) -> dict:
+    """The robot config a sim bring-up of ``config_dir`` runs with.
 
-    ``p_base = Rz(yaw_deg) p_world + translation``. Both keys are required: the
-    sim-world → model-world composition is never guessed. ``source`` names the
-    tree in the refusal.
+    :data:`ROBOT_CONFIG_FILES` that exist, then ``overlays`` (a sim overlay's
+    RT-node section), merged later-wins per key (:func:`load_robot_params`).
     """
-    try:
-        base_frame = str(io["arm_base_frame"])
-        btw = io["base_T_world"]
-        base_t_world = make_transform(
-            rotation_z(math.radians(float(btw["yaw_deg"]))), [float(x) for x in btw["translation"]]
-        )
-    except KeyError as exc:
+    config_dir = Path(config_dir)
+    layers = [config_dir / name for name in ROBOT_CONFIG_FILES if (config_dir / name).is_file()]
+    params = load_robot_params([*layers, *(Path(p) for p in overlays)])
+    if "urdf" not in params:
         raise SystemExit(
-            f"{source}: catching.io lacks {exc.args[0]} — the sim-world → model-world "
-            "composition cannot be read, and guessing it flips the frame silently"
-        ) from exc
-    return base_frame, base_t_world
+            f"{config_dir}: none of {', '.join(ROBOT_CONFIG_FILES)} carries a `urdf` block "
+            "(urdf.extra_frames lives there)"
+        )
+    return params
+
+
+def vision_frame_from_params(params: Mapping, source: str) -> tuple[str, np.ndarray]:
+    """``(parent, parent_T_world 4×4)`` of the robot config's ``scene_world`` frame.
+
+    ``p_parent = R(rpy) p_world + xyz`` — the ``urdf.extra_frames`` convention,
+    ``R = Rz(yaw)·Ry(pitch)·Rx(roll)``. Composed with ``model_world_T_parent``
+    it is the transform the catching controller applies to every prediction.
+    A missing or provisional frame is refused: the controller's vision lane is
+    inert then (#779 V3), and guessing a world flips or shifts it silently.
+    ``source`` names the config in the refusal.
+    """
+    frames = (params.get("urdf") or {}).get("extra_frames") or {}
+    node = frames.get(SCENE_WORLD)
+    if not isinstance(node, Mapping):
+        raise SystemExit(
+            f"{source}: no urdf.extra_frames.{SCENE_WORLD} — the sim world → model world "
+            "composition cannot be read (the controller's vision lane is inert without it)"
+        )
+    # Absent means provisional, as the CM parses it.
+    if node.get("provisional", True) is not False:
+        raise SystemExit(
+            f"{source}: urdf.extra_frames.{SCENE_WORLD} is provisional — the controller does "
+            "not use it (its vision lane is inert), so neither does this tool"
+        )
+    try:
+        # Every key the CM requires (ParseExtraFrames refuses one without rpy).
+        parent = str(node["parent"])
+        xyz = [float(v) for v in node["xyz"]]
+        rpy = [float(v) for v in node["rpy"]]
+    except KeyError as exc:
+        raise SystemExit(f"{source}: urdf.extra_frames.{SCENE_WORLD} lacks {exc.args[0]}") from exc
+    if len(xyz) != 3 or len(rpy) != 3:
+        raise SystemExit(f"{source}: urdf.extra_frames.{SCENE_WORLD} xyz/rpy must be 3 values")
+    return parent, make_transform(rpy_matrix(rpy), xyz)
+
+
+# The catching.io keys the scene_world frame replaced (#779). Refused rather than
+# ignored, as the controller refuses them: ignored, an overlay that still sets them
+# reads as moving the vision frame while it moves nothing.
+RETIRED_IO_FRAME_KEYS = ("arm_base_frame", "base_T_world")
+
+
+def reject_retired_io_frame_keys(io: Mapping, source: str) -> None:
+    for key in RETIRED_IO_FRAME_KEYS:
+        if key in io:
+            raise SystemExit(
+                f"{source}: catching.io.{key} is gone (#779) — the vision world is the model "
+                f"frame '{SCENE_WORLD}' (urdf.extra_frames in sim.yaml or the overlay)"
+            )
 
 
 def load_profile(
@@ -623,8 +664,14 @@ def load_profile(
     controller: str | None = None,
     session: Path | None = None,
     catch_frame: str = DEFAULT_CATCH_FRAME,
+    overlays: Sequence[Path] = (),
 ) -> CatchingProfile:
     """Read the catching controller's config and the profile base from ``config_dir``.
+
+    ``overlays``: the sim overlays the session ran with, laid over the robot
+    config (:func:`robot_config_params`) — an overlay that swaps the scene
+    states its own ``scene_world``, and analysing its session in sim.yaml's
+    world puts the hand that far off.
 
     The controller is the one entry under ``controllers/*.yaml`` that carries a
     ``catching`` tree and logs a ``CatchingDiagLog`` (and, given a session,
@@ -660,8 +707,9 @@ def load_profile(
             device_logs[group] = match[0]
         elif i < len(dev_logs):
             device_logs[group] = dev_logs[i]
-    base_frame, base_t_world = vision_frame_from_io(node["catching"].get("io") or {}, name)
-    params = robot_config_params(config_dir)
+    reject_retired_io_frame_keys(node["catching"].get("io") or {}, name)
+    params = robot_config_params(config_dir, overlays)
+    base_frame, base_t_world = vision_frame_from_params(params, str(config_dir))
     frame = extra_frame_from_params(params, catch_frame)
     ball = (node["catching"].get("core") or {}).get("ball") or {}
     diameter = ball.get("diameter")
@@ -5543,6 +5591,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("trials_dir", type=Path, help="catching_sim_trials output dir")
     ap.add_argument("--config-dir", type=Path, required=True, help="robot profile config dir")
     ap.add_argument("--controller", help="catching controller key (default: the only one)")
+    ap.add_argument(
+        "--overlay",
+        type=Path,
+        action="append",
+        default=[],
+        help="a sim overlay the session ran with (repeatable, in launch order): its "
+        "urdf.extra_frames.scene_world is the world the session was measured in (#779)",
+    )
     ap.add_argument("--catch-frame", default=DEFAULT_CATCH_FRAME)
     ap.add_argument("--urdf", type=Path, help="expanded URDF (default: urdf.package/path)")
     ap.add_argument("--out", type=Path, help="output dir (default: <trials_dir>/catching_trials)")
@@ -5628,7 +5684,9 @@ def main(argv: list[str] | None = None) -> int:
 
     from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text  # noqa: PLC0415
 
-    profile = load_profile(args.config_dir, args.controller, args.session, args.catch_frame)
+    profile = load_profile(
+        args.config_dir, args.controller, args.session, args.catch_frame, overlays=args.overlay
+    )
     urdf_text, _ = resolve_urdf_text(profile.robot_params, args.urdf)
     clock = args.clock_lane or _exists(args.session / "sim" / "clock_lane.csv")
     contact = args.contact_lane or _exists(args.session / "sim" / "ball_contact_lane.csv")

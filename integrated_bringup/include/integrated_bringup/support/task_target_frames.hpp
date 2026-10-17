@@ -111,6 +111,11 @@ class TaskTargetFrames {
   pinocchio::SE3 root_T_world_{pinocchio::SE3::Identity()};
 };
 
+/// Whether the system model config marks its scene_world entry provisional
+/// (urdf.extra_frames.scene_world.provisional). False without a config or an
+/// entry — the frame's presence is the model's to say (TaskTargetFrames).
+[[nodiscard]] bool SceneWorldProvisional(const rtc_urdf_bridge::ModelConfig* system) noexcept;
+
 /// The configure-time wiring every frame-contract controller does, in one
 /// place: OnDeviceConfigsSet calls ConfigureForArm, on_configure calls Report.
 struct ArmTaskTargetFrames {
