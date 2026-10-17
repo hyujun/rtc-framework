@@ -1838,13 +1838,41 @@ def _write_params(path, params):
     path.write_text(yaml.safe_dump({"/**": {"ros__parameters": params}}))
 
 
-def test_robot_config_prefers_base_yaml_and_falls_back_to_sim_yaml(tmp_path):
+def test_robot_config_merges_base_then_sim_then_overlays_key_by_key(tmp_path):
+    # #779: the launch layers _base.yaml, sim.yaml and an overlay onto one RT
+    # node, key by key — ur5e_p1b keeps `urdf` in _base.yaml and its
+    # `urdf.extra_frames.scene_world` in sim.yaml. Reading only the first file
+    # with a `urdf` block (the rule before #779) dropped the world.
     from rtc_tools.analysis.catching_trials import robot_config_params
 
     _write_params(tmp_path / "sim.yaml", {"urdf": {"from": "sim"}})
     assert robot_config_params(tmp_path)["urdf"] == {"from": "sim"}
-    _write_params(tmp_path / "_base.yaml", {"urdf": {"from": "base"}})
-    assert robot_config_params(tmp_path)["urdf"] == {"from": "base"}
+    _write_params(
+        tmp_path / "_base.yaml",
+        {"urdf": {"from": "base", "path": "p", "extra_frames": {"catch_frame": {"parent": "a"}}}},
+    )
+    _write_params(
+        tmp_path / "sim.yaml",
+        {"urdf": {"extra_frames": {"scene_world": {"parent": "base", "xyz": [0.0, 0.0, -0.7]}}}},
+    )
+    merged = robot_config_params(tmp_path)["urdf"]
+    assert merged["from"] == "base" and merged["path"] == "p"
+    assert set(merged["extra_frames"]) == {"catch_frame", "scene_world"}
+    # An overlay's RT-node section lands last.
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text(
+        yaml.safe_dump(
+            {
+                "integrated_rt_controller": {
+                    "ros__parameters": {
+                        "urdf": {"extra_frames": {"scene_world": {"xyz": [0.0, 0.0, 0.0]}}}
+                    }
+                }
+            }
+        )
+    )
+    merged = robot_config_params(tmp_path, [overlay])["urdf"]["extra_frames"]["scene_world"]
+    assert merged == {"parent": "base", "xyz": [0.0, 0.0, 0.0]}
 
 
 def test_robot_config_skips_a_file_without_urdf_and_refuses_when_none_has_it(tmp_path):
@@ -1855,6 +1883,67 @@ def test_robot_config_skips_a_file_without_urdf_and_refuses_when_none_has_it(tmp
         robot_config_params(tmp_path)
     _write_params(tmp_path / "sim.yaml", {"urdf": {"from": "sim"}})
     assert robot_config_params(tmp_path)["urdf"] == {"from": "sim"}
+
+
+# ── The vision world: model frame scene_world (#779) ─────────────────────────
+
+
+def _scene_world(**over):
+    node = {"parent": "base", "xyz": [0.1, -0.2, -0.7], "rpy": [0.3, 0.0, 0.7]}
+    node.update({"provisional": False, **over})
+    return {"urdf": {"extra_frames": {"scene_world": node}}}
+
+
+def test_the_vision_world_composes_as_the_controller_does():
+    # The mirror of DemoCatchingController::ResolveVisionFrame, pinned with the
+    # SAME numbers as test_catching_planner_lane.cpp
+    # AnAsymmetricSceneWorldComposesAsTheToolsDo: an asymmetric frame —
+    # Rz(0.7)·Rx(0.3) and an offset on every axis — so a transposed rotation or
+    # an inverted placement cannot pass (Rz(pi) is its own transpose, and the
+    # shipped yaw is 0). The URDF is the pilot's ur5e_p1b, where `base` is
+    # Rz(pi) from the model root.
+    parent, parent_t_world = ct.vision_frame_from_params(_scene_world(), "test")
+    assert parent == "base"
+    urdf = (FIXTURE / "robot.urdf").read_text()
+    model_t_world = ct.frame_placement_in_model_world(urdf, parent) @ parent_t_world
+    expected_r = np.array(
+        [
+            [-0.7648421872844885, 0.6154446635582733, -0.19037934406737264],
+            [-0.6442176872376908, -0.7306816499355125, 0.22602632124962302],
+            [0.0, 0.29552020666133955, 0.955336489125606],
+        ]
+    )
+    np.testing.assert_allclose(model_t_world[:3, :3], expected_r, atol=1e-12)
+    np.testing.assert_allclose(model_t_world[:3, 3], [-0.1, 0.2, -0.7], atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("params", "match"),
+    [
+        ({"urdf": {"extra_frames": {}}}, "no urdf.extra_frames.scene_world"),
+        (_scene_world(provisional=True), "provisional"),
+        (
+            {"urdf": {"extra_frames": {"scene_world": {"parent": "base", "xyz": [0.0] * 3}}}},
+            "provisional",
+        ),
+        (_scene_world(xyz=[0.0, 0.0]), "3 values"),
+    ],
+)
+def test_a_vision_world_the_controller_would_not_use_is_refused(params, match):
+    with pytest.raises(SystemExit, match=match):
+        ct.vision_frame_from_params(params, "test")
+
+
+@pytest.mark.parametrize("key", ["arm_base_frame", "base_T_world"])
+def test_the_retired_io_frame_keys_are_refused(key):
+    with pytest.raises(SystemExit, match=f"catching.io.{key} is gone"):
+        ct.reject_retired_io_frame_keys({key: "base"}, "test")
+
+
+def test_the_fixture_profile_reads_its_world_from_sim_yaml():
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    assert profile.arm_base_frame == "base"
+    np.testing.assert_allclose(profile.base_t_world, np.eye(4), atol=0.0)
 
 
 # ── Validity (D-S8-16 ①): rig failures are invalid, not failures ─────────────

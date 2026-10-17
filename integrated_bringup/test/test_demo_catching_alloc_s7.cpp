@@ -872,16 +872,23 @@ class DemoCatchingAllocS7LeapTest : public ::testing::TestWithParam<const char*>
     yaml["catching"]["planner"]["enabled"] = false;
     yaml["catching"]["planner"]["segment"]["mode"] = segment_mode;
     yaml["catching"]["io"]["traj_topic"] = topic_;
-    // This test writes its ball in the MODEL frame (the catch frame's own FK),
-    // so the vision frame has to be that frame: the shipped base_T_world is the
-    // shipped SCENE's (the arm on a pedestal), and through it the ball this
-    // test aims at the hand would arrive that much lower and never cross the
-    // close plane.
-    yaml["catching"]["io"]["base_T_world"]["translation"] = std::vector<double>{0.0, 0.0, 0.0};
-
     ctrl_ = std::make_unique<DemoCatchingController>("");
     ctrl_->SetClockForTesting(&FakeSteadyClock::Now);
-    integrated_bringup::testfx::BringUpShipped(*ctrl_, kProfile, configs);
+    // This test writes its ball in the MODEL frame (the catch frame's own FK),
+    // so the vision world has to be that frame: the shipped scene_world is the
+    // shipped SCENE's (the arm on a pedestal), and through it the ball this
+    // test aims at the hand would arrive that much lower and never cross the
+    // close plane. The model root here is the arm root, so scene_world at its
+    // origin is the model world.
+    integrated_bringup::testfx::BringUpShipped(*ctrl_, kProfile, configs,
+                                               [](rtc_urdf_bridge::ModelConfig& cfg) {
+                                                 for (auto& ef : cfg.extra_frames) {
+                                                   if (ef.name == "scene_world") {
+                                                     ef.xyz.setZero();
+                                                     ef.rpy.setZero();
+                                                   }
+                                                 }
+                                               });
     const rclcpp_lifecycle::State prev;
     ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
               DemoCatchingController::CallbackReturn::SUCCESS);

@@ -1,29 +1,35 @@
-"""Shipped ``catching.io.base_T_world`` — the arm base where the shipped scene puts it.
+"""Shipped ``scene_world`` vs each shipped scene — the arm root where the scene puts it.
 
 **Two files in two nodes state one fact.** The simulator's ``model_path`` scene
-places the arm base in the world; the catching controller's
-``catching.io.base_T_world`` tells the planner where that is
-(``p_base = Rz(yaw) p_world + t``, applied to every vision prediction). Nothing
-at runtime compares them: a scene that moves the base and a transform that does
-not follow it give predictions that are entirely plausible and uniformly
-displaced — the planner refuses every throw as outside its workspace, or worse,
-plans against a ball that is somewhere else. The offline tools
-(``rtc_tools`` ``catching_trials``) read the same key to carry the hand into
-the sim world, so the success verdict moves with it.
+places the arm in the world; the RT node's ``urdf.extra_frames.scene_world``
+(#779, ``p_root = R(rpy) p_world + xyz``) tells every consumer where that is:
+the catching controller reads it as the vision world (applied to every
+prediction), the inference controller as the object lane's source frame, and
+the task-goal controllers convert ``scene_world`` goals through it. Nothing at
+runtime compares the two: a scene that moves the base and a frame that does not
+follow it give poses that are entirely plausible and uniformly displaced. The
+offline tools (``rtc_tools`` ``catching_trials``) read the same frame, through
+the same ``_base.yaml`` + ``sim.yaml`` (+ overlay) merge the launch does — this
+test reads it through them too, so a tool that stopped merging fails here.
 
-**Structural lane (always runs).** The translation is three floats — a ROS
-parameter array takes its type from its entries.
+**Structural lane (always runs).** No shipped catching config carries the
+``catching.io`` pair the frame replaced (``arm_base_frame`` / ``base_T_world``);
+the controller refuses it. The frame's own shape (parent, float types,
+``provisional``) is ``test_shipped_scene_world``'s.
 
-**Scene lane (needs the ``mujoco`` module).** The scene is compiled and the
-world position of the body named ``catching.io.arm_base_frame`` must be the
-point the transform maps to the base origin, ``-Rz(yaw)^T t``. Positions only:
+**Scene lane (needs the ``mujoco`` module).** For ``sim.yaml`` and every sim
+overlay of every profile that defines a world, the scene that bring-up loads is
+compiled and the world position of the body named ``scene_world.parent`` must
+be the point the frame maps to the root origin, ``-R^T xyz``. Positions only:
 an MJCF body and the URDF frame of the same name share an origin but not
 necessarily an orientation convention (``ur5e_p1b``'s ``base`` is one such
-pair), so the yaw is not judged here.
+pair), so the rotation is not judged here — the unit tests pin it
+(``test_catching_planner_lane`` / ``test_catching_trials``, an asymmetric
+frame on both sides).
 
 Like the keyframe lane of ``test_shipped_initial_qpos``, the scene lane is
 manual: a local ``colcon test`` runs under ``/usr/bin/python3``, which has no
-``mujoco``. Run it after touching either file::
+``mujoco``. Run it after touching a scene, ``sim.yaml`` or an overlay::
 
     .venv/bin/python -m pytest \
         src/rtc-framework/integrated_bringup/test/test_shipped_base_T_world.py
@@ -39,15 +45,32 @@ import pytest
 import yaml
 from ament_index_python.packages import get_package_share_directory
 
-from rtc_tools.analysis.catching_trials import load_profile
+from rtc_tools.analysis.catching_trials import (
+    RETIRED_IO_FRAME_KEYS,
+    robot_config_params,
+    vision_frame_from_params,
+)
 
-# The profiles that ship a catching controller with a sim scene.
-PROFILES = ["ur5e_p1b", "iiwa7_leap"]
+# The profiles that define the scene's world (test_shipped_scene_world.PROFILES).
+PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap"]
+# The profiles that ship a catching controller.
+CATCHING_PROFILES = ["ur5e_p1b", "iiwa7_leap"]
 CONTROLLER = "demo_catching_controller"
+SIMULATOR = "mujoco_simulator"
 
 
 def _config_dir(profile: str) -> Path:
     return Path(get_package_share_directory("integrated_bringup")) / "config" / profile
+
+
+def _bring_ups() -> list[tuple[str, str | None]]:
+    """``(profile, overlay file name or None for sim.yaml alone)`` of every shipped sim bring-up."""
+    cases: list[tuple[str, str | None]] = []
+    for profile in PROFILES:
+        cases.append((profile, None))
+        overlays = _config_dir(profile) / "sim_overlays"
+        cases.extend((profile, p.name) for p in sorted(overlays.glob("*.yaml")))
+    return cases
 
 
 def _resolve_package_uri(uri: str) -> str | None:
@@ -65,23 +88,35 @@ def _resolve_package_uri(uri: str) -> str | None:
     return path if os.path.isfile(path) else None
 
 
-@pytest.mark.parametrize("profile", PROFILES)
-def test_base_T_world_translation_is_three_floats(profile: str) -> None:
+def _model_path(files: list[Path]) -> str:
+    """The simulator's ``model_path`` after the files are layered (later wins)."""
+    model_path = None
+    for path in files:
+        with open(path) as handle:
+            doc = yaml.safe_load(handle) or {}
+        value = ((doc.get(SIMULATOR) or {}).get("ros__parameters") or {}).get("model_path")
+        if value is not None:
+            model_path = value
+    assert model_path is not None, f"no {SIMULATOR} model_path in {[p.name for p in files]}"
+    return str(model_path)
+
+
+@pytest.mark.parametrize("profile", CATCHING_PROFILES)
+def test_no_catching_config_carries_the_retired_frame_keys(profile: str) -> None:
     path = _config_dir(profile) / "controllers" / f"{CONTROLLER}.yaml"
     with open(path) as handle:
-        io = yaml.safe_load(handle)[CONTROLLER]["catching"]["io"]
-    translation = io["base_T_world"]["translation"]
-    assert len(translation) == 3
-    for i, value in enumerate(translation):
-        assert not isinstance(value, bool) and isinstance(value, float), (
-            f"{profile}: base_T_world.translation[{i}] is {value!r} "
-            f"({type(value).__name__}) — write 0.0, not 0"
+        io = yaml.safe_load(handle)[CONTROLLER]["catching"].get("io") or {}
+    for key in RETIRED_IO_FRAME_KEYS:
+        assert key not in io, (
+            f"{profile}: catching.io.{key} is gone (#779) — the controller refuses it; the "
+            "vision world is urdf.extra_frames.scene_world"
         )
-    assert isinstance(io["base_T_world"]["yaw_deg"], float)
 
 
-@pytest.mark.parametrize("profile", PROFILES)
-def test_base_T_world_puts_the_arm_base_where_the_shipped_scene_does(profile: str) -> None:
+@pytest.mark.parametrize(("profile", "overlay"), _bring_ups())
+def test_scene_world_puts_the_arm_root_where_the_scene_does(
+    profile: str, overlay: str | None
+) -> None:
     mujoco = pytest.importorskip(
         "mujoco",
         reason=(
@@ -90,29 +125,30 @@ def test_base_T_world_puts_the_arm_base_where_the_shipped_scene_does(profile: st
         ),
     )
     config_dir = _config_dir(profile)
-    with open(config_dir / "mujoco_simulator.yaml") as handle:
-        model_path = yaml.safe_load(handle)["mujoco_simulator"]["ros__parameters"]["model_path"]
+    overlays = [config_dir / "sim_overlays" / overlay] if overlay else []
+    where = f"{profile}/{overlay or 'sim.yaml'}"
+    model_path = _model_path([config_dir / f"{SIMULATOR}.yaml", *overlays])
     scene = _resolve_package_uri(model_path)
     if scene is None:
-        pytest.skip(f"{profile}: model_path {model_path!r} is not resolvable here")
+        pytest.skip(f"{where}: model_path {model_path!r} is not resolvable here")
 
-    catching = load_profile(config_dir)
+    params = robot_config_params(config_dir, overlays)
+    parent, parent_t_world = vision_frame_from_params(params, where)
     model = mujoco.MjModel.from_xml_path(scene)
     data = mujoco.MjData(model)
     mujoco.mj_kinematics(model, data)
-    body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, catching.arm_base_frame)
-    assert body >= 0, f"{profile}: no body {catching.arm_base_frame!r} in {scene}"
+    body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, parent)
+    assert body >= 0, f"{where}: no body {parent!r} in {scene}"
 
-    # p_base = R p_world + t, so the base origin (p_base = 0) is at -R^T t.
-    rotation = catching.base_t_world[:3, :3]
-    translation = catching.base_t_world[:3, 3]
+    # p_root = R p_world + t, so the root origin (p_root = 0) is at -R^T t.
+    rotation = parent_t_world[:3, :3]
+    translation = parent_t_world[:3, 3]
     expected = -(rotation.T @ translation)
     actual = data.xpos[body]
     gap = math.dist(actual, expected)
     assert gap < 1e-6, (
-        f"{profile}: the shipped scene {os.path.basename(scene)} has the arm base "
-        f"{catching.arm_base_frame!r} at world {actual.round(4).tolist()}, but "
-        f"catching.io.base_T_world places it at {expected.round(4).tolist()} "
-        f"({gap:.3f} m apart). Every vision prediction would be read that far off — "
-        "move the transform with the scene."
+        f"{where}: the scene {os.path.basename(scene)} has the arm root {parent!r} at world "
+        f"{actual.round(4).tolist()}, but urdf.extra_frames.scene_world places it at "
+        f"{expected.round(4).tolist()} ({gap:.3f} m apart). Every world pose would be read "
+        "that far off — move the frame with the scene."
     )

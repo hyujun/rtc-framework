@@ -23,7 +23,8 @@ few columns inside the 25 trial windows, so this script keeps exactly that:
   file name, and every ``truth_trial_NN.csv`` gzipped;
 * ``robot.urdf`` — the xacro-expanded URDF the pilot analysed;
 * ``config/`` — only the keys ``catching_trials.load_profile`` reads, copied
-  from the robot profile (test data may carry robot values; the module may not).
+  from the robot profile (test data may carry robot values; the module may not);
+  ``sim.yaml`` carries the vision world ``urdf.extra_frames.scene_world`` (#779).
 
 Left out: the hand device log (its ``effort_*`` only feeds ``hand_effort_max``,
 which is not part of the golden) — the tool skips a missing device log.
@@ -82,6 +83,7 @@ from rtc_tools.analysis.catching_trials import (
     diag_columns,
     load_profile,
     load_trials,
+    robot_config_params,
     urdf_robot_links,
 )
 from rtc_tools.utils.controller_config import load_controller_config
@@ -141,6 +143,8 @@ def _config(config_dir: Path, controller: str, out: Path) -> None:
     base = yaml.safe_load((config_dir / "_base.yaml").read_text())
     params = _ros_params(base)
     urdf = params["urdf"]
+    # The vision world (#779) as the bring-up layers it: _base.yaml + sim.yaml.
+    scene_world = robot_config_params(config_dir)["urdf"]["extra_frames"]["scene_world"]
     (out / "controllers").mkdir(parents=True, exist_ok=True)
     header = f"# Cut by make_fixture.py from {config_dir.name}/"
     base_min = {
@@ -157,16 +161,20 @@ def _config(config_dir: Path, controller: str, out: Path) -> None:
     (out / "_base.yaml").write_text(
         f"{header}_base.yaml\n" + yaml.safe_dump(base_min, sort_keys=False)
     )
+    sim_world = {
+        "/**": {"ros__parameters": {"urdf": {"extra_frames": {"scene_world": scene_world}}}}
+    }
+    (out / "sim.yaml").write_text(
+        f"{header}sim.yaml\n" + yaml.safe_dump(sim_world, sort_keys=False)
+    )
     ctl_doc = load_controller_config(
         config_dir / "controllers" / f"{controller}.yaml", config_key=controller
     )
     node = ctl_doc[controller]
-    io = node["catching"]["io"]
     ctl_min = {
         controller: {
             "catching": {
                 "core": {"ball": node["catching"]["core"]["ball"]},
-                "io": {"arm_base_frame": io["arm_base_frame"], "base_T_world": io["base_T_world"]},
             },
             "topics": node["topics"],
             "logs": node["logs"],

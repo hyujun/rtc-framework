@@ -55,7 +55,14 @@ def make_config(
                     "control_rate": 500.0,
                     "urdf": {
                         "extra_frames": {
-                            "catch_frame": {"parent": "palm", "xyz": [0, 0, 0], "rpy": [0, 0, 0]}
+                            "catch_frame": {"parent": "palm", "xyz": [0, 0, 0], "rpy": [0, 0, 0]},
+                            # The vision world (#779): the arm base at the world origin.
+                            "scene_world": {
+                                "parent": "base",
+                                "xyz": [0.0, 0.0, 0.0],
+                                "rpy": [0.0, 0.0, 0.0],
+                                "provisional": False,
+                            },
                         }
                     },
                     "devices": {
@@ -90,10 +97,6 @@ def make_config(
         {
             CONTROLLER: {
                 "catching": {
-                    "io": {
-                        "arm_base_frame": "base",
-                        "base_T_world": {"yaw_deg": 0.0, "translation": [0, 0, 0]},
-                    },
                     "reference": {"omega": OMEGA, "a_max": A_MAX, "v_max": 3.5},
                     "planner": {"search": {"grid": {"gamma": {"eta_v": 0.9}}}},
                     "robot": {"arm": arm_block},

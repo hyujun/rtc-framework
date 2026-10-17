@@ -1031,23 +1031,13 @@ TEST_P(ShippedCatchingProfile, ParsesWithinLimitsAndMatchesTheHandWidth) {
   // Every pose inside the shipped device limits. The limits live in the
   // profile's device YAML, which is a different file — read it rather than
   // restating the numbers, or this check pins a copy instead of the config.
-  const std::string base = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile + "/";
-  YAML::Node devices;
   // Profiles differ in which file carries `devices:` (ur5e_p1b splits a
-  // `_base.yaml` out, iiwa7_leap keeps it in `sim.yaml`), and a profile that
-  // has neither must fail loudly rather than skip the limit check.
-  for (const char* candidate : {"_base.yaml", "sim.yaml"}) {
-    if (!std::filesystem::exists(base + candidate)) {
-      continue;
-    }
-    const YAML::Node root = YAML::LoadFile(base + candidate);
-    const YAML::Node d = root["/**"]["ros__parameters"]["devices"];
-    if (d && d.IsMap()) {
-      devices = d;
-      break;
-    }
-  }
-  ASSERT_TRUE(devices) << profile << ": no devices block found";
+  // `_base.yaml` out, iiwa7_leap keeps it in `sim.yaml`), so both are merged
+  // the way the sim launch layers them; a profile that has neither must fail
+  // loudly rather than skip the limit check.
+  const YAML::Node shipped_params = integrated_bringup::testfx::ShippedSimParams(profile);
+  const YAML::Node devices = shipped_params["devices"];
+  ASSERT_TRUE(devices && devices.IsMap()) << profile << ": no devices block found";
 
   // The hand group is the SECOND entry of the controller's own topics list —
   // taken from there rather than hard-coded, so this stays robot-agnostic.
@@ -1121,6 +1111,68 @@ TEST_P(ShippedCatchingProfile, ConfiguresAndIsArmableOnTheSimAxis) {
   ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS)
       << profile << ": the shipped profile configures but cannot activate";
   ASSERT_EQ(ctrl.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+// The vision world the shipped sim bring-up reads (#779): the model frame
+// `scene_world` from sim.yaml, composed into the Pinocchio universe. The
+// numbers are the ones main logged before the frame moved out of
+// `catching.io` (issue #779, 0-step baseline: ur5e_p1b `yaw 180.0 deg,
+// t [0 0 -0.7]` through `base`, iiwa7_leap `yaw 0.0, t [0 0 -0.7]` through
+// `link_0`) — the move must not have changed what a prediction is read as.
+TEST_P(ShippedCatchingProfile, ReadsTheVisionWorldTheSceneWorldFramePlaces) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  auto node_handle =
+      std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_shipped_world_" + profile);
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl.IsVisionInert()) << profile << ": sim.yaml defines scene_world";
+
+  // Row-major r_model_world; p1b's model root (base_link) is a half turn
+  // about z from `base`, iiwa7's root is `link_0` itself.
+  const std::map<std::string, std::array<double, 9>> rotation = {
+      {"ur5e_p1b", {-1, 0, 0, 0, -1, 0, 0, 0, 1}}, {"iiwa7_leap", {1, 0, 0, 0, 1, 0, 0, 0, 1}}};
+  const std::array<double, 3> translation = {0.0, 0.0, -0.7};
+  ASSERT_TRUE(rotation.count(profile)) << profile << ": no baseline recorded";
+  const auto& cfg = ctrl.GetTrajInputConfig();
+  EXPECT_TRUE(cfg.to_model);
+  for (std::size_t k = 0; k < 9; ++k) {
+    EXPECT_NEAR(cfg.r_model_world[k], rotation.at(profile)[k], 1e-12)
+        << profile << " r[" << k << "]";
+  }
+  for (std::size_t k = 0; k < 3; ++k) {
+    EXPECT_NEAR(cfg.t_model_world[k], translation[k], 1e-12) << profile << " t[" << k << "]";
+  }
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+// The real-arm bring-up (`_base.yaml` + `robot.yaml`) defines no scene_world:
+// the controller still configures — the CM refuses EVERY controller when one
+// fails — and its vision lane takes nothing until the camera is calibrated
+// (#779 V3).
+TEST_P(ShippedCatchingProfile, WithoutASceneWorldTheVisionLaneIsInertButConfigures) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  auto node_handle =
+      std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_shipped_noworld_" + profile);
+  DemoCatchingController ctrl{""};
+  BringUpShipped(
+      ctrl, profile, ShippedSimConfigs(profile, node), [](rtc_urdf_bridge::ModelConfig& cfg) {
+        std::erase_if(cfg.extra_frames, [](const auto& ef) { return ef.name == "scene_world"; });
+      });
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl.IsVisionInert());
+  EXPECT_FALSE(ctrl.GetTrajInputConfig().to_model);
   ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 

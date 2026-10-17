@@ -7,6 +7,7 @@
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/model_config_lookup.hpp"
+#include "integrated_bringup/support/task_target_frames.hpp"
 #include "rtc_inference/inference_types.hpp"
 #include "rtc_urdf_bridge/loop_verification.hpp"
 
@@ -96,7 +97,9 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
     }
 
     // ── Object pose subscription ───────────────────────────────────────────
-    if (wants_object_) {
+    // An inert lane drops the subscription a previous configure made, too.
+    object_sub_.reset();
+    if (wants_object_ && !object_lane_inert_) {
       if (!node) {
         RCLCPP_ERROR(logger_,
                      "[inference] the object pose is observed but there is no node to "
@@ -338,6 +341,7 @@ bool DemoInferenceController::ConfigureKinematics() {
   namespace rub = rtc_urdf_bridge;
   has_closed_links_ = false;
   closed_fk_fresh_ = false;
+  object_lane_inert_ = false;
   policy_frame_idx_ = -1;
   hand_root_idx_ = -1;
   pf_from_src_ = pinocchio::SE3::Identity();
@@ -401,7 +405,30 @@ bool DemoInferenceController::ConfigureKinematics() {
   // wrist camera) would be applied at a configuration the tick never agreed
   // to. Two frames on the same joint are rigidly attached, and their relative
   // placement is then a model constant — no FK, no configuration.
-  if (object_needs_model) {
+  if (object_needs_model && object_source_frame_link_ == TaskTargetFrames::kSceneWorld) {
+    // The scene's world is a model frame only where a scene defines it, so
+    // its absence is a state, not a typo: the lane goes inert (V3). The
+    // resolver's checks are the ones below — rigid to policy_frame, finite.
+    TaskTargetFrames world;
+    const std::string error =
+        world.Configure(*model, policy_frame_, SceneWorldProvisional(sys_cfg));
+    if (!error.empty()) {
+      RCLCPP_ERROR(logger_, "[inference] object_pose.source_frame_link 'scene_world': %s",
+                   error.c_str());
+      return false;
+    }
+    if (world.WorldDefined()) {
+      pf_from_src_ = world.RootFromWorld();
+    } else {
+      object_lane_inert_ = true;
+      RCLCPP_ERROR(logger_,
+                   "[inference] object pose lane INERT: %s — the object is never seen, so every "
+                   "tick holds, until the bring-up defines the scene's world "
+                   "(urdf.extra_frames.scene_world)",
+                   world.WorldProvisional() ? "scene_world is provisional"
+                                            : "the model has no scene_world frame");
+    }
+  } else if (object_needs_model) {
     if (!model->existFrame(object_source_frame_link_)) {
       RCLCPP_ERROR(logger_,
                    "[inference] inference.object_pose.source_frame_link '%s' does not exist in "

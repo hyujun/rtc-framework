@@ -382,7 +382,14 @@ def make_config(share: Path, *, sim_a_dec: float | None = None) -> Path:
                 "ros__parameters": {
                     "urdf": {
                         "extra_frames": {
-                            "catch_frame": {"parent": "palm", "xyz": [0, 0, 0], "rpy": [0, 0, 0]}
+                            "catch_frame": {"parent": "palm", "xyz": [0, 0, 0], "rpy": [0, 0, 0]},
+                            # The vision world (#779): the arm base at the world origin.
+                            "scene_world": {
+                                "parent": "base",
+                                "xyz": [0.0, 0.0, 0.0],
+                                "rpy": [0.0, 0.0, 0.0],
+                                "provisional": False,
+                            },
                         }
                     },
                     "devices": {
@@ -415,10 +422,6 @@ def make_config(share: Path, *, sim_a_dec: float | None = None) -> Path:
         {
             CONTROLLER: {
                 "catching": {
-                    "io": {
-                        "arm_base_frame": "base",
-                        "base_T_world": {"yaw_deg": 0.0, "translation": [0, 0, 0]},
-                    },
                     "supervisor": {"decel": {"a_dec": A_DEC}},
                 },
                 "topics": {ARM: {"subscribe": []}},
@@ -701,25 +704,19 @@ def test_the_pilot_session_runs_through_the_real_fk(tmp_path):
     shutil.copytree(FIXTURE / "config", cfg)
     profile = ct.load_profile(cfg, session=FIXTURE / "session")
     n = len(ct.arm_joints_from_diag(ct._csv_header(_pilot_diag(profile))))
-    _write_yaml(
-        cfg / "sim.yaml",
-        {
-            "/**": {
-                "ros__parameters": {
-                    "devices": {
-                        profile.arm_device: {
-                            "joint_limits": {
-                                "max_torque": [150.0] * n,
-                                "max_velocity": [3.0] * n,
-                                "position_lower": [-6.3] * n,
-                                "position_upper": [6.3] * n,
-                            }
-                        }
-                    }
-                }
+    # Laid INTO the copy's sim.yaml, which also carries the vision world (#779).
+    sim = yaml.safe_load((cfg / "sim.yaml").read_text())
+    sim["/**"]["ros__parameters"]["devices"] = {
+        profile.arm_device: {
+            "joint_limits": {
+                "max_torque": [150.0] * n,
+                "max_velocity": [3.0] * n,
+                "position_lower": [-6.3] * n,
+                "position_upper": [6.3] * n,
             }
-        },
-    )
+        }
+    }
+    _write_yaml(cfg / "sim.yaml", sim)
     out = cd.analyse_unit(
         FIXTURE, FIXTURE / "session", cfg, urdf=FIXTURE / "robot.urdf", ct_dir=ct_dir
     )

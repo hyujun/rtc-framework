@@ -93,9 +93,9 @@ speed margin of the nlp search's limits and ``follows_segments``.
 **Frames.** Throws, the throw list, the flight and the map's axis values are
 in the SIM WORLD. The wake CSV handed to the binary, and the plan it returns
 (``p_c``, ``v_c``), are in the MODEL WORLD (the URDF root). The two are
-composed the way the controller composes them: ``model_world_T_base`` read from
-the URDF at ``catching.io.arm_base_frame`` times ``catching.io.base_T_world``
-(``catching_trials.CatchFrameFk``). Instants are integer nanoseconds on one
+composed the way the controller composes them: the model frame ``scene_world``
+of the composed robot config (#779) — ``model_world_T_parent`` read from the
+URDF times the frame's placement (``catching_trials.CatchFrameFk``). Instants are integer nanoseconds on one
 axis on which every throw is released at :data:`RELEASE_NS`.
 
 **Not reproduced.** What a running clock produces (a search cut by its budget,
@@ -177,7 +177,8 @@ from rtc_tools.analysis.catching_trials import (
     load_profile,
     load_throw_grid_axes,
     most_frequent_reason,
-    vision_frame_from_io,
+    reject_retired_io_frame_keys,
+    vision_frame_from_params,
 )
 from rtc_tools.analysis.derive_accel_limits import _git_dirty, _git_head, load_robot_params
 
@@ -2686,8 +2687,12 @@ def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str])
         raise SystemExit("catching.planner.wait_pose must give one angle per arm joint")
 
     # The frames and the wait pose's catch point, composed from the COMPOSED
-    # tree: an overlay that moves the vision frame moves them with it.
-    base_frame, base_t_world = vision_frame_from_io(catching.get("io") or {}, profile.controller)
+    # layers: an overlay that moves the vision world (its scene_world) moves
+    # them with it.
+    reject_retired_io_frame_keys(catching.get("io") or {}, profile.controller)
+    base_frame, base_t_world = vision_frame_from_params(
+        robot_params, " + ".join(str(p) for p in layers)
+    )
     profile = dataclasses.replace(
         profile,
         arm_base_frame=base_frame,

@@ -7,14 +7,6 @@ demo_catching_controller:
         mass: 0.057
         restitution: 0.75
         provisional: true
-    io:
-      arm_base_frame: base
-      base_T_world:
-        yaw_deg: 0.0
-        translation:
-        - 0.0
-        - 0.0
-        - 0.0
   topics:
     ur5e:
       subscribe:

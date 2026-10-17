@@ -392,26 +392,17 @@ demo_catching_controller:
       # robots. Compared on every message — a publisher that changes frame
       # keeps producing entirely plausible numbers in a different space.
       expected_frame: "world"
-      # Vision world → MODEL world (L3 §4.2). The planner and the CLIK work
-      # in the Pinocchio universe, whose root on this URDF is
-      # `base_link` — 180° about z from `base`. Vision is measured against
-      # `base`. The ingress composes the two and applies Rz(180°) to every
-      # prediction (S6-C: without it every candidate landed behind the arm).
-      #
-      # base_T_world is the SIM scene's: p_base = Rz(yaw) p_world + t. The
-      # shipped scene stands the arm on a 0.7 m pedestal (mujoco_simulator.yaml
-      # `model_path`, 2026-10-09 #747), so the base is 0.7 m above the world
-      # origin and t = -0.7 in z. With the base at the origin it was the
-      # identity (§11: same-q MuJoCo vs Pinocchio FK, 2026-09-20/21), and a
-      # scene that puts the base back there (scene.xml, scene_with_table.xml)
-      # needs the identity back, or every prediction is read 0.7 m low. The
-      # offline tools read THIS key (rtc_tools catching_trials), not an
-      # override in sim.yaml or an overlay. Real arm: the camera calibration
-      # (S10) — this value means nothing there.
-      arm_base_frame: "base"
-      base_T_world:
-        yaw_deg: 0.0
-        translation: [0.0, 0.0, -0.7]
+      # Vision world → MODEL world (L3 §4.2) is not a key here: it is the
+      # model frame `scene_world` (#779), urdf.extra_frames in sim.yaml and in
+      # every overlay that swaps the scene — the same world a `scene_world`
+      # task goal names. The planner and the CLIK work in the Pinocchio
+      # universe, whose root on this URDF is `base_link` — 180° about z from
+      # `base`, the frame scene_world hangs off — so the ingress applies
+      # Rz(180°) and the pedestal's 0.7 m to every prediction (S6-C: without
+      # the turn every candidate landed behind the arm). No scene_world (a
+      # real arm until the camera is calibrated, S10) leaves the vision lane
+      # inert with one ERROR. The offline tools read the same frame (rtc_tools
+      # catching_trials).
       # = ceil(horizon_min / dt_expected) + 1 = ceil(0.53 / 0.05) + 1. The +1 is
       # not a margin: n samples spaced dt apart span (n-1)*dt, so 11 points
       # cover 0.50 s and fall 30 ms SHORT of the window a commit decision

@@ -411,10 +411,11 @@ def hand_geometry(
     """FK of ``profile.wait_pose`` → the catch point and approach axis in the sim world.
 
     Composed the way the catching controller composes its frames (the
-    catching_trials analyser's ``CatchFrameFk``: URDF ``model_world_T_base`` ×
-    ``catching.io.base_T_world``), so the throws land where the controller
-    thinks the hand is. Ball shape comes from the profile's simulator YAML; the
-    drag preset is C++-only and must be handed in with its file:line.
+    catching_trials analyser's ``CatchFrameFk``: the model frame ``scene_world``,
+    #779 — URDF ``model_world_T_parent`` × its placement), so the throws land
+    where the controller thinks the hand is. Ball shape comes from the
+    profile's simulator YAML; the drag preset is C++-only and must be handed in
+    with its file:line.
     """
     from pathlib import Path
 
@@ -442,7 +443,7 @@ def hand_geometry(
         sources={
             "urdf": urdf_source,
             "catch_frame": catching.catch_frame_name,
-            "arm_base_frame": catching.arm_base_frame,
+            "vision_world": f"urdf.extra_frames.scene_world (on {catching.arm_base_frame})",
             "wait_pose": "controller mirror planner.wait_pose",
         },
     )

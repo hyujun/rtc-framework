@@ -128,6 +128,19 @@ const char* TaskTargetFrames::ToRoot(std::string_view frame_id, std::span<const 
   return nullptr;
 }
 
+bool SceneWorldProvisional(const rtc_urdf_bridge::ModelConfig* system) noexcept {
+  if (system == nullptr) {
+    return false;
+  }
+  bool provisional = false;
+  for (const auto& ef : system->extra_frames) {
+    if (ef.name == TaskTargetFrames::kSceneWorld) {
+      provisional = ef.provisional;
+    }
+  }
+  return provisional;
+}
+
 void ArmTaskTargetFrames::ConfigureForArm(const pinocchio::Model* arm_model, bool root_resolved,
                                           const rtc::DeviceNameConfig* device,
                                           const rtc_urdf_bridge::ModelConfig* system) {
@@ -136,15 +149,7 @@ void ArmTaskTargetFrames::ConfigureForArm(const pinocchio::Model* arm_model, boo
   if (arm_model == nullptr || !root_resolved || device == nullptr || !device->urdf) {
     return;
   }
-  bool provisional = false;
-  if (system != nullptr) {
-    for (const auto& ef : system->extra_frames) {
-      if (ef.name == TaskTargetFrames::kSceneWorld) {
-        provisional = ef.provisional;
-      }
-    }
-  }
-  error = frames.Configure(*arm_model, device->urdf->root_link, provisional);
+  error = frames.Configure(*arm_model, device->urdf->root_link, SceneWorldProvisional(system));
 }
 
 std::string ArmTaskTargetFrames::Report(bool has_arm_model, const rclcpp::Logger& logger) const {
