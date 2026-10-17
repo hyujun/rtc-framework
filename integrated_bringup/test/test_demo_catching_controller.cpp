@@ -1086,6 +1086,40 @@ using integrated_bringup::testfx::ShippedSimConfigs;
 // This runs the same on_configure the CM runs, on the file that ships, with
 // the devices and the model the file declares, on the SIM axis — which is the
 // one that refuses rather than parks.
+// E3-F02: no shipped profile declares joint groups or a whole-body term, so
+// every value the feature added parses to its default — "off", the problem
+// every core solved before (the goldens pin that problem).
+TEST_P(ShippedCatchingProfile, DeclaresNoJointGroupAndNoWholeBodyTerm) {
+  const auto& [profile, expected_dof] = GetParam();
+  (void)expected_dof;
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  ASSERT_TRUE(node["catching"]);
+  const rtc::catching::PlannerParams planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  EXPECT_TRUE(planner.groups.empty()) << profile;
+  const auto& mpc = planner.mpc_segment;
+  EXPECT_EQ(mpc.n_groups, 0);
+  EXPECT_EQ(mpc.ang_w_pre, 0.0);
+  EXPECT_EQ(mpc.ang_w_post, 0.0);
+  for (const auto& g : mpc.groups) {
+    EXPECT_EQ(g.w_vel, 0.0);
+    EXPECT_EQ(g.w_rest, 0.0);
+    EXPECT_EQ(g.pre_block, 1);
+    EXPECT_EQ(g.n_stop_blocks, 0);
+  }
+  const int nv = 7;  // the per-joint vectors' width; any width parses the same keys
+  const auto docking = rtc::catching::ParseMpcDockingSegmentParams(node["catching"], nv);
+  EXPECT_EQ(docking.n_groups, 0);
+  EXPECT_EQ(docking.core.w_vel.size(), 0);
+  EXPECT_EQ(docking.core.w_rest_stop.size(), 0);
+  EXPECT_EQ(docking.core.w_ang_pre, 0.0);
+  EXPECT_EQ(docking.core.w_ang_post, 0.0);
+  EXPECT_EQ(docking.core.n_groups, 0);
+  const auto nlp = rtc::catching::ParseNlpSearchParams(node["catching"], nv);
+  EXPECT_EQ(nlp.core.w_vel.size(), 0);
+  EXPECT_EQ(nlp.core.w_ang_post, 0.0);
+}
+
 TEST_P(ShippedCatchingProfile, ConfiguresAndIsArmableOnTheSimAxis) {
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);

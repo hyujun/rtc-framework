@@ -269,6 +269,21 @@ struct Scene {
   JointSet chain{0};          // the search model's joints, as device indices
   std::vector<int> outside;   // the device joints the chain lacks
   std::vector<int> slot_map;  // search model joint m → its column in a chain solution
+  // E3-F02: the tree's segment planners built with planner.groups declared
+  // (waist, left arm, right arm — device order) and no key of a group's own.
+  bool groups_declared{false};
+
+  [[nodiscard]] rtc::catching::JointGroups DeclaredGroups() const {
+    rtc::catching::JointGroups g;
+    if (groups_declared) {
+      g.n_groups = 3;
+      for (int d = 0; d < fx::kG1Dof; ++d) {
+        g.group_of_device[static_cast<std::size_t>(d)] =
+            static_cast<std::int8_t>(d < 3 ? 0 : (d < 10 ? 1 : 2));
+      }
+    }
+    return g;
+  }
 
   // gtest ASSERTs: call as ASSERT_NO_FATAL_FAILURE(scene->Build(pose)).
   void Build(const DevicePose& pose) {
@@ -487,6 +502,10 @@ std::unique_ptr<MpcSegmentPlanner> MakeMpcOn(const Scene& s, const fx::ShippedAr
   }
   MpcSegmentPlannerParams params = s.CycleParams(budget).mpc_segment;
   params.jerk_weight.resize(static_cast<std::size_t>(model.nv));
+  if (&arm == &s.segment) {
+    model.groups = s.DeclaredGroups();
+    params.n_groups = model.groups.n_groups;
+  }
   MpcSegmentPlannerConstants consts;
   consts.eta_v = s.borrowed.grid_consts.eta_v;
   consts.t_arm_s = s.borrowed.t_arm_s;
@@ -523,6 +542,8 @@ std::unique_ptr<MpcDockingSegmentPlanner> MakeDocking(
   }
   // BaseParams(17), q_nom = the command; a segment keeps its torque rows.
   params.core = arm.rig.params;
+  model.groups = s.DeclaredGroups();
+  params.n_groups = model.groups.n_groups;
   ApplyTorqueCost(torque_cost, params.core);
   return rtc::catching::MakeMpcDockingSegmentPlanner(model, consts, params, &SuiteClock, error);
 }
@@ -1116,23 +1137,30 @@ void ExpectTheChainsProblem(const DockingAtBothWidths& r) {
 TEST(G1SearchSegmentAgreement, WithNoTorqueCostMpcDockingOnTheTreeIsTheChainsProblem) {
   RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   const PinnedClock pin(kPinnedNow);
-  auto s = std::make_unique<Scene>();
-  ASSERT_NO_FATAL_FAILURE(BuildAgreementScene(*s));
-  auto r = std::make_unique<DockingAtBothWidths>();
-  ASSERT_NO_FATAL_FAILURE(SolveDockingAtBothWidths(*s, *r));
-  ExpectTheChainsProblem(*r);
-  // Nothing moves a joint the chain lacks.
-  EXPECT_LE(r->from_chain_gap.outside_q, 1e-9);
-  EXPECT_LE(r->from_plan_gap.outside_q, 1e-9);
+  // E3-F02: with planner.groups declared (no weights) the tree's problem is
+  // the same one — the agreement holds either way.
+  for (const bool groups : {false, true}) {
+    SCOPED_TRACE(groups ? "groups declared" : "no groups");
+    auto s = std::make_unique<Scene>();
+    ASSERT_NO_FATAL_FAILURE(BuildAgreementScene(*s));
+    s->groups_declared = groups;
+    auto r = std::make_unique<DockingAtBothWidths>();
+    ASSERT_NO_FATAL_FAILURE(SolveDockingAtBothWidths(*s, *r));
+    ExpectTheChainsProblem(*r);
+    // Nothing moves a joint the chain lacks.
+    EXPECT_LE(r->from_chain_gap.outside_q, 1e-9);
+    EXPECT_LE(r->from_plan_gap.outside_q, 1e-9);
+  }
 }
 
 // mpc: the same plan handed to the planner on the chain (10 joints, a device of
 // its own ten) and to the planner on the tree (17).
-TEST(G1SearchSegmentAgreement, MpcOnTheTreeSolvesTheChainsProblem) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
-  const PinnedClock pin(kPinnedNow);
+// `groups`: the tree's planner with planner.groups declared (E3-F02, no
+// weights) — the same problem, so the same agreement.
+void RunMpcAgreement(bool groups) {
   auto s = std::make_unique<Scene>();
   ASSERT_NO_FATAL_FAILURE(BuildAgreementScene(*s));
+  s->groups_declared = groups;
 
   // The plan: the grid search's, on the chain. It plans nothing until it has
   // seen `n_settle` snapshots of the track: the same throw, read that many
@@ -1215,6 +1243,15 @@ TEST(G1SearchSegmentAgreement, MpcOnTheTreeSolvesTheChainsProblem) {
   RecordGap("tree_vs_chain", gap);
   ASSERT_GT(gap.reach, kMinReachRad);
   ExpectWithinD10(gap, "the mpc planner on the tree against the one on the chain");
+}
+
+TEST(G1SearchSegmentAgreement, MpcOnTheTreeSolvesTheChainsProblem) {
+  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
+  const PinnedClock pin(kPinnedNow);
+  for (const bool groups : {false, true}) {
+    SCOPED_TRACE(groups ? "groups declared" : "no groups");
+    ASSERT_NO_FATAL_FAILURE(RunMpcAgreement(groups));
+  }
 }
 
 // ── (5) Solve times: recorded, not judged ────────────────────────────────────

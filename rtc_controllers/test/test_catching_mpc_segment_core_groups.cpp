@@ -29,6 +29,7 @@
 #include <pinocchio/algorithm/centroidal.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/algorithm/rnea.hpp>
 
 #include <algorithm>
 #include <array>
@@ -39,6 +40,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -1033,6 +1035,185 @@ TEST(MpcSegmentCoreWholeBodyRecord, IterationsWithAndWithoutTheTerms) {
     std::printf("[iterations] cycle %zu: off %d, on %d\n", c, a.result[c].iterations,
                 b.result[c].iterations);
   }
+}
+
+// ── 7. Judgement (#641 Done when; values fixed at stage 0) ──────────────────
+// The other arm (group 2) is the group a plan leaves out: held at its rest
+// posture by w_rest, moved only by the angular-momentum term. Its x_0 is its
+// rest posture, at rest.
+
+constexpr double kWBig = 100.0;
+constexpr double kRestWeight = 1.0;
+
+bool OtherArm(int m) {
+  return GroupOf(m) == 2;
+}
+
+struct JudgeRun {
+  MpcSegmentCoreResult r;
+  bool ok{false};
+};
+
+// One cold first solve of the fixture's reach (the other arm's reference held
+// at its rest posture) with the other arm's rest weight, the angular weights
+// and, when `locked`, the other arm's box of width 0 at its x_0.
+JudgeRun Judge(const Fixture& f, double w_rest, double w_pre, double w_post, bool locked) {
+  MpcSegmentCoreParams p = ThreePartitions();
+  p.w_rest = Eigen::VectorXd::Zero(kNv);
+  p.q_rest = f.arm.q_nominal;
+  for (int m = 0; m < kNv; ++m) {
+    if (OtherArm(m)) {
+      p.w_rest[m] = w_rest;
+    }
+  }
+  if (w_rest == 0.0) {
+    p.w_rest.resize(0);
+  }
+  if (w_pre > 0.0 || w_post > 0.0) {
+    SetAngular(p, w_pre, w_post);
+  }
+  rtc::catching::MpcSegmentCoreLimits limits = f.limits;
+  if (locked) {
+    for (int m = 0; m < kNv; ++m) {
+      if (OtherArm(m)) {
+        limits.q_min[m] = limits.q_max[m] = f.arm.q_nominal[m];
+      }
+    }
+  }
+  JudgeRun out;
+  MpcSegmentCore core;
+  if (core.Init(*f.arm.model, f.arm.frame, p, limits) != MpcSegmentCoreReason::kNone) {
+    return out;
+  }
+  MpcSegmentCoreInput in = f.input;
+  ReachReference(core, f.arm.q_nominal, f.q_target, in);
+  for (int m = 0; m < kNv; ++m) {
+    if (OtherArm(m)) {
+      in.q_ref.row(m).setConstant(f.arm.q_nominal[m]);
+      in.qd_ref.row(m).setZero();
+      in.qdd_ref.row(m).setZero();
+    }
+  }
+  core.ResizeResult(out.r);
+  out.ok = core.Solve(in, out.r);
+  return out;
+}
+
+double OtherArmOffRest(const Fixture& f, const MpcSegmentCoreResult& r) {
+  double d = 0.0;
+  for (int k = 0; k < r.q.cols(); ++k) {
+    for (int m = 0; m < kNv; ++m) {
+      if (OtherArm(m)) {
+        d = std::max(d, std::abs(r.q(m, k) - f.arm.q_nominal[m]));
+      }
+    }
+  }
+  return d;
+}
+
+double ChainDifference(const MpcSegmentCoreResult& a, const MpcSegmentCoreResult& b) {
+  double d = 0.0;
+  for (int m = 0; m < kNv; ++m) {
+    if (!OtherArm(m)) {
+      d = std::max(d, (a.q.row(m) - b.q.row(m)).cwiseAbs().maxCoeff());
+    }
+  }
+  return d;
+}
+
+struct CatchNode {
+  Eigen::Vector3d pos_err, v_rel;
+  double axis_err{0.0};
+};
+
+CatchNode CatchOf(const MpcSegmentCoreResult& r) {
+  return {r.catch_pos_err, r.catch_v_rel, r.catch_axis_err};
+}
+
+// D2's tolerance on the catch-node values against the solve without the
+// whole-body terms.
+bool WithinD2(const CatchNode& a, const CatchNode& b, std::string* why) {
+  const double dp = (a.pos_err - b.pos_err).norm();
+  const double da = std::abs(a.axis_err - b.axis_err);
+  const double dv = (a.v_rel - b.v_rel).norm();
+  *why = "position " + std::to_string(dp) + " m, axis " + std::to_string(da) + " rad, v_rel " +
+         std::to_string(dv) + " m/s";
+  return dp <= 1e-3 && da <= 0.0175 && dv <= 0.02;
+}
+
+// The torque rows already span the whole model: a trunk joint's row carries
+// the other arm's motion (its reaction), seen against the condensed map's own
+// finite difference — z → nodes → RNEA.
+TEST(MpcSegmentCoreJudgement, TheTrunksTorqueRowsCarryTheOtherArmsReaction) {
+  const Fixture f = MakeFixture();
+  MpcSegmentCoreParams p = ThreePartitions();
+  MpcSegmentCore core;
+  ASSERT_EQ(core.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
+  // The reference is x_0 at rest, so it is the trajectory of z = 0 and the
+  // linearisation point of the rows is where the difference is taken.
+  MpcSegmentCoreInput in = RestInput(f.arm.q_nominal);
+  in.q_ref = f.arm.q_nominal.replicate(1, core.NumNodes() + 1);
+  in.qd_ref.setZero(kNv, core.NumNodes() + 1);
+  in.qdd_ref.setZero(kNv, core.NumNodes() + 1);
+  in.reference_valid = true;
+  in.p_b = f.input.p_b;
+  in.a_d = f.input.a_d;
+  in.v_b = f.input.v_b;
+  in.w_p = f.input.w_p;
+  in.p_c = in.p_b;
+  in.d_hat = f.input.d_hat;
+  MpcSegmentCoreResult r;
+  core.ResizeResult(r);
+  ASSERT_TRUE(core.Solve(in, r)) << MpcSegmentCoreReasonName(r.reason);
+  const rtc::tsid::QPData& qp = core.MainQp();
+  const rtc::catching::BlockLayout& l = core.Layout();
+  const int N = core.NumNodes();
+  const int nN = kNv * N;
+  pinocchio::Data data(*f.arm.model);
+  // Nodes of z, from x_0 at rest, through the stage gains and the layout.
+  const auto nodes = [&](const Eigen::VectorXd& z, int k, Eigen::VectorXd& q, Eigen::VectorXd& v,
+                         Eigen::VectorXd& a) {
+    q = f.arm.q_nominal;
+    v.setZero(kNv);
+    a.setZero(kNv);
+    for (int j = 0; j < kNv; ++j) {
+      const int c = l.class_of[static_cast<std::size_t>(j)];
+      for (int b = 0; b < l.pattern[static_cast<std::size_t>(c)].n_blocks; ++b) {
+        const double zb = z[l.Col(j, b)];
+        q[j] += core.StageGain(0, k, b, c) * zb;
+        v[j] += core.StageGain(1, k, b, c) * zb;
+        a[j] += core.StageGain(2, k, b, c) * zb;
+      }
+    }
+  };
+  const double eps = 1e-6;
+  double worst = 0.0;
+  double largest = 0.0;
+  for (int k = 1; k <= N; ++k) {
+    for (int m = kTrunk + kArm; m < kNv; ++m) {  // the other arm's variables
+      const int c = l.class_of[static_cast<std::size_t>(m)];
+      for (int b = 0; b < l.pattern[static_cast<std::size_t>(c)].n_blocks; ++b) {
+        const int col = l.Col(m, b);
+        Eigen::VectorXd zp = Eigen::VectorXd::Zero(l.nu);
+        Eigen::VectorXd zm = zp;
+        zp[col] = eps;
+        zm[col] = -eps;
+        Eigen::VectorXd q, v, a;
+        nodes(zp, k, q, v, a);
+        const Eigen::VectorXd tp = pinocchio::rnea(*f.arm.model, data, q, v, a);
+        nodes(zm, k, q, v, a);
+        const Eigen::VectorXd tm = pinocchio::rnea(*f.arm.model, data, q, v, a);
+        for (int t = 0; t < kTrunk; ++t) {
+          const double fd = (tp[t] - tm[t]) / (2.0 * eps) / f.limits.tau_max[t];
+          const double row = qp.C(2 * nN + (k - 1) * kNv + t, col);
+          worst = std::max(worst, std::abs(row - fd));
+          largest = std::max(largest, std::abs(fd));
+        }
+      }
+    }
+  }
+  EXPECT_GT(largest, 1e-6) << "the reaction must be there";
+  EXPECT_LE(worst, 1e-6 * std::max(1.0, largest));
 }
 
 }  // namespace
