@@ -22,15 +22,15 @@
 # CI. It is shipped because FINDING it cost five failed runs and finally a
 # `mujoco.mj_geomDistance` grid search over every robot collision geom. The
 # maintenance cost of one overlay plus one object is smaller than doing that
-# again. Geometry rationale lives in the object file; the search constraints live
-# in `.claude/skills/verify/references/p1b-fingertip-fixture.md`.
+# again. Geometry rationale lives in the object file; the runs behind it are
+# #504 comment 5645292923.
 #
 # HOW IT IS USED. The arm never moves. Leave the shipped palm-down
 # `initial_qpos` alone, let the disk spawn at fingertip height, and close index
 # then thumb with per-finger ramps (the two have different closure schedules —
 # one scalar saturates the thumb at 14 N while the index is still 1 mm short).
-# The grasp procedure, including which controller to activate FIRST, is in the
-# verify skill; the order is not free (#504).
+# Activate demo_compliance_controller FIRST, then close the hand; the order is
+# not free (#504).
 
 mujoco_simulator:
   ros__parameters:
