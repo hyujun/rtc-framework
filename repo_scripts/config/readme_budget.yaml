@@ -37,7 +37,7 @@ repo_scripts/README.md: 72305
 robot_descriptions/README.md: 22406
 robot_descriptions/robots/panda/README.md: 1058
 robot_descriptions/robots/ur5e_p1b/README.md: 4834
-rtc_base/README.md: 50803
+rtc_base/README.md: 24945 strict
 rtc_communication/README.md: 28726
 rtc_controller_interface/README.md: 54183
 rtc_controller_manager/README.md: 95123
