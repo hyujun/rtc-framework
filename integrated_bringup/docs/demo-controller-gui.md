@@ -72,7 +72,7 @@ phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC pub
 
 ## Pull Force Estimate 패널
 
-`GraspState` / `WbcState` 의 `pull` (`PullEstimate`) 을 표시합니다. joint / task 는 `grasp_state` 만, WBC 는 `wbc_state` 만 발행하고 구독은 active 컨트롤러 네임스페이스에 바인딩되므로 source 는 항상 하나입니다. 마지막 수신이 0.5 s 를 넘으면 stale 입니다.
+`GraspState` / `WbcState` 의 `pull` (`PullEstimate`) 을 표시합니다. joint / task / compliance 는 `grasp_state` 만, WBC 는 `wbc_state` 만 발행하고 구독은 active 컨트롤러 네임스페이스에 바인딩되므로 source 는 항상 하나입니다. 마지막 수신이 0.5 s 를 넘으면 stale 입니다.
 
 배지는 위에서부터 첫 번째로 맞는 조건을 보입니다.
 
