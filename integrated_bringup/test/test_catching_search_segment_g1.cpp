@@ -79,6 +79,7 @@
 
 #include <Eigen/Core>
 #include <gtest/gtest.h>
+#include <pinocchio/algorithm/centroidal.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
@@ -272,6 +273,11 @@ struct Scene {
   // E3-F02: the tree's segment planners built with planner.groups declared
   // (waist, left arm, right arm — device order) and no key of a group's own.
   bool groups_declared{false};
+  // ... and, with the groups, the whole-body terms of the tree's mpc planner:
+  // the left arm's rest weight and the angular-momentum rate (s = 10 N·m).
+  double wb_rest_left{0.0};
+  double wb_ang_pre{0.0};
+  double wb_ang_post{0.0};
 
   [[nodiscard]] rtc::catching::JointGroups DeclaredGroups() const {
     rtc::catching::JointGroups g;
@@ -505,6 +511,14 @@ std::unique_ptr<MpcSegmentPlanner> MakeMpcOn(const Scene& s, const fx::ShippedAr
   if (&arm == &s.segment) {
     model.groups = s.DeclaredGroups();
     params.n_groups = model.groups.n_groups;
+    if (s.groups_declared) {
+      params.groups[1].w_rest = s.wb_rest_left;
+      params.ang_w_pre = s.wb_ang_pre;
+      params.ang_w_post = s.wb_ang_post;
+      params.ang_scale = 10.0;
+      std::copy(s.command.begin(), s.command.end(), model.rest_pose.begin());
+      model.rest_pose_n = fx::kG1Dof;
+    }
   }
   MpcSegmentPlannerConstants consts;
   consts.eta_v = s.borrowed.grid_consts.eta_v;
@@ -1273,6 +1287,167 @@ void RecordUs(const std::string& name, std::vector<std::int64_t> ns) {
   }
   std::sort(v.begin(), v.end());
   return v[v.size() / 2];
+}
+
+// ── E3-F02 (#641): whole catches with the whole-body terms (G1, a check) ────
+// The grid search on the chain, the mpc planner on the tree with the groups
+// declared, the left arm's rest weight and the angular rate (D15's values);
+// an RT stand-in that follows the first plan and takes every segment of it.
+// The judging logic is the synthetic tree's (rtc_controllers
+// test_catching_wholebody_cycle.cpp); this runs it on the G1 model.
+
+struct WholeBodyWake {
+  double rate_max{0.0};  // max ‖k̇_G‖ over the segment's nodes 1..N [N·m]
+  double left_end{0.0};  // max |q_N − q_rest| over the left arm [rad]
+  rtc::catching::SegmentKind kind{rtc::catching::SegmentKind::kFirst};
+};
+
+[[nodiscard]] WholeBodyWake LookAt(const Scene& s, const SegmentSnapshot& seg) {
+  const pinocchio::Model& model = *s.segment.rig.arm.model;
+  pinocchio::Data data(model);
+  WholeBodyWake w;
+  for (int k = 1; k <= seg.n_nodes; ++k) {
+    Eigen::VectorXd q(model.nv), v(model.nv), a(model.nv);
+    for (int m = 0; m < model.nv; ++m) {
+      const auto e = Entry(k, s.segment.device_of_model[static_cast<std::size_t>(m)]);
+      q[m] = seg.q[e];
+      v[m] = seg.qd[e];
+      a[m] = seg.qdd[e];
+    }
+    const Eigen::MatrixXd ag = pinocchio::computeCentroidalMap(model, data, q).bottomRows<3>();
+    const double eps = 1e-6;
+    const Eigen::MatrixXd ap =
+        pinocchio::computeCentroidalMap(model, data, q + eps * v).bottomRows<3>();
+    const Eigen::MatrixXd am =
+        pinocchio::computeCentroidalMap(model, data, q - eps * v).bottomRows<3>();
+    w.rate_max = std::max(w.rate_max, (ag * a + (ap - am) / (2.0 * eps) * v).norm());
+  }
+  for (int d = 3; d < 10; ++d) {  // the left arm, device order
+    w.left_end = std::max(w.left_end, std::abs(seg.q[Entry(seg.n_nodes, d)] -
+                                               s.command[static_cast<std::size_t>(d)]));
+  }
+  return w;
+}
+
+[[nodiscard]] std::vector<WholeBodyWake> RunWholeBodyCatch(double w_rest_left) {
+  std::vector<WholeBodyWake> out;
+  PinnedClock pin(kPinnedNow);
+  auto s = std::make_unique<Scene>();
+  s->Build(fx::kG1Home);
+  s->groups_declared = true;
+  s->wb_rest_left = w_rest_left;
+  s->wb_ang_pre = 0.001;
+  s->wb_ang_post = 0.1;
+  auto w = std::make_unique<Wiring>();
+  w->cycle.Configure(s->CycleParams(Budget::kShipped));
+  w->cycle.SetClock(&SuiteClock);
+  EXPECT_TRUE(w->cycle.Bind(PlannerCycleIo{&w->boxes.traj, &w->boxes.cov, &w->boxes.rt,
+                                           &w->boxes.plan, &w->boxes.segment}));
+  auto search = MakeGrid(*s, Budget::kShipped);
+  EXPECT_NE(search, nullptr);
+  w->cycle.InstallSearch(std::move(search));
+  std::string err;
+  auto planner = MakeMpc(*s, Budget::kShipped, &err);
+  EXPECT_NE(planner, nullptr) << err;
+  if (planner == nullptr) {
+    return out;
+  }
+  w->cycle.InstallSegmentPlanner(std::move(planner));
+  const std::int64_t star = s->SearchStartNs(kPinnedNow, Budget::kShipped) +
+                            static_cast<std::int64_t>(std::llround(kStarAfterT0S * 1e9));
+  // The RT stand-in's following state.
+  bool following = false;
+  std::uint32_t plan_id = 0;
+  std::int64_t t_c = std::numeric_limits<std::int64_t>::max();
+  std::uint32_t last_seq = 0, pending_seq = 0, active_seq = 0;
+  std::int64_t pending_t0 = 0;
+  bool pending = false, active = false;
+  for (int wake = 0; wake < 200; ++wake) {
+    const std::int64_t now = kPinnedNow + wake * kWakePeriodNs;
+    if (now >= t_c) {
+      break;
+    }
+    pin.Set(now);
+    const std::unique_ptr<Throw> ball =
+        s->AimedThrow(kPinnedNow, star, 50 * kMs, static_cast<std::uint64_t>(wake + 1));
+    w->boxes.cov.Store(ball->cov);
+    w->boxes.traj.Store(ball->traj);
+    PlannerRtState rt = s->RestingRt(now, 500 + static_cast<std::uint64_t>(wake));
+    if (!following) {
+      const PlanSnapshot p = w->boxes.plan.Load();
+      if (p.valid) {
+        following = true;
+        plan_id = p.plan_id;
+        t_c = p.t_c_ns;
+      }
+    }
+    if (following) {
+      const SegmentSnapshot d = w->boxes.segment.Load();
+      if (d.valid && d.plan_id == plan_id && d.segment_seq > last_seq) {
+        last_seq = d.segment_seq;
+        pending = true;
+        pending_seq = d.segment_seq;
+        pending_t0 = d.t0_ns;
+      }
+      if (pending &&
+          now + static_cast<std::int64_t>(s->borrowed.t_arm_s * 1e9) + kMs >= pending_t0) {
+        active = true;
+        active_seq = pending_seq;
+        pending = false;
+      }
+      const std::int64_t lead = t_c - now;
+      rt.mode = static_cast<std::uint8_t>(lead <= 200 * kMs ? rtc::catching::Mode::kCommitted
+                                                            : rtc::catching::Mode::kApproach);
+      rt.plan_active = true;
+      rt.plan_id = plan_id;
+      rt.plan_t_c_ns = t_c;
+      rt.segment_pending = pending;
+      rt.segment_pending_seq = pending ? pending_seq : 0;
+      rt.segment_active = active;
+      rt.segment_seq = active ? active_seq : 0;
+    }
+    w->boxes.rt.Store(rt);
+    const PlannerCycleRecord rec = w->cycle.Run(NowReal{now});
+    if (rec.segment.outcome == SegmentOutcome::kPublished) {
+      out.push_back(LookAt(*s, w->boxes.segment.Load()));
+      out.back().kind = rec.segment.kind;
+    }
+  }
+  return out;
+}
+
+TEST(G1WholeBodyCycle, TheRateStaysNearTheFirstWakesAndTheLeftArmEndsAtRest) {
+  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
+  const std::vector<WholeBodyWake> t = RunWholeBodyCatch(1.0);
+  ASSERT_GE(t.size(), 6U) << "the first segment and five replans";
+  RecordProperty("segments", static_cast<int>(t.size()));
+  const double first = t.front().rate_max;
+  ASSERT_GT(first, 0.0);
+  for (std::size_t i = 0; i < t.size(); ++i) {
+    EXPECT_LE(t[i].rate_max, 1.1 * first) << "segment " << i;
+  }
+  EXPECT_LE(t.back().left_end, 1e-2);
+  RecordProperty("left_end_last", std::to_string(t.back().left_end));
+}
+
+TEST(G1WholeBodyCycle, WithoutItsRestWeightTheLeftArmIsNotBroughtBack) {
+  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
+  const std::vector<WholeBodyWake> t = RunWholeBodyCatch(0.0);
+  ASSERT_GE(t.size(), 6U);
+  double last = 0.0;
+  for (std::size_t i = 0; i < t.size(); ++i) {
+    if (i > 0 && t[i].kind == rtc::catching::SegmentKind::kFirst) {
+      continue;
+    }
+    // Near saturation (the jerk cost against the angular term) the end node
+    // wobbles: a return is more than 1 % of the drift reached.
+    EXPECT_GE(t[i].left_end, 0.99 * last) << "segment " << i;
+    last = t[i].left_end;
+  }
+  EXPECT_GT(t.back().left_end, t.front().left_end);
+  EXPECT_GT(t.back().left_end, 10.0 * 1e-2) << "ten times the held arm's tolerance";
+  RecordProperty("left_end_first", std::to_string(t.front().left_end));
+  RecordProperty("left_end_last", std::to_string(t.back().left_end));
 }
 
 TEST(G1SearchSegmentTimes, RecordsTheSearchsCandidateAndTheFirstSolvesOnTheTree) {
