@@ -4,6 +4,7 @@
 #include "catching_yaml_read.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <iomanip>
@@ -39,6 +40,16 @@ std::string Shown(const YAML::Node& sec, const char* key, double value) {
   std::ostringstream os;
   os << std::scientific << std::setprecision(6) << value;
   return os.str();
+}
+
+/// A group name: it becomes part of parameter names, so [A-Za-z][A-Za-z0-9_]*.
+[[nodiscard]] bool IsGroupToken(const std::string& s) {
+  if (s.empty() || std::isalpha(static_cast<unsigned char>(s[0])) == 0) {
+    return false;
+  }
+  return std::all_of(s.begin(), s.end(), [](char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+  });
 }
 
 /// The section under `parent`, empty when absent; refuses a non-map.
@@ -232,6 +243,64 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
       out.wait_pose_source = PlannerParams::WaitPoseSource::kCurrent;
     } else {
       Reject(Key("wait_pose_source") + " must be \"yaml\" or \"current\", got " + Spelling(v));
+    }
+  }
+
+  // Joint groups (E3-F02): names and device joint names only — the binding
+  // resolves them against the device (ResolveJointGroups), and each segment
+  // block reads its per-group values by these names.
+  if (const YAML::Node groups = planner["groups"]; groups) {
+    if (!groups.IsSequence() || groups.size() == 0) {
+      Reject(Key("groups") + " must be a non-empty sequence of {name, joints}, got " +
+             Spelling(groups));
+    }
+    if (groups.size() > static_cast<std::size_t>(kMaxJointGroups)) {
+      Reject(Key("groups") + " lists " + std::to_string(groups.size()) + " groups, at most " +
+             std::to_string(kMaxJointGroups) + " (kMaxJointGroups)");
+    }
+    std::vector<std::string> all_joints;
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+      const std::string where = "groups[" + std::to_string(i) + "]";
+      const YAML::Node g = groups[i];
+      if (!g.IsMap()) {
+        Reject(Key(where) + " must be a map {name, joints}, got " + Spelling(g));
+      }
+      for (const auto& kv : g) {
+        const std::string k = kv.first.as<std::string>();
+        if (k != "name" && k != "joints") {
+          Reject(Key(where + "." + k) + " is not a key of a group (name, joints)");
+        }
+      }
+      JointGroupSpec spec;
+      const YAML::Node name = g["name"];
+      if (!name || !name.IsScalar() || !IsGroupToken(name.Scalar())) {
+        Reject(Key(where + ".name") +
+               " must be a [A-Za-z][A-Za-z0-9_]* token (it names parameters), got " +
+               (name ? Spelling(name) : std::string("nothing")));
+      }
+      spec.name = name.Scalar();
+      if (FindJointGroup(out.groups, spec.name) >= 0) {
+        Reject(Key(where + ".name") + " '" + spec.name + "' names a group already declared");
+      }
+      const YAML::Node joints = g["joints"];
+      if (!joints || !joints.IsSequence() || joints.size() == 0) {
+        Reject(Key(where + ".joints") + " must be a non-empty sequence of joint names, got " +
+               (joints ? Spelling(joints) : std::string("nothing")));
+      }
+      for (std::size_t j = 0; j < joints.size(); ++j) {
+        if (!joints[j].IsScalar() || joints[j].Scalar().empty()) {
+          Reject(Key(where + ".joints[" + std::to_string(j) + "]") + " must be a joint name, got " +
+                 Spelling(joints[j]));
+        }
+        const std::string& joint = joints[j].Scalar();
+        if (std::find(all_joints.begin(), all_joints.end(), joint) != all_joints.end()) {
+          Reject(Key(where + ".joints") + " lists '" + joint +
+                 "', which is already in a group (the groups are disjoint)");
+        }
+        all_joints.push_back(joint);
+        spec.joints.push_back(joint);
+      }
+      out.groups.push_back(std::move(spec));
     }
   }
 

@@ -3174,6 +3174,94 @@ TEST(CatchingSearchChainConfigure, RefusesAChainThatDoesNotEndOnTheCatchFramesPa
   EXPECT_TRUE(ConfigureLog::Said("tip_link ('tool0')")) << ConfigureLog::All();
 }
 
+// ── E3-F02 (#641): `planner.groups` on the arm device ───────────────────────
+//
+// No shipped profile declares groups yet (G1's catching profile is E3-F05's);
+// these cases add a declaration to the shipped ur5e_p1b profile. What is judged
+// is the configure — the groups resolved on the device's joint names, the
+// mirror, the refusals — not what a group's weights do.
+
+// The shipped profile's tree with `groups` under `planner`.
+YAML::Node ShippedWithGroups(const YAML::Node& groups) {
+  YAML::Node yaml = ShippedWithPlanner(kChainProfile, /*planner=*/true, /*oracle=*/false);
+  yaml["catching"]["planner"]["groups"] = groups;
+  return yaml;
+}
+
+TEST(CatchingJointGroupsConfigure, GroupsResolveOnTheDeviceAndAreMirroredAcrossAReconfigure) {
+  const rtc_urdf_bridge::ModelConfig cfg =
+      integrated_bringup::testfx::ShippedModelConfig(kChainProfile);
+  const rclcpp_lifecycle::State prev;
+  // The control: no declaration, no group and no mirror.
+  {
+    SearchChainBringUp none;
+    ASSERT_EQ(none.Configure(cfg, "", "catching_groups_absent"),
+              DemoCatchingController::CallbackReturn::SUCCESS);
+    EXPECT_EQ(none.ctrl.GetJointGroups().n_groups, 0);
+    EXPECT_FALSE(none.node->has_parameter("planner.groups.names"));
+    ASSERT_EQ(none.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+  // Written out of device order on purpose: the map is by name.
+  const YAML::Node groups = YAML::Load(
+      "[{name: wrist, joints: [wrist_3_joint, wrist_1_joint, wrist_2_joint]},"
+      " {name: base, joints: [elbow_joint, shoulder_pan_joint, shoulder_lift_joint]}]");
+  SearchChainBringUp c;
+  const ConfigureLog log;
+  ASSERT_EQ(c.Configure(cfg, "", "catching_groups", ShippedWithGroups(groups)),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << ConfigureLog::All();
+  const auto resolved = [&c](const char* when) {
+    SCOPED_TRACE(when);
+    EXPECT_FALSE(c.ctrl.IsSimOnlyDisabled()) << ConfigureLog::All();
+    const rtc::catching::JointGroups& g = c.ctrl.GetJointGroups();
+    ASSERT_EQ(g.n_groups, 2);
+    ASSERT_EQ(c.arm_joints.size(), 6U);
+    for (std::size_t d = 0; d < c.arm_joints.size(); ++d) {
+      const bool wrist = c.arm_joints[d].rfind("wrist_", 0) == 0;
+      EXPECT_EQ(g.GroupOf(static_cast<int>(d)), wrist ? 0 : 1) << c.arm_joints[d];
+    }
+    EXPECT_EQ(c.node->get_parameter("planner.groups.names").as_string_array(),
+              (std::vector<std::string>{"wrist", "base"}));
+    EXPECT_EQ(
+        c.node->get_parameter("planner.groups.base.joints").as_string_array(),
+        (std::vector<std::string>{"elbow_joint", "shoulder_pan_joint", "shoulder_lift_joint"}));
+  };
+  ASSERT_NO_FATAL_FAILURE(resolved("the first configure"));
+  ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(c.ConfigureAgain(), DemoCatchingController::CallbackReturn::SUCCESS)
+      << ConfigureLog::All();
+  ASSERT_NO_FATAL_FAILURE(resolved("a configure after a cleanup"));
+  ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST(CatchingJointGroupsConfigure, RefusesAJointOfNoGroupAndOneTheDeviceLacks) {
+  const rtc_urdf_bridge::ModelConfig cfg =
+      integrated_bringup::testfx::ShippedModelConfig(kChainProfile);
+
+  struct Case {
+    const char* groups;
+    const char* says;
+  };
+
+  for (const Case& k : {
+           Case{"[{name: a, joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint]},"
+                " {name: b, joints: [wrist_1_joint, wrist_2_joint, wrist_9_joint]}]",
+                "planner.groups: 'planner.groups[1].joints' names 'wrist_9_joint', which is not "
+                "a joint of the arm device"},
+           Case{"[{name: a, joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint]},"
+                " {name: b, joints: [wrist_1_joint, wrist_2_joint]}]",
+                "planner.groups: 'planner.groups' leaves joint 'wrist_3_joint' in no group"},
+       }) {
+    SCOPED_TRACE(k.groups);
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    EXPECT_EQ(
+        c.Configure(cfg, "", "catching_groups_refused", ShippedWithGroups(YAML::Load(k.groups))),
+        DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_TRUE(ConfigureLog::Said(k.says)) << ConfigureLog::All();
+  }
+}
+
 // ── 5. S5.1: the P-1 minimum E-STOP/fault contract (E-8) ────────────────────
 //
 // The four parts are tested separately because they fail separately: (a) is

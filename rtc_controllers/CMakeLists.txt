@@ -108,6 +108,9 @@ add_library(rtc_controllers STATIC
   # What only shows with the docking maps side by side (one check for a
   # controller's configure and the offline whole-wake batch).
   src/catching/docking_config.cpp
+  # dynamic_catching E3-F02 (#641): `planner.groups` resolved against the arm
+  # device — the joint groups the segment cores weight and block per group.
+  src/catching/joint_groups.cpp
   src/catching/planner_cycle.cpp
   src/catching/grid_catch_search.cpp
   # dynamic_catching MPC E1-F01 (#627): the segment MPC numeric core — a jerk-input
@@ -753,6 +756,11 @@ if(BUILD_TESTING)
   # dynamic_catching E1-F16: the docking keys (`robot.hand.docking.*`,
   # `planner.search.nlp.*`, `planner.segment.mpc_docking.*`). Pure parsing — no
   # model, no solver.
+  # dynamic_catching E3-F02 (#641): `planner.groups` — parsed, resolved
+  # against the device's joints, mapped to model order.
+  ament_add_gtest(test_catching_joint_groups test/test_catching_joint_groups.cpp)
+  target_link_libraries(test_catching_joint_groups rtc_controllers)
+  target_include_directories(test_catching_joint_groups PRIVATE ${rtc_base_test_include})
   ament_add_gtest(test_catching_docking_params test/test_catching_docking_params.cpp)
   target_link_libraries(test_catching_docking_params rtc_controllers)
   target_include_directories(test_catching_docking_params PRIVATE ${rtc_base_test_include})

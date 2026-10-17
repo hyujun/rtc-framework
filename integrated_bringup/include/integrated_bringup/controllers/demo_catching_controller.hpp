@@ -110,6 +110,7 @@
 #include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/hand_capture.hpp"
 #include "rtc_controllers/catching/hand_sequencer.hpp"
+#include "rtc_controllers/catching/joint_groups.hpp"
 #include "rtc_controllers/catching/joint_home.hpp"
 #include "rtc_controllers/catching/mpc_docking_segment_planner.hpp"
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
@@ -353,6 +354,12 @@ class DemoCatchingController final : public RTControllerInterface {
 
   [[nodiscard]] const rtc::catching::PlannerParams& GetPlannerParams() const noexcept {
     return planner_params_;
+  }
+
+  /// `planner.groups` resolved against the arm device at configure (E3-F02);
+  /// no group declared = n_groups 0.
+  [[nodiscard]] const rtc::catching::JointGroups& GetJointGroups() const noexcept {
+    return joint_groups_;
   }
 
   /// Record this run's layout profile (issue #350). on_configure reads it from
@@ -1947,6 +1954,7 @@ class DemoCatchingController final : public RTControllerInterface {
 
   // ── Planner thread (S6-A, D-7, E-7 decision J) ───────────────────────────
   rtc::catching::PlannerParams planner_params_{};
+  rtc::catching::JointGroups joint_groups_{};  // planner.groups on the arm device (SetupPlanner)
   /// The iteration body the thread calls. Owned here so it outlives the
   /// thread (which holds a reference to it).
   rtc::catching::PlannerCycle planner_cycle_;

@@ -284,6 +284,21 @@ void DemoCatchingController::DeclareProfileParameters() {
                           : "yaml"),
           "L3 §6 where the wait pose comes from: 'yaml' (planner.wait_pose) or 'current' (the "
           "arm's pose on each activation's first readable tick, S8-I)");
+  // The joint groups (E3-F02): a list of maps is not a parameter type, so one
+  // string array of the names and one per group of its joints, as written.
+  if (!planner_params_.groups.empty()) {
+    std::vector<std::string> names;
+    for (const auto& g : planner_params_.groups) {
+      names.push_back(g.name);
+    }
+    declare("planner.groups.names", names,
+            "E3-F02 the arm device's joint groups, as planner.groups declares them; the segment "
+            "blocks weight and block each by its name");
+    for (const auto& g : planner_params_.groups) {
+      declare("planner.groups." + g.name + ".joints", g.joints,
+              "E3-F02 the device joints of group '" + g.name + "'");
+    }
+  }
   declare("planner.freeze.T_freeze", planner_params_.t_freeze, "L3 §4.11 commit lead [s]");
   declare("planner.freeze.t_stop_plan", planner_params_.t_stop_plan,
           "while a plan is followed on segments, the search runs until the catch instant is "
@@ -2098,6 +2113,7 @@ bool DemoCatchingController::SetupPlanner() {
   // already joined it on the normal path; this covers a configure that did not
   // go through one.
   StopPlannerThread();
+  joint_groups_ = {};  // resolved below only for a planner that runs
   // Bound on every configure, enabled or not: the boxes are members and the
   // binding costs nothing, and a re-configure that turns the planner on must
   // not depend on the previous configure having done it.
@@ -2130,6 +2146,16 @@ bool DemoCatchingController::SetupPlanner() {
                  "decision L)",
                  planner_params_.wait_pose_n, arm_dof_);
     return false;
+  }
+  // The joint groups (E3-F02) are the arm device's: resolved by its joint
+  // names here, where they are known, and handed to the segment planners.
+  {
+    std::string why;
+    if (!rtc::catching::ResolveJointGroups(planner_params_.groups, arm_joint_names_, joint_groups_,
+                                           &why)) {
+      RCLCPP_ERROR(logger_, "planner.groups: %s", why.c_str());
+      return false;
+    }
   }
   if (planner_wake_fd_.load(std::memory_order_acquire) < 0) {
     const int fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);

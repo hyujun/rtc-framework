@@ -32,7 +32,8 @@
 // malformed value of either kind is refused (std::invalid_argument).
 #pragma once
 
-#include "rtc_controllers/catching/trajectory.hpp"  // kMaxPlanNv, kMaxSegmentNodes
+#include "rtc_controllers/catching/joint_groups.hpp"  // JointGroupSpec
+#include "rtc_controllers/catching/trajectory.hpp"    // kMaxPlanNv, kMaxSegmentNodes
 
 #include <yaml-cpp/yaml.h>
 
@@ -297,6 +298,11 @@ struct PlannerParams {
   /// configure-time seed and the fallback when that pose is refused.
   enum class WaitPoseSource : std::uint8_t { kYaml = 0, kCurrent = 1 };
   WaitPoseSource wait_pose_source{WaitPoseSource::kYaml};
+  /// `planner.groups` (E3-F02, joint_groups.hpp): the arm device's joint
+  /// groups the segment blocks weight and block by name, as written. Empty =
+  /// one group of every joint. Resolved against the device's joint names by
+  /// the binding (ResolveJointGroups) — this parser does not know them.
+  std::vector<JointGroupSpec> groups;
   /// `planner.provisional` (invented, same shape as `reference.provisional`):
   /// the block as a whole is provisional — sim warns, a real arm is parked.
   bool provisional{true};
@@ -403,7 +409,8 @@ struct PlannerKeySelection {
 /// ParseCatchingParams takes). An absent `planner:` section yields the
 /// defaults, and so does a map `selection` leaves closed. Throws `std::invalid_argument` (and only
 /// that) on a present but malformed key: a non-map section, a non-bool flag, a number outside its
-/// L3 §6 range, a `wait_pose` that is empty / non-finite / longer than `kMaxPlanNv`, a
+/// L3 §6 range, a `wait_pose` that is empty / non-finite / longer than `kMaxPlanNv`, a `groups`
+/// entry that is not {name, joints} with a unique token name and joints disjoint across groups, a
 /// `segment.mpc` horizon whose blocks do not sum to n_nodes, a Δ_s or Δ_pre that is not whole ns, a
 /// k_max whose replan patterns would drop below three blocks, or an n_pre_max whose pre-catch nodes
 /// or blocks would not fit next to the stop's. The removed `search.grid.workspace` (the catch box,
