@@ -201,6 +201,9 @@ struct MpcSegmentPlannerModel {
   std::array<double, kMaxPlanNv> q_max{};     ///< [rad]
   std::array<double, kMaxPlanNv> qdot_max{};  ///< [rad/s], device ratings
   std::array<double, kMaxPlanNv> tau_max{};   ///< [N·m], device ratings
+  /// `planner.groups` resolved on the arm device (E3-F02); its group count
+  /// must be the profile's (params.n_groups). No group = n_groups 0.
+  JointGroups groups{};
 };
 
 struct MpcSegmentPlannerConstants {
@@ -318,6 +321,11 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   [[nodiscard]] const MpcSegmentPlannerParams& Params() const noexcept { return params_; }
 
   [[nodiscard]] int Nv() const noexcept { return nv_; }
+
+  /// The joint group of model joint m (E3-F02); 0 without groups.
+  [[nodiscard]] int GroupOfModel(int m) const noexcept {
+    return m < 0 || m >= nv_ ? -1 : group_of_model_[static_cast<std::size_t>(m)];
+  }
 
   /// The stop core that starts at the stop grid point k, 0..k_max (tests and
   /// diagnostics).
@@ -468,7 +476,8 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   int nv_{0};
   std::array<int, kMaxPlanNv> device_of_model_{};
   JointSet model_set_{0};  // the model's joints, as device indices: the whole device
-  std::array<double, kMaxPlanNv> v_box_{};  // η_v · q̇_max, model order
+  std::array<std::int8_t, kMaxPlanNv> group_of_model_{};  // planner.groups, model order
+  std::array<double, kMaxPlanNv> v_box_{};                // η_v · q̇_max, model order
   std::int64_t dt_ns_{0};
   std::int64_t t_arm_ns_{0};
 

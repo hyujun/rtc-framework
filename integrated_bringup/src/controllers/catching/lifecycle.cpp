@@ -401,6 +401,20 @@ void DemoCatchingController::DeclareProfileParameters() {
             std::vector<std::int64_t>(mpc_segment.blocks.begin(),
                                       mpc_segment.blocks.begin() + mpc_segment.n_blocks),
             "MPC segment planner move-blocking pattern of the stop part (sum = n_nodes)");
+    // Per joint group (E3-F02): each group's partition, as its catch and stop
+    // cores are built with (the block's own where the group has no key).
+    for (int g = 0; g < mpc_segment.n_groups; ++g) {
+      const auto& gp = mpc_segment.groups[static_cast<std::size_t>(g)];
+      const std::string key =
+          "planner.segment.mpc.groups." + planner_params_.groups[static_cast<std::size_t>(g)].name;
+      std::array<int, rtc::catching::kMaxSegmentNodes> stop{};
+      int n_stop = 0;
+      rtc::catching::MpcSegmentGroupStopBase(mpc_segment, g, stop, n_stop);
+      declare(key + ".blocks.pre", static_cast<std::int64_t>(gp.pre_block),
+              "E3-F02 pre-catch nodes per block of this joint group");
+      declare(key + ".blocks.stop", std::vector<std::int64_t>(stop.begin(), stop.begin() + n_stop),
+              "E3-F02 this joint group's move-blocking pattern of the stop part (sum = n_nodes)");
+    }
     declare("planner.segment.mpc.m_q", mpc_segment.m_q,
             "MPC segment planner position margin inside the limits [rad]");
     declare("planner.segment.mpc.replan.k_max", static_cast<std::int64_t>(mpc_segment.k_max),
@@ -2727,6 +2741,7 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(const PlannerArm& pm) {
   dm.catch_frame = pm.frame;
   dm.nv = pm.nv;
   dm.device_of_model = pm.device_of_model;
+  dm.groups = joint_groups_;
   // MD-42: the stop must be executable by the CLIK, so its position box is
   // the URDF's AND the CLIK's margined device box (m_q then sits inside it).
   // URDF limits alone let a published node reach past the CLIK's box (iiwa7

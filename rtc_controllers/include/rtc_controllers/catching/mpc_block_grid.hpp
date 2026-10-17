@@ -9,10 +9,17 @@
 // stage gains — so that a trajectory one core produces is a trajectory the
 // other (and the RT sampler behind both) reads the same way.
 //
+// Per joint group (E3-F02, #641; formulation §1.1, MD-49) each group may have
+// its own partition. Groups whose partitions are the same share one BLOCK
+// CLASS; BlockLayout says which class a joint is in and where each (joint,
+// block) jerk sits in the variable vector. One class of every joint is the
+// layout the cores had before groups, z_{b·n+j} (block-major), to the bit.
+//
 // Non-RT: called from Init().
 #pragma once
 
-#include "rtc_controllers/catching/trajectory.hpp"  // kMaxSegmentNodes
+#include "rtc_controllers/catching/joint_groups.hpp"  // kMaxJointGroups
+#include "rtc_controllers/catching/trajectory.hpp"    // kMaxSegmentNodes, kMaxPlanNv
 
 #include <Eigen/Core>
 
@@ -123,6 +130,107 @@ inline void ComputeBlockStageGains(std::span<const double> dt_interval,
       ga(k + 1, b) = a;
     }
   }
+}
+
+/// One joint group's partition: the first n_blocks entries of block_sizes.
+struct BlockPattern {
+  int n_blocks{0};
+  std::array<int, kMaxSegmentNodes> block_sizes{};
+
+  [[nodiscard]] bool operator==(const BlockPattern& o) const noexcept {
+    if (n_blocks != o.n_blocks) {
+      return false;
+    }
+    for (int b = 0; b < n_blocks && b < kMaxSegmentNodes; ++b) {
+      if (block_sizes[static_cast<std::size_t>(b)] != o.block_sizes[static_cast<std::size_t>(b)]) {
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+/// Joints by block class and the variable column of each (joint, block).
+/// Classes are ordered by their lowest joint index; within a class the
+/// variables are block-major over its joints in model order:
+///   column(j, b) = offset[c] + b·n_joints[c] + rank[j],  c = class_of[j].
+struct BlockLayout {
+  int nv{0};
+  int n_classes{0};
+  int nu{0};  ///< Σ_c n_joints[c]·pattern[c].n_blocks
+  std::array<BlockPattern, kMaxJointGroups> pattern{};
+  std::array<int, kMaxJointGroups> n_joints{};
+  std::array<int, kMaxJointGroups> offset{};
+  std::array<std::array<int, kMaxPlanNv>, kMaxJointGroups> joints{};  ///< ascending
+  std::array<std::int8_t, kMaxPlanNv> class_of{};
+  std::array<std::int8_t, kMaxPlanNv> rank{};
+
+  [[nodiscard]] int Col(int j, int b) const noexcept {
+    const auto c = static_cast<std::size_t>(class_of[static_cast<std::size_t>(j)]);
+    return offset[c] + b * n_joints[c] + rank[static_cast<std::size_t>(j)];
+  }
+
+  /// One class holding every joint: the layout z_{b·n+j}.
+  [[nodiscard]] bool Single() const noexcept { return n_classes == 1; }
+};
+
+/// @brief Build the layout of nv joints from their groups' partitions.
+///
+/// Each partition a joint uses is checked with CheckBlockGrid; a group no
+/// joint is in is not read. With n_groups ≤ 1 every joint is in group 0.
+/// @param group_of_joint model joint j's group (nv entries, read with n_groups ≥ 2)
+/// @param patterns       group g's partition (n_groups entries; 1 with n_groups ≤ 1)
+/// @return the first failed check (out untouched then), else kOk
+[[nodiscard]] inline BlockGridCheck BuildBlockLayout(int nv, int n_groups,
+                                                     std::span<const std::int8_t> group_of_joint,
+                                                     std::span<const BlockPattern> patterns,
+                                                     int n_pre, int n_nodes,
+                                                     BlockLayout& out) noexcept {
+  const int groups = n_groups <= 1 ? 1 : n_groups;
+  if (nv < 1 || nv > kMaxPlanNv || groups > kMaxJointGroups ||
+      patterns.size() < static_cast<std::size_t>(groups) ||
+      (groups > 1 && group_of_joint.size() < static_cast<std::size_t>(nv))) {
+    return BlockGridCheck::kInvalid;
+  }
+  BlockLayout l;
+  l.nv = nv;
+  std::array<int, kMaxJointGroups> class_of_group{};
+  class_of_group.fill(-1);
+  for (int j = 0; j < nv; ++j) {
+    const int g = groups > 1 ? group_of_joint[static_cast<std::size_t>(j)] : 0;
+    if (g < 0 || g >= groups) {
+      return BlockGridCheck::kInvalid;
+    }
+    int& c = class_of_group[static_cast<std::size_t>(g)];
+    if (c < 0) {
+      const BlockPattern& p = patterns[static_cast<std::size_t>(g)];
+      for (int other = 0; other < l.n_classes; ++other) {
+        if (l.pattern[static_cast<std::size_t>(other)] == p) {
+          c = other;
+          break;
+        }
+      }
+      if (c < 0) {
+        const BlockGridCheck check = CheckBlockGrid(p.n_blocks, p.block_sizes, n_pre, n_nodes);
+        if (check != BlockGridCheck::kOk) {
+          return check;
+        }
+        c = l.n_classes++;
+        l.pattern[static_cast<std::size_t>(c)] = p;
+      }
+    }
+    const auto cu = static_cast<std::size_t>(c);
+    l.class_of[static_cast<std::size_t>(j)] = static_cast<std::int8_t>(c);
+    l.rank[static_cast<std::size_t>(j)] = static_cast<std::int8_t>(l.n_joints[cu]);
+    l.joints[cu][static_cast<std::size_t>(l.n_joints[cu]++)] = j;
+  }
+  for (int c = 0; c < l.n_classes; ++c) {
+    const auto cu = static_cast<std::size_t>(c);
+    l.offset[cu] = l.nu;
+    l.nu += l.n_joints[cu] * l.pattern[cu].n_blocks;
+  }
+  out = l;
+  return BlockGridCheck::kOk;
 }
 
 }  // namespace rtc::catching

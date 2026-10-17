@@ -43,6 +43,10 @@ constexpr double kMinBallSpeed = 1e-6;
   return std::isfinite(x) && x > 0.0 && x <= 1.0;
 }
 
+[[nodiscard]] constexpr std::size_t U(Eigen::Index i) noexcept {
+  return static_cast<std::size_t>(i);
+}
+
 [[nodiscard]] double MicrosSince(std::chrono::steady_clock::time_point t0) noexcept {
   return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -155,9 +159,20 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
     return MpcSegmentCoreReason::kParamsInvalid;
   }
   const int n_nodes = n_pre + n_stop;
-  // The block partition: none may span the catch node, three after it
-  // (mpc_block_grid.hpp — the rule the docking core shares).
-  switch (CheckBlockGrid(params.n_blocks, params.block_sizes, n_pre, n_nodes)) {
+  // The block partitions: none may span the catch node, three after it
+  // (mpc_block_grid.hpp — the rule the docking core shares), one per group a
+  // joint is in; groups of one partition share a block class.
+  if (params.n_groups < 0 || params.n_groups > kMaxJointGroups) {
+    return MpcSegmentCoreReason::kParamsInvalid;
+  }
+  const BlockPattern single{params.n_blocks, params.block_sizes};
+  const bool grouped = params.n_groups > 1;
+  BlockLayout layout;
+  switch (BuildBlockLayout(
+      n, params.n_groups, std::span<const std::int8_t>(params.joint_group).first(U(n)),
+      grouped ? std::span<const BlockPattern>(params.group_blocks).first(U(params.n_groups))
+              : std::span<const BlockPattern>(&single, 1),
+      n_pre, n_nodes, layout)) {
     case BlockGridCheck::kOk:
       break;
     case BlockGridCheck::kInvalid:
@@ -234,7 +249,8 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   n_ = n;
   n_nodes_ = n_nodes;
   n_pre_ = n_pre;
-  n_blocks_ = params.n_blocks;
+  layout_ = layout;
+  n_blocks_ = layout_.pattern[0].n_blocks;
   frame_ = catch_frame;
   w_perp_on_ = params.w_perp > 0.0;
   path_on_ = params.w_path > 0.0 && any_path_node;
@@ -247,8 +263,8 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   pos_on_ = false;
   h_modified_ = false;
   w_delta_scale_ = 1.0;
-  nu_ = n * n_blocks_;
-  nz_ = n * (n_blocks_ + n_nodes_) + (slack_v_on_ ? 1 : 0);
+  nu_ = layout_.nu;
+  nz_ = nu_ + n * n_nodes_ + (slack_v_on_ ? 1 : 0);
   n_eq_ = 2 * n;
   n_in_ = 5 * n * n_nodes_ + (slack_v_on_ ? 7 : 0);
 
@@ -284,59 +300,63 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
       dt_node_[i] = k < n_pre_ ? params.dt_pre : params.dt;
     }
   }
-  {
+  // Per block class: Σ_{k∈b} Δ_k/Δ_s — a block lies on one side of the catch
+  // node, so this is its node count, times Δ_a/Δ_s before the catch — the
+  // interval → block map and the stage gains ĝ_{m,k}[b] (the scalar triple
+  // integrator's response at node k to jerk u_scale held over block b, all
+  // others zero, from rest).
+  const Eigen::Index N1 = n_nodes_ + 1;
+  const auto n_intervals = static_cast<std::size_t>(n_nodes_);
+  for (int c = 0; c < layout_.n_classes; ++c) {
+    const BlockPattern& pat = layout_.pattern[U(c)];
+    ClassStages& st = stage_[U(c)];
     int k = 0;
-    for (int b = 0; b < n_blocks_; ++b) {
-      const int size = params.block_sizes[static_cast<std::size_t>(b)];
-      // Σ_{k∈b} Δ_k/Δ_s — a block lies on one side of the catch node, so this
-      // is its node count, times Δ_a/Δ_s before the catch.
-      block_weight_[static_cast<std::size_t>(b)] =
-          k < n_pre_ ? static_cast<double>(size) * (params.dt_pre / params.dt)
-                     : static_cast<double>(size);
+    for (int b = 0; b < pat.n_blocks; ++b) {
+      const int size = pat.block_sizes[U(b)];
+      st.block_weight[U(b)] = k < n_pre_ ? static_cast<double>(size) * (params.dt_pre / params.dt)
+                                         : static_cast<double>(size);
       k += size;
     }
+    FillBlockOfInterval(pat.n_blocks, pat.block_sizes, st.block_of_node);
+    ComputeBlockStageGains(std::span<const double>(dt_node_).first(n_intervals),
+                           std::span<const int>(st.block_of_node).first(n_intervals), pat.n_blocks,
+                           params.u_scale, st.gq, st.gv, st.ga);
   }
-  FillBlockOfInterval(n_blocks_, params.block_sizes, block_of_node_);
-
-  // Stage gains ĝ_{m,k}[b]: the scalar triple integrator's response at node k
-  // to jerk u_scale held over block b (all others zero), from rest.
-  const Eigen::Index N1 = n_nodes_ + 1;
-  const Eigen::Index nb = n_blocks_;
-  const auto n_intervals = static_cast<std::size_t>(n_nodes_);
-  ComputeBlockStageGains(std::span<const double>(dt_node_).first(n_intervals),
-                         std::span<const int>(block_of_node_).first(n_intervals), n_blocks_,
-                         params.u_scale, gq_, gv_, ga_);
 
   // Dense stage matrices (reference assembly and the rank self-check).
   g_dense_.setZero(3 * nn * N1, nu_);
   for (Eigen::Index k = 0; k < N1; ++k) {
-    for (Eigen::Index b = 0; b < nb; ++b) {
-      for (Eigen::Index j = 0; j < nn; ++j) {
-        g_dense_(3 * nn * k + j, b * nn + j) = gq_(k, b);
-        g_dense_(3 * nn * k + nn + j, b * nn + j) = gv_(k, b);
-        g_dense_(3 * nn * k + 2 * nn + j, b * nn + j) = ga_(k, b);
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const ClassStages& st = stage_[ClassOf(j)];
+      for (Eigen::Index b = 0; b < st.gq.cols(); ++b) {
+        const Eigen::Index col = Col(j, b);
+        g_dense_(3 * nn * k + j, col) = st.gq(k, b);
+        g_dense_(3 * nn * k + nn + j, col) = st.gv(k, b);
+        g_dense_(3 * nn * k + 2 * nn + j, col) = st.ga(k, b);
       }
     }
   }
 
   // Constant Hessians.
   h_kin_.setZero(nz_, nz_);
-  for (Eigen::Index b = 0; b < nb; ++b) {
-    const double n_b = block_weight_[static_cast<std::size_t>(b)];
-    for (Eigen::Index j = 0; j < nn; ++j) {
-      h_kin_(b * nn + j, b * nn + j) = jerk_w_[j] * n_b;
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    const ClassStages& st = stage_[ClassOf(j)];
+    for (Eigen::Index b = 0; b < st.gq.cols(); ++b) {
+      h_kin_(Col(j, b), Col(j, b)) = jerk_w_[j] * st.block_weight[U(b)];
     }
   }
   h_main_ = h_kin_;
   h_delta_.setZero(nz_, nz_);
   if (params.w_delta > 0.0) {
     for (Eigen::Index k = 1; k < N1; ++k) {
-      for (Eigen::Index b = 0; b < nb; ++b) {
-        for (Eigen::Index c = 0; c < nb; ++c) {
-          const double w = params.w_delta * gq_(k, b) * gq_(k, c);
-          for (Eigen::Index j = 0; j < nn; ++j) {
-            h_main_(b * nn + j, c * nn + j) += w;
-            h_delta_(b * nn + j, c * nn + j) += w;
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        const ClassStages& st = stage_[ClassOf(j)];
+        const Eigen::Index nb = st.gq.cols();
+        for (Eigen::Index b = 0; b < nb; ++b) {
+          for (Eigen::Index c = 0; c < nb; ++c) {
+            const double w = params.w_delta * st.gq(k, b) * st.gq(k, c);
+            h_main_(Col(j, b), Col(j, c)) += w;
+            h_delta_(Col(j, b), Col(j, c)) += w;
           }
         }
       }
@@ -433,17 +453,19 @@ double MpcSegmentCore::NodeTime(int k) const noexcept {
   return t_node_[static_cast<std::size_t>(k)];
 }
 
-double MpcSegmentCore::StageGain(int m, int k, int b) const noexcept {
-  if (!initialized_ || k < 0 || k > n_nodes_ || b < 0 || b >= n_blocks_) {
+double MpcSegmentCore::StageGain(int m, int k, int b, int block_class) const noexcept {
+  if (!initialized_ || block_class < 0 || block_class >= layout_.n_classes || k < 0 ||
+      k > n_nodes_ || b < 0 || b >= layout_.pattern[U(block_class)].n_blocks) {
     return std::numeric_limits<double>::quiet_NaN();
   }
+  const ClassStages& st = stage_[U(block_class)];
   switch (m) {
     case 0:
-      return gq_(k, b);
+      return st.gq(k, b);
     case 1:
-      return gv_(k, b);
+      return st.gv(k, b);
     case 2:
-      return ga_(k, b);
+      return st.ga(k, b);
     default:
       return std::numeric_limits<double>::quiet_NaN();
   }
@@ -464,25 +486,26 @@ double MpcSegmentCore::StageGain(int m, int k, int b) const noexcept {
 void MpcSegmentCore::AssembleConstant(tsid::QPData& qp, bool main) noexcept {
   const Eigen::Index nn = n_;
   const Eigen::Index nN = nn * n_nodes_;
-  const Eigen::Index nb = n_blocks_;
   const Eigen::Index N = n_nodes_;
 
   qp.H = main ? h_main_ : h_kin_;
   qp.g.setZero();
   qp.A.setZero();
   qp.C.setZero();
-  for (Eigen::Index b = 0; b < nb; ++b) {
-    for (Eigen::Index j = 0; j < nn; ++j) {
-      qp.A(j, b * nn + j) = gv_(N, b);
-      qp.A(nn + j, b * nn + j) = ga_(N, b);
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    const ClassStages& st = stage_[ClassOf(j)];
+    for (Eigen::Index b = 0; b < st.gq.cols(); ++b) {
+      qp.A(j, Col(j, b)) = st.gv(N, b);
+      qp.A(nn + j, Col(j, b)) = st.ga(N, b);
     }
   }
   for (Eigen::Index k = 1; k <= N; ++k) {
     const Eigen::Index o = (k - 1) * nn;
-    for (Eigen::Index b = 0; b < nb; ++b) {
-      for (Eigen::Index j = 0; j < nn; ++j) {
-        qp.C(o + j, b * nn + j) = gq_(k, b);
-        qp.C(nN + o + j, b * nn + j) = gv_(k, b);
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const ClassStages& st = stage_[ClassOf(j)];
+      for (Eigen::Index b = 0; b < st.gq.cols(); ++b) {
+        qp.C(o + j, Col(j, b)) = st.gq(k, b);
+        qp.C(nN + o + j, Col(j, b)) = st.gv(k, b);
       }
     }
     for (Eigen::Index j = 0; j < nn; ++j) {
@@ -512,13 +535,12 @@ void MpcSegmentCore::AssembleConstantDense(tsid::QPData& qp, bool main) noexcept
   const Eigen::Index nn = n_;
   const Eigen::Index nN = nn * n_nodes_;
   const Eigen::Index N = n_nodes_;
-  const Eigen::Index nb = n_blocks_;
 
   qp.H.setZero();
-  for (Eigen::Index b = 0; b < nb; ++b) {
-    const double n_b = block_weight_[static_cast<std::size_t>(b)];
-    for (Eigen::Index j = 0; j < nn; ++j) {
-      qp.H(b * nn + j, b * nn + j) = jerk_w_[j] * n_b;
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    const ClassStages& st = stage_[ClassOf(j)];
+    for (Eigen::Index b = 0; b < st.gq.cols(); ++b) {
+      qp.H(Col(j, b), Col(j, b)) = jerk_w_[j] * st.block_weight[U(b)];
     }
   }
   if (main && params_.w_delta > 0.0) {
@@ -620,16 +642,37 @@ void MpcSegmentCore::AssembleTorqueRows() noexcept {
   // wrote.
   const Eigen::Index nn = n_;
   const Eigen::Index nN = nn * n_nodes_;
+  if (layout_.Single()) {
+    const ClassStages& st = stage_[0];
+    for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+      const Eigen::Index col = 3 * nn * k;
+      const Eigen::Index o = (k - 1) * nn;
+      const Eigen::Index last_block = st.block_of_node[U(k - 1)];
+      for (Eigen::Index b = 0; b <= last_block; ++b) {
+        qp_main_.C.block(2 * nN + o, b * nn, nn, nn) =
+            st.gq(k, b) * d_scaled_.block(0, col, nn, nn) +
+            st.gv(k, b) * d_scaled_.block(0, col + nn, nn, nn) +
+            st.ga(k, b) * d_scaled_.block(0, col + 2 * nn, nn, nn);
+        qp_main_.C.block(3 * nN + o, b * nn, nn, nn) = qp_main_.C.block(2 * nN + o, b * nn, nn, nn);
+      }
+    }
+    return;
+  }
+  // Block classes: the same sum per (node, joint, block), one column at a time.
   for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
     const Eigen::Index col = 3 * nn * k;
     const Eigen::Index o = (k - 1) * nn;
-    const Eigen::Index last_block = block_of_node_[static_cast<std::size_t>(k - 1)];
-    for (Eigen::Index b = 0; b <= last_block; ++b) {
-      qp_main_.C.block(2 * nN + o, b * nn, nn, nn) =
-          gq_(k, b) * d_scaled_.block(0, col, nn, nn) +
-          gv_(k, b) * d_scaled_.block(0, col + nn, nn, nn) +
-          ga_(k, b) * d_scaled_.block(0, col + 2 * nn, nn, nn);
-      qp_main_.C.block(3 * nN + o, b * nn, nn, nn) = qp_main_.C.block(2 * nN + o, b * nn, nn, nn);
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const ClassStages& st = stage_[ClassOf(j)];
+      const Eigen::Index last_block = st.block_of_node[U(k - 1)];
+      for (Eigen::Index b = 0; b <= last_block; ++b) {
+        const Eigen::Index z = Col(j, b);
+        qp_main_.C.block(2 * nN + o, z, nn, 1) =
+            st.gq(k, b) * d_scaled_.block(0, col + j, nn, 1) +
+            st.gv(k, b) * d_scaled_.block(0, col + nn + j, nn, 1) +
+            st.ga(k, b) * d_scaled_.block(0, col + 2 * nn + j, nn, 1);
+        qp_main_.C.block(3 * nN + o, z, nn, 1) = qp_main_.C.block(2 * nN + o, z, nn, 1);
+      }
     }
   }
 }
@@ -802,13 +845,18 @@ void MpcSegmentCore::AccumulateNodeTerm(Eigen::Index k,
     m_qv_.noalias() = a_q.transpose() * wa_v_;
     c_v_.noalias() = wa_v_.transpose() * r;
   }
-  const Eigen::Index last_block = block_of_node_[static_cast<std::size_t>(k - 1)];
+  if (!layout_.Single()) {
+    AccumulateNodeTermClasses(k, with_v);
+    return;
+  }
+  const ClassStages& st = stage_[0];
+  const Eigen::Index last_block = st.block_of_node[U(k - 1)];
   for (Eigen::Index b = 0; b <= last_block; ++b) {
-    const double gqb = gq_(k, b);
-    const double gvb = gv_(k, b);
+    const double gqb = st.gq(k, b);
+    const double gvb = st.gv(k, b);
     for (Eigen::Index c = b; c <= last_block; ++c) {
-      const double gqc = gq_(k, c);
-      const double gvc = gv_(k, c);
+      const double gqc = st.gq(k, c);
+      const double gvc = st.gv(k, c);
       blk_ = (gqb * gqc) * m_qq_;
       if (with_v) {
         blk_ += (gqb * gvc) * m_qv_;
@@ -826,6 +874,49 @@ void MpcSegmentCore::AccumulateNodeTerm(Eigen::Index k,
     qp_main_.g.segment(b * nn, nn) += gqb * c_q_;
     if (with_v) {
       qp_main_.g.segment(b * nn, nn) += gvb * c_v_;
+    }
+  }
+}
+
+void MpcSegmentCore::AccumulateNodeTermClasses(Eigen::Index k, bool with_v) noexcept {
+  // The same sums as the one-class path, entry by entry: joint j's block b
+  // against joint l's block c, each with its own class's gains (m_qq_, m_qv_,
+  // m_vv_, c_q_, c_v_ are AccumulateNodeTerm's, already formed). H is written
+  // on and above its diagonal and mirrored, so it stays exactly symmetric.
+  const Eigen::Index nn = n_;
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    const ClassStages& sj = stage_[ClassOf(j)];
+    const Eigen::Index last_j = sj.block_of_node[U(k - 1)];
+    for (Eigen::Index b = 0; b <= last_j; ++b) {
+      const double gqb = sj.gq(k, b);
+      const double gvb = sj.gv(k, b);
+      const Eigen::Index row = Col(j, b);
+      for (Eigen::Index l = 0; l < nn; ++l) {
+        const ClassStages& sl = stage_[ClassOf(l)];
+        const Eigen::Index last_l = sl.block_of_node[U(k - 1)];
+        for (Eigen::Index c = 0; c <= last_l; ++c) {
+          const Eigen::Index col = Col(l, c);
+          if (col < row) {
+            continue;
+          }
+          const double gqc = sl.gq(k, c);
+          const double gvc = sl.gv(k, c);
+          double h = (gqb * gqc) * m_qq_(j, l);
+          if (with_v) {
+            h += (gqb * gvc) * m_qv_(j, l);
+            h += (gvb * gqc) * m_qv_(l, j);
+            h += (gvb * gvc) * m_vv_(j, l);
+          }
+          qp_main_.H(row, col) += h;
+          if (col != row) {
+            qp_main_.H(col, row) += h;
+          }
+        }
+      }
+      qp_main_.g[row] += gqb * c_q_[j];
+      if (with_v) {
+        qp_main_.g[row] += gvb * c_v_[j];
+      }
     }
   }
 }
@@ -877,11 +968,25 @@ void MpcSegmentCore::AssembleSlackVRows() noexcept {
   const Eigen::Index kc = n_pre_;
   const Eigen::Index base = 5 * nn * n_nodes_;
   const double inv = 1.0 / params_.v_rel_allow;
-  const Eigen::Index last_block = block_of_node_[static_cast<std::size_t>(kc - 1)];
-  for (Eigen::Index b = 0; b <= last_block; ++b) {
-    qp_main_.C.block(base, b * nn, 3, nn) =
-        (-inv * gq_(kc, b)) * hv_c_ + (-inv * gv_(kc, b)) * jv_c_;
-    qp_main_.C.block(base + 3, b * nn, 3, nn) = qp_main_.C.block(base, b * nn, 3, nn);
+  if (layout_.Single()) {
+    const ClassStages& st = stage_[0];
+    const Eigen::Index last_block = st.block_of_node[U(kc - 1)];
+    for (Eigen::Index b = 0; b <= last_block; ++b) {
+      qp_main_.C.block(base, b * nn, 3, nn) =
+          (-inv * st.gq(kc, b)) * hv_c_ + (-inv * st.gv(kc, b)) * jv_c_;
+      qp_main_.C.block(base + 3, b * nn, 3, nn) = qp_main_.C.block(base, b * nn, 3, nn);
+    }
+    return;
+  }
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    const ClassStages& st = stage_[ClassOf(j)];
+    const Eigen::Index last_block = st.block_of_node[U(kc - 1)];
+    for (Eigen::Index b = 0; b <= last_block; ++b) {
+      const Eigen::Index z = Col(j, b);
+      qp_main_.C.block(base, z, 3, 1) =
+          (-inv * st.gq(kc, b)) * hv_c_.col(j) + (-inv * st.gv(kc, b)) * jv_c_.col(j);
+      qp_main_.C.block(base + 3, z, 3, 1) = qp_main_.C.block(base, z, 3, 1);
+    }
   }
 }
 
@@ -979,7 +1084,6 @@ bool MpcSegmentCore::AssembleBounds(tsid::QPData& qp, bool main) noexcept {
 
 void MpcSegmentCore::AssembleGradient(tsid::QPData& qp, bool main) noexcept {
   const Eigen::Index nn = n_;
-  const Eigen::Index nb = n_blocks_;
   qp.g.setZero();
   if (!main) {
     return;
@@ -987,11 +1091,13 @@ void MpcSegmentCore::AssembleGradient(tsid::QPData& qp, bool main) noexcept {
   if (params_.w_delta > 0.0) {
     const double w_delta = params_.w_delta * w_delta_scale_;
     for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
-      const Eigen::Index last_block = block_of_node_[static_cast<std::size_t>(k - 1)];
-      for (Eigen::Index b = 0; b <= last_block && b < nb; ++b) {
-        const double w = w_delta * gq_(k, b);
-        for (Eigen::Index j = 0; j < nn; ++j) {
-          qp.g[b * nn + j] += w * (qf_(j, k) - qr_(j, k));
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        const ClassStages& st = stage_[ClassOf(j)];
+        const Eigen::Index nb = st.gq.cols();
+        const Eigen::Index last_block = st.block_of_node[U(k - 1)];
+        for (Eigen::Index b = 0; b <= last_block && b < nb; ++b) {
+          const double w = w_delta * st.gq(k, b);
+          qp.g[Col(j, b)] += w * (qf_(j, k) - qr_(j, k));
         }
       }
     }
@@ -1029,17 +1135,18 @@ void MpcSegmentCore::ResetSolver() noexcept {
 
 void MpcSegmentCore::TrajectoryFromZ() noexcept {
   const Eigen::Index nn = n_;
-  const Eigen::Index nb = n_blocks_;
   for (Eigen::Index k = 0; k <= n_nodes_; ++k) {
     for (Eigen::Index j = 0; j < nn; ++j) {
+      const ClassStages& st = stage_[ClassOf(j)];
+      const Eigen::Index nb = st.gq.cols();
       double q = qf_(j, k);
       double v = vf_(j, k);
       double a = af_(j, k);
       for (Eigen::Index b = 0; b < nb; ++b) {
-        const double zb = z_[b * nn + j];
-        q += gq_(k, b) * zb;
-        v += gv_(k, b) * zb;
-        a += ga_(k, b) * zb;
+        const double zb = z_[Col(j, b)];
+        q += st.gq(k, b) * zb;
+        v += st.gv(k, b) * zb;
+        a += st.ga(k, b) * zb;
       }
       q_out_(j, k) = q;
       v_out_(j, k) = v;
@@ -1354,9 +1461,8 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
   const Eigen::Index nN = nn * N;
   const double us = params_.u_scale;
   for (Eigen::Index k = 0; k < N; ++k) {
-    const Eigen::Index b = block_of_node_[static_cast<std::size_t>(k)];
     for (Eigen::Index j = 0; j < nn; ++j) {
-      out.u(j, k) = us * z_[b * nn + j];
+      out.u(j, k) = us * z_[Col(j, stage_[ClassOf(j)].block_of_node[U(k)])];
       out.slack(j, k) = z_[nu_ + k * nn + j];
     }
   }

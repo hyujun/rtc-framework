@@ -88,6 +88,88 @@ TEST(JointGroupsParse, RejectsAMalformedDeclarationByName) {
   }
 }
 
+// ── planner.segment.mpc.groups.<name> ─────────────────────────────────────────
+
+constexpr const char* kTwoGroups =
+    "groups: [{name: a, joints: [j0, j1]}, {name: b, joints: [j2, j3, j4, j5, j6]}]";
+
+TEST(JointGroupsMpcKeys, AGroupWithoutKeysTakesTheBlocksOwnPartition) {
+  const auto p = ParsePlannerParams(YAML::Load(std::string("planner: {") + kTwoGroups + "}"));
+  EXPECT_EQ(p.mpc_segment.n_groups, 2);
+  for (int g = 0; g < 2; ++g) {
+    std::array<int, rtc::catching::kMaxSegmentNodes> base{};
+    int n = 0;
+    rtc::catching::MpcSegmentGroupStopBase(p.mpc_segment, g, base, n);
+    EXPECT_EQ(n, p.mpc_segment.n_blocks);
+    EXPECT_EQ(base, p.mpc_segment.blocks);
+    EXPECT_EQ(p.mpc_segment.groups[static_cast<std::size_t>(g)].pre_block, 1);
+  }
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {}")).mpc_segment.n_groups, 0);
+}
+
+TEST(JointGroupsMpcKeys, ReadsEachGroupsBlocksAtItsIndex) {
+  const auto p = ParsePlannerParams(YAML::Load(
+      std::string("planner: {") + kTwoGroups +
+      ", segment: {mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, replan: "
+      "{k_max: 2}, groups: {b: {blocks: {pre: 3, stop: [2, 2, 3]}}}}}}"));
+  const auto& d = p.mpc_segment;
+  EXPECT_EQ(d.groups[0].pre_block, 1);
+  EXPECT_EQ(d.groups[0].n_stop_blocks, 0);
+  EXPECT_EQ(d.groups[1].pre_block, 3);
+  ASSERT_EQ(d.groups[1].n_stop_blocks, 3);
+  EXPECT_EQ(d.groups[1].stop_blocks[2], 3);
+  std::array<int, rtc::catching::kMaxSegmentNodes> base{};
+  int n = 0;
+  rtc::catching::MpcSegmentGroupStopBase(d, 1, base, n);
+  EXPECT_EQ(n, 3);
+  EXPECT_EQ(base[0], 2);
+  // A selection that does not open the mpc map reads none of it.
+  rtc::catching::PlannerKeySelection none;
+  none.segment_mpc = false;
+  const auto q =
+      ParsePlannerParams(YAML::Load(std::string("planner: {") + kTwoGroups +
+                                    ", segment: {mpc: {groups: {zz: {blocks: {pre: 0}}}}}}"),
+                         none);
+  EXPECT_EQ(q.mpc_segment.groups[1].pre_block, 1);
+}
+
+TEST(JointGroupsMpcKeys, RejectsAGroupKeyByName) {
+  struct Case {
+    const char* mpc;
+    const char* says;
+  };
+
+  const std::string head = std::string("planner: {") + kTwoGroups +
+                           ", segment: {mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, "
+                           "2, 3]}, replan: {k_max: 2}, approach: {n_pre_max: 6}, groups: ";
+  for (const Case& c : {
+           Case{"3", "'planner.segment.mpc.groups' must be a map"},
+           Case{"{c: {}}", "'planner.segment.mpc.groups.c' names no group of 'planner.groups'"},
+           Case{"{a: 1}", "'planner.segment.mpc.groups.a' must be a map"},
+           Case{"{a: {w_rest: 1}}", "'planner.segment.mpc.groups.a.w_rest' is not a key"},
+           Case{"{a: {blocks: {mid: 1}}}",
+                "'planner.segment.mpc.groups.a.blocks.mid' is not a key"},
+           Case{"{a: {blocks: {pre: 0}}}", "'planner.segment.mpc.groups.a.blocks.pre'"},
+           Case{"{a: {blocks: {stop: [3, 4]}}}",
+                "'planner.segment.mpc.groups.a.blocks.stop' must be a sequence of 3.."},
+           Case{"{a: {blocks: {stop: [2, 2, 2]}}}",
+                "'planner.segment.mpc.groups.a.blocks.stop' sums to 6 but horizon.n_nodes is 7"},
+           Case{"{a: {blocks: {stop: [1, 1, 1, 1, 1, 1, 1]}}}", ""},
+       }) {
+    SCOPED_TRACE(c.mpc);
+    const std::string what = ParseError(head + c.mpc + "}}}");
+    if (*c.says == 0) {
+      EXPECT_EQ(what, "") << "the control";
+    } else {
+      EXPECT_NE(what.find(c.says), std::string::npos) << what;
+    }
+  }
+  // Groups' keys need groups.
+  EXPECT_NE(ParseError("planner: {segment: {mpc: {groups: {a: {}}}}}")
+                .find("'planner.segment.mpc.groups.a' names no group of 'planner.groups'"),
+            std::string::npos);
+}
+
 // ── Resolution against the device ────────────────────────────────────────────
 
 TEST(JointGroupsResolve, NoGroupIsOneGroupOfEveryJoint) {

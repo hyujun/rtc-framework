@@ -20,6 +20,11 @@
 // (z_{b·n+j}) the triple integrator decouples per joint and every stage
 // matrix is a Kronecker product: G_{m,k} = ĝ_{m,k}ᵀ ⊗ I_n for m ∈ {q, q̇, q̈},
 // ĝ ∈ R^B. The solver works on z = [ũ/u_scale (nB); s (nN)].
+// Per joint group (E3-F02, params.n_groups): each group may have its own
+// pattern. Joints whose groups share a pattern form one block class with the
+// structure above; z holds the classes one after another (BlockLayout), and a
+// term couples the classes through their own gains. One class — no groups, or
+// groups of one pattern — is the problem above to the bit.
 //
 //   min  ½ Σ_k Σ_j R_j (u_kj/u_scale)²                        jerk
 //      + ½ w_Δ Σ_k ‖q_k − q̄_k‖²                               stay near x̄
@@ -143,7 +148,8 @@
 //    wrongly sized result instead of resizing it.
 #pragma once
 
-#include "rtc_controllers/catching/trajectory.hpp"  // kMaxSegmentNodes, kMaxPlanNv
+#include "rtc_controllers/catching/mpc_block_grid.hpp"  // BlockLayout, BlockPattern
+#include "rtc_controllers/catching/trajectory.hpp"      // kMaxSegmentNodes, kMaxPlanNv
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
 
@@ -198,7 +204,18 @@ struct MpcSegmentCoreParams {
   double dt_pre{0.0};  ///< Δ_a [s], > 0 when n_pre > 0
   int n_blocks{6};     ///< B (3 ≤ B ≤ min(N, kMaxSegmentNodes))
   std::array<int, kMaxSegmentNodes> block_sizes{1, 1, 2, 2, 3, 3};  ///< first B used, Σ = N
-  Eigen::VectorXd jerk_weight;                                      ///< R_j > 0 (n); empty = all 1
+  /// Per-group move blocking (E3-F02, formulation §1.1, MD-49). With n_groups
+  /// ≤ 1 every joint follows n_blocks / block_sizes above. With 2..
+  /// kMaxJointGroups, model joint j follows group_blocks[joint_group[j]] and
+  /// n_blocks / block_sizes are not read; each partition a joint uses obeys
+  /// the same rules (none across the catch node, three after it). Groups with
+  /// the same partition share their variables' layout (BlockLayout) — so
+  /// groups that all have one partition are the problem without groups, to
+  /// the bit.
+  int n_groups{0};
+  std::array<std::int8_t, kMaxPlanNv> joint_group{};
+  std::array<BlockPattern, kMaxJointGroups> group_blocks{};
+  Eigen::VectorXd jerk_weight;  ///< R_j > 0 (n); empty = all 1
   /// Jerk scale [rad/s³]. NOT a pure preconditioner: the jerk cost is
   /// (u/u_scale)², so changing it re-weights jerk against w_Δ, w_⊥ and ρ_τ.
   double u_scale{1e3};
@@ -377,7 +394,12 @@ class MpcSegmentCore {
 
   [[nodiscard]] const Eigen::VectorXd& PositionHigh() const noexcept { return q_hi_; }
 
+  /// B of block class 0 — every joint's, unless groups with different
+  /// partitions split them (Layout()).
   [[nodiscard]] int NumBlocks() const noexcept { return n_blocks_; }
+
+  /// Which block class each joint is in and where its jerk sits in z.
+  [[nodiscard]] const BlockLayout& Layout() const noexcept { return layout_; }
 
   /// Rank of the assembled terminal-equality matrix found at Init (2n).
   [[nodiscard]] int TerminalRank() const noexcept { return terminal_rank_; }
@@ -387,8 +409,9 @@ class MpcSegmentCore {
 
   [[nodiscard]] const tsid::QPData& PresolveQp() const noexcept { return qp_pre_; }
 
-  /// Per-node scaled stage gains ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈).
-  [[nodiscard]] double StageGain(int m, int k, int b) const noexcept;
+  /// Per-node scaled stage gains ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈) of
+  /// block class `block_class` (Layout()).
+  [[nodiscard]] double StageGain(int m, int k, int b, int block_class = 0) const noexcept;
 
  private:
   void FreeResponse() noexcept;
@@ -405,6 +428,7 @@ class MpcSegmentCore {
   void AccumulateNodeTerm(Eigen::Index k, const Eigen::Matrix<double, 3, Eigen::Dynamic>& a_q,
                           const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
                           const Eigen::Matrix3d& w, const Eigen::Vector3d& r) noexcept;
+  void AccumulateNodeTermClasses(Eigen::Index k, bool with_v) noexcept;
   void AccumulateNodeTermDense(Eigen::Index k, const Eigen::Matrix<double, 3, Eigen::Dynamic>& a_q,
                                const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
                                const Eigen::Matrix3d& w, const Eigen::Vector3d& r) noexcept;
@@ -416,16 +440,24 @@ class MpcSegmentCore {
   void ResetSolver() noexcept;
   void TrajectoryFromZ() noexcept;
 
+  [[nodiscard]] std::size_t ClassOf(Eigen::Index j) const noexcept {
+    return static_cast<std::size_t>(layout_.class_of[static_cast<std::size_t>(j)]);
+  }
+
+  [[nodiscard]] Eigen::Index Col(Eigen::Index j, Eigen::Index b) const noexcept {
+    return layout_.Col(static_cast<int>(j), static_cast<int>(b));
+  }
+
   bool initialized_{false};
   MpcSegmentCoreParams params_;
   int n_{0};
-  int n_nodes_{0};  // N = n_pre + stop nodes
-  int n_pre_{0};    // k_c
-  int n_blocks_{0};
-  int nu_{0};    // n·B
-  int nz_{0};    // n·(B + N) (+ 1 with the velocity slack)
-  int n_eq_{0};  // 2n
-  int n_in_{0};  // 5·n·N (+ 7 with the velocity slack)
+  int n_nodes_{0};   // N = n_pre + stop nodes
+  int n_pre_{0};     // k_c
+  int n_blocks_{0};  // B of block class 0
+  int nu_{0};        // Σ_c n_c·B_c (n·B with one class)
+  int nz_{0};        // n·(B + N) (+ 1 with the velocity slack)
+  int n_eq_{0};      // 2n
+  int n_in_{0};      // 5·n·N (+ 7 with the velocity slack)
   int terminal_rank_{0};
 
   pinocchio::Model model_;
@@ -434,17 +466,23 @@ class MpcSegmentCore {
 
   Eigen::VectorXd q_lo_, q_hi_, v_hi_, inv_tau_;
   Eigen::VectorXd jerk_w_;
-  // Stage structure of the (single) joint group: every joint shares one block
-  // pattern, so the gains are scalars per (node, block). A second joint group
-  // with its own E (formulation §1.1, MD-49) gets its own instance of
-  // these four members; the terms below read gains only through them.
-  std::array<int, kMaxMpcNodes> block_of_node_{};
-  std::array<double, kMaxMpcNodes + 1> t_node_{};        // node instants from node 0 [s]
-  std::array<double, kMaxMpcNodes> dt_node_{};           // Δ_k of interval [k, k+1]
-  std::array<double, kMaxSegmentNodes> block_weight_{};  // Σ_{k∈b} Δ_k/Δ_s
 
-  // ĝ: (N+1) × B per derivative order, scaled by u_scale.
-  Eigen::MatrixXd gq_, gv_, ga_;
+  // Stage structure per block class (BlockLayout): the joints of a class
+  // share one block pattern, so its gains are scalars per (node, block). With
+  // one class — no groups, or groups of one partition — this is the
+  // structure every term was built on before groups (z_{b·n+j}), and each
+  // assembly below keeps that code path for it.
+  struct ClassStages {
+    std::array<int, kMaxMpcNodes> block_of_node{};
+    std::array<double, kMaxSegmentNodes> block_weight{};  // Σ_{k∈b} Δ_k/Δ_s
+    // ĝ: (N+1) × B per derivative order, scaled by u_scale.
+    Eigen::MatrixXd gq, gv, ga;
+  };
+
+  BlockLayout layout_;
+  std::array<ClassStages, kMaxJointGroups> stage_;
+  std::array<double, kMaxMpcNodes + 1> t_node_{};  // node instants from node 0 [s]
+  std::array<double, kMaxMpcNodes> dt_node_{};     // Δ_k of interval [k, k+1]
   // Dense stage matrices [G_q; G_q̇; G_q̈] per node, stacked: 3n(N+1) × nB.
   Eigen::MatrixXd g_dense_;
 

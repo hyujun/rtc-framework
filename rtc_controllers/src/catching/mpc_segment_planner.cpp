@@ -55,6 +55,51 @@ void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
   mp.solver.eps_rel = p.solver_eps_rel;
 }
 
+// Group g's partition for a core with n_pre pre-catch nodes at replan instance
+// k (E3-F02, D11): the pre-catch nodes in blocks of `blocks.pre`, the remainder
+// joining the last; then the group's stop partition at k.
+bool GroupBlocks(const MpcSegmentPlannerParams& p, int g, int n_pre, int k, BlockPattern& out) {
+  BlockPattern b;
+  if (n_pre > 0) {
+    const int per = p.groups[U(g)].pre_block;
+    const int count = std::max(1, n_pre / per);
+    for (int i = 0; i < count; ++i) {
+      b.block_sizes[U(b.n_blocks++)] = i + 1 < count ? per : n_pre - per * (count - 1);
+    }
+  }
+  std::array<int, kMaxSegmentNodes> base{};
+  int n_base = 0;
+  MpcSegmentGroupStopBase(p, g, base, n_base);
+  std::array<int, kMaxSegmentNodes> stop{};
+  int n_stop = 0;
+  if (!MpcSegmentBlocksFor(base, n_base, p.n_nodes, k, stop, n_stop) ||
+      b.n_blocks + n_stop > kMaxSegmentNodes) {
+    return false;
+  }
+  for (int i = 0; i < n_stop; ++i) {
+    b.block_sizes[U(b.n_blocks++)] = stop[U(i)];
+  }
+  out = b;
+  return true;
+}
+
+// The groups of a core: none, or every group's own partition (equal ones
+// share a block class, so groups without keys are the problem without groups).
+bool ApplyGroupBlocks(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
+                      const std::array<std::int8_t, kMaxPlanNv>& group_of_model, int n_pre, int k) {
+  mp.n_groups = p.n_groups;
+  if (p.n_groups == 0) {
+    return true;
+  }
+  mp.joint_group = group_of_model;
+  for (int g = 0; g < p.n_groups; ++g) {
+    if (!GroupBlocks(p, g, n_pre, k, mp.group_blocks[U(g)])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 MpcSegmentBallTarget MakeMpcSegmentBallTarget(const TrajectorySnapshot& traj,
@@ -151,6 +196,16 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
     return fail("device_of_model is not a permutation of the arm joints");
   }
   const int n = model.nv;
+  // The joint groups (E3-F02): the device's, read in model order.
+  if (model.groups.n_groups != params.n_groups) {
+    return fail("the arm's joint groups (" + std::to_string(model.groups.n_groups) +
+                ") are not the ones planner.segment.mpc was parsed with (" +
+                std::to_string(params.n_groups) + ")");
+  }
+  if (!GroupsOfModel(model.groups, std::span<const int>(model.device_of_model.data(), U(n)), n,
+                     group_of_model_)) {
+    return fail("device_of_model is outside the arm device");
+  }
   // `cost.jerk_weight` is one entry per ARM joint in device order; the core
   // wants model order. Empty keeps the core's all-ones.
   jerk_weight_model_.resize(0);
@@ -188,7 +243,8 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
     ApplyCoreDesign(mp, params, jerk_weight_model_);
     mp.n_nodes = params.n_nodes - k;
     mp.dt = static_cast<double>(params.DtNs()) * 1e-9;
-    if (!MpcSegmentBlocksFor(params, k, mp.block_sizes, mp.n_blocks)) {
+    if (!MpcSegmentBlocksFor(params, k, mp.block_sizes, mp.n_blocks) ||
+        !ApplyGroupBlocks(mp, params, group_of_model_, 0, k)) {
       return fail("replan instance " + std::to_string(k) + " has fewer than 3 blocks");
     }
     mp.eta_v = consts.eta_v;
@@ -324,6 +380,11 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
       mp.block_sizes[U(j + b)] = stop_blocks[U(b)];
     }
     mp.n_blocks = j + stop_n_blocks;
+    if (!ApplyGroupBlocks(mp, params, group_of_model_, j, 0)) {
+      why = "the joint groups' blocks for the catch core n_pre = " + std::to_string(j) +
+            " exceed the block capacity";
+      return false;
+    }
     mp.catch_terms = true;
     mp.w_axis = params.w_axis;
     mp.w_v_par = params.w_v_par;

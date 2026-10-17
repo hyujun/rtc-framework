@@ -500,6 +500,74 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
              ") would have fewer than 3 blocks");
     }
   }
+  // Per joint group (E3-F02): `groups.<name>`, a `planner.groups` name.
+  d.n_groups = static_cast<int>(out.groups.size());
+  if (const YAML::Node gmap = mpc["groups"]; gmap) {
+    if (!gmap.IsMap()) {
+      Reject(Key("segment.mpc.groups") + " must be a map of planner.groups names, got " +
+             Spelling(gmap));
+    }
+    for (const auto& kv : gmap) {
+      const std::string name = kv.first.as<std::string>();
+      const std::string path = "segment.mpc.groups." + name;
+      const int g = FindJointGroup(out.groups, name);
+      if (g < 0) {
+        Reject(Key(path) + " names no group of 'planner.groups'");
+      }
+      const YAML::Node entry = kv.second;
+      if (!entry.IsMap()) {
+        Reject(Key(path) + " must be a map, got " + Spelling(entry));
+      }
+      for (const auto& e : entry) {
+        const std::string k = e.first.as<std::string>();
+        if (k != "blocks") {
+          Reject(Key(path + "." + k) + " is not a key of a group's segment.mpc entry (blocks)");
+        }
+      }
+      MpcSegmentGroupParams& gp = d.groups[static_cast<std::size_t>(g)];
+      const YAML::Node blocks = Section(entry, "blocks", path + ".blocks");
+      for (const auto& e : blocks) {
+        const std::string k = e.first.as<std::string>();
+        if (k != "pre" && k != "stop") {
+          Reject(Key(path + ".blocks." + k) + " is not a key of a group's blocks (pre, stop)");
+        }
+      }
+      gp.pre_block =
+          ReadInt(blocks, "pre", path + ".blocks.pre", gp.pre_block, 1, kMaxSegmentNodes);
+      if (const YAML::Node st = blocks["stop"]; st) {
+        const std::string sp = path + ".blocks.stop";
+        if (!st.IsSequence() || st.size() < 3 ||
+            st.size() > static_cast<std::size_t>(kMaxSegmentNodes)) {
+          Reject(Key(sp) + " must be a sequence of 3.." + std::to_string(kMaxSegmentNodes) +
+                 " positive integers, got " + Spelling(st));
+        }
+        int sum = 0;
+        for (std::size_t i = 0; i < st.size(); ++i) {
+          int v = 0;
+          try {
+            v = st[i].as<int>();
+          } catch (const YAML::Exception&) {
+            Reject(Key(sp + "[" + std::to_string(i) + "]") + " must be an integer, got " +
+                   Spelling(st[i]));
+          }
+          if (v < 1 || v > kMaxSegmentNodes) {
+            Reject(Key(sp + "[" + std::to_string(i) + "]") + " must be in [1, " +
+                   std::to_string(kMaxSegmentNodes) + "]");
+          }
+          gp.stop_blocks[i] = v;
+          sum += v;
+        }
+        gp.n_stop_blocks = static_cast<int>(st.size());
+        if (sum != d.n_nodes) {
+          Reject(Key(sp) + " sums to " + std::to_string(sum) + " but horizon.n_nodes is " +
+                 std::to_string(d.n_nodes) + " (Σ blocks = N)");
+        }
+        // Every replan instance k ≤ k_max keeps three blocks: a partition loses
+        // a block only once every block is 1, at N − k < 3, which k_max's own
+        // check above already excludes.
+      }
+    }
+  }
   // The ball speed below which its direction of travel is undefined — the mpc
   // segment planner's own floor, beside the search IK's `search.grid.ik.v_eps`.
   d.v_eps = ReadPositive(mpc, "v_eps", "segment.mpc.v_eps", d.v_eps);
@@ -646,11 +714,24 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
 
 bool MpcSegmentBlocksFor(const MpcSegmentPlannerParams& p, int k,
                          std::array<int, kMaxSegmentNodes>& blocks, int& n_blocks) noexcept {
-  if (k < 0 || k >= p.n_nodes || p.n_blocks < 1 || p.n_blocks > kMaxSegmentNodes) {
+  return MpcSegmentBlocksFor(p.blocks, p.n_blocks, p.n_nodes, k, blocks, n_blocks);
+}
+
+void MpcSegmentGroupStopBase(const MpcSegmentPlannerParams& p, int g,
+                             std::array<int, kMaxSegmentNodes>& base, int& n_base) noexcept {
+  const bool own =
+      g >= 0 && g < kMaxJointGroups && p.groups[static_cast<std::size_t>(g)].n_stop_blocks > 0;
+  base = own ? p.groups[static_cast<std::size_t>(g)].stop_blocks : p.blocks;
+  n_base = own ? p.groups[static_cast<std::size_t>(g)].n_stop_blocks : p.n_blocks;
+}
+
+bool MpcSegmentBlocksFor(const std::array<int, kMaxSegmentNodes>& base, int n_base, int n_nodes,
+                         int k, std::array<int, kMaxSegmentNodes>& blocks, int& n_blocks) noexcept {
+  if (k < 0 || k >= n_nodes || n_base < 1 || n_base > kMaxSegmentNodes) {
     return false;
   }
-  std::array<int, kMaxSegmentNodes> b = p.blocks;
-  int n = p.n_blocks;
+  std::array<int, kMaxSegmentNodes> b = base;
+  int n = n_base;
   for (int step = 0; step < k; ++step) {
     int largest = 0;
     for (int i = 1; i < n; ++i) {

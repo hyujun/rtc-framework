@@ -649,6 +649,25 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
+  # dynamic_catching E3-F02 (#641): the segment MPC core with joint groups —
+  # per-group move blocking and the whole-body terms, on a synthetic tree.
+  ament_add_gtest(test_catching_mpc_segment_core_groups
+    test/test_catching_mpc_segment_core_groups.cpp TIMEOUT 600)
+  target_link_libraries(test_catching_mpc_segment_core_groups rtc_controllers)
+  target_include_directories(test_catching_mpc_segment_core_groups PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_definitions(test_catching_mpc_segment_core_groups PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
+  # ... and the segment planners with joint groups, on a synthetic tree whose
+  # device order is the reverse of the model's.
+  ament_add_gtest(test_catching_segment_groups test/test_catching_segment_groups.cpp TIMEOUT 600)
+  target_link_libraries(test_catching_segment_groups rtc_controllers)
+  target_include_directories(test_catching_segment_groups PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_definitions(test_catching_segment_groups PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
   # dynamic_catching E1-F13 (#739): the mpc_docking relative-state seams — each
   # derivative against a finite difference, the crossing-plane covariance
   # against a Monte Carlo, the reference's sanity cases. The seams call into

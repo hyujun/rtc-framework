@@ -97,6 +97,24 @@ inline constexpr int kMaxMpcSegmentReplans = 8;
 /// What stays in code is not a design value: the solver's preconditioner and
 /// KKT backend (the RT no-allocation and infeasibility verdict rely on them),
 /// the test-only `reference_assembly`, and the capacities.
+/// One joint group's keys under `planner.segment.mpc.groups.<name>` (E3-F02,
+/// #641): `<name>` is a `planner.groups` name, and the entry sits at that
+/// group's index. A group without an entry takes these defaults — which are
+/// the block's own partition, so declaring groups alone changes nothing.
+struct MpcSegmentGroupParams {
+  /// `blocks.pre` — pre-catch nodes per block (≥ 1): a pre-catch grid of
+  /// n_pre nodes is split into blocks of this many, the remainder joining the
+  /// last; fewer nodes than this are one block. 1 = one block per node, the
+  /// pattern the block has without groups.
+  int pre_block{1};
+  /// `blocks.stop` — the group's stop-part partition (Σ = horizon.n_nodes,
+  /// three blocks or more for every replan instance k ≤ replan.k_max, the
+  /// largest trailing block shrinking first as for `horizon.blocks`).
+  /// n_stop_blocks 0 = `horizon.blocks`.
+  std::array<int, kMaxSegmentNodes> stop_blocks{};
+  int n_stop_blocks{0};
+};
+
 struct MpcSegmentPlannerParams {
   // There is no `enabled`: the planner solves these segments exactly when
   // `planner.segment.mode` is mpc. That needs `planner.enabled` (the binding
@@ -111,6 +129,10 @@ struct MpcSegmentPlannerParams {
   /// k uses MpcSegmentBlocksFor(k) (the largest trailing block shrinks first).
   std::array<int, kMaxSegmentNodes> blocks{1, 1, 2, 2, 4, 4};
   int n_blocks{6};
+  /// `groups.<name>.*` (E3-F02) at the index of `planner.groups`; n_groups is
+  /// that list's length (0 = no groups — every joint follows `blocks`).
+  std::array<MpcSegmentGroupParams, kMaxJointGroups> groups{};
+  int n_groups{0};
   /// `replan.k_max` — post-catch replans only at grid points k ≤ k_max; the
   /// stop still ends at t_c + N_s·Δ_s (MD-31).
   int k_max{4};
@@ -267,6 +289,18 @@ struct MpcSegmentPlannerParams {
 [[nodiscard]] bool MpcSegmentBlocksFor(const MpcSegmentPlannerParams& p, int k,
                                        std::array<int, kMaxSegmentNodes>& blocks,
                                        int& n_blocks) noexcept;
+
+/// @brief The same rule from any stop-part partition `base` (its first
+///        `n_base` entries, Σ = n_nodes) — a joint group's own (E3-F02).
+[[nodiscard]] bool MpcSegmentBlocksFor(const std::array<int, kMaxSegmentNodes>& base, int n_base,
+                                       int n_nodes, int k,
+                                       std::array<int, kMaxSegmentNodes>& blocks,
+                                       int& n_blocks) noexcept;
+
+/// @brief The stop-part partition group `g` starts from: its `blocks.stop`,
+///        else `horizon.blocks`.
+void MpcSegmentGroupStopBase(const MpcSegmentPlannerParams& p, int g,
+                             std::array<int, kMaxSegmentNodes>& base, int& n_base) noexcept;
 
 struct ScoreWeights {
   double w_sigma{1.0};  ///< σ_max / r_cap
