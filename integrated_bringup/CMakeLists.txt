@@ -1207,10 +1207,10 @@ if(BUILD_TESTING)
   )
 
   # #135 Layer 1b: the same observer inside each production controller.
-  # The residual has no consumer at this layer, so momentum_observer.csv is the
-  # only surface — these cases register the channel the way on_configure does
-  # and read the file back, which is also what keeps the header/row widths and
-  # the per-tick push on the tested path.
+  # momentum_observer.csv is the surface these cases read (the PayloadEstimate
+  # fill is test_payload_estimate_topic's) — they register the channel the way
+  # on_configure does and read the file back, which is also what keeps the
+  # header/row widths and the per-tick push on the tested path.
   # §MomentumObserverLifecycleGate runs on_configure on a real LifecycleNode
   # (the only place the PayloadEstimate gate branch lives), so this target opens
   # a DDS participant and takes the package ROS_DOMAIN_ID like its siblings.
