@@ -153,6 +153,25 @@ void ApplyGroupWeights(const MpcDockingSegmentPlannerParams& p,
   whole_body(c.w_rest_stop, &DockingGroupParams::w_rest_stop);
 }
 
+// Group g's partition for the core of n_pre pre-catch intervals (E3-F02, D11):
+// the pre-catch intervals in blocks of `blocks.pre`, the remainder joining the
+// last; then the group's stop partition (`stop.blocks` without one).
+BlockPattern GroupBlocks(const MpcDockingSegmentPlannerParams& p, int g, int n_pre) {
+  const DockingGroupParams& gp = p.groups[U(g)];
+  BlockPattern b;
+  const int count = std::max(1, n_pre / gp.pre_block);
+  for (int i = 0; i < count; ++i) {
+    b.block_sizes[U(b.n_blocks++)] =
+        i + 1 < count ? gp.pre_block : n_pre - gp.pre_block * (count - 1);
+  }
+  const bool own = gp.n_stop_blocks > 0;
+  const int n_stop = own ? gp.n_stop_blocks : p.n_stop_blocks;
+  for (int i = 0; i < n_stop && b.n_blocks < kMaxSegmentNodes; ++i) {
+    b.block_sizes[U(b.n_blocks++)] = own ? gp.stop_blocks[U(i)] : p.stop_block_sizes[U(i)];
+  }
+  return b;
+}
+
 }  // namespace
 
 bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& model,
@@ -264,6 +283,15 @@ bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& mo
     cp.block_sizes.fill(1);  // one block per pre-catch interval
     for (int b = 0; b < p.n_stop_blocks; ++b) {
       cp.block_sizes[U(n_pre + b)] = p.stop_block_sizes[U(b)];
+    }
+    // The joint groups' own partitions (equal ones share a block class, so
+    // groups without keys are the problem without groups).
+    cp.n_groups = p.n_groups;
+    if (p.n_groups > 0) {
+      cp.joint_group = group_of_model;
+      for (int g = 0; g < p.n_groups; ++g) {
+        cp.group_blocks[U(g)] = GroupBlocks(p, g, n_pre);
+      }
     }
     // The catch instant is the plan's: this planner does not move it.
     cp.catch_time_variable = false;

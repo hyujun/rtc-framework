@@ -360,6 +360,15 @@ struct MpcDockingSegmentCoreParams {
   int n_blocks{9};       ///< B ≤ kMaxSegmentNodes
   /// First B used, Σ = N. No block may span the catch node; at least 3 after it.
   std::array<int, kMaxSegmentNodes> block_sizes{1, 1, 1, 1, 1, 1, 2, 2, 2};
+  /// Per-group move blocking (E3-F02, D11), as MpcSegmentCoreParams': with
+  /// n_groups ≤ 1 every joint follows n_blocks / block_sizes; otherwise model
+  /// joint j follows group_blocks[joint_group[j]] and groups of one partition
+  /// share their variables' layout (BlockLayout) — groups that all have one
+  /// partition are the problem without groups, to the bit. Two or more
+  /// partitions are not available with catch_time_variable.
+  int n_groups{0};
+  std::array<std::int8_t, kMaxPlanNv> joint_group{};
+  std::array<BlockPattern, kMaxJointGroups> group_blocks{};
   double u_scale{1e3};  ///< jerk scale u_s [rad/s³]; the variable is ũ/u_s
 
   // ── Motion cost (reference §9.2), pre-catch stages ──
@@ -783,11 +792,17 @@ class MpcDockingSegmentCore {
 
   /// Instant of node k relative to node 0 [s]; NaN outside [0, N].
   [[nodiscard]] double NodeTime(int k) const noexcept;
-  /// Scaled stage gain ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈) — the same
-  /// quantity as MpcSegmentCore::StageGain on the same grid.
+
+  /// Which block class each joint is in and where its jerk sits in the
+  /// variables (one class without groups, or with groups of one partition).
+  [[nodiscard]] const BlockLayout& Layout() const noexcept { return layout_; }
+
+  /// Scaled stage gain ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈) of block class
+  /// `block_class` — the same quantity as MpcSegmentCore::StageGain on the
+  /// same grid.
   /// With catch_time_variable both are those of the point evaluated LAST (its
   /// δt_c), for the nodes k ≥ k_c; before any Solve, of δt_c = 0.
-  [[nodiscard]] double StageGain(int m, int k, int b) const noexcept;
+  [[nodiscard]] double StageGain(int m, int k, int b, int block_class = 0) const noexcept;
 
   /// |A| and its nodes (ascending); −1 outside.
   [[nodiscard]] int NumApproachNodes() const noexcept { return n_app_; }
@@ -913,6 +928,38 @@ class MpcDockingSegmentCore {
   /// its Hessian from them (header note).
   void FreezeAngular() noexcept;
   [[nodiscard]] double AngularWeight(Eigen::Index k) const noexcept;
+  /// h += scale · Σ_j w_j (ĝ_m,k ⊗ ĝ_m,k) for joint j's own class (m: 0 = q,
+  /// 1 = q̇, 2 = q̈): the Hessian of a diagonal-weighted sum of squares of node
+  /// k's state in the jerk variables.
+  void AddGainOuter(Eigen::MatrixXd& h, int m, Eigen::Index k, const Eigen::VectorXd& w,
+                    double scale) const noexcept;
+
+  // Block classes (BlockLayout): class 0 is gq_, gv_, ga_, block_of_node_,
+  // block_first_, block_span_ — what the catch instant's machinery rebuilds —
+  // and the others, without that machinery, are extra_.
+  [[nodiscard]] int ClassOf(Eigen::Index j) const noexcept {
+    return layout_.class_of[static_cast<std::size_t>(j)];
+  }
+
+  [[nodiscard]] Eigen::Index Col(Eigen::Index j, Eigen::Index b) const noexcept {
+    return layout_.Col(static_cast<int>(j), static_cast<int>(b));
+  }
+
+  [[nodiscard]] const Eigen::MatrixXd& Gain(int m, int c) const noexcept {
+    const Eigen::MatrixXd* g0[3] = {&gq_, &gv_, &ga_};
+    if (c == 0) {
+      return *g0[m];
+    }
+    const ExtraClass& x = extra_[static_cast<std::size_t>(c)];
+    return m == 0 ? x.gq : (m == 1 ? x.gv : x.ga);
+  }
+
+  /// The last block that acts on node k (k ≥ 1) for class c.
+  [[nodiscard]] Eigen::Index LastBlock(int c, Eigen::Index k) const noexcept {
+    const auto i = static_cast<std::size_t>(k - 1);
+    return c == 0 ? block_of_node_[i] : extra_[static_cast<std::size_t>(c)].block_of_node[i];
+  }
+
   void MapRow(Eigen::Index k, const Eigen::VectorXd* a_q, const Eigen::VectorXd* a_v) noexcept;
   void AddScalarResidual(double weight, double residual) noexcept;
   void SetRow(Eigen::Index row, double lower, double upper) noexcept;
@@ -992,6 +1039,17 @@ class MpcDockingSegmentCore {
   std::array<int, kMaxMpcNodes> block_of_node_{};
   std::array<int, kMaxSegmentNodes> block_first_{};    // first interval of block b
   std::array<double, kMaxSegmentNodes> block_span_{};  // Σ_{k∈b} Δ_k [s]
+  BlockLayout layout_;
+
+  struct ExtraClass {
+    std::array<int, kMaxMpcNodes> block_of_node{};
+    std::array<int, kMaxSegmentNodes> block_first{};
+    std::array<double, kMaxSegmentNodes> block_span{};
+    Eigen::MatrixXd gq, gv, ga;
+  };
+
+  std::array<ExtraClass, kMaxJointGroups> extra_;  // classes 1.. (class 0: the members above)
+  std::vector<int> joint_of_col_;                  // the joint of each jerk variable
   std::array<double, kMaxMpcNodes + 1> t_node_{};
   std::array<double, kMaxMpcNodes> dt_node_{};
   std::array<int, kMaxMpcNodes> app_node_{};

@@ -535,4 +535,26 @@ TEST(SegmentGroupsDocking, RefusesGroupsTheModelAndTheProfileDisagreeOn) {
       << err;
 }
 
+TEST(SegmentGroupsDocking, EveryCoreIsBuiltWithEachGroupsOwnPartition) {
+  const fx::ArmModel tree = SyntheticTree(kTrunk, kArm, 2);
+  DockingConfig c = DockingConfigOf(tree, true);
+  c.params.groups[0].pre_block = 2;  // the other arm: coarse before the catch and after it
+  c.params.groups[0].stop_blocks = {2, 2, 3};
+  c.params.groups[0].n_stop_blocks = 3;
+  MpcDockingSegmentPlanner planner;
+  std::string err;
+  ASSERT_TRUE(planner.Configure(c.model, c.consts, c.params, &StepClock, &err)) << err;
+  for (int j = 1; j <= 3; ++j) {
+    const MpcDockingSegmentCoreParams& cp = planner.CoreParamsFor(j);
+    EXPECT_EQ(cp.n_groups, 3);
+    EXPECT_TRUE(cp.group_blocks[0] == Expected(j, 2, {2, 2, 3}, 0)) << "n_pre = " << j;
+    EXPECT_TRUE(cp.group_blocks[1] == Expected(j, 1, {1, 1, 2, 3}, 0)) << "n_pre = " << j;
+    EXPECT_TRUE(cp.group_blocks[2] == Expected(j, 1, {1, 1, 2, 3}, 0)) << "n_pre = " << j;
+    for (int m = 0; m < kNv; ++m) {
+      EXPECT_EQ(cp.joint_group[U(m)], GroupOfModelJoint(m));
+    }
+    EXPECT_EQ(planner.CoreFor(j).Layout().n_classes, 2) << "trunk and catch arm share one";
+  }
+}
+
 }  // namespace

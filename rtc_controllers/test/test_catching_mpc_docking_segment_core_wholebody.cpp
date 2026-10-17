@@ -5,11 +5,17 @@
 //   • off is the problem without them, to the bit; Init refuses what it cannot
 //     solve (with the catch instant a variable among it);
 //   • the solve's convergence contract keeps its meaning with them on: the
-//     assembled gradient is the merit's (finite differences, 2e-6);
+//     assembled gradient is the merit's (finite differences, 2e-6), and
+//     restarts from its own solution contract to the coefficients' fixed
+//     point, where one converges at once (D14);
 //   • the reported values are the direct sums — the angular one on the START
 //     point's coefficients after a Solve, on its own before any;
 //   • the same input gives the same answer whatever was solved before, and no
-//     stage outside the QP solver allocates.
+//     stage outside the QP solver allocates;
+//   • per-group move blocking (D11): groups of one partition are the problem
+//     without groups to the bit; with several the gradient is the merit's,
+//     a restart from its own solution converges at once, every joint's jerk
+//     is constant on its group's blocks and the nodes are its integral.
 #include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_controllers/catching/mpc_docking_segment_core.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
@@ -24,6 +30,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <string>
 #include <vector>
@@ -277,6 +284,51 @@ TEST(MpcDockingWholeBody, TheAssembledGradientIsTheMeritsWithTheTermsOn) {
   EXPECT_GT(wb_slope, 1e-3) << "the whole-body terms must carry part of the gradient";
 }
 
+// D14 (#641, 2026-10-17): a Solve takes the angular coefficients at ITS start
+// point (D12), so a restart from a solution solves the problem held at that
+// solution — another one than the solve that produced it. Restarted on its
+// own solution, the core therefore runs a fixed-point iteration of the
+// coefficients: each restart moves the solution by a tenth or less of the
+// previous move, and at the fixed point a restart converges at once.
+TEST(MpcDockingWholeBody, RestartsContractToTheCoefficientsFixedPointWhereOneConvergesAtOnce) {
+  dk::Rig rig = dk::MakeRig(fx::RealArm7());
+  SetWholeBody(rig.params, rig.model.nv);
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  const std::vector<Case> cases = FeasibleCases(rig, core, 1);
+  ASSERT_EQ(cases.size(), 1U);
+  MpcDockingSegmentCoreResult prev;
+  core.ResizeResult(prev);
+  ASSERT_TRUE(core.Solve(cases[0].in, prev));
+  ASSERT_TRUE(prev.feasible && prev.converged) << Describe(prev);
+  double last_move = std::numeric_limits<double>::infinity();
+  bool at_fixed_point = false;
+  for (int r = 0; r < 6 && !at_fixed_point; ++r) {
+    SCOPED_TRACE("restart " + std::to_string(r));
+    MpcDockingSegmentCoreInput again = cases[0].in;
+    again.initial_valid = true;
+    again.q_init = prev.q;
+    again.qd_init = prev.qd;
+    again.qdd_init = prev.qdd;
+    MpcDockingSegmentCoreResult next;
+    core.ResizeResult(next);
+    ASSERT_TRUE(core.Solve(again, next));
+    EXPECT_FALSE(next.init_qp_used);
+    EXPECT_TRUE(next.feasible && next.converged) << Describe(next);
+    const double move = (next.q - prev.q).cwiseAbs().maxCoeff();
+    if (move < 1e-9) {
+      EXPECT_EQ(next.iterations, 1) << "at the fixed point a restart converges at once";
+      at_fixed_point = true;
+    } else {
+      EXPECT_LE(move, 0.1 * last_move) << "the restarts must contract";
+    }
+    last_move = move;
+    prev = next;
+  }
+  EXPECT_TRUE(at_fixed_point) << "no fixed point within six restarts";
+}
+
 TEST(MpcDockingWholeBody, SameInputGivesTheSameAnswerWhateverWasSolvedBefore) {
   dk::Rig rig = dk::MakeRig(fx::RealArm7());
   SetWholeBody(rig.params, rig.model.nv);
@@ -499,6 +551,240 @@ TEST(MpcDockingWholeBody, NoStageOutsideTheSolverAllocatesWithTheTermsOn) {
     }
     EXPECT_GT(rec.entries[static_cast<std::size_t>(MpcDockingStage::kLinearize)], 2)
         << "the hold and the iterations ran";
+  }
+}
+
+// ── 5. Per-group move blocking ───────────────────────────────────────────────
+
+using rtc::catching::BlockPattern;
+
+BlockPattern Pattern(std::initializer_list<int> sizes) {
+  BlockPattern p;
+  for (const int v : sizes) {
+    p.block_sizes[static_cast<std::size_t>(p.n_blocks++)] = v;
+  }
+  return p;
+}
+
+// The 7-joint arm in three groups (0–1, 2–4, 5–6). BaseParams' grid is 6 ×
+// 0.05 s before the catch and 8 after, {1 × 6 | 1, 1, 2, 2, 2}.
+const BlockPattern kBase = Pattern({1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2});
+const BlockPattern kPreCoarse = Pattern({2, 2, 2, 1, 1, 2, 2, 2});
+const BlockPattern kBothCoarse = Pattern({3, 3, 2, 3, 3});
+
+void SetGroups(MpcDockingSegmentCoreParams& p, const std::array<BlockPattern, 3>& patterns) {
+  p.n_groups = 3;
+  const std::array<int, 7> group = {0, 0, 1, 1, 1, 2, 2};
+  for (std::size_t j = 0; j < 7; ++j) {
+    p.joint_group[j] = static_cast<std::int8_t>(group[j]);
+  }
+  for (std::size_t g = 0; g < 3; ++g) {
+    p.group_blocks[g] = patterns[g];
+  }
+}
+
+TEST(MpcDockingGroups, GroupsOfOnePartitionAreTheProblemWithoutGroupsToTheBit) {
+  dk::Rig rig = dk::MakeRig(fx::RealArm7());
+  SetWholeBody(rig.params, rig.model.nv);
+  rig.params.w_ang_pre = rig.params.w_ang_post = 0.0;  // D14 aside: every other term
+  MpcDockingSegmentCoreParams grouped = rig.params;
+  SetGroups(grouped, {kBase, kBase, kBase});
+  MpcDockingSegmentCore a, b;
+  ASSERT_EQ(a.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  ASSERT_EQ(b.Init(rig.model, rig.arm.frame, grouped, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  EXPECT_TRUE(b.Layout().Single());
+  const std::vector<Case> cases = FeasibleCases(rig, a, 2);
+  ASSERT_EQ(cases.size(), 2U);
+  for (const Case& c : cases) {
+    MpcDockingSegmentCoreResult ra, rb;
+    a.ResizeResult(ra);
+    b.ResizeResult(rb);
+    ASSERT_TRUE(a.Solve(c.in, ra));
+    ASSERT_TRUE(b.Solve(c.in, rb));
+    EXPECT_TRUE(SameBits(ra.q, rb.q));
+    EXPECT_TRUE(SameBits(ra.u, rb.u));
+    EXPECT_EQ(ra.cost.total, rb.cost.total);
+    EXPECT_EQ(ra.iterations, rb.iterations);
+    EXPECT_TRUE(SameBits(a.LastQp().H, b.LastQp().H));
+    EXPECT_TRUE(SameBits(a.LastQp().g, b.LastQp().g));
+    EXPECT_TRUE(SameBits(a.LastQp().C, b.LastQp().C));
+  }
+}
+
+TEST(MpcDockingGroups, InitChecksEveryGroupsPartitionAndRefusesThemWithTheCatchInstantFree) {
+  const dk::Rig rig = dk::MakeRig(fx::RealArm7());
+  MpcDockingSegmentCore core;
+
+  struct Case2 {
+    BlockPattern pattern;
+    MpcDockingReason why;
+  };
+
+  for (const Case2& c : {
+           Case2{Pattern({1, 1, 1, 1, 3, 1, 2, 2, 2}), MpcDockingReason::kBlocksAcrossCatch},
+           Case2{Pattern({3, 3, 4, 4}), MpcDockingReason::kBlocksTooFew},
+           Case2{Pattern({3, 3, 2, 2, 2}), MpcDockingReason::kParamsInvalid},  // Σ ≠ N
+       }) {
+    MpcDockingSegmentCoreParams p = rig.params;
+    SetGroups(p, {kBase, kPreCoarse, c.pattern});
+    EXPECT_EQ(core.Init(rig.model, rig.arm.frame, p, rig.limits, &NoClock), c.why)
+        << MpcDockingReasonName(c.why);
+  }
+  MpcDockingSegmentCoreParams p = rig.params;
+  SetGroups(p, {kBase, kPreCoarse, kBothCoarse});
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, p, rig.limits, &NoClock), MpcDockingReason::kNone);
+  EXPECT_EQ(core.Layout().n_classes, 3);
+  EXPECT_EQ(core.NumJerkVariables(),
+            2 * kBase.n_blocks + 3 * kPreCoarse.n_blocks + 2 * kBothCoarse.n_blocks);
+  p.catch_time_variable = true;
+  EXPECT_EQ(core.Init(rig.model, rig.arm.frame, p, rig.limits, &NoClock),
+            MpcDockingReason::kParamsInvalid);
+  // Groups of one partition stay available with it: they are no groups.
+  SetGroups(p, {kBase, kBase, kBase});
+  EXPECT_EQ(core.Init(rig.model, rig.arm.frame, p, rig.limits, &NoClock), MpcDockingReason::kNone);
+}
+
+// PushedStart on any layout: each joint's push in the null space of its own
+// class's terminal rows.
+Start PushedStartOf(const dk::Rig& rig, const MpcDockingSegmentCore& core) {
+  Start s;
+  (void)dk::MakeThrow(rig, core, 3, 0.0, s.th, s.in);
+  s.in.p_line = s.th.p_b + Eigen::Vector3d(0.02, -0.03, 0.01);
+  s.in.d_line = Eigen::Vector3d(0.3, -0.5, 0.8).normalized();
+  s.in.initial_valid = true;
+  s.z0 = dk::JerkThrough(core, s.th.q0, s.th.q_c, s.th.v_c);
+  const rtc::catching::BlockLayout& l = core.Layout();
+  const int N = core.NumNodes();
+  for (int j = 0; j < core.Nv(); ++j) {
+    const int c = l.class_of[static_cast<std::size_t>(j)];
+    const int nb = l.pattern[static_cast<std::size_t>(c)].n_blocks;
+    Eigen::MatrixXd m(2, nb);
+    for (int b = 0; b < nb; ++b) {
+      m(0, b) = core.StageGain(1, N, b, c);
+      m(1, b) = core.StageGain(2, N, b, c);
+    }
+    const Eigen::MatrixXd null_proj =
+        Eigen::MatrixXd::Identity(nb, nb) - m.transpose() * (m * m.transpose()).inverse() * m;
+    Eigen::VectorXd push(nb);
+    for (int b = 0; b < nb; ++b) {
+      push[b] = 0.02 * std::sin(1.3 * static_cast<double>(b * 7 + j) + 0.4);
+    }
+    const Eigen::VectorXd kept = null_proj * push;
+    for (int b = 0; b < nb; ++b) {
+      s.z0[l.Col(j, b)] += kept[b];
+    }
+  }
+  return s;
+}
+
+TEST(MpcDockingGroups, WithThreePartitionsTheAssembledGradientIsTheMerits) {
+  dk::Rig rig = GradientRig();
+  SetGroups(rig.params, {kBase, kPreCoarse, kBothCoarse});
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  ASSERT_EQ(core.Layout().n_classes, 3);
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  Start s = PushedStartOf(rig, core);
+  SetStart(core, s.th, s.z0, s.in);
+  ASSERT_TRUE(core.Solve(s.in, out)) << Describe(out);
+  ASSERT_FALSE(out.init_qp_used) << "the start must be taken as given";
+  const rtc::tsid::QPData base = core.LastQp();
+  EXPECT_EQ((base.H - base.H.transpose()).cwiseAbs().maxCoeff(), 0.0) << "H exactly symmetric";
+  const auto smooth = [&](const Eigen::VectorXd& z) {
+    SetStart(core, s.th, z, s.in);
+    EXPECT_TRUE(core.Evaluate(s.in, out));
+    return out.cost.total - out.cost.slack;
+  };
+  const double h = 1e-6;
+  for (Eigen::Index i = 0; i < core.NumJerkVariables(); ++i) {
+    Eigen::VectorXd zp = s.z0;
+    Eigen::VectorXd zm = s.z0;
+    zp[i] += h;
+    zm[i] -= h;
+    const double fd = (smooth(zp) - smooth(zm)) / (2.0 * h);
+    EXPECT_NEAR(base.g[i], fd, 2e-6 * std::max(1.0, std::abs(fd))) << "variable " << i;
+  }
+}
+
+TEST(MpcDockingGroups, WithThreePartitionsARestartConvergesAtOnceAndTheJerkKeepsEachGroupsBlocks) {
+  dk::Rig rig = dk::MakeRig(fx::RealArm7());
+  SetGroups(rig.params, {kBase, kPreCoarse, kBothCoarse});
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult first, second;
+  core.ResizeResult(first);
+  core.ResizeResult(second);
+  const std::vector<Case> cases = FeasibleCases(rig, core, 1);
+  ASSERT_EQ(cases.size(), 1U);
+  ASSERT_TRUE(core.Solve(cases[0].in, first));
+  ASSERT_TRUE(first.feasible && first.converged) << Describe(first);
+  // The start-point projection reproduces its own solution exactly.
+  MpcDockingSegmentCoreInput again = cases[0].in;
+  again.initial_valid = true;
+  again.q_init = first.q;
+  again.qd_init = first.qd;
+  again.qdd_init = first.qdd;
+  ASSERT_TRUE(core.Solve(again, second));
+  EXPECT_FALSE(second.init_qp_used);
+  EXPECT_TRUE(second.converged) << Describe(second);
+  EXPECT_EQ(second.iterations, 1);
+  EXPECT_LT((second.q - first.q).cwiseAbs().maxCoeff(), 1e-9);
+  // Each joint's jerk is constant on its own group's blocks, and the nodes
+  // are its integral (what the payload carries and the RT samples).
+  const std::array<BlockPattern, 3> pat = {kBase, kPreCoarse, kBothCoarse};
+  const std::array<int, 7> group = {0, 0, 1, 1, 1, 2, 2};
+  const int N = core.NumNodes();
+  for (int j = 0; j < 7; ++j) {
+    const BlockPattern& p = pat[static_cast<std::size_t>(group[static_cast<std::size_t>(j)])];
+    int k = 0;
+    for (int b = 0; b < p.n_blocks; ++b) {
+      for (int i = 1; i < p.block_sizes[static_cast<std::size_t>(b)]; ++i) {
+        EXPECT_EQ(first.u(j, k + i), first.u(j, k)) << "joint " << j << " block " << b;
+      }
+      k += p.block_sizes[static_cast<std::size_t>(b)];
+    }
+  }
+  for (int k = 0; k < N; ++k) {
+    const double dt = core.NodeTime(k + 1) - core.NodeTime(k);
+    const Eigen::VectorXd u = first.u.col(k);
+    const Eigen::VectorXd q = first.q.col(k) + dt * first.qd.col(k) +
+                              0.5 * dt * dt * first.qdd.col(k) + dt * dt * dt / 6.0 * u;
+    EXPECT_LE((q - first.q.col(k + 1)).cwiseAbs().maxCoeff(), 1e-9) << "node " << k + 1;
+    const Eigen::VectorXd a = first.qdd.col(k) + dt * u;
+    EXPECT_LE((a - first.qdd.col(k + 1)).cwiseAbs().maxCoeff(), 1e-9) << "node " << k + 1;
+  }
+}
+
+TEST(MpcDockingGroups, NoStageAllocatesWithThreePartitionsAndTheTermsOn) {
+  dk::Rig rig = dk::MakeRig(fx::RealArm7());
+  SetWholeBody(rig.params, rig.model.nv);
+  SetGroups(rig.params, {kBase, kPreCoarse, kBothCoarse});
+  rig.params.jerk_box = true;
+  rig.limits.jerk_max = Eigen::VectorXd::Constant(rig.model.nv, 5e3);
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  const std::vector<Case> cases = FeasibleCases(rig, core, 2);
+  ASSERT_EQ(cases.size(), 2U);
+  StageRecord rec;
+  core.SetStageHook(&CountingHook, &rec);
+  std::size_t news = 0;
+  for (const Case& c : cases) {
+    const rtc::testing::ScopedAllocGate new_gate;
+    ASSERT_TRUE(core.Solve(c.in, out)) << Describe(out);
+    news += new_gate.count();
+  }
+  core.SetStageHook(nullptr, nullptr);
+  EXPECT_EQ(news, 0U);
+  for (std::size_t st = 0; st < rec.mallocs.size(); ++st) {
+    EXPECT_EQ(rec.mallocs[st], 0U) << "stage " << st;
   }
 }
 
