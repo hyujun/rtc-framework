@@ -4,360 +4,215 @@
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
-**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 모듈형 rtc_* 프레임워크 기반 UR5e 실시간 제어 시스템**
+URDF 기반 매니퓰레이터를 위한 robot-agnostic 실시간 제어 프레임워크와, 그 위에 UR5e · iiwa7 · G1 등을 묶은 통합 패키지. **유형**: ROS 2 colcon workspace (Ubuntu 24.04 / Jazzy 에서 검증, 22.04 / Humble 은 지원하지만 검증하지 않는다)
 
-> CI ([docs-validate](.github/workflows/docs-validate.yml)) 는 문서·생성물·셸 검사만 합니다. 빌드·테스트는 CI 가 돌리지 않으므로 로컬 (`./build.sh`, `colcon test`) 에서 검증합니다. 로컬 기준은 Jazzy 이며 Humble 은 지원 대상이지만 검증되지 않습니다.
+## 개요
 
-로봇 비의존적(robot-agnostic) RTC 프레임워크 위에 구축된 실시간 제어 솔루션입니다. 가변 DOF, 설정 가능한 RT 루프 주기 (`control_rate` YAML; 설계 범위 100Hz–5kHz, default 500Hz), 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/TSID-WBC), TSID QP 전신 제어 (`rtc_tsid` + ProxSuite), **MPC↔RT 인터페이스 계층 (`rtc_mpc`: zero-copy TripleBuffer + cubic-Hermite 보간 + Riccati 피드백, dedicated-core MPC thread)**, 전송 계층 추상화(UDP/CAN-FD/EtherCAT/RS485), RT-안전 ONNX 추론 엔진, MuJoCo 3.x 물리 시뮬레이터, E-STOP 안전 시스템, CSV 데이터 로깅, GUI 도구를 포함합니다.
-
----
-
-## 패키지 구성
-
-21개 ROS 2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 형상 추정(`shape_estimation_*`), 멀티-로봇 데이터/통합 패키지로 분리됩니다. 각 패키지는 자체 `README.md`를 포함하며, 패키지 버전 핀은 README 에서 의도적으로 생략합니다 (drift 방지 — 정확한 버전은 각 `package.xml` 참조).
-
-### 로봇 비의존적 프레임워크 (rtc_*)
-
-| 패키지 | 설명 | 빌드 |
-|--------|------|------|
-| [`rtc_msgs`](rtc_msgs/) | 커스텀 ROS 2 메시지 (`rtc_msgs/msg/` 가 SSoT — 개수·목록은 여기 박제하지 않는다) | ament_cmake |
-| [`rtc_base`](rtc_base/) | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/14/16코어 + MPC tier `MpcThreadConfig`), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
-| [`rtc_math`](rtc_math/) | 헤더-전용 robot-agnostic 기하/제어 수학 (Eigen-only): SE(3) Lie-group 원시 연산(so3/se3 log/exp/Jacobian) + task-space pose/velocity(twist) error 정의(`rtc::math::se3`) + 접근축 정렬 오차(`axis_align.hpp`). Pinocchio 어댑터는 optional | ament_cmake |
-| [`rtc_communication`](rtc_communication/) | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket/CanSocket/SerialPort RAII, UDP·CAN·CAN FD·RS485 transport (length-prefixed 프레이머), PacketCodec concept, Transceiver 템플릿 | ament_cmake |
-| [`rtc_controller_interface`](rtc_controller_interface/) | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
-| [`rtc_controllers`](rtc_controllers/) | 제어 알고리즘 라이브러리 — 관절/태스크 제어 법칙, compliance 공용 커널, Force-PI grasp, 퀸틱 궤적 생성기 (목록은 [rtc_controllers/README.md](rtc_controllers/) 가 SSoT) | ament_cmake |
-| [`rtc_tsid`](rtc_tsid/) | TSID QP 프레임워크: WQP/HQP formulation, PostureTask/SE3Task/CoMTask/ForceTask, EOM/Contact/FrictionCone/TorqueLimit/JointLimit 제약, ProxSuite 백엔드 | ament_cmake |
-| [`rtc_mpc`](rtc_mpc/) | MPC↔RT 인터페이스: zero-copy `TripleBuffer<T>` (single-atomic publish/acquire), cubic-Hermite `TrajectoryInterpolator`, `RiccatiFeedback`, `MPCSolutionManager` facade, `MPCThread`+`MockMPCThread` jthread skeleton (인터페이스는 solver-agnostic; Aligator 백엔드는 `find_package(aligator REQUIRED)` 로 이미 링크됨 — source-install 이라 `package.xml` 대신 CMake 로 해결) | ament_cmake |
-| [`rtc_controller_manager`](rtc_controller_manager/) | 설정 가능한 RT 루프 (`control_rate`, default 500Hz, clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP + `DeviceBackend` 추상 | ament_cmake |
-| [`rtc_inference`](rtc_inference/) | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
-| [`rtc_mujoco_sim`](rtc_mujoco_sim/) | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어, `n_substeps` 서브스텝 | ament_cmake |
-| [`rtc_digital_twin`](rtc_digital_twin/) | RViz2 디지털 트윈 시각화: 다중 소스 관절 상태 통합, mimic 자동 계산, 핑거팁 센서 Arrow/Sphere 마커 | ament_python |
-| [`rtc_tools`](rtc_tools/) | Python 유틸리티: `plot_rtc_log`/`plot_ur_log`/`plot_ur_trajectory` (CSV 궤적 시각화), `hand_udp_sender_example`, `compare_mjcf_urdf`, `urdf_to_mjcf` — console_scripts 전체 목록은 [rtc_tools/setup.py](rtc_tools/setup.py) 참조. 컨트롤러 튜닝 GUI (`demo_controller_gui`)는 이 패키지가 아니라 [`integrated_bringup`](integrated_bringup/)이 소유 | ament_python |
-| [`repo_scripts`](repo_scripts/) | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화, `setup_env.sh`, MPC 코어 헬퍼 `get_mpc_cores`/`get_rt_cores`/`get_os_cores`) | ament_cmake |
-
-### 브릿지 패키지
-
-| 패키지 | 설명 | 빌드 |
-|--------|------|------|
-| [`rtc_urdf_bridge`](rtc_urdf_bridge/) | 로봇 비의존적 URDF 파서 + Pinocchio 모델 빌더, YAML 기반 체인 추출 설정 | ament_cmake |
-
-### 형상 추정 패키지 (shape_estimation_*)
-
-| 패키지 | 설명 | 빌드 |
-|--------|------|------|
-| [`shape_estimation_msgs`](shape_estimation_msgs/) | ToF 기반 형상 추정용 커스텀 ROS 2 메시지 3종 (ToFReadings, TipPoses, ShapeEstimate) + ExploreShape 액션 | ament_cmake |
-| [`shape_estimation`](shape_estimation/) | ToF 센서 기반 형상 추정: 복셀 포인트 누적, 최소제곱 프리미티브 피팅 (구/실린더/평면/박스) | ament_cmake |
-
-### 멀티-로봇 데이터 + 통합 패키지
-
-| 패키지 | 설명 | 빌드 |
-|--------|------|------|
-| [`robot_descriptions`](robot_descriptions/) | Robot-agnostic data hub — `robots/<name>/` 당 URDF/MJCF/mesh (현재: ur5e, ur5e_assm_v1, assm_v1, iiwa7, iiwa7_leap, leap_hand, schunk_hand, panda). data-only 패키지 — 소비자는 `<exec_depend>` + ament_index 런타임 lookup만 사용 (ARCH-5) | ament_cmake |
-| [`udp_hand_driver`](udp_hand_driver/) | 가변-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서, ONNX F/T 추론 | ament_cmake |
-| [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
-| [`integrated_bringup`](integrated_bringup/) | per-robot launch/config (`config/<robot>/`: ur5e_p1a, iiwa7_leap, ...) + 데모 컨트롤러 (DemoJoint, DemoTask, DemoCompliance, DemoWbc — TSID QP 기반 WBC + MPC 통합 경로, `enable_mpc` launch arg, DemoInference — ONNX 정책) + CPU 격리/DDS 핀닝 | ament_cmake |
-
-### 의존성 그래프
-
-**층위 요약이다 — 전체 엣지의 SSoT 는 각 패키지의 `package.xml`** 이며 여기 전수 박제하지 않는다. 아래는 층위를 가르는 `rtc_*` 엣지와 주요 외부 의존만 담는다.
+- **RT 제어 루프** — `clock_nanosleep` 기반, 주기는 `control_rate` YAML (기본 500 Hz). 가변 DOF, lock-free SPSC · SeqLock, 전역 E-STOP. 스레드 · 코어 배치는 [rtc_base/README.md](rtc_base/README.md#스레딩-threading)
+- **컨트롤러** — joint PD · CLIK · OSC · compliance (impedance / admittance) · CLIK-QP whole-body · MPC 연동. 목록과 전환 방법은 [docs/controllers.md](docs/controllers.md)
+- **장치** — UR 드라이버, UDP 핸드 드라이버, MuJoCo 3.x 시뮬레이터가 같은 `DeviceBackend` 경계 뒤에 있다
+- **도구** — 세션 단위 CSV 로깅, 실시간 게인 튜닝 GUI, 로그 플롯 · URDF/MJCF 변환 스크립트
 
 ```
-rtc_msgs, rtc_base (독립)
-  ├── rtc_communication ← rtc_base
-  ├── rtc_inference ← rtc_base
-  ├── rtc_controller_interface ← rtc_base, rtc_msgs, rtc_urdf_bridge
-  ├── rtc_controllers ← rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge, rtc_tsid
-  │     (rtc_controller_interface 의 형제 — 의존하지 않는다)
-  ├── rtc_controller_manager ← rtc_controller_interface, rtc_controllers,
-  │       rtc_base, rtc_msgs, rtc_communication, rtc_urdf_bridge
-  ├── rtc_tsid ← rtc_math, rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
-  ├── rtc_mpc  ← rtc_base, Eigen3, yaml-cpp, Pinocchio
-  │       (+ CMake 전용: fmt ≥ 10, aligator — source-install, package.xml 미선언)
-  ├── rtc_mujoco_sim ← rtc_base, rtc_msgs, MuJoCo 3.x (optional)
-  ├── rtc_digital_twin (Python) ← rtc_msgs (exec)
-  └── rtc_tools (Python) ← rtc_msgs (exec)
-
-repo_scripts (ament_cmake — 스크립트 install + ament_add_test, 라이브러리/실행파일 없음)
-rtc_math (독립) ← Eigen3 (Pinocchio adapter optional, test 전용 rtc_base)
-rtc_urdf_bridge ← Pinocchio, tinyxml2, yaml-cpp
-
-shape_estimation_msgs (독립)
-  └── shape_estimation ← shape_estimation_msgs, rtc_msgs, tf2/tf2_ros,
-                         rclcpp_action, Eigen3
-
-robot_descriptions (독립, data-only — <exec_depend> only, ARCH-5)
-udp_hand_driver ← rtc_communication, rtc_inference, rtc_base
-ur5e_bt_coordinator ← rtc_msgs, shape_estimation_msgs, tf2/tf2_ros,
-                      BehaviorTree.CPP v4, Eigen3
-                      + <test_depend> rtc_base (test/testing/wait_until.hpp only)
-
-integrated_bringup ← rtc_controller_manager, rtc_controller_interface, rtc_controllers,
-                     rtc_tsid, rtc_mpc, rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
-                     + <exec_depend> udp_hand_driver, robot_descriptions (runtime lookup),
-                       rtc_tools, repo_scripts, ur_robot_driver
+[로봇 HW / MuJoCo] ── /joint_states ──▶ [integrated_rt_controller]
+                                          RT 루프 @ control_rate
+                                          └ 컨트롤러 (rtc_controllers 법칙)
+   ◀── actuator 명령 (inline, RT) ────────┤
+   [udp_hand_driver] ◀── SeqLock ─────────┤
+   세션 CSV · 비-RT 토픽 ◀── SPSC ────────┘
 ```
 
----
-
-## 주요 기능
-
-### RT 제어 코어
-- **가변 DOF 실시간 제어**: `clock_nanosleep(TIMER_ABSTIME)` 기반 RT 루프 (`control_rate` YAML로 100Hz–5kHz 설정, default 500Hz), CPU 코어 자동 할당 (4/6/8/10/12/14/16코어)
-- **Lock-Free SPSC 아키텍처**: RT 스레드 → SPSC 버퍼 → 비-RT 퍼블리시/로깅 (wait-free push, cache-line 정렬)
-- **SeqLock 동기화**: 단일 Writer / 다중 Reader lock-free 상태 공유 (trivially copyable 타입 전용)
-- **컨트롤러 계층 분리**: `rtc_controller_interface` (프레임워크 계약 + 공통 글루) → `rtc_controllers` (제어 법칙 + YAML 스키마 라이브러리 — 노드도 `RTControllerInterface` 상속도 없고, `rtc_controller_interface` 를 **의존하지도 않는다**) → `integrated_bringup` (바인딩 + 등록 + production YAML). 배치 규칙·전이 상태는 [agent_docs/design-principles.md](agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms
-- **Lifecycle 관리**: 핵심 C++ 노드가 `rclcpp_lifecycle::LifecycleNode` 기반 — `ros2 lifecycle` CLI로 런타임 상태 제어 (deactivate/activate), Launch event handler 기반 자동 configure→activate 체이닝. robot-agnostic standalone 노드는 예외 (예: `ClosureStatePublisher` 는 `rclcpp::Node`)
-
-### 제어 알고리즘
-`rtc_controllers` 는 **법칙 함수 + YAML 스키마**로 제공하고, 그것을 tick 마다 부르는 바인딩은 integration 패키지가 소유한다. 목록·헤더 경로는 [rtc_controllers/README.md](rtc_controllers/README.md#개요) 가 SSoT.
-
-- **관절 PD** (`joint/joint_pd_law.hpp`): PD + Pinocchio RNEA 중력/코리올리 보상. 궤적은 바인딩이 소유 (JointSpaceTrajectory 퀸틱 보간)
-- **태스크 속도 / CLIK** (`task/task_vel_law.hpp` + `compliance/differential_ik.hpp`): Damped Jacobian 역운동학 (3/6-DOF), 영공간 제어, TaskSpaceTrajectory SE3 퀸틱
-- **태스크 가속 / OSC** (`task/task_accel_law.hpp` + `compliance/task_dynamics.hpp`): 6-DOF Cartesian PD + SO(3) 회전 제어, Pinocchio log3 오차
-- **Compliance 계열** (`compliance/*` §6.2 impedance · §7 admittance · §7.6 cascade): Jacobian-transpose impedance, 힘 입력 → 위치 출력, 두 루프 직렬. 규범·계약은 [rtc_controllers/docs/compliance-conventions.md](rtc_controllers/docs/compliance-conventions.md)
-- **DemoWbcController**: TSID QP 기반 16-DoF (arm + hand) 전신 제어, 6-state FSM (Idle→Approach→Closure→Hold→Release, 그리고 QP 발산 시의 안전 hold Fallback), ProxSuite Dense QP (Kinematic CLIK-QP position backbone + Dynamic TSID-ID τ_ff QP), RELEASE/abort 가 active grasp phase (`kApproach`/`kClosure`/`kHold`) 에서 즉시 preempt (`kIdle`/`kRelease`/`kFallback` 면제). MPC reference 주입 경로는 opt-in — `rtc_mpc`의 MockMPCThread(20 Hz) → TripleBuffer → cubic-Hermite 보간 → TSID task `q_des/v_des/a_des + u_fb` 주입, 비활성 시 고정-reference 동작과 동일하게 유지
-
-### 안전 시스템
-- **글로벌 E-STOP**: `atomic<bool>` + `compare_exchange_strong` 기반 통합 비상 정지. 디바이스 그룹 init/state 타임아웃, 연속 RT 오버런, sim 동기화 타임아웃, actuator 경계의 controller output 검증 실패가 트리거한다 — 설정된 **모든** 디바이스 그룹이 state 를 보고하기 전에는 제어가 시작되지 않는다
-- **해제는 명시적 서비스 호출뿐**: 자동 복구는 없다. 트리거 전체 목록·해제 조건은 [rtc_controller_manager/README.md](rtc_controller_manager/README.md#e-stop-및-안전-메커니즘) 가 SSoT
-
-### 시뮬레이션 & 추론
-- **MuJoCo 3.x 시뮬레이터**: 동기식 루프, GLFW 인터랙티브 뷰어 (40+ 키보드 단축키), fake_hand 시뮬레이션, `max_rtf` 속도 제어, `n_substeps` 서브스텝으로 물리 해상도 조절
-- **RT-안전 ONNX 추론**: IoBinding + 사전 할당 버퍼로 RT 경로 힙 할당 제거, 배치/다중 모델 지원
-
-### 통신 & 로깅
-- **전송 계층 추상화**: UDP·CAN·CAN FD (SocketCAN)·RS485 (termios, length-prefixed 프레이머) 구현 완료, EtherCAT 확장 가능
-- **세션 기반 CSV 로깅**: `logging_data/YYMMDD_HHMM/` — 서브디렉토리별 분리 (`timing/`, `device/`, `controllers/<config_key>/`; 전체 목록은 아래 세션 디렉토리 표)
-- **ROS2 파라미터 인트로스펙션**: 컨트롤러별 토픽 매핑을 읽기 전용 파라미터로 노출
-
-### 도구
-- **demo_controller_gui** (`integrated_bringup`): tkinter 기반 실시간 게인 튜닝 GUI
-- **plot_rtc_log** (`rtc_tools`): Matplotlib CSV 궤적 시각화 (robot/device 자동 감지)
-- **compare_mjcf_urdf** (`rtc_tools`): MJCF/URDF 물리 파라미터 교차 검증
-- **urdf_to_mjcf** (`rtc_tools`): URDF → MJCF 자동 변환
-
----
+CI ([docs-validate](.github/workflows/docs-validate.yml)) 는 문서 · 생성물 · 셸 검사만 한다. 빌드와 테스트는 로컬에서 돌린다.
 
 ## 빠른 시작
 
-### 클론 (submodule 포함)
-
-이 저장소는 object_sim mesh 데이터를 git submodule (`robot_descriptions/object_sim` → [vikashplus/object_sim](https://github.com/vikashplus/object_sim)) 로 포함합니다. **`--recursive` 없이 클론하면 해당 디렉토리가 비어 있어**, `robot_descriptions` 빌드 시 mesh 가 설치되지 않고 일부 MuJoCo scene ([robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_with_object.xml](robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_with_object.xml)) 의 mesh 로드가 실패합니다.
+sim 하나를 띄우기까지 — 클론 → 설치 → 빌드 → 실행.
 
 ```bash
 git clone --recursive https://github.com/hyujun/rtc-framework.git ~/ros2_ws/rtc_ws/src/rtc-framework
-
-# 이미 --recursive 없이 클론한 경우 — submodule 만 채우기
 cd ~/ros2_ws/rtc_ws/src/rtc-framework
+./install.sh sim
+./build.sh sim
+source ~/ros2_ws/rtc_ws/install/setup.bash
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
+```
+
+### 클론 (submodule 포함)
+
+`robot_descriptions/object_sim` 은 git submodule ([vikashplus/object_sim](https://github.com/vikashplus/object_sim)) 이다. `--recursive` 없이 클론하면 이 디렉토리가 비어 물체 mesh 를 쓰는 MuJoCo scene 이 로드에 실패한다. 이미 클론했다면:
+
+```bash
 git submodule update --init --recursive
 ```
 
 ### 설치
 
 ```bash
-chmod +x install.sh
-./install.sh sim          # 시뮬레이션 전용
-./install.sh robot        # 실제 로봇 전용
-./install.sh full         # 전체 설치
+./install.sh sim          # 시뮬레이션 (MuJoCo 포함, RT 권한 없음)
+./install.sh robot        # 실제 로봇 (UR 드라이버, MuJoCo 제외)
+./install.sh full         # 전부
+./install.sh robot --rt   # 실기 PC 의 RT 설정까지 (GRUB · CPU shield · IRQ · 권한)
 ```
 
-> **이미 설치된 머신에서 재실행하면 apt 의존성도 최신으로 올라간다.** deps 단계의 `apt-get install -y`
-> 는 깔려 있는 ROS 패키지 (pinocchio · proxsuite 등) 를 저장소의 최신판으로 올리고, ROS apt 저장소는 최신판만
-> 제공하므로 **되돌릴 수 없다**. soname 이 바뀌면 기존 빌드는 `…so.<옛 버전>: cannot open shared object`
-> 로 로드에 실패하고, 증분 빌드는 `No rule to make target '…so.<옛 버전>'` 로 멈춘다 — dpkg 가 deb 의
-> 파일 시각 (패키지 빌드 날짜) 을 그대로 두어 CMake 가 config 변경을 못 알아채기 때문이다. 재실행 후에는
-> `colcon build --cmake-force-configure --cmake-args -DBUILD_TESTING=ON` 로 워크스페이스 전체를 다시 구성·빌드하고 전체 테스트를 돌린다.
-> 같은 PC 의 다른 프로젝트가 같은 apt 패키지에 링크돼 있으면 그쪽도 다시 빌드해야 한다.
+apt · rosdep 에 없는 의존성 (ONNX Runtime · MuJoCo · `fmt` / `mimalloc` / `aligator`) 은 `install.sh` 가 핀 버전으로 설치한다 — 버전과 경로는 [install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) · [build_deps.sh](repo_scripts/scripts/build_deps.sh) 가 갖는다.
 
-#### 표준 ROS 2 toolchain 흐름 (외부 통합 환경)
-
-`install.sh`가 만능 wrapper지만 표준 `rosdep install` → `colcon build` → `colcon test` 흐름도 직접 지원합니다.
+표준 `rosdep` → `colcon` 흐름도 된다. 이 경우 `setup_env.sh` 의 병렬도 제한이 걸리지 않으므로 job 수를 직접 준다:
 
 ```bash
 cd ~/ros2_ws/rtc_ws
 source /opt/ros/jazzy/setup.bash
 rosdep install --from-paths src --ignore-src --rosdistro=jazzy -y
-# setup_env.sh 를 source 하지 않는 흐름이라 이 repo 의 병렬도 제한이 걸리지 않는다 —
-# colcon 기본값은 패키지 여러 개 × make -j<논리 코어> 이고 RAM 이 먼저 바닥날 수 있다.
 MAKEFLAGS=-j6 colcon build --symlink-install --parallel-workers 1 --cmake-args -DBUILD_TESTING=ON
-colcon test
 ```
-
-다만 아래 의존성은 apt/rosdep에 없어 manual install path가 필요합니다 (`install.sh`가 자동 처리):
-
-- **ONNX Runtime** (`rtc_inference` 빌드 요구) — 핀 버전 tarball 을 `/opt/onnxruntime` 에 설치한다 ([repo_scripts/scripts/lib/install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) `install_onnxruntime`). apt 의 `libonnxruntime-dev` 는 버전을 핀할 수 없어 쓰지 않는다 (깔려 있으면 경고만, 지우지 않음). tarball 경로는 `ONNXRT_SHA256` 의 `<version>:<arch>` pin 과 일치할 때만 설치되며, 미지원 arch·digest 미등록·mismatch 는 모두 설치 없이 skip 된다 (버전 bump 시 digest 추가 절차는 같은 파일 주석). 설치된 버전이 `install.sh` 의 `ONNXRT_VERSION` 과 다르면 재실행이 핀 버전으로 올리고 `/opt` 의 다른 버전 트리를 지운다 — 옛 트리를 다른 프로젝트가 쓰면 `ONNXRT_KEEP_OTHER_VERSIONS=1` 로 보존
-- **MuJoCo 3.x** (`rtc_mujoco_sim` 빌드 요구) — `/opt/mujoco-3.7.0` tarball ([repo_scripts/scripts/lib/install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) `install_mujoco`)
-- **MPC source-build deps** (`fmt` 11.1.4 + `mimalloc` 2.1.7 + `aligator` 0.19.0 — `rtc_mpc` 요구) — `<rtc_ws>/deps/install/`에 소스 빌드 ([repo_scripts/scripts/build_deps.sh](repo_scripts/scripts/build_deps.sh))
-- **mujoco Python bindings** (`rtc_tools` urdf_to_mjcf / compare_mjcf_urdf 런타임) — `requirements.lock`에 박혀 있고 `install.sh`가 `uv pip sync`로 venv에 설치 (수동: `uv pip sync requirements.lock`)
 
 ### 빌드
 
 ```bash
-chmod +x build.sh
-./build.sh sim            # 시뮬레이션 패키지
-./build.sh robot          # 로봇 패키지 (MuJoCo 제외)
-./build.sh full           # 전체 패키지
-./build.sh sim -c -j 4    # 클린 빌드 + make job 4개 (기본: min(물리 코어, RAM/4GB))
-./build.sh -p rtc_base    # 특정 패키지만 빌드
-./build.sh --tests -p rtc_base   # 테스트까지 빌드 (기본은 테스트 제외 — 클린 빌드 시간 약 절반)
-
-# 수동 빌드 (워크스페이스에 외부 패키지가 섞여 있을 때 권장)
-source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
-deactivate 2>/dev/null   # venv 활성 시 CMake FindPython 충돌 방지 (AGENTS.md §9.2 의 configure 한정 carve-out)
-cd ~/ros2_ws/rtc_ws && colcon build --symlink-install   # defaults.yaml: 테스트 제외
-source install/setup.bash
+./build.sh sim                   # sim 패키지 (robot / full 도 있다)
+./build.sh -p rtc_base           # 특정 패키지만
+./build.sh --tests -p rtc_base   # 테스트까지 (기본은 테스트를 빌드하지 않는다)
+./build.sh sim -c -j 4           # 클린 빌드 + make job 4개
 ```
 
-> `setup_env.sh` 가 `RTC_DEPS_PREFIX` · ONNX Runtime · `mujoco_ROOT` · `COLCON_DEFAULTS_FILE` (`--symlink-install` / Release / `compile_commands` 자동 적용) 를 모두 export 하므로, 이후 plain `colcon build` 만으로도 의존성이 전부 발견됩니다. 단 CMake 가 쓸 인터프리터는 venv 유무와 무관하게 고정해야 합니다 — 위 `deactivate` 는 venv python 만 피하고, PATH 앞의 다른 `python3.X` (예: `uv python install` 의 `~/.local/bin/python3.12`) 는 못 피해 `No module named 'catkin_pkg'` 로 죽습니다. CLI `--cmake-args` 는 defaults 의 Release 등을 **대체**하므로 명령 형태는 [repo_scripts/README.md](repo_scripts/README.md) "Plain `colcon build` 호환성" 을 따릅니다. 이 완화는 **configure 단계에만** 해당합니다 — `colcon test` / `ros2 run` 실패를 deactivate 로 우회하는 것은 금지입니다 (AGENTS.md §9.2). 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · RT 환경 점검은 `build.sh` 만 수행합니다 — 두 워크플로는 같은 `build/`·`install/` 트리를 공유하며 incremental 로 안전하게 병행할 수 있습니다 (단, `build.sh -c` 는 트리 전체를 삭제하므로 외부 패키지가 있으면 사용 금지). workspace 에 다른 저장소가 함께 있을 때 두 경로가 무엇을 빌드하는지는 [repo_scripts/README.md](repo_scripts/README.md) "workspace 에 다른 저장소가 함께 있을 때" 에 있습니다.
-
-> **병렬도.** 패키지는 한 번에 하나씩 빌드하고 병렬도는 make job 수 하나로 정합니다 — `./build.sh -j N` 또는 `RTC_BUILD_JOBS=N`, 기본값은 `min(물리 코어, RAM / 4 GB)` 입니다. plain `colcon build` 도 `setup_env.sh` 가 export 한 `MAKEFLAGS` 로 같은 값을 씁니다. `build.sh` 는 여기에 메모리 상한 (기본: RAM 의 75% 와 지금 비어 있는 메모리의 90% 중 작은 쪽, `RTC_BUILD_MEM_MAX`) 을 더 걸고 — 넘으면 호스트가 아니라 그 빌드가 끝납니다 — ccache 가 깔려 있으면 자동으로 씁니다. **테스트는 기본으로 빌드하지 않습니다**: `colcon test` 전에는 `./build.sh --tests` 로 빌드해야 하고, 그러지 않으면 실패가 아니라 테스트 0개가 보고됩니다. 산정 근거·실측·감별은 [repo_scripts/README.md](repo_scripts/README.md) "빌드 병렬도와 메모리" · "빌드 시간 줄이기" 에 있습니다.
-
-### Python 의존성 sync (dev PC ↔ runtime PC 재현성)
-
-`install.sh` 가 `uv` 를 자동 부트스트랩하여 `.venv` 를 `requirements.lock` 과 비트단위로 일치시킵니다. 정책 (cross-workspace isolation):
-
-- **venv 책임 (lock)**: `numpy` (`<2`, ros-jazzy-rclpy ABI 핀) / `scipy` / `matplotlib` / `pandas` / `PyQt5` / `mujoco` + transitive / `Cython` / `ruff` / `setuptools` / `wheel` — `requirements.lock` 에 sha256 hash 와 함께 박힘. 같은 host 의 다른 workspace 가 시스템 numpy 를 바꿔도 이 venv 는 영향 없음 (sys.path 우선)
-- **시스템 상속 (`--system-site-packages`)**: `rclpy` / `ament_*` (ROS 2 Jazzy) / `python3-bt2` (kernel-bound) / `python3-colcon-*` · `python3-vcstool` · `python3-rosdep` (부트스트랩 도구)
+직접 `colcon` 을 칠 때는 workspace root 에서, `setup_env.sh` 를 절대경로로 source 한 서브셸로 돌린다 (`setup_env.sh` 가 의존성 경로 · 병렬도 · colcon 기본값을 export 한다):
 
 ```bash
-# Lock 재생성 (의존성 추가/버전 변경 시)
-uv pip compile requirements.in --generate-hashes -o requirements.lock
-
-# 새 머신에서 sync (install.sh 가 자동 수행, 수동:)
-uv venv --python /usr/bin/python3.12 --system-site-packages .venv   # 버전이 아니라 경로로 고정 (아래 참고)
-source .venv/bin/activate
-uv pip sync requirements.lock        # lock 과 정확히 일치 (extra 제거)
+( cd ~/ros2_ws/rtc_ws && source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 && colcon build --packages-select rtc_base )
 ```
 
-`uv pip sync` 는 `pip install -r` 과 달리 lock 에 없는 패키지를 venv 에서 제거하므로 dev PC ↔ runtime PC 간 의존성 drift 가 발생하지 않습니다 (system-site-packages 는 건드리지 않음). hash 검증으로 wheel 변조도 차단합니다.
+- `--cmake-args` 를 줄 때의 형태와 venv 와의 관계: [repo_scripts/README.md](repo_scripts/README.md) "Plain `colcon build` 호환성"
+- job 수 · 메모리 상한 · 빌드 시간: [repo_scripts/README.md](repo_scripts/README.md) "빌드 병렬도와 메모리"
+- 다른 저장소와 한 workspace 를 쓸 때: [repo_scripts/README.md](repo_scripts/README.md) "workspace 에 다른 저장소가 함께 있을 때"
+- 테스트는 `--tests` 로 빌드한 뒤 돌린다. 그러지 않으면 실패가 아니라 테스트 0개가 보고된다 — 명령은 [docs/testing.md](docs/testing.md)
 
-venv base 는 **배포판 python 경로로 고정**합니다 (24.04 에서 `/usr/bin/python3.12`). `--python 3.12` 는 runtime PC 의 python3.9/3.10 은 피하지만, uv 기본값(`python-preference=managed`)이 **이미 설치된 uv-managed 3.12 를 apt 의 3.12 보다 우선**합니다. 그렇게 만든 venv 는 `--system-site-packages` 여도 `/usr/lib/python3/dist-packages` (apt 의 `catkin_pkg` · `python3-yaml` 등) 를 못 봐서, `rtc_base` configure 가 `No module named 'catkin_pkg'` 로 죽고 venv 안에서 `rclpy` 도 import 되지 않습니다. `install.sh` 는 base 가 틀린 기존 `.venv` 를 재생성하고, `build.sh` 는 **venv 유무와 무관하게** CMake 에 같은 인터프리터를 넘깁니다 — CMake 의 FindPython 은 PATH 디렉토리 순서로 찾으므로 venv 가 없어도 PATH 앞의 `python3.X` 를 잡습니다. 값은 `rt_common.sh` 의 `get_system_python` (기본 `readlink -f /usr/bin/python3`, `RTC_SYSTEM_PYTHON` 으로 덮어씀) 이 정합니다.
+### Python 의존성 sync
+
+`install.sh` 가 `uv` 로 `.venv` 를 만들고 `requirements.lock` 과 정확히 맞춘다. ROS 2 Python (`rclpy` 등) 은 `--system-site-packages` 로 시스템 것을 쓴다.
+
+```bash
+uv pip compile requirements.in --generate-hashes -o requirements.lock   # 의존성을 바꿨을 때
+uv venv --python /usr/bin/python3.12 --system-site-packages .venv       # 새 머신 (install.sh 가 한다)
+source .venv/bin/activate && uv pip sync requirements.lock
+```
+
+venv 의 base 는 배포판 python **경로**로 고정한다 — `--python 3.12` 로 만들면 uv-managed python 이 잡혀 apt 의 `catkin_pkg` 를 못 본다 (아래 문제 해결).
 
 ### 실행
 
 ```bash
-# MuJoCo 시뮬레이션
-ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
+# MuJoCo 시뮬레이션 (로봇별 launch: sim_ur5e_p1a · sim_ur5e_p1b · sim_iiwa7_leap · sim_g1_p1b)
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
 
-# 실제 로봇 (CycloneDDS 성능 최적화 설정 자동 로드)
+# 실제 로봇
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 launch integrated_bringup robot_ur5e_p1a.launch.py robot_ip:=192.168.1.10
 
-# 가상 하드웨어 (로봇 불필요)
+# 가상 하드웨어 (로봇 없이)
 ros2 launch integrated_bringup robot_ur5e_p1a.launch.py use_fake_hardware:=true
 
-# 핸드 드라이버 노드
+# 핸드 드라이버
 ros2 launch udp_hand_driver udp_hand.launch.py target_ip:=192.168.1.2
 ```
 
-### 모니터링
+launch 인자와 컨트롤러 전환은 [integrated_bringup/README.md](integrated_bringup/README.md) 와 [docs/controllers.md](docs/controllers.md) 에 있다.
+
+### 상태 확인
 
 ```bash
-ros2 topic hz /forward_position_controller/commands   # RT 루프 주기 (= 설정된 control_rate, default ~500Hz)
-ros2 topic echo /system/estop_status                  # E-STOP 상태 (true = 활성)
-ros2 topic echo /sim/status                           # MuJoCo: [step, time, rtf, paused]
-ros2 param list /integrated_rt_controller | grep controllers  # 토픽 파라미터 확인
-
-# RT 스레드 상태 확인 (exec 이름 = 노드 이름 = integrated_rt_controller)
+ros2 topic echo /system/estop_status                     # E-STOP (true = 정지)
+ros2 topic echo /sim/status                              # MuJoCo: [step, time, rtf, paused]
+ros2 param list /integrated_rt_controller | grep controllers
 PID=$(pidof -s integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ```
 
----
+### 로그
 
-## 아키텍처 개요
-
-**ROS2 Humble / Jazzy** 멀티 패키지 리포지토리 (`ament_cmake`, C++20). `rtc_*` 패키지는 URDF 매니퓰레이터에 범용 적용 가능합니다.
-
-```
-[로봇 하드웨어 / MuJoCo 시뮬레이터]
-    │  /joint_states (sensor_msgs/JointState)
-    ▼
-[integrated_rt_controller]  ←  /target_joint_positions (goal)
-    │  RT 루프 (clock_nanosleep @ control_rate)
-    │  제어기: rtc_controllers (P / JointPD / CLIK / OSC)
-    │  전송: rtc_communication (UDP · CAN/CAN FD · RS485)
-    ├── inline ────────────────────→ DeviceBackend.WriteCommand (actuator, RT-safe contract)
-    │                                 → /forward_position_controller/commands · hand UDP
-    ├──→ SPSC (cap 16)  ──→ [nrt_publish_thread (CFS)] ──→ controller.PublishNonRtSnapshot
-    ├──→ SPSC ──→ [nrt_logging_executor] ──→ 세션 CSV (timing/, device/, controllers/)
-    └──→ E-STOP ──→ /system/estop_status
-
-[핸드 HW] ←UDP 직접 소유→ [udp_hand_driver] ← SeqLock ← [ControlLoop]
-
-[rtc_inference]   RT-안전 ONNX 추론 (IoBinding, 사전 할당)
-```
-
-### 스레딩 모델
-
-| 스레드 | 타입 | 스케줄러 | 우선순위 | 역할 |
-|--------|------|----------|----------|------|
-| `rt_control` | jthread (clock_nanosleep) | SCHED_FIFO | 90 | ControlLoop @ `control_rate` + CheckTimeouts 50Hz + inline `DeviceBackend.WriteCommand` (actuator publish, RT-safe contract) |
-| `rt_callback` | ROS2 Executor | SCHED_FIFO | 70 | DeviceBackend state subs (/joint_states, hand state/motor/sensor). DDS receive thread 는 launch 가 같은 코어에 co-pin (CFS) |
-| `mpc_main` | jthread | SCHED_FIFO | 60 | 20 Hz MPC solve, TripleBuffer publish (4코어는 CFS 로 강등) |
-| `nrt_publish` | jthread (SPSC drain) | SCHED_OTHER | 0 | controller-owned non-RT 토픽 — `controller.PublishNonRtSnapshot` 호출 |
-| `nrt_logging_executor` | ROS2 Executor | SCHED_OTHER | nice -5 | `cm_timing_log.csv` + `rt_callback_timing_log.csv` 드레인 + deferred E-STOP 로그 |
-| `nrt_callback_executor` | ROS2 Executor | SCHED_OTHER | 0 | E-STOP 상태 + lifecycle services + CM/controller default group (RobotTarget subs, grasp_command services) |
-| `hand_driver` (process) | external process | SCHED_OTHER | 0 (process); 내부 UDP recv FIFO 65 | hand UDP receive thread 는 hand_driver 프로세스 내부 (`kHandUdpRecvConfig`, process taskset 상속) |
-
-> **코어 배치는 코어 수 tier 마다 다르다** — 값의 SSoT 는 [repo_scripts/config/thread_layout.yaml](repo_scripts/config/thread_layout.yaml), tier 별 매트릭스는 [rtc_base/README.md](rtc_base/README.md) 의 생성된 표를 본다. Core 0 은 OS / DDS / NIC IRQ 전용이고 (isolcpus 대신 런타임 `cset shield`), user-space thread 는 모두 Core 1 이상이다.
-> **RT priority hierarchy**: 90 (rt_control) > 70 (rt_callback) > 65 (hand UDP recv) > 60 (mpc_main) — sensor callback 이 긴 MPC solve 를 항상 preempt 한다. MPC solve 는 단일 스레드이며, 병렬화 경로는 Aligator 의 OpenMP 풀이지 별도 ThreadConfig 가 아니다.
-> CycloneDDS 성능 최적화: 멀티캐스트 비활성화, 소켓 버퍼 확대, write batching, NACK 지연 최소화.
-
----
-
-## 세션 기반 로깅
-
-로그는 `logging_data/YYMMDD_HHMM/` 세션 디렉토리에 자동 저장됩니다. 보관 개수는 로봇 config 의 `max_log_sessions` (기본 10) 가 SSoT 이며, 5개 bringup launch 가 모두 이 값을 동명의 launch 인자 default 로 읽으므로 `ros2 launch ... max_log_sessions:=N` 으로 한 번에 바꿀 수 있습니다:
+각 실행은 `logging_data/YYMMDD_HHMM/` 세션 디렉토리에 기록된다. 보관 개수는 로봇 config 의 `max_log_sessions` (기본 10) 이고 같은 이름의 launch 인자로 바꿀 수 있다.
 
 | 서브디렉토리 | 내용 |
 |---|---|
-| `controllers/<config_key>/` | per-controller 데이터 CSV (`<instance>.csv`, controller-owned 경로) |
-| `timing/` | per-tick 스레드 타이밍 CSV (cm_timing_log, mpc_timing_log, hand_udp_timing_log, rt_callback_timing_log — 동일 8열 `t_wall_ns,tick_count,run_id` + RtTickTimingPayload 5열 스키마. `run_id` 는 같은 분에 재기동해 한 디렉토리를 공유한 두 런을 가른다) |
-| `device/` | 디바이스 통계 JSON (예: udp_hand_driver 의 `hand_udp_stats.json`) |
-| `monitor/` | 모니터링 로그 (생성만 되고 현재 기록 주체 없음) |
-| `tracing/` | LTTng trace 세션 (`--tracing` 빌드 시, [docs/tracing.md](docs/tracing.md)) |
-| `sim/` | screenshot_*.ppm (MuJoCo 전용) |
-| `plots/`, `motions/` | rtc_tools 출력 |
+| `controllers/<config_key>/` | 컨트롤러별 데이터 CSV |
+| `timing/` | 스레드별 tick 타이밍 CSV |
+| `device/` | 장치 통계 JSON |
+| `tracing/` | LTTng trace ([docs/tracing.md](docs/tracing.md)) |
+| `sim/` · `plots/` · `motions/` | MuJoCo 스크린샷 · `rtc_tools` 출력 |
 
-환경변수 `RTC_SESSION_DIR` 로 모든 노드에 세션 경로 자동 전파. 같은 분에 재기동하면 세션 디렉토리(분 해상도)가 재사용되므로, launch 는 `RTC_RUN_ID` 도 함께 전파해 타이밍 CSV 안에서 두 런을 가른다.
+플롯: `ros2 run rtc_tools plot_rtc_log --help`.
 
----
+### 실기 PC 의 RT 권한
 
-## RT 권한 요구사항
+`./install.sh robot --rt` 가 RT 설정을 한 번에 한다. 단계별 수동 설정과 확인: [docs/rt-optimization.md](docs/rt-optimization.md). 확인만 할 때:
 
 ```bash
-sudo groupadd realtime
-sudo usermod -aG realtime $USER
-echo "@realtime - rtprio 99" | sudo tee -a /etc/security/limits.conf
-echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
-# 로그아웃 후 재로그인 필요
+~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/check_rt_setup.sh
 ```
 
-위 권한을 포함한 RT 설정 전체 (GRUB 파라미터 · CPU shield · IRQ · governor · NVIDIA) 는 `./install.sh robot --rt` 가 한 번에 한다 — `isolcpus` 는 쓰지 않는다 (CPU 격리는 `cpu_shield.sh` 가 맡는다). 단계별 설명과 확인 방법: [docs/rt-optimization.md](docs/rt-optimization.md).
+## 패키지 구성
 
----
+각 패키지 디렉토리의 `README.md` 가 사용법을, `package.xml` 이 의존성을 갖는다. 층위와 의존 방향: [architecture.md](agent_docs/architecture.md#dependency-graph).
 
-## 문서
+### 로봇 비의존 프레임워크 (rtc_*)
 
-| 문서 | 설명 |
-|------|------|
-| [docs/rt-optimization.md](docs/rt-optimization.md) | 실기 PC 의 RT 설정 — `install.sh robot --rt` 한 번에 / 단계별 수동 (RT 커널 · GRUB · CPU shield · IRQ · NVIDIA) / 확인 / 문제 해결 / hybrid CPU (NUC) |
-| [docs/vscode-debugging.md](docs/vscode-debugging.md) | VS Code + GDB 디버깅 가이드 — 설정 템플릿은 [docs/vscode/](docs/vscode/) (`cp -r docs/vscode .vscode`) |
-| [docs/tracing.md](docs/tracing.md) | LTTng trace 캡처와 Perfetto 로 보기 — 스레드 × 코어 타임라인, RT tick 내부 span |
-| [AGENTS.md](AGENTS.md) | **AI 에이전트 헌법 (tool-neutral)** — invariants, workflow, escalation, build hard rules. Codex · Copilot · Antigravity 등이 읽는다 |
-| [CLAUDE.md](CLAUDE.md) | Claude Code 진입점 — `@AGENTS.md` import 로 위 헌법을 그대로 싣고, hook · slash command · rule 자동 로드 등 Claude 전용 메커니즘만 덧붙인다 (규칙은 AGENTS.md 에만 있다) |
-| [agent_docs/](agent_docs/) | 헌법이 위임하는 세부 규칙의 SSoT (invariants, architecture, controllers, testing, conventions, handoff) |
-| [docs/controllers.md](docs/controllers.md) | 컨트롤러 카탈로그 — 배선된 컨트롤러와 제어 법칙별 코어, 전환·게인·토픽·설정 사용법 (규범은 `agent_docs/controllers.md`) |
-| [docs/modification-procedures.md](docs/modification-procedures.md) | 수정·추가 작업의 단계별 절차 — 컨트롤러 / 메시지 / device group / 스레드 / 패키지 추가 (규범은 `agent_docs/modification-guide.md`) |
-| [docs/testing.md](docs/testing.md) | 테스트·디버깅 가이드 — 테스트 명령, 바꾼 곳별로 돌릴 테스트 (sensor matrix), 런타임 디버그 토픽, 증상별 처방 (규범은 `agent_docs/testing-debug.md`) |
-| [docs/reference/](docs/reference/README.md) | 헌법 밖 참고 자료 — 규칙의 근거 · 실측 · 사고 이력 · 사례집 (규범이 아니다) |
-| [docs/wbc_humanoid/](docs/wbc_humanoid/ALGORITHM_ANALYSIS.md) | 외부 저장소 `wb_humanoid_mpc` (G1 centroidal · whole-body MPC) 의 알고리즘 분석과, 그것을 Aligator + ProxSuite 로 옮기는 구현 가이드. 이 저장소의 코드를 서술하지 않는다 |
-| [repo_scripts/README.md](repo_scripts/README.md) | RT 설정 / 빌드 / 환경 셋업 쉘 스크립트 가이드 (PREEMPT_RT, CPU shield, IRQ affinity, `setup_env.sh`) |
+| 패키지 | 역할 |
+|---|---|
+| [`rtc_msgs`](rtc_msgs/) | 메시지 · 서비스 정의 |
+| [`rtc_base`](rtc_base/) | header-only RT 인프라 — 타입 · SeqLock · SPSC · 스레드 배치 · 필터 · 로깅 |
+| [`rtc_math`](rtc_math/) | header-only SE(3) Lie-group 연산과 task-space 오차 |
+| [`rtc_communication`](rtc_communication/) | header-only transport 추상화 — UDP · CAN / CAN FD · RS485 |
+| [`rtc_urdf_bridge`](rtc_urdf_bridge/) | URDF 파서 + Pinocchio 모델 빌더 |
+| [`rtc_controller_interface`](rtc_controller_interface/) | 컨트롤러 추상 인터페이스와 레지스트리 |
+| [`rtc_controllers`](rtc_controllers/) | 제어 법칙 라이브러리 (노드 없음) |
+| [`rtc_tsid`](rtc_tsid/) | TSID / CLIK QP 프레임워크 (ProxSuite) |
+| [`rtc_mpc`](rtc_mpc/) | MPC ↔ RT 인터페이스 — TripleBuffer · 보간 · Riccati feedback · MPC 스레드 |
+| [`rtc_controller_manager`](rtc_controller_manager/) | RT 루프 · 컨트롤러 lifecycle · E-STOP · `DeviceBackend` |
+| [`rtc_inference`](rtc_inference/) | header-only RT-safe ONNX 추론 |
+| [`rtc_mujoco_sim`](rtc_mujoco_sim/) | MuJoCo 3.x 시뮬레이터 노드와 뷰어 |
+| [`rtc_digital_twin`](rtc_digital_twin/) | RViz2 디지털 트윈 (Python) |
+| [`rtc_tools`](rtc_tools/) | 로그 플롯 · URDF/MJCF 변환 · 분석 스크립트 (Python) |
+| [`repo_scripts`](repo_scripts/) | 설치 · 빌드 · RT 호스트 설정 스크립트 |
 
-각 패키지의 상세 API, 설정, 아키텍처는 해당 패키지의 `README.md`를 참조하세요.
+### 형상 추정
 
----
+| 패키지 | 역할 |
+|---|---|
+| [`shape_estimation_msgs`](shape_estimation_msgs/) | ToF 형상 추정 메시지 · 액션 |
+| [`shape_estimation`](shape_estimation/) | ToF 포인트 누적과 primitive 피팅 |
 
-## 라이선스
+### 로봇 데이터 · 통합
 
-MIT License — 자세한 내용은 [LICENSE](LICENSE) 파일을 참조하세요.
+| 패키지 | 역할 |
+|---|---|
+| [`robot_descriptions`](robot_descriptions/) | 로봇별 URDF · MJCF · mesh (data-only) |
+| [`udp_hand_driver`](udp_hand_driver/) | 가변 DOF 핸드 UDP 드라이버 |
+| [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | BehaviorTree.CPP v4 태스크 코디네이터 |
+| [`integrated_bringup`](integrated_bringup/) | 로봇별 launch · config, 데모 컨트롤러, 튜닝 GUI |
+
+## 문제 해결
+
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| `robot_descriptions` mesh 로드 실패 | submodule 이 비어 있다 | `git submodule update --init --recursive` |
+| `…so.<옛 버전>: cannot open shared object` · `No rule to make target '…so.<옛 버전>'` | `install.sh` 재실행이 apt 패키지를 올렸다 (되돌릴 수 없다, 같은 PC 의 다른 프로젝트도 영향) | `colcon build --cmake-force-configure --cmake-args -DBUILD_TESTING=ON` 로 전체를 다시 구성 · 빌드 |
+| configure 가 `No module named 'catkin_pkg'` | CMake 가 venv 나 uv-managed python 을 잡았다 | `./build.sh` 를 쓰거나 [repo_scripts/README.md](repo_scripts/README.md) 의 plain colcon 형태를 따른다 |
+| `colcon test` 가 테스트 0개 | 테스트를 빌드하지 않았다 | `./build.sh --tests -p <pkg>` 후 다시 |
+| repo 안에 `build/` · `install/` · `log/` 가 생겼다 | workspace root 가 아닌 곳에서 `colcon` 을 쳤다 | 지우고 workspace root 에서 다시 |
+
+빌드 · 환경 문제 전반: [repo_scripts/README.md](repo_scripts/README.md) "흔한 실패와 감별".
+
+## 더 읽기
+
+| 문서 | 내용 |
+|---|---|
+| [docs/controllers.md](docs/controllers.md) | 컨트롤러 카탈로그 — 전환 · 게인 · 토픽 · 설정 |
+| [docs/testing.md](docs/testing.md) | 테스트 명령, 바꾼 곳별 테스트, 런타임 디버그 토픽 |
+| [docs/rt-optimization.md](docs/rt-optimization.md) | 실기 PC 의 RT 설정 — 커널 · GRUB · CPU shield · IRQ · NVIDIA |
+| [docs/tracing.md](docs/tracing.md) | LTTng trace 와 Perfetto 로 스레드 × 코어 보기 |
+| [docs/vscode-debugging.md](docs/vscode-debugging.md) | VS Code + GDB 디버깅 |
+| [docs/modification-procedures.md](docs/modification-procedures.md) | 컨트롤러 · 메시지 · 장치 · 스레드 · 패키지를 추가하는 절차 |
+| [docs/wbc_humanoid/](docs/wbc_humanoid/ALGORITHM_ANALYSIS.md) | 외부 `wb_humanoid_mpc` 알고리즘 분석 (이 저장소의 코드 설명 아님) |
+| [repo_scripts/README.md](repo_scripts/README.md) | 설치 · 빌드 · RT 스크립트 |
+| [AGENTS.md](AGENTS.md) · [CLAUDE.md](CLAUDE.md) · [agent_docs/](agent_docs/) · [docs/reference/](docs/reference/README.md) | 기여자 · AI coding assistant 용 규약 · 규범 · 근거 |
+
+## 의존성
+
+ROS 2 Jazzy (또는 Humble), Eigen3, Pinocchio, ProxSuite, MuJoCo 3.x, ONNX Runtime, BehaviorTree.CPP v4. 패키지별 의존은 각 `package.xml`, 설치는 `install.sh`. 라이선스: MIT ([LICENSE](LICENSE)).

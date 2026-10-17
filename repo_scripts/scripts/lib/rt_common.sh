@@ -366,6 +366,8 @@ get_os_logical_cpus() {
 # ── isolcpus 기대값 계산 (SMT 시블링 포함) ─────────────────────────────────
 # 비-SMT: 단순 범위 (예: "2-5")
 # SMT: OS 물리 코어의 HT 시블링을 제외한 나머지 (예: "2-5,8-11")
+# 비-OS 코어 전체 (RT + nrt + driver) — check_rt_setup.sh 의 cset shield 검증에 쓴다.
+# nohz_full / rcu_nocbs 는 이보다 좁은 get_rt_cores_with_siblings() 를 쓴다.
 compute_expected_isolated() {
   if [[ "$HAS_SMT" -eq 0 ]]; then
     # Layout v4.1: RT cluster starts at Core 1 on every tier.
@@ -1173,6 +1175,8 @@ isolcpus_isolated_cpus() {
   cat "${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu/isolated" 2>/dev/null || echo ""
 }
 
+# 지금 무엇이 격리를 걸고 있는가: "cset <cpus>" | "isolcpus <cpus>" | "none".
+# cset 을 먼저 묻는 순서가 계약이다 (test_cpu_shield_mask.sh 가 "둘 다 활성" 케이스로 고정).
 shield_isolation_method() {
   local cset_cpus isolated
   cset_cpus=$(shield_actual_user_cpus 2>/dev/null || true)
@@ -1264,6 +1268,9 @@ _rt_expand_smt_siblings() {
 }
 
 # Print the RT-thread cpuset for GRUB nohz_full / rcu_nocbs.
+# Profile-blind on purpose: $2 is ignored and the widest (default-profile) set is
+# returned — nohz_full / rcu_nocbs are boot-static, so following a launch profile
+# would need a reboot and break reboot-free profile switching.
 # Layout v4.1: base = get_rt_cores() (rt_control 1, rt_callback 2, MPC 3+).
 # On SMT systems, each RT physical core's HT sibling is included so that the
 # sibling does not keep ticking and invalidate the RT core's L1/L2 cache.

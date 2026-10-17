@@ -29,25 +29,25 @@
 # Keep the "path: bytes" shape, one per line: the validator reads this file by
 # regex so that it runs on a host without PyYAML.
 
-README.md: 33381
+README.md: 12431 strict
 docs/dynamic_catching/README.md: 5581 strict
-docs/reference/README.md: 5924
+docs/reference/README.md: 6289  # raised from 5924: index row for build-rationale.md
 integrated_bringup/README.md: 312486
-repo_scripts/README.md: 72305
+repo_scripts/README.md: 25904 strict
 robot_descriptions/README.md: 22406
 robot_descriptions/robots/panda/README.md: 1058
 robot_descriptions/robots/ur5e_p1b/README.md: 4834
-rtc_base/README.md: 50803
+rtc_base/README.md: 24945 strict
 rtc_communication/README.md: 15068 strict
-rtc_controller_interface/README.md: 54183
-rtc_controller_manager/README.md: 95123
+rtc_controller_interface/README.md: 25717 strict
+rtc_controller_manager/README.md: 43205 strict
 rtc_controllers/README.md: 148165
 rtc_digital_twin/README.md: 24708
 rtc_inference/README.md: 8774 strict
-rtc_math/README.md: 2571
-rtc_math/include/rtc_math/se3/README.md: 10026
+rtc_math/README.md: 2944 strict  # raised from 2571: skeleton sections the old README lacked (빠른 시작 command, 인터페이스 table, 디렉토리)
+rtc_math/include/rtc_math/se3/README.md: 9116 strict
 rtc_mpc/README.md: 7651 strict
-rtc_msgs/README.md: 46967
+rtc_msgs/README.md: 6141 strict
 rtc_mujoco_sim/README.md: 99118
 rtc_tools/README.md: 223286
 rtc_tsid/README.md: 11550 strict
