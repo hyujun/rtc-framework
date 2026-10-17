@@ -826,6 +826,25 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
   const PlannerParams planner = ParsePlannerParams(catching, keys);
   std::array<int, kMaxPlanNv> device_of_model{};
   std::copy(seg_map.begin(), seg_map.end(), device_of_model.begin());
+  // The joint groups (E3-F02) on the device's joint names, as a controller
+  // resolves them: the segment model's joints are the device's, named alike,
+  // so device joint d is the model joint device_of_model maps to it.
+  JointGroups groups;
+  if (!planner.groups.empty()) {
+    std::vector<std::string> device_joints(n);
+    for (pinocchio::JointIndex i = 1; i < seg_arm->joints.size(); ++i) {
+      const int m = seg_arm->joints[i].idx_v();
+      if (m >= 0 && m < nv && seg_arm->joints[i].nv() == 1) {
+        device_joints[static_cast<std::size_t>(device_of_model[static_cast<std::size_t>(m)])] =
+            seg_arm->names[i];
+      }
+    }
+    std::string why;
+    if (!ResolveJointGroups(planner.groups, device_joints, groups, &why)) {
+      out.error = "planner.groups: " + why;
+      return out;
+    }
+  }
 
   // What a controller's configure refuses of the docking functions' profile
   // (docking_config.hpp): the batch judges no profile that controller parks.
@@ -839,7 +858,7 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
       nlp_params = ParseNlpSearchParams(catching, search_nv);
     }
     if (!mpc) {
-      docking_params = ParseMpcDockingSegmentParams(catching, nv);
+      docking_params = ParseMpcDockingSegmentParams(catching, nv, planner.groups);
     }
     DockingConfig config;
     config.nlp = nlp;
@@ -852,6 +871,20 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     config.search = &nlp_params;
     config.planner = &docking_params;
     if (std::string why = DockingConfigRefusal(config); !why.empty()) {
+      out.error = std::move(why);
+      return out;
+    }
+  }
+  // #641 D9′ as a controller's configure refuses it, on the search model's
+  // joints (the plan's).
+  {
+    const int n_dev = binding.n_dev > 0 ? binding.n_dev : search_nv;
+    JointSet plan_joints = 0;
+    (void)MakeJointSet(binding.device_of_model, n_dev, plan_joints);  // checked with the binding
+    std::string why =
+        mpc ? MpcSegmentLeftFreeRefusal(planner, groups, n_dev, plan_joints)
+            : MpcDockingLeftFreeRefusal(docking_params, planner.groups, groups, n_dev, plan_joints);
+    if (!why.empty()) {
       out.error = std::move(why);
       return out;
     }
@@ -869,6 +902,9 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     model.catch_frame = seg_frame;
     model.nv = nv;
     model.device_of_model = device_of_model;
+    model.groups = groups;
+    model.rest_pose = planner.wait_pose;
+    model.rest_pose_n = planner.wait_pose_n;
     std::copy(sb.q_min.begin(), sb.q_min.end(), model.q_min.begin());
     std::copy(sb.q_max.begin(), sb.q_max.end(), model.q_max.begin());
     std::copy(sb.qdot_max.begin(), sb.qdot_max.end(), model.qdot_max.begin());
@@ -894,6 +930,7 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     model.limits = sb.limits;
     std::copy(sb.qd_rating.begin(), sb.qd_rating.end(), model.qd_rating.begin());
     model.warm_pose = planner.wait_pose;
+    model.groups = groups;
     MpcDockingSegmentPlannerConstants consts;
     consts.t_arm_s = sb.t_arm_s;
     consts.control_dt = sb.control_dt;

@@ -1086,6 +1086,40 @@ using integrated_bringup::testfx::ShippedSimConfigs;
 // This runs the same on_configure the CM runs, on the file that ships, with
 // the devices and the model the file declares, on the SIM axis — which is the
 // one that refuses rather than parks.
+// E3-F02: no shipped profile declares joint groups or a whole-body term, so
+// every value the feature added parses to its default — "off", the problem
+// every core solved before (the goldens pin that problem).
+TEST_P(ShippedCatchingProfile, DeclaresNoJointGroupAndNoWholeBodyTerm) {
+  const auto& [profile, expected_dof] = GetParam();
+  (void)expected_dof;
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  ASSERT_TRUE(node["catching"]);
+  const rtc::catching::PlannerParams planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  EXPECT_TRUE(planner.groups.empty()) << profile;
+  const auto& mpc = planner.mpc_segment;
+  EXPECT_EQ(mpc.n_groups, 0);
+  EXPECT_EQ(mpc.ang_w_pre, 0.0);
+  EXPECT_EQ(mpc.ang_w_post, 0.0);
+  for (const auto& g : mpc.groups) {
+    EXPECT_EQ(g.w_vel, 0.0);
+    EXPECT_EQ(g.w_rest, 0.0);
+    EXPECT_EQ(g.pre_block, 1);
+    EXPECT_EQ(g.n_stop_blocks, 0);
+  }
+  const int nv = 7;  // the per-joint vectors' width; any width parses the same keys
+  const auto docking = rtc::catching::ParseMpcDockingSegmentParams(node["catching"], nv);
+  EXPECT_EQ(docking.n_groups, 0);
+  EXPECT_EQ(docking.core.w_vel.size(), 0);
+  EXPECT_EQ(docking.core.w_rest_stop.size(), 0);
+  EXPECT_EQ(docking.core.w_ang_pre, 0.0);
+  EXPECT_EQ(docking.core.w_ang_post, 0.0);
+  EXPECT_EQ(docking.core.n_groups, 0);
+  const auto nlp = rtc::catching::ParseNlpSearchParams(node["catching"], nv);
+  EXPECT_EQ(nlp.core.w_vel.size(), 0);
+  EXPECT_EQ(nlp.core.w_ang_post, 0.0);
+}
+
 TEST_P(ShippedCatchingProfile, ConfiguresAndIsArmableOnTheSimAxis) {
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
@@ -3172,6 +3206,222 @@ TEST(CatchingSearchChainConfigure, RefusesAChainThatDoesNotEndOnTheCatchFramesPa
   EXPECT_EQ(c.Configure(cfg, kChainName, "catching_search_chain_short"),
             DemoCatchingController::CallbackReturn::FAILURE);
   EXPECT_TRUE(ConfigureLog::Said("tip_link ('tool0')")) << ConfigureLog::All();
+}
+
+// ── E3-F02 (#641): `planner.groups` on the arm device ───────────────────────
+//
+// No shipped profile declares groups yet (G1's catching profile is E3-F05's);
+// these cases add a declaration to the shipped ur5e_p1b profile. What is judged
+// is the configure — the groups resolved on the device's joint names, the
+// mirror, the refusals — not what a group's weights do.
+
+// The shipped profile's tree with `groups` under `planner`.
+YAML::Node ShippedWithGroups(const YAML::Node& groups) {
+  YAML::Node yaml = ShippedWithPlanner(kChainProfile, /*planner=*/true, /*oracle=*/false);
+  yaml["catching"]["planner"]["groups"] = groups;
+  return yaml;
+}
+
+TEST(CatchingJointGroupsConfigure, GroupsResolveOnTheDeviceAndAreMirroredAcrossAReconfigure) {
+  const rtc_urdf_bridge::ModelConfig cfg =
+      integrated_bringup::testfx::ShippedModelConfig(kChainProfile);
+  const rclcpp_lifecycle::State prev;
+  // The control: no declaration, no group and no mirror.
+  {
+    SearchChainBringUp none;
+    ASSERT_EQ(none.Configure(cfg, "", "catching_groups_absent"),
+              DemoCatchingController::CallbackReturn::SUCCESS);
+    EXPECT_EQ(none.ctrl.GetJointGroups().n_groups, 0);
+    EXPECT_FALSE(none.node->has_parameter("planner.groups.names"));
+    ASSERT_EQ(none.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+  // Written out of device order on purpose: the map is by name.
+  const YAML::Node groups = YAML::Load(
+      "[{name: wrist, joints: [wrist_3_joint, wrist_1_joint, wrist_2_joint]},"
+      " {name: base, joints: [elbow_joint, shoulder_pan_joint, shoulder_lift_joint]}]");
+  // Each group's keys of the mpc segment planner, by name.
+  YAML::Node yaml = ShippedWithGroups(groups);
+  yaml["catching"]["planner"]["segment"]["mpc"]["groups"] =
+      YAML::Load("{wrist: {w_vel: 0.2, blocks: {pre: 2}}, base: {w_rest: 1.5}}");
+  SearchChainBringUp c;
+  const ConfigureLog log;
+  ASSERT_EQ(c.Configure(cfg, "", "catching_groups", yaml),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << ConfigureLog::All();
+  const auto resolved = [&c](const char* when) {
+    SCOPED_TRACE(when);
+    EXPECT_FALSE(c.ctrl.IsSimOnlyDisabled()) << ConfigureLog::All();
+    const rtc::catching::JointGroups& g = c.ctrl.GetJointGroups();
+    ASSERT_EQ(g.n_groups, 2);
+    ASSERT_EQ(c.arm_joints.size(), 6U);
+    for (std::size_t d = 0; d < c.arm_joints.size(); ++d) {
+      const bool wrist = c.arm_joints[d].rfind("wrist_", 0) == 0;
+      EXPECT_EQ(g.GroupOf(static_cast<int>(d)), wrist ? 0 : 1) << c.arm_joints[d];
+    }
+    EXPECT_EQ(c.node->get_parameter("planner.groups.names").as_string_array(),
+              (std::vector<std::string>{"wrist", "base"}));
+    EXPECT_EQ(
+        c.node->get_parameter("planner.groups.base.joints").as_string_array(),
+        (std::vector<std::string>{"elbow_joint", "shoulder_pan_joint", "shoulder_lift_joint"}));
+    EXPECT_EQ(c.node->get_parameter("planner.segment.mpc.groups.wrist.w_vel").as_double(), 0.2);
+    EXPECT_EQ(c.node->get_parameter("planner.segment.mpc.groups.wrist.blocks.pre").as_int(), 2);
+    EXPECT_EQ(c.node->get_parameter("planner.segment.mpc.groups.base.w_rest").as_double(), 1.5);
+    EXPECT_EQ(c.node->get_parameter("planner.segment.mpc.groups.base.w_vel").as_double(), 0.0);
+    // The planner's cores: each model joint its group's weights.
+    const rtc::catching::MpcSegmentPlanner* mpc = c.ctrl.GetMpcSegmentPlannerForTesting();
+    ASSERT_NE(mpc, nullptr) << ConfigureLog::All();
+    const rtc::catching::MpcSegmentCoreParams& cp = mpc->ApproachCoreParams(1);
+    ASSERT_EQ(cp.w_rest.size(), mpc->Nv());
+    for (int m = 0; m < mpc->Nv(); ++m) {
+      const bool wrist = mpc->GroupOfModel(m) == 0;
+      EXPECT_EQ(cp.w_vel[m], wrist ? 0.2 : 0.0) << m;
+      EXPECT_EQ(cp.w_rest[m], wrist ? 0.0 : 1.5) << m;
+    }
+    EXPECT_TRUE(mpc->ApproachCore(1).RestTermActive());
+  };
+  ASSERT_NO_FATAL_FAILURE(resolved("the first configure"));
+  ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(c.ConfigureAgain(), DemoCatchingController::CallbackReturn::SUCCESS)
+      << ConfigureLog::All();
+  ASSERT_NO_FATAL_FAILURE(resolved("a configure after a cleanup"));
+  ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST(CatchingJointGroupsConfigure, RefusesAJointOfNoGroupAndOneTheDeviceLacks) {
+  const rtc_urdf_bridge::ModelConfig cfg =
+      integrated_bringup::testfx::ShippedModelConfig(kChainProfile);
+
+  struct Case {
+    const char* groups;
+    const char* says;
+  };
+
+  for (const Case& k : {
+           Case{"[{name: a, joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint]},"
+                " {name: b, joints: [wrist_1_joint, wrist_2_joint, wrist_9_joint]}]",
+                "planner.groups: 'planner.groups[1].joints' names 'wrist_9_joint', which is not "
+                "a joint of the arm device"},
+           Case{"[{name: a, joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint]},"
+                " {name: b, joints: [wrist_1_joint, wrist_2_joint]}]",
+                "planner.groups: 'planner.groups' leaves joint 'wrist_3_joint' in no group"},
+       }) {
+    SCOPED_TRACE(k.groups);
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    EXPECT_EQ(
+        c.Configure(cfg, "", "catching_groups_refused", ShippedWithGroups(YAML::Load(k.groups))),
+        DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_TRUE(ConfigureLog::Said(k.says)) << ConfigureLog::All();
+  }
+}
+
+// D9′: the angular-momentum term reads every joint of the segment model, so a
+// joint the search's plan leaves out (the chain locks shoulder_pan_joint) needs
+// its group's rest weight — refused by the group's name without one.
+TEST(CatchingJointGroupsConfigure, TheAngularTermNeedsARestWeightOnAGroupAPlanLeavesOut) {
+  const rtc_urdf_bridge::ModelConfig chain_cfg =
+      ModelWithSearchChain("shoulder_link", "l_palm_link");
+  const YAML::Node groups = YAML::Load(
+      "[{name: base, joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint]},"
+      " {name: wrist, joints: [wrist_1_joint, wrist_2_joint, wrist_3_joint]}]");
+  const auto profile = [&groups](bool with_groups, double w_rest_base) {
+    YAML::Node yaml =
+        with_groups ? ShippedWithGroups(groups) : ShippedWithPlanner(kChainProfile, true, false);
+    YAML::Node mpc = yaml["catching"]["planner"]["segment"]["mpc"];
+    mpc["cost"]["angular_momentum"] = YAML::Load("{w_pre: 0.01, w_post: 1.0, scale: 10.0}");
+    if (with_groups && w_rest_base > 0.0) {
+      mpc["groups"]["base"]["w_rest"] = w_rest_base;
+    }
+    return yaml;
+  };
+  const rclcpp_lifecycle::State prev;
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    EXPECT_EQ(c.Configure(chain_cfg, kChainName, "catching_d9_unheld", profile(true, 0.0)),
+              DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_TRUE(ConfigureLog::Said("leaves out joints of group 'base' with no rest weight"))
+        << ConfigureLog::All();
+  }
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    EXPECT_EQ(c.Configure(chain_cfg, kChainName, "catching_d9_no_groups", profile(false, 0.0)),
+              DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_TRUE(ConfigureLog::Said("leaves out joints of the arm (no planner.groups)"))
+        << ConfigureLog::All();
+  }
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    ASSERT_EQ(c.Configure(chain_cfg, kChainName, "catching_d9_held", profile(true, 1.0)),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+    const rtc::catching::MpcSegmentPlanner* mpc = c.ctrl.GetMpcSegmentPlannerForTesting();
+    ASSERT_NE(mpc, nullptr) << ConfigureLog::All();
+    EXPECT_TRUE(mpc->ApproachCore(1).AngularMomentumTermActive());
+    EXPECT_TRUE(mpc->ApproachCore(1).RestTermActive());
+    EXPECT_EQ(c.node->get_parameter("planner.segment.mpc.cost.angular_momentum.w_post").as_double(),
+              1.0);
+    ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+  // The control: one model for both — a plan holds every joint.
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    EXPECT_EQ(c.Configure(integrated_bringup::testfx::ShippedModelConfig(kChainProfile), "",
+                          "catching_d9_whole", profile(false, 0.0)),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+  }
+}
+
+// D9′ for the docking planner, per node range: the angular term on the stop
+// nodes needs the left-out group's stop rest; the pre-catch half is w_q_nom
+// (shipped 0.1 on every joint).
+TEST(CatchingJointGroupsConfigure, TheDockingAngularTermNeedsTheStopRestOfAGroupAPlanLeavesOut) {
+  const rtc_urdf_bridge::ModelConfig chain_cfg =
+      ModelWithSearchChain("shoulder_link", "l_palm_link");
+  const auto profile = [](double w_rest_stop) {
+    YAML::Node yaml = ShippedWithSelection(kChainProfile, "nlp", "mpc_docking", {});
+    yaml["catching"]["planner"]["groups"] = YAML::Load(
+        "[{name: base, joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint]},"
+        " {name: wrist, joints: [wrist_1_joint, wrist_2_joint, wrist_3_joint]}]");
+    YAML::Node dock = yaml["catching"]["planner"]["segment"]["mpc_docking"];
+    dock["core"]["cost"]["angular_momentum"] = YAML::Load("{w_pre: 0.01, w_post: 1.0, scale: 10}");
+    if (w_rest_stop > 0.0) {
+      dock["groups"]["base"]["w_rest_stop"] = w_rest_stop;
+    }
+    return yaml;
+  };
+  const rclcpp_lifecycle::State prev;
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    EXPECT_EQ(c.Configure(chain_cfg, kChainName, "catching_d9_docking_unheld", profile(0.0)),
+              DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_TRUE(
+        ConfigureLog::Said("the angular-momentum term on the stop nodes reads joints a "
+                           "plan of the search model leaves out (group 'base')"))
+        << ConfigureLog::All();
+  }
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    ASSERT_EQ(c.Configure(chain_cfg, kChainName, "catching_d9_docking_held", profile(1.0)),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+    EXPECT_FALSE(c.ctrl.IsSimOnlyDisabled()) << ConfigureLog::All();
+    const rtc::catching::MpcDockingSegmentPlanner* dock =
+        c.ctrl.GetMpcDockingSegmentPlannerForTesting();
+    ASSERT_NE(dock, nullptr) << ConfigureLog::All();
+    EXPECT_TRUE(dock->CoreFor(1).AngularMomentumTermActive());
+    EXPECT_TRUE(dock->CoreFor(1).StopRestTermActive());
+    EXPECT_EQ(
+        c.node->get_parameter("planner.segment.mpc_docking.groups.base.w_rest_stop").as_double(),
+        1.0);
+    ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
 }
 
 // ── 5. S5.1: the P-1 minimum E-STOP/fault contract (E-8) ────────────────────

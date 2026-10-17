@@ -1453,4 +1453,148 @@ TEST(DockingConfigCheck, TheEntranceLeadIsTheHandsLeadLessTheFlightFromTheEntran
   EXPECT_TRUE(std::isnan(EntranceCloseLead(0.1, r.hand, r.search.core)));
 }
 
+// ── E3-F02 (#641): joint groups and the whole-body terms ─────────────────────
+
+std::string Refusal(const std::function<void()>& f) {
+  try {
+    f();
+  } catch (const std::invalid_argument& e) {
+    return e.what();
+  }
+  return {};
+}
+
+const std::vector<rtc::catching::JointGroupSpec> kGroups = {{"a", {"j0", "j1"}},
+                                                            {"b", {"j2", "j3", "j4", "j5"}}};
+
+TEST(DockingParamsWholeBody, TheSegmentPlannersGroupsAndAngularKeysParse) {
+  const YAML::Node none = YAML::Load("{planner: {segment: {mpc_docking: {}}}}");
+  const MpcDockingSegmentPlannerParams d0 = ParseMpcDockingSegmentParams(none, kNv, kGroups);
+  EXPECT_EQ(d0.n_groups, 2);
+  for (int g = 0; g < 2; ++g) {
+    const auto& gp = d0.groups[static_cast<std::size_t>(g)];
+    EXPECT_TRUE(std::isnan(gp.r_tau) && std::isnan(gp.r_jerk) && std::isnan(gp.r_jerk_stop) &&
+                std::isnan(gp.w_q_nom))
+        << "not given: the core's own value";
+    EXPECT_EQ(gp.w_vel, 0.0);
+    EXPECT_EQ(gp.w_rest_stop, 0.0);
+    EXPECT_EQ(gp.pre_block, 1);
+    EXPECT_EQ(gp.n_stop_blocks, 0);
+  }
+  EXPECT_EQ(d0.core.w_ang_pre, 0.0);
+  EXPECT_EQ(d0.core.w_ang_post, 0.0);
+  const YAML::Node on = YAML::Load(
+      "{planner: {segment: {mpc_docking: {stop: {n_nodes: 7, blocks: [1, 1, 2, 3]}, groups: {b: "
+      "{r_tau: 0, r_jerk: 3, r_jerk_stop: 4, w_q_nom: 2, w_vel: 0.5, w_rest_stop: 1.5, blocks: "
+      "{pre: 2, stop: [2, 2, 3]}}}, core: {cost: {angular_momentum: {w_pre: 0.01, w_post: 1, "
+      "scale: 10}}}}}}}");
+  const MpcDockingSegmentPlannerParams d = ParseMpcDockingSegmentParams(on, kNv, kGroups);
+  EXPECT_TRUE(std::isnan(d.groups[0].r_tau));
+  const auto& b = d.groups[1];
+  EXPECT_EQ(b.r_tau, 0.0);
+  EXPECT_EQ(b.r_jerk, 3.0);
+  EXPECT_EQ(b.r_jerk_stop, 4.0);
+  EXPECT_EQ(b.w_q_nom, 2.0);
+  EXPECT_EQ(b.w_vel, 0.5);
+  EXPECT_EQ(b.w_rest_stop, 1.5);
+  EXPECT_EQ(b.pre_block, 2);
+  ASSERT_EQ(b.n_stop_blocks, 3);
+  EXPECT_EQ(b.stop_blocks[2], 3);
+  EXPECT_EQ(d.core.w_ang_pre, 0.01);
+  EXPECT_EQ(d.core.w_ang_post, 1.0);
+  EXPECT_EQ(d.core.ang_scale, 10.0);
+}
+
+TEST(DockingParamsWholeBody, TheSegmentPlannersKeysAreRefusedByName) {
+  const std::string head =
+      "{planner: {segment: {mpc_docking: {stop: {n_nodes: 7, blocks: [1, 1, 2, 3]}, ";
+
+  struct Case {
+    const char* map;
+    const char* says;
+  };
+
+  for (const Case& c : {
+           Case{"groups: 3", "'planner.segment.mpc_docking.groups' must be a map"},
+           Case{"groups: {c: {}}",
+                "'planner.segment.mpc_docking.groups.c' names no group of 'planner.groups'"},
+           Case{"groups: {a: 1}", "'planner.segment.mpc_docking.groups.a' must be a map"},
+           Case{"groups: {a: {r_acc: 1}}", "planner.segment.mpc_docking.groups.a.r_acc"},
+           Case{"groups: {a: {r_jerk: 0}}", "planner.segment.mpc_docking.groups.a.r_jerk"},
+           Case{"groups: {a: {w_vel: -1}}", "planner.segment.mpc_docking.groups.a.w_vel"},
+           Case{"groups: {a: {w_rest_stop: 2.0e4}}",
+                "planner.segment.mpc_docking.groups.a.w_rest_stop"},
+           Case{"groups: {a: {blocks: {pre: 0}}}",
+                "planner.segment.mpc_docking.groups.a.blocks.pre"},
+           Case{"groups: {a: {blocks: {stop: [3, 4]}}}",
+                "'planner.segment.mpc_docking.groups.a.blocks.stop' must be a sequence of 3.."},
+           Case{"groups: {a: {blocks: {stop: [2, 2, 2]}}}",
+                "'planner.segment.mpc_docking.groups.a.blocks.stop' sums to 6 but stop.n_nodes is "
+                "7"},
+           Case{"groups: {a: {blocks: {stop: [2, 2.5, 2.5]}}}",
+                "planner.segment.mpc_docking.groups.a.blocks.stop[1]"},
+           Case{"core: {cost: {angular_momentum: {w: 1}}}",
+                "planner.segment.mpc_docking.core.cost.angular_momentum.w"},
+           Case{"core: {cost: {angular_momentum: {scale: 0}}}",
+                "planner.segment.mpc_docking.core.cost.angular_momentum.scale"},
+           Case{"core: {cost: {angular_momentum: {w_post: 2.0e4}}}",
+                "planner.segment.mpc_docking.core.cost.angular_momentum.w_post"},
+       }) {
+    SCOPED_TRACE(c.map);
+    const std::string m = Refusal([&] {
+      (void)ParseMpcDockingSegmentParams(YAML::Load(head + c.map + "}}}}"), kNv, kGroups);
+    });
+    EXPECT_NE(m.find(c.says), std::string::npos) << m;
+  }
+  // Without planner.groups no group name exists.
+  EXPECT_NE(Refusal([&] {
+              (void)ParseMpcDockingSegmentParams(
+                  YAML::Load("{planner: {segment: {mpc_docking: {groups: {a: {}}}}}}"), kNv);
+            }).find("names no group of 'planner.groups'"),
+            std::string::npos);
+  // One group is the whole arm, which the core blocks as without groups: its
+  // own blocks would be ignored, so they are refused — its weights are not.
+  const std::vector<rtc::catching::JointGroupSpec> one = {
+      {"all", {"j0", "j1", "j2", "j3", "j4", "j5"}}};
+  for (const char* blocks : {"{pre: 2}", "{stop: [2, 2, 3]}"}) {
+    SCOPED_TRACE(blocks);
+    EXPECT_NE(Refusal([&] {
+                (void)ParseMpcDockingSegmentParams(
+                    YAML::Load(head + "groups: {all: {blocks: " + blocks + "}}}}}}"), kNv, one);
+              }).find("'planner.segment.mpc_docking.groups.all.blocks': with one group"),
+              std::string::npos);
+  }
+  const MpcDockingSegmentPlannerParams weights = ParseMpcDockingSegmentParams(
+      YAML::Load(head + "groups: {all: {w_vel: 0.5, blocks: {}}}}}}}"), kNv, one);
+  EXPECT_EQ(weights.groups[0].w_vel, 0.5);
+}
+
+// D10′: the search plans the chain alone — its map takes neither groups nor a
+// whole-body term, and says where they belong.
+TEST(DockingParamsWholeBody, TheSearchRefusesGroupsAndTheAngularTerm) {
+  const std::string groups = Refusal([] {
+    (void)ParseNlpSearchParams(YAML::Load("{planner: {search: {nlp: {groups: {a: {}}}}}}"), kNv);
+  });
+  EXPECT_NE(groups.find("'planner.search.nlp.groups': the search does not read joint groups"),
+            std::string::npos)
+      << groups;
+  const std::string ang = Refusal([] {
+    (void)ParseNlpSearchParams(
+        YAML::Load("{planner: {search: {nlp: {core: {cost: {angular_momentum: {w_post: 1}}}}}}}"),
+        kNv);
+  });
+  EXPECT_NE(ang.find("'planner.search.nlp.core.cost.angular_momentum' is a whole-body term"),
+            std::string::npos)
+      << ang;
+  EXPECT_NE(ang.find("planner.segment.mpc_docking.core.cost.angular_momentum"), std::string::npos);
+  // The control: the same core under the segment planner parses.
+  EXPECT_EQ(Refusal([] {
+              (void)ParseMpcDockingSegmentParams(
+                  YAML::Load("{planner: {segment: {mpc_docking: {core: {cost: {angular_momentum: "
+                             "{w_post: 1}}}}}}}"),
+                  kNv);
+            }),
+            "");
+}
+
 }  // namespace

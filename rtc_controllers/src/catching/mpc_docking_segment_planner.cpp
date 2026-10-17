@@ -101,6 +101,77 @@ void WarmUpStageHook(MpcDockingStage stage, bool begin, void* user) noexcept {
   }
 }
 
+// Per joint group, the core's per-joint weights for that group's joints and
+// the whole-body weights (E3-F02): a value the group does not give keeps the
+// core's own; a weight vector left all zero is the core's "off" (empty).
+void ApplyGroupWeights(const MpcDockingSegmentPlannerParams& p,
+                       const std::array<std::int8_t, kMaxPlanNv>& group_of_model, int n,
+                       MpcDockingSegmentCoreParams& c) {
+  if (p.n_groups == 0) {
+    return;
+  }
+  const auto spread = [&](Eigen::VectorXd& dst, const Eigen::VectorXd& fallback,
+                          double DockingGroupParams::*field, bool zero_is_off) {
+    bool any = false;
+    for (int g = 0; g < p.n_groups; ++g) {
+      any = any || !std::isnan(p.groups[U(g)].*field);
+    }
+    if (!any) {
+      return;
+    }
+    Eigen::VectorXd v = dst.size() == n ? dst : fallback;
+    for (int m = 0; m < n; ++m) {
+      const double x = p.groups[U(group_of_model[U(m)])].*field;
+      if (!std::isnan(x)) {
+        v[m] = x;
+      }
+    }
+    if (zero_is_off && v.maxCoeff() == 0.0) {
+      dst.resize(0);
+    } else {
+      dst = v;
+    }
+  };
+  const Eigen::VectorXd zeros = Eigen::VectorXd::Zero(n);
+  const Eigen::VectorXd ones = Eigen::VectorXd::Ones(n);
+  spread(c.r_tau, zeros, &DockingGroupParams::r_tau, true);
+  spread(c.r_jerk, ones, &DockingGroupParams::r_jerk, false);
+  // r_jerk_stop empty = r_jerk: a group that sets only r_jerk moves both.
+  spread(c.r_jerk_stop, c.r_jerk.size() == n ? c.r_jerk : ones, &DockingGroupParams::r_jerk_stop,
+         false);
+  spread(c.w_q_nom, zeros, &DockingGroupParams::w_q_nom, true);
+  const auto whole_body = [&](Eigen::VectorXd& dst, double DockingGroupParams::*field) {
+    Eigen::VectorXd v = zeros;
+    for (int m = 0; m < n; ++m) {
+      v[m] = p.groups[U(group_of_model[U(m)])].*field;
+    }
+    if (v.maxCoeff() > 0.0) {
+      dst = v;
+    }
+  };
+  whole_body(c.w_vel, &DockingGroupParams::w_vel);
+  whole_body(c.w_rest_stop, &DockingGroupParams::w_rest_stop);
+}
+
+// Group g's partition for the core of n_pre pre-catch intervals (E3-F02, D11):
+// the pre-catch intervals in blocks of `blocks.pre`, the remainder joining the
+// last; then the group's stop partition (`stop.blocks` without one).
+BlockPattern GroupBlocks(const MpcDockingSegmentPlannerParams& p, int g, int n_pre) {
+  const DockingGroupParams& gp = p.groups[U(g)];
+  BlockPattern b;
+  const int count = std::max(1, n_pre / gp.pre_block);
+  for (int i = 0; i < count; ++i) {
+    b.block_sizes[U(b.n_blocks++)] =
+        i + 1 < count ? gp.pre_block : n_pre - gp.pre_block * (count - 1);
+  }
+  const bool own = gp.n_stop_blocks > 0;
+  const int n_stop = own ? gp.n_stop_blocks : p.n_stop_blocks;
+  for (int i = 0; i < n_stop && b.n_blocks < kMaxSegmentNodes; ++i) {
+    b.block_sizes[U(b.n_blocks++)] = own ? gp.stop_blocks[U(i)] : p.stop_block_sizes[U(i)];
+  }
+  return b;
+}
+
 }  // namespace
 
 bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& model,
@@ -168,9 +239,25 @@ bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& mo
     return fail("mpc_docking planner: approach.rest_tol or a publish threshold is out of range");
   }
 
+  // The joint groups (E3-F02): the device's, read in model order.
+  if (model.groups.n_groups != p.n_groups) {
+    return fail("mpc_docking planner: the arm's joint groups (" +
+                std::to_string(model.groups.n_groups) +
+                ") are not the ones planner.segment.mpc_docking was parsed with (" +
+                std::to_string(p.n_groups) + ")");
+  }
+  std::array<std::int8_t, kMaxPlanNv> group_of_model{};
+  if (!GroupsOfModel(model.groups, std::span<const int>(model.device_of_model.data(), U(model.nv)),
+                     model.nv, group_of_model)) {
+    return fail("mpc_docking planner: device_of_model is outside the arm device");
+  }
+  MpcDockingSegmentCoreParams base = p.core;
+  ApplyGroupWeights(p, group_of_model, model.nv, base);
+
   params_ = p;
   clock_ = clock;
   nv_ = model.nv;
+  group_of_model_ = group_of_model;
   device_of_model_ = model.device_of_model;
   model_set_ = model_set;
   qd_rating_ = model.qd_rating;
@@ -181,11 +268,13 @@ bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& mo
   t_arm_ns_ = t_arm_ns;
   h_ns_ = h_ns;
 
+  core_params_.clear();
+  core_params_.reserve(U(p.n_pre_max));
   cores_.reserve(U(p.n_pre_max));
   inputs_.resize(U(p.n_pre_max));
   results_.resize(U(p.n_pre_max));
   for (int n_pre = 1; n_pre <= p.n_pre_max; ++n_pre) {
-    MpcDockingSegmentCoreParams cp = p.core;
+    MpcDockingSegmentCoreParams cp = base;
     cp.n_pre = n_pre;
     cp.dt_pre = static_cast<double>(dt_pre_ns_) / kNsPerSec;
     cp.n_stop = p.n_stop;
@@ -194,6 +283,15 @@ bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& mo
     cp.block_sizes.fill(1);  // one block per pre-catch interval
     for (int b = 0; b < p.n_stop_blocks; ++b) {
       cp.block_sizes[U(n_pre + b)] = p.stop_block_sizes[U(b)];
+    }
+    // The joint groups' own partitions (equal ones share a block class, so
+    // groups without keys are the problem without groups).
+    cp.n_groups = p.n_groups;
+    if (p.n_groups > 0) {
+      cp.joint_group = group_of_model;
+      for (int g = 0; g < p.n_groups; ++g) {
+        cp.group_blocks[U(g)] = GroupBlocks(p, g, n_pre);
+      }
     }
     // The catch instant is the plan's: this planner does not move it.
     cp.catch_time_variable = false;
@@ -205,6 +303,7 @@ bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& mo
                   std::to_string(n_pre) +
                   " refused its grid or parameters: " + MpcDockingReasonName(why));
     }
+    core_params_.push_back(cp);
     core->ResizeInput(inputs_[U(n_pre - 1)]);
     core->ResizeResult(results_[U(n_pre - 1)]);
     cores_.push_back(std::move(core));

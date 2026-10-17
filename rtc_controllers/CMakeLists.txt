@@ -108,6 +108,9 @@ add_library(rtc_controllers STATIC
   # What only shows with the docking maps side by side (one check for a
   # controller's configure and the offline whole-wake batch).
   src/catching/docking_config.cpp
+  # dynamic_catching E3-F02 (#641): `planner.groups` resolved against the arm
+  # device — the joint groups the segment cores weight and block per group.
+  src/catching/joint_groups.cpp
   src/catching/planner_cycle.cpp
   src/catching/grid_catch_search.cpp
   # dynamic_catching MPC E1-F01 (#627): the segment MPC numeric core — a jerk-input
@@ -646,6 +649,26 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
+  # dynamic_catching E3-F02 (#641): the segment MPC core with joint groups —
+  # per-group move blocking and the whole-body terms, on a synthetic tree.
+  ament_add_gtest(test_catching_mpc_segment_core_groups
+    test/test_catching_mpc_segment_core_groups.cpp TIMEOUT 600)
+  target_link_libraries(test_catching_mpc_segment_core_groups rtc_controllers)
+  target_include_directories(test_catching_mpc_segment_core_groups PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_mpc_segment_core_groups PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_mpc_segment_core_groups PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
+  # ... and the segment planners with joint groups, on a synthetic tree whose
+  # device order is the reverse of the model's.
+  ament_add_gtest(test_catching_segment_groups test/test_catching_segment_groups.cpp TIMEOUT 600)
+  target_link_libraries(test_catching_segment_groups rtc_controllers)
+  target_include_directories(test_catching_segment_groups PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_definitions(test_catching_segment_groups PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
   # dynamic_catching E1-F13 (#739): the mpc_docking relative-state seams — each
   # derivative against a finite difference, the crossing-plane covariance
   # against a Monte Carlo, the reference's sanity cases. The seams call into
@@ -675,6 +698,18 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_mpc_docking_segment_core PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
+  # dynamic_catching E3-F02 (#641): the docking core's whole-body terms — off,
+  # the convergence contract, the values on the held coefficients, allocation.
+  ament_add_gtest(test_catching_mpc_docking_segment_core_wholebody
+    test/test_catching_mpc_docking_segment_core_wholebody.cpp TIMEOUT 900)
+  target_link_libraries(test_catching_mpc_docking_segment_core_wholebody rtc_controllers)
+  target_include_directories(test_catching_mpc_docking_segment_core_wholebody PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_mpc_docking_segment_core_wholebody PRIVATE
+    -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_mpc_docking_segment_core_wholebody PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
   # dynamic_catching E1-F14 (#740): the NLP catch search on synthetic
   # predictions — the choice against an exhaustive solve by the core, order
@@ -753,6 +788,11 @@ if(BUILD_TESTING)
   # dynamic_catching E1-F16: the docking keys (`robot.hand.docking.*`,
   # `planner.search.nlp.*`, `planner.segment.mpc_docking.*`). Pure parsing — no
   # model, no solver.
+  # dynamic_catching E3-F02 (#641): `planner.groups` — parsed, resolved
+  # against the device's joints, mapped to model order.
+  ament_add_gtest(test_catching_joint_groups test/test_catching_joint_groups.cpp)
+  target_link_libraries(test_catching_joint_groups rtc_controllers)
+  target_include_directories(test_catching_joint_groups PRIVATE ${rtc_base_test_include})
   ament_add_gtest(test_catching_docking_params test/test_catching_docking_params.cpp)
   target_link_libraries(test_catching_docking_params rtc_controllers)
   target_include_directories(test_catching_docking_params PRIVATE ${rtc_base_test_include})
@@ -783,6 +823,15 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_approach_cycle PRIVATE -Wno-mismatched-new-delete)
   target_compile_definitions(test_catching_approach_cycle PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
+  # dynamic_catching E3-F02 (#641): the whole-body terms through whole catches
+  # of the planner cycle (search on a chain, segments on the tree).
+  ament_add_gtest(test_catching_wholebody_cycle test/test_catching_wholebody_cycle.cpp TIMEOUT 600)
+  target_link_libraries(test_catching_wholebody_cycle rtc_controllers)
+  target_include_directories(test_catching_wholebody_cycle PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_definitions(test_catching_wholebody_cycle PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
   ament_add_gtest(test_catch_pose_ik_params test/test_catch_pose_ik_params.cpp)

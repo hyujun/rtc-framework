@@ -39,8 +39,15 @@ constexpr double kMaxCloseTimingS = 5.0;
 // model order (empty = the core's all-ones); the preconditioner and the KKT
 // backend are not design values and keep the core's own setting.
 void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
-                     const Eigen::VectorXd& jerk_weight_model) {
+                     const Eigen::VectorXd& jerk_weight_model, const Eigen::VectorXd& w_vel,
+                     const Eigen::VectorXd& w_rest, const Eigen::VectorXd& q_rest) {
   mp.jerk_weight = jerk_weight_model;
+  mp.w_vel = w_vel;
+  mp.w_rest = w_rest;
+  mp.q_rest = q_rest;
+  mp.w_ang_pre = p.ang_w_pre;
+  mp.w_ang_post = p.ang_w_post;
+  mp.ang_scale = p.ang_scale;
   mp.u_scale = p.u_scale;
   mp.w_delta = p.w_delta;
   mp.rho_tau = p.rho_tau;
@@ -53,6 +60,51 @@ void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
   mp.solver.max_iter_in = p.solver_max_iter_in;
   mp.solver.eps_abs = p.solver_eps_abs;
   mp.solver.eps_rel = p.solver_eps_rel;
+}
+
+// Group g's partition for a core with n_pre pre-catch nodes at replan instance
+// k (E3-F02, D11): the pre-catch nodes in blocks of `blocks.pre`, the remainder
+// joining the last; then the group's stop partition at k.
+bool GroupBlocks(const MpcSegmentPlannerParams& p, int g, int n_pre, int k, BlockPattern& out) {
+  BlockPattern b;
+  if (n_pre > 0) {
+    const int per = p.groups[U(g)].pre_block;
+    const int count = std::max(1, n_pre / per);
+    for (int i = 0; i < count; ++i) {
+      b.block_sizes[U(b.n_blocks++)] = i + 1 < count ? per : n_pre - per * (count - 1);
+    }
+  }
+  std::array<int, kMaxSegmentNodes> base{};
+  int n_base = 0;
+  MpcSegmentGroupStopBase(p, g, base, n_base);
+  std::array<int, kMaxSegmentNodes> stop{};
+  int n_stop = 0;
+  if (!MpcSegmentBlocksFor(base, n_base, p.n_nodes, k, stop, n_stop) ||
+      b.n_blocks + n_stop > kMaxSegmentNodes) {
+    return false;
+  }
+  for (int i = 0; i < n_stop; ++i) {
+    b.block_sizes[U(b.n_blocks++)] = stop[U(i)];
+  }
+  out = b;
+  return true;
+}
+
+// The groups of a core: none, or every group's own partition (equal ones
+// share a block class, so groups without keys are the problem without groups).
+bool ApplyGroupBlocks(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
+                      const std::array<std::int8_t, kMaxPlanNv>& group_of_model, int n_pre, int k) {
+  mp.n_groups = p.n_groups;
+  if (p.n_groups == 0) {
+    return true;
+  }
+  mp.joint_group = group_of_model;
+  for (int g = 0; g < p.n_groups; ++g) {
+    if (!GroupBlocks(p, g, n_pre, k, mp.group_blocks[U(g)])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -151,6 +203,16 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
     return fail("device_of_model is not a permutation of the arm joints");
   }
   const int n = model.nv;
+  // The joint groups (E3-F02): the device's, read in model order.
+  if (model.groups.n_groups != params.n_groups) {
+    return fail("the arm's joint groups (" + std::to_string(model.groups.n_groups) +
+                ") are not the ones planner.segment.mpc was parsed with (" +
+                std::to_string(params.n_groups) + ")");
+  }
+  if (!GroupsOfModel(model.groups, std::span<const int>(model.device_of_model.data(), U(n)), n,
+                     group_of_model_)) {
+    return fail("device_of_model is outside the arm device");
+  }
   // `cost.jerk_weight` is one entry per ARM joint in device order; the core
   // wants model order. Empty keeps the core's all-ones.
   jerk_weight_model_.resize(0);
@@ -163,6 +225,35 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
     jerk_weight_model_.resize(n);
     for (int m = 0; m < n; ++m) {
       jerk_weight_model_[m] = params.jerk_weight[U(model.device_of_model[U(m)])];
+    }
+  }
+  // The groups' whole-body weights, spread over their joints (E3-F02); the
+  // rest posture is the wait pose's (device order).
+  w_vel_model_.resize(0);
+  w_rest_model_.resize(0);
+  q_rest_model_.resize(0);
+  bool any_vel = false;
+  bool any_rest = false;
+  for (int g = 0; g < params.n_groups; ++g) {
+    any_vel = any_vel || params.groups[U(g)].w_vel > 0.0;
+    any_rest = any_rest || params.groups[U(g)].w_rest > 0.0;
+  }
+  if (any_rest && model.rest_pose_n != n) {
+    return fail("a group's planner.segment.mpc.groups.*.w_rest > 0 needs planner.wait_pose (" +
+                std::to_string(model.rest_pose_n) + " entries, the arm has " + std::to_string(n) +
+                ")");
+  }
+  if (any_vel || any_rest) {
+    w_vel_model_.setZero(n);
+    w_rest_model_.setZero(n);
+    q_rest_model_.setZero(n);
+    for (int m = 0; m < n; ++m) {
+      const MpcSegmentGroupParams& gp = params.groups[U(group_of_model_[U(m)])];
+      w_vel_model_[m] = gp.w_vel;
+      w_rest_model_[m] = gp.w_rest;
+      if (any_rest) {
+        q_rest_model_[m] = model.rest_pose[U(model.device_of_model[U(m)])];
+      }
     }
   }
   MpcSegmentCoreLimits limits;
@@ -185,10 +276,11 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   results_.resize(U(params.k_max + 1));
   for (int k = 0; k <= params.k_max; ++k) {
     MpcSegmentCoreParams mp;
-    ApplyCoreDesign(mp, params, jerk_weight_model_);
+    ApplyCoreDesign(mp, params, jerk_weight_model_, w_vel_model_, w_rest_model_, q_rest_model_);
     mp.n_nodes = params.n_nodes - k;
     mp.dt = static_cast<double>(params.DtNs()) * 1e-9;
-    if (!MpcSegmentBlocksFor(params, k, mp.block_sizes, mp.n_blocks)) {
+    if (!MpcSegmentBlocksFor(params, k, mp.block_sizes, mp.n_blocks) ||
+        !ApplyGroupBlocks(mp, params, group_of_model_, 0, k)) {
       return fail("replan instance " + std::to_string(k) + " has fewer than 3 blocks");
     }
     mp.eta_v = consts.eta_v;
@@ -311,7 +403,7 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
   catch_params_.reserve(count);
   for (int j = 1; j <= params.n_pre_max; ++j) {
     MpcSegmentCoreParams mp;
-    ApplyCoreDesign(mp, params, jerk_weight_model_);
+    ApplyCoreDesign(mp, params, jerk_weight_model_, w_vel_model_, w_rest_model_, q_rest_model_);
     mp.n_pre = j;
     mp.dt_pre = static_cast<double>(dt_pre_ns_) * 1e-9;
     mp.n_nodes = params.n_nodes;
@@ -324,6 +416,11 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
       mp.block_sizes[U(j + b)] = stop_blocks[U(b)];
     }
     mp.n_blocks = j + stop_n_blocks;
+    if (!ApplyGroupBlocks(mp, params, group_of_model_, j, 0)) {
+      why = "the joint groups' blocks for the catch core n_pre = " + std::to_string(j) +
+            " exceed the block capacity";
+      return false;
+    }
     mp.catch_terms = true;
     mp.w_axis = params.w_axis;
     mp.w_v_par = params.w_v_par;

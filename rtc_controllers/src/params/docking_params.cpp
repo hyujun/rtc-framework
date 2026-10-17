@@ -4,10 +4,12 @@
 #include "catching_yaml_read.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <initializer_list>
 #include <limits>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -546,7 +548,7 @@ void ApplyHandDocking(const HandDockingParams& hand, double t_close_e2e_s, doubl
 namespace {
 
 void ReadCore(const Reader& rd, const YAML::Node& m, const std::string& path, int nv,
-              MpcDockingSegmentCoreParams& core) {
+              MpcDockingSegmentCoreParams& core, bool whole_body) {
   rd.CheckKeys(m, path,
                {"u_scale", "cost", "catch", "approach", "capture", "timing", "stop", "rows",
                 "catch_time", "sqp", "init", "solver"});
@@ -574,8 +576,9 @@ void ReadCore(const Reader& rd, const YAML::Node& m, const std::string& path, in
   core.u_scale = rd.Number(m, "u_scale", path, core.u_scale, Positive());
 
   const std::string pc = Join(path, "cost");
-  const YAML::Node cost = sub("cost", {"r_tau", "r_acc", "r_jerk", "w_q_nom", "w_manip",
-                                       "manip_d_lin", "manip_d_ang", "manip_delta"});
+  const YAML::Node cost =
+      sub("cost", {"r_tau", "r_acc", "r_jerk", "w_q_nom", "w_manip", "manip_d_lin", "manip_d_ang",
+                   "manip_delta", "angular_momentum"});
   uniform(cost, "r_tau", pc, NonNegative(), true, core.r_tau);
   uniform(cost, "r_acc", pc, NonNegative(), true, core.r_acc);
   uniform(cost, "r_jerk", pc, Positive(), false, core.r_jerk);
@@ -584,6 +587,25 @@ void ReadCore(const Reader& rd, const YAML::Node& m, const std::string& path, in
   core.manip_d_lin = rd.Number(cost, "manip_d_lin", pc, core.manip_d_lin, Positive());
   core.manip_d_ang = rd.Number(cost, "manip_d_ang", pc, core.manip_d_ang, Positive());
   core.manip_delta = rd.Number(cost, "manip_delta", pc, core.manip_delta, Positive());
+  // The angular-momentum rate (E3-F02): a whole-body term, the segment
+  // planner's only — the search plans the chain alone (#641 D10′).
+  if (const YAML::Node ang = cost["angular_momentum"]; ang) {
+    const std::string pw = Join(pc, "angular_momentum");
+    if (!whole_body) {
+      rd.Reject(Quote(pw) +
+                " is a whole-body term, which the search does not read: it plans the chain "
+                "alone (#641 D10'); the segment planner's is "
+                "planner.segment.mpc_docking.core.cost.angular_momentum");
+    }
+    if (!ang.IsMap()) {
+      rd.Reject(Quote(pw) + " must be a map, got " + Spelling(ang));
+    }
+    rd.CheckKeys(ang, pw, {"w_pre", "w_post", "scale"});
+    const Range weight{0.0, false, kWholeBodyWeightMax, false};
+    core.w_ang_pre = rd.Number(ang, "w_pre", pw, core.w_ang_pre, weight);
+    core.w_ang_post = rd.Number(ang, "w_post", pw, core.w_ang_post, weight);
+    core.ang_scale = rd.Number(ang, "scale", pw, core.ang_scale, Positive());
+  }
 
   const std::string pt = Join(path, "catch");
   const YAML::Node catch_map =
@@ -725,7 +747,7 @@ void ReadCore(const Reader& rd, const YAML::Node& m, const std::string& path, in
 }  // namespace
 
 void ReadDockingCoreParams(const YAML::Node& core_map, const std::string& path, int nv,
-                           MpcDockingSegmentCoreParams& core) {
+                           MpcDockingSegmentCoreParams& core, bool whole_body) {
   const Reader rd("ReadDockingCoreParams", true);
   if (!core_map || core_map.IsNull()) {
     return;
@@ -739,7 +761,7 @@ void ReadDockingCoreParams(const YAML::Node& core_map, const std::string& path, 
               "by) is outside [1, " +
               std::to_string(kMaxPlanNv) + "]");
   }
-  ReadCore(rd, core_map, path, nv, core);
+  ReadCore(rd, core_map, path, nv, core, whole_body);
 }
 
 // ═══ The nlp search ══════════════════════════════════════════════════════════
@@ -757,6 +779,13 @@ NlpCatchSearchParams ParseNlpSearchParams(const YAML::Node& catching, int nv) {
   // `catch_box` is the removed catch box (L3 §4.9): not read, and not this
   // parser's to refuse — the binding parks on it (kRemovedCatchingKeys), which
   // keeps the robot up where a throw here would fail the whole configure.
+  // D10′ (#641): the search plans the chain alone — no joint group, no
+  // whole-body term (`core.cost.angular_momentum` is refused by ReadCore).
+  if (nlp.IsMap() && nlp["groups"]) {
+    rd.Reject(Quote(Join(b, "groups")) +
+              ": the search does not read joint groups — it plans the chain alone (#641 D10'); "
+              "the segment planner's are planner.segment.mpc_docking.groups");
+  }
   rd.CheckKeys(nlp, b,
                {"cand_dt", "t_lead_min", "t_max", "cand_capacity", "catch_box", "n_pre", "dt_pre_s",
                 "stop", "budget", "cost", "continuous_tc", "follow_window", "rest_tol",
@@ -829,13 +858,15 @@ NlpCatchSearchParams ParseNlpSearchParams(const YAML::Node& catching, int nv) {
   out.rt_state_age_max_s =
       rd.Number(nlp, "rt_state_age_max_s", b, out.rt_state_age_max_s, {0.0, true, 1.0, false});
 
-  ReadDockingCoreParams(nlp.IsMap() ? nlp["core"] : YAML::Node(), Join(b, "core"), nv, out.core);
+  ReadDockingCoreParams(nlp.IsMap() ? nlp["core"] : YAML::Node(), Join(b, "core"), nv, out.core,
+                        /*whole_body=*/false);
   return out;
 }
 
 // ═══ The mpc_docking segment planner ═════════════════════════════════════════
 
-MpcDockingSegmentPlannerParams ParseMpcDockingSegmentParams(const YAML::Node& catching, int nv) {
+MpcDockingSegmentPlannerParams ParseMpcDockingSegmentParams(
+    const YAML::Node& catching, int nv, std::span<const JointGroupSpec> groups) {
   const Reader rd("ParseMpcDockingSegmentParams", true);
   RequireCatching(rd, catching);
   MpcDockingSegmentPlannerParams out;
@@ -843,9 +874,9 @@ MpcDockingSegmentPlannerParams ParseMpcDockingSegmentParams(const YAML::Node& ca
   const YAML::Node segment = rd.Section(planner, "segment", "planner");
   const YAML::Node mpc = rd.Section(segment, "mpc_docking", "planner.segment");
   const std::string b = "planner.segment.mpc_docking";
-  rd.CheckKeys(
-      mpc, b,
-      {"switch_margin", "eta_v", "approach", "stop", "budget", "replan", "publish", "core"});
+  rd.CheckKeys(mpc, b,
+               {"switch_margin", "eta_v", "approach", "stop", "budget", "replan", "publish", "core",
+                "groups"});
 
   out.switch_margin = rd.Number(mpc, "switch_margin", b, out.switch_margin, Positive());
   out.eta_v = rd.Number(mpc, "eta_v", b, out.eta_v, {0.0, true, 1.0, true});
@@ -888,6 +919,78 @@ MpcDockingSegmentPlannerParams ParseMpcDockingSegmentParams(const YAML::Node& ca
   out.slack_v_max = rd.Number(publish, "slack_v_max", pu, out.slack_v_max, NonNegative());
 
   ReadDockingCoreParams(mpc.IsMap() ? mpc["core"] : YAML::Node(), Join(b, "core"), nv, out.core);
+  // Per joint group (E3-F02): `groups.<name>`, a `planner.groups` name.
+  out.n_groups = static_cast<int>(groups.size());
+  if (mpc.IsMap() && mpc["groups"]) {
+    const YAML::Node gmap = mpc["groups"];
+    const std::string pgr = Join(b, "groups");
+    if (!gmap.IsMap()) {
+      rd.Reject(Quote(pgr) + " must be a map of planner.groups names, got " + Spelling(gmap));
+    }
+    for (const auto& kv : gmap) {
+      const std::string name = kv.first.as<std::string>();
+      const std::string path = Join(pgr, name);
+      const int g = FindJointGroup(groups, name);
+      if (g < 0) {
+        rd.Reject(Quote(path) + " names no group of 'planner.groups'");
+      }
+      const YAML::Node entry = kv.second;
+      if (!entry.IsMap()) {
+        rd.Reject(Quote(path) + " must be a map, got " + Spelling(entry));
+      }
+      rd.CheckKeys(entry, path,
+                   {"r_tau", "r_jerk", "r_jerk_stop", "w_q_nom", "w_vel", "w_rest_stop", "blocks"});
+      DockingGroupParams& gp = out.groups[static_cast<std::size_t>(g)];
+      const double nan = std::numeric_limits<double>::quiet_NaN();
+      gp.r_tau = rd.Number(entry, "r_tau", path, nan, NonNegative());
+      gp.r_jerk = rd.Number(entry, "r_jerk", path, nan, Positive());
+      gp.r_jerk_stop = rd.Number(entry, "r_jerk_stop", path, nan, Positive());
+      gp.w_q_nom = rd.Number(entry, "w_q_nom", path, nan, NonNegative());
+      const Range weight{0.0, false, kWholeBodyWeightMax, false};
+      gp.w_vel = rd.Number(entry, "w_vel", path, gp.w_vel, weight);
+      gp.w_rest_stop = rd.Number(entry, "w_rest_stop", path, gp.w_rest_stop, weight);
+      const std::string pbl = Join(path, "blocks");
+      const YAML::Node blocks = rd.Section(entry, "blocks", path);
+      rd.CheckKeys(blocks, pbl, {"pre", "stop"});
+      // One group is the whole arm: the core then plans without groups (one
+      // block per pre-catch node, stop.blocks), so its own would be ignored.
+      if (groups.size() == 1 && blocks.IsMap() && blocks.size() != 0) {
+        rd.Reject(Quote(pbl) +
+                  ": with one group the planner moves blocks as without groups (one per "
+                  "pre-catch node, " +
+                  Quote(Join(b, "stop.blocks")) +
+                  ") — declare a second group to give a group its own");
+      }
+      gp.pre_block = rd.Int(blocks, "pre", pbl, gp.pre_block, 1, kMaxSegmentNodes);
+      if (blocks.IsMap() && blocks["stop"]) {
+        const int n_nodes = out.n_stop;
+        // The group's partition, under the rules of stop.blocks.
+        const YAML::Node st = blocks["stop"];
+        if (!st.IsSequence() || st.size() < 3 ||
+            st.size() > static_cast<std::size_t>(kMaxSegmentNodes)) {
+          rd.Reject(Quote(Join(pbl, "stop")) + " must be a sequence of 3.." +
+                    std::to_string(kMaxSegmentNodes) + " positive integers, got " + Spelling(st));
+        }
+        int sum = 0;
+        for (std::size_t i = 0; i < st.size(); ++i) {
+          const int v =
+              static_cast<int>(rd.Check(st[i], Join(pbl, "stop[" + std::to_string(i) + "]"),
+                                        Closed(1.0, static_cast<double>(kMaxSegmentNodes))));
+          if (static_cast<double>(v) != st[i].as<double>()) {
+            rd.Reject(Quote(Join(pbl, "stop[" + std::to_string(i) + "]")) +
+                      " must be an integer, got " + Spelling(st[i]));
+          }
+          gp.stop_blocks[i] = v;
+          sum += v;
+        }
+        gp.n_stop_blocks = static_cast<int>(st.size());
+        if (sum != n_nodes) {
+          rd.Reject(Quote(Join(pbl, "stop")) + " sums to " + std::to_string(sum) +
+                    " but stop.n_nodes is " + std::to_string(n_nodes) + " (Σ blocks = N)");
+        }
+      }
+    }
+  }
   // A segment is what the arm follows: its torque rows are not a switch. The
   // key is the search's (a search may judge kinematics alone).
   if (!out.core.torque_rows) {
@@ -928,6 +1031,55 @@ const char* DockingGridMismatch(const NlpCatchSearchParams& search,
     return "planner.search.nlp.n_pre.max exceeds planner.segment.mpc_docking.approach.n_pre_max";
   }
   return nullptr;
+}
+
+std::string MpcDockingLeftFreeRefusal(const MpcDockingSegmentPlannerParams& docking,
+                                      std::span<const JointGroupSpec> specs,
+                                      const JointGroups& groups, int n_dev, JointSet plan_joints) {
+  const auto uniform = [](const Eigen::VectorXd& v) { return v.size() != 0 ? v[0] : 0.0; };
+  const auto group_value = [](double own, double core) { return std::isnan(own) ? core : own; };
+  const int count = groups.Count();
+  // A torque cost on any joint reads every joint's motion (M, g): it needs the
+  // pre-catch rest of every left-out group, not only of its own.
+  bool torque_cost = false;
+  for (int g = 0; g < count; ++g) {
+    torque_cost = torque_cost || group_value(docking.groups[static_cast<std::size_t>(g)].r_tau,
+                                             uniform(docking.core.r_tau)) > 0.0;
+  }
+  const bool pre_read = docking.core.w_ang_pre > 0.0 || torque_cost;
+  const bool stop_read = docking.core.w_ang_post > 0.0;
+  // A range no term reads needs no weight (1 stands for "held").
+  std::array<double, kMaxJointGroups> pre_rest{};
+  std::array<double, kMaxJointGroups> stop_rest{};
+  for (int g = 0; g < count; ++g) {
+    const auto u = static_cast<std::size_t>(g);
+    const DockingGroupParams& gp = docking.groups[u];
+    pre_rest[u] = pre_read ? group_value(gp.w_q_nom, uniform(docking.core.w_q_nom)) : 1.0;
+    stop_rest[u] = !stop_read ? 1.0 : (groups.n_groups == 0 ? 0.0 : gp.w_rest_stop);
+  }
+  // FirstGroupLeftFree reads "no group declared" as rest weight 0; the
+  // docking core's pre-catch posture weight exists without groups too.
+  JointGroups as_groups = groups;
+  if (as_groups.n_groups == 0) {
+    as_groups.n_groups = 1;
+  }
+  const auto n = static_cast<std::size_t>(count);
+  const int free_pre = FirstGroupLeftFree(as_groups, n_dev, plan_joints,
+                                          std::span<const double>(pre_rest.data(), n));
+  const int free_stop = FirstGroupLeftFree(as_groups, n_dev, plan_joints,
+                                           std::span<const double>(stop_rest.data(), n));
+  if (free_pre < 0 && free_stop < 0) {
+    return {};
+  }
+  const int g = free_pre >= 0 ? free_pre : free_stop;
+  return std::string("planner.segment.mpc_docking: ") +
+         (free_pre >= 0 ? "a term on the pre-catch stages (angular momentum or a torque cost)"
+                        : "the angular-momentum term on the stop nodes") +
+         " reads joints a plan of the search model leaves out (" +
+         (groups.n_groups == 0 ? std::string("the arm, no planner.groups")
+                               : "group '" + specs[static_cast<std::size_t>(g)].name + "'") +
+         "), whose " + (free_pre >= 0 ? "pre-catch rest (w_q_nom)" : "stop rest (w_rest_stop)") +
+         " weight is 0 — give it one (#641 D9')";
 }
 
 }  // namespace rtc::catching

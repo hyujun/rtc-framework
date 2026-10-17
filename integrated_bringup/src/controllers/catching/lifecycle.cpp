@@ -284,6 +284,21 @@ void DemoCatchingController::DeclareProfileParameters() {
                           : "yaml"),
           "L3 §6 where the wait pose comes from: 'yaml' (planner.wait_pose) or 'current' (the "
           "arm's pose on each activation's first readable tick, S8-I)");
+  // The joint groups (E3-F02): a list of maps is not a parameter type, so one
+  // string array of the names and one per group of its joints, as written.
+  if (!planner_params_.groups.empty()) {
+    std::vector<std::string> names;
+    for (const auto& g : planner_params_.groups) {
+      names.push_back(g.name);
+    }
+    declare("planner.groups.names", names,
+            "E3-F02 the arm device's joint groups, as planner.groups declares them; the segment "
+            "blocks weight and block each by its name");
+    for (const auto& g : planner_params_.groups) {
+      declare("planner.groups." + g.name + ".joints", g.joints,
+              "E3-F02 the device joints of group '" + g.name + "'");
+    }
+  }
   declare("planner.freeze.T_freeze", planner_params_.t_freeze, "L3 §4.11 commit lead [s]");
   declare("planner.freeze.t_stop_plan", planner_params_.t_stop_plan,
           "while a plan is followed on segments, the search runs until the catch instant is "
@@ -386,6 +401,25 @@ void DemoCatchingController::DeclareProfileParameters() {
             std::vector<std::int64_t>(mpc_segment.blocks.begin(),
                                       mpc_segment.blocks.begin() + mpc_segment.n_blocks),
             "MPC segment planner move-blocking pattern of the stop part (sum = n_nodes)");
+    // Per joint group (E3-F02): each group's partition, as its catch and stop
+    // cores are built with (the block's own where the group has no key).
+    for (int g = 0; g < mpc_segment.n_groups; ++g) {
+      const auto& gp = mpc_segment.groups[static_cast<std::size_t>(g)];
+      const std::string key =
+          "planner.segment.mpc.groups." + planner_params_.groups[static_cast<std::size_t>(g)].name;
+      std::array<int, rtc::catching::kMaxSegmentNodes> stop{};
+      int n_stop = 0;
+      rtc::catching::MpcSegmentGroupStopBase(mpc_segment, g, stop, n_stop);
+      declare(key + ".blocks.pre", static_cast<std::int64_t>(gp.pre_block),
+              "E3-F02 pre-catch nodes per block of this joint group");
+      declare(key + ".blocks.stop", std::vector<std::int64_t>(stop.begin(), stop.begin() + n_stop),
+              "E3-F02 this joint group's move-blocking pattern of the stop part (sum = n_nodes)");
+      declare(key + ".w_vel", gp.w_vel,
+              "E3-F02 this joint group's velocity damping on every node [(rad/s)^-2]; 0 = off");
+      declare(key + ".w_rest", gp.w_rest,
+              "E3-F02 this joint group's pull toward planner.wait_pose on every node [rad^-2]; "
+              "0 = off");
+    }
     declare("planner.segment.mpc.m_q", mpc_segment.m_q,
             "MPC segment planner position margin inside the limits [rad]");
     declare("planner.segment.mpc.replan.k_max", static_cast<std::int64_t>(mpc_segment.k_max),
@@ -463,6 +497,12 @@ void DemoCatchingController::DeclareProfileParameters() {
             "MPC segment planner closing-window path weight [1/m^2]: distance of the catch frame, "
             "on the pre-catch nodes inside the hand's closing window, from the ball's predicted "
             "path; 0 = off, at most 1e4");
+    declare("planner.segment.mpc.cost.angular_momentum.w_pre", mpc_segment.ang_w_pre,
+            "E3-F02 angular-momentum rate weight before the catch node; 0 with w_post = off");
+    declare("planner.segment.mpc.cost.angular_momentum.w_post", mpc_segment.ang_w_post,
+            "E3-F02 angular-momentum rate weight from the catch node on");
+    declare("planner.segment.mpc.cost.angular_momentum.scale", mpc_segment.ang_scale,
+            "E3-F02 the angular-momentum rate the weights are measured against [N*m]");
     declare("planner.segment.mpc.catch.axis_theta_max", mpc_segment.axis_theta_max,
             "MPC segment planner largest axis error of the reference the approach-axis term "
             "linearises at "
@@ -547,6 +587,39 @@ void DemoCatchingController::DeclareProfileParameters() {
             "gate headroom, as run");
     declare("planner.segment.mpc_docking.switch_margin", segment_switch_margin_,
             "rho_max of the segment switch gate (mode mpc_docking)");
+    // The whole-body terms (E3-F02), as run.
+    declare("planner.segment.mpc_docking.core.cost.angular_momentum.w_pre", d.core.w_ang_pre,
+            "E3-F02 mpc_docking angular-momentum rate weight on the pre-catch stages");
+    declare("planner.segment.mpc_docking.core.cost.angular_momentum.w_post", d.core.w_ang_post,
+            "E3-F02 mpc_docking angular-momentum rate weight on the stop nodes");
+    declare("planner.segment.mpc_docking.core.cost.angular_momentum.scale", d.core.ang_scale,
+            "E3-F02 the angular-momentum rate the weights are measured against [N*m]");
+    for (int g = 0; g < d.n_groups; ++g) {
+      const auto& gp = d.groups[static_cast<std::size_t>(g)];
+      const std::string key = "planner.segment.mpc_docking.groups." +
+                              planner_params_.groups[static_cast<std::size_t>(g)].name;
+      declare(key + ".w_vel", gp.w_vel,
+              "E3-F02 this joint group's velocity weight on both running sums; 0 = off");
+      declare(key + ".w_rest_stop", gp.w_rest_stop,
+              "E3-F02 this joint group's pull toward the wait pose on the stop nodes; 0 = off");
+      declare(key + ".r_tau", gp.r_tau,
+              "E3-F02 this joint group's torque weight (NaN = core.cost.r_tau)");
+      declare(key + ".w_q_nom", gp.w_q_nom,
+              "E3-F02 this joint group's pre-catch posture weight (NaN = core.cost.w_q_nom)");
+      declare(key + ".r_jerk", gp.r_jerk,
+              "E3-F02 this joint group's pre-catch jerk weight (NaN = core.cost.r_jerk)");
+      declare(key + ".r_jerk_stop", gp.r_jerk_stop,
+              "E3-F02 this joint group's stop jerk weight (NaN = core.cost.r_jerk_stop)");
+      const bool own = gp.n_stop_blocks > 0;
+      const auto& stop = own ? gp.stop_blocks : d.stop_block_sizes;
+      declare(key + ".blocks.pre", static_cast<std::int64_t>(gp.pre_block),
+              "E3-F02 pre-catch nodes per block of this joint group");
+      declare(key + ".blocks.stop",
+              std::vector<std::int64_t>(stop.begin(),
+                                        stop.begin() + (own ? gp.n_stop_blocks : d.n_stop_blocks)),
+              "E3-F02 this joint group's move-blocking pattern of the stop nodes (sum = "
+              "stop.n_nodes)");
+    }
   }
   if (nlp || docking) {
     const auto& h = hand_docking_;
@@ -2098,6 +2171,7 @@ bool DemoCatchingController::SetupPlanner() {
   // already joined it on the normal path; this covers a configure that did not
   // go through one.
   StopPlannerThread();
+  joint_groups_ = {};  // resolved below only for a planner that runs
   // Bound on every configure, enabled or not: the boxes are members and the
   // binding costs nothing, and a re-configure that turns the planner on must
   // not depend on the previous configure having done it.
@@ -2130,6 +2204,16 @@ bool DemoCatchingController::SetupPlanner() {
                  "decision L)",
                  planner_params_.wait_pose_n, arm_dof_);
     return false;
+  }
+  // The joint groups (E3-F02) are the arm device's: resolved by its joint
+  // names here, where they are known, and handed to the segment planners.
+  {
+    std::string why;
+    if (!rtc::catching::ResolveJointGroups(planner_params_.groups, arm_joint_names_, joint_groups_,
+                                           &why)) {
+      RCLCPP_ERROR(logger_, "planner.groups: %s", why.c_str());
+      return false;
+    }
   }
   if (planner_wake_fd_.load(std::memory_order_acquire) < 0) {
     const int fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -2164,6 +2248,30 @@ bool DemoCatchingController::SetupPlanner() {
     if (search_name != planner_params_.sub_model &&
         !ResolvePlannerArm(search_name, /*chain=*/true, search_arm)) {
       return false;
+    }
+    // D9′ (#641): a term that reads joints a plan (the search's) leaves out
+    // needs those joints' rest weight, or nothing brings them back between
+    // solves — the rule is rtc_controllers' (the offline batch applies it too).
+    const bool mpc_segment = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc;
+    if (mpc_segment || segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking) {
+      rtc::catching::JointSet plan_joints = 0;
+      if (!rtc::catching::MakeJointSet(
+              std::span<const int>(search_arm.device_of_model.data(),
+                                   static_cast<std::size_t>(search_arm.nv)),
+              arm_dof_, plan_joints)) {
+        RCLCPP_ERROR(logger_, "planner: the search model's joints are not the arm device's");
+        return false;
+      }
+      const std::string left_free = mpc_segment
+                                        ? rtc::catching::MpcSegmentLeftFreeRefusal(
+                                              planner_params_, joint_groups_, arm_dof_, plan_joints)
+                                        : rtc::catching::MpcDockingLeftFreeRefusal(
+                                              mpc_docking_params_, planner_params_.groups,
+                                              joint_groups_, arm_dof_, plan_joints);
+      if (!left_free.empty()) {
+        RCLCPP_ERROR(logger_, "%s", left_free.c_str());
+        return false;
+      }
     }
     // No SetJointOrder on this handle: CatchPoseIk refuses a reordered one (its
     // Jacobian columns and box rows are model order). The model↔device mapping
@@ -2459,7 +2567,8 @@ void DemoCatchingController::ParseDockingConfig() {
     nlp_search_params_ = rtc::catching::ParseNlpSearchParams(catching_node_, SearchModelNv());
   }
   if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking) {
-    mpc_docking_params_ = rtc::catching::ParseMpcDockingSegmentParams(catching_node_, arm_dof_);
+    mpc_docking_params_ = rtc::catching::ParseMpcDockingSegmentParams(catching_node_, arm_dof_,
+                                                                      planner_params_.groups);
     // The RT's switch gate reads the margin of the planner whose segments it
     // follows.
     segment_switch_margin_ = mpc_docking_params_.switch_margin;
@@ -2627,6 +2736,7 @@ bool DemoCatchingController::SetupMpcDockingSegmentPlanner(const PlannerArm& arm
   dm.device_of_model = arm.device_of_model;
   dm.qd_rating = arm.qdot_max;
   dm.warm_pose = planner_params_.wait_pose;
+  dm.groups = joint_groups_;
   if (!BuildDockingLimits(arm, mpc_docking_params_.eta_v, "planner.segment.mpc_docking",
                           dm.limits)) {
     return false;
@@ -2701,6 +2811,9 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(const PlannerArm& pm) {
   dm.catch_frame = pm.frame;
   dm.nv = pm.nv;
   dm.device_of_model = pm.device_of_model;
+  dm.groups = joint_groups_;
+  dm.rest_pose = planner_params_.wait_pose;
+  dm.rest_pose_n = planner_params_.wait_pose_n;
   // MD-42: the stop must be executable by the CLIK, so its position box is
   // the URDF's AND the CLIK's margined device box (m_q then sits inside it).
   // URDF limits alone let a published node reach past the CLIK's box (iiwa7

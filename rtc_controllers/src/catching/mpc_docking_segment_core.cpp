@@ -7,6 +7,7 @@
 #include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 #include <Eigen/QR>
+#include <pinocchio/algorithm/centroidal.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
 
@@ -52,23 +53,6 @@ constexpr std::uint8_t kTrustUpper = 2;
 
 // ns → s by DIVISION: the quotient is correctly rounded.
 constexpr double kNsPerSec = 1e9;
-
-// h += scale · (g_k ⊗ g_k) ⊗ diag(w): the Hessian of a diagonal-weighted sum
-// of squares of one node's state, in the block-jerk variables.
-void AddGainOuter(Eigen::MatrixXd& h, const Eigen::MatrixXd& g, Eigen::Index k,
-                  const Eigen::VectorXd& w, double scale, Eigen::Index nn, Eigen::Index nb) {
-  for (Eigen::Index b = 0; b < nb; ++b) {
-    for (Eigen::Index c = 0; c < nb; ++c) {
-      const double gg = scale * (g(k, b) * g(k, c));
-      if (gg == 0.0) {
-        continue;
-      }
-      for (Eigen::Index j = 0; j < nn; ++j) {
-        h(b * nn + j, c * nn + j) += gg * w[j];
-      }
-    }
-  }
-}
 
 }  // namespace
 
@@ -212,9 +196,20 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
     return MpcDockingReason::kParamsInvalid;
   }
   const int n_nodes = p.n_pre + p.n_stop;
-  // The block partition: none may span the catch node, three after it
-  // (mpc_block_grid.hpp — the rule MpcSegmentCore shares).
-  switch (CheckBlockGrid(p.n_blocks, p.block_sizes, p.n_pre, n_nodes)) {
+  // The block partitions: none may span the catch node, three after it
+  // (mpc_block_grid.hpp — the rule MpcSegmentCore shares), one per group a
+  // joint is in; groups of one partition share a block class.
+  if (p.n_groups < 0 || p.n_groups > kMaxJointGroups) {
+    return MpcDockingReason::kParamsInvalid;
+  }
+  const BlockPattern single{p.n_blocks, p.block_sizes};
+  BlockLayout layout;
+  switch (BuildBlockLayout(
+      n, p.n_groups, std::span<const std::int8_t>(p.joint_group).first(static_cast<std::size_t>(n)),
+      p.n_groups > 1 ? std::span<const BlockPattern>(p.group_blocks)
+                           .first(static_cast<std::size_t>(p.n_groups))
+                     : std::span<const BlockPattern>(&single, 1),
+      p.n_pre, n_nodes, layout)) {
     case BlockGridCheck::kOk:
       break;
     case BlockGridCheck::kInvalid:
@@ -223,6 +218,10 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
       return MpcDockingReason::kBlocksTooFew;
     case BlockGridCheck::kAcrossCatch:
       return MpcDockingReason::kBlocksAcrossCatch;
+  }
+  // The catch instant's machinery rebuilds one class's gains (header note).
+  if (!layout.Single() && p.catch_time_variable) {
+    return MpcDockingReason::kParamsInvalid;
   }
 
   // ── Weights ──
@@ -238,6 +237,32 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
     return MpcDockingReason::kParamsInvalid;
   }
   if (p.w_q_nom.size() != 0 && (p.q_nom.size() != nn || !p.q_nom.allFinite())) {
+    return MpcDockingReason::kParamsInvalid;
+  }
+  // The whole-body terms (header note): bounded weights, the stop rest toward
+  // q_nom, and none with the catch instant a variable.
+  const auto optional_bounded = [nn](const Eigen::VectorXd& x) {
+    return x.size() == 0 || (x.size() == nn && x.allFinite() && x.minCoeff() >= 0.0 &&
+                             x.maxCoeff() <= kWholeBodyWeightMax);
+  };
+  const auto bounded = [](double w) {
+    return rtc::IsFiniteNonNegative(w) && w <= kWholeBodyWeightMax;
+  };
+  const bool vel_on = p.w_vel.size() != 0 && p.w_vel.allFinite() && p.w_vel.maxCoeff() > 0.0;
+  const bool rest_stop_on =
+      p.w_rest_stop.size() != 0 && p.w_rest_stop.allFinite() && p.w_rest_stop.maxCoeff() > 0.0;
+  const bool ang_on = p.w_ang_pre > 0.0 || p.w_ang_post > 0.0;
+  // W/s² is what the QP holds: a scale whose square leaves the doubles makes
+  // it 0 or ∞.
+  const auto ang_weight_ok = [&](double w) {
+    return w == 0.0 || FinitePositive(w / (p.ang_scale * p.ang_scale));
+  };
+  if (!optional_bounded(p.w_vel) || !optional_bounded(p.w_rest_stop) || !bounded(p.w_ang_pre) ||
+      !bounded(p.w_ang_post) ||
+      (ang_on && (!FinitePositive(p.ang_scale) || !ang_weight_ok(p.w_ang_pre) ||
+                  !ang_weight_ok(p.w_ang_post))) ||
+      (rest_stop_on && (p.q_nom.size() != nn || !p.q_nom.allFinite())) ||
+      (p.catch_time_variable && (vel_on || rest_stop_on || ang_on))) {
     return MpcDockingReason::kParamsInvalid;
   }
   if (!rtc::IsFiniteNonNegative(p.w_manip) || !FinitePositive(p.manip_d_lin) ||
@@ -367,7 +392,8 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   n_ = n;
   n_nodes_ = n_nodes;
   n_pre_ = p.n_pre;
-  n_blocks_ = p.n_blocks;
+  layout_ = layout;
+  n_blocks_ = layout_.pattern[0].n_blocks;
   tc_on_ = p.catch_time_variable;
   frame_ = catch_frame;
   kappa_face_ = kappa_face;
@@ -384,6 +410,10 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   impact_cost_ = p.w_impact > 0.0;
   impact_on_ = impact_rows_ || impact_cost_;
   perp_on_ = p.w_perp > 0.0;
+  vel_on_ = vel_on;
+  rest_stop_on_ = rest_stop_on;
+  ang_on_ = ang_on;
+  ang_frozen_ = false;
 
   model_ = arm;
   model_.armature = arm.armature + limits.armature;
@@ -402,7 +432,9 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   r_jerk_ = p.r_jerk.size() == 0 ? Eigen::VectorXd::Ones(nn) : p.r_jerk;
   r_jerk_stop_ = p.r_jerk_stop.size() == 0 ? r_jerk_ : p.r_jerk_stop;
   w_q_nom_ = posture_cost_ ? p.w_q_nom : Eigen::VectorXd::Zero(nn);
-  q_nom_ = posture_cost_ ? p.q_nom : Eigen::VectorXd::Zero(nn);
+  q_nom_ = posture_cost_ || rest_stop_on ? p.q_nom : Eigen::VectorXd::Zero(nn);
+  w_vel_ = vel_on ? p.w_vel : Eigen::VectorXd::Zero(nn);
+  w_rest_stop_ = rest_stop_on ? p.w_rest_stop : Eigen::VectorXd::Zero(nn);
   manip_d_q_ = p.manip_d_q.size() == 0 ? Eigen::VectorXd::Ones(nn) : p.manip_d_q;
   r_tau2_ = (2.0 * p.dt_pre) * r_tau_;
 
@@ -416,19 +448,24 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
       dt_node_[i] = k < n_pre_ ? p.dt_pre : p.dt_stop;
     }
   }
-  {
+  for (int c = 0; c < layout_.n_classes; ++c) {
+    const BlockPattern& pat = layout_.pattern[static_cast<std::size_t>(c)];
+    ExtraClass& x = extra_[static_cast<std::size_t>(c)];
+    std::array<int, kMaxSegmentNodes>& first = c == 0 ? block_first_ : x.block_first;
+    std::array<double, kMaxSegmentNodes>& span = c == 0 ? block_span_ : x.block_span;
     int k = 0;
-    for (int b = 0; b < n_blocks_; ++b) {
-      const int size = p.block_sizes[static_cast<std::size_t>(b)];
-      block_first_[static_cast<std::size_t>(b)] = k;
+    for (int b = 0; b < pat.n_blocks; ++b) {
+      const int size = pat.block_sizes[static_cast<std::size_t>(b)];
+      first[static_cast<std::size_t>(b)] = k;
       // A block lies on one side of the catch node, so Σ_{k∈b} Δ_k is its size
       // times that side's spacing.
-      block_span_[static_cast<std::size_t>(b)] =
+      span[static_cast<std::size_t>(b)] =
           static_cast<double>(size) * (k < n_pre_ ? p.dt_pre : p.dt_stop);
       k += size;
     }
+    FillBlockOfInterval(pat.n_blocks, pat.block_sizes,
+                        c == 0 ? std::span<int>(block_of_node_) : std::span<int>(x.block_of_node));
   }
-  FillBlockOfInterval(n_blocks_, p.block_sizes, block_of_node_);
   const double t_c = t_node_[static_cast<std::size_t>(n_pre_)];
   n_app_ = 0;
   for (int k = 1; k < n_pre_; ++k) {
@@ -450,15 +487,27 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   // to jerk u_scale held over block b (all others zero), from rest — the one
   // recursion MpcSegmentCore uses too (mpc_block_grid.hpp).
   const Eigen::Index N1 = n_nodes_ + 1;
-  const Eigen::Index nb = n_blocks_;
   const auto n_intervals = static_cast<std::size_t>(n_nodes_);
   ComputeBlockStageGains(std::span<const double>(dt_node_).first(n_intervals),
                          std::span<const int>(block_of_node_).first(n_intervals), n_blocks_,
                          p.u_scale, gq_, gv_, ga_);
+  for (int c = 1; c < layout_.n_classes; ++c) {
+    ExtraClass& x = extra_[static_cast<std::size_t>(c)];
+    ComputeBlockStageGains(std::span<const double>(dt_node_).first(n_intervals),
+                           std::span<const int>(x.block_of_node).first(n_intervals),
+                           layout_.pattern[static_cast<std::size_t>(c)].n_blocks, p.u_scale, x.gq,
+                           x.gv, x.ga);
+  }
 
   // ── Dimensions ──
   const int nN = n * n_nodes_;
-  nu_ = n * n_blocks_;
+  nu_ = layout_.nu;
+  joint_of_col_.assign(static_cast<std::size_t>(nu_), 0);
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    for (int b = 0; b < layout_.pattern[static_cast<std::size_t>(ClassOf(j))].n_blocks; ++b) {
+      joint_of_col_[static_cast<std::size_t>(Col(j, b))] = static_cast<int>(j);
+    }
+  }
   // The catch instant as a variable: θ right after the jerk step, and the two
   // elastic groups after the others. Without it every count below is 0 and
   // every offset is what it was.
@@ -506,11 +555,15 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
 
   // ── Constant Hessian of the jerk variables (no ½ in J ⇒ H = 2·…) ──
   jerk_diag_.setZero(nu_);
-  for (Eigen::Index b = 0; b < nb; ++b) {
-    const auto bi = static_cast<std::size_t>(b);
-    const Eigen::VectorXd& r = block_first_[bi] < n_pre_ ? r_jerk_ : r_jerk_stop_;
-    for (Eigen::Index j = 0; j < nn; ++j) {
-      jerk_diag_[b * nn + j] = 2.0 * block_span_[bi] * r[j];
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    const int c = ClassOf(j);
+    const ExtraClass& x = extra_[static_cast<std::size_t>(c)];
+    for (int b = 0; b < layout_.pattern[static_cast<std::size_t>(c)].n_blocks; ++b) {
+      const auto bi = static_cast<std::size_t>(b);
+      const int first = c == 0 ? block_first_[bi] : x.block_first[bi];
+      const double span = c == 0 ? block_span_[bi] : x.block_span[bi];
+      const Eigen::VectorXd& r = first < n_pre_ ? r_jerk_ : r_jerk_stop_;
+      jerk_diag_[Col(j, b)] = 2.0 * span * r[j];
     }
   }
   h_const_.setZero(nu_, nu_);
@@ -520,18 +573,33 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   ones_n_ = Eigen::VectorXd::Ones(nn);
   for (Eigen::Index k = 1; k < n_pre_; ++k) {
     if (acc_cost_) {
-      AddGainOuter(h_const_, ga_, k, r_acc_, 2.0 * p.dt_pre, nn, nb);
+      AddGainOuter(h_const_, 2, k, r_acc_, 2.0 * p.dt_pre);
     }
     if (posture_cost_) {
-      AddGainOuter(h_const_, gq_, k, w_q_nom_, 2.0 * p.dt_pre, nn, nb);
+      AddGainOuter(h_const_, 0, k, w_q_nom_, 2.0 * p.dt_pre);
     }
   }
+  // The whole-body velocity and stop rest terms: constant Hessians (no
+  // catch_time_variable with them, so the stop nodes' gains are fixed).
   for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
-    AddGainOuter(h_init_all_, gq_, k, ones_n_, 2.0 * p.init_w_q, nn, nb);
-    AddGainOuter(h_init_all_, gv_, k, ones_n_, 2.0 * p.init_w_v, nn, nb);
+    const double dt = k < n_pre_ ? p.dt_pre : p.dt_stop;
+    if (vel_on_) {
+      AddGainOuter(h_const_, 1, k, w_vel_, 2.0 * dt);
+    }
+    if (rest_stop_on_ && k >= n_pre_) {
+      AddGainOuter(h_const_, 0, k, w_rest_stop_, 2.0 * p.dt_stop);
+    }
   }
-  AddGainOuter(h_init_catch_, gq_, n_pre_, ones_n_, 2.0 * p.init_w_q, nn, nb);
-  AddGainOuter(h_init_catch_, gv_, n_pre_, ones_n_, 2.0 * p.init_w_v, nn, nb);
+  ag_.setZero(3, ang_on_ ? nn * (n_nodes_ + 1) : 0);
+  dag_v_.setZero(3, ang_on_ ? n_nodes_ + 1 : 0);
+  h_ang_.setZero(ang_on_ ? nu_ : 0, ang_on_ ? nu_ : 0);
+  m_ang_.setZero(nn, nn);
+  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    AddGainOuter(h_init_all_, 0, k, ones_n_, 2.0 * p.init_w_q);
+    AddGainOuter(h_init_all_, 1, k, ones_n_, 2.0 * p.init_w_v);
+  }
+  AddGainOuter(h_init_catch_, 0, n_pre_, ones_n_, 2.0 * p.init_w_q);
+  AddGainOuter(h_init_catch_, 1, n_pre_, ones_n_, 2.0 * p.init_w_v);
 
   // ── QP storage and constant parts ──
   qp_.Init(nx_, n_eq_main_, n_in_);
@@ -548,10 +616,11 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   // QP's equality, and the main QP's too unless the catch instant is a
   // variable (the rest is then an elastic row group — header note).
   qp_init_.A.setZero();
-  for (Eigen::Index b = 0; b < nb; ++b) {
-    for (Eigen::Index j = 0; j < nn; ++j) {
-      qp_init_.A(j, b * nn + j) = gv_(N, b);
-      qp_init_.A(nn + j, b * nn + j) = ga_(N, b);
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    const int c = ClassOf(j);
+    for (Eigen::Index b = 0; b < Gain(1, c).cols(); ++b) {
+      qp_init_.A(j, Col(j, b)) = Gain(1, c)(N, b);
+      qp_init_.A(nn + j, Col(j, b)) = Gain(2, c)(N, b);
     }
   }
   if (!tc_on_) {
@@ -559,12 +628,13 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   }
   for (Eigen::Index k = 1; k <= N; ++k) {
     const Eigen::Index o = (k - 1) * nn;
-    for (Eigen::Index b = 0; b < nb; ++b) {
-      for (Eigen::Index j = 0; j < nn; ++j) {
-        qp_.C(row_q_ + o + j, b * nn + j) = gq_(k, b);
-        qp_.C(row_v_ + o + j, b * nn + j) = gv_(k, b);
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const int c = ClassOf(j);
+      for (Eigen::Index b = 0; b < Gain(0, c).cols(); ++b) {
+        qp_.C(row_q_ + o + j, Col(j, b)) = Gain(0, c)(k, b);
+        qp_.C(row_v_ + o + j, Col(j, b)) = Gain(1, c)(k, b);
         if (p.accel_box) {
-          qp_.C(row_a_ + o + j, b * nn + j) = ga_(k, b);
+          qp_.C(row_a_ + o + j, Col(j, b)) = Gain(2, c)(k, b);
         }
       }
     }
@@ -768,17 +838,17 @@ double MpcDockingSegmentCore::NodeTime(int k) const noexcept {
   return t_node_[static_cast<std::size_t>(k)];
 }
 
-double MpcDockingSegmentCore::StageGain(int m, int k, int b) const noexcept {
-  if (!initialized_ || k < 0 || k > n_nodes_ || b < 0 || b >= n_blocks_) {
+double MpcDockingSegmentCore::StageGain(int m, int k, int b, int block_class) const noexcept {
+  if (!initialized_ || block_class < 0 || block_class >= layout_.n_classes || k < 0 ||
+      k > n_nodes_ || b < 0 ||
+      b >= layout_.pattern[static_cast<std::size_t>(block_class)].n_blocks) {
     return std::numeric_limits<double>::quiet_NaN();
   }
   switch (m) {
     case 0:
-      return gq_(k, b);
     case 1:
-      return gv_(k, b);
     case 2:
-      return ga_(k, b);
+      return Gain(m, block_class)(k, b);
     default:
       return std::numeric_limits<double>::quiet_NaN();
   }
@@ -934,11 +1004,11 @@ void MpcDockingSegmentCore::RefreshInitQpGains() noexcept {
   h_init_all_.diagonal() = jerk_diag_;
   h_init_catch_ = h_init_all_;
   for (Eigen::Index k = 1; k <= N; ++k) {
-    AddGainOuter(h_init_all_, gq_, k, ones_n_, 2.0 * p.init_w_q, nn, nb);
-    AddGainOuter(h_init_all_, gv_, k, ones_n_, 2.0 * p.init_w_v, nn, nb);
+    AddGainOuter(h_init_all_, 0, k, ones_n_, 2.0 * p.init_w_q);
+    AddGainOuter(h_init_all_, 1, k, ones_n_, 2.0 * p.init_w_v);
   }
-  AddGainOuter(h_init_catch_, gq_, n_pre_, ones_n_, 2.0 * p.init_w_q, nn, nb);
-  AddGainOuter(h_init_catch_, gv_, n_pre_, ones_n_, 2.0 * p.init_w_v, nn, nb);
+  AddGainOuter(h_init_catch_, 0, n_pre_, ones_n_, 2.0 * p.init_w_q);
+  AddGainOuter(h_init_catch_, 1, n_pre_, ones_n_, 2.0 * p.init_w_v);
 }
 
 // ∂x_k/∂δt_c at the trajectory in (q_, v_, a_) and the iterate z_, for the
@@ -1074,17 +1144,21 @@ bool MpcDockingSegmentCore::CatchTimeStep(double tol) noexcept {
 
 void MpcDockingSegmentCore::TrajectoryFromZ(const Eigen::VectorXd& z) noexcept {
   const Eigen::Index nn = n_;
-  const Eigen::Index nb = n_blocks_;
   for (Eigen::Index k = 0; k <= n_nodes_; ++k) {
     for (Eigen::Index j = 0; j < nn; ++j) {
+      const int c = ClassOf(j);
+      const Eigen::MatrixXd& gq = Gain(0, c);
+      const Eigen::MatrixXd& gv = Gain(1, c);
+      const Eigen::MatrixXd& ga = Gain(2, c);
+      const Eigen::Index nb = gq.cols();
       double q = qf_(j, k);
       double v = vf_(j, k);
       double a = af_(j, k);
       for (Eigen::Index b = 0; b < nb; ++b) {
-        const double zb = z[b * nn + j];
-        q += gq_(k, b) * zb;
-        v += gv_(k, b) * zb;
-        a += ga_(k, b) * zb;
+        const double zb = z[Col(j, b)];
+        q += gq(k, b) * zb;
+        v += gv(k, b) * zb;
+        a += ga(k, b) * zb;
       }
       q_(j, k) = q;
       v_(j, k) = v;
@@ -1098,16 +1172,19 @@ void MpcDockingSegmentCore::ProjectInitial(const MpcDockingSegmentCoreInput& in)
   // average of the node-acceleration differences over its intervals. A
   // trajectory this core produced on the same grid is reproduced exactly.
   const Eigen::Index nn = n_;
-  for (Eigen::Index b = 0; b < n_blocks_; ++b) {
-    const auto bi = static_cast<std::size_t>(b);
-    const int first = block_first_[bi];
-    const int size = params_.block_sizes[bi];
-    for (Eigen::Index j = 0; j < nn; ++j) {
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    const int c = ClassOf(j);
+    const BlockPattern& pat = layout_.pattern[static_cast<std::size_t>(c)];
+    for (Eigen::Index b = 0; b < pat.n_blocks; ++b) {
+      const auto bi = static_cast<std::size_t>(b);
+      const int first =
+          c == 0 ? block_first_[bi] : extra_[static_cast<std::size_t>(c)].block_first[bi];
+      const int size = pat.block_sizes[bi];
       double sum = 0.0;
       for (int k = first; k < first + size; ++k) {
         sum += (in.qdd_init(j, k + 1) - in.qdd_init(j, k)) / dt_node_[static_cast<std::size_t>(k)];
       }
-      z_[b * nn + j] = sum / (static_cast<double>(size) * params_.u_scale);
+      z_[Col(j, b)] = sum / (static_cast<double>(size) * params_.u_scale);
     }
   }
 }
@@ -1131,11 +1208,10 @@ bool MpcDockingSegmentCore::LinearRowsHold() const noexcept {
   }
   const double tol = tol_hard;
   if (params_.jerk_box) {
-    for (Eigen::Index b = 0; b < n_blocks_; ++b) {
-      for (Eigen::Index j = 0; j < nn; ++j) {
-        if (!(std::abs(params_.u_scale * z_[b * nn + j]) <= u_hi_[j] + tol * params_.u_scale)) {
-          return false;
-        }
+    for (Eigen::Index i = 0; i < nu_; ++i) {
+      const auto j = joint_of_col_[static_cast<std::size_t>(i)];
+      if (!(std::abs(params_.u_scale * z_[i]) <= u_hi_[j] + tol * params_.u_scale)) {
+        return false;
       }
     }
   }
@@ -1150,7 +1226,6 @@ bool MpcDockingSegmentCore::LinearRowsHold() const noexcept {
 MpcDockingReason MpcDockingSegmentCore::RunInitQp(const MpcDockingSegmentCoreInput& in,
                                                   MpcDockingSegmentCoreResult& out) noexcept {
   const Eigen::Index nn = n_;
-  const Eigen::Index nb = n_blocks_;
   const Eigen::Index N = n_nodes_;
   const double us = params_.u_scale;
   StageBegin(MpcDockingStage::kStart);
@@ -1162,11 +1237,12 @@ MpcDockingReason MpcDockingSegmentCore::RunInitQp(const MpcDockingSegmentCoreInp
     // Nearest to the caller's whole trajectory.
     qp_init_.H = h_init_all_;
     for (Eigen::Index k = 1; k <= N; ++k) {
-      for (Eigen::Index b = 0; b <= block_of_node_[static_cast<std::size_t>(k - 1)]; ++b) {
-        for (Eigen::Index j = 0; j < nn; ++j) {
-          qp_init_.g[b * nn + j] -=
-              2.0 * (params_.init_w_q * gq_(k, b) * (in.q_init(j, k) - qf_(j, k)) +
-                     params_.init_w_v * gv_(k, b) * (in.qd_init(j, k) - vf_(j, k)));
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        const int c = ClassOf(j);
+        for (Eigen::Index b = 0; b <= LastBlock(c, k); ++b) {
+          qp_init_.g[Col(j, b)] -=
+              2.0 * (params_.init_w_q * Gain(0, c)(k, b) * (in.q_init(j, k) - qf_(j, k)) +
+                     params_.init_w_v * Gain(1, c)(k, b) * (in.qd_init(j, k) - vf_(j, k)));
         }
       }
     }
@@ -1191,11 +1267,12 @@ MpcDockingReason MpcDockingSegmentCore::RunInitQp(const MpcDockingSegmentCoreInp
       StageEnd(MpcDockingStage::kStart);
       return MpcDockingReason::kSolutionNonFinite;
     }
-    for (Eigen::Index b = 0; b <= block_of_node_[static_cast<std::size_t>(kc - 1)]; ++b) {
-      for (Eigen::Index j = 0; j < nn; ++j) {
-        qp_init_.g[b * nn + j] -=
-            2.0 * (params_.init_w_q * gq_(kc, b) * (in.q_catch_target[j] - qf_(j, kc)) +
-                   params_.init_w_v * gv_(kc, b) * (work_n_[j] - vf_(j, kc)));
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const int c = ClassOf(j);
+      for (Eigen::Index b = 0; b <= LastBlock(c, kc); ++b) {
+        qp_init_.g[Col(j, b)] -=
+            2.0 * (params_.init_w_q * Gain(0, c)(kc, b) * (in.q_catch_target[j] - qf_(j, kc)) +
+                   params_.init_w_v * Gain(1, c)(kc, b) * (work_n_[j] - vf_(j, kc)));
       }
     }
   }
@@ -1217,11 +1294,10 @@ MpcDockingReason MpcDockingSegmentCore::RunInitQp(const MpcDockingSegmentCoreInp
     }
   }
   if (params_.jerk_box) {
-    for (Eigen::Index b = 0; b < nb; ++b) {
-      for (Eigen::Index j = 0; j < nn; ++j) {
-        qp_init_.l[row_u_ + b * nn + j] = -u_hi_[j] / us;
-        qp_init_.u[row_u_ + b * nn + j] = u_hi_[j] / us;
-      }
+    for (Eigen::Index i = 0; i < nu_; ++i) {
+      const auto j = joint_of_col_[static_cast<std::size_t>(i)];
+      qp_init_.l[row_u_ + i] = -u_hi_[j] / us;
+      qp_init_.u[row_u_ + i] = u_hi_[j] / us;
     }
   }
   StageEnd(MpcDockingStage::kStart);
@@ -1537,10 +1613,35 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
     }
   }
 
+  // ── Whole-body terms: every node, the angular one on its held coefficients ──
+  const bool whole_body = vel_on_ || rest_stop_on_ || ang_on_;
+  for (Eigen::Index k = 0; whole_body && k <= N; ++k) {
+    const bool pre = k < kc;
+    const double dt = pre ? da : ds;
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      ev.cost.vel += dt * w_vel_[j] * v_(j, k) * v_(j, k);
+      if (!pre) {
+        const double dq = q_(j, k) - q_nom_[j];
+        ev.cost.rest_stop += ds * w_rest_stop_[j] * dq * dq;
+      }
+    }
+    const double w = ang_on_ ? AngularWeight(k) : 0.0;
+    if (w > 0.0) {
+      Eigen::Vector3d kd = dag_v_.col(k);
+      kd.noalias() += ag_.middleCols(nn * k, nn) * a_.col(k);
+      ev.cost.ang += w * kd.squaredNorm();
+      ev.cost.ang_rate_max = std::max(ev.cost.ang_rate_max, seen(kd.norm()));
+    }
+  }
+  ev.cost.whole_body = ev.cost.vel + ev.cost.rest_stop + ev.cost.ang;
+
   ev.cost.reference = ev.cost.tau + ev.cost.acc + ev.cost.jerk + ev.cost.posture + ev.cost.manip +
                       ev.cost.near + ev.cost.terminal + ev.cost.impact + ev.cost.slack;
   ev.cost.stop = ev.cost.stop_jerk + ev.cost.stop_line;
   ev.cost.total = ev.cost.reference + ev.cost.stop;
+  if (whole_body) {
+    ev.cost.total += ev.cost.whole_body;
+  }
   bool finite = rows_finite && std::isfinite(ev.cost.total) && std::isfinite(ev.tau_ratio_max);
   if (tc_on_) {
     finite = finite && std::isfinite(ev.cost.time) && std::isfinite(ev.viol_post_box) &&
@@ -1561,18 +1662,137 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
 // elastics as absolute values. A row a_qᵀδq_k + a_vᵀδq̇_k of node k becomes a
 // row over d through the stage gains (MapRow).
 
+void MpcDockingSegmentCore::AddGainOuter(Eigen::MatrixXd& h, int m, Eigen::Index k,
+                                         const Eigen::VectorXd& w, double scale) const noexcept {
+  const Eigen::Index nn = n_;
+  if (layout_.Single()) {
+    const Eigen::MatrixXd& g = Gain(m, 0);
+    const Eigen::Index nb = g.cols();
+    for (Eigen::Index b = 0; b < nb; ++b) {
+      for (Eigen::Index c = 0; c < nb; ++c) {
+        const double gg = scale * (g(k, b) * g(k, c));
+        if (gg == 0.0) {
+          continue;
+        }
+        for (Eigen::Index j = 0; j < nn; ++j) {
+          h(b * nn + j, c * nn + j) += gg * w[j];
+        }
+      }
+    }
+    return;
+  }
+  for (Eigen::Index j = 0; j < nn; ++j) {
+    const Eigen::MatrixXd& g = Gain(m, ClassOf(j));
+    const Eigen::Index nb = g.cols();
+    for (Eigen::Index b = 0; b < nb; ++b) {
+      for (Eigen::Index c = 0; c < nb; ++c) {
+        const double gg = scale * (g(k, b) * g(k, c));
+        if (gg != 0.0) {
+          h(Col(j, b), Col(j, c)) += gg * w[j];
+        }
+      }
+    }
+  }
+}
+
+double MpcDockingSegmentCore::AngularWeight(Eigen::Index k) const noexcept {
+  // Node k's weight in J: the interval length of its running sum times W/s².
+  const MpcDockingSegmentCoreParams& p = params_;
+  const bool pre = k < n_pre_;
+  const double w = pre ? p.w_ang_pre : p.w_ang_post;
+  return (pre ? p.dt_pre : p.dt_stop) * w / (p.ang_scale * p.ang_scale);
+}
+
+void MpcDockingSegmentCore::FreezeAngular() noexcept {
+  // A_k and d_k at the trajectory in (q_, v_) — one dccrba per node — and
+  // the Hessian Σ_{k≥1} 2 w_k (A_k Ĝ_a,k)ᵀ(A_k Ĝ_a,k) they give. Node 0 is
+  // x_0: its term is a constant of the candidate.
+  if (!ang_on_) {
+    return;
+  }
+  const Eigen::Index nn = n_;
+  h_ang_.setZero();
+  for (Eigen::Index k = 0; k <= n_nodes_; ++k) {
+    const double w = AngularWeight(k);
+    if (w == 0.0) {
+      continue;
+    }
+    pinocchio::dccrba(model_, data_, q_.col(k), v_.col(k));
+    ag_.middleCols(nn * k, nn) = data_.Ag.middleRows<3>(pinocchio::Force::ANGULAR);
+    dag_v_.col(k).noalias() = data_.dAg.middleRows<3>(pinocchio::Force::ANGULAR) * v_.col(k);
+    if (k == 0) {
+      continue;
+    }
+    m_ang_.noalias() = ag_.middleCols(nn * k, nn).transpose() * ag_.middleCols(nn * k, nn);
+    for (Eigen::Index c = 0; c < nn; ++c) {
+      for (Eigen::Index r = c + 1; r < nn; ++r) {
+        m_ang_(c, r) = m_ang_(r, c);
+      }
+    }
+    if (layout_.Single()) {
+      const Eigen::Index last = block_of_node_[static_cast<std::size_t>(k - 1)];
+      for (Eigen::Index b = 0; b <= last; ++b) {
+        for (Eigen::Index c = 0; c <= last; ++c) {
+          // The gains' product first: blocks (b, c) and (c, b) get the same bits.
+          h_ang_.block(b * nn, c * nn, nn, nn) += ((2.0 * w) * (ga_(k, b) * ga_(k, c))) * m_ang_;
+        }
+      }
+      continue;
+    }
+    // Block classes: joint j's block b against joint l's block c, each with
+    // its own class's gains (written both ways, so H stays symmetric).
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const int cj = ClassOf(j);
+      for (Eigen::Index b = 0; b <= LastBlock(cj, k); ++b) {
+        const double gb = Gain(2, cj)(k, b);
+        for (Eigen::Index l = 0; l < nn; ++l) {
+          const int cl = ClassOf(l);
+          for (Eigen::Index c = 0; c <= LastBlock(cl, k); ++c) {
+            h_ang_(Col(j, b), Col(l, c)) += ((2.0 * w) * (gb * Gain(2, cl)(k, c))) * m_ang_(j, l);
+          }
+        }
+      }
+    }
+  }
+  ang_frozen_ = true;
+}
+
 void MpcDockingSegmentCore::MapRow(Eigen::Index k, const Eigen::VectorXd* a_q,
                                    const Eigen::VectorXd* a_v) noexcept {
   const Eigen::Index nn = n_;
-  const Eigen::Index last = block_of_node_[static_cast<std::size_t>(k - 1)];
-  row_len_ = (last + 1) * nn;
   row_.setZero();
-  for (Eigen::Index b = 0; b <= last; ++b) {
-    if (a_q != nullptr) {
-      row_.segment(b * nn, nn) += gq_(k, b) * (*a_q);
+  if (layout_.Single()) {
+    const Eigen::Index last = block_of_node_[static_cast<std::size_t>(k - 1)];
+    row_len_ = (last + 1) * nn;
+    for (Eigen::Index b = 0; b <= last; ++b) {
+      if (a_q != nullptr) {
+        row_.segment(b * nn, nn) += gq_(k, b) * (*a_q);
+      }
+      if (a_v != nullptr) {
+        row_.segment(b * nn, nn) += gv_(k, b) * (*a_v);
+      }
     }
-    if (a_v != nullptr) {
-      row_.segment(b * nn, nn) += gv_(k, b) * (*a_v);
+  } else {
+    // Block classes: each joint's blocks through its class's gains; the row's
+    // non-zero prefix ends with the last class's acting blocks.
+    row_len_ = 0;
+    for (int c = 0; c < layout_.n_classes; ++c) {
+      const auto u = static_cast<std::size_t>(c);
+      row_len_ = std::max<Eigen::Index>(
+          row_len_, layout_.offset[u] + (LastBlock(c, k) + 1) * layout_.n_joints[u]);
+    }
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const int c = ClassOf(j);
+      for (Eigen::Index b = 0; b <= LastBlock(c, k); ++b) {
+        double r = 0.0;
+        if (a_q != nullptr) {
+          r += Gain(0, c)(k, b) * (*a_q)[j];
+        }
+        if (a_v != nullptr) {
+          r += Gain(1, c)(k, b) * (*a_v)[j];
+        }
+        row_[Col(j, b)] = r;
+      }
     }
   }
   if (tc_on_ && k >= n_pre_) {
@@ -1643,11 +1863,44 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
     if (!acc_cost_ && !posture_cost_) {
       break;
     }
-    for (Eigen::Index b = 0; b <= block_of_node_[static_cast<std::size_t>(k - 1)]; ++b) {
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const int c = ClassOf(j);
+      for (Eigen::Index b = 0; b <= LastBlock(c, k); ++b) {
+        qp_.g[Col(j, b)] += 2.0 * da *
+                            (r_acc_[j] * Gain(2, c)(k, b) * a_(j, k) +
+                             w_q_nom_[j] * Gain(0, c)(k, b) * (q_(j, k) - q_nom_[j]));
+      }
+    }
+  }
+
+  // ── Whole-body terms: gradient at the iterate (the Hessian is constant —
+  // h_const_ — or held for the solve — h_ang_) ──
+  if (vel_on_ || rest_stop_on_ || ang_on_) {
+    if (ang_on_) {
+      qp_.H.topLeftCorner(nu_, nu_) += h_ang_;
+    }
+    for (Eigen::Index k = 1; k <= N; ++k) {
+      const double dt = k < kc ? da : ds;
+      const double w = ang_on_ ? AngularWeight(k) : 0.0;
+      if (w > 0.0) {
+        Eigen::Vector3d kd = dag_v_.col(k);
+        kd.noalias() += ag_.middleCols(nn * k, nn) * a_.col(k);
+        work_n_.noalias() = ag_.middleCols(nn * k, nn).transpose() * kd;
+        work_n_ *= 2.0 * w;
+      } else {
+        work_n_.setZero();
+      }
+      const bool stop = k >= kc;
       for (Eigen::Index j = 0; j < nn; ++j) {
-        qp_.g[b * nn + j] +=
-            2.0 * da *
-            (r_acc_[j] * ga_(k, b) * a_(j, k) + w_q_nom_[j] * gq_(k, b) * (q_(j, k) - q_nom_[j]));
+        const int c = ClassOf(j);
+        for (Eigen::Index b = 0; b <= LastBlock(c, k); ++b) {
+          double gj =
+              2.0 * dt * w_vel_[j] * Gain(1, c)(k, b) * v_(j, k) + Gain(2, c)(k, b) * work_n_[j];
+          if (stop) {
+            gj += 2.0 * ds * w_rest_stop_[j] * Gain(0, c)(k, b) * (q_(j, k) - q_nom_[j]);
+          }
+          qp_.g[Col(j, b)] += gj;
+        }
       }
     }
   }
@@ -1661,10 +1914,22 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
     const Eigen::Index o = (k - 1) * nn;
     const Eigen::Index last = block_of_node_[static_cast<std::size_t>(k - 1)];
     t_node_jac_.setZero();
-    for (Eigen::Index b = 0; b <= last; ++b) {
-      t_node_jac_.block(0, b * nn, nn, nn) = gq_(k, b) * d_tau_.block(0, col, nn, nn) +
-                                             gv_(k, b) * d_tau_.block(0, col + nn, nn, nn) +
-                                             ga_(k, b) * d_tau_.block(0, col + 2 * nn, nn, nn);
+    if (layout_.Single()) {
+      for (Eigen::Index b = 0; b <= last; ++b) {
+        t_node_jac_.block(0, b * nn, nn, nn) = gq_(k, b) * d_tau_.block(0, col, nn, nn) +
+                                               gv_(k, b) * d_tau_.block(0, col + nn, nn, nn) +
+                                               ga_(k, b) * d_tau_.block(0, col + 2 * nn, nn, nn);
+      }
+    } else {
+      // Block classes: column by column, each joint with its own class's gains.
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        const int c = ClassOf(j);
+        for (Eigen::Index b = 0; b <= LastBlock(c, k); ++b) {
+          t_node_jac_.col(Col(j, b)) = Gain(0, c)(k, b) * d_tau_.col(col + j) +
+                                       Gain(1, c)(k, b) * d_tau_.col(col + nn + j) +
+                                       Gain(2, c)(k, b) * d_tau_.col(col + 2 * nn + j);
+        }
+      }
     }
     if (tc_on_ && k >= kc) {
       // ∂τ_k/∂δ through the node's state, as θ's column.
@@ -1847,11 +2112,10 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
     }
   }
   if (p.jerk_box) {
-    for (Eigen::Index b = 0; b < nb; ++b) {
-      for (Eigen::Index j = 0; j < nn; ++j) {
-        qp_.l[row_u_ + b * nn + j] = -u_hi_[j] / us - z_[b * nn + j];
-        qp_.u[row_u_ + b * nn + j] = u_hi_[j] / us - z_[b * nn + j];
-      }
+    for (Eigen::Index i = 0; i < nu_; ++i) {
+      const auto j = joint_of_col_[static_cast<std::size_t>(i)];
+      qp_.l[row_u_ + i] = -u_hi_[j] / us - z_[i];
+      qp_.u[row_u_ + i] = u_hi_[j] / us - z_[i];
     }
   }
   for (Eigen::Index i = 0; i < n_elastic_; ++i) {
@@ -2311,9 +2575,8 @@ void MpcDockingSegmentCore::Finish(const Evaluation& ev, MpcDockingReason reason
   out.qd = v_;
   out.qdd = a_;
   for (Eigen::Index k = 0; k < N; ++k) {
-    const Eigen::Index b = block_of_node_[static_cast<std::size_t>(k)];
     for (Eigen::Index j = 0; j < nn; ++j) {
-      out.u(j, k) = p.u_scale * z_[b * nn + j];
+      out.u(j, k) = p.u_scale * z_[Col(j, LastBlock(ClassOf(j), k + 1))];
     }
   }
   out.cost = ev.cost;
@@ -2611,6 +2874,9 @@ bool MpcDockingSegmentCore::Evaluate(const MpcDockingSegmentCoreInput& in,
   ResetPenalties();
   StageBegin(MpcDockingStage::kFinish);
   TrajectoryFromZ(z_);
+  if (ang_on_ && !ang_frozen_) {
+    FreezeAngular();  // no Solve has held them yet (header note)
+  }
   Evaluation ev;
   (void)EvaluateTrajectory(false, ev);
   Finish(ev, ev.ok ? MpcDockingReason::kNone : MpcDockingReason::kSolutionNonFinite, out);
@@ -2659,6 +2925,13 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
       }
     }
     out.start_us = MicrosSince(t0) - out.qp_us;
+  }
+  // The angular term's coefficients, held from the start point on (D12).
+  if (ang_on_) {
+    StageBegin(MpcDockingStage::kLinearize);
+    TrajectoryFromZ(z_);
+    FreezeAngular();
+    StageEnd(MpcDockingStage::kLinearize);
   }
 
   // A new Solve is a new problem: the same input gives the same answer

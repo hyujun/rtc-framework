@@ -4,6 +4,8 @@
 #include "catching_yaml_read.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <iomanip>
@@ -39,6 +41,16 @@ std::string Shown(const YAML::Node& sec, const char* key, double value) {
   std::ostringstream os;
   os << std::scientific << std::setprecision(6) << value;
   return os.str();
+}
+
+/// A group name: it becomes part of parameter names, so [A-Za-z][A-Za-z0-9_]*.
+[[nodiscard]] bool IsGroupToken(const std::string& s) {
+  if (s.empty() || std::isalpha(static_cast<unsigned char>(s[0])) == 0) {
+    return false;
+  }
+  return std::all_of(s.begin(), s.end(), [](char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+  });
 }
 
 /// The section under `parent`, empty when absent; refuses a non-map.
@@ -232,6 +244,68 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
       out.wait_pose_source = PlannerParams::WaitPoseSource::kCurrent;
     } else {
       Reject(Key("wait_pose_source") + " must be \"yaml\" or \"current\", got " + Spelling(v));
+    }
+  }
+
+  // Joint groups (E3-F02): names and device joint names only — the binding
+  // resolves them against the device (ResolveJointGroups), and each segment
+  // block reads its per-group values by these names.
+  if (const YAML::Node groups = planner["groups"]; groups) {
+    if (!groups.IsSequence() || groups.size() == 0) {
+      Reject(Key("groups") + " must be a non-empty sequence of {name, joints}, got " +
+             Spelling(groups));
+    }
+    if (groups.size() > static_cast<std::size_t>(kMaxJointGroups)) {
+      Reject(Key("groups") + " lists " + std::to_string(groups.size()) + " groups, at most " +
+             std::to_string(kMaxJointGroups) + " (kMaxJointGroups)");
+    }
+    std::vector<std::string> all_joints;
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+      const std::string where = "groups[" + std::to_string(i) + "]";
+      const YAML::Node g = groups[i];
+      if (!g.IsMap()) {
+        Reject(Key(where) + " must be a map {name, joints}, got " + Spelling(g));
+      }
+      for (const auto& kv : g) {
+        const std::string k = kv.first.as<std::string>();
+        if (k != "name" && k != "joints") {
+          Reject(Key(where + "." + k) + " is not a key of a group (name, joints)");
+        }
+      }
+      JointGroupSpec spec;
+      const YAML::Node name = g["name"];
+      if (!name || !name.IsScalar() || !IsGroupToken(name.Scalar())) {
+        Reject(Key(where + ".name") +
+               " must be a [A-Za-z][A-Za-z0-9_]* token (it names parameters), got " +
+               (name ? Spelling(name) : std::string("nothing")));
+      }
+      spec.name = name.Scalar();
+      // `planner.groups.names` is the mirror's list of the names themselves.
+      if (spec.name == "names") {
+        Reject(Key(where + ".name") + " 'names' is reserved (planner.groups.names lists them)");
+      }
+      if (FindJointGroup(out.groups, spec.name) >= 0) {
+        Reject(Key(where + ".name") + " '" + spec.name + "' names a group already declared");
+      }
+      const YAML::Node joints = g["joints"];
+      if (!joints || !joints.IsSequence() || joints.size() == 0) {
+        Reject(Key(where + ".joints") + " must be a non-empty sequence of joint names, got " +
+               (joints ? Spelling(joints) : std::string("nothing")));
+      }
+      for (std::size_t j = 0; j < joints.size(); ++j) {
+        if (!joints[j].IsScalar() || joints[j].Scalar().empty()) {
+          Reject(Key(where + ".joints[" + std::to_string(j) + "]") + " must be a joint name, got " +
+                 Spelling(joints[j]));
+        }
+        const std::string& joint = joints[j].Scalar();
+        if (std::find(all_joints.begin(), all_joints.end(), joint) != all_joints.end()) {
+          Reject(Key(where + ".joints") + " lists '" + joint +
+                 "', which is already in a group (the groups are disjoint)");
+        }
+        all_joints.push_back(joint);
+        spec.joints.push_back(joint);
+      }
+      out.groups.push_back(std::move(spec));
     }
   }
 
@@ -431,6 +505,96 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
              ") would have fewer than 3 blocks");
     }
   }
+  // Per joint group (E3-F02): `groups.<name>`, a `planner.groups` name.
+  d.n_groups = static_cast<int>(out.groups.size());
+  if (const YAML::Node gmap = mpc["groups"]; gmap) {
+    if (!gmap.IsMap()) {
+      Reject(Key("segment.mpc.groups") + " must be a map of planner.groups names, got " +
+             Spelling(gmap));
+    }
+    for (const auto& kv : gmap) {
+      const std::string name = kv.first.as<std::string>();
+      const std::string path = "segment.mpc.groups." + name;
+      const int g = FindJointGroup(out.groups, name);
+      if (g < 0) {
+        Reject(Key(path) + " names no group of 'planner.groups'");
+      }
+      const YAML::Node entry = kv.second;
+      if (!entry.IsMap()) {
+        Reject(Key(path) + " must be a map, got " + Spelling(entry));
+      }
+      for (const auto& e : entry) {
+        const std::string k = e.first.as<std::string>();
+        if (k != "blocks" && k != "w_vel" && k != "w_rest") {
+          Reject(Key(path + "." + k) +
+                 " is not a key of a group's segment.mpc entry (blocks, w_vel, w_rest)");
+        }
+      }
+      MpcSegmentGroupParams& gp = d.groups[static_cast<std::size_t>(g)];
+      gp.w_vel = ReadInterval(entry, "w_vel", path + ".w_vel", gp.w_vel, 0.0, false,
+                              kWholeBodyWeightMax, false,
+                              "[0, 1e4] (kWholeBodyWeightMax, the largest weight the "
+                              "core is tested with)");
+      gp.w_rest = ReadInterval(entry, "w_rest", path + ".w_rest", gp.w_rest, 0.0, false,
+                               kWholeBodyWeightMax, false,
+                               "[0, 1e4] (kWholeBodyWeightMax, the largest weight the "
+                               "core is tested with)");
+      if (gp.w_rest > 0.0 && out.wait_pose_n == 0) {
+        Reject(Key(path + ".w_rest") + " > 0 holds the group near its rest posture, " +
+               Key("wait_pose") + ", which is not given");
+      }
+      const YAML::Node blocks = Section(entry, "blocks", path + ".blocks");
+      for (const auto& e : blocks) {
+        const std::string k = e.first.as<std::string>();
+        if (k != "pre" && k != "stop") {
+          Reject(Key(path + ".blocks." + k) + " is not a key of a group's blocks (pre, stop)");
+        }
+      }
+      // One group is the whole arm: the cores then plan without groups (one
+      // block per pre-catch node, horizon.blocks), so its own would be ignored.
+      if (out.groups.size() == 1 && blocks.IsMap() && blocks.size() != 0) {
+        Reject(Key(path + ".blocks") +
+               ": with one group the planner moves blocks as without groups (one per "
+               "pre-catch node, " +
+               Key("segment.mpc.horizon.blocks") +
+               ") — declare a second group to give a group its own");
+      }
+      gp.pre_block =
+          ReadInt(blocks, "pre", path + ".blocks.pre", gp.pre_block, 1, kMaxSegmentNodes);
+      if (const YAML::Node st = blocks["stop"]; st) {
+        const std::string sp = path + ".blocks.stop";
+        if (!st.IsSequence() || st.size() < 3 ||
+            st.size() > static_cast<std::size_t>(kMaxSegmentNodes)) {
+          Reject(Key(sp) + " must be a sequence of 3.." + std::to_string(kMaxSegmentNodes) +
+                 " positive integers, got " + Spelling(st));
+        }
+        int sum = 0;
+        for (std::size_t i = 0; i < st.size(); ++i) {
+          int v = 0;
+          try {
+            v = st[i].as<int>();
+          } catch (const YAML::Exception&) {
+            Reject(Key(sp + "[" + std::to_string(i) + "]") + " must be an integer, got " +
+                   Spelling(st[i]));
+          }
+          if (v < 1 || v > kMaxSegmentNodes) {
+            Reject(Key(sp + "[" + std::to_string(i) + "]") + " must be in [1, " +
+                   std::to_string(kMaxSegmentNodes) + "]");
+          }
+          gp.stop_blocks[i] = v;
+          sum += v;
+        }
+        gp.n_stop_blocks = static_cast<int>(st.size());
+        if (sum != d.n_nodes) {
+          Reject(Key(sp) + " sums to " + std::to_string(sum) + " but horizon.n_nodes is " +
+                 std::to_string(d.n_nodes) + " (Σ blocks = N)");
+        }
+        // Every replan instance k ≤ k_max keeps three blocks: a partition loses
+        // a block only once every block is 1, at N − k < 3, which k_max's own
+        // check above already excludes.
+      }
+    }
+  }
   // The ball speed below which its direction of travel is undefined — the mpc
   // segment planner's own floor, beside the search IK's `search.grid.ik.v_eps`.
   d.v_eps = ReadPositive(mpc, "v_eps", "segment.mpc.v_eps", d.v_eps);
@@ -534,6 +698,24 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
                    kMpcSegmentStopPathWeightMax, false,
                    "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
                    "tested with)");
+  const YAML::Node ang = Section(cost, "angular_momentum", "segment.mpc.cost.angular_momentum");
+  for (const auto& e : ang) {
+    const std::string k = e.first.as<std::string>();
+    if (k != "w_pre" && k != "w_post" && k != "scale") {
+      Reject(Key("segment.mpc.cost.angular_momentum." + k) +
+             " is not a key of the angular-momentum term (w_pre, w_post, scale)");
+    }
+  }
+  d.ang_w_pre = ReadInterval(ang, "w_pre", "segment.mpc.cost.angular_momentum.w_pre", d.ang_w_pre,
+                             0.0, false, kWholeBodyWeightMax, false,
+                             "[0, 1e4] (kWholeBodyWeightMax, the largest weight the core is "
+                             "tested with)");
+  d.ang_w_post =
+      ReadInterval(ang, "w_post", "segment.mpc.cost.angular_momentum.w_post", d.ang_w_post, 0.0,
+                   false, kWholeBodyWeightMax, false,
+                   "[0, 1e4] (kWholeBodyWeightMax, the largest weight the core is tested with)");
+  // NUM-2: the weight is divided by s², so s is a positive finite number.
+  d.ang_scale = ReadPositive(ang, "scale", "segment.mpc.cost.angular_momentum.scale", d.ang_scale);
   d.axis_theta_max =
       ReadInterval(dcatch, "axis_theta_max", "segment.mpc.catch.axis_theta_max", d.axis_theta_max,
                    0.0, true, 3.14159265358979323846, true, "(0, pi)");
@@ -577,11 +759,24 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
 
 bool MpcSegmentBlocksFor(const MpcSegmentPlannerParams& p, int k,
                          std::array<int, kMaxSegmentNodes>& blocks, int& n_blocks) noexcept {
-  if (k < 0 || k >= p.n_nodes || p.n_blocks < 1 || p.n_blocks > kMaxSegmentNodes) {
+  return MpcSegmentBlocksFor(p.blocks, p.n_blocks, p.n_nodes, k, blocks, n_blocks);
+}
+
+void MpcSegmentGroupStopBase(const MpcSegmentPlannerParams& p, int g,
+                             std::array<int, kMaxSegmentNodes>& base, int& n_base) noexcept {
+  const bool own =
+      g >= 0 && g < kMaxJointGroups && p.groups[static_cast<std::size_t>(g)].n_stop_blocks > 0;
+  base = own ? p.groups[static_cast<std::size_t>(g)].stop_blocks : p.blocks;
+  n_base = own ? p.groups[static_cast<std::size_t>(g)].n_stop_blocks : p.n_blocks;
+}
+
+bool MpcSegmentBlocksFor(const std::array<int, kMaxSegmentNodes>& base, int n_base, int n_nodes,
+                         int k, std::array<int, kMaxSegmentNodes>& blocks, int& n_blocks) noexcept {
+  if (k < 0 || k >= n_nodes || n_base < 1 || n_base > kMaxSegmentNodes) {
     return false;
   }
-  std::array<int, kMaxSegmentNodes> b = p.blocks;
-  int n = p.n_blocks;
+  std::array<int, kMaxSegmentNodes> b = base;
+  int n = n_base;
   for (int step = 0; step < k; ++step) {
     int largest = 0;
     for (int i = 1; i < n; ++i) {
@@ -602,6 +797,31 @@ bool MpcSegmentBlocksFor(const MpcSegmentPlannerParams& p, int k,
   blocks = b;
   n_blocks = n;
   return true;
+}
+
+std::string MpcSegmentLeftFreeRefusal(const PlannerParams& planner, const JointGroups& groups,
+                                      int n_dev, JointSet plan_joints) {
+  const MpcSegmentPlannerParams& mpc = planner.mpc_segment;
+  if (!(mpc.ang_w_pre > 0.0 || mpc.ang_w_post > 0.0)) {
+    return {};
+  }
+  std::array<double, kMaxJointGroups> w_rest{};
+  for (std::size_t g = 0; g < w_rest.size(); ++g) {
+    w_rest[g] = mpc.groups[g].w_rest;
+  }
+  const int free = FirstGroupLeftFree(
+      groups, n_dev, plan_joints,
+      std::span<const double>(w_rest.data(), static_cast<std::size_t>(groups.Count())));
+  if (free < 0) {
+    return {};
+  }
+  return "planner.segment.mpc.cost.angular_momentum reads every joint of the segment model, but "
+         "a plan of the search model leaves out joints of " +
+         (groups.n_groups == 0
+              ? std::string("the arm (no planner.groups)")
+              : "group '" + planner.groups[static_cast<std::size_t>(free)].name + "'") +
+         " with no rest weight — give planner.segment.mpc.groups.<that group>.w_rest > 0 (#641 "
+         "D9')";
 }
 
 }  // namespace rtc::catching

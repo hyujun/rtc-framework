@@ -23,7 +23,9 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <set>
@@ -663,84 +665,107 @@ TEST(MpcDockingSegmentCore, SolutionRoundTripsThroughThePayloadAndTheRtSampler) 
   // device_of_model[m]: a non-identity permutation, so a copy that skipped
   // the mapping would be seen.
   const std::array<int, 7> device_of_model{2, 0, 5, 1, 4, 3, 6};
-  for (const dk::Rig& rig : Rigs()) {
-    MpcDockingSegmentCore core;
-    ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
-              MpcDockingReason::kNone);
-    MpcDockingSegmentCoreResult out;
-    core.ResizeResult(out);
-    std::vector<Case> cases = FeasibleCases(rig, core, 1);
-    ASSERT_EQ(cases.size(), 1U);
-    ASSERT_TRUE(core.Solve(cases[0].in, out));
-    ASSERT_TRUE(out.converged);
+  // E3-F02 (#641): and with two joint groups on partitions of their own — the
+  // payload carries nodes, so whatever blocks made them must not show.
+  for (const bool two_groups : {false, true}) {
+    for (dk::Rig rig : Rigs()) {
+      SCOPED_TRACE(two_groups ? "two groups" : "no groups");
+      if (two_groups) {
+        // BaseParams' grid: 6 pre-catch nodes and the stop's {1, 1, 2, 2, 2}.
+        const auto pattern = [](std::initializer_list<int> sizes) {
+          rtc::catching::BlockPattern b;
+          for (const int v : sizes) {
+            b.block_sizes[static_cast<std::size_t>(b.n_blocks++)] = v;
+          }
+          return b;
+        };
+        rig.params.n_groups = 2;
+        for (int j = 0; j < rig.model.nv; ++j) {
+          rig.params.joint_group[static_cast<std::size_t>(j)] =
+              static_cast<std::int8_t>(j < 3 ? 0 : 1);
+        }
+        rig.params.group_blocks[0] = pattern({1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2});
+        rig.params.group_blocks[1] = pattern({3, 3, 2, 3, 3});
+      }
+      MpcDockingSegmentCore core;
+      ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+                MpcDockingReason::kNone);
+      EXPECT_EQ(core.Layout().Single(), !two_groups);
+      MpcDockingSegmentCoreResult out;
+      core.ResizeResult(out);
+      std::vector<Case> cases = FeasibleCases(rig, core, 1);
+      ASSERT_EQ(cases.size(), 1U);
+      ASSERT_TRUE(core.Solve(cases[0].in, out));
+      ASSERT_TRUE(out.converged);
 
-    const int nv = core.Nv();
-    const int N = core.NumNodes();
-    const int kc = core.CatchNode();
-    ASSERT_LE(N, rtc::catching::kMaxSegmentNodes);
-    SegmentSnapshot p{};
-    p.valid = true;
-    p.nv = nv;
-    p.n_nodes = N;
-    p.n_pre = kc;
-    p.k0 = 0;
-    p.dt_ns = static_cast<std::int64_t>(std::llround(rig.params.dt_stop * 1e9));
-    p.dt_pre_ns = static_cast<std::int64_t>(std::llround(rig.params.dt_pre * 1e9));
-    p.t_c_ns = 1'727'000'000'123'456'789LL;
-    p.t0_ns = p.t_c_ns - static_cast<std::int64_t>(kc) * p.dt_pre_ns;
-    const auto idx = [](int k, int j) { return static_cast<std::size_t>(k * kMaxSegmentNv + j); };
-    for (int k = 0; k <= N; ++k) {
-      for (int m = 0; m < nv; ++m) {
-        const int d = nv == 7 ? device_of_model[static_cast<std::size_t>(m)]
-                              : device_of_model[static_cast<std::size_t>(m)] % 6;
-        p.q[idx(k, d)] = out.q(m, k);
-        p.qd[idx(k, d)] = out.qd(m, k);
-        p.qdd[idx(k, d)] = out.qdd(m, k);
+      const int nv = core.Nv();
+      const int N = core.NumNodes();
+      const int kc = core.CatchNode();
+      ASSERT_LE(N, rtc::catching::kMaxSegmentNodes);
+      SegmentSnapshot p{};
+      p.valid = true;
+      p.nv = nv;
+      p.n_nodes = N;
+      p.n_pre = kc;
+      p.k0 = 0;
+      p.dt_ns = static_cast<std::int64_t>(std::llround(rig.params.dt_stop * 1e9));
+      p.dt_pre_ns = static_cast<std::int64_t>(std::llround(rig.params.dt_pre * 1e9));
+      p.t_c_ns = 1'727'000'000'123'456'789LL;
+      p.t0_ns = p.t_c_ns - static_cast<std::int64_t>(kc) * p.dt_pre_ns;
+      const auto idx = [](int k, int j) { return static_cast<std::size_t>(k * kMaxSegmentNv + j); };
+      for (int k = 0; k <= N; ++k) {
+        for (int m = 0; m < nv; ++m) {
+          const int d = nv == 7 ? device_of_model[static_cast<std::size_t>(m)]
+                                : device_of_model[static_cast<std::size_t>(m)] % 6;
+          p.q[idx(k, d)] = out.q(m, k);
+          p.qd[idx(k, d)] = out.qd(m, k);
+          p.qdd[idx(k, d)] = out.qdd(m, k);
+        }
       }
-    }
-    // The 6-joint mapping must still be a permutation.
-    if (nv == 6) {
-      std::set<int> seen;
-      for (int m = 0; m < 6; ++m) {
-        seen.insert(device_of_model[static_cast<std::size_t>(m)] % 6);
+      // The 6-joint mapping must still be a permutation.
+      if (nv == 6) {
+        std::set<int> seen;
+        for (int m = 0; m < 6; ++m) {
+          seen.insert(device_of_model[static_cast<std::size_t>(m)] % 6);
+        }
+        ASSERT_EQ(seen.size(), 6U);
       }
-      ASSERT_EQ(seen.size(), 6U);
-    }
-    ASSERT_TRUE(ValidateSegmentNodes(p)) << rig.arm.name;
+      ASSERT_TRUE(ValidateSegmentNodes(p)) << rig.arm.name;
 
-    std::array<double, kMaxSegmentNv> q{};
-    std::array<double, kMaxSegmentNv> qd{};
-    std::array<double, kMaxSegmentNv> qdd{};
-    const auto device = [&](int m) {
-      return static_cast<std::size_t>(nv == 7 ? device_of_model[static_cast<std::size_t>(m)]
-                                              : device_of_model[static_cast<std::size_t>(m)] % 6);
-    };
-    for (int k = 0; k <= N; ++k) {
-      const std::int64_t t_ns = rtc::catching::SegmentNodeTimeNs(p, k);
-      // The payload's node instants are the core's.
-      EXPECT_NEAR(static_cast<double>(t_ns - p.t0_ns) * 1e-9, core.NodeTime(k), 1e-12);
-      bool held = false;
-      ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(p, t_ns, q, qd, qdd, &held));
-      for (int m = 0; m < nv; ++m) {
-        EXPECT_NEAR(q[device(m)], out.q(m, k), 1e-12) << rig.arm.name << " node " << k;
-        EXPECT_NEAR(qd[device(m)], out.qd(m, k), 1e-12) << rig.arm.name << " node " << k;
-        EXPECT_NEAR(qdd[device(m)], out.qdd(m, k), 1e-12) << rig.arm.name << " node " << k;
+      std::array<double, kMaxSegmentNv> q{};
+      std::array<double, kMaxSegmentNv> qd{};
+      std::array<double, kMaxSegmentNv> qdd{};
+      const auto device = [&](int m) {
+        return static_cast<std::size_t>(nv == 7 ? device_of_model[static_cast<std::size_t>(m)]
+                                                : device_of_model[static_cast<std::size_t>(m)] % 6);
+      };
+      for (int k = 0; k <= N; ++k) {
+        const std::int64_t t_ns = rtc::catching::SegmentNodeTimeNs(p, k);
+        // The payload's node instants are the core's.
+        EXPECT_NEAR(static_cast<double>(t_ns - p.t0_ns) * 1e-9, core.NodeTime(k), 1e-12);
+        bool held = false;
+        ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(p, t_ns, q, qd, qdd, &held));
+        for (int m = 0; m < nv; ++m) {
+          EXPECT_NEAR(q[device(m)], out.q(m, k), 1e-12) << rig.arm.name << " node " << k;
+          EXPECT_NEAR(qd[device(m)], out.qd(m, k), 1e-12) << rig.arm.name << " node " << k;
+          EXPECT_NEAR(qdd[device(m)], out.qdd(m, k), 1e-12) << rig.arm.name << " node " << k;
+        }
       }
-    }
-    // Between nodes the sampler reproduces the core's constant-jerk model:
-    // q(τ) = q_k + q̇_k τ + ½ q̈_k τ² + ⅙ u_k τ³ with the core's own jerk u_k.
-    for (int k = 0; k < N; ++k) {
-      const std::int64_t t0 = rtc::catching::SegmentNodeTimeNs(p, k);
-      const std::int64_t t1 = rtc::catching::SegmentNodeTimeNs(p, k + 1);
-      const std::int64_t t_ns = t0 + (t1 - t0) * 3 / 8;
-      const double tau = static_cast<double>(t_ns - t0) * 1e-9;
-      ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(p, t_ns, q, qd, qdd, nullptr));
-      for (int m = 0; m < nv; ++m) {
-        const double u = out.u(m, k);
-        const double want = out.q(m, k) + out.qd(m, k) * tau + 0.5 * out.qdd(m, k) * tau * tau +
-                            u * tau * tau * tau / 6.0;
-        EXPECT_NEAR(q[device(m)], want, 1e-9) << rig.arm.name << " interval " << k;
-        EXPECT_NEAR(qdd[device(m)], out.qdd(m, k) + u * tau, 1e-6);
+      // Between nodes the sampler reproduces the core's constant-jerk model:
+      // q(τ) = q_k + q̇_k τ + ½ q̈_k τ² + ⅙ u_k τ³ with the core's own jerk u_k.
+      for (int k = 0; k < N; ++k) {
+        const std::int64_t t0 = rtc::catching::SegmentNodeTimeNs(p, k);
+        const std::int64_t t1 = rtc::catching::SegmentNodeTimeNs(p, k + 1);
+        const std::int64_t t_ns = t0 + (t1 - t0) * 3 / 8;
+        const double tau = static_cast<double>(t_ns - t0) * 1e-9;
+        ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(p, t_ns, q, qd, qdd, nullptr));
+        for (int m = 0; m < nv; ++m) {
+          const double u = out.u(m, k);
+          const double want = out.q(m, k) + out.qd(m, k) * tau + 0.5 * out.qdd(m, k) * tau * tau +
+                              u * tau * tau * tau / 6.0;
+          EXPECT_NEAR(q[device(m)], want, 1e-9) << rig.arm.name << " interval " << k;
+          EXPECT_NEAR(qdd[device(m)], out.qdd(m, k) + u * tau, 1e-6);
+        }
       }
     }
   }

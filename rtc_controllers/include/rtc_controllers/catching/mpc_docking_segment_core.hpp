@@ -23,6 +23,8 @@
 //       + ‖ρ_kc − ρ_ref‖²_Qρf + ‖ν^H_kc − ν_ref‖²_Qνf + w_E E_n/E_ref   terminal
 //       + Δ_a Σ_{k∈A} (λ_1ᵀ s_k + ‖s_k‖²_Λ2)                             slack
 //       + Δ_s Σ_{k≥k_c} [ ‖u_k/u_s‖²_Rj,stop + w_⊥ ‖P_⊥(p_C(q_k) − p_line)‖² ]   stop
+//       + Δ_a Σ_{k<k_c} [ ‖q̇_k‖²_Wv + W⁻/s² ‖k̇_G,k‖² ]
+//       + Δ_s Σ_{k≥k_c} [ ‖q̇_k‖²_Wv + ‖q_k − q_nom‖²_Wr + W⁺/s² ‖k̇_G,k‖² ]  whole body
 //   s.t.  q̇_N = q̈_N = 0
 //         q_min ≤ q_k ≤ q_max,  |q̇_k| ≤ q̇_max,  [|q̈_k| ≤ q̈_max],  [|u_k| ≤ j_max]   k = 1..N
 //         τ_lo ≤ RNEA(q_k, q̇_k, q̈_k) ≤ τ_hi                              k = 1..N
@@ -46,6 +48,19 @@
 // variable, so the jerk term covers stage 0 too) and J⋆ adds node 0. With a
 // single pre-catch interval (k_c = 1) the QP therefore has no running terms
 // and no approach rows: the problem is "dock, then stop".
+//
+// The whole-body terms (E3-F02, #641; formulation §1.3, §1.4) are optional and
+// reported apart (cost.whole_body — in `total`, not in `reference`): the
+// velocity weight Wv on both running sums, the rest weight Wr on the stop
+// nodes (the pre-catch posture term above is the other half), and the
+// centroidal angular-momentum rate k̇_G,k = A_k q̈_k + d_k. Its coefficients
+// A_k = A^ω_G(q_k), d_k = Ȧ^ω_G(q_k, q̇_k) q̇_k are taken ONCE per Solve, at
+// the start point, and held through every iteration and merit evaluation:
+// the term is then an exact quadratic of z, so the QP's gradient is the
+// merit's and `converged` keeps its meaning (#641 D12). Evaluate() uses the
+// coefficients the last Solve took (its own trajectory's before any Solve).
+// None of them is available with catch_time_variable (the search's; it plans
+// without them, #641 D10′).
 //
 // ── Method ────────────────────────────────────────────────────────────────────
 // SQP with a Gauss–Newton Hessian (positive definite: every R_j > 0). The
@@ -345,6 +360,15 @@ struct MpcDockingSegmentCoreParams {
   int n_blocks{9};       ///< B ≤ kMaxSegmentNodes
   /// First B used, Σ = N. No block may span the catch node; at least 3 after it.
   std::array<int, kMaxSegmentNodes> block_sizes{1, 1, 1, 1, 1, 1, 2, 2, 2};
+  /// Per-group move blocking (E3-F02, D11), as MpcSegmentCoreParams': with
+  /// n_groups ≤ 1 every joint follows n_blocks / block_sizes; otherwise model
+  /// joint j follows group_blocks[joint_group[j]] and groups of one partition
+  /// share their variables' layout (BlockLayout) — groups that all have one
+  /// partition are the problem without groups, to the bit. Two or more
+  /// partitions are not available with catch_time_variable.
+  int n_groups{0};
+  std::array<std::int8_t, kMaxPlanNv> joint_group{};
+  std::array<BlockPattern, kMaxJointGroups> group_blocks{};
   double u_scale{1e3};  ///< jerk scale u_s [rad/s³]; the variable is ũ/u_s
 
   // ── Motion cost (reference §9.2), pre-catch stages ──
@@ -422,6 +446,19 @@ struct MpcDockingSegmentCoreParams {
   // ── Stop segment ──
   Eigen::VectorXd r_jerk_stop;  ///< R_j,stop diag on u/u_s, > 0; empty = r_jerk
   double w_perp{0.0};           ///< stop-line weight [1/m²]; 0 = off
+
+  // ── Whole-body terms (header note; E3-F02) — not with catch_time_variable ──
+  /// Wv diag [(rad/s)⁻²] on both running sums; empty or all 0 = off. Each
+  /// entry in [0, kWholeBodyWeightMax].
+  Eigen::VectorXd w_vel;
+  /// Wr diag [rad⁻²] toward q_nom on the stop nodes k_c..N; empty or all 0 =
+  /// off. Needs q_nom.
+  Eigen::VectorXd w_rest_stop;
+  /// W⁻ (pre-catch stages) and W⁺ (stop nodes), each in [0,
+  /// kWholeBodyWeightMax]; both 0 = off. s = ang_scale [N·m] > 0 when on.
+  double w_ang_pre{0.0};
+  double w_ang_post{0.0};
+  double ang_scale{1.0};
 
   // ── Rows ──
   bool accel_box{false};  ///< |q̈_k| ≤ q̈_max rows
@@ -576,6 +613,13 @@ struct MpcDockingCost {
   double impact{0.0};    ///< w_E E_n / E_ref
   double slack{0.0};
   double stop_jerk{0.0}, stop_line{0.0};
+  /// The whole-body terms (header note): their sum (in `total`, not in
+  /// `reference` or `stop`) and each one; 0 when off.
+  double whole_body{0.0};
+  double vel{0.0}, rest_stop{0.0}, ang{0.0};
+  /// max ‖k̇_G,k‖ over the nodes the angular term weights [N·m], on its held
+  /// coefficients; 0 when off.
+  double ang_rate_max{0.0};
   /// c₁ δt_c + c₂ (δt_c − δ_ref)² — NOT part of `total`; 0 without
   /// catch_time_variable.
   double time{0.0};
@@ -728,6 +772,13 @@ class MpcDockingSegmentCore {
 
   [[nodiscard]] int Nv() const noexcept { return n_; }
 
+  /// The whole-body terms that are on (a positive weight).
+  [[nodiscard]] bool VelocityTermActive() const noexcept { return vel_on_; }
+
+  [[nodiscard]] bool StopRestTermActive() const noexcept { return rest_stop_on_; }
+
+  [[nodiscard]] bool AngularMomentumTermActive() const noexcept { return ang_on_; }
+
   /// Whether the catch instant is a variable of this core (header note).
   [[nodiscard]] bool CatchTimeVariable() const noexcept { return tc_on_; }
 
@@ -741,11 +792,17 @@ class MpcDockingSegmentCore {
 
   /// Instant of node k relative to node 0 [s]; NaN outside [0, N].
   [[nodiscard]] double NodeTime(int k) const noexcept;
-  /// Scaled stage gain ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈) — the same
-  /// quantity as MpcSegmentCore::StageGain on the same grid.
+
+  /// Which block class each joint is in and where its jerk sits in the
+  /// variables (one class without groups, or with groups of one partition).
+  [[nodiscard]] const BlockLayout& Layout() const noexcept { return layout_; }
+
+  /// Scaled stage gain ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈) of block class
+  /// `block_class` — the same quantity as MpcSegmentCore::StageGain on the
+  /// same grid.
   /// With catch_time_variable both are those of the point evaluated LAST (its
   /// δt_c), for the nodes k ≥ k_c; before any Solve, of δt_c = 0.
-  [[nodiscard]] double StageGain(int m, int k, int b) const noexcept;
+  [[nodiscard]] double StageGain(int m, int k, int b, int block_class = 0) const noexcept;
 
   /// |A| and its nodes (ascending); −1 outside.
   [[nodiscard]] int NumApproachNodes() const noexcept { return n_app_; }
@@ -867,6 +924,42 @@ class MpcDockingSegmentCore {
                                            MpcDockingSegmentCoreResult& out) noexcept;
   [[nodiscard]] bool EvaluateTrajectory(bool with_jacobians, Evaluation& ev) noexcept;
   void AssembleQp() noexcept;
+  /// Take the angular term's coefficients at the trajectory in (q_, v_) and
+  /// its Hessian from them (header note).
+  void FreezeAngular() noexcept;
+  [[nodiscard]] double AngularWeight(Eigen::Index k) const noexcept;
+  /// h += scale · Σ_j w_j (ĝ_m,k ⊗ ĝ_m,k) for joint j's own class (m: 0 = q,
+  /// 1 = q̇, 2 = q̈): the Hessian of a diagonal-weighted sum of squares of node
+  /// k's state in the jerk variables.
+  void AddGainOuter(Eigen::MatrixXd& h, int m, Eigen::Index k, const Eigen::VectorXd& w,
+                    double scale) const noexcept;
+
+  // Block classes (BlockLayout): class 0 is gq_, gv_, ga_, block_of_node_,
+  // block_first_, block_span_ — what the catch instant's machinery rebuilds —
+  // and the others, without that machinery, are extra_.
+  [[nodiscard]] int ClassOf(Eigen::Index j) const noexcept {
+    return layout_.class_of[static_cast<std::size_t>(j)];
+  }
+
+  [[nodiscard]] Eigen::Index Col(Eigen::Index j, Eigen::Index b) const noexcept {
+    return layout_.Col(static_cast<int>(j), static_cast<int>(b));
+  }
+
+  [[nodiscard]] const Eigen::MatrixXd& Gain(int m, int c) const noexcept {
+    const Eigen::MatrixXd* g0[3] = {&gq_, &gv_, &ga_};
+    if (c == 0) {
+      return *g0[m];
+    }
+    const ExtraClass& x = extra_[static_cast<std::size_t>(c)];
+    return m == 0 ? x.gq : (m == 1 ? x.gv : x.ga);
+  }
+
+  /// The last block that acts on node k (k ≥ 1) for class c.
+  [[nodiscard]] Eigen::Index LastBlock(int c, Eigen::Index k) const noexcept {
+    const auto i = static_cast<std::size_t>(k - 1);
+    return c == 0 ? block_of_node_[i] : extra_[static_cast<std::size_t>(c)].block_of_node[i];
+  }
+
   void MapRow(Eigen::Index k, const Eigen::VectorXd* a_q, const Eigen::VectorXd* a_v) noexcept;
   void AddScalarResidual(double weight, double residual) noexcept;
   void SetRow(Eigen::Index row, double lower, double upper) noexcept;
@@ -928,6 +1021,8 @@ class MpcDockingSegmentCore {
   bool torque_cost_{false}, acc_cost_{false}, posture_cost_{false}, near_cost_{false};
   bool manip_on_{false}, impact_rows_{false}, impact_cost_{false}, impact_on_{false};
   bool timing_on_{false}, perp_on_{false};
+  bool vel_on_{false}, rest_stop_on_{false}, ang_on_{false};
+  bool ang_frozen_{false};  // the angular coefficients were taken (FreezeAngular)
 
   pinocchio::Model model_;
   pinocchio::Data data_;
@@ -935,9 +1030,26 @@ class MpcDockingSegmentCore {
 
   Eigen::VectorXd q_lo_, q_hi_, v_hi_, a_hi_, u_hi_, inv_tau_, tau_lo_, tau_hi_;
   Eigen::VectorXd r_tau_, r_tau2_, r_acc_, r_jerk_, r_jerk_stop_, w_q_nom_, q_nom_, manip_d_q_;
+  Eigen::VectorXd w_vel_, w_rest_stop_;  // n; zeros where off
+  // The angular term's held coefficients: A_k (3 × n per node) and d_k; and
+  // its Hessian in the jerk variables (nu × nu, nodes 1..N).
+  Eigen::Matrix<double, 3, Eigen::Dynamic> ag_, dag_v_;
+  Eigen::MatrixXd h_ang_;
+  Eigen::MatrixXd m_ang_;  // n × n workspace: AᵀA of one node
   std::array<int, kMaxMpcNodes> block_of_node_{};
   std::array<int, kMaxSegmentNodes> block_first_{};    // first interval of block b
   std::array<double, kMaxSegmentNodes> block_span_{};  // Σ_{k∈b} Δ_k [s]
+  BlockLayout layout_;
+
+  struct ExtraClass {
+    std::array<int, kMaxMpcNodes> block_of_node{};
+    std::array<int, kMaxSegmentNodes> block_first{};
+    std::array<double, kMaxSegmentNodes> block_span{};
+    Eigen::MatrixXd gq, gv, ga;
+  };
+
+  std::array<ExtraClass, kMaxJointGroups> extra_;  // classes 1.. (class 0: the members above)
+  std::vector<int> joint_of_col_;                  // the joint of each jerk variable
   std::array<double, kMaxMpcNodes + 1> t_node_{};
   std::array<double, kMaxMpcNodes> dt_node_{};
   std::array<int, kMaxMpcNodes> app_node_{};

@@ -130,7 +130,9 @@ struct Nodes {
 };
 
 // The trajectory of scaled block jerks z from x0, through the core's own
-// stage-gain accessor (which a separate test pins against MpcSegmentCore).
+// stage-gain accessor (which a separate test pins against MpcSegmentCore) —
+// each joint with its block class's gains and its variables where the core's
+// layout puts them (one class without groups: z_{b·n+j}).
 inline Nodes NodesFromJerk(const MpcDockingSegmentCore& core, const Eigen::VectorXd& q0,
                            const Eigen::VectorXd& qd0, const Eigen::VectorXd& qdd0,
                            const Eigen::VectorXd& z) {
@@ -146,11 +148,13 @@ inline Nodes NodesFromJerk(const MpcDockingSegmentCore& core, const Eigen::Vecto
       double q = q0[j] + t * qd0[j] + 0.5 * t * t * qdd0[j];
       double v = qd0[j] + t * qdd0[j];
       double a = qdd0[j];
-      for (int b = 0; b < core.NumBlocks(); ++b) {
-        const double zb = z[b * n + j];
-        q += core.StageGain(0, static_cast<int>(k), b) * zb;
-        v += core.StageGain(1, static_cast<int>(k), b) * zb;
-        a += core.StageGain(2, static_cast<int>(k), b) * zb;
+      const rtc::catching::BlockLayout& l = core.Layout();
+      const int c = l.class_of[static_cast<std::size_t>(j)];
+      for (int b = 0; b < l.pattern[static_cast<std::size_t>(c)].n_blocks; ++b) {
+        const double zb = z[l.Col(static_cast<int>(j), b)];
+        q += core.StageGain(0, static_cast<int>(k), b, c) * zb;
+        v += core.StageGain(1, static_cast<int>(k), b, c) * zb;
+        a += core.StageGain(2, static_cast<int>(k), b, c) * zb;
       }
       out.q(j, k) = q;
       out.qd(j, k) = v;
@@ -165,23 +169,26 @@ inline Nodes NodesFromJerk(const MpcDockingSegmentCore& core, const Eigen::Vecto
 inline Eigen::VectorXd JerkThrough(const MpcDockingSegmentCore& core, const Eigen::VectorXd& q0,
                                    const Eigen::VectorXd& q_c, const Eigen::VectorXd& v_c) {
   const Eigen::Index n = core.Nv();
-  const int nb = core.NumBlocks();
   const int kc = core.CatchNode();
   const int N = core.NumNodes();
-  Eigen::MatrixXd m(4, nb);
-  for (int b = 0; b < nb; ++b) {
-    m(0, b) = core.StageGain(0, kc, b);
-    m(1, b) = core.StageGain(1, kc, b);
-    m(2, b) = core.StageGain(1, N, b);
-    m(3, b) = core.StageGain(2, N, b);
-  }
-  const Eigen::MatrixXd pinv = m.transpose() * (m * m.transpose()).inverse();
-  Eigen::VectorXd z(n * nb);
+  const rtc::catching::BlockLayout& l = core.Layout();
+  Eigen::VectorXd z(l.nu);
   for (Eigen::Index j = 0; j < n; ++j) {
+    // Each joint through its block class's gains.
+    const int c = l.class_of[static_cast<std::size_t>(j)];
+    const int nb = l.pattern[static_cast<std::size_t>(c)].n_blocks;
+    Eigen::MatrixXd m(4, nb);
+    for (int b = 0; b < nb; ++b) {
+      m(0, b) = core.StageGain(0, kc, b, c);
+      m(1, b) = core.StageGain(1, kc, b, c);
+      m(2, b) = core.StageGain(1, N, b, c);
+      m(3, b) = core.StageGain(2, N, b, c);
+    }
+    const Eigen::MatrixXd pinv = m.transpose() * (m * m.transpose()).inverse();
     const Eigen::Vector4d rhs(q_c[j] - q0[j], v_c[j], 0.0, 0.0);
     const Eigen::VectorXd zj = pinv * rhs;
     for (int b = 0; b < nb; ++b) {
-      z[b * n + j] = zj[b];
+      z[l.Col(static_cast<int>(j), b)] = zj[b];
     }
   }
   return z;
@@ -194,10 +201,16 @@ inline Eigen::VectorXd JerkThrough(const MpcDockingSegmentCore& core, const Eige
 // solved. The three helpers below read the PARAMETERS instead.
 
 // The trajectory of scaled block jerks z from x0 on the grid whose last
-// pre-catch interval is Δ_a + delta, integrated interval by interval.
+// pre-catch interval is Δ_a + delta, integrated interval by interval — read
+// from the PARAMETERS: each joint's partition is its group's when there are
+// groups (E3-F02), its variables where BlockLayout puts them.
 inline Nodes NodesFromJerkAt(const MpcDockingSegmentCoreParams& p, const Eigen::VectorXd& q0,
                              const Eigen::VectorXd& qd0, const Eigen::VectorXd& qdd0,
-                             const Eigen::VectorXd& z, double delta) {
+                             const Eigen::VectorXd& z, double delta);
+
+inline Nodes NodesFromJerkAtUniform(const MpcDockingSegmentCoreParams& p, const Eigen::VectorXd& q0,
+                                    const Eigen::VectorXd& qd0, const Eigen::VectorXd& qdd0,
+                                    const Eigen::VectorXd& z, double delta) {
   const Eigen::Index n = q0.size();
   const int N = p.n_pre + p.n_stop;
   Nodes out;
@@ -225,6 +238,62 @@ inline Nodes NodesFromJerkAt(const MpcDockingSegmentCoreParams& p, const Eigen::
       out.q(j, k + 1) = q + v * dt + 0.5 * a * dt * dt + u * dt * dt * dt / 6.0;
       out.qd(j, k + 1) = v + a * dt + 0.5 * u * dt * dt;
       out.qdd(j, k + 1) = a + u * dt;
+    }
+  }
+  return out;
+}
+
+inline Nodes NodesFromJerkAt(const MpcDockingSegmentCoreParams& p, const Eigen::VectorXd& q0,
+                             const Eigen::VectorXd& qd0, const Eigen::VectorXd& qdd0,
+                             const Eigen::VectorXd& z, double delta) {
+  if (p.n_groups <= 1) {
+    return NodesFromJerkAtUniform(p, q0, qd0, qdd0, z, delta);
+  }
+  // Joint by joint, each on its own group's partition.
+  const Eigen::Index n = q0.size();
+  const int N = p.n_pre + p.n_stop;
+  rtc::catching::BlockLayout l;
+  EXPECT_EQ(rtc::catching::BuildBlockLayout(
+                static_cast<int>(n), p.n_groups,
+                std::span<const std::int8_t>(p.joint_group).first(static_cast<std::size_t>(n)),
+                std::span<const rtc::catching::BlockPattern>(p.group_blocks)
+                    .first(static_cast<std::size_t>(p.n_groups)),
+                p.n_pre, N, l),
+            rtc::catching::BlockGridCheck::kOk)
+      << "the fixture's groups must be a layout the core accepts";
+  Nodes out;
+  out.q.resize(n, N + 1);
+  out.qd.resize(n, N + 1);
+  out.qdd.resize(n, N + 1);
+  for (Eigen::Index j = 0; j < n; ++j) {
+    const auto& pat =
+        p.group_blocks[static_cast<std::size_t>(p.joint_group[static_cast<std::size_t>(j)])];
+    double q = q0[j];
+    double v = qd0[j];
+    double a = qdd0[j];
+    out.q(j, 0) = q;
+    out.qd(j, 0) = v;
+    out.qdd(j, 0) = a;
+    int block = 0;
+    int left = pat.block_sizes[0];
+    for (int k = 0; k < N; ++k) {
+      if (left == 0) {
+        ++block;
+        left = pat.block_sizes[static_cast<std::size_t>(block)];
+      }
+      --left;
+      const double dt =
+          k < p.n_pre - 1 ? p.dt_pre : (k == p.n_pre - 1 ? p.dt_pre + delta : p.dt_stop);
+      const double u = p.u_scale * z[l.Col(static_cast<int>(j), block)];
+      const double qn = q + v * dt + 0.5 * a * dt * dt + u * dt * dt * dt / 6.0;
+      const double vn = v + a * dt + 0.5 * u * dt * dt;
+      const double an = a + u * dt;
+      q = qn;
+      v = vn;
+      a = an;
+      out.q(j, k + 1) = q;
+      out.qd(j, k + 1) = v;
+      out.qdd(j, k + 1) = a;
     }
   }
   return out;

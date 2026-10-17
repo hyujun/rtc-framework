@@ -32,7 +32,8 @@
 // malformed value of either kind is refused (std::invalid_argument).
 #pragma once
 
-#include "rtc_controllers/catching/trajectory.hpp"  // kMaxPlanNv, kMaxSegmentNodes
+#include "rtc_controllers/catching/joint_groups.hpp"  // JointGroupSpec
+#include "rtc_controllers/catching/trajectory.hpp"    // kMaxPlanNv, kMaxSegmentNodes
 
 #include <yaml-cpp/yaml.h>
 
@@ -96,6 +97,30 @@ inline constexpr int kMaxMpcSegmentReplans = 8;
 /// What stays in code is not a design value: the solver's preconditioner and
 /// KKT backend (the RT no-allocation and infeasibility verdict rely on them),
 /// the test-only `reference_assembly`, and the capacities.
+/// One joint group's keys under `planner.segment.mpc.groups.<name>` (E3-F02,
+/// #641): `<name>` is a `planner.groups` name, and the entry sits at that
+/// group's index. A group without an entry takes these defaults — which are
+/// the block's own partition, so declaring groups alone changes nothing.
+struct MpcSegmentGroupParams {
+  /// `blocks.pre` — pre-catch nodes per block (≥ 1): a pre-catch grid of
+  /// n_pre nodes is split into blocks of this many, the remainder joining the
+  /// last; fewer nodes than this are one block. 1 = one block per node, the
+  /// pattern the block has without groups.
+  int pre_block{1};
+  /// `blocks.stop` — the group's stop-part partition (Σ = horizon.n_nodes,
+  /// three blocks or more for every replan instance k ≤ replan.k_max, the
+  /// largest trailing block shrinking first as for `horizon.blocks`).
+  /// n_stop_blocks 0 = `horizon.blocks`.
+  std::array<int, kMaxSegmentNodes> stop_blocks{};
+  int n_stop_blocks{0};
+  /// `w_vel` [(rad/s)⁻²] — the group's joint velocities damped on every node
+  /// (½ w Σ_k ‖q̇_g,k‖²); 0 = off. In [0, kWholeBodyWeightMax].
+  double w_vel{0.0};
+  /// `w_rest` [rad⁻²] — the group's joints held near `planner.wait_pose` on
+  /// every node (½ w Σ_k ‖q_g,k − q_g^rest‖²); 0 = off. Needs `wait_pose`.
+  double w_rest{0.0};
+};
+
 struct MpcSegmentPlannerParams {
   // There is no `enabled`: the planner solves these segments exactly when
   // `planner.segment.mode` is mpc. That needs `planner.enabled` (the binding
@@ -110,6 +135,10 @@ struct MpcSegmentPlannerParams {
   /// k uses MpcSegmentBlocksFor(k) (the largest trailing block shrinks first).
   std::array<int, kMaxSegmentNodes> blocks{1, 1, 2, 2, 4, 4};
   int n_blocks{6};
+  /// `groups.<name>.*` (E3-F02) at the index of `planner.groups`; n_groups is
+  /// that list's length (0 = no groups — every joint follows `blocks`).
+  std::array<MpcSegmentGroupParams, kMaxJointGroups> groups{};
+  int n_groups{0};
   /// `replan.k_max` — post-catch replans only at grid points k ≤ k_max; the
   /// stop still ends at t_c + N_s·Δ_s (MD-31).
   int k_max{4};
@@ -212,6 +241,15 @@ struct MpcSegmentPlannerParams {
   /// 0 (the default) = off; above 0 the planner needs the hand's closing
   /// timing and refuses to configure without it.
   double w_path{0.0};
+  /// `cost.angular_momentum.{w_pre, w_post, scale}` (E3-F02): the centroidal
+  /// angular-momentum rate, ½ Σ_k W(k)/s² ‖k̇_G,k‖², with W = w_pre before
+  /// the catch node and w_post from it on (formulation §1.4's schedule), s
+  /// [N·m] > 0. Both weights 0 (the default) = off. It reads every joint of
+  /// the segment model, so a group a plan may leave out needs a rest weight
+  /// (the binding checks, D9′).
+  double ang_w_pre{0.0};
+  double ang_w_post{0.0};
+  double ang_scale{1.0};
   /// `catch.axis_theta_max` [rad], in (0, π) — the largest axis error of the
   /// reference the approach-axis term is linearised at.
   double axis_theta_max{1.5707963267948966};
@@ -267,6 +305,18 @@ struct MpcSegmentPlannerParams {
                                        std::array<int, kMaxSegmentNodes>& blocks,
                                        int& n_blocks) noexcept;
 
+/// @brief The same rule from any stop-part partition `base` (its first
+///        `n_base` entries, Σ = n_nodes) — a joint group's own (E3-F02).
+[[nodiscard]] bool MpcSegmentBlocksFor(const std::array<int, kMaxSegmentNodes>& base, int n_base,
+                                       int n_nodes, int k,
+                                       std::array<int, kMaxSegmentNodes>& blocks,
+                                       int& n_blocks) noexcept;
+
+/// @brief The stop-part partition group `g` starts from: its `blocks.stop`,
+///        else `horizon.blocks`.
+void MpcSegmentGroupStopBase(const MpcSegmentPlannerParams& p, int g,
+                             std::array<int, kMaxSegmentNodes>& base, int& n_base) noexcept;
+
 struct ScoreWeights {
   double w_sigma{1.0};  ///< σ_max / r_cap
   double w_t{1.0};      ///< max t_min / (t_k − now − T_arm)
@@ -297,6 +347,11 @@ struct PlannerParams {
   /// configure-time seed and the fallback when that pose is refused.
   enum class WaitPoseSource : std::uint8_t { kYaml = 0, kCurrent = 1 };
   WaitPoseSource wait_pose_source{WaitPoseSource::kYaml};
+  /// `planner.groups` (E3-F02, joint_groups.hpp): the arm device's joint
+  /// groups the segment blocks weight and block by name, as written. Empty =
+  /// one group of every joint. Resolved against the device's joint names by
+  /// the binding (ResolveJointGroups) — this parser does not know them.
+  std::vector<JointGroupSpec> groups;
   /// `planner.provisional` (invented, same shape as `reference.provisional`):
   /// the block as a whole is provisional — sim warns, a real arm is parked.
   bool provisional{true};
@@ -403,12 +458,27 @@ struct PlannerKeySelection {
 /// ParseCatchingParams takes). An absent `planner:` section yields the
 /// defaults, and so does a map `selection` leaves closed. Throws `std::invalid_argument` (and only
 /// that) on a present but malformed key: a non-map section, a non-bool flag, a number outside its
-/// L3 §6 range, a `wait_pose` that is empty / non-finite / longer than `kMaxPlanNv`, a
+/// L3 §6 range, a `wait_pose` that is empty / non-finite / longer than `kMaxPlanNv`, a `groups`
+/// entry that is not {name, joints} with a unique token name and joints disjoint across groups, a
 /// `segment.mpc` horizon whose blocks do not sum to n_nodes, a Δ_s or Δ_pre that is not whole ns, a
 /// k_max whose replan patterns would drop below three blocks, or an n_pre_max whose pre-catch nodes
 /// or blocks would not fit next to the stop's. The removed `search.grid.workspace` (the catch box,
 /// L3 §4.9) is not read and not refused here: the binding parks on it (kRemovedCatchingKeys).
 [[nodiscard]] PlannerParams ParsePlannerParams(const YAML::Node& catching,
                                                const PlannerKeySelection& selection = {});
+
+/// @brief #641 D9′ for the mpc segment planner (non-RT): its angular-momentum
+///        term reads every joint of the segment model, so a group with joints
+///        a plan leaves out needs a rest weight (`groups.<name>.w_rest`), or
+///        nothing brings those joints back between solves.
+/// @param planner      the parsed parameters (the groups' names, the mpc keys)
+/// @param groups       `planner.groups` resolved on the arm device
+/// @param n_dev        the device's joint count
+/// @param plan_joints  the joints a plan of the search model holds (device indices)
+/// @return what a configure refuses, naming the group — empty when the term
+///         is off or every left-out group has its weight
+[[nodiscard]] std::string MpcSegmentLeftFreeRefusal(const PlannerParams& planner,
+                                                    const JointGroups& groups, int n_dev,
+                                                    JointSet plan_joints);
 
 }  // namespace rtc::catching

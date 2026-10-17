@@ -20,11 +20,19 @@
 // (z_{b·n+j}) the triple integrator decouples per joint and every stage
 // matrix is a Kronecker product: G_{m,k} = ĝ_{m,k}ᵀ ⊗ I_n for m ∈ {q, q̇, q̈},
 // ĝ ∈ R^B. The solver works on z = [ũ/u_scale (nB); s (nN)].
+// Per joint group (E3-F02, params.n_groups): each group may have its own
+// pattern. Joints whose groups share a pattern form one block class with the
+// structure above; z holds the classes one after another (BlockLayout), and a
+// term couples the classes through their own gains. One class — no groups, or
+// groups of one pattern — is the problem above to the bit.
 //
 //   min  ½ Σ_k Σ_j R_j (u_kj/u_scale)²                        jerk
 //      + ½ w_Δ Σ_k ‖q_k − q̄_k‖²                               stay near x̄
 //      + ½ w_⊥ Σ_k ‖P_⊥(p_C(q̄_k) + J_C(q̄_k)(q_k − q̄_k) − p_c)‖²   optional
 //      + ½ w_path Σ_k ‖P_k(p_C(q̄_k) + J_C(q̄_k)(q_k − q̄_k) − p_k)‖²  optional
+//      + ½ Σ_k Σ_j w_vel,j q̇_kj²                              optional (E3-F02)
+//      + ½ Σ_k Σ_j w_rest,j (q_kj − q_rest,j)²                 optional (E3-F02)
+//      + ½ Σ_k W(k)/s² ‖A_k q̈_k + d_k‖²                      optional (E3-F02)
 //      + ρ_τ Σ s                                              torque slack
 //   s.t. q̇_N = q̈_N = 0                                         (2n, hard)
 //        max(q_min+m, q̄_k−δ) ≤ q_k ≤ min(q_max−m, q̄_k+δ)       (hard)
@@ -38,6 +46,30 @@
 // (unit-norm scaling), chosen here so the slack reads directly as "how far past
 // the limit". The penalty is exact (s = 0 whenever the hard problem is
 // feasible) only while ρ_τ exceeds the torque rows' multipliers.
+//
+// ── Per-joint velocity and rest terms (E3-F02, #641; formulation §1.3) ────────
+// w_vel and w_rest are weights per joint (the planner spreads a joint group's
+// value over its joints), on every node k = 1..N, per node like w_Δ — no
+// interval-length weight. Both are quadratic in z with a CONSTANT Hessian:
+// that part is built at Init and enters H on every path, the w_delta_scale
+// one (H = h_kin + h_wb + scale·h_delta) included; the pre-solve (a kinematic
+// stop problem that only builds a reference) has neither. q_rest is read only
+// where w_rest > 0. Off (empty, or all zero) the QP is the one without the
+// term, bit for bit; the result's `whole_body` reports the terms' values at
+// the solution.
+//
+// The centroidal angular-momentum rate (formulation §1.3, §1.4) is linearised
+// at the reference like the torque rows: k̇_G,k ≈ A_k q̈_k + d_k with
+// A_k = A^ω_G(q̄_k) (the angular rows of the centroidal momentum matrix) and
+// the constant d_k = Ȧ^ω_G(q̄_k, q̄̇_k) q̄̇_k, both from one pinocchio dccrba at
+// x̄_k on the core's own model. It reads EVERY joint of the model. Its weight
+// is W(k)/s²: W = w_ang_pre on the nodes before the catch node, w_ang_post
+// from it on (all of 1..N without a pre-catch grid), s = ang_scale [N·m] —
+// per node, ½-weighted, like the terms above. The q / q̇ dependence of A_k
+// beyond the reference (the first-order centroidal derivatives) is not
+// modelled. The result's `whole_body` reports the term and max ‖k̇_G,k‖ over
+// the nodes it weights, on this LINEAR model at the solution (no evaluation
+// after the QP).
 //
 // ── The pre-catch grid and the catch terms (E1-F07) ───────────────────────────
 // With n_pre > 0 the horizon has n_pre nodes of spacing Δ_a (dt_pre) BEFORE the
@@ -143,7 +175,8 @@
 //    wrongly sized result instead of resizing it.
 #pragma once
 
-#include "rtc_controllers/catching/trajectory.hpp"  // kMaxSegmentNodes, kMaxPlanNv
+#include "rtc_controllers/catching/mpc_block_grid.hpp"  // BlockLayout, BlockPattern
+#include "rtc_controllers/catching/trajectory.hpp"      // kMaxSegmentNodes, kMaxPlanNv
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
 
@@ -198,7 +231,18 @@ struct MpcSegmentCoreParams {
   double dt_pre{0.0};  ///< Δ_a [s], > 0 when n_pre > 0
   int n_blocks{6};     ///< B (3 ≤ B ≤ min(N, kMaxSegmentNodes))
   std::array<int, kMaxSegmentNodes> block_sizes{1, 1, 2, 2, 3, 3};  ///< first B used, Σ = N
-  Eigen::VectorXd jerk_weight;                                      ///< R_j > 0 (n); empty = all 1
+  /// Per-group move blocking (E3-F02, formulation §1.1, MD-49). With n_groups
+  /// ≤ 1 every joint follows n_blocks / block_sizes above. With 2..
+  /// kMaxJointGroups, model joint j follows group_blocks[joint_group[j]] and
+  /// n_blocks / block_sizes are not read; each partition a joint uses obeys
+  /// the same rules (none across the catch node, three after it). Groups with
+  /// the same partition share their variables' layout (BlockLayout) — so
+  /// groups that all have one partition are the problem without groups, to
+  /// the bit.
+  int n_groups{0};
+  std::array<std::int8_t, kMaxPlanNv> joint_group{};
+  std::array<BlockPattern, kMaxJointGroups> group_blocks{};
+  Eigen::VectorXd jerk_weight;  ///< R_j > 0 (n); empty = all 1
   /// Jerk scale [rad/s³]. NOT a pure preconditioner: the jerk cost is
   /// (u/u_scale)², so changing it re-weights jerk against w_Δ, w_⊥ and ρ_τ.
   double u_scale{1e3};
@@ -244,6 +288,21 @@ struct MpcSegmentCoreParams {
   tsid::QPSolverConfig solver{.max_iter = 200,
                               .update_preconditioner = true,
                               .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT};
+  /// Joint velocity weight w_vel,j [(rad/s)⁻²] per joint (header note); empty
+  /// or all zero = off. Each entry in [0, kWholeBodyWeightMax].
+  Eigen::VectorXd w_vel;
+  /// Rest weight w_rest,j [rad⁻²] per joint; empty or all zero = off. Each
+  /// entry in [0, kWholeBodyWeightMax].
+  Eigen::VectorXd w_rest;
+  /// Rest posture [rad] (n), read where w_rest > 0 (finite there).
+  Eigen::VectorXd q_rest;
+  /// Angular-momentum rate weights W⁻ (nodes before the catch node) and W⁺
+  /// (from it on), each in [0, kWholeBodyWeightMax]; both 0 = off.
+  double w_ang_pre{0.0};
+  double w_ang_post{0.0};
+  /// s_k̇ [N·m], > 0 (read when the term is on): the rate the weight is
+  /// measured against.
+  double ang_scale{1.0};
   /// Test / benchmark only: rebuild every QP matrix densely each Solve
   /// (Γ_k products instead of the Kronecker form, nothing cached). Same
   /// problem, same answer to rounding — the oracle for the structured path
@@ -296,6 +355,18 @@ struct MpcSegmentCoreInput {
       Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
 };
 
+/// The whole-body terms at the returned solution (E3-F02), each with the
+/// cost's ½: their total and their sum over each joint group (index =
+/// params.joint_group; group 0 holds every joint without groups).
+struct MpcSegmentWholeBodyCost {
+  double vel{0.0};
+  double rest{0.0};
+  std::array<double, kMaxJointGroups> vel_group{};
+  std::array<double, kMaxJointGroups> rest_group{};
+  double ang{0.0};           ///< ½ Σ_k W(k)/s² ‖k̇_G,k‖² (linear model)
+  double ang_rate_max{0.0};  ///< max ‖k̇_G,k‖ over the weighted nodes [N·m] (linear model)
+};
+
 struct MpcSegmentCoreResult {
   Eigen::MatrixXd q, qd, qdd;  ///< nodes, n × (N+1)
   Eigen::MatrixXd u;           ///< jerk, n × N [rad/s³]
@@ -323,6 +394,8 @@ struct MpcSegmentCoreResult {
   Eigen::Vector3d catch_v_rel{Eigen::Vector3d::Zero()};  ///< v̂_b − J_v(q_kc) q̇_kc [m/s]
   double catch_gamma{0.0};  ///< v̂_bᵀ v_C / ‖v̂_b‖² (0 when the ball is at rest)
   double slack_v{0.0};      ///< s_v, fraction of v_rel_allow (linear model)
+  /// Written by every valid Solve (zeros for the terms that are off).
+  MpcSegmentWholeBodyCost whole_body;
   double presolve_us{0.0};
   double linearize_us{0.0};
   double condense_us{0.0};
@@ -360,6 +433,13 @@ class MpcSegmentCore {
     return k >= 0 && k <= kMaxMpcNodes && path_active_[static_cast<std::size_t>(k)];
   }
 
+  /// The velocity / rest term is on (a positive weight on some joint).
+  [[nodiscard]] bool VelocityTermActive() const noexcept { return vel_wb_on_; }
+
+  [[nodiscard]] bool RestTermActive() const noexcept { return rest_on_; }
+
+  [[nodiscard]] bool AngularMomentumTermActive() const noexcept { return ang_on_; }
+
   /// N = n_pre + n_nodes: results hold N + 1 node columns.
   [[nodiscard]] int NumNodes() const noexcept { return n_nodes_; }
 
@@ -377,7 +457,12 @@ class MpcSegmentCore {
 
   [[nodiscard]] const Eigen::VectorXd& PositionHigh() const noexcept { return q_hi_; }
 
+  /// B of block class 0 — every joint's, unless groups with different
+  /// partitions split them (Layout()).
   [[nodiscard]] int NumBlocks() const noexcept { return n_blocks_; }
+
+  /// Which block class each joint is in and where its jerk sits in z.
+  [[nodiscard]] const BlockLayout& Layout() const noexcept { return layout_; }
 
   /// Rank of the assembled terminal-equality matrix found at Init (2n).
   [[nodiscard]] int TerminalRank() const noexcept { return terminal_rank_; }
@@ -387,8 +472,9 @@ class MpcSegmentCore {
 
   [[nodiscard]] const tsid::QPData& PresolveQp() const noexcept { return qp_pre_; }
 
-  /// Per-node scaled stage gains ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈).
-  [[nodiscard]] double StageGain(int m, int k, int b) const noexcept;
+  /// Per-node scaled stage gains ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈) of
+  /// block class `block_class` (Layout()).
+  [[nodiscard]] double StageGain(int m, int k, int b, int block_class = 0) const noexcept;
 
  private:
   void FreeResponse() noexcept;
@@ -405,10 +491,15 @@ class MpcSegmentCore {
   void AccumulateNodeTerm(Eigen::Index k, const Eigen::Matrix<double, 3, Eigen::Dynamic>& a_q,
                           const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
                           const Eigen::Matrix3d& w, const Eigen::Vector3d& r) noexcept;
+  void AccumulateNodeTermClasses(Eigen::Index k, bool with_v) noexcept;
   void AccumulateNodeTermDense(Eigen::Index k, const Eigen::Matrix<double, 3, Eigen::Dynamic>& a_q,
                                const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
                                const Eigen::Matrix3d& w, const Eigen::Vector3d& r) noexcept;
   void AssembleSlackVRows() noexcept;
+  [[nodiscard]] double AngularWeight(Eigen::Index k) const noexcept;
+  void AssembleAngularMomentum() noexcept;
+  void AccumulateAccelNodeTerm(Eigen::Index k, double w, const Eigen::Vector3d& r) noexcept;
+  void EvaluateWholeBody(MpcSegmentCoreResult& out) const noexcept;
   void EvaluateCatch(MpcSegmentCoreResult& out) noexcept;
   [[nodiscard]] bool AssembleBounds(tsid::QPData& qp, bool main) noexcept;
   void AssembleGradient(tsid::QPData& qp, bool main) noexcept;
@@ -416,16 +507,24 @@ class MpcSegmentCore {
   void ResetSolver() noexcept;
   void TrajectoryFromZ() noexcept;
 
+  [[nodiscard]] std::size_t ClassOf(Eigen::Index j) const noexcept {
+    return static_cast<std::size_t>(layout_.class_of[static_cast<std::size_t>(j)]);
+  }
+
+  [[nodiscard]] Eigen::Index Col(Eigen::Index j, Eigen::Index b) const noexcept {
+    return layout_.Col(static_cast<int>(j), static_cast<int>(b));
+  }
+
   bool initialized_{false};
   MpcSegmentCoreParams params_;
   int n_{0};
-  int n_nodes_{0};  // N = n_pre + stop nodes
-  int n_pre_{0};    // k_c
-  int n_blocks_{0};
-  int nu_{0};    // n·B
-  int nz_{0};    // n·(B + N) (+ 1 with the velocity slack)
-  int n_eq_{0};  // 2n
-  int n_in_{0};  // 5·n·N (+ 7 with the velocity slack)
+  int n_nodes_{0};   // N = n_pre + stop nodes
+  int n_pre_{0};     // k_c
+  int n_blocks_{0};  // B of block class 0
+  int nu_{0};        // Σ_c n_c·B_c (n·B with one class)
+  int nz_{0};        // nu_ + n·N (+ 1 with the velocity slack)
+  int n_eq_{0};      // 2n
+  int n_in_{0};      // 5·n·N (+ 7 with the velocity slack)
   int terminal_rank_{0};
 
   pinocchio::Model model_;
@@ -434,17 +533,23 @@ class MpcSegmentCore {
 
   Eigen::VectorXd q_lo_, q_hi_, v_hi_, inv_tau_;
   Eigen::VectorXd jerk_w_;
-  // Stage structure of the (single) joint group: every joint shares one block
-  // pattern, so the gains are scalars per (node, block). A second joint group
-  // with its own E (formulation §1.1, MD-49) gets its own instance of
-  // these four members; the terms below read gains only through them.
-  std::array<int, kMaxMpcNodes> block_of_node_{};
-  std::array<double, kMaxMpcNodes + 1> t_node_{};        // node instants from node 0 [s]
-  std::array<double, kMaxMpcNodes> dt_node_{};           // Δ_k of interval [k, k+1]
-  std::array<double, kMaxSegmentNodes> block_weight_{};  // Σ_{k∈b} Δ_k/Δ_s
 
-  // ĝ: (N+1) × B per derivative order, scaled by u_scale.
-  Eigen::MatrixXd gq_, gv_, ga_;
+  // Stage structure per block class (BlockLayout): the joints of a class
+  // share one block pattern, so its gains are scalars per (node, block). With
+  // one class — no groups, or groups of one partition — this is the
+  // structure every term was built on before groups (z_{b·n+j}), and each
+  // assembly below keeps that code path for it.
+  struct ClassStages {
+    std::array<int, kMaxMpcNodes> block_of_node{};
+    std::array<double, kMaxSegmentNodes> block_weight{};  // Σ_{k∈b} Δ_k/Δ_s
+    // ĝ: (N+1) × B per derivative order, scaled by u_scale.
+    Eigen::MatrixXd gq, gv, ga;
+  };
+
+  BlockLayout layout_;
+  std::array<ClassStages, kMaxJointGroups> stage_;
+  std::array<double, kMaxMpcNodes + 1> t_node_{};  // node instants from node 0 [s]
+  std::array<double, kMaxMpcNodes> dt_node_{};     // Δ_k of interval [k, k+1]
   // Dense stage matrices [G_q; G_q̇; G_q̈] per node, stacked: 3n(N+1) × nB.
   Eigen::MatrixXd g_dense_;
 
@@ -452,6 +557,7 @@ class MpcSegmentCore {
   Eigen::MatrixXd h_kin_;    // jerk only (pre-solve)
   Eigen::MatrixXd h_main_;   // jerk + w_Δ (full problem, before w_⊥ and the catch terms)
   Eigen::MatrixXd h_delta_;  // the w_Δ part alone at scale 1 (used when w_delta_scale ≠ 1)
+  Eigen::MatrixXd h_wb_;     // the w_vel and w_rest parts (E3-F02); built only when one is on
 
   tsid::QPSolverWrapper solver_;
   tsid::QPData qp_pre_;
@@ -475,6 +581,14 @@ class MpcSegmentCore {
   Eigen::VectorXd tau_lin_;  // n·N
   bool w_perp_on_{false};
   bool torque_on_{false};
+  bool vel_wb_on_{false};  // w_vel > 0 on some joint
+  bool rest_on_{false};    // w_rest > 0 on some joint
+  bool ang_on_{false};     // w_ang_pre or w_ang_post > 0
+  // A_k (3 × n per node, column block k) and d_k at the reference; node 0 unused.
+  Eigen::Matrix<double, 3, Eigen::Dynamic> ag_;
+  Eigen::Matrix<double, 3, Eigen::Dynamic> dag_v_;
+  Eigen::Matrix<double, 3, Eigen::Dynamic> ag_k_;  // one node's A_k (workspace)
+  Eigen::VectorXd w_vel_, w_rest_, q_rest_;  // n; zeros where off (q_rest_ 0 where w_rest = 0)
   // Closing-window path (#716): w_path > 0 and a node marked; this solve's
   // nodes (marked and switched on), whether any is, and their lines.
   bool path_on_{false};
