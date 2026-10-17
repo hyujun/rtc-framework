@@ -1927,6 +1927,17 @@ def test_the_vision_world_composes_as_the_controller_does():
             "provisional",
         ),
         (_scene_world(xyz=[0.0, 0.0]), "3 values"),
+        # The CM refuses an entry without rpy (ParseExtraFrames), so the tool does.
+        (
+            {
+                "urdf": {
+                    "extra_frames": {
+                        "scene_world": {"parent": "base", "xyz": [0.0] * 3, "provisional": False}
+                    }
+                }
+            },
+            "lacks rpy",
+        ),
     ],
 )
 def test_a_vision_world_the_controller_would_not_use_is_refused(params, match):
@@ -1938,6 +1949,25 @@ def test_a_vision_world_the_controller_would_not_use_is_refused(params, match):
 def test_the_retired_io_frame_keys_are_refused(key):
     with pytest.raises(SystemExit, match=f"catching.io.{key} is gone"):
         ct.reject_retired_io_frame_keys({key: "base"}, "test")
+
+
+def test_a_session_overlay_moves_the_world_it_is_analysed_in(tmp_path):
+    # An overlay that swaps the scene states its own scene_world; the session
+    # it ran is analysed in that world, not sim.yaml's.
+    overlay = tmp_path / "pedestal.yaml"
+    overlay.write_text(
+        yaml.safe_dump(
+            {
+                "integrated_rt_controller": {
+                    "ros__parameters": {
+                        "urdf": {"extra_frames": {"scene_world": {"xyz": [0.0, 0.0, -0.7]}}}
+                    }
+                }
+            }
+        )
+    )
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session", overlays=[overlay])
+    np.testing.assert_allclose(profile.base_t_world[:3, 3], [0.0, 0.0, -0.7], atol=0.0)
 
 
 def test_the_fixture_profile_reads_its_world_from_sim_yaml():

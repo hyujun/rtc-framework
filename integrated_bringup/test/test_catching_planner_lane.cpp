@@ -2210,6 +2210,17 @@ TEST_F(CatchingVisionFrameTest, ASceneWorldThatMovesWithTheArmRefusesTheConfigur
   EXPECT_EQ(ConfigureOnly(), DemoCatchingController::CallbackReturn::FAILURE);
 }
 
+TEST_F(CatchingVisionFrameTest, WithoutAVisionLaneTheWorldIsNotJudged) {
+  // No io.traj_topic: nothing reads a prediction, so neither a missing nor a
+  // malformed world is this controller's to refuse (the task-goal
+  // controllers judge scene_world for their own use).
+  UseSceneWorld("wrist_3_link", Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+  ASSERT_EQ(ConfigureOnly([](YAML::Node& y) { y["catching"]["io"]["traj_topic"] = ""; }),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl_->IsVisionInert());
+  EXPECT_FALSE(ctrl_->GetTrajInputConfig().to_model);
+}
+
 TEST_F(CatchingVisionFrameTest, ASceneWorldOnAFrameTheModelLacksRefusesTheModel) {
   // #779 V3, replacing "an arm_base_frame the model lacks refuses the
   // catching configure": the parent is now resolved where the model is built

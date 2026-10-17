@@ -984,6 +984,9 @@ void DemoCatchingController::AcquireModelBuilder() {
 bool DemoCatchingController::ResolveVisionFrame(TrajInputConfig& cfg) {
   cfg.to_model = false;
   vision_inert_ = false;
+  if (traj_topic_.empty()) {
+    return true;  // no vision lane: nothing reads a prediction, so no world to judge
+  }
   if (!builder_) {
     // No model means no arm to drive (SetupArmCommand holds it) and no
     // planner model either — nothing downstream consumes model coordinates.

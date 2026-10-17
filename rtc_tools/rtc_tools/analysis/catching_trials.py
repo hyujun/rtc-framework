@@ -633,9 +633,10 @@ def vision_frame_from_params(params: Mapping, source: str) -> tuple[str, np.ndar
             "not use it (its vision lane is inert), so neither does this tool"
         )
     try:
+        # Every key the CM requires (ParseExtraFrames refuses one without rpy).
         parent = str(node["parent"])
         xyz = [float(v) for v in node["xyz"]]
-        rpy = [float(v) for v in node.get("rpy", (0.0, 0.0, 0.0))]
+        rpy = [float(v) for v in node["rpy"]]
     except KeyError as exc:
         raise SystemExit(f"{source}: urdf.extra_frames.{SCENE_WORLD} lacks {exc.args[0]}") from exc
     if len(xyz) != 3 or len(rpy) != 3:
@@ -663,8 +664,14 @@ def load_profile(
     controller: str | None = None,
     session: Path | None = None,
     catch_frame: str = DEFAULT_CATCH_FRAME,
+    overlays: Sequence[Path] = (),
 ) -> CatchingProfile:
     """Read the catching controller's config and the profile base from ``config_dir``.
+
+    ``overlays``: the sim overlays the session ran with, laid over the robot
+    config (:func:`robot_config_params`) — an overlay that swaps the scene
+    states its own ``scene_world``, and analysing its session in sim.yaml's
+    world puts the hand that far off.
 
     The controller is the one entry under ``controllers/*.yaml`` that carries a
     ``catching`` tree and logs a ``CatchingDiagLog`` (and, given a session,
@@ -701,7 +708,7 @@ def load_profile(
         elif i < len(dev_logs):
             device_logs[group] = dev_logs[i]
     reject_retired_io_frame_keys(node["catching"].get("io") or {}, name)
-    params = robot_config_params(config_dir)
+    params = robot_config_params(config_dir, overlays)
     base_frame, base_t_world = vision_frame_from_params(params, str(config_dir))
     frame = extra_frame_from_params(params, catch_frame)
     ball = (node["catching"].get("core") or {}).get("ball") or {}
@@ -5584,6 +5591,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("trials_dir", type=Path, help="catching_sim_trials output dir")
     ap.add_argument("--config-dir", type=Path, required=True, help="robot profile config dir")
     ap.add_argument("--controller", help="catching controller key (default: the only one)")
+    ap.add_argument(
+        "--overlay",
+        type=Path,
+        action="append",
+        default=[],
+        help="a sim overlay the session ran with (repeatable, in launch order): its "
+        "urdf.extra_frames.scene_world is the world the session was measured in (#779)",
+    )
     ap.add_argument("--catch-frame", default=DEFAULT_CATCH_FRAME)
     ap.add_argument("--urdf", type=Path, help="expanded URDF (default: urdf.package/path)")
     ap.add_argument("--out", type=Path, help="output dir (default: <trials_dir>/catching_trials)")
@@ -5669,7 +5684,9 @@ def main(argv: list[str] | None = None) -> int:
 
     from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text  # noqa: PLC0415
 
-    profile = load_profile(args.config_dir, args.controller, args.session, args.catch_frame)
+    profile = load_profile(
+        args.config_dir, args.controller, args.session, args.catch_frame, overlays=args.overlay
+    )
     urdf_text, _ = resolve_urdf_text(profile.robot_params, args.urdf)
     clock = args.clock_lane or _exists(args.session / "sim" / "clock_lane.csv")
     contact = args.contact_lane or _exists(args.session / "sim" / "ball_contact_lane.csv")

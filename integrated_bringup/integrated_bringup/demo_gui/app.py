@@ -177,13 +177,14 @@ from .dualarm import (
 )
 from .goal_frame import (
     CM_NODE,
-    SCENE_WORLD_PARAMS,
+    SCENE_WORLD_PREFIX,
     WORLD_LABEL,
     SceneWorld,
+    answer_in_request_order,
+    convert_pose,
     frame_id_for,
     frame_labels,
     parse_scene_world,
-    root_pose_to_world,
 )
 from .hand_step import (
     CATCHING_CONFIG_KEY,
@@ -454,7 +455,13 @@ class DemoControllerGUI(Node):
         self._scene_world_known = False
         self._scene_world_in_flight = False
         self._scene_world_last_query_s = 0.0
+        # Bumped on every switch: an answer to a query sent before it is dropped.
+        self._scene_world_gen = 0
         self._cm_param_client: AsyncParameterClient | None = None
+        # The world the Task Target entries' numbers are stated in (None = the
+        # arm root) — kept apart from the selector, so a frame change without a
+        # live pose to re-seed from converts the numbers instead of relabelling them.
+        self._entries_world: SceneWorld | None = None
 
         # Sensor calibration (Control tab). The driver namespaces these under the
         # hand device group (/<hand_group>/calibration/*), so derive the prefix
@@ -636,7 +643,9 @@ class DemoControllerGUI(Node):
         if not name or name == self._active_ctrl:
             return
         self._active_ctrl = name
-        self._scene_world_known = False  # re-read: the CM may have restarted
+        # Re-read: the CM may have restarted. An answer in flight is stale.
+        self._scene_world_known = False
+        self._scene_world_gen += 1
         # The multi-frame controller's measured poses belong to the activation
         # that broadcast them. Dropped here rather than left to age out: a
         # switch away and back inside that age would offer the pose from before
@@ -5388,24 +5397,43 @@ class DemoControllerGUI(Node):
         if not self._cm_param_client.services_are_ready():
             return
         self._scene_world_in_flight = True
-        future = self._cm_param_client.get_parameters(list(SCENE_WORLD_PARAMS))
+        client, gen = self._cm_param_client, self._scene_world_gen
 
-        def _on_done(fut):
+        # The CM declares only what its files set, and GetParameters answers a
+        # request naming an undeclared parameter with no values — so list what
+        # is declared under the prefix first, then get exactly that.
+        def _on_listed(fut):
             # Executor thread: extract only.
+            try:
+                names = list(fut.result().result.names)
+            except Exception as exc:  # noqa: BLE001 — any failure = not read, retried
+                self.get_logger().debug(f"scene_world list failed: {exc}")
+                self.root.after(0, self._apply_scene_world, None, gen)
+                return
+            if not names:
+                self.root.after(0, self._apply_scene_world, answer_in_request_order([], []), gen)
+                return
+            client.get_parameters(names).add_done_callback(
+                lambda f, names=names: _on_got(f, names)
+            )
+
+        def _on_got(fut, names):
             values = None
             try:
-                values = list(fut.result().values)
+                values = answer_in_request_order(names, list(fut.result().values))
             except Exception as exc:  # noqa: BLE001 — any failure = not read, retried
                 self.get_logger().debug(f"scene_world query failed: {exc}")
-            self.root.after(0, self._apply_scene_world, values)
+            self.root.after(0, self._apply_scene_world, values, gen)
 
-        future.add_done_callback(_on_done)
+        client.list_parameters([SCENE_WORLD_PREFIX], 1).add_done_callback(_on_listed)
 
-    def _apply_scene_world(self, values) -> None:
+    def _apply_scene_world(self, values, gen: int | None = None) -> None:
         """Offer ``world (scene)`` when the CM defines a usable one. Tk thread."""
         self._scene_world_in_flight = False
         if values is None:
             return  # not read: the throttle retries
+        if gen is not None and gen != self._scene_world_gen:
+            return  # sent before a switch: the next query reads the CM as it is now
         world, why = parse_scene_world(values, self._profile.tcp_parent)
         self._scene_world_known = True
         changed = world != self._scene_world
@@ -5427,28 +5455,55 @@ class DemoControllerGUI(Node):
             self.get_logger().info(f"task goal frames: {', '.join(labels)} ({note})")
             self._on_goal_frame_changed()
 
-    def _goal_frame_label(self) -> str:
-        label = self._goal_frame_var.get()
-        return label if self._scene_world is not None or label != WORLD_LABEL else ""
+    def _selected_world(self) -> SceneWorld | None:
+        """The world the selector states goals in, None for the arm root."""
+        if self._scene_world is not None and self._goal_frame_var.get() == WORLD_LABEL:
+            return self._scene_world
+        return None
 
     def _task_goal_frame_id(self) -> str:
         """``header.frame_id`` for the panel's goal: the arm root or scene_world."""
-        return frame_id_for(self._goal_frame_label(), self._profile.tcp_parent)
+        label = WORLD_LABEL if self._selected_world() is not None else ""
+        return frame_id_for(label, self._profile.tcp_parent)
 
     def _task_pose_in_goal_frame(self) -> list[float]:
         """The live TCP pose (read in tcp_parent) in the selected goal frame."""
-        pose = list(self.current_task_positions)
-        if self._scene_world is not None and self._goal_frame_label() == WORLD_LABEL:
-            return root_pose_to_world(pose, self._scene_world)
-        return pose
+        return convert_pose(list(self.current_task_positions), None, self._selected_world())
+
+    def _task_entries_pose(self) -> list[float]:
+        """The entries as a pose (m, rad) in ``_entries_world``. Raises ValueError."""
+        values = [float(e.get()) for e in self._task_target_entries]
+        return [*values[:3], *(math.radians(v) for v in values[3:])]
+
+    def _show_root_task_goal(self, pose: list[float]) -> None:
+        """Show a goal stated in tcp_parent (a preset's) in the selected frame."""
+        self._set_task_target_entries(convert_pose(pose, None, self._selected_world()))
+
+    def _task_entries_as_root_preset(self) -> list[float]:
+        """The entries as a preset's ``robot_target`` (m, deg) in tcp_parent —
+        presets are replayed there (#779), whatever frame the panel shows.
+        Raises ValueError on an unreadable entry."""
+        root = convert_pose(self._task_entries_pose(), self._entries_world, None)
+        return [round(v if i < 3 else math.degrees(v), 4) for i, v in enumerate(root)]
 
     def _on_goal_frame_changed(self) -> None:
-        """Re-seed the panel in the new frame — the old numbers belong to the
-        other one, and sending them would move the arm by the placement."""
+        """Put the panel in the new frame — the old numbers belong to the other
+        one, and sending them would move the arm by the placement. Re-seeded
+        from the live pose when there is one; otherwise the entries' own numbers
+        are converted (an unreadable entry is left for Send to refuse)."""
         self._ee_pose_box.configure(text=f"End-Effector Pose — {self._task_goal_frame_id()}")
         idx = self.selected_ctrl.get()
         if idx and self._task_space_ready(idx) and self._task_pose_valid:
             self._set_task_target_entries(self._task_pose_in_goal_frame())
+            return
+        target = self._selected_world()
+        if self._entries_world == target:
+            return
+        try:
+            pose = self._task_entries_pose()
+        except ValueError:
+            return
+        self._set_task_target_entries(convert_pose(pose, self._entries_world, target))
 
     def _set_joint_target_entries(self, values: list[float]):
         for i, ent in enumerate(self._joint_target_entries):
@@ -5456,6 +5511,8 @@ class DemoControllerGUI(Node):
             ent.insert(0, f"{math.degrees(values[i]):.4f}")
 
     def _set_task_target_entries(self, values: list[float]):
+        """Write a pose (m, rad) stated in the selected goal frame."""
+        self._entries_world = self._selected_world()
         for i, ent in enumerate(self._task_target_entries):
             ent.delete(0, tk.END)
             if i < 3:
@@ -5537,6 +5594,13 @@ class DemoControllerGUI(Node):
                 self.get_logger().info(
                     f"Sent robot cmd (joint): {[f'{v:.4f}' for v in joint_msg.joint_target]}"
                 )
+            if task_on and self._entries_world != self._selected_world():
+                # Never relabel numbers: they were written in another frame.
+                self.get_logger().error(
+                    "Task target withheld — the entries are not in the selected frame; "
+                    "re-select the frame or copy the current pose."
+                )
+                task_on = False
             if task_on:
                 task_msg = RobotTarget()
                 # The panel's numbers are in the selected frame: tcp_parent (the
@@ -5693,7 +5757,7 @@ class DemoControllerGUI(Node):
                         math.radians(v) if i >= 3 else v for i, v in enumerate(robot_target_vals)
                     ]
                     robot_msg.task_target = task_values
-                    self._set_task_target_entries(task_values)
+                    self._show_root_task_goal(task_values)
                 if self.robot_cmd_pub is None:
                     self.get_logger().warn(
                         "robot_cmd_pub not yet bound — waiting for active controller"
@@ -5897,9 +5961,7 @@ class DemoControllerGUI(Node):
                     return
             else:
                 try:
-                    preset_data["robot_target"] = [
-                        round(float(e.get()), 4) for e in self._task_target_entries
-                    ]
+                    preset_data["robot_target"] = self._task_entries_as_root_preset()
                 except ValueError:
                     messagebox.showerror(
                         "Invalid Input", "Task target entries contain invalid values."
