@@ -28,6 +28,7 @@
 
 - AGENTS.md 단일 헌법 + CLAUDE.md 의 `@AGENTS.md` import — "create a CLAUDE.md that imports it so both tools read the same instructions without duplicating them" ([memory docs](https://code.claude.com/docs/en/memory)). `@import` 는 launch 시 전부 로드되어 컨텍스트를 줄이지 않으므로 크기 예산은 import 되는 AGENTS.md 에도 걸린다.
 - rule 의 `paths:` 필수 — "An unscoped rule is mechanically identical to putting the content in CLAUDE.md: always loaded, always costing tokens." ([Steering Claude Code](https://claude.com/blog/steering-claude-code-skills-hooks-rules-subagents-and-more))
+- skill 도 D12 예산을 받는다 — 예산 밖이던 `verify` skill 은 3 KB 에서 34 KB 로 자라는 동안 아무 검사에도 걸리지 않았고, 늘어난 내용은 issue 코멘트와 패키지 문서의 사본이었다 (2026-10-17 삭제).
 - 헌법에서 근거 · 사고 서술을 뺀다 (AP-DOC-1 · AP-DOC-2) — 줄마다 "Would removing this cause Claude to make mistakes?" 를 묻고, "Long explanations or tutorials" · "Information that changes frequently" 를 제외한다 ([Best practices](https://code.claude.com/docs/en/best-practices)). 목표는 "the smallest possible set of high-signal tokens" ([Effective context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)).
 - D12 예산이 줄 수 · 바이트 · 줄 길이를 함께 건다 — 공식 권고는 CLAUDE.md 200줄 이하 (길수록 adherence 저하, [memory docs](https://code.claude.com/docs/en/memory)) 지만 줄 수를 지킨 채 줄이 길어질 수 있다.
 - 에이전트 자기 평가를 믿지 않는다 → inferential sensor 를 generation *전* 에 명시 (AGENTS.md §5.5 · AGENTS.md §6.5) — [Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps).

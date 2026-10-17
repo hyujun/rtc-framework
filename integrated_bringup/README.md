@@ -104,7 +104,7 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 | `sync_timeout_ms` · `max_rtf` · `use_yaml_servo_gains` | `""` (YAML) | sync 타임아웃 (ms) · 최대 실시간 배율 (0 = 무제한) · YAML vs XML 서보 게인 |
 | `use_cpu_affinity` | `true` | Tier 1 CPU 격리 + MuJoCo 핀닝 |
 | `max_log_sessions` | `10` (그 profile 의 YAML) | 세션 폴더 최대 보관 수 |
-| `initial_controller` | `""` (YAML) | 시작 컨트롤러 (예: `demo_wbc_controller`) |
+| `initial_controller` | `""` (YAML) | 시작 컨트롤러. 기본은 `ur5e_p1a` · `iiwa7_leap` 이 `demo_wbc_controller`, `ur5e_p1b` · `g1_p1b` 가 `demo_joint_controller`. 기동 완료 신호는 `RtControllerNode reached Active state` 로그 |
 | `enable_mpc` | `""` (YAML) | `demo_wbc_controller` 의 `mpc.enabled` 를 launch 시점에 덮는다. `sim_iiwa7_leap` 은 `false` 가 YAML 기본, `sim_g1_p1b` 는 CPU layout 만 고르고 기본 `false` |
 | `mpc_engine` | `""` (YAML) | `mock` / `handler` (`demo_wbc_controller` 의 MPC 엔진). `sim_g1_p1b` 에는 없다 |
 | `sim_overlay` | `""` | 출하 씬을 건드리지 않고 바꾸는 overlay (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b`). [Scene overlay](#scene-overlay-sim_overlay--출하-씬을-건드리지-않고-바꾸기) |

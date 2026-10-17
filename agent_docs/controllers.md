@@ -86,7 +86,7 @@
 - E-STOP · device-invalid · cold-cache 리셋은 **하강 에지** 에서 한다 (매 tick 리셋은 bias 평균을 끝내지 못한다). 하강 에지는 ComputeControl 중간에서 반환하는 홀드 (제어 프레임 대기 · 비유한 Jacobian) 에서도 돌아야 한다 — 그렇지 않으면 렌치 age 가 홀드 내내 멈춘다.
 - X_d 를 측정에서 재시드하는 경로는 편차 x̃ 도 함께 붕괴시킨다. 프레임 종류가 바뀐 재시드는 wrench 샘플까지 버린다.
 - 램프 재무장은 **쓸 수 있는 wrench 가 생긴 rising edge** (`valid && !stale`) 에서 한다 — bias 재진입 edge 가 아니다.
-- **파지한 채로 이 컨트롤러로 전환하지 않는다** — 활성화가 hand target 을 측정값에서 재시드하므로 위치 지령 손은 물체를 놓는다. compliance 를 먼저 활성화하고 그 다음에 손을 닫는다 (절차: verify skill).
+- **파지한 채로 이 컨트롤러로 전환하지 않는다** — 활성화가 hand target 을 측정값에서 재시드하므로 위치 지령 손은 물체를 놓는다. compliance 를 먼저 활성화하고 그 다음에 손을 닫는다 (#504).
 - `external_wrench.source` 는 기본값 없는 필수 키다. 그 블록은 코어 파서와 공유하므로 "코어가 안 읽는 잔재" 로 보고 지우지 않는다. 스칼라 `damping` 은 configure 거부다 (여기서 `damping` 은 K_d 6-벡터다).
 - 팔의 응답을 정하는 admittance 키는 출하 YAML 에 **명시 등록** 한다 — 코어 default 가 조용히 실기를 재튜닝하지 못하게 한다.
 - arm 명령은 관절 tail (`compliance/joint_command_tail.hpp`) 로 바운드한다: clamp 다음에 적분 base 기준 rate 재바운드. 밴드를 뒤집는 margin 은 `on_configure` 가 거부한다 (AP-PROC-9). `command_divergence` 는 이 바인딩에 배선하지 않는다 (근거는 fault 블록 옆 주석이 소유).

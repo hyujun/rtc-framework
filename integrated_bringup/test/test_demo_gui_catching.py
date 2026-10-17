@@ -8,7 +8,7 @@ zero.
 
 The rendering is pinned through `lines()` rather than through Tk: the widget
 half is three `config(text=...)` calls and the interesting part is which
-sentence gets built. Visual confirmation is the `verify` skill's job.
+sentence gets built. Visual confirmation is left to a manual sim run.
 """
 
 from __future__ import annotations

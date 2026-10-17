@@ -41,7 +41,7 @@
      suggest, and contacts on non-tip links carry no sensor at all. The shipped
      (x,y) came out of a `mujoco.mj_geomDistance` grid search over every robot
      collision geom; five eyeballed placements before it all missed or buried
-     the disk. See `.claude/skills/verify/references/p1b-fingertip-fixture.md` for the full checklist. -->
+     the disk (#504 comment 5645292923). -->
 <mujoco model="fingertip_disk">
   <worldbody>
     <body name="object">

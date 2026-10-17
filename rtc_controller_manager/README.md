@@ -184,6 +184,8 @@ ros2 lifecycle set /integrated_rt_controller activate     # 재시작
 
 요청의 `strictness` (STRICT / BEST_EFFORT) 로 activate/deactivate 목록을 단일 대상으로 정리한 뒤 sync 로 전환한다. 순서는 이렇다: 사전 조건 (E-STOP idle · single-active) → 이름/`config_key` 로 조회 (`Unknown` 이면 거부) → 대상 `on_activate` → 활성 index 를 atomic 으로 교체 → RT tick 1회 대기 → 이전 컨트롤러 `on_deactivate` → `/rtc_cm/active_controller_name` 발행 → `ok=true` 응답. 응답이 오면 새 컨트롤러가 이미 RT 루프에 보인다. 컨트롤러의 `on_activate` 는 base 가 no-op 이며 첫 `Compute()` tick 에서 현재 device state 로 자체 seed 한다.
 
+deactivate 만 담은 요청은 거부된다 (single-active) — 내리려면 교체할 컨트롤러를 activate 에 넣는다.
+
 #### 컨트롤러 YAML 이 없을 때 — 세 갈래
 
 등록된 컨트롤러는 로봇과 무관하게 전부 인스턴스화되므로, 그 variant 에 YAML 이 없을 때의 거동이 계약이다.
