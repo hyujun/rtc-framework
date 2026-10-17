@@ -1,435 +1,219 @@
 # rtc_communication
 
-> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
+RT-safe 네트워크 전송 추상화 (UDP · CAN · CAN FD · RS485) 와 패킷 코덱·트랜시버 템플릿. **유형**: 라이브러리 패키지 (header-only)
 
 ## 개요
 
-RTC 프레임워크의 **헤더 전용(header-only) C++ 라이브러리**로, 실시간(RT-safe) 네트워크 전송 추상화를 제공합니다. UDP·CAN·CAN FD·RS485 전송, 패킷 코덱, 전이중 트랜시버 템플릿으로 구성되어 있으며, 실시간 제어 루프에서 외부 디바이스와의 통신에 사용됩니다.
+외부 디바이스와 통신하는 전송 계층을 헤더 전용 C++20 라이브러리로 제공한다. `TransportInterface` 아래에 UDP·classic CAN·CAN FD·RS485 구현이 있고, `PacketCodec` concept 과 `Transceiver<Codec>` 가 수신 스레드·디코딩·송신을 묶는다. 설계 원칙: 생성 이후 동적 할당 없음, 모든 I/O 메서드 `noexcept`, RAII 소켓 수명 (RT 규칙 자체는 [invariants.md](../agent_docs/invariants.md) §RT Path Invariants).
 
-**설계 원칙:**
-- 생성 이후 동적 메모리 할당 없음 (RT-safe)
-- 모든 I/O 메서드 `noexcept` 보장
-- RAII 기반 소켓 수명 관리
-- C++20 기능 활용: `concept`, `std::jthread`, `std::stop_token`, `std::span`
-- `[[likely]]`/`[[unlikely]]` 분기 힌트로 수신 루프 최적화
+소비자: [rtc_controller_manager](../rtc_controller_manager/README.md) · [udp_hand_driver](../udp_hand_driver/README.md). 스레드 설정 (`ThreadConfig`) 은 `rtc_base` 에서 가져온다.
 
----
+## 빠른 시작
 
-## 패키지 구조
+빌드는 [루트 README](../README.md#빠른-시작) 를 따른다. 이 패키지만: `./build.sh --tests -p rtc_communication`.
 
-```
-rtc_communication/
-├── CMakeLists.txt
-├── package.xml
-├── include/rtc_communication/
-│   ├── transport_interface.hpp    -- 전송 계층 추상 인터페이스
-│   ├── socket_options.hpp        -- UDP/CAN 공용 SOL_SOCKET 옵션 헬퍼 (SO_RCVBUF/SO_RCVTIMEO)
-│   ├── packet_codec.hpp          -- 패킷 코덱 C++20 Concept + 헬퍼
-│   ├── transceiver.hpp           -- 전이중 트랜시버 템플릿 (수신 루프 + 코덱)
-│   ├── udp/
-│   │   ├── udp_socket.hpp        -- RAII UDP 소켓 래퍼
-│   │   └── udp_transport.hpp     -- TransportInterface의 UDP 구현체
-│   ├── can/
-│   │   ├── can_socket.hpp        -- RAII SocketCAN raw 소켓 래퍼 (classic + FD frame I/O)
-│   │   ├── can_transport.hpp     -- TransportInterface의 classic CAN 구현체 (payload ≤ 8B)
-│   │   └── canfd_transport.hpp   -- TransportInterface의 CAN FD 구현체 (payload ≤ 64B)
-│   └── rs485/
-│       ├── serial_port.hpp       -- RAII termios 시리얼 tty 래퍼 (라인 설정 + RS485 방향 제어)
-│       └── rs485_transport.hpp   -- TransportInterface의 RS485 구현체 (length-prefixed 프레이머)
-└── test/
-    ├── fake_codec.hpp            -- PacketCodec concept을 만족하는 최소 코덱 (테스트 하니스용)
-    ├── can_test_support.hpp      -- vcan 감지·SKIP 매크로 공용 헬퍼 (CAN/CANFD 테스트용)
-    ├── serial_test_support.hpp   -- PTY 페어 루프백 헬퍼 (RS485 테스트용)
-    ├── test_udp_loopback.cpp     -- UdpSocket/UdpTransport 바인드·연결·타임아웃·RAII 테스트
-    ├── test_can_loopback.cpp     -- CanSocket/CanTransport vcan0 라운드 트립·필터·RAII 테스트
-    ├── test_canfd_loopback.cpp   -- CanFdTransport 64B 라운드 트립·classic/FD 혼재 수신 테스트
-    ├── test_serial_loopback.cpp  -- SerialPort PTY 라인 설정·바이트 왕복·VTIME 타임아웃·RAII 테스트
-    ├── test_rs485_transport.cpp  -- Rs485Transport 프레이머(리싱크·분할·연속) + Transceiver 디코드 테스트
-    └── test_transceiver.cpp      -- Transceiver 기동·종료·디코딩·콜백·Send 경로 테스트
+소비자 `package.xml` 에 `<depend>rtc_communication</depend>` 를 추가하고 `CMakeLists.txt` 에서 의존한다.
+
+```cmake
+find_package(rtc_communication REQUIRED)
+ament_target_dependencies(my_target rtc_communication)
 ```
 
----
-
-## 주요 컴포넌트
-
-### TransportInterface (`transport_interface.hpp`)
-
-모든 전송 백엔드의 추상 기반 클래스입니다. `rtc` 네임스페이스에 정의되어 있습니다.
-
-| 메서드 | 반환 | 설명 |
-|--------|------|------|
-| `Open()` | `bool` | 전송 채널 열기 (`[[nodiscard]]`) |
-| `Close()` | `void` | 채널 닫기 (`noexcept`) |
-| `Send(span<const uint8_t>)` | `ssize_t` | 데이터 송신 (`noexcept`, `[[nodiscard]]`) |
-| `Recv(span<uint8_t>)` | `ssize_t` | 데이터 수신 (`noexcept`, `[[nodiscard]]`) |
-| `SetRecvTimeout(int ms)` | `void` | 수신 타임아웃 설정 (`noexcept`) |
-| `SetRecvBufferSize(int)` | `void` | 수신 버퍼 크기 설정 (`noexcept`) |
-| `is_open()` | `bool` | 열림 상태 조회 (`const noexcept`, `[[nodiscard]]`) |
-
-- Non-copyable, non-movable
-- 생성자는 `protected` (직접 인스턴스화 불가)
-
----
-
-### UdpSocket (`udp/udp_socket.hpp`)
-
-raw UDP 소켓(`AF_INET`, `SOCK_DGRAM`)의 RAII 래퍼입니다. 파일 디스크립터를 소유하며 소멸자에서 `close()`를 호출합니다.
-
-**두 가지 사용 모드:**
-
-| 모드 | 설정 | I/O |
-|------|------|-----|
-| **수신 (Bind)** | `Bind(address, port)` -- 지정 주소:포트에 바인드 (`"0.0.0.0"` 또는 빈 문자열이면 `INADDR_ANY`) | `Recv(span<uint8_t>)` |
-| **송신 (Connect)** | `Connect(ip, port)` -- 대상 주소 저장 (`sendto` 사용) | `Send(span<const uint8_t>)` |
-
-주요 특징:
-- `Bind()`는 `std::string_view` 주소와 포트를 매개변수로 받음. `"0.0.0.0"` 또는 빈 문자열은 모든 인터페이스(`INADDR_ANY`)에 바인드
-- `Recv()`는 `std::span<uint8_t>`를 매개변수로 받음
-- `Send()`는 `std::span<const uint8_t>`를 매개변수로 받음
-- `Connect()`는 `std::string_view`를 받되, 내부적으로 null 종료 문자열로 변환하여 `inet_pton` 호출
-- `SetRecvBufferSize(int bytes)` -- 소켓 수신 버퍼 크기(`SO_RCVBUF`) 설정 (`noexcept`). `fd` 가 열려 있지 않으면 아무 동작 없음
-- `is_open()` -- 소켓이 열려 있는지 조회 (`fd_ >= 0`). `[[nodiscard]] bool const noexcept`
-- `fd()` 접근자를 통해 raw 파일 디스크립터 조회 가능
-- Non-copyable, non-movable
+UDP 로 `MyCodec` 패킷을 주고받는 최소 예 (코덱 정의는 [PacketCodec](#packetcodec-packet_codechpp)):
 
 ```cpp
-// 수신 모드
-UdpSocket rx;
-rx.Open();
-rx.Bind("0.0.0.0", 9000);  // 모든 인터페이스에 바인드
-rx.SetRecvTimeout(100);  // 100ms
-uint8_t buf[1024];
-auto n = rx.Recv({buf, sizeof(buf)});
+UdpTransportConfig config{.bind_port = 9000,
+                          .target_address = "192.168.1.100",
+                          .target_port = 9001};
+Transceiver<MyCodec> xcvr(std::make_unique<UdpTransport>(config));
+xcvr.SetCallback([](const MyCodec::State& s) { /* mutex 해제 후 호출 */ });
+if (!xcvr.StartRecv()) { /* Open 실패 */ }
 
-// 송신 모드
-UdpSocket tx;
-tx.Open();
-tx.Connect("192.168.1.100", 9000);
-std::array<uint8_t, 64> data{};
-tx.Send({data.data(), data.size()});
+MyCodec::SendPacket cmd{};
+xcvr.Send(cmd);                      // RT-safe
+auto state = xcvr.GetLatestState();  // non-RT 전용 (mutex)
 ```
 
----
+## 인터페이스
 
-### UdpTransport (`udp/udp_transport.hpp`)
+모든 타입은 `rtc` 네임스페이스에 있다. 시그니처·`noexcept`·`[[nodiscard]]` 는 헤더 Doxygen 이 SSoT 다.
 
-`TransportInterface`의 UDP 구현체입니다. 내부적으로 송신용/수신용 `UdpSocket`을 각각 관리합니다.
+| 헤더 | 주요 타입 | 역할 |
+|---|---|---|
+| `transport_interface.hpp` | `TransportInterface` | 전송 추상 기반 (`Open` `Close` `Send` `Recv` `SetRecvTimeout` `SetRecvBufferSize` `is_open`). non-copyable, 생성자 `protected` |
+| `udp/udp_socket.hpp` · `udp/udp_transport.hpp` | `UdpSocket` · `UdpTransport` | RAII UDP 소켓 / 송수신 소켓 2개를 관리하는 전송 |
+| `can/can_socket.hpp` · `can/can_transport.hpp` | `CanSocket` · `CanTransport` | RAII SocketCAN raw 소켓 / classic CAN 전송 (payload ≤ 8 B) |
+| `can/canfd_transport.hpp` | `CanFdTransport` | CAN FD 전송 (payload ≤ 64 B) |
+| `rs485/serial_port.hpp` · `rs485/rs485_transport.hpp` | `SerialPort` · `Rs485Transport` | RAII termios tty / length-prefixed 프레이머 전송 |
+| `packet_codec.hpp` | `PacketCodec` · `DecodePacket` · `EncodePacket` | 코덱 concept 과 `memcpy` 헬퍼 |
+| `transceiver.hpp` | `Transceiver<Codec>` | 수신 jthread + 코덱 + 송신 |
+| `socket_options.hpp` | (내부 헬퍼) | UDP/CAN 공용 `SO_RCVBUF` · `SO_RCVTIMEO` 설정 |
 
-#### 설정 (`UdpTransportConfig`)
+### UdpTransport
 
-| 필드 | 타입 | 기본값 | 설명 |
-|------|------|--------|------|
-| `bind_address` | `string` | `"0.0.0.0"` | 수신 바인드 주소. `"0.0.0.0"` 또는 빈 문자열이면 모든 인터페이스(`INADDR_ANY`)에 바인드 |
-| `bind_port` | `int` | `0` | 수신 포트 (0이면 수신 소켓 미생성) |
-| `target_address` | `string` | `""` | 송신 대상 IP (빈 문자열이면 송신 소켓 미생성) |
-| `target_port` | `int` | `0` | 송신 대상 포트 |
-| `recv_buffer_size` | `int` | `256 * 1024` | 소켓 수신 버퍼 크기 (`SO_RCVBUF`) |
-| `recv_timeout_ms` | `int` | `100` | 수신 타임아웃 (`SO_RCVTIMEO`) |
+`bind_port > 0` 이면 수신 소켓을 바인드하고, `target_address` 가 비어 있지 않고 `target_port > 0` 이면 송신 소켓을 연결한다. `is_open()` 은 둘 중 하나라도 열려 있으면 `true`. `recv_socket()` / `send_socket()` 으로 하위 `UdpSocket` 에 접근할 수 있다 (레거시 이관용).
 
-- `Open()`에서 `bind_port > 0`이면 수신 소켓을 바인드하고, `target_address`가 비어있지 않고 `target_port > 0`이면 송신 소켓을 연결
-- `is_open()`은 수신 또는 송신 소켓 중 하나라도 열려 있으면 `true` 반환
-- `recv_socket()`과 `send_socket()` 접근자를 통해 하위 `UdpSocket`에 직접 접근 가능 (레거시 코드 마이그레이션용)
+`UdpTransportConfig`:
 
-```cpp
-UdpTransportConfig config{
-    .bind_port = 9000,
-    .target_address = "192.168.1.100",
-    .target_port = 9001,
-    .recv_buffer_size = 256 * 1024,
-    .recv_timeout_ms = 100
-};
-auto transport = std::make_unique<UdpTransport>(config);
-transport->Open();
-```
+| 필드 | 기본값 | 설명 |
+|---|---|---|
+| `bind_address` | `"0.0.0.0"` | 수신 바인드 주소. 빈 문자열도 `INADDR_ANY` |
+| `bind_port` | `0` | 수신 포트. 0 이면 수신 소켓 미생성 |
+| `target_address` | `""` | 송신 대상 IP. 비어 있으면 송신 소켓 미생성 |
+| `target_port` | `0` | 송신 대상 포트 |
+| `recv_buffer_size` | `256 * 1024` | `SO_RCVBUF` |
+| `recv_timeout_ms` | `100` | `SO_RCVTIMEO` |
 
----
+`UdpSocket` 을 직접 쓸 때는 수신은 `Bind(addr, port)` + `Recv(span)`, 송신은 `Connect(ip, port)` + `Send(span)` 이다.
 
-### CanSocket (`can/can_socket.hpp`)
+### CanTransport / CanFdTransport
 
-Linux SocketCAN raw 소켓(`PF_CAN`, `SOCK_RAW`, `CAN_RAW`)의 RAII 래퍼입니다. UDP와 달리 **인터페이스에 바인드한 단일 fd로 송수신을 모두** 수행합니다.
+**payload-only 계약**이다. `Send(span)` 은 payload 를 설정된 `tx_can_id` 의 frame 하나로 보내고, `Recv(span)` 은 필터를 통과한 frame 의 payload 만 돌려준다. CAN ID·flag 는 config 에 고정되므로 인스턴스 하나가 tx ID 하나와 rx 필터 하나에 대응한다. 단일 fd 로 송수신하므로 `is_open()` 은 소켓 하나의 상태다. payload 한도를 넘기면 `Send()` 는 `-1` 을 돌려준다.
 
-주요 특징:
-- `Bind(interface_name)` -- `if_nametoindex()`로 인터페이스 이름(`"can0"`, `"vcan0"`)을 index로 변환 후 `sockaddr_can`에 바인드. 존재하지 않는 인터페이스면 `false` 반환 + 소켓 닫힘
-- `SetFilter(can_id, can_mask)` -- `CAN_RAW_FILTER` 수신 필터. matching: `(recv_id & mask) == (can_id & mask)`
-- `SetLoopback(bool)` / `SetRecvOwnMessages(bool)` -- `CAN_RAW_LOOPBACK`(커널 기본 on) / `CAN_RAW_RECV_OWN_MSGS`(커널 기본 off)
-- `SetFdFrames(bool)` -- `CAN_RAW_FD_FRAMES` 활성화. 활성 시 classic·FD frame 모두 수신 가능
-- `SendFrame`/`RecvFrame` -- `can_frame` 단위 I/O. `SendFdFrame`/`RecvFdFrame` -- `canfd_frame` 단위 I/O
-- `SetRecvTimeout`/`SetRecvBufferSize`, `fd()`, `is_open()` -- UdpSocket과 동일 계약
-- Non-copyable, non-movable, 소멸자에서 fd `close()`
+`CanTransportConfig`:
 
----
+| 필드 | 기본값 | 설명 |
+|---|---|---|
+| `interface_name` | `"can0"` | CAN 인터페이스 이름 |
+| `tx_can_id` | `0` | 송신 frame 의 CAN ID |
+| `rx_can_id` | `0` | 수신 필터 ID |
+| `rx_can_mask` | `0` | 필터 mask. **0 이면 필터 미설치 (전체 수신)** 이고 `rx_can_id` 는 효력이 없다. RTR frame 은 항상 drop |
+| `extended_frame` | `false` | `true` 면 29-bit ID |
+| `receive_own_messages` | `false` | 자기 송신 frame 수신 (`CAN_RAW_RECV_OWN_MSGS`) |
+| `loopback` | `true` | 같은 호스트 소켓으로 local echo (`CAN_RAW_LOOPBACK`) |
+| `recv_timeout_ms` | `100` | `SO_RCVTIMEO` |
 
-### CanTransport (`can/can_transport.hpp`)
-
-`TransportInterface`의 classic CAN 구현체입니다. **payload-only 계약**: `Send(span)`은 payload를 설정된 `tx_can_id`의 단일 frame으로 송신하고, `Recv(span)`은 필터를 통과한 frame의 payload만 반환합니다. frame metadata(CAN ID, flags)는 config에 고정되므로 인스턴스 하나가 tx ID 하나 / rx 필터 하나에 대응합니다.
-
-#### 설정 (`CanTransportConfig`)
-
-| 필드 | 타입 | 기본값 | 설명 |
-|------|------|--------|------|
-| `interface_name` | `string` | `"can0"` | CAN 인터페이스 이름 |
-| `tx_can_id` | `canid_t` | `0` | 송신 frame의 CAN ID |
-| `rx_can_id` | `canid_t` | `0` | 수신 필터 ID |
-| `rx_can_mask` | `canid_t` | `0` | 수신 필터 mask. **0이면 필터 미설치(전체 수신, 커널 기본)** — 이때 `rx_can_id`는 효력 없음. 설치 시 EFF/RTR 비트가 mask에 자동 포함. RTR frame은 필터와 무관하게 `Recv()`에서 항상 drop |
-| `extended_frame` | `bool` | `false` | `true`면 29-bit ID (`CAN_EFF_FLAG`) 송신 및 필터 적용 |
-| `receive_own_messages` | `bool` | `false` | 자기 송신 frame 수신 (`CAN_RAW_RECV_OWN_MSGS`) |
-| `loopback` | `bool` | `true` | 동일 호스트 다른 소켓으로 로컬 echo (`CAN_RAW_LOOPBACK`) |
-| `recv_timeout_ms` | `int` | `100` | 수신 타임아웃 (`SO_RCVTIMEO`) |
-
-- **payload는 최대 8 bytes (`CAN_MAX_DLEN`)** — 초과 시 `Send()`가 `-1` 반환
-- `is_open()`은 단일 소켓 상태 반환 (UDP의 recv/send 2-소켓 구조와 다름)
+`CanFdTransportConfig` 는 `CanTransportConfig` 를 상속하고 `bitrate_switch` (`CANFD_BRS`, 기본 `false`) 와 `error_state_indicator` (`CANFD_ESI`, 기본 `false`) 를 더한다. `Open()` 에서 `CAN_RAW_FD_FRAMES` 를 켜므로 classic·FD frame 을 모두 수신한다.
 
 ```cpp
-CanTransportConfig config{
-    .interface_name = "can0",
-    .tx_can_id = 0x123,
-    .rx_can_id = 0x456,
-    .rx_can_mask = CAN_SFF_MASK,
-    .recv_timeout_ms = 100
-};
+CanTransportConfig config{.interface_name = "can0",
+                          .tx_can_id = 0x123,
+                          .rx_can_id = 0x456,
+                          .rx_can_mask = CAN_SFF_MASK};
 auto transport = std::make_unique<CanTransport>(config);
 transport->Open();
 ```
 
----
+**PacketCodec 크기 제약.** `Transceiver::Send` 는 `sizeof(SendPacket)` 전체를 한 번에 `Send()` 로 넘기고, 수신 루프는 `n < sizeof(RecvPacket)` 인 frame 을 버린다. 따라서 CAN 위의 codec 은 packet 크기가 payload 한도 안이어야 한다 (`CanTransport` ≤ 8 B, `CanFdTransport` ≤ 64 B). 초과하면 `Transceiver::Send` 는 조용히 `false` 를 돌려준다. multi-frame 분할이나 frame 별 ID 해석이 필요한 프로토콜은 이 계약 밖이다.
 
-### CanFdTransport (`can/canfd_transport.hpp`)
+### Rs485Transport
 
-`TransportInterface`의 CAN FD 구현체입니다. `CanTransport`와 동일한 payload-only 계약에 다음이 추가됩니다.
+시리얼은 커널 프레이밍이 없는 raw 바이트 스트림이다. `SerialPort` 가 라인 소유 (open · 설정 · 방향 제어 · raw I/O) 를 맡고, `Rs485Transport` 가 `Recv()` 안에서 **벤더-중립 length-prefixed 프레이머**를 돌려 패킷 경계를 복원한다. sync prefix 와 length 필드로 파라미터화되어 header/length 형 와이어 포맷에 맞출 수 있다.
 
-- **payload 최대 64 bytes (`CANFD_MAX_DLEN`)** — 초과 시 `Send()`가 `-1` 반환
-- `Open()`에서 `CAN_RAW_FD_FRAMES`를 활성화 — 소켓이 classic frame(`CAN_MTU`)과 FD frame(`CANFD_MTU`)을 **모두 수신**하며 `Recv()`가 양쪽을 처리
-- 비표준 payload 길이(CAN FD DLC 집합 0-8/12/16/20/24/32/48/64 외)는 실제 컨트롤러 송신 시 커널이 상향 패딩
+- payload-only 계약: `Recv()` 는 호출당 완전한 raw frame 하나 (sync..trailer) 를, `Send()` 는 호출자가 인코딩한 frame 을 그대로 쓴다. 프레임이 호출자 버퍼보다 크면 자르지 않고 프레임을 버리고 `-1`. **CRC 검증·필드 파싱은 codec 책임**이다.
+- `recv_timeout_ms` 는 read 1회가 아니라 **`Recv()` 호출 전체**의 deadline 이다. `<= 0` 이면 프레임 완성까지 무한 대기하고, 양수는 100 ms 단위로 올림된다.
+- 반이중 방향: `rs485_enabled` 면 `TIOCSRS485` 를 best-effort 로 쓰고, 성공하면 `Open()` 이 `drain_after_send` 를 자동으로 끈다. 실패하면 `tcdrain` fallback 이 켜지며, 이때 `Send()` 는 프레임이 UART 를 떠날 때까지 (≈ `frame_bytes × 10 / baud` 초) 블록하므로 **정기 RT tick 에서 호출하면 예산에 넣어야 한다.**
+- self-echo: 송신 중에도 수신기가 켜진 2-wire 어댑터는 송신 프레임이 rx 로 돌아온다. `discard_echo=true` 면 `Send()` 가 drain 후 송신 바이트 수만큼 읽어 버린다. echo 가 확실한 하드웨어에서만 켠다 (비-echo 라인에서는 Send 당 수신 타임아웃 1회 비용과 응답 바이트 소비 위험).
+- `frame_total = length_offset + length_size + length_value + length_adjust`. 미완성 프레임은 다음 `Recv()` 로 이월하고, corrupt length 는 1바이트씩 drop 하며 리싱크한다.
 
-#### 설정 (`CanFdTransportConfig`)
+`Rs485TransportConfig`:
 
-`CanTransportConfig`를 **상속**하며 (공유 필드는 위 표 참조) FD 전용 2개 추가:
+| 필드 | 기본값 | 설명 |
+|---|---|---|
+| `device` | `"/dev/ttyUSB0"` | tty 경로 |
+| `baud_rate` | `57600` | 통신 속도 |
+| `data_bits` / `parity` / `stop_bits` | 8 / `kNone` / 1 | 라인 프레이밍 |
+| `rs485_enabled` | `true` | `TIOCSRS485` 커널 방향 제어 |
+| `rts_on_send` / `rts_after_send` | `true` / `false` | DE 극성 |
+| `delay_rts_before_us` / `delay_rts_after_us` | `0` | 방향 전환 지연 |
+| `drain_after_send` | `true` | `TIOCSRS485` 실패 시 `tcdrain` fallback |
+| `discard_echo` | `false` | 송신 후 self-echo 를 읽어 버림 (옵트인) |
+| `sync_pattern` | `{FF,FF,FD,00}` | 프레임 시작 sync. 비우면 고정 길이 |
+| `length_offset` | `5` | 프레임 시작 기준 length 필드 offset |
+| `length_size` | `2` | length 필드 폭 (0/1/2). 0 이면 고정 길이 |
+| `length_little_endian` | `true` | 2바이트 length 엔디안 |
+| `length_adjust` | `0` | length 보정. 고정 길이 모드에서는 프레임 크기 |
+| `max_frame_size` | `512` | 프레임 상한. 초과 시 corrupt 처리 (`kBufferCapacity` 1024 B 로 clamp) |
+| `recv_timeout_ms` | `100` | `Recv()` 전체 deadline |
 
-| 필드 | 타입 | 기본값 | 설명 |
-|------|------|--------|------|
-| `bitrate_switch` | `bool` | `false` | `CANFD_BRS` — 데이터 구간을 높은 bitrate로 송신 |
-| `error_state_indicator` | `bool` | `false` | `CANFD_ESI` flag |
-
-#### PacketCodec 크기 제약 (중요)
-
-`Transceiver<Codec>::Send`는 `sizeof(SendPacket)` 전체를 한 번에 `transport_->Send()`로 넘기고, 수신 루프는 `n < sizeof(RecvPacket)`인 frame을 버립니다. 따라서 CAN 계열 transport 위에서 쓰는 codec은 **packet 타입 크기가 payload 한도 안**이어야 합니다:
-
-| Transport | `sizeof(SendPacket)` / `sizeof(RecvPacket)` 한도 |
-|-----------|--------------------------------------------------|
-| `CanTransport` | ≤ 8 bytes |
-| `CanFdTransport` | ≤ 64 bytes |
-
-한도 초과 시 `Transceiver::Send`는 조용히 `false`를 반환합니다 (transport guard가 `-1` 리턴). multi-frame 분할이나 frame별 CAN ID 해석이 필요한 프로토콜은 payload-only 계약 범위 밖입니다 (frame-aware API는 후속 확장).
-
----
-
-### SerialPort (`rs485/serial_port.hpp`)
-
-POSIX 시리얼(tty) 파일 디스크립터의 RAII 래퍼입니다. UDP/CAN 소켓과 달리 시리얼 라인은 **커널 프레이밍이 없는 raw 바이트 스트림**이므로, 이 클래스는 라인 소유(open/설정/방향 제어/raw I/O)만 담당하고 프레임 재조립은 `Rs485Transport`가 수행합니다.
-
-- `Open(device)` -- tty 열기 (`O_RDWR|O_NOCTTY`). blocking 모드로 두고 타임아웃은 VMIN/VTIME으로 제어
-- `ConfigureLine(baud, data_bits, parity, stop_bits)` -- `cfmakeraw` 기반 raw 모드 설정. baud는 `speed_t` 매핑(9600~4M), Dynamixel은 8N1
-- `EnableRs485(rts_on_send, rts_after_send, delay_before_us, delay_after_us)` -- `TIOCSRS485` ioctl로 커널 DE/RE 반이중 방향 제어. 지원 안 하는 어댑터(하드웨어 자동 방향)에서는 `false` 반환 → 호출자가 `Drain()`으로 대체
-- `SetRecvTimeout(ms)` -- **`socket_options.hpp` 재사용 안 함**. `SO_RCVTIMEO`는 tty에 무효이므로 termios로 구현. `ms <= 0`은 **타임아웃 비활성(무한 대기, VMIN=1)** 으로 소켓 `SO_RCVTIMEO=0` 의미론과 일치. 양수는 VMIN=0/VTIME — decisecond 단위로 **올림**(최대 25.5 s), `Read()`는 타임아웃 시 `0` 반환
-- `Read()`/`Write()` -- raw `::read`/`::write`, `noexcept`. `Write()`는 short write(tty tx 버퍼 포화)와 `EINTR`을 루프로 완성해 **torn frame을 방지** (전량 기록 또는 `-1`). `Drain()` = `tcdrain` (반이중 turnaround)
-- Non-copyable, non-movable
-
----
-
-### Rs485Transport (`rs485/rs485_transport.hpp`)
-
-`TransportInterface`의 RS485 구현체입니다. 시리얼 바이트 스트림에서 패킷 경계를 복원하기 위해 `Recv()` 내부에 **stateful length-prefixed 프레이머**를 실행합니다. 프레이머는 **벤더-중립**이며 sync prefix + length 필드로 파라미터화되어, 임의의 header/length-prefixed 와이어 포맷(예: ROBOTIS Dynamixel Protocol 2.0)에 맞출 수 있습니다.
-
-- **payload-only 계약**: `Recv(span)`은 호출당 완전한 raw frame 하나(sync..trailer)를 반환하고, `Send(span)`은 호출자가 인코딩한 frame을 그대로 write합니다. 프레임이 호출자 버퍼보다 크면 **잘라서 반환하지 않고 프레임을 버리고 `-1`** (silent truncation 없음). **CRC 검증·필드 파싱은 codec 책임** — transport에는 벤더별 로직이 없습니다
-- **`Recv()` 전체 deadline**: `recv_timeout_ms`는 read 1회가 아니라 **`Recv()` 호출 전체**를 bound합니다 (`CLOCK_MONOTONIC` 기준, 최악 VTIME 1윈도우 초과). 프레임이 안 되는 바이트가 계속 흘러들어와도(baud 불일치·노이즈) 호출자가 무한정 잡히지 않습니다. `recv_timeout_ms <= 0`이면 프레임 완성까지 무한 대기
-- 반이중 방향: `rs485_enabled`면 `TIOCSRS485`(best-effort). **ioctl 성공 시 `Open()`이 `drain_after_send`를 자동 비활성** (커널이 turnaround를 보장하므로 중복 drain 제거), 실패 시 `drain_after_send`로 대체 — 정확히 한 경로만 활성. drain fallback 경로의 `Send()`는 프레임이 UART를 물리적으로 떠날 때까지 블록하므로(≈ `frame_bytes × 10 / baud` 초) **정기 RT tick에서 호출 시 예산에 반영 필요**
-- **self-echo**: 수신기가 송신 중에도 켜져 있는 2-wire 어댑터(TIOCSRS485 미지원 + 하드웨어 echo 억제 없음)는 송신 프레임이 rx로 되돌아옵니다. `discard_echo=true`면 `Send()`가 drain 후 송신 바이트 수만큼 읽어 버립니다 (echo가 확실한 하드웨어에서만 활성 — 비-echo 라인에서는 Send당 수신 타임아웃 1회 비용 + 응답 바이트를 소비할 수 있음)
-- 프레임 total 계산: `frame_total = length_offset + length_size + length_value + length_adjust`. 미완성 프레임은 다음 `Recv()`로 이월, garbage/corrupt length는 1바이트씩 drop 후 리싱크. 물리 재조립 버퍼 상한 `kBufferCapacity`(1024B)
-
-#### 설정 (`Rs485TransportConfig`)
-
-| 필드 | 타입 | 기본값 | 설명 |
-|------|------|--------|------|
-| `device` | `string` | `"/dev/ttyUSB0"` | tty 디바이스 경로 |
-| `baud_rate` | `int` | `57600` | 통신 속도 (Dynamixel 기본) |
-| `data_bits` / `parity` / `stop_bits` | -- | 8 / `kNone` / 1 | 라인 프레이밍 |
-| `rs485_enabled` | `bool` | `true` | `TIOCSRS485` 커널 방향 제어 활성 |
-| `rts_on_send` / `rts_after_send` | `bool` | `true` / `false` | DE 극성 |
-| `delay_rts_before_us` / `delay_rts_after_us` | `int` | `0` | 방향 전환 지연 |
-| `drain_after_send` | `bool` | `true` | `TIOCSRS485` 실패 시 `tcdrain` fallback (ioctl 성공 시 `Open()`이 자동 비활성) |
-| `discard_echo` | `bool` | `false` | 송신 후 self-echo 바이트를 읽어 버림 (2-wire echo 어댑터 전용, 옵트인) |
-| `sync_pattern` | `vector<uint8_t>` | `{FF,FF,FD,00}` | 프레임 시작 sync 시퀀스 (비우면 고정 길이) |
-| `length_offset` | `size_t` | `5` | 프레임 시작 기준 length 필드 offset |
-| `length_size` | `size_t` | `2` | length 필드 폭 (0/1/2). 0이면 고정 길이 |
-| `length_little_endian` | `bool` | `true` | 2바이트 length 엔디안 |
-| `length_adjust` | `int` | `0` | length 보정값 (고정 길이 모드에서 프레임 크기) |
-| `max_frame_size` | `size_t` | `512` | 단일 프레임 상한 (초과 시 corrupt 처리, `kBufferCapacity`로 clamp) |
-| `recv_timeout_ms` | `int` | `100` | `Recv()` 전체 deadline. `<= 0`이면 무한 대기 (소켓 `SO_RCVTIMEO=0` 의미론), 양수는 100 ms 단위 올림 |
-
-Dynamixel Protocol 2.0 프레임 `FF FF FD 00 | ID | LEN(2,LE) | INST | PARAMS | CRC16(2)`은 기본값이 그대로 매핑됩니다 (`frame_total = 7 + LEN`). 고정 길이 프레이밍이 필요하면 `sync_pattern`을 비우고 **`length_offset=0`**, `length_size=0`, `length_adjust`에 프레임 크기를 지정합니다 — `frame_total` 공식의 모든 필드가 합산되므로 `length_offset` 기본값(5)을 그대로 두면 프레임이 5바이트 길게 잘립니다.
+기본값은 Dynamixel Protocol 2.0 프레임 `FF FF FD 00 | ID | LEN(2,LE) | INST | PARAMS | CRC16(2)` 에 그대로 매핑된다 (`frame_total = 7 + LEN`). 고정 길이 프레이밍은 `sync_pattern` 을 비우고 **`length_offset=0`**, `length_size=0`, `length_adjust=프레임 크기` 로 지정한다 — `length_offset` 기본값 5 를 두면 프레임이 5바이트 길게 잘린다.
 
 ```cpp
-Rs485TransportConfig config{
-    .device = "/dev/ttyUSB0",
-    .baud_rate = 1000000,
-};  // sync/length 기본값 = Dynamixel Protocol 2.0
+Rs485TransportConfig config{.device = "/dev/ttyUSB0", .baud_rate = 1000000};
 auto transport = std::make_unique<Rs485Transport>(config);
 transport->Open();
 ```
 
-> **참고**: RS485 버스는 반이중 master-initiated 트랜잭션이 일반적입니다. `Transceiver`의 상시 수신 스레드 모델은 스트리밍 디바이스에 적합하며, request→status 동기 트랜잭션이나 벤더 CRC/byte-stuffing이 필요한 프로덕션 Dynamixel 드라이버는 별도 downstream 패키지(codec + 트랜잭션 계층)로 구현합니다.
+RS485 버스는 반이중 master-initiated 트랜잭션이 일반적이다. `Transceiver` 의 상시 수신 스레드 모델은 스트리밍 디바이스에 맞고, request→status 동기 트랜잭션이나 벤더 CRC/byte-stuffing 이 필요한 드라이버는 codec + 트랜잭션 계층을 별도 패키지로 둔다.
 
----
+### PacketCodec (`packet_codec.hpp`)
 
-### PacketCodec Concept (`packet_codec.hpp`)
+사용자 정의 코덱이 만족해야 하는 C++20 concept 이다.
 
-사용자 정의 패킷 코덱을 위한 C++20 Concept입니다.
+| 요구 | 제약 |
+|---|---|
+| `Codec::RecvPacket` · `Codec::SendPacket` | `trivially_copyable` 와이어 포맷 |
+| `Codec::State` | 디코딩된 애플리케이션 상태 |
+| `Codec::Decode(span<const uint8_t>, State&)` | `static`, `bool` 반환. 필수 |
 
-**Concept 요구 사항:**
-
-| 타입/메서드 | 제약 | 설명 |
-|------------|------|------|
-| `Codec::RecvPacket` | `trivially_copyable` | 수신 패킷 와이어 포맷 |
-| `Codec::SendPacket` | `trivially_copyable` | 송신 패킷 와이어 포맷 |
-| `Codec::State` | -- | 디코딩된 애플리케이션 상태 타입 |
-| `Codec::Decode(span<const uint8_t>, State&)` | `static`, 반환 `bool` | **필수.** 바이트 버퍼를 State로 디코딩 |
-
-`Encode`는 Concept에서 요구하지 않습니다. 인코딩이 필요한 경우 `EncodePacket<T>()` 헬퍼를 사용할 수 있습니다.
-
-**헬퍼 함수:**
-
-| 함수 | 설명 |
-|------|------|
-| `DecodePacket<T>(span<const uint8_t>, T&) -> bool` | `memcpy` 기반 디코더. 버퍼가 `sizeof(T)` 미만이면 `false` 반환. `trivially_copyable` 제약. |
-| `EncodePacket<T>(const T&, span<uint8_t, sizeof(T)>) -> void` | `memcpy` 기반 인코더. 고정 크기 `span` 사용. `trivially_copyable` 제약. |
+`Encode` 는 요구하지 않는다. 헬퍼: `DecodePacket<T>(span, T&)` (버퍼가 `sizeof(T)` 미만이면 `false`) · `EncodePacket<T>(const T&, span<uint8_t, sizeof(T)>)`.
 
 ```cpp
-// 코덱 정의 예시
 struct MyCodec {
-    struct RecvPacket { float data[6]; } __attribute__((packed));
-    struct SendPacket { float cmd[6]; } __attribute__((packed));
-    struct State { std::array<float, 6> values; bool valid; };
+  struct RecvPacket { float data[6]; } __attribute__((packed));
+  struct SendPacket { float cmd[6]; } __attribute__((packed));
+  struct State { std::array<float, 6> values; bool valid; };
 
-    static bool Decode(std::span<const uint8_t> buf, State& out) {
-        RecvPacket pkt;
-        if (!DecodePacket(buf, pkt)) return false;
-        std::copy_n(pkt.data, 6, out.values.begin());
-        out.valid = true;
-        return true;
-    }
+  static bool Decode(std::span<const uint8_t> buf, State& out) {
+    RecvPacket pkt;
+    if (!DecodePacket(buf, pkt)) return false;
+    std::copy_n(pkt.data, 6, out.values.begin());
+    out.valid = true;
+    return true;
+  }
 };
 ```
 
----
-
 ### Transceiver (`transceiver.hpp`)
 
-`TransportInterface`와 `PacketCodec`를 결합한 전이중 트랜시버 클래스 템플릿입니다.
+`TransportInterface` 를 `unique_ptr` 로 소유하고, `std::jthread` 수신 루프가 `Recv` → 크기 검사 → `Codec::Decode` → 최신 상태 갱신 (mutex) → 콜백 순으로 돈다. 생성자는 `Transceiver(unique_ptr<TransportInterface>, const ThreadConfig& = kRtUdpRecvConfig)` 이고, 수신 스레드의 RT 설정 적용이 실패해도 계속 돈다 (rtprio 가 없는 사용자 대비). `Stop()` 은 소켓 타임아웃 (기본 100 ms) 만큼 지연될 수 있다.
 
-**주요 특징:**
-- `TransportInterface`를 `unique_ptr`로 소유
-- `std::jthread`로 전용 수신 루프 실행
-- 최신 디코딩 상태를 `mutex`로 보호하여 스레드 안전하게 제공
-- 선택적 상태 변경 콜백 지원
-- 송신 경로는 스택 배열을 사용하여 할당 없음
+| 메서드 | 설명 |
+|---|---|
+| `StartRecv()` | 전송 `Open()` + 수신 루프 시작 |
+| `Stop()` | 수신 중단 + 전송 `Close()` |
+| `Send(pkt)` | 스택 배열로 `memcpy` 후 전송 |
+| `GetLatestState()` | 최신 상태 복사본 (mutex) |
+| `SetCallback(fn)` | 새 데이터 수신 시 콜백 (`std::function<void(const State&)>`) |
+| `IsRunning()` · `recv_count()` · `send_count()` | atomic 조회. `recv_count()` 는 디코딩 성공 시에만 증가 |
+| `transport()` | 하위 전송 포인터 |
 
-| 메서드 | 시그니처 | 설명 |
-|--------|---------|------|
-| `StartRecv()` | `[[nodiscard]] bool` | 전송 `Open()` + jthread 수신 루프 시작 |
-| `Stop()` | `void noexcept` | `running_` 해제 + `request_stop()` + 전송 `Close()` |
-| `Send()` | `[[nodiscard]] bool noexcept` | 스택 배열로 `memcpy` 후 전송 (`SendPacket` 크기) |
-| `GetLatestState()` | `[[nodiscard]] State const` | `mutex` 잠금 후 최신 상태 복사본 반환 |
-| `SetCallback()` | `void noexcept` | 상태 변경 콜백 등록 (`std::function<void(const State&)>`) |
-| `IsRunning()` | `[[nodiscard]] bool const noexcept` | `running_` 원자적 조회 (`memory_order_acquire`) |
-| `recv_count()` | `[[nodiscard]] size_t const noexcept` | 수신 패킷 수 (`relaxed`) |
-| `send_count()` | `[[nodiscard]] size_t const noexcept` | 송신 성공 패킷 카운터 (`Send()` 성공 시 증가) |
-| `transport()` | `TransportInterface* const noexcept` | 하위 전송 계층 포인터 반환 |
+**호출 컨텍스트 (RT vs non-RT).** 정기 RT tick (`control_rate` — 범위는 invariants.md §RT Path Invariants) 에서 쓸 수 있는 것과 없는 것이 갈린다.
 
-생성자: `Transceiver(unique_ptr<TransportInterface>, const ThreadConfig& = kRtUdpRecvConfig)`
+| 메서드 | RT-safe | 사유 |
+|---|---|---|
+| `Send(pkt)` | 예 | 스택 `memcpy` + `sendto()` 1회, `noexcept` |
+| `IsRunning()` · `recv_count()` · `send_count()` | 예 | atomic load |
+| `GetLatestState()` | **아니오** | `std::mutex` 획득 — 진단 스레드·ROS 콜백 등 non-RT 에서만 |
+| `StartRecv()` · `Stop()` · `SetCallback()` | 아니오 | 초기화/셧다운 (jthread 생성·조인) |
 
-```cpp
-auto transport = std::make_unique<UdpTransport>(config);
-Transceiver<MyCodec> xcvr(std::move(transport));
+RT 루프에 디코딩된 상태가 필요하면 `GetLatestState()` 를 직접 부르지 말고, non-RT 스레드에서 읽어 `SeqLock<State>` 또는 SPSC 큐로 전달한다.
 
-xcvr.SetCallback([](const MyCodec::State& state) {
-    // 새 데이터 수신 시 호출 (mutex 해제 후 호출됨)
-});
-
-xcvr.StartRecv();
-
-// 송신
-MyCodec::SendPacket cmd{};
-xcvr.Send(cmd);
-
-// 최신 상태 조회
-auto state = xcvr.GetLatestState();
-```
-
-#### 수신 루프 (`RecvLoop`) 상세
-
-`RecvLoop`는 `ApplyThreadConfigVerbose()`로 RT 스레드 설정을 적용하고 결과를 1줄 로그로 남긴 뒤 (실패해도 계속 — 비-RT 사용자는 rtprio 가 없을 수 있다), 다음을 반복합니다:
+## 디렉토리
 
 ```
-while (!stop_requested):
-  1. transport_->Recv(buffer)     -- 커널 블로킹 (SO_RCVTIMEO)
-  2. 수신 크기 < 0 이면 continue   -- 타임아웃 또는 전송 닫힘
-  3. 수신 크기 < sizeof(RecvPacket) 이면 continue
-  4. Codec::Decode(buffer, state)  -- 실패 시 무시
-  5. lock_guard(data_mutex_)       -- latest_state_ 갱신 (mutex 범위 종료)
-  6. callback_(state)              -- 콜백 호출 (mutex 해제 후)
-  7. recv_count_++                 -- atomic (relaxed)
+rtc_communication/
+├── include/rtc_communication/   헤더 (udp/ can/ rs485/ 하위)
+└── test/                        loopback 테스트와 지원 헤더
 ```
 
-주요 사항:
-- 수신 버퍼 크기: `sizeof(RecvPacket) + 64` (오버사이즈 데이터그램 감지용)
-- 콜백은 `data_mutex_` 해제 후 호출됨
-- 디코딩 성공 시에만 `recv_count_` 증가
-- `Stop()` 호출 시 소켓 타임아웃만큼 지연 가능 (기본 100ms)
+파일별 설명은 각 헤더 상단 주석과 Doxygen 을 본다.
 
-#### 메모리 순서 보장
+## 문제 해결
 
-| 원자적 변수 | 쓰기 | 읽기 | 용도 |
-|------------|------|------|------|
-| `running_` | `release` | `acquire` | 셧다운 동기화 |
-| `recv_count_` | `relaxed` | `relaxed` | 통계 |
-| `send_count_` | `relaxed` | `relaxed` | 통계 (`Send()` 성공 시 증가) |
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| CAN `Transceiver::Send` 가 항상 `false` | `sizeof(SendPacket)` 가 payload 한도 (8 B / 64 B) 초과 | 코덱 packet 을 한도 안으로 줄인다 |
+| CAN `Recv()` 에 아무것도 안 온다 | `rx_can_mask = 0` 이 아닌데 `rx_can_id` 불일치, 또는 RTR frame | mask/ID 확인. RTR 은 항상 drop |
+| CAN/CAN FD 테스트가 SKIP | `vcan0` 없음 | 아래 vcan 설정 |
+| RS485 `Send()` 가 오래 블록 | `TIOCSRS485` 미지원으로 `tcdrain` fallback | RT tick 밖에서 호출하거나 프레임 시간을 예산에 반영 |
+| RS485 에서 송신 프레임이 수신으로 돌아온다 | 2-wire echo 어댑터 | `discard_echo=true` |
 
-#### 호출 컨텍스트 (RT vs non-RT)
+## 더 읽기
 
-`Transceiver`의 메서드는 RT-안전성 보장이 다릅니다. 호출 컨텍스트에 맞게 사용해야 합니다.
+테스트: `colcon test --packages-select rtc_communication --event-handlers console_direct+` (GTest, 설계는 `test/` 파일 헤더).
 
-| 메서드 | RT-safe? | 사유 |
-|--------|----------|------|
-| `Send(pkt)` | ✅ Yes | 스택 memcpy + 단일 `sendto()` syscall, `noexcept`. RT 정기 tick 루프 (`control_rate` — default·범위는 [invariants.md](../agent_docs/invariants.md) §RT Path Invariants)에서 직접 호출 가능 |
-| `IsRunning()` / `recv_count()` / `send_count()` | ✅ Yes | atomic load만 수행 |
-| `GetLatestState()` | ❌ **No** | `std::mutex` 획득 — non-RT 컨텍스트(진단 스레드, ROS2 콜백)에서만 호출 |
-| `StartRecv()` / `Stop()` / `SetCallback()` | ❌ No | 초기화/셧다운 경로 (jthread 생성·조인) |
-
-RT 루프에서 디코딩된 상태가 필요하면 `GetLatestState()`를 직접 호출하지 말고, 비-RT 스레드(예: 센서 callback group)에서 한 번 읽어 `SeqLock<State>` 또는 SPSC 큐로 RT 루프에 전달하는 패턴을 사용하세요.
-
----
-
-## 테스트
-
-| 테스트 파일 | 프레임워크 | 다루는 항목 |
-|------------|-----------|------------|
-| `test/test_udp_loopback.cpp` | GTest | UdpSocket bind/connect 라운드 트립, `SO_RCVTIMEO` 만료, RAII fd 닫힘, UdpTransport bind+connect 수명 |
-| `test/test_can_loopback.cpp` | GTest | CanSocket/CanTransport 수명, invalid interface, vcan0 라운드 트립, 타임아웃, RAII, >8B 거부, 필터 accept/reject, extended ID, RTR drop, receive_own_messages (vcan 의존 케이스는 guarded) |
-| `test/test_canfd_loopback.cpp` | GTest | CanFdTransport invalid interface, 64B 라운드 트립, >64B 거부, classic/FD 혼재 수신 (vcan 의존 케이스는 guarded) |
-| `test/test_serial_loopback.cpp` | GTest | SerialPort PTY 수명, 잘못된 device 실패, 라인 설정, 양방향 바이트 왕복, VTIME 타임아웃, RAII fd 닫힘 |
-| `test/test_rs485_transport.cpp` | GTest | Rs485Transport 단일 프레임, 헤더 앞 garbage 리싱크, 연속 프레임 분리, read 분할 재조립, 타임아웃 `-1`, garbage 스트림 하 전체 deadline, oversize 프레임 `-1` 후 복구, timeout=0 무한 대기, 고정 길이 프레이밍, `discard_echo`, `Transceiver<DynamixelTestCodec>` 풀스택 디코드 |
-| `test/test_transceiver.cpp` | GTest | `Transceiver<FakeCodec>` 기동·종료, 외부 송신 디코딩, 콜백 호출, 짧은 데이터그램 무시, Send 경로 외부 수신자 도달 |
-| `test/fake_codec.hpp` | -- | `PacketCodec` concept을 만족하는 최소 코덱 (테스트 하니스용) |
-| `test/can_test_support.hpp` | -- | vcan 감지 (`HasVcan`/`GetInterfaceMtu`)·`SKIP_IF_NO_VCAN`/`SKIP_IF_NO_FD_VCAN` 매크로 공용 헬퍼 |
-| `test/serial_test_support.hpp` | -- | PTY master/slave 페어 루프백 헬퍼 (`OpenPtyPair`). PTY는 상시 사용 가능하므로 RS485 테스트는 SKIP 없이 실행 |
-
-```bash
-colcon test --packages-select rtc_communication --event-handlers console_direct+
-```
-
-### CAN 테스트 환경 (vcan)
-
-CAN/CANFD 통합 테스트는 가상 CAN 인터페이스 `vcan0`이 있어야 실행되며, 없으면 `GTEST_SKIP()`으로 건너뜁니다 (CI green 유지):
+CAN/CAN FD 테스트는 가상 인터페이스 `vcan0` 이 있어야 실행되고 없으면 `GTEST_SKIP()` 으로 건너뛴다.
 
 ```bash
 sudo modprobe vcan
@@ -437,45 +221,8 @@ sudo ip link add dev vcan0 type vcan
 sudo ip link set up vcan0
 ```
 
-수동 smoke test는 [can-utils](https://github.com/linux-can/can-utils) 사용 (`sudo apt install can-utils`):
-
-```bash
-candump vcan0          # 수신 모니터
-cansend vcan0 123#11223344
-cangen vcan0           # 랜덤 트래픽 생성
-canfdtest vcan0        # CAN FD 검증
-```
-
-### RS485 테스트 환경 (PTY)
-
-RS485 테스트는 PTY(pseudo-terminal) 페어를 실제 시리얼 링크 대용으로 사용합니다. PTY는 root·커널 모듈 없이 항상 사용 가능하므로 CAN과 달리 **SKIP 없이 상시 실행**됩니다. PTY는 실제 UART가 아니므로 `TIOCSRS485` ioctl은 미지원이며(`EnableRs485`가 `false` 반환, transport가 허용), 프레이밍·타임아웃·바이트 투명성만 충실히 검증합니다. 실제 HW 검증은 USB-RS485 어댑터 + Dynamixel 모터로 별도 수행합니다.
-
----
+수동 smoke test 는 [can-utils](https://github.com/linux-can/can-utils) (`sudo apt install can-utils`) 의 `candump vcan0` · `cansend vcan0 123#11223344` · `cangen vcan0` · `canfdtest vcan0` 를 쓴다. RS485 테스트는 PTY 페어를 시리얼 링크 대용으로 쓰므로 root·모듈 없이 항상 실행되며, `TIOCSRS485` 는 PTY 에서 미지원이라 프레이밍·타임아웃·바이트 투명성만 검증한다 (실기 검증은 USB-RS485 어댑터로 별도).
 
 ## 의존성
 
-| 의존성 | 유형 | 용도 |
-|--------|------|------|
-| `ament_cmake` | 빌드 도구 | ROS 2 빌드 시스템 |
-| `rtc_base` | 런타임 | `ThreadConfig`, `ApplyThreadConfig` (스레드 설정) |
-| `ament_cmake_gtest` | 테스트 | UDP/CAN/RS485 루프백 / Transceiver 통합 테스트 |
-
-**시스템 의존성:** POSIX 소켓 API (`sys/socket.h`, `arpa/inet.h`, `netinet/in.h`, `unistd.h`), Linux SocketCAN 커널 헤더 (`linux/can.h`, `linux/can/raw.h`, `net/if.h`), POSIX termios + Linux RS485 헤더 (`termios.h`, `linux/serial.h`, `sys/ioctl.h`) — 모두 표준 libc/커널 헤더로 별도 패키지 설치 불필요
-
-**컴파일러 요구 사항:** C++20 (`-std=c++20`), 엄격 경고 플래그 (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`)
-
----
-
-## 빌드
-
-```bash
-./build.sh --tests -p rtc_communication
-```
-
-설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조 (테스트는 위 §테스트). 헤더 전용 라이브러리이므로 컴파일되는 바이너리는 없습니다. 다른 패키지에서 `find_package(rtc_communication REQUIRED)`로 의존성을 추가하면 include 경로가 자동으로 설정됩니다.
-
----
-
-## 라이선스
-
-MIT License
+[package.xml](package.xml) — `rtc_base` (`ThreadConfig`, `ApplyThreadConfig`), 테스트 `ament_cmake_gtest`. C++20, 엄격 경고 플래그. 시스템 헤더 (POSIX 소켓, SocketCAN `linux/can.h`, termios `linux/serial.h`) 만 쓰므로 별도 설치가 필요 없다. MIT ([LICENSE](../LICENSE)).

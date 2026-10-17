@@ -1,139 +1,81 @@
 # rtc_inference
 
-> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
-> 설치/빌드: [Root README](../README.md) | RT 최적화: [rt-optimization.md](../docs/rt-optimization.md)
+ONNX Runtime 으로 신경망 모델을 실행하는 header-only 추론 엔진. **유형**: 라이브러리 패키지
 
 ## 개요
 
-RTC 프레임워크의 **ONNX Runtime 추론 엔진** 패키지입니다. 신경망 모델을 실시간 제어 루프에서 실행하기 위한 헤더 전용(header-only) INTERFACE 라이브러리로, 세션·텐서 버퍼·워밍업은 모두 초기화에서 끝나고 추론 호출은 `noexcept` 이며 이 래퍼 자신은 할당하지 않습니다. **단 ONNX Runtime 의 `Run()` 은 내부에서 매 호출 heap 을 할당합니다** (IoBinding 이든 직접 `Session::Run` 이든) — RT 경로에서의 호출은 [invariants.md](../agent_docs/invariants.md) RT 절의 조건부 수용 (RT-1 알려진 위반 2건째) 이며, 조건에는 RT 프로세스의 `rtc::ConfigureRtHeap()` 가 포함됩니다.
+신경망 모델을 제어 루프에서 실행하기 위한 INTERFACE 라이브러리다. 세션·텐서 버퍼·워밍업은 `Init()` 에서 끝나고, 추론 호출은 `noexcept` 이며 래퍼 자신은 할당하지 않는다. **단 ONNX Runtime 의 `Run()` 은 내부에서 매 호출 heap 을 할당한다** — RT 경로에서 호출하려면 [invariants.md](../agent_docs/invariants.md) RT 절의 조건부 수용 조건 (RT-1 알려진 위반 2건째, 조건에 RT 프로세스의 `rtc::ConfigureRtHeap()` 포함) 을 만족해야 한다. 실측 도구는 `integrated_bringup` 의 `test_demo_inference_real_model` 이다.
 
----
+소비자: [integrated_bringup](../integrated_bringup/README.md) 의 `demo_inference_controller` (`.onnx` 경로는 그 패키지의 컨트롤러 YAML 이 정한다). RT 최적화 배경: [rt-optimization.md](../docs/rt-optimization.md).
 
-## 핵심 컴포넌트
+## 빠른 시작
 
-### ModelConfig (`inference_types.hpp`)
+빌드는 [루트 README](../README.md#빠른-시작) 를 따른다. 이 패키지만 빌드·테스트하려면 `./build.sh --tests -p rtc_inference`.
 
-모델 설정을 담는 구조체입니다. `rtc` 네임스페이스에 정의되어 있습니다.
+소비자 `CMakeLists.txt` 에서 `find_package` 하면 헤더 경로와 ONNX Runtime 링크가 함께 전파된다.
 
-| 필드 | 타입 | 기본값 | 설명 |
-|------|------|--------|------|
-| `model_path` | `std::string` | -- | ONNX 모델 파일 경로 |
-| `optimized_model_path` | `std::string` | `""` | ORT 그래프 최적화 캐시 경로 (빈 문자열이면 비활성) |
-| `inputs` | `std::vector<TensorSpec>` | -- | 입력 텐서. 순서 = 소비자가 `input_buffer(m, i)` 로 인덱싱할 순서 |
-| `outputs` | `std::vector<TensorSpec>` | -- | 출력 head. 순서 = `output_buffer(m, o)` 인덱스 |
-| `intra_op_threads` | `int` | `1` | 추론 내부 스레드 수 (RT 환경에서는 단일 스레드 권장) |
+```cmake
+find_package(rtc_inference REQUIRED)
+target_link_libraries(my_target PRIVATE rtc_inference)
+```
 
-`TensorSpec` 은 `{ std::string name; std::vector<int64_t> shape; }` 입니다. 엔진은 **N 입력 × N 출력 head** 를 지원합니다.
+```cpp
+#include "rtc_inference/onnx/onnx_engine.hpp"
 
-#### 텐서를 이름으로 바인딩하는 이유
+rtc::OnnxEngine engine;                       // non-RT: 설정 단계
+engine.Init(rtc::ModelConfig{
+    .model_path = "policy.onnx",
+    .inputs = {{"obs", {1, 34}}},
+    .outputs = {{"action", {1, 6}}}});        // 불일치면 std::runtime_error
+// RT: 입력 채우기 → 추론 → 출력 읽기
+float* in = engine.input_buffer(0, 0);
+const int models[] = {0};
+if (engine.RunModels(models, 1)) { const float* out = engine.output_buffer(0, 0); }
+```
 
-**positional 바인딩은 같은 shape 인 두 텐서를 구분하지 못합니다.** 가정이 아니라 실제 사례가 있습니다 — LSTM 정책의 `h_out`/`c_out` 은 정의상 동일 shape 이고, `udp_hand_driver` 의 fingertip F/T 모델은 `{{1,1},{1,3},{1,3}}` 로 힘과 방향이 둘 다 `[1,3]` 입니다. 그런 모델이 두 텐서를 반대 순서로 export 되면 **모든 shape 검사를 통과한 채 값이 조용히 뒤바뀝니다.**
+모델이 노출하는 텐서는 bring-up 없이 `rtc_inference_check` 로 확인한다 ([오프라인 모델 검사](#오프라인-모델-검사-rtc_inference_check)).
 
-그래서 각 side (입력 / 출력) 는 다음 셋 중 하나입니다:
+## 인터페이스
+
+| 헤더 | 주요 타입 | 역할 |
+|---|---|---|
+| `rtc_inference/inference_types.hpp` | `ModelConfig` · `TensorSpec` | 모델 경로·입출력 텐서 선언 |
+| `rtc_inference/inference_engine.hpp` | `InferenceEngine` | 백엔드 추상 기반 (non-copyable) |
+| `rtc_inference/onnx/onnx_engine.hpp` | `OnnxEngine` | ONNX Runtime 구현. ORT 가 없으면 스텁 |
+| `rtc_inference/shape_report.hpp` | `CompareModelIo` · `IoReport` | ORT 비의존 입출력 대조·표 렌더 |
+
+필드·메서드 상세와 RT 여부는 각 헤더의 Doxygen 이 SSoT 다. 아래는 사용 계약만 요약한다.
+
+- `ModelConfig`: `model_path`, `optimized_model_path` (빈 문자열이면 그래프 최적화 캐시 비활성), `inputs`/`outputs` (`TensorSpec{name, shape}` 목록), `intra_op_threads` (기본 1).
+- 엔진은 N 입력 × N 출력 head 를 지원하고, `Init()` 을 여러 번 호출해 복수 모델을 등록한다. 같은 인스턴스를 다시 초기화하려면 `Reset()` 을 먼저 부른다.
+- `input_buffer(m, i)` / `output_buffer(m, o)` 의 인덱스는 **`config` 선언 순서**다. 범위 밖이면 `nullptr`, 크기 접근자는 `0`.
+- `Run()` · `RunModel(idx)` 는 IoBinding 경로이고, **RT 루프에는 `RunModels(indices, count)`** (직접 `Session::Run`) 를 쓴다. 모두 실패 시 예외 없이 `false`.
+- 세션은 `ORT_SEQUENTIAL` · 단일 intra-op 스레드 · busy-spin 끔으로 만든다.
+
+### 텐서를 이름으로 바인딩하는 이유
+
+positional 바인딩은 같은 shape 의 두 텐서 (LSTM 의 `h_out`/`c_out`, fingertip F/T 모델의 `[1,3]` 두 head) 가 반대 순서로 export 되어도 **모든 shape 검사를 통과한 채 값이 조용히 뒤바뀐다.** 그래서 각 side (입력 / 출력) 는 다음 중 하나다.
 
 | 선언 | 바인딩 | 비고 |
 |---|---|---|
-| 모든 텐서에 이름 | **이름 기준** | 위 뒤바뀜을 검출한다. `config` 순서가 모델 순서와 달라도 되며, 슬롯 i 는 자기 이름의 텐서를 받는다 |
-| 모든 텐서 이름이 빈 문자열 | **positional** | 모델의 텐서 이름을 모르는 소비자를 위한 호환 경로. 위 사각을 그대로 물려받는다 |
-| 일부만 이름 | **거부** | 의도한 바인딩이 두 가지로 갈리는 유일한 경우라, 추측하지 않고 `Init()` 이 실패한다 |
+| 모든 텐서에 이름 | 이름 기준 | 뒤바뀜을 검출한다. `config` 순서가 모델 순서와 달라도 된다 |
+| 모든 이름이 빈 문자열 | positional | 이름을 모르는 소비자용. 위 사각을 물려받는다 |
+| 일부만 이름 | 거부 | `Init()` 이 실패한다 (바인딩이 모호하므로 추측하지 않는다) |
 
----
+### 모델 검증
 
-### InferenceEngine (`inference_engine.hpp`)
+`Init()` 은 버퍼를 할당하기 전에 모델의 실제 입출력 arity·shape 를 `config` 와 대조하고, 불일치가 하나라도 있으면 **전량을 표로 담은** `std::runtime_error` 를 던진다. 입력·출력 arity 는 양쪽 모두 정확히 일치해야 하고, `config` 쪽 dim 은 static positive 여야 한다 (모델 쪽 dim `< 0` 은 dynamic). 규칙의 SSoT 는 [shape_report.hpp](include/rtc_inference/shape_report.hpp) 다.
 
-모든 추론 백엔드의 추상 기반 클래스입니다. Non-copyable, non-movable이며 `rtc` 네임스페이스에 정의되어 있습니다.
+### 스텁 (ORT 없이 빌드된 경우)
 
-| 메서드 | 반환 타입 | RT 경로 | 설명 |
-|--------|-----------|---------|------|
-| `Init(const ModelConfig&)` | `void` | No | 모델 로드, 텐서 할당, 워밍업 (순수 가상) |
-| `Run()` | `bool` | 조건부 ¹ | 모든 등록된 모델에 대해 추론 실행 (순수 가상) |
-| `RunModel(int model_idx)` | `bool` | 조건부 ¹ | 단일 모델 추론 (기본 구현: `Run()` 위임) |
-| `RunModels(const int*, int)` | `bool` | 조건부 ¹ | 복수 모델 배치 추론 (기본 구현: `RunModel()` 순차 호출) |
-| `input_buffer(int model_idx, int input_idx)` | `float*` | Yes | 사전 할당된 입력 버퍼 포인터 (범위 밖 → `nullptr`) |
-| `output_buffer(int model_idx, int output_idx)` | `const float*` | Yes | 출력 head 버퍼 포인터 반환 (범위 밖 → `nullptr`) |
-| `input_size(int model_idx, int input_idx)` | `std::size_t` | Yes | 입력 버퍼의 float 원소 수 (범위 밖 → `0`) |
-| `output_size(int model_idx, int output_idx)` | `std::size_t` | Yes | 출력 head 버퍼의 float 원소 수 (범위 밖 → `0`) |
-| `num_inputs(int model_idx)` | `int` | Yes | 모델의 입력 텐서 수 (범위 밖 → `0`) |
-| `num_outputs(int model_idx)` | `int` | Yes | 모델의 출력 head 수 (범위 밖 → `0`) |
-| `is_initialized()` | `bool` | Yes | 초기화 완료 여부 (순수 가상) |
-| `num_models()` | `int` | Yes | 등록된 모델 수 (순수 가상) |
+`HAS_ONNXRUNTIME` 이 정의되지 않으면 `Init()` 은 no-op, `Run*()` 은 `false`, 버퍼는 `nullptr`, 크기·`num_models()` 는 `0`, `is_initialized()` 는 `false` 다. 소비자는 `is_initialized()` 로 추론을 건너뛸 수 있다.
 
-¹ `noexcept`·무잠금이지만 ONNX Runtime 이 매 호출 heap 을 할당한다 — RT 경로 호출은 invariants.md RT 절의 수용 조건 (heap 정책·정상상태 무성장·호출자 몫 0·RT 실측) 하에서만. 실측 도구는 `integrated_bringup` 의 `test_demo_inference_real_model`.
+### 오프라인 모델 검사 (`rtc_inference_check`)
 
-`Init()` 을 뺀 모든 메서드에는 `noexcept`가 지정되어 있으며, `Run()`, `RunModel()`, `RunModels()`에는 `[[nodiscard]]` 속성이 부여되어 반환값 무시를 방지합니다.
-
----
-
-### OnnxEngine (`onnx/onnx_engine.hpp`)
-
-`InferenceEngine`의 ONNX Runtime 구현체입니다. 컴파일 시 `HAS_ONNXRUNTIME` 매크로 정의 여부에 따라 전체 구현 또는 스텁이 선택됩니다.
-
-#### 전체 구현 (`HAS_ONNXRUNTIME` 정의 시)
-
-`Init()`을 여러 번 호출하여 복수의 모델을 순차적으로 등록할 수 있습니다. 각 모델은 `std::unique_ptr<Model>`로 보유되어 주소가 안정적이며 (텐서/IoBinding 의 버퍼·세션 참조가 `models_` 성장에도 무효화되지 않음), 첫 호출 시 `Ort::Env`를 생성하고 호출마다 다음 리소스를 사전 할당합니다:
-
-- `Ort::Session` (모델당 1개)
-- `Ort::IoBinding` (모델당 1개)
-- `Ort::Value` 입력 텐서 N개 + 출력 head 별 텐서 N개
-- `std::vector<float>` 입력 버퍼 N개 + 출력 head 별 버퍼 N개 (전부 **선언 순서**로 인덱싱)
-- `Ort::RunOptions` (전체에서 1개, 재사용)
-
-**RT 세션 옵션** (모델당): `ORT_SEQUENTIAL` 실행 모드, `intra_op_threads` 단일 스레드, `session.intra_op.allow_spinning=0` (intra-op 워커의 busy-spin 제거로 RT 루프 지터 차단), `ORT_ENABLE_ALL` 그래프 최적화.
-
-**모델 검증**: `Init()`은 버퍼를 할당하기 전에 모델의 실제 입출력 arity/shape 를 `config` 와 대조하고, 불일치가 하나라도 있으면 **전량을 표로 담은** `std::runtime_error`를 던집니다 — 잘못된/재학습된 `.onnx`가 런타임에 조용히 틀린 값을 내지 않고 setup 단계에서 큰 소리로 실패합니다.
-
-비교 규칙은 [shape_report.hpp](include/rtc_inference/shape_report.hpp) 가 SSoT 이며, 요지는 셋입니다 — ① **입력·출력 양쪽 arity 가 정확히 일치**해야 한다 (한쪽에만 있는 텐서는 각각 "config 미선언" / "모델에 없음" 행으로 실패; extra head 는 조용히 drop 되고, 미선언 입력은 ORT 내부 에러로 죽어 원인을 안 가리킨다), ② 모델 쪽 dim `< 0` 은 dynamic 이라 임의 크기와 매칭되지만 **`config` 쪽 dim 은 static positive** 여야 한다 (dynamic `-1`이 `Numel()`에서 `SIZE_MAX`로 캐스트되어 catastrophic allocation 을 시도하므로 — 이 검사가 rank 검사보다 먼저다), ③ **한 번에 전부 보고**한다 (재학습은 여러 텐서를 동시에 옮기므로 첫 불일치에서 throw 하면 텐서마다 bring-up 사이클을 하나씩 태운다).
-
-> **positional 로 선언한 경우의 사각**: 모든 이름을 빈 문자열로 둔 side 는 positional 로 바인딩되므로 **같은 shape 두 텐서가 뒤바뀐 export 를 검출하지 못합니다.** `udp_hand_driver` 의 3-head FT 모델(`{{1,1},{1,3},{1,3}}` — 힘과 방향이 둘 다 `[1,3]`)이 현재 이 경로에 있습니다 (실모델이 in-tree 에 없어 이름을 채우지 못했다 — 채우는 순간 엔진이 검증한다). 표는 어느 side 가 어떤 방식으로 짝지어졌는지 (`paired by name` / `paired positionally`) 를 함께 찍으므로, 깨끗해 보이는 행이 실제로 깨끗한지 판별할 수 있습니다.
-
-검증은 **두 겹**으로 테스트됩니다. `test_shape_report.cpp` 는 ORT 비의존 순수 함수를 직접 몰아 비교 **규칙**을 전량 고정하고, `test_onnx_engine.cpp` 는 커밋된 `.onnx` 픽스처를 실제 세션에 올려 그 규칙이 실제 버퍼에 **배선**됐는지 확인합니다. 둘은 서로를 대체하지 않습니다 — 완벽한 비교기가 엉뚱한 버퍼에 물려 있으면 여전히 조용히 틀린 로봇입니다.
-
-픽스처(`test/data/two_in_two_out.onnx`, 173 B)는 **생성하지 않고 커밋**합니다: 생성에 python `onnx` 패키지가 필요한데 이 저장소의 의존이 아니므로, 테스트 시점에 만들면 그 패키지가 있는 곳에서만 green 이고 없는 곳에서는 조용히 건너뛰는 host-gated 게이트가 됩니다. 재생성 절차는 [test/data/generate_fixtures.py](test/data/generate_fixtures.py) 헤더에 있습니다. 픽스처의 네 텐서가 **전부 `[1,2]`** 인 것이 요점입니다 — shape 으로는 구분이 불가능하므로, 그 테스트가 올바른 값을 얻는 경로는 이름 바인딩뿐입니다.
-
-워밍업 추론은 모델을 `models_`에 등록하기 **전에** 실행됩니다 (`RunModels()`와 동일한 direct `Session::Run` 경로 재사용 → warmup 이 production 경로를 정확히 데움) — 이 순서 덕분에 `Init()`이 원자적입니다: 워밍업이 예외를 던지면 반쯤 초기화된 모델이 `models_`에 남지 않고 그대로 전파됩니다 (register-or-nothing).
-
-**`Reset()`** (non-RT): 등록된 모든 모델을 해제하여 `Init()` 재호출을 idempotent 하게 만듭니다 (`Ort::Env`/`RunOptions`는 재사용). 같은 엔진 인스턴스로 재초기화하는 소비자는 `Init()` 루프 전에 `Reset()`을 호출해 모델 중복 등록·세션 누수를 방지합니다.
-
-**추론 실행 경로:**
-
-| 메서드 | 동작 방식 | 비고 |
-|--------|-----------|------|
-| `Run()` | IoBinding 기반 순차 실행 (`SynchronizeInputs/Outputs` 호출) | 모든 모델 실행 |
-| `RunModel(idx)` | IoBinding 기반 단일 모델 실행 | 후방 호환용 |
-| `RunModels(indices, count)` | `Session::Run()` 직접 호출 (IoBinding 우회) | RT 루프 권장, 가장 빠름 |
-
-`RunModels()`가 가장 빠른 이유는 IoBinding 래퍼의 `SynchronizeInputs/Outputs` 오버헤드를 우회하기 때문입니다. CPU 백엔드에서 이 동기화는 no-op이므로 생략해도 안전합니다.
-
-**RT 안전 메커니즘:**
-- 모든 RT 메서드 내부에서 `try-catch`로 ONNX Runtime 예외를 포착하여 `false`를 반환
-- `RunModel()`, `RunModels()`는 인덱스 범위를 검증하고 범위 밖이면 `false` 반환
-- 모든 접근자 (`input_buffer`/`output_buffer`/`input_size`/`output_size`/`num_inputs`/`num_outputs`) 도 범위를 검증하여 OOR 시 `nullptr`/`0` 반환 (RT-safe, 예외 없음)
-- `Run()`/`RunModel()`/`RunModels()` 모두 사전 할당된 단일 `Ort::RunOptions`를 재사용
-- Non-copyable, non-movable (단일 스레드 소유 전제, 스레드 안전 보장 없음)
-
-#### 스텁 구현 (`HAS_ONNXRUNTIME` 미정의 시)
-
-ONNX Runtime이 설치되지 않은 환경에서도 빌드가 가능하도록 모든 메서드가 no-op 또는 더미 값을 반환합니다.
-
-| 메서드 | 스텁 동작 |
-|--------|-----------|
-| `Init()` | no-op |
-| `Run()` | `false` 반환 |
-| `input_buffer()` / `output_buffer()` | `nullptr` 반환 |
-| `input_size()` / `output_size()` | `0` 반환 |
-| `is_initialized()` | `false` 반환 |
-| `num_models()` | `0` 반환 |
-
-호출 코드에서 `is_initialized()`를 확인하면 스텁 모드에서 안전하게 추론을 건너뛸 수 있습니다.
-
----
-
-## 오프라인 모델 검사 (`rtc_inference_check`)
-
-`.onnx` 가 실제로 무엇을 노출하는지 bring-up 없이 확인합니다. ONNX Runtime 이 있을 때만 빌드됩니다.
+`.onnx` 가 무엇을 노출하는지 bring-up 없이 확인한다. ONNX Runtime 이 있을 때만 빌드된다.
 
 ```bash
-# 모델이 무엇을 노출하는지 덤프
+# 모델이 노출하는 텐서 덤프
 ros2 run rtc_inference rtc_inference_check policy.onnx
 
 # 선언과 대조 (불일치 시 표를 찍고 exit 1)
@@ -144,76 +86,45 @@ ros2 run rtc_inference rtc_inference_check policy.onnx \
 ros2 run rtc_inference rtc_inference_check policy.onnx --input obs:1x34
 ```
 
-이름 없는 텐서(positional 바인딩)는 `:1x34` 처럼 이름을 비워 선언합니다.
+이름 없는 텐서 (positional) 는 `:1x34` 처럼 이름을 비워 선언한다. 이 도구는 엔진과 같은 `CompareModelIo` 를 호출하므로 판정이 `Init()` 과 갈라지지 않는다. 컨트롤러 YAML 은 읽지 않는다 (그 스키마의 파서는 `rtc_controllers` 소유).
 
-`--input` / `--output` 은 독립적이므로 config 를 점진적으로 쓰면서 한쪽씩 확인할 수 있습니다. 선언하지 않은 쪽은 **판정에 들어가지 않고** 덤프만 됩니다 — 빈 선언을 그대로 대조에 넣으면 "config 가 이 텐서들을 하나도 선언하지 않았다" 로 읽혀 일치하는 모델에 불일치가 찍힙니다.
+## 설정
 
-**이것은 두 번째 검증기가 아닙니다.** 권위 있는 검사는 여전히 configure 시점의 `OnnxEngine::Init` 이고, 이 도구는 **같은 `CompareModelIo` 를 호출해 같은 `IoReport::Format` 으로 렌더**합니다 — 규칙을 재구현하지 않으므로 둘이 갈라질 수 없습니다 (AP-DOC-1). 컨트롤러 YAML 을 읽지 않는 것도 같은 이유입니다: 그 스키마의 파서는 `rtc_controllers` 가 소유하며, 여기에 두 번째 YAML 파서를 두면 그 규칙이 복제됩니다.
+빌드 시점 설정뿐이며 YAML 은 없다 (모델 선언은 소비자 컨트롤러의 YAML).
 
----
+### ONNX Runtime 감지
 
-## 빌드 동작
+[CMakeLists.txt](CMakeLists.txt) 가 `find_library` / `find_path` 로 탐색한다. 우선순위·`find_package(onnxruntime)` 를 쓰지 않는 이유·캐시 정책은 그 파일의 주석이 SSoT 다.
 
-이 패키지는 INTERFACE 라이브러리이므로 자체 바이너리를 생성하지 않습니다. 소비자 패키지에서 `find_package(rtc_inference)`로 의존하면 헤더 경로와 ONNX Runtime 링크가 자동으로 전파됩니다.
+| 상황 | 동작 |
+|---|---|
+| 발견 | `HAS_ONNXRUNTIME` 정의 전파 + 라이브러리 링크. configure 가 `ORT_API_VERSION` 을 출력하고 1.18 미만이면 WARNING (IR 10 모델을 못 연다) |
+| 미발견 | 스텁 엔진으로 빌드 (빌드는 실패하지 않는다) |
 
-### ONNX Runtime 감지 (CMakeLists.txt)
-
-`find_library` / `find_path` 로만 탐색한다 (`find_package(onnxruntime)` 는 **쓰지 않는다** — 아래 주의). 실제 우선순위는 CMake 의 탐색 순서가 정하며, **`CMAKE_PREFIX_PATH` 가 `HINTS` 보다 먼저다**:
-
-0. `CMAKE_PREFIX_PATH` (변수 + 환경변수) — `setup_env.sh` 가 여기에 `/opt/onnxruntime` 을 올리므로, **평소 pin 을 고르는 것은 이 단계다**. 다른 ORT prefix 가 앞에 실린 overlay·CI 이미지에서는 그쪽이 이긴다 (그 경우 `RTC_ONNXRUNTIME_ROOT` 로 의도한 트리를 지정)
-1. `-DRTC_ONNXRUNTIME_ROOT=<dir>` (명시 override — sudo 없이 풀어 둔 tarball 등) — 아래 셋은 `HINTS`
-2. `/opt/onnxruntime` — `install_onnxruntime` 이 **pin 된 버전**으로 가리키게 하는 symlink
-3. `/opt/onnxruntime-*`, `/opt/onnxruntime/onnxruntime-*` — **최신 버전 먼저** (natural sort 내림차순). 0 단계에 symlink 가 안 실렸을 때 pin 을 고르는 fallback
-4. `/usr/local`, `/usr/lib/x86_64-linux-gnu`, `/usr/lib/aarch64-linux-gnu`, 그리고 CMake 기본 경로 (apt·custom prefix 설치도 여기서 잡힌다)
-- 헤더: `include`, `include/onnxruntime/core/session`, `include/onnxruntime` 접미사로 `onnxruntime_cxx_api.h` 탐색
-
-탐색 결과는 **캐시하지 않는다** — 캐시된 경로는 업그레이드 뒤에도 기존 빌드 트리를 옛 런타임에 묶어 둔다. `NO_CACHE` 는 CMake 3.21 키워드인데 이 패키지의 `cmake_minimum_required` 는 3.16 이라 그 아래에서는 조용히 `PATH_SUFFIXES` 항목으로 먹히므로, 선언 최소 버전에서도 보증이 서도록 `unset(... CACHE)` 를 함께 둔다. configure 는 선택한 런타임의 `ORT_API_VERSION` 을 STATUS 로 찍고, **1.18 미만이면 WARNING** 을 낸다 (IR 10 모델을 못 연다 — `ur5e_p1b` 의 demo_inference 정책이 IR 10 이다).
-
-| 감지 결과 | 동작 |
-|-----------|------|
-| 발견 | `HAS_ONNXRUNTIME` 컴파일 정의 전파 + 라이브러리 링크 (INTERFACE) |
-| 미발견 | 스텁 엔진으로 빌드 (빌드 실패 없음) |
-
-> **`find_package(onnxruntime)` 를 쓰지 않는 이유.** 릴리즈 tarball 이 싣는 `lib/cmake/onnxruntime` 이 1.28.2 에서 `lib64/` 를 가리키는데 파일은 `lib/` 에 있어, config 가 **찾아지는 순간** configure 가 (QUIET 이어도, 잡을 수 없게) 실패한다. 그리고 실제로 찾아진다 — `setup_env.sh` 가 `/opt/onnxruntime` 을 `CMAKE_PREFIX_PATH` 에 올린다. 1.17.1 tarball 은 config 가 없어서 업그레이드 전에는 드러나지 않았다. 잃는 것은 imported target 뿐이고 경로 링크는 동일하게 동작한다.
+- 위치 지정: `-DRTC_ONNXRUNTIME_ROOT=<dir>` (`lib/` 와 `include/` 를 가진 루트). 평소에는 `setup_env.sh` 가 `CMAKE_PREFIX_PATH` 에 올린 `/opt/onnxruntime` 이 고른다.
+- 다른 ORT prefix 가 앞에 실린 overlay·CI 이미지에서는 그쪽이 이긴다 — `RTC_ONNXRUNTIME_ROOT` 로 의도한 트리를 지정한다.
 
 ### 런타임 업그레이드
 
-버전은 `install.sh` 의 `ONNXRT_VERSION` 이 SSoT 다. 이미 설치된 머신에서도 `install_onnxruntime` 이 `/opt/onnxruntime/VERSION_NUMBER` 를 pin 과 비교해 다르면 새 tarball 을 받아 symlink 를 옮기고 `ldconfig` 를 다시 돈다. 그 뒤 **ORT 를 링크하는 패키지(`colcon list --packages-above rtc_inference`)를 재구성**해야 한다 — soname 이 버전마다 달라서 (`libonnxruntime.so.1.17.1` → `libonnxruntime.so.1`), 재링크되지 않은 옛 바이너리는 실행 시 `libonnxruntime.so.1.17.1: cannot open shared object file` 로 죽는다 (조용히 옛 런타임을 쓰지는 않는다). colcon 에 `--packages-above rtc_inference --cmake-force-configure` 를 준다 — plain colcon 명령의 전체 형태(venv·`--cmake-args` 주의)는 [repo_scripts/README.md](../repo_scripts/README.md) "Plain `colcon build` 호환성" 이 SSoT 다.
+버전의 SSoT 는 `install.sh` 의 `ONNXRT_VERSION` 이다. 설치된 머신에서도 `install_onnxruntime` 이 `/opt/onnxruntime/VERSION_NUMBER` 를 pin 과 비교해 다르면 새 tarball 로 교체한다. 그 뒤 **ORT 를 링크하는 패키지를 재구성**해야 한다 (`colcon list --packages-above rtc_inference`).
 
-### 빌드 명령
+- soname 이 버전마다 달라, 재링크되지 않은 바이너리는 `libonnxruntime.so.<옛버전>: cannot open shared object file` 로 죽는다.
+- colcon 에 `--packages-above rtc_inference --cmake-force-configure` 를 준다 — plain colcon 의 전체 형태는 [repo_scripts/README.md](../repo_scripts/README.md) "Plain `colcon build` 호환성" 이 SSoT 다.
 
-```bash
-./build.sh --tests -p rtc_inference
-```
+## 문제 해결
 
-설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조.
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| 추론이 항상 `false`, 버퍼가 `nullptr` | ORT 없이 스텁으로 빌드됨 | configure 로그의 `ONNX Runtime not found` 확인 → ORT 설치 또는 `-DRTC_ONNXRUNTIME_ROOT` |
+| `Init()` 이 표와 함께 `runtime_error` | `.onnx` 의 텐서가 `config` 선언과 다름 | `rtc_inference_check` 로 덤프·대조해 YAML 수정 |
+| IR 10 모델이 안 열림 / WARNING | 런타임이 1.18 미만 | `install.sh` pin 으로 업그레이드 후 재구성 |
+| 실행 시 `libonnxruntime.so.… cannot open` | 런타임 업그레이드 뒤 재링크 안 됨 | 위 [런타임 업그레이드](#런타임-업그레이드) |
 
----
+## 더 읽기
+
+- 테스트: `colcon test --packages-select rtc_inference` — `test/` 의 파일 헤더·CMakeLists 주석이 설계를 설명한다. 이름 바인딩 픽스처 재생성: [test/data/generate_fixtures.py](test/data/generate_fixtures.py)
+- RT-1 조건부 수용: [invariants.md](../agent_docs/invariants.md)
 
 ## 의존성
 
-| 의존성 | 종류 | 용도 |
-|--------|------|------|
-| `ament_cmake` | 빌드 도구 | ROS 2 빌드 시스템 |
-| `rtc_base` | 런타임 의존 | 공유 데이터 타입 |
-| `libonnxruntime-dev` | 빌드 의존 (선택) | ONNX Runtime 백엔드 |
-| (lint depend 없음) | — | `ament_lint_common`/`ament_uncrustify` 미사용 정책 — 상세: [agent_docs/conventions.md](../agent_docs/conventions.md) |
-
-C++ 20 표준이 요구됩니다 (`CMAKE_CXX_STANDARD 20`).
-
----
-
-## 테스트
-
-```bash
-colcon test --packages-select rtc_inference --event-handlers console_direct+
-colcon test-result --verbose
-```
-
-`test/test_inference_engine.cpp` (`test_inference_engine`, `BUILD_TESTING`)가 `InferenceEngine`의 기본 델리게이트 동작(`RunModel`/`RunModels`)과 미초기화·범위 밖 접근자의 안전한 fallback을 검증하며, `HAS_ONNXRUNTIME` 빌드에서는 실제 `OnnxEngine` 경로도 함께 검증됩니다.
-
----
-
-## 라이선스
-
-MIT License -- [LICENSE](../LICENSE) 참조.
+[package.xml](package.xml) · `rtc_base` · `libonnxruntime-dev` (선택) · C++20 · MIT ([LICENSE](../LICENSE))
