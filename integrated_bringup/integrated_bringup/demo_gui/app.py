@@ -32,6 +32,10 @@ their own modules.
 - Live TCP pose      → tf2 lookup tcp_parent→tcp_child; the active
                        controller's <config_key>/transforms is fed into the
                        tf buffer by _transforms_cb (no /tf publisher exists)
+- Task goal frame    → the Task Target panel's Frame selector: tcp_parent or
+                       scene_world (header.frame_id, #779); the world is read
+                       from the CM's urdf.extra_frames.scene_world.* params
+                       (demo_gui.goal_frame) and the pose shown and seeded in it
 - Multi-frame CLIK   → on a profile that ships demo_dualarm_controller: gain
                        rows built from its YAML, one <task>/task_goal publisher
                        per task, and a status readout from the tail of its
@@ -170,6 +174,16 @@ from .dualarm import (
     resolve_session_dir,
     status_keys,
     task_status_key,
+)
+from .goal_frame import (
+    CM_NODE,
+    SCENE_WORLD_PARAMS,
+    WORLD_LABEL,
+    SceneWorld,
+    frame_id_for,
+    frame_labels,
+    parse_scene_world,
+    root_pose_to_world,
 )
 from .hand_step import (
     CATCHING_CONFIG_KEY,
@@ -430,6 +444,17 @@ class DemoControllerGUI(Node):
         # (config_key, values) last written into the panel's input widgets; see
         # vtcp.seed_due.
         self._vtcp_seeded: tuple[str, VtcpConfigView | None] | None = None
+        # #779: the frame the Task Target panel states its goal in. The world is
+        # not in TF, so the CM's scene_world parameters are read (goal_frame)
+        # and carry the live base-frame pose into it. None until read, and
+        # whenever the bring-up has no usable world; re-read after a switch
+        # (a restarted CM may run another scene).
+        self._scene_world: SceneWorld | None = None
+        self._scene_world_why = "the CM's scene_world has not been read yet"
+        self._scene_world_known = False
+        self._scene_world_in_flight = False
+        self._scene_world_last_query_s = 0.0
+        self._cm_param_client: AsyncParameterClient | None = None
 
         # Sensor calibration (Control tab). The driver namespaces these under the
         # hand device group (/<hand_group>/calibration/*), so derive the prefix
@@ -611,6 +636,7 @@ class DemoControllerGUI(Node):
         if not name or name == self._active_ctrl:
             return
         self._active_ctrl = name
+        self._scene_world_known = False  # re-read: the CM may have restarted
         # The multi-frame controller's measured poses belong to the activation
         # that broadcast them. Dropped here rather than left to age out: a
         # switch away and back inside that age would offer the pose from before
@@ -1483,6 +1509,7 @@ class DemoControllerGUI(Node):
         self._query_catching_budget("segment")
         self._query_catching_budget("search")
         self._refresh_dualarm_panel()
+        self._query_scene_world()
         self.root.after(200, self._schedule_refresh)
 
     def _set_pull_field(self, key: str, text: str, fg: str = VALUE_FG) -> None:
@@ -1541,11 +1568,12 @@ class DemoControllerGUI(Node):
         # are indistinguishable from live data and may belong to the previous
         # controller or to the wrong control point entirely.
         task_live = self._task_pose_valid
+        shown = self._task_pose_in_goal_frame() if task_live else []
         for i in range(6):
             if not task_live:
                 text = "—"
             else:
-                val = self.current_task_positions[i]
+                val = shown[i]
                 text = f"{val:.4f} m" if i < 3 else f"{val:.4f} rad  ({math.degrees(val):.2f}°)"
             if self._prev_task[i] != text:
                 self._prev_task[i] = text
@@ -1559,7 +1587,7 @@ class DemoControllerGUI(Node):
         idx = self.selected_ctrl.get()
         if idx and task_live and not self._task_frame.seeded():
             if self._task_space_ready(idx):
-                self._set_task_target_entries(self.current_task_positions)
+                self._set_task_target_entries(self._task_pose_in_goal_frame())
                 self._update_target_inputs_state(idx)
             self._task_frame.mark_seeded()
 
@@ -2141,6 +2169,38 @@ class DemoControllerGUI(Node):
             self._task_step_entries.append(step_ent)
             self._task_step_btns.append([btn_m, btn_p])
 
+        # #779: the frame the goal is stated in. Only the arm root until the
+        # CM's scene_world has been read and is usable (_apply_scene_world).
+        frame_row = tk.Frame(right_target_frame, bg="#1e1e2e")
+        frame_row.grid(row=8, column=0, columnspan=3, sticky="w", padx=2, pady=(3, 0))
+        tk.Label(frame_row, text="Frame", bg="#1e1e2e", fg="#89b4fa", font=hdr_font).pack(
+            side="left", padx=(0, 4)
+        )
+        labels = frame_labels(self._profile.tcp_parent, None)
+        self._goal_frame_var = tk.StringVar(value=labels[0])
+        self._goal_frame_combo = ttk.Combobox(
+            frame_row,
+            textvariable=self._goal_frame_var,
+            values=labels,
+            state="readonly",
+            width=18,
+        )
+        self._goal_frame_combo.pack(side="left")
+        self._goal_frame_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._on_goal_frame_changed()
+        )
+        self._goal_frame_note = tk.Label(
+            right_target_frame,
+            text=self._scene_world_why,
+            bg="#1e1e2e",
+            fg="#a6adc8",
+            font=("Segoe UI", 8),
+            wraplength=300,
+            justify="left",
+            anchor="w",
+        )
+        self._goal_frame_note.grid(row=9, column=0, columnspan=3, sticky="w", padx=2)
+
         # Hand Motor Target
         ttk.Separator(pos_frame, orient="horizontal").pack(fill="x", pady=4)
 
@@ -2271,6 +2331,7 @@ class DemoControllerGUI(Node):
 
         # Col 1: End-Effector Pose (always task-space)
         ee_frame = ttk.LabelFrame(status_frame, text="End-Effector Pose", padding=4)
+        self._ee_pose_box = ee_frame  # titled with the goal frame (#779)
         if grouped:
             ee_frame.grid(row=feedback_row, column=0, sticky="nsew", padx=(0, 2))
         else:
@@ -5304,8 +5365,90 @@ class DemoControllerGUI(Node):
         # goal will be interpreted in. The joint and hand halves are unaffected
         # — a task frame that has not settled says nothing about them.
         if self._task_space_ready(idx) and self._task_pose_valid:
-            self._set_task_target_entries(self.current_task_positions)
+            self._set_task_target_entries(self._task_pose_in_goal_frame())
         self._set_hand_target_entries(self.current_hand_positions)
+
+    # ── Task goal frame (#779) ─────────────────────────────────────────
+
+    def _query_scene_world(self) -> None:
+        """Read the CM's ``urdf.extra_frames.scene_world`` parameters. Tk thread.
+
+        Non-blocking like the catching mode reads: a CM whose parameter
+        services are not up yet is retried at 1 Hz, and once an answer lands it
+        is kept until the active controller changes.
+        """
+        if self._scene_world_known or self._scene_world_in_flight:
+            return
+        now_s = time.monotonic()
+        if now_s - self._scene_world_last_query_s < 1.0:
+            return
+        self._scene_world_last_query_s = now_s
+        if self._cm_param_client is None:
+            self._cm_param_client = AsyncParameterClient(self, CM_NODE)
+        if not self._cm_param_client.services_are_ready():
+            return
+        self._scene_world_in_flight = True
+        future = self._cm_param_client.get_parameters(list(SCENE_WORLD_PARAMS))
+
+        def _on_done(fut):
+            # Executor thread: extract only.
+            values = None
+            try:
+                values = list(fut.result().values)
+            except Exception as exc:  # noqa: BLE001 — any failure = not read, retried
+                self.get_logger().debug(f"scene_world query failed: {exc}")
+            self.root.after(0, self._apply_scene_world, values)
+
+        future.add_done_callback(_on_done)
+
+    def _apply_scene_world(self, values) -> None:
+        """Offer ``world (scene)`` when the CM defines a usable one. Tk thread."""
+        self._scene_world_in_flight = False
+        if values is None:
+            return  # not read: the throttle retries
+        world, why = parse_scene_world(values, self._profile.tcp_parent)
+        self._scene_world_known = True
+        changed = world != self._scene_world
+        self._scene_world, self._scene_world_why = world, why
+        labels = frame_labels(self._profile.tcp_parent, world)
+        self._goal_frame_combo.configure(values=labels)
+        if self._goal_frame_var.get() not in labels:
+            self._goal_frame_var.set(labels[0])
+            changed = True
+        if world is not None:
+            note = (
+                f"world (scene) = scene_world on '{world.parent}': "
+                f"xyz {[round(v, 4) for v in world.xyz]}, rpy {[round(v, 4) for v in world.rpy]}"
+            )
+        else:
+            note = f"world (scene) unavailable — {why}"
+        self._goal_frame_note.config(text=note)
+        if changed:
+            self.get_logger().info(f"task goal frames: {', '.join(labels)} ({note})")
+            self._on_goal_frame_changed()
+
+    def _goal_frame_label(self) -> str:
+        label = self._goal_frame_var.get()
+        return label if self._scene_world is not None or label != WORLD_LABEL else ""
+
+    def _task_goal_frame_id(self) -> str:
+        """``header.frame_id`` for the panel's goal: the arm root or scene_world."""
+        return frame_id_for(self._goal_frame_label(), self._profile.tcp_parent)
+
+    def _task_pose_in_goal_frame(self) -> list[float]:
+        """The live TCP pose (read in tcp_parent) in the selected goal frame."""
+        pose = list(self.current_task_positions)
+        if self._scene_world is not None and self._goal_frame_label() == WORLD_LABEL:
+            return root_pose_to_world(pose, self._scene_world)
+        return pose
+
+    def _on_goal_frame_changed(self) -> None:
+        """Re-seed the panel in the new frame — the old numbers belong to the
+        other one, and sending them would move the arm by the placement."""
+        self._ee_pose_box.configure(text=f"End-Effector Pose — {self._task_goal_frame_id()}")
+        idx = self.selected_ctrl.get()
+        if idx and self._task_space_ready(idx) and self._task_pose_valid:
+            self._set_task_target_entries(self._task_pose_in_goal_frame())
 
     def _set_joint_target_entries(self, values: list[float]):
         for i, ent in enumerate(self._joint_target_entries):
@@ -5396,9 +5539,9 @@ class DemoControllerGUI(Node):
                 )
             if task_on:
                 task_msg = RobotTarget()
-                # The panel is seeded from TF in tcp_parent (the arm's root_link),
-                # so its numbers are in that frame (#779 target-frame contract).
-                task_msg.header.frame_id = self._profile.tcp_parent
+                # The panel's numbers are in the selected frame: tcp_parent (the
+                # arm's root_link, read from TF) or scene_world (#779).
+                task_msg.header.frame_id = self._task_goal_frame_id()
                 task_msg.goal_type = "task"
                 task_msg.joint_names = list(self._shape.arm_joint_names)
                 task_values = []
