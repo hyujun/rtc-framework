@@ -308,6 +308,12 @@ struct MpcSegmentCoreParams {
   /// problem, same answer to rounding — the oracle for the structured path
   /// and the "before" of its timing.
   bool reference_assembly{false};
+  /// #857 stage 1, temporary: one torque slack per node, s_k shared by the
+  /// node's joints (|τ^lin_kj/τ_max,j| ≤ η_τ + s_k), instead of one per joint
+  /// and node. Lets one binary time both layouts; false = the shipped
+  /// per-joint layout, bit for bit. Result::slack then holds s_k in every row
+  /// of column k−1. Not a YAML key.
+  bool torque_slack_per_node{false};
 };
 
 /// Joint limits in pinocchio velocity order (n each).
@@ -472,6 +478,9 @@ class MpcSegmentCore {
 
   [[nodiscard]] const tsid::QPData& PresolveQp() const noexcept { return qp_pre_; }
 
+  /// The QP solution z of the last valid Solve() (tests; meaningless before one).
+  [[nodiscard]] const Eigen::VectorXd& LastSolution() const noexcept { return z_; }
+
   /// Per-node scaled stage gains ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈) of
   /// block class `block_class` (Layout()).
   [[nodiscard]] double StageGain(int m, int k, int b, int block_class = 0) const noexcept;
@@ -515,16 +524,25 @@ class MpcSegmentCore {
     return layout_.Col(static_cast<int>(j), static_cast<int>(b));
   }
 
+  /// Column of the torque slack of node k0 + 1 (k0 = 0..N−1) and joint j.
+  [[nodiscard]] Eigen::Index SlackIdx(Eigen::Index k0, Eigen::Index j) const noexcept {
+    return nu_ + k0 * slack_node_stride_ + j * slack_joint_stride_;
+  }
+
   bool initialized_{false};
   MpcSegmentCoreParams params_;
   int n_{0};
-  int n_nodes_{0};   // N = n_pre + stop nodes
-  int n_pre_{0};     // k_c
-  int n_blocks_{0};  // B of block class 0
-  int nu_{0};        // Σ_c n_c·B_c (n·B with one class)
-  int nz_{0};        // nu_ + n·N (+ 1 with the velocity slack)
-  int n_eq_{0};      // 2n
-  int n_in_{0};      // 5·n·N (+ 7 with the velocity slack)
+  int n_nodes_{0};            // N = n_pre + stop nodes
+  int n_pre_{0};              // k_c
+  int n_blocks_{0};           // B of block class 0
+  int nu_{0};                 // Σ_c n_c·B_c (n·B with one class)
+  int n_s_{0};                // torque slack variables: n·N per joint, N per node (#857)
+  int nz_{0};                 // nu_ + n_s_ (+ 1 with the velocity slack)
+  int n_eq_{0};               // 2n
+  int n_in_{0};               // 4·n·N + n_s_ (+ 7 with the velocity slack)
+  int sv_row_{0};             // first velocity-slack row, 4·n·N + n_s_
+  int slack_node_stride_{0};  // SlackIdx strides: (n, 1) per joint, (1, 0) per node
+  int slack_joint_stride_{0};
   int terminal_rank_{0};
 
   pinocchio::Model model_;

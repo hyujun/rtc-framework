@@ -93,6 +93,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <span>
 #include <sstream>
@@ -282,6 +283,9 @@ struct Scene {
   // ... and the left arm's own move blocking: two pre-catch intervals per
   // block (the mpc planner's stop part in [2, 2, 3] too).
   bool wb_coarse_left{false};
+  // #857 stage 1 (temporary): the tree's mpc planner with one torque slack per
+  // node instead of one per joint and node.
+  bool slack_per_node{false};
 
   [[nodiscard]] rtc::catching::JointGroups DeclaredGroups() const {
     rtc::catching::JointGroups g;
@@ -513,6 +517,7 @@ std::unique_ptr<MpcSegmentPlanner> MakeMpcOn(const Scene& s, const fx::ShippedAr
   }
   MpcSegmentPlannerParams params = s.CycleParams(budget).mpc_segment;
   params.jerk_weight.resize(static_cast<std::size_t>(model.nv));
+  params.torque_slack_per_node = s.slack_per_node;
   if (&arm == &s.segment) {
     model.groups = s.DeclaredGroups();
     params.n_groups = model.groups.n_groups;
@@ -1784,6 +1789,197 @@ TEST(G1WholeBodyTimes, RecordsTheBaselineWithAndWithoutTheTerms) {
                 static_cast<double>(same_wake[same_wake.size() / 2]) * 1e-6,
                 static_cast<double>(same_wake.back()) * 1e-6);
   }
+}
+
+// ── #857 stage 1 (temporary — removed with the flag): the torque slack layouts ──
+// Run only with RTC_WHOLEBODY_TIMING set, alone (ctest -j1). The tree's mpc
+// planner, the whole-body terms off and terms + the left arm's blocks (E3-F02),
+// with one torque slack per joint and node or one per node: the four planners
+// solve the SAME first solve — one throw, one search, one pinned clock per
+// repeat — in turns (ABCD, DCBA, …), on three throws, 1 + 20 times each (the
+// first is warm-up). Times are the core's own (pre-solve + linearisation +
+// condensing + QP — the pinned clock does not move); µs per QP iteration
+// counts the pre-solve too (rec.iterations sums both). Rows at a bound are
+// counted at the solution to 10·eps_abs, the s ≥ 0 rows apart.
+TEST(G1SlackLayoutTimes, RecordsBothLayoutsOnTheSamePlans) {
+  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
+  if (std::getenv("RTC_WHOLEBODY_TIMING") == nullptr) {
+    GTEST_SKIP() << "a record: set RTC_WHOLEBODY_TIMING and run alone (ctest -j1)";
+  }
+  constexpr int kRepeats = 20;
+  constexpr int kSamples = 3 * kRepeats;
+  constexpr double kNanD = std::numeric_limits<double>::quiet_NaN();
+
+  struct Variant {
+    const char* name;
+    bool terms;
+    bool per_node;
+    std::unique_ptr<Scene> scene;
+    std::unique_ptr<MpcSegmentPlanner> mpc;
+    std::vector<double> total_us, us_per_it;  // per sample, NaN = no solve
+    std::vector<int> iterations, n_pre, active, active_slack;
+    std::vector<int> n_pre_at;  // per sample, -1 = no solve
+    int nz{0}, n_eq{0}, n_in{0}, retried{0}, slack_active{0};
+  };
+
+  std::array<Variant, 4> v{Variant{"off_joint", false, false, {}, {}},
+                           Variant{"off_node", false, true, {}, {}},
+                           Variant{"terms_blocks_joint", true, false, {}, {}},
+                           Variant{"terms_blocks_node", true, true, {}, {}}};
+  std::string err;
+  for (Variant& x : v) {
+    x.total_us.assign(kSamples, kNanD);
+    x.us_per_it.assign(kSamples, kNanD);
+    x.n_pre_at.assign(kSamples, -1);
+    x.scene = std::make_unique<Scene>();
+    ASSERT_NO_FATAL_FAILURE(x.scene->Build(fx::kG1Home));
+    x.scene->groups_declared = true;
+    x.scene->wb_coarse_left = x.terms;
+    x.scene->slack_per_node = x.per_node;
+    if (x.terms) {
+      x.scene->wb_rest_left = 1.0;
+      x.scene->wb_ang_pre = 0.001;
+      x.scene->wb_ang_post = 0.1;
+    }
+    x.mpc = MakeMpc(*x.scene, Budget::kGenerous, &err);
+    ASSERT_NE(x.mpc, nullptr) << x.name << ": " << err;
+  }
+  Scene& s0 = *v[0].scene;
+  const double tol = 10.0 * s0.CycleParams(Budget::kGenerous).mpc_segment.solver_eps_abs;
+  const std::unique_ptr<NlpCatchSearch> search = MakeNlp(s0, Budget::kGenerous, &err);
+  ASSERT_NE(search, nullptr) << err;
+  auto out = std::make_unique<SegmentSnapshot>();
+  auto stats = std::make_unique<SearchStats>();
+  std::uint32_t plan_id = 0;
+  int throw_index = 0;
+  for (const double star_after : {0.55, 0.65, 0.75}) {
+    for (int rep = 0; rep <= kRepeats; ++rep) {
+      const bool warm_up = rep == 0;
+      const int sample = throw_index * kRepeats + rep - 1;
+      const std::int64_t now = rtc::SteadyNowNs();
+      PinnedClock pinned(now);
+      const std::int64_t star = s0.SearchStartNs(now, Budget::kGenerous) +
+                                static_cast<std::int64_t>(std::llround(star_after * 1e9));
+      const std::unique_ptr<Throw> ball = s0.AimedThrow(now, star, 100 * kMs);
+      PlannerRtState rt = s0.RestingRt(now, 500);
+      rt.rt_state_ns = now - kMs;
+      search->ResetTrial();
+      PlanSnapshot plan =
+          search->Plan(ball->traj, ball->cov, true, rt, NoSegments(), NowReal{now}, 0, *stats);
+      ASSERT_TRUE(plan.valid) << NlpRejectName(stats->nlp.reason);
+      const CatchSolution* solution = search->Solution();
+      plan.plan_id = ++plan_id;
+      for (int turn = 0; turn < 4; ++turn) {
+        Variant& x = v[static_cast<std::size_t>(rep % 2 == 0 ? turn : 3 - turn)];
+        SegmentRecord rec{};
+        x.mpc->ResetTrial();
+        const bool ok = x.mpc->PlanFirst(rt, plan, BallOf(*ball), solution, *out, rec);
+        EXPECT_TRUE(ok) << x.name << " " << Describe(rec);
+        if (warm_up || !ok) {
+          continue;
+        }
+        const auto u = static_cast<std::size_t>(sample);
+        const double qp_us = rec.mpc_presolve_us + rec.mpc_qp_us;
+        x.total_us[u] = qp_us + rec.mpc_linearize_us + rec.mpc_condense_us;
+        if (!rec.solver_retried && rec.iterations > 0) {
+          x.us_per_it[u] = qp_us / rec.iterations;
+        }
+        x.iterations.push_back(rec.iterations);
+        x.n_pre.push_back(-rec.k);
+        x.n_pre_at[u] = out->n_pre;
+        x.retried += rec.solver_retried ? 1 : 0;
+        x.slack_active += rec.slack_max > 1e-6 ? 1 : 0;
+        const auto& core = x.mpc->ApproachCore(out->n_pre);
+        const rtc::tsid::QPData& qp = core.MainQp();
+        x.nz = static_cast<int>(qp.H.rows());
+        x.n_eq = static_cast<int>(qp.A.rows());
+        x.n_in = static_cast<int>(qp.C.rows());
+        const Eigen::Index nN = static_cast<Eigen::Index>(core.Nv()) * core.NumNodes();
+        const Eigen::Index n_s = x.per_node ? core.NumNodes() : nN;
+        const Eigen::VectorXd cz = qp.C * core.LastSolution();
+        int rows = 0;
+        int slack_rows = 0;
+        for (Eigen::Index r = 0; r < cz.size(); ++r) {
+          const bool at = (std::isfinite(qp.l[r]) && std::abs(cz[r] - qp.l[r]) <= tol) ||
+                          (std::isfinite(qp.u[r]) && std::abs(cz[r] - qp.u[r]) <= tol);
+          if (at) {
+            (r >= 4 * nN && r < 4 * nN + n_s ? slack_rows : rows) += 1;
+          }
+        }
+        x.active.push_back(rows);
+        x.active_slack.push_back(slack_rows);
+      }
+    }
+    ++throw_index;
+  }
+  const auto median = [](std::vector<double> d) {
+    std::vector<double> f;
+    for (const double e : d) {
+      if (std::isfinite(e)) {
+        f.push_back(e);
+      }
+    }
+    if (f.empty()) {
+      return kNanD;
+    }
+    std::sort(f.begin(), f.end());
+    return f[f.size() / 2];
+  };
+  const auto max_of = [](const std::vector<double>& d) {
+    double m = kNanD;
+    for (const double e : d) {
+      m = std::isfinite(e) && !(e <= m) ? e : m;
+    }
+    return m;
+  };
+  for (const Variant& x : v) {
+    std::printf(
+        "[layout] mpc_first_%-20s n=%zu total median %.1f max %.1f ms | it_med %d | us/it_med "
+        "%.1f | nz %d n_eq %d n_in %d | active med %d (+ s>=0 %d) | retried %d | slack active "
+        "%d | n_pre_med %d\n",
+        x.name, x.iterations.size(), 1e-3 * median(x.total_us), 1e-3 * max_of(x.total_us),
+        MedianOf(x.iterations), median(x.us_per_it), x.nz, x.n_eq, x.n_in, MedianOf(x.active),
+        MedianOf(x.active_slack), x.retried, x.slack_active, MedianOf(x.n_pre));
+    const std::string k = std::string("mpc_first_") + x.name;
+    ::testing::Test::RecordProperty(k + "_total_us_median",
+                                    static_cast<int>(std::lround(median(x.total_us))));
+    ::testing::Test::RecordProperty(k + "_us_per_iteration_median",
+                                    static_cast<int>(std::lround(median(x.us_per_it))));
+    ::testing::Test::RecordProperty(k + "_median_iterations", MedianOf(x.iterations));
+    ::testing::Test::RecordProperty(k + "_nz", x.nz);
+    ::testing::Test::RecordProperty(k + "_n_in", x.n_in);
+  }
+  // Per sample, node over joint (the same plan, so the same grid point).
+  for (std::size_t a = 0; a < 4; a += 2) {
+    const Variant& j = v[a];
+    const Variant& n = v[a + 1];
+    std::vector<double> per_it, total;
+    int n_pre_differs = 0;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(kSamples); ++i) {
+      n_pre_differs += j.n_pre_at[i] != n.n_pre_at[i] ? 1 : 0;
+      if (std::isfinite(j.us_per_it[i]) && std::isfinite(n.us_per_it[i])) {
+        per_it.push_back(n.us_per_it[i] / j.us_per_it[i]);
+      }
+      if (std::isfinite(j.total_us[i]) && std::isfinite(n.total_us[i])) {
+        total.push_back(n.total_us[i] / j.total_us[i]);
+      }
+    }
+    EXPECT_EQ(n_pre_differs, 0) << "the layouts did not solve the same grid point";
+    const double it_ratio =
+        static_cast<double>(MedianOf(n.iterations)) / std::max(1, MedianOf(j.iterations));
+    const std::string k = std::string(a == 0 ? "off" : "terms_blocks");
+    std::printf(
+        "[layout] %-14s node/joint: us/it ratio median %.3f (n=%zu) | total ratio median %.3f | "
+        "iterations median ratio %.3f\n",
+        k.c_str(), median(per_it), per_it.size(), median(total), it_ratio);
+    ::testing::Test::RecordProperty(k + "_us_per_iteration_ratio_median_permille",
+                                    static_cast<int>(std::lround(1e3 * median(per_it))));
+    ::testing::Test::RecordProperty(k + "_total_ratio_median_permille",
+                                    static_cast<int>(std::lround(1e3 * median(total))));
+  }
+#ifdef RTC_TEST_BUILD_TYPE
+  ::testing::Test::RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+#endif
 }
 
 }  // namespace

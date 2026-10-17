@@ -96,7 +96,8 @@ inline constexpr int kMaxMpcSegmentReplans = 8;
 /// own map, so the two can be tuned apart (#711).
 /// What stays in code is not a design value: the solver's preconditioner and
 /// KKT backend (the RT no-allocation and infeasibility verdict rely on them),
-/// the test-only `reference_assembly`, and the capacities.
+/// the test-only `reference_assembly` and `torque_slack_per_node` (#857,
+/// temporary), and the capacities.
 /// One joint group's keys under `planner.segment.mpc.groups.<name>` (E3-F02,
 /// #641): `<name>` is a `planner.groups` name, and the entry sits at that
 /// group's index. A group without an entry takes these defaults — which are
@@ -223,6 +224,9 @@ struct MpcSegmentPlannerParams {
   /// `cost.rho_tau` — torque slack penalty; 0 = the torque rows are off, which
   /// makes the publish judgement's slack condition vacuous.
   double rho_tau{10.0};
+  /// #857 stage 1, temporary and not a YAML key: forwarded to the core's
+  /// MpcSegmentCoreParams::torque_slack_per_node (tests time both layouts).
+  bool torque_slack_per_node{false};
   /// `cost.w_perp` [1/m²], in [0, kMpcSegmentStopPathWeightMax] — the stop-path
   /// term: on the nodes from the catch on, the catch frame's distance from a
   /// line is penalised; 0 (the default) = off, and no line is then built or

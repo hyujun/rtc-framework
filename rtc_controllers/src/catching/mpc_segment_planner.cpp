@@ -37,7 +37,8 @@ constexpr double kMaxCloseTimingS = 5.0;
 // on their nodes from the catch on), the axis and trust-region limits, the
 // rest tolerance and the solver's tolerances. `jerk_weight` is already in
 // model order (empty = the core's all-ones); the preconditioner and the KKT
-// backend are not design values and keep the core's own setting.
+// backend are not design values and keep the core's own setting; the #857
+// layout switch is a temporary test field, not a YAML key.
 void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
                      const Eigen::VectorXd& jerk_weight_model, const Eigen::VectorXd& w_vel,
                      const Eigen::VectorXd& w_rest, const Eigen::VectorXd& q_rest) {
@@ -51,6 +52,7 @@ void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
   mp.u_scale = p.u_scale;
   mp.w_delta = p.w_delta;
   mp.rho_tau = p.rho_tau;
+  mp.torque_slack_per_node = p.torque_slack_per_node;
   mp.w_perp = p.w_perp;
   mp.w_path = p.w_path;
   mp.axis_theta_max = p.axis_theta_max;
