@@ -1,6 +1,9 @@
 #include "rtc_controllers/catching/joint_groups.hpp"
 
 #include <algorithm>
+#include <array>
+#include <iterator>
+#include <string>
 
 namespace rtc::catching {
 

@@ -1,14 +1,17 @@
 // E3-F02 (#641): `planner.groups` — the parser (names and joint names as
 // written), the resolution against the arm device's joints, and the model-order
 // map a segment planner reads.
+#include "rtc_controllers/catching/docking_params.hpp"
 #include "rtc_controllers/catching/joint_groups.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 
+#include <Eigen/Core>
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -68,6 +71,8 @@ TEST(JointGroupsParse, RejectsAMalformedDeclarationByName) {
                 "'planner.groups[0].name' must be a"},
            Case{"planner: {groups: [{name: a.b, joints: [j0]}]}",
                 "'planner.groups[0].name' must be a"},
+           Case{"planner: {groups: [{name: names, joints: [j0]}]}",
+                "'planner.groups[0].name' 'names' is reserved"},
            Case{"planner: {groups: [{name: a, joints: [j0]}, {name: a, joints: [j1]}]}",
                 "'planner.groups[1].name' 'a' names a group already declared"},
            Case{"planner: {groups: [{name: a}]}", "'planner.groups[0].joints' must be a non-empty"},
@@ -174,6 +179,18 @@ TEST(JointGroupsMpcKeys, RejectsAGroupKeyByName) {
                        ", wait_pose: [0, 0, 0, 0, 0, 0, 0], segment: {mpc: {groups: {a: {w_rest: "
                        "1, w_vel: 0.5}}}}}"),
             "");
+  // One group is the whole arm, which the cores block as without groups: its
+  // own blocks would be ignored, so they are refused — its weights are not.
+  const std::string one =
+      "planner: {groups: [{name: all, joints: [j0, j1, j2]}], segment: {mpc: "
+      "{groups: {all: ";
+  for (const char* entry : {"{blocks: {pre: 2}}", "{blocks: {stop: [2, 2, 3]}}"}) {
+    SCOPED_TRACE(entry);
+    EXPECT_NE(ParseError(one + entry + "}}}}")
+                  .find("'planner.segment.mpc.groups.all.blocks': with one group"),
+              std::string::npos);
+  }
+  EXPECT_EQ(ParseError(one + "{w_vel: 0.5, blocks: {}}}}}}"), "");
   // Groups' keys need groups.
   EXPECT_NE(ParseError("planner: {segment: {mpc: {groups: {a: {}}}}}")
                 .find("'planner.segment.mpc.groups.a' names no group of 'planner.groups'"),
@@ -341,6 +358,77 @@ TEST(JointGroupsLeftFree, NamesTheFirstGroupWithAJointOutsideThePlanAndNoRestWei
   const std::array<double, 1> none = {5.0};
   EXPECT_EQ(FirstGroupLeftFree(JointGroups{}, 7, plan, none), 0);
   EXPECT_EQ(FirstGroupLeftFree(JointGroups{}, 7, 0b1111111, none), -1);
+}
+
+// The refusals a configure (and the offline batch) makes of D9′: the plan
+// holds trunk and one arm (group a, b), the other arm (c) is left out.
+struct LeftFreeRig {
+  std::vector<JointGroupSpec> specs = {
+      {"a", {"j0", "j1", "j2"}}, {"b", {"j3", "j4"}}, {"c", {"j5", "j6"}}};
+  JointGroups groups;
+  rtc::catching::JointSet plan = 0b0011111;
+};
+
+LeftFreeRig MakeLeftFreeRig() {
+  LeftFreeRig r;
+  std::string why;
+  EXPECT_TRUE(ResolveJointGroups(r.specs, kDevice, r.groups, &why)) << why;
+  return r;
+}
+
+TEST(JointGroupsLeftFree, TheMpcRefusalNamesTheLeftOutGroupWhileTheAngularTermIsOn) {
+  const LeftFreeRig r = MakeLeftFreeRig();
+  rtc::catching::PlannerParams p;
+  p.groups = r.specs;
+  using rtc::catching::MpcSegmentLeftFreeRefusal;
+  EXPECT_EQ(MpcSegmentLeftFreeRefusal(p, r.groups, 7, r.plan), "") << "the term is off";
+  p.mpc_segment.ang_w_post = 1.0;
+  const std::string why = MpcSegmentLeftFreeRefusal(p, r.groups, 7, r.plan);
+  EXPECT_NE(why.find("group 'c' with no rest weight"), std::string::npos) << why;
+  p.mpc_segment.groups[2].w_rest = 1.0;
+  EXPECT_EQ(MpcSegmentLeftFreeRefusal(p, r.groups, 7, r.plan), "");
+  EXPECT_NE(
+      MpcSegmentLeftFreeRefusal(p, JointGroups{}, 7, r.plan).find("the arm (no planner.groups)"),
+      std::string::npos)
+      << "no groups: no rest weight exists";
+  EXPECT_EQ(MpcSegmentLeftFreeRefusal(p, JointGroups{}, 7, 0b1111111), "") << "nothing left out";
+}
+
+TEST(JointGroupsLeftFree, TheDockingRefusalReadsEachRangesTermsAndAnyJointsTorqueCost) {
+  const LeftFreeRig r = MakeLeftFreeRig();
+  using rtc::catching::MpcDockingLeftFreeRefusal;
+  rtc::catching::MpcDockingSegmentPlannerParams d;
+  d.n_groups = 3;
+  const auto refusal = [&] { return MpcDockingLeftFreeRefusal(d, r.specs, r.groups, 7, r.plan); };
+  EXPECT_EQ(refusal(), "") << "no term reads the left-out arm";
+  // A torque cost on the trunk alone reads the other arm's motion too (M, g):
+  // the left-out group needs its pre-catch rest.
+  d.groups[0].r_tau = 0.1;
+  std::string why = refusal();
+  EXPECT_NE(why.find("pre-catch stages"), std::string::npos) << why;
+  EXPECT_NE(why.find("group 'c'"), std::string::npos) << why;
+  d.groups[2].w_q_nom = 1.0;
+  EXPECT_EQ(refusal(), "");
+  // The core's uniform torque cost, the trunk's own switched off: the arm's
+  // falls back on it.
+  d.groups[0].r_tau = 0.0;
+  d.groups[2].w_q_nom = std::numeric_limits<double>::quiet_NaN();
+  d.core.r_tau = Eigen::VectorXd::Constant(7, 0.1);
+  EXPECT_NE(refusal().find("pre-catch rest (w_q_nom)"), std::string::npos);
+  d.core.w_q_nom = Eigen::VectorXd::Constant(7, 0.5);
+  EXPECT_EQ(refusal(), "");
+  // The angular term from the catch node on: the stop rest.
+  d.core.w_ang_post = 1.0;
+  why = refusal();
+  EXPECT_NE(why.find("the angular-momentum term on the stop nodes"), std::string::npos) << why;
+  EXPECT_NE(why.find("stop rest (w_rest_stop)"), std::string::npos) << why;
+  d.groups[2].w_rest_stop = 2.0;
+  EXPECT_EQ(refusal(), "");
+  // Before the catch: the posture weight.
+  d.core.w_q_nom.resize(0);
+  d.core.r_tau.resize(0);
+  d.core.w_ang_pre = 0.01;
+  EXPECT_NE(refusal().find("pre-catch rest (w_q_nom)"), std::string::npos);
 }
 
 }  // namespace

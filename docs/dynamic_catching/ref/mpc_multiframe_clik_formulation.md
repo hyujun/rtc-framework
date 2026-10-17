@@ -1547,7 +1547,7 @@ $$\Delta_a\sum_{k<k_c}\Big[\Vert\dot q_k\Vert^2_{W_v}+\frac{W^-}{s^2}\Vert A_k\d
 
 ### 14.5 계획기와 configure 의 규칙
 
-- **D9′**: 사슬 밖 관절을 읽는 항 — 각운동량, 그 관절에 걸린 `r_tau` — 이 켜지면, 그 항이 걸리는 노드 범위마다 탐색의 plan 이 빼는 관절의 군에 rest 가중이 있어야 한다 (`mpc`: `w_rest`; docking: 포구 전 `w_q_nom`, 정지 구간 `w_rest_stop`). 없으면 configure 가 그 군의 이름으로 거부한다 — 되돌리는 항이 없으면 재계획마다 그 관절이 흘러간다 (연속 wake 의 음성 대조가 그것을 보인다).
+- **D9′**: 사슬 밖 관절을 읽는 항 — 각운동량, 그리고 (docking) **어느 관절에 걸린** `r_tau` 든 (관절 $i$ 의 토크 $\tau_i = M_{i,:}\ddot q + h_i(q, \dot q)$ 는 질량 행렬의 비대각과 중력으로 사슬 밖 관절의 운동을 읽는다 — trunk 의 토크 비용을 줄이려 빠진 팔이 움직인다) — 이 켜지면, 그 항이 걸리는 노드 범위마다 탐색의 plan 이 빼는 관절의 군에 rest 가중이 있어야 한다 (`mpc`: `w_rest`; docking: 포구 전 `w_q_nom`, 정지 구간 `w_rest_stop`). 없으면 configure 가 그 군의 이름으로 거부한다 — 되돌리는 항이 없으면 재계획마다 그 관절이 흘러간다 (연속 wake 의 음성 대조가 그것을 보인다).
 - 가중에는 상한 `kWholeBodyWeightMax` (1e4 — 시험한 가장 큰 값), $s_{\dot k}$ 는 양수 (NUM-2) 다.
 
 ### 14.6 §1.3 · §4 와의 대응 (구현 대조표)

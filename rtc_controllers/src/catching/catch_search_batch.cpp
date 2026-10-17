@@ -875,6 +875,20 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
       return out;
     }
   }
+  // #641 D9′ as a controller's configure refuses it, on the search model's
+  // joints (the plan's).
+  {
+    const int n_dev = binding.n_dev > 0 ? binding.n_dev : search_nv;
+    JointSet plan_joints = 0;
+    (void)MakeJointSet(binding.device_of_model, n_dev, plan_joints);  // checked with the binding
+    std::string why =
+        mpc ? MpcSegmentLeftFreeRefusal(planner, groups, n_dev, plan_joints)
+            : MpcDockingLeftFreeRefusal(docking_params, planner.groups, groups, n_dev, plan_joints);
+    if (!why.empty()) {
+      out.error = std::move(why);
+      return out;
+    }
+  }
 
   std::unique_ptr<SegmentPlanner> segment_planner;
   std::string error;

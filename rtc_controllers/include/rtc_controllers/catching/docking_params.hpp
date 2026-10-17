@@ -27,6 +27,7 @@
 // The tree root every parser takes is the `catching:` map.
 #pragma once
 
+#include "rtc_controllers/catching/joint_groups.hpp"  // JointGroups, JointGroupSpec
 #include "rtc_controllers/catching/mpc_docking_segment_core.hpp"
 #include "rtc_controllers/catching/nlp_catch_search.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"  // kMaxSegmentNodes
@@ -271,5 +272,24 @@ struct MpcDockingSegmentPlannerParams {
 ///         exceed the planner's `approach.n_pre_max`.
 [[nodiscard]] const char* DockingGridMismatch(
     const NlpCatchSearchParams& search, const MpcDockingSegmentPlannerParams& planner) noexcept;
+
+/// @brief #641 D9′ for the docking segment planner (non-RT): a range a term
+///        reads outside the plan's joints needs the left-out groups' rest
+///        weight there — `w_q_nom` before the catch node, `w_rest_stop` from it
+///        on. Before the catch the angular-momentum term reads every joint and
+///        so does a torque cost on ANY joint (the mass matrix and gravity
+///        couple a joint's torque to every joint's motion); from the catch node
+///        on, the angular-momentum term.
+/// @param docking      the parsed planner parameters
+/// @param specs        `planner.groups` as parsed (names for the message)
+/// @param groups       `specs` resolved on the arm device
+/// @param n_dev        the device's joint count
+/// @param plan_joints  the joints a plan of the search model holds (device indices)
+/// @return what a configure refuses, naming the range and the group — empty
+///         when nothing is
+[[nodiscard]] std::string MpcDockingLeftFreeRefusal(const MpcDockingSegmentPlannerParams& docking,
+                                                    std::span<const JointGroupSpec> specs,
+                                                    const JointGroups& groups, int n_dev,
+                                                    JointSet plan_joints);
 
 }  // namespace rtc::catching

@@ -4,10 +4,12 @@
 #include "catching_yaml_read.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <initializer_list>
 #include <limits>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -950,6 +952,15 @@ MpcDockingSegmentPlannerParams ParseMpcDockingSegmentParams(
       const std::string pbl = Join(path, "blocks");
       const YAML::Node blocks = rd.Section(entry, "blocks", path);
       rd.CheckKeys(blocks, pbl, {"pre", "stop"});
+      // One group is the whole arm: the core then plans without groups (one
+      // block per pre-catch node, stop.blocks), so its own would be ignored.
+      if (groups.size() == 1 && blocks.IsMap() && blocks.size() != 0) {
+        rd.Reject(Quote(pbl) +
+                  ": with one group the planner moves blocks as without groups (one per "
+                  "pre-catch node, " +
+                  Quote(Join(b, "stop.blocks")) +
+                  ") — declare a second group to give a group its own");
+      }
       gp.pre_block = rd.Int(blocks, "pre", pbl, gp.pre_block, 1, kMaxSegmentNodes);
       if (blocks.IsMap() && blocks["stop"]) {
         const int n_nodes = out.n_stop;
@@ -1020,6 +1031,55 @@ const char* DockingGridMismatch(const NlpCatchSearchParams& search,
     return "planner.search.nlp.n_pre.max exceeds planner.segment.mpc_docking.approach.n_pre_max";
   }
   return nullptr;
+}
+
+std::string MpcDockingLeftFreeRefusal(const MpcDockingSegmentPlannerParams& docking,
+                                      std::span<const JointGroupSpec> specs,
+                                      const JointGroups& groups, int n_dev, JointSet plan_joints) {
+  const auto uniform = [](const Eigen::VectorXd& v) { return v.size() != 0 ? v[0] : 0.0; };
+  const auto group_value = [](double own, double core) { return std::isnan(own) ? core : own; };
+  const int count = groups.Count();
+  // A torque cost on any joint reads every joint's motion (M, g): it needs the
+  // pre-catch rest of every left-out group, not only of its own.
+  bool torque_cost = false;
+  for (int g = 0; g < count; ++g) {
+    torque_cost = torque_cost || group_value(docking.groups[static_cast<std::size_t>(g)].r_tau,
+                                             uniform(docking.core.r_tau)) > 0.0;
+  }
+  const bool pre_read = docking.core.w_ang_pre > 0.0 || torque_cost;
+  const bool stop_read = docking.core.w_ang_post > 0.0;
+  // A range no term reads needs no weight (1 stands for "held").
+  std::array<double, kMaxJointGroups> pre_rest{};
+  std::array<double, kMaxJointGroups> stop_rest{};
+  for (int g = 0; g < count; ++g) {
+    const auto u = static_cast<std::size_t>(g);
+    const DockingGroupParams& gp = docking.groups[u];
+    pre_rest[u] = pre_read ? group_value(gp.w_q_nom, uniform(docking.core.w_q_nom)) : 1.0;
+    stop_rest[u] = !stop_read ? 1.0 : (groups.n_groups == 0 ? 0.0 : gp.w_rest_stop);
+  }
+  // FirstGroupLeftFree reads "no group declared" as rest weight 0; the
+  // docking core's pre-catch posture weight exists without groups too.
+  JointGroups as_groups = groups;
+  if (as_groups.n_groups == 0) {
+    as_groups.n_groups = 1;
+  }
+  const auto n = static_cast<std::size_t>(count);
+  const int free_pre = FirstGroupLeftFree(as_groups, n_dev, plan_joints,
+                                          std::span<const double>(pre_rest.data(), n));
+  const int free_stop = FirstGroupLeftFree(as_groups, n_dev, plan_joints,
+                                           std::span<const double>(stop_rest.data(), n));
+  if (free_pre < 0 && free_stop < 0) {
+    return {};
+  }
+  const int g = free_pre >= 0 ? free_pre : free_stop;
+  return std::string("planner.segment.mpc_docking: ") +
+         (free_pre >= 0 ? "a term on the pre-catch stages (angular momentum or a torque cost)"
+                        : "the angular-momentum term on the stop nodes") +
+         " reads joints a plan of the search model leaves out (" +
+         (groups.n_groups == 0 ? std::string("the arm, no planner.groups")
+                               : "group '" + specs[static_cast<std::size_t>(g)].name + "'") +
+         "), whose " + (free_pre >= 0 ? "pre-catch rest (w_q_nom)" : "stop rest (w_rest_stop)") +
+         " weight is 0 — give it one (#641 D9')";
 }
 
 }  // namespace rtc::catching

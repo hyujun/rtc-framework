@@ -4,6 +4,7 @@
 #include "catching_yaml_read.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -279,6 +280,10 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
                (name ? Spelling(name) : std::string("nothing")));
       }
       spec.name = name.Scalar();
+      // `planner.groups.names` is the mirror's list of the names themselves.
+      if (spec.name == "names") {
+        Reject(Key(where + ".name") + " 'names' is reserved (planner.groups.names lists them)");
+      }
       if (FindJointGroup(out.groups, spec.name) >= 0) {
         Reject(Key(where + ".name") + " '" + spec.name + "' names a group already declared");
       }
@@ -545,6 +550,15 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
           Reject(Key(path + ".blocks." + k) + " is not a key of a group's blocks (pre, stop)");
         }
       }
+      // One group is the whole arm: the cores then plan without groups (one
+      // block per pre-catch node, horizon.blocks), so its own would be ignored.
+      if (out.groups.size() == 1 && blocks.IsMap() && blocks.size() != 0) {
+        Reject(Key(path + ".blocks") +
+               ": with one group the planner moves blocks as without groups (one per "
+               "pre-catch node, " +
+               Key("segment.mpc.horizon.blocks") +
+               ") — declare a second group to give a group its own");
+      }
       gp.pre_block =
           ReadInt(blocks, "pre", path + ".blocks.pre", gp.pre_block, 1, kMaxSegmentNodes);
       if (const YAML::Node st = blocks["stop"]; st) {
@@ -783,6 +797,31 @@ bool MpcSegmentBlocksFor(const std::array<int, kMaxSegmentNodes>& base, int n_ba
   blocks = b;
   n_blocks = n;
   return true;
+}
+
+std::string MpcSegmentLeftFreeRefusal(const PlannerParams& planner, const JointGroups& groups,
+                                      int n_dev, JointSet plan_joints) {
+  const MpcSegmentPlannerParams& mpc = planner.mpc_segment;
+  if (!(mpc.ang_w_pre > 0.0 || mpc.ang_w_post > 0.0)) {
+    return {};
+  }
+  std::array<double, kMaxJointGroups> w_rest{};
+  for (std::size_t g = 0; g < w_rest.size(); ++g) {
+    w_rest[g] = mpc.groups[g].w_rest;
+  }
+  const int free = FirstGroupLeftFree(
+      groups, n_dev, plan_joints,
+      std::span<const double>(w_rest.data(), static_cast<std::size_t>(groups.Count())));
+  if (free < 0) {
+    return {};
+  }
+  return "planner.segment.mpc.cost.angular_momentum reads every joint of the segment model, but "
+         "a plan of the search model leaves out joints of " +
+         (groups.n_groups == 0
+              ? std::string("the arm (no planner.groups)")
+              : "group '" + planner.groups[static_cast<std::size_t>(free)].name + "'") +
+         " with no rest weight — give planner.segment.mpc.groups.<that group>.w_rest > 0 (#641 "
+         "D9')";
 }
 
 }  // namespace rtc::catching

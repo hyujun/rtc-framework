@@ -467,4 +467,18 @@ struct PlannerKeySelection {
 [[nodiscard]] PlannerParams ParsePlannerParams(const YAML::Node& catching,
                                                const PlannerKeySelection& selection = {});
 
+/// @brief #641 D9′ for the mpc segment planner (non-RT): its angular-momentum
+///        term reads every joint of the segment model, so a group with joints
+///        a plan leaves out needs a rest weight (`groups.<name>.w_rest`), or
+///        nothing brings those joints back between solves.
+/// @param planner      the parsed parameters (the groups' names, the mpc keys)
+/// @param groups       `planner.groups` resolved on the arm device
+/// @param n_dev        the device's joint count
+/// @param plan_joints  the joints a plan of the search model holds (device indices)
+/// @return what a configure refuses, naming the group — empty when the term
+///         is off or every left-out group has its weight
+[[nodiscard]] std::string MpcSegmentLeftFreeRefusal(const PlannerParams& planner,
+                                                    const JointGroups& groups, int n_dev,
+                                                    JointSet plan_joints);
+
 }  // namespace rtc::catching

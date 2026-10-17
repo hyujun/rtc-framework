@@ -1552,6 +1552,21 @@ TEST(DockingParamsWholeBody, TheSegmentPlannersKeysAreRefusedByName) {
                   YAML::Load("{planner: {segment: {mpc_docking: {groups: {a: {}}}}}}"), kNv);
             }).find("names no group of 'planner.groups'"),
             std::string::npos);
+  // One group is the whole arm, which the core blocks as without groups: its
+  // own blocks would be ignored, so they are refused — its weights are not.
+  const std::vector<rtc::catching::JointGroupSpec> one = {
+      {"all", {"j0", "j1", "j2", "j3", "j4", "j5"}}};
+  for (const char* blocks : {"{pre: 2}", "{stop: [2, 2, 3]}"}) {
+    SCOPED_TRACE(blocks);
+    EXPECT_NE(Refusal([&] {
+                (void)ParseMpcDockingSegmentParams(
+                    YAML::Load(head + "groups: {all: {blocks: " + blocks + "}}}}}}"), kNv, one);
+              }).find("'planner.segment.mpc_docking.groups.all.blocks': with one group"),
+              std::string::npos);
+  }
+  const MpcDockingSegmentPlannerParams weights = ParseMpcDockingSegmentParams(
+      YAML::Load(head + "groups: {all: {w_vel: 0.5, blocks: {}}}}}}}"), kNv, one);
+  EXPECT_EQ(weights.groups[0].w_vel, 0.5);
 }
 
 // D10′: the search plans the chain alone — its map takes neither groups nor a
