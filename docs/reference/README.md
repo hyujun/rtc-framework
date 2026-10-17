@@ -16,6 +16,7 @@
 | [rt-setup-rationale.md](rt-setup-rationale.md) | RT 호스트 설정의 근거 — 전 tier RT 코어 집합 (#380) · CM cpuset 범위 · cset adopt fail-closed · degraded 격리 예외 (#343) · isolcpus 폐기 | [invariants.md](../../agent_docs/invariants.md#rt-host--runtime-preconditions) (RT-HOST-1~3) |
 | [build-rationale.md](build-rationale.md) | 빌드 기본값의 근거와 실측 — colcon 병렬도 · make job 수 `min(코어, RAM/4GB)` · 메모리 상한과 OOM 판정 · 테스트 기본 OFF · ccache · colcon cwd 사고 경로 | [repo_scripts/README.md](../../repo_scripts/README.md) (빌드 병렬도와 메모리) · [AGENTS.md](../../AGENTS.md) §9 |
 | [tracing-rationale.md](tracing-rationale.md) | tracing 계측의 근거 — 예외 L3 · cadence 지표 · span 이 없거나 따로 놓인 자리의 의도 · 계측 제외 | [testing-debug.md](../../agent_docs/testing-debug.md#tracing) |
+| [sim-rationale.md](sim-rationale.md) | rtc_mujoco_sim 의 근거와 실측 — 동기 루프 · tick · effort 정의 · 외력 CoM 보정 · contact wrench 부호 · 공 preset · stamp 실측 · lane 설계 | [rtc_mujoco_sim/README.md](../../rtc_mujoco_sim/README.md) |
 | [testing-rationale.md](testing-rationale.md) | 테스트 규범의 사례와 실측 — false green 3형 · fixtures CI · ROS_DOMAIN_ID 격리 · 계측 함정 표 · 할당 게이트 사건 · coverage 함정 | [testing-debug.md](../../agent_docs/testing-debug.md) |
 | [controllers-rationale.md](controllers-rationale.md) | 컨트롤러 설계의 실측과 기각 대안 — 코어 추출 이력 · 바인딩 함정 · Compliance · Inference · GraspController | [controllers.md](../../agent_docs/controllers.md) |
 | [readme-guide.md](readme-guide.md) | README 유형별 골격 · 목적지 표 · 샘플 · 체크리스트 · 외부 출처 | [conventions.md](../../agent_docs/conventions.md#readme) |

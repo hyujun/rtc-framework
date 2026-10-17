@@ -1,897 +1,177 @@
 # rtc_controllers
 
-
-> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
-> 설치/빌드: [Root README](../README.md) | RT 최적화: [rt-optimization.md](../docs/rt-optimization.md)
-> 그래스프 튜닝: [docs/grasp_tuning_guide.md](docs/grasp_tuning_guide.md)
+URDF 기반 매니퓰레이터용 제어 법칙·궤적·estimator 라이브러리. **유형**: 라이브러리 패키지 (정적 라이브러리 `librtc_controllers.a`, 노드 없음)
 
 ## 개요
 
-RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니다. 관절/태스크 공간 제어 법칙, compliance 계열 법칙과 그 공용 커널(`compliance/`), 적응형 PI 힘 제어 그래스프 컨트롤러, 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인), 공 포구 수치 코어(`catching/`), 그리고 in-thread estimator 코어(`grasp/pull_force_estimator.hpp` · `estimation/momentum_observer.hpp` · `estimation/payload_estimator.hpp` · `estimation/inertial_estimator.hpp`)를 제공합니다.
+관절/태스크 공간 제어 법칙, compliance 계열 법칙과 공용 커널, 적응형 PI 힘 제어 `GraspController`, 5차 다항식 궤적 생성기, in-thread estimator, 공 포구(`catching/`) 수치 코어를 **헤더 단위 함수·클래스**로 제공합니다. 노드·publisher·subscription 을 만들지 않고 `RTControllerInterface` 도 상속하지 않습니다. 법칙을 tick 마다 부르는 바인딩은 [integrated_bringup](../integrated_bringup/README.md) 같은 integration 패키지가 소유합니다 (경계 규범: [design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms).
 
-> **계약**: 이 패키지는 **제어 법칙만** 소유합니다 — 노드·publisher·subscription 을 만들지 않고, `RTControllerInterface` 를 상속하지도 않습니다. 프레임워크 계약을 구현하는 클래스(= 바인딩)는 downstream integration 패키지가 소유합니다. 규칙·3계층 배치·경계 판정의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 이며, 여기서 반복하지 않습니다.
->
-> **이 패키지에는 어댑터가 없습니다.** 검증은 개수 박제가 아니라 grep 입니다 — `grep -rn "public RTControllerInterface" include/` 와 `grep -n rtc_controller_interface package.xml` 이 모두 비어야 합니다. 남은 것은 법칙(`compliance/*` · `joint/*` · `task/*`), 그 YAML 스키마(`params/*` — POD + `ParseXxxParams` 자유함수, rclcpp-free), 그리고 `grasp/`·`trajectory/` 입니다.
->
-> **단 3계층 배치 전이 자체는 아직 진행 중입니다** — 위 문장은 *이 패키지*에 한정됩니다. 전이의 완료 판정 기준 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §완료 상태의 검증 기준 입니다.
+### 사용 모델
 
-> **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
+- 이 패키지는 라이브러리 심볼만 제공하고 `RTC_REGISTER_CONTROLLER` 로 아무것도 등록하지 않습니다. 다운스트림 `<robot>_bringup` 이 바인딩 클래스를 만들어 이 패키지의 법칙을 멤버로 호출하고, 자체 `controller_registration.cpp` 에서 등록하며, 자체 `config/controllers/<subdir>/<key>.yaml` 을 가집니다.
+- 바인딩은 configure 시 `params/` 의 `ParseXxxParams()` 로 YAML 을 한 번 파싱하고(비-RT, throw 가능), tick 에서 법칙 함수(`noexcept`, heap-free)를 부릅니다.
+- `examples/controllers/` 의 YAML 은 `<robot>` placeholder 를 쓰는 **참고용**이라 그대로는 로드되지 않습니다 (의도된 동작). production YAML 은 `integrated_bringup/config/<robot>/controllers/` 에 두고 여기에는 새 파일을 추가하지 않습니다.
+- 런타임 게인 파라미터 채널은 이 패키지에 없습니다. 게인 스냅샷(SeqLock)·타깃 전달(SPSC)은 바인딩과 `rtc_base` 몫입니다.
 
-**제어 법칙 분류** — 각 행은 *법칙*이며, 그것을 tick 마다 부르는 바인딩은 downstream 이 소유합니다. 스키마 열은 그 법칙의 컨트롤러-레벨 설정 POD + 파서(`params/`)로, 바인딩이 configure 시 한 번 호출합니다:
+### 제어 법칙과 헤더
 
-| 제어 법칙 | 공간 | 출력 모드 | 코어 헤더 | 스키마 (`params/`) |
-|---------|------|----------|----------|----------|
-| 관절 PD | 관절 공간 | Torque (direct) | `joint/joint_pd_law.hpp` | `joint_pd_params.hpp` |
-| 태스크 속도 (CLIK) | 태스크 공간 | Position (indirect) | `task/task_vel_law.hpp` + `compliance/differential_ik.hpp` | `clik_params.hpp` |
-| 태스크 가속 (OSC) | 태스크 공간 | Torque (direct) | `task/task_accel_law.hpp` + `compliance/task_dynamics.hpp` | `osc_params.hpp` |
-| 태스크 임피던스 | 태스크 공간 | Torque (direct) | `compliance/impedance_law.hpp` (§6.2) · `compliance/inertia_shaping.hpp` (§6.3) + `joint/posture_law.hpp` | `task_impedance_params.hpp` |
-| 태스크 어드미턴스 | 태스크 공간 | Position (indirect) | `compliance/admittance_integrator.hpp` (§7.2) + `task/task_vel_law.hpp` + `joint/posture_law.hpp` (P 형) | `task_admittance_params.hpp` |
-| 캐스케이드 컴플라이언스 | 태스크 공간 | Torque (direct) | 위 둘 + `compliance/bandwidth_separation.hpp` (§7.6) | `cascaded_compliance_params.hpp` |
-| GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/grasp_controller.hpp` | — (상위 컨트롤러가 멤버로 소유) |
+모든 경로는 `include/rtc_controllers/` 기준입니다. 법칙과 YAML 스키마 POD(`params/`)가 짝입니다.
 
-> 각 코어의 참조 배선(모델·궤적·SeqLock 을 어떻게 엮는가)은 `test/test_*_core.cpp` 의 `*Shim` 클래스에 남아 있습니다. 대부분은(`JointPdShim` / `ClikShim` / `AdmittanceShim`) **아무 테스트도 pin 하지 않으므로** 새 바인딩의 출발점이지 검증된 산출물이 아닙니다. 예외로 셋은 어댑터 없이 관측할 수 없던 게이트 계약을 지키기 위해 shim-only 케이스가 남아 이들을 pin 합니다: `OscShim` (posture 게이트), `ImpedanceShim` (Λ_d 인수분해 degrade), `CascadeShim` (§7.6 대역폭 평가 게이트). 이 셋을 고칠 때는 해당 케이스가 함께 움직입니다.
+| 계열 | 헤더 | 설명 |
+|---|---|---|
+| joint | `joint/joint_pd_law.hpp` · `params/joint_pd_params.hpp` | 관절 PD (+ 중력/코리올리 피드포워드, torque lane 한정) |
+| joint | `joint/posture_law.hpp` | 영공간 posture 법칙 `τ₀ = Kp(q_null−q) − Kd q̇` |
+| task | `task/task_vel_law.hpp` · `params/clik_params.hpp` | CLIK 태스크 속도 법칙 `K_p ⊙ e + ν_ff` (Position 출력) |
+| task | `task/task_accel_law.hpp` · `params/osc_params.hpp` | OSC 태스크 가속도 법칙 (Torque 출력, task inertia Λ 사용) |
+| compliance | `compliance/impedance_law.hpp` · `inertia_shaping.hpp` · `params/task_impedance_params.hpp` | 태스크 임피던스 (Jacobian-transpose, 선택적 관성 성형) |
+| compliance | `compliance/admittance_integrator.hpp` · `params/task_admittance_params.hpp` | 태스크 어드미턴스 (힘 입력 → compliant frame 적분 → Position 출력) |
+| compliance | `compliance/bandwidth_separation.hpp` · `params/cascaded_compliance_params.hpp` | 캐스케이드 (outer 어드미턴스 + inner 임피던스) 의 대역폭 분리 판정 |
+| compliance | `compliance/differential_ik.hpp` · `task_dynamics.hpp` | 공용 커널: σ_min 적응형 DLS 미분 IK · Λ_S/h 조립 |
+| compliance | `compliance/external_wrench.hpp` · `wrench_conditioning.hpp` · `wrench_pipeline.hpp` | 외부 F/T wrench 입력 계약 · 조건화 순서 · tick 파이프라인 |
+| compliance | `compliance/safety_limiter.hpp` · `torque_estop.hpp` · `joint_command_tail.hpp` · `compliance_state_machine.hpp` | 출력 안전층 · torque E-STOP hold · 관절 명령 tail · 상태 머신 |
+| grasp | `grasp/grasp_controller.hpp` · `grasp_types.hpp` · `grasp_state.hpp` | `GraspController` 적응형 PI 힘 제어 · 파라미터/FSM 타입 · tick 상태 POD |
+| grasp | `grasp/pull_force_estimator.hpp` | 당김 힘 estimator |
+| estimation | `estimation/momentum_observer.hpp` · `payload_estimator.hpp` · `inertial_estimator.hpp` | 모멘텀 observer 잔차 · payload 질량/COM 추정 · 관성 회귀 |
+| trajectory | `trajectory/*.hpp` | 5차 다항식 궤적 ([아래](#궤적-생성기)) |
+| inference | `inference/policy_io.hpp` · `reach_gate.hpp` · `params/policy_io_params.hpp` · `params/reach_gate_params.hpp` | 학습 정책 tensor marshalling · reach gate |
+| 공용 | `gain_floor.hpp` | 비음수 게인 floor `FloorNonNegativeGain` (NUM-6) |
 
-> **태스크 임피던스**는 Cartesian **compliance** 법칙이다. 기본 법칙은
-> `formulation: jacobian_transpose` (§6.2 A=NONE,
-> `τ = Jᵀ Sᵀ[K_p·S·e + K_d·S·ė] + τ_null + ĝ(q)`) — OSC 와 달리 task inertia Λ 를 쓰지
-> 않아 **task-space 특이점에서 자유**롭다 (Λ 는 nullspace 에만). MuJoCo backend 전용
-> (torque). A=NONE 은 열등한 fallback 이 아니며, `TRANSLATION_ONLY` 의 회전은 nullspace
-> posture 가 담당한다.
->
-> 외부 F/T 를 쓰면 `formulation: inertia_shaping` (§6.3) 으로 목표 관성 `Λ_d` 를 성형할 수
-> 있다 (기본 비활성 — §5.2 MUST). 그 성형 법칙
-> `f_cmd = B·f_task + (B − I)·f_ext`, `B = Λ_S Λ_d⁻¹` 는 `compliance/inertia_shaping.hpp` 의
-> `ComputeShapedTaskForce()` 가 구현하고 바인딩이 그것을 호출한다 (pin: `test_inertia_shaping_core.cpp`).
-> 코어는 `Λ_S` 를 **인자로** 받으므로
-> `TaskDynamics` 를 모른다 — Λ 블록을 누가 만드는가는 이 코어의 관심사가 아니다. wrench 는 **비-RT setter `SetExternalWrench()`** 로 받는다:
-> 컨트롤러는 순수 제어 알고리즘이라 노드·구독·메시지 타입을 만들지 않으며, 호출자는
-> `sensor_frame` 기준 raw `[f;τ]` 를 그대로 넘기면 된다 (bias·중력보상·`Ad^{-T}` 변환·필터는
-> 모두 컨트롤러가 수행). 입력 계약·조건화 순서·staleness 정책·`Λ_d` clamp·하드웨어 부호
-> 검증 절차(P1–P4) 등 규범·근거는 [docs/compliance-conventions.md](docs/compliance-conventions.md).
->
-> **태스크 어드미턴스**는 같은 계열의 **반대 방향** 법칙이다 (§7 Rule 3): 힘을
-> **입력**으로 받아 가상 compliant frame `X_c` 를 적분하고 (`Λ_d ẍ̃ + K_d ẋ̃ + K_p x̃ = f_ext`),
-> 미분 IK 로 관절 **위치** 명령을 만든다. 같은 `+x` 밀림에 impedance 는 `−x` 로 저항하고
-> admittance 는 `+x` 로 따라간다 (§11.4.1 P2 vs P3 — 두 컨트롤러를 같은 픽스처에서 대조하는
-> 테스트가 이 부호를 고정한다). 출력이 position 이라 **현재 유일하게 position-only 실기
-> backend 가 받을 수 있는 compliance 경로**이며, 외부 wrench 는 **필수**다
-> (`external_wrench.enabled: false` 는 configure 에러 — impedance 와 달리 A=NONE 이 없다).
-> 접촉 안정성은 impedance 보다 근본적으로 취약하므로 (§7.4) `min_desired_inertia` 하한이
-> 강제되고, 딱딱한 환경에서는 **`Λ_d` 를 키우고 `K_p` 를 낮춘다**. `K_p = 0` 은 hand-guiding
-> 모드이며 이때 `X_c` 의 표류는 `max_compliant_displacement` (saturating spring) 와
-> `max_compliant_{linear,angular}_velocity` 가 막는다 (§7.5). 뒤의 두 velocity 키는
-> `≤ 0` 로 **끌 수 있는** 가드이므로, 이미 경계 밖에 있는 상태를 되돌리는 속도 상한은
-> 별도 키 `max_return_{linear,angular}_velocity` 가 **상시** 담당한다. 규범·근거는 위와 같은
-> [docs/compliance-conventions.md](docs/compliance-conventions.md) §3.5.
->
-> §7.3 의 IK 속도항 `ν = ν_c + K^ik ⊙ e` 는 **새 코어를 만들지 않고**
-> CLIK 이 이미 쓰는 `task/task_vel_law.hpp` 의 `ComputeTaskVelocity()` 를 호출한다 —
-> 같은 속도형 법칙에 같은 `[1/s]` 게인 규약이므로 두 번째 사본을 만드는 대신 일반화한 것이다
-> (design-principles P5). 여기서 `ν_ff` 자리에 들어가는 것이 CLIK 의 궤적 twist 가 아니라 §7.2
-> compliant frame 의 속도 `ν_c` 라는 점만 다르며, 법칙은 그 출처를 알지 않는다 (pin:
-> `test_admittance_task_vel_reuse.cpp`). `ik_kp_* = 0` 은 §7.3
-> 을 문자 그대로 읽은 순수 피드포워드 형태이며 별도 케이스로 고정된다. 속도 클램프→적분→관절한계
-> clamp→rate 재바운드로 이어지는 **관절 tail 은 법칙이 아니라 한계·정책**이라 바인딩 몫이고,
-> DLS `J⁺`·영공간은 이미 `compliance/differential_ik` 다.
->
-> **캐스케이드 컴플라이언스**는 그 둘을 **직렬로** 잇는다 (§7.6): outer admittance 가
-> compliant frame `(X_c, ν_c)` 를 만들고, inner §6.2 impedance 가 그것을 추종하는 **토크**를
-> 낸다. 명세가 "외력 추종의 올바른 구조" 로 지목한 형태이며 §6.3(측정 외력을 impedance
-> 법칙에 직접 가산)보다 안정적이라고 명시한 대안이다. 순응 거동은 **outer 게인만** 정의하고
-> inner 는 그 프레임을 얼마나 단단히 따라가느냐만 정한다 — 그래서 YAML 이 `outer:` / `inner:`
-> 로 나뉜다 (양쪽 다 stiffness·damping 을 가지므로 flat 키는 위험한 모호성이다). wrench 는
-> **정확히 한 번만** 소비된다: outer 가 이미 썼으므로 inner 에는 `f_ext` 항 자체가 없다
-> (§7.6 MUST-4 를 런타임 검사가 아니라 타입 레벨로). 대역폭 분리 `ω_i/ω_a ≥ 3` (MUST-1) 은
-> `Λ_S(q₀)` 가 필요해 configure 시점에 계산할 수 없으므로 **첫 seeding tick 에 1회** 평가해
-> 진단 플래그로만 보고한다 (fault 아님). 게인이 바뀌면(`set_gains()` / 재-`LoadConfig`) 다시
-> 평가하고, 그 자세에서 Cholesky 가 실패하면 이전 수치를 남기지 않고 "평가 불가"(∞)를 발행한
-> 뒤 다음 tick 에 재시도한다. 규범은 같은 문서 §3.6.
->
-> 그 판정식 자체는 `compliance/bandwidth_separation.hpp` 의 무상태 free
-> function `EvaluateBandwidthSeparation()` 이고 바인딩이 그것을 호출한다 — §7.6 MUST-1 은 두
-> 게인 세트와 관성에 대한 **명세의 진술**이지 이 함수의 사정이 아니며, `Λ_S` 를 인자로 받으므로
-> 그것을 누가 만드는가를 선점하지 않는다. 영공간 **자세 법칙**
-> `τ₀ = Kp·(q_null−q) − Kd·q̇` 도 `joint/posture_law.hpp` 로 일반화됐다: 이 컨트롤러와
-> `TaskImpedanceController` 의 인라인 루프가 **문자 그대로 동일**했으므로 ARCH-3 의 정확한
-> 발동 조건이었다 (`TaskAdmittanceController` 는 같은 법칙의 속도형 P — 별도 함수인 이유는
-> [agent_docs/design-principles.md](../agent_docs/design-principles.md) §코어의 형태; pin:
-> `test_posture_core.cpp`). 두 게이트가 닫힐
-> 때 **수치적으로 inert** 하므로(자세 게이트는 부호 있는 0 만 흘리고, §7.6 게이트는 이전 값을
-> 그대로 남긴다) 토크 비교만으로는 배선이 고정되지 않는다 — 그래서 `diag.nullspace_active` 와
-> `diag.bandwidth_ratio` 를 **매 tick** 대조한다.
+`catching/` 은 공 포구 플래너·감독자의 수치 코어입니다 (설계: [docs/dynamic_catching/](../docs/dynamic_catching/README.md)).
 
----
+| 묶음 | 헤더 (`catching/`) |
+|---|---|
+| 데이터 계약 | `trajectory.hpp` · `time_types.hpp` · `planner_io.hpp` · `traj_ingress.hpp` · `traj_sampler.hpp` · `segment_ring.hpp` · `ball_node_samples.hpp` |
+| 도달·포구 판정 | `catch_pose_ik.hpp` · `time_feasibility.hpp` · `reach_bound.hpp` · `rank_gates.hpp` · `unit_speed.hpp` · `plane_crossing.hpp` |
+| 탐색 | `catch_search.hpp` · `grid_catch_search.hpp` · `nlp_catch_search.hpp` · `nlp_catch_screening.hpp` · `gamma_rollout.hpp` · `search_stats.hpp` |
+| segment MPC | `mpc_segment_core*.hpp` · `mpc_segment_planner.hpp` · `mpc_docking_*.hpp` · `mpc_block_grid.hpp` · `jerk_segment.hpp` · `segment_planner.hpp` · `planner_cycle.hpp` · `node_follower.hpp` |
+| 손·감독자 | `hand_sequencer.hpp` · `hand_capture.hpp` · `contact_debounce.hpp` · `decel_target.hpp` · `soft_catch.hpp` · `transition_table.hpp` · `joint_home.hpp` · `joint_stop.hpp` · `joint_groups.hpp` |
+| 파라미터 | `catching_params.hpp` · `catch_pose_ik_params.hpp` · `planner_params.hpp` · `docking_params.hpp` · `docking_config.hpp` |
+| 오프라인 도구 | `catch_pose_ik_batch.hpp` · `catch_gate_batch.hpp` · `catch_search_batch.hpp` |
 
-## 패키지 구조
+compliance 3종(임피던스·어드미턴스·캐스케이드)의 법칙·부호 규약·wrench 계약·게인 단위는 [docs/compliance-conventions.md](docs/compliance-conventions.md) 가 SSoT 입니다. 게인 단위는 법칙마다 다릅니다 (CLIK 속도형 `[1/s]`, OSC 가속도형 `[1/s²]`, 임피던스 힘형).
+
+## 빠른 시작
+
+빌드·테스트는 [루트 README](../README.md#빠른-시작) 를 따릅니다. 이 패키지만 다시 빌드할 때는 `./build.sh --tests -p rtc_controllers`, 테스트는 `colcon test --packages-select rtc_controllers` 입니다 ([docs/testing.md](../docs/testing.md)).
+
+소비 패키지의 `CMakeLists.txt` / `package.xml`:
+
+```cmake
+find_package(rtc_controllers REQUIRED)
+ament_target_dependencies(my_binding rtc_controllers)
+```
+
+```xml
+<depend>rtc_controllers</depend>
+```
+
+관절 PD 법칙을 tick 에서 부르는 최소 예 (position lane, 중력/코리올리 보상 끔):
+
+```cpp
+#include "rtc_controllers/joint/joint_pd_law.hpp"
+
+std::array<double, 6> kp{200, 200, 150, 120, 120, 120}, kd{30, 30, 25, 20, 20, 20};
+std::array<double, 6> q{}, ref_pos{}, ref_vel{}, prev_err{}, cmd{};  // 매 tick 갱신
+
+const rtc::joint::JointPdGainsView gains{.kp = kp, .kd = kd};
+const rtc::joint::JointPdInputs in{
+    .q = q, .ref_pos = ref_pos, .ref_vel = ref_vel, .gravity = {}, .coriolis = {}};
+rtc::joint::ComputeJointPdCommand(gains, in, /*dt=*/0.002, /*nq=*/6, /*nc0=*/6,
+                                  rtc::CommandType::kPosition, prev_err, cmd);
+```
+
+## 인터페이스
+
+### GraspController
+
+가변 개수·가변 DoF 핸드를 위한 위치 제어 기반 적응형 PI 힘 제어기입니다. 스칼라 `s ∈ [0,1]` 로 finger 별 open/close 자세를 보간하고 외부 루프 PI 가 `s` 를 움직입니다. 직접 등록되지 않고 integration 패키지의 컨트롤러가 멤버로 소유합니다 (`grasp_controller_type: "force_pi"`).
+
+| 호출 | 설명 |
+|---|---|
+| `Init(std::span<const FingerConfig>, const GraspParams&)` | non-RT. finger 수는 `min(configs.size(), kMaxGraspFingers)`, finger 별 DoF 는 `FingerConfig::dof` |
+| `Update(std::span<const double> f_filtered, double dt) noexcept` | RT. finger 별 **필터된** 힘 크기 [N] → `GraspJointCommands`. 필터링은 호출자 몫 |
+| `CommandGrasp(target_force)` · `CommandRelease()` | 다른 스레드에서 호출 가능 (atomic 플래그) |
+| `Reset() noexcept` | FSM 을 `kIdle` 로 되돌림. 중단된 파지를 정리할 때 |
+| `phase()` · `finger_states()` | 관측용 |
+
+FSM(`GraspPhase`): `kIdle → kApproaching → kContact → kForceControl → kHolding → kReleasing → kIdle`. `thumb_finger_index` 가 가리키는 finger + 다른 finger 하나가 접촉하면 Contact 로 전이합니다. 슬립·힘 급감은 `kHolding` 에서 grip tightening 으로 처리합니다. 주요 `GraspParams` (기본값은 `grasp_types.hpp`):
+
+| 키 | 기본 | 의미 |
+|---|---|---|
+| `f_target` · `f_contact_threshold` · `f_ramp_rate` | 2.0 N · 0.2 N · 1.0 N/s | 목표 파지력 · 접촉 감지 · 힘 레퍼런스 램프 |
+| `Kp_base` · `Ki_base` · `integral_clamp` | 0.02 · 0.002 · 0.1 | PI 게인 · anti-windup |
+| `approach_speed` · `release_speed` · `ds_max` | 0.2 · 0.3 · 0.05 [1/s] | `s` 변화율 |
+| `delta_s_max` | 0.15 | 접촉 후 최대 변형 (이를 넘으면 closing 금지) |
+| `thumb_finger_index` | 0 | Contact 전이가 필수로 요구하는 finger 슬롯 (호출자가 지정) |
+
+적응 이득 스케줄링은 `K_est_max` 가 seed 와 같아 꺼져 있습니다. 튜닝 절차·근거는 [docs/grasp_tuning_guide.md](docs/grasp_tuning_guide.md) 입니다.
+
+### 궤적 생성기
+
+`trajectory/` 의 생성기는 모두 5차 다항식 기반이며 `compute(t)` 는 RT-safe 입니다. 시간은 `[0, T]` 로 클램프됩니다.
+
+| 클래스 (`trajectory/`) | 공간 | 입력 | 연속성 |
+|---|---|---|---|
+| `QuinticPolynomial` (`trajectory_utils.hpp`) | 스칼라 | 경계 pos/vel/acc | C2 |
+| `JointSpaceTrajectory<N>` (`joint_space_trajectory.hpp`) | 관절 | start/goal `State` + duration | C2 |
+| `TaskSpaceTrajectory` (`task_space_trajectory.hpp`) | SE(3) | start/goal pose·velocity + duration | C2 |
+| `QuinticBlendTrajectory<N>` (`quintic_blend_trajectory.hpp`) | 관절 | via-point (최대 `kMaxWaypoints = 32`), rest-to-rest | via-point 에서 C2 |
+| `QuinticSplineTrajectory<N>` (`quintic_spline_trajectory.hpp`) | 관절 | via-point, natural 또는 clamped 경계 | 전역 C4 |
+| `TaskSpaceBlendTrajectory` (`task_space_blend_trajectory.hpp`) | SE(3) | via-point, rest-to-rest | via-point 에서 C2 |
+| `TaskSpaceSplineTrajectory` (`task_space_spline_trajectory.hpp`) | SE(3) | via-point, natural 또는 clamped 경계 | 전역 C4 |
+
+SE(3) 생성기는 `log6` tangent space 에서 보간하고 `pose(t) = start * exp6(p(t))` 로 복원합니다. 스플라인은 `initialize()` 에서 선형 시스템을 풀므로(non-RT) via-point 수의 3제곱 비용이 듭니다. `State` 의 `velocity`·`acceleration` 은 LOCAL 표현이며, world-aligned 값은 `TaskSpaceTrajectory::State::AlignedVelocity()` · `AlignedClassicalAcceleration()` 입니다.
+
+### 오프라인 CLI
+
+모두 로봇을 모르는 판정 도구이며 모델·프레임·후보는 argv 로 받습니다. 옵션은 `--help` 로 확인합니다.
+
+| 실행 파일 | 용도 |
+|---|---|
+| `catch_pose_ik_batch` | 포구 자세 IK 가능 여부 (catchability map) 판정 |
+| `catch_gate_batch` | 도달 시간·γ 게이트 판정 (gate-catchable map) |
+| `catch_search_batch` | 플래너 wake 의 catch search 를 오프라인으로 재생 |
+
+```bash
+ros2 run rtc_controllers catch_pose_ik_batch --help
+```
+
+## 설정
+
+`examples/controllers/` 의 YAML 이 키·단위·기본값의 reference 입니다 (키는 컨트롤러 이름 아래에 둡니다. `topics:` 섹션은 base 의 `RTControllerInterface::LoadConfig()` 가 파싱합니다). 파서는 모르는 키를 조용히 무시하지만, 아는 키를 틀린 길이로 적으면 configure 가 실패합니다 (`double[3]` 게인은 정확히 3원소).
+
+| 파일 (`examples/controllers/`) | 법칙 | 핵심 키 |
+|---|---|---|
+| `direct/joint_pd_controller.yaml` | 관절 PD (Torque) | `kp` `kd` `enable_gravity_compensation` `enable_coriolis_compensation` `trajectory_speed` `command_type` |
+| `indirect/clik_controller.yaml` | CLIK (Position) | `kp_translation` `kp_rotation` `max_damping` `singularity_threshold` `null_kp` `control_6dof` |
+| `direct/operational_space_controller.yaml` | OSC (Torque 고정) | `kp_pos` `kd_pos` `kp_rot` `kd_rot` `max_damping` `null_kp` `null_kd` `estop_damping` |
+
+- 단일 `kp:` 배열이 아니라 CLIK 은 `kp_translation`/`kp_rotation`, OSC 는 `kp_pos`/`kd_pos`/`kp_rot`/`kd_rot` 입니다.
+- 중력/코리올리 보상은 `command_type: torque` 에서만 허용됩니다 (비-torque 에서 켜면 거부).
+- `max_damping`(λ_max) · `singularity_threshold`(σ₀) 는 σ_min 적응형 DLS 램프의 파라미터이고 로더가 floor 를 적용합니다 (NUM-1·2). 은퇴한 `damping` 키는 경고 후 무시됩니다.
+
+## 디렉토리
 
 ```
 rtc_controllers/
-├── CMakeLists.txt
-├── package.xml
-├── include/rtc_controllers/
-│   ├── gain_floor.hpp                        -- 불변식이 이름 붙인 게인 하한 한 곳 (header-only) — `FloorNonNegativeGain` (NUM-6/6b: 유한만 0 으로 floor, 비유한은 통과시켜 하류 finite 검사로) + `IsFiniteNonNegative` (floor 로 못 고치는 δ 류의 거부 판정)
-│   ├── params/                               -- 컨트롤러-레벨 YAML 스키마. 게인 POD + `ParseXxxParams(YAML::Node, …)` 자유함수. yaml-cpp 만 의존하고 **rclcpp-free** — 미래 바인딩이 ROS 로깅 스택 없이 config 를 검증할 수 있어야 한다. 은퇴 키는 로그 대신 `<Name>RetiredKeys` 로 **보고**하고 호출자가 찍는다
-│   │   ├── joint_pd_params.hpp               -- kp/kd (길이 == nv 강제) + 중력/코리올리 스위치 (torque 전용 교차검증)
-│   │   ├── clik_params.hpp                   -- 태스크 P 게인 + §6.5 DLS + 영공간 + 궤적 한계
-│   │   ├── osc_params.hpp                    -- 태스크 PD (가속도형) + §6.5 DLS + posture + E-STOP 감쇠
-│   │   ├── task_impedance_params.hpp         -- §6.2/§6.3 게인 + TaskSelection · TaskImpedanceFormulation
-│   │   ├── task_admittance_params.hpp        -- §7.2/§7.3 게인 + wrench 소스
-│   │   ├── cascaded_compliance_params.hpp    -- outer/inner 게인 + §7.6 임계
-│   │   ├── policy_io_params.hpp              -- 학습 정책 I/O 스키마. `PolicyIoParams` + `ParsePolicyIoParams(YAML::Node, FeatureSizeFn[, FeatureRowsFn])`. **텐서 단위 선언** (`inputs:`/`outputs:`) 이라 텐서마다 자기 feature 목록·affine lane·offset 공간을 갖고, 텐서 `name` 은 필수다 — 이름이 있어야 엔진이 이름으로 바인딩하고 같은 shape 두 개의 재export 순서 바뀜이 load 에서 잡힌다. feature id 는 robot 사실이라 크기 표를 **caller 가 준다** (ARCH-1). 출력 명령은 `OutputCommandSpec{device, role, slice}` 이고 `device`/`role` 은 **불투명 문자열**이다 (ARCH-1 — 어떤 그룹·역할이 있는지는 binding 이 안다). 이 계층이 강제하는 것은 둘 다 선언됐고 **쌍이 유일**하다는 것뿐이며, suffix 추정 + `break` 없는 루프로 같은 역할의 두 device 중 마지막 것이 조용히 이기는 상황을 이 규칙이 막는다. 별도 `name:` 키는 없다 — `device`+`role` 이 정체성이면 name 은 사본일 뿐이라 어긋날 자리만 만든다. 거부 대상: 미지 feature id · 텐서 이름 누락/중복 · feature 합 ≠ 그 텐서 폭 · **텐서 간** feature id 중복 · 부분 affine lane · `device`/`role` 누락 · **(device, role) 쌍 중복** · 미선언 텐서 참조 · 텐서 밖 slice · **같은 텐서 안의** slice 겹침 · decimation < 1 · 구버전 평탄 키. **recurrent**: 입력의 `source: recurrent` 와 출력의 `feeds: <input>` 이 링크를 이루며(텐서 전체 단위), 거부 대상은 features/source 를 둘 다·둘 다 아님 · recurrent 텐서의 affine lane · 아무도 안 먹이는 recurrent 텐서 · feeds 대상 부재/비-recurrent/폭 불일치 · 한 입력을 두 출력이 먹임 · `feeds:` 를 가진 텐서를 slice. **이름 기반 배치** (export 가 정한 순서의 긴 상태 벡터에 로봇이 일부만 채우는 정책용): 입력 `element_names` (행 이름, stride = 폭/개수) 가 있으면 feature 는 caller 의 `FeatureRowsFn` 이 돌려준 행 이름 위치로 scatter 되고, `fill:` (반복 패턴 — 예 `[0,0,0,1]`) 이 덮지 않은 원소를 매 평가 채운다. `source: constant` + `values` 는 고정값 텐서, recurrent 의 `seed: <feature id>` 는 리셋 시 상태의 시작값(없으면 0). 출력 `element_names` 는 binding 이 `ResolveNamedIndices` 로 device 관절 순서에 gather 한다. 추가 거부 대상: 이름 개수가 폭을 안 나눔 · 이름 중복 · element_names 에 없는 행 · 행 이름 없는 feature · 폭 ≠ 행×stride · 한 원소를 두 feature 가 점유 · fill 없는 부분 피복 · fill 길이가 폭을 안 나눔 · **부분 피복 텐서의 affine** · constant 의 values 누락/길이/비유한 · constant + features/fill/affine · 비-recurrent 의 seed · seed 폭 불일치 · 출력 이름 개수 ≠ 폭 · 이름 있는 head 의 offset/count
-│   │   └── reach_gate_params.hpp             -- reach gate 스키마 (`ReachGateParams` + `ParseReachGateParams`). tip 마다 {link, force_group, contact_obj} (첫 tip = 대향 digit) + 훈련 상수 5개 (tip_std 0.030 · force_threshold 0.5 · min_fingers 2 · hold_on 5 · hold_off 100 — 기본값 = 훈련값, 존재하는데 파싱 안 되는 키는 기본값으로 읽지 않고 거부). **contact_obj 는 정책이 부르는 '물체' 프레임 기준**이어야 한다 — grasp 기록의 원점과 훈련 자산의 원점이 평행이동만큼 다를 수 있고, 그 차이는 범위 검사에 안 걸린 채 gate 를 닫는다. 같은 함정이 `link` 쪽에도 있다: **접촉점이 실제로 찍히는 면의 프레임**이어야 하며, 손끝의 관절 원점 프레임은 보통 그 면에서 1–2 cm 떨어져 있다 (ur5e_p1b 실측 17.5 mm). σ 가 30 mm 인 게이트에서 그 편향은 값을 절반으로 떨어뜨리지만 어느 검사에도 안 걸린다 — 기록된 grasp 자세에서 tip 과 접촉점 사이 거리를 한 번 재 보면 어느 프레임인지 바로 갈린다
-│   ├── inference/
-│   │   ├── policy_io.hpp                     -- 학습 정책 텐서 마샬링 코어 (header-only, 무상태, RT). `PackSegment` / `ApplyAffine` / `UnpackSlice` / `CopyFiniteChecked` / `BlendPosture` 다섯뿐이고 `std::span` 만 본다 — `rtc_inference` 에 의존하지 않으므로 두 패키지는 sibling 으로 남고 버퍼가 유일한 계약이다. pack/unpack 은 **all-or-nothing** (반쪽 관측은 유효한 관측과 구별되지 않는다), affine 은 NaN 을 세탁하지 않으며, posture blend 는 비유한 스칼라를 clamp 하지 않고 **거부**한다 (NaN 비교는 전부 false 라 clamp 가 통과시킨다). `CopyFiniteChecked` (recurrent 되먹임) 는 비유한 값을 만나면 dst 를 **0 으로 리셋**한다 — 얼리면 이후 전 step 이 NaN 이 되고 매 tick 조용히 hold 해 재활성화 말고는 복구 경로가 없다. 이름 기반 배치를 위해 `InputSegment.indices` (비면 연속 run) scatter · `ApplyFill` (반복 패턴, constant 텐서의 구현이기도 함) · `UnpackIndexed` (gather) 가 추가됐다
-│   │   └── reach_gate.hpp                    -- reach gate 코어 (header-only, RT). `gate = max(exp(-(d/σ)²), hold)` — d = tip 들과 물체 pose 에 실린 기록 접촉점 사이 평균 거리, hold = 대향 digit + `min_fingers` 개가 threshold 초과인 상태가 `hold_on_steps` 연속이면 ON, 미접촉 `hold_off_steps` 연속이면 OFF 인 Schmitt trigger (**policy step 단위**, ratchet 없음). `IsGraspedByForce` / `UpdateReachHold` / `RotateByQuatXyzw` (x,y,z,w · 정규화 · 영 쿼터니언 → NaN) / `MeanTipDistance` / `ReachProximity` / `ReachGate` (NaN 근접도는 hold 로 세탁하지 않는다)
-│   ├── joint/
-│   │   ├── posture_law.hpp                   -- 영공간 자세 법칙 코어 (header-only, 무상태) — 토크형 PD `Kp·(q_ref−q) − Kd·q̇` 와 속도형 P `Kp·(q_ref−q)` **두 함수**. 레퍼런스 `q_ref` 를 인자로 받으므로 측정 seed(impedance·cascade)와 config `safe_position`(OSC)이 한 법칙이다. P 를 PD 의 `Kd=0` 으로 흡수하지 않는 이유는 비트 동치가 깨지기 때문 (부호 있는 0 — 규범은 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §코어의 형태, 그 근거는 이 헤더의 머리 주석). 채널 순서·사영 Nᵀ·활성화 램프는 바인딩 몫
-│   │   └── joint_pd_law.hpp                  -- 관절 공간 PD 법칙 코어 (header-only, 무상태). 궤적 **샘플**을 받고 생성기를 소유하지 않는다 — 어느 궤적이 어느 법칙을 먹이는지는 integration 계층의 구조 결정
-│   ├── task/
-│   │   ├── task_accel_law.hpp                -- 태스크 공간 가속도 법칙 코어 (header-only, 무상태) a_task = K_p·e + K_d·(ν_d−ν) + a_ff. 게인은 **가속도형** `[1/s²]` — `impedance_law` 의 힘형과 Λ 배 차이. pose error 정의·궤적·모델은 바인딩 몫
-│   │   └── task_vel_law.hpp                  -- 태스크 공간 속도 법칙 코어 (header-only, 무상태) task_vel = K_p ⊙ e + ν_ff. 게인은 **속도형** `[1/s]` 이고 미분항이 없다 (CLIK 이 닫는 플랜트가 적분기이므로). 6축·병진전용 두 형태. pose error 정의·궤적·**ν_ff 의 프레임 전송**은 바인딩 몫
-│   ├── catching/                             -- 공 포구 (dynamic_catching, Epic #537) ROS 비의존 수치 코어 `rtc::catching`. 수학과 구조는 `docs/dynamic_catching/ref/`, 주석의 결정 ID · 게이트 ID 는 `docs/dynamic_catching/ID_INDEX.md`. 전부 할당 0·noexcept·fail-closed (비유한/무효 입력은 invalid flag 또는 게이트를 떨어뜨리는 값)
-│   │   ├── time_types.hpp                    -- 시간축 강한 타입 `BallTime`·`NowReal`·`NowLead` (절대 steady ns). 섞은 비교 연산자가 없고 판정마다 (L0 §4.5) 자기 축만 받는 함수 (`DecelDue`·`CommitDue`…) — 축을 잘못 고르면 컴파일되지 않는다. `ConvertRemoteStamp` 는 D-2 (3) E-1 기록된 예외 (미래 stamp 거부). 초 → 정수 ns (`SecondsToNs`) 와 정수 격자 나눗셈 (`FloorDiv` · `CeilDiv`) 의 정의도 여기 하나뿐이다
-│   │   ├── trajectory.hpp                    -- SeqLock payload POD: `TrajectorySnapshot` (용량 `kCap` 40, provisional) · `ProvenanceToken` (D-22) · `PlanSnapshot` (L3 §5.2) · `SegmentSnapshot` (MPC E1-F02, MD-27 — segment MPC 정지 구간의 관절 노드, device 순서, `PlanSnapshot` 의 형제 POD 이고 자기 SeqLock 을 탄다. 용량 `kMaxSegmentNv` 20 (관절 — 지원 최대이고 로봇의 관절 수가 아니다. 단일 팔보다 넓은 구간 모델까지 싣는다, #827) · `kMaxSegmentNodes` 24 (코어의 정지 구간 노드 수와 블록 수의 상한이기도 하다 — 코어의 전체 노드 용량은 `mpc_segment_core.hpp` 의 `kMaxMpcNodes`), 약 12.2 KB — RT 가 tick 마다 통째로 복사하므로 용량이 곧 복사 비용이다. 노드 0 의 시각은 효력 시각이고 격자는 정수 ns) · `ValidateSegmentNodes` (새 payload 마다 한 번 — 샘플러는 노드 값을 검사하지 않는다). **E1-F08 (#661, MD-60)**: 구간이 $t_c$ 앞에서 시작할 수 있다 — `n_pre` (포구 전 구간 수) · `dt_pre_ns`. 노드 0 는 t_c − n_pre·Δ_pre, 포구 노드는 `n_pre` 번이고 그 뒤는 `dt_ns` 다. 노드 시각은 `SegmentNodeTimeNs` (격자 규칙은 `SegmentGridNodeTimeNs`) 한 곳이 정한다. `n_pre` 0 은 정지 구간 그대로. **E1-F14 (#740)**: `dt_catch_ns` — 포구 노드 앞 구간 하나의 길이 (탐색이 포구 시각을 후보의 셀 안에서 옮긴 구간). 0 이 "`dt_pre_ns` 와 같다" 의 유일한 표기이고 `ValidateSegmentNodes` 는 `dt_pre_ns` 와 같은 값을 거부한다 (상한 `kMaxSegmentDtCatchNs`). 그 필드의 모양 검사는 `SegmentCatchIntervalOk` 하나이고 검증과 RT 샘플러가 같이 부른다. 0 이 아니면 노드 0 는 t_c − (n_pre − 1)·Δ_pre − dt_catch 이고 포구 전 노드는 제자리다. **E3-F01 (#640)**: `JointSet` — 팔 device 의 관절 집합 (bit d = device 관절 d; `FullJointSet` · `InJointSet` · `JointSetSize` · `JointSetSlot` · `MakeJointSet`). plan 은 자기가 어느 관절의 것인지 싣는다 (`PlanSnapshot::joint_set` — 탐색이 돈 모델의 관절이고 `nv` 는 그 크기다; `q_star` 는 device 칸에 쓰고 집합의 관절에서만 뜻이 있다, 나머지는 0). `PlanJointsWithin` 은 구간 계획기가 plan 을 받는 조건이다 (집합이 자기 모델 안). RT 는 `joint_set` 을 읽지 않는다
-│   │   ├── traj_sampler.hpp                  -- 5차 Hermite 샘플러 `SampleAt(snapshot, NowLead)` + 수신 검사 `Check` (개수는 인덱싱 전에, NaN·비단조·dt_min 미만 거부)
-│   │   ├── traj_ingress.hpp                  -- tick 쪽 수신 판정 `ReadTraj(snapshot, …, ConsumedToken&) → TrajView` (stale · expired · is_new · age_ns) 와 발행자 순서 검사 `CheckOrder`. **나이는 미수신이면 -1** (`tip_age_s` 와 같은 "never") — `traj_recv_ns` 가 0 이라 센티넬 없이는 `now − 0`, 즉 발행자의 uptime 이 나이로 나간다. **newness 는 번호가 아니라 `(generation, sequence)` 쌍 + `seen`** 으로 판정한다 (`ConsumedToken`): A-S5-4 로 새 epoch 은 번호를 다시 시작할 수 있어 겹친 번호가 반복의 근거가 못 되고, 0 은 합법 번호라 "아직 아무것도 안 봤다" 를 번호 하나로 표현할 수 없다
-│   │   ├── soft_catch.hpp                    -- soft-catch 병진 기준 `SoftCatchTranslation` (γ 프로파일, NaN 가드 — 비유한 입력에서 상태 보존). γ derate 없음 (D-8)
-│   │   ├── time_feasibility.hpp              -- 도달시간 `TMinChecked` (한계 무효 → flag + t=+∞)·γ 창 (η_v·v_max, D-9)·방향 속력·정지거리·오차 예산
-│   │   ├── decel_target.hpp · joint_stop.hpp · transition_table.hpp · contact_debounce.hpp -- L7 순수 조각: 가상 감속 목표, 관절공간 정지 ramp, (상태 × 사유) 전이표 + 완전성 검사, 지문 접촉 debounce
-│   │   ├── hand_capture.hpp                  -- 판정의 손 관절 증거 (S8-C, D-S8-8 (b)) `EvaluateHandCapture`: caging 관절별로 ρ 가 `[rho_min, rho_max]` 에서 멈추고 (\|q̇\| ≤ `qd_tol`) q_close 쪽으로 밀면 (s·τ/τ_max ≥ `effort_frac_min`) stalled, `min_joints` 이상이면 blocked. τ_max 는 손 device 의 `joint_limits.max_torque` (로봇 상수 없음), 비유한 입력·좁은 lane·무효 config 는 "not blocked". Hold 여부·lane freshness·지속 시간은 바인딩 몫
-│   │   ├── catch_pose_ik.hpp                 -- 포구 자세 IK + catchability 게이트 `CatchPoseIk` (L3 §4.2, S1.9). 5행 과제 = 병진 3 (LOCAL_WORLD_ALIGNED) + 접근축 2 (LOCAL x·y). 갱신은 관절속도의 합 `q̇_d = q̇_clik + q̇_n` 이고, `q̇_clik` 은 관절 한계·스텝 제한을 부등식 제약으로 갖는 **QP** 가 푼다 (ProxQP, D-26 — `DifferentialIk` 는 영공간 투영 N 전용). roll 은 영공간 log w₅ 상승에 쓴다 (D-25). `Resize()` 뒤 할당 0·noexcept·무로깅, 호출 간 상태 없음 — 후보마다 `ResetWarmStart()` 로 QP 를 cold start 하므로 오프라인 지도 S3.5a 와 런타임 계획기 S6.2 가 같은 q\* 를 얻는다. 랭크 결손은 `DifferentialIk` 의 `ok` 가 아니라 w 의 LDLT 피벗에서 판정한다. 핸들에 device 관절 순서(`SetJointOrder`)가 걸려 있으면 **거부**한다 — `ComputeJacobians` 는 입력만 재배열하고 열·한계·q̇ 는 Pinocchio 순서라, 섞이면 결과가 유한·수렴한 채로 틀린다. `Manipulability` 는 `Solve` 가 내지 않은 자세에서 같은 w₅ · w₆ 를 낸다 (NLP 탐색이 해의 포구 자세에서 부른다)
-│   │   ├── catching_params.hpp               -- 파라미터 검증기 (`ParseCatchingParams` + `ValidateCatchingParams` → `armable`): 활성 구성 TBD, D-9·a_dec 교차제약 (탐색의 복사본 `planner.search.grid.reference.*` · `stop.a_dec` 도 원본과 같은 규칙, `planner.segment.mpc.eta_v` 는 `mpc` 일 때만), 선택 enum `CatchingSearchMode` (`grid` \| `nlp`) · `CatchingSegmentMode` (`closed_form` \| `mpc` \| `mpc_docking`, `FollowsSegments(mode)` 는 closed_form 만 거짓) 와 **선택이 요구를 정한다**: `reference.*` (와 그 provisional · ω·h 이산화 검사) · `supervisor.decel.a_dec` 는 `closed_form` 에서만, `planner.search.grid.*` 의 복사본 · η_v · manipulability_min 은 `grid` 에서만 판정한다 (E1-F16), 옮긴 key 18 개의 표 `kRenamedCatchingKeys` · `FindRenamedCatchingKeys` (컨트롤러가 park), 복사본 비교 `SearchCopiesThatDiffer`, ω·dt 안정 경계, ζ≠1, provisional 은 실기에서 차단 (invented key 7종: `core.ball.provisional`·`planner.search.grid.catchability.manipulability_min.provisional`·`robot.hand.provisional`·`robot.hand.capture.provisional` (S8-C)·`supervisor.deadline.provisional` (S9b — 운동 기한 `supervisor.deadline.stop_s`·`return_s`, TBD·비양수 거부)·`joint_cmd.lag.provisional` (pre-S10 R3 — 실기 `T_arm` 미식별, 값·`lead_enable` 과 무관)·`reference.provisional` — 마지막은 S5.4 신설로, 블록 안에서 `v_max` 는 확정이고 `a_max` 는 미결이라 둘을 한 TBD 로 묶을 수 없었기 때문이다. 소비 키의 TBD 는 sim 에서도 이제 configure 거부가 아니라 park 다 — A-S5-12, 바인딩이 판정). `CheckCatchFrameProvisional` 은 robot config 의 `urdf.extra_frames.<catch_frame>.provisional` 에 같은 규칙 적용 (flag 를 읽어 넘기는 쪽은 포구 컨트롤러의 `on_configure`). 손 프로파일 `HandProfile` 은 S4.1 에서 `q_open`·`eta_close`(0.5–1)·`T_close_e2e`(≥0, **잰** 폐쇄 시간) 를 더했고 E1-F16 에서 `T_close_lead` (명령 선행 — 설계값, `CloseLead()` 는 키가 없으면 `T_close_e2e`; `CheckFreezeCoversClose` 가 `T_freeze` ≥ `T_close_lead` + `T_arm` + h 를 본다) 를 더했다 — S8-C 에서 `T_release_timeout` (없으면 `ReleaseTimeoutPerE2e` × T_close_e2e 로 유도, > T_close_e2e) 과 `capture.*` (`HandCaptureParams`, 섹션이 있을 때만 활성, 자체 provisional 이 실기를 막는다) 를 더했다 — `q_open` 은 §4.2 caging 쌍이 아니라 따로 세므로 (`q_open_tbd`) 쌍을 준 채 그것만 빠진 프로파일은 parse 되고 검증기가 그 키를 지목한다
-│   │   ├── catch_pose_ik_params.hpp          -- `CatchPoseIkOptions` 의 YAML 스키마 (`ParseCatchPoseIkParams` → `CatchPoseIkConfig`, S3.5a). L3 §6 의 `planner.search.grid.ik.*` + `planner.search.grid.catchability.definition`·`manipulability_min.*` 를 읽고, `definition` 이 고른 행을 `options.manipulability_min` 에 담는다 — 두 행은 단위가 달라 (C-3) 한 호출로 묶어 짝이 어긋날 수 없게 한다. 없는 키는 구조체 기본값, **`planner.search.grid.ik` 의 모르는 키는 거부** (그 섹션을 이 파서가 통째로 소유하므로 오타 외 가능성이 없다), 은퇴 키 (`lambda`·`manip_min`) 는 `CatchPoseIkRetiredKeys` 로 보고. `fd_step` 은 키가 있다 (코어의 설계 값이라 — 유한 > 0, 출하 1e-5). `alpha_max` 는 L3 §6 과 코드가 같은 provisional 기본값을 갖지만 config 의 명시적 `TBD` 가 표현 가능해야 하므로 `TbdDouble` 로 개방 여부를 남기고 (TBD·부재면 값은 그 provisional 기본값), 반대로 **활성 정의의 문턱이 TBD 면** `options.manipulability_min` 을 비유한값으로 남겨 `Solve` 가 `kOptionsInvalid` 로 막는다 (다른 정의의 수치로 게이트하지 않는다). `fd_step` 은 L3 §6 에 키가 없어 YAML 로 도달할 수 없는 유일한 필드다. `ParseCatchingParams` 와 겹치는 키 `manipulability_min.arm_5row` 는 **읽는 법만** 공유한다 — 범위 밖 값 (`-0.1`) 은 이 파서가 던지고, 저쪽은 parse 한 뒤 `ValidateCatchingParams` 가 `kRangeViolation` 으로 보고한다
-│   │   ├── catch_pose_ik_batch.hpp           -- 오프라인 catchability 지도(S3.5a)의 배치 계층: 후보/seed CSV I/O (`ParseCandidateCsv`·`ParseSeedCsv`), 결과 CSV (`BatchCsvHeader`·`BatchCsvRow`), 사유 이름 (`CatchPoseReasonName`), 배치 루프 (`RunBatch`), 그리고 실행파일의 fail-closed 진입 검사 둘 — catch frame 이름 해석 (`ResolveCatchFrame`: `RtModelHandle::GetFrameId` 는 모르는 이름에 universe(0) 를 돌려주므로, 오타나 frame 이 빠진 sub-model 이 전부 `model_invalid` 인 멀쩡한 CSV 로 끝나지 않게 먼저 던진다) 와 `--params` 파일 안의 `catching:` 트리 위치 (`ResolveCatchingTree`: 최상위 `catching:` · 출하 컨트롤러 config `<controller>: {catching: …}` · 트리 자체(최상위 `planner:`) **세 형태만** 받고 나머지는 거부한다 — root 로 폴백하면 파서가 모든 키를 조용히 기본값으로 채운다; `include:` 로 나뉜 컨트롤러 config 는 합성하지 않는다 — 이 패키지는 CM 아래라 `rtc::LoadControllerConfig` 를 쓸 수 없으므로 `planner.search.grid.ik` · `planner.search.grid.catchability` 가 든 조각을 직접 넘긴다 (주 파일은 top-level 키가 둘이라 거부된다)). `FormatCatchPoseIkOptions` 는 `--print-options` 가 찍는 해석 결과다. `BatchCsvRow(row, nv)` 의 행 폭은 **헤더의 nv** 다 — `Solve` 는 `kOptionsInvalid`·`kModelInvalid`·`kJointOrderMismatch` 를 `result.nv` 기록 전에 반환하므로 결과의 nv 로 폭을 잡으면 바로 그 fail-closed 행이 짧아져 reader 가 파일을 거부한다. 실행파일이 아니라 라이브러리에 있는 이유는 두 계약이 gtest 로 닿아야 하기 때문이다 — 결과 열이 solver 의 double 을 **bit-exact** 로 싣고 (S6.2 의 G3-I 동치 비교가 반올림된 열로는 성립하지 않는다), 후보 **순서를 바꿔도 판정이 같다** (python 이 격자를 샤딩·재개한다). `p_c`·`v_ball` 은 `Solve` 와 같이 **모델 world** 좌표이고 base→world 변환은 호출자 몫이다. 후보 CSV 의 열 순서는 헤더에서 읽고 (가정하면 p_c 와 v 가 바뀌어도 그럴듯한 지도가 나온다), 비유한 값은 거부한다 (`kTargetNonFinite` 로 사유 분포에 섞이면 깨진 생성기가 물리로 보인다)
-│   │   ├── catch_gate_batch.hpp              -- 오프라인 gate-catchable 지도(S3.5b)의 배치 계층: 후보 CSV (q\*·q̇ᵘ 포함, 열 순서는 헤더가 정한다) → `time_feasibility.hpp` 의 런타임 함수 그대로 도달시간·γ 창·정지점 판정 (`JudgeGates`·`RunGateBatch`), 게이트별 결과와 첫 탈락 사유 (`GateReason`) 를 round-trip 정밀도 CSV 로. 모델을 로드하지 않는다 — 한계·상수는 전부 `GateSettings` (기본값 없음, `ValidateGateSettings`)
-│   │   ├── catch_search_batch.hpp            -- 탐색의 판정 지도 (L3 §4.1) 의 배치 계층: 투척마다의 wake 열 (예측 snapshot CSV — `ParseSearchWakeCsv`) 에 `CatchSearch::Plan` 을 planner wake 가 부르는 그대로 부른다 (`RunSearchBatch`). wake 가 받는 것은 고정이다 (`MakeSearchBatchInputs`) — 팔은 대기 자세에 정지해 있고 따르는 plan 이 없다, 공분산은 0 행렬 (유효 · 예측과 짝), 시계는 멈춰 있다 (`StoppedClock` — 예산에서 계산되는 풀이 수는 그대로, 벽시계가 만드는 거부는 나타나지 않는다). 한 투척은 reset 된 탐색 (`ResetTrial`) 에서 시작해 첫 plan 을 낸 wake 까지만 돈다. 결과 CSV (`SearchBatchCsvHeader` · `SearchBatchCsvRow`) 의 wake 기록 열은 `planner_events.csv` 와 같은 이름이고 plan 열은 round-trip 정밀도다. 마지막 열 `wall_us` 는 `Plan` 호출의 벽시계 시간 [µs] — 탐색의 시계 (`StoppedClock`) 가 아니라 기계의 시간이라 재현되지 않는다. 탐색을 짓는 것은 `MakeSearchBatchSearch` — 합성된 `catching:` 트리를 런타임 파서로 읽고, 컨트롤러가 configure 에서 묶는 값 (장치 정격 · 여유가 적용된 한계 · 손의 시간) 은 binding 파일 (`ParseSearchBatchBinding`, 모든 키 필수 · 모르는 키 거부 · `.nan` = TBD) 로 받는다. **wake 전체 (`PlanBatch`).** binding 에 `segment` (`mode`: `mpc` | `mpc_docking` 과 그 계획기의 map) 가 있으면 wake 마다 planner thread 가 도는 것 — 탐색과 구간 계획기를 설치한 `PlannerCycle::Run` (탐색 → 첫 구간 풀이 → 쌍 게시 판정) — 을 돈다 (`MakePlanBatch` · `PlanBatch::Run`). 컨트롤러가 docking 기능을 park 시키는 프로파일은 판정하지 않고 그 컨트롤러의 문장으로 거부한다 (`DockingConfigRefusal`). 한 투척은 쌍이 게시된 첫 wake 까지 돌고, plan 이 구간과 함께 보류된 wake 는 다음 wake 로 이어진다. 시계는 wake 의 시각에 멈춰 있다 (`WakeClock` — 구간 계획기는 RT 보고의 나이와 node 0 의 자리에 시각 자체를 쓴다; 탐색은 차이만 재므로 판정이 탐색만 돌린 것과 같다). 결과 CSV (`PlanBatchCsvHeader` · `PlanBatchCsvRow`) 는 탐색 열을 제자리에 두고 `wall_us` 앞에 `outcome` · `segment_outcome` · `segment_kind` · `segment_core_reason` · `segment_catch_pos_err` 등을 `planner_events.csv` 와 같은 이름으로 싣는다; plan 열은 쌍이 게시된 wake 에만 채워진다. 재현하지 않는 것: 예산을 넘긴 풀이, 풀이 도중의 새 예측 · reset 으로 버려지는 쌍, 쌍 게시 뒤의 재계획 · 교체. **두 모델 (E3-F01 #640)**: 탐색 모델이 더 넓은 device 의 사슬이면 binding 의 `n_dev` (device 의 관절 수, 없으면 탐색 모델의 것 — 그때 `device_of_model` 은 0…`n_dev`−1 로의 단사이고 `planner.wait_pose` 는 device 관절마다 한 칸) 와 `segment.device_of_model` (구간 모델의 device map — device 관절의 순열, 없으면 탐색의 것) 이 그것을 말한다. 둘만 선택 키다 — 다만 구간 모델이 탐색 모델보다 넓으면 `n_dev` 는 필수이고 구간 모델의 관절 수와 같아야 한다 (없으면 그 키의 이름으로 거부한다). `MakePlanBatch` 는 구간 계획기의 모델을 따로 받는다 (`SegmentBatchModel` — null 이면 모델 하나). 관절별 벡터의 길이는 자기 모델의 관절 수다 (탐색의 map 은 탐색 모델, 구간 계획기의 map 은 구간 모델)
-│   │   ├── planner_io.hpp                    -- 계획기 ↔ RT 데이터 계약 (S6-A): `PlannerRtState` (RT → 계획기, 매 tick) · `ActivityFor(Mode)` (TRACKING/APPROACH 탐색, COMMITTED/CLOSING monitor, DECEL 포구 뒤 재계획 (MD-29 · MD-31) — enum 순서가 아닌 술어) · `JudgePlan` (L3 §5.2 (a)~(f) RT 수락 규칙 — 새 plan 판정은 궤적 token 이 아니라 writer 의 단조 `plan_id`, E-STOP 처럼 generation 을 안 올리는 리셋은 reset floor 로) · MPC E1-F03: `PlannerRtState` 의 `plan_t_c_ns` (RT 가 **따르는** plan 의 t_c — 구간 격자 anchor) · `segment_active`/`segment_seq` (`mode: mpc` 에서 따르는 구간 — APPROACH 부터 HOLD 까지, E1-F04 · E1-F09), `JudgeSegment` (구간 수락: valid → activation → 따르는 plan 의 id·t_c (context 가 `check_track` 이면 plan 의 track 도, E1-F09) → `segment_seq` 단조 `>` → 나이 → reset floor → 구간이 출발한 RT 상태의 floor (`state_floor_ns`, 0 = 끔) → `ValidateSegmentNodes`), `ChooseSegment` (효력 시각 전환 규칙 — 대기 구간은 now_lead ≥ node 0 시각이 될 때 넘겨받는다), `JudgeSegmentSwitch` (전환 게이트 — 관절마다 $\vert\Delta\dot q\vert+K_p\vert\Delta q\vert\le\rho_{\max}(1-\eta_v)\dot q_{\max}$, 곱셈형이라 NaN · 여유 없음은 거부, MD-39). **E1-F08**: `PlannerRtState` 의 `segment_pending`/`segment_pending_seq` (RT 가 대기 슬롯에 둔 구간 — 계획기가 재계획의 출처를 추론 없이 정한다, MD-58; catching 컨트롤러가 `mode: mpc` 에서 채운다, E1-F09), `SegmentAdmissionContext::accept_pre_catch` (기본 꺼짐 — 포구 전 노드가 있는 구간을 `kMalformed` 로 거부, 나이 검사 뒤 · 노드 검사 앞. catching 컨트롤러는 켠다) · E1-F14 (#740): `ReportedSegments` (RT 가 보고한 대기 · 추종 구간의 값 복사) 와 `SourceSegmentAt` — "노드 0 이 $t_{eff}$ 인 풀이는 어느 구간에서 출발하나" (MD-58: 노드 0 에 닿은 대기 구간, 아니면 추종 구간) 의 한 곳 · E1-F17 (#743): `PlannerRtState` 의 `plan_pending` · `plan_pending_id` · `plan_pending_t_c_ns` — RT 가 첫 구간과 함께 받아 그 node 0 까지 들고 있는 **교체 plan**. 그 동안 `plan_id` · `segment_seq` 는 팔이 따르는 옛 plan 의 것이고 `segment_pending_seq` 는 교체의 첫 구간이다
-│   │   ├── joint_groups.hpp                  -- 팔 device 의 관절군 (E3-F02 #641, non-RT): `JointGroupSpec` (`planner.groups` 의 항목 그대로), `JointGroups` (device 관절 → 군), `ResolveJointGroups` (device 관절 이름으로 해석 — 군은 device 를 분할한다; 없는 이름 · 겹침 · 빠진 관절을 이름으로 거부), `GroupsOfModel` (모델 순서의 군), `FirstGroupLeftFree` (D9′ — plan 이 빼는 관절의 군 가운데 rest 가중이 없는 것), `kMaxJointGroups` 4 · `kWholeBodyWeightMax` 1e4. 역할 (waist · 왼팔) 은 모른다
-│   │   ├── planner_params.hpp                -- `planner.*` 파서 (`ParsePlannerParams(catching, PlannerKeySelection)` — 선택된 기능의 맵만 연다: `search_grid` 일 때만 `planner.search.grid`, `segment_mpc` 일 때만 `planner.segment.mpc`, 기본 선택은 전부 연다 (테스트 · 도구용); `planner.freeze.t_stop_plan` (E1-F16 — 없으면 `T_freeze`, 바인딩이 `T_freeze` 보다 작으면 park)): 스레드 키 (S6-A) + 탐색 키 (S6-B: `planner.search.grid.` 아래의 `max_ik` · `slice.*` · `time.margin` · `n_settle` · `unc.kappa_sigma` · `gamma.margin` · `budget.*` · `hand.d_eff/r_cap` · `switch.*` · `score.*` (+ 발명 키 `penalty`) — 없어진 키 `workspace` 는 읽지 않는다 (L3 §4.9, 바인딩이 `FindRemovedCatchingKeys` 로 찾아 park) —, 그리고 `planner` 바로 아래의 `sub_model` · `freeze.T_freeze` · `provisional`) · `segment.mpc.*` (MPC E1-F03 — 켜는 키는 없다, `planner.segment.mode` 가 고른다: `horizon.{n_nodes, dt_s, blocks}` (값은 로봇별 `segment_mpc.yaml`, Δ_s 는 정수 ns) · `replan.k_max` · `v_eps` (> 0, 이 파서가 거부 — `eta_v` 는 `ParseCatchingParams` 가 읽는다) · `eta_tau` · `m_q` · `publish.{slack_max, slack_terminal_max}` — `MpcSegmentBlocksFor(k)` 가 재계획 인스턴스 k 의 블록 (가장 큰 뒤쪽 블록부터 한 노드씩) 을 만들고 B < 3 이 되는 k_max 는 거부) · `wait_pose_source` (S8-I: `yaml`|`current` — 대기 자세를 YAML 목록에서 읽을지, 활성화 뒤 첫 팔 판독 tick 의 자세로 채택할지; `PlannerRtState.wait_pose` 로 계획기 seed 에 전달, `SearchStats.chosen_g_min/g_max/v_dir_max/max_catchable` 이 채택 후보의 γ 창을 기록)). **결정값** (`T_freeze`·`d_eff`·`r_cap`) 은 기본값이 없어 부재·TBD 면 unset (바인딩이 park), 기형 값은 거부. **E1-F08 (MD-55 – MD-64)** 의 `planner.segment.mpc` 키: `approach.{n_pre_max, dt_pre_s, rest_tol}` (기본 0 = 포구 전 격자 없음 — MPC 구간 계획기가 configure 를 거부한다, MD-70; 포구 전 노드와 블록이 정지 쪽과 함께 용량 24 에 들어야 한다) · `budget.{first_s, replan_s}` · `replan.same_point` · `publish.catch_pos_err_max` · `catch.{w_axis, w_v_par, w_v_perp, gamma_ref, kappa, sigma_floor, w_max, w_const, sigma_ref}` — 전부 provisional. **MD-91** 의 `planner.segment.mpc` 키: `catch.{rho_v, v_rel_allow}` — 포구 노드의 상대속도 slack 행 (기본 0 · 0 = 끔, 둘 다 유한 · ≥ 0, `rho_v` > 0 이면 `v_rel_allow` > 0 — 아니면 두 키 이름을 대며 거부). **코어의 설계 값** 인 `planner.segment.mpc` 키 (출하값은 코어 코드의 기본값 — 측정으로 정한 `cost.w_perp` · `linearization.ref_speed_fraction` 만 다르다, `integrated_bringup` README): `cost.{jerk_weight, u_scale, w_delta, rho_tau}` · `catch.axis_theta_max` · `linearization.{delta_tr, reference_rest_tol, ref_speed_fraction}` · `solver.{max_iter, max_iter_in, eps_abs, eps_rel}` — 범위는 코어의 `Init` 검사를 키 이름과 함께 되풀이하고 (`eps_abs` < `reference_rest_tol` ≤ `kSegmentRestTol` 포함 — 상한은 RT 의 payload 검증과 맞춘 것이다), `jerk_weight` 길이 = 팔 자유도는 파서가 자유도를 몰라 계획기 configure 가 거부한다. 같은 묶음의 `gamma.unit_speed_damping` (DLS 단위속도 λ) · `switch.samples` (2 ~ `kSwitchSamplesMax` = 64 — 샘플마다 계획 스레드에서 ramp 를 평가한다). **#698** 의 `planner.segment.mpc` 키: `cost.w_perp` — 정지 경로 항의 가중 (기본 0 = 끔, [0, `kMpcSegmentStopPathWeightMax` = 1e4] — 상한은 코어를 시험한 가장 큰 값이고 뒤에서 걸러 줄 장치가 없어 파서가 막는다; 키 이름을 대며 거부). 이로써 코어의 설계 값은 전부 YAML 이다 — 직선의 정의와 못 만들 때의 보류는 `mpc_segment_planner.hpp` 가 적는다. `horizon_explicit` 는 profile 이 `horizon` 을 적었는지를 기록한다 (코드 기본 지평은 E1-F03 의 것 (MD-24) 이고 출하 YAML 이 MD-54 의 7 × 0.05 s 다). **E3-F01 (#640)** 의 키: `planner.search.sub_model` (`PlannerParams::search_sub_model`) — 탐색이 도는 모델이 `planner.sub_model` 과 다를 때의 `urdf.sub_models` 사슬 이름이다. 없으면 빈 문자열 (모델 하나), 적었는데 비었거나 TBD 면 거부. `planner.sub_model` 은 구간 모델 (팔 device 의 관절 전부 — `urdf.sub_models`, 없으면 `urdf.tree_models` 의 이름) 이다 **E3-F02 (#641)** 의 키: `planner.groups` (`PlannerParams::groups` — `{name, joints}` 목록, 이름은 토큰 (`names` 는 미러의 이름 목록이라 예약) · 관절은 군 사이에 서로소, 넷까지 `kMaxJointGroups`; device 관절에 대한 해석은 바인딩의 `ResolveJointGroups`), `planner.segment.mpc.groups.<name>.{w_vel, w_rest, blocks.{pre, stop}}` (`MpcSegmentPlannerParams::groups` — 군의 index 자리; 없는 이름 · 모르는 키 · Σ ≠ `n_nodes` 거부, `w_rest` > 0 이면 `wait_pose` 필수) · `planner.segment.mpc.cost.angular_momentum.{w_pre, w_post, scale}` (가중 ∈ [0, `kWholeBodyWeightMax` = 1e4], `scale` > 0). 군이 하나면 그 군의 `blocks` 는 거부한다 (군 하나는 군 없음과 같게 블록을 나눈다 — docking 도 같다). D9′ 의 거부는 `MpcSegmentLeftFreeRefusal` (이 헤더) · `MpcDockingLeftFreeRefusal` (`docking_params.hpp` — 어느 관절의 토크 비용이든 포구 전 구간을 읽는다) 가 갖고, 컨트롤러 configure 와 오프라인 batch 가 둘 다 부른다. 기본은 전부 끔 — 군을 선언만 하면 문제가 그대로다 (formulation §14)
-│   │   ├── docking_config.hpp                -- 선택된 docking 기능이 이 프로파일에서 돌 수 있는가 (non-RT, configure 전용): 맵 하나만으로는 안 보이고 손의 측정값 · 두 맵 · 선택을 나란히 놓아야 보이는 것 — 아무도 추측하면 안 되는 값이 비어 있음, 입구 평면에서 포구점까지의 비행보다 짧은 닫힘 선행 (`EntranceCloseLead`), 구간 계획기가 받는 RT 상태의 나이 한계 이상인 탐색 예산, 두 격자의 불일치 (`DockingGridMismatch`) 와 `continuous_tc`, 손의 범위 밖 기준 접근 속도 — 를 `DockingConfigRefusal` 이 사유 문장으로 낸다 (빈 문자열 = 돌 수 있다). 컨트롤러의 configure 와 오프라인 wake 전체 판정 (`MakePlanBatch`) 이 같은 함수를 불러 같은 프로파일을 거부한다
-│   │   ├── docking_params.hpp                -- docking 기능 둘의 YAML 스키마 (E1-F16 #742, non-RT): 손의 측정값 `HandDockingParams` (`ParseHandDockingParams` — `robot.hand.docking.*`: 입구 평면 · 통로 · lateral 다각형 · 속도 · 폐쇄 창 · 충격; 비었거나 TBD 면 unset 으로 기록 — 바인딩이 park, `FirstUnset` 이 키를 댄다), `nlp` 탐색의 `NlpCatchSearchParams` (`ParseNlpSearchParams`) 와 `mpc_docking` 구간 계획기의 `MpcDockingSegmentPlannerParams` (`ParseMpcDockingSegmentParams`) 가 같이 쓰는 `core:` 하위 스키마 (`ReadDockingCoreParams` — 손의 키가 `core:` 아래에 있으면 `robot.hand.docking` 을 가리키며 거부; `core.solver` 는 `eps_abs` · `eps_rel` · `max_iter` · `max_iter_in` (QP 의 안쪽 반복 상한, 1 – 1000000, 없으면 `QPSolverConfig` 의 100) · `max_iter_warm` (warm start 한 QP 에만 거는 `max_iter` 의 상한, 0 – 1000000, 없거나 0 이면 따로 두지 않는다 — 넘으면 코어가 그 QP 를 0 에서 다시 푼다)), 손의 값을 코어에 쓰는 `ApplyHandDocking` ($\delta_0$ = `T_close_e2e` − lead), 두 계획기의 격자 일치 검사 `DockingGridMismatch`. 키는 기능이 갖고 측정값은 손이 갖는다. 로봇 이름 · 관절 수는 모른다. **E3-F01 (#640)**: `core.rows.torque` (기본 참) — 토크 행 (토크 비용 `cost.r_tau` 가 아니다) 의 스위치이고 `planner.search.nlp.core` 만의 것이다: `ParseMpcDockingSegmentParams` 는 `false` 를 거부한다 (구간은 팔이 따르는 것이라 토크 행을 유지한다) **E3-F02 (#641)**: `planner.segment.mpc_docking.groups.<name>` (`DockingGroupParams` — `core:` 의 관절별 가중 `r_tau` · `r_jerk` · `r_jerk_stop` · `w_q_nom` 의 군별 값 (없으면 NaN = `core:` 의 것), `w_vel` · `w_rest_stop`, `blocks.{pre, stop}`; `ParseMpcDockingSegmentParams` 가 `planner.groups` 의 이름을 받는다) · `core.cost.angular_momentum.{w_pre, w_post, scale}`. 탐색의 map 은 둘 다 거부한다 — `planner.search.nlp.groups`, `planner.search.nlp.core.cost.angular_momentum` (D10′: 탐색은 사슬만 계획한다)
-│   │   ├── rank_gates.hpp                    -- 순위 게이트 공유 코어 `JudgeRankGates` (도달시간 §4.3 · γ 창 §4.5 · 정지점 §4.9, span 기반·할당 0). 오프라인 gate 지도 (`JudgeGates`) 와 런타임 계획기가 **같은 함수**를 불러 G3-I 가 구조적으로 성립한다 (refactor 전후 지도 3771 후보 판정 바이트 동일)
-│   │   ├── reach_bound.hpp                   -- 팔의 도달 반경 — 포구 frame 의 사슬에서 관절 축 위의 점들 사이 거리의 합을 최소화한 상한 (어느 점이든 상한이다; 반복은 조이기만 한다), 기준점은 첫 관절 축 위의 점; 직동 관절은 행정을 더하고 그 밖의 관절 형은 상한 없음 (∞ — 필터 꺼짐). 두 탐색이 Configure 에서 구해 IK 앞에서 `too_far` 로 거른다 (L3 §4.1)
-│   │   ├── unit_speed.hpp                    -- q̇ᵘ (`UnitSpeedSolver`): $J_5^\top(J_5J_5^\top+\lambda^2I)^{-1}[\hat v;0;0]$, 행·λ (1e-3) 가 지도 python (`catch_speed_budget.dls_unit_velocity`) 과 같다. 고정 용량·할당 0
-│   │   ├── grid_catch_search.hpp                -- 계획기 탐색 `GridCatchSearch::Plan` (S6-B; `CatchSearch` 의 구현): 후보 = vision 격자 (slice.dt 로 솎음, lead ∈ [t_lead_min, t_max]) · **판정 게이트** 는 후보를 제거하고 **순위 게이트** 는 벌점을 매긴다 (결정 C/D — 어느 검사가 어느 쪽인지는 [L3 §4.1](../docs/dynamic_catching/ref/L3_planner.md) 이 갖는다) · 싼 항으로 사전 점수 → IK 는 상위 `max_ik` 개만, `budget_s` 까지 (R-2) · 최소 점수 선택 (§4.10) · 교체 히스테리시스·점프 한계 (§4.7) · freeze (결정 G) · `Monitor` (σ_ℓ — 가장 가까운 표본의 6×6 을 `SampleBallNode` 로 전파한 것). 구간 계획기 아래에서는 (`GridCatchSearchConstants::follows_segments`) 교체를 ΔJ 만으로 판정한다 (η_jump 의 계단 상한은 L4 기준이 없어 보지 않는다). E1-F17 (#743): RT 가 구간을 따르는 동안 도달시간 게이트의 출발은 보고된 명령이 아니라 `SourceSegmentAt(arm, now_lead)` 의 구간을 now_lead 에서 `SampleJoints` 한 (q, q̇) 다 (읽을 수 없으면 보고된 명령) — 기준의 출발과 교체 규칙은 그대로. `Plan` 의 `budget_cap_ns` > 0 이면 IK 예산은 min(`budget_s`, 상한) 이다. 팩토리 `MakeGridCatchSearch` (성공했을 때만 객체, 아니면 null). γ_f 는 rollout (S6-C) 전까지 창 하한 **모델 폭 (#827)**: `Configure` 는 포구 자세 IK 가 크기를 잡지 못하는 모델 (`rtc::kMaxRobotDOF` 초과) 을 거부한다 — 전에는 구성된 뒤 모든 후보가 IK 실패로 끝났다. **사슬 모델 (E3-F01 #640)**: `GridCatchSearchModel::n_dev` (팔 device 의 관절 수, 0 = `nv`) 가 `nv` 보다 크면 모델은 더 넓은 device 안의 사슬이다 — `device_of_model` 은 device 로의 단사이고, RT 보고 · 대기 자세 · 보고된 구간 (device 폭) 에서 자기 관절의 칸만 읽으며, 탐색이 정하는 것은 다른 관절에 무관하다. plan 은 자기 관절 집합을 싣는다 (`PlanSnapshot::joint_set`) — 그 집합은 `Joints()` 로도 읽는다
-│   │   ├── catch_search.hpp                  -- 포구 탐색의 추상 interface `CatchSearch` (E1-F12 #738, ARCH-3): `Plan` (A-4 단일 진입) · `Monitor` · `NotePublished` · `ResetTrial` · `Solution` · `SetClock` (E1-F16 — cycle 의 시계를 받는다; `NlpCatchSearch` 는 코어에 전달). 한 wake 가 탐색에 대해 아는 전부다. 구현은 `GridCatchSearch` 와 `NlpCatchSearch` 둘. E1-F14 (#740): `Plan` 은 RT 가 보고한 구간 (`ReportedSegments` — 대기 · 추종, 값 복사) 을 받고, `Solution()` 은 직전 `Plan` 이 고른 후보의 팔 궤적 `CatchSolution` (게시할 `SegmentSnapshot` 을 품는다; 없으면 null) 을 낸다 — 탐색과 구간 계획기가 cycle 을 거쳐 주고받는 두 가지다. E1-F17 (#743): `Plan` 은 `budget_cap_ns` (0 = 없음) 를 받아 자기 예산과 그 값 가운데 작은 쪽으로 돈다 — cycle 이 탐색 뒤에 재계획이 남은 wake 에 준다. 전부 계획기 스레드 (SCHED_FIFO 일 수 있다) 에서 불린다 — 할당 · 잠금 · 로그 · 예외 없음. 기록 타입 `SearchStats` 는 전방 선언만 한다 (정의는 `search_stats.hpp`). **E3-F01 (#640)**: `CatchSolution::joint_set` — 해의 열이 어느 device 관절의 것인지. 해의 구간은 그 집합만큼의 폭이고 device 관절 d 의 열은 집합 안에서의 오름차순 순위다 (`JointSetSlot`) — 탐색의 모델이 device 전체면 device 순서 (게시할 수 있는 구간) 이고, 사슬이면 게시할 구간이 아니라 더 넓은 모델의 구간 계획기가 넓힌다
-│   │   ├── search_stats.hpp                  -- 탐색 wake 하나의 기록 `SearchStats` (L3 §8, 계획기 CSV 의 본문; #798 의 `cov_n` — 받은 공분산 상자의 점 수 — 와 `chosen_sigma_c` — 고른 후보의 포구 노드의 raw σ, 모르면 NaN — 를 두 탐색이 채운다) 와 그 enum `JudgeReject` (`kTooFar` — 도달 반경 밖이라 IK 없이 거른 후보) · `SwitchDecision` (`SwitchDecisionName`). NLP 탐색의 블록 `SearchStats::nlp` (`NlpSearchStats` — 후보 수 · 사유별 수 · 고른 후보의 $\Phi$ 와 그 묶음 · 가장 느린 풀이 · 명령과 추종 구간의 차이 · 채택 뒤 처음 따른 plan 의 셀과 고른 후보의 거리 · 연속 풀이의 수와 고른 후보의 δt_c · #798: wake 가 푼 후보 하나하나의 기록 `NlpCandidateStat` 의 고정 배열 (`cands`, verdict · 위반한 행 군의 비트마스크 · 최대 위반 · 반복 · QP 수 · 풀이 시간 · 포구 노드의 raw σ · Φ · 코어가 기한에 끊은 자리 `cut_site` (#803) — 통합 패키지가 `nlp_candidates.csv` 로 푼다)) 와 사유 `NlpReject` (`NlpRejectName`; `kTooFar` 는 `kNoSource` 와 `kIk` 사이 — 검사 순서; 채택 뒤의 창 밖은 `kFollowWindow`) 도 여기 있다 — CSV 의 열이 아니고 trace digest 에 들지 않는다. 탐색 구현과 따로 둔다 — 두 번째 구현이 첫 번째를 include 하지 않고 같은 기록을 채운다. trivially copyable (cycle 이 SeqLock · SPSC 로 복사한다)
-│   │   ├── nlp_catch_screening.hpp           -- NLP 탐색 (E1-F14 #740) 의 순수 함수 — 모델 · solver · 상태 없음, 오프라인 지도가 같은 함수를 부른다. 절대 시각 후보 격자 (`NlpCandidatesInWindow` · `NlpCandidateInstant`), 시각이 든 반열린 격자 셀 (`NlpCellOf`), 후보의 팔 격자 (`NlpCandidateGridAt`: $n_{pre}=\lfloor(t_c-t_0)/\Delta_a\rfloor$, 노드 0 은 $t_s=t_c-n_{pre}\Delta_a$ — 전부 정수 ns), 필요조건 둘 (`NlpReachCheck`: 참고 문서 §11.3 S4 의 속도 · 가속 도달 조건, `NlpClosingSpeedWindow`: §8.4 의 closing speed 창), 바깥 비용 (`NlpTimeCost` · `NlpSwitchCost`, §9.5), 출발 상태의 box 사영 (`ProjectStartIntoBox`). NaN 은 그것이 들어간 조건을 실패시킨다
-│   │   ├── nlp_catch_search.hpp              -- NLP 탐색 `NlpCatchSearch` (E1-F14 #740, ROS 비의존; `CatchSearch` 의 두 번째 구현 — 식은 참고 문서 §17.11 · §17.12). 후보마다 `MpcDockingSegmentCore` 로 팔 궤적을 풀어 그 비용 $\Phi=J^\star+J_{time}+J_{switch}$ 로 고른다 ($J^\star$ 는 포구 노드까지의 비용 — 정지 구간의 항은 기록만). 한 wake: 절대 시각 격자의 후보 → 필요조건 (항목과 순서는 참고 문서 §17.11 이 갖는다) → 순위 → 앞의 $L$ 개를 후보마다의 몫 안에서 풀이 → 최소. 유효는 몫 안 · hard 행 · 수렴에 더해, wake 가 예산을 넘겨 끝났으면 그 넘긴 시간보다 노드 0 이 뒤인 후보만이다 (아니면 RT 가 노드 0 부터 읽지 못한다). 코어는 포구 전 구간 수마다 하나 (configure). 출발 상태는 RT 가 plan 을 따르기 전에는 정지한 명령, 뒤에는 RT 가 보고한 구간 (`ReportedSegments`) 을 노드 0 시각에서 평가한 값. 시작점은 앞선 wake 의 기억에서만 (풀이 순서 무관) — 기억은 풀이가 끝난 점이고, solver 가 실패한 점 (QP 미수렴 · 유한하지 않은 평가) 은 넣지 않고 그 후보의 기억을 지운다. plan 의 `q_star` 는 해의 포구 자세이고 `w5` · `w6` 는 그 자세의 값이다. `Solution()` 이 고른 후보의 궤적을 구간 계획기가 게시할 형태 (`CatchSolution`) 로 낸다. 스위치 둘 (기본은 꺼짐): `continuous_tc` — 푸는 후보마다 고정 격자 풀이 뒤에 포구 시각을 그 후보의 셀 안에서 풀어 준 풀이를 한 번 더 하고 (후보 하나가 몫 둘), 그것이 유효하고 끝난 시각의 공이 필요조건의 공 검사 (지평 · 속력 · 공분산) 를 지나면 그 해를 쓴다 (아니면 고정 격자의 해와 판정). 셀은 최소 lead · 창의 끝과, 그 공 검사를 지나는 범위로 자른다 (예측 자체로 이분). 그때 plan 과 구간의 $t_c$ 는 격자 밖의 시각이고 구간은 `dt_catch_ns` 를 싣는다. RT 가 따르는 plan 의 셀은 그 plan 의 포구 시각에 묶어 한 번 푼다. `follow_window` — RT 가 이 track 의 plan 을 따르는 동안 처음 따른 plan 의 셀에서 그 수보다 먼 셀의 후보를 먼저 뺀다 (음수 = 없음). 스위치와 무관하게, 따르는 plan 의 셀의 후보는 필요조건을 지나면 순위의 맨 앞이다. 후보마다의 기록은 `Candidates()`, 사유는 `NlpReject` (`search_stats.hpp`) 와 `NlpPlanReason`. `Plan` 은 solver 밖에서 할당 0 — IK 와 코어 안의 ProxQP 는 할당한다 (기록된 RT-1 위반, #654). **꽂는 경로가 없다 — 부르는 것은 테스트다** (cycle 의 배선은 E1-F16) **모델 폭 (#827)**: 탐색이 받는 관절 수의 상한은 `kNlpMaxSearchNv` = min(`kMaxSegmentNv`, `rtc::kMaxRobotDOF`) 하나다 — 해는 구간 payload 이고 후보의 seed 는 포구 자세 IK 가 내므로 둘 중 작은 쪽이 한계이고, `Configure` 가 그 이름으로 거부한다. **사슬 모델 (E3-F01 #640)**: `NlpCatchSearchModel::n_dev` — `GridCatchSearchModel::n_dev` 와 같은 계약이고 (대기 자세는 device 관절마다 한 칸), 해는 사슬 폭이다 (`CatchSolution::joint_set`), 탐색의 관절 집합은 `Joints()` 다
-│   │   ├── segment_planner.hpp               -- 구간 계획기의 추상 interface `SegmentPlanner` (E1-F12 #738, ARCH-3): `PlanFirst` · `Replan` · `NotePublished` · `ResetTrial` · `FollowedTrack` · `StartsInTime` · `ControlDtNs` · `ReplanBudgetNs` · `EarliestFirstStartNs` · `Reported` · `SourceSeq` · `SetClock`. E1-F14 (#740): `PlanFirst` 는 탐색의 해 (`const CatchSolution*`, null 일 수 있다) 를 받고, `Reported` 는 RT 가 보고한 대기 · 추종 구간을 복사해 내준다 (`SourceSeq` 는 그 둘에 `SourceSegmentAt` 을 적용한 것). 구현은 `MpcSegmentPlanner` 와 `MpcDockingSegmentPlanner`. 기록 타입 `SegmentOutcome` · `SegmentKind` · `SegmentRecord` 도 여기 산다 (E1-F16 — 두 구현이 같은 기록을 채운다; `SegmentRecord::core_reason` 은 `uint8_t` 와 `core_reason_name` 이고 CSV 는 이름을 쓴다, `from_search` 는 첫 구간이 탐색의 해에서 왔는가). 공의 예측은 view `BallPrediction` (그 wake 의 궤적 · 공분산의 포인터와 짝 여부, 비어 있을 수 있다) 로 받는다 — 거기서 무엇을 뽑는가는 구현의 일이다. 스레드 · RT 계약은 `CatchSearch` 와 같다 (`SetClock` 만 스레드가 멈춰 있을 때). 그중 cycle 이 되읽는 것은 `source_seq` 하나다 (재확인의 게시 게이트) — `Replan` 의 것과, RT 가 plan 을 따를 때의 `PlanFirst` 의 것. E1-F17 (#743): `PlanFirst` 의 출발은 RT 의 보고가 정한다 — 따르는 plan 이 없으면 정지한 명령 (q_cmd, 0, 0), 있으면 그 plan 의 **교체**이고 `SourceSeq` 가 가리키는 보고된 구간을 새 구간의 node 0 시각에서 평가한 (q, q̇, q̈) 다 (없으면 `kNotFollowed`). `ReplanBudgetNs` 는 재계획 한 번의 예산, `EarliestFirstStartNs(now)` 는 지금 푼 첫 구간의 node 0 가 설 수 있는 가장 이른 시각이다 풀이의 기록 `SegmentRecord` 는 `mpc_docking` 계획기만 채우는 블록 `DockingSolveStats docking` 을 갖는다 (E1-F18 #744 — QP 수 · 단계별 시간 · KKT 잔차 · 행 그룹별 위반과 불능 그룹 · 포구 노드의 $c_N$ · $\sigma_s$ · $\sigma_t$ · lateral / timing 행의 부호 있는 여유; 다른 계획기는 `ran` false 로 둔다. trace digest 에는 넣지 않는다), 그리고 `mpc` 계획기가 채우는 정지의 기록 `stop_line_p` · `stop_line_d` · `stop_dev_max` · `stop_dev_end` · `stop_along_end` (#713 — 기본 NaN, trace digest 에 넣지 않는다)
-│   │   ├── planner_cycle.hpp                 -- 계획기 한 번 깨어남 `PlannerCycle::Run`: RT 상태 → 궤적 → 공분산 (token 불일치 1회 재독) → `PlanOnce` (A-4 단일 진입, S6-A 는 stub) → 궤적·리셋·activation 재검사 → 게시. 할당 0 (G3-K). 스레드는 `integrated_bringup` 이 소유. MPC E1-F03 · E1-F08: 선택적 다섯 번째 box (`SegmentSnapshot`) 와 꽂힌 구간 계획기가 둘 다 있을 때만 구간 계획기가 돈다 (없으면 plan 만 게시) — `publish_ns` 를 재검사 **전에** 찍고 (재검사 뒤에 끼는 reset 은 plan 일치 검사가 거른다 — E-STOP 의 reset floor 는 tick 시작 시각이라 그 역할을 못 한다) 단조 `segment_seq` 로 저장한다. reset 을 보면 box 에 valid=false 를 저장한다. 재계획은 `CycleOutcome` 을 바꾸지 않고 (MD-29) 결과는 `PlannerCycleRecord::segment`. 탐색 wake 가 plan 과 그 첫 구간을 **쌍으로** 게시한다 (구간 먼저, 같은 `publish_ns`; 구간이 보류되면 plan 도 보류 → `kHeld`, MD-56). 쌍의 재확인은 같은 track 의 더 새 스냅샷을 허용하고, `T_freeze` 안이거나 node 0 를 못 읽는 쌍은 버린다. 쌍 직후에는 RT 상태가 그것을 반영할 때까지 아무것도 저장하지 않는다. RT 가 plan 을 따르면 DECEL 까지 매 wake 에 `Replan` 이 돈다 — 재확인은 RT 가 여전히 그 plan 을 따르고, 새 node 0 의 출처가 같은 구간이고, 교체를 들고 있지 않은가다 (풀이 사이에 RT 가 교체 쌍을 받았으면 그 구간은 버린다). APPROACH 에서는 탐색이 `planner.freeze.t_stop_plan` (없으면 `T_freeze`, NaN 이면 돌지 않는다; 처음 따른 plan 의 t_c 기준, COMMITTED 부터는 재계획만) 까지 계속 돌고 (E1-F16 #742), 그 wake 는 **탐색 → (교체 쌍 또는 재계획)** 이다 (E1-F17 #743). 탐색은 wake 시각에서 재고 RT 가 보고한 구간 (`arm`) 과 예산의 상한 (`PlannerParams::dt_expected` − 구간 계획기의 `ReplanBudgetNs`; 둘 중 하나를 모르면 없음) 을 받는다 (상한이 한 주기에 묶는 것은 탐색과 재계획이다 — 교체의 첫 풀이는 그 위에 자기 예산으로 돈다). 판정이 교체 (`kReplaced`) 이고 plan 이 유효하면 첫 구간을 움직이는 팔에서 풀어 (`PlanFirst` — `rt.plan_active`) **교체 쌍**으로 게시한다 (구간 먼저, 같은 `publish_ns`, 새 plan id → `kPublished`). 새 구간의 node 0 는 따르는 plan 의 동결 (t_c − `T_freeze`) 앞이고 새 plan 의 t_c 보다 `T_freeze` 넘게 앞이어야 한다 (RT 가 전환 tick 에 버리지 않을 쌍만 낸다) — 가장 이른 시작 (`EarliestFirstStartNs`) 이 이미 어기면 풀지 않는다. 쌍의 재확인 — 같은 track · 시행 · activation, RT 가 같은 plan 을 APPROACH 에서 따르고 들고 있는 교체가 없음, 출처 구간이 그대로, 새 t_c 가 게시 시각에서 `T_freeze` 밖, 풀린 node 0 가 위의 두 경계 안이고 읽을 수 있음 — 이 하나라도 아니면 버린다 (`kSuperseded`, 재계획도 없다). 그 밖의 판정 (갱신 · 보류 · 후보 없음 · 궤적 없음) 과 풀지 않았거나 보류된 교체는 RT 의 보고를 다시 읽어 따르는 plan 의 구간을 재계획한다 (`kHeld`; 보류된 교체의 풀이 기록은 `PlannerCycleRecord::replacement`). RT 가 교체를 들고 있다고 보고하는 동안 (`plan_pending`) 에는 탐색도 재계획도 하지 않는다 (`kHeld`). E1-F12 (#738): wake 는 탐색과 구간 계획기를 `CatchSearch` · `SegmentPlanner` 로만 부르고 꽂힌 구현을 소유한다 — **꽂힌 것이 구성된 것**이다 — cycle 은 구성하지 않고 (두 구현의 헤더를 include 하지 않는다) 호출자가 팩토리 (`MakeGridCatchSearch` · `MakeMpcSegmentPlanner` · `MakeMpcDockingSegmentPlanner`, 실패는 null) 로 만들어 구성한 것을 `InstallSearch` · `InstallSegmentPlanner` 로 꽂는다 (configure 에서만); `Clear*` 는 비운다, `SearchConfigured` · `SegmentPlannerConfigured` 는 꽂혀 있는가다. cycle 의 시계는 둘 모두에 전달된다 — 꽂을 때와 `SetClock` 때 (`CatchSearch::SetClock`). cycle 은 복사 · 이동하지 않는다 기록 `PlannerCycleRecord::replace_step` (`ReplaceStep`, E1-F18 #744) 은 그 wake 의 교체 시도가 어디서 끝났는지다 — 풀지 않음 (`too_late_followed` · `too_late_new`) · 보류 · re-check 탈락 · 게시
-│   │   ├── mpc_segment_planner.hpp                 -- MPC 구간 계획기 `MpcSegmentPlanner` (MPC E1-F03 #629 · E1-F08 #661, ROS 비의존; `SegmentPlanner` 의 구현 — view 를 받는 `PlanFirst` · `Replan` 은 `MakeMpcSegmentBallTarget` 으로 t_c 의 공을 뽑아 값 진입을 부른다): APPROACH 부터 정지 끝까지의 관절 노드 구간을 푼다. 격자는 t_c − jΔ_pre (포구 전, j ≤ `n_pre_max`) 와 t_c + kΔ_s (정지) 이고 (정수 ns), 정지 끝 t_c + N_sΔ_s 는 고정 — configure 가 정지 코어 k ≤ k_max 와 포구 전 노드 수마다 포구 코어를 하나씩 Init 하고 (armature 는 명시적 0, MD-25; 두 코어의 η_v · η_τ · m_q 는 같다, MD-64) 코어마다 한 번 푼다 (실패하면 configure 실패, `WarmUpMaxNs`). `n_pre_max` < 1 이면 configure 를 거부한다 — 정지 구간만 푸는 계획기는 없다 (MD-70). `PlanFirst` 는 탐색이 낸 plan 의 첫 구간 (RT 가 plan 을 따르지 않으면 정지한 팔 — 보고된 자세가 코어의 위치 box 밖이면 사영하고 `x0_clamped`, 예산이 허용하는 가장 큰 포구 전 노드 수, 최소 jerk 기준을 코어 box 로 자르고 최고 속력이 `ref_speed_fraction`·η_v·q̇_max (∈ (0, 1.875] — 1 위면 속도 box 를 넘는 기준, trust region 이 되돌린다 #819) 를 넘는 관절만 변위를 줄임, cold, 재시도 없음. RT 가 plan 을 따르면 그 plan 의 **교체**다 (E1-F17 #743) — x₀ 는 RT 가 보고한 구간을 node 0 시각에서 평가한 (q, q̇, q̈) 를 box 로 사영한 것 (없으면 `kNotFollowed`), 기준은 그 상태에서 (q_star, 0, 0) 까지의 관절별 5 차 다항식이고 속력으로 줄이지 않는다; 따르는 plan 의 구간은 ring 에 남는다), `Replan` 은 RT 가 대기 · 따름으로 **보고한** 구간에서 출발하는 다음 격자점 (같은 포구 전 격자점은 warm 재풀이, 그 밖과 거부 · 실패한 풀이 뒤는 cold; 정지 코어가 기준을 trust region · 정지로 거부하면 기준 없이 한 번 더; 게시 구간 8 개의 ring — `SegmentRing<Payload>` (`segment_ring.hpp`), payload 는 정지선). 구간은 plan 의 track 을 싣고 (`FollowedTrack` — RT 가 마지막으로 소비한 track 이 아니다), 효력 시각의 lead 는 `StartsInTime` 한 곳이 정한다. `MakeMpcSegmentBallTarget` 은 t_c 의 공과 Σ_p (가장 가까운 표본의 6×6 을 `SampleBallNode` 로 전파한 것의 위치 블록 — 그 표본의 비유한 원소는 `sigma_valid` 거짓), `MpcSegmentBetweenNodeSpeedOk` 는 노드 사이의 속도 극값 검사. 게시는 풀이 성공 · 예산 안 (그 풀이의 시작부터) · t_eff 전 · slack 두 임계 이하 · 포구 위치 오차 · 노드 사이 속도 · 마지막 노드 정지 (1e-4) 를 모두 채울 때만 — 모두 양의 비교 (NaN 불통). 상대속도 slack s_v (`catch.rho_v` > 0 — 포구 코어에만 실린다) 는 기록만 하고 (`SegmentRecord::slack_v`) 판정하지 않는다. **정지 경로 직선** (`cost.w_perp` > 0, #698 — 두 코어 모두에 실린다): 포구 코어 풀이는 그 풀이의 공으로 직선을 만든다 (p_c = p̂_b, d̂ = v̂_b/‖v̂_b‖ — `PlanFirst` 는 plan 의 것, 포구 전 `Replan` 은 그 wake 의 공). 게시된 구간마다 그 구간이 풀린 직선을 ring 옆에 둔다 (`NotePublished` — 바로 앞의 풀이가 한 번 넘긴다; 고정 크기 배열 — 할당 없음. 정지 구간은 출처의 직선을 물려받는다). 정지 코어 풀이와 그 기준 없는 재풀이는 **출처 구간 — RT 가 따르는 구간 — 의 직선**을 쓴다: 그 wake 의 공이 유효해도, 더 새 직선의 구간이 게시됐어도 (RT 가 채택하지 않았다면) 쓰지 않는다. 직선이 없으면 풀지 않는다: 공 속력 ≤ `v_eps` 와 출처 구간에 직선 없음은 `kNoBall` (포구 전만의 사유가 아니다), 속력 비유한은 `kInputNonFinite`. `ResetTrial` 이 직선을 ring 과 함께 지우고, warm-up 은 합성 포구의 직선으로 두 코어를 푼다. `w_perp` 0 이면 코어는 직선을 읽지 않고 (입력은 기본값 그대로) 직선이 없다고 보류하지도 않는다. **정지의 기록** (#713, `w_perp` 와 무관): 직선은 `w_perp` 0 에서도 풀이마다 만들어 ring 옆에 두고, 해가 나온 풀이는 그 직선에 대해 잰다 — 해의 정지 노드 (포구 코어는 포구 노드부터, 정지 코어는 전부) 의 catch frame 을 FK 해 직선에서 떨어진 거리의 최댓값 · 마지막 노드의 값 · 마지막 노드의 직선 방향 위치를 `SegmentRecord::stop_line_*` · `stop_dev_*` · `stop_along_end` 에 적는다 (`MeasureMpcSegmentStop` — 자유 함수, RT-safe · 할당 없음; 풀이의 끝 시각을 찍은 뒤 · 게시 판정 앞이라 예산은 이 시간을 보지 않고 보류된 풀이도 재진다). 직선이 없는 풀이는 NaN 이다. `ApproachCoreInput` · `StopCoreInput` 은 코어가 마지막으로 받은 입력 (테스트 · 진단). `PlanFirst` · `Replan` 은 noexcept · 무로깅, 할당은 ProxQP 안에서만 (MD-23, #654). **plan 이 모델의 일부 관절의 것일 때 (E3-F01 #640)**: 관절 집합이 이 모델 안에 있는 plan 을 받는다 (`PlanJointsWithin`, 아니면 `kNoState`). plan 밖 관절의 기준은 정지 출발에서 변위 0 (명령에 정지), 교체에서 보고된 구간의 (q, q̇, q̈) 에서 그 위치에 정지하는 같은 5 차 다항식이다 **E3-F02 (#641)**: 모델의 `groups` (`JointGroups` — 프로파일의 군 수와 같아야 한다) 와 `rest_pose` (`planner.wait_pose`, device 순서) 로 군의 가중을 관절마다 펴고 (`GroupOfModel`), 포구 코어 · 정지 코어마다 군의 분할을 만든다 (포구 전은 `blocks.pre` 개씩, 정지는 군의 `stop` 에 재계획 k 의 규칙)
-│   │   ├── mpc_segment_core.hpp                     -- segment MPC 코어 `MpcSegmentCore` (MPC 계획 E1-F01, #627): 정지 구간의 jerk 입력 condensed QP (formulation §1.6). move blocking (관절 공통 블록, B ≥ 3), 종단 q̇=q̈=0 · 위치 ∪ trust region · 속도는 hard, 토크는 `computeRNEADerivatives` 1차 선형화 행 + 노드×관절 slack (τ_max 비율, 1차 벌점). 기준 x̄ 가 없으면 kinematic pre-solve (cold) 뒤 본 solve. **지평 N·Δ 가 곧 정지 시간** (MD-21) 이라 값은 호출자가 정한다 (`planner.segment.mpc.horizon` — 값은 로봇별 `segment_mpc.yaml`). 진입 상태가 자체 box 밖 · x₀ 가 x̄₀ 에서 δ 넘게 표류 · 기준 종단이 정지가 아님 · 비유한 입력은 QP 전에 거부하고 결과를 건드리지 않는다. `Init` 이 모델 사본 (armature 포함) 과 전부를 할당하고 `Solve` 는 noexcept. 조립은 Kronecker 구조 (`reference_assembly` 는 조밀 조립 oracle, 테스트 전용). **E1-F07 (#660, MD-51 – MD-53): APPROACH 부터 정지까지** — `n_pre` · `dt_pre` 로 포구 전 노드를 두면 지평은 N = `n_pre` + `n_nodes` (≤ `kMaxMpcNodes` 32) 이고 포구 노드는 `n_pre` 다. 간격이 둘이면 jerk 비용을 구간 길이로 가중하고, 블록은 포구 노드를 넘지 못하며 포구 뒤에 3 개 이상이어야 한다. `catch_terms` 를 켜면 포구 노드에 위치 (입력 `w_p` 3×3) · 접근축 (`rtc_math` 의 e_a, `w_axis`) · 상대속도 (`w_v_par` · `w_v_perp`, 목표 `gamma_ref`·v̂_b, H_v δq 포함) 항과 선택적 slack `s_v` (`rho_v` · `v_rel_allow`, 무차원) 가 붙는다 — 이때 기준 x̄ 는 필수다 (pre-solve 는 포구점을 모르는 정지 문제). 노드 항은 공통 루틴 하나 (`AccumulateNodeTerm`) 가 Hessian · gradient 로 접고 `w_perp` 도 그 루틴을 탄다. `w_perp` 는 정지 구간의 노드 (포구 노드부터) 에만 걸린다. 풀이마다의 입력 `w_delta_scale` (w_Δ 의 공분산 비례) · `cold_start` (새 plan 의 첫 풀이, 다른 코어로 넘어간 풀이). warm 풀이가 실패하면 코어가 solver 를 비우고 한 번 다시 푼다 (결과 `cold_retried`). 결과에 포구 노드를 FK 로 다시 평가한 위치 · 축 · 상대속도 오차와 γ. `CatchPositionWeight` 가 κ(Σ_p + σ²I)⁻¹ 를 고유값 하한 · 상한과 함께 만든다. 새 파라미터의 기본값은 모두 끔이고 그때 E1-F01 과 같은 QP 다 (golden 회귀) **E3-F02 (#641)**: 관절별 `w_vel` · `w_rest` (+ `q_rest`) — 상수 Hessian 이라 `Init` 에서 짓고 `w_delta_scale` 경로를 포함한 H 의 모든 경로에 더한다 (pre-solve 에는 없다) — 와 각운동량 변화율 (`w_ang_pre` · `w_ang_post` · `ang_scale`; 선형화 점에서 노드마다 `dccrba` 하나, 가속도 이득의 3 행 누적기 — `AccumulateNodeTerm` 은 그대로). 군별 분할 (`n_groups` · `joint_group` · `group_blocks`) 은 `BlockLayout` 의 class 로 접고, class 하나는 군이 없는 문제와 비트 단위로 같다. 결과의 `whole_body` 는 선형 모델의 값 (군별 항 · `ang` · `ang_rate_max`). 활성 플래그 `VelocityTermActive` · `RestTermActive` · `AngularMomentumTermActive`
-│   │   ├── mpc_segment_core_catch.hpp               -- 포구 노드의 선형화 seam `LinearizeCatchAt` → p, e_a, J_v, J_ω, L_a = J_a J_ω, H_v = ∂_q[J_v(q) v]. H_v 는 pinocchio 의 **점** 속도 미분 (`getPointVelocityDerivatives`) 이다 — frame 속도 미분은 공간 속도의 것이라 ω×v 항이 없다. 정렬 deadband 에서 `rtc_math` 가 주는 J_a = 0 을 극한 [a_d]×[z]× 로 바꾼다 (QP 의 곡률 유지)
-│   │   ├── mpc_segment_core_torque.hpp              -- 한 노드의 토크 선형화 seam `LinearizeTorqueAt` → τ̄, D = [∂τ/∂q ∂τ/∂q̇ M]. pinocchio 가 M 을 상삼각만 채우고 armature 를 출력 대각에 **더하므로** 매 호출 0 으로 지우고 대칭화한다
-│   │   ├── segment_ring.hpp                         -- `SegmentRing<Payload>` (E1-F16 #742 · E1-F17 #743, header-only): 게시한 구간 8 개 (오래된 것부터) 와 구간마다의 payload (`NoSegmentPayload` 면 없음). `Push` 는 세 plan 의 구간만 남긴다 — RT 가 따른다고 알린 plan 과 들고 있다고 알린 교체 (`NoteReported` — `plan_pending`), 넣는 구간의 plan (보통은 그 셋이 둘이다). 그래서 교체 쌍의 첫 구간이 따르는 plan 의 구간 옆에 들어가고, RT 가 쌍을 들고 있는 동안에는 무엇을 넣어도 남는다. RT 의 보고는 plan 별로 읽는다 (`ReportedIn` — 추종 구간은 따르는 plan 에서, 대기 구간은 들고 있는 교체 또는 따르는 plan 에서; `Source` · `SourceSeq` · `FollowedTrack`). 가득 차면 RT 가 마지막으로 보고한 둘 (추종 구간과 대기 구간 — 교체를 들고 있으면 그 교체의 첫 구간) 을 빼고 가장 오래된 것을 버린다. 두 구간 계획기가 공유한다. 할당 0
-│   │   ├── plane_crossing.hpp                       -- 공이 catch frame 의 한 평면을 지나는 시각 (E1-F17 #743, header-only — 식은 `docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md` §17.16): `PlaneGap` (g = e₃ᵀRᵀ(p_b − p_h) − s_plane) 과 `SolvePlaneCrossing` (시작 추정에서 출발하는 secant — 창 `window_ns` · 허용 오차 `tol_ns` · step 상한 `max_iterations`; 평가 불가 · 비유한 · 기울기 없음 · 창 밖 · 미수렴은 invalid). g 는 호출자가 callable 로 준다 — payload 도 모델도 모른다. 할당 · 잠금 · 예외 없음. 포구 컨트롤러가 COMMITTED 에서 손의 폐쇄 지령 시각을 다시 맞추는 데 쓰고, 그 값은 `hand_sequencer.hpp` 의 `HandSequencer::Retime` (commit 뒤 · 폐쇄 지령 전에만 듣는다) 이 받는다
-│   │   ├── mpc_docking_segment_planner.hpp          -- `mpc_docking` 구간 계획기 `MpcDockingSegmentPlanner` (E1-F16 #742, ROS 비의존; 두 번째 `SegmentPlanner` — 식은 `docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md` §17.12): `MpcDockingSegmentCore` 를 포구 전 구간 수 n_pre = 1..`n_pre_max` 마다 하나씩 configure 에서 만들어 한 번 푼다 (포구 노드 = 공이 입구 평면을 지나는 순간). `PlanFirst` 는 RT 가 plan 을 따르지 않으면 정지한 팔에서 (아니면 `kNotAtRest`), 따르면 (교체 쌍 — E1-F17 #743) RT 가 보고한 구간을 새 구간의 node 0 시각에서 평가한 (q, q̇, q̈) 에서 (없으면 `kNotFollowed`) 푼다 — 탐색의 해 (`CatchSolution`) 가 이 plan 의 것이고 그 해가 출발한 구간이 RT 가 그 node 0 에 보고하는 구간과 같으면 (`source_seq`) 노드를 다시 풀지 않고 이 코어에서 평가해 그대로 게시한다 (`converged` 는 탐색의 것). 스스로 푸는 첫 풀이의 시작점은 앞선 wake 가 같은 첫 구간 (같은 track · plan id · t_c) 을 풀다 끝난 점이 있으면 그것 (지난 노드를 버리고 node 0 을 x₀ 로 — `StartFromDockingSolution`, `nlp` 탐색과 한 함수), 없으면 plan 의 `q_star` 다 (#803; 기억은 하나 — 그 plan 의 게시 · `ResetTrial` · 기억에서 출발한 풀이의 기한 아닌 거부 · solver 실패에서 지운다; `SegmentRecord::start_from_memory`). `Replan` 은 RT 가 보고한 구간에서 출발하는 같은 t_c 의 다음 격자점, 포구 전 구간이 남지 않으면 `kPastReplanWindow` — **포구 뒤에는 게시하지 않는다**. 게시 조건은 예산 · `StartsInTime` · 실행 가능과 수렴 · slack 상한 · 노드 사이 속도 · `ValidateSegmentNodes`. 팩토리 `MakeMpcDockingSegmentPlanner`. `ProxQP` 가 solve 안에서 할당한다 (기록된 RT-1 위반, #654). **사슬의 해 (E3-F01 #640)**: 탐색의 해를 그대로 게시하는 것은 해의 관절 집합 (`CatchSolution::joint_set`) 이 이 모델의 관절 전부일 때뿐이다. 진부분집합이면 (탐색이 이 모델의 사슬에서 돈 것) 게시하지 않고 넓혀 풀이의 시작 궤적으로 쓴다 — 사슬의 관절은 탐색의 노드 (지난 노드는 버린다), 그 밖은 출발 위치에 정지, node 0 은 x₀, 포구 자세 목표는 사슬이 `q_star` · 그 밖이 출발 위치이고, 탐색의 격자가 이 계획기의 것보다 늦게 시작하면 그 격자에서 푼다 (`SegmentRecord::start_from_search` — `from_search` 는 거짓). 쓸 수 있는 해가 없어도 plan 밖 관절의 목표는 출발 위치다. plan 은 `PlanJointsWithin` 을 지나야 한다 (`kNoState`) **E3-F02 (#641)**: 모델의 `groups` 로 군의 가중을 `core:` 의 관절별 벡터 위에 펴고 (`ApplyGroupWeights` — 끈 벡터는 빈 채로), 코어마다 군의 분할을 만든다; `CoreFor` · `CoreParamsFor` · `GroupOfModel` 은 테스트용
-│   │   ├── ball_node_samples.hpp                    -- 계획기 노드 시각의 공 표본 `BallNodeSample` · `SampleBallNode` (E1-F13, #739, header-only): 평균은 `SampleAt` (5 차 Hermite — 다른 소비자와 같은 공), 6×6 공분산은 가장 가까운 예측 표본에서 F(Δ) Σ F(Δ)ᵀ 로 옮긴 것 (대칭화). 공분산이 없거나 · 다른 예측의 것이거나 · 비유한 원소가 있거나 · 분산이 음이면 `cov_valid` 가 거짓이다 (0 으로 바꾸지 않는다). 평균의 유효 여부는 공분산과 독립이다
-│   │   ├── mpc_block_grid.hpp                       -- 두 segment 코어가 공유하는 move blocking 격자 (E1-F13, #739, header-only): 블록 분할의 규칙 `CheckBlockGrid` (포구 노드를 넘지 않음 · 포구 뒤 셋 이상), 구간 → 블록 사상 `FillBlockOfInterval`, 삼중 적분기의 stage gain `ComputeBlockStageGains`. `MpcSegmentCore` 와 `MpcDockingSegmentCore` 가 같은 함수를 쓴다 — 한 코어의 궤적을 다른 코어와 RT 표본기가 같은 뜻으로 읽게 **E3-F02 (#641)**: `BlockPattern` 과 `BlockLayout` (`BuildBlockLayout` — 같은 분할의 군을 한 블록 class 로 접고 (관절, 블록) 마다 변수의 열을 정한다)
-│   │   ├── mpc_docking_relative_state.hpp           -- mpc_docking 의 한 노드 seam (E1-F13, #739 — 식은 `docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md` §17.5 – §17.9): capture frame 의 운동학 `ComputeDockingFrameKinematics`, 상대상태 r^H · ν^H (transport 항 포함) `ComputeDockingRelativeState`, corridor · closing envelope 행, 통과 평면 공분산 `ComputeDockingCrossing`, lateral · timing · 속도 chance 행, 충격 `ComputeDockingImpact` (β_h · m_red · E · P), 조작성 `ComputeDockingManipulability` (ψ_m 과 정확한 기울기), 상대 가속 (진단). 값마다 q · q̇ 에 대한 미분을 같이 낸다. 포구 노드의 행은 요청하면 공 (p_b, v_b) 에 대한 기울기 `DockingBallGradient` 도 낸다 (포구 시각을 변수로 둔 코어가 쓴다). 수치 가드 둘 (corridor 의 max(ℓ, 0), Π 의 max(c, c_min)) 과 모든 표준편차의 ε_σ. `NormalCdf` · `NormalQuantile` · `DockingTimingSigmaMax` (risk → κ, 폐쇄 창 → σ_max). 할당 없음, noexcept
-│   │   ├── mpc_docking_segment_core.hpp             -- mpc_docking 수치 코어 `MpcDockingSegmentCore` (E1-F13, #739 — 식은 같은 참고 문서 §17): 지금부터 포구 시각을 지나 정지까지의 팔 궤적 하나를 푸는 SQP (Gauss–Newton Hessian, ProxQP). 결정변수는 `MpcSegmentCore` 와 같은 블록 상수 jerk, 격자는 포구 시각에 닻. hard 인 비선형 행 (토크 · gap · 통과 평면 · lateral · timing · 속도 집합 · 충격) 은 (군, 노드) 마다 elastic 하나이고, 해는 그 행들을 비선형 모델로 다시 평가해 허용 오차 안일 때만 `feasible` 이다. ℓ₁ merit 의 줄탐색 (QP 해가 남긴 행 잔차를 허용), 벌점은 증가가 elastic 을 줄일 때만 키운다, 시작점은 늘 선형 행을 만족 (호출자 궤적의 사영 또는 초기화 QP). 결과의 `feasible` · `converged` 는 합치지 않고, `reason` 이 끝난 이유를 낸다 (수렴 · 반복 상한 · 기한 · 실행 불가 + 행 군 · 줄탐색 실패 · QP 실패). 기한은 QP 를 시작하기 전마다 본다 (#803 — 초기화 QP · 반복마다 · cold 재풀이 · 벌점 되돌린 재풀이 · 벌점 probe; 지났으면 그 QP 를 시작하지 않고 `cut_site` 에 자리를 적는다. 초기화 QP 앞이면 반복값이 없어 `Solve` 가 false, 첫 반복 앞이면 시작점 · `iterations` 0; 돌고 있는 QP 는 끊지 않는다). step 이 trust region 에 걸려 있는 동안 (`step_capped`) 은 수렴도 실행 불가도 판정하지 않는다. 스위치 `catch_time_variable` (E1-F14 #740, 기본은 꺼짐 — 끈 코어는 차원 · 경로 · 수치가 그대로): 포구 노드를 닻에서 δt_c 만큼 옮기는 변수를 더한다. 포구 노드 앞 구간 하나만 늘어나고, 포구 노드부터의 box 와 종단 정지가 elastic 행 군이 되며, 포구 노드의 공은 예측에서 직접 읽는다. δt_c 는 QP 안에서 움직이지 않는다 — δt_c 를 고정한 SQP 가 끝나면 그 최적값의 δt_c 미분 (묶은 행의 multiplier) 으로 secant 이동을 한다 (한 번에 `delta_t_step` 이하, 호출자가 준 구간 안의 정수 ns). 예측의 끝을 지난 시각의 공 표본 (`after_horizon`) 은 받지 않고, 거부된 호출은 결과에 이전 풀이의 값을 남기지 않는다. `Evaluate` 는 풀지 않고 호출자의 궤적을 평가한다. `Init` 이 전부 할당하고 `Solve` 는 noexcept — 코어 자신은 할당하지 않지만 ProxQP 는 한다 (기록된 RT-1 위반, #654). 부르는 것은 테스트뿐이다 (계획기 통합은 E1-F16) `PositionLower` · `PositionUpper` · `VelocityLimit` · `AccelerationLimit` · `HasAccelerationBox` 는 행과 출발 상태 검사가 쓰는 box 의 읽기 접근자다 (E1-F14 — 탐색의 screening 과 출발 상태 사영이 같은 값을 쓴다) 결과의 `lateral_margin` · `timing_margin` (E1-F18 #744) 은 포구 노드의 lateral 행과 timing 행의 부호 있는 여유다 — `violation` 은 지켜진 행에서 0 이라 여유를 말하지 못한다. **E3-F01 (#640)**: `MpcDockingSegmentCoreParams::torque_rows` (기본 참) — 거짓이면 토크 행과 그 elastic 이 QP 에 없고 (열어 둔 행이 아니다) 결과의 `tau_ratio_max` 는 NaN 이다 (평가하지 않음). 토크 비용 (`r_tau`) 은 따로이고 그대로 조립된다. 역동역학이 로봇의 것이 아닌 모델 (다른 body 를 잠근 사슬) 위의 코어를 위한 것이다 **E3-F02 (#641)**: 관절별 `w_vel` (두 running sum) · `w_rest_stop` (정지 노드, `q_nom` 쪽) 과 각운동량 변화율 — 계수는 Solve 의 시작점에서 한 번 잡아 반복 · merit 내내 둔다 (`Evaluate` 는 마지막 Solve 의 것). 값은 `MpcDockingCost::whole_body` (`total` 에 들고 `reference` 에는 들지 않는다). 군별 분할 (`n_groups` …) 은 `catch_time_variable` 과 같이 쓰지 못한다
-│   │   ├── jerk_segment.hpp                  -- 구간 상수 jerk 관절 궤적의 닫힌식 평가 (formulation §1.5, header-only) `EvaluateJerkSegment` · `SampleJerkTrajectory`. MPC 노드에 대해 정확하고 노드에서 C². t<0 · Δ≤0 · 비유한은 거부, t ≥ N·Δ 는 노드 N 유지. E1-F02 RT 샘플러와 E1-F03 계획기의 자기 구간 예측 (MD-28 경로 (i)) 이 공유한다
-│   │   └── node_follower.hpp                 -- segment payload 의 RT 샘플러 `NodeTrajectoryFollower` (MPC E1-F02, #628): lead 축 시각에서 관절 기준을 닫힌식으로 평가하고 (`jerk_segment.hpp`) 손의 목표를 FK 로 만든다 — T_d = T(q_ref), V_ff = ᵂJ(q_ref)·q̇_ref (속도 FK, `LOCAL_WORLD_ALIGNED`, CLIK `twist_ff` 와 같은 축). device → 모델 순서 사상을 Init 에서 받는다 (순열 검사). 자기 `pinocchio::Data`, `Sample` 은 할당 0 · noexcept · 실패 시 출력 불변, 노드 0 이전 질의는 거부. CLIK 잔차 0 은 주장하지 않는다 — 샘플러가 보장하는 것은 FK 일관성이고 (MD-30), 자세 목표 $q_{ref}$ 와 자세 속도 feedforward $\dot q_{ref}$ 를 CLIK 에 넘기는 것은 호출측이다 (MD-36). 배선: catching 컨트롤러의 `mode: mpc` 추종 tick — APPROACH 부터 HOLD 까지 (E1-F04 · E1-F09). **E1-F08 (MD-60)**: 포구 전 노드가 있는 구간은 포구 노드 앞을 `dt_pre_ns`, 뒤를 `dt_ns` 로 읽는다 (정수 ns 로 가르고 포구 노드의 시각은 정지 쪽). 샘플러는 `ValidateSegmentNodes` 를 부르지 않으므로 `n_pre` 의 범위도 shape 검사에서 본다. **E1-F14 (#740)**: 포구 노드 앞 구간의 길이가 다른 구간 (`dt_catch_ns` ≠ 0) 은 세 부분으로 읽는다 — 노드 `n_pre` − 1 까지 `dt_pre_ns`, 거기서 포구 노드까지 `dt_catch_ns`, 그 뒤 `dt_ns` — 그리고 그 길이나 노드 0 의 시각이 `ValidateSegmentNodes` 가 받는 것이 아니면 거부한다. RT 의 정지 위치 검사 (`NodesInsideBox` · `NodePosition`) 는 MD-73 으로 지웠다
-│   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
-│   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
-│   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
-│   │   ├── bandwidth_separation.hpp          -- §7.6 MUST-1 판정식 (header-only, 무상태) `min_axis ω_i/ω_a`, ω = √(K_p/Λ). **Λ_S 를 행렬 인자로** 받아 대각만 읽는다 (`.diagonal()` 을 Ref 로 받으면 stride 때문에 힙 복사가 난다 — RT-1). 언제 평가할지·어디에 발행할지는 바인딩 몫
-│   │   ├── inertia_shaping.hpp               -- §6.3 관성 성형 코어 (header-only, 무상태) f_cmd = B·f_task + (B−I)·f_ext, B = Λ_S Λ_d⁻¹ + §5.2 편차 clamp. **Λ_S 를 인자로** 받는다 (TaskDynamics 를 모른다 — S2b 수렴점 선점 금지). 스크래치는 max-size `Matrix<double,Dyn,Dyn,0,6,6>` 라 m<6 에서도 heap-free
-│   │   ├── differential_ik.hpp               -- §7.3 운동학 DLS J⁺ + 속도공간 nullspace N (task_dynamics 의 §6.5 λ 규칙 재사용)
-│   │   ├── admittance_integrator.hpp         -- §7.2 semi-implicit Euler + exp3 retract, §7.5 변위/속도 가드
-│   │   ├── joint_command_tail.hpp            -- §7.3 관절 tail: q_base + q̇Δt → [q_min+δ, q_max−δ] clamp → q_base±|v|Δt rate 재바운드 → q̇ round-trip. **순서가 MUST** (clamp 는 받은 스텝을 넓힐 수 있다). position 출력을 자기적분하는 바인딩이 공유한다
-│   │   ├── safety_limiter.hpp                -- §10.5 4단계 (관절한계 반발 → saturation → rate → non-finite)
-│   │   ├── torque_estop.hpp                  -- E-8 토크 홀드 τ = ĝ(q) − D·q̇
-│   │   ├── compliance_state_machine.hpp      -- §10.6 상태기계 (BIAS_CALIBRATING…SAFE_STOP latch)
-│   │   ├── external_wrench.hpp               -- 외부 wrench 입력 계약 (SeqLock, generation 기반 staleness, contact 히스테리시스)
-│   │   ├── wrench_conditioning.hpp           -- bias → 정적 중력보상 → deadband → saturation → filter
-│   │   └── wrench_pipeline.hpp               -- 위 두 개 + bias 이중 래치 + Ad^{-T} + fade 를 한 tick 순서로 묶은 것
-│   ├── trajectory/
-│   │   ├── trajectory_utils.hpp              -- 5차 다항식 궤적 (QuinticPolynomial)
-│   │   ├── joint_space_trajectory.hpp        -- N-DOF 관절 공간 궤적 생성기
-│   │   ├── task_space_trajectory.hpp         -- SE(3) 태스크 공간 궤적 생성기
-│   │   ├── quintic_blend_trajectory.hpp      -- C2 via-point 블렌드 궤적
-│   │   ├── quintic_spline_trajectory.hpp     -- C4 글로벌 스플라인 궤적
-│   │   ├── task_space_blend_trajectory.hpp   -- SE(3) C2 via-point 블렌드
-│   │   └── task_space_spline_trajectory.hpp  -- SE(3) C4 글로벌 스플라인
-│   ├── estimation/
-│   │   ├── momentum_observer.hpp             -- 일반화 운동량 관측기 잔차 `r` (Layer 1). `M`/`C` 가 아니라 조립된 nv 벡터 (`p = M q̇` · `Cᵀq̇` · `g` · `τ_m`) 를 받는다 — 모델 순서와 device 순서를 섞을 자리를 관측기에서 없애기 위함이며, 그 좌표 계약은 호출자(`integrated_bringup/support/momentum_observer_wiring.hpp`)가 소유한다. `τ_m` 은 **관절 토크 [N·m]** 이고 관절에 작용하는 일반화력을 **전부** 담아야 한다 (모터 전류는 backend 경계에서 변환; `DeviceState::motor_efforts` 는 별도 lane). lane 판정도 호출자 몫 — `rtc::IsLaneReadable` 는 `rtc_controller_interface` 에 있고 이 패키지는 그것을 의존하지 않는다
-│   │   ├── inertial_estimator.hpp            -- payload 관성 파라미터 회귀 (Layer 2B). `r ≈ Y₄ φ₄` 를 누적 정규방정식(4×4)으로 푼다. **4 파라미터이고 `I` 는 없다** — 준정적 게이트 아래 회귀자의 관성 6열은 항등적으로 0 이라 (자세 60개를 쌓아도 rank 4) 중력만으로는 회전 관성에 정보가 없다. 그리고 **단일 자세로는 절대 안 된다**: 중력 wrench 가 `τ = (m·c) × ᵂg` 라 외적이 `m·c` 의 ᵂg 방향 성분을 지우므로 한 자세는 4개 중 정확히 3개만 고정한다 (실측 σ₄ = 0, 모든 자세·두 로봇). 그래서 per-tick LS 가 아니라 forgetting factor 를 둔 RLS 이고, σ_min 게이트가 4번째 방향이 채워지기 전에는 보고를 거부한다 — 기동 직후 invalid 는 정상 상태다. Layer 2A 가 이 문제를 피하는 것은 파라미터가 아니라 Jᵀ 로 wrench 를 맞추기 때문. 회귀자는 `rtc_urdf_bridge::RtModelHandle::ComputePayloadRegressor` 가 주고, 좌표 계약은 여기서도 호출자 소유
-│   │   └── payload_estimator.hpp             -- 준정적 payload wrench/질량 역산 (Layer 2A). `ŵ = argmin‖J_pᵀw − r‖² + μ‖w‖²` [WRENCH-A] 와 `m̂ = (f̂·ᵂg)/‖ᵂg‖²` [MASS-A]. **부호 규약은 Layer 1 이 이미 고정**한다 — `[MO-3a]` 가 전제하는 `M q̈ + C q̇ + g = τ_m + τ_ext` 때문에 `r` 은 *환경이 로봇에 가하는* 토크이고, 따라서 매달린 질량은 **아래**를 향하는 힘을 준다. `ᵂg` 로 나누는 형태라 `up_axis` 파라미터가 없고 비-Z 중력 모델도 코드 변경 없이 동작한다 (ARCH-1). damped LS 는 신규 구현이 아니라 `compliance::DifferentialIk` 재사용 (P5) — `(J⁺)ᵀr` 이 곧 [WRENCH-A] 이고, NUM-1 §6.5 σ_min-adaptive 법칙과 NaN-pivot 가드를 그대로 상속한다. `J` 와 `r` 은 **같은 관절 순서**여야 하며 그 계약은 호출자 소유
-│   └── grasp/
-│       ├── grasp_types.hpp                   -- 그래스프 상태 머신 타입/파라미터
-│       ├── grasp_controller.hpp              -- 적응형 PI 힘 제어 그래스프 컨트롤러
-│       ├── pull_force_estimator.hpp          -- in-plane 외력(pull) 추정. 입력은 finger-on-object 힘 (PullContactConfig::force_sign 기본 +1; 반대 관례 소스는 -1 로 wiring)
-│       └── grasp_state.hpp                   -- GraspStateData POD (SeqLock-호환). contact_flag 는 capability-aware: sensor A → native sigmoid prob, sensor B → derived binary (rtc_msgs/GraspState.msg 참조)
-├── src/
-│   ├── controller_registration.cpp           -- no-op (registration은 robot bringup 책임)
-│   ├── params/                               -- 위 스키마 파서 구현 (`catch_pose_ik_params.cpp` 포함 — S1.9 IK 옵션의 YAML 반쪽). `docking_params.cpp` 는 위 `docking_params.hpp` 구현이다. `catching_yaml_read.hpp` 는 `catching:` 트리를 읽는 파서들 (`catching_params.cpp`·`catch_pose_ik_params.cpp`·`planner_params.cpp`·`docking_params.cpp`) 이 공유하는 **private** 읽기 helper (섹션 접근·TBD double·값 표기) 다 — 노드를 어떻게 *읽는가* 만 공유하고, 어떻게 *보고하는가* (검증 report vs 예외) 는 각 파서가 갖는다
-│   ├── catching/
-│   │   ├── catch_pose_ik.cpp                 -- 위 `catch_pose_ik.hpp` 구현 (Pinocchio + Eigen, ROS 비의존)
-│   │   ├── reach_bound.cpp                   -- 위 `reach_bound.hpp` 구현 (Pinocchio + Eigen, ROS 비의존)
-│   │   ├── catch_pose_ik_batch.cpp           -- 위 `catch_pose_ik_batch.hpp` 구현
-│   │   ├── catch_pose_ik_batch_main.cpp      -- `catch_pose_ik_batch` 실행파일의 `main` (ARCH-7-exempt 오프라인 검사 도구)
-│   │   ├── batch_csv.hpp                     -- 배치 도구들이 공유하는 CSV 읽기·쓰기 (private): 헤더가 열 순서를 정하는 `ReadHeadered`/`Row` (중복 헤더·필수 열·행 폭 검사), 빈 끝 필드 보존, 유한값·정수 폭 검사, `%.17g`
-│   │   ├── catch_gate_batch.cpp              -- 위 `catch_gate_batch.hpp` 구현
-│   │   ├── catch_search_batch.cpp            -- 위 `catch_search_batch.hpp` 구현
-│   │   ├── docking_config.cpp                -- 위 `docking_config.hpp` 구현
-│   │   ├── mpc_segment_core.cpp                     -- 위 `mpc_segment_core.hpp` · `mpc_segment_core_torque.hpp` · `mpc_segment_core_catch.hpp` 구현 (Pinocchio RNEA 미분 · frame Jacobian · 점 속도 미분, rtc_math 축 정렬 오차 + rtc_tsid `QPSolverWrapper`)
-│   │   ├── mpc_docking_relative_state.cpp           -- 위 `mpc_docking_relative_state.hpp` 구현 (Pinocchio 의 점 · frame 속도 미분, RNEA 미분, 운동학 Hessian)
-│   │   ├── mpc_docking_segment_planner.cpp          -- 위 `mpc_docking_segment_planner.hpp` 구현
-│   │   ├── mpc_docking_segment_core.cpp             -- 위 `mpc_docking_segment_core.hpp` 구현 (rtc_tsid `QPSolverWrapper` 둘 — 본 QP 와 초기화 QP)
-│   │   ├── node_follower.cpp                 -- 위 `node_follower.hpp` 구현 (Pinocchio 속도 FK)
-│   │   ├── mpc_segment_planner.cpp                 -- 위 `mpc_segment_planner.hpp` 구현
-│   │   ├── planner_cycle.cpp                 -- 위 `planner_cycle.hpp` 구현
-│   │   ├── grid_catch_search.cpp                -- 위 `grid_catch_search.hpp` 구현
-│   │   ├── nlp_catch_search.cpp                 -- 위 `nlp_catch_search.hpp` 구현
-│   │   ├── catch_gate_batch_main.cpp         -- `catch_gate_batch` 실행파일의 `main` (ARCH-7-exempt 오프라인 검사 도구, 모든 인자 필수)
-│   │   └── catch_search_batch_main.cpp       -- `catch_search_batch` 실행파일의 `main` (ARCH-7-exempt 오프라인 검사 도구): `--model-config` · `--sub-model` (profile 의 `planner.sub_model` — model config 의 `sub_models` 항목, 없으면 `tree_models` 항목) · `--search-sub-model` (profile 의 `planner.search.sub_model` — 탐색이 `--sub-model` 의 일부 사슬에서 돌 때의 `sub_models` 항목; 그때 binding 이 `n_dev` 와, wake 전체를 돌면 `segment.device_of_model` 을 준다) · `--catch-frame` · `--params` (합성된 트리) · `--binding` · `--wakes` · `--out` · `--print-reach-bound` (두 탐색의 reach 사전 필터 구 — `ComputeReachBound` 의 중심·반지름과 두 탐색 각각의 `ik.eps_pos` (`tolerance_by_search`; `tolerance` 는 트리가 고른 탐색의 것) — 를 JSON 한 줄 `catch_reach_bound/1` 로 찍고 0 으로 끝난다. `--binding` · `--wakes` 불필요; 포맷은 `ReachBoundJson`). binding 에 `segment` 가 있으면 wake 전체를 돌고 구간 계획기의 열을 더 낸다. 탐색이나 구간 계획기가 설정을 거부하면 사유를 stderr 에 적고 3 으로 끝난다
-│   └── controllers/
-│       ├── estimation/
-│       │   ├── inertial_estimator.cpp
-│       │   ├── momentum_observer.cpp
-│       │   └── payload_estimator.cpp
-│       └── grasp/
-│           ├── grasp_controller.cpp
-│           └── pull_force_estimator.cpp
-└── examples/controllers/                     -- ★ 모두 reference example (ARCH-1)
-    ├── indirect/
-    │   └── clik_controller.yaml          -- example (placeholder `<robot>` 그룹)
-    └── direct/
-        ├── joint_pd_controller.yaml      -- example
-        └── operational_space_controller.yaml -- example
+├── include/rtc_controllers/  -- 공개 헤더 (계열별)
+├── src/                      -- params/ 파서 · 비헤더 구현
+├── examples/controllers/     -- 참고용 YAML
+├── docs/                     -- compliance · grasp 문서
+└── test/                     -- gtest + 공용 fixture
 ```
 
-> 위 YAML 들은 *복제용 reference* 입니다 (설치 위치: `share/rtc_controllers/examples/`). 실제 production 설정은 `integrated_bringup/config/<robot>/controllers/` 에 두고, `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 `config_package` 를 자기 패키지로 등록하세요 (config_package 인자의 `<robot>_bringup` 은 다운스트림 패키지 이름 placeholder — 이 저장소의 concrete 패키지는 `integrated_bringup`). `<robot>` placeholder 는 자신의 CM `devices.<group>` 키 (e.g. "ur5e", "iiwa7") 로 일괄 치환합니다. 자세한 사용법은 각 YAML 상단 주석 참고.
-
----
-
-## 컨트롤러 상세
-
-아래 4절은 비-compliance 계열입니다. compliance 3종(`TaskImpedance` / `TaskAdmittance` / `CascadedCompliance`)의 법칙·계약·근거는 §개요의 서술과 [docs/compliance-conventions.md](docs/compliance-conventions.md) 가 SSoT 이므로 여기서 반복하지 않습니다.
-
-### 1. 관절 공간 PD + 중력/코리올리 피드포워드 (`joint/joint_pd_law.hpp`)
-
-5차 다항식 궤적 생성과 선택적 중력/코리올리 **피드포워드**를 포함하는 관절 공간 PD 토크 제어기입니다.
-
-> **코어:** 아래 제어 법칙 자체는 `joint/joint_pd_law.hpp` 의 `ComputeJointPdCommand()` 가 구현하고 바인딩이 그것을 호출합니다 (pin: `test_joint_pd_core.cpp`). 코어는 궤적을 소유하지 않습니다 — 궤적 생성·재타겟은 바인딩 몫이고, 코어는 `ref_pos`/`ref_vel` 샘플만 받습니다. `kd = 0` 은 순수 비례(P) 제어와 비트 단위로 동일한 법칙입니다.
-
-> **명명 주의:** 이 제어기는 표준 computed-torque 가 **아닙니다** — 질량행렬 `M(q)` 나 desired acceleration `ddq_d` 를 사용하지 않고, PD 항에 `g(q)`·`C(q,v)·v` 를 피드포워드로 더할 뿐입니다 (즉 `M·ddq_ref + h` 형태가 아님). 정식 computed-torque 가 필요하면 별도 제어기로 추가해야 합니다.
-
-**제어 법칙:**
-
-```
-e[i]  = trajectory_position[i] - current_position[i]
-de[i] = (e[i] - e_prev[i]) / dt
-
-command[i] = kp[i] * e[i] + kd[i] * de[i]
-  ── command_type == torque (N·m):
-           + g(q)[i]                       (enable_gravity_compensation = true)
-           + C(q,v)*v[i]                   (enable_coriolis_compensation = true)
-  ── command_type != torque (position/velocity):
-           + ff_vel[i]                     (궤적 속도 피드포워드만; N·m 항 금지)
-```
-
-> **단위 안전:** `g(q)`·`C(q,v)·v` (N·m) 는 `command_type: torque` 에서만 더해집니다. 비-torque 모드에서 `enable_gravity_compensation`/`enable_coriolis_compensation` 을 켜면 LoadConfig 에서 거부됩니다 (velocity/position command 에 N·m 를 섞지 않기 위함).
-
-**파라미터:**
-
-| 파라미터 | 타입 | 기본값 | 설명 |
-|---------|------|--------|------|
-| `kp` | `double[6]` | `[200, 200, 150, 120, 120, 120]` | 비례 게인 |
-| `kd` | `double[6]` | `[30, 30, 25, 20, 20, 20]` | 미분 게인 |
-| `enable_gravity_compensation` | `bool` | `false` | 중력 보상 활성화 |
-| `enable_coriolis_compensation` | `bool` | `false` | 코리올리 보상 활성화 |
-| `trajectory_speed` | `double` | `1.0` | 궤적 최대 관절 속도 (rad/s) |
-| `command_type` | `string` | `"torque"` | 출력 명령 타입 |
-
-**알고리즘 흐름:**
-
-1. `SetDeviceTarget()` -- 새 목표 수신 (mutex 보호)
-2. 5차 다항식 궤적 초기화 (현재 -> 목표, duration = max_joint_distance / trajectory_speed)
-3. Pinocchio로 FK, 중력 토크, 코리올리 행렬, 자코비안 계산 (`UpdateDynamics`)
-4. 궤적 설정값 대비 PD 오차 계산 + 선택적 피드포워드/보상항
-5. 명령 제한 적용 (토크 모드: max_joint_torque 기본 150 Nm / 위치 모드: max_joint_velocity 기본 2.0 rad/s)
-
-**E-STOP:** `safe_position` (YAML 디바이스 설정에서 로드)으로 PD 제어를 통해 이동
-
-```yaml
-# examples/controllers/direct/joint_pd_controller.yaml
-joint_pd_controller:
-  kp: [200.0, 200.0, 150.0, 120.0, 120.0, 120.0]
-  kd: [30.0, 30.0, 25.0, 20.0, 20.0, 20.0]
-  enable_gravity_compensation: false
-  enable_coriolis_compensation: false
-  trajectory_speed: 1.0
-  command_type: "torque"
-```
-
----
-
-### 2. 태스크 공간 CLIK (`task/task_vel_law.hpp`)
-
-Closed-Loop Inverse Kinematics -- 감쇠 의사역행렬과 영공간 보조 태스크를 사용하는 태스크 공간 위치 제어기입니다. 3-DOF (위치만) 또는 6-DOF (위치+자세) 모드를 지원합니다.
-
-> **코어:** 아래 두 모드의 **태스크 속도 법칙** `task_vel = K_p ⊙ e + ν_ff` 는 `task/task_vel_law.hpp` 의 `ComputeTaskVelocity()` (6축) · `ComputeTranslationVelocity()` (병진 전용) 이 구현하고 바인딩이 그것을 호출합니다 (pin: `test_task_vel_core.cpp`). 코어는 궤적도 pose error 정의도 **피드포워드의 프레임 전송도** 소유하지 않습니다 — 이미 world-aligned 로 회전된 `ν_ff` 를 인자로 받을 뿐이며, `R_trajectory` 로 회전할지 `R_current` 로 회전할지는 프레임을 소유한 바인딩이 정합니다. 감쇠 의사역행렬(J^#)과 영공간 블록은 `compliance/differential_ik` 가 담당하며, σ_min-적응형 감쇠의 수렴 특성은 `test_dls_convergence.cpp` 의 2-tier 수렴 하네스가 고정합니다.
-
-**제어 법칙 (3-DOF 모드):**
-
-```
-e_body     = log6(T_current^{-1} * T_traj)          (body-frame screw error, LOCAL)
-e_lwa      = blockdiag(R_current, R_current) * e_body   (LOCAL -> LOCAL_WORLD_ALIGNED)
-pos_error  = e_lwa[0:3]                             (log6 의 병진-회전 결합 포함)
-nu_ff      = R_traj * v_traj.linear                 (궤적 프레임 -> world-aligned)
-
-J_pos      = J[0:3, :]                              (병진 자코비안, 3xnv)
-J_pos^#    = J_pos^T (J_pos J_pos^T + lambda^2 I)^{-1}   (감쇠 의사역행렬, LDLT 분해)
-N          = I - J_pos^# J_pos                      (영공간 투영)
-
-task_vel = kp_translation ⊙ pos_error + nu_ff       (task/task_vel_law.hpp)
-dq       = J_pos^# * task_vel
-         + null_kp * N * (q_null - q)               (enable_null_space = true)
-
-q_des += clamp(dq, +/-v_max) * dt          (trajectory 갱신 시 q_des = q_actual로 초기화)
-q_cmd  = q_des
-```
-
-**제어 법칙 (6-DOF 모드):**
-
-```
-e_body      = log6(T_current^{-1} * T_traj)         (SE(3) 로그, LOCAL)
-e_lwa       = blockdiag(R_current, R_current) * e_body   (병진·회전 양쪽 절반 모두 회전)
-nu_ff[0:3]  = R_traj * v_traj.linear
-nu_ff[3:6]  = R_traj * v_traj.angular
-
-J_full^#    = J_full^T (J_full J_full^T + lambda^2 I_6)^{-1}   (6x6 LDLT)
-
-task_vel = [kp_translation; kp_rotation] ⊙ e_lwa + nu_ff   (task/task_vel_law.hpp)
-dq       = J_full^# * task_vel
-
-q_des += clamp(dq, +/-v_max) * dt          (trajectory 갱신 시 q_des = q_actual로 초기화)
-q_cmd  = q_des
-```
-
-두 모드 공통으로 주의할 두 가지 — 게인은 축별 원소곱(`⊙`)이며 스칼라가 아니고, **피드포워드 `nu_ff` 는 `J^#` *앞*(태스크 공간)에서 더해진다**. 관절 공간에서 `J^# * pos_error` 에 더하는 형태가 아니므로, 이 법칙을 재구현할 때 `nu_ff` 를 역행렬 뒤로 옮기면 이동 궤적 추종이 조용히 열화된다. `trajectory_velocities` 로 퍼블리시되는 값은 P 항을 뺀 `J^# * nu_ff` 레인이다.
-
-**파라미터:**
-
-| 파라미터 | 타입 | 기본값 | 설명 |
-|---------|------|--------|------|
-| `kp_translation` | `double[3]` | `[1.0, 1.0, 1.0]` | 병진 비례 게인 (x, y, z) [1/s] |
-| `kp_rotation` | `double[3]` | `[1.0, 1.0, 1.0]` | 회전 비례 게인 (rx, ry, rz) [1/s] — 6-DOF 모드에서만 법칙에 들어간다 |
-| `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max — 로더가 `compliance::FloorMaxDamping` 으로 `1e-4` floor. 사용 지점 half 는 바인딩 요구사항 (NUM-1) |
-| `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `compliance::FloorSigma0` 으로 `1e-6` floor (σ₀≤0 은 감쇠를 상시 0 으로 만든다). 사용 지점 half 는 λ_max 와 같은 바인딩 요구사항 (NUM-2) |
-| `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 [1/s] — 로더·사용 지점 모두 `rtc::FloorNonNegativeGain` floor. 음수는 posture 를 목표에서 **멀어지는** 방향으로 몰고 `N` 이 그걸 task 로부터 가려 조용한 drift 가 된다 |
-| `enable_null_space` | `bool` | `true` | 영공간 관절 센터링 활성화 (3-DOF 모드에서만 발동) |
-| `trajectory_speed` | `double` | `0.1` | 태스크 공간 궤적 병진 속도 (m/s) |
-| `trajectory_angular_speed` | `double` | `0.5` | 태스크 공간 궤적 회전 속도 (rad/s, 6-DOF 모드) |
-| `max_traj_velocity` | `double` | `0.5` | 궤적 중 최대 TCP 병진 속도 (m/s) |
-| `max_traj_angular_velocity` | `double` | `1.0` | 궤적 중 최대 TCP 회전 속도 (rad/s) |
-| `control_6dof` | `bool` | `false` | 6-DOF (위치+자세) 제어 활성화 |
-| `command_type` | `string` | `"position"` | 출력 명령 타입 |
-
-**타겟 해석 방식:**
-
-| 모드 | target[0:3] | target[3:6] |
-|------|-------------|-------------|
-| `control_6dof=false` | TCP 위치 (x, y, z) | 영공간 참조 관절 3-5 (rad) |
-| `control_6dof=true` | TCP 위치 (x, y, z) | TCP 자세 (roll, pitch, yaw, ZYX) |
-
-**핵심 기법:**
-- §6.5 σ_min-적응형 DLS (`compliance/differential_ik.hpp`) -- 특이점에서 멀면 감쇠가 **정확히 0**, σ₀ 셸 안에서만 λ² 가 자란다
-- 비유한 J 게이트 -- NaN 관절 상태가 FK 를 타면 `ok=false` 로 직전 J⁺ 를 보존하고 홀드 (LLT 는 NaN 행렬에 Success 를 반환하므로 `.info()` 만으로는 못 잡는다)
-- SE(3) 궤적 보간 -- log6 기반 거리 계산 + TaskSpaceTrajectory
-- Pinocchio 자코비안 -- `computeJointJacobians()` + `getJointJacobian(LOCAL_WORLD_ALIGNED)`
-- 영공간 참조: `safe_position` (디바이스 설정에서 로드) 또는 기본값 `[0, -1.57, 1.57, -1.57, -1.57, 0]`
-
-**E-STOP:** `safe_position`으로 관절 속도 제한 범위 내에서 위치 명령 이동
-
-```yaml
-# examples/controllers/indirect/clik_controller.yaml
-clik_controller:
-  kp_translation: [1.0, 1.0, 1.0]
-  kp_rotation: [1.0, 1.0, 1.0]
-  max_damping: 0.05             # λ_max — §6.5 램프의 상한
-  singularity_threshold: 0.02   # σ₀ — 이 아래에서 감쇠가 붙기 시작
-  trajectory_speed: 0.1
-  trajectory_angular_speed: 0.5
-  max_traj_velocity: 0.5
-  max_traj_angular_velocity: 1.0
-  enable_null_space: true
-  null_kp: 0.5
-  control_6dof: false
-  command_type: "position"
-```
-
-> 게인 키는 `kp_translation` / `kp_rotation` 이다 — 단일 `kp:` 6원소 배열이 아니다. 로더는 모르는 키를 조용히 무시하므로 `kp:` 로 적으면 게인이 기본값 `1.0` 에 머문 채 빌드·실행이 모두 성공한다.
->
-> 반대로 **아는 키를 틀린 길이로 적으면 configure 가 실패한다.** `double[3]` 게인은 정확히 3원소 시퀀스여야 하고, 과다·미달·스칼라는 전부 throw 다 — 스칼라 축약도 없다 (D5). 다섯 태스크 스키마가 같은 계약을 쓴다.
-
----
-
-### 3. 태스크 공간 6-DOF 토크 OSC (`task/task_accel_law.hpp`)
-
-전체 6-DOF 태스크 공간 **토크** 제어기입니다 (operational-space / Khatib 정식화). 태스크 공간 PD 가속도를 task inertia Λ 와 Jacobian transpose 로 관절 토크에 사상하고, joint-space Coriolis + 중력을 완전 보상합니다. **출력은 N·m** 이며 command_type 은 `torque` 로 고정됩니다 (다른 값은 `ParseOscParams` 에서 거부 — position/velocity task 제어는 CLIK 법칙 사용).
-
-> **코어:** 아래 `a_task` 식은 `task/task_accel_law.hpp` 의 `ComputeTaskAcceleration()` 이 구현하고 바인딩이 그것을 호출합니다 (pin: `test_task_accel_core.cpp`). 코어는 궤적도 pose error 정의도 소유하지 않습니다 — `e`·`ν_d`·`a_ff` 를 인자로 받을 뿐입니다. Λ / τ / Nᵀ 블록은 `compliance/task_dynamics` 가 담당하며 (동적 크기 LLT + Λ 를 materialise 하는 구조), 수렴 특성은 `test_dls_convergence.cpp` 의 2-tier 수렴 하네스가 고정합니다.
-
-**제어 법칙:**
-
-```
-pos_error = p_des - FK(q)                       (3D world, m)
-rot_error = log3(R_des * R_FK(q)^T)             (3D world axis-angle)
-tcp_vel   = J * q_dot                           (6D 현재 태스크 속도)
-
-a_task[0:3] = kp_pos * pos_error + kd_pos * (vel_d_lin - tcp_vel_lin) + acc_ff_lin
-a_task[3:6] = kp_rot * rot_error + kd_rot * (vel_d_ang - tcp_vel_ang) + acc_ff_ang
-
-M         = symmetrise(M(q))                    (nv x nv joint-space inertia)
-h         = C(q,v)*v + g(q)                     (nv nonlinear effects)
-Lambda^-1 = J M^-1 J^T + lambda^2 I_6           (6x6 damped task inertia inverse)
-F         = Lambda * a_task                     (6D task-space force)
-tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
-  with  Jbar^T = Lambda J M^-1,  N^T = I - J^T Jbar^T   (dynamically-consistent null space)
-        tau0   = null_kp*(q_safe - q) - null_kd*v       (posture secondary task)
-```
-
-**파라미터:**
-
-| 파라미터 | 타입 | 기본값 | 설명 |
-|---------|------|--------|------|
-| `kp_pos` | `double[3]` | `[100, 100, 100]` | 위치 비례 게인 [1/s²] |
-| `kd_pos` | `double[3]` | `[20, 20, 20]` | 위치 미분 게인 [1/s] |
-| `kp_rot` | `double[3]` | `[50, 50, 50]` | 자세 비례 게인 [1/s²] |
-| `kd_rot` | `double[3]` | `[10, 10, 10]` | 자세 미분 게인 [1/s] |
-| `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max (Λ⁻¹ 정칙화) — 로더가 `compliance::FloorMaxDamping` 으로 `1e-4` floor. 사용 지점 half 는 바인딩 요구사항 (NUM-1) |
-| `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `compliance::FloorSigma0` 으로 floor |
-| `null_kp` | `double` | `0.0` | 널공간 posture 강성 [N·m/rad] (nv>6 에서만 유효) — 로더·사용 지점 모두 `rtc::FloorNonNegativeGain` floor. 음수 `K_pⁿ` 는 τ₀ 를 발산 방향으로 만들고 `Nᵀ` 가 그걸 task 로부터 가린다 |
-| `null_kd` | `double` | `1.0` | 널공간 관절 damping [N·m·s/rad] — 같은 floor. 음수 감쇠는 여유자유도에 에너지를 **주입**한다 |
-| `trajectory_speed` | `double` | `0.1` | 위치 궤적 최대 병진 속도 (m/s) |
-| `trajectory_angular_speed` | `double` | `0.5` | 자세 궤적 최대 회전 속도 (rad/s) |
-| `command_type` | `string` | `"torque"` | **torque 고정** (다른 값 거부) |
-
-> 네 `double[3]` 게인은 **정확히 3원소 시퀀스**여야 하며, 과다·미달·스칼라는 전부 configure 실패다 (스칼라 축약 없음 — D5).
->
-> `enable_gravity_compensation` 은 YAML 하위 호환을 위해 파싱만 되고 **무시**됩니다 — 토크 OSC 는 g(q)+C·v 를 항상 보상합니다 (제어 법칙상 필수). 게인 단위·의미가 바뀌었으므로 (velocity-IK → 토크 가속도형) 로봇별 재튜닝이 필요합니다.
->
-> **은퇴한 `damping` 키 (OSC·CLIK 공통):** 상수 λ 를 지정하던 이 키는 §6.5 σ_min-적응형 램프로 대체됐습니다. 남아 있으면 **경고 후 무시**되며 `max_damping` 으로 매핑되지 않습니다 — 상수 λ 와 램프의 상한은 같은 양이 아니라 어떤 매핑도 추측이 되기 때문입니다. 기존 config 는 `damping: X` 를 지우고 `max_damping` / `singularity_threshold` 를 명시하십시오. 그대로 두면 두 값 모두 기본값(0.05 / 0.02)으로 돕니다.
-
-**타겟 해석 방식:**
-- `target[0:3]` = TCP 위치 (x, y, z) (m)
-- `target[3:6]` = TCP 자세 (roll, pitch, yaw) (rad, ZYX 오일러)
-
-**핵심 기법:**
-- In-place Cholesky (LLT) — M(q) (nv×nv) 분해 후 `compliance/task_dynamics.hpp` 가 Λ_S (6×6) 를 형성, 버퍼 선할당으로 RT 동적 할당 없음
-- `.info()` + `allFinite()` 이중 검사 — 비-PD 이면 안전 fallback (τ = h) 으로, 비유한 J 이면 `ok=false` 로 차단. `.info()` 만으로는 부족한 이유는 LLT 가 NaN 행렬에 Success 를 반환하고 σ_min 마저 깨끗한 0 으로 세탁되기 때문
-- 출력단 non-finite 스크럽 — 형성 불가한 채널은 **0** 을 명령 (E-STOP 경로의 `GravityCompDampedHold` 와 동일 정책). clamp 는 NaN 을 그대로 통과시키므로 clamp *앞*에 둔다
-- 동적 일관 널공간 사영 — 여유자유도(nv>6) posture 이차 태스크
-- SO(3) 로그 맵 / SE(3) 궤적 보간 / ZYX 오일러 규약
-
-**E-STOP:** 중력 보상 감쇠 토크 홀드 `τ = ĝ(q) − D·q̇` (관절별 ±τ_max clamp, non-finite→0). D 는 `estop_damping` YAML (기본 5.0). 잔여 운동 에너지를 −D·q̇ 로 흡수하고 ĝ(q) 로 중력에 버틴다. 태스크 임피던스와 동일한 `compliance::GravityCompDampedHold` helper 사용. `estopped_` 는 controller-local latch 로 `ClearEstop()` 없이는 자동 복귀하지 않는다.
-
-```yaml
-# examples/controllers/direct/operational_space_controller.yaml
-operational_space_controller:
-  kp_pos: [100.0, 100.0, 100.0]
-  kd_pos: [20.0, 20.0, 20.0]
-  kp_rot: [50.0, 50.0, 50.0]
-  kd_rot: [10.0, 10.0, 10.0]
-  max_damping: 0.05       # λ_max — §6.5 램프의 상한
-  singularity_threshold: 0.02  # σ₀ — 이 아래에서 감쇠가 붙기 시작
-  null_kd: 1.0            # nv>6 여유자유도 널공간 damping
-  estop_damping: 5.0     # 토크 E-STOP 홀드 감쇠 D [N·m·s/rad] (τ=ĝ(q)−D·q̇)
-  trajectory_speed: 0.1
-  trajectory_angular_speed: 0.5
-  command_type: "torque"  # 고정
-```
-
----
-
-### 4. GraspController (적응형 PI 힘 제어)
-
-가변 개수·가변 DoF 핸드를 위한 위치 제어 기반 적응형 PI 힘 제어기입니다. 스칼라 그래스프 파라미터 `s in [0,1]`로 finger별 open/close 자세를 선형 보간하며, 외부 루프 PI 제어기와 온라인 강성(stiffness) 추정을 통해 목표 접촉력을 달성합니다. ROS2 독립적이며 `Init()` 호출 이후 RT-safe합니다.
-
-> **내부 컨트롤러**: `RTC_REGISTER_CONTROLLER` 매크로로 직접 등록되지 않습니다. `DemoJointController`, `DemoTaskController`, `DemoWbcController` 등 상위 컨트롤러에서 `grasp_controller_type: "force_pi"` 설정으로 내부적으로 인스턴스화하여 사용합니다.
-
-**가변 finger 수 / 가변 DoF (`grasp_types.hpp`):**
-
-| 타입/상수 | 설명 |
-|---|---|
-| `FingerConfig` | `{int dof; std::array<double, kMaxDoFPerFinger> q_open; std::array<double, kMaxDoFPerFinger> q_close;}` — finger 1개의 실제 DoF + open/close 관절각. Finger마다 DoF가 다를 수 있음 (예: thumb:4, index:3, middle:2, ring:1) |
-| `kMaxGraspFingers` (=8) | 컴파일 타임 상한 — 실제 finger 수는 런타임 값 (`Init()` 인자 `configs.size()`, 클램프됨). 저장은 항상 fixed-size (RT no-alloc) |
-| `kMaxDoFPerFinger` (=8) | finger당 DoF 컴파일 타임 상한 — 실제 DoF는 `FingerConfig::dof` / `GraspJointCommands::dof[f]`, 루프는 런타임 카운트까지만 순회 |
-| `GraspJointCommands` | `{int num_fingers; std::array<int, kMaxGraspFingers> dof; std::array<std::array<double, kMaxDoFPerFinger>, kMaxGraspFingers> q;}` — `Update()` 반환값. `q[f][0..dof[f])`만 유효, 나머지는 0 |
-
-**API:**
-
-| 메서드 | 설명 |
-|---|---|
-| `Init(std::span<const FingerConfig> configs, const GraspParams& params)` | non-RT. finger 수 = `min(configs.size(), kMaxGraspFingers)`, 각 finger DoF = `FingerConfig::dof`. 필터 계수 계산 포함 |
-| `Update(std::span<const double> f_raw, double dt) noexcept` | RT-safe, 매 제어 주기 호출. `f_raw[f]`는 `Init()` configs와 동일 순서의 finger별 힘 크기(3축 norm) — 부족한 entry는 0 취급, 초과 entry는 무시. `GraspJointCommands` 반환 |
-| `finger_states()` | `std::span<const FingerState>` — `Init()`에서 설정된 `num_fingers_`개 활성 finger 범위만 span |
-| `CommandGrasp(target_force=0)` / `CommandRelease()` | atomic 플래그 기반 크로스 스레드 명령 |
-| `Reset() noexcept` | RT-safe. FSM 을 `kIdle` 로 되돌리고 두 요청 플래그·finger 상태·힘 필터 tail 을 clear (`Init()` 이 하는 일에서 필터 **계수 재계산만 제외**). `active_target_force_` 는 setpoint 이므로 유지. **소유자가 이 컨트롤러를 항상 돌리지 않는 경우 필수** — `Update()` 호출을 멈추면 FSM 도 멈추므로, 제어 법칙 전환이나 deactivate 로 중단된 grasp 가 phase 중간에 요청 플래그를 든 채 얼어붙고 다음 `Update()` 가 그 squeeze 를 재개한다. `phase()` 로 게이트하는 관측자에게는 아무도 지울 수 없는 non-Idle 값이 남는다 |
-
-**상태 머신 (GraspPhase):**
-
-```
-  Idle ──[CommandGrasp()]──> Approaching ──[thumb + 1 접촉]──> Contact
-   ^                            |                                   |
-   |                     [s=1.0, 미접촉]                    [settle_time 경과]
-   |                            |                                   v
-   +────────────────────────────+                            ForceControl
-   ^                                                           |      |
-   |                                                    [수렴]  |  [CommandRelease()]
-   |                                                      v     |
-   +──────[전원 open]───── Releasing <──[CommandRelease()]── Holding
-```
-
-| 단계 | 설명 |
-|------|------|
-| `kIdle` | 대기 상태, `s` 유지. `CommandGrasp()` 시 Approaching으로 전이 |
-| `kApproaching` | `approach_speed` (1/s)로 `s`를 증가시키며 closing. `f_measured > f_contact_threshold`이면 접촉 감지. **Contact gate**: `thumb_finger_index` 가 가리키는 finger + **그 밖의 아무 finger 하나**가 접촉하면 Contact 로 전이 (finger 수 < 2 면 가용한 전부). 무는 쌍이 앞의 두 슬롯이 아니어도 진행한다 |
-| `kContact` | 안정화 대기 (`contact_settle_time` 초). 경과 후 ForceControl 진입 |
-| `kForceControl` | PI 힘 제어 활성화. `f_desired`를 `f_ramp_rate` (N/s)로 `f_target`까지 램프. 모든 finger가 `settle_epsilon` 이내로 `settle_time` 이상 수렴하면 Holding 전이 |
-| `kHolding` | 힘 유지 + 이상 감지. 슬립 (`df/dt < -df_slip_threshold`) 또는 힘 급감 시 grip tightening 적용 |
-| `kReleasing` | `release_speed` (1/s)로 `s`를 감소. 모든 finger `s < 0.01`이면 Idle 복귀 |
-
-**GraspParams (주요 파라미터):**
-
-| 파라미터 | 타입 | 기본값 | 단위 | 설명 |
-|---------|------|--------|------|------|
-| `Kp_base` | `double` | `0.02` | 1/(N*s) | PI 비례 게인 기본값 |
-| `Ki_base` | `double` | `0.002` | 1/(N*s^2) | PI 적분 게인 기본값 |
-| `alpha_ema` | `double` | `0.95` | [0,1] | 강성 EMA 계수 (1에 가까울수록 느린 적응) |
-| `beta` | `double` | `0.3` | -- | 루프이득 상한 — `tau_min = beta/Kp_base` (배율이 아니다, [grasp_tuning_guide.md](docs/grasp_tuning_guide.md) §3.2). pin 상태에서는 이 값 혼자 상수 `gain_scale` 을 정한다 |
-| `K_est_max` | `double` | `1.0` | N/delta_s | `K_contact_est` 상한. seed 와 같으므로 **적응이 꺼져 있다 — 최종 처분** (§6.9) |
-| `thumb_finger_index` | `int` | `0` | -- | Contact 전이가 필수로 요구하는 finger 슬롯. `FingerConfig` 에 역할이 없으므로 호출자가 준다 — `integrated_bringup` 은 `finger_names` 의 `"thumb"` 위치에서 해석한다. 범위 밖이면 0 으로 낙하 (`set_params` 가 noexcept 라 거부할 자리가 없고, 도달 불가능한 Contact phase 가 더 나쁘다) |
-| `f_contact_threshold` | `double` | `0.2` | N | 접촉 감지 힘 임계값 |
-| `f_target` | `double` | `2.0` | N | 목표 파지력 |
-| `f_ramp_rate` | `double` | `1.0` | N/s | 힘 레퍼런스 램프 속도 |
-| `ds_max` | `double` | `0.05` | 1/s | 최대 ds/dt (s 변화율 제한) |
-| `delta_s_max` | `double` | `0.15` | -- | 접촉 후 최대 변형 delta_s (변형 가드) |
-| `integral_clamp` | `double` | `0.1` | -- | 적분기 포화 한계 |
-| `approach_speed` | `double` | `0.2` | 1/s | Approaching 단계 ds/dt |
-| `release_speed` | `double` | `0.3` | 1/s | Releasing 단계 ds/dt |
-| `settle_epsilon` | `double` | `0.1` | N | 힘 수렴 판정 임계값 (**램프 완료 후**의 목표력 대비 오차) |
-| `settle_time` | `double` | `0.3` | s | 수렴 유지 시간 |
-| `contact_settle_time` | `double` | `0.1` | s | Contact 단계 안정화 대기 시간 |
-| `df_slip_threshold` | `double` | `5.0` | N/s | 슬립 감지 df/dt 임계값 (음방향) |
-| `f_slip_fraction` | `double` | `0.5` | -- | `f_measured < f_target * this` 면 grip 상실로 판정 |
-| `grip_tightening_rate` | `double` | `0.5` | N/s | grip 상실 동안 기준력 상승 속도 |
-| `grip_decay_rate` | `double` | `0.1` | N/s | tightening 후 목표력으로 감쇄 속도 |
-| `f_max_multiplier` | `double` | `2.0` | -- | 최대 허용 힘 = f_target * multiplier |
-
-> **적응 이득 스케줄링은 pin 되어 비활성입니다** (`K_est_max` 가 `K_contact_est` 의 seed 값과 같아 `gain_scale` 이 상수) — 근거·튜닝은 [grasp_tuning_guide.md](docs/grasp_tuning_guide.md) §6.9, `grasp_types.hpp` 주석 참고. `beta` / `K_est_max` 를 올리지 않는다.
-
-`lpf_cutoff_hz` · `control_rate_hz` 는 **`GraspParams` 필드가 아니다** — 필터가 호출자 (컨트롤러의 축별 뱅크) 로 옮겨가면서 제거됐다. `force_pi_grasp.lpf_cutoff_hz` YAML 키는 그대로이고 값은 `DemoSharedConfig::force_pi_lpf_cutoff_hz` 를 거친다. `grip_tightening_ratio` 도 제거됐다 (per-tick 비율이라 grip force 가 `control_rate` 에 의존했다 → `grip_tightening_rate` [N/s]); YAML 에 남아 있으면 `LoadConfig` 가 throw 한다.
-
-**Per-finger 제어 법칙 (적응형 PI):**
-
-```
-# 온라인 강성 추정 (EMA)
-K_inst   = min(delta_f / delta_s, K_est_max)       (|delta_s| > 1e-6 일 때만)
-K_est    = alpha_ema * K_est + (1 - alpha_ema) * K_inst   (K_inst > 0 일 때만)
-
-# 적응 게인 스케줄링
-gain_scale = 1.0 / (1.0 + beta * K_est)
-Kp = Kp_base * gain_scale
-Ki = Ki_base * gain_scale
-
-# PI 제어 + anti-windup
-e_f = f_desired - f_measured
-integral_error += e_f * dt                         (integrator_frozen이 아닐 때)
-integral_error  = clamp(integral_error, +/-integral_clamp)
-
-ds = clamp(Kp * e_f + Ki * integral_error, +/-ds_max)
-
-# 변형 가드 (deformation guard)
-deformation = s - s_at_contact
-if deformation >= delta_s_max:      ds = min(ds, 0)   # closing 금지
-elif deformation >= 0.9*delta_s_max: ds *= remaining / (0.1*delta_s_max)   # 비례 감속
-
-# 자세 보간 (finger의 실제 DoF만큼, InterpolatePosture)
-s += ds * dt
-q[j] = (1 - s) * q_open[j] + s * q_close[j]       (j = 0 .. dof[finger]-1)
-```
-
-**RT 안전성:**
-
-- `Update()` 메서드: `noexcept`, 매 제어 주기 (`control_rate` Hz; default 500) 호출
-- 4차 Bessel LPF (`BesselFilterN<kMaxGraspFingers>`, per-finger 채널)로 힘 신호 필터링 (RT 경로에서 동적 할당 없음)
-- `CommandGrasp()` / `CommandRelease()`: `std::atomic<bool>` + `memory_order_release/acq_rel`로 크로스 스레드 명령 전달
-- 모든 상태 (`FingerState`, `GraspParams`)는 `trivially_copyable` 구조체
-- `Init()`은 non-RT (필터 계수 계산), 이후 모든 호출은 RT-safe
-- 고정 크기 배열 (`std::array`) 사용, 동적 할당 없음
-
----
-
-## 궤적 생성 (`trajectory/`)
-
-모든 궤적 기반 컨트롤러(JointPD, CLIK, OSC)는 5차(quintic) 다항식 기반 궤적 생성기를 사용합니다.
-
-### QuinticPolynomial (`trajectory_utils.hpp`)
-
-시작/끝 위치, 속도, 가속도 경계 조건을 만족하는 5차 다항식입니다.
-
-```
-q(t) = c0 + c1*t + c2*t^2 + c3*t^3 + c4*t^4 + c5*t^5
-
-경계 조건: q(0) = q0, q_dot(0) = v0, q_ddot(0) = a0
-          q(T) = qf, q_dot(T) = vf,  q_ddot(T) = af
-```
-
-> 시간 t는 `[0, T]` 범위로 클램핑되어 궤적 완료 후 오버슈트를 방지합니다.
-
-**반환 구조체:** `TrajectoryState { pos, vel, acc }`
-
-### JointSpaceTrajectory (`joint_space_trajectory.hpp`)
-
-N-DOF 관절 공간 궤적 -- 각 관절에 독립 QuinticPolynomial을 적용합니다. 관절 PD 바인딩에서 사용합니다.
-
-| 메서드 | 설명 |
-|--------|------|
-| `initialize(start_state, goal_state, duration)` | 시작/목표 상태 (위치, 속도, 가속도) 기반 궤적 초기화 |
-| `compute(t)` | 시간 t에서의 위치/속도/가속도 반환 |
-| `duration()` | 궤적 지속 시간 |
-
-**Duration 계산 (관절 PD):** `max(0.01, max_joint_distance / trajectory_speed)`
-
-### TaskSpaceTrajectory (`task_space_trajectory.hpp`)
-
-SE(3) 태스크 공간 궤적 -- log6 기반 tangent space에서 6-DOF에 각각 QuinticPolynomial을 적용합니다. CLIK · OSC 바인딩에서 사용합니다.
-
-| 메서드 | 설명 |
-|--------|------|
-| `initialize(start_pose, start_velocity, goal_pose, goal_velocity, duration)` | SE(3) 궤적 초기화 |
-| `compute(t)` | 시간 t에서의 SE(3) pose, Motion velocity, Motion acceleration 반환 |
-| `duration()` | 궤적 지속 시간 |
-| `State::AlignedVelocity()` · `State::AlignedClassicalAcceleration()` | `velocity` · `acceleration` 은 LOCAL (body) 표현이다. 이 둘은 pose 가 표현된 frame 의 축으로 바꾼 원점 속도 `[R v; R ω]` 와 classical 가속도 `[R (v̇ + ω×v); R ω̇]` — LOCAL_WORLD_ALIGNED Jacobian 으로 추종하는 소비자 (`rtc_tsid` SE3Task) 의 feedforward 형식 (#779) |
-
-**보간 방식:**
-1. `delta_X = log6(start_pose^{-1} * goal_pose)` -- tangent space 변위 계산
-2. 각 6-DOF 성분에 QuinticPolynomial 적용 (시작 0 -> 목표 delta_X)
-3. `pose(t) = start_pose * exp6(p(t))` -- SE(3) 지수 맵으로 복원
-4. `velocity(t) = Jexp6(delta_X(t)) * v(t)` -- 우측 자코비안으로 속도 변환
-
-### 다중 웨이포인트 궤적 (Multi-Waypoint Trajectories)
-
-단일 시작-목표 궤적 외에, 2개 이상의 via-point를 경유하는 4가지 다중 웨이포인트 궤적 생성기를 제공합니다. 모든 궤적은 최대 `kMaxWaypoints = 32`개의 웨이포인트를 지원하며, `initialize()`는 non-RT, `compute()`는 RT-safe (`noexcept`)입니다.
-
-#### QuinticBlendTrajectory (`quintic_blend_trajectory.hpp`)
-
-N-DOF 관절 공간 다중 웨이포인트 블렌드 궤적입니다. 각 세그먼트를 5차 다항식으로 생성하며, via-point에서 **C2 연속성**(위치, 속도, 가속도 연속)을 보장합니다.
-
-- **Via-point 속도 계산**: 인접 세그먼트 평균 속도 `v[i] = 0.5 * (v_prev + v_next)`
-- **경계 조건**: Rest-to-rest (시작/끝 속도 = 0, 가속도 = 0)
-- **세그먼트 탐색**: 선형 검색 (O(N), N <= 32)
-- **웨이포인트 < 2**: 첫 번째 웨이포인트 위치에서 hold
-
-```cpp
-QuinticBlendTrajectory<6> traj;
-traj.initialize(waypoints, num_waypoints);      // non-RT
-auto state = traj.compute(time);                // RT-safe
-// state.positions, state.velocities, state.accelerations
-```
-
-| 메서드 | 설명 |
-|--------|------|
-| `initialize(waypoints, num_waypoints)` | 웨이포인트 배열로 블렌드 궤적 초기화 (non-RT) |
-| `compute(time)` | 시간 t에서 위치/속도/가속도 반환 (RT-safe, `noexcept`) |
-| `duration()` | 전체 궤적 지속 시간 |
-| `num_segments()` | 세그먼트 수 (= 웨이포인트 수 - 1) |
-
-#### QuinticSplineTrajectory (`quintic_spline_trajectory.hpp`)
-
-N-DOF 관절 공간 글로벌 스플라인 궤적입니다. 모든 내부 knot에서 **C4 연속성**(위치, 속도, 가속도, 저크, 스냅 연속)을 보장합니다.
-
-- **풀이 방식**: 6*(N-1) 미지수 선형 시스템 (PartialPivLU 분해)
-  - 조건: N개 위치 보간 + 4개 경계 조건 + 5*(N-2)개 내부 연속성 = 6*(N-1)
-- **경계 조건**: Natural (vel=0, acc=0) 또는 Clamped (사용자 지정 시작/끝 속도, 가속도)
-- **2-웨이포인트 특수 케이스**: 단일 세그먼트 직접 5차 다항식 (선형 시스템 없이)
-
-```cpp
-QuinticSplineTrajectory<6> traj;
-traj.initialize(waypoints, num_waypoints);                   // natural
-traj.initialize(waypoints, n, start_vel, start_acc,          // clamped
-                end_vel, end_acc);
-auto state = traj.compute(time);
-```
-
-| 메서드 | 설명 |
-|--------|------|
-| `initialize(waypoints, num_waypoints)` | Natural 스플라인 (시작/끝 vel=0, acc=0) |
-| `initialize(waypoints, n, start_vel, start_acc, end_vel, end_acc)` | Clamped 스플라인 (사용자 경계 조건) |
-| `compute(time)` | 시간 t에서 위치/속도/가속도 반환 (RT-safe, `noexcept`) |
-| `duration()` | 전체 궤적 지속 시간 |
-
-#### TaskSpaceBlendTrajectory (`task_space_blend_trajectory.hpp`)
-
-SE(3) 태스크 공간 다중 웨이포인트 블렌드 궤적입니다. 각 세그먼트의 시작 pose 로컬 tangent space에서 5차 다항식 보간하며, via-point에서 **C2 연속성**을 보장합니다.
-
-- **Via-point 속도**: 도착/출발 속도의 평균 (프레임 변환 적용: 도착 속도를 해당 웨이포인트 프레임으로 Adjoint 변환)
-- **경계 조건**: Rest-to-rest (시작/끝 속도 = 0)
-- **보간**: `pose(t) = start_pose[seg] * exp6(p(t))`, 속도 = `Jexp6(delta_X) * v(t)`
-
-```cpp
-TaskSpaceBlendTrajectory traj;
-traj.initialize(waypoints, num_waypoints);
-auto state = traj.compute(time);
-// state.pose (SE3), state.velocity (Motion), state.acceleration (Motion)
-```
-
-| 메서드 | 설명 |
-|--------|------|
-| `initialize(waypoints, num_waypoints)` | SE(3) 웨이포인트로 블렌드 궤적 초기화 (non-RT) |
-| `compute(time)` | 시간 t에서 SE(3) pose, Motion velocity/acceleration 반환 (RT-safe) |
-| `duration()` | 전체 궤적 지속 시간 |
-
-#### TaskSpaceSplineTrajectory (`task_space_spline_trajectory.hpp`)
-
-SE(3) 태스크 공간 글로벌 스플라인 궤적으로 **C4 연속성**을 보장합니다. 첫 번째 웨이포인트 프레임을 공통 참조 프레임으로 사용하여 6D 선형 시스템을 풀고, 결과를 각 세그먼트의 로컬 tangent space 다항식으로 변환합니다.
-
-- **풀이 방식**: 누적 tangent 벡터(`cum_pos[k] = log6(wp[0]^{-1} * wp[k])`)를 wp[0] 프레임에서 계산 -> 글로벌 6D 스플라인 시스템 풀이 (PartialPivLU) -> Adjoint 변환으로 per-segment 로컬 계수 추출
-- **경계 조건**: Natural (vel=0, acc=0) 또는 Clamped (로컬 프레임에서 지정)
-- **속도 변환**: 경계 속도는 `SE3::act()` / `SE3::actInv()`로 프레임 간 변환
-
-```cpp
-TaskSpaceSplineTrajectory traj;
-traj.initialize(waypoints, num_waypoints);                   // natural
-traj.initialize(waypoints, n, start_vel, start_acc,          // clamped
-                end_vel, end_acc);
-auto state = traj.compute(time);
-```
-
-| 메서드 | 설명 |
-|--------|------|
-| `initialize(waypoints, num_waypoints)` | Natural SE(3) 스플라인 (시작/끝 vel=0, acc=0) |
-| `initialize(waypoints, n, start_vel, start_acc, end_vel, end_acc)` | Clamped SE(3) 스플라인 (로컬 프레임 경계 조건) |
-| `compute(time)` | 시간 t에서 SE(3) pose, Motion velocity/acceleration 반환 (RT-safe) |
-| `duration()` | 전체 궤적 지속 시간 |
-
-#### 궤적 비교
-
-| | QuinticBlend | QuinticSpline | TaskSpaceBlend | TaskSpaceSpline |
-|---|---|---|---|---|
-| **공간** | 관절 | 관절 | SE(3) 태스크 | SE(3) 태스크 |
-| **연속성** | C2 | C4 | C2 | C4 |
-| **초기화 비용** | O(N) | O(N^3) 선형 시스템 | O(N) | O(N^3) 선형 시스템 |
-| **경계 조건** | Rest-to-rest only | Natural / Clamped | Rest-to-rest only | Natural / Clamped |
-| **Via-point 속도** | 인접 평균 | 글로벌 최적 | 인접 평균 (프레임 변환) | 글로벌 최적 (프레임 변환) |
-| **RT-safe compute** | O(DOF) | O(DOF) | O(1) (6-DOF 고정) | O(1) (6-DOF 고정) |
-| **최대 웨이포인트** | 32 | 32 | 32 | 32 |
-
----
-
-## 컨트롤러 등록
-
-`rtc_controllers` 는 **라이브러리 심볼로만 제공**되며 `ControllerRegistry` 에 등록할 수 있는 클래스를 하나도 갖지 않습니다 (어댑터가 없습니다). 런타임에 선택 가능한 컨트롤러 집합은 각 로봇의 `<robot>_bringup` 패키지가 결정합니다 (이 저장소에서는 `integrated_bringup`이 `DemoJointController`, `DemoTaskController`, `DemoWbcController` 3종을 등록).
-
-> `rtc_controllers` 에는 등록할 수 있는 클래스가 없습니다. downstream 은 **바인딩 클래스**를 자기 패키지에 만들고 그 안에서 `rtc_controllers` 의 코어를 멤버로 소유해 호출합니다 — `integrated_bringup` 의 데모 컨트롤러가 `trajectory/*`·`grasp/*` 를 쓰는 방식 그대로입니다 ([agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms).
-
-```cpp
-#include "rtc_controller_interface/controller_registry.hpp"
-#include "<your_bringup_pkg>/my_joint_controller.hpp"   // RTControllerInterface 상속은 여기서
-
-RTC_REGISTER_CONTROLLER(
-    my_joint_controller, "direct/", "<your_bringup_pkg>",
-    std::make_unique<mypkg::MyJointController>(urdf))
-```
-
-바인딩 안에서 법칙과 스키마를 부르는 형태는 다음과 같습니다.
-
-```cpp
-#include "rtc_controllers/joint/joint_pd_law.hpp"      // 법칙 (RT tick)
-#include "rtc_controllers/params/joint_pd_params.hpp"  // 스키마 (configure 시 1회)
-
-// on_configure / LoadConfig — 사본에 파싱하고 통과한 뒤에만 커밋한다.
-// 파서는 in-place 로 @p out 을 채우므로, live 멤버를 그대로 넘기면 throw 하는
-// 설정이 절반만 적용된 게인을 남긴다 (아래 "게인 스냅샷" 계약과 같은 이유).
-auto g = gains_lock_.Load();
-auto cmd_type = command_type_.load(std::memory_order_relaxed);
-rtc::params::ParseJointPdParams(cfg, model_nv, g, cmd_type);   // throw 하면 여기서 끝
-gains_lock_.Store(g);
-command_type_.store(cmd_type, std::memory_order_relaxed);
-// Compute() 안
-rtc::joint::ComputeJointPdCommand(gains_view, inputs, dt, nq, nc0, cmd_type, prev_err, out);
-```
-
-> `src/controller_registration.cpp`의 `ForceBuiltinControllerRegistration()`은 이제 no-op이며, 기존 `main()`들과의 링크 호환성을 위해서만 남아 있습니다.
-
----
-
-## 컨트롤러 비교
-
-아래는 **비-compliance 3종 법칙**의 대조표입니다. compliance 3종(`TaskImpedance` / `TaskAdmittance` / `CascadedCompliance`)은 게인 단위·부호 규약·wrench 계약이 달라 같은 축으로 비교되지 않으므로 §개요의 서술과 [docs/compliance-conventions.md](docs/compliance-conventions.md) 가 SSoT 입니다.
-
-| | 관절 PD | CLIK | OSC |
-|---|---|---|---|
-| **제어 공간** | 관절 | 태스크 (3/6-DOF) | 태스크 (6-DOF) |
-| **출력** | Torque | Position | **Torque (N·m)** |
-| **궤적** | JointSpace 5차 | TaskSpace SE(3) 5차 | TaskSpace SE(3) 5차 |
-| **동역학** | FK + G + C + J | FK + J | FK + J + **M + h(=C·v+g)** |
-| **영공간** | N/A | 관절 센터링 (3-DOF만) | **동적 일관 posture (nv>6)** |
-| **E-STOP** | PD 기반 safe_position 이동 | safe_position 위치 명령 | safe_position 위치 명령 |
-| **역행렬** | N/A | LDLT (3x3/6x6) | **LLT (M nv×nv, Λ⁻¹ 6×6)** |
-| **명령 제한** | torque (기본 150 Nm) / velocity (기본 2.0 rad/s) | velocity (기본 2.0 rad/s) | **torque (기본 150 Nm)** |
-| **계산량** | 중간 | 중간 | 높음 |
-| **스레드 안전** | try_lock + atomic | try_lock + atomic | try_lock + atomic |
-
-### 게인 채널 (per-controller ROS 2 parameter)
-
-`rtc_controllers` 는 런타임 게인 채널을 제공하지 않는다 — `params/` 파서가 configure 시점에 YAML 에서 게인을 읽어 POD 를 채울 뿐이다. 이는 누락이 아니라 계약이다: 파라미터 채널은 LifecycleNode 를 요구하고 이 패키지는 노드를 만들지 않는다. 데모 컨트롤러(`DemoJointController`/`DemoTaskController`/`DemoWbcController`)는 integration 패키지에 있어 자기 LifecycleNode(`/<config_key>`)에서 게인을 `declare_parameter`로 노출하며 `add_on_set_parameters_callback`이 SeqLock writer로 mutate→Store 한다 ([agent_docs/controllers.md](../agent_docs/controllers.md) §Gains).
-
-게인 POD 레이아웃은 [include/rtc_controllers/params/*.hpp](./include/rtc_controllers/params/) 참조 — 그 옆의 `ParseXxxParams()` 가 YAML 스키마이며, 둘 다 바인딩이 소유합니다.
-
-### RT 안전 보장 (전체 공통)
-
-이 패키지가 tick 위에서 제공하는 것은 **법칙 함수**뿐이므로, 그 함수들이 지키는 것은:
-- `noexcept`, 무상태 (header-only), 컨테이너·Eigen 동적 타입 없음 — 스크래치가 필요한 곳은 max-size 고정 타입 (`Matrix<double,Dyn,Dyn,0,6,6>`)
-- Eigen: `noalias()` 사용, 고정 크기 행렬(3x3, 6x6) 스택 할당
-- 각 코어 스위트의 `IsAllocationFree` 가 두 센서로 이것을 고정한다 — `operator new` 카운터(`rtc_controllers/testing/alloc_gate.hpp`)와 Eigen 자체 할당 tripwire(`rtc_base/testing/no_malloc_scope.hpp`). Eigen 은 `std::malloc` 을 직접 부르므로 전자만으로는 안 보인다
-- 라이브러리 (Pinocchio `.so` · `rtc_tsid` 의 ProxQP) 를 부르는 코어는 세 번째 센서 `rtc_base/testing/malloc_gate.hpp` (`ScopedMallocGate`, `rtc_base` 의 test 전용 헤더) 를 더한다 — 실행 파일이 `malloc` 계열을 정의해 `__libc_*` 로 넘기며 세므로, 두 센서가 못 보는 라이브러리 안의 C 할당까지 본다 (`test_catching_mpc_segment_core`)
-
-**바인딩이 지켜야 하는 것** (여기 없고, base 와 integration 계층이 소유):
-- **SeqLock + SPSC marshal:** target 슬롯은 `rtc::SeqLock<TargetSlot>` 이 publish 하고 **RT 스레드 (Compute)** 가 유일한 writer다. Off-RT `SetDeviceTarget` 콜백은 `rtc::SpscQueue<PendingTarget, 4>` 에 lock-free push (newest-drop) 만 한다. 이 글루는 `RTControllerInterface` 가 소유하므로 (`PushPendingTarget` / `DrainPendingTargets` / `ApplyPendingTarget`) 바인딩이 복제하지 않는다. SE3 는 `is_trivially_copyable=false` (Eigen false-negative) 이므로 POD wrapper 로 마샬링한다
-- **게인 스냅샷:** 게인 POD 를 `rtc::SeqLock<Params>` 에 두고 `Compute()` 진입 시 한 번 `Load()` — parameter callback 이 non-RT 스레드에서 동시 실행돼도 한 tick 내 전 필드 일관성이 유지된다. writer 는 Load→mutate→Store
-- **`params/` 파서를 configure 에서 호출**하고 그 결과만 SeqLock 에 넣는다. 파서는 비-RT 이고 throw 한다 (`trajectory_speed` 의 `std::max(1e-6, ·)` floor 같은 검증이 거기 있다)
-
----
-
-## 예시 설정 파일 (`examples/`)
-
-각 법칙에 대응하는 YAML reference example. `params/ParseXxxParams()` 가 파싱하는 스키마를 보여주며, 모든 설정 파일은 컨트롤러명을 최상위 키로 사용합니다. **production 설정은 `integrated_bringup/config/<robot>/controllers/`** 에 두고, 아래 example 의 `<robot>` placeholder 를 robot 식별자 (`devices.<group>` 키) 로 치환해 복제합니다.
-
-| 파일 | 설명 |
-|------|------|
-| `examples/controllers/indirect/clik_controller.yaml` | CLIK 제어기: kp, §6.5 DLS (`max_damping`/`singularity_threshold`), null_kp, 영공간/6DOF 설정, 토픽 매핑 |
-| `examples/controllers/direct/joint_pd_controller.yaml` | JointPD 제어기: kp/kd 게인, 중력/코리올리 보상, 궤적 속도, 토픽 매핑 |
-| `examples/controllers/direct/operational_space_controller.yaml` | OSC 제어기: 위치/자세 PD 게인, §6.5 DLS (`max_damping`/`singularity_threshold`), 널공간 posture, 궤적 속도, 토픽 매핑 |
-
-각 YAML 파일은 `topics` 섹션에서 디바이스별 ROS2 토픽 구독/발행 매핑도 정의합니다. 이 섹션은 `params/` 스키마가 아니라 **base 의 `RTControllerInterface::LoadConfig()`** 가 파싱하므로, 바인딩은 게인 파싱(`ParseXxxParams`) 전에 base 판을 먼저 부르면 됩니다.
-
----
+`src/params/` 는 `ParseXxxParams()` 구현(YAML → POD)이고, `src/catching/` 의 `*_main.cpp` 3개가 오프라인 CLI 입니다.
+
+## 더 읽기
+
+- [docs/compliance-conventions.md](docs/compliance-conventions.md) — compliance 법칙·계약·부호 규약
+- [docs/grasp_tuning_guide.md](docs/grasp_tuning_guide.md) — GraspController 튜닝
+- [docs/dynamic_catching/](../docs/dynamic_catching/README.md) — 포구 설계·수식
+- [design-principles.md](../agent_docs/design-principles.md) — 코어/바인딩 3계층 경계 · [invariants.md](../agent_docs/invariants.md) — RT/NUM 규칙
+- [controllers-rationale.md](../docs/reference/controllers-rationale.md) — 코어 추출 근거
+- 각 법칙의 수식·계약은 해당 헤더 상단 주석이 SSoT 입니다
 
 ## 의존성
 
-| 의존성 | 용도 |
-|--------|------|
-| `ament_cmake` | 빌드 시스템 |
-| `rtc_base` | 공유 데이터 타입 (`ControllerState`, `ControllerOutput`, `DeviceState`), 상수 (`kDefaultMaxJointVelocity`, `kDefaultMaxJointTorque`), RT-safe 유틸리티 (`utils/clamp_commands.hpp::ClampSymmetric`, `utils/device_passthrough.hpp::PassthroughSecondaryDevices`) |
-| `rtc_msgs` | RTC 프레임워크 커스텀 ROS2 메시지 |
-| `eigen` | 선형 대수 연산 (Eigen3) |
-| `pinocchio` | 기구학/동역학 (FK, Jacobian, Gravity, Coriolis, SE3/SO3, exp/log) |
-| `rtc_math` | SE3 헬퍼 (`rtc_math/se3/pinocchio_adapter.hpp` — CLIK/OSC 법칙의 log/exp 오차 계산) |
-| `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 (`ModelConfig`/`PinocchioModelBuilder`) |
-| `rtc_tsid` | 포구 자세 IK (`catching/catch_pose_ik.hpp`) 의 과제 스텝 QP, segment MPC 코어 (`catching/mpc_segment_core.hpp`) 와 mpc_docking 코어 (`catching/mpc_docking_segment_core.hpp`) 의 QP — `QPSolverWrapper` (ProxQP). **2026-09-20 추가** (dynamic_catching D-26). rtc_tsid 는 rtc_controllers 를 의존하지 않아 순환은 없지만, 이 엣지로 rtc_controllers 의 모든 소비자(`rtc_controller_manager` 포함)가 ProxSuite 를 전이적으로 끌게 된다 |
-| `yaml-cpp` | YAML 설정 파싱 |
-
----
-
-## 빌드
-
-```bash
-cd ~/ros2_ws/rtc_ws
-colcon build --packages-select rtc_controllers
-source install/setup.bash
-```
-
-정적 라이브러리(`librtc_controllers.a`)가 생성됩니다. `POSITION_INDEPENDENT_CODE ON` 속성이 설정되어 공유 라이브러리에서 링크할 수 있습니다.
-
----
-
-## 의존성 그래프 내 위치
-
-```
-rtc_base + pinocchio + yaml-cpp + eigen + rtc_math + rtc_urdf_bridge
-    |
-rtc_controllers  -- 제어 법칙 + YAML 스키마 라이브러리
-    ^                (rtc_controller_interface 를 의존하지 않는다)
-    |-- integrated_bringup            (바인딩 소유 + launch에서 컨트롤러 선택)
-                                       └ rtc_controller_interface 는 여기서 상속한다
-```
-
----
-
-## 라이선스
-
-MIT License -- 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.
+[package.xml](package.xml): `rtc_base` `rtc_msgs` `rtc_math` `rtc_urdf_bridge` `rtc_tsid` (포구 QP) · Eigen3 · Pinocchio · yaml-cpp. `rtc_controller_interface` 는 의존하지 않습니다 (법칙은 프레임워크 계약을 모릅니다). 라이선스: MIT ([LICENSE](../LICENSE)).

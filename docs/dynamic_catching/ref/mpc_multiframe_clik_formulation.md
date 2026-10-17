@@ -1404,7 +1404,7 @@ $$
 
 ## 11. 바인딩이 구현한 것 — `demo_dualarm_controller` (E2-F05)
 
-§2 의 QP 는 §10 의 코어가 조립하므로, 이 표의 "구현" 은 바인딩 (`integrated_bringup`) 이 코어에 무엇을 넘기고 코어를 부르지 않는 tick 에 무엇을 하는가다. 동작 · 설정 · 로그의 서술은 `integrated_bringup/README.md` 의 `DemoDualArmController` 절이 갖는다. 파일은 모두 `integrated_bringup/src/controllers/dualarm/` 아래이고, 테스트 이름은 `test/test_demo_dualarm_controller.cpp` 의 `Suite.Case` 다. 값 (가중, 게인, $\eta_\tau$) 은 출발값이고 튜닝하지 않았으며, sim 측정값은 #637 의 측정 · 검증 기록이 갖는다.
+§2 의 QP 는 §10 의 코어가 조립하므로, 이 표의 "구현" 은 바인딩 (`integrated_bringup`) 이 코어에 무엇을 넘기고 코어를 부르지 않는 tick 에 무엇을 하는가다. 동작 · 설정 · 로그의 서술은 `integrated_bringup/docs/demo-dualarm-controller.md` 가 갖는다. 파일은 모두 `integrated_bringup/src/controllers/dualarm/` 아래이고, 테스트 이름은 `test/test_demo_dualarm_controller.cpp` 의 `Suite.Case` 다. 값 (가중, 게인, $\eta_\tau$) 은 출발값이고 튜닝하지 않았으며, sim 측정값은 #637 의 측정 · 검증 기록이 갖는다.
 
 | 참고 문서 | 식 · 내용 | 구현 | 확인하는 테스트 | 다르게 한 곳과 이유 |
 |---|---|---|---|---|

@@ -1,321 +1,102 @@
 # rtc_mujoco_sim
 
-> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
-> 설치/빌드: [Root README](../README.md) | RT 최적화: [rt-optimization.md](../docs/rt-optimization.md)
-
-**MuJoCo 3.x 물리 시뮬레이터 패키지**입니다. 실제 로봇 드라이버를 대체하여 개발 환경에서 알고리즘 검증 및 테스트를 수행할 수 있습니다. 멀티 그룹 아키텍처로 임의의 로봇 조합(ur5e + hand, kuka, franka 등)을 독립된 ROS2 토픽으로 제어합니다.
-LifecycleNode 기반으로, `ros2 lifecycle` CLI를 통한 런타임 상태 제어(deactivate/activate)를 지원합니다.
+MuJoCo 3.x 기반 robot-agnostic 물리 시뮬레이터 lifecycle 노드와 GLFW 뷰어. **유형**: 노드 패키지
 
 ## 개요
 
-```
-rtc_mujoco_sim/
-├── include/rtc_mujoco_sim/
-│   ├── mujoco_simulator.hpp       ← 멀티 그룹 MuJoCo 3.x 물리 래퍼
-│   └── ros2_resource_provider.hpp ← package:// URI provider 등록
-├── src/
-│   ├── mujoco_simulator.cpp       ← Initialize, 양방향 XML 검증, 이름 기반 매핑
-│   ├── mujoco_sim_loop.cpp        ← SimLoop: 동기식 물리 루프 (그룹 순회)
-│   ├── viewer/                    ← GLFW 뷰어
-│   │   ├── viewer_state.hpp       ←   공유 상태 + 함수 선언 (내부 헤더)
-│   │   ├── viewer_input_policy.hpp ←  world 를 바꾸는 키 집합 (`viewer_input_enabled`, GLFW 비의존)
-│   │   ├── viewer_loop.cpp        ←   ViewerLoop 멤버 함수 (~60Hz)
-│   │   ├── viewer_callbacks.cpp   ←   GLFW 입력 콜백 (키/마우스)
-│   │   └── viewer_overlays.cpp    ←   mjr_overlay/mjr_figure 렌더 함수
-│   ├── mujoco_simulator_node.cpp  ← ROS2 LifecycleNode (robot_response / fake_response 파싱)
-│   └── ros2_resource_provider.cpp ← package:// URI 해석 구현
-├── config/
-│   ├── solver_param.yaml     ← agnostic 기본값 + solver SSoT (모든 launch가 로드)
-│   └── mujoco_default.yaml   ← 예제/템플릿 (launch 미사용, robot 패키지 복사용)
-└── launch/
-    └── mujoco_sim.launch.py  ← agnostic 단독 launch (mujoco_simulator_node 만 띄움)
-```
+실제 로봇 드라이버를 대체해 알고리즘을 개발 PC 에서 검증한다. YAML 로 정한 임의 개수의 **그룹** (robot arm, hand 등) 을 독립된 command / state 토픽으로 구동한다. 로봇별 모델 · 조인트 · 토픽 설정과 컨트롤러 통합 launch 는 bringup 패키지 (예: [integrated_bringup](../integrated_bringup/README.md)) 가 소유하고, 이 패키지는 `model_path` 를 외부 입력으로 받는다 ([design-principles.md](../agent_docs/design-principles.md)).
 
-> **이 패키지는 robot-agnostic입니다.** 로봇별 모델/조인트/토픽 설정과 컨트롤러 통합 launch는 robot-specific bringup 패키지(예: `integrated_bringup`)가 소유합니다. 자세한 원칙: [agent_docs/design-principles.md](../agent_docs/design-principles.md).
+- **`robot_response` 그룹**: MuJoCo 물리로 구동한다. YAML 의 `command_joint_names` 와 XML 의 hinge + actuator 조인트가 **양방향으로 완전히 일치**해야 한다 (한쪽에만 있으면 Initialize 실패). 이름 기반 qpos / qvel / actuator 매핑이라 비연속 인덱스도 된다.
+- **`fake_response` 그룹**: 물리 없이 1차 LPF 로 command 를 되돌려 주는 100 Hz 에코백. XML 에 없는 디바이스 (예: 손) 용이다. 토픽 이름만 검증한다.
+- 한 이름이 robot 과 fake 양쪽에 있으면 에러다.
+- **동기 루프**: 매 step 마다 state 발행 → 모든 robot 그룹의 command 대기 (`sync_timeout_ms`) → `n_substeps` 번 물리 진행 → `max_rtf` 로 throttle. 컨트롤러의 tick 하나가 sim step 하나다. 명령하지 않는 그룹은 `wait_for_command: false` 로 뺀다 (안 빼면 매 step 이 타임아웃을 기다린다).
+- 부가 기능: [Object Pool](#object-pool) · [Object State](#object-state) · [Projectile Ball](#projectile-ball-발사-공) (투척 실험) · contact wrench 자동 발견 · 측정용 CSV lane. 동기 루프 · tick 의 배경은 [sim-rationale.md](../docs/reference/sim-rationale.md).
 
-**의존성 그래프 내 위치:**
+## 빠른 시작
 
-```
-rtc_base + rtc_msgs  ← 독립
-    ↑
-rtc_mujoco_sim       ← agnostic 물리 시뮬레이터 (model_path는 외부 입력)
-    ↑
-integrated_bringup 등      ← robot YAML + launch에서 mujoco_simulator_node를 직접 띄움
+빌드는 [루트 README](../README.md#빠른-시작) 를 따른다. MuJoCo 가 없으면 노드 (`mujoco_simulator_node`) 는 빌드에서 빠지고, GLFW 가 없으면 뷰어 없이 headless 로만 빌드된다. MuJoCo 3.2 이상이 필요하다 ([의존성](#의존성)).
+
+```bash
+# 이 저장소만으로 도는 단독 smoke test — 그룹 설정은 bringup YAML 에서 가져온다
+ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \
+    params_file:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml
+
+# 헤드리스 10배속
+ros2 launch rtc_mujoco_sim mujoco_sim.launch.py params_file:=... enable_viewer:=false max_rtf:=10.0
+
+# 컨트롤러까지 포함한 통합 시나리오는 bringup launch
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
 ```
 
----
+`mujoco_sim.launch.py` 는 노드를 띄워 `configure` → `activate` 를 자동 전환한다. `params_file` 없이는 `robot_response.groups` 가 비어 configure 가 실패한다. 상태 확인:
 
-## 핵심 아키텍처: 멀티 그룹 (robot_response / fake_response)
+```bash
+ros2 lifecycle get /mujoco_simulator          # active 여야 한다
+ros2 topic echo /sim/status --once            # [step_count, sim_time_sec, rtf, paused]
+ros2 topic hz /joint_states
+ros2 lifecycle set /mujoco_simulator deactivate   # 런타임 정지 / activate 로 재개
+```
 
-`rtc_mujoco_sim`은 **그룹 기반 아키텍처**로 임의 개수의 로봇/디바이스를 독립적으로 제어합니다.
+뷰어 조작은 [뷰어 단축키](#뷰어-단축키) — 일시정지 `Space`, 리셋 `R`, 도움말 `F1`.
 
-### robot_response (MuJoCo 물리 시뮬레이션)
+## 인터페이스
 
-- YAML에 명시된 `command_joint_names`를 XML의 hinge+actuator 조인트와 **양방향 완전 일치 검증**
-  - YAML에 있는데 XML에 없음 → **FAIL**
-  - XML에 있는데 YAML에 없음 → **FAIL**
-- `state_joint_names`로 state publish 시 관절 이름/순서를 별도 지정 가능 (빈 배열 = XML 전체)
-- 이름 기반 qpos/qvel/actuator 인덱스 매핑 (비연속 인덱스 지원)
-- 그룹별 독립 command/state 버퍼, control mode, servo gains
-- 동기 루프는 **모든 robot 그룹**의 command 를 기다린다 (#566 — 이전에는 첫 그룹만 기다려, 손 명령이 한 step 늦게 적용될 수 있었다). controller 가 명령하지 않는 그룹은 `wait_for_command: false` 로 빼야 한다 — 안 빼면 매 step 이 `sync_timeout_ms` 를 기다리고, 일부 그룹만 명령이 온 채 timeout 된 step 은 stderr 에 그룹 이름과 함께 경고된다 (초당 1 회). 첫 그룹은 기동 로그의 `[PRIMARY]` 라벨로만 남는다
+### 실행파일 · launch
 
-### fake_response (LPF 에코백)
-
-- MuJoCo 물리를 사용하지 않는 1차 저역통과 필터 기반 에코백
-- 토픽 이름 유효성만 검증 (비어있으면 에러)
-- 100Hz 타이머로 LPF 진행 + JointState 퍼블리시
-- XML에 해당 조인트가 없는 디바이스를 시뮬레이션할 때 사용
-
-### 검증 규칙
-
-| 항목 | robot_response | fake_response |
+| 이름 | 종류 | 설명 |
 |---|---|---|
-| XML 조인트 검증 | 양방향 완전 일치 필수 | 없음 |
-| joint_names | YAML 필수 명시 | YAML 필수 명시 |
-| 토픽 이름 | 비어있으면 에러 | 비어있으면 에러 |
-| 중복 그룹 이름 | robot ∩ fake ≠ ∅ → **에러** | 동일 |
+| `mujoco_simulator_node` | 실행파일 (`LifecycleNode`) | 시뮬레이터 본체. 이름 `mujoco_simulator` |
+| `mujoco_sim.launch.py` | launch | 노드 단독 + 세션 디렉토리 생성 (`RTC_SESSION_DIR` 전파). 컨트롤러는 띄우지 않는다 |
 
----
+launch 인자 (빈 값 = YAML 값 사용):
 
-## 시뮬레이션 루프
+| 인자 | 기본값 | 설명 |
+|---|---|---|
+| `params_file` | `""` | `solver_param.yaml` 위에 덮을 YAML (robot 그룹 설정 등) |
+| `model_path` | `""` | MJCF scene 경로 |
+| `enable_viewer` | `""` | GLFW 뷰어 on/off |
+| `viewer_input_enabled` | `""` | `false` 면 world 를 바꾸는 뷰어 입력 무시 ([뷰어 단축키](#뷰어-단축키)) |
+| `max_rtf` | `""` | 최대 실시간 비율 (0.0 = 무제한) |
+| `max_log_sessions` | `10` | 보관할 세션 폴더 수 |
 
-동기식 루프로 동작합니다. 매 스텝마다 state 퍼블리시 → command 대기 → 물리 서브스텝을 순서대로 수행하며, `max_rtf`로 속도를 제한합니다.
+세션 루트는 `rtc_tools.utils.session_dir.resolve_logging_root()` 의 3단 체인 (`$COLCON_PREFIX_PATH` → cwd 상위 `install/` + `src/` → `$PWD`) 이 정한다 ([rtc_tools/README.md](../rtc_tools/README.md)).
 
-```
-SimLoop → 모든 robot 그룹의 state 퍼블리시
-        → 모든 robot 그룹의 sensor 퍼블리시 (sensor_topic 설정 시)
-        → 모든 robot 그룹의 command 대기 (sync_timeout_ms — 넘기면 받은 것만 적용하고 step)
-        │     reset 요청은 이 대기를 끊지 않는다 — 이번 step 의 명령이 다 온 뒤 reset 하므로
-        │     pre-reset state 에 대한 명령이 reset 뒤로 새지 않는다. 대기 중 도착한 공 reset·
-        │     object refresh 는 적용한 뒤 받은 명령으로 그대로 step 한다 (#566)
-        → 모든 robot 그룹의 command 적용 (ApplyCommand, 1회)
-        → for sub in [0, n_substeps):
-        │     PreparePhysicsStep() (actuator 모드/solver 파라미터/중력/외력)
-        │     mj_step()            (substep_dt = physics_timestep / n_substeps)
-        │     ClearContactForces()
-        → ReadSolverStats()
-        → ThrottleIfNeeded(max_rtf)
-        → (반복)
-```
+### 퍼블리시 토픽
 
-### Substepping
-
-`n_substeps` 파라미터로 한 제어 주기 내 물리 스텝 횟수를 제어합니다. 제어 주기(`physics_timestep`)는 변하지 않고, MuJoCo의 실제 step 크기(`substep_dt`)만 작아집니다.
-
-아래 표는 default `control_rate=500Hz` (2 ms 제어 주기) 기준 예시. 실제 제어 주기는 `control_rate` YAML로 설정되며, `substep_dt = 제어 주기 / n_substeps` 관계는 모든 rate에서 성립.
-
-| n_substeps | substep_dt | 제어 주기 | 효과 |
-|-----------|-----------|----------|------|
-| `1` (기본) | 2.0ms | 2.0ms (default 500Hz) | 기존 동작과 동일 |
-| `4` | 0.5ms | 2.0ms (default 500Hz) | 물리 해상도 4배 향상 |
-| `10` | 0.2ms | 2.0ms (default 500Hz) | contact-rich 시나리오 안정성 극대화 |
-
-- `ApplyCommand()`는 루프 밖에서 1회만 호출 — 서브스텝 중간에 ctrl 값 변경 없음
-- `StepOnce` (`>` 버튼)은 N substeps 전부 실행 = 1 제어 주기 진행
-- **Physics Load** = substep 루프 wall time / 제어 주기 (뷰어 상단에 표시, >100%면 실시간 유지 불가)
-
-rtc_controller_manager는 `use_sim_time_sync: true` 설정 시 state 도착 즉시 eventfd 로 wakeup하여 ControlLoop를 실행합니다. 기존 `clock_nanosleep` 대비 round-trip 지연이 ~1ms → ~0.35ms로 감소합니다. **tick 은 state 메시지가 아니라 sim step 마다 한 번**입니다 (#566): 이 sim 은 group 마다 joint state 를 따로 발행하므로, CM 은 `sim_sync_tick_devices` (기본: 모든 device group) 의 state 가 전부 새로 도착했을 때 한 번 tick 합니다. 이전에는 메시지마다 tick 해 group 이 2 개인 씬 (ur5e_p1b) 에서 838 Hz / 500 Hz step 으로 돌았고, `state.dt` 를 적분하는 법칙이 sim 보다 ~1.67× 빨리 흘렀습니다 — 그 시기의 sim 측정 (궤적 시간·서보 지연·포구 기준 오프셋 등) 은 이 오차를 품고 있습니다. 같은 이유로 sim 에서 CM 의 `t_relative_s` 는 `iteration × dt` 입니다. 반대 방향으로는 sim 이 모든 robot group 의 command 를 기다리므로 (위 루프), 한 tick = 한 step 이 양쪽에서 성립합니다.
-
-### Constraint Solver 설정 (`solver_param.yaml`)
-
-MuJoCo constraint solver의 전체 파라미터를 `config/solver_param.yaml`에서 관리합니다.
-
-**XML 우선순위 규칙:**
-- MJCF XML의 `<option>` 요소에 명시적으로 설정된 속성은 YAML 값보다 우선합니다
-- XML에 해당 속성이 없는 경우에만 YAML의 값이 적용됩니다
-- `Initialize()` 시 tinyxml2로 원본 XML을 파싱하여 명시된 속성 집합을 감지합니다.
-  `model_path`가 `package://` URI 인 경우 `ResolveModelPath()` 가 ament 를 통해
-  절대 경로로 변환한 뒤 tinyxml2 에 전달합니다 (tinyxml2 는 `package://` 를
-  직접 해석하지 못하므로 — fallback 만 동작하면 모든 solver 파라미터가 YAML 로
-  대체되어 XML 우선순위가 사라짐)
-
-```
-XML: <option solver="CG" iterations="50"/>
-YAML: solver: "Newton", iterations: 100, cone: "elliptic"
-결과: solver=CG (XML), iterations=50 (XML), cone=elliptic (YAML fallback)
-```
-
-**SSoT는 [config/solver_param.yaml](config/solver_param.yaml)** — 모든 sim launch가 항상 먼저 로드하는 실제 shipped 기본값이며, 값이 바뀌어도 이 표를 갱신할 필요 없이 YAML을 참조한다. 아래 표의 "코드 Fallback"은 `mujoco_simulator_node.cpp`의 `declare_parameter()` 값(파라미터가 어디서도 설정되지 않았을 때만 적용)이고, 코드 Fallback과 shipped YAML 값이 다른 경우에만 `(shipped: ...)`로 병기했다.
-
-| 카테고리 | 파라미터 | 코드 Fallback | 설명 |
-|----------|----------|--------|------|
-| **알고리즘** | `solver` | `"Newton"` | constraint solver (`PGS`, `CG`, `Newton`) |
-| | `cone` | `"pyramidal"` (shipped: `"elliptic"`) | 마찰 원뿔 모델 (`pyramidal`, `elliptic`) |
-| | `jacobian` | `"auto"` | Jacobian 표현 (`dense`, `sparse`, `auto`) |
-| | `integrator` | `"Euler"` (shipped: `"implicitfast"`) | 적분기 (`Euler`, `RK4`, `implicit`, `implicitfast`) |
-| **반복 계산** | `iterations` | `100` (shipped: `20`) | 메인 solver 최대 반복 횟수 |
-| | `tolerance` | `1e-8` | 메인 solver 수렴 threshold |
-| | `ls_iterations` | `50` (shipped: `20`) | CG/Newton linesearch 최대 반복 |
-| | `ls_tolerance` | `0.01` | linesearch 수렴 threshold |
-| | `noslip_iterations` | `0` | Noslip 후처리 반복 (0=비활성화, 매니퓰레이션에서 10~20 권장) |
-| | `noslip_tolerance` | `1e-6` | Noslip solver 수렴 threshold |
-| | `ccd_iterations` | `50` | convex collision 최대 반복 |
-| | `ccd_tolerance` | `1e-6` | convex collision 수렴 threshold |
-| | `sdf_iterations` | `10` | SDF collision 반복 횟수 |
-| | `sdf_initpoints` | `40` | SDF 초기 탐색 포인트 수 |
-| **물리** | `impratio` | `1.0` | 마찰/법선 impedance 비율 (elliptic cone에서 5~10으로 slip 억제) |
-| **플래그** | `warmstart` | `true` | 이전 timestep constraint force로 초기화 |
-| | `refsafe` | `true` | `solref[0] < 2*timestep` 자동 보정 |
-| | `island` | `false` | constraint island discovery (CG 병렬화) |
-| | `eulerdamp` | `true` | Euler에서 joint damping implicit 처리 |
-| | `filterparent` | `true` | 부모-자식 body collision 필터링 |
-| | `multiccd` | `false` (shipped: `true`) | convex pair 당 다점 contact (object grasp / pinch 권장) |
-| | `autoreset` | `true` | NaN/blow-up 시 silently `mj_resetData` (개발 중 `false` 권장) |
-| | `nativeccd` | `true` | MuJoCo 3.3+ native CCD (legacy MPR fallback 필요 시 `false`) |
-| **Contact Override** | `contact_override.enable` | `false` | 전체 contact 파라미터 일괄 덮어쓰기 |
-| | `contact_override.o_solref` | `[0.02, 1.0]` | override solref [timeconst, dampratio] |
-| | `contact_override.o_solimp` | `[0.9, 0.95, 0.001, 0.5, 2.0]` | override solimp [d0, dwidth, width, midpoint, power] |
-| | `contact_override.o_friction` | `[1.0, 1.0, 0.005, 0.0001, 0.0001]` | override friction [tan1, tan2, spin, roll1, roll2] |
-
-> `n_substeps` (top-level 파라미터, `solver.*` 밖)도 동일하게 drift한다: 코드 fallback `1`, shipped `config/solver_param.yaml` 값 `3`. SSoT는 [config/solver_param.yaml](config/solver_param.yaml).
-
-**Runtime 변경 가능 파라미터** (atomic, viewer 단축키 연동):
-`solver`, `integrator`, `iterations`, `tolerance`, `cone`, `jacobian`, `ls_iterations`, `ls_tolerance`, `noslip_iterations`, `noslip_tolerance`, `impratio`
-
-**Init-only 파라미터** (Initialize 시 1회 적용):
-`ccd_*`, `sdf_*`, flags, contact override
-
-**튜닝 레시피:**
-
-```yaml
-# 매니퓰레이션 (contact slip 억제)
-solver:
-  solver: "Newton"
-  cone: "elliptic"
-  impratio: 10.0
-  tolerance: 1.0e-10
-  noslip_iterations: 10
-
-# Object grasp / pinch / in-hand manipulation
-solver:
-  solver: "Newton"
-  cone: "elliptic"
-  impratio: 5.0
-  noslip_iterations: 15
-  iterations: 30
-  multiccd: true        # finger-pad ↔ object 다점 접촉 — 핵심
-  nativeccd: true       # 3.3+ 기본값 유지
-  autoreset: false      # 개발 단계 numerical issue 가시화
-
-# 안정적 보행 시뮬레이션
-solver:
-  solver: "Newton"
-  cone: "elliptic"
-  impratio: 5.0
-  iterations: 50
-  tolerance: 1.0e-10
-```
-
-### max_rtf (Maximum Real-Time Factor)
-
-| max_rtf | 동작 |
-|---------|------|
-| `1.0` | 실시간 (wall clock 2ms당 sim 2ms) |
-| `10.0` | 10배속 |
-| `0.0` | 무제한 (round-trip 속도가 곧 sim 속도) |
-
----
-
-## ROS2 인터페이스
-
-모든 그룹은 동일한 메시지 타입을 사용합니다:
-- **커맨드**: `rtc_msgs/JointCommand` (joint_names + values + command_type + feedforward/kp/kd)
-- **상태**: `sensor_msgs/JointState` (position, velocity, effort — `effort` 는 **관절 토크 [N·m]**, 아래 [제어 모드 자동 전환](#제어-모드-자동-전환-robot-그룹) 의 effort 정의 참조)
-- **센서** (선택): `rtc_msgs/SimSensorState` (MuJoCo XML 센서 데이터)
-
-### 퍼블리시 토픽 (그룹별)
+모든 그룹이 같은 타입을 쓴다 — command `rtc_msgs/JointCommand`, state `sensor_msgs/JointState` (`effort` 는 관절 토크 [N·m]), 센서 `rtc_msgs/SimSensorState`. QoS 는 command subscriber 와 state publisher 모두 `BEST_EFFORT` + depth 1.
 
 | 토픽 | 타입 | 주기 | 설명 |
-|------|------|------|------|
-| `<group.state_topic>` (예: `/joint_states`) | `sensor_msgs/JointState` | 매 물리 스텝 ÷ `state_publish_divisor` | robot 그룹: 위치/속도/토크 |
-| `<group.state_topic>` (예: `/hand/joint_states`) | `sensor_msgs/JointState` | 100Hz | fake 그룹: LPF 필터링된 상태 |
-| `<group.sensor_topic>` (예: `/hand/sim_sensors`) | `rtc_msgs/SimSensorState` | 매 물리 스텝 ÷ `state_publish_divisor` | robot 그룹: MuJoCo XML 센서 (선택, YAML에 `sensor_topic` + `sensor_names` 설정 시) |
-| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 ÷ `state_publish_divisor` | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. **부호는 link-on-environment** (아래 참조). 비접촉 시 0 발행 (stale 방지). |
-| `<contact_wrench.topic_prefix>/<target>/contact_state` | `std_msgs/Bool` | 접촉 전이 시 | `contact_wrench.publish_state: true` 일 때만. edge-triggered — 값이 바뀔 때만 발행 |
-| `<contact_wrench.topic_prefix>/<target>/contact_point` | `geometry_msgs/PointStamped` | 매 물리 스텝 | `contact_wrench.publish_debug: true` 일 때만. **world frame** (`frame_id: "world"`) 접촉점 — wrench 와 달리 손끝 프레임이 아니다. 아래 [디버그 lane](#publish_debug--접촉점접촉깊이-디버그-lane) 절 |
-| `<contact_wrench.topic_prefix>/<target>/contact_depth` | `std_msgs/Float64` | 매 물리 스텝 | 〃. MuJoCo 의 부호 있는 contact distance — **음수가 관통** |
-| `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 ÷ `object_state.publish_divisor` | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
-| `<projectile_ball.publish.ground_truth_topic>` (예: `/sim/ball/ground_truth`) | `nav_msgs/Odometry` | `publish.sample_rate_hz` (sim 시간 기준) | 씬 전체: 발사된 공의 참값 pose·twist. twist 는 선속도·각속도 모두 **world 프레임** (Odometry 의 child frame 관례와 다르다). **park 중에는 발행하지 않는다**. stamp 는 발행 순간이 아니라 **발사 순간부터 sim 시간축을 wall 에 얹은 값** (간격이 sim 축과 같다 — 아래 [stamp](#stamp--sim-시간축을-wall-에-사상한-값) 항목). 아래 [Projectile Ball](#projectile-ball-발사-공) 절 |
-| `<projectile_ball.publish.camera_topic>` (예: `/sim/ball/camera_position`) | `geometry_msgs/PointStamped` | 〃 | 〃 위치에 축별 가우시안 노이즈 (`position_noise_stddev_m`) — 카메라 관측 모사 |
-| `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
+|---|---|---|---|
+| `<group.state_topic>` | `sensor_msgs/JointState` | 매 step ÷ `state_publish_divisor` | robot 그룹: 위치 / 속도 / 토크 |
+| `<group.state_topic>` | `sensor_msgs/JointState` | 100 Hz | fake 그룹: LPF 상태 |
+| `<group.sensor_topic>` | `rtc_msgs/SimSensorState` | 매 step ÷ divisor | MJCF 센서 (`sensor_topic` + `sensor_names` 설정 시) |
+| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 step ÷ divisor | MJCF contact 센서 자동 발견. 비접촉 시 0 발행. [부호](#contact-wrench-자동-발견) 는 link-on-environment |
+| `.../<target>/contact_state` | `std_msgs/Bool` | 전이 시 | `publish_state: true` 일 때. 값이 바뀔 때만 |
+| `.../<target>/contact_point` | `geometry_msgs/PointStamped` | 매 step | `publish_debug: true` 일 때. **world frame** 접촉점 |
+| `.../<target>/contact_depth` | `std_msgs/Float64` | 매 step | `publish_debug: true` 일 때. 음수가 관통 |
+| `<object_state.topic>` | `tf2_msgs/TFMessage` | 매 step ÷ `publish_divisor` | 씬 전체의 free body 이름 · 프레임 · pose ([Object State](#object-state)) |
+| `<projectile_ball.publish.ground_truth_topic>` | `nav_msgs/Odometry` | `sample_rate_hz` (sim 시간) | 발사된 공의 참값. twist 는 world 프레임. park 중에는 발행하지 않는다 |
+| `<projectile_ball.publish.camera_topic>` | `geometry_msgs/PointStamped` | 〃 | 위 위치 + 축별 가우시안 노이즈 (카메라 관측 모사) |
+| `/sim/status` | `std_msgs/Float64MultiArray` | 1 Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
-#### Contact wrench auto-discovery (MJCF `<sensor><contact>` → ROS WrenchStamped)
-
-MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact_wrench.enabled: true` 면, `rtc_mujoco_sim` 이 매 물리 스텝마다 world-frame netforce 를 link frame 으로 변환해 표준 `geometry_msgs/WrenchStamped` 로 발행한다. Custom 메시지 정의 없음.
-
-요구사항:
-- `<contact>` 의 `data="found force torque dist pos normal tangent"` + `num="1"` + `reduce="netforce"` (sensor_dim == 17 필수)
-- sensor 이름 suffix (default `_tip_contact` / `_contact`) 와 site 이름 suffix (default `_tip_ft_site` / `_ft_site`) 가 같은 target 토큰을 가리킬 것 (예: `index_tip_contact` ↔ `index_tip_ft_site`)
-- ROS frame_id 는 `reference_frame` 이 정한다 (아래)
-
-##### `reference_frame` — wrench 를 어느 프레임으로 낼 것인가
-
-| 값 | 회전 기준 | `frame_id` |
-|----|-----------|------------|
-| `"body"` (기본) | ft_site 의 **owning body** (`mjData.xmat`) | 그 body 의 MJCF 이름 (예: `index_tip_head`) |
-| `"site"` | ft_site **자신** (`mjData.site_xmat`) | 그 site 의 이름 |
-
-둘은 **site 가 body 대비 non-identity quat 을 가질 때만** 갈라지고, 그때는 정확히 그 회전만큼 갈라진다 — 회전된 wrench 도 여전히 그럴듯한 wrench 이므로 크기·부호·NaN 검사로는 구별되지 않는다.
-
-`"site"` 가 필요한 경우는 하나다: **소비자가 `R_link(q)` 를 적용하는 URDF 프레임이 site 가 매달린 MJCF body 와 다를 때.** 예를 들어 손의 URDF fingertip 프레임이 tip link 에서 회전된 bracket 링크면, body 프레임으로 내보낸 힘은 매 fingertip 마다 그 회전만큼 틀어진 채 도착한다 (`ur5e_p1b` 가 이 경우다 — index/middle/ring 90°, thumb 은 복합).
-
-기본이 `"body"` 인 것은 하위호환이다: 기존 씬의 ft_site 는 quat 이 없어 두 프레임이 수치적으로 동일하지만 `frame_id` 는 다르므로, 일괄 전환이 아니라 opt-in 이다. `"body"`/`"site"` 이외의 값은 fallback 없이 **Initialize 실패** — 오타가 조용히 `"body"` 로 읽히면 아무도 못 알아챈다.
-
-##### 부호 규약 — link-on-environment
-
-발행되는 force/torque 는 **손끝이 환경에 가하는** 힘이다 (`fingertip → object`). ROS wrench 를 "프레임에 가해지는 하중" 으로 읽는 관례와는 반대 방향이므로 처음 보면 어색하지만, 이 저장소에서는 이쪽이 표준이다:
-
-- `rtc_msgs/FingertipSensor.f` 가 finger-on-object 이고 (proto-1b firmware, 1a ONNX),
-- `rtc::grasp::PullContactConfig::force_sign` 의 기본값이 `+1` 인 이유가 그것이다.
-
-즉 **sim lane 과 실기 센서 lane 이 같은 부호**여서, `demo_shared.yaml` 의 `pull_estimator` 블록이 sim/실기 양쪽에서 그대로 맞는다. 구현상으로는 MuJoCo `reduce="netforce"` 가 내는 geom1-on-environment 값을 **그대로 통과**시킨다 (`<contact body1="...">` 의 body 가 손끝이므로). **어떤 프로필에도 per-tip 반전(`force_sign: -1.0`)이 있으면 안 된다** — 반전이 들어가면 파지 중에도 `f_n` 이 전 contact 음수가 되어 all-zero estimate 가 나간다.
-
-부호는 두 물리 oracle 이 고정한다: `test_contact_wrench_known_load` (파지한 물체에 건 **알려진 외력**이 lane 의 world 합으로 되나타나는지) 와 `ShippedPullEstimator` (그 lane 을 출하 프로필로 파싱해 in-plane 성분을 뽑는지). 시뮬레이터 쪽 negation 을 되살리면 전자가, 프로필에 `-1.0` 을 넣으면 후자가 red 가 된다.
-
-##### `publish_debug` — 접촉점·접촉깊이 디버그 lane
-
-`contact_wrench.publish_debug: true` 면 target 마다 두 토픽이 더 붙는다 — `<target>/contact_point` (`geometry_msgs/PointStamped`, **world frame**) 과 `<target>/contact_depth` (`std_msgs/Float64`, 음수가 관통). 둘 다 `ReadContactWrenches` 가 이미 읽어 두는 `point_world` / `dist` 를 그대로 낸다.
-
-**wrench lane 이 답할 수 없는 질문을 위한 것이다.** wrench 는 손끝이 *얼마나 세게* 누르는지를 **각자의 프레임**으로 말하므로, 두 손끝이 물체를 **마주 눌러 가두는지** 아니면 **같은 쪽으로 밀어내는지**를 구별하지 못한다 — 180° 로 마주 선 1.5 N 두 개와 90° 로 벌어진 1.5 N 두 개는 크기가 똑같다. 그 구별은 **어디를 누르는지**가 정하고, 폐쇄 체인 손에서는 그것을 `joint_states` 로 재구성할 수 없다 (수동 linkage 관절 때문에 허상이 나온다 — [testing-debug.md](../agent_docs/testing-debug.md)).
-
-기본 OFF 인 이유는 진단이기 때문이고, 켜는 곳은 **그 질문을 하는 fixture** 다 (예: `integrated_bringup/config/ur5e_p1b/sim_overlays/fingertip_grasp_free.yaml`). `frame_id` 가 `"world"` 인 것은 `object_state` 의 기본 fallback 과 같은 문자열이라, 접촉점과 물체 pose 를 변환 없이 같은 표에 놓을 수 있다.
-
-##### Viewer force arrows (기본 ON)
-
-`contact_wrench.enabled` 인 그룹은 뷰어에서 각 reference site 로부터 **주황색 화살표**를 그린다 — 방향·부호가 위 토픽과 동일하다.
-
-| 키 | 기본값 | 설명 |
-|----|--------|------|
-| `contact_wrench.visualize` | `true` | 이 그룹의 화살표. 다른 opt-in 키와 달리 기본 ON — 센서를 설정했다면 그 값을 보는 것이 기대 동작이고, "0 을 발행 중" 과 "발행 자체가 없음" 은 눈으로 보기 전까지 구별되지 않는다 |
-| `contact_wrench.visualize_scale` | `0.005` | [m/N]. 20 N → 10 cm. 길이는 0.3 m 에서 clamp, 0.1 N 미만은 미표시 (둘 다 렌더러 상수) |
-
-런타임 토글은 **Shift+F**. 맨 `F` 는 MuJoCo 자체의 `mjVIS_CONTACTFORCE` 로 남아 있는데, 그것은 **다른 양**이다 — 뷰어 전용 `mjData` (qpos 만 동기화, qvel/ctrl 은 0) 에서 다시 푼 접촉이라 sim 의 값도 아니고 센서의 netforce reduction 도 아니다. 그래서 화살표는 물리 스레드가 `qpos` 와 **같은 임계구역에서** 넘긴 스냅샷으로 그린다.
-
-`enable_viewer: false` 이거나 GLFW 없는 빌드에서는 스냅샷 자체를 뜨지 않는다.
-
-토픽 이름은 `<contact_wrench.topic_prefix>/<contact_sensor_name>/contact_wrench` — **MJCF `<contact name="...">` 값이 ROS topic segment 로 verbatim 전달** 되어 XML 과 1:1 round-trip 한다. Suffix 리스트는 ft_site 를 찾기 위한 *내부 site_stem* 도출에만 쓰임 (예: sensor `index_tip_contact` → site_stem `index_tip` → site `index_tip_ft_site`). LEAP profile 예시 (`topic_prefix: "/leap_hand"`): `/leap_hand/{index_tip_contact, middle_tip_contact, ring_tip_contact, thumb_tip_contact}/contact_wrench`. 비-LEAP MJCF 도 sensor↔site suffix 규약만 맞으면 wrapper 코드 변경 없이 자동 토픽 생성.
-
-### 구독 토픽 (그룹별)
+### 구독 토픽
 
 | 토픽 | 타입 | 설명 |
-|------|------|------|
-| `<group.command_topic>` (예: `/ur5e/joint_command`) | `rtc_msgs/JointCommand` | robot 그룹: position/torque/pd_feedforward 명령 (command_type으로 자동 전환) |
-| `<group.command_topic>` (예: `/hand/joint_command`) | `rtc_msgs/JointCommand` | fake 그룹: LPF 타겟 업데이트 |
-
-> **QoS**: command subscriber와 state publisher 모두 `BEST_EFFORT` + depth 1을 사용합니다.
+|---|---|---|
+| `<group.command_topic>` | `rtc_msgs/JointCommand` | robot 그룹: `command_type` (`position` / `torque` / `pd_feedforward`) 로 제어 모드 자동 전환. fake 그룹: LPF 타겟 갱신 |
 
 ### 서비스
 
 | 서비스 | 타입 | 설명 |
-|------|------|------|
-| `/sim/set_external_wrench` | `rtc_msgs/SetExternalWrench` | body 이름으로 지정한 곳에 알려진 외력 부착 / 전체 해제 |
-| `/sim/launch_ball` | `std_srvs/Trigger` | projectile ball 발사 요청 — 상태는 **설정 분포에서 샘플링** (뷰어 `K` 와 같은 경로). 공이 비활성이면 `success: false` |
-| `/sim/launch_ball_at` | `rtc_msgs/LaunchBall` | projectile ball 을 **호출자가 지정한 `(p0, v0, ω)`** 로 발사 (D-14). RNG 를 소비하지 않는다. 거부 시 `accepted: false` 이고 **아무것도 바뀌지 않는다** |
-| `/sim/reset_ball` | `std_srvs/Trigger` | projectile ball 을 park 위치로 회수. 공이 비활성이면 `success: false` |
+|---|---|---|
+| `/sim/set_external_wrench` | `rtc_msgs/srv/SetExternalWrench` | body 에 알려진 외력을 걸거나 전부 해제 |
+| `/sim/launch_ball` | `std_srvs/srv/Trigger` | 설정 분포에서 샘플링해 공 발사 (뷰어 `K` 와 같은 경로). 공이 비활성이면 `success: false` |
+| `/sim/launch_ball_at` | `rtc_msgs/srv/LaunchBall` | 호출자가 준 `(p0, v0, ω)` (world) 로 발사. RNG 를 쓰지 않는다. 거부 시 `accepted: false` 이고 아무것도 바뀌지 않는다 |
+| `/sim/reset_ball` | `std_srvs/srv/Trigger` | 공을 park 위치로 회수. 공이 비활성이면 `success: false` |
 
 #### 외력 주입 (`/sim/set_external_wrench`)
 
-추정기·관측기 검증에는 **참값을 아는 부하**가 필요합니다. 이 서비스는 MJCF body 를 이름으로 지정해 world 축 wrench 를 매답니다.
+추정기 · 관측기 검증에는 참값을 아는 부하가 필요하다. MJCF body 를 이름으로 지정해 world 축 wrench 를 건다.
 
 ```bash
 # ee_link 프레임 원점에 1 kg 상당의 하중을 매단다 (아래 방향 9.81 N)
@@ -328,254 +109,226 @@ ros2 service call /sim/set_external_wrench rtc_msgs/srv/SetExternalWrench \
 ros2 service call /sim/set_external_wrench rtc_msgs/srv/SetExternalWrench "{clear: true}"
 ```
 
-세 가지 성질이 계약이며, 어느 하나를 오해하면 **발산이 아니라 유한하고 매끄러운 틀린 답**이 나옵니다.
+- 작용점은 `point` 이지 body 질량중심이 아니다 (`{0,0,0}` = body 프레임 원점). 질량중심 보정은 sim 이 매 tick 한다.
+- **latched**: 해제 · 덮어쓰기 · 시뮬레이터 리셋 전까지 매 tick 재적용된다. 한 body 만 떼려면 그 body 에 0 wrench 를 보낸다.
+- 없는 body 와 `world` 는 `accepted=false` + 사유로 거부된다.
+- `JointState.effort` 에는 이 외력이 들어가지 않는다 — 관측기가 미지의 외란 토크로 보아야 하기 때문이다.
 
-1. **작용점은 `point` 이지 body 질량중심이 아닙니다.** MuJoCo 의 `mjData::xfrc_applied` 는 body 질량중심 (`xipos`) 에 걸립니다 — 문서가 아니라 실측으로 확인했습니다 (순수 힘을 걸고 `qfrc_smooth` 차분을 자코비안과 대조: `J(xipos)ᵀw` 와 1e-14, `J(xpos)ᵀw` 와는 1.7e-1). 그런데 그 질량중심은 body 프레임 원점과 다릅니다 — iiwa7_leap 에서는 **모든 body** 가 0 이 아닌 오프셋을 갖고 (`ee_link` 35 mm, 최대 13 cm), **질량이 0 인 body 도** 그렇습니다. 요청을 그대로 전달하면 10 N 당 0.25 N·m 의 모멘트가 따라붙어 payload 추정기의 노이즈 바닥 (0.048 N·m) 의 5 배가 되고, "실재하지 않는 CoM 오프셋을 가진 물체" 로 읽힙니다. 따라서 SimLoop 이 **매 tick** `xpos`/`xipos`/`xmat` 에서 CoM 기준 등가 wrench 를 다시 만듭니다 — 요청 시점에 한 번 계산해두면 팔이 움직이는 순간 stale 이 되기 때문입니다.
+계약의 SSoT 는 [SetExternalWrench.srv](../rtc_msgs/srv/SetExternalWrench.srv) 주석, 측정 근거는 [sim-rationale.md](../docs/reference/sim-rationale.md#외력-주입-simset_external_wrench).
 
-   `point: {0,0,0}` 은 body 프레임 원점을 뜻하고, 이 점은 같은 이름의 pinocchio 프레임과 일치합니다 (home 자세에서 `ee_link` 기준 1e-9 m 이내 실측). 즉 `point` 를 비워두면 프레임 자코비안이 사영하는 바로 그 wrench 가 걸립니다.
+### 제어 모드 자동 전환
 
-2. **latched 입니다.** 해제·덮어쓰기·시뮬레이터 리셋 전까지 매 물리 tick 재적용되므로 한 번만 호출하면 됩니다. 한 body 만 떼려면 그 body 에 0 wrench 를 보내고, 전부 떼려면 `clear: true` 를 보냅니다.
+robot 그룹은 command 의 `command_type` 으로 모드를 바꾼다.
 
-3. **없는 body 이름은 거부됩니다.** `accepted=false` + 사유가 돌아오며 WARN 이 찍힙니다. 조용히 무시하면 호출자는 부하가 걸렸다고 믿고 추정기는 정확히 아무것도 못 보는, 서로 만나지 않는 상태가 됩니다. `world` body 도 같은 이유로 거부합니다 — 고정 베이스가 흡수해 아무 일도 일어나지 않기 때문입니다.
-
-> `JointState.effort` 에는 이 외력이 **들어가지 않습니다** (`qfrc_actuator + qfrc_applied + qfrc_gravcomp` 이고 `xfrc_applied` 는 별개). 관측기가 이를 미지의 외란 토크로 보아야 하므로 의도된 것입니다 — 만약 effort 에 섞이면 관측기 입력 `τ_m` 이 이미 외력을 포함해 residual 이 0 으로 남는, 조용한 실패가 됩니다.
-
-### 제어 모드 자동 전환 (robot 그룹)
-
-| command_type | 제어 모드 | Robot Gravcomp | World Gravity |
+| `command_type` | 제어 모드 | Robot gravcomp | World gravity |
 |---|---|---|---|
-| `"position"` | Position Servo | **ON** (해당 그룹 body chain 만 `body_gravcomp=1`) | ON (불변) |
-| `"torque"` | Direct Torque | OFF (실 로봇처럼 controller 가 중력 보상 책임) | ON (불변) |
-| `"pd_feedforward"` | PD servo + feedforward torque | OFF (feedforward 가 중력 포함) | ON (불변) |
+| `"position"` | Position servo | **ON** (해당 그룹 body chain 만) | ON |
+| `"torque"` | Direct torque | OFF (controller 가 중력 보상 책임) | ON |
+| `"pd_feedforward"` | PD servo + feedforward torque | OFF (feedforward 가 중력 포함) | ON |
 
-> **torque 모드의 토크 한계 (#815)**: torque 모드에서는 그룹의 actuator 가 전부 `force = ctrl` 이 됩니다. XML 이 서보 (`<position>` · `<velocity>` — bias 를 가진 actuator) 로 쓴 actuator 의 `ctrlrange` 는 서보 **목표** 의 범위 (rad · rad/s) 이지 토크 한계가 아니므로, torque 모드에 있는 동안 그 clamp 를 끄고 모드를 나오면 XML 값으로 되돌립니다. 토크를 묶는 것은 actuator 의 `forcerange` 와 관절의 `actuatorfrcrange` 입니다 — 둘 다 없는 서보 actuator 는 torque 모드에서 한계가 없습니다. `<motor>` 의 `ctrlrange` 는 원래 토크 한계라 그대로 걸립니다. 다루지 않는 것: `<damper>`, 내부 dynamics 가 있는 actuator, `gear` ≠ 1 인 서보.
+- 전역 중력은 항상 켜져 있어 같은 씬의 free body (들어올릴 object) 는 정상적으로 떨어진다.
+- `JointState.effort` = `qfrc_actuator + qfrc_applied + qfrc_gravcomp` — 모드와 무관하게 관절에 작용하는 일반화력 전부이며 실기와 같은 의미다.
+- **torque 모드의 한계**: 서보 (`<position>` · `<velocity>`) actuator 는 torque 모드에서 `ctrlrange` clamp 가 꺼지고 `forcerange` / `actuatorfrcrange` 만 토크를 묶는다. 둘 다 없으면 한계가 없다.
+- **`pd_feedforward`** (sim 전용): `kp·(q_d−q) − kd·qvel + tau_ff`. `values` = 위치 타겟, `feedforward[]` = `tau_ff` [N·m] (**중력 포함**, 빠지면 팔이 처진다), `kp[]` / `kd[]` = 런타임 게인 (sticky, all-or-nothing, 둘 다 ≥ 0). 현재 rtc 컨트롤러 스택은 이 값을 발행하지 못하고 테스트나 직접 publish 로만 도달한다.
 
-Position servo 모드에서는 MuJoCo 의 per-body `body_gravcomp` 가 그룹의 link body 들에 대해 1.0 으로 설정되어 중력이 내부적으로 상쇄됩니다. 전역 `opt.gravity` 는 항상 원래 값으로 유지되므로, 같은 씬 안의 free body (들어올릴 객체 등) 는 정상적으로 떨어집니다 — lift / manipulation 시뮬레이션과 양립.
+근거 · 구현 노트는 [sim-rationale.md](../docs/reference/sim-rationale.md#제어-모드와-effort).
 
-> **`JointState.effort` 의 정의 (모드 무관)**: `qfrc_actuator + qfrc_applied + qfrc_gravcomp` — 즉 **그 관절에 작용하는 일반화력 전부**이며 단위는 관절 토크 [N·m] 입니다. `DeviceState::effort` lane 계약 (`rtc_base` `types.hpp`: "torques for robot arm") 이 실기·sim 양쪽에 동일하게 걸리고, 실기는 command mode 와 무관하게 관절 토크를 보고하므로 sim 도 모드에 따라 의미가 달라지면 안 됩니다. `gravcomp` 항이 빠지면 position 모드의 effort 는 "중력이 이미 상쇄된 뒤 PD 가 추가로 낸 토크" 가 되어 조용히 다른 물리량이 됩니다. gravcomp 가 OFF 인 `torque` / `pd_feedforward` 에서는 MuJoCo 가 `qfrc_gravcomp` 를 **0 으로 기입**하므로 (미기입이 아니다 — `mj_passive` 는 `ngravcomp == 0` early-out 전에 배열을 0 으로 덮는다) 이 합산은 모드 분기 없이 안전합니다. `qfrc_passive` 를 통째로 더하지 않는 이유는 거기에 spring / damper / fluid 가 섞여 있어서입니다 (iiwa7 은 관절 damping 1.0–3.0 → `qvel=0.5` 에서 1.5 N·m) — 그건 모델의 마찰이고 관측기의 residual 에 남습니다.
+### Contact wrench 자동 발견
 
-#### `pd_feedforward` 모드 (sim 전용)
+MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact_wrench.enabled: true` 이면 매 물리 step 마다 world-frame netforce 를 표준 `geometry_msgs/WrenchStamped` 로 발행한다.
 
-`command_type == "pd_feedforward"` 는 `position` 모드와 동일한 affine PD actuator (`kp·(q_d−q) − kd·qvel`, `values` = 위치 타겟 `q_d`) 에 per-joint feedforward torque 를 더합니다 (조인트당 총 일반화 힘 = `kp·(q_d−q) − kd·qvel + tau_ff`). 구현은 `tau_ff` 를 `data_->qfrc_applied[dofadr]` 에 주입하고 (MuJoCo 가 `qfrc_actuator + qfrc_applied` 합산), `body_gravcomp` 를 0 으로 둡니다 — **컨트롤러의 `feedforward` 가 중력 보상까지 전부 포함**해야 하며, 누락 시 팔이 무음으로 처집니다. 메시지 필드:
+요구사항:
+- `<contact>` 는 `data="found force torque dist pos normal tangent"` + `num="1"` + `reduce="netforce"` (sensor_dim == 17).
+- sensor 이름 suffix (기본 `_tip_contact` / `_contact`) 와 site 이름 suffix (기본 `_tip_ft_site` / `_ft_site`) 가 같은 target 토큰을 가리킨다 (`index_tip_contact` ↔ `index_tip_ft_site`).
+- 토픽 이름은 `<topic_prefix>/<contact 센서 이름>/contact_wrench` — MJCF `<contact name>` 이 그대로 segment 가 된다 (예: `/leap_hand/index_tip_contact/contact_wrench`). suffix 는 site 를 찾는 데만 쓰인다.
 
-- `feedforward[]` — `tau_ff` (Nm), gravity 포함. 비면 0. command joint 는 hinge/slide (1-dof) 만 지원.
-- `kp[]` / `kd[]` — 런타임 PD gain (둘 다 `>= 0`), **sticky** (비면 현재 게인 유지, 채우면 갱신 후 지속). **all-or-nothing**: kp/kd 중 하나만 채우거나 그룹 조인트 전체를 덮지 못하면 (또는 음수면) 무시 + throttled warning. `JointState.effort` 는 `qfrc_actuator + qfrc_applied + qfrc_gravcomp` 합산이라 `tau_ff` 가 반영됩니다 (이 모드는 gravcomp OFF 라 마지막 항이 0).
-
-> **도달성 (Path A)**: `pd_feedforward` 는 현재 sim 수신측에서만 해석됩니다. 프레임워크 전역 `rtc::CommandType` enum 이 2-값 (`position`/`torque`) 이라 rtc 컨트롤러→백엔드 스택은 이 값을 발행하지 못하며, sim 테스트 / 직접 publish 로만 도달합니다. end-to-end 컨트롤 경로는 별도 작업 (rtc_base enum + ControllerOutput 확장).
-
-> **per-consumer dispatch**: `command_type` 은 *수신자별로* 해석됩니다. 예컨대 `udp_hand_driver` 는 `command_type` 을 무시하고 `values` 를 항상 position 으로 읽으므로, 공유 토픽에 `pd_feedforward` 를 발행해도 hand 는 이를 position 명령으로 취급합니다 (의도된 계약).
-
-> **Implementation note**: MuJoCo 의 `mj_passive()` 는 `mjModel.ngravcomp == 0` 이면 gravcomp 루프를 건너뜁니다. MJCF 가 `gravcomp` 속성을 명시하지 않으면 컴파일 시점 카운트가 0 이라, 런타임에 `body_gravcomp[]` 만 1.0 으로 써도 효과가 없습니다. `Init` / `PreparePhysicsStep` 에서 `body_gravcomp[]` 를 mutate 한 직후 `RefreshNgravcomp()` 가 nonzero entry 수를 다시 카운트해 이 게이트를 통과시킵니다. `test_gravcomp_scene::GravcompForceActuallyAppliedAfterForward` 가 `qfrc_gravcomp[]` 가 실제로 채워지는지 검증하는 회귀 가드입니다.
-
-> **Body chain 확장 규칙**: `MapGroupIndices()` 는 그룹 command joint 가 매달린 body 를 seed 로 잡은 뒤, child 방향으로 BFS 하면서 `body_jntnum == 0` (= fixed link) 인 descendant 를 모두 그룹에 포함시킵니다. arm-leaf 아래에 mount / wrist adapter / tool / hand 같이 joint-free 체인이 매달려 있을 때, 그 mass 의 중력이 leaf joint 에 외부 토크로 작용해 PD 정상상태 처짐을 만드는 것을 막기 위함입니다. 다른 group 의 joint 를 가진 body 에서는 traversal 이 멈추므로 multi-group 모델에서도 소유권이 깨끗하게 분리됩니다. 초기화 로그의 `gravcomp body chain: N body(ies) (seed S + fixed-link descendants D)` 가 seed / 확장분을 분리해 보여줍니다.
-
----
-
-## 스레딩 모델
-
-```
-mujoco_simulator_node
-    │
-    ├── SimLoop 스레드 (jthread)
-    │     └── SimLoop (동기식: state→wait→step→throttle)
-    │         ├── 그룹별 cmd_mutex + cmd_pending (atomic) — 명령 전달
-    │         ├── sync_cv_ — 모든 robot 그룹 명령 대기
-    │         ├── 그룹별 state_mutex — 최신 상태 스냅샷 보호
-    │         ├── pert_mutex_ (try_lock 전용 — 퍼튜베이션/외부힘 보호)
-    │         └── solver_stats_mutex_ — solver 통계 보호
-    │
-    └── ViewerLoop 스레드 (jthread, 선택적)
-          └── GLFW 3D 뷰어 ~60Hz
-              └── viz_mutex_ (try_lock 전용 — SimLoop 절대 블로킹 안 함)
-
-Caller 스레드 (ROS2 노드): SetCommand(group_idx), GetPositions(group_idx) 호출
-Fake 타이머 (100Hz): AdvanceFakeLPF(group_idx), GetFakeState(group_idx) 호출
-```
-
-### 로그 메시지 prefix
-
-모든 stdout/stderr 출력은 thread/컴포넌트 컨텍스트를 식별할 수 있도록 `[Component]` prefix로 통일됩니다.
-
-| Prefix | Thread / 컴포넌트 | 출력 위치 |
+| `reference_frame` | 회전 기준 | `frame_id` |
 |---|---|---|
-| `[MuJoCoSimulatorNode]` | ROS executor (LifecycleNode 콜백, subscriber, status timer) | `mujoco_simulator_node.cpp` (RCLCPP_*) |
-| `[MuJoCoSimulator]` | Init / library 코드 (`Initialize()`, VFS resolver) | `mujoco_simulator.cpp`, `ros2_resource_provider.cpp` |
-| `[SimLoop]` | `sim_thread_` (reset, exit) | `mujoco_sim_loop.cpp` |
-| `[Viewer]` | `viewer_thread_` (GLFW callbacks, viewer lifecycle) | `viewer/viewer_loop.cpp`, `viewer/viewer_callbacks.cpp` |
+| `"body"` (기본) | ft_site 의 owning body | 그 body 의 MJCF 이름 |
+| `"site"` | ft_site 자신 | 그 site 의 이름 |
 
-새 메시지를 추가할 때는 출력 thread에 맞는 prefix를 사용하고 본문을 Sentence-case로 작성합니다 (마침표 없음, em-dash `—`로 보조 설명, 화살표 `→`로 상태 전환).
+- 둘은 site 가 body 대비 non-identity quat 을 가질 때만 갈라진다. 소비자가 `R_link(q)` 를 적용하는 URDF 프레임이 site 가 붙은 MJCF body 와 다르면 `"site"` 를 쓴다. 그 외의 값은 Initialize 실패다.
+- **부호는 link-on-environment** — 손끝이 환경에 가하는 힘이며 실기 센서 lane 과 같은 부호다. 프로필에 per-tip 반전 (`force_sign: -1.0`) 을 두지 않는다.
+- `publish_debug: true` 는 접촉점 / 깊이 lane 을 켠다. 마주 누르는지 같은 쪽으로 미는지를 가려야 하는 진단 fixture 용이고 기본은 OFF 다 (예: `integrated_bringup/config/ur5e_p1b/sim_overlays/fingertip_grasp_free.yaml`).
+- 뷰어는 각 reference site 에서 주황색 화살표를 그린다 (`contact_wrench.visualize` 기본 `true`, `visualize_scale` 기본 `0.005` [m/N]). 토글은 **Shift+F**. 맨 `F` 는 MuJoCo 자체 접촉력으로 **다른 양**이다.
 
----
+근거는 [sim-rationale.md](../docs/reference/sim-rationale.md#contact-wrench-lane).
+
+### 뷰어 상태 오버레이
+
+우상단에 항상 표시된다.
+
+| 항목 | 설명 |
+|---|---|
+| Mode / Camera / Status | 동기 모드 (`sync`) / Free · Tracking · Fixed:name / running · PAUSED · perturb |
+| RTF / Limit | 실시간 비율 / `max_rtf` 설정값 |
+| Sim Time / Steps | 경과 시간 / 누적 제어 step |
+| Contacts / World G | 활성 접촉 수 (on\|OFF) / 전역 중력 ON\|OFF |
+| Robot Gravcomp | per-body 중력 보상이 켜진 그룹 인덱스 (torque 모드면 `none`) |
+| Object | 현재 pool object 이름 (pool 활성 시). `o` 가 동작했는지 확인하는 유일한 관측면 |
+| Integrator / Solver / Iterations / Residual | 현재 solver 설정과 통계 |
+| Substeps | `n_substeps (substep_dt ms)` — 예: `4 (0.50ms)` |
+| Physics Load | substep 루프 wall time / 제어 주기 (%). 100% 초과 시 실시간 유지 불가 |
+| Frames | Link / Joint frame overlay ON/OFF |
+| Perturb (\<body\>) | Ctrl+drag 외력 `\|F\|` (N) · `\|t\|` (Nm). 비활성 시 `-` |
+
+### 뷰어 단축키
+
+`viewer_input_enabled: false` (launch 인자 `viewer_input_enabled:=false`) 이면 world 를 바꾸는 입력 — 아래 "입력 차단" 열이 `차단` 인 키와 Ctrl+drag 퍼튜베이션 — 을 무시한다. 카메라 · 시각화 · 오버레이 · 스크린샷은 그대로 동작한다. 뷰어를 띄운 채 돌리는 평가 sim 이 실수로 누른 키에 흔들리지 않게 하려는 것이다. 무시된 키는 한 번 `[Viewer] Input disabled: key <name> ignored` 를 남긴다. 차단 집합의 SSoT 는 [viewer_input_policy.hpp](src/viewer/viewer_input_policy.hpp).
+
+#### 키보드
+
+| 키 | 기능 | 입력 차단 |
+|---|---|---|
+| **F1** | 도움말 오버레이 순환 (off → page1 → page2 → off) |  |
+| Space | 일시정지 / 재개 | 차단 |
+| Right (일시정지 중) | 한 스텝 진행 | 차단 |
+| + / - | RTF 속도 2배 / 0.5배 | 차단 |
+| R | 초기 자세로 리셋 (pool object 는 같은 자세로 다시 놓임) | 차단 |
+| O | pool object 교체 ([Object Pool](#object-pool)) | 차단 |
+| K | projectile ball 발사 (`/sim/launch_ball` 과 같음) | 차단 |
+| TAB | 카메라 모드 순환 (Free → Tracking → Fixed[0..N-1] → Free) |  |
+| Esc | 카메라 초기화 (Free 모드, 기본 거리/방위각) |  |
+| Backspace | 시각화 옵션 초기화 |  |
+| G | 전역 중력 ON/OFF (디버깅용; 로봇 gravcomp 와 무관) | 차단 |
+| B | link frame overlay ON/OFF |  |
+| N | 접촉 제약 ON/OFF | 차단 |
+| I | integrator 순환 (Euler → RK4 → Implicit → ImplFast) | 차단 |
+| S | solver 순환 (PGS → CG → Newton) | 차단 |
+| ] / [ | solver 반복 횟수 x2 / /2 | 차단 |
+| C / F | 접촉점 / 접촉력 표시 |  |
+| Shift+F | contact wrench 화살표 (뷰어 force arrow) |  |
+| T | 투명 시각화 |  |
+| J / U | 관절 / 액추에이터 시각화 |  |
+| E / W | 관성 / CoM 시각화 |  |
+| L / A / X | 조명 / 텐던 / 볼록 껍질 시각화 |  |
+| 0-5 / V | 지오메트리 그룹 토글 (V = 그룹 0 별칭) |  |
+| F3 / F4 / F9 / F10 | RTF 그래프 / Solver 통계 / 센서 값 / 모델 정보 오버레이 |  |
+| F5 / F6 / F7 / F8 | 와이어프레임 / 그림자 / 스카이박스 / 반사 |  |
+| P | 스크린샷 저장 (PPM) |  |
+
+#### 마우스
+
+| 조작 | 기능 | 입력 차단 |
+|---|---|---|
+| Left drag | 카메라 궤도 |  |
+| Shift + Left drag | 수평축 회전 |  |
+| Right drag | 카메라 패닝 |  |
+| Shift + Right drag | 수평 평면 패닝 |  |
+| Scroll / Middle drag | 줌 인/아웃 |  |
+| Dbl-click | 물체 선택 |  |
+| Ctrl + Left drag | 퍼튜베이션 (토크) — status 의 `\|t\|` 가 실제 인가 토크 | 차단 |
+| Ctrl + Right drag | 퍼튜베이션 (힘, 카메라 수직 평면) — status 의 `\|F\|` | 차단 |
+| Ctrl + Shift + Right drag | 퍼튜베이션 (힘, 월드 수평 평면) | 차단 |
+
+### 공개 헤더
+
+노드 밖에서 라이브러리로 쓰는 경우다. 시그니처 · 동작은 헤더의 Doxygen 이 SSoT 다.
+
+| 헤더 | 내용 |
+|---|---|
+| [mujoco_simulator.hpp](include/rtc_mujoco_sim/mujoco_simulator.hpp) | `MuJoCoSimulator` — 그룹 인덱스 기반 `SetCommand` / `GetPositions` / 콜백 등록 / `Pause` · `Resume` · `StepOnce` · `RequestReset` |
+| [ros2_resource_provider.hpp](include/rtc_mujoco_sim/ros2_resource_provider.hpp) | `rtc::RegisterRos2ResourceProvider()` — MJCF 안의 `package://` URI 를 `ament_index_cpp` 로 해석 |
+| [object_pool.hpp](include/rtc_mujoco_sim/object_pool.hpp) · [projectile_ball.hpp](include/rtc_mujoco_sim/projectile_ball.hpp) | pool / 공 설정 · 샘플링 순수 로직 |
 
 ## 설정
 
-설정 파일은 두 계층으로 분리되어 있습니다:
-- `config/solver_param.yaml` — **모든 sim launch가 항상 가장 먼저 로드**. agnostic 기본값 (sync timeout, max_rtf, viewer, physics_timestep 등) + solver 파라미터 SSoT. 우선순위: XML `<option>` → robot bringup mujoco_simulator.yaml → 본 파일.
-- `config/mujoco_default.yaml` — **예제/템플릿** (어떤 launch에도 로드되지 않음). 새 robot bringup 패키지가 자신의 `mujoco_simulator.yaml`을 작성할 때 복사용 reference로만 사용. 헤더의 경고 참조.
+설정은 두 계층이다.
 
-robot-specific 오버라이드(예: UR5e 설정 — `model_path`, `robot_response.groups`, joint names, command/state 토픽, servo gains)는 robot bringup 패키지에 위치합니다 — 예시: [integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml](../integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml).
+- [config/solver_param.yaml](config/solver_param.yaml) — **모든 sim launch 가 가장 먼저 로드**하는 agnostic 기본값 (`sync_timeout_ms` 50, `max_rtf` 1.0, `physics_timestep` 0.002, `n_substeps` 3, viewer 등) 과 solver 파라미터 SSoT. 우선순위는 XML `<option>` → bringup `mujoco_simulator.yaml` → 이 파일.
+- [config/mujoco_default.yaml](config/mujoco_default.yaml) — launch 에 로드되지 않는 **템플릿**. 새 bringup 이 자기 `mujoco_simulator.yaml` 을 쓸 때 복사한다 (Object Pool · Object State · Projectile Ball · lane 의 전체 키와 주석이 여기 있다).
 
-### Contact point 시각화 크기
+robot-specific 값 (`model_path`, `robot_response.groups`, joint 이름, 토픽, 게인) 은 bringup 에 있다 — 예: [ur5e_p1a/mujoco_simulator.yaml](../integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml).
 
-MuJoCo 기본 `contactwidth=0.3` / `contactheight=0.1`는 manipulator scale에서 과도하게 큽니다. `ApplySolverConfig()`에서 모델 로드 직후 1/10로 축소 (`contactwidth=0.03` / `contactheight=0.01`) — 모든 robot scene에 일괄 적용되며 physics 영향 없는 순수 시각화 처리입니다.
+### 노드 파라미터
 
-### 지오메트리 그룹 가시성 (group 3+ 는 기본 숨김)
+기본값은 `solver_param.yaml` 기준이다.
 
-MJCF `<geom group="N">` 은 분류만 할 뿐 뷰어 노출 여부는 `mjvOption.geomgroup[0..5]` 가 결정하는데, MuJoCo `mjv_defaultOption()` 은 이를 `[1, 1, 1, 0, 0, 0]` 으로 초기화한다 (3.7.0 실측). 즉 **group 3 / 4 / 5 는 launch 직후 화면에서 숨겨진 상태**이고, 키보드 `0`–`5` 로 토글해야 보인다 (§뷰어 단축키).
+| 파라미터 | 기본값 | 설명 |
+|---|---|---|
+| `model_path` | `""` | MJCF 경로 (**필수**, 비면 configure 가 `runtime_error`). 보통 `package://<pkg>/.../scene.xml` |
+| `enable_viewer` | `true` | GLFW 뷰어 |
+| `viewer_refresh_rate` | `60.0` | 뷰어 목표 refresh [Hz] |
+| `viewer_input_enabled` | `true` | `false` 면 world 를 바꾸는 키와 Ctrl+drag 무시 (시작 시 1 회 읽음) |
+| `viewer_camera.lookat` / `.distance` | `[0,0,0]` / `2.5` | free camera 가 바라보는 점 [m, world] 과 거리. 뷰어는 MJCF `<statistic>` 을 읽지 않으므로 로봇이 원점에 없으면 여기서 맞춘다 |
+| `viewer_camera.azimuth_deg` / `.elevation_deg` | `90.0` / `-20.0` | 방위각 (90 이면 −y 쪽에서 +x 를 오른쪽에 둠) / 고각 (음수가 내려다봄) |
+| `sync_timeout_ms` | `50.0` | 모든 robot 그룹 command 대기 한계 [ms]. 넘기면 받은 command 만 적용하고 step |
+| `max_rtf` | `1.0` | 최대 실시간 비율 (`0.0` = 무제한) |
+| `control_rate` | `500.0` | [Hz]. `physics_timestep == 1/control_rate` 가 아니면 기동 FATAL |
+| `physics_timestep` | `0.002` | 제어 주기 [s]. `0.0` 이면 XML 값 사용 |
+| `n_substeps` | `3` | 제어 주기당 물리 서브스텝 수. `substep_dt = physics_timestep / n_substeps` |
+| `use_yaml_servo_gains` | `false` | `true` 면 YAML `servo_kp` / `servo_kd`, `false` 면 XML gainprm / biasprm. `false` + XML `<motor>` 이면 position 명령이 그대로 토크로 들어가 기동 때 경고 |
+| `servo_kp` / `servo_kd` | (bringup 이 정함) | Position servo 게인 (글로벌). 그룹마다 DoF 가 다르면 그룹별로 지정한다 |
+| `robot_response.groups` / `fake_response.groups` | `[]` | 물리 / LPF 그룹 이름 목록 |
+| `solver.*` | — | [Constraint solver](#constraint-solver) |
+| `object_pool.*` · `object_state.*` · `projectile_ball.*` | 비활성 | 아래 각 절 |
+| `clock_lane.*` · `ball_contact_lane.*` | 비활성 | [측정용 CSV lane](#측정용-csv-lane) |
 
-collision geom 을 group 3 에 모으면 자동으로 가려져 편리하지만, 여기에 함정이 하나 있다 — robot-only MJCF 의 main `<default>` 가 group 3 이면, 그 파일을 `<include>` 하는 scene 의 floor / table 같은 **visual** geom 이 group 을 명시하지 않을 때 그 default 를 상속받아 함께 사라진다.
+그룹별 파라미터 (`robot_response.<name>.` / `fake_response.<name>.`):
 
-- "뷰어에 X 가 안 보인다" 디버깅은 `m->geom_group[i]` 가 `0..2` 인지 확인하는 것부터 시작한다 (모델 정보 오버레이 `F10`).
-- robot-only MJCF 를 include 하는 scene 파일은 보여야 할 geom 에 group 을 **명시**한다.
+| 파라미터 | 설명 |
+|---|---|
+| `command_joint_names` | command 조인트 이름 (robot: XML actuator 와 양방향 일치). 미지정 시 `joint_names` 로 대체 |
+| `state_joint_names` | state 발행 조인트. 빈 배열 = robot 은 XML 전체, fake 는 command 와 동일. 다중 그룹이면 그룹별로 명시한다 |
+| `command_topic` / `state_topic` | 구독 / 발행 토픽 |
+| `sensor_topic` / `sensor_names` | MJCF 센서 발행 (빈 문자열 = 비활성, 이름 `["auto"]` = XML 전체) |
+| `contact_wrench.*` | `enabled` · `topic_prefix` · `sensor_name_suffixes` · `reference_site_suffixes` · `reference_frame` · `publish_state` · `publish_debug` · `allow_partial_discovery` · `visualize` · `visualize_scale` |
+| `filter_alpha` | fake 전용 LPF 계수 (기본 `0.1`) |
+| `servo_kp` / `servo_kd` | 그룹별 servo 게인 (미지정 시 글로벌 상속) |
+| `initial_qpos` | 기동 · 리셋 자세. **robot 전용** ([초기 자세](#초기-자세-initial_qpos)) |
+| `wait_for_command` | 기본 `true`. lock-step 이 이 그룹의 command 를 기다리는가 |
+| `state_publish_divisor` | 기본 `1`. state · sensor · contact wrench 를 N step 에 한 번 발행 (물리는 매 step). fake 그룹은 1 만 |
 
-### `config/mujoco_simulator.yaml` (예시 — UR5e bringup 형식)
+`state_publish_divisor` > 1 인 그룹과 fake 그룹은 controller manager 의 `sim_sync_tick_devices` 에서 빼야 한다 — 넣으면 tick 이 그 그룹을 기다리느라 N−1 step 을 멈춘다. `wait_for_command: false` 인 그룹도 명령이 오면 적용한다.
 
-robot-specific bringup 패키지의 YAML 형태. `solver_param.yaml` 위에 오버레이됩니다. 아래 예시는 UR5e 6-DOF arm + 10-DOF hand 구성:
+### bringup YAML 예시
 
 ```yaml
 mujoco_simulator:
   ros__parameters:
-    model_path: "robots/ur5e/mjcf/scene_with_hand.xml"
-    sync_timeout_ms: 50.0        # 명령 대기 타임아웃 (ms)
-    max_rtf: 1.0                 # 최대 실시간 비율 (0.0 = 무제한)
-    enable_viewer: true          # GLFW 3D 뷰어 활성화
-    physics_timestep: 0.002      # seconds — control period (constant)
-    n_substeps: 1                # physics substeps per control cycle (substep_dt = physics_timestep / n_substeps)
-
-    # Position servo 게인 (글로벌 기본값)
-    use_yaml_servo_gains: false
-    servo_kp: [500.0, 500.0, 500.0, 150.0, 150.0, 150.0]
-    servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]
-
-    # ── Robot Response (MuJoCo 물리) ──────────────────────────────
-    # command_joint_names 합집합 == XML 전체 joints (양방향 완전 일치 필수)
+    model_path: "package://robot_descriptions/robots/ur5e_assm_v1/mjcf/scene_with_hand.xml"
     robot_response:
       groups: ["ur5e", "hand"]
       ur5e:
-        command_joint_names:
-          - shoulder_pan_joint
-          - shoulder_lift_joint
-          - elbow_joint
-          - wrist_1_joint
-          - wrist_2_joint
-          - wrist_3_joint
-        state_joint_names:         # state publish용 (빈 배열 = XML 전체)
-          - shoulder_pan_joint
-          - shoulder_lift_joint
-          - elbow_joint
-          - wrist_1_joint
-          - wrist_2_joint
-          - wrist_3_joint
+        command_joint_names: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint,
+                              wrist_1_joint, wrist_2_joint, wrist_3_joint]
+        state_joint_names:   [shoulder_pan_joint, shoulder_lift_joint, elbow_joint,
+                              wrist_1_joint, wrist_2_joint, wrist_3_joint]
         command_topic: "/ur5e/joint_command"
         state_topic: "/joint_states"
-        # sensor_topic: "/ur5e/sim_sensors"  # MuJoCo 센서 publish (선택)
-        # sensor_names: ["ft_sensor"]        # XML sensor 이름 목록
+        # sensor_topic: "/ur5e/sim_sensors"
+        # sensor_names: ["ft_sensor"]
       hand:
-        command_joint_names:
-          - thumb_cmc_aa
-          - thumb_cmc_fe
-          - thumb_mcp_fe
-          - index_mcp_aa
-          - index_mcp_fe
-          - index_dip_fe
-          - middle_mcp_aa
-          - middle_mcp_fe
-          - middle_dip_fe
-          - ring_mcp_fe
+        command_joint_names: [thumb_cmc_aa, thumb_cmc_fe, ...]
         command_topic: "/hand/joint_command"
         state_topic: "/hand/joint_states"
-        # sensor_topic: "/hand/sim_sensors"  # MuJoCo 센서 publish (선택)
-        # sensor_names: ["thumb_touch", "index_touch"]  # XML sensor 이름 목록
-
-    # ── Fake Response (LPF 에코백) ────────────────────────────────
-    # robot_response와 같은 그룹 이름 중복 불가.
-    # XML에 hand가 없는 모델 사용 시 hand를 여기로 이동.
+    # XML 에 손이 없는 모델이면 hand 를 robot_response 에서 빼고 LPF 로:
     # fake_response:
     #   groups: ["hand"]
-    #   hand:
-    #     command_joint_names: [thumb_cmc_aa, ...]
-    #     command_topic: "/hand/joint_command"
-    #     state_topic: "/hand/joint_states"
-    #     filter_alpha: 0.1
-
-# RT 컨트롤러 노드용 시뮬레이션 오버라이드는 robot-specific bringup YAML
-# (예: integrated_bringup/config/ur5e_p1a/sim.yaml)에서 `/**:` wildcard로 관리.
+    #   hand: { command_joint_names: [...], command_topic: "/hand/joint_command",
+    #           state_topic: "/hand/joint_states", filter_alpha: 0.1 }
 ```
 
-> **참고:** `joint_names`는 `command_joint_names` 미지정 시 하위 호환 대체로 사용됩니다. `state_joint_names`가 빈 배열이면 robot 그룹은 XML 전체 조인트, fake 그룹은 command_joint_names와 동일하게 사용됩니다. 다중 그룹(arm + hand)에서는 각 그룹의 `state_joint_names`를 명시적으로 지정해야 그룹별 state 토픽이 자기 도메인 조인트만 publish 합니다 (미지정 시 전 그룹이 XML 전체를 publish).
->
-> **검증 경고:** XML 조인트가 모든 robot 그룹의 `state_joint_names` 합집합에 포함되지 않으면 `WARNING: XML joint '...' not published by any group's state_joint_names` 가 1회 출력됩니다.
-
-### 노드가 읽는 파라미터 목록
-
-| 파라미터 | 타입 | 기본값 | 설명 |
-|----------|------|--------|------|
-| `model_path` | string | `""` | MJCF 모델 경로 (필수). 빈 값이면 노드 configure 시 `runtime_error`. robot-specific bringup이 `package://<pkg>/path/to/scene.xml` 형태로 전달. |
-| `enable_viewer` | bool | `true` | GLFW 3D 뷰어 활성화 |
-| `viewer_refresh_rate` | double | `60.0` | 뷰어 목표 refresh rate (Hz) |
-| `viewer_input_enabled` | bool | `true` | `false` 면 뷰어가 world 를 바꾸는 키 (일시정지 · step · 속도 · 리셋 · 스폰 · 물리 · solver) 와 Ctrl+drag 퍼튜베이션을 무시한다. 카메라 · 표시 키는 그대로 동작 ([§뷰어 단축키](#뷰어-단축키)). 뷰어 스레드 시작 시 1 회 읽는다 |
-| `viewer_camera.lookat` | double[3] | `[0, 0, 0]` | 뷰어가 열릴 때 (그리고 ESC 로 돌아갈 때) 의 free camera 가 바라보는 점 (m, world). 뷰어는 MJCF 의 `<statistic>` · `<visual><global>` 을 읽지 않으므로, 로봇이 world 원점에 서 있지 않은 씬은 여기서 맞춘다. 3 원소가 아니거나 유한하지 않으면 노드 생성이 실패한다 |
-| `viewer_camera.distance` | double | `2.5` | `lookat` 에서 카메라까지의 거리 (m, > 0) |
-| `viewer_camera.azimuth_deg` | double | `90.0` | 방위각. 90 이면 카메라가 −y 쪽에 서서 +x 를 오른쪽에 둔다 |
-| `viewer_camera.elevation_deg` | double | `-20.0` | 고각 ([−90, 90]). 음수가 내려다보는 방향 |
-| `sync_timeout_ms` | double | `50.0` | 모든 robot 그룹 command 대기 타임아웃 (ms). 넘기면 도착한 group 의 command 만 적용하고 step 한다 — 한 group 이 명령을 안 보내는 동안 sim 은 step 마다 이만큼 멈춘다 |
-| `max_rtf` | double | `0.0` | 최대 실시간 비율 (0.0 = 무제한) |
-| `control_rate` | double | `500.0` | 런치 파일에서 전달. lock-step 은 step 하나가 controller tick 하나이므로 `physics_timestep == 1/control_rate` 를 요구한다 (다르면 기동 FATAL — #566 이전에는 physics 가 더 빠른 쪽을 허용해 `dt` 적분이 sim 시간과 어긋났다) |
-| `physics_timestep` | double | `0.0` | 0.0이면 XML 값 사용. 양수면 XML과 불일치 시 경고. 제어 주기를 의미 |
-| `n_substeps` | int | `1` | 제어 주기당 물리 서브스텝 수. `substep_dt = physics_timestep / n_substeps`. 1이면 기존 동작 |
-| `use_yaml_servo_gains` | bool | `false` | `true`=YAML servo_kp/kd, `false`=XML gainprm/biasprm. `true` (또는 런타임 게인) 일 때는 actuator 의 bias 타입도 affine 으로 맞추므로 **XML 이 `<motor>` 여도 위치 서보가 된다** — torque 모드로 가거나 게인이 빠지면 XML 의 타입으로 되돌린다. `false` 이고 XML 이 `<motor>` 이면 position 모드의 명령이 그대로 토크로 들어가며, 기동 때 그룹당 한 번 stderr 에 경고한다. 설치되는 서보는 **actuator 단위**다 (길이 = gear · q, ctrl 은 XML 의 `ctrlrange` 로 clamp) — 토크용으로 쓴 `<motor>` 가 `gear` ≠ 1 이거나 `ctrlrange` 를 가지면 목표가 1/gear 로 줄고 그 범위로 잘리므로, 그런 actuator 에 게인을 설치할 때도 그룹당 한 번 경고한다 (`gear="1"` + `forcerange` 로 쓴다) |
-| `servo_kp` | double[] | `[500, 500, 500, 150, 150, 150]` | Position servo P 게인 (글로벌) |
-| `servo_kd` | double[] | `[400, 400, 400, 100, 100, 100]` | Position servo D 게인 (글로벌) |
-| `robot_response.groups` | string[] | `[]` | MuJoCo 물리 그룹 이름 목록 |
-| `fake_response.groups` | string[] | `[]` | LPF 에코백 그룹 이름 목록 |
-| `solver.*` | (다양) | (MuJoCo 기본값) | Solver 파라미터 — 상세: [solver_param.yaml](config/solver_param.yaml) 및 위 Constraint Solver 설정 섹션 참조 |
-| `object_pool.*` | (다양) | 비활성 | 랜덤 object 스폰 — 아래 [Object Pool](#object-pool-랜덤-object-스폰) 섹션 참조 |
-| `object_state.*` | (다양) | 비활성 | object 이름·프레임·pose 발행 — 아래 [Object State](#object-state-object-이름프레임pose-발행) 섹션 참조 |
-| `projectile_ball.*` | (다양) | 비활성 | 발사 공 생성·발사·발행 — 아래 [Projectile Ball](#projectile-ball-발사-공) 섹션 참조 |
-| `clock_lane.enabled` | bool | `false` | 완료 step 마다 `(step, sim_time, steady_ns)` 를 CSV 로 기록 (D-3 위상 오차 측정) |
-| `clock_lane.csv_path` | string | `""` | 출력 CSV 경로. **비어 있으면 lane 이 켜져 있어도 거부**된다 |
-| `clock_lane.drain_rate_hz` | double | `20.0` | 노드가 링을 비우는 주기. 너무 낮으면 링이 넘치고 넘친 수가 CSV 에 기록된다 |
-| `ball_contact_lane.enabled` | bool | `false` | 공 접촉 episode 마다 시각·충격량·최대력을 CSV 로 기록 |
-| `ball_contact_lane.csv_path` | string | `""` | 출력 CSV 경로. **비어 있으면 거부**된다 |
-
-그룹별 파라미터 (`robot_response.<name>.` / `fake_response.<name>.`):
-
-| 파라미터 | 타입 | 설명 |
-|----------|------|------|
-| `command_joint_names` | string[] | command용 조인트 이름 (robot: XML actuator 매칭) |
-| `state_joint_names` | string[] | state publish용 조인트 이름 (빈 배열 = 기본값) |
-| `joint_names` | string[] | 하위 호환용 (`command_joint_names` 미지정 시 대체) |
-| `command_topic` | string | 커맨드 구독 토픽 |
-| `state_topic` | string | 상태 퍼블리시 토픽 |
-| `sensor_topic` | string | MuJoCo 센서 퍼블리시 토픽 (빈 문자열 = 비활성화) |
-| `sensor_names` | string[] | XML 센서 이름 목록 (빈 배열 = 센서 없음, `["auto"]` = XML 전체) |
-| `contact_wrench.*` | (다양) | MJCF `mjSENS_CONTACT` → WrenchStamped 자동 발견 — 위 [Contact wrench auto-discovery](#contact-wrench-auto-discovery-mjcf-sensorcontact-→-ros-wrenchstamped) 절 참조. `enabled` / `topic_prefix` / `sensor_name_suffixes` / `reference_site_suffixes` / `reference_frame` / `publish_state` / `publish_debug` / `allow_partial_discovery` / `visualize` / `visualize_scale` |
-| `filter_alpha` | double | fake_response 전용 LPF 계수 (기본 0.1) |
-| `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속). 그룹마다 DoF 가 다르면 글로벌 fallback 으론 매치 불가하므로 그룹별 지정 필수. |
-| `initial_qpos` | double[] | 기동·리셋 자세 (rad, `command_joint_names` 순서). **robot_response 전용** — fake 그룹에 주면 Initialize 실패. 아래 [초기 자세](#초기-자세-initial_qpos) 절 참조. |
-| `wait_for_command` | bool | 기본 `true`. lock-step 이 이 그룹의 command 를 기다리는가. controller 가 명령하지 않는 그룹 (controller manager 가 소유하지 않는 device, 일부 그룹만 구동하는 controller) 은 `false` — 명령이 오면 여전히 적용한다 (#566) |
-| `state_publish_divisor` | int | 기본 `1`. 이 그룹의 joint state · sensor · contact wrench 를 **N step 에 한 번** (step % N == 0) 발행한다 — 물리와 명령 수신은 매 step 이고 **발행만** 솎는다 (실기에서 control rate 보다 느리게 갱신되는 device, 예: 500 Hz 팔 아래 100 Hz 손 = 5). rate 는 `control_rate / N` 만 표현된다. **N > 1 인 그룹은 CM 의 `sim_sync_tick_devices` 에서 빼야 한다** — 넣으면 tick 이 그 그룹을 기다리느라 N−1 step 을 멈춘다 (#566). ≥ 1, fake 그룹은 1 만 (그 외 Initialize 실패 — fake 그룹은 step 이 아니라 자기 100 Hz wall timer 로 발행한다. 같은 이유로 **fake 그룹은 CM 의 `sim_sync_tick_devices` 에서도 빼야 한다**) |
+XML 의 조인트가 모든 robot 그룹의 `state_joint_names` 합집합에 없으면 `WARNING: XML joint '...' not published by any group's state_joint_names` 가 한 번 출력된다. 다른 로봇 (kuka 등) 도 같은 형식으로 그룹만 바꾼다.
 
 ### 초기 자세 (`initial_qpos`)
 
-그룹의 기동 자세이자 뷰어 `R` 키 리셋이 돌아가는 자세입니다. 우선순위는 다음과 같습니다:
+그룹의 기동 자세이자 뷰어 `R` 리셋이 돌아가는 자세다. 우선순위:
 
 | 순위 | 소스 | 비고 |
 |---|---|---|
 | 1 | `robot_response.<group>.initial_qpos` | rad, `command_joint_names` 순서. 크기가 그룹의 command joint 수와 다르면 Initialize 실패 |
-| 2 | MJCF 의 **첫 번째** `<keyframe>` | 이 키가 없을 때의 fallback (기존 동작) |
-| 3 | 0 | keyframe 도 없을 때 — arm 이라면 완전히 뻗은 자세라 보통 쓸 수 없는 값 |
+| 2 | MJCF 의 **첫 번째** `<keyframe>` | YAML 키가 없을 때의 fallback |
+| 3 | 0 | keyframe 도 없을 때 — arm 이라면 완전히 뻗은 자세 |
 
-어떤 소스가 이겼는지는 기동 로그가 **그룹별로** 알려줍니다:
+어느 소스가 이겼는지는 기동 로그가 그룹별로 알려준다.
 
 ```
 [MuJoCoSimulator] [ur5e] initial positions from YAML initial_qpos
 [MuJoCoSimulator] [p1b] initial positions from MJCF keyframe 'home'
 ```
 
-**값이 전부 0 이어도 YAML 이 이깁니다.** "설정됐는가" 는 값이 아니라 키의 존재로 판정하므로, 손처럼 열린 자세가 전부 0 인 그룹도 keyframe 으로 되돌아가지 않습니다.
-
-**왜 keyframe 만으로 부족한가**: 씬에 keyframe 이 없으면 `qpos0` 에서 시작하는데 arm 은 그게 뻗은 자세이고, MJCF 가 다른 패키지 소유라 keyframe 을 추가할 수 없는 bringup 도 있습니다. 반대로 keyframe 이 이미 있는 씬에 이 키를 쓰면 keyframe 은 **그 그룹에 한해** 무시되므로, 두 값을 같이 두려면 테스트로 고정하십시오 (`integrated_bringup/test/test_shipped_initial_qpos.py` 가 그 예입니다).
+**값이 전부 0 이어도 YAML 이 이긴다** — "설정됐는가" 는 값이 아니라 키의 존재로 판정한다. keyframe 이 있는 씬에 이 키를 쓰면 그 그룹에 한해 keyframe 은 무시된다.
 
 ```yaml
 robot_response:
@@ -583,99 +336,39 @@ robot_response:
   arm:
     command_joint_names: [j1, j2, j3, j4, j5, j6]
     initial_qpos: [0.0, -1.5708, 1.5708, -1.5708, 0.0, 0.0]   # 소수점 필수
-    ...
 ```
 
-> 모든 원소에 **소수점을 찍으십시오**. ROS 2 params YAML 은 시퀀스의 타입을 원소에서 추론하므로 `[0, -1, 1]` 은 정수 배열이 되고, 선언된 double 배열과 타입이 달라 **노드 생성 시점에** 예외로 죽습니다 (`on_configure` 전이라 위의 검증에 닿지 않습니다).
+> 모든 원소에 **소수점을 찍는다.** ROS 2 params YAML 은 시퀀스 타입을 원소에서 추론하므로 `[0, -1, 1]` 은 정수 배열이 되어 double 배열 선언과 어긋나고 노드 생성 시점에 예외로 죽는다 (`on_configure` 검증에 닿지 못한다).
 
-### 그룹 구성 예시
+### Constraint solver
 
-**Case 1: ur5e + hand 모두 MuJoCo 물리** (scene_with_hand.xml 사용)
+`solver.*` 의 전체 키와 설명은 [config/solver_param.yaml](config/solver_param.yaml) 이 갖는다 (코드 fallback 과 shipped 값이 다르므로 표로 옮기지 않는다 — [근거](../docs/reference/sim-rationale.md#constraint-solver-설정)).
+
+- **XML 우선순위**: MJCF `<option>` 에 명시된 속성은 YAML 값보다 우선하고, 없는 속성만 YAML 이 채운다. `<option solver="CG" iterations="50"/>` + YAML `solver: Newton, iterations: 100, cone: elliptic` → solver=CG, iterations=50 (XML), cone=elliptic (YAML).
+- **런타임 변경 가능** (atomic, 뷰어 단축키 연동): `solver`, `integrator`, `iterations`, `tolerance`, `cone`, `jacobian`, `ls_iterations`, `ls_tolerance`, `noslip_iterations`, `noslip_tolerance`, `impratio`. 그 외 (`ccd_*`, `sdf_*`, flags, `contact_override`) 는 Initialize 에서 한 번 적용된다.
+- `max_rtf`: `1.0` 실시간, `10.0` 10배속, `0.0` 무제한 (round-trip 속도가 곧 sim 속도).
+- `n_substeps` 는 제어 주기는 두고 MuJoCo step 크기만 줄인다 (`substep_dt = 제어 주기 / n_substeps`). `ApplyCommand()` 는 루프 밖에서 1 회라 서브스텝 중 ctrl 은 변하지 않는다. 뷰어의 `>` 한 스텝은 N substep 전부 = 제어 주기 1 개다.
+
+튜닝 레시피:
 
 ```yaml
-robot_response:
-  groups: ["ur5e", "hand"]
-  ur5e: { command_joint_names: [...], state_joint_names: [...], command_topic: "/ur5e/joint_command", state_topic: "/joint_states" }
-  hand: { command_joint_names: [...], command_topic: "/hand/joint_command", state_topic: "/hand/joint_states" }
+# 매니퓰레이션 (contact slip 억제)
+solver: {solver: "Newton", cone: "elliptic", impratio: 10.0, tolerance: 1.0e-10, noslip_iterations: 10}
+
+# object grasp / pinch / in-hand
+solver: {solver: "Newton", cone: "elliptic", impratio: 5.0, noslip_iterations: 15, iterations: 30,
+         multiccd: true,    # finger-pad ↔ object 다점 접촉 — 핵심
+         autoreset: false}  # 개발 중 numerical issue 가시화
+
+# 안정적 보행
+solver: {solver: "Newton", cone: "elliptic", impratio: 5.0, iterations: 50, tolerance: 1.0e-10}
 ```
 
-**Case 1b: 센서 포함** (XML에 touch/force 센서 정의된 경우)
+### Object Pool
 
-```yaml
-robot_response:
-  groups: ["ur5e", "hand"]
-  ur5e:
-    command_joint_names: [...]
-    command_topic: "/ur5e/joint_command"
-    state_topic: "/joint_states"
-    sensor_topic: "/ur5e/sim_sensors"
-    sensor_names: ["ft_sensor"]
-  hand:
-    command_joint_names: [...]
-    command_topic: "/hand/joint_command"
-    state_topic: "/hand/joint_states"
-    sensor_topic: "/hand/sim_sensors"
-    sensor_names: ["thumb_touch", "index_touch", "middle_touch", "ring_touch"]
-```
+씬에 놓을 object 를 디렉토리에서 읽어 뷰어 **`o` 키**로 교체한다. 누를 때마다 기존 object 는 사라지고 설정 범위 안에서 새 object 가 생긴다. 후보는 `mj_compile` 전에 모두 attach 되고 `o` 는 park / unpark 만 하므로 모델은 기동 후 불변이다.
 
-**Case 2: ur5e만 물리, hand는 LPF** (scene.xml 사용, hand 조인트 없음)
-
-```yaml
-robot_response:
-  groups: ["ur5e"]
-  ur5e: { command_joint_names: [...], command_topic: "/ur5e/joint_command", state_topic: "/joint_states" }
-fake_response:
-  groups: ["hand"]
-  hand: { command_joint_names: [...], command_topic: "/hand/joint_command", state_topic: "/hand/joint_states", filter_alpha: 0.1 }
-```
-
-**Case 3: 다른 로봇 (kuka 등)**
-
-```yaml
-robot_response:
-  groups: ["kuka"]
-  kuka:
-    command_joint_names: [kuka_joint_1, kuka_joint_2, kuka_joint_3, ...]
-    command_topic: "/kuka/joint_command"
-    state_topic: "/kuka/joint_states"
-```
-
----
-
-## Object Pool (랜덤 object 스폰)
-
-씬에 놓을 object 를 YAML 로 지정한 디렉토리에서 읽어, 뷰어에서 **`o` 키**로 교체합니다. 누를 때마다 기존 object 는 사라지고 설정한 범위 안에서 새 object 가 생성됩니다.
-
-### 무엇을 대체하는가
-
-[robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_with_object.xml](../robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_with_object.xml) 에는 object 하나를 손으로 추가하는 5단계 절차가 주석으로 박혀 있습니다 — mesh 항목 복사, mesh 이름에 prefix 부착 (object_sim 은 `contact0` 같은 generic 이름을 57개 object 가 공유하므로 충돌), body 블록 복제, **모든 keyframe 에 freejoint qpos 7개 append**. object pool 은 이 네 가지를 로드 시점에 자동으로 수행하므로, 씬은 object 목록 대신 **디렉토리**만 선언하면 됩니다.
-
-### 동작 원리 — 런타임 recompile 이 아니라 사전 컴파일된 pool
-
-후보 object 전부가 `mj_compile` **이전에** spec 에 attach 됩니다. 따라서 `mjModel`/`mjData` 는 `Initialize` 이후 불변이라는 이 클래스의 전제가 유지되고, viewer 스레드의 `mjvScene`/`mjrContext`/`vis_data` 를 재생성할 필요가 없습니다. `o` 는 **현재 object 를 park 하고 다른 하나를 unpark** 할 뿐입니다.
-
-Park 은 세 가지를 동시에 합니다. 하나라도 빠지면 조용히 깨집니다:
-
-| Park 요소 | 빠뜨리면 |
-|---|---|
-| `contype`/`conaffinity` = 0 | 충돌은 사라지지만 **영원히 낙하** (막을 것이 없어 속도가 발산) |
-| `body_gravcomp` = 1 | 위와 동일 |
-| freejoint `qvel`·`qacc_warmstart` = 0 | 낙하 중에 `o` 를 누르면 **등속 표류** — 충돌이 꺼져 있어 아무것도 멈추지 못함 |
-
-park **위치**는 attach 된 body 의 spec `pos` 로 들어가 그대로 `qpos0` 가 되므로, `R`(reset) 이 pool 전체를 자동으로 park 상태로 되돌립니다. 활성 object 만 같은 자세로 다시 놓입니다 (reset 이 주사위를 다시 굴리면 "리셋하고 재시도" 가 같은 실험의 반복이 아니게 되므로 의도적으로 재추첨하지 않습니다).
-
-### 4가지 모드
-
-두 축의 곱입니다:
-
-| 모드 | `selection` | `pose` |
-|---|---|---|
-| 동일 object + 동일 pose | `fixed` | `fixed` |
-| 동일 object + random pose | `fixed` | `random` |
-| random object + 고정 pose | `random` | `fixed` |
-| random object + random pose | `random` | `random` |
-
-### 설정
+두 축의 곱으로 4 모드가 된다 — `selection` (`fixed` | `random`) × `pose` (`fixed` | `random`).
 
 ```yaml
 mujoco_simulator:
@@ -690,151 +383,78 @@ mujoco_simulator:
       position:           [0.70, 0.00, 0.10]       # m, 중심
       position_variation: [0.10, 0.10, 0.00]       # m, ± 반폭
       rpy:                [0.0, 0.0, 0.0]          # rad, ZYX Euler
-      rpy_variation:      [0.0, 0.0, 3.1416]       # rad, ± 반폭 (yaw-only 가 일반적)
+      rpy_variation:      [0.0, 0.0, 3.1416]       # rad, ± 반폭
       park_position: [0.0, 0.0, -50.0]
       seed: 0                                      # 0 = 매 실행 다름, >0 = 재현 가능
       avoid_repeat: true
       spawn_on_start: true
 ```
 
-전체 키·기본값·주석은 [config/mujoco_default.yaml](config/mujoco_default.yaml) 이 SSoT 입니다.
+- 전체 키는 [mujoco_default.yaml](config/mujoco_default.yaml) 이 SSoT.
+- **`objects:` 로 디렉토리 전체를 쓰려면 키를 생략한다.** `objects: []` 는 ROS 2 params YAML 이 빈 시퀀스 타입을 추론하지 못해 노드 생성 시점에 죽는다.
+- 단위는 rad (degree 별칭 없음). `*_variation` 은 반폭 — 각 축을 `[중심 − variation, 중심 + variation]` 에서 균등 추출한다.
+- 잘못된 설정 (후보 0 개, 없는 `directory` · `fixed_object` · `objects:` 항목, 허용 밖 `selection` / `pose`, 3 원소 아닌 `position`) 은 전부 Initialize 실패다.
+- 후보 수에 비례해 비용이 든다 (16 개 초과 시 경고). `enabled: false` 면 비용이 0 이다.
+- 씬이 이미 object 를 하드코딩했다면 (`scene_right_with_object.xml` 의 `apple_01`) pool 은 그것을 관리하지 않아 object 가 두 개가 된다 — 하드코딩 블록을 지운다.
 
-**`objects:` 로 디렉토리 전체를 쓰려면 키를 비우지 말고 아예 생략하십시오.** ROS 2
-params YAML 은 빈 시퀀스를 표현할 수 없습니다 — `objects: []` 는
-`rcl_yaml_param_parser` 가 원소 타입을 추론하지 못해 `PARAMETER_NOT_SET` 이 되고,
-rclcpp 가 **노드 생성 시점에** `InvalidParameterValueException` 을 던지며 죽습니다
-(`on_configure` 전이라 아래 "실패는 조용하지 않다" 의 검증에 닿지도 못합니다).
-키가 없으면 `declare_parameter` 기본값 `{}` 가 그대로 쓰이며, 그게 "디렉토리 전체"
-입니다.
+근거: [sim-rationale.md](../docs/reference/sim-rationale.md#object-pool).
 
-**단위는 rad 입니다** (SI — AGENTS.md §10). degree 스펠링의 별칭 키는 두지 않습니다.
+### Object State
 
-**`*_variation` 은 반폭**입니다: 각 축을 `[중심 - variation, 중심 + variation]` 에서 균등 추출합니다.
-
-### 실패는 조용하지 않다
-
-다음은 전부 `Initialize` 실패(노드 configure 실패)입니다. 활성화됐는데 비어 있는 pool 은 "무작위화하는 척하며 아무것도 안 하는" 상태이므로 도달 가능해선 안 됩니다.
-
-- `enabled: true` 인데 `directory` 아래에 후보가 0개
-- `directory` 가 없는 경로
-- `fixed_object` 가 후보에 없음
-- `objects:` 항목 중 하나가 디렉토리에 없음 (오타가 조용히 pool 을 줄이지 않음)
-- `selection` / `pose` 에 `fixed`/`random` 외의 문자열
-- `position` 계열 키가 3원소가 아님
-
-### 비용
-
-후보 전부가 씬에 컴파일되므로 물리 스텝 비용과 컴파일 시간·RSS 가 후보 개수에 비례합니다. 메모리가 문제면 `objects:` 로 후보를 좁히십시오 (후보가 16개를 넘으면 기동 시 경고 로그를 남깁니다). **끄면 비용은 0 입니다** — `enabled: false` 면 컴파일된 모델의 `nq`/`nbody`/`ngeom` 이 이 블록이 없을 때와 동일하며, 이는 테스트로 고정돼 있습니다.
-
-### 주의
-
-- 씬이 이미 object 를 하드코딩하고 있으면 (예: `scene_right_with_object.xml` 의 `apple_01`) pool 은 그것을 관리하지 않습니다. prefix 가 달라 충돌하지는 않지만 **사과가 두 개**가 됩니다 — pool 을 쓸 때는 씬의 하드코딩 블록을 지우십시오.
-- `<sensor><contact>` 는 `geom1=` (fingertip geom) 로 필터링하므로 어떤 object 가 활성이든 contact wrench 파이프라인은 그대로 동작합니다.
-
----
-
-## Object State (object 이름·프레임·pose 발행)
-
-씬에 있는 object 들의 **이름 / 기준 프레임 / 위치·자세** 를 매 물리 스텝마다 표준 `tf2_msgs/TFMessage` 하나로 발행합니다. 배열이므로 object 개수와 무관하게 토픽은 하나입니다.
-
-```
-tf2_msgs/TFMessage
-  geometry_msgs/TransformStamped[] transforms
-    header.frame_id   ← object_state.reference_body (또는 frame_id override)
-    child_frame_id    ← MJCF body 이름 (예: pool_apple_object)
-    transform         ← 그 프레임 기준 위치 + 자세
-```
-
-### 무엇이 object 인가
-
-**freejoint 를 가진 body 전부, 단 park 된 object_pool 후보와 park 된 [projectile ball](#projectile-ball-발사-공) 은 제외.** 이것이 규칙의 전부이며 이름 목록은 없습니다 — 씬에 object 가 늘거나 줄어도 YAML 을 따라 고칠 필요가 없습니다.
-
-- 로봇 링크는 hinge 조인트라 해당 없음
-- 작업 테이블 같은 정적 소품은 조인트가 없어 해당 없음
-- park 된 pool 후보는 모델에는 컴파일돼 있지만 바닥 아래 50 m 에 있으므로, 발행하면 소비자의 프레임 집합에 유령 object 가 생김
-- projectile ball 도 같은 이유로 park 중에는 빠지고, 발사된 뒤에는 물리 아래 free body 이므로 포함됨
-
-park 판정은 **매 tick** 다시 하므로 뷰어 `o` 키 refresh 와 공의 발사·reset 이 즉시 반영됩니다 (Initialize 시점에 고정하면 방금 park 된 object 를 계속 발행하게 됩니다).
-
-### `/tf` 가 아니다
-
-TF **메시지 타입**을 쓰는 일반 토픽이지 TF broadcast 가 아닙니다. sim ground truth 는 실기가 발행하는 트리에 섞이지 않아야 합니다. RViz 에서 프레임을 보려면 이 토픽을 `/tf` 로 재발행하는 노드를 붙이십시오.
-
-### `reference_body` 를 반드시 확인할 것
-
-포즈는 `p_rel = R_ref^T (p_obj - p_ref)` 로 계산됩니다. 빈 문자열이면 MuJoCo world 프레임입니다.
-
-**둘 중 무엇을 고르든 의식적으로 골라야 합니다.** base 에 180° yaw 를 주는 것은 흔한 배치이고 (`ur5e_p1b` 의 MJCF base 가 `quat "0 0 0 -1"` 입니다), 그러면 world 와 base 는 실제로 다른 프레임입니다 — 둘을 헷갈리면 모든 object 가 base 를 통과해 거울상 위치에 찍히는데, 값 자체는 완벽히 그럴듯하므로 소비자가 알아챌 방법이 없습니다. 모델에 없는 이름은 fallback 없이 **startup 실패**입니다.
-
-- `reference_body: "<로봇 base>"` — 좌표가 곧바로 로봇 기준. 대신 "sim 이 아는 절대 좌표" 는 사라집니다.
-- `reference_body: ""` (world) — sim ground truth 를 그대로. 대신 **`world` 는 대개 이 bringup 의 TF 트리에 없습니다** (`robot_state_publisher` 의 루트는 로봇 base 이고, world→base 를 발행하는 노드는 없습니다). 로봇 기준이 필요한 소비자가 그 변환을 스스로 알아야 합니다.
-
-출하 프로필 `ur5e_p1b` 는 후자입니다 — 위 "/tf 가 아니다" 와 같은 이유로, sim ground truth 를 실기 TF 트리에 이어 붙이지 않고 절대 좌표를 그대로 내보냅니다.
-
-### 설정
+씬 object 의 이름 / 기준 프레임 / pose 를 매 step 표준 `tf2_msgs/TFMessage` 하나로 발행한다 (`header.frame_id` = reference, `child_frame_id` = MJCF body 이름). **object = freejoint 를 가진 body 전부**, 단 park 된 pool 후보와 park 된 projectile ball 은 제외한다 (매 tick 판정). `/tf` 가 아닌 일반 토픽이라 sim ground truth 가 실기 TF 트리에 섞이지 않는다 — RViz 에서 보려면 `/tf` 로 재발행하는 노드를 붙인다.
 
 ```yaml
 object_state:
   enabled: true
-  topic: "/sim/object_transforms"   # 상대 이름이면 노드 네임스페이스 아래로 해석
+  topic: "/sim/object_transforms"   # 상대 이름이면 노드 네임스페이스 아래
   reference_body: ""                # "" = MuJoCo world
   frame_id: ""                      # "" = reference_body 이름 (world 면 "world")
-  publish_divisor: 1                # N step 에 한 번 발행 (물리는 매 step) — rate = control_rate / N (#566)
+  publish_divisor: 1                # N step 에 한 번 발행. rate = control_rate / N
 ```
 
-`frame_id` override 는 같은 프레임을 MJCF body 이름과 URDF 링크 이름이 다르게 부를 때만 씁니다.
-
-### 확인
+- pose 는 `p_rel = R_ref^T (p_obj − p_ref)`. **`reference_body` 는 의식적으로 고른다** — base 에 180° yaw 가 있는 배치 (ur5e_p1b) 에서 world 와 base 를 헷갈리면 object 가 거울상 위치에 찍히는데 값은 그럴듯하다. 모델에 없는 이름은 startup 실패다.
+- `""` (world) 는 sim 이 아는 절대 좌표를 주지만 `world` 는 대개 bringup 의 TF 트리에 없다. 로봇 base 를 주면 좌표가 곧바로 로봇 기준이다. ur5e_p1b 는 world 다.
+- `frame_id` override 는 같은 프레임을 MJCF body 이름과 URDF 링크 이름이 다르게 부를 때만 쓴다.
 
 ```bash
 ros2 topic echo /sim/object_transforms --once
 ```
 
----
+### Projectile Ball (발사 공)
 
-## Projectile Ball (발사 공)
+파지 · 추적 실험용으로 **공 하나를 던져 주는** 기능이다. `projectile_ball.enabled: true` 이면 파싱한 MJCF spec 에 공을 직접 붙이므로 씬 XML 을 고치지 않는다. **YAML 은 반경 · 질량만** 정하고 나머지 물성 (관성 분포 · 반발 · 마찰 · 항력 · 양력) 은 `ball_type` preset 이 정한다. 물성은 기동 시 고정이고 발사는 qpos / qvel 만 바꾼다. 공 geom 은 씬 default 와 무관하게 group 0 · 노란색이다.
 
-파지·추적 실험용으로 **공 하나를 던져 주는** 기능입니다. 공은 `projectile_ball.enabled: true` 일 때 `rtc_mujoco_sim` 이 파싱한 MJCF spec 에 직접 붙이므로 씬 XML 을 고칠 필요가 없습니다. **YAML 은 반경·질량만 정하고**, 나머지 물성 (관성 분포·반발·마찰·항력·양력) 은 `ball_type` preset 이 정합니다. 물성은 기동 시 고정이고, 발사는 SimLoop 에서 qpos/qvel 만 바꿉니다.
-
-공 geom 은 씬의 default class 와 무관하게 **group 0 · 노란색** 으로 붙입니다. main default 가 group 3 인 씬 (예: `<default><geom group="3"/></default>`) 에서 이를 물려받으면 viewer 가 기본으로 숨기는 그룹이 되어, 물리는 도는데 공이 그려지지 않습니다. group 과 rgba 는 렌더링에만 쓰입니다.
-
-### 동작
-
-| 상태 | 위치 | 접촉 | gravcomp | 발행 |
-|---|---|---|---|---|
-| park (기동 직후 · `R` · `/sim/reset_ball`) | `park_position_m` | 끔 (contype/conaffinity = 0) | 켬 | 안 함 (`object_state` 에서도 빠짐) |
-| 발사 (`K` · `/sim/launch_ball`) | `spawn_position_m` | `collision_contype` / `collision_conaffinity` | 끔 | `sample_rate_hz` |
-| 발사 (`/sim/launch_ball_at`) | 요청의 `position` | 〃 | 끔 | 〃 |
-
-park 는 세 가지를 **함께** 해야 합니다 — object pool 의 park 와 같은 이유입니다.
-- **접촉 끄기**: MuJoCo plane 은 halfspace 라서, 바닥 아래 park 위치에 접촉이 켜진 공을 두면 관통으로 판정돼 수백 m/s 로 튕겨 나갑니다.
-- **gravcomp 켜기**: 접촉을 끄면 공을 붙잡는 것이 없어 끝없이 자유낙하합니다.
-- **속도·warm start·공력 지우기**: gravcomp 만으로는 움직이던 공이 등속으로 계속 흘러갑니다.
-
-발사 속도는 `launch_direction` (수평, 정규화) 을 z 축으로 `launch_azimuth_variation_deg` 만큼 돌린 방향으로, `launch_angle_deg ± launch_angle_variation_deg` 만큼 올려 `launch_speed_m_s ± launch_speed_variation_m_s` 크기로 줍니다. `launch_noise` 가 `uniform` 이면 `*_variation` 은 반폭, `normal` 이면 표준편차입니다. 앙각은 `launch_angle_deg` 만 결정하므로 **`launch_direction` 에 z 성분이 있으면 Initialize 가 실패**합니다.
-
-초기 회전 `launch_spin_rad_s` 는 **발사 프레임** 기준입니다 — x = (azimuth 가 반영된) 발사 방향, z = 월드 위, y = z × x (왼쪽). 날아가는 방향에 대해 **backspin (공이 뜸) 은 −y, topspin 은 +y**, 옆으로 휘는 sidespin 은 z 입니다. `launch_spin_variation_rad_s` 는 축별 산포입니다.
-
-### `ball_type` preset
-
-| 물성 | `tennis` | `hard` (야구공류) | `beanbag` (모래 주머니 공) |
+| 상태 | 위치 | 접촉 | 발행 |
 |---|---|---|---|
-| I / (m r²) | 0.55 [Cross 2003] | 0.378 [Brody] | 0.4 (추정 — 충전물이 움직임) |
-| 반발계수 (강체 바닥) | 0.75 [ITF 낙하 시험 0.745] | 0.55 [ASTM F1887 0.546 @27 m/s; 저속은 더 높음, 추정] | 0.1 (추정) |
-| 미끄럼 마찰 μ | 0.6 [Cross 2003, hard court 0.6–0.75] | 0.5 [Sawicki 2003] | 0.5 (추정) |
+| park (기동 직후 · `R` · `/sim/reset_ball`) | `park_position_m` | 끔 | 안 함 (`object_state` 에서도 빠짐) |
+| 발사 (`K` · `/sim/launch_ball`) | `spawn_position_m` | `collision_contype` / `collision_conaffinity` | `sample_rate_hz` |
+| 발사 (`/sim/launch_ball_at`) | 요청의 `position` | 〃 | 〃 |
+
+발사 속도는 `launch_direction` (수평, 정규화) 을 z 축으로 `launch_azimuth_variation_deg` 만큼 돌린 방향으로, `launch_angle_deg ± launch_angle_variation_deg` 만큼 올려 `launch_speed_m_s ± launch_speed_variation_m_s` 크기로 준다. `launch_noise` 가 `uniform` 이면 `*_variation` 은 반폭, `normal` 이면 표준편차다. **`launch_direction` 에 z 성분이 있으면 Initialize 가 실패한다** (앙각은 `launch_angle_deg` 만 정한다).
+
+초기 회전 `launch_spin_rad_s` 는 **발사 프레임** 기준이다 — x = 발사 방향, z = 월드 위, y = z × x (왼쪽). backspin (공이 뜸) 은 −y, topspin 은 +y, sidespin 은 z 다.
+
+#### `ball_type` preset
+
+값과 출처의 코드 쪽 SSoT 는 [src/projectile_ball.cpp](src/projectile_ball.cpp) 의 preset 상수이고, 바꿀 때는 이 표도 함께 고친다. (추정) 은 측정값을 찾지 못한 값이다. 근거와 모델링 [sim-rationale.md](../docs/reference/sim-rationale.md#projectile-ball).
+
+| 물성 | `tennis` | `hard` (야구공류) | `beanbag` |
+|---|---|---|---|
+| I / (m r²) | 0.55 [Cross 2003] | 0.378 [Brody] | 0.4 (추정) |
+| 반발계수 (강체 바닥) | 0.75 [ITF 0.745] | 0.55 [ASTM F1887, 추정] | 0.1 (추정) |
+| 미끄럼 마찰 μ | 0.6 [Cross 2003] | 0.5 [Sawicki 2003] | 0.5 (추정) |
 | 비틀림 마찰 / r | 0.05 (추정) | 0.02 (추정) | 0.3 (추정) |
-| 구름 저항 / r | 0.02 (추정) | 0.005 (추정) | 0.5 (추정 — 거의 안 구름) |
-| 항력 Cd | 0.55 [자유비행 0.51 – 풍동 0.65] | 0.5 [Cross, Kensrud: 아임계 Re] | 0.5 (추정) |
-| 양력 C_L(S) | S / (0.981 + 2.022 S) [Stepanek 1988] | S / (0.667 + 1.48 S) [Sawicki 2003 bilinear 에 맞춤] | 없음 |
+| 구름 저항 / r | 0.02 (추정) | 0.005 (추정) | 0.5 (추정) |
+| 항력 Cd | 0.55 [자유비행 0.51 – 풍동 0.65] | 0.5 [Cross, Kensrud] | 0.5 (추정) |
+| 양력 C_L(S) | S / (0.981 + 2.022 S) [Stepanek 1988] | S / (0.667 + 1.48 S) [Sawicki 2003 에 맞춤] | 없음 |
 
-S = r·|ω⊥| / |v|. 던지는 속도 (2–10 m/s, Re ≈ 10⁴–6×10⁴) 는 drag crisis 아래이므로 Cd 는 상수입니다. 값을 바꾸려면 `src/projectile_ball.cpp` 의 preset 표와 이 표를 함께 고칩니다.
+S = r·|ω⊥| / |v|. Cd 는 상수다 (던지는 속도 2–10 m/s 는 drag crisis 아래).
 
-- **접촉**: 공 geom 은 `condim=6` (비틀림·구름 마찰이 실제로 작동) 에 `priority=100` 이라 **바닥·테이블·손끝 어느 상대와 부딪혀도 공의 반발·마찰이 그대로 적용**됩니다 (상대 geom 의 solref/friction 과 섞이지 않음). 씬에 priority ≥ 100 인 geom 이 있으면 Initialize 가 실패합니다. 반발은 direct 형식 `solref = (−k, −b)` 로 넣습니다 — k 는 접촉 반주기가 physics substep 12 개가 되도록, b 는 누르기만 하는 (push-only) spring-damper 의 반발이 목표값이 되도록 정합니다. MuJoCo 3.7.0 실측으로 2–6 m/s 충돌에서 목표 ±0.04 (substep 0.67–2 ms) 입니다. 대가로 접촉이 실제 공보다 부드러워 6 m/s 충돌 시 약 1 cm 파고듭니다.
-- **공력** (`aerodynamics: true`): 항력 −½ρC_d·A·|v|v 와 Magnus 양력 ½ρC_L·A·|v|² (ω×v 방향) 을 **공의 `qfrc_applied` 에만** 매 substep 씁니다 (ρ = 1.204 kg/m³). MuJoCo 내장 fluid 모델은 전역 `density` 를 켜야 해 로봇 링크까지 끌리므로 쓰지 않습니다. 57 g 테니스공을 5 m/s·45° 로 던지면 2 m 지점에서 진공 궤적보다 약 5 cm 낮고, 가벼운 공일수록 차이가 커집니다.
-- `solver.contact_override.enable: true` 이면 MuJoCo 가 모든 접촉을 override 값으로 덮으므로 preset 반발이 적용되지 않습니다.
-- `solver.island: false` (기본) 에서는 **씬 어딘가에 깊게 파묻힌 접촉** (예: 바닥에 10 cm 박힌 링크) 이 같은 solve 를 공유해 공 접촉을 흔듭니다 (fixture 에서 20 mm 튐, 멈추지 않는 구름으로 실측). 공이 이유 없이 튀면 씬의 관통부터 확인합니다.
+- 공은 `condim=6` + `priority=100` 이라 어떤 상대와 부딪혀도 공의 반발 · 마찰이 그대로 적용된다. **priority ≥ 100 인 geom 이 씬에 있으면 Initialize 가 실패한다.**
+- `aerodynamics: true` 는 항력과 Magnus 양력을 공에만 건다 (MuJoCo 내장 fluid 모델은 로봇 링크까지 끌어서 쓰지 않는다). 57 g 테니스공을 5 m/s · 45° 로 던지면 2 m 지점에서 진공 궤적보다 약 5 cm 낮다.
+- `solver.contact_override.enable: true` 이면 preset 반발이 적용되지 않는다. `solver.island: false` 에서는 씬 어딘가에 깊게 파묻힌 접촉이 공 접촉을 흔들 수 있다 — 공이 이유 없이 튀면 씬의 관통부터 확인한다.
 
-### 설정
+#### 설정
 
 ```yaml
 projectile_ball:
@@ -866,56 +486,26 @@ projectile_ball:
     position_noise_stddev_m: [0.0, 0.0, 0.0]   # 0 인 축은 노이즈 없음
 ```
 
-MuJoCo 는 `(contype_A & conaffinity_B) || (contype_B & conaffinity_A)` 이면 두 geom 을 충돌시킵니다. 손끝 mesh 가 `contype=1, conaffinity=2` 라면 공은 `contype=2, conaffinity=1` 로 두어 양쪽 방향이 모두 맞게 합니다. 이 값이면 기본 마스크 (1/1) 인 바닥과도 충돌합니다.
-
-`seed` 는 발사 샘플링과 카메라 노이즈에 함께 쓰이지만 노이즈 쪽은 stream tag 를 섞어 두 난수열이 겹치지 않습니다. variation 이 0 인 항목은 난수를 소비하지 않습니다.
+MuJoCo 는 `(contype_A & conaffinity_B) || (contype_B & conaffinity_A)` 이면 두 geom 을 충돌시킨다. 손끝 mesh 가 `contype=1, conaffinity=2` 라면 공은 `contype=2, conaffinity=1` 로 둔다. 이 값이면 기본 마스크 (1/1) 인 바닥과도 충돌한다.
 
 #### stamp — sim 시간축을 wall 에 사상한 값
 
-발행 gate 는 **sim 시간** 기준이라 (`ShouldPublishProjectileBallSample`) 샘플은 sim 축에서 정확히 `1/sample_rate_hz` 간격입니다.
-`header.stamp` 도 그 간격을 말해야 합니다 — 발행 순간의 `now()` 를 찍으면 stepper 가 여러 스텝을 몰아 돌고 자는
-리듬이 stamp 에 그대로 실립니다 (2026-09-22 실측, `max_rtf` 1.0 · RTF 1.0x: 10 ms 주기의 stamp 간격이 p05 2.7 /
-p95 33.6 / max 52 ms). stamp 를 capture time 으로 믿는 소비자 (ball_perception `stamp_is_capture_time: true` 의 init 창
-"5 점을 0.1 s 안에") 는 그 지터를 초기화 실패로 겪습니다. 그래서 두 공 토픽의 stamp 는 **발사 순간을 기준으로 sim 시간축을 wall 에
-얹은 값** 입니다 — `ProjectileBallSample::stamp_steady_ns` = 발사 wall 시각 + (sim 시각 − 발사 sim 시각) / `max_rtf`
-→ 발행 시점의 steady↔system 오프셋으로 ROS 시각 변환.
+두 공 토픽 (`ground_truth_topic` · `camera_topic`) 의 `header.stamp` 는 발행 순간의 `now()` 가 아니라 **발사 순간을 기준으로 sim 시간축을 wall 에 얹은 값**이다: `발사 wall 시각 + (sim 시각 − 발사 sim 시각) / max_rtf`. 샘플 간격이 sim 축과 정확히 `1/sample_rate_hz` 이고, 발행 순간의 stepper wake 지터가 stamp 에 실리지 않는다 (소비자의 "5 점을 0.1 s 안에" 같은 init 창이 이 지터로 깨지던 것을 막는다). 소비자가 알아야 할 사실:
 
-- **epoch 은 그대로 wall (ROS system time, `/clock` 없음)** 이고, 바뀐 것은 지터뿐입니다. 실제 wall 과의 차이는 **그 비행
-  안에서** stepper 가 뒤처지거나 (stamp 가 wall 보다 늦음) 따라잡은 (앞섬) 양 — D-3 의 위상 오차 δ
-  ([Clock phase lane](#clock-phase-lane-d-3-측정) 이 재는 양) — 이지 wake 지터가 아닙니다.
-- **stamp 는 wall 을 수십 ms 앞설 수 있습니다** (sim 이 발사 때의 pace 보다 앞서는 동안). 그래서 sim 에서는 소비자의 future
-  허용치가 그 폭을 덮어야 합니다 — ball_perception profile 의 `max_future_skew_s` 는 0.1 s (ball_perception 저장소의
-  `ball_perception_sim/config/sim_profile.catching.json`), 컨트롤러의 `io.future_tol` 도 sim overlay 에서는 같은 자릿수 (L1 §6). **앞서지 않게
-  발행 순간으로 clamp 하는 변형은 기각했습니다** — sim 이 발사 pace 를 앞설 때마다 stamp 가 wall 로 떨어져 wake 지터가
-  그대로 돌아옵니다 (2026-09-22 재실측: 25 ms 초과 3.8 %, T_det max 0.41 s). 소비자의 stale 판정은 수신 steady 시각 기준
-  (D-2) 이라 뒤처진 stamp 는 계약에 어긋나지 않습니다.
-- **발사 전에 쌓인 sim↔wall 지연은 비행의 stamp 에 들어가지 않습니다.** 컨트롤러가 붙기 전 sync timeout 으로만 step 하던
-  구간이나 pause 로 sim 이 wall 보다 초 단위로 뒤처져 있어도, anchor 가 발사 순간이라 그 비행의 stamp 는 wall 에서 시작합니다
-  (loop 시작 기준으로 anchor 를 두면 그 지연이 모든 stamp 에 박혀 컨트롤러가 계산하는 포구 시각이 그만큼 이르게 틀린다).
-- **`max_rtf: 0` (무제한) 이면** 대응 기준이 없어 종전처럼 발행 순간의 `now()` 입니다 — 이때는 RTF 가 1 이 아니라
-  stamp 축의 동역학 자체가 틀리므로, 추정기를 붙이는 run 은 `max_rtf: 1.0` 으로 돌립니다.
-- 두 토픽이 **같은 stamp** 를 받으므로 ball_perception 의 truth↔camera stamp 짝짓기는 영향이 없습니다.
+- **epoch 은 wall 그대로** (ROS system time, `/clock` 없음) 다. 두 토픽이 같은 stamp 를 받으므로 truth ↔ camera stamp 짝짓기는 영향이 없다.
+- **stamp 는 wall 을 수십 ms 앞설 수 있다** (그 비행 안에서 stepper 가 따라잡은 양 — D-3 위상 오차). 그래서 sim 에서는 소비자의 future 허용치를 같은 자릿수로 둔다 (ball_perception `max_future_skew_s` 0.1 s, 컨트롤러 `sim.io.future_tol`).
+- 발사 전에 쌓인 sim ↔ wall 지연은 비행의 stamp 에 들어가지 않는다 (anchor 가 발사 순간).
+- **`max_rtf: 0` (무제한) 이면 종전처럼 발행 순간의 `now()`** 라 stamp 축의 동역학이 틀린다 — 추정기를 붙이는 run 은 `max_rtf: 1.0` 으로 돌린다.
+
+측정 (stamp 간격 p05 / p95 / max, 기각한 clamp 변형) 은 [sim-rationale.md](../docs/reference/sim-rationale.md#stamp--sim-시간축을-wall-에-사상한-값).
 
 #### 지정 상태 발사 (`/sim/launch_ball_at`)
 
-위 표의 `spawn_position_m`·각도·속도·spin 은 **샘플링 경로**의 입력입니다. 측정을 하려면 한 투척을 고정한 채
-다른 변수만 바꿔 재실행할 수 있어야 하는데, `std_srvs/Trigger` 는 요청 필드가 없어 그것을 표현할 수단이
-없었습니다 (D-14). `/sim/launch_ball_at` (`rtc_msgs/LaunchBall`) 은 같은 writer 로 가는 **두 번째 경로**로,
-`(p0, v0, ω)` 를 world 프레임에서 직접 받습니다. 필드·거부 집합의 SSoT 는
-[`rtc_msgs/srv/LaunchBall.srv`](../rtc_msgs/srv/LaunchBall.srv) 주석입니다.
-
-- **재현성** — RNG 를 보지 않고, writer 가 warm start·적용력을 0 으로, 자세를 단위 quaternion 으로 되돌립니다.
-  같은 숫자를 두 번 보내면 공은 비트 단위로 같은 상태에서 출발하고, 자유 비행 동안 궤적도 비트 단위로 같습니다.
-- **샘플링 경로와 간섭하지 않습니다** — 난수열을 소비하지 않으므로 시드 sweep 중간에 끼워 넣어도 sweep 은
-  동일하게 재생됩니다.
-- **거부는 조용한 무시가 아닙니다** — 시뮬레이터 미구성 · 모델에 공 없음 (`enabled: false`) · 비유한값이면
-  `accepted: false` 이고 직전 발사는 그대로 비행합니다.
-
-### 확인
+`spawn_position_m` · 각도 · 속도 · spin 은 **샘플링 경로**의 입력이다. 한 투척을 고정한 채 다른 변수만 바꿔 재실행하려면 `/sim/launch_ball_at` 으로 `(p0, v0, ω)` 를 world 프레임에서 직접 준다. RNG 를 소비하지 않아 같은 숫자를 두 번 보내면 궤적이 비트 단위로 같고, 시드 sweep 에 끼워 넣어도 sweep 이 그대로 재생된다. 시뮬레이터 미구성 · 모델에 공 없음 (`enabled: false`) · 비유한값이면 `accepted: false` 이고 직전 발사는 그대로 비행한다. 필드 · 거부 집합의 SSoT 는 [LaunchBall.srv](../rtc_msgs/srv/LaunchBall.srv) 주석이다.
 
 ```bash
 ros2 service call /sim/launch_ball std_srvs/srv/Trigger   # 설정 분포에서 샘플링
-ros2 topic hz /sim/ball/ground_truth       # 발사 후 ~sample_rate_hz × RTF
+ros2 topic hz /sim/ball/ground_truth                       # 발사 후 ~sample_rate_hz × RTF
 
 # 지정 상태 발사 — 같은 숫자면 궤적이 비트 단위로 같다
 ros2 service call /sim/launch_ball_at rtc_msgs/srv/LaunchBall \
@@ -925,366 +515,74 @@ ros2 service call /sim/launch_ball_at rtc_msgs/srv/LaunchBall \
 ros2 service call /sim/reset_ball std_srvs/srv/Trigger   # 이후 발행이 멈춘다
 ```
 
----
+### 측정용 CSV lane
 
-## Clock phase lane (D-3 측정)
-
-완료된 물리 step 마다 `(step, sim_time_sec, steady_ns, dropped_total)` 한 줄을 CSV 로 남깁니다.
-**sim 클럭과 이 기계가 실제로 쓰는 steady 클럭의 위상 오차**를 재기 위한 lane 이고, 측정 run 에서만 켭니다.
-
-기존 수단으로는 못 쟀습니다 — `/sim/status` 가 `sim_time` 을 싣지만 **1 Hz wall 타이머**라 500× 느리고
-샘플링 클럭 자체가 틀렸으며, 이 패키지에는 파일 writer 자체가 없었습니다.
-
-| 열 | 뜻 |
-|---|---|
-| `step` | 1 부터의 step 번호. 건너뛰지 않는다 |
-| `sim_time_sec` | `mjData::time` |
-| `steady_ns` | 같은 순간의 `std::chrono::steady_clock` (RT 경로와 같은 epoch) |
-| `dropped_total` | 그 시점까지 링이 넘겨 잃은 샘플 누적 수 |
-
-- **물리 스레드는 링에 넣기만 합니다.** 파일 열기·포맷·쓰기는 전부 노드 executor 에서 합니다.
-- **넘침은 조용하지 않습니다.** 링이 가득 차면 샘플을 버리되 세고, 그 누적값을 **매 행에** 적습니다 —
-  끝에 한 번만 적으면 *언제* 넘쳤는지 알 수 없는데, 넘친 구간이 바로 위상 오차가 가장 컸을 구간입니다.
-  `dropped_total > 0` 이면 분포의 꼬리를 신뢰할 수 없으므로 `drain_rate_hz` 를 올리고 다시 잽니다.
-- `csv_path` 가 비면 lane 을 **거부**합니다. 측정 run 의 유일한 산출물을 아무도 지정하지 않은 경로에 쓰지 않습니다.
-
-> ⚠️ **공 토픽의 stamp 를 sim 시각 (epoch) 으로 바꾸는 쪽이 아닙니다.** ball_perception 의 `recorder_node` 와
-> `evaluator_node` 가 `/sim/ball/ground_truth` 와 카메라 토픽을 **stamp 로 짝짓기** 때문에 (허용오차는 profile 의 `evaluation.time_alignment_tolerance_s`)
-> 한쪽만 클럭 축을 바꾸면 둘 다 조용히 깨집니다. 스택 전체를 sim epoch 으로 옮기려면 rtc 가 `/clock` 을 내고
-> 모두가 `use_sim_time` 으로 돌아야 하며, 그건 S5/S6 결정입니다. 공 토픽이 하는 것은 그것이 아니라
-> **wall epoch 을 유지한 채 stepper 의 wake 지터만 걷어내는 것**입니다 ([Projectile Ball](#projectile-ball-발사-공)
-> 의 stamp 항목) — 두 토픽이 같은 stamp 를 받으므로 짝짓기는 그대로입니다. 이 lane 은 **sim↔steady 대응표**를
-> 주고, "sim 축으로 보간" 에 실제로 필요한 것과 D-3 위상 오차의 측정이 그것입니다.
-
----
-
-## Ball contact truth (S3.3)
-
-공이 무언가에 닿아 있는 **연속 substep 구간 하나 = episode 하나**를 CSV 한 줄로 남깁니다.
-포구 작업이 알아야 하는 "언제 맞았고, 얼마나 세게 맞았고, 무엇에 맞았나" 가 그 한 줄입니다.
-
-기존 contact lane 은 쓸 수 없습니다 — `mjSENS_CONTACT` **센서 기반**이고 **로봇 group 범위**라
-어느 group 에도 속하지 않는 공을 아예 보지 않습니다.
-
-| 열 | 뜻 |
-|---|---|
-| `step` | episode 가 끝난 step |
-| `begin/end_sim_time_sec` | 접촉 시작·끝 sim 시각 |
-| `substeps` | 접촉이 걸친 substep 수 |
-| `impulse_{x,y,z}` | **공에 가해진** 충격량 [N·s], world |
-| `peak_force_n` | 동시 접촉력 합의 최대 크기 |
-| `pos_*`, `vel_*` | 첫 접촉 순간 공의 위치·속도 (world) |
-| `first_body` | 공이 처음 닿은 body 이름 |
-| `distinct_bodies` | episode 가 걸친 서로 다른 body 수 |
-| `dropped_total` | 넘겨 잃은 episode 누적 수 |
-
-- ⚠️ **충격량은 substep 루프 *안에서* 적산합니다.** `mjData::contact` 는 매 `mj_step` 에 다시
-  만들어지므로 루프 밖에서 읽으면 **마지막 substep 만** 보이고 충격량이 조용히 `n_substeps` 배만큼
-  어긋납니다 — 튐 하나가 여러 substep 에 걸치는 일이 흔합니다.
-- ⚠️ **부호는 "공에 가해진 힘" 입니다.** `mj_contactForce` 는 쌍의 `geom[1]` 에 가해지는 힘을 주는데
-  공은 씬에 따라 어느 쪽에도 올 수 있어(공은 spec 에 **pool 물체보다 먼저** 붙으므로 공↔pool 물체
-  접촉에서는 공이 `geom[0]` 입니다) 뒤집지 않으면 절반의 경우 **바닥으로 끌리는** 충격량이 나오면서도
-  그럴듯한 숫자로 보입니다.
-
----
-
-## 실행
-
-```bash
-# 기본 (뷰어 활성화, max_rtf=1.0 실시간)
-ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
-
-# MJCF 경로를 직접 지정한 단독 smoke test
-ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \
-    model_path:=/path/to/mujoco_menagerie/universal_robots_ur5e/scene.xml
-
-# Robot-specific 그룹 설정이 들어간 params 파일 추가
-ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \
-    params_file:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml
-
-# 10배속 / 헤드리스
-ros2 launch rtc_mujoco_sim mujoco_sim.launch.py model_path:=... max_rtf:=10.0
-ros2 launch rtc_mujoco_sim mujoco_sim.launch.py model_path:=... enable_viewer:=false
-```
-
-> **이 launch는 mujoco_simulator_node 단독만 띄우는 agnostic smoke test입니다.** RT 컨트롤러를 함께 실행하는 통합 시나리오는 robot-specific bringup의 launch (예: `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py`)를 사용하세요.
-
-### Launch 파라미터
+둘 다 측정 run 에서만 켠다. `csv_path` 가 비면 lane 이 켜져 있어도 거부된다.
 
 | 파라미터 | 기본값 | 설명 |
-|----------|--------|------|
-| `params_file` | `""` | `solver_param.yaml` 위에 오버레이할 YAML (robot 그룹 설정 등) |
-| `model_path` | `""` | MJCF scene 경로 (빈값 = YAML) |
-| `enable_viewer` | `""` | GLFW 3D 뷰어 활성화 (빈값 = YAML) |
-| `viewer_input_enabled` | `""` | `false` 면 world 를 바꾸는 뷰어 입력 무시 (빈값 = YAML, [§뷰어 단축키](#뷰어-단축키)) |
-| `max_rtf` | `""` | 최대 실시간 비율 (빈값 = YAML, 0.0 = 무제한) |
-| `max_log_sessions` | (robot config) | 최대 보관 세션 폴더 수. default 는 그 변종의 노드 config YAML (`_base.yaml` / `sim.yaml`) 에서 읽고, 값은 RT 노드 파라미터로도 전달된다 — launch 와 노드가 같은 트리를 각자 정리하기 때문 |
-
-세션 디렉토리 (`YYMMDD_HHMM`)를 launch 실행 시점에 자동 생성하고 `RTC_SESSION_DIR` 환경변수로 전파합니다. 세션 루트 결정 로직은 `rtc_tools.utils.session_dir.resolve_logging_root()`의 **3단** 체인 (`$COLCON_PREFIX_PATH` → cwd 상위 `install/+src/` → `$PWD`) 을 따릅니다 — `$RTC_SESSION_DIR` 는 이 체인이 아니라 그 위의 세션 결정 단계에 있고, launch 가 *내보내는* 값입니다 (자세한 내용: [rtc_tools/README.md](../rtc_tools/README.md)).
-
----
-
-## 시뮬레이터 상태 모니터링
-
-```bash
-# 시뮬 상태 확인
-ros2 topic echo /sim/status
-
-# ur5e 관절 상태
-ros2 topic echo /joint_states
-
-# hand 관절 상태
-ros2 topic echo /hand/joint_states
-
-# MuJoCo 센서 데이터 (sensor_topic 설정 시)
-ros2 topic echo /hand/sim_sensors
-
-# 퍼블리시 주파수 확인
-ros2 topic hz /joint_states
-ros2 topic hz /hand/joint_states
-```
-
----
-
-## 뷰어 상태 오버레이
-
-뷰어 우상단에 항상 표시되는 상태 패널의 항목:
-
-| 항목 | 설명 |
-|------|------|
-| Mode | 동기 모드 (`sync`) |
-| Camera | 카메라 모드 (Free/Tracking/Fixed:name) |
-| RTF | 실시간 비율 |
-| Limit | max_rtf 설정값 |
-| Sim Time | 시뮬레이션 경과 시간 |
-| Steps | 누적 제어 스텝 수 |
-| Contacts | 활성 접촉 수 / on\|OFF |
-| World G | 전역 중력 ON / OFF (디버그용 G 키) |
-| Robot Gravcomp | per-body 중력 보상이 켜진 그룹 인덱스 목록 (예: `g0`) — torque 모드면 `none` |
-| Object | 현재 씬에 있는 pool object 이름 (object_pool 활성 시에만 표시). `o` 키가 실제로 동작했는지 확인하는 유일한 관측면 — 스폰 위치가 화면 밖일 수 있다 |
-| Status | running / PAUSED / perturb |
-| Integrator | Euler / RK4 / Implicit / ImplFast |
-| Solver | PGS / CG / Newton |
-| Iterations | 사용된 / 최대 solver 반복 |
-| Residual | solver 잔차 |
-| Substeps | `n_substeps (substep_dt ms)` — 예: `4 (0.50ms)` |
-| Physics Load | substep 루프 wall time / 제어 주기 (%) — 100% 초과 시 실시간 유지 불가 |
-| Frames | Link / Joint frame overlay ON/OFF |
-| Perturb (\<body\>) | Ctrl+drag 으로 인가 중인 외력의 크기 — `|F|=X.XX N  |t|=X.XXX Nm`. 비활성 시 `-` |
-
-또한 perturb active 시 선택된 body 위에 빨간 force arrow (MuJoCo `mjVIS_PERTFORCE`) 와 body→drag-anchor 까지의 흰 capsule (`mjVIS_PERTOBJ`) 이 동시에 그려진다. Arrow 길이는 `m->vis.map.force / m->stat.meanmass` 로 스케일된 표시용이며, 정확한 수치는 위 status 의 `|F|` / `|t|` 를 참조.
-
----
-
-## 뷰어 단축키
-
-`viewer_input_enabled: false` (launch 인자 `viewer_input_enabled:=false`) 이면 뷰어는 **world 를 바꾸는 입력**을 무시한다 — 아래 표에서 "입력 차단" 이 `차단` 인 키와 Ctrl+drag 퍼튜베이션. 카메라 · 시각화 · 오버레이 · 스크린샷은 그대로 동작한다. 뷰어를 띄운 채 돌리는 평가 sim 이 실수로 누른 키 하나에 흔들리지 않게 하려는 것이다. 무시된 키는 누를 때 한 번 `[Viewer] Input disabled: key <name> ignored` 를 남기고, 뷰어 기동 배너에 `[Viewer] Input: world-changing keys DISABLED` 가 붙는다. 차단 대상 집합의 SSoT 는 [src/viewer/viewer_input_policy.hpp](src/viewer/viewer_input_policy.hpp) 다.
-
-### 키보드
-
-| 키 | 기능 | 입력 차단 |
 |---|---|---|
-| **F1** | 도움말 오버레이 순환 (off → page1 → page2 → off) |  |
-| Space | 일시정지 / 재개 | 차단 |
-| Right (일시정지 중) | 한 스텝 진행 | 차단 |
-| + / - | RTF 속도 2배 / 0.5배 | 차단 |
-| R | 초기 자세로 리셋 (pool object 는 같은 자세로 다시 놓임) | 차단 |
-| O | pool object 교체 — 기존 object 를 park 하고 설정 범위에서 새로 스폰 ([Object Pool](#object-pool-랜덤-object-스폰)) | 차단 |
-| K | projectile ball 발사 (`/sim/launch_ball` 과 같음, [Projectile Ball](#projectile-ball-발사-공)) | 차단 |
-| TAB | 카메라 모드 순환 (Free → Tracking → Fixed[0..N-1] → Free) |  |
-| Esc | 카메라 초기화 (Free 모드, 기본 거리/방위각) |  |
-| Backspace | 시각화 옵션 초기화 |  |
-| G | 전역 중력 ON/OFF (디버깅용; 로봇 gravcomp 와 무관) | 차단 |
-| B | link frame overlay ON/OFF (`mjFRAME_BODY`) |  |
-| N | 접촉 제약 ON/OFF | 차단 |
-| I | integrator 순환 (Euler → RK4 → Implicit → ImplFast) | 차단 |
-| S | solver 순환 (PGS → CG → Newton) | 차단 |
-| ] / [ | solver 반복 횟수 x2 / /2 | 차단 |
-| C / F | 접촉점 / 접촉력 표시 |  |
-| T | 투명 시각화 |  |
-| J / U | 관절 / 액추에이터 시각화 |  |
-| E / W | 관성 / CoM 시각화 |  |
-| L / A / X | 조명 / 텐던 / 볼록 껍질 시각화 |  |
-| 0-5 / V | 지오메트리 그룹 토글 (V = 그룹 0 별칭) |  |
-| F3 | RTF 프로파일러 그래프 |  |
-| F4 | Solver 통계 오버레이 |  |
-| F5 / F6 / F7 / F8 | 와이어프레임 / 그림자 / 스카이박스 / 반사 |  |
-| F9 | 센서 값 오버레이 |  |
-| F10 | 모델 정보 오버레이 |  |
-| P | 스크린샷 저장 (PPM) |  |
+| `clock_lane.enabled` / `.csv_path` | `false` / `""` | 완료 step 마다 `step, sim_time_sec, steady_ns, dropped_total` — sim 클럭과 steady 클럭의 위상 오차 (D-3) 측정 |
+| `clock_lane.drain_rate_hz` | `20.0` | 노드가 링을 비우는 주기. `dropped_total > 0` 이면 올리고 다시 잰다 |
+| `ball_contact_lane.enabled` / `.csv_path` | `false` / `""` | 공 접촉 episode (연속 substep 구간) 마다 한 줄 |
 
-### 마우스
+`ball_contact_lane` 열: `step`, `begin/end_sim_time_sec`, `substeps`, `impulse_{x,y,z}` (**공에 가해진** 충격량 [N·s], world), `peak_force_n`, `pos_*` · `vel_*` (첫 접촉 순간 공 상태), `first_body`, `distinct_bodies`, `dropped_total`. 설계 근거는 [sim-rationale.md](../docs/reference/sim-rationale.md#clock-phase-lane-d-3-측정).
 
-| 조작 | 기능 | 입력 차단 |
+## 디렉토리
+
+```
+rtc_mujoco_sim/
+├── include/rtc_mujoco_sim/
+├── src/
+│   └── viewer/
+├── config/
+├── launch/
+└── test/
+```
+
+공개 헤더 · 시뮬레이터 · SimLoop · 노드 · pool · 공은 `src/` 와 `include/`, GLFW 뷰어는 `src/viewer/`, 테스트 fixture 는 `test/fixtures/` 에 있다.
+
+## 문제 해결
+
+| 증상 | 원인 | 조치 |
 |---|---|---|
-| Left drag | 카메라 궤도 |  |
-| Shift + Left drag | 수평축 회전 |  |
-| Right drag | 카메라 패닝 |  |
-| Shift + Right drag | 수평 평면 패닝 |  |
-| Scroll / Middle drag | 줌 인/아웃 |  |
-| Dbl-click | 물체 선택 |  |
-| Ctrl + Left drag | 퍼튜베이션 (토크) — 마우스 방향이 곧 회전 축, status 패널의 `|t|` 가 실제 인가 토크 (N·m) | 차단 |
-| Ctrl + Right drag | 퍼튜베이션 (힘, 카메라 수직 평면 = MOVE_V) — 드래그 방향과 인가 force 방향이 일치, status 의 `|F|` (N) | 차단 |
-| Ctrl + Shift + Right drag | 퍼튜베이션 (힘, 월드 수평 평면 = MOVE_H) | 차단 |
+| configure 실패 `model_path` | `model_path` 가 비었다 | `params_file` 이나 `model_path:=` 로 준다 |
+| configure 실패 (그룹 없음) | `params_file` 없이 띄워 `robot_response.groups` 가 비었다 | bringup 의 `mujoco_simulator.yaml` 을 `params_file` 로 준다 |
+| 노드 생성 시점에 예외 | `initial_qpos` 에 정수 (`0`) 가 섞였거나 `objects: []` | 소수점을 찍는다 / `objects` 키를 생략한다 |
+| 기동 FATAL | `physics_timestep` ≠ `1/control_rate` | 둘을 맞춘다 |
+| 매 step 이 50 ms 멈춘다 | 명령하지 않는 robot 그룹이 command 를 기다린다 | 그 그룹에 `wait_for_command: false` |
+| controller tick 이 멈춘다 | `state_publish_divisor` > 1 이거나 fake 인 그룹이 `sim_sync_tick_devices` 에 있다 | CM 설정에서 뺀다 |
+| 뷰어에 scene 의 floor / 일부 geom 이 안 보인다 | group 3 이상은 기본 숨김. include 한 `<default>` 의 group 을 상속했을 수 있다 | `F10` 으로 `geom_group` 확인, 보여야 할 geom 에 group 을 명시 |
+| 공이 안 그려진다 / 이유 없이 튄다 | [Projectile Ball](#projectile-ball-발사-공) 의 접촉 마스크 · 관통 접촉 참고 | `collision_contype` / `conaffinity` 와 씬의 관통부 확인 |
+| 모든 object 가 거울상 위치다 | `object_state.reference_body` 를 world 와 base 중 잘못 골랐다 | [Object State](#object-state) |
 
----
+## 더 읽기
 
-## C++ API
-
-그룹 인덱스 기반입니다 (`group_idx` 생략 오버로드는 group 0 에 위임하는 하위 호환용). 전체 시그니처·동작은 [include/rtc_mujoco_sim/mujoco_simulator.hpp](include/rtc_mujoco_sim/mujoco_simulator.hpp) 의 인라인 주석이 SSoT — 아래는 사용 패턴 요약.
-
-```cpp
-auto sim = std::make_unique<MuJoCoSimulator>(cfg);
-sim->Start();
-
-sim->SetCommand(0, cmd);                  // group 0 커맨드
-sim->SetControlMode(0, true);             // torque 모드 (false = position servo)
-auto pos = sim->GetPositions(0);
-auto eff = sim->GetEfforts(0);
-
-// 센서 / contact wrench / fake(LPF) 콜백 (해당 그룹에 설정돼 있을 때만)
-sim->SetSensorCallback(0, [](const auto& infos, const auto& values) { /* ... */ });
-sim->SetContactWrenchCallback(0, [](const auto& infos, const auto& samples) { /* ... */ });
-sim->SetFakeTarget(fake_group_idx, target);
-
-// 물리 파라미터 런타임 변경, 외력, 일시정지/리셋
-sim->SetIntegrator(mjINT_IMPLICIT);
-sim->SetSolverType(mjSOL_NEWTON);
-sim->SetExternalForce(body_id, wrench);
-sim->Pause(); sim->Resume(); sim->StepOnce(); sim->RequestReset();
-
-// 시뮬레이터 상태
-auto rtf = sim->GetRtf();
-auto load = sim->GetPhysicsLoad();  // physics wall time / control period
-```
-
----
-
-## MuJoCo ROS2 Resource Provider
-
-`package://` URI를 MuJoCo가 네이티브로 해석할 수 있도록 전역 resource provider를 등록합니다.
-
-```cpp
-rtc::RegisterRos2ResourceProvider();
-```
-
-MJCF 파일 안에서 `package://` URI를 별도 변환 없이 사용 가능:
-```xml
-<mesh file="package://robot_descriptions/robots/ur5e/meshes/ur5e.dae"/>
-```
-
-내부적으로 `ament_index_cpp::get_package_share_directory()`를 사용하여 패키지 경로를 해석하고, `mjpResourceProvider` 콜백(open/read/close/getdir)을 통해 MuJoCo에 파일 데이터를 제공합니다.
-
----
+- [docs/reference/sim-rationale.md](../docs/reference/sim-rationale.md) — 동기 루프 · tick, effort 정의, 외력 CoM 보정, contact wrench 부호, 공 preset 근거, stamp 실측, lane 설계
+- [rtc_msgs/srv/SetExternalWrench.srv](../rtc_msgs/srv/SetExternalWrench.srv) · [LaunchBall.srv](../rtc_msgs/srv/LaunchBall.srv) — 서비스 계약
+- [include/rtc_mujoco_sim/mujoco_simulator.hpp](include/rtc_mujoco_sim/mujoco_simulator.hpp) — C++ API Doxygen
+- [docs/testing.md](../docs/testing.md) — 테스트 명령 · sensor matrix. 이 패키지는 `colcon test --packages-select rtc_mujoco_sim` (GLFW 렌더링 자체는 헤드리스 제약으로 테스트하지 않는다)
+- [integrated_bringup](../integrated_bringup/README.md) — 이 시뮬레이터를 쓰는 robot 별 launch / YAML
+- [rt-optimization.md](../docs/rt-optimization.md)
 
 ## 의존성
 
-### ROS2 패키지 (빌드 + 런타임)
+[package.xml](package.xml) 이 SSoT. 라이선스 MIT.
 
-| 패키지 | 용도 |
-|--------|------|
-| `rclcpp` | ROS2 C++ 클라이언트 |
-| `rclcpp_lifecycle` | LifecycleNode 기반 상태 관리 |
-| `std_msgs` | Float64MultiArray (sim/status) |
-| `sensor_msgs` | JointState (state publish) |
-| `nav_msgs` | `Odometry` — projectile ball 참값 lane |
-| `std_srvs` | `Trigger` — `/sim/launch_ball`, `/sim/reset_ball` |
-| `rtc_msgs` | `LaunchBall` — `/sim/launch_ball_at` (지정 상태 발사), `SetExternalWrench` — `/sim/set_external_wrench` |
-| `geometry_msgs` | `WrenchStamped` (contact wrench lane), `TransformStamped` (object state), `PointStamped` (projectile ball camera lane) |
-| `tf2_msgs` | `TFMessage` — object state lane 의 named object pose 배열 |
-| `ament_index_cpp` | package:// URI 해석 |
-| `rtc_msgs` | JointCommand, SimSensorState 메시지 |
-| `rtc_base` | RTC 공통 유틸리티 |
-| `tinyxml2` | MJCF XML `<option>` 파싱 (solver 파라미터 XML 우선순위 감지) |
+| 구분 | 패키지 | 용도 |
+|---|---|---|
+| ROS 2 | `rclcpp` · `rclcpp_lifecycle` | 노드, lifecycle |
+| ROS 2 | `std_msgs` · `sensor_msgs` · `nav_msgs` · `geometry_msgs` · `tf2_msgs` · `std_srvs` | 토픽 / 서비스 타입 |
+| ROS 2 | `rtc_msgs` · `rtc_base` | `JointCommand` · `SimSensorState` · `LaunchBall` · `SetExternalWrench`, 공통 유틸 |
+| ROS 2 | `ament_index_cpp` · `tinyxml2` | `package://` 해석, MJCF `<option>` 파싱 (solver 우선순위) |
+| 런타임 | `robot_descriptions` · `rtc_tools` | MJCF 모델 · 메시, 세션 디렉토리 헬퍼 |
+| 외부 | **MuJoCo ≥ 3.2** | 물리 엔진 (필수 — 없으면 노드 빌드 생략). Object Pool 이 mjSpec attach API 를 쓰므로 3.0 / 3.1 은 컴파일되지 않는다 |
+| 외부 | GLFW 3 | 3D 뷰어 (선택, 없으면 headless 전용) |
 
-### 런타임 전용
-
-| 패키지 | 용도 |
-|--------|------|
-| `robot_descriptions` | MJCF 모델, URDF, 메시 파일 |
-| `udp_hand_driver` | udp_hand_node.yaml 참조 (선택) |
-| `rtc_controller_manager` | 런치 파일에서 rtc_controller_manager 노드 실행 (실행 파일: `rt_controller`) |
-| `rtc_tools` | `mujoco_sim.launch.py`의 세션 디렉토리 헬퍼 (`session_dir.resolve_logging_root()`) |
-
-### 외부 라이브러리 (비ROS2)
-
-| 라이브러리 | 용도 |
-|-----------|------|
-| **MuJoCo >= 3.2** | 물리 시뮬레이션 엔진 (필수, 없으면 노드 빌드 생략). Object pool 이 mjSpec attach API (`mj_parseXML` / `mjs_attach` / `mjs_addFreeJoint` / `mj_compile`) 를 쓰므로 3.0/3.1 로는 컴파일되지 않으며, [object_pool.hpp](include/rtc_mujoco_sim/object_pool.hpp) 의 `#error` 가드가 이를 빌드 시점에 막는다. 3.x 의 `mjVERSION_HEADER` 는 7자리다 (3.7.0 → `3007000`) — 2.x 의 3자리와 비교하지 말 것 |
-| **GLFW 3** | 3D 뷰어 윈도우 (선택, 없으면 headless 전용) |
-
----
-
-## 빌드
-
-### 전제 조건: MuJoCo 3.2 이상 설치
+MuJoCo 설치와 coverage 빌드:
 
 ```bash
 wget https://github.com/google-deepmind/mujoco/releases/download/3.x.x/mujoco-3.x.x-linux-x86_64.tar.gz
 sudo tar -xzf mujoco-*.tar.gz -C /opt/
+# MuJoCo 를 못 찾으면: colcon build 에 --cmake-args -Dmujoco_ROOT=/opt/mujoco-3.x.x
+# coverage (gcov/lcov): colcon build --packages-select rtc_mujoco_sim --cmake-args -DENABLE_COVERAGE=ON -DBUILD_TESTING=ON
 ```
-
-### colcon 빌드
-
-```bash
-colcon build --packages-select rtc_mujoco_sim --symlink-install \
-    --cmake-args -Dmujoco_ROOT=/opt/mujoco-3.x.x
-```
-
-> MuJoCo가 설치되지 않은 경우 `mujoco_simulator_node`는 자동으로 빌드에서 제외됩니다.
-> GLFW가 설치되지 않은 경우 뷰어 없이 headless 모드로만 빌드됩니다.
-> 빌드 시 C++20 표준을 사용합니다 (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`).
-
-### Coverage (gcov/lcov)
-
-```bash
-colcon build --packages-select rtc_mujoco_sim --cmake-args -DENABLE_COVERAGE=ON -DBUILD_TESTING=ON
-```
-
-`mujoco_simulator_lib` + 전체 테스트를 `--coverage -fprofile-arcs -ftest-coverage`로 계측 (기본 `OFF`).
-
----
-
-## Testing
-
-```bash
-./build.sh --tests -p rtc_mujoco_sim sim
-colcon test --packages-select rtc_mujoco_sim --event-handlers console_direct+
-colcon test-result --verbose
-```
-
-GTest 스위트 (`test/` 디렉토리, 표는 파일 이름). 최신 케이스 수·pass/fail 은 `colcon test-result --verbose` 실측 — 표에 개수를 박지 않는다 (drift 방지). 같은 fixture 를 쓰는 파일은 한 바이너리를 공유한다 (예: `test_lifecycle.cpp` → `test_simulator_core`) — 파일↔바이너리 대응은 `CMakeLists.txt` 가 SSoT 이고, 한 파일만 돌리려면 그 바이너리에 `--gtest_filter` 를 준다:
-
-| Test | Scope |
-|------|-------|
-| `test_pure_helpers` | `SolverNameToEnum`/`ConeNameToEnum`/`JacobianNameToEnum`/`IntegratorNameToEnum`/`ApplyFakeLpfStep` (순수 로직) |
-| `test_resource_provider` | `ResolveModelPath` — package:// URI 해석 (순수 문자열 + ament, MJCF fixture 불필요) |
-| `test_initial_qpos` | `robot_response.<group>.initial_qpos` — 시작·reset 자세 |
-| `test_shipped_config` | 이 패키지가 출하하는 모든 params YAML 이 rclcpp 파라미터 로더를 통과하는지 |
-| `test_viewer_input_gate` | `viewer_input_enabled: false` 가 막는 키 집합 — world 를 바꾸는 키는 전부 차단, 카메라 · 표시 · 수정키는 통과, 전체 GLFW 키 코드 sweep 으로 집합이 정확히 그 15 개인지, `Config` 기본값 `true` (GLFW 없이 돈다; 키 코드 ↔ `GLFW_KEY_*` 일치는 `viewer_callbacks.cpp` 의 `static_assert`) |
-| `test_simulator_init` | `Initialize` happy/실패 경로, joint/sensor 디스커버리, 검증 |
-| `test_solver_config` | XML `<option>`/`<flag>` 우선순위, YAML fallback, ContactOverride |
-| `test_command_state_io` | `SetCommand`/`SetControlMode`/`SetFakeTarget` 정합성 (스레드 미사용) |
-| `test_lifecycle` | Start/Stop/Pause/Resume/Reset/StepOnce/SyncTimeout |
-| `test_runtime_controls` | atomic setter/getter, 클램핑, world gravity 토글 |
-| `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증, position 모드 effort 가 중력항을 포함 / torque 모드는 불변 (`scene_with_object.xml`) |
-| `test_data_flow` | 상태/센서 콜백 firing, StepCount 단조, RTF |
-| `test_motor_servo_gains` | `<motor>` actuator 위의 위치 서보 — YAML · 런타임 게인이 0 이 아닌 목표를 유지, torque 모드에서 bias 타입 원복, 게인이 없으면 명령이 토크로 직결 (`motor_arm.xml`), gear · ctrlrange 가 있는 motor 에 게인을 설치하면 경고 (`motor_arm_geared.xml`) |
-| `test_torque_mode_ctrl_range` | torque 모드의 ctrl clamp — `<position>` · `<velocity>` actuator 는 `ctrlrange` 를 넘는 토크가 그대로 걸리고 `forcerange` 는 계속 묶음, `<motor>` 의 `ctrlrange` 는 유지, 모드를 나오면 (XML lane · 게인 lane) 목표가 다시 잘림, 재진입 (`servo_arm_ctrl_limited.xml`) |
-| `test_contact_wrench` | MJCF `<sensor><contact>` 자동 발견, world→link frame 변환, 비접촉 시 0 발행 (`contact_minimal.xml`) |
-| `test_contact_wrench_site_frame` | `ContactWrenchConfig::reference_frame` — `body` / `site` 모드가 site 회전만큼 다른 벡터를 내는지 고정 |
-| `test_contact_wrench_viz` | 뷰어 화살표 스냅샷이 **토픽과 같은 벡터**인지 — 발행된 link-frame force 를 reference frame 회전으로 world 로 되돌린 것과 componentwise 일치, 화살표 시작점 = reference site, `visualize:false` 시 스냅샷 자체가 빔 (negative control) |
-| `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
-| `test_object_pool_sampling` | object pool 순수 로직 — 디렉토리 스캔·정렬, allowlist 해석, ZYX Euler→quat (비대칭 각도 3쌍으로 `mju_euler2Quat` seq 규약 고정), pose 샘플링의 범위 **커버리지**, seed 재현성, `avoid_repeat` (MJCF fixture 불필요) |
-| `test_object_state` | object state lane — 어떤 body 가 object 로 잡히는지, pose 가 어느 프레임으로 나오는지 |
-| `test_projectile_ball` | projectile ball — 설정 검증 (기울어진 `launch_direction`·음수 spin 산포 거부), 발사 샘플링 재현성·범위 (azimuth, normal 분포), 발사 프레임 spin, sim 시간 publish throttle 이 reset 후 재개되는지, park **negative control** 과 접촉 **positive control** (`pool_scene.xml`); preset 질량·관성·condim·priority, 바닥과 **자체 solref 를 가진 손끝 모사 pad** 모두에서 preset 반발 (±0.05), pad 가 공보다 priority 가 높으면 Initialize 거부, 구름 저항, 공력 방향·크기 순수함수와 자유낙하 tanh 해석해 (1 %), backspin 양력 (`ball_scene.xml`); **ball contact truth** — 꺼져 있으면 비용 0, 충격량 부호가 공을 **밀어내는** 방향인지 (공이 `geom[0]` 인 pool 물체 접촉 포함), 충격량이 독립 오라클(공 자신의 운동량 변화 − 중력항)과 맞는지, **실제 SimLoop 을 `n_substeps=4` 로 돌려** 마지막 substep 만 읽는 구현을 배제하는지; **clock phase lane** — 꺼져 있으면 step 당 비용 0, 켜면 step 마다 두 클럭이 한 줄씩 쌓이고 sim 시각이 정확히 physics step 만큼 전진하는지, 링이 넘치면 **세어서** 알리는지 (보유 + 버린 수 = 전체 step); **지정 상태 발사** — 요청 상태가 그대로 장전되는지, 같은 요청의 궤적이 **비트 단위로** 동일한지, 샘플링 RNG 스트림을 건드리지 않는지, 공 없음·비유한값 거부가 상태를 바꾸지 않는지 |
-| `test_object_pool` | object pool 통합 — attach/park/spawn/refresh, `enabled:false` 시 모델 불변, keyframe park pose, geom 별 contact filter 복원, **positive control** (활성 object 가 낙하·정지) 과 **negative control** (park object 가 전혀 안 움직임), reset 재적용, 실패 모드 (`pool_scene.xml` + `fixtures/objects/`) |
-
-Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml), [test/fixtures/pool_scene.xml](test/fixtures/pool_scene.xml) (바닥 + keyframe), [test/fixtures/ball_scene.xml](test/fixtures/ball_scene.xml) (바닥 + 손끝 모사 pad) 과 [test/fixtures/objects/](test/fixtures/objects/) (primitive geom 후보 3개 — object_sim submodule 없이도 돈다).
-GLFW **렌더링** 자체는 헤드리스 제약으로 테스트하지 않습니다 — 대신 무엇을 그릴지 정하는 스냅샷은 `test_contact_wrench_viz` 가 디스플레이 없이 고정합니다.
-
----
-
-## 라이선스
-
-MIT License

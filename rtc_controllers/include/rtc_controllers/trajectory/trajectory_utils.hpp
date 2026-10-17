@@ -7,12 +7,17 @@
 namespace rtc {
 namespace trajectory {
 
+/// Scalar trajectory sample: position, velocity, acceleration at one instant.
 struct TrajectoryState {
   double pos{0.0};
   double vel{0.0};
   double acc{0.0};
 };
 
+/// Quintic polynomial satisfying position/velocity/acceleration boundary
+/// conditions at t=0 and t=T. The basic building block of every generator in
+/// this directory; time is clamped to [0, T], so there is no overshoot after the
+/// end of the trajectory.
 class QuinticPolynomial {
  public:
   QuinticPolynomial() = default;

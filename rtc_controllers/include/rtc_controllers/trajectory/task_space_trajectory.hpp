@@ -19,6 +19,10 @@
 namespace rtc {
 namespace trajectory {
 
+/// SE(3) point-to-point trajectory: a quintic polynomial per axis of the
+/// log6 tangent-space displacement between start and goal pose, mapped back with
+/// exp6. State velocity/acceleration are LOCAL (body) spatial vectors. For
+/// via-points use TaskSpaceBlendTrajectory / TaskSpaceSplineTrajectory.
 class TaskSpaceTrajectory {
  public:
   struct State {

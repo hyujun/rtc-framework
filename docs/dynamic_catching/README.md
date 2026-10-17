@@ -14,7 +14,7 @@ vision 이 예측한 공의 궤적을 받아 팔과 손으로 공을 잡는 컨�
 | 코드 주석의 `MD-45` · `D-16` · `G3-I` · `S6-B` · `plan §9` 가 무슨 뜻인가 | [ID_INDEX.md](ID_INDEX.md) |
 | 지금 상태, 남은 feature, 아직 정하지 않은 것 | [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) — 구현이 끝나면 지우는 계획 문서 |
 | 값 (YAML 키의 값) | `integrated_bringup/config/<robot>/controllers/` 의 YAML |
-| 운용 방법 (launch · 투척 시행 · 분석) | [integrated_bringup/README.md](../../integrated_bringup/README.md#catching-sim-trials--한-투척--한-s7-순환) · [rtc_tools/README.md](../../rtc_tools/README.md) |
+| 운용 방법 (launch · 투척 시행 · 분석) | [docs/catching-sim-trials.md](../catching-sim-trials.md) · [rtc_tools/README.md](../../rtc_tools/README.md) |
 | 측정 · 검증 기록, 결정의 경위 | 이슈 ([더 읽기](#더-읽기)) |
 
 같은 사실은 한 곳에만 적는다. 계획 문서에는 영구히 보관할 정보를 넣지 않는다.
