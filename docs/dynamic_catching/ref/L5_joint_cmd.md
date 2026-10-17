@@ -3,7 +3,7 @@
 이 문서는 현재 구현의 **팔 명령 계층** — `rtc_tsid` 의 `ClikReferenceGenerator` 와 그것을 부르는 포구 컨트롤러의 바인딩 — 을 표현한다. 다음 일반화 (다중 frame) 의 출발점 서술이기도 하다.
 
 - 코드 배치: CLIK 은 `rtc_tsid` (`rtc::tsid::ClikReferenceGenerator`), 컨트롤러 바인딩은 `integrated_bringup`. 새 패키지를 만들지 않는다
-- API 정의: `rtc_tsid/include/rtc_tsid/kinematics/clik_reference.hpp` · `rtc_tsid/src/kinematics/clik_reference.cpp`. 필드 · 옵션의 사양은 그 헤더 주석과 `rtc_tsid/README.md` 가 갖는다 — 이 문서는 **식과 구조 결정** 을 갖는다
+- API 정의: `rtc_tsid/include/rtc_tsid/kinematics/clik_reference.hpp` · `rtc_tsid/src/kinematics/clik_reference.cpp`. 필드 · 옵션의 사양은 그 헤더 주석이 갖는다 — 이 문서는 **식과 구조 결정** 을 갖는다
 
 ---
 
