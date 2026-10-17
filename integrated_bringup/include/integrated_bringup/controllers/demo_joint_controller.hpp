@@ -956,7 +956,7 @@ class DemoJointController final : public RTControllerInterface {
   rclcpp::TimerBase::SharedPtr log_drain_timer_;
 
   // Pod fill helpers live in integrated_bringup/logging/pod_fill.hpp (shared by
-  // all 3 demo controllers — Phase C).
+  // the demo controllers — Phase C).
 };
 
 }  // namespace integrated_bringup

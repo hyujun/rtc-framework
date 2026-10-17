@@ -2,7 +2,7 @@
 //
 // Layer 1 proved the residual math and the coordinate contract against a real
 // arm sub-model (test_momentum_observer / test_momentum_observer_wiring). What
-// is new here is EMBEDDING: three controllers each build one wiring from a
+// is new here is EMBEDDING: the controllers each build one wiring from a
 // `momentum_observer` YAML block, tick it before their control law, hold it on
 // E-STOP, and push a row to momentum_observer.csv every tick.
 //
@@ -441,7 +441,7 @@ std::vector<double> ResidualRow(const CsvFile& csv, std::size_t row) {
   return out;
 }
 
-/// The shared body of the three controller cases. Everything asserted here is
+/// The shared body of the per-controller cases. Everything asserted here is
 /// a property of the EMBEDDING, not of the observer math (that has its own
 /// file): a row per tick, convergence to ~zero under no load, and an E-STOP
 /// tick that freezes rather than zeroes.

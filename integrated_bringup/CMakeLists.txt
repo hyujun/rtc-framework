@@ -1206,7 +1206,7 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # #135 Layer 1b: the same observer inside the three production controllers.
+  # #135 Layer 1b: the same observer inside each production controller.
   # The residual has no consumer at this layer, so momentum_observer.csv is the
   # only surface — these cases register the channel the way on_configure does
   # and read the file back, which is also what keeps the header/row widths and

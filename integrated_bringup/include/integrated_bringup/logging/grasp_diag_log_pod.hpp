@@ -1,9 +1,9 @@
 #ifndef INTEGRATED_BRINGUP_LOGGING_GRASP_DIAG_LOG_POD_HPP_
 #define INTEGRATED_BRINGUP_LOGGING_GRASP_DIAG_LOG_POD_HPP_
 
-// Per-tick Force-PI grasp diagnostics for the joint / task demo controllers
-// (#428). One row per RT tick (`grasp_diag.csv`), single fixed instance — the
-// `task_diag` / `pull_estimator` shape, not the per-device maps.
+// Per-tick Force-PI grasp diagnostics for the demo controllers that own a
+// GraspController (#428). One row per RT tick (`grasp_diag.csv`), single fixed
+// instance — the `task_diag` / `pull_estimator` shape, not the per-device maps.
 //
 // Why this exists: every value here is already computed on every tick and then
 // dropped. #426 had to decide whether the online stiffness estimator was

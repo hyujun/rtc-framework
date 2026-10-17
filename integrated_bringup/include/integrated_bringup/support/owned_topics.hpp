@@ -2,8 +2,7 @@
 #define UR5E_BRINGUP_SUPPORT_OWNED_TOPICS_HPP_
 
 // Shared helper for Phase 4 — creates, activates, and publishes the
-// controller-owned sub/pub set that the three demo controllers
-// (DemoJointController / DemoTaskController / DemoWbcController) share.
+// controller-owned sub/pub set that the demo controllers share.
 //
 // Each demo owns one ControllerTopicHandles instance and delegates to the
 // free functions here from its lifecycle overrides + PublishNonRtSnapshot.
@@ -149,9 +148,8 @@ struct TaskGoalSubscriptionRequest {
 // introduces a third group.
 inline constexpr std::size_t kMaxOwnedGroups = 2;
 
-// Upper bound on TFMessage transforms broadcast by a single controller.
-// Sized for DemoJoint/Task (6: arm tip + 4 fingertip + virtual_tcp) and
-// DemoWbc (4 fingertip + alpha placeholder + headroom for future frames).
+// Upper bound on TFMessage transforms broadcast by a single controller, with
+// headroom over every frame list (docs/controller-logs.md lists them).
 inline constexpr std::size_t kMaxControllerTransforms = 16;
 
 // One transform slot — populated at on_configure from the system YAML

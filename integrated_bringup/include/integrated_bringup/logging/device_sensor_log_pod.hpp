@@ -55,9 +55,9 @@ struct DeviceSensorLogPod {
   std::uint8_t num_fingertips{0};
   bool inference_valid{false};
   /// True only when the producing controller actually runs the per-axis force
-  /// LPF (joint / task). Controllers without it (wbc) leave `force_filtered`
-  /// zero-filled, and a zero column is indistinguishable from "the filter
-  /// output really was 0" downstream — this flag is what tells the two apart.
+  /// LPF. Controllers without it (e.g. wbc) leave `force_filtered` zero-filled,
+  /// and a zero column is indistinguishable from "the filter output really was
+  /// 0" downstream — this flag is what tells the two apart.
   bool force_filtered_valid{false};
 
   // ── Sensor data (raw + filtered, packed [fingertip *

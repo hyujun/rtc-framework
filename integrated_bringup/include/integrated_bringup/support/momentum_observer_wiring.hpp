@@ -227,8 +227,8 @@ void HoldMomentumObserver(MomentumObserverWiring& w) noexcept;
 void ResetMomentumObserverRtState(MomentumObserverWiring& w) noexcept;
 
 /// Build the wiring from `cfg` (non-RT, on_configure / LoadConfig) — the entry
-/// point the three demo controllers call, so the gain expansion and the
-/// enablement rule live in one place instead of three.
+/// point every embedding controller calls, so the gain expansion and the
+/// enablement rule live in one place instead of one per controller.
 ///
 /// Resets `w` first and leaves it DISABLED (no throw) when the
 /// `momentum_observer` block is absent or `enabled: false`, or when
@@ -309,7 +309,7 @@ inline void FillMomentumObserverLogPod(const MomentumObserverWiring& w, double t
 }
 
 /// RT tick tail — noexcept, heap-free; a no-op when the wiring is disabled, so
-/// the three demo controllers carry one call instead of a copy-pasted guard +
+/// each embedding controller carries one call instead of a copy-pasted guard +
 /// fill + Push block.
 ///
 /// Call it on EVERY tick, including held and E-STOP ones. A row is what makes

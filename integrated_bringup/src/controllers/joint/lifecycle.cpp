@@ -12,7 +12,7 @@
 namespace integrated_bringup {
 
 // ── Phase 4: controller-owned topic lifecycle ─────────────────────────────
-// Delegates to integrated_bringup::owned_topics helpers so the 3 demo controllers
+// Delegates to integrated_bringup::owned_topics helpers so the demo controllers
 // share a single implementation; only storage lives in the subclass.
 
 RTControllerInterface::CallbackReturn DemoJointController::on_configure(

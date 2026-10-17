@@ -1,8 +1,8 @@
 // ── UR5e demo controller registration ─────────────────────────────────────────
 //
-// Registers DemoJointController and DemoTaskController into the global
-// ControllerRegistry.  The library is linked with --whole-archive so the
-// linker preserves this translation unit without a Force function.
+// Registers the demo controllers into the global ControllerRegistry.  The
+// library is linked with --whole-archive so the linker preserves this
+// translation unit without a Force function.
 
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"

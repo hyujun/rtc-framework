@@ -263,8 +263,9 @@ const rtc::grasp::PullEstimate& UpdatePullEstimator(PullEstimatorWiring& w, bool
     // touch_active is false whenever the sensor was invalid or saturated, so it
     // already subsumes inputs[k].valid; position_valid covers the geometry the
     // centroid needs. In the WBC consumer both derive from the TSID contact
-    // cache (that is where fingertip poses come from there), in joint/task from
-    // hand FK — the rule is the same, its inputs differ per controller.
+    // cache (that is where fingertip poses come from there), in the other
+    // consumers from hand FK — the rule is the same, its inputs differ per
+    // controller.
     if (k == w.thumb_contact || !w.position_valid[idx] || !w.estimator->touch_active(k)) {
       continue;
     }

@@ -22,8 +22,8 @@ struct FingertipCounts {
 // Prefer num_inference_groups (set by mujoco_native and udp_hand backends
 // regardless of sensor_layout), fall back to the sensor-channel stride for
 // older mocks that only fill the sensor lane. Both counts are clamped to
-// kMaxSensorGroups. Shared by the joint / task / wbc demo controllers so the
-// derivation cannot drift between them.
+// kMaxSensorGroups. Shared by every demo controller that counts fingertips so
+// the derivation cannot drift between them.
 [[nodiscard]] inline FingertipCounts DeriveFingertipCounts(const rtc::DeviceState& dev) noexcept {
   constexpr int kCap = static_cast<int>(rtc::kMaxSensorGroups);
   constexpr int kStride = static_cast<int>(kHandSensorValuesPerFingertipCapacity);

@@ -2,8 +2,8 @@
 #define INTEGRATED_BRINGUP_LOGGING_PULL_ESTIMATOR_LOG_POD_HPP_
 
 // Per-controller in-plane pull-force estimator log POD (#167 Phase-2). One
-// per-tick row (`pull_estimator.csv`) shared by the three demo controllers
-// (joint / task / wbc) — the estimator is a single shared component
+// per-tick row (`pull_estimator.csv`) shared by every demo controller that
+// runs the estimator — it is a single shared component
 // (PullEstimatorWiring), so the channel shape is controller-independent.
 //
 // Filled from rtc::grasp::PullEstimate (the Eigen-typed estimator output).

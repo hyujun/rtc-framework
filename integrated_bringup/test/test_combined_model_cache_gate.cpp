@@ -1,6 +1,6 @@
 // ── CombinedModelCache: the F5 gate on the shared model scatter (#236 S7b) ───
 //
-// `ExtractFullState` is where three controllers turn a device reading into the
+// `ExtractFullState` is where the controllers turn a device reading into the
 // Pinocchio configuration every FK / Jacobian / QP consumer runs on, and where
 // the #265 audit found the claim that motivates decision B: `min(arm_dof, nc0)`
 // prevents the out-of-range read and prevents nothing else. `q_curr_full_`

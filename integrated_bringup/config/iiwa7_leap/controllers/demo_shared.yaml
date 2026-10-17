@@ -1,7 +1,7 @@
 # demo_shared.yaml — iiwa7+LEAP variant
-# Grasp controller is intentionally disabled (no sensor stack on LEAP);
-# demo_joint/task controllers run as pure trajectory tracking + hand joint
-# passthrough. demo_wbc runs TSID posture+SE3 only (no contacts/force).
+# Grasp controller is intentionally disabled (no sensor stack on LEAP); the
+# controllers that would run it pass the hand joints through. demo_wbc runs
+# TSID posture+SE3 only (no contacts/force).
 demo_shared:
   # ── Virtual TCP ───────────────────────────────────────────────────────────
   # WBC SE3 task drives ee_link directly; virtual TCP overlay disabled.
@@ -21,8 +21,8 @@ demo_shared:
   grasp_min_fingertips: 2        # [common]  grasp_detected = active_count ≥ N
 
   # ── Grasp controller disabled ─────────────────────────────────────────────
-  # demo_shared_config.cpp:234-239 → grasp_controller_ = nullptr when
-  # type != "force_pi". demo_joint/task hot paths gate on nullptr.
+  # No force_pi_grasp block here, so BuildGraspController leaves
+  # grasp_controller_ null; the hand law and grasp_command check this mode.
   grasp_controller_type: "none"
 
   # ── In-plane pull-force estimator (#167) ────────────────────────────────────
@@ -152,8 +152,8 @@ demo_shared:
     # double-count. Under the WBC controller a tip additionally needs its tsid
     # contact *active* in the current phase preset to supply a fingertip pose
     # (that is the only pose source there) — so on a phase that deactivates the
-    # ring, the ring is excluded from the axis under wbc but not under
-    # joint/task, which read hand FK directly.
+    # ring, the ring is excluded from the axis under wbc but not under the
+    # controllers that read hand FK directly.
     # Optional per-tip touch hysteresis (#234 P-16): touch_on_threshold /
     # touch_off_threshold split the axis-selection gate (on |f_obj|) from the
     # force-sum gate (on f_n). Omit both — as every tip below does — and the

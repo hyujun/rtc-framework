@@ -44,7 +44,7 @@ enum class HandFkWiringResult {
   kActive,                      ///< closed-chain FK 활성
 };
 
-/// @brief task/joint 컨트롤러의 **hand fingertip FK** 를 closed-chain-consistent 로 얻는 래퍼.
+/// @brief 데모 컨트롤러의 **hand fingertip FK** 를 closed-chain-consistent 로 얻는 래퍼.
 ///
 /// `urdf.extended: true` (loop closure sidecar) 인 hand 에서, loop-passive 관절 하류의 fingertip
 /// 프레임은 frozen-loop(tree 모델) FK 로 계산하면 큰 오차가 난다 (#121 Phase 1: 운영점 이탈 시
@@ -237,8 +237,8 @@ class ClosedChainHandFk {
   std::string missing_joint_;
 };
 
-// ── 컨트롤러 wiring 공용 dispatch (task/joint 공유, #121 Phase 2c) ─────────────
-// task/joint 컨트롤러가 동일하게 쓰는 hand-FK 분기·로깅을 단일 출처로 둔다.
+// ── 컨트롤러 wiring 공용 dispatch (#121 Phase 2c) ──────────────────────────────
+// 컨트롤러들이 동일하게 쓰는 hand-FK 분기·로깅을 단일 출처로 둔다.
 
 /// @brief 이번 tick 의 hand FK 를 실행한다: closed 활성이면 @p fk.Update(state), 아니면 serial
 ///   @p hand_handle 의 ComputeForwardKinematics(measured hand q). **RT-safe.**
@@ -247,7 +247,7 @@ class ClosedChainHandFk {
 ///   넘기면 사영할 수단이 없으므로 false 를 돌려 withhold 시킨다 (조용한 stale 방지). WBC 의
 ///   borrowed 경로는 이 dispatch 를 **우회**하고 `UpdateFromProjection` 을 직접 부른다: 채택
 ///   판정에 필요한 provenance(사영 소유자의 실행 카운터 · 컨트롤러의 device readability)가
-///   task/joint 에는 없는 WBC 전용 상태라 여기 접을 수 없다 (#175).
+///   다른 호출자에는 없는 WBC 전용 상태라 여기 접을 수 없다 (#175).
 [[nodiscard]] bool RunHandForwardKinematics(ClosedChainHandFk& fk,
                                             rtc_urdf_bridge::RtModelHandle* hand_handle,
                                             Eigen::VectorXd& hand_q,
@@ -269,7 +269,7 @@ class ClosedChainHandFk {
                                              bool use_hand_root, pinocchio::FrameIndex hand_root_id,
                                              std::size_t f, pinocchio::SE3& out) noexcept;
 
-/// @brief Configure 결과를 컨트롤러 태그(@p tag, 예: "[task]")와 함께 로깅 (task/joint 공용).
+/// @brief Configure 결과를 컨트롤러 태그(@p tag, 예: "[task]")와 함께 로깅 (컨트롤러 공용).
 void LogHandFkWiring(const rclcpp::Logger& logger, const char* tag, HandFkWiringResult result,
                      const std::string& missing_joint);
 

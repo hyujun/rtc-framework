@@ -2,8 +2,8 @@
 #define INTEGRATED_BRINGUP_LOGGING_MOMENTUM_OBSERVER_LOG_POD_HPP_
 
 // Per-controller generalized-momentum observer log POD (#135 Layer 1b). One
-// per-tick row (`momentum_observer.csv`) shared by the three demo controllers
-// (joint / task / wbc) — the observer is a single shared component
+// per-tick row (`momentum_observer.csv`) shared by every demo controller that
+// embeds the observer — it is a single shared component
 // (MomentumObserverWiring), so the channel shape is controller-independent.
 //
 // THIS POD FEEDS TWO LANES. Layer 1b shipped it as CSV only (#135 D12): the
