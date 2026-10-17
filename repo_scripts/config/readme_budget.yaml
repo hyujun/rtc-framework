@@ -31,7 +31,7 @@
 
 README.md: 33381
 docs/dynamic_catching/README.md: 7615
-docs/reference/README.md: 5924
+docs/reference/README.md: 6198  # raised from 5924: index row for sim-rationale.md
 integrated_bringup/README.md: 312486
 repo_scripts/README.md: 72305
 robot_descriptions/README.md: 22406
@@ -48,7 +48,7 @@ rtc_math/README.md: 2571
 rtc_math/include/rtc_math/se3/README.md: 10026
 rtc_mpc/README.md: 9759
 rtc_msgs/README.md: 46967
-rtc_mujoco_sim/README.md: 99118
+rtc_mujoco_sim/README.md: 42500 strict
 rtc_tools/README.md: 223286
 rtc_tsid/README.md: 40706
 rtc_urdf_bridge/README.md: 36726
