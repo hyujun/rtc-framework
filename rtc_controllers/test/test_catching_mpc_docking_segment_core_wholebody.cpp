@@ -968,4 +968,43 @@ TEST(MpcDockingJudgement, TheOtherArmSwingsAgainstTheReachAndTheCatchHardlyNotic
   EXPECT_LE(TreeOtherOffRest(*t, locked), 1e-9);
 }
 
+// The allocation gate on the seventeen-joint tree with every whole-body term
+// on (D15's schedule): the 7-joint test above does not see a workspace sized
+// by the arm alone.
+TEST(MpcDockingWholeBody, NoStageAllocatesOnTheSeventeenJointTreeWithTheTermsOn) {
+  const std::unique_ptr<TreeJudge> t = MakeTreeJudge();
+  const int n = t->rig.model.nv;
+  ASSERT_EQ(n, 17);
+  MpcDockingSegmentCoreParams p = t->rig.params;
+  p.q_nom = t->tree.q_nominal;
+  p.w_vel = Eigen::VectorXd::Constant(n, 0.05);
+  p.w_rest_stop = Eigen::VectorXd::Zero(n);
+  p.w_rest_stop.tail(n - kTreeOther).setConstant(1.0);
+  p.w_ang_pre = 0.001;
+  p.w_ang_post = 0.1;
+  p.ang_scale = 10.0;
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(t->rig.model, t->rig.arm.frame, p, t->rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  ASSERT_TRUE(core.VelocityTermActive() && core.StopRestTermActive() &&
+              core.AngularMomentumTermActive());
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  ASSERT_TRUE(core.Solve(t->in, out)) << Describe(out);  // warm-up
+  StageRecord rec;
+  core.SetStageHook(&CountingHook, &rec);
+  std::size_t news = 0;
+  for (int r = 0; r < 2; ++r) {
+    const rtc::testing::ScopedAllocGate new_gate;
+    ASSERT_TRUE(core.Solve(t->in, out)) << Describe(out);
+    news += new_gate.count();
+  }
+  core.SetStageHook(nullptr, nullptr);
+  EXPECT_EQ(news, 0U) << "operator new inside Solve";
+  for (std::size_t s = 0; s < rec.mallocs.size(); ++s) {
+    EXPECT_EQ(rec.mallocs[s], 0U) << "stage " << s;
+  }
+  EXPECT_GT(rec.entries[static_cast<std::size_t>(MpcDockingStage::kLinearize)], 1);
+}
+
 }  // namespace
