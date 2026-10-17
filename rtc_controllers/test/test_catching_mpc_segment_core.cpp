@@ -30,6 +30,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <random>
@@ -272,6 +274,25 @@ Eigen::MatrixXd TerminalMatrixOracle(int n, int n_nodes, const std::vector<int>&
   return a;
 }
 
+// The same per joint (E3-F02, #641 D11): joint j on its own group's blocks,
+// its columns where `col(j, b)` puts them.
+Eigen::MatrixXd TerminalMatrixOracle(const std::vector<std::vector<int>>& blocks_of_joint,
+                                     int n_nodes, double dt,
+                                     const std::function<Eigen::Index(int, int)>& col,
+                                     Eigen::Index nu) {
+  const int n = static_cast<int>(blocks_of_joint.size());
+  Eigen::MatrixXd a = Eigen::MatrixXd::Zero(2 * n, nu);
+  for (int j = 0; j < n; ++j) {
+    const std::vector<int>& blocks = blocks_of_joint[static_cast<std::size_t>(j)];
+    const Eigen::MatrixXd one = TerminalMatrixOracle(1, n_nodes, blocks, dt);
+    for (int b = 0; b < static_cast<int>(blocks.size()); ++b) {
+      a(j, col(j, b)) = one(0, b);
+      a(n + j, col(j, b)) = one(1, b);
+    }
+  }
+  return a;
+}
+
 TEST(MpcSegmentCore, StageGainsMatchIntegralOracle) {
   const ArmModel arm = Synthetic6R();
   const MpcSegmentCoreParams p;
@@ -319,6 +340,37 @@ TEST(MpcSegmentCore, TerminalEqualityIsFullRank) {
     EXPECT_LE(
         (a - p.u_scale * TerminalMatrixOracle(n, p.n_nodes, blocks, p.dt)).cwiseAbs().maxCoeff(),
         1e-9 * p.u_scale);
+  }
+  // Two joint groups on partitions of their own: each joint's rows hold its
+  // group's integrals, in the columns the layout gives that joint.
+  {
+    const std::vector<int> fine{1, 1, 2, 2, 3, 3};
+    const std::vector<int> coarse{4, 4, 4};
+    MpcSegmentCoreParams p;
+    p.n_groups = 2;
+    std::vector<std::vector<int>> blocks_of_joint;
+    for (int j = 0; j < n; ++j) {
+      p.joint_group[static_cast<std::size_t>(j)] = static_cast<std::int8_t>(j < 2 ? 0 : 1);
+      blocks_of_joint.push_back(j < 2 ? coarse : fine);
+    }
+    for (std::size_t g = 0; g < 2; ++g) {
+      const std::vector<int>& sizes = g == 0 ? coarse : fine;
+      p.group_blocks[g].n_blocks = static_cast<int>(sizes.size());
+      std::copy(sizes.begin(), sizes.end(), p.group_blocks[g].block_sizes.begin());
+    }
+    MpcSegmentCore mpc;
+    ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)),
+              MpcSegmentCoreReason::kNone);
+    ASSERT_FALSE(mpc.Layout().Single());
+    EXPECT_EQ(mpc.TerminalRank(), 2 * n);
+    const Eigen::MatrixXd a = mpc.MainQp().A;
+    const Eigen::Index nu = mpc.Layout().nu;
+    ASSERT_EQ(nu, 2 * 3 + (n - 2) * 6);
+    const Eigen::MatrixXd oracle = TerminalMatrixOracle(
+        blocks_of_joint, p.n_nodes, p.dt,
+        [&](int j, int b) { return static_cast<Eigen::Index>(mpc.Layout().Col(j, b)); }, nu);
+    EXPECT_LE((a.leftCols(nu) - p.u_scale * oracle).cwiseAbs().maxCoeff(), 1e-9 * p.u_scale);
+    EXPECT_EQ(a.rightCols(a.cols() - nu).cwiseAbs().maxCoeff(), 0.0);
   }
   MpcSegmentCoreParams two;
   two.n_blocks = 2;
