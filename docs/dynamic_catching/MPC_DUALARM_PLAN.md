@@ -84,9 +84,8 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E3-F02 | [#641](https://github.com/hyujun/rtc-framework/issues/641) | 전신 항을 두 구간 코어 (`mpc` · `mpc_docking`) 에 추가 — 왼팔 rest · waist 억제 · 각운동량 변화율 (위상 스케줄) · 관절군별 move blocking, 관절군 선언 (`planner.groups`) 과 군별 가중 (`mpc_docking` 의 `r_tau` · `r_jerk` 포함). 탐색에는 넣지 않는다. waist 토크 행은 17 관절 모델 위에서 이미 전 관절에 걸린다 — 왼팔 반력을 담는지는 테스트로 확인한다. 착수 전 결정 D1 – D13 은 끝났다 ([착수 분석](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6216709591) · [계획 검토](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6217491550) · [계획 검토 2](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6229412753) 와 그 아래 결정 코멘트, 2026-10-16 · 17; 검토가 고친 것 — docking 의 전신 항은 정지 구간에도, 항은 군별 `w_vel` · `w_rest` 로 역할 이름 없이, 사슬 밖 관절을 읽는 항은 plan 밖 군의 rest 가중을 요구, `nlp.core` 는 전신 키를 거부, docking 의 각운동량 계수는 시작 궤적에서 고정 (SQP 의 수렴 계약), 군별 $E$ 의 키 · 생성 · 배치 규칙, 단계 순서는 배선 → 군별 $E$ → 항, 판별 논리는 `SyntheticTree` 위에): "거의 영향 없음" 은 가중 + 위상 스케줄로 지키고 (사전적 처리는 `[선택]` 그대로 미구현), 판정은 같은 입력에서 전신 가중 0 대비 포구 노드 값의 차 — 위치 ≤ 1 mm · 접근축 ≤ 1° · 상대속도 ≤ 0.02 m/s, 각운동량은 왼팔 고정 대비 줄어든다 (크기는 기록). 17 관절 시간은 기록만 한다 (판정은 E3-F07). 노드당 토크 slack 은 이 feature 밖 ([#857](https://github.com/hyujun/rtc-framework/issues/857)) | 선행 모두 끝 | 다음 — 착수 지시 대기 |
-| E3-F03 | [#642](https://github.com/hyujun/rtc-framework/issues/642) | 충돌 제약 — capsule 모델 (신규 코어) 과 MPC 제약 행 (자기충돌 · 공–왼팔 거리) | E3-F02 | 대기 |
-| E3-F04 | [#643](https://github.com/hyujun/rtc-framework/issues/643) | MPC ↔ CLIK 계약의 전신 확장 — 왼손 FK, 한계 여유, 17 관절 구간의 RT 평가 (payload 관절 용량은 #827 이 올렸다 — 끝). 구간이 만든 desired value 의 소비자는 `demo_dualarm_controller` 다. 단일 팔 계약은 `ID_INDEX.md` MD-36 · `ref/L7_supervisor.md` §4.3a. E2-F04 가 넣은 것: CLIK 의 자세 속도 feedforward (`qd_posture_ff`) 와 관절군별 자세 과제 — 전신 구간의 $\dot q_{ref}$ 는 그 입력으로 간다 | E1-F08 (끝), E2-F04 (끝), E3-F02 (브랜치를 나눴다 — [#641 D8](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6216709591)) | 대기 |
+| E3-F03 | [#642](https://github.com/hyujun/rtc-framework/issues/642) | 충돌 제약 — capsule 모델 (신규 코어) 과 MPC 제약 행 (자기충돌 · 공–왼팔 거리) | E3-F02 (끝) | 대기 |
+| E3-F04 | [#643](https://github.com/hyujun/rtc-framework/issues/643) | MPC ↔ CLIK 계약의 전신 확장 — 왼손 FK, 한계 여유, 17 관절 구간의 RT 평가 (payload 관절 용량은 #827 이 올렸다 — 끝). 구간이 만든 desired value 의 소비자는 `demo_dualarm_controller` 다. 단일 팔 계약은 `ID_INDEX.md` MD-36 · `ref/L7_supervisor.md` §4.3a. E2-F04 가 넣은 것: CLIK 의 자세 속도 feedforward (`qd_posture_ff`) 와 관절군별 자세 과제 — 전신 구간의 $\dot q_{ref}$ 는 그 입력으로 간다 | E1-F08 (끝), E2-F04 (끝), E3-F02 (끝 — 군 · 전신 항의 키는 formulation §14) | 다음 |
 | E3-F05 | [#644](https://github.com/hyujun/rtc-framework/issues/644) | G1 통합 — supervisor · 손 시퀀서 · vision sim profile (`mode: mpc` 의 확장) | E3-F03, E3-F04, E2-F05 (끝) | 대기 |
 | E3-F06 | [#645](https://github.com/hyujun/rtc-framework/issues/645) | 로그 · plot_rtc_log · demo_controller_gui — dual arm 열. 항별 비용 분해는 코어 변경이라 아직 없다. E2-F06 · F07 에서 넘어온 것: GUI 의 `g1_p1b` profile 과 tree 군의 관절 묶음, 컨트롤러 YAML 에서 만드는 gain 행, CSV 꼬리로 읽는 상태 줄 (`demo_dualarm_controller` 에는 상태 토픽이 없다 — G1 포구 컨트롤러의 상태를 무엇으로 보일지는 이 feature 가 정한다. `rtc_msgs` 를 고치면 E-3), 열 이름에서 과제 · 관절을 읽는 plot 의 helper 는 [#645 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/645#issuecomment-6054618892) | E3-F05 | 대기 |
 | E3-F07 | [#646](https://github.com/hyujun/rtc-framework/issues/646) | 평가 — G1 sim 포구 시행 · 예측 격자 sweep · waist · 왼팔 고정 대조 · 기존 로봇 회귀 | E3-F06 | 대기 |
@@ -118,15 +117,14 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `feat/catching-mpc-wholebody-terms` | E3-F02 | 두 코어의 전신 항 — 코어 둘을 각각 100 줄 넘게 고치는 code review 단위. E3-F04 와 묶지 않는다 ([#641 D8](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6216709591), 2026-10-16): 고치는 파일이 겹치지 않고, 계약의 sanity check 는 merge 된 코어의 해를 입력으로 쓰면 된다 |
-| `feat/catching-mpc-clik-contract` | E3-F04 | MPC ↔ CLIK 계약의 전신 확장 — `integrated_bringup` 의 RT · 왼손 FK · 한계 여유. E3-F02 가 `main` 에 들어간 뒤 |
+| `feat/catching-mpc-clik-contract` | E3-F04 | MPC ↔ CLIK 계약의 전신 확장 — `integrated_bringup` 의 RT · 왼손 FK · 한계 여유. 계약의 sanity check 는 E3-F02 의 해를 입력으로 쓴다 |
 | `feat/collision-capsule-core` | E3-F03 | 신규 수치 코어. code review 단위 |
 | `feat/g1-catch-controller` | E3-F05 | supervisor · 손 시퀀서 통합. E-STOP 경로를 건드리면 E-8 |
 | `feat/g1-catch-tooling-eval` | E3-F06, E3-F07 | 로그 · plot · GUI 와 평가. 평가가 새 로그 컬럼을 쓴다. **나누는 조건**: 평가 결과가 설계 결정을 바꾸면 결과 기록을 `docs/` 브랜치로 분리한다 |
 
 **순서 — E1.** 남은 feature 브랜치는 없다 (§1). feature 번호 없는 남은 단독 이슈는 보류 중인 #715 하나다 (§5 의 "mpc planner · catching 의 남은 일").
 
-**순서 — E3.** E3-F02 (`feat/catching-mpc-wholebody-terms`) → E3-F04 (`feat/catching-mpc-clik-contract`) → E3-F03 → E3-F05 → E3-F06 · F07 (착수 조건인 E2 · E1-F07 · #827 과 E3-F01 은 끝났다 — MD-47, `ID_INDEX.md` §3). E3-F02 앞에 두었던 #819 는 끝났다 (§5). 병행은 서로 다른 파일을 고치는 브랜치끼리만 한다. 그 앞에 두었던 `mpc` 의 법칙을 고치는 단독 이슈 (#834 · #716) 도 끝났다 (§5).
+**순서 — E3.** E3-F04 (`feat/catching-mpc-clik-contract`) → E3-F03 → E3-F05 → E3-F06 · F07 (착수 조건인 E2 · E1-F07 · #827 과 E3-F01 · F02 는 끝났다 — MD-47, `ID_INDEX.md` §3). E3-F02 앞에 두었던 #819 는 끝났다 (§5). 병행은 서로 다른 파일을 고치는 브랜치끼리만 한다. 그 앞에 두었던 `mpc` 의 법칙을 고치는 단독 이슈 (#834 · #716) 도 끝났다 (§5).
 
 ### 게이트 · escalation
 
@@ -145,11 +143,10 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 |---|---|---|
 | MD-14 | CLIK 의 충돌 damper 는 선택 항이고 기본 꺼짐이다 (기존 로봇의 golden 회귀를 지키기 위해). E3-F03 의 거리 코어 뒤에 넣는다. 같은 결정의 제동 거리 한계와 오차 되먹임 상한은 E2-F04 가 넣었다 (`ID_INDEX.md` MD-14) | E3-F03 뒤 |
 | MD-86 | `sim_g1_p1b` 의 `enable_mpc` 는 CPU layout 만 고른다. G1 의 포구 컨트롤러가 오면 그 기본값을 그 feature 에서 다시 정한다 (E2-F05 는 바꾸지 않았다) | E3-F05 |
-| MD-12 | 각운동량 항은 유지한다 — 목적은 왼팔의 운동 생성과 floating base 확장이고, 효과는 포구 성공률이 아니라 각운동량 변화율의 크기로 판정한다 | E3-F02 |
-| MD-13 | 토크는 1차까지 선형화하고 토크 · 자기충돌 행에는 slack 을 둔다. 위치 · 속도 한계, 종단 등식, trust region, 공–왼팔 행은 hard 다. 동역학은 손을 기준 자세로 잠근 축소 모델로 계산한다 | E3-F02 · F03 |
-| MD-46 | 설계는 formulation §1.3 하나다. g1_p1b 는 같은 코어에 dual arm · waist 전용 항 (waist 억제, 왼팔 rest, 각운동량, 자기충돌, 공–왼팔, waist 토크 행 · counter-swing, 관절군별 move blocking) 을 더한다. **편차의 뜻이 바뀌었다 (D7, 2026-10-13)**: 포구 후보 ($t_c$) 는 G1 구성에서도 탐색이 고른다 — 탐색 모델은 waist + 오른팔 사슬이고 전신 항은 구간에만 들어가 후보의 순위에 들어가지 않는다. formulation 의 "후보마다 §1.3 의 QP 를 푸는 바깥 루프" 는 구현하지 않는 설계로 남긴다 (D1′) | E1-F14 (탐색 코어 — 끝) · F16 (계획기가 부른다 — 끝) · E3-F01 (모델 둘 — 끝) · F02 (전신 항) |
+| MD-12 | 각운동량 항은 유지한다 — 목적은 왼팔의 운동 생성과 floating base 확장이고, 효과는 포구 성공률이 아니라 각운동량 변화율의 크기로 판정한다 (항은 E3-F02 가 넣었다) | E3-F07 |
+| MD-13 | 토크는 1차까지 선형화하고 토크 · 자기충돌 행에는 slack 을 둔다. 위치 · 속도 한계, 종단 등식, trust region, 공–왼팔 행은 hard 다. 동역학은 손을 기준 자세로 잠근 축소 모델로 계산한다 (토크 쪽은 E3-F02 까지 그대로 — 17 관절 모델) | E3-F03 |
+| MD-46 | 설계는 formulation §1.3 하나다. g1_p1b 는 같은 코어에 dual arm · waist 전용 항 (waist 억제, 왼팔 rest, 각운동량, 자기충돌, 공–왼팔, waist 토크 행 · counter-swing, 관절군별 move blocking) 을 더한다. **편차의 뜻이 바뀌었다 (D7, 2026-10-13)**: 포구 후보 ($t_c$) 는 G1 구성에서도 탐색이 고른다 — 탐색 모델은 waist + 오른팔 사슬이고 전신 항은 구간에만 들어가 후보의 순위에 들어가지 않는다. formulation 의 "후보마다 §1.3 의 QP 를 푸는 바깥 루프" 는 구현하지 않는 설계로 남긴다 (D1′) | E1-F14 (탐색 코어 — 끝) · F16 (계획기가 부른다 — 끝) · E3-F01 (모델 둘 — 끝) · F02 (전신 항 — 끝) |
 | MD-47 | E3 의 착수 조건은 E2 (g1_p1b 준비) 와 E1-F07 (코어) 이다. G-1 은 조건이 아니다 | E3 |
-| MD-49 | 코어는 비용 · 제약을 항 단위로 조립하고 관절군별 move blocking 행렬 $E$ 의 자리만 둔다. 다관절군 일반화는 E3 에서 한다 | E3-F02 |
 
 ## 5. 아직 정하지 않은 것
 
@@ -157,7 +154,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 **남은 feature 의 결정**
 
-- [#641](https://github.com/hyujun/rtc-framework/issues/641) — E3-F02: 남은 것은 안 B (`nlp` 에 전신 항) 로 옮길지의 **문턱** 하나다 — E3-F02 의 완료 코멘트에서 잰 $t_{17}$ 을 들고 제안해 확정하고 (초안: 탐색 수용 후보의 첫 구간이 전신 쪽 사유로 보류되는 몫 ≤ 10 %, 포구 노드의 벗어남 ≤ 허용 폭, $t_{10}+t_{17}\le\Delta_m$), E3-F07 이 잰다. 메커니즘 · 허용 폭 · G1 의 `r_tau` (군별 가중, G1 탐색 block 은 0) · 관절군 선언 · 군별 $E$ 의 범위 (두 코어) · 시간 항 (기록) · 브랜치 (E3-F04 와 분리) 는 2026-10-16 에 정했다 — [착수 분석](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6216709591) 과 그 아래 결정 코멘트. 사슬에만 의존하는 항을 탐색에도 켜는 것은 하지 않는다 (탐색은 운동학만 — #640 D8 과 같은 뜻)
+- [#646](https://github.com/hyujun/rtc-framework/issues/646) — E3-F07: 안 B (`nlp` 에 전신 항) 로 옮길지의 **문턱** (D17 — E3-F02 가 [완료 코멘트](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6231319410) 에서 잰 시간과 함께 넘긴 결정, [#646 의 결정 요청](https://github.com/hyujun/rtc-framework/issues/646#issuecomment-6231320420)). 사슬에만 의존하는 항을 탐색에도 켜는 것은 하지 않는다 (탐색은 운동학만 — #640 D8 과 같은 뜻)
 - [#642](https://github.com/hyujun/rtc-framework/issues/642) — E3-F03: 충돌 제약 — capsule 모델 · 자기충돌 · 공–왼팔 거리
 - [#645](https://github.com/hyujun/rtc-framework/issues/645) — E3-F06: 로그 · plot_rtc_log · demo_controller_gui (dual arm 열) — G1 포구 컨트롤러의 상태를 GUI 에 무엇으로 보일지 (E2-F06 은 상태 토픽 없이 세션 CSV 의 꼬리를 읽었다 — GUI 가 컨트롤러와 같은 머신에 있어야 한다. `rtc_msgs/CatchingState` 에 열을 더하면 E-3)
 
@@ -188,13 +185,13 @@ E1 의 끝난 일 (E1-F19 · F20 · F21, T [#803](https://github.com/hyujun/rtc-
 **mpc planner · catching 의 남은 일**
 
 - [#715](https://github.com/hyujun/rtc-framework/issues/715) — integrated_bringup: 세 군 (두 번째 손) 지원 — 보류
-- [#857](https://github.com/hyujun/rtc-framework/issues/857) — rtc_controllers: `mpc` 의 토크 slack 을 노드당 하나로 (#716 D6 b) — 착수 조건: E3-F02 의 17 관절 시간 기준선; slack 차원의 변형 측정은 그 이슈의 1 단계
+- [#857](https://github.com/hyujun/rtc-framework/issues/857) — rtc_controllers: `mpc` 의 토크 slack 을 노드당 하나로 (#716 D6 b) — 착수 조건 (E3-F02 의 17 관절 시간 기준선) 충족 — [기준선](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6230796468); slack 차원의 변형 측정은 그 이슈의 1 단계
 
 **`mpc planner · catching 의 남은 일` 의 순서 (권장).** 이 문서에서 남은 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이다. 이슈에 정해진 시기 안에서 고른 순서다.
 
 | 순서 | 이슈 | 착수 조건 | 브랜치 | 착수 때 정할 것 |
 |---|---|---|---|---|
-| 1 | #857 | E3-F02 의 17 관절 시간 기준선 (차원 · 활성 행 · 반복당 비용, 재현 명세) 이 #641 에 적힌 뒤 — slack 차원을 줄인 변형은 #857 자신의 1 단계다 (`mpc` 의 `rho_tau = 0` 은 차원을 바꾸지 않는다). E3-F02 와 같은 코어 (`MpcSegmentCore`) 를 고치므로 병행하지 않는다 | 착수 때 확정 | 측정의 판정 기준 (timing fixture · sim 의 가드) 을 던지기 전에 고정 |
+| 1 | #857 | 충족 — E3-F02 의 17 관절 시간 기준선이 [#641](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6230796468) 에 있다 (`n_in` 이 그대로인 변형만 — slack 차원을 줄인 변형은 #857 자신의 1 단계다). 다음 E3 브랜치 (E3-F04) 와 고치는 파일이 겹치지 않는다 | 착수 때 확정 | 측정의 판정 기준 (timing fixture · sim 의 가드) 을 던지기 전에 고정 |
 | — | #715 | 보류 — 착수 조건이 없다 | — | — |
 
 - **묶지 않는 이유.** `mpc` 의 법칙을 한 PR 에서 두 곳 바꾸면 측정이 원인을 가르지 못한다. PR 을 쌓지 않으므로 같은 파일을 고친다는 것은 묶을 이유가 아니다.
