@@ -23,7 +23,9 @@ python owns is everything those functions take as input and leave as output:
   no runtime producer before S6.2, so it is computed here and handed over;
 - whether p_stop is inside the workspace. The runtime search has no such gate (its catch
   box was removed, 2026-10-09), so the bound is this map's own: the reach sphere and the
-  floor — the ones the kinematic map used;
+  floor — the ones the kinematic map used. The sphere's centre and the world the floor is
+  level in are the map's own frames (its ``provenance.yaml``, ``read_map_frames``), not
+  arguments;
 - a second, PROVISIONAL reach layer (D-16 revision, L3 §4.3). The shipped
   acceleration limit is one constant box from a worst-sign sufficient condition.
   This layer instead asks whether THIS move fits the torque limits: all joints
@@ -67,7 +69,14 @@ from rtc_tools.analysis.catch_speed_budget import (
     dls_unit_velocity,
     extra_frame_from_params,
 )
-from rtc_tools.analysis.catchability_map import distribution
+from rtc_tools.analysis.catchability_map import (
+    RETIRED_MAP_FRAME_FLAGS,
+    MapFrames,
+    add_retired_flags,
+    check_map_world_heights,
+    distribution,
+    read_map_frames,
+)
 from rtc_tools.analysis.derive_accel_limits import (
     arm_spec_from_params,
     load_robot_params,
@@ -285,9 +294,7 @@ def run_gate_judge(
 
 def stop_inside_workspace(
     p_stop_model: np.ndarray,
-    p_catch_model_z: float,
-    p_catch_world_z: float,
-    reach_centre: np.ndarray,
+    frames: MapFrames,
     reach_m: float,
     floor_world_z_m: float,
 ) -> bool:
@@ -296,14 +303,14 @@ def stop_inside_workspace(
     The runtime search judges neither the catch point nor the stopping point by
     position (its catch box was removed, 2026-10-09).
 
-    Model world and world differ by a yaw and a translation only, so heights
-    transfer by difference.
+    The sphere is about the arm base and the floor is level in the WORLD, so the
+    stop's height is taken through the map's world (which may be tilted against
+    the model root), not read off the model's z.
     """
     if not np.all(np.isfinite(p_stop_model)):
         return False
-    inside_sphere = float(np.linalg.norm(p_stop_model - reach_centre)) <= reach_m
-    stop_world_z = p_catch_world_z + (float(p_stop_model[2]) - p_catch_model_z)
-    return inside_sphere and stop_world_z >= floor_world_z_m
+    inside_sphere = float(np.linalg.norm(p_stop_model - frames.reach_centre)) <= reach_m
+    return inside_sphere and frames.world_z(p_stop_model) >= floor_world_z_m
 
 
 def layer_reasons(
@@ -572,7 +579,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--time-margin-s", type=float, required=True, help="planner.search.grid.time.margin"
     )
-    ap.add_argument("--arm-base-frame", required=True, help="centre of the reach sphere")
+    add_retired_flags(ap, RETIRED_MAP_FRAME_FLAGS)  # the reach centre is the map's
     ap.add_argument("--max-reach-m", type=float, required=True)
     ap.add_argument("--floor-world-z-m", type=float, required=True)
     ap.add_argument(
@@ -590,10 +597,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fk-tolerance-m", type=float, default=DEFAULT_FK_TOLERANCE_M)
     args = ap.parse_args(argv)
 
-    from rtc_tools.analysis.catchability_map import (  # noqa: PLC0415
-        find_judge,
-        frame_placement_in_model_world,
-    )
+    from rtc_tools.analysis.catchability_map import find_judge  # noqa: PLC0415
 
     params = load_robot_params(list(args.robot_config))
     spec = arm_spec_from_params(params, args.group)
@@ -622,7 +626,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dls_damping is not None
         else load_unit_speed_damping(controller_config, args.controller, args.overlay)
     )
-    reach_centre = frame_placement_in_model_world(urdf_text, args.arm_base_frame)[:3, 3]
+    frames = read_map_frames(args.map_dir)
 
     with (args.map_dir / "throw_summary.csv").open() as handle:
         throws = {int(r["throw_index"]): r for r in csv.DictReader(handle)}
@@ -635,6 +639,7 @@ def main(argv: list[str] | None = None) -> int:
     accepted = [r for r in accepted if int(r["seed_id"]) == seed_id]
     if not accepted:
         raise SystemExit("the map has no accepted candidate for that wait pose — nothing to gate")
+    check_map_world_heights(frames, accepted)
     seeds_csv = args.map_dir / "seeds.csv"
     seeds = {}
     for line in seeds_csv.read_text().splitlines():
@@ -688,12 +693,7 @@ def main(argv: list[str] | None = None) -> int:
         t_torque = torque_reach_time(arm, q_wait, item.q_star, qd_plan, tau_limit)
         p_stop = np.array([float(verdict[f"stop_gmin_{a}"]) for a in "xyz"])
         stop_ok = verdict["stop_gmin_valid"] in _TRUE and stop_inside_workspace(
-            p_stop,
-            float(row["p_model_z"]),
-            float(row["p_world_z"]),
-            reach_centre,
-            args.max_reach_m,
-            args.floor_world_z_m,
+            p_stop, frames, args.max_reach_m, args.floor_world_z_m
         )
         budget = float(verdict["lead_s"]) - args.time_margin_s
         commit_slack = float(row["t_c_s"]) - settings.first_plan_s - commit_lead
@@ -769,6 +769,7 @@ def main(argv: list[str] | None = None) -> int:
         "commit_lead_s": commit_lead,
         "min_flight_time_s": settings.first_plan_s + commit_lead,
         "seed_id": seed_id,
+        "arm_base_frame": frames.arm_base_frame,  # the reach centre, from the map
         "dls_damping": dls_damping,
         "wait_pose": [float(x) for x in seeds[seed_id]],
         "grid_throws": len(throws),

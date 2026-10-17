@@ -29,6 +29,7 @@ import test_catch_speed_budget as base  # noqa: E402
 from rtc_tools.analysis import (
     catch_gate_map as cgm,  # noqa: E402
     catch_speed_budget as csb,  # noqa: E402
+    catchability_map as cm,  # noqa: E402
 )
 
 CONTROLLER = "demo_catching_controller"
@@ -189,15 +190,37 @@ def test_gate_inputs_hand_over_what_the_dls_velocity_achieves_not_what_was_asked
 # ── workspace bound, reasons, aggregation ─────────────────────────────────────
 
 
+def _frames(model_world_t_world) -> cm.MapFrames:
+    """The reach sphere about (0, 0, 0.3) of the model world."""
+    return cm.MapFrames(
+        arm_base_frame="base",
+        model_world_t_base=cm.make_transform(np.eye(3), (0.0, 0.0, 0.3)),
+        model_world_t_world=np.asarray(model_world_t_world, dtype=float),
+    )
+
+
 def test_stop_bound_is_the_reach_sphere_and_the_floor_in_world_height():
-    centre = np.array([0.0, 0.0, 0.3])
-    inside = {"reach_centre": centre, "reach_m": 1.0, "floor_world_z_m": 0.1}
-    # catch point: model z 0.5 is world z 0.9 (model world sits 0.4 m below world)
-    assert cgm.stop_inside_workspace(np.array([0.5, 0.0, 0.5]), 0.5, 0.9, **inside)
-    assert not cgm.stop_inside_workspace(np.array([1.2, 0.0, 0.5]), 0.5, 0.9, **inside)
-    # 0.85 m below the catch point is world z 0.05: inside the sphere, under the floor
-    assert not cgm.stop_inside_workspace(np.array([0.0, 0.0, -0.35]), 0.5, 0.9, **inside)
-    assert not cgm.stop_inside_workspace(np.array([np.nan, 0.0, 0.5]), 0.5, 0.9, **inside)
+    # model z 0.5 is world z 0.9: the model world sits 0.4 m below the world
+    frames = _frames(cm.make_transform(np.eye(3), (0.0, 0.0, -0.4)))
+    inside = {"frames": frames, "reach_m": 1.0, "floor_world_z_m": 0.1}
+    assert cgm.stop_inside_workspace(np.array([0.5, 0.0, 0.5]), **inside)
+    assert not cgm.stop_inside_workspace(np.array([1.2, 0.0, 0.5]), **inside)
+    # model z -0.35 is world z 0.05: inside the sphere, under the floor
+    assert not cgm.stop_inside_workspace(np.array([0.0, 0.0, -0.35]), **inside)
+    assert not cgm.stop_inside_workspace(np.array([np.nan, 0.0, 0.5]), **inside)
+
+
+def test_stop_bound_takes_the_height_through_a_tilted_world():
+    """Rolled 0.6 rad about x: the model's z is not the world's height."""
+    model_world_t_world = cm.make_transform(cm.rotation_x(0.6), (0.0, 0.0, -0.4))
+    frames = _frames(model_world_t_world)
+    catch_w, stop_w = np.array([0.0, 0.0, 0.9]), np.array([0.0, 0.5, 0.05])
+    catch_m = cm.transform_point(catch_w, model_world_t_world)
+    stop_m = cm.transform_point(stop_w, model_world_t_world)
+    # not vacuous: carried by model-z difference, the stop would clear the 0.1 m floor
+    assert catch_w[2] + (stop_m[2] - catch_m[2]) > 0.1
+    assert not cgm.stop_inside_workspace(stop_m, frames, reach_m=2.0, floor_world_z_m=0.1)
+    assert cgm.stop_inside_workspace(stop_m, frames, reach_m=2.0, floor_world_z_m=0.0)
 
 
 def judged(reason="none", gamma_ok=True, stop_valid=True, invalid=False, undetermined=False):
@@ -349,7 +372,7 @@ def _write_run(
     )
     keep = {"--robot-config", "--group", "--map-dir", "--out-dir", "--urdf", "--velocity-source",
             "--eta-v", "--eta-tau", "--rotor-inertia", "--rotor-inertia-source",
-            "--arm-base-frame", "--max-reach-m", "--floor-world-z-m", "--detection-s",
+            "--max-reach-m", "--floor-world-z-m", "--detection-s",
             "--latency-s", "--close-total-s", "--arm-delay-s"}  # fmt: skip
     pairs = dict(zip(argv[0::2], argv[1::2], strict=True))
     pairs = {k: v for k, v in pairs.items() if k in keep}
@@ -654,3 +677,9 @@ def test_an_overlay_still_writing_an_old_key_is_refused(tmp_path):
     overlay = _overlay(tmp_path / "ov.yaml", {"planner": {"gamma": {"unit_speed_damping": 0.07}}})
     with pytest.raises(RenamedCatchingKeyError, match="ov.yaml"):
         cgm.load_unit_speed_damping(path, CONTROLLER, [overlay])
+
+
+def test_the_reach_centre_is_the_maps_not_an_argument(tmp_path, arm):
+    argv = _write_run(tmp_path, arm)
+    with pytest.raises(SystemExit, match=r"--arm-base-frame is gone \(#779\) — .*provenance"):
+        cgm.main([*argv, "--arm-base-frame", "base"])

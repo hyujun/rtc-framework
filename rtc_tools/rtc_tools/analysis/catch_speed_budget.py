@@ -34,9 +34,12 @@ gate chain (rollout, reach time, stopping distance) has run.
 
 Frames. The judge's ``p_model`` / ``v_model`` columns are in the MODEL WORLD
 (the URDF root), which is what ``LOCAL_WORLD_ALIGNED`` Jacobians use, so they
-are consumed as they are. The height floor is a WORLD quantity and uses the
-``*_world`` columns. Nothing robot-specific is baked in: joints, limits, the
-extra frame, and the reach centre all come from the robot config and the URDF.
+are consumed as they are. The height floor is a WORLD quantity: a candidate's
+clearance is its ``p_world_z`` column, and a stroke's descent is measured along
+world +z through the map's own frames (``provenance.yaml``, ``read_map_frames`` —
+the world may be tilted against the model root), which also give the reach
+centre. Nothing robot-specific is baked in: joints, limits and the extra frame
+come from the robot config and the URDF, the frames from the map.
 
 Self-check. FK of the catch frame at every accepted q* must land on the
 candidate's ``p_model`` (the judge accepted it within its own tolerance). A
@@ -255,12 +258,16 @@ def stroke_to_boundary(
     centre: np.ndarray,
     reach_m: float,
     height_above_floor_m: float,
+    *,
+    world_up: np.ndarray,
 ) -> float:
     """Distance from ``point`` along ``direction`` to the reach sphere or the height floor.
 
+    ``point``, ``direction`` and ``centre`` are in the model world;
     ``height_above_floor_m`` is the point's clearance over the floor (a WORLD
-    quantity; ``direction[2]`` is the same in both frames because only a yaw and
-    a translation separate them). 0 when the point is already outside.
+    quantity) and ``world_up`` is world +z in model-world coordinates
+    (``MapFrames.world_up``), so the descent per metre of stroke is
+    ``-world_up · direction``. 0 when the point is already outside.
     """
     rel = np.asarray(point, dtype=float) - np.asarray(centre, dtype=float)
     b = float(rel @ direction)
@@ -268,8 +275,9 @@ def stroke_to_boundary(
     if disc < 0.0 or height_above_floor_m < 0.0:
         return 0.0
     travel = -b + math.sqrt(disc)
-    if direction[2] < 0.0:
-        travel = min(travel, height_above_floor_m / -float(direction[2]))
+    climb = float(np.asarray(world_up, dtype=float) @ direction)
+    if climb < 0.0:
+        travel = min(travel, height_above_floor_m / -climb)
     return max(0.0, travel)
 
 
@@ -497,6 +505,7 @@ class BudgetSettings:
     eta_v: float
     eta_tau: float
     reach_centre: np.ndarray  # model world
+    world_up: np.ndarray  # world +z in the model world (MapFrames.world_up)
     reach_m: float
     floor_world_z_m: float
     lead_s: float  # time before t_c that is not available for the ramp
@@ -516,8 +525,12 @@ def budget_candidate(arm: ArmKinematics, row: Mapping[str, str], cfg: BudgetSett
     lp, qd_dir = directional_speed_lp(rest["jp"], rest["jw"], v_hat, cfg.eta_v * cfg.qd_max)
     dls = directional_speed_dls(rest["jp"], rest["jw"], v_hat, cfg.eta_v * cfg.qd_max)
     clearance = float(row["p_world_z"]) - cfg.floor_world_z_m
-    s_before = stroke_to_boundary(p, -v_hat, cfg.reach_centre, cfg.reach_m, clearance)
-    s_after = stroke_to_boundary(p, v_hat, cfg.reach_centre, cfg.reach_m, clearance)
+    s_before = stroke_to_boundary(
+        p, -v_hat, cfg.reach_centre, cfg.reach_m, clearance, world_up=cfg.world_up
+    )
+    s_after = stroke_to_boundary(
+        p, v_hat, cfg.reach_centre, cfg.reach_m, clearance, world_up=cfg.world_up
+    )
     tau_limit = cfg.eta_tau * cfg.tau_max
     speeds = np.append(np.arange(0.0, lp.v_dir_max, cfg.speed_step_m_s), lp.v_dir_max)
     accel, decel = [], []
@@ -632,6 +645,13 @@ def _floats(text: str) -> list[float]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from rtc_tools.analysis.catchability_map import (  # noqa: PLC0415
+        RETIRED_MAP_FRAME_FLAGS,
+        add_retired_flags,
+        check_map_world_heights,
+        read_map_frames,
+    )
+
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--robot-config", type=Path, nargs="+", required=True)
     ap.add_argument("--group", required=True, help="device group of the arm (devices.<group>)")
@@ -656,7 +676,7 @@ def main(argv: list[str] | None = None) -> int:
         "none, and leaving it out overstates every acceleration — pass zeros to say so",
     )
     ap.add_argument("--rotor-inertia-source", required=True, help="file:line or datasheet")
-    ap.add_argument("--arm-base-frame", required=True, help="centre of the reach sphere")
+    add_retired_flags(ap, RETIRED_MAP_FRAME_FLAGS)  # the reach centre is the map's
     ap.add_argument("--max-reach-m", type=float, required=True)
     ap.add_argument("--floor-world-z-m", type=float, required=True)
     ap.add_argument("--detection-s", type=float, required=True)
@@ -680,10 +700,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fk-tolerance-m", type=float, default=DEFAULT_FK_TOLERANCE_M)
     args = ap.parse_args(argv)
 
-    from rtc_tools.analysis.catchability_map import (  # noqa: PLC0415
-        frame_placement_in_model_world,
-    )
-
     params = load_robot_params(list(args.robot_config))
     spec = arm_spec_from_params(params, args.group)
     urdf_text, urdf_label = resolve_urdf_text(params, args.urdf)
@@ -695,6 +711,7 @@ def main(argv: list[str] | None = None) -> int:
         args.catch_frame,
     )
     qd_max = spec.v_max if args.velocity_source == "config" else arm.model_velocity_limits()
+    frames = read_map_frames(args.map_dir)
     lead = min_flight_time(
         args.detection_s, args.latency_s, args.close_total_s, args.arm_delay_s, args.time_margin_s
     )
@@ -703,7 +720,8 @@ def main(argv: list[str] | None = None) -> int:
         tau_max=np.asarray(spec.tau_max, dtype=float),
         eta_v=args.eta_v,
         eta_tau=args.eta_tau,
-        reach_centre=frame_placement_in_model_world(urdf_text, args.arm_base_frame)[:3, 3],
+        reach_centre=frames.reach_centre,
+        world_up=frames.world_up,
         reach_m=args.max_reach_m,
         floor_world_z_m=args.floor_world_z_m,
         # only detection + latency eat into the RAMP; the closing time runs in parallel with it
@@ -716,6 +734,7 @@ def main(argv: list[str] | None = None) -> int:
         accepted = [r for r in csv.DictReader(handle) if r["accepted"] in _TRUE]
     if not accepted:
         raise SystemExit("the map has no accepted candidate — nothing to budget")
+    check_map_world_heights(frames, accepted)
     rows = []
     for row in accepted:
         rec = budget_candidate(arm, row, cfg)
@@ -743,6 +762,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "tool": "rtc_tools.analysis.catch_speed_budget",
         "map_dir": str(args.map_dir),
+        "arm_base_frame": frames.arm_base_frame,  # the reach centre, from the map
         "urdf": urdf_label,
         "arm_joints": spec.joint_names,
         "velocity_source": args.velocity_source,

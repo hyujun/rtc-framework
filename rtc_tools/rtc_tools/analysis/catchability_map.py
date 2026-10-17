@@ -25,8 +25,8 @@ The parts that are pure functions of numbers:
    (SIM WORLD, the ``world`` below): exactly its throws, each keeping its
    ``throw_id`` as the ``throw_index`` of the output CSVs, which is the key
    ``catch_gate_map --map-dir`` carries on. A throw with spin is refused (item 1).
-3. **Frame conversion** — world-frame points and vectors into the arm base
-   frame, with the transform supplied by the caller.
+3. **Frame conversion** — world-frame points and vectors into the model world,
+   through the robot config's ``scene_world`` frame (below).
 4. **Candidate sampling** — the catch instants taken out of one flight, filtered
    by flight time and by a reachability pre-filter the caller supplies.
 5. **Aggregation** — per-throw outcome, reason histogram, w₅/w₆ and θ
@@ -47,10 +47,11 @@ world→base being the identity does not make world→*model world* the identity
 L3 §4.2 (frame convention) has the per-robot facts. Feeding
 world coordinates straight to the judge is therefore the "ball arrives from
 behind the arm" trap, with every number still plausible. So this module never
-takes "the" transform as one opaque matrix: the caller gives ``base_T_world``
-(measured), :func:`frame_placement_in_model_world` reads
-``model_world_T_base`` out of the model, and the two are composed. Nothing
-per-robot is embedded either way.
+takes "the" transform as one opaque matrix: ``base_T_world`` is the placement of
+the ``scene_world`` frame on its parent (the arm base frame),
+:func:`frame_placement_in_model_world` reads ``model_world_T_base`` out of the
+model, and the two are composed — exactly what the catching controller does
+with the same frame. Nothing per-robot is embedded either way.
 
 **Why the aerodynamic parameters have no defaults.** The simulator's drag
 coefficient lives in a ``constexpr`` preset table in C++
@@ -63,15 +64,20 @@ source label for each*, and :func:`build_provenance` writes those labels into
 the report. Radius and mass, which ARE exposed, are read from the YAML by
 :func:`ball_shape_from_config` instead of being passed in.
 
-**The caller owns the world-to-base transform.** A URDF that carries both a
-``base`` and a ``base_link`` frame may place the two at the same origin rotated
-180 degrees about z. Choosing the wrong one flips the downrange axis: the ball
-appears to arrive from behind the arm, and every number in the report stays
-plausible. Hence :func:`world_to_base` takes the transform as an argument and
-this module embeds no per-robot value — pass the transform measured for the
-robot at hand (same-q MuJoCo FK against Pinocchio FK). The design plan carried the
-wrong row for one robot profile until 2026-09-21 (a 180-degree turn counted
-twice), which is exactly why this is a parameter and not a constant.
+**The world is the robot config's, not an argument (#779).** A URDF that
+carries both a ``base`` and a ``base_link`` frame may place the two at the same
+origin rotated 180 degrees about z. Choosing the wrong one flips the downrange
+axis: the ball appears to arrive from behind the arm, and every number in the
+report stays plausible. The design plan carried the wrong row for one robot
+profile until 2026-09-21 (a 180-degree turn counted twice), and a hand-typed
+world beside the config is one more place for that to happen. So the CLI reads
+``urdf.extra_frames.scene_world`` from the ``--robot-config`` layers — the frame
+the controller's vision lane and ``scene_world`` task goals use, whose values
+were measured against each scene (same-q MuJoCo FK against Pinocchio FK) — and
+refuses to run without one (:func:`vision_frame_from_params`). The functions
+below still take the transform as an argument and embed no per-robot value.
+The map records the frames in its ``provenance.yaml``; the tools that read a
+map take them from there (:func:`read_map_frames`).
 """
 
 from __future__ import annotations
@@ -106,6 +112,7 @@ from rtc_tools.analysis.derive_accel_limits import (
     resolve_urdf_text,
 )
 from rtc_tools.utils.catching_keys import reject_renamed_keys
+from rtc_tools.utils.rotations import rpy_matrix
 
 # ── Physical constants that are NOT ball parameters ───────────────────────────
 
@@ -1060,12 +1067,128 @@ def world_to_base(
     coordinates: ``p_base = R p_world + t``. It may be a 4x4 or a
     ``(rotation, translation)`` pair.
 
-    **The caller owns this transform.** It is never inferred and never defaulted
-    per robot. Where a URDF offers two candidate base frames a 180-degree error
-    about z is silent — downrange flips sign and the map still looks sensible —
-    so pass the transform that was measured for the robot in hand.
+    It is never inferred and never defaulted per robot. Where a URDF offers two
+    candidate base frames a 180-degree error about z is silent — downrange flips
+    sign and the map still looks sensible — so pass the measured one (the CLI
+    reads it from ``scene_world``, :func:`vision_frame_from_params`).
     """
     return transform_point(point_w, base_t_world), transform_direction(vector_w, base_t_world)
+
+
+# ── The world: the robot config's scene_world frame ───────────────────────────
+
+# The model frame that is the sim scene's world (#779) — the catching
+# controller's vision world and the frame a ``scene_world`` task goal names.
+SCENE_WORLD = "scene_world"
+
+
+def vision_frame_from_params(params: Mapping, source: str) -> tuple[str, np.ndarray]:
+    """``(parent, parent_T_world 4×4)`` of the robot config's ``scene_world`` frame.
+
+    ``p_parent = R(rpy) p_world + xyz`` — the ``urdf.extra_frames`` convention,
+    ``R = Rz(yaw)·Ry(pitch)·Rx(roll)``. Composed with ``model_world_T_parent``
+    it is the transform the catching controller applies to every prediction.
+    A missing or provisional frame is refused: the controller's vision lane is
+    inert then (#779 V3), and guessing a world flips or shifts it silently.
+    ``source`` names the config in the refusal.
+    """
+    frames = (params.get("urdf") or {}).get("extra_frames") or {}
+    node = frames.get(SCENE_WORLD)
+    if not isinstance(node, Mapping):
+        raise SystemExit(
+            f"{source}: no urdf.extra_frames.{SCENE_WORLD} — the sim world → model world "
+            "composition cannot be read (the controller's vision lane is inert without it)"
+        )
+    # Absent means provisional, as the CM parses it.
+    if node.get("provisional", True) is not False:
+        raise SystemExit(
+            f"{source}: urdf.extra_frames.{SCENE_WORLD} is provisional — the controller does "
+            "not use it (its vision lane is inert), so neither does this tool"
+        )
+    try:
+        # Every key the CM requires (ParseExtraFrames refuses one without rpy).
+        parent = str(node["parent"])
+        xyz = [float(v) for v in node["xyz"]]
+        rpy = [float(v) for v in node["rpy"]]
+    except KeyError as exc:
+        raise SystemExit(f"{source}: urdf.extra_frames.{SCENE_WORLD} lacks {exc.args[0]}") from exc
+    if len(xyz) != 3 or len(rpy) != 3:
+        raise SystemExit(f"{source}: urdf.extra_frames.{SCENE_WORLD} xyz/rpy must be 3 values")
+    return parent, make_transform(rpy_matrix(rpy), xyz)
+
+
+# ── The frames a map was judged in, read back by the tools that consume it ────
+
+PROVENANCE_FILE = "provenance.yaml"
+
+
+@dataclass(frozen=True, eq=False)
+class MapFrames:
+    """The frames of a catchability map, as its ``provenance.yaml`` records them.
+
+    The tools that read a map (``catch_gate_map``, ``catch_speed_budget``) take
+    the reach centre and the world from here rather than from arguments of their
+    own: those would be a second statement of the frames the map was judged in,
+    free to disagree with it.
+    """
+
+    arm_base_frame: str
+    model_world_t_base: np.ndarray
+    model_world_t_world: np.ndarray
+
+    @property
+    def reach_centre(self) -> np.ndarray:
+        """The arm base origin in the model world — the centre of the reach sphere."""
+        return self.model_world_t_base[:3, 3].copy()
+
+    @property
+    def world_up(self) -> np.ndarray:
+        """World +z in model-world coordinates: ``d(world z) = world_up · d(p_model)``.
+
+        Not the model's +z in general — the scene world may be tilted against the
+        model root (``scene_world.rpy``), and a floor is level in the WORLD.
+        """
+        return invert_transform(self.model_world_t_world)[2, :3].copy()
+
+    def world_z(self, p_model: np.ndarray) -> float:
+        """World height of a model-world point."""
+        return float(transform_point(p_model, invert_transform(self.model_world_t_world))[2])
+
+
+def read_map_frames(map_dir: Path) -> MapFrames:
+    """The frames ``catchability_map`` wrote into ``<map_dir>/provenance.yaml``."""
+    path = Path(map_dir) / PROVENANCE_FILE
+    try:
+        frames = (yaml.safe_load(path.read_text()) or {})["provenance"]["frames"]
+        return MapFrames(
+            arm_base_frame=str(frames["arm_base_frame"]),
+            model_world_t_base=as_transform(frames["model_world_t_base"]),
+            model_world_t_world=as_transform(frames["model_world_t_world"]),
+        )
+    except OSError as exc:
+        raise SystemExit(f"{path}: {exc.strerror} — not a catchability_map output dir") from exc
+    except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+        raise SystemExit(
+            f"{path}: no usable provenance.frames ({exc}) — re-run catchability_map"
+        ) from exc
+
+
+def check_map_world_heights(
+    frames: MapFrames, rows: Iterable[Mapping[str, str]], tolerance_m: float = 1e-6
+) -> None:
+    """Refuse candidate rows whose ``p_world_z`` is not ``p_model`` through ``frames``.
+
+    The map writes both from one transform, so a mismatch means the rows and the
+    provenance come from different runs.
+    """
+    for row in rows:
+        p_model = np.array([float(row[f"p_model_{a}"]) for a in "xyz"])
+        miss = abs(frames.world_z(p_model) - float(row["p_world_z"]))
+        if not miss <= tolerance_m:
+            raise SystemExit(
+                f"candidate {row.get('id', '?')}: p_world_z is {miss * 1e3:.3f} mm off p_model "
+                "through the map's provenance.frames — the CSV and the provenance are not one run"
+            )
 
 
 # ── Provenance ────────────────────────────────────────────────────────────────
@@ -3429,6 +3552,31 @@ _GRID_AXIS_DEFAULTS: dict[str, tuple[float, ...]] = {
 }
 
 
+# Flags that stated the frames by hand (#779). Refused with the reason rather than
+# dropped: argparse would only say "unrecognized", and a script that still passes
+# one meant a world the run would no longer use.
+RETIRED_WORLD_FLAGS = {
+    "--world-yaw-deg": f"the world is urdf.extra_frames.{SCENE_WORLD} of --robot-config",
+    "--world-translation-m": f"the world is urdf.extra_frames.{SCENE_WORLD} of --robot-config",
+    "--arm-base-frame": f"the arm base frame is the parent of urdf.extra_frames.{SCENE_WORLD}",
+}
+# The map's consumers read the frames out of the map itself (read_map_frames).
+RETIRED_MAP_FRAME_FLAGS = {
+    "--arm-base-frame": f"the reach centre is read from the map's {PROVENANCE_FILE}",
+}
+
+
+def add_retired_flags(ap: argparse.ArgumentParser, flags: Mapping[str, str]) -> None:
+    """Make each flag of ``flags`` a refusal that names its replacement."""
+
+    class _Retired(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+            raise SystemExit(f"{option_string} is gone (#779) — {flags[option_string]}")
+
+    for flag in flags:
+        ap.add_argument(flag, nargs="*", action=_Retired, help=argparse.SUPPRESS)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="catchability_map",
@@ -3443,7 +3591,10 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         nargs="+",
         required=True,
-        help="shipped robot config YAML(s), later files override (e.g. _base.yaml sim.yaml)",
+        help="shipped robot config YAML(s), later files override (e.g. _base.yaml sim.yaml, then "
+        "a sim overlay). Their urdf.extra_frames.scene_world is the world the throws are in and "
+        "its parent the arm base frame — the composition the catching controller applies "
+        "(refused when absent or provisional, as the controller's vision lane is inert then)",
     )
     ap.add_argument(
         "--ball-config",
@@ -3459,14 +3610,6 @@ def main(argv: list[str] | None = None) -> int:
         help="urdf.sub_models key of the arm (default: the first one in the config)",
     )
     ap.add_argument("--catch-frame", default=DEFAULT_CATCH_FRAME)
-    ap.add_argument(
-        "--arm-base-frame",
-        required=True,
-        help="URDF frame this robot's CLIK config calls base_frame (its value in that "
-        "robot's controllers/*.yaml). The judge works in MODEL WORLD, which is the URDF model "
-        "root and NOT this frame — the two are composed, so naming it wrong is what flips "
-        "downrange",
-    )
     ap.add_argument("--urdf", type=Path, help="URDF/xacro override (default: urdf.package/path)")
     ap.add_argument(
         "--params",
@@ -3491,24 +3634,8 @@ def main(argv: list[str] | None = None) -> int:
         "--air-density-source", required=True, help="file:line the air density came from"
     )
 
-    # ── the world -> arm base transform: the caller owns it ──
-    ap.add_argument(
-        "--world-yaw-deg",
-        type=float,
-        default=0.0,
-        help="yaw of base_T_world about z [deg] (p_base = Rz(yaw) p_world + t). The CALLER owns "
-        "this: measure it with MuJoCo FK against Pinocchio FK at the same q. Default 0 is what "
-        "what both shipped robots need (L1 §1, L3 §4.2); whatever is used is recorded in the "
-        "provenance",
-    )
-    ap.add_argument(
-        "--world-translation-m",
-        type=float,
-        nargs=3,
-        default=(0.0, 0.0, 0.0),
-        metavar=("X", "Y", "Z"),
-        help="translation t of base_T_world [m] (see --world-yaw-deg)",
-    )
+    # ── the world: the robot config's scene_world, never an argument ──
+    add_retired_flags(ap, RETIRED_WORLD_FLAGS)
 
     # ── the throws: a grid over six axes, or a throw list ──
     ap.add_argument(
@@ -3517,8 +3644,8 @@ def main(argv: list[str] | None = None) -> int:
         help="judge the throws of a catching_throw_list/1 file (SIM WORLD, e.g. catch_search_map's "
         "throw_list.json) instead of a grid: exactly those throws, in file order, each keeping "
         "its throw_id as the throw_index of candidates.csv / throw_summary.csv — the key "
-        "catch_gate_map carries on. Give the same --world-yaw-deg / --world-translation-m the "
-        "list was made against. A throw with a non-zero omega is refused (no spin term here). "
+        "catch_gate_map carries on. Give the --robot-config layers the list was made against "
+        "(their scene_world is the list's world). A throw with a non-zero omega is refused (no spin term here). "
         "The six grid axes of throw_summary.csv are the entry's own when it carries all six "
         "(catch_search_map's lists do, and its --gate-map join is by those values), else derived "
         "about the arm base. Conflicts with every grid axis argument below (an error, not "
@@ -3602,8 +3729,9 @@ def main(argv: list[str] | None = None) -> int:
         dest = flag[2:].replace("-", "_")
         if getattr(args, dest) is None:
             setattr(args, dest, list(default))
-    base_t_world = make_transform(
-        rotation_z(math.radians(args.world_yaw_deg)), args.world_translation_m
+    robot_layers = " + ".join(str(p) for p in args.robot_config)
+    arm_base_frame, base_t_world = vision_frame_from_params(
+        load_robot_params(list(args.robot_config)), robot_layers
     )
     world_t_base = invert_transform(base_t_world)
     base_origin_w = world_t_base[:3, 3]
@@ -3705,7 +3833,7 @@ def main(argv: list[str] | None = None) -> int:
         air_density_source=args.air_density_source,
     )
 
-    model_world_t_base = frame_placement_in_model_world(artifacts.urdf_text, args.arm_base_frame)
+    model_world_t_base = frame_placement_in_model_world(artifacts.urdf_text, arm_base_frame)
     model_world_t_world = as_transform(model_world_t_base @ base_t_world)
 
     reach = max_distance_filter(base_origin_w, args.max_reach_m)
@@ -3845,12 +3973,11 @@ def main(argv: list[str] | None = None) -> int:
             },
             "frames": {
                 "base_t_world": base_t_world.tolist(),
-                "world_yaw_deg": args.world_yaw_deg,
-                "world_translation_m": list(args.world_translation_m),
-                "world_transform_owner": (
-                    "the caller — measured MuJoCo FK vs Pinocchio FK at the same q (L3 §4.2)"
+                "world_source": (
+                    f"urdf.extra_frames.{SCENE_WORLD} of {robot_layers} (its parent is "
+                    "arm_base_frame, base_t_world its placement there)"
                 ),
-                "arm_base_frame": args.arm_base_frame,
+                "arm_base_frame": arm_base_frame,
                 "model_world_t_base": model_world_t_base.tolist(),
                 "model_world_t_world": model_world_t_world.tolist(),
                 "note": (
