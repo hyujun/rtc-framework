@@ -441,7 +441,7 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   // RT-3's throttle exception: primitive-only format, no assembly.
   // The macro is expanded HERE rather than inside the base predicate on
   // purpose — RCLCPP_*_THROTTLE keeps its state at the expansion point, so a
-  // shared helper would give all three bindings one window and let a switch
+  // shared helper would give every binding one window and let a switch
   // swallow the new controller's first report.
   if (rtc::IsGateClosedByWidth(state.devices[0], arm_dof_)) {
     RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,

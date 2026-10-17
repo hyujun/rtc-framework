@@ -53,9 +53,9 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
   }
 
   const auto& dev1 = state.devices[1];
-  // Shared derivation (joint / task / wbc): prefer the inference-group count,
-  // fall back to the sensor-channel stride. See DeriveFingertipCounts. The wbc
-  // controller has no ToF snapshot, so only the active (inference) count is used.
+  // Shared derivation: prefer the inference-group count, fall back to the
+  // sensor-channel stride. See DeriveFingertipCounts. The wbc controller has no
+  // ToF snapshot, so only the active (inference) count is used.
   num_active_fingertips_ = DeriveFingertipCounts(dev1).active;
 
   const double inv_dt = (state.dt > 0.0) ? (1.0 / state.dt) : 500.0;

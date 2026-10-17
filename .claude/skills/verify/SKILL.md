@@ -28,7 +28,7 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
 
 - 이름: `demo_joint_controller` / `demo_task_controller` / `demo_wbc_controller` / `demo_compliance_controller` / `demo_inference_controller` / `demo_dualarm_controller` (g1_p1b 만).
 - **Pure deactivate 불가** (single-active D-A1) — 항상 교체 대상을 activate 에 지정.
-- 토픽: joint/task → `/<ctrl>/p1a/grasp_state`, wbc → `/<ctrl>/p1a/wbc_state`. 활성 컨트롤러는 `/rtc_cm/active_controller_name` (latched).
+- 토픽: joint/task/compliance → `/<ctrl>/p1a/grasp_state`, wbc → `/<ctrl>/p1a/wbc_state`. 활성 컨트롤러는 `/rtc_cm/active_controller_name` (latched).
 
 ## GUI (Tkinter, 실제 DISPLAY 사용)
 

@@ -52,8 +52,8 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
   num_sensor_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
-    // Shared derivation (joint / task / wbc): active = inference-group count,
-    // sensor = raw sensor-lane count. See DeriveFingertipCounts.
+    // Shared derivation: active = inference-group count, sensor = raw
+    // sensor-lane count. See DeriveFingertipCounts.
     const auto counts = DeriveFingertipCounts(dev1);
     num_active_fingertips_ = counts.active;
     num_sensor_fingertips_ = counts.sensor;

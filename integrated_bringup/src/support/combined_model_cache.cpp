@@ -51,7 +51,8 @@ bool CombinedModelCache::InitModel(rtc_urdf_bridge::PinocchioModelBuilder& build
   if (!SelectModel(builder, log_prefix, logger)) {
     return false;
   }
-  // contact_frame_ids: empty for joint/task; WBC passes its TSID contact frames.
+  // contact_frame_ids: empty for every caller but WBC, which passes its TSID
+  // contact frames.
   // (WBC defers this cache Init to InitCacheDeferred once its contact frame ids
   // are parsed — see DemoWbcController::LoadConfig.)
   cache_.Init(full_model_ptr_, contact_frame_ids);

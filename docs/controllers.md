@@ -22,7 +22,7 @@ RTC 의 컨트롤러는 두 층이다. `rtc_controllers` 는 프레임워크에 
 
 - 기동 시 활성 컨트롤러는 `config/<robot>/{sim,robot}.yaml` 의 `initial_controller` 가 정한다. 로봇마다 다르니 그 YAML 을 본다.
 - YAML 이 없는 로봇에서는 해당 컨트롤러가 인스턴스화되지 않고 건너뛴다 (`_REQUIRING_CONFIG` 등록). `demo_joint_controller` 만 모든 로봇이 YAML 을 싣는다.
-- 손 모드(`grasp_controller_type`)는 joint · task 가 노출한다 — 아래 GraspController 절.
+- 손 모드(`grasp_controller_type`)는 joint · task · compliance 가 노출한다 — 아래 GraspController 절.
 
 ### 알고리즘 코어 (`rtc_controllers`)
 
@@ -77,7 +77,7 @@ ros2 param set /demo_task_controller/demo_task_controller kp_translation '[20.0,
 
 ## GraspController (Force-PI, internal only)
 
-손 파지 법칙이다. 독립 컨트롤러가 아니라 joint · task 컨트롤러가 멤버로 소유한다. 모드는 `grasp_controller_type` 으로 고른다 (기본 `contact_stop`).
+손 파지 법칙이다. 독립 컨트롤러가 아니라 joint · task · compliance 컨트롤러가 멤버로 소유한다. 모드는 `grasp_controller_type` 으로 고른다 (기본 `contact_stop`).
 
 | 모드 | 동작 |
 |---|---|
@@ -116,7 +116,7 @@ ros2 param set /demo_task_controller/demo_task_controller grasp_controller_type 
 **토픽의 소유자**
 - 하드웨어/시뮬 경계(`state_topic` · `motor_topic` · `sensor_topic` · `command_topic`)는 `devices.<group>.backend:` 에 선언되고 `DeviceBackend` 가 소유한다. 컨트롤러 YAML 에는 쓰지 않는다.
 - 컨트롤러 소유 토픽은 `<config_key>/` namespace 에 발행된다. YAML role 로 선언하는 것은 `kRobotTransforms` 하나다.
-- `GraspState` · `WbcState` · `PayloadEstimate` · `ToFSnapshot` 은 각 컨트롤러가 직접 만들어 발행한다. `GraspState` 와 `WbcState` 는 배타적이다 (joint · task = grasp, wbc = wbc).
+- `GraspState` · `WbcState` · `PayloadEstimate` · `ToFSnapshot` 은 각 컨트롤러가 직접 만들어 발행한다. `GraspState` 와 `WbcState` 는 배타적이다 (joint · task · compliance = grasp, wbc = wbc).
 - `demo_dualarm_controller` 는 과제마다 `<task>/task_goal` (`rtc_msgs/RobotTarget`, `goal_type: task`) 을 구독한다. `header.frame_id` 가 목표의 frame 이다.
 
 **E-STOP 중에도 매 tick 갱신된다.** CM 은 tick 마다 새 stamp 로 snapshot 을 발행하므로 컨트롤러가 갱신을 건너뛰면 직전 값이 새 stamp 로 다시 나간다. 그래서 E-STOP tick 도 상태를 쓰되 계산하지 않은 필드는 무효화한다 (규범: [invariants.md](../agent_docs/invariants.md) PROC-7).

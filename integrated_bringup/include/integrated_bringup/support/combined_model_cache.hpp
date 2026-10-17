@@ -1,4 +1,4 @@
-// ── CombinedModelCache: joint/task/wbc 공유 결합-모델(arm+hand) cache 배선 (#174) ──
+// ── CombinedModelCache: 데모 컨트롤러 공유 결합-모델(arm+hand) cache 배선 (#174) ──
 #pragma once
 
 #include "rtc_urdf_bridge/pinocchio_cache.hpp"
@@ -33,17 +33,17 @@ class PinocchioModelBuilder;
 
 namespace integrated_bringup {
 
-/// @brief joint/task/wbc 데모 컨트롤러가 공유하는 결합-모델(arm+hand) cache 배선 (#174).
+/// @brief 데모 컨트롤러가 공유하는 결합-모델(arm+hand) cache 배선 (#174).
 ///
-/// unified kin&dyn 리팩터로 세 컨트롤러가 동일한 combined-model @ref
-/// rtc_urdf_bridge::PinocchioCache 로 arm 기구학을 획득하게 되면서, 아래 네 조각이 삼중
+/// unified kin&dyn 리팩터로 각 컨트롤러가 동일한 combined-model @ref
+/// rtc_urdf_bridge::PinocchioCache 로 arm 기구학을 획득하게 되면서, 아래 네 조각이 컨트롤러마다
 /// 복제됐다: 모델 선택(actuated closed-chain → reduced tree "wbc" → raw full) + cache Init,
 /// ext(device joint-state 순서)→Pinocchio q/v reorder map, 매 tick state scatter, arm-TCP FK.
 /// 이 타입이 그 공통 배선을 소유한다. 컨트롤러는 멤버로 소유하고 위임한다.
 ///
 /// ### 범위 (TSID-agnostic)
 /// WBC 의 TSID contact 프레임과 축약 동역학 provider 는 이 헬퍼의 **superset** 이다: contact
-/// 프레임 id 는 @ref InitModel 인자로 전달(joint/task 는 빈 리스트), @ref
+/// 프레임 id 는 @ref InitModel 인자로 전달(WBC 외 호출자는 빈 리스트), @ref
 /// rtc_urdf_bridge::PinocchioCache::reduced_provider 는 컨트롤러가 @ref cache() 로 직접 주입한다.
 /// 헬퍼 자체는 TSID 를 알지 못한다.
 ///
@@ -89,7 +89,7 @@ class CombinedModelCache {
 
   /// 모델 선택(actuated closed-chain → reduced tree "wbc" → raw full model) + 그 위에서
   /// @ref rtc_urdf_bridge::PinocchioCache::Init + q/v 버퍼 alloc. @p contact_frame_ids 는
-  /// joint/task 에서 비어 있고 WBC 는 자기 TSID contact 프레임을 전달한다. @p log_prefix 는
+  /// WBC 외 호출자에서 비어 있고 WBC 는 자기 TSID contact 프레임을 전달한다. @p log_prefix 는
   /// "[joint]" 등 컨트롤러 태그.
   /// @return builder 가 유효하고 모델을 얻으면 true (Init 수행), 그 외 false.
   [[nodiscard]] bool InitModel(rtc_urdf_bridge::PinocchioModelBuilder& builder,
@@ -101,7 +101,7 @@ class CombinedModelCache {
   /// 요구해 cache Init 을 뒤로 미뤄야 하는(select → contact 파싱 → cache Init) 컨트롤러용.
   /// 이후 호출자는 @ref InitCacheDeferred 로 cache 를 초기화한다(@ref cache() 의 raw `Init`
   /// 직접 호출 대신 — 그래야 @ref Update / @ref ArmTcpPoseFromCache 의 cache-ready 게이트가
-  /// self-enforcing 하게 유지된다). joint/task 는 대신 묶음 @ref InitModel 을 쓴다.
+  /// self-enforcing 하게 유지된다). WBC 외 호출자는 대신 묶음 @ref InitModel 을 쓴다.
   /// @return 모델을 얻으면 true (@ref model() 유효), 그 외 false.
   [[nodiscard]] bool SelectModel(rtc_urdf_bridge::PinocchioModelBuilder& builder,
                                  std::string_view log_prefix, const rclcpp::Logger& logger);

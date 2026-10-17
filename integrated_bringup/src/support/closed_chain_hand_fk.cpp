@@ -269,7 +269,7 @@ rub::RtClosedChainHandle::Status ClosedChainHandFk::status() const noexcept {
   return handle_->GetStatus();
 }
 
-// ── 컨트롤러 wiring 공용 dispatch (task/joint 공유) ───────────────────────────
+// ── 컨트롤러 wiring 공용 dispatch ─────────────────────────────────────────────
 
 bool RunHandForwardKinematics(ClosedChainHandFk& fk, rub::RtModelHandle* hand_handle,
                               Eigen::VectorXd& hand_q, const rtc::ControllerState& state) noexcept {

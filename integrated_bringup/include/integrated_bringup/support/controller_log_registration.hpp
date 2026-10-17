@@ -1,11 +1,10 @@
 #ifndef UR5E_BRINGUP_SUPPORT_CONTROLLER_LOG_REGISTRATION_HPP_
 #define UR5E_BRINGUP_SUPPORT_CONTROLLER_LOG_REGISTRATION_HPP_
 
-// Shared helper for the Phase C `logs:` YAML block. The 3 demo controllers
-// (joint, task, wbc) parse the same controller-owned `logs:` schema and
-// register typed CSV channels on their own ControllerLogSet. PR2 of the
-// demo-controller refactor lifts that ~54-line verbatim block into a single
-// templated entry point.
+// Shared helper for the Phase C `logs:` YAML block. The demo controllers parse
+// the same controller-owned `logs:` schema and register typed CSV channels on
+// their own ControllerLogSet. PR2 of the demo-controller refactor lifts that
+// ~54-line verbatim block into a single templated entry point.
 //
 // Conservative scope (KUKA + LEAP readiness):
 //   - The helper does NOT assume any device name, fingertip count, or
@@ -143,8 +142,8 @@ struct LogRegistrationContext {
   bool task_diag_enabled{false};
 
   // GraspDiagLog (#428) — per-tick Force-PI servo + stiffness-estimator
-  // diagnostics for the joint/task controllers. Single fixed instance
-  // (kGraspDiagLogInstance).
+  // diagnostics for the controllers that own a GraspController. Single fixed
+  // instance (kGraspDiagLogInstance).
   //
   // Gated on the force_pi_grasp BLOCK, not on `grasp_hand_mode` — deliberately
   // the same rule BuildGraspController uses. The mode is runtime-writable
@@ -218,10 +217,10 @@ struct LogRegistrationContext {
 // ⚠ Two separate hazards, two separate fixes — keep both (#428).
 //
 //   1. Every field above is reachable by POSITIONAL brace-init, which is how
-//      the three demo controllers used to build this struct. Inserting a field
+//      the demo controllers used to build this struct. Inserting a field
 //      mid-struct then silently reassigned their arguments (it did:
 //      `pull_estimator_roles` landed in a bool and only failed to compile
-//      because the types happened to disagree). All three call sites now use
+//      because the types happened to disagree). Every call site now uses
 //      DESIGNATED initializers, so order is not load-bearing and an omission is
 //      named rather than shifted. Keep them that way.
 //   2. Designated initializers do NOT silence -Wmissing-field-initializers —

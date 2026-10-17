@@ -353,7 +353,7 @@ std::vector<std::string> AnyDiagnostic() {
 }
 
 // The whole per-binding sequence, in the one order that keeps every assertion
-// honest. Templated rather than virtual-dispatched because the three bindings
+// honest. Templated rather than virtual-dispatched because the bindings
 // share no base that exposes Compute() the way this needs it, and because the
 // point is to run the IDENTICAL sequence against each — a divergence between
 // them is the failure mode #307's fourth acceptance criterion names.
@@ -401,7 +401,7 @@ void ExerciseBothAxes(Controller& ctrl) {
   {
     // The gate's THIRD closure cause (#284), and the reason it needs a binding
     // test of its own rather than the base predicate tests it already has:
-    // those prove the predicate, not that these three bindings call it with the
+    // those prove the predicate, not that these bindings call it with the
     // right device and the right width. A holed tick has no other trace — the
     // width message does not fire, the device is `valid`, and the arm simply
     // stops appearing — so a binding that never wired it up looks identical to

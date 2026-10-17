@@ -899,9 +899,8 @@ class DemoTaskController final : public RTControllerInterface {
   // which is the first point the arm device's joint_state_names exist — the
   // wiring pins that order on its own model handle, so it cannot be built any
   // earlier. Disabled without a `momentum_observer` block. Output is the
-  // joint-space residual r; it goes to momentum_observer.csv and nowhere else
-  // this layer (#135 D12 — the PayloadEstimate wire surface arrives with
-  // Layer 2A, when there is a payload estimate to put in it).
+  // joint-space residual r; it goes to momentum_observer.csv and, through
+  // payload_estimate_lock_ below, to the PayloadEstimate topic (#135 D12).
   MomentumObserverParams momentum_params_;
   MomentumObserverWiring momentum_wiring_;
   /// RT → publish-thread egress for the PayloadEstimate topic (#135 D12).

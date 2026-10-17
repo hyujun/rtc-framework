@@ -264,10 +264,9 @@ demo_shared:
     # must be unique: the role keys the block below and picks the thumb, so a
     # repeat is an on_configure FAILURE, not a silent double-count. The hand's
     # 4th tip (l_ring_tip_bracket) is deliberately absent: these links are also
-    # resolved against tsid.contacts by the WBC controller (demo_shared.yaml is
-    # shared by joint/task/wbc), and ring is not a tsid contact here — adding it
-    # would fail WBC on_configure. Add the tsid contact first if ring should
-    # count.
+    # resolved against tsid.contacts by the WBC controller (which reads this
+    # file too), and ring is not a tsid contact here — adding it would fail
+    # WBC on_configure. Add the tsid contact first if ring should count.
     # Optional per-tip touch hysteresis (#234 P-16): touch_on_threshold /
     # touch_off_threshold split the axis-selection gate (on |f_obj|) from the
     # force-sum gate (on f_n). Omit both — as every tip below does — and the

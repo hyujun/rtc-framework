@@ -62,7 +62,7 @@ inline constexpr double kDefaultForcePiLpfCutoffHz = 25.0;
 inline constexpr double kDefaultMomentumObserverGain = 10.0;
 
 // The `momentum_observer` YAML block (#135 Layer 1b), mirrored as a struct so
-// the three demo controllers can carry it from LoadConfig (where the YAML is
+// each embedding controller can carry it from LoadConfig (where the YAML is
 // read) to OnDeviceConfigsSet (where the arm device's joint order first
 // exists), which is the earliest point the wiring can be built.
 //
@@ -156,7 +156,7 @@ struct MomentumObserverParams {
   PayloadEstimatorParams payload{};
 };
 
-// Parameters that DemoJointController and DemoTaskController share.
+// Parameters the demo controllers read from demo_shared.yaml.
 // Defaults live in config/ur5e_p1a/controllers/demo_shared.yaml; per-controller YAMLs
 // may override individual keys via a second ApplyDemoSharedConfig() pass.
 struct DemoSharedConfig {
@@ -268,7 +268,7 @@ void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_var
 // skipped construction under contact_stop would make the mode a one-way door.
 // Every consumer that used to read `grasp_controller_ != nullptr` as "force_pi is
 // running" must therefore check the mode itself: the control law and the
-// diagnostics fill do (see the two controllers' compute paths), and the
+// diagnostics fill do (see each GraspController owner's compute path), and the
 // grasp_command service uses GraspCommandRejectReason below.
 void BuildGraspController(const DemoSharedConfig& cfg,
                           std::unique_ptr<rtc::grasp::GraspController>& grasp_controller);

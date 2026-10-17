@@ -1,13 +1,14 @@
 #ifndef UR5E_BRINGUP_SUPPORT_PULL_ESTIMATOR_WIRING_HPP_
 #define UR5E_BRINGUP_SUPPORT_PULL_ESTIMATOR_WIRING_HPP_
 
-// Shared wiring for the in-plane pull-force estimator (#167 P3) — the three
-// demo controllers (joint / task / wbc) embed one PullEstimatorWiring each.
+// Shared wiring for the in-plane pull-force estimator (#167 P3) — each demo
+// controller that runs the estimator embeds one PullEstimatorWiring.
 // Split of responsibilities:
 //   ConfigurePullEstimatorWiring (non-RT, on_configure/LoadConfig): build the
 //     estimator from DemoSharedConfig and resolve each configured tip link to
-//     the caller's fingertip slot index (joint/task: tree-model tip_links
-//     order; wbc: tsid contacts order — 1:1 with the sensor lanes either way).
+//     the caller's fingertip slot index (tree-model tip_links order when the
+//     fingertip poses come from hand FK; tsid contacts order when they come
+//     from the WBC contact cache — 1:1 with the sensor lanes either way).
 //   Controller RT tick: stage inputs[k] / positions[k] / position_valid[k]
 //     for [0, num_contacts) from its own force + FK (or contact-frame) caches.
 //   UpdatePullEstimator (RT): derive the plane normal (fixed YAML vector or
@@ -99,8 +100,8 @@ static_assert(rtc::grasp::kMaxPullContacts <= 8,
 
 // Push one pull-estimator log row from the wiring's latest estimate (#167).
 // RT tick tail — noexcept, heap-free; a no-op when the CSV channel is
-// unregistered or the estimator is disabled, so the three demo controllers
-// carry one call instead of the copy-pasted guard + fill + Push block.
+// unregistered or the estimator is disabled, so each embedding controller
+// carries one call instead of the copy-pasted guard + fill + Push block.
 inline void PushPullEstimatorLog(rtc::LogHandle<PullEstimatorLogPod>& handle,
                                  const PullEstimatorWiring& wiring, double t_relative_s,
                                  std::uint64_t tick) noexcept {
@@ -117,10 +118,10 @@ inline void PushPullEstimatorLog(rtc::LogHandle<PullEstimatorLogPod>& handle,
 
 // Build the estimator via BuildPullForceEstimator and resolve tip links.
 // `link_names[j]` names the fingertip link the caller services at slot j —
-// pass only slots backed by real force/FK storage (joint/task cap at
-// kNumFingertips). Resets `w` first; stays disabled (estimator == nullptr,
-// no throw) when the YAML block is absent/disabled OR `link_names` is empty
-// (no FK available — unit-test and hand-less paths). Throws
+// pass only slots backed by real force/FK storage (callers whose poses come
+// from hand FK cap at kNumFingertips). Resets `w` first; stays disabled
+// (estimator == nullptr, no throw) when the YAML block is absent/disabled OR
+// `link_names` is empty (no FK available — unit-test and hand-less paths). Throws
 // std::runtime_error when a configured tip link resolves to no slot, when a
 // role name repeats, when no "thumb" role is present, or when pinch geometry is
 // selected without a non-thumb tip to oppose it (config wiring errors — non-RT
@@ -179,10 +180,11 @@ void StageEstopPullTick(PullEstimatorWiring& w, double dt,
     const rtc_urdf_bridge::ModelConfig* sys_model, const std::string& secondary_device,
     std::size_t max_slots);
 
-// Stage one RT tick of the joint/task FK pull path, run the estimator, and
-// mirror the result into `out`. `FtData` is each demo controller's private
-// FingertipSensorData (only `.valid` + `.force[0..2]` are read), so this is a
-// template rather than a concrete-typed free function. `w.slot[k]` indexes
+// Stage one RT tick of the pull path whose poses come from hand FK, run the
+// estimator, and mirror the result into `out`. `FtData` is each demo
+// controller's private FingertipSensorData (only `.valid` + `.force[0..2]` are
+// read), so this is a template rather than a concrete-typed free function.
+// `w.slot[k]` indexes
 // `fingertip_data` / `rotations` / `tip_positions` / `pose_valid` alike (tree-
 // model tip_links order == fingertip sensor-lane order, Stage A-3 contract).
 // Caller must gate on `w.enabled()`. noexcept, heap-free (RT tick path).
