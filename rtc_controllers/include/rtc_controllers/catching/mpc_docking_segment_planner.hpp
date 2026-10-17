@@ -135,6 +135,9 @@ struct MpcDockingSegmentPlannerModel {
   std::array<double, kMaxPlanNv> qd_rating{};
   /// A pose the warm-up solves start from, DEVICE order (the wait pose).
   std::array<double, kMaxPlanNv> warm_pose{};
+  /// `planner.groups` resolved on the arm device (E3-F02); its group count
+  /// must be the profile's (params.n_groups). No group = n_groups 0.
+  JointGroups groups{};
 };
 
 struct MpcDockingSegmentPlannerConstants {
@@ -203,6 +206,21 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
   [[nodiscard]] const MpcDockingSegmentPlannerParams& Params() const noexcept { return params_; }
 
   [[nodiscard]] int Nv() const noexcept { return nv_; }
+
+  /// The joint group of model joint m (E3-F02); 0 without groups.
+  [[nodiscard]] int GroupOfModel(int m) const noexcept {
+    return m < 0 || m >= nv_ ? -1 : group_of_model_[static_cast<std::size_t>(m)];
+  }
+
+  /// The core of n_pre pre-catch intervals (1..n_pre_max) and the parameters
+  /// it was built with (tests).
+  [[nodiscard]] const MpcDockingSegmentCore& CoreFor(int n_pre) const noexcept {
+    return *cores_[static_cast<std::size_t>(n_pre - 1)];
+  }
+
+  [[nodiscard]] const MpcDockingSegmentCoreParams& CoreParamsFor(int n_pre) const noexcept {
+    return core_params_[static_cast<std::size_t>(n_pre - 1)];
+  }
 
   /// The core for `n_pre` pre-catch intervals (1..n_pre_max), or nullptr.
   [[nodiscard]] const MpcDockingSegmentCore* Core(int n_pre) const noexcept;
@@ -291,6 +309,8 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
   ClockFn clock_{nullptr};
   int nv_{0};
   std::array<int, kMaxPlanNv> device_of_model_{};
+  std::array<std::int8_t, kMaxPlanNv> group_of_model_{};  // planner.groups, model order
+  std::vector<MpcDockingSegmentCoreParams> core_params_;  // per core (n_pre − 1)
   JointSet model_set_{0};  // the model's joints, as device indices: the whole device
   std::array<double, kMaxPlanNv> qd_rating_{};
   std::int64_t dt_pre_ns_{0};

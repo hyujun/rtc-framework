@@ -699,6 +699,18 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
+  # dynamic_catching E3-F02 (#641): the docking core's whole-body terms — off,
+  # the convergence contract, the values on the held coefficients, allocation.
+  ament_add_gtest(test_catching_mpc_docking_segment_core_wholebody
+    test/test_catching_mpc_docking_segment_core_wholebody.cpp TIMEOUT 900)
+  target_link_libraries(test_catching_mpc_docking_segment_core_wholebody rtc_controllers)
+  target_include_directories(test_catching_mpc_docking_segment_core_wholebody PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_mpc_docking_segment_core_wholebody PRIVATE
+    -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_mpc_docking_segment_core_wholebody PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
   # dynamic_catching E1-F14 (#740): the NLP catch search on synthetic
   # predictions — the choice against an exhaustive solve by the core, order
   # independence of the solves, validity and reasons, the wakes after the RT

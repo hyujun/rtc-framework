@@ -3342,6 +3342,54 @@ TEST(CatchingJointGroupsConfigure, TheAngularTermNeedsARestWeightOnAGroupAPlanLe
   }
 }
 
+// D9′ for the docking planner, per node range: the angular term on the stop
+// nodes needs the left-out group's stop rest; the pre-catch half is w_q_nom
+// (shipped 0.1 on every joint).
+TEST(CatchingJointGroupsConfigure, TheDockingAngularTermNeedsTheStopRestOfAGroupAPlanLeavesOut) {
+  const rtc_urdf_bridge::ModelConfig chain_cfg =
+      ModelWithSearchChain("shoulder_link", "l_palm_link");
+  const auto profile = [](double w_rest_stop) {
+    YAML::Node yaml = ShippedWithSelection(kChainProfile, "nlp", "mpc_docking", {});
+    yaml["catching"]["planner"]["groups"] = YAML::Load(
+        "[{name: base, joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint]},"
+        " {name: wrist, joints: [wrist_1_joint, wrist_2_joint, wrist_3_joint]}]");
+    YAML::Node dock = yaml["catching"]["planner"]["segment"]["mpc_docking"];
+    dock["core"]["cost"]["angular_momentum"] = YAML::Load("{w_pre: 0.01, w_post: 1.0, scale: 10}");
+    if (w_rest_stop > 0.0) {
+      dock["groups"]["base"]["w_rest_stop"] = w_rest_stop;
+    }
+    return yaml;
+  };
+  const rclcpp_lifecycle::State prev;
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    EXPECT_EQ(c.Configure(chain_cfg, kChainName, "catching_d9_docking_unheld", profile(0.0)),
+              DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_TRUE(
+        ConfigureLog::Said("the angular-momentum term on the stop nodes reads joints a "
+                           "plan of the search model leaves out (group 'base')"))
+        << ConfigureLog::All();
+  }
+  {
+    const ConfigureLog log;
+    SearchChainBringUp c;
+    ASSERT_EQ(c.Configure(chain_cfg, kChainName, "catching_d9_docking_held", profile(1.0)),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+    EXPECT_FALSE(c.ctrl.IsSimOnlyDisabled()) << ConfigureLog::All();
+    const rtc::catching::MpcDockingSegmentPlanner* dock =
+        c.ctrl.GetMpcDockingSegmentPlannerForTesting();
+    ASSERT_NE(dock, nullptr) << ConfigureLog::All();
+    EXPECT_TRUE(dock->CoreFor(1).AngularMomentumTermActive());
+    EXPECT_TRUE(dock->CoreFor(1).StopRestTermActive());
+    EXPECT_EQ(
+        c.node->get_parameter("planner.segment.mpc_docking.groups.base.w_rest_stop").as_double(),
+        1.0);
+    ASSERT_EQ(c.ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+}
+
 // ── 5. S5.1: the P-1 minimum E-STOP/fault contract (E-8) ────────────────────
 //
 // The four parts are tested separately because they fail separately: (a) is

@@ -858,7 +858,7 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
       nlp_params = ParseNlpSearchParams(catching, search_nv);
     }
     if (!mpc) {
-      docking_params = ParseMpcDockingSegmentParams(catching, nv);
+      docking_params = ParseMpcDockingSegmentParams(catching, nv, planner.groups);
     }
     DockingConfig config;
     config.nlp = nlp;
@@ -916,6 +916,7 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     model.limits = sb.limits;
     std::copy(sb.qd_rating.begin(), sb.qd_rating.end(), model.qd_rating.begin());
     model.warm_pose = planner.wait_pose;
+    model.groups = groups;
     MpcDockingSegmentPlannerConstants consts;
     consts.t_arm_s = sb.t_arm_s;
     consts.control_dt = sb.control_dt;

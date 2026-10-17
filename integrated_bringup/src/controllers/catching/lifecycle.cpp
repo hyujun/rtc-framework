@@ -587,6 +587,26 @@ void DemoCatchingController::DeclareProfileParameters() {
             "gate headroom, as run");
     declare("planner.segment.mpc_docking.switch_margin", segment_switch_margin_,
             "rho_max of the segment switch gate (mode mpc_docking)");
+    // The whole-body terms (E3-F02), as run.
+    declare("planner.segment.mpc_docking.core.cost.angular_momentum.w_pre", d.core.w_ang_pre,
+            "E3-F02 mpc_docking angular-momentum rate weight on the pre-catch stages");
+    declare("planner.segment.mpc_docking.core.cost.angular_momentum.w_post", d.core.w_ang_post,
+            "E3-F02 mpc_docking angular-momentum rate weight on the stop nodes");
+    declare("planner.segment.mpc_docking.core.cost.angular_momentum.scale", d.core.ang_scale,
+            "E3-F02 the angular-momentum rate the weights are measured against [N*m]");
+    for (int g = 0; g < d.n_groups; ++g) {
+      const auto& gp = d.groups[static_cast<std::size_t>(g)];
+      const std::string key = "planner.segment.mpc_docking.groups." +
+                              planner_params_.groups[static_cast<std::size_t>(g)].name;
+      declare(key + ".w_vel", gp.w_vel,
+              "E3-F02 this joint group's velocity weight on both running sums; 0 = off");
+      declare(key + ".w_rest_stop", gp.w_rest_stop,
+              "E3-F02 this joint group's pull toward the wait pose on the stop nodes; 0 = off");
+      declare(key + ".r_tau", gp.r_tau,
+              "E3-F02 this joint group's torque weight (NaN = core.cost.r_tau)");
+      declare(key + ".w_q_nom", gp.w_q_nom,
+              "E3-F02 this joint group's pre-catch posture weight (NaN = core.cost.w_q_nom)");
+    }
   }
   if (nlp || docking) {
     const auto& h = hand_docking_;
@@ -2251,6 +2271,67 @@ bool DemoCatchingController::SetupPlanner() {
         return false;
       }
     }
+    // D9′ for the docking planner: its angular-momentum term reads every joint
+    // on both running sums, a torque cost reads its joint's motion before the
+    // catch — each range then needs the left-out groups' rest weight there:
+    // w_q_nom before the catch node, w_rest_stop from it on.
+    if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking) {
+      const auto& dp = mpc_docking_params_;
+      rtc::catching::JointSet plan_joints = 0;
+      if (!rtc::catching::MakeJointSet(
+              std::span<const int>(search_arm.device_of_model.data(),
+                                   static_cast<std::size_t>(search_arm.nv)),
+              arm_dof_, plan_joints)) {
+        RCLCPP_ERROR(logger_, "planner: the search model's joints are not the arm device's");
+        return false;
+      }
+      const auto uniform = [](const Eigen::VectorXd& v) { return v.size() != 0 ? v[0] : 0.0; };
+      const auto group_value = [](double own, double core) { return std::isnan(own) ? core : own; };
+      const int count = joint_groups_.Count();
+      std::array<double, rtc::catching::kMaxJointGroups> pre_rest{};
+      std::array<double, rtc::catching::kMaxJointGroups> stop_rest{};
+      std::array<double, rtc::catching::kMaxJointGroups> pre_free{};  // a pre range nobody holds
+      const bool ang_pre = dp.core.w_ang_pre > 0.0;
+      const bool ang_post = dp.core.w_ang_post > 0.0;
+      for (int g = 0; g < count; ++g) {
+        const auto u = static_cast<std::size_t>(g);
+        const auto& gp = dp.groups[u];
+        const double r_tau = group_value(gp.r_tau, uniform(dp.core.r_tau));
+        pre_rest[u] = group_value(gp.w_q_nom, uniform(dp.core.w_q_nom));
+        stop_rest[u] = joint_groups_.n_groups == 0 ? 0.0 : gp.w_rest_stop;
+        // A range a term reads needs the rest weight; one no term reads, none.
+        pre_free[u] = (ang_pre || r_tau > 0.0) ? pre_rest[u] : 1.0;
+        stop_rest[u] = ang_post ? stop_rest[u] : 1.0;
+      }
+      // FirstGroupLeftFree reads "no group declared" as rest weight 0; the
+      // docking core's pre-catch posture weight exists without groups too.
+      rtc::catching::JointGroups as_groups = joint_groups_;
+      if (as_groups.n_groups == 0) {
+        as_groups.n_groups = 1;
+      }
+      const int free_pre = rtc::catching::FirstGroupLeftFree(
+          as_groups, arm_dof_, plan_joints,
+          std::span<const double>(pre_free.data(), static_cast<std::size_t>(count)));
+      const int free_stop = rtc::catching::FirstGroupLeftFree(
+          as_groups, arm_dof_, plan_joints,
+          std::span<const double>(stop_rest.data(), static_cast<std::size_t>(count)));
+      if (free_pre >= 0 || free_stop >= 0) {
+        const int g = free_pre >= 0 ? free_pre : free_stop;
+        RCLCPP_ERROR(logger_,
+                     "planner.segment.mpc_docking: %s reads joints a plan of the search model "
+                     "leaves out (%s%s%s), whose %s weight is 0 — give it one (#641 D9')",
+                     free_pre >= 0 ? "a term on the pre-catch stages (angular momentum or a "
+                                     "torque cost)"
+                                   : "the angular-momentum term on the stop nodes",
+                     joint_groups_.n_groups == 0 ? "the arm, no planner.groups" : "group '",
+                     joint_groups_.n_groups == 0
+                         ? ""
+                         : planner_params_.groups[static_cast<std::size_t>(g)].name.c_str(),
+                     joint_groups_.n_groups == 0 ? "" : "'",
+                     free_pre >= 0 ? "pre-catch rest (w_q_nom)" : "stop rest (w_rest_stop)");
+        return false;
+      }
+    }
     // No SetJointOrder on this handle: CatchPoseIk refuses a reordered one (its
     // Jacobian columns and box rows are model order). The model↔device mapping
     // is carried explicitly instead.
@@ -2545,7 +2626,8 @@ void DemoCatchingController::ParseDockingConfig() {
     nlp_search_params_ = rtc::catching::ParseNlpSearchParams(catching_node_, SearchModelNv());
   }
   if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking) {
-    mpc_docking_params_ = rtc::catching::ParseMpcDockingSegmentParams(catching_node_, arm_dof_);
+    mpc_docking_params_ = rtc::catching::ParseMpcDockingSegmentParams(catching_node_, arm_dof_,
+                                                                      planner_params_.groups);
     // The RT's switch gate reads the margin of the planner whose segments it
     // follows.
     segment_switch_margin_ = mpc_docking_params_.switch_margin;
@@ -2713,6 +2795,7 @@ bool DemoCatchingController::SetupMpcDockingSegmentPlanner(const PlannerArm& arm
   dm.device_of_model = arm.device_of_model;
   dm.qd_rating = arm.qdot_max;
   dm.warm_pose = planner_params_.wait_pose;
+  dm.groups = joint_groups_;
   if (!BuildDockingLimits(arm, mpc_docking_params_.eta_v, "planner.segment.mpc_docking",
                           dm.limits)) {
     return false;

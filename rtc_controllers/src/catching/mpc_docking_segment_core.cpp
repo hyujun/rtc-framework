@@ -7,6 +7,7 @@
 #include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 #include <Eigen/QR>
+#include <pinocchio/algorithm/centroidal.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
 
@@ -240,6 +241,25 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   if (p.w_q_nom.size() != 0 && (p.q_nom.size() != nn || !p.q_nom.allFinite())) {
     return MpcDockingReason::kParamsInvalid;
   }
+  // The whole-body terms (header note): bounded weights, the stop rest toward
+  // q_nom, and none with the catch instant a variable.
+  const auto optional_bounded = [nn](const Eigen::VectorXd& x) {
+    return x.size() == 0 || (x.size() == nn && x.allFinite() && x.minCoeff() >= 0.0 &&
+                             x.maxCoeff() <= kWholeBodyWeightMax);
+  };
+  const auto bounded = [](double w) {
+    return rtc::IsFiniteNonNegative(w) && w <= kWholeBodyWeightMax;
+  };
+  const bool vel_on = p.w_vel.size() != 0 && p.w_vel.allFinite() && p.w_vel.maxCoeff() > 0.0;
+  const bool rest_stop_on =
+      p.w_rest_stop.size() != 0 && p.w_rest_stop.allFinite() && p.w_rest_stop.maxCoeff() > 0.0;
+  const bool ang_on = p.w_ang_pre > 0.0 || p.w_ang_post > 0.0;
+  if (!optional_bounded(p.w_vel) || !optional_bounded(p.w_rest_stop) || !bounded(p.w_ang_pre) ||
+      !bounded(p.w_ang_post) || (ang_on && !FinitePositive(p.ang_scale)) ||
+      (rest_stop_on && (p.q_nom.size() != nn || !p.q_nom.allFinite())) ||
+      (p.catch_time_variable && (vel_on || rest_stop_on || ang_on))) {
+    return MpcDockingReason::kParamsInvalid;
+  }
   if (!rtc::IsFiniteNonNegative(p.w_manip) || !FinitePositive(p.manip_d_lin) ||
       !FinitePositive(p.manip_d_ang) || !FinitePositive(p.manip_delta)) {
     return MpcDockingReason::kParamsInvalid;
@@ -384,6 +404,10 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   impact_cost_ = p.w_impact > 0.0;
   impact_on_ = impact_rows_ || impact_cost_;
   perp_on_ = p.w_perp > 0.0;
+  vel_on_ = vel_on;
+  rest_stop_on_ = rest_stop_on;
+  ang_on_ = ang_on;
+  ang_frozen_ = false;
 
   model_ = arm;
   model_.armature = arm.armature + limits.armature;
@@ -402,7 +426,9 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   r_jerk_ = p.r_jerk.size() == 0 ? Eigen::VectorXd::Ones(nn) : p.r_jerk;
   r_jerk_stop_ = p.r_jerk_stop.size() == 0 ? r_jerk_ : p.r_jerk_stop;
   w_q_nom_ = posture_cost_ ? p.w_q_nom : Eigen::VectorXd::Zero(nn);
-  q_nom_ = posture_cost_ ? p.q_nom : Eigen::VectorXd::Zero(nn);
+  q_nom_ = posture_cost_ || rest_stop_on ? p.q_nom : Eigen::VectorXd::Zero(nn);
+  w_vel_ = vel_on ? p.w_vel : Eigen::VectorXd::Zero(nn);
+  w_rest_stop_ = rest_stop_on ? p.w_rest_stop : Eigen::VectorXd::Zero(nn);
   manip_d_q_ = p.manip_d_q.size() == 0 ? Eigen::VectorXd::Ones(nn) : p.manip_d_q;
   r_tau2_ = (2.0 * p.dt_pre) * r_tau_;
 
@@ -526,6 +552,21 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
       AddGainOuter(h_const_, gq_, k, w_q_nom_, 2.0 * p.dt_pre, nn, nb);
     }
   }
+  // The whole-body velocity and stop rest terms: constant Hessians (no
+  // catch_time_variable with them, so the stop nodes' gains are fixed).
+  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    const double dt = k < n_pre_ ? p.dt_pre : p.dt_stop;
+    if (vel_on_) {
+      AddGainOuter(h_const_, gv_, k, w_vel_, 2.0 * dt, nn, nb);
+    }
+    if (rest_stop_on_ && k >= n_pre_) {
+      AddGainOuter(h_const_, gq_, k, w_rest_stop_, 2.0 * p.dt_stop, nn, nb);
+    }
+  }
+  ag_.setZero(3, ang_on_ ? nn * (n_nodes_ + 1) : 0);
+  dag_v_.setZero(3, ang_on_ ? n_nodes_ + 1 : 0);
+  h_ang_.setZero(ang_on_ ? nu_ : 0, ang_on_ ? nu_ : 0);
+  m_ang_.setZero(nn, nn);
   for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
     AddGainOuter(h_init_all_, gq_, k, ones_n_, 2.0 * p.init_w_q, nn, nb);
     AddGainOuter(h_init_all_, gv_, k, ones_n_, 2.0 * p.init_w_v, nn, nb);
@@ -1537,10 +1578,35 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
     }
   }
 
+  // ── Whole-body terms: every node, the angular one on its held coefficients ──
+  const bool whole_body = vel_on_ || rest_stop_on_ || ang_on_;
+  for (Eigen::Index k = 0; whole_body && k <= N; ++k) {
+    const bool pre = k < kc;
+    const double dt = pre ? da : ds;
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      ev.cost.vel += dt * w_vel_[j] * v_(j, k) * v_(j, k);
+      if (!pre) {
+        const double dq = q_(j, k) - q_nom_[j];
+        ev.cost.rest_stop += ds * w_rest_stop_[j] * dq * dq;
+      }
+    }
+    const double w = ang_on_ ? AngularWeight(k) : 0.0;
+    if (w > 0.0) {
+      Eigen::Vector3d kd = dag_v_.col(k);
+      kd.noalias() += ag_.middleCols(nn * k, nn) * a_.col(k);
+      ev.cost.ang += w * kd.squaredNorm();
+      ev.cost.ang_rate_max = std::max(ev.cost.ang_rate_max, seen(kd.norm()));
+    }
+  }
+  ev.cost.whole_body = ev.cost.vel + ev.cost.rest_stop + ev.cost.ang;
+
   ev.cost.reference = ev.cost.tau + ev.cost.acc + ev.cost.jerk + ev.cost.posture + ev.cost.manip +
                       ev.cost.near + ev.cost.terminal + ev.cost.impact + ev.cost.slack;
   ev.cost.stop = ev.cost.stop_jerk + ev.cost.stop_line;
   ev.cost.total = ev.cost.reference + ev.cost.stop;
+  if (whole_body) {
+    ev.cost.total += ev.cost.whole_body;
+  }
   bool finite = rows_finite && std::isfinite(ev.cost.total) && std::isfinite(ev.tau_ratio_max);
   if (tc_on_) {
     finite = finite && std::isfinite(ev.cost.time) && std::isfinite(ev.viol_post_box) &&
@@ -1560,6 +1626,50 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
 // Variables x = [d | s_c | s_v | e]: d the step of ũ/u_s, the slacks and
 // elastics as absolute values. A row a_qᵀδq_k + a_vᵀδq̇_k of node k becomes a
 // row over d through the stage gains (MapRow).
+
+double MpcDockingSegmentCore::AngularWeight(Eigen::Index k) const noexcept {
+  // Node k's weight in J: the interval length of its running sum times W/s².
+  const MpcDockingSegmentCoreParams& p = params_;
+  const bool pre = k < n_pre_;
+  const double w = pre ? p.w_ang_pre : p.w_ang_post;
+  return (pre ? p.dt_pre : p.dt_stop) * w / (p.ang_scale * p.ang_scale);
+}
+
+void MpcDockingSegmentCore::FreezeAngular() noexcept {
+  // A_k and d_k at the trajectory in (q_, v_) — one dccrba per node — and
+  // the Hessian Σ_{k≥1} 2 w_k (A_k Ĝ_a,k)ᵀ(A_k Ĝ_a,k) they give. Node 0 is
+  // x_0: its term is a constant of the candidate.
+  if (!ang_on_) {
+    return;
+  }
+  const Eigen::Index nn = n_;
+  h_ang_.setZero();
+  for (Eigen::Index k = 0; k <= n_nodes_; ++k) {
+    const double w = AngularWeight(k);
+    if (w == 0.0) {
+      continue;
+    }
+    pinocchio::dccrba(model_, data_, q_.col(k), v_.col(k));
+    ag_.middleCols(nn * k, nn) = data_.Ag.middleRows<3>(pinocchio::Force::ANGULAR);
+    dag_v_.col(k).noalias() = data_.dAg.middleRows<3>(pinocchio::Force::ANGULAR) * v_.col(k);
+    if (k == 0) {
+      continue;
+    }
+    m_ang_.noalias() = ag_.middleCols(nn * k, nn).transpose() * ag_.middleCols(nn * k, nn);
+    for (Eigen::Index c = 0; c < nn; ++c) {
+      for (Eigen::Index r = c + 1; r < nn; ++r) {
+        m_ang_(c, r) = m_ang_(r, c);
+      }
+    }
+    const Eigen::Index last = block_of_node_[static_cast<std::size_t>(k - 1)];
+    for (Eigen::Index b = 0; b <= last; ++b) {
+      for (Eigen::Index c = 0; c <= last; ++c) {
+        h_ang_.block(b * nn, c * nn, nn, nn) += (2.0 * w * ga_(k, b) * ga_(k, c)) * m_ang_;
+      }
+    }
+  }
+  ang_frozen_ = true;
+}
 
 void MpcDockingSegmentCore::MapRow(Eigen::Index k, const Eigen::VectorXd* a_q,
                                    const Eigen::VectorXd* a_v) noexcept {
@@ -1648,6 +1758,36 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
         qp_.g[b * nn + j] +=
             2.0 * da *
             (r_acc_[j] * ga_(k, b) * a_(j, k) + w_q_nom_[j] * gq_(k, b) * (q_(j, k) - q_nom_[j]));
+      }
+    }
+  }
+
+  // ── Whole-body terms: gradient at the iterate (the Hessian is constant —
+  // h_const_ — or held for the solve — h_ang_) ──
+  if (vel_on_ || rest_stop_on_ || ang_on_) {
+    if (ang_on_) {
+      qp_.H.topLeftCorner(nu_, nu_) += h_ang_;
+    }
+    for (Eigen::Index k = 1; k <= N; ++k) {
+      const double dt = k < kc ? da : ds;
+      const double w = ang_on_ ? AngularWeight(k) : 0.0;
+      if (w > 0.0) {
+        Eigen::Vector3d kd = dag_v_.col(k);
+        kd.noalias() += ag_.middleCols(nn * k, nn) * a_.col(k);
+        work_n_.noalias() = ag_.middleCols(nn * k, nn).transpose() * kd;
+        work_n_ *= 2.0 * w;
+      } else {
+        work_n_.setZero();
+      }
+      const bool stop = k >= kc;
+      for (Eigen::Index b = 0; b <= block_of_node_[static_cast<std::size_t>(k - 1)]; ++b) {
+        for (Eigen::Index j = 0; j < nn; ++j) {
+          double gj = 2.0 * dt * w_vel_[j] * gv_(k, b) * v_(j, k) + ga_(k, b) * work_n_[j];
+          if (stop) {
+            gj += 2.0 * ds * w_rest_stop_[j] * gq_(k, b) * (q_(j, k) - q_nom_[j]);
+          }
+          qp_.g[b * nn + j] += gj;
+        }
       }
     }
   }
@@ -2611,6 +2751,9 @@ bool MpcDockingSegmentCore::Evaluate(const MpcDockingSegmentCoreInput& in,
   ResetPenalties();
   StageBegin(MpcDockingStage::kFinish);
   TrajectoryFromZ(z_);
+  if (ang_on_ && !ang_frozen_) {
+    FreezeAngular();  // no Solve has held them yet (header note)
+  }
   Evaluation ev;
   (void)EvaluateTrajectory(false, ev);
   Finish(ev, ev.ok ? MpcDockingReason::kNone : MpcDockingReason::kSolutionNonFinite, out);
@@ -2659,6 +2802,13 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
       }
     }
     out.start_us = MicrosSince(t0) - out.qp_us;
+  }
+  // The angular term's coefficients, held from the start point on (D12).
+  if (ang_on_) {
+    StageBegin(MpcDockingStage::kLinearize);
+    TrajectoryFromZ(z_);
+    FreezeAngular();
+    StageEnd(MpcDockingStage::kLinearize);
   }
 
   // A new Solve is a new problem: the same input gives the same answer

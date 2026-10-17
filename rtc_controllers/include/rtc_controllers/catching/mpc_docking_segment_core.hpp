@@ -23,6 +23,8 @@
 //       + ‖ρ_kc − ρ_ref‖²_Qρf + ‖ν^H_kc − ν_ref‖²_Qνf + w_E E_n/E_ref   terminal
 //       + Δ_a Σ_{k∈A} (λ_1ᵀ s_k + ‖s_k‖²_Λ2)                             slack
 //       + Δ_s Σ_{k≥k_c} [ ‖u_k/u_s‖²_Rj,stop + w_⊥ ‖P_⊥(p_C(q_k) − p_line)‖² ]   stop
+//       + Δ_a Σ_{k<k_c} [ ‖q̇_k‖²_Wv + W⁻/s² ‖k̇_G,k‖² ]
+//       + Δ_s Σ_{k≥k_c} [ ‖q̇_k‖²_Wv + ‖q_k − q_nom‖²_Wr + W⁺/s² ‖k̇_G,k‖² ]  whole body
 //   s.t.  q̇_N = q̈_N = 0
 //         q_min ≤ q_k ≤ q_max,  |q̇_k| ≤ q̇_max,  [|q̈_k| ≤ q̈_max],  [|u_k| ≤ j_max]   k = 1..N
 //         τ_lo ≤ RNEA(q_k, q̇_k, q̈_k) ≤ τ_hi                              k = 1..N
@@ -46,6 +48,19 @@
 // variable, so the jerk term covers stage 0 too) and J⋆ adds node 0. With a
 // single pre-catch interval (k_c = 1) the QP therefore has no running terms
 // and no approach rows: the problem is "dock, then stop".
+//
+// The whole-body terms (E3-F02, #641; formulation §1.3, §1.4) are optional and
+// reported apart (cost.whole_body — in `total`, not in `reference`): the
+// velocity weight Wv on both running sums, the rest weight Wr on the stop
+// nodes (the pre-catch posture term above is the other half), and the
+// centroidal angular-momentum rate k̇_G,k = A_k q̈_k + d_k. Its coefficients
+// A_k = A^ω_G(q_k), d_k = Ȧ^ω_G(q_k, q̇_k) q̇_k are taken ONCE per Solve, at
+// the start point, and held through every iteration and merit evaluation:
+// the term is then an exact quadratic of z, so the QP's gradient is the
+// merit's and `converged` keeps its meaning (#641 D12). Evaluate() uses the
+// coefficients the last Solve took (its own trajectory's before any Solve).
+// None of them is available with catch_time_variable (the search's; it plans
+// without them, #641 D10′).
 //
 // ── Method ────────────────────────────────────────────────────────────────────
 // SQP with a Gauss–Newton Hessian (positive definite: every R_j > 0). The
@@ -423,6 +438,19 @@ struct MpcDockingSegmentCoreParams {
   Eigen::VectorXd r_jerk_stop;  ///< R_j,stop diag on u/u_s, > 0; empty = r_jerk
   double w_perp{0.0};           ///< stop-line weight [1/m²]; 0 = off
 
+  // ── Whole-body terms (header note; E3-F02) — not with catch_time_variable ──
+  /// Wv diag [(rad/s)⁻²] on both running sums; empty or all 0 = off. Each
+  /// entry in [0, kWholeBodyWeightMax].
+  Eigen::VectorXd w_vel;
+  /// Wr diag [rad⁻²] toward q_nom on the stop nodes k_c..N; empty or all 0 =
+  /// off. Needs q_nom.
+  Eigen::VectorXd w_rest_stop;
+  /// W⁻ (pre-catch stages) and W⁺ (stop nodes), each in [0,
+  /// kWholeBodyWeightMax]; both 0 = off. s = ang_scale [N·m] > 0 when on.
+  double w_ang_pre{0.0};
+  double w_ang_post{0.0};
+  double ang_scale{1.0};
+
   // ── Rows ──
   bool accel_box{false};  ///< |q̈_k| ≤ q̈_max rows
   bool jerk_box{false};   ///< |u_k| ≤ j_max rows
@@ -576,6 +604,13 @@ struct MpcDockingCost {
   double impact{0.0};    ///< w_E E_n / E_ref
   double slack{0.0};
   double stop_jerk{0.0}, stop_line{0.0};
+  /// The whole-body terms (header note): their sum (in `total`, not in
+  /// `reference` or `stop`) and each one; 0 when off.
+  double whole_body{0.0};
+  double vel{0.0}, rest_stop{0.0}, ang{0.0};
+  /// max ‖k̇_G,k‖ over the nodes the angular term weights [N·m], on its held
+  /// coefficients; 0 when off.
+  double ang_rate_max{0.0};
   /// c₁ δt_c + c₂ (δt_c − δ_ref)² — NOT part of `total`; 0 without
   /// catch_time_variable.
   double time{0.0};
@@ -728,6 +763,13 @@ class MpcDockingSegmentCore {
 
   [[nodiscard]] int Nv() const noexcept { return n_; }
 
+  /// The whole-body terms that are on (a positive weight).
+  [[nodiscard]] bool VelocityTermActive() const noexcept { return vel_on_; }
+
+  [[nodiscard]] bool StopRestTermActive() const noexcept { return rest_stop_on_; }
+
+  [[nodiscard]] bool AngularMomentumTermActive() const noexcept { return ang_on_; }
+
   /// Whether the catch instant is a variable of this core (header note).
   [[nodiscard]] bool CatchTimeVariable() const noexcept { return tc_on_; }
 
@@ -867,6 +909,10 @@ class MpcDockingSegmentCore {
                                            MpcDockingSegmentCoreResult& out) noexcept;
   [[nodiscard]] bool EvaluateTrajectory(bool with_jacobians, Evaluation& ev) noexcept;
   void AssembleQp() noexcept;
+  /// Take the angular term's coefficients at the trajectory in (q_, v_) and
+  /// its Hessian from them (header note).
+  void FreezeAngular() noexcept;
+  [[nodiscard]] double AngularWeight(Eigen::Index k) const noexcept;
   void MapRow(Eigen::Index k, const Eigen::VectorXd* a_q, const Eigen::VectorXd* a_v) noexcept;
   void AddScalarResidual(double weight, double residual) noexcept;
   void SetRow(Eigen::Index row, double lower, double upper) noexcept;
@@ -928,6 +974,8 @@ class MpcDockingSegmentCore {
   bool torque_cost_{false}, acc_cost_{false}, posture_cost_{false}, near_cost_{false};
   bool manip_on_{false}, impact_rows_{false}, impact_cost_{false}, impact_on_{false};
   bool timing_on_{false}, perp_on_{false};
+  bool vel_on_{false}, rest_stop_on_{false}, ang_on_{false};
+  bool ang_frozen_{false};  // the angular coefficients were taken (FreezeAngular)
 
   pinocchio::Model model_;
   pinocchio::Data data_;
@@ -935,6 +983,12 @@ class MpcDockingSegmentCore {
 
   Eigen::VectorXd q_lo_, q_hi_, v_hi_, a_hi_, u_hi_, inv_tau_, tau_lo_, tau_hi_;
   Eigen::VectorXd r_tau_, r_tau2_, r_acc_, r_jerk_, r_jerk_stop_, w_q_nom_, q_nom_, manip_d_q_;
+  Eigen::VectorXd w_vel_, w_rest_stop_;  // n; zeros where off
+  // The angular term's held coefficients: A_k (3 × n per node) and d_k; and
+  // its Hessian in the jerk variables (nu × nu, nodes 1..N).
+  Eigen::Matrix<double, 3, Eigen::Dynamic> ag_, dag_v_;
+  Eigen::MatrixXd h_ang_;
+  Eigen::MatrixXd m_ang_;  // n × n workspace: AᵀA of one node
   std::array<int, kMaxMpcNodes> block_of_node_{};
   std::array<int, kMaxSegmentNodes> block_first_{};    // first interval of block b
   std::array<double, kMaxSegmentNodes> block_span_{};  // Σ_{k∈b} Δ_k [s]

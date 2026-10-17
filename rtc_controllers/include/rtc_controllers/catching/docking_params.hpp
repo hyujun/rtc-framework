@@ -38,6 +38,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 
 namespace rtc::catching {
@@ -153,8 +154,11 @@ void ApplyHandDocking(const HandDockingParams& hand, double t_close_e2e_s, doubl
 ///         `core:` is named as belonging under robot.hand.docking), a pair
 ///         lambda1 + lambda2 that is not positive, or `nv` outside
 ///         [1, kMaxPlanNv] when the map is present.
+/// @param whole_body whether the map may hold the whole-body keys
+///        (`cost.angular_momentum`): the segment planner's may, the search's
+///        may not — the search plans the chain alone (#641 D10′).
 void ReadDockingCoreParams(const YAML::Node& core_map, const std::string& path, int nv,
-                           MpcDockingSegmentCoreParams& core);
+                           MpcDockingSegmentCoreParams& core, bool whole_body = true);
 
 /// @brief `catching.planner.search.nlp.*` into a default-constructed
 ///        NlpCatchSearchParams, its `core:` sub-map into `.core`. Not read here
@@ -168,6 +172,29 @@ void ReadDockingCoreParams(const YAML::Node& core_map, const std::string& path, 
 ///         that do not sum to stop.n_nodes, or n_pre.max + stop.n_nodes above
 ///         kMaxSegmentNodes.
 [[nodiscard]] NlpCatchSearchParams ParseNlpSearchParams(const YAML::Node& catching, int nv);
+
+/// One joint group's keys under `planner.segment.mpc_docking.groups.<name>`
+/// (E3-F02, #641), `<name>` a `planner.groups` name: the per-joint weights of
+/// `core:` for this group's joints (NaN = not given — the core's own value),
+/// the whole-body weights, and the group's move blocking. A group without an
+/// entry takes these defaults, which change nothing.
+struct DockingGroupParams {
+  double r_tau{std::numeric_limits<double>::quiet_NaN()};
+  double r_jerk{std::numeric_limits<double>::quiet_NaN()};
+  double r_jerk_stop{std::numeric_limits<double>::quiet_NaN()};
+  double w_q_nom{std::numeric_limits<double>::quiet_NaN()};
+  /// `w_vel` [(rad/s)⁻²] — velocity on both running sums; 0 = off.
+  double w_vel{0.0};
+  /// `w_rest_stop` [rad⁻²] — the stop nodes held near q_nom (the wait pose);
+  /// the pre-catch half is `w_q_nom`. 0 = off.
+  double w_rest_stop{0.0};
+  /// `blocks.pre` — pre-catch intervals per block (≥ 1), the remainder in the
+  /// last; `blocks.stop` — the group's stop partition (Σ = stop.n_nodes, ≥ 3
+  /// blocks), n_stop_blocks 0 = `stop.blocks`.
+  int pre_block{1};
+  std::array<int, kMaxSegmentNodes> stop_blocks{};
+  int n_stop_blocks{0};
+};
 
 /// `catching.planner.segment.mpc_docking.*`: the new segment planner's own
 /// values. Defaults are the values of the search's shared grid.
@@ -208,6 +235,10 @@ struct MpcDockingSegmentPlannerParams {
   double slack_v_max{0.0};
   /// `core:`.
   MpcDockingSegmentCoreParams core;
+  /// `groups.<name>` (E3-F02) at the index of `planner.groups`; n_groups is
+  /// that list's length (0 = no groups).
+  std::array<DockingGroupParams, kMaxJointGroups> groups{};
+  int n_groups{0};
 
   [[nodiscard]] std::int64_t DtPreNs() const noexcept {
     return static_cast<std::int64_t>(std::llround(dt_pre_s * 1e9));
@@ -225,8 +256,10 @@ struct MpcDockingSegmentPlannerParams {
 ///         `core.rows.torque: false` — the one `core:` key the two maps do not
 ///         share: a segment is what the arm follows and keeps its torque rows,
 ///         the switch is the search's (`planner.search.nlp.core.rows.torque`).
+/// `groups` is `planner.groups` as parsed (ParsePlannerParams): the names
+/// `groups.<name>` may use.
 [[nodiscard]] MpcDockingSegmentPlannerParams ParseMpcDockingSegmentParams(
-    const YAML::Node& catching, int nv);
+    const YAML::Node& catching, int nv, std::span<const JointGroupSpec> groups = {});
 
 /// @brief Whether the nlp search can run with this planner. The planner
 ///        republishes the search's solution after re-evaluating it on its own

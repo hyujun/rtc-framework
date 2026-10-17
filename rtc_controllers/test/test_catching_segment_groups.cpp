@@ -4,12 +4,15 @@
 // Judged: each model joint's group, the partition each core is built with, the
 // fold of groups without keys into the problem without groups, the refusals,
 // and a first segment planned with per-group partitions.
+#include "rtc_controllers/catching/docking_params.hpp"
 #include "rtc_controllers/catching/joint_groups.hpp"
+#include "rtc_controllers/catching/mpc_docking_segment_planner.hpp"
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
 #include "rtc_controllers/catching/transition_table.hpp"
+#include "rtc_controllers/testing/mpc_docking_fixture.hpp"
 #include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
 #include "rtc_controllers/testing/synthetic_tree_fixture.hpp"
 
@@ -392,6 +395,142 @@ TEST(SegmentGroupsMpc, NoWeightLeavesTheCoresWithoutTheTermsAndARestWeightNeedsT
   MpcSegmentPlanner planner;
   EXPECT_FALSE(planner.Configure(ModelOf(tree, true), Consts(), p, &FixedClock, &err));
   EXPECT_NE(err.find("w_rest > 0 needs planner.wait_pose (0 entries, the arm has 17)"),
+            std::string::npos)
+      << err;
+}
+
+// ── The docking planner ──────────────────────────────────────────────────────
+
+namespace dk = rtc::testing::mpc_docking;
+using rtc::catching::MpcDockingSegmentCoreParams;
+using rtc::catching::MpcDockingSegmentPlanner;
+using rtc::catching::MpcDockingSegmentPlannerConstants;
+using rtc::catching::MpcDockingSegmentPlannerModel;
+using rtc::catching::MpcDockingSegmentPlannerParams;
+
+std::int64_t StepClock() noexcept {
+  static std::atomic<std::int64_t> clock{0};
+  return clock.fetch_add(1000, std::memory_order_relaxed) + 1000;
+}
+
+struct DockingConfig {
+  MpcDockingSegmentPlannerModel model;
+  MpcDockingSegmentPlannerConstants consts;
+  MpcDockingSegmentPlannerParams params;
+};
+
+// The capacity suite's docking inputs (the docking fixture's cores, 8 × 0.05 s
+// before the catch, a 7-node stop in four blocks) on the reversed device.
+DockingConfig DockingConfigOf(const fx::ArmModel& a, bool groups) {
+  const dk::Rig rig = dk::MakeRig(a);
+  DockingConfig c;
+  c.model.arm = a.model;
+  c.model.catch_frame = a.frame;
+  c.model.nv = a.model->nv;
+  c.model.limits = rig.limits;
+  for (int m = 0; m < c.model.nv; ++m) {
+    c.model.device_of_model[U(m)] = DeviceOf(m);
+    c.model.qd_rating[U(m)] = 2.0 * rig.limits.qd_max[m];
+    c.model.warm_pose[U(DeviceOf(m))] = a.q_nominal[m];
+  }
+  if (groups) {
+    std::string why;
+    const std::vector<JointGroupSpec> specs = Specs();
+    const std::vector<std::string> joints = DeviceJoints();
+    EXPECT_TRUE(rtc::catching::ResolveJointGroups(specs, joints, c.model.groups, &why)) << why;
+    c.params.n_groups = 3;
+  }
+  c.consts.t_arm_s = 0.0;
+  c.consts.control_dt = 0.002;
+  c.params.n_pre_max = 3;
+  c.params.dt_pre_s = 0.05;
+  c.params.n_stop = 7;
+  c.params.dt_stop_s = 0.05;
+  c.params.n_stop_blocks = 4;
+  c.params.stop_block_sizes = {1, 1, 2, 3};
+  c.params.core = rig.params;
+  return c;
+}
+
+bool SameVector(const Eigen::VectorXd& x, const Eigen::VectorXd& y) {
+  return x.size() == y.size() && (x.size() == 0 || x == y);
+}
+
+TEST(SegmentGroupsDocking, GroupsWithoutKeysLeaveTheCoresAsTheyWere) {
+  const fx::ArmModel tree = SyntheticTree(kTrunk, kArm, 2);
+  const DockingConfig plain = DockingConfigOf(tree, false);
+  const DockingConfig grouped = DockingConfigOf(tree, true);
+  MpcDockingSegmentPlanner a, b;
+  std::string err;
+  ASSERT_TRUE(a.Configure(plain.model, plain.consts, plain.params, &StepClock, &err)) << err;
+  ASSERT_TRUE(b.Configure(grouped.model, grouped.consts, grouped.params, &StepClock, &err)) << err;
+  for (int j = 1; j <= 3; ++j) {
+    const MpcDockingSegmentCoreParams& pa = a.CoreParamsFor(j);
+    const MpcDockingSegmentCoreParams& pb = b.CoreParamsFor(j);
+    EXPECT_TRUE(SameVector(pa.r_tau, pb.r_tau));
+    EXPECT_TRUE(SameVector(pa.r_jerk, pb.r_jerk));
+    EXPECT_TRUE(SameVector(pa.r_jerk_stop, pb.r_jerk_stop));
+    EXPECT_TRUE(SameVector(pa.w_q_nom, pb.w_q_nom));
+    EXPECT_EQ(pb.w_vel.size(), 0);
+    EXPECT_EQ(pb.w_rest_stop.size(), 0);
+    EXPECT_FALSE(b.CoreFor(j).VelocityTermActive());
+  }
+  for (int m = 0; m < kNv; ++m) {
+    EXPECT_EQ(b.GroupOfModel(m), GroupOfModelJoint(m)) << m;
+  }
+}
+
+TEST(SegmentGroupsDocking, EachJointTakesItsGroupsWeights) {
+  const fx::ArmModel tree = SyntheticTree(kTrunk, kArm, 2);
+  DockingConfig c = DockingConfigOf(tree, true);
+  // "other" (0): held at the stop and before it, no torque cost; "trunk" (1):
+  // damped, its own jerk weights; "reach" (2): nothing of its own.
+  c.params.groups[0].w_rest_stop = 2.0;
+  c.params.groups[0].w_q_nom = 3.0;
+  c.params.groups[0].r_tau = 0.0;
+  c.params.groups[1].w_vel = 0.4;
+  c.params.groups[1].r_jerk = 5.0;
+  c.params.groups[1].r_jerk_stop = 6.0;
+  MpcDockingSegmentPlanner planner;
+  std::string err;
+  ASSERT_TRUE(planner.Configure(c.model, c.consts, c.params, &StepClock, &err)) << err;
+  const MpcDockingSegmentCoreParams& base = c.params.core;  // uniform per joint
+  for (int j = 1; j <= 3; ++j) {
+    const MpcDockingSegmentCoreParams& cp = planner.CoreParamsFor(j);
+    ASSERT_EQ(cp.w_vel.size(), kNv);
+    ASSERT_EQ(cp.w_rest_stop.size(), kNv);
+    ASSERT_EQ(cp.r_tau.size(), kNv);
+    for (int m = 0; m < kNv; ++m) {
+      SCOPED_TRACE("model joint " + std::to_string(m));
+      const int g = GroupOfModelJoint(m);
+      EXPECT_EQ(cp.w_vel[m], g == 1 ? 0.4 : 0.0);
+      EXPECT_EQ(cp.w_rest_stop[m], g == 0 ? 2.0 : 0.0);
+      EXPECT_EQ(cp.w_q_nom[m], g == 0 ? 3.0 : base.w_q_nom[m]);
+      EXPECT_EQ(cp.r_tau[m], g == 0 ? 0.0 : base.r_tau[m]);
+      EXPECT_EQ(cp.r_jerk[m], g == 1 ? 5.0 : base.r_jerk[m]);
+      EXPECT_EQ(cp.r_jerk_stop[m], g == 1 ? 6.0 : base.r_jerk[m]) << "empty = r_jerk";
+    }
+    EXPECT_TRUE(planner.CoreFor(j).VelocityTermActive());
+    EXPECT_TRUE(planner.CoreFor(j).StopRestTermActive());
+  }
+  // Every group's torque weight 0: the core's "off", an empty vector.
+  for (auto& gp : c.params.groups) {
+    gp.r_tau = 0.0;
+  }
+  MpcDockingSegmentPlanner off;
+  ASSERT_TRUE(off.Configure(c.model, c.consts, c.params, &StepClock, &err)) << err;
+  EXPECT_EQ(off.CoreParamsFor(1).r_tau.size(), 0);
+}
+
+TEST(SegmentGroupsDocking, RefusesGroupsTheModelAndTheProfileDisagreeOn) {
+  const fx::ArmModel tree = SyntheticTree(kTrunk, kArm, 2);
+  DockingConfig c = DockingConfigOf(tree, true);
+  c.params.n_groups = 0;
+  MpcDockingSegmentPlanner planner;
+  std::string err;
+  EXPECT_FALSE(planner.Configure(c.model, c.consts, c.params, &StepClock, &err));
+  EXPECT_NE(err.find("joint groups (3) are not the ones planner.segment.mpc_docking was parsed "
+                     "with (0)"),
             std::string::npos)
       << err;
 }
