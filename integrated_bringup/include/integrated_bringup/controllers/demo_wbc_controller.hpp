@@ -951,6 +951,9 @@ class DemoWbcController final : public RTControllerInterface {
   // before tsid_controller_.Init() re-creates the formulation and in
   // on_cleanup. FillWbcDiagLogPod reads InvertedCount() through it (#551).
   const rtc::tsid::JointLimitConstraint* joint_limit_constraint_{nullptr};
+  // tsid.constraints.<joint_limit>.position_margin as configured (−1 = none);
+  // LoadConfig compares it with integration.position_margin (#551).
+  double tsid_joint_limit_margin_{-1.0};
   bool tsid_initialized_{false};
   // dyn_qp_fail_count_ — Dynamic WBC (TSID-ID) QP. NON-critical: a failure drops
   //   the hand τ_ff this tick only; the Kinematic CLIK-QP still owns position.

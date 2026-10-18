@@ -99,6 +99,42 @@ TEST(DemoWbcConfigLint, Se3TaskNameMatchesMapKey) {
   }
 }
 
+// ── #551: the two position margins have an order ────────────────────────────
+//
+// The CLIK position backbone (integration.position_margin) parks a joint at
+// ITS margin; the TSID joint_limit constraint turns its own position_margin
+// into an acceleration box that collapses to full braking inside that band.
+// If the TSID band is not strictly narrower, a joint resting on a limit sits
+// inside it on every tick (p1b idle: 98 % of ticks primal-infeasible before the
+// box repair). The runtime only WARNs, so the shipped files are pinned here.
+TEST(DemoWbcConfigLint, TsidJointLimitMarginIsBelowIntegrationMargin) {
+  for (const auto& cfg : ShippedConfigs()) {
+    YAML::Node root = YAML::LoadFile(cfg.path);
+    const YAML::Node ctrl = root["demo_wbc_controller"];
+    ASSERT_TRUE(ctrl) << cfg.robot << ": missing top-level key";
+    ASSERT_TRUE(ctrl["integration"] && ctrl["integration"]["position_margin"])
+        << cfg.robot << ": integration.position_margin missing";
+    const double clik_margin = ctrl["integration"]["position_margin"].as<double>();
+
+    const YAML::Node constraints = ctrl["tsid"]["constraints"];
+    ASSERT_TRUE(constraints && constraints.IsMap()) << cfg.robot << ": tsid.constraints missing";
+    bool saw_joint_limit = false;
+    for (auto it = constraints.begin(); it != constraints.end(); ++it) {
+      const auto key = it->first.as<std::string>();
+      const YAML::Node c_cfg = it->second;
+      if (!c_cfg["type"] || c_cfg["type"].as<std::string>() != "joint_limit")
+        continue;
+      saw_joint_limit = true;
+      // Same default JointLimitConstraint::Init applies when the key is absent.
+      const double tsid_margin = c_cfg["position_margin"].as<double>(0.05);
+      EXPECT_LT(tsid_margin, clik_margin)
+          << cfg.robot << ": tsid.constraints." << key << ".position_margin (" << tsid_margin
+          << ") must be strictly below integration.position_margin (" << clik_margin << ")";
+    }
+    EXPECT_TRUE(saw_joint_limit) << cfg.robot << ": expected a joint_limit constraint";
+  }
+}
+
 // ── #340: the shipped `arm_dof` migration, pinned ────────────────────────────
 //
 // `arm_dof` became a required key with no fallback, so a shipped YAML that
