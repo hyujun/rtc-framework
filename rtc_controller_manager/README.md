@@ -182,7 +182,7 @@ ros2 lifecycle set /integrated_rt_controller activate     # 재시작
 
 #### 런타임 전환 (`/rtc_cm/switch_controller`)
 
-요청의 `strictness` (STRICT / BEST_EFFORT) 로 activate/deactivate 목록을 단일 대상으로 정리한 뒤 sync 로 전환한다. 순서는 이렇다: 사전 조건 (E-STOP idle · single-active) → 이름/`config_key` 로 조회 (`Unknown` 이면 거부) → 대상 `on_activate` → 활성 index 를 atomic 으로 교체 → RT tick 1회 대기 → 이전 컨트롤러 `on_deactivate` → `/rtc_cm/active_controller_name` 발행 → `ok=true` 응답. 응답이 오면 새 컨트롤러가 이미 RT 루프에 보인다. 컨트롤러의 `on_activate` 는 base 가 no-op 이며 첫 `Compute()` tick 에서 현재 device state 로 자체 seed 한다.
+요청의 `strictness` (STRICT / BEST_EFFORT) 로 activate/deactivate 목록을 단일 대상으로 정리한 뒤 sync 로 전환한다. 순서: 사전 조건 (E-STOP idle · single-active) → 이름/`config_key` 로 조회 (`Unknown` 이면 거부) → 대상 `on_activate` → 활성 index 를 atomic 으로 교체 → RT tick 1회 대기 → 이전 컨트롤러 `on_deactivate` → `/rtc_cm/active_controller_name` 발행 → `ok=true` 응답. 응답이 오면 새 컨트롤러가 이미 RT 루프에 보인다. `on_activate` 는 base 가 no-op 이며 첫 `Compute()` tick 에서 현재 device state 로 자체 seed 한다.
 
 deactivate 만 담은 요청은 거부된다 (single-active) — 내리려면 교체할 컨트롤러를 activate 에 넣는다.
 
@@ -279,17 +279,17 @@ latch 가 서면 (또는 해제 검증 창 동안) 컨트롤러 output 은 `Devi
 
 #### Backend safe-output 계약
 
-`DeviceBackend::WriteSafeCommand()` 는 pure virtual 이고 인자가 없다. CM 은 actuator 에 normal command 를 보낼 수 없고 **hold 도 못 만들 때** (device 가 non-finite 위치를 보고) 부른다. zero-length command 는 fail-closed 가 아니라 "하던 것을 계속하라" 는 침묵이다. 현재 backend 3종의 답은 "마지막 good command 재발행" 이므로 물리적으로는 침묵 경로와 같은 자리에 머문다. 달라지는 것은 의도가 wire 와 rosbag 에 명시된다는 것이다. 새 backend 는 `device_backend.hpp` 의 Doxygen 계약을 따른다.
+`DeviceBackend::WriteSafeCommand()` 는 pure virtual 이고 인자가 없다. CM 은 actuator 에 normal command 를 보낼 수 없고 **hold 도 못 만들 때** (device 가 non-finite 위치를 보고) 부른다. zero-length command 는 fail-closed 가 아니라 "하던 것을 계속하라" 는 침묵이다. backend 3종의 답은 "마지막 good command 재발행" 이므로 물리적으로는 침묵 경로와 같은 자리에 머문다. 달라지는 것은 의도가 wire 와 rosbag 에 명시된다는 것이다. 새 backend 는 `device_backend.hpp` 의 Doxygen 계약을 따른다.
 
 ### 타이밍과 로그
 
-`ControllerTimingProfiler` 가 `Compute()` 의 락-프리 히스토그램 (200 버킷, 10 us 간격, 0-2000 us) 을 모은다. RT 루프가 1000 tick 마다 로깅 스레드에 요청해 서머리를 내고 리셋하므로 각 출력은 **직전 윈도우**의 값이다.
+`ControllerTimingProfiler` 가 `Compute()` 의 락-프리 히스토그램 (200 × 10 us 버킷) 을 모은다. RT 루프가 1000 tick 마다 서머리를 요청하고 리셋하므로 각 출력은 **직전 윈도우** 값이다.
 
 ```text
 <ctrl> timing: elapsed=Xs  mean=Yµs  max=Zµs  overruns=N  skips=N  nrt_pub_drops=N  timing_drops=N  rt_cb_timing_drops=N
 ```
 
-누적 카운터 (`overruns` · `skips` · `*_drops`) 는 서머리 리셋과 무관하다. 예산은 `1e6 / control_rate` µs 다. sim 모드의 `elapsed` 는 `count × period` (가상 시간) 이고 robot 모드는 wall-clock 이다.
+누적 카운터 (`overruns` · `skips` · `*_drops`) 는 서머리 리셋과 무관하다. sim 은 `n/a(sim)` ([docs/testing.md](../docs/testing.md) cm_timing 행). 예산은 `1e6 / control_rate` µs 다. sim 모드의 `elapsed` 는 `count × period` (가상 시간) 이고 robot 모드는 wall-clock 이다.
 
 타이밍 CSV 는 세션 디렉토리 `<session>/timing/` 아래에 쓰인다. 세 채널이 같은 5-컬럼 payload (`t_state_us` · `t_compute_us` · `t_publish_us` · `t_total_us` · `jitter_us`) 에 공통 컬럼 `t_wall_ns` · `tick_count` · `run_id` 를 붙인다.
 

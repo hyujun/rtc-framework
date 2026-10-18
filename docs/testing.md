@@ -90,6 +90,7 @@ timing CSV 는 `ros2 run rtc_tools plot_rtc_log <csv> --stats` 로 읽는다.
 | 세션 CSV 의 끝이 잘렸다 | SIGINT 로 끝낸다 — `-9` 는 CSV flush 를 날린다. `ros2 launch` 에 보낸 SIGINT 가 45 s 안에 안 끝난 적이 있으니 노드에 직접 `kill -INT $(pidof integrated_rt_controller mujoco_simulator_node)` |
 | `pkill -f <노드>` 가 자기 셸을 죽인다 (exit 144), `pgrep -f` 가 엉뚱한 PID 를 섞는다 | 명령을 `bash -c '…'` 로 감싸는 셸은 자기 커맨드라인에 그 패턴을 담는다. 노드는 `pidof <실행 파일 이름>` 으로 찾고 (`pgrep -x` 는 15 자에서 잘려 0 건이 된다), 직접 띄운 것은 띄울 때의 `$!` 로 죽인다 — `ros2 launch` · `ros2 topic pub` 은 실행 파일이 python 이라 `$!` 뿐이다 |
 | 남겨 둔 평가 세션이 사라졌다 | launch 는 기동할 때 `logging_data/` 를 `max_log_sessions` (출하 10) 로 잘라 오래된 세션을 지운다. 세션을 모으는 동안에는 모든 기동에 `max_log_sessions:=<현재 개수 + 여유>` 를 주고, 판정에 쓸 세션은 끝나는 즉시 다른 곳으로 복사한다 |
+| 한 세션 CSV 안에서 열 수가 중간에 바뀐다 (pandas `Expected N fields … saw M`) | 세션 이름은 `YYMMDD_HHMM` 이라 **같은 분에 띄운 두 기동은 한 세션 폴더를 공유**하고, 로거는 있던 CSV 에 헤더 없이 이어 쓴다 (다른 로봇이면 λ 열 수가 다르다). 기동 사이를 1 분 이상 띄우거나, 끝난 세션을 다음 기동 전에 복사해 둔다 |
 | 켜 둔 sim 이 디스크를 채운다 | 활성 컨트롤러는 대기 중에도 tick 마다 CSV 를 쓴다 (무장한 catching 컨트롤러는 약 3.4 GB/h). 확인이 끝나면 바로 내린다. 정리할 때는 `YYMMDD_HHMM` 세션 폴더만 지운다 — 옆의 `*.json` · `stats/` · `ur_plot/` 은 사용자 파일이다 |
 | sim 의 `<group>/joint_states` 구독이 0 메시지, "incompatible QoS" 경고 | sim 은 상태를 BEST_EFFORT depth 1 로 발행한다. 구독도 BEST_EFFORT (sensor-data QoS) 로 한다 |
 
