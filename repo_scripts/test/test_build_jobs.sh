@@ -320,6 +320,26 @@ test_setup_env_is_safe_to_source() {
   expect_eq "no helper functions leak" none "$out"
 }
 
+# `set -u` 인 caller: ROS 의 setup.bash 와 colcon overlay 는 미정의 변수를 읽는다
+# (AMENT_TRACE_SETUP_FILES). -u 인 셸이 출력을 /dev/null 로 보낸 채 source 하면 아무
+# 메시지 없이 끝났다 — mutation 드라이버의 빌드가 "0 초 실패" 로 보였다 (#857). 가짜
+# overlay 가 그 변수를 읽게 해 경로를 탄다; -u 는 caller 의 상태로 돌아와야 한다.
+test_setup_env_survives_nounset_callers() {
+  local out
+  mkdir -p "$FAKE_WS/install"
+  # shellcheck disable=SC2016  # overlay 안에서 펼친다
+  printf ': "$AMENT_TRACE_SETUP_FILES"\n' >"$FAKE_WS/install/setup.bash"
+  # shellcheck disable=SC2016
+  out="$(run_clean -- bash -c 'set -euo pipefail; source "$1" >/dev/null 2>&1; [[ $- == *u* ]] && echo "alive -u"' \
+    _ "$FAKE_REPO/repo_scripts/scripts/setup_env.sh")" || true
+  expect_eq "set -euo pipefail caller survives, -u restored" "alive -u" "$out"
+  # shellcheck disable=SC2016
+  out="$(run_clean -- bash -c 'set -eo pipefail; source "$1" >/dev/null 2>&1; [[ $- == *u* ]] || echo "alive no -u"' \
+    _ "$FAKE_REPO/repo_scripts/scripts/setup_env.sh")" || true
+  expect_eq "set -eo pipefail caller survives, -u not added" "alive no -u" "$out"
+  rm -rf -- "$FAKE_WS/install"
+}
+
 # MuJoCo 가 없는 호스트 (fresh PC 의 robot 모드, CI): setup_env.sh 의 MuJoCo 탐색
 # `ls -d /opt/mujoco-* | sort | tail` 은 ls 가 2 로 끝나고, `set -eo pipefail` 인
 # build.sh · install.sh 가 그 대입에서 출력 없이 종료됐다 — 아무것도 설치하기 전에.
@@ -948,6 +968,7 @@ test_setup_env_exports_default_jobs
 test_setup_env_respects_explicit_choices
 test_setup_env_bad_knob_warns_and_falls_back
 test_setup_env_is_safe_to_source
+test_setup_env_survives_nounset_callers
 
 test_build_default_is_one_package_and_capped_jobs
 test_build_jobs_flag_sets_make_jobs_not_workers

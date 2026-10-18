@@ -177,12 +177,10 @@ cd "$PROJECT_DIR" 2>/dev/null || exit 0
 WORKSPACE="$(cd "$PROJECT_DIR/../.." 2>/dev/null && pwd)"
 SETUP_ENV="$PROJECT_DIR/repo_scripts/scripts/setup_env.sh"
 if [ -z "${RTC_DEPS_PREFIX:-}" ] && [ -f "$SETUP_ENV" ]; then
-  # ROS setup.bash references unbound vars (AMENT_TRACE_SETUP_FILES), which
-  # aborts the hook under `set -u`: relax -u only around the source. -e stays on.
-  set +u
+  # ROS setup.bash reads unbound vars (AMENT_TRACE_SETUP_FILES); setup_env.sh
+  # lifts -u for its own duration and restores it, so this `set -u` hook survives.
   # shellcheck source=/dev/null
   source "$SETUP_ENV"
-  set -u
 fi
 
 # ── Verification baseline ──
