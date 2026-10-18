@@ -3381,5 +3381,38 @@ out=$(run_hook "$dir")
 expect_not_contains "83e: a third-level directory under an existing one raises none" "$out" "public surface changed"
 rm -rf "$dir"
 
+# 84. Formatter drift is graded before the build, and under --run it means
+#     nothing is built: the run is blocked whatever the build answers, and the
+#     reformat changes what its verdict would be keyed on (#880: one file's
+#     drift threw away a 150 s build and test). Once formatted, --run builds.
+if have_formatter; then
+  dir=$(make_fixture)
+  bcount=$(mktemp)
+  tcount=$(mktemp)
+  bstub=$(make_counting_build_stub "$bcount")
+  tstub=$(make_test_stub "$tcount" 0)
+  printf 'int existing( ){return   1;}\n' >"$dir/rtc_demo/src/existing.cpp"
+  out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+  expect_exit "84: --run over formatter drift blocks" "$rc" 2
+  expect_contains "84: ...naming the drift" "$out" "clang-format -i rtc_demo/src/existing.cpp"
+  expect_contains "84: ...and saying nothing was built" "$out" "build/test NOT run — formatter drift"
+  if [ "$(calls "$bcount")" = 0 ] && [ "$(calls "$tcount")" = 0 ]; then
+    pass "84: --run over formatter drift neither builds nor tests"
+  else
+    fail "84: --run over formatter drift built $(calls "$bcount") and tested $(calls "$tcount") times"
+  fi
+  printf 'int existing() { return 1; }\n' >"$dir/rtc_demo/src/existing.cpp"
+  out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+  expect_exit "84: --run over the formatted file passes" "$rc" 0
+  if [ "$(calls "$bcount")" = 1 ] && [ "$(calls "$tcount")" = 1 ]; then
+    pass "84: ...and builds and tests it once"
+  else
+    fail "84: the formatted --run built $(calls "$bcount") and tested $(calls "$tcount") times"
+  fi
+  rm -rf "$dir" "$bstub" "$tstub" "$bcount" "$tcount"
+else
+  skip "84: formatter drift before the build (no clang-format/uvx)"
+fi
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
