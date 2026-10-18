@@ -81,7 +81,7 @@ colcon test-result --verbose
 
 1. **spec · 법칙 commit** — 코드 · 문서만 바꾼다. 아직 고치지 않은 단언 때문에 red 이므로, 본문에 "의도된 red" 와 다음 commit 이 고칠 단언 목록을 적는다. 이 commit 을 한 번 빌드해 red 집합이 그 목록과 같은지 본다 — 목록 밖의 red 는 E-6 로 escalate 한다.
 2. **E-6 commit** — 단언만 다시 고정하고, 무엇을 무엇으로 바꿨는지 · 왜 회귀 은폐가 아닌지를 본문에 적는다. 두 commit 은 연달아 넣고, 검증은 2 뒤의 트리로 한다.
-3. **1 과 2 사이에서 멈출 때** (escalation 으로 사용자 결정을 기다릴 때 등) — red HEAD 로 멈추지 않는다. `git branch wip/<slug>` 로 1 을 보관하고 branch 를 마지막 green commit 으로 되돌린 뒤 그 트리의 검증을 남긴다. 재개할 때 `wip/<slug>` 로 돌아가고 그 branch 를 지운다. (Claude Code 의 Stop hook 은 turn 끝 트리의 green verdict 를 요구하므로 이 경우 turn 을 끝낼 수 없다.)
+3. **red 인 채로 멈출 때** (escalation 으로 사용자 결정을 기다릴 때 등) — 1 을 commit 하기 전의 red 집합 확인에서든 1 과 2 사이에서든, red HEAD 나 red 작업 트리로 멈추지 않는다. escalation 을 보내기 **전에** red 편집을 `wip/<slug>` branch 에 commit 해 보관하고, 작업 branch 를 마지막 green commit 으로 되돌린 뒤 그 트리의 검증을 남긴다. 재개할 때 `wip/<slug>` 의 변경을 가져오고 그 branch 를 지운다.
 4. **squash 머지** (사용자 지시일 때만) — 2 의 근거를 squash 본문에 옮겨 적는다. 지키는 것은 commit 개수가 아니라 단언 변경의 감사 가능성이다.
 
 ### PR 전 리뷰와 정리
