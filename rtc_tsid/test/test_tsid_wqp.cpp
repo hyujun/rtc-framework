@@ -11,6 +11,7 @@
 #include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
+#include "rtc_tsid/constraints/joint_limit_constraint.hpp"
 #include "rtc_tsid/controller/tsid_controller.hpp"
 #include "rtc_tsid/formulation/formulation_factory.hpp"
 #include "rtc_tsid/formulation/wqp_formulation.hpp"
@@ -20,6 +21,53 @@ namespace rtc::tsid {
 namespace {
 
 class WQPFormulationTest : public test::PandaNoContactTest {};
+
+// ──────────────────────────────────────────────
+// #551: a joint resting inside the joint-limit position-margin band
+// ──────────────────────────────────────────────
+// Reproduces the DemoWbc idle failure without a simulator: the raw joint-limit
+// box inverts on that joint (l > u) and the whole QP went primal-infeasible
+// every tick. With the row collapsed onto its velocity bound the QP solves and
+// pins that joint's acceleration to full braking toward the range.
+TEST_F(WQPFormulationTest, WqpSolvesWithJointOnLimit) {
+  YAML::Node formulation_config;
+  formulation_config["formulation_type"] = "wqp";
+  auto formulation = std::make_unique<WQPFormulation>();
+  formulation->Init(*model_, robot_info_, contact_cfg_, formulation_config);
+
+  auto posture = std::make_unique<PostureTask>();
+  YAML::Node task_cfg;
+  task_cfg["kp"] = 100.0;
+  task_cfg["kd"] = 20.0;
+  task_cfg["weight"] = 1.0;
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
+
+  auto jl = std::make_unique<JointLimitConstraint>();
+  YAML::Node jl_cfg;
+  jl_cfg["dt"] = 0.002;
+  jl_cfg["position_margin"] = 0.05;
+  jl_cfg["velocity_margin"] = 0.1;
+  jl->Init(*model_, robot_info_, cache_, jl_cfg);
+  const JointLimitConstraint* jl_view = jl.get();
+  formulation->AddConstraint(std::move(jl));
+
+  Eigen::VectorXd q = 0.5 * (robot_info_.q_lower + robot_info_.q_upper);
+  q(0) = robot_info_.q_upper(0) - 0.001;  // at rest, inside the margin band
+  Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
+  cache_.Update(q, v);
+  ref_.q_des = q;
+  ref_.v_des = v;
+  ref_.a_des.setZero(robot_info_.nv);
+
+  const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
+
+  EXPECT_EQ(jl_view->InvertedCount(), 1);
+  ASSERT_TRUE(result.converged) << "qp status " << result.status << " (2 = PRIMAL_INFEASIBLE)";
+  EXPECT_EQ(result.status, 0);
+  const double a_vel_lb0 = (-(robot_info_.v_max(0) - 0.1) - v(0)) / 0.002;
+  EXPECT_NEAR(result.x_opt(0), a_vel_lb0, 1e-3 * std::abs(a_vel_lb0));
+}
 
 // ──────────────────────────────────────────────
 // Posture-only WQP (no contacts)

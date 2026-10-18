@@ -4,7 +4,7 @@ TSID (Task-Space Inverse Dynamics) QP 솔버 라이브러리와 velocity-level C
 
 ## 개요
 
-URDF 기반 매니퓰레이터의 전신 제어(Whole-Body Control)용 QP 를 구성하고 푼다. Weighted QP (WQP) 와 Hierarchical QP (HQP) formulation 을 Strategy 패턴으로 교체할 수 있고, 백엔드는 ProxSuite (ProxQP) 다. compute 경로는 사전 할당된 workspace 만 쓰며 (RT-1), 동역학 계산은 Pinocchio 공유 캐시 하나로 한다. phase 별 가중치·태스크 활성은 YAML preset 으로 바꾼다.
+URDF 기반 매니퓰레이터의 전신 제어(Whole-Body Control)용 QP 를 구성하고 푼다. WQP · HQP formulation 을 Strategy 패턴으로 교체할 수 있고, 백엔드는 ProxSuite (ProxQP) 다. compute 경로는 사전 할당 workspace 만 쓰고 (RT-1) 동역학은 Pinocchio 공유 캐시 하나로 한다. phase 별 가중치·태스크 활성은 YAML preset 으로 바꾼다.
 
 ROS 2 노드나 `RTControllerInterface` 구현이 아니라 정적 라이브러리다. 소비자는 [rtc_controllers](../rtc_controllers/README.md) 와 [integrated_bringup](../integrated_bringup/README.md) 의 컨트롤러다. `rtc_mpc` 에는 의존하지 않는다 — 둘을 잇는 것은 컨트롤러의 몫이다:
 
@@ -60,7 +60,7 @@ const rtc::tsid::CommandOutput out =
 | `ActivateContact(idx)` · `DeactivateContact(idx)` | 접촉점 활성화·비활성화 (`noexcept`) |
 | `Formulation()` | 내부 formulation 참조 |
 
-`CommandOutput` 은 `tau` (구동 토크) · `a_opt` · `lambda_opt` (고정 크기, 비활성 slot ≈ 0) · `qp_converged` · `solve_time_us` · `solve_levels` (WQP 1, HQP N) · `qp_status` · `qp_iterations` · `qp_non_finite` 를 갖는다. 입력 타입은 `types/wbc_types.hpp`.
+`CommandOutput` 은 `tau` (구동 토크) · `a_opt` · `lambda_opt` (고정 크기) · `qp_converged` · `solve_time_us` · `solve_levels` (WQP 1, HQP N) · `qp_status` · `qp_iterations` · `qp_non_finite` 를 갖는다. 입력 타입은 `types/wbc_types.hpp`.
 
 ### Formulation
 
@@ -97,7 +97,7 @@ const rtc::tsid::CommandOutput out =
 | `ContactConstraint` | 등식 | 접촉점 가속도 = 0 |
 | `FrictionConeConstraint` | 부등식 | 쿨롱 마찰 원뿔 선형 근사 (point / surface) |
 | `TorqueLimitConstraint` | 부등식 | URDF effort limit × YAML `tau_scale` ∈ (0, 1] (범위 위반 시 init throw) |
-| `JointLimitConstraint` | 부등식 | 가속도 레벨 관절 한계 viability |
+| `JointLimitConstraint` | 부등식 | 1-tick 가속도 box. margin 띠 안의 역전 행은 속도 bound 로 collapse (`position_margin` < reference margin) |
 
 ### ClikReferenceGenerator
 

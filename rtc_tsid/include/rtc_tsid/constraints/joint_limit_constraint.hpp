@@ -5,21 +5,29 @@
 namespace rtc::tsid {
 
 // ────────────────────────────────────────────────
-// Acceleration-level joint limit viability constraint
-// (Del Prete 2018)
+// Acceleration-level joint limit constraint — ONE-TICK reachability of the
+// position and velocity limits. (Not the multi-step viability bound of
+// Del Prete 2018: this box only asks that the next sample respect q / v
+// limits, which is why a joint can still be parked inside the margin band.)
 //
-// Position limit → acceleration bound:
+// Position limit → acceleration bound  (q⁺ = q + v·dt + ½·a·dt²):
 //   a_i ≥ 2·(q_min_i - q_i - v_i·dt) / dt²
 //   a_i ≤ 2·(q_max_i - q_i - v_i·dt) / dt²
-//
-// Velocity limit → acceleration bound:
+// Velocity limit → acceleration bound  (v⁺ = v + a·dt):
 //   a_i ≥ (v_min_i - v_i) / dt
 //   a_i ≤ (v_max_i - v_i) / dt
+// Row i: l_i = max(pos_lb, vel_lb), u_i = min(pos_ub, vel_ub); C = [I_nv | 0].
 //
-// 최종: l_i = max(pos_lb, vel_lb), u_i = min(pos_ub, vel_ub)
-// C = [I_{nv} | 0]  (nv × n_vars)
+// Inside the position-margin band the two cross (l_i > u_i). The row is then
+// collapsed onto the velocity bound it crossed (l = u = vel_lb at the upper
+// limit, vel_ub at the lower) so the box stays non-empty and the QP demands
+// full braking toward the range (#551); InvertedCount() says how many rows
+// needed that this tick. Config: dt, position_margin, velocity_margin. Keep
+// position_margin SMALLER than the margin of whatever generates the position
+// reference — a joint parked at that margin otherwise sits in this band on
+// every tick.
 //
-// Floating-base: 처음 6 DoF는 무제약 (l=-∞, u=+∞)
+// Floating-base: the first 6 DoF are unconstrained (l = -∞, u = +∞).
 // ────────────────────────────────────────────────
 class JointLimitConstraint final : public ConstraintBase {
  public:

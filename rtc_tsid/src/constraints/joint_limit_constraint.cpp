@@ -1,6 +1,7 @@
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
 
 #include <cmath>
+#include <stdexcept>
 
 namespace rtc::tsid {
 
@@ -14,6 +15,13 @@ void JointLimitConstraint::Init(const pinocchio::Model& /*model*/, const RobotMo
     dt_ = constraint_config["dt"].as<double>(0.002);
     margin_pos_ = constraint_config["position_margin"].as<double>(0.05);
     margin_vel_ = constraint_config["velocity_margin"].as<double>(0.1);
+  }
+  // Init is non-RT: reject what would make every box below meaningless.
+  if (!(std::isfinite(dt_) && dt_ > 0.0)) {
+    throw std::invalid_argument("joint_limit: dt must be finite and > 0");
+  }
+  if (!std::isfinite(margin_pos_) || !std::isfinite(margin_vel_)) {
+    throw std::invalid_argument("joint_limit: position_margin / velocity_margin must be finite");
   }
 
   // Position limits (margin 적용)
@@ -60,6 +68,11 @@ void JointLimitConstraint::Init(const pinocchio::Model& /*model*/, const RobotMo
     const int na = nv_ - offset;
     for (int i = 0; i < na; ++i) {
       const double vl = robot_info.v_max(offset + i);
+      // v_max == 0 is a locked joint and legitimate; negative or non-finite
+      // would put vel_lb above vel_ub on every tick.
+      if (!(std::isfinite(vl) && vl >= 0.0)) {
+        throw std::invalid_argument("joint_limit: velocity limit must be finite and >= 0");
+      }
       const double eff_margin = (vl > 2.0 * margin_vel_) ? margin_vel_ : 0.0;
       v_min_(offset + i) = -vl + eff_margin;
       v_max_limit_(offset + i) = vl - eff_margin;
@@ -136,11 +149,22 @@ void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
     l_block(i) = std::max(a_pos_lb_(i), a_vel_lb_(i));
     u_block(i) = std::min(a_pos_ub_(i), a_vel_ub_(i));
 
-    // Inside the position-margin band the two bounds can cross (l > u = empty
-    // box → the whole QP is primal-infeasible). Count it for the diagnostics
-    // log; non-finite inputs are the wrapper's non_finite path, not a box.
+    // Inside the position-margin band the position bound crosses the opposite
+    // velocity bound (l > u): one empty row makes the whole QP primal
+    // infeasible (#551). Collapse the row onto the velocity bound it crossed —
+    // the repair ClikReferenceGenerator::AssembleBox applies at velocity
+    // level — so the box stays non-empty and the QP demands full braking
+    // toward the range. Continuous at the crossing (there u = pos_ub =
+    // vel_lb); rows that did not cross are untouched. Both sides cannot cross
+    // at once while q_min_ <= q_max_. Non-finite q / v take the unrepaired
+    // path on purpose: that is QPSolverWrapper's non_finite rejection, and a
+    // std::max/min on NaN must not be laundered into a box (NUM-7).
     if (std::isfinite(qi) && std::isfinite(vi) && l_block(i) > u_block(i)) {
       ++inverted;
+      // Upper band: pos_ub < vel_lb. Lower band: pos_lb > vel_ub.
+      const double pinned = (a_pos_ub_(i) < a_vel_lb_(i)) ? a_vel_lb_(i) : a_vel_ub_(i);
+      l_block(i) = pinned;
+      u_block(i) = pinned;
     }
   }
   inverted_count_ = inverted;
