@@ -517,7 +517,7 @@ $$
 
   $\sigma_{floor}$ 가 §1.3 의 $\sigma_{trk}$ 자리다 (키 `catch.{kappa, sigma_floor, w_max, w_const}`).
 - **상대속도 비용의 목표.** $\gamma_{ref}\hat v_b$ 다 ($\gamma_{ref}\in(0,1]$, 아래 "상대속도 목표"). slack 행의 기준은 $\hat v_b$ 그대로다.
-- **토크 행.** 행과 slack 을 관절의 $\tau_{\max,j}$ 로 나눈다 — $s_\tau$ 는 무차원 ($\tau_{\max}$ 의 비율) 이고 벌점 $\rho_\tau$ 가 관절마다 같은 세기로 걸린다. $\rho_\tau=0$ 이면 토크 행과 slack 변수가 없다.
+- **토크 행.** 행과 slack 을 관절의 $\tau_{\max,j}$ 로 나눈다 — $s_\tau$ 는 무차원 ($\tau_{\max}$ 의 비율) 이라 관절들의 초과를 같은 단위로 비교하고, 벌점 $\rho_\tau$ 는 노드에서 가장 크게 넘는 관절에 걸린다 (아래). $\rho_\tau=0$ 이면 토크 행과 slack 변수가 없다.
 - **토크 slack 은 노드당 하나.** §1.3 의 벡터 $s_{\tau,k}\in\mathbb R^n$ (관절마다 하나) 대신 노드의 관절들이 $s_{\tau,k}$ 하나를 나눠 쓴다 (#857). slack 이 켜진 해에서 $s_{\tau,k}=\max_j\big(\vert\tau^{lin} _ {k,j}\vert/\tau_{\max,j}-\eta' _ \tau\big)^+$ 다 — 노드 안의 $\ell_\infty$ 벌점이고 (관절별 slack 은 넘는 관절들의 합에 벌을 준다), 최대가 아닌 관절은 $\eta' _ \tau+s_{\tau,k}$ 까지 공짜로 쓴다. 벌점이 정확한 (hard 문제가 실행 가능하면 $s=0$) 조건은 $\rho_\tau\ge\sum_j(\lambda^+ _ {k,j}+\lambda^- _ {k,j})$ — 노드마다 **그 노드의 토크 행 승수의 합** 이다 (관절별 slack 은 승수 하나하나). 게시 판정 (§13.2) 은 slack 의 최댓값을 읽으므로 뜻이 같다.
 - **포구 전 노드 수.** $k_c=n_{pre}$ 이고 풀기 전에 정한다. $T_{bud}$ 는 그 풀이의 예산 (첫 풀이 `budget.first_s`, 재계획 `budget.replan_s`), $h$ 는 제어 주기다:
 
