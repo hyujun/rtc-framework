@@ -3002,6 +3002,15 @@ TEST(MpcSegmentCoreApproachTiming, CostDrivers7R) {
   return MpcSegmentCoreParams{}.solver.eps_primal_inf;
 }
 
+// The B side's (and the infeasible family's) outer iteration cap:
+// RTC_MPC_MAX_ITER_B when set, else the params' own (#880 D10 α — the cap is
+// what bounds an infeasible solve's time once the threshold is 0).
+void ApplyMaxIterB(MpcSegmentCoreParams& p) {
+  if (const char* e = std::getenv("RTC_MPC_MAX_ITER_B"); e != nullptr && e[0] != '\0') {
+    p.solver.max_iter = std::stoi(e);
+  }
+}
+
 struct EpsSide {
   MpcSegmentCore mpc, adv_cold, adv_stale;
   MpcSegmentCoreResult res, res_same, res_adv;
@@ -3018,16 +3027,24 @@ void RunGridEpsPair(const ArmModel& arm, const MpcSegmentCoreLimits& lim, const 
   using rtc::testing::mpc_segment_core::Percentile;
   std::array<EpsSide, 2> side;
   const std::array<double, 2> eps{eps_a, eps_b};
+  int max_iter_b = 0;
   MpcSegmentCoreParams p0;
   for (std::size_t a = 0; a < 2; ++a) {
     MpcSegmentCoreParams p = GridParams(tg.grid);
     TimingCatchParams(p, false);
     p.solver.eps_primal_inf = eps[a];
+    if (a == 1) {
+      ApplyMaxIterB(p);
+      max_iter_b = p.solver.max_iter;
+    }
     Grid next_grid = tg.grid;
     next_grid.n_pre -= 1;
     MpcSegmentCoreParams p_next = GridParams(next_grid);
     TimingCatchParams(p_next, false);
     p_next.solver.eps_primal_inf = eps[a];
+    if (a == 1) {
+      ApplyMaxIterB(p_next);
+    }
     EpsSide& s = side[a];
     ASSERT_EQ(s.mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone) << key;
     ASSERT_EQ(s.adv_cold.Init(*arm.model, arm.frame, p_next, lim), MpcSegmentCoreReason::kNone);
@@ -3095,6 +3112,7 @@ void RunGridEpsPair(const ArmModel& arm, const MpcSegmentCoreLimits& lim, const 
   const std::array<std::string, 2> side_name{"a", "b"};
   ::testing::Test::RecordProperty(key + ".eps_a", std::to_string(eps_a));
   ::testing::Test::RecordProperty(key + ".eps_b", std::to_string(eps_b));
+  ::testing::Test::RecordProperty(key + ".max_iter_b", max_iter_b);
   for (std::size_t a = 0; a < 2; ++a) {
     for (std::size_t m = 0; m < 4; ++m) {
       ReportSeries(key + "." + side_name[a] + "." + series_name[m], side[a].series[m]);
@@ -3113,9 +3131,10 @@ void RunGridEpsPair(const ArmModel& arm, const MpcSegmentCoreLimits& lim, const 
     ::testing::Test::RecordProperty(k + ".total_p50_ratio_permille",
                                     static_cast<int>(std::lround(1e3 * p50_b / p50_a)));
     std::printf(
-        "[eps] %-26s b/a (%.0e/%.0e): total p50 %.3f p99 %.3f | iter p50 %.0f/%.0f | fail %d/%d "
+        "[eps] %-26s b/a (%.0e@%d / %.0e): total p50 %.3f p99 %.3f | iter p50 %.0f/%.0f | fail "
+        "%d/%d "
         "| retried %d/%d\n",
-        k.c_str(), eps_b, eps_a, p50_b / p50_a, p99_b / p99_a, Percentile(a.iters, 0.5),
+        k.c_str(), eps_b, max_iter_b, eps_a, p50_b / p50_a, p99_b / p99_a, Percentile(a.iters, 0.5),
         Percentile(b.iters, 0.5), a.failures, b.failures, a.retried, b.retried);
   }
   ::testing::Test::RecordProperty(key + ".cold.dq_max_urad",
@@ -3212,8 +3231,11 @@ void RunInfeasibleFamily(const ArmModel& arm, const MpcSegmentCoreLimits& lim,
   MpcSegmentCoreParams pc = GridParams(kTimingGrids[4].grid);  // C1, the shipped grid
   TimingCatchParams(pc, false);
   pc.solver.eps_primal_inf = eps;
+  ApplyMaxIterB(pc);
   MpcSegmentCoreParams ps = GridParams({0, 0.1, 7, 0.05, 1, {1, 1, 2, 3}});  // a stop core
   ps.solver.eps_primal_inf = eps;
+  ApplyMaxIterB(ps);
+  ::testing::Test::RecordProperty(key + ".max_iter", pc.solver.max_iter);
   MpcSegmentCore cold, warm, stop;
   ASSERT_EQ(cold.Init(*arm.model, arm.frame, pc, lim), MpcSegmentCoreReason::kNone) << key;
   ASSERT_EQ(warm.Init(*arm.model, arm.frame, pc, lim), MpcSegmentCoreReason::kNone) << key;
@@ -3308,13 +3330,14 @@ void RunInfeasibleFamily(const ArmModel& arm, const MpcSegmentCoreLimits& lim,
     ::testing::Test::RecordProperty(base + ".retried", t.retried);
     ::testing::Test::RecordProperty(base + ".samples", static_cast<int>(t.wall_us.size()));
     std::printf(
-        "[infeasible] %-14s eps %-7.0e %-9s n=%3zu solved %d | status 0/1/2/x %d/%d/%d/%d | wall "
+        "[infeasible] %-14s eps %-7.0e it_max %3d %-9s n=%3zu solved %d | status 0/1/2/x "
+        "%d/%d/%d/%d | wall "
         "p50 %8.0f p99 %8.0f max %8.0f us | iter p50 %4.0f max %5.0f | us/iter p50 %.2f | "
         "retried %d\n",
-        key.c_str(), eps, kind[k], t.wall_us.size(), t.solved, t.status[0], t.status[1],
-        t.status[2], t.status[3], Percentile(t.wall_us, 0.5), Percentile(t.wall_us, 0.99),
-        Percentile(t.wall_us, 1.0), Percentile(t.iters, 0.5), Percentile(t.iters, 1.0),
-        Percentile(t.us_per_iter, 0.5), t.retried);
+        key.c_str(), eps, pc.solver.max_iter, kind[k], t.wall_us.size(), t.solved, t.status[0],
+        t.status[1], t.status[2], t.status[3], Percentile(t.wall_us, 0.5),
+        Percentile(t.wall_us, 0.99), Percentile(t.wall_us, 1.0), Percentile(t.iters, 0.5),
+        Percentile(t.iters, 1.0), Percentile(t.us_per_iter, 0.5), t.retried);
   }
 }
 
