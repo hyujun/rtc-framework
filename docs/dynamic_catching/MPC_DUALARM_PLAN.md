@@ -185,17 +185,18 @@ E1 의 끝난 일 (E1-F19 · F20 · F21, T [#803](https://github.com/hyujun/rtc-
 **mpc planner · catching 의 남은 일**
 
 - [#715](https://github.com/hyujun/rtc-framework/issues/715) — integrated_bringup: 세 군 (두 번째 손) 지원 — 보류
-- [#880](https://github.com/hyujun/rtc-framework/issues/880) — rtc_controllers: `mpc` 코어의 ProxQP 거짓 infeasible (`eps_primal_inf`) 처리 (#857 에서 넘어온 것)
+- [#887](https://github.com/hyujun/rtc-framework/issues/887) — rtc_controllers: `mpc` 코어의 진짜 infeasible 풀이 시간 (warm + cold 재시도) 을 예산 안으로 (#880 에서 넘어온 것)
 
 **`mpc planner · catching 의 남은 일` 의 순서 (권장).** 이 문서에서 남은 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이다. 이슈에 정해진 시기 안에서 고른 순서다.
 
 | 순서 | 이슈 | 착수 조건 | 브랜치 | 착수 때 정할 것 |
 |---|---|---|---|---|
-| 1 | #880 | 충족 — 조건 없음 | 착수 때 확정 | 판정을 끈 뒤의 시간 대가를 재는 기준 (timing fixture · sim 의 시간 가드) 을 던지기 전에 고정 |
+| 1 | #887 | 충족 — 조건 없음 | 착수 때 확정 | 수렴하는 warm 풀이 (same · advance) 의 반복 분포 — warm 상한 · 재시도 판단의 근거를 던지기 전에 고정 |
 | — | #715 | 보류 — 착수 조건이 없다 | — | — |
 
 - **묶지 않는 이유.** `mpc` 의 법칙을 한 PR 에서 두 곳 바꾸면 측정이 원인을 가르지 못한다. PR 을 쌓지 않으므로 같은 파일을 고친다는 것은 묶을 이유가 아니다.
 - **끝난 단독 이슈** — 측정과 결정의 기록은 각 이슈가 갖는다. 남긴 일만 적는다.
+  - [#880](https://github.com/hyujun/rtc-framework/issues/880) (2026-10-19) — `mpc` 코어의 ProxQP 근사 infeasibility 판정을 껐다 (`solver.eps_primal_inf` 0, 새 키) — 오프라인 첫 풀이에서 그것이 실패시킨 5,452 / 약 26만 이 모두 실행 가능한 QP 였다. 그 대신 정말 실행 불가능한 QP 를 묶는 `solver.max_iter` 를 200 → 60, `w_perp` · `w_path` 의 파서 상한을 1e4 → 3e3 으로 내렸고, warm-up 을 box 가운데로 되돌렸다 (#857 의 우회 제거). 오프라인 게시는 그대로이고, sim (두 로봇 × 세 chunk) 의 `qp_failed` 는 29 → 0 이며 #716 · #857 의 가드를 지났다 (`ur5e_p1b` 의 토크 한계 1 투척은 같은 코드의 drift unit 에서도 나는 변동으로 판정 — D13). 남긴 일: 정말 실행 불가능한 풀이의 시간 (→ #887); stale warm start 의 cold 재시도는 남는다 (수렴하지 못하는 warm 풀이).
   - [#857](https://github.com/hyujun/rtc-framework/issues/857) (2026-10-18) — `mpc` 의 토크 slack 을 노드당 하나로 바꿨다 (노드 안에서 가장 크게 넘는 관절에 벌점 — formulation §1.6; 벌점이 정확한 조건은 노드의 토크 행 승수의 합). 오프라인 첫 풀이의 게시는 두 로봇 모두 그대로이고, sim (두 로봇 × 세 chunk) 은 #716 의 가드와 `slack` 보류 가드를 지났다 — 첫 풀이 p99 는 약 30 ms 에서 약 10 ms 로 줄었다. 남긴 일: ProxQP 의 근사 infeasibility 판정이 퇴화한 QP 를 infeasible 로 보는 것 — planner 의 warm-up 자세를 box 가운데에서 비켜 우회했다 (→ #880); `cost.rho_tau` 10 은 노드당 법칙에서 다시 sweep 하지 않았다.
   - [#716](https://github.com/hyujun/rtc-framework/issues/716) (2026-10-16) — `mpc` 의 풀이 시간 예산을 `budget.first_s` 0.040 · `replan_s` 0.030 s 로 올렸다 (두 로봇, #834 에서 넘어온 것 — [측정 ①](https://github.com/hyujun/rtc-framework/issues/716#issuecomment-6188682991)). 폐쇄 창의 경로 이탈 항 `cost.w_path` (formulation §1.6 — 포구 구간 $\mathcal K_c$ 대신 손이 닫히는 창의 포구 전 노드) 를 구현하고 0 으로 출하한다 — `ur5e_p1b` sim 에서 창의 이탈은 줄었지만 포구로 이어지지 않았다 ([측정 ②](https://github.com/hyujun/rtc-framework/issues/716#issuecomment-6200092609), 사용자 결정 D10 a). 남긴 일: 노드당 토크 slack (→ #857, 착수 조건은 E3-F02 의 변형 측정 — [#641 D6](https://github.com/hyujun/rtc-framework/issues/641#issuecomment-6216709591)), `n_pre_max` 를 다시 올리는 판정 (측정 ① 의 기록이 근거가 될 수 있다), 실기 PC 에서의 예산 재측정 (#613 의 단계). 포구 구간을 여러 노드로 두는 것 ($\mathcal K_c$) 은 하지 않았다 — formulation §1.6 은 단일 팔의 포구 구간이 한 노드인 것을 손 폐쇄 명령 시각의 귀결로 적고, 여러 노드로 두려면 세 planner 가 함께 쓰는 그 규칙이 바뀐다 (이슈 없음)
   - [#834](https://github.com/hyujun/rtc-framework/issues/834) (2026-10-15, PR [#839](https://github.com/hyujun/rtc-framework/pull/839)) — 포구 전 격자의 상한 `approach.n_pre_max` 를 `ur5e_p1b` 7 로 올렸다 (`iiwa7_leap` 6, `dt_pre_s` 0.1 그대로). 남긴 일: 풀이 시간 예산 (#716 이 올렸다, 위), 아래 #819 의 `delta_tr` 재측정 · `n_pre` 하한은 이 격자를 기준선으로 잰다. 탐색의 도달 게이트를 격자 시간에 견주는 안은 판단하지 않았다 — [닫는 코멘트](https://github.com/hyujun/rtc-framework/issues/834#issuecomment-6182203068)

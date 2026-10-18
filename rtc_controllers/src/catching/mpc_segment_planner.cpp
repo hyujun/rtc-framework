@@ -31,15 +31,14 @@ constexpr int kPathNewtonSteps = 2;
 // Upper bound on the hand's lead and closure time [s]: keeps the ns
 // conversion far from overflow; a real hand's are a fraction of a second.
 constexpr double kMaxCloseTimingS = 5.0;
-// Where in each joint's range the configure warm-ups solve (WarmUp).
-constexpr double kWarmUpRangeFraction = 0.51;
 
 // The core's design values, all YAML keys, from `planner.segment.mpc.*`: the cost
 // scalars (the stop-path weight among them — both core kinds carry that term,
 // on their nodes from the catch on), the axis and trust-region limits, the
-// rest tolerance and the solver's tolerances. `jerk_weight` is already in
-// model order (empty = the core's all-ones); the preconditioner and the KKT
-// backend are not design values and keep the core's own setting.
+// rest tolerance and the solver's tolerances (the infeasibility threshold
+// among them, #880). `jerk_weight` is already in model order (empty = the
+// core's all-ones); the preconditioner and the KKT backend are not design
+// values and keep the core's own setting.
 void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
                      const Eigen::VectorXd& jerk_weight_model, const Eigen::VectorXd& w_vel,
                      const Eigen::VectorXd& w_rest, const Eigen::VectorXd& q_rest) {
@@ -62,6 +61,7 @@ void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
   mp.solver.max_iter_in = p.solver_max_iter_in;
   mp.solver.eps_abs = p.solver_eps_abs;
   mp.solver.eps_rel = p.solver_eps_rel;
+  mp.solver.eps_primal_inf = p.solver_eps_primal_inf;
 }
 
 // Group g's partition for a core with n_pre pre-catch nodes at replan instance
@@ -475,11 +475,12 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
   // runs. With the stop-path term on (w_⊥ > 0) both kinds solve on that
   // synthetic ball's line — through the catch frame, along its travel — so no
   // warm-up runs on the input's default line.
-  // Not AT the middle (kWarmUpRangeFraction): an arm can stand there with no
-  // joint loaded by gravity (a vertical 7-joint arm at q = 0); the stop from
-  // rest is then degenerate (z = 0, every torque row at 0), and under one
-  // torque slack per node ProxQP's approximate infeasibility test calls it
-  // infeasible (#857 D12). 1 % of each box off its middle is not.
+  // An arm can stand at the middle with no joint loaded by gravity (a
+  // vertical 7-joint arm at q = 0); the stop from rest is then degenerate
+  // (z = 0, every torque row at 0). ProxQP's approximate infeasibility test
+  // called it infeasible (#857 D12, which moved the pose 1 % off the middle);
+  // the cores run without that test (solver.eps_primal_inf 0, #880), and the
+  // degenerate warm-up solves.
   const int n = nv_;
   warmup_max_ns_ = 0;
   warmup_total_ns_ = 0;
@@ -501,7 +502,7 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
   const Eigen::VectorXd& hi = cores_[0]->PositionHigh();
   Eigen::VectorXd q_warm(n);
   for (int m = 0; m < n; ++m) {
-    q_warm[m] = lo[m] + kWarmUpRangeFraction * (hi[m] - lo[m]);
+    q_warm[m] = lo[m] + 0.5 * (hi[m] - lo[m]);
   }
   pinocchio::Data data(*model.arm);
   pinocchio::forwardKinematics(*model.arm, data, q_warm);

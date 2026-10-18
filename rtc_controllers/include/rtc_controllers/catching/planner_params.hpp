@@ -74,10 +74,14 @@ inline constexpr int kSwitchSamplesMax = 64;
 /// stop-path weight the cores are tested to solve with (a stop core alone in
 /// test_catching_mpc_segment_core.cpp, the planner's catch and stop cores on both
 /// test arms in test_catching_approach_planner.cpp). The weight raises the
-/// QP's condition number with nothing else to bound it — the configure
-/// warm-up cannot notice a value too large, its line runs through the catch
-/// frame — so the parser refuses anything above.
-inline constexpr double kMpcSegmentStopPathWeightMax = 1e4;
+/// QP's condition number, so a solve needs more outer steps as it grows: a
+/// 6-joint arm's catch-core warm-up needs 121 – 150 at 1e4, solves at 3e3
+/// within `solver.max_iter` 60 (the shipped cap, #880 D11) and fails there
+/// with 40 (#880 D12). The configure warm-up is no check on the weight — it
+/// solves one synthetic line, not every line a replan may — so the parser
+/// refuses anything above. The bound holds at max_iter 60; a profile that
+/// lowers `solver.max_iter` is outside what it was tested with.
+inline constexpr double kMpcSegmentStopPathWeightMax = 3e3;
 
 /// Capacity of the MPC segment planner's replan window: instances k = 0..k_max, one
 /// MpcSegmentCore each (MD-31). A capacity, not a default (the default k_max is 4).
@@ -276,10 +280,18 @@ struct MpcSegmentPlannerParams {
   double ref_speed_fraction{0.9};
   /// `solver.max_iter` · `max_iter_in` (≥ 1) · `eps_abs` (> 0) · `eps_rel`
   /// (≥ 0): the QP's tolerances. Preconditioner and backend stay in code.
-  int solver_max_iter{200};
+  int solver_max_iter{60};
   int solver_max_iter_in{100};
   double solver_eps_abs{1e-6};
   double solver_eps_rel{0.0};
+  /// `solver.eps_primal_inf` (≥ 0): the threshold of ProxQP's approximate
+  /// primal-infeasibility test (tsid::QPSolverConfig::eps_primal_inf). It
+  /// decides both ways — a larger value reports feasible QPs whose
+  /// multipliers grow fast as infeasible (#880: a degenerate rest solve at a
+  /// gravity-free pose), a smaller one lets an infeasible QP run to max_iter.
+  /// The default and the shipped profiles hold 0 with max_iter 60 (the core's
+  /// own values, MpcSegmentCoreParams::solver — the measurement is noted there).
+  double solver_eps_primal_inf{0.0};
   /// Whether the profile set `horizon` itself: the code default above is
   /// MD-24's horizon, not MD-54's, and the configure warns when the MPC segment
   /// planner runs on it.

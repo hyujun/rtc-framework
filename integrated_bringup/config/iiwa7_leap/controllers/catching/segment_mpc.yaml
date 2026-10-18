@@ -147,7 +147,7 @@ demo_catching_controller:
             # 130,247 first solves that one per joint kept at 0, and the
             # published throws stayed 5,060 of 16,230.
             rho_tau: 10.0
-            # Stop-path weight [1/m^2], in [0, 1.0e4]: on the nodes from the
+            # Stop-path weight [1/m^2], in [0, 3.0e3]: on the nodes from the
             # catch on, the squared distance of the catch frame from a line is
             # penalised. 0 = off — the solve is the one before this key existed.
             # The line is the BALL's (decided 2026-10-03, #698): through its
@@ -157,15 +157,15 @@ demo_catching_controller:
             # solve with no line to build — a ball slower than v_eps (above), or
             # a followed segment that carries no line — is withheld, not solved
             # on a default. The weight raises the QP's condition number; above
-            # 1.0e4, the largest value the cores are tested with, the configure
-            # refuses the key.
+            # 3.0e3, the largest value the cores are tested to solve with at
+            # solver.max_iter 60 (#880), the configure refuses the key.
             # 100 is measured (#713, sim): at the end of the stop the hand is a
             # median 2.5 mm off the line — 67 mm at 0, 21 mm at 10 — and the
             # solves keep their budgets. Nothing above 100 was thrown. The line
             # and the distance are recorded for every solve (planner_events.csv
             # segment_stop_*), at 0 too.
             w_perp: 100.0
-            # Closing-window path weight [1/m^2], in [0, 1e4] (#716): on the
+            # Closing-window path weight [1/m^2], in [0, 3e3] (#716): on the
             # pre-catch nodes inside the hand's closing window [t_cmd - h/2,
             # t_cmd + T_close_e2e + h/2], t_cmd = t_c - T_close_lead, the
             # catch frame's distance from the ball's predicted path near where
@@ -205,8 +205,21 @@ demo_catching_controller:
           solver:
             # ProxQP: outer and inner iteration caps (>= 1) and tolerances. The
             # preconditioner update and the KKT backend are not keys (the RT
-            # no-allocation and infeasibility verdict rely on them).
-            max_iter: 200
+            # no-allocation relies on them).
+            # max_iter bounds a QP that is really infeasible (eps_primal_inf 0
+            # below lets it run to the cap). Measured (#880, the offline grid map at
+            # eps_primal_inf 0): 30 and above keep every converging first solve
+            # (160,733), 20 cuts five; the other shipped arm cuts one at 30. 60
+            # keeps a margin on both and holds an infeasible solve to about 0.1 s
+            # cold (0.2 - 0.3 s when a warm run fails and is retried).
+            max_iter: 60
             max_iter_in: 100
             eps_abs: 1.0e-6
             eps_rel: 0.0
+            # ProxQP's approximate primal-infeasibility threshold (>= 0; 0 accepts
+            # an exact certificate only). At ProxQP's default 1e-4 it called
+            # feasible QPs infeasible: every first solve it failed in the offline
+            # maps solves at 0 (#880), as does a vertical 7-joint arm's stop from
+            # rest (#857 D12) - the configure warm-up runs that stop at the box
+            # middle, so a positive value can refuse the configure on such an arm.
+            eps_primal_inf: 0.0

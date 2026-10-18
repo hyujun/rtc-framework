@@ -689,14 +689,14 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
   d.w_perp =
       ReadInterval(cost, "w_perp", "segment.mpc.cost.w_perp", d.w_perp, 0.0, false,
                    kMpcSegmentStopPathWeightMax, false,
-                   "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
+                   "[0, 3e3] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
                    "tested with)");
   // The closing-window path weight (#716; 0 = off): the same form as w_perp
   // on other nodes, so the same tested bound.
   d.w_path =
       ReadInterval(cost, "w_path", "segment.mpc.cost.w_path", d.w_path, 0.0, false,
                    kMpcSegmentStopPathWeightMax, false,
-                   "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
+                   "[0, 3e3] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
                    "tested with)");
   const YAML::Node ang = Section(cost, "angular_momentum", "segment.mpc.cost.angular_momentum");
   for (const auto& e : ang) {
@@ -745,6 +745,8 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
       ReadPositive(solver, "eps_abs", "segment.mpc.solver.eps_abs", d.solver_eps_abs);
   d.solver_eps_rel =
       ReadNonNegative(solver, "eps_rel", "segment.mpc.solver.eps_rel", d.solver_eps_rel);
+  d.solver_eps_primal_inf = ReadNonNegative(
+      solver, "eps_primal_inf", "segment.mpc.solver.eps_primal_inf", d.solver_eps_primal_inf);
   // A shifted previous solution meets the terminal equality only to eps_abs
   // (the core's check, mpc_segment_core.cpp Init): a rest tolerance at or below it
   // would refuse every warm solve.

@@ -374,6 +374,7 @@ TEST(MpcSegmentParams, TheDesignKeysDefaultToTheCoresOwnValues) {
   EXPECT_EQ(d.solver_max_iter_in, core.solver.max_iter_in);
   EXPECT_EQ(d.solver_eps_abs, core.solver.eps_abs);
   EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel);
+  EXPECT_EQ(d.solver_eps_primal_inf, core.solver.eps_primal_inf);
   EXPECT_EQ(d.ref_speed_fraction, 0.9);  // the planner's own former constant (MD-62)
   // An absent section changes nothing either.
   const auto absent =
@@ -383,8 +384,8 @@ TEST(MpcSegmentParams, TheDesignKeysDefaultToTheCoresOwnValues) {
   EXPECT_EQ(absent.solver_max_iter, core.solver.max_iter);
 }
 
-// Twelve keys, twelve distinct values: a read wired to the wrong field, or to
-// the default, shows as a mismatch on its own line.
+// Thirteen keys, thirteen distinct values: a read wired to the wrong field, or
+// to the default, shows as a mismatch on its own line.
 TEST(MpcSegmentParams, TheDesignKeysParse) {
   const auto d = ParsePlannerParams(YAML::Load(R"(
 planner:
@@ -393,7 +394,8 @@ planner:
       cost: {jerk_weight: [1.0, 2.0, 3.0], u_scale: 500.0, w_delta: 2.5, rho_tau: 7.0}
       catch: {axis_theta_max: 1.2}
       linearization: {delta_tr: 0.2, reference_rest_tol: 2.0e-5, ref_speed_fraction: 0.8}
-      solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, eps_rel: 1.0e-5}
+      solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, eps_rel: 1.0e-5,
+               eps_primal_inf: 3.0e-6}
 )"))
                      .mpc_segment;
   ASSERT_EQ(d.jerk_weight.size(), 3U);
@@ -411,13 +413,16 @@ planner:
   EXPECT_EQ(d.solver_max_iter_in, 150);
   EXPECT_EQ(d.solver_eps_abs, 2.0e-7);
   EXPECT_EQ(d.solver_eps_rel, 1.0e-5);
+  EXPECT_EQ(d.solver_eps_primal_inf, 3.0e-6);
   // Valid edges: rho_tau 0 (torque rows off), w_delta 0, ref_speed_fraction at
   // the minimum-jerk peak factor (above 1 the reference may run over the
-  // velocity box, #819).
+  // velocity box, #819), eps_primal_inf 0 (an exact certificate only, #880).
   const auto edge =
       ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {rho_tau: 0.0, w_delta: "
-                                    "0.0}, linearization: {ref_speed_fraction: 1.875}}}}"))
+                                    "0.0}, linearization: {ref_speed_fraction: 1.875}, "
+                                    "solver: {eps_primal_inf: 0.0}}}}"))
           .mpc_segment;
+  EXPECT_EQ(edge.solver_eps_primal_inf, 0.0);
   EXPECT_EQ(edge.rho_tau, 0.0);
   EXPECT_EQ(edge.w_delta, 0.0);
   EXPECT_EQ(edge.ref_speed_fraction, rtc::catching::kMinJerkPeakFactor);
@@ -485,6 +490,9 @@ TEST(MpcSegmentParams, RejectsADesignKeyByName) {
       {"solver: {eps_abs: -1.0e-6}", "planner.segment.mpc.solver.eps_abs'"},
       {"solver: {eps_rel: -1.0e-6}", "planner.segment.mpc.solver.eps_rel'"},
       {"solver: {eps_rel: .inf}", "planner.segment.mpc.solver.eps_rel'"},
+      {"solver: {eps_primal_inf: -1.0e-6}", "planner.segment.mpc.solver.eps_primal_inf'"},
+      {"solver: {eps_primal_inf: .inf}", "planner.segment.mpc.solver.eps_primal_inf'"},
+      {"solver: {eps_primal_inf: .nan}", "planner.segment.mpc.solver.eps_primal_inf'"},
   };
   for (const Case& c : cases) {
     const std::string why = message(c.body);
@@ -563,8 +571,8 @@ TEST(MpcSegmentParams, TheStopPathWeightDefaultsOffAndParses) {
   EXPECT_EQ(on.w_delta, 2.5);
   EXPECT_EQ(on.rho_tau, 7.0);
   // Both ends of [0, kMpcSegmentStopPathWeightMax] are values a profile may write.
-  EXPECT_EQ(rtc::catching::kMpcSegmentStopPathWeightMax, 1e4);
-  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_perp: 1.0e+4}}}}"))
+  EXPECT_EQ(rtc::catching::kMpcSegmentStopPathWeightMax, 3e3);
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_perp: 3.0e+3}}}}"))
                 .mpc_segment.w_perp,
             rtc::catching::kMpcSegmentStopPathWeightMax);
 }
@@ -589,12 +597,12 @@ TEST(MpcSegmentParams, RejectsTheStopPathWeightByName) {
   };
   // Valid neighbours beside it, so only this key's range can be what refuses.
   for (const char* bad :
-       {"-0.1", "-1.0e-12", ".nan", ".inf", "-.inf", "10000.001", "1.0e+5", "1.0e+9"}) {
+       {"-0.1", "-1.0e-12", ".nan", ".inf", "-.inf", "3000.001", "1.0e+4", "1.0e+5", "1.0e+9"}) {
     const std::string why =
         message(std::string("cost: {w_delta: 1.0, rho_tau: 10.0, w_perp: ") + bad + "}");
     ASSERT_FALSE(why.empty()) << "w_perp: " << bad << " was accepted";
     EXPECT_TRUE(has(why, key)) << why;
-    EXPECT_TRUE(has(why, "must be a finite number in [0, 1e4]")) << why;
+    EXPECT_TRUE(has(why, "must be a finite number in [0, 3e3]")) << why;
     EXPECT_TRUE(has(why, "kMpcSegmentStopPathWeightMax")) << why;
     EXPECT_FALSE(has(why, "w_delta")) << why;
     EXPECT_FALSE(has(why, "rho_tau")) << why;
@@ -627,7 +635,7 @@ TEST(MpcSegmentParams, TheClosingWindowPathWeightDefaultsOffAndParses) {
   EXPECT_EQ(on.w_path, 40.0);
   EXPECT_EQ(on.w_perp, 70.0);
   EXPECT_EQ(on.w_delta, 2.5);
-  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_path: 1.0e+4}}}}"))
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_path: 3.0e+3}}}}"))
                 .mpc_segment.w_path,
             rtc::catching::kMpcSegmentStopPathWeightMax);
 }
@@ -646,13 +654,13 @@ TEST(MpcSegmentParams, RejectsTheClosingWindowPathWeightByName) {
   const auto has = [](const std::string& text, const std::string& part) {
     return text.find(part) != std::string::npos;
   };
-  for (const char* bad :
-       {"-0.1", "-1.0e-12", "-1.0", ".nan", ".inf", "-.inf", "10000.001", "1.0e+5", "1.0e+9"}) {
+  for (const char* bad : {"-0.1", "-1.0e-12", "-1.0", ".nan", ".inf", "-.inf", "3000.001", "1.0e+4",
+                          "1.0e+5", "1.0e+9"}) {
     const std::string why =
         message(std::string("cost: {w_delta: 1.0, rho_tau: 10.0, w_path: ") + bad + "}");
     ASSERT_FALSE(why.empty()) << "w_path: " << bad << " was accepted";
     EXPECT_TRUE(has(why, key)) << why;
-    EXPECT_TRUE(has(why, "must be a finite number in [0, 1e4]")) << why;
+    EXPECT_TRUE(has(why, "must be a finite number in [0, 3e3]")) << why;
     EXPECT_FALSE(has(why, "w_delta")) << why;
     EXPECT_FALSE(has(why, "rho_tau")) << why;
   }
