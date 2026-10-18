@@ -275,8 +275,9 @@ TEST(SegmentCapacity, TheMpcPlannerConfiguresOnSeventeenJoints) {
 }
 
 // #880 D8 (i): the warm-ups at the middle of the tree's box (q = 0 on its
-// symmetric limits), per infeasibility threshold — recorded; the replica is
-// the planner's own warm-up at the planner's pose.
+// symmetric limits), per infeasibility threshold — recorded, and none fails at
+// the cores' own threshold; the replica is the planner's own warm-up at the
+// planner's pose.
 TEST(SegmentCapacity, TheSeventeenJointWarmUpsAtTheBoxMiddlePerInfeasibilityThreshold) {
   namespace wu = rtc::testing::mpc_warm_up;
   const fx::ArmModel tree = SyntheticTree(kTrunk, kArm, 2);
@@ -298,6 +299,9 @@ TEST(SegmentCapacity, TheSeventeenJointWarmUpsAtTheBoxMiddlePerInfeasibilityThre
       failed += s.ok ? 0 : 1;
     }
     RecordProperty("tree17.eps_" + wu::EpsKey(eps) + ".failed", failed);
+    if (eps == rtc::catching::MpcSegmentCoreParams{}.solver.eps_primal_inf) {
+      EXPECT_EQ(failed, 0) << "at the cores' own threshold (#880)";
+    }
   }
 }
 

@@ -689,14 +689,14 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
   d.w_perp =
       ReadInterval(cost, "w_perp", "segment.mpc.cost.w_perp", d.w_perp, 0.0, false,
                    kMpcSegmentStopPathWeightMax, false,
-                   "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
+                   "[0, 3e3] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
                    "tested with)");
   // The closing-window path weight (#716; 0 = off): the same form as w_perp
   // on other nodes, so the same tested bound.
   d.w_path =
       ReadInterval(cost, "w_path", "segment.mpc.cost.w_path", d.w_path, 0.0, false,
                    kMpcSegmentStopPathWeightMax, false,
-                   "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
+                   "[0, 3e3] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
                    "tested with)");
   const YAML::Node ang = Section(cost, "angular_momentum", "segment.mpc.cost.angular_momentum");
   for (const auto& e : ang) {

@@ -160,9 +160,11 @@
 //    only reason, valid, qp_status, the iteration counts, presolved,
 //    cold_retried and the timings change.
 //  • A warm main QP that fails is solved once more from zero
-//    (result.cold_retried): iterates left by another problem make ProxQP call
-//    a feasible QP infeasible. cold_start on a new problem avoids paying for
-//    the failed run.
+//    (result.cold_retried): from iterates left by another problem ProxQP may
+//    not converge within solver.max_iter on a feasible QP (and, under an
+//    approximate infeasibility test, called such QPs infeasible — #880). A
+//    QP that is really infeasible fails both runs, so it costs two. cold_start
+//    on a new problem avoids paying for the failed run.
 //  • Heap: this core allocates nothing in Solve(). Everything up to the QP
 //    (linearisation, FK, condensing) is pinned by a C-level malloc gate; the
 //    extraction after the QP shares its Solve with ProxQP, whose C mallocs
@@ -252,11 +254,13 @@ struct MpcSegmentCoreParams {
   /// (u/u_scale)², so changing it re-weights jerk against w_Δ, w_⊥ and ρ_τ.
   double u_scale{1e3};
   double w_delta{1.0};  ///< pull toward the reference x̄ [1/rad²]
-  /// Catch-frame off-line error weight [1/m²]; 0 = off. Tested up to 1e4;
-  /// large values raise H's condition number (more ProxQP iterations).
+  /// Catch-frame off-line error weight [1/m²]; 0 = off. Large values raise
+  /// H's condition number (more ProxQP iterations): the planner's parser
+  /// bounds it where its cores still solve within solver.max_iter
+  /// (kMpcSegmentStopPathWeightMax).
   double w_perp{0.0};
-  /// Closing-window path weight [1/m²]; 0 = off (header note, #716). Tested
-  /// up to 1e4, like w_perp.
+  /// Closing-window path weight [1/m²]; 0 = off (header note, #716). Bounded
+  /// like w_perp.
   double w_path{0.0};
   /// The nodes the path term may sit on, indexed by node k. Only
   /// 1..n_pre − 1 may be set (Init: kParamsInvalid otherwise); read only with
@@ -279,7 +283,8 @@ struct MpcSegmentCoreParams {
   double axis_theta_max{1.5707963267948966};
   /// Torque slack penalty (per node); 0 = torque rows off. Exact only above
   /// every node's sum of torque-row multipliers (header note); larger values
-  /// slow ProxQP and trigger false infeasibility verdicts. The E1-F01 sweep
+  /// slow ProxQP (and, under an approximate infeasibility test, drew false
+  /// infeasibility verdicts — solver.eps_primal_inf below). The E1-F01 sweep
   /// (#627) found 10 exact with one slack per joint and node; #857 records it
   /// for one per node.
   double rho_tau{10.0};
@@ -291,10 +296,19 @@ struct MpcSegmentCoreParams {
   /// solver.eps_abs: a shifted previous solution is at rest only to eps_abs.
   double reference_rest_tol{1e-4};
   /// Re-equilibrated every solve; PrimalDualLDLT backend (see QPSolverConfig).
+  /// eps_primal_inf 0: only an exact infeasibility certificate ends a solve
+  /// early. ProxQP's approximate test (its default 1e-4) called feasible QPs
+  /// of this core infeasible — every first solve it failed in the offline
+  /// grid maps (5,452 of about 262,000, #880) and a vertical 7-joint arm's
+  /// stop from rest at q = 0 (#857 D12) solve without it. An infeasible QP
+  /// then runs to max_iter: 60 outer steps keep every converging first solve
+  /// of those maps (the hardest takes 31 – 40; 30 cuts one) and hold an
+  /// infeasible solve to about 0.1 s cold on a 7-joint arm (#880 D11).
   /// Designated so a field added to QPSolverConfig cannot shift these.
-  tsid::QPSolverConfig solver{.max_iter = 200,
+  tsid::QPSolverConfig solver{.max_iter = 60,
                               .update_preconditioner = true,
-                              .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT};
+                              .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT,
+                              .eps_primal_inf = 0.0};
   /// Joint velocity weight w_vel,j [(rad/s)⁻²] per joint (header note); empty
   /// or all zero = off. Each entry in [0, kWholeBodyWeightMax].
   Eigen::VectorXd w_vel;
@@ -340,8 +354,9 @@ struct MpcSegmentCoreInput {
   /// Start the main QP from x = y = z = 0. A supplied reference does not reset
   /// the warm start by itself; set this when the problem is a NEW one (a new
   /// plan, another core's grid point), where the last problem's iterates
-  /// mislead ProxQP. Left false there, the solve still succeeds — a failed
-  /// warm run is retried cold (result.cold_retried) — but pays for both runs.
+  /// mislead ProxQP (it may not converge from them within solver.max_iter).
+  /// Left false there, the solve still succeeds — a failed warm run is
+  /// retried cold (result.cold_retried) — but pays for both runs.
   bool cold_start{false};
   // ── Catch inputs: read (and validated) only with params.catch_terms ────────
   Eigen::Vector3d p_b{

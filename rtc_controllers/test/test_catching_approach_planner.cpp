@@ -1669,8 +1669,9 @@ TEST(ApproachPlanner, TheWarmUpReplicaIsThePlannersWarmUp) {
 // #880 D8 (i): the warm-ups at the MIDDLE of the box — where a vertical 7-joint
 // arm stands with no joint loaded by gravity (q = 0) and its stop from rest is
 // degenerate (#857 D12) — per threshold, on the shipped arms and the two test
-// arms. Recorded per threshold; ProxQP's default 1e-4 is the control: it
-// calls the 7-joint arm's degenerate stop infeasible.
+// arms. Recorded per threshold; at the cores' own threshold (0) every one
+// solves, and ProxQP's default 1e-4 is the control: it calls the 7-joint
+// arm's degenerate stop infeasible.
 TEST(ApproachPlanner, TheWarmUpsAtTheBoxMiddlePerInfeasibilityThreshold) {
   namespace wu = rtc::testing::mpc_warm_up;
 
@@ -1696,6 +1697,10 @@ TEST(ApproachPlanner, TheWarmUpsAtTheBoxMiddlePerInfeasibilityThreshold) {
         failed += s.ok ? 0 : 1;
       }
       RecordProperty(std::string(c.label) + ".eps_" + wu::EpsKey(eps) + ".failed", failed);
+      // At the cores' own threshold every warm-up at the middle solves (#880).
+      if (eps == MpcSegmentCoreParams{}.solver.eps_primal_inf) {
+        EXPECT_EQ(failed, 0) << c.label << " at eps " << eps;
+      }
     }
   }
   // The control: at ProxQP's default the 7-joint arm's degenerate stop from

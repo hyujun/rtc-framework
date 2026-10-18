@@ -1599,8 +1599,9 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
     // A pre-solve starts a NEW stop problem: warm-starting it from the last
     // cycle's iterates (a different problem, with other rows active) made
     // ProxQP report PRIMAL_INFEASIBLE on feasible kinematic stops (~7 % of
-    // random entry states in the timing fixture). Cold here; the full solve
-    // that follows warm-starts from this one.
+    // random entry states in the timing fixture, under ProxQP's approximate
+    // infeasibility test). Cold here; the full solve that follows
+    // warm-starts from this one.
     ResetSolver();
     int status = -1;
     int iters = 0;
@@ -1707,11 +1708,14 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
     const bool warm = solver_warm_;
     MpcSegmentCoreReason why = RunQp(qp_main_, status, iters);
     if (why != MpcSegmentCoreReason::kNone && warm) {
-      // Iterates left by ANOTHER problem (the caller did not set cold_start on
-      // a new plan) make ProxQP report a feasible QP infeasible — about a
-      // quarter of the solves in the timing fixture. The failed run reset the
-      // solver, so this second run starts from zero; a problem that is really
-      // infeasible fails again and that verdict is returned.
+      // From iterates left by ANOTHER problem (the caller did not set
+      // cold_start on a new plan) ProxQP may not converge on a feasible QP
+      // within solver.max_iter — 5 – 10 % of the timing fixture's stale warm
+      // solves at the default solver settings (#880; with ProxQP's
+      // approximate infeasibility test, which also called them infeasible,
+      // about 40 %). The failed run reset the solver, so this second run
+      // starts from zero; a problem that is really infeasible fails again and
+      // that verdict is returned.
       out.cold_retried = true;
       why = RunQp(qp_main_, status, iters);
     }

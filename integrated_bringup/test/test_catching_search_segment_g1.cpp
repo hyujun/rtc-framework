@@ -1486,8 +1486,9 @@ TEST(G1WholeBodyCycle, WithoutItsRestWeightTheLeftArmIsNotBroughtBack) {
 }
 
 // #880 D8 (i): the tree planner's warm-ups at the middle of its box, per
-// infeasibility threshold — recorded; the replica is the planner's own
-// warm-up at the planner's pose (mpc_warm_up_fixture.hpp).
+// infeasibility threshold — recorded, and none fails at the cores' own
+// threshold; the replica is the planner's own warm-up at the planner's pose
+// (mpc_warm_up_fixture.hpp).
 TEST(G1SearchSegmentAgreement, TheTreeWarmUpsAtTheBoxMiddlePerInfeasibilityThreshold) {
   RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   namespace wu = rtc::testing::mpc_warm_up;
@@ -1512,6 +1513,9 @@ TEST(G1SearchSegmentAgreement, TheTreeWarmUpsAtTheBoxMiddlePerInfeasibilityThres
       failed += w.ok ? 0 : 1;
     }
     RecordProperty("g1_tree.eps_" + wu::EpsKey(eps) + ".failed", failed);
+    if (eps == rtc::catching::MpcSegmentCoreParams{}.solver.eps_primal_inf) {
+      EXPECT_EQ(failed, 0) << "at the cores' own threshold (#880)";
+    }
   }
 }
 
