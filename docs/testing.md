@@ -61,7 +61,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `/system/estop_status` | `rtc_controller_manager` | E-STOP 원인 (timeout name / trigger thread) |
 | `/rtc_cm/active_controller_name` | 동일 (TRANSIENT_LOCAL) | 컨트롤러 전환 확인. BT · GUI · digital_twin 이 이 토픽으로 다시 연결한다 |
 | `/forward_position_controller/commands` | robot 모드 + `ur_driver_native` 전용 | `ros2 topic hz` 로 `control_rate` 확인. **sim 에는 없다** — sim 은 `devices.<group>.backend.command_topic` (예: `/ur5e/joint_command`) 을 본다 |
-| `<session>/timing/cm_timing_log.csv` | CM RT loop | tick 별 8열 timing (`run_id`, `t_state_us` … `jitter_us`). p50/p99 는 후처리. `run_id` 로 먼저 묶는다. sim 에서는 `jitter_us` 가 항상 0 |
+| `<session>/timing/cm_timing_log.csv` | CM RT loop | tick 별 8열 timing (`run_id`, `t_state_us` … `jitter_us`). p50/p99 는 후처리. `run_id` 로 먼저 묶는다. sim 에서는 `jitter_us` 가 항상 0. **RT 예산 판정은 이 CSV 로 한다** — `plot_rtc_log --stats` 의 `Overruns (> budget µs)` 행. 종료 요약 line 의 `overruns=` 는 sim 에서 센서가 아니다 (sim 동기화 경로가 overrun 판정을 우회해 `n/a(sim)` 으로 찍힌다) |
 | `<session>/timing/mpc_timing_log.csv` · `rt_callback_timing_log.csv` | MPC thread · rt_callback thread | 같은 8열. MPC tick 당 1행 · device state 콜백당 1행. `rt_callback` 은 열 의미가 lane 고유다 (`t_state_us` = decode, `t_publish_us` = mailbox hand-off, `t_total_us` = slot 2 duty 분자) — dispatch 간격은 연속 행의 `t_wall_ns` 차분 |
 | `/rtc_cm/{group}/joint_states` | CM (그룹별) | 그룹별 건강성 |
 | `/sim/status` | `rtc_mujoco_sim` 1 Hz | sim 건강성 |
@@ -79,6 +79,7 @@ timing CSV 는 `ros2 run rtc_tools plot_rtc_log <csv> --stats` 로 읽는다.
 | 시작하자마자 E-STOP | sim 이면 `init_timeout_sec: 0.0` |
 | Jitter 큼 (> 200 us) | `check_rt_setup.sh --summary` → `cpu_shield.sh status` (격리는 `isolcpus` 가 아니라 cset shield). 단계별 점검은 [rt-optimization.md](rt-optimization.md#5-문제-해결) |
 | Hand timeout E-STOP | UDP 링크 확인. `recv_timeout_ms` 는 로봇별 값이니 `integrated_bringup/config/<robot>/udp_hand_node_*.yaml` 을 본다 |
+| TSID (dynamic) QP 가 거의 매 tick 실패 (`[wbc] Dynamic QP failed` 반복, solve 수 ms) | `wbc_diag.csv` 를 `plot_rtc_log --stats` 로 읽는다 — `QP converged` 비율, `qp_status` 이름별 히스토그램 (MAX_ITER / PRIMAL_INFEASIBLE 구분), `joint_box_inverted` 비율. inverted > 0 이면 관절이 TSID `joint_limit.position_margin` 띠 안에 있는 것이다 — 그 margin 은 position 백본의 `integration.position_margin` 보다 작아야 한다 (#551) |
 | 관절 궤적이 "정착" 인지 "밴드에 pin" 인지 모르겠다 | 컨트롤러 로그의 `joint band engaged:` WARN 구간은 pin 이다. Ctrl-C 로 끝내면 요약이 없다 |
 | `ament_cmake_test` missing | `.venv` overlay 가 system site-packages 를 가림. 재활성화 후 ROS 환경 재로드 |
 | 0.01 초 만의 configure 실패 `Failed to find .../package.sh`, 빌드 직후 테스트 바이너리 없음 | 잘못된 cwd 로 colcon 을 돌린 것. repo 안 `build/`·`install/`·`log/` 삭제 후 workspace root 에서 재실행 |
@@ -89,6 +90,7 @@ timing CSV 는 `ros2 run rtc_tools plot_rtc_log <csv> --stats` 로 읽는다.
 | 세션 CSV 의 끝이 잘렸다 | SIGINT 로 끝낸다 — `-9` 는 CSV flush 를 날린다. `ros2 launch` 에 보낸 SIGINT 가 45 s 안에 안 끝난 적이 있으니 노드에 직접 `kill -INT $(pidof integrated_rt_controller mujoco_simulator_node)` |
 | `pkill -f <노드>` 가 자기 셸을 죽인다 (exit 144), `pgrep -f` 가 엉뚱한 PID 를 섞는다 | 명령을 `bash -c '…'` 로 감싸는 셸은 자기 커맨드라인에 그 패턴을 담는다. 노드는 `pidof <실행 파일 이름>` 으로 찾고 (`pgrep -x` 는 15 자에서 잘려 0 건이 된다), 직접 띄운 것은 띄울 때의 `$!` 로 죽인다 — `ros2 launch` · `ros2 topic pub` 은 실행 파일이 python 이라 `$!` 뿐이다 |
 | 남겨 둔 평가 세션이 사라졌다 | launch 는 기동할 때 `logging_data/` 를 `max_log_sessions` (출하 10) 로 잘라 오래된 세션을 지운다. 세션을 모으는 동안에는 모든 기동에 `max_log_sessions:=<현재 개수 + 여유>` 를 주고, 판정에 쓸 세션은 끝나는 즉시 다른 곳으로 복사한다 |
+| 한 세션 CSV 안에서 열 수가 중간에 바뀐다 (pandas `Expected N fields … saw M`) | 세션 이름은 `YYMMDD_HHMM` 이라 **같은 분에 띄운 두 기동은 한 세션 폴더를 공유**하고, 로거는 있던 CSV 에 헤더 없이 이어 쓴다 (다른 로봇이면 λ 열 수가 다르다). 기동 사이를 1 분 이상 띄우거나, 끝난 세션을 다음 기동 전에 복사해 둔다 |
 | 켜 둔 sim 이 디스크를 채운다 | 활성 컨트롤러는 대기 중에도 tick 마다 CSV 를 쓴다 (무장한 catching 컨트롤러는 약 3.4 GB/h). 확인이 끝나면 바로 내린다. 정리할 때는 `YYMMDD_HHMM` 세션 폴더만 지운다 — 옆의 `*.json` · `stats/` · `ur_plot/` 은 사용자 파일이다 |
 | sim 의 `<group>/joint_states` 구독이 0 메시지, "incompatible QoS" 경고 | sim 은 상태를 BEST_EFFORT depth 1 로 발행한다. 구독도 BEST_EFFORT (sensor-data QoS) 로 한다 |
 

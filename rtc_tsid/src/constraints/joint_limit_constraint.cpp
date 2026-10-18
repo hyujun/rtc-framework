@@ -1,6 +1,7 @@
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
 
 #include <cmath>
+#include <stdexcept>
 
 namespace rtc::tsid {
 
@@ -14,6 +15,15 @@ void JointLimitConstraint::Init(const pinocchio::Model& /*model*/, const RobotMo
     dt_ = constraint_config["dt"].as<double>(0.002);
     margin_pos_ = constraint_config["position_margin"].as<double>(0.05);
     margin_vel_ = constraint_config["velocity_margin"].as<double>(0.1);
+  }
+  // Init is non-RT: reject what would make every box below meaningless.
+  if (!(std::isfinite(dt_) && dt_ > 0.0)) {
+    throw std::invalid_argument("joint_limit: dt must be finite and > 0");
+  }
+  if (!(std::isfinite(margin_pos_) && margin_pos_ >= 0.0) ||
+      !(std::isfinite(margin_vel_) && margin_vel_ >= 0.0)) {
+    throw std::invalid_argument(
+        "joint_limit: position_margin / velocity_margin must be finite and >= 0");
   }
 
   // Position limits (margin 적용)
@@ -38,6 +48,12 @@ void JointLimitConstraint::Init(const pinocchio::Model& /*model*/, const RobotMo
     for (int i = 0; i < na; ++i) {
       const double ql = robot_info.q_lower(q_offset + i);
       const double qu = robot_info.q_upper(q_offset + i);
+      // q_min_ <= q_max_ below relies on this (the collapse assumes at most
+      // one side of a row can cross).
+      if (!(std::isfinite(ql) && std::isfinite(qu) && ql <= qu)) {
+        throw std::invalid_argument(
+            "joint_limit: position limits must be finite with lower <= upper");
+      }
       const double range = qu - ql;
       const double eff_margin = (range > 2.0 * margin_pos_) ? margin_pos_ : 0.0;
       q_min_(offset + i) = ql + eff_margin;
@@ -60,6 +76,11 @@ void JointLimitConstraint::Init(const pinocchio::Model& /*model*/, const RobotMo
     const int na = nv_ - offset;
     for (int i = 0; i < na; ++i) {
       const double vl = robot_info.v_max(offset + i);
+      // v_max == 0 is a locked joint and legitimate; negative or non-finite
+      // would put vel_lb above vel_ub on every tick.
+      if (!(std::isfinite(vl) && vl >= 0.0)) {
+        throw std::invalid_argument("joint_limit: velocity limit must be finite and >= 0");
+      }
       const double eff_margin = (vl > 2.0 * margin_vel_) ? margin_vel_ : 0.0;
       v_min_(offset + i) = -vl + eff_margin;
       v_max_limit_(offset + i) = vl - eff_margin;
@@ -82,25 +103,27 @@ int JointLimitConstraint::IneqDim(const ContactState& /*contacts*/) const noexce
 }
 
 void JointLimitConstraint::ComputeEquality(const PinocchioCache& /*cache*/,
-                                            const ContactState& /*contacts*/,
-                                            const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
-                                            Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
-                                            Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {
+                                           const ContactState& /*contacts*/,
+                                           const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                           Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
+                                           Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {
   // No equality constraints
 }
 
 void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
-                                              const ContactState& /*contacts*/,
-                                              const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
-                                              Eigen::Ref<Eigen::MatrixXd> C_block,
-                                              Eigen::Ref<Eigen::VectorXd> l_block,
-                                              Eigen::Ref<Eigen::VectorXd> u_block) noexcept {
+                                             const ContactState& /*contacts*/,
+                                             const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                             Eigen::Ref<Eigen::MatrixXd> C_block,
+                                             Eigen::Ref<Eigen::VectorXd> l_block,
+                                             Eigen::Ref<Eigen::VectorXd> u_block) noexcept {
   const double dt2 = dt_ * dt_;
 
   // C = [I_{nv} | 0]
   for (int i = 0; i < nv_; ++i) {
     C_block(i, i) = 1.0;
   }
+
+  int inverted = 0;
 
   // Floating-base 또는 fixed-base에 따라 q 접근 방식 결정
   // Fixed-base: cache.q는 [nv], 직접 사용
@@ -133,7 +156,27 @@ void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
     // 최종: tightening
     l_block(i) = std::max(a_pos_lb_(i), a_vel_lb_(i));
     u_block(i) = std::min(a_pos_ub_(i), a_vel_ub_(i));
+
+    // Inside the position-margin band the position bound crosses the opposite
+    // velocity bound (l > u): one empty row makes the whole QP primal
+    // infeasible (#551). Collapse the row onto the velocity bound it crossed —
+    // the repair ClikReferenceGenerator::AssembleBox applies at velocity
+    // level — so the box stays non-empty and the QP is asked to reverse the
+    // joint toward the range at its velocity limit in one tick. Continuous at
+    // the crossing (there u = pos_ub = vel_lb); rows that did not cross are
+    // untouched. Both sides cannot cross at once since Init enforces
+    // q_min_ <= q_max_. Non-finite q / v take the unrepaired path on purpose:
+    // the row stays non-finite for the solve to fail on, instead of being
+    // laundered into a finite box by std::max/min (NUM-7).
+    if (std::isfinite(qi) && std::isfinite(vi) && l_block(i) > u_block(i)) {
+      ++inverted;
+      // Upper band: pos_ub < vel_lb. Lower band: pos_lb > vel_ub.
+      const double pinned = (a_pos_ub_(i) < a_vel_lb_(i)) ? a_vel_lb_(i) : a_vel_ub_(i);
+      l_block(i) = pinned;
+      u_block(i) = pinned;
+    }
   }
+  inverted_count_ = inverted;
 }
 
 }  // namespace rtc::tsid

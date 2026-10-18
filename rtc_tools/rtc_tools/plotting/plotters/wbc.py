@@ -11,6 +11,9 @@ the WBC-only fields the generic plotters don't know about:
 WbcDiagLog is the per-tick TSID/QP diagnostics file (single `wbc_diag.csv`):
 
   - solver health (`solve_time_us`, `qp_converged`, `solve_levels`, …)
+  - QP outcome (`qp_status`, `qp_iterations`, `joint_box_inverted`) — last
+    QP attempt's proxsuite status / iterations, and the count of empty
+    joint-limit acceleration-box rows (lower > upper)
   - QP contact wrench solution (`lambda_*`) + grasp aggregates
 
 `plot_*` functions render a figure and either save to `save_dir` or
@@ -28,6 +31,18 @@ from rtc_tools.plotting.columns import (
     has_columns as _has_columns,
 )
 from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
+
+# qp_status code -> name. Source: proxsuite `QPSolverOutput` enum order;
+# the -1 convention (no QP attempt) is from rtc_tsid `SolveResult::status`.
+_QP_STATUS_NAMES = {
+    -1: "NOT_ATTEMPTED",
+    0: "SOLVED",
+    1: "MAX_ITER_REACHED",
+    2: "PRIMAL_INFEASIBLE",
+    3: "SOLVED_CLOSEST_PRIMAL_FEASIBLE",
+    4: "DUAL_INFEASIBLE",
+    5: "NOT_RUN",
+}
 
 # SE3 task-space axis order emitted by the DeviceWbcLog writer.
 _TASK_AXES = ("x", "y", "z", "roll", "pitch", "yaw")
@@ -215,7 +230,9 @@ def plot_wbc_diag_solver(df, save_dir=None):
         print("  Skipping WBC solver diag plot (solve_time_us not found)")
         return
 
-    fig, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
+    has_status = "qp_status" in df.columns
+    nrows = 4 if has_status else 3
+    fig, axes = plt.subplots(nrows, 1, figsize=(14, 11 if nrows == 3 else 14), sharex=True)
     fig.suptitle("WBC TSID/QP Solver Diagnostics", fontsize=16, fontweight="bold")
     t = df["timestamp"]
 
@@ -231,11 +248,31 @@ def plot_wbc_diag_solver(df, save_dir=None):
     axes[1].legend(fontsize=8)
     axes[1].grid(True, alpha=0.3)
 
+    fail_ax = axes[2]
     if "qp_fail_count" in df.columns:
-        axes[2].plot(t, df["qp_fail_count"], linewidth=1.2, color="C3")
-    axes[2].set_ylabel("qp_fail_count")
-    axes[2].set_xlabel("Time (s)")
-    axes[2].grid(True, alpha=0.3)
+        fail_ax.plot(t, df["qp_fail_count"], linewidth=1.2, color="C3", label="qp_fail_count")
+    if "joint_box_inverted" in df.columns:
+        fail_ax.plot(
+            t,
+            df["joint_box_inverted"],
+            linewidth=1.0,
+            color="C4",
+            label="joint_box_inverted (rows; -1 = absent)",
+        )
+        fail_ax.legend(fontsize=8)
+    fail_ax.set_ylabel("qp_fail_count / box")
+    fail_ax.grid(True, alpha=0.3)
+
+    if has_status:
+        st_ax = axes[3]
+        st_ax.step(t, df["qp_status"], where="post", linewidth=1.0, color="C5", label="qp_status")
+        codes = sorted(set(_QP_STATUS_NAMES) | {int(c) for c in df["qp_status"].dropna().unique()})
+        st_ax.set_yticks(codes)
+        st_ax.set_yticklabels([_QP_STATUS_NAMES.get(c, str(c)) for c in codes], fontsize=7)
+        st_ax.set_ylabel("qp_status")
+        st_ax.legend(fontsize=8)
+        st_ax.grid(True, alpha=0.3)
+    axes[-1].set_xlabel("Time (s)")
 
     plt.tight_layout()
     if save_dir:
@@ -301,6 +338,24 @@ def print_wbc_diag_statistics(df):
         print(f"QP converged: {conv.mean() * 100:.1f}% of ticks")
     if "qp_fail_count" in df.columns:
         print(f"QP fail count (final): {int(df['qp_fail_count'].iloc[-1])}")
+    if "qp_status" in df.columns and n > 0:
+        counts = df["qp_status"].dropna().astype(int).value_counts().sort_index()
+        total = int(counts.sum())
+        summary = " · ".join(
+            f"{_QP_STATUS_NAMES.get(int(code), str(int(code)))} {c / total * 100:.1f}% ({c})"
+            for code, c in counts.items()
+        )
+        print(f"QP status: {summary}")
+    if "joint_box_inverted" in df.columns:
+        box = df["joint_box_inverted"].dropna()
+        box = box[box >= 0]  # -1 = constraint absent/inactive
+        if len(box) > 0:
+            print(
+                f"Joint box inverted: {(box > 0).mean() * 100:.1f}% of ticks "
+                f"(max rows={int(box.max())})"
+            )
+        else:
+            print("Joint box inverted: constraint absent (all -1)")
     if "num_active_contacts" in df.columns:
         print(
             f"Active contacts: mean={df['num_active_contacts'].mean():.2f} max={int(df['num_active_contacts'].max())}"

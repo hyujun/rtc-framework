@@ -281,6 +281,12 @@ void CommandOutput::Init(int nv, int n_actuated, int max_contact_vars) {
   tau.setZero(n_actuated);
   a_opt.setZero(nv);
   lambda_opt.setZero(max_contact_vars);
+  qp_converged = false;
+  solve_time_us = 0.0;
+  solve_levels = 0;
+  qp_status = -1;
+  qp_iterations = 0;
+  qp_non_finite = false;
 }
 
 // ════════════════════════════════════════════════

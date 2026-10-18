@@ -6,6 +6,7 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic pop
 
+#include "box_test_util.hpp"
 #include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 
@@ -99,6 +100,8 @@ TEST_F(FrictionConeTest, ConeMatrixStructure) {
   u.setZero();
 
   fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
+
+  test::ExpectBoxNonEmpty(l, u);
 
   // a 열 (0:nv)은 모두 0
   EXPECT_NEAR(C.leftCols(nv).norm(), 0.0, 1e-15);
@@ -197,6 +200,7 @@ TEST_F(FrictionConeTest, SurfaceCopRectangleMatrix) {
   l.setZero();
   u.setZero();
   fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
+  test::ExpectBoxNonEmpty(l, u);
 
   // Row layout: [0..3] cone, [4] unilateral, [5..6] CoP_x (±m_y - l_x·fz),
   // [7..8] CoP_y (±m_x - l_y·fz), [9..10] yaw (±m_z - μ_τ·fz).
@@ -267,6 +271,7 @@ TEST_F(FrictionConeTest, SurfaceYawMoment) {
   l.setZero();
   u.setZero();
   fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
+  test::ExpectBoxNonEmpty(l, u);
 
   // Yaw rows 9, 10 — fz column = -μ_τ
   EXPECT_DOUBLE_EQ(C(9, nv + 2), -0.05);
@@ -319,6 +324,7 @@ TEST_F(FrictionConeTest, SurfaceZeroPatchForcesZeroMoment) {
   l.setZero();
   u.setZero();
   fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
+  test::ExpectBoxNonEmpty(l, u);
 
   // Rows 5..10 의 fz column 은 모두 0 (l_x=l_y=μ_τ=0)
   for (int r = 5; r <= 10; ++r) {
@@ -382,6 +388,7 @@ TEST_F(FrictionConeTest, MixedPointSurfaceLambdaOffsets) {
   l.setZero();
   u.setZero();
   fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
+  test::ExpectBoxNonEmpty(l, u);
 
   // Rows 0..4: point contact — λ columns [nv .. nv+3).
   // Row 4 (point unilateral): C(4, nv+2) = -1.
@@ -444,7 +451,9 @@ TEST_F(FrictionConeTest, NormalDefaultsToWorldZ) {
   C1.setZero();
   C2.setZero();
   fc.ComputeInequality(cache, cs_default, info, n_vars, C1, l, u);
+  test::ExpectBoxNonEmpty(l, u);
   fc.ComputeInequality(cache, cs_explicit, info, n_vars, C2, l, u);
+  test::ExpectBoxNonEmpty(l, u);
 
   // Byte-equal: short-circuit must produce identical matrices.
   EXPECT_LT((C1 - C2).norm(), 1e-15);
@@ -491,6 +500,7 @@ TEST_F(FrictionConeTest, NormalAwareTiltedZ) {
   Eigen::VectorXd u(n_ineq);
   C.setZero();
   fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
+  test::ExpectBoxNonEmpty(l, u);
 
   // Independent R_c computation: same Gram-Schmidt the constraint uses.
   // Seed = +X since |n.x|=0 < 0.9.

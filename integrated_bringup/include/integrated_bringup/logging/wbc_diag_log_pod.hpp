@@ -10,7 +10,16 @@
 //   - phase / num_active_contacts / grasp_detected / max_force / qp_fail_count
 //       ← WbcStateData staging buffer
 //   - solve_time_us / solve_levels / qp_converged / lambda_opt
+//     / qp_status / qp_iterations
 //       ← rtc::tsid::CommandOutput (tsid_output_)
+//   - joint_box_inverted
+//       ← rtc::tsid::JointLimitConstraint::InvertedCount() (non-owning view)
+//
+// qp_status is proxsuite's QPSolverOutput as int (0 SOLVED · 1 MAX_ITER_REACHED
+// · 2 PRIMAL_INFEASIBLE · 3 SOLVED_CLOSEST_PRIMAL_FEASIBLE · 4 DUAL_INFEASIBLE
+// · 5 NOT_RUN); −1 = no QP attempted. joint_box_inverted = rows of the TSID
+// joint-limit acceleration box with l > u this tick (an empty box makes the
+// QP primal-infeasible — #551); −1 = constraint absent or preset-inactive.
 //
 // SPSC constraint: trivially copyable. lambda_opt is fixed-dim
 // (Stage A-5a QP always emits max_contact_vars); num_contact_vars carries
@@ -53,6 +62,11 @@ struct WbcDiagLogPod {
   bool clik_valid{false};           // clik_.Compute() succeeded this tick
   double clik_tcp_err{0.0};         // ‖e_x‖ [m+rad]
   double clik_manipulability{0.0};  // √det(JJᵀ+μ²I)
+
+  // ── Dynamic QP failure classification (#551) ──────────────────────────────
+  std::int32_t qp_status{-1};           // proxsuite QPSolverOutput; −1 = no attempt
+  std::int32_t qp_iterations{0};        // WQP: last solve. HQP: sum over levels tried
+  std::int32_t joint_box_inverted{-1};  // joint-limit rows with l > u; −1 = n/a
 
   // ── QP contact solution (wrench / λ per contact var) ─────────────────────
   std::array<double, kMaxContactVars> lambda_opt{};
@@ -100,6 +114,8 @@ inline void WriteWbcDiagLogHeader(std::ostream& os, std::size_t num_contact_vars
   os << ",num_active_contacts,grasp_detected,max_force";
   // Stage C-2: CLIK-QP (Kinematic WBC) diagnostic columns.
   os << ",clik_valid,clik_tcp_err,clik_manipulability";
+  // Dynamic QP failure classification (#551).
+  os << ",qp_status,qp_iterations,joint_box_inverted";
   const auto n = std::min(num_contact_vars, WbcDiagLogPod::kMaxContactVars);
   for (std::size_t i = 0; i < n; ++i) {
     os << ",lambda_" << i;
@@ -129,6 +145,10 @@ inline void WriteWbcDiagLogRow(std::ostream& os, const WbcDiagLogPod& p,
   os << ',' << (p.clik_valid ? 1 : 0);
   os << ',' << p.clik_tcp_err;
   os << ',' << p.clik_manipulability;
+  // Dynamic QP failure classification (#551).
+  os << ',' << p.qp_status;
+  os << ',' << p.qp_iterations;
+  os << ',' << p.joint_box_inverted;
   const auto n = std::min(num_contact_vars, WbcDiagLogPod::kMaxContactVars);
   const auto reported = std::min(static_cast<std::size_t>(p.num_contact_vars), n);
   for (std::size_t i = 0; i < n; ++i) {

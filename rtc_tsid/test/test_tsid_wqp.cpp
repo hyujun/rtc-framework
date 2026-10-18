@@ -11,6 +11,8 @@
 #include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
+#include "rtc_tsid/constraints/joint_limit_constraint.hpp"
+#include "rtc_tsid/constraints/torque_limit_constraint.hpp"
 #include "rtc_tsid/controller/tsid_controller.hpp"
 #include "rtc_tsid/formulation/formulation_factory.hpp"
 #include "rtc_tsid/formulation/wqp_formulation.hpp"
@@ -20,6 +22,138 @@ namespace rtc::tsid {
 namespace {
 
 class WQPFormulationTest : public test::PandaNoContactTest {};
+
+// ──────────────────────────────────────────────
+// #551: a joint resting inside the joint-limit position-margin band
+// ──────────────────────────────────────────────
+// The joint-limit box alone: the raw box inverts on that joint (l > u) and the
+// QP was primal-infeasible. With the row collapsed onto its velocity bound the
+// QP solves and pins that joint's acceleration to the velocity-limit bound.
+// (Posture + joint_limit only — the torque-limited case is the next test.)
+TEST_F(WQPFormulationTest, WqpSolvesWithJointOnLimit) {
+  YAML::Node formulation_config;
+  formulation_config["formulation_type"] = "wqp";
+  auto formulation = std::make_unique<WQPFormulation>();
+  formulation->Init(*model_, robot_info_, contact_cfg_, formulation_config);
+
+  auto posture = std::make_unique<PostureTask>();
+  YAML::Node task_cfg;
+  task_cfg["kp"] = 100.0;
+  task_cfg["kd"] = 20.0;
+  task_cfg["weight"] = 1.0;
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
+
+  auto jl = std::make_unique<JointLimitConstraint>();
+  YAML::Node jl_cfg;
+  jl_cfg["dt"] = 0.002;
+  jl_cfg["position_margin"] = 0.05;
+  jl_cfg["velocity_margin"] = 0.1;
+  jl->Init(*model_, robot_info_, cache_, jl_cfg);
+  const JointLimitConstraint* jl_view = jl.get();
+  formulation->AddConstraint(std::move(jl));
+
+  Eigen::VectorXd q = 0.5 * (robot_info_.q_lower + robot_info_.q_upper);
+  q(0) = robot_info_.q_upper(0) - 0.001;  // at rest, inside the margin band
+  Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
+  cache_.Update(q, v);
+  ref_.q_des = q;
+  ref_.v_des = v;
+  ref_.a_des.setZero(robot_info_.nv);
+
+  const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
+
+  EXPECT_EQ(jl_view->InvertedCount(), 1);
+  ASSERT_TRUE(result.converged) << "qp status " << result.status << " (2 = PRIMAL_INFEASIBLE)";
+  EXPECT_EQ(result.status, 0);
+  const double a_vel_lb0 = (-(robot_info_.v_max(0) - 0.1) - v(0)) / 0.002;
+  EXPECT_NEAR(result.x_opt(0), a_vel_lb0, 1e-3 * std::abs(a_vel_lb0));
+}
+
+// With torque_limit also hard (the shipped idle preset) the pinned
+// acceleration |v_lim − v| / dt has to fit S·(M·a + h) inside the effort box.
+// It does, for a proximal and for a distal joint alike: the other joints'
+// accelerations are free (the posture task is soft) and redistribute the
+// coupled torque. So the collapse keeps the shipped dynamic QP solvable while
+// a joint sits in the band — but the command it produces is violent, which is
+// why the margin ordering (TSID band narrower than the position backbone's)
+// remains the actual cure and the collapse the safety net.
+namespace {
+struct BandSolve {
+  bool converged;
+  int status;
+  int inverted;
+};
+
+BandSolve SolveWithJointInBand(const pinocchio::Model& model, const RobotModelInfo& info,
+                               const ContactManagerConfig& contact_cfg, PinocchioCache& cache,
+                               const ContactState& contacts, ControlReference& ref, int joint) {
+  YAML::Node formulation_config;
+  formulation_config["formulation_type"] = "wqp";
+  auto formulation = std::make_unique<WQPFormulation>();
+  formulation->Init(model, info, contact_cfg, formulation_config);
+
+  auto posture = std::make_unique<PostureTask>();
+  YAML::Node task_cfg;
+  task_cfg["kp"] = 100.0;
+  task_cfg["kd"] = 20.0;
+  task_cfg["weight"] = 1.0;
+  posture->Init(model, info, cache, task_cfg);
+  formulation->AddTask(std::move(posture));
+
+  auto jl = std::make_unique<JointLimitConstraint>();
+  YAML::Node jl_cfg;
+  jl_cfg["dt"] = 0.002;
+  jl_cfg["position_margin"] = 0.05;
+  jl_cfg["velocity_margin"] = 0.1;
+  jl->Init(model, info, cache, jl_cfg);
+  const JointLimitConstraint* jl_view = jl.get();
+  formulation->AddConstraint(std::move(jl));
+
+  auto tl = std::make_unique<TorqueLimitConstraint>();
+  YAML::Node tl_cfg;
+  tl->Init(model, info, cache, tl_cfg);
+  tl->SetContactManager(&contact_cfg);
+  formulation->AddConstraint(std::move(tl));
+
+  Eigen::VectorXd q = 0.5 * (info.q_lower + info.q_upper);
+  q(joint) = info.q_upper(joint) - 0.001;  // at rest, inside the margin band
+  Eigen::VectorXd v = Eigen::VectorXd::Zero(info.nv);
+  cache.Update(q, v);
+  ref.q_des = q;
+  ref.v_des = v;
+  ref.a_des.setZero(info.nv);
+
+  const auto& result = formulation->Solve(cache, ref, contacts, info);
+  return {result.converged, result.status, jl_view->InvertedCount()};
+}
+
+// The last joint whose range is wide enough for the position margin to apply
+// (a sub-margin range, e.g. a gripper finger, gets margin 0 and never inverts).
+int LastJointWithMarginBand(const RobotModelInfo& info, double margin) {
+  for (int j = info.nv - 1; j >= 0; --j)
+    if (info.q_upper(j) - info.q_lower(j) > 2.0 * margin)
+      return j;
+  return 0;
+}
+}  // namespace
+
+TEST_F(WQPFormulationTest, TorqueLimitedCollapseSolvesForProximalJoint) {
+  const auto r =
+      SolveWithJointInBand(*model_, robot_info_, contact_cfg_, cache_, contacts_, ref_, 0);
+  EXPECT_EQ(r.inverted, 1);
+  EXPECT_TRUE(r.converged) << "status " << r.status;
+  EXPECT_EQ(r.status, 0);
+}
+
+TEST_F(WQPFormulationTest, TorqueLimitedCollapseSolvesForDistalJoint) {
+  const int j = LastJointWithMarginBand(robot_info_, 0.05);
+  const auto r =
+      SolveWithJointInBand(*model_, robot_info_, contact_cfg_, cache_, contacts_, ref_, j);
+  EXPECT_EQ(r.inverted, 1) << "joint " << j;
+  EXPECT_TRUE(r.converged) << "joint " << j << " status " << r.status;
+  EXPECT_EQ(r.status, 0);
+}
 
 // ──────────────────────────────────────────────
 // Posture-only WQP (no contacts)

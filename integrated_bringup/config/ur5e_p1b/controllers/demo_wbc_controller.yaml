@@ -171,7 +171,11 @@ demo_wbc_controller:
       joint_limit:
         type: "joint_limit"
         dt: 0.002               # must match control_rate
-        position_margin: 0.05   # rad
+        # Keep this strictly below integration.position_margin: the CLIK
+        # position backbone parks a joint at ITS margin, and a wider band here
+        # keeps that joint inside it on every tick, pinning its acceleration to
+        # the velocity limit — which the torque limits may not carry (#551).
+        position_margin: 0.01   # rad
         velocity_margin: 0.1    # rad/s
       # Friction cone: linearised n-face pyramid per contact. Face count
       # (n_faces) and μ (mu) live per-contact under `contacts:` — this block

@@ -1090,14 +1090,22 @@ void RtControllerNode::DrainLog() {
     }
     last_summary_wall_ = wall_now;
 
+    // Sim: WaitForNextTick runs the sim-sync barrier and never reaches the
+    // base class's overrun bookkeeping (periodic_rt_thread.hpp: CV-driven
+    // subclasses get none), so the counter is structurally 0 there and must
+    // not read as "no overruns" (#551). The RT-budget sensor in sim is
+    // cm_timing_log.csv (plot_rtc_log --stats, "Overruns" row).
+    const std::string overruns_str =
+        use_sim_time_sync_ ? std::string("n/a(sim)") : std::to_string(overruns);
+
     RCLCPP_INFO(
         get_logger(),
-        "%s  overruns=%lu  skips=%lu  nrt_pub_drops=%lu  timing_drops=%lu  "
+        "%s  overruns=%s  skips=%lu  nrt_pub_drops=%lu  timing_drops=%lu  "
         "rt_cb_timing_drops=%lu",
         timing_profiler_
             .Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()), elapsed_s)
             .c_str(),
-        static_cast<unsigned long>(overruns), static_cast<unsigned long>(skips),
+        overruns_str.c_str(), static_cast<unsigned long>(skips),
         static_cast<unsigned long>(nrt_pub_drops), static_cast<unsigned long>(timing_drops),
         static_cast<unsigned long>(rt_callback_timing_drops));
 

@@ -143,8 +143,12 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
   RebuildLevelIndices();
 
   if (active_max_level_ < 0) {
-    // No active tasks
+    // No active tasks — no QP was attempted this tick.
     result_.converged = false;
+    result_.status = -1;
+    result_.non_finite = false;
+    result_.solve_time_us = 0.0;
+    result_.iterations = 0;
     result_.levels_solved = 0;
     return result_;
   }
@@ -198,6 +202,13 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
   int prev_stack_rows = 0;
   int levels_solved = 0;
   result_.converged = false;
+  // Per-tick accumulators (were never reset before #551, so solve_time_us /
+  // iterations grew across ticks). status / non_finite report the LAST level
+  // tried — the failed one when the cascade breaks.
+  result_.status = -1;
+  result_.non_finite = false;
+  result_.solve_time_us = 0.0;
+  result_.iterations = 0;
 
   for (int k = 0; k <= active_max_level_ && k < max_levels_; ++k) {
     const auto& task_indices = level_task_indices_[static_cast<size_t>(k)];
@@ -286,6 +297,13 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     // ── Solve level k ──
     const auto& solver_result = qp_solvers_[static_cast<size_t>(k)].Solve(qp);
 
+    // Every attempted level counts toward time / iterations — a failed level
+    // still spent the budget, and the diagnostics must see that.
+    result_.status = solver_result.status;
+    result_.non_finite = solver_result.non_finite;
+    result_.solve_time_us += solver_result.solve_time_us;
+    result_.iterations += solver_result.iterations;
+
     if (!solver_result.converged) {
       // Infeasible → 직전 level z* 사용
       break;
@@ -294,8 +312,6 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     // Store solution
     result_.x_opt.head(n_vars) = solver_result.x_opt.head(n_vars);
     result_.converged = true;
-    result_.solve_time_us += solver_result.solve_time_us;
-    result_.iterations += solver_result.iterations;
     ++levels_solved;
 
     // Update J_prev · z* for next level cascaded equality

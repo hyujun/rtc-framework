@@ -168,7 +168,7 @@ tsid:
     joint_limit:
       type: "joint_limit"
       dt: 0.002
-      position_margin: 0.05
+      position_margin: 0.01
       velocity_margin: 0.1
     friction_cone:
       type: "friction_cone"

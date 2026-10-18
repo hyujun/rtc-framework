@@ -449,6 +449,10 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
     } else if (type == "joint_limit") {
       auto c = std::make_unique<rtc::tsid::JointLimitConstraint>();
       c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
+      // Diagnostics view (#551): the formulation owns it; keep a raw pointer
+      // for FillWbcDiagLogPod. Last `joint_limit` entry wins.
+      joint_limit_constraint_ = c.get();
+      tsid_joint_limit_margin_ = c_cfg["position_margin"].as<double>(0.05);
       formulation.AddConstraint(std::move(c));
     } else if (type == "friction_cone") {
       // Stage C-0.1: FrictionConeConstraint takes its face count from each
@@ -812,7 +816,11 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     ctrl_state_.q = Eigen::VectorXd::Zero(robot_info_.nq);
     ctrl_state_.v = Eigen::VectorXd::Zero(robot_info_.nv);
 
-    // TSIDController init (creates formulation; tasks/constraints added below)
+    // TSIDController init (creates formulation; tasks/constraints added below).
+    // The previous formulation (and the constraint joint_limit_constraint_
+    // pointed at) dies here.
+    joint_limit_constraint_ = nullptr;
+    tsid_joint_limit_margin_ = -1.0;
     tsid_controller_.Init(model, robot_info_, tsid_node);
 
     // Build tasks + constraints from YAML (auto-dispatch by `type` field)
@@ -897,6 +905,20 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
           "range [0, 1]");
     }
     force_rate_alpha_ = static_cast<float>(alpha);
+  }
+  // #551: the TSID joint_limit band must be narrower than the CLIK position
+  // margin — the position backbone parks a joint at its own margin, and a
+  // wider TSID band keeps that joint inside it on every tick: its acceleration
+  // row is pinned to the velocity limit, which the torque limits may not carry
+  // (then the dynamic QP fails on every such tick, as before the repair). WARN
+  // rather than reject: the dynamic QP is diagnostics / hand τ_ff only and a
+  // failure never reaches the position command (decision 6).
+  if (tsid_joint_limit_margin_ >= 0.0 && tsid_joint_limit_margin_ >= position_margin_) {
+    RCLCPP_WARN(logger_,
+                "[wbc] tsid.constraints joint_limit.position_margin (%.4f) >= "
+                "integration.position_margin (%.4f): a joint parked at the CLIK margin sits "
+                "inside the TSID joint-limit band every tick (#551)",
+                tsid_joint_limit_margin_, position_margin_);
   }
   q_min_clamped_ = combined_cache_.model()->lowerPositionLimit.array() + position_margin_;
   q_max_clamped_ = combined_cache_.model()->upperPositionLimit.array() - position_margin_;

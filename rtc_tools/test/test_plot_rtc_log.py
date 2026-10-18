@@ -1223,8 +1223,13 @@ def _wbc_hand_header(joints, motors, fingertips, max_fingertips=8):
     return cols
 
 
-def _wbc_diag_header(n_lambda):
-    """Column order of WriteWbcDiagLogHeader (wbc_diag_log_pod.hpp)."""
+def _wbc_diag_columns_for_plotter(n_lambda):
+    """Columns the wbc_diag plotter reads, in the writer's order.
+
+    A subset: the full order's SSoT is
+    integrated_bringup/include/integrated_bringup/logging/wbc_diag_log_pod.hpp
+    and this list does not claim to mirror it.
+    """
     cols = [
         "t_relative_s",
         "phase",
@@ -1232,11 +1237,19 @@ def _wbc_diag_header(n_lambda):
         "qp_converged",
         "solve_levels",
         "qp_fail_count",
+        "kin_qp_fail_count",
         "num_active_contacts",
         "grasp_detected",
         "max_force",
+        "clik_valid",
+        "clik_tcp_err",
+        "clik_manipulability",
+        "qp_status",
+        "qp_iterations",
+        "joint_box_inverted",
     ]
     cols += [f"lambda_{i}" for i in range(n_lambda)]
+    cols.append("num_contact_vars")
     return cols
 
 
@@ -1347,7 +1360,7 @@ class TestWbcDiagRoundTrip:
     N_LAMBDA = 6
 
     def _df(self, tmp_path):
-        header = _wbc_diag_header(self.N_LAMBDA)
+        header = _wbc_diag_columns_for_plotter(self.N_LAMBDA)
         return _build_wbc_log(
             tmp_path,
             "wbc_diag.csv",
@@ -1360,7 +1373,9 @@ class TestWbcDiagRoundTrip:
         assert detect_log_type("/s/controllers/demo_wbc/wbc_diag.csv") == "wbc_diag"
 
     def test_column_detection(self):
-        assert detect_log_type_by_columns(_wbc_diag_header(self.N_LAMBDA)) == "wbc_diag"
+        assert (
+            detect_log_type_by_columns(_wbc_diag_columns_for_plotter(self.N_LAMBDA)) == "wbc_diag"
+        )
 
     def test_lambda_predicate(self, tmp_path):
         assert _has_wbc_lambda(self._df(tmp_path)) is True
@@ -1382,6 +1397,27 @@ class TestWbcDiagRoundTrip:
         out = capsys.readouterr().out
         assert "WBC TSID/QP Diagnostics" in out
         assert "closure" in out
+
+    def test_qp_status_named_and_plotted(self, tmp_path, capsys):
+        header = _wbc_diag_columns_for_plotter(self.N_LAMBDA)
+        rows = []
+        for i in range(4):
+            row = [float(i)] * len(header)
+            row[header.index("t_relative_s")] = i * 0.002
+            row[header.index("phase")] = "closure"
+            row[header.index("qp_status")] = 2 if i == 3 else 0
+            row[header.index("joint_box_inverted")] = 1 if i == 3 else (-1 if i == 0 else 0)
+            rows.append(row)
+        path = tmp_path / "wbc_diag.csv"
+        _write_csv(str(path), header, rows)
+        df = load_log_csv(str(path), "wbc_diag")
+        _print_wbc_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "SOLVED" in out
+        assert "PRIMAL_INFEASIBLE" in out
+        assert "inverted" in out
+        _plot_wbc_diag_solver(df, save_dir=str(tmp_path))
+        assert (tmp_path / "wbc_diag_solver.png").exists()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

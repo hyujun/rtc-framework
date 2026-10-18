@@ -7,6 +7,7 @@
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #pragma GCC diagnostic pop
 
+#include "box_test_util.hpp"
 #include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/torque_limit_constraint.hpp"
 
@@ -78,6 +79,8 @@ TEST_F(TorqueLimitTest, BoundsConsistency) {
 
   tl.ComputeInequality(cache, cs, info, n_vars, C, l, u);
 
+  test::ExpectBoxNonEmpty(l, u);
+
   // C = S·M (should be non-zero)
   EXPECT_GT(C.norm(), 0.0);
 
@@ -116,6 +119,7 @@ TEST_F(TorqueLimitTest, TauScaleAppliesMargin) {
   l1.setZero();
   u1.setZero();
   tl1.ComputeInequality(cache, cs, info, n_vars, C, l1, u1);
+  test::ExpectBoxNonEmpty(l1, u1);
 
   // 둘째: tau_scale=0.5 — bound 가 정확히 절반 magnitude 가 되는지.
   // l = 0.5·τ_min - S·h,  u = 0.5·τ_max - S·h.
@@ -131,6 +135,7 @@ TEST_F(TorqueLimitTest, TauScaleAppliesMargin) {
   l2.setZero();
   u2.setZero();
   tl2.ComputeInequality(cache, cs, info, n_vars, C, l2, u2);
+  test::ExpectBoxNonEmpty(l2, u2);
 
   // tau_min < 0, tau_max > 0 가정 (URDF effort_limit 의 부호).
   // diff = (scale - 1) · tau_lim. scale=0.5 → diff_l = -0.5·tau_min (positive),
@@ -172,6 +177,7 @@ TEST_F(TorqueLimitTest, NoContact_MatchesDirectComputation) {
   l.setZero();
   u.setZero();
   tl.ComputeInequality(cache, cs, info, n_vars, C, l, u);
+  test::ExpectBoxNonEmpty(l, u);
 
   const Eigen::VectorXd Sh = info.S * cache.h;
   const Eigen::MatrixXd SM = info.S * cache.M;
@@ -244,6 +250,7 @@ TEST_F(TorqueLimitTest, WithContact_MatchesDirectComputation) {
   l.setZero();
   u.setZero();
   tl.ComputeInequality(cache, cs, info, n_vars, C, l, u);
+  test::ExpectBoxNonEmpty(l, u);
 
   const Eigen::VectorXd Sh = info.S * cache.h;
   const Eigen::MatrixXd SM = info.S * cache.M;
@@ -297,6 +304,7 @@ TEST_F(TorqueLimitTest, TightBoundsReduceFeasibleRegion) {
   l1.setZero();
   u1.setZero();
   tl_baseline.ComputeInequality(cache, cs, info, info.nv, C1, l1, u1);
+  test::ExpectBoxNonEmpty(l1, u1);
 
   // tau_scale=0.01 — 100배 tight.
   TorqueLimitConstraint tl_tight;
@@ -309,6 +317,7 @@ TEST_F(TorqueLimitTest, TightBoundsReduceFeasibleRegion) {
   l2.setZero();
   u2.setZero();
   tl_tight.ComputeInequality(cache, cs, info, info.nv, C2, l2, u2);
+  test::ExpectBoxNonEmpty(l2, u2);
 
   // C matrix 는 tau_scale 과 무관 (S·M 만 들어감).
   EXPECT_LT((C2 - C1).norm(), 1e-12);
@@ -351,6 +360,7 @@ TEST_F(TorqueLimitTest, LooseBoundsMatchRawEffortLimits) {
   l.setZero();
   u.setZero();
   tl.ComputeInequality(cache, cs, info, info.nv, C, l, u);
+  test::ExpectBoxNonEmpty(l, u);
 
   const Eigen::VectorXd Sh = info.S * cache.h;
   // raw bound: l + S·h = τ_min, u + S·h = τ_max.
@@ -370,6 +380,7 @@ TEST_F(TorqueLimitTest, LooseBoundsMatchRawEffortLimits) {
   lh.setZero();
   uh.setZero();
   tl_half.ComputeInequality(cache, cs, info, info.nv, Ch, lh, uh);
+  test::ExpectBoxNonEmpty(lh, uh);
 
   for (int i = 0; i < n_ineq; ++i) {
     const double w_loose = u(i) - l(i);

@@ -190,6 +190,8 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
 
   result_.x_opt.head(n_vars) = solver_result.x_opt.head(n_vars);
   result_.converged = solver_result.converged;
+  result_.status = solver_result.status;
+  result_.non_finite = solver_result.non_finite;
   result_.solve_time_us = solver_result.solve_time_us;
   result_.iterations = solver_result.iterations;
   result_.levels_solved = 1;
