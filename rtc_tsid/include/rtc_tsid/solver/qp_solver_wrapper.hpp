@@ -50,10 +50,12 @@ struct QPSolverConfig {
   // fraction of ‖(δy, δz)‖ — so it also fires on feasible problems whose
   // multipliers grow fast (a QP with large linear penalties on elastic
   // variables, dynamic_catching E1-F13 #739: PRIMAL_INFEASIBLE on a QP that is
-  // feasible by construction). 0 leaves only an EXACT certificate
-  // (‖Aᵀδy + Cᵀδz‖ = 0): a QP that is infeasible without one runs to max_iter
-  // instead of being reported early. For a caller whose QP cannot be
-  // infeasible.
+  // feasible by construction; dynamic_catching #880: a degenerate stop from
+  // rest, and thousands of first solves of a segment MPC). 0 leaves only an
+  // EXACT certificate (‖Aᵀδy + Cᵀδz‖ = 0): a QP that is infeasible without one
+  // runs to max_iter instead of being reported early — so a caller that sets
+  // 0 bounds that time with max_iter (and max_iter_in), chosen against the
+  // iterations its converging solves need.
   double eps_primal_inf{1e-4};
 };
 
