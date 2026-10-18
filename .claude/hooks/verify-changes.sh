@@ -67,7 +67,8 @@
 #   5.  formatter drift (clang-format / ruff format) the change INTRODUCED;
 #       pre-existing debt passes. At the turn end, past
 #       RTC_VERIFY_FORMAT_DEADLINE_S (480s) the rest is listed as ungraded;
-#       --run has no deadline.
+#       --run has no deadline. Runs BEFORE Phase 2: under --run, drift means
+#       nothing is built.
 #   NOT graded: `ruff check` lint, Doxygen, YAML default/range/unit, README
 #   need (modification-guide.md Completion Checklist).
 #
@@ -1479,6 +1480,56 @@ if [ -n "$CHANGED_TESTGATE" ]; then
   done
 fi
 
+# --- Phase 5: formatter drift introduced by the change ---
+# format-code.sh (PostToolUse) formats only what Edit / Write touch; a file
+# written through Bash had nothing else to catch it (CI runs no formatter).
+#
+# Blocks only on drift the change INTRODUCED: the working file is not a formatter
+# fixed point AND its $VERIFY_BASE blob either does not exist or was one (a
+# rename is graded whole). Scope is CHANGED_SRC_BUILD. Fails OPEN when the
+# formatter is missing or prints nothing: style, not correctness.
+# Compared byte-for-byte through files: command substitution strips trailing
+# newlines, hiding a missing final newline or trailing blank lines.
+#
+# At the turn end, once $SECONDS passes RTC_VERIFY_FORMAT_DEADLINE_S the rest
+# are listed as ungraded (non-blocking) rather than risk a Stop-budget SIGKILL
+# with no report. --run has no budget, so it grades them all unless the
+# variable is set.
+#
+# Placed before Phase 2, out of number order: under --run, drift means nothing
+# is built (see the build decision below). It blocks the run whatever the build
+# answers, and the reformat changes the package content every verdict is keyed
+# on, so a build beside it was thrown away (#880: 150 s for one file).
+FORMAT_FAILURES=""
+FORMAT_UNGRADED=""
+if [ -n "$RUN_MODE" ]; then
+  FORMAT_DEADLINE_S="${RTC_VERIFY_FORMAT_DEADLINE_S:-2147483647}"
+else
+  FORMAT_DEADLINE_S="${RTC_VERIFY_FORMAT_DEADLINE_S:-480}"
+fi
+FMT_OUT=$(mktemp)
+FMT_BASE=$(mktemp)
+while IFS= read -r f; do
+  [ -n "$f" ] && [ -f "$f" ] || continue
+  if [ "$SECONDS" -ge "$FORMAT_DEADLINE_S" ]; then
+    FORMAT_UNGRADED="${FORMAT_UNGRADED} $f"
+    continue
+  fi
+  format_stdin "$f" < "$f" > "$FMT_OUT" || continue
+  [ -s "$FMT_OUT" ] || continue
+  cmp -s "$FMT_OUT" "$f" && continue
+  if git cat-file -e "$VERIFY_BASE:$f" 2>/dev/null; then
+    git show "$VERIFY_BASE:$f" > "$FMT_BASE" 2>/dev/null || continue
+    format_stdin "$f" < "$FMT_BASE" > "$FMT_OUT" || continue
+    cmp -s "$FMT_OUT" "$FMT_BASE" || continue
+  fi
+  FORMAT_FAILURES="${FORMAT_FAILURES}  - $f: formatter would rewrite it -- run: $(format_fix_cmd "$f")\n"
+done <<< "$CHANGED_SRC_BUILD"
+rm -f "$FMT_OUT" "$FMT_BASE"
+if [ -n "$FORMAT_UNGRADED" ]; then
+  CHECKLIST="${CHECKLIST}  - formatter drift NOT graded (${SECONDS}s of the Stop budget spent before Phase 5):${FORMAT_UNGRADED} -- run the formatter on these yourself\n"
+fi
+
 # --- Phase 2: Build + test, with PROC-3 fallback for rtc_base / rtc_msgs ---
 # Test seams, never set in normal operation: RTC_VERIFY_SKIP_BUILD lets
 # repo_scripts/test/test_verify_changes.sh exercise the routing without a
@@ -1991,6 +2042,8 @@ elif [ -z "$RUN_MODE" ] && [ -n "$SIM_RIVALS" ]; then
   SIM_DEFERRED=1
 elif [ -z "$RUN_MODE" ]; then
   TEST_FAILURES="${TEST_FAILURES}  - build/test verdict missing for: ${OWED} — the turn end does not build or test. Run '${RUN_CMD}' (it builds with --tests, runs colcon test and records the verdict; if it will take long, background it and wait for it in the foreground with \`tail --pid=<pid> -f /dev/null\`, the pid being the first field of ${RUN_LOCK}), then end the turn again. An edit inside any package after that run voids the verdict (a *.md does not).\n"
+elif [ -n "$FORMAT_FAILURES" ]; then
+  TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — formatter drift (listed below) blocks this run whatever the build answers, and the reformat changes what a verdict would be recorded for. Run the formatter, then run this again.\n"
 elif [ -n "$RIVALS" ]; then
   TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(report_procs "$RIVALS")\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (your own background task: \`tail --pid=<its pid> -f /dev/null\` in the foreground), then run this again.\n"
 elif [ -n "$SIM_RIVALS" ]; then
@@ -2176,51 +2229,6 @@ if [ -n "$CHANGED_SH" ]; then
   else
     echo "verify-changes: shellcheck not found; shell-script lint gate skipped." >&2
   fi
-fi
-
-# --- Phase 5: formatter drift introduced by the change ---
-# format-code.sh (PostToolUse) formats only what Edit / Write touch; a file
-# written through Bash had nothing else to catch it (CI runs no formatter).
-#
-# Blocks only on drift the change INTRODUCED: the working file is not a formatter
-# fixed point AND its $VERIFY_BASE blob either does not exist or was one (a
-# rename is graded whole). Scope is CHANGED_SRC_BUILD. Fails OPEN when the
-# formatter is missing or prints nothing: style, not correctness.
-# Compared byte-for-byte through files: command substitution strips trailing
-# newlines, hiding a missing final newline or trailing blank lines.
-#
-# At the turn end, once $SECONDS passes RTC_VERIFY_FORMAT_DEADLINE_S the rest
-# are listed as ungraded (non-blocking) rather than risk a Stop-budget SIGKILL
-# with no report. --run has no budget, so it grades them all unless the
-# variable is set.
-FORMAT_FAILURES=""
-FORMAT_UNGRADED=""
-if [ -n "$RUN_MODE" ]; then
-  FORMAT_DEADLINE_S="${RTC_VERIFY_FORMAT_DEADLINE_S:-2147483647}"
-else
-  FORMAT_DEADLINE_S="${RTC_VERIFY_FORMAT_DEADLINE_S:-480}"
-fi
-FMT_OUT=$(mktemp)
-FMT_BASE=$(mktemp)
-while IFS= read -r f; do
-  [ -n "$f" ] && [ -f "$f" ] || continue
-  if [ "$SECONDS" -ge "$FORMAT_DEADLINE_S" ]; then
-    FORMAT_UNGRADED="${FORMAT_UNGRADED} $f"
-    continue
-  fi
-  format_stdin "$f" < "$f" > "$FMT_OUT" || continue
-  [ -s "$FMT_OUT" ] || continue
-  cmp -s "$FMT_OUT" "$f" && continue
-  if git cat-file -e "$VERIFY_BASE:$f" 2>/dev/null; then
-    git show "$VERIFY_BASE:$f" > "$FMT_BASE" 2>/dev/null || continue
-    format_stdin "$f" < "$FMT_BASE" > "$FMT_OUT" || continue
-    cmp -s "$FMT_OUT" "$FMT_BASE" || continue
-  fi
-  FORMAT_FAILURES="${FORMAT_FAILURES}  - $f: formatter would rewrite it -- run: $(format_fix_cmd "$f")\n"
-done <<< "$CHANGED_SRC_BUILD"
-rm -f "$FMT_OUT" "$FMT_BASE"
-if [ -n "$FORMAT_UNGRADED" ]; then
-  CHECKLIST="${CHECKLIST}  - formatter drift NOT graded (${SECONDS}s of the Stop budget spent before Phase 5):${FORMAT_UNGRADED} -- run the formatter on these yourself\n"
 fi
 
 # --- Report ---
