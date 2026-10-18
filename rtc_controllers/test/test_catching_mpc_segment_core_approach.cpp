@@ -2834,12 +2834,14 @@ void RunGridTiming(const ArmModel& arm, const MpcSegmentCoreLimits& lim, const T
       Percentile(pos_err_mm, 0.99), slack_active, cold.total_us.size(), Percentile(overshoot, 1.0));
 }
 
-// A warm solve from ANOTHER problem's iterates: ProxQP calls a feasible QP
-// infeasible on about a quarter of these (formulation §1.6; measured in E1-F07,
-// #660). The core retries from zero, so a caller that left cold_start off on a
-// new throw still gets the plan — the one a cold solve gives. A QP that really
-// is infeasible fails both runs.
-TEST(MpcSegmentCoreApproach, AStaleWarmStartIsRetriedCold) {
+// A warm solve from ANOTHER problem's iterates. Under ProxQP's approximate
+// infeasibility test about a quarter of these were called infeasible and
+// retried (formulation §1.6; E1-F07, #660); without it (#880) none of these
+// 24 is — the stale start converges, to the cold solution. The retry stays for
+// a warm run that does not converge within max_iter (the timing fixture's
+// adv_stale, 5 – 10 %) and for a QP that really is infeasible, which fails
+// both runs (below).
+TEST(MpcSegmentCoreApproach, AStaleWarmStartSolvesAndAnInfeasibleOneIsRetriedCold) {
   const ArmModel arm = RealArm7();
   const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
   MpcSegmentCoreParams p = GridParams(kTimingGrids[4].grid);
@@ -2869,7 +2871,7 @@ TEST(MpcSegmentCoreApproach, AStaleWarmStartIsRetriedCold) {
     retried += r_stale.cold_retried ? 1 : 0;
     worst = std::max(worst, (r_stale.q - r_fresh.q).cwiseAbs().maxCoeff());
   }
-  ASSERT_GT(retried, 0) << "no stale warm start failed: the fixture does not reach the retry";
+  EXPECT_EQ(retried, 0) << "a stale warm start called infeasible (#880: the test is exact)";
   RecordProperty("cold_retried_of_24", retried);
   EXPECT_LE(worst, 1e-4) << "the same QP has one solution, however the solver was started [rad]";
 

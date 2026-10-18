@@ -1577,11 +1577,12 @@ TEST(ApproachPlanner, TheStopPathWeightReachesEveryCoreAndTheWarmUpsSolveOnOneLi
     Rig off(arm, params_of(""));
     ASSERT_TRUE(on.planner.Configured());  // every warm-up solved with the term on
     ASSERT_TRUE(off.planner.Configured());
-    // The warm-up pose: 1 % of each box off its middle (#857 D12 — at the
-    // middle a vertical arm's stop from rest is degenerate).
+    // The warm-up pose: the middle of each box (#880; #857 D12 had moved it
+    // 1 % off, where ProxQP's approximate infeasibility test let the vertical
+    // arm's degenerate stop from rest solve).
     const Eigen::VectorXd& lo = on.planner.ApproachCore(1).PositionLow();
     const Eigen::VectorXd& hi = on.planner.ApproachCore(1).PositionHigh();
-    const Eigen::VectorXd q_warm = lo + 0.51 * (hi - lo);
+    const Eigen::VectorXd q_warm = lo + 0.5 * (hi - lo);
     pinocchio::Data data(*arm.model);
     pinocchio::forwardKinematics(*arm.model, data, q_warm);
     pinocchio::updateFramePlacement(*arm.model, data, arm.frame);
@@ -2061,7 +2062,7 @@ TEST(ApproachPlanner, TheStopPathWeightSolvesAtItsUpperBound) {
   for (const Arm& arm : {Arm6(), Arm7()}) {
     Rig r(arm, PerpParams(rtc::catching::kMpcSegmentStopPathWeightMax));
     ASSERT_TRUE(r.planner.Configured());
-    ASSERT_EQ(r.planner.StopCoreParams(0).w_perp, 1e4);
+    ASSERT_EQ(r.planner.StopCoreParams(0).w_perp, 3e3);
     const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
     ASSERT_NE(s.seq, 0U) << Why(r.rec);
     int iterations = r.rec.iterations;

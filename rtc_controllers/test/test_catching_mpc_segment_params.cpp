@@ -571,8 +571,8 @@ TEST(MpcSegmentParams, TheStopPathWeightDefaultsOffAndParses) {
   EXPECT_EQ(on.w_delta, 2.5);
   EXPECT_EQ(on.rho_tau, 7.0);
   // Both ends of [0, kMpcSegmentStopPathWeightMax] are values a profile may write.
-  EXPECT_EQ(rtc::catching::kMpcSegmentStopPathWeightMax, 1e4);
-  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_perp: 1.0e+4}}}}"))
+  EXPECT_EQ(rtc::catching::kMpcSegmentStopPathWeightMax, 3e3);
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_perp: 3.0e+3}}}}"))
                 .mpc_segment.w_perp,
             rtc::catching::kMpcSegmentStopPathWeightMax);
 }
@@ -597,12 +597,12 @@ TEST(MpcSegmentParams, RejectsTheStopPathWeightByName) {
   };
   // Valid neighbours beside it, so only this key's range can be what refuses.
   for (const char* bad :
-       {"-0.1", "-1.0e-12", ".nan", ".inf", "-.inf", "10000.001", "1.0e+5", "1.0e+9"}) {
+       {"-0.1", "-1.0e-12", ".nan", ".inf", "-.inf", "3000.001", "1.0e+4", "1.0e+5", "1.0e+9"}) {
     const std::string why =
         message(std::string("cost: {w_delta: 1.0, rho_tau: 10.0, w_perp: ") + bad + "}");
     ASSERT_FALSE(why.empty()) << "w_perp: " << bad << " was accepted";
     EXPECT_TRUE(has(why, key)) << why;
-    EXPECT_TRUE(has(why, "must be a finite number in [0, 1e4]")) << why;
+    EXPECT_TRUE(has(why, "must be a finite number in [0, 3e3]")) << why;
     EXPECT_TRUE(has(why, "kMpcSegmentStopPathWeightMax")) << why;
     EXPECT_FALSE(has(why, "w_delta")) << why;
     EXPECT_FALSE(has(why, "rho_tau")) << why;
@@ -635,7 +635,7 @@ TEST(MpcSegmentParams, TheClosingWindowPathWeightDefaultsOffAndParses) {
   EXPECT_EQ(on.w_path, 40.0);
   EXPECT_EQ(on.w_perp, 70.0);
   EXPECT_EQ(on.w_delta, 2.5);
-  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_path: 1.0e+4}}}}"))
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_path: 3.0e+3}}}}"))
                 .mpc_segment.w_path,
             rtc::catching::kMpcSegmentStopPathWeightMax);
 }
@@ -654,13 +654,13 @@ TEST(MpcSegmentParams, RejectsTheClosingWindowPathWeightByName) {
   const auto has = [](const std::string& text, const std::string& part) {
     return text.find(part) != std::string::npos;
   };
-  for (const char* bad :
-       {"-0.1", "-1.0e-12", "-1.0", ".nan", ".inf", "-.inf", "10000.001", "1.0e+5", "1.0e+9"}) {
+  for (const char* bad : {"-0.1", "-1.0e-12", "-1.0", ".nan", ".inf", "-.inf", "3000.001", "1.0e+4",
+                          "1.0e+5", "1.0e+9"}) {
     const std::string why =
         message(std::string("cost: {w_delta: 1.0, rho_tau: 10.0, w_path: ") + bad + "}");
     ASSERT_FALSE(why.empty()) << "w_path: " << bad << " was accepted";
     EXPECT_TRUE(has(why, key)) << why;
-    EXPECT_TRUE(has(why, "must be a finite number in [0, 1e4]")) << why;
+    EXPECT_TRUE(has(why, "must be a finite number in [0, 3e3]")) << why;
     EXPECT_FALSE(has(why, "w_delta")) << why;
     EXPECT_FALSE(has(why, "rho_tau")) << why;
   }
