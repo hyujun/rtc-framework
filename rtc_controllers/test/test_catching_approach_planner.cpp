@@ -1558,7 +1558,7 @@ void ExpectNotSolved(const SegmentRecord& rec) {
 
 // YAML → planner → BOTH core kinds, and the configure warm-ups: each core is
 // solved once on the synthetic catch's line (through the catch frame at the
-// mid pose, along the synthetic ball's travel), never on the input's default.
+// warm-up pose, along the synthetic ball's travel), never on the input's default.
 TEST(ApproachPlanner, TheStopPathWeightReachesEveryCoreAndTheWarmUpsSolveOnOneLine) {
   const auto params_of = [](const std::string& body) {
     return rtc::catching::ParsePlannerParams(
@@ -1573,18 +1573,19 @@ TEST(ApproachPlanner, TheStopPathWeightReachesEveryCoreAndTheWarmUpsSolveOnOneLi
     Rig off(arm, params_of(""));
     ASSERT_TRUE(on.planner.Configured());  // every warm-up solved with the term on
     ASSERT_TRUE(off.planner.Configured());
-    Eigen::VectorXd q_mid(arm.model->nv);
-    for (int m = 0; m < q_mid.size(); ++m) {
-      q_mid[m] = 0.5 * (arm.model->lowerPositionLimit[m] + arm.model->upperPositionLimit[m]);
-    }
+    // The warm-up pose: 1 % of each box off its middle (#857 D12 — at the
+    // middle a vertical arm's stop from rest is degenerate).
+    const Eigen::VectorXd& lo = on.planner.ApproachCore(1).PositionLow();
+    const Eigen::VectorXd& hi = on.planner.ApproachCore(1).PositionHigh();
+    const Eigen::VectorXd q_warm = lo + 0.51 * (hi - lo);
     pinocchio::Data data(*arm.model);
-    pinocchio::forwardKinematics(*arm.model, data, q_mid);
+    pinocchio::forwardKinematics(*arm.model, data, q_warm);
     pinocchio::updateFramePlacement(*arm.model, data, arm.frame);
     const Eigen::Vector3d p = data.oMf[arm.frame].translation();
     const Eigen::Vector3d d = -data.oMf[arm.frame].rotation().col(2);
     // The fixture must tell the built line from the input's default (origin,
-    // x). p is far from the origin on both arms; the 7-joint arm's mid-pose
-    // axis happens to lie within 1e-5 of x — still far outside the 1e-12 the
+    // x). p is far from the origin on both arms; the 7-joint arm's warm-up
+    // axis may lie close to x — still far outside the 1e-12 the
     // comparison below allows — and the 6-joint arm's is nowhere near it.
     ASSERT_GT(p.norm(), 0.05);
     ASSERT_GT((d - Eigen::Vector3d::UnitX()).norm(), arm.model->nv == 6 ? 0.05 : 1e-9);

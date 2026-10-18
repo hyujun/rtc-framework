@@ -141,7 +141,7 @@ Condensing: $\mathbf x=\Phi x_0+\Gamma\mathbf u$, $\Phi=[A;A^2;\dots;A^N]$, $\Ga
 | 종단 등식 | 34 |
 
 - 양쪽 부등식 약 1400 행에 충돌 행이 더해진다.
-- 위 표는 G1 구성이다. 단일 팔 ($n=6$ · 7) 의 노드 수는 출하 격자에서 최대 13 이고 (§1.6 "격자와 지평"), 단일 팔 코어의 부등식 행은 $5nN$ 이다 (§1.6).
+- 위 표는 G1 구성이다. 단일 팔 ($n=6$ · 7) 의 노드 수는 출하 격자에서 최대 13 이고 (§1.6 "격자와 지평"), 단일 팔 코어의 부등식 행은 $4nN+N$ 이다 (§1.6 — 토크 slack 은 노드당 하나, #857).
 - condensed QP 를 만드는 비용은 horizon 의 제곱 규모이고 주기마다 든다 [Verschueren2022]. dense 분해는 세제곱 규모다 [Frison2016].
 - 행을 줄이는 수단은 한계 행을 일부 노드에만 거는 것이다 `[선택]`. 거르는 기준은 직전 해에서 한계까지의 거리다.
 
@@ -478,12 +478,12 @@ $$
 &\quad+\Vert p_{C_R}(q_{k_c})-\hat p_b(t_c)\Vert^2_{W_p}
 +w_a\Vert e_a(q_{k_c})\Vert^2
 +\Vert v_{C_R,k_c}-\gamma_{ref}\hat v_b(t_c)\Vert^2_{W_{v,k_c}}\Big]\\
-&+\rho_v s_v+\rho_\tau\sum_{k=1}^{N}\mathbf 1^\top s_{\tau,k}\\
+&+\rho_v s_v+\rho_\tau\sum_{k=1}^{N}s_{\tau,k}\\
 \text{s.t.}\quad
 &x_0=\hat x(t_s)\quad(\text{따르는 구간을 }t_s\text{에서 평가}),\qquad \mathbf u=E\tilde{\mathbf u},\\
 &q_{\min}+m_q\le q_{k}\le q_{\max}-m_q,\quad
 |\dot q_{k}|\le\eta_v\dot q_{\max}\quad(k=1,\dots,N),\\
-&\Big|\frac{\tau^{lin} _ {k,j}}{\tau_{\max,j}}\Big|\le\eta' _ \tau+s_{\tau,k,j},\quad s_{\tau,k,j}\ge0
+&\Big|\frac{\tau^{lin} _ {k,j}}{\tau_{\max,j}}\Big|\le\eta' _ \tau+s_{\tau,k},\quad s_{\tau,k}\ge0
 \quad(k=1,\dots,N,\enspace j=1,\dots,n),\\
 &\big\vert\big(\hat v_b(t_c)-v_{C_R,k_c}\big) _ i\big\vert\le v_{rel,\mathrm{allow}}(1+s_v)\quad(i=x,y,z),\quad s_v\ge0,\\
 &\dot q_{N}=0,\quad\ddot q_{N}=0,\qquad
@@ -517,7 +517,8 @@ $$
 
   $\sigma_{floor}$ 가 §1.3 의 $\sigma_{trk}$ 자리다 (키 `catch.{kappa, sigma_floor, w_max, w_const}`).
 - **상대속도 비용의 목표.** $\gamma_{ref}\hat v_b$ 다 ($\gamma_{ref}\in(0,1]$, 아래 "상대속도 목표"). slack 행의 기준은 $\hat v_b$ 그대로다.
-- **토크 행.** 행과 slack 을 관절의 $\tau_{\max,j}$ 로 나눈다 — $s_\tau$ 는 무차원 ($\tau_{\max}$ 의 비율) 이고 벌점 $\rho_\tau$ 가 관절마다 같은 세기로 걸린다. $\rho_\tau=0$ 이면 토크 행과 slack 변수가 없다.
+- **토크 행.** 행과 slack 을 관절의 $\tau_{\max,j}$ 로 나눈다 — $s_\tau$ 는 무차원 ($\tau_{\max}$ 의 비율) 이라 관절들의 초과를 같은 단위로 비교하고, 벌점 $\rho_\tau$ 는 노드에서 가장 크게 넘는 관절에 걸린다 (아래). $\rho_\tau=0$ 이면 토크 행과 slack 변수가 없다.
+- **토크 slack 은 노드당 하나.** §1.3 의 벡터 $s_{\tau,k}\in\mathbb R^n$ (관절마다 하나) 대신 노드의 관절들이 $s_{\tau,k}$ 하나를 나눠 쓴다 (#857). slack 이 켜진 해에서 $s_{\tau,k}=\max_j\big(\vert\tau^{lin} _ {k,j}\vert/\tau_{\max,j}-\eta' _ \tau\big)^+$ 다 — 노드 안의 $\ell_\infty$ 벌점이고 (관절별 slack 은 넘는 관절들의 합에 벌을 준다), 최대가 아닌 관절은 $\eta' _ \tau+s_{\tau,k}$ 까지 공짜로 쓴다. 벌점이 정확한 (hard 문제가 실행 가능하면 $s=0$) 조건은 $\rho_\tau\ge\sum_j(\lambda^+ _ {k,j}+\lambda^- _ {k,j})$ — 노드마다 **그 노드의 토크 행 승수의 합** 이다 (관절별 slack 은 승수 하나하나). 게시 판정 (§13.2) 은 slack 의 최댓값을 읽으므로 뜻이 같다.
 - **포구 전 노드 수.** $k_c=n_{pre}$ 이고 풀기 전에 정한다. $T_{bud}$ 는 그 풀이의 예산 (첫 풀이 `budget.first_s`, 재계획 `budget.replan_s`), $h$ 는 제어 주기다:
 
 $$
@@ -539,7 +540,7 @@ $$
 **격자와 지평.** 지평은 APPROACH 부터 정지 끝까지이고, 정지 끝은 $t_c+N_s\Delta_s$ 에 고정한다 (MD-31). 격자는 코어의 파라미터다 — 포구 전 노드 수와 간격 ($\Delta_a$), 정지 구간의 노드 수와 간격 ($\Delta_s$) 을 받는다. 출하 격자는 포구 전 $\Delta_a$ 0.1 s (노드 최대 `ur5e_p1b` 7 · `iiwa7_leap` 6), 정지 구간 $\Delta_s$ 0.05 s × 7, 정지 구간의 블록 {1, 1, 2, 3} 이다 — 노드는 최대 14 · 13 이다. 포구 전 구간은 노드마다 블록 하나다. 키는 `planner.segment.mpc.approach.{n_pre_max, dt_pre_s}` · `horizon.{n_nodes, dt_s, blocks}` 이고 로봇마다 다른 것은 `n_pre_max` 하나다. 계산 시간을 정하는 것은 노드 수와 토크 행이다 — 포구 전 노드의 상한은 첫 풀이와 재계획의 예산이 막는다 ([#834](https://github.com/hyujun/rtc-framework/issues/834): 한 노드를 더하면 `ur5e_p1b` 는 노드 14 의 재계획이, `iiwa7_leap` 은 노드 14 의 첫 풀이가 예산을 넘는다). 계획기는 첫 풀이와 재계획에 예산을 따로 둔다 (`budget.first_s` · `budget.replan_s`) — 예산은 그 풀이가 계획되는 선행 시간이기도 하다.
 
 - **간격의 대가.** 효력 시각은 최대 $\Delta_a$ 늦어진다 (§1.2 "격자"). 한계는 노드에서만 걸리므로 노드 사이의 속도가 box 를 넘을 수 있다 — 게시 판정이 노드 사이 속도의 극값을 $\dot q_{\max}$ 와 대조한다. 포구 전 jerk 는 $\Delta_a$ 동안 일정하다.
-- **문제 크기.** $n=6$ · 7 이고 노드 수는 위 격자를 따른다. 코어의 부등식 행은 $5nN$ (상대속도 slack 을 켜면 + 7), 종단 등식은 $2n$, 변수는 $n(B+N)$ 이다 — $n=7$, $N=13$ 이면 부등식 455 행 · 변수 161 개다. 변수의 절반 이상이 토크 slack ($nN$) 이다.
+- **문제 크기.** $n=6$ · 7 이고 노드 수는 위 격자를 따른다. 코어의 부등식 행은 $4nN+N$ (상대속도 slack 을 켜면 + 7), 종단 등식은 $2n$, 변수는 $nB+N$ 이다 — $n=7$, $N=13$, $B=10$ 이면 부등식 377 행 · 변수 83 개다. 토크 slack 을 관절마다 두던 때 ($5nN$ 행 · $n(B+N)$ 변수 — 455 · 161) 는 변수의 절반 이상이 slack 이었고 그 $s\ge0$ 행이 대부분의 풀이에서 활성이었다 (#857).
 - **격자점 전진.** 격자가 $t_c$ 에 고정이라 재계획은 같은 격자점을 다시 풀거나 격자점을 전진한다. 전진하면 노드 수가 하나 준 다른 문제다 — 코어의 노드 수는 고정이라 포구 전 노드 수마다 코어가 따로 있고, solver 의 warm start 는 코어를 넘어 이어지지 않는다 (기준은 이어진다). 전진한 풀이는 solver 를 비우고 시작한다.
 - **포구 시각.** $t_c$ (와 $p_c$ · $a_d$) 는 L3 의 탐색이 고른 plan 에서 온다 (MD-45). 탐색은 두 planner 가 공유한다. MPC 는 그 $t_c$ 하나에 대해 푼다 — §1.3 의 바깥 루프가 없다. 알려진 한계: 탐색의 후보 순위와 $\gamma_f$ 는 soft-catch DS rollout (L3 §4.8) 에서 나온다. `mpc` 에서 실제로 따르는 궤적은 DS 가 아니라 MPC 의 것이다. 계획기는 탐색과 구간 계획기를 추상 interface 로 갈라 갖고 (`CatchSearch` · `SegmentPlanner`, E1-F12, ARCH-3), 후보 선택은 탐색의 일로 남는다 — G1 구성에서도 (§12). plan 을 채택한 뒤에는 RT 와 손 시퀀서가 plan 의 $t_c$ · $t_{cmd}$ 를 쓴다.
 - **상대속도 목표.** 기본은 §1.3 의 형태 — $\hat v_b$ 를 방향별 가중 $W_v$ 로 맞추고 $\gamma$ 는 해의 결과 — 다. 코어는 비용의 목표를 $\gamma_{ref}\hat v_b$ 로 받는다 ($\gamma_{ref}\in(0,1]$, 키 `catch.gamma_ref` — 값은 로봇별 YAML). $\gamma_{ref}=1$ 이 §1.3 의 형태다. slack 행의 기준은 $\gamma_{ref}$ 와 무관하게 $\hat v_b$ 다. plan 의 $\gamma_f$ 는 목표로 배선하지 않는다.
@@ -1502,7 +1503,7 @@ $$\tilde d_j=\mathrm{sign}(d_j)\,\min\!\Big(\vert d_j\vert,\ \frac{\varphi\,\eta
 | 풀이 성공 | 코어가 해를 냈다 | `solve_failed` (+ 코어 사유) |
 | 예산 | $t_{\mathrm{end}}-t_{\mathrm{start}}\le$ `budget.first_s` (재계획은 `budget.replan_s`) | `budget` |
 | 효력 시각 | 풀이가 끝난 시각 $+T_{\mathrm{arm}}+2h\lt t_{\mathrm{eff}}$ (노드 0 의 시각) | `late` |
-| 토크 slack | $\max s\le$ `publish.slack_max`, 종단 블록의 $\max s\le$ `publish.slack_terminal_max` (둘 다 유한) | `slack` |
+| 토크 slack | $\max_k s_{\tau,k}\le$ `publish.slack_max`, 종단 노드의 $s_{\tau,N}\le$ `publish.slack_terminal_max` (둘 다 유한) | `slack` |
 | 포구 위치 | $\Vert p_C(q_{k_c})-\hat p_b\Vert\le$ `publish.catch_pos_err_max` (포구 코어만) | `catch_error` |
 | 노드 사이 속도 | 모든 노드와, $\ddot q$ 의 부호가 바뀌는 구간의 내부 극값에서 $\vert\dot q_j\vert\le\dot q_{\max,j}$ (정격 — box 가 아니다) | `speed` |
 | 종단 정지 | $\vert\dot q_{j,N_{\mathrm{tot}}}\vert,\ \vert\ddot q_{j,N_{\mathrm{tot}}}\vert\le$ `linearization.reference_rest_tol` (게시된 구간은 다음 풀이의 기준이 된다) | `solve_failed` |
@@ -1560,7 +1561,7 @@ $$\Delta_a\sum_{k<k_c}\Big[\Vert\dot q_k\Vert^2_{W_v}+\frac{W^-}{s^2}\Vert A_k\d
 | $J_{\dot k}$, $W^\pm$ (§1.4) | 두 코어 — `mpc` 는 선형화 점, docking 은 시작점에서 고정 | `MpcSegmentCoreAngularMomentum.*`, `MpcDockingWholeBody.TheAssembledGradientIsTheMerits…` |
 | 관절군별 $E$ (§1.1) | `BlockLayout`, 두 코어 | `MpcSegmentCoreGroups.*`, `MpcDockingGroups.*` |
 | 토크 행 (waist 행의 반력) | 바꾸지 않았다 — 이미 전 관절 | `MpcSegmentCoreJudgement.TheTrunksTorqueRowsCarryTheOtherArmsReaction` |
-| 토크 slack | (관절 × 노드) 그대로 | 노드당 slack 은 #857 |
+| 토크 slack | 노드당 하나 ($s_{\tau,k}$, 노드 안 $\ell_\infty$ — §1.6) — §1.3 의 관절 × 노드 대신 (#857) | `MpcSegmentCoreSlackLayout.*` |
 | waist 토크 비용 `[선택]` | docking `r_tau` 의 군별 값 | — |
 | 사전적 처리 `[선택]`, centroidal 1 차 항 `[선택]` | 구현하지 않음 | — |
 | 자기충돌 · 공–왼팔 | 구현하지 않음 | E3-F03 |

@@ -31,6 +31,8 @@ constexpr int kPathNewtonSteps = 2;
 // Upper bound on the hand's lead and closure time [s]: keeps the ns
 // conversion far from overflow; a real hand's are a fraction of a second.
 constexpr double kMaxCloseTimingS = 5.0;
+// Where in each joint's range the configure warm-ups solve (WarmUp).
+constexpr double kWarmUpRangeFraction = 0.51;
 
 // The core's design values, all YAML keys, from `planner.segment.mpc.*`: the cost
 // scalars (the stop-path weight among them — both core kinds carry that term,
@@ -466,13 +468,18 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
 }
 
 bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string& why) {
-  // One solve per core at the middle of the joint range (MD-64): the first
+  // One solve per core near the middle of the joint range (MD-64): the first
   // ProxQP solve of a core is its slowest. The stop cores solve a stop from
   // rest (no reference: pre-solve + solve); the catch cores a catch where
   // the ball already is — at the catch frame, along its +z — so every term
   // runs. With the stop-path term on (w_⊥ > 0) both kinds solve on that
   // synthetic ball's line — through the catch frame, along its travel — so no
   // warm-up runs on the input's default line.
+  // Not AT the middle (kWarmUpRangeFraction): an arm can stand there with no
+  // joint loaded by gravity (a vertical 7-joint arm at q = 0); the stop from
+  // rest is then degenerate (z = 0, every torque row at 0), and under one
+  // torque slack per node ProxQP's approximate infeasibility test calls it
+  // infeasible (#857 D12). 1 % of each box off its middle is not.
   const int n = nv_;
   warmup_max_ns_ = 0;
   warmup_total_ns_ = 0;
@@ -488,12 +495,16 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
     warmup_total_ns_ += ns;
     return ok;
   };
-  Eigen::VectorXd q_mid(n);
+  // Inside the cores' box (MD-64: every core has the same one), which a
+  // joint narrower than 2·m_q collapses to its midpoint.
+  const Eigen::VectorXd& lo = cores_[0]->PositionLow();
+  const Eigen::VectorXd& hi = cores_[0]->PositionHigh();
+  Eigen::VectorXd q_warm(n);
   for (int m = 0; m < n; ++m) {
-    q_mid[m] = 0.5 * (model.q_min[U(m)] + model.q_max[U(m)]);
+    q_warm[m] = lo[m] + kWarmUpRangeFraction * (hi[m] - lo[m]);
   }
   pinocchio::Data data(*model.arm);
-  pinocchio::forwardKinematics(*model.arm, data, q_mid);
+  pinocchio::forwardKinematics(*model.arm, data, q_warm);
   pinocchio::updateFramePlacement(*model.arm, data, model.catch_frame);
   const Eigen::Vector3d p = data.oMf[model.catch_frame].translation();
   const Eigen::Vector3d z = data.oMf[model.catch_frame].rotation().col(2);
@@ -501,7 +512,7 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
   const Eigen::Vector3d d_ball = v_ball.normalized();
   for (std::size_t k = 0; k < cores_.size(); ++k) {
     MpcSegmentCoreInput& in = inputs_[k];
-    in.q0 = q_mid;
+    in.q0 = q_warm;
     in.qd0.setZero();
     in.qdd0.setZero();
     in.reference_valid = false;
@@ -519,11 +530,11 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
   }
   for (std::size_t j = 0; j < catch_cores_.size(); ++j) {
     MpcSegmentCoreInput& in = catch_inputs_[j];
-    in.q0 = q_mid;
+    in.q0 = q_warm;
     in.qd0.setZero();
     in.qdd0.setZero();
     for (Eigen::Index c = 0; c < in.q_ref.cols(); ++c) {
-      in.q_ref.col(c) = q_mid;
+      in.q_ref.col(c) = q_warm;
     }
     in.qd_ref.setZero();
     in.qdd_ref.setZero();

@@ -88,7 +88,9 @@ demo_catching_controller:
             # under the dynamic CLIK form (checked at configure). The terminal one
             # is a guard value, not a tuned one: in every recorded solve the
             # terminal slack stayed at numerical zero, so there is no
-            # distribution to tighten it from (#713).
+            # distribution to tighten it from (#713). Still so with one torque
+            # slack per node (#857): at most 9e-8 over 130,247 offline
+            # first solves.
             slack_max: 0.1
             slack_terminal_max: 0.1
             # Largest catch-node position error [m] a segment may carry (MD-62).
@@ -139,7 +141,11 @@ demo_catching_controller:
             # Penalty of the torque slack. 0 = the torque rows are off, and the
             # publish judgement's slack condition (publish.slack_max) is then
             # vacuous: no slack exists to bound. 10 was exact on every sampled
-            # stop (E1-F01 sweep, #627).
+            # stop with one slack per joint and node (E1-F01 sweep, #627). With
+            # one per node (#857) it must cover the SUM of a node's torque-row
+            # multipliers; not re-swept. Offline the slack turned on in 7 of
+            # 130,247 first solves that one per joint kept at 0, and the
+            # published throws stayed 5,060 of 16,230.
             rho_tau: 10.0
             # Stop-path weight [1/m^2], in [0, 1.0e4]: on the nodes from the
             # catch on, the squared distance of the catch frame from a line is
@@ -192,6 +198,9 @@ demo_catching_controller:
             # 611 -> 681, catches 316 -> 370. Offline it passed the box less
             # cleanly (solve_failed share 7.9 -> 9.5 %, mostly throws 0.9 also
             # withheld); 1.3 and above fail half the first solves.
+            # Measured with one torque slack per joint; one per node (#857) kept
+            # the offline published first solves (5,060 of 16,230) and moved the sim
+            # published throws 685 -> 675 (three chunks, within the noise of S1).
             ref_speed_fraction: 1.2
           solver:
             # ProxQP: outer and inner iteration caps (>= 1) and tolerances. The

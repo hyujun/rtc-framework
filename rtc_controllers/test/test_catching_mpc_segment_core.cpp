@@ -28,6 +28,7 @@
 #include <pinocchio/algorithm/rnea.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -416,13 +417,19 @@ TorqueFixture MakeTorqueFixture(double armature = 0.0) {
 }
 
 // Solve the fixture's last main QP with the slack pinned to 0 (the hard
-// problem). Returns false when it is infeasible.
+// problem). Returns false when it is infeasible. The N slack variables (#857)
+// follow the jerk ones and their s ≥ 0 rows are the last rows — true only
+// without a velocity slack, whose column and rows would be pinned instead.
 bool SolveHard(const MpcSegmentCore& mpc, const MpcSegmentCoreParams& p, Eigen::VectorXd& z) {
   rtc::tsid::QPData hard = mpc.MainQp();
   const Eigen::Index n_in = hard.C.rows();
-  const Eigen::Index nN = n_in / 5;
-  hard.u.tail(nN).setZero();
-  hard.g.tail(nN).setZero();
+  const Eigen::Index n_s = hard.H.rows() - mpc.Layout().nu;
+  EXPECT_EQ(n_s, mpc.NumNodes()) << "SolveHard assumes no velocity slack";
+  if (n_s != mpc.NumNodes()) {
+    return false;
+  }
+  hard.u.tail(n_s).setZero();
+  hard.g.tail(n_s).setZero();
   rtc::tsid::QPSolverWrapper solver;
   solver.Init(static_cast<int>(hard.H.rows()), static_cast<int>(hard.A.rows()),
               static_cast<int>(n_in), p.solver);
@@ -494,6 +501,321 @@ TEST(MpcSegmentCore, SlackIsZeroWhenFeasible) {
     Eigen::VectorXd z3;
     EXPECT_FALSE(SolveHard(m3, f.params, z3));
   }
+}
+
+// ── #857: one torque slack per node, against a per-joint oracle ─────────────
+// The oracle lays a core QP's torque slack out again — one per joint and node,
+// or one per node — around the SAME jerk block (H, g, A, b and the position,
+// velocity and torque rows' jerk columns with their l, u copied), and solves it
+// with its own QPSolverWrapper to kOracleEps. Every count is filled in:
+// QPData::Init leaves n_ineq at 0, and the wrapper then swaps the rows for ±∞
+// placeholders — an unconstrained QP that agrees with anything. These fixtures
+// have no velocity slack.
+
+constexpr double kOracleEps = 1e-9;
+
+rtc::tsid::QPData RelaySlack(const MpcSegmentCore& mpc, const rtc::tsid::QPData& src, bool per_node,
+                             double rho) {
+  const Eigen::Index n = mpc.Nv();
+  const Eigen::Index N = mpc.NumNodes();
+  const Eigen::Index nN = n * N;
+  const Eigen::Index nu = mpc.Layout().nu;
+  const Eigen::Index n_s = per_node ? N : nN;
+  const Eigen::Index nz = nu + n_s;
+  const Eigen::Index n_eq = src.A.rows();
+  const Eigen::Index n_in = 4 * nN + n_s;
+  // src is either layout; a velocity slack would be one column more.
+  EXPECT_TRUE(src.H.rows() == nu + N || src.H.rows() == nu + nN)
+      << "RelaySlack assumes no velocity slack";
+  rtc::tsid::QPData qp;
+  qp.Init(static_cast<int>(nz), static_cast<int>(n_eq), static_cast<int>(n_in));
+  qp.n_vars = static_cast<int>(nz);
+  qp.n_eq = static_cast<int>(n_eq);
+  qp.n_ineq = static_cast<int>(n_in);
+  qp.H.topLeftCorner(nu, nu) = src.H.topLeftCorner(nu, nu);
+  qp.g.head(nu) = src.g.head(nu);
+  qp.g.tail(n_s).setConstant(rho);
+  qp.A.leftCols(nu) = src.A.leftCols(nu);
+  qp.b = src.b;
+  qp.C.topLeftCorner(4 * nN, nu) = src.C.topLeftCorner(4 * nN, nu);
+  for (Eigen::Index k0 = 0; k0 < N; ++k0) {
+    for (Eigen::Index j = 0; j < n; ++j) {
+      const Eigen::Index col = nu + (per_node ? k0 : k0 * n + j);
+      qp.C(2 * nN + k0 * n + j, col) = -1.0;
+      qp.C(3 * nN + k0 * n + j, col) = 1.0;
+    }
+  }
+  qp.C.bottomRightCorner(n_s, n_s).setIdentity();
+  qp.l.head(4 * nN) = src.l.head(4 * nN);
+  qp.u.head(4 * nN) = src.u.head(4 * nN);
+  qp.l.tail(n_s).setZero();
+  qp.u.tail(n_s).setConstant(kInf);
+  return qp;
+}
+
+struct OracleSolution {
+  bool converged{false};
+  int status{-1};
+  Eigen::VectorXd x;
+  Eigen::VectorXd z_in;  // inequality multipliers (QPSolverWrapper sign convention)
+  int iterations{0};
+};
+
+// A slack QP is feasible by construction, so ProxQP's approximate
+// infeasibility test is off for it (eps_primal_inf 0, QPSolverConfig); a hard
+// QP (slack pinned) may be infeasible and keeps the test.
+OracleSolution SolveOracle(const rtc::tsid::QPData& qp, bool may_be_infeasible = false) {
+  rtc::tsid::QPSolverConfig cfg;
+  cfg.max_iter = 5000;
+  cfg.max_iter_in = 1500;
+  cfg.eps_abs = kOracleEps;
+  cfg.eps_rel = 0.0;
+  cfg.eps_primal_inf = may_be_infeasible ? 1e-4 : 0.0;
+  cfg.update_preconditioner = true;
+  cfg.dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT;
+  rtc::tsid::QPSolverWrapper solver;
+  solver.Init(qp.n_vars, qp.n_eq, qp.n_ineq, cfg);
+  const rtc::tsid::SolveResult& r = solver.Solve(qp);
+  OracleSolution o;
+  o.converged = r.converged;
+  o.status = r.status;
+  o.x = r.x_opt.head(qp.n_vars);
+  o.z_in = solver.InequalityDual().head(qp.n_ineq);
+  o.iterations = r.iterations;
+  return o;
+}
+
+// Torque row r of [2nN, 4nN) at one of its bounds at x, to tol.
+bool TorqueRowActive(const rtc::tsid::QPData& qp, const Eigen::VectorXd& x, Eigen::Index row,
+                     double tol) {
+  const double cx = qp.C.row(row).dot(x);
+  return (std::isfinite(qp.l[row]) && std::abs(cx - qp.l[row]) <= tol) ||
+         (std::isfinite(qp.u[row]) && std::abs(cx - qp.u[row]) <= tol);
+}
+
+int ActiveTorqueRows(const rtc::tsid::QPData& qp, const Eigen::VectorXd& x, Eigen::Index nN,
+                     double tol) {
+  int active = 0;
+  for (Eigen::Index r = 2 * nN; r < 4 * nN; ++r) {
+    active += TorqueRowActive(qp, x, r, tol) ? 1 : 0;
+  }
+  return active;
+}
+
+// τ^lin/τ_max (signed, nN) at x, read off the upper torque rows:
+// C_ũ ũ − s ≤ η − c̃, so the ratio C_ũ ũ + c̃ is C_ũ ũ + η − u.
+Eigen::VectorXd TorqueRatio(const rtc::tsid::QPData& qp, const Eigen::VectorXd& x, Eigen::Index nN,
+                            Eigen::Index nu, double eta) {
+  Eigen::VectorXd ratio = qp.C.block(2 * nN, 0, nN, nu) * x.head(nu);
+  ratio.array() += eta - qp.u.segment(2 * nN, nN).array();
+  return ratio;
+}
+
+bool SameQp(const rtc::tsid::QPData& a, const rtc::tsid::QPData& b) {
+  return a.n_vars == b.n_vars && a.n_eq == b.n_eq && a.n_ineq == b.n_ineq && a.H == b.H &&
+         a.g == b.g && a.A == b.A && a.b == b.b && a.C == b.C && a.l == b.l && a.u == b.u;
+}
+
+// The oracle's relay of the core's layout IS the core's QP, bit for bit: the
+// slack block is −1 / +1 on the torque rows of its node, identity on the
+// s ≥ 0 rows, ρ_τ in g, [0, ∞) bounds; nothing else touches it.
+TEST(MpcSegmentCoreSlackLayout, TheOracleRelayReproducesTheCoreQp) {
+  const TorqueFixture f = MakeTorqueFixture();
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
+  mpc.ResizeResult(res);
+  ASSERT_TRUE(mpc.Solve(f.input, res)) << MpcSegmentCoreReasonName(res.reason);
+  const Eigen::Index N = mpc.NumNodes();
+  const Eigen::Index nN = static_cast<Eigen::Index>(mpc.Nv()) * N;
+  EXPECT_EQ(mpc.MainQp().H.rows(), mpc.Layout().nu + N);
+  EXPECT_EQ(mpc.MainQp().C.rows(), 4 * nN + N);
+  EXPECT_TRUE(SameQp(RelaySlack(mpc, mpc.MainQp(), true, f.params.rho_tau), mpc.MainQp()));
+  ASSERT_EQ(res.slack.size(), N);
+  for (Eigen::Index k = 0; k < N; ++k) {
+    EXPECT_EQ(res.slack[k], mpc.LastSolution()[mpc.Layout().nu + k]) << "node " << k + 1;
+  }
+}
+
+// (b) The hard problem feasible and its torque row binding: both layouts give
+// the same jerk — ρ_τ = 10 is exact for both here.
+TEST(MpcSegmentCoreSlackLayout, PerNodeAgreesWithPerJointWhenTheSlackIsZero) {
+  const TorqueFixture f = MakeTorqueFixture();
+  MpcSegmentCoreParams p = f.params;
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
+  mpc.ResizeResult(res);
+  ASSERT_TRUE(mpc.Solve(f.input, res)) << MpcSegmentCoreReasonName(res.reason);
+  const Eigen::Index N = mpc.NumNodes();
+  const Eigen::Index nN = static_cast<Eigen::Index>(mpc.Nv()) * N;
+  const Eigen::Index nu = mpc.Layout().nu;
+  const rtc::tsid::QPData joint = RelaySlack(mpc, mpc.MainQp(), false, p.rho_tau);
+  const rtc::tsid::QPData node = RelaySlack(mpc, mpc.MainQp(), true, p.rho_tau);
+  const OracleSolution oj = SolveOracle(joint);
+  const OracleSolution on = SolveOracle(node);
+  ASSERT_TRUE(oj.converged);
+  ASSERT_TRUE(on.converged);
+  // The premise: torque rows bind (else the agreement says nothing) and no
+  // slack is needed.
+  EXPECT_GT(ActiveTorqueRows(joint, oj.x, nN, 10.0 * kOracleEps), 0);
+  EXPECT_GT(ActiveTorqueRows(node, on.x, nN, 10.0 * kOracleEps), 0);
+  EXPECT_LE(oj.x.tail(nN).maxCoeff(), 10.0 * kOracleEps);
+  EXPECT_LE(on.x.tail(N).maxCoeff(), 10.0 * kOracleEps);
+  const double scale = oj.x.head(nu).cwiseAbs().maxCoeff();
+  ASSERT_GT(scale, 0.0);
+  EXPECT_LE((oj.x.head(nu) - on.x.head(nu)).cwiseAbs().maxCoeff(), 1e-6 * scale);
+  // The core's own answer (eps_abs 1e-6) against the oracle — measured.
+  const double core_err =
+      (mpc.LastSolution().head(nu) - on.x.head(nu)).cwiseAbs().maxCoeff() / scale;
+  RecordProperty("core_vs_oracle_rel_ppb", static_cast<int>(std::lround(1e9 * core_err)));
+  std::printf("[slack layout] core vs oracle |dz|/|z| = %.3g (oracle it %d / %d)\n", core_err,
+              oj.iterations, on.iterations);
+  EXPECT_LE(core_err, 1e-4);  // measured 7.8e-6 (2026-10-18)
+}
+
+// (c) Past the limit — static torques the stop posture cannot hold on two
+// joints — the node's slack is its worst excess, max_j(|τ_kj|/τ_max,j − η)⁺:
+// an ℓ∞ penalty within the node.
+TEST(MpcSegmentCoreSlackLayout, PerNodeSlackIsTheWorstExcessOfItsNode) {
+  const TorqueFixture f = MakeTorqueFixture();
+  const int n = f.arm.model->nv;
+  MpcSegmentCoreLimits tight = f.limits;
+  pinocchio::Data data(*f.arm.model);
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(n);
+  const Eigen::VectorXd g = Rnea(*f.arm.model, data, f.arm.q_nominal, zero, zero);
+  tight.tau_max[1] = 0.5 * std::abs(g[1]) / f.params.eta_tau;
+  tight.tau_max[2] = 0.7 * std::abs(g[2]) / f.params.eta_tau;
+  ASSERT_GT(std::abs(g[2]), 1.0) << "the second joint carries no static torque here";
+  MpcSegmentCoreParams p = f.params;
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, p, tight), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
+  mpc.ResizeResult(res);
+  ASSERT_TRUE(mpc.Solve(f.input, res)) << MpcSegmentCoreReasonName(res.reason);
+  const Eigen::Index N = mpc.NumNodes();
+  const Eigen::Index nN = static_cast<Eigen::Index>(n) * N;
+  const Eigen::Index nu = mpc.Layout().nu;
+  const rtc::tsid::QPData node = RelaySlack(mpc, mpc.MainQp(), true, p.rho_tau);
+  const OracleSolution on = SolveOracle(node);
+  ASSERT_TRUE(on.converged);
+  const Eigen::VectorXd ratio = TorqueRatio(node, on.x, nN, nu, p.eta_tau);
+  int two_over = 0;
+  for (Eigen::Index k0 = 0; k0 < N; ++k0) {
+    double worst = 0.0;
+    int over = 0;
+    for (Eigen::Index j = 0; j < n; ++j) {
+      const double excess = std::abs(ratio[k0 * n + j]) - p.eta_tau;
+      worst = std::max(worst, excess);
+      over += excess > 1e-6 ? 1 : 0;
+    }
+    const double s_k = on.x[nu + k0];
+    EXPECT_NEAR(s_k, worst, 1e-6) << "node " << k0 + 1;
+    for (Eigen::Index j = 0; j < n; ++j) {
+      EXPECT_LE(std::abs(ratio[k0 * n + j]), p.eta_tau + s_k + 1e-6)
+          << "node " << k0 + 1 << " joint " << j;
+    }
+    two_over += over >= 2 ? 1 : 0;
+  }
+  EXPECT_GT(on.x.tail(N).maxCoeff(), 0.1) << "the premise: the slack is active";
+  EXPECT_GT(two_over, 0) << "no node has two joints past η — the max is not exercised";
+  // The core agrees with its oracle on the terminal (static-torque) node.
+  EXPECT_NEAR(res.slack_terminal_max, on.x[nu + N - 1], 1e-4);
+}
+
+// (d) The exactness condition the law changes: per joint ρ_τ must exceed each
+// torque row's multiplier, per node it must exceed the SUM over the node's
+// rows. Built so that the answer is known: at the loose stop's optimum x*
+// (no torque row active), m rows of one inner node get their bound at their
+// value at x*, and the cost a pull −μ·c_r along each — x* stays optimal, with
+// multiplier μ on each of those rows (KKT) and m·μ on their node. With ρ*
+// between the two, the per-joint penalty stays exact and the per-node one
+// does not. (Tightening τ_max instead makes this stop's hard problem
+// infeasible: the joints that carry torque on one node carry the arm's
+// weight, which the jerk cannot shed.)
+TEST(MpcSegmentCoreSlackLayout, PerNodeNeedsTheSumOfItsNodesMultipliers) {
+  const TorqueFixture f = MakeTorqueFixture();
+  const int n = f.arm.model->nv;
+  MpcSegmentCoreParams p = f.params;
+  MpcSegmentCoreLimits lim = f.limits;
+  lim.tau_max[0] *= 10.0;  // loose: no torque row active at the optimum
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, p, lim), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
+  mpc.ResizeResult(res);
+  ASSERT_TRUE(mpc.Solve(f.input, res)) << MpcSegmentCoreReasonName(res.reason);
+  const Eigen::Index N = mpc.NumNodes();
+  const Eigen::Index nN = static_cast<Eigen::Index>(n) * N;
+  const Eigen::Index nu = mpc.Layout().nu;
+  rtc::tsid::QPData base = RelaySlack(mpc, mpc.MainQp(), false, 0.0);
+  base.u.tail(nN).setZero();  // the hard problem: slack pinned at 0
+  const OracleSolution o0 = SolveOracle(base, true);
+  ASSERT_TRUE(o0.converged) << "status " << o0.status;
+  ASSERT_EQ(ActiveTorqueRows(base, o0.x, nN, 10.0 * kOracleEps), 0) << "the loose stop binds";
+  // The inner node (2..N−1) with the most torque; its three largest joints.
+  const Eigen::VectorXd ratio = TorqueRatio(base, o0.x, nN, nu, p.eta_tau);
+  Eigen::Index k1 = 1;
+  double most = -1.0;
+  for (Eigen::Index k0 = 1; k0 + 1 < N; ++k0) {
+    const double t = ratio.segment(k0 * n, n).cwiseAbs().sum();
+    if (t > most) {
+      most = t;
+      k1 = k0;
+    }
+  }
+  std::vector<int> order(static_cast<std::size_t>(n));
+  for (int j = 0; j < n; ++j) {
+    order[static_cast<std::size_t>(j)] = j;
+  }
+  std::sort(order.begin(), order.end(), [&](int a, int b) {
+    return std::abs(ratio[k1 * n + a]) > std::abs(ratio[k1 * n + b]);
+  });
+  constexpr int kBound = 3;
+  constexpr double kMu = 1.0;
+  for (int i = 0; i < kBound; ++i) {
+    const Eigen::Index r = k1 * n + order[static_cast<std::size_t>(i)];
+    const bool upper = ratio[r] >= 0.0;
+    const Eigen::Index row = (upper ? 2 * nN : 3 * nN) + r;
+    const double at = base.C.row(row).dot(o0.x);
+    if (upper) {
+      base.u[row] = at;
+      base.g.head(nu) -= kMu * base.C.row(row).head(nu).transpose();
+    } else {
+      base.l[row] = at;
+      base.g.head(nu) += kMu * base.C.row(row).head(nu).transpose();
+    }
+  }
+  const OracleSolution oh = SolveOracle(base, true);
+  ASSERT_TRUE(oh.converged) << "status " << oh.status;
+  EXPECT_LE((oh.x.head(nu) - o0.x.head(nu)).cwiseAbs().maxCoeff(),
+            1e-6 * o0.x.head(nu).cwiseAbs().maxCoeff())
+      << "x* is no longer the optimum";
+  std::vector<double> node_sum(static_cast<std::size_t>(N), 0.0);
+  double lambda_max = 0.0;
+  for (Eigen::Index r0 = 0; r0 < 2 * nN; ++r0) {
+    const Eigen::Index row = 2 * nN + r0;
+    if (!TorqueRowActive(base, oh.x, row, 10.0 * kOracleEps)) {
+      continue;
+    }
+    const double lambda = std::abs(oh.z_in[row]);
+    lambda_max = std::max(lambda_max, lambda);
+    node_sum[static_cast<std::size_t>((r0 % nN) / n)] += lambda;
+  }
+  const auto it = std::max_element(node_sum.begin(), node_sum.end());
+  EXPECT_EQ(std::distance(node_sum.begin(), it), k1);
+  EXPECT_NEAR(lambda_max, kMu, 1e-6);
+  EXPECT_NEAR(*it, kBound * kMu, 1e-6);
+  const double rho_star = 0.5 * (lambda_max + *it);
+  std::printf("[slack layout] node %ld: sum of multipliers %.6g, largest %.6g, rho* %.4g\n",
+              static_cast<long>(k1 + 1), *it, lambda_max, rho_star);
+  const OracleSolution oj = SolveOracle(RelaySlack(mpc, base, false, rho_star));
+  const OracleSolution on = SolveOracle(RelaySlack(mpc, base, true, rho_star));
+  ASSERT_TRUE(oj.converged) << "status " << oj.status;
+  ASSERT_TRUE(on.converged) << "status " << on.status;
+  RecordProperty("per_node_slack_at_rho_star_ppb",
+                 static_cast<int>(std::lround(1e9 * on.x[nu + k1])));
+  EXPECT_LE(oj.x.tail(nN).maxCoeff(), 10.0 * kOracleEps) << "per joint: exact at rho*";
+  EXPECT_GE(on.x[nu + k1], 100.0 * kOracleEps) << "per node: not exact at rho*";
 }
 
 // ── 7. Re-evaluated torque inside the limit ──────────────────────────────────
@@ -901,7 +1223,9 @@ TEST(MpcSegmentCore, PresolveAndRejectionPathsAllocateNothing) {
 // ── 6. Fail-closed ───────────────────────────────────────────────────────────
 
 struct Snapshot {
-  Eigen::MatrixXd q, qd, qdd, u, slack, tau_ratio;
+  Eigen::MatrixXd q, qd, qdd, u;
+  Eigen::VectorXd slack;  // one per node (#857)
+  Eigen::MatrixXd tau_ratio;
 
   explicit Snapshot(const MpcSegmentCoreResult& r)
       : q(r.q), qd(r.qd), qdd(r.qdd), u(r.u), slack(r.slack), tau_ratio(r.tau_ratio) {}

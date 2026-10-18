@@ -274,7 +274,7 @@ TEST(MpcSegmentCoreGroups, TheLayoutHoldsEachClassBlockMajorInModelOrder) {
   ASSERT_EQ(l.n_classes, 3);
   EXPECT_EQ(l.nu,
             kTrunk * kPreCoarse.n_blocks + kArm * kFine.n_blocks + kArm * kBothCoarse.n_blocks);
-  EXPECT_EQ(core.MainQp().H.rows(), l.nu + kNv * (kNPre + kNStop) + 1);
+  EXPECT_EQ(core.MainQp().H.rows(), l.nu + (kNPre + kNStop) + 1);  // a slack per node (#857)
   // Every (joint, block) has its own column.
   std::vector<int> seen(static_cast<std::size_t>(l.nu), 0);
   for (int j = 0; j < kNv; ++j) {

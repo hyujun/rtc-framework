@@ -25,6 +25,7 @@
 #include <pinocchio/algorithm/rnea.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -74,7 +75,10 @@ using rtc::testing::mpc_segment_core::UseAsReference;
 // the sum of |entries|, and a signature of where the ±inf bounds sit.
 //
 // Regenerating these constants is a change of an existing assertion (PROC-6):
-// it needs its own commit and a reason.
+// it needs its own commit and a reason. Once so far: #857 (one torque slack
+// per node) changed the QP's size, so the assembled-QP fingerprints were
+// re-taken; the jerk block those QPs share with the old ones is pinned on its
+// own (JerkBlockIsTheSameForBothSlackLayouts), and the solutions did not move.
 
 struct Probe {
   std::vector<double> tight;  // matrix fingerprints
@@ -193,37 +197,40 @@ void ShiftUniform(const MpcSegmentCoreResult& r, double dt, double t_shift,
   in.qdd0 = in.qdd_ref.col(0);
 }
 
-// GOLDEN-CONSTANTS-BEGIN (main edc0fa4e, Release, 2026-10-01)
+// GOLDEN-CONSTANTS-BEGIN (main edc0fa4e, Release, 2026-10-01; the _tight
+// fingerprints re-taken at #857 — one torque slack per node changes the QP's
+// size — Release, 2026-10-18. The _loose solution values stayed within 5.2e-8
+// of edc0fa4e's and are kept.)
 // clang-format off
 const std::vector<double> kGolden_kinematic_6r_tight = {
-    2.0975223758848318, 2.7779410800051276, -0.61133040610582645,
-    -3.1050014150769387, 72, 0,
-    0, 0, 0,
-    0, 0, 0,
-    -59.38174127892043, 265.83283673065381, 201.60168614972119,
-    -157.97640694307051, 4680, 0,
-    -0.92880220269491764, -0.27344680166202939, 0.7825088044234525,
-    0.6920871788054288, 6.6100000000000012, 0,
-    -47.845731539272457, 12.957330264087243, 54.777872874763482,
-    16.348703393003422, 5851.4999999999982, 0,
-    -11.868524095846992, 2.770794872940336, 13.350892861588102,
-    4.3719015301940214, 379.14125000000001, -31176,
-    10.102816417685368, -3.9644701962100481, -12.223798684891936,
-    -2.5752334628926681, 348.05875000000015, 31176,
-    -130.07049534937607, 142.66874043045968, 206.39793724236256,
-    -32.246327544735337, 17613.536458333318, 0,
-    34.016148859569945, -4.0527307803653807, -36.184350332526989,
-    -15.305811876619925, 783.14268426074, 0,
-    -59.38174127892043, 265.83283673065381, 201.60168614972119,
-    -157.97640694307051, 4680, 0,
-    -0.92880220269491764, -0.27344680166202939, 0.7825088044234525,
-    0.6920871788054288, 6.6100000000000012, 0,
-    -40.494620849123912, 15.041481766404518, 48.541778355706896,
-    10.928255932606628, 6080.1136838575658, 0,
-    -1.6849979155651313, 5.9263525914139139, 4.8555826680041481,
-    -3.3286272394520235, 241.73210783102456, -12996,
-    -0.30093980165202872, -10.385672670115063, -5.2553707458163412,
-    7.5740616331274948, 239.3589697650076, 41544,
+    2.0975223758848318,    2.7779410800051276,    -0.61133040610582645,
+    -3.1050014150769387,    72,    0,
+    0,    0,    0,
+    0,    0,    0,
+    -59.38174127892043,    265.83283673065381,    201.60168614972119,
+    -157.97640694307051,    4680,    0,
+    -0.92880220269491764,    -0.27344680166202939,    0.7825088044234525,
+    0.6920871788054288,    6.6100000000000012,    0,
+    -48.036823097639264,    14.156405595820914,    55.610466926473016,
+    15.595063928374016,    5791.4999999999982,    0,
+    -11.868524095846992,    2.770794872940336,    13.350892861588102,
+    4.3719015301940214,    379.14125000000001,    -31176,
+    10.102816417685368,    -3.9644701962100481,    -12.223798684891936,
+    -2.5752334628926681,    348.05875000000015,    31176,
+    -130.07049534937607,    142.66874043045968,    206.39793724236256,
+    -32.246327544735337,    17613.536458333318,    0,
+    -14.18551470968977,    -40.546758544569265,    -7.506906120702693,
+    36.530581356803793,    183.14268426073994,    0,
+    -59.38174127892043,    265.83283673065381,    201.60168614972119,
+    -157.97640694307051,    4680,    0,
+    -0.92880220269491764,    -0.27344680166202939,    0.7825088044234525,
+    0.6920871788054288,    6.6100000000000012,    0,
+    -40.685712407490719,    16.240557098138204,    49.374372407416423,
+    10.174616467977229,    6020.1136838575658,    0,
+    -1.6849979155651313,    5.9263525914139139,    4.8555826680041481,
+    -3.3286272394520235,    241.73210783102456,    -12996,
+    -0.30093980165202872,    -10.385672670115063,    -5.2553707458163412,
+    7.5740616331274948,    239.3589697650076,    21714,
 };
 const std::vector<double> kGolden_kinematic_6r_loose = {
     0.29304347827120991, -0.57077898550867301, 0.96473188434607815,
@@ -235,20 +242,20 @@ const std::vector<double> kGolden_kinematic_6r_loose = {
     9.9153826788695908e-10, 0.15826776759386685,
 };
 const std::vector<double> kGolden_perp_7r_warm_tight = {
-    2801.3844433248487, 812.00863468594707, -2366.9617261017702,
-    -2078.3276129488627, 97010.820090870926, 0,
-    7.961049401475039, 11.699519328399447, -1.7018339698399219,
-    -12.609996515290852, 896.93957280152745, 0,
-    -581.89921998457589, -568.08604116270158, 277.97451884657289,
-    716.80175752058472, 5460, 0,
-    -1.6856807043757249, -1.7819803626403938, 0.73232538509907885,
-    2.1737727280125005, 10.77701765349331, 0,
-    -193.57991460613135, -112.78696789666985, 133.23915101317476,
-    184.0696015425882, 7278.5938111046671, 0,
-    -0.64533938131083246, 1.9854522435180963, 1.7075516801731703,
-    -1.0719160949936044, 258.26169350279378, -17682,
-    -0.98432333109613901, -3.1253706752685857, -0.68774265820787661,
-    2.7574299643371081, 244.7175139729338, 56532,
+    2801.3844460561686,    812.00863622460827,    -2366.9617280099101,
+    -2078.3276155083795,    97010.8200708433,    0,
+    -17.191906368549475,    31.380436473102606,    33.980366365115884,
+    -13.201020075297,    176.93957856121736,    0,
+    -581.89921998457589,    -568.08604116270158,    277.97451884657289,
+    716.80175752058472,    5460,    0,
+    -1.6856807429837173,    -1.7819803116451216,    0.73232545098942226,
+    2.173772712268407,    10.777017578951254,    0,
+    -191.71085767936472,    -110.17586427190409,    132.76702840849262,
+    181.20591343038265,    7206.5938096016307,    0,
+    -0.6453393671005333,    1.985452296802934,    1.7075516944701348,
+    -1.0719161406295927,    258.261694143032,    -17682,
+    -0.98432331710625909,    -3.1253706218507835,    -0.68774264361935211,
+    2.7574299187241262,    244.71751335440237,    28848,
 };
 const std::vector<double> kGolden_perp_7r_warm_loose = {
     0.041480331310868312, 0.60932859159018793, 0.031904729961790786,
@@ -261,34 +268,34 @@ const std::vector<double> kGolden_perp_7r_warm_loose = {
     1.0690346466812067e-19, 0.25913673094721879,
 };
 const std::vector<double> kGolden_torque_6r_shipped_tight = {
-    3.2347628215285917, 4.2330258732956212, -0.97010389624027171,
-    -4.7520291850724652, 84, 0,
-    0, 0, 0,
-    0, 0, 0,
-    -51.490194366363788, 150.07842905745466, 131.78180231573768,
-    -79.575473550461822, 2467.5, 0,
-    -2.0767861445900437, -0.60824766145748344, 1.7513750706830005,
-    1.5452292212374961, 3.8999999999999995, 0,
-    17.335286277490262, 5.0918909642138699, -14.611136540667632,
-    -12.908814783219158, 2327.3906249999964, 0,
-    1.9468471742839515, 7.6442714678225432, 2.1428201523778587,
-    -6.4978677063941657, 732.21186240929228, -42420,
-    -1.7776094797471198, -7.7296437623382461, -2.3577318244745555,
-    6.4682627598226539, 728.39686240929416, 42420,
-    -0.1940816098776379, 7.9939403756395437, 4.4708209830344146,
-    -5.6020616237357697, 860.86747233072936, 0,
-    -7.467835549570184, -5.949010396074943, 4.2851289247191602,
-    8.2415443318103563, 853.85325515671457, 0,
-    -51.490194366363788, 150.07842905745466, 131.78180231573768,
-    -79.575473550461822, 2467.5, 0,
-    -2.0767861445900437, -0.60824766145748344, 1.7513750706830005,
-    1.5452292212374961, 3.8999999999999995, 0,
-    15.414920859183034, 22.825870781345131, -3.2031334664911491,
-    -24.539539681774503, 3109.1215106139766, 0,
-    -0.12206112941742642, 3.5573733582133977, 2.0252475420222815,
-    -2.4738706678818829, 356.5874231716374, -17682,
-    0.37089731444078289, -2.7755130442413343, -1.8557902907744903,
-    1.7826695863312867, 279.9213647816191, 56532,
+    3.2347628215285917,    4.2330258732956212,    -0.97010389624027171,
+    -4.7520291850724652,    84,    0,
+    0,    0,    0,
+    0,    0,    0,
+    -51.490194366363788,    150.07842905745466,    131.78180231573768,
+    -79.575473550461822,    2467.5,    0,
+    -2.0767861445900437,    -0.60824766145748344,    1.7513750706830005,
+    1.5452292212374961,    3.8999999999999995,    0,
+    17.632693929050767,    3.7887531385535622,    -15.605719876029267,
+    -12.137776711916626,    2257.3906249999964,    0,
+    1.9468471742839515,    7.6442714678225432,    2.1428201523778587,
+    -6.4978677063941657,    732.21186240929228,    -42420,
+    -1.7776094797471198,    -7.7296437623382461,    -2.3577318244745555,
+    6.4682627598226539,    728.39686240929416,    42420,
+    -0.1940816098776379,    7.9939403756395437,    4.4708209830344146,
+    -5.6020616237357697,    860.86747233072936,    0,
+    -18.087230400378562,    -25.51391689238427,    4.4373446357028641,
+    27.88788587689244,    153.8532551567146,    0,
+    -51.490194366363788,    150.07842905745466,    131.78180231573768,
+    -79.575473550461822,    2467.5,    0,
+    -2.0767861445900437,    -0.60824766145748344,    1.7513750706830005,
+    1.5452292212374961,    3.8999999999999995,    0,
+    15.712328510743603,    21.522732955684873,    -4.1977168018527662,
+    -23.768501610471983,    3039.1215106139766,    0,
+    -0.12206112941742753,    3.5573733582133986,    2.0252475420222815,
+    -2.4738706678818825,    356.5874231716374,    -17682,
+    0.37089731444078111,    -2.7755130442413325,    -1.8557902907744894,
+    1.7826695863312865,    279.9213647816191,    29547,
 };
 const std::vector<double> kGolden_torque_6r_shipped_loose = {
     0.16859800818720766, -1.284430544142992, 1.412748293515969,
@@ -484,6 +491,145 @@ void ReachReference(const MpcSegmentCore& mpc, const Eigen::VectorXd& q0, const 
   in.q0 = q0;
   in.qd0 = Eigen::VectorXd::Zero(n);
   in.qdd0 = Eigen::VectorXd::Zero(n);
+}
+
+// ── #857: the jerk block of the main QP under both torque slack layouts ─────
+// Everything of the main QP that does not touch a torque slack — H, g and A
+// over the jerk columns, b, the position / velocity / torque rows' jerk
+// columns with their bounds, the velocity slack's rows and column — is the
+// same whether the torque slack is one per joint and node or one per node
+// (#857 (a)): the golden was captured with one per joint, both layouts
+// matched it to the bit (#857 stage 1), and the per-node core is held to it.
+// The input is a reference no solve made (ReachReference), so no pre-solve
+// feeds the main QP. Regenerating it is a change of an existing assertion
+// (PROC-6).
+
+void AddJerkBlock(Probe& p, const rtc::tsid::QPData& qp, Eigen::Index nu, Eigen::Index nN) {
+  constexpr Eigen::Index kSvRows = 7;  // this case has the velocity slack
+  AddMatrix(p, qp.H.topLeftCorner(nu, nu));
+  AddMatrix(p, qp.H.bottomLeftCorner(1, nu));
+  AddMatrix(p, qp.H.bottomRightCorner(1, 1));
+  AddMatrix(p, qp.g.head(nu));
+  AddMatrix(p, qp.g.tail(1));
+  AddMatrix(p, qp.A.leftCols(nu));
+  AddMatrix(p, qp.b);
+  AddMatrix(p, qp.C.topLeftCorner(4 * nN, nu));
+  AddMatrix(p, qp.l.head(4 * nN));
+  AddMatrix(p, qp.u.head(4 * nN));
+  AddMatrix(p, qp.C.bottomLeftCorner(kSvRows, nu));
+  AddMatrix(p, qp.C.bottomRightCorner(kSvRows, 1));
+  AddMatrix(p, qp.l.tail(kSvRows));
+  AddMatrix(p, qp.u.tail(kSvRows));
+}
+
+// GOLDEN-CONSTANTS (#857 stage 1: the per-joint layout = the problem of main
+// cd1282d5, captured with RTC_MPC_SEGMENT_CORE_GOLDEN_PRINT=1, Release, 2026-10-18)
+// clang-format off
+const std::vector<double> kGolden_jerk_block_7r_catch_tight = {
+    1397492.5949514259,    447342.94874463481,    -1158165.1653861178,
+    -1066958.5989338134,    24364616.60429683,    0,
+    0,    0,    0,
+    0,    0,    0,
+    0,    0,    0,
+    0,    0,    0,
+    -5089.4643421116734,    -3449.9874110046817,    3243.7291596850214,
+    5185.3749121870042,    38948.540371957868,    0,
+    0.64421768723769102,    0.90929742682568171,    -0.15774569414324821,
+    -0.99369100363346452,    1,    0,
+    -695.48968985399119,    -701.41129769977636,    320.23628881650893,
+    872.73696198277787,    9808.75,    0,
+    0,    0,    0,
+    0,    0,    0,
+    32.445612319873717,    -303.39489920334211,    -194.76117261500988,
+    199.19812813121047,    25043.186725500625,    0,
+    5.5732446102380218,    9.3734151648997486,    -0.55848945659270377,
+    -9.6722057157751955,    275.34965877677445,    -20748,
+    -9.0483057974439891,    -5.0657699823762448,    6.3381307247094556,
+    8.4566550714348523,    280.95664950855144,    29029,
+    335.30481115734079,    149.4853612306126,    -255.33049310591639,
+    -286.08657686655391,    2403.6818151627176,    0,
+    0.056221693356164615,    -3.8296888966618448,    -2.1050962810634286,
+    2.7034673180089617,    7,    0,
+    9.8377674978780014,    -2.3321086572673657,    -11.08544016596656,
+    -3.5985758611006364,    11.791847391387073,    -6,
+    14.014356356246884,    12.682756367997696,    -7.2291114119060627,
+    -16.550314037360714,    17.791847391387073,    22,
+};
+// clang-format on
+
+TEST(MpcSegmentCoreGolden, JerkBlockIsTheSameForBothSlackLayouts) {
+  const ArmModel arm = RealArm7();
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  const int n = arm.model->nv;
+  pinocchio::Data data(*arm.model);
+  Probe probe;
+  {
+    // The shipped-like grid (C1 of the timing table) with every term on.
+    MpcSegmentCoreParams p = GridParams({6, 0.1, 7, 0.05, 1, {1, 1, 2, 3}});
+    p.w_perp = 10.0;
+    p.catch_terms = true;
+    p.w_axis = 100.0;
+    p.w_v_par = 1.0;
+    p.w_v_perp = 20.0;
+    p.rho_v = 1.0;
+    p.v_rel_allow = 0.5;
+    MpcSegmentCore mpc;
+    ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone);
+    MpcSegmentCoreResult res;
+    mpc.ResizeResult(res);
+    Eigen::VectorXd q_t = arm.q_nominal;
+    q_t += (Eigen::VectorXd(n) << 0.25, -0.2, 0.2, -0.25, 0.15, -0.15, 0.1).finished();
+    const CatchPose target = CatchPoseAt(arm, data, q_t, Eigen::VectorXd::Zero(n));
+    MpcSegmentCoreInput in;
+    ReachReference(mpc, arm.q_nominal, q_t, in);
+    in.p_b = target.p + Eigen::Vector3d(0.004, -0.003, 0.002);
+    in.a_d = target.z;
+    in.v_b = -5.0 * target.z;
+    ASSERT_TRUE(
+        rtc::catching::CatchPositionWeight(SkewWeight(1e-4, 4e-4, 2.5e-5), 1.0, 0.01, 1e4, in.w_p));
+    in.p_c = target.p;
+    in.d_hat = Eigen::Vector3d(0.3, -0.4, 0.2).normalized();
+    in.w_delta_scale = 0.5;
+    in.cold_start = true;
+    ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);
+    ASSERT_FALSE(res.presolved);
+    const rtc::tsid::QPData& qp = mpc.MainQp();
+    const Eigen::Index N = mpc.NumNodes();
+    const Eigen::Index nN = static_cast<Eigen::Index>(n) * N;
+    const Eigen::Index nu = mpc.Layout().nu;
+    const Eigen::Index n_s = N;
+    const Eigen::Index sv = nu + n_s;  // the velocity slack's column
+    ASSERT_EQ(qp.H.rows(), nu + n_s + 1);
+    ASSERT_EQ(qp.C.rows(), 4 * nN + n_s + 7);
+    AddJerkBlock(probe, qp, nu, nN);
+    // The slack block: −1 / +1 on the torque rows of its node,
+    // nothing on the other rows but its own s ≥ 0 row, ρ_τ in g, no H or A.
+    for (Eigen::Index k0 = 0; k0 < N; ++k0) {
+      for (Eigen::Index j = 0; j < n; ++j) {
+        const Eigen::Index r = k0 * n + j;
+        const Eigen::Index own = nu + k0;
+        for (Eigen::Index c = nu; c < sv; ++c) {
+          const double e = c == own ? 1.0 : 0.0;
+          ASSERT_EQ(qp.C(2 * nN + r, c), -e) << "upper torque row " << r << " col " << c;
+          ASSERT_EQ(qp.C(3 * nN + r, c), e) << "lower torque row " << r << " col " << c;
+        }
+        ASSERT_EQ(qp.C(2 * nN + r, sv), 0.0);
+        ASSERT_EQ(qp.C(3 * nN + r, sv), 0.0);
+      }
+    }
+    EXPECT_TRUE(qp.C.block(0, nu, 2 * nN, n_s + 1).isZero(0.0));
+    EXPECT_TRUE(qp.C.block(4 * nN, 0, n_s, nu).isZero(0.0));
+    EXPECT_TRUE(qp.C.block(4 * nN, nu, n_s, n_s).isIdentity(0.0));
+    EXPECT_TRUE(qp.C.block(4 * nN, sv, n_s, 1).isZero(0.0));
+    EXPECT_TRUE(qp.C.block(4 * nN + n_s, nu, 7, n_s).isZero(0.0));
+    EXPECT_TRUE(qp.l.segment(4 * nN, n_s).isZero(0.0));
+    EXPECT_TRUE((qp.u.segment(4 * nN, n_s).array() == kInf).all());
+    EXPECT_TRUE((qp.g.segment(nu, n_s).array() == p.rho_tau).all());
+    EXPECT_TRUE(qp.H.middleRows(nu, n_s).isZero(0.0));
+    EXPECT_TRUE(qp.H.middleCols(nu, n_s).isZero(0.0));
+    EXPECT_TRUE(qp.A.middleCols(nu, n_s).isZero(0.0));
+  }
+  ExpectGolden("jerk_block_7r_catch", probe, kGolden_jerk_block_7r_catch_tight, {});
 }
 
 // ── 1. Grid ──────────────────────────────────────────────────────────────────
@@ -1079,10 +1225,11 @@ TEST(MpcSegmentCoreApproach, StructuredCatchAssemblyMatchesDense) {
   MpcSegmentCore fast, dense;
   ASSERT_EQ(fast.Init(*f.arm.model, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
   ASSERT_EQ(dense.Init(*f.arm.model, f.arm.frame, pd, f.limits), MpcSegmentCoreReason::kNone);
-  // One slack variable and seven rows more than the E1-F01 layout.
+  // One slack variable and seven rows more than the E1-F01 layout (one
+  // torque slack per node — #857).
   const int n = f.arm.model->nv;
-  ASSERT_EQ(fast.MainQp().H.rows(), n * (fast.NumBlocks() + fast.NumNodes()) + 1);
-  ASSERT_EQ(fast.MainQp().C.rows(), 5 * n * fast.NumNodes() + 7);
+  ASSERT_EQ(fast.MainQp().H.rows(), n * fast.NumBlocks() + fast.NumNodes() + 1);
+  ASSERT_EQ(fast.MainQp().C.rows(), 4 * n * fast.NumNodes() + fast.NumNodes() + 7);
   MpcSegmentCoreResult rf, rd;
   fast.ResizeResult(rf);
   dense.ResizeResult(rd);
@@ -2194,7 +2341,9 @@ TEST(MpcSegmentCorePath, AllocatesNothingOutsideTheQpSolver) {
 // ── 7. Fail-closed ───────────────────────────────────────────────────────────
 
 struct Snapshot {
-  Eigen::MatrixXd q, qd, qdd, u, slack, tau_ratio;
+  Eigen::MatrixXd q, qd, qdd, u;
+  Eigen::VectorXd slack;  // one per node (#857)
+  Eigen::MatrixXd tau_ratio;
   Eigen::Vector3d pos, v_rel;
   double axis, gamma, slack_v;
   bool evaluated;

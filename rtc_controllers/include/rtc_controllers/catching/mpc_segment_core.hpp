@@ -19,7 +19,7 @@
 // all joints) and a variable scale ũ = u_scale·z. With z ordered block-major
 // (z_{b·n+j}) the triple integrator decouples per joint and every stage
 // matrix is a Kronecker product: G_{m,k} = ĝ_{m,k}ᵀ ⊗ I_n for m ∈ {q, q̇, q̈},
-// ĝ ∈ R^B. The solver works on z = [ũ/u_scale (nB); s (nN)].
+// ĝ ∈ R^B. The solver works on z = [ũ/u_scale (nB); s (N)].
 // Per joint group (E3-F02, params.n_groups): each group may have its own
 // pattern. Joints whose groups share a pattern form one block class with the
 // structure above; z holds the classes one after another (BlockLayout), and a
@@ -33,19 +33,24 @@
 //      + ½ Σ_k Σ_j w_vel,j q̇_kj²                              optional (E3-F02)
 //      + ½ Σ_k Σ_j w_rest,j (q_kj − q_rest,j)²                 optional (E3-F02)
 //      + ½ Σ_k W(k)/s² ‖A_k q̈_k + d_k‖²                      optional (E3-F02)
-//      + ρ_τ Σ s                                              torque slack
+//      + ρ_τ Σ_k s_k                                          torque slack, per node
 //   s.t. q̇_N = q̈_N = 0                                         (2n, hard)
 //        max(q_min+m, q̄_k−δ) ≤ q_k ≤ min(q_max−m, q̄_k+δ)       (hard)
 //        |q̇_k| ≤ η_v q̇_max                                     (hard)
-//        |τ^lin_k / τ_max| ≤ η_τ + s_k,  s ≥ 0                  (soft)
+//        |τ^lin_kj / τ_max,j| ≤ η_τ + s_k,  s_k ≥ 0  (every j; soft)
 //
 // τ^lin_k = τ̄_k + D_k (x_k − x̄_k), D_k = [∂τ/∂q  ∂τ/∂q̇  M] at the reference
 // node x̄_k (pinocchio computeRNEADerivatives on the caller's hand-locked arm
 // model with armature added). Torque rows and slack are scaled by 1/τ_max, so
 // the slack is a DIMENSIONLESS fraction of τ_max — unlike the CLIK torque rows
 // (unit-norm scaling), chosen here so the slack reads directly as "how far past
-// the limit". The penalty is exact (s = 0 whenever the hard problem is
-// feasible) only while ρ_τ exceeds the torque rows' multipliers.
+// the limit". There is ONE slack per node (#857): the node's joints share
+// s_k, so where its rows bind s_k = max_j(|τ^lin_kj|/τ_max,j − η_τ)⁺ — the
+// node's worst excess, an ℓ∞ penalty within the node (one slack per joint
+// would pay the sum), and a joint below the worst may use η_τ + s_k. The
+// penalty is exact (s = 0 whenever the hard problem is feasible) only while
+// ρ_τ exceeds, on every node, the SUM of that node's torque-row multipliers
+// Σ_j (λ⁺_kj + λ⁻_kj) — not each multiplier alone.
 //
 // ── Per-joint velocity and rest terms (E3-F02, #641; formulation §1.3) ────────
 // w_vel and w_rest are weights per joint (the planner spreads a joint group's
@@ -272,9 +277,11 @@ struct MpcSegmentCoreParams {
   /// in (0, π). Beyond it ‖J_a‖ grows like θ/sinθ and the linearisation radius
   /// falls below the trust region; Solve() fails closed instead.
   double axis_theta_max{1.5707963267948966};
-  /// Slack penalty; 0 = torque rows off. Exact only above the torque rows'
-  /// multipliers; larger values slow ProxQP and trigger false infeasibility
-  /// verdicts. 10 was exact on every sampled stop (E1-F01 sweep, #627).
+  /// Torque slack penalty (per node); 0 = torque rows off. Exact only above
+  /// every node's sum of torque-row multipliers (header note); larger values
+  /// slow ProxQP and trigger false infeasibility verdicts. The E1-F01 sweep
+  /// (#627) found 10 exact with one slack per joint and node; #857 records it
+  /// for one per node.
   double rho_tau{10.0};
   double eta_v{0.95};    ///< velocity row fraction of q̇_max, (0, 1]
   double eta_tau{0.7};   ///< torque row fraction of τ_max, (0, 1]
@@ -370,7 +377,7 @@ struct MpcSegmentWholeBodyCost {
 struct MpcSegmentCoreResult {
   Eigen::MatrixXd q, qd, qdd;  ///< nodes, n × (N+1)
   Eigen::MatrixXd u;           ///< jerk, n × N [rad/s³]
-  Eigen::MatrixXd slack;       ///< torque slack, n × N (column k−1 = node k), fraction of τ_max
+  Eigen::VectorXd slack;       ///< torque slack s_k, N (entry k−1 = node k), fraction of τ_max
   /// Linearised torque ratio τ^lin/τ_max (signed), n × N, column k−1 = node k.
   /// Only written when torque_evaluated.
   Eigen::MatrixXd tau_ratio;
@@ -472,6 +479,10 @@ class MpcSegmentCore {
 
   [[nodiscard]] const tsid::QPData& PresolveQp() const noexcept { return qp_pre_; }
 
+  /// The QP solution z of the last converged QP (tests; meaningless before one). A
+  /// Solve() that fails after its pre-solve converged leaves the pre-solve's z here.
+  [[nodiscard]] const Eigen::VectorXd& LastSolution() const noexcept { return z_; }
+
   /// Per-node scaled stage gains ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈) of
   /// block class `block_class` (Layout()).
   [[nodiscard]] double StageGain(int m, int k, int b, int block_class = 0) const noexcept;
@@ -480,6 +491,7 @@ class MpcSegmentCore {
   void FreeResponse() noexcept;
   void AssembleConstant(tsid::QPData& qp, bool main) noexcept;
   void AssembleConstantDense(tsid::QPData& qp, bool main) noexcept;
+  void AssembleTorqueSlackConstant(tsid::QPData& qp) const noexcept;
   void AssembleSlackVConstant(tsid::QPData& qp) const noexcept;
   [[nodiscard]] bool Linearize() noexcept;
   void AssembleTorqueRows() noexcept;
@@ -515,6 +527,9 @@ class MpcSegmentCore {
     return layout_.Col(static_cast<int>(j), static_cast<int>(b));
   }
 
+  /// Column of the torque slack of node k0 + 1 (k0 = 0..N−1).
+  [[nodiscard]] Eigen::Index SlackIdx(Eigen::Index k0) const noexcept { return nu_ + k0; }
+
   bool initialized_{false};
   MpcSegmentCoreParams params_;
   int n_{0};
@@ -522,9 +537,11 @@ class MpcSegmentCore {
   int n_pre_{0};     // k_c
   int n_blocks_{0};  // B of block class 0
   int nu_{0};        // Σ_c n_c·B_c (n·B with one class)
-  int nz_{0};        // nu_ + n·N (+ 1 with the velocity slack)
+  int n_s_{0};       // torque slack variables: one per node, N (#857)
+  int nz_{0};        // nu_ + n_s_ (+ 1 with the velocity slack)
   int n_eq_{0};      // 2n
-  int n_in_{0};      // 5·n·N (+ 7 with the velocity slack)
+  int n_in_{0};      // 4·n·N + n_s_ (+ 7 with the velocity slack)
+  int sv_row_{0};    // first velocity-slack row, 4·n·N + n_s_
   int terminal_rank_{0};
 
   pinocchio::Model model_;
