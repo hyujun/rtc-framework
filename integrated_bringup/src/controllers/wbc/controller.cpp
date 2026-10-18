@@ -820,6 +820,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     // The previous formulation (and the constraint joint_limit_constraint_
     // pointed at) dies here.
     joint_limit_constraint_ = nullptr;
+    tsid_joint_limit_margin_ = -1.0;
     tsid_controller_.Init(model, robot_info_, tsid_node);
 
     // Build tasks + constraints from YAML (auto-dispatch by `type` field)
@@ -907,9 +908,11 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   }
   // #551: the TSID joint_limit band must be narrower than the CLIK position
   // margin — the position backbone parks a joint at its own margin, and a
-  // wider TSID band keeps that joint inside it on every tick (its acceleration
-  // box then collapses to full braking). WARN rather than reject: with the box
-  // repair in rtc_tsid this is a quality requirement, not a safety one.
+  // wider TSID band keeps that joint inside it on every tick: its acceleration
+  // row is pinned to the velocity limit, which the torque limits may not carry
+  // (then the dynamic QP fails on every such tick, as before the repair). WARN
+  // rather than reject: the dynamic QP is diagnostics / hand τ_ff only and a
+  // failure never reaches the position command (decision 6).
   if (tsid_joint_limit_margin_ >= 0.0 && tsid_joint_limit_margin_ >= position_margin_) {
     RCLCPP_WARN(logger_,
                 "[wbc] tsid.constraints joint_limit.position_margin (%.4f) >= "

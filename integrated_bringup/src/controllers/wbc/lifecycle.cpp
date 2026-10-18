@@ -433,6 +433,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_cleanup(
   // drain timer is torn down, so no drain runs concurrently with Reset().
   ResetLogState();
   joint_limit_constraint_ = nullptr;
+  tsid_joint_limit_margin_ = -1.0;
   ResetOwnedTopics(owned_topics_);
   grasp_command_srv_.reset();
   param_callback_handle_.reset();

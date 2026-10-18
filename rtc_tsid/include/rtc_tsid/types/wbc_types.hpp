@@ -216,7 +216,10 @@ struct CommandOutput {
   // tried, iterations summed over every level tried (failed one included).
   int qp_status{-1};
   int qp_iterations{0};
-  bool qp_non_finite{false};  // solver iterates were non-finite (then qp_converged is false)
+  // Solver iterates of the last attempt were non-finite. WQP: qp_converged is
+  // then false. HQP: refers to the last level tried; qp_converged may still be
+  // true from an earlier level whose solution is the one in use.
+  bool qp_non_finite{false};
 
   void Init(int nv, int n_actuated, int max_contact_vars);
 };

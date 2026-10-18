@@ -315,9 +315,8 @@ TEST_F(JointLimitConstraintTest, NonFiniteInputBypassesGuard) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const double inf = std::numeric_limits<double>::infinity();
 
-  // A NaN position inside the band is not a box to repair: the row stays
-  // non-finite so QPSolverWrapper's non_finite path rejects the solve (NUM-7),
-  // and it is not counted as inverted.
+  // A NaN position is not a box to repair: the row stays non-finite for the
+  // solve to fail on (NUM-7) and is not counted as inverted.
   Eigen::VectorXd q = MidConfig();
   q(0) = nan;
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
@@ -326,11 +325,13 @@ TEST_F(JointLimitConstraintTest, NonFiniteInputBypassesGuard) {
   EXPECT_FALSE(std::isfinite(b.u(0)));
   EXPECT_EQ(c.InvertedCount(), 0);
 
-  // Same for an infinite velocity.
+  // q = +inf is the case that exercises the guard: pos_ub = -inf < vel_lb, so
+  // without the isfinite check the row would be "repaired" to the finite
+  // vel_lb and the infinity laundered away. It must stay non-finite.
   q = MidConfig();
-  v(0) = inf;
+  q(0) = inf;
   b = Assemble(c, q, v);
-  EXPECT_FALSE(std::isfinite(b.l(0)) && std::isfinite(b.u(0)));
+  EXPECT_FALSE(std::isfinite(b.u(0)));
   EXPECT_EQ(c.InvertedCount(), 0);
 }
 
@@ -355,6 +356,23 @@ TEST_F(JointLimitConstraintTest, InitRejectsNonPositiveDtAndNonFiniteMargin) {
     cfg["dt"] = kDt;
     cfg["velocity_margin"] = nan;
     EXPECT_THROW(c.Init(*model_, robot_info_, cache_, cfg), std::invalid_argument);
+  }
+  {
+    // A negative margin would put q_min_ above q_max_ and let both sides of a
+    // row cross at once, which the collapse assumes cannot happen.
+    JointLimitConstraint c;
+    YAML::Node cfg;
+    cfg["dt"] = kDt;
+    cfg["position_margin"] = -0.01;
+    EXPECT_THROW(c.Init(*model_, robot_info_, cache_, cfg), std::invalid_argument);
+  }
+  {
+    JointLimitConstraint c;
+    RobotModelInfo info = robot_info_;
+    info.q_lower(0) = info.q_upper(0) + 0.1;  // inverted position limits
+    YAML::Node cfg;
+    cfg["dt"] = kDt;
+    EXPECT_THROW(c.Init(*model_, info, cache_, cfg), std::invalid_argument);
   }
   {
     // A locked joint (v_max == 0) is legitimate; only negative / non-finite

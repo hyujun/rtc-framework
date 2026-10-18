@@ -20,12 +20,16 @@ namespace rtc::tsid {
 //
 // Inside the position-margin band the two cross (l_i > u_i). The row is then
 // collapsed onto the velocity bound it crossed (l = u = vel_lb at the upper
-// limit, vel_ub at the lower) so the box stays non-empty and the QP demands
-// full braking toward the range (#551); InvertedCount() says how many rows
-// needed that this tick. Config: dt, position_margin, velocity_margin. Keep
-// position_margin SMALLER than the margin of whatever generates the position
-// reference — a joint parked at that margin otherwise sits in this band on
-// every tick.
+// limit, vel_ub at the lower): the box stays non-empty and the QP is asked to
+// reverse the joint toward the range at its velocity limit within one tick
+// (#551). That acceleration, |v_lim − v| / dt, is a violent command: the QP
+// stays solvable with hard torque limits (the other joints redistribute the
+// coupled torque — test_tsid_wqp pins this), but the collapse is a safety net,
+// not a substitute for keeping joints out of the band. InvertedCount() says
+// how many rows needed it this tick. Config: dt, position_margin, velocity_margin.
+// Keep position_margin SMALLER than the margin of whatever generates the
+// position reference — a joint parked at that margin otherwise sits in this
+// band on every tick.
 //
 // Floating-base: the first 6 DoF are unconstrained (l = -∞, u = +∞).
 // ────────────────────────────────────────────────

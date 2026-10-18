@@ -20,8 +20,10 @@ void JointLimitConstraint::Init(const pinocchio::Model& /*model*/, const RobotMo
   if (!(std::isfinite(dt_) && dt_ > 0.0)) {
     throw std::invalid_argument("joint_limit: dt must be finite and > 0");
   }
-  if (!std::isfinite(margin_pos_) || !std::isfinite(margin_vel_)) {
-    throw std::invalid_argument("joint_limit: position_margin / velocity_margin must be finite");
+  if (!(std::isfinite(margin_pos_) && margin_pos_ >= 0.0) ||
+      !(std::isfinite(margin_vel_) && margin_vel_ >= 0.0)) {
+    throw std::invalid_argument(
+        "joint_limit: position_margin / velocity_margin must be finite and >= 0");
   }
 
   // Position limits (margin 적용)
@@ -46,6 +48,12 @@ void JointLimitConstraint::Init(const pinocchio::Model& /*model*/, const RobotMo
     for (int i = 0; i < na; ++i) {
       const double ql = robot_info.q_lower(q_offset + i);
       const double qu = robot_info.q_upper(q_offset + i);
+      // q_min_ <= q_max_ below relies on this (the collapse assumes at most
+      // one side of a row can cross).
+      if (!(std::isfinite(ql) && std::isfinite(qu) && ql <= qu)) {
+        throw std::invalid_argument(
+            "joint_limit: position limits must be finite with lower <= upper");
+      }
       const double range = qu - ql;
       const double eff_margin = (range > 2.0 * margin_pos_) ? margin_pos_ : 0.0;
       q_min_(offset + i) = ql + eff_margin;
@@ -153,12 +161,13 @@ void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
     // velocity bound (l > u): one empty row makes the whole QP primal
     // infeasible (#551). Collapse the row onto the velocity bound it crossed —
     // the repair ClikReferenceGenerator::AssembleBox applies at velocity
-    // level — so the box stays non-empty and the QP demands full braking
-    // toward the range. Continuous at the crossing (there u = pos_ub =
-    // vel_lb); rows that did not cross are untouched. Both sides cannot cross
-    // at once while q_min_ <= q_max_. Non-finite q / v take the unrepaired
-    // path on purpose: that is QPSolverWrapper's non_finite rejection, and a
-    // std::max/min on NaN must not be laundered into a box (NUM-7).
+    // level — so the box stays non-empty and the QP is asked to reverse the
+    // joint toward the range at its velocity limit in one tick. Continuous at
+    // the crossing (there u = pos_ub = vel_lb); rows that did not cross are
+    // untouched. Both sides cannot cross at once since Init enforces
+    // q_min_ <= q_max_. Non-finite q / v take the unrepaired path on purpose:
+    // the row stays non-finite for the solve to fail on, instead of being
+    // laundered into a finite box by std::max/min (NUM-7).
     if (std::isfinite(qi) && std::isfinite(vi) && l_block(i) > u_block(i)) {
       ++inverted;
       // Upper band: pos_ub < vel_lb. Lower band: pos_lb > vel_ub.
