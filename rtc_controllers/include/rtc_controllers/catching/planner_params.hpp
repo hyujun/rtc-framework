@@ -280,6 +280,12 @@ struct MpcSegmentPlannerParams {
   int solver_max_iter_in{100};
   double solver_eps_abs{1e-6};
   double solver_eps_rel{0.0};
+  /// `solver.eps_primal_inf` (≥ 0): the threshold of ProxQP's approximate
+  /// primal-infeasibility test (tsid::QPSolverConfig::eps_primal_inf). It
+  /// decides both ways — a larger value reports feasible QPs whose
+  /// multipliers grow fast as infeasible (#880: a degenerate rest solve at a
+  /// gravity-free pose), a smaller one lets an infeasible QP run to max_iter.
+  double solver_eps_primal_inf{1e-4};
   /// Whether the profile set `horizon` itself: the code default above is
   /// MD-24's horizon, not MD-54's, and the configure warns when the MPC segment
   /// planner runs on it.

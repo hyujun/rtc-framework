@@ -203,7 +203,8 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
       // A shifted previous solution meets the terminal equality only to
       // eps_abs; a rest tolerance at or below it rejects every warm cycle.
       !(params.reference_rest_tol > params.solver.eps_abs) ||
-      !rtc::IsFiniteNonNegative(params.solver.eps_rel) || params.solver.max_iter < 1 ||
+      !rtc::IsFiniteNonNegative(params.solver.eps_rel) ||
+      !rtc::IsFiniteNonNegative(params.solver.eps_primal_inf) || params.solver.max_iter < 1 ||
       params.solver.max_iter_in < 1) {
     return MpcSegmentCoreReason::kParamsInvalid;
   }

@@ -1925,6 +1925,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
                        Key{mpc["solver"], "max_iter_in"},
                        Key{mpc["solver"], "eps_abs"},
                        Key{mpc["solver"], "eps_rel"},
+                       Key{mpc["solver"], "eps_primal_inf"},
                        Key{ik, "eps_pos"},
                        Key{ik, "alpha_max"},
                        Key{ik, "rho"},
@@ -1965,6 +1966,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
   EXPECT_EQ(d.solver_max_iter_in, core.solver.max_iter_in) << profile;
   EXPECT_EQ(d.solver_eps_abs, core.solver.eps_abs) << profile;
   EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel) << profile;
+  EXPECT_EQ(d.solver_eps_primal_inf, core.solver.eps_primal_inf) << profile;
   // `linearization.ref_speed_fraction` is written (the key list above) but not
   // compared here: #819 moves it off the planner's former constant 0.9, and
   // ShipsTheFirstReferenceFractionMeasured pins it.
@@ -1999,7 +2001,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
-  // The twelve segment-MPC design keys moved in the composed tree — where a CM
+  // The thirteen segment-MPC design keys moved in the composed tree — where a CM
   // override writes — reach the controller: each read-only mirror carries the
   // moved value, and the MPC segment planner configures with the cores built on them.
   // A mirror declared from a default would read the shipped value here.
@@ -2024,6 +2026,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   mpc["solver"]["max_iter_in"] = 150;
   mpc["solver"]["eps_abs"] = 2.0e-7;
   mpc["solver"]["eps_rel"] = 1.0e-5;
+  mpc["solver"]["eps_primal_inf"] = 3.0e-6;
 
   auto node_handle = NodeWithProfile("catching_shipped_design_" + profile, "mpc_on");
   DemoCatchingController ctrl{""};
@@ -2046,6 +2049,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   EXPECT_EQ(integer("planner.segment.mpc.solver.max_iter_in"), 150) << profile;
   EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.solver.eps_abs"), 2.0e-7) << profile;
   EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.solver.eps_rel"), 1.0e-5) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.solver.eps_primal_inf"), 3.0e-6) << profile;
   const auto jw =
       node_handle->get_parameter("planner.segment.mpc.cost.jerk_weight").as_double_array();
   ASSERT_EQ(jw.size(), static_cast<std::size_t>(arm_dof)) << profile;

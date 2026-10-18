@@ -37,9 +37,10 @@ constexpr double kWarmUpRangeFraction = 0.51;
 // The core's design values, all YAML keys, from `planner.segment.mpc.*`: the cost
 // scalars (the stop-path weight among them — both core kinds carry that term,
 // on their nodes from the catch on), the axis and trust-region limits, the
-// rest tolerance and the solver's tolerances. `jerk_weight` is already in
-// model order (empty = the core's all-ones); the preconditioner and the KKT
-// backend are not design values and keep the core's own setting.
+// rest tolerance and the solver's tolerances (the infeasibility threshold
+// among them, #880). `jerk_weight` is already in model order (empty = the
+// core's all-ones); the preconditioner and the KKT backend are not design
+// values and keep the core's own setting.
 void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
                      const Eigen::VectorXd& jerk_weight_model, const Eigen::VectorXd& w_vel,
                      const Eigen::VectorXd& w_rest, const Eigen::VectorXd& q_rest) {
@@ -62,6 +63,7 @@ void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
   mp.solver.max_iter_in = p.solver_max_iter_in;
   mp.solver.eps_abs = p.solver_eps_abs;
   mp.solver.eps_rel = p.solver_eps_rel;
+  mp.solver.eps_primal_inf = p.solver_eps_primal_inf;
 }
 
 // Group g's partition for a core with n_pre pre-catch nodes at replan instance

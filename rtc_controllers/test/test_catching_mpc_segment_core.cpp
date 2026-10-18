@@ -1390,6 +1390,16 @@ TEST(MpcSegmentCore, InitValidatesParamsAndLimits) {
   EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kParamsInvalid);
   p.reference_rest_tol = 2.0 * p.solver.eps_abs;
   EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kNone);
+  // The infeasibility threshold (#880): 0 is valid (an exact certificate only),
+  // a negative or non-finite one is not.
+  for (const double bad : {-1e-6, kNan, std::numeric_limits<double>::infinity()}) {
+    p = MpcSegmentCoreParams{};
+    p.solver.eps_primal_inf = bad;
+    EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kParamsInvalid) << "eps_primal_inf " << bad;
+  }
+  p = MpcSegmentCoreParams{};
+  p.solver.eps_primal_inf = 0.0;
+  EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kNone);
 
   p = MpcSegmentCoreParams{};
   MpcSegmentCoreLimits l = good;

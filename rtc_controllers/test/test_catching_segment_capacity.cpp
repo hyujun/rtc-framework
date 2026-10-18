@@ -34,6 +34,7 @@
 #include "rtc_controllers/catching/transition_table.hpp"
 #include "rtc_controllers/testing/mpc_docking_fixture.hpp"
 #include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
+#include "rtc_controllers/testing/mpc_warm_up_fixture.hpp"
 #include "rtc_controllers/testing/synthetic_tree_fixture.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 
@@ -51,6 +52,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -270,6 +272,33 @@ TEST(SegmentCapacity, TheMpcPlannerConfiguresOnSeventeenJoints) {
       << err;
   EXPECT_TRUE(planner.Configured());
   EXPECT_EQ(planner.Nv(), kTreeNv);
+}
+
+// #880 D8 (i): the warm-ups at the middle of the tree's box (q = 0 on its
+// symmetric limits), per infeasibility threshold — recorded; the replica is
+// the planner's own warm-up at the planner's pose.
+TEST(SegmentCapacity, TheSeventeenJointWarmUpsAtTheBoxMiddlePerInfeasibilityThreshold) {
+  namespace wu = rtc::testing::mpc_warm_up;
+  const fx::ArmModel tree = SyntheticTree(kTrunk, kArm, 2);
+  const MpcSegmentPlannerModel model = MpcModelOf(tree);
+  MpcSegmentPlanner planner;
+  std::string err;
+  ASSERT_TRUE(planner.Configure(model, MpcConsts(), MpcParams(), &StepClock, &err)) << err;
+  for (const wu::WarmUpSolve& s :
+       wu::WarmUpSolvesAt(planner, model, wu::PlannerWarmUpPose(planner),
+                          planner.StopCoreParams(0).solver.eps_primal_inf)) {
+    EXPECT_TRUE(s.ok && s.same_as_planner) << s.core;
+  }
+  const Eigen::VectorXd mid = wu::BoxMiddle(planner);
+  for (const double eps : wu::EpsGrid()) {
+    const std::vector<wu::WarmUpSolve> solves = wu::WarmUpSolvesAt(planner, model, mid, eps);
+    wu::PrintWarmUpSolves("tree17", eps, solves);
+    int failed = 0;
+    for (const wu::WarmUpSolve& s : solves) {
+      failed += s.ok ? 0 : 1;
+    }
+    RecordProperty("tree17.eps_" + wu::EpsKey(eps) + ".failed", failed);
+  }
 }
 
 TEST(SegmentCapacity, TheMpcPlannerRefusesAModelPastTheCapacity) {

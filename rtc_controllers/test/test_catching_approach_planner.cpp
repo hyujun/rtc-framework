@@ -31,9 +31,11 @@
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
+#include "rtc_controllers/testing/mpc_warm_up_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
+#include "test_urdf_path.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Eigenvalues>
@@ -789,7 +791,7 @@ TEST(ApproachPlanner, TheVelocitySlackIsRecordedNotJudged) {
 
 // The core's design values, from the YAML to every core the planner
 // builds — the stop cores (k = 0..k_max) and the catch cores (n_pre = 1..6).
-// Twelve distinct values; a core left on MpcSegmentCoreParams{} reads its default.
+// Thirteen distinct values; a core left on MpcSegmentCoreParams{} reads its default.
 TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
   const auto params_of = [](const std::string& body) {
     return rtc::catching::ParsePlannerParams(
@@ -815,7 +817,7 @@ TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
                           "linearization: {delta_tr: 0.2, reference_rest_tol: 2.0e-5, "
                           "ref_speed_fraction: 0.8}, "
                           "solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, "
-                          "eps_rel: 1.0e-5}"));
+                          "eps_rel: 1.0e-5, eps_primal_inf: 3.0e-6}"));
     Rig off(arm, params_of(""));
     ASSERT_TRUE(on.planner.Configured());
     ASSERT_TRUE(off.planner.Configured());
@@ -835,6 +837,7 @@ TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
       EXPECT_EQ(mp.solver.max_iter_in, 150);
       EXPECT_EQ(mp.solver.eps_abs, 2.0e-7);
       EXPECT_EQ(mp.solver.eps_rel, 1.0e-5);
+      EXPECT_EQ(mp.solver.eps_primal_inf, 3.0e-6);
       // Not design values: the core's own setting stays.
       EXPECT_EQ(mp.solver.update_preconditioner, defaults.solver.update_preconditioner);
       EXPECT_EQ(mp.solver.dense_backend, defaults.solver.dense_backend);
@@ -863,6 +866,7 @@ TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
       EXPECT_EQ(mp.solver.max_iter_in, defaults.solver.max_iter_in);
       EXPECT_EQ(mp.solver.eps_abs, defaults.solver.eps_abs);
       EXPECT_EQ(mp.solver.eps_rel, defaults.solver.eps_rel);
+      EXPECT_EQ(mp.solver.eps_primal_inf, defaults.solver.eps_primal_inf);
       EXPECT_EQ(mp.jerk_weight.size(), 0);
     };
     for (int j = 1; j <= 6; ++j) {
@@ -1617,6 +1621,95 @@ TEST(ApproachPlanner, TheStopPathWeightReachesEveryCoreAndTheWarmUpsSolveOnOneLi
       EXPECT_EQ(on.planner.StopCoreInput(k).d_hat, on.planner.ApproachCoreInput(1).d_hat) << k;
     }
   }
+}
+
+// ── #880: the configure warm-ups, solved again per infeasibility threshold ──
+// mpc_warm_up_fixture.hpp re-solves every core's warm-up at a pose of the
+// test's choice on fresh cores. The replica is the planner's own warm-up: at
+// the planner's pose and threshold, every solution is the planner core's, bit
+// for bit.
+
+// A test URDF arm (rtc_urdf_bridge/test/urdf) with its own ratings, identity
+// device order.
+Arm UrdfArm(const std::string& urdf, const std::string& frame) {
+  Arm a;
+  rtc_urdf_bridge::ModelConfig config;
+  config.urdf_path = rtc::test::TestUrdfPath(urdf);
+  config.root_joint_type = "fixed";
+  rtc_urdf_bridge::PinocchioModelBuilder builder(config);
+  a.model = builder.GetFullModel();
+  a.frame = a.model->getFrameId(frame);
+  const int n = static_cast<int>(a.model->nv);
+  a.q_nominal = Eigen::VectorXd::Zero(n);
+  for (int m = 0; m < n; ++m) {
+    a.device_of_model[static_cast<std::size_t>(m)] = m;
+    a.qd_max.push_back(a.model->upperVelocityLimit[m]);
+    a.tau_max.push_back(a.model->upperEffortLimit[m]);
+  }
+  return a;
+}
+
+TEST(ApproachPlanner, TheWarmUpReplicaIsThePlannersWarmUp) {
+  namespace wu = rtc::testing::mpc_warm_up;
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig rig(arm);
+    ASSERT_TRUE(rig.planner.Configured());
+    const double eps = rig.planner.StopCoreParams(0).solver.eps_primal_inf;
+    const std::vector<wu::WarmUpSolve> solves = wu::WarmUpSolvesAt(
+        rig.planner, MpcSegmentPlannerModelOf(arm), wu::PlannerWarmUpPose(rig.planner), eps);
+    ASSERT_EQ(solves.size(), static_cast<std::size_t>(rig.planner.Params().k_max + 1 +
+                                                      rig.planner.Params().n_pre_max));
+    for (const wu::WarmUpSolve& s : solves) {
+      EXPECT_TRUE(s.ok) << arm.model->nv << " " << s.core;
+      EXPECT_TRUE(s.same_as_planner) << arm.model->nv << " " << s.core;
+    }
+  }
+}
+
+// #880 D8 (i): the warm-ups at the MIDDLE of the box — where a vertical 7-joint
+// arm stands with no joint loaded by gravity (q = 0) and its stop from rest is
+// degenerate (#857 D12) — per threshold, on the shipped arms and the two test
+// arms. Recorded per threshold; ProxQP's default 1e-4 is the control: it
+// calls the 7-joint arm's degenerate stop infeasible.
+TEST(ApproachPlanner, TheWarmUpsAtTheBoxMiddlePerInfeasibilityThreshold) {
+  namespace wu = rtc::testing::mpc_warm_up;
+
+  struct Case {
+    const char* label;
+    Arm arm;
+  };
+
+  const std::vector<Case> cases{{"ur5e", Arm6()},
+                                {"iiwa7", Arm7()},
+                                {"serial_6r_wrist", UrdfArm("serial_6r_wrist.urdf", "catch_frame")},
+                                {"serial_7dof", UrdfArm("serial_7dof.urdf", "tool_link")}};
+  for (const Case& c : cases) {
+    Rig rig(c.arm);
+    ASSERT_TRUE(rig.planner.Configured()) << c.label;
+    const Eigen::VectorXd mid = wu::BoxMiddle(rig.planner);
+    for (const double eps : wu::EpsGrid()) {
+      const std::vector<wu::WarmUpSolve> solves =
+          wu::WarmUpSolvesAt(rig.planner, MpcSegmentPlannerModelOf(c.arm), mid, eps);
+      wu::PrintWarmUpSolves(c.label, eps, solves);
+      int failed = 0;
+      for (const wu::WarmUpSolve& s : solves) {
+        failed += s.ok ? 0 : 1;
+      }
+      RecordProperty(std::string(c.label) + ".eps_" + wu::EpsKey(eps) + ".failed", failed);
+    }
+  }
+  // The control: at ProxQP's default the 7-joint arm's degenerate stop from
+  // rest is reported primal infeasible (status 2) — the fixture reaches the
+  // false verdict #880 is about.
+  Rig rig7(Arm7());
+  const std::vector<wu::WarmUpSolve> control = wu::WarmUpSolvesAt(
+      rig7.planner, MpcSegmentPlannerModelOf(rig7.arm), wu::BoxMiddle(rig7.planner), 1e-4);
+  ASSERT_FALSE(control.empty());
+  EXPECT_LT(wu::BoxMiddle(rig7.planner).cwiseAbs().maxCoeff(), 1e-12) << "the middle is q = 0";
+  EXPECT_FALSE(control[0].ok) << control[0].core;
+  EXPECT_EQ(control[0].qp_status, 2) << control[0].core;
+  EXPECT_EQ(control[0].reason, MpcSegmentCoreReason::kQpFailed)
+      << rtc::catching::MpcSegmentCoreReasonName(control[0].reason);
 }
 
 // PlanFirst: the line is the PLAN's catch point along the plan's ball velocity

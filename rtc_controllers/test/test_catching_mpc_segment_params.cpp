@@ -374,6 +374,7 @@ TEST(MpcSegmentParams, TheDesignKeysDefaultToTheCoresOwnValues) {
   EXPECT_EQ(d.solver_max_iter_in, core.solver.max_iter_in);
   EXPECT_EQ(d.solver_eps_abs, core.solver.eps_abs);
   EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel);
+  EXPECT_EQ(d.solver_eps_primal_inf, core.solver.eps_primal_inf);
   EXPECT_EQ(d.ref_speed_fraction, 0.9);  // the planner's own former constant (MD-62)
   // An absent section changes nothing either.
   const auto absent =
@@ -383,8 +384,8 @@ TEST(MpcSegmentParams, TheDesignKeysDefaultToTheCoresOwnValues) {
   EXPECT_EQ(absent.solver_max_iter, core.solver.max_iter);
 }
 
-// Twelve keys, twelve distinct values: a read wired to the wrong field, or to
-// the default, shows as a mismatch on its own line.
+// Thirteen keys, thirteen distinct values: a read wired to the wrong field, or
+// to the default, shows as a mismatch on its own line.
 TEST(MpcSegmentParams, TheDesignKeysParse) {
   const auto d = ParsePlannerParams(YAML::Load(R"(
 planner:
@@ -393,7 +394,8 @@ planner:
       cost: {jerk_weight: [1.0, 2.0, 3.0], u_scale: 500.0, w_delta: 2.5, rho_tau: 7.0}
       catch: {axis_theta_max: 1.2}
       linearization: {delta_tr: 0.2, reference_rest_tol: 2.0e-5, ref_speed_fraction: 0.8}
-      solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, eps_rel: 1.0e-5}
+      solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, eps_rel: 1.0e-5,
+               eps_primal_inf: 3.0e-6}
 )"))
                      .mpc_segment;
   ASSERT_EQ(d.jerk_weight.size(), 3U);
@@ -411,13 +413,16 @@ planner:
   EXPECT_EQ(d.solver_max_iter_in, 150);
   EXPECT_EQ(d.solver_eps_abs, 2.0e-7);
   EXPECT_EQ(d.solver_eps_rel, 1.0e-5);
+  EXPECT_EQ(d.solver_eps_primal_inf, 3.0e-6);
   // Valid edges: rho_tau 0 (torque rows off), w_delta 0, ref_speed_fraction at
   // the minimum-jerk peak factor (above 1 the reference may run over the
-  // velocity box, #819).
+  // velocity box, #819), eps_primal_inf 0 (an exact certificate only, #880).
   const auto edge =
       ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {rho_tau: 0.0, w_delta: "
-                                    "0.0}, linearization: {ref_speed_fraction: 1.875}}}}"))
+                                    "0.0}, linearization: {ref_speed_fraction: 1.875}, "
+                                    "solver: {eps_primal_inf: 0.0}}}}"))
           .mpc_segment;
+  EXPECT_EQ(edge.solver_eps_primal_inf, 0.0);
   EXPECT_EQ(edge.rho_tau, 0.0);
   EXPECT_EQ(edge.w_delta, 0.0);
   EXPECT_EQ(edge.ref_speed_fraction, rtc::catching::kMinJerkPeakFactor);
@@ -485,6 +490,9 @@ TEST(MpcSegmentParams, RejectsADesignKeyByName) {
       {"solver: {eps_abs: -1.0e-6}", "planner.segment.mpc.solver.eps_abs'"},
       {"solver: {eps_rel: -1.0e-6}", "planner.segment.mpc.solver.eps_rel'"},
       {"solver: {eps_rel: .inf}", "planner.segment.mpc.solver.eps_rel'"},
+      {"solver: {eps_primal_inf: -1.0e-6}", "planner.segment.mpc.solver.eps_primal_inf'"},
+      {"solver: {eps_primal_inf: .inf}", "planner.segment.mpc.solver.eps_primal_inf'"},
+      {"solver: {eps_primal_inf: .nan}", "planner.segment.mpc.solver.eps_primal_inf'"},
   };
   for (const Case& c : cases) {
     const std::string why = message(c.body);

@@ -524,6 +524,8 @@ void DemoCatchingController::DeclareProfileParameters() {
             "MPC segment planner ProxQP absolute tolerance");
     declare("planner.segment.mpc.solver.eps_rel", mpc_segment.solver_eps_rel,
             "MPC segment planner ProxQP relative tolerance");
+    declare("planner.segment.mpc.solver.eps_primal_inf", mpc_segment.solver_eps_primal_inf,
+            "MPC segment planner ProxQP primal-infeasibility threshold (0 = exact certificate)");
   }
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.

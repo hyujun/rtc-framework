@@ -13,6 +13,7 @@
 #include "rtc_controllers/catching/mpc_segment_core_catch.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
+#include "rtc_controllers/testing/mpc_warm_up_fixture.hpp"
 #include "rtc_math/se3/axis_align.hpp"
 
 #include <Eigen/Core>
@@ -26,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -2981,6 +2983,363 @@ TEST(MpcSegmentCoreApproachTiming, CostDrivers7R) {
   RunGridTiming(arm, lim, typical, "real_7dof.B2_pre9", n_samples, false);
   RunGridTiming(arm, lim, kTimingGrids[4], "real_7dof.C1.torque_rows_off", n_samples, false,
                 {[](MpcSegmentCoreParams& p) { p.rho_tau = 0.0; }, {}});
+}
+
+// ── #880: ProxQP's infeasibility threshold (solver.eps_primal_inf) ────────────
+// The full tables need RTC_MPC_SEGMENT_CORE_TIMING_FULL=1 in a Release build,
+// run alone (ctest -j1); the default run is a smoke of the same code.
+
+[[nodiscard]] bool TimingFull() {
+  const char* e = std::getenv("RTC_MPC_SEGMENT_CORE_TIMING_FULL");
+  return e != nullptr && e[0] != '\0' && e[0] != '0';
+}
+
+// The B side of a pair: RTC_MPC_EPS_PRIMAL_INF_B when set, else the core's own.
+[[nodiscard]] double EpsSideB() {
+  if (const char* e = std::getenv("RTC_MPC_EPS_PRIMAL_INF_B"); e != nullptr && e[0] != '\0') {
+    return std::stod(e);
+  }
+  return MpcSegmentCoreParams{}.solver.eps_primal_inf;
+}
+
+struct EpsSide {
+  MpcSegmentCore mpc, adv_cold, adv_stale;
+  MpcSegmentCoreResult res, res_same, res_adv;
+  std::array<Series, 4> series;
+};
+
+// The four series of RunGridTiming on two cores that differ ONLY in
+// solver.eps_primal_inf (A, B), the same sample on both, the order alternating.
+// A threshold changes nothing on a solve the test does not end (the iterates
+// do not depend on it), so the ratio of the two is noise unless the verdict
+// moved — the null pair (A = B) measures that noise.
+void RunGridEpsPair(const ArmModel& arm, const MpcSegmentCoreLimits& lim, const TimingGrid& tg,
+                    const std::string& key, int n_samples, double eps_a, double eps_b) {
+  using rtc::testing::mpc_segment_core::Percentile;
+  std::array<EpsSide, 2> side;
+  const std::array<double, 2> eps{eps_a, eps_b};
+  MpcSegmentCoreParams p0;
+  for (std::size_t a = 0; a < 2; ++a) {
+    MpcSegmentCoreParams p = GridParams(tg.grid);
+    TimingCatchParams(p, false);
+    p.solver.eps_primal_inf = eps[a];
+    Grid next_grid = tg.grid;
+    next_grid.n_pre -= 1;
+    MpcSegmentCoreParams p_next = GridParams(next_grid);
+    TimingCatchParams(p_next, false);
+    p_next.solver.eps_primal_inf = eps[a];
+    EpsSide& s = side[a];
+    ASSERT_EQ(s.mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone) << key;
+    ASSERT_EQ(s.adv_cold.Init(*arm.model, arm.frame, p_next, lim), MpcSegmentCoreReason::kNone);
+    ASSERT_EQ(s.adv_stale.Init(*arm.model, arm.frame, p_next, lim), MpcSegmentCoreReason::kNone);
+    s.mpc.ResizeResult(s.res);
+    s.mpc.ResizeResult(s.res_same);
+    s.adv_cold.ResizeResult(s.res_adv);
+    p0 = p;
+  }
+  const int N = side[0].mpc.NumNodes();
+  Eigen::Matrix3d w_p;
+  ASSERT_TRUE(
+      rtc::catching::CatchPositionWeight(SkewWeight(1e-4, 4e-4, 2.5e-5), 1.0, 0.01, 1e4, w_p));
+  ThrowSampler sampler;
+  std::mt19937& rng = sampler.rng;
+  std::uniform_real_distribution<double>& uni = sampler.uni;
+  pinocchio::Data data(*arm.model);
+  std::vector<double> dq;
+  const auto note = [](EpsSide& s, int series, bool ok, const MpcSegmentCoreResult& r) {
+    if (ok) {
+      s.series[static_cast<std::size_t>(series)].Add(r);
+    } else {
+      s.series[static_cast<std::size_t>(series)].Fail(r);
+    }
+  };
+  for (int i = 0; i < n_samples; ++i) {
+    // Every random number of this sample, before any solve.
+    const MpcSegmentCoreInput in = sampler.Next(arm, lim, p0, side[0].mpc, data, w_p);
+    const Eigen::Vector3d moved =
+        in.p_b + 0.01 * Eigen::Vector3d(uni(rng), uni(rng), uni(rng)).normalized();
+    std::array<bool, 2> cold_ok{false, false};
+    for (int turn = 0; turn < 2; ++turn) {
+      const std::size_t a = static_cast<std::size_t>(i % 2 == 0 ? turn : 1 - turn);
+      EpsSide& s = side[a];
+      cold_ok[a] = s.mpc.Solve(in, s.res);
+      note(s, 0, cold_ok[a], s.res);
+      if (!cold_ok[a]) {
+        continue;
+      }
+      MpcSegmentCoreInput same = in;
+      UseAsReference(s.res, same);
+      same.p_b = moved;
+      same.w_delta_scale = 1.0;
+      same.cold_start = false;
+      note(s, 1, s.mpc.Solve(same, s.res_same), s.res_same);
+      MpcSegmentCoreInput adv = in;
+      adv.q_ref = s.res.q.rightCols(N);
+      adv.qd_ref = s.res.qd.rightCols(N);
+      adv.qdd_ref = s.res.qdd.rightCols(N);
+      adv.q0 = s.res.q.col(1);
+      adv.qd0 = s.res.qd.col(1);
+      adv.qdd0 = s.res.qdd.col(1);
+      adv.p_b = moved;
+      adv.w_delta_scale = 1.0;
+      adv.cold_start = true;
+      note(s, 2, s.adv_cold.Solve(adv, s.res_adv), s.res_adv);
+      adv.cold_start = false;
+      note(s, 3, s.adv_stale.Solve(adv, s.res_adv), s.res_adv);
+    }
+    if (cold_ok[0] && cold_ok[1]) {
+      dq.push_back((side[0].res.q - side[1].res.q).cwiseAbs().maxCoeff());
+    }
+  }
+  const std::array<const char*, 4> series_name{"cold", "warm_same", "adv_cold", "adv_stale"};
+  const std::array<std::string, 2> side_name{"a", "b"};
+  ::testing::Test::RecordProperty(key + ".eps_a", std::to_string(eps_a));
+  ::testing::Test::RecordProperty(key + ".eps_b", std::to_string(eps_b));
+  for (std::size_t a = 0; a < 2; ++a) {
+    for (std::size_t m = 0; m < 4; ++m) {
+      ReportSeries(key + "." + side_name[a] + "." + series_name[m], side[a].series[m]);
+    }
+  }
+  for (std::size_t m = 0; m < 4; ++m) {
+    const Series& a = side[0].series[m];
+    const Series& b = side[1].series[m];
+    const double p99_a = Percentile(a.total_us, 0.99);
+    const double p99_b = Percentile(b.total_us, 0.99);
+    const double p50_a = Percentile(a.total_us, 0.5);
+    const double p50_b = Percentile(b.total_us, 0.5);
+    const std::string k = key + "." + series_name[m];
+    ::testing::Test::RecordProperty(k + ".total_p99_ratio_permille",
+                                    static_cast<int>(std::lround(1e3 * p99_b / p99_a)));
+    ::testing::Test::RecordProperty(k + ".total_p50_ratio_permille",
+                                    static_cast<int>(std::lround(1e3 * p50_b / p50_a)));
+    std::printf(
+        "[eps] %-26s b/a (%.0e/%.0e): total p50 %.3f p99 %.3f | iter p50 %.0f/%.0f | fail %d/%d "
+        "| retried %d/%d\n",
+        k.c_str(), eps_b, eps_a, p50_b / p50_a, p99_b / p99_a, Percentile(a.iters, 0.5),
+        Percentile(b.iters, 0.5), a.failures, b.failures, a.retried, b.retried);
+  }
+  ::testing::Test::RecordProperty(key + ".cold.dq_max_urad",
+                                  static_cast<int>(std::lround(1e6 * Percentile(dq, 1.0))));
+  std::printf("[eps] %-26s cold |dq|inf max %.3g rad (n=%zu)\n", key.c_str(), Percentile(dq, 1.0),
+              dq.size());
+}
+
+TEST(MpcSegmentCoreApproachTiming, EpsPrimalInfNullPair7R) {
+  const ArmModel arm = RealArm7();
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+  if (TimingFull()) {
+    ASSERT_TRUE(OptimisedBuild()) << "a timing table from a " << RTC_TEST_BUILD_TYPE << " build";
+  }
+  RunGridEpsPair(arm, lim, kTimingGrids[4], "null_7dof.C1", TimingSamples(), 1e-4, 1e-4);
+}
+
+TEST(MpcSegmentCoreApproachTiming, EpsPrimalInfNullPair6R) {
+  const ArmModel arm = RealArm6();
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.1);
+  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+  if (TimingFull()) {
+    ASSERT_TRUE(OptimisedBuild()) << "a timing table from a " << RTC_TEST_BUILD_TYPE << " build";
+  }
+  RunGridEpsPair(arm, lim, kTimingGrids[4], "null_6dof.C1", TimingSamples(), 1e-4, 1e-4);
+}
+
+TEST(MpcSegmentCoreApproachTiming, EpsPrimalInfPair7R) {
+  const ArmModel arm = RealArm7();
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+  if (TimingFull()) {
+    ASSERT_TRUE(OptimisedBuild()) << "a timing table from a " << RTC_TEST_BUILD_TYPE << " build";
+  }
+  for (const TimingGrid& tg : kTimingGrids) {
+    RunGridEpsPair(arm, lim, tg, std::string("eps_7dof.") + tg.name, TimingSamples(), 1e-4,
+                   EpsSideB());
+  }
+}
+
+TEST(MpcSegmentCoreApproachTiming, EpsPrimalInfPair6R) {
+  const ArmModel arm = RealArm6();
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.1);
+  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+  if (TimingFull()) {
+    ASSERT_TRUE(OptimisedBuild()) << "a timing table from a " << RTC_TEST_BUILD_TYPE << " build";
+  }
+  for (const TimingGrid& tg : kTimingGrids) {
+    RunGridEpsPair(arm, lim, tg, std::string("eps_6dof.") + tg.name, TimingSamples(), 1e-4,
+                   EpsSideB());
+  }
+}
+
+// #880 D8 (iii): QPs that really are infeasible, timed per threshold. Without
+// a certificate inside eps_primal_inf ProxQP runs to max_iter outer steps of up
+// to max_iter_in + 1 inner ones (status 1); with one it stops early (status 2).
+// The family: a random posture inside the box, one random joint at the box's
+// upper edge moving outward at α of the velocity box, from rest otherwise. One
+// jerk per interval sets both q₁ and q̇₁ (q₁ − q₀ − Δq̇₀ = Δ³u/6,
+// q̇₁ − q̇₀ = Δ²u/2), so staying inside the position box at node 1 takes
+// q̇₁ ≤ −2q̇₀: outside the velocity box for every α > 1/2, by more as α grows.
+//   main_cold  the catch core, the state's own rest as the reference, cold: one run
+//   main_warm  the same core warm from a feasible solve of the posture at rest:
+//              the warm run fails and the core retries cold — two runs (D3)
+//   presolve   the stop core without a reference: its kinematic pre-solve fails
+// Every sample must fail, fail-closed (asserted); the times are recorded.
+struct InfeasibleTally {
+  std::vector<double> wall_us, iters, us_per_iter;
+  std::array<int, 4> status{};  // 0 · 1 · 2 · other
+  int retried{0};
+  int solved{0};
+
+  void Add(bool ok, const MpcSegmentCoreResult& r, double us, bool presolve) {
+    solved += ok ? 1 : 0;
+    wall_us.push_back(us);
+    const int it = presolve ? r.presolve_iterations : r.iterations;
+    iters.push_back(it);
+    if (it > 0) {
+      us_per_iter.push_back((presolve ? r.presolve_us : r.solve_us) / it /
+                            (r.cold_retried ? 2.0 : 1.0));
+    }
+    const int st = r.qp_status;
+    status[static_cast<std::size_t>(st >= 0 && st <= 2 ? st : 3)] += 1;
+    retried += r.cold_retried ? 1 : 0;
+  }
+};
+
+void RunInfeasibleFamily(const ArmModel& arm, const MpcSegmentCoreLimits& lim,
+                         const std::string& key, int n_samples, double eps) {
+  using rtc::testing::mpc_segment_core::Percentile;
+  using rtc::testing::mpc_segment_core::RecordMicros;
+  const int n = arm.model->nv;
+  MpcSegmentCoreParams pc = GridParams(kTimingGrids[4].grid);  // C1, the shipped grid
+  TimingCatchParams(pc, false);
+  pc.solver.eps_primal_inf = eps;
+  MpcSegmentCoreParams ps = GridParams({0, 0.1, 7, 0.05, 1, {1, 1, 2, 3}});  // a stop core
+  ps.solver.eps_primal_inf = eps;
+  MpcSegmentCore cold, warm, stop;
+  ASSERT_EQ(cold.Init(*arm.model, arm.frame, pc, lim), MpcSegmentCoreReason::kNone) << key;
+  ASSERT_EQ(warm.Init(*arm.model, arm.frame, pc, lim), MpcSegmentCoreReason::kNone) << key;
+  ASSERT_EQ(stop.Init(*arm.model, arm.frame, ps, lim), MpcSegmentCoreReason::kNone) << key;
+  MpcSegmentCoreResult r_cold, r_warm, r_stop;
+  cold.ResizeResult(r_cold);
+  warm.ResizeResult(r_warm);
+  stop.ResizeResult(r_stop);
+  Eigen::Matrix3d w_p;
+  ASSERT_TRUE(
+      rtc::catching::CatchPositionWeight(SkewWeight(1e-4, 4e-4, 2.5e-5), 1.0, 0.01, 1e4, w_p));
+  std::mt19937 rng(880);
+  std::uniform_real_distribution<double> uni(-1.0, 1.0);
+  std::uniform_int_distribution<int> joint(0, n - 1);
+  constexpr std::array<double, 4> kAlpha{0.6, 0.75, 0.9, 1.0};
+  pinocchio::Data data(*arm.model);
+  const auto timed = [](MpcSegmentCore& core, const MpcSegmentCoreInput& in,
+                        MpcSegmentCoreResult& r, double& us) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok = core.Solve(in, r);
+    us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+    return ok;
+  };
+  std::array<InfeasibleTally, 3> tally;
+  for (int i = 0; i < n_samples; ++i) {
+    // Every random number of this sample, before any solve.
+    Eigen::VectorXd q = arm.q_nominal;
+    for (int m = 0; m < n; ++m) {
+      q[m] = std::clamp(q[m] + 0.3 * uni(rng), lim.q_min[m] + pc.m_q + 0.05,
+                        lim.q_max[m] - pc.m_q - 0.05);
+    }
+    const int j = joint(rng);
+    const double alpha = kAlpha[static_cast<std::size_t>(i) % kAlpha.size()];
+    // At rest: the feasible solve that warms the second core.
+    MpcSegmentCoreInput rest = RestInput(q);
+    rest.q_ref = q.replicate(1, cold.NumNodes() + 1);
+    rest.qd_ref.setZero(n, cold.NumNodes() + 1);
+    rest.qdd_ref.setZero(n, cold.NumNodes() + 1);
+    rest.reference_valid = true;
+    const CatchPose here = CatchPoseAt(arm, data, q, Eigen::VectorXd::Zero(n));
+    rest.p_b = here.p;
+    rest.a_d = here.z;
+    rest.v_b = -5.0 * here.z;
+    rest.w_p = w_p;
+    rest.cold_start = true;
+    MpcSegmentCoreInput edge = rest;
+    edge.q0[j] = lim.q_max[j] - pc.m_q - 1e-9;
+    edge.qd0[j] = alpha * pc.eta_v * lim.qd_max[j];
+    edge.q_ref = edge.q0.replicate(1, cold.NumNodes() + 1);
+    // The ball at the edge posture's catch frame: the catch terms' inputs are
+    // valid, so what fails is the QP.
+    const CatchPose at_edge = CatchPoseAt(arm, data, edge.q0, Eigen::VectorXd::Zero(n));
+    edge.p_b = at_edge.p;
+    edge.a_d = at_edge.z;
+    edge.v_b = -5.0 * at_edge.z;
+    double us = 0.0;
+    bool ok = timed(cold, edge, r_cold, us);
+    tally[0].Add(ok, r_cold, us, false);
+    EXPECT_FALSE(ok) << key << " main_cold " << i << " joint " << j << " alpha " << alpha;
+    EXPECT_EQ(r_cold.reason, MpcSegmentCoreReason::kQpFailed)
+        << key << " main_cold " << i << ": " << MpcSegmentCoreReasonName(r_cold.reason);
+    double us_rest = 0.0;
+    ASSERT_TRUE(timed(warm, rest, r_warm, us_rest))
+        << key << " " << i << ": " << MpcSegmentCoreReasonName(r_warm.reason);
+    edge.cold_start = false;
+    ok = timed(warm, edge, r_warm, us);
+    tally[1].Add(ok, r_warm, us, false);
+    EXPECT_FALSE(ok) << key << " main_warm " << i;
+    EXPECT_EQ(r_warm.reason, MpcSegmentCoreReason::kQpFailed)
+        << key << " main_warm " << i << ": " << MpcSegmentCoreReasonName(r_warm.reason);
+    EXPECT_TRUE(r_warm.cold_retried) << key << " main_warm " << i;
+    MpcSegmentCoreInput stop_in = RestInput(edge.q0);
+    stop_in.qd0 = edge.qd0;
+    stop_in.cold_start = true;
+    ok = timed(stop, stop_in, r_stop, us);
+    tally[2].Add(ok, r_stop, us, true);
+    EXPECT_FALSE(ok) << key << " presolve " << i;
+    EXPECT_EQ(r_stop.reason, MpcSegmentCoreReason::kPresolveFailed)
+        << key << " " << i << ": " << MpcSegmentCoreReasonName(r_stop.reason);
+  }
+  const std::array<const char*, 3> kind{"main_cold", "main_warm", "presolve"};
+  for (std::size_t k = 0; k < 3; ++k) {
+    const InfeasibleTally& t = tally[k];
+    const std::string base = key + ".eps_" + rtc::testing::mpc_warm_up::EpsKey(eps) + "." + kind[k];
+    RecordMicros(base + ".wall_us.p50", Percentile(t.wall_us, 0.5));
+    RecordMicros(base + ".wall_us.p99", Percentile(t.wall_us, 0.99));
+    RecordMicros(base + ".wall_us.max", Percentile(t.wall_us, 1.0));
+    for (std::size_t st = 0; st < 4; ++st) {
+      ::testing::Test::RecordProperty(base + ".status" + (st < 3 ? std::to_string(st) : "x"),
+                                      t.status[st]);
+    }
+    ::testing::Test::RecordProperty(base + ".retried", t.retried);
+    ::testing::Test::RecordProperty(base + ".samples", static_cast<int>(t.wall_us.size()));
+    std::printf(
+        "[infeasible] %-14s eps %-7.0e %-9s n=%3zu solved %d | status 0/1/2/x %d/%d/%d/%d | wall "
+        "p50 %8.0f p99 %8.0f max %8.0f us | iter p50 %4.0f max %5.0f | us/iter p50 %.2f | "
+        "retried %d\n",
+        key.c_str(), eps, kind[k], t.wall_us.size(), t.solved, t.status[0], t.status[1],
+        t.status[2], t.status[3], Percentile(t.wall_us, 0.5), Percentile(t.wall_us, 0.99),
+        Percentile(t.wall_us, 1.0), Percentile(t.iters, 0.5), Percentile(t.iters, 1.0),
+        Percentile(t.us_per_iter, 0.5), t.retried);
+  }
+}
+
+TEST(MpcSegmentCoreApproachTiming, InfeasibleSolves7R) {
+  const ArmModel arm = RealArm7();
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+  if (TimingFull()) {
+    ASSERT_TRUE(OptimisedBuild()) << "a timing table from a " << RTC_TEST_BUILD_TYPE << " build";
+  }
+  for (const double eps : rtc::testing::mpc_warm_up::EpsGrid()) {
+    RunInfeasibleFamily(arm, lim, "infeasible_7dof", TimingSamples(), eps);
+  }
+}
+
+TEST(MpcSegmentCoreApproachTiming, InfeasibleSolves6R) {
+  const ArmModel arm = RealArm6();
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.1);
+  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+  if (TimingFull()) {
+    ASSERT_TRUE(OptimisedBuild()) << "a timing table from a " << RTC_TEST_BUILD_TYPE << " build";
+  }
+  for (const double eps : rtc::testing::mpc_warm_up::EpsGrid()) {
+    RunInfeasibleFamily(arm, lim, "infeasible_6dof", TimingSamples(), eps);
+  }
 }
 
 }  // namespace

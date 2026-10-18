@@ -74,6 +74,7 @@
 #include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
 #include "rtc_controllers/testing/mpc_docking_fixture.hpp"
+#include "rtc_controllers/testing/mpc_warm_up_fixture.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 #include "shipped_config_test_fixture.hpp"
 
@@ -494,11 +495,17 @@ std::unique_ptr<NlpCatchSearch> MakeNlp(const Scene& s, Budget budget, std::stri
   return search;
 }
 
-// The mpc planner on `arm`, whose model joint m is device joint
+// What the mpc planner on `arm` is configured with (MakeMpcOn).
+struct MpcSetup {
+  MpcSegmentPlannerModel model;
+  MpcSegmentPlannerConstants consts;
+  MpcSegmentPlannerParams params;
+};
+
+// The mpc planner's setup on `arm`, whose model joint m is device joint
 // `device_of_model[m]` of the device the RT reports to THIS planner.
-std::unique_ptr<MpcSegmentPlanner> MakeMpcOn(const Scene& s, const fx::ShippedArm& arm,
-                                             std::span<const int> device_of_model, Budget budget,
-                                             std::string* error) {
+MpcSetup MpcSetupOn(const Scene& s, const fx::ShippedArm& arm, std::span<const int> device_of_model,
+                    Budget budget) {
   MpcSegmentPlannerModel model;
   model.arm = arm.rig.arm.model;
   model.catch_frame = arm.rig.arm.frame;
@@ -535,7 +542,16 @@ std::unique_ptr<MpcSegmentPlanner> MakeMpcOn(const Scene& s, const fx::ShippedAr
   consts.t_arm_s = s.borrowed.t_arm_s;
   consts.control_dt = kControlDt;
   consts.v_eps = params.v_eps;
-  return rtc::catching::MakeMpcSegmentPlanner(model, consts, params, &SuiteClock, error);
+  return {model, consts, params};
+}
+
+// The mpc planner on `arm` (MpcSetupOn).
+std::unique_ptr<MpcSegmentPlanner> MakeMpcOn(const Scene& s, const fx::ShippedArm& arm,
+                                             std::span<const int> device_of_model, Budget budget,
+                                             std::string* error) {
+  const MpcSetup setup = MpcSetupOn(s, arm, device_of_model, budget);
+  return rtc::catching::MakeMpcSegmentPlanner(setup.model, setup.consts, setup.params, &SuiteClock,
+                                              error);
 }
 
 std::unique_ptr<MpcSegmentPlanner> MakeMpc(const Scene& s, Budget budget, std::string* error) {
@@ -1467,6 +1483,36 @@ TEST(G1WholeBodyCycle, WithoutItsRestWeightTheLeftArmIsNotBroughtBack) {
   EXPECT_GT(t.back().left_end, 10.0 * 1e-2) << "ten times the held arm's tolerance";
   RecordProperty("left_end_first", std::to_string(t.front().left_end));
   RecordProperty("left_end_last", std::to_string(t.back().left_end));
+}
+
+// #880 D8 (i): the tree planner's warm-ups at the middle of its box, per
+// infeasibility threshold — recorded; the replica is the planner's own
+// warm-up at the planner's pose (mpc_warm_up_fixture.hpp).
+TEST(G1SearchSegmentAgreement, TheTreeWarmUpsAtTheBoxMiddlePerInfeasibilityThreshold) {
+  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
+  namespace wu = rtc::testing::mpc_warm_up;
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Build(fx::kG1Home));
+  const MpcSetup setup = MpcSetupOn(*s, s->segment, s->segment.device_of_model, Budget::kShipped);
+  std::string err;
+  const std::unique_ptr<MpcSegmentPlanner> mpc = rtc::catching::MakeMpcSegmentPlanner(
+      setup.model, setup.consts, setup.params, &SuiteClock, &err);
+  ASSERT_NE(mpc, nullptr) << err;
+  for (const wu::WarmUpSolve& w :
+       wu::WarmUpSolvesAt(*mpc, setup.model, wu::PlannerWarmUpPose(*mpc),
+                          mpc->StopCoreParams(0).solver.eps_primal_inf)) {
+    EXPECT_TRUE(w.ok && w.same_as_planner) << w.core;
+  }
+  const Eigen::VectorXd mid = wu::BoxMiddle(*mpc);
+  for (const double eps : wu::EpsGrid()) {
+    const std::vector<wu::WarmUpSolve> solves = wu::WarmUpSolvesAt(*mpc, setup.model, mid, eps);
+    wu::PrintWarmUpSolves("g1_tree", eps, solves);
+    int failed = 0;
+    for (const wu::WarmUpSolve& w : solves) {
+      failed += w.ok ? 0 : 1;
+    }
+    RecordProperty("g1_tree.eps_" + wu::EpsKey(eps) + ".failed", failed);
+  }
 }
 
 TEST(G1SearchSegmentTimes, RecordsTheSearchsCandidateAndTheFirstSolvesOnTheTree) {

@@ -210,3 +210,6 @@ demo_catching_controller:
             max_iter_in: 100
             eps_abs: 1.0e-6
             eps_rel: 0.0
+            # ProxQP's approximate primal-infeasibility threshold (>= 0; 0 accepts
+            # an exact certificate only). ProxQP's own default; #880 measures it.
+            eps_primal_inf: 1.0e-4
