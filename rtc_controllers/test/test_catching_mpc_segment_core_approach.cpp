@@ -2903,6 +2903,63 @@ TEST(MpcSegmentCoreApproach, AStaleWarmStartSolvesAndAnInfeasibleOneIsRetriedCol
   EXPECT_FALSE(r_stale.cold_retried) << "the failed run already reset the solver";
 }
 
+// The cold retry recovers a FEASIBLE QP whose warm run fails: the grid
+// advanced by one pre-catch node, the solver left on another throw's
+// iterates (the timing fixture's adv_stale). From such a start ProxQP does not
+// always converge within solver.max_iter (#880: 5 – 10 % of them at the
+// shipped settings); the retry from zero then returns the cold solution.
+TEST(MpcSegmentCoreApproach, AFailedWarmRunOfAFeasibleQpIsRecoveredCold) {
+  const ArmModel arm = RealArm7();
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  const Grid grid = kTimingGrids[4].grid;
+  MpcSegmentCoreParams p = GridParams(grid);
+  TimingCatchParams(p, false);
+  Grid next_grid = grid;
+  next_grid.n_pre -= 1;
+  MpcSegmentCoreParams p_next = GridParams(next_grid);
+  TimingCatchParams(p_next, false);
+  MpcSegmentCore mpc, adv_cold, adv_stale;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(adv_cold.Init(*arm.model, arm.frame, p_next, lim), MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(adv_stale.Init(*arm.model, arm.frame, p_next, lim), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res, r_cold, r_stale;
+  mpc.ResizeResult(res);
+  adv_cold.ResizeResult(r_cold);
+  adv_stale.ResizeResult(r_stale);
+  const int N = mpc.NumNodes();
+  Eigen::Matrix3d w_p;
+  ASSERT_TRUE(
+      rtc::catching::CatchPositionWeight(SkewWeight(1e-4, 4e-4, 2.5e-5), 1.0, 0.01, 1e4, w_p));
+  ThrowSampler sampler;
+  pinocchio::Data data(*arm.model);
+  int recovered = 0;
+  for (int i = 0; i < 200 && recovered < 3; ++i) {
+    const MpcSegmentCoreInput in = sampler.Next(arm, lim, p, mpc, data, w_p);
+    ASSERT_TRUE(mpc.Solve(in, res)) << i << " " << MpcSegmentCoreReasonName(res.reason);
+    MpcSegmentCoreInput adv = in;
+    adv.q_ref = res.q.rightCols(N);
+    adv.qd_ref = res.qd.rightCols(N);
+    adv.qdd_ref = res.qdd.rightCols(N);
+    adv.q0 = res.q.col(1);
+    adv.qd0 = res.qd.col(1);
+    adv.qdd0 = res.qdd.col(1);
+    adv.w_delta_scale = 1.0;
+    adv.cold_start = true;
+    ASSERT_TRUE(adv_cold.Solve(adv, r_cold)) << i << " " << MpcSegmentCoreReasonName(r_cold.reason);
+    adv.cold_start = false;  // the solver still holds the previous throw's iterates
+    ASSERT_TRUE(adv_stale.Solve(adv, r_stale))
+        << i << " " << MpcSegmentCoreReasonName(r_stale.reason);
+    if (r_stale.cold_retried) {
+      ++recovered;
+      EXPECT_EQ(r_stale.qp_status, 0) << i;
+      EXPECT_LE((r_stale.q - r_cold.q).cwiseAbs().maxCoeff(), 1e-4)
+          << i << ": the retry is the cold solve [rad]";
+    }
+  }
+  EXPECT_GT(recovered, 0) << "no warm run failed: the fixture does not reach the retry";
+  RecordProperty("recovered", recovered);
+}
+
 TEST(MpcSegmentCoreApproachTiming, GridTable7R) {
   const ArmModel arm = RealArm7();
   const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
@@ -3215,9 +3272,8 @@ struct InfeasibleTally {
     wall_us.push_back(us);
     const int it = presolve ? r.presolve_iterations : r.iterations;
     iters.push_back(it);
-    if (it > 0) {
-      us_per_iter.push_back((presolve ? r.presolve_us : r.solve_us) / it /
-                            (r.cold_retried ? 2.0 : 1.0));
+    if (it > 0 && !r.cold_retried) {  // a retried solve's time covers two runs
+      us_per_iter.push_back((presolve ? r.presolve_us : r.solve_us) / it);
     }
     const int st = r.qp_status;
     status[static_cast<std::size_t>(st >= 0 && st <= 2 ? st : 3)] += 1;

@@ -162,7 +162,8 @@ struct WarmUpSolve {
 }
 
 /// The thresholds a suite records: RTC_MPC_EPS_GRID (comma-separated) when
-/// set, else ProxQP's default 1e-4 and the core's own (MpcSegmentCoreParams{}).
+/// set, else ProxQP's default 1e-4 — and the core's own
+/// (MpcSegmentCoreParams{}) always, so its check never drops out.
 [[nodiscard]] inline std::vector<double> EpsGrid() {
   std::vector<double> grid;
   if (const char* e = std::getenv("RTC_MPC_EPS_GRID"); e != nullptr && e[0] != '\0') {
@@ -171,20 +172,20 @@ struct WarmUpSolve {
     while (std::getline(ss, item, ',')) {
       grid.push_back(std::stod(item));
     }
-    return grid;
+  } else {
+    grid.push_back(1e-4);
   }
-  grid.push_back(1e-4);
   const double own = rtc::catching::MpcSegmentCoreParams{}.solver.eps_primal_inf;
-  if (own != 1e-4) {
+  if (std::find(grid.begin(), grid.end(), own) == grid.end()) {
     grid.push_back(own);
   }
   return grid;
 }
 
-/// A threshold as a property key ("1e-04", "0e+00").
+/// A threshold as a property key ("0.0001", "1.5e-05", "0").
 [[nodiscard]] inline std::string EpsKey(double eps) {
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "%.0e", eps);
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%g", eps);
   return buf;
 }
 
@@ -192,7 +193,7 @@ struct WarmUpSolve {
 inline void PrintWarmUpSolves(const std::string& label, double eps,
                               const std::vector<WarmUpSolve>& solves) {
   for (const WarmUpSolve& s : solves) {
-    std::printf("[warm-up] %-28s eps %-7.0e %-8s: %-4s status %d it %3d (%s)\n", label.c_str(), eps,
+    std::printf("[warm-up] %-28s eps %-7g %-8s: %-4s status %d it %3d (%s)\n", label.c_str(), eps,
                 s.core.c_str(), s.ok ? "ok" : "FAIL", s.qp_status, s.iterations,
                 rtc::catching::MpcSegmentCoreReasonName(s.reason));
   }

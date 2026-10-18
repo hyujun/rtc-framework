@@ -1641,8 +1641,12 @@ Arm UrdfArm(const std::string& urdf, const std::string& frame) {
   a.model = builder.GetFullModel();
   a.frame = a.model->getFrameId(frame);
   const int n = static_cast<int>(a.model->nv);
+  // device_of_model holds 7; a continuous joint has no box middle.
+  EXPECT_LE(n, static_cast<int>(a.device_of_model.size())) << urdf;
+  EXPECT_TRUE(a.model->lowerPositionLimit.allFinite() && a.model->upperPositionLimit.allFinite())
+      << urdf;
   a.q_nominal = Eigen::VectorXd::Zero(n);
-  for (int m = 0; m < n; ++m) {
+  for (int m = 0; m < std::min(n, static_cast<int>(a.device_of_model.size())); ++m) {
     a.device_of_model[static_cast<std::size_t>(m)] = m;
     a.qd_max.push_back(a.model->upperVelocityLimit[m]);
     a.tau_max.push_back(a.model->upperEffortLimit[m]);

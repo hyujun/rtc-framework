@@ -74,12 +74,13 @@ inline constexpr int kSwitchSamplesMax = 64;
 /// stop-path weight the cores are tested to solve with (a stop core alone in
 /// test_catching_mpc_segment_core.cpp, the planner's catch and stop cores on both
 /// test arms in test_catching_approach_planner.cpp). The weight raises the
-/// QP's condition number with nothing else to bound it — the configure
-/// warm-up cannot notice a value too large, its line runs through the catch
-/// frame — so the parser refuses anything above. It moves with
-/// `solver.max_iter`: at 60 (#880 D11) a 6-joint arm's catch-core warm-up
-/// needs 121 – 150 outer steps at 1e4, solves at 3e3 and fails at 3e3 with 40
-/// (#880 D12).
+/// QP's condition number, so a solve needs more outer steps as it grows: a
+/// 6-joint arm's catch-core warm-up needs 121 – 150 at 1e4, solves at 3e3
+/// within `solver.max_iter` 60 (the shipped cap, #880 D11) and fails there
+/// with 40 (#880 D12). The configure warm-up is no check on the weight — it
+/// solves one synthetic line, not every line a replan may — so the parser
+/// refuses anything above. The bound holds at max_iter 60; a profile that
+/// lowers `solver.max_iter` is outside what it was tested with.
 inline constexpr double kMpcSegmentStopPathWeightMax = 3e3;
 
 /// Capacity of the MPC segment planner's replan window: instances k = 0..k_max, one

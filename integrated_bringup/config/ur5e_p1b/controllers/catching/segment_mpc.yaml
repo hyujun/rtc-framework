@@ -230,5 +230,6 @@ demo_catching_controller:
             # an exact certificate only). At ProxQP's default 1e-4 it called
             # feasible QPs infeasible: every first solve it failed in the offline
             # maps solves at 0 (#880), as does a vertical 7-joint arm's stop from
-            # rest (#857 D12).
+            # rest (#857 D12) - the configure warm-up runs that stop at the box
+            # middle, so a positive value can refuse the configure on such an arm.
             eps_primal_inf: 0.0
