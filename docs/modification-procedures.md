@@ -75,6 +75,15 @@ colcon test-result --verbose
 
 `colcon` 은 colcon workspace root (`~/ros2_ws/rtc_ws`) 에서 실행한다 ([AGENTS.md](../AGENTS.md) §9.1). `rtc_base` / `rtc_msgs` 를 바꿨으면 downstream 전체를 빌드·테스트한다 (PROC-3).
 
+### 테스트 단언을 바꾸는 commit 쌍 (PROC-6)
+
+규범은 [invariants.md](../agent_docs/invariants.md) PROC-6 · E-6 이고, 여기는 순서만 갖는다.
+
+1. **spec · 법칙 commit** — 코드 · 문서만 바꾼다. 아직 고치지 않은 단언 때문에 red 이므로, 본문에 "의도된 red" 와 다음 commit 이 고칠 단언 목록을 적는다. 이 commit 을 한 번 빌드해 red 집합이 그 목록과 같은지 본다 — 목록 밖의 red 는 E-6 로 escalate 한다.
+2. **E-6 commit** — 단언만 다시 고정하고, 무엇을 무엇으로 바꿨는지 · 왜 회귀 은폐가 아닌지를 본문에 적는다. 두 commit 은 연달아 넣고, 검증은 2 뒤의 트리로 한다.
+3. **1 과 2 사이에서 멈출 때** (escalation 으로 사용자 결정을 기다릴 때 등) — red HEAD 로 멈추지 않는다. `git branch wip/<slug>` 로 1 을 보관하고 branch 를 마지막 green commit 으로 되돌린 뒤 그 트리의 검증을 남긴다. 재개할 때 `wip/<slug>` 로 돌아가고 그 branch 를 지운다. (Claude Code 의 Stop hook 은 turn 끝 트리의 green verdict 를 요구하므로 이 경우 turn 을 끝낼 수 없다.)
+4. **squash 머지** (사용자 지시일 때만) — 2 의 근거를 squash 본문에 옮겨 적는다. 지키는 것은 commit 개수가 아니라 단언 변경의 감사 가능성이다.
+
 ### PR 전 리뷰와 정리
 
 - PR 을 열기 전에 [Inferential review 트리거](../agent_docs/modification-guide.md#inferential-review-트리거-llm-as-judge-수동-trigger) 표에서 이번 변경이 어느 review (code · security · 재사용·단순화) 에 걸리는지 보고 그 review 를 받는다. 목록은 그 표에만 있다.

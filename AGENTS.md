@@ -60,7 +60,7 @@
 판정 기준은 [testing-debug.md](agent_docs/testing-debug.md), sensor matrix·명령·Live Debug Topics 는 헌법 밖 [docs/testing.md](docs/testing.md) 가 갖는다.
 
 - 변경 패키지의 sensor 행을 찾아 **필수 sensor + 추가 sensor** 모두 실행
-- 실패한 채로 커밋하지 않는다
+- 실패한 채로 커밋하지 않는다 — 예외는 PROC-6 의 commit 쌍 (spec 변경 → assertion 재고정) 의 앞 commit 뿐이다 ([invariants.md](agent_docs/invariants.md) PROC-6)
 
 ## 5.5 Inferential Sensors (LLM-as-judge, 수동 trigger)
 
