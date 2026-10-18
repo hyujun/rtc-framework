@@ -312,7 +312,9 @@ if(BUILD_TESTING)
   # ── Header-only helpers, one binary ────────────────────────────────────────
   #   test_device_log_pods   DeviceStateLog / DeviceSensorLog POD mirrors;
   #                          pull_estimator_log_pod.hpp mirrors
-  #                          rtc::grasp::PullEstimate (#167).
+  #                          rtc::grasp::PullEstimate (#167). Every logging
+  #                          POD's CSV writers, all columns asserted by name
+  #                          (#883; planner_events_csv.hpp is not covered).
   #   test_virtual_tcp       virtual_tcp.
   #   test_task_vel_binding  Task-velocity assembly convergence (#314): compares
   #                          two pure functions, so it needs no URDF, no
