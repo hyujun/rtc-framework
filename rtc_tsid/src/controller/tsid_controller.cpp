@@ -39,6 +39,11 @@ CommandOutput TSIDController::Compute(const ControlState& /*state*/, const Contr
   output_.qp_converged = result.converged;
   output_.solve_time_us = result.solve_time_us;
   output_.solve_levels = result.levels_solved;
+  // Filled before the early return: the failure classification is exactly
+  // what the non-converged path has to leave behind (#551).
+  output_.qp_status = result.status;
+  output_.qp_iterations = result.iterations;
+  output_.qp_non_finite = result.non_finite;
 
   if (!result.converged) {
     return output_;
@@ -102,6 +107,9 @@ void TSIDController::Reset() noexcept {
   output_.qp_converged = false;
   output_.solve_time_us = 0.0;
   output_.solve_levels = 0;
+  output_.qp_status = -1;
+  output_.qp_iterations = 0;
+  output_.qp_non_finite = false;
   output_.tau.setZero();
   output_.a_opt.setZero();
   output_.lambda_opt.setZero();

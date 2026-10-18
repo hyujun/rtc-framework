@@ -32,17 +32,23 @@ class JointLimitConstraint final : public ConstraintBase {
   [[nodiscard]] int IneqDim(const ContactState& contacts) const noexcept override;
 
   void ComputeEquality(const PinocchioCache& cache, const ContactState& contacts,
-                        const RobotModelInfo& robot_info, int n_vars,
-                        Eigen::Ref<Eigen::MatrixXd> A_block,
-                        Eigen::Ref<Eigen::VectorXd> b_block) noexcept override;
+                       const RobotModelInfo& robot_info, int n_vars,
+                       Eigen::Ref<Eigen::MatrixXd> A_block,
+                       Eigen::Ref<Eigen::VectorXd> b_block) noexcept override;
 
   void ComputeInequality(const PinocchioCache& cache, const ContactState& contacts,
-                          const RobotModelInfo& robot_info, int n_vars,
-                          Eigen::Ref<Eigen::MatrixXd> C_block, Eigen::Ref<Eigen::VectorXd> l_block,
-                          Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
+                         const RobotModelInfo& robot_info, int n_vars,
+                         Eigen::Ref<Eigen::MatrixXd> C_block, Eigen::Ref<Eigen::VectorXd> l_block,
+                         Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
+
+  // Rows of the last ComputeInequality whose assembled box was empty
+  // (l_i > u_i) before any repair. Rows with non-finite q_i / v_i are not
+  // counted. Diagnostic only — read by the controller's wbc_diag log (#551).
+  [[nodiscard]] int InvertedCount() const noexcept { return inverted_count_; }
 
  private:
   int nv_{0};
+  int inverted_count_{0};
   bool floating_base_{false};
 
   double dt_{0.002};         // 제어 주기 (s)

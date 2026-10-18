@@ -35,6 +35,57 @@ int CountCommas(const std::string& s) {
   return n;
 }
 
+std::vector<std::string> NumberedJoints(std::size_t n) {
+  std::vector<std::string> names;
+  for (std::size_t i = 0; i < n; ++i) {
+    names.push_back("q" + std::to_string(i));
+  }
+  return names;
+}
+
+std::vector<std::string> SplitCsv(const std::string& line) {
+  std::vector<std::string> out;
+  std::string tok;
+  std::istringstream is(line);
+  while (std::getline(is, tok, ','))
+    out.push_back(tok);
+  if (!line.empty() && line.back() == ',')
+    out.emplace_back();
+  return out;
+}
+
+// Header ↔ row structural agreement: same token count, no empty header name,
+// no duplicate header name. Comma counting alone (the pre-#551 check) passed
+// a header whose columns were in a different order from the row's — every CSV
+// consumer is name-based, so that reads silently wrong values.
+::testing::AssertionResult HeaderRowAligned(const std::string& hdr, const std::string& row) {
+  const auto h = SplitCsv(hdr);
+  const auto r = SplitCsv(row);
+  if (h.size() != r.size())
+    return ::testing::AssertionFailure() << "header has " << h.size() << " columns, row has "
+                                         << r.size() << "\nheader: " << hdr << "\nrow: " << row;
+  std::vector<std::string> sorted = h;
+  std::sort(sorted.begin(), sorted.end());
+  for (std::size_t i = 0; i < sorted.size(); ++i) {
+    if (sorted[i].empty())
+      return ::testing::AssertionFailure() << "empty header name\nheader: " << hdr;
+    if (i > 0 && sorted[i] == sorted[i - 1])
+      return ::testing::AssertionFailure()
+             << "duplicate header name '" << sorted[i] << "'\nheader: " << hdr;
+  }
+  return ::testing::AssertionSuccess();
+}
+
+// Row value under the header column named `name` ("" when the name is absent).
+std::string ColumnValue(const std::string& hdr, const std::string& row, const std::string& name) {
+  const auto h = SplitCsv(hdr);
+  const auto r = SplitCsv(row);
+  for (std::size_t i = 0; i < h.size() && i < r.size(); ++i)
+    if (h[i] == name)
+      return r[i];
+  return {};
+}
+
 }  // namespace
 
 TEST(DeviceStateLogPod, IsTriviallyCopyable) {
@@ -63,7 +114,7 @@ TEST(DeviceStateLogPod, HeaderColumnsMatchRowColumnsForArmHand) {
   integrated_bringup::WriteDeviceStateLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
 }
 
 // SPEC CHANGE (#440): this case used to assert `row_commas < hdr_commas` —
@@ -75,7 +126,7 @@ TEST(DeviceStateLogPod, HeaderColumnsMatchRowColumnsForArmHand) {
 // its own column instead.
 TEST(DeviceStateLogPod, ShortRuntimeChannelCountPadsRatherThanNarrowsTheRow) {
   // Header sized for 16 joints, but the device reports only 6.
-  const std::vector<std::string> joint_names_16(16, "j");
+  const std::vector<std::string> joint_names_16 = NumberedJoints(16);
   const std::vector<std::string> motor_names_0;
   const auto cols = integrated_bringup::DeviceStateLogColumnsFor(joint_names_16, motor_names_0);
   std::ostringstream hdr_os;
@@ -89,7 +140,7 @@ TEST(DeviceStateLogPod, ShortRuntimeChannelCountPadsRatherThanNarrowsTheRow) {
   integrated_bringup::WriteDeviceStateLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
   // The runtime truth travels in the row, not in the column count.
   EXPECT_NE(hdr.find("num_joints"), std::string::npos) << hdr;
   EXPECT_EQ(row.substr(row.rfind(',') + 1), "0");  // num_motors
@@ -114,7 +165,7 @@ TEST(DeviceStateLogPod, ZeroRuntimeChannelsStillEmitsEveryNamedColumn) {
   std::ostringstream row_os;
   integrated_bringup::WriteDeviceStateLogRow(row_os, pod, cols);
 
-  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row_os.str()))
       << "header: " << hdr_os.str() << "\nrow: " << row_os.str();
 }
 
@@ -127,24 +178,6 @@ TEST(DeviceStateLogPod, ZeroRuntimeChannelsStillEmitsEveryNamedColumn) {
 // that. Nothing failed. These two cases put the boundary where it is visible.
 
 namespace {
-
-std::vector<std::string> NumberedJoints(std::size_t n) {
-  std::vector<std::string> names;
-  for (std::size_t i = 0; i < n; ++i) {
-    names.push_back("q" + std::to_string(i));
-  }
-  return names;
-}
-
-std::vector<std::string> SplitCsv(const std::string& line) {
-  std::vector<std::string> out;
-  std::stringstream ss(line);
-  std::string cell;
-  while (std::getline(ss, cell, ',')) {
-    out.push_back(cell);
-  }
-  return out;
-}
 
 /// A state whose device 0 reports `n` channels with position i+1 on channel i,
 /// so every channel's value says which channel it is.
@@ -229,7 +262,7 @@ TEST(DeviceSensorLogPod, HeaderColumnsMatchRowColumnsFor4Fingertips) {
   integrated_bringup::WriteDeviceSensorLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
 }
 
 // A force-only hand declares values_per_group=0. The barometer/ToF block must
@@ -271,7 +304,7 @@ TEST(DeviceSensorLogPod, ForceOnlyLayoutHeaderMatchesRow) {
   std::ostringstream row_os;
   integrated_bringup::WriteDeviceSensorLogRow(row_os, pod, cols);
 
-  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row_os.str()))
       << "header: " << hdr_os.str() << "\nrow: " << row_os.str();
 }
 
@@ -359,7 +392,7 @@ TEST(DeviceSensorLogPod, GuardColumnsHeaderMatchesRow) {
   std::ostringstream row_os;
   integrated_bringup::WriteDeviceSensorLogRow(row_os, pod, cols);
 
-  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row_os.str()))
       << "header: " << hdr_os.str() << "\nrow: " << row_os.str();
 }
 
@@ -417,7 +450,7 @@ TEST(DeviceSensorLogPod, ShortRuntimeFingertipCountPadsRatherThanNarrowsTheRow) 
   std::ostringstream row_os;
   integrated_bringup::WriteDeviceSensorLogRow(row_os, pod, cols);
 
-  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row_os.str()))
       << "header: " << hdr_os.str() << "\nrow: " << row_os.str();
 }
 
@@ -443,7 +476,7 @@ TEST(DeviceSensorLogPod, ZeroRuntimeFingertipsKeepsHeaderAndRowAligned) {
   integrated_bringup::WriteDeviceSensorLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
 
-  ASSERT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  ASSERT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
 
   // Resolve ft_thumb_contact positionally, the way a header-driven reader does,
   // and confirm it now lands on an absent-sensor 0 rather than on the
@@ -492,7 +525,7 @@ TEST(DeviceSensorLogPod, ExcessRuntimeFingertipsTruncateToHeaderWidthAndSaySo) {
   integrated_bringup::WriteDeviceSensorLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row)) << "header: " << hdr_os.str();
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row)) << "header: " << hdr_os.str();
   EXPECT_EQ(row.substr(row.rfind(',') + 1), "4") << row;
 }
 
@@ -519,7 +552,7 @@ TEST(DeviceSensorLogPod, PaddedSlotsAreZeroEvenWhenTheArrayTailHoldsData) {
   integrated_bringup::WriteDeviceSensorLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row));
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row));
   EXPECT_NE(row.find("11"), std::string::npos) << row;  // reported slot survives
   EXPECT_EQ(row.find("33"), std::string::npos) << row;
   EXPECT_EQ(row.find("44"), std::string::npos) << row;
@@ -565,7 +598,7 @@ TEST(DeviceWbcLogPod, ArmRoleHeaderColumnsMatchRow) {
   integrated_bringup::WriteDeviceWbcLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
   // SE3 task block present, motor/fingertip absent.
   EXPECT_NE(hdr.find("traj_task_vel_yaw"), std::string::npos);
   EXPECT_NE(hdr.find("accel_elbow"), std::string::npos);
@@ -593,7 +626,7 @@ TEST(DeviceWbcLogPod, HandRoleHeaderColumnsMatchRow) {
   integrated_bringup::WriteDeviceWbcLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
   EXPECT_NE(hdr.find("fingertip_force_thumb"), std::string::npos);
   // Per-axis force-vector blocks accompany the |F| magnitude block.
   EXPECT_NE(hdr.find("fingertip_fx_thumb"), std::string::npos);
@@ -621,7 +654,7 @@ TEST(DeviceWbcLogPod, HandFingertipBlockFixedWidthWhenNamesEmpty) {
   std::ostringstream row_os;
   integrated_bringup::WriteDeviceWbcLogRow(row_os, pod, cols);
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row_os.str())) << "header: " << hdr;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row_os.str())) << "header: " << hdr;
   // Fixed-width blocks → numeric-labelled columns present for |F| and each axis.
   EXPECT_NE(hdr.find("fingertip_force_0"), std::string::npos);
   EXPECT_NE(hdr.find("fingertip_force_7"), std::string::npos);
@@ -635,7 +668,7 @@ TEST(DeviceWbcLogPod, HandFingertipBlockFixedWidthWhenNamesEmpty) {
 // contract for the axis with no configured width; the joint / motor axes now
 // close it the other way, by sizing the row from the configured width.
 TEST(DeviceWbcLogPod, ShortRuntimeJointCountPadsRatherThanNarrowsTheRow) {
-  const std::vector<std::string> joint_names_16(16, "j");
+  const std::vector<std::string> joint_names_16 = NumberedJoints(16);
   const auto cols = integrated_bringup::DeviceWbcLogColumnsFor(joint_names_16, {});
   std::ostringstream hdr_os;
   integrated_bringup::WriteDeviceWbcLogHeader(hdr_os, /*role=*/0, joint_names_16, {}, {}, cols);
@@ -648,7 +681,7 @@ TEST(DeviceWbcLogPod, ShortRuntimeJointCountPadsRatherThanNarrowsTheRow) {
   integrated_bringup::WriteDeviceWbcLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
   EXPECT_EQ(row.substr(row.rfind(',') + 1), "6") << row;
   // The arm role carries no hand-only counts.
   EXPECT_EQ(hdr.find("num_fingertips"), std::string::npos) << hdr;
@@ -672,7 +705,7 @@ TEST(DeviceWbcLogPod, ZeroRuntimeCountsKeepsHandHeaderAndRowAligned) {
   std::ostringstream row_os;
   integrated_bringup::WriteDeviceWbcLogRow(row_os, pod, cols);
 
-  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row_os.str()))
       << "header: " << hdr_os.str() << "\nrow: " << row_os.str();
   EXPECT_NE(hdr_os.str().find("num_fingertips"), std::string::npos) << hdr_os.str();
 }
@@ -709,16 +742,44 @@ TEST(WbcDiagLogPod, HeaderColumnsMatchRow) {
   pod.phase = 3;
   pod.num_contact_vars = static_cast<std::uint8_t>(kNVars);
   pod.qp_converged = true;
+  pod.qp_fail_count = 4;
+  pod.kin_qp_fail_count = 5;
+  pod.qp_status = 7;
+  pod.qp_iterations = 123;
+  pod.joint_box_inverted = 3;
+  pod.lambda_opt[11] = 0.25;
   std::ostringstream row_os;
   integrated_bringup::WriteWbcDiagLogRow(row_os, pod, kNVars);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
-  EXPECT_NE(hdr.find("lambda_11"), std::string::npos);
+  EXPECT_TRUE(HeaderRowAligned(hdr, row));
+  // Name → value, not just width: a header/row order mismatch reads a wrong
+  // column silently in every (name-based) consumer. The distinct values catch
+  // a swap among the int columns (#551).
+  EXPECT_EQ(ColumnValue(hdr, row, "phase"), "closure");
+  EXPECT_EQ(ColumnValue(hdr, row, "qp_converged"), "1");
   // Fallback split (decision 6): Dynamic (qp_fail_count) and Kinematic
   // (kin_qp_fail_count) QP failure counters are distinct CSV columns.
-  EXPECT_NE(hdr.find("qp_fail_count"), std::string::npos);
-  EXPECT_NE(hdr.find("kin_qp_fail_count"), std::string::npos);
+  EXPECT_EQ(ColumnValue(hdr, row, "qp_fail_count"), "4");
+  EXPECT_EQ(ColumnValue(hdr, row, "kin_qp_fail_count"), "5");
+  EXPECT_EQ(ColumnValue(hdr, row, "qp_status"), "7");
+  EXPECT_EQ(ColumnValue(hdr, row, "qp_iterations"), "123");
+  EXPECT_EQ(ColumnValue(hdr, row, "joint_box_inverted"), "3");
+  EXPECT_EQ(ColumnValue(hdr, row, "lambda_11"), "0.25");
+  EXPECT_EQ(ColumnValue(hdr, row, "num_contact_vars"), "12");
+}
+
+TEST(WbcDiagLogPod, DefaultRowSaysNoQpAttemptAndNoJointBox) {
+  // −1 is the "nothing to report" value for both classification columns, so a
+  // zero-initialised pod must not read as "SOLVED with 0 inverted rows".
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteWbcDiagLogHeader(hdr_os, 0);
+  integrated_bringup::WbcDiagLogPod pod{};
+  std::ostringstream row_os;
+  integrated_bringup::WriteWbcDiagLogRow(row_os, pod, 0);
+  EXPECT_EQ(ColumnValue(hdr_os.str(), row_os.str(), "qp_status"), "-1");
+  EXPECT_EQ(ColumnValue(hdr_os.str(), row_os.str(), "qp_iterations"), "0");
+  EXPECT_EQ(ColumnValue(hdr_os.str(), row_os.str(), "joint_box_inverted"), "-1");
 }
 
 TEST(WbcDiagLogPod, PhaseStringTranslation) {
@@ -745,7 +806,7 @@ TEST(WbcDiagLogPod, ShortRuntimeContactVarCountPadsRatherThanNarrowsTheRow) {
   integrated_bringup::WriteWbcDiagLogRow(row_os, pod, kNVars);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
   EXPECT_EQ(row.substr(row.rfind(',') + 1), "6") << row;
 }
 
@@ -776,7 +837,7 @@ TEST(PullEstimatorLogPod, HeaderColumnsMatchRow) {
   integrated_bringup::WritePullEstimatorLogRow(row_os, pod);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
   // The CSV is the only surface carrying the pre-filter force (#167 decision:
   // wire msg / SeqLock POD are filtered-only). Renamed from force_raw_* in
   // #234 P-13 — it is post-projection/gravity/baseline, so the old name read
@@ -922,7 +983,7 @@ TEST(TaskDiagLogPod, HeaderColumnsMatchRow) {
   integrated_bringup::WriteTaskDiagLogRow(row_os, pod);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
   EXPECT_NE(hdr.find("sigma_min"), std::string::npos);
   EXPECT_NE(hdr.find("lambda_sq"), std::string::npos);
   // σ₀/λ_max ride along so a stored CSV decodes without that run's YAML — the
@@ -989,7 +1050,7 @@ TEST(GraspDiagLogPod, HeaderColumnsMatchRowColumns) {
   std::ostringstream row_os;
   integrated_bringup::WriteGraspDiagLogRow(row_os, pod, fingers.size());
 
-  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row_os.str()))
       << "header: " << hdr_os.str() << "\nrow: " << row_os.str();
 }
 
@@ -1003,7 +1064,7 @@ TEST(GraspDiagLogPod, HeaderAndRowAgreeForASingleFinger) {
   integrated_bringup::GraspDiagLogPod pod{};
   std::ostringstream row_os;
   integrated_bringup::WriteGraspDiagLogRow(row_os, pod, fingers.size());
-  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()));
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row_os.str()));
 }
 
 // The finger name is stamped into every per-finger column, so a stored CSV
@@ -1123,7 +1184,7 @@ TEST(InferenceDiagLogPod, HeaderColumnsMatchRowAndNameTheTips) {
   integrated_bringup::WriteInferenceDiagLogRow(row_os, pod, tips.size());
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
   EXPECT_EQ(hdr.rfind("t_relative_s", 0), 0U);
   EXPECT_NE(hdr.find(",force_thumb,force_index,force_middle,force_ring"), std::string::npos);
   // The reason is written as a code AND a name, so a stored file reads without
@@ -1141,7 +1202,7 @@ TEST(InferenceDiagLogPod, AShortTipCountPadsRatherThanNarrowsTheRow) {
   std::ostringstream row_os;
   integrated_bringup::WriteInferenceDiagLogRow(row_os, pod, tips.size());
   const std::string row = row_os.str();
-  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row));
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row));
   EXPECT_EQ(row.substr(row.size() - 8), ",9,0,0,0") << row;
 }
 
@@ -1185,7 +1246,7 @@ TEST(DualArmDiagLogPod, HeaderColumnsMatchRowAndNameTheTasksAndJoints) {
   integrated_bringup::WriteDualArmDiagLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_TRUE(HeaderRowAligned(hdr, row)) << "header: " << hdr << "\nrow: " << row;
   // The declared width is the one both writers produce.
   EXPECT_EQ(static_cast<std::size_t>(CountCommas(hdr)) + 1,
             integrated_bringup::DualArmDiagLogColumnCount(cols));
@@ -1216,7 +1277,7 @@ TEST(DualArmDiagLogPod, RowWidthFollowsTheConfiguredNamesNotThePod) {
     pod.num_joints = static_cast<std::uint8_t>(claimed * 8);
     std::ostringstream row_os;
     integrated_bringup::WriteDualArmDiagLogRow(row_os, pod, cols);
-    EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+    EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row_os.str()))
         << "claimed " << static_cast<int>(claimed);
   }
 

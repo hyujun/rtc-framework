@@ -82,25 +82,27 @@ int JointLimitConstraint::IneqDim(const ContactState& /*contacts*/) const noexce
 }
 
 void JointLimitConstraint::ComputeEquality(const PinocchioCache& /*cache*/,
-                                            const ContactState& /*contacts*/,
-                                            const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
-                                            Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
-                                            Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {
+                                           const ContactState& /*contacts*/,
+                                           const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                           Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
+                                           Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {
   // No equality constraints
 }
 
 void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
-                                              const ContactState& /*contacts*/,
-                                              const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
-                                              Eigen::Ref<Eigen::MatrixXd> C_block,
-                                              Eigen::Ref<Eigen::VectorXd> l_block,
-                                              Eigen::Ref<Eigen::VectorXd> u_block) noexcept {
+                                             const ContactState& /*contacts*/,
+                                             const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                             Eigen::Ref<Eigen::MatrixXd> C_block,
+                                             Eigen::Ref<Eigen::VectorXd> l_block,
+                                             Eigen::Ref<Eigen::VectorXd> u_block) noexcept {
   const double dt2 = dt_ * dt_;
 
   // C = [I_{nv} | 0]
   for (int i = 0; i < nv_; ++i) {
     C_block(i, i) = 1.0;
   }
+
+  int inverted = 0;
 
   // Floating-base 또는 fixed-base에 따라 q 접근 방식 결정
   // Fixed-base: cache.q는 [nv], 직접 사용
@@ -133,7 +135,15 @@ void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
     // 최종: tightening
     l_block(i) = std::max(a_pos_lb_(i), a_vel_lb_(i));
     u_block(i) = std::min(a_pos_ub_(i), a_vel_ub_(i));
+
+    // Inside the position-margin band the two bounds can cross (l > u = empty
+    // box → the whole QP is primal-infeasible). Count it for the diagnostics
+    // log; non-finite inputs are the wrapper's non_finite path, not a box.
+    if (std::isfinite(qi) && std::isfinite(vi) && l_block(i) > u_block(i)) {
+      ++inverted;
+    }
   }
+  inverted_count_ = inverted;
 }
 
 }  // namespace rtc::tsid

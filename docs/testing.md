@@ -61,7 +61,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `/system/estop_status` | `rtc_controller_manager` | E-STOP 원인 (timeout name / trigger thread) |
 | `/rtc_cm/active_controller_name` | 동일 (TRANSIENT_LOCAL) | 컨트롤러 전환 확인. BT · GUI · digital_twin 이 이 토픽으로 다시 연결한다 |
 | `/forward_position_controller/commands` | robot 모드 + `ur_driver_native` 전용 | `ros2 topic hz` 로 `control_rate` 확인. **sim 에는 없다** — sim 은 `devices.<group>.backend.command_topic` (예: `/ur5e/joint_command`) 을 본다 |
-| `<session>/timing/cm_timing_log.csv` | CM RT loop | tick 별 8열 timing (`run_id`, `t_state_us` … `jitter_us`). p50/p99 는 후처리. `run_id` 로 먼저 묶는다. sim 에서는 `jitter_us` 가 항상 0 |
+| `<session>/timing/cm_timing_log.csv` | CM RT loop | tick 별 8열 timing (`run_id`, `t_state_us` … `jitter_us`). p50/p99 는 후처리. `run_id` 로 먼저 묶는다. sim 에서는 `jitter_us` 가 항상 0. **RT 예산 판정은 이 CSV 로 한다** — `plot_rtc_log --stats` 의 `Overruns (> budget µs)` 행. 종료 요약 line 의 `overruns=` 는 sim 에서 센서가 아니다 (sim 동기화 경로가 overrun 판정을 우회해 `n/a(sim)` 으로 찍힌다) |
 | `<session>/timing/mpc_timing_log.csv` · `rt_callback_timing_log.csv` | MPC thread · rt_callback thread | 같은 8열. MPC tick 당 1행 · device state 콜백당 1행. `rt_callback` 은 열 의미가 lane 고유다 (`t_state_us` = decode, `t_publish_us` = mailbox hand-off, `t_total_us` = slot 2 duty 분자) — dispatch 간격은 연속 행의 `t_wall_ns` 차분 |
 | `/rtc_cm/{group}/joint_states` | CM (그룹별) | 그룹별 건강성 |
 | `/sim/status` | `rtc_mujoco_sim` 1 Hz | sim 건강성 |
@@ -79,6 +79,7 @@ timing CSV 는 `ros2 run rtc_tools plot_rtc_log <csv> --stats` 로 읽는다.
 | 시작하자마자 E-STOP | sim 이면 `init_timeout_sec: 0.0` |
 | Jitter 큼 (> 200 us) | `check_rt_setup.sh --summary` → `cpu_shield.sh status` (격리는 `isolcpus` 가 아니라 cset shield). 단계별 점검은 [rt-optimization.md](rt-optimization.md#5-문제-해결) |
 | Hand timeout E-STOP | UDP 링크 확인. `recv_timeout_ms` 는 로봇별 값이니 `integrated_bringup/config/<robot>/udp_hand_node_*.yaml` 을 본다 |
+| TSID (dynamic) QP 가 거의 매 tick 실패 (`[wbc] Dynamic QP failed` 반복, solve 수 ms) | `wbc_diag.csv` 를 `plot_rtc_log --stats` 로 읽는다 — `QP converged` 비율, `qp_status` 이름별 히스토그램 (MAX_ITER / PRIMAL_INFEASIBLE 구분), `joint_box_inverted` 비율. inverted > 0 이면 관절이 TSID `joint_limit.position_margin` 띠 안에 있는 것이다 — 그 margin 은 position 백본의 `integration.position_margin` 보다 작아야 한다 (#551) |
 | 관절 궤적이 "정착" 인지 "밴드에 pin" 인지 모르겠다 | 컨트롤러 로그의 `joint band engaged:` WARN 구간은 pin 이다. Ctrl-C 로 끝내면 요약이 없다 |
 | `ament_cmake_test` missing | `.venv` overlay 가 system site-packages 를 가림. 재활성화 후 ROS 환경 재로드 |
 | 0.01 초 만의 configure 실패 `Failed to find .../package.sh`, 빌드 직후 테스트 바이너리 없음 | 잘못된 cwd 로 colcon 을 돌린 것. repo 안 `build/`·`install/`·`log/` 삭제 후 workspace root 에서 재실행 |

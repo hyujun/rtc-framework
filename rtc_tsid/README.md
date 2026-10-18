@@ -60,7 +60,7 @@ const rtc::tsid::CommandOutput out =
 | `ActivateContact(idx)` · `DeactivateContact(idx)` | 접촉점 활성화·비활성화 (`noexcept`) |
 | `Formulation()` | 내부 formulation 참조 |
 
-`CommandOutput` 은 `tau` (구동 토크) · `a_opt` · `lambda_opt` (고정 크기, 비활성 slot ≈ 0) · `qp_converged` · `solve_time_us` · `solve_levels` (WQP 1, HQP N) 를 갖는다. 입력 타입 `RobotModelInfo` · `PinocchioCache` · `ContactState` 는 `types/wbc_types.hpp` 에 있다.
+`CommandOutput` 은 `tau` (구동 토크) · `a_opt` · `lambda_opt` (고정 크기, 비활성 slot ≈ 0) · `qp_converged` · `solve_time_us` · `solve_levels` (WQP 1, HQP N) · `qp_status` · `qp_iterations` · `qp_non_finite` 를 갖는다. 입력 타입은 `types/wbc_types.hpp`.
 
 ### Formulation
 

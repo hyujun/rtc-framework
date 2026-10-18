@@ -432,6 +432,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_cleanup(
   // instead of hitting the Q-MSG-3 duplicate guard (#238). Order: after the
   // drain timer is torn down, so no drain runs concurrently with Reset().
   ResetLogState();
+  joint_limit_constraint_ = nullptr;
   ResetOwnedTopics(owned_topics_);
   grasp_command_srv_.reset();
   param_callback_handle_.reset();

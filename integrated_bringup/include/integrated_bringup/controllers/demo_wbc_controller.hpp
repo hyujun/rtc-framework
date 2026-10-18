@@ -35,6 +35,7 @@
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
 #include "rtc_mpc/thread/mock_mpc_thread.hpp"
 #include "rtc_mpc/thread/mpc_thread.hpp"
+#include "rtc_tsid/constraints/joint_limit_constraint.hpp"
 #include "rtc_tsid/contact/contact_manager.hpp"
 #include "rtc_tsid/contact/grasp_cache.hpp"
 #include "rtc_tsid/contact/object_state_provider.hpp"
@@ -945,6 +946,11 @@ class DemoWbcController final : public RTControllerInterface {
   // ══════════════════════════════════════════════════════════════════════════
   rtc::tsid::TSIDController tsid_controller_;
   rtc::tsid::CommandOutput tsid_output_;
+  // Non-owning view of the formulation's `joint_limit` constraint (owned by
+  // tsid_controller_'s formulation). Set in BuildTsidConstraints, cleared
+  // before tsid_controller_.Init() re-creates the formulation and in
+  // on_cleanup. FillWbcDiagLogPod reads InvertedCount() through it (#551).
+  const rtc::tsid::JointLimitConstraint* joint_limit_constraint_{nullptr};
   bool tsid_initialized_{false};
   // dyn_qp_fail_count_ — Dynamic WBC (TSID-ID) QP. NON-critical: a failure drops
   //   the hand τ_ff this tick only; the Kinematic CLIK-QP still owns position.

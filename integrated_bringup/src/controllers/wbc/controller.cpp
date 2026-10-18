@@ -449,6 +449,9 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
     } else if (type == "joint_limit") {
       auto c = std::make_unique<rtc::tsid::JointLimitConstraint>();
       c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
+      // Diagnostics view (#551): the formulation owns it; keep a raw pointer
+      // for FillWbcDiagLogPod. Last `joint_limit` entry wins.
+      joint_limit_constraint_ = c.get();
       formulation.AddConstraint(std::move(c));
     } else if (type == "friction_cone") {
       // Stage C-0.1: FrictionConeConstraint takes its face count from each
@@ -812,7 +815,10 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     ctrl_state_.q = Eigen::VectorXd::Zero(robot_info_.nq);
     ctrl_state_.v = Eigen::VectorXd::Zero(robot_info_.nv);
 
-    // TSIDController init (creates formulation; tasks/constraints added below)
+    // TSIDController init (creates formulation; tasks/constraints added below).
+    // The previous formulation (and the constraint joint_limit_constraint_
+    // pointed at) dies here.
+    joint_limit_constraint_ = nullptr;
     tsid_controller_.Init(model, robot_info_, tsid_node);
 
     // Build tasks + constraints from YAML (auto-dispatch by `type` field)

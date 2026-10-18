@@ -209,6 +209,14 @@ struct CommandOutput {
   bool qp_converged{false};
   double solve_time_us{0.0};
   int solve_levels{0};  // WQP: 1, HQP: 실제 level 수
+  // Failure classification of the last QP attempt (#551). qp_status is the
+  // proxsuite QPSolverOutput as int (0 = SOLVED, 1 = MAX_ITER_REACHED,
+  // 2 = PRIMAL_INFEASIBLE, …); −1 = nothing was attempted (no active task,
+  // wrapper not initialised, after Reset). HQP: status of the last level
+  // tried, iterations summed over every level tried (failed one included).
+  int qp_status{-1};
+  int qp_iterations{0};
+  bool qp_non_finite{false};  // solver iterates were non-finite (then qp_converged is false)
 
   void Init(int nv, int n_actuated, int max_contact_vars);
 };
