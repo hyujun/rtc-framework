@@ -13,6 +13,12 @@
 # 사용:
 #   source <rtc_ws>/src/rtc-framework/repo_scripts/scripts/setup_env.sh
 
+# `set -u` 인 caller: ROS 의 setup.bash 와 colcon overlay 는 미정의 변수
+# (AMENT_TRACE_SETUP_FILES 등) 를 읽어, -u 인 셸을 이 source 에서 끝낸다 — 출력을
+# /dev/null 로 보낸 caller 는 아무 메시지 없이. 이 파일 동안만 -u 를 풀고 끝에서 되돌린다.
+case $- in *u*) _rtc_env_nounset=1 ;; *) _rtc_env_nounset=0 ;; esac
+set +u
+
 # ROS 2 — distro 자동 탐색 (jazzy 우선, humble fallback).
 # fresh PC: ROS 미설치 시 silent 통과 — install.sh 가 이후 auto-install 처리.
 if [[ -z "${ROS_DISTRO:-}" ]]; then
@@ -85,3 +91,9 @@ if [[ -f "${_WS_ROOT}/install/setup.bash" ]]; then
 fi
 
 unset _SCRIPT_DIR _WS_ROOT _REPO_ROOT
+# `[[ ]] && set -u` 로 쓰면 -u 가 아니던 caller 에서 source 가 1 로 끝나 `set -e` 인
+# caller 가 죽는다 — if 로 쓴다.
+if [[ "${_rtc_env_nounset}" == 1 ]]; then
+  set -u
+fi
+unset _rtc_env_nounset
