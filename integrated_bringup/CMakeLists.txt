@@ -314,7 +314,10 @@ if(BUILD_TESTING)
   #                          pull_estimator_log_pod.hpp mirrors
   #                          rtc::grasp::PullEstimate (#167). Every logging
   #                          POD's CSV writers, all columns asserted by name
-  #                          (#883; planner_events_csv.hpp is not covered).
+  #                          (#883).
+  #   test_planner_events_csv  planner_events.csv / nlp_candidates.csv, all
+  #                          columns asserted by name (#886). The writer
+  #                          reaches the docking core's header, hence rtc_tsid.
   #   test_virtual_tcp       virtual_tcp.
   #   test_task_vel_binding  Task-velocity assembly convergence (#314): compares
   #                          two pure functions, so it needs no URDF, no
@@ -323,6 +326,7 @@ if(BUILD_TESTING)
   #                          source-relative include dir.
   ament_add_gtest(test_header_only_helpers
     test/test_device_log_pods.cpp
+    test/test_planner_events_csv.cpp
     test/test_virtual_tcp.cpp
     test/test_task_vel_binding.cpp)
   ib_timeout_per_file(test_header_only_helpers)
@@ -334,6 +338,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_header_only_helpers pinocchio::pinocchio)
   ament_target_dependencies(test_header_only_helpers
     rtc_controllers
+    rtc_tsid
     rtc_base
     pinocchio
     Eigen3
