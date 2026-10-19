@@ -157,7 +157,7 @@
 ### planner_solves
 
 `planner_events.csv` 의 풀이 시간 (`segment_solve_us`) 을 읽는 규칙이다. `plot_rtc_log` 통계, `catching_trials` 의 `first_solve_cut`, `unit_report.py` 가 부른다.
-- **규칙**: `segment_core_reason` 이 `deadline` 인 행이 코어가 기한에 끊은 풀이 (`cut_at_deadline`) 이고 그 시간은 끊긴 시각 — 풀이 시간의 하한일 뿐이다. `segment_outcome` 의 `budget` 으로 가리지 않는다: 기한이 없는 코어의 `budget` 과, 다른 사유 (`infeasible` 등) 로 끝나며 예산을 넘긴 풀이는 끝까지 푼 시간이다.
+- **규칙**: `segment_core_reason` 이 `deadline` 인 행이 코어가 기한에 끊은 풀이 (`cut_at_deadline`) 이고 그 시간은 끊긴 시각 — 풀이 시간의 하한일 뿐이다. `segment_outcome` 의 `budget` 으로 가리지 않는다: 기한 전에 시작한 QP 를 끝까지 돌아 예산을 넘긴 풀이의 `budget` 과, 다른 사유 (`infeasible` 등) 로 끝나며 예산을 넘긴 풀이는 끝까지 푼 시간이다.
 - `summarise_times` 는 끝난 풀이의 분포와 끊긴 풀이의 수 · 가장 이른 끊긴 시각을 나눠 낸다. `quantile_with_bound` 는 두 종류가 섞인 집합의 분위수와 "하한인가" 를 함께 돌려준다 (끊긴 값을 기록된 대로 넣은 분위수는 참 분위수의 하한이고, 가장 이른 끊긴 시각보다 작으면 참값이다).
 - `nlp_summary` 는 기한 사유로 거부한 wake 를 따로 세고 끊겼다고 단정하지 않는다. `first_wake_summary` 는 투척 `track_generation` 마다 정지에서 출발한 가장 이른 첫 풀이를 센다. 열 이름 접미는 C++ 이름 함수와 테스트로 대조한다.
 

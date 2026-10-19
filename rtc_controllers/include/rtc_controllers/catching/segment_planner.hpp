@@ -69,7 +69,7 @@ enum class SegmentOutcome : std::uint8_t {
   kPastReplanWindow,  ///< t_eff beyond t_c + k_max·Δ_s (MD-31)
   kInputNonFinite,    ///< the predicted x₀ (w_⊥ > 0: or the ball's speed) is not finite
   kSolveFailed,       ///< the core refused or the QP failed (core_reason)
-  kBudget,            ///< solved after budget_s
+  kBudget,            ///< solved after budget_s, or cut at the deadline (#887)
   kLate,              ///< t_eff passed while solving
   kSlack,             ///< slack non-finite or over its threshold (MD-33)
   kReady,             ///< publishable; the cycle's re-check decides

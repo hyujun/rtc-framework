@@ -9,10 +9,12 @@ finish at all. Everything here keeps them apart, by ONE rule:
 
     a solve was cut  ⇔  its ``segment_core_reason`` is ``deadline``
 
-The solve's OUTCOME does not say it. ``budget`` is "ended past the budget":
-a core without a deadline (the QP planner's) ends past it with a complete
-solve, and a core with one may end for another reason — infeasible — a moment
-past it; both are times the solve really took.
+The solve's OUTCOME does not say it. ``budget`` is "ended past the budget"
+as well as "cut": a core may end past its deadline with a complete solve (a
+QP already running when the deadline passed is not interrupted — the QP
+planner's core reads its deadline before each QP only, #887), and a core may
+end for another reason — infeasible — a moment past it; those are times the
+solve really took.
 
 A wake whose replacement was withheld records TWO solves: the replan in the
 ``segment_*`` columns and the replacement's first solve in ``replacement_*``.

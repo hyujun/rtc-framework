@@ -55,7 +55,9 @@
 // `deadline` is the instant the core was cut at, not the time the solve takes.
 // `segment_cut_site` names the QP that solve was kept from starting
 // (MpcDockingCutSiteName: `init_qp`, `iteration`, `cold_retry`,
-// `penalty_reset`, `penalty_probe`; `none` when the core did not cut it), and
+// `penalty_reset`, `penalty_probe`; `none` when the core did not cut it — and
+// on every `mpc` row: that core reads its deadline too (#887), but its cut
+// shows only as core reason `deadline`, outcome `budget`), and
 // `segment_start_from_memory` is 1 on a first solve the planner handed the
 // iterate the previous wake's solve of the same plan ended on (0: the
 // search's catch pose, and every other solve; the core still runs its

@@ -327,7 +327,9 @@ struct MpcSegmentCoreParams {
   /// stop from rest at q = 0 (#857 D12) solve without it. An infeasible QP
   /// then runs to max_iter: 60 outer steps keep every converging first solve
   /// of those maps (the hardest takes 31 – 40; 30 cuts one) and hold an
-  /// infeasible solve to about 0.1 s cold on a 7-joint arm (#880 D11).
+  /// infeasible solve to about 0.1 s cold on a 7-joint arm (#880 D11). A
+  /// warm run before that cold run is held by solver_max_iter_warm, and the
+  /// cold run is not started past the solve's deadline (#887).
   /// Designated so a field added to QPSolverConfig cannot shift these.
   tsid::QPSolverConfig solver{.max_iter = 60,
                               .update_preconditioner = true,
@@ -392,7 +394,8 @@ struct MpcSegmentCoreInput {
   /// plan, another core's grid point), where the last problem's iterates
   /// mislead ProxQP (it may not converge from them within solver.max_iter).
   /// Left false there, the solve still succeeds — a failed warm run is
-  /// retried cold (result.cold_retried) — but pays for both runs.
+  /// retried cold (result.cold_retried) — but pays for both runs (the warm
+  /// one up to solver_max_iter_warm outer steps).
   bool cold_start{false};
   /// Absolute instant on the core's clock (SetClock) [ns]; ≤ 0 = no deadline
   /// (the clock is then not read). Read before every QP (header note).

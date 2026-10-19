@@ -211,7 +211,9 @@ demo_catching_controller:
             # eps_primal_inf 0): 30 and above keep every converging first solve
             # (160,733), 20 cuts five; the other shipped arm cuts one at 30. 60
             # keeps a margin on both and holds an infeasible solve to about 0.1 s
-            # cold (0.2 - 0.3 s when a warm run fails and is retried).
+            # cold. A warm run that fails first is held by max_iter_warm below (the
+            # warm + cold pair about 0.05 s, #887) and the cold run is not started
+            # past the solve's budget.
             max_iter: 60
             max_iter_in: 100
             # Outer-iteration cap of a main QP that starts warm (>= 0; 0 = none):
