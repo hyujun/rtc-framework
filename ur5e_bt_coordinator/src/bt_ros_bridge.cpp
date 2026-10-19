@@ -663,7 +663,7 @@ void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr n
         continue;
       }
       HandPose pose(static_cast<std::size_t>(hand_dof_), 0.0);
-      for (int i = 0; i < hand_dof_; ++i) {
+      for (std::size_t i = 0; i < pose.size(); ++i) {
         pose[i] = vals[i] * kDeg2Rad;
       }
       hand_poses_[pose_name] = pose;
@@ -690,7 +690,7 @@ void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr n
         continue;
       }
       ArmPose pose(static_cast<std::size_t>(arm_dof_), 0.0);
-      for (int i = 0; i < arm_dof_; ++i) {
+      for (std::size_t i = 0; i < pose.size(); ++i) {
         pose[i] = vals[i] * kDeg2Rad;
       }
       arm_poses_[pose_name] = pose;

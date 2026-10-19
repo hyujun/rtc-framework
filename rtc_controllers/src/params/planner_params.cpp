@@ -297,7 +297,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
           Reject(Key(where + ".joints[" + std::to_string(j) + "]") + " must be a joint name, got " +
                  Spelling(joints[j]));
         }
-        const std::string& joint = joints[j].Scalar();
+        const std::string joint = joints[j].Scalar();
         if (std::find(all_joints.begin(), all_joints.end(), joint) != all_joints.end()) {
           Reject(Key(where + ".joints") + " lists '" + joint +
                  "', which is already in a group (the groups are disjoint)");

@@ -248,8 +248,9 @@ void BtCoordinatorNode::DeclareParameters() {
   // loaded (standalone run), instead of silently subscribing to a dead
   // /rtc_cm/hand/* group that no longer exists after the p1a rename.
   hand_group_ = safe_declare("hand_group", std::string(""));
-  arm_dof_ = safe_declare("arm_dof", kDefaultArmDof);
-  hand_dof_ = safe_declare("hand_dof", kDefaultHandDof);
+  // rclcpp keeps integer parameters as int64; get_value<int> returns that.
+  arm_dof_ = static_cast<int>(safe_declare("arm_dof", kDefaultArmDof));
+  hand_dof_ = static_cast<int>(safe_declare("hand_dof", kDefaultHandDof));
   // #779: the frame task goals are sent in (= the arm's root_link) and the
   // frame /world_target_info positions are in (empty = base_frame).
   base_frame_ = safe_declare("base_frame", std::string("base"));
@@ -264,7 +265,7 @@ void BtCoordinatorNode::DeclareParameters() {
   repeat_delay_s_ = safe_declare("repeat_delay_s", 1.0);
   paused_ = safe_declare("paused", false);
   step_mode_ = safe_declare("step_mode", false);
-  groot2_port_ = safe_declare("groot2_port", 0);
+  groot2_port_ = static_cast<int>(safe_declare("groot2_port", 0));
   watchdog_timeout_s_ = safe_declare("watchdog_timeout_s", 2.0);
   watchdog_interval_s_ = safe_declare("watchdog_interval_s", 5.0);
   // Diagnostic-only: the tick gate waits for the first active controller
@@ -570,7 +571,7 @@ void BtCoordinatorNode::LogFailureDiagnosis() {
       return;
 
     const auto status = node->status();
-    const std::string indent(depth * 2, ' ');
+    const std::string indent(static_cast<std::size_t>(depth) * 2, ' ');
     const std::string name = node->name().empty() ? "<anon>" : node->name();
 
     if (status == BT::NodeStatus::FAILURE) {

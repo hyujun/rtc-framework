@@ -15,13 +15,16 @@ if(ENABLE_COVERAGE)
   add_link_options(--coverage)
 endif()
 
-# ── enum switch exhaustiveness ───────────────────────────────────────────────
-# 이 패키지는 위 표준 경고 블록(-Wall/-Wextra/...)이 없다 — 별건이다. 다만
-# 배선 없는 enum 값이 조용히 통과하면 dead topic/dead branch 가 되므로
-# (#205 A-2, #211) switch exhaustiveness 만은 에러로 잡는다. `-Werror=switch`
-# 는 -Wall 없이도 해당 진단을 활성화한다.
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Werror=switch)
+  add_compile_options(
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wshadow
+    -Wconversion
+    -Wsign-conversion
+    -Werror=switch  # enum switch 누락은 dead topic 을 낳는다 (#211)
+  )
 endif()
 
 find_package(ament_cmake REQUIRED)
@@ -116,7 +119,11 @@ endif()
 if(HAS_ONNXRUNTIME)
   message(STATUS "ONNX Runtime found — building with inference support")
   target_compile_definitions(rtc_inference INTERFACE HAS_ONNXRUNTIME)
-  target_include_directories(rtc_inference INTERFACE ${_RTC_ORT_INCLUDE})
+  # SYSTEM: the ORT headers fail -Wshadow/-Wsign-conversion on their own. A
+  # consumer linking the exported (IMPORTED) target already gets them as system
+  # includes; this package's own tests link the non-imported target and would
+  # otherwise report the runtime's warnings as ours.
+  target_include_directories(rtc_inference SYSTEM INTERFACE ${_RTC_ORT_INCLUDE})
   target_link_libraries(rtc_inference INTERFACE ${_RTC_ORT_LIB})
 else()
   message(STATUS "ONNX Runtime not found — building stub inference engine")
