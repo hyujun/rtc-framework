@@ -10,6 +10,7 @@
 #include <sys/eventfd.h>  // eventfd_write (state-lane mailbox signal)
 
 #include <algorithm>
+#include <cstdint>
 #include <stdexcept>
 
 namespace urtc = rtc;
@@ -318,31 +319,64 @@ bool RtControllerNode::LoadDeviceNameConfigs() {
       const bool any = has_parameter(pri_key) || has_parameter(sec_key) || has_parameter(vpg_key) ||
                        has_parameter(ipg_key) || has_parameter(hnc_key) || has_parameter(hnd_key);
       if (any) {
-        rtc::DeviceSensorLayout sl;
-        if (has_parameter(pri_key))
-          sl.primary_count_per_group = static_cast<int>(get_parameter(pri_key).as_int());
-        if (has_parameter(sec_key))
-          sl.secondary_count_per_group = static_cast<int>(get_parameter(sec_key).as_int());
-        if (has_parameter(vpg_key)) {
-          sl.values_per_group = static_cast<int>(get_parameter(vpg_key).as_int());
+        // The backend's sensor lane writes group g's values at
+        // g * values_per_group into a kMaxSensorChannels-wide buffer and its
+        // inference block at g * inference_values_per_group into a
+        // kMaxInferenceValues-wide one, for up to kMaxSensorGroups groups.
+        // Check the raw int64 parameters before narrowing them, so a stride
+        // those buffers cannot hold — or one that only fits after wrapping
+        // through `int` — refuses the config instead of writing past the
+        // buffers at runtime (issue #885).
+        constexpr std::int64_t kMaxValuesPerGroup =
+            urtc::kMaxSensorChannels / urtc::kMaxSensorGroups;
+        constexpr std::int64_t kMaxInferenceValuesPerGroup =
+            urtc::kMaxInferenceValues / urtc::kMaxSensorGroups;
+        const auto read_count = [this](const std::string& key) -> std::int64_t {
+          return has_parameter(key) ? get_parameter(key).as_int() : 0;
+        };
+        const std::int64_t pri = read_count(pri_key);
+        const std::int64_t sec = read_count(sec_key);
+        const std::int64_t ipg = read_count(ipg_key);
+        // Bound the counts first so the default stride below cannot overflow.
+        const bool counts_ok =
+            pri >= 0 && pri <= kMaxValuesPerGroup && sec >= 0 && sec <= kMaxValuesPerGroup;
+        const std::int64_t vpg =
+            has_parameter(vpg_key) ? get_parameter(vpg_key).as_int() : (counts_ok ? pri + sec : 0);
+        const bool layout_ok = counts_ok && vpg >= pri + sec && vpg <= kMaxValuesPerGroup &&
+                               ipg >= 0 && ipg <= kMaxInferenceValuesPerGroup;
+        if (!layout_ok) {
+          RCLCPP_ERROR(get_logger(),
+                       "[%s] sensor_layout primary=%lld secondary=%lld values_per_group=%lld "
+                       "inference_values_per_group=%lld is out of range: counts must be >= 0, "
+                       "primary + secondary <= values_per_group <= %lld, and "
+                       "inference_values_per_group <= %lld (kMaxSensorChannels %d / "
+                       "kMaxInferenceValues %d over kMaxSensorGroups %d)",
+                       group_name.c_str(), static_cast<long long>(pri), static_cast<long long>(sec),
+                       static_cast<long long>(vpg), static_cast<long long>(ipg),
+                       static_cast<long long>(kMaxValuesPerGroup),
+                       static_cast<long long>(kMaxInferenceValuesPerGroup),
+                       urtc::kMaxSensorChannels, urtc::kMaxInferenceValues, urtc::kMaxSensorGroups);
+          config_invalid = true;
         } else {
-          sl.values_per_group = sl.primary_count_per_group + sl.secondary_count_per_group;
+          rtc::DeviceSensorLayout sl;
+          sl.primary_count_per_group = static_cast<int>(pri);
+          sl.secondary_count_per_group = static_cast<int>(sec);
+          sl.values_per_group = static_cast<int>(vpg);
+          sl.inference_values_per_group = static_cast<int>(ipg);
+          if (has_parameter(hnc_key))
+            sl.has_native_contact = get_parameter(hnc_key).as_bool();
+          if (has_parameter(hnd_key))
+            sl.has_native_displacement = get_parameter(hnd_key).as_bool();
+          cfg.sensor_layout = sl;
+          RCLCPP_INFO(get_logger(),
+                      "[%s] Sensor layout: primary=%d secondary=%d values_per_group=%d "
+                      "inference_values_per_group=%d has_native_contact=%d "
+                      "has_native_displacement=%d",
+                      group_name.c_str(), sl.primary_count_per_group, sl.secondary_count_per_group,
+                      sl.values_per_group, sl.inference_values_per_group,
+                      static_cast<int>(sl.has_native_contact),
+                      static_cast<int>(sl.has_native_displacement));
         }
-        if (has_parameter(ipg_key))
-          sl.inference_values_per_group = static_cast<int>(get_parameter(ipg_key).as_int());
-        if (has_parameter(hnc_key))
-          sl.has_native_contact = get_parameter(hnc_key).as_bool();
-        if (has_parameter(hnd_key))
-          sl.has_native_displacement = get_parameter(hnd_key).as_bool();
-        cfg.sensor_layout = sl;
-        RCLCPP_INFO(get_logger(),
-                    "[%s] Sensor layout: primary=%d secondary=%d values_per_group=%d "
-                    "inference_values_per_group=%d has_native_contact=%d "
-                    "has_native_displacement=%d",
-                    group_name.c_str(), sl.primary_count_per_group, sl.secondary_count_per_group,
-                    sl.values_per_group, sl.inference_values_per_group,
-                    static_cast<int>(sl.has_native_contact),
-                    static_cast<int>(sl.has_native_displacement));
       }
     }
 

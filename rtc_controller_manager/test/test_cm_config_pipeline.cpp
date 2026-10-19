@@ -28,9 +28,12 @@
 #include <gtest/gtest.h>
 #include <rcutils/logging.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rtc {
@@ -705,6 +708,80 @@ TEST_F(CmConfigPipelineTest, DeviceAtExactlyCapacityConfigures) {
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── sensor_layout strides beyond the sensor lane's capacity (issue #885) ────
+//
+// The backend sensor lane writes group g at g * values_per_group into a
+// kMaxSensorChannels-wide buffer and at g * inference_values_per_group into a
+// kMaxInferenceValues-wide one, for up to kMaxSensorGroups groups — so
+// values_per_group <= 16 and inference_values_per_group <= 8. These used to be
+// narrowed to int and accepted unchecked.
+
+struct SensorLayoutParams {
+  int64_t primary;
+  int64_t secondary;
+  std::optional<int64_t> values_per_group;  // nullopt → omitted (primary + secondary)
+  int64_t inference_values_per_group;
+};
+
+void DeclareSensorLayout(RtControllerNode& node, const SensorLayoutParams& p) {
+  node.declare_parameter("devices.arm.sensor_layout.primary_count_per_group", p.primary);
+  node.declare_parameter("devices.arm.sensor_layout.secondary_count_per_group", p.secondary);
+  if (p.values_per_group) {
+    node.declare_parameter("devices.arm.sensor_layout.values_per_group", *p.values_per_group);
+  }
+  node.declare_parameter("devices.arm.sensor_layout.inference_values_per_group",
+                         p.inference_values_per_group);
+}
+
+TEST_F(CmConfigPipelineTest, SensorLayoutOutOfRangeRefusesConfigure) {
+  const std::vector<std::pair<std::string, SensorLayoutParams>> cases = {
+      {"negative primary", {-1, 3, 11, 7}},
+      {"primary + secondary over the stride", {8, 3, 10, 7}},
+      {"stride 17 over 128 / 8", {8, 3, 17, 7}},
+      {"inference stride 9 over 64 / 8", {8, 3, 11, 9}},
+      {"negative inference stride", {8, 3, 11, -1}},
+      // 2^32 + 11 narrows to 11 through int — it must be refused, not wrapped.
+      {"stride that wraps to 11", {8, 3, (int64_t{1} << 32) + 11, 7}},
+      {"omitted stride defaulting to 17", {9, 8, std::nullopt, 7}},
+  };
+  for (const auto& [label, params] : cases) {
+    SCOPED_TRACE(label);
+    LogSink::Install();  // clears the previous case's lines
+    auto node = MakeNode();
+    DeclareArmDevice(*node);
+    DeclareSensorLayout(*node, params);
+
+    EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+    EXPECT_EQ(1U,
+              LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, {"[arm] sensor_layout", "out of range"})
+                  .size());
+  }
+}
+
+TEST_F(CmConfigPipelineTest, SensorLayoutAtCapacityConfigures) {
+  const std::vector<std::pair<std::string, SensorLayoutParams>> cases = {
+      // Both bounds are inclusive.
+      {"stride 16 and inference stride 8", {8, 3, 16, 8}},
+      // The shipped fingertip hand layout (8 barometer + 3 ToF, 7 inference).
+      {"shipped hand layout", {8, 3, 11, 7}},
+  };
+  for (const auto& [label, params] : cases) {
+    SCOPED_TRACE(label);
+    auto node = MakeNode();
+    DeclareArmDevice(*node);
+    DeclareSensorLayout(*node, params);
+
+    ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+    const auto& layout = ArmConfig(*node).sensor_layout;
+    ASSERT_TRUE(layout.has_value());
+    EXPECT_EQ(params.primary, layout->primary_count_per_group);
+    EXPECT_EQ(params.secondary, layout->secondary_count_per_group);
+    EXPECT_EQ(*params.values_per_group, layout->values_per_group);
+    EXPECT_EQ(params.inference_values_per_group, layout->inference_values_per_group);
+    EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+  }
 }
 
 }  // namespace
