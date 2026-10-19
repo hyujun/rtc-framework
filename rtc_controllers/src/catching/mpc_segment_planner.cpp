@@ -62,6 +62,7 @@ void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
   mp.solver.eps_abs = p.solver_eps_abs;
   mp.solver.eps_rel = p.solver_eps_rel;
   mp.solver.eps_primal_inf = p.solver_eps_primal_inf;
+  mp.solver_max_iter_warm = p.solver_max_iter_warm;
 }
 
 // Group g's partition for a core with n_pre pre-catch nodes at replan instance
@@ -331,8 +332,18 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   if (!ConfigureApproach(model, why)) {
     return fail(why);
   }
+  ForwardClock();
   configured_ = true;
   return true;
+}
+
+void MpcSegmentPlanner::ForwardClock() noexcept {
+  for (const auto& core : cores_) {
+    core->SetClock(clock_);
+  }
+  for (const auto& core : catch_cores_) {
+    core->SetClock(clock_);
+  }
 }
 
 bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, std::string& why) {
@@ -518,6 +529,7 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
     in.qdd0.setZero();
     in.reference_valid = false;
     in.cold_start = true;
+    in.deadline_ns = 0;  // and no clock yet (ForwardClock)
     if (perp_on_) {
       in.p_c = p;
       in.d_hat = d_ball;
@@ -541,6 +553,7 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
     in.qdd_ref.setZero();
     in.reference_valid = true;
     in.cold_start = true;
+    in.deadline_ns = 0;
     in.w_delta_scale = 0.0;
     in.p_b = p;
     in.a_d = z;
@@ -851,7 +864,10 @@ SegmentOutcome MpcSegmentPlanner::Judge(const MpcSegmentCoreResult& r, bool ok, 
   rec.mpc_condense_us = r.condense_us;
   rec.mpc_qp_us = r.solve_us;
   if (!ok) {
-    return SegmentOutcome::kSolveFailed;
+    // A deadline cut is the budget's verdict, reached before the QP that
+    // would have overrun it (#887); any other refusal is the core's.
+    return r.reason == MpcSegmentCoreReason::kDeadline ? SegmentOutcome::kBudget
+                                                       : SegmentOutcome::kSolveFailed;
   }
   rec.slack_max = r.slack_max;
   rec.slack_terminal_max = r.slack_terminal_max;
@@ -1159,6 +1175,7 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
   // catch terms above are the plan's.
   SetPathInputs(prediction, plan.t_c_ns, n_pre, in, rec);
   // No retry: a catch core cannot be solved without its reference.
+  in.deadline_ns = start + first_ns_;
   const bool ok = core.Solve(in, res);
   const std::int64_t end = clock_();
   NoteSolve(ok, true, n_pre, t_eff, plan.plan_id, plan.t_c_ns);
@@ -1440,6 +1457,8 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   if (pre) {
     SetPathInputs(prediction, t_c, n_pre, in, rec);
   }
+  // One deadline for the wake: a re-solve below gets what the first left.
+  in.deadline_ns = start + replan_ns_;
   bool ok = core.Solve(in, res);
   if (!ok && !pre &&
       (res.reason == MpcSegmentCoreReason::kTrustRegionConflict ||

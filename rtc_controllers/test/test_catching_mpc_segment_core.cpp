@@ -1345,6 +1345,280 @@ TEST_F(MpcSegmentCoreFailClosed, TrustRegionConflictFailsClosed) {
   ExpectRejected(in, MpcSegmentCoreReason::kTrustRegionConflict, "reference outside box");
 }
 
+// ── 6b. Deadline and warm cap (#887) ─────────────────────────────────────────
+
+// A clock that returns its time, then advances it by a step, and counts its
+// reads — which QP a deadline cuts is then fixed by the step, not by how long
+// a solve takes.
+std::int64_t g_clock_now = 0;
+std::int64_t g_clock_step = 0;
+int g_clock_reads = 0;
+
+std::int64_t StepClock() noexcept {
+  ++g_clock_reads;
+  const std::int64_t t = g_clock_now;
+  g_clock_now += g_clock_step;
+  return t;
+}
+
+void StartStepClock(std::int64_t now, std::int64_t step) {
+  g_clock_now = now;
+  g_clock_step = step;
+  g_clock_reads = 0;
+}
+
+// The cut site's fields, and the fields a cut must leave alone.
+void ExpectCut(const MpcSegmentCoreResult& r, rtc::catching::MpcSegmentCutSite site,
+               const char* what) {
+  EXPECT_FALSE(r.valid) << what;
+  EXPECT_EQ(r.reason, MpcSegmentCoreReason::kDeadline)
+      << what << ": got " << MpcSegmentCoreReasonName(r.reason);
+  EXPECT_EQ(r.cut_site, site) << what << ": got "
+                              << rtc::catching::MpcSegmentCutSiteName(r.cut_site);
+  EXPECT_FALSE(r.cold_retried) << what;
+}
+
+class MpcSegmentCoreDeadline : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    arm_ = RealArm7();
+    limits_ = LimitsFromModel(*arm_.model, 0.2);
+    ASSERT_EQ(mpc_.Init(*arm_.model, arm_.frame, params_, limits_), MpcSegmentCoreReason::kNone);
+    mpc_.ResizeResult(res_);
+    moving_ = RestInput(arm_.q_nominal);
+    moving_.qd0 << 0.6, -0.4, 0.5, 0.7, -0.3, 0.4, 0.2;
+    ASSERT_TRUE(mpc_.Solve(moving_, res_));
+    referenced_ = moving_;
+    UseAsReference(res_, referenced_);
+    // Really infeasible (the approach suite's case): at the upper edge of the
+    // box, moving outward at the velocity limit — node 1 cannot stay inside.
+    // With a reference, so a warm solver runs the main QP twice.
+    edge_ = RestInput(arm_.q_nominal);
+    edge_.q0[3] = limits_.q_max[3] - params_.m_q - 1e-9;
+    edge_.qd0[3] = params_.eta_v * limits_.qd_max[3];
+    const int n = static_cast<int>(arm_.model->nv);
+    edge_.q_ref = edge_.q0.replicate(1, mpc_.NumNodes() + 1);
+    edge_.qd_ref.setZero(n, mpc_.NumNodes() + 1);
+    edge_.qdd_ref.setZero(n, mpc_.NumNodes() + 1);
+    edge_.reference_valid = true;
+    mpc_.SetClock(&StepClock);
+  }
+
+  // A converged solve with a reference: the solver holds its iterates.
+  void Warm(MpcSegmentCore& mpc) {
+    MpcSegmentCoreInput in = referenced_;
+    in.deadline_ns = 0;
+    ASSERT_TRUE(mpc.Solve(in, res_)) << MpcSegmentCoreReasonName(res_.reason);
+  }
+
+  ArmModel arm_;
+  MpcSegmentCoreParams params_;
+  MpcSegmentCoreLimits limits_;
+  MpcSegmentCore mpc_;
+  MpcSegmentCoreResult res_;
+  MpcSegmentCoreInput moving_, referenced_, edge_;
+};
+
+TEST_F(MpcSegmentCoreDeadline, WithoutADeadlineOrAClockTheClockIsNotRead) {
+  StartStepClock(1000, 0);
+  ASSERT_TRUE(mpc_.Solve(moving_, res_));  // pre-solve + main, deadline 0
+  EXPECT_EQ(g_clock_reads, 0);
+  MpcSegmentCoreInput past = referenced_;
+  past.deadline_ns = -5;  // ≤ 0 is no deadline
+  ASSERT_TRUE(mpc_.Solve(past, res_));
+  EXPECT_EQ(g_clock_reads, 0);
+  EXPECT_EQ(res_.cut_site, rtc::catching::MpcSegmentCutSite::kNone);
+  // A core with no clock ignores a deadline long past.
+  MpcSegmentCore no_clock;
+  ASSERT_EQ(no_clock.Init(*arm_.model, arm_.frame, params_, limits_), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult r;
+  no_clock.ResizeResult(r);
+  past.deadline_ns = 1;
+  EXPECT_TRUE(no_clock.Solve(past, r)) << MpcSegmentCoreReasonName(r.reason);
+  EXPECT_EQ(g_clock_reads, 0);
+}
+
+TEST_F(MpcSegmentCoreDeadline, PastItThePresolveIsNotStarted) {
+  const Snapshot before(res_);
+  StartStepClock(1000, 0);
+  MpcSegmentCoreInput in = moving_;  // no reference: the pre-solve runs first
+  in.deadline_ns = 500;
+  EXPECT_FALSE(mpc_.Solve(in, res_));
+  ExpectCut(res_, rtc::catching::MpcSegmentCutSite::kPresolve, "pre-solve");
+  EXPECT_FALSE(res_.presolved);
+  EXPECT_EQ(res_.presolve_iterations, 0);
+  EXPECT_EQ(res_.iterations, 0);
+  EXPECT_EQ(res_.qp_status, -1);
+  EXPECT_EQ(res_.solve_us, 0.0);
+  EXPECT_EQ(g_clock_reads, 1);
+  EXPECT_TRUE(before.Same(res_)) << "outputs changed on a cut";
+}
+
+TEST_F(MpcSegmentCoreDeadline, PastItTheMainQpIsNotStarted) {
+  const Snapshot before(res_);
+  StartStepClock(1000, 0);
+  MpcSegmentCoreInput in = referenced_;
+  in.deadline_ns = 500;
+  EXPECT_FALSE(mpc_.Solve(in, res_));
+  ExpectCut(res_, rtc::catching::MpcSegmentCutSite::kMain, "main");
+  EXPECT_EQ(res_.iterations, 0);
+  EXPECT_EQ(res_.outer_iterations, 0);
+  EXPECT_EQ(res_.qp_status, -1);
+  EXPECT_EQ(res_.solve_us, 0.0);
+  EXPECT_EQ(g_clock_reads, 1);
+  EXPECT_TRUE(before.Same(res_)) << "outputs changed on a cut";
+  // The pre-solve ran inside the deadline, the main QP did not: its fields
+  // are the pre-solve's, the cut is the main QP's.
+  in = moving_;
+  StartStepClock(0, 10);
+  in.deadline_ns = 5;  // read 1 (pre-solve) at 0, read 2 (main) at 10
+  EXPECT_FALSE(mpc_.Solve(in, res_));
+  ExpectCut(res_, rtc::catching::MpcSegmentCutSite::kMain, "main after the pre-solve");
+  EXPECT_TRUE(res_.presolved);
+  EXPECT_GT(res_.presolve_iterations, 0);
+  EXPECT_EQ(res_.iterations, 0);
+  EXPECT_EQ(g_clock_reads, 2);
+  EXPECT_TRUE(before.Same(res_)) << "outputs changed on a cut";
+}
+
+TEST_F(MpcSegmentCoreDeadline, PastItAfterAFailedWarmRunTheColdRunIsNotStarted) {
+  // The control: inside the deadline the warm run fails and the cold run
+  // follows — two reads, both runs.
+  Warm(mpc_);
+  StartStepClock(0, 10);
+  MpcSegmentCoreInput in = edge_;
+  in.deadline_ns = 1000;
+  EXPECT_FALSE(mpc_.Solve(in, res_));
+  EXPECT_EQ(res_.reason, MpcSegmentCoreReason::kQpFailed) << MpcSegmentCoreReasonName(res_.reason);
+  EXPECT_TRUE(res_.cold_retried);
+  EXPECT_EQ(g_clock_reads, 2);
+
+  // Read 1 (main) at 0 is inside, read 2 (cold run) at 10 is past.
+  Warm(mpc_);
+  const Snapshot before(res_);
+  StartStepClock(0, 10);
+  in.deadline_ns = 5;
+  EXPECT_FALSE(mpc_.Solve(in, res_));
+  ExpectCut(res_, rtc::catching::MpcSegmentCutSite::kColdRetry, "cold run");
+  EXPECT_EQ(g_clock_reads, 2);
+  // The warm run's record.
+  EXPECT_NE(res_.qp_status, 0);
+  EXPECT_NE(res_.qp_status, -1);
+  EXPECT_GT(res_.iterations, 0);
+  EXPECT_GE(res_.outer_iterations, 1);
+  EXPECT_LE(res_.outer_iterations, params_.solver.max_iter);
+  EXPECT_GT(res_.solve_us, 0.0);
+  EXPECT_TRUE(before.Same(res_)) << "outputs changed on a cut";
+  // The failed warm run reset the solver: the same input now runs once, cold.
+  StartStepClock(0, 0);
+  in.deadline_ns = 0;
+  EXPECT_FALSE(mpc_.Solve(in, res_));
+  EXPECT_EQ(res_.reason, MpcSegmentCoreReason::kQpFailed);
+  EXPECT_FALSE(res_.cold_retried);
+}
+
+TEST_F(MpcSegmentCoreDeadline, AFarDeadlineChangesNoResult) {
+  MpcSegmentCore plain;
+  ASSERT_EQ(plain.Init(*arm_.model, arm_.frame, params_, limits_), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult r_plain;
+  plain.ResizeResult(r_plain);
+  ASSERT_TRUE(plain.Solve(moving_, r_plain));  // the same history as mpc_
+  StartStepClock(0, 1);
+  for (const MpcSegmentCoreInput* base : {&referenced_, &edge_, &moving_, &referenced_}) {
+    MpcSegmentCoreInput far = *base;
+    far.deadline_ns = std::numeric_limits<std::int64_t>::max();
+    const bool ok = mpc_.Solve(far, res_);
+    EXPECT_EQ(plain.Solve(*base, r_plain), ok);
+    EXPECT_EQ(res_.reason, r_plain.reason);
+    EXPECT_EQ(res_.iterations, r_plain.iterations);
+    EXPECT_EQ(res_.outer_iterations, r_plain.outer_iterations);
+    EXPECT_EQ(res_.presolve_iterations, r_plain.presolve_iterations);
+    EXPECT_EQ(res_.qp_status, r_plain.qp_status);
+    EXPECT_EQ(res_.cold_retried, r_plain.cold_retried);
+    EXPECT_TRUE(Snapshot(r_plain).Same(res_)) << "bit for bit";
+  }
+  EXPECT_GT(g_clock_reads, 0);
+}
+
+TEST_F(MpcSegmentCoreDeadline, ACutAllocatesNothing) {
+  StartStepClock(1000, 0);
+  for (MpcSegmentCoreInput in : {moving_, referenced_}) {
+    in.deadline_ns = 500;
+    bool ok = true;
+    const AllocCounts c = GatedSolve(mpc_, in, res_, ok);
+    EXPECT_FALSE(ok);
+    EXPECT_EQ(res_.reason, MpcSegmentCoreReason::kDeadline);
+    EXPECT_EQ(c.op_new + c.c_malloc, 0U) << rtc::catching::MpcSegmentCutSiteName(res_.cut_site);
+  }
+}
+
+// solver_max_iter_warm caps the outer iterations of a main QP that starts
+// warm; the cold run after it keeps solver.max_iter.
+TEST_F(MpcSegmentCoreDeadline, TheWarmCapEndsAFailingWarmRunAndNotTheColdOne) {
+  constexpr int kCap = 5;
+  MpcSegmentCoreParams capped_params = params_;
+  capped_params.solver_max_iter_warm = kCap;
+  MpcSegmentCore capped;
+  ASSERT_EQ(capped.Init(*arm_.model, arm_.frame, capped_params, limits_),
+            MpcSegmentCoreReason::kNone);
+  capped.SetClock(&StepClock);
+  ASSERT_TRUE(capped.Solve(moving_, res_));
+  // The warm run, read where the cold run is cut: capped, and the control
+  // (no cap) past it.
+  for (MpcSegmentCore* core : {&capped, &mpc_}) {
+    Warm(*core);
+    StartStepClock(0, 10);
+    MpcSegmentCoreInput in = edge_;
+    in.deadline_ns = 5;
+    EXPECT_FALSE(core->Solve(in, res_));
+    ExpectCut(res_, rtc::catching::MpcSegmentCutSite::kColdRetry, "warm run");
+    if (core == &capped) {
+      EXPECT_LE(res_.outer_iterations, kCap);
+    } else {
+      EXPECT_GT(res_.outer_iterations, kCap) << "the control does not reach past the cap";
+    }
+  }
+  // Uncut, the cold run after the capped warm one runs under max_iter.
+  Warm(capped);
+  StartStepClock(0, 0);
+  EXPECT_FALSE(capped.Solve(edge_, res_));
+  EXPECT_EQ(res_.reason, MpcSegmentCoreReason::kQpFailed);
+  EXPECT_TRUE(res_.cold_retried);
+  EXPECT_GT(res_.outer_iterations, kCap);
+  // And it is a cap on max_iter, not a setting left behind: a solve from zero
+  // on the capped core matches the uncapped one.
+  MpcSegmentCoreInput cold = referenced_;
+  cold.cold_start = true;
+  MpcSegmentCoreResult r_plain;
+  mpc_.ResizeResult(r_plain);
+  ASSERT_TRUE(capped.Solve(cold, res_));
+  ASSERT_TRUE(mpc_.Solve(cold, r_plain));
+  EXPECT_EQ(res_.iterations, r_plain.iterations);
+  EXPECT_TRUE(Snapshot(r_plain).Same(res_));
+  // A main QP warm-started by the solve's own pre-solve is not capped: a
+  // cap of 1 changes nothing there, and the control shows it would bite.
+  capped_params.solver_max_iter_warm = 1;
+  MpcSegmentCore one, none;
+  ASSERT_EQ(one.Init(*arm_.model, arm_.frame, capped_params, limits_), MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(none.Init(*arm_.model, arm_.frame, params_, limits_), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult r_one, r_none;
+  one.ResizeResult(r_one);
+  none.ResizeResult(r_none);
+  ASSERT_TRUE(one.Solve(moving_, r_one));
+  ASSERT_TRUE(none.Solve(moving_, r_none));
+  ASSERT_TRUE(r_none.presolved);
+  EXPECT_GT(r_none.outer_iterations, 1) << "the control does not reach past the cap";
+  EXPECT_EQ(r_one.outer_iterations, r_none.outer_iterations);
+  EXPECT_EQ(r_one.iterations, r_none.iterations);
+  EXPECT_FALSE(r_one.cold_retried);
+  EXPECT_TRUE(Snapshot(r_none).Same(r_one));
+  // Negative is refused.
+  capped_params.solver_max_iter_warm = -1;
+  MpcSegmentCore bad;
+  EXPECT_EQ(bad.Init(*arm_.model, arm_.frame, capped_params, limits_),
+            MpcSegmentCoreReason::kParamsInvalid);
+}
+
 TEST(MpcSegmentCore, RejectsBeforeInit) {
   MpcSegmentCore mpc;
   MpcSegmentCoreResult res;

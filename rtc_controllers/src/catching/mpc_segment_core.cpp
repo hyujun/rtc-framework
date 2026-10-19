@@ -98,6 +98,22 @@ const char* MpcSegmentCoreReasonName(MpcSegmentCoreReason reason) noexcept {
       return "reference_required";
     case MpcSegmentCoreReason::kCatchAxisOutOfRange:
       return "catch_axis_out_of_range";
+    case MpcSegmentCoreReason::kDeadline:
+      return "deadline";
+  }
+  return "unknown";
+}
+
+const char* MpcSegmentCutSiteName(MpcSegmentCutSite site) noexcept {
+  switch (site) {
+    case MpcSegmentCutSite::kNone:
+      return "none";
+    case MpcSegmentCutSite::kPresolve:
+      return "presolve";
+    case MpcSegmentCutSite::kMain:
+      return "main";
+    case MpcSegmentCutSite::kColdRetry:
+      return "cold_retry";
   }
   return "unknown";
 }
@@ -205,7 +221,7 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
       !(params.reference_rest_tol > params.solver.eps_abs) ||
       !rtc::IsFiniteNonNegative(params.solver.eps_rel) ||
       !rtc::IsFiniteNonNegative(params.solver.eps_primal_inf) || params.solver.max_iter < 1 ||
-      params.solver.max_iter_in < 1) {
+      params.solver.max_iter_in < 1 || params.solver_max_iter_warm < 0) {
     return MpcSegmentCoreReason::kParamsInvalid;
   }
   if (!rtc::IsFiniteNonNegative(params.w_axis) || !rtc::IsFiniteNonNegative(params.w_v_par) ||
@@ -1371,11 +1387,24 @@ void MpcSegmentCore::AssembleGradient(tsid::QPData& qp, bool main) noexcept {
   }
 }
 
-MpcSegmentCoreReason MpcSegmentCore::RunQp(tsid::QPData& qp, int& status,
-                                           int& iterations) noexcept {
+MpcSegmentCoreReason MpcSegmentCore::RunQp(tsid::QPData& qp, int& status, int& iterations,
+                                           int& outer, bool warm_capped) noexcept {
+  // A warm run that converges takes a few outer iterations; one that does not
+  // runs to its cap, and is then run again cold (Solve). solver_max_iter_warm
+  // ends it early (header note). Only the cap changes — no allocation.
+  const int warm_cap = params_.solver_max_iter_warm;
+  const bool short_warm =
+      warm_capped && solver_warm_ && warm_cap > 0 && warm_cap < params_.solver.max_iter;
+  if (short_warm) {
+    solver_.SetMaxIter(warm_cap);
+  }
   const tsid::SolveResult& res = solver_.Solve(qp);
+  if (short_warm) {
+    solver_.SetMaxIter(params_.solver.max_iter);
+  }
   status = res.status;
   iterations = res.iterations;
+  outer = res.outer_iterations;
   if (!res.converged) {
     // The wrapper reports non-finite iterates as not converged; kept as its
     // own reason because a pre-solve answer becomes x̄ and feeds the max/min
@@ -1432,8 +1461,12 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
   out.solve_us = 0.0;
   out.iterations = 0;
   out.presolve_iterations = 0;
+  out.outer_iterations = 0;
   out.qp_status = -1;
   out.cold_retried = false;
+  out.cut_site = MpcSegmentCutSite::kNone;
+  // Stored, not read: the clock is read only before a QP (PastDeadline).
+  deadline_ns_ = clock_ != nullptr && in.deadline_ns > 0 ? in.deadline_ns : 0;
   const auto fail = [&out](MpcSegmentCoreReason r) noexcept {
     out.reason = r;
     out.valid = false;
@@ -1590,6 +1623,10 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
 
   // Reference: supplied, or the kinematic pre-solve.
   if (!in.reference_valid) {
+    if (PastDeadline()) {
+      out.cut_site = MpcSegmentCutSite::kPresolve;
+      return fail(MpcSegmentCoreReason::kDeadline);
+    }
     const auto t0 = Clock::now();
     if (params_.reference_assembly) {
       AssembleConstantDense(qp_pre_, false);
@@ -1605,7 +1642,8 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
     ResetSolver();
     int status = -1;
     int iters = 0;
-    const MpcSegmentCoreReason why = RunQp(qp_pre_, status, iters);
+    int outer = 0;
+    const MpcSegmentCoreReason why = RunQp(qp_pre_, status, iters, outer, false);
     out.presolve_iterations = iters;
     out.presolved = true;
     out.presolve_us = MicrosSince(t0);
@@ -1698,16 +1736,30 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
 
   // Solve.
   {
+    if (PastDeadline()) {
+      // Before the reset below: a cut leaves the solver as it was, like every
+      // rejection above.
+      out.cut_site = MpcSegmentCutSite::kMain;
+      return fail(MpcSegmentCoreReason::kDeadline);
+    }
     const auto t0 = Clock::now();
     int status = -1;
     int iters = 0;
+    int outer = 0;
     if (in.cold_start) {
       // Only here: every rejection above leaves the solver as it was.
       ResetSolver();
     }
     const bool warm = solver_warm_;
-    MpcSegmentCoreReason why = RunQp(qp_main_, status, iters);
-    if (why != MpcSegmentCoreReason::kNone && warm) {
+    // The warm cap is measured on a start from the previous solve's iterates;
+    // a start from this solve's own pre-solve is the one the main QP wants
+    // (header note) and keeps solver.max_iter.
+    MpcSegmentCoreReason why = RunQp(qp_main_, status, iters, outer, !out.presolved);
+    // A failed warm run is retried cold unless the deadline has passed; then
+    // the warm run's status, iterations and time are this call's record (RunQp
+    // reset the solver).
+    const bool cut = why != MpcSegmentCoreReason::kNone && warm && PastDeadline();
+    if (why != MpcSegmentCoreReason::kNone && warm && !cut) {
       // From iterates left by ANOTHER problem (the caller did not set
       // cold_start on a new plan) ProxQP may not converge on a feasible QP
       // within solver.max_iter — 5 – 10 % of the timing fixture's stale warm
@@ -1717,11 +1769,16 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
       // starts from zero; a problem that is really infeasible fails again and
       // that verdict is returned.
       out.cold_retried = true;
-      why = RunQp(qp_main_, status, iters);
+      why = RunQp(qp_main_, status, iters, outer, false);
     }
     out.solve_us = MicrosSince(t0);
     out.qp_status = status;
     out.iterations = iters;
+    out.outer_iterations = outer;
+    if (cut) {
+      out.cut_site = MpcSegmentCutSite::kColdRetry;
+      return fail(MpcSegmentCoreReason::kDeadline);
+    }
     if (why != MpcSegmentCoreReason::kNone) {
       return fail(why);
     }

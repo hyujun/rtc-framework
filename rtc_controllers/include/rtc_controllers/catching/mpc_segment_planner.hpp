@@ -311,10 +311,12 @@ class MpcSegmentPlanner final : public SegmentPlanner {
 
   [[nodiscard]] bool Configured() const noexcept { return configured_; }
 
-  /// Replace the clock (tests pin it; the cycle forwards its own).
+  /// Replace the clock (tests pin it; the cycle forwards its own). Every core
+  /// reads its solve's deadline on it (#887).
   void SetClock(ClockFn clock) noexcept override {
     if (clock != nullptr) {
       clock_ = clock;
+      ForwardClock();
     }
   }
 
@@ -497,6 +499,8 @@ class MpcSegmentPlanner final : public SegmentPlanner {
                                               std::int64_t t_c_ns) const noexcept;
   [[nodiscard]] bool ConfigureApproach(const MpcSegmentPlannerModel& model, std::string& why);
   [[nodiscard]] bool WarmUp(const MpcSegmentPlannerModel& model, std::string& why);
+  /// Install clock_ in every core (after the warm-up, which runs without one).
+  void ForwardClock() noexcept;
   [[nodiscard]] bool CheckState(const PlannerRtState& rt, std::int64_t start, bool need_command,
                                 SegmentRecord& rec) const noexcept;
   [[nodiscard]] bool SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::Vector3d& v_b,

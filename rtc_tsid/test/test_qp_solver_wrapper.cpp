@@ -201,6 +201,8 @@ TEST_F(QPSolverWrapperTest, SolveWithoutInit) {
 
   const auto& result = solver.Solve(qp);
   EXPECT_FALSE(result.converged);
+  EXPECT_EQ(result.iterations, 0);
+  EXPECT_EQ(result.outer_iterations, 0);
 }
 
 // TSID와 유사한 차원의 QP (7 DoF + 3 contact forces = 10 vars)
@@ -461,6 +463,42 @@ TEST_F(QPSolverWrapperTest, ZeroPrimalInfeasibilityThresholdStillRejectsAContrad
   ASSERT_TRUE(solved.converged);
   EXPECT_NEAR(solved.x_opt(0), -1.0, 1e-5);
   EXPECT_NEAR(solved.x_opt(1), 2.0, 1e-5);
+}
+
+// SolveResult carries both of ProxQP's counts: iterations is the INNER
+// (Newton) total, outer_iterations the outer proximal steps — the count that
+// max_iter bounds. ProxQP counts an outer step only when its convergence check
+// fails, so a cold solve of a QP whose answer is not 0 takes at least one, and
+// a cap of 1 stops after exactly one.
+TEST_F(QPSolverWrapperTest, MaxIterBoundsTheOuterCount) {
+  QPData qp;
+  qp.Init(2, 0, 2);
+  qp.n_vars = 2;
+  qp.n_ineq = 2;
+  qp.H.topLeftCorner(2, 2) = Eigen::Matrix2d::Identity();
+  qp.C(0, 0) = 1.0;
+  qp.C(1, 1) = 1.0;
+  qp.l.head(2) << 2.0, 3.0;
+  qp.u.head(2) << 1e10, 1e10;
+
+  QPSolverConfig config;
+  config.max_iter = 50;
+  QPSolverWrapper solved;
+  solved.Init(2, 0, 2, config);
+  const auto& full = solved.Solve(qp);
+  ASSERT_TRUE(full.converged);
+  EXPECT_GE(full.outer_iterations, 1);
+  EXPECT_LE(full.outer_iterations, config.max_iter);
+  EXPECT_GE(full.iterations, full.outer_iterations);
+
+  config.max_iter = 1;
+  config.eps_abs = 1e-14;  // out of reach in one outer step
+  QPSolverWrapper capped;
+  capped.Init(2, 0, 2, config);
+  const auto& one = capped.Solve(qp);
+  EXPECT_FALSE(one.converged);
+  EXPECT_EQ(one.outer_iterations, 1);
+  EXPECT_GE(one.iterations, 1);
 }
 
 TEST_F(QPSolverWrapperTest, DualsAreEmptyBeforeInit) {

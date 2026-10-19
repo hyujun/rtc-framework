@@ -158,13 +158,25 @@
 //    noexcept and fail-closed — on ANY failure the result's trajectory,
 //    slack, torque ratios and catch-node fields keep their previous values;
 //    only reason, valid, qp_status, the iteration counts, presolved,
-//    cold_retried and the timings change.
+//    cold_retried, cut_site and the timings change.
 //  • A warm main QP that fails is solved once more from zero
 //    (result.cold_retried): from iterates left by another problem ProxQP may
 //    not converge within solver.max_iter on a feasible QP (and, under an
 //    approximate infeasibility test, called such QPs infeasible — #880). A
 //    QP that is really infeasible fails both runs, so it costs two. cold_start
-//    on a new problem avoids paying for the failed run.
+//    on a new problem avoids paying for the failed run. A main QP that starts
+//    warm from the previous solve's iterates runs under solver_max_iter_warm
+//    (when set) instead of solver.max_iter, so a warm run that will not
+//    converge gives up early; the cold run, and a main QP warm-started by this
+//    solve's own pre-solve, keep solver.max_iter.
+//  • The deadline (input.deadline_ns, on the clock SetClock installs) is read
+//    before every QP: the pre-solve, the main QP and its cold run. Past it no
+//    QP is started and the solve fails kDeadline; `cut_site` says before
+//    which. A QP in progress is not interrupted — it is bounded only by the
+//    solver's iteration caps — so a solve overruns its deadline by at most
+//    one QP. Cut before the cold run, the result keeps the warm run's status,
+//    iterations and time (cold_retried stays false). Without a clock or a
+//    deadline the clock is never read and nothing changes (#887).
 //  • Heap: this core allocates nothing in Solve(). Everything up to the QP
 //    (linearisation, FK, condensing) is pinned by a C-level malloc gate; the
 //    extraction after the QP shares its Solve with ProxQP, whose C mallocs
@@ -225,10 +237,22 @@ enum class MpcSegmentCoreReason : std::uint8_t {
   kInputOutOfRange,      ///< W_p not symmetric PSD, γ_ref ∉ (0, 1], w_delta_scale ∉ [0, 1]
   kReferenceRequired,    ///< catch terms on and reference_valid = false
   kCatchAxisOutOfRange,  ///< the reference's axis error exceeds axis_theta_max
+  // #887 — appended.
+  kDeadline,  ///< past input.deadline_ns before a QP (result.cut_site says which)
+};
+
+/// The QP a solve that failed kDeadline did not start (header note). kNone on
+/// every other reason.
+enum class MpcSegmentCutSite : std::uint8_t {
+  kNone = 0,
+  kPresolve,   ///< the kinematic pre-solve
+  kMain,       ///< the main QP
+  kColdRetry,  ///< the cold run after a warm main QP that failed
 };
 
 /// @brief Stable name for logs and test messages.
 [[nodiscard]] const char* MpcSegmentCoreReasonName(MpcSegmentCoreReason reason) noexcept;
+[[nodiscard]] const char* MpcSegmentCutSiteName(MpcSegmentCutSite site) noexcept;
 
 /// Tuning of the stop problem. Every field is validated by Init().
 struct MpcSegmentCoreParams {
@@ -303,12 +327,26 @@ struct MpcSegmentCoreParams {
   /// stop from rest at q = 0 (#857 D12) solve without it. An infeasible QP
   /// then runs to max_iter: 60 outer steps keep every converging first solve
   /// of those maps (the hardest takes 31 – 40; 30 cuts one) and hold an
-  /// infeasible solve to about 0.1 s cold on a 7-joint arm (#880 D11).
+  /// infeasible solve to about 0.1 s cold on a 7-joint arm (#880 D11). A
+  /// warm run before that cold run is held by solver_max_iter_warm, and the
+  /// cold run is not started past the solve's deadline (#887).
   /// Designated so a field added to QPSolverConfig cannot shift these.
   tsid::QPSolverConfig solver{.max_iter = 60,
                               .update_preconditioner = true,
                               .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT,
                               .eps_primal_inf = 0.0};
+  /// The cap on solver.max_iter for a main QP that starts WARM from the
+  /// previous solve's iterates (not one warm-started by this solve's own
+  /// pre-solve, which keeps max_iter); like max_iter it counts ProxQP's OUTER
+  /// iterations (result.iterations sums the inner ones). ≥ 0; 0 or a value
+  /// of at least solver.max_iter is no separate cap. A warm run that has not
+  /// converged by it is run again from zero under solver.max_iter, as a warm
+  /// run that fails always is (the deadline is read between the two). A
+  /// failed warm run otherwise costs a full solver.max_iter before that cold
+  /// run — longer than the cold run itself on a really infeasible QP (#887).
+  /// The docking core's key of the same name works the same way on the QPs of
+  /// its iterations.
+  int solver_max_iter_warm{0};
   /// Joint velocity weight w_vel,j [(rad/s)⁻²] per joint (header note); empty
   /// or all zero = off. Each entry in [0, kWholeBodyWeightMax].
   Eigen::VectorXd w_vel;
@@ -356,8 +394,12 @@ struct MpcSegmentCoreInput {
   /// plan, another core's grid point), where the last problem's iterates
   /// mislead ProxQP (it may not converge from them within solver.max_iter).
   /// Left false there, the solve still succeeds — a failed warm run is
-  /// retried cold (result.cold_retried) — but pays for both runs.
+  /// retried cold (result.cold_retried) — but pays for both runs (the warm
+  /// one up to solver_max_iter_warm outer steps).
   bool cold_start{false};
+  /// Absolute instant on the core's clock (SetClock) [ns]; ≤ 0 = no deadline
+  /// (the clock is then not read). Read before every QP (header note).
+  std::int64_t deadline_ns{0};
   // ── Catch inputs: read (and validated) only with params.catch_terms ────────
   Eigen::Vector3d p_b{
       Eigen::Vector3d::Zero()};  ///< predicted ball position at t_c [m], model world
@@ -405,9 +447,14 @@ struct MpcSegmentCoreResult {
   MpcSegmentCoreReason reason{MpcSegmentCoreReason::kNotInitialized};
   int qp_status{-1};  ///< proxsuite QPSolverOutput of the last QP (0 = solved)
   int iterations{0};  ///< main QP, its last run (pre-solve iterations in presolve_iterations)
+  /// ProxQP's outer iterations of that run (iterations sums the inner ones;
+  /// solver.max_iter and solver_max_iter_warm bound this one).
+  int outer_iterations{0};
   /// The warm main QP failed and was solved again from zero (header note);
   /// solve_us covers both runs.
   bool cold_retried{false};
+  /// The QP a kDeadline solve did not start; kNone on every other reason.
+  MpcSegmentCutSite cut_site{MpcSegmentCutSite::kNone};
   int presolve_iterations{0};
   // ── Catch node, re-evaluated by FK at the SOLUTION (not the linear model) ──
   bool catch_evaluated{false};  ///< params.catch_terms; the fields below are then set
@@ -426,6 +473,8 @@ struct MpcSegmentCoreResult {
 
 class MpcSegmentCore {
  public:
+  using ClockFn = std::int64_t (*)() noexcept;
+
   MpcSegmentCore() = default;
 
   /// @brief Build the problem for one arm (non-RT: copies the model, allocates).
@@ -437,6 +486,10 @@ class MpcSegmentCore {
                                           pinocchio::FrameIndex catch_frame,
                                           const MpcSegmentCoreParams& params,
                                           const MpcSegmentCoreLimits& limits);
+
+  /// @brief The clock input.deadline_ns is read on [ns] (non-RT; nullptr, the
+  ///        default, disables the deadline). Init() leaves it as it is.
+  void SetClock(ClockFn clock) noexcept { clock_ = clock; }
 
   /// @brief Size a result for this problem (non-RT).
   void ResizeResult(MpcSegmentCoreResult& result) const;
@@ -530,7 +583,16 @@ class MpcSegmentCore {
   void EvaluateCatch(MpcSegmentCoreResult& out) noexcept;
   [[nodiscard]] bool AssembleBounds(tsid::QPData& qp, bool main) noexcept;
   void AssembleGradient(tsid::QPData& qp, bool main) noexcept;
-  [[nodiscard]] MpcSegmentCoreReason RunQp(tsid::QPData& qp, int& status, int& iterations) noexcept;
+  /// warm_capped: a warm start runs under solver_max_iter_warm.
+  [[nodiscard]] MpcSegmentCoreReason RunQp(tsid::QPData& qp, int& status, int& iterations,
+                                           int& outer, bool warm_capped) noexcept;
+
+  /// Whether this Solve's deadline has passed. Reads the clock only when the
+  /// call has a deadline and the core a clock.
+  [[nodiscard]] bool PastDeadline() const noexcept {
+    return deadline_ns_ > 0 && clock_() >= deadline_ns_;
+  }
+
   void ResetSolver() noexcept;
   void TrajectoryFromZ() noexcept;
 
@@ -547,6 +609,8 @@ class MpcSegmentCore {
 
   bool initialized_{false};
   MpcSegmentCoreParams params_;
+  ClockFn clock_{nullptr};
+  std::int64_t deadline_ns_{0};  // this Solve's deadline; 0 = none, or no clock
   int n_{0};
   int n_nodes_{0};   // N = n_pre + stop nodes
   int n_pre_{0};     // k_c

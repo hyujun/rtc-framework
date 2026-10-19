@@ -1923,6 +1923,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
                        Key{mpc["linearization"], "ref_speed_fraction"},
                        Key{mpc["solver"], "max_iter"},
                        Key{mpc["solver"], "max_iter_in"},
+                       Key{mpc["solver"], "max_iter_warm"},
                        Key{mpc["solver"], "eps_abs"},
                        Key{mpc["solver"], "eps_rel"},
                        Key{mpc["solver"], "eps_primal_inf"},
@@ -1967,6 +1968,9 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
   EXPECT_EQ(d.solver_eps_abs, core.solver.eps_abs) << profile;
   EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel) << profile;
   EXPECT_EQ(d.solver_eps_primal_inf, core.solver.eps_primal_inf) << profile;
+  // `solver.max_iter_warm` is written (the key list above) but not compared
+  // here: #887 sets it from a measurement, the core's default stays 0, and
+  // ShipsTheWarmCapMeasured pins it.
   // `linearization.ref_speed_fraction` is written (the key list above) but not
   // compared here: #819 moves it off the planner's former constant 0.9, and
   // ShipsTheFirstReferenceFractionMeasured pins it.
@@ -2027,6 +2031,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   mpc["solver"]["eps_abs"] = 2.0e-7;
   mpc["solver"]["eps_rel"] = 1.0e-5;
   mpc["solver"]["eps_primal_inf"] = 3.0e-6;
+  mpc["solver"]["max_iter_warm"] = 12;
 
   auto node_handle = NodeWithProfile("catching_shipped_design_" + profile, "mpc_on");
   DemoCatchingController ctrl{""};
@@ -2047,6 +2052,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.linearization.ref_speed_fraction"), 0.8) << profile;
   EXPECT_EQ(integer("planner.segment.mpc.solver.max_iter"), 300) << profile;
   EXPECT_EQ(integer("planner.segment.mpc.solver.max_iter_in"), 150) << profile;
+  EXPECT_EQ(integer("planner.segment.mpc.solver.max_iter_warm"), 12) << profile;
   EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.solver.eps_abs"), 2.0e-7) << profile;
   EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.solver.eps_rel"), 1.0e-5) << profile;
   EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.solver.eps_primal_inf"), 3.0e-6) << profile;
@@ -2113,6 +2119,23 @@ TEST_P(ShippedCatchingProfile, ShipsTheFirstReferenceFractionMeasured) {
   EXPECT_EQ(planner.mpc_segment.ref_speed_fraction, written) << profile;
   EXPECT_EQ(rtc::catching::MpcSegmentPlannerParams{}.ref_speed_fraction, 0.9)
       << "the code default stays the planner's former constant";
+}
+
+TEST_P(ShippedCatchingProfile, ShipsTheWarmCapMeasured) {
+  // #887: `solver.max_iter_warm` is WRITTEN in catching/segment_mpc.yaml at the
+  // value the core's timing fixture chose (1.5 x the outer steps of the
+  // slowest converging warm solve), below max_iter so it is a cap; the code
+  // default stays 0 (none).
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  EXPECT_EQ(planner.mpc_segment.solver_max_iter_warm, 14) << profile;
+  EXPECT_LT(planner.mpc_segment.solver_max_iter_warm, planner.mpc_segment.solver_max_iter)
+      << profile << ": at or above max_iter the key is no cap";
+  EXPECT_EQ(rtc::catching::MpcSegmentCoreParams{}.solver_max_iter_warm, 0)
+      << "the core's default stays no cap";
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {

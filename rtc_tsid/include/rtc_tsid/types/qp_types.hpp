@@ -50,7 +50,12 @@ struct SolveResult {
   // reports SOLVED — see QPSolverWrapper::Solve).
   bool non_finite{false};
   double solve_time_us{0.0};
+  // ProxQP's INNER (Newton) iterations summed over its outer proximal steps
+  // (info.iter) — what max_iter × max_iter_in bounds.
   int iterations{0};
+  // ProxQP's OUTER (proximal / BCL) steps (info.iter_ext) — what
+  // QPSolverConfig::max_iter bounds. 0 when no solve ran.
+  int outer_iterations{0};
   int levels_solved{0};  // WQP: 항상 1, HQP: 실제 solve한 level 수
 
   void Init(int max_n_vars) { x_opt.setZero(max_n_vars); }

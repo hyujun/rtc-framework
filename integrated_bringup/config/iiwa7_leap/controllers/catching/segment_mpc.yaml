@@ -211,9 +211,22 @@ demo_catching_controller:
             # eps_primal_inf 0): 30 and above keep every converging first solve
             # (160,733), 20 cuts five; the other shipped arm cuts one at 30. 60
             # keeps a margin on both and holds an infeasible solve to about 0.1 s
-            # cold (0.2 - 0.3 s when a warm run fails and is retried).
+            # cold. A warm run that fails first is held by max_iter_warm below (the
+            # warm + cold pair about 0.05 s, #887) and the cold run is not started
+            # past the solve's budget.
             max_iter: 60
             max_iter_in: 100
+            # Outer-iteration cap of a main QP that starts warm (>= 0; 0 = none):
+            # a warm run that has not converged by it is run again cold under
+            # max_iter. Measured (#887, the core's timing fixture, both shipped
+            # arms): a warm solve of the same problem converges in at most 9
+            # outer steps (the sim's warm solves sum <= 32 inner); 14 = 1.5 x 9.
+            # A warm run that will not converge then gives up after 14 instead
+            # of 60: a really infeasible QP's warm + cold pair 311 -> 134 ms on
+            # a 7-joint arm, 175 -> 54 ms on a 6-joint one. A slow warm start
+            # from another problem's iterates (17 - 47 steps) is cut too, and
+            # its cold run returns the same solution sooner.
+            max_iter_warm: 14
             eps_abs: 1.0e-6
             eps_rel: 0.0
             # ProxQP's approximate primal-infeasibility threshold (>= 0; 0 accepts
