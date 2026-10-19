@@ -1595,6 +1595,23 @@ TEST_F(MpcSegmentCoreDeadline, TheWarmCapEndsAFailingWarmRunAndNotTheColdOne) {
   ASSERT_TRUE(mpc_.Solve(cold, r_plain));
   EXPECT_EQ(res_.iterations, r_plain.iterations);
   EXPECT_TRUE(Snapshot(r_plain).Same(res_));
+  // A main QP warm-started by the solve's own pre-solve is not capped: a
+  // cap of 1 changes nothing there, and the control shows it would bite.
+  capped_params.solver_max_iter_warm = 1;
+  MpcSegmentCore one, none;
+  ASSERT_EQ(one.Init(*arm_.model, arm_.frame, capped_params, limits_), MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(none.Init(*arm_.model, arm_.frame, params_, limits_), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult r_one, r_none;
+  one.ResizeResult(r_one);
+  none.ResizeResult(r_none);
+  ASSERT_TRUE(one.Solve(moving_, r_one));
+  ASSERT_TRUE(none.Solve(moving_, r_none));
+  ASSERT_TRUE(r_none.presolved);
+  EXPECT_GT(r_none.outer_iterations, 1) << "the control does not reach past the cap";
+  EXPECT_EQ(r_one.outer_iterations, r_none.outer_iterations);
+  EXPECT_EQ(r_one.iterations, r_none.iterations);
+  EXPECT_FALSE(r_one.cold_retried);
+  EXPECT_TRUE(Snapshot(r_none).Same(r_one));
   // Negative is refused.
   capped_params.solver_max_iter_warm = -1;
   MpcSegmentCore bad;

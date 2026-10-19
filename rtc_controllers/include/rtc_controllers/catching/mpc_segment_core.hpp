@@ -165,9 +165,10 @@
 //    approximate infeasibility test, called such QPs infeasible — #880). A
 //    QP that is really infeasible fails both runs, so it costs two. cold_start
 //    on a new problem avoids paying for the failed run. A main QP that starts
-//    warm runs under solver_max_iter_warm (when set) instead of
-//    solver.max_iter, so a warm run that will not converge gives up early;
-//    the cold run keeps solver.max_iter.
+//    warm from the previous solve's iterates runs under solver_max_iter_warm
+//    (when set) instead of solver.max_iter, so a warm run that will not
+//    converge gives up early; the cold run, and a main QP warm-started by this
+//    solve's own pre-solve, keep solver.max_iter.
 //  • The deadline (input.deadline_ns, on the clock SetClock installs) is read
 //    before every QP: the pre-solve, the main QP and its cold run. Past it no
 //    QP is started and the solve fails kDeadline; `cut_site` says before
@@ -332,15 +333,17 @@ struct MpcSegmentCoreParams {
                               .update_preconditioner = true,
                               .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT,
                               .eps_primal_inf = 0.0};
-  /// The cap on solver.max_iter for a main QP that starts WARM (from the
-  /// previous QP's iterates); like max_iter it counts ProxQP's OUTER
+  /// The cap on solver.max_iter for a main QP that starts WARM from the
+  /// previous solve's iterates (not one warm-started by this solve's own
+  /// pre-solve, which keeps max_iter); like max_iter it counts ProxQP's OUTER
   /// iterations (result.iterations sums the inner ones). ≥ 0; 0 or a value
   /// of at least solver.max_iter is no separate cap. A warm run that has not
   /// converged by it is run again from zero under solver.max_iter, as a warm
   /// run that fails always is (the deadline is read between the two). A
   /// failed warm run otherwise costs a full solver.max_iter before that cold
   /// run — longer than the cold run itself on a really infeasible QP (#887).
-  /// Same meaning as the docking core's key.
+  /// The docking core's key of the same name works the same way on the QPs of
+  /// its iterations.
   int solver_max_iter_warm{0};
   /// Joint velocity weight w_vel,j [(rad/s)⁻²] per joint (header note); empty
   /// or all zero = off. Each entry in [0, kWholeBodyWeightMax].
@@ -577,8 +580,9 @@ class MpcSegmentCore {
   void EvaluateCatch(MpcSegmentCoreResult& out) noexcept;
   [[nodiscard]] bool AssembleBounds(tsid::QPData& qp, bool main) noexcept;
   void AssembleGradient(tsid::QPData& qp, bool main) noexcept;
+  /// warm_capped: a warm start runs under solver_max_iter_warm.
   [[nodiscard]] MpcSegmentCoreReason RunQp(tsid::QPData& qp, int& status, int& iterations,
-                                           int& outer) noexcept;
+                                           int& outer, bool warm_capped) noexcept;
 
   /// Whether this Solve's deadline has passed. Reads the clock only when the
   /// call has a deadline and the core a clock.

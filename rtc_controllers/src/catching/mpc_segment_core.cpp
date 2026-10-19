@@ -1388,12 +1388,13 @@ void MpcSegmentCore::AssembleGradient(tsid::QPData& qp, bool main) noexcept {
 }
 
 MpcSegmentCoreReason MpcSegmentCore::RunQp(tsid::QPData& qp, int& status, int& iterations,
-                                           int& outer) noexcept {
+                                           int& outer, bool warm_capped) noexcept {
   // A warm run that converges takes a few outer iterations; one that does not
   // runs to its cap, and is then run again cold (Solve). solver_max_iter_warm
   // ends it early (header note). Only the cap changes — no allocation.
   const int warm_cap = params_.solver_max_iter_warm;
-  const bool short_warm = solver_warm_ && warm_cap > 0 && warm_cap < params_.solver.max_iter;
+  const bool short_warm =
+      warm_capped && solver_warm_ && warm_cap > 0 && warm_cap < params_.solver.max_iter;
   if (short_warm) {
     solver_.SetMaxIter(warm_cap);
   }
@@ -1642,7 +1643,7 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
     int status = -1;
     int iters = 0;
     int outer = 0;
-    const MpcSegmentCoreReason why = RunQp(qp_pre_, status, iters, outer);
+    const MpcSegmentCoreReason why = RunQp(qp_pre_, status, iters, outer, false);
     out.presolve_iterations = iters;
     out.presolved = true;
     out.presolve_us = MicrosSince(t0);
@@ -1750,18 +1751,15 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
       ResetSolver();
     }
     const bool warm = solver_warm_;
-    MpcSegmentCoreReason why = RunQp(qp_main_, status, iters, outer);
-    if (why != MpcSegmentCoreReason::kNone && warm && PastDeadline()) {
-      // The cold run would start past the deadline: the warm run's status,
-      // iterations and time are this call's record (RunQp reset the solver).
-      out.solve_us = MicrosSince(t0);
-      out.qp_status = status;
-      out.iterations = iters;
-      out.outer_iterations = outer;
-      out.cut_site = MpcSegmentCutSite::kColdRetry;
-      return fail(MpcSegmentCoreReason::kDeadline);
-    }
-    if (why != MpcSegmentCoreReason::kNone && warm) {
+    // The warm cap is measured on a start from the previous solve's iterates;
+    // a start from this solve's own pre-solve is the one the main QP wants
+    // (header note) and keeps solver.max_iter.
+    MpcSegmentCoreReason why = RunQp(qp_main_, status, iters, outer, !out.presolved);
+    // A failed warm run is retried cold unless the deadline has passed; then
+    // the warm run's status, iterations and time are this call's record (RunQp
+    // reset the solver).
+    const bool cut = why != MpcSegmentCoreReason::kNone && warm && PastDeadline();
+    if (why != MpcSegmentCoreReason::kNone && warm && !cut) {
       // From iterates left by ANOTHER problem (the caller did not set
       // cold_start on a new plan) ProxQP may not converge on a feasible QP
       // within solver.max_iter — 5 – 10 % of the timing fixture's stale warm
@@ -1771,12 +1769,16 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
       // starts from zero; a problem that is really infeasible fails again and
       // that verdict is returned.
       out.cold_retried = true;
-      why = RunQp(qp_main_, status, iters, outer);
+      why = RunQp(qp_main_, status, iters, outer, false);
     }
     out.solve_us = MicrosSince(t0);
     out.qp_status = status;
     out.iterations = iters;
     out.outer_iterations = outer;
+    if (cut) {
+      out.cut_site = MpcSegmentCutSite::kColdRetry;
+      return fail(MpcSegmentCoreReason::kDeadline);
+    }
     if (why != MpcSegmentCoreReason::kNone) {
       return fail(why);
     }
