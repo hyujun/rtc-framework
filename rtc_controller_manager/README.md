@@ -363,8 +363,8 @@ latch 가 서면 (또는 해제 검증 창 동안) 컨트롤러 output 은 `Devi
 | `safe_position` | E-STOP 시 안전 위치 (관절 수와 동일) |
 | `urdf.{package,path,root_link,tip_link}` | 선택. 시스템 `sub_models` / `tree_models` 에서 자동 해석되지 않을 때 |
 | `joint_limits.{max_velocity,max_torque,position_lower,position_upper}` | URDF 와 병합해 더 보수적인 값을 쓴다. YAML 에 없으면 URDF 값만 |
-| `sensor_layout.{primary,secondary}_count_per_group` · `values_per_group` | packed-sensor 토픽의 stride. CM 은 의미를 모르고 stride 계산만 한다. 미설정이면 해당 콜백은 WARN 후 drop |
-| `sensor_layout.inference_values_per_group` | ML 추론 출력의 그룹당 값 수 |
+| `sensor_layout.{primary,secondary}_count_per_group` · `values_per_group` | packed-sensor stride (≤ 16, 넘으면 configure 실패). CM 은 의미를 모른다. 미설정이면 로그 없이 drop |
+| `sensor_layout.inference_values_per_group` | ML 추론 출력의 그룹당 값 수 (≤ 8) |
 | `sensor_layout.has_native_{contact,displacement}` | backend 가 inference slot 에 native 신호를 채우는지 advertise (기본 `false`). 컨트롤러 행동 분기에만 영향 |
 
 #### 컨트롤러 파라미터 override — `<config_key>.<yaml.경로>`

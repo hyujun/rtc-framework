@@ -136,6 +136,12 @@ struct DeviceSensorLogColumns {
 /// 2 * names * 11 permanently-zero columns that read downstream as a barometer
 /// flatlining rather than as absent hardware. It defaults to the capacity so a
 /// caller that has no layout to hand keeps the old columns.
+///
+/// The min against the capacity is a guard, not a path anything takes: the
+/// controllers that register this log refuse at configure a hand whose
+/// values_per_group is neither 0 nor the capacity (HandSensorLayoutError,
+/// #885). A clamped wider stride would log every fingertip after the first
+/// shifted under the right names, since FillDeviceSensorLogPod copies flat.
 [[nodiscard]] inline DeviceSensorLogColumns DeviceSensorLogColumnsFor(
     std::span<const std::string> sensor_names,
     std::size_t values_per_group = DeviceSensorLogPod::kSensorValuesPerFingertip) {

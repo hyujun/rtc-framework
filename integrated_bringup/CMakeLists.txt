@@ -1412,6 +1412,30 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # #885: joint / task / compliance / wbc refuse a hand sensor_layout whose
+  #       strides their fixed fingertip parser does not read.
+  ament_add_gtest(test_hand_sensor_layout_gate
+    test/test_hand_sensor_layout_gate.cpp
+    TIMEOUT 180
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_hand_sensor_layout_gate
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_hand_sensor_layout_gate
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    rtc_tsid
+    rtc_mpc
+    pinocchio
+    Eigen3
+  )
+
   # #779: WBC / Task / Compliance take a task goal only in root_link or
   # scene_world (refused otherwise, counted), and refuse a configure whose root
   # link does not resolve or whose world is not rigid to it. iiwa7_leap rig.
@@ -1972,6 +1996,7 @@ if(BUILD_TESTING)
     test_demo_dualarm_controller
     test_hand_fk_wiring
     test_arm_tip_resolution
+    test_hand_sensor_layout_gate
     test_task_goal_frames
     test_mujoco_native_backend
     test_catching_traj_input

@@ -40,7 +40,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `integrated_bringup/` demo FSM | demo_wbc · demo_joint · demo_task · grasp_phase_manager · virtual_tcp gtest | BT coordinator 통합 |
 | `integrated_bringup/` demo_joint 군 0 · dualarm | `test_joint_tree_primary_group` · `test_demo_dualarm_controller` · `test_demo_dualarm_alloc` | sim_g1_p1b 로 launch 후 GUI 확인 |
 | `integrated_bringup/` demo GUI · profile | `test_demo_gui_dualarm` · `test_robot_profiles` | `demo_controller_gui --robot g1_p1b` (Tk 배치는 pytest 가 못 본다) |
-| `integrated_bringup/` FK · arm tip | `test_hand_fk_wiring` · `test_arm_tip_resolution` | `iiwa7_leap` sim 에서 손 목표 smoke |
+| `integrated_bringup/` FK · arm tip · hand sensor_layout | `test_hand_fk_wiring` · `test_arm_tip_resolution` · `test_hand_sensor_layout_gate` | `iiwa7_leap` sim 에서 손 목표 smoke |
 | `integrated_bringup/` compliance · catching | `test_compliance_admittance_coupling` · `test_demo_catching_controller` (configure — 사슬 탐색 · 관절군 · D9′) · `test_demo_catching_alloc` · `test_catching_search_segment_g1` (G1 탐색 · 구간 · 전신 항 — repo 밖 `hand_description` 이 없으면 skip, skip 은 미검증) | sim 외부 렌치 → `compliance_diag.csv`; 17 관절 시간 기록은 `RTC_WHOLEBODY_TIMING=1` 로 단독 실행 |
 | `integrated_bringup/` inference · observer | `test_demo_inference_controller` · `test_momentum_observer_wiring` · `test_payload_estimator` | `test_demo_inference_real_model` (로컬) |
 | `udp_hand_driver/` | hand_packets · codec · FT · failure detector gtest + UDP loopback | `ros2 topic hz /p1a/joint_states` |

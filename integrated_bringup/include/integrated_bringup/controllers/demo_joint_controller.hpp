@@ -366,6 +366,15 @@ class DemoJointController final : public RTControllerInterface {
                                   GetDeviceNameConfig(primary));
   }
 
+  /// Why the hand device's sensor_layout cannot be read by this controller's
+  /// fixed-stride fingertip parser, or empty when it can (or there is no hand
+  /// device or layout). on_configure refuses on it; tests read the reason.
+  [[nodiscard]] std::string HandSensorLayoutConfigError() const {
+    const auto secondary = GetSecondaryDeviceName();
+    return secondary.empty() ? std::string{}
+                             : HandSensorLayoutError(GetSensorLayout(secondary), secondary);
+  }
+
   /// Test-only: fingertips carrying a raw sensor lane (gates the ToF snapshot),
   /// separate from the inference-group count reported in GraspState.
   [[nodiscard]] int GetNumSensorFingertipsForTesting() const noexcept {

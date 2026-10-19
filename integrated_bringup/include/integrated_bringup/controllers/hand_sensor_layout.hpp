@@ -3,17 +3,26 @@
 
 // integrated_bringup-local capacity constants for the demo controllers'
 // per-fingertip sensor parsing. These mirror the assm_v1 hand schema but
-// live HERE — neither rtc_* nor udp_hand_driver is referenced. The boundary
+// live HERE — no rtc_* or udp_hand_driver constant defines them. The boundary
 // between integrated_bringup and udp_hand_driver is the rtc_msgs
 // FingertipSensor.msg named fields (barometer[8], tof[3]); array sizes here
 // are integrated_bringup's own SSoT for compile-time std::array dimensions.
 //
 // Runtime stride (values_per_group, inference_values_per_group) is delivered
-// per-device by the YAML sensor_layout block (rtc::DeviceSensorLayout); use
-// `RTControllerInterface::GetDeviceNameConfig(GetSecondaryDeviceName())
-// ->sensor_layout` at on_configure to pick it up.
+// per-device by the YAML sensor_layout block (rtc::DeviceSensorLayout). The
+// demo controllers' fingertip parsers do NOT follow it — they read the raw
+// lane at the fixed stride kHandSensorValuesPerFingertipCapacity and the
+// inference lane at kHandInferenceValuesPerFingertipCapacity — so their
+// on_configure refuses any layout HandSensorLayoutError rejects (#885). A
+// stride the parser does not match would otherwise shift every fingertip
+// after the first under the right names, with nothing to flag it.
+
+#include "rtc_base/types/types.hpp"
 
 #include <cstddef>
+#include <optional>
+#include <string>
+#include <string_view>
 
 namespace integrated_bringup {
 
@@ -48,6 +57,44 @@ inline constexpr std::size_t kHandInferenceValuesPerFingertipCapacity = 7;
 // the same number under its own roof; the boundary contract is the
 // rtc_msgs JointCommand named arrays.
 inline constexpr std::size_t kHandMotorCount = 10;
+
+// Why `layout` (the hand device's, named `device`) cannot be read by the demo
+// controllers' fixed-stride fingertip parsers, or empty when it can. The raw
+// lane must be absent (every count 0) or exactly kHandBaroChannelsCapacity +
+// kHandTofChannelsCapacity per fingertip; the inference lane must be absent
+// (0) or exactly kHandInferenceValuesPerFingertipCapacity per fingertip. No
+// layout at all is accepted — the device then carries no packed sensor lane.
+// The generic capacity bounds are rtc_controller_manager's, checked earlier.
+[[nodiscard]] inline std::string HandSensorLayoutError(
+    const std::optional<rtc::DeviceSensorLayout>& layout, std::string_view device) {
+  if (!layout.has_value()) {
+    return {};
+  }
+  const auto& sl = *layout;
+  const bool raw_absent = sl.primary_count_per_group == 0 && sl.secondary_count_per_group == 0 &&
+                          sl.values_per_group == 0;
+  const bool raw_matches =
+      sl.primary_count_per_group == static_cast<int>(kHandBaroChannelsCapacity) &&
+      sl.secondary_count_per_group == static_cast<int>(kHandTofChannelsCapacity) &&
+      sl.values_per_group == static_cast<int>(kHandSensorValuesPerFingertipCapacity);
+  const bool inference_matches =
+      sl.inference_values_per_group == 0 ||
+      sl.inference_values_per_group == static_cast<int>(kHandInferenceValuesPerFingertipCapacity);
+  if ((raw_absent || raw_matches) && inference_matches) {
+    return {};
+  }
+  return "device '" + std::string(device) +
+         "' sensor_layout primary=" + std::to_string(sl.primary_count_per_group) +
+         " secondary=" + std::to_string(sl.secondary_count_per_group) +
+         " values_per_group=" + std::to_string(sl.values_per_group) +
+         " inference_values_per_group=" + std::to_string(sl.inference_values_per_group) +
+         " does not match the fixed fingertip parser: the raw lane must be 0/0/0 or " +
+         std::to_string(kHandBaroChannelsCapacity) + "/" +
+         std::to_string(kHandTofChannelsCapacity) + "/" +
+         std::to_string(kHandSensorValuesPerFingertipCapacity) +
+         " and inference_values_per_group 0 or " +
+         std::to_string(kHandInferenceValuesPerFingertipCapacity);
+}
 
 }  // namespace integrated_bringup
 

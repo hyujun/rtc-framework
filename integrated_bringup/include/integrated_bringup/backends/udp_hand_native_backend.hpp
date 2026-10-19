@@ -34,7 +34,10 @@ namespace rtc {
 //
 // Sensor packing layout (DeviceSensorLayout) is forwarded via
 // SetSensorLayout() before Configure() — the layout originates from the
-// device YAML's `sensor_layout` block and is resolved by CM.
+// device YAML's `sensor_layout` block and is resolved by CM. The sensor lane
+// indexes its fixed-size buffers with the layout's strides and does not bound
+// them itself (it runs on the RT callback group): CM's configure refuses any
+// stride the buffers cannot hold for kMaxSensorGroups groups (#885).
 class UdpHandNativeBackend : public DeviceBackend {
  public:
   UdpHandNativeBackend() = default;

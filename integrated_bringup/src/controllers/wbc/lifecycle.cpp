@@ -135,6 +135,14 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
       return CallbackReturn::FAILURE;
     }
 
+    // A hand sensor_layout whose strides the fixed fingertip parser does not
+    // match: every fingertip after the first would be read from its
+    // neighbour's slots, finite and labelled correctly (#885).
+    if (const std::string layout_error = HandSensorLayoutConfigError(); !layout_error.empty()) {
+      RCLCPP_ERROR(logger_, "hand sensor_layout unsupported: %s", layout_error.c_str());
+      return CallbackReturn::FAILURE;
+    }
+
     // #779: a root link that is named but not a frame used to fall back to the
     // world in silence; a malformed scene_world would read world goals wrong.
     if (const std::string arm_root_error = ArmRootConfigError(); !arm_root_error.empty()) {

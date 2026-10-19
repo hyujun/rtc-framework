@@ -577,6 +577,15 @@ class DemoComplianceController final : public RTControllerInterface {
                                   GetDeviceNameConfig(primary));
   }
 
+  /// Why the hand device's sensor_layout cannot be read by this controller's
+  /// fixed-stride fingertip parser, or empty when it can (or there is no hand
+  /// device or layout). on_configure refuses on it; tests read the reason.
+  [[nodiscard]] std::string HandSensorLayoutConfigError() const {
+    const auto secondary = GetSecondaryDeviceName();
+    return secondary.empty() ? std::string{}
+                             : HandSensorLayoutError(GetSensorLayout(secondary), secondary);
+  }
+
   [[nodiscard]] std::string ArmRootConfigError() const {
     const auto primary = GetPrimaryDeviceName();
     return ArmRootUnresolvedReason(arm_handle_ != nullptr, root_frame_id_ != 0, primary,
