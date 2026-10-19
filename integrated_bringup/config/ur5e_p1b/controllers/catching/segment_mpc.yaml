@@ -226,8 +226,15 @@ demo_catching_controller:
             max_iter_in: 100
             # Outer-iteration cap of a main QP that starts warm (>= 0; 0 = none):
             # a warm run that has not converged by it is run again cold under
-            # max_iter. 0 until measured (#887).
-            max_iter_warm: 0
+            # max_iter. Measured (#887, the core's timing fixture, both shipped
+            # arms): a warm solve of the same problem converges in at most 9
+            # outer steps (the sim's warm solves sum <= 32 inner); 14 = 1.5 x 9.
+            # A warm run that will not converge then gives up after 14 instead
+            # of 60: a really infeasible QP's warm + cold pair 311 -> 134 ms on
+            # a 7-joint arm, 175 -> 54 ms on a 6-joint one. A slow warm start
+            # from another problem's iterates (17 - 47 steps) is cut too, and
+            # its cold run returns the same solution sooner.
+            max_iter_warm: 14
             eps_abs: 1.0e-6
             eps_rel: 0.0
             # ProxQP's approximate primal-infeasibility threshold (>= 0; 0 accepts

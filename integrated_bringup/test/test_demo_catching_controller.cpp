@@ -1969,7 +1969,8 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
   EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel) << profile;
   EXPECT_EQ(d.solver_eps_primal_inf, core.solver.eps_primal_inf) << profile;
   // `solver.max_iter_warm` is written (the key list above) but not compared
-  // here: #887 sets it from a measurement, the core's default stays 0.
+  // here: #887 sets it from a measurement, the core's default stays 0, and
+  // ShipsTheWarmCapMeasured pins it.
   // `linearization.ref_speed_fraction` is written (the key list above) but not
   // compared here: #819 moves it off the planner's former constant 0.9, and
   // ShipsTheFirstReferenceFractionMeasured pins it.
@@ -2118,6 +2119,23 @@ TEST_P(ShippedCatchingProfile, ShipsTheFirstReferenceFractionMeasured) {
   EXPECT_EQ(planner.mpc_segment.ref_speed_fraction, written) << profile;
   EXPECT_EQ(rtc::catching::MpcSegmentPlannerParams{}.ref_speed_fraction, 0.9)
       << "the code default stays the planner's former constant";
+}
+
+TEST_P(ShippedCatchingProfile, ShipsTheWarmCapMeasured) {
+  // #887: `solver.max_iter_warm` is WRITTEN in catching/segment_mpc.yaml at the
+  // value the core's timing fixture chose (1.5 x the outer steps of the
+  // slowest converging warm solve), below max_iter so it is a cap; the code
+  // default stays 0 (none).
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  EXPECT_EQ(planner.mpc_segment.solver_max_iter_warm, 14) << profile;
+  EXPECT_LT(planner.mpc_segment.solver_max_iter_warm, planner.mpc_segment.solver_max_iter)
+      << profile << ": at or above max_iter the key is no cap";
+  EXPECT_EQ(rtc::catching::MpcSegmentCoreParams{}.solver_max_iter_warm, 0)
+      << "the core's default stays no cap";
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
