@@ -282,6 +282,11 @@ struct MpcSegmentPlannerParams {
   /// (≥ 0): the QP's tolerances. Preconditioner and backend stay in code.
   int solver_max_iter{60};
   int solver_max_iter_in{100};
+  /// `solver.max_iter_warm` (≥ 0; 0 = none): the outer-iteration cap of a main
+  /// QP that starts warm, after which it is run again cold under max_iter
+  /// (MpcSegmentCoreParams::solver_max_iter_warm — the measurement is noted
+  /// in the shipped profiles).
+  int solver_max_iter_warm{0};
   double solver_eps_abs{1e-6};
   double solver_eps_rel{0.0};
   /// `solver.eps_primal_inf` (≥ 0): the threshold of ProxQP's approximate

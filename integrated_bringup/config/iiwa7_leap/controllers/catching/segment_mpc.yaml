@@ -214,6 +214,10 @@ demo_catching_controller:
             # cold (0.2 - 0.3 s when a warm run fails and is retried).
             max_iter: 60
             max_iter_in: 100
+            # Outer-iteration cap of a main QP that starts warm (>= 0; 0 = none):
+            # a warm run that has not converged by it is run again cold under
+            # max_iter. 0 until measured (#887).
+            max_iter_warm: 0
             eps_abs: 1.0e-6
             eps_rel: 0.0
             # ProxQP's approximate primal-infeasibility threshold (>= 0; 0 accepts

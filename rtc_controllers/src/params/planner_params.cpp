@@ -741,6 +741,8 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
                               1, std::numeric_limits<int>::max());
   d.solver_max_iter_in = ReadInt(solver, "max_iter_in", "segment.mpc.solver.max_iter_in",
                                  d.solver_max_iter_in, 1, std::numeric_limits<int>::max());
+  d.solver_max_iter_warm = ReadInt(solver, "max_iter_warm", "segment.mpc.solver.max_iter_warm",
+                                   d.solver_max_iter_warm, 0, std::numeric_limits<int>::max());
   d.solver_eps_abs =
       ReadPositive(solver, "eps_abs", "segment.mpc.solver.eps_abs", d.solver_eps_abs);
   d.solver_eps_rel =

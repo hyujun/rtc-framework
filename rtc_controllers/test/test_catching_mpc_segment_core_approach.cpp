@@ -8,6 +8,7 @@
 // (CMakeLists note); rtc_base's malloc_gate.hpp is the one that sees
 // pinocchio's and ProxQP's own allocations.
 #include "rtc_base/testing/malloc_gate.hpp"
+#include "rtc_base/types/types.hpp"
 #include "rtc_controllers/catching/jerk_segment.hpp"
 #include "rtc_controllers/catching/mpc_segment_core.hpp"
 #include "rtc_controllers/catching/mpc_segment_core_catch.hpp"
@@ -2600,8 +2601,24 @@ const TimingGrid kTimingGrids[] = {
     {"C1", {6, 0.1, 7, 0.05, 1, {1, 1, 2, 3}}},
 };
 
+// The caps solver_max_iter_warm is chosen among (#887): how many solves of a
+// series needed more outer iterations than each.
+constexpr std::array<int, 5> kWarmCaps{5, 10, 15, 20, 30};
+
+// solver_max_iter_warm of the grid and infeasible fixtures: RTC_MPC_MAX_ITER_WARM
+// when set, else the params' own (#887).
+void ApplyMaxIterWarm(MpcSegmentCoreParams& p) {
+  if (const char* e = std::getenv("RTC_MPC_MAX_ITER_WARM"); e != nullptr && e[0] != '\0') {
+    p.solver_max_iter_warm = std::stoi(e);
+  }
+}
+
 struct Series {
   std::vector<double> total_us, solve_us, iters;
+  // Outer iterations of the solves that converged in their first run (a
+  // retried solve's count is its cold run's).
+  std::vector<double> outer;
+  std::array<int, kWarmCaps.size()> outer_over{};
   int failures{0};
   int retried{0};
   std::string failure_log;
@@ -2611,6 +2628,12 @@ struct Series {
     solve_us.push_back(r.solve_us);
     iters.push_back(r.iterations);
     retried += r.cold_retried ? 1 : 0;
+    if (!r.cold_retried) {
+      outer.push_back(r.outer_iterations);
+      for (std::size_t w = 0; w < kWarmCaps.size(); ++w) {
+        outer_over[w] += r.outer_iterations > kWarmCaps[w] ? 1 : 0;
+      }
+    }
   }
 
   void Fail(const MpcSegmentCoreResult& r) {
@@ -2637,13 +2660,23 @@ void ReportSeries(const std::string& key, const Series& s) {
   EXPECT_EQ(s.failures, 0) << key << ":" << s.failure_log;
   ::testing::Test::RecordProperty(key + ".samples", static_cast<int>(s.total_us.size()));
   RecordMicros(key + ".solve_us.p50", Percentile(s.solve_us, 0.50));
+  ::testing::Test::RecordProperty(key + ".outer.p50", static_cast<int>(Percentile(s.outer, 0.5)));
+  ::testing::Test::RecordProperty(key + ".outer.p99", static_cast<int>(Percentile(s.outer, 0.99)));
+  ::testing::Test::RecordProperty(key + ".outer.max", static_cast<int>(Percentile(s.outer, 1.0)));
+  std::string over;
+  for (std::size_t w = 0; w < kWarmCaps.size(); ++w) {
+    ::testing::Test::RecordProperty(key + ".outer_over_" + std::to_string(kWarmCaps[w]),
+                                    s.outer_over[w]);
+    over += " >" + std::to_string(kWarmCaps[w]) + ":" + std::to_string(s.outer_over[w]);
+  }
   std::printf(
       "[timing] %-22s n=%3zu fail=%2d retried=%3d | total p50 %7.0f p99 %7.0f max %7.0f us (QP "
-      "p50 %7.0f) | iter p50 %3.0f p99 %3.0f%s%s\n",
+      "p50 %7.0f) | iter p50 %3.0f p99 %3.0f | outer p50 %2.0f p99 %2.0f max %2.0f%s%s%s\n",
       key.c_str(), s.total_us.size(), s.failures, s.retried, Percentile(s.total_us, 0.5),
       Percentile(s.total_us, 0.99), Percentile(s.total_us, 1.0), Percentile(s.solve_us, 0.5),
-      Percentile(s.iters, 0.5), Percentile(s.iters, 0.99), s.failures > 0 ? " | failures:" : "",
-      s.failure_log.c_str());
+      Percentile(s.iters, 0.5), Percentile(s.iters, 0.99), Percentile(s.outer, 0.5),
+      Percentile(s.outer, 0.99), Percentile(s.outer, 1.0), over.c_str(),
+      s.failures > 0 ? " | failures:" : "", s.failure_log.c_str());
 }
 
 [[nodiscard]] bool OptimisedBuild() {
@@ -2727,14 +2760,23 @@ void RunGridTiming(const ArmModel& arm, const MpcSegmentCoreLimits& lim, const T
     variant.params(p);
     variant.params(p_next);
   }
-  MpcSegmentCore mpc, adv_cold, adv_stale;
+  ApplyMaxIterWarm(p);
+  ApplyMaxIterWarm(p_next);
+  ::testing::Test::RecordProperty(key + ".max_iter_warm", p.solver_max_iter_warm);
+  MpcSegmentCore mpc, adv_cold, adv_stale, adv_far;
   ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone) << key;
   ASSERT_EQ(adv_cold.Init(*arm.model, arm.frame, p_next, lim), MpcSegmentCoreReason::kNone) << key;
   ASSERT_EQ(adv_stale.Init(*arm.model, arm.frame, p_next, lim), MpcSegmentCoreReason::kNone) << key;
-  MpcSegmentCoreResult res, res_same, res_adv;
+  // adv_stale's twin on a steady clock with a deadline that never comes
+  // (#887): the same results, bit for bit.
+  ASSERT_EQ(adv_far.Init(*arm.model, arm.frame, p_next, lim), MpcSegmentCoreReason::kNone) << key;
+  adv_far.SetClock(&rtc::SteadyNowNs);
+  int far_differs = 0;
+  MpcSegmentCoreResult res, res_same, res_adv, res_far;
   mpc.ResizeResult(res);
   mpc.ResizeResult(res_same);
   adv_cold.ResizeResult(res_adv);
+  adv_far.ResizeResult(res_far);
   const int N = mpc.NumNodes();
   ::testing::Test::RecordProperty(key + ".n_vars", static_cast<int>(mpc.MainQp().H.rows()));
   ::testing::Test::RecordProperty(key + ".n_ineq", static_cast<int>(mpc.MainQp().C.rows()));
@@ -2807,12 +2849,26 @@ void RunGridTiming(const ArmModel& arm, const MpcSegmentCoreLimits& lim, const T
       s_adv_cold.Fail(res_adv);
     }
     adv.cold_start = false;
-    if (adv_stale.Solve(adv, res_adv)) {
+    const bool stale_ok = adv_stale.Solve(adv, res_adv);
+    if (stale_ok) {
       s_adv_stale.Add(res_adv);
     } else {
       s_adv_stale.Fail(res_adv);
     }
+    MpcSegmentCoreInput far = adv;
+    far.deadline_ns = std::numeric_limits<std::int64_t>::max();
+    const bool far_ok = adv_far.Solve(far, res_far);
+    far_differs += far_ok != stale_ok || res_far.reason != res_adv.reason ||
+                           res_far.iterations != res_adv.iterations ||
+                           res_far.outer_iterations != res_adv.outer_iterations ||
+                           res_far.qp_status != res_adv.qp_status ||
+                           res_far.cold_retried != res_adv.cold_retried ||
+                           (far_ok && (res_far.q != res_adv.q || res_far.u != res_adv.u))
+                       ? 1
+                       : 0;
   }
+  EXPECT_EQ(far_differs, 0) << key << ": a deadline that never comes changed a result";
+  ::testing::Test::RecordProperty(key + ".far_deadline_differs", far_differs);
   ReportSeries(key + ".cold", cold);
   ReportSeries(key + ".warm_same", warm_same);
   ReportSeries(key + ".adv_cold", s_adv_cold);
@@ -3259,8 +3315,12 @@ TEST(MpcSegmentCoreApproachTiming, EpsPrimalInfPair6R) {
 //   main_cold  the catch core, the state's own rest as the reference, cold: one run
 //   main_warm  the same core warm from a feasible solve of the posture at rest:
 //              the warm run fails and the core retries cold — two runs (D3)
+//   main_warm_dl  main_warm on a core with the replan budget as its deadline
+//              (#887): the cold run starts only if the warm run ended inside it.
+//              The same sample as main_warm, the two in alternating order
 //   presolve   the stop core without a reference: its kinematic pre-solve fails
-// Every sample must fail, fail-closed (asserted); the times are recorded.
+// Every sample must fail, fail-closed (asserted); the times are recorded, and
+// in a full timing run the deadline's pair bound is asserted (below).
 struct InfeasibleTally {
   std::vector<double> wall_us, iters, us_per_iter;
   std::array<int, 4> status{};  // 0 · 1 · 2 · other
@@ -3293,15 +3353,26 @@ void RunInfeasibleFamily(const ArmModel& arm, const MpcSegmentCoreLimits& lim,
   MpcSegmentCoreParams ps = GridParams({0, 0.1, 7, 0.05, 1, {1, 1, 2, 3}});  // a stop core
   ps.solver.eps_primal_inf = eps;
   ApplyMaxIterB(ps);
+  ApplyMaxIterWarm(pc);
   ::testing::Test::RecordProperty(key + ".max_iter", pc.solver.max_iter);
-  MpcSegmentCore cold, warm, stop;
+  ::testing::Test::RecordProperty(key + ".max_iter_warm", pc.solver_max_iter_warm);
+  MpcSegmentCore cold, warm, warm_dl, stop;
   ASSERT_EQ(cold.Init(*arm.model, arm.frame, pc, lim), MpcSegmentCoreReason::kNone) << key;
   ASSERT_EQ(warm.Init(*arm.model, arm.frame, pc, lim), MpcSegmentCoreReason::kNone) << key;
+  ASSERT_EQ(warm_dl.Init(*arm.model, arm.frame, pc, lim), MpcSegmentCoreReason::kNone) << key;
   ASSERT_EQ(stop.Init(*arm.model, arm.frame, ps, lim), MpcSegmentCoreReason::kNone) << key;
-  MpcSegmentCoreResult r_cold, r_warm, r_stop;
+  warm_dl.SetClock(&rtc::SteadyNowNs);
+  MpcSegmentCoreResult r_cold, r_warm, r_dl, r_stop;
   cold.ResizeResult(r_cold);
   warm.ResizeResult(r_warm);
+  warm_dl.ResizeResult(r_dl);
   stop.ResizeResult(r_stop);
+  constexpr std::int64_t kDeadlineNs = 30'000'000;  // the replan budget (budget.replan_s)
+  constexpr double kDeadlineUs = 1e-3 * static_cast<double>(kDeadlineNs);
+  std::vector<double> pair_off, pair_on, warm_run_us;
+  int cut = 0;
+  int pair_over = 0;
+  double pair_excess_us = 0.0;
   Eigen::Matrix3d w_p;
   ASSERT_TRUE(
       rtc::catching::CatchPositionWeight(SkewWeight(1e-4, 4e-4, 2.5e-5), 1.0, 0.01, 1e4, w_p));
@@ -3317,7 +3388,7 @@ void RunInfeasibleFamily(const ArmModel& arm, const MpcSegmentCoreLimits& lim,
     us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
     return ok;
   };
-  std::array<InfeasibleTally, 3> tally;
+  std::array<InfeasibleTally, 4> tally;
   for (int i = 0; i < n_samples; ++i) {
     // Every random number of this sample, before any solve.
     Eigen::VectorXd q = arm.q_nominal;
@@ -3355,27 +3426,98 @@ void RunInfeasibleFamily(const ArmModel& arm, const MpcSegmentCoreLimits& lim,
     EXPECT_FALSE(ok) << key << " main_cold " << i << " joint " << j << " alpha " << alpha;
     EXPECT_EQ(r_cold.reason, MpcSegmentCoreReason::kQpFailed)
         << key << " main_cold " << i << ": " << MpcSegmentCoreReasonName(r_cold.reason);
-    double us_rest = 0.0;
-    ASSERT_TRUE(timed(warm, rest, r_warm, us_rest))
-        << key << " " << i << ": " << MpcSegmentCoreReasonName(r_warm.reason);
+    const double us_cold = us;
     edge.cold_start = false;
-    ok = timed(warm, edge, r_warm, us);
-    tally[1].Add(ok, r_warm, us, false);
-    EXPECT_FALSE(ok) << key << " main_warm " << i;
-    EXPECT_EQ(r_warm.reason, MpcSegmentCoreReason::kQpFailed)
-        << key << " main_warm " << i << ": " << MpcSegmentCoreReasonName(r_warm.reason);
-    EXPECT_TRUE(r_warm.cold_retried) << key << " main_warm " << i;
+    double us_off = 0.0;
+    double us_on = 0.0;
+    // The two warm cores in alternating order, each warmed by the rest solve
+    // (no deadline) right before its edge solve.
+    for (int arm_k = 0; arm_k < 2; ++arm_k) {
+      const bool with_deadline = (arm_k == 0) == (i % 2 == 1);
+      MpcSegmentCore& core = with_deadline ? warm_dl : warm;
+      MpcSegmentCoreResult& r = with_deadline ? r_dl : r_warm;
+      double us_rest = 0.0;
+      ASSERT_TRUE(timed(core, rest, r, us_rest))
+          << key << " " << i << ": " << MpcSegmentCoreReasonName(r.reason);
+      MpcSegmentCoreInput e = edge;
+      const auto t0 = std::chrono::steady_clock::now();
+      e.deadline_ns =
+          with_deadline
+              ? std::chrono::duration_cast<std::chrono::nanoseconds>(t0.time_since_epoch())
+                        .count() +
+                    kDeadlineNs
+              : 0;
+      ok = core.Solve(e, r);
+      const double w =
+          std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+      EXPECT_FALSE(ok) << key << " main_warm " << i << (with_deadline ? " (deadline)" : "");
+      if (!with_deadline) {
+        us_off = w;
+        tally[1].Add(ok, r, w, false);
+        EXPECT_EQ(r.reason, MpcSegmentCoreReason::kQpFailed)
+            << key << " main_warm " << i << ": " << MpcSegmentCoreReasonName(r.reason);
+        EXPECT_TRUE(r.cold_retried) << key << " main_warm " << i;
+        continue;
+      }
+      us_on = w;
+      tally[2].Add(ok, r, w, false);
+      if (r.reason == MpcSegmentCoreReason::kDeadline) {
+        ++cut;
+        EXPECT_EQ(r.cut_site, rtc::catching::MpcSegmentCutSite::kColdRetry) << key << " " << i;
+        EXPECT_FALSE(r.cold_retried) << key << " " << i;
+        // Cut only past the deadline, which started with the clock of `w`.
+        EXPECT_GE(w, kDeadlineUs) << key << " " << i << ": cut before its deadline";
+        warm_run_us.push_back(r.linearize_us + r.condense_us + r.solve_us);
+      } else {
+        EXPECT_EQ(r.reason, MpcSegmentCoreReason::kQpFailed)
+            << key << " main_warm_dl " << i << ": " << MpcSegmentCoreReasonName(r.reason);
+        EXPECT_TRUE(r.cold_retried) << key << " main_warm_dl " << i;
+      }
+    }
+    // The pair bound: a cut pair ends with its warm run (+ what precedes the
+    // QP); an uncut one started its cold run inside the deadline, and that
+    // run is the cold core's of the same sample. Tolerance max(5 %, 1 ms).
+    const double w_cut = r_dl.reason == MpcSegmentCoreReason::kDeadline ? warm_run_us.back() : 0.0;
+    const double bound = std::max(w_cut, kDeadlineUs + us_cold);
+    const double excess = us_on - (bound + std::max(0.05 * bound, 1e3));
+    pair_over += excess > 0.0 ? 1 : 0;
+    pair_excess_us = std::max(pair_excess_us, excess);
+    pair_off.push_back(us_off);
+    pair_on.push_back(us_on);
     MpcSegmentCoreInput stop_in = RestInput(edge.q0);
     stop_in.qd0 = edge.qd0;
     stop_in.cold_start = true;
     ok = timed(stop, stop_in, r_stop, us);
-    tally[2].Add(ok, r_stop, us, true);
+    tally[3].Add(ok, r_stop, us, true);
     EXPECT_FALSE(ok) << key << " presolve " << i;
     EXPECT_EQ(r_stop.reason, MpcSegmentCoreReason::kPresolveFailed)
         << key << " " << i << ": " << MpcSegmentCoreReasonName(r_stop.reason);
   }
-  const std::array<const char*, 3> kind{"main_cold", "main_warm", "presolve"};
-  for (std::size_t k = 0; k < 3; ++k) {
+  const std::string dl = key + ".eps_" + rtc::testing::mpc_warm_up::EpsKey(eps) + ".deadline";
+  ::testing::Test::RecordProperty(dl + ".cut", cut);
+  ::testing::Test::RecordProperty(dl + ".pair_over_bound", pair_over);
+  RecordMicros(dl + ".pair_excess_us.max", pair_excess_us);
+  RecordMicros(dl + ".pair_off_us.p99", Percentile(pair_off, 0.99));
+  RecordMicros(dl + ".pair_off_us.max", Percentile(pair_off, 1.0));
+  RecordMicros(dl + ".pair_on_us.p99", Percentile(pair_on, 0.99));
+  RecordMicros(dl + ".pair_on_us.max", Percentile(pair_on, 1.0));
+  RecordMicros(dl + ".warm_run_us.max", Percentile(warm_run_us, 1.0));
+  std::printf(
+      "[deadline]   %-14s eps %-7.0e it_max %3d warm %2d | cut %d/%zu | pair off p99 %8.0f max "
+      "%8.0f | on p99 %8.0f max %8.0f us | over bound %d (worst %+.0f us) | cut warm run max "
+      "%8.0f us\n",
+      key.c_str(), eps, pc.solver.max_iter, pc.solver_max_iter_warm, cut, pair_on.size(),
+      Percentile(pair_off, 0.99), Percentile(pair_off, 1.0), Percentile(pair_on, 0.99),
+      Percentile(pair_on, 1.0), pair_over, pair_excess_us, Percentile(warm_run_us, 1.0));
+  if (TimingFull()) {
+    // #887's pre-registered gates (the timing side): every pair within its
+    // bound, and the deadline never lengthens the tail.
+    EXPECT_EQ(pair_over, 0) << key << ": worst excess " << pair_excess_us << " us";
+    EXPECT_LE(Percentile(pair_on, 0.99), 1.05 * Percentile(pair_off, 0.99)) << key;
+    EXPECT_LE(Percentile(pair_on, 1.0), 1.05 * Percentile(pair_off, 1.0)) << key;
+  }
+  const std::array<const char*, 4> kind{"main_cold", "main_warm", "main_warm_dl", "presolve"};
+  for (std::size_t k = 0; k < 4; ++k) {
     const InfeasibleTally& t = tally[k];
     const std::string base = key + ".eps_" + rtc::testing::mpc_warm_up::EpsKey(eps) + "." + kind[k];
     RecordMicros(base + ".wall_us.p50", Percentile(t.wall_us, 0.5));

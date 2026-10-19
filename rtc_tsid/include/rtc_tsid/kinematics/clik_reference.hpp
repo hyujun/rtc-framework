@@ -511,7 +511,7 @@ class ClikReferenceGenerator {
     bool converged{false};         ///< QP converged with finite iterates
     bool non_finite{false};        ///< QP iterates or q_ref / v_ref were non-finite
     int status{-1};                ///< proxsuite::proxqp::QPSolverOutput (0 = SOLVED), −1 = none
-    int iterations{0};             ///< ProxQP outer iterations
+    int iterations{0};             ///< ProxQP inner iterations (SolveResult::iterations)
     double solve_time_us{0.0};     ///< wall time of the solve [µs]
     bool command_mismatch{false};  ///< evaluate_at_command: cache.q (arm) ≠ previous QRef()
     /// kKinematic / kDynamic: rows assembled this call, how many the solution

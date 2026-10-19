@@ -520,6 +520,9 @@ void DemoCatchingController::DeclareProfileParameters() {
     declare("planner.segment.mpc.solver.max_iter_in",
             static_cast<std::int64_t>(mpc_segment.solver_max_iter_in),
             "MPC segment planner ProxQP inner iteration cap per outer step");
+    declare("planner.segment.mpc.solver.max_iter_warm",
+            static_cast<std::int64_t>(mpc_segment.solver_max_iter_warm),
+            "MPC segment planner ProxQP outer iteration cap of a warm-started QP (0 = none)");
     declare("planner.segment.mpc.solver.eps_abs", mpc_segment.solver_eps_abs,
             "MPC segment planner ProxQP absolute tolerance");
     declare("planner.segment.mpc.solver.eps_rel", mpc_segment.solver_eps_rel,

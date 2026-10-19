@@ -149,6 +149,7 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     result_.non_finite = false;
     result_.solve_time_us = 0.0;
     result_.iterations = 0;
+    result_.outer_iterations = 0;
     result_.levels_solved = 0;
     return result_;
   }
@@ -209,6 +210,7 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
   result_.non_finite = false;
   result_.solve_time_us = 0.0;
   result_.iterations = 0;
+  result_.outer_iterations = 0;
 
   for (int k = 0; k <= active_max_level_ && k < max_levels_; ++k) {
     const auto& task_indices = level_task_indices_[static_cast<size_t>(k)];
@@ -303,6 +305,7 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     result_.non_finite = solver_result.non_finite;
     result_.solve_time_us += solver_result.solve_time_us;
     result_.iterations += solver_result.iterations;
+    result_.outer_iterations += solver_result.outer_iterations;
 
     if (!solver_result.converged) {
       // Infeasible → 직전 level z* 사용

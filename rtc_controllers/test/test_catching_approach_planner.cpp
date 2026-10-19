@@ -651,6 +651,96 @@ TEST(ApproachPlanner, EachGateWithholdsOnItsOwn) {
   EXPECT_EQ(first(p, 0).outcome, SegmentOutcome::kCatchError);
 }
 
+// #887: a core reads its solve's deadline — the solve's start plus the kind's
+// budget — on the planner's clock before each QP, and a cut is a budget
+// withhold. The fake clock advances by `step` per read: the solve's start,
+// the core's read before its main QP (both solves below have a reference, so
+// no pre-solve), the solve's end.
+TEST(ApproachPlanner, TheKindsBudgetIsTheCoresDeadline) {
+  const Catch c0 = CatchAt(Arm6(), Offset(Arm6(), 0.02));
+  const auto first = [&](std::int64_t step) {
+    Rig r(Arm6());
+    SetClock(kT0, step);
+    const bool ok =
+        r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH),
+                            PlanFor(r.arm, c0, kT0 + 800 * kMs), BallFor(c0), r.out, r.rec);
+    SetClock(kT0);
+    EXPECT_EQ(ok, step == 0) << Why(r.rec);
+    return r.rec;
+  };
+  // At the deadline the main QP is not started.
+  SegmentRecord rec = first(kFirst);
+  EXPECT_EQ(rec.outcome, SegmentOutcome::kBudget);
+  EXPECT_STREQ(rec.core_reason_name, "deadline");
+  EXPECT_EQ(rec.iterations, 0);
+  // A nanosecond before it the QP runs, and the solve ends past the budget.
+  rec = first(kFirst - 1);
+  EXPECT_EQ(rec.outcome, SegmentOutcome::kBudget);
+  EXPECT_STREQ(rec.core_reason_name, "none");
+  EXPECT_GT(rec.iterations, 0);
+  // A frozen clock (the offline batch's) never passes a deadline.
+  rec = first(0);
+  EXPECT_EQ(rec.outcome, SegmentOutcome::kReady);
+
+  // A stop core's replan: the replan budget.
+  const auto replan = [&](std::int64_t step) {
+    Rig r(Arm6());
+    const Started s = StartPlan(r, kT0, 800 * kMs);
+    EXPECT_NE(s.seq, 0U);
+    const std::int64_t now = s.t_c - kTArm - kReplan - 2 * kH - 1 * kMs;  // stop k = 0
+    SetClock(now, step);
+    const bool ok = r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
+                                     MpcSegmentBallTarget{}, r.out, r.rec);
+    SetClock(kT0);
+    EXPECT_EQ(r.rec.kind, SegmentKind::kStop);
+    EXPECT_EQ(ok, step == 0) << Why(r.rec);
+    return r.rec;
+  };
+  rec = replan(kReplan);
+  EXPECT_EQ(rec.outcome, SegmentOutcome::kBudget);
+  EXPECT_STREQ(rec.core_reason_name, "deadline");
+  rec = replan(kReplan - 1);
+  EXPECT_EQ(rec.outcome, SegmentOutcome::kBudget);
+  EXPECT_STREQ(rec.core_reason_name, "none");
+  rec = replan(0);
+  EXPECT_EQ(rec.outcome, SegmentOutcome::kReady);
+}
+
+// The cycle installs its clock after Configure (PlannerCycle): the cores read
+// the new one too.
+std::atomic<int> g_other_reads{0};
+
+std::int64_t OtherClock() noexcept {
+  ++g_other_reads;
+  return FakeClock();
+}
+
+TEST(ApproachPlanner, SetClockReachesEveryCore) {
+  const Catch c0 = CatchAt(Arm6(), Offset(Arm6(), 0.02));
+  Rig r(Arm6());
+  r.planner.SetClock(&OtherClock);
+  SetClock(kT0, kFirst);
+  g_other_reads = 0;
+  EXPECT_FALSE(r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH),
+                                   PlanFor(r.arm, c0, kT0 + 800 * kMs), BallFor(c0), r.out, r.rec));
+  EXPECT_STREQ(r.rec.core_reason_name, "deadline");
+  EXPECT_EQ(g_other_reads.load(), 3) << "start, the catch core, end";
+  // A stop core.
+  Rig s_rig(Arm6());
+  const Started s = StartPlan(s_rig, kT0, 800 * kMs);
+  ASSERT_NE(s.seq, 0U);
+  s_rig.planner.SetClock(&OtherClock);
+  const std::int64_t now = s.t_c - kTArm - kReplan - 2 * kH - 1 * kMs;
+  SetClock(now, kReplan);
+  g_other_reads = 0;
+  EXPECT_FALSE(
+      s_rig.planner.Replan(FollowingRt(s_rig.arm, s_rig.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
+                           MpcSegmentBallTarget{}, s_rig.out, s_rig.rec));
+  SetClock(kT0);
+  EXPECT_STREQ(s_rig.rec.core_reason_name, "deadline");
+  EXPECT_EQ(g_other_reads.load(), 3) << "start, the stop core, end";
+}
+
 // #716: the record carries where the core spent each solve — its pre-solve,
 // linearising, condensing and QP times, on the core's own clock. A record no
 // solve filled has them NaN; a catch solve and a stop solve fill all four. On
@@ -816,8 +906,8 @@ TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
                           "catch: {axis_theta_max: 1.2}, "
                           "linearization: {delta_tr: 0.2, reference_rest_tol: 2.0e-5, "
                           "ref_speed_fraction: 0.8}, "
-                          "solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, "
-                          "eps_rel: 1.0e-5, eps_primal_inf: 3.0e-6}"));
+                          "solver: {max_iter: 300, max_iter_in: 150, max_iter_warm: 12, "
+                          "eps_abs: 2.0e-7, eps_rel: 1.0e-5, eps_primal_inf: 3.0e-6}"));
     Rig off(arm, params_of(""));
     ASSERT_TRUE(on.planner.Configured());
     ASSERT_TRUE(off.planner.Configured());
@@ -835,6 +925,7 @@ TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
       EXPECT_EQ(mp.reference_rest_tol, 2.0e-5);
       EXPECT_EQ(mp.solver.max_iter, 300);
       EXPECT_EQ(mp.solver.max_iter_in, 150);
+      EXPECT_EQ(mp.solver_max_iter_warm, 12);
       EXPECT_EQ(mp.solver.eps_abs, 2.0e-7);
       EXPECT_EQ(mp.solver.eps_rel, 1.0e-5);
       EXPECT_EQ(mp.solver.eps_primal_inf, 3.0e-6);
@@ -864,6 +955,7 @@ TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
       EXPECT_EQ(mp.reference_rest_tol, defaults.reference_rest_tol);
       EXPECT_EQ(mp.solver.max_iter, defaults.solver.max_iter);
       EXPECT_EQ(mp.solver.max_iter_in, defaults.solver.max_iter_in);
+      EXPECT_EQ(mp.solver_max_iter_warm, defaults.solver_max_iter_warm);
       EXPECT_EQ(mp.solver.eps_abs, defaults.solver.eps_abs);
       EXPECT_EQ(mp.solver.eps_rel, defaults.solver.eps_rel);
       EXPECT_EQ(mp.solver.eps_primal_inf, defaults.solver.eps_primal_inf);

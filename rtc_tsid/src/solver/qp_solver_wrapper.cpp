@@ -82,6 +82,8 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   if (!initialized_) {
     result_.converged = false;
     result_.status = -1;
+    result_.iterations = 0;
+    result_.outer_iterations = 0;
     return result_;
   }
 
@@ -149,6 +151,7 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   result_.status = static_cast<int>(qp_->results.info.status);
   result_.non_finite = !iterates_finite;
   result_.iterations = static_cast<int>(qp_->results.info.iter);
+  result_.outer_iterations = static_cast<int>(qp_->results.info.iter_ext);
 
   const int active_n = (qp.n_vars > 0 && qp.n_vars <= n) ? qp.n_vars : n;
   if (result_.converged) {
