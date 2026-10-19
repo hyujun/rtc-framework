@@ -634,7 +634,9 @@ TEST(ApproachPlanner, EachGateWithholdsOnItsOwn) {
     EXPECT_FALSE(ok);
     return r.rec;
   };
-  // Budget: the fake clock advances the first budget plus one per read.
+  // Budget: the fake clock advances the first budget plus one per read, so
+  // the core's read before its QP is already past the deadline (#887) and the
+  // withhold is the core's cut.
   EXPECT_EQ(first(ApproachParams(), kFirst + 1).outcome, SegmentOutcome::kBudget);
   MpcSegmentPlannerParams p = ApproachParams();
   p.slack_max = -1.0;
@@ -2392,7 +2394,9 @@ TEST(ApproachPlannerRecord, AWithheldSolveIsMeasuredToo) {
         << Why(r.rec);
     const rtc::catching::MpcSegmentStopDeviation want = StopOf(r.arm, r.out, r.out.n_pre, c.p, d);
 
-    SegmentRecord rec = first(ApproachParams(), kFirst + 1);
+    // Half the budget per read: the core reads its deadline (start + kFirst)
+    // before it has passed, so the QP runs; the end read is past the budget.
+    SegmentRecord rec = first(ApproachParams(), kFirst / 2 + 1);
     ASSERT_EQ(rec.outcome, SegmentOutcome::kBudget);
     ExpectStopRecord(rec, want, c.p, d);
     MpcSegmentPlannerParams p = ApproachParams();
