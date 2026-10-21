@@ -1243,8 +1243,10 @@ for pkg_dir in $CHANGED_PKGS; do
   # trigger made per-file README trees the habit (#869 D4) -- file roles live in
   # header comments. A doc kept beside the headers
   # (rtc_math/include/rtc_math/se3/README.md) is not surface.
+  # repo_scripts/config/*_budget.yaml are the docs gate's own data (Phase 1b
+  # grades them), not user-facing config: a budget raise is not a README delta.
   PKG_PUBLIC=$(echo "$CHANGED" | grep -E "^${pkg_dir}/(include|launch|config)/" \
-                 | grep -vE '\.md$' || true)
+                 | grep -vE '\.md$|^repo_scripts/config/[a-z_]+_budget\.yaml$' || true)
   # Directory = the file's dir cut to <pkg>/a/ or <pkg>/a/b/ (package-root files
   # have none). New: nothing under it at the baseline. Removed: nothing tracked
   # or untracked left under it. One git call per candidate directory, not file.
