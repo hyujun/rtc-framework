@@ -17,6 +17,10 @@ install(PROGRAMS
   scripts/verify_rt_runtime.sh
   scripts/timeline.sh
   scripts/enroll_lttng_mok.sh
+  # CAN FD host (issue #896): virtual bus for tests / SIL, IXXAT driver, can0 + systemd
+  scripts/setup_vcan.sh
+  scripts/setup_can_interface.sh
+  scripts/install_ixxat_socketcan.sh
   # Dependency isolation (see README.md "격리 환경 배포 가이드")
   scripts/setup_env.sh
   scripts/build_deps.sh
@@ -67,6 +71,16 @@ if(BUILD_TESTING)
   # base hides the apt catkin_pkg and fails the first ament configure (rtc_base).
   ament_add_test(test_install_python
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_install_python.sh
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
+  # CAN FD host scripts (issue #896, D32): the `ip link set ... type can` line the
+  # generated oneshot carries, txqueuelen, service + udev wiring, idempotence.
+  # ip / systemctl / udevadm are stubs and the system dirs are redirected
+  # (RTC_ETC_ROOT), so no root and no CAN hardware; whether the real `ip`
+  # accepts the line is the hardware gate of #896, not this test.
+  ament_add_test(test_can_setup
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_can_setup.sh
     TIMEOUT 60
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )

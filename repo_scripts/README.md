@@ -42,6 +42,9 @@ source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
   6. sudo ./setup_nvidia_rt.sh
   (선택)
   7. sudo ./setup_display_rt.sh          # 디스플레이 최적화
+  (CAN FD 손 -- udp_hand_driver protocol_version 2)
+  8. ./install_ixxat_socketcan.sh build && sudo ./install_ixxat_socketcan.sh install
+  9. sudo ./setup_can_interface.sh       # can0 1M/8M fd on + systemd + can-utils
 
 [빌드 전 검증]   ./check_rt_setup.sh --summary
 [실행]           ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
@@ -91,6 +94,14 @@ RT 호스트 설정의 절차와 근거는 [docs/rt-optimization.md](../docs/rt-
 | `setup_cpu_governor.sh` | governor 를 performance 로 (`cpu-governor-performance.service`). [§2.6](../docs/rt-optimization.md#26-cpu-governor) |
 | `setup_nvidia_rt.sh` | NVIDIA 와 RT 커널의 공존 (7단계). 마지막에 `setup_grub_rt.sh` · `setup_display_rt.sh` · `setup_cpu_governor.sh` 를 자동 호출. [§2.7](../docs/rt-optimization.md#27-nvidia-gpu-가-있을-때) |
 | `setup_display_rt.sh` | X11 안티 티어링 (`/etc/X11/xorg.conf.d/20-nvidia-antitear.conf`) + compositor renice -10 서비스. headless 에서도 설정 파일을 설치 |
+
+**CAN FD 호스트 (proto2 손, `udp_hand_driver`)**
+
+| 스크립트 | 용도 | sudo |
+|---------|------|------|
+| `setup_vcan.sh [IFACE]` | 개발 PC 의 가상 CAN FD (`vcan0`, MTU 72) — `rtc_communication` CAN 테스트와 proto2 SIL 이 요구. `rtc-vcan-<iface>.service` 가 재부팅 뒤 재생성 | 필수 |
+| `install_ixxat_socketcan.sh <build·install·status>` | IXXAT USB-to-CAN FD 드라이버 `ix_usb_can` 을 실행 커널 헤더로 빌드 · 설치 (DKMS 아님 — 커널을 바꾸면 다시). 소스는 `<rtc_ws>/deps/src/` | `install` 만 |
+| `setup_can_interface.sh [IFACE] [--bitrate · --dbitrate · --txqueuelen · --restart-ms]` | `can0` 를 1 M / 8 M BRS `fd on` 으로 올리고 `rtc-can-<iface>.service` + udev 로 재부팅 · 재연결마다 재적용, can-utils 설치. 기본값은 제안값이고 실기 측정이 고친다 | 필수 |
 
 **런타임 · 검증**
 
