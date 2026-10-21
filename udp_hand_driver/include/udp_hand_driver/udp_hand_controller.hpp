@@ -248,6 +248,15 @@ class UdpHandController {
     //   read_plan_     — the per-run part of the HandComm read plan (only its
     //                    `sensors` field flips per cycle)
     is_bulk_ = (communication_mode_ == HandCommunicationMode::kBulk);
+    // Individual mode is a UDP-only read sequence (epic #895 D25); a link that
+    // does not implement it must be refused here, before the loop launches,
+    // rather than run the unsupported default every tick until the failure
+    // detector latches link-down (D16).
+    if (!is_bulk_ && !comm_->SupportsIndividualMode()) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::ControllerLogger(),
+                   "communication_mode=individual is not supported by this hand link");
+      return false;
+    }
     joint_io_mode_ = sensor_protocol_->JointIoMode();
     comm_->set_joint_io_mode(joint_io_mode_);
     read_plan_.motor_space_read = sensor_protocol_->HasMotorSpaceRead();
@@ -451,19 +460,23 @@ class UdpHandController {
   // ── Hand comm injection (non-RT — call before Start()) ─────────────────
 
   /// Replace the link implementation (default: UdpHandComm built from the
-  /// config). Must be called before Start() and never while running — the
-  /// CommLoop dereferences it every tick with no synchronization. A null
-  /// argument is ignored (the controller always has a comm). Injection point
-  /// for the CAN FD comm (epic #895 F04-2d) and for scripted test doubles.
-  void SetHandComm(std::unique_ptr<HandComm> comm) noexcept {
-    if (comm) {
-      comm_ = std::move(comm);
+  /// config). Returns false and keeps the current comm when `comm` is null (a
+  /// factory that failed — the caller must not fall through to UDP silently)
+  /// or when the controller is running (the CommLoop dereferences comm_ every
+  /// tick with no synchronization, so a swap would free it under the RT
+  /// thread). Injection point for the CAN FD comm (epic #895 F04-2d) and for
+  /// scripted test doubles.
+  [[nodiscard]] bool SetHandComm(std::unique_ptr<HandComm> comm) noexcept {
+    if (!comm || running_.load(std::memory_order_acquire)) {
+      return false;
     }
+    comm_ = std::move(comm);
+    return true;
   }
 
-  /// The active link implementation (non-RT readers: node diagnostics, tests).
-  [[nodiscard]] HandComm& hand_comm() noexcept { return *comm_; }
-
+  /// The active link implementation, read-only (node diagnostics, tests). The
+  /// mutating surface stays with the controller: every non-const HandComm call
+  /// is either CommLoop-only or part of Start()/Stop().
   [[nodiscard]] const HandComm& hand_comm() const noexcept { return *comm_; }
 
   // ── Timing producer (per-tick CSV output, optional) ────────────────────
@@ -913,7 +926,11 @@ class UdpHandController {
         ++sensor_seq_;  // fresh validated sensor read (freshness gate for detector)
       }
 
-      const auto t3 = rc.phase_end[2];
+      // Read-phase end is stamped HERE, after the decode + cache copies, so
+      // read_all_sensor_us keeps its pre-seam meaning (recv + decode) and
+      // sensor_proc_us starts where it did; the comm's stamps mark only the
+      // boundaries inside the read.
+      const auto t3 = std::chrono::steady_clock::now();
       comm_loop_.MarkState();  // end of the read phase (base t1)
 
       // Bulk-only state field (1b firmware-computed force; 0 for 1a). Set before
@@ -1019,7 +1036,9 @@ class UdpHandController {
           ++sensor_seq_;  // one bump per cycle with ≥1 fresh finger read
       }
 
-      const auto t4 = rc.phase_end[3];
+      // Read-phase end stamped after the finger cache copies (pre-seam
+      // placement) — see the bulk branch.
+      const auto t4 = std::chrono::steady_clock::now();
       comm_loop_.MarkState();  // end of the read phase (base t1)
 
       const CommCycleTailResult tail =

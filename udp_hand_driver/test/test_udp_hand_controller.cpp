@@ -901,7 +901,7 @@ TEST(HandControllerEStop, RestartResetsCountersAfterFailures) {
 // while the loop runs; the "last_*" captures are plain and are read only after
 // Stop() (which joins the loop) or after the loop self-exited AND Stop() joined.
 
-class ScriptedHandComm final : public HandComm {
+class ScriptedHandComm : public HandComm {
  public:
   // Script.
   bool script_motor_ok{true};
@@ -1066,19 +1066,60 @@ ScriptedRig MakeScriptedRig(HandCommunicationMode mode, int num_fingertips) {
   });
   auto comm = std::make_unique<ScriptedHandComm>();
   rig.comm = comm.get();
-  rig.ctrl->SetHandComm(std::move(comm));
+  EXPECT_TRUE(rig.ctrl->SetHandComm(std::move(comm)));
   return rig;
 }
 
-TEST(HandCommSeam, DefaultCommIsUdp_NullInjectionIgnored) {
+TEST(HandCommSeam, DefaultCommIsUdp_NullOrRunningInjectionRefused) {
   auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
       .target_ip = "127.0.0.1",
       .target_port = 1,
       .use_fake_hand = true,
   });
-  EXPECT_NE(dynamic_cast<UdpHandComm*>(&ctrl->hand_comm()), nullptr);
-  ctrl->SetHandComm(nullptr);
-  EXPECT_NE(dynamic_cast<UdpHandComm*>(&ctrl->hand_comm()), nullptr);
+  EXPECT_NE(dynamic_cast<const UdpHandComm*>(&ctrl->hand_comm()), nullptr);
+  // A null comm (a factory that failed) is refused, not silently replaced by UDP.
+  EXPECT_FALSE(ctrl->SetHandComm(nullptr));
+  EXPECT_NE(dynamic_cast<const UdpHandComm*>(&ctrl->hand_comm()), nullptr);
+  // While running the swap would free the comm under the CommLoop: refused.
+  ASSERT_TRUE(ctrl->Start());
+  auto late = std::make_unique<ScriptedHandComm>();
+  const ScriptedHandComm* late_ptr = late.get();
+  EXPECT_FALSE(ctrl->SetHandComm(std::move(late)));
+  EXPECT_NE(&ctrl->hand_comm(), static_cast<const HandComm*>(late_ptr));
+  ctrl->Stop();
+}
+
+// D16: a link without the individual read sequence must be refused at Start(),
+// before the CommLoop launches — not run the unsupported default every tick.
+TEST(HandCommSeam, Individual_RefusedByCommWithoutIndividualSupport) {
+  class BulkOnlyComm final : public ScriptedHandComm {
+   public:
+    [[nodiscard]] bool SupportsIndividualMode() const noexcept override { return false; }
+  };
+
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 1,
+      .num_fingertips = 0,
+      .communication_mode = HandCommunicationMode::kIndividual,
+  });
+  auto comm = std::make_unique<BulkOnlyComm>();
+  const BulkOnlyComm* probe = comm.get();
+  ASSERT_TRUE(ctrl->SetHandComm(std::move(comm)));
+  EXPECT_FALSE(ctrl->Start());
+  EXPECT_FALSE(ctrl->IsRunning());
+  EXPECT_EQ(probe->open_calls, 0);  // refused before the link is opened
+
+  // The same comm starts fine in bulk mode.
+  auto bulk = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 1,
+      .num_fingertips = 0,
+      .communication_mode = HandCommunicationMode::kBulk,
+  });
+  ASSERT_TRUE(bulk->SetHandComm(std::make_unique<BulkOnlyComm>()));
+  EXPECT_TRUE(bulk->Start());
+  bulk->Stop();
 }
 
 TEST(HandCommSeam, Bulk_PlanHoistedFromProtocol_OutcomeMapsToStateMasksAndStats) {

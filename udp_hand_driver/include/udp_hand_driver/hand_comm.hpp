@@ -178,9 +178,15 @@ struct HandReadOutcome {
   // End of each read phase, in issue order:
   //   bulk       [0] motor-space  [1] joint-space  [2] sensors  [3] = [2]
   //   individual [0] pos          [1] joint pos    [2] vel      [3] sensors
-  // A phase not planned this cycle still stamps its end (zero-length span), so
-  // the controller's phase arithmetic never reads an unset time_point.
+  // Construction stamps every entry with now(), so an implementation that
+  // resets `out = HandReadOutcome{}` and never touches a phase (not planned, or
+  // a link with no internal phases) still hands the controller's phase
+  // arithmetic a valid, zero-length span. The controller stamps the END of the
+  // whole read itself (after its own decode / cache copies); these are the
+  // boundaries inside the read.
   std::array<Clock::time_point, 4> phase_end{};
+
+  HandReadOutcome() noexcept { phase_end.fill(Clock::now()); }
 };
 
 static_assert(kMaxFingertips <= 8, "HandReadOutcome::finger_ok_mask is 8 bits");
@@ -226,8 +232,9 @@ class HandComm {
   /// Per-stage receive deadline the implementation was configured with.
   [[nodiscard]] virtual double recv_timeout_ms() const noexcept = 0;
 
-  /// Whether ReadCycleIndividual() is implemented (UDP only, decision D25). The
-  /// node rejects `individual` for a comm that returns false (D16).
+  /// Whether ReadCycleIndividual() is implemented (UDP only, decision D25).
+  /// UdpHandController::PrepareRun() refuses to start `individual` on a comm
+  /// that returns false (D16), so a non-UDP link never runs the default below.
   [[nodiscard]] virtual bool SupportsIndividualMode() const noexcept { return false; }
 
   // ── RT (CommLoop thread, every tick) — noexcept, allocation-free ─────────
@@ -257,12 +264,11 @@ class HandComm {
                          HandReadOutcome& out) noexcept = 0;
 
   /// One individual-mode read cycle: pos → joint pos → vel → per-finger
-  /// sensors. Default = unsupported: nothing attempted, all phase stamps set,
-  /// every flag false (SupportsIndividualMode() is the configure-time gate).
+  /// sensors. Default = unsupported: nothing attempted, every flag false, phase
+  /// stamps from the outcome's constructor (SupportsIndividualMode() gates it).
   virtual void ReadCycleIndividual(const HandReadPlan& /*plan*/, HandReadBuffers& /*bufs*/,
                                    HandReadOutcome& out) noexcept {
     out = HandReadOutcome{};
-    out.phase_end.fill(HandReadOutcome::Clock::now());
   }
 
   /// Mutable working copy for the CommLoop's own per-cycle writes (total_cycles
