@@ -38,7 +38,7 @@ robot_descriptions/README.md: 6491 strict
 robot_descriptions/robots/panda/README.md: 1129 strict  # raised from 1058: skeleton headings (개요 · 디렉토리 · 문제 해결) the old README lacked
 robot_descriptions/robots/ur5e_p1b/README.md: 3047 strict
 rtc_base/README.md: 24945 strict
-rtc_communication/README.md: 15068 strict
+rtc_communication/README.md: 15879 strict  # raised from 15068: CanFdTransport frame API (SendFrame / RecvFrameWithTimeout / RecvFrameNonBlocking / SetPriority) is a second contract beside payload-only, and the installed testing header is a new user surface; nothing in the README could come out for them
 rtc_controller_interface/README.md: 25717 strict
 rtc_controller_manager/README.md: 43334 strict  # raised from 43205: pure-deactivate rejection on switch_controller (moved in when the verify skill was removed)
 rtc_controllers/README.md: 14350 strict

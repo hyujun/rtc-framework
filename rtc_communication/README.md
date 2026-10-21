@@ -43,11 +43,12 @@ auto state = xcvr.GetLatestState();  // non-RT 전용 (mutex)
 | `transport_interface.hpp` | `TransportInterface` | 전송 추상 기반 (`Open` `Close` `Send` `Recv` `SetRecvTimeout` `SetRecvBufferSize` `is_open`). non-copyable, 생성자 `protected` |
 | `udp/udp_socket.hpp` · `udp/udp_transport.hpp` | `UdpSocket` · `UdpTransport` | RAII UDP 소켓 / 송수신 소켓 2개를 관리하는 전송 |
 | `can/can_socket.hpp` · `can/can_transport.hpp` | `CanSocket` · `CanTransport` | RAII SocketCAN raw 소켓 / classic CAN 전송 (payload ≤ 8 B) |
-| `can/canfd_transport.hpp` | `CanFdTransport` | CAN FD 전송 (payload ≤ 64 B) |
+| `can/canfd_transport.hpp` | `CanFdTransport` | CAN FD 전송 (payload ≤ 64 B) + 프레임 API |
 | `rs485/serial_port.hpp` · `rs485/rs485_transport.hpp` | `SerialPort` · `Rs485Transport` | RAII termios tty / length-prefixed 프레이머 전송 |
 | `packet_codec.hpp` | `PacketCodec` · `DecodePacket` · `EncodePacket` | 코덱 concept 과 `memcpy` 헬퍼 |
 | `transceiver.hpp` | `Transceiver<Codec>` | 수신 jthread + 코덱 + 송신 |
-| `socket_options.hpp` | (내부 헬퍼) | UDP/CAN 공용 `SO_RCVBUF` · `SO_RCVTIMEO` 설정 |
+| `socket_options.hpp` | (내부 헬퍼) | UDP/CAN 공용 `SO_RCVBUF` · `SO_RCVTIMEO` · `SO_PRIORITY` 설정 |
+| `testing/can_test_support.hpp` | `SKIP_IF_NO_VCAN` · `SKIP_IF_NO_FD_VCAN` | 테스트 전용 (gtest): `vcan0` 감지 · skip. 소비 패키지 테스트가 재사용 |
 
 ### UdpTransport
 
@@ -84,6 +85,8 @@ auto state = xcvr.GetLatestState();  // non-RT 전용 (mutex)
 | `recv_timeout_ms` | `100` | `SO_RCVTIMEO` |
 
 `CanFdTransportConfig` 는 `CanTransportConfig` 를 상속하고 `bitrate_switch` (`CANFD_BRS`, 기본 `false`) 와 `error_state_indicator` (`CANFD_ESI`, 기본 `false`) 를 더한다. `Open()` 에서 `CAN_RAW_FD_FRAMES` 를 켜므로 classic·FD frame 을 모두 수신한다.
+
+**프레임 API (`CanFdTransport` 전용).** 한 소켓으로 여러 CAN ID 를 다루는 프로토콜은 payload-only 계약 대신 `SendFrame(const canfd_frame&)` (classic 은 `can_frame` overload) · `RecvFrameWithTimeout(canfd_frame&, const timespec&)` (`ppoll`, sub-ms deadline) · `RecvFrameNonBlocking(canfd_frame&)` · `SetPriority(int)` (`SO_PRIORITY`) 를 쓴다. ID · len · `CANFD_BRS` 는 호출마다 호출자가 채우고 (`tx_can_id` · `bitrate_switch` 미적용), 수신은 같은 `rx_can_id` · `rx_can_mask` 필터를 지나 frame 그대로 온다. 반환값 · errno 규약은 헤더 주석이 SSoT 다.
 
 ```cpp
 CanTransportConfig config{.interface_name = "can0",

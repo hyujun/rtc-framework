@@ -6,6 +6,7 @@
 #include "rtc_communication/transport_interface.hpp"
 
 #include <linux/can.h>
+#include <time.h>
 
 #include <algorithm>
 #include <cstring>
@@ -19,6 +20,10 @@ namespace rtc {
 // classic and FD frames; Recv() handles both. Non-standard payload lengths
 // (not in the CAN FD DLC set 0-8/12/16/20/24/32/48/64) are padded up by the
 // kernel when sent to real controllers.
+//
+// Beside the payload-only TransportInterface contract, the frame API below
+// (SendFrame / RecvFrameWithTimeout / RecvFrameNonBlocking) exposes whole
+// canfd_frames for protocols that drive several CAN IDs over one socket.
 //
 // Shared fields (interface, tx/rx IDs, filter, loopback, timeout) are
 // inherited from CanTransportConfig and documented there.
@@ -77,6 +82,45 @@ class CanFdTransport : public TransportInterface {
     std::memcpy(buffer.data(), frame.data, copy_len);
     return static_cast<ssize_t>(copy_len);
   }
+
+  // -- Frame API: ID / len / flags chosen per call ----------------------------
+  // The config's tx_can_id / bitrate_switch / error_state_indicator are NOT
+  // applied here: the caller fills can_id (with CAN_EFF_FLAG for a 29-bit ID),
+  // len and flags (CANFD_BRS / CANFD_ESI). Reception passes the configured rx
+  // filter and hands the frame over as-is (RTR frames are not dropped); the
+  // frame size tells classic (CAN_MTU) from FD (CANFD_MTU) on both sides.
+  // Send/Recv are noexcept, allocation-free and never sleep in the kernel
+  // beyond the given timeout; errno is left as the failing syscall set it.
+
+  // Sends one FD frame (CANFD_MTU: the FDF bit is set even for len <= 8).
+  // Returns false on error — EINVAL for len > CANFD_MAX_DLEN, ENOBUFS when the
+  // tx queue is full, EAGAIN when the socket send buffer is full, ENETDOWN.
+  [[nodiscard]] bool SendFrame(const canfd_frame& frame) noexcept {
+    return socket_.SendFdFrameNonBlocking(frame) >= 0;
+  }
+
+  // Sends one classic frame (CAN_MTU, no FDF bit) on the same socket — for a
+  // peer ID that speaks classic CAN beside the FD stream. Same errors.
+  [[nodiscard]] bool SendFrame(const can_frame& frame) noexcept {
+    return socket_.SendFrameNonBlocking(frame) >= 0;
+  }
+
+  // Waits up to `timeout` (relative, ppoll) for a frame and reads it without
+  // blocking. Returns CAN_MTU / CANFD_MTU, 0 when nothing arrived, -1 on error
+  // (EBADF when closed).
+  [[nodiscard]] ssize_t RecvFrameWithTimeout(canfd_frame& frame, const timespec& timeout) noexcept {
+    return socket_.RecvFdFrameWithTimeout(frame, timeout);
+  }
+
+  // Reads one queued frame without blocking. Returns CAN_MTU / CANFD_MTU, 0
+  // when nothing is queued, -1 on error (EBADF when closed).
+  [[nodiscard]] ssize_t RecvFrameNonBlocking(canfd_frame& frame) noexcept {
+    return socket_.RecvFdFrameNonBlocking(frame);
+  }
+
+  // Sets SO_PRIORITY (tx qdisc band / skb priority; values > 6 need
+  // CAP_NET_ADMIN). Setup-time call: after Open(), before the RT loop starts.
+  [[nodiscard]] bool SetPriority(int priority) noexcept { return socket_.SetPriority(priority); }
 
   void SetRecvTimeout(int timeout_ms) noexcept override { socket_.SetRecvTimeout(timeout_ms); }
 

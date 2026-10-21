@@ -16,9 +16,9 @@
 //   - CanTransport payload round-trip, >8-byte send rejection, rx filter,
 //     extended-frame IDs, receive_own_messages, is_open() lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
-#include "can_test_support.hpp"
 #include "rtc_communication/can/can_socket.hpp"
 #include "rtc_communication/can/can_transport.hpp"
+#include "rtc_communication/testing/can_test_support.hpp"
 
 #include <fcntl.h>
 #include <gtest/gtest.h>

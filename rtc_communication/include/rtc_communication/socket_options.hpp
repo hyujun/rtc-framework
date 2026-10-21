@@ -28,6 +28,15 @@ inline void SetSocketRecvTimeout(int fd, int timeout_ms) noexcept {
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
+// Set socket priority (SO_PRIORITY): the kernel maps it to the tx qdisc band
+// and the skb priority. Values above 6 need CAP_NET_ADMIN. Returns false when
+// fd is not open or setsockopt fails (errno preserved).
+[[nodiscard]] inline bool SetSocketPriority(int fd, int priority) noexcept {
+  if (fd < 0)
+    return false;
+  return setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &priority, sizeof(priority)) == 0;
+}
+
 }  // namespace rtc
 
 #endif  // RTC_COMMUNICATION_SOCKET_OPTIONS_HPP_

@@ -1,7 +1,7 @@
 #!/bin/bash
 # setup_vcan.sh — 개발 PC 용 가상 CAN FD 인터페이스 (vcan0, MTU 72)
 #
-# rtc_communication 의 CAN / CAN FD 테스트 (test/can_test_support.hpp 의
+# rtc_communication 의 CAN / CAN FD 테스트 (설치 헤더 testing/can_test_support.hpp 의
 # SKIP_IF_NO_FD_VCAN) 와 udp_hand_driver 의 proto2 SIL (`sil_mode:=firmware`,
 # vcan0) 이 요구하는 인터페이스를 만든다. CAN FD 프레임 (canfd_frame, 72 B) 을
 # 실으려면 MTU 가 CANFD_MTU = 72 여야 하고, vcan 의 기본 MTU 는 커널에 따라

@@ -16,10 +16,13 @@
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <net/if.h>
+#include <poll.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -127,6 +130,9 @@ class CanSocket {
   // Set receive timeout (SO_RCVTIMEO).
   void SetRecvTimeout(int timeout_ms) noexcept { SetSocketRecvTimeout(fd_, timeout_ms); }
 
+  // Set socket priority (SO_PRIORITY). Returns false when closed or on failure.
+  [[nodiscard]] bool SetPriority(int priority) noexcept { return SetSocketPriority(fd_, priority); }
+
   // -- I/O (allocation-free, noexcept) ---------------------------------------
 
   // Sends one classic CAN frame. Returns bytes written, or -1 on error.
@@ -148,11 +154,67 @@ class CanSocket {
     return (n == static_cast<ssize_t>(sizeof(frame))) ? n : -1;
   }
 
+  // Non-blocking variants of SendFrame / SendFdFrame (MSG_DONTWAIT): when the
+  // socket send buffer is exhausted — frames pending on a stalled controller —
+  // they fail at once with errno = EAGAIN instead of sleeping in the kernel
+  // until the default (infinite) SO_SNDTIMEO. Returns bytes written, or -1.
+  [[nodiscard]] ssize_t SendFrameNonBlocking(const can_frame& frame) noexcept {
+    const ssize_t n = ::send(fd_, &frame, sizeof(frame), MSG_DONTWAIT);
+    return (n == static_cast<ssize_t>(sizeof(frame))) ? n : -1;
+  }
+
+  [[nodiscard]] ssize_t SendFdFrameNonBlocking(const canfd_frame& frame) noexcept {
+    const ssize_t n = ::send(fd_, &frame, sizeof(frame), MSG_DONTWAIT);
+    return (n == static_cast<ssize_t>(sizeof(frame))) ? n : -1;
+  }
+
   // Receives one frame into a canfd_frame buffer. On an FD-enabled socket the
   // result is either CAN_MTU (classic frame) or CANFD_MTU (FD frame); the
   // caller distinguishes by the returned size. Returns -1 on error/timeout.
   [[nodiscard]] ssize_t RecvFdFrame(canfd_frame& frame) noexcept {
     return ::read(fd_, &frame, sizeof(frame));
+  }
+
+  // Waits up to `timeout` (relative) for a frame, then reads it without
+  // blocking. ppoll gives sub-millisecond deadlines, which SO_RCVTIMEO (ms)
+  // cannot, and the read never sleeps past it: a wake with nothing queued
+  // (POLLERR whose error was already consumed, another reader draining the
+  // socket) returns 0 instead of blocking for SO_RCVTIMEO. Returns CAN_MTU /
+  // CANFD_MTU on success, 0 when nothing arrived (timeout expired or a
+  // spurious wake), -1 on error (errno set: EBADF when closed, EINTR when a
+  // signal interrupted the wait, else the pending socket error — e.g.
+  // ENETDOWN — that ppoll reported as POLLERR).
+  [[nodiscard]] ssize_t RecvFdFrameWithTimeout(canfd_frame& frame,
+                                               const timespec& timeout) noexcept {
+    if (fd_ < 0) {
+      errno = EBADF;  // ppoll ignores a negative fd and would report a timeout
+      return -1;
+    }
+    pollfd pfd{};
+    pfd.fd = fd_;
+    pfd.events = POLLIN;
+    const int rc = ::ppoll(&pfd, 1, &timeout, nullptr);
+    if (rc < 0)
+      return -1;
+    if (rc == 0)
+      return 0;
+    // POLLIN: one frame is queued. POLLERR / POLLHUP: recv() surfaces the
+    // pending socket error as errno (sk_err is reported before EAGAIN).
+    return RecvFdFrameNonBlocking(frame);
+  }
+
+  // Reads one queued frame without blocking (MSG_DONTWAIT), regardless of
+  // SO_RCVTIMEO. Returns CAN_MTU / CANFD_MTU, 0 when nothing is queued, -1 on
+  // error (errno set, EBADF when closed).
+  [[nodiscard]] ssize_t RecvFdFrameNonBlocking(canfd_frame& frame) noexcept {
+    if (fd_ < 0) {
+      errno = EBADF;
+      return -1;
+    }
+    const ssize_t n = ::recv(fd_, &frame, sizeof(frame), MSG_DONTWAIT);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+      return 0;
+    return n;
   }
 
   // -- Accessors -------------------------------------------------------------
