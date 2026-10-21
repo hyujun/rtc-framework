@@ -43,6 +43,10 @@ KO="${SRC}/${MOD_SUBDIR}/${DRV}.ko"
 KVER="$(uname -r)"
 INSTALL_DIR="/lib/modules/${KVER}/${MOD_SUBDIR}"
 
+# `lsmod | grep -q` 가 아니다: set -o pipefail 아래서 grep -q 가 먼저 닫으면 lsmod 가
+# SIGPIPE 로 죽어 로드된 모듈을 "없다" 고 한다 (PC#1 에서 실제로 났다).
+module_loaded() { [[ -d "/sys/module/${DRV}" ]]; }
+
 usage() {
   echo ""
   echo "Usage:"
@@ -91,9 +95,21 @@ do_build() {
   info "  at $(git -C "$SRC" describe --tags --always)"
 
   section "Step 2: make all (KERNEL_SRC=${kernel_src})"
+  # v2.1.15 는 <linux/unaligned.h> 를 쓰는데 그 헤더는 6.12 에서 <asm/unaligned.h> 를
+  # 옮긴 것이다 (PC#2 6.1.112 에 없다). 소스를 고치지 않고 shim 디렉토리를 include
+  # 경로 앞에 둔다 — 커널 트리에 헤더가 있으면 그쪽이 먼저 잡혀 shim 은 놀고 있다.
+  local -a extra=()
+  if [[ ! -f "${kernel_src}/include/linux/unaligned.h" ]]; then
+    local shim="${SRC}/.rtc-compat/include"
+    mkdir -p "${shim}/linux"
+    printf '/* shim by install_ixxat_socketcan.sh: kernels before 6.12 keep this header under asm/ */\n#include <asm/unaligned.h>\n' \
+      >"${shim}/linux/unaligned.h"
+    extra=("KCPPFLAGS=-I${shim}")
+    info "  kernel has no include/linux/unaligned.h — using shim ${shim}"
+  fi
   # 다른 커널로 빌드한 산출물이 남아 있으면 vermagic 이 어긋난 .ko 를 설치하게 된다 → clean
   make -C "$SRC" clean KERNEL_SRC="$kernel_src" >/dev/null 2>&1 || true
-  if ! make -C "$SRC" all KERNEL_SRC="$kernel_src"; then
+  if ! make -C "$SRC" all KERNEL_SRC="$kernel_src" "${extra[@]}"; then
     fatal "build failed — paste the output into the issue (#896 asks for the result on each PC)"
   fi
   [[ -f "$KO" ]] || fatal "build reported success but ${KO} is missing"
@@ -116,7 +132,7 @@ do_install() {
   fi
 
   section "Step 1: install ${DRV}.ko → ${INSTALL_DIR}"
-  if lsmod | grep -q "^${DRV}\b"; then
+  if module_loaded; then
     warn "  ${DRV} is loaded — unloading (CAN interfaces go away until modprobe)"
     rmmod "$DRV"
   fi
@@ -142,7 +158,7 @@ do_install() {
 # ── status ──────────────────────────────────────────────────────────────────
 do_status() {
   section "ix_usb_can status (kernel ${KVER})"
-  if lsmod | grep -q "^${DRV}\b"; then
+  if module_loaded; then
     success "module loaded: $(modinfo -F version "$DRV" 2>/dev/null || echo '?') ($(modinfo -n "$DRV" 2>/dev/null || echo '?'))"
   else
     warn "module not loaded (sudo modprobe ${DRV}; not installed → $0 install)"
