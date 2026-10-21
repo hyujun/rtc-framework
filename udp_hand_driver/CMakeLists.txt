@@ -212,6 +212,10 @@ if(BUILD_TESTING)
     src/udp_hand_node_stats.cpp
     ENV ROS_DOMAIN_ID=54)
   target_include_directories(test_udp_hand_node_lifecycle PRIVATE include)
+  # Forensic-artifact schema fixtures (stats JSON key set, timing CSV header) —
+  # the G-1 "existing keys preserved" gate of epic #895 (#897).
+  target_compile_definitions(test_udp_hand_node_lifecycle
+    PRIVATE UDP_HAND_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures")
   target_link_libraries(test_udp_hand_node_lifecycle udp_hand_protocol)
   ament_target_dependencies(test_udp_hand_node_lifecycle
     rtc_base rtc_inference rtc_msgs rclcpp rclcpp_lifecycle lifecycle_msgs

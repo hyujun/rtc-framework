@@ -28,16 +28,95 @@
 
 #include <gtest/gtest.h>
 
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
+#include <set>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
+
+#ifndef UDP_HAND_TEST_FIXTURE_DIR
+#error "UDP_HAND_TEST_FIXTURE_DIR must be set by CMake (test/fixtures)"
+#endif
 
 namespace {
 
 using namespace std::chrono_literals;
+
+// Dotted key paths of every object member in a JSON document made of objects
+// and scalars only (SaveCommStats emits no arrays). Root-level keys have no
+// prefix; nested ones read `comm_stats.per_request.write_echo.ok`. A string is
+// a key when the next non-blank character is ':'; the writer emits no escaped
+// quotes, so a plain scan is exact for this file.
+std::set<std::string> JsonKeyPaths(const std::string& json) {
+  std::set<std::string> out;
+  std::vector<std::string> stack;
+  std::string pending;
+  for (std::size_t i = 0; i < json.size(); ++i) {
+    const char c = json[i];
+    if (c == '"') {
+      const auto end = json.find('"', i + 1);
+      if (end == std::string::npos) {
+        break;
+      }
+      const std::string s = json.substr(i + 1, end - i - 1);
+      i = end;
+      std::size_t j = i + 1;
+      while (j < json.size() && std::isspace(static_cast<unsigned char>(json[j])) != 0) {
+        ++j;
+      }
+      if (j < json.size() && json[j] == ':') {
+        std::string path;
+        for (const auto& k : stack) {
+          if (!k.empty()) {
+            path += k + '.';
+          }
+        }
+        path += s;
+        out.insert(path);
+        pending = s;
+      }
+    } else if (c == '{') {
+      stack.push_back(pending);  // root pushes "" (skipped when joining)
+      pending.clear();
+    } else if (c == '}') {
+      if (!stack.empty()) {
+        stack.pop_back();
+      }
+    }
+  }
+  return out;
+}
+
+std::string ReadFile(const std::filesystem::path& p) {
+  std::ifstream ifs(p);
+  std::stringstream ss;
+  ss << ifs.rdbuf();
+  return ss.str();
+}
+
+// One non-empty, non-`#` line per entry.
+std::set<std::string> ReadFixtureLines(const std::filesystem::path& p) {
+  std::set<std::string> out;
+  std::ifstream ifs(p);
+  std::string line;
+  while (std::getline(ifs, line)) {
+    if (!line.empty() && line[0] != '#') {
+      out.insert(line);
+    }
+  }
+  return out;
+}
+
+std::string FirstLine(const std::string& text) {
+  const auto nl = text.find('\n');
+  return nl == std::string::npos ? text : text.substr(0, nl);
+}
 
 rclcpp::NodeOptions LoopmodelOptions() {
   rclcpp::NodeOptions options;
@@ -422,6 +501,65 @@ TEST_F(UdpHandNodeLifecycleTest, NonPositiveLoopRateIsRejectedAtConfigure) {
          "infinite period";
 
   exec_.remove_node(node->get_node_base_interface());
+}
+
+// Forensic-artifact schema gate (G-1 of epic #895, #897): the key set of
+// <session>/device/hand_udp_stats.json must stay a SUPERSET of the checked-in
+// fixture, and the <session>/timing/hand_udp_timing_log.csv header must match
+// it exactly. Analysis scripts and the hand-stats readers key on these names, so
+// a transport seam or a new protocol may ADD keys but never drop or rename one.
+// The fixtures were generated from this very run on the pre-seam tree (main
+// d7d38af7); regenerate them only in a commit that deliberately changes the
+// schema (new keys: append the line; the CSV header is rtc_base's
+// RtTickTimingPayload schema shared with CM / MPC). Loopmodel runs the node's
+// default (individual) comm mode, so the individual-mode timing keys are the
+// ones pinned; the bulk-only keys are not in this fixture.
+TEST_F(UdpHandNodeLifecycleTest, StatsJsonKeysAndTimingCsvHeaderMatchFixture) {
+  auto node = std::make_shared<UdpHandNode>(LoopmodelOptions());
+  exec_.add_node(node->get_node_base_interface());
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  // Enough cycles that every sensor-cycle-gated timing block (sensor_proc_us)
+  // has samples and appears in the JSON.
+  SpinFor(500ms);
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+
+  const std::filesystem::path fixtures = UDP_HAND_TEST_FIXTURE_DIR;
+
+  // ── hand_udp_stats.json: key superset ──────────────────────────────────
+  const auto json_path = session_dir_ / "device" / "hand_udp_stats.json";
+  ASSERT_TRUE(std::filesystem::exists(json_path));
+  const auto actual_keys = JsonKeyPaths(ReadFile(json_path));
+  const auto expected_keys = ReadFixtureLines(fixtures / "hand_udp_stats_keys.txt");
+  ASSERT_FALSE(expected_keys.empty())
+      << "fixture missing or empty: " << (fixtures / "hand_udp_stats_keys.txt");
+  std::vector<std::string> missing;
+  for (const auto& k : expected_keys) {
+    if (actual_keys.count(k) == 0) {
+      missing.push_back(k);
+    }
+  }
+  std::string actual_dump;
+  for (const auto& k : actual_keys) {
+    actual_dump += "  " + k + "\n";
+  }
+  EXPECT_TRUE(missing.empty()) << "hand_udp_stats.json dropped " << missing.size()
+                               << " fixture key(s); first: " << missing.front()
+                               << "\nactual keys:\n"
+                               << actual_dump;
+
+  // ── hand_udp_timing_log.csv: header identical ──────────────────────────
+  const auto csv_path = session_dir_ / "timing" / "hand_udp_timing_log.csv";
+  ASSERT_TRUE(std::filesystem::exists(csv_path));
+  const std::string actual_header = FirstLine(ReadFile(csv_path));
+  const std::string expected_header =
+      FirstLine(ReadFile(fixtures / "hand_udp_timing_log_header.txt"));
+  ASSERT_FALSE(expected_header.empty())
+      << "fixture missing or empty: " << (fixtures / "hand_udp_timing_log_header.txt");
+  EXPECT_EQ(actual_header, expected_header);
 }
 
 }  // namespace

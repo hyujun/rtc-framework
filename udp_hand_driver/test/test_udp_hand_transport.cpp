@@ -1,6 +1,7 @@
 // Unit tests for hand_udp_transport.hpp — UdpHandCommStats, transport lifecycle,
 // and mode validation on request-response via loopback UDP.
 
+#include "udp_hand_driver/udp_hand_comm.hpp"
 #include "udp_hand_driver/udp_hand_transport.hpp"
 
 #include <arpa/inet.h>
@@ -9,6 +10,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -26,6 +28,12 @@ using namespace packets;
 [[nodiscard]] inline UdpHandCommStats PubStats(UdpHandTransport& t) {
   t.PublishCommStats();
   return t.comm_stats();
+}
+
+// Same, through the HandComm surface (UdpHandComm tests stay on the seam API).
+[[nodiscard]] inline UdpHandCommStats PubStats(HandComm& c) {
+  c.PublishCommStats();
+  return c.comm_stats();
 }
 
 // ── Helper: loopback UDP device simulator ──────────────────────────────────────
@@ -62,6 +70,14 @@ class LoopbackDevice {
     ::recvfrom(fd_, req.data(), req.size(), 0, reinterpret_cast<sockaddr*>(&client_addr),
                &addr_len);
     ::sendto(fd_, data, len, 0, reinterpret_cast<const sockaddr*>(&client_addr), addr_len);
+  }
+
+  // Receive one packet, keep the client address (so Send() can answer it) and
+  // hand the bytes back — for asserting what the transport put on the wire.
+  [[nodiscard]] ssize_t RecvCapture(uint8_t* buf, std::size_t cap) {
+    client_addr_len_ = sizeof(client_addr_);
+    return ::recvfrom(fd_, buf, cap, 0, reinterpret_cast<sockaddr*>(&client_addr_),
+                      &client_addr_len_);
   }
 
   // Learn the transport's ephemeral source address from one received packet
@@ -919,6 +935,193 @@ TEST(HandUdpTransportDrain, NineStale_BoundedToEightThenOne) {
   EXPECT_EQ(transport.DrainStaleDatagrams(), 8);
   EXPECT_EQ(transport.DrainStaleDatagrams(), 1);
   EXPECT_EQ(PubStats(transport).stale_drained, 9u);
+}
+
+// ── HandComm seam: UdpHandComm wraps the transport (epic #895 D25, #897) ──────
+// The controller talks to the link only through HandComm; UdpHandComm must put
+// the same bytes on the wire the controller used to produce through
+// UdpHandTransport directly, attribute the same per-kind stats, and report the
+// per-channel outcome + phase stamps the controller's masks are built from.
+
+TEST(UdpHandComm, Construction_NotOpen_Defaults) {
+  UdpHandComm comm("127.0.0.1", 55151, 10.0);
+  EXPECT_FALSE(comm.transport().is_open());
+  EXPECT_DOUBLE_EQ(comm.recv_timeout_ms(), 10.0);
+  EXPECT_TRUE(comm.SupportsIndividualMode());
+  // Closed link: the cycle-start drain is a safe no-op (fake mode never opens).
+  EXPECT_EQ(comm.DrainStale(), 0);
+  EXPECT_EQ(comm.recv_error_count(), 0u);
+  EXPECT_EQ(comm.comm_stats().total_cycles, 0u);
+}
+
+TEST(UdpHandComm, WriteCommandWithEcho_EncodesJointIoMode_IgnoresFf) {
+  LoopbackDevice device;
+  UdpHandComm comm("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(comm.Open());
+  comm.set_joint_io_mode(JointMode::kMotor);  // 1b
+
+  std::array<uint8_t, kHeaderSize> echo{};
+  echo[0] = kDeviceId;
+  echo[1] = static_cast<uint8_t>(Command::kWritePosition);
+  std::array<uint8_t, kMaxPacketSize> wire{};
+  ssize_t wire_len = 0;
+  std::thread dev_thread([&]() {
+    wire_len = device.RecvCapture(wire.data(), wire.size());
+    device.Send(echo.data(), echo.size());
+  });
+
+  std::array<float, kNumHandMotors> cmd{};
+  std::array<float, kNumHandMotors> ff{};
+  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    cmd[i] = 0.1f * static_cast<float>(i);
+    ff[i] = 7.0f;  // no proto1 wire field — must not change the datagram
+  }
+  const bool result = comm.WriteCommandWithEcho(cmd, ff);
+  dev_thread.join();
+
+  EXPECT_TRUE(result);
+  std::array<uint8_t, kMotorPacketSize> expected{};
+  codec::EncodeWritePosition(cmd, expected, JointMode::kMotor);
+  ASSERT_EQ(wire_len, static_cast<ssize_t>(kMotorPacketSize));
+  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), wire.begin()));
+  EXPECT_EQ(PubStats(comm).per_kind[KindIdx(RequestKind::kWriteEcho)].ok, 1u);
+}
+
+TEST(UdpHandComm, WriteCommandFireAndForget_OneDatagram_NoRecv) {
+  LoopbackDevice device;
+  UdpHandComm comm("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(comm.Open());
+  comm.set_joint_io_mode(JointMode::kJoint);  // 1a
+
+  // E-Stop shape: zero position AND zero feedforward; returns without waiting.
+  const std::array<float, kNumHandMotors> zeros{};
+  comm.WriteCommandFireAndForget(zeros, zeros);
+
+  std::array<uint8_t, kMaxPacketSize> wire{};
+  const ssize_t wire_len = device.RecvCapture(wire.data(), wire.size());
+  std::array<uint8_t, kMotorPacketSize> expected{};
+  codec::EncodeWritePosition(zeros, expected, JointMode::kJoint);
+  ASSERT_EQ(wire_len, static_cast<ssize_t>(kMotorPacketSize));
+  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), wire.begin()));
+  // Nothing was awaited: no recv accounting at all.
+  const auto stats = PubStats(comm);
+  EXPECT_EQ(stats.recv_ok + stats.recv_timeout + stats.recv_error, 0u);
+}
+
+TEST(UdpHandComm, ReadCycle_SilentDevice_PlannedChannelsOnlyAreAttempted) {
+  LoopbackDevice device;  // never responds
+  UdpHandComm comm("127.0.0.1", device.port(), 2.0);
+  ASSERT_TRUE(comm.Open());
+
+  // 1b-shaped plan: no motor-space read, no sensor this cycle.
+  HandReadPlan plan{};
+  plan.motor_space_read = false;
+  plan.sensors = false;
+  plan.sensor_response_size = kP1bSensorResponseSize;
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  const auto t0 = HandReadOutcome::Clock::now();
+  comm.ReadCycle(plan, bufs, out);
+
+  EXPECT_FALSE(out.motor_ok);
+  EXPECT_FALSE(out.joint_ok);
+  EXPECT_EQ(out.sensor_recvd, -1);
+  // Boundaries inside the read, in issue order (stamped even when not planned).
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kMotor), t0);
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kJoint), out.PhaseEnd(ReadPhase::kMotor));
+  // Bulk has no vel phase: left at the epoch (the controller clamps it).
+  EXPECT_EQ(out.PhaseEnd(ReadPhase::kVel), HandReadOutcome::Clock::time_point{});
+  const auto stats = PubStats(comm);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].timeout, 0u);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kJointRead)].timeout, 1u);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kBulkSensor)].timeout, 0u);
+
+  // 1a-shaped plan on a sensor cycle: all three attempted.
+  plan.motor_space_read = true;
+  plan.sensors = true;
+  plan.sensor_response_size = kAllSensorResponseSize;
+  comm.ReadCycle(plan, bufs, out);
+  const auto stats2 = PubStats(comm);
+  EXPECT_EQ(stats2.per_kind[KindIdx(RequestKind::kMotorRead)].timeout, 1u);
+  EXPECT_EQ(stats2.per_kind[KindIdx(RequestKind::kJointRead)].timeout, 2u);
+  EXPECT_EQ(stats2.per_kind[KindIdx(RequestKind::kBulkSensor)].timeout, 1u);
+}
+
+TEST(UdpHandComm, ReadCycle_MotorAndJointAnswered_FillsBuffersAndReportsMode) {
+  LoopbackDevice device;
+  UdpHandComm comm("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(comm.Open());
+  comm.set_joint_io_mode(JointMode::kJoint);  // 1a
+
+  // Device: answer the kMotor read, then the kJoint read, then stay silent for
+  // the bulk-sensor request (sensor_recvd must report the failure as -1).
+  AllMotorResponsePacket motor_resp{};
+  motor_resp.id = kDeviceId;
+  motor_resp.cmd = static_cast<uint8_t>(Command::kReadAllMotors);
+  motor_resp.mode = static_cast<uint8_t>(JointMode::kMotor);
+  for (std::size_t i = 0; i < kAllMotorDataCount; ++i) {
+    motor_resp.data[i] = FloatToUint32(static_cast<float>(i));
+  }
+  AllMotorResponsePacket joint_resp = motor_resp;
+  joint_resp.mode = static_cast<uint8_t>(JointMode::kJoint);
+  for (std::size_t i = 0; i < kAllMotorDataCount; ++i) {
+    joint_resp.data[i] = FloatToUint32(100.0f + static_cast<float>(i));
+  }
+  std::array<uint8_t, kAllMotorResponseSize> motor_buf{}, joint_buf{};
+  std::memcpy(motor_buf.data(), &motor_resp, kAllMotorResponseSize);
+  std::memcpy(joint_buf.data(), &joint_resp, kAllMotorResponseSize);
+  std::thread dev_thread([&]() {
+    device.RespondWith(motor_buf.data(), motor_buf.size());
+    device.RespondWith(joint_buf.data(), joint_buf.size());
+  });
+
+  HandReadPlan plan{};
+  plan.motor_space_read = true;
+  plan.sensors = true;
+  plan.sensor_response_size = kAllSensorResponseSize;
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  comm.ReadCycle(plan, bufs, out);
+  dev_thread.join();
+
+  EXPECT_TRUE(out.motor_ok);
+  EXPECT_TRUE(out.joint_ok);
+  EXPECT_EQ(out.received_motor_mode, JointMode::kMotor);
+  EXPECT_EQ(out.sensor_recvd, -1);
+  // pos = data[0..9], vel = data[10..19], cur = data[20..29] per the codec.
+  EXPECT_FLOAT_EQ(bufs.motor.pos[3], 3.0f);
+  EXPECT_FLOAT_EQ(bufs.motor.vel[0], static_cast<float>(kMotorDataCount));
+  EXPECT_FLOAT_EQ(bufs.joint.pos[3], 103.0f);
+  const auto stats = PubStats(comm);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].ok, 1u);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kJointRead)].ok, 1u);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kBulkSensor)].timeout, 1u);
+}
+
+TEST(UdpHandComm, ReadCycleIndividual_SilentDevice_AttemptsPosJointVelAndFingers) {
+  LoopbackDevice device;  // never responds
+  UdpHandComm comm("127.0.0.1", device.port(), 2.0);
+  ASSERT_TRUE(comm.Open());
+
+  HandReadPlan plan{};
+  plan.sensors = true;
+  plan.num_fingertips = 2;
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  const auto t0 = HandReadOutcome::Clock::now();
+  comm.ReadCycleIndividual(plan, bufs, out);
+
+  EXPECT_FALSE(out.motor_ok);
+  EXPECT_FALSE(out.joint_ok);
+  EXPECT_FALSE(out.vel_ok);
+  EXPECT_EQ(out.finger_ok_mask, 0u);
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kMotor), t0);
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kJoint), out.PhaseEnd(ReadPhase::kMotor));
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kVel), out.PhaseEnd(ReadPhase::kJoint));
+  const auto stats = PubStats(comm);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].timeout, 2u);  // pos + vel
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kJointRead)].timeout, 1u);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kSensorRead)].timeout, 2u);  // 2 fingers
 }
 
 }  // namespace udp_hand_driver::test
