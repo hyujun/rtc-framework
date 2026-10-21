@@ -216,9 +216,7 @@ rtc_communication/
 CAN/CAN FD 테스트는 가상 인터페이스 `vcan0` 이 있어야 실행되고 없으면 `GTEST_SKIP()` 으로 건너뛴다.
 
 ```bash
-sudo modprobe vcan
-sudo ip link add dev vcan0 type vcan
-sudo ip link set up vcan0
+sudo ../repo_scripts/scripts/setup_vcan.sh   # vcan0, MTU 72
 ```
 
 수동 smoke test 는 [can-utils](https://github.com/linux-can/can-utils) (`sudo apt install can-utils`) 의 `candump vcan0` · `cansend vcan0 123#11223344` · `cangen vcan0` · `canfdtest vcan0` 를 쓴다. RS485 테스트는 PTY 페어를 시리얼 링크 대용으로 쓰므로 root·모듈 없이 항상 실행되며, `TIOCSRS485` 는 PTY 에서 미지원이라 프레이밍·타임아웃·바이트 투명성만 검증한다 (실기 검증은 USB-RS485 어댑터로 별도).
