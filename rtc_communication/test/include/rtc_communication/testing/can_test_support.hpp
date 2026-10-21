@@ -1,13 +1,17 @@
 // ── can_test_support.hpp ────────────────────────────────────────────────────
-// Shared vcan detection and skip helpers for the CAN/CANFD loopback tests.
+// Shared vcan detection and skip helpers for CAN / CAN FD tests.
 //
-// Local setup:
-//   sudo modprobe vcan
-//   sudo ip link add dev vcan0 type vcan
-//   sudo ip link set up vcan0
+// Test-only (it pulls in gtest) and therefore never installed: it lives under
+// test/include/, and consumer packages' tests (device drivers over
+// CanTransport / CanFdTransport) reach it with
+// rtc_communication_add_test_includes(<target>) in their CMakeLists so the
+// skip contract is shared instead of forked (P5). Rule:
+// agent_docs/conventions.md §Code Conventions.
+//
+// Local setup (vcan0, MTU 72 for CAN FD): sudo repo_scripts/scripts/setup_vcan.sh
 // ─────────────────────────────────────────────────────────────────────────────
-#ifndef RTC_COMMUNICATION_TEST_CAN_TEST_SUPPORT_HPP_
-#define RTC_COMMUNICATION_TEST_CAN_TEST_SUPPORT_HPP_
+#ifndef RTC_COMMUNICATION_TESTING_CAN_TEST_SUPPORT_HPP_
+#define RTC_COMMUNICATION_TESTING_CAN_TEST_SUPPORT_HPP_
 
 #include <gtest/gtest.h>
 #include <linux/can.h>
@@ -54,4 +58,4 @@ inline constexpr char kVcanInterface[] = "vcan0";
                  << "); sudo ip link set vcan0 mtu 72";                                      \
   }
 
-#endif  // RTC_COMMUNICATION_TEST_CAN_TEST_SUPPORT_HPP_
+#endif  // RTC_COMMUNICATION_TESTING_CAN_TEST_SUPPORT_HPP_
