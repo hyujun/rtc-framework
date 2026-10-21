@@ -1360,6 +1360,23 @@ expect_contains "a new rule document without a budget entry is reported" "$out" 
 expect_exit "a new rule document without a budget entry blocks the turn" "$rc" 2
 rm -rf "$dir"
 
+# 48c. The README budgets (repo_scripts/config/readme_budget.yaml, D14) are the
+#      same whole-file cap reported at line 1, but the pass-through matched
+#      D12 alone: a README grown past its budget by an edit in the middle was
+#      green here and red in CI (three PRs in a row, #908-#910).
+dir=$(make_fixture)
+mkdir -p "$dir/repo_scripts/config"
+for i in $(seq 1 40); do printf -- '- item %03d\n' "$i"; done >"$dir/rtc_demo/README.md"
+printf 'rtc_demo/README.md: %s\n' "$(wc -c <"$dir/rtc_demo/README.md")" >"$dir/repo_scripts/config/readme_budget.yaml"
+git -C "$dir" add -A && git -C "$dir" commit -qm readme-budgeted
+out=$(run_hook "$dir"); rc=$?
+expect_exit "a README at its budget does not block" "$rc" 0
+sed -i '20s/$/ and the story of how it was found/' "$dir/rtc_demo/README.md"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "a README grown past its budget mid-file is reported" "$out" "rtc_demo/README.md:1: [D14]"
+expect_exit "a README over its budget blocks the turn" "$rc" 2
+rm -rf "$dir"
+
 # 49. Renumbering a constitution heading breaks refs in files the change never
 #     touched, and bare refs on unchanged lines of the constitution itself; the
 #     per-file, added-line scope saw neither. The heading change now resolves

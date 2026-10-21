@@ -39,8 +39,9 @@
 #       must be in CMakeLists.txt, a new find_package() in package.xml
 #       (blocking).
 #   1b. changed *.md -> validate_docs.py --files, findings narrowed to added
-#       lines of a tracked doc; changed *.yaml -> parse check (no PyYAML:
-#       fails OPEN).
+#       lines of a tracked doc except the whole-file byte caps (D12 docs /
+#       D14 README budgets), which pass through; changed *.yaml -> parse check
+#       (no PyYAML: fails OPEN).
 #   1c. changed .claude/rules/*.md -> validate_claude_rules.py (globs can fire)
 #   1d. changed CMakeLists.txt / conftest.py / colcon.pkg / test sources ->
 #       validate_test_{domains,fixtures,registration}.py, WHOLE repo.
@@ -1348,12 +1349,13 @@ if [ "${#DOC_FILES[@]}" -gt 0 ]; then
         }
         # Validator findings are "path:line: [Dn] message"; anything else is a
         # summary or a traceback and must survive so real breakage stays loud.
-        # D12 line/byte caps are whole-file budgets reported at a nominal line
-        # (1, or cap+1) that the edit which blew the budget almost never adds,
-        # so they bypass the narrowing -- filtered, a constitution could grow
-        # past its cap here and only CI would say so.
+        # D12 / D14 line/byte caps are whole-file budgets reported at a nominal
+        # line (1, or cap+1) that the edit which blew the budget almost never
+        # adds, so they bypass the narrowing -- filtered, a constitution (D12)
+        # or a README (D14, readme_budget.yaml) could grow past its cap here and
+        # only CI would say so (it did: #908-#910 shipped a README 418 B over).
         {
-          if ($0 ~ /: \[D12\] [0-9]+ (bytes|lines) > [0-9]+ /) {
+          if ($0 ~ /: \[D1[24]\] [0-9]+ (bytes|lines) > [0-9]+ /) {
             print "  - " $0
           } else if (match($0, /^[^:]+:[0-9]+: \[D[0-9]+\] /)) {
             head = substr($0, 1, RLENGTH)
