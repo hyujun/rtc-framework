@@ -69,6 +69,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 #include <type_traits>
 
 namespace udp_hand_driver::canfd {
@@ -83,6 +84,33 @@ inline constexpr uint8_t kNodeHost = 0x00;
 inline constexpr uint8_t kNodeRightHand = 0x01;
 inline constexpr uint8_t kNodeLeftHand = 0x02;
 inline constexpr uint8_t kNodeBroadcast = 0xFF;
+
+/// Which hand a node is. This is the only spelling the host side exposes
+/// (the `hand_side` parameter, D51): the integer node id stays inside this
+/// header, derived by NodeIdOf().
+enum class HandSide : uint8_t { kRight, kLeft };
+
+/// Node id of a hand (D51: right → kNodeRightHand, left → kNodeLeftHand).
+[[nodiscard]] constexpr uint8_t NodeIdOf(HandSide side) noexcept {
+  return side == HandSide::kLeft ? kNodeLeftHand : kNodeRightHand;
+}
+
+/// Parse the `hand_side` parameter's value ("right" / "left", exact). False
+/// and `out` untouched for anything else.
+[[nodiscard]] constexpr bool ParseHandSide(std::string_view text, HandSide& out) noexcept {
+  if (text == "right") {
+    out = HandSide::kRight;
+    return true;
+  }
+  if (text == "left") {
+    out = HandSide::kLeft;
+    return true;
+  }
+  return false;
+}
+
+static_assert(NodeIdOf(HandSide::kRight) == kNodeRightHand, "D51: right hand is node 1");
+static_assert(NodeIdOf(HandSide::kLeft) == kNodeLeftHand, "D51: left hand is node 2");
 
 /// The only priority the hand protocol uses (0 = wins arbitration).
 inline constexpr uint8_t kPriorityRealtime = 0;

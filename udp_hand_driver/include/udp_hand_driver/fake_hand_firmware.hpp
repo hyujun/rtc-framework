@@ -19,9 +19,23 @@
 // hardware (Phase 5 is ground truth). Loopback latency is ~µs, so this harness
 // validates protocol/decode correctness, not timing.
 //
+// proto2 (CAN FD, epic #895 · H1-F04-2b): the same joint model answers the
+// CAN FD wire through BuildCanFdResponse(), the MCU's mirror image for one
+// hand (Config::hand_side → node id, D51). One received frame yields 0..3
+// frames: a CMD Frame 0 / 1 is applied and its 64 bytes echoed verbatim
+// (D41); a REQ (DLC 0, D47) is answered by the RESP burst idx 0, 1, 2 built
+// from the joint model and the 1b tactile channels; everything else (Frame
+// 2 / 3, another node's target, error frames, bad lengths) is dropped and
+// counted (D45). Broadcast (0xFF) is answered like the node's own id. The
+// feedforward frame is kept for inspection only — the LPF model has no
+// torque input, and the kt conversion lives in the driver (D50). All bytes
+// come from hand_canfd_packets.hpp; the vcan socket shell is F04-2c, so this
+// header still has no <linux/can.h>.
+//
 // All response builders write into a caller-provided buffer (no allocation).
 // The class is single-threaded: the UDP server loop in fake_hand_firmware_main
-// owns one instance and calls BuildResponse() serially.
+// owns one instance and calls BuildResponse() serially; the CAN FD shell will
+// own its own instance and call BuildCanFdResponse() the same way.
 //
 // ARCH note: udp_hand_driver is a hand-specific package (not rtc_*), so
 // hand-domain constants live here directly. This is a peer simulator, not a
@@ -29,6 +43,7 @@
 // not apply.
 
 #include "udp_hand_driver/fake_hand_lpf.hpp"
+#include "udp_hand_driver/hand_canfd_packets.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_packets.hpp"
 
@@ -58,8 +73,26 @@ class FakeHandFirmware {
     double step_rate_hz = 500.0;                 ///< fixed LPF step rate (dt = 1/step_rate_hz)
     int sensor_base_min = 100;                   ///< per-channel base ~ U[min, max] (init once)
     int sensor_base_max = 4000;
-    double sensor_noise_stddev = 5.0;  ///< per-response additive N(0, stddev)
-    uint32_t seed = 42;                ///< std::mt19937 seed (base + noise)
+    double sensor_noise_stddev = 5.0;                     ///< per-response additive N(0, stddev)
+    uint32_t seed = 42;                                   ///< std::mt19937 seed (base + noise)
+    canfd::HandSide hand_side = canfd::HandSide::kRight;  ///< proto2 node (D51: right 1 · left 2)
+  };
+
+  /// One frame as the proto2 mirror emits it: the bare 29-bit identifier (the
+  /// socket shell adds CAN_EFF_FLAG), the payload length and the payload.
+  struct CanFdFrame {
+    uint32_t can_id{0};
+    std::size_t len{0};
+    std::array<uint8_t, canfd::kFrameLen> data{};
+  };
+
+  /// Frames BuildCanFdResponse() dropped, by reason. Single writer; read by value.
+  struct CanFdCounters {
+    uint64_t error_frames{0};  ///< CAN_ERR_FLAG set — rejected before the id is read
+    uint64_t other_target{0};  ///< target neither this node nor broadcast
+    uint64_t unknown_type{0};  ///< msg type other than CMD / REQ (a RESP, or an undefined value)
+    uint64_t bad_length{0};    ///< CMD Frame 0 / 1 whose payload is not 64 bytes
+    uint64_t cmd_ignored{0};   ///< CMD Frame 2, 3 or higher (D27 · D45: no model, no echo)
   };
 
   explicit FakeHandFirmware(const Config& cfg)
@@ -67,6 +100,7 @@ class FakeHandFirmware {
         dt_(CalcDt(cfg.step_rate_hz)),
         inv_dt_(CalcInvDt(cfg.step_rate_hz)),
         alpha_(CalcAlpha(cfg.lpf_time_constant_s, CalcDt(cfg.step_rate_hz))),
+        node_(canfd::NodeIdOf(cfg.hand_side)),
         rng_(cfg.seed) {
     InitSensorBases();
   }
@@ -121,6 +155,42 @@ class FakeHandFirmware {
     }
   }
 
+  // proto2 mirror: dispatch one received CAN FD frame and write the frames the
+  // hand would send into `out` (at most `cap` of them). Returns the number of
+  // frames written; 0 means dropped — counted in canfd_counters(), except for
+  // an insufficient `cap`, which is the caller's bug and leaves the model and
+  // the RNG untouched. `can_id` is taken as the socket delivers it (EFF / ERR
+  // flags still set) or as a bare 29-bit id; `data` holds `len` bytes.
+  //   CMD Frame 0 (64 B) → target latched, model stepped once, 64 B echoed (D41)
+  //   CMD Frame 1 (64 B) → kept as last_feedforward(), 64 B echoed (D50)
+  //   CMD Frame 2 / 3 / … → counted, nothing else (D45)
+  //   REQ (any DLC, D47)  → RESP burst idx 0, 1, 2 — all three or none (D43)
+  // Not const: mutates the joint model (Frame 0) and the RNG (every burst).
+  std::size_t BuildCanFdResponse(uint32_t can_id, const uint8_t* data, std::size_t len,
+                                 CanFdFrame* out, std::size_t cap) {
+    if (out == nullptr)
+      return 0;
+    if (canfd::IsErrorFrame(can_id)) {
+      ++canfd_counters_.error_frames;
+      return 0;
+    }
+    const uint32_t id = can_id & canfd::kExtIdMask;
+    const uint8_t target = canfd::TargetOf(id);
+    if (target != node_ && target != canfd::kNodeBroadcast) {
+      ++canfd_counters_.other_target;
+      return 0;
+    }
+    switch (canfd::MsgTypeOf(id)) {
+      case static_cast<uint8_t>(canfd::MsgType::kCmd):
+        return HandleCanFdCmd(canfd::FrameIndexOf(id), data, len, out, cap);
+      case static_cast<uint8_t>(canfd::MsgType::kReq):
+        return BuildCanFdRespBurst(out, cap);
+      default:
+        ++canfd_counters_.unknown_type;
+        return 0;
+    }
+  }
+
   // Advance the first-order joint model one fixed step (dt = 1/step_rate_hz).
   // Delegates the per-joint math to the shared FakeLpfStep (fake_hand_lpf.hpp)
   // so this device-side model and UdpHandController's controller-side model
@@ -152,7 +222,23 @@ class FakeHandFirmware {
 
   [[nodiscard]] double alpha() const noexcept { return alpha_; }
 
+  /// Payload of the last CMD Frame 1 (feedforward current, A, firmware motor
+  /// order); zeros until one arrives. Inspection only — not fed to the model.
+  [[nodiscard]] const std::array<float, kNumHandMotors>& last_feedforward() const noexcept {
+    return last_feedforward_;
+  }
+
+  /// CMD Frame 1 frames applied so far.
+  [[nodiscard]] uint64_t feedforward_count() const noexcept { return feedforward_count_; }
+
+  [[nodiscard]] const CanFdCounters& canfd_counters() const noexcept { return canfd_counters_; }
+
  private:
+  static_assert(canfd::kWireMotorCount == static_cast<std::size_t>(kNumHandMotors),
+                "the joint model is copied motor-for-motor onto the proto2 wire");
+  static_assert(canfd::kWireFingertipCount <= static_cast<std::size_t>(kMaxFingertips),
+                "every wire fingertip has 1b base channels");
+
   static constexpr uint8_t Cmd(packets::Command c) noexcept { return static_cast<uint8_t>(c); }
 
   static double CalcDt(double rate) noexcept { return rate > 0.0 ? 1.0 / rate : 1.0 / 500.0; }
@@ -293,15 +379,123 @@ class FakeHandFirmware {
     return packets::kSensorRequestSize;
   }
 
+  // ── proto2 (CAN FD) builders ───────────────────────────────────────────────
+
+  // One fingertip's raw tactile record. Synthesised in the wire's count
+  // domain from the 1b base channels ([fx, fy, fz, Lx, Ly, Temp] — the same
+  // channel order as TactileRaw): base + N(0, stddev), rounded and clamped to
+  // int16. With the default bases (100..4000 counts) the host decodes a thumb
+  // fx of 0.08..3 N; fy, fz and py come out negative there because the host
+  // applies the Proto §4.3 sign flips, which this side does not undo. An
+  // active fingertip reports contact; an inactive one is all zeros.
+  [[nodiscard]] canfd::TactileRaw SampleTactile(canfd::Fingertip finger) {
+    canfd::TactileRaw r{};
+    const int f = static_cast<int>(finger);
+    if (!FingerActive(f))
+      return r;
+    const std::size_t k0 = static_cast<std::size_t>(f) * kP1bValuesPerFingertip;
+    r.fx = SampleSensorCanFd(k0 + 0);
+    r.fy = SampleSensorCanFd(k0 + 1);
+    r.fz = SampleSensorCanFd(k0 + 2);
+    r.px = SampleSensorCanFd(k0 + 3);
+    r.py = SampleSensorCanFd(k0 + 4);
+    r.temp = SampleSensorCanFd(k0 + 5);
+    r.contact = 1;
+    return r;
+  }
+
+  [[nodiscard]] int16_t SampleSensorCanFd(std::size_t channel) {
+    std::normal_distribution<double> nd(0.0, cfg_.sensor_noise_stddev);
+    const long v = std::lround(static_cast<double>(base_1b_[channel]) + nd(rng_));
+    return static_cast<int16_t>(std::clamp<long>(v, INT16_MIN, INT16_MAX));
+  }
+
+  // CMD Frame `idx`: Frame 0 latches the target and steps the model, Frame 1
+  // is kept; both are echoed verbatim. Higher indices are counted and ignored
+  // (D45). A payload that is not 64 bytes is a bad frame, not a command.
+  std::size_t HandleCanFdCmd(uint8_t idx, const uint8_t* data, std::size_t len, CanFdFrame* out,
+                             std::size_t cap) {
+    if (idx > static_cast<uint8_t>(canfd::CmdFrame::kFeedforward)) {
+      ++canfd_counters_.cmd_ignored;
+      return 0;
+    }
+    canfd::CmdMotorFrame in{};
+    if (data == nullptr || !canfd::DecodeFrame(data, len, in)) {
+      ++canfd_counters_.bad_length;
+      return 0;
+    }
+    if (cap < 1)
+      return 0;
+    if (idx == static_cast<uint8_t>(canfd::CmdFrame::kPosition)) {
+      for (std::size_t i = 0; i < kNumHandMotors; ++i)
+        target_[i] = in.values[i];
+      StepModel();
+    } else {
+      for (std::size_t i = 0; i < kNumHandMotors; ++i)
+        last_feedforward_[i] = in.values[i];
+      ++feedforward_count_;
+    }
+    out[0].can_id = canfd::EchoId(node_, idx);
+    out[0].len = canfd::kFrameLen;
+    std::memcpy(out[0].data.data(), data, canfd::kFrameLen);
+    return 1;
+  }
+
+  // The RESP burst for one REQ: F0 pos + vel M0..M5, F1 vel M6..M9 + cur
+  // (= effort) + thumb head, F2 thumb tail + index / middle / ring. Written
+  // whole or not at all — a partial set is what the host discards (D43).
+  // Tactile draws happen in fingertip order, so one seed gives one burst.
+  std::size_t BuildCanFdRespBurst(CanFdFrame* out, std::size_t cap) {
+    if (cap < canfd::kNumRespFrames)
+      return 0;
+    canfd::RespFrame0 f0{};
+    canfd::RespFrame1 f1{};
+    canfd::RespFrame2 f2{};
+    for (std::size_t i = 0; i < canfd::kWireMotorCount; ++i) {
+      f0.pos[i] = pos_[i];
+      f1.cur[i] = effort_[i];
+    }
+    for (std::size_t i = 0; i < canfd::kVelLoCount; ++i)
+      f0.vel_lo[i] = vel_[i];
+    for (std::size_t i = 0; i < canfd::kVelHiCount; ++i)
+      f1.vel_hi[i] = vel_[canfd::kVelLoCount + i];
+    const canfd::TactileRaw thumb = SampleTactile(canfd::Fingertip::kThumb);
+    f1.thumb_fx = thumb.fx;
+    f1.thumb_fy = thumb.fy;
+    f1.thumb_fz = thumb.fz;
+    f1.thumb_px = thumb.px;
+    f2.thumb_py = thumb.py;
+    f2.thumb_temp = thumb.temp;
+    f2.thumb_contact = thumb.contact;
+    f2.index = SampleTactile(canfd::Fingertip::kIndex);
+    f2.middle = SampleTactile(canfd::Fingertip::kMiddle);
+    f2.ring = SampleTactile(canfd::Fingertip::kRing);
+    EmitCanFd(out[0], canfd::RespId(node_, 0), f0);
+    EmitCanFd(out[1], canfd::RespId(node_, 1), f1);
+    EmitCanFd(out[2], canfd::RespId(node_, 2), f2);
+    return canfd::kNumRespFrames;
+  }
+
+  template <typename Frame>
+  static void EmitCanFd(CanFdFrame& dst, uint32_t id, const Frame& frame) noexcept {
+    dst.can_id = id;
+    dst.len = canfd::kFrameLen;
+    canfd::SerializeFrame(frame, dst.data.data());
+  }
+
   Config cfg_;
   double dt_;
   double inv_dt_;
   double alpha_;
+  uint8_t node_;  ///< proto2 node id, from cfg_.hand_side
 
   std::array<float, kNumHandMotors> target_{};
   std::array<float, kNumHandMotors> pos_{};
   std::array<float, kNumHandMotors> vel_{};
   std::array<float, kNumHandMotors> effort_{};
+  std::array<float, kNumHandMotors> last_feedforward_{};  ///< CMD Frame 1, kept only
+  uint64_t feedforward_count_{0};
+  CanFdCounters canfd_counters_{};
 
   static constexpr std::size_t kBase1aSize =
       static_cast<std::size_t>(kMaxFingertips) * kSensorDataPerPacket;  // 128

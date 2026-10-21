@@ -165,6 +165,27 @@ TEST(HandCanFdId, ArbitrationOrderW2) {
   EXPECT_LT(RespId(kNodeRightHand, 2), RespId(kNodeLeftHand, 0));
 }
 
+// ── Hand side → node id (D51) ───────────────────────────────────────────────
+
+TEST(HandCanFdId, HandSide_MapsToNodeId) {
+  EXPECT_EQ(NodeIdOf(HandSide::kRight), kNodeRightHand);
+  EXPECT_EQ(NodeIdOf(HandSide::kLeft), kNodeLeftHand);
+  EXPECT_EQ(CmdId(NodeIdOf(HandSide::kLeft), 0), 0x00008000u);
+}
+
+TEST(HandCanFdId, ParseHandSide_ExactSpellingsOnly) {
+  HandSide side = HandSide::kRight;
+  EXPECT_TRUE(ParseHandSide("left", side));
+  EXPECT_EQ(side, HandSide::kLeft);
+  EXPECT_TRUE(ParseHandSide("right", side));
+  EXPECT_EQ(side, HandSide::kRight);
+  side = HandSide::kLeft;
+  EXPECT_FALSE(ParseHandSide("Right", side));
+  EXPECT_FALSE(ParseHandSide("1", side));
+  EXPECT_FALSE(ParseHandSide("", side));
+  EXPECT_EQ(side, HandSide::kLeft) << "a failed parse leaves `out` alone";
+}
+
 // ── Frame layouts ───────────────────────────────────────────────────────────
 
 TEST(HandCanFdLayout, Sizes) {
