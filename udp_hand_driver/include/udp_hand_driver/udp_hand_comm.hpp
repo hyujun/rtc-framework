@@ -4,11 +4,18 @@
 // UdpHandComm: HandComm over UDP for the proto1a / proto1b hands.
 //
 // A thin cycle-level wrapper around UdpHandTransport (which keeps its name and
-// its socket / retry / stats behaviour unchanged — decision D1): the request
-// sequence each cycle issues is exactly what UdpHandController issued directly
-// before the seam, so proto1 behaviour, stats attribution and the trace span
-// names are bit-for-bit the same. The feedforward torque has no proto1 wire
-// field and is ignored.
+// its socket / retry / stats behaviour unchanged): the request sequence each
+// cycle issues is exactly what UdpHandController issued directly before the
+// seam, so proto1 behaviour, stats attribution and the trace span names are
+// the same. The feedforward torque has no proto1 wire field and is ignored.
+//
+// RequestKind ↔ proto1 command bytes on this link:
+//   kWriteEcho  0x01 write position + echo
+//   kMotorRead  0x10 (bulk, MODE kMotor) / 0x11 pos · 0x12 vel (individual)
+//   kJointRead  0x10 (bulk, joint I/O MODE) / 0x11 pos (individual)
+//   kSensorRead 0x14..0x17 per-finger (individual)
+//   kBulkSensor 0x19 all sensors (bulk)
+//   kSetMode    0x04 set sensor mode (InitializeSensors)
 //
 // RT: every HandComm RT method here is noexcept and allocation-free — the
 // command scratch buffers are members, the per-finger decode buffer too.
@@ -35,13 +42,9 @@ class UdpHandComm final : public HandComm {
       : transport_(std::move(target_ip), target_port, recv_timeout_ms, std::move(local_ip),
                    std::move(local_interface)) {}
 
-  /// The wrapped transport (tests / forensics). Not for the RT cycle — the
-  /// controller talks through the HandComm surface only.
-  [[nodiscard]] UdpHandTransport& transport() noexcept { return transport_; }
-
+  /// The wrapped transport, read-only (socket-level observations in tests).
+  /// The mutating surface is the HandComm interface.
   [[nodiscard]] const UdpHandTransport& transport() const noexcept { return transport_; }
-
-  [[nodiscard]] packets::JointMode joint_io_mode() const noexcept { return joint_io_mode_; }
 
   // ── Non-RT ────────────────────────────────────────────────────────────────
 
@@ -83,8 +86,7 @@ class UdpHandComm final : public HandComm {
 
   int DrainStale() noexcept override { return transport_.DrainStaleDatagrams(); }
 
-  // proto1 has no feedforward field: `ff_nm` is ignored (epic #895 D56 — the
-  // CAN FD comm is the first consumer).
+  // proto1 has no feedforward field: `ff_nm` is ignored.
   [[nodiscard]] bool WriteCommandWithEcho(const HandMotorArray& pos,
                                           const HandMotorArray& /*ff_nm*/) noexcept override {
     return transport_.WritePositionWithEcho(pos, send_buf_, echo_buf_, joint_io_mode_);
@@ -101,26 +103,24 @@ class UdpHandComm final : public HandComm {
     out = HandReadOutcome{};
     if (plan.motor_space_read) {
       RTC_TRACE_SCOPE("hand_read_motor");
-      out.motor_space_ok = transport_.RequestAllMotorRead(
-          bufs.motor_pos, bufs.motor_vel, bufs.motor_cur, packets::JointMode::kMotor,
+      out.motor_ok = transport_.RequestAllMotorRead(
+          bufs.motor.pos, bufs.motor.vel, bufs.motor.cur, packets::JointMode::kMotor,
           &out.received_motor_mode, RequestKind::kMotorRead);
     }
-    out.phase_end[0] = HandReadOutcome::Clock::now();
+    out.StampPhase(ReadPhase::kMotor);
     {
       RTC_TRACE_SCOPE("hand_read_joint");
-      out.joint_space_ok =
-          transport_.RequestAllMotorRead(bufs.joint_pos, bufs.joint_vel, bufs.joint_cur,
+      out.joint_ok =
+          transport_.RequestAllMotorRead(bufs.joint.pos, bufs.joint.vel, bufs.joint.cur,
                                          joint_io_mode_, nullptr, RequestKind::kJointRead);
     }
-    out.phase_end[1] = HandReadOutcome::Clock::now();
+    out.StampPhase(ReadPhase::kJoint);
     if (plan.sensors) {
       RTC_TRACE_SCOPE("hand_read_sensor");
       out.sensor_recvd =
           transport_.RequestBulkSensorRaw(bufs.sensor_raw.data(), bufs.sensor_raw.size(),
                                           plan.sensor_response_size, packets::SensorMode::kRaw);
     }
-    out.phase_end[2] = HandReadOutcome::Clock::now();
-    out.phase_end[3] = out.phase_end[2];
   }
 
   // Individual: 0x11 kMotor → 0x11 joint_io_mode → 0x12 kMotor → 0x14+i per
@@ -131,25 +131,24 @@ class UdpHandComm final : public HandComm {
     out = HandReadOutcome{};
     {
       RTC_TRACE_SCOPE("hand_read_pos");
-      out.pos_ok = transport_.RequestMotorRead(packets::Command::kReadPosition, bufs.motor_pos,
-                                               packets::JointMode::kMotor, &out.received_motor_mode,
-                                               RequestKind::kMotorRead);
+      out.motor_ok = transport_.RequestMotorRead(packets::Command::kReadPosition, bufs.motor.pos,
+                                                 packets::JointMode::kMotor,
+                                                 &out.received_motor_mode, RequestKind::kMotorRead);
     }
-    out.phase_end[0] = HandReadOutcome::Clock::now();
+    out.StampPhase(ReadPhase::kMotor);
     {
       RTC_TRACE_SCOPE("hand_read_joint_pos");
-      out.joint_pos_ok =
-          transport_.RequestMotorRead(packets::Command::kReadPosition, bufs.joint_pos,
-                                      joint_io_mode_, nullptr, RequestKind::kJointRead);
+      out.joint_ok = transport_.RequestMotorRead(packets::Command::kReadPosition, bufs.joint.pos,
+                                                 joint_io_mode_, nullptr, RequestKind::kJointRead);
     }
-    out.phase_end[1] = HandReadOutcome::Clock::now();
+    out.StampPhase(ReadPhase::kJoint);
     {
       RTC_TRACE_SCOPE("hand_read_vel");
       out.vel_ok =
-          transport_.RequestMotorRead(packets::Command::kReadVelocity, bufs.motor_vel,
+          transport_.RequestMotorRead(packets::Command::kReadVelocity, bufs.motor.vel,
                                       packets::JointMode::kMotor, nullptr, RequestKind::kMotorRead);
     }
-    out.phase_end[2] = HandReadOutcome::Clock::now();
+    out.StampPhase(ReadPhase::kVel);
     if (plan.sensors) {
       RTC_TRACE_SCOPE("hand_read_sensor");
       const int fingers = std::min(plan.num_fingertips, kMaxFingertips);
@@ -157,13 +156,11 @@ class UdpHandComm final : public HandComm {
         if (transport_.RequestSensorRead(packets::SensorCommand(i), finger_buf_,
                                          packets::SensorMode::kRaw)) {
           std::copy_n(finger_buf_.begin(), kSensorValuesPerFingertip,
-                      bufs.sensor_values.begin() +
-                          static_cast<std::ptrdiff_t>(i) * kSensorValuesPerFingertip);
-          out.finger_ok_mask |= static_cast<uint8_t>(1u << static_cast<unsigned>(i));
+                      bufs.sensor_values.begin() + FingerOffset(i));
+          out.finger_ok_mask |= FingerBit(i);
         }
       }
     }
-    out.phase_end[3] = HandReadOutcome::Clock::now();
   }
 
   [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept override {

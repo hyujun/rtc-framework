@@ -904,12 +904,10 @@ TEST(HandControllerEStop, RestartResetsCountersAfterFailures) {
 class ScriptedHandComm : public HandComm {
  public:
   // Script.
-  bool script_motor_ok{true};
-  bool script_joint_ok{true};
+  bool script_motor_ok{true};  // bulk motor-space / individual pos
+  bool script_joint_ok{true};  // bulk joint-space / individual joint pos
+  bool script_vel_ok{true};    // individual vel
   ssize_t script_sensor_recvd{-1};
-  bool script_pos_ok{true};
-  bool script_joint_pos_ok{true};
-  bool script_vel_ok{true};
   uint8_t script_finger_mask{0};
   float pattern_base{1.0f};
 
@@ -994,11 +992,12 @@ class ScriptedHandComm : public HandComm {
     ++read_cycle_calls;
     FillMotorPattern(bufs);
     out = HandReadOutcome{};
-    out.motor_space_ok = plan.motor_space_read && script_motor_ok;
-    out.joint_space_ok = script_joint_ok;
+    out.motor_ok = plan.motor_space_read && script_motor_ok;
+    out.StampPhase(ReadPhase::kMotor);
+    out.joint_ok = script_joint_ok;
+    out.StampPhase(ReadPhase::kJoint);
     out.sensor_recvd = plan.sensors ? script_sensor_recvd : -1;
     out.received_motor_mode = packets::JointMode::kMotor;
-    out.phase_end.fill(HandReadOutcome::Clock::now());
   }
 
   void ReadCycleIndividual(const HandReadPlan& plan, HandReadBuffers& bufs,
@@ -1007,20 +1006,21 @@ class ScriptedHandComm : public HandComm {
     ++read_individual_calls;
     FillMotorPattern(bufs);
     out = HandReadOutcome{};
-    out.pos_ok = script_pos_ok;
-    out.joint_pos_ok = script_joint_pos_ok;
+    out.motor_ok = script_motor_ok;
+    out.StampPhase(ReadPhase::kMotor);
+    out.joint_ok = script_joint_ok;
+    out.StampPhase(ReadPhase::kJoint);
     out.vel_ok = script_vel_ok;
+    out.StampPhase(ReadPhase::kVel);
     out.received_motor_mode = packets::JointMode::kMotor;
     if (plan.sensors) {
       out.finger_ok_mask = script_finger_mask;
       for (int f = 0; f < plan.num_fingertips && f < kMaxFingertips; ++f) {
         for (int k = 0; k < kSensorValuesPerFingertip; ++k) {
-          bufs.sensor_values[static_cast<std::size_t>(f * kSensorValuesPerFingertip + k)] =
-              1000 * (f + 1) + k;
+          bufs.sensor_values[static_cast<std::size_t>(FingerOffset(f) + k)] = 1000 * (f + 1) + k;
         }
       }
     }
-    out.phase_end.fill(HandReadOutcome::Clock::now());
   }
 
   [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept override { return stats_; }
@@ -1035,12 +1035,12 @@ class ScriptedHandComm : public HandComm {
   void FillMotorPattern(HandReadBuffers& bufs) const noexcept {
     for (std::size_t i = 0; i < packets::kMotorDataCount; ++i) {
       const auto fi = static_cast<float>(i);
-      bufs.motor_pos[i] = pattern_base + fi;
-      bufs.motor_vel[i] = pattern_base + 10.0f + fi;
-      bufs.motor_cur[i] = pattern_base + 20.0f + fi;
-      bufs.joint_pos[i] = pattern_base + 100.0f + fi;
-      bufs.joint_vel[i] = pattern_base + 110.0f + fi;
-      bufs.joint_cur[i] = pattern_base + 120.0f + fi;
+      bufs.motor.pos[i] = pattern_base + fi;
+      bufs.motor.vel[i] = pattern_base + 10.0f + fi;
+      bufs.motor.cur[i] = pattern_base + 20.0f + fi;
+      bufs.joint.pos[i] = pattern_base + 100.0f + fi;
+      bufs.joint.vel[i] = pattern_base + 110.0f + fi;
+      bufs.joint.cur[i] = pattern_base + 120.0f + fi;
     }
   }
 
@@ -1255,6 +1255,38 @@ TEST(HandCommSeam, Individual_UsesIndividualCycle_PartialFingersRefreshOnlyTheir
                                        RequestKindBit(RequestKind::kSensorRead));
   // pos ok sets the motor bit even though vel failed; one ok finger sets sensor.
   EXPECT_EQ(latest.ok_mask, latest.attempted_mask);
+}
+
+// A comm that leaves ReadCycleIndividual at the HandComm default (a non-UDP
+// link): nothing read, every flag false, phases left at the epoch — which the
+// controller clamps to zero-length spans. SupportsIndividualMode() is what
+// keeps this body from ever running in production (see the test above).
+TEST(HandCommSeam, DefaultReadCycleIndividual_NothingReadFlagsFalse) {
+  class DefaultIndividualComm final : public ScriptedHandComm {
+   public:
+    void ReadCycleIndividual(const HandReadPlan& plan, HandReadBuffers& bufs,
+                             HandReadOutcome& out) noexcept override {
+      HandComm::ReadCycleIndividual(plan, bufs, out);
+    }
+  };
+
+  DefaultIndividualComm comm;
+  HandReadPlan plan{};
+  plan.sensors = true;
+  plan.num_fingertips = 4;
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  out.motor_ok = true;  // stale content must be cleared
+  out.finger_ok_mask = 0xFF;
+  comm.ReadCycleIndividual(plan, bufs, out);
+  EXPECT_FALSE(out.motor_ok);
+  EXPECT_FALSE(out.joint_ok);
+  EXPECT_FALSE(out.vel_ok);
+  EXPECT_EQ(out.finger_ok_mask, 0u);
+  EXPECT_EQ(out.sensor_recvd, -1);
+  for (const auto& t : out.phase_end) {
+    EXPECT_EQ(t, HandReadOutcome::Clock::time_point{});
+  }
 }
 
 }  // namespace udp_hand_driver::test

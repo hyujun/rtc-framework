@@ -858,15 +858,15 @@ class UdpHandController {
     const bool is_sensor_cycle = (sensor_cycle_counter_ >= sensor_decimation_);
     if (is_sensor_cycle)
       sensor_cycle_counter_ = 0;
+    read_plan_.sensors = is_sensor_cycle;  // the only per-cycle field of the plan
 
     if (is_bulk_) {
       // ── Bulk mode ─────────────────────────────────────────────────────
       // One HandComm read cycle: motor-space (when the protocol has one) →
       // joint-space → sensors (on a sensor cycle). The comm fills read_bufs_
-      // and reports per-channel outcomes + phase stamps in read_outcome_; the
-      // attempted / ok masks, the state fill and the sensor decode (version
-      // seam: SensorProtocol) stay here.
-      read_plan_.sensors = is_sensor_cycle;
+      // and reports per-channel outcomes + the boundaries inside the read in
+      // read_outcome_; the attempted / ok masks, the state fill and the sensor
+      // decode (version seam: SensorProtocol) stay here.
       const bool motor_space_attempted = read_plan_.motor_space_read;
       if (motor_space_attempted) {
         attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
@@ -882,10 +882,9 @@ class UdpHandController {
       // 2. Motor-space read (kMotor). Skipped when the protocol has no
       //    motor-space read (1b) — motor_states is then not published.
       bool read_all_motor_ok = false;
-      if (rc.motor_space_ok) {
-        std::copy_n(read_bufs_.motor_pos.begin(), kNumHandMotors, state.motor_positions.begin());
-        std::copy_n(read_bufs_.motor_vel.begin(), kNumHandMotors, state.motor_velocities.begin());
-        std::copy_n(read_bufs_.motor_cur.begin(), kNumHandMotors, state.motor_currents.begin());
+      if (rc.motor_ok) {
+        CopyTriplet(read_bufs_.motor, state.motor_positions, state.motor_velocities,
+                    state.motor_currents);
         state.received_joint_mode = static_cast<uint8_t>(rc.received_motor_mode);
         state.motor_valid = true;
         any_recv_ok = true;
@@ -893,23 +892,24 @@ class UdpHandController {
         read_all_motor_ok = true;
       }
 
-      const auto t2 = rc.phase_end[0];
+      // Phase boundaries from the comm, clamped monotone so a phase it did not
+      // stamp reads as a zero-length span (see HandReadOutcome).
+      const auto t2 = std::max(t1, rc.PhaseEnd(ReadPhase::kMotor));
 
       // 3. Joint-space read (joint_io_mode_) — pos/vel/cur. 1b issues this in
       //    kMotor (its only joint-serving mode) and still publishes the result
       //    as joint_states.
       bool read_all_joint_motor_ok = false;
-      if (rc.joint_space_ok) {
-        std::copy_n(read_bufs_.joint_pos.begin(), kNumHandMotors, state.joint_positions.begin());
-        std::copy_n(read_bufs_.joint_vel.begin(), kNumHandMotors, state.joint_velocities.begin());
-        std::copy_n(read_bufs_.joint_cur.begin(), kNumHandMotors, state.joint_currents.begin());
+      if (rc.joint_ok) {
+        CopyTriplet(read_bufs_.joint, state.joint_positions, state.joint_velocities,
+                    state.joint_currents);
         state.joint_valid = true;
         any_recv_ok = true;
         ok_mask |= RequestKindBit(RequestKind::kJointRead);
         read_all_joint_motor_ok = true;
       }
 
-      const auto t2j = rc.phase_end[1];
+      const auto t2j = std::max(t2, rc.PhaseEnd(ReadPhase::kJoint));
 
       // 4. Sensors — raw bytes from the comm, decoded via the injected protocol
       //    (version seam). The request is identical across versions; only the
@@ -928,8 +928,7 @@ class UdpHandController {
 
       // Read-phase end is stamped HERE, after the decode + cache copies, so
       // read_all_sensor_us keeps its pre-seam meaning (recv + decode) and
-      // sensor_proc_us starts where it did; the comm's stamps mark only the
-      // boundaries inside the read.
+      // sensor_proc_us starts where it did.
       const auto t3 = std::chrono::steady_clock::now();
       comm_loop_.MarkState();  // end of the read phase (base t1)
 
@@ -958,11 +957,10 @@ class UdpHandController {
       FinalizePhaseTiming(pt, tail, t3, t0, is_sensor_cycle);
 
     } else {
-      // ── Individual mode (UDP proto1a only, D25) ─────────────────────────
+      // ── Individual mode (UDP proto1a only) ─────────────────────────────
       // One HandComm individual read cycle: pos → joint pos → vel → per-finger
       // sensors (on a sensor cycle). Same split as bulk: the comm fills
       // read_bufs_ + read_outcome_, the masks / state fill stay here.
-      read_plan_.sensors = is_sensor_cycle;
       attempted_mask |= RequestKindBit(RequestKind::kMotorRead);  // pos + vel
       attempted_mask |= RequestKindBit(RequestKind::kJointRead);
       const bool sensor_attempted = is_sensor_cycle && num_fingertips_ > 0;
@@ -974,8 +972,8 @@ class UdpHandController {
 
       // 2. Motor position (kMotor)
       bool read_pos_ok = false;
-      if (rc.pos_ok) {
-        std::copy_n(read_bufs_.motor_pos.begin(), kNumHandMotors, state.motor_positions.begin());
+      if (rc.motor_ok) {
+        std::copy_n(read_bufs_.motor.pos.begin(), kNumHandMotors, state.motor_positions.begin());
         state.received_joint_mode = static_cast<uint8_t>(rc.received_motor_mode);
         state.motor_valid = true;
         any_recv_ok = true;
@@ -983,31 +981,31 @@ class UdpHandController {
         read_pos_ok = true;
       }
 
-      const auto t2 = rc.phase_end[0];
+      const auto t2 = std::max(t1, rc.PhaseEnd(ReadPhase::kMotor));
 
       // 3. Joint position (joint-space: joint_io_mode_). Individual mode is
       //    1a-only (1b requires bulk), so this resolves to kJoint in practice.
       bool read_joint_pos_ok = false;
-      if (rc.joint_pos_ok) {
-        std::copy_n(read_bufs_.joint_pos.begin(), kNumHandMotors, state.joint_positions.begin());
+      if (rc.joint_ok) {
+        std::copy_n(read_bufs_.joint.pos.begin(), kNumHandMotors, state.joint_positions.begin());
         state.joint_valid = true;
         any_recv_ok = true;
         ok_mask |= RequestKindBit(RequestKind::kJointRead);
         read_joint_pos_ok = true;
       }
 
-      const auto t2j = rc.phase_end[1];
+      const auto t2j = std::max(t2, rc.PhaseEnd(ReadPhase::kJoint));
 
       // 4. Motor velocity (kMotor)
       bool read_vel_ok = false;
       if (rc.vel_ok) {
-        std::copy_n(read_bufs_.motor_vel.begin(), kNumHandMotors, state.motor_velocities.begin());
+        std::copy_n(read_bufs_.motor.vel.begin(), kNumHandMotors, state.motor_velocities.begin());
         any_recv_ok = true;
         ok_mask |= RequestKindBit(RequestKind::kMotorRead);
         read_vel_ok = true;
       }
 
-      const auto t3 = rc.phase_end[2];
+      const auto t3 = std::max(t2j, rc.PhaseEnd(ReadPhase::kVel));
 
       // 5. Sensors. A finger that validated this cycle refreshes its slot of the
       //    cache; a failed finger keeps its previous values. read_sensor_ok gates
@@ -1018,12 +1016,10 @@ class UdpHandController {
         bool sensor_validated = false;
         bool all_fingers_ok = (num_fingertips_ > 0);
         for (int i = 0; i < num_fingertips_; ++i) {
-          if ((rc.finger_ok_mask & static_cast<uint8_t>(1u << static_cast<unsigned>(i))) != 0) {
-            const auto off =
-                static_cast<std::ptrdiff_t>(i) * udp_hand_driver::kSensorValuesPerFingertip;
-            std::copy_n(read_bufs_.sensor_values.begin() + off,
+          if (rc.FingerOk(i)) {
+            std::copy_n(read_bufs_.sensor_values.begin() + FingerOffset(i),
                         udp_hand_driver::kSensorValuesPerFingertip,
-                        cached_sensor_data_.begin() + off);
+                        cached_sensor_data_.begin() + FingerOffset(i));
             any_recv_ok = true;
             ok_mask |= RequestKindBit(RequestKind::kSensorRead);
             sensor_validated = true;
@@ -1334,6 +1330,17 @@ class UdpHandController {
     // did now() + ROS message fill + 5 publishes on this SCHED_FIFO 65 thread.
     result.tail_done = std::chrono::steady_clock::now();
     return result;
+  }
+
+  // Copy the leading kNumHandMotors of a wire-width motor triplet into the
+  // published state's three arrays (one helper for both spaces so a pos/vel/cur
+  // mix-up cannot pass the compiler). CommLoop thread only; noexcept.
+  static void CopyTriplet(const MotorTriplet& src, std::array<float, kNumHandMotors>& pos,
+                          std::array<float, kNumHandMotors>& vel,
+                          std::array<float, kNumHandMotors>& cur) noexcept {
+    std::copy_n(src.pos.begin(), kNumHandMotors, pos.begin());
+    std::copy_n(src.vel.begin(), kNumHandMotors, vel.begin());
+    std::copy_n(src.cur.begin(), kNumHandMotors, cur.begin());
   }
 
   // Fill the mode-independent tail of a PhaseTiming record and push it to the

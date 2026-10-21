@@ -10,18 +10,18 @@
 //
 //   - UdpHandComm (udp_hand_comm.hpp): proto1a / proto1b over UDP. Wraps the
 //     pre-existing UdpHandTransport; a cycle is the same request/response
-//     sequence the controller used to issue directly (bulk 0x10 / 0x10 / 0x19,
-//     individual 0x11 / 0x11 / 0x12 / 0x14..0x17).
-//   - A CAN FD implementation (proto2, epic #895 F04-2c) sends the command as
-//     two frames and reads one REQ → three-frame RESP burst per cycle; it
-//     cannot be split into per-request calls without caching, which is why
-//     the read side is one ReadCycle() and not three virtuals.
+//     sequence the controller used to issue directly.
+//   - A CAN FD implementation (proto2) sends the command as two frames and
+//     reads one REQ → three-frame RESP burst per cycle; it cannot be split
+//     into per-request calls without caching, which is why the read side is
+//     one ReadCycle() and not three virtuals.
 //
 // Ownership of the bookkeeping stays with the controller: ReadCycle reports
-// per-channel outcomes and phase timestamps; the controller builds the
-// attempted / ok masks, the per-channel failure streaks and the timing
-// profile from them, and decodes the raw bulk-sensor response through its
-// SensorProtocol. The comm knows nothing about the outcome ring.
+// per-channel outcomes and the phase boundaries inside the read; the
+// controller builds the attempted / ok masks, the per-channel failure streaks
+// and the timing profile from them, stamps the end of the read itself, and
+// decodes the raw bulk-sensor response through its SensorProtocol. The comm
+// knows nothing about the outcome ring.
 //
 // Thread contract (same as the transport it replaces): the "RT" group runs on
 // the SCHED_FIFO CommLoop thread every tick and must be noexcept and
@@ -30,9 +30,8 @@
 // path before the loop launches or after it joined. comm_stats() may be read
 // from any thread — it is a SeqLock snapshot published by PublishCommStats().
 //
-// Public names: the pre-existing UDP types keep their names (decision D1);
-// UdpHandCommStats / RequestKind moved here unchanged so the abstract header
-// does not pull in the socket headers.
+// The pre-existing UDP type names are kept (UdpHandCommStats, RequestKind);
+// they moved here unchanged so this header does not pull in the socket headers.
 
 #include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_packets.hpp"
@@ -47,28 +46,27 @@
 namespace udp_hand_driver {
 
 // ── Communication mode ───────────────────────────────────────────────────────
-// Which read sequence a cycle issues. Individual mode is a UDP-only legacy
-// (decision D25); a comm that does not support it reports so through
-// HandComm::SupportsIndividualMode() and the node rejects the combination at
-// configure (D16).
+// Which read sequence a cycle issues. Individual mode is a UDP-only legacy; a
+// comm that does not implement it says so through SupportsIndividualMode() and
+// the controller refuses to start in that mode.
 enum class HandCommunicationMode {
-  kIndividual,  // 0x11 pos + 0x12 vel + 0x14~0x17 sensors
-  kBulk,        // 0x10 all motors + 0x19 all sensors
+  kIndividual,  // per-motor pos + vel reads, per-finger sensor reads
+  kBulk,        // one all-motors read (per space) + one all-sensors read
 };
 
-// Request kind for per-kind statistics attribution. The caller disambiguates
-// joint- vs motor-space reads (same request method / cmd byte, different MODE),
-// which the transport cannot infer from the wire format alone. Values are bit
-// positions in the controller's cycle-outcome masks — keep them dense from 0.
-// A non-UDP protocol maps its own transactions onto these kinds so the stats
-// JSON `per_request` keys stay stable (epic #895 G-1).
+// Request kind: the comm-neutral vocabulary of the per-kind statistics and of
+// the controller's cycle-outcome masks (values are bit positions — keep them
+// dense from 0). The names are the stats JSON `per_request` keys, so every
+// link maps its own transactions onto these six; the UDP proto1 command bytes
+// behind each one are documented in UdpHandComm. The caller disambiguates
+// joint- vs motor-space reads, which share a wire format.
 enum class RequestKind : uint8_t {
-  kWriteEcho = 0,   // 0x01 write position + echo
-  kMotorRead = 1,   // 0x10/0x11/0x12 motor-space read
-  kJointRead = 2,   // 0x10/0x11 joint-space read
-  kSensorRead = 3,  // 0x14~0x17 individual sensor read
-  kBulkSensor = 4,  // 0x19 bulk sensor read
-  kSetMode = 5,     // 0x04 set sensor mode
+  kWriteEcho = 0,   // command write + echo
+  kMotorRead = 1,   // motor-space read (pos / vel / cur)
+  kJointRead = 2,   // joint-space read
+  kSensorRead = 3,  // per-finger sensor read (individual mode)
+  kBulkSensor = 4,  // all-sensors read (bulk mode)
+  kSetMode = 5,     // sensor-mode handshake (InitializeSensors)
 };
 
 inline constexpr int kNumRequestKinds = 6;
@@ -124,15 +122,36 @@ struct UdpHandCommStats {
 
 using HandMotorArray = std::array<float, kNumHandMotors>;
 
+// Bit / slot helpers for the per-finger sensor channel (bit i = finger i).
+static_assert(kMaxFingertips <= 8, "finger masks are 8 bits");
+
+[[nodiscard]] constexpr uint8_t FingerBit(int finger) noexcept {
+  return static_cast<uint8_t>(1u << static_cast<unsigned>(finger));
+}
+
+/// Offset of finger `finger`'s values in a kMaxHandSensors-sized array.
+[[nodiscard]] constexpr std::ptrdiff_t FingerOffset(int finger) noexcept {
+  return static_cast<std::ptrdiff_t>(finger) * kSensorValuesPerFingertip;
+}
+
 // What the controller wants read this cycle. Every field but `sensors` is a
 // per-run constant (hoisted in PrepareRun from the SensorProtocol / config);
-// `sensors` flips per cycle with the sensor decimation.
+// `sensors` flips per cycle with the sensor decimation. Passing the constants
+// with every call keeps the comm stateless about the protocol.
 struct HandReadPlan {
-  bool motor_space_read{true};  ///< bulk: issue the kMotor read (SensorProtocol::HasMotorSpaceRead)
-  bool sensors{false};          ///< this cycle is a sensor cycle
-  int num_fingertips{0};        ///< individual: fingers polled (0x14 + i)
-  std::size_t sensor_response_size{
-      0};  ///< bulk: expected 0x19 response bytes (SensorProtocol::ResponseSize)
+  bool motor_space_read{
+      true};              ///< bulk: issue the motor-space read (SensorProtocol::HasMotorSpaceRead)
+  bool sensors{false};    ///< this cycle is a sensor cycle
+  int num_fingertips{0};  ///< individual: fingers polled
+  std::size_t sensor_response_size{0};  ///< bulk: expected all-sensors response bytes
+};
+
+/// Position / velocity / current of one motor space (the wire width, not the
+/// published kNumHandMotors — the controller copies the leading motors).
+struct MotorTriplet {
+  std::array<float, packets::kMotorDataCount> pos{};
+  std::array<float, packets::kMotorDataCount> vel{};
+  std::array<float, packets::kMotorDataCount> cur{};
 };
 
 // Controller-owned scratch the comm fills in place (preallocated, reused every
@@ -140,56 +159,52 @@ struct HandReadPlan {
 // channel whose outcome flag is set; the controller copies from there into the
 // published state.
 struct HandReadBuffers {
-  // Motor-space (kMotor): bulk 0x10 pos/vel/cur, individual 0x11 pos + 0x12 vel.
-  std::array<float, packets::kMotorDataCount> motor_pos{};
-  std::array<float, packets::kMotorDataCount> motor_vel{};
-  std::array<float, packets::kMotorDataCount> motor_cur{};
-  // Joint-space (the protocol's joint I/O MODE): bulk 0x10 pos/vel/cur,
-  // individual 0x11 pos.
-  std::array<float, packets::kMotorDataCount> joint_pos{};
-  std::array<float, packets::kMotorDataCount> joint_vel{};
-  std::array<float, packets::kMotorDataCount> joint_cur{};
-  // Bulk raw 0x19 response (sized for the largest response); decoded by the
-  // controller's SensorProtocol, which owns the per-version layout.
+  MotorTriplet motor;  ///< motor-space (bulk: pos/vel/cur; individual: pos + vel)
+  MotorTriplet joint;  ///< joint-space (bulk: pos/vel/cur; individual: pos)
+  /// Bulk raw all-sensors response (sized for the largest response); decoded
+  /// by the controller's SensorProtocol, which owns the per-version layout.
   std::array<uint8_t, packets::kMaxPacketSize> sensor_raw{};
-  // Individual per-finger decoded values, finger i at
-  // [i * kSensorValuesPerFingertip, (i + 1) * kSensorValuesPerFingertip).
+  /// Individual per-finger decoded values, finger i at FingerOffset(i).
   std::array<int32_t, kMaxHandSensors> sensor_values{};
 };
 
-// Per-channel outcome of one read cycle plus the phase boundary timestamps the
-// timing profiler consumes. Bulk and individual fill disjoint flag groups.
+/// Boundaries INSIDE a read cycle that the timing profiler splits on. The end
+/// of the whole read is stamped by the controller after its own decode / cache
+/// copies, so the comm never stamps a sensor phase.
+///   bulk       stamps kMotor (after the motor-space read) and kJoint
+///   individual stamps kMotor (pos), kJoint (joint pos) and kVel
+enum class ReadPhase : uint8_t { kMotor = 0, kJoint = 1, kVel = 2 };
+
+inline constexpr std::size_t kNumReadPhases = 3;
+
+// Per-channel outcome of one read cycle. Trivially resettable (`out = {}`): a
+// phase an implementation does not stamp stays at the epoch, and the
+// controller clamps each boundary to be no earlier than the previous one, so
+// an unstamped phase reads as a zero-length span rather than garbage.
 struct HandReadOutcome {
   using Clock = std::chrono::steady_clock;
 
-  // Bulk channels.
-  bool motor_space_ok{false};  ///< 0x10 kMotor read validated (only if planned)
-  bool joint_space_ok{false};  ///< 0x10 joint-space read validated
-  ssize_t sensor_recvd{-1};    ///< 0x19 raw bytes received (−1 = none / failed)
+  bool motor_ok{false};       ///< motor-space read validated (bulk pos/vel/cur, individual pos)
+  bool joint_ok{false};       ///< joint-space read validated (bulk pos/vel/cur, individual pos)
+  bool vel_ok{false};         ///< individual only: motor-space velocity read validated
+  ssize_t sensor_recvd{-1};   ///< bulk: raw bytes received (−1 = none / failed)
+  uint8_t finger_ok_mask{0};  ///< individual: FingerBit(i) set when finger i validated
   packets::JointMode received_motor_mode{
       packets::JointMode::kMotor};  ///< MODE echoed by the motor-space read
+  std::array<Clock::time_point, kNumReadPhases> phase_end{};
 
-  // Individual channels.
-  bool pos_ok{false};         ///< 0x11 kMotor
-  bool joint_pos_ok{false};   ///< 0x11 joint-space
-  bool vel_ok{false};         ///< 0x12 kMotor
-  uint8_t finger_ok_mask{0};  ///< bit i = finger i's 0x14+i read validated
+  void StampPhase(ReadPhase phase) noexcept {
+    phase_end[static_cast<std::size_t>(phase)] = Clock::now();
+  }
 
-  // End of each read phase, in issue order:
-  //   bulk       [0] motor-space  [1] joint-space  [2] sensors  [3] = [2]
-  //   individual [0] pos          [1] joint pos    [2] vel      [3] sensors
-  // Construction stamps every entry with now(), so an implementation that
-  // resets `out = HandReadOutcome{}` and never touches a phase (not planned, or
-  // a link with no internal phases) still hands the controller's phase
-  // arithmetic a valid, zero-length span. The controller stamps the END of the
-  // whole read itself (after its own decode / cache copies); these are the
-  // boundaries inside the read.
-  std::array<Clock::time_point, 4> phase_end{};
+  [[nodiscard]] Clock::time_point PhaseEnd(ReadPhase phase) const noexcept {
+    return phase_end[static_cast<std::size_t>(phase)];
+  }
 
-  HandReadOutcome() noexcept { phase_end.fill(Clock::now()); }
+  [[nodiscard]] bool FingerOk(int finger) const noexcept {
+    return (finger_ok_mask & FingerBit(finger)) != 0;
+  }
 };
-
-static_assert(kMaxFingertips <= 8, "HandReadOutcome::finger_ok_mask is 8 bits");
 
 // ── Interface ────────────────────────────────────────────────────────────────
 
@@ -210,14 +225,16 @@ class HandComm {
   [[nodiscard]] virtual bool InitializeSensors() noexcept = 0;
 
   /// MODE-byte validation gates (SensorProtocol::VerifiesResponseMode /
-  /// VerifiesBulkSensorResponseMode). Protocols without a MODE byte ignore them.
-  virtual void set_verify_response_mode(bool v) noexcept = 0;
-  virtual void set_verify_bulk_sensor_mode(bool v) noexcept = 0;
+  /// VerifiesBulkSensorResponseMode). Links without a MODE byte leave the
+  /// defaults (no-ops).
+  virtual void set_verify_response_mode(bool /*v*/) noexcept {}
+
+  virtual void set_verify_bulk_sensor_mode(bool /*v*/) noexcept {}
 
   /// Joint-space I/O MODE the command write and the joint-space read carry
-  /// (SensorProtocol::JointIoMode — 1a kJoint, 1b kMotor). Protocols without a
-  /// MODE byte ignore it.
-  virtual void set_joint_io_mode(packets::JointMode mode) noexcept = 0;
+  /// (SensorProtocol::JointIoMode — 1a kJoint, 1b kMotor). Links without a
+  /// MODE byte leave the default (no-op).
+  virtual void set_joint_io_mode(packets::JointMode /*mode*/) noexcept {}
 
   /// Zero all counters + forensics and publish the cleared snapshot (restart
   /// begins clean — see UdpHandTransport::ResetCommStats).
@@ -232,9 +249,9 @@ class HandComm {
   /// Per-stage receive deadline the implementation was configured with.
   [[nodiscard]] virtual double recv_timeout_ms() const noexcept = 0;
 
-  /// Whether ReadCycleIndividual() is implemented (UDP only, decision D25).
+  /// Whether ReadCycleIndividual() is implemented (UDP only).
   /// UdpHandController::PrepareRun() refuses to start `individual` on a comm
-  /// that returns false (D16), so a non-UDP link never runs the default below.
+  /// that returns false, so a non-UDP link never runs the default below.
   [[nodiscard]] virtual bool SupportsIndividualMode() const noexcept { return false; }
 
   // ── RT (CommLoop thread, every tick) — noexcept, allocation-free ─────────
@@ -245,9 +262,8 @@ class HandComm {
   virtual int DrainStale() noexcept = 0;
 
   /// Send the position command (rad) with per-motor feedforward torque (Nm) and
-  /// wait for the hand's echo. Returns true when the echo validated. Protocols
-  /// without a feedforward channel ignore `ff_nm` (UDP proto1); the CAN FD
-  /// implementation converts it to current (epic #895 D34 · D50).
+  /// wait for the hand's echo. Returns true when the echo validated. Links
+  /// without a feedforward channel ignore `ff_nm` (UDP proto1).
   [[nodiscard]] virtual bool WriteCommandWithEcho(const HandMotorArray& pos,
                                                   const HandMotorArray& ff_nm) noexcept = 0;
 
@@ -258,14 +274,14 @@ class HandComm {
 
   /// One bulk read cycle: motor-space (if planned) → joint-space → sensors (if
   /// planned). Fills `bufs` for the channels that validated and reports them in
-  /// `out` with the phase timestamps. Every per-request failure is already
-  /// counted in comm_stats_mut() by the implementation.
+  /// `out` (reset by the implementation) with the kMotor / kJoint boundaries.
+  /// Every per-request failure is already counted in comm_stats_mut().
   virtual void ReadCycle(const HandReadPlan& plan, HandReadBuffers& bufs,
                          HandReadOutcome& out) noexcept = 0;
 
   /// One individual-mode read cycle: pos → joint pos → vel → per-finger
-  /// sensors. Default = unsupported: nothing attempted, every flag false, phase
-  /// stamps from the outcome's constructor (SupportsIndividualMode() gates it).
+  /// sensors. Default = unsupported: nothing attempted, every flag false
+  /// (SupportsIndividualMode() gates it at Start).
   virtual void ReadCycleIndividual(const HandReadPlan& /*plan*/, HandReadBuffers& /*bufs*/,
                                    HandReadOutcome& out) noexcept {
     out = HandReadOutcome{};

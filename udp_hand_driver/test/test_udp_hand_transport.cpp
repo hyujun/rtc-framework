@@ -30,6 +30,12 @@ using namespace packets;
   return t.comm_stats();
 }
 
+// Same, through the HandComm surface (UdpHandComm tests stay on the seam API).
+[[nodiscard]] inline UdpHandCommStats PubStats(HandComm& c) {
+  c.PublishCommStats();
+  return c.comm_stats();
+}
+
 // ── Helper: loopback UDP device simulator ──────────────────────────────────────
 
 class LoopbackDevice {
@@ -941,7 +947,6 @@ TEST(UdpHandComm, Construction_NotOpen_Defaults) {
   UdpHandComm comm("127.0.0.1", 55151, 10.0);
   EXPECT_FALSE(comm.transport().is_open());
   EXPECT_DOUBLE_EQ(comm.recv_timeout_ms(), 10.0);
-  EXPECT_EQ(comm.joint_io_mode(), JointMode::kJoint);
   EXPECT_TRUE(comm.SupportsIndividualMode());
   // Closed link: the cycle-start drain is a safe no-op (fake mode never opens).
   EXPECT_EQ(comm.DrainStale(), 0);
@@ -979,7 +984,7 @@ TEST(UdpHandComm, WriteCommandWithEcho_EncodesJointIoMode_IgnoresFf) {
   codec::EncodeWritePosition(cmd, expected, JointMode::kMotor);
   ASSERT_EQ(wire_len, static_cast<ssize_t>(kMotorPacketSize));
   EXPECT_TRUE(std::equal(expected.begin(), expected.end(), wire.begin()));
-  EXPECT_EQ(PubStats(comm.transport()).per_kind[KindIdx(RequestKind::kWriteEcho)].ok, 1u);
+  EXPECT_EQ(PubStats(comm).per_kind[KindIdx(RequestKind::kWriteEcho)].ok, 1u);
 }
 
 TEST(UdpHandComm, WriteCommandFireAndForget_OneDatagram_NoRecv) {
@@ -999,7 +1004,7 @@ TEST(UdpHandComm, WriteCommandFireAndForget_OneDatagram_NoRecv) {
   ASSERT_EQ(wire_len, static_cast<ssize_t>(kMotorPacketSize));
   EXPECT_TRUE(std::equal(expected.begin(), expected.end(), wire.begin()));
   // Nothing was awaited: no recv accounting at all.
-  const auto stats = PubStats(comm.transport());
+  const auto stats = PubStats(comm);
   EXPECT_EQ(stats.recv_ok + stats.recv_timeout + stats.recv_error, 0u);
 }
 
@@ -1018,15 +1023,15 @@ TEST(UdpHandComm, ReadCycle_SilentDevice_PlannedChannelsOnlyAreAttempted) {
   const auto t0 = HandReadOutcome::Clock::now();
   comm.ReadCycle(plan, bufs, out);
 
-  EXPECT_FALSE(out.motor_space_ok);
-  EXPECT_FALSE(out.joint_space_ok);
+  EXPECT_FALSE(out.motor_ok);
+  EXPECT_FALSE(out.joint_ok);
   EXPECT_EQ(out.sensor_recvd, -1);
-  // Phase stamps: issue order, every phase stamped even when not planned.
-  EXPECT_GE(out.phase_end[0], t0);
-  EXPECT_GE(out.phase_end[1], out.phase_end[0]);
-  EXPECT_GE(out.phase_end[2], out.phase_end[1]);
-  EXPECT_EQ(out.phase_end[3], out.phase_end[2]);
-  const auto stats = PubStats(comm.transport());
+  // Boundaries inside the read, in issue order (stamped even when not planned).
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kMotor), t0);
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kJoint), out.PhaseEnd(ReadPhase::kMotor));
+  // Bulk has no vel phase: left at the epoch (the controller clamps it).
+  EXPECT_EQ(out.PhaseEnd(ReadPhase::kVel), HandReadOutcome::Clock::time_point{});
+  const auto stats = PubStats(comm);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].timeout, 0u);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kJointRead)].timeout, 1u);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kBulkSensor)].timeout, 0u);
@@ -1036,7 +1041,7 @@ TEST(UdpHandComm, ReadCycle_SilentDevice_PlannedChannelsOnlyAreAttempted) {
   plan.sensors = true;
   plan.sensor_response_size = kAllSensorResponseSize;
   comm.ReadCycle(plan, bufs, out);
-  const auto stats2 = PubStats(comm.transport());
+  const auto stats2 = PubStats(comm);
   EXPECT_EQ(stats2.per_kind[KindIdx(RequestKind::kMotorRead)].timeout, 1u);
   EXPECT_EQ(stats2.per_kind[KindIdx(RequestKind::kJointRead)].timeout, 2u);
   EXPECT_EQ(stats2.per_kind[KindIdx(RequestKind::kBulkSensor)].timeout, 1u);
@@ -1079,15 +1084,15 @@ TEST(UdpHandComm, ReadCycle_MotorAndJointAnswered_FillsBuffersAndReportsMode) {
   comm.ReadCycle(plan, bufs, out);
   dev_thread.join();
 
-  EXPECT_TRUE(out.motor_space_ok);
-  EXPECT_TRUE(out.joint_space_ok);
+  EXPECT_TRUE(out.motor_ok);
+  EXPECT_TRUE(out.joint_ok);
   EXPECT_EQ(out.received_motor_mode, JointMode::kMotor);
   EXPECT_EQ(out.sensor_recvd, -1);
   // pos = data[0..9], vel = data[10..19], cur = data[20..29] per the codec.
-  EXPECT_FLOAT_EQ(bufs.motor_pos[3], 3.0f);
-  EXPECT_FLOAT_EQ(bufs.motor_vel[0], static_cast<float>(kMotorDataCount));
-  EXPECT_FLOAT_EQ(bufs.joint_pos[3], 103.0f);
-  const auto stats = PubStats(comm.transport());
+  EXPECT_FLOAT_EQ(bufs.motor.pos[3], 3.0f);
+  EXPECT_FLOAT_EQ(bufs.motor.vel[0], static_cast<float>(kMotorDataCount));
+  EXPECT_FLOAT_EQ(bufs.joint.pos[3], 103.0f);
+  const auto stats = PubStats(comm);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].ok, 1u);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kJointRead)].ok, 1u);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kBulkSensor)].timeout, 1u);
@@ -1106,90 +1111,17 @@ TEST(UdpHandComm, ReadCycleIndividual_SilentDevice_AttemptsPosJointVelAndFingers
   const auto t0 = HandReadOutcome::Clock::now();
   comm.ReadCycleIndividual(plan, bufs, out);
 
-  EXPECT_FALSE(out.pos_ok);
-  EXPECT_FALSE(out.joint_pos_ok);
+  EXPECT_FALSE(out.motor_ok);
+  EXPECT_FALSE(out.joint_ok);
   EXPECT_FALSE(out.vel_ok);
   EXPECT_EQ(out.finger_ok_mask, 0u);
-  EXPECT_GE(out.phase_end[0], t0);
-  EXPECT_GE(out.phase_end[1], out.phase_end[0]);
-  EXPECT_GE(out.phase_end[2], out.phase_end[1]);
-  EXPECT_GE(out.phase_end[3], out.phase_end[2]);
-  const auto stats = PubStats(comm.transport());
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kMotor), t0);
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kJoint), out.PhaseEnd(ReadPhase::kMotor));
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kVel), out.PhaseEnd(ReadPhase::kJoint));
+  const auto stats = PubStats(comm);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].timeout, 2u);  // pos + vel
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kJointRead)].timeout, 1u);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kSensorRead)].timeout, 2u);  // 2 fingers
-}
-
-// A HandComm that leaves ReadCycleIndividual at its default (a non-UDP link)
-// must report "nothing read" with every phase stamped — the controller's
-// timing arithmetic reads all four — and advertise no individual support so
-// the node can reject the mode at configure (decision D16).
-TEST(HandComm, DefaultReadCycleIndividual_UnsupportedButStamped) {
-  class NullComm final : public HandComm {
-   public:
-    [[nodiscard]] bool Open() noexcept override { return true; }
-
-    void Close() noexcept override {}
-
-    [[nodiscard]] bool InitializeSensors() noexcept override { return true; }
-
-    void set_verify_response_mode(bool) noexcept override {}
-
-    void set_verify_bulk_sensor_mode(bool) noexcept override {}
-
-    void set_joint_io_mode(JointMode) noexcept override {}
-
-    void ResetCommStats() noexcept override {}
-
-    [[nodiscard]] UdpHandCommStats comm_stats() const noexcept override { return stats_; }
-
-    [[nodiscard]] uint64_t recv_error_count() const noexcept override { return 0; }
-
-    [[nodiscard]] double recv_timeout_ms() const noexcept override { return 0.0; }
-
-    int DrainStale() noexcept override { return 0; }
-
-    [[nodiscard]] bool WriteCommandWithEcho(const HandMotorArray&,
-                                            const HandMotorArray&) noexcept override {
-      return false;
-    }
-
-    void WriteCommandFireAndForget(const HandMotorArray&, const HandMotorArray&) noexcept override {
-    }
-
-    void ReadCycle(const HandReadPlan&, HandReadBuffers&, HandReadOutcome& out) noexcept override {
-      out = HandReadOutcome{};
-    }
-
-    [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept override { return stats_; }
-
-    void PublishCommStats() noexcept override {}
-
-    [[nodiscard]] uint8_t last_unexpected_cmd() const noexcept override { return 0; }
-
-    [[nodiscard]] uint16_t last_unexpected_len() const noexcept override { return 0; }
-
-   private:
-    UdpHandCommStats stats_{};
-  };
-
-  NullComm comm;
-  EXPECT_FALSE(comm.SupportsIndividualMode());
-  HandReadPlan plan{};
-  plan.sensors = true;
-  plan.num_fingertips = 4;
-  HandReadBuffers bufs{};
-  HandReadOutcome out{};
-  out.pos_ok = true;  // stale content must be cleared
-  const auto t0 = HandReadOutcome::Clock::now();
-  comm.ReadCycleIndividual(plan, bufs, out);
-  EXPECT_FALSE(out.pos_ok);
-  EXPECT_FALSE(out.joint_pos_ok);
-  EXPECT_FALSE(out.vel_ok);
-  EXPECT_EQ(out.finger_ok_mask, 0u);
-  for (const auto& t : out.phase_end) {
-    EXPECT_GE(t, t0);
-  }
 }
 
 }  // namespace udp_hand_driver::test
