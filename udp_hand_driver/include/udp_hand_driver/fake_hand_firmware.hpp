@@ -23,8 +23,10 @@
 // CAN FD wire through BuildCanFdResponse(), the MCU's mirror image for one
 // hand (Config::hand_side → node id, D51). One received frame yields 0..3
 // frames: a CMD Frame 0 / 1 is applied and its 64 bytes echoed verbatim
-// (D41); a REQ (DLC 0, D47) is answered by the RESP burst idx 0, 1, 2 built
-// from the joint model and the 1b tactile channels; everything else (Frame
+// (D41); a REQ (DLC 0 by D47 — any length is answered, a payload counted) is
+// answered by the RESP burst idx 0, 1, 2 built from the joint model and the
+// 1b tactile channels, with the Proto §4.3 sign flips pre-applied so the host
+// decodes the same positive forces the 1b path yields; everything else (Frame
 // 2 / 3, another node's target, error frames, bad lengths) is dropped and
 // counted (D45). Broadcast (0xFF) is answered like the node's own id. The
 // feedforward frame is kept for inspection only — the LPF model has no
@@ -86,13 +88,17 @@ class FakeHandFirmware {
     std::array<uint8_t, canfd::kFrameLen> data{};
   };
 
-  /// Frames BuildCanFdResponse() dropped, by reason. Single writer; read by value.
+  /// What BuildCanFdResponse() saw besides the frames it answered. The first
+  /// two are normal on a shared bus (the socket shell may pre-filter them);
+  /// the rest are drops. Single writer; canfd_counters() hands out a copy.
   struct CanFdCounters {
-    uint64_t error_frames{0};  ///< CAN_ERR_FLAG set — rejected before the id is read
-    uint64_t other_target{0};  ///< target neither this node nor broadcast
-    uint64_t unknown_type{0};  ///< msg type other than CMD / REQ (a RESP, or an undefined value)
-    uint64_t bad_length{0};    ///< CMD Frame 0 / 1 whose payload is not 64 bytes
-    uint64_t cmd_ignored{0};   ///< CMD Frame 2, 3 or higher (D27 · D45: no model, no echo)
+    uint64_t peer_traffic{0};      ///< addressed to the host (another hand's echo / RESP)
+    uint64_t req_with_payload{0};  ///< REQ answered although it carried data (D47 says DLC 0)
+    uint64_t error_frames{0};      ///< CAN_ERR_FLAG set — rejected before the id is read
+    uint64_t other_target{0};      ///< target another hand (neither this node, host nor broadcast)
+    uint64_t unknown_type{0};      ///< msg type other than CMD / REQ (RESP, or an undefined value)
+    uint64_t bad_length{0};        ///< CMD Frame 0 / 1 whose payload is not 64 bytes
+    uint64_t cmd_ignored{0};       ///< CMD Frame 2, 3 or higher (D27 · D45: no model, no echo)
   };
 
   explicit FakeHandFirmware(const Config& cfg)
@@ -164,7 +170,8 @@ class FakeHandFirmware {
   //   CMD Frame 0 (64 B) → target latched, model stepped once, 64 B echoed (D41)
   //   CMD Frame 1 (64 B) → kept as last_feedforward(), 64 B echoed (D50)
   //   CMD Frame 2 / 3 / … → counted, nothing else (D45)
-  //   REQ (any DLC, D47)  → RESP burst idx 0, 1, 2 — all three or none (D43)
+  //   REQ (DLC 0, D47)    → RESP burst idx 0, 1, 2 — all three or none (D43);
+  //                         a REQ with data is answered too, and counted
   // Not const: mutates the joint model (Frame 0) and the RNG (every burst).
   std::size_t BuildCanFdResponse(uint32_t can_id, const uint8_t* data, std::size_t len,
                                  CanFdFrame* out, std::size_t cap) {
@@ -176,6 +183,10 @@ class FakeHandFirmware {
     }
     const uint32_t id = can_id & canfd::kExtIdMask;
     const uint8_t target = canfd::TargetOf(id);
+    if (target == canfd::kNodeHost) {
+      ++canfd_counters_.peer_traffic;
+      return 0;
+    }
     if (target != node_ && target != canfd::kNodeBroadcast) {
       ++canfd_counters_.other_target;
       return 0;
@@ -184,6 +195,8 @@ class FakeHandFirmware {
       case static_cast<uint8_t>(canfd::MsgType::kCmd):
         return HandleCanFdCmd(canfd::FrameIndexOf(id), data, len, out, cap);
       case static_cast<uint8_t>(canfd::MsgType::kReq):
+        if (len != 0)
+          ++canfd_counters_.req_with_payload;
         return BuildCanFdRespBurst(out, cap);
       default:
         ++canfd_counters_.unknown_type;
@@ -231,7 +244,7 @@ class FakeHandFirmware {
   /// CMD Frame 1 frames applied so far.
   [[nodiscard]] uint64_t feedforward_count() const noexcept { return feedforward_count_; }
 
-  [[nodiscard]] const CanFdCounters& canfd_counters() const noexcept { return canfd_counters_; }
+  [[nodiscard]] CanFdCounters canfd_counters() const noexcept { return canfd_counters_; }
 
  private:
   static_assert(canfd::kWireMotorCount == static_cast<std::size_t>(kNumHandMotors),
@@ -261,9 +274,14 @@ class FakeHandFirmware {
   }
 
   // Per-response sensor draws: base (fixed at construction) + N(0, stddev).
-  [[nodiscard]] int32_t SampleSensor1a(std::size_t channel) {
+  // Integer channels (1a, proto2) share DrawCounts; 1b stays float.
+  [[nodiscard]] long DrawCounts(int32_t base) {
     std::normal_distribution<double> nd(0.0, cfg_.sensor_noise_stddev);
-    return base_1a_[channel] + static_cast<int32_t>(std::lround(nd(rng_)));
+    return static_cast<long>(base) + std::lround(nd(rng_));
+  }
+
+  [[nodiscard]] int32_t SampleSensor1a(std::size_t channel) {
+    return static_cast<int32_t>(DrawCounts(base_1a_[channel]));
   }
 
   [[nodiscard]] float SampleSensor1b(std::size_t channel) {
@@ -384,30 +402,32 @@ class FakeHandFirmware {
   // One fingertip's raw tactile record. Synthesised in the wire's count
   // domain from the 1b base channels ([fx, fy, fz, Lx, Ly, Temp] — the same
   // channel order as TactileRaw): base + N(0, stddev), rounded and clamped to
-  // int16. With the default bases (100..4000 counts) the host decodes a thumb
-  // fx of 0.08..3 N; fy, fz and py come out negative there because the host
-  // applies the Proto §4.3 sign flips, which this side does not undo. An
-  // active fingertip reports contact; an inactive one is all zeros.
+  // int16. The host applies the Proto §4.3 sign flips on fy, fz and py, so
+  // those raw counts are negated here and every decoded channel comes out
+  // positive, as the 1b fake's do — a SIL consumer thresholding normal force
+  // sees the same sign on both wires. With the default bases (100..4000
+  // counts) the host decodes a thumb fx of 0.08..3 N. An active fingertip
+  // reports contact; an inactive one is all zeros.
   [[nodiscard]] canfd::TactileRaw SampleTactile(canfd::Fingertip finger) {
     canfd::TactileRaw r{};
     const int f = static_cast<int>(finger);
     if (!FingerActive(f))
       return r;
     const std::size_t k0 = static_cast<std::size_t>(f) * kP1bValuesPerFingertip;
-    r.fx = SampleSensorCanFd(k0 + 0);
-    r.fy = SampleSensorCanFd(k0 + 1);
-    r.fz = SampleSensorCanFd(k0 + 2);
-    r.px = SampleSensorCanFd(k0 + 3);
-    r.py = SampleSensorCanFd(k0 + 4);
-    r.temp = SampleSensorCanFd(k0 + 5);
+    r.fx = SampleSensorCanFd(k0 + 0, +1);
+    r.fy = SampleSensorCanFd(k0 + 1, -1);
+    r.fz = SampleSensorCanFd(k0 + 2, -1);
+    r.px = SampleSensorCanFd(k0 + 3, +1);
+    r.py = SampleSensorCanFd(k0 + 4, -1);
+    r.temp = SampleSensorCanFd(k0 + 5, +1);
     r.contact = 1;
     return r;
   }
 
-  [[nodiscard]] int16_t SampleSensorCanFd(std::size_t channel) {
-    std::normal_distribution<double> nd(0.0, cfg_.sensor_noise_stddev);
-    const long v = std::lround(static_cast<double>(base_1b_[channel]) + nd(rng_));
-    return static_cast<int16_t>(std::clamp<long>(v, INT16_MIN, INT16_MAX));
+  // int16 wire count; `sign` −1 pre-applies a Proto §4.3 flip.
+  [[nodiscard]] int16_t SampleSensorCanFd(std::size_t channel, long sign) {
+    return static_cast<int16_t>(
+        std::clamp<long>(sign * DrawCounts(base_1b_[channel]), INT16_MIN, INT16_MAX));
   }
 
   // CMD Frame `idx`: Frame 0 latches the target and steps the model, Frame 1

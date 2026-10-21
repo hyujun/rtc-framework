@@ -95,10 +95,16 @@ void ExpectBareId(const FakeHandFirmware::CanFdFrame& f, uint32_t id) {
   EXPECT_EQ(f.len, kFrameLen);
 }
 
+// Raw counts of an active fingertip: base ± noise on fx / px / temp, the
+// negated band on fy / fz / py (the fake pre-applies the Proto §4.3 flips).
 void ExpectInBand(const TactileRaw& r) {
-  for (int v : {r.fx, r.fy, r.fz, r.px, r.py, r.temp}) {
+  for (int v : {r.fx, r.px, r.temp}) {
     EXPECT_GE(v, kBaseMin - kBand);
     EXPECT_LE(v, kBaseMax + kBand);
+  }
+  for (int v : {r.fy, r.fz, r.py}) {
+    EXPECT_GE(v, -(kBaseMax + kBand));
+    EXPECT_LE(v, -(kBaseMin - kBand));
   }
   EXPECT_EQ(r.contact, 1u);
 }
@@ -114,6 +120,8 @@ void ExpectZero(const TactileRaw& r) {
 }
 
 void ExpectNoDrops(const FakeHandFirmware::CanFdCounters& c) {
+  EXPECT_EQ(c.peer_traffic, 0u);
+  EXPECT_EQ(c.req_with_payload, 0u);
   EXPECT_EQ(c.error_frames, 0u);
   EXPECT_EQ(c.other_target, 0u);
   EXPECT_EQ(c.unknown_type, 0u);
@@ -236,7 +244,7 @@ TEST(FakeHandFirmwareCanFd, Req_ThreeFrames_DecodeMatchesJointModel) {
     ExpectBareId(out[i], RespId(kNodeRightHand, static_cast<uint8_t>(i)));
 
   Telemetry t{};
-  ReadBack(kNodeRightHand, out, t);
+  ASSERT_NO_FATAL_FAILURE(ReadBack(kNodeRightHand, out, t));
   for (std::size_t i = 0; i < kWireMotorCount; ++i) {
     EXPECT_FLOAT_EQ(t.pos[i], pos[i]) << "motor " << i;
     EXPECT_FLOAT_EQ(t.vel[i], vel[i]) << "motor " << i;
@@ -266,15 +274,18 @@ TEST(FakeHandFirmwareCanFd, Req_ActiveFingertips_TactileInBand_WithContact) {
   for (uint8_t b : f2.reserved)
     EXPECT_EQ(b, 0u);
 
-  // The host sees Proto §4.3 signs: fx positive, fy / fz / py negative.
+  // After the host's Proto §4.3 decode every channel is positive, like the
+  // 1b fake's — a SIL force threshold behaves the same on both wires.
   Telemetry t{};
-  ReadBack(kNodeRightHand, out, t);
+  ASSERT_NO_FATAL_FAILURE(ReadBack(kNodeRightHand, out, t));
+  const float fx_lo = static_cast<float>(kBaseMin - kBand) * kForceXyRangeN / kTactileFullScale;
   for (const Tactile& tac : t.tactile) {
-    EXPECT_GT(tac.fx_n, 0.0f);
-    EXPECT_LT(tac.fy_n, 0.0f);
-    EXPECT_LT(tac.fz_n, 0.0f);
+    EXPECT_GE(tac.fx_n, fx_lo);
+    EXPECT_GT(tac.fy_n, 0.0f);
+    EXPECT_GT(tac.fz_n, 0.0f);
     EXPECT_GT(tac.px_m, 0.0f);
-    EXPECT_LT(tac.py_m, 0.0f);
+    EXPECT_GT(tac.py_m, 0.0f);
+    EXPECT_GT(tac.temp_c, 0.0f);
     EXPECT_TRUE(tac.contact);
   }
 }
@@ -296,7 +307,7 @@ TEST(FakeHandFirmwareCanFd, Req_InactiveFingertips_AllZero_NoContact) {
   ExpectZero(f2.ring);
 
   Telemetry t{};
-  ReadBack(kNodeRightHand, out, t);
+  ASSERT_NO_FATAL_FAILURE(ReadBack(kNodeRightHand, out, t));
   EXPECT_FALSE(t.tactile[static_cast<std::size_t>(Fingertip::kMiddle)].contact);
   EXPECT_FLOAT_EQ(t.tactile[static_cast<std::size_t>(Fingertip::kRing)].fz_n, 0.0f);
 }
@@ -310,7 +321,9 @@ TEST(FakeHandFirmwareCanFd, Req_LengthIgnored_ClassicFallbackStillAnswered) {
   EXPECT_EQ(Send(fw, ReqId(kNodeRightHand), junk.data(), 8, out), kNumRespFrames);
   EXPECT_EQ(Send(fw, ReqId(kNodeRightHand), junk.data(), junk.size(), out), kNumRespFrames);
   EXPECT_FLOAT_EQ(fw.target()[0], 0.0f) << "a REQ payload is not a command";
-  ExpectNoDrops(fw.canfd_counters());
+  EXPECT_EQ(fw.canfd_counters().req_with_payload, 2u) << "…but the harness can see it";
+  EXPECT_EQ(SendReq(fw, kNodeRightHand, out), kNumRespFrames);
+  EXPECT_EQ(fw.canfd_counters().req_with_payload, 2u);
 }
 
 TEST(FakeHandFirmwareCanFd, Req_CapBelowBurst_WritesNothing) {
@@ -386,9 +399,11 @@ TEST(FakeHandFirmwareCanFd, UnknownType_Dropped_Counted) {
   FakeHandFirmware fw(DefaultConfig());
   Frames out{};
   const Bytes cmd = CmdBytes(Ramp(0.7f, 0.0f));
-  // Another hand's RESP (type 2) addressed to the host: target 0 ≠ ours → other_target.
+  // The other hand's RESP and echo, addressed to the host: normal bus traffic.
   EXPECT_EQ(Send(fw, RespId(kNodeLeftHand, 0), cmd.data(), cmd.size(), out), 0u);
-  EXPECT_EQ(fw.canfd_counters().other_target, 1u);
+  EXPECT_EQ(Send(fw, EchoId(kNodeLeftHand, 1), cmd.data(), cmd.size(), out), 0u);
+  EXPECT_EQ(fw.canfd_counters().peer_traffic, 2u);
+  EXPECT_EQ(fw.canfd_counters().other_target, 0u);
   // A RESP (type 2) and an undefined type (0xF) addressed to us.
   EXPECT_EQ(Send(fw, MakeCanId(0, MsgType::kResp, kNodeRightHand, kNodeHost, 0), cmd.data(),
                  cmd.size(), out),
