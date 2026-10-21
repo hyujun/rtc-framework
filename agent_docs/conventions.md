@@ -29,6 +29,7 @@
     - **Tier 0 예외**: 어떤 lifecycle transition 보다 먼저 확정돼야 하는 것만 생성자에 둘 수 있다 — ① executor 에 넘길 callback group, ② 그 스레드를 어디에 pin 할지 정하는 파라미터 declare. 판정 기준은 "configure 가 오기 전에 이미 필요한가" 다. 리소스 (publisher / subscription / timer / 디바이스 핸들) 는 여전히 금지이고, 이 예외를 쓰는 노드는 생성자에 그 이유를 한 줄로 남긴다
 - **ROS 2 API**: 명시 `rclcpp::QoS` (`KEEP_LAST` depth 1 — ARCH-6; reliability · durability 는 lane 마다 정해진 값을 유지), `MutuallyExclusiveCallbackGroup`, 범위 지정 `ParameterDescriptor`
 - **Formatting SSoT**: C++ 는 [`.clang-format`](../.clang-format), Python 은 [`pyproject.toml`](../pyproject.toml) (ruff). **`ament_uncrustify` / `ament_lint_common` 사용 금지** (clang-format 과 영구 충돌한다; meta 패키지를 쓰면 skip 할 수 없다). 새 패키지는 개별 lint depend 만: `ament_cmake_cppcheck` / `ament_cmake_lint_cmake` / `ament_cmake_xmllint`
+- **Test-only 헤더는 install 하지 않는다**: gtest · Eigen 등 테스트 의존을 끌어오는 공유 헤더는 `<pkg>/test/include/<pkg>/testing/` 에 두고 (`include/` 아래는 ament symlink install 이 전부 싣는다), 형제 패키지의 테스트는 그 패키지가 `CONFIG_EXTRAS` 로 내보내는 `<pkg>_add_test_includes(<target>)` 로만 소비한다 (경로 박제 금지, 원형은 `rtc_base/cmake/`)
 - **Include grouping**: `.clang-format` 의 `IncludeCategories` 가 SSoT 다 (프로젝트 → ROS 2 → third-party → stdlib). 같은 Priority 안의 blank line 은 clang-format 이 지우며 의도된 동작이다 (own header 와 `<rtc_base/...>` 도 같은 P1 — grouping 지적은 거절해도 된다). 분리가 필요하면 `.clang-format` 패턴을 추가한다 — manual blank line 이 아니다
 
 ## Logging

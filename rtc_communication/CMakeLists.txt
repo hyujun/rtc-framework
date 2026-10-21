@@ -21,9 +21,15 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rtc_base REQUIRED)
 
+# Only include/ ships. test/include/rtc_communication/testing/ holds the
+# gtest-coupled vcan skip helpers — test-only, never installed (rule:
+# agent_docs/conventions.md §Code Conventions); sibling driver tests reach them
+# through rtc_communication_add_test_includes() from the CONFIG_EXTRAS template
+# at the bottom of this file, which bakes in this source tree's real path.
 install(DIRECTORY include/ DESTINATION include)
 ament_export_include_directories(include)
 ament_export_dependencies(rtc_base)
+set(RTC_COMMUNICATION_TEST_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/include")
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
@@ -36,12 +42,12 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_can_loopback test/test_can_loopback.cpp)
   if(TARGET test_can_loopback)
-    target_include_directories(test_can_loopback PRIVATE include ${rtc_base_INCLUDE_DIRS})
+    target_include_directories(test_can_loopback PRIVATE include test/include ${rtc_base_INCLUDE_DIRS})
   endif()
 
   ament_add_gtest(test_canfd_loopback test/test_canfd_loopback.cpp)
   if(TARGET test_canfd_loopback)
-    target_include_directories(test_canfd_loopback PRIVATE include ${rtc_base_INCLUDE_DIRS})
+    target_include_directories(test_canfd_loopback PRIVATE include test/include ${rtc_base_INCLUDE_DIRS})
   endif()
 
   ament_add_gtest(test_serial_loopback test/test_serial_loopback.cpp)
@@ -69,4 +75,4 @@ if(BUILD_TESTING)
   endif()
 endif()
 
-ament_package()
+ament_package(CONFIG_EXTRAS "cmake/rtc_communication-test-include.cmake.in")

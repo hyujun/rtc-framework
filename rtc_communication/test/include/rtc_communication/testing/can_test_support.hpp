@@ -1,10 +1,12 @@
 // ── can_test_support.hpp ────────────────────────────────────────────────────
 // Shared vcan detection and skip helpers for CAN / CAN FD tests.
 //
-// Installed under rtc_communication/testing/ so that consumer packages' tests
-// (device drivers over CanTransport / CanFdTransport) reuse the same skip
-// contract instead of forking it. Test-only: it pulls in gtest, so only test
-// translation units include it — no runtime header does.
+// Test-only (it pulls in gtest) and therefore never installed: it lives under
+// test/include/, and consumer packages' tests (device drivers over
+// CanTransport / CanFdTransport) reach it with
+// rtc_communication_add_test_includes(<target>) in their CMakeLists so the
+// skip contract is shared instead of forked (P5). Rule:
+// agent_docs/conventions.md §Code Conventions.
 //
 // Local setup (vcan0, MTU 72 for CAN FD): sudo repo_scripts/scripts/setup_vcan.sh
 // ─────────────────────────────────────────────────────────────────────────────

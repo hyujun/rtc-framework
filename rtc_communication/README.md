@@ -48,7 +48,7 @@ auto state = xcvr.GetLatestState();  // non-RT 전용 (mutex)
 | `packet_codec.hpp` | `PacketCodec` · `DecodePacket` · `EncodePacket` | 코덱 concept 과 `memcpy` 헬퍼 |
 | `transceiver.hpp` | `Transceiver<Codec>` | 수신 jthread + 코덱 + 송신 |
 | `socket_options.hpp` | (내부 헬퍼) | UDP/CAN 공용 `SO_RCVBUF` · `SO_RCVTIMEO` · `SO_PRIORITY` 설정 |
-| `testing/can_test_support.hpp` | `SKIP_IF_NO_VCAN` · `SKIP_IF_NO_FD_VCAN` | 테스트 전용 (gtest): `vcan0` 감지 · skip. 소비 패키지 테스트가 재사용 |
+| `test/include/…/testing/can_test_support.hpp` | `SKIP_IF_NO_VCAN` · `SKIP_IF_NO_FD_VCAN` | 테스트 전용 (gtest), install 안 됨. 소비 패키지 테스트는 CMake 에서 `rtc_communication_add_test_includes(<target>)` |
 
 ### UdpTransport
 

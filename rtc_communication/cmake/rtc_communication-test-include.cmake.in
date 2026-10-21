@@ -1,0 +1,34 @@
+# Consumed by every find_package(rtc_communication) via
+# ament_package(CONFIG_EXTRAS). Configured at rtc_communication's own configure
+# time (@ONLY), so the path below is the real location of its source tree.
+#
+# rtc_communication/test/include holds test-only headers (gtest-coupled vcan
+# detection / skip macros) that are never installed — the rule and its reason
+# are agent_docs/conventions.md §Code Conventions; the mechanism mirrors
+# rtc_base/cmake/rtc_base-test-include.cmake.in (#356), which also explains
+# why a loud check beats a silent missing include path.
+
+set(rtc_communication_TEST_INCLUDE_DIRS "@RTC_COMMUNICATION_TEST_INCLUDE_DIR@")
+
+macro(_rtc_communication_assert_test_includes _caller)
+  if(NOT EXISTS "${rtc_communication_TEST_INCLUDE_DIRS}")
+    message(FATAL_ERROR
+      "${_caller}: rtc_communication's test-only include dir is not reachable at "
+      "'${rtc_communication_TEST_INCLUDE_DIRS}'. These headers are never installed, "
+      "so the consumer needs rtc_communication as a sibling SOURCE package, not "
+      "merely an installed one.")
+  endif()
+endmacro()
+
+# Attach rtc_communication's never-installed test headers to one or more
+# targets (rtc_communication/testing/can_test_support.hpp: SKIP_IF_NO_VCAN /
+# SKIP_IF_NO_FD_VCAN).
+function(rtc_communication_add_test_includes)
+  _rtc_communication_assert_test_includes("rtc_communication_add_test_includes()")
+  foreach(target ${ARGV})
+    if(NOT TARGET ${target})
+      message(FATAL_ERROR "rtc_communication_add_test_includes(): no such target '${target}'")
+    endif()
+    target_include_directories(${target} PRIVATE "${rtc_communication_TEST_INCLUDE_DIRS}")
+  endforeach()
+endfunction()
