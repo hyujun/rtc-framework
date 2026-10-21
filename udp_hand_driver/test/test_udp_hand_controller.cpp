@@ -9,12 +9,16 @@
 // NOT required — rclcpp logging works without node context.
 
 #include "rtc_base/testing/wait_until.hpp"
+#include "rtc_base/threading/seqlock.hpp"
+#include "udp_hand_driver/hand_comm.hpp"
+#include "udp_hand_driver/udp_hand_comm.hpp"
 #include "udp_hand_driver/udp_hand_controller.hpp"
 
 #include <arpa/inet.h>
 #include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -23,6 +27,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 #include <utility>
@@ -880,6 +886,334 @@ TEST(HandControllerEStop, RestartResetsCountersAfterFailures) {
 
   ctrl->Stop();
   ::close(fd);
+}
+
+// ── HandComm seam: scripted comm double (epic #895 D25, #897) ──────────────
+// Drives the REAL (non-fake) RunCommCycle against a deterministic HandComm so
+// the plumbing the seam moved — plan hoisting, outcome → state / mask / streak,
+// stats stamping, the write gate's feedforward argument and the E-Stop
+// fire-and-forget — is pinned without sockets or timing. The double fills the
+// read buffers with a recognisable pattern (motor i → base + i, joint i → base
+// + 100 + i, finger f value k → 1000·(f+1) + k) and records every call.
+//
+// Threading: the script fields are written before Start() and read on the
+// CommLoop thread; the counters are atomics so the test thread may poll them
+// while the loop runs; the "last_*" captures are plain and are read only after
+// Stop() (which joins the loop) or after the loop self-exited AND Stop() joined.
+
+class ScriptedHandComm final : public HandComm {
+ public:
+  // Script.
+  bool script_motor_ok{true};
+  bool script_joint_ok{true};
+  ssize_t script_sensor_recvd{-1};
+  bool script_pos_ok{true};
+  bool script_joint_pos_ok{true};
+  bool script_vel_ok{true};
+  uint8_t script_finger_mask{0};
+  float pattern_base{1.0f};
+
+  // Observations.
+  std::atomic<int> open_calls{0};
+  std::atomic<int> close_calls{0};
+  std::atomic<int> init_sensor_calls{0};
+  std::atomic<int> reset_stats_calls{0};
+  std::atomic<int> drain_calls{0};
+  std::atomic<int> read_cycle_calls{0};
+  std::atomic<int> read_individual_calls{0};
+  std::atomic<int> write_echo_calls{0};
+  std::atomic<int> fire_and_forget_calls{0};
+  std::atomic<bool> verify_response_mode{true};
+  std::atomic<bool> verify_bulk_sensor_mode{true};
+  std::atomic<uint8_t> joint_io_mode{0xFF};
+  HandReadPlan last_plan{};
+  HandMotorArray last_echo_pos{};
+  HandMotorArray last_echo_ff{};
+  HandMotorArray last_faf_pos{};
+  HandMotorArray last_faf_ff{};
+
+  [[nodiscard]] bool Open() noexcept override {
+    ++open_calls;
+    return true;
+  }
+
+  void Close() noexcept override { ++close_calls; }
+
+  [[nodiscard]] bool InitializeSensors() noexcept override {
+    ++init_sensor_calls;
+    return true;
+  }
+
+  void set_verify_response_mode(bool v) noexcept override { verify_response_mode = v; }
+
+  void set_verify_bulk_sensor_mode(bool v) noexcept override { verify_bulk_sensor_mode = v; }
+
+  void set_joint_io_mode(packets::JointMode m) noexcept override {
+    joint_io_mode = static_cast<uint8_t>(m);
+  }
+
+  void ResetCommStats() noexcept override {
+    ++reset_stats_calls;
+    stats_ = {};
+    stats_seqlock_.Store(stats_);
+  }
+
+  [[nodiscard]] UdpHandCommStats comm_stats() const noexcept override {
+    return stats_seqlock_.Load();
+  }
+
+  [[nodiscard]] uint64_t recv_error_count() const noexcept override { return 0; }
+
+  [[nodiscard]] double recv_timeout_ms() const noexcept override { return 1.0; }
+
+  [[nodiscard]] bool SupportsIndividualMode() const noexcept override { return true; }
+
+  int DrainStale() noexcept override {
+    ++drain_calls;
+    return 0;
+  }
+
+  [[nodiscard]] bool WriteCommandWithEcho(const HandMotorArray& pos,
+                                          const HandMotorArray& ff_nm) noexcept override {
+    last_echo_pos = pos;
+    last_echo_ff = ff_nm;
+    ++write_echo_calls;
+    return true;
+  }
+
+  void WriteCommandFireAndForget(const HandMotorArray& pos,
+                                 const HandMotorArray& ff_nm) noexcept override {
+    last_faf_pos = pos;
+    last_faf_ff = ff_nm;
+    ++fire_and_forget_calls;
+  }
+
+  void ReadCycle(const HandReadPlan& plan, HandReadBuffers& bufs,
+                 HandReadOutcome& out) noexcept override {
+    last_plan = plan;
+    ++read_cycle_calls;
+    FillMotorPattern(bufs);
+    out = HandReadOutcome{};
+    out.motor_space_ok = plan.motor_space_read && script_motor_ok;
+    out.joint_space_ok = script_joint_ok;
+    out.sensor_recvd = plan.sensors ? script_sensor_recvd : -1;
+    out.received_motor_mode = packets::JointMode::kMotor;
+    out.phase_end.fill(HandReadOutcome::Clock::now());
+  }
+
+  void ReadCycleIndividual(const HandReadPlan& plan, HandReadBuffers& bufs,
+                           HandReadOutcome& out) noexcept override {
+    last_plan = plan;
+    ++read_individual_calls;
+    FillMotorPattern(bufs);
+    out = HandReadOutcome{};
+    out.pos_ok = script_pos_ok;
+    out.joint_pos_ok = script_joint_pos_ok;
+    out.vel_ok = script_vel_ok;
+    out.received_motor_mode = packets::JointMode::kMotor;
+    if (plan.sensors) {
+      out.finger_ok_mask = script_finger_mask;
+      for (int f = 0; f < plan.num_fingertips && f < kMaxFingertips; ++f) {
+        for (int k = 0; k < kSensorValuesPerFingertip; ++k) {
+          bufs.sensor_values[static_cast<std::size_t>(f * kSensorValuesPerFingertip + k)] =
+              1000 * (f + 1) + k;
+        }
+      }
+    }
+    out.phase_end.fill(HandReadOutcome::Clock::now());
+  }
+
+  [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept override { return stats_; }
+
+  void PublishCommStats() noexcept override { stats_seqlock_.Store(stats_); }
+
+  [[nodiscard]] uint8_t last_unexpected_cmd() const noexcept override { return 0; }
+
+  [[nodiscard]] uint16_t last_unexpected_len() const noexcept override { return 0; }
+
+ private:
+  void FillMotorPattern(HandReadBuffers& bufs) const noexcept {
+    for (std::size_t i = 0; i < packets::kMotorDataCount; ++i) {
+      const auto fi = static_cast<float>(i);
+      bufs.motor_pos[i] = pattern_base + fi;
+      bufs.motor_vel[i] = pattern_base + 10.0f + fi;
+      bufs.motor_cur[i] = pattern_base + 20.0f + fi;
+      bufs.joint_pos[i] = pattern_base + 100.0f + fi;
+      bufs.joint_vel[i] = pattern_base + 110.0f + fi;
+      bufs.joint_cur[i] = pattern_base + 120.0f + fi;
+    }
+  }
+
+  UdpHandCommStats stats_{};
+  rtc::SeqLock<UdpHandCommStats> stats_seqlock_{};
+};
+
+// Real-mode controller (sockets never opened — the scripted comm answers) with
+// the comm injected; the raw pointer observes it while the controller owns it.
+struct ScriptedRig {
+  std::unique_ptr<UdpHandController> ctrl;
+  ScriptedHandComm* comm{nullptr};
+};
+
+ScriptedRig MakeScriptedRig(HandCommunicationMode mode, int num_fingertips) {
+  ScriptedRig rig;
+  rig.ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 1,
+      .recv_timeout_ms = 1.0,
+      .num_fingertips = num_fingertips,
+      .communication_mode = mode,
+  });
+  auto comm = std::make_unique<ScriptedHandComm>();
+  rig.comm = comm.get();
+  rig.ctrl->SetHandComm(std::move(comm));
+  return rig;
+}
+
+TEST(HandCommSeam, DefaultCommIsUdp_NullInjectionIgnored) {
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 1,
+      .use_fake_hand = true,
+  });
+  EXPECT_NE(dynamic_cast<UdpHandComm*>(&ctrl->hand_comm()), nullptr);
+  ctrl->SetHandComm(nullptr);
+  EXPECT_NE(dynamic_cast<UdpHandComm*>(&ctrl->hand_comm()), nullptr);
+}
+
+TEST(HandCommSeam, Bulk_PlanHoistedFromProtocol_OutcomeMapsToStateMasksAndStats) {
+  auto rig = MakeScriptedRig(HandCommunicationMode::kBulk, /*num_fingertips=*/4);
+  auto& comm = *rig.comm;
+  comm.script_sensor_recvd = -1;  // sensor channel fails every cycle
+
+  ASSERT_TRUE(rig.ctrl->Start());
+  ASSERT_TRUE(PollUntil([&] { return rig.ctrl->cycle_count() >= 3; }, 2s));
+  rig.ctrl->Stop();
+
+  // Non-RT setup went through the seam, in PrepareRun order.
+  EXPECT_EQ(comm.open_calls, 1);
+  EXPECT_EQ(comm.init_sensor_calls, 1);
+  EXPECT_EQ(comm.reset_stats_calls, 1);
+  EXPECT_EQ(comm.close_calls, 1);
+  // 1a default protocol: strict MODE gates, kJoint I/O, motor-space read, 259 B.
+  EXPECT_TRUE(comm.verify_response_mode);
+  EXPECT_TRUE(comm.verify_bulk_sensor_mode);
+  EXPECT_EQ(comm.joint_io_mode, static_cast<uint8_t>(packets::JointMode::kJoint));
+  EXPECT_TRUE(comm.last_plan.motor_space_read);
+  EXPECT_TRUE(comm.last_plan.sensors);  // sensor_decimation 1: every cycle
+  EXPECT_EQ(comm.last_plan.num_fingertips, 4);
+  EXPECT_EQ(comm.last_plan.sensor_response_size, packets::kAllSensorResponseSize);
+  EXPECT_GT(comm.drain_calls, 0);
+  EXPECT_GT(comm.read_cycle_calls, 0);
+  EXPECT_EQ(comm.read_individual_calls, 0);
+
+  // Outcome → published state.
+  const UdpHandState st = rig.ctrl->GetLatestState();
+  EXPECT_TRUE(st.valid);
+  EXPECT_TRUE(st.motor_valid);
+  EXPECT_TRUE(st.joint_valid);
+  EXPECT_FLOAT_EQ(st.motor_positions[2], 3.0f);
+  EXPECT_FLOAT_EQ(st.motor_velocities[2], 13.0f);
+  EXPECT_FLOAT_EQ(st.motor_currents[2], 23.0f);
+  EXPECT_FLOAT_EQ(st.joint_positions[2], 103.0f);
+  EXPECT_FLOAT_EQ(st.joint_velocities[2], 113.0f);
+  EXPECT_FLOAT_EQ(st.joint_currents[2], 123.0f);
+  EXPECT_EQ(st.received_joint_mode, static_cast<uint8_t>(packets::JointMode::kMotor));
+  EXPECT_EQ(st.sensor_seq, 0u);  // no validated sensor read ever
+
+  // Outcome → masks / streaks: sensor attempted and failed, reads ok.
+  const CycleOutcomeRing ring = rig.ctrl->GetCycleOutcomeRing();
+  ASSERT_GT(ring.count, 0u);
+  const auto& latest = ring.entries[(ring.count - 1) % CycleOutcomeRing::kCapacity];
+  EXPECT_EQ(latest.attempted_mask, RequestKindBit(RequestKind::kMotorRead) |
+                                       RequestKindBit(RequestKind::kJointRead) |
+                                       RequestKindBit(RequestKind::kBulkSensor));
+  EXPECT_EQ(latest.ok_mask,
+            RequestKindBit(RequestKind::kMotorRead) | RequestKindBit(RequestKind::kJointRead));
+  EXPECT_GT(rig.ctrl->channel_consec_fail(RequestKind::kBulkSensor), 0u);
+  EXPECT_EQ(rig.ctrl->channel_consec_fail(RequestKind::kJointRead), 0u);
+  EXPECT_EQ(rig.ctrl->consecutive_recv_failures(), 0u);  // some channel answered
+
+  // Stats stamping goes through comm_stats_mut()/PublishCommStats().
+  EXPECT_EQ(rig.ctrl->comm_stats().total_cycles, rig.ctrl->cycle_count());
+}
+
+TEST(HandCommSeam, Write_GatedOnFirstState_ForwardsCommandWithZeroFeedforward) {
+  auto rig = MakeScriptedRig(HandCommunicationMode::kBulk, /*num_fingertips=*/0);
+  auto& comm = *rig.comm;
+
+  ASSERT_TRUE(rig.ctrl->Start());
+  ASSERT_TRUE(PollUntil([&] { return rig.ctrl->HasStateBeenRead(); }, 2s));
+  HandMotorArray cmd{};
+  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    cmd[i] = 0.25f * static_cast<float>(i);
+  }
+  rig.ctrl->SendCommandAndRequestStates(cmd);
+  ASSERT_TRUE(PollUntil([&] { return comm.write_echo_calls >= 1; }, 2s));
+  rig.ctrl->Stop();
+
+  EXPECT_EQ(comm.write_echo_calls, 1);  // per-command gate: one write per staged command
+  EXPECT_EQ(comm.last_echo_pos, cmd);
+  EXPECT_EQ(comm.last_echo_ff, HandMotorArray{});  // zero until F04-2d wires feedforward
+  EXPECT_EQ(comm.fire_and_forget_calls, 0);
+}
+
+// E-8 regression pin for the seam: the terminal E-Stop zero-write goes through
+// HandComm::WriteCommandFireAndForget exactly once, with zero position AND zero
+// feedforward, before any cycle I/O (the E-Stop branch precedes the drain).
+TEST(HandCommSeam, EStop_FireAndForgetOnce_ZeroPositionAndZeroFeedforward) {
+  auto rig = MakeScriptedRig(HandCommunicationMode::kBulk, /*num_fingertips=*/0);
+  auto& comm = *rig.comm;
+  std::atomic<bool> estop{true};  // asserted before Start → first tick self-exits
+  rig.ctrl->SetEstopFlag(&estop);
+
+  ASSERT_TRUE(rig.ctrl->Start());
+  ASSERT_TRUE(PollUntil([&] { return !rig.ctrl->IsRunning(); }, 2s));
+  rig.ctrl->Stop();  // joins the loop → the captures below are stable
+
+  EXPECT_EQ(comm.fire_and_forget_calls, 1);
+  EXPECT_EQ(comm.last_faf_pos, HandMotorArray{});
+  EXPECT_EQ(comm.last_faf_ff, HandMotorArray{});
+  EXPECT_EQ(comm.write_echo_calls, 0);
+  EXPECT_EQ(comm.read_cycle_calls, 0);
+  EXPECT_EQ(comm.drain_calls, 0);
+  EXPECT_EQ(rig.ctrl->cycle_count(), 0u);
+}
+
+TEST(HandCommSeam, Individual_UsesIndividualCycle_PartialFingersRefreshOnlyTheirSlots) {
+  auto rig = MakeScriptedRig(HandCommunicationMode::kIndividual, /*num_fingertips=*/2);
+  auto& comm = *rig.comm;
+  comm.script_vel_ok = false;      // 0x12 fails every cycle
+  comm.script_finger_mask = 0x01;  // finger 0 answers, finger 1 times out
+
+  ASSERT_TRUE(rig.ctrl->Start());
+  ASSERT_TRUE(PollUntil([&] { return rig.ctrl->cycle_count() >= 3; }, 2s));
+  rig.ctrl->Stop();
+
+  EXPECT_GT(comm.read_individual_calls, 0);
+  EXPECT_EQ(comm.read_cycle_calls, 0);
+  EXPECT_EQ(comm.last_plan.num_fingertips, 2);
+
+  const UdpHandState st = rig.ctrl->GetLatestState();
+  EXPECT_TRUE(st.motor_valid);
+  EXPECT_TRUE(st.joint_valid);
+  EXPECT_FLOAT_EQ(st.motor_positions[4], 5.0f);
+  EXPECT_FLOAT_EQ(st.motor_velocities[4], 0.0f);  // vel channel failed: never copied
+  EXPECT_FLOAT_EQ(st.joint_positions[4], 105.0f);
+  // Finger 0's slot refreshed from the comm; finger 1's slot never written.
+  EXPECT_EQ(st.sensor_data[0], 1000);
+  EXPECT_EQ(st.sensor_data[kSensorValuesPerFingertip - 1], 1000 + kSensorValuesPerFingertip - 1);
+  EXPECT_EQ(st.sensor_data[kSensorValuesPerFingertip], 0);
+  EXPECT_GE(st.sensor_seq, 1u);  // ≥1 fresh finger per cycle bumps the freshness seq
+
+  const CycleOutcomeRing ring = rig.ctrl->GetCycleOutcomeRing();
+  ASSERT_GT(ring.count, 0u);
+  const auto& latest = ring.entries[(ring.count - 1) % CycleOutcomeRing::kCapacity];
+  EXPECT_EQ(latest.attempted_mask, RequestKindBit(RequestKind::kMotorRead) |
+                                       RequestKindBit(RequestKind::kJointRead) |
+                                       RequestKindBit(RequestKind::kSensorRead));
+  // pos ok sets the motor bit even though vel failed; one ok finger sets sensor.
+  EXPECT_EQ(latest.ok_mask, latest.attempted_mask);
 }
 
 }  // namespace udp_hand_driver::test

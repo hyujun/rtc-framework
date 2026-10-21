@@ -1,14 +1,16 @@
 #ifndef UDP_HAND_DRIVER_UDP_HAND_CONTROLLER_HPP_
 #define UDP_HAND_DRIVER_UDP_HAND_CONTROLLER_HPP_
 
-// High-level hand controller: self-clocked UDP driver.
+// High-level hand controller: self-clocked hand driver.
 //
-// Uses a single UDP socket for both send and receive. A dedicated
-// rtc::PeriodicRtThread (CommLoop) drives one RunCommCycle() per period at a
-// fixed `loop_rate_hz` (default 500 Hz) — the read/state-publish cadence is
-// autonomous and does NOT depend on how often commands arrive.
+// All link I/O goes through the injected HandComm (hand_comm.hpp — the
+// communication-cycle seam, epic #895 D25); the default is UdpHandComm over a
+// single UDP socket. A dedicated rtc::PeriodicRtThread (CommLoop) drives one
+// RunCommCycle() per period at a fixed `loop_rate_hz` (default 500 Hz) — the
+// read/state-publish cadence is autonomous and does NOT depend on how often
+// commands arrive.
 //
-// Per comm cycle (bulk mode):
+// Per comm cycle (bulk mode, UDP proto1 request names):
 //   1. Write position (0x01) + recv echo — ONLY when a command is pending
 //   2. Read all motors (0x10)            — every cycle (state)
 //   3. Read all sensors (0x19)           — every sensor cycle (state)
@@ -43,14 +45,15 @@
 #include "rtc_base/types/types.hpp"
 #include "udp_hand_driver/fake_hand_lpf.hpp"
 #include "udp_hand_driver/fingertip_ft_inferencer.hpp"
+#include "udp_hand_driver/hand_comm.hpp"
 #include "udp_hand_driver/protocol/sensor_protocol.hpp"
+#include "udp_hand_driver/udp_hand_comm.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_logging.hpp"
 #include "udp_hand_driver/udp_hand_packets.hpp"
 #include "udp_hand_driver/udp_hand_sensor_processor.hpp"
 #include "udp_hand_driver/udp_hand_state.hpp"
 #include "udp_hand_driver/udp_hand_timing_profiler.hpp"
-#include "udp_hand_driver/udp_hand_transport.hpp"
 
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
@@ -74,12 +77,7 @@
 
 namespace udp_hand_driver {
 
-// ── Communication mode
-// ────────────────────────────────────────────────────────
-enum class HandCommunicationMode {
-  kIndividual,  // 0x11 pos + 0x12 vel + 0x14~0x17 sensors
-  kBulk,        // 0x10 all motors + 0x19 all sensors
-};
+// HandCommunicationMode lives in hand_comm.hpp (seam header).
 
 // ── Sensor calibration (matches rtc_msgs::msg::CalibrationCommand/Status) ─
 // Kept independent of rtc_msgs to avoid adding a message dependency in this
@@ -187,8 +185,11 @@ class UdpHandController {
                                                      : cfg.fingertip_names),
         communication_mode_(cfg.communication_mode),
         ft_config_(std::move(cfg.ft_config)),
-        transport_(std::move(cfg.target_ip), cfg.target_port, cfg.recv_timeout_ms,
-                   std::move(cfg.local_ip), std::move(cfg.local_interface)),
+        // Default link: UDP proto1 (socket is not opened until PrepareRun). The
+        // node / tests may replace it through SetHandComm() before Start().
+        comm_(std::make_unique<UdpHandComm>(std::move(cfg.target_ip), cfg.target_port,
+                                            cfg.recv_timeout_ms, std::move(cfg.local_ip),
+                                            std::move(cfg.local_interface))),
         sensor_processor_(UdpHandSensorProcessorConfig{
             num_fingertips_, sensor_decimation_, cfg.tof_lpf_enabled, cfg.tof_lpf_cutoff_hz,
             cfg.baro_lpf_enabled, cfg.baro_lpf_cutoff_hz, cfg.drift_detection_enabled,
@@ -229,22 +230,30 @@ class UdpHandController {
       sensor_protocol_ = CreateSensorProtocol("1a");
     }
 
-    // Propagate the protocol's MODE-echo capabilities to the transport before
-    // any request runs (InitializeSensors below, then the CommLoop thread).
-    // The joint / set-mode gate stays strict on both 1a and 1b; the bulk-sensor
-    // gate is separate because 1b's 0x19 response echoes an arbitrary MODE byte
-    // (see VerifiesBulkSensorResponseMode()). Set here (off the RT path) so there
-    // is no race with the CommLoop thread started further down.
-    transport_.set_verify_response_mode(sensor_protocol_->VerifiesResponseMode());
-    transport_.set_verify_bulk_sensor_mode(sensor_protocol_->VerifiesBulkSensorResponseMode());
+    // Propagate the protocol's MODE-echo capabilities to the comm before any
+    // request runs (InitializeSensors below, then the CommLoop thread). The
+    // joint / set-mode gate stays strict on both 1a and 1b; the bulk-sensor gate
+    // is separate because 1b's 0x19 response echoes an arbitrary MODE byte (see
+    // VerifiesBulkSensorResponseMode()). Set here (off the RT path) so there is
+    // no race with the CommLoop thread started further down.
+    comm_->set_verify_response_mode(sensor_protocol_->VerifiesResponseMode());
+    comm_->set_verify_bulk_sensor_mode(sensor_protocol_->VerifiesBulkSensorResponseMode());
 
-    // Hoist per-loop-lifetime constants off the RunCommCycle hot path. Both are
+    // Hoist per-loop-lifetime constants off the RunCommCycle hot path. All are
     // fixed once sensor_protocol_ is set (above) and read every cycle:
-    //   is_bulk_       — communication-mode branch (bulk 0x10/0x19 vs individual)
-    //   joint_io_mode_ — joint-space I/O MODE (1a=kJoint, 1b=kMotor); drives the
-    //                    position write, the joint read, and the E-Stop zero-write
+    //   is_bulk_       — communication-mode branch (bulk vs individual)
+    //   joint_io_mode_ — joint-space I/O MODE (1a=kJoint, 1b=kMotor); the comm
+    //                    applies it to the command write, the joint read, and
+    //                    the E-Stop zero-write
+    //   read_plan_     — the per-run part of the HandComm read plan (only its
+    //                    `sensors` field flips per cycle)
     is_bulk_ = (communication_mode_ == HandCommunicationMode::kBulk);
     joint_io_mode_ = sensor_protocol_->JointIoMode();
+    comm_->set_joint_io_mode(joint_io_mode_);
+    read_plan_.motor_space_read = sensor_protocol_->HasMotorSpaceRead();
+    read_plan_.sensors = false;
+    read_plan_.num_fingertips = num_fingertips_;
+    read_plan_.sensor_response_size = sensor_protocol_->ResponseSize();
 
     // F/T inferencer initialization. Non-RT init path — verbose diagnostics
     // here are intentional: when FT inference misbehaves at runtime, this
@@ -286,14 +295,14 @@ class UdpHandController {
     }
 
     if (!use_fake_hand_) {
-      if (!transport_.Open()) {
-        RCLCPP_ERROR(::udp_hand_driver::logging::ControllerLogger(), "UDP socket open failed");
+      if (!comm_->Open()) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::ControllerLogger(), "hand link open failed");
         return false;
       }
 
-      // Sensor initialization: NN -> RAW mode
+      // Sensor initialization (UDP: NN -> RAW mode)
       if (num_fingertips_ > 0) {
-        sensor_init_ok_ = transport_.InitializeSensors();
+        sensor_init_ok_ = comm_->InitializeSensors();
         if (!sensor_init_ok_) {
           RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
                       "Sensor initialization failed (sensor_init_ok=false)");
@@ -354,7 +363,7 @@ class UdpHandController {
     comm_skip_count_.store(0, std::memory_order_relaxed);
     sensor_seq_ = 0;  // CommLoop-thread-only; restart begins fresh at 0 so the
                       // detector's prev_sensor_seq_ (also 0) sees the first read.
-    transport_.ResetCommStats();
+    comm_->ResetCommStats();
     return true;
   }
 
@@ -417,7 +426,7 @@ class UdpHandController {
     // Runs in fake mode too — the CommLoop thread is started there as well.
     comm_loop_.Join();
     if (!use_fake_hand_) {
-      transport_.Close();
+      comm_->Close();
     }
     const auto cycles = cycle_count_.load(std::memory_order_relaxed);
     const double elapsed_sec =
@@ -438,6 +447,24 @@ class UdpHandController {
   void SetSensorProtocol(std::unique_ptr<SensorProtocol> proto) noexcept {
     sensor_protocol_ = std::move(proto);
   }
+
+  // ── Hand comm injection (non-RT — call before Start()) ─────────────────
+
+  /// Replace the link implementation (default: UdpHandComm built from the
+  /// config). Must be called before Start() and never while running — the
+  /// CommLoop dereferences it every tick with no synchronization. A null
+  /// argument is ignored (the controller always has a comm). Injection point
+  /// for the CAN FD comm (epic #895 F04-2d) and for scripted test doubles.
+  void SetHandComm(std::unique_ptr<HandComm> comm) noexcept {
+    if (comm) {
+      comm_ = std::move(comm);
+    }
+  }
+
+  /// The active link implementation (non-RT readers: node diagnostics, tests).
+  [[nodiscard]] HandComm& hand_comm() noexcept { return *comm_; }
+
+  [[nodiscard]] const HandComm& hand_comm() const noexcept { return *comm_; }
 
   // ── Timing producer (per-tick CSV output, optional) ────────────────────
 
@@ -574,7 +601,7 @@ class UdpHandController {
     return cycle_count_.load(std::memory_order_relaxed);
   }
 
-  [[nodiscard]] uint64_t recv_error_count() const noexcept { return transport_.recv_error_count(); }
+  [[nodiscard]] uint64_t recv_error_count() const noexcept { return comm_->recv_error_count(); }
 
   [[nodiscard]] int comm_decimation() const noexcept { return comm_decimation_; }
 
@@ -628,7 +655,7 @@ class UdpHandController {
   }
 
   [[nodiscard]] UdpHandCommStats comm_stats() const noexcept {
-    UdpHandCommStats stats = transport_.comm_stats();
+    UdpHandCommStats stats = comm_->comm_stats();
     stats.comm_decimation_skip_count = comm_skip_count_.load(std::memory_order_relaxed);
     return stats;
   }
@@ -649,7 +676,7 @@ class UdpHandController {
     return communication_mode_;
   }
 
-  [[nodiscard]] double recv_timeout_ms() const noexcept { return transport_.recv_timeout_ms(); }
+  [[nodiscard]] double recv_timeout_ms() const noexcept { return comm_->recv_timeout_ms(); }
 
   [[nodiscard]] double actual_sensor_rate_hz() const noexcept {
     return sensor_processor_.actual_sensor_rate_hz();
@@ -755,16 +782,16 @@ class UdpHandController {
       return;
     }
 
-    // Drain any datagram left queued from a prior cycle before this cycle's
-    // first request. A 1-cycle desync parks the previous request's late response
-    // in the recv buffer; without draining it, the first read below would
-    // consume that stale packet (cmd_mismatch) and burn retries. Bounded
-    // non-blocking drain — the count is observed via comm_stats().stale_drained
-    // only (no hot-path logging). Runs only on real comm cycles (after the
-    // decimation skip return above); a no-op in fake mode (socket closed).
+    // Drain anything left queued from a prior cycle before this cycle's first
+    // request. A 1-cycle desync parks the previous request's late response in
+    // the receive queue; without draining it, the first read below would consume
+    // that stale packet (cmd_mismatch) and burn retries. Bounded non-blocking
+    // drain — the count is observed via comm_stats().stale_drained only (no
+    // hot-path logging). Runs only on real comm cycles (after the decimation
+    // skip return above); a no-op in fake mode (link closed).
     {
       RTC_TRACE_SCOPE("hand_drain_stale");
-      transport_.DrainStaleDatagrams();
+      comm_->DrainStale();
     }
 
     // Latch the most recent staged command (last-command-wins). Per-command:
@@ -783,7 +810,9 @@ class UdpHandController {
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    // 1. Write position + recv echo (joint_io_mode_: 1a=kJoint, 1b=kMotor).
+    // 1. Write command + recv echo (the comm applies joint_io_mode_: 1a=kJoint,
+    // 1b=kMotor; pending_ff_ is the per-motor feedforward torque, zero until
+    // F04-2d wires JointCommand.feedforward — epic #895 D56).
     // Gated on BOTH the first state read (startup no-jump contract) AND a
     // pending command. has_pending_write_ is cleared only here, inside the open
     // gate, so a command staged before the first state read is held (not lost)
@@ -801,7 +830,7 @@ class UdpHandController {
       RTC_TRACE_SCOPE("hand_write_echo");
       write_attempted = true;
       attempted_mask |= RequestKindBit(RequestKind::kWriteEcho);
-      if (transport_.WritePositionWithEcho(pending_cmd_, send_buf_, echo_buf_, joint_io_mode_)) {
+      if (comm_->WriteCommandWithEcho(pending_cmd_, pending_ff_)) {
         any_recv_ok = true;
         ok_mask |= RequestKindBit(RequestKind::kWriteEcho);
         write_ok = true;
@@ -819,77 +848,73 @@ class UdpHandController {
 
     if (is_bulk_) {
       // ── Bulk mode ─────────────────────────────────────────────────────
-      // 2. Read all motors (motor-space: kMotor). Skipped when the protocol
-      //    has no motor-space read (1b) — motor_states is then not published.
-      bool motor_space_attempted = false;
-      bool read_all_motor_ok = false;
-      if (sensor_protocol_->HasMotorSpaceRead()) {
-        RTC_TRACE_SCOPE("hand_read_motor");
-        motor_space_attempted = true;
-        packets::JointMode received_mode{};
+      // One HandComm read cycle: motor-space (when the protocol has one) →
+      // joint-space → sensors (on a sensor cycle). The comm fills read_bufs_
+      // and reports per-channel outcomes + phase stamps in read_outcome_; the
+      // attempted / ok masks, the state fill and the sensor decode (version
+      // seam: SensorProtocol) stay here.
+      read_plan_.sensors = is_sensor_cycle;
+      const bool motor_space_attempted = read_plan_.motor_space_read;
+      if (motor_space_attempted) {
         attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
-        if (transport_.RequestAllMotorRead(motor_pos_buf_, motor_vel_buf_, motor_cur_buf_,
-                                           packets::JointMode::kMotor, &received_mode,
-                                           RequestKind::kMotorRead)) {
-          std::copy_n(motor_pos_buf_.begin(), kNumHandMotors, state.motor_positions.begin());
-          std::copy_n(motor_vel_buf_.begin(), kNumHandMotors, state.motor_velocities.begin());
-          std::copy_n(motor_cur_buf_.begin(), kNumHandMotors, state.motor_currents.begin());
-          state.received_joint_mode = static_cast<uint8_t>(received_mode);
-          state.motor_valid = true;
-          any_recv_ok = true;
-          ok_mask |= RequestKindBit(RequestKind::kMotorRead);
-          read_all_motor_ok = true;
-        }
+      }
+      attempted_mask |= RequestKindBit(RequestKind::kJointRead);
+      if (is_sensor_cycle) {
+        state.num_fingertips = num_fingertips_;  // decode input
+        attempted_mask |= RequestKindBit(RequestKind::kBulkSensor);
+      }
+      comm_->ReadCycle(read_plan_, read_bufs_, read_outcome_);
+      const HandReadOutcome& rc = read_outcome_;
+
+      // 2. Motor-space read (kMotor). Skipped when the protocol has no
+      //    motor-space read (1b) — motor_states is then not published.
+      bool read_all_motor_ok = false;
+      if (rc.motor_space_ok) {
+        std::copy_n(read_bufs_.motor_pos.begin(), kNumHandMotors, state.motor_positions.begin());
+        std::copy_n(read_bufs_.motor_vel.begin(), kNumHandMotors, state.motor_velocities.begin());
+        std::copy_n(read_bufs_.motor_cur.begin(), kNumHandMotors, state.motor_currents.begin());
+        state.received_joint_mode = static_cast<uint8_t>(rc.received_motor_mode);
+        state.motor_valid = true;
+        any_recv_ok = true;
+        ok_mask |= RequestKindBit(RequestKind::kMotorRead);
+        read_all_motor_ok = true;
       }
 
-      const auto t2 = std::chrono::steady_clock::now();
+      const auto t2 = rc.phase_end[0];
 
-      // 3. Read all motors (joint-space: joint_io_mode_) — pos/vel/cur. 1b
-      //    issues this in kMotor (its only joint-serving mode) and still
-      //    publishes the result as joint_states.
+      // 3. Joint-space read (joint_io_mode_) — pos/vel/cur. 1b issues this in
+      //    kMotor (its only joint-serving mode) and still publishes the result
+      //    as joint_states.
       bool read_all_joint_motor_ok = false;
-      {
-        RTC_TRACE_SCOPE("hand_read_joint");
-        std::array<float, packets::kMotorDataCount> jp_buf{}, jv_buf{}, jc_buf{};
-        attempted_mask |= RequestKindBit(RequestKind::kJointRead);
-        if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf, joint_io_mode_, nullptr,
-                                           RequestKind::kJointRead)) {
-          std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
-          std::copy_n(jv_buf.begin(), kNumHandMotors, state.joint_velocities.begin());
-          std::copy_n(jc_buf.begin(), kNumHandMotors, state.joint_currents.begin());
-          state.joint_valid = true;
-          any_recv_ok = true;
-          ok_mask |= RequestKindBit(RequestKind::kJointRead);
-          read_all_joint_motor_ok = true;
-        }
+      if (rc.joint_space_ok) {
+        std::copy_n(read_bufs_.joint_pos.begin(), kNumHandMotors, state.joint_positions.begin());
+        std::copy_n(read_bufs_.joint_vel.begin(), kNumHandMotors, state.joint_velocities.begin());
+        std::copy_n(read_bufs_.joint_cur.begin(), kNumHandMotors, state.joint_currents.begin());
+        state.joint_valid = true;
+        any_recv_ok = true;
+        ok_mask |= RequestKindBit(RequestKind::kJointRead);
+        read_all_joint_motor_ok = true;
       }
 
-      const auto t2j = std::chrono::steady_clock::now();
+      const auto t2j = rc.phase_end[1];
 
-      // 4. Read all sensors — raw recv, decode via the injected protocol
+      // 4. Sensors — raw bytes from the comm, decoded via the injected protocol
       //    (version seam). The request is identical across versions; only the
       //    response size/layout and decode differ.
       bool read_all_sensor_ok = false;
-      if (is_sensor_cycle) {
-        RTC_TRACE_SCOPE("hand_read_sensor");
-        state.num_fingertips = num_fingertips_;  // decode input
-        attempted_mask |= RequestKindBit(RequestKind::kBulkSensor);
-        const ssize_t recvd = transport_.RequestBulkSensorRaw(
-            sensor_recv_buf_.data(), sensor_recv_buf_.size(), sensor_protocol_->ResponseSize(),
-            packets::SensorMode::kRaw);
-        if (recvd >= 0 && sensor_protocol_->DecodeAllSensors(
-                              sensor_recv_buf_.data(), static_cast<std::size_t>(recvd), state)) {
-          any_recv_ok = true;
-          ok_mask |= RequestKindBit(RequestKind::kBulkSensor);
-          read_all_sensor_ok = true;
-          cached_sensor_data_ = state.sensor_data;    // 1a raw decode (0 for 1b)
-          cached_sensor_force_ = state.sensor_force;  // 1b force (0 for 1a)
-          ++sensor_seq_;  // fresh validated sensor read (freshness gate for detector)
-        }
+      if (is_sensor_cycle && rc.sensor_recvd >= 0 &&
+          sensor_protocol_->DecodeAllSensors(read_bufs_.sensor_raw.data(),
+                                             static_cast<std::size_t>(rc.sensor_recvd), state)) {
+        any_recv_ok = true;
+        ok_mask |= RequestKindBit(RequestKind::kBulkSensor);
+        read_all_sensor_ok = true;
+        cached_sensor_data_ = state.sensor_data;    // 1a raw decode (0 for 1b)
+        cached_sensor_force_ = state.sensor_force;  // 1b force (0 for 1a)
+        ++sensor_seq_;  // fresh validated sensor read (freshness gate for detector)
       }
 
-      const auto t3 = std::chrono::steady_clock::now();
-      comm_loop_.MarkState();  // end of UDP read phase (base t1)
+      const auto t3 = rc.phase_end[2];
+      comm_loop_.MarkState();  // end of the read phase (base t1)
 
       // Bulk-only state field (1b firmware-computed force; 0 for 1a). Set before
       // the shared tail so the SeqLock store captures it.
@@ -916,82 +941,72 @@ class UdpHandController {
       FinalizePhaseTiming(pt, tail, t3, t0, is_sensor_cycle);
 
     } else {
-      // ── Individual mode ───────────────────────────────────────────────
-      // 2. Read motor position (kMotor)
-      packets::JointMode received_mode{};
-      attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
+      // ── Individual mode (UDP proto1a only, D25) ─────────────────────────
+      // One HandComm individual read cycle: pos → joint pos → vel → per-finger
+      // sensors (on a sensor cycle). Same split as bulk: the comm fills
+      // read_bufs_ + read_outcome_, the masks / state fill stay here.
+      read_plan_.sensors = is_sensor_cycle;
+      attempted_mask |= RequestKindBit(RequestKind::kMotorRead);  // pos + vel
+      attempted_mask |= RequestKindBit(RequestKind::kJointRead);
+      const bool sensor_attempted = is_sensor_cycle && num_fingertips_ > 0;
+      if (sensor_attempted) {
+        attempted_mask |= RequestKindBit(RequestKind::kSensorRead);
+      }
+      comm_->ReadCycleIndividual(read_plan_, read_bufs_, read_outcome_);
+      const HandReadOutcome& rc = read_outcome_;
+
+      // 2. Motor position (kMotor)
       bool read_pos_ok = false;
-      {
-        RTC_TRACE_SCOPE("hand_read_pos");
-        if (transport_.RequestMotorRead(packets::Command::kReadPosition, motor_pos_buf_,
-                                        packets::JointMode::kMotor, &received_mode,
-                                        RequestKind::kMotorRead)) {
-          std::copy_n(motor_pos_buf_.begin(), kNumHandMotors, state.motor_positions.begin());
-          state.received_joint_mode = static_cast<uint8_t>(received_mode);
-          state.motor_valid = true;
-          any_recv_ok = true;
-          ok_mask |= RequestKindBit(RequestKind::kMotorRead);
-          read_pos_ok = true;
-        }
+      if (rc.pos_ok) {
+        std::copy_n(read_bufs_.motor_pos.begin(), kNumHandMotors, state.motor_positions.begin());
+        state.received_joint_mode = static_cast<uint8_t>(rc.received_motor_mode);
+        state.motor_valid = true;
+        any_recv_ok = true;
+        ok_mask |= RequestKindBit(RequestKind::kMotorRead);
+        read_pos_ok = true;
       }
 
-      const auto t2 = std::chrono::steady_clock::now();
+      const auto t2 = rc.phase_end[0];
 
-      // 3. Read joint position (joint-space: joint_io_mode_). Individual mode is
+      // 3. Joint position (joint-space: joint_io_mode_). Individual mode is
       //    1a-only (1b requires bulk), so this resolves to kJoint in practice.
       bool read_joint_pos_ok = false;
-      {
-        RTC_TRACE_SCOPE("hand_read_joint_pos");
-        std::array<float, packets::kMotorDataCount> jp_buf{};
-        attempted_mask |= RequestKindBit(RequestKind::kJointRead);
-        if (transport_.RequestMotorRead(packets::Command::kReadPosition, jp_buf, joint_io_mode_,
-                                        nullptr, RequestKind::kJointRead)) {
-          std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
-          state.joint_valid = true;
-          any_recv_ok = true;
-          ok_mask |= RequestKindBit(RequestKind::kJointRead);
-          read_joint_pos_ok = true;
-        }
+      if (rc.joint_pos_ok) {
+        std::copy_n(read_bufs_.joint_pos.begin(), kNumHandMotors, state.joint_positions.begin());
+        state.joint_valid = true;
+        any_recv_ok = true;
+        ok_mask |= RequestKindBit(RequestKind::kJointRead);
+        read_joint_pos_ok = true;
       }
 
-      const auto t2j = std::chrono::steady_clock::now();
+      const auto t2j = rc.phase_end[1];
 
-      // 4. Read motor velocity (kMotor)
-      attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
+      // 4. Motor velocity (kMotor)
       bool read_vel_ok = false;
-      {
-        RTC_TRACE_SCOPE("hand_read_vel");
-        if (transport_.RequestMotorRead(packets::Command::kReadVelocity, motor_vel_buf_,
-                                        packets::JointMode::kMotor, nullptr,
-                                        RequestKind::kMotorRead)) {
-          std::copy_n(motor_vel_buf_.begin(), kNumHandMotors, state.motor_velocities.begin());
-          any_recv_ok = true;
-          ok_mask |= RequestKindBit(RequestKind::kMotorRead);
-          read_vel_ok = true;
-        }
+      if (rc.vel_ok) {
+        std::copy_n(read_bufs_.motor_vel.begin(), kNumHandMotors, state.motor_velocities.begin());
+        any_recv_ok = true;
+        ok_mask |= RequestKindBit(RequestKind::kMotorRead);
+        read_vel_ok = true;
       }
 
-      const auto t3 = std::chrono::steady_clock::now();
+      const auto t3 = rc.phase_end[2];
 
-      // 5. Read sensors. read_sensor_ok gates the timing sample on ALL attempted
-      //    fingers succeeding — a partial-finger read would bundle a timeout into
-      //    the phase duration.
-      bool sensor_attempted = false;
+      // 5. Sensors. A finger that validated this cycle refreshes its slot of the
+      //    cache; a failed finger keeps its previous values. read_sensor_ok gates
+      //    the timing sample on ALL attempted fingers succeeding — a
+      //    partial-finger read would bundle a timeout into the phase duration.
       bool read_sensor_ok = false;
       if (is_sensor_cycle) {
-        RTC_TRACE_SCOPE("hand_read_sensor");
-        if (num_fingertips_ > 0) {
-          sensor_attempted = true;
-          attempted_mask |= RequestKindBit(RequestKind::kSensorRead);
-        }
         bool sensor_validated = false;
         bool all_fingers_ok = (num_fingertips_ > 0);
         for (int i = 0; i < num_fingertips_; ++i) {
-          auto cmd = packets::SensorCommand(i);
-          if (transport_.RequestSensorRead(cmd, sensor_raw_buf_, packets::SensorMode::kRaw)) {
-            std::copy_n(
-                sensor_raw_buf_.begin(), udp_hand_driver::kSensorValuesPerFingertip,
-                cached_sensor_data_.begin() + i * udp_hand_driver::kSensorValuesPerFingertip);
+          if ((rc.finger_ok_mask & static_cast<uint8_t>(1u << static_cast<unsigned>(i))) != 0) {
+            const auto off =
+                static_cast<std::ptrdiff_t>(i) * udp_hand_driver::kSensorValuesPerFingertip;
+            std::copy_n(read_bufs_.sensor_values.begin() + off,
+                        udp_hand_driver::kSensorValuesPerFingertip,
+                        cached_sensor_data_.begin() + off);
             any_recv_ok = true;
             ok_mask |= RequestKindBit(RequestKind::kSensorRead);
             sensor_validated = true;
@@ -1004,8 +1019,8 @@ class UdpHandController {
           ++sensor_seq_;  // one bump per cycle with ≥1 fresh finger read
       }
 
-      const auto t4 = std::chrono::steady_clock::now();
-      comm_loop_.MarkState();  // end of UDP read phase (base t1)
+      const auto t4 = rc.phase_end[3];
+      comm_loop_.MarkState();  // end of the read phase (base t1)
 
       const CommCycleTailResult tail =
           RunCommCycleTail(state, cached_sensor_data_raw, any_recv_ok, is_sensor_cycle);
@@ -1034,7 +1049,7 @@ class UdpHandController {
     // that could drift. cycle_seq is the pre-increment value; total_cycles wants
     // the post-increment count.
     const auto cycle_seq = cycle_count_.fetch_add(1, std::memory_order_relaxed);
-    transport_.comm_stats_mut().total_cycles = cycle_seq + 1;
+    comm_->comm_stats_mut().total_cycles = cycle_seq + 1;
 
     // Record this cycle's outcome into the working forensic ring (cheap in-place
     // write, every cycle).
@@ -1083,8 +1098,8 @@ class UdpHandController {
       const auto failures = consecutive_recv_failures_.fetch_add(1, std::memory_order_relaxed) + 1;
       // Decode the last-unexpected forensics via lightweight atomic loads rather
       // than copying the full comm_stats() snapshot on this hot path.
-      const auto last_cmd = transport_.last_unexpected_cmd();
-      const auto last_len = transport_.last_unexpected_len();
+      const auto last_cmd = comm_->last_unexpected_cmd();
+      const auto last_len = comm_->last_unexpected_len();
       if (failures == 1) {
         // 0→1 transition: name the FIRST failed request kind of this cycle
         // and the last rejected CMD byte — a stale echo of the *previous*
@@ -1117,7 +1132,7 @@ class UdpHandController {
     // snapshot. All this cycle's transport mutations (per_kind, aggregates,
     // last_unexpected) and the total_cycles stamp above are now captured, so an
     // off-loop reader never sees a torn per_kind/aggregate pair. RT-safe memcpy.
-    transport_.PublishCommStats();
+    comm_->PublishCommStats();
   }
 
   // Fake-hand comm cycle (CommLoop thread only; use_fake_hand). Replaces the UDP
@@ -1221,14 +1236,17 @@ class UdpHandController {
   // Terminal E-Stop zero-write, invoked once by CommLoop::OnLoopAborted() on
   // the loop thread as the loop unwinds (moved out of RunCommCycle's E-Stop
   // branch per review #2-A so the hot path stays free of the write + its recv).
-  // Fire-and-forget: no echo wait, allocation-free, noexcept.
+  // Fire-and-forget through the HandComm seam: zero position AND zero
+  // feedforward, no echo wait, allocation-free, noexcept. E-STOP path (E-8):
+  // the UDP comm sends the same single datagram as before the seam; the CAN FD
+  // comm sends Frame 1 zeros → Frame 0 zeros (epic #895 D26 · D33).
   void OnCommLoopAborted() noexcept {
     // Sibling of hand_comm_tick, NOT a child — CommLoop::OnLoopAborted() calls
     // this after the tick loop has unwound, so it lands on the loop thread's
     // lane outside any hand_comm_tick span.
     RTC_TRACE_SCOPE("hand_estop_zero_write");
-    std::array<float, kNumHandMotors> zeros{};
-    transport_.WritePositionFireAndForget(zeros, joint_io_mode_);
+    const HandMotorArray zeros{};
+    comm_->WriteCommandFireAndForget(zeros, zeros);
   }
 
   // Intermediate timestamps + FT cost from RunCommCycleTail, so each mode's
@@ -1406,7 +1424,7 @@ class UdpHandController {
   HandCommunicationMode communication_mode_;
   bool sensor_init_ok_{false};
 
-  // F/T inferencer config (before transport_ for initializer list order)
+  // F/T inferencer config (before comm_ for initializer list order)
   FingertipFTInferencer::Config ft_config_;
 
   // Firmware sensor protocol (version seam). Defaulted to 1a in Start() if the
@@ -1414,8 +1432,9 @@ class UdpHandController {
   // and queries capabilities (motor-space read, post-process) through it.
   std::unique_ptr<SensorProtocol> sensor_protocol_;
 
-  // Sub-systems
-  UdpHandTransport transport_;
+  // Sub-systems. comm_ is the link seam (HandComm): UdpHandComm by default,
+  // replaceable through SetHandComm() before Start(). Never null.
+  std::unique_ptr<HandComm> comm_;
   UdpHandSensorProcessor sensor_processor_;
   UdpHandTimingProfiler timing_profiler_;
   std::unique_ptr<FingertipFTInferencer> ft_inferencer_;
@@ -1487,19 +1506,19 @@ class UdpHandController {
   // Latched write command + its pending flag (per-command gate). pending_cmd_
   // holds the last staged command; has_pending_write_ is set when latched and
   // cleared after one write attempt (see the write gate in RunCommCycle).
+  // pending_ff_ is the per-motor feedforward torque (Nm) handed to the comm
+  // with every write — zero until F04-2d wires JointCommand.feedforward
+  // (epic #895 D39 · D56); the UDP comm ignores it either way.
   std::array<float, kNumHandMotors> pending_cmd_{};
+  HandMotorArray pending_ff_{};
   bool has_pending_write_{false};
 
-  // Scratch buffers reused every cycle (avoid per-tick re-zeroing of large
-  // arrays; overwritten by the transport before use).
-  std::array<uint8_t, packets::kMotorPacketSize> send_buf_{};
-  std::array<uint8_t, packets::kMotorPacketSize> echo_buf_{};
-  std::array<float, packets::kMotorDataCount> motor_pos_buf_{};
-  std::array<float, packets::kMotorDataCount> motor_vel_buf_{};
-  std::array<float, packets::kMotorDataCount> motor_cur_buf_{};
-  std::array<int32_t, udp_hand_driver::kSensorValuesPerFingertip> sensor_raw_buf_{};
-  // Raw bulk-sensor receive scratch (sized for the largest response, 259B).
-  std::array<uint8_t, packets::kMaxPacketSize> sensor_recv_buf_{};
+  // HandComm read-cycle plan (per-run constants hoisted in PrepareRun, `sensors`
+  // flipped per cycle), the scratch the comm fills in place, and the outcome it
+  // reports. All preallocated — the RT path never zeroes or allocates them.
+  HandReadPlan read_plan_{};
+  HandReadBuffers read_bufs_{};
+  HandReadOutcome read_outcome_{};
 
   // Sensor caches (persist across decimated sensor cycles). 1a int32 pipeline
   // vs 1b float force; the unused one stays zero.
@@ -1552,7 +1571,7 @@ class UdpHandController {
   rclcpp::Clock throttle_clock_{RCL_STEADY_TIME};
 
   // Self-clocked comm thread. Declared last so ~PeriodicRtThread joins the loop
-  // before any member it touches (transport_, sensor_processor_, …) is
+  // before any member it touches (comm_, sensor_processor_, …) is
   // destroyed. Stop()/~UdpHandController also Join() it explicitly.
   CommLoop comm_loop_{this};
 };

@@ -200,7 +200,7 @@ udp_hand_driver/
 └── test/
 ```
 
-include 의 헤더 (`udp_hand_transport.hpp` · `udp_hand_controller.hpp` · `fingertip_ft_inferencer.hpp` · `fake_hand_firmware.hpp` 등) 는 상단 주석에 역할과 동작 계약이 있다. `protocol/` 은 `SensorProtocol` 구현 (정적 lib `udp_hand_protocol`) 이다.
+include 의 헤더 (`hand_comm.hpp` · `udp_hand_comm.hpp` · `udp_hand_transport.hpp` · `udp_hand_controller.hpp` · `fingertip_ft_inferencer.hpp` · `fake_hand_firmware.hpp` 등) 는 상단 주석에 역할과 동작 계약이 있다. `protocol/` 은 `SensorProtocol` 구현 (정적 lib `udp_hand_protocol`) 이다. 컨트롤러는 링크를 `HandComm` (통신 사이클 추상, `hand_comm.hpp`) 으로만 보며 기본 구현 `UdpHandComm` 이 `UdpHandTransport` 를 감싼다 — 다른 링크 (CAN FD) 는 `SetHandComm()` 으로 주입한다.
 
 ## 문제 해결
 
@@ -240,6 +240,7 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"   # 콘�
 
 ## 더 읽기
 
+- 통신 사이클 seam (`HandComm` 의 RT / 비-RT 계약 · read plan / outcome): [hand_comm.hpp](include/udp_hand_driver/hand_comm.hpp) 주석
 - UDP 소켓 · stale drain · mode 검증 · retry 의 동작: [udp_hand_transport.hpp](include/udp_hand_driver/udp_hand_transport.hpp) 주석
 - mailbox · write gate · E-Stop self-exit: [udp_hand_controller.hpp](include/udp_hand_driver/udp_hand_controller.hpp) · [udp_hand_node.hpp](include/udp_hand_driver/udp_hand_node.hpp) 주석
 - RT 튜닝: [rt-optimization.md](../docs/rt-optimization.md)

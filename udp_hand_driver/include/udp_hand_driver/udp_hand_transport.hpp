@@ -18,6 +18,7 @@
 
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/types/types.hpp"
+#include "udp_hand_driver/hand_comm.hpp"
 #include "udp_hand_driver/udp_hand_codec.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_logging.hpp"
@@ -46,68 +47,9 @@
 
 namespace udp_hand_driver {
 
-// Request kind for per-kind statistics attribution. The caller disambiguates
-// joint- vs motor-space reads (same request method / cmd byte, different MODE),
-// which the transport cannot infer from the wire format alone. Values are bit
-// positions in the controller's cycle-outcome masks — keep them dense from 0.
-enum class RequestKind : uint8_t {
-  kWriteEcho = 0,   // 0x01 write position + echo
-  kMotorRead = 1,   // 0x10/0x11/0x12 motor-space read
-  kJointRead = 2,   // 0x10/0x11 joint-space read
-  kSensorRead = 3,  // 0x14~0x17 individual sensor read
-  kBulkSensor = 4,  // 0x19 bulk sensor read
-  kSetMode = 5,     // 0x04 set sensor mode
-};
-
-inline constexpr int kNumRequestKinds = 6;
-
-// Stable short names for logs / stats JSON, indexed by RequestKind.
-inline constexpr std::array<const char*, kNumRequestKinds> kRequestKindNames = {
-    "write_echo", "motor_read", "joint_read", "sensor_read", "bulk_sensor", "set_mode"};
-
-// Bit for a RequestKind in the cycle-outcome attempted/ok masks.
-[[nodiscard]] constexpr uint8_t RequestKindBit(RequestKind kind) noexcept {
-  return static_cast<uint8_t>(1u << static_cast<unsigned>(kind));
-}
-
-// Communication statistics (recv success/timeout/error and total cycles).
-// Single writer (EventLoop); other threads read racily — same relaxed pattern
-// as the pre-existing aggregate fields.
-struct UdpHandCommStats {
-  uint64_t recv_ok{0};
-  uint64_t recv_timeout{0};
-  uint64_t recv_error{0};
-  uint64_t cmd_mismatch{0};
-  uint64_t mode_mismatch{0};
-  uint64_t total_cycles{0};
-  uint64_t comm_decimation_skip_count{0};  // cycles skipped by comm_decimation
-  // Datagrams dropped by the cycle-start drain (DrainStaleDatagrams): a
-  // 1-cycle desync leaves the previous request's late response queued, which
-  // this cycle would otherwise consume as a cmd_mismatch. Pre-request stage —
-  // not attributable to a RequestKind, so aggregate-only (no per_kind entry).
-  uint64_t stale_drained{0};
-
-  // Per-request-kind breakdown. Unlike aggregate recv_ok (any first-attempt
-  // packet arrival), per-kind `ok` counts request-level success — the method
-  // returned validated data. `short_or_decode` counts short packets and codec
-  // decode failures (both drop the packet and retry).
-  struct PerKind {
-    uint64_t ok{0};
-    uint64_t timeout{0};
-    uint64_t error{0};
-    uint64_t cmd_mismatch{0};
-    uint64_t mode_mismatch{0};
-    uint64_t short_or_decode{0};
-  };
-
-  std::array<PerKind, kNumRequestKinds> per_kind{};
-
-  // Forensics for the most recent rejected packet: the CMD byte of the last
-  // cmd_mismatch (a stale echo of the *previous* request implies desync), and
-  // the byte count of the last rejected recv (mismatch or short).
-  uint8_t last_unexpected_cmd{0};
-  uint16_t last_unexpected_len{0};
-};
+// RequestKind / UdpHandCommStats live in hand_comm.hpp (the HandComm seam,
+// epic #895 D25) so the abstract interface does not depend on this socket
+// header. Names unchanged (D1).
 
 class UdpHandTransport {
  public:
