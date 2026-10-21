@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(udp_hand_driver VERSION 5.18.0 LANGUAGES CXX)
+project(udp_hand_driver VERSION 5.19.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -162,6 +162,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fake_hand_firmware test/test_fake_hand_firmware.cpp)
   target_include_directories(test_fake_hand_firmware PRIVATE include)
   ament_target_dependencies(test_fake_hand_firmware rtc_base)
+
+  # proto2 (CAN FD) mirror of the fake firmware — byte pure, no vcan (#900).
+  ament_add_gtest(test_fake_hand_firmware_canfd test/test_fake_hand_firmware_canfd.cpp)
+  target_include_directories(test_fake_hand_firmware_canfd PRIVATE include)
+  ament_target_dependencies(test_fake_hand_firmware_canfd rtc_base)
 
   ament_add_gtest(test_udp_hand_timing_profiler test/test_udp_hand_timing_profiler.cpp)
   target_include_directories(test_udp_hand_timing_profiler PRIVATE include)
