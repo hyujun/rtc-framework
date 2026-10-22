@@ -20,7 +20,7 @@
 //   3. Read velocity  (0x12)
 //   4. Read sensor 0-3 (0x14..0x17) x 4
 //
-// Write gating: SendCommandAndRequestStates(cmd) stages the command
+// Write gating: SendCommandAndRequestStates(cmd, ff) stages the command
 // (SeqLock) and sets event_pending_. The next cycle latches it, writes once,
 // and clears the pending flag (per-command, not a permanent latch). When no
 // command has been staged since the last write, cycles are read-only — the
@@ -136,6 +136,20 @@ inline const rtc::ThreadConfig kHandUdpRecvConfig{.cpu_core = -1,
 // UdpHandSensorProcessorConfig). Field defaults preserve the historical
 // constructor defaults; callers use designated initializers and set only
 // what differs.
+/// What one JointCommand stages for the CommLoop: the position (rad, firmware
+/// slot order, joint offset already removed) and the per-motor feedforward
+/// torque (Nm, same order, D39). One SeqLock payload so a cycle can never
+/// latch the position of one command with the feedforward of another.
+struct StagedHandCommand {
+  HandMotorArray pos{};
+  HandMotorArray ff{};
+};
+
+static_assert(std::is_trivially_copyable_v<StagedHandCommand>,
+              "SeqLock payload must be trivially copyable");
+static_assert(sizeof(StagedHandCommand) == 2 * sizeof(HandMotorArray),
+              "StagedHandCommand is the two arrays and nothing else");
+
 struct UdpHandControllerConfig {
   std::string target_ip{};
   int target_port{0};
@@ -358,6 +372,7 @@ class UdpHandController {
     outcome_ring_working_ = CycleOutcomeRing{};
     cached_sensor_data_ = {};
     cached_sensor_force_ = {};
+    cached_sensor_contact_ = {};
 
     // Reset per-run link/telemetry counters so a deactivate→activate restart
     // (including after an E-Stop self-exit) does not carry stale failure or
@@ -422,7 +437,7 @@ class UdpHandController {
   /// `cmd`, drives the LPF model, publishes state + invokes the callback, and
   /// advances cycle_count / sensor_seq by one. Requires a prior InitFakeForTest().
   void StepFakeCycleForTest(const std::array<float, kNumHandMotors>& cmd) noexcept {
-    staged_cmd_seqlock_.Store(cmd);
+    staged_cmd_seqlock_.Store(StagedHandCommand{cmd, HandMotorArray{}});
     event_pending_.store(true, std::memory_order_release);
     RunFakeCommCycle();
   }
@@ -522,7 +537,17 @@ class UdpHandController {
 
   // ── Command API (ROS command sub / CM ControlLoop → self-clocked loop) ──
 
+  /// Position only; the feedforward is zero (proto1 links ignore it anyway).
   void SendCommandAndRequestStates(const std::array<float, kNumHandMotors>& cmd) noexcept {
+    SendCommandAndRequestStates(cmd, HandMotorArray{});
+  }
+
+  /// Stage `cmd` (rad) + `ff_nm` (Nm, D39) for the next write. Single writer:
+  /// the node's command subscription is the one production caller (the
+  /// executor thread), so the SeqLock sees one producer — a second staging
+  /// thread would need its own serialization.
+  void SendCommandAndRequestStates(const std::array<float, kNumHandMotors>& cmd,
+                                   const HandMotorArray& ff_nm) noexcept {
     // RT-safe handoff to the self-clocked CommLoop: lock-free SeqLock store +
     // release-ordered pending flag. No wake primitive — the loop is already
     // ticking at loop_rate_hz_ and latches the flag at the top of its next
@@ -531,7 +556,7 @@ class UdpHandController {
     // one write attempt, so an uncommanded interval is read-only. Fake mode uses
     // this same path — RunFakeCommCycle latches the staged command and drives it
     // through the LPF model (no synchronous echo).
-    staged_cmd_seqlock_.Store(cmd);
+    staged_cmd_seqlock_.Store(StagedHandCommand{cmd, ff_nm});
     event_pending_.store(true, std::memory_order_release);
   }
 
@@ -811,7 +836,9 @@ class UdpHandController {
     // cleared after one write attempt below, so an uncommanded interval is
     // read-only and the firmware holds its last position.
     if (event_pending_.exchange(false, std::memory_order_acquire)) {
-      pending_cmd_ = staged_cmd_seqlock_.Load();
+      const StagedHandCommand staged = staged_cmd_seqlock_.Load();
+      pending_cmd_ = staged.pos;
+      pending_ff_ = staged.ff;
       has_pending_write_ = true;
     }
 
@@ -824,8 +851,8 @@ class UdpHandController {
     const auto t0 = std::chrono::steady_clock::now();
 
     // 1. Write command + recv echo (the comm applies joint_io_mode_: 1a=kJoint,
-    // 1b=kMotor; pending_ff_ is the per-motor feedforward torque, zero until
-    // F04-2d wires JointCommand.feedforward — epic #895 D56).
+    // 1b=kMotor; pending_ff_ is the per-motor feedforward torque of the same
+    // command — the UDP comm ignores it, the CAN FD comm sends it as Frame 1).
     // Gated on BOTH the first state read (startup no-jump contract) AND a
     // pending command. has_pending_write_ is cleared only here, inside the open
     // gate, so a command staged before the first state read is held (not lost)
@@ -921,8 +948,9 @@ class UdpHandController {
         any_recv_ok = true;
         ok_mask |= RequestKindBit(RequestKind::kBulkSensor);
         read_all_sensor_ok = true;
-        cached_sensor_data_ = state.sensor_data;    // 1a raw decode (0 for 1b)
-        cached_sensor_force_ = state.sensor_force;  // 1b force (0 for 1a)
+        cached_sensor_data_ = state.sensor_data;        // 1a raw decode (0 for 1b)
+        cached_sensor_force_ = state.sensor_force;      // 1b / 2 force (0 for 1a)
+        cached_sensor_contact_ = state.sensor_contact;  // 2 contact (0 for 1a / 1b)
         ++sensor_seq_;  // fresh validated sensor read (freshness gate for detector)
       }
 
@@ -932,9 +960,10 @@ class UdpHandController {
       const auto t3 = std::chrono::steady_clock::now();
       comm_loop_.MarkState();  // end of the read phase (base t1)
 
-      // Bulk-only state field (1b firmware-computed force; 0 for 1a). Set before
-      // the shared tail so the SeqLock store captures it.
+      // Bulk-only state fields (1b / 2 firmware-computed force, 2 contact; 0 for
+      // 1a). Set before the shared tail so the SeqLock store captures them.
       state.sensor_force = cached_sensor_force_;
+      state.sensor_contact = cached_sensor_contact_;
       const CommCycleTailResult tail =
           RunCommCycleTail(state, cached_sensor_data_raw, any_recv_ok, is_sensor_cycle);
 
@@ -1165,7 +1194,7 @@ class UdpHandController {
     // handoff the real path uses. An uncommanded interval keeps the last target
     // latched so the LPF continues settling toward it.
     if (event_pending_.exchange(false, std::memory_order_acquire)) {
-      fake_cmd_target_ = staged_cmd_seqlock_.Load();
+      fake_cmd_target_ = staged_cmd_seqlock_.Load().pos;  // the fake has no feedforward
     }
 
     // Sensor decimation — mirror the real cycle so the sensor post-process +
@@ -1193,6 +1222,7 @@ class UdpHandController {
       }
     }
     cached_sensor_force_ = state.sensor_force;
+    cached_sensor_contact_ = state.sensor_contact;  // stays zero: no contact model
 
     // Advance the freshness sequence only on a sensor cycle — parity with the
     // real read path (bumps under is_sensor_cycle at lines ~876/985). On a
@@ -1474,9 +1504,7 @@ class UdpHandController {
   // (SendCommandAndRequestStates — ROS command sub / CM ControlLoop) stores the
   // latest cmd into the SeqLock and sets event_pending_ (release). The
   // self-clocked CommLoop latches it at the top of its next cycle (acquire).
-  static_assert(std::is_trivially_copyable_v<std::array<float, kNumHandMotors>>,
-                "SeqLock payload must be trivially copyable");
-  rtc::SeqLock<std::array<float, kNumHandMotors>> staged_cmd_seqlock_{};
+  rtc::SeqLock<StagedHandCommand> staged_cmd_seqlock_{};
   std::atomic<bool> event_pending_{false};
 
   // Count of cycles skipped by comm_decimation_ (load-reduction telemetry).
@@ -1532,9 +1560,9 @@ class UdpHandController {
   // Latched write command + its pending flag (per-command gate). pending_cmd_
   // holds the last staged command; has_pending_write_ is set when latched and
   // cleared after one write attempt (see the write gate in RunCommCycle).
-  // pending_ff_ is the per-motor feedforward torque (Nm) handed to the comm
-  // with every write — zero until F04-2d wires JointCommand.feedforward
-  // (epic #895 D39 · D56); the UDP comm ignores it either way.
+  // pending_ff_ is the per-motor feedforward torque (Nm) latched with the same
+  // command and handed to the comm with every write (epic #895 D39); the UDP
+  // comm ignores it, the CAN FD comm converts it to A (D50).
   std::array<float, kNumHandMotors> pending_cmd_{};
   HandMotorArray pending_ff_{};
   bool has_pending_write_{false};
@@ -1550,6 +1578,7 @@ class UdpHandController {
   // vs 1b float force; the unused one stays zero.
   std::array<int32_t, udp_hand_driver::kMaxHandSensors> cached_sensor_data_{};
   std::array<float, udp_hand_driver::kMaxSensorForceValues> cached_sensor_force_{};
+  std::array<uint8_t, udp_hand_driver::kMaxFingertips> cached_sensor_contact_{};
 
   // Decimation counters (CommLoop thread only).
   int sensor_cycle_counter_{0};

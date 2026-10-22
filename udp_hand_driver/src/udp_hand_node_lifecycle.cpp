@@ -1,3 +1,4 @@
+#include "udp_hand_driver/canfd_hand_comm.hpp"
 #include "udp_hand_driver/udp_hand_logging.hpp"
 #include "udp_hand_driver/udp_hand_node.hpp"
 #include <rtc_base/threading/thread_utils.hpp>
@@ -6,8 +7,12 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <lifecycle_msgs/msg/state.hpp>
 
+#include <net/if.h>
+
+#include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <string>
 
 using namespace std::chrono_literals;
@@ -55,6 +60,11 @@ UdpHandNode::~UdpHandNode() {
 }
 
 UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
+  // A FAILURE below returns to Unconfigured without on_cleanup, so a stale
+  // observer from a previous attempt must not survive into this one (it would
+  // dangle once controller_ is replaced). Nulled before anything else.
+  canfd_comm_ = nullptr;
+
   // ── Parameters ─────────────────────────────────────────────────────
   declare_parameter("target_ip", std::string{"192.168.1.2"});
   declare_parameter("target_port", 55151);
@@ -123,6 +133,26 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
 
   declare_parameter("communication_mode", std::string{"individual"});
 
+  // Firmware protocol seam: "1a" / "1b" (UDP) or "2" (CAN FD, epic #895). The
+  // transport is derived from this key alone (D11) — there is no transport
+  // parameter. YAML must quote "2": an unquoted 2 arrives as an integer and the
+  // parameter declaration throws.
+  declare_parameter("protocol_version", std::string{"1a"});
+  // CAN FD link (protocol_version "2" only; ignored on 1a / 1b):
+  //   can_interface   SocketCAN device (sil_mode=firmware forces vcan0)
+  //   hand_side       "right" | "left" → node id (D51). Declared for every
+  //                   protocol because an explicit value also suffixes the
+  //                   stats / timing file names.
+  //   feedforward_kt  per-motor torque constant Nm/A, firmware motor order
+  //                   (D50); JointCommand.feedforward [Nm] / kt → wire [A].
+  //   recv_timeout_ms is shared with UDP: on CAN FD it is the per-stage
+  //                   deadline (echo stage, RESP-set stage — D42).
+  declare_parameter("can_interface", std::string{"can0"});
+  declare_parameter("hand_side", std::string{"right"});
+  declare_parameter(
+      "feedforward_kt",
+      std::vector<double>(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 1.0));
+
   declare_parameter("baro_lpf_enabled", false);
   declare_parameter("baro_lpf_cutoff_hz", 30.0);
   declare_parameter("tof_lpf_enabled", false);
@@ -142,7 +172,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     declare_parameter("ft_inferencer." + std::string(name) + "_max", std::vector<double>(16, 1.0));
   }
 
-  // ── SIL mode → use_fake_hand_ + effective network endpoint ───────────
+  // ── SIL mode → use_fake_hand_ ────────────────────────────────────────
   const std::string sil_mode = get_parameter("sil_mode").as_string();
   if (sil_mode != "off" && sil_mode != "loopmodel" && sil_mode != "firmware") {
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
@@ -151,11 +181,57 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     return CallbackReturn::FAILURE;
   }
   use_fake_hand_ = (sil_mode == "loopmodel");
+
+  // ── Sensor protocol (firmware version seam: 1a / 1b / 2) ─────────────
+  // Resolved before the endpoint because the transport — and so which
+  // endpoint fields matter — follows from the protocol (D11).
+  const std::string protocol_version = get_parameter("protocol_version").as_string();
+  auto sensor_protocol = udp_hand_driver::CreateSensorProtocol(protocol_version);
+  if (!sensor_protocol) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "Unsupported protocol_version '%s' (expected \"1a\", \"1b\" or \"2\")",
+                 protocol_version.c_str());
+    return CallbackReturn::FAILURE;
+  }
+  const bool is_canfd = (protocol_version == "2");
+  const std::string comm_mode_str = get_parameter("communication_mode").as_string();
+  const auto comm_mode = (comm_mode_str == "bulk")
+                             ? udp_hand_driver::HandCommunicationMode::kBulk
+                             : udp_hand_driver::HandCommunicationMode::kIndividual;
+  // Cache the publish-layout capability off the hot path. Force-layout protocols
+  // (1b, 2) route sensor decode only through the bulk path, so they require
+  // bulk — for 2 that is also D16 (the CAN FD link has no individual sequence).
+  sensor_uses_force_layout_ = !sensor_protocol->RunsSensorPostProcess();
+  if (sensor_uses_force_layout_ && comm_mode != udp_hand_driver::HandCommunicationMode::kBulk) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "protocol_version '%s' (force sensor layout) requires "
+                 "communication_mode \"bulk\" (got \"%s\")",
+                 protocol_version.c_str(), comm_mode_str.c_str());
+    return CallbackReturn::FAILURE;
+  }
+
+  // ── hand_side (every protocol: it names the forensic files; on 2 the node id)
+  const std::string hand_side_str = get_parameter("hand_side").as_string();
+  udp_hand_driver::canfd::HandSide hand_side{};
+  if (!udp_hand_driver::canfd::ParseHandSide(hand_side_str, hand_side)) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "Invalid hand_side '%s' (expected \"right\" or \"left\")", hand_side_str.c_str());
+    return CallbackReturn::FAILURE;
+  }
+  // "Explicit" = the value came from YAML / launch / NodeOptions, not from the
+  // declare default: only then do the artifact names carry the side, so a
+  // one-hand deployment keeps hand_udp_stats.json / hand_udp_timing_log.csv.
+  hand_file_suffix_.clear();
+  if (get_node_parameters_interface()->get_parameter_overrides().count("hand_side") != 0) {
+    hand_file_suffix_ = "_" + hand_side_str;
+  }
+
+  // ── Effective endpoint (sil_mode × protocol) ──────────────────────────
   const udp_hand_driver::HandEndpoint configured_endpoint{
       get_parameter("target_ip").as_string(), get_parameter("local_ip").as_string(),
-      get_parameter("local_interface").as_string()};
+      get_parameter("local_interface").as_string(), get_parameter("can_interface").as_string()};
   const udp_hand_driver::HandEndpoint endpoint =
-      udp_hand_driver::DeriveHandEndpoint(sil_mode, configured_endpoint);
+      udp_hand_driver::DeriveHandEndpoint(sil_mode, protocol_version, configured_endpoint);
   if (endpoint.target_ip != configured_endpoint.target_ip) {
     RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
                 "sil_mode=%s → target_ip forced to %s (was %s)", sil_mode.c_str(),
@@ -169,36 +245,31 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                 sil_mode.c_str(), configured_endpoint.local_ip.c_str(),
                 configured_endpoint.local_interface.c_str());
   }
+  if (endpoint.can_interface != configured_endpoint.can_interface) {
+    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                "sil_mode=%s → can_interface forced to %s (was %s)", sil_mode.c_str(),
+                endpoint.can_interface.c_str(), configured_endpoint.can_interface.c_str());
+  }
+  if (is_canfd) {
+    // The shipped YAML always carries target_ip, so its mere presence is not a
+    // misconfiguration — one INFO line says the UDP keys are idle. A local
+    // binding, on the other hand, is only ever set on purpose: warn.
+    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                "protocol_version 2: target_ip / target_port are not used (CAN FD on %s)",
+                endpoint.can_interface.c_str());
+    if (!configured_endpoint.local_ip.empty() || !configured_endpoint.local_interface.empty()) {
+      RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                  "protocol_version 2: local_ip=\"%s\" / local_interface=\"%s\" are UDP keys and "
+                  "are ignored on CAN FD",
+                  configured_endpoint.local_ip.c_str(),
+                  configured_endpoint.local_interface.c_str());
+    }
+  }
   const std::string& target_ip = endpoint.target_ip;
   const std::string& local_ip = endpoint.local_ip;
   const std::string& local_interface = endpoint.local_interface;
   const int target_port = static_cast<int>(get_parameter("target_port").as_int());
   const double recv_timeout_ms = get_parameter("recv_timeout_ms").as_double();
-  const std::string comm_mode_str = get_parameter("communication_mode").as_string();
-  const auto comm_mode = (comm_mode_str == "bulk")
-                             ? udp_hand_driver::HandCommunicationMode::kBulk
-                             : udp_hand_driver::HandCommunicationMode::kIndividual;
-
-  // ── Sensor protocol (firmware version seam: 1a / 1b) ─────────────────
-  declare_parameter("protocol_version", std::string{"1a"});
-  const std::string protocol_version = get_parameter("protocol_version").as_string();
-  auto sensor_protocol = udp_hand_driver::CreateSensorProtocol(protocol_version);
-  if (!sensor_protocol) {
-    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                 "Unsupported protocol_version '%s' (expected \"1a\" or \"1b\")",
-                 protocol_version.c_str());
-    return CallbackReturn::FAILURE;
-  }
-  // Cache the publish-layout capability off the hot path. Force-layout protocols
-  // (1b) route sensor decode only through the bulk path, so they require bulk.
-  sensor_uses_force_layout_ = !sensor_protocol->RunsSensorPostProcess();
-  if (sensor_uses_force_layout_ && comm_mode != udp_hand_driver::HandCommunicationMode::kBulk) {
-    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                 "protocol_version '%s' (force sensor layout) requires "
-                 "communication_mode \"bulk\" (got \"%s\")",
-                 protocol_version.c_str(), comm_mode_str.c_str());
-    return CallbackReturn::FAILURE;
-  }
 
   const bool baro_lpf_enabled = get_parameter("baro_lpf_enabled").as_bool();
   const double baro_lpf_cutoff_hz = get_parameter("baro_lpf_cutoff_hz").as_double();
@@ -260,6 +331,64 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                  loop_rate_hz);
     return CallbackReturn::FAILURE;
   }
+
+  // ── CAN FD link validity (protocol_version "2") ────────────────────────
+  // Everything the link needs is checked here, before the controller or any
+  // publisher exists, so a bad configuration ends in Unconfigured with one
+  // actionable line instead of an on_activate Open() failure.
+  udp_hand_driver::CanFdHandCommConfig canfd_cfg{};
+  if (is_canfd) {
+    canfd_cfg.interface_name = endpoint.can_interface;
+    canfd_cfg.hand_side = hand_side;
+    canfd_cfg.recv_timeout_ms = recv_timeout_ms;
+    if (canfd_cfg.interface_name.empty() || canfd_cfg.interface_name.size() >= IFNAMSIZ) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "can_interface '%s' is not a valid interface name (1..%d chars)",
+                   canfd_cfg.interface_name.c_str(), IFNAMSIZ - 1);
+      return CallbackReturn::FAILURE;
+    }
+    // loopmodel never opens the socket, so a dev box without CAN can still run
+    // the in-process model under protocol 2; every other mode needs the device.
+    if (sil_mode != "loopmodel" && ::if_nametoindex(canfd_cfg.interface_name.c_str()) == 0) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "CAN interface '%s' not found (%s) — protocol_version 2 needs it up "
+                   "(sil_mode=firmware: vcan0, see repo_scripts/README.md)",
+                   canfd_cfg.interface_name.c_str(), std::strerror(errno));
+      return CallbackReturn::FAILURE;
+    }
+    const auto kt = get_parameter("feedforward_kt").as_double_array();
+    if (kt.size() != canfd_cfg.feedforward_kt.size()) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "feedforward_kt must have %zu values (got %zu)", canfd_cfg.feedforward_kt.size(),
+                   kt.size());
+      return CallbackReturn::FAILURE;
+    }
+    for (std::size_t i = 0; i < kt.size(); ++i) {
+      const auto kt_f = static_cast<float>(kt[i]);
+      if (!udp_hand_driver::CanFdHandComm::IsValidFeedforwardKt(kt_f)) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                     "feedforward_kt[%zu] = %g is not a usable torque constant (must be > 0 "
+                     "with a finite reciprocal)",
+                     i, kt[i]);
+        return CallbackReturn::FAILURE;
+      }
+      canfd_cfg.feedforward_kt[i] = kt_f;
+    }
+    // D42: two receive stages per cycle (echo, RESP set), each bounded by
+    // recv_timeout_ms, must fit the comm slot — otherwise one slow cycle
+    // overruns the next tick by construction rather than by a fault.
+    const double slot_ms =
+        1000.0 / loop_rate_hz *
+        static_cast<double>(udp_hand_driver::ClampCommDecimation(comm_decimation));
+    if (!(recv_timeout_ms > 0.0) || !(2.0 * recv_timeout_ms < slot_ms)) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "recv_timeout_ms=%.3f: protocol_version 2 needs 0 < 2 × recv_timeout_ms < "
+                   "comm slot %.3f ms (1000 / loop_rate_hz × comm_decimation) — D42",
+                   recv_timeout_ms, slot_ms);
+      return CallbackReturn::FAILURE;
+    }
+  }
+
   const double fake_lpf_time_constant_s = get_parameter("fake_lpf_time_constant_s").as_double();
   const double fake_effort_stiffness = get_parameter("fake_effort_stiffness").as_double();
   const double fake_effort_damping = get_parameter("fake_effort_damping").as_double();
@@ -290,6 +419,22 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
           .fake_effort_damping = fake_effort_damping,
       });
   controller_->SetSensorProtocol(std::move(sensor_protocol));
+  if (is_canfd) {
+    // Constructed in every sil_mode so the stats JSON has its canfd block even
+    // under loopmodel (which never calls Open()); the socket is opened by the
+    // controller's Start(). The raw pointer is taken before the move and kept
+    // only if the controller accepted the comm (SetHandComm destroys it on
+    // refusal — see the canfd_comm_ member note).
+    auto comm = std::make_unique<udp_hand_driver::CanFdHandComm>(canfd_cfg);
+    const udp_hand_driver::CanFdHandComm* raw = comm.get();
+    if (!controller_->SetHandComm(std::move(comm))) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "Failed to install the CAN FD link on the controller");
+      controller_.reset();
+      return CallbackReturn::FAILURE;
+    }
+    canfd_comm_ = raw;
+  }
 
   // ── Topic names ──────────────────────────────────────────────────
   // Relative by default (D53): the node namespace supplies the prefix, so the
@@ -482,21 +627,29 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                         udp_hand_driver::kNumHandMotors);
           }
         }
-        std::array<float, udp_hand_driver::kNumHandMotors> cmd;
-        for (std::size_t i = 0; i < static_cast<std::size_t>(udp_hand_driver::kNumHandMotors);
-             ++i) {
-          // Pick the source value by name (firmware slot i ← published index),
-          // then subtract the per-joint offset: controller frame → firmware
-          // frame. offset stays aligned to firmware slot order (joint_names_).
-          std::size_t src = i;
-          if (cmd_name_reorder_ready_) {
-            src = static_cast<std::size_t>(cmd_name_reorder_[i]);
-          }
-          const float value =
-              (src < msg->values.size()) ? static_cast<float>(msg->values[src]) : 0.0f;
-          cmd[i] = value - joint_offset_rad_[i];
+        // Pick each source value by name (firmware slot i ← published index),
+        // then subtract the per-joint offset: controller frame → firmware
+        // frame. offset stays aligned to firmware slot order (joint_names_).
+        const auto cmd = udp_hand_driver::ApplyCommandNameReorder(
+            cmd_name_reorder_, cmd_name_reorder_ready_, msg->values, joint_offset_rad_);
+        // D39: the feedforward (Nm) rides the same name map with NO offset (a
+        // position-frame correction has no business in a torque). Absent →
+        // zeros silently; any other size → zeros, one throttled warning and a
+        // counter (the position is still applied). command_type / kp / kd are
+        // not consumed. The UDP comms ignore ff; the CAN FD comm sends it.
+        udp_hand_driver::HandMotorArray ff{};
+        if (msg->feedforward.size() == msg->values.size()) {
+          ff = udp_hand_driver::ApplyCommandNameReorder(cmd_name_reorder_, cmd_name_reorder_ready_,
+                                                        msg->feedforward,
+                                                        udp_hand_driver::HandMotorArray{});
+        } else if (!msg->feedforward.empty()) {
+          feedforward_size_mismatch_.fetch_add(1, std::memory_order_relaxed);
+          RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::NodeLogger(), *get_clock(), 1000,
+                               "JointCommand feedforward size %zu != values size %zu — "
+                               "feedforward zeroed (position applied)",
+                               msg->feedforward.size(), msg->values.size());
         }
-        controller_->SendCommandAndRequestStates(cmd);
+        controller_->SendCommandAndRequestStates(cmd, ff);
       });
 
   calib_cmd_sub_ = create_subscription<rtc_msgs::msg::CalibrationCommand>(
@@ -524,10 +677,11 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   calib_status_timer_ = create_wall_timer(std::chrono::milliseconds(status_period_ms),
                                           [this]() { PublishCalibrationStatus(); });
 
-  // Cache config values needed by on_activate
-  target_ip_ = target_ip;
-  target_port_ = target_port;
+  // Cache config values needed by on_activate / the stats JSON
+  link_desc_ = is_canfd ? ("CAN FD " + endpoint.can_interface + " (" + hand_side_str + ")")
+                        : (target_ip + ":" + std::to_string(target_port));
   comm_mode_str_ = comm_mode_str;
+  protocol_version_ = protocol_version;
 
   {
     std::string names_str;
@@ -541,9 +695,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   }
 
   RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
-              "UdpHandNode configured: target %s:%d, direct publish from "
-              "EventLoop, comm=%s, protocol=%s",
-              target_ip.c_str(), target_port, comm_mode_str.c_str(), protocol_version.c_str());
+              "UdpHandNode configured: link %s, direct publish from EventLoop, comm=%s, "
+              "protocol=%s",
+              link_desc_.c_str(), comm_mode_str.c_str(), protocol_version.c_str());
   return CallbackReturn::SUCCESS;
 }
 
@@ -560,8 +714,8 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   controller_->SetTimingProducer(&hand_udp_timing_producer_);
 
   if (!controller_->Start()) {
-    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                 "Failed to start UdpHandController to %s:%d", target_ip_.c_str(), target_port_);
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Failed to start UdpHandController (%s)",
+                 link_desc_.c_str());
     return CallbackReturn::FAILURE;
   }
 
@@ -656,7 +810,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
       RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                   "UdpHandTimingLogger::Open() failed — timing CSV disabled");
     } else {
-      RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand UDP tick-timing CSV: %s",
+      RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand tick-timing CSV: %s",
                   hand_udp_timing_logger_.Path().c_str());
     }
     hand_udp_timing_opened_ = true;
@@ -821,5 +975,6 @@ void UdpHandNode::ReleaseResources() {
   motor_state_pub_.reset();
   joint_state_pub_.reset();
   calib_status_pub_.reset();
+  canfd_comm_ = nullptr;  // observes an object controller_ owns — drop it first
   controller_.reset();
 }

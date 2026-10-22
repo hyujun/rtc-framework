@@ -15,14 +15,17 @@
 #include <std_msgs/msg/bool.hpp>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
-// Unified hand UDP node using request-response protocol.
+// Unified hand node using request-response protocol over UDP (protocol_version
+// 1a / 1b) or CAN FD (protocol_version 2, epic #895).
 //
 // Owns a UdpHandController with a self-clocked CommLoop that polls the hand
 // device at loop_rate_hz (default 500 Hz):
@@ -129,11 +132,13 @@ inline constexpr double kPublishPollOversampling = 2.0;
   return true;
 }
 
-/// Network endpoint the transport actually opens, after `sil_mode` derivation.
+/// Endpoint the transport actually opens, after `sil_mode` derivation. The
+/// UDP triple serves protocol_version 1a / 1b; `can_interface` serves 2.
 struct HandEndpoint {
   std::string target_ip;
   std::string local_ip;
   std::string local_interface;
+  std::string can_interface{};
 };
 
 /// Apply the `sil_mode` overrides to the yaml-configured endpoint.
@@ -157,6 +162,30 @@ struct HandEndpoint {
   }
   return configured;
 }
+
+/// Loopback device of the CAN FD firmware SIL: the virtual CAN interface the
+/// repo's vcan setup creates and `test_canfd_hand_comm` / the proto2
+/// fake_hand_firmware default to.
+inline constexpr const char* kFirmwareSilCanInterface = "vcan0";
+
+/// Protocol-aware form. `firmware` SIL moves the device onto the loopback of
+/// the protocol's transport: UDP (1a / 1b) → the 2-arg rule above; CAN FD (2)
+/// → `can_interface` forced to kFirmwareSilCanInterface, the UDP triple left
+/// untouched (it is not used on that transport). `off` / `loopmodel` pass
+/// through unchanged on every protocol.
+[[nodiscard]] inline HandEndpoint DeriveHandEndpoint(const std::string& sil_mode,
+                                                     const std::string& protocol_version,
+                                                     HandEndpoint configured) {
+  if (protocol_version == "2") {
+    if (sil_mode == "firmware") {
+      configured.can_interface = kFirmwareSilCanInterface;
+    }
+    return configured;
+  }
+  return DeriveHandEndpoint(sil_mode, std::move(configured));
+}
+
+class CanFdHandComm;  // canfd_hand_comm.hpp — only the lifecycle / stats TUs need the type
 
 inline const rtc::ThreadConfig kHandAuxIoConfig{.cpu_core = -1,
                                                 .sched_policy = SCHED_OTHER,
@@ -271,6 +300,28 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   std::unique_ptr<udp_hand_driver::UdpHandController> controller_;
   std::unique_ptr<udp_hand_driver::UdpHandFailureDetector> failure_detector_;
 
+  // Non-owning view of the CAN FD link when protocol_version is "2" (null
+  // otherwise): SaveCommStats reads CanFdHandComm::canfd_stats() through it,
+  // which HandComm deliberately does not expose. The controller owns the comm,
+  // so this pointer is valid exactly while controller_ holds the object it was
+  // taken from: assigned only after SetHandComm() accepted the comm, nulled on
+  // the first line of on_configure (a FAILURE return leaves controller_ for
+  // the next configure to replace) and in ReleaseResources() before
+  // controller_.reset(); read under aux_lane_mutex_ after the controller_ null
+  // check like every other controller access there.
+  const udp_hand_driver::CanFdHandComm* canfd_comm_{nullptr};
+
+  // D39: JointCommand messages whose feedforward size matched neither 0 nor
+  // values.size() (feedforward zeroed, position applied). Written on the
+  // command callback thread, read by SaveCommStats on the aux lane → atomic.
+  std::atomic<std::uint64_t> feedforward_size_mismatch_{0};
+
+  // File suffix of the forensic artifacts (stats JSON, timing CSV): "_<side>"
+  // when `hand_side` was set explicitly (a parameter override exists), else
+  // empty so the default names stay as they were (D51). Fixed in on_configure
+  // before any timer runs; read on the aux lane and in on_activate.
+  std::string hand_file_suffix_;
+
   // Data publishers — LifecyclePublisher (gated by lifecycle state).
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr motor_state_pub_;
@@ -364,10 +415,11 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // is a fixed constant — see on_activate (no ROS param on purpose).
   rclcpp::TimerBase::SharedPtr stats_save_timer_;
 
-  // Cached config for on_activate logging
-  std::string target_ip_;
-  int target_port_{0};
+  // Cached config for on_activate logging: the link in words ("192.168.0.100:55151"
+  // or "CAN FD can0 (right)") and the protocol tag.
+  std::string link_desc_;
   std::string comm_mode_str_;
+  std::string protocol_version_;
 
   // ── Per-EventLoop-tick timing CSV (mpc_timing_log pattern) ─────────────
   // Producer (filled on the EventLoop thread) → 1 Hz drain on aux timer →

@@ -46,7 +46,7 @@
 // per_kind) plus CanFdCommStats for what only this link has (tx errno classes,
 // error frames, echo payload mismatches, the assembler's counters) behind its
 // own SeqLock. canfd_stats() is not part of HandComm; the node reaches it
-// through the concrete type (2d).
+// through a non-owning pointer to the concrete type it constructed.
 //
 // Receive filter: rx id EchoId(node, 0) under kRxMask — priority, target (host)
 // and source (this node) bits only — so this node's echoes and RESP frames pass
@@ -84,7 +84,7 @@
 
 namespace udp_hand_driver {
 
-/// Link configuration (the node fills it from parameters in 2d).
+/// Link configuration (the node fills it from parameters at on_configure).
 struct CanFdHandCommConfig {
   std::string interface_name{"can0"};
   canfd::HandSide hand_side{canfd::HandSide::kRight};  ///< D51: the only hand selector
@@ -179,6 +179,15 @@ class CanFdHandComm final : public HandComm {
     return ff_nm * inv_kt_[motor];
   }
 
+  /// D50 / NUM-2 acceptance of one torque constant: kt > 0 (which also rejects
+  /// NaN) with a finite reciprocal — a subnormal kt passes > 0 but 1/kt is +inf,
+  /// and 0 × inf = NaN would put NaN into the E-Stop feedforward frame. One
+  /// predicate for Open() and the node's configure-time check, so the two
+  /// cannot disagree on which values are refused.
+  [[nodiscard]] static bool IsValidFeedforwardKt(float kt) noexcept {
+    return (kt > 0.0f) && std::isfinite(1.0f / kt);
+  }
+
   // ── Non-RT ────────────────────────────────────────────────────────────────
 
   /// Validates feedforward_kt (> 0, NUM-2), precomputes the per-stage timeout
@@ -186,12 +195,9 @@ class CanFdHandComm final : public HandComm {
   [[nodiscard]] bool Open() noexcept override {
     for (std::size_t i = 0; i < inv_kt_.size(); ++i) {
       const float kt = cfg_.feedforward_kt[i];
-      const float inv = 1.0f / kt;
-      // kt > 0 also rejects NaN; a subnormal kt passes it but its reciprocal is
-      // +inf, and 0 × inf = NaN would put NaN into the E-Stop feedforward frame.
-      if (!(kt > 0.0f) || !std::isfinite(inv))
+      if (!IsValidFeedforwardKt(kt))
         return false;
-      inv_kt_[i] = inv;
+      inv_kt_[i] = 1.0f / kt;
     }
     if (!(cfg_.recv_timeout_ms > 0.0))
       return false;

@@ -30,6 +30,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -613,6 +614,148 @@ TEST_F(UdpHandNodeLifecycleTest, StatsJsonKeysAndTimingCsvHeaderMatchFixture) {
   ASSERT_FALSE(expected_header.empty())
       << "fixture missing or empty: " << (fixtures / "hand_udp_timing_log_header.txt");
   EXPECT_EQ(actual_header, expected_header);
+}
+
+// ── protocol_version "2" (CAN FD, epic #895 — F04-2d) ──────────────────────
+// Every configure-time rejection below must end in Unconfigured *before* a
+// controller or publisher exists. No test here reconfigures the same node:
+// on_configure re-declares its parameters, so cleanup → configure throws on a
+// redeclaration (pre-existing, out of this feature's scope).
+
+rclcpp::NodeOptions Proto2Options(std::vector<rclcpp::Parameter> extra) {
+  rclcpp::NodeOptions options;
+  std::vector<rclcpp::Parameter> params = {
+      rclcpp::Parameter("sil_mode", "off"),
+      rclcpp::Parameter("protocol_version", "2"),
+      rclcpp::Parameter("communication_mode", "bulk"),
+      // No such device on any PC (rig PCs do have can0); keeps the interface
+      // check the one that fires only where the test says it does.
+      rclcpp::Parameter("can_interface", "rtcnone0"),
+      // The shipped YAML value. The C++ declare default (10 ms) cannot satisfy
+      // D42 at 500 Hz, so a proto2 node always needs this key set.
+      rclcpp::Parameter("recv_timeout_ms", 0.4),
+  };
+  params.insert(params.end(), extra.begin(), extra.end());
+  options.parameter_overrides(params);
+  return options;
+}
+
+// D11 / D16: the CAN FD link is bulk-only; "2" + individual is a configuration
+// error, not a silent fallback.
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsIndividualCommunicationMode) {
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("communication_mode", "individual"),
+  }));
+  exec_.add_node(node->get_node_base_interface());
+  EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// A missing CAN interface is refused at configure on the real-hardware path
+// (an Open() failure at activate would be too late and too vague) …
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsAMissingCanInterfaceOutsideLoopmodel) {
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({}));
+  exec_.add_node(node->get_node_base_interface());
+  EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// … while loopmodel never opens the socket, so the same missing interface is
+// accepted there and the node reaches Inactive (the dev-box path).
+TEST_F(UdpHandNodeLifecycleTest, Proto2LoopmodelAcceptsAMissingCanInterface) {
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+  }));
+  exec_.add_node(node->get_node_base_interface());
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// An interface name the kernel could never hold is refused in every sil_mode.
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsAnOverlongCanInterfaceName) {
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("can_interface", std::string(64, 'x')),
+  }));
+  exec_.add_node(node->get_node_base_interface());
+  EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// D51: hand_side is parsed on every protocol (it names the forensic files).
+TEST_F(UdpHandNodeLifecycleTest, InvalidHandSideIsRejectedOnEveryProtocol) {
+  for (const char* proto : {"1a", "2"}) {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+        rclcpp::Parameter("sil_mode", "loopmodel"),
+        rclcpp::Parameter("protocol_version", proto),
+        rclcpp::Parameter("communication_mode", "bulk"),
+        rclcpp::Parameter("hand_side", "middle"),
+    });
+    auto node = std::make_shared<UdpHandNode>(options);
+    exec_.add_node(node->get_node_base_interface());
+    EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+        << "protocol " << proto;
+    exec_.remove_node(node->get_node_base_interface());
+  }
+}
+
+// D50 / NUM-2: feedforward_kt must be 10 values, each > 0 with a finite
+// reciprocal — the same predicate CanFdHandComm::Open() applies.
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsAnUnusableFeedforwardKt) {
+  const std::vector<std::vector<double>> bad = {
+      std::vector<double>(9, 1.0),                                  // wrong size
+      {1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},           // zero
+      {1.0, 1.0, 1.0, -2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},          // negative
+      {1.0, 1.0, 1.0, 1e-40, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},         // 1/kt overflows
+      {1.0, 1.0, 1.0, std::nan(""), 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},  // NaN
+  };
+  for (std::size_t i = 0; i < bad.size(); ++i) {
+    auto node = std::make_shared<UdpHandNode>(Proto2Options({
+        rclcpp::Parameter("sil_mode", "loopmodel"),
+        rclcpp::Parameter("feedforward_kt", bad[i]),
+    }));
+    exec_.add_node(node->get_node_base_interface());
+    EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+        << "case " << i;
+    exec_.remove_node(node->get_node_base_interface());
+  }
+}
+
+// D42: both receive stages must fit the comm slot — 2 × recv_timeout_ms <
+// 1000 / loop_rate_hz × comm_decimation. 500 Hz gives a 2 ms slot: 1.0 ms is
+// out (2.0 < 2.0 fails), 0.9 ms is in; decimation 2 widens the slot to 4 ms.
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsARecvTimeoutThatCannotFitTheSlot) {
+  struct Case {
+    double recv_timeout_ms;
+    int comm_decimation;
+    bool accepted;
+  };
+
+  const Case cases[] = {
+      {1.0, 1, false}, {0.9, 1, true}, {0.0, 1, false}, {-0.4, 1, false}, {1.5, 2, true},
+  };
+  for (const auto& c : cases) {
+    auto node = std::make_shared<UdpHandNode>(Proto2Options({
+        rclcpp::Parameter("sil_mode", "loopmodel"),
+        rclcpp::Parameter("loop_rate_hz", 500.0),
+        rclcpp::Parameter("recv_timeout_ms", c.recv_timeout_ms),
+        rclcpp::Parameter("comm_decimation", c.comm_decimation),
+    }));
+    exec_.add_node(node->get_node_base_interface());
+    const auto state = node->configure().id();
+    if (c.accepted) {
+      EXPECT_EQ(state, lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
+          << c.recv_timeout_ms << " ms / decimation " << c.comm_decimation;
+      ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+    } else {
+      EXPECT_EQ(state, lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+          << c.recv_timeout_ms << " ms / decimation " << c.comm_decimation;
+    }
+    exec_.remove_node(node->get_node_base_interface());
+  }
 }
 
 }  // namespace

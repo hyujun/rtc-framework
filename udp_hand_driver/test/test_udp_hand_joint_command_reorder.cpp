@@ -17,6 +17,7 @@
 
 namespace {
 
+using udp_hand_driver::ApplyCommandNameReorder;
 using udp_hand_driver::BuildCommandNameReorder;
 using udp_hand_driver::kNumHandMotors;
 
@@ -95,6 +96,71 @@ TEST(CommandNameReorder, ApplyReordersValuesIntoFirmwareOrder) {
   EXPECT_FLOAT_EQ(cmd[1], 0.0F);
   for (int i = 2; i < kNumHandMotors; ++i) {
     EXPECT_FLOAT_EQ(cmd[static_cast<std::size_t>(i)], static_cast<float>(i) * 0.1F) << "slot " << i;
+  }
+}
+
+// ApplyCommandNameReorder is the callback's apply step as one function. With a
+// ready map it must produce exactly what the inline loop above produces.
+TEST(CommandNameReorder, ApplyHelperMatchesTheInlineApplyStep) {
+  const auto map = BuildCommandNameReorder(kWire, kUrdf);
+  std::vector<double> values(kNumHandMotors);
+  for (int i = 0; i < kNumHandMotors; ++i) {
+    values[static_cast<std::size_t>(i)] = static_cast<double>(i) * 0.1;
+  }
+  std::array<float, kNumHandMotors> offset{};
+  offset.fill(0.5F);
+
+  const auto cmd = ApplyCommandNameReorder(map, /*ready=*/true, values, offset);
+  EXPECT_FLOAT_EQ(cmd[0], 0.1F - 0.5F);
+  EXPECT_FLOAT_EQ(cmd[1], 0.0F - 0.5F);
+  for (int i = 2; i < kNumHandMotors; ++i) {
+    EXPECT_FLOAT_EQ(cmd[static_cast<std::size_t>(i)], static_cast<float>(i) * 0.1F - 0.5F)
+        << "slot " << i;
+  }
+}
+
+// ready=false is the positional fallback (the map is ignored even if filled).
+TEST(CommandNameReorder, ApplyHelperFallsBackToPositionalWhenNotReady) {
+  const auto map = BuildCommandNameReorder(kWire, kUrdf);  // would swap 0/1
+  std::vector<double> values(kNumHandMotors);
+  for (int i = 0; i < kNumHandMotors; ++i) {
+    values[static_cast<std::size_t>(i)] = static_cast<double>(i);
+  }
+  const auto cmd = ApplyCommandNameReorder(map, /*ready=*/false, values, {});
+  for (int i = 0; i < kNumHandMotors; ++i) {
+    EXPECT_FLOAT_EQ(cmd[static_cast<std::size_t>(i)], static_cast<float>(i)) << "slot " << i;
+  }
+}
+
+// A source index past the end of the array reads as 0 (minus the offset) — the
+// guard the callback relied on for a short `values`.
+TEST(CommandNameReorder, ApplyHelperReadsZeroPastTheEndOfValues) {
+  std::array<int, kNumHandMotors> map{};
+  for (int i = 0; i < kNumHandMotors; ++i) {
+    map[static_cast<std::size_t>(i)] = i;
+  }
+  std::vector<double> values(3, 2.0);  // only 3 published
+  std::array<float, kNumHandMotors> offset{};
+  offset.fill(0.25F);
+  const auto cmd = ApplyCommandNameReorder(map, /*ready=*/true, values, offset);
+  EXPECT_FLOAT_EQ(cmd[2], 2.0F - 0.25F);
+  EXPECT_FLOAT_EQ(cmd[3], 0.0F - 0.25F);
+  EXPECT_FLOAT_EQ(cmd[9], 0.0F - 0.25F);
+}
+
+// D39: the feedforward uses the same map with a zero offset — the joint
+// position offset must never leak into a torque.
+TEST(CommandNameReorder, FeedforwardUsesTheSameMapWithoutTheOffset) {
+  const auto map = BuildCommandNameReorder(kWire, kUrdf);
+  std::vector<double> feedforward(kNumHandMotors);
+  for (int i = 0; i < kNumHandMotors; ++i) {
+    feedforward[static_cast<std::size_t>(i)] = 1.0 + static_cast<double>(i);
+  }
+  const auto ff = ApplyCommandNameReorder(map, /*ready=*/true, feedforward, {});
+  EXPECT_FLOAT_EQ(ff[0], 2.0F);  // wire slot 0 (thumb_cmc_fe) ← URDF index 1
+  EXPECT_FLOAT_EQ(ff[1], 1.0F);  // wire slot 1 (thumb_cmc_aa) ← URDF index 0
+  for (int i = 2; i < kNumHandMotors; ++i) {
+    EXPECT_FLOAT_EQ(ff[static_cast<std::size_t>(i)], 1.0F + static_cast<float>(i)) << "slot " << i;
   }
 }
 
