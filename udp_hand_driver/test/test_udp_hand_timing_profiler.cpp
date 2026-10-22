@@ -1,4 +1,4 @@
-// Unit tests for hand_timing_profiler.hpp — per-phase timing measurement.
+// Unit tests for udp_hand_timing_profiler.hpp — per-phase timing measurement.
 //
 // Tier 1: Pure computation, no ROS2 or network dependencies.
 
@@ -348,7 +348,7 @@ TEST(UdpHandTimingProfiler, Summary_IndividualMode) {
   profiler.Update(pt);
 
   const auto summary = profiler.Summary();
-  EXPECT_NE(summary.find("HandUDP timing:"), std::string::npos);
+  EXPECT_NE(summary.find("Hand timing:"), std::string::npos);
   // Should NOT contain "[bulk]"
   EXPECT_EQ(summary.find("[bulk]"), std::string::npos);
 }

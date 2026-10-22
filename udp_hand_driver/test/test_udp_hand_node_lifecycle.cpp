@@ -154,8 +154,8 @@ class UdpHandNodeLifecycleTest : public ::testing::Test {
     const char* created = mkdtemp(tmpl);
     ASSERT_NE(created, nullptr);
     session_dir_ = created;
-    // The node writes <session>/device/hand_udp_stats.json (SaveCommStats) and
-    // <session>/timing/hand_udp_timing_log.csv (on_activate). ResolveSessionDir
+    // The node writes <session>/device/hand_stats.json (SaveCommStats) and
+    // <session>/timing/hand_timing_log.csv (on_activate). ResolveSessionDir
     // honours this env var first.
     setenv("RTC_SESSION_DIR", created, 1);
     rclcpp::init(0, nullptr);
@@ -305,8 +305,8 @@ TEST_F(UdpHandNodeLifecycleTest, PublishLaneRunsEndToEndAcrossTheLifecycle) {
   // only widens the exercised path.
   SpinFor(1200ms);
 
-  // The timing CSV opened on activation (hand_udp_timing_opened_).
-  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "timing" / "hand_udp_timing_log.csv"));
+  // The timing CSV opened on activation (hand_timing_opened_).
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "timing" / "hand_timing_log.csv"));
 
   // Deactivate stops the CommLoop, so the SeqLock sequence freezes and every
   // subsequent poll takes the no-progress early return; LifecyclePublishers are
@@ -325,7 +325,7 @@ TEST_F(UdpHandNodeLifecycleTest, PublishLaneRunsEndToEndAcrossTheLifecycle) {
   EXPECT_EQ(joint_count, joint_after_deactivate);
 
   // on_cleanup persisted the forensic counters before releasing the controller.
-  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "device" / "hand_udp_stats.json"));
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "device" / "hand_stats.json"));
 
   exec_.remove_node(probe);
   exec_.remove_node(node->get_node_base_interface());
@@ -456,7 +456,7 @@ TEST_F(UdpHandNodeLifecycleTest, AuxTimerFiresOnItsOwnExecutor) {
   ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
   ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
 
-  const auto csv = session_dir_ / "timing" / "hand_udp_timing_log.csv";
+  const auto csv = session_dir_ / "timing" / "hand_timing_log.csv";
   ASSERT_TRUE(std::filesystem::exists(csv));
   const auto size_before_drain = std::filesystem::file_size(csv);
 
@@ -516,7 +516,7 @@ TEST_F(UdpHandNodeLifecycleTest, ShutdownFromActiveRunsTheDeactivatePath) {
   // timing samples, so the SPSC certainly holds undrained rows.
   ASSERT_TRUE(SpinUntil([&] { return joint_count >= 5; }, 10s));
 
-  const auto csv = session_dir_ / "timing" / "hand_udp_timing_log.csv";
+  const auto csv = session_dir_ / "timing" / "hand_timing_log.csv";
   ASSERT_TRUE(std::filesystem::exists(csv));
   const auto size_before_shutdown = std::filesystem::file_size(csv);
 
@@ -561,8 +561,8 @@ TEST_F(UdpHandNodeLifecycleTest, NonPositiveLoopRateIsRejectedAtConfigure) {
 }
 
 // Forensic-artifact schema gate (G-1 of epic #895, #897): the key set of
-// <session>/device/hand_udp_stats.json must stay a SUPERSET of the checked-in
-// fixture, and the <session>/timing/hand_udp_timing_log.csv header must match
+// <session>/device/hand_stats.json must stay a SUPERSET of the checked-in
+// fixture, and the <session>/timing/hand_timing_log.csv header must match
 // it exactly. Analysis scripts and the hand-stats readers key on these names, so
 // a transport seam or a new protocol may ADD keys but never drop or rename one.
 // The fixtures were generated from this very run on the pre-seam tree (main
@@ -586,13 +586,13 @@ TEST_F(UdpHandNodeLifecycleTest, StatsJsonKeysAndTimingCsvHeaderMatchFixture) {
 
   const std::filesystem::path fixtures = UDP_HAND_TEST_FIXTURE_DIR;
 
-  // ── hand_udp_stats.json: key superset ──────────────────────────────────
-  const auto json_path = session_dir_ / "device" / "hand_udp_stats.json";
+  // ── hand_stats.json: key superset ──────────────────────────────────
+  const auto json_path = session_dir_ / "device" / "hand_stats.json";
   ASSERT_TRUE(std::filesystem::exists(json_path));
   const auto actual_keys = JsonKeyPaths(ReadFile(json_path));
-  const auto expected_keys = ReadFixtureLines(fixtures / "hand_udp_stats_keys.txt");
+  const auto expected_keys = ReadFixtureLines(fixtures / "hand_stats_keys.txt");
   ASSERT_FALSE(expected_keys.empty())
-      << "fixture missing or empty: " << (fixtures / "hand_udp_stats_keys.txt");
+      << "fixture missing or empty: " << (fixtures / "hand_stats_keys.txt");
   std::vector<std::string> missing;
   for (const auto& k : expected_keys) {
     if (actual_keys.count(k) == 0) {
@@ -603,19 +603,18 @@ TEST_F(UdpHandNodeLifecycleTest, StatsJsonKeysAndTimingCsvHeaderMatchFixture) {
   for (const auto& k : actual_keys) {
     actual_dump += "  " + k + "\n";
   }
-  EXPECT_TRUE(missing.empty()) << "hand_udp_stats.json dropped " << missing.size()
+  EXPECT_TRUE(missing.empty()) << "hand_stats.json dropped " << missing.size()
                                << " fixture key(s); first: " << missing.front()
                                << "\nactual keys:\n"
                                << actual_dump;
 
-  // ── hand_udp_timing_log.csv: header identical ──────────────────────────
-  const auto csv_path = session_dir_ / "timing" / "hand_udp_timing_log.csv";
+  // ── hand_timing_log.csv: header identical ──────────────────────────
+  const auto csv_path = session_dir_ / "timing" / "hand_timing_log.csv";
   ASSERT_TRUE(std::filesystem::exists(csv_path));
   const std::string actual_header = FirstLine(ReadFile(csv_path));
-  const std::string expected_header =
-      FirstLine(ReadFile(fixtures / "hand_udp_timing_log_header.txt"));
+  const std::string expected_header = FirstLine(ReadFile(fixtures / "hand_timing_log_header.txt"));
   ASSERT_FALSE(expected_header.empty())
-      << "fixture missing or empty: " << (fixtures / "hand_udp_timing_log_header.txt");
+      << "fixture missing or empty: " << (fixtures / "hand_timing_log_header.txt");
   EXPECT_EQ(actual_header, expected_header);
 }
 
@@ -770,7 +769,7 @@ std::string Dump(const std::set<std::string>& keys) {
 }
 
 // Forensic schema of a proto2 run: the stats JSON key set must EQUAL
-// fixtures/hand_udp_stats_keys_proto2.txt (bulk timing keys + comm_stats.canfd.*
+// fixtures/hand_stats_keys_proto2.txt (bulk timing keys + comm_stats.canfd.*
 // + the keys every protocol emits) and the timing CSV header must still match
 // the shared fixture. Exact, not superset: the proto1 fixture pins the
 // individual-mode keys, so it cannot double as this gate, and G-2's SIL run
@@ -795,13 +794,13 @@ TEST_F(UdpHandNodeLifecycleTest, Proto2StatsJsonKeysMatchTheProto2FixtureExactly
   exec_.remove_node(node->get_node_base_interface());
 
   const std::filesystem::path fixtures = UDP_HAND_TEST_FIXTURE_DIR;
-  const auto json_path = session_dir_ / "device" / "hand_udp_stats.json";
+  const auto json_path = session_dir_ / "device" / "hand_stats.json";
   ASSERT_TRUE(std::filesystem::exists(json_path));
   const std::string json = ReadFile(json_path);
   const auto actual_keys = JsonKeyPaths(json);
-  const auto expected_keys = ReadFixtureLines(fixtures / "hand_udp_stats_keys_proto2.txt");
+  const auto expected_keys = ReadFixtureLines(fixtures / "hand_stats_keys_proto2.txt");
   ASSERT_FALSE(expected_keys.empty())
-      << "fixture missing or empty: " << (fixtures / "hand_udp_stats_keys_proto2.txt")
+      << "fixture missing or empty: " << (fixtures / "hand_stats_keys_proto2.txt")
       << "\nactual keys:\n"
       << Dump(actual_keys);
   EXPECT_EQ(actual_keys, expected_keys) << "actual keys:\n" << Dump(actual_keys);
@@ -809,17 +808,17 @@ TEST_F(UdpHandNodeLifecycleTest, Proto2StatsJsonKeysMatchTheProto2FixtureExactly
   // The tags say what ran; the proto1 superset still holds (nothing dropped).
   EXPECT_NE(json.find("\"protocol_version\": \"2\""), std::string::npos);
   EXPECT_NE(json.find("\"transport\": \"canfd\""), std::string::npos);
-  for (const auto& k : ReadFixtureLines(fixtures / "hand_udp_stats_keys.txt")) {
+  for (const auto& k : ReadFixtureLines(fixtures / "hand_stats_keys.txt")) {
     if (k.rfind("timing_stats.read_", 0) == 0) {
       continue;  // individual-mode timing keys — bulk writes its own set
     }
     EXPECT_EQ(actual_keys.count(k), 1u) << "proto1 key dropped on proto2: " << k;
   }
 
-  const auto csv_path = session_dir_ / "timing" / "hand_udp_timing_log.csv";
+  const auto csv_path = session_dir_ / "timing" / "hand_timing_log.csv";
   ASSERT_TRUE(std::filesystem::exists(csv_path));
   EXPECT_EQ(FirstLine(ReadFile(csv_path)),
-            FirstLine(ReadFile(fixtures / "hand_udp_timing_log_header.txt")));
+            FirstLine(ReadFile(fixtures / "hand_timing_log_header.txt")));
 }
 
 // D39 through the node: the command callback's feedforward branches, observed
@@ -862,7 +861,7 @@ TEST_F(UdpHandNodeLifecycleTest, JointCommandFeedforwardBranchesAreCounted) {
   exec_.remove_node(probe);
   exec_.remove_node(node->get_node_base_interface());
 
-  const std::string json = ReadFile(session_dir_ / "device" / "hand_udp_stats.json");
+  const std::string json = ReadFile(session_dir_ / "device" / "hand_stats.json");
   EXPECT_NE(json.find("\"feedforward_size_mismatch\": 1,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"feedforward_nonfinite\": 1,"), std::string::npos) << json;
 }
@@ -886,13 +885,52 @@ TEST_F(UdpHandNodeLifecycleTest, ExplicitHandSideSuffixesTheForensicFiles) {
   ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
   exec_.remove_node(node->get_node_base_interface());
 
-  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "device" / "hand_udp_stats_left.json"));
-  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "timing" / "hand_udp_timing_log_left.csv"));
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "device" / "hand_stats_left.json"));
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "timing" / "hand_timing_log_left.csv"));
   // The suffixed run is a proto1 UDP run: tagged as such.
-  const std::string json = ReadFile(session_dir_ / "device" / "hand_udp_stats_left.json");
+  const std::string json = ReadFile(session_dir_ / "device" / "hand_stats_left.json");
   EXPECT_NE(json.find("\"protocol_version\": \"1a\""), std::string::npos);
   EXPECT_NE(json.find("\"transport\": \"udp\""), std::string::npos);
   EXPECT_EQ(json.find("\"canfd\""), std::string::npos);
+}
+
+// F08 (#905): the runtime names are link-neutral. The CommLoop thread is
+// `hand_comm` (kHandCommThreadConfig; the name is set before the affinity and
+// scheduler steps, so it survives an EPERM on SCHED_FIFO), and the forensic
+// artifacts carry no `hand_udp_` prefix. The external-layout verifier
+// (repo_scripts verify_rt_runtime.sh) and the gate tool key on these names;
+// its unit tests use synthetic records, so this is the only check against the
+// binary.
+TEST_F(UdpHandNodeLifecycleTest, CommThreadAndArtifactsCarryTheNeutralNames) {
+  auto node = std::make_shared<UdpHandNode>(LoopmodelOptions());
+  exec_.add_node(node->get_node_base_interface());
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  SpinFor(200ms);
+
+  std::map<std::string, int> thread_names;
+  for (const auto& task : std::filesystem::directory_iterator("/proc/self/task")) {
+    std::ifstream comm(task.path() / "comm");
+    std::string name;
+    std::getline(comm, name);
+    ++thread_names[name];
+  }
+  EXPECT_EQ(thread_names["hand_comm"], 1) << "CommLoop thread not named hand_comm while active";
+  EXPECT_EQ(thread_names["hand_udp_recv"], 0) << "pre-F08 thread name still in use";
+
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "device" / "hand_stats.json"));
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "timing" / "hand_timing_log.csv"));
+  for (const auto* sub : {"device", "timing"}) {
+    for (const auto& entry : std::filesystem::directory_iterator(session_dir_ / sub)) {
+      const std::string name = entry.path().filename().string();
+      EXPECT_NE(name.rfind("hand_udp_", 0), 0u) << "pre-F08 artifact written: " << entry.path();
+    }
+  }
 }
 
 // ── E-Stop input (E-8) ───────────────────────────────────────────────────────

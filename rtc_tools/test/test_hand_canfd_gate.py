@@ -22,10 +22,14 @@ from rtc_tools.analysis.candump_log import (
 )
 from rtc_tools.analysis.hand_canfd_gate import (
     FAIL,
+    LEGACY_STEMS,
     NOT_EVALUATED,
     PASS,
+    STATS_STEM,
+    TIMING_STEM,
     UNDECIDED,
     Thresholds,
+    _artifact,
     analyse_bus,
     judge,
     load_comm_stats,
@@ -460,12 +464,16 @@ def test_overall_precedence(tmp_path):
     assert overall(list(checks.values())) == FAIL
 
 
-def write_session(tmp_path: Path, suffix: str = "", rows=None, comm=None) -> Path:
+def write_session(
+    tmp_path: Path, suffix: str = "", rows=None, comm=None, legacy_names: bool = False
+) -> Path:
     session = tmp_path / "session"
-    (session / "timing").mkdir(parents=True)
-    (session / "device").mkdir()
+    (session / "timing").mkdir(parents=True, exist_ok=True)
+    (session / "device").mkdir(exist_ok=True)
+    timing_stem = LEGACY_STEMS[TIMING_STEM] if legacy_names else TIMING_STEM
+    stats_stem = LEGACY_STEMS[STATS_STEM] if legacy_names else STATS_STEM
     rows = rows if rows is not None else timing_rows(150_001)
-    with (session / "timing" / f"hand_udp_timing_log{suffix}.csv").open("w") as fh:
+    with (session / "timing" / f"{timing_stem}{suffix}.csv").open("w") as fh:
         fh.write(
             "t_wall_ns,tick_count,run_id,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us\n"
         )
@@ -474,10 +482,43 @@ def write_session(tmp_path: Path, suffix: str = "", rows=None, comm=None) -> Pat
                 f"{r['t_wall_ns']},{r['tick_count']},{r['run_id']},400,50,0,"
                 f"{r['t_total_us']},{r['jitter_us']}\n"
             )
-    (session / "device" / f"hand_udp_stats{suffix}.json").write_text(
+    (session / "device" / f"{stats_stem}{suffix}.json").write_text(
         json.dumps({"comm_stats": comm if comm is not None else comm_stats(), "timing_stats": {}})
     )
     return session
+
+
+def test_artifact_names_are_link_neutral():
+    assert TIMING_STEM == "hand_timing_log"
+    assert STATS_STEM == "hand_stats"
+
+
+def test_artifact_falls_back_to_the_pre_f08_name_per_artifact(tmp_path):
+    # Pre-F08 (#905) sessions: both artifacts under the old names, D51 suffix kept.
+    legacy = write_session(tmp_path / "legacy", suffix="_left", legacy_names=True)
+    assert _artifact(legacy, "timing", TIMING_STEM, "_left", ".csv").name == (
+        "hand_udp_timing_log_left.csv"
+    )
+    assert (
+        _artifact(legacy, "device", STATS_STEM, "_left", ".json").name
+        == "hand_udp_stats_left.json"
+    )
+    # Neither name present: the current name, so the exit-3 message shows it.
+    assert _artifact(legacy, "timing", TIMING_STEM, "", ".csv").name == "hand_timing_log.csv"
+    # Both present (a pre- and a post-rename binary restarted into the same
+    # minute's session): the current name wins, per artifact.
+    both = write_session(tmp_path / "both", legacy_names=True)
+    write_session(tmp_path / "both")
+    (both / "timing" / "hand_timing_log.csv").unlink()
+    assert _artifact(both, "timing", TIMING_STEM, "", ".csv").name == "hand_udp_timing_log.csv"
+    assert _artifact(both, "device", STATS_STEM, "", ".json").name == "hand_stats.json"
+
+
+def test_main_reads_a_pre_f08_session(tmp_path):
+    session = write_session(tmp_path, legacy_names=True, comm=comm_stats(joint_timeouts=150))
+    log = tmp_path / "g3.log"
+    log.write_text("\n".join(good_bus_lines()) + "\n")
+    assert main([str(session), str(log)]) == 2  # judged, not exit 3
 
 
 def test_main_end_to_end_pass(tmp_path, capsys):

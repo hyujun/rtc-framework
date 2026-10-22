@@ -497,7 +497,7 @@ TEST(HandFailureDetectorLinkDown, DumpRunsAndFailureLatchesOnce) {
 
   EXPECT_TRUE(detector.failed());
   EXPECT_EQ(callback_count.load(), 1);
-  EXPECT_NE(failure_reason.find("hand_udp_link_down"), std::string::npos);
+  EXPECT_NE(failure_reason.find("hand_link_down"), std::string::npos);
 
   controller->Stop();
   ::close(fd);
@@ -740,7 +740,7 @@ TEST(HandFailureDetectorStartupGrace, LargeRateGrace_DoesNotSuppressLinkDown) {
   detector.Stop();
 
   EXPECT_TRUE(detector.failed());
-  EXPECT_NE(reason.find("hand_udp_link_down"), std::string::npos);
+  EXPECT_NE(reason.find("hand_link_down"), std::string::npos);
 
   controller->Stop();
   ::close(fd);
@@ -769,7 +769,7 @@ TEST(HandFailureDetectorStartupGrace, ShortLinkGrace_FiresAfterElapse) {
   detector.Stop();
 
   EXPECT_TRUE(detector.failed());
-  EXPECT_NE(reason.find("hand_udp_link_down"), std::string::npos);
+  EXPECT_NE(reason.find("hand_link_down"), std::string::npos);
 
   controller->Stop();
   ::close(fd);

@@ -90,7 +90,12 @@ class TestDetectLogType:
     def test_state_log_with_prefix(self):
         assert detect_log_type("device0_state_log.csv") == "state_log"
 
-    def test_hand_udp_timing_log(self):
+    def test_hand_timing_log(self):
+        assert detect_log_type("hand_timing_log.csv") == "cm_timing"
+        assert detect_log_type("hand_timing_log_left.csv") == "cm_timing"
+
+    def test_hand_timing_log_pre_f08_name(self):
+        # Sessions recorded before the F08 rename (#905) keep the old stem.
         assert detect_log_type("hand_udp_timing_log.csv") == "cm_timing"
 
     def test_phase_c_controller_owned_returns_unknown_for_column_fallback(self, tmp_path):
