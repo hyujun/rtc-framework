@@ -16,7 +16,8 @@
 //   D43 · D44  a partial set is abandoned, no retry in the tick, next cycle ok
 //   D41        echo stage classification: a stale RESP costs budget but the
 //              write still succeeds, three fail it, an echo with another
-//              payload only counts, an error frame costs nothing
+//              payload only counts, an error frame costs nothing (error
+//              frames are shared bus-wide, so that case asserts >= 1)
 //   D26        E-Stop fire-and-forget: Frame 1 zeros then Frame 0 zeros
 //   D51        a left-hand comm never talks to a right-hand fake
 //   DrainStale bounded drain, stale_drained accounting
@@ -561,8 +562,11 @@ TEST_F(CanFdHandCommVcan, D41_BusOffErrorFrameCostsNeitherBudgetNorDeadline) {
   EXPECT_TRUE(comm->WriteCommandWithEcho(Ramp(0.0f, 0.1f), HandMotorArray{}));
   comm->PublishCommStats();
   const CanFdCommStats c = comm->canfd_stats();
-  EXPECT_EQ(c.error_frames, 1u);
-  EXPECT_EQ(c.bus_off, 1u);
+  // >= : error frames have no id separation on the shared vcan0, so another
+  // package's test injecting one at the same moment must not fail this one.
+  EXPECT_GE(c.error_frames, 1u);
+  EXPECT_GE(c.bus_off, 1u);
+  EXPECT_EQ(c.error_frames, c.bus_off);
   EXPECT_EQ(comm->comm_stats().cmd_mismatch, 0u);
   EXPECT_EQ(comm->comm_stats().per_kind[static_cast<std::size_t>(RequestKind::kWriteEcho)].ok, 1u);
 }

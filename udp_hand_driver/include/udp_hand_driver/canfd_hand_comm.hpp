@@ -149,7 +149,8 @@ class CanFdHandComm final : public HandComm {
     }
   }
 
-  explicit CanFdHandComm(CanFdHandCommConfig cfg) noexcept
+  // Not noexcept: the transport config copies interface_name (non-RT path).
+  explicit CanFdHandComm(CanFdHandCommConfig cfg)
       : cfg_(std::move(cfg)),
         node_(canfd::NodeIdOf(cfg_.hand_side)),
         transport_(MakeTransportConfig(cfg_, node_)),
@@ -307,7 +308,7 @@ class CanFdHandComm final : public HandComm {
 
  private:
   [[nodiscard]] static rtc::CanFdTransportConfig MakeTransportConfig(const CanFdHandCommConfig& cfg,
-                                                                     uint8_t node) noexcept {
+                                                                     uint8_t node) {
     rtc::CanFdTransportConfig t{};
     t.interface_name = cfg.interface_name;
     t.extended_frame = true;
@@ -387,20 +388,18 @@ class CanFdHandComm final : public HandComm {
         return false;
       }
       const ssize_t n = transport_.RecvFrameWithTimeout(rx_, ToTimespec(deadline - now));
-      if (n == 0) {
-        stats_.CountRecvTimeout(RequestKind::kWriteEcho);
-        return false;
-      }
+      if (n == 0)
+        continue;  // nothing queued (deadline or a spurious wake): the loop head decides
       if (n < 0) {
         stats_.CountRecvError(RequestKind::kWriteEcho);
         return false;
       }
-      if (first) {
-        stats_.CountRecvOk();
-        first = false;
-      }
       if (ConsumeErrorFrame(rx_))
         continue;  // ①
+      if (first) {
+        stats_.CountRecvOk();  // first data frame of the stage, whatever it is
+        first = false;
+      }
       const uint32_t id = rx_.can_id & canfd::kExtIdMask;
       const uint8_t idx = canfd::FrameIndexOf(id);
       if ((id & ~canfd::kFrameIndexMask) == echo_base_ && idx < 2 &&
@@ -456,22 +455,19 @@ class CanFdHandComm final : public HandComm {
         return false;
       }
       const ssize_t n = transport_.RecvFrameWithTimeout(rx_, ToTimespec(remaining));
-      if (n == 0) {
-        CountSetTimeout(sensors);
-        AbandonSet();
-        return false;
-      }
+      if (n == 0)
+        continue;  // deadline or spurious wake: Remaining() at the loop head decides
       if (n < 0) {
         CountSetError(sensors);
         AbandonSet();
         return false;
       }
+      if (ConsumeErrorFrame(rx_))
+        continue;
       if (first) {
         stats_.CountRecvOk();
         first = false;
       }
-      if (ConsumeErrorFrame(rx_))
-        continue;
       switch (assembler_.Feed(rx_.can_id, rx_.data, rx_.len)) {
         case canfd::FeedResult::kComplete:
           ++stats_.PerKind(RequestKind::kJointRead).ok;

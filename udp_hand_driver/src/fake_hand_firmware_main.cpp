@@ -44,9 +44,11 @@ namespace {
 // Read the FakeHandFirmware::Config from ROS parameters (declared with defaults).
 // `hand_side` is declared for every protocol_version (it only matters on CAN FD);
 // an unparsable value is a configuration error — `hand_side_ok` reports it.
-udp_hand_driver::FakeHandFirmware::Config LoadConfig(rclcpp::Node& node, bool& hand_side_ok) {
+// `proto` receives protocol_version (it selects the UDP / CAN FD shell in main).
+udp_hand_driver::FakeHandFirmware::Config LoadConfig(rclcpp::Node& node, std::string& proto,
+                                                     bool& hand_side_ok) {
   udp_hand_driver::FakeHandFirmware::Config cfg;
-  const std::string proto = node.declare_parameter<std::string>("protocol_version", "1a");
+  proto = node.declare_parameter<std::string>("protocol_version", "1a");
   cfg.proto_1b = (proto == "1b");
   const std::string side = node.declare_parameter<std::string>("hand_side", "right");
   hand_side_ok = udp_hand_driver::canfd::ParseHandSide(side, cfg.hand_side);
@@ -97,7 +99,7 @@ int RunCanFd(rclcpp::Node& node, udp_hand_driver::FakeHandFirmware& firmware,
       if (errno == EINTR)
         continue;  // signal (e.g. SIGINT) — re-check rclcpp::ok()
       RCLCPP_ERROR(node.get_logger(), "CAN FD recv failed: %s", std::strerror(errno));
-      break;
+      return 1;  // a dead interface is a failed peer, not a clean shutdown
     }
     if (n == 0)
       continue;
@@ -126,9 +128,9 @@ int main(int argc, char** argv) {
 
   const int port = static_cast<int>(node->declare_parameter<int64_t>("port", 55151));
   const std::string can_interface = node->declare_parameter<std::string>("can_interface", "vcan0");
-  const std::string proto = node->get_parameter("protocol_version").as_string();
+  std::string proto;
   bool hand_side_ok = false;
-  const udp_hand_driver::FakeHandFirmware::Config cfg = LoadConfig(*node, hand_side_ok);
+  const udp_hand_driver::FakeHandFirmware::Config cfg = LoadConfig(*node, proto, hand_side_ok);
   if (!hand_side_ok) {
     RCLCPP_ERROR(node->get_logger(), "hand_side must be \"right\" or \"left\"");
     rclcpp::shutdown();

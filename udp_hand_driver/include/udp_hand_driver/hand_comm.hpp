@@ -352,7 +352,8 @@ class HandComm {
   /// Consistent snapshot for off-loop readers (stats timer, failure detector).
   [[nodiscard]] virtual UdpHandCommStats comm_stats() const noexcept = 0;
 
-  /// Receive errors (not timeouts) since the last reset. Any thread.
+  /// Receive failures (timeouts and socket errors) since the last reset — the
+  /// failure detector's onset counter. Any thread.
   [[nodiscard]] virtual uint64_t recv_error_count() const noexcept = 0;
 
   /// Per-stage receive deadline the implementation was configured with.
