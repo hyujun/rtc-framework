@@ -453,6 +453,21 @@ TEST_F(UdpHandNodeLifecycleTest, AuxTimerFiresOnItsOwnExecutor) {
 
   std::thread aux_thread([&aux_exec] { aux_exec.spin(); });
 
+  // An ASSERT below returns from the test body; a still-joinable thread then
+  // terminates the whole binary and the suite reports no result file instead of
+  // the failure (seen on the F08 rename, #905). Cancel and join on every exit.
+  struct JoinOnExit {
+    rclcpp::executors::SingleThreadedExecutor& exec;
+    std::thread& thread;
+
+    ~JoinOnExit() {
+      exec.cancel();
+      if (thread.joinable()) {
+        thread.join();
+      }
+    }
+  } join_on_exit{aux_exec, aux_thread};
+
   ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
   ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
 
