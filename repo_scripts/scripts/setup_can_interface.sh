@@ -9,8 +9,10 @@
 # 컨트롤러에서 EOPNOTSUPP 가 나고, 기본값이 off 다 (검증 출력에서 ONE-SHOT 이
 # 없어야 한다).
 #
-# 기본값은 epic #895 D32 의 제안값이고 실측 (H1-F06) 이 고친다: restart-ms 100,
-# txqueuelen 64. 인자로 모두 바꿀 수 있다.
+# 기본값은 epic #895 D32 의 값이고 실측 (H1-F06, 2026-10-22, IXXAT USB-to-CAN FD
+# 5 분 × 3 run) 이 확정했다: restart-ms 100, txqueuelen 64 — tx_enobufs 0 ·
+# 드롭 0 · bus-off 0 · re-started 0, sjw 1 로 ERROR-ACTIVE 유지. 인자로 모두
+# 바꿀 수 있다.
 #
 # 재적용: USB 어댑터는 재연결 · 재부팅마다 새 can0 로 나타나므로 (bitrate 없음,
 # down) setup_udp_optimization.sh Step 5 패턴대로 생성 스크립트

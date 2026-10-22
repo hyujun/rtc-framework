@@ -54,6 +54,10 @@
                                       # CAN FD(protocol_version "2") 에서는 stage 별 deadline
                                       # (echo · RESP set, D42): 2 × 값 < 1000/loop_rate_hz ×
                                       # comm_decimation 이어야 configure 를 통과한다.
+                                      # 실기 proto2 는 launch 로 0.9 를 준다 (H1-F06 실측, D6):
+                                      # 손의 REQ→RESP 왕복 p99 0.73 / max 0.76 ms (read-only),
+                                      # write 동시엔 echo max 1.46 ms 가 15만 사이클에 22번 →
+                                      # 0.9 에서 타임아웃 0.016 %. 0.4 는 매 사이클 타임아웃.
 
     # -- CAN FD 링크 (protocol_version "2" 전용 — 1a / 1b 에서는 무시) --
     # can_interface : SocketCAN 장치. sil_mode=firmware 는 vcan0 로 강제한다.
