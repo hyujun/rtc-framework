@@ -20,7 +20,7 @@
 // file; without a per-run stamp `n / span` rate analysis reads both as one
 // run and no sensor fires (the drop counters are honestly 0 — nothing was
 // dropped). The column costs the RT path nothing: Log() runs on the draining
-// consumer (CM log thread @ 100 Hz, MPC / hand_udp aux timers @ 1 Hz), never
+// consumer (CM log thread @ 100 Hz, MPC / hand aux timers @ 1 Hz), never
 // on the producer. See rtc_base/logging/run_id.hpp for the resolution chain.
 //
 // Writer side:

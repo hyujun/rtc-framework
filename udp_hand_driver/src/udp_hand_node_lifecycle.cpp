@@ -220,7 +220,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   }
   // "Explicit" = the value came from YAML / launch / NodeOptions, not from the
   // declare default: only then do the artifact names carry the side, so a
-  // one-hand deployment keeps hand_udp_stats.json / hand_udp_timing_log.csv.
+  // one-hand deployment keeps hand_stats.json / hand_timing_log.csv.
   hand_file_suffix_.clear();
   if (get_node_parameters_interface()->get_parameter_overrides().count("hand_side") != 0) {
     hand_file_suffix_ = "_" + hand_side_str;
@@ -761,7 +761,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // Inject producer before Start() so the CommLoop thread sees a non-null
   // producer on its first iteration. The CommLoop (PeriodicRtThread) computes
   // jitter against its own loop_rate_hz period budget.
-  controller_->SetTimingProducer(&hand_udp_timing_producer_);
+  controller_->SetTimingProducer(&hand_timing_producer_);
 
   // Per-run counters, reset where the controller resets its own (Start →
   // PrepareRun → ResetCommStats) so one stats JSON never mixes two runs.
@@ -868,44 +868,44 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // because StopRuntime() now cancels it to quiesce the aux lane — keeping both
   // on one flag would either skip on_deactivate's straggler drain (if the flag
   // were cleared) or leave the timer dead after deactivate -> activate (if not).
-  if (!hand_udp_timing_opened_) {
-    if (!hand_udp_timing_logger_.Open(hand_file_suffix_)) {
+  if (!hand_timing_opened_) {
+    if (!hand_timing_logger_.Open(hand_file_suffix_)) {
       RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                   "UdpHandTimingLogger::Open() failed — timing CSV disabled");
     } else {
       RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand tick-timing CSV: %s",
-                  hand_udp_timing_logger_.Path().c_str());
+                  hand_timing_logger_.Path().c_str());
     }
-    hand_udp_timing_opened_ = true;
+    hand_timing_opened_ = true;
   }
   // cb_group_aux_: this is the heaviest callback in the process — one 1 Hz
-  // burst writes up to kHandUdpTimingBufferCapacity (512) CSV rows, two orders
+  // burst writes up to kHandTimingBufferCapacity (512) CSV rows, two orders
   // of magnitude more per invocation than CM's equivalent drain, which its own
   // nrt_logging thread runs at 100 Hz (rt_tick_timing_sample.hpp) (issue #345).
-  hand_udp_timing_timer_ =
-      create_wall_timer(std::chrono::seconds(1), [this]() { DrainHandUdpTiming(); }, cb_group_aux_);
+  hand_timing_timer_ =
+      create_wall_timer(std::chrono::seconds(1), [this]() { DrainHandTiming(); }, cb_group_aux_);
 
   RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "UdpHandNode activated");
   return CallbackReturn::SUCCESS;
 }
 
-void UdpHandNode::DrainHandUdpTiming() {
+void UdpHandNode::DrainHandTiming() {
   // Two callers now: the 1 Hz aux timer (hand_aux_io thread) and on_deactivate's
-  // straggler drain (executor thread). hand_udp_timing_producer_ is SPSC — a
+  // straggler drain (executor thread). hand_timing_producer_ is SPSC — a
   // *single* consumer — so the two must never overlap. StopRuntime() cancels the
   // timer and waits out any in-flight callback before on_deactivate drains, and
   // this lock enforces the invariant rather than relying on that ordering (#345).
   std::lock_guard lock(aux_lane_mutex_);
   if (!controller_)
     return;
-  hand_udp_timing_producer_.Drain(
-      [this](const rtc::RtTickTimingSample& s) { hand_udp_timing_logger_.Log(s); });
-  const std::uint64_t drops = hand_udp_timing_producer_.DropCount();
-  if (drops > hand_udp_timing_drop_baseline_) {
-    const std::uint64_t delta = drops - hand_udp_timing_drop_baseline_;
-    hand_udp_timing_drop_baseline_ = drops;
+  hand_timing_producer_.Drain(
+      [this](const rtc::RtTickTimingSample& s) { hand_timing_logger_.Log(s); });
+  const std::uint64_t drops = hand_timing_producer_.DropCount();
+  if (drops > hand_timing_drop_baseline_) {
+    const std::uint64_t delta = drops - hand_timing_drop_baseline_;
+    hand_timing_drop_baseline_ = drops;
     RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                "Hand UDP timing SPSC dropped %lu samples since last drain",
+                "Hand timing SPSC dropped %lu samples since last drain",
                 static_cast<unsigned long>(delta));
   }
 }
@@ -920,8 +920,8 @@ UdpHandNode::CallbackReturn UdpHandNode::on_deactivate(const rclcpp_lifecycle::S
   // Drain any stragglers so the CSV reflects everything pushed before stop. Safe
   // as the sole consumer here: StopRuntime() above cancelled the aux timer and
   // waited out any in-flight aux callback (issue #345).
-  if (hand_udp_timing_opened_) {
-    DrainHandUdpTiming();
+  if (hand_timing_opened_) {
+    DrainHandTiming();
   }
 
   // Parent call deactivates LifecyclePublishers.
@@ -985,11 +985,11 @@ void UdpHandNode::StopRuntime() {
     stats_save_timer_->cancel();
     stats_save_timer_.reset();
   }
-  // Timer only — `hand_udp_timing_opened_` stays true so a later on_activate
+  // Timer only — `hand_timing_opened_` stays true so a later on_activate
   // reuses the open CSV instead of re-running Open().
-  if (hand_udp_timing_timer_) {
-    hand_udp_timing_timer_->cancel();
-    hand_udp_timing_timer_.reset();
+  if (hand_timing_timer_) {
+    hand_timing_timer_->cancel();
+    hand_timing_timer_.reset();
   }
   if (failure_detector_) {
     // Join outside the lock: the detector's failure callback is itself a
@@ -1028,7 +1028,7 @@ void UdpHandNode::ReleaseResources() {
   // holding aux_lane_mutex_ across a join is the deadlock shape StopRuntime()
   // documents.
   stats_save_timer_.reset();
-  hand_udp_timing_timer_.reset();
+  hand_timing_timer_.reset();
   calib_status_timer_.reset();
   estop_sub_.reset();
   calib_cmd_sub_.reset();

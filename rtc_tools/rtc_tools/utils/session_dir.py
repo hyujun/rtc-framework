@@ -132,7 +132,7 @@ def generate_run_id() -> str:
     않는다 (#376).
 
     한 launch 의 모든 노드가 같은 값을 ``$RTC_RUN_ID`` 로 받으므로 cm / mpc /
-    hand_udp / rt_callback 네 CSV 를 run 단위로 join 할 수 있다.
+    hand / rt_callback 네 CSV 를 run 단위로 join 할 수 있다.
 
     C++ 소비자 ``rtc::ResolveRunId()`` 는 이 값을 uint64 로 **완전 파싱**한다 —
     숫자 아닌 문자가 섞이면 거부하고 PID 폴백으로 떨어지므로 (경계는 남지만

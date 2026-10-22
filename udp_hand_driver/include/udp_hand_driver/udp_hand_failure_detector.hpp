@@ -381,12 +381,13 @@ class UdpHandFailureDetector {
     // Name the latched channels + their streaks for the log/E-STOP reason.
     // Non-RT detector thread — string building is fine here.
     const std::string detail = LinkDownChannelDetail(comm_thr, sensor_thr);
-    RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(), "UDP link down (%s)", detail.c_str());
+    RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(), "Hand link failure latched (%s)",
+                detail.c_str());
     if (!link_dump_done_) {
       link_dump_done_ = true;
       DumpLinkForensics();
     }
-    RaiseFailure("hand_udp_link_down (" + detail + ")");
+    RaiseFailure("hand_link_down (" + detail + ")");
   }
 
   // Build a "kind=streak/threshold" list of the channels that have latched, for

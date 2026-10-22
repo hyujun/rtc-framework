@@ -1,4 +1,4 @@
-# hand_udp_stats.json dotted key paths of a protocol_version "2" run (H1-F04-2d,
+# hand_stats.json dotted key paths of a protocol_version "2" run (H1-F04-2d,
 # #903): bulk comm mode, so the bulk timing keys, plus comm_stats.canfd.* from
 # CanFdHandComm::canfd_stats(). Generated from test_udp_hand_node_lifecycle
 # Proto2StatsJsonKeysMatchTheProto2FixtureExactly (sil_mode=loopmodel), which

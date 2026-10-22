@@ -199,7 +199,7 @@ detect_hybrid_capability
 # 필드가 있었으나, 유일한 생산자가 `mpc_worker_*` 였고 그 슬롯이 사라지면서
 # (#380) 함께 제거했다 — 그 필드의 존재 이유 자체가 "설정만 적용하고 즉시
 # 죽는 스레드를 미발견 처리한다" 였다. hand_driver 프로세스 내부의
-# `hand_udp_recv` 는 이 표가 아니라 EXTERNAL_DRIVER_THREAD_LAYOUT 에 있고
+# `hand_comm` 는 이 표가 아니라 EXTERNAL_DRIVER_THREAD_LAYOUT 에 있고
 # 그쪽은 이 필드를 쓰지 않는다. 다시 optional 이 필요해지면 그때는 "왜 없어도
 # 되는가" 를 manifest 에 근거로 남기고 되살릴 것.
 declare -a EXPECTED_THREADS
@@ -293,7 +293,7 @@ build_external_drivers() {
   hand_logical=$(slot_to_logical_cpu "$hand_slot")
   aux_slot="${RTC_HAND_AUX_SLOT:-$(get_os_cores)}"
   aux_logical=$(slot_to_logical_cpu "$aux_slot")
-  EXTERNAL_DRIVER_THREAD_LAYOUT[hand_driver]="hand_udp_recv:${hand_logical}:SCHED_FIFO:65 hand_aux_io:${aux_logical}:SCHED_OTHER:0"
+  EXTERNAL_DRIVER_THREAD_LAYOUT[hand_driver]="hand_comm:${hand_logical}:SCHED_FIFO:65 hand_aux_io:${aux_logical}:SCHED_OTHER:0"
   EXTERNAL_DRIVER_THREAD_LAYOUT[arm_driver]=""
 }
 

@@ -14,9 +14,10 @@ def detect_log_type(filepath):
     Per-tick timing (unified 8-col schema):
       cm_timing_log*.csv  → cm_timing   (CM RT loop)
       mpc_timing_log*.csv → mpc_timing  (MPC main loop)
-      hand_udp_timing_log*.csv → cm_timing  (hand UDP EventLoop —
-                                             same 8-col schema, treated
-                                             as cm_timing for plotting)
+      hand_timing_log*.csv → cm_timing  (hand comm loop — same 8-col
+                                         schema, treated as cm_timing for
+                                         plotting; hand_udp_timing_log*.csv
+                                         is the pre-F08 name, #905)
 
     Phase C controller-owned CSVs live under
     <session>/controllers/<config_key>/<instance>.csv. The instance
@@ -69,7 +70,7 @@ def detect_log_type(filepath):
         return "state_log"
     elif stem.endswith("sensor_log"):
         return "sensor_log"
-    elif stem.startswith(("cm_timing_log", "hand_udp_timing_log")):
+    elif stem.startswith(("cm_timing_log", "hand_timing_log", "hand_udp_timing_log")):
         return "cm_timing"
     elif stem.startswith("mpc_timing_log"):
         return "mpc_timing"

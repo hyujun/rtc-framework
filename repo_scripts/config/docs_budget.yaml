@@ -27,7 +27,7 @@
 AGENTS.md: 17408
 CLAUDE.md: 4096
 
-agent_docs/architecture.md: 17986  # raised from 17977: the hand link is UDP or CAN FD (#903); before: 17574 -> 17977 #779 one external world (scene_world) shared by every consumer, no per-consumer copy; 17391 -> 17574 helper-thread affinity (#851)
+agent_docs/architecture.md: 17985  # raised from 17977: the hand link is UDP or CAN FD (#903); before: 17574 -> 17977 #779 one external world (scene_world) shared by every consumer, no per-consumer copy; 17391 -> 17574 helper-thread affinity (#851)
 agent_docs/controllers.md: 16157  # raised from 15612: #779 RobotTarget task-goal frame rule (producers and frame-contract controllers apply it)
 agent_docs/conventions.md: 11938  # raised from 11512: test-only shared headers stay under test/include and are consumed via CONFIG_EXTRAS -- the rule lived only in a rtc_base CMake comment and a second package forked an installed-header mechanism (#898); before: 9962 -> 11512: README contract (reader, content in/out, H2 skeleton, shape, language) -- READMEs had become every doc update's default destination (#869); before: 9800 -> 9962 output-field consumer comment and per-lane QoS
 agent_docs/design-principles.md: 15377

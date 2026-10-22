@@ -56,7 +56,7 @@
 //   callback group and the thread-layout parameter. See UdpHandNode().
 
 // Non-RT auxiliary I/O lane (issue #345). The blocking file writes — the timing
-// CSV drain (up to kHandUdpTimingBufferCapacity rows in a single 1 Hz burst) and
+// CSV drain (up to kHandTimingBufferCapacity rows in a single 1 Hz burst) and
 // the stats JSON save — run here instead of the node's default executor thread,
 // which also serves the joint-command subscription. CFS: this lane must never
 // preempt the CommLoop, and it is the only hand thread that leaves the
@@ -244,7 +244,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Deliberately not noexcept: the body takes aux_lane_mutex_, and
   // std::mutex::lock may throw std::system_error — under noexcept that would be
   // std::terminate() instead of a catchable error.
-  void DrainHandUdpTiming();
+  void DrainHandTiming();
 
   // Pre-allocate ROS2 messages once in on_configure (non-RT).
   // Avoids dynamic allocation on the EventLoop publish path.
@@ -265,7 +265,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
 
   void PublishCalibrationStatus();
 
-  // Persist comm/timing stats to <session>/device/hand_udp_stats.json.
+  // Persist comm/timing stats to <session>/device/hand_stats.json.
   // Three concurrent call contexts, serialized by aux_lane_mutex_:
   //   1. the periodic timer, on the `hand_aux_io` thread (cb_group_aux_)
   //   2. the failure-detector thread, from its failure callback
@@ -443,16 +443,16 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // ── Per-EventLoop-tick timing CSV (mpc_timing_log pattern) ─────────────
   // Producer (filled on the EventLoop thread) → 1 Hz drain on aux timer →
   // rtc::ThreadTimingCsvLogger writes one row per tick to
-  // <session>/timing/hand_udp_timing_log.csv. Open() runs once on the first
-  // on_activate and is gated by `hand_udp_timing_opened_` so reactivation does
+  // <session>/timing/hand_timing_log.csv. Open() runs once on the first
+  // on_activate and is gated by `hand_timing_opened_` so reactivation does
   // not truncate or re-write the header. The *timer* has a shorter lifetime than
   // the logger — StopRuntime() cancels it to quiesce the aux lane and every
   // on_activate recreates it — so the two are separate members (issue #345).
-  rtc::HandUdpTimingBuffer hand_udp_timing_producer_;
-  udp_hand_driver::UdpHandTimingLogger hand_udp_timing_logger_;
-  rclcpp::TimerBase::SharedPtr hand_udp_timing_timer_;
-  bool hand_udp_timing_opened_{false};
-  std::uint64_t hand_udp_timing_drop_baseline_{0};
+  rtc::HandTimingBuffer hand_timing_producer_;
+  udp_hand_driver::UdpHandTimingLogger hand_timing_logger_;
+  rclcpp::TimerBase::SharedPtr hand_timing_timer_;
+  bool hand_timing_opened_{false};
+  std::uint64_t hand_timing_drop_baseline_{0};
 
   // Aux lane (issue #345). Created in the constructor, NOT on_configure: the
   // group is handed to main()'s aux executor before the first lifecycle

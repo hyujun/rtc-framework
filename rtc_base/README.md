@@ -140,7 +140,7 @@ auto vels = kf.velocities();
 2. header/row writer 자유 함수
 3. `using MyBuffer = ThreadTimingProducer<Payload, N>;`
 
-CM (`CmTimingBuffer`), MPC (`MpcTimingBuffer`), hand UDP (`HandUdpTimingBuffer`) 가 `RtTickTimingPayload` (`t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 로 쓰는 사용처입니다.
+CM (`CmTimingBuffer`), MPC (`MpcTimingBuffer`), hand (`HandTimingBuffer`) 가 `RtTickTimingPayload` (`t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 로 쓰는 사용처입니다.
 
 ### 스레딩 (`threading/`)
 
@@ -180,7 +180,7 @@ CM (`CmTimingBuffer`), MPC (`MpcTimingBuffer`), hand UDP (`HandUdpTimingBuffer`)
 >
 > **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다 (`test/test_mpc_thread_config.cpp` 가 보장).
 
-`SystemThreadConfigs` 는 `rt_control`, `rt_callback`, `nrt_logging`, `nrt_callback`, `nrt_publish`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`) 를 가집니다. actuator publish 는 `rt_control` 이 tick 안에서 inline 으로 하고, hand UDP receive thread 는 `udp_hand_driver` 내부 (`kHandUdpRecvConfig`) 에 있습니다. 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (`cpu_core=-1`) 를 호출자가 명시적으로 씁니다.
+`SystemThreadConfigs` 는 `rt_control`, `rt_callback`, `nrt_logging`, `nrt_callback`, `nrt_publish`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`) 를 가집니다. actuator publish 는 `rt_control` 이 tick 안에서 inline 으로 하고, hand comm thread 는 `udp_hand_driver` 내부 (`kHandCommThreadConfig`) 에 있습니다. 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (`cpu_core=-1`) 를 호출자가 명시적으로 씁니다.
 
 `MpcThreadConfig` 의 필드는 `main` (MPC solve 스레드의 `ThreadConfig`) 하나입니다. Aligator 의 병렬화는 OpenMP 이고 자기 스레드를 직접 소유하므로 외부 핸들을 받지 않습니다. `ValidateSystemThreadConfigs()` 는 (1) MPC main priority < rt_callback priority, (2) `arm_driver` / `hand_driver` 의 `cpu_core` 가 모든 RT controller thread (rt_control/rt_callback/mpc_main) 와 disjoint, (3) `cpu_core=-1` 은 disjointness 검사에서 제외를 검증합니다.
 
@@ -226,14 +226,14 @@ RT 스레드 (producer) 에서 비-RT 스레드 (consumer) 로 데이터를 넘�
 | 버퍼 | 용량 | 용도 |
 |------|------|------|
 | `ControlPublishBuffer` (`PublishSnapshot`) | 512 | ROS 2 퍼블리시 오프로드 |
-| `CmTimingBuffer` / `HandUdpTimingBuffer` | 512 | CM RT loop / hand UDP EventLoop per-tick timing CSV |
+| `CmTimingBuffer` / `HandTimingBuffer` | 512 | CM RT loop / hand comm loop per-tick timing CSV |
 | `MpcTimingBuffer` | 128 | MPC per-tick timing CSV |
 
 `PublishSnapshot` 은 디바이스별 `GroupCommandSlot[8]` (command·goal·target·trajectory·feedforward·actual·motor·sensor·inference 배열, resolved `command_type`, 그룹별 `stamp_ns`, TF source pose) 과 공유 필드 (`actual_task_positions[6]`, `stamp_ns`, `active_controller_idx`, `num_groups`) 로 구성됩니다.
 
 ### 로깅 (`logging/`)
 
-**CM per-tick timing** -- `cm_timing_log.csv` 의 스키마는 `t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` 입니다 (MPC / hand_udp 와 같은 8열). `run_id` 는 `logging/run_id.hpp` 가 `Open()` 에서 한 번 정해 매 행에 찍으므로, 같은 분에 재기동해 한 세션 디렉토리를 공유한 두 런을 분석이 합쳐 읽지 못합니다. controller 데이터 CSV 는 `rtc_controller_interface` 의 `ControllerLogSet` 과 각 controller 의 POD 미러가 맡습니다.
+**CM per-tick timing** -- `cm_timing_log.csv` 의 스키마는 `t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` 입니다 (MPC / hand 와 같은 8열). `run_id` 는 `logging/run_id.hpp` 가 `Open()` 에서 한 번 정해 매 행에 찍으므로, 같은 분에 재기동해 한 세션 디렉토리를 공유한 두 런을 분석이 합쳐 읽지 못합니다. controller 데이터 CSV 는 `rtc_controller_interface` 의 `ControllerLogSet` 과 각 controller 의 POD 미러가 맡습니다.
 
 세 phase 열은 `t_total_us` 로 합산되지 않습니다. `PeriodicRtThread::MarkPublishDone()` 을 부르는 producer (CM) 는 남는 `t_total_us − (t_state_us + t_compute_us + t_publish_us)` 가 post-publish tail 입니다 (분석 쪽 파생 열은 `rtc_tools` `plotting/plotters/timing.py` 의 `add_tail_column`). 훅 `JitterMeaningful()` · `RequestLoopExit()` · `SuppressTimingThisTick()` 의 계약은 `periodic_rt_thread.hpp` Doxygen 을 봅니다.
 
@@ -264,7 +264,7 @@ producer.Drain([&](const StateLogPod& p) { logger.Log(p); });  // non-RT timer
 ```
 logging_data/YYMMDD_HHMM/
 ├── controllers/   # controller 별 데이터 CSV (config_key 하위)
-├── timing/        # cm/mpc/hand_udp per-tick timing CSV
+├── timing/        # cm/mpc/hand per-tick timing CSV
 ├── monitor/
 ├── device/        # device 통신 통계
 ├── sim/           # mujoco 스크린샷

@@ -1,4 +1,4 @@
-// Unit tests for hand_udp_codec.hpp — encode/decode request-response codec.
+// Unit tests for udp_hand_codec.hpp — encode/decode request-response codec.
 //
 // Tier 1: Pure computation, no ROS2 or network dependencies.
 

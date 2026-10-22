@@ -8,7 +8,7 @@
 // `rtc_base/timing/rt_tick_timing_sample.hpp`. This header is a thin wrapper
 // that resolves the canonical `<session>/timing/mpc_timing_log.csv` path
 // and pre-binds the unified RtTickTimingPayload header / row writers (the
-// same schema the CM RT loop and hand_udp EventLoop emit, so analysis
+// same schema the CM RT loop and hand comm loop emit, so analysis
 // scripts can join across threads).
 //
 // CSV schema:

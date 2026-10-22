@@ -14,13 +14,13 @@
 
 | 스레드 | 스케줄러 | 하는 일 |
 |---|---|---|
-| `hand_udp_recv` (CommLoop) | **SCHED_FIFO 65**, `hand_driver` slot | UDP I/O · 센서 처리 · ONNX 추론 · SeqLock store |
+| `hand_comm` (CommLoop) | **SCHED_FIFO 65**, `hand_driver` slot | 링크 I/O · 센서 처리 · ONNX 추론 · SeqLock store |
 | main (executor) | CFS, `hand_driver` slot | publish (SeqLock 을 당겨서 발행), 명령 · calib 구독 |
 | failure detector | CFS nice −5, 상속 | 50 Hz 감시 |
 | `hand_aux_io` | CFS, aux slot (`aux_cpu_slot`) | 타이밍 CSV drain, stats JSON — blocking 파일 쓰기 |
 | DDS | CFS, `hand_driver` slot | launch `pin_dds_threads_to_slot` 이 co-pin (robot launch 전용) |
 
-publish 는 RT tick 이 호출하는 push 가 아니라 executor 가 `loop_rate_hz × 2` 로 SeqLock 을 폴링하는 pull 이다. mailbox 는 latest-wins 라 밀린 구간의 중간 샘플은 덮인다. `hand_udp_recv` 와 detector 는 `cpu_core=-1` 로 프로세스 affinity 를 상속하며, main 과 `hand_aux_io` 는 노드가 스스로 pin 한다.
+publish 는 RT tick 이 호출하는 push 가 아니라 executor 가 `loop_rate_hz × 2` 로 SeqLock 을 폴링하는 pull 이다. mailbox 는 latest-wins 라 밀린 구간의 중간 샘플은 덮인다. `hand_comm` 와 detector 는 `cpu_core=-1` 로 프로세스 affinity 를 상속하며, main 과 `hand_aux_io` 는 노드가 스스로 pin 한다.
 
 > ⚠️ **실기 RT 배포에서는 `use_cpu_affinity:=false` 를 쓰지 말 것.** 이 스위치는 프로세스 내부 pin 2개만 끄고 스케줄링 정책은 그대로 둔다. pin 없는 FIFO 65 CommLoop 은 아무 코어로나 이주할 수 있고, `mpc_main` (FIFO 60) 이 핀된 코어에 올라가면 우선순위가 더 높아 **그 solve 를 선점**한다 (`rt_control` 90 · `rt_callback` 70 은 영향 없음). 개발 노트북 · 컨테이너 · cpuset 없는 CI 처럼 격리가 아예 없는 환경 전용이다.
 
@@ -129,7 +129,7 @@ UDP 부하를 강제로 줄여 보는 테스트용 knob 이다 (기본 `1`). `se
 
 - 첫 사이클은 항상 통신하고, E-Stop 은 skip 과 무관하게 매 사이클 검사한다. 명령은 유실 없이 다음 통신 사이클에 전송된다 (last-wins)
 - 유효 rate: 통신 `loop_rate_hz / comm_decimation`, 센서 `loop_rate_hz / (comm_decimation × sensor_decimation)`. `on_activate` 가 `min_rate_hz` 를 `comm_decimation` 으로 자동 스케일하므로 rate failure 오탐은 없다
-- 감쇠량은 `hand_udp_stats.json` 의 `comm_decimation` · `comm_decimation_skip_count`
+- 감쇠량은 `hand_stats.json` 의 `comm_decimation` · `comm_decimation_skip_count`
 
 ### ONNX F/T 추론
 
@@ -220,7 +220,7 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 
 | 증상 | 원인 | 조치 |
 |---|---|---|
-| `/hand/link_status` 가 `false`, recv timeout | IP · NIC 불일치, 포트 차단 | `target_ip` 확인 (YAML 은 `192.168.0.100`). `hand_udp_stats.json` 의 `recv_timeout` · `recv_error` 확인 |
+| `/hand/link_status` 가 `false`, recv timeout | IP · NIC 불일치, 포트 차단 | `target_ip` 확인 (YAML 은 `192.168.0.100`). `hand_stats.json` 의 `recv_timeout` · `recv_error` 확인 |
 | `sil_mode:=firmware` 인데 timeout 만 반복 | YAML 의 `local_interface` 가 실 NIC 에 소켓을 고정 | 노드가 `firmware` 모드에서 binding 을 해제하고 INFO 로 원래 값을 남긴다. 해당 NIC 이 없는 PC 에서는 `Open()` 이 ENODEV 로 실패한다 |
 | failure detector 가 all-zero / duplicate 경고 | commander 없이 단독 실행 (SIL 모터가 0 에 머묾) | 명령을 보내면 해소된다 |
 | `1b` · `2` 에서 `on_configure` FAILURE | `communication_mode: individual` 과 조합 | `communication_mode:=bulk` |
@@ -228,13 +228,13 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 | F/T 가 항상 0, grasp 이 안 잡힘 | `ft_inferencer.enabled=false` 인데 capability=true | [capability lockstep](#onnx-ft-추론) |
 | `recv_error` 가 증가 | 손 쪽 포트 닫힘 (ICMP port-unreachable → `ECONNREFUSED`) | 펌웨어 · 전원 · 케이블 확인. timeout 과 구분되는 결정적 link-down 신호다 |
 
-### 통계 (`hand_udp_stats.json`)
+### 통계 (`hand_stats.json`)
 
-`<session>/device/hand_udp_stats.json` 에 통신 · 타이밍 통계를 쓴다. 10 s 주기 저장 (SIGKILL 대비), failure 발생 즉시 1회, 정상 teardown 때 저장한다. `comm_stats` 에 cycle · recv ok / timeout / error · mismatch · `stale_drained` · `comm_decimation` 이 있고, `per_request` 는 request kind (`write_echo` · `motor_read` · `joint_read` · `sensor_read` · `bulk_sensor` · `set_mode`) 별 집계다.
+`<session>/device/hand_stats.json` 에 통신 · 타이밍 통계를 쓴다. 10 s 주기 저장 (SIGKILL 대비), failure 발생 즉시 1회, 정상 teardown 때 저장한다. `comm_stats` 에 cycle · recv ok / timeout / error · mismatch · `stale_drained` · `comm_decimation` 이 있고, `per_request` 는 request kind (`write_echo` · `motor_read` · `joint_read` · `sensor_read` · `bulk_sensor` · `set_mode`) 별 집계다.
 
-`last_unexpected_cmd` 에 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처다. `timing_stats` 는 성공한 패킷의 latency 만 집계한다. per-tick 타이밍은 `<session>/timing/hand_udp_timing_log.csv`.
+`last_unexpected_cmd` 에 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처다. `timing_stats` 는 성공한 패킷의 latency 만 집계한다. per-tick 타이밍은 `<session>/timing/hand_timing_log.csv`.
 
-`protocol_version` · `transport` (`udp` \| `canfd`, 설치된 링크 종류 — `loopmodel` 은 기록하지 않음) · `feedforward_size_mismatch` · `feedforward_nonfinite` 는 모든 프로토콜에 있고, `"2"` 는 `canfd` 블록 (tx errno 분류 · error frame · `echo_payload_mismatch` · RESP-set assembler 카운터) 을 더한다. `hand_side` 를 명시하면 두 파일이 `hand_udp_stats_<side>.json` · `hand_udp_timing_log_<side>.csv` 가 된다. 키 집합은 `test/fixtures/hand_udp_stats_keys*.txt` 가 고정한다.
+`protocol_version` · `transport` (`udp` \| `canfd`, 설치된 링크 종류 — `loopmodel` 은 기록하지 않음) · `feedforward_size_mismatch` · `feedforward_nonfinite` 는 모든 프로토콜에 있고, `"2"` 는 `canfd` 블록 (tx errno 분류 · error frame · `echo_payload_mismatch` · RESP-set assembler 카운터) 을 더한다. `hand_side` 를 명시하면 두 파일이 `hand_stats_<side>.json` · `hand_timing_log_<side>.csv` 가 된다. 키 집합은 `test/fixtures/hand_stats_keys*.txt` 가 고정한다.
 
 ### 로깅 (Logging)
 
@@ -244,14 +244,14 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 |---|---|
 | `hand.node` | `UdpHandNode` (lifecycle · 토픽 · link 상태 전이) |
 | `hand.ctrl` | `UdpHandController` (CommLoop · 캘리브레이션 dispatch) |
-| `hand.udp` | `UdpHandTransport` (소켓 open/close · 센서모드 전환) |
+| `hand.link` | `UdpHandTransport` (소켓 open/close · 센서모드 전환) |
 | `hand.sensor` | `UdpHandSensorProcessor` (LPF · drift) |
 | `hand.fail` | `UdpHandFailureDetector` (50 Hz 워치독) |
 | `hand.ft` | `FingertipFTInferencer` (모델 로드 · 캘리브레이션) |
 
 ```bash
 ros2 service call /hand/udp_hand_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
-  "{levels: [{name: 'hand.udp', level: 10}]}"
+  "{levels: [{name: 'hand.link', level: 10}]}"
 export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 ```
 

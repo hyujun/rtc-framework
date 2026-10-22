@@ -255,7 +255,7 @@ ros2 run rtc_tools analyze_vision_lane <prefix>
 
 ### hand_canfd_gate
 
-`udp_hand.launch.py protocol_version:=2` 를 실제 손에 대고 돌린 한 run 의 세션 디렉토리 (`device/hand_udp_stats*.json` · `timing/hand_udp_timing_log*.csv`) 와 `candump -L` 로그로 G-3 의 다섯 항목을 PASS / FAIL / UNDECIDED 로 판정한다 (문턱은 모두 옵션, 기본값이 D55).
+`udp_hand.launch.py protocol_version:=2` 를 실제 손에 대고 돌린 한 run 의 세션 디렉토리 (`device/hand_stats*.json` · `timing/hand_timing_log*.csv`) 와 `candump -L` 로그로 G-3 의 다섯 항목을 PASS / FAIL / UNDECIDED 로 판정한다 (문턱은 모두 옵션, 기본값이 D55).
 
 ```bash
 candump -L -d -t a 'can0,0:0,#FFFFFFFF' > g3.log &          # 노드 기동 전부터 E-Stop 뒤까지

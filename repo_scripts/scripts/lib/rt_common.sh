@@ -1027,7 +1027,7 @@ get_robot_packages() {
 # a /proc affinity mask.
 
 # get_rt_cores() feeds IRQ affinity and GRUB nohz_full/rcu_nocbs. Order is not
-# guaranteed. The hand UDP receive thread lives inside the hand_driver process
+# guaranteed. The hand comm thread lives inside the hand_driver process
 # (cpu_core = -1 sentinel) and is deliberately not represented there.
 #
 # ── CPU shield marker (issue #350) ─────────────────────────────────────────
@@ -1698,10 +1698,10 @@ print_thread_layout() {
   _ptl_row "Core ${rt_cb}" "rt_callback  ($(_ptl_sched rt_callback "$ncpu"); DDS recv co-pin via taskset, CFS)${aux_tail:+${aux_tail} [aux slot]}"
   _ptl_row "$(_ptl_span "$mpc_main" "$mpc_last")" "${mpc_label} (${mpc_sched})"
   if [[ "$arm" == "$hand" ]]; then
-    _ptl_row "Core ${arm}" "arm_driver + hand_driver (shared, degraded; hand_udp_recv FIFO 65)"
+    _ptl_row "Core ${arm}" "arm_driver + hand_driver (shared, degraded; hand_comm FIFO 65)"
   else
     _ptl_row "Core ${arm}" "arm_driver   (CFS, taskset pin)"
-    _ptl_row "Core ${hand}" "hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
+    _ptl_row "Core ${hand}" "hand_driver  (CFS, in-process self-pin; hand_comm FIFO 65)"
   fi
   # Any nrt lane that did NOT fold onto the aux slot gets its own row, grouped
   # by slot so two lanes on one core print once instead of twice. Under v5 every

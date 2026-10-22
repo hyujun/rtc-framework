@@ -66,7 +66,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `/rtc_cm/{group}/joint_states` | CM (그룹별) | 그룹별 건강성 |
 | `/sim/status` | `rtc_mujoco_sim` 1 Hz | sim 건강성 |
 | `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `rtc_mujoco_sim` | 손끝 접촉 힘/토크 (그룹 YAML `contact_wrench.enabled: true` + MJCF contact sensor 필요) |
-| `/p1a/joint_states` 등 | `udp_hand_driver` | hand UDP 건강성 |
+| `/p1a/joint_states` 등 | `udp_hand_driver` | hand link 건강성 |
 | `/shape/estimate` · `/shape/explore` (action) | `shape_estimation` | 형상 추정 결과 · 탐색 진행. 입력은 `<ns>/tof/snapshot` (`<ns>` = active 컨트롤러 이름) |
 
 timing CSV 는 `ros2 run rtc_tools plot_rtc_log <csv> --stats` 로 읽는다.

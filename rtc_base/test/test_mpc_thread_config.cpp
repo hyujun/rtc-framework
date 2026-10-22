@@ -322,7 +322,7 @@ TEST(MpcThreadConfig, LayoutV3ValidatorCatchesArmHandCollision) {
 }
 
 // cpu_core == -1 sentinel must pass ValidateThreadConfig (Phase 5 follow-up).
-// kRtUdpRecvConfig (transceiver default) and kHandUdpRecvConfig (udp_hand
+// kRtUdpRecvConfig (transceiver default) and kHandCommThreadConfig (udp_hand
 // private) both ship with cpu_core = -1; ApplyThreadConfig must accept them
 // so the FIFO 65 priority actually lands on the receive thread instead of
 // being silently dropped by an early-return validation failure.

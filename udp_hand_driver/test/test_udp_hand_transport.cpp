@@ -1,4 +1,4 @@
-// Unit tests for hand_udp_transport.hpp — UdpHandCommStats, transport lifecycle,
+// Unit tests for udp_hand_transport.hpp — UdpHandCommStats, transport lifecycle,
 // and mode validation on request-response via loopback UDP.
 
 #include "udp_hand_driver/udp_hand_comm.hpp"

@@ -7,7 +7,7 @@
 // Lock-free, single-producer timing profiler with histogram-based percentiles.
 //
 // Provides the common core shared by ControllerTimingProfiler and
-// HandTimingProfiler:
+// UdpHandTimingProfiler:
 //   - Running count / sum / sum-of-squares / min / max / last
 //   - Fixed-width histogram with linear-interpolated percentiles (p95, p99)
 //   - Over-budget counter

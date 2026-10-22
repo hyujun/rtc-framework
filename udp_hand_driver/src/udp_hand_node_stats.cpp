@@ -1,11 +1,11 @@
 // UdpHandNode::SaveCommStats — persist comm/timing statistics to
-// <session>/device/hand_udp_stats<suffix>.json (suffix = "_<side>" only when
+// <session>/device/hand_stats<suffix>.json (suffix = "_<side>" only when
 // hand_side was set explicitly, D51). Split out of udp_hand_node_lifecycle.cpp
 // so the ~150-line manual JSON writer does not crowd the lifecycle callbacks.
 // See udp_hand_node.hpp for the declaration and threading contract.
 //
-// Key set: test/fixtures/hand_udp_stats_keys.txt (proto1, individual; a
-// superset gate) and hand_udp_stats_keys_proto2.txt (proto2, bulk; exact) —
+// Key set: test/fixtures/hand_stats_keys.txt (proto1, individual; a
+// superset gate) and hand_stats_keys_proto2.txt (proto2, bulk; exact) —
 // append, never rename, and regenerate the fixture in the same commit.
 
 #include "udp_hand_driver/canfd_hand_comm.hpp"
@@ -47,7 +47,7 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
   std::filesystem::create_directories(output_dir_path, dir_ec);
   const std::string output_dir = output_dir_path.string();
 
-  const std::string path = output_dir + "/hand_udp_stats" + hand_file_suffix_ + ".json";
+  const std::string path = output_dir + "/hand_stats" + hand_file_suffix_ + ".json";
   std::ofstream ofs(path);
   if (!ofs.is_open()) {
     RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(), "Failed to save hand stats to %s",
