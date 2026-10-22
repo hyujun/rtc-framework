@@ -112,7 +112,9 @@ void UdpHandNode::PublishState(const udp_hand_driver::UdpHandState& state,
         // because 1b intentionally leaves ft_inferencer.enabled=false (no
         // barometer input to infer from).
         fs.inference_enable = true;
-        fs.contact_flag = 0.0f;  // no contact classifier on the 1b path yet
+        // D29: proto2's firmware contact flag; 1b never writes sensor_contact,
+        // so it stays 0.0 there (no contact classifier on that path).
+        fs.contact_flag = (state.sensor_contact[static_cast<std::size_t>(f)] != 0) ? 1.0f : 0.0f;
         continue;
       }
 
@@ -169,10 +171,10 @@ void UdpHandNode::PublishState(const udp_hand_driver::UdpHandState& state,
                                                 static_cast<uint32_t>(link_fail_threshold_sensor_));
     if (link_ok != prev_link_ok_) {
       if (link_ok) {
-        RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand UDP link UP");
+        RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand link UP");
       } else {
         RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                    "Hand UDP link DOWN (consecutive_recv_failures=%lu)",
+                    "Hand link DOWN (consecutive_recv_failures=%lu)",
                     static_cast<unsigned long>(controller_->consecutive_recv_failures()));
       }
       prev_link_ok_ = link_ok;

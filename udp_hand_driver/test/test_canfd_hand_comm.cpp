@@ -29,6 +29,7 @@
 #include "udp_hand_driver/canfd_hand_comm.hpp"
 #include "udp_hand_driver/fake_hand_firmware.hpp"
 #include "udp_hand_driver/hand_canfd_packets.hpp"
+#include "udp_hand_driver/protocol/sensor_protocol.hpp"
 #include "udp_hand_driver/protocol/sensor_protocol_canfd.hpp"
 
 #include <gtest/gtest.h>
@@ -43,6 +44,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -281,6 +283,20 @@ TEST(CanFdHandCommTier1, ClosedLinkRtMethodsAreHarmlessAndCountNothing) {
   EXPECT_EQ(comm.node(), kNodeRightHand);
 }
 
+// D50 / NUM-2: the one predicate Open() and the node's configure check share.
+// +inf is the case `kt > 0 && isfinite(1/kt)` alone would let through (1/inf =
+// 0 → every feedforward silently 0 A).
+TEST(CanFdHandCommTier1, IsValidFeedforwardKtRejectsNonFiniteZeroNegativeAndSubnormal) {
+  EXPECT_TRUE(CanFdHandComm::IsValidFeedforwardKt(1.0f));
+  EXPECT_TRUE(CanFdHandComm::IsValidFeedforwardKt(0.05f));
+  EXPECT_TRUE(CanFdHandComm::IsValidFeedforwardKt(1e30f));
+  EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(0.0f));
+  EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(-1.0f));
+  EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(std::nanf("")));
+  EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(std::numeric_limits<float>::infinity()));
+  EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(1e-40f));  // 1/kt overflows
+}
+
 TEST(SensorProtocol2Test, CapabilitiesMatchTheWire) {
   SensorProtocol2 proto;
   EXPECT_EQ(proto.ResponseSize(), sizeof(RespSet));
@@ -291,6 +307,18 @@ TEST(SensorProtocol2Test, CapabilitiesMatchTheWire) {
   EXPECT_FALSE(proto.VerifiesBulkSensorResponseMode());
   EXPECT_EQ(proto.JointIoMode(), packets::JointMode::kMotor);
   EXPECT_STREQ(proto.Version(), "2");
+}
+
+// The node selects the protocol by key; "2" must resolve to SensorProtocol2 and
+// the proto1 keys must still resolve (the factory is shared).
+TEST(SensorProtocol2Test, FactoryBuildsItForKeyTwo) {
+  const auto proto = CreateSensorProtocol("2");
+  ASSERT_NE(proto, nullptr);
+  EXPECT_NE(dynamic_cast<const SensorProtocol2*>(proto.get()), nullptr);
+  EXPECT_STREQ(proto->Version(), "2");
+  EXPECT_NE(CreateSensorProtocol("1a"), nullptr);
+  EXPECT_NE(CreateSensorProtocol("1b"), nullptr);
+  EXPECT_EQ(CreateSensorProtocol("3"), nullptr);
 }
 
 TEST(SensorProtocol2Test, DecodeAppliesSignsMetresClampAndLengthGuard) {
@@ -329,6 +357,10 @@ TEST(SensorProtocol2Test, DecodeAppliesSignsMetresClampAndLengthGuard) {
   EXPECT_FLOAT_EQ(state.sensor_force[2 * kVals + 0], -1.0f);  // clamp: untouched
   EXPECT_TRUE(proto.telemetry().tactile[0].contact);
   EXPECT_FALSE(proto.telemetry().tactile[1].contact);
+  // D29: the contact flag lands in the state field the publish path reads.
+  EXPECT_EQ(state.sensor_contact[0], 1);
+  EXPECT_EQ(state.sensor_contact[1], 0);
+  EXPECT_EQ(state.sensor_contact[2], 0);  // clamped fingertip: untouched (zero-init)
 
   EXPECT_FALSE(proto.DecodeAllSensors(raw.data(), raw.size() - 1, state));
   EXPECT_FALSE(proto.DecodeAllSensors(nullptr, raw.size(), state));

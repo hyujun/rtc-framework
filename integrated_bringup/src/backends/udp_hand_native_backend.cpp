@@ -235,11 +235,12 @@ void UdpHandNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot&
   if (nc <= 0)
     return;
 
-  // The real LEAP hand firmware is position-only: udp_hand_driver ignores
+  // The proto1 (UDP) hand firmware is position-only: udp_hand_driver ignores
   // command_type / feedforward / kp / kd and servos toward values[] as a joint
-  // position target. We still label the mode honestly on the wire, but the
-  // feedforward torque channel is intentionally NOT transmitted here — real
-  // torque/current drive is a separate backend/firmware track (τ→I, mode bits).
+  // position target. The proto2 (CAN FD) driver does accept feedforward (Nm,
+  // same name order as values, D39 / D50 of epic #895), but this backend still
+  // does not fill it — wiring the controller stack's feedforward through here
+  // is the H2 track (D56). The mode is labelled honestly on the wire either way.
   cmd_msg_.command_type = CommandTypeToString(command_type);
 
   // Stamp the JointCommand header from the RT-loop wall-clock capture (integer

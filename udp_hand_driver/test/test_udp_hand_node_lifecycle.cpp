@@ -30,6 +30,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -613,6 +614,282 @@ TEST_F(UdpHandNodeLifecycleTest, StatsJsonKeysAndTimingCsvHeaderMatchFixture) {
   ASSERT_FALSE(expected_header.empty())
       << "fixture missing or empty: " << (fixtures / "hand_udp_timing_log_header.txt");
   EXPECT_EQ(actual_header, expected_header);
+}
+
+// ── protocol_version "2" (CAN FD, epic #895 — F04-2d) ──────────────────────
+// Every configure-time rejection below must end in Unconfigured *before* a
+// controller or publisher exists. No test here reconfigures the same node:
+// on_configure re-declares its parameters, so cleanup → configure throws on a
+// redeclaration (pre-existing, out of this feature's scope).
+
+rclcpp::NodeOptions Proto2Options(std::vector<rclcpp::Parameter> extra) {
+  rclcpp::NodeOptions options;
+  std::vector<rclcpp::Parameter> params = {
+      rclcpp::Parameter("sil_mode", "off"),
+      rclcpp::Parameter("protocol_version", "2"),
+      rclcpp::Parameter("communication_mode", "bulk"),
+      // No such device on any PC (rig PCs do have can0); keeps the interface
+      // check the one that fires only where the test says it does.
+      rclcpp::Parameter("can_interface", "rtcnone0"),
+      // The shipped YAML value. The C++ declare default (10 ms) cannot satisfy
+      // D42 at 500 Hz, so a proto2 node always needs this key set.
+      rclcpp::Parameter("recv_timeout_ms", 0.4),
+  };
+  params.insert(params.end(), extra.begin(), extra.end());
+  options.parameter_overrides(params);
+  return options;
+}
+
+// D11 / D16: the CAN FD link is bulk-only; "2" + individual is a configuration
+// error, not a silent fallback.
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsIndividualCommunicationMode) {
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("communication_mode", "individual"),
+  }));
+  exec_.add_node(node->get_node_base_interface());
+  EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// A missing CAN interface is refused at configure on the real-hardware path
+// (an Open() failure at activate would be too late and too vague) …
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsAMissingCanInterfaceOutsideLoopmodel) {
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({}));
+  exec_.add_node(node->get_node_base_interface());
+  EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// … while loopmodel never opens the socket, so the same missing interface is
+// accepted there and the node reaches Inactive (the dev-box path).
+TEST_F(UdpHandNodeLifecycleTest, Proto2LoopmodelAcceptsAMissingCanInterface) {
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+  }));
+  exec_.add_node(node->get_node_base_interface());
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// An interface name the kernel could never hold is refused in every sil_mode.
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsAnOverlongCanInterfaceName) {
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("can_interface", std::string(64, 'x')),
+  }));
+  exec_.add_node(node->get_node_base_interface());
+  EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// D51: hand_side is parsed on every protocol (it names the forensic files).
+TEST_F(UdpHandNodeLifecycleTest, InvalidHandSideIsRejectedOnEveryProtocol) {
+  for (const char* proto : {"1a", "2"}) {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+        rclcpp::Parameter("sil_mode", "loopmodel"),
+        rclcpp::Parameter("protocol_version", proto),
+        rclcpp::Parameter("communication_mode", "bulk"),
+        rclcpp::Parameter("hand_side", "middle"),
+    });
+    auto node = std::make_shared<UdpHandNode>(options);
+    exec_.add_node(node->get_node_base_interface());
+    EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+        << "protocol " << proto;
+    exec_.remove_node(node->get_node_base_interface());
+  }
+}
+
+// D50 / NUM-2: feedforward_kt must be 10 values, each > 0 with a finite
+// reciprocal — the same predicate CanFdHandComm::Open() applies.
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsAnUnusableFeedforwardKt) {
+  const std::vector<std::vector<double>> bad = {
+      std::vector<double>(9, 1.0),                                  // wrong size
+      {1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},           // zero
+      {1.0, 1.0, 1.0, -2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},          // negative
+      {1.0, 1.0, 1.0, 1e-40, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},         // 1/kt overflows
+      {1.0, 1.0, 1.0, std::nan(""), 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},  // NaN
+  };
+  for (std::size_t i = 0; i < bad.size(); ++i) {
+    auto node = std::make_shared<UdpHandNode>(Proto2Options({
+        rclcpp::Parameter("sil_mode", "loopmodel"),
+        rclcpp::Parameter("feedforward_kt", bad[i]),
+    }));
+    exec_.add_node(node->get_node_base_interface());
+    EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+        << "case " << i;
+    exec_.remove_node(node->get_node_base_interface());
+  }
+}
+
+// D42: both receive stages must fit the comm slot — 2 × recv_timeout_ms <
+// 1000 / loop_rate_hz × comm_decimation. 500 Hz gives a 2 ms slot: 1.0 ms is
+// out (2.0 < 2.0 fails), 0.9 ms is in; decimation 2 widens the slot to 4 ms.
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsARecvTimeoutThatCannotFitTheSlot) {
+  struct Case {
+    double recv_timeout_ms;
+    int comm_decimation;
+    bool accepted;
+  };
+
+  const Case cases[] = {
+      {1.0, 1, false}, {0.9, 1, true}, {0.0, 1, false}, {-0.4, 1, false}, {1.5, 2, true},
+  };
+  for (const auto& c : cases) {
+    auto node = std::make_shared<UdpHandNode>(Proto2Options({
+        rclcpp::Parameter("sil_mode", "loopmodel"),
+        rclcpp::Parameter("loop_rate_hz", 500.0),
+        rclcpp::Parameter("recv_timeout_ms", c.recv_timeout_ms),
+        rclcpp::Parameter("comm_decimation", c.comm_decimation),
+    }));
+    exec_.add_node(node->get_node_base_interface());
+    const auto state = node->configure().id();
+    if (c.accepted) {
+      EXPECT_EQ(state, lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
+          << c.recv_timeout_ms << " ms / decimation " << c.comm_decimation;
+      ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+    } else {
+      EXPECT_EQ(state, lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+          << c.recv_timeout_ms << " ms / decimation " << c.comm_decimation;
+    }
+    exec_.remove_node(node->get_node_base_interface());
+  }
+}
+
+std::string Dump(const std::set<std::string>& keys) {
+  std::string out;
+  for (const auto& k : keys) {
+    out += "  " + k + "\n";
+  }
+  return out;
+}
+
+// Forensic schema of a proto2 run: the stats JSON key set must EQUAL
+// fixtures/hand_udp_stats_keys_proto2.txt (bulk timing keys + comm_stats.canfd.*
+// + the keys every protocol emits) and the timing CSV header must still match
+// the shared fixture. Exact, not superset: the proto1 fixture pins the
+// individual-mode keys, so it cannot double as this gate, and G-2's SIL run
+// compares its JSON against this same file. loopmodel never opens the CAN
+// socket, but the comm is constructed, so the canfd block is present with
+// zero counters — the schema this pins is the one the hardware run writes.
+TEST_F(UdpHandNodeLifecycleTest, Proto2StatsJsonKeysMatchTheProto2FixtureExactly) {
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("loop_rate_hz", 2000.0),
+      rclcpp::Parameter("publish_rate", 2000.0),
+      // D42 at 2 kHz: the slot is 0.5 ms, so the shipped 0.4 ms is refused.
+      rclcpp::Parameter("recv_timeout_ms", 0.2),
+  }));
+  exec_.add_node(node->get_node_base_interface());
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  SpinFor(500ms);  // sensor-cycle-gated blocks (sensor_proc_us) need samples
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+
+  const std::filesystem::path fixtures = UDP_HAND_TEST_FIXTURE_DIR;
+  const auto json_path = session_dir_ / "device" / "hand_udp_stats.json";
+  ASSERT_TRUE(std::filesystem::exists(json_path));
+  const std::string json = ReadFile(json_path);
+  const auto actual_keys = JsonKeyPaths(json);
+  const auto expected_keys = ReadFixtureLines(fixtures / "hand_udp_stats_keys_proto2.txt");
+  ASSERT_FALSE(expected_keys.empty())
+      << "fixture missing or empty: " << (fixtures / "hand_udp_stats_keys_proto2.txt")
+      << "\nactual keys:\n"
+      << Dump(actual_keys);
+  EXPECT_EQ(actual_keys, expected_keys) << "actual keys:\n" << Dump(actual_keys);
+
+  // The tags say what ran; the proto1 superset still holds (nothing dropped).
+  EXPECT_NE(json.find("\"protocol_version\": \"2\""), std::string::npos);
+  EXPECT_NE(json.find("\"transport\": \"canfd\""), std::string::npos);
+  for (const auto& k : ReadFixtureLines(fixtures / "hand_udp_stats_keys.txt")) {
+    if (k.rfind("timing_stats.read_", 0) == 0) {
+      continue;  // individual-mode timing keys — bulk writes its own set
+    }
+    EXPECT_EQ(actual_keys.count(k), 1u) << "proto1 key dropped on proto2: " << k;
+  }
+
+  const auto csv_path = session_dir_ / "timing" / "hand_udp_timing_log.csv";
+  ASSERT_TRUE(std::filesystem::exists(csv_path));
+  EXPECT_EQ(FirstLine(ReadFile(csv_path)),
+            FirstLine(ReadFile(fixtures / "hand_udp_timing_log_header.txt")));
+}
+
+// D39 through the node: the command callback's feedforward branches, observed
+// through the two counters the stats JSON carries. Four messages in order —
+// no feedforward (silent), a matching size (accepted), a wrong size (zeroed +
+// counted), a matching size with a NaN (that entry zeroed + counted). The
+// loopmodel fake ignores the feedforward value itself, so what this pins is
+// branch selection and the per-message accounting, not the wire payload (the
+// controller seam test covers that the staged ff reaches the comm).
+TEST_F(UdpHandNodeLifecycleTest, JointCommandFeedforwardBranchesAreCounted) {
+  auto node = std::make_shared<UdpHandNode>(LoopmodelOptions());
+  auto probe = std::make_shared<rclcpp::Node>("hand_feedforward_probe");
+  // The node's command subscription is best_effort depth 1.
+  auto cmd_pub = probe->create_publisher<rtc_msgs::msg::JointCommand>("/hand/joint_command",
+                                                                      rclcpp::QoS(1).best_effort());
+
+  exec_.add_node(node->get_node_base_interface());
+  exec_.add_node(probe);
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  ASSERT_TRUE(SpinUntil([&] { return cmd_pub->get_subscription_count() > 0; }, 10s));
+
+  rtc_msgs::msg::JointCommand msg;
+  msg.joint_names = udp_hand_driver::kDefaultHandMotorNames;
+  msg.values.assign(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 0.1);
+  const auto send = [&](std::vector<double> ff) {
+    msg.feedforward = std::move(ff);
+    cmd_pub->publish(msg);
+    SpinFor(150ms);  // best_effort: give DDS time to deliver before the next one
+  };
+  send({});  // absent → silent
+  send(std::vector<double>(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 0.5));
+  send({1.0, 2.0, 3.0});  // size mismatch
+  std::vector<double> with_nan(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 0.5);
+  with_nan[4] = std::nan("");
+  send(with_nan);  // non-finite entry
+
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(probe);
+  exec_.remove_node(node->get_node_base_interface());
+
+  const std::string json = ReadFile(session_dir_ / "device" / "hand_udp_stats.json");
+  EXPECT_NE(json.find("\"feedforward_size_mismatch\": 1,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"feedforward_nonfinite\": 1,"), std::string::npos) << json;
+}
+
+// D51: an explicit hand_side suffixes both forensic artifacts; the default
+// names above stay as they were, so one-hand deployments see no rename.
+TEST_F(UdpHandNodeLifecycleTest, ExplicitHandSideSuffixesTheForensicFiles) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("hand_side", "left"),
+      rclcpp::Parameter("loop_rate_hz", 2000.0),
+  });
+  auto node = std::make_shared<UdpHandNode>(options);
+  exec_.add_node(node->get_node_base_interface());
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  SpinFor(200ms);
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "device" / "hand_udp_stats_left.json"));
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "timing" / "hand_udp_timing_log_left.csv"));
+  // The suffixed run is a proto1 UDP run: tagged as such.
+  const std::string json = ReadFile(session_dir_ / "device" / "hand_udp_stats_left.json");
+  EXPECT_NE(json.find("\"protocol_version\": \"1a\""), std::string::npos);
+  EXPECT_NE(json.find("\"transport\": \"udp\""), std::string::npos);
+  EXPECT_EQ(json.find("\"canfd\""), std::string::npos);
 }
 
 }  // namespace

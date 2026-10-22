@@ -1195,7 +1195,31 @@ TEST(HandCommSeam, Write_GatedOnFirstState_ForwardsCommandWithZeroFeedforward) {
 
   EXPECT_EQ(comm.write_echo_calls, 1);  // per-command gate: one write per staged command
   EXPECT_EQ(comm.last_echo_pos, cmd);
-  EXPECT_EQ(comm.last_echo_ff, HandMotorArray{});  // zero until F04-2d wires feedforward
+  EXPECT_EQ(comm.last_echo_ff, HandMotorArray{});  // the 1-arg overload stages a zero feedforward
+  EXPECT_EQ(comm.fire_and_forget_calls, 0);
+}
+
+// D39: the 2-arg overload stages position and feedforward as ONE payload, so
+// the write that latches the command hands the comm both of that same command.
+TEST(HandCommSeam, Write_ForwardsTheFeedforwardStagedWithTheCommand) {
+  auto rig = MakeScriptedRig(HandCommunicationMode::kBulk, /*num_fingertips=*/0);
+  auto& comm = *rig.comm;
+
+  ASSERT_TRUE(rig.ctrl->Start());
+  ASSERT_TRUE(PollUntil([&] { return rig.ctrl->HasStateBeenRead(); }, 2s));
+  HandMotorArray cmd{};
+  HandMotorArray ff{};
+  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    cmd[i] = 0.25f * static_cast<float>(i);
+    ff[i] = -0.5f + 0.1f * static_cast<float>(i);
+  }
+  rig.ctrl->SendCommandAndRequestStates(cmd, ff);
+  ASSERT_TRUE(PollUntil([&] { return comm.write_echo_calls >= 1; }, 2s));
+  rig.ctrl->Stop();
+
+  EXPECT_EQ(comm.write_echo_calls, 1);
+  EXPECT_EQ(comm.last_echo_pos, cmd);
+  EXPECT_EQ(comm.last_echo_ff, ff);
   EXPECT_EQ(comm.fire_and_forget_calls, 0);
 }
 

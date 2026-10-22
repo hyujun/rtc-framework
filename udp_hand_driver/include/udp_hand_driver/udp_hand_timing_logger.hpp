@@ -26,6 +26,8 @@
 #include "rtc_base/timing/thread_timing_csv_logger.hpp"
 
 #include <filesystem>
+#include <string>
+#include <string_view>
 #include <system_error>
 
 namespace udp_hand_driver {
@@ -41,14 +43,16 @@ class UdpHandTimingLogger {
   /// Resolve the CSV path under `<session>/timing/`, create the parent
   /// directory, and open the file. Schema header is written on first
   /// creation; existing files are appended without a duplicate header.
-  /// Returns false on filesystem errors.
-  [[nodiscard]] bool Open() noexcept {
+  /// `suffix` goes between the stem and `.csv` (`hand_udp_timing_log_left.csv`
+  /// for an explicit hand_side, D51); empty keeps the historical name, which
+  /// the analysis scripts match by prefix. Returns false on filesystem errors.
+  [[nodiscard]] bool Open(std::string_view suffix = {}) noexcept {
     try {
       const auto session = rtc::ResolveSessionDir();
       const auto timing_dir = rtc::TimingDir(session);
       std::error_code ec;
       std::filesystem::create_directories(timing_dir, ec);
-      const auto path = timing_dir / "hand_udp_timing_log.csv";
+      const auto path = timing_dir / ("hand_udp_timing_log" + std::string(suffix) + ".csv");
       return inner_.Open(path, &rtc::WriteRtTickTimingHeader, &rtc::WriteRtTickTimingRow);
     } catch (...) {
       return false;

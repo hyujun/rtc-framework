@@ -91,11 +91,11 @@ class SensorProtocol {
     return VerifiesResponseMode();
   }
 
-  /// Version tag ("1a"/"1b") for diagnostics/logging.
+  /// Version tag ("1a" / "1b" / "2") for diagnostics/logging.
   [[nodiscard]] virtual const char* Version() const noexcept = 0;
 };
 
-/// Construct the sensor protocol for `version` ("1a" or "1b"). Returns nullptr
+/// Construct the sensor protocol for `version` ("1a", "1b" or "2"). Returns nullptr
 /// for an unsupported version — callers (on_configure, off the RT path) must
 /// treat nullptr as a configuration failure rather than throwing.
 [[nodiscard]] std::unique_ptr<SensorProtocol> CreateSensorProtocol(const std::string& version);

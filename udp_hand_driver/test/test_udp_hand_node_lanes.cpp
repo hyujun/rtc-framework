@@ -174,6 +174,44 @@ TEST(UdpHandEndpointDerivation, FirmwareSilOnAnUnboundEndpointOnlyMovesTargetIp)
   EXPECT_TRUE(endpoint.local_interface.empty());
 }
 
+// protocol_version 2 (CAN FD, epic #895): firmware SIL moves the device onto
+// vcan0 and leaves the UDP triple alone — those keys are idle on that transport,
+// and rewriting them would make the "UDP keys ignored" notice lie about what
+// was configured.
+TEST(UdpHandEndpointDerivation, FirmwareSilOnCanFdForcesVcanAndKeepsTheUdpTriple) {
+  const auto endpoint = udp_hand_driver::DeriveHandEndpoint(
+      "firmware", "2", {"192.168.0.100", "192.168.0.46", "enp86s0", "can0"});
+
+  EXPECT_EQ(endpoint.can_interface, udp_hand_driver::kFirmwareSilCanInterface);
+  EXPECT_EQ(endpoint.can_interface, "vcan0");
+  EXPECT_EQ(endpoint.target_ip, "192.168.0.100");
+  EXPECT_EQ(endpoint.local_ip, "192.168.0.46");
+  EXPECT_EQ(endpoint.local_interface, "enp86s0");
+}
+
+// Real hardware and loopmodel keep the configured CAN interface on protocol 2.
+TEST(UdpHandEndpointDerivation, OffAndLoopmodelKeepTheConfiguredCanInterface) {
+  for (const char* mode : {"off", "loopmodel"}) {
+    const auto endpoint =
+        udp_hand_driver::DeriveHandEndpoint(mode, "2", {"192.168.0.100", "", "", "can1"});
+    EXPECT_EQ(endpoint.can_interface, "can1") << mode;
+    EXPECT_EQ(endpoint.target_ip, "192.168.0.100") << mode;
+  }
+}
+
+// On 1a / 1b the protocol-aware form is exactly the 2-arg rule: UDP loopback,
+// local binding dropped, can_interface untouched.
+TEST(UdpHandEndpointDerivation, ProtocolAwareFormMatchesTheUdpRuleOnProtocol1) {
+  for (const char* proto : {"1a", "1b"}) {
+    const auto endpoint = udp_hand_driver::DeriveHandEndpoint(
+        "firmware", proto, {"192.168.0.100", "192.168.0.46", "enp86s0", "can0"});
+    EXPECT_EQ(endpoint.target_ip, "127.0.0.1") << proto;
+    EXPECT_TRUE(endpoint.local_ip.empty()) << proto;
+    EXPECT_TRUE(endpoint.local_interface.empty()) << proto;
+    EXPECT_EQ(endpoint.can_interface, "can0") << proto;
+  }
+}
+
 TEST(UdpHandPinPolicy, ResolvePinSlotHonoursTheAffinitySwitch) {
   EXPECT_EQ(udp_hand_driver::ResolvePinSlot(7, true), 7);
   EXPECT_EQ(udp_hand_driver::ResolvePinSlot(0, true), 0);

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(udp_hand_driver VERSION 5.20.0 LANGUAGES CXX)
+project(udp_hand_driver VERSION 5.21.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -173,6 +173,8 @@ if(BUILD_TESTING)
   # rtc_communication's test-only header, shared instead of forked — P5).
   ament_add_gtest(test_canfd_hand_comm test/test_canfd_hand_comm.cpp)
   target_include_directories(test_canfd_hand_comm PRIVATE include)
+  # udp_hand_protocol: the CreateSensorProtocol("2") factory case.
+  target_link_libraries(test_canfd_hand_comm udp_hand_protocol)
   ament_target_dependencies(test_canfd_hand_comm rtc_base rtc_communication rclcpp)
   rtc_communication_add_test_includes(test_canfd_hand_comm)
 
@@ -209,8 +211,9 @@ if(BUILD_TESTING)
     ENV ROS_DOMAIN_ID=54)
   target_include_directories(test_udp_hand_node_lanes PRIVATE include)
   target_link_libraries(test_udp_hand_node_lanes udp_hand_protocol)
+  # rtc_communication: the lifecycle TU includes canfd_hand_comm.hpp (proto2).
   ament_target_dependencies(test_udp_hand_node_lanes
-    rtc_base rtc_inference rtc_msgs rclcpp rclcpp_lifecycle lifecycle_msgs
+    rtc_base rtc_communication rtc_inference rtc_msgs rclcpp rclcpp_lifecycle lifecycle_msgs
     sensor_msgs std_msgs ament_index_cpp)
 
   # Lifecycle behaviour in sil_mode=loopmodel: configure/activate bring up the
@@ -236,7 +239,7 @@ if(BUILD_TESTING)
     PRIVATE UDP_HAND_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures")
   target_link_libraries(test_udp_hand_node_lifecycle udp_hand_protocol)
   ament_target_dependencies(test_udp_hand_node_lifecycle
-    rtc_base rtc_inference rtc_msgs rclcpp rclcpp_lifecycle lifecycle_msgs
+    rtc_base rtc_communication rtc_inference rtc_msgs rclcpp rclcpp_lifecycle lifecycle_msgs
     sensor_msgs std_msgs ament_index_cpp)
 
   # ── Tier 3: FT inferencer stub tests ──────────────────────────────────────

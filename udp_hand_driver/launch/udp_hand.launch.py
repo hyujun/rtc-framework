@@ -12,6 +12,10 @@
 #     firmware  — device-side fake_hand_firmware 를 loopback 으로. 노드가 target_ip 를
 #                 127.0.0.1 로 강제하고, 이 launch 가 firmware 프로세스를 조건부로 띄운다
 #                 (프로세스 spawn 은 launch 전용 — 노드는 peer 프로세스를 못 띄운다).
+#                 protocol_version "2" (CAN FD, epic #895) 에서는 loopback 이 UDP 가
+#                 아니라 vcan0 다: 노드가 can_interface 를 vcan0 로 강제하고, 이 launch
+#                 는 fake 를 같은 vcan0 · 같은 hand_side 로 띄운다. vcan0 이 없거나
+#                 FD(MTU 72) 가 아니면 여기서 거부한다 (repo_scripts/scripts/setup_vcan.sh).
 #
 # `sil_mode:=firmware` 처럼 CLI 로 준 값이 yaml 의 sil_mode 를 이긴다.
 #
@@ -55,6 +59,11 @@ VALID_SIL_MODES = ("off", "loopmodel", "firmware")
 # yaml 미기재 시 firmware peer 구성에 쓰는 fallback (노드 C++ declare 기본과 일치).
 _FW_PORT_DEFAULT = 55151
 _FW_PROTO_DEFAULT = "1a"
+_FW_HAND_SIDE_DEFAULT = "right"
+# protocol_version "2" 의 firmware SIL 이 쓰는 vcan 장치 — 노드 쪽 상수
+# udp_hand_driver::kFirmwareSilCanInterface (udp_hand_node.hpp) 와 같은 값.
+_FW_CAN_INTERFACE = "vcan0"
+_CANFD_MIN_MTU = 72
 
 
 # launch arg → (yaml key, python caster). 빈 문자열이면 override 하지 않음(yaml 우선).
@@ -81,8 +90,32 @@ _OVERRIDE_ARGS = [
     ("communication_mode", str),
     ("recv_timeout_ms", float),
     ("protocol_version", str),
+    ("can_interface", str),
+    ("hand_side", str),
     ("use_cpu_affinity", _as_bool),
 ]
+
+
+def _check_fd_vcan(interface):
+    """protocol_version "2" firmware SIL 의 전제: `interface` 가 있고 CAN FD (MTU ≥ 72) 다.
+
+    디렉토리 존재만 보면 classic (MTU 16) vcan 이 통과해 모든 configure 검사를 지난 뒤
+    프레임마다 실패하므로 MTU 를 본다.
+    """
+    mtu_path = f"/sys/class/net/{interface}/mtu"
+    try:
+        with open(mtu_path) as f:
+            mtu = int(f.read().strip())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"sil_mode=firmware with protocol_version 2 needs CAN FD interface '{interface}' "
+            f"({mtu_path} unreadable: {exc}); run repo_scripts/scripts/setup_vcan.sh"
+        ) from exc
+    if mtu < _CANFD_MIN_MTU:
+        raise RuntimeError(
+            f"'{interface}' is not CAN FD (mtu {mtu} < {_CANFD_MIN_MTU}); "
+            "run repo_scripts/scripts/setup_vcan.sh"
+        )
 
 
 def _load_ros_params(yaml_path):
@@ -142,16 +175,29 @@ def _launch_setup(context):
     actions = []
 
     # ── Device-side firmware simulator (sil_mode=firmware 일 때만) ──────────
-    # target_port 를 bind 하고 선택된 protocol_version 을 echo → 노드와 wire 일치.
+    # 1a / 1b: target_port 를 bind 하고 선택된 protocol_version 을 echo → 노드와 wire
+    # 일치. "2": vcan0 에 노드와 같은 hand_side 로 붙는다 (port 는 쓰이지 않는다).
     if eff_sil == "firmware":
-        fw_port = int(
-            overrides.get("target_port", yaml_params.get("target_port", _FW_PORT_DEFAULT))
-        )
         fw_proto = str(
             overrides.get(
                 "protocol_version", yaml_params.get("protocol_version", _FW_PROTO_DEFAULT)
             )
         )
+        if fw_proto == "2":
+            _check_fd_vcan(_FW_CAN_INTERFACE)
+            fw_side = str(
+                overrides.get("hand_side", yaml_params.get("hand_side", _FW_HAND_SIDE_DEFAULT))
+            )
+            fw_params = {
+                "protocol_version": "2",
+                "can_interface": _FW_CAN_INTERFACE,
+                "hand_side": fw_side,
+            }
+        else:
+            fw_port = int(
+                overrides.get("target_port", yaml_params.get("target_port", _FW_PORT_DEFAULT))
+            )
+            fw_params = {"port": fw_port, "protocol_version": fw_proto}
         actions.append(
             Node(
                 package="udp_hand_driver",
@@ -159,7 +205,7 @@ def _launch_setup(context):
                 name="fake_hand_firmware",
                 namespace="",
                 output="screen",
-                parameters=[firmware_config, {"port": fw_port, "protocol_version": fw_proto}],
+                parameters=[firmware_config, fw_params],
                 emulate_tty=True,
             )
         )
@@ -250,7 +296,27 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "protocol_version",
             default_value="",
-            description="yaml protocol_version override (빈 값=yaml). firmware peer 에도 전파.",
+            description=(
+                "yaml protocol_version override (빈 값=yaml): 1a | 1b (UDP) | 2 (CAN FD). "
+                "firmware peer 에도 전파."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "can_interface",
+            default_value="",
+            description=(
+                "yaml can_interface override (빈 값=yaml). protocol_version 2 의 SocketCAN "
+                "장치; sil_mode=firmware 는 노드가 vcan0 로 강제한다."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "hand_side",
+            default_value="",
+            description=(
+                "yaml hand_side override (빈 값=yaml, 노드 기본 right): right | left. CAN FD "
+                "노드 id 를 정하고, 명시하면 stats JSON · timing CSV 이름에 _<side> 가 붙는다. "
+                "firmware peer 에도 전파."
+            ),
         ),
         DeclareLaunchArgument(
             "use_cpu_affinity",

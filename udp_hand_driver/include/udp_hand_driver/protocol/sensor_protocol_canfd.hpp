@@ -10,9 +10,9 @@
 // Tactile values are decoded through hand_canfd_packets.hpp (signs and metres
 // included) into the 1b force slots — sensor_force[f*6 + {fx, fy, fz, px, py,
 // temp}] — so the existing 1b publish path carries fx fy fz unchanged; the
-// contact flag has no state field yet (D29) and is wired in 2d, as is the
-// CreateSensorProtocol("2") factory key. Header-only: the controller's
-// SensorProtocol seam is the only consumer and the node links it in 2d.
+// contact flag goes to UdpHandState::sensor_contact[f] (D29: the one field
+// proto2 adds to the sensor message). CreateSensorProtocol("2") builds it.
+// Header-only: the controller's SensorProtocol seam is the only consumer.
 //
 // RT: DecodeAllSensors is noexcept and allocation-free (memcpy + arithmetic).
 
@@ -65,6 +65,8 @@ class SensorProtocol2 final : public SensorProtocol {
     static_assert(canfd::kWireFingertipCount * kValuesPerFingertip <=
                       static_cast<std::size_t>(kMaxSensorForceValues),
                   "sensor_force holds every wire fingertip");
+    static_assert(canfd::kWireFingertipCount <= static_cast<std::size_t>(kMaxFingertips),
+                  "sensor_contact holds every wire fingertip");
     for (std::size_t f = 0; f < n; ++f) {
       const canfd::Tactile& t = telemetry_.tactile[f];
       float* slot = &state.sensor_force[f * kValuesPerFingertip];
@@ -74,6 +76,7 @@ class SensorProtocol2 final : public SensorProtocol {
       slot[3] = t.px_m;
       slot[4] = t.py_m;
       slot[5] = t.temp_c;
+      state.sensor_contact[f] = t.contact ? 1 : 0;
     }
     return true;
   }
@@ -83,7 +86,7 @@ class SensorProtocol2 final : public SensorProtocol {
   [[nodiscard]] const char* Version() const noexcept override { return "2"; }
 
   /// The last decoded set in host units (pos / vel / cur / tactile incl.
-  /// contact) — for the 2d contact wiring and for tests.
+  /// contact) — for tests and diagnostics.
   [[nodiscard]] const canfd::Telemetry& telemetry() const noexcept { return telemetry_; }
 
  private:

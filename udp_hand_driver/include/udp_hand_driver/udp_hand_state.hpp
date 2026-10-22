@@ -23,6 +23,9 @@ struct UdpHandState {
   std::array<int32_t, udp_hand_driver::kMaxHandSensors> sensor_data_raw{};
   // Sensor (1b: per-fingertip float32 [fx,fy,fz,Lx,Ly,Temp]; zero on 1a)
   std::array<float, udp_hand_driver::kMaxSensorForceValues> sensor_force{};
+  // Sensor (2: per-fingertip firmware contact flag, D29; 0 = no contact. Only
+  // SensorProtocol2 writes it — 1a / 1b leave every slot zero)
+  std::array<uint8_t, udp_hand_driver::kMaxFingertips> sensor_contact{};
   int num_fingertips{udp_hand_driver::kDefaultNumFingertips};
   bool valid{false};                  ///< any read succeeded this cycle
   bool joint_valid{false};            ///< kJoint read succeeded this cycle

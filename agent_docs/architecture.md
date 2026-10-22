@@ -113,7 +113,7 @@ CM RT loop · MPC thread · hand UDP receiver · rt_callback 이 **같은** gene
     +--SPSC--> [nrt_logging_executor (CFS)] --> CSV (timing + per-device state + sensor)
     +--E-STOP latch--> [nrt_logging (CFS)] --> /system/estop_status + RCLCPP log (deferred, RT-10)
 
-[Hand HW] <--UDP--> [udp_hand_driver] <--SeqLock--> [ControlLoop]
+[Hand HW] <--UDP | CAN FD--> [udp_hand_driver] <--SeqLock--> [ControlLoop]
 [rtc_digital_twin]: merge /rtc_cm/{group}/joint_states --> RViz2
 [BT coordinator]: subscribes grasp_state + /rtc_cm/<group>/joint_states + `<config_key>/transforms` (self-feed), publishes goals
 ```

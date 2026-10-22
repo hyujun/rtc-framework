@@ -1,5 +1,6 @@
 #include "udp_hand_driver/protocol/sensor_protocol.hpp"
 
+#include "udp_hand_driver/protocol/sensor_protocol_canfd.hpp"
 #include "udp_hand_driver/udp_hand_codec.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_packets.hpp"
@@ -128,6 +129,8 @@ std::unique_ptr<SensorProtocol> CreateSensorProtocol(const std::string& version)
     return std::make_unique<SensorProtocol1a>();
   if (version == "1b")
     return std::make_unique<SensorProtocol1b>();
+  if (version == "2")  // CAN FD hand (epic #895); header-only SensorProtocol2
+    return std::make_unique<SensorProtocol2>();
   return nullptr;
 }
 
