@@ -210,11 +210,37 @@ def test_tick_gap_fails_unless_decimated(tmp_path):
 
 def test_json_link_flags(tmp_path):
     assert run_judge(tmp_path, comm=comm_stats(link_ok=False))["b.json_link_ok"].verdict == FAIL
-    assert (
-        run_judge(tmp_path, comm=comm_stats(failure_detected=True))["b.json_link_ok"].verdict
-        == FAIL
-    )
     assert run_judge(tmp_path)["b.json_link_ok"].verdict == PASS
+    latched = comm_stats(failure_detected=True)
+    # No node log: the latch cannot be attributed, so it counts against the link.
+    assert run_judge(tmp_path, comm=latched)["b.json_link_ok"].verdict == FAIL
+    # A sensor heuristic (every sensorless hand latches it) is reported, not failed.
+    c = run_judge(tmp_path, comm=latched, failure_reasons=["hand_sensor_all_zero"])[
+        "b.json_link_ok"
+    ]
+    assert c.verdict == PASS
+    assert "sensor heuristic" in c.note
+    # Anything else the detector latched on is a link failure.
+    c = run_judge(tmp_path, comm=latched, failure_reasons=["hand_link_down"])["b.json_link_ok"]
+    assert c.verdict == FAIL
+    c = run_judge(
+        tmp_path, comm=latched, failure_reasons=["hand_sensor_all_zero", "hand_rate_low"]
+    )["b.json_link_ok"]
+    assert c.verdict == FAIL
+
+
+def test_failure_reasons_are_parsed_from_the_node_log(tmp_path):
+    from rtc_tools.analysis.hand_canfd_gate import failure_reasons
+
+    log = tmp_path / "node.log"
+    log.write_text(
+        "[udp_hand_node-1] [INFO] [1.0] [hand.node]: UdpHandNode activated\n"
+        "[udp_hand_node-1] [ERROR] [1.1] [hand.node]: Hand failure detected: "
+        "hand_sensor_all_zero (count=5)\n"
+        "[udp_hand_node-1] [WARN] [1.2] [hand.fail]: Sensor duplicate detected (count=6)\n"
+    )
+    assert failure_reasons(log) == ["hand_sensor_all_zero"]
+    assert failure_reasons(None) is None
 
 
 def test_log_and_topic_witnesses(tmp_path):

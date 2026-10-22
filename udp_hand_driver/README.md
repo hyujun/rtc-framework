@@ -37,6 +37,8 @@ ros2 topic echo /hand/joint_states --once
 
 # 실제 손 (IP 는 필요한 것만 override)
 ros2 launch udp_hand_driver udp_hand.launch.py target_ip:=192.168.0.100
+# 실제 손, CAN FD (실측 확정값 — can0 은 repo_scripts/scripts/setup_can_interface.sh)
+ros2 launch udp_hand_driver udp_hand.launch.py protocol_version:=2 hand_side:=right recv_timeout_ms:=0.9
 ros2 topic echo /hand/link_status --once        # data: true 면 링크 정상
 ```
 
@@ -55,7 +57,7 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | `target_port` | `55151` | 손 컨트롤러 포트 |
 | `local_ip` / `local_interface` | `""` / `""` | 제어 PC source address (bind) / egress NIC (`SO_BINDTODEVICE`) |
 | `communication_mode` | `bulk` | `bulk` \| `individual` |
-| `recv_timeout_ms` | `0.4` | 수신 타임아웃 [ms] (UDP: ppoll · CAN FD: stage 별 deadline) |
+| `recv_timeout_ms` | `0.4` | 수신 타임아웃 [ms] (UDP: ppoll · CAN FD: stage 별 deadline). CAN FD 실기는 `0.9` (실측: 왕복 max 0.76 ms, 타임아웃 0.016 %; 0.4 는 매 사이클 타임아웃) |
 | `publish_rate` | `100.0` | `link_status` decimation 기준 [Hz]. `loop_rate_hz` 는 launch 인자가 아니다 |
 | `protocol_version` | `1a` | `1a` \| `1b` \| `2`. 노드와 `fake_hand_firmware` 양쪽에 전파 |
 | `can_interface` | `can0` | `2` 의 SocketCAN 장치 (`firmware` 는 `vcan0` 로 강제) |
