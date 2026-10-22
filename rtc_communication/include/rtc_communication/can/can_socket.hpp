@@ -14,6 +14,7 @@
 #include "rtc_communication/socket_options.hpp"
 
 #include <linux/can.h>
+#include <linux/can/error.h>
 #include <linux/can/raw.h>
 #include <net/if.h>
 #include <poll.h>
@@ -98,6 +99,17 @@ class CanSocket {
     filter.can_id = can_id;
     filter.can_mask = can_mask;
     return setsockopt(fd_, SOL_CAN_RAW, CAN_RAW_FILTER, &filter, sizeof(filter)) == 0;
+  }
+
+  // Subscribes to CAN error message frames (CAN_ERR_FLAG set, can_id class
+  // bits per linux/can/error.h) whose class intersects `mask`. The kernel
+  // default is 0: error frames are never delivered — they are routed through
+  // a separate receiver list that CAN_RAW_FILTER does not reach — so a
+  // protocol that counts bus-off / controller errors must opt in here.
+  [[nodiscard]] bool SetErrorFilter(can_err_mask_t mask) noexcept {
+    if (fd_ < 0)
+      return false;
+    return setsockopt(fd_, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &mask, sizeof(mask)) == 0;
   }
 
   // Controls local echo of sent frames to other sockets (kernel default: on).
