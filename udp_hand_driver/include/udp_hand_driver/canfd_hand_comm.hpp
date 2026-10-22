@@ -484,7 +484,6 @@ class CanFdHandComm final : public HandComm {
             ++stats_.PerKind(RequestKind::kBulkSensor).ok;
           return true;
         case canfd::FeedResult::kStored:
-        case canfd::FeedResult::kRestarted:
         case canfd::FeedResult::kDuplicate:
           break;  // the assembler's own counters record these
         case canfd::FeedResult::kOutsideSet:

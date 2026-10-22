@@ -443,7 +443,6 @@ inline void DecodeTelemetry(const RespSet& set, Telemetry& out) noexcept {
 enum class FeedResult : uint8_t {
   kStored,      ///< a frame of this node's set, stored; set still incomplete
   kComplete,    ///< this frame completed the set — set() is now defined
-  kRestarted,   ///< idx 0 arrived on top of a pending set: that set was dropped, a new one begun
   kDuplicate,   ///< idx already held — replaces that copy before completion, dropped after
   kOutsideSet,  ///< not a RESP from this node (error frame, echo, other hand, CMD, REQ) — dropped
   kBadIndex,    ///< RESP from this node with idx >= kNumRespFrames — dropped
@@ -457,8 +456,6 @@ struct AssemblerStats {
   /// A partial set was dropped by Reset / Begin (the deadline passed: D43
   /// cycle failure).
   uint64_t sets_abandoned{0};
-  /// idx 0 arrived while a set (partial or complete) was pending.
-  uint64_t restarted{0};
   /// An idx already in the set: replaced before completion, dropped after.
   uint64_t duplicate{0};
   uint64_t outside_set{0};
@@ -488,8 +485,7 @@ class RespSetAssembler {
 
   /// Start a new set with its deadline; a pending partial set counts as abandoned.
   void Begin(Clock::time_point deadline) noexcept {
-    AbandonIfPartial();
-    mask_ = 0;
+    Reset();
     deadline_ = deadline;
   }
 
