@@ -20,7 +20,7 @@
 #   pub: motor_states    JointState (motor pos:10 + vel:10 + effort=cur:10)
 #   pub: sensor_states   HandSensorState (FingertipSensor[] per fingertip)
 #   pub: sensor_states/monitor  HandSensorState (RELIABLE QoS, 비-RT용)
-#   pub: link_status     Bool (UDP 링크 상태)
+#   pub: link_status     Bool (링크 상태 — UDP 또는 CAN FD)
 #   sub: joint_command   JointCommand (values[10])
 
 /**:
@@ -50,6 +50,21 @@
     local_ip: ""                      # 제어 PC source IP ("" = 커널 선택)
     local_interface: ""               # egress NIC 이름 ("" = 라우팅 테이블에 위임)
     recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms), sub-ms 지원: 0.4 -> 400us
+                                      # CAN FD(protocol_version "2") 에서는 stage 별 deadline
+                                      # (echo · RESP set, D42): 2 × 값 < 1000/loop_rate_hz ×
+                                      # comm_decimation 이어야 configure 를 통과한다.
+
+    # -- CAN FD 링크 (protocol_version "2" 전용 — 1a / 1b 에서는 무시) --
+    # can_interface : SocketCAN 장치. sil_mode=firmware 는 vcan0 로 강제한다.
+    # hand_side     : "right" | "left" → 노드 id (D51). 모든 프로토콜에서 선언되며,
+    #                 YAML/launch 로 *명시* 하면 hand_udp_stats.json · hand_udp_timing_log.csv
+    #                 이름에 `_<side>` 가 붙는다 (아래처럼 주석이면 기본 right, 접미사 없음).
+    # feedforward_kt: 모터별 토크 상수 [Nm/A], 펌웨어 모터 순서 10개 (D50).
+    #                 JointCommand.feedforward [Nm] / kt → wire [A]. 1.0 = pass-through.
+    #                 각 값은 > 0 이고 역수가 유한해야 한다.
+    can_interface: "can0"
+    # hand_side: "right"
+    feedforward_kt: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
     # -- 통신 모드 --
     communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17
@@ -76,6 +91,9 @@
     # "1b": 핑거당 float32 힘벡터 [fx,fy,fz,Lx,Ly,Temp] (99B bulk 응답).
     #       force 직접 발행(후처리 없음), motor-space read 스킵 → motor_states 미발행.
     #       force layout 은 "bulk" 모드 전용 (individual 모드와 조합 시 configure 실패).
+    # "2":  CAN FD (hand_canfd_packets.hpp). UDP 키 대신 위 CAN FD 블록을 쓰고,
+    #       1b 와 같은 force layout + contact_flag, bulk 전용. 반드시 따옴표로 "2" —
+    #       따옴표 없는 2 는 정수로 들어와 파라미터 선언에서 예외가 난다.
     protocol_version: "1a"
 
     # -- Self-clocked 루프 주기 (Hz) --
@@ -170,7 +188,7 @@
     check_sensor: true                # 센서 데이터 검사
     min_rate_hz: 30.0                 # 최소 허용 polling rate
     rate_fail_threshold: 5            # 연속 N회 미달 시 failure
-    check_link: true                  # UDP 링크 상태 검사
+    check_link: true                  # 링크 상태 검사 (UDP · CAN FD 공통)
     # 채널별 strict link-down (#1): 어느 한 채널(motor/joint/sensor)이라도 이
     # 시간 budget 만큼 연속 실패하면 link_down latch (한 채널이 살아있어도 마스킹
     # 안 됨). on_configure 에서 채널별 cycle 수로 환산 —
@@ -184,10 +202,11 @@
     # 기동 직후 boot transient (ARP resolution, 펌웨어 부팅, 첫 패킷 왕복) 동안
     # 오탐 억제. RATE, LINK, SENSOR 를 분리:
     #   startup_grace_ms      : polling-rate 검사 warmup (루프가 정상 cadence 도달까지).
-    #   link_startup_grace_ms : link-down 검사 유예 — ARP/부팅 transient 만 넘기면
-    #                           되므로 훨씬 짧게. CM device_timeout(1000 ms) 보다
-    #                           한참 아래로 두어야 죽은 링크가 rate warmup 에 가려지지
-    #                           않고 먼저 latch 된다. 0 = 즉시 검사.
+    #   link_startup_grace_ms : link-down 검사 유예 — ARP/부팅 transient (CAN FD 에서는
+    #                           MCU 부팅 · 버스 합류) 만 넘기면 되므로 훨씬 짧게. CM
+    #                           device_timeout(1000 ms) 보다 한참 아래로 두어야 죽은
+    #                           링크가 rate warmup 에 가려지지 않고 먼저 latch 된다.
+    #                           0 = 즉시 검사.
     #   sensor_startup_grace_ms: 센서 all-zero/duplicate 검사 유예. ADC 안정화가
     #                            필요한 펌웨어에서만 설정하며 0 = 즉시 검사.
     startup_grace_ms: 1000.0
