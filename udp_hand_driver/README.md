@@ -59,7 +59,7 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | `communication_mode` | `bulk` | `bulk` \| `individual` |
 | `recv_timeout_ms` | `0.4` | 수신 타임아웃 [ms] (UDP: ppoll · CAN FD: stage 별 deadline). CAN FD 실기는 `0.9` (실측: 왕복 max 0.76 ms, 타임아웃 0.016 %; 0.4 는 매 사이클 타임아웃) |
 | `publish_rate` | `100.0` | `link_status` decimation 기준 [Hz]. `loop_rate_hz` 는 launch 인자가 아니다 |
-| `protocol_version` | `1a` | `1a` \| `1b` \| `2`. 노드와 `fake_hand_firmware` 양쪽에 전파 |
+| `protocol_version` | `1b` | `1a` \| `1b` \| `2`. 노드와 `fake_hand_firmware` 양쪽에 전파 |
 | `can_interface` | `can0` | `2` 의 SocketCAN 장치 (`firmware` 는 `vcan0` 로 강제) |
 | `hand_side` | — (노드 기본 `right`) | `right` \| `left`. 명시하면 통계 · 타이밍 파일명에 `_<side>` 접미사. firmware 에도 전파 |
 | `sil_mode` | `off` | `off` \| `loopmodel` \| `firmware` ([SIL 모드](#sil-모드-sil_mode)) |
@@ -106,7 +106,7 @@ ros2 topic echo /hand/calibration/status
 
 펌웨어 센서 응답의 wire 포맷 차이는 `SensorProtocol` (`protocol/sensor_protocol.hpp`) 로 격리된다. 사용자가 고를 것은 펌웨어에 맞는 버전이다.
 
-| | `1a` (기본) | `1b` | `2` |
+| | `1a` | `1b` (기본) | `2` |
 |---|---|---|---|
 | transport | UDP | UDP | **CAN FD** (`can_interface` · `hand_side`) |
 | bulk sensor 응답 | 259B (4 × 16 int32: barometer 8 + ToF 3 + reserved) | 99B (3B 헤더 + 4 × 6 float32) | RESP 3 프레임 (192 B set, joint 와 공용) |
@@ -176,7 +176,7 @@ ros2 topic echo /hand/link_status --once     # 별도 터미널
 | `loop_rate_hz` | `500.0` | CommLoop 주기 |
 | `publish_rate` | `100.0` | `link_status` decimation 기준 (`loop_rate_hz / publish_rate`) |
 | `comm_decimation` / `sensor_decimation` | `1` / `1` | 위 [통신 decimation](#통신-decimation-comm_decimation) · 센서 read 감쇠 |
-| `protocol_version` | `"1a"` | `"1a"` \| `"1b"` \| `"2"` (따옴표 필수) |
+| `protocol_version` | `"1b"` | `"1a"` \| `"1b"` \| `"2"` (따옴표 필수) |
 | `can_interface` / `feedforward_kt` | `"can0"` / 10 × `1.0` | `"2"` 전용: SocketCAN 장치 / 모터별 토크 상수 [Nm/A]. `hand_side` 는 YAML 에 주석 (기본 `right`) |
 | `baro_lpf_enabled` / `baro_lpf_cutoff_hz` | `true` / `100.0` | barometer 4차 Bessel LPF |
 | `tof_lpf_enabled` / `tof_lpf_cutoff_hz` | `true` / `15.0` | ToF LPF |

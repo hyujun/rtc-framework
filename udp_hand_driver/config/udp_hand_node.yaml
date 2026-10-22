@@ -8,16 +8,16 @@
 #     (read/publish 는 계속). CM clock 과 hand clock 은 독립.
 #   - standalone (udp_hand_node 단독 실행): ROS2 토픽으로 상태 퍼블리시/명령 구독
 #
-# 통신 프로토콜 (1 사이클, Bulk mode):
-#   1. Write position  (cmd=0x01, kJoint) + recv echo
-#   2. Read all motors (cmd=0x10, kMotor) -> request 3B & recv 123B (pos+vel+cur)
-#   3. Read all motors (cmd=0x10, kJoint) -> request 3B & recv 123B (pos+vel+cur)
-#   4. Read all sensors(cmd=0x19)         -> request 3B & recv 259B (4 fingers)
+# 통신 프로토콜 (1 사이클, Bulk mode, protocol_version "1b" — 이 파일의 기본):
+#   1. Write position  (cmd=0x01, kMotor) + recv echo
+#   2. Read all motors (cmd=0x10, kMotor) -> request 3B & recv 123B (pos+vel+cur, joint_states 로 발행)
+#   3. Read all sensors(cmd=0x19)         -> request 3B & recv 99B (4 fingers × float32 힘벡터)
+# "1a" 는 2 를 kMotor · kJoint 두 번 (motor_states + joint_states) 하고 3 이 259B 다.
 #
 # Standalone 모드 ROS2 토픽 (상대 이름 — 노드 네임스페이스가 접두. udp_hand.launch.py
 # 의 `namespace` 인자 기본 `/hand` 이므로 런타임 이름은 /hand/* 그대로):
 #   pub: joint_states    JointState (joint-space pos:10 + vel:10 + effort:10)
-#   pub: motor_states    JointState (motor pos:10 + vel:10 + effort=cur:10)
+#   pub: motor_states    JointState (motor pos:10 + vel:10 + effort=cur:10) — "1a" 만
 #   pub: sensor_states   HandSensorState (FingertipSensor[] per fingertip)
 #   pub: sensor_states/monitor  HandSensorState (RELIABLE QoS, 비-RT용)
 #   pub: link_status     Bool (링크 상태 — UDP 또는 CAN FD)
@@ -92,14 +92,15 @@
 
     # -- 펌웨어 센서 프로토콜 (버전 seam) --
     # "1a": barometer/ToF int32 센서 (259B bulk 응답) + LPF/drift/F-T 추론,
-    #       /motor_states 발행. (기본, 기존 동작)
-    # "1b": 핑거당 float32 힘벡터 [fx,fy,fz,Lx,Ly,Temp] (99B bulk 응답).
+    #       /motor_states 발행. (노드 C++ 기본값 — YAML 없이 띄우면 이것)
+    # "1b": 핑거당 float32 힘벡터 [fx,fy,fz,Lx,Ly,Temp] (99B bulk 응답). (이 파일의 기본)
     #       force 직접 발행(후처리 없음), motor-space read 스킵 → motor_states 미발행.
     #       force layout 은 "bulk" 모드 전용 (individual 모드와 조합 시 configure 실패).
+    #       아래 baro/tof LPF · drift 키와 check_motor 는 1b 에서 no-op 이다.
     # "2":  CAN FD (hand_canfd_packets.hpp). UDP 키 대신 위 CAN FD 블록을 쓰고,
     #       1b 와 같은 force layout + contact_flag, bulk 전용. 반드시 따옴표로 "2" —
     #       따옴표 없는 2 는 정수로 들어와 파라미터 선언에서 예외가 난다.
-    protocol_version: "1a"
+    protocol_version: "1b"
 
     # -- Self-clocked 루프 주기 (Hz) --
     # CommLoop 가 이 주기로 자율 tick: read + state publish (joint_states 등) 를
