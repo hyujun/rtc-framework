@@ -12,7 +12,6 @@ comm_stats.canfd.assembler.bad_index
 comm_stats.canfd.assembler.bad_length
 comm_stats.canfd.assembler.duplicate
 comm_stats.canfd.assembler.outside_set
-comm_stats.canfd.assembler.restarted
 comm_stats.canfd.assembler.sets_abandoned
 comm_stats.canfd.assembler.sets_completed
 comm_stats.canfd.bus_off

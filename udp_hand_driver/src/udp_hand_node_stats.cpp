@@ -131,7 +131,6 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
         << "      \"echo_payload_mismatch\": " << cs.echo_payload_mismatch << ",\n"
         << "      \"assembler\": { \"sets_completed\": " << cs.assembler.sets_completed
         << ", \"sets_abandoned\": " << cs.assembler.sets_abandoned
-        << ", \"restarted\": " << cs.assembler.restarted
         << ", \"duplicate\": " << cs.assembler.duplicate
         << ", \"outside_set\": " << cs.assembler.outside_set
         << ", \"bad_index\": " << cs.assembler.bad_index

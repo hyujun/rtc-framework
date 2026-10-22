@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -417,50 +418,99 @@ TEST(HandCanFdAssembler, InOrderBurstCompletes) {
   EXPECT_EQ(slot, Filled(0x12));
 }
 
-TEST(HandCanFdAssembler, StaleTailBeforeIdx0IsDropped) {
-  // Late F1 / F2 of the previous burst arrive, then the real burst (D31: no
-  // counter on the wire, so idx 0 is the only restart signal).
+TEST(HandCanFdAssembler, EveryArrivalOrderCompletes) {
+  // D57: the three bits decide, not the order — all 3! orders, each payload
+  // in its own slot.
+  std::array<uint8_t, kNumRespFrames> order{0, 1, 2};
+  int orders = 0;
+  do {
+    RespSetAssembler a(kNodeRightHand);
+    a.Begin(Clock::time_point{} + 1ms);
+    for (std::size_t k = 0; k < order.size(); ++k) {
+      const uint8_t idx = order[k];
+      const FeedResult want = (k + 1 == order.size()) ? FeedResult::kComplete : FeedResult::kStored;
+      EXPECT_EQ(FeedRight(a, idx, Filled(static_cast<uint8_t>(0x20 + idx))), want)
+          << "order " << int{order[0]} << int{order[1]} << int{order[2]} << " step " << k;
+    }
+    ASSERT_TRUE(a.complete());
+    EXPECT_EQ(a.stats().sets_completed, 1u);
+    Bytes slot{};
+    SerializeFrame(a.set().frame0, slot.data());
+    EXPECT_EQ(slot, Filled(0x20));
+    SerializeFrame(a.set().frame1, slot.data());
+    EXPECT_EQ(slot, Filled(0x21));
+    SerializeFrame(a.set().frame2, slot.data());
+    EXPECT_EQ(slot, Filled(0x22));
+    ++orders;
+  } while (std::next_permutation(order.begin(), order.end()));
+  EXPECT_EQ(orders, 6);
+}
+
+TEST(HandCanFdAssembler, FramesAfterCompleteChangeNothing) {
+  RespSetAssembler a(kNodeRightHand);
+  a.Begin(Clock::time_point{} + 1ms);
+  (void)FeedRight(a, 2, Filled(0x32));
+  (void)FeedRight(a, 0, Filled(0x30));
+  ASSERT_EQ(FeedRight(a, 1, Filled(0x31)), FeedResult::kComplete);
+  for (uint8_t idx = 0; idx < kNumRespFrames; ++idx)
+    EXPECT_EQ(FeedRight(a, idx, Filled(0xEE)), FeedResult::kDuplicate) << "idx " << int{idx};
+  EXPECT_TRUE(a.complete());
+  EXPECT_EQ(a.stats().sets_completed, 1u) << "no second completion";
+  EXPECT_EQ(a.stats().duplicate, 3u);
+  Bytes slot{};
+  SerializeFrame(a.set().frame0, slot.data());
+  EXPECT_EQ(slot, Filled(0x30));
+  SerializeFrame(a.set().frame1, slot.data());
+  EXPECT_EQ(slot, Filled(0x31));
+  SerializeFrame(a.set().frame2, slot.data());
+  EXPECT_EQ(slot, Filled(0x32));
+}
+
+TEST(HandCanFdAssembler, StaleTailBeforeIdx0CompletesAMixedSet) {
+  // Late F1 / F2 of the previous burst arrive, then the real burst. With no
+  // counter on the wire (D31) the set completes on the first F0 — the risk
+  // D57 accepts; the real F1 / F2 arrive after completion and are dropped.
   RespSetAssembler a(kNodeRightHand);
   a.Begin(Clock::time_point{} + 1ms);
   EXPECT_EQ(FeedRight(a, 1, Filled(0xA1)), FeedResult::kStored);
   EXPECT_EQ(FeedRight(a, 2, Filled(0xA2)), FeedResult::kStored);
   EXPECT_FALSE(a.complete());
-  EXPECT_EQ(FeedRight(a, 0, Filled(0xB0)), FeedResult::kRestarted);
-  EXPECT_EQ(a.mask(), FrameBit(0));
-  EXPECT_EQ(a.stats().restarted, 1u);
-  EXPECT_EQ(a.stats().sets_abandoned, 1u);
-  EXPECT_EQ(FeedRight(a, 1, Filled(0xB1)), FeedResult::kStored);
-  EXPECT_EQ(FeedRight(a, 2, Filled(0xB2)), FeedResult::kComplete);
+  EXPECT_EQ(FeedRight(a, 0, Filled(0xB0)), FeedResult::kComplete);
+  EXPECT_EQ(a.mask(), kRespSetMask);
+  EXPECT_EQ(a.stats().sets_abandoned, 0u);
+  EXPECT_EQ(FeedRight(a, 1, Filled(0xB1)), FeedResult::kDuplicate);
+  EXPECT_EQ(FeedRight(a, 2, Filled(0xB2)), FeedResult::kDuplicate);
 
   Bytes slot{};
   SerializeFrame(a.set().frame1, slot.data());
-  EXPECT_EQ(slot, Filled(0xB1)) << "new burst, not the stale F1";
+  EXPECT_EQ(slot, Filled(0xA1)) << "the stale F1 (D57 accepted risk)";
   SerializeFrame(a.set().frame2, slot.data());
-  EXPECT_EQ(slot, Filled(0xB2));
+  EXPECT_EQ(slot, Filled(0xA2));
 }
 
-TEST(HandCanFdAssembler, Idx0AfterCompleteStartsNewSetWithoutAbandon) {
+TEST(HandCanFdAssembler, Idx0AfterCompleteLeavesTheSetWithoutAbandon) {
   RespSetAssembler a(kNodeRightHand);
   a.Begin(Clock::time_point{} + 1ms);
   (void)FeedRight(a, 0, Filled(1));
   (void)FeedRight(a, 1, Filled(2));
   ASSERT_EQ(FeedRight(a, 2, Filled(3)), FeedResult::kComplete);
-  EXPECT_EQ(FeedRight(a, 0, Filled(4)), FeedResult::kRestarted);
-  EXPECT_FALSE(a.complete());
-  EXPECT_EQ(a.mask(), FrameBit(0));
-  EXPECT_EQ(a.stats().restarted, 1u);
+  EXPECT_EQ(FeedRight(a, 0, Filled(4)), FeedResult::kDuplicate);
+  EXPECT_TRUE(a.complete());
+  EXPECT_EQ(a.mask(), kRespSetMask);
+  EXPECT_EQ(a.stats().duplicate, 1u);
   EXPECT_EQ(a.stats().sets_abandoned, 0u) << "the finished set was not partial";
 }
 
-TEST(HandCanFdAssembler, RepeatedIdx0SupersedesWithoutAbandon) {
-  // F0 twice, then F1 F2: the freshest F0 wins and the cycle still completes —
-  // nothing was abandoned (the counter means a dropped tail, D43).
+TEST(HandCanFdAssembler, RepeatedIdx0ReplacesWithoutAbandon) {
+  // F0 twice, then F1 F2: the later F0 replaces the earlier one and the cycle
+  // still completes — nothing was abandoned (the counter means a dropped
+  // partial set, D43).
   RespSetAssembler a(kNodeRightHand);
   a.Begin(Clock::time_point{} + 1ms);
   EXPECT_EQ(FeedRight(a, 0, Filled(0xC0)), FeedResult::kStored);
-  EXPECT_EQ(FeedRight(a, 0, Filled(0xD0)), FeedResult::kRestarted);
+  EXPECT_EQ(FeedRight(a, 0, Filled(0xD0)), FeedResult::kDuplicate);
   EXPECT_EQ(a.mask(), FrameBit(0));
-  EXPECT_EQ(a.stats().restarted, 1u);
+  EXPECT_EQ(a.stats().duplicate, 1u);
   EXPECT_EQ(a.stats().sets_abandoned, 0u);
   EXPECT_EQ(FeedRight(a, 1, Filled(0xD1)), FeedResult::kStored);
   EXPECT_EQ(FeedRight(a, 2, Filled(0xD2)), FeedResult::kComplete);
@@ -483,7 +533,7 @@ TEST(HandCanFdAssembler, ErrorFrameIsOutsideSetEvenWhenItsBitsLookLikeAnId) {
   EXPECT_EQ(a.mask(), 0u);
 }
 
-TEST(HandCanFdAssembler, DuplicateKeepsFirstCopy) {
+TEST(HandCanFdAssembler, DuplicateBeforeCompleteReplacesTheCopy) {
   RespSetAssembler a(kNodeRightHand);
   a.Begin(Clock::time_point{} + 1ms);
   (void)FeedRight(a, 0, Filled(0));
@@ -494,7 +544,7 @@ TEST(HandCanFdAssembler, DuplicateKeepsFirstCopy) {
   EXPECT_EQ(FeedRight(a, 2, Filled(0)), FeedResult::kComplete);
   Bytes slot{};
   SerializeFrame(a.set().frame1, slot.data());
-  EXPECT_EQ(slot, Filled(0x55));
+  EXPECT_EQ(slot, Filled(0x66));
 }
 
 TEST(HandCanFdAssembler, FramesOutsideTheSetAreCountedNotStored) {
@@ -534,11 +584,11 @@ TEST(HandCanFdAssembler, BadIndexAndBadLengthAreDropped) {
   EXPECT_EQ(a.Feed(RespId(kNodeRightHand, 1), b.data(), 63), FeedResult::kBadLength);
   EXPECT_EQ(a.Feed(RespId(kNodeRightHand, 1), b.data(), 0), FeedResult::kBadLength);
   EXPECT_EQ(a.stats().bad_length, 3u);
-  EXPECT_EQ(a.mask(), FrameBit(0)) << "a bad frame neither stores nor restarts";
-  // A short idx 0 must not restart a pending set either.
+  EXPECT_EQ(a.mask(), FrameBit(0)) << "a bad frame stores nothing";
+  // A short idx 0 must not touch a pending set either.
   EXPECT_EQ(a.Feed(RespId(kNodeRightHand, 0), b.data(), 8), FeedResult::kBadLength);
   EXPECT_EQ(a.mask(), FrameBit(0));
-  EXPECT_EQ(a.stats().restarted, 0u);
+  EXPECT_EQ(a.stats().duplicate, 0u);
 }
 
 TEST(HandCanFdAssembler, LeftHandInstanceIgnoresRightHand) {

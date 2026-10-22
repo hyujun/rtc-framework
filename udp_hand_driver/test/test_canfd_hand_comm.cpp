@@ -14,10 +14,12 @@
 //              that SensorProtocol2 decodes; per-kind stats 1:1 with proto1
 //   D42        one deadline per stage: echo timeout, set timeout
 //   D43 · D44  a partial set is abandoned, no retry in the tick, next cycle ok
-//   D41        echo stage classification: a stale RESP costs budget but the
-//              write still succeeds, three fail it, an echo with another
-//              payload only counts, an error frame costs nothing (error
-//              frames are shared bus-wide, so that case asserts >= 1)
+//   D57        a RESP burst in reverse order (2 1 0) still completes the set
+//   D41 · D58  echo stage classification: unexpected frames only count — one
+//              or three before the echoes, the write still succeeds; with no
+//              echo it ends at the deadline; an echo with another payload
+//              only counts, an error frame costs nothing (error frames are
+//              shared bus-wide, so that case asserts >= 1)
 //   D26        E-Stop fire-and-forget: Frame 1 zeros then Frame 0 zeros
 //   D51        a left-hand comm never talks to a right-hand fake
 //   DrainStale bounded drain, stale_drained accounting
@@ -124,11 +126,12 @@ canfd_frame DataFrame(uint32_t bare_id, uint8_t fill) {
 
 // FakeHandFirmware behind its own socket on a thread: the device side of the
 // link. Mode kDropFrame2 withholds RESP idx 2 (a partial set every cycle);
-// kSilent answers nothing. Model reads go through WithModel() (mutex — test
+// kReverse sends each answer's frames last-first (RESP 2 1 0); kSilent
+// answers nothing. Model reads go through WithModel() (mutex — test
 // code, not RT).
 class FakePeer {
  public:
-  enum class Mode { kNormal, kDropFrame2, kSilent };
+  enum class Mode { kNormal, kDropFrame2, kReverse, kSilent };
 
   explicit FakePeer(HandSide side, Mode mode = Mode::kNormal)
       : firmware_(FakeConfig(side)), mode_(mode), transport_(TargetedConfig(NodeIdOf(side))) {
@@ -167,7 +170,8 @@ class FakePeer {
       }
       if (mode_ == Mode::kSilent)
         continue;
-      for (std::size_t i = 0; i < count; ++i) {
+      for (std::size_t k = 0; k < count; ++k) {
+        const std::size_t i = (mode_ == Mode::kReverse) ? count - 1 - k : k;
         if (mode_ == Mode::kDropFrame2 &&
             MsgTypeOf(out[i].can_id) == static_cast<uint8_t>(MsgType::kResp) &&
             FrameIndexOf(out[i].can_id) == 2)
@@ -532,7 +536,33 @@ TEST_F(CanFdHandCommVcan, D43_D44_PartialSetIsAbandonedAndNextCycleRecovers) {
   EXPECT_EQ(comm->canfd_stats().assembler.sets_completed, 1u);
 }
 
-TEST_F(CanFdHandCommVcan, D41_OneStaleRespCostsBudgetButTheWriteSucceeds) {
+TEST_F(CanFdHandCommVcan, D57_ReverseOrderedRespBurstCompletesTheSet) {
+  auto peer = StartPeer(HandSide::kRight, FakePeer::Mode::kReverse);
+  auto comm = OpenComm();
+  ASSERT_TRUE(comm->WriteCommandWithEcho(Ramp(0.2f, 0.02f), HandMotorArray{}));  // move the model
+
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  comm->ReadCycle(SensorPlan(true), bufs, out);
+  ASSERT_TRUE(out.joint_ok);
+  EXPECT_EQ(out.sensor_recvd, static_cast<ssize_t>(sizeof(RespSet)));
+  peer->WithModel([&](const FakeHandFirmware& fw) {
+    for (std::size_t i = 0; i < kWireMotorCount; ++i) {
+      EXPECT_FLOAT_EQ(bufs.joint.pos[i], fw.pos()[i]);     // F0
+      EXPECT_FLOAT_EQ(bufs.joint.vel[i], fw.vel()[i]);     // F0 + F1
+      EXPECT_FLOAT_EQ(bufs.joint.cur[i], fw.effort()[i]);  // F1
+    }
+    return 0;
+  });
+
+  comm->PublishCommStats();
+  EXPECT_EQ(comm->canfd_stats().assembler.sets_completed, 1u);
+  EXPECT_EQ(comm->canfd_stats().assembler.sets_abandoned, 0u);
+  EXPECT_EQ(comm->canfd_stats().assembler.duplicate, 0u);
+  EXPECT_EQ(comm->comm_stats().cmd_mismatch, 0u);
+}
+
+TEST_F(CanFdHandCommVcan, D58_OneStaleRespOnlyCountsAndTheWriteSucceeds) {
   auto peer = StartPeer();
   auto comm = OpenComm();
   rtc::CanFdTransport injector(InjectorConfig());
@@ -550,7 +580,23 @@ TEST_F(CanFdHandCommVcan, D41_OneStaleRespCostsBudgetButTheWriteSucceeds) {
   EXPECT_EQ(comm->last_unexpected_len(), kFrameLen);
 }
 
-TEST_F(CanFdHandCommVcan, D41_ThreeUnexpectedFramesFailTheWriteAtOnce) {
+TEST_F(CanFdHandCommVcan, D58_ThreeUnexpectedFramesBeforeTheEchoesDoNotFailTheWrite) {
+  auto peer = StartPeer();
+  auto comm = OpenComm();
+  rtc::CanFdTransport injector(InjectorConfig());
+  ASSERT_TRUE(injector.Open());
+  for (uint8_t i = 0; i < 3; ++i)
+    ASSERT_TRUE(injector.SendFrame(DataFrame(RespId(kNodeRightHand, i), 0x11)));
+
+  EXPECT_TRUE(comm->WriteCommandWithEcho(Ramp(0.0f, 0.1f), HandMotorArray{}));
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(s.cmd_mismatch, 3u);
+  EXPECT_EQ(s.per_kind[static_cast<std::size_t>(RequestKind::kWriteEcho)].ok, 1u);
+  EXPECT_EQ(s.recv_timeout, 0u);
+}
+
+TEST_F(CanFdHandCommVcan, D58_ThreeUnexpectedFramesOnlyCountUntilTheDeadline) {
   auto comm = OpenComm();  // no peer: only the injected frames are on the bus
   rtc::CanFdTransport injector(InjectorConfig());
   ASSERT_TRUE(injector.Open());
@@ -559,12 +605,15 @@ TEST_F(CanFdHandCommVcan, D41_ThreeUnexpectedFramesFailTheWriteAtOnce) {
 
   const auto t0 = std::chrono::steady_clock::now();
   EXPECT_FALSE(comm->WriteCommandWithEcho(Ramp(0.0f, 0.1f), HandMotorArray{}));
-  EXPECT_LT(std::chrono::steady_clock::now() - t0, 40ms);  // failed before the deadline
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+  EXPECT_GE(elapsed, 45ms);  // still waiting for the echoes at the deadline
+  EXPECT_LT(elapsed, 500ms);
 
   comm->PublishCommStats();
   const UdpHandCommStats s = comm->comm_stats();
   EXPECT_EQ(s.cmd_mismatch, 3u);
-  EXPECT_EQ(s.recv_timeout, 0u);
+  EXPECT_EQ(s.recv_timeout, 1u);
+  EXPECT_EQ(s.per_kind[static_cast<std::size_t>(RequestKind::kWriteEcho)].timeout, 1u);
   EXPECT_EQ(s.per_kind[static_cast<std::size_t>(RequestKind::kWriteEcho)].ok, 0u);
 }
 
@@ -583,7 +632,7 @@ TEST_F(CanFdHandCommVcan, D41_EchoWithAnotherPayloadOnlyCounts) {
   EXPECT_EQ(comm->comm_stats().per_kind[static_cast<std::size_t>(RequestKind::kWriteEcho)].ok, 1u);
 }
 
-TEST_F(CanFdHandCommVcan, D41_BusOffErrorFrameCostsNeitherBudgetNorDeadline) {
+TEST_F(CanFdHandCommVcan, D41_BusOffErrorFrameIsNotAnUnexpectedFrame) {
   auto peer = StartPeer();
   auto comm = OpenComm();
   rtc::CanFdTransport injector(InjectorConfig());

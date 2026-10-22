@@ -108,7 +108,6 @@ def comm_stats(
             "assembler": {
                 "sets_completed": total_cycles - joint_timeouts,
                 "sets_abandoned": joint_timeouts,
-                "restarted": 0,
                 "bad_index": 0,
                 "bad_length": 0,
                 "duplicate": 0,
