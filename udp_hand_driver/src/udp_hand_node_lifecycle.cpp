@@ -440,6 +440,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     }
     canfd_comm_ = raw;
   }
+  // The CommLoop polls this flag every tick (E-8). Handed over once here, on
+  // the controller that will run; on_activate clears the latch before Start().
+  controller_->SetEstopFlag(&estop_flag_);
 
   // ── Topic names ──────────────────────────────────────────────────
   // Relative by default (D53): the node namespace supplies the prefix, so the
@@ -451,6 +454,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_parameter("motor_state_topic", std::string("motor_states"));
   declare_parameter("sensor_topic", std::string("sensor_states"));
   declare_parameter("link_status_topic", std::string("link_status"));
+  declare_parameter("estop_topic", std::string("estop"));
   declare_parameter("calibration_command_topic", std::string("calibration/command"));
   declare_parameter("calibration_status_topic", std::string("calibration/status"));
   declare_parameter("calibration_status_rate_hz", 5.0);
@@ -459,6 +463,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   const std::string motor_state_topic = get_parameter("motor_state_topic").as_string();
   const std::string sensor_topic = get_parameter("sensor_topic").as_string();
   const std::string link_status_topic = get_parameter("link_status_topic").as_string();
+  const std::string estop_topic = get_parameter("estop_topic").as_string();
   const std::string calib_cmd_topic = get_parameter("calibration_command_topic").as_string();
   const std::string calib_status_topic = get_parameter("calibration_status_topic").as_string();
   const double calib_status_rate_hz = get_parameter("calibration_status_rate_hz").as_double();
@@ -686,6 +691,32 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
         controller_->RequestCalibration(msg->sensor_type, msg->action, msg->sample_count);
       });
 
+  // E-Stop input (E-8). Latch-only: `true` sets the flag the CommLoop polls
+  // every tick (zero-write + self-exit, UdpHandController::RunCommCycle);
+  // `false` is ignored — the only way back is deactivate → activate, which
+  // clears the latch right before Start(). Reliable depth 1 so a single
+  // publish is not dropped the way the best-effort command stream may be.
+  // Node-level only: nothing here knows whether a loop is running — a `true`
+  // received while Inactive is discarded by the next on_activate.
+  estop_sub_ = create_subscription<std_msgs::msg::Bool>(
+      estop_topic, rclcpp::QoS(1).reliable(), [this](std_msgs::msg::Bool::SharedPtr msg) {
+        if (!msg->data) {
+          return;
+        }
+        if (estop_flag_.exchange(true, std::memory_order_acq_rel)) {
+          return;  // already latched
+        }
+        if (controller_ && controller_->IsRunning()) {
+          RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                      "E-Stop received: the CommLoop zero-writes once and stops; "
+                      "deactivate → activate to resume");
+        } else {
+          RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                      "E-Stop received while the CommLoop is not running: latched, and "
+                      "discarded by the next activate");
+        }
+      });
+
   rclcpp::QoS calib_status_qos{1};
   calib_status_qos.reliable().transient_local();
   calib_status_pub_ =
@@ -736,6 +767,14 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // PrepareRun → ResetCommStats) so one stats JSON never mixes two runs.
   feedforward_size_mismatch_.store(0, std::memory_order_relaxed);
   feedforward_nonfinite_.store(0, std::memory_order_relaxed);
+
+  // Every run starts untripped (see the estop_flag_ member note). A `true`
+  // that lands after this exchange and before the first tick still stops the
+  // loop — it arrived once we had committed to run.
+  if (estop_flag_.exchange(false, std::memory_order_acq_rel)) {
+    RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                "Discarding the E-Stop received while Inactive: this activate is the resume");
+  }
 
   if (!controller_->Start()) {
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Failed to start UdpHandController (%s)",
@@ -991,6 +1030,7 @@ void UdpHandNode::ReleaseResources() {
   stats_save_timer_.reset();
   hand_udp_timing_timer_.reset();
   calib_status_timer_.reset();
+  estop_sub_.reset();
   calib_cmd_sub_.reset();
   joint_command_sub_.reset();
   link_status_pub_.reset();

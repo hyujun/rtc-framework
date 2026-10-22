@@ -41,6 +41,9 @@
 // Pre-allocated messages avoid dynamic allocation on the publish path.
 // Receives commands on the command_topic (default `joint_command`, relative to
 // the node namespace — the standalone launch runs the node under /hand).
+// Receives the E-Stop on the estop_topic (default `estop`, relative likewise):
+// a `true` latches estop_flag_, which the CommLoop checks every tick and
+// answers with one zero-write + self-exit (UdpHandController::RunCommCycle).
 //
 // Lifecycle states:
 //   Unconfigured -> on_configure -> Inactive -> on_activate -> Active
@@ -297,6 +300,17 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // half-torn-down node.
   mutable std::mutex aux_lane_mutex_;
 
+  // E-Stop latch (E-8). Set to true by the estop_topic subscription callback
+  // (executor thread), read by the CommLoop every tick through the pointer
+  // handed over with SetEstopFlag() in on_configure, cleared by on_activate
+  // right before Start() so every run begins untripped — a `true` received
+  // while Inactive has no loop to stop and must not become a zero-write on the
+  // next activate before the first state read (the startup no-jump contract).
+  // Declared before controller_: the CommLoop dereferences it until the
+  // controller's destructor has joined that thread, so the flag has to outlive
+  // the controller (members are destroyed in reverse declaration order).
+  std::atomic<bool> estop_flag_{false};
+
   std::unique_ptr<udp_hand_driver::UdpHandController> controller_;
   std::unique_ptr<udp_hand_driver::UdpHandFailureDetector> failure_detector_;
 
@@ -334,6 +348,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
       sensor_monitor_pub_;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr joint_command_sub_;
   rclcpp::Subscription<rtc_msgs::msg::CalibrationCommand>::SharedPtr calib_cmd_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::CalibrationStatus>::SharedPtr
       calib_status_pub_;
   rclcpp::TimerBase::SharedPtr calib_status_timer_;

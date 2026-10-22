@@ -446,7 +446,8 @@ class UdpHandController {
     running_.store(false, std::memory_order_release);
     // Join() requests stop (cooperative stop_token) and waits for the CommLoop
     // to exit its current tick + clock_nanosleep. Idempotent; safe on a loop
-    // that already self-stopped via the E-Stop path (RequestStop in RunCommCycle).
+    // that already self-exited via the E-Stop path (RequestLoopExit in
+    // RunCommCycle) — the zero-write has run by the time Join() returns.
     // Runs in fake mode too — the CommLoop thread is started there as well.
     comm_loop_.Join();
     if (!use_fake_hand_) {
@@ -509,8 +510,13 @@ class UdpHandController {
     return timing_producer_;
   }
 
-  // ── E-Stop flag (shared with RtControllerNode) ─────────────────────────
+  // ── E-Stop flag ────────────────────────────────────────────────────────
 
+  /// Non-owning pointer to the latch RunCommCycle polls every tick; the owner
+  /// (UdpHandNode's `estop_topic` subscription — or a test) sets it, and it
+  /// must outlive this controller. Call before Start(). nullptr disables the
+  /// check. Clearing the latch is the owner's job (the node does it before
+  /// each Start()); this class only reads it.
   void SetEstopFlag(std::atomic<bool>* flag) noexcept { estop_flag_ = flag; }
 
   // ── State readiness ─────────────────────────────────────────────────────

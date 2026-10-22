@@ -8,7 +8,7 @@
 
 - 소비자: [integrated_bringup](../integrated_bringup/README.md) (robot launch), 센서 → grasp 컨트롤러
 - 첫 상태 read 가 끝나기 전에는 명령을 latch 만 하고 write 하지 않는다. activate 직후 손이 q=0 으로 끌려가지 않는다
-- E-Stop 은 매 tick 검사하며 활성이면 CommLoop 이 스스로 종료하고 loop unwind 시 zero-write 를 1회 보낸다. 재시작 (`deactivate→activate`) 은 링크 · 통계 카운터를 리셋한다
+- E-Stop 은 `/hand/estop` (`true`) 로 건다. 매 tick 검사하며 활성이면 CommLoop 이 스스로 종료하고 loop unwind 시 zero-write (위치 0 목표, 정지 아님) 를 1회 보낸다. 노드는 ACTIVE 에 남고, 재시작 (`deactivate→activate`) 이 latch · 링크 · 통계 카운터를 리셋한다
 
 ### 스레드 모델
 
@@ -75,6 +75,7 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | pub | `/hand/calibration/status` | `rtc_msgs/CalibrationStatus` | RELIABLE, TRANSIENT_LOCAL/1 | 캘리브레이션 진행 · 완료 (5 Hz) |
 | sub | `/hand/joint_command` | `rtc_msgs/JointCommand` | BEST_EFFORT/1 | 모터 명령 `values[10]`. 발행측 `joint_names` 순서를 firmware 슬롯 순서로 재정렬하고, 이름이 없거나 안 맞으면 positional |
 | sub | `/hand/calibration/command` | `rtc_msgs/CalibrationCommand` | RELIABLE/1 | 센서 캘리브레이션 트리거 (현재 barometer) |
+| sub | `/hand/estop` | `std_msgs/Bool` | RELIABLE/1 | `true` 만 latch (`false` 무시). Inactive 중 수신분은 다음 activate 가 버린다. 상대 이름이라 네임스페이스 없는 통합 launch 에서는 `/estop` (발행자 없음 — 시스템 E-STOP 연결은 H2) |
 
 토픽 이름은 YAML 의 `*_topic` 키로 바꾼다. `sensor_states` 한 건의 센서 값과 F/T 값은 **같은 tick 이 보장되지 않는다** (F/T 가 최대 1 comm cycle 앞설 수 있음). 소비자는 `1 / loop_rate_hz` 의 pairing 허용오차를 둔다. `sensor_decimation > 1` 이면 F/T 가 마지막 센서 cycle 값이라 더 오래될 수 있다.
 

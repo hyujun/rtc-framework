@@ -10,6 +10,7 @@
 
 #include "rtc_base/testing/wait_until.hpp"
 #include "rtc_base/threading/seqlock.hpp"
+#include "silent_loopback_socket.hpp"
 #include "udp_hand_driver/hand_comm.hpp"
 #include "udp_hand_driver/udp_hand_comm.hpp"
 #include "udp_hand_driver/udp_hand_controller.hpp"
@@ -601,22 +602,6 @@ TEST(HandControllerConfig, MaxFingertips_Clamped) {
 
 namespace {
 
-// Bind a loopback UDP socket that never answers; returns {fd, port}.
-std::pair<int, int> OpenSilentLoopbackSocket() {
-  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = 0;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);
-    return {-1, 0};
-  }
-  socklen_t len = sizeof(addr);
-  ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len);
-  return {fd, ntohs(addr.sin_port)};
-}
-
 // Real-mode controller (individual mode, no fingertips) with an explicit
 // comm_decimation.
 std::unique_ptr<UdpHandController> MakeDecimatedController(int port, int comm_decimation) {
@@ -632,8 +617,9 @@ std::unique_ptr<UdpHandController> MakeDecimatedController(int port, int comm_de
 }  // namespace
 
 TEST(HandControllerOutcomeRing, SilentDevice_RecordsFailedCycles) {
-  const auto [fd, port] = OpenSilentLoopbackSocket();
-  ASSERT_GE(fd, 0);
+  udp_hand_driver::test_support::SilentLoopbackSocket silent;
+  ASSERT_TRUE(silent.ok());
+  const int port = silent.port();
 
   // Real mode, 1 ms recv timeout, no fingertips (skips sensor init retries).
   auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
@@ -664,7 +650,6 @@ TEST(HandControllerOutcomeRing, SilentDevice_RecordsFailedCycles) {
   EXPECT_GT(stats.per_kind[static_cast<std::size_t>(RequestKind::kJointRead)].timeout, 0u);
 
   ctrl->Stop();
-  ::close(fd);
 }
 
 // ── Comm decimation (whole-cycle UDP load reduction) ────────────────────────
@@ -683,8 +668,9 @@ TEST(HandControllerCommDecimation, ClampedToOne) {
 
 TEST(HandControllerCommDecimation, DefaultCommunicatesEveryCycle) {
   // decim=1: no cycle is ever skipped (bit-identical to pre-feature behavior).
-  const auto [fd, port] = OpenSilentLoopbackSocket();
-  ASSERT_GE(fd, 0);
+  udp_hand_driver::test_support::SilentLoopbackSocket silent;
+  ASSERT_TRUE(silent.ok());
+  const int port = silent.port();
 
   auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
   ASSERT_TRUE(ctrl->Start());
@@ -694,7 +680,6 @@ TEST(HandControllerCommDecimation, DefaultCommunicatesEveryCycle) {
   EXPECT_EQ(ctrl->comm_decimation(), 1);
   EXPECT_EQ(ctrl->comm_skip_count(), 0u);
   EXPECT_GT(ctrl->cycle_count(), 0u);
-  ::close(fd);
 }
 
 TEST(HandControllerCommDecimation, SkipsExpectedRatio) {
@@ -702,8 +687,9 @@ TEST(HandControllerCommDecimation, SkipsExpectedRatio) {
   // exactly 1 comm + (N-1) skips. So with `comm` comm-cycles recorded,
   // skips ∈ [(N-1)(comm-1), (N-1)(comm-1) + (N-1)] — a tight, non-flaky bound.
   constexpr int kDecim = 4;
-  const auto [fd, port] = OpenSilentLoopbackSocket();
-  ASSERT_GE(fd, 0);
+  udp_hand_driver::test_support::SilentLoopbackSocket silent;
+  ASSERT_TRUE(silent.ok());
+  const int port = silent.port();
 
   auto ctrl = MakeDecimatedController(port, kDecim);
   ASSERT_TRUE(ctrl->Start());
@@ -718,7 +704,6 @@ TEST(HandControllerCommDecimation, SkipsExpectedRatio) {
   const uint64_t base = static_cast<uint64_t>(kDecim - 1) * (comm - 1);
   EXPECT_GE(skip, base);
   EXPECT_LE(skip, base + static_cast<uint64_t>(kDecim - 1));
-  ::close(fd);
 }
 
 // ── Self-clocked read loop + command-gated write ────────────────────────────
@@ -729,8 +714,9 @@ TEST(HandControllerCommDecimation, SkipsExpectedRatio) {
 // and is covered by the Phase 5 hardware verification, not here.
 
 TEST(HandControllerSelfClocked, CyclesWithoutCommand) {
-  const auto [fd, port] = OpenSilentLoopbackSocket();
-  ASSERT_GE(fd, 0);
+  udp_hand_driver::test_support::SilentLoopbackSocket silent;
+  ASSERT_TRUE(silent.ok());
+  const int port = silent.port();
 
   auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
   ASSERT_TRUE(ctrl->Start());
@@ -742,12 +728,12 @@ TEST(HandControllerSelfClocked, CyclesWithoutCommand) {
   // Lenient lower bound (timing-robust; the exact rate depends on recv timeouts
   // and scheduler, so do not assert it).
   EXPECT_GT(ctrl->cycle_count(), 20u);
-  ::close(fd);
 }
 
 TEST(HandControllerSelfClocked, NoWriteAttempted_WithoutCommand) {
-  const auto [fd, port] = OpenSilentLoopbackSocket();
-  ASSERT_GE(fd, 0);
+  udp_hand_driver::test_support::SilentLoopbackSocket silent;
+  ASSERT_TRUE(silent.ok());
+  const int port = silent.port();
 
   auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
   ASSERT_TRUE(ctrl->Start());
@@ -764,12 +750,12 @@ TEST(HandControllerSelfClocked, NoWriteAttempted_WithoutCommand) {
     const auto& e = ring.entries[(ring.count - n + i) % CycleOutcomeRing::kCapacity];
     EXPECT_EQ(e.attempted_mask & write_bit, 0u);
   }
-  ::close(fd);
 }
 
 TEST(HandControllerSelfClocked, NoWriteAttempted_BeforeFirstStateRead) {
-  const auto [fd, port] = OpenSilentLoopbackSocket();
-  ASSERT_GE(fd, 0);
+  udp_hand_driver::test_support::SilentLoopbackSocket silent;
+  ASSERT_TRUE(silent.ok());
+  const int port = silent.port();
 
   auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
   ASSERT_TRUE(ctrl->Start());
@@ -794,12 +780,12 @@ TEST(HandControllerSelfClocked, NoWriteAttempted_BeforeFirstStateRead) {
     const auto& e = ring.entries[(ring.count - n + i) % CycleOutcomeRing::kCapacity];
     EXPECT_EQ(e.attempted_mask & write_bit, 0u);
   }
-  ::close(fd);
 }
 
 TEST(HandControllerOutcomeRing, CycleSeq_Monotonic) {
-  const auto [fd, port] = OpenSilentLoopbackSocket();
-  ASSERT_GE(fd, 0);
+  udp_hand_driver::test_support::SilentLoopbackSocket silent;
+  ASSERT_TRUE(silent.ok());
+  const int port = silent.port();
 
   auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
       .target_ip = "127.0.0.1",
@@ -819,7 +805,6 @@ TEST(HandControllerOutcomeRing, CycleSeq_Monotonic) {
     const auto& cur = ring.entries[(ring.count - n + i) % CycleOutcomeRing::kCapacity];
     EXPECT_EQ(cur.cycle_seq, prev.cycle_seq + 1);
   }
-  ::close(fd);
 }
 
 // ── E-Stop self-exit + restart reset (review #1/#2-A/#4) ────────────────────
@@ -829,8 +814,9 @@ TEST(HandControllerOutcomeRing, CycleSeq_Monotonic) {
 // the loop; the zero-write happens off the hot path in OnLoopAborted.
 
 TEST(HandControllerEStop, SelfExitClearsRunning) {
-  const auto [fd, port] = OpenSilentLoopbackSocket();
-  ASSERT_GE(fd, 0);
+  udp_hand_driver::test_support::SilentLoopbackSocket silent;
+  ASSERT_TRUE(silent.ok());
+  const int port = silent.port();
 
   std::atomic<bool> estop{true};  // asserted before Start → first tick self-exits
   auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
@@ -849,12 +835,12 @@ TEST(HandControllerEStop, SelfExitClearsRunning) {
   EXPECT_EQ(ctrl->consecutive_recv_failures(), 0u);
 
   ctrl->Stop();  // idempotent after a self-exit
-  ::close(fd);
 }
 
 TEST(HandControllerEStop, RestartResetsCountersAfterFailures) {
-  const auto [fd, port] = OpenSilentLoopbackSocket();
-  ASSERT_GE(fd, 0);
+  udp_hand_driver::test_support::SilentLoopbackSocket silent;
+  ASSERT_TRUE(silent.ok());
+  const int port = silent.port();
 
   std::atomic<bool> estop{false};
   auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
@@ -885,7 +871,6 @@ TEST(HandControllerEStop, RestartResetsCountersAfterFailures) {
   EXPECT_EQ(ctrl->recv_error_count(), 0u);
 
   ctrl->Stop();
-  ::close(fd);
 }
 
 // ── HandComm seam: scripted comm double (epic #895 D25, #897) ──────────────

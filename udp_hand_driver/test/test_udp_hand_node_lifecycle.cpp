@@ -16,6 +16,7 @@
 // matching waits. RTC_SESSION_DIR points at a per-run temp dir so the stats
 // JSON / timing CSV side effects land nowhere real and stay assertable.
 
+#include "silent_loopback_socket.hpp"
 #include "udp_hand_driver/udp_hand_node.hpp"
 #include <rtc_msgs/msg/calibration_command.hpp>
 #include <rtc_msgs/msg/calibration_status.hpp>
@@ -28,6 +29,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -198,7 +200,7 @@ class UdpHandNodeLifecycleTest : public ::testing::Test {
 
 std::filesystem::path UdpHandNodeLifecycleTest::session_dir_;
 
-// D53: the seven topic parameters default to relative names and the namespace
+// D53: the eight topic parameters default to relative names and the namespace
 // alone decides where they land. Both halves are asserted — the resolved names
 // on the graph, because that is the runtime contract (G-1), and the raw
 // parameter values, because a default rewritten back to "/hand/joint_states"
@@ -218,6 +220,7 @@ TEST_F(UdpHandNodeLifecycleTest, RelativeTopicDefaultsResolveUnderTheNamespace) 
       {"motor_state_topic", "motor_states"},
       {"sensor_topic", "sensor_states"},
       {"link_status_topic", "link_status"},
+      {"estop_topic", "estop"},
       {"calibration_command_topic", "calibration/command"},
       {"calibration_status_topic", "calibration/status"},
   };
@@ -227,7 +230,7 @@ TEST_F(UdpHandNodeLifecycleTest, RelativeTopicDefaultsResolveUnderTheNamespace) 
   }
 
   // The resolved graph names: publishers for the five outputs, subscriptions
-  // for the two inputs. The monitor topic derives from sensor_topic.
+  // for the three inputs. The monitor topic derives from sensor_topic.
   const auto resolved = [&](const std::string& relative) {
     return std::string(kTestNamespace) + "/" + relative;
   };
@@ -235,7 +238,7 @@ TEST_F(UdpHandNodeLifecycleTest, RelativeTopicDefaultsResolveUnderTheNamespace) 
                           "link_status", "calibration/status"}) {
     EXPECT_EQ(node->count_publishers(resolved(out)), 1u) << "no publisher on " << resolved(out);
   }
-  for (const char* in : {"joint_command", "calibration/command"}) {
+  for (const char* in : {"joint_command", "calibration/command", "estop"}) {
     EXPECT_EQ(node->count_subscribers(resolved(in)), 1u) << "no subscription on " << resolved(in);
   }
 
@@ -890,6 +893,119 @@ TEST_F(UdpHandNodeLifecycleTest, ExplicitHandSideSuffixesTheForensicFiles) {
   EXPECT_NE(json.find("\"protocol_version\": \"1a\""), std::string::npos);
   EXPECT_NE(json.find("\"transport\": \"udp\""), std::string::npos);
   EXPECT_EQ(json.find("\"canfd\""), std::string::npos);
+}
+
+// ── E-Stop input (E-8) ───────────────────────────────────────────────────────
+// A loopback UDP socket the test owns and never answers stands in for the hand
+// (test/silent_loopback_socket.hpp): sil_mode=off opens the real UdpHandComm
+// against it, so this is the production wire end to end — not the scripted seam
+// test_udp_hand_controller uses.
+bool IsWritePosition(const std::vector<std::uint8_t>& d) {
+  return d.size() == udp_hand_driver::packets::kMotorPacketSize &&
+         d[1] == static_cast<std::uint8_t>(udp_hand_driver::packets::Command::kWritePosition);
+}
+
+// The estop_topic input reaches the CommLoop latch and the wire. With no hand
+// answering, every cycle is read requests that time out and no write ever goes
+// out (no command is sent, and the write gate holds until a first read
+// succeeds), so the only write-position datagram the socket can ever see is the
+// terminal E-Stop zero-write: exactly one, all-zero payload, and silence after
+// it because the loop has exited. A `false` must not trip it, and
+// deactivate → activate must clear the latch so the reads resume — the
+// documented way back.
+TEST_F(UdpHandNodeLifecycleTest, EstopTopicZeroWritesOnceAndStopsTheLoop) {
+  udp_hand_driver::test_support::SilentLoopbackSocket hand;
+  ASSERT_TRUE(hand.ok());
+
+  rclcpp::NodeOptions options;
+  options.arguments({"--ros-args", "-r", std::string("__ns:=") + kTestNamespace});
+  options.parameter_overrides({
+      rclcpp::Parameter("sil_mode", "off"),
+      rclcpp::Parameter("target_ip", "127.0.0.1"),
+      rclcpp::Parameter("target_port", hand.port()),
+      // Three timed-out reads per cycle must fit the 500 Hz slot.
+      rclcpp::Parameter("recv_timeout_ms", 0.3),
+      rclcpp::Parameter("loop_rate_hz", 500.0),
+      // The detector would otherwise declare the (deliberately dead) link a
+      // failure; it is not what this test is about.
+      rclcpp::Parameter("enable_failure_detector", false),
+  });
+  auto node = std::make_shared<UdpHandNode>(options);
+  auto probe = std::make_shared<rclcpp::Node>("hand_estop_probe");
+  auto estop_pub =
+      probe->create_publisher<std_msgs::msg::Bool>("/hand/estop", rclcpp::QoS(1).reliable());
+  exec_.add_node(node->get_node_base_interface());
+  exec_.add_node(probe);
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  ASSERT_TRUE(SpinUntil([&] { return estop_pub->get_subscription_count() > 0; }, 10s));
+
+  std::vector<std::vector<std::uint8_t>> rx;
+  // The loop is running: read requests are arriving.
+  ASSERT_TRUE(SpinUntil(
+      [&] {
+        hand.Drain(rx);
+        return !rx.empty();
+      },
+      10s));
+  std_msgs::msg::Bool msg;
+  msg.data = false;
+  estop_pub->publish(msg);
+  SpinFor(200ms);
+  hand.Drain(rx);
+  EXPECT_TRUE(std::none_of(rx.begin(), rx.end(), IsWritePosition))
+      << "a write-position datagram went out before any E-Stop";
+  EXPECT_EQ(node->get_current_state().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  rx.clear();
+
+  msg.data = true;
+  estop_pub->publish(msg);
+  ASSERT_TRUE(SpinUntil(
+      [&] {
+        hand.Drain(rx);
+        return std::any_of(rx.begin(), rx.end(), IsWritePosition);
+      },
+      10s));
+  // Silence after the zero-write: the loop has exited, nothing else may send.
+  SpinFor(300ms);
+  hand.Drain(rx);
+  const auto first_write = std::find_if(rx.begin(), rx.end(), IsWritePosition);
+  ASSERT_NE(first_write, rx.end());
+  EXPECT_EQ(std::count_if(rx.begin(), rx.end(), IsWritePosition), 1);
+  EXPECT_EQ(std::next(first_write), rx.end()) << "datagrams were sent after the E-Stop zero-write";
+  // id, cmd, mode, then ten float positions — all zero (D26: zero position).
+  EXPECT_TRUE(std::all_of(first_write->begin() + 3, first_write->end(),
+                          [](std::uint8_t b) { return b == 0; }));
+  // The node stays ACTIVE with a stopped loop: resuming is the operator's call.
+  EXPECT_EQ(node->get_current_state().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+
+  // A second `true` on a stopped loop changes nothing.
+  estop_pub->publish(msg);
+  SpinFor(200ms);
+  rx.clear();
+  hand.Drain(rx);
+  EXPECT_TRUE(rx.empty());
+
+  // deactivate → activate clears the latch: reads resume, no write.
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  rx.clear();
+  ASSERT_TRUE(SpinUntil(
+      [&] {
+        hand.Drain(rx);
+        return !rx.empty();
+      },
+      10s));
+  SpinFor(100ms);
+  hand.Drain(rx);
+  EXPECT_TRUE(std::none_of(rx.begin(), rx.end(), IsWritePosition))
+      << "the E-Stop latch survived deactivate → activate";
+
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(probe);
+  exec_.remove_node(node->get_node_base_interface());
 }
 
 }  // namespace
