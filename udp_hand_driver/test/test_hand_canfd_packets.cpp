@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -415,6 +416,54 @@ TEST(HandCanFdAssembler, InOrderBurstCompletes) {
   EXPECT_EQ(slot, Filled(0x11));
   SerializeFrame(a.set().frame2, slot.data());
   EXPECT_EQ(slot, Filled(0x12));
+}
+
+TEST(HandCanFdAssembler, EveryArrivalOrderCompletes) {
+  // D57: the three bits decide, not the order — all 3! orders, each payload
+  // in its own slot.
+  std::array<uint8_t, kNumRespFrames> order{0, 1, 2};
+  int orders = 0;
+  do {
+    RespSetAssembler a(kNodeRightHand);
+    a.Begin(Clock::time_point{} + 1ms);
+    for (std::size_t k = 0; k < order.size(); ++k) {
+      const uint8_t idx = order[k];
+      const FeedResult want = (k + 1 == order.size()) ? FeedResult::kComplete : FeedResult::kStored;
+      EXPECT_EQ(FeedRight(a, idx, Filled(static_cast<uint8_t>(0x20 + idx))), want)
+          << "order " << int{order[0]} << int{order[1]} << int{order[2]} << " step " << k;
+    }
+    ASSERT_TRUE(a.complete());
+    EXPECT_EQ(a.stats().sets_completed, 1u);
+    Bytes slot{};
+    SerializeFrame(a.set().frame0, slot.data());
+    EXPECT_EQ(slot, Filled(0x20));
+    SerializeFrame(a.set().frame1, slot.data());
+    EXPECT_EQ(slot, Filled(0x21));
+    SerializeFrame(a.set().frame2, slot.data());
+    EXPECT_EQ(slot, Filled(0x22));
+    ++orders;
+  } while (std::next_permutation(order.begin(), order.end()));
+  EXPECT_EQ(orders, 6);
+}
+
+TEST(HandCanFdAssembler, FramesAfterCompleteChangeNothing) {
+  RespSetAssembler a(kNodeRightHand);
+  a.Begin(Clock::time_point{} + 1ms);
+  (void)FeedRight(a, 2, Filled(0x32));
+  (void)FeedRight(a, 0, Filled(0x30));
+  ASSERT_EQ(FeedRight(a, 1, Filled(0x31)), FeedResult::kComplete);
+  for (uint8_t idx = 0; idx < kNumRespFrames; ++idx)
+    EXPECT_EQ(FeedRight(a, idx, Filled(0xEE)), FeedResult::kDuplicate) << "idx " << int{idx};
+  EXPECT_TRUE(a.complete());
+  EXPECT_EQ(a.stats().sets_completed, 1u) << "no second completion";
+  EXPECT_EQ(a.stats().duplicate, 3u);
+  Bytes slot{};
+  SerializeFrame(a.set().frame0, slot.data());
+  EXPECT_EQ(slot, Filled(0x30));
+  SerializeFrame(a.set().frame1, slot.data());
+  EXPECT_EQ(slot, Filled(0x31));
+  SerializeFrame(a.set().frame2, slot.data());
+  EXPECT_EQ(slot, Filled(0x32));
 }
 
 TEST(HandCanFdAssembler, StaleTailBeforeIdx0CompletesAMixedSet) {
