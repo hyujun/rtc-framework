@@ -82,6 +82,7 @@ auto state = xcvr.GetLatestState();  // non-RT 전용 (mutex)
 | `extended_frame` | `false` | `true` 면 29-bit ID |
 | `receive_own_messages` | `false` | 자기 송신 frame 수신 (`CAN_RAW_RECV_OWN_MSGS`) |
 | `loopback` | `true` | 같은 호스트 소켓으로 local echo (`CAN_RAW_LOOPBACK`) |
+| `error_mask` | `0` | error message frame 구독 class (`CAN_RAW_ERR_FILTER`, `linux/can/error.h`). **0 이면 bus-off 등 error frame 은 전혀 오지 않는다**. payload-only `Recv()` 는 drop, 프레임 API 는 그대로 전달 |
 | `recv_timeout_ms` | `100` | `SO_RCVTIMEO` |
 
 `CanFdTransportConfig` 는 `CanTransportConfig` 를 상속하고 `bitrate_switch` (`CANFD_BRS`, 기본 `false`) 와 `error_state_indicator` (`CANFD_ESI`, 기본 `false`) 를 더한다. `Open()` 에서 `CAN_RAW_FD_FRAMES` 를 켜므로 classic·FD frame 을 모두 수신한다.

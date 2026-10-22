@@ -67,8 +67,8 @@ class CanFdTransport : public TransportInterface {
 
   // Receives one frame — classic (CAN_MTU) or FD (CANFD_MTU), both arrive on
   // an FD-enabled socket — and copies its payload into buffer (truncating if
-  // the buffer is smaller). RTR frames are dropped (their data has no
-  // meaning). Returns payload bytes copied, or -1 on error/timeout/RTR.
+  // the buffer is smaller). RTR and error message frames are dropped (their
+  // data is not a payload). Returns payload bytes copied, or -1 on error/timeout.
   [[nodiscard]] ssize_t Recv(std::span<uint8_t> buffer) noexcept override {
     canfd_frame frame{};
     const ssize_t n = socket_.RecvFdFrame(frame);
@@ -76,7 +76,7 @@ class CanFdTransport : public TransportInterface {
     // classic frame read into a canfd_frame is directly usable.
     if (n != static_cast<ssize_t>(CAN_MTU) && n != static_cast<ssize_t>(CANFD_MTU))
       return -1;
-    if (frame.can_id & CAN_RTR_FLAG)
+    if (frame.can_id & (CAN_RTR_FLAG | CAN_ERR_FLAG))
       return -1;
     const std::size_t copy_len = std::min(static_cast<std::size_t>(frame.len), buffer.size());
     std::memcpy(buffer.data(), frame.data, copy_len);
@@ -87,8 +87,10 @@ class CanFdTransport : public TransportInterface {
   // The config's tx_can_id / bitrate_switch / error_state_indicator are NOT
   // applied here: the caller fills can_id (with CAN_EFF_FLAG for a 29-bit ID),
   // len and flags (CANFD_BRS / CANFD_ESI). Reception passes the configured rx
-  // filter and hands the frame over as-is (RTR frames are not dropped); the
-  // frame size tells classic (CAN_MTU) from FD (CANFD_MTU) on both sides.
+  // filter and hands the frame over as-is (RTR frames are not dropped, and
+  // error message frames — CAN_ERR_FLAG, subscribed with error_mask — arrive
+  // here too); the frame size tells classic (CAN_MTU) from FD (CANFD_MTU) on
+  // both sides.
   // Send/Recv are noexcept, allocation-free and never sleep in the kernel
   // beyond the given timeout; errno is left as the failing syscall set it.
 

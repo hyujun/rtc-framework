@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(udp_hand_driver VERSION 5.19.0 LANGUAGES CXX)
+project(udp_hand_driver VERSION 5.20.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -97,6 +97,7 @@ target_include_directories(fake_hand_firmware PRIVATE include)
 ament_target_dependencies(fake_hand_firmware
   rclcpp
   rtc_base
+  rtc_communication
 )
 
 # ── Install ────────────────────────────────────────────────────────────────────
@@ -167,6 +168,13 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fake_hand_firmware_canfd test/test_fake_hand_firmware_canfd.cpp)
   target_include_directories(test_fake_hand_firmware_canfd PRIVATE include)
   ament_target_dependencies(test_fake_hand_firmware_canfd rtc_base)
+
+  # CAN FD HandComm: Tier 1 cases plus vcan0 cases (SKIP_IF_NO_FD_VCAN from
+  # rtc_communication's test-only header, shared instead of forked — P5).
+  ament_add_gtest(test_canfd_hand_comm test/test_canfd_hand_comm.cpp)
+  target_include_directories(test_canfd_hand_comm PRIVATE include)
+  ament_target_dependencies(test_canfd_hand_comm rtc_base rtc_communication rclcpp)
+  rtc_communication_add_test_includes(test_canfd_hand_comm)
 
   ament_add_gtest(test_udp_hand_timing_profiler test/test_udp_hand_timing_profiler.cpp)
   target_include_directories(test_udp_hand_timing_profiler PRIVATE include)

@@ -29,11 +29,18 @@ struct CanTransportConfig {
   bool extended_frame{false};
   bool receive_own_messages{false};  // kernel default: off
   bool loopback{true};               // kernel default: on
+  // CAN error message frames (CAN_ERR_FLAG) are delivered only when their
+  // error class intersects this mask (CAN_RAW_ERR_FILTER); the default 0 =
+  // kernel default = none. Payload-only Recv() never returns them (the
+  // CAN_ERR_FLAG id is treated like RTR); the CanFdTransport frame API hands
+  // them over as-is for the caller to classify (can_id & CAN_ERR_FLAG).
+  can_err_mask_t error_mask{0};
   int recv_timeout_ms{100};
 };
 
 // Applies the config-driven socket options shared by the classic and FD
-// transports (rx filter, loopback, receive-own-messages, timeout). Bind and
+// transports (rx filter, error filter, loopback, receive-own-messages,
+// timeout). Bind and
 // FD-mode selection stay in each transport's Open(); the caller closes the
 // socket on failure.
 [[nodiscard]] inline bool ApplyCanSocketConfig(CanSocket& socket,
@@ -46,6 +53,8 @@ struct CanTransportConfig {
     if (!socket.SetFilter(filter_id, filter_mask))
       return false;
   }
+  if (config.error_mask != 0 && !socket.SetErrorFilter(config.error_mask))
+    return false;
   if (!socket.SetLoopback(config.loopback) ||
       !socket.SetRecvOwnMessages(config.receive_own_messages))
     return false;
@@ -83,13 +92,13 @@ class CanTransport : public TransportInterface {
   }
 
   // Receives one frame and copies its payload into buffer (truncating if the
-  // buffer is smaller). RTR frames are dropped (their data has no meaning).
-  // Returns payload bytes copied, or -1 on error/timeout/RTR.
+  // buffer is smaller). RTR and error message frames are dropped (their data
+  // is not a payload). Returns payload bytes copied, or -1 on error/timeout.
   [[nodiscard]] ssize_t Recv(std::span<uint8_t> buffer) noexcept override {
     can_frame frame{};
     if (socket_.RecvFrame(frame) < static_cast<ssize_t>(sizeof(frame)))
       return -1;
-    if (frame.can_id & CAN_RTR_FLAG)
+    if (frame.can_id & (CAN_RTR_FLAG | CAN_ERR_FLAG))
       return -1;
     const std::size_t copy_len = std::min(static_cast<std::size_t>(frame.len), buffer.size());
     std::memcpy(buffer.data(), frame.data, copy_len);

@@ -21,6 +21,8 @@
 //     overload arrives as CAN_MTU beside the FD stream, oversized len is
 //     refused with EINVAL, SetPriority applies, and a closed transport reports
 //     errors without waiting (no vcan needed for that one)
+//   - error_mask: an error message frame (CAN_ERR_FLAG) reaches only the
+//     socket that subscribed to its class; a default socket never sees it
 // ─────────────────────────────────────────────────────────────────────────────
 #include "rtc_communication/can/can_transport.hpp"
 #include "rtc_communication/can/canfd_transport.hpp"
@@ -28,6 +30,7 @@
 
 #include <gtest/gtest.h>
 #include <linux/can.h>
+#include <linux/can/error.h>
 
 #include <array>
 #include <cerrno>
@@ -315,6 +318,47 @@ TEST(CanFdTransportFrameApiTest, SendFrameRejectsOversizedLenAndSetPriorityAppli
   EXPECT_TRUE(transport.SendFrame(tx));  // boundary passes
 
   EXPECT_TRUE(transport.SetPriority(6));  // highest value without CAP_NET_ADMIN
+}
+
+// ── error_mask: error message frames reach only a subscribed socket ─────────
+// The kernel routes CAN_ERR_FLAG frames through a receiver list of their own
+// that CAN_RAW_FILTER never reaches, so without error_mask a bus-off is
+// invisible; with it the frame arrives as-is on the frame API (CAN_MTU, the
+// error class in can_id) beside the regular stream.
+TEST(CanFdTransportFrameApiTest, ErrorMaskDeliversErrorFramesOnlyWhenSubscribed) {
+  SKIP_IF_NO_FD_VCAN();
+
+  rtc::CanFdTransportConfig subscribed = FrameSenderConfig();
+  subscribed.error_mask = CAN_ERR_BUSOFF | CAN_ERR_CRTL;
+  rtc::CanFdTransport rx_subscribed(subscribed);
+  ASSERT_TRUE(rx_subscribed.Open());
+
+  rtc::CanFdTransport rx_default(FrameSenderConfig());  // error_mask 0, no filter
+  ASSERT_TRUE(rx_default.Open());
+
+  rtc::CanFdTransport tx(FrameSenderConfig());
+  ASSERT_TRUE(tx.Open());
+
+  // Error message frames are classic frames: class bits in can_id, 8 data bytes.
+  can_frame err{};
+  err.can_id = CAN_ERR_FLAG | CAN_ERR_BUSOFF;
+  err.len = CAN_ERR_DLC;
+  ASSERT_TRUE(tx.SendFrame(err));
+
+  canfd_frame rx{};
+  ASSERT_EQ(rx_subscribed.RecvFrameWithTimeout(rx, kHalfSecond), static_cast<ssize_t>(CAN_MTU));
+  EXPECT_TRUE(rx.can_id & CAN_ERR_FLAG);
+  EXPECT_TRUE(rx.can_id & CAN_ERR_BUSOFF);
+
+  EXPECT_EQ(rx_default.RecvFrameWithTimeout(rx, kTwentyMs), 0);  // never delivered
+
+  // A class outside the mask is not delivered. Error frames have no id
+  // separation on the shared vcan0, so a subscribed-class frame injected by
+  // another test at this moment is tolerated: only a TX_TIMEOUT frame fails.
+  err.can_id = CAN_ERR_FLAG | CAN_ERR_TX_TIMEOUT;
+  ASSERT_TRUE(tx.SendFrame(err));
+  while (rx_subscribed.RecvFrameWithTimeout(rx, kTwentyMs) > 0)
+    EXPECT_EQ(rx.can_id & CAN_ERR_TX_TIMEOUT, 0u);
 }
 
 // ── Frame API: a closed transport reports errors and never waits (no vcan) ──

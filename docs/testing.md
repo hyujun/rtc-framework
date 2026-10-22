@@ -43,7 +43,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `integrated_bringup/` FK · arm tip · hand sensor_layout | `test_hand_fk_wiring` · `test_arm_tip_resolution` · `test_hand_sensor_layout_gate` | `iiwa7_leap` sim 에서 손 목표 smoke |
 | `integrated_bringup/` compliance · catching | `test_compliance_admittance_coupling` · `test_demo_catching_controller` (configure — 사슬 탐색 · 관절군 · D9′) · `test_demo_catching_alloc` · `test_catching_search_segment_g1` (G1 탐색 · 구간 · 전신 항 — repo 밖 `hand_description` 이 없으면 skip, skip 은 미검증) | sim 외부 렌치 → `compliance_diag.csv`; 17 관절 시간 기록은 `RTC_WHOLEBODY_TIMING=1` 로 단독 실행 |
 | `integrated_bringup/` inference · observer | `test_demo_inference_controller` · `test_momentum_observer_wiring` · `test_payload_estimator` | `test_demo_inference_real_model` (로컬) |
-| `udp_hand_driver/` | hand_packets · codec · FT · failure detector gtest + UDP loopback | `ros2 topic hz /p1a/joint_states` |
+| `udp_hand_driver/` | hand_packets · codec · FT · failure detector gtest + UDP loopback · CAN FD comm (`test_canfd_hand_comm`, vcan0 없으면 skip — skip 은 미검증) | `ros2 topic hz /p1a/joint_states` |
 | `ur5e_bt_coordinator/` | BT gtest | 실제 grasp smoke |
 | Launch · YAML config | `--ctest-args -R 'test_launch_'` + 변경한 YAML 의 parse · 범위 | 짧은 sim/실기 smoke |
 | Threading (`ApplyThreadConfig`) | `rtc_base` thread-config gtest + RT 권한 | `check_rt_setup.sh --summary` |

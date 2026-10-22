@@ -11,10 +11,10 @@
 //   - UdpHandComm (udp_hand_comm.hpp): proto1a / proto1b over UDP. Wraps the
 //     pre-existing UdpHandTransport; a cycle is the same request/response
 //     sequence the controller used to issue directly.
-//   - A CAN FD implementation (proto2) sends the command as two frames and
-//     reads one REQ → three-frame RESP burst per cycle; it cannot be split
-//     into per-request calls without caching, which is why the read side is
-//     one ReadCycle() and not three virtuals.
+//   - CanFdHandComm (canfd_hand_comm.hpp): proto2 over CAN FD. Sends the
+//     command as two frames and reads one REQ → three-frame RESP burst per
+//     cycle; it cannot be split into per-request calls without caching, which
+//     is why the read side is one ReadCycle() and not three virtuals.
 //
 // Ownership of the bookkeeping stays with the controller: ReadCycle reports
 // per-channel outcomes and the phase boundaries inside the read; the
@@ -33,15 +33,19 @@
 // The pre-existing UDP type names are kept (UdpHandCommStats, RequestKind);
 // they moved here unchanged so this header does not pull in the socket headers.
 
+#include "rtc_base/threading/seqlock.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_packets.hpp"
 
 #include <sys/types.h>
 
 #include <array>
+#include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 namespace udp_hand_driver {
 
@@ -116,6 +120,111 @@ struct UdpHandCommStats {
   // the byte count of the last rejected recv (mismatch or short).
   uint8_t last_unexpected_cmd{0};
   uint16_t last_unexpected_len{0};
+};
+
+// ── Stats pair ───────────────────────────────────────────────────────────────
+// The working copy / published snapshot pair every HandComm keeps, with the
+// counting vocabulary the links share, so a second link does not fork the
+// bookkeeping (P5). Single writer (the CommLoop thread) mutates `working()` and
+// publishes it once per cycle; any thread reads `Load()`. Hot-path methods are
+// counter increments only — noexcept, allocation-free (RT-safe).
+//
+// Which event each link maps onto which counter is the link's business
+// (UdpHandTransport: a datagram; CanFdHandComm: a frame / a transaction) — the
+// JSON keys and their meaning in UdpHandCommStats stay the same.
+class HandCommStatsPair {
+ public:
+  [[nodiscard]] UdpHandCommStats& working() noexcept { return working_; }
+
+  [[nodiscard]] const UdpHandCommStats& working() const noexcept { return working_; }
+
+  [[nodiscard]] UdpHandCommStats::PerKind& PerKind(RequestKind kind) noexcept {
+    return working_.per_kind[static_cast<std::size_t>(kind)];
+  }
+
+  /// Consistent snapshot for off-loop readers (SeqLock retry loop: no torn
+  /// per_kind / aggregate or cmd / len pair).
+  [[nodiscard]] UdpHandCommStats Load() const noexcept { return seqlock_.Load(); }
+
+  /// Publish the working copy (~400 B memcpy + 2 fences; once per cycle).
+  void Publish() noexcept { seqlock_.Store(working_); }
+
+  /// Zero everything and publish the cleared snapshot (restart begins clean —
+  /// a reader between restart and the first cycle sees zeros, not stale data).
+  void Reset() noexcept {
+    working_ = {};
+    recv_error_count_.store(0, std::memory_order_relaxed);
+    seqlock_.Store(working_);
+  }
+
+  /// Receive failures (timeouts + errors) since the last reset. Any thread.
+  [[nodiscard]] uint64_t recv_error_count() const noexcept {
+    return recv_error_count_.load(std::memory_order_relaxed);
+  }
+
+  // ── Counting (CommLoop thread) ───────────────────────────────────────────
+
+  /// First-attempt packet / frame arrival, validity-independent.
+  void CountRecvOk() noexcept { ++working_.recv_ok; }
+
+  void CountRecvTimeout(RequestKind kind) noexcept {
+    recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+    ++working_.recv_timeout;
+    ++PerKind(kind).timeout;
+  }
+
+  void CountRecvError(RequestKind kind) noexcept {
+    recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+    ++working_.recv_error;
+    ++PerKind(kind).error;
+  }
+
+  /// Classify a failed blocking recv by errno: EAGAIN / EWOULDBLOCK is a
+  /// timeout, anything else a socket error.
+  void CountRecvFailErrno(RequestKind kind) noexcept {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      CountRecvTimeout(kind);
+    } else {
+      CountRecvError(kind);
+    }
+  }
+
+  /// A packet / frame that is not the one this request waits for. Records the
+  /// rejected cmd + len into the working copy; the whole-struct publish keeps
+  /// the pair consistent for cross-thread readers.
+  void CountCmdMismatch(RequestKind kind, uint8_t got_cmd, ssize_t recvd) noexcept {
+    ++working_.cmd_mismatch;
+    ++PerKind(kind).cmd_mismatch;
+    working_.last_unexpected_cmd = got_cmd;
+    working_.last_unexpected_len = static_cast<uint16_t>(recvd);
+  }
+
+  void CountModeMismatch(RequestKind kind) noexcept {
+    ++working_.mode_mismatch;
+    ++PerKind(kind).mode_mismatch;
+  }
+
+  /// Short packet or codec decode failure. Updates only the len, preserving
+  /// the last cmd byte.
+  void CountShortOrDecode(RequestKind kind, ssize_t recvd) noexcept {
+    ++PerKind(kind).short_or_decode;
+    working_.last_unexpected_len = static_cast<uint16_t>(recvd);
+  }
+
+  void CountStaleDrained(int drained) noexcept {
+    working_.stale_drained += static_cast<uint64_t>(drained);
+  }
+
+ private:
+  static_assert(std::is_trivially_copyable_v<UdpHandCommStats>,
+                "SeqLock payload must be trivially copyable");
+  // CommLoop-thread-only working copy: mutated in place every cycle, then
+  // published as one consistent snapshot at cycle end.
+  UdpHandCommStats working_{};
+  // Reader-visible snapshot. Single writer = CommLoop via Publish() / Reset();
+  // readers = stats timer + failure detector (Load()).
+  rtc::SeqLock<UdpHandCommStats> seqlock_{};
+  std::atomic<uint64_t> recv_error_count_{0};
 };
 
 // ── Read-cycle contract ──────────────────────────────────────────────────────
@@ -243,7 +352,8 @@ class HandComm {
   /// Consistent snapshot for off-loop readers (stats timer, failure detector).
   [[nodiscard]] virtual UdpHandCommStats comm_stats() const noexcept = 0;
 
-  /// Receive errors (not timeouts) since the last reset. Any thread.
+  /// Receive failures (timeouts and socket errors) since the last reset — the
+  /// failure detector's onset counter. Any thread.
   [[nodiscard]] virtual uint64_t recv_error_count() const noexcept = 0;
 
   /// Per-stage receive deadline the implementation was configured with.
