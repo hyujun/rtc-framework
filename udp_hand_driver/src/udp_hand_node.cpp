@@ -48,9 +48,9 @@ int main(int argc, char** argv) {
   // that affinity. Both keep cpu_core=-1 and rely on inheriting the process
   // affinity; hand_comm deliberately still does, because giving it an
   // explicit slot would add a failure path where ApplyThreadConfig's affinity
-  // step fails and takes SCHED_FIFO 65 *and* the thread name down with it
-  // (it returns early on affinity failure), and a thread with no name is a
-  // thread verify_rt_runtime.sh cannot find.
+  // step fails and returns before the scheduler step, so the thread runs CFS
+  // instead of SCHED_FIFO 65 (the name is set first and survives,
+  // thread_utils.hpp) and verify_rt_runtime.sh reports WRONG_SCHED.
   //
   // cpu_core is a *slot index*; SlotToLogicalCpu translates it to a logical CPU
   // (identity when sysfs is unavailable, e.g. a container) — the same

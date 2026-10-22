@@ -74,18 +74,15 @@ from rtc_tools.analysis.candump_log import (
     read_candump,
 )
 from rtc_tools.analysis.hand_close import quantile
+from rtc_tools.utils.session_dir import HAND_STATS_STEM, HAND_TIMING_STEM, PRE_F08_HAND_STEMS
 
 PASS = "PASS"
 FAIL = "FAIL"
 UNDECIDED = "UNDECIDED"
 NOT_EVALUATED = "NOT_EVALUATED"
 
-TIMING_STEM = "hand_timing_log"
-STATS_STEM = "hand_stats"
-# Pre-F08 artifact names (#905): sessions recorded before the rename — the G-3
-# hardware runs on the control PC among them — still carry these. Remove the
-# fallback (and _artifact's lookup) once no pre-F08 session needs analysing.
-LEGACY_STEMS = {TIMING_STEM: "hand_udp_timing_log", STATS_STEM: "hand_udp_stats"}
+TIMING_STEM = HAND_TIMING_STEM
+STATS_STEM = HAND_STATS_STEM
 LINK_DOWN_NEEDLE = "Hand link DOWN"
 FAILURE_NEEDLE = "Hand failure detected: "
 # Failure-detector reasons that judge the SENSOR payload, not the link: a hand
@@ -734,15 +731,25 @@ def _rel(t: float | None, t0: float) -> str:
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
-def _artifact(session: Path, sub: str, stem: str, suffix: str, ext: str) -> Path:
-    """Resolve one forensic artifact, per artifact: the current name when it
-    exists, else the pre-F08 name when that exists, else the current name (so
-    the exit-3 message names what the node writes today)."""
-    current = session / sub / f"{stem}{suffix}{ext}"
-    if current.exists():
-        return current
-    legacy = session / sub / f"{LEGACY_STEMS[stem]}{suffix}{ext}"
-    return legacy if legacy.exists() else current
+def _artifacts(session: Path, suffix: str) -> tuple[Path, Path]:
+    """Resolve the (timing CSV, comm-stats JSON) pair of one run.
+
+    The pre-F08 names (#905, PRE_F08_HAND_STEMS) are used only when BOTH exist
+    and NEITHER current file does; every other mix resolves to the current
+    names, so a session holding one run's CSV next to another run's JSON is an
+    exit-3 "missing file" (naming what the node writes today), never a verdict
+    assembled from two runs."""
+    current = (
+        session / "timing" / f"{TIMING_STEM}{suffix}.csv",
+        session / "device" / f"{STATS_STEM}{suffix}.json",
+    )
+    legacy = (
+        session / "timing" / f"{PRE_F08_HAND_STEMS[TIMING_STEM]}{suffix}.csv",
+        session / "device" / f"{PRE_F08_HAND_STEMS[STATS_STEM]}{suffix}.json",
+    )
+    if all(p.exists() for p in legacy) and not any(p.exists() for p in current):
+        return legacy
+    return current
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -791,8 +798,7 @@ def main(argv: list[str] | None = None) -> int:
     suffix = args.suffix
     if suffix is None:
         suffix = f"_{args.hand_side}" if args.explicit_side else ""
-    csv_path = _artifact(args.session, "timing", TIMING_STEM, suffix, ".csv")
-    json_path = _artifact(args.session, "device", STATS_STEM, suffix, ".json")
+    csv_path, json_path = _artifacts(args.session, suffix)
 
     try:
         rows = load_timing_csv(csv_path)

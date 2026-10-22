@@ -38,6 +38,16 @@ _SESSION_SUBDIRS = (
 )
 _SESSION_PATTERN = re.compile(r"^\d{6}_\d{4}$")
 
+# Hand forensic artifact stems: udp_hand_driver writes <session>/timing/
+# <HAND_TIMING_STEM>[_<side>].csv and <session>/device/<HAND_STATS_STEM>
+# [_<side>].json. The F08 rename (#905) dropped the UDP prefix; sessions recorded
+# before it keep the old names, so both readers (plot_rtc_log's detect_log_type,
+# analyze_hand_canfd_gate) accept PRE_F08_HAND_STEMS as well. Remove that dict
+# and the two fallbacks that use it once no pre-F08 session needs analysing.
+HAND_TIMING_STEM = "hand_timing_log"
+HAND_STATS_STEM = "hand_stats"
+PRE_F08_HAND_STEMS = {HAND_TIMING_STEM: "hand_udp_timing_log", HAND_STATS_STEM: "hand_udp_stats"}
+
 
 def is_session_dir_name(name: str) -> bool:
     """``YYMMDD_HHMM`` 세션 디렉토리 이름인지 판정합니다.

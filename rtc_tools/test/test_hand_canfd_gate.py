@@ -22,14 +22,13 @@ from rtc_tools.analysis.candump_log import (
 )
 from rtc_tools.analysis.hand_canfd_gate import (
     FAIL,
-    LEGACY_STEMS,
     NOT_EVALUATED,
     PASS,
     STATS_STEM,
     TIMING_STEM,
     UNDECIDED,
     Thresholds,
-    _artifact,
+    _artifacts,
     analyse_bus,
     judge,
     load_comm_stats,
@@ -38,6 +37,7 @@ from rtc_tools.analysis.hand_canfd_gate import (
     overall,
     summarise_timing,
 )
+from rtc_tools.utils.session_dir import PRE_F08_HAND_STEMS
 
 NODE = node_id_of("right")
 TH = Thresholds()
@@ -470,8 +470,8 @@ def write_session(
     session = tmp_path / "session"
     (session / "timing").mkdir(parents=True, exist_ok=True)
     (session / "device").mkdir(exist_ok=True)
-    timing_stem = LEGACY_STEMS[TIMING_STEM] if legacy_names else TIMING_STEM
-    stats_stem = LEGACY_STEMS[STATS_STEM] if legacy_names else STATS_STEM
+    timing_stem = PRE_F08_HAND_STEMS[TIMING_STEM] if legacy_names else TIMING_STEM
+    stats_stem = PRE_F08_HAND_STEMS[STATS_STEM] if legacy_names else STATS_STEM
     rows = rows if rows is not None else timing_rows(150_001)
     with (session / "timing" / f"{timing_stem}{suffix}.csv").open("w") as fh:
         fh.write(
@@ -488,30 +488,34 @@ def write_session(
     return session
 
 
-def test_artifact_names_are_link_neutral():
-    assert TIMING_STEM == "hand_timing_log"
-    assert STATS_STEM == "hand_stats"
+def _names(pair) -> tuple[str, str]:
+    return tuple(p.name for p in pair)
 
 
-def test_artifact_falls_back_to_the_pre_f08_name_per_artifact(tmp_path):
-    # Pre-F08 (#905) sessions: both artifacts under the old names, D51 suffix kept.
+def test_artifacts_fall_back_to_the_pre_f08_pair_only_as_a_pair(tmp_path):
+    # Pre-F08 (#905) session: both artifacts under the old names, D51 suffix kept.
     legacy = write_session(tmp_path / "legacy", suffix="_left", legacy_names=True)
-    assert _artifact(legacy, "timing", TIMING_STEM, "_left", ".csv").name == (
-        "hand_udp_timing_log_left.csv"
+    assert _names(_artifacts(legacy, "_left")) == (
+        "hand_udp_timing_log_left.csv",
+        "hand_udp_stats_left.json",
     )
-    assert (
-        _artifact(legacy, "device", STATS_STEM, "_left", ".json").name
-        == "hand_udp_stats_left.json"
-    )
-    # Neither name present: the current name, so the exit-3 message shows it.
-    assert _artifact(legacy, "timing", TIMING_STEM, "", ".csv").name == "hand_timing_log.csv"
-    # Both present (a pre- and a post-rename binary restarted into the same
-    # minute's session): the current name wins, per artifact.
+    # Neither name present: the current names, so the exit-3 message shows them.
+    assert _names(_artifacts(legacy, "")) == ("hand_timing_log.csv", "hand_stats.json")
+    # Two complete pairs (a pre- and a post-rename binary restarted into the
+    # same minute's session): the current pair.
     both = write_session(tmp_path / "both", legacy_names=True)
     write_session(tmp_path / "both")
-    (both / "timing" / "hand_timing_log.csv").unlink()
-    assert _artifact(both, "timing", TIMING_STEM, "", ".csv").name == "hand_udp_timing_log.csv"
-    assert _artifact(both, "device", STATS_STEM, "", ".json").name == "hand_stats.json"
+    assert _names(_artifacts(both, "")) == ("hand_timing_log.csv", "hand_stats.json")
+    # A mixed session (old run's CSV, new run's JSON) must not be judged as one
+    # run: it resolves to the current pair, whose CSV is missing -> exit 3.
+    mixed = write_session(tmp_path / "mixed", legacy_names=True)
+    write_session(tmp_path / "mixed")
+    (mixed / "timing" / "hand_timing_log.csv").unlink()
+    (mixed / "device" / "hand_udp_stats.json").unlink()
+    assert _names(_artifacts(mixed, "")) == ("hand_timing_log.csv", "hand_stats.json")
+    log = tmp_path / "g3.log"
+    log.write_text("\n".join(good_bus_lines()) + "\n")
+    assert main([str(mixed), str(log)]) == 3
 
 
 def test_main_reads_a_pre_f08_session(tmp_path):
