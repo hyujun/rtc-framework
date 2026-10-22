@@ -22,6 +22,7 @@
 #   pub: sensor_states/monitor  HandSensorState (RELIABLE QoS, 비-RT용)
 #   pub: link_status     Bool (링크 상태 — UDP 또는 CAN FD)
 #   sub: joint_command   JointCommand (values[10])
+#   sub: estop           Bool (true → zero-write 1회 + CommLoop 종료; deactivate→activate 로 복귀)
 
 /**:
   ros__parameters:
@@ -171,6 +172,7 @@
     motor_state_topic: "motor_states"   # JointState 발행 (motor pos/vel/effort)
     sensor_topic: "sensor_states"       # HandSensorState 발행
     link_status_topic: "link_status"    # Bool 발행 (UDP 링크 상태)
+    estop_topic: "estop"                # Bool 구독 (true 만 latch — 네임스페이스 없이 띄우면 /estop)
 
     # -- Sensor calibration (trigger + status) --
     # CalibrationCommand 를 publish 하면 udp_hand_driver 가 지정 센서의
