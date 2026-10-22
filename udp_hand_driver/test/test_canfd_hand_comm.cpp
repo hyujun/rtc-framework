@@ -550,7 +550,7 @@ TEST_F(CanFdHandCommVcan, D41_OneStaleRespCostsBudgetButTheWriteSucceeds) {
   EXPECT_EQ(comm->last_unexpected_len(), kFrameLen);
 }
 
-TEST_F(CanFdHandCommVcan, D41_ThreeUnexpectedFramesFailTheWriteAtOnce) {
+TEST_F(CanFdHandCommVcan, D58_ThreeUnexpectedFramesOnlyCountUntilTheDeadline) {
   auto comm = OpenComm();  // no peer: only the injected frames are on the bus
   rtc::CanFdTransport injector(InjectorConfig());
   ASSERT_TRUE(injector.Open());
@@ -559,12 +559,15 @@ TEST_F(CanFdHandCommVcan, D41_ThreeUnexpectedFramesFailTheWriteAtOnce) {
 
   const auto t0 = std::chrono::steady_clock::now();
   EXPECT_FALSE(comm->WriteCommandWithEcho(Ramp(0.0f, 0.1f), HandMotorArray{}));
-  EXPECT_LT(std::chrono::steady_clock::now() - t0, 40ms);  // failed before the deadline
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+  EXPECT_GE(elapsed, 45ms);  // still waiting for the echoes at the deadline
+  EXPECT_LT(elapsed, 500ms);
 
   comm->PublishCommStats();
   const UdpHandCommStats s = comm->comm_stats();
   EXPECT_EQ(s.cmd_mismatch, 3u);
-  EXPECT_EQ(s.recv_timeout, 0u);
+  EXPECT_EQ(s.recv_timeout, 1u);
+  EXPECT_EQ(s.per_kind[static_cast<std::size_t>(RequestKind::kWriteEcho)].timeout, 1u);
   EXPECT_EQ(s.per_kind[static_cast<std::size_t>(RequestKind::kWriteEcho)].ok, 0u);
 }
 
