@@ -1,8 +1,14 @@
 // UdpHandNode::SaveCommStats — persist comm/timing statistics to
-// <session>/device/hand_udp_stats.json. Split out of udp_hand_node_lifecycle.cpp
+// <session>/device/hand_udp_stats<suffix>.json (suffix = "_<side>" only when
+// hand_side was set explicitly, D51). Split out of udp_hand_node_lifecycle.cpp
 // so the ~150-line manual JSON writer does not crowd the lifecycle callbacks.
 // See udp_hand_node.hpp for the declaration and threading contract.
+//
+// Key set: test/fixtures/hand_udp_stats_keys.txt (proto1, individual; a
+// superset gate) and hand_udp_stats_keys_proto2.txt (proto2, bulk; exact) —
+// append, never rename, and regenerate the fixture in the same commit.
 
+#include "udp_hand_driver/canfd_hand_comm.hpp"
 #include "udp_hand_driver/udp_hand_logging.hpp"
 #include "udp_hand_driver/udp_hand_node.hpp"
 #include <rtc_base/logging/session_dir.hpp>
@@ -41,7 +47,7 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
   std::filesystem::create_directories(output_dir_path, dir_ec);
   const std::string output_dir = output_dir_path.string();
 
-  const std::string path = output_dir + "/hand_udp_stats.json";
+  const std::string path = output_dir + "/hand_udp_stats" + hand_file_suffix_ + ".json";
   std::ofstream ofs(path);
   if (!ofs.is_open()) {
     RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(), "Failed to save hand stats to %s",
@@ -55,9 +61,18 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
       (controller_->communication_mode() == udp_hand_driver::HandCommunicationMode::kBulk);
   const char* mode_str = is_bulk ? "bulk" : "individual";
 
+  // transport follows the installed link, not the protocol string, so the two
+  // keys together say what actually ran (loopmodel "2" still reads canfd — the
+  // comm was constructed even though its socket never opened).
+  const char* transport_str = (canfd_comm_ != nullptr) ? "canfd" : "udp";
+
   ofs << "{\n"
       << "  \"comm_stats\": {\n"
       << "    \"communication_mode\": \"" << mode_str << "\",\n"
+      << "    \"protocol_version\": \"" << protocol_version_ << "\",\n"
+      << "    \"transport\": \"" << transport_str
+      << "\",\n"
+      // On CAN FD this is the per-stage deadline (D42); the key is shared.
       << "    \"recv_timeout_ms\": " << std::fixed << std::setprecision(3)
       << controller_->recv_timeout_ms() << ",\n"
       << "    \"total_cycles\": " << stats.total_cycles << ",\n"
@@ -77,7 +92,13 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
       // Datagrams dropped by the cycle-start drain (desync backlog). A rising
       // count with 0.4 ms timeout means the drain is actively unmasking stale
       // reads — see Phase 2 recv-stabilization notes.
-      << "    \"stale_drained\": " << stats.stale_drained << ",\n";
+      << "    \"stale_drained\": " << stats.stale_drained
+      << ",\n"
+      // D39: JointCommand messages whose feedforward was zeroed for a size
+      // mismatch (position still applied). Every protocol, so a proto1 run
+      // reads 0 rather than lacking the key.
+      << "    \"feedforward_size_mismatch\": "
+      << feedforward_size_mismatch_.load(std::memory_order_relaxed) << ",\n";
 
   // Per-request-kind breakdown (link-down forensics): which request kind eats
   // the failures, and whether drops are timeouts or stale/desync mismatches.
@@ -91,8 +112,32 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
         << ", \"short_or_decode\": " << pk.short_or_decode << " }"
         << (k + 1 < udp_hand_driver::kNumRequestKinds ? "," : "") << "\n";
   }
-  ofs << "    },\n"
-      << "    \"last_unexpected_cmd\": " << static_cast<unsigned>(stats.last_unexpected_cmd)
+  ofs << "    },\n";
+
+  // CAN FD-only counters (tx errno classes, error frames, echo payload
+  // mismatches, RESP-set assembler) — the link's own SeqLock snapshot. Absent
+  // on UDP so the proto1 key set is exactly what it was.
+  if (canfd_comm_ != nullptr) {
+    const udp_hand_driver::CanFdCommStats cs = canfd_comm_->canfd_stats();
+    ofs << "    \"canfd\": {\n"
+        << "      \"tx_eagain\": " << cs.tx_eagain << ",\n"
+        << "      \"tx_enobufs\": " << cs.tx_enobufs << ",\n"
+        << "      \"tx_enetdown\": " << cs.tx_enetdown << ",\n"
+        << "      \"tx_other\": " << cs.tx_other << ",\n"
+        << "      \"error_frames\": " << cs.error_frames << ",\n"
+        << "      \"bus_off\": " << cs.bus_off << ",\n"
+        << "      \"echo_payload_mismatch\": " << cs.echo_payload_mismatch << ",\n"
+        << "      \"assembler\": { \"sets_completed\": " << cs.assembler.sets_completed
+        << ", \"sets_abandoned\": " << cs.assembler.sets_abandoned
+        << ", \"restarted\": " << cs.assembler.restarted
+        << ", \"duplicate\": " << cs.assembler.duplicate
+        << ", \"outside_set\": " << cs.assembler.outside_set
+        << ", \"bad_index\": " << cs.assembler.bad_index
+        << ", \"bad_length\": " << cs.assembler.bad_length << " }\n"
+        << "    },\n";
+  }
+
+  ofs << "    \"last_unexpected_cmd\": " << static_cast<unsigned>(stats.last_unexpected_cmd)
       << ",\n"
       << "    \"last_unexpected_len\": " << static_cast<unsigned>(stats.last_unexpected_len)
       << ",\n"

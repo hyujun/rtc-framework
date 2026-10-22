@@ -758,4 +758,93 @@ TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsARecvTimeoutThatCannotFitTheSlot) 
   }
 }
 
+std::string Dump(const std::set<std::string>& keys) {
+  std::string out;
+  for (const auto& k : keys) {
+    out += "  " + k + "\n";
+  }
+  return out;
+}
+
+// Forensic schema of a proto2 run: the stats JSON key set must EQUAL
+// fixtures/hand_udp_stats_keys_proto2.txt (bulk timing keys + comm_stats.canfd.*
+// + the keys every protocol emits) and the timing CSV header must still match
+// the shared fixture. Exact, not superset: the proto1 fixture pins the
+// individual-mode keys, so it cannot double as this gate, and G-2's SIL run
+// compares its JSON against this same file. loopmodel never opens the CAN
+// socket, but the comm is constructed, so the canfd block is present with
+// zero counters — the schema this pins is the one the hardware run writes.
+TEST_F(UdpHandNodeLifecycleTest, Proto2StatsJsonKeysMatchTheProto2FixtureExactly) {
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("loop_rate_hz", 2000.0),
+      rclcpp::Parameter("publish_rate", 2000.0),
+      // D42 at 2 kHz: the slot is 0.5 ms, so the shipped 0.4 ms is refused.
+      rclcpp::Parameter("recv_timeout_ms", 0.2),
+  }));
+  exec_.add_node(node->get_node_base_interface());
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  SpinFor(500ms);  // sensor-cycle-gated blocks (sensor_proc_us) need samples
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+
+  const std::filesystem::path fixtures = UDP_HAND_TEST_FIXTURE_DIR;
+  const auto json_path = session_dir_ / "device" / "hand_udp_stats.json";
+  ASSERT_TRUE(std::filesystem::exists(json_path));
+  const std::string json = ReadFile(json_path);
+  const auto actual_keys = JsonKeyPaths(json);
+  const auto expected_keys = ReadFixtureLines(fixtures / "hand_udp_stats_keys_proto2.txt");
+  ASSERT_FALSE(expected_keys.empty())
+      << "fixture missing or empty: " << (fixtures / "hand_udp_stats_keys_proto2.txt")
+      << "\nactual keys:\n"
+      << Dump(actual_keys);
+  EXPECT_EQ(actual_keys, expected_keys) << "actual keys:\n" << Dump(actual_keys);
+
+  // The tags say what ran; the proto1 superset still holds (nothing dropped).
+  EXPECT_NE(json.find("\"protocol_version\": \"2\""), std::string::npos);
+  EXPECT_NE(json.find("\"transport\": \"canfd\""), std::string::npos);
+  for (const auto& k : ReadFixtureLines(fixtures / "hand_udp_stats_keys.txt")) {
+    if (k.rfind("timing_stats.read_", 0) == 0) {
+      continue;  // individual-mode timing keys — bulk writes its own set
+    }
+    EXPECT_EQ(actual_keys.count(k), 1u) << "proto1 key dropped on proto2: " << k;
+  }
+
+  const auto csv_path = session_dir_ / "timing" / "hand_udp_timing_log.csv";
+  ASSERT_TRUE(std::filesystem::exists(csv_path));
+  EXPECT_EQ(FirstLine(ReadFile(csv_path)),
+            FirstLine(ReadFile(fixtures / "hand_udp_timing_log_header.txt")));
+}
+
+// D51: an explicit hand_side suffixes both forensic artifacts; the default
+// names above stay as they were, so one-hand deployments see no rename.
+TEST_F(UdpHandNodeLifecycleTest, ExplicitHandSideSuffixesTheForensicFiles) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("hand_side", "left"),
+      rclcpp::Parameter("loop_rate_hz", 2000.0),
+  });
+  auto node = std::make_shared<UdpHandNode>(options);
+  exec_.add_node(node->get_node_base_interface());
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  SpinFor(200ms);
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "device" / "hand_udp_stats_left.json"));
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "timing" / "hand_udp_timing_log_left.csv"));
+  // The suffixed run is a proto1 UDP run: tagged as such.
+  const std::string json = ReadFile(session_dir_ / "device" / "hand_udp_stats_left.json");
+  EXPECT_NE(json.find("\"protocol_version\": \"1a\""), std::string::npos);
+  EXPECT_NE(json.find("\"transport\": \"udp\""), std::string::npos);
+  EXPECT_EQ(json.find("\"canfd\""), std::string::npos);
+}
+
 }  // namespace

@@ -806,7 +806,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // on one flag would either skip on_deactivate's straggler drain (if the flag
   // were cleared) or leave the timer dead after deactivate -> activate (if not).
   if (!hand_udp_timing_opened_) {
-    if (!hand_udp_timing_logger_.Open()) {
+    if (!hand_udp_timing_logger_.Open(hand_file_suffix_)) {
       RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                   "UdpHandTimingLogger::Open() failed — timing CSV disabled");
     } else {

@@ -101,3 +101,8 @@ timing_stats.write_us
 timing_stats.write_us.max
 timing_stats.write_us.mean
 timing_stats.write_us.min
+# Appended by H1-F04-2d (#903): protocol / transport tag + the D39 counter,
+# emitted on every protocol.
+comm_stats.feedforward_size_mismatch
+comm_stats.protocol_version
+comm_stats.transport
