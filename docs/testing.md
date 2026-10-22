@@ -12,7 +12,10 @@ colcon test-result --verbose
 colcon test --packages-select ur5e_bt_coordinator --event-handlers console_direct+   # 패키지 하나
 colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_controller  # C++ 테스트 하나
 colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser     # Python 테스트 하나
+PYTHONPATH=rtc_tools:$PYTHONPATH <rtc_ws>/.venv/bin/python -m pytest <pkg>/test/<file>.py  # venv 전용 pytest 직접 (repo 루트에서)
 ```
+
+colcon 의 pytest 는 시스템 python 이라 `.venv` 에만 있는 의존성 (mujoco 등) 의 테스트는 skip 된다 — 그 파일은 마지막 줄로 repo 루트에서 직접 돌린다. `PYTHONPATH` 는 덮어쓰지 말고 이어붙이고, `rtc_tools` 를 앞에 두는 이유는 [testing-rationale.md](reference/testing-rationale.md#venv-격리의-false-green) 에 있다.
 
 `colcon.pkg` 로 패키지 안 병렬 (`ctest-args: ["-j", n]`) 을 켠 패키지는 CLI 의 `-j 1` 로 직렬이 되지 않는다 (`colcon.pkg` 의 `-j` 가 뒤에 붙는다). 직렬로 돌리려면 `COLCON_EXTENSION_BLOCKLIST=colcon_core.package_augmentation.colcon_pkg colcon test …` 로 `colcon.pkg` 를 읽지 않게 한다. `ament_python` 패키지의 병렬 (pytest-xdist) 과 xdist 가 없는 호스트의 처리는 `rtc_tools/colcon.pkg` 주석이 갖는다.
 
@@ -34,7 +37,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `rtc_mujoco_sim/` | 패키지 전체 + `test_motor_servo_gains` · `test_torque_mode_ctrl_range` | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` smoke |
 | `rtc_urdf_bridge/` | 패키지 전체 + `test_frame_jacobian_fd_oracle` · `test_inertial_validation` · `test_real_model_inertial_gate` | 실제 robot 모델 로드 smoke |
 | `rtc_communication/` · `rtc_inference/` · `rtc_digital_twin/` | UDP · CAN (vcan0 없으면 skip) · RS485 PTY · ONNX · pytest | vcan0 설정 후 CAN, 실제 모델 · RViz2 smoke |
-| `rtc_tools/` | pytest. MJCF/URDF 를 고쳤으면 `test_real_model_pairs.py` 가 게이트 (colcon 에서 skip 될 수 있음) | `.venv/bin/python -m pytest rtc_tools/test` |
+| `rtc_tools/` | pytest. MJCF/URDF 를 고쳤으면 `test_real_model_pairs.py` 가 게이트 (colcon 에서 skip 될 수 있음) | venv 직접 실행 ([Test Commands](#test-commands)) |
 | `repo_scripts/` | `test_rt_common` · `test_install_deps` · `test_install_python` · `test_build_jobs` · `test_can_setup` + shell unit test | `check_rt_setup.sh --summary` |
 | `shape_estimation*/` | ToF + exploration gtest | `/shape/estimate` echo, `/shape/explore` 액션 |
 | `integrated_bringup/` demo FSM | demo_wbc · demo_joint · demo_task · grasp_phase_manager · virtual_tcp gtest | BT coordinator 통합 |

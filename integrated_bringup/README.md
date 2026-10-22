@@ -157,7 +157,7 @@ GUI 는 `ros2 run integrated_bringup demo_controller_gui --robot g1_p1b` ([demo_
 
 #### 기동 자세
 
-시뮬레이터의 기동 자세는 각 그룹의 `initial_qpos` (rad, `command_joint_names` 순서) 가 정하며 MJCF keyframe 보다 우선한다 ([rtc_mujoco_sim README](../rtc_mujoco_sim/README.md#초기-자세-initial_qpos)). 값을 고칠 때 **모든 원소에 소수점을 찍는다** — 정수 리터럴이 하나라도 있으면 시퀀스 전체가 정수 배열로 읽혀 노드 생성 시점에 죽는다. 길이와 keyframe 일치는 `test/test_shipped_initial_qpos.py` 가 고정한다 (keyframe 일치 레인은 mujoco 가 필요해 `colcon test` 에서 skip 되므로 `.venv/bin/python -m pytest` 로 직접 돌린다).
+시뮬레이터의 기동 자세는 각 그룹의 `initial_qpos` (rad, `command_joint_names` 순서) 가 정하며 MJCF keyframe 보다 우선한다 ([rtc_mujoco_sim README](../rtc_mujoco_sim/README.md#초기-자세-initial_qpos)). 값을 고칠 때 **모든 원소에 소수점을 찍는다** — 정수 리터럴이 하나라도 있으면 시퀀스 전체가 정수 배열로 읽혀 노드 생성 시점에 죽는다. 길이와 keyframe 일치는 `test/test_shipped_initial_qpos.py` 가 고정한다 (keyframe 일치 레인은 mujoco 가 필요해 `colcon test` 에서 skip — [testing.md](../docs/testing.md#test-commands) 참조).
 
 ### 데모 컨트롤러
 
