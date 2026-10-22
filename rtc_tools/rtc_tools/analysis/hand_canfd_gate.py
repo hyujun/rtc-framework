@@ -82,6 +82,11 @@ NOT_EVALUATED = "NOT_EVALUATED"
 TIMING_STEM = "hand_udp_timing_log"
 STATS_STEM = "hand_udp_stats"
 LINK_DOWN_NEEDLE = "Hand link DOWN"
+FAILURE_NEEDLE = "Hand failure detected: "
+# Failure-detector reasons that judge the SENSOR payload, not the link: a hand
+# whose sensors read zero (none fitted, or motors off) latches these within
+# the first 100 ms of every run, which says nothing about link-down 0 (D55).
+SENSOR_HEURISTIC_REASONS = ("hand_sensor_all_zero", "hand_sensor_duplicate")
 # The per-request-kind outcome counters that fire ONCE per attempt (fixture
 # udp_hand_driver/test/fixtures/hand_udp_stats_keys_proto2.txt lists the full
 # set; cmd_mismatch / mode_mismatch are per frame and excluded on purpose).
@@ -380,6 +385,21 @@ def count_needle(path: Path | None, needle: str) -> int | None:
         return sum(1 for line in fh if needle in line)
 
 
+def failure_reasons(path: Path | None) -> list[str] | None:
+    """Reasons the node logged as `Hand failure detected: <reason> (...)`, in order."""
+    if path is None:
+        return None
+    out: list[str] = []
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            i = line.find(FAILURE_NEEDLE)
+            if i < 0:
+                continue
+            rest = line[i + len(FAILURE_NEEDLE) :].strip()
+            out.append(rest.split(" (", 1)[0].split()[0] if rest else "?")
+    return out
+
+
 # ── judgement ────────────────────────────────────────────────────────────────
 
 
@@ -418,6 +438,7 @@ def judge(
     *,
     link_down_lines: int | None,
     link_status_false: int | None,
+    failure_reasons: list[str] | None = None,
 ) -> list[Check]:
     checks: list[Check] = []
 
@@ -462,15 +483,30 @@ def judge(
             )
         )
 
-    # (b) link never down — four independent witnesses must agree.
+    # (b) link never down — four independent witnesses must agree. The failure
+    # detector's latch counts only when its reason is about the link: a sensor
+    # heuristic (all-zero / duplicate payload) trips on every sensorless hand
+    # and is reported, not failed. Attribution needs the node log.
     link_ok = bool(comm.get("link_ok", False))
     failed = bool(comm.get("failure_detected", False))
+    verdict = PASS if link_ok else FAIL
+    note = ""
+    if failed:
+        if failure_reasons is None:
+            verdict = FAIL
+            note = "detector latched; pass --node-log to attribute the reason"
+        elif failure_reasons and all(r in SENSOR_HEURISTIC_REASONS for r in failure_reasons):
+            note = f"detector latched on {sorted(set(failure_reasons))}: sensor heuristic, not the link"
+        else:
+            verdict = FAIL
+            note = f"detector latched on {sorted(set(failure_reasons or ['?']))}"
     checks.append(
         Check(
             "b.json_link_ok",
-            PASS if link_ok and not failed else FAIL,
+            verdict,
             f"link_ok={link_ok} failure_detected={failed}",
-            "link_ok and not failure_detected",
+            "link_ok; a detector latch only for a link reason",
+            note,
         )
     )
     if link_down_lines is None:
@@ -751,6 +787,7 @@ def main(argv: list[str] | None = None) -> int:
         comm = load_comm_stats(json_path)
         frames, unparsed = read_candump(args.candump)
         link_down = count_needle(args.node_log, LINK_DOWN_NEEDLE)
+        reasons = failure_reasons(args.node_log)
         link_false = count_needle(args.link_status, "data: false")
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -763,7 +800,15 @@ def main(argv: list[str] | None = None) -> int:
             return 3
     timing = summarise_timing(rows, th.p99_limit_us, th.period_us)
     bus = analyse_bus(frames, node_id_of(args.hand_side), unparsed)
-    checks = judge(timing, comm, bus, th, link_down_lines=link_down, link_status_false=link_false)
+    checks = judge(
+        timing,
+        comm,
+        bus,
+        th,
+        link_down_lines=link_down,
+        link_status_false=link_false,
+        failure_reasons=reasons,
+    )
 
     print(f"session : {args.session}")
     print(f"timing  : {csv_path}")
