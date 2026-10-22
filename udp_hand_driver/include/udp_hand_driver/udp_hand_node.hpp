@@ -36,7 +36,8 @@
 // was received.
 //
 // Pre-allocated messages avoid dynamic allocation on the publish path.
-// Receives commands on the command_topic (default /hand/joint_command).
+// Receives commands on the command_topic (default `joint_command`, relative to
+// the node namespace — the standalone launch runs the node under /hand).
 //
 // Lifecycle states:
 //   Unconfigured -> on_configure -> Inactive -> on_activate -> Active

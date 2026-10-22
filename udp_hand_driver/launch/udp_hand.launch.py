@@ -15,6 +15,16 @@
 #
 # `sil_mode:=firmware` 처럼 CLI 로 준 값이 yaml 의 sil_mode 를 이긴다.
 #
+# ── 네임스페이스 (D53) ──────────────────────────────────────────────────────
+# 토픽 기본값은 상대 이름 (`joint_states` …) 이고 노드 네임스페이스가 접두다.
+# `namespace` 인자는 유일한 **비-override** 인자로 기본 `/hand` — 그래서 런타임
+# 이름은 /hand/joint_states …, 노드 FQN 은 /hand/udp_hand_node 다. 빈 값은 다른
+# 인자처럼 "yaml 값" 이 되지 않고 루트 (`/joint_states` — 팔의 토픽) 로 가 버리므로
+# _launch_setup 이 거부한다. 두 손 (F09) 은 `namespace:=/hand/right` 처럼 다르게
+# 주는 것이 전제지만, 이 런치의 `sil_mode:=firmware` 는 fake_hand_firmware 를 고정
+# 이름 · 루트 · 단일 `target_port` 로 띄우므로 두 인스턴스를 동시에 돌리는 것은
+# 여기서 다루지 않는다 (F09 에서 firmware 의 이름 · 포트를 손별로 나눈다).
+#
 # ── 지원 범위 (issue #345) ────────────────────────────────────────────────
 # 이 런치는 **프로세스 내부 pin 만** 다룬다 — 노드가 스스로 main 스레드를
 # hand_driver slot 에, hand_aux_io 를 aux slot 에 붙이고, `use_cpu_affinity`
@@ -98,6 +108,12 @@ def _launch_setup(context):
     eff_sil = cli_sil if cli_sil else str(yaml_params.get("sil_mode", "off"))
     if eff_sil not in VALID_SIL_MODES:
         raise RuntimeError(f"invalid sil_mode '{eff_sil}' (expected one of {VALID_SIL_MODES})")
+    # namespace 는 override 인자가 아니다: 빈 값은 "yaml 값" 이 아니라 루트 네임스페이스라
+    # 상대 토픽이 /joint_states 로 가 버린다 (머리 주석). 조용히 그렇게 되지 않게 막는다.
+    if not LaunchConfiguration("namespace").perform(context):
+        raise RuntimeError(
+            "namespace must not be empty (default '/hand'); relative topics would land in /"
+        )
 
     # 노드 파라미터 = [단일 yaml, 예시 ft yaml] + {CLI 로 명시된 override 만}.
     # sil_mode / target_ip 파생은 노드 on_configure 가 담당하므로 여기선 주입하지 않는다.
@@ -117,7 +133,7 @@ def _launch_setup(context):
         package="udp_hand_driver",
         executable="udp_hand_node",
         name="udp_hand_node",
-        namespace="",
+        namespace=LaunchConfiguration("namespace"),
         output="screen",
         parameters=node_params,
         emulate_tty=True,
@@ -180,8 +196,17 @@ def _launch_setup(context):
 
 
 def generate_launch_description():
-    # 모든 인자는 override-only: 빈 문자열 default 이면 yaml 값을 그대로 사용한다.
+    # namespace 만 실제 기본값을 갖는다 (머리 주석) — 나머지는 override-only: 빈 문자열
+    # default 이면 yaml 값을 그대로 사용한다.
     # (choices= 를 쓰면 빈 문자열 default 가 거부되므로 sil_mode 검증은 _launch_setup 에서.)
+    namespace_arg = DeclareLaunchArgument(
+        "namespace",
+        default_value="/hand",
+        description=(
+            "udp_hand_node 의 네임스페이스. 상대 토픽 기본값 (joint_states …) 의 접두이자 "
+            "노드 FQN (<namespace>/udp_hand_node). 다른 인자와 달리 빈 값은 거부된다."
+        ),
+    )
     override_arg_decls = [
         DeclareLaunchArgument(
             "sil_mode",
@@ -237,4 +262,6 @@ def generate_launch_description():
             ),
         ),
     ]
-    return LaunchDescription([*override_arg_decls, OpaqueFunction(function=_launch_setup)])
+    return LaunchDescription(
+        [namespace_arg, *override_arg_decls, OpaqueFunction(function=_launch_setup)]
+    )

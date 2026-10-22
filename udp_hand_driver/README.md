@@ -40,16 +40,17 @@ ros2 launch udp_hand_driver udp_hand.launch.py target_ip:=192.168.0.100
 ros2 topic echo /hand/link_status --once        # data: true 면 링크 정상
 ```
 
-launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 수동으로 다루려면 `ros2 lifecycle set /udp_hand_node deactivate` · `activate` 를 쓴다. 실제 손에 처음 붙일 때는 `/hand/link_status` 가 `true` 이고 `/hand/joint_states` 가 나오는지 먼저 확인하고, 안 되면 [문제 해결](#문제-해결) 의 표를 본다.
+launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 수동으로 다루려면 `ros2 lifecycle set /hand/udp_hand_node deactivate` · `activate` 를 쓴다. 실제 손에 처음 붙일 때는 `/hand/link_status` 가 `true` 이고 `/hand/joint_states` 가 나오는지 먼저 확인하고, 안 되면 [문제 해결](#문제-해결) 의 표를 본다.
 
 ## 인터페이스
 
 ### launch 인자 (`udp_hand.launch.py`)
 
-모든 인자는 기본값이 빈 문자열인 **override 전용** 이다. 주지 않으면 [config/udp_hand_node.yaml](config/udp_hand_node.yaml) 값을 쓴다 (아래 표의 "YAML 값").
+`namespace` 외의 인자는 기본값이 빈 문자열인 **override 전용** 이다. 주지 않으면 [config/udp_hand_node.yaml](config/udp_hand_node.yaml) 값을 쓴다 (아래 표의 "YAML 값").
 
 | 인자 | YAML 값 | 설명 |
 |---|---|---|
+| `namespace` | — (launch 기본 `/hand`) | 노드 FQN · 상대 토픽 이름의 접두. 빈 값은 거부 |
 | `target_ip` | `192.168.0.100` | 손 컨트롤러 IP |
 | `target_port` | `55151` | 손 컨트롤러 포트 |
 | `local_ip` / `local_interface` | `""` / `""` | 제어 PC source address (bind) / egress NIC (`SO_BINDTODEVICE`) |
@@ -73,7 +74,7 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | sub | `/hand/joint_command` | `rtc_msgs/JointCommand` | BEST_EFFORT/1 | 모터 명령 `values[10]`. 발행측 `joint_names` 순서를 firmware 슬롯 순서로 재정렬하고, 이름이 없거나 안 맞으면 positional |
 | sub | `/hand/calibration/command` | `rtc_msgs/CalibrationCommand` | RELIABLE/1 | 센서 캘리브레이션 트리거 (현재 barometer) |
 
-토픽 이름은 YAML 의 `command_topic` · `joint_state_topic` · `calibration_command_topic` 등으로 바꾼다. `sensor_states` 한 건의 센서 값과 F/T 값은 **같은 tick 이 보장되지 않는다** (F/T 가 최대 1 comm cycle 앞설 수 있음). 소비자는 `1 / loop_rate_hz` 의 pairing 허용오차를 둔다. `sensor_decimation > 1` 이면 F/T 가 마지막 센서 cycle 값이라 더 오래될 수 있다.
+토픽 이름은 YAML 의 `*_topic` 키로 바꾼다. `sensor_states` 한 건의 센서 값과 F/T 값은 **같은 tick 이 보장되지 않는다** (F/T 가 최대 1 comm cycle 앞설 수 있음). 소비자는 `1 / loop_rate_hz` 의 pairing 허용오차를 둔다. `sensor_decimation > 1` 이면 F/T 가 마지막 센서 cycle 값이라 더 오래될 수 있다.
 
 #### 센서 캘리브레이션 재트리거
 
@@ -145,7 +146,7 @@ UDP 부하를 강제로 줄여 보는 테스트용 knob 이다 (기본 `1`). `se
 
 ```bash
 ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=firmware protocol_version:=1a
-ros2 topic echo /hand/link_status --once     # 별도 터미널. data: true 면 전체 경로 정상
+ros2 topic echo /hand/link_status --once     # 별도 터미널
 ```
 
 한계: loopback latency 가 µs 라 timing 검증에는 부적합하다. firmware 는 driver decoder 의 거울상이라 실제 펌웨어와의 일치는 보장하지 못한다. commander 없이 단독 실행하면 모터가 LPF rest(0) 에 머물러 failure detector 의 all-zero / duplicate 경고가 뜨는데, 명령이 오면 해소되는 정상 동작이다.
@@ -233,9 +234,9 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 | `hand.ft` | `FingertipFTInferencer` (모델 로드 · 캘리브레이션) |
 
 ```bash
-ros2 service call /udp_hand_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+ros2 service call /hand/udp_hand_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
   "{levels: [{name: 'hand.udp', level: 10}]}"
-export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"   # 콘솔에 logger 이름 표시
+export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 ```
 
 ## 더 읽기
