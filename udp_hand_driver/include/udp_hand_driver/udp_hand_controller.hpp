@@ -125,12 +125,12 @@ struct CycleOutcomeRing {
 // in SystemThreadConfigs prior to the SSoT cleanup). cpu_core = -1 means the
 // receive thread inherits whatever affinity the launch script's process-level
 // `taskset` set on the hand_driver process; SCHED_FIFO 65 preserves the prior
-// priority hierarchy (rt_callback 70 > hand UDP 65 > mpc_main 60).
-inline const rtc::ThreadConfig kHandUdpRecvConfig{.cpu_core = -1,
-                                                  .sched_policy = SCHED_FIFO,
-                                                  .sched_priority = 65,
-                                                  .nice_value = 0,
-                                                  .name = "hand_udp_recv"};
+// priority hierarchy (rt_callback 70 > hand_comm 65 > mpc_main 60).
+inline const rtc::ThreadConfig kHandCommThreadConfig{.cpu_core = -1,
+                                                     .sched_policy = SCHED_FIFO,
+                                                     .sched_priority = 65,
+                                                     .nice_value = 0,
+                                                     .name = "hand_comm"};
 
 // Construction parameters for UdpHandController (same pattern as
 // UdpHandSensorProcessorConfig). Field defaults preserve the historical
@@ -155,7 +155,7 @@ struct UdpHandControllerConfig {
   int target_port{0};
   std::string local_ip{};
   std::string local_interface{};
-  rtc::ThreadConfig thread_cfg{kHandUdpRecvConfig};
+  rtc::ThreadConfig thread_cfg{kHandCommThreadConfig};
   double recv_timeout_ms{10.0};
   int sensor_decimation{1};
   int num_fingertips{udp_hand_driver::kDefaultNumFingertips};
@@ -502,13 +502,9 @@ class UdpHandController {
   /// outlive this controller. Pass nullptr to disable. Call before Start()
   /// (Start() forwards it to the CommLoop base). Jitter is computed by the
   /// CommLoop base against its own loop_rate_hz_ period budget.
-  void SetTimingProducer(rtc::HandUdpTimingBuffer* producer) noexcept {
-    timing_producer_ = producer;
-  }
+  void SetTimingProducer(rtc::HandTimingBuffer* producer) noexcept { timing_producer_ = producer; }
 
-  [[nodiscard]] rtc::HandUdpTimingBuffer* TimingProducer() const noexcept {
-    return timing_producer_;
-  }
+  [[nodiscard]] rtc::HandTimingBuffer* TimingProducer() const noexcept { return timing_producer_; }
 
   // ── E-Stop flag ────────────────────────────────────────────────────────
 
@@ -1532,7 +1528,7 @@ class UdpHandController {
   std::array<float, kNumHandMotors> fake_pos_{};         // filtered pose (LPF state)
   double fake_alpha_{0.0};                               // LPF coeff dt/(τ+dt)
   double fake_dt_{0.0};                                  // 1/loop_rate_hz (s)
-  rtc::HandUdpTimingBuffer* timing_producer_{nullptr};
+  rtc::HandTimingBuffer* timing_producer_{nullptr};
   rtc::SeqLock<UdpHandState> state_seqlock_{};
   std::atomic<std::size_t> cycle_count_{0};
 

@@ -185,7 +185,7 @@ TEST(PeriodicRtThread, TimingProducerReceivesPerTickSamples) {
 TEST(PeriodicRtThread, UnstampedPublishPhaseLeavesNoResidual) {
   // A producer that never calls MarkPublishDone() keeps the historical
   // identity t_state + t_compute + t_publish == t_total exactly, so its
-  // residual carries no signal. Pinned because MPC / hand UDP rely on it.
+  // residual carries no signal. Pinned because MPC / hand comm rely on it.
   TimingThread t;
   t.Start(MakeCfg("rtc_test_g", 100.0));
   EXPECT_TRUE(WaitUntil([&] { return t.TickCount() >= 6; }))

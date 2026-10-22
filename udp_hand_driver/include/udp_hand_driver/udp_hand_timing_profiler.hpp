@@ -246,7 +246,7 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
   [[nodiscard]] std::string Summary() const noexcept {
     const Stats s = GetStats();
     if (s.count == 0) {
-      return "HandUDP timing: no data";
+      return "Hand timing: no data";
     }
 
     const double over_pct =
@@ -254,7 +254,7 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
     char buf[512];
     if (s.is_bulk_mode) {
       std::snprintf(buf, sizeof(buf),
-                    "HandUDP timing [bulk]: count=%lu  mean=%.0f\xc2\xb5s  "
+                    "Hand timing [bulk]: count=%lu  mean=%.0f\xc2\xb5s  "
                     "min=%.0f\xc2\xb5s"
                     "  max=%.0f\xc2\xb5s  p95=%.0f\xc2\xb5s  p99=%.0f\xc2\xb5s"
                     "  over_budget=%lu (%.1f%%)"
@@ -266,7 +266,7 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
                     s.read_all_sensor.mean_us, s.sensor_proc.mean_us);
     } else {
       std::snprintf(buf, sizeof(buf),
-                    "HandUDP timing: count=%lu  mean=%.0f\xc2\xb5s  min=%.0f\xc2\xb5s"
+                    "Hand timing: count=%lu  mean=%.0f\xc2\xb5s  min=%.0f\xc2\xb5s"
                     "  max=%.0f\xc2\xb5s  p95=%.0f\xc2\xb5s  p99=%.0f\xc2\xb5s"
                     "  over_budget=%lu (%.1f%%)"
                     "  | write=%.0f  pos=%.0f  joint_pos=%.0f  vel=%.0f"

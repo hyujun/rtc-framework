@@ -235,7 +235,7 @@ python3 integrated_bringup/tools/catch_frame/show_catch_frame.py <ur5e_p1b|iiwa7
 - `report.py <profile>` — 저장된 판정에서 값을 계산해 보고서를 낸다. simulator 를 쓰지 않아 원자료에서 언제든 다시 계산된다.
 - `rig_config.py` · `rig.py` — 위 두 스크립트가 쓰는 입력 읽기와 MuJoCo rig 이다 (직접 실행하지 않는다).
 - `DATA` 가 없으면 거부하고, `OMP_NUM_THREADS=1` 이 아니어도 거부한다. **측정하는 동안 빌드를 돌리지 않는다.** store 의 결과가 이번 실행이 묻는 조건과 다르면 거부한다 — 상자나 규칙을 바꿨으면 그 단계부터의 store 를 치우고 다시 날린다.
-- 테스트: `test/test_docking_ident_config.py` 는 colcon 에서 돈다. `test/test_docking_ident_rig.py` 는 mujoco 가 필요해 colcon 에서는 skip 이므로, rig 를 고쳤으면 `.venv/bin/python -m pytest` 로 직접 돌린다.
+- 테스트: `test/test_docking_ident_config.py` 는 colcon 에서 돈다. `test/test_docking_ident_rig.py` 는 mujoco 가 필요해 colcon 에서는 skip 이므로, rig 를 고쳤으면 venv 로 직접 돌린다 ([testing.md](testing.md#test-commands)).
 
 ## 7. 추정기 profile 과 맞춰야 하는 값
 

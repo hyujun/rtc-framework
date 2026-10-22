@@ -43,7 +43,7 @@
 
 ### Per-thread timing CSV infrastructure
 
-CM RT loop · MPC thread · hand UDP receiver · rt_callback 이 **같은** generic transport 와 **같은** `RtTickTimingPayload` 를 공유한다. loop · lifecycle · cadence · overrun detection · per-tick capture 는 `rtc::PeriodicRtThread` base 가 갖고 channel 은 hook override 만 더한다. **새 per-tick timing channel 은 같은 base + payload alias 를 재사용한다** — `RTControllerInterface` virtual 추가 / 새 SPSC class / 새 logger class 금지. percentile 은 post-process 다 (aggregate 는 INFO summary 만).
+CM RT loop · MPC thread · hand comm thread · rt_callback 이 **같은** generic transport 와 **같은** `RtTickTimingPayload` 를 공유한다. loop · lifecycle · cadence · overrun detection · per-tick capture 는 `rtc::PeriodicRtThread` base 가 갖고 channel 은 hook override 만 더한다. **새 per-tick timing channel 은 같은 base + payload alias 를 재사용한다** — `RTControllerInterface` virtual 추가 / 새 SPSC class / 새 logger class 금지. percentile 은 post-process 다 (aggregate 는 INFO summary 만).
 
 ## Lock-Free Rules
 

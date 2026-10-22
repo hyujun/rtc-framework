@@ -62,7 +62,7 @@
     # -- CAN FD 링크 (protocol_version "2" 전용 — 1a / 1b 에서는 무시) --
     # can_interface : SocketCAN 장치. sil_mode=firmware 는 vcan0 로 강제한다.
     # hand_side     : "right" | "left" → 노드 id (D51). 모든 프로토콜에서 선언되며,
-    #                 YAML/launch 로 *명시* 하면 hand_udp_stats.json · hand_udp_timing_log.csv
+    #                 YAML/launch 로 *명시* 하면 hand_stats.json · hand_timing_log.csv
     #                 이름에 `_<side>` 가 붙는다 (아래처럼 주석이면 기본 right, 접미사 없음).
     # feedforward_kt: 모터별 토크 상수 [Nm/A], 펌웨어 모터 순서 10개 (D50).
     #                 JointCommand.feedforward [Nm] / kt → wire [A]. 1.0 = pass-through.

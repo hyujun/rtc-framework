@@ -176,7 +176,7 @@ struct MpcThreadConfig {
 // DDS receive thread (CycloneDDS / Fast-RTPS) is co-pinned to the rt_callback
 // core (Core 2, the v5 aux slot) via launch-time taskset for cache locality. Its CFS policy is
 // preserved; the launch script pins only non-RT threads of the controller
-// process. The hand UDP receive thread (RT priority 65) lives privately
+// process. The hand comm thread (RT priority 65) lives privately
 // inside udp_hand_controller and inherits affinity from the launch-level
 // taskset on the hand_driver core. Generic UDP receivers using
 // rtc_communication::Transceiver pick up the kRtUdpRecvConfig default

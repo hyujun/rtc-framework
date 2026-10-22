@@ -1,4 +1,4 @@
-# hand_udp_stats.json dotted key paths (G-1 of epic #895, #897). Generated from
+# hand_stats.json dotted key paths (G-1 of epic #895, #897). Generated from
 # test_udp_hand_node_lifecycle StatsJsonKeysAndTimingCsvHeaderMatchFixture on the
 # pre-seam tree (main d7d38af7), sil_mode=loopmodel, individual comm mode.
 # Later features may APPEND keys; never remove or rename a line without a

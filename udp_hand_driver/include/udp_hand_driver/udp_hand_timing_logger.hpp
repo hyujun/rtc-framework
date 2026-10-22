@@ -1,15 +1,15 @@
 #ifndef UDP_HAND_DRIVER_UDP_HAND_TIMING_LOGGER_HPP_
 #define UDP_HAND_DRIVER_UDP_HAND_TIMING_LOGGER_HPP_
 
-// Per-EventLoop-tick timing CSV writer for the hand UDP node.
+// Per-EventLoop-tick timing CSV writer for the hand node.
 //
 // Mirrors rtc::mpc::MpcTimingLogger structurally: a thin wrapper around
 // rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> that resolves the canonical
-// `<session>/timing/hand_udp_timing_log.csv` path and pre-binds the unified
+// `<session>/timing/hand_timing_log.csv` path and pre-binds the unified
 // rtc::RtTickTimingPayload header / row writers (the same schema CM and MPC emit,
 // so analysis scripts can join across threads).
 //
-// Phase mapping for the hand UDP loop (see udp_hand_controller.hpp::EventLoop):
+// Phase mapping for the hand comm loop (see udp_hand_controller.hpp::EventLoop):
 //   t_state_us    UDP write + read phase (post-condvar to post-sensor-read)
 //   t_compute_us  sensor processing + F/T inference
 //   t_publish_us  state rtc::SeqLock store + EventLoop callback
@@ -43,7 +43,7 @@ class UdpHandTimingLogger {
   /// Resolve the CSV path under `<session>/timing/`, create the parent
   /// directory, and open the file. Schema header is written on first
   /// creation; existing files are appended without a duplicate header.
-  /// `suffix` goes between the stem and `.csv` (`hand_udp_timing_log_left.csv`
+  /// `suffix` goes between the stem and `.csv` (`hand_timing_log_left.csv`
   /// for an explicit hand_side, D51); empty keeps the historical name, which
   /// the analysis scripts match by prefix. Returns false on filesystem errors.
   [[nodiscard]] bool Open(std::string_view suffix = {}) noexcept {
@@ -52,7 +52,7 @@ class UdpHandTimingLogger {
       const auto timing_dir = rtc::TimingDir(session);
       std::error_code ec;
       std::filesystem::create_directories(timing_dir, ec);
-      const auto path = timing_dir / ("hand_udp_timing_log" + std::string(suffix) + ".csv");
+      const auto path = timing_dir / ("hand_timing_log" + std::string(suffix) + ".csv");
       return inner_.Open(path, &rtc::WriteRtTickTimingHeader, &rtc::WriteRtTickTimingRow);
     } catch (...) {
       return false;
@@ -63,7 +63,7 @@ class UdpHandTimingLogger {
 
   [[nodiscard]] const std::filesystem::path& Path() const noexcept { return inner_.Path(); }
 
-  /// Append one row for a single hand UDP tick sample. No-op if not open.
+  /// Append one row for a single hand tick sample. No-op if not open.
   void Log(const rtc::RtTickTimingSample& s) noexcept { inner_.Log(s); }
 
  private:

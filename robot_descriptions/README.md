@@ -80,7 +80,7 @@ sim(MJCF) 과 컨트롤러 모델(URDF) 이 어긋나면 튜닝한 게인이 모
 
 | 증상 | 원인 | 조치 |
 |---|---|---|
-| 로컬 `colcon test` 에서 `test_real_model_pairs` 가 skip | colcon 이 `/usr/bin/python3` 로 pytest 를 돌리는데 mujoco 는 `.venv` 에 있다 | `PYTHONPATH=rtc_tools:$PYTHONPATH .venv/bin/python -m pytest rtc_tools/test/test_real_model_pairs.py` (`PYTHONPATH` 는 덮어쓰지 말고 이어붙인다 — xacro 쌍이 `import xacro` 를 한다) |
+| 로컬 `colcon test` 에서 `test_real_model_pairs` 가 skip | colcon 이 `/usr/bin/python3` 로 pytest 를 돌리는데 mujoco 는 `.venv` 에 있다 | [docs/testing.md](../docs/testing.md#test-commands) 의 venv 직접 실행 (`PYTHONPATH` 는 덮어쓰지 말고 이어붙인다 — xacro 쌍이 `import xacro` 를 한다) |
 | MuJoCo scene 의 mesh 로드 실패 | `object_sim` submodule 이 비어 있다 | `git submodule update --init --recursive` |
 | 새 소비자 패키지에서 colcon 이 불필요한 build 의존 edge 를 만든다 | `<depend>` 또는 `find_package(robot_descriptions)` 를 썼다 | `<exec_depend>` 로 바꾼다 (ARCH-5) |
 

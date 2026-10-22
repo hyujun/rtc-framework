@@ -166,7 +166,7 @@ void UdpHandNode::PublishState(const udp_hand_driver::UdpHandState& state,
   if (udp_hand_driver::AdvanceDecimation(link_cycle_counter_, cycles, link_decimation_)) {
     // Strict per-channel link health (#1): mirrors the detector's E-STOP decision
     // exactly (same UdpHandController::LinkDown, same thresholds) so the
-    // link_status Bool never disagrees with hand_udp_link_down.
+    // link_status Bool never disagrees with hand_link_down.
     const bool link_ok = !controller_->LinkDown(static_cast<uint32_t>(link_fail_threshold_),
                                                 static_cast<uint32_t>(link_fail_threshold_sensor_));
     if (link_ok != prev_link_ok_) {

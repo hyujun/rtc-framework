@@ -24,7 +24,7 @@ namespace rtc {
 // 결정 체인 (ResolveRunId):
 //   1) $RTC_RUN_ID — launch 가 $RTC_SESSION_DIR 과 함께 싣는다. 한 launch 의
 //      모든 프로세스가 **같은 값**을 보고하므로 스레드별 CSV (cm / mpc /
-//      hand_udp / rt_callback) 를 run 단위로 join 할 수 있다.
+//      hand / rt_callback) 를 run 단위로 join 할 수 있다.
 //   2) getpid() — launch 밖에서 기동된 프로세스 (`ros2 run`, 테스트) 의 폴백.
 //      프로세스 간 join 은 포기하지만 **각 파일 안의 런 경계는 여전히 보인다**
 //      (재기동 = 다른 PID). 시각 기반 폴백을 쓰지 않는 이유는 같은 프로세스의

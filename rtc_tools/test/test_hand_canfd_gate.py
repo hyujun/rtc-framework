@@ -24,8 +24,11 @@ from rtc_tools.analysis.hand_canfd_gate import (
     FAIL,
     NOT_EVALUATED,
     PASS,
+    STATS_STEM,
+    TIMING_STEM,
     UNDECIDED,
     Thresholds,
+    _artifacts,
     analyse_bus,
     judge,
     load_comm_stats,
@@ -34,6 +37,7 @@ from rtc_tools.analysis.hand_canfd_gate import (
     overall,
     summarise_timing,
 )
+from rtc_tools.utils.session_dir import PRE_F08_HAND_STEMS
 
 NODE = node_id_of("right")
 TH = Thresholds()
@@ -460,12 +464,16 @@ def test_overall_precedence(tmp_path):
     assert overall(list(checks.values())) == FAIL
 
 
-def write_session(tmp_path: Path, suffix: str = "", rows=None, comm=None) -> Path:
+def write_session(
+    tmp_path: Path, suffix: str = "", rows=None, comm=None, legacy_names: bool = False
+) -> Path:
     session = tmp_path / "session"
-    (session / "timing").mkdir(parents=True)
-    (session / "device").mkdir()
+    (session / "timing").mkdir(parents=True, exist_ok=True)
+    (session / "device").mkdir(exist_ok=True)
+    timing_stem = PRE_F08_HAND_STEMS[TIMING_STEM] if legacy_names else TIMING_STEM
+    stats_stem = PRE_F08_HAND_STEMS[STATS_STEM] if legacy_names else STATS_STEM
     rows = rows if rows is not None else timing_rows(150_001)
-    with (session / "timing" / f"hand_udp_timing_log{suffix}.csv").open("w") as fh:
+    with (session / "timing" / f"{timing_stem}{suffix}.csv").open("w") as fh:
         fh.write(
             "t_wall_ns,tick_count,run_id,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us\n"
         )
@@ -474,10 +482,47 @@ def write_session(tmp_path: Path, suffix: str = "", rows=None, comm=None) -> Pat
                 f"{r['t_wall_ns']},{r['tick_count']},{r['run_id']},400,50,0,"
                 f"{r['t_total_us']},{r['jitter_us']}\n"
             )
-    (session / "device" / f"hand_udp_stats{suffix}.json").write_text(
+    (session / "device" / f"{stats_stem}{suffix}.json").write_text(
         json.dumps({"comm_stats": comm if comm is not None else comm_stats(), "timing_stats": {}})
     )
     return session
+
+
+def _names(pair) -> tuple[str, str]:
+    return tuple(p.name for p in pair)
+
+
+def test_artifacts_fall_back_to_the_pre_f08_pair_only_as_a_pair(tmp_path):
+    # Pre-F08 (#905) session: both artifacts under the old names, D51 suffix kept.
+    legacy = write_session(tmp_path / "legacy", suffix="_left", legacy_names=True)
+    assert _names(_artifacts(legacy, "_left")) == (
+        "hand_udp_timing_log_left.csv",
+        "hand_udp_stats_left.json",
+    )
+    # Neither name present: the current names, so the exit-3 message shows them.
+    assert _names(_artifacts(legacy, "")) == ("hand_timing_log.csv", "hand_stats.json")
+    # Two complete pairs (a pre- and a post-rename binary restarted into the
+    # same minute's session): the current pair.
+    both = write_session(tmp_path / "both", legacy_names=True)
+    write_session(tmp_path / "both")
+    assert _names(_artifacts(both, "")) == ("hand_timing_log.csv", "hand_stats.json")
+    # A mixed session (old run's CSV, new run's JSON) must not be judged as one
+    # run: it resolves to the current pair, whose CSV is missing -> exit 3.
+    mixed = write_session(tmp_path / "mixed", legacy_names=True)
+    write_session(tmp_path / "mixed")
+    (mixed / "timing" / "hand_timing_log.csv").unlink()
+    (mixed / "device" / "hand_udp_stats.json").unlink()
+    assert _names(_artifacts(mixed, "")) == ("hand_timing_log.csv", "hand_stats.json")
+    log = tmp_path / "g3.log"
+    log.write_text("\n".join(good_bus_lines()) + "\n")
+    assert main([str(mixed), str(log)]) == 3
+
+
+def test_main_reads_a_pre_f08_session(tmp_path):
+    session = write_session(tmp_path, legacy_names=True, comm=comm_stats(joint_timeouts=150))
+    log = tmp_path / "g3.log"
+    log.write_text("\n".join(good_bus_lines()) + "\n")
+    assert main([str(session), str(log)]) == 2  # judged, not exit 3
 
 
 def test_main_end_to_end_pass(tmp_path, capsys):

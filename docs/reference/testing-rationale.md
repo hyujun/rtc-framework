@@ -45,7 +45,7 @@
 
 ## `.venv` 격리의 false-green
 
-규칙은 [AGENTS.md](../../AGENTS.md) §9.2. 이 격리에는 **로컬 전용 false-green 방향**이 있다: `colcon` 과 colcon 이 생성하는 console script 의 shebang 이 `/usr/bin/python3` 라, venv 를 activate 해도 `colcon test` 의 pytest 는 시스템 python 으로 돌아 `.venv` 전용 패키지를 import 못 하고 (`pytest.importorskip` 테스트가 **조용히 skip** — `rtc_tools` 의 mujoco 의존 11개 전부), `ros2 run` 도 venv 를 못 봐 `.venv/bin/python` 직접 실행과 다른 답을 낸다. 실제 인터프리터는 `log/latest_test/<pkg>/command.log` 가 확정한다. CI 는 venv 없이 `pip install` 이라 영향이 없으므로 방심 방향이 반대다 — CI green 을 근거로 로컬 skip 을 무시하지 않는다. 신호는 `Testing/Temporary/LastTest.log` 의 Start/End 동일 초다. 확인용 직접 실행 (`PYTHONPATH=<pkg> .venv/bin/python -m pytest …`) 은 우회 금지 하의 진단 용도이며, 자작 게이트에는 "검사가 아예 안 돌았음" 을 통과와 구분하는 플래그를 둔다.
+규칙은 [AGENTS.md](../../AGENTS.md) §9.2. 이 격리에는 **로컬 전용 false-green 방향**이 있다: `colcon` 과 colcon 이 생성하는 console script 의 shebang 이 `/usr/bin/python3` 라, venv 를 activate 해도 `colcon test` 의 pytest 는 시스템 python 으로 돌아 `.venv` 전용 패키지를 import 못 하고 (`pytest.importorskip` 테스트가 **조용히 skip** — `rtc_tools` 의 mujoco 의존 11개 전부), `ros2 run` 도 venv 를 못 봐 `.venv/bin/python` 직접 실행과 다른 답을 낸다. 실제 인터프리터는 `log/latest_test/<pkg>/command.log` 가 확정한다. CI 는 venv 없이 `pip install` 이라 영향이 없으므로 방심 방향이 반대다 — CI green 을 근거로 로컬 skip 을 무시하지 않는다. 신호는 `Testing/Temporary/LastTest.log` 의 Start/End 동일 초다. 확인용 직접 실행 (명령은 [docs/testing.md](../testing.md#test-commands); `PYTHONPATH=rtc_tools` 를 앞에 두는 이유는 repo 루트에서 바깥 `rtc_tools/` 디렉토리가 namespace package 로 잡혀 안쪽 `rtc_tools` 패키지를 가리기 때문이고, `rtc_tools.analysis` 를 import 하는 다른 패키지의 테스트도 같은 값이 필요하다) 은 우회 금지 하의 진단 용도이며, 자작 게이트에는 "검사가 아예 안 돌았음" 을 통과와 구분하는 플래그를 둔다.
 
 ## 계측 함정
 

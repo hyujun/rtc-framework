@@ -2,7 +2,7 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="custom_hand">
   <!--
     Custom Hand URDF — simplified geometric model (no mesh)
-    10 revolute joints matching hand_udp_node motor names:
+    10 revolute joints matching udp_hand_node motor names:
       thumb:  thumb_cmc_aa, thumb_cmc_fe, thumb_mcp_fe
       index:  index_mcp_aa, index_mcp_fe, index_dip_fe
       middle: middle_mcp_aa, middle_mcp_fe, middle_dip_fe

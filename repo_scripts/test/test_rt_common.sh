@@ -920,13 +920,29 @@ test_classify_external_rt_ignores_non_rt_threads() {
 # hand 코어 = logical 9 (12코어 NUC13 slot 5, v6/#383), aux = logical 0.
 # 이 두 숫자는 slot 이 아니라 **논리 CPU** 라서 생성기가 안 닿는다 — 마스크
 # 0x200 = bit 9 도 같다. layout 을 고치면 여기를 손으로 따라와야 한다.
-_HAND_SPEC="hand_udp_recv:9:SCHED_FIFO:65 hand_aux_io:0:SCHED_OTHER:0"
+_HAND_SPEC="hand_comm:9:SCHED_FIFO:65 hand_aux_io:0:SCHED_OTHER:0"
+
+test_classify_layout_spec_names_match_the_verifier() {
+  # 위 레코드는 합성이라 바이너리와 묶이지 않는다 (스레드 이름 자체는
+  # udp_hand_driver 의 lifecycle gtest 가 /proc/self/task 로 고정한다). 여기서는
+  # 합성 spec 의 이름이 verify_rt_runtime.sh 가 실제로 요구하는 이름과 같은지만
+  # 묶는다 — 한쪽만 개명되면 (F08, #905) 이 테스트가 먼저 깨진다.
+  local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
+  local line
+  line=$(grep -E '^\s*EXTERNAL_DRIVER_THREAD_LAYOUT\[hand_driver\]=' "$verifier")
+  local name
+  for name in hand_comm hand_aux_io; do
+    expect_eq "layout.spec_names.${name}" "1" \
+      "$(printf '%s\n' "$line" | grep -c -E "[\"= ]${name}:")"
+  done
+  expect_eq "layout.spec_names.no_legacy" "0" "$(grep -c 'hand_udp_recv' "$verifier")"
+}
 
 test_classify_layout_ok() {
   local out
   out=$(printf '%s\n' \
     "100 udp_hand_node SCHED_OTHER 0 200" \
-    "101 hand_udp_recv SCHED_FIFO 65 200" \
+    "101 hand_comm SCHED_FIFO 65 200" \
     "102 hand_aux_io SCHED_OTHER 0 1" \
     "103 recv SCHED_OTHER 0 200" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.ok.verdict" "OK" "${out%%|*}"
@@ -936,7 +952,7 @@ test_classify_layout_aux_dragged_back() {
   # `taskset -a` 스윕이 되살아나면 정확히 이 모양이 된다 — aux 가 hand 코어로.
   local out
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_FIFO 65 200" \
+    "101 hand_comm SCHED_FIFO 65 200" \
     "102 hand_aux_io SCHED_OTHER 0 200" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.aux_dragged.verdict" "WRONG_CPU" "${out%%|*}"
 }
@@ -945,7 +961,7 @@ test_classify_layout_commloop_lost_fifo() {
   # ApplyThreadConfig 가 affinity 실패로 조기 반환하면 정책이 안 붙는다.
   local out
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_OTHER 0 200" \
+    "101 hand_comm SCHED_OTHER 0 200" \
     "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.no_fifo.verdict" "WRONG_SCHED" "${out%%|*}"
 }
@@ -953,7 +969,7 @@ test_classify_layout_commloop_lost_fifo() {
 test_classify_layout_wrong_prio() {
   local out
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_FIFO 50 200" \
+    "101 hand_comm SCHED_FIFO 50 200" \
     "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.wrong_prio.verdict" "WRONG_SCHED" "${out%%|*}"
 }
@@ -966,7 +982,7 @@ test_classify_layout_aux_became_realtime() {
   # pin_dds_threads_to_slot 의 FIFO 가드가 그것을 조용히 건너뛰게 된다.
   local out
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_FIFO 65 200" \
+    "101 hand_comm SCHED_FIFO 65 200" \
     "102 hand_aux_io SCHED_FIFO 65 1" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.aux_rt.verdict" "WRONG_SCHED" "${out%%|*}"
 }
@@ -977,9 +993,9 @@ test_classify_layout_unpinned_sentinel_is_not_a_failure() {
   # 가드가 없으면 $((1 << -1)) 이 조용히 거대한 음수가 되어, 올바르게 설정된
   # 스레드가 어떤 마스크를 갖든 WRONG_CPU 로 오탐된다 — 잡아야 할 오설정이
   # 아니라 verifier 가 만들어내는 가짜 FAIL 이다.
-  local out spec="hand_udp_recv:9:SCHED_FIFO:65 hand_aux_io:-1:SCHED_OTHER:0"
+  local out spec="hand_comm:9:SCHED_FIFO:65 hand_aux_io:-1:SCHED_OTHER:0"
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_FIFO 65 200" \
+    "101 hand_comm SCHED_FIFO 65 200" \
     "102 hand_aux_io SCHED_OTHER 0 fff" | rt_classify_external_thread_layout 9 "$spec")
   expect_eq "layout.unpinned_sentinel.verdict" "OK" "${out%%|*}"
 }
@@ -989,7 +1005,7 @@ test_classify_layout_missing_thread() {
   # 맞는지보다 먼저 보고돼야 한다 — 없는 스레드는 더 나쁜 발견이다.
   local out
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_FIFO 65 200" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
+    "101 hand_comm SCHED_FIFO 65 200" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.missing.verdict" "MISSING" "${out%%|*}"
 }
 
@@ -999,7 +1015,7 @@ test_classify_layout_unnamed_thread_must_be_on_driver_core() {
   local out
   out=$(printf '%s\n' \
     "100 udp_hand_node SCHED_OTHER 0 1" \
-    "101 hand_udp_recv SCHED_FIFO 65 200" \
+    "101 hand_comm SCHED_FIFO 65 200" \
     "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.stray.verdict" "WRONG_CPU" "${out%%|*}"
 }
@@ -1010,9 +1026,9 @@ test_classify_layout_degraded_tier_collapse() {
   local out
   out=$(printf '%s\n' \
     "100 udp_hand_node SCHED_OTHER 0 1" \
-    "101 hand_udp_recv SCHED_FIFO 65 1" \
+    "101 hand_comm SCHED_FIFO 65 1" \
     "102 hand_aux_io SCHED_OTHER 0 1" \
-    | rt_classify_external_thread_layout 0 "hand_udp_recv:0:SCHED_FIFO:65 hand_aux_io:0:SCHED_OTHER:0")
+    | rt_classify_external_thread_layout 0 "hand_comm:0:SCHED_FIFO:65 hand_aux_io:0:SCHED_OTHER:0")
   expect_eq "layout.degraded.verdict" "OK" "${out%%|*}"
 }
 
@@ -1308,6 +1324,7 @@ test_classify_layout_missing_thread
 test_classify_layout_unnamed_thread_must_be_on_driver_core
 test_classify_layout_degraded_tier_collapse
 test_classify_layout_no_threads
+test_classify_layout_spec_names_match_the_verifier
 test_get_rt_shield_cpus_non_smt
 test_get_rt_shield_cpus_smt_primaries_first
 test_get_rt_shield_cpus_smt_interleaved

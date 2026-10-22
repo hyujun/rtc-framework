@@ -3,7 +3,7 @@
 
 // Unified per-tick timing payload shared by every RT / soft-RT thread that
 // publishes timing CSV output (CM RT loop @ control_rate, MPC solve thread,
-// hand UDP EventLoop, future channels). The transport (SPSC ring) and CSV shell are generic — see
+// hand comm loop, future channels). The transport (SPSC ring) and CSV shell are generic — see
 // thread_timing_producer.hpp / thread_timing_csv_logger.hpp.
 //
 // One row per tick is appended to a thread-specific CSV path with schema
@@ -79,10 +79,10 @@ inline constexpr std::size_t kCmTimingBufferCapacity = 512;
 /// 6 s of headroom at 20 Hz, comfortably covering a 1 s drain interval.
 inline constexpr std::size_t kMpcTimingBufferCapacity = 128;
 
-/// SPSC ring capacity for the hand UDP EventLoop (typically driven by the
+/// SPSC ring capacity for the hand comm loop (typically driven by the
 /// CM at `control_rate`, default 500 Hz). 512 slots ≈ 1 s of headroom at
 /// 500 Hz; drained at 1 Hz by the node's aux timer.
-inline constexpr std::size_t kHandUdpTimingBufferCapacity = 512;
+inline constexpr std::size_t kHandTimingBufferCapacity = 512;
 
 /// SPSC ring capacity for the rt_callback lane (issue #349). Sized above the
 /// CM lane because this producer is fed by EVERY device state callback on the
@@ -97,7 +97,7 @@ using CmTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kCmTimingBuffer
 
 using MpcTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kMpcTimingBufferCapacity>;
 
-using HandUdpTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kHandUdpTimingBufferCapacity>;
+using HandTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kHandTimingBufferCapacity>;
 
 /// Per-callback timing for the rt_callback thread (SCHED_FIFO 70, layout v4.1
 /// slot 2). Single-producer holds because CM hands every backend the SAME

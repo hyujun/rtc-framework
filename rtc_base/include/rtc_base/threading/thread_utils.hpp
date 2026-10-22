@@ -61,7 +61,7 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   // inherit the calling process's taskset" — used by process-level pins
   // (sim_thread / viewer) and by RT receive threads that piggy-back on a
   // launch-level driver process taskset (Transceiver default kRtUdpRecvConfig,
-  // udp_hand_driver kHandUdpRecvConfig). Apply the upper-bound check only
+  // udp_hand_driver kHandCommThreadConfig). Apply the upper-bound check only
   // when cpu_core is non-sentinel.
   const auto& slots = GetCpuTopology().physical_core_slots;
   const int max_slots = slots.empty() ? GetOnlineCpuCount() : static_cast<int>(slots.size());
@@ -229,7 +229,7 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
 
   // 1. Try CPU affinity (skip when cpu_core == -1: launch-level taskset is
   //    the source of truth for this thread's affinity, see Phase 5 sentinel
-  //    in kRtUdpRecvConfig / kHandUdpRecvConfig). cpu_core is a *slot index*;
+  //    in kRtUdpRecvConfig / kHandCommThreadConfig). cpu_core is a *slot index*;
   //    SlotToLogicalCpu translates to the actual logical CPU id (P-core
   //    physical, not SMT sibling, on hybrid).
   if (cfg.cpu_core >= 0) {

@@ -41,8 +41,10 @@ inline rclcpp::Logger ControllerLogger() {
   return rclcpp::get_logger("hand.ctrl");
 }
 
+// Link-neutral name (#905): today only UdpHandTransport logs here; the CAN FD
+// link (CanFdTransport / CanFdHandComm) emits no logs of its own.
 inline rclcpp::Logger TransportLogger() {
-  return rclcpp::get_logger("hand.udp");
+  return rclcpp::get_logger("hand.link");
 }
 
 inline rclcpp::Logger SensorLogger() {

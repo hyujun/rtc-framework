@@ -38,6 +38,16 @@ _SESSION_SUBDIRS = (
 )
 _SESSION_PATTERN = re.compile(r"^\d{6}_\d{4}$")
 
+# Hand forensic artifact stems: udp_hand_driver writes <session>/timing/
+# <HAND_TIMING_STEM>[_<side>].csv and <session>/device/<HAND_STATS_STEM>
+# [_<side>].json. The F08 rename (#905) dropped the UDP prefix; sessions recorded
+# before it keep the old names, so both readers (plot_rtc_log's detect_log_type,
+# analyze_hand_canfd_gate) accept PRE_F08_HAND_STEMS as well. Remove that dict
+# and the two fallbacks that use it once no pre-F08 session needs analysing.
+HAND_TIMING_STEM = "hand_timing_log"
+HAND_STATS_STEM = "hand_stats"
+PRE_F08_HAND_STEMS = {HAND_TIMING_STEM: "hand_udp_timing_log", HAND_STATS_STEM: "hand_udp_stats"}
+
 
 def is_session_dir_name(name: str) -> bool:
     """``YYMMDD_HHMM`` 세션 디렉토리 이름인지 판정합니다.
@@ -132,7 +142,7 @@ def generate_run_id() -> str:
     않는다 (#376).
 
     한 launch 의 모든 노드가 같은 값을 ``$RTC_RUN_ID`` 로 받으므로 cm / mpc /
-    hand_udp / rt_callback 네 CSV 를 run 단위로 join 할 수 있다.
+    hand / rt_callback 네 CSV 를 run 단위로 join 할 수 있다.
 
     C++ 소비자 ``rtc::ResolveRunId()`` 는 이 값을 uint64 로 **완전 파싱**한다 —
     숫자 아닌 문자가 섞이면 거부하고 PID 폴백으로 떨어지므로 (경계는 남지만

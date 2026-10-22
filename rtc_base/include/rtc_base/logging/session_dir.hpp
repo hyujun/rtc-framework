@@ -24,7 +24,7 @@ namespace rtc {
 //     controllers/  — per-controller 데이터 CSV (예:
 //                     demo_wbc_controller/<log_name>.csv); on-demand 생성
 //     timing/       — per-tick 스레드 타이밍 CSV (cm_timing_log,
-//                     mpc_timing_log, hand_udp_timing_log,
+//                     mpc_timing_log, hand_timing_log,
 //                     rt_callback_timing_log)
 //     monitor/      — 모니터링 로그
 //     device/       — device 통신 통계 / 센서 로그
@@ -65,7 +65,7 @@ inline void EnsureSessionSubdirs(const std::filesystem::path& session_dir) {
 }
 
 /// per-tick 스레드 타이밍 CSV 들의 공용 디렉토리.
-/// (cm_timing_log.csv, mpc_timing_log.csv, hand_udp_timing_log.csv,
+/// (cm_timing_log.csv, mpc_timing_log.csv, hand_timing_log.csv,
 ///  rt_callback_timing_log.csv)
 inline std::filesystem::path TimingDir(const std::filesystem::path& session_dir) {
   return session_dir / "timing";

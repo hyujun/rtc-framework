@@ -210,7 +210,7 @@ class PeriodicRtThread {
   /// publishing (issue #222 — a 3.4 ms CM tick attributed to "publish" was
   /// 28 us of publish and 3.4 ms of tail).
   ///
-  /// Producers that publish last (MPC solve, hand UDP EventLoop) simply do
+  /// Producers that publish last (MPC solve, hand comm loop) simply do
   /// not call it and keep the identity, and their residual stays exactly 0.
   void MarkPublishDone() noexcept {
     t2p_ = std::chrono::steady_clock::now();

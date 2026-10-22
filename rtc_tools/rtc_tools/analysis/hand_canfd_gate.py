@@ -47,8 +47,9 @@ Why each definition is what it is (the reviewed corrections of H1-F06):
     every bus-side round trip here is a lower bound on what the node saw.
 
 Inputs are the forensic artifacts the node writes under the session directory
-(``device/hand_udp_stats[_<side>].json``, ``timing/hand_udp_timing_log[_<side>].csv``,
-D51 suffix when ``hand_side`` was explicit), a ``candump -L`` log, and
+(``device/hand_stats[_<side>].json``, ``timing/hand_timing_log[_<side>].csv``,
+D51 suffix when ``hand_side`` was explicit; sessions recorded before the F08
+rename, #905, are read under their old ``hand_udp_*`` names), a ``candump -L`` log, and
 optionally the node's console log and a ``ros2 topic echo`` of link_status.
 Exit status: 0 no check FAIL or UNDECIDED (NOT_EVALUATED checks are listed, not passed), 2 at least one UNDECIDED and no
 FAIL, 1 any FAIL, 3 unusable input.
@@ -73,14 +74,15 @@ from rtc_tools.analysis.candump_log import (
     read_candump,
 )
 from rtc_tools.analysis.hand_close import quantile
+from rtc_tools.utils.session_dir import HAND_STATS_STEM, HAND_TIMING_STEM, PRE_F08_HAND_STEMS
 
 PASS = "PASS"
 FAIL = "FAIL"
 UNDECIDED = "UNDECIDED"
 NOT_EVALUATED = "NOT_EVALUATED"
 
-TIMING_STEM = "hand_udp_timing_log"
-STATS_STEM = "hand_udp_stats"
+TIMING_STEM = HAND_TIMING_STEM
+STATS_STEM = HAND_STATS_STEM
 LINK_DOWN_NEEDLE = "Hand link DOWN"
 FAILURE_NEEDLE = "Hand failure detected: "
 # Failure-detector reasons that judge the SENSOR payload, not the link: a hand
@@ -88,7 +90,7 @@ FAILURE_NEEDLE = "Hand failure detected: "
 # the first 100 ms of every run, which says nothing about link-down 0 (D55).
 SENSOR_HEURISTIC_REASONS = ("hand_sensor_all_zero", "hand_sensor_duplicate")
 # The per-request-kind outcome counters that fire ONCE per attempt (fixture
-# udp_hand_driver/test/fixtures/hand_udp_stats_keys_proto2.txt lists the full
+# udp_hand_driver/test/fixtures/hand_stats_keys_proto2.txt lists the full
 # set; cmd_mismatch / mode_mismatch are per frame and excluded on purpose).
 ATTEMPT_COUNTERS = ("ok", "timeout", "error", "short_or_decode")
 
@@ -729,8 +731,25 @@ def _rel(t: float | None, t0: float) -> str:
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
-def _artifact(session: Path, sub: str, stem: str, suffix: str, ext: str) -> Path:
-    return session / sub / f"{stem}{suffix}{ext}"
+def _artifacts(session: Path, suffix: str) -> tuple[Path, Path]:
+    """Resolve the (timing CSV, comm-stats JSON) pair of one run.
+
+    The pre-F08 names (#905, PRE_F08_HAND_STEMS) are used only when BOTH exist
+    and NEITHER current file does; every other mix resolves to the current
+    names, so a session holding one run's CSV next to another run's JSON is an
+    exit-3 "missing file" (naming what the node writes today), never a verdict
+    assembled from two runs."""
+    current = (
+        session / "timing" / f"{TIMING_STEM}{suffix}.csv",
+        session / "device" / f"{STATS_STEM}{suffix}.json",
+    )
+    legacy = (
+        session / "timing" / f"{PRE_F08_HAND_STEMS[TIMING_STEM]}{suffix}.csv",
+        session / "device" / f"{PRE_F08_HAND_STEMS[STATS_STEM]}{suffix}.json",
+    )
+    if all(p.exists() for p in legacy) and not any(p.exists() for p in current):
+        return legacy
+    return current
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -779,8 +798,7 @@ def main(argv: list[str] | None = None) -> int:
     suffix = args.suffix
     if suffix is None:
         suffix = f"_{args.hand_side}" if args.explicit_side else ""
-    csv_path = _artifact(args.session, "timing", TIMING_STEM, suffix, ".csv")
-    json_path = _artifact(args.session, "device", STATS_STEM, suffix, ".json")
+    csv_path, json_path = _artifacts(args.session, suffix)
 
     try:
         rows = load_timing_csv(csv_path)
