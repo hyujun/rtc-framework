@@ -5,7 +5,7 @@ RTC 로그 시각화, 포구 sim 평가 도구, MJCF/URDF 변환·비교, launch
 ## 개요
 
 - 제어 로그 CSV 를 그리고 (`plot_rtc_log`), 동적 포구 sim 의 시행을 오프라인으로 평가하며 (`catching_*` · `catch_*`), MJCF/URDF 를 변환·비교한다.
-- 실행 파일은 `setup.py` 의 `console_scripts` 28 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
+- 실행 파일은 `setup.py` 의 `console_scripts` 29 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
 - `launch/` 와 `utils/` 의 모듈은 다른 패키지의 launch 파일과 도구가 import 한다 (아래 [launch 헬퍼](#launch-헬퍼와-utils-모듈)).
 - 분석 CLI 가 낸 열과 판정을 읽는 법은 [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#rtc_tools) 가 갖는다. 이 README 는 실행 방법만 둔다.
 - 컨트롤러 데모 GUI 는 이 패키지에 없다: [integrated_bringup/scripts/demo_controller_gui.py](../integrated_bringup/scripts/demo_controller_gui.py).
@@ -47,6 +47,7 @@ ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.
 | `run_clock_phase_trials` | 지정 발사 N 회 러너 (clock 위상 시행 생성) | `run_clock_phase_trials --trials 200` |
 | `analyze_hand_close` | 손 폐쇄 시간 $T_{close,e2e}$ 분석 | `analyze_hand_close <hand>_state.csv --profile run.json` |
 | `run_hand_close_trials` | 손 preshape↔closed 계단 N 회 러너 | `run_hand_close_trials --group … --joint-names … --out run.json` |
+| `analyze_hand_canfd_gate` | CAN FD 손 실기 run 의 G-3 게이트 판정 (D55) | `analyze_hand_canfd_gate <session> g3.log --node-log node.log` |
 | `analyze_vision_lane` | 예측 lane 프로브 CSV 요약 | `analyze_vision_lane <prefix>` |
 | `vision_lane_probe` | 예측 · 카메라 · truth lane 을 CSV 로 기록 | `vision_lane_probe <prefix> --dump` |
 | `camera_relay` | 카메라 lane 릴레이 + 드롭·지연 주입 | `camera_relay --drop-after-s 0.4` |
@@ -251,6 +252,19 @@ ros2 run rtc_tools analyze_vision_lane <prefix>
 ```
 
 `sim_estimator_node` 는 `debug.enabled_topics` 에 `prediction/trajectory` 만 있으면 발행이 0 건이다. 다른 debug 토픽을 하나 더 켠다. 판정 규칙: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#clock_phase--hand_close--vision_lane).
+
+### hand_canfd_gate
+
+`udp_hand.launch.py protocol_version:=2` 를 실제 손에 대고 돌린 한 run 의 세션 디렉토리 (`device/hand_udp_stats*.json` · `timing/hand_udp_timing_log*.csv`) 와 `candump -L` 로그로 G-3 의 다섯 항목을 PASS / FAIL / UNDECIDED 로 판정한다 (문턱은 모두 옵션, 기본값이 D55).
+
+```bash
+candump -L -d -t a 'can0,0:0,#FFFFFFFF' > g3.log &          # 노드 기동 전부터 E-Stop 뒤까지
+ros2 run rtc_tools analyze_hand_canfd_gate <session> g3.log --node-log node.log \
+    --link-status link.log --hand-side right [--explicit-side] [--json-out g3.json]
+```
+
+- (a) 기간 ≥ 300 s · run_id 하나 · tick 누락 0 — (b) link down 0: JSON `link_ok`, 노드 로그 "Hand link DOWN" 0, 완전한 RESP 세트 없는 연속 REQ < 50, `link_status` false 0 — (c) `t_total_us` p99 < 0.8 × 주기, 제외 없음 — (d) RESP 세트 타임아웃 / 사이클 과 echo 타임아웃 / write 시도 가 **각각** < 0.1 % (집계 `recv_timeout` 은 사이클당 2 회까지 올라 상한으로만 보고) — (e) candump 의 Frame 1 zeros → Frame 0 zeros (정상 write 와 반대 순서) → echo 2 개 가 2 ms 안, 그 뒤 명령 없음.
+- (d) 는 문턱 건수 ±1.65 σ (150k 사이클에서 ±20 건) 안이면 UNDECIDED (한 번 재측정); echo 분모는 시도당 1회 오르는 카운터 합이라 과소일 수만 있고 bus 의 write 쌍 수를 옆에 보고한다. 입력이 없어 못 본 항목은 `NOT_EVALUATED(<사유>)` 이고 통과가 아니다. candump 왕복은 TX-done 스탬프라 노드 체감의 하한이다. 종료 코드 0 / 1 (FAIL) / 2 (UNDECIDED) / 3 (입력 불가).
 
 ### catching_trials
 
