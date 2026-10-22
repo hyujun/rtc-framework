@@ -352,10 +352,13 @@ TEST(CanFdTransportFrameApiTest, ErrorMaskDeliversErrorFramesOnlyWhenSubscribed)
 
   EXPECT_EQ(rx_default.RecvFrameWithTimeout(rx, kTwentyMs), 0);  // never delivered
 
-  // A class outside the mask is not delivered either.
+  // A class outside the mask is not delivered. Error frames have no id
+  // separation on the shared vcan0, so a subscribed-class frame injected by
+  // another test at this moment is tolerated: only a TX_TIMEOUT frame fails.
   err.can_id = CAN_ERR_FLAG | CAN_ERR_TX_TIMEOUT;
   ASSERT_TRUE(tx.SendFrame(err));
-  EXPECT_EQ(rx_subscribed.RecvFrameWithTimeout(rx, kTwentyMs), 0);
+  while (rx_subscribed.RecvFrameWithTimeout(rx, kTwentyMs) > 0)
+    EXPECT_EQ(rx.can_id & CAN_ERR_TX_TIMEOUT, 0u);
 }
 
 // ── Frame API: a closed transport reports errors and never waits (no vcan) ──
