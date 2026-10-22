@@ -35,11 +35,11 @@ Why each definition is what it is (the reviewed corrections of H1-F06):
     UNDECIDED (repeat once) instead of PASS or FAIL by luck. The band scales
     with the denominator, so a small write count cannot hide a gross failure.
   * The per-stage ``ok`` / ``timeout`` / ``error`` counters fire once per
-    attempt; ``cmd_mismatch`` fires once per unexpected FRAME (up to the echo
-    budget per attempt) and an attempt that exhausts that budget is counted
-    nowhere. The attempt denominator therefore sums only the once-per-attempt
-    counters — it can only undercount attempts, i.e. overstate the rate — and
-    the bus write-pair count is reported beside it as the cross-check.
+    attempt — every echo stage ends on both echoes, the deadline or a recv
+    error (D58); ``cmd_mismatch`` fires once per unexpected FRAME, any number
+    per attempt. The attempt denominator therefore sums only the
+    once-per-attempt counters, and the bus write-pair count is reported beside
+    it as the cross-check.
   * (c) is judged against ``--loop-rate-hz``; the stats JSON carries no rate,
     so the CSV's own median tick period must agree with it or (c) FAILS with
     the reason instead of judging against the wrong threshold.
@@ -682,8 +682,8 @@ def render_markdown(
         f"| canfd.bus_off / error_frames | {canfd.get('bus_off')} / {canfd.get('error_frames')} "
         f"| 0 (bus errors are outside error_mask) |",
         f"| canfd.echo_payload_mismatch | {canfd.get('echo_payload_mismatch')} | 0 |",
-        f"| assembler sets_completed / sets_abandoned / restarted | {asm.get('sets_completed')} / "
-        f"{asm.get('sets_abandoned')} / {asm.get('restarted')} | abandoned ~ timeouts |",
+        f"| assembler sets_completed / sets_abandoned | {asm.get('sets_completed')} / "
+        f"{asm.get('sets_abandoned')} | abandoned ~ timeouts |",
         f"| assembler bad_index / bad_length / duplicate / outside_set | {asm.get('bad_index')} / "
         f"{asm.get('bad_length')} / {asm.get('duplicate')} / {asm.get('outside_set')} | 0 |",
         f"| stale_drained / cmd_mismatch / mode_mismatch | {comm.get('stale_drained')} / "

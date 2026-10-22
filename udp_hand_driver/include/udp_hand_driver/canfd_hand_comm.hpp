@@ -12,7 +12,8 @@
 //                             hand echoes both (D41); one deadline for the
 //                             echo stage (D42)                   → kWriteEcho
 //   ReadCycle                 REQ (DLC 0, D47) → RESP burst idx 0 1 2 collected
-//                             by RespSetAssembler under one deadline (D42); a
+//                             by RespSetAssembler in any order (D57) under one
+//                             deadline (D42); a
 //                             partial set is discarded, never retried inside
 //                             the tick (D43 · D44)        → kJointRead, and on
 //                             a sensor cycle kBulkSensor too (D49: 1:1 with
@@ -22,15 +23,15 @@
 //   DrainStale                non-blocking drain of the queue (≤ kMaxDrainPerCall)
 //                             + assembler reset
 //
-// Echo stage classification (D41). Every frame the filter lets through is one of:
+// Echo stage classification (D41 · D58). Every frame the filter lets through is one of:
 //   ① an error message frame (CAN_ERR_FLAG, subscribed through error_mask) →
-//      CanFdCommStats::error_frames / bus_off, no deadline or budget cost;
+//      CanFdCommStats::error_frames / bus_off only;
 //   ② this node's echo with idx 0 or 1 not yet seen → accepted in any order; a
 //      payload that differs from what was sent only bumps echo_payload_mismatch
 //      (the hand applied its own copy — nothing to re-send);
 //   ③ anything else (a stale RESP, a duplicate idx, idx ≥ 2) → cmd_mismatch +
-//      last_unexpected_*, and one unit of the stage's budget — one per expected
-//      echo, so the third such frame fails the write at once. No re-send (D41).
+//      last_unexpected_* only — however many arrive, the stage still waits for
+//      both echoes (D58). No re-send (D41).
 // Deadline → recv_timeout; both echoes → ok. A failed send fails the write
 // before any wait and is counted as a recv_error of kWriteEcho beside the tx
 // errno counter — on this link a dead peer / downed interface surfaces on
@@ -389,8 +390,6 @@ class CanFdHandComm final : public HandComm {
   /// Echo stage of WriteCommandWithEcho (classification in the header comment).
   [[nodiscard]] bool AwaitEchoes() noexcept {
     const Clock::time_point deadline = Clock::now() + stage_timeout_;
-    constexpr int kBudgetPerEcho = 1;
-    int budget = kBudgetPerEcho * 2;
     uint8_t got = 0;
     bool first = true;
     for (;;) {
@@ -430,8 +429,6 @@ class CanFdHandComm final : public HandComm {
       }
       // ③
       stats_.CountCmdMismatch(RequestKind::kWriteEcho, UnexpectedCmdOf(id), rx_.len);
-      if (--budget < 0)
-        return false;
     }
   }
 

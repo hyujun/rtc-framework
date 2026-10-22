@@ -57,8 +57,8 @@
 //   py [m] = −raw × 0.32767 / 32767   temp [°C] = raw      contact = raw != 0
 //
 //   There is no sequence number, CRC, cycle counter, mode readback or fault
-//   flag anywhere on the wire (W3, D31) — RespSetAssembler relies on the frame
-//   index alone, which is why an idx 0 always starts a new set.
+//   flag anywhere on the wire (W3, D31) — RespSetAssembler completes a set on
+//   its three frame indices alone, in any arrival order (D57).
 //
 // RT contract: everything here is noexcept and allocation-free (the comm calls
 // it from the SCHED_FIFO CommLoop tick). The assembler takes the clock as an
@@ -444,7 +444,7 @@ enum class FeedResult : uint8_t {
   kStored,      ///< a frame of this node's set, stored; set still incomplete
   kComplete,    ///< this frame completed the set — set() is now defined
   kRestarted,   ///< idx 0 arrived on top of a pending set: that set was dropped, a new one begun
-  kDuplicate,   ///< idx 1 / 2 already in the set — dropped, first copy kept
+  kDuplicate,   ///< idx already held — replaces that copy before completion, dropped after
   kOutsideSet,  ///< not a RESP from this node (error frame, echo, other hand, CMD, REQ) — dropped
   kBadIndex,    ///< RESP from this node with idx >= kNumRespFrames — dropped
   kBadLength,   ///< RESP from this node with len != kFrameLen — dropped
@@ -454,12 +454,12 @@ enum class FeedResult : uint8_t {
 /// assembler); snapshot by value.
 struct AssemblerStats {
   uint64_t sets_completed{0};
-  /// A set holding F1 and/or F2 was dropped before completing — by Reset /
-  /// Begin (the deadline passed: D43 cycle failure) or by a restart. A lone
-  /// F0 replaced by a fresher F0 is a restart, not an abandonment.
+  /// A partial set was dropped by Reset / Begin (the deadline passed: D43
+  /// cycle failure).
   uint64_t sets_abandoned{0};
   /// idx 0 arrived while a set (partial or complete) was pending.
   uint64_t restarted{0};
+  /// An idx already in the set: replaced before completion, dropped after.
   uint64_t duplicate{0};
   uint64_t outside_set{0};
   uint64_t bad_index{0};
@@ -472,10 +472,14 @@ struct AssemblerStats {
 /// every frame the socket yields until kComplete or Expired(now) → on expiry
 /// Reset() (drops the partial set; the comm drains the socket and fails the
 /// cycle — D43 / D44, no retry inside the tick). Membership is by id only:
-/// not an error frame and (id & kRespIdMask) == RespId(node, 0). An idx 0
-/// always opens a new set (the freshest F0 wins), which is the only defence
-/// against a late tail of the previous burst — there is no counter on the
-/// wire (D31). One instance per hand; no shared state.
+/// not an error frame and (id & kRespIdMask) == RespId(node, 0). The set
+/// completes when all three indices are held, whatever their arrival order
+/// (D57); a repeated idx replaces the earlier copy until then, and once
+/// complete the set is frozen until Begin / Reset. With no counter on the
+/// wire (D31), a tail of the previous burst that arrives more than a tick
+/// late can complete a mixed set; this tick's leftover frames then show up
+/// in the next DrainStale's stale_drained. One instance per hand; no shared
+/// state.
 class RespSetAssembler {
  public:
   using Clock = std::chrono::steady_clock;
@@ -484,14 +488,14 @@ class RespSetAssembler {
 
   /// Start a new set with its deadline; a pending partial set counts as abandoned.
   void Begin(Clock::time_point deadline) noexcept {
-    AbandonIfPartial(mask_);
+    AbandonIfPartial();
     mask_ = 0;
     deadline_ = deadline;
   }
 
   /// Drop whatever is pending (partial → abandoned). Deadline untouched.
   void Reset() noexcept {
-    AbandonIfPartial(mask_);
+    AbandonIfPartial();
     mask_ = 0;
   }
 
@@ -517,18 +521,10 @@ class RespSetAssembler {
       ++stats_.bad_length;
       return FeedResult::kBadLength;
     }
-    FeedResult result = FeedResult::kStored;
-    if (idx == 0) {
-      if (mask_ != 0) {
-        // The pending set is dropped only if it had a tail; a repeated F0
-        // just supersedes the earlier one.
-        AbandonIfPartial(static_cast<uint8_t>(mask_ & ~FrameBit(0)));
-        mask_ = 0;
-        ++stats_.restarted;
-        result = FeedResult::kRestarted;
-      }
-    } else if ((mask_ & FrameBit(idx)) != 0) {
+    if ((mask_ & FrameBit(idx)) != 0) {
       ++stats_.duplicate;
+      if (mask_ != kRespSetMask)
+        Store(idx, data);
       return FeedResult::kDuplicate;
     }
     Store(idx, data);
@@ -537,7 +533,7 @@ class RespSetAssembler {
       ++stats_.sets_completed;
       return FeedResult::kComplete;
     }
-    return result;
+    return FeedResult::kStored;
   }
 
   [[nodiscard]] bool complete() const noexcept { return mask_ == kRespSetMask; }
@@ -545,7 +541,7 @@ class RespSetAssembler {
   /// FrameBit(i) set for every frame received in the current set.
   [[nodiscard]] uint8_t mask() const noexcept { return mask_; }
 
-  /// Defined only while complete(); a later Feed may overwrite it.
+  /// Defined only while complete(); later Feeds leave it as it is.
   [[nodiscard]] const RespSet& set() const noexcept { return set_; }
 
   [[nodiscard]] bool Expired(Clock::time_point now) const noexcept { return now >= deadline_; }
@@ -564,11 +560,8 @@ class RespSetAssembler {
   void ResetStats() noexcept { stats_ = AssemblerStats{}; }
 
  private:
-  // Counts `pending` as an abandoned set when it holds a tail frame (F1 / F2)
-  // but is not complete. Pass the full mask for Begin / Reset, the mask minus
-  // F0 for a restart.
-  void AbandonIfPartial(uint8_t pending) noexcept {
-    if (pending != 0 && mask_ != kRespSetMask)
+  void AbandonIfPartial() noexcept {
+    if (mask_ != 0 && mask_ != kRespSetMask)
       ++stats_.sets_abandoned;
   }
 
