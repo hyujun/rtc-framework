@@ -44,6 +44,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -280,6 +281,20 @@ TEST(CanFdHandCommTier1, ClosedLinkRtMethodsAreHarmlessAndCountNothing) {
   EXPECT_TRUE(comm.InitializeSensors());
   EXPECT_DOUBLE_EQ(comm.recv_timeout_ms(), kStageTimeoutMs);
   EXPECT_EQ(comm.node(), kNodeRightHand);
+}
+
+// D50 / NUM-2: the one predicate Open() and the node's configure check share.
+// +inf is the case `kt > 0 && isfinite(1/kt)` alone would let through (1/inf =
+// 0 → every feedforward silently 0 A).
+TEST(CanFdHandCommTier1, IsValidFeedforwardKtRejectsNonFiniteZeroNegativeAndSubnormal) {
+  EXPECT_TRUE(CanFdHandComm::IsValidFeedforwardKt(1.0f));
+  EXPECT_TRUE(CanFdHandComm::IsValidFeedforwardKt(0.05f));
+  EXPECT_TRUE(CanFdHandComm::IsValidFeedforwardKt(1e30f));
+  EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(0.0f));
+  EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(-1.0f));
+  EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(std::nanf("")));
+  EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(std::numeric_limits<float>::infinity()));
+  EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(1e-40f));  // 1/kt overflows
 }
 
 TEST(SensorProtocol2Test, CapabilitiesMatchTheWire) {

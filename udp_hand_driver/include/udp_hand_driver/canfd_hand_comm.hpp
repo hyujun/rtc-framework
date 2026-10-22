@@ -179,13 +179,14 @@ class CanFdHandComm final : public HandComm {
     return ff_nm * inv_kt_[motor];
   }
 
-  /// D50 / NUM-2 acceptance of one torque constant: kt > 0 (which also rejects
-  /// NaN) with a finite reciprocal — a subnormal kt passes > 0 but 1/kt is +inf,
-  /// and 0 × inf = NaN would put NaN into the E-Stop feedforward frame. One
-  /// predicate for Open() and the node's configure-time check, so the two
-  /// cannot disagree on which values are refused.
+  /// D50 / NUM-2 acceptance of one torque constant: finite and > 0 (which also
+  /// rejects NaN) with a finite reciprocal — a subnormal kt passes > 0 but 1/kt
+  /// is +inf, and 0 × inf = NaN would put NaN into the E-Stop feedforward
+  /// frame; kt = +inf (a YAML value past FLT_MAX) would pass > 0 with 1/kt = 0
+  /// and silently send every feedforward as 0 A. One predicate for Open() and
+  /// the node's configure-time check, so the two cannot disagree.
   [[nodiscard]] static bool IsValidFeedforwardKt(float kt) noexcept {
-    return (kt > 0.0f) && std::isfinite(1.0f / kt);
+    return std::isfinite(kt) && (kt > 0.0f) && std::isfinite(1.0f / kt);
   }
 
   // ── Non-RT ────────────────────────────────────────────────────────────────

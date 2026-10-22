@@ -61,9 +61,9 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
       (controller_->communication_mode() == udp_hand_driver::HandCommunicationMode::kBulk);
   const char* mode_str = is_bulk ? "bulk" : "individual";
 
-  // transport follows the installed link, not the protocol string, so the two
-  // keys together say what actually ran (loopmodel "2" still reads canfd — the
-  // comm was constructed even though its socket never opened).
+  // transport is the type of the installed link, not the protocol string
+  // (loopmodel "2" reads canfd too: the comm was constructed even though its
+  // socket never opened — sil_mode is not recorded here).
   const char* transport_str = (canfd_comm_ != nullptr) ? "canfd" : "udp";
 
   ofs << "{\n"
@@ -98,7 +98,9 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
       // mismatch (position still applied). Every protocol, so a proto1 run
       // reads 0 rather than lacking the key.
       << "    \"feedforward_size_mismatch\": "
-      << feedforward_size_mismatch_.load(std::memory_order_relaxed) << ",\n";
+      << feedforward_size_mismatch_.load(std::memory_order_relaxed) << ",\n"
+      << "    \"feedforward_nonfinite\": " << feedforward_nonfinite_.load(std::memory_order_relaxed)
+      << ",\n";
 
   // Per-request-kind breakdown (link-down forensics): which request kind eats
   // the failures, and whether drops are timeouts or stale/desync mismatches.

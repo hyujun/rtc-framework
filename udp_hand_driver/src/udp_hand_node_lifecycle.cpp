@@ -332,6 +332,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     return CallbackReturn::FAILURE;
   }
 
+  // Effective comm decimation, shared by the D42 slot below and the link_status
+  // decimation further down so the two cannot disagree on the cycle period.
+  const int comm_dec_guarded = udp_hand_driver::ClampCommDecimation(comm_decimation);
+
   // ── CAN FD link validity (protocol_version "2") ────────────────────────
   // Everything the link needs is checked here, before the controller or any
   // publisher exists, so a bad configuration ends in Unconfigured with one
@@ -377,13 +381,14 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     // D42: two receive stages per cycle (echo, RESP set), each bounded by
     // recv_timeout_ms, must fit the comm slot — otherwise one slow cycle
     // overruns the next tick by construction rather than by a fault.
-    const double slot_ms =
-        1000.0 / loop_rate_hz *
-        static_cast<double>(udp_hand_driver::ClampCommDecimation(comm_decimation));
+    const double slot_ms = 1000.0 / loop_rate_hz * static_cast<double>(comm_dec_guarded);
     if (!(recv_timeout_ms > 0.0) || !(2.0 * recv_timeout_ms < slot_ms)) {
+      // The declare default (10 ms) is UDP's and can never pass here: a proto2
+      // configuration must set recv_timeout_ms itself (the shipped YAML: 0.4).
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                    "recv_timeout_ms=%.3f: protocol_version 2 needs 0 < 2 × recv_timeout_ms < "
-                   "comm slot %.3f ms (1000 / loop_rate_hz × comm_decimation) — D42",
+                   "comm slot %.3f ms (1000 / loop_rate_hz × comm_decimation) — D42; set it in "
+                   "the YAML (the declare default is the UDP value)",
                    recv_timeout_ms, slot_ms);
       return CallbackReturn::FAILURE;
     }
@@ -557,7 +562,6 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // cycles do no publish. Base the link_status decimation on that effective
   // cadence so the intended publish_rate holds when comm_decimation > 1. Guard
   // publish_rate > 0 (a non-positive value would divide by zero / yield garbage).
-  const int comm_dec_guarded = udp_hand_driver::ClampCommDecimation(comm_decimation);
   const double effective_state_hz = loop_rate_hz / static_cast<double>(comm_dec_guarded);
   link_decimation_ =
       (publish_rate > 0.0) ? std::max(1, static_cast<int>(effective_state_hz / publish_rate)) : 1;
@@ -649,6 +653,21 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                                "feedforward zeroed (position applied)",
                                msg->feedforward.size(), msg->values.size());
         }
+        // A NaN / ±inf feedforward would be serialized as-is into the current
+        // frame (the comm only scales by 1/kt): zero that entry, count, warn.
+        bool nonfinite = false;
+        for (auto& v : ff) {
+          if (!std::isfinite(v)) {
+            v = 0.0f;
+            nonfinite = true;
+          }
+        }
+        if (nonfinite) {
+          feedforward_nonfinite_.fetch_add(1, std::memory_order_relaxed);
+          RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::NodeLogger(), *get_clock(), 1000,
+                               "JointCommand feedforward carried a non-finite value — that "
+                               "entry zeroed (position applied)");
+        }
         controller_->SendCommandAndRequestStates(cmd, ff);
       });
 
@@ -712,6 +731,11 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // producer on its first iteration. The CommLoop (PeriodicRtThread) computes
   // jitter against its own loop_rate_hz period budget.
   controller_->SetTimingProducer(&hand_udp_timing_producer_);
+
+  // Per-run counters, reset where the controller resets its own (Start →
+  // PrepareRun → ResetCommStats) so one stats JSON never mixes two runs.
+  feedforward_size_mismatch_.store(0, std::memory_order_relaxed);
+  feedforward_nonfinite_.store(0, std::memory_order_relaxed);
 
   if (!controller_->Start()) {
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Failed to start UdpHandController (%s)",

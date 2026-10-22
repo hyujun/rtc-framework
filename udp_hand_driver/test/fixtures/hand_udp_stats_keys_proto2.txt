@@ -29,6 +29,7 @@ comm_stats.communication_mode
 comm_stats.consecutive_recv_failures
 comm_stats.elapsed_sec
 comm_stats.failure_detected
+comm_stats.feedforward_nonfinite
 comm_stats.feedforward_size_mismatch
 comm_stats.last_unexpected_cmd
 comm_stats.last_unexpected_len

@@ -106,3 +106,4 @@ timing_stats.write_us.min
 comm_stats.feedforward_size_mismatch
 comm_stats.protocol_version
 comm_stats.transport
+comm_stats.feedforward_nonfinite

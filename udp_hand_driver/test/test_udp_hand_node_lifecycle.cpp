@@ -819,6 +819,51 @@ TEST_F(UdpHandNodeLifecycleTest, Proto2StatsJsonKeysMatchTheProto2FixtureExactly
             FirstLine(ReadFile(fixtures / "hand_udp_timing_log_header.txt")));
 }
 
+// D39 through the node: the command callback's feedforward branches, observed
+// through the two counters the stats JSON carries. Four messages in order —
+// no feedforward (silent), a matching size (accepted), a wrong size (zeroed +
+// counted), a matching size with a NaN (that entry zeroed + counted). The
+// loopmodel fake ignores the feedforward value itself, so what this pins is
+// branch selection and the per-message accounting, not the wire payload (the
+// controller seam test covers that the staged ff reaches the comm).
+TEST_F(UdpHandNodeLifecycleTest, JointCommandFeedforwardBranchesAreCounted) {
+  auto node = std::make_shared<UdpHandNode>(LoopmodelOptions());
+  auto probe = std::make_shared<rclcpp::Node>("hand_feedforward_probe");
+  // The node's command subscription is best_effort depth 1.
+  auto cmd_pub = probe->create_publisher<rtc_msgs::msg::JointCommand>("/hand/joint_command",
+                                                                      rclcpp::QoS(1).best_effort());
+
+  exec_.add_node(node->get_node_base_interface());
+  exec_.add_node(probe);
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  ASSERT_TRUE(SpinUntil([&] { return cmd_pub->get_subscription_count() > 0; }, 10s));
+
+  rtc_msgs::msg::JointCommand msg;
+  msg.joint_names = udp_hand_driver::kDefaultHandMotorNames;
+  msg.values.assign(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 0.1);
+  const auto send = [&](std::vector<double> ff) {
+    msg.feedforward = std::move(ff);
+    cmd_pub->publish(msg);
+    SpinFor(150ms);  // best_effort: give DDS time to deliver before the next one
+  };
+  send({});  // absent → silent
+  send(std::vector<double>(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 0.5));
+  send({1.0, 2.0, 3.0});  // size mismatch
+  std::vector<double> with_nan(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 0.5);
+  with_nan[4] = std::nan("");
+  send(with_nan);  // non-finite entry
+
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(probe);
+  exec_.remove_node(node->get_node_base_interface());
+
+  const std::string json = ReadFile(session_dir_ / "device" / "hand_udp_stats.json");
+  EXPECT_NE(json.find("\"feedforward_size_mismatch\": 1,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"feedforward_nonfinite\": 1,"), std::string::npos) << json;
+}
+
 // D51: an explicit hand_side suffixes both forensic artifacts; the default
 // names above stay as they were, so one-hand deployments see no rename.
 TEST_F(UdpHandNodeLifecycleTest, ExplicitHandSideSuffixesTheForensicFiles) {

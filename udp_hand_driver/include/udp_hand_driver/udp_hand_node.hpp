@@ -312,9 +312,13 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   const udp_hand_driver::CanFdHandComm* canfd_comm_{nullptr};
 
   // D39: JointCommand messages whose feedforward size matched neither 0 nor
-  // values.size() (feedforward zeroed, position applied). Written on the
-  // command callback thread, read by SaveCommStats on the aux lane → atomic.
+  // values.size() (feedforward zeroed, position applied), and messages whose
+  // feedforward carried a NaN / ±inf (that entry zeroed — a non-finite current
+  // command must never reach the wire; the position is still applied). Per
+  // run: reset in on_activate beside the controller's own counters. Written on
+  // the command callback thread, read by SaveCommStats on the aux lane → atomic.
   std::atomic<std::uint64_t> feedforward_size_mismatch_{0};
+  std::atomic<std::uint64_t> feedforward_nonfinite_{0};
 
   // File suffix of the forensic artifacts (stats JSON, timing CSV): "_<side>"
   // when `hand_side` was set explicitly (a parameter override exists), else

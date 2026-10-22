@@ -118,7 +118,7 @@ ros2 topic echo /hand/calibration/status
 
 `1b` · `2` + `individual` 조합은 `on_configure` 가 FAILURE 를 반환한다. `2` 는 그 밖에도 `can_interface` 가 없을 때 (`loopmodel` 제외), `feedforward_kt` 가 10개가 아니거나 양수가 아닐 때, `2 × recv_timeout_ms` 가 comm 슬롯 (`1000 / loop_rate_hz × comm_decimation` ms) 을 넘을 때 configure 를 거부한다. YAML 의 값은 반드시 `"2"` 로 따옴표를 친다 (정수는 파라미터 선언에서 예외).
 
-`2` 의 `JointCommand.feedforward` 는 `values` 와 크기가 같을 때만 같은 이름 맵으로 재정렬되어 전송되고 (joint offset 은 적용하지 않음), 비어 있으면 0, 그 외 크기면 0 + 경고 + `feedforward_size_mismatch` 카운터다. `command_type` · `kp` · `kd` 는 소비하지 않는다. wire 포맷의 SSoT 는 [hand_canfd_packets.hpp](include/udp_hand_driver/hand_canfd_packets.hpp) 주석이다.
+`2` 의 `JointCommand.feedforward` 는 `values` 와 크기가 같을 때만 같은 이름 맵으로 재정렬되어 전송되고 (joint offset 은 적용하지 않음), 비어 있으면 0, 그 외 크기면 0 + 경고 + `feedforward_size_mismatch` 카운터, NaN · ±inf 항목은 0 + `feedforward_nonfinite` 카운터다. `command_type` · `kp` · `kd` 는 소비하지 않는다. wire 포맷의 SSoT 는 [hand_canfd_packets.hpp](include/udp_hand_driver/hand_canfd_packets.hpp) 주석이다.
 
 ### 통신 decimation (`comm_decimation`)
 
@@ -231,7 +231,7 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 
 `last_unexpected_cmd` 에 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처다. `timing_stats` 는 성공한 패킷의 latency 만 집계한다. per-tick 타이밍은 `<session>/timing/hand_udp_timing_log.csv`.
 
-`protocol_version` · `transport` (`udp` \| `canfd`) · `feedforward_size_mismatch` 는 모든 프로토콜에 있고, `"2"` 는 `canfd` 블록 (tx errno 분류 · error frame · `echo_payload_mismatch` · RESP-set assembler 카운터) 을 더한다. `hand_side` 를 명시하면 두 파일이 `hand_udp_stats_<side>.json` · `hand_udp_timing_log_<side>.csv` 가 된다. 키 집합은 `test/fixtures/hand_udp_stats_keys*.txt` 가 고정한다.
+`protocol_version` · `transport` (`udp` \| `canfd`, 설치된 링크 종류 — `loopmodel` 은 기록하지 않음) · `feedforward_size_mismatch` · `feedforward_nonfinite` 는 모든 프로토콜에 있고, `"2"` 는 `canfd` 블록 (tx errno 분류 · error frame · `echo_payload_mismatch` · RESP-set assembler 카운터) 을 더한다. `hand_side` 를 명시하면 두 파일이 `hand_udp_stats_<side>.json` · `hand_udp_timing_log_<side>.csv` 가 된다. 키 집합은 `test/fixtures/hand_udp_stats_keys*.txt` 가 고정한다.
 
 ### 로깅 (Logging)
 
