@@ -70,6 +70,8 @@
       "program": "${workspaceFolder}/../../install/udp_hand_driver/lib/udp_hand_driver/udp_hand_node",
       "args": [
         "--ros-args",
+        "-r",
+        "__ns:=/hand",
         "--params-file",
         "${workspaceFolder}/udp_hand_driver/config/udp_hand_node.yaml"
       ],

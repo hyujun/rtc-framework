@@ -292,13 +292,17 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   controller_->SetSensorProtocol(std::move(sensor_protocol));
 
   // ── Topic names ──────────────────────────────────────────────────
-  declare_parameter("command_topic", std::string("/hand/joint_command"));
-  declare_parameter("joint_state_topic", std::string("/hand/joint_states"));
-  declare_parameter("motor_state_topic", std::string("/hand/motor_states"));
-  declare_parameter("sensor_topic", std::string("/hand/sensor_states"));
-  declare_parameter("link_status_topic", std::string("/hand/link_status"));
-  declare_parameter("calibration_command_topic", std::string("/hand/calibration/command"));
-  declare_parameter("calibration_status_topic", std::string("/hand/calibration/status"));
+  // Relative by default (D53): the node namespace supplies the prefix, so the
+  // standalone launch (`-r __ns:=/hand`) still lands on /hand/* and a second
+  // hand only needs a different namespace. Absolute names remain accepted as
+  // overrides (the robot overlays pin /p1a/*, /p1b/* that way).
+  declare_parameter("command_topic", std::string("joint_command"));
+  declare_parameter("joint_state_topic", std::string("joint_states"));
+  declare_parameter("motor_state_topic", std::string("motor_states"));
+  declare_parameter("sensor_topic", std::string("sensor_states"));
+  declare_parameter("link_status_topic", std::string("link_status"));
+  declare_parameter("calibration_command_topic", std::string("calibration/command"));
+  declare_parameter("calibration_status_topic", std::string("calibration/status"));
   declare_parameter("calibration_status_rate_hz", 5.0);
   const std::string cmd_topic = get_parameter("command_topic").as_string();
   const std::string joint_state_topic = get_parameter("joint_state_topic").as_string();

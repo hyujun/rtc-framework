@@ -33,6 +33,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -118,8 +119,16 @@ std::string FirstLine(const std::string& text) {
   return nl == std::string::npos ? text : text.substr(0, nl);
 }
 
+// Every topic below is subscribed by its absolute /hand/... name while the node
+// itself declares only relative defaults (D53). The namespace is supplied the
+// way the standalone launch supplies it, so a default that silently regressed
+// to an absolute name would still resolve to the same topic — which is why
+// RelativeTopicDefaultsResolveUnderTheNamespace pins the parameter values too.
+constexpr const char* kTestNamespace = "/hand";
+
 rclcpp::NodeOptions LoopmodelOptions() {
   rclcpp::NodeOptions options;
+  options.arguments({"--ros-args", "-r", std::string("__ns:=") + kTestNamespace});
   options.parameter_overrides({
       rclcpp::Parameter("sil_mode", "loopmodel"),
       // 2 kHz instead of the 500 Hz default: comm cycles accumulate 4x faster,
@@ -187,6 +196,50 @@ class UdpHandNodeLifecycleTest : public ::testing::Test {
 };
 
 std::filesystem::path UdpHandNodeLifecycleTest::session_dir_;
+
+// D53: the seven topic parameters default to relative names and the namespace
+// alone decides where they land. Both halves are asserted — the resolved names
+// on the graph, because that is the runtime contract (G-1), and the raw
+// parameter values, because a default rewritten back to "/hand/joint_states"
+// would resolve to the same topic under this namespace and pass the first half.
+TEST_F(UdpHandNodeLifecycleTest, RelativeTopicDefaultsResolveUnderTheNamespace) {
+  auto node = std::make_shared<UdpHandNode>(LoopmodelOptions());
+  exec_.add_node(node->get_node_base_interface());
+
+  EXPECT_STREQ(node->get_namespace(), kTestNamespace);
+  EXPECT_EQ(node->get_fully_qualified_name(), std::string(kTestNamespace) + "/udp_hand_node");
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+
+  const std::map<std::string, std::string> expected_relative = {
+      {"command_topic", "joint_command"},
+      {"joint_state_topic", "joint_states"},
+      {"motor_state_topic", "motor_states"},
+      {"sensor_topic", "sensor_states"},
+      {"link_status_topic", "link_status"},
+      {"calibration_command_topic", "calibration/command"},
+      {"calibration_status_topic", "calibration/status"},
+  };
+  for (const auto& [name, relative] : expected_relative) {
+    EXPECT_EQ(node->get_parameter(name).as_string(), relative)
+        << name << " default is no longer the relative name";
+  }
+
+  // The resolved graph names: publishers for the five outputs, subscriptions
+  // for the two inputs. The monitor topic derives from sensor_topic.
+  const auto resolved = [&](const std::string& relative) {
+    return std::string(kTestNamespace) + "/" + relative;
+  };
+  for (const char* out : {"joint_states", "motor_states", "sensor_states", "sensor_states/monitor",
+                          "link_status", "calibration/status"}) {
+    EXPECT_EQ(node->count_publishers(resolved(out)), 1u) << "no publisher on " << resolved(out);
+  }
+  for (const char* in : {"joint_command", "calibration/command"}) {
+    EXPECT_EQ(node->count_subscribers(resolved(in)), 1u) << "no subscription on " << resolved(in);
+  }
+
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+}
 
 // The publish lane, end to end: loopmodel configure/activate brings up the real
 // CommLoop thread, the poll timer turns SeqLock progress into topic traffic,
