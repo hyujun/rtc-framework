@@ -183,7 +183,7 @@ PID=$(pidof -s integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 | 패키지 | 역할 |
 |---|---|
 | [`robot_descriptions`](robot_descriptions/) | 로봇별 URDF · MJCF · mesh (data-only) |
-| [`udp_hand_driver`](udp_hand_driver/) | 가변 DOF 핸드 UDP 드라이버 |
+| [`udp_hand_driver`](udp_hand_driver/) | 가변 DOF 핸드 드라이버 (UDP · CAN FD) |
 | [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | BehaviorTree.CPP v4 태스크 코디네이터 |
 | [`integrated_bringup`](integrated_bringup/) | 로봇별 launch · config, 데모 컨트롤러, 튜닝 GUI |
 
