@@ -1500,6 +1500,19 @@ expect_not_contains "a README under include/ does not raise the README checklist
 printf 'int demo_fn();\n' >"$dir/rtc_demo/include/rtc_demo/demo.hpp"
 out=$(run_hook "$dir")
 expect_contains "a header under include/ still raises the README checklist" "$out" "public surface changed"
+
+# 53b. A tracked header whose changed lines are all comments carries no
+#      interface delta (a thread renamed inside a comment asked for a README it
+#      did not need, #905). A code line in the same header still asks -- the
+#      control keeps the absence from holding because the filter ate everything.
+git -C "$dir" add -A && git -C "$dir" commit -qm "header"
+git -C "$dir" rev-parse HEAD >"$dir/.git/rtc-verify-base"  # the earlier run left a watermark behind HEAD
+printf '// returns one\nint demo_fn();\n' >"$dir/rtc_demo/include/rtc_demo/demo.hpp"
+out=$(run_hook "$dir")
+expect_not_contains "53b: a comment-only header edit raises no README checklist" "$out" "public surface changed"
+printf '// returns one\nint demo_fn(int);\n' >"$dir/rtc_demo/include/rtc_demo/demo.hpp"
+out=$(run_hook "$dir")
+expect_contains "53b: a code line in that header still raises it" "$out" "public surface changed"
 rm -rf "$dir"
 
 # --- Verdict reuse -------------------------------------------------------------

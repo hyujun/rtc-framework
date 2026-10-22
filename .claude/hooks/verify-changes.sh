@@ -35,7 +35,8 @@
 #   1.  README reminder on a public-surface change -- header / launch / config,
 #       a directory (<= 2 levels below the package) added or removed, package.xml
 #       (NON-BLOCKING; a file add/del inside an existing directory is not one,
-#       so READMEs stop growing per-file trees, #869 D4); a new .cpp
+#       so READMEs stop growing per-file trees, #869 D4; a tracked header whose
+#       changed lines are all comment lines is not one either); a new .cpp
 #       must be in CMakeLists.txt, a new find_package() in package.xml
 #       (blocking).
 #   1b. changed *.md -> validate_docs.py --files, findings narrowed to added
@@ -1248,6 +1249,24 @@ for pkg_dir in $CHANGED_PKGS; do
   # grades them), not user-facing config: a budget raise is not a README delta.
   PKG_PUBLIC=$(echo "$CHANGED" | grep -E "^${pkg_dir}/(include|launch|config)/" \
                  | grep -vE '\.md$|^repo_scripts/config/[a-z_]+_budget\.yaml$' || true)
+  # A tracked header whose changed lines are all comment lines (`//`, `/*`,
+  # `*`) carries no interface delta the README could reflect (a thread renamed
+  # inside a comment asked for a README it did not need, #905). A code line
+  # with a trailing comment still counts; a header new since the baseline is
+  # surface as before.
+  if [ -n "$PKG_PUBLIC" ]; then
+    PKG_PUBLIC=$(echo "$PKG_PUBLIC" | while IFS= read -r f; do
+      case "$f" in
+        */include/*.h|*/include/*.hpp)
+          if git cat-file -e "${VERIFY_BASE}:${f}" 2>/dev/null \
+             && [ -z "$(git diff -U0 "$VERIFY_BASE" -- "$f" | grep -E '^[-+][^-+]' \
+                       | grep -vE '^[-+][[:space:]]*(//|/\*|\*)' | head -n 1)" ]; then
+            continue
+          fi ;;
+      esac
+      printf '%s\n' "$f"
+    done)
+  fi
   # Directory = the file's dir cut to <pkg>/a/ or <pkg>/a/b/ (package-root files
   # have none). New: nothing under it at the baseline. Removed: nothing tracked
   # or untracked left under it. One git call per candidate directory, not file.
