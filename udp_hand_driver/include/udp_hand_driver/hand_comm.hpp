@@ -11,10 +11,10 @@
 //   - UdpHandComm (udp_hand_comm.hpp): proto1a / proto1b over UDP. Wraps the
 //     pre-existing UdpHandTransport; a cycle is the same request/response
 //     sequence the controller used to issue directly.
-//   - A CAN FD implementation (proto2) sends the command as two frames and
-//     reads one REQ → three-frame RESP burst per cycle; it cannot be split
-//     into per-request calls without caching, which is why the read side is
-//     one ReadCycle() and not three virtuals.
+//   - CanFdHandComm (canfd_hand_comm.hpp): proto2 over CAN FD. Sends the
+//     command as two frames and reads one REQ → three-frame RESP burst per
+//     cycle; it cannot be split into per-request calls without caching, which
+//     is why the read side is one ReadCycle() and not three virtuals.
 //
 // Ownership of the bookkeeping stays with the controller: ReadCycle reports
 // per-channel outcomes and the phase boundaries inside the read; the

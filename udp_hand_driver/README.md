@@ -132,7 +132,7 @@ UDP 부하를 강제로 줄여 보는 테스트용 knob 이다 (기본 `1`). `se
 
 ### SIL 모드 (`sil_mode`)
 
-하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 하나**로 고른다. `sil_mode` 는 노드 파라미터 (YAML) 이고 launch 인자 `sil_mode:=` 가 override 한다. 노드 `on_configure` 가 이를 해석해 내부 플래그 `use_fake_hand` 와 실효 endpoint 를 파생한다. `fake_hand_firmware` 프로세스는 노드가 못 띄우므로 launch 가 `sil_mode` 를 읽어 조건부로 띄운다. `integrated_bringup` 의 `robot_ur5e_p1a.launch.py` · `robot_ur5e_p1b.launch.py` 도 같은 `sil_mode:=` 를 지원한다.
+하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 하나**로 고른다. `sil_mode` 는 노드 파라미터 (YAML) 이고 launch 인자 `sil_mode:=` 가 override 한다. 노드 `on_configure` 가 `use_fake_hand` 와 실효 endpoint 를 파생하고, `fake_hand_firmware` 는 launch 가 `sil_mode` 를 읽어 조건부로 띄운다. `integrated_bringup` 의 `robot_ur5e_p1a.launch.py` · `robot_ur5e_p1b.launch.py` 도 같은 `sil_mode:=` 를 지원한다.
 
 | `sil_mode` | 계층 | `use_fake_hand` | firmware | 네트워크 endpoint | 검증 대상 |
 |---|---|:---:|:---:|---|---|
@@ -142,14 +142,14 @@ UDP 부하를 강제로 줄여 보는 테스트용 knob 이다 (기본 `1`). `se
 
 **`loopmodel`**: UDP 소켓을 우회하고 command 를 in-process 1차 LPF 로 통과시켜 read state 를 만든다. 튜닝은 `fake_lpf_time_constant_s` · `fake_effort_stiffness` · `fake_effort_damping`.
 
-**`firmware`**: `fake_hand_firmware` 가 hand 프로토콜의 디바이스 측을 흉내 내고, 수정하지 않은 `udp_hand_node` 가 loopback UDP 로 통신한다. firmware 의 bind 포트는 `target_port`, wire 포맷은 `protocol_version` 이다. 합성 튜닝 (LPF τ · effort 게인 · 센서 대역 · seed) 은 [config/fake_hand_firmware.yaml](config/fake_hand_firmware.yaml).
+**`firmware`**: `fake_hand_firmware` 가 hand 프로토콜의 디바이스 측을 흉내 내고, 수정하지 않은 `udp_hand_node` 가 loopback UDP 로 통신한다. firmware 의 bind 포트는 `target_port`, wire 포맷은 `protocol_version` 이다. `"2"` 는 UDP 대신 `can_interface` (기본 `vcan0`) 의 CAN FD 에 `hand_side` 노드로 붙는다. 합성 튜닝 (LPF τ · effort 게인 · 센서 대역 · seed) 은 [config/fake_hand_firmware.yaml](config/fake_hand_firmware.yaml).
 
 ```bash
 ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=firmware protocol_version:=1a
 ros2 topic echo /hand/link_status --once     # 별도 터미널
 ```
 
-한계: loopback latency 가 µs 라 timing 검증에는 부적합하다. firmware 는 driver decoder 의 거울상이라 실제 펌웨어와의 일치는 보장하지 못한다. commander 없이 단독 실행하면 모터가 LPF rest(0) 에 머물러 failure detector 의 all-zero / duplicate 경고가 뜨는데, 명령이 오면 해소되는 정상 동작이다.
+한계: µs loopback latency 라 timing 검증엔 부적합하고, driver decoder 의 거울상이라 실제 펌웨어와의 일치는 보장하지 못하며, commander 없이 단독 실행하면 모터가 LPF rest(0) 에 머물러 failure detector 의 all-zero / duplicate 경고가 뜬다 (명령이 오면 해소).
 
 ## 설정
 

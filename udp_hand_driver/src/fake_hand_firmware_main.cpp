@@ -1,22 +1,31 @@
 // fake_hand_firmware_main.cpp -- full-SIL loopback firmware simulator (device side).
 //
-// Binds a UDP socket and answers the real udp_hand_node's request datagrams with
-// protocol-correct responses (see fake_hand_firmware.hpp). Run alongside an
-// unmodified udp_hand_node (use_fake_hand=false, target_ip=127.0.0.1) to exercise
-// the whole transport path with no hardware. Launch both via
-// `udp_hand.launch.py sil_mode:=firmware`.
+// protocol_version 1a / 1b: binds a UDP socket and answers the real
+// udp_hand_node's request datagrams with protocol-correct responses (see
+// fake_hand_firmware.hpp). Run alongside an unmodified udp_hand_node
+// (use_fake_hand=false, target_ip=127.0.0.1) to exercise the whole transport
+// path with no hardware. Launch both via `udp_hand.launch.py sil_mode:=firmware`.
+//
+// protocol_version 2: opens a CAN FD socket on `can_interface` (vcan0 by
+// default) as the hand node `hand_side` names (D51) and answers CMD / REQ frames
+// with the echo / RESP burst BuildCanFdResponse() builds — the device side of
+// CanFdHandComm. No receive filter: the mirror itself sorts other traffic into
+// its counters, as the real MCU would see the whole bus.
 //
 // This is a thin socket/param/log shell; all response logic lives in the
 // header-only FakeHandFirmware class (unit-tested independently). The node reads
 // parameters once at startup then runs its own recv loop, polling rclcpp::ok()
-// via ppoll timeout — no executor spin is required.
+// via a 100 ms receive timeout — no executor spin is required.
 
+#include "rtc_communication/can/canfd_transport.hpp"
 #include "udp_hand_driver/fake_hand_firmware.hpp"
+#include "udp_hand_driver/hand_canfd_packets.hpp"
 #include "udp_hand_driver/udp_hand_packets.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
 #include <arpa/inet.h>
+#include <linux/can.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -33,10 +42,14 @@
 namespace {
 
 // Read the FakeHandFirmware::Config from ROS parameters (declared with defaults).
-udp_hand_driver::FakeHandFirmware::Config LoadConfig(rclcpp::Node& node) {
+// `hand_side` is declared for every protocol_version (it only matters on CAN FD);
+// an unparsable value is a configuration error — `hand_side_ok` reports it.
+udp_hand_driver::FakeHandFirmware::Config LoadConfig(rclcpp::Node& node, bool& hand_side_ok) {
   udp_hand_driver::FakeHandFirmware::Config cfg;
   const std::string proto = node.declare_parameter<std::string>("protocol_version", "1a");
   cfg.proto_1b = (proto == "1b");
+  const std::string side = node.declare_parameter<std::string>("hand_side", "right");
+  hand_side_ok = udp_hand_driver::canfd::ParseHandSide(side, cfg.hand_side);
   cfg.num_fingertips = static_cast<int>(
       node.declare_parameter<int64_t>("num_fingertips", udp_hand_driver::kDefaultNumFingertips));
   cfg.lpf_time_constant_s = node.declare_parameter<double>("lpf_time_constant_s", 0.1);
@@ -50,6 +63,61 @@ udp_hand_driver::FakeHandFirmware::Config LoadConfig(rclcpp::Node& node) {
   return cfg;
 }
 
+// proto2 shell: one CAN FD socket, no filter, 100 ms receive timeout polling
+// rclcpp::ok(). Every received frame goes through BuildCanFdResponse(); the
+// frames it yields are sent as 29-bit FD frames with BRS, in order.
+int RunCanFd(rclcpp::Node& node, udp_hand_driver::FakeHandFirmware& firmware,
+             const udp_hand_driver::FakeHandFirmware::Config& cfg,
+             const std::string& can_interface) {
+  rtc::CanFdTransportConfig tcfg{};
+  tcfg.interface_name = can_interface;
+  tcfg.extended_frame = true;
+  tcfg.bitrate_switch = true;
+  rtc::CanFdTransport transport(tcfg);
+  if (!transport.Open()) {
+    RCLCPP_ERROR(node.get_logger(), "CAN FD open(%s) failed: %s", can_interface.c_str(),
+                 std::strerror(errno));
+    return 1;
+  }
+  RCLCPP_INFO(node.get_logger(),
+              "fake_hand_firmware on CAN FD %s (protocol_version=2, node=%u, num_fingertips=%d, "
+              "step_rate=%.0f Hz)",
+              can_interface.c_str(),
+              static_cast<unsigned>(udp_hand_driver::canfd::NodeIdOf(cfg.hand_side)),
+              cfg.num_fingertips, cfg.step_rate_hz);
+
+  std::array<udp_hand_driver::FakeHandFirmware::CanFdFrame, udp_hand_driver::canfd::kNumRespFrames>
+      out{};
+  canfd_frame rx{};
+  canfd_frame tx{};
+  const timespec timeout{0, 100 * 1000 * 1000};  // 100 ms
+  while (rclcpp::ok()) {
+    const ssize_t n = transport.RecvFrameWithTimeout(rx, timeout);
+    if (n < 0) {
+      if (errno == EINTR)
+        continue;  // signal (e.g. SIGINT) — re-check rclcpp::ok()
+      RCLCPP_ERROR(node.get_logger(), "CAN FD recv failed: %s", std::strerror(errno));
+      break;
+    }
+    if (n == 0)
+      continue;
+    const std::size_t count =
+        firmware.BuildCanFdResponse(rx.can_id, rx.data, rx.len, out.data(), out.size());
+    for (std::size_t i = 0; i < count; ++i) {
+      tx = canfd_frame{};
+      tx.can_id = out[i].can_id | CAN_EFF_FLAG;
+      tx.len = static_cast<__u8>(out[i].len);
+      tx.flags = CANFD_BRS;
+      std::memcpy(tx.data, out[i].data.data(), out[i].len);
+      if (!transport.SendFrame(tx))
+        RCLCPP_WARN_THROTTLE(node.get_logger(), *node.get_clock(), 1000, "CAN FD send failed: %s",
+                             std::strerror(errno));
+    }
+  }
+  RCLCPP_INFO(node.get_logger(), "fake_hand_firmware shutting down");
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -57,8 +125,22 @@ int main(int argc, char** argv) {
   auto node = std::make_shared<rclcpp::Node>("fake_hand_firmware");
 
   const int port = static_cast<int>(node->declare_parameter<int64_t>("port", 55151));
-  const udp_hand_driver::FakeHandFirmware::Config cfg = LoadConfig(*node);
+  const std::string can_interface = node->declare_parameter<std::string>("can_interface", "vcan0");
+  const std::string proto = node->get_parameter("protocol_version").as_string();
+  bool hand_side_ok = false;
+  const udp_hand_driver::FakeHandFirmware::Config cfg = LoadConfig(*node, hand_side_ok);
+  if (!hand_side_ok) {
+    RCLCPP_ERROR(node->get_logger(), "hand_side must be \"right\" or \"left\"");
+    rclcpp::shutdown();
+    return 1;
+  }
   udp_hand_driver::FakeHandFirmware firmware(cfg);
+
+  if (proto == "2") {
+    const int rc = RunCanFd(*node, firmware, cfg, can_interface);
+    rclcpp::shutdown();
+    return rc;
+  }
 
   // ── Open + bind the UDP socket ─────────────────────────────────────────────
   const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
