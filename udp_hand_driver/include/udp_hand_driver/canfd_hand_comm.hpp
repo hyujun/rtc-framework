@@ -74,6 +74,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -90,7 +91,8 @@ struct CanFdHandCommConfig {
   /// Per-stage receive deadline (echo stage · RESP set stage), D42.
   double recv_timeout_ms{2.0};
   /// Per-motor torque constant kt [Nm/A] (firmware motor order), D50. Must be
-  /// > 0 — Open() refuses otherwise (NUM-2). 1.0 passes Nm through as A.
+  /// > 0 with a finite reciprocal — Open() refuses otherwise (NUM-2). 1.0
+  /// passes Nm through as A.
   std::array<float, kNumHandMotors> feedforward_kt{
       {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}};
   /// SO_PRIORITY for the socket; < 0 leaves the kernel default.
@@ -184,9 +186,12 @@ class CanFdHandComm final : public HandComm {
   [[nodiscard]] bool Open() noexcept override {
     for (std::size_t i = 0; i < inv_kt_.size(); ++i) {
       const float kt = cfg_.feedforward_kt[i];
-      if (!(kt > 0.0f))  // also rejects NaN
+      const float inv = 1.0f / kt;
+      // kt > 0 also rejects NaN; a subnormal kt passes it but its reciprocal is
+      // +inf, and 0 × inf = NaN would put NaN into the E-Stop feedforward frame.
+      if (!(kt > 0.0f) || !std::isfinite(inv))
         return false;
-      inv_kt_[i] = 1.0f / kt;
+      inv_kt_[i] = inv;
     }
     if (!(cfg_.recv_timeout_ms > 0.0))
       return false;

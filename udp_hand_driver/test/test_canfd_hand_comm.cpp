@@ -344,6 +344,8 @@ TEST_F(CanFdHandCommVcan, OpenRejectsNonPositiveKtAndScalesFeedforward) {
   EXPECT_FALSE(CanFdHandComm(cfg).Open());
   cfg.feedforward_kt[3] = std::nanf("");
   EXPECT_FALSE(CanFdHandComm(cfg).Open());
+  cfg.feedforward_kt[3] = 1e-40f;  // subnormal: > 0 but 1/kt = inf → NaN E-Stop ff
+  EXPECT_FALSE(CanFdHandComm(cfg).Open());
 
   cfg.feedforward_kt[3] = 4.0f;
   CanFdHandComm comm(cfg);
