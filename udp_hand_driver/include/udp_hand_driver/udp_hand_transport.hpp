@@ -233,7 +233,7 @@ class UdpHandTransport {
   // A cmd-mismatched echo (a stale echo of the previous request under a 1-cycle
   // desync) gets ONE blocking re-recv to wait for this write's own echo; still
   // mismatched → false. Short read / recv failure are not retried. recv_ok and
-  // CountRecvFail account attempt 0 only (first-attempt packet arrival).
+  // CountRecvFailErrno account attempt 0 only (first-attempt packet arrival).
   [[nodiscard]] bool WritePositionWithEcho(
       const std::array<float, kNumHandMotors>& cmd,
       std::array<uint8_t, packets::kMotorPacketSize>& send_buf,
@@ -249,21 +249,21 @@ class UdpHandTransport {
       if (recvd < static_cast<ssize_t>(packets::kHeaderSize)) {
         if (recvd < 0) {
           if (attempt == 0) {
-            CountRecvFail(RequestKind::kWriteEcho);
+            stats_.CountRecvFailErrno(RequestKind::kWriteEcho);
           }
         } else {
-          CountShortOrDecode(RequestKind::kWriteEcho, recvd);
+          stats_.CountShortOrDecode(RequestKind::kWriteEcho, recvd);
         }
         return false;  // short read / recv failure: not retried
       }
       if (attempt == 0) {
-        ++comm_stats_working_.recv_ok;
+        stats_.CountRecvOk();
       }
       if (echo_buf[1] == static_cast<uint8_t>(packets::Command::kWritePosition)) {
-        ++PerKindStats(RequestKind::kWriteEcho).ok;
+        ++stats_.PerKind(RequestKind::kWriteEcho).ok;
         return true;
       }
-      CountCmdMismatch(RequestKind::kWriteEcho, echo_buf[1], recvd);
+      stats_.CountCmdMismatch(RequestKind::kWriteEcho, echo_buf[1], recvd);
       // cmd mismatch → block once more (next iteration) for the fresh echo.
     }
     return false;
@@ -295,21 +295,21 @@ class UdpHandTransport {
                send_buf.data(), send_buf.size(), recv_buf.data(), recv_buf.size(), kind,
                [&](ssize_t recvd) noexcept {
                  if (recvd < static_cast<ssize_t>(packets::kMotorPacketSize)) {
-                   CountShortOrDecode(kind, recvd);
+                   stats_.CountShortOrDecode(kind, recvd);
                    return ValidateResult::kRetry;
                  }
                  uint8_t cmd_out, mode_out;
                  if (!codec::DecodeMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd),
                                                  cmd_out, mode_out, out)) {
-                   CountShortOrDecode(kind, recvd);
+                   stats_.CountShortOrDecode(kind, recvd);
                    return ValidateResult::kRetry;
                  }
                  if (cmd_out != static_cast<uint8_t>(cmd)) {
-                   CountCmdMismatch(kind, cmd_out, recvd);
+                   stats_.CountCmdMismatch(kind, cmd_out, recvd);
                    return ValidateResult::kRetryBlocking;
                  }
                  if (verify_response_mode_ && mode_out != static_cast<uint8_t>(joint_mode)) {
-                   CountModeMismatch(kind);
+                   stats_.CountModeMismatch(kind);
                    return ValidateResult::kFail;
                  }
                  if (received_mode) {
@@ -333,22 +333,22 @@ class UdpHandTransport {
                send_buf.data(), send_buf.size(), recv_buf.data(), recv_buf.size(), kind,
                [&](ssize_t recvd) noexcept {
                  if (recvd < static_cast<ssize_t>(packets::kSensorResponseSize)) {
-                   CountShortOrDecode(kind, recvd);
+                   stats_.CountShortOrDecode(kind, recvd);
                    return ValidateResult::kRetry;
                  }
                  uint8_t cmd_out, mode_out;
                  if (!codec::DecodeSensorResponseRaw(recv_buf.data(),
                                                      static_cast<std::size_t>(recvd), cmd_out,
                                                      mode_out, out)) {
-                   CountShortOrDecode(kind, recvd);
+                   stats_.CountShortOrDecode(kind, recvd);
                    return ValidateResult::kRetry;
                  }
                  if (cmd_out != static_cast<uint8_t>(cmd)) {
-                   CountCmdMismatch(kind, cmd_out, recvd);
+                   stats_.CountCmdMismatch(kind, cmd_out, recvd);
                    return ValidateResult::kRetryBlocking;
                  }
                  if (verify_response_mode_ && mode_out != static_cast<uint8_t>(sensor_mode)) {
-                   CountModeMismatch(kind);
+                   stats_.CountModeMismatch(kind);
                    return ValidateResult::kFail;
                  }
                  return ValidateResult::kOk;
@@ -373,22 +373,22 @@ class UdpHandTransport {
                send_buf.data(), send_buf.size(), recv_buf.data(), recv_buf.size(), kind,
                [&](ssize_t recvd) noexcept {
                  if (recvd < static_cast<ssize_t>(packets::kAllMotorResponseSize)) {
-                   CountShortOrDecode(kind, recvd);
+                   stats_.CountShortOrDecode(kind, recvd);
                    return ValidateResult::kRetry;
                  }
                  uint8_t cmd_out, mode_out;
                  if (!codec::DecodeAllMotorResponse(recv_buf.data(),
                                                     static_cast<std::size_t>(recvd), cmd_out,
                                                     mode_out, positions, velocities, currents)) {
-                   CountShortOrDecode(kind, recvd);
+                   stats_.CountShortOrDecode(kind, recvd);
                    return ValidateResult::kRetry;
                  }
                  if (cmd_out != static_cast<uint8_t>(packets::Command::kReadAllMotors)) {
-                   CountCmdMismatch(kind, cmd_out, recvd);
+                   stats_.CountCmdMismatch(kind, cmd_out, recvd);
                    return ValidateResult::kRetryBlocking;
                  }
                  if (verify_response_mode_ && mode_out != static_cast<uint8_t>(joint_mode)) {
-                   CountModeMismatch(kind);
+                   stats_.CountModeMismatch(kind);
                    return ValidateResult::kFail;
                  }
                  if (received_mode) {
@@ -416,15 +416,15 @@ class UdpHandTransport {
     return RequestWithRetry(
         send_buf.data(), send_buf.size(), buf, capacity, kind, [&](ssize_t recvd) noexcept {
           if (recvd < static_cast<ssize_t>(expected_size)) {
-            CountShortOrDecode(kind, recvd);
+            stats_.CountShortOrDecode(kind, recvd);
             return ValidateResult::kRetry;
           }
           if (buf[1] != static_cast<uint8_t>(packets::Command::kReadAllSensors)) {
-            CountCmdMismatch(kind, buf[1], recvd);
+            stats_.CountCmdMismatch(kind, buf[1], recvd);
             return ValidateResult::kRetryBlocking;
           }
           if (verify_bulk_sensor_mode_ && buf[2] != static_cast<uint8_t>(sensor_mode)) {
-            CountModeMismatch(kind);
+            stats_.CountModeMismatch(kind);
             return ValidateResult::kFail;
           }
           return ValidateResult::kOk;
@@ -441,7 +441,7 @@ class UdpHandTransport {
                                          recv_buf.size(), RequestKind::kSetMode);
     if (recvd < static_cast<ssize_t>(packets::kSensorRequestSize)) {
       if (recvd >= 0) {
-        CountShortOrDecode(RequestKind::kSetMode, recvd);
+        stats_.CountShortOrDecode(RequestKind::kSetMode, recvd);
       }
       return false;
     }
@@ -449,14 +449,14 @@ class UdpHandTransport {
     // 1b MODE-don't-care path still validates that the firmware acknowledged the
     // set-mode command (not just "any 3 bytes = success").
     if (recv_buf[1] != static_cast<uint8_t>(packets::Command::kSetSensorMode)) {
-      CountCmdMismatch(RequestKind::kSetMode, recv_buf[1], recvd);
+      stats_.CountCmdMismatch(RequestKind::kSetMode, recv_buf[1], recvd);
       return false;
     }
     if (verify_response_mode_ && recv_buf[2] != static_cast<uint8_t>(sensor_mode)) {
-      CountModeMismatch(RequestKind::kSetMode);
+      stats_.CountModeMismatch(RequestKind::kSetMode);
       return false;
     }
-    ++PerKindStats(RequestKind::kSetMode).ok;
+    ++stats_.PerKind(RequestKind::kSetMode).ok;
     return true;
   }
 
@@ -484,7 +484,7 @@ class UdpHandTransport {
   // burns retries. Draining at cycle start clears the backlog so the fresh
   // request reads its own response. Bounded to kMaxDrainPerCall non-blocking
   // reads per call — RT hot path must not spin on an unbounded queue. Returns
-  // the number drained; accumulates into comm_stats_working_.stale_drained. Socket not
+  // the number drained; accumulates into the stats' stale_drained. Socket not
   // open (fake mode) → 0. noexcept, allocation-free.
   int DrainStaleDatagrams() noexcept {
     if (socket_fd_ < 0) {
@@ -498,7 +498,7 @@ class UdpHandTransport {
       }
       ++drained;
     }
-    comm_stats_working_.stale_drained += static_cast<uint64_t>(drained);
+    stats_.CountStaleDrained(drained);
     return drained;
   }
 
@@ -510,26 +510,26 @@ class UdpHandTransport {
   // shears if plain-copied while the CommLoop mutates it, so it is published as
   // one SeqLock snapshot (PublishCommStats) and read here with a retry loop: no
   // reader can observe a torn per_kind/aggregate pair or a half-updated cmd/len.
-  [[nodiscard]] UdpHandCommStats comm_stats() const noexcept { return comm_stats_seqlock_.Load(); }
+  [[nodiscard]] UdpHandCommStats comm_stats() const noexcept { return stats_.Load(); }
 
   // Mutable working copy for the CommLoop's own per-cycle writes (e.g. the
   // controller stamping total_cycles). CommLoop thread only — published via
   // PublishCommStats() at cycle end.
-  [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept { return comm_stats_working_; }
+  [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept { return stats_.working(); }
 
   // Publish the working copy as the reader-visible snapshot. Called once at the
   // end of each real comm cycle (CommLoop thread). RT-safe: ~400 B memcpy + 2
   // fences, no alloc/lock.
-  void PublishCommStats() noexcept { comm_stats_seqlock_.Store(comm_stats_working_); }
+  void PublishCommStats() noexcept { stats_.Publish(); }
 
   // Last-unexpected forensics for the CommLoop RT logging path. Same-thread reads
   // of the working copy (the writer), so no atomic needed.
   [[nodiscard]] uint8_t last_unexpected_cmd() const noexcept {
-    return comm_stats_working_.last_unexpected_cmd;
+    return stats_.working().last_unexpected_cmd;
   }
 
   [[nodiscard]] uint16_t last_unexpected_len() const noexcept {
-    return comm_stats_working_.last_unexpected_len;
+    return stats_.working().last_unexpected_len;
   }
 
   // Reset all comm statistics + forensics to zero. Non-RT (called from Start()
@@ -537,11 +537,7 @@ class UdpHandTransport {
   // restart begins with clean counters — a stale recv_error_count / mismatch
   // history must not carry into the fresh run. Publishes the cleared snapshot so
   // a reader between restart and the first cycle sees zeros, not stale data.
-  void ResetCommStats() noexcept {
-    comm_stats_working_ = {};
-    recv_error_count_.store(0, std::memory_order_relaxed);
-    comm_stats_seqlock_.Store(comm_stats_working_);
-  }
+  void ResetCommStats() noexcept { stats_.Reset(); }
 
   // MODE-byte validation gate for the joint / motor / set-sensor-mode responses.
   // Default true = strict (both 1a and 1b echo the requested joint/sensor mode
@@ -560,9 +556,7 @@ class UdpHandTransport {
 
   [[nodiscard]] bool verify_bulk_sensor_mode() const noexcept { return verify_bulk_sensor_mode_; }
 
-  [[nodiscard]] uint64_t recv_error_count() const noexcept {
-    return recv_error_count_.load(std::memory_order_relaxed);
-  }
+  [[nodiscard]] uint64_t recv_error_count() const noexcept { return stats_.recv_error_count(); }
 
   [[nodiscard]] double recv_timeout_ms() const noexcept { return recv_timeout_ms_; }
 
@@ -586,7 +580,7 @@ class UdpHandTransport {
   //     kMaxBlockingRetries so a persistently wrong link can't stall the cycle.
   //   * A short/decode drop (kRetry) instead drains the next already-queued
   //     datagram non-blocking (MSG_DONTWAIT) — cheap, no extra wait.
-  // Aggregate/per-kind accounting: recv failure is counted (CountRecvFail) only
+  // Aggregate/per-kind accounting: recv failure is counted (CountRecvFailErrno) only
   // on attempt 0, and recv_ok counts only first-attempt packet arrival
   // (validity-independent). `validate(recvd)` classifies the payload and must
   // itself count the drop cause (CountShortOrDecode / CountCmdMismatch /
@@ -618,16 +612,16 @@ class UdpHandTransport {
                                      : ::recv(socket_fd_, recv_buf, recv_capacity, MSG_DONTWAIT);
       if (recvd < 0) {
         if (attempt == 0) {
-          CountRecvFail(kind);
+          stats_.CountRecvFailErrno(kind);
         }
         return -1;
       }
       if (attempt == 0) {
-        ++comm_stats_working_.recv_ok;
+        stats_.CountRecvOk();
       }
       switch (validate(recvd)) {
         case ValidateResult::kOk:
-          ++PerKindStats(kind).ok;
+          ++stats_.PerKind(kind).ok;
           return recvd;
         case ValidateResult::kRetry:
           break;  // next attempt: drain queued datagram (non-blocking)
@@ -643,46 +637,6 @@ class UdpHandTransport {
       }
     }
     return -1;
-  }
-
-  // ── Per-kind stat counting (hot path: counter increments only) ────────────
-
-  [[nodiscard]] UdpHandCommStats::PerKind& PerKindStats(RequestKind kind) noexcept {
-    return comm_stats_working_.per_kind[static_cast<std::size_t>(kind)];
-  }
-
-  // First-attempt recv failure: classify timeout (EAGAIN) vs socket error.
-  void CountRecvFail(RequestKind kind) noexcept {
-    recv_error_count_.fetch_add(1, std::memory_order_relaxed);
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      ++comm_stats_working_.recv_timeout;
-      ++PerKindStats(kind).timeout;
-    } else {
-      ++comm_stats_working_.recv_error;
-      ++PerKindStats(kind).error;
-    }
-  }
-
-  void CountCmdMismatch(RequestKind kind, uint8_t got_cmd, ssize_t recvd) noexcept {
-    ++comm_stats_working_.cmd_mismatch;
-    ++PerKindStats(kind).cmd_mismatch;
-    // Record the rejected cmd + len into the working copy; the whole-struct
-    // SeqLock publish (PublishCommStats) keeps the cmd/len pair consistent for
-    // cross-thread readers, so no separate packed atomic is needed.
-    comm_stats_working_.last_unexpected_cmd = got_cmd;
-    comm_stats_working_.last_unexpected_len = static_cast<uint16_t>(recvd);
-  }
-
-  void CountModeMismatch(RequestKind kind) noexcept {
-    ++comm_stats_working_.mode_mismatch;
-    ++PerKindStats(kind).mode_mismatch;
-  }
-
-  void CountShortOrDecode(RequestKind kind, ssize_t recvd) noexcept {
-    ++PerKindStats(kind).short_or_decode;
-    // Update only the len, preserving the last cmd byte. The SeqLock publish
-    // keeps the cmd/len pair consistent for readers.
-    comm_stats_working_.last_unexpected_len = static_cast<uint16_t>(recvd);
   }
 
   // Sub-ms precision recv using ppoll (hrtimer on PREEMPT_RT kernels). The
@@ -712,9 +666,9 @@ class UdpHandTransport {
 
     const ssize_t recvd = RecvWithTimeout(recv_data, recv_len);
     if (recvd < 0) {
-      CountRecvFail(kind);
+      stats_.CountRecvFailErrno(kind);
     } else {
-      ++comm_stats_working_.recv_ok;
+      stats_.CountRecvOk();
     }
     return recvd;
   }
@@ -737,18 +691,9 @@ class UdpHandTransport {
   // socket's lifetime) so the hot-path RecvWithTimeout skips the per-call math.
   struct timespec recv_timeout_ts_ {};
 
-  // CommLoop-thread-only working copy: mutated in place every cycle (aggregates,
-  // per_kind, stale_drained, total_cycles, last_unexpected cmd/len) then
-  // published as one consistent snapshot at cycle end.
-  UdpHandCommStats comm_stats_working_{};
-  // Reader-visible snapshot. Single writer = CommLoop via PublishCommStats() /
-  // ResetCommStats(); readers = stats timer + failure detector (comm_stats()).
-  // Whole-struct SeqLock so no reader observes a torn per_kind/aggregate or
-  // cmd/len pair — replaces the old plain copy + separate packed atomic.
-  static_assert(std::is_trivially_copyable_v<UdpHandCommStats>,
-                "SeqLock payload must be trivially copyable");
-  rtc::SeqLock<UdpHandCommStats> comm_stats_seqlock_{};
-  std::atomic<uint64_t> recv_error_count_{0};
+  // Working copy + SeqLock snapshot + recv_error_count (hand_comm.hpp): the
+  // CommLoop thread counts into it every cycle and publishes at cycle end.
+  HandCommStatsPair stats_;
   bool verify_response_mode_{
       true};  // strict MODE echo check (joint/set-mode); injected per protocol capability
   bool verify_bulk_sensor_mode_{
