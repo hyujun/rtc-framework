@@ -380,8 +380,8 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
 
   // MPC tick-timing CSV + 1 Hz aux timer: one-shot setup per controller
   // lifetime (gated on mpc_timing_initialized_). Re-activation after a
-  // deactivate must NOT re-Open the CSV (truncates accumulated rows) or
-  // re-register the timer (executor churn).
+  // deactivate must NOT re-Open the CSV (refused while it is still open, #932)
+  // or re-register the timer (executor churn).
   if (mpc_enabled_ && !mpc_timing_initialized_) {
     if (!mpc_timing_logger_.Open()) {
       RCLCPP_WARN(logger_, "MpcTimingLogger::Open() failed — MPC timing CSV disabled");

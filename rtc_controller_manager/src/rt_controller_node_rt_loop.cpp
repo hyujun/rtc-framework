@@ -1016,16 +1016,21 @@ void RtControllerNode::DrainLog() {
   // drain runs at the log-thread cadence (10 ms timer ⇒ ≤5 samples/drain
   // at the default 500 Hz; scales as control_rate / 100). Controller-owned
   // data CSVs are drained by each controller's
-  // own ControllerLogSet timer (Phase C) — not from here.
-  cm_timing_producer_.Drain(
-      [this](const urtc::RtTickTimingSample& s) { cm_timing_logger_.Log(s); });
+  // own ControllerLogSet timer (Phase C) — not from here. The lock keeps a
+  // lifecycle Open/Close off these writes (#932); this is the logging lane,
+  // not the RT path, and the producers stay lock-free.
+  {
+    const std::lock_guard<std::mutex> lock(timing_csv_mutex_);
+    cm_timing_producer_.Drain(
+        [this](const urtc::RtTickTimingSample& s) { cm_timing_logger_.Log(s); });
 
-  // Drain the rt_callback lane the same way (issue #349). Producer is the
-  // rt_callback thread rather than the RT loop, so this can outpace the CM
-  // lane: one row per device state callback, i.e. per active state lane per
-  // arrival, not one per tick.
-  rt_callback_timing_producer_.Drain(
-      [this](const urtc::RtTickTimingSample& s) { rt_callback_timing_logger_.Log(s); });
+    // Drain the rt_callback lane the same way (issue #349). Producer is the
+    // rt_callback thread rather than the RT loop, so this can outpace the CM
+    // lane: one row per device state callback, i.e. per active state lane per
+    // arrival, not one per tick.
+    rt_callback_timing_producer_.Drain(
+        [this](const urtc::RtTickTimingSample& s) { rt_callback_timing_logger_.Log(s); });
+  }
 
   // Drain the deferred /system/estop_status publish (issue #198 Phase 3).
   // The latch is what stops the actuators; this topic reports it, so it rides

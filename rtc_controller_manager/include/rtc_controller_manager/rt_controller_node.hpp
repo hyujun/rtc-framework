@@ -35,6 +35,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -128,6 +129,14 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // these fds and outlives on_deactivate (issue #224). Shared by on_cleanup /
   // on_error / the destructor so the three paths cannot drift apart again.
   void CloseTeardownEventfds() noexcept;
+  // Drains both timing producers into their CSVs, then closes the CSVs, all
+  // under timing_csv_mutex_ (#932). The loggers are
+  // members, so the next configure re-opens the same instances, and Open() on
+  // a still-open one is refused. on_cleanup / on_error call it after dropping
+  // drain_timer_; on_configure calls it first, because a configure refused
+  // past the logging setup returns FAILURE and FAILURE skips on_cleanup.
+  // Not noexcept: std::mutex::lock may throw std::system_error.
+  void CloseTimingCsvs();
 
   // ── Session directory helpers ─────────────────────────────────────────────
   // Resolves session directory via rtc::ResolveSessionDir() 2-tier chain.
@@ -631,6 +640,15 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // cm_timing_log.csv in the same analysis pass.
   rtc::RtCallbackTimingBuffer rt_callback_timing_producer_{};
   rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> rt_callback_timing_logger_{};
+
+  // Guards the two loggers above, which are not thread-safe: DrainLog() logs
+  // on the logging lane while the lifecycle callbacks open and close them on
+  // another thread (after Phase 3 of RtControllerMain). Dropping drain_timer_
+  // does not wait for a pass already running, and a pass the executor has
+  // already picked up can still start after the drop, so the lock — not the
+  // timer reset — is what keeps Open/Close off a concurrent Log. Aux lane and
+  // lifecycle only, never the RT path (RT-4): the producers above are SPSC.
+  std::mutex timing_csv_mutex_;
 
   // ── Shared state ──────────────────────────────────────────────────────────
   // Device state lives inside each DeviceBackend (per-device SeqLock,
