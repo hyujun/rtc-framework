@@ -1007,30 +1007,49 @@ void RtControllerNode::FlushCommandTypeLog() {
   command_type_log_pending_.store(false, std::memory_order_release);
 }
 
+// Drain deferred E-STOP log messages (set by TriggerGlobalEstop /
+// ClearGlobalEstop).
+void RtControllerNode::FlushEstopLog() {
+  if (!estop_log_pending_.exchange(false, std::memory_order_acquire)) {
+    return;
+  }
+  if (global_estop_.load(std::memory_order_relaxed)) {
+    RCLCPP_ERROR(get_logger(), "GLOBAL E-STOP triggered: %s", estop_reason_.data());
+  } else {
+    RCLCPP_INFO(get_logger(), "GLOBAL E-STOP cleared (was: %s)", estop_reason_.data());
+    estop_reason_.fill('\0');
+  }
+}
+
 // File I/O and diagnostic logging stay exclusively in the log thread (Core 4).
 void RtControllerNode::DrainLog() {
   // L2 under the log-timer executor's ros2:callback_* (L1) — the CSV drain +
   // deferred E-STOP log + timing-summary print body on the nrt_logging lane.
   RTC_TRACE_SCOPE("CM::DrainLog");
+  // The whole pass holds the drain lock, and a pass that finds the lane shut
+  // does nothing: the lifecycle teardown on another thread releases what the
+  // pass reads, and a pass picked up before drain_timer_ went still runs
+  // (#932, #935). This is the logging lane, not the RT path, and the
+  // producers stay lock-free.
+  const std::lock_guard<std::mutex> lock(drain_mutex_);
+  if (!drain_armed_) {
+    return;
+  }
+
   // Drain per-tick CM timing samples → CSV. Producer is the RT thread; this
   // drain runs at the log-thread cadence (10 ms timer ⇒ ≤5 samples/drain
   // at the default 500 Hz; scales as control_rate / 100). Controller-owned
   // data CSVs are drained by each controller's
-  // own ControllerLogSet timer (Phase C) — not from here. The lock keeps a
-  // lifecycle Open/Close off these writes (#932); this is the logging lane,
-  // not the RT path, and the producers stay lock-free.
-  {
-    const std::lock_guard<std::mutex> lock(timing_csv_mutex_);
-    cm_timing_producer_.Drain(
-        [this](const urtc::RtTickTimingSample& s) { cm_timing_logger_.Log(s); });
+  // own ControllerLogSet timer (Phase C) — not from here.
+  cm_timing_producer_.Drain(
+      [this](const urtc::RtTickTimingSample& s) { cm_timing_logger_.Log(s); });
 
-    // Drain the rt_callback lane the same way (issue #349). Producer is the
-    // rt_callback thread rather than the RT loop, so this can outpace the CM
-    // lane: one row per device state callback, i.e. per active state lane per
-    // arrival, not one per tick.
-    rt_callback_timing_producer_.Drain(
-        [this](const urtc::RtTickTimingSample& s) { rt_callback_timing_logger_.Log(s); });
-  }
+  // Drain the rt_callback lane the same way (issue #349). Producer is the
+  // rt_callback thread rather than the RT loop, so this can outpace the CM
+  // lane: one row per device state callback, i.e. per active state lane per
+  // arrival, not one per tick.
+  rt_callback_timing_producer_.Drain(
+      [this](const urtc::RtTickTimingSample& s) { rt_callback_timing_logger_.Log(s); });
 
   // Drain the deferred /system/estop_status publish (issue #198 Phase 3).
   // The latch is what stops the actuators; this topic reports it, so it rides
@@ -1045,16 +1064,7 @@ void RtControllerNode::DrainLog() {
     PublishEstopStatus(EstopStatusValue());
   }
 
-  // Drain deferred E-STOP log messages (set by TriggerGlobalEstop /
-  // ClearGlobalEstop).
-  if (estop_log_pending_.exchange(false, std::memory_order_acquire)) {
-    if (global_estop_.load(std::memory_order_relaxed)) {
-      RCLCPP_ERROR(get_logger(), "GLOBAL E-STOP triggered: %s", estop_reason_.data());
-    } else {
-      RCLCPP_INFO(get_logger(), "GLOBAL E-STOP cleared (was: %s)", estop_reason_.data());
-      estop_reason_.fill('\0');
-    }
-  }
+  FlushEstopLog();
 
   // Drain the deferred command-type rejection line (issue #342).
   FlushCommandTypeLog();
@@ -1103,16 +1113,18 @@ void RtControllerNode::DrainLog() {
     const std::string overruns_str =
         use_sim_time_sync_ ? std::string("n/a(sim)") : std::to_string(overruns);
 
-    RCLCPP_INFO(
-        get_logger(),
-        "%s  overruns=%s  skips=%lu  nrt_pub_drops=%lu  timing_drops=%lu  "
-        "rt_cb_timing_drops=%lu",
-        timing_profiler_
-            .Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()), elapsed_s)
-            .c_str(),
-        overruns_str.c_str(), static_cast<unsigned long>(skips),
-        static_cast<unsigned long>(nrt_pub_drops), static_cast<unsigned long>(timing_drops),
-        static_cast<unsigned long>(rt_callback_timing_drops));
+    RCLCPP_INFO(get_logger(),
+                "%s  overruns=%s  skips=%lu  nrt_pub_drops=%lu  timing_drops=%lu  "
+                "rt_cb_timing_drops=%lu",
+                timing_profiler_
+                    .Summary(idx >= 0 && static_cast<std::size_t>(idx) < controllers_.size()
+                                 ? std::string(controllers_[static_cast<std::size_t>(idx)]->Name())
+                                 : std::string("<none>"),
+                             elapsed_s)
+                    .c_str(),
+                overruns_str.c_str(), static_cast<unsigned long>(skips),
+                static_cast<unsigned long>(nrt_pub_drops), static_cast<unsigned long>(timing_drops),
+                static_cast<unsigned long>(rt_callback_timing_drops));
 
     // Sim-sync barrier health (issue #566): steps whose partner state came
     // more than a period late. A handful from dropped messages is noise; a

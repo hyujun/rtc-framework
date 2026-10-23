@@ -116,6 +116,17 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
     return controller_nodes_;
   }
 
+  // RtControllerMain calls this once Phase 3 has handed the callback groups
+  // and the controller nodes to its dedicated executors. Those hand-offs are
+  // one-time, so every later on_configure is refused (#935): the groups it
+  // would create land on nrt_callback_executor whatever their lane, the
+  // controller nodes it would create are served by no executor, and shutdown
+  // could not detach them. Changing the configuration means restarting the
+  // process.
+  void MarkDedicatedExecutorsAttached() noexcept {
+    dedicated_executors_attached_.store(true, std::memory_order_release);
+  }
+
   // RT loop lifecycle — public until Step 8 (RtControllerMain redesign)
   void StartRtLoop(const rtc::ThreadConfig& rt_cfg);
   void StartNrtPublishLoop(const rtc::ThreadConfig& nrt_pub_cfg);
@@ -129,14 +140,16 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // these fds and outlives on_deactivate (issue #224). Shared by on_cleanup /
   // on_error / the destructor so the three paths cannot drift apart again.
   void CloseTeardownEventfds() noexcept;
-  // Drains both timing producers into their CSVs, then closes the CSVs, all
-  // under timing_csv_mutex_ (#932). The loggers are
-  // members, so the next configure re-opens the same instances, and Open() on
-  // a still-open one is refused. on_cleanup / on_error call it after dropping
-  // drain_timer_; on_configure calls it first, because a configure refused
-  // past the logging setup returns FAILURE and FAILURE skips on_cleanup.
-  // Not noexcept: std::mutex::lock may throw std::system_error.
-  void CloseTimingCsvs();
+  // Shuts the drain lane (#935) — caller holds drain_mutex_. Disarms
+  // DrainLog(), so a pass that starts later returns without touching anything;
+  // reports what it would have reported (E-STOP status, the deferred E-STOP
+  // and command-type lines); drops drain_timer_; and drains then closes both
+  // timing CSVs (#932). The loggers are members, so the next configure
+  // re-opens the same instances, and Open() on a still-open one is refused.
+  // on_cleanup / on_error call it before they release anything a pass reads;
+  // on_configure calls it first, because a configure refused after
+  // CreateTimers() returns FAILURE and FAILURE skips on_cleanup.
+  void ShutDrainLaneLocked();
 
   // ── Session directory helpers ─────────────────────────────────────────────
   // Resolves session directory via rtc::ResolveSessionDir() 2-tier chain.
@@ -150,11 +163,18 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // never left registered as an active/switch candidate.
   [[nodiscard]] bool DeclareAndLoadParameters();
 
-  // Drops everything controller bring-up accumulates. Called before Pass 1 so
-  // a retry cannot register a controller twice, and on every refusal so a
-  // failed configure leaves no controller behind as an active/switch
-  // candidate.
+  // Drops everything controller bring-up accumulates, device liveness entries
+  // included. Destroys the controllers without driving their lifecycle — use
+  // AbandonControllerBringUp() wherever they may already hold resources.
   void ResetControllerBringUpState();
+  // Tears a refused bring-up down (#935): each controller's on_cleanup — the
+  // one hook that releases what its on_configure allocated — then
+  // ResetControllerBringUpState(). Called on every configure refusal, so a
+  // failed configure leaves no controller behind as an active/switch
+  // candidate, and before Pass 1, so a retry cannot register one twice.
+  // FAILURE skips CM's own on_cleanup, which makes the refusal the last point
+  // these controllers can be cleaned up.
+  void AbandonControllerBringUp();
   // Fills controller_slot_mappings_ from controller_topic_configs_ +
   // group_slot_map_. Returns false when a controller declares more device
   // groups than the RT path's fixed arrays hold, or names a group that has no
@@ -288,6 +308,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // last transition before teardown (notably on_error's "lifecycle_error"
   // trigger) would otherwise never reach the topic. Non-RT callers only.
   void FlushEstopStatus();
+  // Emits the deferred GLOBAL E-STOP triggered / cleared line, if one is
+  // queued. DrainLog calls it at the drain cadence; the teardown calls it so a
+  // line queued by the closing session is not printed by the next one's first
+  // pass. Non-RT, under drain_mutex_ — it clears estop_reason_.
+  void FlushEstopLog();
 
   // ── Controller-level lifecycle (aux thread only) ─────────────────────────
   // Activate / deactivate a single controller. Updates controller_states_
@@ -580,6 +605,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   rclcpp::TimerBase::SharedPtr drain_timer_;  // log drain (log thread)
 
+  // Set by MarkDedicatedExecutorsAttached() on main's thread, read by
+  // on_configure on an executor thread.
+  std::atomic<bool> dedicated_executors_attached_{false};
+
   // ── RT loop ────────────────────────────────────────────────────────────
   // The PeriodicRtThread owns the loop thread + clock_nanosleep cadence +
   // overrun bookkeeping; RtControllerNode keeps the CM-specific state below
@@ -641,14 +670,20 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rtc::RtCallbackTimingBuffer rt_callback_timing_producer_{};
   rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> rt_callback_timing_logger_{};
 
-  // Guards the two loggers above, which are not thread-safe: DrainLog() logs
-  // on the logging lane while the lifecycle callbacks open and close them on
-  // another thread (after Phase 3 of RtControllerMain). Dropping drain_timer_
-  // does not wait for a pass already running, and a pass the executor has
-  // already picked up can still start after the drop, so the lock — not the
-  // timer reset — is what keeps Open/Close off a concurrent Log. Aux lane and
+  // The drain lane's lock (#932, #935). DrainLog() runs its whole pass under
+  // it on the logging lane while the lifecycle callbacks run on another thread
+  // (after Phase 3 of RtControllerMain). Dropping drain_timer_ does not wait
+  // for a pass already running, and a pass the executor has already picked up
+  // can still start after the drop, so the lock — not the timer reset — is
+  // what keeps a pass off what a teardown releases: the two loggers above
+  // (not thread-safe), estop_pub_, controllers_, estop_reason_. Aux lane and
   // lifecycle only, never the RT path (RT-4): the producers above are SPSC.
-  std::mutex timing_csv_mutex_;
+  std::mutex drain_mutex_;
+  // Whether a DrainLog() pass may run, read and written only under
+  // drain_mutex_. ShutDrainLaneLocked() lowers it and CreateTimers() raises
+  // it, so a pass that outlives the teardown returns at once. Starts raised:
+  // a node that was never configured has nothing torn down to protect.
+  bool drain_armed_{true};
 
   // ── Shared state ──────────────────────────────────────────────────────────
   // Device state lives inside each DeviceBackend (per-device SeqLock,

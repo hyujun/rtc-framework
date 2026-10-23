@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <vector>
@@ -155,6 +156,26 @@ class ControllerLifecycleTestAccess {
 
   static bool RtCallbackTimingLogOpen(const RtControllerNode& node) {
     return node.rt_callback_timing_logger_.IsOpen();
+  }
+
+  // ── Drain lane teardown (#935) ──────────────────────────────────────────
+  // The lock DrainLog() runs under, taken from a test thread so a lifecycle
+  // callback on another thread can be caught mid-teardown.
+  [[nodiscard]] static std::unique_lock<std::mutex> LockDrainLane(RtControllerNode& node) {
+    return std::unique_lock<std::mutex>(node.drain_mutex_);
+  }
+
+  // What CreateTimers() does once a configure has rebuilt what a pass reads —
+  // for a test that rebuilds it by hand after a teardown shut the lane.
+  static void ArmDrainLane(RtControllerNode& node) {
+    const std::lock_guard<std::mutex> lock(node.drain_mutex_);
+    node.drain_armed_ = true;
+  }
+
+  // A weak handle, so a test can see the timer go from another thread without
+  // reading the member that thread resets.
+  static std::weak_ptr<rclcpp::TimerBase> DrainTimer(const RtControllerNode& node) {
+    return node.drain_timer_;
   }
 
   // Queues one CM-lane sample as the RT loop would, for a test with no loop.

@@ -436,11 +436,25 @@ void RtControllerNode::ResetControllerBringUpState() {
   slot_to_group_name_.clear();
   slot_to_sensor_layout_.clear();
 
-  // Deliberately NOT reset here: device_timeouts_. It is written only after
-  // the last ResetControllerBringUpState() call site in
-  // DeclareAndLoadParameters(), so no refused attempt can leave it dirty, and
-  // a retry after a SUCCESSFUL configure must pass through on_cleanup (which
-  // does clear it). Adding it would defend a state that cannot occur.
+  // Built from group_slot_map_ near the end of DeclareAndLoadParameters(), and
+  // refusals follow it (sim_sync_tick_devices, no controller, and on_configure's
+  // own checks after it) — a retry used to append a second entry per group.
+  device_timeouts_.clear();
+}
+
+void RtControllerNode::AbandonControllerBringUp() {
+  // Inactive, as on_cleanup hands it: what the controllers see is "leaving a
+  // configured state", whichever bring-up pass got them this far. The shipped
+  // overrides only reset what they own, so this is safe on a controller whose
+  // on_configure never ran.
+  const rclcpp_lifecycle::State inactive_state(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                               "inactive");
+  for (auto& ctrl : controllers_) {
+    if (ctrl) {
+      (void)ctrl->on_cleanup(inactive_state);
+    }
+  }
+  ResetControllerBringUpState();
 }
 
 // ── Per-controller flat slot mappings (RT-safe, no map lookup) ──────────────
@@ -796,10 +810,10 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   // one run reports every broken controller instead of only the first.
   bool bring_up_failed = false;
 
-  // A previous configure attempt that failed leaves these populated; clearing
-  // makes the bring-up idempotent so a retry cannot register a controller
-  // twice. No-op on the first call.
-  ResetControllerBringUpState();
+  // Every refusal abandons its own bring-up, so this is a no-op unless an
+  // earlier attempt ended some other way; it keeps the bring-up idempotent so
+  // a retry cannot register a controller twice.
+  AbandonControllerBringUp();
 
   // ── Duplicate config_key scan (issue #196 Phase 5) ───────────────────────
   //
@@ -1055,7 +1069,7 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     RCLCPP_FATAL(get_logger(),
                  "Controller bring-up failed — refusing to configure. Fix the "
                  "controller config(s) reported above; no controller is registered.");
-    ResetControllerBringUpState();
+    AbandonControllerBringUp();
     return false;
   }
 
@@ -1095,7 +1109,7 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       // Previously this returned from a void function and the caller carried
       // on building publishers/backends while the shutdown was still pending.
       // Reporting the failure stops configure at the caller too.
-      ResetControllerBringUpState();
+      AbandonControllerBringUp();
       return false;
     }
   }
@@ -1104,12 +1118,12 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   if (!LoadDeviceNameConfigs()) {
     RCLCPP_FATAL(get_logger(),
                  "Device config exceeds the RT path's fixed capacity — refusing to configure.");
-    ResetControllerBringUpState();
+    AbandonControllerBringUp();
     return false;
   }
 
   if (!BuildControllerSlotMappings()) {
-    ResetControllerBringUpState();
+    AbandonControllerBringUp();
     return false;
   }
 
@@ -1141,7 +1155,7 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       RCLCPP_FATAL(get_logger(),
                    "Controller on_configure failed — refusing to configure. "
                    "No controller is registered as an active/switch candidate.");
-      ResetControllerBringUpState();
+      AbandonControllerBringUp();
       return false;
     }
   }
@@ -1161,9 +1175,10 @@ bool RtControllerNode::DeclareAndLoadParameters() {
 
     const bool enable_timing = get_parameter("enable_timing_log").as_bool();
     if (enable_timing) {
-      // A drain pass picked up before the old drain_timer_ went can still run
-      // (timing_csv_mutex_ in the header).
-      const std::lock_guard<std::mutex> lock(timing_csv_mutex_);
+      // The drain lane is shut until CreateTimers(), but a pass picked up
+      // before the old drain_timer_ went can still be waiting on the lock
+      // (drain_mutex_ in the header).
+      const std::lock_guard<std::mutex> lock(drain_mutex_);
       const auto timing_dir = urtc::TimingDir(session_dir);
       std::filesystem::create_directories(timing_dir);
       const auto timing_path = timing_dir / "cm_timing_log.csv";
@@ -1285,6 +1300,7 @@ bool RtControllerNode::DeclareAndLoadParameters() {
                        "sim_sync_tick_devices['%s'] names no configured device group — refusing "
                        "to configure",
                        name.c_str());
+          AbandonControllerBringUp();
           return false;
         }
         sim_tick_slot_mask_ |= 1U << static_cast<unsigned>(it->second);
@@ -1332,6 +1348,7 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   // reporting a configured node with nothing to run.
   if (controllers_.empty()) {
     RCLCPP_FATAL(get_logger(), "No controller registered — refusing to configure.");
+    AbandonControllerBringUp();
     return false;
   }
 

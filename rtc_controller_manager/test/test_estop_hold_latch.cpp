@@ -815,8 +815,10 @@ TEST_F(EstopClearServiceWindowTest, APublisherRecreatedUnderALatchedEstopReports
   ASSERT_EQ(node_->on_error(inactive), RtControllerNode::CallbackReturn::SUCCESS);
   ASSERT_TRUE(Access::IsEstopped(*node_)) << "precondition: on_error leaves the latch up";
 
-  // What the next on_configure does, then one pass of the drain.
+  // What the next on_configure does, then one pass of the drain. on_error shut
+  // the drain lane (#935); the configure's CreateTimers() reopens it.
   Access::CallCreateFixedSafetyPublishers(*node_);
+  Access::ArmDrainLane(*node_);
   Access::CallDrainLog(*node_);
   const auto got = LateSubscriberReceives("test_estop_hold_latch_recreated");
   ASSERT_FALSE(got.empty()) << "the recreated publisher holds no sample: a GUI started now "
