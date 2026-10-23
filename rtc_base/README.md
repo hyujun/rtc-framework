@@ -279,7 +279,7 @@ logging_data/YYMMDD_HHMM/
 |------|------|
 | `GenerateSessionTimestamp()` | `YYMMDD_HHMM` 타임스탬프 |
 | `ResolveLoggingRoot()` | `logging_data` 루트 결정 (아래 체인) |
-| `ResolveSessionDir()` | `$RTC_SESSION_DIR`, 없으면 루트 아래 새 세션 디렉토리 생성 |
+| `ResolveSessionDir()` | `$RTC_SESSION_DIR`, 없으면 루트 아래 프로세스당 한 세션 |
 | `EnsureSessionSubdirs(dir)` / `TimingDir(dir)` | 하위 폴더 생성 / `<session>/timing/` 경로 |
 | `ListSessionDirs(root)` / `CleanupOldSessions(root, max)` | 세션 목록 / 초과분 삭제 |
 

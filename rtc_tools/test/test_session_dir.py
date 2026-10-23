@@ -3,12 +3,14 @@
 C++ ``rtc_base/logging/session_dir.hpp`` 와 Python 헬퍼가 **동일한 로직** 을
 공유해야 하므로, 4 단 체인 (env → COLCON_PREFIX_PATH → install/src walk-up →
 cwd fallback) 각각을 독립 환경변수 / cwd 조건으로 격리해 검증합니다.
+env 가 없을 때 ``get_or_create_session_dir`` 의 폴백 세션 *이름* 은 프로세스 전역입니다 (#930).
 """
 
 from __future__ import annotations
 
 import os
 import re
+import time
 
 import pytest
 
@@ -45,6 +47,32 @@ def chdir(monkeypatch):
         monkeypatch.chdir(path)
 
     return _chdir
+
+
+@pytest.fixture
+def set_tz():
+    """TZ 를 바꾸고 ``time.tzset()`` 을 호출하는 함수를 주며, 종료 시 원복한다.
+
+    monkeypatch 의 teardown 순서에 기대지 않고 TZ 를 직접 저장·복원한다.
+    """
+    saved = os.environ.get("TZ")
+
+    def _set(value):
+        os.environ["TZ"] = value
+        time.tzset()
+
+    yield _set
+    if saved is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = saved
+    time.tzset()
+
+
+def _make_ws(path):
+    (path / "install").mkdir(parents=True)
+    (path / "src").mkdir()
+    return path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -164,6 +192,51 @@ def test_get_or_create_generates_new_when_unset(tmp_path, chdir):
     assert session.startswith(str(tmp_path / "logging_data"))
     for sub in _EXPECTED_SUBDIRS:
         assert os.path.isdir(os.path.join(session, sub))
+
+
+# POSIX TZ 의 부호는 반대라 ``-00:01`` 이 UTC+1분 (로컬 시계가 1분 앞섬) 이다.
+_TZ_BASE = "AAA0"
+_TZ_PLUS_ONE_MIN = "AAA-00:01"
+
+
+def test_get_or_create_keeps_one_name_per_process(tmp_path, chdir, set_tz):
+    ws = _make_ws(tmp_path / "ws")
+    chdir(ws)
+    set_tz(_TZ_BASE)
+    first = get_or_create_session_dir()
+    set_tz(_TZ_PLUS_ONE_MIN)
+    second = get_or_create_session_dir()
+
+    assert second == first
+    assert len(list((ws / "logging_data").iterdir())) == 1
+
+
+def test_get_or_create_env_overrides_cached_name(tmp_path, chdir, set_tz, monkeypatch):
+    ws = _make_ws(tmp_path / "ws")
+    chdir(ws)
+    set_tz(_TZ_BASE)
+    first = get_or_create_session_dir()
+    set_tz(_TZ_PLUS_ONE_MIN)
+
+    explicit = tmp_path / "from_env"
+    monkeypatch.setenv("RTC_SESSION_DIR", str(explicit))
+    assert get_or_create_session_dir() == str(explicit)
+    assert len(list((ws / "logging_data").iterdir())) == 1
+
+    monkeypatch.delenv("RTC_SESSION_DIR")
+    assert get_or_create_session_dir() == first
+
+
+def test_get_or_create_reresolves_root_keeps_name(tmp_path, chdir, set_tz):
+    ws1 = _make_ws(tmp_path / "ws1")
+    ws2 = _make_ws(tmp_path / "ws2")
+    chdir(ws1)
+    set_tz(_TZ_BASE)
+    first = get_or_create_session_dir()
+    set_tz(_TZ_PLUS_ONE_MIN)
+    chdir(ws2)
+
+    assert get_or_create_session_dir() == str(ws2 / "logging_data" / os.path.basename(first))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

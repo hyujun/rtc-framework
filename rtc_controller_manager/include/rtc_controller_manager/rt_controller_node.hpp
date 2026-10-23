@@ -130,7 +130,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void CloseTeardownEventfds() noexcept;
 
   // ── Session directory helpers ─────────────────────────────────────────────
-  // Resolves session directory via rtc::ResolveSessionDir() 3-tier chain.
+  // Resolves session directory via rtc::ResolveSessionDir() 2-tier chain.
   std::filesystem::path ResolveAndSetupSessionDir();
 
   // ── Initialisation helpers ────────────────────────────────────────────────
