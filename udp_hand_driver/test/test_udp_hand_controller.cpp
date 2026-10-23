@@ -450,6 +450,66 @@ TEST_F(FakeHandControllerTest, SetEstopFlag_Settable) {
   EXPECT_TRUE(PollUntil([&] { return controller_->cycle_count() > 0; }, 1s));
 }
 
+// ── Run length (#927 I-2) ───────────────────────────────────────────────────
+// ElapsedSeconds() is the run length the stats JSON reports: 0 before any
+// Start, wall time while the loop runs, and frozen at the end of the last
+// completed cycle once it stops. An E-Stop self-exit leaves the node ACTIVE
+// with a dead loop, and the idle after it is not part of the run. The 300 ms
+// waits below exceed the 0.25 s tolerance, so a "now − start" run length fails
+// them by construction.
+
+TEST_F(FakeHandControllerTest, ElapsedSeconds_ZeroBeforeStart) {
+  EXPECT_EQ(controller_->ElapsedSeconds(), 0.0);
+}
+
+TEST_F(FakeHandControllerTest, ElapsedSeconds_FreezesAtTheLastCycleAfterAnEStop) {
+  std::atomic<bool> estop{false};
+  controller_->SetEstopFlag(&estop);
+  ASSERT_TRUE(controller_->Start());
+  std::this_thread::sleep_for(400ms);
+  const double running_a = controller_->ElapsedSeconds();
+  std::this_thread::sleep_for(50ms);
+  const double running_b = controller_->ElapsedSeconds();
+  EXPECT_GE(running_a, 0.4);
+  EXPECT_GT(running_b, running_a) << "ElapsedSeconds() must advance while the loop runs";
+
+  estop.store(true);
+  ASSERT_TRUE(PollUntil([&] { return !controller_->IsRunning(); }, 500ms));
+  const double at_trip = controller_->ElapsedSeconds();
+  // The last completed cycle may end up to one tick before running_b was read.
+  EXPECT_GE(at_trip, running_b - 0.01);
+  std::this_thread::sleep_for(300ms);
+  EXPECT_LT(controller_->ElapsedSeconds() - at_trip, 0.25)
+      << "the idle after the E-Stop leaked into the run length";
+
+  controller_->Stop();
+  EXPECT_LT(controller_->ElapsedSeconds() - at_trip, 0.25) << "Stop() restarted the clock";
+}
+
+TEST_F(FakeHandControllerTest, ElapsedSeconds_SynchronousDriveFreezesAtTheLastStep) {
+  ASSERT_TRUE(controller_->InitFakeForTest());
+  const std::array<float, kNumHandMotors> cmd{};
+  for (int i = 0; i < 5; ++i) {
+    controller_->StepFakeCycleForTest(cmd);
+  }
+  std::this_thread::sleep_for(300ms);
+  controller_->Stop();
+  EXPECT_LT(controller_->ElapsedSeconds(), 0.25)
+      << "the wait after the last fake cycle leaked into the run length";
+}
+
+TEST_F(FakeHandControllerTest, ElapsedSeconds_RestartDoesNotInheritThePreviousRun) {
+  ASSERT_TRUE(controller_->Start());
+  std::this_thread::sleep_for(400ms);
+  controller_->Stop();
+  ASSERT_GE(controller_->ElapsedSeconds(), 0.35);
+
+  ASSERT_TRUE(controller_->Start());
+  EXPECT_LT(controller_->ElapsedSeconds(), 0.25);
+  controller_->Stop();
+  EXPECT_LT(controller_->ElapsedSeconds(), 0.25);
+}
+
 // ── Sensor init status ──────────────────────────────────────────────────────
 
 TEST_F(FakeHandControllerTest, SensorInit_FakeModeNotInitialized) {

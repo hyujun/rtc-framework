@@ -1153,4 +1153,54 @@ TEST_F(UdpHandNodeLifecycleTest, UnquotedProtocolVersionEndsEveryConfigureInUnco
   exec_.remove_node(node->get_node_base_interface());
 }
 
+// ── Final stats JSON (#927 I-1) ─────────────────────────────────────────────
+// StopRuntime() destroys the failure detector, and the teardown save after it
+// (on_cleanup / on_error / ~UdpHandNode) read `failure_detected` from the null
+// detector as false — so a graceful teardown overwrote the failure-time JSON
+// with a clean bill. A silent hand trips the link check (link_startup_grace_ms
+// + link_fail_timeout_ms ≈ 200 ms) and the failure callback saves `true`;
+// deactivate → cleanup must still leave `true`. A reconfigure into loopmodel
+// (no detector) is the failure-free control: the latch is per run.
+TEST_F(UdpHandNodeLifecycleTest, FinalStatsJsonKeepsALatchedFailureAcrossTeardown) {
+  udp_hand_driver::test_support::SilentLoopbackSocket hand;
+  ASSERT_TRUE(hand.ok());
+  const auto json_path = session_dir_ / "device" / "hand_stats.json";
+  std::error_code ec;
+  std::filesystem::remove(json_path, ec);
+  const auto failure_saved = [&] {
+    return ReadFile(json_path).find("\"failure_detected\": true") != std::string::npos;
+  };
+
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      rclcpp::Parameter("sil_mode", "off"),
+      rclcpp::Parameter("target_ip", "127.0.0.1"),
+      rclcpp::Parameter("target_port", hand.port()),
+      rclcpp::Parameter("recv_timeout_ms", 0.3),
+      rclcpp::Parameter("loop_rate_hz", 500.0),
+  });
+  auto node = std::make_shared<UdpHandNode>(options);
+  exec_.add_node(node->get_node_base_interface());
+  ASSERT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), State::PRIMARY_STATE_ACTIVE);
+  ASSERT_TRUE(SpinUntil(failure_saved, 10s))
+      << "the detector never latched a failure against the silent hand";
+  ASSERT_EQ(node->deactivate().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_TRUE(failure_saved()) << "teardown overwrote the latched failure:\n"
+                               << ReadFile(json_path);
+
+  ASSERT_TRUE(node->set_parameter(rclcpp::Parameter("sil_mode", "loopmodel")).successful);
+  ASSERT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), State::PRIMARY_STATE_ACTIVE);
+  SpinFor(100ms);
+  ASSERT_EQ(node->deactivate().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  const std::string json = ReadFile(json_path);
+  EXPECT_NE(json.find("\"failure_detected\": false"), std::string::npos)
+      << "the previous run's failure leaked into a failure-free run:\n"
+      << json;
+  exec_.remove_node(node->get_node_base_interface());
+}
+
 }  // namespace

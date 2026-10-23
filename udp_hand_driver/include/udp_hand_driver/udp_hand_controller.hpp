@@ -395,8 +395,9 @@ class UdpHandController {
     if (!PrepareRun()) {
       return false;
     }
-    running_.store(true, std::memory_order_release);
     start_time_ = std::chrono::steady_clock::now();
+    last_tick_end_ns_.store(SteadyNs(start_time_), std::memory_order_relaxed);
+    running_.store(true, std::memory_order_release);
 
     // Self-clocked comm loop: PeriodicRtThread ticks RunCommCycle() at
     // loop_rate_hz_ (clock_nanosleep TIMER_ABSTIME + overrun recovery). The
@@ -428,8 +429,9 @@ class UdpHandController {
     if (!PrepareRun()) {
       return false;
     }
-    running_.store(true, std::memory_order_release);
     start_time_ = std::chrono::steady_clock::now();
+    last_tick_end_ns_.store(SteadyNs(start_time_), std::memory_order_relaxed);
+    running_.store(true, std::memory_order_release);
     return true;
   }
 
@@ -454,13 +456,26 @@ class UdpHandController {
       comm_->Close();
     }
     const auto cycles = cycle_count_.load(std::memory_order_relaxed);
-    const double elapsed_sec =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count();
+    const double elapsed_sec = ElapsedSeconds();
     const double avg_rate_hz =
         (elapsed_sec > 0.0) ? static_cast<double>(cycles) / elapsed_sec : 0.0;
     RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
                 "UdpHandController stopped: %zu cycles in %.1fs (avg=%.1f Hz)", cycles, elapsed_sec,
                 avg_rate_hz);
+  }
+
+  /// Length of the current or last run in seconds — the stats JSON's
+  /// `elapsed_sec` (#927 I-2). 0 before the first Start(); wall time since
+  /// Start() while the loop runs; once it has stopped — Stop(), or the E-Stop
+  /// self-exit, which leaves the node ACTIVE with a dead loop — frozen at the
+  /// end of the last completed cycle, so the idle after the stop is not part of
+  /// the run. Any thread; not concurrent with Start() / InitFakeForTest().
+  [[nodiscard]] double ElapsedSeconds() const noexcept {
+    const std::int64_t end_ns = running_.load(std::memory_order_acquire)
+                                    ? SteadyNs(std::chrono::steady_clock::now())
+                                    : last_tick_end_ns_.load(std::memory_order_relaxed);
+    const std::int64_t span_ns = end_ns - SteadyNs(start_time_);
+    return span_ns > 0 ? static_cast<double>(span_ns) * 1e-9 : 0.0;
   }
 
   // ── Sensor protocol injection (non-RT — call before Start()) ───────────
@@ -1389,6 +1404,7 @@ class UdpHandController {
     // (issue #345). Before that, RunCommCycleTail invoked a std::function that
     // did now() + ROS message fill + 5 publishes on this SCHED_FIFO 65 thread.
     result.tail_done = std::chrono::steady_clock::now();
+    last_tick_end_ns_.store(SteadyNs(result.tail_done), std::memory_order_relaxed);
     return result;
   }
 
@@ -1560,8 +1576,21 @@ class UdpHandController {
   rtc::SeqLock<UdpHandState> state_seqlock_{};
   std::atomic<std::size_t> cycle_count_{0};
 
-  // Non-RT: captured in Start() to report the average cycle rate in Stop().
+  // Non-RT: captured in Start() — the origin of ElapsedSeconds().
   std::chrono::steady_clock::time_point start_time_{};
+  // End of the last completed cycle (steady_clock ns), the end of the run once
+  // the loop has stopped (ElapsedSeconds, #927 I-2). Stored by RunCommCycleTail
+  // on the CommLoop thread from the timestamp it already takes — one relaxed
+  // store, no extra clock read. Seeded with start_time_ by Start() /
+  // InitFakeForTest(), so a run that stops before its first cycle reads 0
+  // rather than the previous run.
+  std::atomic<std::int64_t> last_tick_end_ns_{0};
+  static_assert(std::atomic<std::int64_t>::is_always_lock_free,
+                "last_tick_end_ns_ must be lock-free on the RT CommLoop path");
+
+  [[nodiscard]] static std::int64_t SteadyNs(std::chrono::steady_clock::time_point t) noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count();
+  }
 
   // Link health. consecutive_recv_failures_ is the aggregate "no channel
   // answered this cycle" streak — kept for onset/steady logging + the forensic

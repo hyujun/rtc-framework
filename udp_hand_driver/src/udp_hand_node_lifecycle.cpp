@@ -67,11 +67,16 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
 
   // Per-configuration state (#927): this may be a second configure on the same
   // node, which must not inherit the previous configuration's command-name map
-  // (joint_state_names may have changed), link edge or decimation phase.
+  // (joint_state_names may have changed), link edge, decimation phase or
+  // failure verdict.
   cmd_name_reorder_ready_ = false;
   prev_link_ok_ = true;
   link_cycle_counter_ = 0;
   publish_count_ = 0;
+  {
+    std::lock_guard<std::mutex> lock(aux_lane_mutex_);
+    failure_latched_ = false;
+  }
 
   // ── Parameters ─────────────────────────────────────────────────────
   // Declared here rather than in the constructor (conventions.md, Tier 0:
@@ -775,7 +780,12 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // Parent call activates LifecyclePublishers — must be called first.
   LifecycleNode::on_activate(state);
 
-  start_time_ = std::chrono::steady_clock::now();
+  // A new run starts without the previous run's failure verdict (#927 I-1);
+  // the run length restarts with controller_->Start() below (I-2).
+  {
+    std::lock_guard<std::mutex> lock(aux_lane_mutex_);
+    failure_latched_ = false;
+  }
 
   // ── Per-tick timing CSV setup ──────────────────────────────────────
   // Inject producer before Start() so the CommLoop thread sees a non-null
@@ -1024,6 +1034,13 @@ void UdpHandNode::StopRuntime() {
     // ownership), which means a reset placed before the barrier frees the
     // object out from under a live reader.
     std::lock_guard<std::mutex> quiesce(aux_lane_mutex_);
+    // The verdict outlives the detector: the teardown save after this
+    // (on_cleanup / on_error / ~UdpHandNode) must still report it (#927 I-1).
+    // Only a live detector updates it — a second StopRuntime() in the same
+    // teardown finds none and keeps the first one's verdict.
+    if (failure_detector_) {
+      failure_latched_ = failure_detector_->failed();
+    }
     failure_detector_.reset();
   }
   // Call Stop() unconditionally (it is idempotent). The IsRunning() guard was

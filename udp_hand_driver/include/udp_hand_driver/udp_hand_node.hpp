@@ -314,6 +314,13 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   std::unique_ptr<udp_hand_driver::UdpHandController> controller_;
   std::unique_ptr<udp_hand_driver::UdpHandFailureDetector> failure_detector_;
 
+  // The detector's verdict for the current run, kept past the detector itself
+  // (#927 I-1): StopRuntime() destroys the detector, and the teardown save that
+  // follows reports this instead of a default `false`. Written by StopRuntime()
+  // from a live detector only, cleared by on_configure / on_activate; guarded
+  // by aux_lane_mutex_ like failure_detector_.
+  bool failure_latched_{false};
+
   // Non-owning view of the CAN FD link when protocol_version is "2" (null
   // otherwise): SaveCommStats reads CanFdHandComm::canfd_stats() through it,
   // which HandComm deliberately does not expose. The controller owns the comm,
@@ -426,8 +433,6 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // the node needs no self-tick timer or command cache — commands flow through the
   // normal command sub → SendCommandAndRequestStates path.
   bool use_fake_hand_{false};
-
-  std::chrono::steady_clock::time_point start_time_{std::chrono::steady_clock::now()};
 
   // Periodic stats persistence (crash-safety): without it the stats JSON is
   // written only on graceful teardown and is lost on SIGKILL/crash. Interval

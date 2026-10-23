@@ -13,7 +13,6 @@
 #include "udp_hand_driver/udp_hand_node.hpp"
 #include <rtc_base/logging/session_dir.hpp>
 
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -34,10 +33,12 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
     return;
 
   const auto stats = controller_->comm_stats();
-  const bool fd_failed = failure_detector_ ? failure_detector_->failed() : false;
+  // A torn-down detector leaves its verdict in failure_latched_ (#927 I-1).
+  const bool fd_failed = failure_detector_ ? failure_detector_->failed() : failure_latched_;
 
-  const auto elapsed = std::chrono::steady_clock::now() - start_time_;
-  const double elapsed_sec = std::chrono::duration<double>(elapsed).count();
+  // The controller's run length: frozen at the last completed cycle once the
+  // loop has stopped, so an E-Stop's idle tail is not counted (#927 I-2).
+  const double elapsed_sec = controller_->ElapsedSeconds();
   const double avg_rate_hz =
       (elapsed_sec > 0.0) ? static_cast<double>(stats.total_cycles) / elapsed_sec : 0.0;
 
