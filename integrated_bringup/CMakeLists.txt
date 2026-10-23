@@ -1882,6 +1882,9 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_launch_shield_wiring test/test_launch_shield_wiring.py)
   ament_add_pytest_test(test_launch_hand_affinity_wiring
     test/test_launch_hand_affinity_wiring.py)
+  # Every topic udp_hand_node declares is set to /<robot>/... in each overlay: a
+  # key left out falls back to a relative default, global under namespace="".
+  ament_add_pytest_test(test_hand_overlay_topics test/test_hand_overlay_topics.py)
   # Behavioural twin of the two AST tests above: evaluates every launch
   # description instead of reading it.
   ament_add_pytest_test(test_sim_overlay test/test_sim_overlay.py)

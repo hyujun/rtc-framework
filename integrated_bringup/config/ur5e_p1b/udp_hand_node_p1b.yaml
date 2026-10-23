@@ -1,7 +1,9 @@
 # ur5e_p1b/udp_hand_node_p1b.yaml -- standalone config for the p1b hand
 #
 # 완전 독립(self-contained) 파일이다. robot_ur5e_p1b.launch.py 는 이 파일만
-# udp_hand_node 에 넘긴다 (+ 공용 fingertip_ft_inferencer.yaml).
+# udp_hand_node 에 넘긴다 (+ CLI 의 sil_mode · use_cpu_affinity). F/T inferencer
+# yaml 은 넘기지 않는다 — 1b 는 barometer 입력이 없어 노드 기본값
+# ft_inferencer.enabled=false 로 충분하다.
 # ur5e_p1a/udp_hand_node_p1a.yaml 과 대칭인 per-robot overlay 이며,
 # udp_hand_driver/config/udp_hand_node.yaml (standalone udp_hand.launch.py 용
 # generic /hand/ reference) 과는 base+overlay 관계가 아니다 — 여기서 명시하지
@@ -11,11 +13,18 @@
 #   - communication_mode 는 반드시 "bulk" — 1b force layout 은 bulk 전용이고
 #     C++ 기본값 "individual" 로 두면 on_configure 가 실패한다.
 #   - joint state/command 는 kMotor MODE 로 주고받는다 (1b 펌웨어의 유일한
-#     joint-serving 모드; JointIoMode()=kMotor). 펌웨어가 요청 MODE 를 정확히
-#     echo 하므로 수신 MODE 검증은 strict 유지 (VerifiesResponseMode()=true).
+#     joint-serving 모드; JointIoMode()=kMotor). 1b 펌웨어는 모든 응답의 MODE
+#     바이트를 임의 값으로 채우므로 수신 MODE 검증은 끈다
+#     (VerifiesResponseMode()=false — CMD · 길이 검증은 유지).
 #   - /p1b/sensor_states = HandSensorState, 핑거당 f[3]={fx,fy,fz} (firmware force).
 #   - /p1b/motor_states 미발행 (별도 motor-space read 스킵) → motor_state_names 생략.
 #   - LPF/drift/F-T 후처리 파라미터는 1b 경로에서 무시되므로 생략 (C++ 기본 off).
+#
+# generic udp_hand_node.yaml 에 있지만 여기서 생략한 키:
+#   - can_interface · feedforward_kt: protocol_version "2" (CAN FD) 전용 — 1b 는 무시.
+#   - hand_side: 명시하면 hand_stats.json · hand_timing_log.csv 이름에 `_<side>` 가
+#     붙는다. 생략 = 기본 right, 접미사 없음 (기존 로그 이름 유지).
+#   - aux_cpu_slot · use_cpu_affinity: 기본값 사용, use_cpu_affinity 는 launch 인자가 준다.
 /**:
   ros__parameters:
     # -- SIL mode (하드웨어 없이 thread 할당/RT 구조 검증용) --
@@ -57,12 +66,13 @@
     # CommLoop 가 이 주기로 자율 tick: read + /p1b/joint_states publish 를 명령과
     # 무관하게 loop_rate_hz 로 수행. write UDP 는 /p1b/joint_command 수신 시에만 —
     # CM RT loop 가 active controller 있을 때만 publish 하므로 write 는 control_rate
-    # 로, deactivate 시 정지 (read/publish 는 계속). control_rate SSoT=500 과 일치
-    # 시켜 CM 이 매 tick fresh state 를 소비 (clock 드리프트 최소).
+    # 로, deactivate 시 정지 (read/publish 는 계속). 250 Hz 는 실기 튜닝값으로
+    # control_rate(500, _base.yaml) 의 절반이다 — CM 은 두 tick 에 한 번 새 state 를
+    # 받고 그 사이에는 직전 state 를 쓴다.
     loop_rate_hz: 250.0
 
     # -- Publish rate (link_status decimation) --
-    # loop_rate_hz / publish_rate 비율 (500/100=5 -> ~100Hz link_status).
+    # loop_rate_hz / publish_rate 비율 (250/50=5 -> ~50Hz link_status).
     publish_rate: 50.0
 
     # -- 조인트 이름 (firmware wire-slot order) --
@@ -112,6 +122,11 @@
     motor_state_topic: "/p1b/motor_states"   # 미발행 (1b: motor-space read 스킵)
     sensor_topic: "/p1b/sensor_states"
     link_status_topic: "/p1b/link_status"
+    # Bool 구독: true → zero-write 1회 + CommLoop 종료 (deactivate→activate 로 복귀).
+    # 시스템 E-STOP (/system/estop_status) 에는 연결하지 않는다 — CM 이 E-STOP 중
+    # hand 를 latch 위치에 hold 하고, hand 가 스스로 멈추면 clear 후 CM watchdog 이
+    # hand timeout 을 다시 낸다. 생략하면 namespace="" 에서 전역 /estop 이 된다.
+    estop_topic: "/p1b/estop"
 
     # -- Sensor calibration (trigger + status) --
     calibration_command_topic: "/p1b/calibration/command"
@@ -128,7 +143,7 @@
     check_link: true
     # 채널별 strict link-down (#1): 어느 채널이라도 이 budget 만큼 연속 실패하면
     # latch. on_configure 채널별 환산 — motor/joint: ms/1000 × loop_rate_hz /
-    # comm_decimation (여기서 0.1 × 500 / 1 = 50 cycle); sensor: 추가로 /
+    # comm_decimation (여기서 0.1 × 250 / 1 = 25 cycle); sensor: 추가로 /
     # sensor_decimation. CM device_timeout 1000 ms 보다 한참 아래라 hand
     # link-down 이 먼저 latch 된다.
     link_fail_timeout_ms: 100.0

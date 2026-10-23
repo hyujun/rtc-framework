@@ -123,7 +123,7 @@ ros2 param set /demo_task_controller/demo_task_controller grasp_controller_type 
 
 **자기기술 메시지** — `PullEstimate` 는 좌표 기저(`plane_normal` · `basis_x` · `basis_source`)를, `PayloadEstimate` 는 `joint_names` 와 두 프레임(`header.frame_id` = 축 정렬, `payload_frame` = 작용점)을 함께 싣는다. 이 필드 없이는 값을 해석할 수 없으니 구독자는 반드시 읽는다. 신선도는 stamp 가 아니라 `tick` 으로 판단한다.
 
-**Hand driver** (`ur5e_p1a` 예, 기본 `/hand/` 를 variant 마다 remap): `/p1a/joint_states` · `/p1a/motor_states` · `/p1a/sensor_states` (Pub), `/p1a/joint_command` (Sub).
+**Hand driver** (`ur5e_p1a` 예, robot overlay 가 모든 `*_topic` 을 `/<robot>/` 절대 이름으로 지정): `/p1a/joint_states` · `/p1a/motor_states` · `/p1a/sensor_states` (Pub), `/p1a/joint_command` · `/p1a/estop` (Sub).
 **MuJoCo**: `<group.state_topic>` (Pub), `<group.command_topic>` (Sub), `/sim/status` (1 Hz).
 
 ## Configuration Files

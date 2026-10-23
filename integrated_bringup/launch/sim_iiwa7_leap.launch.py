@@ -103,9 +103,6 @@ def launch_setup(context, *args, **kwargs):
     )
     ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "iiwa7_leap", "sim.yaml"])
 
-    # No hand UDP driver on iiwa7+LEAP — sensor stack disabled.
-    hand_config = None
-
     # ── Build simulator parameters (defaults → robot YAML → overlay → CLI) ──
     # The overlay sits between the shipped YAML and the per-argument overrides
     # so it can replace the scene while `model_path:=` & co. still win over it.
@@ -178,8 +175,6 @@ def launch_setup(context, *args, **kwargs):
 
     # ── Build controller parameters (YAML + overrides + launch args) ──────────
     ctrl_params = [ctrl_config, sim_config]
-    if hand_config is not None:
-        ctrl_params.append(hand_config)
     if sim_overlay is not None:
         ctrl_params.append(sim_overlay)
     ctrl_overrides = {}
