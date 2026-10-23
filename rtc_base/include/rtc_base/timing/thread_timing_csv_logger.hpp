@@ -29,6 +29,9 @@
 //     and stamps every row it writes with the current run id.
 //   - `Log(sample)` appends one row + flushes (so an aborted session still
 //     produces a readable file).
+//   - `Close()` ends the file; the next `Open()` starts over. A logger that
+//     lives across lifecycle reconfigures (a node member) must Close() in its
+//     teardown: `Open()` on a still-open logger is refused (#932).
 //   - Header-only; one writer per file. Not thread-safe.
 //
 // Consumer:
@@ -75,12 +78,20 @@ class ThreadTimingCsvLogger {
   /// already exists) the existing header is preserved. Returns false on
   /// filesystem errors — caller may retry or skip.
   ///
+  /// Also returns false, touching nothing, when already open: the open file
+  /// keeps its path and its rows. Re-opening the stream in place used to fail
+  /// with failbit set, so IsOpen() stayed true while every later row was
+  /// dropped (#932). Close() first to switch or reopen.
+  ///
   /// The run id is resolved here, not per row: a reopen within the same
   /// launch (e.g. a lifecycle reconfigure) keeps the same id and reads as
   /// one continuous run, while a restart of the process — or a new launch —
   /// yields a different one and marks the boundary.
   [[nodiscard]] bool Open(const std::filesystem::path& path, const HeaderWriter& header_writer,
                           RowWriter row_writer) noexcept {
+    if (out_.is_open()) {
+      return false;
+    }
     try {
       path_ = path;
       std::error_code ec;
@@ -106,6 +117,13 @@ class ThreadTimingCsvLogger {
     } catch (...) {
       return false;
     }
+  }
+
+  /// End the file. Log() is a no-op until the next Open(), which appends
+  /// under a freshly resolved run id. No-op when not open.
+  void Close() noexcept {
+    out_.close();
+    out_.clear();
   }
 
   [[nodiscard]] bool IsOpen() const noexcept { return out_.is_open(); }

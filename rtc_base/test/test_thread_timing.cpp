@@ -258,6 +258,84 @@ TEST(ThreadTimingCsvLogger, LogIsNoopWhenNotOpen) {
   EXPECT_FALSE(logger.IsOpen());
 }
 
+// #932 — 같은 로거 인스턴스의 재-open. 위 reopen 테스트는 매번 새 인스턴스라
+// 이 경로를 못 본다: CM 은 로거를 멤버로 들고 lifecycle 재configure 마다 같은
+// 인스턴스를 다시 연다. Close() 뒤의 Open() 은 처음 연 것과 같아야 한다 —
+// 헤더는 한 번, run id 는 그대로 (위 ReopenWithSameRunIdStaysOneRun 과 같은 계약).
+TEST(ThreadTimingCsvLogger, CloseThenReopenOnTheSameInstanceContinuesTheRun) {
+  ScopedTempDir scope;
+  const ScopedRunId run{"55"};
+  const auto path = scope.dir() / "t.csv";
+  rtc::ThreadTimingCsvLogger<TestPayload> logger;
+  rtc::ThreadTimingSample<TestPayload> s{};
+
+  ASSERT_TRUE(logger.Open(path, &WriteHeader, &WriteRow));
+  s.t_wall_ns = 1000;
+  s.tick_count = 1;
+  logger.Log(s);
+  logger.Close();
+
+  ASSERT_TRUE(logger.Open(path, &WriteHeader, &WriteRow));
+  EXPECT_TRUE(logger.IsOpen());
+  s.t_wall_ns = 2000;
+  s.tick_count = 2;
+  logger.Log(s);
+
+  const auto lines = ReadAllLines(path);
+  ASSERT_EQ(lines.size(), 3u);
+  EXPECT_EQ(lines[0], "t_wall_ns,tick_count,run_id,a,b");
+  EXPECT_EQ(lines[1], "1000,1,55,0,0");
+  EXPECT_EQ(lines[2], "2000,2,55,0,0");
+}
+
+// 열린 채로 다시 Open() 하면 거부한다 — 그리고 이미 열린 파일은 그대로 둔다.
+// 예전에는 ofstream::open 이 failbit 를 세워 IsOpen() 은 true 인 채 이후의
+// 모든 행이 조용히 사라졌다 (#932).
+TEST(ThreadTimingCsvLogger, OpenWhileOpenIsRefusedAndKeepsTheFirstFile) {
+  ScopedTempDir scope;
+  const ScopedRunId run{"66"};
+  const auto first = scope.dir() / "a.csv";
+  const auto second = scope.dir() / "b.csv";
+  rtc::ThreadTimingCsvLogger<TestPayload> logger;
+  rtc::ThreadTimingSample<TestPayload> s{};
+
+  ASSERT_TRUE(logger.Open(first, &WriteHeader, &WriteRow));
+  s.t_wall_ns = 1000;
+  s.tick_count = 1;
+  logger.Log(s);
+
+  EXPECT_FALSE(logger.Open(second, &WriteHeader, &WriteRow));
+  EXPECT_TRUE(logger.IsOpen());
+  EXPECT_EQ(logger.Path(), first);
+  s.t_wall_ns = 2000;
+  s.tick_count = 2;
+  logger.Log(s);
+
+  const auto lines = ReadAllLines(first);
+  ASSERT_EQ(lines.size(), 3u);
+  EXPECT_EQ(lines[1], "1000,1,66,0,0");
+  EXPECT_EQ(lines[2], "2000,2,66,0,0");
+  EXPECT_FALSE(fs::exists(second));
+}
+
+TEST(ThreadTimingCsvLogger, LogIsNoopAfterClose) {
+  ScopedTempDir scope;
+  const auto path = scope.dir() / "t.csv";
+  rtc::ThreadTimingCsvLogger<TestPayload> logger;
+  ASSERT_TRUE(logger.Open(path, &WriteHeader, &WriteRow));
+  logger.Close();
+  EXPECT_FALSE(logger.IsOpen());
+
+  rtc::ThreadTimingSample<TestPayload> s{};
+  s.tick_count = 1;
+  logger.Log(s);
+  logger.Close();  // 두 번째 Close 도 no-op
+
+  const auto lines = ReadAllLines(path);
+  ASSERT_EQ(lines.size(), 1u);
+  EXPECT_EQ(lines[0], "t_wall_ns,tick_count,run_id,a,b");
+}
+
 // ── End-to-end ──────────────────────────────────────────────────────────────
 
 TEST(ThreadTimingEndToEnd, ProducerDrainIntoCsv) {
