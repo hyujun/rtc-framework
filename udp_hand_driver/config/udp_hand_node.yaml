@@ -51,9 +51,10 @@
     local_ip: ""                      # 제어 PC source IP ("" = 커널 선택)
     local_interface: ""               # egress NIC 이름 ("" = 라우팅 테이블에 위임)
     recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms), sub-ms 지원: 0.4 -> 400us
-                                      # CAN FD(protocol_version "2") 에서는 stage 별 deadline
-                                      # (echo · RESP set, D42): 2 × 값 < 1000/loop_rate_hz ×
-                                      # comm_decimation 이어야 configure 를 통과한다.
+                                      # CAN FD(protocol_version "2") 에서는 stage 별 deadline T
+                                      # (echo: CMD + T, RESP set: echo 끝 + T — 체인, D42 · D59):
+                                      # 최악 2 × 값 < 1000/loop_rate_hz × comm_decimation 이어야
+                                      # configure 를 통과한다.
                                       # 실기 proto2 는 launch 로 0.9 를 준다 (H1-F06 실측, D6):
                                       # 손의 REQ→RESP 왕복 p99 0.73 / max 0.76 ms (read-only),
                                       # write 동시엔 echo max 1.46 ms 가 15만 사이클에 22번 →

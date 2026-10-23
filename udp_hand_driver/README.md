@@ -57,7 +57,7 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | `target_port` | `55151` | 손 컨트롤러 포트 |
 | `local_ip` / `local_interface` | `""` / `""` | 제어 PC source address (bind) / egress NIC (`SO_BINDTODEVICE`) |
 | `communication_mode` | `bulk` | `bulk` \| `individual` |
-| `recv_timeout_ms` | `0.4` | 수신 타임아웃 [ms] (UDP: ppoll · CAN FD: stage 별 deadline). CAN FD 실기는 `0.9` (실측: 왕복 max 0.76 ms, 타임아웃 0.016 %; 0.4 는 매 사이클 타임아웃) |
+| `recv_timeout_ms` | `0.4` | 수신 타임아웃 [ms] (UDP: ppoll · CAN FD: stage 별 deadline, 체인 최악 2 ×). CAN FD 실기는 `0.9` (H1-F06 실측) |
 | `publish_rate` | `100.0` | `link_status` decimation 기준 [Hz]. `loop_rate_hz` 는 launch 인자가 아니다 |
 | `protocol_version` | `1b` | `1a` \| `1b` \| `2`. 노드와 `fake_hand_firmware` 양쪽에 전파 |
 | `can_interface` | `can0` | `2` 의 SocketCAN 장치 (`firmware` 는 `vcan0` 로 강제) |
@@ -119,7 +119,7 @@ ros2 topic echo /hand/calibration/status
 | `feedforward` | 무시 | 무시 | 전송 (Frame 1, `feedforward_kt` 로 Nm → A) |
 | 통신 모드 | individual / bulk | **bulk 전용** | **bulk 전용** |
 
-`1b` · `2` + `individual` 조합은 `on_configure` 가 FAILURE 를 반환한다. `2` 는 그 밖에도 `can_interface` 가 없을 때 (`loopmodel` 제외), `feedforward_kt` 가 10개가 아니거나 양수가 아닐 때, `2 × recv_timeout_ms` 가 comm 슬롯 (`1000 / loop_rate_hz × comm_decimation` ms) 을 넘을 때 configure 를 거부한다. YAML 의 값은 반드시 `"2"` 로 따옴표를 친다 (정수는 파라미터 선언에서 예외).
+`1b` · `2` + `individual` 조합은 `on_configure` 가 FAILURE 를 반환한다. `2` 는 그 밖에도 `can_interface` 가 없을 때 (`loopmodel` 제외), `feedforward_kt` 가 10개가 아니거나 양수가 아닐 때, `2 × recv_timeout_ms` 가 comm 슬롯 (`1000 / loop_rate_hz × comm_decimation` ms) 을 넘을 때 거부한다. YAML 의 값은 반드시 `"2"` 로 따옴표를 친다 (정수는 파라미터 선언에서 예외).
 
 `2` 의 `JointCommand.feedforward` 는 `values` 와 크기가 같을 때만 같은 이름 맵으로 재정렬되어 전송되고 (joint offset 은 적용하지 않음), 비어 있으면 0, 그 외 크기면 0 + 경고 + `feedforward_size_mismatch` 카운터, NaN · ±inf 항목은 0 + `feedforward_nonfinite` 카운터다. `command_type` · `kp` · `kd` 는 소비하지 않는다. wire 포맷의 SSoT 는 [hand_canfd_packets.hpp](include/udp_hand_driver/hand_canfd_packets.hpp) 주석이다.
 
@@ -161,7 +161,7 @@ ros2 topic echo /hand/link_status --once     # 별도 터미널
 
 `protocol_version:=2` 는 FD vcan0 (MTU 72, `repo_scripts/scripts/setup_vcan.sh`) 이 없으면 launch 가 거부한다. `test_canfd_hand_comm` 이 같은 vcan0 · 같은 노드 id 를 쓰므로 proto2 SIL 과 `colcon test` 를 동시에 돌리지 않는다.
 
-한계: µs loopback latency 라 timing 검증엔 부적합하고, driver decoder 의 거울상이라 실제 펌웨어와의 일치는 보장하지 못하며, commander 없이 단독 실행하면 모터가 LPF rest(0) 에 머물러 failure detector 의 all-zero / duplicate 경고가 뜬다 (명령이 오면 해소).
+한계: µs loopback latency 라 timing 검증엔 부적합하고, driver decoder 의 거울상이라 실제 펌웨어와의 일치는 보장하지 못하며, commander 없이 돌리면 모터가 rest(0) 에 머물러 failure detector 의 all-zero / duplicate 경고가 뜬다 (명령이 오면 해소).
 
 ## 설정
 
@@ -232,9 +232,9 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 
 `<session>/device/hand_stats.json` 에 통신 · 타이밍 통계를 쓴다. 10 s 주기 저장 (SIGKILL 대비), failure 발생 즉시 1회, 정상 teardown 때 저장한다. `comm_stats` 에 cycle · recv ok / timeout / error · mismatch · `stale_drained` · `comm_decimation` 이 있고, `per_request` 는 request kind (`write_echo` · `motor_read` · `joint_read` · `sensor_read` · `bulk_sensor` · `set_mode`) 별 집계다.
 
-`last_unexpected_cmd` 에 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처다. `timing_stats` 는 성공한 패킷의 latency 만 집계한다. per-tick 타이밍은 `<session>/timing/hand_timing_log.csv`.
+`last_unexpected_cmd` 에 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처다. `timing_stats` 는 성공한 패킷의 latency 만 집계한다. per-tick 타이밍은 `<session>/timing/hand_timing_log.csv`. `2` write tick 의 `read_all_joint_motor` 는 echo 끝 → 세트 완료 (profiler 헤더).
 
-`protocol_version` · `transport` (`udp` \| `canfd`, 설치된 링크 종류 — `loopmodel` 은 기록하지 않음) · `feedforward_size_mismatch` · `feedforward_nonfinite` 는 모든 프로토콜에 있고, `"2"` 는 `canfd` 블록 (tx errno 분류 · error frame · `echo_payload_mismatch` · RESP-set assembler 카운터) 을 더한다. `hand_side` 를 명시하면 두 파일이 `hand_stats_<side>.json` · `hand_timing_log_<side>.csv` 가 된다. 키 집합은 `test/fixtures/hand_stats_keys*.txt` 가 고정한다.
+`protocol_version` · `transport` (`udp` \| `canfd`, 설치된 링크 — `loopmodel` 은 기록하지 않음) · `feedforward_size_mismatch` · `feedforward_nonfinite` 는 모든 프로토콜에 있고, `"2"` 는 `canfd` 블록 (tx errno · error frame · `echo_payload_mismatch` · assembler 카운터) 을 더한다. `hand_side` 를 명시하면 두 파일이 `hand_stats_<side>.json` · `hand_timing_log_<side>.csv` 가 된다. 키 집합은 `test/fixtures/hand_stats_keys*.txt` 가 고정한다.
 
 ### 로깅 (Logging)
 
@@ -258,7 +258,7 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 ## 더 읽기
 
 - UDP 소켓 · drain · mode 검증 · retry: [udp_hand_transport.hpp](include/udp_hand_driver/udp_hand_transport.hpp) 주석
-- CAN FD 링크 (echo 분류 · stage deadline · E-Stop 순서): [canfd_hand_comm.hpp](include/udp_hand_driver/canfd_hand_comm.hpp) 주석
+- CAN FD 링크 (수신 창 · deadline 체인 · E-Stop 순서): [canfd_hand_comm.hpp](include/udp_hand_driver/canfd_hand_comm.hpp) 주석
 - mailbox · write gate · E-Stop self-exit: [udp_hand_controller.hpp](include/udp_hand_driver/udp_hand_controller.hpp) · [udp_hand_node.hpp](include/udp_hand_driver/udp_hand_node.hpp) 주석
 - RT 튜닝: [rt-optimization.md](../docs/rt-optimization.md)
 
