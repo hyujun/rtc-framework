@@ -291,7 +291,7 @@ latch 가 서면 (또는 해제 검증 창 동안) 컨트롤러 output 은 `Devi
 
 누적 카운터 (`overruns` · `skips` · `*_drops`) 는 서머리 리셋과 무관하다. sim 은 `n/a(sim)` ([docs/testing.md](../docs/testing.md) cm_timing 행). 예산은 `1e6 / control_rate` µs 다. sim 모드의 `elapsed` 는 `count × period` (가상 시간) 이고 robot 모드는 wall-clock 이다.
 
-타이밍 CSV 는 세션 디렉토리 `<session>/timing/` 아래에 쓰인다. 세 채널이 같은 5-컬럼 payload (`t_state_us` · `t_compute_us` · `t_publish_us` · `t_total_us` · `jitter_us`) 에 공통 컬럼 `t_wall_ns` · `tick_count` · `run_id` 를 붙인다.
+타이밍 CSV 는 세션 디렉토리 (`$RTC_SESSION_DIR`, 없으면 프로세스 세션) 의 `timing/` 아래에 쓰인다. 세 채널이 같은 5-컬럼 payload (`t_state_us` · `t_compute_us` · `t_publish_us` · `t_total_us` · `jitter_us`) 에 공통 컬럼 `t_wall_ns` · `tick_count` · `run_id` 를 붙인다.
 
 | 파일 | 한 행의 단위 |
 |---|---|
@@ -334,7 +334,6 @@ latch 가 서면 (또는 해제 검증 창 동안) 컨트롤러 output 은 `Devi
 | `device_timeout_values` | double[] | `[]` | 각 그룹의 state 타임아웃 (ms) |
 | `device_timeout_default_ms` | double | `1000.0` | 위 목록에 없는 그룹의 timeout (ms) |
 | `enable_logging` · `enable_timing_log` · `enable_device_log` | bool | `true` | CSV 로깅 전체 · 타이밍 · 디바이스별 |
-| `log_dir` | string | `""` | 로그 디렉토리 (빈 값이면 자동 생성) |
 | `max_log_sessions` | int | `10` | 로그 세션 보관 수. bringup launch 도 같은 트리를 정리하므로 launch 가 이 값을 자기 인자의 default 로 읽는다 — YAML 이 SSoT 이고 CLI `max_log_sessions:=N` 은 양쪽을 함께 움직인다 |
 | `use_sim_time_sync` | bool | `false` | MuJoCo lock-step — RT tick 을 sim step 완료로 깨운다 |
 | `sim_sync_timeout_sec` | double | `5.0` | step 이 이 시간 안에 완성되지 않으면 `sim_sync_timeout` E-STOP |

@@ -781,6 +781,35 @@ TEST_F(CmConfigPipelineTest, TimingCsvsReopenAfterAConfigureRefusedPastLogging) 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// ── A leftover log_dir override (#933) ──────────────────────────────────────
+//
+// log_dir used to send CM's logs to an explicit dir instead of the session.
+// It is gone; an override still carrying it is refused, not silently ignored,
+// so the operator learns the logs now follow RTC_SESSION_DIR. The accepted
+// counterpart is ConfigureWritesIntoThisBinarysPrivateSession — a statically
+// typed parameter cannot be undeclared, so this node cannot be retried.
+TEST_F(CmConfigPipelineTest, ALogDirOverrideRefusesConfigureAndWritesNothingThere) {
+  const char* session = std::getenv("RTC_SESSION_DIR");
+  ASSERT_NE(nullptr, session) << "this binary must isolate its session dir";
+  // The binary's own temp root, so a regression that honours log_dir writes
+  // nowhere shared.
+  const auto root = std::filesystem::path(session).parent_path().parent_path();
+  const auto temp = std::filesystem::temp_directory_path();
+  ASSERT_EQ(0U, root.string().rfind(temp.string(), 0)) << root << " is not under " << temp;
+  ASSERT_NE(temp, root);
+  const auto log_dir = root / "log_dir_override";
+  std::filesystem::remove_all(log_dir);
+
+  auto node = MakeTimingLogNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("log_dir", log_dir.string());
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U,
+            LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, {"'log_dir'", "RTC_SESSION_DIR"}).size());
+  EXPECT_FALSE(std::filesystem::exists(log_dir));
+}
+
 // ── Device config beyond the RT path's fixed capacity (issue #196 §2) ────────
 
 TEST_F(CmConfigPipelineTest, DeviceDeclaringMoreJointsThanCapacityRefusesConfigure) {

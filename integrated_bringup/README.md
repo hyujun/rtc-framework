@@ -369,7 +369,7 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
 |---|---|---|
 | `control_rate` | `_base.yaml` | RT 루프 주기 (Hz). 범위는 [invariants.md](../agent_docs/invariants.md) §RT Path |
 | `device_timeout_names` / `device_timeout_values` | `_base` / mode 파일 | 디바이스별 timeout (ms). sim 은 여유 있게 10000 |
-| `enable_logging` · `enable_timing_log` · `enable_device_log` · `log_dir` · `max_log_sessions` | `_base.yaml` | 세션 로깅 (`log_dir: ""` = 기본 root) |
+| `enable_logging` · `enable_timing_log` · `enable_device_log` · `max_log_sessions` | `_base.yaml` | 세션 로깅 |
 | `initial_controller` | mode 파일 | 시작 컨트롤러 (launch 인자로 override) |
 | `init_timeout_sec` · `enable_estop` | mode 파일 | 실로봇은 30 s · true, sim 은 0 (끔) · false |
 

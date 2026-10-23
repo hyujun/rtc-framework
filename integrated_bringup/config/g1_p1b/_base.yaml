@@ -28,7 +28,6 @@
     enable_logging: true
     enable_timing_log: true
     enable_device_log: true # auto-creates per-device log files
-    log_dir: "" # launch overrides with the session directory
     max_log_sessions: 10 # session folders kept (YYMMDD_HHMM); the sim launch reads this too
 
     # ── Robot model ──────────────────────────────────────────────────────────

@@ -530,7 +530,7 @@ def test_sim_overlay_sits_between_the_profile_yaml_and_the_cli_overrides():
     overlay = "/sim_overlays/inference_pole.yaml"
     for name, cli_key in (
         ("mujoco_simulator", "model_path"),
-        ("integrated_rt_controller", "log_dir"),
+        ("integrated_rt_controller", "max_log_sessions"),
     ):
         assert name in nodes, f"{P1B_SIM} built no node named {name}: {sorted(nodes)}"
         sources = _node_parameter_sources(nodes[name], context)

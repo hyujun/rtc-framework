@@ -113,8 +113,8 @@ inline std::filesystem::path ResolveLoggingRoot() {
 /// env 폴백 세션의 이름 — 이 프로세스에서 처음 불린 시각의 "YYMMDD_HHMM".
 ///
 /// 호출처는 한 프로세스의 ResolveSessionDir() 호출이 모두 같은 세션이라고
-/// 가정한다 (주기 저장 타이머, on_activate 의 여러 번, `log_dir` 없이 configure
-/// 하는 CM 과 컨트롤러 log set). 매 호출 시각을 찍으면 분이 바뀔 때마다 새
+/// 가정한다 (주기 저장 타이머, on_activate 의 여러 번, configure 하는 CM 과
+/// 컨트롤러 log set). 매 호출 시각을 찍으면 분이 바뀔 때마다 새
 /// 디렉토리가 생기고 한 런의 파일이 흩어진다 (#930). run_id.hpp 는 값이 env
 /// 또는 PID 라 원래 상수여서 캐시하지 않지만, 이 이름은 시각이므로 고정하려면
 /// 캐시가 필요하다. 루트는 캐시하지 않는다 — 노드는 실행 중에 cwd 나

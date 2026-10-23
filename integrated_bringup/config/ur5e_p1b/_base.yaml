@@ -30,7 +30,6 @@
     enable_logging: true
     enable_timing_log: true
     enable_device_log: true # auto-creates per-device log files
-    log_dir: ""
     max_log_sessions: 10
 
     # ── System URDF + model topology (shared by all controllers) ──────────

@@ -541,10 +541,6 @@ def generate_launch_description():
             base_config,
             ur_control_config,
             {
-                # Substitutions, not strings: this node is built while the
-                # description is, so the session path does not exist yet — it is
-                # resolved when the node action executes (#402).
-                "log_dir": ParameterValue(LaunchConfiguration("session_dir"), value_type=str),
                 # Same number the launch pruned with, so the node's own
                 # on_configure prune cannot fight it (#402).
                 "max_log_sessions": ParameterValue(
