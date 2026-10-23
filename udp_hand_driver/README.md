@@ -171,7 +171,7 @@ ros2 topic echo /hand/link_status --once     # 별도 터미널
 |---|---|---|
 | `target_ip` / `target_port` | `"192.168.0.100"` / `55151` | 핸드 컨트롤러 endpoint |
 | `local_ip` / `local_interface` | `""` / `""` | `""` = 커널 선택 / 라우팅 테이블에 위임. 같은 subnet 에 NIC 이 둘 이상일 때만 설정 |
-| `recv_timeout_ms` | `0.4` | ppoll 타임아웃. sub-ms 지원. `"2"` 에서는 stage 별 deadline (`2 ×` 값이 comm 슬롯 미만) |
+| `recv_timeout_ms` | `0.4` | ppoll 타임아웃 (sub-ms). `"2"` 의 deadline 체인은 [launch 인자](#launch-인자-udp_handlaunchpy) 표 |
 | `communication_mode` | `"bulk"` | `"individual"` 도 가능. 노드 C++ 기본값은 `individual` 이므로 YAML 없이 띄우면 달라진다 |
 | `loop_rate_hz` | `500.0` | CommLoop 주기 |
 | `publish_rate` | `100.0` | `link_status` decimation 기준 (`loop_rate_hz / publish_rate`) |
