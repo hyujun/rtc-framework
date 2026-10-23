@@ -10,8 +10,9 @@ and it is wired to nothing the robot publishes or reads. ``estop_topic`` shipped
 that way in both overlays.
 
 Checking only the keys an overlay already has would miss exactly that case, so
-the list of keys comes from the node: the ``declare_parameter("*_topic")``
-string literals in ``udp_hand_node_lifecycle.cpp``. Scanning C++ as text is the
+the list of keys comes from the node: the ``"*_topic"`` string literals that
+``udp_hand_node_lifecycle.cpp`` declares (``declare_parameter`` or its
+re-configure guard ``declare_once``). Scanning C++ as text is the
 weaker instrument and is guarded the way ``test_shipped_sim_param_declared``
 guards it — comments are stripped first, and the scan must find known keys
 before its result is trusted, so a regex that stops matching fails loudly
@@ -54,7 +55,7 @@ def _node_source() -> str:
 
 @pytest.fixture(scope="module")
 def declared_topics() -> set[str]:
-    keys = set(re.findall(r'declare_parameter\(\s*"([^"]+_topic)"', _node_source()))
+    keys = set(re.findall(r'declare_(?:parameter|once)\(\s*"([^"]+_topic)"', _node_source()))
     missing = SCANNER_CANARIES - keys
     assert not missing, (
         f"declare_parameter scan found none of {sorted(missing)} — the scanner is "

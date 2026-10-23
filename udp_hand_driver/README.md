@@ -223,8 +223,7 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 | `/hand/link_status` 가 `false`, recv timeout | IP · NIC 불일치, 포트 차단 | `target_ip` 확인 (YAML 은 `192.168.0.100`). `hand_stats.json` 의 `recv_timeout` · `recv_error` 확인 |
 | `sil_mode:=firmware` 인데 timeout 만 반복 | YAML 의 `local_interface` 가 실 NIC 에 소켓을 고정 | 노드가 `firmware` 모드에서 binding 을 해제하고 INFO 로 원래 값을 남긴다. 해당 NIC 이 없는 PC 에서는 `Open()` 이 ENODEV 로 실패한다 |
 | failure detector 가 all-zero / duplicate 경고 | commander 없이 단독 실행 (SIL 모터가 0 에 머묾) | 명령을 보내면 해소된다 |
-| `1b` · `2` 에서 `on_configure` FAILURE | `communication_mode: individual` 과 조합 | `communication_mode:=bulk` |
-| `2` 에서 `on_configure` FAILURE (bulk 인데도) | `can_interface` 없음 · `feedforward_kt` 불량 · `recv_timeout_ms` 가 슬롯 초과 · YAML 의 `2` 가 따옴표 없음 | 로그의 ERROR 한 줄이 원인을 적는다. [센서 프로토콜 버전](#센서-프로토콜-버전-protocol_version) |
+| `1b` · `2` 에서 `on_configure` FAILURE | `individual` 조합, `2` 는 `can_interface` 없음 · `feedforward_kt` 불량 · `recv_timeout_ms` 슬롯 초과 · 따옴표 없는 `2` | ERROR 한 줄이 원인을 적는다. 값을 고쳐 `ros2 param set` 뒤 다시 configure 하면 된다 ([프로토콜](#센서-프로토콜-버전-protocol_version)) |
 | F/T 가 항상 0, grasp 이 안 잡힘 | `ft_inferencer.enabled=false` 인데 capability=true | [capability lockstep](#onnx-ft-추론) |
 | `recv_error` 가 증가 | 손 쪽 포트 닫힘 (ICMP port-unreachable → `ECONNREFUSED`) | 펌웨어 · 전원 · 케이블 확인. timeout 과 구분되는 결정적 link-down 신호다 |
 

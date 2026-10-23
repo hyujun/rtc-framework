@@ -54,5 +54,5 @@ rtc_tsid/README.md: 11550 strict
 rtc_urdf_bridge/README.md: 17451 strict
 shape_estimation/README.md: 6548 strict
 shape_estimation_msgs/README.md: 1597 strict
-udp_hand_driver/README.md: 25214 strict  # raised from 24936: proto2 실기 launch 한 줄 + recv_timeout_ms 실측값 (H1-F06 D6)
+udp_hand_driver/README.md: 25140 strict  # proto2 실기 launch 한 줄 + recv_timeout_ms 실측값 (H1-F06 D6)
 ur5e_bt_coordinator/README.md: 19469 strict

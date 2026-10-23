@@ -40,8 +40,10 @@
 #include <memory>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifndef UDP_HAND_TEST_FIXTURE_DIR
@@ -635,9 +637,8 @@ TEST_F(UdpHandNodeLifecycleTest, StatsJsonKeysAndTimingCsvHeaderMatchFixture) {
 
 // ── protocol_version "2" (CAN FD, epic #895 — F04-2d) ──────────────────────
 // Every configure-time rejection below must end in Unconfigured *before* a
-// controller or publisher exists. No test here reconfigures the same node:
-// on_configure re-declares its parameters, so cleanup → configure throws on a
-// redeclaration (pre-existing, out of this feature's scope).
+// controller or publisher exists. Reconfiguring one node after such a
+// rejection is pinned separately (#927 A, "Reconfiguration" below).
 
 rclcpp::NodeOptions Proto2Options(std::vector<rclcpp::Parameter> extra) {
   rclcpp::NodeOptions options;
@@ -1058,6 +1059,173 @@ TEST_F(UdpHandNodeLifecycleTest, EstopTopicZeroWritesOnceAndStopsTheLoop) {
   ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
   ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
   exec_.remove_node(probe);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// ── Reconfiguration (#927 A) ────────────────────────────────────────────────
+// on_configure declares its parameters only when they are not declared yet.
+// Before that guard, any second configure on the same node — after cleanup,
+// after a FAILURE, after on_error — threw ParameterAlreadyDeclared, which
+// rclcpp turns into ERROR → on_error → Unconfigured: the node could never be
+// configured again. A new declaration added without the guard turns the first
+// test below red.
+
+using lifecycle_msgs::msg::State;
+
+TEST_F(UdpHandNodeLifecycleTest, CleanupThenConfigureReachesInactiveAgainOnEveryProtocol) {
+  const std::vector<std::pair<std::string, rclcpp::NodeOptions>> cases = {
+      {"1a", LoopmodelOptions()},
+      {"2", Proto2Options({rclcpp::Parameter("sil_mode", "loopmodel")})},
+  };
+  for (const auto& [proto, options] : cases) {
+    auto node = std::make_shared<UdpHandNode>(options);
+    exec_.add_node(node->get_node_base_interface());
+    EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE) << proto;
+    EXPECT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED) << proto;
+    EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE)
+        << proto << ": the second configure did not reach Inactive";
+    EXPECT_EQ(node->activate().id(), State::PRIMARY_STATE_ACTIVE) << proto;
+    EXPECT_EQ(node->deactivate().id(), State::PRIMARY_STATE_INACTIVE) << proto;
+    EXPECT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED) << proto;
+    exec_.remove_node(node->get_node_base_interface());
+  }
+}
+
+// A configure FAILURE is the operator's cue to fix a parameter and retry.
+TEST_F(UdpHandNodeLifecycleTest, ConfigureFailureIsRecoverableBySettingTheParameter) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({rclcpp::Parameter("sil_mode", "loopmdoel")});
+  auto node = std::make_shared<UdpHandNode>(options);
+  exec_.add_node(node->get_node_base_interface());
+  EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  ASSERT_TRUE(node->set_parameter(rclcpp::Parameter("sil_mode", "loopmodel")).successful);
+  EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  EXPECT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// Throws after a complete base on_configure — the controller, publishers and
+// timers all exist — so on_error has real resources to release before the
+// retry builds them again.
+class ThrowOnFirstConfigureNode : public UdpHandNode {
+ public:
+  using UdpHandNode::UdpHandNode;
+
+  CallbackReturn on_configure(const rclcpp_lifecycle::State& state) override {
+    const CallbackReturn ret = UdpHandNode::on_configure(state);
+    if (!thrown_) {
+      thrown_ = true;
+      throw std::runtime_error("injected configure fault");
+    }
+    return ret;
+  }
+
+ private:
+  bool thrown_{false};
+};
+
+TEST_F(UdpHandNodeLifecycleTest, ErrorInConfigureRecoversThroughOnErrorAndReconfigures) {
+  auto node = std::make_shared<ThrowOnFirstConfigureNode>(LoopmodelOptions());
+  exec_.add_node(node->get_node_base_interface());
+  EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_UNCONFIGURED)
+      << "on_error must return the node to Unconfigured";
+  EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  EXPECT_EQ(node->activate().id(), State::PRIMARY_STATE_ACTIVE);
+  EXPECT_EQ(node->deactivate().id(), State::PRIMARY_STATE_INACTIVE);
+  EXPECT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// A YAML `protocol_version: 2` (unquoted — an integer) makes the declaration
+// itself throw inside on_configure: the transition ends in Unconfigured, not
+// in a crash, and a retry fails the same way rather than on a redeclaration of
+// the parameters that did get declared the first time.
+TEST_F(UdpHandNodeLifecycleTest, UnquotedProtocolVersionEndsEveryConfigureInUnconfigured) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({rclcpp::Parameter("protocol_version", 2)});
+  auto node = std::make_shared<UdpHandNode>(options);
+  exec_.add_node(node->get_node_base_interface());
+  EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_FALSE(node->has_parameter("protocol_version"));
+  EXPECT_TRUE(node->has_parameter("communication_mode"));
+  EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_FALSE(node->has_parameter("protocol_version"));
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// The timing CSV opens once per process and carries the side in its name, so
+// once a run has opened it a reconfigure onto the other side is refused rather
+// than splitting one hand's artifacts across two names; the original side
+// still configures.
+TEST_F(UdpHandNodeLifecycleTest, HandSideIsFixedOnceTheForensicFilesAreOpen) {
+  auto node = std::make_shared<UdpHandNode>(LoopmodelOptions());
+  exec_.add_node(node->get_node_base_interface());
+  ASSERT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), State::PRIMARY_STATE_ACTIVE);
+  ASSERT_EQ(node->deactivate().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  ASSERT_TRUE(node->set_parameter(rclcpp::Parameter("hand_side", "left")).successful);
+  EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  ASSERT_TRUE(node->set_parameter(rclcpp::Parameter("hand_side", "right")).successful);
+  EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  EXPECT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// ── Final stats JSON (#927 I-1) ─────────────────────────────────────────────
+// StopRuntime() destroys the failure detector, and the teardown save after it
+// (on_cleanup / on_error / ~UdpHandNode) read `failure_detected` from the null
+// detector as false — so a graceful teardown overwrote the failure-time JSON
+// with a clean bill. A silent hand trips the link check (link_startup_grace_ms
+// + link_fail_timeout_ms ≈ 200 ms) and the failure callback saves `true`;
+// deactivate → cleanup must still leave `true`, and so must a configure →
+// cleanup with no run in between (nothing to report, so nothing is written).
+// A reconfigure into loopmodel (no detector) that does run is the
+// failure-free control: the latch is per run.
+TEST_F(UdpHandNodeLifecycleTest, FinalStatsJsonKeepsALatchedFailureAcrossTeardown) {
+  udp_hand_driver::test_support::SilentLoopbackSocket hand;
+  ASSERT_TRUE(hand.ok());
+  const auto json_path = session_dir_ / "device" / "hand_stats.json";
+  std::error_code ec;
+  std::filesystem::remove(json_path, ec);
+  const auto failure_saved = [&] {
+    return ReadFile(json_path).find("\"failure_detected\": true") != std::string::npos;
+  };
+
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      rclcpp::Parameter("sil_mode", "off"),
+      rclcpp::Parameter("target_ip", "127.0.0.1"),
+      rclcpp::Parameter("target_port", hand.port()),
+      rclcpp::Parameter("recv_timeout_ms", 0.3),
+      rclcpp::Parameter("loop_rate_hz", 500.0),
+  });
+  auto node = std::make_shared<UdpHandNode>(options);
+  exec_.add_node(node->get_node_base_interface());
+  ASSERT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), State::PRIMARY_STATE_ACTIVE);
+  ASSERT_TRUE(SpinUntil(failure_saved, 10s))
+      << "the detector never latched a failure against the silent hand";
+  ASSERT_EQ(node->deactivate().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_TRUE(failure_saved()) << "teardown overwrote the latched failure:\n"
+                               << ReadFile(json_path);
+
+  ASSERT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_TRUE(failure_saved()) << "a configure without a run overwrote the failed run's JSON:\n"
+                               << ReadFile(json_path);
+
+  ASSERT_TRUE(node->set_parameter(rclcpp::Parameter("sil_mode", "loopmodel")).successful);
+  ASSERT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), State::PRIMARY_STATE_ACTIVE);
+  SpinFor(100ms);
+  ASSERT_EQ(node->deactivate().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  const std::string json = ReadFile(json_path);
+  EXPECT_NE(json.find("\"failure_detected\": false"), std::string::npos)
+      << "the previous run's failure leaked into a failure-free run:\n"
+      << json;
   exec_.remove_node(node->get_node_base_interface());
 }
 
