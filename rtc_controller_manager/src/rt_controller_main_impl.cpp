@@ -14,7 +14,10 @@
 //   Phase 3: Add rt_callback/nrt_logging/nrt_callback callback groups to
 //            dedicated executors with RT thread configs. The default callback
 //            group stays on nrt_callback_executor to continue processing
-//            lifecycle services.
+//            lifecycle services. The hand-off is one-time, so from here on
+//            the node refuses configure (MarkDedicatedExecutorsAttached) —
+//            deactivate / activate still work, a new configuration needs a
+//            restart.
 //
 // Threading model (core slots per tier: repo_scripts/config/thread_layout.yaml):
 //   rt_control       Core 1  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
@@ -175,12 +178,15 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
 
   // Attach each controller's LifecycleNode to nrt_callback_executor so controller-
   // owned subscriptions/publishers are processed off the RT path.  Created
-  // during CM on_configure; stable for the lifetime of the CM node.
+  // during CM on_configure; no configure after this point creates more.
   for (const auto& ctrl_node : node->GetControllerNodes()) {
     if (ctrl_node) {
       nrt_callback_executor.add_node(ctrl_node->get_node_base_interface());
     }
   }
+  // Before any executor spins: the lifecycle services run on
+  // nrt_callback_executor, so no configure can slip in ahead of the flag.
+  node->MarkDedicatedExecutorsAttached();
 
   // Helper lambda to create executor thread with RT config
   auto make_thread = [](auto& executor, const ThreadConfig& cfg) {

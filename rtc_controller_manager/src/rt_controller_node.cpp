@@ -131,6 +131,16 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
     RCLCPP_ERROR(get_logger(), "RtControllerNode configure refused — controller bring-up failed");
     return CallbackReturn::FAILURE;
   }
+  // Before anything is created: a configure after Phase 3 would build callback
+  // groups and controller nodes the dedicated executors never serve (#935).
+  if (dedicated_executors_attached_.load(std::memory_order_acquire)) {
+    RCLCPP_ERROR(get_logger(),
+                 "RtControllerNode configure refused — this process attached the node to its "
+                 "dedicated executors at the first activation, and they would not serve a new "
+                 "configuration. Restart the process to configure again.");
+    return CallbackReturn::FAILURE;
+  }
+
   CreatePublishers();      // digital twin + fixed safety; HW publishers live in backends.
   CreateDeviceBackends();  // state/motor/sensor subs + joint/ros2 command publishers.
   PropagateCapabilitiesIntoMappings();  // patch ControllerSlotMapping after backends decide caps.
@@ -164,6 +174,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   // the RT loop polls it with the sim timeout — but the producer (device
   // state callback) only ever writes, which never blocks on an eventfd whose
   // counter is below UINT64_MAX.
+    AbandonControllerBringUp();
   if (use_sim_time_sync_) {
     const int sim_fd = eventfd(0, EFD_NONBLOCK);
     sim_wake_eventfd_.store(sim_fd, std::memory_order_release);
@@ -174,7 +185,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
     }
   }
 
-    AbandonControllerBringUp();
   // Per-controller lifecycle state, parallel to controllers_. All start
   // Inactive; CM's on_activate flips the initial controller to Active via
   // ActivateController(). std::vector<std::atomic<int>> is non-copyable, so
@@ -196,6 +206,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   {
     std_msgs::msg::String ctrl_name_msg;
     const auto aidx =
+      AbandonControllerBringUp();
         static_cast<std::size_t>(active_controller_idx_.load(std::memory_order_acquire));
     ctrl_name_msg.data = controller_types_[aidx];
     active_ctrl_name_pub_->publish(ctrl_name_msg);
@@ -206,7 +217,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
 
   return CallbackReturn::SUCCESS;
 }
-      AbandonControllerBringUp();
 
 RtControllerNode::CallbackReturn RtControllerNode::on_activate(
     const rclcpp_lifecycle::State& state) {
@@ -494,7 +504,8 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   switch_controller_srv_.reset();
   device_timeouts_.clear();
 
-  // SUCCESS → recovers to Unconfigured (can be reconfigured)
+  // SUCCESS → recovers to Unconfigured. Configuring again needs a process
+  // restart once RtControllerMain has reached Phase 3 (#935).
   return CallbackReturn::SUCCESS;
 }
 

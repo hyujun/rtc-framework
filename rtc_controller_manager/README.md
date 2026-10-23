@@ -120,16 +120,16 @@ controller YAML 에는 `ownership:` 필드가 없고 `topics:` entry 는 전부 
 
 | 콜백 | 하는 일 |
 |---|---|
-| `on_configure` | 콜백 그룹 · 파라미터 · 컨트롤러 · 퍼블리셔/구독 · 타이머 · eventfd 생성 |
+| `on_configure` | 콜백 그룹 · 파라미터 · 컨트롤러 · 퍼블리셔/구독 · 타이머 · eventfd 생성. 전용 executor 전환 뒤엔 거부 (재시작) |
 | `on_activate` | RT 루프와 publish 스레드 시작 |
 | `on_deactivate` | 스레드 중지, E-STOP 클리어, 상태 초기화 |
-| `on_cleanup` | `on_configure` 역순 해제 (eventfd 만 backend 해제 **후** close) |
+| `on_cleanup` | `on_configure` 역순 해제 |
 | `on_error` | E-STOP 트리거 후 정리 → Unconfigured 복구 |
 
 ```bash
 ros2 lifecycle get /integrated_rt_controller
 ros2 lifecycle set /integrated_rt_controller deactivate   # RT 루프 중지
-ros2 lifecycle set /integrated_rt_controller activate     # 재시작
+ros2 lifecycle set /integrated_rt_controller activate     # 재개
 ```
 
 `/system/estop_status` 와 `/rtc_cm/active_controller_name` 퍼블리셔는 lifecycle 상태와 무관하게 동작한다.

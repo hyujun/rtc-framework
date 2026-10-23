@@ -799,6 +799,28 @@ TEST_F(CmConfigPipelineTest, AFailedControllerConfigureCleansUpTheController) {
   EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetDeviceTimeoutCount(*node));
 }
 
+// ── Configure after the dedicated executors took the node (#935) ───────────
+//
+// RtControllerMain hands the node's callback groups and the controller nodes
+// to its dedicated executors once, after the first activation. A configure
+// after that builds new groups and new controller nodes none of them will ever
+// serve (and shutdown then fails to detach the controller nodes), so it is
+// refused, and the operator is told to restart instead.
+TEST_F(CmConfigPipelineTest, ConfigureAfterTheDedicatedExecutorsAttachedIsRefused) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  node->MarkDedicatedExecutorsAttached();
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+  ASSERT_EQ(1, PipelineTestController::instances_created.load());
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1, PipelineTestController::instances_created.load())
+      << "the refused configure built a controller";
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+  EXPECT_EQ(1U, LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, {"Restart the process"}).size());
+}
+
 // ── A leftover log_dir override (#933) ──────────────────────────────────────
 //
 // log_dir used to send CM's logs to an explicit dir instead of the session.

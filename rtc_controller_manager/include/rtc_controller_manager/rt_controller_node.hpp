@@ -116,6 +116,17 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
     return controller_nodes_;
   }
 
+  // RtControllerMain calls this once Phase 3 has handed the callback groups
+  // and the controller nodes to its dedicated executors. Those hand-offs are
+  // one-time, so every later on_configure is refused (#935): the groups it
+  // would create land on nrt_callback_executor whatever their lane, the
+  // controller nodes it would create are served by no executor, and shutdown
+  // could not detach them. Changing the configuration means restarting the
+  // process.
+  void MarkDedicatedExecutorsAttached() noexcept {
+    dedicated_executors_attached_.store(true, std::memory_order_release);
+  }
+
   // RT loop lifecycle — public until Step 8 (RtControllerMain redesign)
   void StartRtLoop(const rtc::ThreadConfig& rt_cfg);
   void StartNrtPublishLoop(const rtc::ThreadConfig& nrt_pub_cfg);
@@ -156,6 +167,14 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void ResetControllerBringUpState();
   // Fills controller_slot_mappings_ from controller_topic_configs_ +
   // group_slot_map_. Returns false when a controller declares more device
+  // Tears a refused bring-up down (#935): each controller's on_cleanup — the
+  // one hook that releases what its on_configure allocated — then
+  // ResetControllerBringUpState(). Called on every configure refusal, so a
+  // failed configure leaves no controller behind as an active/switch
+  // candidate, and before Pass 1, so a retry cannot register one twice.
+  // FAILURE skips CM's own on_cleanup, which makes the refusal the last point
+  // these controllers can be cleaned up.
+  void AbandonControllerBringUp();
   // groups than the RT path's fixed arrays hold, or names a group that has no
   // device slot — either way configure is refused rather than routed to a
   // default slot. See the definition for why both are unreachable via YAML
@@ -167,14 +186,6 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // (CreateDeviceBackends). CM therefore creates no controller-target subs.
   void CreatePublishers();
   void CreateDigitalTwinPublishers();
-  // Tears a refused bring-up down (#935): each controller's on_cleanup — the
-  // one hook that releases what its on_configure allocated — then
-  // ResetControllerBringUpState(). Called on every configure refusal, so a
-  // failed configure leaves no controller behind as an active/switch
-  // candidate, and before Pass 1, so a retry cannot register one twice.
-  // FAILURE skips CM's own on_cleanup, which makes the refusal the last point
-  // these controllers can be cleaned up.
-  void AbandonControllerBringUp();
   void CreateFixedSafetyPublishers();
   void CreateServices();
   void ExposeTopicParameters();
@@ -594,6 +605,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   ControlLoopThread rt_loop_{this};
 
   // ── Publish offload (controller-owned non-RT lane only) ─────────────────
+  // Set by MarkDedicatedExecutorsAttached() on main's thread, read by
+  // on_configure on an executor thread.
+  std::atomic<bool> dedicated_executors_attached_{false};
+
   // Layout v4: actuator command lane removed — RT loop calls
   // DeviceBackend.WriteCommand inline on the rt_control thread (Core 2
   // FIFO 90) at the end of each tick. Only controller-owned non-RT
