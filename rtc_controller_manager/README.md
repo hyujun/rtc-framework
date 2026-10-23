@@ -283,7 +283,7 @@ latch 가 서면 (또는 해제 검증 창 동안) 컨트롤러 output 은 `Devi
 
 ### 타이밍과 로그
 
-`ControllerTimingProfiler` 가 `Compute()` 의 락-프리 히스토그램 (200 × 10 us 버킷) 을 모은다. RT 루프가 1000 tick 마다 서머리를 요청하고 리셋하므로 각 출력은 **직전 윈도우** 값이다.
+`ControllerTimingProfiler` 가 `Compute()` 의 락-프리 히스토그램 (200 × 10 us 버킷) 을 모은다. RT 루프가 1000 tick 마다 버퍼를 바꿔 넘기므로 각 출력은 **직전 윈도우** 값이다.
 
 ```text
 <ctrl> timing: elapsed=Xs  mean=Yµs  max=Zµs  overruns=N  skips=N  nrt_pub_drops=N  timing_drops=N  rt_cb_timing_drops=N
