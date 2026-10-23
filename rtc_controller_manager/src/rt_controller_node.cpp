@@ -239,7 +239,10 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   if (!ValidateCommandTypePairing()) {
     RCLCPP_ERROR(get_logger(),
                  "RtControllerNode configure refused — controller/backend command-type mismatch");
-    AbandonControllerBringUp();
+    // FAILURE skips on_cleanup, and the publishers and backends above are
+    // already up — release them with the controllers (#935). The drain lane
+    // was shut at the top of this configure and has not been reopened.
+    ReleaseConfiguredResources();
     return CallbackReturn::FAILURE;
   }
   CreateServices();
@@ -266,12 +269,13 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
       RCLCPP_ERROR(get_logger(),
                    "eventfd() failed: simulation sync has no wake lane — refusing to configure");
       // CreateTimers() above opened the drain lane, and a pass reads what the
-      // abandon below clears.
+      // release below clears — which is everything this configure built,
+      // the nrt eventfd included, since FAILURE skips on_cleanup (#935).
       {
         const std::lock_guard<std::mutex> lock(drain_mutex_);
         ShutDrainLaneLocked();
       }
-      AbandonControllerBringUp();
+      ReleaseConfiguredResources();
       return CallbackReturn::FAILURE;
     }
   }

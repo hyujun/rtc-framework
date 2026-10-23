@@ -181,6 +181,8 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ResetControllerBringUpState(). Called on every configure refusal, so a
   // failed configure leaves no controller behind as an active/switch
   // candidate, and before Pass 1, so a retry cannot register one twice.
+  // Refusals past CreatePublishers() go through ReleaseConfiguredResources(),
+  // which ends here.
   // FAILURE skips CM's own on_cleanup, which makes the refusal the last point
   // these controllers can be cleaned up.
   void AbandonControllerBringUp();

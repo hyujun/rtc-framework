@@ -192,6 +192,8 @@ class ControllerLifecycleTestAccess {
     }
   }
 
+  static bool HasEstopPublisher(const RtControllerNode& node) { return node.estop_pub_ != nullptr; }
+
   static void CallTriggerEstop(RtControllerNode& node, std::string_view reason) {
     node.TriggerGlobalEstop(reason);
   }
