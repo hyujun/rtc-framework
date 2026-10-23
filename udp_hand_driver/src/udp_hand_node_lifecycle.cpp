@@ -67,15 +67,15 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
 
   // Per-configuration state (#927): this may be a second configure on the same
   // node, which must not inherit the previous configuration's command-name map
-  // (joint_state_names may have changed), link edge, decimation phase or
-  // failure verdict.
+  // (joint_state_names may have changed), link edge or decimation phase, and
+  // has not run yet.
   cmd_name_reorder_ready_ = false;
   prev_link_ok_ = true;
   link_cycle_counter_ = 0;
   publish_count_ = 0;
   {
     std::lock_guard<std::mutex> lock(aux_lane_mutex_);
-    failure_latched_ = false;
+    has_run_ = false;
   }
 
   // ── Parameters ─────────────────────────────────────────────────────
@@ -249,6 +249,15 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   hand_file_suffix_.clear();
   if (get_node_parameters_interface()->get_parameter_overrides().count("hand_side") != 0) {
     hand_file_suffix_ = "_" + hand_side_str;
+  }
+  if (!hand_timing_opened_) {
+    artifact_hand_side_ = hand_side_str;
+  } else if (hand_side_str != artifact_hand_side_) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "hand_side '%s' differs from '%s', which names this process's forensic files "
+                 "— restart the node to change sides",
+                 hand_side_str.c_str(), artifact_hand_side_.c_str());
+    return CallbackReturn::FAILURE;
   }
 
   // ── Effective endpoint (sil_mode × protocol) ──────────────────────────
@@ -780,13 +789,6 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // Parent call activates LifecyclePublishers — must be called first.
   LifecycleNode::on_activate(state);
 
-  // A new run starts without the previous run's failure verdict (#927 I-1);
-  // the run length restarts with controller_->Start() below (I-2).
-  {
-    std::lock_guard<std::mutex> lock(aux_lane_mutex_);
-    failure_latched_ = false;
-  }
-
   // ── Per-tick timing CSV setup ──────────────────────────────────────
   // Inject producer before Start() so the CommLoop thread sees a non-null
   // producer on its first iteration. The CommLoop (PeriodicRtThread) computes
@@ -810,6 +812,14 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Failed to start UdpHandController (%s)",
                  link_desc_.c_str());
     return CallbackReturn::FAILURE;
+  }
+  // A run has started: from here the stats JSON describes it, without the
+  // previous run's failure verdict (#927 I-1). Not before Start() — a failed
+  // start leaves the previous run's JSON and verdict to the teardown save.
+  {
+    std::lock_guard<std::mutex> lock(aux_lane_mutex_);
+    failure_latched_ = false;
+    has_run_ = true;
   }
 
   // Fake mode needs no node-side self-tick: the controller's CommLoop RT thread

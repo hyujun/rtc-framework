@@ -395,9 +395,7 @@ class UdpHandController {
     if (!PrepareRun()) {
       return false;
     }
-    start_time_ = std::chrono::steady_clock::now();
-    last_tick_end_ns_.store(SteadyNs(start_time_), std::memory_order_relaxed);
-    running_.store(true, std::memory_order_release);
+    BeginRun();
 
     // Self-clocked comm loop: PeriodicRtThread ticks RunCommCycle() at
     // loop_rate_hz_ (clock_nanosleep TIMER_ABSTIME + overrun recovery). The
@@ -429,9 +427,7 @@ class UdpHandController {
     if (!PrepareRun()) {
       return false;
     }
-    start_time_ = std::chrono::steady_clock::now();
-    last_tick_end_ns_.store(SteadyNs(start_time_), std::memory_order_relaxed);
-    running_.store(true, std::memory_order_release);
+    BeginRun();
     return true;
   }
 
@@ -1590,6 +1586,16 @@ class UdpHandController {
 
   [[nodiscard]] static std::int64_t SteadyNs(std::chrono::steady_clock::time_point t) noexcept {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count();
+  }
+
+  // Shared by Start() and InitFakeForTest(), after PrepareRun(): the run's
+  // origin and its last-tick seed are in place before running_ publishes them
+  // (release), so ElapsedSeconds() never pairs a new run with the previous
+  // run's last tick.
+  void BeginRun() noexcept {
+    start_time_ = std::chrono::steady_clock::now();
+    last_tick_end_ns_.store(SteadyNs(start_time_), std::memory_order_relaxed);
+    running_.store(true, std::memory_order_release);
   }
 
   // Link health. consecutive_recv_failures_ is the aggregate "no channel

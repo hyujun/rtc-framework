@@ -1153,14 +1153,35 @@ TEST_F(UdpHandNodeLifecycleTest, UnquotedProtocolVersionEndsEveryConfigureInUnco
   exec_.remove_node(node->get_node_base_interface());
 }
 
+// The timing CSV opens once per process and carries the side in its name, so
+// once a run has opened it a reconfigure onto the other side is refused rather
+// than splitting one hand's artifacts across two names; the original side
+// still configures.
+TEST_F(UdpHandNodeLifecycleTest, HandSideIsFixedOnceTheForensicFilesAreOpen) {
+  auto node = std::make_shared<UdpHandNode>(LoopmodelOptions());
+  exec_.add_node(node->get_node_base_interface());
+  ASSERT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), State::PRIMARY_STATE_ACTIVE);
+  ASSERT_EQ(node->deactivate().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  ASSERT_TRUE(node->set_parameter(rclcpp::Parameter("hand_side", "left")).successful);
+  EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  ASSERT_TRUE(node->set_parameter(rclcpp::Parameter("hand_side", "right")).successful);
+  EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  EXPECT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
 // ── Final stats JSON (#927 I-1) ─────────────────────────────────────────────
 // StopRuntime() destroys the failure detector, and the teardown save after it
 // (on_cleanup / on_error / ~UdpHandNode) read `failure_detected` from the null
 // detector as false — so a graceful teardown overwrote the failure-time JSON
 // with a clean bill. A silent hand trips the link check (link_startup_grace_ms
 // + link_fail_timeout_ms ≈ 200 ms) and the failure callback saves `true`;
-// deactivate → cleanup must still leave `true`. A reconfigure into loopmodel
-// (no detector) is the failure-free control: the latch is per run.
+// deactivate → cleanup must still leave `true`, and so must a configure →
+// cleanup with no run in between (nothing to report, so nothing is written).
+// A reconfigure into loopmodel (no detector) that does run is the
+// failure-free control: the latch is per run.
 TEST_F(UdpHandNodeLifecycleTest, FinalStatsJsonKeepsALatchedFailureAcrossTeardown) {
   udp_hand_driver::test_support::SilentLoopbackSocket hand;
   ASSERT_TRUE(hand.ok());
@@ -1188,6 +1209,11 @@ TEST_F(UdpHandNodeLifecycleTest, FinalStatsJsonKeepsALatchedFailureAcrossTeardow
   ASSERT_EQ(node->deactivate().id(), State::PRIMARY_STATE_INACTIVE);
   ASSERT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
   EXPECT_TRUE(failure_saved()) << "teardown overwrote the latched failure:\n"
+                               << ReadFile(json_path);
+
+  ASSERT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_TRUE(failure_saved()) << "a configure without a run overwrote the failed run's JSON:\n"
                                << ReadFile(json_path);
 
   ASSERT_TRUE(node->set_parameter(rclcpp::Parameter("sil_mode", "loopmodel")).successful);

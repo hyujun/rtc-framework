@@ -317,9 +317,17 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // The detector's verdict for the current run, kept past the detector itself
   // (#927 I-1): StopRuntime() destroys the detector, and the teardown save that
   // follows reports this instead of a default `false`. Written by StopRuntime()
-  // from a live detector only, cleared by on_configure / on_activate; guarded
-  // by aux_lane_mutex_ like failure_detector_.
+  // from a live detector only, cleared by on_activate once a new run has
+  // started (a failed Start() keeps the previous run's verdict); guarded by
+  // aux_lane_mutex_ like failure_detector_.
   bool failure_latched_{false};
+
+  // Whether the current configuration has run (#927): set by on_activate once
+  // controller_->Start() succeeded, cleared by on_configure. The stats JSON
+  // describes a run, so a teardown save without one — configure → cleanup on
+  // a node that already ran — would overwrite that run's JSON with an empty,
+  // clean report; SaveCommStats skips it. Guarded by aux_lane_mutex_.
+  bool has_run_{false};
 
   // Non-owning view of the CAN FD link when protocol_version is "2" (null
   // otherwise): SaveCommStats reads CanFdHandComm::canfd_stats() through it,
@@ -346,6 +354,12 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // empty so the default names stay as they were (D51). Fixed in on_configure
   // before any timer runs; read on the aux lane and in on_activate.
   std::string hand_file_suffix_;
+
+  // hand_side the forensic files are named for. Follows each configure until
+  // the timing CSV opens (once per process, hand_timing_opened_); from then on
+  // a configure with another side is refused, or one hand's artifacts would
+  // split across two names. Executor thread only.
+  std::string artifact_hand_side_;
 
   // Data publishers — LifecyclePublisher (gated by lifecycle state).
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;

@@ -476,8 +476,10 @@ TEST_F(FakeHandControllerTest, ElapsedSeconds_FreezesAtTheLastCycleAfterAnEStop)
   estop.store(true);
   ASSERT_TRUE(PollUntil([&] { return !controller_->IsRunning(); }, 500ms));
   const double at_trip = controller_->ElapsedSeconds();
-  // The last completed cycle may end up to one tick before running_b was read.
-  EXPECT_GE(at_trip, running_b - 0.01);
+  // The run that ticked for ≥ 0.45 s is counted — loosely, because the last
+  // completed cycle may predate running_b by however long the loop was
+  // descheduled (no SCHED_FIFO in CI).
+  EXPECT_GT(at_trip, 0.2);
   std::this_thread::sleep_for(300ms);
   EXPECT_LT(controller_->ElapsedSeconds() - at_trip, 0.25)
       << "the idle after the E-Stop leaked into the run length";

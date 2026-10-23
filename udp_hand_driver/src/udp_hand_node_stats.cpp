@@ -29,7 +29,9 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
   // guard and dereference under the same critical section that teardown's
   // quiesce barrier waits on (issue #345).
   std::lock_guard lock(aux_lane_mutex_);
-  if (!controller_)
+  // No run since the last configure: nothing to describe, and writing would
+  // overwrite the previous run's JSON with an empty one (#927).
+  if (!controller_ || !has_run_)
     return;
 
   const auto stats = controller_->comm_stats();
