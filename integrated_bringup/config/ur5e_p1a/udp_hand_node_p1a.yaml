@@ -3,7 +3,16 @@
 # p1a device group 의 self-contained UDP 설정 (ur5e_p1b/udp_hand_node_p1b.yaml 와
 # 대칭). robot_ur5e_p1a.launch.py / sim_ur5e_p1a.launch.py 가 이 파일을 로드한다.
 # udp_hand_driver/config/udp_hand_node.yaml 은 driver 의 generic (/hand/) reference
-# 로 남으며 standalone udp_hand.launch.py 가 사용 — 여기서 topic 만 /p1a/ 로 오버레이.
+# 로 남으며 standalone udp_hand.launch.py 가 사용한다. 이 파일과는 base+overlay 관계가
+# 아니다 — 여기서 명시하지 않은 키는 udp_hand_node 의 C++ declare_parameter()
+# 기본값으로 fallback 한다.
+#
+# generic udp_hand_node.yaml 에 있지만 여기서 생략한 키:
+#   - can_interface · feedforward_kt: protocol_version "2" (CAN FD) 전용 — 1a 는 무시.
+#   - hand_side: 명시하면 hand_stats.json · hand_timing_log.csv 이름에 `_<side>` 가
+#     붙는다. 생략 = 기본 right, 접미사 없음 (기존 로그 이름 유지).
+#   - aux_cpu_slot · use_cpu_affinity: 기본값 사용, use_cpu_affinity 는 launch 인자가 준다.
+#   - local_ip · local_interface · sensor_startup_grace_ms: 기본값 (바인딩 없음 · 0).
 #
 # 동작 모드 (self-clocked):
 #   - CommLoop 가 loop_rate_hz 로 자율 tick — read + state publish 는 명령 도착과
@@ -26,6 +35,7 @@
 #   pub: /p1a/sensor_states/monitor  HandSensorState (RELIABLE QoS, 비-RT용)
 #   pub: /p1a/link_status     Bool (UDP 링크 상태)
 #   sub: /p1a/joint_command   JointCommand (values[10])
+#   sub: /p1a/estop           Bool (true → zero-write 1회 + CommLoop 종료)
 
 /**:
   ros__parameters:
@@ -68,6 +78,7 @@
     # "1b": 핑거당 float32 힘벡터 [fx,fy,fz,Lx,Ly,Temp] (99B bulk 응답).
     #       force 직접 발행(후처리 없음), motor-space read 스킵 → motor_states 미발행.
     #       force layout 은 "bulk" 모드 전용 (individual 모드와 조합 시 configure 실패).
+    # "2":  CAN FD — robot launch 는 아직 지원하지 않는다 (H2).
     protocol_version: "1a"
 
     # -- Self-clocked 루프 주기 (Hz) --
@@ -129,6 +140,11 @@
     motor_state_topic: "/p1a/motor_states"   # JointState 발행 (motor pos/vel/effort)
     sensor_topic: "/p1a/sensor_states"       # HandSensorState 발행
     link_status_topic: "/p1a/link_status"    # Bool 발행 (UDP 링크 상태)
+    # Bool 구독: true → zero-write 1회 + CommLoop 종료 (deactivate→activate 로 복귀).
+    # 시스템 E-STOP (/system/estop_status) 에는 연결하지 않는다 — CM 이 E-STOP 중
+    # hand 를 latch 위치에 hold 하고, hand 가 스스로 멈추면 clear 후 CM watchdog 이
+    # hand timeout 을 다시 낸다. 생략하면 namespace="" 에서 전역 /estop 이 된다.
+    estop_topic: "/p1a/estop"
 
     # -- Sensor calibration (trigger + status) --
     # CalibrationCommand 를 publish 하면 udp_hand_driver 가 지정 센서의
@@ -146,7 +162,7 @@
     check_sensor: true                # 센서 데이터 검사
     min_rate_hz: 30.0                 # 최소 허용 polling rate
     rate_fail_threshold: 5            # 연속 N회 미달 시 failure
-    check_link: true                  # UDP 링크 상태 검사
+    check_link: true                  # 링크 상태 검사 (채널별 연속 read 실패)
     # 채널별 strict link-down (#1): 어느 한 채널(motor/joint/sensor)이라도 이
     # 시간 budget 만큼 연속 실패하면 link_down latch (한 채널이 살아있어도 마스킹
     # 안 됨). on_configure 에서 채널별 cycle 수로 환산 —
@@ -156,9 +172,10 @@
     # hand link-down 이 먼저 latch 된다.
     link_fail_timeout_ms: 100.0        # link_down 판정 시간 budget (채널별 공통)
 
-    # -- Startup grace (#2, 독립 2-window) --
+    # -- Startup grace (#2, 독립 3-window) --
     # 기동 직후 boot transient (ARP resolution, 펌웨어 부팅, 첫 패킷 왕복) 동안
-    # 오탐 억제. RATE 와 LINK 를 분리:
+    # 오탐 억제. RATE 와 LINK 를 분리 (세 번째 sensor_startup_grace_ms 는 생략 —
+    # 기본 0, 센서 값 검사 즉시 시작):
     #   startup_grace_ms      : polling-rate 검사 warmup (루프가 정상 cadence 도달까지).
     #   link_startup_grace_ms : link-down 검사 유예 — ARP/부팅 transient 만 넘기면
     #                           되므로 훨씬 짧게. CM device_timeout(1000 ms) 보다
