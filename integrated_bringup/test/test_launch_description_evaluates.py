@@ -552,6 +552,25 @@ def test_no_sim_overlay_adds_no_parameter_file():
         assert not stray, f"{name}: an overlay was applied without sim_overlay:= — {stray}"
 
 
+@pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)
+def test_sim_controller_gets_no_hand_driver_parameter_file(filename):
+    """The sims run no ``udp_hand_node``, so its YAML has no reader there.
+
+    Appended to the CM's parameters it only adds ~50 undeclared driver keys to
+    the controller node (``automatically_declare_parameters_from_overrides``)
+    that nothing reads — noise that looks like configuration.
+    """
+    nodes, context = _nodes_by_name({"use_cpu_affinity": "false"}, filename)
+    assert "integrated_rt_controller" in nodes, f"{filename}: no CM node: {sorted(nodes)}"
+    sources = _node_parameter_sources(nodes["integrated_rt_controller"], context)
+    stray = [
+        s
+        for s in sources
+        if isinstance(s, str) and os.path.basename(s).startswith("udp_hand_node")
+    ]
+    assert not stray, f"{filename}: the CM was given hand driver YAML {stray}"
+
+
 def test_unknown_sim_overlay_is_rejected():
     """A mistyped overlay must stop the launch, not quietly run the shipped scene."""
     with pytest.raises(RuntimeError, match=r"sim_overlay 'no_such_overlay'.*inference_pole"):

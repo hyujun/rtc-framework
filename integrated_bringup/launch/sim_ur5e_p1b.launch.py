@@ -106,14 +106,6 @@ def launch_setup(context, *args, **kwargs):
     base_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_p1b", "_base.yaml"])
     ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_p1b", "sim.yaml"])
 
-    # udp_hand_driver is optional — may not be built in sim-only installs
-    hand_config = None
-    try:
-        hand_share = get_package_share_directory("udp_hand_driver")
-        hand_config = os.path.join(hand_share, "config", "udp_hand_node.yaml")
-    except Exception:
-        pass
-
     # ── Build simulator parameters (defaults → robot YAML → overlay → CLI) ──
     # The overlay sits between the shipped YAML and the per-argument overrides
     # so it can replace the scene while `model_path:=` & co. still win over it.
@@ -209,8 +201,6 @@ def launch_setup(context, *args, **kwargs):
 
     # ── Build controller parameters (YAML + overrides + launch args) ──────────
     ctrl_params = [base_config, ctrl_config, sim_config]
-    if hand_config is not None:
-        ctrl_params.append(hand_config)
     if sim_overlay is not None:
         ctrl_params.append(sim_overlay)
     ctrl_overrides = {}

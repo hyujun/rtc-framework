@@ -1,7 +1,8 @@
 # udp_hand_node_p1a.yaml -- ur5e_p1a 전용 Hand UDP 드라이버 오버레이
 #
 # p1a device group 의 self-contained UDP 설정 (ur5e_p1b/udp_hand_node_p1b.yaml 와
-# 대칭). robot_ur5e_p1a.launch.py / sim_ur5e_p1a.launch.py 가 이 파일을 로드한다.
+# 대칭). robot_ur5e_p1a.launch.py 가 이 파일을 로드한다 (sim 은 hand 노드를 띄우지
+# 않으므로 로드하지 않는다).
 # udp_hand_driver/config/udp_hand_node.yaml 은 driver 의 generic (/hand/) reference
 # 로 남으며 standalone udp_hand.launch.py 가 사용한다. 이 파일과는 base+overlay 관계가
 # 아니다 — 여기서 명시하지 않은 키는 udp_hand_node 의 C++ declare_parameter()

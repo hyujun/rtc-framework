@@ -73,15 +73,6 @@ def launch_setup(context, *args, **kwargs):
     base_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_p1a", "_base.yaml"])
     ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_p1a", "sim.yaml"])
 
-    # Hand UDP config -- p1a self-contained overlay (in integrated_bringup, always
-    # present). The driver's own config stays generic (/hand/) for standalone use.
-    hand_config = os.path.join(
-        get_package_share_directory("integrated_bringup"),
-        "config",
-        "ur5e_p1a",
-        "udp_hand_node_p1a.yaml",
-    )
-
     # ── Build simulator parameters (defaults → robot YAML → CLI overrides) ──
     sim_params = [sim_default, sim_config]
     sim_overrides = {}
@@ -142,9 +133,7 @@ def launch_setup(context, *args, **kwargs):
         sim_params.append(sim_overrides)
 
     # ── Build controller parameters (YAML + overrides + launch args) ──────────
-    # hand_config lives in integrated_bringup (this launch's own package), so it
-    # is always present — no optional/None guard needed.
-    ctrl_params = [base_config, ctrl_config, sim_config, hand_config]
+    ctrl_params = [base_config, ctrl_config, sim_config]
     ctrl_overrides = {}
 
     ctrl_overrides["log_dir"] = session_dir
