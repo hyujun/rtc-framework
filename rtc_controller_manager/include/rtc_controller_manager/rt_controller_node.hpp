@@ -150,10 +150,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // never left registered as an active/switch candidate.
   [[nodiscard]] bool DeclareAndLoadParameters();
 
-  // Drops everything controller bring-up accumulates. Called before Pass 1 so
-  // a retry cannot register a controller twice, and on every refusal so a
-  // failed configure leaves no controller behind as an active/switch
-  // candidate.
+  // Drops everything controller bring-up accumulates, device liveness entries
+  // included. Destroys the controllers without driving their lifecycle — use
+  // AbandonControllerBringUp() wherever they may already hold resources.
   void ResetControllerBringUpState();
   // Fills controller_slot_mappings_ from controller_topic_configs_ +
   // group_slot_map_. Returns false when a controller declares more device
@@ -168,6 +167,14 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // (CreateDeviceBackends). CM therefore creates no controller-target subs.
   void CreatePublishers();
   void CreateDigitalTwinPublishers();
+  // Tears a refused bring-up down (#935): each controller's on_cleanup — the
+  // one hook that releases what its on_configure allocated — then
+  // ResetControllerBringUpState(). Called on every configure refusal, so a
+  // failed configure leaves no controller behind as an active/switch
+  // candidate, and before Pass 1, so a retry cannot register one twice.
+  // FAILURE skips CM's own on_cleanup, which makes the refusal the last point
+  // these controllers can be cleaned up.
+  void AbandonControllerBringUp();
   void CreateFixedSafetyPublishers();
   void CreateServices();
   void ExposeTopicParameters();

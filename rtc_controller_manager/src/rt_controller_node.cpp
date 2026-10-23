@@ -174,6 +174,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
     }
   }
 
+    AbandonControllerBringUp();
   // Per-controller lifecycle state, parallel to controllers_. All start
   // Inactive; CM's on_activate flips the initial controller to Active via
   // ActivateController(). std::vector<std::atomic<int>> is non-copyable, so
@@ -205,6 +206,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
 
   return CallbackReturn::SUCCESS;
 }
+      AbandonControllerBringUp();
 
 RtControllerNode::CallbackReturn RtControllerNode::on_activate(
     const rclcpp_lifecycle::State& state) {

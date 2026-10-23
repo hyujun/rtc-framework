@@ -132,6 +132,16 @@ class PipelineTestController : public RTControllerInterface {
   // controllers and LifecycleNodes" from "rejected after".
   static inline std::atomic<int> instances_created{0};
 
+  // on_cleanup calls the CM made on instances of this class (#935). A refused
+  // configure drops the controllers it built, and one that got as far as
+  // on_configure holds resources only on_cleanup releases — so a refusal must
+  // leave this equal to instances_created.
+  static inline std::atomic<int> cleanup_count{0};
+
+  // Makes this controller's on_configure report FAILURE (#935) — the Pass-3
+  // refusal, after its siblings may already have configured.
+  static inline std::atomic<bool> fail_on_configure{false};
+
   // DeviceState::hole_mask as seen by Compute on the last tick (issue #284).
   // The read end of PipelineStubBackend::state_hole_mask — together they span
   // the whole ingress→controller path, which is the only span that can catch a
@@ -176,6 +186,8 @@ class PipelineTestController : public RTControllerInterface {
     device0_command_type_ticks.store(-1, std::memory_order_relaxed);
     injected_command_type_ticks.store(0, std::memory_order_relaxed);
     instances_created.store(0, std::memory_order_relaxed);
+    cleanup_count.store(0, std::memory_order_relaxed);
+    fail_on_configure.store(false, std::memory_order_relaxed);
     observed_hole_mask.store(0, std::memory_order_relaxed);
     observed_velocity_hole_mask.store(0, std::memory_order_relaxed);
     observed_effort_hole_mask.store(0, std::memory_order_relaxed);
@@ -191,7 +203,15 @@ class PipelineTestController : public RTControllerInterface {
     captured_layout_profile = (lc && lc->has_parameter("rt_layout_profile"))
                                   ? lc->get_parameter("rt_layout_profile").as_string()
                                   : std::string("<absent>");
+    if (fail_on_configure.load(std::memory_order_relaxed)) {
+      return CallbackReturn::FAILURE;
+    }
     return ret;
+  }
+
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State& prev) noexcept override {
+    cleanup_count.fetch_add(1, std::memory_order_relaxed);
+    return RTControllerInterface::on_cleanup(prev);
   }
 
   void LoadConfig(const YAML::Node& cfg) override {

@@ -8,7 +8,8 @@
 //     SetYamlScalarFromParam (all scalar/array kinds) and the warning for an
 //     override whose path the YAML lacks (issue #574), matched device-timeout
 //     parsing, initial_controller found-branch, logging block and the refused
-//     log_dir override, urdf.closure_path explicit override
+//     log_dir override, urdf.closure_path explicit override, and what a
+//     refused configure must tear down before it returns (#935)
 //   - device_config.cpp: ParseSubModels/ParseTreeModels, LoadDeviceNameConfigs
 //     (names / limits / safe_position / backend / sensor_layout blocks + URDF
 //     joint-name validation and joint-limit merge)
@@ -755,6 +756,47 @@ TEST_F(CmConfigPipelineTest, TimingCsvsReopenAfterAConfigureRefusedPastLogging) 
   EXPECT_TRUE(ControllerLifecycleTestAccess::RtCallbackTimingLogOpen(*node));
   EXPECT_TRUE(TimingOpenFailures().empty());
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── A refused configure cleans up what it built (#935) ──────────────────────
+//
+// FAILURE parks CM in Unconfigured and skips on_cleanup, so the refusal itself
+// is the last point at which the controllers it created can be torn down.
+// Past Pass 3 each one holds what its on_configure allocated; dropping it
+// without on_cleanup leaves that to the destructor, and the device liveness
+// entries the attempt registered used to carry into the retry.
+TEST_F(CmConfigPipelineTest, AConfigureRefusedPastPass3CleansUpItsControllers) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("use_sim_time_sync", true);
+  node->declare_parameter("sim_sync_tick_devices", std::vector<std::string>{"no_such_group"});
+
+  ASSERT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  ASSERT_EQ(1, PipelineTestController::instances_created.load());
+  EXPECT_EQ(1, PipelineTestController::cleanup_count.load())
+      << "the refused attempt's controller was dropped without on_cleanup";
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetDeviceTimeoutCount(*node));
+
+  node->set_parameter(rclcpp::Parameter("sim_sync_tick_devices", std::vector<std::string>{"arm"}));
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, ControllerLifecycleTestAccess::GetDeviceTimeoutCount(*node))
+      << "one liveness entry per device group, not one per configure attempt";
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// The Pass-3 checkpoint itself: a controller whose on_configure failed is the
+// one most likely to hold half of what it allocated.
+TEST_F(CmConfigPipelineTest, AFailedControllerConfigureCleansUpTheController) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  PipelineTestController::fail_on_configure.store(true);
+
+  ASSERT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  ASSERT_EQ(1, PipelineTestController::instances_created.load());
+  EXPECT_EQ(1, PipelineTestController::cleanup_count.load());
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetDeviceTimeoutCount(*node));
 }
 
 // ── A leftover log_dir override (#933) ──────────────────────────────────────

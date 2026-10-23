@@ -143,6 +143,16 @@ TEST_F(CommandTypeGateTest, RefusesATorqueControllerBoundToAPositionOnlyBackend)
   EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
 }
 
+// The gate runs after the bring-up has configured every controller, so its
+// refusal is the one that drops the most on_configure work (#935).
+TEST_F(CommandTypeGateTest, ARefusedPairingCleansUpEveryConfiguredController) {
+  auto node = MakeNode("cm_position_only_backend");
+  ASSERT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  ASSERT_EQ(3, PipelineTestController::instances_created.load());
+  EXPECT_EQ(3, PipelineTestController::cleanup_count.load());
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+}
+
 TEST_F(CommandTypeGateTest, AcceptsATorqueControllerWhenTheBackendDeclaresTheMode) {
   // Same controller, same wiring — only the backend's declaration differs, so
   // the refusal above cannot be an artefact of the torque fixture itself.
