@@ -293,8 +293,8 @@ ControllerState MakeState() {
 }
 
 // The shipped config opens its CSV logs at configure. The package-wide
-// IsolatedSessionDir (session_dir_test_fixture.hpp) keeps them out of the
-// workspace's real session tree — and is what lets registration succeed, which
+// IsolatedSessionDir (rtc_base/testing/isolated_session_dir.hpp) keeps them
+// out of the workspace's real session tree — and is what lets registration succeed, which
 // puts the bound log push inside the shipped gates below.
 
 class InferenceAllocGate : public ::testing::Test {

@@ -7,6 +7,8 @@
 // test_compliance_diag_log.cpp when the catching controller's per-tick record
 // (S5.4) needed the same three things: a private session directory, a CSV
 // split that does not lose empty trailing cells, and a lookup BY COLUMN NAME.
+// The session is rtc::testing::ScopedSessionDir (rtc_base's test isolation,
+// #935), included here so every suite reading a CSV back has it.
 //
 // WHY BY NAME AND NOT BY INDEX. These headers carry per-joint and per-tip
 // blocks whose width comes from the robot's config, so an index-based
@@ -15,61 +17,19 @@
 // half of that: a row and a header that disagree is exactly the failure #440
 // shipped 138,248 rows through, and it must be caught wherever it is read.
 
+#include "rtc_base/testing/isolated_session_dir.hpp"
+
 #include <gtest/gtest.h>
 
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <system_error>
 #include <vector>
 
 namespace integrated_bringup::testfx {
 
 namespace fs = std::filesystem;
-
-/// Point `RTC_SESSION_DIR` at a private directory for the life of the object,
-/// and put the operator's own value back afterwards. A test that wrote into
-/// the ambient session directory would leave rows behind for whoever reads
-/// that session next.
-class ScopedSessionDir {
- public:
-  explicit ScopedSessionDir(const std::string& tag) {
-    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
-      had_prev_ = true;
-      prev_value_ = prev;
-    }
-    auto base = fs::temp_directory_path() / ("rtc_" + tag + "_test");
-    fs::create_directories(base);
-    dir_ = base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFU));
-    fs::remove_all(dir_);
-    fs::create_directories(dir_);
-    ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
-  }
-
-  ~ScopedSessionDir() {
-    if (had_prev_) {
-      ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
-    } else {
-      ::unsetenv("RTC_SESSION_DIR");
-    }
-    std::error_code ec;
-    fs::remove_all(dir_, ec);
-  }
-
-  ScopedSessionDir(const ScopedSessionDir&) = delete;
-  ScopedSessionDir& operator=(const ScopedSessionDir&) = delete;
-  ScopedSessionDir(ScopedSessionDir&&) = delete;
-  ScopedSessionDir& operator=(ScopedSessionDir&&) = delete;
-
-  [[nodiscard]] const fs::path& path() const noexcept { return dir_; }
-
- private:
-  fs::path dir_;
-  bool had_prev_{false};
-  std::string prev_value_;
-};
 
 inline std::vector<std::string> SplitCsv(const std::string& line) {
   std::vector<std::string> out;

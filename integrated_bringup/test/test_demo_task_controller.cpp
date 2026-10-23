@@ -2377,8 +2377,8 @@ namespace grasp_diag_fs = std::filesystem;
 
 using integrated_bringup::testfx::ColumnIndex;
 using integrated_bringup::testfx::ReadLines;
-using integrated_bringup::testfx::ScopedSessionDir;
 using integrated_bringup::testfx::SplitCsv;
+using rtc::testing::ScopedSessionDir;
 
 class TaskGraspDiagLogTest : public TaskForcePiBuiltTest {
  protected:

@@ -115,6 +115,16 @@ if(BUILD_TESTING)
     target_include_directories(test_session_dir PRIVATE include)
   endif()
 
+  # Self-test for the test-only session isolation (#935). rtc_base cannot call
+  # its own rtc_base_isolate_test_sessions() (CONFIG_EXTRAS reaches consumers
+  # only), so the registrar TU every consumer gets is compiled in by hand.
+  ament_add_gtest(test_isolated_session_dir
+    test/test_isolated_session_dir.cpp
+    test/include/rtc_base/testing/isolated_session_dir_env.cpp)
+  if(TARGET test_isolated_session_dir)
+    target_include_directories(test_isolated_session_dir PRIVATE include test/include)
+  endif()
+
   ament_add_gtest(test_seqlock test/test_seqlock.cpp)
   if(TARGET test_seqlock)
     target_include_directories(test_seqlock PRIVATE include)

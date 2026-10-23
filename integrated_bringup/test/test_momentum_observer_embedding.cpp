@@ -152,7 +152,7 @@ TEST(MomentumObserverBuild, ExpandsGainsAndRejectsAWrongLengthList) {
 
 using integrated_bringup::testfx::CsvFile;
 using integrated_bringup::testfx::ReadCsv;
-using integrated_bringup::testfx::ScopedSessionDir;
+using rtc::testing::ScopedSessionDir;
 
 /// g(q) for the arm sub-model, in the arm DEVICE order — what a resting arm's
 /// joint torque sensor reads while holding this posture with nothing in its

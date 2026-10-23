@@ -11,13 +11,13 @@
 // (only B is Pushed), and we confirm A's CSV row count is unchanged from
 // before the switch.
 
+#include "rtc_base/testing/isolated_session_dir.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <ostream>
@@ -40,37 +40,7 @@ void Row(std::ostream& os, const StatePod& p) {
   os << p.t_relative_s << ',' << p.tick;
 }
 
-class ScopedSessionDir {
- public:
-  ScopedSessionDir() {
-    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
-      had_prev_ = true;
-      prev_value_ = prev;
-    }
-    auto base = fs::temp_directory_path() / "rtc_log_set_switch";
-    fs::create_directories(base);
-    dir_ = base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFu));
-    fs::create_directories(dir_);
-    ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
-  }
-
-  ~ScopedSessionDir() {
-    if (had_prev_) {
-      ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
-    } else {
-      ::unsetenv("RTC_SESSION_DIR");
-    }
-    std::error_code ec;
-    fs::remove_all(dir_, ec);
-  }
-
-  const fs::path& dir() const noexcept { return dir_; }
-
- private:
-  fs::path dir_;
-  bool had_prev_{false};
-  std::string prev_value_;
-};
+using rtc::testing::ScopedSessionDir;
 
 std::uintmax_t FileSize(const fs::path& p) noexcept {
   std::error_code ec;
