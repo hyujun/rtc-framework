@@ -1257,7 +1257,8 @@ def check_size_budget(
             code,
             f"{nbytes} bytes > {budget} -- over this file's budget in {budget_file}; "
             f"{hint} "
-            "(a budget goes down as its file shrinks, not up to fit an edit)",
+            "(a budget goes down as its file shrinks, not up to fit an edit; a rule or section "
+            "that really grew is raised on its own line with `# raised from N: <why>`)",
         )
     ]
 

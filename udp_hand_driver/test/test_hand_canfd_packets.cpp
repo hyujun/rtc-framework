@@ -616,6 +616,35 @@ TEST(HandCanFdAssembler, DeadlineIsCallerClock) {
   EXPECT_EQ(a.Remaining(t0 + 1s), Clock::duration::zero());
 }
 
+// D59 deadline chain: SetDeadline moves only the deadline — frames already
+// stored stay, nothing is abandoned, Remaining / Expired follow the new value.
+TEST(HandCanFdAssembler, SetDeadlineKeepsTheStoredFramesAndMovesOnlyTheDeadline) {
+  RespSetAssembler a(kNodeRightHand);
+  const Clock::time_point t0{};
+  a.Begin(t0 + 2ms);
+  EXPECT_EQ(FeedRight(a, 0, Filled(1)), FeedResult::kStored);
+  EXPECT_EQ(FeedRight(a, 2, Filled(3)), FeedResult::kStored);
+
+  a.SetDeadline(t0 + 1500us);  // pulled in
+  EXPECT_EQ(a.deadline(), t0 + 1500us);
+  EXPECT_EQ(a.mask(), FrameBit(0) | FrameBit(2));
+  EXPECT_EQ(a.stats().sets_abandoned, 0u);
+  EXPECT_EQ(a.Remaining(t0 + 1000us), 500us);
+  EXPECT_FALSE(a.Expired(t0 + 1499us));
+  EXPECT_TRUE(a.Expired(t0 + 1500us));
+
+  a.SetDeadline(t0 + 3ms);  // and pushed out again, still nothing lost
+  EXPECT_FALSE(a.Expired(t0 + 2500us));
+  EXPECT_EQ(FeedRight(a, 1, Filled(2)), FeedResult::kComplete);
+  EXPECT_EQ(a.stats().sets_completed, 1u);
+  EXPECT_EQ(a.stats().sets_abandoned, 0u);
+  Bytes slot{};
+  SerializeFrame(a.set().frame0, slot.data());
+  EXPECT_EQ(slot, Filled(1));  // stored before the deadline moved, still there
+  SerializeFrame(a.set().frame2, slot.data());
+  EXPECT_EQ(slot, Filled(3));
+}
+
 TEST(HandCanFdAssembler, ResetAndBeginAbandonOnlyPartialSets) {
   RespSetAssembler a(kNodeRightHand);
   const Clock::time_point t0{};

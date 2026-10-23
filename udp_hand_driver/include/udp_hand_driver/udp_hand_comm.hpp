@@ -89,6 +89,7 @@ class UdpHandComm final : public HandComm {
   // proto1 has no feedforward field: `ff_nm` is ignored.
   [[nodiscard]] bool WriteCommandWithEcho(const HandMotorArray& pos,
                                           const HandMotorArray& /*ff_nm*/) noexcept override {
+    RTC_TRACE_SCOPE("hand_write_echo");
     return transport_.WritePositionWithEcho(pos, send_buf_, echo_buf_, joint_io_mode_);
   }
 

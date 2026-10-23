@@ -38,6 +38,6 @@ agent_docs/testing-debug.md: 16772  # raised from 14610: L1/L2 span, executor-ca
 
 .claude/rules/arch-build-meta.md: 2632
 .claude/rules/arch-source.md: 3693
-.claude/rules/rt-path.md: 3472
+.claude/rules/rt-path.md: 3707  # raised from 3472: glob + 구속 대상에 udp_hand_driver (CommLoop SCHED_FIFO) — #919 에서 RT 코드를 고치는 동안 rule 이 로드되지 않았다
 
 .claude/skills/adding-component/SKILL.md: 5315
