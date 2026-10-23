@@ -41,7 +41,7 @@
 
 ## 세션 디렉토리 격리
 
-출하 YAML 의 `logs:` 블록을 가진 컨트롤러는 `on_configure` 에서 CSV 를 열고, `RTC_SESSION_DIR` 이 없으면 세션 resolver 가 workspace 의 **실제 `logging_data/<YYMMDD_HHMM>`** 로 떨어진다. 테스트 행이 운영자 세션 사이에 남고 같은 분에 띄운 sim 실험 세션과 섞인다 (Stop hook 의 `colcon test` 가 실험 세션 하나의 diag 헤더를 오염시킨 사례). `integrated_bringup` 은 CMakeLists 의 test 블록 끝이 `test/session_dir_test_env.cpp` 를 모든 `test_*` gtest 실행 파일에 링크해 이를 구조로 강제한다 — 파일마다 등록하던 방식은 7개 바이너리가 빠뜨렸다.
+출하 YAML 의 `logs:` 블록을 가진 컨트롤러는 `on_configure` 에서 CSV 를 열고, `RTC_SESSION_DIR` 이 없으면 세션 resolver 가 workspace 의 **실제 `logging_data/<YYMMDD_HHMM>`** 로 떨어진다. 테스트 행이 운영자 세션 사이에 남고 같은 분에 띄운 sim 실험 세션과 섞인다 (Stop hook 의 `colcon test` 가 실험 세션 하나의 diag 헤더를 오염시킨 사례). `integrated_bringup` 과 `rtc_controller_manager` 는 CMakeLists 의 test 블록 끝에서 `rtc_base_isolate_test_sessions()` 를 불러 Environment 등록 TU 를 모든 `test_*` gtest 실행 파일에 넣어 이를 구조로 강제한다 — 파일마다 등록하던 방식은 7개 바이너리가 빠뜨렸다. Environment 본체는 `rtc_base/testing/isolated_session_dir.hpp` 하나다 (#932). CM 은 `enable_logging` 기본값이 true 이고 configure 가 세션의 **부모**에서 retention 을 돌리므로, 세션을 `<mkdtemp>/logging_data/session` 으로 한 단계 내려 retention 이 공용 `/tmp` 가 아니라 바이너리 전용 루트를 훑게 한다.
 
 ## `.venv` 격리의 false-green
 

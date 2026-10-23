@@ -29,7 +29,9 @@
 #include <rcutils/logging.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -671,6 +673,112 @@ TEST_F(CmConfigPipelineTest, LoggingSetupCreatesTimingCsvInLogDir) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 
   std::filesystem::remove_all(log_dir.parent_path());
+}
+
+// ── Timing CSVs across a reconfigure (#932) ─────────────────────────────────
+//
+// The loggers are members, so every configure re-opens the same instances. A
+// second Open() on a still-open stream used to fail and poison it: the WARN
+// below fired and every timing row after the first configure was lost while
+// IsOpen() still said true. No log_dir here — the session comes from the
+// binary's RTC_SESSION_DIR (rtc_base_isolate_test_sessions() in CMakeLists).
+
+std::vector<std::string> TimingOpenFailures() {
+  return LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, {"Failed to open"});
+}
+
+std::shared_ptr<RtControllerNode> MakeTimingLogNode() {
+  auto node = std::make_shared<RtControllerNode>("test_cm_config_pipeline_node");
+  node->declare_parameter("enable_logging", true);
+  node->declare_parameter("enable_timing_log", true);
+  node->declare_parameter("enable_device_log", false);
+  node->declare_parameter("control_rate", 200.0);
+  node->declare_parameter("config_variant", std::string("test_fixtures"));
+  return node;
+}
+
+// {header lines, data rows} of a timing CSV; {0, 0} when it does not exist.
+std::pair<int, int> CsvLineCounts(const std::filesystem::path& path) {
+  std::pair<int, int> counts{0, 0};
+  std::ifstream in(path);
+  for (std::string line; std::getline(in, line);) {
+    ++(line.rfind("t_wall_ns,", 0) == 0 ? counts.first : counts.second);
+  }
+  return counts;
+}
+
+TEST_F(CmConfigPipelineTest, TimingCsvsReopenAcrossReconfigure) {
+  const char* session = std::getenv("RTC_SESSION_DIR");
+  ASSERT_NE(nullptr, session) << "this binary must isolate its session dir";
+  const auto cm_csv = std::filesystem::path(session) / "timing" / "cm_timing_log.csv";
+  // The session is shared by the whole binary; another case may have made the
+  // file already.
+  const int rows_before = CsvLineCounts(cm_csv).second;
+
+  auto node = MakeTimingLogNode();
+  DeclareArmDevice(*node);
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()))
+        << "cycle " << cycle;
+    EXPECT_TRUE(ControllerLifecycleTestAccess::CmTimingLogOpen(*node)) << "cycle " << cycle;
+    EXPECT_TRUE(ControllerLifecycleTestAccess::RtCallbackTimingLogOpen(*node)) << "cycle " << cycle;
+    // Queued, not drained: cleanup must write it before it closes the file.
+    ASSERT_TRUE(ControllerLifecycleTestAccess::PushCmTimingSample(*node));
+    ASSERT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive())) << "cycle " << cycle;
+    EXPECT_FALSE(ControllerLifecycleTestAccess::CmTimingLogOpen(*node)) << "cycle " << cycle;
+    EXPECT_FALSE(ControllerLifecycleTestAccess::RtCallbackTimingLogOpen(*node))
+        << "cycle " << cycle;
+  }
+  EXPECT_TRUE(TimingOpenFailures().empty());
+
+  const auto [headers, rows] = CsvLineCounts(cm_csv);
+  EXPECT_EQ(1, headers);
+  EXPECT_EQ(rows_before + 2, rows) << "one row per configure cycle";
+}
+
+// Every test binary of this package writes its session into a private temp
+// dir. CM's enable_logging defaults to true, and a configure then writes
+// timing CSVs into the resolved session and runs retention on its parent —
+// without RTC_SESSION_DIR, the workspace's real logging_data. This pins the
+// isolation itself, with the node left at its logging defaults.
+TEST_F(CmConfigPipelineTest, ConfigureWritesIntoThisBinarysPrivateSession) {
+  const char* raw = std::getenv("RTC_SESSION_DIR");
+  ASSERT_NE(nullptr, raw) << "RTC_SESSION_DIR is not set — the session would be the real one";
+  const std::filesystem::path session{raw};
+  const auto temp = std::filesystem::temp_directory_path();
+  ASSERT_EQ(0U, session.string().rfind(temp.string(), 0)) << session << " is not under " << temp;
+  // Retention runs on the session's parent: it must be a root of our own, not
+  // the shared temp dir.
+  EXPECT_EQ("logging_data", session.parent_path().filename());
+  EXPECT_NE(temp, session.parent_path());
+
+  auto node = std::make_shared<RtControllerNode>("test_cm_config_pipeline_node");
+  node->declare_parameter("control_rate", 200.0);
+  node->declare_parameter("config_variant", std::string("test_fixtures"));
+  node->declare_parameter("enable_device_log", false);
+  DeclareArmDevice(*node);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_TRUE(std::filesystem::exists(session / "timing" / "cm_timing_log.csv"));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// A configure refused after the logging setup returns FAILURE, and FAILURE
+// skips on_cleanup — the retry must still open both CSVs.
+TEST_F(CmConfigPipelineTest, TimingCsvsReopenAfterAConfigureRefusedPastLogging) {
+  auto node = MakeTimingLogNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("use_sim_time_sync", true);
+  node->declare_parameter("sim_sync_tick_devices", std::vector<std::string>{"no_such_group"});
+
+  ASSERT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+
+  node->set_parameter(rclcpp::Parameter("sim_sync_tick_devices", std::vector<std::string>{"arm"}));
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_TRUE(ControllerLifecycleTestAccess::CmTimingLogOpen(*node));
+  EXPECT_TRUE(ControllerLifecycleTestAccess::RtCallbackTimingLogOpen(*node));
+  EXPECT_TRUE(TimingOpenFailures().empty());
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
 // ── Device config beyond the RT path's fixed capacity (issue #196 §2) ────────

@@ -70,6 +70,20 @@ void RtControllerNode::CloseTeardownEventfds() noexcept {
   }
 }
 
+void RtControllerNode::CloseTimingCsvs() {
+  const std::lock_guard<std::mutex> lock(timing_csv_mutex_);
+  // Last drain first: what the producers queued since the previous DrainLog()
+  // pass belongs to the file being closed. When the loggers are already closed
+  // (on_configure after a cleanup) Log() is a no-op, so this discards what the
+  // backends pushed between sessions instead of opening the next file with it.
+  cm_timing_producer_.Drain(
+      [this](const urtc::RtTickTimingSample& s) { cm_timing_logger_.Log(s); });
+  rt_callback_timing_producer_.Drain(
+      [this](const urtc::RtTickTimingSample& s) { rt_callback_timing_logger_.Log(s); });
+  cm_timing_logger_.Close();
+  rt_callback_timing_logger_.Close();
+}
+
 // ── Session directory helpers
 // ─────────────────────────────────────────────────
 std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir() {
@@ -106,6 +120,8 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   CreateCallbackGroups();
   // No RT thread yet — a window or latch left by an earlier session goes.
   ResetEstopHoldState();
+  // So do timing CSVs a refused configure left open (#932).
+  CloseTimingCsvs();
   // Fail-closed (issue #196 §1): controller bring-up decides whether this node
   // may configure at all. Returning FAILURE here means no publisher, no device
   // backend, no service, no timer, and no RT thread is ever created — the
@@ -335,6 +351,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   FlushEstopStatus();
   FlushCommandTypeLog();
   drain_timer_.reset();
+  CloseTimingCsvs();
 
   // 5. parameter callback
   param_callback_handle_.reset();
@@ -444,6 +461,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   FlushEstopStatus();
   FlushCommandTypeLog();
   drain_timer_.reset();
+  CloseTimingCsvs();
   param_callback_handle_.reset();
   for (auto& backend : backends_) {
     backend.reset();

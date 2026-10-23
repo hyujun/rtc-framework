@@ -1159,6 +1159,9 @@ bool RtControllerNode::DeclareAndLoadParameters() {
 
     const bool enable_timing = get_parameter("enable_timing_log").as_bool();
     if (enable_timing) {
+      // A drain pass picked up before the old drain_timer_ went can still run
+      // (timing_csv_mutex_ in the header).
+      const std::lock_guard<std::mutex> lock(timing_csv_mutex_);
       const auto timing_dir = urtc::TimingDir(session_dir);
       std::filesystem::create_directories(timing_dir);
       const auto timing_path = timing_dir / "cm_timing_log.csv";

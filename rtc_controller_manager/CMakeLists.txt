@@ -483,6 +483,13 @@ if(BUILD_TESTING)
     target_link_libraries(test_cm_identifier_resolution
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
+
+  # Every gtest binary logs into its own throwaway session directory (#932).
+  # CM's enable_logging defaults to true, and a configure then writes timing
+  # CSVs into the resolved session and runs retention on its parent — without
+  # RTC_SESSION_DIR, the workspace's real logging_data. Covers only the test
+  # targets defined above it. Keep this call last.
+  rtc_base_isolate_test_sessions()
 endif()
 
 ament_package()

@@ -146,6 +146,22 @@ class ControllerLifecycleTestAccess {
     return node.system_model_config_.closure_yaml_path;
   }
 
+  // ── Timing CSV loggers (#932) ───────────────────────────────────────────
+  // Whether each per-tick timing CSV is open right now. A reconfigure must
+  // leave both open again, and a teardown must leave both closed.
+  static bool CmTimingLogOpen(const RtControllerNode& node) {
+    return node.cm_timing_logger_.IsOpen();
+  }
+
+  static bool RtCallbackTimingLogOpen(const RtControllerNode& node) {
+    return node.rt_callback_timing_logger_.IsOpen();
+  }
+
+  // Queues one CM-lane sample as the RT loop would, for a test with no loop.
+  static bool PushCmTimingSample(RtControllerNode& node) {
+    return node.cm_timing_producer_.Push(rtc::RtTickTimingPayload{});
+  }
+
   // ── E-STOP ────────────────────────────────────────────────────────────────
   // estop_pub_ is a plain (non-lifecycle) publisher, so PublishEstopStatus()
   // works without driving on_activate.
