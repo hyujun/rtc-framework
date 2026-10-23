@@ -12,10 +12,14 @@ C++ ``rtc_base/logging/session_dir.hpp`` 와 동일한 결정 로직을 Python �
     2. cwd 에서 상위로 올라가며 install/ + src/ 쌍을 찾으면 그 dir / "logging_data"
     3. 최종 폴백: $PWD / "logging_data"
 
-세션 디렉토리 결정 체인 (``get_session_dir`` / ``create_session_dir``)::
+세션 디렉토리 결정 체인 (``get_or_create_session_dir``, C++ ``ResolveSessionDir`` 미러)::
 
     1. $RTC_SESSION_DIR
-    2. resolve_logging_root() / "YYMMDD_HHMM"
+    2. resolve_logging_root() / 프로세스 전역 이름 (첫 폴백 호출 시 "YYMMDD_HHMM" 으로 확정)
+
+env 는 매 호출 먼저 확인하고 루트도 매 호출 다시 결정하며, 프로세스 전역인 것은
+폴백 세션의 *이름* 뿐이다 (#930). 반면 ``create_session_dir`` 은 호출마다 새
+타임스탬프를 찍는다 — launch 는 기동마다 새 세션을 연다.
 
 런 ID (``generate_run_id``) 는 그 세션 디렉토리 *안에서* 이번 기동을 식별합니다.
 launch 가 ``$RTC_RUN_ID`` 로 실어 보내고 C++ 쪽 소비자는
@@ -25,6 +29,7 @@ launch 가 ``$RTC_RUN_ID`` 로 실어 보내고 C++ 쪽 소비자는
 import os
 import re
 import shutil
+import threading
 from datetime import datetime
 
 _SESSION_SUBDIRS = (
@@ -37,6 +42,10 @@ _SESSION_SUBDIRS = (
     "tracing",
 )
 _SESSION_PATTERN = re.compile(r"^\d{6}_\d{4}$")
+
+# get_or_create_session_dir 의 폴백 세션 이름 — 프로세스당 한 번만 정한다 (#930).
+_fallback_name: str | None = None
+_fallback_name_lock = threading.Lock()
 
 # Hand forensic artifact stems: udp_hand_driver writes <session>/timing/
 # <HAND_TIMING_STEM>[_<side>].csv and <session>/device/<HAND_STATS_STEM>
@@ -91,6 +100,11 @@ def _ensure_session_subdirs(session_dir: str) -> None:
         os.makedirs(os.path.join(session_dir, sub), exist_ok=True)
 
 
+def _session_timestamp() -> str:
+    """세션 이름 ``YYMMDD_HHMM`` (C++ ``GenerateSessionTimestamp``)."""
+    return datetime.now().strftime("%y%m%d_%H%M")
+
+
 def create_session_dir(logging_root: str | None = None) -> str:
     """현재 타임스탬프로 새 세션 디렉토리를 만들고 표준 서브디렉토리까지 생성.
 
@@ -101,7 +115,7 @@ def create_session_dir(logging_root: str | None = None) -> str:
         생성된 세션 디렉토리 절대 경로.
     """
     root = logging_root if logging_root else resolve_logging_root()
-    session = os.path.join(root, datetime.now().strftime("%y%m%d_%H%M"))
+    session = os.path.join(root, _session_timestamp())
     _ensure_session_subdirs(session)
     return session
 
@@ -122,11 +136,22 @@ def list_session_dirs(logging_root: str) -> list[str]:
     )
 
 
-def cleanup_old_sessions(logging_root: str, max_sessions: int) -> None:
-    """YYMMDD_HHMM 패턴 세션 폴더를 ``max_sessions`` 개 이하로 유지."""
+def cleanup_old_sessions(logging_root: str, max_sessions: int, keep: str | None = None) -> None:
+    """YYMMDD_HHMM 패턴 세션 폴더를 ``max_sessions`` 개 이하로 유지.
+
+    ``keep`` 은 호출자가 지금 쓰는 세션이다 — 개수에는 들지만 지우지 않는다
+    (C++ ``CleanupOldSessions`` 의 ``keep`` 과 같은 규칙).
+    """
     if max_sessions <= 0:
         return
     dirs = list_session_dirs(logging_root)
+    if keep:
+        kept = os.path.realpath(keep)
+        for name in dirs:
+            if os.path.realpath(os.path.join(logging_root, name)) == kept:
+                dirs.remove(name)
+                max_sessions -= 1
+                break
     while len(dirs) > max_sessions:
         oldest = os.path.join(logging_root, dirs.pop(0))
         shutil.rmtree(oldest, ignore_errors=True)
@@ -164,16 +189,29 @@ def get_session_dir() -> str | None:
 
 
 def get_or_create_session_dir() -> str:
-    """환경변수에 세션이 설정돼 있으면 그것을, 아니면 새 세션을 만들어 반환.
+    """환경변수에 세션이 설정돼 있으면 그것을, 아니면 폴백 세션을 만들어 반환.
 
     CLI 툴(플롯/모션 편집기 등) 이 "런치 중인 세션이 있으면 그걸, 없으면
     현재 ws 에 새로 만들어 거기에 저장" 하는 흐름을 한 줄로 쓸 때 사용.
+
+    C++ ``rtc::ResolveSessionDir()`` 와 같은 규칙이다: env 는 매 호출 먼저
+    확인하고, 루트(:func:`resolve_logging_root`)도 매 호출 다시 결정한다.
+    폴백 세션의 *이름* 만 첫 폴백 호출 때 한 번 정해 프로세스 내내 재사용하므로,
+    오래 사는 프로세스가 분마다 새 디렉토리를 만들지 않는다 (#930). 호출마다
+    새 이름이 필요하면 :func:`create_session_dir` 을 쓴다.
     """
+    global _fallback_name
     existing = get_session_dir()
     if existing:
         _ensure_session_subdirs(existing)
         return existing
-    return create_session_dir()
+    with _fallback_name_lock:
+        if _fallback_name is None:
+            _fallback_name = _session_timestamp()
+        name = _fallback_name
+    session = os.path.join(resolve_logging_root(), name)
+    _ensure_session_subdirs(session)
+    return session
 
 
 def get_session_subdir(subdir: str) -> str | None:

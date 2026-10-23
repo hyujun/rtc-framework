@@ -279,13 +279,13 @@ logging_data/YYMMDD_HHMM/
 |------|------|
 | `GenerateSessionTimestamp()` | `YYMMDD_HHMM` 타임스탬프 |
 | `ResolveLoggingRoot()` | `logging_data` 루트 결정 (아래 체인) |
-| `ResolveSessionDir()` | `$RTC_SESSION_DIR`, 없으면 루트 아래 새 세션 디렉토리 생성 |
+| `ResolveSessionDir()` | `$RTC_SESSION_DIR`, 없으면 루트 아래 프로세스당 한 세션 |
 | `EnsureSessionSubdirs(dir)` / `TimingDir(dir)` | 하위 폴더 생성 / `<session>/timing/` 경로 |
-| `ListSessionDirs(root)` / `CleanupOldSessions(root, max)` | 세션 목록 / 초과분 삭제 |
+| `ListSessionDirs(root)` / `CleanupOldSessions(root, max, keep)` | 세션 목록 / 초과분 삭제 (`keep` 제외) |
 
 `ResolveLoggingRoot()` 결정 체인: (1) `$COLCON_PREFIX_PATH` 첫 entry 가 쓰기 가능한 디렉토리이면 그 `parent / "logging_data"`, (2) cwd 에서 상위로 올라가며 `install/` + `src/` 쌍이 있는 디렉토리의 `logging_data`, (3) 폴백 `cwd / "logging_data"`.
 
-`ResolveSessionDir()` 은 `std::filesystem::filesystem_error` 를 throw 할 수 있으므로 초기화 시에만 호출합니다. Python 측 동일 로직은 `rtc_tools.utils.session_dir.resolve_logging_root()` 입니다.
+`ResolveSessionDir()` 은 `std::filesystem::filesystem_error` 를 throw 할 수 있으므로 초기화 시에만 호출합니다. Python 미러는 `rtc_tools.utils.session_dir` 입니다.
 
 ### 트레이싱 (`tracing/`)
 

@@ -2,8 +2,10 @@
 // rtc::ResolveLoggingRoot() / ResolveSessionDir() 4단 체인 검증 +
 // rtc::ResolveRunId() 2단 체인 (그 헤더의 형제이고 같은 env 규율을 쓴다).
 //
-// 각 테스트는 환경변수(COLCON_PREFIX_PATH, RTC_SESSION_DIR, RTC_RUN_ID)
-// 와 cwd 를 독립적으로 세팅하도록 scoped fixture 로 관리합니다.
+// 각 테스트는 환경변수(COLCON_PREFIX_PATH, RTC_SESSION_DIR, RTC_RUN_ID, TZ)
+// 와 cwd 를 scoped fixture 로 세팅·복원합니다. 단 env 폴백의 세션 *이름* 은
+// 프로세스에 한 번 정해지므로 테스트 사이에 공유된다 — 이름이 "지금 시각" 이라고
+// 단언하지 않는다.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <rtc_base/logging/run_id.hpp>
 #include <rtc_base/logging/session_dir.hpp>
@@ -13,6 +15,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <string>
 
@@ -87,6 +90,45 @@ class ScopedCwd {
  private:
   fs::path prev_;
 };
+
+// ScopedTz: TZ 를 세팅하고 tzset() 으로 localtime_r 에 반영, 종료 시 복원.
+// 세션 이름은 localtime 의 분이므로 TZ 를 1 분 옮기면 시계 seam 없이 "분 경계를
+// 넘긴 호출" 을 결정적으로 만든다.
+class ScopedTz {
+ public:
+  explicit ScopedTz(const char* value) {
+    if (const char* prev = std::getenv("TZ")) {
+      prev_ = prev;
+      had_prev_ = true;
+    }
+    Set(value);
+  }
+
+  ~ScopedTz() {
+    if (had_prev_) {
+      ::setenv("TZ", prev_.c_str(), 1);
+    } else {
+      ::unsetenv("TZ");
+    }
+    ::tzset();
+  }
+
+  void Set(const char* value) {
+    ::setenv("TZ", value, 1);
+    ::tzset();
+  }
+
+  ScopedTz(const ScopedTz&) = delete;
+  ScopedTz& operator=(const ScopedTz&) = delete;
+
+ private:
+  std::string prev_;
+  bool had_prev_{false};
+};
+
+// UTC 와 UTC+1분. POSIX TZ 의 오프셋 부호는 반대라 "-00:01" 이 동쪽 (+1 분) 이다.
+constexpr const char* kTzUtc = "AAA0";
+constexpr const char* kTzUtcPlusOneMinute = "AAA-00:01";
 
 // 각 테스트마다 독립된 tmp 디렉토리를 만들고 종료 시 삭제.
 class SessionDirTest : public ::testing::Test {
@@ -216,6 +258,78 @@ TEST_F(SessionDirTest, SessionDir_NoEnv_CreatesUnderResolvedRoot) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ResolveSessionDir() — env 폴백의 세션 이름은 프로세스당 하나 (#930)
+//
+// 호출처 (10 s stats 저장 타이머 · on_activate 의 여러 번 · configure 의
+// CM ↔ 컨트롤러 log set) 는 한 프로세스의 호출이 같은 세션이라고 가정한다.
+// 분이 바뀔 때마다 새 디렉토리가 생기면 retention 이 실제 세션을 지운다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_F(SessionDirTest, SessionDir_NoEnv_KeepsOneNamePerProcess) {
+  const fs::path ws = tmp_root_ / "minute_ws";
+  fs::create_directories(ws / "install");
+  fs::create_directories(ws / "src");
+
+  ScopedUnsetEnv clear_rtc{"RTC_SESSION_DIR"};
+  ScopedUnsetEnv clear_prefix{"COLCON_PREFIX_PATH"};
+  ScopedCwd cwd{ws};
+  ScopedTz tz{kTzUtc};
+
+  const fs::path first = rtc::ResolveSessionDir();
+  tz.Set(kTzUtcPlusOneMinute);
+  const fs::path second = rtc::ResolveSessionDir();
+
+  EXPECT_EQ(second, first);
+  EXPECT_EQ(rtc::ListSessionDirs(ws / "logging_data").size(), 1U);
+}
+
+TEST_F(SessionDirTest, SessionDir_EnvStillOverridesProcessName) {
+  const fs::path ws = tmp_root_ / "env_ws";
+  fs::create_directories(ws / "install");
+  fs::create_directories(ws / "src");
+  const fs::path explicit_session = tmp_root_ / "explicit_session";
+
+  ScopedUnsetEnv clear_rtc{"RTC_SESSION_DIR"};
+  ScopedUnsetEnv clear_prefix{"COLCON_PREFIX_PATH"};
+  ScopedCwd cwd{ws};
+  ScopedTz tz{kTzUtc};
+
+  const fs::path fallback = rtc::ResolveSessionDir();
+  tz.Set(kTzUtcPlusOneMinute);
+  {
+    ScopedEnv rtc_env{"RTC_SESSION_DIR", explicit_session.string()};
+    EXPECT_EQ(rtc::ResolveSessionDir(), explicit_session);
+  }
+  EXPECT_EQ(rtc::ListSessionDirs(ws / "logging_data").size(), 1U);
+  EXPECT_EQ(rtc::ResolveSessionDir(), fallback);
+}
+
+TEST_F(SessionDirTest, SessionDir_NoEnv_ReresolvesRootKeepsName) {
+  const fs::path ws1 = tmp_root_ / "ws1";
+  const fs::path ws2 = tmp_root_ / "ws2";
+  for (const fs::path& ws : {ws1, ws2}) {
+    fs::create_directories(ws / "install");
+    fs::create_directories(ws / "src");
+  }
+
+  ScopedUnsetEnv clear_rtc{"RTC_SESSION_DIR"};
+  ScopedUnsetEnv clear_prefix{"COLCON_PREFIX_PATH"};
+  ScopedTz tz{kTzUtc};
+
+  fs::path first;
+  {
+    ScopedCwd cwd{ws1};
+    first = rtc::ResolveSessionDir();
+  }
+  tz.Set(kTzUtcPlusOneMinute);
+  ScopedCwd cwd{ws2};
+  const fs::path second = rtc::ResolveSessionDir();
+
+  EXPECT_EQ(first.parent_path(), ws1 / "logging_data");
+  EXPECT_EQ(second, ws2 / "logging_data" / first.filename());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CleanupOldSessions — max_sessions 제한
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -238,6 +352,25 @@ TEST_F(SessionDirTest, CleanupOldSessions_KeepsOnlyMaxSessions) {
   EXPECT_TRUE(fs::exists(root / "260104_1200"));
   EXPECT_TRUE(fs::exists(root / "260105_1300"));
   EXPECT_TRUE(fs::exists(root / "not_a_session"));
+}
+
+TEST_F(SessionDirTest, CleanupOldSessions_NeverRemovesKeptSession) {
+  // 세션 이름이 프로세스당 하나라 오래 사는 CM 의 세션은 재-configure 때 가장
+  // 오래된 것일 수 있다 — 자기 정리가 지금 쓰는 세션을 지우면 안 된다.
+  const fs::path root = tmp_root_ / "logging_data";
+  for (const char* ts :
+       {"260101_0900", "260102_1000", "260103_1100", "260104_1200", "260105_1300"}) {
+    fs::create_directories(root / ts);
+  }
+
+  // 끝의 구분자는 env 로 들어온 경로에 흔하다 — 같은 디렉토리로 본다.
+  rtc::CleanupOldSessions(root, 2, root / "260101_0900" / "");
+
+  EXPECT_TRUE(fs::exists(root / "260101_0900"));
+  EXPECT_FALSE(fs::exists(root / "260102_1000"));
+  EXPECT_FALSE(fs::exists(root / "260103_1100"));
+  EXPECT_FALSE(fs::exists(root / "260104_1200"));
+  EXPECT_TRUE(fs::exists(root / "260105_1300"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

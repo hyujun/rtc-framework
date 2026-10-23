@@ -466,10 +466,10 @@ actions = make_trace_action(context, session_dir=session_dir)   # [] 가능
 
 **`controller_config`**: 컨트롤러 YAML 은 `include:` 로 여러 파일에 나뉠 수 있다 (규칙: [rtc_controller_manager](../rtc_controller_manager/README.md#컨트롤러-yaml-을-여러-파일로-나누기--include)). 경로로 컨트롤러 YAML 을 읽는 도구와 테스트는 `yaml.safe_load` 대신 `load_controller_config(path, *, config_key=None)` 를 쓴다. 주 파일만 읽으면 조각의 키가 조용히 빠진 트리를 본다. C++ 로더의 mirror 이므로 규칙을 바꾸면 `rtc_controller_manager/src/controller_config_loader.cpp` 와 함께 바꾼다 (PROC-5). `controller_config_leaf_lines` · `unread_leaves` 등 보조 함수는 모듈 docstring 을 본다.
 
-**`session_dir`**: C++ `rtc_base/logging/session_dir.hpp` 와 같은 결정 로직이다. 로깅 루트 (`resolve_logging_root`) 는 3 단 체인이고, 그 위에서 세션 디렉토리가 정해진다.
+**`session_dir`**: C++ `rtc_base/logging/session_dir.hpp` 와 같은 결정 로직이다. 로깅 루트 (`resolve_logging_root`) 는 3 단 체인이다.
 
 1. 로깅 루트: `$COLCON_PREFIX_PATH` 첫 entry 가 쓰기 가능하면 그 `parent/logging_data` → cwd 에서 위로 올라가며 `install/` + `src/` 쌍을 찾으면 그 디렉토리의 `logging_data` → 최종 폴백 `$PWD/logging_data`.
-2. 세션 디렉토리: `$RTC_SESSION_DIR` → 없으면 로깅 루트 아래 `YYMMDD_HHMM` 을 새로 만든다. 런 ID (`generate_run_id`, `YYMMDDHHMMSS`) 는 launch 가 `RTC_RUN_ID` 로 전파한다.
+2. 세션 디렉토리: `$RTC_SESSION_DIR` → 없으면 로깅 루트 아래 `YYMMDD_HHMM` (프로세스당 한 이름, `create_session_dir` 는 매번 새로). 런 ID (`generate_run_id`, `YYMMDDHHMMSS`) 는 launch 가 `RTC_RUN_ID` 로 전파한다.
 
 ```python
 from rtc_tools.utils.session_dir import (create_session_dir, cleanup_old_sessions,
