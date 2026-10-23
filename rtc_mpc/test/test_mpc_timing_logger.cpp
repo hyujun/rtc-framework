@@ -7,11 +7,12 @@
 // One CSV row per MPC main-loop iteration. `run_id` separates two starts that
 // share one minute-resolution session directory (#376).
 //
-// `RTC_SESSION_DIR` env var is used to redirect the resolver chain to a
-// per-test tempdir; ResolveSessionDir() honours that env first. `RTC_RUN_ID`
-// is pinned the same way where a row is spelled out exactly — unset, the run
-// id falls back to getpid() (rtc_base/logging/run_id.hpp).
+// `RTC_SESSION_DIR` is pointed at a per-test session
+// (rtc::testing::ScopedSessionDir, #935); ResolveSessionDir() honours that env
+// first. `RTC_RUN_ID` is pinned the same way where a row is spelled out exactly
+// — unset, the run id falls back to getpid() (rtc_base/logging/run_id.hpp).
 
+#include "rtc_base/testing/isolated_session_dir.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_mpc/logging/mpc_timing_logger.hpp"
 
@@ -26,50 +27,7 @@
 namespace {
 
 namespace fs = std::filesystem;
-
-class ScopedSessionDir {
- public:
-  ScopedSessionDir() {
-    const char* prev = std::getenv("RTC_SESSION_DIR");
-    if (prev) {
-      had_prev_ = true;
-      prev_value_ = prev;
-    }
-    auto base = fs::temp_directory_path() / "rtc_mpc_logger_test";
-    fs::create_directories(base);
-    dir_ = fs::path(base) /
-           ("session_" +
-            std::to_string(::testing::UnitTest::GetInstance()
-                               ->current_test_info()
-                               ->result()
-                               ->test_property_count()) +
-            "_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFu));
-    fs::create_directories(dir_);
-    std::error_code canon_ec;
-    auto canon = fs::canonical(dir_, canon_ec);
-    if (!canon_ec) {
-      dir_ = canon;
-    }
-    ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
-  }
-
-  ~ScopedSessionDir() {
-    if (had_prev_) {
-      ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
-    } else {
-      ::unsetenv("RTC_SESSION_DIR");
-    }
-    std::error_code ec;
-    fs::remove_all(dir_, ec);
-  }
-
-  const fs::path& dir() const noexcept { return dir_; }
-
- private:
-  fs::path dir_;
-  bool had_prev_{false};
-  std::string prev_value_;
-};
+using rtc::testing::ScopedSessionDir;
 
 class ScopedRunId {
  public:
@@ -125,7 +83,7 @@ TEST(MpcTimingLogger, OpenResolvesPathUnderTimingDir) {
   EXPECT_TRUE(logger.IsOpen());
 
   const auto& p = logger.Path();
-  const auto expected = scope.dir() / "timing" / "mpc_timing_log.csv";
+  const auto expected = scope.Dir() / "timing" / "mpc_timing_log.csv";
   EXPECT_EQ(p, expected) << "logger path: " << p;
   EXPECT_TRUE(fs::exists(p));
 }

@@ -212,6 +212,11 @@ if(BUILD_TESTING)
       "mimalloc not found — aligator-solve tests may double-free under Pinocchio 4.0. "
       "Set RTC_DEPS_PREFIX or build deps via repo_scripts/scripts/build_deps.sh.")
   endif()
+
+  # Every gtest binary logs into its own throwaway session directory (#935):
+  # rtc_base's IsolatedSessionDir, which ScopedSessionDir also needs. Covers
+  # only the test targets defined above it. Keep this call last.
+  rtc_base_isolate_test_sessions()
 endif()
 
 ament_package()

@@ -71,7 +71,7 @@ constexpr const char* kProfile = "iiwa7_leap";
 
 using integrated_bringup::testfx::CsvFile;
 using integrated_bringup::testfx::ReadCsv;
-using integrated_bringup::testfx::ScopedSessionDir;
+using rtc::testing::ScopedSessionDir;
 
 // ── Bring-up ────────────────────────────────────────────────────────────────
 

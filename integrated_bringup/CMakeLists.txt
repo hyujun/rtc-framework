@@ -2038,7 +2038,7 @@ if(BUILD_TESTING)
     PROPERTIES RUN_SERIAL TRUE)
 
   # Every gtest binary logs into its own throwaway session directory
-  # (rtc_base_isolate_test_sessions(); test/session_dir_test_fixture.hpp). A
+  # (rtc_base_isolate_test_sessions(); rtc_base/testing/isolated_session_dir.hpp). A
   # controller configured from a shipped YAML opens CSV logs at on_configure,
   # and without RTC_SESSION_DIR they land in the workspace's real logging_data.
   # Covers only the test targets defined above it. Keep this call last.

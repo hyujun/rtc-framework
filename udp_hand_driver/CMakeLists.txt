@@ -246,6 +246,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fingertip_ft_inferencer test/test_fingertip_ft_inferencer.cpp)
   target_include_directories(test_fingertip_ft_inferencer PRIVATE include)
   ament_target_dependencies(test_fingertip_ft_inferencer rtc_base rtc_inference rclcpp)
+
+  # Every gtest binary logs into its own throwaway session directory (#935):
+  # rtc_base's IsolatedSessionDir, which ScopedSessionDir also needs. Covers
+  # only the test targets defined above it. Keep this call last.
+  rtc_base_isolate_test_sessions()
 endif()
 
 ament_package()

@@ -30,7 +30,7 @@
 #include "inference_shipped_fixture.hpp"
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 #include "rtc_base/logging/thread_csv_producer.hpp"
-#include "session_dir_test_fixture.hpp"
+#include "rtc_base/testing/isolated_session_dir.hpp"
 #include "shipped_config_test_fixture.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
 
@@ -136,8 +136,8 @@ class RclcppEnv : public ::testing::Environment {
 const auto* const kEnv = ::testing::AddGlobalTestEnvironment(new RclcppEnv);
 
 // The shipped config opens its CSV logs at configure; the package-wide
-// IsolatedSessionDir (session_dir_test_fixture.hpp) keeps them out of the
-// workspace's real session tree, and fx::SessionDir() is where they land.
+// IsolatedSessionDir (rtc_base/testing/isolated_session_dir.hpp) keeps them
+// out of the workspace's real session tree, and SessionDir() is where they land.
 
 /// The scene_world (#779) of a shipped params file's RT node, added to the
 /// fixture model — the frame the shipped object lane names. `file` is relative
@@ -883,7 +883,8 @@ TEST_F(ShippedInference, ShipsItsCsvLogs) {
 
 TEST_F(ShippedInference, TheDiagFileIsOpenedUnderTheSessionWithTheReachTipColumns) {
   namespace fs = std::filesystem;
-  const fs::path dir = fx::SessionDir().Dir() / "controllers" / "demo_inference_controller";
+  const fs::path dir =
+      rtc::testing::SessionDir().Dir() / "controllers" / "demo_inference_controller";
   const fs::path diag = dir / "inference_diag.csv";
   ASSERT_TRUE(fs::exists(diag)) << "configure must open " << diag;
   EXPECT_TRUE(fs::exists(dir / "ur5e_state.csv"));

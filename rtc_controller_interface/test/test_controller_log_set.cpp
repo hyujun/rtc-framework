@@ -11,14 +11,14 @@
 //     cleanup→configure) re-registers cleanly instead of tripping the
 //     duplicate guard and going unbound (#238).
 //
-// RTC_SESSION_DIR is redirected to a per-test tempdir.
+// RTC_SESSION_DIR is pointed at a per-test session (rtc::testing::ScopedSessionDir).
 
+#include "rtc_base/testing/isolated_session_dir.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <ostream>
@@ -56,37 +56,7 @@ void RowB(std::ostream& os, const PodB& p) {
   os << p.t_relative_s << ',' << p.x << ',' << p.y;
 }
 
-class ScopedSessionDir {
- public:
-  ScopedSessionDir() {
-    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
-      had_prev_ = true;
-      prev_value_ = prev;
-    }
-    auto base = fs::temp_directory_path() / "rtc_log_set_test";
-    fs::create_directories(base);
-    dir_ = base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFu));
-    fs::create_directories(dir_);
-    ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
-  }
-
-  ~ScopedSessionDir() {
-    if (had_prev_) {
-      ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
-    } else {
-      ::unsetenv("RTC_SESSION_DIR");
-    }
-    std::error_code ec;
-    fs::remove_all(dir_, ec);
-  }
-
-  const fs::path& dir() const noexcept { return dir_; }
-
- private:
-  fs::path dir_;
-  bool had_prev_{false};
-  std::string prev_value_;
-};
+using rtc::testing::ScopedSessionDir;
 
 std::vector<std::string> ReadAllLines(const fs::path& p) {
   std::vector<std::string> lines;
@@ -115,7 +85,7 @@ TEST(ControllerLogSet, RegisterLogResolvesPathUnderConfigKey) {
 
   const auto channels = set.Channels();
   ASSERT_EQ(channels.size(), 1u);
-  const auto expected = scope.dir() / "controllers" / "my_controller" / "dev_state.csv";
+  const auto expected = scope.Dir() / "controllers" / "my_controller" / "dev_state.csv";
   EXPECT_EQ(channels[0].second, expected);
   EXPECT_TRUE(fs::exists(expected));
 }

@@ -128,6 +128,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_controller_log_set_switch
     test/test_controller_log_set_switch.cpp)
   target_link_libraries(test_controller_log_set_switch rtc_controller_interface)
+
+  # Every gtest binary logs into its own throwaway session directory (#935):
+  # rtc_base's IsolatedSessionDir, which ScopedSessionDir also needs. Covers
+  # only the test targets defined above it. Keep this call last.
+  rtc_base_isolate_test_sessions()
 endif()
 
 ament_package()

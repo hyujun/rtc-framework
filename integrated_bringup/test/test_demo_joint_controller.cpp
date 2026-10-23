@@ -1392,8 +1392,8 @@ namespace fs = std::filesystem;
 
 using integrated_bringup::testfx::ColumnIndex;
 using integrated_bringup::testfx::ReadLines;
-using integrated_bringup::testfx::ScopedSessionDir;
 using integrated_bringup::testfx::SplitCsv;
+using rtc::testing::ScopedSessionDir;
 
 // Bind a real grasp_diag channel to the controller so the per-tick push in
 // Compute() reaches a file. Registration goes through RegisterControllerLogs,

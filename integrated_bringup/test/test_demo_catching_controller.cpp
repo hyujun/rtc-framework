@@ -4146,7 +4146,7 @@ const std::vector<std::string> kArmJointNames{"a0", "a1", "a2", "a3", "a4", "a5"
 const std::vector<std::string> kTipNames{"thumb", "index"};
 
 TEST(CatchingDiagLog, EveryTickIsARowAndTheHeaderMatchesTheRowWidth) {
-  integrated_bringup::testfx::ScopedSessionDir session{"catching_diag"};
+  rtc::testing::ScopedSessionDir session{"catching_diag"};
   rtc::ControllerLogSet log_set{"catching_diag_rows"};
   auto ch = BindCatchingDiagChannel(log_set, kArmJointNames, kTipNames);
   ASSERT_TRUE(ch.handle) << "the catching_diag channel did not bind";
@@ -4179,7 +4179,7 @@ TEST(CatchingDiagLog, EveryTickIsARowAndTheHeaderMatchesTheRowWidth) {
 TEST(CatchingDiagLog, TheHeaderNamesTheJointsAndTipsItsColumnsAreIn) {
   // A stored file has to decode without that run's YAML (#234 P-14). Column
   // POSITION cannot carry that: the arm width comes from the robot's config.
-  integrated_bringup::testfx::ScopedSessionDir session{"catching_diag"};
+  rtc::testing::ScopedSessionDir session{"catching_diag"};
   rtc::ControllerLogSet log_set{"catching_diag_names"};
   auto ch = BindCatchingDiagChannel(log_set, kArmJointNames, kTipNames);
   ASSERT_TRUE(ch.handle);
@@ -4209,7 +4209,7 @@ TEST(CatchingDiagLog, TheSegmentBlockIsWrittenAsNumbersAndIsZeroWhenTheLaneDidNo
   // closed_form log. `segment_refusal` is a std::uint8_t: streamed without a
   // cast it would be a raw NUL byte, not "0", and the width check above would
   // not notice.
-  integrated_bringup::testfx::ScopedSessionDir session{"catching_diag"};
+  rtc::testing::ScopedSessionDir session{"catching_diag"};
   rtc::ControllerLogSet log_set{"catching_diag_decel"};
   auto ch = BindCatchingDiagChannel(log_set, kArmJointNames, kTipNames);
   ASSERT_TRUE(ch.handle);
@@ -4236,7 +4236,7 @@ TEST(CatchingDiagLog, TheSegmentBlockIsWrittenAsNumbersAndIsZeroWhenTheLaneDidNo
 }
 
 TEST(CatchingDiagLog, AStoppedTickIsARowLikeAnyOtherAndSaysSo) {
-  integrated_bringup::testfx::ScopedSessionDir session{"catching_diag"};
+  rtc::testing::ScopedSessionDir session{"catching_diag"};
   rtc::ControllerLogSet log_set{"catching_diag_estop"};
   auto ch = BindCatchingDiagChannel(log_set, kArmJointNames, kTipNames);
   ASSERT_TRUE(ch.handle);

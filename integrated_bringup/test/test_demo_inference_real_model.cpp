@@ -315,8 +315,8 @@ class RclcppEnv : public ::testing::Environment {
 const auto* const kEnv = ::testing::AddGlobalTestEnvironment(new RclcppEnv);
 
 // The shipped config opens its CSV logs at configure; the package-wide
-// IsolatedSessionDir (session_dir_test_fixture.hpp) keeps them out of the
-// workspace's real session tree.
+// IsolatedSessionDir (rtc_base/testing/isolated_session_dir.hpp) keeps them
+// out of the workspace's real session tree.
 
 /// The production bring-up order on the real model, the SHIPPED controller
 /// config untouched, and the real engine behind the recording seam.

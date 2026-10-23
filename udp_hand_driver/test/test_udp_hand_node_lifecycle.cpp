@@ -13,9 +13,11 @@
 // The suite runs under a dedicated ROS_DOMAIN_ID (CMakeLists — the isolation
 // idiom rtc_controller_manager's full-pipeline tests use) because colcon test
 // runs packages in parallel and cross-package discovery churn breaks pub/sub
-// matching waits. RTC_SESSION_DIR points at a per-run temp dir so the stats
-// JSON / timing CSV side effects land nowhere real and stay assertable.
+// matching waits. RTC_SESSION_DIR is the binary's private session (rtc_base's
+// IsolatedSessionDir), so the stats JSON / timing CSV side effects land nowhere
+// real and stay assertable.
 
+#include "rtc_base/testing/isolated_session_dir.hpp"
 #include "silent_loopback_socket.hpp"
 #include "udp_hand_driver/udp_hand_node.hpp"
 #include <rtc_msgs/msg/calibration_command.hpp>
@@ -152,22 +154,14 @@ rclcpp::NodeOptions LoopmodelOptions() {
 class UdpHandNodeLifecycleTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
-    char tmpl[] = "/tmp/udp_hand_node_lifecycle_XXXXXX";
-    const char* created = mkdtemp(tmpl);
-    ASSERT_NE(created, nullptr);
-    session_dir_ = created;
     // The node writes <session>/device/hand_stats.json (SaveCommStats) and
-    // <session>/timing/hand_timing_log.csv (on_activate). ResolveSessionDir
-    // honours this env var first.
-    setenv("RTC_SESSION_DIR", created, 1);
+    // <session>/timing/hand_timing_log.csv (on_activate) into the binary's
+    // private session (rtc_base_isolate_test_sessions(), #935).
+    session_dir_ = rtc::testing::SessionDir().Dir();
     rclcpp::init(0, nullptr);
   }
 
-  static void TearDownTestSuite() {
-    rclcpp::shutdown();
-    std::error_code ec;
-    std::filesystem::remove_all(session_dir_, ec);
-  }
+  static void TearDownTestSuite() { rclcpp::shutdown(); }
 
   // Stays local instead of moving to the shared rtc::testing::WaitUntil (#356):
   // that helper only sleeps, and this fixture has no other spinner — the node's
