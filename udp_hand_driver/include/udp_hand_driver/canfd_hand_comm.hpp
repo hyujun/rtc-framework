@@ -48,14 +48,14 @@
 //      cmd_mismatch + last_unexpected_* only, attributed to kWriteEcho while
 //      the echo stage is open and to kJointRead otherwise — however many
 //      arrive, the open stages keep waiting (D58). Nothing is re-sent (D41).
-// recv_ok counts the first class-② / ③ frame of each open stage (≤ 2 per
-// cycle); every stage ends on exactly one terminal counter (ok, timeout or
-// error), so the per-kind attempt denominators hold. A failed CMD send fails
-// the echo stage before any wait (recv_error of kWriteEcho beside the tx errno
-// counter; the REQ still goes out); a failed REQ send fails the set stage the
-// same way (the echo stage still waits); a recv error ends every open stage
-// with an error. On this link a dead peer / downed interface surfaces on send
-// (ENETDOWN, ENOBUFS), which is the role ECONNREFUSED plays on UDP.
+// recv_ok counts the first frame of each open stage's id class — an echo id
+// for the echo stage, a RESP id for the set stage, whatever its index or
+// length (a frame-level arrival, as on UDP) — so ≤ 2 per cycle; every stage ends on exactly one
+// terminal counter (ok, timeout or error), so the per-kind attempt denominators hold. A failed CMD
+// send fails the echo stage before any wait (recv_error of kWriteEcho beside the tx errno counter;
+// the REQ still goes out); a failed REQ send fails the set stage the same way (the echo stage still
+// waits); a recv error ends every open stage with an error. On this link a dead peer / downed
+// interface surfaces on send (ENETDOWN, ENOBUFS), which is the role ECONNREFUSED plays on UDP.
 //
 // The set stage takes every RESP of this node that arrives after DrainStale,
 // so a RESP tail more than a tick late can complete a mixed set (D57) on a
