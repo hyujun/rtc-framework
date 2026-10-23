@@ -29,6 +29,12 @@ Why each definition is what it is (the reviewed corrections of H1-F06):
     at 500 Hz (Run B-2) writes zero pairs all along. The ORDER does — a normal
     write sends Frame 0 then Frame 1, the E-Stop sends Frame 1 then Frame 0
     (D26 · D33) — and the loop exits after it, so nothing may follow.
+  * Since #919 (D49 (b) · D59) a write tick is pipelined: CMD 0 · CMD 1 · REQ
+    go out back to back and the echoes and the RESP burst share one receive
+    window, so echoes and RESP frames may interleave on the bus. The REQ ->
+    RESP round trip of such a tick includes the hand's echo handling and is
+    not comparable with a read-only tick's; the write tick's hand-side figure
+    is CMD frame 0 -> RESP frame 2, reported beside it.
   * (d) is a proportion estimated from one run. Near the threshold the run
     cannot decide it: a count within ``undecided_sigmas`` binomial standard
     deviations of the threshold count (±20 counts at 150 000 cycles) is
@@ -180,6 +186,9 @@ class BusSummary:
     write_pairs: int = 0  # normal Frame 0 -> Frame 1 command pairs seen on the bus
     rtt_req_f2_ms: list[float] = field(default_factory=list)
     rtt_cmd_echo_ms: list[float] = field(default_factory=list)
+    # Write tick, pipelined (#919): CMD frame 0 -> RESP frame 2 of the REQ that
+    # follows the pair before the next command frame.
+    rtt_cmd_f2_ms: list[float] = field(default_factory=list)
     estop: EstopEvent | None = None
     estop_candidates: int = 0
 
@@ -287,11 +296,16 @@ def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusS
             s.other += 1
 
     # REQ -> RESP sets. A set is complete when frames 0, 1 and 2 all arrived
-    # before the next REQ. The RTT is REQ -> frame 2, the last of the set.
+    # before the next REQ. The RTT is REQ -> frame 2, the last of the set. The
+    # echoes of a pipelined write tick (#919) interleave with the burst on the
+    # bus; they are another Kind and do not touch the set. Each REQ's frame-2
+    # time is kept (by REQ index) for the write-tick figure below.
     open_req: Frame | None = None
+    open_req_index = -1
     seen: set[int] = set()
     t_f2: float | None = None
     silent = 0
+    f2_by_req: dict[int, float] = {}
 
     def close_set() -> None:
         nonlocal silent
@@ -302,15 +316,16 @@ def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusS
             silent = 0
             if t_f2 is not None:
                 s.rtt_req_f2_ms.append((t_f2 - open_req.t) * 1e3)
+                f2_by_req[open_req_index] = t_f2
         else:
             s.incomplete_sets += 1
             silent += 1
             s.max_silent_req_streak = max(s.max_silent_req_streak, silent)
 
-    for f, k in zip(frames, kinds, strict=True):
+    for i, (f, k) in enumerate(zip(frames, kinds, strict=True)):
         if k is Kind.REQ:
             close_set()
-            open_req, seen, t_f2 = f, set(), None
+            open_req, open_req_index, seen, t_f2 = f, i, set(), None
         elif k is Kind.RESP and open_req is not None:
             seen.add(f.frame_idx)
             if f.frame_idx == 2:
@@ -320,10 +335,13 @@ def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusS
     # CMD pairs and their echoes. Normal write: frame 0 then frame 1 (both
     # echoed, D41). E-Stop: frame 1 then frame 0, both zero (D26 · D33). Two
     # consecutive normal writes also put a frame 1 next to a frame 0 — but a
-    # REQ always lies between them (every comm cycle reads after it writes),
-    # whereas the E-Stop pair is sent back to back, so "no REQ in between" is
-    # what separates the two. Echoes are searched up to the next command frame
-    # after the pair, never into the following write.
+    # REQ always lies between them (every comm cycle sends its REQ after the
+    # CMD pair, pipelined since #919 or sequential before), whereas the E-Stop
+    # pair is sent back to back with no REQ (the loop exits), so "no REQ in
+    # between" is what separates the two. Echoes are searched up to the next
+    # command frame after the pair, never into the following write; the REQ,
+    # the RESP burst and the echoes of one tick all lie in that window
+    # whatever their interleaving.
     cmd_frames = [
         (i, f) for i, (f, k) in enumerate(zip(frames, kinds, strict=True)) if k is Kind.CMD
     ]
@@ -334,6 +352,10 @@ def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusS
         # a 5 min run that writes every cycle has ~300k pairs x ~150k REQs.
         return bisect.bisect_right(req_indices, lo) < bisect.bisect_left(req_indices, hi)
 
+    def first_req_in(lo: int, hi: int) -> int | None:
+        j = bisect.bisect_right(req_indices, lo)
+        return req_indices[j] if j < len(req_indices) and req_indices[j] < hi else None
+
     for n, ((i_a, a), (i_b, b)) in enumerate(zip(cmd_frames, cmd_frames[1:], strict=False)):
         window_end = cmd_frames[n + 2][0] if n + 2 < len(cmd_frames) else len(frames)
         if a.frame_idx == 0 and b.frame_idx == 1 and not req_between(i_a, i_b):
@@ -341,6 +363,12 @@ def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusS
             t0, t1 = _echoes_between(frames, kinds, i_a, window_end)
             if t0 is not None and t1 is not None:
                 s.rtt_cmd_echo_ms.append((max(t0, t1) - a.t) * 1e3)
+            # The write tick's REQ is the first after the pair, before the next
+            # command; its frame 2 (when the set completed) closes the tick's
+            # hand-side round trip.
+            i_req = first_req_in(i_b, window_end)
+            if i_req is not None and i_req in f2_by_req:
+                s.rtt_cmd_f2_ms.append((f2_by_req[i_req] - a.t) * 1e3)
         elif (
             a.frame_idx == 1
             and b.frame_idx == 0
@@ -696,9 +724,12 @@ def render_markdown(
         f"{bus.resp} / {bus.other} | — |",
         f"| REQ with DLC > 0 | {bus.nonzero_dlc_req} | 0 (D47: DLC 0) |",
         f"| RESP sets complete / incomplete | {bus.complete_sets} / {bus.incomplete_sets} | — |",
-        f"| REQ -> RESP frame 2 round trip (bus, lower bound) | {_dist(bus.rtt_req_f2_ms)} | — |",
+        f"| REQ -> RESP frame 2 round trip (bus, lower bound; a write tick's includes the "
+        f"echo handling since #919) | {_dist(bus.rtt_req_f2_ms)} | — |",
         f"| CMD frame 0 -> last echo round trip (bus, lower bound) | {_dist(bus.rtt_cmd_echo_ms)} "
         f"| — |",
+        f"| CMD frame 0 -> RESP frame 2, write tick (bus, lower bound) | "
+        f"{_dist(bus.rtt_cmd_f2_ms)} | — |",
         f"| write attempts (JSON once-per-attempt counters) / bus write pairs | "
         f"{stage_attempts(comm, 'write_echo')} / {bus.write_pairs} | about equal |",
     ]
@@ -845,10 +876,11 @@ def main(argv: list[str] | None = None) -> int:
                 **{
                     k: v
                     for k, v in asdict(bus).items()
-                    if k not in ("rtt_req_f2_ms", "rtt_cmd_echo_ms")
+                    if k not in ("rtt_req_f2_ms", "rtt_cmd_echo_ms", "rtt_cmd_f2_ms")
                 },
                 "rtt_req_f2_ms": _dist(bus.rtt_req_f2_ms),
                 "rtt_cmd_echo_ms": _dist(bus.rtt_cmd_echo_ms),
+                "rtt_cmd_f2_ms": _dist(bus.rtt_cmd_f2_ms),
             },
         }
         args.json_out.write_text(json.dumps(_json_safe(payload), indent=2) + "\n")

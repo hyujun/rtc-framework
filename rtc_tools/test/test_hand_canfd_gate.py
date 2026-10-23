@@ -35,6 +35,7 @@ from rtc_tools.analysis.hand_canfd_gate import (
     load_timing_csv,
     main,
     overall,
+    render_markdown,
     summarise_timing,
 )
 from rtc_tools.utils.session_dir import PRE_F08_HAND_STEMS
@@ -140,6 +141,31 @@ def normal_write(t: float, data_hex: str = NONZERO44) -> list[str]:
         line(t + 0.0003, echo_id(NODE, 0), data_hex),
         line(t + 0.0004, echo_id(NODE, 1), data_hex),
     ]
+
+
+def pipelined_write(
+    t: float, data_hex: str = NONZERO44, resp_first: bool = False, complete: bool = True
+) -> list[str]:
+    """One #919 write tick: CMD 0 · CMD 1 · REQ back to back, then the echoes and
+    the RESP burst sharing the window (RESP 0 ahead of the echoes when
+    `resp_first`); frame 2 withheld when not `complete`."""
+    out = [
+        line(t, cmd_id(NODE, 0), data_hex),
+        line(t + 0.00004, cmd_id(NODE, 1), data_hex),
+        line(t + 0.00008, req_id(NODE)),
+    ]
+    echoes = [
+        line(t + 0.0005, echo_id(NODE, 0), data_hex),
+        line(t + 0.00077, echo_id(NODE, 1), data_hex),
+    ]
+    resp = [line(t + 0.0004 + 0.00013 * i, resp_id(NODE, i), "11" * 8) for i in range(3)]
+    if not complete:
+        resp = resp[:2]
+    if resp_first:
+        out += resp[:1] + echoes + resp[1:]
+    else:
+        out += echoes + resp
+    return out
 
 
 def estop(t: float, echo_delay_s: float = 0.0015, with_echoes: bool = True) -> list[str]:
@@ -430,6 +456,62 @@ def test_write_pairs_are_counted_for_the_denominator_cross_check(tmp_path):
         lines += req_resp(1.0005 + i * 0.002)
     lines += estop(1.1)
     assert bus_from(lines, tmp_path).write_pairs == 7
+
+
+# ── pipelined write ticks (#919, D49 (b) · D59) ──────────────────────────────
+
+
+def test_pipelined_write_ticks_keep_pairs_sets_and_the_estop_apart(tmp_path):
+    # 6 write ticks (3 with RESP 0 ahead of the echoes), 4 read-only ticks, an
+    # incomplete write tick, then the E-Stop. Interleaved echoes do not break
+    # the REQ -> RESP set, the pair count or the E-Stop detection.
+    lines: list[str] = []
+    t = 1.0
+    for i in range(6):
+        lines += pipelined_write(t, resp_first=(i % 2 == 1))
+        t += 0.002
+    for _ in range(4):
+        lines += req_resp(t)
+        t += 0.002
+    lines += pipelined_write(t, complete=False)
+    t += 0.002
+    lines += estop(t)
+    bus = bus_from(lines, tmp_path)
+    assert bus.write_pairs == 7
+    assert (bus.cmd, bus.echo, bus.req) == (16, 16, 11)
+    assert bus.complete_sets == 10
+    assert bus.incomplete_sets == 1
+    assert bus.estop_candidates == 1
+    assert bus.estop is not None and bus.estop.cmd_frames_after == 0
+    assert len(bus.rtt_cmd_echo_ms) == 7
+    assert bus.rtt_cmd_echo_ms[0] == pytest.approx(0.77, abs=1e-6)
+    # REQ -> F2 for every complete set (write and read-only ticks alike) ...
+    assert len(bus.rtt_req_f2_ms) == 10
+    assert bus.rtt_req_f2_ms[0] == pytest.approx((0.0004 + 0.00026 - 0.00008) * 1e3, abs=1e-6)
+    # ... and CMD 0 -> F2 only for the write ticks whose set completed.
+    assert len(bus.rtt_cmd_f2_ms) == 6
+    assert all(v == pytest.approx(0.66, abs=1e-6) for v in bus.rtt_cmd_f2_ms)
+    assert run_judge(tmp_path, lines=lines)["e.estop"].verdict == PASS
+
+
+def test_sequential_write_ticks_have_no_cmd_f2_without_a_following_req(tmp_path):
+    # Pre-#919 order (write, then a separate REQ) still yields the figure — the
+    # REQ follows the pair before the next command — but a pair with no REQ
+    # before the next CMD (E-Stop right after a write) does not.
+    lines = normal_write(1.0) + req_resp(1.0005) + normal_write(1.002) + estop(1.0025)
+    bus = bus_from(lines, tmp_path)
+    assert bus.write_pairs == 2
+    assert len(bus.rtt_cmd_f2_ms) == 1
+    assert bus.rtt_cmd_f2_ms[0] == pytest.approx((1.0005 + 0.0005 - 1.0) * 1e3, abs=1e-6)
+
+
+def test_report_renders_the_cmd_f2_distribution(tmp_path):
+    lines = pipelined_write(1.0) + estop(1.002)
+    bus = bus_from(lines, tmp_path)
+    assert len(bus.rtt_cmd_f2_ms) == 1
+    md = render_markdown([], summarise_timing([], LIMIT_US, PERIOD_US), comm_stats(), bus, TH)
+    assert "CMD frame 0 -> RESP frame 2, write tick" in md
+    assert "n=1 p50=0.660" in md
 
 
 def test_period_mismatch_refuses_to_judge_p99(tmp_path):
