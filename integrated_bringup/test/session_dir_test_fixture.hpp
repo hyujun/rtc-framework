@@ -1,64 +1,20 @@
-// ── Point controller CSV logs at a throwaway session directory ───────────────
-//
-// A controller configured from a shipped YAML that carries a `logs:` block
-// opens its CSV files during on_configure. With no RTC_SESSION_DIR set, the
-// session resolver falls back to the workspace's real logging root, so a test
-// binary would leave a timestamped session of test rows among the operator's
-// runs — and prune real sessions past the retention count on the way.
-//
-// Every gtest binary in this package gets exactly one instance, registered by
-// session_dir_test_env.cpp, which CMakeLists.txt links into each `test_*`
-// executable — a test file does not register it itself. Tests in the binary log
-// into one fresh temp directory, removed at teardown. `SessionDir().Dir()` is
-// for the test that wants to read a file back.
+// Every gtest binary in this package logs into one throwaway session directory
+// — rtc_base's shared Environment (rtc_base/testing/isolated_session_dir.hpp
+// owns the contract and the layout). CMakeLists.txt registers it in each
+// `test_*` executable (rtc_base_isolate_test_sessions()), so a test file does
+// not register it itself. `SessionDir().Dir()` is for the test that wants to
+// read a file back.
 //
 // Per-file registration was the old contract and seven binaries never did it:
 // every `colcon test` (the Stop hook's included) left sessions in the real
 // logging_data, next to sim runs started the same minute (2026-09-24).
 #pragma once
 
-#include <gtest/gtest.h>
-
-#include <cstdlib>
-#include <filesystem>
-#include <string>
-#include <system_error>
+#include "rtc_base/testing/isolated_session_dir.hpp"
 
 namespace integrated_bringup::testfx {
 
-class IsolatedSessionDir : public ::testing::Environment {
- public:
-  void SetUp() override {
-    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
-      had_prev_ = true;
-      prev_ = prev;
-    }
-    std::string tmpl = (std::filesystem::temp_directory_path() / "rtc_session_XXXXXX").string();
-    ASSERT_NE(::mkdtemp(tmpl.data()), nullptr) << "mkdtemp failed for " << tmpl;
-    dir_ = tmpl;
-    ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
-  }
-
-  void TearDown() override {
-    if (had_prev_) {
-      ::setenv("RTC_SESSION_DIR", prev_.c_str(), 1);
-    } else {
-      ::unsetenv("RTC_SESSION_DIR");
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(dir_, ec);
-  }
-
-  [[nodiscard]] const std::filesystem::path& Dir() const noexcept { return dir_; }
-
- private:
-  std::filesystem::path dir_;
-  std::string prev_;
-  bool had_prev_{false};
-};
-
-/// The binary's one registered instance (session_dir_test_env.cpp). Its
-/// directory is set up before any test runs.
-IsolatedSessionDir& SessionDir();
+using rtc::testing::IsolatedSessionDir;
+using rtc::testing::SessionDir;
 
 }  // namespace integrated_bringup::testfx

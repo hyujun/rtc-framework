@@ -60,7 +60,7 @@ auto snapshot = state_lock.Load();            // 다른 스레드, lock-free
 | `tracing/` | `trace_scope.hpp`, `rtc_tracepoints.hpp` | `RTC_TRACE_SCOPE` (opt-in) |
 | `utils/` | `clamp_commands.hpp`, `device_passthrough.hpp` | `ClampSymmetric`, `ClampRange`, `PassthroughSecondaryDevices` |
 
-`test/include/rtc_base/testing/` 의 `malloc_gate.hpp` · `no_malloc_scope.hpp` · `wait_until.hpp` 는 **test 전용**이라 install 되지 않습니다 (형제 패키지는 `../rtc_base/test/include` 로 소비). 사용 계약은 각 헤더 상단 주석이 SSoT 이고 ASan 과의 제약은 [docs/testing.md](../docs/testing.md) 에 있습니다.
+`test/include/rtc_base/testing/` 의 헤더는 **test 전용**이라 install 되지 않습니다 (형제 패키지는 `rtc_base_add_test_includes()` 로 소비). 사용 계약은 각 헤더 상단 주석이 SSoT 이고 ASan 과의 제약은 [docs/testing.md](../docs/testing.md) 에 있습니다.
 
 ### 타입 (`types/types.hpp`)
 

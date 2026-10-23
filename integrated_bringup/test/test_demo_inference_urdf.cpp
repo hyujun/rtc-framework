@@ -136,7 +136,7 @@ class RclcppEnv : public ::testing::Environment {
 const auto* const kEnv = ::testing::AddGlobalTestEnvironment(new RclcppEnv);
 
 // The shipped config opens its CSV logs at configure; the package-wide
-// IsolatedSessionDir (session_dir_test_env.cpp) keeps them out of the
+// IsolatedSessionDir (session_dir_test_fixture.hpp) keeps them out of the
 // workspace's real session tree, and fx::SessionDir() is where they land.
 
 /// The scene_world (#779) of a shipped params file's RT node, added to the

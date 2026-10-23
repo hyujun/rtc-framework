@@ -42,6 +42,26 @@ function(rtc_base_add_test_includes)
   endforeach()
 endfunction()
 
+# Point RTC_SESSION_DIR at a throwaway session for every gtest binary of the
+# calling package (testing/isolated_session_dir.hpp owns the contract): compiles
+# the registrar TU into every `test_*` executable defined so far in the calling
+# directory. A target added after the call is not covered, so call it last in
+# the BUILD_TESTING block.
+function(rtc_base_isolate_test_sessions)
+  _rtc_base_assert_test_includes("rtc_base_isolate_test_sessions()")
+  get_directory_property(_targets BUILDSYSTEM_TARGETS)
+  foreach(_target IN LISTS _targets)
+    if(_target MATCHES "^test_")
+      get_target_property(_type ${_target} TYPE)
+      if(_type STREQUAL "EXECUTABLE")
+        target_sources(${_target} PRIVATE
+          "${rtc_base_TEST_INCLUDE_DIRS}/rtc_base/testing/isolated_session_dir_env.cpp")
+        target_include_directories(${_target} PRIVATE "${rtc_base_TEST_INCLUDE_DIRS}")
+      endif()
+    endif()
+  endforeach()
+endfunction()
+
 # Hand the validated path back in `out_var`. For consumers that compose it into
 # a longer include list alongside their own test-include dirs (rtc_controllers,
 # rtc_mpc), where naming the list entry keeps the surrounding call readable.

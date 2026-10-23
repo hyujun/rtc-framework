@@ -293,7 +293,7 @@ ControllerState MakeState() {
 }
 
 // The shipped config opens its CSV logs at configure. The package-wide
-// IsolatedSessionDir (session_dir_test_env.cpp) keeps them out of the
+// IsolatedSessionDir (session_dir_test_fixture.hpp) keeps them out of the
 // workspace's real session tree — and is what lets registration succeed, which
 // puts the bound log push inside the shipped gates below.
 
