@@ -82,8 +82,8 @@ TEST_F(EstopTest, TriggerIsIdempotent) {
 }
 
 TEST_F(EstopTest, TriggerTruncatesOverlongReason) {
-  // estop_reason_ is a fixed 128-byte buffer — an over-length reason must be
-  // truncated (and NUL-terminated) without overflowing.
+  // The E-STOP reason is a fixed 128-byte seqlock buffer — an over-length
+  // reason must be truncated (and NUL-terminated) without overflowing.
   const std::string long_reason(300, 'x');
   ControllerLifecycleTestAccess::CallTriggerEstop(*node_, long_reason);
   const std::string captured = ControllerLifecycleTestAccess::GetEstopReason(*node_);
@@ -461,6 +461,16 @@ TEST_F(EstopTest, DrainLogPrintsTimingSummaryWhenSignalled) {
   // A second drain with the flag cleared takes the no-summary path.
   ControllerLifecycleTestAccess::CallDrainLog(*node_);
   SUCCEED();
+}
+
+// A cleared latch has no reason once the drain has reported the clear — what
+// /rtc_cm/clear_estop and the reset path quote is the latch in force (#935).
+TEST_F(EstopTest, AClearedLatchHasNoReasonOnceDrained) {
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node_, "drained_reason");
+  ASSERT_EQ(ControllerLifecycleTestAccess::EstopClearOutcome::kCleared,
+            ControllerLifecycleTestAccess::CallClearEstop(*node_));
+  ControllerLifecycleTestAccess::CallDrainLog(*node_);
+  EXPECT_EQ("", ControllerLifecycleTestAccess::GetGlobalEstopReason(*node_));
 }
 
 // ── Slot-mapping build guards (issue #198 comment 16) ────────────────────────

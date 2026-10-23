@@ -313,8 +313,8 @@ void RtControllerNode::CreateServices() {
           return;
         }
 
-        // Captured before the clear: DrainLog wipes the buffer once it logs a
-        // cleared latch, so the reply would otherwise quote an empty reason.
+        // Captured before the clear: DrainLog retires the reason once it logs
+        // a cleared latch, so the reply would otherwise quote an empty one.
         const std::string latched_reason = GlobalEstopReason();
 
         // Echoing the reason is the operator confirmation step (see

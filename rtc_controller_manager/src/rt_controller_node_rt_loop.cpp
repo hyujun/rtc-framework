@@ -12,6 +12,7 @@
 #include <cmath>  // std::abs
 #include <cstddef>
 #include <cstdio>  // std::snprintf
+#include <optional>
 #include <string>
 
 namespace urtc = rtc;
@@ -1013,11 +1014,24 @@ void RtControllerNode::FlushEstopLog() {
   if (!estop_log_pending_.exchange(false, std::memory_order_acquire)) {
     return;
   }
-  if (global_estop_.load(std::memory_order_relaxed)) {
-    RCLCPP_ERROR(get_logger(), "GLOBAL E-STOP triggered: %s", estop_reason_.data());
+  // The reason is read BEFORE the latch: a cleared latch retires the reason
+  // at the sequence read here, and a trigger landing between a latch load and
+  // a later read would have its live reason retired. A latch found up is
+  // read again, so a trigger that landed after the first read is logged with
+  // its own reason rather than the cleared one.
+  std::array<char, kEstopReasonBytes> reason{};
+  const std::optional<std::uint64_t> seq = ReadEstopReason(reason);
+  if (global_estop_.load(std::memory_order_acquire)) {
+    (void)ReadEstopReason(reason);
+    RCLCPP_ERROR(get_logger(), "GLOBAL E-STOP triggered: %s", reason.data());
   } else {
-    RCLCPP_INFO(get_logger(), "GLOBAL E-STOP cleared (was: %s)", estop_reason_.data());
-    estop_reason_.fill('\0');
+    RCLCPP_INFO(get_logger(), "GLOBAL E-STOP cleared (was: %s)", reason.data());
+    // Retire exactly the reason just logged (#935). A trigger that wrote
+    // since has moved the sequence on, so its reason stays readable; one
+    // still writing made the read fail, and retires nothing.
+    if (seq.has_value()) {
+      estop_reason_cleared_seq_.store(*seq, std::memory_order_release);
+    }
   }
 }
 

@@ -31,13 +31,14 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstring>  // ::strnlen — bounded read of the fixed-size E-STOP reason buffer
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -322,8 +323,26 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // Emits the deferred GLOBAL E-STOP triggered / cleared line, if one is
   // queued. DrainLog calls it at the drain cadence; the teardown calls it so a
   // line queued by the closing session is not printed by the next one's first
-  // pass. Non-RT, under drain_mutex_ — it clears estop_reason_.
+  // pass. Non-RT, under drain_mutex_ — the cleared branch retires the reason,
+  // and the lock keeps it the only writer of estop_reason_cleared_seq_.
   void FlushEstopLog();
+
+  // ── E-STOP reason seqlock (#935) ──────────────────────────────────────────
+  static constexpr std::size_t kEstopReasonBytes = 128;  // fixed — no heap on the RT path
+  static constexpr std::size_t kEstopReasonWords = kEstopReasonBytes / sizeof(std::uint64_t);
+  // Reads give up after this many torn or in-progress attempts.
+  static constexpr int kEstopReasonReadAttempts = 8;
+  // Records `reason` for the trigger that just raised the latch. RT-safe: one
+  // snprintf into the stack, one CAS, plain word stores — no lock, no
+  // allocation. When another writer holds the seqlock the reason is dropped;
+  // the latch and its propagation never depend on it.
+  void WriteEstopReason(std::string_view reason) noexcept;
+  // Copies the reason in force into `out` ("" once FlushEstopLog() retired
+  // it) and returns the generation it was read at. nullopt, with `out` empty,
+  // when a writer held the seqlock through every retry — the read is bounded
+  // because DrainLog() makes it while holding drain_mutex_. Non-RT.
+  [[nodiscard]] std::optional<std::uint64_t> ReadEstopReason(
+      std::array<char, kEstopReasonBytes>& out) const noexcept;
 
   // ── Controller-level lifecycle (aux thread only) ─────────────────────────
   // Activate / deactivate a single controller. Updates controller_states_
@@ -407,15 +426,12 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   }
 
   /// Copy of the reason captured by the most recent trigger ("" once a cleared
-  /// latch has been drained). Aux-thread read of a buffer the RT thread writes
-  /// with snprintf, so a copy taken during a concurrent re-trigger can mix two
-  /// reasons — the same tolerance DrainLog's deferred log line already takes,
-  /// and bounded here because the read never runs past the array. Callers use
-  /// it for operator-facing text and confirmation, never for control flow that
-  /// has to be exact.
-  [[nodiscard]] std::string GlobalEstopReason() const {
-    return std::string(estop_reason_.data(), ::strnlen(estop_reason_.data(), estop_reason_.size()));
-  }
+  /// latch has been drained). A seqlock read (#935): the copy is one whole
+  /// reason, never two mixed, and comes back "" if a trigger kept rewriting it
+  /// through every retry. Between a trigger's latch and its reason write it is
+  /// still the previous reason. Callers use it for operator-facing text and
+  /// confirmation, never for control flow that has to be exact. Non-RT.
+  [[nodiscard]] std::string GlobalEstopReason() const;
 
   /// One configured control period. Every aux-thread wait that has to let the
   /// RT loop observe an off-RT store sizes itself from this, so the period has
@@ -687,7 +703,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // for a pass already running, and a pass the executor has already picked up
   // can still start after the drop, so the lock — not the timer reset — is
   // what keeps a pass off what a teardown releases: the two loggers above
-  // (not thread-safe), estop_pub_, controllers_, estop_reason_. Aux lane and
+  // (not thread-safe), estop_pub_, controllers_. Aux lane and
   // lifecycle only, never the RT path (RT-4): the producers above are SPSC.
   std::mutex drain_mutex_;
   // Whether a DrainLog() pass may run, read and written only under
@@ -819,7 +835,17 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // Every TriggerGlobalEstop() entry, counted before its CAS so the swallowed
   // calls are counted too (issue #288). See EstopTriggerRequestCount().
   std::atomic<std::uint64_t> estop_trigger_requests_{0};
-  std::array<char, 128> estop_reason_{};        // fixed-size — no heap alloc on RT path
+  // The reason the latching trigger gave, as a seqlock (#935): TriggerGlobalEstop
+  // writes it from the RT loop with no lock, while DrainLog() and the services
+  // read it on other threads. Atomic words rather than a char array, so a read
+  // that races a write is a retry, not a data race. An odd sequence is a write
+  // in progress; the even value a reader saw it at names the reason it got.
+  // FlushEstopLog() retires a cleared latch's reason by recording that value
+  // in estop_reason_cleared_seq_ — the words stay, and the next write moves
+  // the sequence past it.
+  std::array<std::atomic<std::uint64_t>, kEstopReasonWords> estop_reason_words_{};
+  std::atomic<std::uint64_t> estop_reason_seq_{0};
+  std::atomic<std::uint64_t> estop_reason_cleared_seq_{0};
   std::atomic<bool> estop_log_pending_{false};  // deferred logging flag
   // Deferred /system/estop_status publish. TriggerGlobalEstop /
   // ClearGlobalEstop are reachable from the RT loop, where a plain
@@ -1021,7 +1047,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // controller put WHICH mode on WHICH group, which is the whole content of
   // an operator's fix.
   //
-  // Same lane as estop_reason_ / estop_log_pending_ rather than a throttled
+  // Same lane as the E-STOP reason / estop_log_pending_ rather than a throttled
   // macro: RCLCPP_*_THROTTLE keeps its window in a static at the macro's
   // expansion point, which is process-global and would make two nodes in one
   // process silence each other. The pending flag is a node member, so it does

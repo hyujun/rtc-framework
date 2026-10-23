@@ -484,12 +484,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
     const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_ERROR(get_logger(), "RtControllerNode error — attempting recovery");
 
-  {
-    // Under the drain lock: the trigger writes estop_reason_, which a pass
-    // clears on its "cleared" branch (#935).
-    const std::lock_guard<std::mutex> lock(drain_mutex_);
-    TriggerGlobalEstop("lifecycle_error");
-  }
+  // No drain lock: the reason is a seqlock (#935), written lock-free here as
+  // on the RT loop, which may not be joined yet.
+  TriggerGlobalEstop("lifecycle_error");
   StopRtLoop();
   StopNrtPublishLoop();
   // RT joined: no one would ever close a verification window now, and the

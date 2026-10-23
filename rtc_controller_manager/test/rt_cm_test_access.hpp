@@ -213,6 +213,12 @@ class ControllerLifecycleTestAccess {
     return node.GlobalEstopReason();
   }
 
+  // FlushEstopLog() as a DrainLog() pass runs it: under the drain lock.
+  static void CallFlushEstopLog(RtControllerNode& node) {
+    const std::lock_guard<std::mutex> lock(node.drain_mutex_);
+    node.FlushEstopLog();
+  }
+
   static bool IsEstopped(const RtControllerNode& node) { return node.IsGlobalEstopped(); }
 
   // Completed control ticks (gate-idle ticks excluded) — the sim-sync
@@ -231,8 +237,10 @@ class ControllerLifecycleTestAccess {
     return node.sim_missing_mask_.load(std::memory_order_acquire);
   }
 
+  // The same seqlock read as GetGlobalEstopReason since #935 — the raw buffer
+  // it used to copy is gone. Kept for the tests written against it.
   static std::string GetEstopReason(const RtControllerNode& node) {
-    return std::string(node.estop_reason_.data());
+    return GetGlobalEstopReason(node);
   }
 
   static bool GetEstopLogPending(const RtControllerNode& node) {
