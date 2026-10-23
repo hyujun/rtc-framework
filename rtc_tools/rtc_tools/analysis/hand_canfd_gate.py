@@ -33,8 +33,9 @@ Why each definition is what it is (the reviewed corrections of H1-F06):
     go out back to back and the echoes and the RESP burst share one receive
     window, so echoes and RESP frames may interleave on the bus. The REQ ->
     RESP round trip of such a tick includes the hand's echo handling and is
-    not comparable with a read-only tick's; the write tick's hand-side figure
-    is CMD frame 0 -> RESP frame 2, reported beside it.
+    not comparable with a read-only tick's: the read-only ticks' round trips
+    are reported on their own (the H1-F06 baseline) and the write tick's
+    hand-side figure is CMD frame 0 -> RESP frame 2, both beside the mixed row.
   * (d) is a proportion estimated from one run. Near the threshold the run
     cannot decide it: a count within ``undecided_sigmas`` binomial standard
     deviations of the threshold count (±20 counts at 150 000 cycles) is
@@ -187,8 +188,11 @@ class BusSummary:
     rtt_req_f2_ms: list[float] = field(default_factory=list)
     rtt_cmd_echo_ms: list[float] = field(default_factory=list)
     # Write tick, pipelined (#919): CMD frame 0 -> RESP frame 2 of the REQ that
-    # follows the pair before the next command frame.
+    # follows the pair within `cmd_req_max_s`.
     rtt_cmd_f2_ms: list[float] = field(default_factory=list)
+    # REQ -> RESP frame 2 of the ticks that wrote nothing: the hand's bare
+    # round trip, comparable with the read-only baseline (H1-F06 Run B-1).
+    rtt_req_f2_readonly_ms: list[float] = field(default_factory=list)
     estop: EstopEvent | None = None
     estop_candidates: int = 0
 
@@ -275,8 +279,14 @@ def stage_timeouts(comm: dict, kind: str) -> int:
 # ── bus (candump) ────────────────────────────────────────────────────────────
 
 
-def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusSummary:
-    """Per-hand counts, REQ -> RESP completeness, round trips and the E-Stop event."""
+def analyse_bus(
+    frames: list[Frame], node: int, unparsed_lines: int = 0, cmd_req_max_s: float = 1e-3
+) -> BusSummary:
+    """Per-hand counts, REQ -> RESP completeness, round trips and the E-Stop event.
+
+    `cmd_req_max_s` bounds how long after CMD frame 0 the write tick's own REQ
+    may follow (half a period from the CLI): a tick whose REQ never left
+    (send failure) must not borrow the next read-only tick's REQ."""
     s = BusSummary(frames=len(frames), unparsed_lines=unparsed_lines)
     kinds = [classify(f, node) for f in frames]
     for f, k in zip(frames, kinds, strict=True):
@@ -305,7 +315,7 @@ def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusS
     seen: set[int] = set()
     t_f2: float | None = None
     silent = 0
-    f2_by_req: dict[int, float] = {}
+    f2_by_req: dict[int, tuple[float, float]] = {}  # REQ index -> (t_req, t_f2)
 
     def close_set() -> None:
         nonlocal silent
@@ -316,7 +326,7 @@ def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusS
             silent = 0
             if t_f2 is not None:
                 s.rtt_req_f2_ms.append((t_f2 - open_req.t) * 1e3)
-                f2_by_req[open_req_index] = t_f2
+                f2_by_req[open_req_index] = (open_req.t, t_f2)
         else:
             s.incomplete_sets += 1
             silent += 1
@@ -356,6 +366,7 @@ def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusS
         j = bisect.bisect_right(req_indices, lo)
         return req_indices[j] if j < len(req_indices) and req_indices[j] < hi else None
 
+    write_reqs: set[int] = set()
     for n, ((i_a, a), (i_b, b)) in enumerate(zip(cmd_frames, cmd_frames[1:], strict=False)):
         window_end = cmd_frames[n + 2][0] if n + 2 < len(cmd_frames) else len(frames)
         if a.frame_idx == 0 and b.frame_idx == 1 and not req_between(i_a, i_b):
@@ -364,11 +375,14 @@ def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusS
             if t0 is not None and t1 is not None:
                 s.rtt_cmd_echo_ms.append((max(t0, t1) - a.t) * 1e3)
             # The write tick's REQ is the first after the pair, before the next
-            # command; its frame 2 (when the set completed) closes the tick's
+            # command and within cmd_req_max_s of CMD frame 0 (not the next
+            # tick's); its frame 2 (when the set completed) closes the tick's
             # hand-side round trip.
             i_req = first_req_in(i_b, window_end)
-            if i_req is not None and i_req in f2_by_req:
-                s.rtt_cmd_f2_ms.append((f2_by_req[i_req] - a.t) * 1e3)
+            if i_req is not None and frames[i_req].t - a.t <= cmd_req_max_s:
+                write_reqs.add(i_req)
+                if i_req in f2_by_req:
+                    s.rtt_cmd_f2_ms.append((f2_by_req[i_req][1] - a.t) * 1e3)
         elif (
             a.frame_idx == 1
             and b.frame_idx == 0
@@ -385,6 +399,9 @@ def analyse_bus(frames: list[Frame], node: int, unparsed_lines: int = 0) -> BusS
                 t_echo0=t0,
                 cmd_frames_after=len(cmd_frames) - (n + 2),
             )
+    s.rtt_req_f2_readonly_ms = [
+        (t_f2 - t_req) * 1e3 for i, (t_req, t_f2) in f2_by_req.items() if i not in write_reqs
+    ]
     return s
 
 
@@ -724,11 +741,13 @@ def render_markdown(
         f"{bus.resp} / {bus.other} | — |",
         f"| REQ with DLC > 0 | {bus.nonzero_dlc_req} | 0 (D47: DLC 0) |",
         f"| RESP sets complete / incomplete | {bus.complete_sets} / {bus.incomplete_sets} | — |",
-        f"| REQ -> RESP frame 2 round trip (bus, lower bound; a write tick's includes the "
-        f"echo handling since #919) | {_dist(bus.rtt_req_f2_ms)} | — |",
+        f"| REQ -> RESP frame 2 round trip, all ticks (bus, lower bound; a write tick's "
+        f"includes the echo handling since #919) | {_dist(bus.rtt_req_f2_ms)} | — |",
+        f"| REQ -> RESP frame 2 round trip, read-only ticks (bus, lower bound; the H1-F06 "
+        f"baseline) | {_dist(bus.rtt_req_f2_readonly_ms)} | — |",
         f"| CMD frame 0 -> last echo round trip (bus, lower bound) | {_dist(bus.rtt_cmd_echo_ms)} "
         f"| — |",
-        f"| CMD frame 0 -> RESP frame 2, write tick (bus, lower bound) | "
+        f"| CMD frame 0 -> RESP frame 2, write ticks (bus, lower bound) | "
         f"{_dist(bus.rtt_cmd_f2_ms)} | — |",
         f"| write attempts (JSON once-per-attempt counters) / bus write pairs | "
         f"{stage_attempts(comm, 'write_echo')} / {bus.write_pairs} | about equal |",
@@ -848,7 +867,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: no rows with run_id {args.run_id} in {csv_path}", file=sys.stderr)
             return 3
     timing = summarise_timing(rows, th.p99_limit_us, th.period_us)
-    bus = analyse_bus(frames, node_id_of(args.hand_side), unparsed)
+    bus = analyse_bus(
+        frames, node_id_of(args.hand_side), unparsed, cmd_req_max_s=th.period_us * 0.5e-6
+    )
     checks = judge(
         timing,
         comm,
@@ -876,9 +897,16 @@ def main(argv: list[str] | None = None) -> int:
                 **{
                     k: v
                     for k, v in asdict(bus).items()
-                    if k not in ("rtt_req_f2_ms", "rtt_cmd_echo_ms", "rtt_cmd_f2_ms")
+                    if k
+                    not in (
+                        "rtt_req_f2_ms",
+                        "rtt_cmd_echo_ms",
+                        "rtt_cmd_f2_ms",
+                        "rtt_req_f2_readonly_ms",
+                    )
                 },
                 "rtt_req_f2_ms": _dist(bus.rtt_req_f2_ms),
+                "rtt_req_f2_readonly_ms": _dist(bus.rtt_req_f2_readonly_ms),
                 "rtt_cmd_echo_ms": _dist(bus.rtt_cmd_echo_ms),
                 "rtt_cmd_f2_ms": _dist(bus.rtt_cmd_f2_ms),
             },
