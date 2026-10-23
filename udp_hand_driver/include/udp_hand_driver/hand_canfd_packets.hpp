@@ -489,6 +489,11 @@ class RespSetAssembler {
     deadline_ = deadline;
   }
 
+  /// Move the deadline of the set in progress without touching what is
+  /// stored (D59 deadline chain: the set stage's deadline is re-based on the
+  /// moment the echo stage closes, after frames may already have arrived).
+  void SetDeadline(Clock::time_point deadline) noexcept { deadline_ = deadline; }
+
   /// Drop whatever is pending (partial → abandoned). Deadline untouched.
   void Reset() noexcept {
     AbandonIfPartial();

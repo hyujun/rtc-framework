@@ -20,6 +20,14 @@
 //              echo it ends at the deadline; an echo with another payload
 //              only counts, an error frame costs nothing (error frames are
 //              shared bus-wide, so that case asserts >= 1)
+//   D59 · D60  RunCycle = CMD pair + REQ back to back, one receive window:
+//              echoes and RESP interleaved (RESP first), no echo → echo
+//              timeout but the set completes within ~T, no RESP F2 → write ok
+//              but the set times out, the deadline chain (late echoes, later
+//              RESP) completes the set, class-④ frames only count, a stale
+//              RESP before the echoes is replaced by the real burst (D57),
+//              payload mismatch / bus-off / left-right split / recovery on the
+//              window path, write without a REQ-side change for the E-Stop
 //   D26        E-Stop fire-and-forget: Frame 1 zeros then Frame 0 zeros
 //   D51        a left-hand comm never talks to a right-hand fake
 //   DrainStale bounded drain, stale_drained accounting
@@ -50,6 +58,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace udp_hand_driver::test {
 
@@ -125,16 +134,27 @@ canfd_frame DataFrame(uint32_t bare_id, uint8_t fill) {
 }
 
 // FakeHandFirmware behind its own socket on a thread: the device side of the
-// link. Mode kDropFrame2 withholds RESP idx 2 (a partial set every cycle);
-// kReverse sends each answer's frames last-first (RESP 2 1 0); kSilent
-// answers nothing. Model reads go through WithModel() (mutex — test
-// code, not RT).
+// link. Modes beyond kNormal shape the answers:
+//   kDropFrame2  withholds RESP idx 2 (a partial set every cycle)
+//   kReverse     sends each answer's frames last-first (RESP 2 1 0)
+//   kSilent      answers nothing
+//   kRespFirst   holds the echoes until the REQ, then RESP 0 · echo 0 · echo 1 ·
+//                RESP 1 · RESP 2 — the interleaving a pipelined window must take
+//   kNoEcho      answers the REQ, never echoes
+//   kLate        holds the echoes until 0.6 x `late_unit` after CMD 0 arrived
+//                and the RESP burst until 1.3 x `late_unit` (the D59 chain:
+//                within (echo close) + T, outside REQ + T)
+// Model reads go through WithModel() (mutex — test code, not RT).
 class FakePeer {
  public:
-  enum class Mode { kNormal, kDropFrame2, kReverse, kSilent };
+  enum class Mode { kNormal, kDropFrame2, kReverse, kSilent, kRespFirst, kNoEcho, kLate };
 
-  explicit FakePeer(HandSide side, Mode mode = Mode::kNormal)
-      : firmware_(FakeConfig(side)), mode_(mode), transport_(TargetedConfig(NodeIdOf(side))) {
+  explicit FakePeer(HandSide side, Mode mode = Mode::kNormal,
+                    std::chrono::milliseconds late_unit = std::chrono::milliseconds(0))
+      : firmware_(FakeConfig(side)),
+        mode_(mode),
+        late_unit_(late_unit),
+        transport_(TargetedConfig(NodeIdOf(side))) {
     open_ = transport_.Open();
     if (open_)
       thread_ = std::thread([this] { Run(); });
@@ -155,39 +175,85 @@ class FakePeer {
   }
 
  private:
+  using Clock = std::chrono::steady_clock;
+
+  void Send(const FakeHandFirmware::CanFdFrame& f) {
+    canfd_frame tx{};
+    tx.can_id = f.can_id | CAN_EFF_FLAG;
+    tx.len = static_cast<__u8>(f.len);
+    tx.flags = CANFD_BRS;
+    std::memcpy(tx.data, f.data.data(), f.len);
+    (void)transport_.SendFrame(tx);
+  }
+
   void Run() {
     canfd_frame rx{};
     Frames out{};
+    std::vector<FakeHandFirmware::CanFdFrame> held;  // echoes held back (kRespFirst · kLate)
+    Clock::time_point t_cmd0{};
     const timespec poll{0, 5'000'000};  // 5 ms, re-checks stop_
     while (!stop_.load()) {
       const ssize_t n = transport_.RecvFrameWithTimeout(rx, poll);
       if (n <= 0)
         continue;
+      const bool is_req = MsgTypeOf(rx.can_id) == static_cast<uint8_t>(MsgType::kReq);
+      if (MsgTypeOf(rx.can_id) == static_cast<uint8_t>(MsgType::kCmd) &&
+          FrameIndexOf(rx.can_id) == 0)
+        t_cmd0 = Clock::now();
       std::size_t count = 0;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         count = firmware_.BuildCanFdResponse(rx.can_id, rx.data, rx.len, out.data(), out.size());
       }
-      if (mode_ == Mode::kSilent)
-        continue;
+      switch (mode_) {
+        case Mode::kSilent:
+          continue;
+        case Mode::kNoEcho:
+          if (!is_req)
+            continue;
+          break;
+        case Mode::kRespFirst:
+          if (!is_req) {
+            held.insert(held.end(), out.begin(), out.begin() + static_cast<std::ptrdiff_t>(count));
+            continue;
+          }
+          Send(out[0]);
+          for (const auto& f : held)
+            Send(f);
+          held.clear();
+          for (std::size_t k = 1; k < count; ++k)
+            Send(out[k]);
+          continue;
+        case Mode::kLate:
+          if (!is_req) {
+            held.insert(held.end(), out.begin(), out.begin() + static_cast<std::ptrdiff_t>(count));
+            continue;
+          }
+          std::this_thread::sleep_until(t_cmd0 + late_unit_ * 6 / 10);
+          for (const auto& f : held)
+            Send(f);
+          held.clear();
+          std::this_thread::sleep_until(t_cmd0 + late_unit_ * 13 / 10);
+          break;
+        case Mode::kNormal:
+        case Mode::kDropFrame2:
+        case Mode::kReverse:
+          break;
+      }
       for (std::size_t k = 0; k < count; ++k) {
         const std::size_t i = (mode_ == Mode::kReverse) ? count - 1 - k : k;
         if (mode_ == Mode::kDropFrame2 &&
             MsgTypeOf(out[i].can_id) == static_cast<uint8_t>(MsgType::kResp) &&
             FrameIndexOf(out[i].can_id) == 2)
           continue;
-        canfd_frame tx{};
-        tx.can_id = out[i].can_id | CAN_EFF_FLAG;
-        tx.len = static_cast<__u8>(out[i].len);
-        tx.flags = CANFD_BRS;
-        std::memcpy(tx.data, out[i].data.data(), out[i].len);
-        (void)transport_.SendFrame(tx);
+        Send(out[i]);
       }
     }
   }
 
   FakeHandFirmware firmware_;
   Mode mode_;
+  std::chrono::milliseconds late_unit_;
   rtc::CanFdTransport transport_;
   bool open_{false};
   std::mutex mutex_;
@@ -207,10 +273,23 @@ class CanFdHandCommVcan : public ::testing::Test {
   }
 
   std::unique_ptr<FakePeer> StartPeer(HandSide side = HandSide::kRight,
-                                      FakePeer::Mode mode = FakePeer::Mode::kNormal) {
-    auto peer = std::make_unique<FakePeer>(side, mode);
+                                      FakePeer::Mode mode = FakePeer::Mode::kNormal,
+                                      std::chrono::milliseconds late_unit = 0ms) {
+    auto peer = std::make_unique<FakePeer>(side, mode, late_unit);
     EXPECT_TRUE(peer->open());
     return peer;
+  }
+
+  // One cycle transaction with a command (the write tick of the controller).
+  HandReadOutcome Cycle(CanFdHandComm& comm, const HandMotorArray& pos, const HandMotorArray& ff,
+                        HandReadBuffers& bufs, bool sensors = true) {
+    HandReadOutcome out{};
+    comm.RunCycle(SensorPlan(sensors), &pos, &ff, bufs, out);
+    return out;
+  }
+
+  static const UdpHandCommStats::PerKind& Kind(const UdpHandCommStats& s, RequestKind k) {
+    return s.per_kind[static_cast<std::size_t>(k)];
   }
 
   HandReadPlan SensorPlan(bool sensors) {
@@ -270,6 +349,13 @@ TEST(CanFdHandCommTier1, ClosedLinkRtMethodsAreHarmlessAndCountNothing) {
   EXPECT_FALSE(out.motor_ok);
   EXPECT_FALSE(out.joint_ok);
   EXPECT_EQ(out.sensor_recvd, -1);
+  out.joint_ok = true;  // RunCycle must reset it too
+  comm.RunCycle(plan, &zeros, &zeros, bufs, out);
+  EXPECT_FALSE(out.write_ok);
+  EXPECT_FALSE(out.joint_ok);
+  EXPECT_EQ(out.sensor_recvd, -1);
+  EXPECT_NE(out.write_end, HandReadOutcome::Clock::time_point{});  // the stage "ran" and closed
+  EXPECT_LE(out.PhaseEnd(ReadPhase::kMotor), out.PhaseEnd(ReadPhase::kJoint));
 
   comm.PublishCommStats();
   const UdpHandCommStats s = comm.comm_stats();
@@ -652,6 +738,329 @@ TEST_F(CanFdHandCommVcan, D41_BusOffErrorFrameIsNotAnUnexpectedFrame) {
   EXPECT_EQ(c.error_frames, c.bus_off);
   EXPECT_EQ(comm->comm_stats().cmd_mismatch, 0u);
   EXPECT_EQ(comm->comm_stats().per_kind[static_cast<std::size_t>(RequestKind::kWriteEcho)].ok, 1u);
+}
+
+// ═══════════════════ D59 · D60 — the pipelined cycle (RunCycle) ═════════════
+
+// The normal cycle: CMD 0 · CMD 1 · REQ on the bus back to back, one window.
+// Both echoes and the set validate, each stage counted once, no mismatch.
+TEST_F(CanFdHandCommVcan, D59_RunCycleWritesAndReadsInOneWindow) {
+  rtc::CanFdTransport sniffer(TargetedConfig(kNodeRightHand));
+  ASSERT_TRUE(sniffer.Open());
+  auto peer = StartPeer();
+  CanFdHandCommConfig cfg = CommConfig();
+  cfg.feedforward_kt.fill(2.0f);
+  auto comm = OpenComm(cfg);
+
+  const HandMotorArray pos = Ramp(0.1f, 0.01f);
+  const HandMotorArray ff_nm = Ramp(1.0f, 0.5f);
+  HandReadBuffers bufs{};
+  const auto t0 = std::chrono::steady_clock::now();
+  const HandReadOutcome out = Cycle(*comm, pos, ff_nm, bufs);
+  const auto t_end = std::chrono::steady_clock::now();
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_FALSE(out.motor_ok);
+  ASSERT_TRUE(out.joint_ok);
+  EXPECT_EQ(out.sensor_recvd, static_cast<ssize_t>(sizeof(RespSet)));
+  EXPECT_GE(out.write_end, t0);
+  EXPECT_LE(out.write_end, t_end);
+  EXPECT_LE(out.PhaseEnd(ReadPhase::kMotor), out.PhaseEnd(ReadPhase::kJoint));
+  EXPECT_LE(out.PhaseEnd(ReadPhase::kJoint), t_end);
+
+  // Wire order: the REQ follows the CMD pair without waiting for an echo.
+  const timespec wait{0, 200'000'000};
+  canfd_frame rx{};
+  ASSERT_EQ(sniffer.RecvFrameWithTimeout(rx, wait), static_cast<ssize_t>(CANFD_MTU));
+  EXPECT_EQ(rx.can_id & kExtIdMask, CmdId(kNodeRightHand, 0));
+  ASSERT_EQ(sniffer.RecvFrameWithTimeout(rx, wait), static_cast<ssize_t>(CANFD_MTU));
+  EXPECT_EQ(rx.can_id & kExtIdMask, CmdId(kNodeRightHand, 1));
+  ASSERT_GT(sniffer.RecvFrameWithTimeout(rx, wait), 0);
+  EXPECT_EQ(rx.can_id & kExtIdMask, ReqId(kNodeRightHand));
+  EXPECT_EQ(rx.len, 0);  // D47
+
+  peer->WithModel([&](const FakeHandFirmware& fw) {
+    for (std::size_t i = 0; i < pos.size(); ++i) {
+      EXPECT_FLOAT_EQ(fw.target()[i], pos[i]);
+      EXPECT_FLOAT_EQ(fw.last_feedforward()[i], ff_nm[i] / 2.0f);  // D50
+    }
+    for (std::size_t i = 0; i < kWireMotorCount; ++i)
+      EXPECT_FLOAT_EQ(bufs.joint.pos[i], fw.pos()[i]);
+    return 0;
+  });
+
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).timeout, 0u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kBulkSensor).ok, 1u);
+  EXPECT_EQ(s.recv_ok, 2u);  // one per stage
+  EXPECT_EQ(s.cmd_mismatch, 0u);
+  EXPECT_EQ(s.recv_timeout, 0u);
+  EXPECT_EQ(comm->canfd_stats().assembler.outside_set, 0u);  // class ④ never reaches Feed
+  EXPECT_EQ(comm->canfd_stats().echo_payload_mismatch, 0u);
+}
+
+// A RESP that arrives before the echoes (the hand answered the REQ first, or
+// the burst interleaves with the echoes) is fed to the set, not rejected as a
+// stale frame: same outcome as the in-order cycle, no duplicate, no mismatch.
+TEST_F(CanFdHandCommVcan, D59_RespBeforeTheEchoesIsFedNotRejected) {
+  auto peer = StartPeer(HandSide::kRight, FakePeer::Mode::kRespFirst);
+  auto comm = OpenComm();
+  HandReadBuffers bufs{};
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.2f, 0.02f), HandMotorArray{}, bufs);
+  EXPECT_TRUE(out.write_ok);
+  ASSERT_TRUE(out.joint_ok);
+  EXPECT_EQ(out.sensor_recvd, static_cast<ssize_t>(sizeof(RespSet)));
+  peer->WithModel([&](const FakeHandFirmware& fw) {
+    for (std::size_t i = 0; i < kWireMotorCount; ++i) {
+      EXPECT_FLOAT_EQ(bufs.joint.pos[i], fw.pos()[i]);
+      EXPECT_FLOAT_EQ(bufs.joint.cur[i], fw.effort()[i]);
+    }
+    return 0;
+  });
+
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
+  EXPECT_EQ(s.cmd_mismatch, 0u);
+  EXPECT_EQ(s.recv_timeout, 0u);
+  EXPECT_EQ(s.recv_ok, 2u);
+  EXPECT_EQ(comm->canfd_stats().assembler.duplicate, 0u);
+  EXPECT_EQ(comm->canfd_stats().assembler.sets_completed, 1u);
+}
+
+// No echo at all: the echo stage times out at CMD + T while the set, answered
+// at once, completes — the window lasts about T, not 2T, and the set is not
+// charged for the missing echoes.
+TEST_F(CanFdHandCommVcan, D59_NoEchoTimesOutTheEchoStageOnlyWithinOneT) {
+  constexpr auto kT = 100ms;
+  auto peer = StartPeer(HandSide::kRight, FakePeer::Mode::kNoEcho);
+  CanFdHandCommConfig cfg = CommConfig();
+  cfg.recv_timeout_ms = 100.0;
+  auto comm = OpenComm(cfg);
+  HandReadBuffers bufs{};
+  const auto t0 = std::chrono::steady_clock::now();
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.0f, 0.1f), HandMotorArray{}, bufs);
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+  EXPECT_FALSE(out.write_ok);
+  EXPECT_TRUE(out.joint_ok);
+  EXPECT_GE(elapsed, kT * 9 / 10);
+  EXPECT_LT(elapsed, kT * 15 / 10);
+  EXPECT_GE(out.write_end, t0 + kT * 9 / 10);                 // closed at the deadline, not early
+  EXPECT_LE(out.PhaseEnd(ReadPhase::kJoint), out.write_end);  // the set closed first
+
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).timeout, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok, 0u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).timeout, 0u);
+  EXPECT_EQ(s.recv_timeout, 1u);
+  EXPECT_EQ(s.recv_ok, 1u);  // only the set stage saw its class
+  EXPECT_EQ(s.cmd_mismatch, 0u);
+  EXPECT_EQ(comm->recv_error_count(), 1u);
+}
+
+// RESP frame 2 missing: the write validates, the set stage times out at
+// (echo close) + T and the partial set is abandoned (D43 · D44) — one
+// terminal counter per stage.
+TEST_F(CanFdHandCommVcan, D59_MissingRespFrame2FailsOnlyTheSetStage) {
+  auto peer = StartPeer(HandSide::kRight, FakePeer::Mode::kDropFrame2);
+  auto comm = OpenComm();
+  HandReadBuffers bufs{};
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.0f, 0.1f), HandMotorArray{}, bufs);
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_FALSE(out.joint_ok);
+  EXPECT_EQ(out.sensor_recvd, -1);
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kJoint), out.write_end);
+
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).timeout, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kBulkSensor).timeout, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 0u);
+  EXPECT_EQ(s.recv_timeout, 1u);
+  EXPECT_EQ(s.recv_ok, 2u);
+  EXPECT_EQ(comm->canfd_stats().assembler.sets_abandoned, 1u);
+  EXPECT_EQ(comm->canfd_stats().assembler.sets_completed, 0u);
+}
+
+// The deadline chain (A2): echoes 0.6 T after the CMD, the RESP burst 1.3 T
+// after it. A set deadline of REQ + T would miss the burst; the chain's
+// (echo close) + T = 1.6 T takes it. Window within 2 T.
+TEST_F(CanFdHandCommVcan, D59_SetDeadlineChainsFromTheEchoClose) {
+  constexpr auto kT = 100ms;
+  auto peer = StartPeer(HandSide::kRight, FakePeer::Mode::kLate, kT);
+  CanFdHandCommConfig cfg = CommConfig();
+  cfg.recv_timeout_ms = 100.0;
+  auto comm = OpenComm(cfg);
+  HandReadBuffers bufs{};
+  const auto t0 = std::chrono::steady_clock::now();
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.0f, 0.1f), HandMotorArray{}, bufs);
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_TRUE(out.joint_ok);
+  EXPECT_GE(out.write_end - t0, kT * 5 / 10);
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kJoint) - t0, kT * 12 / 10);
+  EXPECT_LT(elapsed, kT * 2);
+
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
+  EXPECT_EQ(s.recv_timeout, 0u);
+  EXPECT_EQ(s.cmd_mismatch, 0u);
+  EXPECT_EQ(comm->canfd_stats().assembler.sets_abandoned, 0u);
+}
+
+// Class ④ in the window: an echo idx 2, a second copy of echo 0 (the first
+// copy, injected with another payload, is the one accepted) and a frame of
+// another type that passes the socket filter. Three mismatches, nothing
+// fails, nothing reaches the assembler as outside_set.
+TEST_F(CanFdHandCommVcan, D59_ClassFourFramesOnlyCount) {
+  auto peer = StartPeer();
+  auto comm = OpenComm();
+  rtc::CanFdTransport injector(InjectorConfig());
+  ASSERT_TRUE(injector.Open());
+  ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 2), 0x22)));
+  ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 0), 0x55)));
+  constexpr uint32_t kOtherType =
+      MakeCanId(kPriorityRealtime, static_cast<MsgType>(0x3), kNodeHost, kNodeRightHand, 0);
+  ASSERT_TRUE(injector.SendFrame(DataFrame(kOtherType, 0x33)));
+
+  HandReadBuffers bufs{};
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.0f, 0.1f), HandMotorArray{}, bufs);
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_TRUE(out.joint_ok);
+
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(s.cmd_mismatch, 3u);
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).cmd_mismatch,
+            3u);  // all while the echo stage was open
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).cmd_mismatch, 0u);
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
+  EXPECT_EQ(s.recv_timeout, 0u);
+  EXPECT_EQ(comm->canfd_stats().echo_payload_mismatch, 1u);  // the injected echo 0
+  EXPECT_EQ(comm->canfd_stats().assembler.outside_set, 0u);
+  EXPECT_EQ(comm->canfd_stats().assembler.bad_index, 0u);
+}
+
+// D57 on the window path: a stale RESP 0 of the previous cycle queued before
+// the CMD goes out is stored, then replaced by the real burst's frame 0
+// (duplicate before completion) — the set completes with the hand's data.
+TEST_F(CanFdHandCommVcan, D59_StaleRespBeforeTheEchoesIsReplacedByTheRealBurst) {
+  auto peer = StartPeer();
+  auto comm = OpenComm();
+  ASSERT_TRUE(comm->WriteCommandWithEcho(Ramp(0.2f, 0.02f), HandMotorArray{}));  // move the model
+  rtc::CanFdTransport injector(InjectorConfig());
+  ASSERT_TRUE(injector.Open());
+  ASSERT_TRUE(injector.SendFrame(DataFrame(RespId(kNodeRightHand, 0), 0xAB)));
+
+  HandReadBuffers bufs{};
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.2f, 0.02f), HandMotorArray{}, bufs);
+  EXPECT_TRUE(out.write_ok);
+  ASSERT_TRUE(out.joint_ok);
+  peer->WithModel([&](const FakeHandFirmware& fw) {
+    for (std::size_t i = 0; i < kWireMotorCount; ++i)
+      EXPECT_FLOAT_EQ(bufs.joint.pos[i], fw.pos()[i]);  // not the 0xAB pattern
+    return 0;
+  });
+
+  comm->PublishCommStats();
+  EXPECT_EQ(comm->canfd_stats().assembler.duplicate, 1u);
+  EXPECT_EQ(comm->canfd_stats().assembler.sets_completed, 1u);
+  EXPECT_EQ(comm->canfd_stats().assembler.sets_abandoned, 0u);
+  EXPECT_EQ(comm->comm_stats().cmd_mismatch, 0u);
+}
+
+// D41 on the window path: echoes with another payload only count; a bus-off
+// error frame costs nothing (>= 1: error frames are bus-wide on vcan0).
+TEST_F(CanFdHandCommVcan, D59_PayloadMismatchAndErrorFrameOnlyCountInTheWindow) {
+  auto peer = StartPeer();
+  auto comm = OpenComm();
+  rtc::CanFdTransport injector(InjectorConfig());
+  ASSERT_TRUE(injector.Open());
+  ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 1), 0x55)));
+  can_frame err{};
+  err.can_id = CAN_ERR_FLAG | CAN_ERR_BUSOFF;
+  err.len = CAN_ERR_DLC;
+  ASSERT_TRUE(injector.SendFrame(err));
+
+  HandReadBuffers bufs{};
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.3f, 0.1f), Ramp(1.0f, 0.1f), bufs);
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_TRUE(out.joint_ok);
+
+  comm->PublishCommStats();
+  const CanFdCommStats c = comm->canfd_stats();
+  EXPECT_EQ(c.echo_payload_mismatch, 1u);  // the injected idx 1; the real idx 1 is then class ④
+  EXPECT_GE(c.error_frames, 1u);
+  EXPECT_GE(c.bus_off, 1u);
+  EXPECT_EQ(comm->comm_stats().cmd_mismatch, 1u);
+  EXPECT_EQ(Kind(comm->comm_stats(), RequestKind::kWriteEcho).ok, 1u);
+}
+
+// D51 on the window path, and recovery: a left comm gets nothing from a right
+// fake (both stages time out, one terminal counter each); with a left fake
+// the next cycle is clean after DrainStale.
+TEST_F(CanFdHandCommVcan, D59_LeftHandWindowSeesOnlyTheLeftFakeAndRecovers) {
+  auto right_peer = StartPeer(HandSide::kRight);
+  auto comm = OpenComm(CommConfig(HandSide::kLeft));
+  HandReadBuffers bufs{};
+  HandReadOutcome out = Cycle(*comm, Ramp(0.0f, 0.1f), HandMotorArray{}, bufs);
+  EXPECT_FALSE(out.write_ok);
+  EXPECT_FALSE(out.joint_ok);
+  comm->PublishCommStats();
+  EXPECT_EQ(Kind(comm->comm_stats(), RequestKind::kWriteEcho).timeout, 1u);
+  EXPECT_EQ(Kind(comm->comm_stats(), RequestKind::kJointRead).timeout, 1u);
+  EXPECT_EQ(comm->comm_stats().recv_timeout, 2u);
+  EXPECT_EQ(comm->comm_stats().recv_ok, 0u);
+
+  auto left_peer = StartPeer(HandSide::kLeft);
+  EXPECT_EQ(comm->DrainStale(), 0);
+  out = Cycle(*comm, Ramp(0.0f, 0.1f), HandMotorArray{}, bufs);
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_TRUE(out.joint_ok);
+  right_peer->WithModel([](const FakeHandFirmware& fw) {
+    EXPECT_FLOAT_EQ(fw.target()[9], 0.0f);
+    return 0;
+  });
+  left_peer->WithModel([](const FakeHandFirmware& fw) {
+    EXPECT_FLOAT_EQ(fw.target()[9], 0.9f);
+    return 0;
+  });
+  comm->PublishCommStats();
+  EXPECT_EQ(comm->comm_stats().recv_timeout, 2u);  // nothing new
+  EXPECT_EQ(comm->comm_stats().cmd_mismatch, 0u);
+}
+
+// A tick without a command: RunCycle with null pointers is the set stage
+// alone — the same as ReadCycle, write fields at their defaults.
+TEST_F(CanFdHandCommVcan, D60_RunCycleWithoutCommandIsTheReadCycle) {
+  auto peer = StartPeer();
+  auto comm = OpenComm();
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  out.write_ok = true;
+  comm->RunCycle(SensorPlan(false), nullptr, nullptr, bufs, out);
+  EXPECT_FALSE(out.write_ok);
+  EXPECT_EQ(out.write_end, HandReadOutcome::Clock::time_point{});
+  EXPECT_TRUE(out.joint_ok);
+  EXPECT_EQ(out.sensor_recvd, -1);
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok + Kind(s, RequestKind::kWriteEcho).timeout, 0u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
+  EXPECT_EQ(s.recv_ok, 1u);
+  peer->WithModel([](const FakeHandFirmware& fw) {
+    EXPECT_FLOAT_EQ(fw.target()[9], 0.0f);  // no command reached the hand
+    return 0;
+  });
 }
 
 TEST_F(CanFdHandCommVcan, D26_FireAndForgetSendsZeroFrame1ThenZeroFrame0) {

@@ -4,38 +4,62 @@
 // CanFdHandComm: HandComm over CAN FD for the proto2 hand (epic #895, H1-F04-2c).
 //
 // One rtc::CanFdTransport (29-bit ids, BRS on, RECV_OWN_MSGS off) carries the
-// whole cycle as sequential transactions (D49) built from
-// hand_canfd_packets.hpp — the wire contract stays in that header, this one
-// only decides what to send when and how to count what comes back:
+// whole cycle built from hand_canfd_packets.hpp — the wire contract stays in
+// that header, this one only decides what to send when and how to count what
+// comes back. Every receive goes through ONE window (RunWindow), whose two
+// stages open with what was sent:
 //
-//   WriteCommandWithEcho      CMD Frame 0 (pos, rad) + Frame 1 (ff, A) → the
-//                             hand echoes both (D41); one deadline for the
-//                             echo stage (D42)                   → kWriteEcho
-//   ReadCycle                 REQ (DLC 0, D47) → RESP burst idx 0 1 2 collected
-//                             by RespSetAssembler in any order (D57) under one
-//                             deadline (D42); a
-//                             partial set is discarded, never retried inside
-//                             the tick (D43 · D44)        → kJointRead, and on
-//                             a sensor cycle kBulkSensor too (D49: 1:1 with
-//                             proto1's per-kind stats)
+//   RunCycle                  the cycle transaction (D49 (b) · D59 · D60):
+//                             CMD Frame 0 (pos, rad) + Frame 1 (ff, A) when a
+//                             command came in, then REQ (DLC 0, D47), back to
+//                             back; one receive window collects the two echoes
+//                             (D41) and the RESP burst idx 0 1 2 in any order
+//                             (D57) under the deadline chain below
+//                                                     → kWriteEcho · kJointRead,
+//                             and on a sensor cycle kBulkSensor too (D49: 1:1
+//                             with proto1's per-kind stats)
+//   WriteCommandWithEcho      the echo stage alone (no REQ)       → kWriteEcho
+//   ReadCycle                 the set stage alone (REQ, no CMD) → kJointRead
 //   WriteCommandFireAndForget E-Stop: Frame 1 zeros, then Frame 0 zeros (D26),
-//                             nothing awaited
+//                             nothing awaited — not a window
 //   DrainStale                non-blocking drain of the queue (≤ kMaxDrainPerCall)
 //                             + assembler reset
 //
-// Echo stage classification (D41 · D58). Every frame the filter lets through is one of:
+// Deadline chain (D42 · D59). Each stage has one deadline of length T =
+// recv_timeout_ms: the echo stage closes at CMD + T (or on both echoes), the
+// set stage at (echo stage close) + T — re-based with SetDeadline when the
+// echoes arrive, left at the nominal CMD + 2T when they do not — so the worst
+// case is 2T whatever the hand does, the configure-time check 2T < slot stays
+// the bound, and a tick without a write has the set stage alone (REQ + T).
+// The hand answers each frame in turn, so the pipelined RESP burst lands at
+// about CMD + 1.3 ms; a set deadline of REQ + T would miss it every cycle.
+//
+// Frame classification (D41 · D58 · D59). Every frame the filter lets through:
 //   ① an error message frame (CAN_ERR_FLAG, subscribed through error_mask) →
 //      CanFdCommStats::error_frames / bus_off only;
-//   ② this node's echo with idx 0 or 1 not yet seen → accepted in any order; a
-//      payload that differs from what was sent only bumps echo_payload_mismatch
-//      (the hand applied its own copy — nothing to re-send);
-//   ③ anything else (a stale RESP, a duplicate idx, idx ≥ 2) → cmd_mismatch +
-//      last_unexpected_* only — however many arrive, the stage still waits for
-//      both echoes (D58). No re-send (D41).
-// Deadline → recv_timeout; both echoes → ok. A failed send fails the write
-// before any wait and is counted as a recv_error of kWriteEcho beside the tx
-// errno counter — on this link a dead peer / downed interface surfaces on
-// send (ENETDOWN, ENOBUFS), which is the role ECONNREFUSED plays on UDP.
+//   ② this node's echo with idx 0 or 1 not yet seen while the echo stage is
+//      open → accepted in any order; a payload that differs from what was sent
+//      only bumps echo_payload_mismatch (the hand applied its own copy —
+//      nothing to re-send);
+//   ③ this node's RESP while the set stage is open → RespSetAssembler::Feed
+//      (duplicates, bad index / length counted by it, D57);
+//   ④ anything else (an echo idx ≥ 2 or a repeated idx, a RESP outside an
+//      open set stage, a late echo after its stage closed, another type) →
+//      cmd_mismatch + last_unexpected_* only, attributed to kWriteEcho while
+//      the echo stage is open and to kJointRead otherwise — however many
+//      arrive, the open stages keep waiting (D58). Nothing is re-sent (D41).
+// recv_ok counts the first class-② / ③ frame of each open stage (≤ 2 per
+// cycle); every stage ends on exactly one terminal counter (ok, timeout or
+// error), so the per-kind attempt denominators hold. A failed CMD send fails
+// the echo stage before any wait (recv_error of kWriteEcho beside the tx errno
+// counter; the REQ still goes out); a failed REQ send fails the set stage the
+// same way (the echo stage still waits); a recv error ends every open stage
+// with an error. On this link a dead peer / downed interface surfaces on send
+// (ENETDOWN, ENOBUFS), which is the role ECONNREFUSED plays on UDP.
+//
+// The set stage takes every RESP of this node that arrives after DrainStale,
+// so a RESP tail more than a tick late can complete a mixed set (D57) on a
+// write tick as on a read-only one — accepted in #919, no arrival-time guard.
 //
 // Feedforward units (D50): the controller hands Nm, the wire carries A;
 // FeedforwardToAmps() divides by the per-motor torque constant
@@ -158,7 +182,8 @@ class CanFdHandComm final : public HandComm {
         node_(canfd::NodeIdOf(cfg_.hand_side)),
         transport_(MakeTransportConfig(cfg_, node_)),
         assembler_(node_),
-        echo_base_(canfd::EchoId(node_, 0)) {
+        echo_base_(canfd::EchoId(node_, 0)),
+        resp_base_(canfd::RespId(node_, 0)) {
     tx_frame0_.can_id = canfd::CmdId(node_, 0) | CAN_EFF_FLAG;
     tx_frame1_.can_id = canfd::CmdId(node_, 1) | CAN_EFF_FLAG;
     tx_frame0_.len = tx_frame1_.len = static_cast<__u8>(canfd::kFrameLen);
@@ -260,11 +285,7 @@ class CanFdHandComm final : public HandComm {
     if (!transport_.is_open())
       return false;
     BuildCommandFrames(pos, ff_nm);
-    if (!SendCounted(tx_frame0_) || !SendCounted(tx_frame1_)) {
-      stats_.CountRecvError(RequestKind::kWriteEcho);
-      return false;
-    }
-    return AwaitEchoes();
+    return RunWindow(/*send_cmd=*/true, /*send_req=*/false, /*sensors=*/false).write_ok;
   }
 
   void WriteCommandFireAndForget(const HandMotorArray& pos,
@@ -277,28 +298,46 @@ class CanFdHandComm final : public HandComm {
     (void)SendCounted(tx_frame0_);
   }
 
-  /// REQ → RESP set. No motor-space read exists on this wire (motor_ok stays
-  /// false, kMotor stamped at once); the set fills the joint-space triplet and,
-  /// on a sensor cycle, the raw 192-byte RespSet for SensorProtocol2.
+  /// REQ → RESP set (the set stage alone). No motor-space read exists on this
+  /// wire (motor_ok stays false, kMotor stamped at once); the set fills the
+  /// joint-space triplet and, on a sensor cycle, the raw 192-byte RespSet for
+  /// SensorProtocol2.
   void ReadCycle(const HandReadPlan& plan, HandReadBuffers& bufs,
                  HandReadOutcome& out) noexcept override {
     out = HandReadOutcome{};
     out.StampPhase(ReadPhase::kMotor);
-    {
-      RTC_TRACE_SCOPE("hand_read_joint");
-      if (ReadTelemetrySet(plan.sensors)) {
-        const canfd::RespSet& set = assembler_.set();
-        FillJoint(set, bufs.joint);
-        out.joint_ok = true;
-        if (plan.sensors) {
-          static_assert(sizeof(canfd::RespSet) <= sizeof(bufs.sensor_raw),
-                        "sensor_raw must hold a RespSet");
-          std::memcpy(bufs.sensor_raw.data(), &set, sizeof(canfd::RespSet));
-          out.sensor_recvd = static_cast<ssize_t>(sizeof(canfd::RespSet));
-        }
-      }
+    if (!transport_.is_open()) {
+      out.StampPhase(ReadPhase::kJoint);
+      return;
     }
-    out.StampPhase(ReadPhase::kJoint);
+    RTC_TRACE_SCOPE("hand_read_joint");
+    const WindowResult r = RunWindow(/*send_cmd=*/false, /*send_req=*/true, plan.sensors);
+    FinishRead(r, plan, bufs, out);
+  }
+
+  /// The cycle transaction (D49 (b) · D59 · D60): CMD pair (when a command
+  /// came in) and REQ sent back to back, then one receive window for the
+  /// echoes and the RESP set. kMotor is stamped at the window start, kJoint
+  /// at set completion (or at the window end when the set failed).
+  void RunCycle(const HandReadPlan& plan, const HandMotorArray* cmd_pos,
+                const HandMotorArray* cmd_ff, HandReadBuffers& bufs,
+                HandReadOutcome& out) noexcept override {
+    RTC_TRACE_SCOPE("hand_cycle_window");
+    out = HandReadOutcome{};
+    const bool write = (cmd_pos != nullptr) && (cmd_ff != nullptr);
+    out.StampPhase(ReadPhase::kMotor);
+    if (!transport_.is_open()) {
+      if (write)
+        out.write_end = Clock::now();
+      out.StampPhase(ReadPhase::kJoint);
+      return;
+    }
+    if (write)
+      BuildCommandFrames(*cmd_pos, *cmd_ff);
+    const WindowResult r = RunWindow(write, /*send_req=*/true, plan.sensors);
+    out.write_ok = r.write_ok;
+    out.write_end = r.write_end;
+    FinishRead(r, plan, bufs, out);
   }
 
   [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept override { return stats_.working(); }
@@ -310,7 +349,7 @@ class CanFdHandComm final : public HandComm {
   }
 
   /// MsgType in the high nibble, frame index (low 4 bits) in the low nibble of
-  /// the last class-③ frame — there is no CMD byte on this wire.
+  /// the last class-④ frame — there is no CMD byte on this wire.
   [[nodiscard]] uint8_t last_unexpected_cmd() const noexcept override {
     return stats_.working().last_unexpected_cmd;
   }
@@ -387,49 +426,175 @@ class CanFdHandComm final : public HandComm {
     return true;
   }
 
-  /// Echo stage of WriteCommandWithEcho (classification in the header comment).
-  [[nodiscard]] bool AwaitEchoes() noexcept {
-    const Clock::time_point deadline = Clock::now() + stage_timeout_;
-    uint8_t got = 0;
-    bool first = true;
-    for (;;) {
-      const Clock::time_point now = Clock::now();
-      if (now >= deadline) {
-        stats_.CountRecvTimeout(RequestKind::kWriteEcho);
-        return false;
-      }
-      const ssize_t n = transport_.RecvFrameWithTimeout(rx_, ToTimespec(deadline - now));
-      if (n == 0)
-        continue;  // nothing queued (deadline or a spurious wake): the loop head decides
-      if (n < 0) {
+  /// What one receive window reported (see RunWindow).
+  struct WindowResult {
+    bool write_ok{false};           ///< both echoes arrived (echo stage only)
+    bool set_ok{false};             ///< the RESP set completed (set stage only)
+    Clock::time_point write_end{};  ///< echo stage close (echoes, deadline or error)
+    Clock::time_point set_end{};    ///< set stage close (complete, deadline or error)
+  };
+
+  /// Class of one received data frame (classification in the header comment).
+  enum class RxClass : uint8_t { kEcho, kResp, kOther };
+
+  [[nodiscard]] RxClass ClassifyRx(uint32_t id) const noexcept {
+    if ((id & ~canfd::kFrameIndexMask) == echo_base_)
+      return RxClass::kEcho;
+    if ((id & canfd::kRespIdMask) == resp_base_)
+      return RxClass::kResp;
+    return RxClass::kOther;
+  }
+
+  /// The receive window (D59). Sends what the flags ask for — the CMD pair
+  /// (tx_frame0_/1_ already built) and / or the REQ — then receives until
+  /// every stage that opened has closed. Deadline chain: echo stage CMD + T;
+  /// set stage (echo close) + T, nominal CMD + 2T until the echoes arrive, REQ
+  /// + T when no echo stage opened. ppoll waits for the nearest open deadline.
+  [[nodiscard]] WindowResult RunWindow(bool send_cmd, bool send_req, bool sensors) noexcept {
+    WindowResult r{};
+    // ── Send stage ───────────────────────────────────────────────────────
+    bool echo_open = false;
+    Clock::time_point echo_deadline{};
+    if (send_cmd) {
+      if (SendCounted(tx_frame0_) && SendCounted(tx_frame1_)) {
+        echo_open = true;
+        echo_deadline = Clock::now() + stage_timeout_;
+      } else {
         stats_.CountRecvError(RequestKind::kWriteEcho);
-        return false;
+        r.write_end = Clock::now();
+      }
+    }
+    bool set_open = false;
+    if (send_req) {
+      if (SendCounted(tx_req_)) {
+        set_open = true;
+        // Upper bound of the chain; pulled in by SetDeadline when the echoes
+        // arrive. Begin() resets the assembler, so it is called once here.
+        assembler_.Begin((echo_open ? echo_deadline : Clock::now()) + stage_timeout_);
+      } else {
+        CountSetError(sensors);
+        r.set_end = Clock::now();
+      }
+    }
+
+    // ── Receive window ───────────────────────────────────────────────────
+    uint8_t echo_got = 0;
+    bool echo_first = true;
+    bool set_first = true;
+    while (echo_open || set_open) {
+      const Clock::time_point now = Clock::now();
+      if (echo_open && now >= echo_deadline) {
+        stats_.CountRecvTimeout(RequestKind::kWriteEcho);
+        echo_open = false;
+        r.write_end = now;  // the set deadline stays at the nominal CMD + 2T
+      }
+      if (set_open && assembler_.Expired(now)) {
+        CountSetTimeout(sensors);
+        AbandonSet();
+        set_open = false;
+        r.set_end = now;
+      }
+      if (!echo_open && !set_open)
+        break;
+      Clock::time_point next = set_open ? assembler_.deadline() : echo_deadline;
+      if (echo_open && echo_deadline < next)
+        next = echo_deadline;
+      const ssize_t n = transport_.RecvFrameWithTimeout(rx_, ToTimespec(next - now));
+      if (n == 0)
+        continue;  // deadline or a spurious wake: the loop head decides
+      if (n < 0) {
+        const Clock::time_point t_err = Clock::now();
+        if (echo_open) {
+          stats_.CountRecvError(RequestKind::kWriteEcho);
+          echo_open = false;
+          r.write_end = t_err;
+        }
+        if (set_open) {
+          CountSetError(sensors);
+          AbandonSet();
+          set_open = false;
+          r.set_end = t_err;
+        }
+        break;
       }
       if (ConsumeErrorFrame(rx_))
         continue;  // ①
-      if (first) {
-        stats_.CountRecvOk();  // first data frame of the stage, whatever it is
-        first = false;
-      }
       const uint32_t id = rx_.can_id & canfd::kExtIdMask;
       const uint8_t idx = canfd::FrameIndexOf(id);
-      if ((id & ~canfd::kFrameIndexMask) == echo_base_ && idx < 2 &&
-          (got & canfd::FrameBit(idx)) == 0) {  // ②
-        got = static_cast<uint8_t>(got | canfd::FrameBit(idx));
-        const canfd_frame& sent = (idx == 0) ? tx_frame0_ : tx_frame1_;
-        if (rx_.len != canfd::kFrameLen ||
-            std::memcmp(rx_.data, sent.data, canfd::kFrameLen) != 0) {
-          ++canfd_working_.echo_payload_mismatch;
+      const RxClass cls = ClassifyRx(id);
+      if (cls == RxClass::kEcho && echo_open) {
+        if (echo_first) {
+          stats_.CountRecvOk();
+          echo_first = false;
         }
-        if (got == (canfd::FrameBit(0) | canfd::FrameBit(1))) {
-          ++stats_.PerKind(RequestKind::kWriteEcho).ok;
-          return true;
+        if (idx < 2 && (echo_got & canfd::FrameBit(idx)) == 0) {  // ②
+          echo_got = static_cast<uint8_t>(echo_got | canfd::FrameBit(idx));
+          const canfd_frame& sent = (idx == 0) ? tx_frame0_ : tx_frame1_;
+          if (rx_.len != canfd::kFrameLen ||
+              std::memcmp(rx_.data, sent.data, canfd::kFrameLen) != 0) {
+            ++canfd_working_.echo_payload_mismatch;
+          }
+          if (echo_got == (canfd::FrameBit(0) | canfd::FrameBit(1))) {
+            ++stats_.PerKind(RequestKind::kWriteEcho).ok;
+            echo_open = false;
+            r.write_ok = true;
+            r.write_end = Clock::now();
+            if (set_open)
+              assembler_.SetDeadline(r.write_end + stage_timeout_);  // chain
+          }
+          continue;
+        }
+        // ④ (idx ≥ 2 or a repeated idx) — falls through to the mismatch below
+      } else if (cls == RxClass::kResp && set_open) {  // ③
+        if (set_first) {
+          stats_.CountRecvOk();
+          set_first = false;
+        }
+        switch (assembler_.Feed(rx_.can_id, rx_.data, rx_.len)) {
+          case canfd::FeedResult::kComplete:
+            ++stats_.PerKind(RequestKind::kJointRead).ok;
+            if (sensors)
+              ++stats_.PerKind(RequestKind::kBulkSensor).ok;
+            set_open = false;
+            r.set_ok = true;
+            r.set_end = Clock::now();
+            break;
+          case canfd::FeedResult::kStored:
+          case canfd::FeedResult::kDuplicate:
+            break;  // the assembler's own counters record these
+          case canfd::FeedResult::kBadLength:
+            stats_.CountShortOrDecode(RequestKind::kJointRead, rx_.len);
+            break;
+          case canfd::FeedResult::kOutsideSet:  // unreachable: ClassifyRx matched the base
+          case canfd::FeedResult::kBadIndex:
+            stats_.CountCmdMismatch(RequestKind::kJointRead, UnexpectedCmdOf(id), rx_.len);
+            break;
         }
         continue;
       }
-      // ③
-      stats_.CountCmdMismatch(RequestKind::kWriteEcho, UnexpectedCmdOf(id), rx_.len);
+      // ④
+      stats_.CountCmdMismatch(echo_open ? RequestKind::kWriteEcho : RequestKind::kJointRead,
+                              UnexpectedCmdOf(id), rx_.len);
     }
+    return r;
+  }
+
+  /// Copy a completed set into the read buffers and stamp kJoint at the set
+  /// stage's close (completion, or the window end when it failed).
+  void FinishRead(const WindowResult& r, const HandReadPlan& plan, HandReadBuffers& bufs,
+                  HandReadOutcome& out) noexcept {
+    if (r.set_ok) {
+      const canfd::RespSet& set = assembler_.set();
+      FillJoint(set, bufs.joint);
+      out.joint_ok = true;
+      if (plan.sensors) {
+        static_assert(sizeof(canfd::RespSet) <= sizeof(bufs.sensor_raw),
+                      "sensor_raw must hold a RespSet");
+        std::memcpy(bufs.sensor_raw.data(), &set, sizeof(canfd::RespSet));
+        out.sensor_recvd = static_cast<ssize_t>(sizeof(canfd::RespSet));
+      }
+    }
+    out.phase_end[static_cast<std::size_t>(ReadPhase::kJoint)] = r.set_end;
   }
 
   void CountSetTimeout(bool sensors) noexcept {
@@ -442,60 +607,6 @@ class CanFdHandComm final : public HandComm {
     stats_.CountRecvError(RequestKind::kJointRead);
     if (sensors)
       ++stats_.PerKind(RequestKind::kBulkSensor).error;
-  }
-
-  /// REQ → complete RespSet in assembler_.set(). On the deadline or a recv
-  /// error the partial set is dropped, the queue drained and false returned
-  /// (D43 · D44: no retry inside the tick).
-  [[nodiscard]] bool ReadTelemetrySet(bool sensors) noexcept {
-    if (!transport_.is_open())
-      return false;
-    if (!SendCounted(tx_req_)) {
-      CountSetError(sensors);
-      return false;
-    }
-    assembler_.Begin(Clock::now() + stage_timeout_);
-    bool first = true;
-    for (;;) {
-      const Clock::duration remaining = assembler_.Remaining(Clock::now());
-      if (remaining == Clock::duration::zero()) {
-        CountSetTimeout(sensors);
-        AbandonSet();
-        return false;
-      }
-      const ssize_t n = transport_.RecvFrameWithTimeout(rx_, ToTimespec(remaining));
-      if (n == 0)
-        continue;  // deadline or spurious wake: Remaining() at the loop head decides
-      if (n < 0) {
-        CountSetError(sensors);
-        AbandonSet();
-        return false;
-      }
-      if (ConsumeErrorFrame(rx_))
-        continue;
-      if (first) {
-        stats_.CountRecvOk();
-        first = false;
-      }
-      switch (assembler_.Feed(rx_.can_id, rx_.data, rx_.len)) {
-        case canfd::FeedResult::kComplete:
-          ++stats_.PerKind(RequestKind::kJointRead).ok;
-          if (sensors)
-            ++stats_.PerKind(RequestKind::kBulkSensor).ok;
-          return true;
-        case canfd::FeedResult::kStored:
-        case canfd::FeedResult::kDuplicate:
-          break;  // the assembler's own counters record these
-        case canfd::FeedResult::kOutsideSet:
-        case canfd::FeedResult::kBadIndex:
-          stats_.CountCmdMismatch(RequestKind::kJointRead,
-                                  UnexpectedCmdOf(rx_.can_id & canfd::kExtIdMask), rx_.len);
-          break;
-        case canfd::FeedResult::kBadLength:
-          stats_.CountShortOrDecode(RequestKind::kJointRead, rx_.len);
-          break;
-      }
-    }
   }
 
   void AbandonSet() noexcept {
@@ -531,6 +642,7 @@ class CanFdHandComm final : public HandComm {
   rtc::CanFdTransport transport_;
   canfd::RespSetAssembler assembler_;
   uint32_t echo_base_;  ///< EchoId(node, 0): this node's echoes under ~kFrameIndexMask
+  uint32_t resp_base_;  ///< RespId(node, 0): this node's RESP burst under kRespIdMask
 
   std::array<float, kNumHandMotors> inv_kt_{};  ///< 1 / feedforward_kt, set in Open()
   Clock::duration stage_timeout_{};
