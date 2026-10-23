@@ -374,6 +374,13 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
 
+  ament_add_gtest(test_executor_group_collection
+    test/test_executor_group_collection.cpp
+    ENV ROS_DOMAIN_ID=44)
+  if(TARGET test_executor_group_collection)
+    ament_target_dependencies(test_executor_group_collection rclcpp rclcpp_lifecycle)
+  endif()
+
   ament_add_gtest(test_rt_loop_pipeline
     test/test_rt_loop_pipeline.cpp
     ENV ROS_DOMAIN_ID=44)
