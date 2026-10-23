@@ -16,12 +16,21 @@
 //     cycle; it cannot be split into per-request calls without caching, which
 //     is why the read side is one ReadCycle() and not three virtuals.
 //
-// Ownership of the bookkeeping stays with the controller: ReadCycle reports
-// per-channel outcomes and the phase boundaries inside the read; the
-// controller builds the attempted / ok masks, the per-channel failure streaks
-// and the timing profile from them, stamps the end of the read itself, and
-// decodes the raw bulk-sensor response through its SensorProtocol. The comm
-// knows nothing about the outcome ring.
+// The bulk cycle is ONE transaction call, RunCycle() (D60): the optional
+// command write and the read cycle together, so a link may overlap the two
+// (CAN FD pipelines CMD · REQ and receives the echoes and the RESP burst in
+// one window, D49 (b) · D59) while the default implementation keeps the
+// sequential order (WriteCommandWithEcho → ReadCycle) the UDP link and the
+// test mocks rely on. WriteCommandWithEcho / ReadCycle stay on the interface
+// as the building blocks of that default and of the individual-mode path.
+//
+// Ownership of the bookkeeping stays with the controller: RunCycle reports
+// the write result, the per-channel outcomes and the phase boundaries inside
+// the cycle; the controller decides whether a write is attempted this tick,
+// builds the attempted / ok masks, the per-channel failure streaks and the
+// timing profile from them, stamps the end of the read itself, and decodes
+// the raw bulk-sensor response through its SensorProtocol. The comm knows
+// nothing about the outcome ring.
 //
 // Thread contract (same as the transport it replaces): the "RT" group runs on
 // the SCHED_FIFO CommLoop thread every tick and must be noexcept and
@@ -286,13 +295,20 @@ enum class ReadPhase : uint8_t { kMotor = 0, kJoint = 1, kVel = 2 };
 
 inline constexpr std::size_t kNumReadPhases = 3;
 
-// Per-channel outcome of one read cycle. Trivially resettable (`out = {}`): a
+// Per-channel outcome of one cycle. Trivially resettable (`out = {}`): a
 // phase an implementation does not stamp stays at the epoch, and the
 // controller clamps each boundary to be no earlier than the previous one, so
 // an unstamped phase reads as a zero-length span rather than garbage.
 struct HandReadOutcome {
   using Clock = std::chrono::steady_clock;
 
+  /// RunCycle only: the command write validated (its echo arrived). Defined
+  /// only when the controller handed RunCycle a command; false otherwise.
+  bool write_ok{false};
+  /// RunCycle only: when the write stage ended (echo received, deadline or
+  /// send failure) — the controller's write_us is write_end − cycle start.
+  /// Epoch when no command was handed in.
+  Clock::time_point write_end{};
   bool motor_ok{false};       ///< motor-space read validated (bulk pos/vel/cur, individual pos)
   bool joint_ok{false};       ///< joint-space read validated (bulk pos/vel/cur, individual pos)
   bool vel_ok{false};         ///< individual only: motor-space velocity read validated
@@ -388,6 +404,30 @@ class HandComm {
   /// Every per-request failure is already counted in comm_stats_mut().
   virtual void ReadCycle(const HandReadPlan& plan, HandReadBuffers& bufs,
                          HandReadOutcome& out) noexcept = 0;
+
+  /// One bulk cycle's transactions (D60): the command write (when `cmd_pos`
+  /// and `cmd_ff` are non-null — both or neither) and the read cycle of
+  /// `plan`. Resets `out`, then reports the write in `out.write_ok` /
+  /// `out.write_end` and the reads as ReadCycle does. The controller owns the
+  /// decision to write (startup gate + pending command) and clears its
+  /// pending flag itself, success or failure.
+  ///
+  /// Default: strictly sequential — WriteCommandWithEcho, then ReadCycle (the
+  /// order the UDP protocol requires and the pre-D60 controller issued). A
+  /// link whose wire allows it overrides this to overlap the two stages.
+  virtual void RunCycle(const HandReadPlan& plan, const HandMotorArray* cmd_pos,
+                        const HandMotorArray* cmd_ff, HandReadBuffers& bufs,
+                        HandReadOutcome& out) noexcept {
+    bool write_ok = false;
+    HandReadOutcome::Clock::time_point write_end{};
+    if (cmd_pos != nullptr && cmd_ff != nullptr) {
+      write_ok = WriteCommandWithEcho(*cmd_pos, *cmd_ff);
+      write_end = HandReadOutcome::Clock::now();
+    }
+    ReadCycle(plan, bufs, out);  // resets `out` — the write result is filled in after
+    out.write_ok = write_ok;
+    out.write_end = write_end;
+  }
 
   /// One individual-mode read cycle: pos → joint pos → vel → per-finger
   /// sensors. Default = unsupported: nothing attempted, every flag false

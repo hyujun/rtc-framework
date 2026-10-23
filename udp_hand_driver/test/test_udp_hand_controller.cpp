@@ -894,6 +894,7 @@ class ScriptedHandComm : public HandComm {
   bool script_vel_ok{true};    // individual vel
   ssize_t script_sensor_recvd{-1};
   uint8_t script_finger_mask{0};
+  bool script_write_ok{true};  // WriteCommandWithEcho result
   float pattern_base{1.0f};
 
   // Observations.
@@ -914,6 +915,9 @@ class ScriptedHandComm : public HandComm {
   HandMotorArray last_echo_ff{};
   HandMotorArray last_faf_pos{};
   HandMotorArray last_faf_ff{};
+  // Order of the RT building blocks within one process lifetime: 'W' =
+  // WriteCommandWithEcho, 'R' = ReadCycle (test-only bookkeeping, not RT).
+  std::string call_order;
 
   [[nodiscard]] bool Open() noexcept override {
     ++open_calls;
@@ -961,7 +965,8 @@ class ScriptedHandComm : public HandComm {
     last_echo_pos = pos;
     last_echo_ff = ff_nm;
     ++write_echo_calls;
-    return true;
+    call_order.push_back('W');
+    return script_write_ok;
   }
 
   void WriteCommandFireAndForget(const HandMotorArray& pos,
@@ -975,6 +980,7 @@ class ScriptedHandComm : public HandComm {
                  HandReadOutcome& out) noexcept override {
     last_plan = plan;
     ++read_cycle_calls;
+    call_order.push_back('R');
     FillMotorPattern(bufs);
     out = HandReadOutcome{};
     out.motor_ok = plan.motor_space_read && script_motor_ok;
@@ -1016,7 +1022,7 @@ class ScriptedHandComm : public HandComm {
 
   [[nodiscard]] uint16_t last_unexpected_len() const noexcept override { return 0; }
 
- private:
+ protected:
   void FillMotorPattern(HandReadBuffers& bufs) const noexcept {
     for (std::size_t i = 0; i < packets::kMotorDataCount; ++i) {
       const auto fi = static_cast<float>(i);
@@ -1264,6 +1270,223 @@ TEST(HandCommSeam, Individual_UsesIndividualCycle_PartialFingersRefreshOnlyTheir
                                        RequestKindBit(RequestKind::kSensorRead));
   // pos ok sets the motor bit even though vel failed; one ok finger sets sensor.
   EXPECT_EQ(latest.ok_mask, latest.attempted_mask);
+}
+
+// D60: a comm that owns the whole bulk cycle transaction. Records every
+// RunCycle call (whether a command came with it, and which) and answers from
+// the script; the building blocks are never called, so any direct
+// WriteCommandWithEcho / ReadCycle from the controller shows up in the
+// ScriptedHandComm counters.
+class TxnHandComm final : public ScriptedHandComm {
+ public:
+  std::atomic<int> run_cycle_calls{0};
+  std::atomic<int> run_cycle_with_cmd{0};
+  std::atomic<int> run_cycle_half_cmd{0};  // exactly one of the two pointers null
+  HandMotorArray last_cmd_pos{};
+  HandMotorArray last_cmd_ff{};
+  // write_end = call time + this offset (a stage that "took" write_stage_us).
+  std::atomic<int> write_stage_us{0};
+
+  void RunCycle(const HandReadPlan& plan, const HandMotorArray* cmd_pos,
+                const HandMotorArray* cmd_ff, HandReadBuffers& bufs,
+                HandReadOutcome& out) noexcept override {
+    const auto t_call = HandReadOutcome::Clock::now();
+    ++run_cycle_calls;
+    if ((cmd_pos == nullptr) != (cmd_ff == nullptr))
+      ++run_cycle_half_cmd;
+    last_plan = plan;
+    FillMotorPattern(bufs);
+    out = HandReadOutcome{};
+    if (cmd_pos != nullptr && cmd_ff != nullptr) {
+      ++run_cycle_with_cmd;
+      last_cmd_pos = *cmd_pos;
+      last_cmd_ff = *cmd_ff;
+      out.write_ok = script_write_ok;
+      out.write_end = t_call + std::chrono::microseconds(write_stage_us.load());
+    }
+    out.motor_ok = plan.motor_space_read && script_motor_ok;
+    out.StampPhase(ReadPhase::kMotor);
+    out.joint_ok = script_joint_ok;
+    out.StampPhase(ReadPhase::kJoint);
+    out.sensor_recvd = plan.sensors ? script_sensor_recvd : -1;
+    out.received_motor_mode = packets::JointMode::kMotor;
+  }
+};
+
+struct TxnRig {
+  std::unique_ptr<UdpHandController> ctrl;
+  TxnHandComm* comm{nullptr};
+};
+
+TxnRig MakeTxnRig() {
+  TxnRig rig;
+  rig.ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 1,
+      .recv_timeout_ms = 1.0,
+      .num_fingertips = 0,
+      .communication_mode = HandCommunicationMode::kBulk,
+  });
+  auto comm = std::make_unique<TxnHandComm>();
+  rig.comm = comm.get();
+  EXPECT_TRUE(rig.ctrl->SetHandComm(std::move(comm)));
+  return rig;
+}
+
+// D60: the bulk tick issues exactly one RunCycle and never the building
+// blocks directly; a tick without a pending command hands in no command, the
+// tick that latches one hands in that command (position AND feedforward) once.
+TEST(HandCommSeam, RunCycle_OneTransactionPerBulkTick_CommandHandedInOnce) {
+  auto rig = MakeTxnRig();
+  auto& comm = *rig.comm;
+
+  ASSERT_TRUE(rig.ctrl->Start());
+  ASSERT_TRUE(PollUntil([&] { return rig.ctrl->cycle_count() >= 3; }, 2s));
+  EXPECT_EQ(comm.run_cycle_with_cmd, 0);  // no command staged yet: nullptr every tick
+  HandMotorArray cmd{};
+  HandMotorArray ff{};
+  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    cmd[i] = 0.25f * static_cast<float>(i);
+    ff[i] = 1.0f - 0.1f * static_cast<float>(i);
+  }
+  rig.ctrl->SendCommandAndRequestStates(cmd, ff);
+  ASSERT_TRUE(PollUntil([&] { return comm.run_cycle_with_cmd >= 1; }, 2s));
+  ASSERT_TRUE(PollUntil([&] { return rig.ctrl->cycle_count() >= 8; }, 2s));
+  rig.ctrl->Stop();
+
+  EXPECT_EQ(static_cast<std::size_t>(comm.run_cycle_calls.load()), rig.ctrl->cycle_count());
+  EXPECT_EQ(comm.run_cycle_with_cmd, 1);  // per-command gate: once per staged command
+  EXPECT_EQ(comm.run_cycle_half_cmd, 0);
+  EXPECT_EQ(comm.last_cmd_pos, cmd);
+  EXPECT_EQ(comm.last_cmd_ff, ff);
+  EXPECT_EQ(comm.write_echo_calls, 0);  // the building blocks are the comm's business
+  EXPECT_EQ(comm.read_cycle_calls, 0);
+  EXPECT_EQ(comm.fire_and_forget_calls, 0);
+  EXPECT_EQ(rig.ctrl->channel_consec_fail(RequestKind::kWriteEcho), 0u);
+}
+
+// D60: the controller maps write_ok into the cycle masks / streaks and clears
+// its pending flag whether or not the write validated — a failed write is not
+// re-sent (one RunCycle with a command, then none).
+TEST(HandCommSeam, RunCycle_FailedWrite_LeavesOkMask_ClearsPending_NotResent) {
+  auto rig = MakeTxnRig();
+  auto& comm = *rig.comm;
+  comm.script_write_ok = false;
+
+  ASSERT_TRUE(rig.ctrl->Start());
+  ASSERT_TRUE(PollUntil([&] { return rig.ctrl->HasStateBeenRead(); }, 2s));
+  rig.ctrl->SendCommandAndRequestStates(HandMotorArray{});
+  ASSERT_TRUE(PollUntil([&] { return comm.run_cycle_with_cmd >= 1; }, 2s));
+  const std::size_t cycles_at_write = rig.ctrl->cycle_count();
+  ASSERT_TRUE(PollUntil([&] { return rig.ctrl->cycle_count() >= cycles_at_write + 4; }, 2s));
+  rig.ctrl->Stop();
+
+  EXPECT_EQ(comm.run_cycle_with_cmd, 1);
+  // The write-echo streak counts only the attempted tick (1), the reads were ok.
+  EXPECT_EQ(rig.ctrl->channel_consec_fail(RequestKind::kWriteEcho), 1u);
+  EXPECT_EQ(rig.ctrl->channel_consec_fail(RequestKind::kJointRead), 0u);
+  bool saw_failed_write = false;
+  const CycleOutcomeRing ring = rig.ctrl->GetCycleOutcomeRing();
+  const std::size_t n = std::min<std::size_t>(ring.count, CycleOutcomeRing::kCapacity);
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto& e = ring.entries[i];
+    if ((e.attempted_mask & RequestKindBit(RequestKind::kWriteEcho)) != 0) {
+      saw_failed_write = true;
+      EXPECT_EQ(e.ok_mask & RequestKindBit(RequestKind::kWriteEcho), 0u);
+    }
+  }
+  EXPECT_TRUE(saw_failed_write);
+}
+
+// D60 / C1: write_us is the comm-stamped write stage (write_end − cycle
+// start), not the controller's own clock around the call. A comm that reports
+// a 3 ms stage puts >= 3000 us into the write phase while the read phases
+// that follow it clamp to zero-length spans.
+TEST(HandCommSeam, RunCycle_WriteUsIsWriteEndMinusCycleStart) {
+  auto rig = MakeTxnRig();
+  auto& comm = *rig.comm;
+  comm.write_stage_us = 3000;
+
+  ASSERT_TRUE(rig.ctrl->Start());
+  ASSERT_TRUE(PollUntil([&] { return rig.ctrl->HasStateBeenRead(); }, 2s));
+  rig.ctrl->SendCommandAndRequestStates(HandMotorArray{});
+  ASSERT_TRUE(PollUntil([&] { return comm.run_cycle_with_cmd >= 1; }, 2s));
+  ASSERT_TRUE(PollUntil([&] { return rig.ctrl->timing_stats().write.max_us > 0.0; }, 2s));
+  rig.ctrl->Stop();
+
+  // The one write tick is the only write sample (min == max); its span is the
+  // comm's 3 ms stage plus the controller's own overhead, never a whole tick
+  // of the mock's own wall time (the call itself returns at once).
+  const auto ts = rig.ctrl->timing_stats();
+  EXPECT_GE(ts.write.min_us, 3000.0);
+  EXPECT_EQ(ts.write.min_us, ts.write.max_us);
+  EXPECT_LT(ts.write.max_us, 3000.0 + 1000.0);
+}
+
+// E-8 / D60: the terminal E-Stop tick issues no cycle transaction at all —
+// the fire-and-forget zero-write is the only I/O (pin beside the
+// ScriptedHandComm version above, now for the RunCycle path).
+TEST(HandCommSeam, EStop_NoRunCycle_FireAndForgetOnce) {
+  auto rig = MakeTxnRig();
+  auto& comm = *rig.comm;
+  std::atomic<bool> estop{true};
+  rig.ctrl->SetEstopFlag(&estop);
+
+  ASSERT_TRUE(rig.ctrl->Start());
+  ASSERT_TRUE(PollUntil([&] { return !rig.ctrl->IsRunning(); }, 2s));
+  rig.ctrl->Stop();
+
+  EXPECT_EQ(comm.run_cycle_calls, 0);
+  EXPECT_EQ(comm.fire_and_forget_calls, 1);
+  EXPECT_EQ(comm.last_faf_pos, HandMotorArray{});
+  EXPECT_EQ(comm.last_faf_ff, HandMotorArray{});
+  EXPECT_EQ(comm.write_echo_calls, 0);
+  EXPECT_EQ(comm.read_cycle_calls, 0);
+}
+
+// D60 default implementation (what UdpHandComm and every mock without an
+// override run): WriteCommandWithEcho first, ReadCycle second, the same
+// position / feedforward handed through, and the write result surviving the
+// reset ReadCycle performs on `out`. No command → no write, write fields at
+// their defaults. A failed write still stamps write_end (the stage ran).
+TEST(HandCommSeam, DefaultRunCycle_WriteThenRead_SamePayload_WriteResultSurvivesReset) {
+  ScriptedHandComm comm;
+  HandReadPlan plan{};
+  plan.motor_space_read = true;
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  HandMotorArray pos{};
+  HandMotorArray ff{};
+  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    pos[i] = 0.1f * static_cast<float>(i);
+    ff[i] = 2.0f + static_cast<float>(i);
+  }
+
+  const auto t_before = HandReadOutcome::Clock::now();
+  comm.RunCycle(plan, &pos, &ff, bufs, out);
+  EXPECT_EQ(comm.call_order, "WR");
+  EXPECT_EQ(comm.last_echo_pos, pos);
+  EXPECT_EQ(comm.last_echo_ff, ff);
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_GE(out.write_end, t_before);
+  EXPECT_LE(out.write_end, out.PhaseEnd(ReadPhase::kMotor));  // write stage closed before the reads
+  EXPECT_TRUE(out.motor_ok);
+  EXPECT_TRUE(out.joint_ok);
+
+  out.write_ok = true;  // stale content must not leak into a no-command cycle
+  comm.RunCycle(plan, nullptr, nullptr, bufs, out);
+  EXPECT_EQ(comm.call_order, "WRR");
+  EXPECT_EQ(comm.write_echo_calls, 1);
+  EXPECT_FALSE(out.write_ok);
+  EXPECT_EQ(out.write_end, HandReadOutcome::Clock::time_point{});
+  EXPECT_TRUE(out.joint_ok);
+
+  comm.script_write_ok = false;
+  comm.RunCycle(plan, &pos, &ff, bufs, out);
+  EXPECT_EQ(comm.call_order, "WRRWR");
+  EXPECT_FALSE(out.write_ok);
+  EXPECT_NE(out.write_end, HandReadOutcome::Clock::time_point{});
+  EXPECT_TRUE(out.joint_ok);  // the read still ran after the failed write
 }
 
 // A comm that leaves ReadCycleIndividual at the HandComm default (a non-UDP

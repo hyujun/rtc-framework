@@ -856,31 +856,23 @@ class UdpHandController {
     // 1b=kMotor; pending_ff_ is the per-motor feedforward torque of the same
     // command — the UDP comm ignores it, the CAN FD comm sends it as Frame 1).
     // Gated on BOTH the first state read (startup no-jump contract) AND a
-    // pending command. has_pending_write_ is cleared only here, inside the open
+    // pending command. has_pending_write_ is cleared only inside the open
     // gate, so a command staged before the first state read is held (not lost)
     // until state_read_once_ flips true. Success/failure both clear — a dropped
-    // write is not re-sent stale (control_rate delivers a fresh one).
+    // write is not re-sent stale (control_rate delivers a fresh one). The gate
+    // is decided here; bulk mode hands the command to the comm's RunCycle
+    // (one transaction call with the reads, D60), individual mode writes
+    // before its read cycle below.
     // Per-phase timing validity: a phase's latency is recorded only when its
     // request was attempted AND echoed/decoded OK. Not-attempted phases (no
     // pending write, 1b motor-space read, sensor on a non-sensor cycle) and
     // failed phases are excluded so recv-timeout ticks never inflate the timing
     // distribution. Failure counting itself lives in comm_stats (transport
     // per_kind), so a dropped read is still tallied there.
+    const bool write_gate_open =
+        state_read_once_.load(std::memory_order_relaxed) && has_pending_write_;
     bool write_attempted = false;
     bool write_ok = false;
-    if (state_read_once_.load(std::memory_order_relaxed) && has_pending_write_) {
-      RTC_TRACE_SCOPE("hand_write_echo");
-      write_attempted = true;
-      attempted_mask |= RequestKindBit(RequestKind::kWriteEcho);
-      if (comm_->WriteCommandWithEcho(pending_cmd_, pending_ff_)) {
-        any_recv_ok = true;
-        ok_mask |= RequestKindBit(RequestKind::kWriteEcho);
-        write_ok = true;
-      }
-      has_pending_write_ = false;
-    }
-
-    const auto t1 = std::chrono::steady_clock::now();
 
     // Sensor decimation
     ++sensor_cycle_counter_;
@@ -891,11 +883,17 @@ class UdpHandController {
 
     if (is_bulk_) {
       // ── Bulk mode ─────────────────────────────────────────────────────
-      // One HandComm read cycle: motor-space (when the protocol has one) →
-      // joint-space → sensors (on a sensor cycle). The comm fills read_bufs_
-      // and reports per-channel outcomes + the boundaries inside the read in
+      // One HandComm cycle transaction (RunCycle, D60): the gated command
+      // write, then motor-space (when the protocol has one) → joint-space →
+      // sensors (on a sensor cycle) — sequential on UDP, one receive window on
+      // CAN FD. The comm fills read_bufs_ and reports the write result, the
+      // per-channel outcomes and the boundaries inside the cycle in
       // read_outcome_; the attempted / ok masks, the state fill and the sensor
       // decode (version seam: SensorProtocol) stay here.
+      if (write_gate_open) {
+        write_attempted = true;
+        attempted_mask |= RequestKindBit(RequestKind::kWriteEcho);
+      }
       const bool motor_space_attempted = read_plan_.motor_space_read;
       if (motor_space_attempted) {
         attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
@@ -905,8 +903,24 @@ class UdpHandController {
         state.num_fingertips = num_fingertips_;  // decode input
         attempted_mask |= RequestKindBit(RequestKind::kBulkSensor);
       }
-      comm_->ReadCycle(read_plan_, read_bufs_, read_outcome_);
+      {
+        RTC_TRACE_SCOPE("hand_cycle_txn");
+        comm_->RunCycle(read_plan_, write_gate_open ? &pending_cmd_ : nullptr,
+                        write_gate_open ? &pending_ff_ : nullptr, read_bufs_, read_outcome_);
+      }
       const HandReadOutcome& rc = read_outcome_;
+
+      if (write_attempted) {
+        has_pending_write_ = false;  // one attempt per staged command, ok or not
+        if (rc.write_ok) {
+          any_recv_ok = true;
+          ok_mask |= RequestKindBit(RequestKind::kWriteEcho);
+          write_ok = true;
+        }
+      }
+      // End of the write stage as the comm stamped it (clamped like the read
+      // phases); a tick without a write has a zero-length write span.
+      const auto t1 = write_attempted ? std::max(t0, rc.write_end) : t0;
 
       // 2. Motor-space read (kMotor). Skipped when the protocol has no
       //    motor-space read (1b) — motor_states is then not published.
@@ -989,9 +1003,23 @@ class UdpHandController {
 
     } else {
       // ── Individual mode (UDP proto1a only) ─────────────────────────────
-      // One HandComm individual read cycle: pos → joint pos → vel → per-finger
-      // sensors (on a sensor cycle). Same split as bulk: the comm fills
-      // read_bufs_ + read_outcome_, the masks / state fill stay here.
+      // The gated write, then one HandComm individual read cycle: pos → joint
+      // pos → vel → per-finger sensors (on a sensor cycle). Same split as bulk:
+      // the comm fills read_bufs_ + read_outcome_, the masks / state fill stay
+      // here. Sequential by nature (UDP), so no RunCycle.
+      if (write_gate_open) {
+        RTC_TRACE_SCOPE("hand_write_echo");
+        write_attempted = true;
+        attempted_mask |= RequestKindBit(RequestKind::kWriteEcho);
+        if (comm_->WriteCommandWithEcho(pending_cmd_, pending_ff_)) {
+          any_recv_ok = true;
+          ok_mask |= RequestKindBit(RequestKind::kWriteEcho);
+          write_ok = true;
+        }
+        has_pending_write_ = false;
+      }
+      const auto t1 = std::chrono::steady_clock::now();
+
       attempted_mask |= RequestKindBit(RequestKind::kMotorRead);  // pos + vel
       attempted_mask |= RequestKindBit(RequestKind::kJointRead);
       const bool sensor_attempted = is_sensor_cycle && num_fingertips_ > 0;
