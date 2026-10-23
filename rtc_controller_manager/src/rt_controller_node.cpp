@@ -59,7 +59,7 @@ void RtControllerNode::CloseTeardownEventfds() noexcept {
   // state-ready callback on cb_group_rt_callback_) guard their
   // eventfd_write on these members, so clearing and reading the old value
   // must be one step. Producers that already loaded a live fd are still a
-  // residual — see the ordering note in on_cleanup.
+  // residual — see the ordering note in ReleaseConfiguredResources().
   const int nrt_fd = nrt_publish_eventfd_.exchange(-1, std::memory_order_acq_rel);
   if (nrt_fd >= 0) {
     close(nrt_fd);
@@ -91,6 +91,71 @@ void RtControllerNode::ShutDrainLaneLocked() {
       [this](const urtc::RtTickTimingSample& s) { rt_callback_timing_logger_.Log(s); });
   cm_timing_logger_.Close();
   rt_callback_timing_logger_.Close();
+}
+
+void RtControllerNode::ReleaseConfiguredResources() {
+  // Reverse order of on_configure, with ONE deliberate exception: the eventfds
+  // (step 7 in configure order) are closed after the device backends (step 4),
+  // not before them. See the note at CloseTeardownEventfds() below — issue
+  // #224. Step 6 (the drain timer) is the caller's ShutDrainLaneLocked().
+
+  // Services first: these two read the controller set released last.
+  // reset_fault and clear_estop stay up while Unconfigured and answer over an
+  // empty set — every service runs on the executor running this callback, so
+  // none is mid-call while the set goes.
+  list_controllers_srv_.reset();
+  switch_controller_srv_.reset();
+
+  // 5. parameter callback
+  param_callback_handle_.reset();
+
+  // 4. publishers (CM-owned: digital twin + fixed safety) + device backends
+  //    (own their own sub/pub handles)
+  for (auto& backend : backends_) {
+    backend.reset();
+  }
+  for (std::size_t slot = 0; slot < digital_twin_by_slot_.size(); ++slot) {
+    digital_twin_by_slot_[slot] = DigitalTwinEntry();
+    dt_dirty_[slot].store(false, std::memory_order_relaxed);
+  }
+  estop_pub_.reset();
+  active_ctrl_name_pub_.reset();
+
+  // 7. eventfd (nrt publish lane only — actuator lane is inline).
+  //
+  // Out of reverse order ON PURPOSE (issue #224): the writer must die before
+  // the fd does. The backends' state-lane subscriptions survive on_deactivate
+  // — DeviceBackend::Deactivate() only gates LifecyclePublishers — so the
+  // state-ready callback keeps running on the rt_callback executor while this
+  // (lifecycle) thread tears the node down, and all it does is set a dirty bit
+  // and eventfd_write() these two fds. Closing them first left a window
+  // spanning FlushEstopStatus + two resets in which that callback would write
+  // to a closed descriptor, corrupting whatever stream had since taken the
+  // number.
+  //
+  // Residual, knowingly accepted: destroying a backend does not join a
+  // callback that is already executing — the executor holds the subscription
+  // alive for the duration of the call — so a write can still land just after
+  // the reset above returns. The window is now two instructions wide instead
+  // of a whole teardown sequence. Closing it completely would need the
+  // rt_callback executor quiesced, which CM cannot request from here.
+  CloseTeardownEventfds();
+
+  // 3. subscribers — nothing CM-owned to release: controller-YAML target subs
+  //    belong to each controller LifecycleNode (torn down with the controller
+  //    below) and state/motor/sensor subs die with their DeviceBackend above.
+
+  // 2. parameters / controllers
+  // (Controller-owned CSV loggers are released inside each controller's
+  // own on_cleanup via log_drain_timer_/log_set_; nothing to drain here.)
+  // Each controller's lifecycle on_cleanup runs before destruction so any
+  // sub/pub it created in on_configure is released deterministically, and
+  // controller_nodes_ — what RtControllerMain detaches at shutdown — goes
+  // with them.
+  AbandonControllerBringUp();
+  controller_states_.clear();
+
+  // 1. callback groups — kept alive (executor may still reference them)
 }
 
 // ── Session directory helpers
@@ -381,91 +446,15 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
     const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_INFO(get_logger(), "Cleaning up RtControllerNode...");
 
-  // Reverse order of on_configure, with ONE deliberate exception: the eventfds
-  // (step 7 in configure order) are closed after the device backends (step 4),
-  // not before them. See the note at the close() below — issue #224.
-
-  // 6. timers — the drain lane goes first, under its lock: a pass already
-  //    picked up by the logging executor survives drain_timer_.reset(), so it
-  //    is the lock plus the disarm that keep it off everything released below
-  //    (#935). ShutDrainLaneLocked() also reports what the lane still held.
+  // The drain lane goes first, under its lock: a pass already picked up by
+  // the logging executor survives drain_timer_.reset(), so it is the lock plus
+  // the disarm that keep it off everything released below (#935).
+  // ShutDrainLaneLocked() also reports what the lane still held.
   {
     const std::lock_guard<std::mutex> lock(drain_mutex_);
     ShutDrainLaneLocked();
   }
-
-  // 5. parameter callback
-  param_callback_handle_.reset();
-
-  // 4. publishers (CM-owned: digital twin + fixed safety) + device backends
-  //    (own their own sub/pub handles)
-  for (auto& backend : backends_) {
-    backend.reset();
-  }
-  for (std::size_t slot = 0; slot < digital_twin_by_slot_.size(); ++slot) {
-    digital_twin_by_slot_[slot] = DigitalTwinEntry();
-    dt_dirty_[slot].store(false, std::memory_order_relaxed);
-  }
-  estop_pub_.reset();
-  active_ctrl_name_pub_.reset();
-
-  // 7. eventfd (nrt publish lane only — actuator lane is inline).
-  //
-  // Out of reverse order ON PURPOSE (issue #224): the writer must die before
-  // the fd does. The backends' state-lane subscriptions survive on_deactivate
-  // — DeviceBackend::Deactivate() only gates LifecyclePublishers — so the
-  // state-ready callback keeps running on the rt_callback executor while this
-  // (lifecycle) thread tears the node down, and all it does is set a dirty bit
-  // and eventfd_write() these two fds. Closing them first left a window
-  // spanning FlushEstopStatus + two resets in which that callback would write
-  // to a closed descriptor, corrupting whatever stream had since taken the
-  // number.
-  //
-  // Residual, knowingly accepted: destroying a backend does not join a
-  // callback that is already executing — the executor holds the subscription
-  // alive for the duration of the call — so a write can still land just after
-  // the reset above returns. The window is now two instructions wide instead
-  // of a whole teardown sequence. Closing it completely would need the
-  // rt_callback executor quiesced, which CM cannot request from here.
-  CloseTeardownEventfds();
-
-  // 3. subscribers — nothing CM-owned to release: controller-YAML target subs
-  //    belong to each controller LifecycleNode (torn down with the controller
-  //    below) and state/motor/sensor subs die with their DeviceBackend above.
-
-  // 2. parameters / controllers
-  // (Controller-owned CSV loggers are released inside each controller's
-  // own on_cleanup via log_drain_timer_/log_set_; nothing to drain here.)
-  // Drive each controller's lifecycle on_cleanup before destruction so any
-  // sub/pub they created in on_configure is released deterministically.  The
-  // injected LifecycleNode is reset inside the controller; we then drop our
-  // parallel reference.
-  {
-    const rclcpp_lifecycle::State inactive_state(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
-                                                 "inactive");
-    for (auto& ctrl : controllers_) {
-      if (ctrl) {
-        (void)ctrl->on_cleanup(inactive_state);
-      }
-    }
-  }
-  controller_nodes_.clear();
-  controllers_.clear();
-  controller_states_.clear();
-  controller_topic_configs_.clear();
-  controller_name_to_idx_.clear();
-  controller_types_.clear();
-  controller_slot_mappings_.clear();
-  device_name_configs_.clear();
-  slot_to_group_name_.clear();
-  slot_to_sensor_layout_.clear();
-  active_groups_.clear();
-  group_slot_map_.clear();
-  device_timeouts_.clear();
-  list_controllers_srv_.reset();
-  switch_controller_srv_.reset();
-
-  // 1. callback groups — kept alive (executor may still reference them)
+  ReleaseConfiguredResources();
 
   RCLCPP_INFO(get_logger(), "RtControllerNode cleaned up");
   return CallbackReturn::SUCCESS;
@@ -503,41 +492,27 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   // latch is up regardless (issue #588).
   ResetEstopHoldState();
 
-  // Full cleanup for recovery to Unconfigured state. The drain lane first, as
-  // in on_cleanup; its flush is what puts the trigger above on the topic.
+  // on_error arrives from Active as well, and a controller's on_cleanup
+  // expects it Inactive — bring the active one down first, as on_deactivate
+  // does, now that nothing publishes through it.
+  {
+    const rclcpp_lifecycle::State active_state(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE,
+                                               "active");
+    for (std::size_t i = 0; i < controller_states_.size(); ++i) {
+      if (controller_states_[i].load(std::memory_order_acquire) == 1) {
+        (void)DeactivateController(i, active_state);
+      }
+    }
+  }
+
+  // Full cleanup for recovery to Unconfigured state — the same release as
+  // on_cleanup, controllers' on_cleanup included (#935). The drain lane first;
+  // its flush is what puts the trigger above on the topic.
   {
     const std::lock_guard<std::mutex> lock(drain_mutex_);
     ShutDrainLaneLocked();
   }
-  param_callback_handle_.reset();
-  for (auto& backend : backends_) {
-    backend.reset();
-  }
-  for (std::size_t slot = 0; slot < digital_twin_by_slot_.size(); ++slot) {
-    digital_twin_by_slot_[slot] = DigitalTwinEntry();
-    dt_dirty_[slot].store(false, std::memory_order_relaxed);
-  }
-  estop_pub_.reset();
-  active_ctrl_name_pub_.reset();
-
-  // Backends first, then their fds — see the ordering note in on_cleanup
-  // (issue #224). Same two-thread hazard applies here: on_error also runs on
-  // the lifecycle executor while the state-ready callback runs on rt_callback.
-  CloseTeardownEventfds();
-  controllers_.clear();
-  controller_states_.clear();
-  controller_topic_configs_.clear();
-  controller_name_to_idx_.clear();
-  controller_types_.clear();
-  controller_slot_mappings_.clear();
-  device_name_configs_.clear();
-  slot_to_group_name_.clear();
-  slot_to_sensor_layout_.clear();
-  active_groups_.clear();
-  group_slot_map_.clear();
-  list_controllers_srv_.reset();
-  switch_controller_srv_.reset();
-  device_timeouts_.clear();
+  ReleaseConfiguredResources();
 
   // SUCCESS → recovers to Unconfigured. Configuring again needs a process
   // restart once RtControllerMain has reached Phase 3 (#935).

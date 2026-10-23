@@ -14,7 +14,7 @@
 // Precedent: #218 settled for a structural assertion where no deterministic
 // red test existed. Here one does exist, so we take it.
 //
-// Residual NOT covered (documented in on_cleanup): destroying a backend does
+// Residual NOT covered (documented in ReleaseConfiguredResources): destroying a backend does
 // not join a callback already executing on the rt_callback executor, so a
 // write can still land in the two instructions between the reset and the
 // close. Closing that would need executor quiescence, which CM cannot request.

@@ -150,6 +150,15 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // on_configure calls it first, because a configure refused after
   // CreateTimers() returns FAILURE and FAILURE skips on_cleanup.
   void ShutDrainLaneLocked();
+  // Releases everything a configure built, in teardown order (#935): the
+  // services, the parameter callback, the device backends and the CM-owned
+  // publishers, then the eventfds the backends write (issue #224), and last
+  // the controllers — each one's on_cleanup first (AbandonControllerBringUp()).
+  // The caller has stopped the RT and publish threads, brought every Active
+  // controller down to Inactive, and shut the drain lane. on_cleanup, on_error
+  // and the configure refusals past CreatePublishers() all end here, because
+  // FAILURE and on_error skip on_cleanup.
+  void ReleaseConfiguredResources();
 
   // ── Session directory helpers ─────────────────────────────────────────────
   // Resolves session directory via rtc::ResolveSessionDir() 2-tier chain.

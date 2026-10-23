@@ -799,6 +799,23 @@ TEST_F(CmConfigPipelineTest, AFailedControllerConfigureCleansUpTheController) {
   EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetDeviceTimeoutCount(*node));
 }
 
+// on_error is the other path to Unconfigured that skips on_cleanup, and it
+// used to drop the controllers without one — leaving their LifecycleNodes in
+// the list RtControllerMain detaches at shutdown (#935).
+TEST_F(CmConfigPipelineTest, AnOnErrorCleansUpItsControllers) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  ASSERT_EQ(1, PipelineTestController::instances_created.load());
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_error(StateInactive()));
+  EXPECT_EQ(1, PipelineTestController::cleanup_count.load())
+      << "on_error dropped the controller without on_cleanup";
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+  EXPECT_TRUE(node->GetControllerNodes().empty());
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetDeviceTimeoutCount(*node));
+}
+
 // ── Configure after the dedicated executors took the node (#935) ───────────
 //
 // RtControllerMain hands the node's callback groups and the controller nodes
