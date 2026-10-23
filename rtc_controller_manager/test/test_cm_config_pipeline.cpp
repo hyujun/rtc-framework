@@ -7,8 +7,8 @@
 //   - params.cpp: config_variant YAML path, ApplyControllerParamOverrides +
 //     SetYamlScalarFromParam (all scalar/array kinds) and the warning for an
 //     override whose path the YAML lacks (issue #574), matched device-timeout
-//     parsing, initial_controller found-branch, logging block with log_dir,
-//     urdf.closure_path explicit override
+//     parsing, initial_controller found-branch, logging block and the refused
+//     log_dir override, urdf.closure_path explicit override
 //   - device_config.cpp: ParseSubModels/ParseTreeModels, LoadDeviceNameConfigs
 //     (names / limits / safe_position / backend / sensor_layout blocks + URDF
 //     joint-name validation and joint-limit merge)
@@ -651,37 +651,13 @@ TEST_F(CmConfigPipelineTest, ClosurePathOverrideBindsWhenFileExists) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
-// ── Logging block (log_dir + timing CSV) ─────────────────────────────────────
-
-TEST_F(CmConfigPipelineTest, LoggingSetupCreatesTimingCsvInLogDir) {
-  const auto log_dir =
-      std::filesystem::temp_directory_path() / "rtc_cm_cfg_test_logs" / "session_a";
-  std::filesystem::remove_all(log_dir.parent_path());
-
-  auto node = std::make_shared<RtControllerNode>("test_cm_config_pipeline_node");
-  node->declare_parameter("enable_logging", true);
-  node->declare_parameter("enable_timing_log", true);
-  node->declare_parameter("enable_device_log", false);
-  node->declare_parameter("control_rate", 200.0);
-  node->declare_parameter("config_variant", std::string("test_fixtures"));
-  node->declare_parameter("log_dir", log_dir.string());
-  node->declare_parameter("max_log_sessions", 2);
-  DeclareArmDevice(*node);
-
-  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
-  EXPECT_TRUE(std::filesystem::exists(log_dir));
-  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
-
-  std::filesystem::remove_all(log_dir.parent_path());
-}
-
 // ── Timing CSVs across a reconfigure (#932) ─────────────────────────────────
 //
 // The loggers are members, so every configure re-opens the same instances. A
 // second Open() on a still-open stream used to fail and poison it: the WARN
 // below fired and every timing row after the first configure was lost while
-// IsOpen() still said true. No log_dir here — the session comes from the
-// binary's RTC_SESSION_DIR (rtc_base_isolate_test_sessions() in CMakeLists).
+// IsOpen() still said true. The session comes from the binary's
+// RTC_SESSION_DIR (rtc_base_isolate_test_sessions() in CMakeLists).
 
 std::vector<std::string> TimingOpenFailures() {
   return LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, {"Failed to open"});
@@ -779,6 +755,35 @@ TEST_F(CmConfigPipelineTest, TimingCsvsReopenAfterAConfigureRefusedPastLogging) 
   EXPECT_TRUE(ControllerLifecycleTestAccess::RtCallbackTimingLogOpen(*node));
   EXPECT_TRUE(TimingOpenFailures().empty());
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── A leftover log_dir override (#933) ──────────────────────────────────────
+//
+// log_dir used to send CM's logs to an explicit dir instead of the session.
+// It is gone; an override still carrying it is refused, not silently ignored,
+// so the operator learns the logs now follow RTC_SESSION_DIR. The accepted
+// counterpart is ConfigureWritesIntoThisBinarysPrivateSession — a statically
+// typed parameter cannot be undeclared, so this node cannot be retried.
+TEST_F(CmConfigPipelineTest, ALogDirOverrideRefusesConfigureAndWritesNothingThere) {
+  const char* session = std::getenv("RTC_SESSION_DIR");
+  ASSERT_NE(nullptr, session) << "this binary must isolate its session dir";
+  // The binary's own temp root, so a regression that honours log_dir writes
+  // nowhere shared.
+  const auto root = std::filesystem::path(session).parent_path().parent_path();
+  const auto temp = std::filesystem::temp_directory_path();
+  ASSERT_EQ(0U, root.string().rfind(temp.string(), 0)) << root << " is not under " << temp;
+  ASSERT_NE(temp, root);
+  const auto log_dir = root / "log_dir_override";
+  std::filesystem::remove_all(log_dir);
+
+  auto node = MakeTimingLogNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("log_dir", log_dir.string());
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U,
+            LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, {"'log_dir'", "RTC_SESSION_DIR"}).size());
+  EXPECT_FALSE(std::filesystem::exists(log_dir));
 }
 
 // ── Device config beyond the RT path's fixed capacity (issue #196 §2) ────────

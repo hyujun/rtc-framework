@@ -124,7 +124,7 @@ def _walk(entities, depth: int = 0):
 
     The RT controller node is not a top-level entity: it is launched from an
     ``OnProcessExit`` handler, so a flat scan of ``description.entities`` would
-    miss precisely the node whose ``log_dir`` this file is about.
+    miss precisely the node whose parameters this file is about.
     """
     for entity in entities:
         yield entity
@@ -261,10 +261,12 @@ def test_building_a_description_creates_and_deletes_nothing(filename, isolated_l
 def test_the_session_path_reaches_every_consumer(filename, isolated_logging_root):
     """One session per run, and all four consumers agree on it.
 
-    "Real-robot behaviour is unchanged" is operationally this: ``$RTC_SESSION_DIR``,
-    the RT node's ``log_dir``, and (for the robot launches) the generated
-    controller_manager RT parameter file all name the same ``YYMMDD_HHMM``
-    directory, and exactly one is created.
+    "Real-robot behaviour is unchanged" is operationally this: ``$RTC_SESSION_DIR``
+    and (for the robot launches) the generated controller_manager RT parameter
+    file name the same ``YYMMDD_HHMM`` directory, and exactly one is created.
+    The RT node logs into ``$RTC_SESSION_DIR`` itself — it has no ``log_dir``
+    since #933, and refuses to configure if one is still passed — so the launch
+    must not hand it one.
     """
     description = _load(filename).generate_launch_description()
     context, produced = _evaluate_in_order(description)
@@ -277,8 +279,8 @@ def test_the_session_path_reaches_every_consumer(filename, isolated_logging_root
     assert context.environment["RTC_RUN_ID"].isdigit()
 
     parameters = _resolved_rt_controller_parameters(description, context, produced)
-    assert parameters["log_dir"] == session_dir, (
-        "the RT node would log outside this run's session directory"
+    assert "log_dir" not in parameters, (
+        "the RT node refuses to configure with a log_dir; it logs into $RTC_SESSION_DIR"
     )
 
     if filename in ROBOT_LAUNCH_FILES:

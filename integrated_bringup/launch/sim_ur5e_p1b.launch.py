@@ -205,7 +205,6 @@ def launch_setup(context, *args, **kwargs):
         ctrl_params.append(sim_overlay)
     ctrl_overrides = {}
 
-    ctrl_overrides["log_dir"] = session_dir
     # Same number the launch pruned with: the RT node prunes this tree again in
     # on_configure, and two independent numbers made the effective retention
     # min(launch, node) (#402).

@@ -509,6 +509,17 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     }
   };
 
+  // log_dir is gone: CM logs into the launch's session (RTC_SESSION_DIR).
+  // A leftover override is refused rather than ignored, so a stale YAML or
+  // launch cannot silently move the logs.
+  if (has_parameter("log_dir")) {
+    RCLCPP_ERROR(get_logger(),
+                 "'log_dir' was removed — CM logs into the session dir from "
+                 "RTC_SESSION_DIR (or its own process session). Drop the "
+                 "'log_dir' override — refusing to configure");
+    return false;
+  }
+
   // RT loop rate. Framework supports kMin..kMaxControlRateHz; 500 Hz is the
   // declare_parameter default only — robot bringups should set this in YAML
   // (e.g. 1000.0 / 2000.0 for higher-bandwidth devices, lower for ToF-rich
@@ -517,7 +528,6 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   safe_declare("kp", rclcpp::ParameterValue(5.0));
   safe_declare("kd", rclcpp::ParameterValue(0.5));
   safe_declare("enable_logging", rclcpp::ParameterValue(true));
-  safe_declare("log_dir", rclcpp::ParameterValue(std::string("")));
   safe_declare("max_log_sessions", rclcpp::ParameterValue(10));
   safe_declare("enable_timing_log", rclcpp::ParameterValue(true));
   safe_declare("enable_device_log", rclcpp::ParameterValue(true));
@@ -1143,17 +1153,9 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   // CM-side DataLogger and `<session>/controller/` directory have been
   // removed.
   if (enable_logging_) {
-    const std::string log_dir_param = get_parameter("log_dir").as_string();
     const int max_sessions = static_cast<int>(get_parameter("max_log_sessions").as_int());
 
-    std::filesystem::path session_dir;
-    if (!log_dir_param.empty()) {
-      session_dir = std::filesystem::path(log_dir_param);
-      std::filesystem::create_directories(session_dir);
-      urtc::EnsureSessionSubdirs(session_dir);
-    } else {
-      session_dir = ResolveAndSetupSessionDir();
-    }
+    const auto session_dir = ResolveAndSetupSessionDir();
     const auto logging_root = session_dir.parent_path();
     urtc::CleanupOldSessions(logging_root, max_sessions, session_dir);
 
