@@ -1,8 +1,13 @@
 // ── Global E-Stop trigger and clear ──────────────────────────────────────────
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
-#include <cstdio>  // std::snprintf
+#include <array>
+#include <cstdio>   // std::snprintf
+#include <cstring>  // std::memcpy, ::strnlen
+#include <optional>
+#include <string>
 #include <string_view>
+#include <thread>  // std::this_thread::yield
 
 namespace urtc = rtc;
 
@@ -32,9 +37,8 @@ void RtControllerNode::TriggerGlobalEstop(std::string_view reason) noexcept {
     return;  // already estopped
   }
 
-  // Fixed-size copy — no heap allocation on the RT path.
-  std::snprintf(estop_reason_.data(), estop_reason_.size(), "%.*s", static_cast<int>(reason.size()),
-                reason.data());
+  // Fixed-size seqlock write — no heap allocation, no lock on the RT path.
+  WriteEstopReason(reason);
 
   // Propagate to all controllers — TriggerEstop is safe from any thread.
   for (auto& ctrl : controllers_) {
@@ -50,6 +54,65 @@ void RtControllerNode::TriggerGlobalEstop(std::string_view reason) noexcept {
   // `global_estop_` carries the value, so the drain never needs a payload.
   estop_status_pending_.store(true, std::memory_order_release);
   estop_log_pending_.store(true, std::memory_order_release);
+}
+
+// ── E-STOP reason seqlock (#935) ─────────────────────────────────────────────
+//
+// The latch CAS makes the RT trigger the usual only writer, but not always:
+// on_error triggers from the lifecycle thread while an RT loop that has not
+// been joined yet can trigger too, and a clear landing between one trigger's
+// CAS and its reason write lets a second trigger through the latch. So the
+// writer takes the sequence from even to odd with a CAS, and a writer that
+// finds it odd — or loses the CAS — drops its reason instead of waiting.
+void RtControllerNode::WriteEstopReason(std::string_view reason) noexcept {
+  std::array<char, kEstopReasonBytes> text{};
+  std::snprintf(text.data(), text.size(), "%.*s", static_cast<int>(reason.size()), reason.data());
+
+  std::uint64_t seq = estop_reason_seq_.load(std::memory_order_relaxed);
+  // Acquire on success: a previous writer's words are ordered before ours.
+  if ((seq & 1U) != 0U || !estop_reason_seq_.compare_exchange_strong(
+                              seq, seq + 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+    return;
+  }
+  // Orders the odd sequence before the words: a reader that sees any new word
+  // then sees the sequence move, and retries.
+  std::atomic_thread_fence(std::memory_order_release);
+  for (std::size_t i = 0; i < kEstopReasonWords; ++i) {
+    std::uint64_t word = 0;
+    std::memcpy(&word, text.data() + i * sizeof(word), sizeof(word));
+    estop_reason_words_[i].store(word, std::memory_order_relaxed);
+  }
+  estop_reason_seq_.store(seq + 2, std::memory_order_release);
+}
+
+std::optional<std::uint64_t> RtControllerNode::ReadEstopReason(
+    std::array<char, kEstopReasonBytes>& out) const noexcept {
+  for (int attempt = 0; attempt < kEstopReasonReadAttempts; ++attempt) {
+    const std::uint64_t before = estop_reason_seq_.load(std::memory_order_acquire);
+    if ((before & 1U) == 0U) {
+      for (std::size_t i = 0; i < kEstopReasonWords; ++i) {
+        const std::uint64_t word = estop_reason_words_[i].load(std::memory_order_relaxed);
+        std::memcpy(out.data() + i * sizeof(word), &word, sizeof(word));
+      }
+      std::atomic_thread_fence(std::memory_order_acquire);
+      if (estop_reason_seq_.load(std::memory_order_relaxed) == before) {
+        if (before == estop_reason_cleared_seq_.load(std::memory_order_acquire)) {
+          out[0] = '\0';
+        }
+        out.back() = '\0';  // terminated for %s callers whatever the words hold
+        return before;
+      }
+    }
+    std::this_thread::yield();
+  }
+  out[0] = '\0';
+  return std::nullopt;
+}
+
+std::string RtControllerNode::GlobalEstopReason() const {
+  std::array<char, kEstopReasonBytes> reason{};
+  (void)ReadEstopReason(reason);
+  return std::string(reason.data(), ::strnlen(reason.data(), reason.size()));
 }
 
 RtControllerNode::EstopClearOutcome RtControllerNode::ClearGlobalEstop() noexcept {

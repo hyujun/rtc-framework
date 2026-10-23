@@ -7,6 +7,7 @@
 // trigger E-8) that previously had 0% coverage.
 
 #include "rclcpp_suite_fixture.hpp"
+#include "rt_cm_log_sink.hpp"
 #include "rt_cm_test_access.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -82,8 +83,8 @@ TEST_F(EstopTest, TriggerIsIdempotent) {
 }
 
 TEST_F(EstopTest, TriggerTruncatesOverlongReason) {
-  // estop_reason_ is a fixed 128-byte buffer — an over-length reason must be
-  // truncated (and NUL-terminated) without overflowing.
+  // The E-STOP reason is a fixed 128-byte seqlock buffer — an over-length
+  // reason must be truncated (and NUL-terminated) without overflowing.
   const std::string long_reason(300, 'x');
   ControllerLifecycleTestAccess::CallTriggerEstop(*node_, long_reason);
   const std::string captured = ControllerLifecycleTestAccess::GetEstopReason(*node_);
@@ -453,14 +454,50 @@ TEST_F(EstopTest, DrainLogEmitsDeferredEstopMessages) {
 }
 
 TEST_F(EstopTest, DrainLogPrintsTimingSummaryWhenSignalled) {
-  // print_timing_summary_ gates the summary block; controllers_ are injected so
+  // A window boundary gates the summary block; controllers_ are injected so
   // the active-controller name lookup is in bounds.
   ControllerLifecycleTestAccess::SetActiveIdx(*node_, 0);
-  ControllerLifecycleTestAccess::SetPrintTimingSummary(*node_, true);
+  ControllerLifecycleTestAccess::CallMarkTimingWindowBoundary(*node_);
   ControllerLifecycleTestAccess::CallDrainLog(*node_);  // emits summary, resets profiler
   // A second drain with the flag cleared takes the no-summary path.
   ControllerLifecycleTestAccess::CallDrainLog(*node_);
   SUCCEED();
+}
+
+// The summary reports the window that closed at the boundary, and the samples
+// the RT loop records while the drain is still on its way belong to the next
+// one (#935). One profiler for both used to fold them into the printed mean,
+// then Reset() threw them away.
+TEST_F(EstopTest, TimingSummaryReportsOnlyTheWindowThatClosed) {
+  ControllerLifecycleTestAccess::SetActiveIdx(*node_, 0);
+  for (int i = 0; i < 1000; ++i) {
+    ControllerLifecycleTestAccess::RecordComputeSample(*node_, 10.0);
+  }
+  ControllerLifecycleTestAccess::CallMarkTimingWindowBoundary(*node_);
+  for (int i = 0; i < 5; ++i) {
+    ControllerLifecycleTestAccess::RecordComputeSample(*node_, 1000.0);
+  }
+
+  LogSink::Install();
+  ControllerLifecycleTestAccess::CallDrainLog(*node_);
+  const auto summary = LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"timing:"});
+  LogSink::Restore();
+
+  ASSERT_EQ(1U, summary.size());
+  EXPECT_NE(std::string::npos, summary[0].find("mean=10.0"))
+      << "the summary folded in samples from after the boundary: " << summary[0];
+  EXPECT_EQ(5U, ControllerLifecycleTestAccess::ActiveTimingWindowCount(*node_))
+      << "the samples recorded after the boundary were reset with the closed window";
+}
+
+// A cleared latch has no reason once the drain has reported the clear — what
+// /rtc_cm/clear_estop and the reset path quote is the latch in force (#935).
+TEST_F(EstopTest, AClearedLatchHasNoReasonOnceDrained) {
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node_, "drained_reason");
+  ASSERT_EQ(ControllerLifecycleTestAccess::EstopClearOutcome::kCleared,
+            ControllerLifecycleTestAccess::CallClearEstop(*node_));
+  ControllerLifecycleTestAccess::CallDrainLog(*node_);
+  EXPECT_EQ("", ControllerLifecycleTestAccess::GetGlobalEstopReason(*node_));
 }
 
 // ── Slot-mapping build guards (issue #198 comment 16) ────────────────────────

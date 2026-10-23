@@ -153,6 +153,18 @@ TEST_F(CommandTypeGateTest, ARefusedPairingCleansUpEveryConfiguredController) {
   EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetControllerCount(*node));
 }
 
+// The gate runs after CreatePublishers / CreateDeviceBackends, and FAILURE
+// skips on_cleanup — the refusal has to release those too, or the node keeps
+// the backends' subscriptions and the E-STOP publisher alive while
+// Unconfigured (#935).
+TEST_F(CommandTypeGateTest, ARefusedPairingReleasesWhatConfigureBuilt) {
+  auto node = MakeNode("cm_position_only_backend");
+  ASSERT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(nullptr, ControllerLifecycleTestAccess::GetBackend(*node, 0));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::HasEstopPublisher(*node));
+  EXPECT_EQ(-1, ControllerLifecycleTestAccess::GetNrtPublishEventfd(*node));
+}
+
 TEST_F(CommandTypeGateTest, AcceptsATorqueControllerWhenTheBackendDeclaresTheMode) {
   // Same controller, same wiring — only the backend's declaration differs, so
   // the refusal above cannot be an artefact of the torque fixture itself.

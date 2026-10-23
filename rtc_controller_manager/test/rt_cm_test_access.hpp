@@ -192,6 +192,8 @@ class ControllerLifecycleTestAccess {
     }
   }
 
+  static bool HasEstopPublisher(const RtControllerNode& node) { return node.estop_pub_ != nullptr; }
+
   static void CallTriggerEstop(RtControllerNode& node, std::string_view reason) {
     node.TriggerGlobalEstop(reason);
   }
@@ -209,6 +211,12 @@ class ControllerLifecycleTestAccess {
 
   static std::string GetGlobalEstopReason(const RtControllerNode& node) {
     return node.GlobalEstopReason();
+  }
+
+  // FlushEstopLog() as a DrainLog() pass runs it: under the drain lock.
+  static void CallFlushEstopLog(RtControllerNode& node) {
+    const std::lock_guard<std::mutex> lock(node.drain_mutex_);
+    node.FlushEstopLog();
   }
 
   static bool IsEstopped(const RtControllerNode& node) { return node.IsGlobalEstopped(); }
@@ -229,8 +237,10 @@ class ControllerLifecycleTestAccess {
     return node.sim_missing_mask_.load(std::memory_order_acquire);
   }
 
+  // The same seqlock read as GetGlobalEstopReason since #935 — the raw buffer
+  // it used to copy is gone. Kept for the tests written against it.
   static std::string GetEstopReason(const RtControllerNode& node) {
-    return std::string(node.estop_reason_.data());
+    return GetGlobalEstopReason(node);
   }
 
   static bool GetEstopLogPending(const RtControllerNode& node) {
@@ -535,8 +545,20 @@ class ControllerLifecycleTestAccess {
   // ── Log drain (DrainLog) ────────────────────────────────────────────────────
   static void CallDrainLog(RtControllerNode& node) { node.DrainLog(); }
 
-  static void SetPrintTimingSummary(RtControllerNode& node, bool v) {
-    node.print_timing_summary_.store(v, std::memory_order_relaxed);
+  // ── Timing summary window (#935) ────────────────────────────────────────────
+  // One Compute() sample of `us` into the window the RT loop is filling.
+  static void RecordComputeSample(RtControllerNode& node, double us) {
+    node.timing_profilers_[node.timing_profiler_active_.load()].UpdateTotal(us);
+  }
+
+  // What ControlLoop() does every kTimingSummaryInterval ticks.
+  static void CallMarkTimingWindowBoundary(RtControllerNode& node) {
+    node.MarkTimingWindowBoundary();
+  }
+
+  // Samples in the window the RT loop is filling now.
+  static std::uint64_t ActiveTimingWindowCount(const RtControllerNode& node) {
+    return node.timing_profilers_[node.timing_profiler_active_.load()].GetStats().count;
   }
 
   // ── Hand-driven ticks (issue #588) ──────────────────────────────────────────

@@ -31,13 +31,14 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstring>  // ::strnlen — bounded read of the fixed-size E-STOP reason buffer
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -150,6 +151,15 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // on_configure calls it first, because a configure refused after
   // CreateTimers() returns FAILURE and FAILURE skips on_cleanup.
   void ShutDrainLaneLocked();
+  // Releases everything a configure built, in teardown order (#935): the
+  // services, the parameter callback, the device backends and the CM-owned
+  // publishers, then the eventfds the backends write (issue #224), and last
+  // the controllers — each one's on_cleanup first (AbandonControllerBringUp()).
+  // The caller has stopped the RT and publish threads, brought every Active
+  // controller down to Inactive, and shut the drain lane. on_cleanup, on_error
+  // and the configure refusals past CreatePublishers() all end here, because
+  // FAILURE and on_error skip on_cleanup.
+  void ReleaseConfiguredResources();
 
   // ── Session directory helpers ─────────────────────────────────────────────
   // Resolves session directory via rtc::ResolveSessionDir() 2-tier chain.
@@ -172,6 +182,8 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ResetControllerBringUpState(). Called on every configure refusal, so a
   // failed configure leaves no controller behind as an active/switch
   // candidate, and before Pass 1, so a retry cannot register one twice.
+  // Refusals past CreatePublishers() go through ReleaseConfiguredResources(),
+  // which ends here.
   // FAILURE skips CM's own on_cleanup, which makes the refusal the last point
   // these controllers can be cleaned up.
   void AbandonControllerBringUp();
@@ -294,6 +306,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void NrtPublishLoopEntry(const rtc::ThreadConfig& cfg);
   void WaitForNrtPublishWakeup();
   void DrainLog();  // Log drain (non-RT core)
+  // RT. Closes the timing summary window (#935): switches the RT loop to the
+  // other profiler buffer and hands the closed one to DrainLog(). If the drain
+  // has not taken the previous window yet, the current buffer keeps filling
+  // and the next boundary hands over both windows' samples together.
+  void MarkTimingWindowBoundary() noexcept;
 
   // Digital-twin republish, drained on the nrt_publish thread. The device
   // state-lane callback (rt_callback, FIFO 70) only raises dt_dirty_[slot];
@@ -311,8 +328,26 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // Emits the deferred GLOBAL E-STOP triggered / cleared line, if one is
   // queued. DrainLog calls it at the drain cadence; the teardown calls it so a
   // line queued by the closing session is not printed by the next one's first
-  // pass. Non-RT, under drain_mutex_ — it clears estop_reason_.
+  // pass. Non-RT, under drain_mutex_ — the cleared branch retires the reason,
+  // and the lock keeps it the only writer of estop_reason_cleared_seq_.
   void FlushEstopLog();
+
+  // ── E-STOP reason seqlock (#935) ──────────────────────────────────────────
+  static constexpr std::size_t kEstopReasonBytes = 128;  // fixed — no heap on the RT path
+  static constexpr std::size_t kEstopReasonWords = kEstopReasonBytes / sizeof(std::uint64_t);
+  // Reads give up after this many torn or in-progress attempts.
+  static constexpr int kEstopReasonReadAttempts = 8;
+  // Records `reason` for the trigger that just raised the latch. RT-safe: one
+  // snprintf into the stack, one CAS, plain word stores — no lock, no
+  // allocation. When another writer holds the seqlock the reason is dropped;
+  // the latch and its propagation never depend on it.
+  void WriteEstopReason(std::string_view reason) noexcept;
+  // Copies the reason in force into `out` ("" once FlushEstopLog() retired
+  // it) and returns the generation it was read at. nullopt, with `out` empty,
+  // when a writer held the seqlock through every retry — the read is bounded
+  // because DrainLog() makes it while holding drain_mutex_. Non-RT.
+  [[nodiscard]] std::optional<std::uint64_t> ReadEstopReason(
+      std::array<char, kEstopReasonBytes>& out) const noexcept;
 
   // ── Controller-level lifecycle (aux thread only) ─────────────────────────
   // Activate / deactivate a single controller. Updates controller_states_
@@ -396,15 +431,12 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   }
 
   /// Copy of the reason captured by the most recent trigger ("" once a cleared
-  /// latch has been drained). Aux-thread read of a buffer the RT thread writes
-  /// with snprintf, so a copy taken during a concurrent re-trigger can mix two
-  /// reasons — the same tolerance DrainLog's deferred log line already takes,
-  /// and bounded here because the read never runs past the array. Callers use
-  /// it for operator-facing text and confirmation, never for control flow that
-  /// has to be exact.
-  [[nodiscard]] std::string GlobalEstopReason() const {
-    return std::string(estop_reason_.data(), ::strnlen(estop_reason_.data(), estop_reason_.size()));
-  }
+  /// latch has been drained). A seqlock read (#935): the copy is one whole
+  /// reason, never two mixed, and comes back "" if a trigger kept rewriting it
+  /// through every retry. Between a trigger's latch and its reason write it is
+  /// still the previous reason. Callers use it for operator-facing text and
+  /// confirmation, never for control flow that has to be exact. Non-RT.
+  [[nodiscard]] std::string GlobalEstopReason() const;
 
   /// One configured control period. Every aux-thread wait that has to let the
   /// RT loop observe an off-RT store sizes itself from this, so the period has
@@ -645,7 +677,15 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // active is enforced by SwitchActiveController; the vector permits a
   // future relaxation to multi-active without a schema change.
   std::vector<std::atomic<int>> controller_states_;
-  rtc::ControllerTimingProfiler timing_profiler_{};  // Compute() timing
+  // Compute() timing, double-buffered by summary window (#935). The RT loop
+  // records into timing_profilers_[timing_profiler_active_] and, at each
+  // window boundary, switches to the other buffer before raising
+  // print_timing_summary_; DrainLog() summarises and resets the buffer the
+  // RT loop left, and lowers the flag last. So the summary never counts a
+  // sample from after its boundary, and the drain's Reset() never discards
+  // one. The RT loop is the only writer of the index.
+  std::array<rtc::ControllerTimingProfiler, 2> timing_profilers_{};
+  std::atomic<unsigned> timing_profiler_active_{0};
 
   // Per-tick RT-loop timing → <session>/timing/cm_timing_log.csv.
   // Producer (RT thread, ControlLoop) pushes one RtTickTimingPayload per
@@ -676,7 +716,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // for a pass already running, and a pass the executor has already picked up
   // can still start after the drop, so the lock — not the timer reset — is
   // what keeps a pass off what a teardown releases: the two loggers above
-  // (not thread-safe), estop_pub_, controllers_, estop_reason_. Aux lane and
+  // (not thread-safe), estop_pub_, controllers_. Aux lane and
   // lifecycle only, never the RT path (RT-4): the producers above are SPSC.
   std::mutex drain_mutex_;
   // Whether a DrainLog() pass may run, read and written only under
@@ -696,6 +736,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // into its own SetDeviceTarget (DeliverTargetMessage) — there is no CM-side
   // target subscription or mirror (issue #138).
 
+  // Raised by MarkTimingWindowBoundary() (RT) once the closed window is ready
+  // in the inactive buffer; lowered by DrainLog() after it has summarised and
+  // reset that buffer. While raised, the RT loop does not switch buffers.
   std::atomic<bool> print_timing_summary_{false};
 
   // Wall-clock timestamp of the previous timing-summary print, used by
@@ -808,7 +851,17 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // Every TriggerGlobalEstop() entry, counted before its CAS so the swallowed
   // calls are counted too (issue #288). See EstopTriggerRequestCount().
   std::atomic<std::uint64_t> estop_trigger_requests_{0};
-  std::array<char, 128> estop_reason_{};        // fixed-size — no heap alloc on RT path
+  // The reason the latching trigger gave, as a seqlock (#935): TriggerGlobalEstop
+  // writes it from the RT loop with no lock, while DrainLog() and the services
+  // read it on other threads. Atomic words rather than a char array, so a read
+  // that races a write is a retry, not a data race. An odd sequence is a write
+  // in progress; the even value a reader saw it at names the reason it got.
+  // FlushEstopLog() retires a cleared latch's reason by recording that value
+  // in estop_reason_cleared_seq_ — the words stay, and the next write moves
+  // the sequence past it.
+  std::array<std::atomic<std::uint64_t>, kEstopReasonWords> estop_reason_words_{};
+  std::atomic<std::uint64_t> estop_reason_seq_{0};
+  std::atomic<std::uint64_t> estop_reason_cleared_seq_{0};
   std::atomic<bool> estop_log_pending_{false};  // deferred logging flag
   // Deferred /system/estop_status publish. TriggerGlobalEstop /
   // ClearGlobalEstop are reachable from the RT loop, where a plain
@@ -1010,7 +1063,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // controller put WHICH mode on WHICH group, which is the whole content of
   // an operator's fix.
   //
-  // Same lane as estop_reason_ / estop_log_pending_ rather than a throttled
+  // Same lane as the E-STOP reason / estop_log_pending_ rather than a throttled
   // macro: RCLCPP_*_THROTTLE keeps its window in a static at the macro's
   // expansion point, which is process-global and would make two nodes in one
   // process silence each other. The pending flag is a node member, so it does

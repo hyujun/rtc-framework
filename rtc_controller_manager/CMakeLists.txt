@@ -247,6 +247,18 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib)
   endif()
 
+  ament_add_gtest(test_estop_reason_race
+    test/test_estop_reason_race.cpp
+    ENV ROS_DOMAIN_ID=44)
+  if(TARGET test_estop_reason_race)
+    target_include_directories(test_estop_reason_race PRIVATE include test)
+    ament_target_dependencies(test_estop_reason_race
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs
+      rtc_controller_interface rtc_base rtc_msgs)
+    target_link_libraries(test_estop_reason_race
+      rtc_controller_manager_lib)
+  endif()
+
   ament_add_gtest(test_estop_hold_latch
     test/test_estop_hold_latch.cpp
     ENV ROS_DOMAIN_ID=44)
