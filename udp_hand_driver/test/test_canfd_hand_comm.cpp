@@ -5,8 +5,12 @@
 // test header) when vcan0 is absent or not FD-capable; a skip is unverified.
 //
 // The cases use the real hand id space (right 0x01 / left 0x02 nodes), so they
-// must not run while a proto2 SIL (fake_hand_firmware protocol_version 2) is
-// on vcan0 — its echoes / RESP bursts would be read as stale frames here.
+// cannot share vcan0 with a proto2 SIL (fake_hand_firmware protocol_version 2
+// + udp_hand_node): its echoes / RESP bursts would be read as stale frames
+// here, FakePeer would answer the SIL node's REQs, and the error frames D41
+// injects would reach the SIL node's bus_off count. Before each vcan case the
+// fixture probes both nodes and listens, and fails the case when hand traffic
+// answers or is already on the bus (#927 B).
 //
 // Covers (decision ids from epic #895):
 //   D41 · D50  write + echo round trip reaches the fake, feedforward Nm → A
@@ -32,6 +36,7 @@
 //   D51        a left-hand comm never talks to a right-hand fake
 //   DrainStale bounded drain, stale_drained accounting
 //   Tier 1     tx errno classification, closed link harmless, kRxMask bits,
+//              the vcan0 SIL detector's id set (#927 B),
 //              SensorProtocol2 decode (signs, metres, length guard, clamp)
 // ─────────────────────────────────────────────────────────────────────────────
 #include "rtc_communication/can/canfd_transport.hpp"
@@ -115,6 +120,86 @@ rtc::CanFdTransportConfig InjectorConfig() {
   cfg.interface_name = kVcanInterface;
   cfg.extended_frame = true;
   return cfg;
+}
+
+// ── vcan0 shared with a running SIL (#927 B) ──────────────────────────────
+// with_verify_hold.sh holds only the Stop hook, not a `colcon test` typed by
+// hand, so the clash above is detected here instead: a REQ probe to each node
+// draws a RESP set from a listening fake_hand_firmware whatever the SIL node
+// is doing, and a transmitting SIL node shows its own traffic. A node with no
+// firmware that is not transmitting (Inactive, E-Stopped) is not seen — and
+// does not touch these cases either.
+
+// Kernel pre-filter: the bits that are zero in every hand-protocol id of nodes
+// 1 and 2 — priority, the top two msg-type bits (types 0..2), and target and
+// source above bit 1. The transport adds EFF to it, so 11-bit frames never
+// reach user space. IsHandTraffic below is the exact test; this only narrows.
+constexpr canid_t kHandTrafficFilterMask = (0x7u << kPriorityShift) | (0xCu << kMsgTypeShift) |
+                                           (0xFCu << kTargetShift) | (0xFCu << kSourceShift);
+static_assert(kHandTrafficFilterMask == 0x1F3F3F00u, "hand-traffic pre-filter mask");
+// Lets a frame the previous case sent but the kernel delivers late (a deferred
+// softirq) arrive and be discarded before the probe.
+constexpr auto kSilSettle = 5ms;
+constexpr auto kSilListenWindow = 20ms;
+
+// A data frame of either hand's protocol: CMD, REQ, echo or RESP (any frame
+// index) to or from node 1 or 2.
+[[nodiscard]] bool IsHandTraffic(canid_t can_id) noexcept {
+  if ((can_id & CAN_EFF_FLAG) == 0 || (can_id & (CAN_ERR_FLAG | CAN_RTR_FLAG)) != 0) {
+    return false;
+  }
+  const uint32_t base = (can_id & kExtIdMask) & ~kFrameIndexMask;
+  for (const uint8_t node : {kNodeRightHand, kNodeLeftHand}) {
+    if (base == CmdId(node, 0) || base == ReqId(node) || base == EchoId(node, 0) ||
+        base == RespId(node, 0)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The id of the first hand frame seen on vcan0 within `window`, 0 when none
+// arrived, -1 when the listener failed (EINTR is not a failure).
+[[nodiscard]] int64_t FirstHandFrame(rtc::CanFdTransport& listener,
+                                     std::chrono::nanoseconds window) {
+  const auto deadline = std::chrono::steady_clock::now() + window;
+  for (auto now = std::chrono::steady_clock::now(); now < deadline;
+       now = std::chrono::steady_clock::now()) {
+    const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now);
+    const timespec wait{0, static_cast<long>(left.count())};
+    canfd_frame rx{};
+    const ssize_t n = listener.RecvFrameWithTimeout(rx, wait);
+    if (n < 0 && errno != EINTR) {
+      return -1;
+    }
+    if (n > 0 && IsHandTraffic(rx.can_id)) {
+      return static_cast<int64_t>(rx.can_id & kExtIdMask);
+    }
+  }
+  return 0;
+}
+
+// Settles, probes both nodes with a REQ, then listens. Returns the id of the
+// first hand frame seen, 0 when the bus stayed quiet, or -1 when the listener
+// itself failed (an infrastructure error, reported apart from a SIL). The
+// socket does not receive its own REQs.
+[[nodiscard]] int64_t FirstHandTrafficOnVcan() {
+  rtc::CanFdTransportConfig cfg = InjectorConfig();
+  cfg.rx_can_id = 0;
+  cfg.rx_can_mask = kHandTrafficFilterMask;
+  rtc::CanFdTransport listener(cfg);
+  if (!listener.Open() || FirstHandFrame(listener, kSilSettle) < 0) {
+    return -1;
+  }
+  for (const uint8_t node : {kNodeRightHand, kNodeLeftHand}) {
+    canfd_frame req{};
+    req.can_id = ReqId(node) | CAN_EFF_FLAG;
+    req.flags = CANFD_BRS;
+    if (!listener.SendFrame(req)) {
+      return -1;
+    }
+  }
+  return FirstHandFrame(listener, kSilListenWindow);
 }
 
 HandMotorArray Ramp(float start, float step) {
@@ -264,7 +349,19 @@ class FakePeer {
 // Opens a comm, fails the test if vcan refuses.
 class CanFdHandCommVcan : public ::testing::Test {
  protected:
-  void SetUp() override { SKIP_IF_NO_FD_VCAN(); }
+  void SetUp() override {
+    SKIP_IF_NO_FD_VCAN();
+    // FAIL, not skip: a skip reads as "no vcan here" and would hide the clash.
+    const int64_t seen = FirstHandTrafficOnVcan();
+    if (seen < 0) {
+      FAIL() << "could not listen on " << kVcanInterface << " before the case";
+    }
+    if (seen > 0) {
+      FAIL() << "proto2 hand traffic on " << kVcanInterface << " (id 0x" << std::hex << seen
+             << ") — a firmware SIL is running there. Stop it before running "
+                "test_canfd_hand_comm (docs/testing.md).";
+    }
+  }
 
   std::unique_ptr<CanFdHandComm> OpenComm(CanFdHandCommConfig cfg = CommConfig()) {
     auto comm = std::make_unique<CanFdHandComm>(std::move(cfg));
@@ -385,6 +482,41 @@ TEST(CanFdHandCommTier1, IsValidFeedforwardKtRejectsNonFiniteZeroNegativeAndSubn
   EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(std::nanf("")));
   EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(std::numeric_limits<float>::infinity()));
   EXPECT_FALSE(CanFdHandComm::IsValidFeedforwardKt(1e-40f));  // 1/kt overflows
+}
+
+// #927 B: the vcan0 SIL detector. Every hand-protocol id of both nodes is
+// hand traffic AND passes the kernel pre-filter (a filter that dropped one
+// would make the exact check unreachable for it); the ids rtc_communication's
+// vcan tests use, 11-bit frames, a hand id sent without EFF, error and RTR
+// frames are not.
+TEST(CanFdHandCommTier1, VcanSilDetectorMatchesExactlyTheHandIds) {
+  const uint32_t hand_ids[] = {
+      CmdId(kNodeRightHand, 0),  CmdId(kNodeLeftHand, 1),   ReqId(kNodeRightHand),
+      ReqId(kNodeLeftHand),      EchoId(kNodeRightHand, 0), EchoId(kNodeLeftHand, 1),
+      RespId(kNodeRightHand, 0), RespId(kNodeLeftHand, 2),
+  };
+  for (const uint32_t id : hand_ids) {
+    EXPECT_TRUE(IsHandTraffic(id | CAN_EFF_FLAG)) << std::hex << id;
+    EXPECT_EQ(id & kHandTrafficFilterMask, 0u) << std::hex << id;
+    EXPECT_FALSE(IsHandTraffic(id)) << "without EFF: " << std::hex << id;
+    EXPECT_FALSE(IsHandTraffic(id | CAN_EFF_FLAG | CAN_RTR_FLAG)) << std::hex << id;
+  }
+  EXPECT_FALSE(IsHandTraffic(CAN_ERR_FLAG | CAN_ERR_BUSOFF));
+  // rtc_communication's vcan ids (11-bit ones, then the 29-bit ones).
+  for (const canid_t id : {canid_t{0x100}, canid_t{0x123}, canid_t{0x321}, canid_t{0x456}}) {
+    EXPECT_FALSE(IsHandTraffic(id)) << std::hex << id;
+  }
+  for (const uint32_t id : {0x1ABCDEFu, 0x200u, 0x300u, 0x321u, 0x400u}) {
+    EXPECT_FALSE(IsHandTraffic(id | CAN_EFF_FLAG)) << std::hex << id;
+  }
+  // test_canfd_loopback's range filter cases: kRangeBase (0x00123440) | 0..0x3F
+  // and the first id past it.
+  for (uint32_t id = 0x00123440u; id <= 0x00123480u; ++id) {
+    EXPECT_FALSE(IsHandTraffic(id | CAN_EFF_FLAG)) << std::hex << id;
+    EXPECT_NE(id & kHandTrafficFilterMask, 0u) << std::hex << id;
+  }
+  // Same node but another message type (type field 3) is not the protocol.
+  EXPECT_FALSE(IsHandTraffic((ReqId(kNodeRightHand) | 0x00C00000u) | CAN_EFF_FLAG));
 }
 
 TEST(SensorProtocol2Test, CapabilitiesMatchTheWire) {
