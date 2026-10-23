@@ -354,6 +354,25 @@ TEST_F(SessionDirTest, CleanupOldSessions_KeepsOnlyMaxSessions) {
   EXPECT_TRUE(fs::exists(root / "not_a_session"));
 }
 
+TEST_F(SessionDirTest, CleanupOldSessions_NeverRemovesKeptSession) {
+  // 세션 이름이 프로세스당 하나라 오래 사는 CM 의 세션은 재-configure 때 가장
+  // 오래된 것일 수 있다 — 자기 정리가 지금 쓰는 세션을 지우면 안 된다.
+  const fs::path root = tmp_root_ / "logging_data";
+  for (const char* ts :
+       {"260101_0900", "260102_1000", "260103_1100", "260104_1200", "260105_1300"}) {
+    fs::create_directories(root / ts);
+  }
+
+  // 끝의 구분자는 env 로 들어온 경로에 흔하다 — 같은 디렉토리로 본다.
+  rtc::CleanupOldSessions(root, 2, root / "260101_0900" / "");
+
+  EXPECT_TRUE(fs::exists(root / "260101_0900"));
+  EXPECT_FALSE(fs::exists(root / "260102_1000"));
+  EXPECT_FALSE(fs::exists(root / "260103_1100"));
+  EXPECT_FALSE(fs::exists(root / "260104_1200"));
+  EXPECT_TRUE(fs::exists(root / "260105_1300"));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ResolveRunId — $RTC_RUN_ID → getpid() 2단 체인 (#376)
 //

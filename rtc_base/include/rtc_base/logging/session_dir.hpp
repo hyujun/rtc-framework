@@ -113,15 +113,19 @@ inline std::filesystem::path ResolveLoggingRoot() {
 /// env 폴백 세션의 이름 — 이 프로세스에서 처음 불린 시각의 "YYMMDD_HHMM".
 ///
 /// 호출처는 한 프로세스의 ResolveSessionDir() 호출이 모두 같은 세션이라고
-/// 가정한다 (주기 저장 타이머, on_activate 의 여러 번, CM 과 컨트롤러 log set).
-/// 매 호출 시각을 찍으면 분이 바뀔 때마다 새 디렉토리가 생기고 한 런의 파일이
-/// 흩어진다 (#930). run_id.hpp 는 값이 env 또는 PID 라 원래 상수여서 캐시하지
-/// 않지만, 이 이름은 시각이므로 고정하려면 캐시가 필요하다.
+/// 가정한다 (주기 저장 타이머, on_activate 의 여러 번, `log_dir` 없이 configure
+/// 하는 CM 과 컨트롤러 log set). 매 호출 시각을 찍으면 분이 바뀔 때마다 새
+/// 디렉토리가 생기고 한 런의 파일이 흩어진다 (#930). run_id.hpp 는 값이 env
+/// 또는 PID 라 원래 상수여서 캐시하지 않지만, 이 이름은 시각이므로 고정하려면
+/// 캐시가 필요하다. 루트는 캐시하지 않는다 — 노드는 실행 중에 cwd 나
+/// $COLCON_PREFIX_PATH 를 바꾸지 않고, 테스트는 케이스마다 루트를 바꾼다.
 ///
 /// 함수-local static 은 이 헤더를 STATIC 라이브러리·실행 파일로 링크하는 한
-/// 프로세스에 하나다. 실행 파일과 dlopen 한 .so 가 각각 인스턴스화하면 둘로
-/// 갈린다 — 세션 해석을 플러그인 .so 로 옮기려면 그 전에 out-of-line 정의로
-/// 바꾼다. 첫 호출은 초기화 guard 를 잡으므로 RT 경로에서 부르지 않는다.
+/// 프로세스에 하나다. 다음 경우에는 둘로 갈린다 (g++ 13.3 실측): 동적 심볼을
+/// 내보내지 않는 (`-rdynamic` 없는) 실행 파일과 dlopen 한 .so, 그리고 hidden
+/// visibility 로 빌드한 SHARED 라이브러리 (링크해도). 세션 해석을 그런 .so 로
+/// 옮기려면 그 전에 out-of-line 정의로 바꾼다. 첫 호출은 초기화 guard 를
+/// 잡으므로 RT 경로에서 부르지 않는다.
 inline const std::string& ProcessSessionName() {
   static const std::string name = GenerateSessionTimestamp();
   return name;
@@ -176,9 +180,24 @@ inline std::vector<std::filesystem::path> ListSessionDirs(
 
 /// 오래된 세션 디렉토리를 삭제하여 max_sessions 개수 이하로 유지.
 /// logging_root 내 YYMMDD_HHMM 패턴 디렉토리만 대상.
-inline void CleanupOldSessions(const std::filesystem::path& logging_root, int max_sessions) {
+///
+/// `keep` 은 호출자가 지금 쓰는 세션이다 — 개수에는 들지만 지우지 않는다.
+/// 오래 사는 프로세스의 세션은 이름이 고정이라 (ProcessSessionName, 또는
+/// launch 가 준 $RTC_SESSION_DIR) 재-configure 때 가장 오래된 것일 수 있다.
+inline void CleanupOldSessions(const std::filesystem::path& logging_root, int max_sessions,
+                               const std::filesystem::path& keep = {}) {
   auto dirs = ListSessionDirs(logging_root);
-  while (static_cast<int>(dirs.size()) > max_sessions) {
+  if (!keep.empty()) {
+    std::error_code err;
+    const auto kept = std::find_if(dirs.begin(), dirs.end(), [&](const auto& dir) {
+      return std::filesystem::equivalent(dir, keep, err);
+    });
+    if (kept != dirs.end()) {
+      dirs.erase(kept);
+      --max_sessions;
+    }
+  }
+  while (!dirs.empty() && static_cast<int>(dirs.size()) > max_sessions) {
     std::filesystem::remove_all(dirs.front());
     dirs.erase(dirs.begin());
   }

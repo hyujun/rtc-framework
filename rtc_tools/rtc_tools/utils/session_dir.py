@@ -100,6 +100,11 @@ def _ensure_session_subdirs(session_dir: str) -> None:
         os.makedirs(os.path.join(session_dir, sub), exist_ok=True)
 
 
+def _session_timestamp() -> str:
+    """세션 이름 ``YYMMDD_HHMM`` (C++ ``GenerateSessionTimestamp``)."""
+    return datetime.now().strftime("%y%m%d_%H%M")
+
+
 def create_session_dir(logging_root: str | None = None) -> str:
     """현재 타임스탬프로 새 세션 디렉토리를 만들고 표준 서브디렉토리까지 생성.
 
@@ -110,7 +115,7 @@ def create_session_dir(logging_root: str | None = None) -> str:
         생성된 세션 디렉토리 절대 경로.
     """
     root = logging_root if logging_root else resolve_logging_root()
-    session = os.path.join(root, datetime.now().strftime("%y%m%d_%H%M"))
+    session = os.path.join(root, _session_timestamp())
     _ensure_session_subdirs(session)
     return session
 
@@ -131,11 +136,22 @@ def list_session_dirs(logging_root: str) -> list[str]:
     )
 
 
-def cleanup_old_sessions(logging_root: str, max_sessions: int) -> None:
-    """YYMMDD_HHMM 패턴 세션 폴더를 ``max_sessions`` 개 이하로 유지."""
+def cleanup_old_sessions(logging_root: str, max_sessions: int, keep: str | None = None) -> None:
+    """YYMMDD_HHMM 패턴 세션 폴더를 ``max_sessions`` 개 이하로 유지.
+
+    ``keep`` 은 호출자가 지금 쓰는 세션이다 — 개수에는 들지만 지우지 않는다
+    (C++ ``CleanupOldSessions`` 의 ``keep`` 과 같은 규칙).
+    """
     if max_sessions <= 0:
         return
     dirs = list_session_dirs(logging_root)
+    if keep:
+        kept = os.path.realpath(keep)
+        for name in dirs:
+            if os.path.realpath(os.path.join(logging_root, name)) == kept:
+                dirs.remove(name)
+                max_sessions -= 1
+                break
     while len(dirs) > max_sessions:
         oldest = os.path.join(logging_root, dirs.pop(0))
         shutil.rmtree(oldest, ignore_errors=True)
@@ -191,7 +207,7 @@ def get_or_create_session_dir() -> str:
         return existing
     with _fallback_name_lock:
         if _fallback_name is None:
-            _fallback_name = datetime.now().strftime("%y%m%d_%H%M")
+            _fallback_name = _session_timestamp()
         name = _fallback_name
     session = os.path.join(resolve_logging_root(), name)
     _ensure_session_subdirs(session)

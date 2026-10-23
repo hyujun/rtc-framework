@@ -258,6 +258,19 @@ def test_cleanup_old_sessions_keeps_only_max(tmp_path):
     assert remaining == ["260104_1200", "260105_1300", "not_a_session"]
 
 
+def test_cleanup_old_sessions_never_removes_kept_session(tmp_path):
+    # C++ CleanupOldSessions_NeverRemovesKeptSession 의 짝 (PROC-5).
+    root = tmp_path / "logging_data"
+    root.mkdir()
+    for name in ("260101_0900", "260102_1000", "260103_1100", "260104_1200", "260105_1300"):
+        (root / name).mkdir()
+
+    cleanup_old_sessions(str(root), 2, keep=str(root / "260101_0900") + os.sep)
+
+    remaining = sorted(p.name for p in root.iterdir())
+    assert remaining == ["260101_0900", "260105_1300"]
+
+
 def test_list_session_dirs_is_sessions_only_oldest_first(tmp_path):
     root = tmp_path / "logging_data"
     root.mkdir()

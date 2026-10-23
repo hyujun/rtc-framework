@@ -1155,7 +1155,7 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       session_dir = ResolveAndSetupSessionDir();
     }
     const auto logging_root = session_dir.parent_path();
-    urtc::CleanupOldSessions(logging_root, max_sessions);
+    urtc::CleanupOldSessions(logging_root, max_sessions, session_dir);
 
     const bool enable_timing = get_parameter("enable_timing_log").as_bool();
     if (enable_timing) {

@@ -37,7 +37,7 @@ repo_scripts/README.md: 26993 strict  # raised from 25904: CAN FD host scripts (
 robot_descriptions/README.md: 6464 strict
 robot_descriptions/robots/panda/README.md: 1129 strict  # raised from 1058: skeleton headings (개요 · 디렉토리 · 문제 해결) the old README lacked
 robot_descriptions/robots/ur5e_p1b/README.md: 3047 strict
-rtc_base/README.md: 24915 strict
+rtc_base/README.md: 24903 strict
 rtc_communication/README.md: 16176 strict  # raised from 15940: CanTransportConfig::error_mask (CAN_RAW_ERR_FILTER) is a new config row — without it a CAN protocol cannot see bus-off; the table has no row to drop for it
 rtc_controller_interface/README.md: 25717 strict
 rtc_controller_manager/README.md: 43334 strict  # raised from 43205: pure-deactivate rejection on switch_controller (moved in when the verify skill was removed)
