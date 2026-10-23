@@ -70,8 +70,17 @@ void RtControllerNode::CloseTeardownEventfds() noexcept {
   }
 }
 
-void RtControllerNode::CloseTimingCsvs() {
-  const std::lock_guard<std::mutex> lock(timing_csv_mutex_);
+void RtControllerNode::ShutDrainLaneLocked() {
+  drain_armed_ = false;
+  // What a pass would have reported, before the timer that runs passes goes.
+  // The E-STOP status first: /system/estop_status is what a GUI shows over a
+  // held arm. The command-type line (issue #342) and the E-STOP line, left
+  // queued, would be printed by the first pass of the NEXT session, naming a
+  // configuration torn down here.
+  FlushEstopStatus();
+  FlushCommandTypeLog();
+  FlushEstopLog();
+  drain_timer_.reset();
   // Last drain first: what the producers queued since the previous DrainLog()
   // pass belongs to the file being closed. When the loggers are already closed
   // (on_configure after a cleanup) Log() is a no-op, so this discards what the
@@ -103,6 +112,11 @@ void RtControllerNode::CreateTimers() {
   // deferred E-STOP RCLCPP messages. Controller data CSVs are owned by
   // each controller's own ControllerLogSet (Phase C), not by CM.
   static constexpr auto kLogDrainPeriod = 10ms;
+  {
+    // Everything a pass reads exists by now.
+    const std::lock_guard<std::mutex> lock(drain_mutex_);
+    drain_armed_ = true;
+  }
   drain_timer_ =
       create_wall_timer(kLogDrainPeriod, [this]() { DrainLog(); }, cb_group_nrt_logging_);
 }
@@ -117,20 +131,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
     const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_INFO(get_logger(), "Configuring RtControllerNode...");
 
-  CreateCallbackGroups();
-  // No RT thread yet — a window or latch left by an earlier session goes.
-  ResetEstopHoldState();
-  // So do timing CSVs a refused configure left open (#932).
-  CloseTimingCsvs();
-  // Fail-closed (issue #196 §1): controller bring-up decides whether this node
-  // may configure at all. Returning FAILURE here means no publisher, no device
-  // backend, no service, no timer, and no RT thread is ever created — the
-  // lifecycle leaves CM Unconfigured instead of running a partially
-  // configured controller set.
-  if (!DeclareAndLoadParameters()) {
-    RCLCPP_ERROR(get_logger(), "RtControllerNode configure refused — controller bring-up failed");
-    return CallbackReturn::FAILURE;
-  }
   // Before anything is created: a configure after Phase 3 would build callback
   // groups and controller nodes the dedicated executors never serve (#935).
   if (dedicated_executors_attached_.load(std::memory_order_acquire)) {
@@ -141,6 +141,25 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
     return CallbackReturn::FAILURE;
   }
 
+  // A configure refused after CreateTimers() left the drain lane running, and
+  // its timing CSVs open (#932); FAILURE skips on_cleanup, so shut it here
+  // before anything it reads is replaced (#935).
+  {
+    const std::lock_guard<std::mutex> lock(drain_mutex_);
+    ShutDrainLaneLocked();
+  }
+  CreateCallbackGroups();
+  // No RT thread yet — a window or latch left by an earlier session goes.
+  ResetEstopHoldState();
+  // Fail-closed (issue #196 §1): controller bring-up decides whether this node
+  // may configure at all. Returning FAILURE here means no publisher, no device
+  // backend, no service, no timer, and no RT thread is ever created — the
+  // lifecycle leaves CM Unconfigured instead of running a partially
+  // configured controller set.
+  if (!DeclareAndLoadParameters()) {
+    RCLCPP_ERROR(get_logger(), "RtControllerNode configure refused — controller bring-up failed");
+    return CallbackReturn::FAILURE;
+  }
   CreatePublishers();      // digital twin + fixed safety; HW publishers live in backends.
   CreateDeviceBackends();  // state/motor/sensor subs + joint/ros2 command publishers.
   PropagateCapabilitiesIntoMappings();  // patch ControllerSlotMapping after backends decide caps.
@@ -155,6 +174,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   if (!ValidateCommandTypePairing()) {
     RCLCPP_ERROR(get_logger(),
                  "RtControllerNode configure refused — controller/backend command-type mismatch");
+    AbandonControllerBringUp();
     return CallbackReturn::FAILURE;
   }
   CreateServices();
@@ -174,13 +194,19 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   // the RT loop polls it with the sim timeout — but the producer (device
   // state callback) only ever writes, which never blocks on an eventfd whose
   // counter is below UINT64_MAX.
-    AbandonControllerBringUp();
   if (use_sim_time_sync_) {
     const int sim_fd = eventfd(0, EFD_NONBLOCK);
     sim_wake_eventfd_.store(sim_fd, std::memory_order_release);
     if (sim_fd < 0) {
       RCLCPP_ERROR(get_logger(),
                    "eventfd() failed: simulation sync has no wake lane — refusing to configure");
+      // CreateTimers() above opened the drain lane, and a pass reads what the
+      // abandon below clears.
+      {
+        const std::lock_guard<std::mutex> lock(drain_mutex_);
+        ShutDrainLaneLocked();
+      }
+      AbandonControllerBringUp();
       return CallbackReturn::FAILURE;
     }
   }
@@ -206,7 +232,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   {
     std_msgs::msg::String ctrl_name_msg;
     const auto aidx =
-      AbandonControllerBringUp();
         static_cast<std::size_t>(active_controller_idx_.load(std::memory_order_acquire));
     ctrl_name_msg.data = controller_types_[aidx];
     active_ctrl_name_pub_->publish(ctrl_name_msg);
@@ -323,8 +348,14 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
   // even if the node is cleaned up before the next 10 ms drain fires. The
   // command-type line rides along for the same reason (issue #342) — and the
   // RT thread is joined by now, so nothing can queue another one behind it.
-  FlushEstopStatus();
-  FlushCommandTypeLog();
+  // Under the drain lock: a pass may be running, and the summary clock below
+  // is the pass's own state.
+  {
+    const std::lock_guard<std::mutex> lock(drain_mutex_);
+    FlushEstopStatus();
+    FlushCommandTypeLog();
+    last_summary_wall_ = {};
+  }
 
   // Reset initialization state for clean re-activate
   init_complete_ = false;
@@ -336,7 +367,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
   // counter climbed back past it.
   command_type_log_next_tick_ = 0;
   command_type_log_suppressed_ = 0;
-  last_summary_wall_ = {};
   // Base PeriodicRtThread counters (overrun_count / skip_count /
   // consecutive_overruns) reset implicitly when StartRtLoop spawns a fresh
   // loop instance on the next on_activate.
@@ -355,15 +385,14 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   // (step 7 in configure order) are closed after the device backends (step 4),
   // not before them. See the note at the close() below — issue #224.
 
-  // 6. timers — flush the deferred E-STOP status first; once the drain timer
-  //    is gone nothing else will publish it. Same for the command-type line
-  //    (issue #342): left queued it would be printed by the first drain of the
-  //    NEXT activation, naming a pairing from a configuration that is being
-  //    torn down here.
-  FlushEstopStatus();
-  FlushCommandTypeLog();
-  drain_timer_.reset();
-  CloseTimingCsvs();
+  // 6. timers — the drain lane goes first, under its lock: a pass already
+  //    picked up by the logging executor survives drain_timer_.reset(), so it
+  //    is the lock plus the disarm that keep it off everything released below
+  //    (#935). ShutDrainLaneLocked() also reports what the lane still held.
+  {
+    const std::lock_guard<std::mutex> lock(drain_mutex_);
+    ShutDrainLaneLocked();
+  }
 
   // 5. parameter callback
   param_callback_handle_.reset();
@@ -462,18 +491,24 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
     const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_ERROR(get_logger(), "RtControllerNode error — attempting recovery");
 
-  TriggerGlobalEstop("lifecycle_error");
+  {
+    // Under the drain lock: the trigger writes estop_reason_, which a pass
+    // clears on its "cleared" branch (#935).
+    const std::lock_guard<std::mutex> lock(drain_mutex_);
+    TriggerGlobalEstop("lifecycle_error");
+  }
   StopRtLoop();
   StopNrtPublishLoop();
   // RT joined: no one would ever close a verification window now, and the
   // latch is up regardless (issue #588).
   ResetEstopHoldState();
 
-  // Full cleanup for recovery to Unconfigured state
-  FlushEstopStatus();
-  FlushCommandTypeLog();
-  drain_timer_.reset();
-  CloseTimingCsvs();
+  // Full cleanup for recovery to Unconfigured state. The drain lane first, as
+  // in on_cleanup; its flush is what puts the trigger above on the topic.
+  {
+    const std::lock_guard<std::mutex> lock(drain_mutex_);
+    ShutDrainLaneLocked();
+  }
   param_callback_handle_.reset();
   for (auto& backend : backends_) {
     backend.reset();

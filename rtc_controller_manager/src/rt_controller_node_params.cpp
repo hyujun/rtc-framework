@@ -1175,9 +1175,10 @@ bool RtControllerNode::DeclareAndLoadParameters() {
 
     const bool enable_timing = get_parameter("enable_timing_log").as_bool();
     if (enable_timing) {
-      // A drain pass picked up before the old drain_timer_ went can still run
-      // (timing_csv_mutex_ in the header).
-      const std::lock_guard<std::mutex> lock(timing_csv_mutex_);
+      // The drain lane is shut until CreateTimers(), but a pass picked up
+      // before the old drain_timer_ went can still be waiting on the lock
+      // (drain_mutex_ in the header).
+      const std::lock_guard<std::mutex> lock(drain_mutex_);
       const auto timing_dir = urtc::TimingDir(session_dir);
       std::filesystem::create_directories(timing_dir);
       const auto timing_path = timing_dir / "cm_timing_log.csv";
@@ -1299,8 +1300,8 @@ bool RtControllerNode::DeclareAndLoadParameters() {
                        "sim_sync_tick_devices['%s'] names no configured device group — refusing "
                        "to configure",
                        name.c_str());
-          return false;
           AbandonControllerBringUp();
+          return false;
         }
         sim_tick_slot_mask_ |= 1U << static_cast<unsigned>(it->second);
       }
@@ -1347,8 +1348,8 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   // reporting a configured node with nothing to run.
   if (controllers_.empty()) {
     RCLCPP_FATAL(get_logger(), "No controller registered — refusing to configure.");
-    return false;
     AbandonControllerBringUp();
+    return false;
   }
 
   return true;

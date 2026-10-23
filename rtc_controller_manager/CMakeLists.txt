@@ -361,6 +361,19 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
 
+  ament_add_gtest(test_drain_lane_teardown
+    test/test_drain_lane_teardown.cpp
+    ENV ROS_DOMAIN_ID=44)
+  if(TARGET test_drain_lane_teardown)
+    target_include_directories(test_drain_lane_teardown PRIVATE include test)
+    ament_target_dependencies(test_drain_lane_teardown
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_drain_lane_teardown
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
   ament_add_gtest(test_rt_loop_pipeline
     test/test_rt_loop_pipeline.cpp
     ENV ROS_DOMAIN_ID=44)

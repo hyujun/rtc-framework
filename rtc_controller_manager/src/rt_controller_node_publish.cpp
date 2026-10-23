@@ -134,6 +134,12 @@ void RtControllerNode::FlushEstopStatus() {
 }
 
 void RtControllerNode::PublishEstopStatus(bool estopped) {
+  // Every caller runs with a live publisher (DrainLog only while the drain
+  // lane is open); the check keeps a future caller from turning a teardown
+  // ordering slip into a crash on the E-STOP path.
+  if (!estop_pub_) {
+    return;
+  }
   std_msgs::msg::Bool msg;
   msg.data = estopped;
   estop_pub_->publish(msg);
