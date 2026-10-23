@@ -306,6 +306,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void NrtPublishLoopEntry(const rtc::ThreadConfig& cfg);
   void WaitForNrtPublishWakeup();
   void DrainLog();  // Log drain (non-RT core)
+  // RT. Closes the timing summary window (#935): switches the RT loop to the
+  // other profiler buffer and hands the closed one to DrainLog(). If the drain
+  // has not taken the previous window yet, the current buffer keeps filling
+  // and the next boundary hands over both windows' samples together.
+  void MarkTimingWindowBoundary() noexcept;
 
   // Digital-twin republish, drained on the nrt_publish thread. The device
   // state-lane callback (rt_callback, FIFO 70) only raises dt_dirty_[slot];
@@ -672,7 +677,15 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // active is enforced by SwitchActiveController; the vector permits a
   // future relaxation to multi-active without a schema change.
   std::vector<std::atomic<int>> controller_states_;
-  rtc::ControllerTimingProfiler timing_profiler_{};  // Compute() timing
+  // Compute() timing, double-buffered by summary window (#935). The RT loop
+  // records into timing_profilers_[timing_profiler_active_] and, at each
+  // window boundary, switches to the other buffer before raising
+  // print_timing_summary_; DrainLog() summarises and resets the buffer the
+  // RT loop left, and lowers the flag last. So the summary never counts a
+  // sample from after its boundary, and the drain's Reset() never discards
+  // one. The RT loop is the only writer of the index.
+  std::array<rtc::ControllerTimingProfiler, 2> timing_profilers_{};
+  std::atomic<unsigned> timing_profiler_active_{0};
 
   // Per-tick RT-loop timing → <session>/timing/cm_timing_log.csv.
   // Producer (RT thread, ControlLoop) pushes one RtTickTimingPayload per
@@ -723,6 +736,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // into its own SetDeviceTarget (DeliverTargetMessage) — there is no CM-side
   // target subscription or mirror (issue #138).
 
+  // Raised by MarkTimingWindowBoundary() (RT) once the closed window is ready
+  // in the inactive buffer; lowered by DrainLog() after it has summarised and
+  // reset that buffer. While raised, the RT loop does not switch buffers.
   std::atomic<bool> print_timing_summary_{false};
 
   // Wall-clock timestamp of the previous timing-summary print, used by

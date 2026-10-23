@@ -545,8 +545,20 @@ class ControllerLifecycleTestAccess {
   // ── Log drain (DrainLog) ────────────────────────────────────────────────────
   static void CallDrainLog(RtControllerNode& node) { node.DrainLog(); }
 
-  static void SetPrintTimingSummary(RtControllerNode& node, bool v) {
-    node.print_timing_summary_.store(v, std::memory_order_relaxed);
+  // ── Timing summary window (#935) ────────────────────────────────────────────
+  // One Compute() sample of `us` into the window the RT loop is filling.
+  static void RecordComputeSample(RtControllerNode& node, double us) {
+    node.timing_profilers_[node.timing_profiler_active_.load()].UpdateTotal(us);
+  }
+
+  // What ControlLoop() does every kTimingSummaryInterval ticks.
+  static void CallMarkTimingWindowBoundary(RtControllerNode& node) {
+    node.MarkTimingWindowBoundary();
+  }
+
+  // Samples in the window the RT loop is filling now.
+  static std::uint64_t ActiveTimingWindowCount(const RtControllerNode& node) {
+    return node.timing_profilers_[node.timing_profiler_active_.load()].GetStats().count;
   }
 
   // ── Hand-driven ticks (issue #588) ──────────────────────────────────────────

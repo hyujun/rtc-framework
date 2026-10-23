@@ -617,7 +617,8 @@ void RtControllerNode::ControlLoop() {
   // Measure Compute() wall-clock time via ControllerTimingProfiler.
   auto& active_controller = *controllers_[static_cast<std::size_t>(active_idx)];
   const urtc::ControllerOutput raw_output =
-      timing_profiler_.MeasuredCompute(active_controller, state);
+      timing_profilers_[timing_profiler_active_.load(std::memory_order_relaxed)].MeasuredCompute(
+          active_controller, state);
 
   rt_loop_.StampComputeDone();
 
@@ -976,8 +977,21 @@ void RtControllerNode::ControlLoop() {
   // Signal the log thread to print timing summary every 1 000 iterations.
   static constexpr std::uint64_t kTimingSummaryInterval = 1000;
   if (completed % kTimingSummaryInterval == 0) {
-    print_timing_summary_.store(true, std::memory_order_relaxed);
+    MarkTimingWindowBoundary();
   }
+}
+
+void RtControllerNode::MarkTimingWindowBoundary() noexcept {
+  // Acquire pairs with DrainLog()'s release: a lowered flag means the drain
+  // has finished with — and reset — the buffer switched to below.
+  if (print_timing_summary_.load(std::memory_order_acquire)) {
+    return;
+  }
+  const unsigned active = timing_profiler_active_.load(std::memory_order_relaxed);
+  timing_profiler_active_.store(active ^ 1U, std::memory_order_relaxed);
+  // Release: the closed buffer's samples and the switch reach the drain
+  // before the flag does.
+  print_timing_summary_.store(true, std::memory_order_release);
 }
 
 // Deferred command-type rejection line (issue #342). WARN, not ERROR: the tick
@@ -1092,7 +1106,13 @@ void RtControllerNode::DrainLog() {
   // The rt_controller_node owns cumulative counters (overruns, skips,
   // pub_drops, timing_drops) separately, so they are unaffected by the
   // reset.
-  if (print_timing_summary_.exchange(false, std::memory_order_relaxed)) {
+  //
+  // The window that closed is the buffer the RT loop switched away from
+  // (#935); it records into the other one meanwhile, and does not switch back
+  // until the flag is lowered — after the Reset() below, never before.
+  if (print_timing_summary_.load(std::memory_order_acquire)) {
+    auto& closed_window =
+        timing_profilers_[timing_profiler_active_.load(std::memory_order_relaxed) ^ 1U];
     int idx = active_controller_idx_.load(std::memory_order_acquire);
     const auto overruns = rt_loop_.OverrunCount();
     const auto skips = rt_loop_.SkipCount();
@@ -1111,7 +1131,7 @@ void RtControllerNode::DrainLog() {
     // the very first line still reads as "≈2.0s" instead of the time elapsed
     // since steady_clock epoch.
     constexpr double kUsToS = 1e-6;
-    const auto window_count = timing_profiler_.GetStats().count;
+    const auto window_count = closed_window.GetStats().count;
     const auto wall_now = std::chrono::steady_clock::now();
     double elapsed_s = static_cast<double>(window_count) * budget_us_ * kUsToS;
     if (!use_sim_time_sync_ && last_summary_wall_.time_since_epoch().count() != 0) {
@@ -1130,7 +1150,7 @@ void RtControllerNode::DrainLog() {
     RCLCPP_INFO(get_logger(),
                 "%s  overruns=%s  skips=%lu  nrt_pub_drops=%lu  timing_drops=%lu  "
                 "rt_cb_timing_drops=%lu",
-                timing_profiler_
+                closed_window
                     .Summary(idx >= 0 && static_cast<std::size_t>(idx) < controllers_.size()
                                  ? std::string(controllers_[static_cast<std::size_t>(idx)]->Name())
                                  : std::string("<none>"),
@@ -1160,7 +1180,8 @@ void RtControllerNode::DrainLog() {
                   names.empty() ? "a device" : names.c_str());
       sim_slow_steps_reported_ = slow;
     }
-    timing_profiler_.Reset();
+    closed_window.Reset();
+    print_timing_summary_.store(false, std::memory_order_release);
   }
 }
 

@@ -344,6 +344,19 @@ RtControllerNode::CallbackReturn RtControllerNode::on_activate(
   // Last point before the RT thread owns the hold state (issue #588): a new
   // session starts with no latch, no readings and no clear-verification window.
   ResetEstopHoldState();
+  // And with an empty timing window in buffer 0 (#935) — a flag the last
+  // session raised after its final drain would otherwise hand this session's
+  // first summary a stale buffer, and stop the RT loop from switching. Under
+  // the drain lock: the drain timer survives on_deactivate, and a pass that
+  // saw that flag would otherwise reset buffer 0 under the new RT loop.
+  {
+    const std::lock_guard<std::mutex> lock(drain_mutex_);
+    for (auto& profiler : timing_profilers_) {
+      profiler.Reset();
+    }
+    timing_profiler_active_.store(0, std::memory_order_relaxed);
+    print_timing_summary_.store(false, std::memory_order_relaxed);
+  }
 
   const auto cfgs = urtc::SelectThreadConfigs();
   StartRtLoop(cfgs.rt_control);
