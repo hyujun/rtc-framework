@@ -65,36 +65,57 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // dangle once controller_ is replaced). Nulled before anything else.
   canfd_comm_ = nullptr;
 
+  // Per-configuration state (#927): this may be a second configure on the same
+  // node, which must not inherit the previous configuration's command-name map
+  // (joint_state_names may have changed), link edge or decimation phase.
+  cmd_name_reorder_ready_ = false;
+  prev_link_ok_ = true;
+  link_cycle_counter_ = 0;
+  publish_count_ = 0;
+
   // ── Parameters ─────────────────────────────────────────────────────
-  declare_parameter("target_ip", std::string{"192.168.1.2"});
-  declare_parameter("target_port", 55151);
-  declare_parameter("local_ip", std::string{});
-  declare_parameter("local_interface", std::string{});
-  declare_parameter("publish_rate", 100.0);
+  // Declared here rather than in the constructor (conventions.md, Tier 0:
+  // only what is needed before the first transition), and declared *once*.
+  // The node may be configured again — after on_cleanup, a FAILURE or
+  // on_error — and a second declare_parameter() throws
+  // ParameterAlreadyDeclared, which rclcpp turns into ERROR → on_error →
+  // Unconfigured: the node could never be configured again (#927). Same
+  // guard as rtc_controller_manager's safe_declare. A later configure reads
+  // the values already held, including any set_parameter() in between.
+  const auto declare_once = [this](const std::string& name, const auto& default_value) {
+    if (!has_parameter(name)) {
+      declare_parameter(name, default_value);
+    }
+  };
+  declare_once("target_ip", std::string{"192.168.1.2"});
+  declare_once("target_port", 55151);
+  declare_once("local_ip", std::string{});
+  declare_once("local_interface", std::string{});
+  declare_once("publish_rate", 100.0);
   // Self-clocked CommLoop cadence (Hz). Drives the autonomous read/state-publish
   // period; write is command-gated. Independent of publish_rate (which only sets
   // the link_status decimation ratio below).
-  declare_parameter("loop_rate_hz", 500.0);
-  declare_parameter("recv_timeout_ms", 10.0);
-  declare_parameter("enable_failure_detector", true);
-  declare_parameter("failure_threshold", 5);
-  declare_parameter("check_motor", true);
-  declare_parameter("check_sensor", true);
-  declare_parameter("min_rate_hz", 30.0);
-  declare_parameter("rate_fail_threshold", 5);
-  declare_parameter("check_link", true);
+  declare_once("loop_rate_hz", 500.0);
+  declare_once("recv_timeout_ms", 10.0);
+  declare_once("enable_failure_detector", true);
+  declare_once("failure_threshold", 5);
+  declare_once("check_motor", true);
+  declare_once("check_sensor", true);
+  declare_once("min_rate_hz", 30.0);
+  declare_once("rate_fail_threshold", 5);
+  declare_once("check_link", true);
   // Link-down declared as a time budget (ms), converted to a consecutive-recv-
   // failure cycle count at on_configure via loop_rate_hz / comm_decimation. A
   // time param stays meaningful across loop-rate / decimation changes, unlike a
   // raw cycle count. Default 100 ms sits an order below the CM device_timeout
   // (1000 ms) so the hand link-down latches first.
-  declare_parameter("link_fail_timeout_ms", 100.0);
+  declare_once("link_fail_timeout_ms", 100.0);
   // Independent startup-grace windows. startup_grace_ms warms the RATE check,
   // link_startup_grace_ms spans the ARP / first-packet transient, and
   // sensor_startup_grace_ms optionally spans a firmware ADC stabilization period.
-  declare_parameter("startup_grace_ms", 1000.0);
-  declare_parameter("link_startup_grace_ms", 100.0);
-  declare_parameter("sensor_startup_grace_ms", 0.0);
+  declare_once("startup_grace_ms", 1000.0);
+  declare_once("link_startup_grace_ms", 100.0);
+  declare_once("sensor_startup_grace_ms", 0.0);
 
   // SIL entry point. Device-side firmware-process spawn is the launch layer's
   // job (a node cannot spawn a peer process); this param drives the node-side
@@ -104,40 +125,40 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   //   firmware  — device-side fake_hand_firmware over loopback. use_fake_hand_=false,
   //               target_ip forced to 127.0.0.1 and the local binding dropped
   //               (launch spawns the peer process).
-  declare_parameter("sil_mode", std::string{"off"});
+  declare_once("sil_mode", std::string{"off"});
   // Fake-hand dynamics (sil_mode=loopmodel only). The CommLoop RT thread runs
   // exactly as in real mode; the commanded pose is driven through a first-order
   // LPF to produce read-back pos, its derivative (vel), and a PD-torque effort.
   // See udp_hand_controller.hpp StepFakeModel / README sil_mode table.
-  declare_parameter("fake_lpf_time_constant_s", 0.1);
-  declare_parameter("fake_effort_stiffness", 1.0);
-  declare_parameter("fake_effort_damping", 0.1);
+  declare_once("fake_lpf_time_constant_s", 0.1);
+  declare_once("fake_effort_stiffness", 1.0);
+  declare_once("fake_effort_damping", 0.1);
 
   // Whole-cycle UDP decimation (load-reduction test knob): 1 = communicate every
   // cycle (default). N>1 skips the entire UDP transaction on N-1 of every N
   // EventLoop cycles. See udp_hand_controller.hpp / README "통신 decimation".
-  declare_parameter("comm_decimation", 1);
+  declare_once("comm_decimation", 1);
 
   // Sensor-read decimation: 1 = read sensors every comm cycle (default). N>1
   // reads sensors on 1 of every N comm cycles (motor/joint reads unaffected —
   // unlike comm_decimation, which skips the whole transaction).
-  declare_parameter("sensor_decimation", 1);
+  declare_once("sensor_decimation", 1);
 
-  declare_parameter("joint_state_names", std::vector<std::string>{});
-  declare_parameter("motor_state_names", std::vector<std::string>{});
-  declare_parameter("hand_fingertip_names", std::vector<std::string>{});
+  declare_once("joint_state_names", std::vector<std::string>{});
+  declare_once("motor_state_names", std::vector<std::string>{});
+  declare_once("hand_fingertip_names", std::vector<std::string>{});
 
   // Per-joint position offset in degrees (joint_state_names order, 10 values).
   // Converted to radians into joint_offset_rad_ below. Empty → all-zero.
-  declare_parameter("joint_position_offsets_deg", std::vector<double>{});
+  declare_once("joint_position_offsets_deg", std::vector<double>{});
 
-  declare_parameter("communication_mode", std::string{"individual"});
+  declare_once("communication_mode", std::string{"individual"});
 
   // Firmware protocol seam: "1a" / "1b" (UDP) or "2" (CAN FD, epic #895). The
   // transport is derived from this key alone (D11) — there is no transport
   // parameter. YAML must quote "2": an unquoted 2 arrives as an integer and the
   // parameter declaration throws.
-  declare_parameter("protocol_version", std::string{"1a"});
+  declare_once("protocol_version", std::string{"1a"});
   // CAN FD link (protocol_version "2" only; ignored on 1a / 1b):
   //   can_interface   SocketCAN device (sil_mode=firmware forces vcan0)
   //   hand_side       "right" | "left" → node id (D51). Declared for every
@@ -147,29 +168,28 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   //                   (D50); JointCommand.feedforward [Nm] / kt → wire [A].
   //   recv_timeout_ms is shared with UDP: on CAN FD it is the per-stage
   //                   deadline (echo stage, RESP-set stage — D42).
-  declare_parameter("can_interface", std::string{"can0"});
-  declare_parameter("hand_side", std::string{"right"});
-  declare_parameter(
-      "feedforward_kt",
-      std::vector<double>(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 1.0));
+  declare_once("can_interface", std::string{"can0"});
+  declare_once("hand_side", std::string{"right"});
+  declare_once("feedforward_kt",
+               std::vector<double>(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 1.0));
 
-  declare_parameter("baro_lpf_enabled", false);
-  declare_parameter("baro_lpf_cutoff_hz", 30.0);
-  declare_parameter("tof_lpf_enabled", false);
-  declare_parameter("tof_lpf_cutoff_hz", 15.0);
+  declare_once("baro_lpf_enabled", false);
+  declare_once("baro_lpf_cutoff_hz", 30.0);
+  declare_once("tof_lpf_enabled", false);
+  declare_once("tof_lpf_cutoff_hz", 15.0);
 
-  declare_parameter("drift_detection_enabled", false);
-  declare_parameter("drift_threshold", 5.0);
-  declare_parameter("drift_window_size", 2500);
+  declare_once("drift_detection_enabled", false);
+  declare_once("drift_threshold", 5.0);
+  declare_once("drift_window_size", 2500);
 
-  declare_parameter("ft_inferencer.enabled", false);
-  declare_parameter("ft_inferencer.num_fingertips", 4);
-  declare_parameter("ft_inferencer.history_length", udp_hand_driver::kFTHistoryLength);
-  declare_parameter("ft_inferencer.model_paths", std::vector<std::string>{});
-  declare_parameter("ft_inferencer.calibration_enabled", true);
-  declare_parameter("ft_inferencer.calibration_samples", 500);
+  declare_once("ft_inferencer.enabled", false);
+  declare_once("ft_inferencer.num_fingertips", 4);
+  declare_once("ft_inferencer.history_length", udp_hand_driver::kFTHistoryLength);
+  declare_once("ft_inferencer.model_paths", std::vector<std::string>{});
+  declare_once("ft_inferencer.calibration_enabled", true);
+  declare_once("ft_inferencer.calibration_samples", 500);
   for (const auto& name : {"thumb", "index", "middle", "ring"}) {
-    declare_parameter("ft_inferencer." + std::string(name) + "_max", std::vector<double>(16, 1.0));
+    declare_once("ft_inferencer." + std::string(name) + "_max", std::vector<double>(16, 1.0));
   }
 
   // ── SIL mode → use_fake_hand_ ────────────────────────────────────────
@@ -449,15 +469,15 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // standalone launch (`-r __ns:=/hand`) still lands on /hand/* and a second
   // hand only needs a different namespace. Absolute names remain accepted as
   // overrides (the robot overlays pin /p1a/*, /p1b/* that way).
-  declare_parameter("command_topic", std::string("joint_command"));
-  declare_parameter("joint_state_topic", std::string("joint_states"));
-  declare_parameter("motor_state_topic", std::string("motor_states"));
-  declare_parameter("sensor_topic", std::string("sensor_states"));
-  declare_parameter("link_status_topic", std::string("link_status"));
-  declare_parameter("estop_topic", std::string("estop"));
-  declare_parameter("calibration_command_topic", std::string("calibration/command"));
-  declare_parameter("calibration_status_topic", std::string("calibration/status"));
-  declare_parameter("calibration_status_rate_hz", 5.0);
+  declare_once("command_topic", std::string("joint_command"));
+  declare_once("joint_state_topic", std::string("joint_states"));
+  declare_once("motor_state_topic", std::string("motor_states"));
+  declare_once("sensor_topic", std::string("sensor_states"));
+  declare_once("link_status_topic", std::string("link_status"));
+  declare_once("estop_topic", std::string("estop"));
+  declare_once("calibration_command_topic", std::string("calibration/command"));
+  declare_once("calibration_status_topic", std::string("calibration/status"));
+  declare_once("calibration_status_rate_hz", 5.0);
   const std::string cmd_topic = get_parameter("command_topic").as_string();
   const std::string joint_state_topic = get_parameter("joint_state_topic").as_string();
   const std::string motor_state_topic = get_parameter("motor_state_topic").as_string();
@@ -1030,6 +1050,7 @@ void UdpHandNode::ReleaseResources() {
   stats_save_timer_.reset();
   hand_timing_timer_.reset();
   calib_status_timer_.reset();
+  publish_timer_.reset();
   estop_sub_.reset();
   calib_cmd_sub_.reset();
   joint_command_sub_.reset();
