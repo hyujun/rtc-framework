@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
+from ur5e_p1b_test_profile import ur5e_p1b_test_profile
 
 from rtc_tools.analysis import catchability_map as cm
 from rtc_tools.analysis.catch_gate_map import LAYERS, REASON_NONE
@@ -2192,12 +2193,6 @@ def test_derived_axes_invert_the_grid_geometry_off_the_origin():
 
 # ── The real judge (skipped cleanly when it is not built) ─────────────────────
 
-# Repo-relative rather than through the ament index: `integrated_bringup`
-# exec_depends on rtc_tools, so making it a test_depend here would be a cycle.
-SHIPPED_UR5E_P1B = (
-    Path(__file__).resolve().parents[2] / "integrated_bringup/config/ur5e_p1b/_base.yaml"
-)
-
 
 def _judge_or_skip() -> Path:
     try:
@@ -2214,12 +2209,13 @@ def test_judge_csv_round_trip_on_the_shipped_model(tmp_path: Path):
     binary. It skips with a message when the binary, the shipped config or the
     URDF toolchain is absent rather than passing vacuously.
     """
-    if not SHIPPED_UR5E_P1B.is_file():
-        pytest.skip(f"shipped robot config is not in this tree: {SHIPPED_UR5E_P1B}")
+    # The shipped profile, repo-relative (integrated_bringup exec_depends on
+    # rtc_tools, so a test_depend here would be a cycle), on its test model.
+    shipped = ur5e_p1b_test_profile() / "_base.yaml"
     judge = _judge_or_skip()
     pytest.importorskip("pinocchio")
     try:
-        artifacts = cm.write_model_config([SHIPPED_UR5E_P1B], tmp_path / "model")
+        artifacts = cm.write_model_config([shipped], tmp_path / "model")
     except (SystemExit, OSError, subprocess.CalledProcessError) as exc:
         pytest.skip(f"cannot expand the shipped URDF here: {exc}")
 

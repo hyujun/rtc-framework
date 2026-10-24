@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ur5e_p1b_test_profile import retarget_model
 
 from rtc_tools.analysis import (
     catch_population as cp,
@@ -656,6 +657,7 @@ def _robot_folder(folder: Path, arms: list[dict] = TWO_ARMS, **sample) -> Path:
         pytest.skip("integrated_bringup config is not beside this checkout")
     config_dir = folder / "some_robot"
     shutil.copytree(_SHIPPED, config_dir)
+    retarget_model(config_dir)
     path = config_dir / "catch_population.yaml"
     path.write_text(yaml.safe_dump(_config_doc(arms, TINY, **sample)))
     return path

@@ -4,7 +4,9 @@ arithmetic between its raw verdicts and the report — without a simulator.
 Three things are pinned here, all under a plain ``colcon test`` (no ``mujoco``):
 
 * both shipped catching profiles give the rig everything it needs, with the
-  lengths that have to agree;
+  lengths that have to agree (the scene file itself is opened only when it is
+  in ``robot_descriptions``: ``ur5e_p1b``'s is in ``hand_description``, which a
+  test here never resolves, #952);
 * the rig's COPY of the simulator's ball (material constants and the way the
   contact is built live only in C++) still equals the C++;
 * report.py turns planted stores into the boxes, the lateral set and the
@@ -31,15 +33,31 @@ import rig_config as rc  # noqa: E402
 import run_ident as ri  # noqa: E402
 
 PROFILES = ["ur5e_p1b", "iiwa7_leap"]
+# The one package whose scenes a test here resolves.
+SCENE_PACKAGE = "robot_descriptions"
+
+
+def _load_rig_config(profile: str, monkeypatch) -> rc.RigConfig:
+    """load_rig_config, with a scene outside :data:`SCENE_PACKAGE` left as its URI."""
+    resolve = rc.resolve_model_path
+
+    def scene(uri: str) -> str:
+        return resolve(uri) if uri.startswith(f"package://{SCENE_PACKAGE}/") else uri
+
+    monkeypatch.setattr(rc, "resolve_model_path", scene)
+    return rc.load_rig_config(profile)
 
 
 # ── The shipped profiles ──────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("profile", PROFILES)
-def test_a_shipped_profile_gives_the_rig_everything(profile):
-    cfg = rc.load_rig_config(profile)
-    assert Path(cfg.model_path).is_file()
+def test_a_shipped_profile_gives_the_rig_everything(profile, monkeypatch):
+    cfg = _load_rig_config(profile, monkeypatch)
+    if cfg.model_path.startswith("package://"):
+        assert not cfg.model_path.startswith(f"package://{SCENE_PACKAGE}/")
+    else:
+        assert Path(cfg.model_path).is_file()
     assert cfg.control_period > 0.0 and cfg.n_substeps >= 1
 
     hand = len(cfg.hand_joints)
@@ -93,8 +111,8 @@ def test_a_profile_that_is_not_one_is_refused(tmp_path):
 
 
 @pytest.mark.parametrize("profile", PROFILES)
-def test_an_empty_caging_set_is_refused(profile):
-    cfg = rc.load_rig_config(profile)
+def test_an_empty_caging_set_is_refused(profile, monkeypatch):
+    cfg = _load_rig_config(profile, monkeypatch)
     with pytest.raises(SystemExit, match="caging_mask"):
         dataclasses.replace(cfg, caging_mask=tuple(False for _ in cfg.caging_mask))
 

@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
+from ur5e_p1b_test_profile import ur5e_p1b_test_profile
 
 from rtc_tools.analysis import (
     catch_search_map as m,
@@ -954,7 +955,7 @@ def test_a_gate_map_output_reads_back_per_throw_and_layer(tmp_path):
 @pytest.fixture(scope="module")
 def shipped_run(tmp_path_factory):
     pytest.importorskip("pinocchio")
-    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    config = ur5e_p1b_test_profile()
     if not config.is_dir():
         pytest.skip("integrated_bringup config is not beside this checkout")
     if _installed_search() is None:
@@ -1026,7 +1027,7 @@ def test_the_cli_joins_a_gate_map_and_a_sim_run_by_throw(shipped_run):
 
 def test_the_shipped_tree_without_the_selected_search_map_is_refused():
     pytest.importorskip("pinocchio")
-    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    config = ur5e_p1b_test_profile()
     if not config.is_dir():
         pytest.skip("integrated_bringup config is not beside this checkout")
     from rtc_tools.analysis.catch_gate_map import composed_catching  # noqa: PLC0415
@@ -1235,7 +1236,7 @@ def screened_list(tmp_path_factory) -> Path:
 
 
 def _run_list(out: Path, throws: Path, *extra: str) -> dict:
-    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    config = ur5e_p1b_test_profile()
     argv = [
         "--config-dir", str(config), "--search", "grid", "--out-dir", str(out),
         "--throws-file", str(throws),
@@ -1259,7 +1260,7 @@ def _verdict_rows(out: Path) -> list[dict]:
 
 def _installed_or_skip():
     pytest.importorskip("pinocchio")
-    if not (_REPO / "integrated_bringup/config/ur5e_p1b").is_dir():
+    if not (ur5e_p1b_test_profile()).is_dir():
         pytest.skip("integrated_bringup config is not beside this checkout")
     if _installed_search() is None:
         pytest.skip(f"{m.SEARCH_EXECUTABLE} is not installed (build rtc_controllers)")
@@ -1528,7 +1529,7 @@ def test_a_profile_whose_search_names_a_model_of_its_own_is_refused(tmp_path):
     """`planner.search.sub_model` (a chain of the segment model): the binding this tool writes
     is of one model, so it says so instead of mapping the search on the segments' model."""
     pytest.importorskip("pinocchio")
-    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    config = ur5e_p1b_test_profile()
     if not config.is_dir():
         pytest.skip("integrated_bringup config is not beside this checkout")
 
@@ -1606,7 +1607,7 @@ def test_a_linked_source_is_labelled_relative_to_the_folder_it_was_read_in(tmp_p
 
 def test_the_setups_ball_names_its_file_in_the_robots_folder(tmp_path):
     pytest.importorskip("pinocchio")
-    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    config = ur5e_p1b_test_profile()
     if not config.is_dir():
         pytest.skip("integrated_bringup config is not beside this checkout")
     ball = m.load_setup(_setup_args(config), tmp_path, ()).ball
@@ -1617,7 +1618,7 @@ def test_the_setups_ball_names_its_file_in_the_robots_folder(tmp_path):
 
 def test_segment_mode_overrides_that_one_value_after_the_overlays_and_is_recorded(tmp_path):
     pytest.importorskip("pinocchio")
-    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    config = ur5e_p1b_test_profile()
     if not config.is_dir():
         pytest.skip("integrated_bringup config is not beside this checkout")
     overlay = tmp_path / "overlay.yaml"
@@ -2165,7 +2166,7 @@ def _fake_judge(tmp_path: Path, refuse_segment: bool = False) -> Path:
 
 
 def _segment_argv(out: Path, judge: Path, *extra: str) -> list[str]:
-    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    config = ur5e_p1b_test_profile()
     return [
         "--config-dir", str(config), "--search", "grid", "--out-dir", str(out),
         "--judge", str(judge),
@@ -2182,7 +2183,7 @@ def _segment_argv(out: Path, judge: Path, *extra: str) -> list[str]:
 
 def _shipped_or_skip():
     pytest.importorskip("pinocchio")
-    if not (_REPO / "integrated_bringup/config/ur5e_p1b").is_dir():
+    if not (ur5e_p1b_test_profile()).is_dir():
         pytest.skip("integrated_bringup config is not beside this checkout")
 
 
@@ -2349,7 +2350,7 @@ def test_judging_segments_of_a_tree_without_a_segment_planner_exits_before_any_r
 @pytest.fixture(scope="module")
 def shipped_segment_run(tmp_path_factory):
     pytest.importorskip("pinocchio")
-    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    config = ur5e_p1b_test_profile()
     if not config.is_dir():
         pytest.skip("integrated_bringup config is not beside this checkout")
     if _installed_search() is None:
