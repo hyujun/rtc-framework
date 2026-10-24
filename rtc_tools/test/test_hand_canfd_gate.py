@@ -534,6 +534,37 @@ def test_report_renders_the_cmd_f2_distribution(tmp_path):
     assert "read-only ticks" in md and "n=0" in md  # no read-only tick in this log
 
 
+GOLDEN_ECHO_RENDER = Path(__file__).parent / "data" / "hand_canfd_gate_echo_render.md"
+
+
+def _echo_mode_render(tmp_path) -> str:
+    """Echo-mode report on a fixed synthetic session: sequential + pipelined
+    writes, read-only ticks, an incomplete set and the E-Stop pair."""
+    lines: list[str] = []
+    t = 1.0
+    for i in range(5):
+        lines += normal_write(t)
+        lines += req_resp(t + 0.0005)
+        t += 0.002
+        lines += pipelined_write(t, resp_first=bool(i % 2))
+        t += 0.002
+        lines += req_resp(t)
+        t += 0.002
+    lines += pipelined_write(t, complete=False)
+    t += 0.002
+    lines += estop(t)
+    comm = comm_stats(total_cycles=150_000, joint_timeouts=3, write_ok=10, write_timeouts=0)
+    timing = summarise_timing(timing_rows(150_001), TH.p99_limit_us, TH.period_us)
+    bus = bus_from(lines, tmp_path)
+    checks = judge(timing, comm, bus, TH, link_down_lines=0, link_status_false=0)
+    return render_markdown(checks, timing, comm, bus, TH)
+
+
+def test_echo_mode_render_is_unchanged(tmp_path):
+    # Golden file: echo-mode output must stay byte-identical across cmd_ack changes.
+    assert _echo_mode_render(tmp_path) == GOLDEN_ECHO_RENDER.read_text()
+
+
 def test_period_mismatch_refuses_to_judge_p99(tmp_path):
     # A 250 Hz run (4 ms ticks) judged with the 500 Hz default threshold.
     rows = timing_rows(75_001, period_ns=4_000_000)
