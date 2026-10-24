@@ -428,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
             "the maximum. A 99th percentile needs >= 100 successful trials."
         )
     print()
-    print("  steady is L6 §4.2's definition and includes host stalls; tick is simulated")
+    print("  steady is the steady-clock definition and includes host stalls; tick is simulated")
     print("  time and cannot be compared with a real-hardware measurement. Report both.")
     print()
     print("  spread (sample std, n - 1) and the closure's offset from the catch instant")

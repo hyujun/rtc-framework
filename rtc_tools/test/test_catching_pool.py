@@ -173,7 +173,7 @@ def test_a_unit_from_before_the_validity_rules_is_refused(tmp_path):
         cp.read_unit(u)
 
 
-def test_d3_s31b_is_judged_on_the_arms_and_lists_the_extra_summaries(tmp_path):
+def test_clock_covariate_is_judged_on_the_arms_and_lists_the_extra_summaries(tmp_path):
     """The clock-phase count is judged on the arms' own trials. An --extra-d3 summary's
     d3.paired counts another population (every accepted trial with a lane
     launch) — listed with that definition, never added: 100 arm trials + 150
@@ -249,7 +249,7 @@ def test_pool_reuses_the_session_statistics():
     assert cp.ct.impulse_correlation is ct.impulse_correlation
 
 
-def test_g8b_and_c2_are_recomputed_from_the_pooled_trial_columns(tmp_path):
+def test_nees_and_independence_are_recomputed_from_the_pooled_trial_columns(tmp_path):
     """Two units with different per-trial sample counts: the pooled mean NEES is
     Σ NEES / Σ n over every trial of both (not a mean of unit means), and the
     C2 count spans both units."""

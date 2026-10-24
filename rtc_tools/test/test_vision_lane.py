@@ -363,7 +363,7 @@ def test_only_the_summarised_subscription_contributes(tmp_path):
 
 
 def test_a_ghost_track_from_the_previous_flight_is_not_this_flights_detection():
-    """TBD-VIS-07: a track that was already VALID keeps its generation."""
+    """A track that was already VALID keeps its generation."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as d:

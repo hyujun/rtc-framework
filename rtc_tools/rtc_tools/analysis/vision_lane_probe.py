@@ -270,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "also write <prefix>_prediction_dump.csv (every horizon point, full "
-            "6x6 covariance) and record debug/innovation, debug/nis (S8-A; "
+            "6x6 covariance) and record debug/innovation, debug/nis ("
             "default off, existing output unchanged)"
         ),
     )

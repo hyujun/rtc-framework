@@ -4130,7 +4130,7 @@ def streak_distribution(rows: Sequence[Mapping], bin_width: int = STREAK_BIN_WID
         for r in rows
         if np.isfinite(_num(r.get("ref_saturated_max_streak")))
     ]
-    out: dict = {"note": "G8-C3 deleted (D-S8-16) — distribution recorded, no verdict"}
+    out: dict = {"note": "ref_saturated streak: distribution recorded, no verdict"}
     out["n_trials"] = len(values)
     out["n_streak_gt0"] = sum(1 for v in values if v > 0)
     if not values:
@@ -5335,7 +5335,7 @@ def validity_line(v: Mapping) -> str:
 def verdict_line(tr: Mapping) -> str:
     itt = tr["itt"]
     out = (
-        f"G8-D: p̂ {_fmt(tr['p_hat'], '.3f')} · lower_975 {_fmt(tr['lower_975'])} (z "
+        f"truth success: p̂ {_fmt(tr['p_hat'], '.3f')} · lower_975 {_fmt(tr['lower_975'])} (z "
         f"{tr['z']:g}) · ITT {itt['successes']}/{itt['n']} lower_975 {_fmt(itt['lower_975'])}"
     )
     if "verdict" in tr:
@@ -5345,7 +5345,7 @@ def verdict_line(tr: Mapping) -> str:
 
 def streak_line(c3: Mapping) -> str:
     return (
-        f"G8-C3 (record only): ref_saturated streak > 0 in {c3['n_streak_gt0']}/"
+        f"ref_saturated streak (record only): > 0 in {c3['n_streak_gt0']}/"
         f"{c3['n_trials']} · p50/p95/p99/max {c3['p50']}/{c3['p95']}/{c3['p99']}/{c3['max']} · "
         f"histogram {c3['histogram']}"
     )
@@ -5353,7 +5353,7 @@ def streak_line(c3: Mapping) -> str:
 
 def b3_line(b3: Mapping) -> str:
     return (
-        f"G7-B3: n {b3['n']} · OLS slope {_fmt(b3['ols_slope'], '.3f')} "
+        f"contact impulse fit: n {b3['n']} · OLS slope {_fmt(b3['ols_slope'], '.3f')} "
         f"{_fmt_ci(b3['ols_slope_ci95'])} · intercept {_fmt(b3['ols_intercept_ns'], '+.4f')} N·s · "
         f"Spearman ρ(Δp, impulse) {_fmt(b3['spearman_rho_impulse'], '.3f')} "
         f"(p {_fmt(b3['spearman_p_impulse'], '.2g')}), ρ(Δp, peak force) "
@@ -5401,15 +5401,15 @@ def rtf_line(rtf) -> str:
 
 def g8b_lines(g8b) -> list[str]:
     if not isinstance(g8b, Mapping):
-        return [f"G8-B: {g8b}"]
+        return [f"vision-lane NEES: {g8b}"]
     out = []
     for lab, h in g8b["horizons"].items():
         if "mean_nees" not in h:
-            out.append(f"G8-B h {lab} ms: {h['verdict']} (n {h['n_samples']})")
+            out.append(f"vision-lane NEES h {lab} ms: {h['verdict']} (n {h['n_samples']})")
             continue
         bias = ", ".join(f"{v * 1e3:+.1f}" for v in h["bias_m"])
         out.append(
-            f"G8-B h {lab} ms: mean NEES {h['mean_nees']:.3f} CI {_fmt_ci(h['ci95'])} → "
+            f"vision-lane NEES h {lab} ms: mean NEES {h['mean_nees']:.3f} CI {_fmt_ci(h['ci95'])} → "
             f"{h['verdict']} · coverage_95 {h['coverage_95']:.3f} · bias [{bias}] mm · n "
             f"{h['n_samples']} over {h['n_trials']} trials, NaN {h['nan_share']:.1%}"
         )
@@ -5418,11 +5418,11 @@ def g8b_lines(g8b) -> list[str]:
 
 def c2_line(c2) -> str:
     if not isinstance(c2, Mapping):
-        return f"G8-C2: {c2}"
+        return f"lane error independence: {c2}"
     ind = c2["independence"]
     verdict = ind if isinstance(ind, str) else ("PASS" if ind["passed"] else "FAIL")
     return (
-        f"G8-C2: n {c2['n']} (exact {c2['n_exact']}, approx {c2['n_approx']}) · |A| "
+        f"lane error independence: n {c2['n']} (exact {c2['n_exact']}, approx {c2['n_approx']}) · |A| "
         f"{c2['A_norm_mm_median']:.1f} mm · |B| {c2['B_norm_mm_median']:.1f} mm · E|A+B|² "
         f"{c2['E_A_plus_B_sq_mm2']:.0f} vs E|A|²+E|B|² {c2['E_A_sq_plus_E_B_sq_mm2']:.0f} mm² · "
         f"A⊥B {verdict}"
@@ -5515,21 +5515,21 @@ def report(result: SessionResult) -> str:
         lines.extend(g8b_lines(s["g8b"]))
     if "g8b_unrestricted" in s:
         lines.append(
-            f"G8-B unrestricted (eval_report, post-contact included): {s['g8b_unrestricted']}"
+            f"vision-lane NEES unrestricted (eval_report, post-contact included): {s['g8b_unrestricted']}"
         )
     if "c2" in s:
         lines.append(c2_line(s["c2"]))
     if "d3" in s:
         d3 = s["d3"]
         lines.append(
-            f"D-3: δ_max p50/p95/max {d3['delta_max_ms_p50_p95_max']} ms · |δ(t_commit)| "
+            f"clock covariate: δ_max p50/p95/max {d3['delta_max_ms_p50_p95_max']} ms · |δ(t_commit)| "
             f"{d3['delta_commit_ms_p50_p95_max']} · |δ(t_c)| {d3['delta_tc_ms_p50_p95_max']} · "
-            f"valid {d3['valid']} (a covariate, not a verdict — D-S8-4 (c))"
+            f"valid {d3['valid']} (a covariate, not a verdict)"
         )
     if "g3d" in s:
         g3d = s["g3d"]
         lines.append(
-            f"G3-D: plan validity ratio p50/p05/p95 {g3d['plan_valid_ratio_p50_p05_p95']} over "
+            f"plan validity ratio p50/p05/p95 {g3d['plan_valid_ratio_p50_p05_p95']} over "
             f"{g3d['n_trials_with_cycles']} trials with ≥1 planner cycle · APPROACH plan "
             f"switches distribution {g3d['approach_plan_switches_distribution']}"
         )
@@ -5578,16 +5578,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--v-max",
         type=float,
-        help="D-3: fastest catch speed of the target distribution [m/s] (L8 §4.5). No "
+        help="clock covariate: fastest catch speed of the target distribution [m/s]. No "
         "default — without it the validity is NOT_EVALUATED",
     )
     ap.add_argument(
         "--a-bound",
         type=float,
         default=clock_phase.DEFAULT_A_BOUND_M_S2,
-        help="D-3 acceleration bound [m/s²] (default: clock_phase's g + drag ceiling)",
+        help="clock covariate acceleration bound [m/s²] (default: clock_phase's g + drag ceiling)",
     )
-    ap.add_argument("--eps-mm", type=float, nargs="*", default=[], help="D-3 ε_clk,alloc [mm]")
+    ap.add_argument(
+        "--eps-mm", type=float, nargs="*", default=[], help="clock covariate ε_clk,alloc [mm]"
+    )
     ap.add_argument("--n-boot", type=int, default=DEFAULT_N_BOOT)
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ap.add_argument(
@@ -5600,20 +5602,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--gate-map",
         type=Path,
-        help="a catch_gate_map output dir (S8-D): per-trial box-open verdict against its "
+        help="a catch_gate_map output dir: per-trial box-open verdict against its "
         "catchability_map grid, and truth success over the map-open subset. Only trials drawn "
         "from a --dist box (catching_sim_trials) carry the axis values a verdict needs",
     )
     ap.add_argument(
         "--floor",
         type=float,
-        help="G8-D floor (D-S8-3): truth.verdict PASS when the valid trials' Wilson lower bound "
+        help="success-rate floor: truth.verdict PASS when the valid trials' Wilson lower bound "
         "(z 1.96, the 97.5 %% one-sided bound) is ≥ this. No default — without it no verdict",
     )
     ap.add_argument(
         "--n-valid-target",
         type=int,
-        help="the verdict is INSUFFICIENT_N while n_valid is below this (D-S8-3: 200)",
+        help="the verdict is INSUFFICIENT_N while n_valid is below this (e.g. 200)",
     )
     ap.add_argument(
         "--tc-shift-max-ms",
@@ -5625,18 +5627,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--eval-samples",
         type=Path,
-        help="G8-B: sim_capture_evaluate eval_samples.csv of this session's capture",
+        help="vision-lane NEES: sim_capture_evaluate eval_samples.csv of this session's capture",
     )
     ap.add_argument(
         "--eval-report",
         type=Path,
-        help="G8-B: its eval_report.json — echoed as the unrestricted (post-contact "
+        help="vision-lane NEES: its eval_report.json — echoed as the unrestricted (post-contact "
         "included) reference, not judged",
     )
     ap.add_argument(
         "--probe-dump",
         type=Path,
-        help="G8-C2: vision_lane_probe --dump lane_prediction_dump.csv of this session",
+        help="lane error independence: vision_lane_probe --dump lane_prediction_dump.csv of this session",
     )
     args = ap.parse_args(argv)
 

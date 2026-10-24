@@ -276,7 +276,7 @@ def test_wilson_interval_known_values():
 @pytest.mark.parametrize(
     ("p", "floor", "n"), [(0.9, 0.7, 35), (0.8, 0.6, 44), (0.6, 0.5, 198), (0.95, 0.9, 254)]
 )
-def test_required_n_reproduces_the_s09_table(p, floor, n):
+def test_required_n_reproduces_the_sample_size_table(p, floor, n):
     """Four cells of the power table (z 1.96, power 0.8)."""
     assert ct.required_n(p, floor) == n
 
@@ -2494,7 +2494,7 @@ def test_drifted_runner_offsets_do_not_move_the_lane_aligned_analysis(pilot, tmp
         assert rows[idx]["first_plan_s"] - ref[idx]["first_plan_s"] == pytest.approx(0.4, abs=0.01)
 
 
-def test_golden_g8b_and_c2_end_to_end(pilot, tmp_path):
+def test_golden_vision_lane_nees_and_independence_end_to_end(pilot, tmp_path):
     """NEES binding and the A/B comparison through analyse_session on the pilot's own axes.
 
     Samples: one at the launch (kept), one whose target is after the ball hit

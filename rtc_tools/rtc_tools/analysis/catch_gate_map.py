@@ -555,14 +555,19 @@ def main(argv: list[str] | None = None) -> int:
         help=f"the catching controller's config key (default {DEFAULT_CONTROLLER})",
     )
     ap.add_argument("--eta-v", type=float, required=True, help="planner.search.grid.gamma.eta_v")
-    ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (L3 §4.3)")
+    ap.add_argument(
+        "--eta-tau",
+        type=float,
+        required=True,
+        help="torque fraction of the dynamic acceleration budget",
+    )
     ap.add_argument("--rotor-inertia", type=_floats, required=True, help="[kg m²], arm order")
     ap.add_argument("--rotor-inertia-source", required=True, help="file:line or datasheet")
     ap.add_argument(
         "--v-max-m-s",
         required=True,
         help="planner.search.grid.reference.v_max: a number, or 'derived' = the largest LP v_dir,max over the "
-        "accepted candidates at the unscaled joint limits (S4.4)",
+        "accepted candidates at the unscaled joint limits",
     )
     ap.add_argument("--d-eff-m", type=float, required=True, help="planner.search.grid.hand.d_eff")
     ap.add_argument("--d-eff-source", required=True, help="where that d_eff comes from")
@@ -788,9 +793,9 @@ def main(argv: list[str] | None = None) -> int:
         "open_candidates": {layer: open_candidate_stats(rows, layer) for layer in LAYERS},
         "open_but_for_reach_candidates": len(reachable_targets),
         "proposed_wait_pose": None if proposal is None else [float(x) for x in proposal],
-        "note": "rollout (L3 §4.8) is not judged: an open cell is PASS(provisional), an empty "
+        "note": "rollout is not judged: an open cell is PASS(provisional), an empty "
         "map is conclusive. The torque layer is a sufficient condition without a runtime "
-        "counterpart (L3 §4.3, D-16 revision).",
+        "counterpart.",
     }
     (args.out_dir / "gate_map_summary.yaml").write_text(yaml.safe_dump(summary, sort_keys=False))
     print(yaml.safe_dump(summary, sort_keys=False))

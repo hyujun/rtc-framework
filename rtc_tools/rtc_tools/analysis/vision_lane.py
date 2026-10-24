@@ -713,8 +713,8 @@ def main(argv: list[str] | None = None) -> int:
     rate_p50, rate_lo, rate_hi = lane.rate_hz()
     print(f"prediction lane : {pred_csv}  ({lane.messages} rows, by sub {dict(lane.by_sub)})")
     print(f"  summarised sub          : {args.sub}")
-    print(f"  frame_id                : {_fmt_counter(lane.frame_ids)}   (TBD-VIS-06)")
-    print(f"  N (points)              : {_fmt_counter(lane.n_points)}   (TBD-VIS-04)")
+    print(f"  frame_id                : {_fmt_counter(lane.frame_ids)}")
+    print(f"  N (points)              : {_fmt_counter(lane.n_points)}")
     print(
         f"  horizon first / last [s]: {_fmt_counter(lane.horizon_first_s)} / "
         f"{_fmt_counter(lane.horizon_last_s)}"
@@ -731,14 +731,14 @@ def main(argv: list[str] | None = None) -> int:
 
     rel = summarise_reliability(pred_csv)
     print(
-        f"  reliability (TBD-VIS-08): reliable {rel.reliable}, best_effort {rel.best_effort}, "
+        f"  reliability             : reliable {rel.reliable}, best_effort {rel.best_effort}, "
         f"only-reliable {rel.only_reliable}, only-best_effort {rel.only_best_effort}"
     )
 
     if cam_csv.exists():
         ghost = summarise_ghost(pred_csv, cam_csv, args.sub, args.loss_gap_s)
         print(
-            f"  ghost (TBD-VIS-07)      : VALID snapshots {ghost.valid_snapshots}; age of newest "
+            f"  ghost                   : VALID snapshots {ghost.valid_snapshots}; age of newest "
             f"camera msg at a VALID snapshot max {ghost.valid_after_loss_max_s * 1e3:.1f} ms, "
             f"p95 {ghost.valid_after_loss_p95_s * 1e3:.1f} ms"
         )
@@ -766,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
         stamped = [d.t_det_stamp_s for d in lat if not math.isnan(d.t_det_stamp_s)]
         silent = [d.flight_index for d in lat if math.isnan(d.t_det_recv_s)]
         print()
-        print(f"T_det (S3.6)       : {len(lat)} flights, {len(seen)} with a VALID prediction")
+        print(f"T_det              : {len(lat)} flights, {len(seen)} with a VALID prediction")
         if seen:
             print(
                 f"  recv axis  [s]          : min {min(seen):.3f}  p50 {quantile(seen, 0.5):.3f}  "
@@ -789,8 +789,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         print("  its quantisation is one ball sample period (publish.sample_rate_hz).")
     print()
-    print("  This is a MEASUREMENT (S3.4). No threshold is applied here; the policy for")
-    print("  rewinds, partial validity and ghost tracks is S5.2's (L1 §10).")
+    print("  This is a MEASUREMENT. No threshold is applied here; the policy for")
+    print("  rewinds, partial validity and ghost tracks is decided elsewhere.")
     return 0
 
 

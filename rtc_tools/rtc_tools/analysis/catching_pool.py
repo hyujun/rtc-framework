@@ -144,7 +144,7 @@ def read_unit(ct_dir: Path) -> Unit:
         if "invalid_reason" not in (reader.fieldnames or []):
             raise SystemExit(
                 f"{csv_path}: no invalid_reason column — written by a catching_trials older "
-                "than the D-S8-16 validity rules; re-run catching_trials on this unit"
+                "than the current validity rules; re-run catching_trials on this unit"
             )
         if "truth_success" not in (reader.fieldnames or []):
             raise SystemExit(f"{csv_path}: no truth_success column — run with a hold radius")
@@ -288,7 +288,7 @@ def check_unique_keys(label: str, units: Sequence[Unit]) -> None:
             if key in seen:
                 raise SystemExit(
                     f"arm {label}: throw {key} in both {seen[key]} and {u.ct_dir} — a "
-                    "re-run unit replaces its original (D-S8-16 ①), pass only one of them"
+                    "re-run unit replaces its original, pass only one of them"
                 )
             seen[key] = u.ct_dir
 
@@ -462,7 +462,7 @@ def report(summary: Mapping) -> str:
         lines.append("  " + ct.verdict_line(tr))
         d3 = arm["d3"]
         lines.append(
-            f"  D-3 (covariate, p50/p95/max ms): {d3['n_with_clock_covariate']} trials · "
+            f"  clock covariate (p50/p95/max ms): {d3['n_with_clock_covariate']} trials · "
             f"|δ(t_commit)| {_q(d3['delta_commit_ms_abs_p50_p95_max'])} · |δ(t_c)| "
             f"{_q(d3['delta_tc_ms_abs_p50_p95_max'])} · δ_max {_q(d3['delta_max_ms_p50_p95_max'])}"
         )
@@ -493,7 +493,7 @@ def report(summary: Mapping) -> str:
         )
     s = summary["d3_s31b"]
     lines.append(
-        f"D-3 S3.1b: {s['total']} trials with a clock covariate (arms {s['per_arm']}) vs ≥ "
+        f"clock covariate: {s['total']} trials with a clock covariate (arms {s['per_arm']}) vs ≥ "
         f"{s['requirement_n']} → {'met' if s['met'] else 'NOT met'}"
     )
     for e in s["extra_sources"]:
@@ -527,7 +527,9 @@ def main(argv: list[str] | None = None) -> int:
         help="an arm: its label and its catching_trials output dirs IN THE PRE-DECLARED ORDER "
         "(top-up units last). Repeat per arm",
     )
-    ap.add_argument("--floor", type=float, required=True, help="G8-D floor (D-S8-3)")
+    ap.add_argument(
+        "--floor", type=float, required=True, help="success-rate floor for the truth verdict"
+    )
     ap.add_argument(
         "--n-valid-target",
         type=int,
@@ -552,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="SUMMARY_JSON",
         help="other sessions' catching_trials_summary.json: their d3 block is listed beside the "
-        "S3.1b verdict, which the arms alone decide (D-S8-16 ⑤)",
+        "clock-covariate verdict, which the arms alone decide",
     )
     args = ap.parse_args(argv)
     summary, trial_rows = pool(

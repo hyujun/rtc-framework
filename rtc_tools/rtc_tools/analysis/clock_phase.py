@@ -220,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         "--v-max",
         type=float,
         default=DEFAULT_V_MAX_M_S,
-        help="fastest ball speed [m/s] (S0.7 assumption until S3.5b)",
+        help="fastest ball speed [m/s] (assumption until measured)",
     )
     parser.add_argument(
         "--a-bound",
@@ -240,8 +240,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "candidate eps_clk_alloc [mm] to report a 'valid under eps' COVARIATE "
-            "fraction against (D-S8-4 (c)); omit to skip that line — this is never "
-            "a verdict (D-S8-4 (c))"
+            "fraction against; omit to skip that line — this is never "
+            "a verdict"
         ),
     )
     parser.add_argument("--plot", type=Path, default=None, help="write a delta/pause plot here")
@@ -293,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
         f"  eps_clk_alloc that admits {args.admit * 100:.0f}% of trials : "
         f"{proposal * 1e3:.3f} mm  (v_max {args.v_max} m/s, a_bound {args.a_bound:.2f} m/s^2)"
     )
-    print("  (a PROPOSAL for the user to confirm — L8 §4.5 — not a threshold")
+    print("  (a PROPOSAL for the user to confirm — not a threshold")
     print("  this run adopts)")
 
     summary = covariate_summary(stats.trials, args.v_max, args.a_bound, eps_mm=args.eps_mm)
@@ -305,10 +305,12 @@ def main(argv: list[str] | None = None) -> int:
             f"({summary.valid_fraction * 100:.1f}%)  — COVARIATE, not a verdict"
         )
     print()
-    print("  S3.1a / D-3: clock phase error is a COVARIATE (D-S8-4 (c)), not a")
-    print("  pass/fail — eps_clk_alloc is a provisional budget (L8 §4.5), and")
+    print("  Clock phase error is a COVARIATE, not a")
+    print("  pass/fail — eps_clk_alloc is a provisional budget, and")
     print("  a direct delta-vs-outcome correlation has no power at S8's trial counts.")
-    print("  The distributions above are what S8-B/E correlate against catch outcomes")
+    print(
+        "  The distributions above are what the trial evaluation correlates against catch outcomes"
+    )
     print("  and against a same-seed load A/B; nothing here is a gate.")
 
     if args.plot is not None:
@@ -350,7 +352,7 @@ def _write_plot(path: Path, trials: list[Trial]) -> None:
     for row in axes:
         for ax in row:
             ax.grid(alpha=0.3)
-    fig.suptitle("D-3 clock phase error per launch trial (covariate, not a verdict — D-S8-4 (c))")
+    fig.suptitle("clock phase error per launch trial (covariate, not a verdict)")
     fig.tight_layout()
     fig.savefig(path, dpi=120)
     plt.close(fig)
