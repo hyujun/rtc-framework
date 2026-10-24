@@ -32,7 +32,7 @@ colcon 의 pytest 는 시스템 python 이라 `.venv` 에만 있는 의존성 (m
 | `rtc_controllers/` RT path | `test_*_core` + `test_dls_convergence` (할당 게이트 무장) + grasp 관련 gtest | `ps -eLo cls,rtprio` 로 RT scheduling 확인 |
 | `rtc_controllers/` gains · config | 위 + controller YAML 로드 smoke | `ros2 topic echo /rtc_cm/active_controller_name` |
 | `rtc_controllers/` catching core | `--ctest-args -R test_catching` | ASan/UBSan 은 별도 build base (rationale 참조) |
-| `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | `cm_timing_log.csv` p99 |
+| `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) · teardown (`test_eventfd_teardown_order` · `test_state_lane_teardown`) | `cm_timing_log.csv` p99 |
 | `rtc_tsid/` · `rtc_mpc/` | QP · task · constraint gtest · MPC gtest (Riccati · SolutionManager) | TSID performance · `mpc_timing_log.csv` p99 회귀 |
 | `rtc_mujoco_sim/` | 패키지 전체 + `test_motor_servo_gains` · `test_torque_mode_ctrl_range` | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` smoke |
 | `rtc_urdf_bridge/` | 패키지 전체 + `test_frame_jacobian_fd_oracle` · `test_inertial_validation` · `test_real_model_inertial_gate` | 실제 robot 모델 로드 smoke |

@@ -6,7 +6,7 @@
 
 `RtControllerNode` (`rclcpp_lifecycle::LifecycleNode`) 가 `control_rate` YAML 주기로 `clock_nanosleep` 제어 루프를 돌리고, 등록된 컨트롤러를 수명 관리하며, 디바이스 워치독과 글로벌 E-STOP 을 맡는다. 범위·default 는 [invariants.md](../agent_docs/invariants.md) §RT Path Invariants 가 SSoT 다. 퍼블리시·CSV 로깅은 락-프리 SPSC 로 non-RT 스레드에 넘긴다.
 
-**이 패키지에는 실행 파일이 없다.** 정적 라이브러리 `librtc_controller_manager_lib.a` 를 export 하고, 로봇별 bringup 패키지가 `rtc::RtControllerMain(argc, argv, node_name)` 을 호출해 자기 실행 파일을 만든다. 이 workspace 의 실행 파일은 `integrated_bringup` 의 `integrated_rt_controller` 이며 ROS 노드 이름도 같다 (`/integrated_rt_controller`). 로봇 데이터 (`control_rate` · `devices` · `urdf`) 와 launch 는 [integrated_bringup](../integrated_bringup/README.md) 이 소유한다.
+**이 패키지에는 실행 파일이 없다.** 정적 라이브러리 `librtc_controller_manager_lib.a` 를 export 하고, 로봇별 bringup 패키지가 `rtc::RtControllerMain(argc, argv, node_name)` 을 호출해 자기 실행 파일을 만든다. 실행 파일은 `integrated_bringup` 의 `integrated_rt_controller` 이며 ROS 노드 이름도 같다. 로봇 데이터 (`control_rate` · `devices` · `urdf`) 와 launch 는 [integrated_bringup](../integrated_bringup/README.md) 소유다.
 
 ## 빠른 시작
 
@@ -123,7 +123,7 @@ controller YAML 에는 `ownership:` 필드가 없고 `topics:` entry 는 전부 
 | `on_configure` | 콜백 그룹 · 파라미터 · 컨트롤러 · 퍼블리셔/구독 · 타이머 · eventfd 생성. 전용 executor 전환 뒤엔 거부 (재시작) |
 | `on_activate` | RT 루프와 publish 스레드 시작 |
 | `on_deactivate` | 스레드 중지, E-STOP 클리어, 상태 초기화 |
-| `on_cleanup` | `on_configure` 역순 해제 |
+| `on_cleanup` | `on_configure` 역순 해제. backend 는 state-lane 콜백 drain 뒤 파괴 |
 | `on_error` | E-STOP 트리거 후 정리 → Unconfigured 복구 |
 
 ```bash

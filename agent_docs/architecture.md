@@ -62,7 +62,7 @@ CM RT loop · MPC thread · hand comm thread · rt_callback 이 **같은** gener
 | `on_configure` | 1 | Callback groups, parameters, controllers, publishers/subscribers, timers, eventfd |
 | `on_activate` | 2 | `SelectThreadConfigs()` -> `StartRtLoop()` + `StartNrtPublishLoop()` |
 | `on_deactivate` | -- | Stop RT / nrt_publish threads, clear E-STOP, reset init state |
-| `on_cleanup` | -- | Reverse of `on_configure`, with one exception: the eventfds are closed **after** the device backends (their state-lane subs outlive `on_deactivate` and write those fds) |
+| `on_cleanup` | -- | Reverse of `on_configure`; each backend's state lane is closed and drained before the backend goes (#941), and the eventfds those lanes write close after them (#224) |
 | `on_error` | -- | `TriggerGlobalEstop("lifecycle_error")`, stop threads, full cleanup -> SUCCESS |
 
 **Safety publishers** (`estop_pub_`, `active_ctrl_name_pub_`) use standalone `rclcpp::create_publisher` -- active regardless of lifecycle state.

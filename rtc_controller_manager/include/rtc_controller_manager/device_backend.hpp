@@ -74,6 +74,9 @@ struct DeviceBackendConfig {
 //   - Configure()   — called in node on_configure; create subs/pubs.
 //   - Activate()    — called in node on_activate; enable lifecycle publishers.
 //   - Deactivate()  — called in node on_deactivate; disable publishers.
+//   - CloseStateLane() — called by CM right before the backend is destroyed
+//                   (on_cleanup / on_error / refused configure / destructor);
+//                   refuses and drains the state-lane callbacks (issue #941).
 //
 // RT contract:
 //   - ReadState() and WriteCommand() run on the RT path. Implementations must
