@@ -40,8 +40,8 @@
 
 ## Test fixtures — robot URDF 해석
 
-- robot 모델이 필요한 fixture 는 URDF 를 **`robot_descriptions/robots/<name>/`** (repo 체크인) 에서 해석한다 — compile macro 또는 `ament_index_cpp::get_package_share_directory("robot_descriptions")`. `deps/src/...` 나 `/usr/local/...` 경로를 박지 않는다.
-- fixture 는 **in-repo 패키지만** resolve 한다. 패키지 이름은 **리터럴로** 적는다 — 게이트 (`repo_scripts/scripts/validate_test_fixtures.py`) 는 비-리터럴 인자도 unresolvable 로 친다. 기존 fixture 를 재사용할 때는 그것이 무엇을 여는지부터 본다.
+- robot 모델이 필요한 fixture 는 URDF 를 **`robot_descriptions/robots/<name>/`** (repo 체크인) 에서 해석한다 — compile macro 또는 `get_package_share_directory("robot_descriptions")`. `deps/src/...` 나 `/usr/local/...` 를 박지 않는다.
+- fixture 는 **in-repo 패키지만** resolve 한다 (skip guard 도 불가 — 공개 못 하는 모델은 합성 대리). 패키지 이름은 **리터럴로** — 게이트 `validate_test_fixtures.py` 는 비-리터럴을 unresolvable 로 친다. 기존 fixture 를 재사용할 때는 무엇을 여는지부터 본다.
 - 로컬 통과는 증거가 아니다. 검증은 `AMENT_PREFIX_PATH` 에서 그 prefix 를 빼고 바이너리를 돌리는 것이고, 격리가 걸렸다는 positive control 은 그 셸에서 `ros2 pkg prefix <pkg>` 가 실패하는 것이다.
 - 다른 패키지를 `ament_index` 로 resolve 하는 테스트는 install set 이 다른 환경에서 깨진다 — 해석 경로 자체를 검증하는 것이 아니면 경로 헬퍼를 stub 한다.
 
