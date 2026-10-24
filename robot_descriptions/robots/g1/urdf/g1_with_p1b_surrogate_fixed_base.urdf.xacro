@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!--
+  Unitree G1 upper body (fixed base, no right hand) + p1b_surrogate on the right
+  wrist — a TEST model: the hand is the synthetic one of
+  ../../p1b_surrogate/README.md, not a real hand.
+
+  The hand mount (right_wrist_yaw_link → base_adapter) is the one
+  integrated_bringup/config/g1_p1b/_base.yaml states; the pelvis height is the
+  G1 MJCF's standing height. Paired with g1_with_p1b_surrogate_fixed_base.closure.yaml.
+
+  Process with: xacro g1_with_p1b_surrogate_fixed_base.urdf.xacro
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="g1_with_p1b_surrogate_fixed_base">
+  <xacro:include filename="$(find robot_descriptions)/robots/g1/urdf/g1_without_right_hand_fixed_base.urdf"/>
+  <xacro:include filename="$(find robot_descriptions)/robots/p1b_surrogate/urdf/p1b_surrogate.urdf.xacro"/>
+
+  <link name="world"/>
+  <joint name="world_to_pelvis" type="fixed">
+    <parent link="world"/>
+    <child link="pelvis"/>
+    <origin xyz="0 0 0.793" rpy="0 0 0"/>
+  </joint>
+  <joint name="right_wrist_to_p1b_surrogate" type="fixed">
+    <parent link="right_wrist_yaw_link"/>
+    <child link="base_adapter"/>
+    <origin xyz="0.0415 -0.003 0" rpy="1.5707963267948966 0 1.5707963267948966"/>
+  </joint>
+</robot>

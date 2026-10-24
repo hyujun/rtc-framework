@@ -1,0 +1,247 @@
+<?xml version="1.0"?>
+<!--
+  p1b_surrogate — a SYNTHETIC test hand. It is not a real hand and not a model of one.
+
+  It has the link and joint NAMES of the proto_1b hand and the same loop
+  topology (four fingers, 10 actuated joints, 5 contact_3d loop closures: one
+  four-bar in the thumb, index and middle, two chained four-bars in the ring), so
+  the closed-chain code paths and the shipped `ur5e_p1b` / `g1_p1b` configs run
+  on it. Every length, offset, mass and inertia below was made up for this file;
+  none is taken or derived from the real hand's model.
+
+  Conventions kept from the shipped configs (they read these, not dimensions):
+  joint names and axes, the actuated position limits of
+  integrated_bringup/config/ur5e_p1b/_base.yaml, the palm frame (fingers along +y,
+  flexion towards +z, mounted on the flange with rpy (90°, 0, 90°)), and the
+  fingertip bracket frames' rotations.
+
+  Each four-bar is laid out in its parent link's plane, in (s, t): s along the
+  finger, t towards the flexion side. The loop's two constraint frames are placed
+  by the same expressions as the joints, so every loop is closed at q = 0 by
+  construction (that is the model's reference configuration). Loop passive joints
+  carry no limits (lower = upper = 0, effort 0), as the closure sidecar owns them.
+
+  No meshes: visual and collision geometry are boxes.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="p1b_surrogate">
+
+  <xacro:property name="half_pi" value="1.5707963267948966"/>
+  <xacro:property name="act_effort" value="3.0"/>
+  <xacro:property name="act_velocity" value="10.384"/>
+
+  <!-- Four-bar layout shared by the thumb, index and middle (parent-link (s, t), m):
+       actuated pivot O_b = (Lp, 0); passive pivot O_a = O_b + (fb_oa_s, fb_oa_t);
+       crank (link b) O_b → D = O_b + (fb_d_s, 0); rocker (link a) O_a → C =
+       O_b + (fb_c_s, fb_c_t); coupler = the tip link, pinned at C, closing at D. -->
+  <xacro:property name="fb_oa_s" value="0.0"/>
+  <xacro:property name="fb_oa_t" value="-0.004"/>
+  <xacro:property name="fb_d_s" value="0.026"/>
+  <xacro:property name="fb_c_s" value="0.026"/>
+  <xacro:property name="fb_c_t" value="-0.008"/>
+  <!-- Fingertip bracket, from C in (s, t). -->
+  <xacro:property name="tip_s" value="0.022"/>
+  <xacro:property name="tip_t" value="0.006"/>
+
+  <material name="surrogate_grey">
+    <color rgba="0.55 0.55 0.6 1.0"/>
+  </material>
+
+  <!-- A moving link: a box of size (sx, sy, sz) centred at (cx, cy, cz), its
+       inertia the solid box's. -->
+  <xacro:macro name="box_link" params="name m sx sy sz cx:=0 cy:=0 cz:=0">
+    <link name="${name}">
+      <visual>
+        <origin xyz="${cx} ${cy} ${cz}" rpy="0 0 0"/>
+        <geometry><box size="${sx} ${sy} ${sz}"/></geometry>
+        <material name="surrogate_grey"/>
+      </visual>
+      <collision>
+        <origin xyz="${cx} ${cy} ${cz}" rpy="0 0 0"/>
+        <geometry><box size="${sx} ${sy} ${sz}"/></geometry>
+      </collision>
+      <inertial>
+        <origin xyz="${cx} ${cy} ${cz}" rpy="0 0 0"/>
+        <mass value="${m}"/>
+        <inertia ixx="${m * (sy * sy + sz * sz) / 12.0}" ixy="0" ixz="0"
+                 iyy="${m * (sx * sx + sz * sz) / 12.0}" iyz="0"
+                 izz="${m * (sx * sx + sy * sy) / 12.0}"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- A link along the finger: length `l` along s, the box thin across.
+       (ux uy uz) is s in the link frame, (vx vy vz) is t; each a unit axis. -->
+  <xacro:macro name="segment" params="name m l ux uy uz vx vy vz w:=0.014">
+    <xacro:box_link name="${name}" m="${m}"
+        sx="${ux * ux * l + (1 - ux * ux) * w}"
+        sy="${uy * uy * l + (1 - uy * uy) * w}"
+        sz="${uz * uz * l + (1 - uz * uz) * w}"
+        cx="${ux * l / 2}" cy="${uy * l / 2}" cz="${uz * l / 2}"/>
+  </xacro:macro>
+
+  <xacro:macro name="revolute" params="name parent child x y z axis lower upper">
+    <joint name="${name}" type="revolute">
+      <parent link="${parent}"/>
+      <child link="${child}"/>
+      <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
+      <axis xyz="${axis}"/>
+      <limit lower="${lower}" upper="${upper}" effort="${act_effort}" velocity="${act_velocity}"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="passive" params="name parent child x y z axis">
+    <joint name="${name}" type="revolute">
+      <parent link="${parent}"/>
+      <child link="${child}"/>
+      <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
+      <axis xyz="${axis}"/>
+      <limit lower="0.0" upper="0.0" effort="0.0" velocity="0.0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="fixed_frame" params="joint parent child x y z rpy:='0 0 0'">
+    <link name="${child}"/>
+    <joint name="${joint}" type="fixed">
+      <parent link="${parent}"/>
+      <child link="${child}"/>
+      <origin xyz="${x} ${y} ${z}" rpy="${rpy}"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- The distal four-bar of the thumb, index and middle. `f` is the finger
+       (joint names <f>_dip_fe_joint, <f>_dip_a_joint_passive,
+       <f>_pip_a_joint_passive, <f>_pip_b_joint_constraint_{ab,ba},
+       <f>_tip_bracket_joint_fixed); link_b / link_a are the crank / rocker links. -->
+  <xacro:macro name="distal_four_bar"
+      params="f parent link_b link_a lp axis ux uy uz vx vy vz bracket_rpy m_b m_a m_tip">
+    <xacro:segment name="${link_b}" m="${m_b}" l="${fb_d_s}"
+        ux="${ux}" uy="${uy}" uz="${uz}" vx="${vx}" vy="${vy}" vz="${vz}"/>
+    <xacro:segment name="${link_a}" m="${m_a}" l="${fb_c_s - fb_oa_s}" w="0.006"
+        ux="${ux}" uy="${uy}" uz="${uz}" vx="${vx}" vy="${vy}" vz="${vz}"/>
+    <xacro:segment name="l_${f}_tip_link" m="${m_tip}" l="${tip_s}"
+        ux="${ux}" uy="${uy}" uz="${uz}" vx="${vx}" vy="${vy}" vz="${vz}"/>
+
+    <xacro:revolute name="${f}_dip_fe_joint" parent="${parent}" child="${link_b}"
+        x="${lp * ux}" y="${lp * uy}" z="${lp * uz}"
+        axis="${axis}" lower="${-half_pi}" upper="0.0"/>
+    <xacro:passive name="${f}_dip_a_joint_passive" parent="${parent}" child="${link_a}"
+        x="${(lp + fb_oa_s) * ux + fb_oa_t * vx}"
+        y="${(lp + fb_oa_s) * uy + fb_oa_t * vy}"
+        z="${(lp + fb_oa_s) * uz + fb_oa_t * vz}" axis="${axis}"/>
+    <!-- C − O_a -->
+    <xacro:passive name="${f}_pip_a_joint_passive" parent="${link_a}" child="l_${f}_tip_link"
+        x="${(fb_c_s - fb_oa_s) * ux + (fb_c_t - fb_oa_t) * vx}"
+        y="${(fb_c_s - fb_oa_s) * uy + (fb_c_t - fb_oa_t) * vy}"
+        z="${(fb_c_s - fb_oa_s) * uz + (fb_c_t - fb_oa_t) * vz}" axis="${axis}"/>
+    <!-- D − C on the coupler, D − O_b on the crank: the same point at q = 0. -->
+    <xacro:fixed_frame joint="${f}_pip_b_joint_constraint_ab" parent="l_${f}_tip_link"
+        child="l_${f}_tip_constraint_ab"
+        x="${(fb_d_s - fb_c_s) * ux - fb_c_t * vx}"
+        y="${(fb_d_s - fb_c_s) * uy - fb_c_t * vy}"
+        z="${(fb_d_s - fb_c_s) * uz - fb_c_t * vz}"/>
+    <xacro:fixed_frame joint="${f}_pip_b_joint_constraint_ba" parent="${link_b}"
+        child="l_${f}_tip_constraint_ba"
+        x="${fb_d_s * ux}" y="${fb_d_s * uy}" z="${fb_d_s * uz}"/>
+    <xacro:fixed_frame joint="${f}_tip_bracket_joint_fixed" parent="l_${f}_tip_link"
+        child="l_${f}_tip_bracket"
+        x="${tip_s * ux + tip_t * vx}" y="${tip_s * uy + tip_t * vy}"
+        z="${tip_s * uz + tip_t * vz}" rpy="${bracket_rpy}"/>
+  </xacro:macro>
+
+  <!-- ── Palm ──────────────────────────────────────────────────────────── -->
+  <link name="base_adapter"/>
+  <xacro:box_link name="l_palm_link" m="0.55" sx="0.09" sy="0.12" sz="0.03" cy="0.06"/>
+  <joint name="base_to_l_palm_link" type="fixed">
+    <parent link="base_adapter"/>
+    <child link="l_palm_link"/>
+    <origin xyz="0 0 0" rpy="${half_pi} 0 ${half_pi}"/>
+  </joint>
+
+  <!-- ── Index: abduction, flexion, distal four-bar (plane y-z) ─────────── -->
+  <xacro:box_link name="l_index_mcp_link" m="0.02" sx="0.014" sy="0.014" sz="0.014"/>
+  <xacro:revolute name="index_mcp_aa_joint" parent="l_palm_link" child="l_index_mcp_link"
+      x="0.026" y="0.125" z="0.0" axis="0 0 -1" lower="-0.34906585" upper="0.523598776"/>
+  <xacro:segment name="l_index_dip_link" m="0.05" l="0.046" ux="0" uy="1" uz="0" vx="0" vy="0" vz="1"/>
+  <xacro:revolute name="index_mcp_fe_joint" parent="l_index_mcp_link" child="l_index_dip_link"
+      x="0" y="0" z="0" axis="-1 0 0" lower="${-half_pi}" upper="0.0"/>
+  <xacro:distal_four_bar f="index" parent="l_index_dip_link"
+      link_b="l_index_pip_linkage_b" link_a="l_index_pip_linkage_a" lp="0.046"
+      axis="-1 0 0" ux="0" uy="1" uz="0" vx="0" vy="0" vz="1"
+      bracket_rpy="0 0 ${half_pi}" m_b="0.012" m_a="0.003" m_tip="0.015"/>
+
+  <!-- ── Middle: flexion, distal four-bar (plane y-z) ──────────────────── -->
+  <xacro:segment name="l_middle_mcp_link" m="0.05" l="0.050" ux="0" uy="1" uz="0" vx="0" vy="0" vz="1"/>
+  <xacro:revolute name="middle_mcp_fe_joint" parent="l_palm_link" child="l_middle_mcp_link"
+      x="0.0" y="0.130" z="0.0" axis="-1 0 0" lower="${-half_pi}" upper="0.0"/>
+  <xacro:distal_four_bar f="middle" parent="l_middle_mcp_link"
+      link_b="l_middle_dip_b_link" link_a="l_middle_dip_a_link" lp="0.050"
+      axis="-1 0 0" ux="0" uy="1" uz="0" vx="0" vy="0" vz="1"
+      bracket_rpy="0 0 ${half_pi}" m_b="0.012" m_a="0.003" m_tip="0.015"/>
+
+  <!-- ── Thumb: three serial joints, distal four-bar (plane x-y, along +x) ── -->
+  <xacro:segment name="l_thumb_cmc_link_a" m="0.015" l="0.016" ux="1" uy="0" uz="0" vx="0" vy="1" vz="0"/>
+  <xacro:revolute name="thumb_cmc_aa_joint" parent="l_palm_link" child="l_thumb_cmc_link_a"
+      x="0.038" y="0.035" z="0.018" axis="0 -1 0" lower="0.0" upper="2.356194487"/>
+  <xacro:segment name="l_thumb_cmc_link_b" m="0.025" l="0.020" ux="1" uy="0" uz="0" vx="0" vy="1" vz="0"/>
+  <xacro:revolute name="thumb_cmc_fe_joint" parent="l_thumb_cmc_link_a" child="l_thumb_cmc_link_b"
+      x="0.016" y="0" z="0" axis="0 0 1" lower="${-half_pi}" upper="${half_pi}"/>
+  <xacro:segment name="l_thumb_mcp_link" m="0.06" l="0.040" ux="1" uy="0" uz="0" vx="0" vy="1" vz="0"/>
+  <xacro:revolute name="thumb_mcp_joint" parent="l_thumb_cmc_link_b" child="l_thumb_mcp_link"
+      x="0.020" y="0" z="0" axis="0 1 0" lower="${-half_pi}" upper="${half_pi}"/>
+  <xacro:distal_four_bar f="thumb" parent="l_thumb_mcp_link"
+      link_b="l_thumb_dip_link_b" link_a="l_thumb_dip_link_a" lp="0.040"
+      axis="0 0 -1" ux="1" uy="0" uz="0" vx="0" vy="1" vz="0"
+      bracket_rpy="${-half_pi} 0 ${half_pi}" m_b="0.012" m_a="0.003" m_tip="0.015"/>
+
+  <!-- ── Ring: one actuated joint driving two chained four-bars (plane y-z) ──
+       Palm-side loop (ring_pip_loop): crank pip_linkage_b O_b1 → D1, rocker
+       pip_linkage_a O_a1 → P1, coupler dip_linkage_b P1 → D1. Distal loop
+       (ring_tip_loop), on pip_linkage_b: dip_linkage_b turns about D1, rocker
+       dip_linkage_a O_a2 → C2, coupler = the tip, C2 → E (E on dip_linkage_b).
+       All points below are in pip_linkage_b's (s, t) with O_b1 at the origin. -->
+  <xacro:property name="r_lp" value="0.045"/>
+  <xacro:property name="r_oa1_s" value="0.002"/>
+  <xacro:property name="r_oa1_t" value="-0.002"/>
+  <xacro:property name="r_p1_s" value="0.044"/>
+  <xacro:property name="r_p1_t" value="-0.014"/>
+  <xacro:property name="r_oa2_s" value="0.045"/>
+  <xacro:property name="r_oa2_t" value="-0.004"/>
+  <xacro:property name="r_e_s" value="0.068"/>
+  <xacro:property name="r_c2_s" value="0.068"/>
+  <xacro:property name="r_c2_t" value="-0.008"/>
+
+  <xacro:segment name="l_ring_pip_linkage_b" m="0.04" l="${r_lp}" ux="0" uy="1" uz="0" vx="0" vy="0" vz="1"/>
+  <xacro:segment name="l_ring_pip_linkage_a" m="0.004" l="${r_p1_s - r_oa1_s}" w="0.006"
+      ux="0" uy="1" uz="0" vx="0" vy="0" vz="1"/>
+  <xacro:segment name="l_ring_dip_linkage_b" m="0.01" l="${r_e_s - r_p1_s}" ux="0" uy="1" uz="0" vx="0" vy="0" vz="1"/>
+  <xacro:segment name="l_ring_dip_linkage_a" m="0.003" l="${r_c2_s - r_oa2_s}" w="0.006"
+      ux="0" uy="1" uz="0" vx="0" vy="0" vz="1"/>
+  <xacro:segment name="l_ring_tip_link" m="0.015" l="${tip_s}" ux="0" uy="1" uz="0" vx="0" vy="0" vz="1"/>
+
+  <xacro:revolute name="ring_mcp_fe_joint" parent="l_palm_link" child="l_ring_pip_linkage_b"
+      x="-0.026" y="0.122" z="0.0" axis="-1 0 0" lower="${-half_pi}" upper="0.0"/>
+  <xacro:passive name="ring_mcp_a_joint_passive" parent="l_palm_link" child="l_ring_pip_linkage_a"
+      x="-0.026" y="${0.122 + r_oa1_s}" z="${r_oa1_t}" axis="-1 0 0"/>
+  <!-- P1 − O_a1 -->
+  <xacro:passive name="ring_dip_b_joint_passive" parent="l_ring_pip_linkage_a" child="l_ring_dip_linkage_b"
+      x="0" y="${r_p1_s - r_oa1_s}" z="${r_p1_t - r_oa1_t}" axis="-1 0 0"/>
+  <!-- O_a2 − O_b1 -->
+  <xacro:passive name="ring_dip_a_joint_passive" parent="l_ring_pip_linkage_b" child="l_ring_dip_linkage_a"
+      x="0" y="${r_oa2_s}" z="${r_oa2_t}" axis="-1 0 0"/>
+  <!-- C2 − O_a2 -->
+  <xacro:passive name="ring_pip_a_joint_passive" parent="l_ring_dip_linkage_a" child="l_ring_tip_link"
+      x="0" y="${r_c2_s - r_oa2_s}" z="${r_c2_t - r_oa2_t}" axis="-1 0 0"/>
+  <!-- ring_pip_loop at D1 = (r_lp, 0): D1 − P1 on dip_linkage_b, D1 − O_b1 on pip_linkage_b. -->
+  <xacro:fixed_frame joint="ring_dip_b_joint_constraint_ab" parent="l_ring_dip_linkage_b"
+      child="l_ring_pip_b_constraint_ab" x="0" y="${r_lp - r_p1_s}" z="${-r_p1_t}"/>
+  <xacro:fixed_frame joint="ring_dip_b_joint_constraint_ba" parent="l_ring_pip_linkage_b"
+      child="l_ring_pip_b_constraint_ba" x="0" y="${r_lp}" z="0"/>
+  <!-- ring_tip_loop at E = (r_e_s, 0): E − C2 on the tip, E − P1 on dip_linkage_b. -->
+  <xacro:fixed_frame joint="ring_pip_b_joint_constraint_ab" parent="l_ring_tip_link"
+      child="l_ring_tip_constraint_ab" x="0" y="${r_e_s - r_c2_s}" z="${-r_c2_t}"/>
+  <xacro:fixed_frame joint="ring_pip_b_joint_constraint_ba" parent="l_ring_dip_linkage_b"
+      child="l_ring_tip_constraint_ba" x="0" y="${r_e_s - r_p1_s}" z="${-r_p1_t}"/>
+  <xacro:fixed_frame joint="ring_tip_bracket_joint_fixed" parent="l_ring_tip_link"
+      child="l_ring_tip_bracket" x="0" y="${tip_s}" z="${tip_t}" rpy="0 0 ${half_pi}"/>
+
+</robot>

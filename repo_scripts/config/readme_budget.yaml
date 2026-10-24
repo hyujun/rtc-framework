@@ -33,7 +33,9 @@ README.md: 12443 strict  # raised from 12431: udp_hand_driver row names both tra
 docs/reference/README.md: 6815  # raised from 6563: why skills are D12-budgeted (verify skill removal); before: 6289 -> 6563 sim-rationale.md, 5924 -> 6289 build-rationale.md
 integrated_bringup/README.md: 37746 strict  # raised from 37635: per-robot initial_controller default and the startup log line (moved in when the verify skill was removed)
 repo_scripts/README.md: 26993 strict  # raised from 25904: CAN FD host scripts (setup_vcan · install_ixxat_socketcan · setup_can_interface, issue #896) added to the script tables and the RT PC steps
-robot_descriptions/README.md: 6464 strict
+robot_descriptions/README.md: 6671 strict  # raised from 6464: rows for the synthetic hand and the G1 test model (p1b_surrogate, g1); the vendored ur5e_p1b row they replace goes next
+robot_descriptions/robots/g1/README.md: 1800 strict
+robot_descriptions/robots/p1b_surrogate/README.md: 2600 strict
 robot_descriptions/robots/panda/README.md: 1129 strict  # raised from 1058: skeleton headings (개요 · 디렉토리 · 문제 해결) the old README lacked
 robot_descriptions/robots/ur5e_p1b/README.md: 3047 strict
 rtc_base/README.md: 24850 strict

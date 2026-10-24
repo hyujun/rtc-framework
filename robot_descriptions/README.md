@@ -22,6 +22,8 @@ C++ 헤더·CMake target·robot-specific 코드는 없고 `robots/<name>/` 하�
 | `iiwa7_leap/` | iiwa7 + LEAP Hand 결합 (left/right) — URDF xacro, MJCF scene |
 | `schunk_hand/` | Schunk SVH 5-finger hand (left/right) — URDF, mesh (MJCF 없음) |
 | `panda/` | kinematics-only 테스트 fixture — [README](robots/panda/README.md) |
+| `p1b_surrogate/` | 합성 폐쇄 체인 손 + UR5e — 테스트 fixture, [README](robots/p1b_surrogate/README.md) |
+| `g1/` | G1 상체 + 합성 손 — 테스트 fixture, [README](robots/g1/README.md) |
 | `ur5e_p1b/` | kinematics-only 폐쇄 체인 테스트 fixture — [README](robots/ur5e_p1b/README.md) |
 
 로봇마다 필요한 자산만 갖는다 (hand 계열은 primitive geometry 라 mesh 가 없고, fixture 는 URDF 만 갖는다). 파일 목록은 직접 조회한다.
