@@ -302,12 +302,18 @@ inline constexpr std::size_t kNumReadPhases = 3;
 struct HandReadOutcome {
   using Clock = std::chrono::steady_clock;
 
-  /// RunCycle only: the command write validated (its echo arrived). Defined
-  /// only when the controller handed RunCycle a command; false otherwise.
+  /// RunCycle only: the command write validated — its echo arrived, or, on a
+  /// link whose firmware does not echo commands (CAN FD `cmd_ack` none,
+  /// #945), every frame of it was sent. Defined only when the controller
+  /// handed RunCycle a command; false otherwise.
   bool write_ok{false};
-  /// RunCycle only: when the write stage ended (echo received, deadline or
-  /// send failure) — the controller's write_us is write_end − cycle start.
-  /// Epoch when no command was handed in.
+  /// RunCycle only: write_ok was proven by a frame received from the hand
+  /// (the echo), not by the send alone — what the controller may count as
+  /// "the hand answered" (D68). Equal to write_ok on every echoing link.
+  bool write_rx{false};
+  /// RunCycle only: when the write stage ended (echo received, send done,
+  /// deadline or send failure) — the controller's write_us is write_end −
+  /// cycle start. Epoch when no command was handed in.
   Clock::time_point write_end{};
   bool motor_ok{false};       ///< motor-space read validated (bulk pos/vel/cur, individual pos)
   bool joint_ok{false};       ///< joint-space read validated (bulk pos/vel/cur, individual pos)
@@ -388,7 +394,8 @@ class HandComm {
   virtual int DrainStale() noexcept = 0;
 
   /// Send the position command (rad) with per-motor feedforward torque (Nm) and
-  /// wait for the hand's echo. Returns true when the echo validated. Links
+  /// wait for the hand's echo. Returns true when the echo validated (on a link
+  /// whose firmware does not echo commands: when the send completed). Links
   /// without a feedforward channel ignore `ff_nm` (UDP proto1).
   [[nodiscard]] virtual bool WriteCommandWithEcho(const HandMotorArray& pos,
                                                   const HandMotorArray& ff_nm) noexcept = 0;
@@ -408,13 +415,14 @@ class HandComm {
   /// One bulk cycle's transactions (D60): the command write (when `cmd_pos`
   /// and `cmd_ff` are non-null — both or neither) and the read cycle of
   /// `plan`. Resets `out`, then reports the write in `out.write_ok` /
-  /// `out.write_end` and the reads as ReadCycle does. The controller owns the
+  /// `out.write_rx` / `out.write_end` and the reads as ReadCycle does. The controller owns the
   /// decision to write (startup gate + pending command) and clears its
   /// pending flag itself, success or failure.
   ///
   /// Default: strictly sequential — WriteCommandWithEcho, then ReadCycle (the
-  /// order the UDP protocol requires and the pre-D60 controller issued). A
-  /// link whose wire allows it overrides this to overlap the two stages.
+  /// order the UDP protocol requires and the pre-D60 controller issued), with
+  /// write_rx = write_ok (an echoing link). A link whose wire allows it
+  /// overrides this to overlap the two stages.
   virtual void RunCycle(const HandReadPlan& plan, const HandMotorArray* cmd_pos,
                         const HandMotorArray* cmd_ff, HandReadBuffers& bufs,
                         HandReadOutcome& out) noexcept {
@@ -426,6 +434,7 @@ class HandComm {
     }
     ReadCycle(plan, bufs, out);  // resets `out` — the write result is filled in after
     out.write_ok = write_ok;
+    out.write_rx = write_ok;
     out.write_end = write_end;
   }
 

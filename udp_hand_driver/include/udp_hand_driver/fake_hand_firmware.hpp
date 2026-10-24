@@ -22,17 +22,17 @@
 // proto2 (CAN FD, epic #895 · H1-F04-2b): the same joint model answers the
 // CAN FD wire through BuildCanFdResponse(), the MCU's mirror image for one
 // hand (Config::hand_side → node id, D51). One received frame yields 0..3
-// frames: a CMD Frame 0 / 1 is applied and its 64 bytes echoed verbatim
-// (D41); a REQ (DLC 0 by D47 — any length is answered, a payload counted) is
-// answered by the RESP burst idx 0, 1, 2 built from the joint model and the
-// 1b tactile channels, with the Proto §4.3 sign flips pre-applied so the host
-// decodes the same positive forces the 1b path yields; everything else (Frame
-// 2 / 3, another node's target, error frames, bad lengths) is dropped and
-// counted (D45). Broadcast (0xFF) is answered like the node's own id. The
-// feedforward frame is kept for inspection only — the LPF model has no
-// torque input, and the kt conversion lives in the driver (D50). All bytes
-// come from hand_canfd_packets.hpp; the vcan socket shell is F04-2c, so this
-// header still has no <linux/can.h>.
+// frames: a CMD Frame 0 / 1 is applied and — under Config::cmd_ack echo, the
+// current firmware — its 64 bytes echoed verbatim (D41); under none (the PDO-
+// like firmware, #945) it is applied and nothing is sent back; a REQ (DLC 0 by D47 — any length is
+// answered, a payload counted) is answered by the RESP burst idx 0, 1, 2 built from the joint model
+// and the 1b tactile channels, with the Proto §4.3 sign flips pre-applied so the host decodes the
+// same positive forces the 1b path yields; everything else (Frame 2 / 3, another node's target,
+// error frames, bad lengths) is dropped and counted (D45). Broadcast (0xFF) is answered like the
+// node's own id. The feedforward frame is kept for inspection only — the LPF model has no torque
+// input, and the kt conversion lives in the driver (D50). All bytes come from
+// hand_canfd_packets.hpp; the vcan socket shell is F04-2c, so this header still has no
+// <linux/can.h>.
 //
 // All response builders write into a caller-provided buffer (no allocation).
 // The class is single-threaded: the UDP server loop in fake_hand_firmware_main
@@ -78,6 +78,7 @@ class FakeHandFirmware {
     double sensor_noise_stddev = 5.0;                     ///< per-response additive N(0, stddev)
     uint32_t seed = 42;                                   ///< std::mt19937 seed (base + noise)
     canfd::HandSide hand_side = canfd::HandSide::kRight;  ///< proto2 node (D51: right 1 · left 2)
+    canfd::CmdAck cmd_ack = canfd::CmdAck::kEcho;  ///< proto2: echo CMD frames or not (#945 D65)
   };
 
   /// One frame as the proto2 mirror emits it: the bare 29-bit identifier (the
@@ -431,8 +432,10 @@ class FakeHandFirmware {
   }
 
   // CMD Frame `idx`: Frame 0 latches the target and steps the model, Frame 1
-  // is kept; both are echoed verbatim. Higher indices are counted and ignored
-  // (D45). A payload that is not 64 bytes is a bad frame, not a command.
+  // is kept; both are echoed verbatim under cmd_ack echo, neither under none.
+  // Higher indices are counted and ignored (D45). A payload that is not 64
+  // bytes is a bad frame, not a command. The command is applied even when
+  // `cap` leaves no room for the echo.
   std::size_t HandleCanFdCmd(uint8_t idx, const uint8_t* data, std::size_t len, CanFdFrame* out,
                              std::size_t cap) {
     if (idx > static_cast<uint8_t>(canfd::CmdFrame::kFeedforward)) {
@@ -444,8 +447,6 @@ class FakeHandFirmware {
       ++canfd_counters_.bad_length;
       return 0;
     }
-    if (cap < 1)
-      return 0;
     if (idx == static_cast<uint8_t>(canfd::CmdFrame::kPosition)) {
       for (std::size_t i = 0; i < kNumHandMotors; ++i)
         target_[i] = in.values[i];
@@ -455,6 +456,8 @@ class FakeHandFirmware {
         last_feedforward_[i] = in.values[i];
       ++feedforward_count_;
     }
+    if (cfg_.cmd_ack == canfd::CmdAck::kNone || cap < 1)
+      return 0;
     out[0].can_id = canfd::EchoId(node_, idx);
     out[0].len = canfd::kFrameLen;
     std::memcpy(out[0].data.data(), data, canfd::kFrameLen);

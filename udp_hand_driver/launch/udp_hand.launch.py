@@ -14,7 +14,7 @@
 #                 (프로세스 spawn 은 launch 전용 — 노드는 peer 프로세스를 못 띄운다).
 #                 protocol_version "2" (CAN FD, epic #895) 에서는 loopback 이 UDP 가
 #                 아니라 vcan0 다: 노드가 can_interface 를 vcan0 로 강제하고, 이 launch
-#                 는 fake 를 같은 vcan0 · 같은 hand_side 로 띄운다. vcan0 이 없거나
+#                 는 fake 를 같은 vcan0 · 같은 hand_side · 같은 cmd_ack 로 띄운다. vcan0 이 없거나
 #                 FD(MTU 72) 가 아니면 여기서 거부한다 (repo_scripts/scripts/setup_vcan.sh).
 #
 # `sil_mode:=firmware` 처럼 CLI 로 준 값이 yaml 의 sil_mode 를 이긴다.
@@ -60,6 +60,8 @@ VALID_SIL_MODES = ("off", "loopmodel", "firmware")
 _FW_PORT_DEFAULT = 55151
 _FW_PROTO_DEFAULT = "1a"
 _FW_HAND_SIDE_DEFAULT = "right"
+# 노드 C++ declare_once("cmd_ack", "echo") 기본값의 거울 — 기본값을 바꿀 때 둘 다 바꾼다.
+_FW_CMD_ACK_DEFAULT = "echo"
 # protocol_version "2" 의 firmware SIL 이 쓰는 vcan 장치 — 노드 쪽 상수
 # udp_hand_driver::kFirmwareSilCanInterface (udp_hand_node.hpp) 와 같은 값.
 _FW_CAN_INTERFACE = "vcan0"
@@ -92,6 +94,7 @@ _OVERRIDE_ARGS = [
     ("protocol_version", str),
     ("can_interface", str),
     ("hand_side", str),
+    ("cmd_ack", str),
     ("use_cpu_affinity", _as_bool),
 ]
 
@@ -176,7 +179,7 @@ def _launch_setup(context):
 
     # ── Device-side firmware simulator (sil_mode=firmware 일 때만) ──────────
     # 1a / 1b: target_port 를 bind 하고 선택된 protocol_version 을 echo → 노드와 wire
-    # 일치. "2": vcan0 에 노드와 같은 hand_side 로 붙는다 (port 는 쓰이지 않는다).
+    # 일치. "2": vcan0 에 노드와 같은 hand_side · cmd_ack 로 붙는다 (port 는 쓰이지 않는다).
     if eff_sil == "firmware":
         fw_proto = str(
             overrides.get(
@@ -188,10 +191,12 @@ def _launch_setup(context):
             fw_side = str(
                 overrides.get("hand_side", yaml_params.get("hand_side", _FW_HAND_SIDE_DEFAULT))
             )
+            fw_ack = str(overrides.get("cmd_ack", yaml_params.get("cmd_ack", _FW_CMD_ACK_DEFAULT)))
             fw_params = {
                 "protocol_version": "2",
                 "can_interface": _FW_CAN_INTERFACE,
                 "hand_side": fw_side,
+                "cmd_ack": fw_ack,
             }
         else:
             fw_port = int(
@@ -316,6 +321,15 @@ def generate_launch_description():
                 "yaml hand_side override (빈 값=yaml, 노드 기본 right): right | left. CAN FD "
                 "노드 id 를 정하고, 명시하면 stats JSON · timing CSV 이름에 _<side> 가 붙는다. "
                 "firmware peer 에도 전파."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "cmd_ack",
+            default_value="",
+            description=(
+                "yaml cmd_ack override (빈 값=yaml, 노드 기본 echo): echo | none. protocol_version "
+                "2 펌웨어가 CMD frame 을 echo 하는지 — 펌웨어와 일치해야 한다. firmware peer 에도 "
+                "전파."
             ),
         ),
         DeclareLaunchArgument(

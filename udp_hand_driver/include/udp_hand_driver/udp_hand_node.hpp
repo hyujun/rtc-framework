@@ -340,6 +340,14 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // check like every other controller access there.
   const udp_hand_driver::CanFdHandComm* canfd_comm_{nullptr};
 
+  // #945 D63: whether SaveCommStats already warned that `cmd_ack` disagrees
+  // with the firmware (silent firmware under echo / echoes under none) — each
+  // once per run, like the counters it reads. Written and read only under
+  // aux_lane_mutex_ (in the const SaveCommStats, hence mutable); cleared by
+  // on_activate with has_run_.
+  mutable bool warned_cmd_ack_silent_{false};
+  mutable bool warned_cmd_ack_echoes_{false};
+
   // D39: JointCommand messages whose feedforward size matched neither 0 nor
   // values.size() (feedforward zeroed, position applied), and messages whose
   // feedforward carried a NaN / ±inf (that entry zeroed — a non-finite current

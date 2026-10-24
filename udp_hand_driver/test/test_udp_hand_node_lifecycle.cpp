@@ -685,6 +685,29 @@ TEST_F(UdpHandNodeLifecycleTest, Proto2LoopmodelAcceptsAMissingCanInterface) {
   exec_.remove_node(node->get_node_base_interface());
 }
 
+// cmd_ack (#945 D61): "echo" | "none" exactly; anything else is a
+// configuration error on protocol 2, and "none" configures like "echo".
+TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsAnUnknownCmdAck) {
+  for (const char* bad : {"pdo", "Echo", ""}) {
+    auto node = std::make_shared<UdpHandNode>(Proto2Options({
+        rclcpp::Parameter("sil_mode", "loopmodel"),
+        rclcpp::Parameter("cmd_ack", bad),
+    }));
+    exec_.add_node(node->get_node_base_interface());
+    EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+        << "cmd_ack '" << bad << "'";
+    exec_.remove_node(node->get_node_base_interface());
+  }
+  auto node = std::make_shared<UdpHandNode>(Proto2Options({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("cmd_ack", "none"),
+  }));
+  exec_.add_node(node->get_node_base_interface());
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
 // An interface name the kernel could never hold is refused in every sil_mode.
 TEST_F(UdpHandNodeLifecycleTest, Proto2RejectsAnOverlongCanInterfaceName) {
   auto node = std::make_shared<UdpHandNode>(Proto2Options({
@@ -818,6 +841,7 @@ TEST_F(UdpHandNodeLifecycleTest, Proto2StatsJsonKeysMatchTheProto2FixtureExactly
   // The tags say what ran; the proto1 superset still holds (nothing dropped).
   EXPECT_NE(json.find("\"protocol_version\": \"2\""), std::string::npos);
   EXPECT_NE(json.find("\"transport\": \"canfd\""), std::string::npos);
+  EXPECT_NE(json.find("\"cmd_ack\": \"echo\""), std::string::npos);  // the declare default
   for (const auto& k : ReadFixtureLines(fixtures / "hand_stats_keys.txt")) {
     if (k.rfind("timing_stats.read_", 0) == 0) {
       continue;  // individual-mode timing keys — bulk writes its own set

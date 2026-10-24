@@ -36,8 +36,10 @@
 // ── Payloads (every data frame DLC 64, little-endian, IEEE 754 float32) ─────
 //   CMD Frame 0 (target position, rad) and Frame 1 (feedforward current, A)
 //   share one layout:    0..39 float[10] M0..M9       40..63 reserved (0x00)
-//   The MCU applies a CMD, then echoes its 64 bytes back verbatim (same idx,
-//   target host, source node) — the host's write validation (D41). Frame 2
+//   The MCU applies a CMD, then — on firmware that acknowledges commands
+//   (`cmd_ack` echo, #945 D61) — echoes its 64 bytes back verbatim (same idx,
+//   target host, source node), the host's write validation (D41); firmware
+//   with `cmd_ack` none applies it and sends nothing back. Frame 2
 //   (target current → current mode) and Frame 3 (hand side → flash) are not
 //   built here (D27: Frame 0 + 1 only); only their ids can be formed.
 //   REQ carries no data (DLC 0, D47) and is answered by the RESP burst idx 0, 1, 2:
@@ -107,6 +109,32 @@ enum class HandSide : uint8_t { kRight, kLeft };
     return true;
   }
   return false;
+}
+
+/// Whether the MCU answers a CMD frame with its echo (#945 D61): kEcho — the
+/// SDO-like firmware echoes every CMD frame and the host waits for both echoes
+/// (D41); kNone — the PDO-like firmware applies it silently and a write is
+/// confirmed by its send. The `cmd_ack` parameter selects it; it must match
+/// the firmware (a mismatch only shows in counters, D63).
+enum class CmdAck : uint8_t { kEcho, kNone };
+
+/// Parse the `cmd_ack` parameter's value ("echo" / "none", exact). False and
+/// `out` untouched for anything else.
+[[nodiscard]] constexpr bool ParseCmdAck(std::string_view text, CmdAck& out) noexcept {
+  if (text == "echo") {
+    out = CmdAck::kEcho;
+    return true;
+  }
+  if (text == "none") {
+    out = CmdAck::kNone;
+    return true;
+  }
+  return false;
+}
+
+/// The parameter spelling of `ack` — what ParseCmdAck() accepts back.
+[[nodiscard]] constexpr const char* CmdAckName(CmdAck ack) noexcept {
+  return ack == CmdAck::kNone ? "none" : "echo";
 }
 
 static_assert(NodeIdOf(HandSide::kRight) == kNodeRightHand, "D51: right hand is node 1");

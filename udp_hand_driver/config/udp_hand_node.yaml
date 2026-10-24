@@ -52,7 +52,8 @@
     local_interface: ""               # egress NIC 이름 ("" = 라우팅 테이블에 위임)
     recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms), sub-ms 지원: 0.4 -> 400us
                                       # CAN FD(protocol_version "2") 에서는 stage 별 deadline T
-                                      # (echo: CMD + T, RESP set: echo 끝 + T — 체인, D42 · D59):
+                                      # (echo: CMD + T, RESP set: echo 끝 + T — 체인, D42 · D59;
+                                      # cmd_ack none 은 echo 단계 없이 RESP set CMD + 2T):
                                       # 최악 2 × 값 < 1000/loop_rate_hz × comm_decimation 이어야
                                       # configure 를 통과한다.
                                       # 실기 proto2 는 launch 로 0.9 를 준다 (H1-F06 실측, D6):
@@ -68,8 +69,15 @@
     # feedforward_kt: 모터별 토크 상수 [Nm/A], 펌웨어 모터 순서 10개 (D50).
     #                 JointCommand.feedforward [Nm] / kt → wire [A]. 1.0 = pass-through.
     #                 각 값은 > 0 이고 역수가 유한해야 한다.
+    # cmd_ack       : 펌웨어가 CMD Frame 0/1 을 echo 하는지 — 펌웨어와 일치해야 한다.
+    #                 "echo" = 현 펌웨어 (SDO 형: echo 2 개를 기다려 write 검증),
+    #                 "none" = echo 없는 펌웨어 (PDO 형: 송신 성공이 write 성공).
+    #                 불일치는 실패가 아니라 카운터로 드러난다 — echo 인데 펌웨어가
+    #                 조용하면 per_request.write_echo.timeout 이 전부, none 인데 echo 가
+    #                 오면 canfd.echo_unexpected 가 오르고, 노드가 WARN 을 한 번 낸다.
     can_interface: "can0"
     # hand_side: "right"
+    cmd_ack: "echo"
     feedforward_kt: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
     # -- 통신 모드 --

@@ -21,7 +21,7 @@
 #   - LPF/drift/F-T 후처리 파라미터는 1b 경로에서 무시되므로 생략 (C++ 기본 off).
 #
 # generic udp_hand_node.yaml 에 있지만 여기서 생략한 키:
-#   - can_interface · feedforward_kt: protocol_version "2" (CAN FD) 전용 — 1b 는 무시.
+#   - can_interface · feedforward_kt · cmd_ack: protocol_version "2" (CAN FD) 전용 — 1b 는 무시.
 #   - hand_side: 명시하면 hand_stats.json · hand_timing_log.csv 이름에 `_<side>` 가
 #     붙는다. 생략 = 기본 right, 접미사 없음 (기존 로그 이름 유지).
 #   - aux_cpu_slot · use_cpu_affinity: 기본값 사용, use_cpu_affinity 는 launch 인자가 준다.
