@@ -2,6 +2,7 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="custom_hand">
   <!--
     Custom Hand URDF — simplified geometric model (no mesh)
+    SYNTHETIC — a made-up geometric hand, not a model of the real assm v1 hand.
     10 revolute joints matching udp_hand_node motor names:
       thumb:  thumb_cmc_aa, thumb_cmc_fe, thumb_mcp_fe
       index:  index_mcp_aa, index_mcp_fe, index_dip_fe

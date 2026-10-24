@@ -15,8 +15,8 @@ C++ 헤더·CMake target·robot-specific 코드는 없고 `robots/<name>/` 하�
 | 디렉토리 | 내용 |
 |---|---|
 | `ur5e/` | UR5e 6-DoF arm — URDF, MJCF, mesh |
-| `assm_v1/` | 10-DoF custom hand — URDF xacro, MJCF |
-| `ur5e_assm_v1/` | UR5e + assm_v1 결합 — URDF xacro, MJCF scene |
+| `assm_v1/` | **합성** 10-DoF 손 (실제 손 아님) — URDF xacro, MJCF |
+| `ur5e_assm_v1/` | UR5e + 합성 assm_v1 — URDF xacro, MJCF scene |
 | `iiwa7/` | KUKA iiwa7 7-DoF arm — URDF, MJCF, mesh |
 | `leap_hand/` | LEAP Hand 16-DoF (left/right) — URDF, MJCF, mesh |
 | `iiwa7_leap/` | iiwa7 + LEAP Hand 결합 (left/right) — URDF xacro, MJCF scene |

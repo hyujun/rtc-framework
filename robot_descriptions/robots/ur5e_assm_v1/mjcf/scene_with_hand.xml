@@ -1,3 +1,8 @@
+<!--
+  Scene for the UR5e + the synthetic assm_v1 hand (ur5e_with_hand.xml).
+  The same floor, light and sky as robots/ur5e/mjcf/scene.xml (the MuJoCo
+  Menagerie UR5e scene); only the included model differs.
+-->
 <mujoco model="ur5e scene">
   <include file="ur5e_with_hand.xml"/>
 

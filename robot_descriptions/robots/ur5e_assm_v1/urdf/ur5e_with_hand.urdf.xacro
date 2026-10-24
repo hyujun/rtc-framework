@@ -1,6 +1,7 @@
 <?xml version="1.0"?>
 <!--
-  Combined URDF: UR5e + Custom Hand
+  Combined URDF: UR5e + Custom Hand (assm_v1)
+  SYNTHETIC — a made-up geometric hand, not a model of the real assm v1 hand.
   Hand is attached to tool0 via a fixed joint.
   Process with: xacro ur5e_with_hand.urdf.xacro
 -->
