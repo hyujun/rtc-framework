@@ -27,6 +27,7 @@
 #include <gtest/gtest.h>
 #include <rcutils/logging.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -77,7 +78,25 @@ class PdFeedforwardTestController : public PipelineTestController {
 
 // Position-only backend: keeps DeviceBackend::AcceptsCommandType's default,
 // which is what every hardware backend in this tree relies on.
-class PositionOnlyBackend : public PipelineStubBackend {};
+//
+// Its destructor records whether the state lane was closed first (#941). The
+// refusal below destroys the backends it just created, and in production it
+// runs on the single-threaded Phase 1 executor, so there is no callback to
+// wait for and no latch case — what is pinned is that the refusal releases
+// through the same drain as on_cleanup. TU-local on purpose: the shared stub
+// in rt_cm_pipeline_fixtures.hpp stays free of this suite's bookkeeping.
+std::atomic<int> g_position_only_destroyed{0};
+std::atomic<int> g_position_only_destroyed_open{0};  ///< destroyed with the lane still open
+
+class PositionOnlyBackend : public PipelineStubBackend {
+ public:
+  ~PositionOnlyBackend() override {
+    g_position_only_destroyed.fetch_add(1);
+    if (!StateLaneClosed()) {
+      g_position_only_destroyed_open.fetch_add(1);
+    }
+  }
+};
 
 // Declares that it honours the mode on the wire, like mujoco_native.
 class AnyCommandTypeBackend : public PipelineStubBackend {
@@ -107,6 +126,8 @@ class CommandTypeGateTest : public ::testing::Test {
     }
     PipelineTestController::ResetCaptured();
     PipelineStubBackend::ResetCaptured();
+    g_position_only_destroyed.store(0);
+    g_position_only_destroyed_open.store(0);
     LogSink::Install();
   }
 
@@ -163,6 +184,11 @@ TEST_F(CommandTypeGateTest, ARefusedPairingReleasesWhatConfigureBuilt) {
   EXPECT_EQ(nullptr, ControllerLifecycleTestAccess::GetBackend(*node, 0));
   EXPECT_FALSE(ControllerLifecycleTestAccess::HasEstopPublisher(*node));
   EXPECT_EQ(-1, ControllerLifecycleTestAccess::GetNrtPublishEventfd(*node));
+  // Released the same way on_cleanup releases: lane closed before the object
+  // went (#941).
+  ASSERT_GE(g_position_only_destroyed.load(), 1);
+  EXPECT_EQ(0, g_position_only_destroyed_open.load())
+      << "the refusal destroyed a backend with its state lane still open (#941)";
 }
 
 TEST_F(CommandTypeGateTest, AcceptsATorqueControllerWhenTheBackendDeclaresTheMode) {

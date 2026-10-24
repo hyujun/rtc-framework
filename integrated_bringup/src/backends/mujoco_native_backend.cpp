@@ -47,9 +47,11 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   sub_opts.callback_group = state_cb_group;
 
   if (!config_.state_topic.empty()) {
+    // GuardStateLane: CM drains this lane before destroying the backend (#941).
     state_sub_ = node->create_subscription<sensor_msgs::msg::JointState>(
         config_.state_topic, qos,
-        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); },
+        GuardStateLane(
+            [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); }),
         sub_opts);
   }
   if (!config_.command_topic.empty()) {
@@ -108,9 +110,9 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
       const int idx = static_cast<int>(i);
       wrench_subs_.push_back(node->create_subscription<geometry_msgs::msg::WrenchStamped>(
           wrench_topics[i], rclcpp::SensorDataQoS().keep_last(1),
-          [this, idx](const geometry_msgs::msg::WrenchStamped::ConstSharedPtr msg) {
+          GuardStateLane([this, idx](const geometry_msgs::msg::WrenchStamped::ConstSharedPtr msg) {
             OnWrench(idx, *msg);
-          },
+          }),
           wrench_opts));
     }
   }

@@ -45,10 +45,10 @@ RtControllerNode::~RtControllerNode() {
   // on_cleanup (issue #224), and here it also removes a reliance on member
   // destruction order: `backends_` is a member, so it would otherwise be
   // destroyed *after* this body, leaving the state-ready callback alive
-  // across the close() below.
-  for (auto& backend : backends_) {
-    backend.reset();
-  }
+  // across the close() below. In production every executor is joined before
+  // this runs (RtControllerMain), so the drain inside is a no-op here — the
+  // order is kept so the three teardown paths stay one path.
+  DestroyDeviceBackends();
 
   CloseTeardownEventfds();
 }
@@ -58,8 +58,9 @@ void RtControllerNode::CloseTeardownEventfds() noexcept {
   // exchange, not load-then-store: the producers (rt_control loop,
   // state-ready callback on cb_group_rt_callback_) guard their
   // eventfd_write on these members, so clearing and reading the old value
-  // must be one step. Producers that already loaded a live fd are still a
-  // residual — see the ordering note in ReleaseConfiguredResources().
+  // must be one step. Both producers are quiesced by the time this runs — the
+  // loop joined, the state lanes drained (DestroyDeviceBackends, #941) — so
+  // this is the second line of defence, kept because it costs nothing.
   const int nrt_fd = nrt_publish_eventfd_.exchange(-1, std::memory_order_acq_rel);
   if (nrt_fd >= 0) {
     close(nrt_fd);
@@ -67,6 +68,42 @@ void RtControllerNode::CloseTeardownEventfds() noexcept {
   const int sim_fd = sim_wake_eventfd_.exchange(-1, std::memory_order_acq_rel);
   if (sim_fd >= 0) {
     close(sim_fd);
+  }
+}
+
+void RtControllerNode::DestroyDeviceBackends() {
+  // Pass 1: close and drain every lane. One pass per concern, not per slot —
+  // a slot reset while a neighbour is still draining would be back to the
+  // reset-under-callback this exists to remove, since the executor serialises
+  // all backends' callbacks on one thread and a running neighbour is exactly
+  // when the slot's own callback is not running.
+  for (std::size_t slot = 0; slot < backends_.size(); ++slot) {
+    auto& backend = backends_[slot];
+    if (backend && !backend->CloseStateLane()) {
+      // The lane is closed, so nothing new enters; what is inside has not
+      // returned in kStateLaneCloseTimeout and is not going to be hurried.
+      // Freeing the object now would hand that callback dangling members on
+      // the RT thread; leaking it keeps the subscription and the gate alive
+      // for as long as the callback can still touch them. A leak is the
+      // bounded failure. Its price: the leaked subscription stays on the rt
+      // callback group for the life of the process, so its topic keeps being
+      // taken on that thread and dropped at the gate; and the leaked lane
+      // still points at this node (state-ready hook, timing sink), which is
+      // safe only because RtControllerMain joins every executor before the
+      // node is destroyed — an embedder that destroys the node under a
+      // spinning executor has moved the hazard, not removed it.
+      RCLCPP_ERROR(
+          get_logger(),
+          "device slot %zu: a state-lane callback was still running %lld ms after its lane "
+          "was closed — leaking the backend rather than destroying it under the callback "
+          "(#941)",
+          slot, static_cast<long long>(rtc::DeviceBackend::kStateLaneCloseTimeout.count()));
+      static_cast<void>(backend.release());
+    }
+  }
+  // Pass 2: nothing is executing in any backend any more.
+  for (auto& backend : backends_) {
+    backend.reset();
   }
 }
 
@@ -110,10 +147,10 @@ void RtControllerNode::ReleaseConfiguredResources() {
   param_callback_handle_.reset();
 
   // 4. publishers (CM-owned: digital twin + fixed safety) + device backends
-  //    (own their own sub/pub handles)
-  for (auto& backend : backends_) {
-    backend.reset();
-  }
+  //    (own their own sub/pub handles). The backends go through the drain
+  //    (#941): their state-lane callbacks may be executing on the rt_callback
+  //    executor right now, and a reset under one is a use-after-free.
+  DestroyDeviceBackends();
   for (std::size_t slot = 0; slot < digital_twin_by_slot_.size(); ++slot) {
     digital_twin_by_slot_[slot] = DigitalTwinEntry();
     dt_dirty_[slot].store(false, std::memory_order_relaxed);
@@ -133,12 +170,12 @@ void RtControllerNode::ReleaseConfiguredResources() {
   // to a closed descriptor, corrupting whatever stream had since taken the
   // number.
   //
-  // Residual, knowingly accepted: destroying a backend does not join a
-  // callback that is already executing — the executor holds the subscription
-  // alive for the duration of the call — so a write can still land just after
-  // the reset above returns. The window is now two instructions wide instead
-  // of a whole teardown sequence. Closing it completely would need the
-  // rt_callback executor quiesced, which CM cannot request from here.
+  // The residual #224 left — a callback already executing when the backend
+  // was reset — is closed by DestroyDeviceBackends() above (#941): each lane
+  // is refused and drained before its backend goes, so by this line no
+  // state-lane callback is running. The order is still load-bearing, though:
+  // a lane that timed out and was leaked keeps its callback alive, and that
+  // callback must find the fds closed, not reused.
   CloseTeardownEventfds();
 
   // 3. subscribers — nothing CM-owned to release: controller-YAML target subs

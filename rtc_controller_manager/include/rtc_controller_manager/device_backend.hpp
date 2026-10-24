@@ -5,14 +5,20 @@
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_base/types/types.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
+#include "rtc_controller_manager/state_lane_gate.hpp"
 
 #include <rclcpp/callback_group.hpp>
+#include <rclcpp/function_traits.hpp>
+#include <rclcpp/logging.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace rtc {
@@ -68,6 +74,9 @@ struct DeviceBackendConfig {
 //   - Configure()   — called in node on_configure; create subs/pubs.
 //   - Activate()    — called in node on_activate; enable lifecycle publishers.
 //   - Deactivate()  — called in node on_deactivate; disable publishers.
+//   - CloseStateLane() — called by CM right before the backend is destroyed
+//                   (on_cleanup / on_error / refused configure / destructor);
+//                   refuses and drains the state-lane callbacks (issue #941).
 //
 // RT contract:
 //   - ReadState() and WriteCommand() run on the RT path. Implementations must
@@ -285,7 +294,75 @@ class DeviceBackend {
   /// underlying SPSC ring hold across backends, not just within one.
   void SetStateLaneTimingSink(RtCallbackTimingBuffer* sink) noexcept { state_lane_timing_ = sink; }
 
+  // ── State-lane teardown (issue #941) ───────────────────────────────────────
+
+  /// Bound on CloseStateLane()'s wait. The measured joint-lane body is ~7 us
+  /// mean, < 200 us p99 and < 4 ms max (issue #941), so a callback still inside
+  /// at 50 ms is stuck, not slow — waiting longer would only delay the leak.
+  static constexpr std::chrono::milliseconds kStateLaneCloseTimeout{50};
+
+  /// Refuses every further state-lane callback and waits for the ones already
+  /// executing to return. Returns false when one is still running at
+  /// kStateLaneCloseTimeout — the caller must then NOT destroy this backend
+  /// (CM leaks it instead: a leaked backend is a bounded loss, a backend freed
+  /// under its own callback is a use-after-free on the RT thread).
+  ///
+  /// The lane stays closed for the life of the object: there is no reopen,
+  /// because CM builds a fresh backend on every configure. Not RT — the
+  /// lifecycle teardown paths (on_cleanup / on_error / destructor / a refused
+  /// configure) call it right before the reset.
+  [[nodiscard]] bool CloseStateLane() noexcept {
+    return state_lane_gate_->Close(kStateLaneCloseTimeout);
+  }
+
+  /// True once CloseStateLane() has been called. Readable from any thread.
+  [[nodiscard]] bool StateLaneClosed() const noexcept { return state_lane_gate_->IsClosed(); }
+
  protected:
+  /// Wraps a state-lane subscription callback so the backend's teardown can
+  /// drain it (issue #941). Every subscription a backend creates on the
+  /// `state_cb_group` — joint, motor, sensor, wrench — goes through this:
+  ///
+  ///     state_sub_ = node->create_subscription<Msg>(
+  ///         topic, qos, GuardStateLane([this](Msg::SharedPtr msg) { OnState(std::move(msg)); }),
+  ///         sub_opts);
+  ///
+  /// The returned callable has the same single message parameter as `callback`
+  /// (deduced through rclcpp::function_traits, so rclcpp's dispatch overload
+  /// resolution is unchanged — this is why a generic lambda is not accepted).
+  /// Per message it costs one StateLaneEntry: two atomic RMWs and a load, no
+  /// allocation, no lock. The gate is captured by shared_ptr so that a
+  /// callback the executor has already picked up can still refuse or exit
+  /// cleanly after the backend itself is gone — that is the whole point, and
+  /// why the gate is not reached through `this`.
+  ///
+  /// A lane created with a bare lambda compiles and runs; what it loses is the
+  /// drain, and integrated_bringup's test_state_lane_close exists to catch it.
+  template <typename F>
+  [[nodiscard]] auto GuardStateLane(F&& callback) const {
+    if (state_lane_gate_->IsClosed()) {
+      // A closed gate never reopens: a lane wrapped now would take every
+      // message and drop it, looking healthy from the outside. CM never
+      // reconfigures a backend instance (a fresh one per configure), so this
+      // is an embedder's mistake, named here rather than at the watchdog.
+      RCLCPP_WARN(rclcpp::get_logger("rtc_controller_manager"),
+                  "GuardStateLane on a closed state lane: this subscription will drop every "
+                  "message (CloseStateLane is final — configure a new backend instead)");
+    }
+    using Callback = std::decay_t<F>;
+    using Traits = rclcpp::function_traits::function_traits<Callback>;
+    static_assert(Traits::arity == 1,
+                  "GuardStateLane: a state-lane callback takes exactly one argument, the message");
+    using Message = typename Traits::template argument_type<0>;
+    return [gate = state_lane_gate_, callback = Callback(std::forward<F>(callback))](Message msg) {
+      const StateLaneEntry entry(*gate);
+      if (!entry) {
+        return;  // closed: the backend is being torn down
+      }
+      callback(std::forward<Message>(msg));
+    };
+  }
+
   /// Backends call this at the end of each sub callback (joint / motor /
   /// sensor lane). Safe to call when no callback is registered.
   ///
@@ -386,6 +463,11 @@ class DeviceBackend {
   /// serialises onto the rt_callback thread — single accessor, no atomics.
   RtCallbackTimingBuffer* state_lane_timing_{nullptr};
   std::uint64_t state_lane_notify_ns_{0};
+
+  /// Shared with every GuardStateLane() wrapper this backend created (issue
+  /// #941). Allocated once here, never copied on the RT path: the wrapper
+  /// holds its own reference and dereferences it.
+  std::shared_ptr<StateLaneGate> state_lane_gate_{std::make_shared<StateLaneGate>()};
 };
 
 }  // namespace rtc

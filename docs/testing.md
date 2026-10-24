@@ -32,7 +32,7 @@ colcon 의 pytest 는 시스템 python 이라 `.venv` 에만 있는 의존성 (m
 | `rtc_controllers/` RT path | `test_*_core` + `test_dls_convergence` (할당 게이트 무장) + grasp 관련 gtest | `ps -eLo cls,rtprio` 로 RT scheduling 확인 |
 | `rtc_controllers/` gains · config | 위 + controller YAML 로드 smoke | `ros2 topic echo /rtc_cm/active_controller_name` |
 | `rtc_controllers/` catching core | `--ctest-args -R test_catching` | ASan/UBSan 은 별도 build base (rationale 참조) |
-| `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | `cm_timing_log.csv` p99 |
+| `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) · teardown (`test_eventfd_teardown_order` · `test_state_lane_teardown`) | `cm_timing_log.csv` p99 |
 | `rtc_tsid/` · `rtc_mpc/` | QP · task · constraint gtest · MPC gtest (Riccati · SolutionManager) | TSID performance · `mpc_timing_log.csv` p99 회귀 |
 | `rtc_mujoco_sim/` | 패키지 전체 + `test_motor_servo_gains` · `test_torque_mode_ctrl_range` | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` smoke |
 | `rtc_urdf_bridge/` | 패키지 전체 + `test_frame_jacobian_fd_oracle` · `test_inertial_validation` · `test_real_model_inertial_gate` | 실제 robot 모델 로드 smoke |
@@ -46,6 +46,7 @@ colcon 의 pytest 는 시스템 python 이라 `.venv` 에만 있는 의존성 (m
 | `integrated_bringup/` FK · arm tip · hand sensor_layout | `test_hand_fk_wiring` · `test_arm_tip_resolution` · `test_hand_sensor_layout_gate` | `iiwa7_leap` sim 에서 손 목표 smoke |
 | `integrated_bringup/` compliance · catching | `test_compliance_admittance_coupling` · `test_demo_catching_controller` (configure — 사슬 탐색 · 관절군 · D9′) · `test_demo_catching_alloc` · `test_catching_search_segment_g1` (G1 탐색 · 구간 · 전신 항 — repo 밖 `hand_description` 이 없으면 skip, skip 은 미검증) | sim 외부 렌치 → `compliance_diag.csv`; 17 관절 시간 기록은 `RTC_WHOLEBODY_TIMING=1` 로 단독 실행 |
 | `integrated_bringup/` inference · observer | `test_demo_inference_controller` · `test_momentum_observer_wiring` · `test_payload_estimator` | `test_demo_inference_real_model` (로컬) |
+| `integrated_bringup/` device backend (state lane) | `test_mujoco_native_backend` · `test_udp_hand_native_backend` · `test_state_lane_close` (`CloseStateLane()` 뒤 6 lane 모두 불변 — lane 을 추가하면 여기에 케이스를 더한다) | sim 에서 `ros2 lifecycle set /integrated_rt_controller cleanup` 뒤 CM 로그에 `#941` ERROR 없음 |
 | `udp_hand_driver/` | hand_packets · codec · FT · failure detector gtest + UDP loopback · CAN FD comm (`test_canfd_hand_comm`, vcan0 없으면 skip — skip 은 미검증) · lifecycle (proto2 configure 거부 · cleanup / on_error 뒤 재configure · stats 키 fixture · teardown 뒤 `failure_detected` 유지 · E-Stop 토픽 → zero-write 1회: `sil_mode=off` + 127.0.0.1 무응답 소켓) | `ros2 topic hz /p1a/joint_states`; proto2 SIL: `ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=firmware protocol_version:=2` → `/hand/link_status` true · `/hand/sensor_states` 의 `contact_flag`; 실기 proto2 는 `recv_timeout_ms:=0.9 hand_side:=<side>` (H1-F06 실측값, 출하 0.4 는 매 사이클 타임아웃). **vcan0 에서 proto2 SIL 과 `colcon test` 를 동시에 돌리지 않는다** (`test_canfd_hand_comm` 이 같은 노드 id 공간을 쓴다). fixture 가 케이스마다 REQ probe 로 듣고, SIL (`fake_hand_firmware` 의 응답이나 송신 중인 노드) 이 보이면 vcan 케이스를 전부 FAIL 시킨다 ("proto2 hand traffic on vcan0") |
 | `ur5e_bt_coordinator/` | BT gtest | 실제 grasp smoke |
 | Launch · YAML config | `--ctest-args -R 'test_launch_'` + 변경한 YAML 의 parse · 범위 | 짧은 sim/실기 smoke |

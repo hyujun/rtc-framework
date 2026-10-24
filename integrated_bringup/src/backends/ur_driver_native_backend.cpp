@@ -37,9 +37,11 @@ void UrDriverNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   sub_opts.callback_group = state_cb_group;
 
   if (!config_.state_topic.empty()) {
+    // GuardStateLane: CM drains this lane before destroying the backend (#941).
     state_sub_ = node->create_subscription<sensor_msgs::msg::JointState>(
         config_.state_topic, state_qos,
-        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); },
+        GuardStateLane(
+            [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); }),
         sub_opts);
   }
   if (!config_.command_topic.empty()) {
