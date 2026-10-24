@@ -49,7 +49,7 @@ rtc_math/include/rtc_math/se3/README.md: 9116 strict
 rtc_mpc/README.md: 7651 strict
 rtc_msgs/README.md: 6141 strict
 rtc_mujoco_sim/README.md: 42500 strict
-rtc_tools/README.md: 39291 strict  # raised from 37498: analyze_hand_canfd_gate — 표 1행 + H3 1절 (G-3 판정 규칙, H1-F06)
+rtc_tools/README.md: 39354 strict  # raised from 39291: hand_canfd_gate cmd_ack 한 줄 (none 판정 규칙)
 rtc_tsid/README.md: 11550 strict
 rtc_urdf_bridge/README.md: 17451 strict
 shape_estimation/README.md: 6548 strict

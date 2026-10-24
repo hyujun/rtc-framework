@@ -11,10 +11,14 @@ real hand must satisfy, all at once:
   (c) cycle p99 — t_total_us p99 < 0.8 x period (1600 us at 500 Hz), nothing
                   excluded
   (d) timeouts  — RESP-set timeouts / comm cycles < 0.1 % AND echo timeouts /
-                  write attempts < 0.1 %, each on its own denominator
+                  write attempts < 0.1 %, each on its own denominator; with
+                  ``cmd_ack: none`` there is no echo stage, so the echo row is
+                  NOT_EVALUATED and only the RESP-set rate is judged
   (e) E-Stop    — on the bus: Frame 1 zeros -> Frame 0 zeros (the D26 order,
                   which is the REVERSE of a normal write) -> both echoes, within
-                  2 ms of the first zero frame, and no command after it
+                  2 ms of the first zero frame, and no command after it; with
+                  ``cmd_ack: none`` the hand sends no echoes, so the pair's own
+                  order and spacing (F1 -> F0 < 2 ms) replace the echo timing
 
 Why each definition is what it is (the reviewed corrections of H1-F06):
 
@@ -31,11 +35,17 @@ Why each definition is what it is (the reviewed corrections of H1-F06):
     (D26 · D33) — and the loop exits after it, so nothing may follow.
   * Since #919 (D49 (b) · D59) a write tick is pipelined: CMD 0 · CMD 1 · REQ
     go out back to back and the echoes and the RESP burst share one receive
-    window, so echoes and RESP frames may interleave on the bus. The REQ ->
-    RESP round trip of such a tick includes the hand's echo handling and is
-    not comparable with a read-only tick's: the read-only ticks' round trips
+    window, so echoes and RESP frames may interleave on the bus (echo mode;
+    with ``cmd_ack: none`` only the RESP burst remains). The REQ -> RESP round
+    trip of such a tick includes the hand's echo handling and is not
+    comparable with a read-only tick's: the read-only ticks' round trips
     are reported on their own (the H1-F06 baseline) and the write tick's
     hand-side figure is CMD frame 0 -> RESP frame 2, both beside the mixed row.
+  * ``cmd_ack`` (stats JSON ``canfd.cmd_ack``, absent in older archives and
+    then read as ``echo``) says whether the firmware echoes the two CMD frames.
+    With ``none`` the bus carries no ECHO frames: the echo stage does not exist
+    (nothing to time out), and a stray echo is counted by the driver as
+    ``echo_unexpected`` rather than judged here.
   * (d) is a proportion estimated from one run. Near the threshold the run
     cannot decide it: a count within ``undecided_sigmas`` binomial standard
     deviations of the threshold count (±20 counts at 150 000 cycles) is
@@ -450,6 +460,11 @@ def failure_reasons(path: Path | None) -> list[str] | None:
 # ── judgement ────────────────────────────────────────────────────────────────
 
 
+def _cmd_ack(comm: dict) -> str:
+    """``canfd.cmd_ack`` of the stats JSON; archives that predate it are echo mode."""
+    return comm.get("canfd", {}).get("cmd_ack", "echo")
+
+
 def _rate_check(key: str, count: int, denominator: int, th: Thresholds, what: str) -> Check:
     if denominator <= 0:
         return Check(
@@ -488,6 +503,7 @@ def judge(
     failure_reasons: list[str] | None = None,
 ) -> list[Check]:
     checks: list[Check] = []
+    none_mode = _cmd_ack(comm) == "none"
 
     # (a) duration
     span = timing.span_s
@@ -624,26 +640,36 @@ def judge(
             "comm cycles",
         )
     )
-    checks.append(
-        _rate_check(
-            "d.echo_timeout",
-            stage_timeouts(comm, "write_echo"),
-            stage_attempts(comm, "write_echo"),
-            th,
-            "writes",
+    if none_mode:
+        checks.append(
+            Check(
+                "d.echo_timeout",
+                NOT_EVALUATED,
+                "NOT_EVALUATED(cmd_ack none: no echo stage)",
+                f"< {th.timeout_rate_max:.1%}",
+            )
         )
-    )
+    else:
+        checks.append(
+            _rate_check(
+                "d.echo_timeout",
+                stage_timeouts(comm, "write_echo"),
+                stage_attempts(comm, "write_echo"),
+                th,
+                "writes",
+            )
+        )
 
     # (e) E-Stop on the bus
     e = bus.estop
+    estop_threshold = (
+        f"1 pair, F1 -> F0 zeros, < {th.estop_window_ms:g} ms, no CMD after"
+        if none_mode
+        else f"1 pair, both echoes, < {th.estop_window_ms:g} ms"
+    )
     if e is None:
         checks.append(
-            Check(
-                "e.estop",
-                FAIL,
-                "no Frame 1 zeros -> Frame 0 zeros pair",
-                f"1 pair, both echoes, < {th.estop_window_ms:g} ms",
-            )
+            Check("e.estop", FAIL, "no Frame 1 zeros -> Frame 0 zeros pair", estop_threshold)
         )
     else:
         notes = []
@@ -656,19 +682,20 @@ def judge(
             notes.append(
                 f"{e.cmd_frames_after} command frame(s) after the pair — loop did not stop"
             )
-        if e.t_echo0 is None or e.t_echo1 is None:
-            ok = False
-            notes.append("echo missing")
-        elif not e.delta_ms < th.estop_window_ms:
-            ok = False
+        if none_mode:
+            delta_ms = (e.t_cmd0 - e.t_cmd1) * 1e3
+            value = f"Δt(CMD F1 zeros -> CMD F0 zeros) = {delta_ms:.3f} ms, candump-to-candump"
+            if not (e.t_cmd0 > e.t_cmd1 and delta_ms < th.estop_window_ms):
+                ok = False
+        else:
+            value = f"Δt(first zero CMD -> last echo) = {e.delta_ms:.3f} ms, candump-to-candump"
+            if e.t_echo0 is None or e.t_echo1 is None:
+                ok = False
+                notes.append("echo missing")
+            elif not e.delta_ms < th.estop_window_ms:
+                ok = False
         checks.append(
-            Check(
-                "e.estop",
-                PASS if ok else FAIL,
-                f"Δt(first zero CMD -> last echo) = {e.delta_ms:.3f} ms, candump-to-candump",
-                f"1 pair, both echoes, < {th.estop_window_ms:g} ms",
-                "; ".join(notes),
-            )
+            Check("e.estop", PASS if ok else FAIL, value, estop_threshold, "; ".join(notes))
         )
     return checks
 
@@ -710,11 +737,18 @@ def render_markdown(
     rt = int(comm.get("recv_timeout", 0))
     re_ = int(comm.get("recv_error", 0))
     bound = (rt + re_) / total_cycles if total_cycles else math.nan
+    none_mode = _cmd_ack(comm) == "none"
+    d42 = "D42: 2 x T < period (nominal; no echo stage)" if none_mode else "D42: 2 x T < period"
+    echo_handling = (
+        "shares its window with the CMD sends since #919"
+        if none_mode
+        else "includes the echo handling since #919"
+    )
     out += [
         "| figure | value | expected |",
         "|---|---|---|",
         f"| protocol / transport | {comm.get('protocol_version')} / {comm.get('transport')} | 2 / canfd |",
-        f"| recv_timeout_ms (as run) | {comm.get('recv_timeout_ms')} | D42: 2 x T < period |",
+        f"| recv_timeout_ms (as run) | {comm.get('recv_timeout_ms')} | {d42} |",
         f"| total_cycles / timing rows | {total_cycles} / {timing.rows} | about equal |",
         f"| median tick period | {timing.period_us_median:.0f} us | {th.period_us:.0f} us |",
         f"| t_total_us p50 / p99 / max | {timing.p50_total_us:.0f} / {timing.p99_total_us:.0f} / "
@@ -738,25 +772,39 @@ def render_markdown(
         f"| bus frames (parsed / unparsed lines / error frames) | {bus.frames} / "
         f"{bus.unparsed_lines} / {bus.error_frames} | errors 0 |",
         f"| bus CMD / ECHO / REQ / RESP / other-node | {bus.cmd} / {bus.echo} / {bus.req} / "
-        f"{bus.resp} / {bus.other} | — |",
+        f"{bus.resp} / {bus.other} | {'ECHO 0 (cmd_ack none)' if none_mode else '—'} |",
         f"| REQ with DLC > 0 | {bus.nonzero_dlc_req} | 0 (D47: DLC 0) |",
         f"| RESP sets complete / incomplete | {bus.complete_sets} / {bus.incomplete_sets} | — |",
         f"| REQ -> RESP frame 2 round trip, all ticks (bus, lower bound; a write tick's "
-        f"includes the echo handling since #919) | {_dist(bus.rtt_req_f2_ms)} | — |",
+        f"{echo_handling}) | {_dist(bus.rtt_req_f2_ms)} | — |",
         f"| REQ -> RESP frame 2 round trip, read-only ticks (bus, lower bound; the H1-F06 "
         f"baseline) | {_dist(bus.rtt_req_f2_readonly_ms)} | — |",
-        f"| CMD frame 0 -> last echo round trip (bus, lower bound) | {_dist(bus.rtt_cmd_echo_ms)} "
-        f"| — |",
         f"| CMD frame 0 -> RESP frame 2, write ticks (bus, lower bound) | "
         f"{_dist(bus.rtt_cmd_f2_ms)} | — |",
         f"| write attempts (JSON once-per-attempt counters) / bus write pairs | "
         f"{stage_attempts(comm, 'write_echo')} / {bus.write_pairs} | about equal |",
     ]
+    if not none_mode:
+        out.insert(
+            out.index(next(r for r in out if r.startswith("| CMD frame 0 -> RESP frame 2"))),
+            f"| CMD frame 0 -> last echo round trip (bus, lower bound) | "
+            f"{_dist(bus.rtt_cmd_echo_ms)} | — |",
+        )
+    if "echo_unexpected" in canfd:
+        out.insert(
+            out.index(next(r for r in out if r.startswith("| canfd.echo_payload_mismatch"))) + 1,
+            f"| echo_unexpected | {canfd.get('echo_unexpected')} | 0 |",
+        )
     if bus.estop is not None:
         e = bus.estop
+        echoes = (
+            ""
+            if none_mode
+            else f", echo F1 {_rel(e.t_echo1, e.t_cmd1)}, echo F0 {_rel(e.t_echo0, e.t_cmd1)}"
+        )
         out.append(
-            f"| E-Stop frames (t rel. to CMD F1) | CMD F0 +{(e.t_cmd0 - e.t_cmd1) * 1e3:.3f} ms, "
-            f"echo F1 {_rel(e.t_echo1, e.t_cmd1)}, echo F0 {_rel(e.t_echo0, e.t_cmd1)} | — |"
+            f"| E-Stop frames (t rel. to CMD F1) | CMD F0 +{(e.t_cmd0 - e.t_cmd1) * 1e3:.3f} ms"
+            f"{echoes} | — |"
         )
     return "\n".join(out) + "\n"
 

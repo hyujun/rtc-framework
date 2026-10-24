@@ -263,8 +263,9 @@ ros2 run rtc_tools analyze_hand_canfd_gate <session> g3.log --node-log node.log 
     --link-status link.log --hand-side right [--explicit-side] [--json-out g3.json]
 ```
 
-- (a) 기간 ≥ 300 s · run_id 하나 · tick 누락 0 — (b) link down 0: JSON `link_ok`, 노드 로그 "Hand link DOWN" 0, 완전한 RESP 세트 없는 연속 REQ < 50, `link_status` false 0 — (c) `t_total_us` p99 < 0.8 × 주기, 제외 없음 — (d) RESP 세트 타임아웃 / 사이클 과 echo 타임아웃 / write 시도 가 **각각** < 0.1 % (집계 `recv_timeout` 은 사이클당 2 회까지 올라 상한으로만 보고) — (e) candump 의 Frame 1 zeros → Frame 0 zeros (정상 write 와 반대 순서) → echo 2 개 가 2 ms 안, 그 뒤 명령 없음.
-- (d) 는 문턱 건수 ±1.65 σ (150k 사이클에서 ±20 건) 안이면 UNDECIDED (한 번 재측정); echo 분모는 시도당 1회 오르는 카운터 합이라 과소일 수만 있고 bus 의 write 쌍 수를 옆에 보고한다. 입력이 없어 못 본 항목은 `NOT_EVALUATED(<사유>)` 이고 통과가 아니다. candump 왕복은 TX-done 스탬프라 노드 체감의 하한이다. 종료 코드 0 / 1 (FAIL) / 2 (UNDECIDED) / 3 (입력 불가).
+- (a) 기간 ≥ 300 s · run_id 1 · tick 누락 0 — (b) link down 0: JSON `link_ok`, 노드 로그 "Hand link DOWN" 0, 완전한 RESP 세트 없는 연속 REQ < 50, `link_status` false 0 — (c) `t_total_us` p99 < 0.8 × 주기, 제외 없음 — (d) RESP 세트 타임아웃 / 사이클 과 echo 타임아웃 / write 시도 가 **각각** < 0.1 % (집계 `recv_timeout` 은 상한만) — (e) candump 의 Frame 1 zeros → Frame 0 zeros (정상 write 와 반대 순서) → echo 2 개 가 2 ms 안, 그 뒤 명령 없음.
+- `cmd_ack` (JSON `canfd.cmd_ack`, 없으면 `echo`): `none` 이면 echo 타임아웃은 `NOT_EVALUATED`, (e) 는 두 zeros 의 순서 · 간격 < 2 ms · 이후 명령 0 으로 판정한다.
+- (d) 는 문턱 건수 ±1.65 σ 안이면 UNDECIDED (한 번 재측정); echo 분모는 시도당 1회 오르는 카운터 합이라 과소일 수만 있고 bus 의 write 쌍 수를 병기한다. 못 본 항목은 `NOT_EVALUATED(<사유>)` 이고 통과 아님. candump 왕복은 TX-done 스탬프라 하한이다. 종료 코드 0 / 1 (FAIL) / 2 (UNDECIDED) / 3 (입력 불가).
 
 ### catching_trials
 

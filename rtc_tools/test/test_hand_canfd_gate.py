@@ -73,6 +73,7 @@ def comm_stats(
     link_ok: bool = True,
     failure_detected: bool = False,
     decimation: int = 1,
+    cmd_ack: str | None = None,
 ) -> dict:
     def stage(ok: int, timeout: int) -> dict:
         return {
@@ -116,6 +117,14 @@ def comm_stats(
             },
         },
     }
+
+
+def none_comm_stats(**kw) -> dict:
+    """A cmd_ack none run: the key, no unexpected echoes, no echo timeouts."""
+    comm = comm_stats(write_ok=kw.pop("write_ok", 1000), **kw)
+    comm["canfd"]["cmd_ack"] = "none"
+    comm["canfd"]["echo_unexpected"] = 0
+    return comm
 
 
 def line(t: float, can_id: int, data_hex: str = "") -> str:
@@ -458,6 +467,93 @@ def test_write_pairs_are_counted_for_the_denominator_cross_check(tmp_path):
     assert bus_from(lines, tmp_path).write_pairs == 7
 
 
+# ── cmd_ack none (firmware without CMD echoes) ───────────────────────────────
+
+
+def none_bus_lines(n_req: int = 20) -> list[str]:
+    lines: list[str] = []
+    for i in range(n_req):
+        lines += req_resp(1.0 + i * 0.002)
+    return lines + estop(1.0 + n_req * 0.002, with_echoes=False)
+
+
+def test_none_mode_echo_timeout_not_evaluated_set_timeout_still_judged(tmp_path):
+    c = run_judge(tmp_path, comm=none_comm_stats(), lines=none_bus_lines())
+    assert c["d.echo_timeout"].verdict == NOT_EVALUATED
+    assert c["d.echo_timeout"].value == "NOT_EVALUATED(cmd_ack none: no echo stage)"
+    # Even with writes counted, the echo row is never judged in none mode.
+    assert run_judge(tmp_path, comm=none_comm_stats(write_ok=0))["d.echo_timeout"].verdict == (
+        NOT_EVALUATED
+    )
+    for timeouts, verdict in ((0, PASS), (150, UNDECIDED), (171, FAIL)):
+        comm = none_comm_stats(joint_timeouts=timeouts)
+        c = run_judge(tmp_path, comm=comm, lines=none_bus_lines())
+        assert c["d.resp_set_timeout"].verdict == verdict
+
+
+def test_none_mode_estop_pair_passes_without_echoes(tmp_path):
+    c = run_judge(tmp_path, comm=none_comm_stats(), lines=none_bus_lines())["e.estop"]
+    assert c.verdict == PASS, c
+    assert "CMD F1 zeros -> CMD F0 zeros" in c.value
+    assert "0.100 ms" in c.value
+    assert "both echoes" not in c.threshold
+    # The same bus judged as an echo run is missing its echoes.
+    assert run_judge(tmp_path, lines=none_bus_lines())["e.estop"].verdict == FAIL
+
+
+def test_none_mode_estop_fails_on_wrong_order_or_late_f0_or_cmd_after(tmp_path):
+    comm = none_comm_stats()
+    head = none_bus_lines()[:-2]  # drop the E-Stop pair
+    # Wrong order: F0 zeros then F1 zeros is a normal write, not an E-Stop.
+    wrong = head + [line(1.04, cmd_id(NODE, 0), ZERO44), line(1.0401, cmd_id(NODE, 1), ZERO44)]
+    assert run_judge(tmp_path, comm=comm, lines=wrong)["e.estop"].verdict == FAIL
+    # F0 zeros 2.1 ms after F1 zeros: outside the window; 1.9 ms is inside.
+    for gap, verdict in ((0.0019, PASS), (0.0021, FAIL)):
+        pair = [line(1.04, cmd_id(NODE, 1), ZERO44), line(1.04 + gap, cmd_id(NODE, 0), ZERO44)]
+        c = run_judge(tmp_path, comm=comm, lines=head + pair)["e.estop"]
+        assert c.verdict == verdict, c
+    # A command after the pair: the loop did not stop.
+    after = none_bus_lines() + [
+        line(2.0, cmd_id(NODE, 0), NONZERO44),
+        line(2.0001, cmd_id(NODE, 1), NONZERO44),
+    ]
+    c = run_judge(tmp_path, comm=comm, lines=after)["e.estop"]
+    assert c.verdict == FAIL
+    assert "loop did not stop" in c.note
+
+
+def _render(tmp_path, comm, lines):
+    timing = summarise_timing(timing_rows(150_001), TH.p99_limit_us, TH.period_us)
+    bus = bus_from(lines, tmp_path)
+    checks = judge(timing, comm, bus, TH, link_down_lines=0, link_status_false=0)
+    return render_markdown(checks, timing, comm, bus, TH)
+
+
+def test_none_mode_report_rows(tmp_path):
+    md = _render(tmp_path, none_comm_stats(), none_bus_lines())
+    assert "| echo_unexpected | 0 | 0 |" in md
+    assert "ECHO 0 (cmd_ack none)" in md
+    assert "CMD frame 0 -> last echo round trip" not in md
+    assert "D42: 2 x T < period (nominal; no echo stage)" in md
+    assert "includes the echo handling" not in md
+    assert "echo F1" not in md
+    assert "NOT_EVALUATED(cmd_ack none: no echo stage)" in md
+
+
+def test_missing_cmd_ack_key_reads_as_echo_and_prints_no_none(tmp_path):
+    comm = comm_stats(write_ok=1000)
+    assert "cmd_ack" not in comm["canfd"]
+    md = _render(tmp_path, comm, good_bus_lines())
+    assert "cmd_ack" not in md
+    assert "echo_unexpected" not in md
+    assert "CMD frame 0 -> last echo round trip" in md
+    assert "D42: 2 x T < period |" in md
+    assert "includes the echo handling" in md
+    c = run_judge(tmp_path, comm=comm)
+    assert c["d.echo_timeout"].verdict == PASS
+    assert c["e.estop"].verdict == PASS
+
+
 # ── pipelined write ticks (#919, D49 (b) · D59) ──────────────────────────────
 
 
@@ -532,6 +628,37 @@ def test_report_renders_the_cmd_f2_distribution(tmp_path):
     assert "CMD frame 0 -> RESP frame 2, write ticks" in md
     assert "n=1 p50=0.660" in md
     assert "read-only ticks" in md and "n=0" in md  # no read-only tick in this log
+
+
+GOLDEN_ECHO_RENDER = Path(__file__).parent / "data" / "hand_canfd_gate_echo_render.md"
+
+
+def _echo_mode_render(tmp_path) -> str:
+    """Echo-mode report on a fixed synthetic session: sequential + pipelined
+    writes, read-only ticks, an incomplete set and the E-Stop pair."""
+    lines: list[str] = []
+    t = 1.0
+    for i in range(5):
+        lines += normal_write(t)
+        lines += req_resp(t + 0.0005)
+        t += 0.002
+        lines += pipelined_write(t, resp_first=bool(i % 2))
+        t += 0.002
+        lines += req_resp(t)
+        t += 0.002
+    lines += pipelined_write(t, complete=False)
+    t += 0.002
+    lines += estop(t)
+    comm = comm_stats(total_cycles=150_000, joint_timeouts=3, write_ok=10, write_timeouts=0)
+    timing = summarise_timing(timing_rows(150_001), TH.p99_limit_us, TH.period_us)
+    bus = bus_from(lines, tmp_path)
+    checks = judge(timing, comm, bus, TH, link_down_lines=0, link_status_false=0)
+    return render_markdown(checks, timing, comm, bus, TH)
+
+
+def test_echo_mode_render_is_unchanged(tmp_path):
+    # Golden file: echo-mode output must stay byte-identical across cmd_ack changes.
+    assert _echo_mode_render(tmp_path) == GOLDEN_ECHO_RENDER.read_text()
 
 
 def test_period_mismatch_refuses_to_judge_p99(tmp_path):
