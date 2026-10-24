@@ -72,6 +72,8 @@ import re
 import sys
 from pathlib import Path
 
+from colcon_scope import in_colcon_scope, self_test_failures
+
 # `ENV ROS_DOMAIN_ID=44)` / `ENV ROS_DOMAIN_ID=52` -- the ament_add_test(ENV ...)
 # spelling. Trailing context is deliberately unanchored: the value is followed
 # by `)`, a newline, or another ENV assignment depending on the call site.
@@ -122,8 +124,6 @@ PY_ENV_MENTION_RE = re.compile(r"ROS_DOMAIN_ID")
 MIN_DOMAIN = 1
 MAX_DOMAIN = 101
 
-SKIP_DIRS = {"build", "install", "log", ".git", "__pycache__", ".venv"}
-
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -151,7 +151,7 @@ def collect(root: Path) -> tuple[dict[int, list[tuple[str, str, int]]], list[tup
     found: dict[int, list[tuple[str, str, int]]] = {}
     non_literal: list[tuple[str, str]] = []
     for path in sorted(root.rglob("CMakeLists.txt")):
-        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+        if not in_colcon_scope(path, root):
             continue
         pkg = owning_package(path, root)
         rel = path.relative_to(root).as_posix()
@@ -267,7 +267,7 @@ def scan_registrations(root: Path) -> tuple[list[tuple], set[str]]:
     with_participants: set[str] = set()
 
     for path in sorted(root.rglob("CMakeLists.txt")):
-        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+        if not in_colcon_scope(path, root):
             continue
         pkg = owning_package(path, root)
         rel = path.relative_to(root).as_posix()
@@ -312,7 +312,7 @@ def python_package_claims(root: Path) -> tuple[list[tuple[int, str, str]], list[
     claims: list[tuple[int, str, str]] = []
     problems: list[str] = []
     for manifest in sorted(root.rglob("package.xml")):
-        if any(part in SKIP_DIRS for part in manifest.relative_to(root).parts):
+        if not in_colcon_scope(manifest, root):
             continue
         pkg_dir = manifest.parent
         if "<build_type>ament_python</build_type>" not in _text(manifest):
@@ -483,7 +483,7 @@ def parallel_packages(root: Path) -> dict[str, int]:
     """package -> ctest job count, for the packages that run ctest in parallel."""
     found: dict[str, int] = {}
     for path in sorted(root.rglob("colcon.pkg")):
-        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+        if not in_colcon_scope(path, root):
             continue
         jobs = parallel_ctest_jobs(_text(path))
         if jobs != 1:
@@ -508,7 +508,7 @@ def parallel_pytest_packages(root: Path) -> dict[str, str]:
     """package -> xdist worker count, for the packages that ask pytest for workers."""
     found: dict[str, str] = {}
     for path in sorted(root.rglob("colcon.pkg")):
-        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+        if not in_colcon_scope(path, root):
             continue
         workers = parallel_pytest_workers(_text(path))
         if workers:
@@ -570,7 +570,7 @@ def scan_claims(
     claims: list[tuple[str, str, str, int]] = []
     held: dict[tuple[str, str], set[str]] = {}
     for path in sorted(root.rglob("CMakeLists.txt")):
-        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+        if not in_colcon_scope(path, root):
             continue
         pkg = owning_package(path, root)
         rel = path.relative_to(root).as_posix()
@@ -876,6 +876,24 @@ def self_test() -> int:
     # Workers are fine where no test opens a participant: no claim, no problem.
     if pytest_worker_check([], {"q": "4"}):
         failures.append("xdist workers in a participant-free package were reported")
+
+    # ── Scope: only what colcon builds is in the allocation ─────────────────
+    # An agent worktree under .claude/worktrees/ holds a copy of every package;
+    # counted, each claim had two owners (#945).
+    failures.extend(self_test_failures())
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for base in (root / "pkg_a", root / ".claude" / "worktrees" / "agent-x" / "pkg_a"):
+            base.mkdir(parents=True)
+            (base / "package.xml").write_text("<package><name>pkg_a</name></package>\n")
+            (base / "CMakeLists.txt").write_text("ament_add_gtest(t ENV ROS_DOMAIN_ID=44)\n")
+        found, non_literal = collect(root)
+        if [pkg for pkg, _, _ in found.get(44, [])] != ["pkg_a"]:
+            failures.append(f"a worktree copy was counted as a claimant: {found}")
+        if check(found, non_literal):
+            failures.append("a worktree copy of a package made a duplicate-claim problem")
 
     if failures:
         print("validate_test_domains --self-test FAILED", file=sys.stderr)

@@ -540,12 +540,15 @@ rm -rf "$dir"
 
 # The gate scripts judge the tree they live in, so each case copies them into
 # the fixture (the hook resolves them in PROJECT_DIR) and gives it a second
-# package. $1 and $2 are the two packages' ROS_DOMAIN_ID claims.
+# package. $1 and $2 are the two packages' ROS_DOMAIN_ID claims. colcon_scope.py
+# is the module two of them import (the scope colcon crawls) -- it travels with
+# them.
 make_testgate_fixture() {
   local dir
   dir=$(make_fixture)
   mkdir -p "$dir/repo_scripts/scripts" "$dir/rtc_other"
-  cp "$REPO_ROOT/repo_scripts/scripts/validate_test_domains.py" \
+  cp "$REPO_ROOT/repo_scripts/scripts/colcon_scope.py" \
+    "$REPO_ROOT/repo_scripts/scripts/validate_test_domains.py" \
     "$REPO_ROOT/repo_scripts/scripts/validate_test_fixtures.py" \
     "$REPO_ROOT/repo_scripts/scripts/validate_test_registration.py" "$dir/repo_scripts/scripts/"
   sed 's/rtc_demo/rtc_other/' "$dir/rtc_demo/package.xml" >"$dir/rtc_other/package.xml"
