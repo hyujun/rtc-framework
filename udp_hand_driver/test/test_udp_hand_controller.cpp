@@ -1348,6 +1348,11 @@ class TxnHandComm final : public ScriptedHandComm {
   HandMotorArray last_cmd_ff{};
   // write_end = call time + this offset (a stage that "took" write_stage_us).
   std::atomic<int> write_stage_us{0};
+  // write_rx = write_ok && this (false: a link that confirms a write by its
+  // send, CAN FD cmd_ack none — D68). Atomic: flipped while the loop runs.
+  std::atomic<bool> script_write_rx{true};
+  // Every read of every cycle fails while set (atomic, like script_write_rx).
+  std::atomic<bool> script_reads_fail{false};
 
   void RunCycle(const HandReadPlan& plan, const HandMotorArray* cmd_pos,
                 const HandMotorArray* cmd_ff, HandReadBuffers& bufs,
@@ -1364,11 +1369,13 @@ class TxnHandComm final : public ScriptedHandComm {
       last_cmd_pos = *cmd_pos;
       last_cmd_ff = *cmd_ff;
       out.write_ok = script_write_ok;
+      out.write_rx = script_write_ok && script_write_rx.load();
       out.write_end = t_call + std::chrono::microseconds(write_stage_us.load());
     }
-    out.motor_ok = plan.motor_space_read && script_motor_ok;
+    const bool reads_ok = !script_reads_fail.load();
+    out.motor_ok = plan.motor_space_read && script_motor_ok && reads_ok;
     out.StampPhase(ReadPhase::kMotor);
-    out.joint_ok = script_joint_ok;
+    out.joint_ok = script_joint_ok && reads_ok;
     out.StampPhase(ReadPhase::kJoint);
     out.sensor_recvd = plan.sensors ? script_sensor_recvd : -1;
     out.received_motor_mode = packets::JointMode::kMotor;
@@ -1460,6 +1467,55 @@ TEST(HandCommSeam, RunCycle_FailedWrite_LeavesOkMask_ClearsPending_NotResent) {
   EXPECT_TRUE(saw_failed_write);
 }
 
+// D68: a write the comm confirmed by its send alone (write_ok, !write_rx —
+// CAN FD cmd_ack none) still sets the write-echo ok bit, but is not a receive:
+// with every read failing, the write tick does not reset the receive-failure
+// streak. Control: the same write with write_rx (an echo) does reset it.
+namespace {
+// Reads fail from c0 on; one command lands >= 3 cycles later. Returns the
+// streak minus the cycles counted since c0 (>= -1 iff the streak never reset).
+int64_t StreakSinceReadsFailed(bool write_rx) {
+  auto rig = MakeTxnRig();
+  auto& comm = *rig.comm;
+  comm.script_write_rx = write_rx;
+  EXPECT_TRUE(rig.ctrl->Start());
+  EXPECT_TRUE(PollUntil([&] { return rig.ctrl->HasStateBeenRead(); }, 2s));
+  comm.script_reads_fail = true;
+  const auto c0 = static_cast<int64_t>(rig.ctrl->cycle_count());
+  EXPECT_TRUE(
+      PollUntil([&] { return static_cast<int64_t>(rig.ctrl->cycle_count()) >= c0 + 3; }, 2s));
+  rig.ctrl->SendCommandAndRequestStates(HandMotorArray{});
+  EXPECT_TRUE(PollUntil([&] { return comm.run_cycle_with_cmd >= 1; }, 2s));
+  const auto cw = static_cast<int64_t>(rig.ctrl->cycle_count());
+  EXPECT_TRUE(
+      PollUntil([&] { return static_cast<int64_t>(rig.ctrl->cycle_count()) >= cw + 3; }, 2s));
+  rig.ctrl->Stop();
+  const auto c1 = static_cast<int64_t>(rig.ctrl->cycle_count());
+  // The write tick still reports the write as ok in its outcome.
+  bool saw_ok_write = false;
+  const CycleOutcomeRing ring = rig.ctrl->GetCycleOutcomeRing();
+  const std::size_t n = std::min<std::size_t>(ring.count, CycleOutcomeRing::kCapacity);
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto& e = ring.entries[i];
+    if ((e.attempted_mask & RequestKindBit(RequestKind::kWriteEcho)) != 0)
+      saw_ok_write = (e.ok_mask & RequestKindBit(RequestKind::kWriteEcho)) != 0;
+  }
+  EXPECT_TRUE(saw_ok_write);
+  EXPECT_FALSE(rig.ctrl->GetLatestState().valid);
+  return static_cast<int64_t>(rig.ctrl->consecutive_recv_failures()) - (c1 - c0);
+}
+}  // namespace
+
+TEST(HandCommSeam, RunCycle_WriteRxFalse_DoesNotCountAsRecv) {
+  EXPECT_GE(StreakSinceReadsFailed(/*write_rx=*/false), -1)
+      << "the send-confirmed write reset the receive-failure streak";
+}
+
+TEST(HandCommSeam, RunCycle_WriteRxTrue_CountsAsRecv) {
+  EXPECT_LT(StreakSinceReadsFailed(/*write_rx=*/true), -1)
+      << "an echoed write is a receive and resets the streak";
+}
+
 // D60 / C1: write_us is the comm-stamped write stage (write_end − cycle
 // start), not the controller's own clock around the call. A comm that reports
 // a 3 ms stage puts >= 3000 us into the write phase while the read phases
@@ -1530,16 +1586,19 @@ TEST(HandCommSeam, DefaultRunCycle_WriteThenRead_SamePayload_WriteResultSurvives
   EXPECT_EQ(comm.last_echo_pos, pos);
   EXPECT_EQ(comm.last_echo_ff, ff);
   EXPECT_TRUE(out.write_ok);
+  EXPECT_TRUE(out.write_rx);  // the default is an echoing link: write_rx = write_ok (D68)
   EXPECT_GE(out.write_end, t_before);
   EXPECT_LE(out.write_end, out.PhaseEnd(ReadPhase::kMotor));  // write stage closed before the reads
   EXPECT_TRUE(out.motor_ok);
   EXPECT_TRUE(out.joint_ok);
 
   out.write_ok = true;  // stale content must not leak into a no-command cycle
+  out.write_rx = true;
   comm.RunCycle(plan, nullptr, nullptr, bufs, out);
   EXPECT_EQ(comm.call_order, "WRR");
   EXPECT_EQ(comm.write_echo_calls, 1);
   EXPECT_FALSE(out.write_ok);
+  EXPECT_FALSE(out.write_rx);
   EXPECT_EQ(out.write_end, HandReadOutcome::Clock::time_point{});
   EXPECT_TRUE(out.joint_ok);
 
@@ -1547,6 +1606,7 @@ TEST(HandCommSeam, DefaultRunCycle_WriteThenRead_SamePayload_WriteResultSurvives
   comm.RunCycle(plan, &pos, &ff, bufs, out);
   EXPECT_EQ(comm.call_order, "WRRWR");
   EXPECT_FALSE(out.write_ok);
+  EXPECT_FALSE(out.write_rx);
   EXPECT_NE(out.write_end, HandReadOutcome::Clock::time_point{});
   EXPECT_TRUE(out.joint_ok);  // the read still ran after the failed write
 }

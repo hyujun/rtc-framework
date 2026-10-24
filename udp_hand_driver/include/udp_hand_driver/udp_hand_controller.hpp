@@ -875,7 +875,8 @@ class UdpHandController {
     // (one transaction call with the reads, D60), individual mode writes
     // before its read cycle below.
     // Per-phase timing validity: a phase's latency is recorded only when its
-    // request was attempted AND echoed/decoded OK. Not-attempted phases (no
+    // request was attempted AND echoed (or, on a link without CMD echo, sent)
+    // / decoded OK. Not-attempted phases (no
     // pending write, 1b motor-space read, sensor on a non-sensor cycle) and
     // failed phases are excluded so recv-timeout ticks never inflate the timing
     // distribution. Failure counting itself lives in comm_stats (transport
@@ -924,7 +925,10 @@ class UdpHandController {
       if (write_attempted) {
         has_pending_write_ = false;  // one attempt per staged command, ok or not
         if (rc.write_ok) {
-          any_recv_ok = true;
+          // Only a write proven by the hand's echo is a receive: under CAN FD
+          // cmd_ack none a write is ok on send alone, and must not make the
+          // state valid or reset the receive-failure streak (D68).
+          any_recv_ok = any_recv_ok || rc.write_rx;
           ok_mask |= RequestKindBit(RequestKind::kWriteEcho);
           write_ok = true;
         }
