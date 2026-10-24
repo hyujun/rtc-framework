@@ -15,7 +15,9 @@ comm_stats.canfd.assembler.outside_set
 comm_stats.canfd.assembler.sets_abandoned
 comm_stats.canfd.assembler.sets_completed
 comm_stats.canfd.bus_off
+comm_stats.canfd.cmd_ack
 comm_stats.canfd.echo_payload_mismatch
+comm_stats.canfd.echo_unexpected
 comm_stats.canfd.error_frames
 comm_stats.canfd.tx_eagain
 comm_stats.canfd.tx_enetdown

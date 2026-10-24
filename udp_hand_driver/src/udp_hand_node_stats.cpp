@@ -38,6 +38,45 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
   // A torn-down detector leaves its verdict in failure_latched_ (#927 I-1).
   const bool fd_failed = failure_detector_ ? failure_detector_->failed() : failure_latched_;
 
+  // CAN FD-only counters, one snapshot for the WARN below and the JSON. A
+  // cmd_ack the firmware disagrees with (#945 D63) fails no stage outright, so
+  // say it once per kind per run — before the file is opened, so an I/O
+  // failure does not hide it; the mode is never switched here.
+  udp_hand_driver::CanFdCommStats cs{};
+  udp_hand_driver::canfd::CmdAck cmd_ack = udp_hand_driver::canfd::CmdAck::kEcho;
+  if (canfd_comm_ != nullptr) {
+    cs = canfd_comm_->canfd_stats();
+    cmd_ack = canfd_comm_->config().cmd_ack;
+    const auto& write_echo =
+        stats.per_kind[static_cast<std::size_t>(udp_hand_driver::RequestKind::kWriteEcho)];
+    const auto& joint_read =
+        stats.per_kind[static_cast<std::size_t>(udp_hand_driver::RequestKind::kJointRead)];
+    switch (udp_hand_driver::CmdAckMismatchDecision(cmd_ack, write_echo, joint_read.ok,
+                                                    cs.echo_unexpected)) {
+      case udp_hand_driver::CmdAckMismatch::kFirmwareSilent:
+        if (!warned_cmd_ack_silent_) {
+          warned_cmd_ack_silent_ = true;
+          RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                      "cmd_ack echo, but %llu writes timed out on the echo and none saw it while "
+                      "RESP sets complete: the firmware does not echo CMD frames — set cmd_ack "
+                      "none",
+                      static_cast<unsigned long long>(write_echo.timeout));
+        }
+        break;
+      case udp_hand_driver::CmdAckMismatch::kFirmwareEchoes:
+        if (!warned_cmd_ack_echoes_) {
+          warned_cmd_ack_echoes_ = true;
+          RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                      "cmd_ack none, but %llu CMD echoes arrived (canfd.echo_unexpected): the "
+                      "firmware echoes CMD frames — set cmd_ack echo",
+                      static_cast<unsigned long long>(cs.echo_unexpected));
+        }
+        break;
+      case udp_hand_driver::CmdAckMismatch::kNone:
+        break;
+    }
+  }
+
   // The controller's run length: frozen at the last completed cycle once the
   // loop has stopped, so an E-Stop's idle tail is not counted (#927 I-2).
   const double elapsed_sec = controller_->ElapsedSeconds();
@@ -120,11 +159,13 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
   ofs << "    },\n";
 
   // CAN FD-only counters (tx errno classes, error frames, echo payload
-  // mismatches, RESP-set assembler) — the link's own SeqLock snapshot. Absent
-  // on UDP so the proto1 key set is exactly what it was.
+  // mismatches and unexpected echoes, RESP-set assembler) — the link's own
+  // SeqLock snapshot, taken above — and the configured cmd_ack (#945). Absent
+  // on UDP so the
+  // proto1 key set is exactly what it was.
   if (canfd_comm_ != nullptr) {
-    const udp_hand_driver::CanFdCommStats cs = canfd_comm_->canfd_stats();
     ofs << "    \"canfd\": {\n"
+        << "      \"cmd_ack\": \"" << udp_hand_driver::canfd::CmdAckName(cmd_ack) << "\",\n"
         << "      \"tx_eagain\": " << cs.tx_eagain << ",\n"
         << "      \"tx_enobufs\": " << cs.tx_enobufs << ",\n"
         << "      \"tx_enetdown\": " << cs.tx_enetdown << ",\n"
@@ -132,6 +173,7 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
         << "      \"error_frames\": " << cs.error_frames << ",\n"
         << "      \"bus_off\": " << cs.bus_off << ",\n"
         << "      \"echo_payload_mismatch\": " << cs.echo_payload_mismatch << ",\n"
+        << "      \"echo_unexpected\": " << cs.echo_unexpected << ",\n"
         << "      \"assembler\": { \"sets_completed\": " << cs.assembler.sets_completed
         << ", \"sets_abandoned\": " << cs.assembler.sets_abandoned
         << ", \"duplicate\": " << cs.assembler.duplicate

@@ -171,10 +171,15 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   //                   stats / timing file names.
   //   feedforward_kt  per-motor torque constant Nm/A, firmware motor order
   //                   (D50); JointCommand.feedforward [Nm] / kt → wire [A].
+  //   cmd_ack         "echo" | "none" — whether the firmware echoes CMD
+  //                   frames (#945 D61); must match the firmware.
   //   recv_timeout_ms is shared with UDP: on CAN FD it is the per-stage
-  //                   deadline (echo stage, RESP-set stage — D42).
+  //                   deadline (echo stage, RESP-set stage — D42; under
+  //                   cmd_ack none the set stage after a write gets 2T).
   declare_once("can_interface", std::string{"can0"});
   declare_once("hand_side", std::string{"right"});
+  // The default mirrors udp_hand.launch.py's _FW_CMD_ACK_DEFAULT (D62).
+  declare_once("cmd_ack", std::string{"echo"});
   declare_once("feedforward_kt",
                std::vector<double>(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 1.0));
 
@@ -379,6 +384,13 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     canfd_cfg.interface_name = endpoint.can_interface;
     canfd_cfg.hand_side = hand_side;
     canfd_cfg.recv_timeout_ms = recv_timeout_ms;
+    const std::string cmd_ack = get_parameter("cmd_ack").as_string();
+    if (!udp_hand_driver::canfd::ParseCmdAck(cmd_ack, canfd_cfg.cmd_ack)) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "cmd_ack '%s' must be \"echo\" (firmware echoes CMD frames) or \"none\"",
+                   cmd_ack.c_str());
+      return CallbackReturn::FAILURE;
+    }
     if (canfd_cfg.interface_name.empty() || canfd_cfg.interface_name.size() >= IFNAMSIZ) {
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                    "can_interface '%s' is not a valid interface name (1..%d chars)",
@@ -414,7 +426,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     }
     // D42: two receive stages per cycle (echo, RESP set), each bounded by
     // recv_timeout_ms, must fit the comm slot — otherwise one slow cycle
-    // overruns the next tick by construction rather than by a fault.
+    // overruns the next tick by construction rather than by a fault. Under
+    // cmd_ack none the one set stage after a write is bounded by the nominal
+    // 2T itself (D64), so the bound is the same.
     const double slot_ms = 1000.0 / loop_rate_hz * static_cast<double>(comm_dec_guarded);
     if (!(recv_timeout_ms > 0.0) || !(2.0 * recv_timeout_ms < slot_ms)) {
       // The declare default (10 ms) is UDP's and can never pass here: a proto2
@@ -820,6 +834,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     std::lock_guard<std::mutex> lock(aux_lane_mutex_);
     failure_latched_ = false;
     has_run_ = true;
+    // The counters behind the cmd_ack WARN were reset with this run.
+    warned_cmd_ack_silent_ = false;
+    warned_cmd_ack_echoes_ = false;
   }
 
   // Fake mode needs no node-side self-tick: the controller's CommLoop RT thread
