@@ -134,7 +134,7 @@ def main() -> int:
     print(f"catch_frame    : parent={parent}  xyz={xyz.tolist()}  rpy={rpy}")
     print(f"                 provisional={provisional}")
     print(f"ball radius    : {r_ball} m   (catching.core.ball.diameter / 2)")
-    print(f"pocket (S4.5)  : d_eff={pocket.get('d_eff')}  r_cap={pocket.get('r_cap')}")
+    print(f"pocket          : d_eff={pocket.get('d_eff')}  r_cap={pocket.get('r_cap')}")
     print(f"preshape q_pre : {len(q_pre)} values from catching.robot.hand.q_pre")
 
     # ── build the scene with two massless marker bodies ─────────────────────

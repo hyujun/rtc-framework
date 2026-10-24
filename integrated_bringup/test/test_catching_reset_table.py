@@ -50,7 +50,7 @@ def _rt_owned_members(text: str) -> list[str]:
 
 
 def _reset_table(text: str) -> str:
-    start = text.index("// ── Reset table (L7 §4.8, G8-A2)")
+    start = text.index("// ── Reset table")
     end = text.index("\n\n", start)
     return text[start:end]
 
@@ -70,7 +70,7 @@ def test_every_rt_owned_member_is_in_the_reset_table():
     table = _reset_table(text)
     missing = [m for m in _rt_owned_members(text) if not re.search(rf"\b{m}", table)]
     assert not missing, (
-        "RT-owned members with no row in the reset table (L7 §4.8): "
+        "RT-owned members with no row in the reset table: "
         + ", ".join(missing)
         + " — add each to ResetForRearm / ResetTrialState, or to the table as exempt with "
         "the reason"

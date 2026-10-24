@@ -193,7 +193,7 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── diagnostic.oracle_plan ──────────────────────────────────────────────
-  // The stand-in for the S6 planner: one fixed catch point, supplied by the
+  // The stand-in for the planner: one fixed catch point, supplied by the
   // operator from a ground-truth measurement. It exists because the tracking
   // law cannot be exercised — in a test or in the sim — without SOMETHING
   // naming a catch point, and inventing one inside the controller would make
@@ -518,8 +518,8 @@ void DemoCatchingController::OnTrajectoryCloud(const sensor_msgs::msg::PointClou
 
   if (diag.horizon_short) {
     RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
-                         "vision horizon %ld ms is shorter than the %ld ms this controller needs "
-                         "(D-15): late catch points are not reaching the planner",
+                         "vision horizon %ld ms is shorter than the %ld ms this controller needs: "
+                         "late catch points are not reaching the planner",
                          static_cast<long>(diag.horizon_ns / 1000000),
                          static_cast<long>(traj_horizon_min_ns_ / 1000000));
   }
@@ -815,7 +815,7 @@ bool DemoCatchingController::RampArmToStop(const ControllerState& state) noexcep
 }
 
 void DemoCatchingController::StoreOraclePlan(rtc::catching::NowReal now) noexcept {
-  // A-S5-8. One fixed catch point, from the operator's ground-truth
+  // One fixed catch point, from the operator's ground-truth
   // measurement, with the γ ramp spanning from now to the catch instant.
   //
   // Stored in the plan box rather than written to plan_ directly, so
@@ -1332,7 +1332,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateIdle(
   using rtc::catching::Reason;
   if (!trials_enabled_) {
     // No law, no homing: nothing moves in this configuration, so readiness is
-    // the operator's latch alone — the S5/S6 behaviour, kept for the
+    // the operator's latch alone — kept for the
     // configurations that cannot run a trial (no model, a unit fixture).
     return {Reason::kNone, true};
   }
@@ -1990,8 +1990,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
   // escalation — the motion that makes leaving safe is not going to finish.
   // In this tier, ahead of readiness, so a deadline that has passed is a
   // FAULT even on the tick the operator disarms. A disarm BEFORE the deadline
-  // still ends the stop in IDLE, whose ramp has no deadline — as
-  // before S9b.
+  // still ends the stop in IDLE, whose ramp has no deadline.
   if (const auto overrun = MotionDeadlineOverrun();
       overrun != CatchingDiagLogPod::FaultCause::kNone) {
     LatchFault(overrun);
@@ -2123,7 +2122,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
       if (mpc) {
         AdoptFirstSegment();
       }
-      // An ATTEMPT (S8 counts attempts against successes): only this edge.
+      // An ATTEMPT (attempts are counted against successes): only this edge.
       // A replacement in APPROACH is the same attempt and counts separately.
       plan_admitted_count_.fetch_add(1, std::memory_order_relaxed);
       trial_active_ = true;
@@ -2350,7 +2349,7 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   track_seen_ = false;
   traj_new_track_ = false;
   traj_view_ = rtc::catching::TrajView{};
-  // The S7 supervisor (header table). The hand goes back to the latch, which
+  // The supervisor (header table). The hand goes back to the latch, which
   // the next readable tick re-seeds at the MEASURED pose: after a stop
   // the hand is not opened, and not squeezed either.
   hand_seq_.Deactivate();
@@ -2534,7 +2533,7 @@ void DemoCatchingController::UpdateHandCapture(const ControllerState& state) noe
   }
 }
 
-// ── Motion and hand stages (S7, after the decision) ─────────────────────────
+// ── Motion and hand stages (after the decision) ─────────────────────────────
 
 namespace {
 
@@ -2674,7 +2673,7 @@ void DemoCatchingController::RunRetreatMotion(const ControllerState& state) noex
       // EvaluateRetreat judges must be this motion's. A TRACK_ERR abort leaves
       // its own (large) value behind, and judging the return on it sent the
       // controller back to ABORT_SAFE and round again, forever, with the arm
-      // standing still (found by the S7 scenario suite).
+      // standing still (found by the supervisor scenario suite).
       bool caught_up = true;
       if (arm_cmd_seeded_ && arm_readable_) {
         UpdateTrackError(state);
@@ -3193,7 +3192,7 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
 
   // ── Fingertip ages ──────────────────────────────────────────────────────
   // The age is a measurement; `tip_fresh` / `tip_contact` / `tip_force` wait
-  // for S7's threshold and its force layout — see the POD header.
+  // for their threshold and its force layout — see the POD header.
   // EVERY slot starts at "never received", including the ones past the
   // runtime count. The POD's zero-init would leave them at 0.0, which on this
   // wire means "arrived this instant" — and the message's arrays are sized
@@ -3280,7 +3279,7 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
                 "arming homes the arm to it",
                 why, tick.wait_pose_refuse_joint, tick.wait_pose_refuse_value);
   }
-  // #537 pre-S10 R3: a velocity lane with a hole blocks ARMED (and more)
+  // A velocity lane with a hole blocks ARMED (and more)
   // without any transition to show for it — one WARN when it starts, one INFO
   // when it ends, per axis.
   // The memory is per activation: a hole that outlives a deactivate is
@@ -3319,7 +3318,7 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
                        "the hand is not settled at q_pre, the controller does not enter ARMED "
                        "(a RETREAT then ends at the release timeout) and no contact baseline is "
                        "learned");
-  // #537 S9b: one WARN per fault latch, naming the cause — the transition that
+  // One WARN per fault latch, naming the cause — the transition that
   // follows is ABORT_ESCALATED whatever raised it, so this line (and the CSV's
   // `fault_cause`) is where the operator learns which.
   if (tick.fault_latch_seq != fault_latch_logged_seq_) {

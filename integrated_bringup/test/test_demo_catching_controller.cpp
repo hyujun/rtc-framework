@@ -1002,7 +1002,7 @@ TEST_F(CatchingConfigureTest, ConfigureCreatesTheDeclaredJointGoalEndpoints) {
   };
 
   EXPECT_TRUE(wait_for_subscriber("/hand/joint_goal"))
-      << "the hand step lane has no endpoint — S4.2 would publish into nothing";
+      << "the hand step lane has no endpoint — the hand command would publish into nothing";
   EXPECT_TRUE(wait_for_subscriber("/arm/joint_goal"))
       << "the arm lane has no endpoint, so its targets are never counted as rejected";
 }
@@ -1023,7 +1023,7 @@ TEST_P(ShippedCatchingProfile, ParsesWithinLimitsAndMatchesTheHandWidth) {
   EXPECT_FALSE(hand.tbd);
   EXPECT_FALSE(hand.q_open_tbd);
   EXPECT_FALSE(hand.eta_close.tbd);
-  EXPECT_TRUE(hand.provisional) << "S4.1 profiles are provisional until S4.2 confirms them";
+  EXPECT_TRUE(hand.provisional) << "hand profiles are provisional until the hardware confirms them";
 
   // Every pose inside the shipped device limits. The limits live in the
   // profile's device YAML, which is a different file — read it rather than
@@ -1046,7 +1046,7 @@ TEST_P(ShippedCatchingProfile, ParsesWithinLimitsAndMatchesTheHandWidth) {
   const YAML::Node hand_dev = devices[hand_group];
   ASSERT_TRUE(hand_dev) << profile << ": no device '" << hand_group << "'";
   EXPECT_EQ(static_cast<int>(hand_dev["joint_state_names"].size()), expected_dof)
-      << profile << ": profile width must equal the hand device's channel count (L6 §5.1)";
+      << profile << ": profile width must equal the hand device's channel count";
 
   const YAML::Node limits = hand_dev["joint_limits"];
   ASSERT_TRUE(limits) << profile << ": hand device declares no joint_limits";
@@ -1228,7 +1228,7 @@ TEST_P(ShippedCatchingProfile, IsStillParkedOnTheRealArmAxis) {
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
-      << profile << ": a real-arm configuration is PARKED, never refused (A-S5-1)";
+      << profile << ": a real-arm configuration is PARKED, never refused";
   EXPECT_TRUE(ctrl.IsRealArmConfig());
   EXPECT_TRUE(ctrl.IsSimOnlyDisabled())
       << profile << ": the provisional values stopped blocking a real arm";
@@ -1555,7 +1555,7 @@ TEST_P(ShippedCatchingProfile, AConsumedKeyLeftTbdParksTheSimProfileInsteadOfFai
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
-      << profile << ": a consumed TBD in sim must park, not refuse (A-S5-12)";
+      << profile << ": a consumed TBD in sim must park, not refuse";
   EXPECT_FALSE(ctrl.IsRealArmConfig()) << "precondition: judged on the sim axis";
   EXPECT_TRUE(ctrl.IsSimOnlyDisabled());
   EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kConsumedValues);
@@ -3756,7 +3756,7 @@ TEST(DemoCatchingRecord, EstopTickPublishesThisTicksBody) {
   EXPECT_EQ(rec.tick, 2U) << "the stop tick did not publish a body of its own";
   EXPECT_TRUE(rec.estop_active);
   EXPECT_EQ(rec.reason, static_cast<std::uint8_t>(rtc::catching::Reason::kEstop));
-  EXPECT_FALSE(rec.armed) << "the tick must lower the arm latch on a stop (P-1 (c))";
+  EXPECT_FALSE(rec.armed) << "the tick must lower the arm latch on a stop";
 }
 
 TEST(DemoCatchingRecord, AStaleInputTickPublishesThisTicksBody) {

@@ -18,7 +18,7 @@ LANES = ("clock_lane", "ball_contact_lane")
 def sim_lanes_argument_description() -> str:
     return (
         "Write the sim clock-phase lane and the ball contact truth lane to "
-        "<session_dir>/sim/{clock_lane,ball_contact_lane}.csv (S8 trial runs; "
+        "<session_dir>/sim/{clock_lane,ball_contact_lane}.csv (trial runs; "
         "catching_trials joins them with the controller CSVs)."
     )
 

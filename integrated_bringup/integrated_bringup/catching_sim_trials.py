@@ -1070,7 +1070,7 @@ def run_trials(
             if watch.aborted:
                 node.get_logger().error(
                     f"--host-watch abort: run ended after trial {idx} of {len(throws)}; "
-                    "re-run the unit with the same seed (D-S8-17)"
+                    "re-run the unit with the same seed"
                 )
                 break
         node.spin_for(0.3)
@@ -1455,7 +1455,7 @@ def parse_args(argv=None):
         choices=sorted(HAND_DESIGNS),
         default=None,
         help=(
-            "a hand-near throw design aimed at the loaded wait pose (S8-F; a hand_* grid ignores "
+            "a hand-near throw design aimed at the loaded wait pose (a hand_* grid ignores "
             "--n) — instead of --throws-file; one of the two is required"
         ),
     )

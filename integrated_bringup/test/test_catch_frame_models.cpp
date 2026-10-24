@@ -130,7 +130,8 @@ void CheckRobot(const RobotCase& rc) {
   // these, or a revert to the placeholder, goes red here and has to be thought
   // about rather than inherited.
   EXPECT_FALSE(cf->provisional)
-      << rc.label << ": catch frame back to provisional — S2.3b and the user check are done";
+      << rc.label
+      << ": catch frame back to provisional — the measurement and the user check are done";
 
   const rub::PinocchioModelBuilder builder(cfg);
   std::vector<std::pair<std::string, std::shared_ptr<const pinocchio::Model>>> models = {

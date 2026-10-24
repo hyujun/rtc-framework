@@ -260,8 +260,7 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
   RecordProperty("rank_rollout", static_cast<int>(rank_fail[5]));
   RecordProperty("rollout_window_only", static_cast<int>(window_only));
 
-  EXPECT_LT(pct(0.99), budget_us)
-      << "G3-C: the planner's p99 cycle exceeds planner.search.grid.budget_s";
+  EXPECT_LT(pct(0.99), budget_us) << "the planner's p99 cycle exceeds planner.search.grid.budget_s";
   EXPECT_GT(plans, 0) << "not one of 1000 reachable throws produced a plan";
 }
 

@@ -6,7 +6,7 @@
 // profile's system model as the CM builds it (`_base.yaml` + `sim.yaml`
 // merged, as the sim launch layers them), one builder per profile per process. Shared by
 // test_demo_catching_controller (the shipped-profile suites) and the allocation gate's second robot
-// (test_demo_catching_alloc_s7).
+// (test_demo_catching_alloc_armed).
 #pragma once
 
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"

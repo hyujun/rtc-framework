@@ -283,7 +283,7 @@ catching:
     qp:
       max_iter: 30
     lag:
-      # Cleared like the other provisional flags here (real-arm axis, #537 Q5).
+      # Cleared like the other provisional flags here (real-arm axis).
       provisional: false
       T_arm: 0.0
   supervisor:
@@ -291,7 +291,7 @@ catching:
      << gains.track_err_abort << R"(
     n_qp: 3
     # Cleared like the other provisional flags here (real-arm axis); the two
-    # deadlines themselves are left to the parser defaults (#537 S9b).
+    # deadlines themselves are left to the parser defaults.
     deadline:
       provisional: false
     decel:
@@ -348,10 +348,10 @@ catching:
           manipulability_min:
             arm_5row: 0.1
             provisional: false
-    # The S7 supervisor needs both once the law is wired (a configuration
+    # The supervisor needs both once the law is wired (a configuration
     # without them is parked). The wait pose is the fixture's home, where
     # every suite measures the arm at start: an aligned arm skips homing
-    # (#537 S7 Q13), so the S5/S6 cases still arm on their first tick. The
+    # (homing skip), so the tracking cases still arm on their first tick. The
     # freeze is what p1b shipped with T_arm 0 (until #821), above
     # T_close_e2e + T_arm + h for this fixture's T_arm 0.
     wait_pose: [)"

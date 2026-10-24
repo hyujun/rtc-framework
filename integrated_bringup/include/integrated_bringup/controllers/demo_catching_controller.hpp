@@ -9,8 +9,8 @@
 // tracking law (CLIK), the planner thread and the whole trial cycle with the
 // hand sequencer owning the hand (THE TRIAL CYCLE below).
 //
-// THE E-STOP / FAULT CONTRACT, in four parts — (a)..(d) below are what the
-// member comments cite:
+// THE E-STOP / FAULT CONTRACT ("P-1" in the comments), in four parts — (a)..(d) below
+// are what the member comments cite:
 //   (a) TriggerEstop / ClearEstop / ResetFault / ResetTargetInitialization
 //       update an atomic REQUEST or epoch and nothing else. The one writer of
 //       the reset itself — the code that puts values back — is the RT tick.
@@ -1819,7 +1819,7 @@ class DemoCatchingController final : public RTControllerInterface {
   bool window_stale_seen_{false};
   // RT-OWNED END
 
-  // ── Reset table (L7 §4.8, G8-A2) ─────────────────────────────────────────
+  // ── Reset table ──────────────────────────────────────────────────────────
   // Every RT-owned member (the RT-OWNED ranges of this header), and which
   // reset puts it back. R = ResetForRearm (RETREAT → ARMED), T =
   // ResetTrialState (activation / E-STOP / explicit). "exempt" names why it

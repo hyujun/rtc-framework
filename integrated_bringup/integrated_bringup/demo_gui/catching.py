@@ -705,7 +705,7 @@ class CatchingStatus:
         if self.ref_saturated:
             parts.append("reference SATURATED")
         if self.qp_fail_streak > 0:
-            # Trials in a row the solver ended (#537 S9b), not failed solves:
+            # Trials in a row the solver ended, not failed solves:
             # it stays up across good solves until a verdict or a fault reset.
             parts.append(f"QP fail streak {self.qp_fail_streak} trial(s)")
         return "  |  ".join(parts)

@@ -71,7 +71,7 @@ using rtc::catching::Mode;
 
 using namespace std::chrono_literals;
 
-TEST(DemoCatchingAllocS7, TheGateSeesAnAllocation) {
+TEST(DemoCatchingAllocArmed, TheGateSeesAnAllocation) {
   // Positive control: an allocation inside the gate is counted.
   rtc::testing::ScopedAllocGate gate;
   auto* leak = new int(7);  // NOLINT(cppcoreguidelines-owning-memory)
@@ -87,11 +87,11 @@ struct BallLine {
   std::array<double, 3> vel{};
 };
 
-class DemoCatchingAllocS7Test : public ::testing::Test {
+class DemoCatchingAllocArmedTest : public ::testing::Test {
  protected:
   void SetUp() override {
     FakeSteadyClock::Restart();
-    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_alloc_s7_test");
+    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_alloc_armed_test");
     builder_ = SharedCatchFrameBuilder();
     CatchFrameOracle oracle(*builder_);
     std::array<double, 64> home{};
@@ -272,7 +272,7 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
   std::unique_ptr<DemoCatchingController> ctrl_;
   rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
-  std::string topic_{"/test_catching_alloc_s7/prediction"};
+  std::string topic_{"/test_catching_alloc_armed/prediction"};
   pinocchio::SE3 start_{pinocchio::SE3::Identity()};
   ControllerState state_{};
 };
@@ -469,7 +469,7 @@ void RunGatedReplacementCase(const GatedRig& rig, const std::string& segment_mod
   ::testing::Test::RecordProperty("worst_us_any_tick", static_cast<int>(us_worst));
 }
 
-TEST_F(DemoCatchingAllocS7Test, EveryModeOfATrialTicksWithoutAllocating) {
+TEST_F(DemoCatchingAllocArmedTest, EveryModeOfATrialTicksWithoutAllocating) {
   ASSERT_NO_FATAL_FAILURE(BringUp());
   // Every tick is gated, and a mode counts as measured once a tick STARTED
   // in it. (ARMED lasts a single tick when a ball is already in view, so
@@ -525,7 +525,7 @@ TEST_F(DemoCatchingAllocS7Test, EveryModeOfATrialTicksWithoutAllocating) {
   RecordProperty("worst_tick_us", static_cast<int>(worst_us));
 }
 
-TEST_F(DemoCatchingAllocS7Test, TheHandWitnessAndTheReleaseTimeoutTickWithoutAllocating) {
+TEST_F(DemoCatchingAllocArmedTest, TheHandWitnessAndTheReleaseTimeoutTickWithoutAllocating) {
   // The same trial with the hand-joint witness evaluated on every
   // Hold tick (a stalled, pushing finger — the full per-joint evaluation, not
   // its early exit) and a hand that never comes back to q_pre, so RETREAT ends
@@ -563,7 +563,7 @@ TEST_F(DemoCatchingAllocS7Test, TheHandWitnessAndTheReleaseTimeoutTickWithoutAll
   // the hand says — the scenario suite owns the verdict; this case, the heap.)
 }
 
-TEST_F(DemoCatchingAllocS7Test, TheFaultLatchAndBothFaultResetAnswersTickWithoutAllocating) {
+TEST_F(DemoCatchingAllocArmedTest, TheFaultLatchAndBothFaultResetAnswersTickWithoutAllocating) {
   // n_qp = 1 and a degenerate axis latch the fault on the first law
   // tick; FAULT then runs, a reset is refused (the measured arm moves) and one
   // is accepted. Every tick is gated. On the real clock (file header).
@@ -599,7 +599,7 @@ TEST_F(DemoCatchingAllocS7Test, TheFaultLatchAndBothFaultResetAnswersTickWithout
   EXPECT_FALSE(ctrl_->HasLatchedFault()) << "precondition: the accept path ran";
 }
 
-TEST_F(DemoCatchingAllocS7Test, TheJointSpaceStopTicksWithoutAllocating) {
+TEST_F(DemoCatchingAllocArmedTest, TheJointSpaceStopTicksWithoutAllocating) {
   // ABORT_SAFE: a degenerate approach axis makes CLIK refuse, and the stop
   // runs on the carried command without the QP.
   ASSERT_NO_FATAL_FAILURE(BringUp());
@@ -633,10 +633,10 @@ TEST_F(DemoCatchingAllocS7Test, TheJointSpaceStopTicksWithoutAllocating) {
 /// The segment-following tick under each segment planner: the RT's
 /// lane is one code path for `mpc` and `mpc_docking`, so the gate is run on
 /// both.
-class DemoCatchingAllocS7SegmentTest : public DemoCatchingAllocS7Test,
-                                       public ::testing::WithParamInterface<const char*> {};
+class DemoCatchingAllocArmedSegmentTest : public DemoCatchingAllocArmedTest,
+                                          public ::testing::WithParamInterface<const char*> {};
 
-TEST_P(DemoCatchingAllocS7SegmentTest, TheMpcTicksFromThePairToTheHoldWithoutAllocating) {
+TEST_P(DemoCatchingAllocArmedSegmentTest, TheMpcTicksFromThePairToTheHoldWithoutAllocating) {
   // planner.segment.mode mpc (and mpc_docking): the segment lane's Load and
   // judge in TRACKING and from APPROACH on, the stop part's node-wise catch-box FK, the pair's
   // adoption, the wait before node 0, a same-node-0 replacement, the first switch and two replan
@@ -784,7 +784,7 @@ TEST_P(DemoCatchingAllocS7SegmentTest, TheMpcTicksFromThePairToTheHoldWithoutAll
   RecordProperty("worst_us_mpc_tick", static_cast<int>(us_worst));
 }
 
-TEST_P(DemoCatchingAllocS7SegmentTest,
+TEST_P(DemoCatchingAllocArmedSegmentTest,
        TheReplacementPairTheSwitchAndTheRetimedCloseTickWithoutAllocating) {
   const std::string segment_mode = GetParam();
   ASSERT_NO_FATAL_FAILURE(BringUp(false, [&segment_mode](YAML::Node& y) {
@@ -811,7 +811,7 @@ TEST_P(DemoCatchingAllocS7SegmentTest,
   RunGatedReplacementCase(rig, segment_mode);
 }
 
-INSTANTIATE_TEST_SUITE_P(SegmentPlanners, DemoCatchingAllocS7SegmentTest,
+INSTANTIATE_TEST_SUITE_P(SegmentPlanners, DemoCatchingAllocArmedSegmentTest,
                          ::testing::Values("mpc", "mpc_docking"),
                          [](const ::testing::TestParamInfo<const char*>& param_info) {
                            return std::string(param_info.param) == "mpc_docking" ? "MpcDocking"
@@ -823,13 +823,13 @@ INSTANTIATE_TEST_SUITE_P(SegmentPlanners, DemoCatchingAllocS7SegmentTest,
 /// (shipped_catching_bringup_fixture.hpp), with the planner off and the oracle
 /// plan on — the oracle writes the plan of a catch point at the hand's start
 /// pose, this test the segment box. A 7-joint arm, a 16-joint hand.
-class DemoCatchingAllocS7LeapTest : public ::testing::TestWithParam<const char*> {
+class DemoCatchingAllocArmedLeapTest : public ::testing::TestWithParam<const char*> {
  protected:
   static constexpr const char* kProfile = "iiwa7_leap";
 
   void SetUp() override {
     FakeSteadyClock::Restart();
-    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_alloc_s7_leap_test");
+    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_alloc_armed_leap_test");
   }
 
   void TearDown() override {
@@ -977,7 +977,7 @@ class DemoCatchingAllocS7LeapTest : public ::testing::TestWithParam<const char*>
   std::unique_ptr<DemoCatchingController> ctrl_;
   rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
-  std::string topic_{"/test_catching_alloc_s7_leap/prediction"};
+  std::string topic_{"/test_catching_alloc_armed_leap/prediction"};
   std::vector<std::string> arm_names_;
   std::vector<double> wait_pose_;
   std::vector<double> q_pre_;
@@ -986,7 +986,7 @@ class DemoCatchingAllocS7LeapTest : public ::testing::TestWithParam<const char*>
   ControllerState state_{};
 };
 
-TEST_P(DemoCatchingAllocS7LeapTest,
+TEST_P(DemoCatchingAllocArmedLeapTest,
        TheReplacementPairTheSwitchAndTheRetimedCloseTickWithoutAllocatingOnTheLeapArm) {
   const std::string segment_mode = GetParam();
   ASSERT_NO_FATAL_FAILURE(BringUp(segment_mode));
@@ -1003,7 +1003,7 @@ TEST_P(DemoCatchingAllocS7LeapTest,
   RunGatedReplacementCase(rig, segment_mode);
 }
 
-INSTANTIATE_TEST_SUITE_P(SegmentPlanners, DemoCatchingAllocS7LeapTest,
+INSTANTIATE_TEST_SUITE_P(SegmentPlanners, DemoCatchingAllocArmedLeapTest,
                          ::testing::Values("mpc", "mpc_docking"),
                          [](const ::testing::TestParamInfo<const char*>& param_info) {
                            return std::string(param_info.param) == "mpc_docking" ? "MpcDocking"

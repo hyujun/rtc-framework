@@ -364,7 +364,7 @@ class SupervisorScenarioTest : public ::testing::Test {
     ASSERT_FALSE(ctrl_->IsSimOnlyDisabled()) << "precondition: the profile parked (reason "
                                              << static_cast<int>(ctrl_->GetParkReason()) << ")";
     ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
-    ASSERT_TRUE(ctrl_->AreTrialsEnabled()) << "precondition: the S7 supervisor is not wired";
+    ASSERT_TRUE(ctrl_->AreTrialsEnabled()) << "precondition: the supervisor is not wired";
     ASSERT_EQ(ctrl_->GetPlannerThread(), nullptr)
         << "precondition: the planner wakes on the real clock (SetClockForTesting)";
     if (arm) {
@@ -2872,7 +2872,7 @@ TEST_F(SupervisorScenarioTest, ActivatedOutsideTheWaitPoseHomesThenArms) {
   ASSERT_TRUE(TickUntilMode(Mode::kArmed, 800)) << "deadlock: never left IDLE\n" << Transitions();
   ExpectSeq({Mode::kIdle, Mode::kArmed});
   EXPECT_GT(CountTicks([](const TickRec& t) { return t.homing; }), 10)
-      << "IDLE never homed (a Q13 skip from outside the pose would be wrong)";
+      << "IDLE never homed (a homing skip from outside the pose would be wrong)";
   const auto& qc = ctrl_->GetArmCommandForTesting();
   for (int i = 0; i < kUr5eArmDof; ++i) {
     EXPECT_NEAR(qc[static_cast<std::size_t>(i)], kUr5eHome[static_cast<std::size_t>(i)], 1e-12)
@@ -3760,7 +3760,7 @@ TEST_F(SupervisorScenarioTest, ADisarmInTrackingWithAnAlignedArmLeavesAbortSafe)
   }));
   ASSERT_TRUE(TickUntilMode(Mode::kTracking, 200)) << Transitions();
   EXPECT_EQ(CountTicks([](const TickRec& t) { return t.homing; }), 0)
-      << "precondition: the Q13 skip, not a homing";
+      << "precondition: the homing skip, not a homing";
   SetArmed(false);
   ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 5)) << Transitions();
   EXPECT_TRUE(TickUntilMode(Mode::kIdle, 200)) << "stranded in ABORT_SAFE\n" << Transitions();
@@ -5124,7 +5124,8 @@ TEST_F(FaultExtensionTest, AnEstopPairBetweenTwoTicksDoesNotTimeTheStopOnTheRetu
       << "a false stop-deadline FAULT\n"
       << Window(static_cast<int>(pair), 3);
   EXPECT_FALSE(ctrl_->HasLatchedFault());
-  EXPECT_EQ(ctrl_->GetMode(), Mode::kIdle) << "the pair disarms (P-1 (c))\n" << Transitions();
+  EXPECT_EQ(ctrl_->GetMode(), Mode::kIdle) << "the pair disarms (no automatic resume)\n"
+                                           << Transitions();
   EXPECT_FALSE(ctrl_->IsArmRequested());
 }
 
@@ -5307,7 +5308,7 @@ TEST_F(FaultExtensionTest, AFaultResetIsRefusedUntilTheArmIsAtRest) {
   EXPECT_EQ(log_[t].reason, Reason::kFaultReset);
   EXPECT_FALSE(ctrl_->HasLatchedFault());
   EXPECT_EQ(log_.back().body.fault_cause, FaultCause::kNone);
-  EXPECT_FALSE(ctrl_->IsArmRequested()) << "no automatic resume (P-1 (c))";
+  EXPECT_FALSE(ctrl_->IsArmRequested()) << "no automatic resume";
   EXPECT_EQ(ctrl_->GetFaultResetRefusedCount(), 3U);
 }
 
@@ -5318,14 +5319,14 @@ TEST_F(FaultExtensionTest, AFaultResetUnderAnEstopShowsFaultUntilTheClearThenIdl
   ASSERT_TRUE(TickUntil([this] { return Speed(log_.back()) == 0.0; }, 500)) << Transitions();
   ctrl_->TriggerEstop();
   Ticks(3);
-  ASSERT_EQ(ctrl_->GetMode(), Mode::kFault) << "P-1 (d): the stop keeps FAULT";
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kFault) << "the stop keeps FAULT";
   ctrl_->ResetFault();
   const std::size_t reset = log_.size();
   Ticks(10);
   EXPECT_FALSE(ctrl_->HasLatchedFault()) << "the latch goes down on the reset's own tick";
   EXPECT_FALSE(log_[reset].body.fault_latched);
   for (std::size_t i = reset; i < log_.size(); ++i) {
-    ASSERT_EQ(log_[i].mode, Mode::kFault) << "ESTOP outranks the reset (R-PREC)\n"
+    ASSERT_EQ(log_[i].mode, Mode::kFault) << "ESTOP outranks the reset\n"
                                           << Window(static_cast<int>(i), 2);
     ASSERT_EQ(log_[i].reason, Reason::kEstop);
   }

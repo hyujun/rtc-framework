@@ -3347,7 +3347,7 @@ class DemoControllerGUI(Node):
         plus a line that shows both keeps the disagreement visible, which is the
         state worth noticing.
         """
-        frame = ttk.LabelFrame(parent, text="Catching (dynamic_catching)", padding=4)
+        frame = ttk.LabelFrame(parent, text="Catching", padding=4)
         frame.pack(fill="x", padx=8, pady=(2, 2))
 
         btn_row = tk.Frame(frame, bg="#1e1e2e")

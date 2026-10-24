@@ -337,7 +337,7 @@ class CatchingCmServicesTest : public ::testing::Test {
     ASSERT_FALSE(ctrl->IsSimOnlyDisabled()) << "precondition: the profile parked (reason "
                                             << static_cast<int>(ctrl->GetParkReason()) << ")";
     ASSERT_EQ(ctrl->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
-    ASSERT_TRUE(ctrl->AreTrialsEnabled()) << "precondition: the S7 supervisor is not wired";
+    ASSERT_TRUE(ctrl->AreTrialsEnabled()) << "precondition: the supervisor is not wired";
     ctrl_ = ctrl.get();
 
     // ── The CM hosting it ──

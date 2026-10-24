@@ -149,7 +149,7 @@ def main():
                 sys.exit(f"{cond} {robot}: {problems}")
             overlay = f"{OUT}/{cond}/overlay_{short}.yaml"
             with open(overlay, "w") as f:
-                f.write(f"# E0-F04 {cond} ({robot}): shipped + the prediction grid.\n")
+                f.write(f"# {cond} ({robot}): shipped + the prediction grid.\n")
                 yaml.safe_dump(ov, f, sort_keys=False)
             rows.append(
                 (

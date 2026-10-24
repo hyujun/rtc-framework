@@ -241,4 +241,4 @@ def test_sim_yaml_overrides_the_planner_box_with_float_keys_of_the_shipped_type(
     # The point of the override: the envelope is well above the shipped derived box.
     assert all(e > 2 * s for e, s in zip(box, shipped_box, strict=True))
     robot = _load(os.path.join(CONFIG_DIR, "robot.yaml"))["/**"]["ros__parameters"]
-    assert CONTROLLER not in robot, "the real arm keeps the shipped box (S10 measures its own)"
+    assert CONTROLLER not in robot, "the real arm keeps the shipped box (measured on the real arm)"

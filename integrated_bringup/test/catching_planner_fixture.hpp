@@ -79,7 +79,7 @@ catching:
          (planner_enabled ? "true" : "false") + R"(
     wake_timeout_s: 0.02
     wait_pose: [0.0, -1.0, 1.0, -1.5, -1.5, 0.0]
-    # The S6-B decision values: without them an enabled planner parks. This
+    # The planner values the config must state: without them an enabled planner parks. This
     # fixture has no system model, so the search stays the stub either way.
     sub_model: "arm_catch"
     freeze: {T_freeze: 0.36}

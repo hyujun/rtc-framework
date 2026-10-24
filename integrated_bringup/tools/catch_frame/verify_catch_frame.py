@@ -293,7 +293,7 @@ def run(name: str, samples: int, seed: int) -> dict:
         "mjcf_anchor_frame": spec["urdf_arm_root"],
         "translation_m": [round(float(v), 9) for v in plan_vs_anchor[:3, 3]],
         "rotation_angle_deg": round(float(np.degrees(angle_of(plan_vs_anchor[:3, :3]))), 6),
-        "note": "nonzero rotation => naming the wrong one is silently wrong (plan SS11)",
+        "note": "nonzero rotation => naming the wrong one is silently wrong",
     }
     w_root0 = mj_fk(np.zeros(len(pin_arm_q)))[0]
     world_t_base = w_root0 @ inv(plan_vs_anchor)

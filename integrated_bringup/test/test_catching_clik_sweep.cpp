@@ -400,7 +400,7 @@ TEST_F(ClikSweepTest, TheSolverStaysHealthyAcrossTheBallEnvelope) {
                  " az=" + std::to_string(r.azimuth_deg));
     EXPECT_GT(r.ticks, 0) << "the law never ran — this case measured nothing";
     EXPECT_EQ(r.non_converged, 0) << "the QP failed to converge";
-    EXPECT_LT(r.solve_us_max, 1500.0) << "outside the G5-C max budget";
+    EXPECT_LT(r.solve_us_max, 1500.0) << "outside the max solve-time budget";
     EXPECT_TRUE(std::isfinite(r.catch_err_m) && std::isfinite(r.axis_err_deg))
         << "a non-finite pose reached the oracle";
   }

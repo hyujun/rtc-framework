@@ -276,9 +276,9 @@ class DemoCatchingControllerResetProbe {
     EXPECT_GT(c.reset_floor_ns_, 5);
     EXPECT_EQ(c.planner_reset_epoch_, 11U);
     EXPECT_FALSE(c.arm_cmd_seeded_);
-    EXPECT_FALSE(c.wait_pose_adopted_) << "S8-I: an activation starts from the YAML wait pose";
-    EXPECT_FALSE(c.wait_pose_decided_) << "S8-I: and decides again on its first readable tick";
-    EXPECT_EQ(c.wait_pose_[0], 0.25) << "S8-I: the YAML pose is restored";
+    EXPECT_FALSE(c.wait_pose_adopted_) << "an activation starts from the YAML wait pose";
+    EXPECT_FALSE(c.wait_pose_decided_) << "and decides again on its first readable tick";
+    EXPECT_EQ(c.wait_pose_[0], 0.25) << "the YAML pose is restored";
     EXPECT_EQ(c.arm_qd_cmd_[0], 0.0);
     EXPECT_FALSE(c.reference_seeded_);
     EXPECT_EQ(c.traj_hint_, 0);
@@ -346,7 +346,7 @@ class DemoCatchingControllerResetProbe {
     c_.fault_cause_ = Cause::kQpFailures;
     c_.motion_start_ns_ = kNs;
     TrialReset(/*reset_mode=*/false);
-    EXPECT_EQ(c_.qp_fail_streak_, 2) << "D-S9-D2: an E-STOP does not clear the streak";
+    EXPECT_EQ(c_.qp_fail_streak_, 2) << "an E-STOP does not clear the streak";
     EXPECT_EQ(c_.fault_cause_, Cause::kQpFailures) << "the cause goes with the latch";
     EXPECT_GT(c_.motion_start_ns_, kNs)
         << "the clock restarts with the stage the reset puts back to kStop";

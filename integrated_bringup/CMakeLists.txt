@@ -804,15 +804,15 @@ if(BUILD_TESTING)
   # on the real UR5e+P1b model (homing, law, freeze, hand sequencer, DECEL,
   # HOLD, return, joint-space stop). Own binary: alloc_gate.hpp replaces the
   # global operator new (one TU per binary).
-  ament_add_gtest(test_demo_catching_alloc_s7 test/test_demo_catching_alloc_s7.cpp
+  ament_add_gtest(test_demo_catching_alloc_armed test/test_demo_catching_alloc_armed.cpp
     ENV ROS_DOMAIN_ID=52)
-  target_include_directories(test_demo_catching_alloc_s7 PRIVATE
+  target_include_directories(test_demo_catching_alloc_armed PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
-  target_link_libraries(test_demo_catching_alloc_s7
+  target_link_libraries(test_demo_catching_alloc_armed
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
   )
-  ament_target_dependencies(test_demo_catching_alloc_s7
+  ament_target_dependencies(test_demo_catching_alloc_armed
     rclcpp
     rclcpp_lifecycle
     rtc_controllers
@@ -823,10 +823,10 @@ if(BUILD_TESTING)
     pinocchio
     Eigen3
   )
-  target_compile_options(test_demo_catching_alloc_s7 PRIVATE -Wno-mismatched-new-delete)
+  target_compile_options(test_demo_catching_alloc_armed PRIVATE -Wno-mismatched-new-delete)
   # The second robot's gate brings the controller up from the
   # shipped iiwa7_leap profile.
-  target_compile_definitions(test_demo_catching_alloc_s7 PRIVATE
+  target_compile_definitions(test_demo_catching_alloc_armed PRIVATE
     RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
 
   # The reset table's rows hold at run time — every
@@ -1618,16 +1618,16 @@ if(BUILD_TESTING)
   # The shipped ur5e_p1b planner profile on the real catch sub-model: p99 of
   # the planning cycle < planner.search.grid.budget_s (asserted), rejection distribution and
   # rank-gate counts recorded.
-  ament_add_gtest(test_catching_planner_g3c test/test_catching_planner_g3c.cpp
+  ament_add_gtest(test_catching_planner_timing test/test_catching_planner_timing.cpp
     TIMEOUT 300)
-  target_include_directories(test_catching_planner_g3c PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/test")
-  target_compile_definitions(test_catching_planner_g3c PRIVATE
+  target_include_directories(test_catching_planner_timing PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_catching_planner_timing PRIVATE
     RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
-  target_link_libraries(test_catching_planner_g3c
+  target_link_libraries(test_catching_planner_timing
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
   )
-  ament_target_dependencies(test_catching_planner_g3c
+  ament_target_dependencies(test_catching_planner_timing
     rclcpp
     rtc_controllers
     rtc_urdf_bridge
@@ -1917,8 +1917,8 @@ if(BUILD_TESTING)
     test/test_shipped_catching_config.py
     ENV RTC_CONTROLLER_CONFIG_DUMP=$<TARGET_FILE:controller_config_dump>)
   ament_add_pytest_test(test_catching_sim_trials test/test_catching_sim_trials.py)
-  ament_add_pytest_test(test_catching_sim_trials_s8 test/test_catching_sim_trials_s8.py)
-  ament_add_pytest_test(test_catching_sim_trials_s8f test/test_catching_sim_trials_s8f.py)
+  ament_add_pytest_test(test_catching_sim_trials_driver test/test_catching_sim_trials_driver.py)
+  ament_add_pytest_test(test_catching_sim_trials_hand_near test/test_catching_sim_trials_hand_near.py)
   ament_add_pytest_test(test_catching_sim_trials_throw_list
     test/test_catching_sim_trials_throw_list.py)
   # #821: the shipped throw sets (config/<robot>/throw_sets/ — each arm's catch set of the
@@ -2009,7 +2009,7 @@ if(BUILD_TESTING)
     test_demo_inference_real_model
     test_compliance_admittance_coupling
     test_demo_catching_controller
-    test_demo_catching_alloc_s7
+    test_demo_catching_alloc_armed
     test_catching_cm_services
     test_demo_wbc_tsid_path
     test_wbc_closed_chain_projection_sharing
@@ -2035,7 +2035,7 @@ if(BUILD_TESTING)
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99
-  #     (planner_g3c), a QP solve-time p99 / maximum (clik_sweep, tracking), a
+  #     (planner_timing), a QP solve-time p99 / maximum (clik_sweep, tracking), a
   #     join that must return within 200 ms (planner_lane), a phase that must
   #     end within 10-20 ms of its deadline on the real clock
   #     (supervisor_scenarios, the *RealClock fixtures). It must not share the
@@ -2047,7 +2047,7 @@ if(BUILD_TESTING)
   #     Durations that are only recorded are not protected: quote those from a
   #     run of that one test.
   set_tests_properties(
-    test_catching_planner_g3c
+    test_catching_planner_timing
     test_catching_clik_sweep
     test_catching_planner_lane
     test_catching_tracking
