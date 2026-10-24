@@ -12,12 +12,14 @@
 #include "rtc_base/timing/thread_timing_sample.hpp"
 
 #include <gtest/gtest.h>
+#include <stdlib.h>  // mkdtemp
 
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <ostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -40,11 +42,14 @@ void WriteRow(std::ostream& os, const TestPayload& p) {
 
 class ScopedTempDir {
  public:
+  // mkdtemp, one directory per scope and no shared parent: a fixed parent
+  // outlived every run in the shared temp dir.
   ScopedTempDir() {
-    auto base = fs::temp_directory_path() / "rtc_thread_timing_test";
-    fs::create_directories(base);
-    dir_ = base / ("t_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFu));
-    fs::create_directories(dir_);
+    std::string pattern = (fs::temp_directory_path() / "rtc_thread_timing_XXXXXX").string();
+    if (::mkdtemp(pattern.data()) == nullptr) {
+      throw std::runtime_error("mkdtemp failed for " + pattern);
+    }
+    dir_ = pattern;
   }
 
   ~ScopedTempDir() {
