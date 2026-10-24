@@ -7,8 +7,9 @@
 
 | 무엇 | 어디에 |
 |---|---|
-| 수학 · 구조 (지금 구현의 서술) | [ref/](ref/) — [mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md) (구현한 것과 아직 구현하지 않은 설계의 구분은 그 문서 §0), [grid_search_closed_form_formulation.md](ref/grid_search_closed_form_formulation.md) (격자 탐색과 `closed_form` 구간의 수식 통합본), [CATCHING_MASTER.md](ref/CATCHING_MASTER.md), `L0` – `L8`, [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) (§17 이 구현 — mpc_docking 수치 코어와 NLP search 의 탐색 코어, §0 – §16 은 설계 자료) |
-| 결정 ID (`MD-n` · `D-n` · `G…`) 의 뜻, 단계 · feature 의 이름과 이슈 번호, 옛 절 인용의 새 자리 | [ID_INDEX.md](ID_INDEX.md) (§1 · §3 · §4) |
+| 구현한 수학 (식 · 기호 · 단위 · frame) | 구현 헤더의 주석 — §2 "작성 규약" |
+| 설계 원문 · 수학 · 구조 (private — 공개 코드는 가리키지 않는다) | [ref/](ref/) — [mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md) (구현한 것과 아직 구현하지 않은 설계의 구분은 그 문서 §0), [grid_search_closed_form_formulation.md](ref/grid_search_closed_form_formulation.md) (격자 탐색과 `closed_form` 구간의 수식 통합본), [CATCHING_MASTER.md](ref/CATCHING_MASTER.md), `L0` – `L8`, [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) (§17 이 구현 — mpc_docking 수치 코어와 NLP search 의 탐색 코어, §0 – §16 은 설계 자료) |
+| 결정 ID (`MD-n` · `D-n` · `G…`) 의 뜻, 단계 · feature 의 이름과 이슈 번호, 옛 절 인용의 새 자리 (코드에는 ID 를 쓰지 않는다) | [ID_INDEX.md](ID_INDEX.md) (§1 · §3 · §4) |
 | 측정 · 검증 기록 | 각 feature 이슈의 코멘트 ("측정 · 검증 기록" 으로 시작하는 코멘트가 이 문서에 있던 기록이다) |
 | `MD-n` 의 근거와 경위 (옮기기 전 결정 로그의 원문) | [#705 의 기록 코멘트](https://github.com/hyujun/rtc-framework/issues/705#issuecomment-5974506385) — 고치지 않는 기록이다 |
 | 미결 항목 | 이슈 — §5 |
@@ -46,7 +47,11 @@
 
 - 이슈 제목은 `[EPIC] E<n> — …`, `[FEATURE] E<n>-F<nn> — …` 이고 feature 는 epic 의 sub-issue 다. 실기 epic 의 이슈는 [#613](https://github.com/hyujun/rtc-framework/issues/613) 이고 feature 이슈는 착수할 때 만든다 (§3).
 - label: `type:epic` / `type:feature`, `area:mpc-dualarm`, 필수면 `priority:p0`, 조건부면 `conditional`, sim 전용이면 `sim-only`.
-- feature 를 끝내면 이슈의 Done when 을 항목별로 갱신한다. **결정의 이유는 코드 주석과 `ref/` 에, 경위는 이슈에 적는다. 새 `MD-n` 을 만들지 않는다.**
+- feature 를 끝내면 이슈의 Done when 을 항목별로 갱신한다. **결정의 이유는 코드 주석에 요약으로, 경위는 이슈에 적는다. 새 `MD-n` 을 만들지 않는다.**
+- **작성 규약 (사용자 결정, 2026-10-24 — #950).** 이 폴더는 private 이고 공개 코드는 이 폴더 없이 읽혀야 한다.
+  1. **코드 주석**: 수학 (식 · 기호 정의 · 단위 · frame) 은 구현 헤더 한 곳에 자세히 쓰고, 그 외 (이유 · 경위 · 결정) 는 요약해 간추린다 — 이유는 한 절 이내.
+  2. **참조하지 않는다**: 코드 주석에 이슈 번호 · md 파일 · 절 번호 · 결정 ID (`MD-n` · `D-n` · `E<n>-F<nn>` · 게이트 ID) 를 되도록 쓰지 않는다. 측정 기록이 이슈에만 있을 때만 이슈 번호 하나.
+  3. **md 갱신 (결정 · 진행)**: 사용자가 읽고 지금 상황을 알 수 있는 요약으로 쓴다 — 상태 한 줄, 남은 일, 정하지 않은 것. 경위 · 측정 원문은 이슈 코멘트에.
 - **상태는 한 곳에만 적는다.** feature 의 상태 (다음 · 대기, PR, 결과 한 줄) 는 §3 feature 표의 상태 열이, epic 의 상태는 문서 머리의 상태줄이 (feature 를 세지 않는다), **순서는 feature 면 §3 의 "순서" 줄이, feature 번호 없는 단독 이슈면 §5 의 순서표가** 갖는다 — 다른 절은 그 자리를 가리키고 다시 적지 않는다. 브랜치 계획과 순서 표, epic 이슈의 본문, project 의 readme, 그리고 **`ref/` 문서의 머리와 [README.md](README.md) 의 문서 표** 에는 상태를 적지 않는다 (그 둘은 어느 feature 가 무엇을 구현했는가만 적는다 — 남은 feature 와 그 상태를 적으면 feature 가 끝날 때 어긋난다. 문서 자신의 구현 범위, 곧 어느 절이 구현됐는가는 그 문서의 내용이다) — epic 의 feature 목록과 열림 · 닫힘은 sub-issue 가 보여 주고, 보드의 Done 은 이슈가 닫힐 때 자동으로 옮겨진다. feature 를 끝낼 때 손으로 고치는 곳은 넷이다: §3 의 그 행을 지우고 (끝난 feature 는 표에 없다) [ID_INDEX.md](ID_INDEX.md) §3 에 행을 더한다, 남긴 일이 있으면 §5, 그 feature 이슈의 Done when, epic 이슈의 머지 코멘트. 순서가 바뀌면 그 한 곳을 고친다.
 - feature 착수 전에 Sprint Contract 를 제시하고 컨펌받는다 (AGENTS.md §6.5). 브랜치는 비슷한 feature 를 묶어 만든다 (§3 "브랜치 계획").
 - 수치로 판정하는 게이트는 기준과 N 을 시행 전에 고정하고, 기준을 본 뒤에 바꾸지 않는다. 포구 수로 arm 을 가를 때는 seed 하나로 가르지 않는다 — 같은 arm 도 추정기 seed 에 따라 잡는 투척이 바뀐다 (E1-F20: `ur5e_p1b` 의 `closed_form` 이 seed 둘에서 29 · 31 발을 잡았고 겹침은 5 발). 미정인 값으로 판정하면 `PASS(provisional)` 로 표기한다.
@@ -54,7 +59,7 @@
 - **참고 문서를 구현하는 feature 는 구현 대조표를 낸다 (사용자 결정).** `ref/` 의 설계 자료를 구현하는 feature (끝난 E1-F13 · F14 · F16 · F17 의 표는 #739 · #740 · #742 · #743 에 있다) 는 사용자가 "정확하게 구현됐는가" 를 직접 확인할 수 있게, 참고 문서의 수학 · 구현할 알고리즘 · 구현한 것을 나란히 놓은 표를 그 feature 이슈의 코멘트로 낸다.
   - 행은 참고 문서의 식 · 제약 · 비용 항 하나씩이다. 그 feature 가 맡은 절의 식은 빠짐없이 행으로 둔다 — 구현하지 않는 것도 "구현하지 않음" 과 이유를 적어 남긴다.
   - 착수 때 (Sprint Contract 와 함께): 참고 문서의 수학 (절 · 식) ↔ 구현할 알고리즘 (이산화 · 선형화 · 행의 형태 · 자료 구조 · 호출 순서) ↔ 다르게 하는 곳과 이유. 다르게 하는 곳은 이 표로 승인을 받는다.
-  - 완료 때 (PR 을 올리기 전): 같은 행에 구현한 것 (파일 · 함수, 코드가 실제로 계산하는 식) · 착수 때의 계획과 달라진 곳 · 그 행을 확인하는 테스트를 더한다.
+  - 완료 때 (PR 을 올리기 전): 같은 행에 구현한 것 (파일 · 함수, 코드가 실제로 계산하는 식 — 그 식은 구현 헤더의 주석에 있다) · 착수 때의 계획과 달라진 곳 · 그 행을 확인하는 테스트를 더한다.
   - 대조표는 이슈에 남는다. `ref/` 의 설계 자료는 고쳐 쓰지 않는다 — 구현한 내용을 문서 끝의 새 절에 원래 절과 대응시켜 적고, 그 절에는 최종 구현만 적는다 (사용자 결정, [README.md](README.md) 의 `ref/` 규칙).
 - 기존 test assertion 은 약화하지 않는다 (PROC-6). RT 경로 (`Compute`, 샘플러, CLIK) 는 할당 0 을 게이트로 확인한다. 실험 overlay 와 원자료는 repo 밖에 둔다.
 
