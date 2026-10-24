@@ -187,6 +187,25 @@ TEST(HandCanFdId, ParseHandSide_ExactSpellingsOnly) {
   EXPECT_EQ(side, HandSide::kLeft) << "a failed parse leaves `out` alone";
 }
 
+TEST(HandCanFdId, ParseCmdAck_ExactSpellingsOnly) {
+  CmdAck ack = CmdAck::kEcho;
+  EXPECT_TRUE(ParseCmdAck("none", ack));
+  EXPECT_EQ(ack, CmdAck::kNone);
+  EXPECT_TRUE(ParseCmdAck("echo", ack));
+  EXPECT_EQ(ack, CmdAck::kEcho);
+  ack = CmdAck::kNone;
+  EXPECT_FALSE(ParseCmdAck("Echo", ack));
+  EXPECT_FALSE(ParseCmdAck("pdo", ack));
+  EXPECT_FALSE(ParseCmdAck("", ack));
+  EXPECT_EQ(ack, CmdAck::kNone) << "a failed parse leaves `out` alone";
+  // CmdAckName() is the spelling ParseCmdAck() takes back.
+  for (const CmdAck a : {CmdAck::kEcho, CmdAck::kNone}) {
+    CmdAck back = a == CmdAck::kEcho ? CmdAck::kNone : CmdAck::kEcho;
+    EXPECT_TRUE(ParseCmdAck(CmdAckName(a), back));
+    EXPECT_EQ(back, a);
+  }
+}
+
 // ── Frame layouts ───────────────────────────────────────────────────────────
 
 TEST(HandCanFdLayout, Sizes) {
