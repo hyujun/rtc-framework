@@ -1,4 +1,4 @@
-// ── The reach bound on the shipped catch sub-models (L3 §4.1) ────────────────
+// ── The reach bound on the shipped catch sub-models ──────────────────────────
 //
 // The searches refuse a candidate whose IK target is farther from the arm than
 // the bound, without running the IK. That is only sound if the bound is a

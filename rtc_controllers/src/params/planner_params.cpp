@@ -1,4 +1,4 @@
-// Parser for `catching.planner.*` (S6). See planner_params.hpp.
+// Parser for `catching.planner.*`. See planner_params.hpp.
 #include "rtc_controllers/catching/planner_params.hpp"
 
 #include "catching_yaml_read.hpp"
@@ -63,7 +63,7 @@ YAML::Node Section(const YAML::Node& parent, const char* key, const std::string&
 }
 
 /// A finite number inside [lo, hi], or the fallback when absent. `TBD` is NOT
-/// accepted: these keys have documented defaults (L3 §6), so a TBD here is a
+/// accepted: these keys have documented defaults, so a TBD here is a
 /// profile that meant something and did not say what.
 double ReadBounded(const YAML::Node& sec, const char* key, const std::string& path, double fallback,
                    double lo, double hi) {
@@ -79,7 +79,7 @@ double ReadBounded(const YAML::Node& sec, const char* key, const std::string& pa
   }
   if (!std::isfinite(d) || d < lo || d > hi) {
     Reject(Key(path) + " = " + Spelling(v) + " is outside [" + std::to_string(lo) + ", " +
-           std::to_string(hi) + "] (L3 §6)");
+           std::to_string(hi) + "]");
   }
   return d;
 }
@@ -247,7 +247,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
     }
   }
 
-  // Joint groups (E3-F02): names and device joint names only — the binding
+  // Joint groups: names and device joint names only — the binding
   // resolves them against the device (ResolveJointGroups), and each segment
   // block reads its per-group values by these names.
   if (const YAML::Node groups = planner["groups"]; groups) {
@@ -405,9 +405,8 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
   // rather than silently run on the eta_jump default.
   for (const char* retired : {"e_jump_max", "ed_jump_max"}) {
     if (sw && sw.IsMap() && sw[retired]) {
-      Reject(
-          Key(std::string("search.grid.switch.") + retired) +
-          " was replaced by planner.search.grid.switch.eta_jump (L3 §4.7, an acceleration budget)");
+      Reject(Key(std::string("search.grid.switch.") + retired) +
+             " was replaced by planner.search.grid.switch.eta_jump (an acceleration budget)");
     }
   }
   out.switch_eta_jump =
@@ -439,11 +438,11 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
   out.score.penalty =
       ReadBounded(score, "penalty", "search.grid.score.penalty", out.score.penalty, 0.0, 1e9);
 
-  // `search.grid.workspace` (the catch box, decision I) is not read: the
-  // search no longer judges where the catch point is (L3 §4.9). A tree that
+  // `search.grid.workspace` (the removed catch box) is not read: the
+  // search no longer judges where the catch point is. A tree that
   // still writes it is the binding's to park on (kRemovedCatchingKeys).
 
-  // ── Segment MPC (MPC E1-F03) ─────────────────────────────────────────────────
+  // ── Segment MPC ────────────────────────────────────────────────────────────
   // `planner.segment.mode` and, under `mpc`, `switch_margin` and `eta_v` are
   // ParseCatchingParams' (the validator judges them); the rest is read here.
   const YAML::Node segment = Section(planner, "segment", "segment");
@@ -505,7 +504,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
              ") would have fewer than 3 blocks");
     }
   }
-  // Per joint group (E3-F02): `groups.<name>`, a `planner.groups` name.
+  // Per joint group: `groups.<name>`, a `planner.groups` name.
   d.n_groups = static_cast<int>(out.groups.size());
   if (const YAML::Node gmap = mpc["groups"]; gmap) {
     if (!gmap.IsMap()) {
@@ -610,7 +609,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
       ReadBounded(publish, "catch_pos_err_max", "segment.mpc.publish.catch_pos_err_max",
                   d.catch_pos_err_max, 1e-6, 1.0);
 
-  // The pre-catch part (E1-F08). Its nodes and the stop's share the
+  // The pre-catch part. Its nodes and the stop's share the
   // payload's node capacity and the core's block array.
   const YAML::Node approach = Section(mpc, "approach", "segment.mpc.approach");
   const int n_pre_cap = std::min(kMaxSegmentNodes - d.n_nodes, kMaxSegmentNodes - d.n_blocks);

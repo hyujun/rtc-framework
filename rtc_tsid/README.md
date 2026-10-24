@@ -103,7 +103,7 @@ const rtc::tsid::CommandOutput out =
 
 `kinematics/clik_reference.hpp`. TSID 가속도 적분의 대안으로, 측정 상태에 anchor 한 velocity-level CLIK one-step reference `(q_ref, v_ref)` 를 단일 box-constrained QP 로 만든다. Robot-agnostic 이며 arm/hand velocity index 는 컨트롤러가 주입한다. 호출 형태는 단일 SE3 과제 · 위치 + 접근축 과제 · 다중 frame (`MultiFrameInput`) 세 가지다.
 
-옵션 (속도·위치 box, 평활, twist feedforward, 가속 제약, 제동 거리 한계, 상대 과제, 자세 군), 진단 (`LastSolve()`), frame 규약, 입력 검증(NUM-7) 의 사양은 **전부 `clik_reference.hpp` 의 머리 주석과 `Config` 필드 주석**이 갖는다. 옵션은 기본 off 이고 off 에서는 기존 출력과 비트 일치한다 (`test_clik_golden`). 보조 헤더는 `kinematics/se3_error.hpp` (kinematics·dynamics 공유 SE(3) 오차, 식은 [L5](../docs/dynamic_catching/ref/L5_joint_cmd.md)) · `kinematics/relative_jacobian.hpp` 다.
+옵션 (속도·위치 box, 평활, twist feedforward, 가속 제약, 제동 거리 한계, 상대 과제, 자세 군), 진단 (`LastSolve()`), frame 규약, 입력 검증(NUM-7) 의 사양은 **전부 `clik_reference.hpp` 의 머리 주석과 `Config` 필드 주석**이 갖는다. 옵션은 기본 off 이고 off 에서는 기존 출력과 비트 일치한다 (`test_clik_golden`). 보조 헤더는 `kinematics/se3_error.hpp` (kinematics·dynamics 공유 SE(3) 오차) · `kinematics/relative_jacobian.hpp` 다.
 
 ### QPSolverWrapper
 
@@ -182,7 +182,6 @@ rtc_tsid/
 
 ## 더 읽기
 
-- CLIK 식·구조 결정: [L5 joint cmd](../docs/dynamic_catching/ref/L5_joint_cmd.md) · [다중 frame CLIK 정식화](../docs/dynamic_catching/ref/mpc_multiframe_clik_formulation.md)
 - NUM-7 입력 유한성 가드의 근거·실측: [invariants-rationale.md](../docs/reference/invariants-rationale.md) §NUM-7 의 실측
 - 테스트 명령·카운트 측정: [docs/testing.md](../docs/testing.md) §Test 측정
 - 규칙: [invariants.md](../agent_docs/invariants.md) (RT · ARCH-1 · ARCH-2)

@@ -163,10 +163,10 @@ using ObjectStateCallback = std::function<void(const std::vector<ObjectStateInfo
 // steady clock the rest of the machine runs on.
 //
 // WHY A LANE AND NOT A TOPIC. /sim/status carries sim_time already, but on a
-// 1 Hz WALL timer — five hundred times too slow to see the phase error D-3 is
-// about, and sampled on the wrong clock to boot. Nothing else in this package
+// 1 Hz WALL timer — five hundred times too slow to see the sim-vs-wall phase
+// error, and sampled on the wrong clock to boot. Nothing else in this package
 // writes per-step state: there is no file writer anywhere in it. So the
-// measurement substrate for D-3 (and therefore S3.1a) did not exist.
+// measurement substrate for that phase error did not exist.
 //
 // WHY NOT JUST STAMP THE BALL TRUTH WITH SIM TIME. Putting mjData::time into
 // header.stamp would change the stamp's EPOCH, and ball_perception's
@@ -174,13 +174,13 @@ using ObjectStateCallback = std::function<void(const std::vector<ObjectStateInfo
 // topic BY TIMESTAMP (tolerance: the profile's
 // evaluation.time_alignment_tolerance_s), so moving one topic's clock axis and
 // not the other silently breaks both; moving the stack onto a sim epoch needs
-// rtc to publish /clock and everything to run use_sim_time — an S5/S6
-// decision. What the ball publisher does instead (2026-09-22) keeps the wall
+// rtc to publish /clock and everything to run use_sim_time — a separate
+// decision. What the ball publisher does instead keeps the wall
 // epoch and only removes the stepper's wake jitter: both ball topics are
 // stamped with the sim-time axis laid onto the wall from the launch instant
 // (ProjectileBallSample::stamp_steady_ns), so
 // consumers still see ROS system time, paired as before. This lane remains the
-// sim↔steady correspondence table that the D-3 phase error is measured from.
+// sim↔steady correspondence table that the phase error is measured from.
 struct SimClockSample {
   std::uint64_t step{0};
   double sim_time_sec{0.0};
@@ -189,7 +189,7 @@ struct SimClockSample {
   /// Rows sharing a value belong to the same trial.
   std::uint64_t launch_seq{0};
   /// Whether the ball was in flight. Together with launch_seq this cuts the
-  /// FLIGHT window out of the run, which is the only window D-3's delta means
+  /// FLIGHT window out of the run, which is the only window the phase error δ means
   /// anything over: delta is measured from the launch instant and accumulates,
   /// so letting a trial run to the next launch would report the idle time
   /// between throws as clock error.
@@ -637,12 +637,12 @@ class MuJoCoSimulator {
 
     ProjectileBallConfig projectile_ball;
 
-    // Per-step clock phase lane (D-3 / S3.1a). Off by default: it costs a ring
+    // Per-step clock phase lane. Off by default: it costs a ring
     // write per step and a file on disk, and nothing outside a measurement run
     // wants either.
     bool clock_lane_enabled{false};
 
-    // Ball contact truth lane (S3.3). Same deal — measurement runs only.
+    // Ball contact truth lane. Same deal — measurement runs only.
     bool ball_contact_lane_enabled{false};
 
     // 멀티 그룹 설정 (robot_response + fake_response)
@@ -734,7 +734,7 @@ class MuJoCoSimulator {
     sync_cv_.notify_all();
   }
 
-  /// Launch with the state the CALLER names (`/sim/launch_ball_at`, D-14).
+  /// Launch with the state the CALLER names (`/sim/launch_ball_at`).
   /// Returns false — and stages nothing — when the model carries no projectile
   /// ball or any component is non-finite; `error` then says which.
   ///

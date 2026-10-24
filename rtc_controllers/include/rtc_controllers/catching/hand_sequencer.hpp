@@ -1,19 +1,19 @@
-// ── Hand sequencer (L6 §5.3, dynamic_catching S7.1) ──────────────────────────
+// ── Hand sequencer ───────────────────────────────────────────────────────────
 // What the hand is told to do, tick by tick, over one trial:
 //
 //   Open ──Ready──▶ Preshape ──(t_cmd, after Commit)──▶ Close ──ρ≥η or timeout──▶ Hold
 //     ▲                ▲                                                             │
 //     └──Home──        └────────────── at q_pre ◀── Release ◀──────Release───────────┘
 //
-// THE HAND RULE (#537 S7 decision Q4, 2026-09-23). `q_open` is used only while
+// THE HAND RULE. `q_open` is used only while
 // the arm is homing; from the moment the arm is at its wait pose the hand
 // waits at `q_pre`, and that is its posture from ARMED through COMMITTED. So
 // there is no timed preshape (`t_c − T_pre`): Preshape is entered by the
 // supervisor's `Ready()`, and Release ends at `q_pre` rather than at `q_open`.
 //
-// THE CLOSE INSTANT (L6 §4.3). t_cmd = t_c − T_close_lead, from the FROZEN t_c
+// THE CLOSE INSTANT. t_cmd = t_c − T_close_lead, from the FROZEN t_c
 // the supervisor commits to and the hand profile — one source, so the planner's
-// own `t_cmd_ns` is a record, not an input (#537 S7, C-14). The command goes
+// own `t_cmd_ns` is a record, not an input. The command goes
 // out on the first tick with now ≥ t_cmd − h/2 (`HandCommandDueRounded`): the
 // tick nearest t_cmd, so the error is at most h/2 on a regular tick grid
 // instead of up to h late. `now` is the REAL axis — T_arm is the arm servo's
@@ -23,8 +23,8 @@
 // below), the clock (`now` is an argument, so the core is deterministic under
 // test), and the output latch the caller falls back to while this is
 // inactive. An aborting supervisor simply keeps calling Update: a close that is
-// already committed completes on time (L7 hand policy: ABORT_SAFE continues
-// the current phase), and one that is not stays at q_pre.
+// already committed completes on time (ABORT_SAFE continues the current
+// hand phase), and one that is not stays at q_pre.
 //
 // Pure numeric core: fixed-size, no allocation, noexcept, no ROS. A non-finite
 // measurement never produces a transition by itself — ρ is then 0 and the hand
@@ -66,7 +66,7 @@ struct HandSequencerConfig {
   /// How long before the catch instant t_c the close is commanded: the
   /// profile's `robot.hand.T_close_lead` as the binding resolved it for the
   /// t_c its planner publishes. Apart from the closure time below — a hand may
-  /// be told to close later (or earlier) than its closure takes (E1-F16).
+  /// be told to close later (or earlier) than its closure takes.
   std::int64_t t_close_lead_ns{0};
   /// `robot.hand.T_close_e2e`: how long a closure takes, measured. Read here
   /// only as the floor of the timeout.
@@ -103,7 +103,7 @@ struct HandSequencerConfig {
         return false;
       }
       if (caging_mask[u]) {
-        // ρ divides by this gap (L6 §4.2) — the validator's rho_eps floor is
+        // ρ divides by this gap — the validator's rho_eps floor is
         // what makes it safe; here it only has to be non-zero.
         if (!(std::abs(q_close[u] - q_pre[u]) > 0.0)) {
           return false;
@@ -148,7 +148,7 @@ struct HandSequencerOutput {
   int dof{0};
   bool active{false};
   HandPhase phase{HandPhase::kOpen};
-  /// L6 §4.2 closure fraction, clamped to [0, 1] for reporting (η ≤ 1, so the
+  /// Closure fraction ρ (Rho), clamped to [0, 1] for reporting (η ≤ 1, so the
   /// clamp never changes a Close → Hold decision). 0 on a non-finite reading.
   double rho{0.0};
   /// The close command has gone out in this trial (sticky until the next
@@ -159,7 +159,7 @@ struct HandSequencerOutput {
   /// Settled at `target`: max |q − target| ≤ q_tol and max |q̇| ≤ qd_tol.
   bool at_target{false};
   /// Close ended by T_close_timeout rather than by ρ ≥ η (sticky, like
-  /// close_issued). L6 §5.3's timeout flag.
+  /// close_issued).
   bool timeout{false};
 };
 
@@ -185,7 +185,7 @@ class HandSequencer {
     ClearTrial();
   }
 
-  /// Homing: open to q_open (Q4: the one use of q_open).
+  /// Homing: open to q_open (the one use of q_open).
   void Home() noexcept { Enter(HandPhase::kOpen); }
 
   /// The arm is at its wait pose: wait at q_pre. Cancels a commit that has not
@@ -219,7 +219,7 @@ class HandSequencer {
     return true;
   }
 
-  /// Open to q_pre (Q4) and wait there. From any active phase; the Release
+  /// Open to q_pre and wait there. From any active phase; the Release
   /// ends in Preshape once the hand has settled.
   void Release() noexcept {
     if (!active_) {
@@ -241,7 +241,8 @@ class HandSequencer {
 
   [[nodiscard]] NowReal CloseCommandTime() const noexcept { return close_cmd_; }
 
-  /// L6 §4.2's ρ for a measured hand pose (unclamped; NaN on a non-finite
+  /// ρ = min_{i ∈ C} JointClosureProgress(q_i, q_pre,i, q_close,i) over the
+  /// caging joints C, for a measured hand pose (unclamped; NaN on a non-finite
   /// reading). Public so the supervisor's logs and the tests compute it the
   /// same way the transition does.
   [[nodiscard]] double Rho(std::span<const double> q) const noexcept {
@@ -265,7 +266,7 @@ class HandSequencer {
 
   /// One tick. `q` / `qd` are the hand's measured positions and velocities
   /// (device order, at least `dof` wide — a narrower span is "not readable").
-  /// The two are judged apart (#606): ρ and the hold offset read positions
+  /// The two are judged apart: ρ and the hold offset read positions
   /// only, while "settled" needs both, so a caller whose velocities cannot be
   /// read passes an empty `qd` and gets a hand that closes and holds as usual
   /// but is at nothing. `h_ns` is this tick's period.

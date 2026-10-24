@@ -1,8 +1,8 @@
 """Resolve the ``sim_lanes:=`` launch argument to simulator parameter overrides.
 
 Shared by the per-profile sim launch files that run catching trials. The two
-lanes are the measurement substrate of every S8 trial run — the clock-phase
-lane is the D-3 covariate and the ball-contact lane the sim truth that
+lanes are the measurement substrate of every trial run — the clock-phase
+lane is the covariate for host load and the ball-contact lane the sim truth that
 ``catching_trials`` reads by default from ``<session>/sim/``. A profile that
 lacks the argument cannot produce that truth, so the wiring lives here once
 rather than as a copy per launch file that can drift.
@@ -18,7 +18,7 @@ LANES = ("clock_lane", "ball_contact_lane")
 def sim_lanes_argument_description() -> str:
     return (
         "Write the sim clock-phase lane and the ball contact truth lane to "
-        "<session_dir>/sim/{clock_lane,ball_contact_lane}.csv (S8 trial runs; "
+        "<session_dir>/sim/{clock_lane,ball_contact_lane}.csv (trial runs; "
         "catching_trials joins them with the controller CSVs)."
     )
 

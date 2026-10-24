@@ -1,9 +1,8 @@
-// E1-F03 (#629): the segment MPC's `planner.segment.mpc.*` keys. (The RT-side
+// The segment MPC's `planner.segment.mpc.*` keys. (The RT-side
 // admission and switch rules are test_catching_segment_admission.cpp.) The
 // planner itself — the first segment, the replans and the cycle that publishes them — is tested in
 // test_catching_approach_planner.cpp and test_catching_approach_cycle.cpp
-// (E1-F08); the stop-only planner E1-F03 shipped was removed with its tests
-// (MD-70).
+// (the stop-only planner was removed with its tests).
 #include "rtc_controllers/catching/catching_params.hpp"
 #include "rtc_controllers/catching/mpc_segment_core.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
@@ -32,15 +31,15 @@ using rtc::catching::ParsePlannerParams;
 
 TEST(MpcSegmentParams, DefaultsAreTheShippedHorizon) {
   const MpcSegmentPlannerParams d = rtc::catching::PlannerParams{}.mpc_segment;
-  EXPECT_EQ(d.n_nodes, 14);  // MD-24: 14 × 0.025 s = 0.35 s
+  EXPECT_EQ(d.n_nodes, 14);  // 14 × 0.025 s = 0.35 s
   EXPECT_DOUBLE_EQ(d.dt_s, 0.025);
   EXPECT_EQ(d.DtNs(), 25'000'000);
   EXPECT_EQ(d.n_blocks, 6);
   EXPECT_EQ((std::array<int, 6>{d.blocks[0], d.blocks[1], d.blocks[2], d.blocks[3], d.blocks[4],
                                 d.blocks[5]}),
             (std::array<int, 6>{1, 1, 2, 2, 4, 4}));
-  EXPECT_EQ(d.k_max, 4);               // MD-31
-  EXPECT_DOUBLE_EQ(d.slack_max, 0.1);  // MD-33
+  EXPECT_EQ(d.k_max, 4);
+  EXPECT_DOUBLE_EQ(d.slack_max, 0.1);
   EXPECT_DOUBLE_EQ(d.slack_terminal_max, 0.1);
   EXPECT_DOUBLE_EQ(d.eta_tau, 0.7);
   EXPECT_DOUBLE_EQ(d.m_q, 0.05);
@@ -128,8 +127,8 @@ TEST(MpcSegmentParams, BlocksForShrinksTheLargestTrailingBlock) {
   EXPECT_FALSE(MpcSegmentBlocksFor(d, 14, b, n));
 }
 
-// E1-F08 (#661): the pre-catch keys. n_pre_max defaults to 0 — no pre-catch
-// grid, with which the MPC segment planner does not configure (MD-70).
+// The pre-catch keys. n_pre_max defaults to 0 — no pre-catch grid, with which
+// the MPC segment planner does not configure.
 TEST(MpcSegmentParams, ApproachKeysDefaultOff) {
   const MpcSegmentPlannerParams d = rtc::catching::PlannerParams{}.mpc_segment;
   EXPECT_EQ(d.n_pre_max, 0);
@@ -264,7 +263,7 @@ TEST(MpcSegmentParams, RejectsMalformedApproachKeys) {
   }
 }
 
-// MPC MD-91: the relative-velocity slack row's two keys, `catch.rho_v` and
+// The relative-velocity slack row's two keys, `catch.rho_v` and
 // `catch.v_rel_allow`. Off by default — the core then builds no slack variable
 // and no rows, so a profile without the keys solves what it solved before.
 TEST(MpcSegmentParams, VelocitySlackKeysDefaultOffAndParse) {
@@ -377,7 +376,7 @@ TEST(MpcSegmentParams, TheDesignKeysDefaultToTheCoresOwnValues) {
   EXPECT_EQ(d.solver_eps_abs, core.solver.eps_abs);
   EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel);
   EXPECT_EQ(d.solver_eps_primal_inf, core.solver.eps_primal_inf);
-  EXPECT_EQ(d.ref_speed_fraction, 0.9);  // the planner's own former constant (MD-62)
+  EXPECT_EQ(d.ref_speed_fraction, 0.9);  // the planner's own former constant
   // An absent section changes nothing either.
   const auto absent =
       ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {m_q: 0.05}}}")).mpc_segment;

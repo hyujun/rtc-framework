@@ -1,7 +1,7 @@
-"""Drive N launch trials against a running simulator (D-3 / S3.1a).
+"""Drive N launch trials against a running simulator (clock phase error).
 
-Spec: L8 §4.5. The measurement wants
-"per configuration (2 robots), >= 200 launches" of clock phase error. This issues
+The measurement wants >= 200 launches of clock phase error per robot
+configuration. This issues
 those launches against an already-running ``mujoco_simulator`` node and leaves
 the recording to the node's clock lane; ``analyze_clock_phase`` reads the CSV
 afterwards.
@@ -11,7 +11,7 @@ the second is the one that matters: a stated launch does not consume the seeded
 RNG, so a trial series can be replayed exactly; and every trial starts the ball
 from the same release state, so a difference between trials is a difference in
 the machine rather than in the throw. A sampled series would confound the two
-and the distribution would carry throw variance that D-3 is not about.
+and the distribution would carry throw variance the clock phase is not about.
 
 **The ball is reset between trials.** The lane closes a trial's window when the
 ball stops being active, and delta accumulates from the launch instant, so a
@@ -19,9 +19,9 @@ trial that ran until the next launch would report the gap between throws as
 clock error.
 
 This does not decide anything. It produces the CSV; ``analyze_clock_phase``
-reports clock phase error as a COVARIATE, not a pass/fail (D-S8-4 (c)) —
-``eps_clk_alloc`` is still not chosen (it needs r_cap, TBD-HAND-04), but the
-tool no longer treats that as a verdict pending a threshold.
+reports clock phase error as a COVARIATE, not a pass/fail —
+``eps_clk_alloc`` is still not chosen (it needs the hand's capture radius
+r_cap).
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         "--trials",
         type=int,
         default=200,
-        help="launches to issue (L8 §4.5 proposes >= 200 per configuration)",
+        help="launches to issue (>= 200 per configuration is proposed)",
     )
     parser.add_argument(
         "--flight-s",

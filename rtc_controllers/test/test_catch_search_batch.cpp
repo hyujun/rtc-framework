@@ -1,4 +1,4 @@
-// ── The offline batch of the planner's search (L3 §4.1) ──────────────────────
+// ── The offline batch of the planner's search ────────────────────────────────
 //
 //   1. A row is the direct call's result: the same wake handed to
 //      `CatchSearch::Plan` by hand gives the row the batch wrote, cell for cell.
@@ -338,7 +338,7 @@ TEST(CatchSearchBatch, TheCsvCarriesThePlanBitExactlyAndLeavesNoPlanEmpty) {
   EXPECT_NE(empty.at("plan_reason"), "0");
   EXPECT_NE(empty.at("n_in_window"), "0");
   // Ten metres off is past the arm's reach: the pre-filter refused every
-  // candidate and the IK ran on none (L3 §4.1).
+  // candidate and the IK ran on none.
   EXPECT_EQ(empty.at("rej_too_far"), empty.at("n_in_window"));
   EXPECT_EQ(empty.at("n_ik"), "0");
   EXPECT_EQ(empty.at("rej_ik"), "0");
@@ -562,7 +562,7 @@ TEST(CatchSearchBatchBinding, ReadsBothSearches) {
   EXPECT_EQ(nlp.limits.armature.cwiseAbs().maxCoeff(), 0.0);
 }
 
-// A search on a CHAIN of a wider device (E3-F01, #640): `n_dev` is the
+// A search on a CHAIN of a wider device: `n_dev` is the
 // device's joint count, `device_of_model` an injection into it; the segment
 // planner's map is sized by ITS model (`segment_nv`) and may give its own
 // device map — a permutation of the whole device.
@@ -985,8 +985,8 @@ TEST(CatchPlanBatch, TheCsvKeepsTheSearchColumnsAndEndsWithWallUs) {
   }
 }
 
-// A first segment solved from the search's solution of a chain, widened
-// (E3-F01): the batch says so beside `segment_from_search`, which stays 0 for
+// A first segment solved from the search's solution of a chain, widened:
+// the batch says so beside `segment_from_search`, which stays 0 for
 // it — the segment is the planner's own solve.
 TEST(CatchPlanBatch, TheCsvSaysWhenTheSegmentStartedFromTheSearchsSolution) {
   const int nv = 6;

@@ -147,7 +147,7 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   //    misconfigured threads anonymous: `ps -L` and verify_rt_runtime.sh key
   //    threads by name, so the thread whose config failed was the one they
   //    could not find, and two roles sharing a slot could not be told apart
-  //    (dynamic_catching S6 R-1 found this on an unprivileged development host).
+  //    (seen on an unprivileged development host).
   {
     char name_buf[16];
     std::strncpy(name_buf, cfg.name, sizeof(name_buf) - 1);

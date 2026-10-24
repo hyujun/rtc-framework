@@ -69,8 +69,8 @@ class ValueDigest {
 
 // Every field of each struct, in declaration order — except the blocks and
 // fields that were added for one implementation or for the log after the
-// constants were recorded: SearchStats::nlp (the NLP search's block, E1-F14),
-// SegmentRecord::docking (the mpc_docking planner's block, E1-F18),
+// constants were recorded: SearchStats::nlp (the NLP search's block),
+// SegmentRecord::docking (the mpc_docking planner's block),
 // SegmentRecord's stop_line_* / stop_dev_* / stop_along_end (the stop against
 // the ball's line, #713), its mpc_*_us (the mpc core's split of a solve on a
 // real clock, #716) and path_* (the closing-window path, #716), and
@@ -86,7 +86,7 @@ inline void AddSearchStats(ValueDigest& h, const catching::SearchStats& s) noexc
   h.Add(s.n_ik);
   h.Add(s.n_pass);
   // In the layout the constants were recorded with: six counts, the fifth the
-  // catch box's (JudgeReject::kWorkspace, removed with that gate — L3 §4.9). No recorded catch
+  // catch box's (JudgeReject::kWorkspace, removed with that gate). No recorded catch
   // had a candidate that gate removed, so its count is the zero it always was
   // — and the constants stay a pin on what the search does.
   // The count added after them (JudgeReject::kTooFar, the reach bound) is not

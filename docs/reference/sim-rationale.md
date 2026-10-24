@@ -106,28 +106,28 @@ S = r·|ω⊥| / |v|. 던지는 속도 (2–10 m/s, Re ≈ 10⁴–6×10⁴) 는
 
 그래서 두 공 토픽의 stamp 는 `ProjectileBallSample::stamp_steady_ns` = 발사 wall 시각 + (sim 시각 − 발사 sim 시각) / `max_rtf` 를 발행 시점의 steady↔system 오프셋으로 ROS 시각에 변환한 값이다.
 
-- **epoch 은 wall 그대로** (ROS system time, `/clock` 없음) 이고 바뀐 것은 지터뿐이다. wall 과의 차이는 그 비행 안에서 stepper 가 뒤처지거나 (stamp 가 wall 보다 늦음) 따라잡은 (앞섬) 양, 즉 D-3 의 위상 오차 δ 이며 wake 지터가 아니다.
-- stamp 는 wall 을 수십 ms 앞설 수 있다. sim 에서는 소비자의 future 허용치가 그 폭을 덮어야 한다 — ball_perception profile `max_future_skew_s` 0.1 s, 컨트롤러 `io.future_tol` 도 sim overlay 에서는 같은 자릿수 (L1 §6).
-- **기각한 변형**: 앞서지 않게 발행 순간으로 clamp. sim 이 발사 pace 를 앞설 때마다 stamp 가 wall 로 떨어져 wake 지터가 그대로 돌아온다 (2026-09-22 재실측: 25 ms 초과 3.8 %, T_det max 0.41 s). 소비자의 stale 판정은 수신 steady 시각 기준 (D-2) 이라 뒤처진 stamp 는 계약에 어긋나지 않는다.
+- **epoch 은 wall 그대로** (ROS system time, `/clock` 없음) 이고 바뀐 것은 지터뿐이다. wall 과의 차이는 그 비행 안에서 stepper 가 뒤처지거나 (stamp 가 wall 보다 늦음) 따라잡은 (앞섬) 양, 즉 sim↔wall 위상 오차 δ 이며 wake 지터가 아니다.
+- stamp 는 wall 을 수십 ms 앞설 수 있다. sim 에서는 소비자의 future 허용치가 그 폭을 덮어야 한다 — ball_perception profile `max_future_skew_s` 0.1 s, 컨트롤러 `io.future_tol` 도 sim overlay 에서는 같은 자릿수.
+- **기각한 변형**: 앞서지 않게 발행 순간으로 clamp. sim 이 발사 pace 를 앞설 때마다 stamp 가 wall 로 떨어져 wake 지터가 그대로 돌아온다 (2026-09-22 재실측: 25 ms 초과 3.8 %, T_det max 0.41 s). 소비자의 stale 판정은 수신 steady 시각 기준이라 뒤처진 stamp 는 계약에 어긋나지 않는다.
 - 발사 전에 쌓인 sim↔wall 지연은 비행의 stamp 에 들어가지 않는다. anchor 가 발사 순간이므로 sync timeout 으로만 step 하던 구간이나 pause 로 sim 이 초 단위로 뒤처져 있어도 stamp 는 wall 에서 시작한다. loop 시작 기준 anchor 였다면 그 지연이 모든 stamp 에 박혀 컨트롤러가 계산하는 포구 시각이 그만큼 이르게 틀린다.
 - `max_rtf: 0` (무제한) 이면 대응 기준이 없어 발행 순간의 `now()` 를 쓴다. 이때는 stamp 축의 동역학 자체가 틀리므로 추정기를 붙이는 run 은 `max_rtf: 1.0` 으로 돌린다.
 - 두 토픽이 같은 stamp 를 받으므로 ball_perception 의 truth↔camera stamp 짝짓기는 영향이 없다.
-- **stamp 를 sim 시각 epoch 으로 바꾸지 않는 이유**: ball_perception 의 `recorder_node` · `evaluator_node` 가 `/sim/ball/ground_truth` 와 카메라 토픽을 stamp 로 짝짓기 때문에 (`evaluation.time_alignment_tolerance_s`) 한쪽만 축을 바꾸면 둘 다 조용히 깨진다. 스택 전체를 sim epoch 으로 옮기려면 rtc 가 `/clock` 을 내고 모두가 `use_sim_time` 으로 돌아야 하며 그것은 S5/S6 결정이다.
+- **stamp 를 sim 시각 epoch 으로 바꾸지 않는 이유**: ball_perception 의 `recorder_node` · `evaluator_node` 가 `/sim/ball/ground_truth` 와 카메라 토픽을 stamp 로 짝짓기 때문에 (`evaluation.time_alignment_tolerance_s`) 한쪽만 축을 바꾸면 둘 다 조용히 깨진다. 스택 전체를 sim epoch 으로 옮기려면 rtc 가 `/clock` 을 내고 모두가 `use_sim_time` 으로 돌아야 하며 그것은 별개의 결정이다.
 
 ### `/sim/launch_ball_at` 이 필요했던 이유
 
-`std_srvs/Trigger` 는 요청 필드가 없어 한 투척을 고정한 채 다른 변수만 바꿔 재실행할 수 없었다 (D-14). 같은 writer 로 가는 두 번째 경로이며 RNG 를 소비하지 않으므로 시드 sweep 중간에 끼워 넣어도 sweep 이 동일하게 재생된다. writer 가 warm start · 적용력을 0 으로, 자세를 단위 quaternion 으로 되돌려 같은 숫자를 두 번 보내면 비트 단위로 같은 궤적이다. 필드 · 거부 집합의 SSoT 는 `rtc_msgs/srv/LaunchBall.srv` 주석이다.
+`std_srvs/Trigger` 는 요청 필드가 없어 한 투척을 고정한 채 다른 변수만 바꿔 재실행할 수 없었다. 같은 writer 로 가는 두 번째 경로이며 RNG 를 소비하지 않으므로 시드 sweep 중간에 끼워 넣어도 sweep 이 동일하게 재생된다. writer 가 warm start · 적용력을 0 으로, 자세를 단위 quaternion 으로 되돌려 같은 숫자를 두 번 보내면 비트 단위로 같은 궤적이다. 필드 · 거부 집합의 SSoT 는 `rtc_msgs/srv/LaunchBall.srv` 주석이다.
 
-## Clock phase lane (D-3 측정)
+## Clock phase lane
 
 `/sim/status` 가 `sim_time` 을 싣지만 1 Hz wall 타이머라 위상 오차에 500 배 느리고 샘플링 클럭 자체가 틀렸다. 이 패키지에는 파일 writer 도 없었다. lane 은 완료된 step 마다 `(step, sim_time_sec, steady_ns, dropped_total)` 을 남긴다.
 
 - 물리 스레드는 링에 넣기만 하고 파일 열기 · 포맷 · 쓰기는 노드 executor 가 한다.
 - 링이 가득 차면 샘플을 버리되 세고, 누적값을 **매 행에** 적는다. 끝에 한 번만 적으면 언제 넘쳤는지 알 수 없는데 넘친 구간이 위상 오차가 가장 컸을 구간이다. `dropped_total > 0` 이면 분포의 꼬리를 신뢰할 수 없으므로 `drain_rate_hz` 를 올려 다시 잰다.
 - `csv_path` 가 비면 거부한다. 측정 run 의 유일한 산출물을 아무도 지정하지 않은 경로에 쓰지 않는다.
-- 이 lane 은 sim↔steady 대응표를 준다. "sim 축으로 보간" 에 실제로 필요한 것과 D-3 위상 오차의 측정이 그것이다.
+- 이 lane 은 sim↔steady 대응표를 준다. "sim 축으로 보간" 에 실제로 필요한 것과 sim↔steady 위상 오차 δ 의 측정이 그것이다.
 
-## Ball contact truth (S3.3)
+## Ball contact truth
 
 기존 contact lane 은 `mjSENS_CONTACT` 센서 기반이고 로봇 group 범위라 어느 group 에도 속하지 않는 공을 보지 못한다. 그래서 공이 닿아 있는 연속 substep 구간 하나를 episode 로 보고 CSV 한 줄을 남긴다.
 

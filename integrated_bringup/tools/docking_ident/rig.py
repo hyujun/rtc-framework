@@ -1,6 +1,6 @@
 """The docking identification rig: the sim's ball flown into the preshape hand.
 
-dynamic_catching E1-F15 (#741). The planner's capture set is a property of a
+The planner's capture set is a property of a
 hand, a posture pair and a ball, and it is measured here: the arm is held at
 the wait pose, the hand settles at ``q_pre``, a ball arrives along a straight
 line in the catch frame, and ``q_close`` is commanded at an instant fixed
@@ -445,7 +445,7 @@ class DockingRig:
         d.qvel[self.ball_v : self.ball_v + 3] = self.rot @ np.asarray(velocity, dtype=float)
 
     def progress(self) -> float:
-        """ρ: the closure progress of the caging set (L6 §4.2), now."""
+        """ρ: the closure progress of the caging set, now."""
         q = self.data.qpos
         return min(
             joint_progress(float(q[self.hand_qpos[i]]), self.cfg.q_pre[i], self.cfg.q_close[i])

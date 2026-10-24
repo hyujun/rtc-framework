@@ -478,9 +478,9 @@ class DemoWbcController final : public RTControllerInterface {
 
   /// The MPC solve thread, or null before the first activation that spawned
   /// it. Read-only observation for tests that check where the `mpc` layout
-  /// role's threads are and whether they run (dynamic_catching S6 R-1: the
-  /// catching planner shares this role, and a controller switch must leave
-  /// exactly one of the two running).
+  /// role's threads are and whether they run (the catching planner shares
+  /// this role, and a controller switch must leave exactly one of the two
+  /// running).
   [[nodiscard]] const rtc::mpc::MPCThread* GetMpcThread() const noexcept {
     return mpc_thread_.get();
   }

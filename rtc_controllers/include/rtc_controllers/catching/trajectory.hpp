@@ -1,19 +1,20 @@
-// ── Shared snapshot types of the catching core (dynamic_catching S1.2) ───────
+// ── Shared snapshot types of the catching core ───────────────────────────────
 // The POD payloads that cross threads through rtc::SeqLock:
 //
-//   TrajectorySnapshot — vision prediction, written by the nrt ingress
-//                        (L1), read every RT tick (L2) and by the planner (L3)
-//   PlanSnapshot       — planner (L3) → RT tick (L4/L7)
-//   SegmentSnapshot  — planner (L3) → RT tick: the segment MPC's stop segment
-//                        as joint nodes (MPC plan E1-F02, MD-27)
+//   TrajectorySnapshot — vision prediction, written by the nrt ingress,
+//                        read every RT tick and by the planner
+//   PlanSnapshot       — planner → RT tick
+//   SegmentSnapshot    — planner → RT tick: the segment MPC's stop segment
+//                        as joint nodes
 //
 // SeqLock requires trivially copyable payloads, and Eigen::Vector3d is not one,
 // so vectors are std::array<double, 3> and the computing side views them with
-// Eigen::Map (L0 §5.2, L3 §5.3). Every instant is an absolute steady-ns
-// BallTime (L0 §4.5); relative seconds exist only inside the numeric core.
+// Eigen::Map. Every instant is an absolute steady-ns BallTime (time_types.hpp);
+// relative seconds exist only inside the numeric core.
 //
-// This header is the single owner of the trajectory capacity kCap (L0 §5.2). It
-// is shared by L1/L2/L3 so that none of them depends on another for the type.
+// This header is the single owner of the trajectory capacity kCap. It is
+// shared by the ingress, the sampler and the planner so that none of them
+// depends on another for the type.
 #pragma once
 
 #include <array>
@@ -27,11 +28,10 @@ namespace rtc::catching {
 
 /// Compile-time capacity of one predicted trajectory [points].
 ///
-/// PROVISIONAL (D-15 / S0.7, user decision 2026-09-19): 40 holds ≈1.95 s at
-/// the 0.05 s sim-profile spacing, twice the largest point count the S0.7 sweep
-/// needed. The run-time bound n_max ≤ kCap comes from S3.6; if S3.6 needs more,
-/// raise this and re-run the S1 gates (ID_INDEX §3). The snapshot is
-/// copied whole every RT tick (D-21 forbids gating the copy on
+/// Provisional: 40 holds ≈1.95 s at the 0.05 s sim-profile spacing, twice the
+/// largest point count a horizon sweep needed. The run-time bound is
+/// n_max ≤ kCap (TrajLimits); raise this if n_max needs more. The snapshot is
+/// copied whole every RT tick (the copy is never gated on
 /// SeqLock::sequence()), so this constant IS the per-tick copy cost.
 inline constexpr int kCap = 40;
 
@@ -100,7 +100,7 @@ inline constexpr int kMaxSegmentNodes = 24;
 /// supported maximum, not a robot's joint count — the model's nv is checked
 /// against it at configure. Deliberately NOT kMaxPlanNv: the payload is copied
 /// whole by the RT's SeqLock read every tick, so this constant is that copy's
-/// cost and its retry window against the planner's store (MD-27). At 20 the
+/// cost and its retry window against the planner's store. At 20 the
 /// payload is about 12.2 KB (measured: #827); at 32 it would be 19.4 KB.
 inline constexpr int kMaxSegmentNv = 20;
 
@@ -108,8 +108,8 @@ inline constexpr int kMaxSegmentNv = 20;
 /// axis, converted once on receipt by ConvertRemoteStamp + SampleBallTime).
 /// Position, velocity and acceleration are in the MODEL world (the Pinocchio
 /// universe the planner and CLIK work in): the ingress converts the vision
-/// frame once on receipt (L3 §4.2 — the two can differ by a rigid transform,
-/// e.g. a model rooted at a frame rotated from the vision world).
+/// frame once on receipt (the two can differ by a rigid transform, e.g. a
+/// model rooted at a frame rotated from the vision world).
 struct TrajSample {
   std::int64_t t_ns{0};
   std::array<double, 3> p{};  // [m]   model world
@@ -118,20 +118,20 @@ struct TrajSample {
 };
 
 /// Identity a snapshot carries so that consumers can reject a stale or
-/// mismatched one (D-22, D-23). The trajectory snapshot, the planner-side
+/// mismatched one. The trajectory snapshot, the planner-side
 /// covariance buffer and PlanSnapshot all carry the same four values.
 struct ProvenanceToken {
   std::uint64_t activation_generation{0};  // base ActivationGeneration() at ingress
-  std::uint64_t generation{0};             // vision track epoch (D-4)
-  std::uint64_t snapshot_sequence{0};      // monotone; the ONLY "is new" signal (D-21)
+  std::uint64_t generation{0};             // vision track epoch
+  std::uint64_t snapshot_sequence{0};      // monotone; the ONLY "is new" signal
   std::int64_t traj_recv_ns{0};            // steady receive instant — source age input
 };
 
 /// Vision prediction as the RT tick and the planner see it.
 ///
 /// `n` is untrusted until Check() has accepted it against [n_min, n_max]; every
-/// reader bounds-checks it before indexing `s` (the reference sampler indexed
-/// first and flagged later — an out-of-range read at n > capacity).
+/// reader bounds-checks it before indexing `s` (indexing first reads out of
+/// range at n > capacity).
 struct TrajectorySnapshot {
   ProvenanceToken token{};
   std::int32_t n{0};
@@ -139,7 +139,7 @@ struct TrajectorySnapshot {
   std::array<TrajSample, kCap> s{};
 };
 
-/// Why a plan is absent or a candidate was dropped (L3 §5.2, one code per gate).
+/// Why a plan is absent or a candidate was dropped (one code per gate).
 enum class PlanReason : std::uint8_t {
   kNone = 0,
   kUncertainty,
@@ -152,17 +152,17 @@ enum class PlanReason : std::uint8_t {
   kRollout,
   kErrorBudget,
   kImpulse,
-  kHorizonShort,  // received horizon below the requirement (D-15)
+  kHorizonShort,  // received horizon below io.horizon_min (diagnosed, not rejected)
   kBudgetExceeded,
   kInputNonFinite,
 };
 
-/// Planner → RT payload (L3 §5.2). Field set frozen here; the planner fills it
-/// in S6. Instants are absolute steady ns; t_c / t_cmd / γ-profile times are on
-/// the BallTime axis and are compared against now_lead / now per L0 §4.5.
+/// Planner → RT payload. Instants are absolute steady ns; t_c / t_cmd /
+/// γ-profile times are on the BallTime axis and are compared against
+/// now_lead / now as time_types.hpp assigns.
 struct PlanSnapshot {
   ProvenanceToken token{};
-  std::uint64_t rt_iteration{0};  // RT state snapshot the plan was computed from (D-22)
+  std::uint64_t rt_iteration{0};  // RT state snapshot the plan was computed from
   std::int64_t rt_state_ns{0};    // its steady instant — state age input
   std::int64_t publish_ns{0};     // when the planner published this
 
@@ -177,7 +177,7 @@ struct PlanSnapshot {
   double gamma_gf{0.0};
   std::int64_t gamma_t0_ns{0};  // BallTime axis, evaluated against now_lead
   std::int64_t gamma_t1_ns{0};
-  double gamma_min{0.0};  // γ-window lower bound (diagnostic, D-8)
+  double gamma_min{0.0};  // γ-window lower bound (diagnostic)
 
   /// The catch posture, DEVICE order: entry d is device joint d's, and means
   /// something only for the joints of `joint_set` (the others are zero).
@@ -194,8 +194,8 @@ struct PlanSnapshot {
   /// segment planner refuses a plan whose set is empty or disagrees with `nv`
   /// (PlanJointsWithin; SegmentOutcome::kNoState).
   JointSet joint_set{0};
-  double w5{0.0};  // catchability manipulability, gate definition (D-18)
-  double w6{0.0};  // 6-row variant, always recorded alongside (C-3)
+  double w5{0.0};  // catchability manipulability, 5-row — the gated value
+  double w6{0.0};  // 6-row variant, recorded alongside, never pooled with w5
 
   double score{0.0};
   double sigma_c{0.0};
@@ -218,28 +218,28 @@ struct PlanSnapshot {
          (plan.joint_set & ~model_set) == 0U;
 }
 
-/// Planner → RT: the segment MPC's stop segment (MPC plan E1-F02, MD-27). A
+/// Planner → RT: the segment MPC's stop segment. A
 /// SIBLING of PlanSnapshot on its own SeqLock, not a field of it: the RT stops
 /// taking PlanSnapshots once it has committed (JudgePlan too_late / repeat),
 /// and the stop segment is re-planned after that, up to k_max grid points past
-/// t_c (MD-31).
+/// t_c.
 ///
 /// Nodes are joint states in the arm's DEVICE order — the order PlannerRtState
 /// and PlanSnapshot::q_star speak — at t0_ns + k·dt_ns, k = 0..n_nodes. Between
 /// nodes the jerk is constant (jerk_segment.hpp), so the RT reproduces exactly
 /// the trajectory the QP optimised and derives the hand's pose and twist from
-/// it by FK (MD-9). Storage is node-major with a fixed stride of kMaxSegmentNv:
+/// it by FK. Storage is node-major with a fixed stride of kMaxSegmentNv:
 /// entry (joint j, node k) is `[k * kMaxSegmentNv + j]`, which an Eigen::Map with
 /// OuterStride<kMaxSegmentNv> views as the n × (N+1) node matrix the sampler
 /// takes, without a copy.
 ///
 /// Instants are absolute steady ns on the LEAD axis (t_c is BallTime, which
-/// the RT compares against now_lead; L0 §4.5). t0_ns is the EFFECTIVE instant
+/// the RT compares against now_lead). t0_ns is the EFFECTIVE instant
 /// t_eff — t_c for the pre-catch solve, a later grid point for a post-catch
-/// replan (MD-10, MD-31) — never "t_c" by assumption. All grid arithmetic is
+/// replan — never "t_c" by assumption. All grid arithmetic is
 /// integer ns so that t0_ns lands exactly on t_c + k·dt_ns.
 ///
-/// TWO SPACINGS (MD-54, MD-60). An APPROACH–stop segment (n_pre > 0) starts
+/// TWO SPACINGS. An APPROACH–stop segment (n_pre > 0) starts
 /// n_pre pre-catch intervals of dt_pre_ns before t_c and continues with the
 /// n_nodes − n_pre stop intervals of dt_ns after it: node n_pre is the catch
 /// node at t_c, and node 0 is t_c − n_pre·dt_pre_ns (k0 is 0). n_pre = 0 is
@@ -247,7 +247,7 @@ struct PlanSnapshot {
 /// SegmentNodeTimeNs() is the one place a node's
 /// instant is computed.
 ///
-/// THE CATCH INTERVAL'S OWN LENGTH (E1-F14, #740). A search that lets the
+/// THE CATCH INTERVAL'S OWN LENGTH. A search that lets the
 /// catch instant move inside its candidate's cell stretches ONE interval — the
 /// last one before the catch node — and leaves every pre-catch node where it
 /// was. dt_catch_ns is that interval's length: node n_pre − 1 is at
@@ -255,8 +255,7 @@ struct PlanSnapshot {
 /// node 0 is t_c − (n_pre − 1)·dt_pre_ns − dt_catch_ns. 0 means "the same as
 /// dt_pre_ns" and is the ONLY way to say so: a writer whose catch interval
 /// came out at dt_pre_ns writes 0, and the validator refuses dt_catch_ns equal
-/// to dt_pre_ns — one grid, one encoding, so a payload without the field is
-/// read by exactly the arithmetic it was read by before the field existed.
+/// to dt_pre_ns — one grid, one encoding.
 struct SegmentSnapshot {
   // activation_generation and track generation of the followed plan. A
   // segment carries the PLAN's track (its first segment is packed from the
@@ -264,7 +263,7 @@ struct SegmentSnapshot {
   // latest consumed track need not be after the freeze. snapshot_sequence /
   // traj_recv_ns stay 0.
   ProvenanceToken token{};
-  std::uint64_t rt_iteration{0};  // RT state the stop was predicted from (D-22)
+  std::uint64_t rt_iteration{0};  // RT state the stop was predicted from
   std::int64_t rt_state_ns{0};
   std::int64_t publish_ns{0};
 
@@ -286,7 +285,7 @@ struct SegmentSnapshot {
   std::array<double, kMaxSegmentNv*(kMaxSegmentNodes + 1)> qd{};   // [rad/s]
   std::array<double, kMaxSegmentNv*(kMaxSegmentNodes + 1)> qdd{};  // [rad/s²]
 
-  // The QP's own account of the published solution (MD-33 publish gate).
+  // The QP's own account of the published solution (the publish gate reads it).
   double slack_max{0.0};           // fraction of τ_max
   double slack_terminal_max{0.0};  // node N — static torque at the stop posture
   double tau_ratio_max{0.0};       // linearised max |τ/τ_max|, nodes 1..N
@@ -309,7 +308,7 @@ inline constexpr std::int64_t kMaxSegmentDtPreNs = 1'000'000'000;
 /// catch instant moves by less than one pre-catch spacing inside its cell.
 inline constexpr std::int64_t kMaxSegmentDtCatchNs = 2 * kMaxSegmentDtPreNs;
 
-/// Instant of node k of a two-spacing grid (MD-54): pre-catch nodes at
+/// Instant of node k of a two-spacing grid: pre-catch nodes at
 /// t0 + k·dt_pre, the catch node at t_c, stop nodes at t_c + (k − n_pre)·dt;
 /// with n_pre = 0, t0 + k·dt. The grid rule lives here — the payload's node
 /// instants and the planner's own grid both read it.
@@ -400,7 +399,7 @@ static_assert(std::is_trivially_copyable_v<ProvenanceToken>);
 static_assert(std::is_trivially_copyable_v<TrajectorySnapshot>);
 static_assert(std::is_trivially_copyable_v<PlanSnapshot>);
 static_assert(std::is_trivially_copyable_v<SegmentSnapshot>);
-// The size MD-27 budgets: three node blocks of kMaxSegmentNv × (kMaxSegmentNodes + 1)
+// The budgeted size: three node blocks of kMaxSegmentNv × (kMaxSegmentNodes + 1)
 // and a header. Raising a capacity fails here on purpose — the RT copies this
 // payload every tick, so a larger one is a copy cost to measure first (#827).
 static_assert(sizeof(SegmentSnapshot) < 12 * 1024);

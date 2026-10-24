@@ -213,7 +213,7 @@ struct DeviceState {
   std::array<bool, kMaxSensorGroups> inference_enable{};    // per-group enable flag
   int num_inference_groups{0};
   // Per-group receipt time and sample counter of the inference (fingertip
-  // sensor) lane — dynamic_catching D-24 (a).
+  // sensor) lane.
   //
   // WHY, given `inference_enable` already exists. That flag is each backend's
   // OWN verdict, reached by its own rule (mujoco: a per-tip miss counter
@@ -241,8 +241,8 @@ struct DeviceState {
   // its own leaves it at 0, and a consumer must then fall back to the age.
   //
   // Both are per GROUP (fingertip), not per value: a lane can go quiet on one
-  // finger while the others keep reporting, and that is the case D-24 is
-  // about. Same mirror-seam caveat as the hole masks — DeviceStateCache holds
+  // finger while the others keep reporting, and that is the case these fields
+  // exist for. Same mirror-seam caveat as the hole masks — DeviceStateCache holds
   // the twin of each field and RtControllerNode copies them across; a field
   // dropped there compiles and hands controllers a permanent 0, which here
   // reads as "never received" and fails closed rather than silently fresh.
@@ -273,7 +273,7 @@ struct DeviceState {
 }
 
 // Age of one sensor group's most recent sample, or a negative value when that
-// group has never reported (dynamic_catching D-24).
+// group has never reported.
 //
 // The "never received" answer is deliberately NOT "infinitely old": those two
 // states differ in what they license. An age says a sample existed and has

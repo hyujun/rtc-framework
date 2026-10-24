@@ -19,21 +19,19 @@ namespace rtc::catching {
 namespace {
 
 // ── Invented YAML keys ───────────────────────────────────────────────────
-// None of these are named by any dynamic_catching doc as a schema field —
-// each place a doc marks a value "provisional" (L0 §5.3), it does so in
-// prose or a table 근거 column, not with a boolean key, EXCEPT the catch
-// frame (D-17, L5 §11), which already has one (`provisional: true`) but
+// Docs do not mark a value "provisional" with a boolean key, EXCEPT the catch
+// frame, which already has one (`provisional: true`) but
 // lives in the robot's `urdf:` tree, a different YAML root than `catching:` —
-// CheckCatchFrameProvisional (S2.3a) applies the same rule to it from the
+// CheckCatchFrameProvisional applies the same rule to it from the
 // model config. For the provisional groups this validator DOES own,
 // the chosen key sits as a sibling of the group's other fields, mirroring
 // the catch frame's own placement:
-//   - `reference.provisional`                              (L4 §6, whole block)
-//   - `core.ball.provisional`                              (D-12 공 사양)
-//   - `planner.search.grid.catchability.manipulability_min.provisional` (D-18)
-//   - `robot.hand.provisional`                              (L6 §6, whole profile)
-//   - `supervisor.deadline.provisional`                     (D-S9-D1, both deadlines)
-//   - `joint_cmd.lag.provisional`                           (#537 Q5, T_arm)
+//   - `reference.provisional`
+//   - `core.ball.provisional`
+//   - `planner.search.grid.catchability.manipulability_min.provisional`
+//   - `robot.hand.provisional`
+//   - `supervisor.deadline.provisional`                     (both deadlines)
+//   - `joint_cmd.lag.provisional`                           (T_arm)
 // All of them default to `true` (fail-closed: unconfirmed until the YAML says
 // otherwise), matching how every other provisional flag in this repo defaults
 // to blocking the real arm rather than trusting silence.
@@ -72,7 +70,7 @@ YAML::Node ReadSection(const YAML::Node& parent, const char* key) {
   return sec.node;
 }
 
-/// Read a scalar that may be the literal string "TBD" (or, per L0 §5.3, an
+/// Read a scalar that may be the literal string "TBD" (or an
 /// unparseable/non-finite number — treated the same way). An absent key takes
 /// `fallback` (the doc default, itself possibly still-TBD); a present key
 /// that is neither a number nor "TBD" is refused. The READING is
@@ -150,9 +148,9 @@ void ReadHandPoseArray(const YAML::Node& seq, const char* key, std::size_t dof,
 
 /// Parse `robot.hand.q_pre`/`q_close` (+ optional `caging_mask`, `q_open`).
 /// `q_pre`/`q_close` must be TBD together or given together — a doc has no
-/// notion of "half a hand profile" (L6 §6). `caging_mask` defaults to "every
-/// joint is checked" when absent, the fail-closed reading of L6 §4.2 (it names
-/// no default). `q_open` (L6 §5.1) is not part of the §4.2 caging pair: an
+/// notion of "half a hand profile". `caging_mask` defaults to "every
+/// joint is checked" when absent, the fail-closed reading (no default is
+/// named). `q_open` is not part of the caging pair: an
 /// absent one leaves `q_open_tbd` set for the validator to report as a
 /// still-TBD active key, while a present one must match the pair's length.
 HandProfile ReadHandProfile(const YAML::Node& hand_node) {
@@ -162,23 +160,23 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
   out.eta_close = ReadTbdDouble(hand_node, "eta_close", out.eta_close);
   out.T_close_e2e = ReadTbdDouble(hand_node, "T_close_e2e", out.T_close_e2e);
   // Absent → HandProfile::CloseLead() answers T_close_e2e (the two were one
-  // key before E1-F16). An explicit value, or an explicit `TBD`, is the
+  // key before the docking keys). An explicit value, or an explicit `TBD`, is the
   // profile's design lead.
   out.T_close_lead_given = static_cast<bool>(hand_node["T_close_lead"]);
   out.T_close_lead = ReadTbdDouble(hand_node, "T_close_lead", out.T_close_lead);
 
-  // ── Sequencer keys (S7.1) ─────────────────────────────────────────────────
-  // `T_pre` is refused by name: #537 S7 decision Q4 removed the time-based
-  // preshape (the hand waits at q_pre from the moment the arm is at its wait
-  // pose), and a profile still carrying the key was written for a sequencer
-  // that no longer exists — its author should hear that, not have it ignored.
+  // ── Sequencer keys ─────────────────────────────────────────────────────
+  // `T_pre` is refused by name: the time-based preshape was removed (the hand waits at q_pre
+  // from the moment the arm is at its wait pose), and a profile still carrying the key was
+  // written for a sequencer that no longer exists — its author should hear that, not have it
+  // ignored.
   if (hand_node["T_pre"]) {
     Reject(
-        "robot.hand.T_pre was removed (S7: the hand waits at q_pre, there is no timed "
+        "robot.hand.T_pre was removed (the hand waits at q_pre, there is no timed "
         "preshape) — delete the key");
   }
   out.T_hold = ReadTbdDouble(hand_node, "T_hold", out.T_hold);
-  // Absent → the documented rule, 2 × T_close_e2e (#537 S7 D-S7-1), derived
+  // Absent → the documented rule, 2 × T_close_e2e, derived
   // here rather than stored in the profile so a re-measured T_close_e2e moves
   // the timeout with it. An explicit value (or an explicit `TBD`) overrides.
   if (hand_node["T_close_timeout"]) {
@@ -194,7 +192,7 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
   }
   out.q_tol = ReadOptional(hand_node, "q_tol", out.q_tol);
   out.qd_tol = ReadOptional(hand_node, "qd_tol", out.qd_tol);
-  // `capture` (D-S8-8 (b)): present = enabled, and then every threshold must
+  // `capture`: present = enabled, and then every threshold must
   // be given — a half-written block is the validator's to report, not a
   // default to guess.
   // Presence is tested on the raw key: ReadSection answers an absent section
@@ -284,7 +282,7 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
     }
   }
 
-  // q_open (L6 §5.1): absent or the literal "TBD" leaves the flag set; a
+  // q_open: absent or the literal "TBD" leaves the flag set; a
   // present value must be a well-formed array of the pair's length, because
   // defaulting a malformed one would read a typo as "still TBD".
   const YAML::Node q_open = hand_node["q_open"];
@@ -324,12 +322,12 @@ BallSpec ReadBallSpec(const YAML::Node& ball_node) {
 
 CatchingParams ParseCatchingParams(const YAML::Node& node) {
   if (!node || !node.IsMap()) {
-    Reject("must be a map (the `catching:` tree, CATCHING_MASTER.md §6)");
+    Reject("must be a map (the `catching:` tree)");
   }
   CatchingParams out;
 
   // The two selectors first: a function that does not run has no say in
-  // whether this profile parses (E1-F16).
+  // whether this profile parses.
   const YAML::Node planner = ReadSection(node, "planner");
   const YAML::Node search = ReadSection(planner, "search");
   const YAML::Node segment = ReadSection(planner, "segment");
@@ -520,8 +518,8 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   out.supervisor_deadline_provisional = ReadOptional(deadline, "provisional", true);
   const YAML::Node ready = ReadSection(supervisor, "ready");
   if (ready["wait_pose"]) {
-    // L7 §6 once named the wait pose here as well as under `planner`. Two
-    // keys for one pose is how they end up different (#537 S7, C-10).
+    // The wait pose was once named here as well as under `planner`. Two
+    // keys for one pose is how they end up different.
     Reject("supervisor.ready.wait_pose was removed — the wait pose is planner.wait_pose");
   }
   out.supervisor_ready_pose_tol = ReadOptional(ready, "pose_tol", out.supervisor_ready_pose_tol);
@@ -544,7 +542,7 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
 
   const YAML::Node sim = ReadSection(node, "sim");
   out.sim_ball_drag_k = ReadTbdDouble(ReadSection(sim, "ball"), "drag_k", out.sim_ball_drag_k);
-  // The sim OVERLAY of a shared key (A-S5-2). Nested under `sim:` for the same
+  // The sim OVERLAY of a shared key. Nested under `sim:` for the same
   // reason `sim.ball.drag_k` is: this YAML is loaded by both the sim and the
   // hardware bring-up, so "sim only" has to be said in the schema rather than
   // in which file the value happens to sit.
@@ -560,13 +558,13 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
 namespace {
 
 // ── Validation ────────────────────────────────────────────────────────────
-// L4 §4.7 discrete stability boundary s = omega*h: unstable at/above
+// Discrete stability boundary s = omega*h: unstable at/above
 // 2*sqrt(2) - 2, accuracy recommendation is s <= 0.05. Written as literals
 // (not std::sqrt) so the bound stays a compile-time constant without relying
 // on a constexpr math function the standard does not guarantee pre-C++23.
 inline constexpr double kSqrt2 = 1.4142135623730951;
-inline constexpr double kDiscreteStabilityLimit = 2.0 * kSqrt2 - 2.0;  // ~0.8284271 (L4 §4.7)
-inline constexpr double kDiscreteAccuracyWarnLimit = 0.05;             // L4 §4.7
+inline constexpr double kDiscreteStabilityLimit = 2.0 * kSqrt2 - 2.0;  // ~0.8284271
+inline constexpr double kDiscreteAccuracyWarnLimit = 0.05;
 
 void AddFailure(CatchingValidationReport& report, CatchingValidationReason reason, const char* key,
                 int index = -1) noexcept {
@@ -583,12 +581,12 @@ void AddWarning(CatchingValidationReport& report, CatchingValidationReason reaso
   }
 }
 
-/// Active-config TBD gate (G0-C). Returns true if the caller should go on to
+/// Active-config TBD gate. Returns true if the caller should go on to
 /// check `v.value` (i.e. `v` is active and resolved).
 bool CheckActiveTbd(CatchingValidationReport& report, const TbdDouble& v, const char* key,
                     bool active) noexcept {
   if (!active) {
-    return false;  // inactive-config key: TBD or not, it is not evaluated (G0-C)
+    return false;  // inactive-config key: TBD or not, it is not evaluated
   }
   if (v.tbd) {
     AddFailure(report, CatchingValidationReason::kActiveConfigTbd, key);
@@ -610,7 +608,7 @@ void CheckPositive(CatchingValidationReport& report, const char* key, double val
   }
 }
 
-/// Applies a provisional flag's L0 §5.3 rule: sim warns, real-arm blocks.
+/// Applies a provisional flag's rule: sim warns, real-arm blocks.
 void CheckProvisional(CatchingValidationReport& report, const char* key, bool provisional,
                       bool real_arm_config) noexcept {
   if (!provisional) {
@@ -649,7 +647,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
                                                 bool real_arm_config) noexcept {
   CatchingValidationReport report;
 
-  // decision K, FIRST: the report is a fixed-size list that drops what does
+  // The acceleration form, FIRST: the report is a fixed-size list that drops what does
   // not fit, and a caller that missed this entry would go on to set up a CLIK
   // for a profile that named no form. The form has no default — a profile that
   // selects none is not decided yet, and one that still says `box` holds a
@@ -669,7 +667,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   }
 
   // What the configuration selects decides which functions' keys it is held to
-  // (E1-F16): a key of a function that does not run is neither required nor
+  // a key of a function that does not run is neither required nor
   // judged — the rule `planner.segment.mpc.eta_v` below already followed.
   const bool closed_form = params.planner_segment_mode == CatchingSegmentMode::kClosedForm;
   const bool grid = params.planner_search_mode == CatchingSearchMode::kGrid;
@@ -687,7 +685,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   if (CheckActiveTbd(report, params.reference_v_max, "reference.v_max", closed_form)) {
     CheckPositive(report, "reference.v_max", params.reference_v_max.value);
   }
-  // The block as a whole (L0 §5.3). Keyed on `reference` without a trailing
+  // The block as a whole. Keyed on `reference` without a trailing
   // dot — the flag is a property of the profile, not of a field of it, exactly
   // as `robot.hand` and `core.ball` are. A consumer's gate has to match the
   // dotless key too, or a provisional reference reaches a real arm unnoticed
@@ -701,7 +699,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     CheckPositive(report, "reference.a_max", params.reference_a_max.value);
   }
 
-  // planner.search.grid.gamma.eta_v — D-9: 0 < eta_v <= 1. The grid search's.
+  // planner.search.grid.gamma.eta_v — 0 < eta_v <= 1. The grid search's.
   if (CheckActiveTbd(report, params.planner_search_grid_gamma_eta_v,
                      "planner.search.grid.gamma.eta_v", grid)) {
     const double eta_v = params.planner_search_grid_gamma_eta_v.value;
@@ -758,7 +756,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     }
   }
 
-  // planner.search.grid.catchability.manipulability_min.arm_5row (D-18) + its provisional flag.
+  // planner.search.grid.catchability.manipulability_min.arm_5row + its provisional flag.
   const bool manip_resolved =
       CheckActiveTbd(report, params.planner_catchability_manip_min_arm5row,
                      "planner.search.grid.catchability.manipulability_min.arm_5row", grid);
@@ -770,7 +768,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
                      params.planner_catchability_manip_min_provisional, real_arm_config);
   }
 
-  // supervisor.decel.a_dec — > 0 and <= reference.a_max (L7 §4.3). The
+  // supervisor.decel.a_dec — > 0 and <= reference.a_max. The
   // closed_form stop's: a mode that follows segments stops on its last one.
   const bool a_dec_ok =
       CheckActiveTbd(report, params.supervisor_decel_a_dec, "supervisor.decel.a_dec", closed_form);
@@ -781,7 +779,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     }
   }
 
-  // core.ball.* — active in every configuration (L0 §6: "제어 경로에도 필요").
+  // core.ball.* — active in every configuration.
   const bool diameter_ok = CheckActiveTbd(report, params.ball.diameter, "core.ball.diameter", true);
   if (diameter_ok) {
     CheckRange(report, "core.ball.diameter", params.ball.diameter.value, 0.02, 0.3);
@@ -799,13 +797,13 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     CheckProvisional(report, "core.ball", params.ball.provisional, real_arm_config);
   }
 
-  // sim.ball.drag_k — active ONLY in the sim configuration (fixture-only, L0 §1/§6).
+  // sim.ball.drag_k — active ONLY in the sim configuration (fixture-only).
   if (CheckActiveTbd(report, params.sim_ball_drag_k, "sim.ball.drag_k", !real_arm_config)) {
     CheckRange(report, "sim.ball.drag_k", params.sim_ball_drag_k.value, 0.0, 0.2);
   }
 
   // io.* / prediction.* — the vision ingress, active in every configuration
-  // from S5.2 (the controller cannot judge a message's order, age or usable
+  // (the controller cannot judge a message's order, age or usable
   // window without them, and every one of those judgements is fail-closed).
   if (params.io_n_min >= 2) {
     if (params.io_n_min > kCap) {
@@ -840,13 +838,13 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   }
 
   // future_tol: the shared key is active on both axes; the sim override is
-  // active only in sim (A-S5-2), exactly like sim.ball.drag_k.
+  // active only in sim, exactly like sim.ball.drag_k.
   if (CheckActiveTbd(report, params.io_future_tol, "io.future_tol", true)) {
     CheckRange(report, "io.future_tol", params.io_future_tol.value, 1e-4, 1e-2);
   }
   if (!real_arm_config && !params.sim_io_future_tol.tbd) {
     // Its own, much wider range: the sim ball lane's stamps ride the sim time
-    // axis and lead wall by the in-flight phase error (D-3), which is two
+    // axis and lead wall by the in-flight phase error, which is two
     // orders of magnitude above any clock-sync budget. An absent override is
     // not a failure — the configuration then inherits the strict shared value,
     // which is the fail-closed direction.
@@ -870,7 +868,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     }
   }
 
-  // joint_cmd.* / robot.arm.* — the CLIK step, active from S5.3.
+  // joint_cmd.* / robot.arm.* — the CLIK step.
   if (CheckActiveTbd(report, params.joint_cmd_k_p, "joint_cmd.K_p", true)) {
     CheckRange(report, "joint_cmd.K_p", params.joint_cmd_k_p.value, 1.0, 100.0);
   }
@@ -889,7 +887,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   if (params.joint_cmd_max_iter < 1) {
     AddFailure(report, CatchingValidationReason::kRangeViolation, "joint_cmd.qp.max_iter");
   }
-  // decision K: each acceleration form's keys are active only when it is the
+  // The acceleration form: each acceleration form's keys are active only when it is the
   // selected form (an unselected form's TBD is not a reason to refuse). The
   // form itself is judged first, at the top.
   const bool kinematic = params.joint_cmd_accel_constraint == CatchingAccelConstraint::kKinematic;
@@ -915,7 +913,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     CheckRange(report, "robot.arm.limit_margin", params.robot_arm_limit_margin.value, 0.0, 0.3);
   }
 
-  // The WEIGHT ORDERING, not just three ranges (L5 §4.3: w_task ≫ w_arm ≫ μ²).
+  // The WEIGHT ORDERING, not just three ranges.
   // Each weight can be individually sensible while the set is wrong, and the
   // result is a controller that tracks its posture and treats the catch point
   // as a suggestion — plausible motion, missed ball, nothing in any log that
@@ -949,7 +947,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     }
   }
 
-  // supervisor.track_err_abort / n_qp — L7 owns both keys; the joint command
+  // supervisor.track_err_abort / n_qp — the supervisor owns both keys; the joint command
   // layer reports to them, so they are active as soon as it exists.
   if (CheckActiveTbd(report, params.supervisor_track_err_abort, "supervisor.track_err_abort",
                      true)) {
@@ -958,7 +956,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   if (params.supervisor_n_qp <= 0) {
     AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "supervisor.n_qp");
   }
-  // The S7.2 driver's keys (L7 §6).
+  // The supervisor driver's keys.
   if (CheckActiveTbd(report, params.supervisor_stale_committed_max_s,
                      "supervisor.stale_committed_max_s", true)) {
     CheckRange(report, "supervisor.stale_committed_max_s",
@@ -973,7 +971,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     AddFailure(report, CatchingValidationReason::kRangeViolation, "supervisor.homing.eta_a");
   }
   CheckPositive(report, "supervisor.homing.qd_tol", params.supervisor_homing_qd_tol);
-  // The motion deadlines (#537 S9b, D-S9-D1). A TBD or non-positive deadline
+  // The motion deadlines. A TBD or non-positive deadline
   // is refused rather than read as "off": a stop with no bound is the state
   // the key exists to end.
   if (CheckActiveTbd(report, params.supervisor_deadline_stop_s, "supervisor.deadline.stop_s",
@@ -1016,7 +1014,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   //
   // eta_close / T_close_e2e are checked outside the profile branch: each is an
   // independent key with its own report line, so a TBD pose pair does not hide
-  // a second missing value behind one failure (L6 §6).
+  // a second missing value behind one failure.
   if (CheckActiveTbd(report, params.hand.eta_close, "robot.hand.eta_close", true)) {
     CheckRange(report, "robot.hand.eta_close", params.hand.eta_close.value, 0.5, 1.0);
   }
@@ -1051,7 +1049,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     }
     CheckProvisional(report, "robot.hand", params.hand.provisional, real_arm_config);
   }
-  // The sequencer's keys (S7.1, L6 §6). Independent report lines, like η and
+  // The sequencer's keys. Independent report lines, like η and
   // T_close_e2e above, so one missing value does not hide the next.
   if (CheckActiveTbd(report, params.hand.T_hold, "robot.hand.T_hold", true)) {
     CheckRange(report, "robot.hand.T_hold", params.hand.T_hold.value, 0.0, 5.0);
@@ -1066,7 +1064,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
                  "robot.hand.T_close_timeout");
     }
   }
-  // D-S8-6. TBD exactly when T_close_e2e or the poses are (derived from them).
+  // TBD exactly when T_close_e2e or the poses are (derived from them).
   if (CheckActiveTbd(report, params.hand.T_release_timeout, "robot.hand.T_release_timeout", true)) {
     CheckPositive(report, "robot.hand.T_release_timeout", params.hand.T_release_timeout.value);
     // Strictly above, as for the close: this also refuses the 0 s timeout a
@@ -1079,7 +1077,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   }
   CheckPositive(report, "robot.hand.q_tol", params.hand.q_tol);
   CheckPositive(report, "robot.hand.qd_tol", params.hand.qd_tol);
-  // D-S8-8 (b): active only when the section is present.
+  // Active only when the section is present.
   if (const HandCaptureParams& cap = params.hand.capture; cap.enabled) {
     const bool rho_min_ok = CheckActiveTbd(report, cap.rho_min, "robot.hand.capture.rho_min", true);
     const bool rho_max_ok = CheckActiveTbd(report, cap.rho_max, "robot.hand.capture.rho_max", true);
@@ -1131,7 +1129,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     AddFailure(report, CatchingValidationReason::kRangeViolation, "robot.hand.hold.delta_rad");
   }
 
-  // ζ·ω·h (`dt` 기준, L4 §4.7): only meaningful once control_rate and omega
+  // ζ·ω·h (`dt` 기준): only meaningful once control_rate and omega
   // both resolved to a real number.
   if (closed_form && rate_ok && !params.reference_omega.tbd) {
     const double h = 1.0 / control_rate_hz;

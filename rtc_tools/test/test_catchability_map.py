@@ -1,4 +1,4 @@
-"""catchability_map (dynamic_catching S3.5a) — the pure numeric core.
+"""catchability_map — the pure numeric core.
 
 The oracles are independent of the module under test:
 
@@ -107,7 +107,7 @@ def test_derived_k_matches_the_closed_form_and_differs_from_the_docs_value():
     area = math.pi * RADIUS_M**2
     expected = RHO_AIR * CD_TENNIS * area / (2.0 * MASS_KG)
     assert p.drag_k_per_m == pytest.approx(expected, rel=1e-15)
-    # L0 §7 says the documented scalar and the preset Cd are not convertible
+    # The documented scalar and the preset Cd are not convertible
     # into one another; this pins that they indeed do not agree numerically, so
     # nobody "fixes" the model by substituting one for the other.
     assert p.drag_k_per_m == pytest.approx(0.020480, abs=1e-6)
@@ -598,7 +598,7 @@ def test_model_config_translation_adds_a_sub_model_reaching_the_catch_frame(tmp_
 
 
 def _with_shipped_catch_sub_model(tmp_path: Path, tip: str) -> Path:
-    """The shipped config, renamed arm, plus a shipped `<arm>_catch` entry (S6-B R-3)."""
+    """The shipped config, renamed arm, plus a shipped `<arm>_catch` entry."""
     path = _shipped_style_config(tmp_path)
     doc = yaml.safe_load(path.read_text())
     urdf = doc["/**"]["ros__parameters"]["urdf"]
@@ -612,7 +612,7 @@ def _with_shipped_catch_sub_model(tmp_path: Path, tip: str) -> Path:
 
 def test_model_config_uses_the_shipped_catch_sub_model_by_name(tmp_path: Path):
     # The runtime planner plans in `urdf.sub_models.<arm>_catch`; the map must
-    # judge in the SAME sub-model (G3-I), so it takes the shipped one by name
+    # judge in the SAME sub-model, so it takes the shipped one by name
     # instead of emitting its own under another name.
     config = _with_shipped_catch_sub_model(tmp_path, tip="tip")
     urdf = tmp_path / "tiny.urdf"

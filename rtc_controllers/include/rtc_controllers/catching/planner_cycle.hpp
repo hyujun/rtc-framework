@@ -1,13 +1,13 @@
-// ── One planner wake (dynamic_catching S6, L3 §5.3 "한 번 깨어났을 때의 순서") ──
+// ── One planner wake ─────────────────────────────────────────────────────────
 //
 // The whole body of a planner-thread iteration, as a class the thread merely
 // calls: read the three inputs, run the single search entry point
-// (`PlanOnce`, A-4 — the search strategy stays behind it), re-check the
+// (`PlanOnce` — the search strategy stays behind it), re-check the
 // provenance, publish. The THREAD (wake source, scheduling, lifetime) lives in
 // the integration binding; everything that decides what gets published lives
 // here, ROS-free, so it is testable against plain SeqLocks.
 //
-// THE TWO INTERFACES (E1-F12 #738, ARCH-3). A wake calls the search and the
+// THE TWO INTERFACES (ARCH-3). A wake calls the search and the
 // segment planner through CatchSearch (catch_search.hpp) and SegmentPlanner
 // (segment_planner.hpp) only, and owns whichever implementation was installed
 // behind each. "Installed" is "configured": the cycle is handed objects that
@@ -16,19 +16,20 @@
 // package and the tests build each object with its own factory, configure it,
 // and install it (InstallSearch / InstallSegmentPlanner).
 //
-// RT-1~10. The planner may run SCHED_FIFO (D-7a, shares the `mpc_main` role —
-// E-7 decision J), so `Run` allocates nothing, takes no lock, logs nothing and
+// RT-1~10. The planner may run SCHED_FIFO (it shares the `mpc_main` role), so
+// `Run` allocates nothing, takes no lock, logs nothing and
 // throws nothing. Buffers are members sized at construction and filled with
 // SeqLock::LoadInto: the covariance snapshot alone is 11.5 KB.
 //
-// THE MPC SEGMENT PLANNER'S PART (MPC E1-F03 #629, E1-F08 #661). It runs when a
-// segment planner is installed and the optional fifth box is bound; without either, a wake is the
-// search alone and the plan is published by itself. A replan never changes the wake's CycleOutcome
-// (MD-29) — the PlanSnapshot counters and the D-7a latency keep meaning what they meant; the
-// segment account is PlannerCycleRecord::segment.
+// THE MPC SEGMENT PLANNER'S PART. It runs when a segment planner is installed
+// and the optional fifth box is bound; without either, a wake is the search
+// alone and the plan is published by itself. A replan never changes the wake's
+// CycleOutcome — the PlanSnapshot counters and the receive → publish latency
+// keep meaning what they meant; the segment account is
+// PlannerCycleRecord::segment.
 //
 // A search wake that produces a plan also solves its first segment
-// (PlanFirst) and publishes the two as a PAIR (MD-56): segment first, then
+// (PlanFirst) and publishes the two as a PAIR: segment first, then
 // the plan, under one publish_ns — or neither, when the segment is withheld
 // (kHeld). The pair's re-check accepts a newer
 // snapshot of the same track (the first solve can outlast a trajectory
@@ -43,9 +44,9 @@
 // follows that plan, reports the same source segment for the new node 0, and
 // holds no replacement.
 //
-// WHILE A PLAN IS FOLLOWED THE SEARCH GOES ON, AND MAY REPLACE IT (E1-F16,
-// E1-F17). In APPROACH, until the first catch instant the RT followed since
-// the last reset is within `planner.freeze.t_stop_plan`, a wake runs:
+// WHILE A PLAN IS FOLLOWED THE SEARCH GOES ON, AND MAY REPLACE IT. In APPROACH, until the first
+// catch instant the RT followed since the last reset is within `planner.freeze.t_stop_plan`, a wake
+// runs:
 //   1. THE SEARCH, against the newest prediction and with the segments the RT
 //      reports, so that a candidate's arm motion starts where the arm will be.
 //      It is timed from the wake, and capped: it is handed one prediction
@@ -91,12 +92,10 @@
 // nothing held, and the next wake's search may replace it again under a new
 // id. After `t_stop_plan`, and from COMMITTED on, a wake is the replan alone.
 //
-// WHAT S6-A IMPLEMENTS. The cycle, the provenance handling and a STUB search:
-// `PlanOnce` never produces a candidate, so every search wake publishes a
-// "no plan" snapshot. That is exactly what the controller did before a planner
-// existed (TRACKING self-loops on NO_CATCHABLE_PLAN), so wiring the thread in
-// changes no behaviour — the search itself lands in S6-B/S6-C behind the same
-// entry point.
+// WITHOUT AN INSTALLED SEARCH `PlanOnce` is a stub that never produces a
+// candidate, so every search wake publishes a "no plan" snapshot — what the
+// controller does without a planner (TRACKING self-loops on
+// NO_CATCHABLE_PLAN).
 #pragma once
 
 #include "rtc_base/threading/seqlock.hpp"
@@ -115,14 +114,13 @@
 
 namespace rtc::catching {
 
-/// What one wake did — the per-wake diagnostic record (L3 §8). S6-A carries
-/// the provenance fields; the candidate counts and gate bitmask join in S6-B.
+/// What one wake did — the outcome of the per-wake diagnostic record.
 enum class CycleOutcome : std::uint8_t {
   kIdle = 0,    ///< no RT state yet, or a mode with nothing to plan for
   kNoInput,     ///< no trajectory of the current activation
   kPublished,   ///< a PlanSnapshot (valid or "no plan") was stored
   kSuperseded,  ///< the trajectory or the trial moved during compute — dropped
-  kHeld,        ///< the switching rule kept the RT's current plan (§4.7, G)
+  kHeld,        ///< the switching rule (or the freeze) kept the RT's current plan
 };
 
 [[nodiscard]] constexpr const char* CycleOutcomeName(CycleOutcome o) noexcept {
@@ -186,14 +184,14 @@ struct PlannerCycleRecord {
   CycleOutcome outcome{CycleOutcome::kIdle};
   /// This wake saw the RT's reset epoch move (a trial reset since last wake).
   bool reset_seen{false};
-  /// The covariance box carried the same token as the trajectory (L3 §5.2).
+  /// The covariance box carried the same token as the trajectory.
   bool cov_matched{false};
   std::uint8_t mode{0};
   /// The published plan — meaningful only when `outcome == kPublished`.
   std::uint32_t plan_id{0};
   bool plan_valid{false};
   /// This wake's SEARCH produced a valid plan, published or not. A plan the
-  /// switching rule kept back, or one withheld with its first segment (MD-62),
+  /// switching rule kept back, or one withheld with its first segment,
   /// leaves `plan_valid` false and this true; a wake that ran no search
   /// (idle, no input, monitor, replan) leaves it false.
   bool search_valid{false};
@@ -204,13 +202,13 @@ struct PlannerCycleRecord {
   std::int64_t traj_recv_ns{0};
   /// Steady instants: when the wake started and when the plan was stored
   /// (0 when nothing was stored). `publish_ns − traj_recv_ns` is the
-  /// receive → publish latency D-7a is judged on (L3 §5.3).
+  /// receive → publish latency the planner is judged on.
   std::int64_t wake_ns{0};
   std::int64_t publish_ns{0};
-  /// The search's own account (S6-B): candidate counts, judgement rejects,
+  /// The search's own account: candidate counts, judgement rejects,
   /// the chosen candidate's rank-gate bitmask, the switching decision, timing.
   SearchStats search{};
-  /// The segment planner's account (MPC E1-F03). `outcome == kOff` when it
+  /// The segment planner's account. `outcome == kOff` when it
   /// solved nothing this wake.
   SegmentRecord segment{};
   /// The first segment of a REPLACEMENT that was withheld on this wake: the
@@ -263,7 +261,7 @@ class PlannerCycle {
   /// whatever was there, or none (nullptr). It is handed the cycle's clock
   /// here, and again on every SetClock — whichever order the two calls come
   /// in, its budget is measured on the axis `publish_ns` is stamped on. Without
-  /// a search `PlanOnce` is the S6-A stub ("no plan"). Not while the planner
+  /// a search `PlanOnce` is a stub ("no plan"). Not while the planner
   /// thread runs.
   void InstallSearch(std::unique_ptr<CatchSearch> search) noexcept {
     search_ = std::move(search);
@@ -319,8 +317,8 @@ class PlannerCycle {
   /// One wake. RT-safe. `wake` is the instant the thread woke.
   [[nodiscard]] PlannerCycleRecord Run(NowReal wake) noexcept;
 
-  /// The single search entry point (A-4, S6.6): the installed search's `Plan`,
-  /// the S6-A stub ("no plan") when there is none. `arm` is what the segment
+  /// The single search entry point: the installed search's `Plan`, a stub
+  /// ("no plan") when there is none. `arm` is what the segment
   /// planner reports the RT following, `budget_cap_ns` the bound on the
   /// search's budget, 0 = none (CatchSearch::Plan).
   [[nodiscard]] PlanSnapshot PlanOnce(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
@@ -350,7 +348,7 @@ class PlannerCycle {
   }
 
   /// Test seam: called between a pair's segment Store and its plan Store
-  /// (MPC E1-F08) — the only place the store ORDER is observable without a
+  /// — the only place the store ORDER is observable without a
   /// race.
   void SetPairStoreHookForTesting(PostSearchHook hook, void* context) noexcept {
     pair_store_hook_ = hook;
@@ -371,7 +369,7 @@ class PlannerCycle {
   PostSearchHook pair_store_hook_{nullptr};
   void* pair_store_context_{nullptr};
 
-  // The MPC segment planner's part of a wake (MPC E1-F08): a plan goes out with its
+  // The MPC segment planner's part of a wake: a plan goes out with its
   // first segment, and a followed plan's segment is replanned. Off without a
   // segment box or an installed segment planner — the plan is then published
   // alone.

@@ -1,6 +1,6 @@
 """From the rig's raw verdicts to the numbers the planner is given, and a report.
 
-dynamic_catching E1-F15 (#741). run_ident.py leaves one JSON store per stage
+run_ident.py leaves one JSON store per stage
 under ``$DATA/<profile>/``; this module reads them and applies the arithmetic
 of ``rtc_tools.analysis.catching_capture_set``. It simulates nothing, so the
 whole identification can be re-derived from the raw data at any time — and

@@ -3,37 +3,32 @@
 # A fragment of ../demo_catching_controller.yaml (its `include:` list). The CM
 # merges it into that file's tree; every key keeps its full path.
 #
-# v1's law: the L4 soft-catch reference the arm follows up to t_c, the constant
-# deceleration after it (L7 DECEL). Followed when
+# The law: the soft-catch reference (SoftCatchTranslation) up to t_c, then the
+# constant-deceleration target (DecelTarget). Followed when
 # `planner.segment.mode: closed_form` (the main file).
 #
-# The search ranks its candidates by this law's rollout under both modes
-# (MD-46), on its own copy of these five values
-# (planner.search.grid.reference.*, planner.search.grid.stop.a_dec in
-# search_grid.yaml). Under closed_form the copy must equal what is written
-# here, or the controller parks.
+# The search ranks candidates by this law's rollout under every mode, on its
+# own copy of these five values (planner.search.grid.reference.*,
+# planner.search.grid.stop.a_dec in search_grid.yaml). Under closed_form the
+# copy must equal what is written here, or the controller parks.
 demo_catching_controller:
   catching:
-    # ── The L4 soft-catch reference (L4 §6, S5.3 consumes all four) ──────────
-    # See the ur5e_p1b profile for why the block carries `provisional: true`
-    # rather than leaving `a_max` at TBD.
+    # ── Soft-catch reference (SoftCatchTranslation) ─────────────────────────────
+    # See the ur5e_p1b profile for why the block is `provisional: true`.
     reference:
       provisional: true
       omega: 10.0
       zeta: 1.0
-      # m/s. L4 §6's derived value for this robot (eta_v = 0.9).
+      # m/s. Derived for this robot (eta_v = 0.9).
       v_max: 1.8
-      # m/s^2. Provisional, pending the D-16 revision. S4.4 measured a median
-      # of 79 here and 35-36 under the 10x rotor-inertia assumption; 35 is the
-      # conservative end.
+      # m/s^2. Provisional. Measured torque-limited median 79, 35-36 under a
+      # 10x rotor-inertia assumption; 35 is the conservative end.
       a_max: 35.0
 
-    # ── Deceleration (L7 §6 `supervisor.decel.a_dec`) ─────────────────────────
-    # The constant deceleration of the closed_form DECEL target (L7 §4.3). The
-    # stopping point the search reserves behind each candidate (L3 §4.9) reads
-    # its own copy, planner.search.grid.stop.a_dec.
-    # 10 m/s^2 is the value the S3.5b gate map ran with, confirmed 2026-09-22
-    # (#537). The validator requires a_dec <= reference.a_max.
+    # ── Deceleration (DecelTarget) ──────────────────────────────────────────────
+    # The closed_form DECEL target's constant deceleration. The search's
+    # stopping-point reservation reads its own copy,
+    # planner.search.grid.stop.a_dec. Requires a_dec <= reference.a_max.
     supervisor:
       decel:
         a_dec: 10.0

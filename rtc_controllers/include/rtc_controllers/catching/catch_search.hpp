@@ -1,7 +1,7 @@
-// ── The catch search, as one planner wake calls it (E1-F12 #738, ARCH-3) ─────
+// ── The catch search, as one planner wake calls it (ARCH-3) ─────────────────
 //
 // What PlannerCycle knows of the search that turns a predicted ball into a
-// catch plan: one cycle's candidates in, one PlanSnapshot out (L3 §4, the A-4
+// catch plan: one cycle's candidates in, one PlanSnapshot out (the search's
 // single entry point), plus the three calls that keep the search's per-trial
 // memory in step with what the cycle published and with the RT's trials. Which
 // search runs behind it is the configuration's choice — a wake calls this
@@ -22,7 +22,7 @@
 //
 // ── Contract ──────────────────────────────────────────────────────────────────
 //  • THREAD. Every member below except SetClock is called from
-//    PlannerCycle::Run, on the planner thread — which may run SCHED_FIFO (D-7a). RT-1~10 apply to
+//    PlannerCycle::Run, on the planner thread — which may run SCHED_FIFO. RT-1~10 apply to
 //    all of them: no allocation, no lock, no log, no throw. An implementation sizes its buffers
 //    when it is built and configured, on the non-RT configure path, before it is installed
 //    (PlannerCycle::InstallSearch).
@@ -139,7 +139,7 @@ class CatchSearch {
   /// until the next Plan() or ResetTrial().
   [[nodiscard]] virtual const CatchSolution* Solution() const noexcept = 0;
 
-  /// @brief A wake after the RT committed (monitorOnly, L3 §4.6): record what
+  /// @brief A wake after the RT committed (monitorOnly): record what
   ///        the newest prediction says about the plan the RT follows. Nothing
   ///        is published from it (RT-safe).
   /// @param[out] stats reset, with `publish` false

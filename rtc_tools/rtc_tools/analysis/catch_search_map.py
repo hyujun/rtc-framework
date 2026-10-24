@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Search-acceptance map: which throws the planner's catch search accepts (dynamic_catching L3 §4.1).
+"""Search-acceptance map: which throws the planner's catch search accepts.
 
 ``catchability_map`` asks whether a catch posture exists and ``catch_gate_map``
 whether the gates behind it open, one candidate at a time. This asks the

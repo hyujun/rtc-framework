@@ -254,8 +254,7 @@ TEST_F(RtLoopPipelineTest, PerLaneFreshnessReachesTheControllerUnclipped) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
-// The same seam for the fingertip lane's receipt time and sample counter
-// (dynamic_catching D-24 (a)).
+// The same seam for the fingertip lane's receipt time and sample counter.
 //
 // A THIRD test rather than more assertions in the two above, because this pair
 // fails differently from the masks. A mask dropped from ControlLoop's copy

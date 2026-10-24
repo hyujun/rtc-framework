@@ -1,6 +1,5 @@
 /// @file test_clik_pink_reference.cpp
-/// @brief The two-frame CLIK against pink's solution of the same problems
-///        (E2-F04, #636; formulation §2.2).
+/// @brief The two-frame CLIK against pink's solution of the same problems.
 ///
 /// pink is an independent published implementation of a velocity-level QP IK
 /// with a world frame task, a relative frame task, a posture task and

@@ -6,7 +6,7 @@
 // profile's system model as the CM builds it (`_base.yaml` + `sim.yaml`
 // merged, as the sim launch layers them), one builder per profile per process. Shared by
 // test_demo_catching_controller (the shipped-profile suites) and the allocation gate's second robot
-// (test_demo_catching_alloc_s7).
+// (test_demo_catching_alloc_armed).
 #pragma once
 
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
@@ -100,7 +100,7 @@ inline std::map<std::string, rtc::DeviceNameConfig> ShippedSimConfigs(const std:
       cfg.motor_state_names = dev["motor_state_names"].as<std::vector<std::string>>();
     }
     if (const YAML::Node limits = dev["joint_limits"]; limits) {
-      // Every field the CM carries: the shipped `mpc` law (MD-89) and the
+      // Every field the CM carries: the shipped `mpc` law and the
       // dynamic CLIK read the torque and velocity ratings, not only the box.
       const auto per_joint = [&limits](const char* key) {
         return limits[key] ? limits[key].as<std::vector<double>>() : std::vector<double>{};
@@ -123,7 +123,7 @@ inline std::map<std::string, rtc::DeviceNameConfig> ShippedSimConfigs(const std:
 /// The profile's system model as the CM builds it: every entry of the shipped
 /// `urdf:` block, read from the file. Only the package is swapped, for the
 /// vendored `robot_descriptions` copy at the same relative path — the one
-/// model CI can acquire (ur5e_p1b_test_fixture.hpp has why). Since MD-89 the
+/// model CI can acquire (ur5e_p1b_test_fixture.hpp has why). The
 /// shipped DECEL law is `mpc`, which parks without a model, so a bring-up
 /// test of the shipped file that left the model out would configure a
 /// controller production never builds.

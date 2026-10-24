@@ -101,12 +101,12 @@ namespace rtc::tsid {
 // failure branch leaves q_ref = q_meas, v_ref = 0, and forces the next call to
 // re-anchor to measured).
 //
-// Acceleration constraint (Config::accel_constraint, dynamic_catching decision
-// K). With v̇ ≈ (v − v_c)/dt every form is LINEAR in v, so each is a set of
-// extra inequality rows below the box (C = [Iₙ; C_a]). v_c is the velocity the
-// cache was evaluated at (cache.v — the command velocity under D-6, the same
-// state h and J̇ are evaluated at); only its ARM entries enter, because the
-// hand is commanded elsewhere and its acceleration is not this solve's:
+// Acceleration constraint (Config::accel_constraint). With v̇ ≈ (v − v_c)/dt
+// every form is LINEAR in v, so each is a set of extra inequality rows below
+// the box (C = [Iₙ; C_a]). v_c is the velocity the cache was evaluated at
+// (cache.v — the command velocity under evaluate_at_command, the same state h
+// and J̇ are evaluated at); only its ARM entries enter, because the hand is
+// commanded elsewhere and its acceleration is not this solve's:
 //   kNone      — no acceleration constraint: no extra rows, the QP is the
 //                velocity ∩ position box alone (the default);
 //   kKinematic — the task acceleration J·v̇ + J̇·v_c of the rows the cost
@@ -157,7 +157,7 @@ namespace rtc::tsid {
 //     the limit, at the tick it turns from accelerating to braking.
 // The torque rows stay the hard constraint either way.
 //
-// Several frames in one solve (the MultiFrameInput overload, E2-F04). The cost
+// Several frames in one solve (the MultiFrameInput overload). The cost
 // above with a SUM of task terms — one per FrameTask, each an SE3 task (6
 // rows) or a position + approach-axis task (3 + 2 rows) with its own gain,
 // weight and feed-forward — and the posture term over Config::posture_groups
@@ -216,7 +216,7 @@ class ClikReferenceGenerator {
     // ProxQP outer-iteration cap (≥ 1). The default is the value CLIK always
     // used (QPSolverConfig), so an unset field keeps the legacy solve. Hitting
     // the cap is a failed Compute() with LastSolve().status =
-    // PROXQP_MAX_ITER_REACHED (G5-C3).
+    // PROXQP_MAX_ITER_REACHED.
     int max_iter{20};
     // Per-joint velocity limits [nv] (rad/s or m/s), each finite and > 0.
     // Empty → the scalar v_limit applies to every joint (legacy). When set it
@@ -224,12 +224,12 @@ class ClikReferenceGenerator {
     // collapsed position box.
     Eigen::VectorXd v_limit_per_joint;
     // Smoothing weight w_s ≥ 0 (finite): adds (w_s/2)·‖v − v_prev‖² to the
-    // cost, pulling the command toward the previous one (L5 §4.3). 0 → off.
+    // cost, pulling the command toward the previous one. 0 → off.
     // v_prev is the v_ref of the last successful Compute() (0 after Init /
     // ResetAnchor and after a failed call, whose output command is v_ref = 0).
     // Keep w_s ≪ w_task like the posture weights, or it competes with tracking.
     double w_smooth{0.0};
-    // Command-value evaluation (D-6, L5 §4.2). The caller passes a cache
+    // Command-value evaluation. The caller passes a cache
     // updated at the COMMAND state q_c (its previous QRef() on the arm), not
     // at the measured state, so error, Jacobian and box are evaluated along
     // the commanded path and servo lag stays out of the loop. Then:
@@ -239,12 +239,12 @@ class ClikReferenceGenerator {
     //     QRef() (|Δ| ≤ 1e-12) — otherwise the call fails
     //     with LastSolve().command_mismatch (a wiring error: a measured q
     //     would silently turn this back into measured-state CLIK). Hand
-    //     indices are not checked: the hand is commanded elsewhere (L6);
+    //     indices are not checked: the hand is commanded elsewhere;
     //   - anchor_drift_max must be ≤ 0 (Init throws): there is no measured q
-    //     to bound against; tracking is supervised outside (L7 TRACK_ERR).
+    //     to bound against; tracking is supervised by the caller.
     bool evaluate_at_command{false};
     // Weight of the two approach-axis rows of the position + axis Compute()
-    // overload (L5 §4.3 w_a; finite and > 0). Unused by the SE3 overload.
+    // overload (w_a; finite and > 0). Unused by the SE3 overload.
     double w_axis{0.5};
     // The acceleration constraint (file header). kKinematic and kDynamic each
     // read their own fields below and refuse the other's; kNone refuses both
@@ -347,7 +347,7 @@ class ClikReferenceGenerator {
   /// position gain is SetTaskGain()'s linear part).
   void SetAxisGain(double ka) noexcept { k_axis_ = ka; }
 
-  /// Target of the position + approach-axis task (dynamic_catching L5 §4.2),
+  /// Target of the position + approach-axis task,
   /// all in the base frame of the call. Roll about the axis is left free —
   /// the arm posture term resolves it.
   struct PositionAxisTarget {
@@ -372,7 +372,7 @@ class ClikReferenceGenerator {
   // closed-loop); false = carry forward from the previous q_ref. The first call
   // after Init (and the call after any failure) always re-anchors to measured
   // regardless, so the integrator never starts from an undefined anchor.
-  // twist_ff (optional, D-5): desired TCP twist [linear; angular] in the same
+  // twist_ff (optional): desired TCP twist [linear; angular] in the same
   // axes as the pose error (base-frame aligned), added as
   // r_task = Kx ⊙ e_x + twist_ff, then rotated into the world with the error
   // (file header "Frame contract"). nullptr → the legacy law. A non-finite
@@ -384,7 +384,7 @@ class ClikReferenceGenerator {
                              const Eigen::Matrix<double, 6, 1>* twist_ff = nullptr) noexcept;
 
   // Position (3 rows) + approach axis (2 rows) step for a frame whose LOCAL
-  // +z must point along target.axis, e.g. a catch frame (L5 §4.2):
+  // +z must point along target.axis, e.g. a catch frame:
   //   J_p = rf.J rows 0–2 (LOCAL_WORLD_ALIGNED),  r_p = Kx[0:3] ⊙ e_p + v_ff
   //   J_a = S·R_WCᵀ·rf.J rows 3–5,                r_a = S·R_WCᵀ·(K_a·e_a + ω_ff)
   // with S = [I₂ 0] (LOCAL x, y), e_a = rtc::math::se3::AxisAlignError(z_C, a)
@@ -503,7 +503,7 @@ class ClikReferenceGenerator {
   // ‖e_x‖ of the last Compute() (6D mixed: position [m] + rotation [rad]).
   [[nodiscard]] double TcpErrorNorm() const noexcept { return tcp_error_norm_; }
 
-  /// Solver outcome of the last Compute() (dynamic_catching S2.2b, L5 §5.1).
+  /// Solver outcome of the last Compute().
   /// Diagnostic only — it never changes the outputs. Filled on every call;
   /// a call rejected by its preconditions leaves reached_solve = false.
   struct SolveDiagnostics {
@@ -546,7 +546,7 @@ class ClikReferenceGenerator {
 
   /// Forget the integration anchor and the previous velocity: the next
   /// Compute() re-anchors q_ref to cache.q and the smoothing term starts from
-  /// v_prev = 0. Call at activation, re-arm and E-STOP release (L5 §4.2) —
+  /// v_prev = 0. Call at activation, re-arm and E-STOP release —
   /// leaving v_prev from the previous run would pull the first tick toward a
   /// stale velocity. RT-safe.
   void ResetAnchor() noexcept {

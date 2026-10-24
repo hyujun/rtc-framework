@@ -77,7 +77,7 @@ void CatchingPlannerThread::OnTick() noexcept {
   MarkStateAcquired();
   const rtc::catching::PlannerCycleRecord rec = cycle_.Run(wake);
   MarkComputeDone();
-  // No drain on a reset (L7 §4.8's "drain the wake signal"): signals raised
+  // No drain on a reset: signals raised
   // for the ended trial were consumed by this wake's own wait, and anything
   // pending NOW was raised during this wake — i.e. for the new trial, whose
   // first plan it would delay by a whole wake timeout. A plan computed for the

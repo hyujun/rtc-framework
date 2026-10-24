@@ -1,5 +1,5 @@
 // NLP catch search on the SHIPPED catch sub-models: what one wake costs
-// (E1-F14, #740).
+// (#740).
 //
 // rtc_controllers' own suite runs the search on a synthetic 6R, with a clock
 // that steps on every read, to pin WHAT it decides. How LONG it takes depends
@@ -8,7 +8,7 @@
 // frame and joint ratings, against the real clock.
 //
 // RECORDED, not judged. The capture-set parameters are the docking fixture's
-// synthetic ones (the identified values are E1-F15's) and the host is whatever
+// synthetic ones (the identified values are not shipped) and the host is whatever
 // this runs on, so a threshold here would be a verdict on made-up numbers on an
 // arbitrary machine. What IS asserted is only that the search configures on
 // the shipped models, that the wakes that are timed did the work they are
@@ -117,7 +117,7 @@ struct Rig {
     constants.control_dt = 0.002;
 
     // One candidate per vision period; the segment grid these timings were
-    // recorded on (the one shipped until E1-F19 part 2, #745, shortened the
+    // recorded on (the one shipped until #745 shortened the
     // stop part to 4 × 0.0875 s) — 0.1 s pre-catch intervals, a 7 × 0.05 s
     // stop in blocks 1, 1, 2, 3 — with as
     // many pre-catch intervals as the grid search's shipped horizon (0.95 s)
@@ -395,10 +395,9 @@ TEST(NlpSearchShipped, RecordsHowFarASolveRunsPastAShortShare) {
   }
 }
 
-// The catch instant free inside a candidate's cell (`continuous_tc`, E1-F14
-// PR 2): what the second solve of a candidate costs beside the first, by the
-// number of pre-catch intervals, and what a whole wake costs with it.
-// Recorded, not judged — as everything in this file.
+// The catch instant free inside a candidate's cell (`continuous_tc`): what the second solve of a
+// candidate costs beside the first, by the number of pre-catch intervals, and what a whole wake
+// costs with it. Recorded, not judged — as everything in this file.
 TEST(NlpSearchShipped, RecordsTheContinuousSolveBesideTheFixedOne) {
   for (ShippedArm& shipped : ShippedArms()) {
     ASSERT_TRUE(shipped.rig.arm.model);

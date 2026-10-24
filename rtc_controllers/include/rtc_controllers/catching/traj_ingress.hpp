@@ -1,12 +1,13 @@
-// ── L1 ingress judgement: order, track epoch, staleness ─────────────────────
+// ── Trajectory ingress judgement: order, track epoch, staleness ─────────────
 //
-// The ROS-free half of S5.2. The binding in the integration package owns the
-// `PointCloud2` field map, the byte decode and the SeqLock; everything that
-// DECIDES — is this message in order, is this snapshot still the one we are
-// allowed to use, has it gone stale, has its horizon run out — lives here, so
-// it can be tested against a struct instead of against a publisher (D-1).
+// The ROS-free half of the trajectory ingress. The binding in the integration
+// package owns the `PointCloud2` field map, the byte decode and the SeqLock;
+// everything that DECIDES — is this message in order, is this snapshot still
+// the one we are allowed to use, has it gone stale, has its horizon run out —
+// lives here, so it can be tested against a struct instead of against a
+// publisher.
 //
-// Two axes run through this file and they are not interchangeable (L0 §4.5):
+// Two axes run through this file and they are not interchangeable:
 //
 //   NowReal  — the steady receive axis. Staleness, ages and watchdogs are
 //              judged on it and ONLY on it. `header.stamp` never reaches a
@@ -16,7 +17,7 @@
 //              T_arm later; a horizon that ends before then is exhausted for
 //              the command even though it has not expired in real time.
 //
-// The T_arm ≠ 0 fixture requirement (L0 §4.5) exists because the two axes
+// The T_arm ≠ 0 fixture requirement exists because the two axes
 // coincide at T_arm = 0, which hides every confusion between them.
 
 #pragma once
@@ -32,19 +33,17 @@
 
 namespace rtc::catching {
 
-// ── Order and track epoch (L1 §4.4, A-S5-4) ─────────────────────────────────
+// ── Order and track epoch ───────────────────────────────────────────────────
 
 enum class IngressReject : std::uint8_t {
   kNone = 0,
-  /// A point carries `validity` != VALID. C-1: the whole message is refused
-  /// rather than the point dropped. S3.4 measured zero partial-invalid
-  /// messages over 856 samples, so this is a fail-closed rule with no
-  /// observed cost; the decision to revisit it (C-1) belongs to whoever
-  /// first sees the counter move.
+  /// A point carries `validity` != VALID. The whole message is refused rather
+  /// than the point dropped: zero partial-invalid messages were measured over
+  /// 856 samples, so this fail-closed rule has no observed cost.
   kNotEvaluated = 1,
   /// `snapshot_sequence` at or below the last accepted value WITHIN the same
   /// generation — a duplicate or a message overtaken in flight. Accepting it
-  /// would let an older prediction overwrite a newer one (L1 §4.4, v0.4 M1).
+  /// would let an older prediction overwrite a newer one.
   kStaleSequence = 2,
 };
 
@@ -69,13 +68,13 @@ struct IngressHeader {
 
 /// Accept or reject on order and validity, updating `state` only on acceptance.
 ///
-/// GENERATION CHANGE RESETS THE SEQUENCE EXPECTATION (A-S5-4). The vision node
+/// GENERATION CHANGE RESETS THE SEQUENCE EXPECTATION. The vision node
 /// numbers snapshots within a track epoch; a new epoch may restart at any
 /// value, including one below what the previous epoch reached. Carrying the
 /// expectation across the change would refuse every message of the new track
 /// until it happened to climb past the old high-water mark — a permanent
-/// blindness after a restart, with no error anywhere. S3.4 observed no
-/// rewinds in 856 messages, so this rule costs nothing observed and removes
+/// blindness after a restart, with no error anywhere. No rewinds were
+/// observed in 856 messages, so this rule costs nothing observed and removes
 /// the one failure mode that would be silent.
 ///
 /// The rejection order is validity first: an invalid message tells us nothing
@@ -96,7 +95,7 @@ struct IngressHeader {
   return IngressReject::kNone;
 }
 
-// ── RT-side read (L1 §5.3) ──────────────────────────────────────────────────
+// ── RT-side read ────────────────────────────────────────────────────────────
 
 /// What one tick concluded about the snapshot it is holding.
 struct TrajView {
@@ -111,7 +110,7 @@ struct TrajView {
   /// different reasons in the supervisor: BALL_STALE against HORIZON_EXTRAP.
   bool expired{false};
   /// A snapshot the previous tick had not seen. Judged from the payload's own
-  /// `snapshot_sequence`, never from SeqLock::sequence() — D-21: reading the
+  /// `snapshot_sequence`, never from SeqLock::sequence() — reading the
   /// lock's counter and the payload separately lets a writer land between the
   /// two, pairing a new counter with an old payload and hiding the newest
   /// snapshot for as long as the pattern repeats.
@@ -123,11 +122,10 @@ struct TrajView {
   ///
   /// The sentinel is not cosmetic. `traj_recv_ns` is 0 before the first
   /// message, so a plain `now - recv` reports the STEADY-CLOCK UPTIME as the
-  /// age — 373966 s on the box this was caught on (2026-09-23), on every row
-  /// of every run until the first prediction arrives. Any consumer that
-  /// thresholds on the number, or averages it, silently eats the uptime. -1
-  /// is the same "never" the fingertip lane uses for `tip_age_s`, so the two
-  /// receive-axis lanes read the same way.
+  /// age, on every row of every run until the first prediction arrives. Any
+  /// consumer that thresholds on the number, or averages it, silently eats the
+  /// uptime. -1 is the same "never" the fingertip lane uses for `tip_age_s`,
+  /// so the two receive-axis lanes read the same way.
   std::int64_t age_ns{-1};
 };
 
@@ -141,8 +139,8 @@ struct TrajView {
 /// axis solved this with an explicit `seen` flag; this is the same flag for
 /// the sequence axis.
 ///
-/// `generation` is carried for the OTHER half: A-S5-4 lets a new track epoch
-/// restart its numbering at any value, so a sequence that merely repeats the
+/// `generation` is carried for the OTHER half: a new track epoch may restart
+/// its numbering at any value, so a sequence that merely repeats the
 /// last one is not evidence of a repeat unless the epoch also matches.
 struct ConsumedToken {
   std::uint64_t sequence{0};
@@ -153,10 +151,10 @@ struct ConsumedToken {
 /// Judge a snapshot the caller has already loaded.
 ///
 /// Takes the loaded copy rather than the SeqLock so the decision is testable
-/// against a struct, and so the caller keeps the D-21 obligation where it is
-/// visible: `Load()` unconditionally, once per tick, before calling this.
+/// against a struct, and so the caller keeps the load-once obligation where it
+/// is visible: `Load()` unconditionally, once per tick, before calling this.
 ///
-/// `current_activation` is the controller's `ActivationGeneration()`. D-23: a
+/// `current_activation` is the controller's `ActivationGeneration()`. A
 /// controller-owned subscription stays alive while the controller is inactive
 /// (lifecycle gates publishers, not subscriptions), so without this check the
 /// first tick after re-activation would consume a trajectory received while
@@ -206,7 +204,7 @@ struct ConsumedToken {
 }
 
 /// Whether a snapshot's predicted window is long enough to be worth planning
-/// against (D-15). Shorter than `horizon_min` is a DIAGNOSIS, not a rejection:
+/// against. Shorter than `horizon_min` is a DIAGNOSIS, not a rejection:
 /// the message is well-formed and the ball is real, the prediction simply does
 /// not reach far enough for a commit decision, and the operator needs to see
 /// that as a vision-configuration problem rather than as silence.
@@ -220,22 +218,22 @@ struct ConsumedToken {
   return span < horizon_min_ns;
 }
 
-// ── Covariance (A-3, D-22) ──────────────────────────────────────────────────
+// ── Covariance ──────────────────────────────────────────────────────────────
 
 /// Per-point 6x6 position/velocity covariance, row-major (p_x..v_z), as vision
 /// publishes it. NaN means "not known" for that element and is carried through
 /// unchanged — an unknown element must stay unknown rather than become a zero
 /// that reads as certainty.
 ///
-/// SEPARATE FROM THE TRAJECTORY SNAPSHOT (A-3), not merged into it: the RT tick
+/// SEPARATE FROM THE TRAJECTORY SNAPSHOT, not merged into it: the RT tick
 /// never needs a covariance, and folding 11.5 KB into the payload the tick
 /// copies every cycle would put the planner's data in the RT budget. It
-/// carries the SAME token (D-22) so the planner can refuse a covariance that
+/// carries the SAME token so the planner can refuse a covariance that
 /// does not belong to the trajectory it is holding — the N/N-1 mix-up that
 /// token exists to make impossible.
 ///
-/// Nothing consumes this yet; the consumer is the S6 planner (A-S5-5). It is
-/// filled here because the covariance only exists at ingress — by the time the
+/// The planner's catch search consumes it (CatchSearch). It is filled here
+/// because the covariance only exists at ingress — by the time the
 /// planner runs, the message is gone.
 struct CovarianceSnapshot {
   static constexpr std::size_t kElems = 36;
@@ -246,10 +244,12 @@ struct CovarianceSnapshot {
   std::array<std::array<double, kElems>, kCap> c{};
 };
 
-// ── Prediction jump (L1 §4.4 diagnostic) ────────────────────────────────────
+// ── Prediction jump (diagnostic) ────────────────────────────────────────────
 
 /// Distance between two consecutive predictions of the SAME track, evaluated
-/// at one absolute instant (L1 §4.4's J).
+/// at one absolute instant:
+///   J = ‖p_newer(t*) − p_older(t*)‖ [m],  t* = max(t₀,older, t₀,newer) + eval_offset
+/// with t₀ each snapshot's first sample instant.
 ///
 /// Sampling both at a COMMON instant is the whole point: two predictions
 /// disagree about where the ball will be, and comparing them at their own

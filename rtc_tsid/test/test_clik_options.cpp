@@ -1,6 +1,10 @@
 /// @file test_clik_options.cpp
-/// @brief ClikReferenceGenerator S2.2b options (dynamic_catching, L5 §5.1, gates
-///        G5-A / G5-B / G5-C / G5-C3 — CLIK side only).
+/// @brief ClikReferenceGenerator options, CLIK side only:
+///   - velocity ∩ position box: 1e4 ticks of random target jumps stay inside both
+///     boxes to the solver tolerance;
+///   - position + approach-axis overload: stationary target → position < 1 mm,
+///     axis < 0.5°;
+///   - every option on, both overloads: no heap allocation.
 ///
 /// Every option defaults off; "off ⇒ bit-identical" is the golden-vector
 /// suite's job (test_clik_golden.cpp). This file checks what each option does
@@ -189,7 +193,7 @@ TEST_F(ClikOptionsTest, LastSolveReportsSolverOutcome) {
   EXPECT_EQ(gen.LastSolve().status, -1);
 }
 
-// ── max_iter (G5-C3, CLIK side) ─────────────────────────────────────────────
+// ── max_iter (CLIK side) ────────────────────────────────────────────────────
 
 TEST_F(ClikOptionsTest, MaxIterDefaultIsLegacyValue) {
   EXPECT_EQ(ClikReferenceGenerator::Config{}.max_iter, QPSolverConfig{}.max_iter);
@@ -298,9 +302,9 @@ TEST_F(ClikOptionsTest, PerJointLimitReclampsCollapsedBox) {
   EXPECT_NEAR(gen.VRef()(3), -0.2, kSolverEps);
 }
 
-// ── Velocity ∩ position box under random references (G5-B, CLIK side) ──────
+// ── Velocity ∩ position box under random references (CLIK side) ────────────
 
-// G5-B: 1e4 ticks of random target jumps with the robot tracking q_ref
+// 1e4 ticks of random target jumps with the robot tracking q_ref
 // exactly. Velocity stays inside its box on every tick, and the position
 // inside the box the CLIK was given — both to the solver tolerance.
 TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndPositionBoxes) {
@@ -492,7 +496,7 @@ TEST_F(ClikRestartTest, FailedCallRestartsFromRest) {
   ExpectRestartsFromRest(Restart::kFailedCall);
 }
 
-// ── Twist feedforward (SE3 path, D-5) ───────────────────────────────────────
+// ── Twist feedforward (SE3 path) ────────────────────────────────────────────
 
 // Target moving at constant velocity: the P-only law lags by ≈ v/Kx; the
 // feedforward removes the lag. w_arm is lowered because the arm posture term
@@ -543,7 +547,7 @@ TEST_F(ClikOptionsTest, TwistFeedforwardNonFiniteFailsBeforeSolve) {
   EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
 }
 
-// ── Command-value evaluation (D-6) ──────────────────────────────────────────
+// ── Command-value evaluation (evaluate_at_command) ──────────────────────────
 
 TEST_F(ClikOptionsTest, CommandModeRejectsDriftClamp) {
   auto cfg = BaseConfig();
@@ -631,7 +635,7 @@ TEST_F(ClikOptionsTest, CommandModeDetectsMeasuredStateOnTheArm) {
   EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
 }
 
-// ── Position + approach-axis overload (G5-A, L5 §4.2) ───────────────────────
+// ── Position + approach-axis overload ───────────────────────────────────────
 
 class ClikAxisTest : public ClikOptionsTest {
  protected:
@@ -687,7 +691,7 @@ TEST_F(ClikAxisTest, RejectsInvalidAxisWeight) {
   }
 }
 
-// G5-A: stationary target → position < 1 mm, axis < 0.5°.
+// Stationary target → position < 1 mm, axis < 0.5°.
 TEST_F(ClikAxisTest, StationaryTargetConverges) {
   auto gen = MakeAxisGen(BaseConfig());
   const auto t = Target(0.05, 0.5);
@@ -745,7 +749,7 @@ TEST_F(ClikAxisTest, BaseFrameTargetMatchesWorldTarget) {
   EXPECT_LT((a.VRef() - b.VRef()).cwiseAbs().maxCoeff(), 1e-9);
 }
 
-// L5 §4.7 sanity 2: the axis rows are the frame's LOCAL x, y angular velocity.
+// The axis rows are the frame's LOCAL x, y angular velocity.
 TEST_F(ClikAxisTest, AxisRowsMatchFiniteDifferenceOfLocalRotation) {
   // Step with a pure axis task and read the frame's LOCAL angular velocity
   // from the rotation change: its x, y must equal S·R_WCᵀ·J_ω·v_ref, i.e. the
@@ -794,7 +798,7 @@ TEST_F(ClikAxisTest, InvalidAxisTargetFailsBeforeSolve) {
   EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, -1, t, q_home_, kDt));
 }
 
-// ── RT: every option on, both overloads — no heap allocation (G5-C) ────────
+// ── RT: every option on, both overloads — no heap allocation ───────────────
 TEST_F(ClikAxisTest, AllOptionsOnComputeIsAllocationFree) {
   auto cfg = BaseConfig();
   cfg.q_min = model_->lowerPositionLimit;

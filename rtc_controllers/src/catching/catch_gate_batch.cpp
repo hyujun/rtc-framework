@@ -153,9 +153,9 @@ GateRow JudgeGates(const GateCandidate& candidate, const Eigen::VectorXd& q_wait
   GateRow row;
   row.candidate = candidate;
 
-  // Planning limits carry the η_v margin on the joints too (S4.4): with
+  // Planning limits carry the η_v margin on the joints too: with
   // v_dir,max binding instead of the TCP term, a margin on v_max alone would
-  // leave the plan no buffer at all (D-9).
+  // leave the plan no buffer at all.
   std::vector<double> w_plan(settings.qdot_max);
   for (double& w : w_plan) {
     w *= settings.eta_v;

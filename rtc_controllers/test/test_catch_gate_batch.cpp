@@ -1,4 +1,4 @@
-// dynamic_catching S3.5b — the gate batch behind the gate-catchable map.
+// The gate batch behind the gate-catchable map.
 //
 // What is pinned here is the PLUMBING, not the gate mathematics (that is
 // test_catching_time_feasibility.cpp): that each column is the runtime

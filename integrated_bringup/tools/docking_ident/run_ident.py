@@ -1,6 +1,6 @@
 """Fly the identification protocol for one robot profile, a stage at a time.
 
-dynamic_catching E1-F15 (#741). The protocol and its lattices are in
+The protocol and its lattices are in
 report.py; the rig is rig.py. Each stage leaves a store under
 ``$DATA/<profile>/`` and can be interrupted: what is already in the store is
 not flown again. Nothing is written inside the repository.

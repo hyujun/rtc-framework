@@ -1,16 +1,16 @@
 #ifndef INTEGRATED_BRINGUP_CONTROLLERS_CATCHING_PLANNER_THREAD_HPP_
 #define INTEGRATED_BRINGUP_CONTROLLERS_CATCHING_PLANNER_THREAD_HPP_
 
-// ── Catching planner thread (dynamic_catching S6-A, D-7, L3 §5.3) ───────────
+// ── Catching planner thread ──────────────────────────────────────────────────
 //
 // A `rtc::PeriodicRtThread` sibling of `rtc::mpc::MPCThread`, not a subclass of
 // it: the MPC thread's interface is built around `MPCSolution`, and forcing a
-// PlanSnapshot through it would couple the two for nothing (L3 §5.3). The
+// PlanSnapshot through it would couple the two for nothing. The
 // thread is thin on purpose — the whole iteration body is
 // `rtc::catching::PlannerCycle::Run` (rtc_controllers, ROS-free), so what the
 // thread adds is only the WAKE SOURCE and the scheduling.
 //
-// PLACEMENT (E-7 decision J, 2026-09-23). The planner plays the same role as
+// PLACEMENT. The planner plays the same role as
 // the MPC solver — a solver thread feeding the RT loop — so it takes the
 // existing `mpc` layout role (`SelectThreadConfigs().mpc.main`) and its thread
 // name, `mpc_main`. There is no layout role of its own. A `ps -L` that shows
@@ -19,18 +19,18 @@
 // deactivation. CM keeps one controller active at a time and each pauses its
 // solver on deactivate, so only one of them RUNS on that core.
 //
-// WAKE SOURCE. Event driven (D-7c): the vision subscription writes the wake
+// WAKE SOURCE. Event driven: the vision subscription writes the wake
 // eventfd whenever it accepts a trajectory, and `WaitForNextTick` polls it with
 // `planner.wake_timeout_s` as the upper bound, so the planner also re-plans
 // against a moving RT state when vision is quiet. A non-semaphore eventfd read
 // drains the whole counter: any number of signals between two wakes coalesce
-// into ONE wake, and that wake always reads the newest snapshot (G3-L). The RT
+// into ONE wake, and that wake always reads the newest snapshot. The RT
 // tick never touches the eventfd.
 //
 // PAUSE DOES NOT STOP AN ITERATION IN FLIGHT. `Pause()` is a flag the loop
 // checks at the top of the next iteration; a wake already past it runs to the
 // end and can publish once after `on_deactivate`. The RT refuses that plan by
-// its activation generation (D-23, JudgePlan (b)), which is why this thread
+// its activation generation (JudgePlan), which is why this thread
 // does not try to make Pause synchronous.
 
 #include "integrated_bringup/logging/planner_events_csv.hpp"
@@ -54,7 +54,7 @@ class CatchingPlannerThread final : public rtc::PeriodicRtThread {
   /// wakes, several drain periods.
   static constexpr std::size_t kTimingCapacity = 512;
   using TimingBuffer = rtc::ThreadTimingProducer<rtc::RtTickTimingPayload, kTimingCapacity>;
-  /// Per-wake records for planner_events.csv (decision E). Same drain as the
+  /// Per-wake records for planner_events.csv. Same drain as the
   /// timing ring; a full ring drops the NEWEST row and counts it.
   static constexpr std::size_t kEventCapacity = 512;
   using EventQueue = rtc::SpscQueue<rtc::catching::PlannerCycleRecord, kEventCapacity>;
@@ -107,7 +107,7 @@ class CatchingPlannerThread final : public rtc::PeriodicRtThread {
     return superseded_.load(std::memory_order_relaxed);
   }
 
-  /// Wakes that saw a trial reset in the RT state (L7 §4.8).
+  /// Wakes that saw a trial reset in the RT state.
   [[nodiscard]] std::uint64_t ResetSeenCount() const noexcept {
     return resets_seen_.load(std::memory_order_relaxed);
   }

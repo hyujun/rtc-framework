@@ -1,4 +1,4 @@
-"""Planner-events plotter for the controller-owned planner_events.csv (S6-B).
+"""Planner-events plotter for the controller-owned planner_events.csv.
 
 WHAT ONE FIGURE HAS TO ANSWER. This channel is the planner thread's own
 account of each non-idle wake — not the RT tick record `catching_diag.csv`
@@ -84,7 +84,7 @@ SEGMENT_KIND_ORDER = ("none", "first", "same", "advance", "stop", "unknown")
 
 # SegmentOutcomeName order (rtc_controllers/src/catching/mpc_segment_planner.cpp), plus
 # `not_due`: the stop-only planner's wait, in logs from before it was removed
-# (MPC plan MD-70).
+# (the stop-only planner).
 SEGMENT_OUTCOME_ORDER = (
     "off",
     "no_state",
@@ -124,12 +124,12 @@ _SEGMENT_KIND_COLOURS = {
     "unknown": "0.3",
 }
 
-# Candidate funnel, in the order candidates are narrowed (S6-B decision E).
+# Candidate funnel, in the order candidates are narrowed.
 FUNNEL_COLUMNS = ("n_in_window", "n_ik", "n_pass")
 
 # JudgeReject order (rtc_controllers/catching/search_stats.hpp), then the one
 # column the search no longer writes: `rej_workspace` — the catch box, removed
-# 2026-10-09 (L3 §4.9). Sessions recorded before that carry it, and every reader
+# 2026-10-09. Sessions recorded before that carry it, and every reader
 # below takes the columns a file has.
 REJECT_COLUMNS = (
     "rej_input",
@@ -142,7 +142,7 @@ REJECT_COLUMNS = (
 
 # RankGateBit order (rtc_controllers/catching/grid_catch_search.hpp). A `1`
 # means that gate FAILED for the chosen candidate, not that it passed.
-# `rank_rollout` (§4.8) is the whole-interval rollout check: no (gamma, T_w)
+# `rank_rollout` is the whole-interval rollout check: no (gamma, T_w)
 # on the grid passed it.
 RANK_COLUMNS = (
     "rank_uncertainty",

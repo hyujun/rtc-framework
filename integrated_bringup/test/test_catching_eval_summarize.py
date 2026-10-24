@@ -178,7 +178,7 @@ def test_verdict_labels():
     cf, mp = _solves()
     assert sm.verdict(ok, _lim(10, 0), cf, mp, "pass")[1] == "PASS"
     assert sm.verdict({"noninferior": False}, _lim(10, 0), cf, mp, "pass")[1] == "FAIL"
-    # the control arm's search over budget fails the robot too (MD-87 (3), both arms)
+    # the control arm's search over budget fails the robot too (both arms)
     cf_bad, _ = _solves(search=False)
     assert sm.verdict(ok, _lim(10, 0), cf_bad, mp, "pass")[1] == "FAIL"
     assert sm.verdict(ok, _lim(10, 1), cf, mp, "pass")[1] == "FAIL"

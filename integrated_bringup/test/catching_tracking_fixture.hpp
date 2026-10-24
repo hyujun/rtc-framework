@@ -1,4 +1,4 @@
-// Shared pieces of the catching closed-loop suites (S5.3 / S5.5).
+// Shared pieces of the catching closed-loop suites.
 //
 // Extracted from test_catching_tracking.cpp when the CLIK sweep
 // (test_catching_clik_sweep.cpp) needed the same model, the same independent
@@ -68,7 +68,7 @@ const Eigen::Vector3d kCatchXyz{0.015, 0.145, 0.052};
 constexpr const char* kModelRootLink = "base_link";
 
 /// The fixture's model config plus the catch frame, which the shared fixture
-/// does not carry (it predates D-10). Built here rather than added to the
+/// does not carry (it predates the catch frame). Built here rather than added to the
 /// shared fixture so the other suites keep the model they were written for.
 ///
 /// `with_scene_world` adds the vision world (#779) at the model root, so the
@@ -208,8 +208,8 @@ enum class AccelBoxFlag { kCleared, kProvisional, kAbsent };
 /// The `robot.arm.qdd_provisional` line TrackingYaml writes: the fixture is
 /// judged on the real-arm axis, where a provisional box parks the controller,
 /// so it ships the box CLEARED (the shipped file stays provisional until the
-/// real arm's box is identified, #537 Q4).
-/// The reference generator's gains. Defaulted to what the S5.3 suite was
+/// real arm's box is identified).
+/// The reference generator's gains. Defaulted to what the tracking suite was
 /// written against; the sweep passes the SHIPPED profile's values instead,
 /// because "how well does the law track" is a question about the law that is
 /// actually deployed, not about a faster one chosen to make a test converge.
@@ -283,7 +283,7 @@ catching:
     qp:
       max_iter: 30
     lag:
-      # Cleared like the other provisional flags here (real-arm axis, #537 Q5).
+      # Cleared like the other provisional flags here (real-arm axis).
       provisional: false
       T_arm: 0.0
   supervisor:
@@ -291,7 +291,7 @@ catching:
      << gains.track_err_abort << R"(
     n_qp: 3
     # Cleared like the other provisional flags here (real-arm axis); the two
-    # deadlines themselves are left to the parser defaults (#537 S9b).
+    # deadlines themselves are left to the parser defaults.
     deadline:
       provisional: false
     decel:
@@ -348,10 +348,10 @@ catching:
           manipulability_min:
             arm_5row: 0.1
             provisional: false
-    # The S7 supervisor needs both once the law is wired (a configuration
+    # The supervisor needs both once the law is wired (a configuration
     # without them is parked). The wait pose is the fixture's home, where
     # every suite measures the arm at start: an aligned arm skips homing
-    # (#537 S7 Q13), so the S5/S6 cases still arm on their first tick. The
+    # (homing skip), so the tracking cases still arm on their first tick. The
     # freeze is what p1b shipped with T_arm 0 (until #821), above
     # T_close_e2e + T_arm + h for this fixture's T_arm 0.
     wait_pose: [)"

@@ -1,4 +1,4 @@
-// RT sampler of the segment MPC's joint nodes (E1-F02). See node_follower.hpp.
+// RT sampler of the segment MPC's joint nodes. See node_follower.hpp.
 #include "rtc_controllers/catching/node_follower.hpp"
 
 #include "rtc_controllers/catching/jerk_segment.hpp"
@@ -123,7 +123,7 @@ bool NodeTrajectoryFollower::SampleJoints(const SegmentSnapshot& plan, std::int6
     }
     return true;
   }
-  // Two spacings (MD-60): before the catch node the pre-catch columns
+  // Two spacings: before the catch node the pre-catch columns
   // 0..n_pre at dt_pre, from it on the stop columns n_pre..N at dt. The split
   // is on integer ns; the catch node's instant belongs to the stop part (τ 0).
   const std::int64_t pre_ns = static_cast<std::int64_t>(plan.n_pre) * plan.dt_pre_ns;

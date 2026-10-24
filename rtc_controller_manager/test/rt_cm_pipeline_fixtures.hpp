@@ -153,8 +153,8 @@ class PipelineTestController : public RTControllerInterface {
   static inline std::atomic<uint64_t> observed_velocity_hole_mask{0};
   static inline std::atomic<uint64_t> observed_effort_hole_mask{0};
   // The fingertip lane's per-group receipt time and sample counter as seen by
-  // Compute (dynamic_catching D-24 (a)) — the read end of
-  // PipelineStubBackend::sensor_recv_steady_ns / sensor_sequence. Group 1
+  // Compute — the read end of PipelineStubBackend::sensor_recv_steady_ns /
+  // sensor_sequence. Group 1
   // rather than group 0 so a copy that fills only the first element, or one
   // that copies a scalar instead of the array, is visible.
   static inline std::atomic<int64_t> observed_inference_recv_ns_g1{0};
@@ -424,7 +424,7 @@ class PipelineStubBackend : public DeviceBackend {
   static inline std::atomic<uint64_t> state_effort_hole_mask{0};
 
   // Fingertip-lane receipt time and sample counter this backend reports for
-  // sensor GROUP 1 (dynamic_catching D-24 (a)). Defaults are 0 — "never
+  // sensor GROUP 1. Defaults are 0 — "never
   // received" — so tests that predate these fields keep the state they
   // already asserted against.
   static inline std::atomic<int64_t> sensor_recv_steady_ns_g1{0};

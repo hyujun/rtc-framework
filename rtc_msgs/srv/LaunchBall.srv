@@ -7,7 +7,7 @@
 # through `/sim/launch_ball`, which is a `std_srvs/Trigger`. A Trigger carries
 # no request fields at all: the callback does not even name its request
 # argument. Every launch condition therefore came from YAML plus a seeded RNG,
-# so a caller could ask for "a launch" but never for "THIS launch" (D-14).
+# so a caller could ask for "a launch" but never for "THIS launch".
 #
 # That is fine for a demo and useless as a measurement substrate. Catching work
 # needs to re-run one throw while something else changes, to sweep a grid of

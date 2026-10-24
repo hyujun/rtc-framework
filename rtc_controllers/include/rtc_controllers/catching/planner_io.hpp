@@ -1,8 +1,8 @@
-// ── Planner ↔ RT data contract (dynamic_catching S6-A, L3 §5.2–5.3, D-7) ────
+// ── Planner ↔ RT data contract ───────────────────────────────────────────────
 //
 // The two POD payloads that cross the planner-thread boundary, and the RT
 // side's admission rule for a published plan. ROS-free and allocation-free: the
-// planner thread may run SCHED_FIFO (D-7a), so everything it touches follows
+// planner thread may run SCHED_FIFO, so everything it touches follows
 // RT-1~10, and the RT tick evaluates the admission rule every tick.
 //
 // DIRECTION AND WRITERS. Each payload rides its own `rtc::SeqLock` and each
@@ -10,16 +10,15 @@
 //   - `PlannerRtState`  RT tick → planner. Stored EVERY tick.
 //   - `PlanSnapshot`    planner → RT (trajectory.hpp). Stored by the planner,
 //     or — in a test profile only — by the RT tick's oracle stand-in
-//     (A-S5-8). The two are never enabled together; the binding parks a
+//     (`diagnostic.oracle_plan`). The two are never enabled together; the binding parks a
 //     configuration that asks for both, because a SeqLock with two writers is
 //     a torn read waiting to happen.
-//   - `SegmentSnapshot` planner → RT (trajectory.hpp, MPC E1-F02). Stored
-//     by the planner only; judged by `JudgeSegment` below. The RT tick reads
-//     it under `planner.segment.mode: mpc` only (E1-F04, MD-44) — from the
-//     tick that takes a plan together with its first segment to the end of the
-//     stop (E1-F09).
+//   - `SegmentSnapshot` planner → RT (trajectory.hpp). Stored by the planner
+//     only; judged by `JudgeSegment` below. The RT tick reads it under
+//     `planner.segment.mode: mpc` only — from the tick that takes a plan
+//     together with its first segment to the end of the stop.
 //
-// WHY `plan_id` DECIDES NEWNESS (L3 §5.2, S6 implementation note). The
+// WHY `plan_id` DECIDES NEWNESS. The
 // provenance token's `snapshot_sequence` belongs to the TRAJECTORY the plan
 // was computed from, so two plans computed from one trajectory — the planner
 // re-planning on a timeout wake, or after the RT state moved — carry the same
@@ -48,7 +47,7 @@
 
 namespace rtc::catching {
 
-/// RT tick → planner (L3 §5.3 "데이터"). What the planner needs to know about
+/// RT tick → planner. What the planner needs to know about
 /// the controller it is planning for, as of one tick.
 ///
 /// Filled from scratch every tick (a default-constructed value, then the
@@ -58,14 +57,14 @@ namespace rtc::catching {
 struct PlannerRtState {
   /// `false` until the first tick of a configured controller has stored it.
   bool valid{false};
-  /// The controller's ActivationGeneration() on this tick (D-23). A planner
+  /// The controller's ActivationGeneration() on this tick. A planner
   /// output stamped with anything else is refused by the RT.
   std::uint64_t activation_generation{0};
-  /// ControllerState::iteration and the tick's steady instant (D-22: the
-  /// plan's `rt_iteration` / `rt_state_ns` are copied from here).
+  /// ControllerState::iteration and the tick's steady instant (the plan's
+  /// `rt_iteration` / `rt_state_ns` are copied from here).
   std::uint64_t rt_iteration{0};
   std::int64_t rt_state_ns{0};
-  /// Bumped by the RT on every trial reset (L7 §4.8). The planner compares it
+  /// Bumped by the RT on every trial reset. The planner compares it
   /// against the value it last saw and, on a change, drops whatever it was
   /// holding and drains its wake signal — the RT cannot do either itself.
   std::uint32_t reset_epoch{0};
@@ -82,15 +81,15 @@ struct PlannerRtState {
   std::array<double, kMaxPlanNv> qd_cmd{};
 
   /// The wait pose the RT homes to and the planner seeds its IK from, DEVICE
-  /// order (S8-I, `planner.wait_pose_source: current`). `wait_pose_adopted`
+  /// order (`planner.wait_pose_source: current`). `wait_pose_adopted`
   /// false means the RT runs the configure-time YAML pose, which the planner
   /// already holds as its seed; true means the arrays carry the pose adopted
   /// on this activation's first readable tick and the seed must follow it.
   bool wait_pose_adopted{false};
   std::array<double, kMaxPlanNv> wait_pose{};
 
-  /// The L4 reference state (x, ẋ, γ, γ̇, γ̈) the tracking law produced on
-  /// this tick — the input to the §4.7 switching rule (γ̇ and γ̈ size the step
+  /// The TCP reference state (x, ẋ, γ, γ̇, γ̈) the tracking law produced on
+  /// this tick — the input to the plan switching rule (γ̇ and γ̈ size the step
   /// a replacement's restarted γ ramp puts into u_des). `ref_valid` false on
   /// every tick that did not run the law.
   bool ref_valid{false};
@@ -102,8 +101,8 @@ struct PlannerRtState {
   /// The γ ramp the law is running (the followed plan's, as the RT adopted
   /// it — g0 and t0 are the RT's, not the planner's), lead axis. The switch
   /// rule evaluates it over the instants the RT may adopt a new plan: γ̇ and
-  /// γ̈ above are this tick's and may be 0 just before the ramp starts
-  /// (2026-09-23 /code-review). `ramp_valid` false with no plan followed.
+  /// γ̈ above are this tick's and may be 0 just before the ramp starts.
+  /// `ramp_valid` false with no plan followed.
   bool ramp_valid{false};
   double ramp_g0{0.0};
   double ramp_gf{0.0};
@@ -114,20 +113,20 @@ struct PlannerRtState {
   bool plan_active{false};
   std::uint32_t plan_id{0};
   /// That plan's catch instant t_c (BallTime / lead axis), 0 with no plan.
-  /// The MPC segment planner's grid anchor t_c + k·Δ_s (MD-10): it must be the
+  /// The MPC segment planner's grid anchor t_c + k·Δ_s: it must be the
   /// plan the RT FOLLOWS, not the one the planner last published — after
   /// COMMITTED the RT takes no new plan, so the two can differ.
   std::int64_t plan_t_c_ns{0};
   /// Whether the RT is following a segment this tick, and which one (its
   /// segment_seq) — the segment its command is sampled from, in every mode that
-  /// follows one: APPROACH through HOLD (E1-F09). The planner evaluates the
-  /// next solve's initial state on it (MD-58). Always false /
+  /// follows one: APPROACH through HOLD. The planner evaluates the
+  /// next solve's initial state on it (SourceSegmentAt). Always false /
   /// 0 under `planner.segment.mode: closed_form`.
   bool segment_active{false};
   std::uint32_t segment_seq{0};
   /// The segment the RT has admitted and holds PENDING (its node 0 not reached
   /// yet), if any, by segment_seq. The planner takes the next solve's initial
-  /// state from the segment the RT will be following at that instant (MD-58),
+  /// state from the segment the RT will be following at that instant,
   /// and only the RT knows whether it admitted, deferred or dropped one: a
   /// segment the switch gate refused, or one dropped with its trial, is no
   /// longer reported. Always false / 0 under `closed_form`.
@@ -148,7 +147,7 @@ struct PlannerRtState {
   std::uint32_t plan_pending_id{0};
   std::int64_t plan_pending_t_c_ns{0};
 
-  /// The vision track epoch of the last trajectory the RT consumed (L1 §4.4),
+  /// The vision track epoch of the last trajectory the RT consumed,
   /// and whether it has consumed one at all in this trial.
   bool track_seen{false};
   std::uint64_t track_generation{0};
@@ -156,7 +155,7 @@ struct PlannerRtState {
 
 static_assert(std::is_trivially_copyable_v<PlannerRtState>);
 
-// ── The segments the RT reports, for a solve that starts on one (MD-58) ─────
+// ── The segments the RT reports, for a solve that starts on one ──────────────
 
 /// @brief The segments the RT reports, as the segment planner published them —
 ///        COPIED out of its memory.
@@ -183,8 +182,8 @@ struct ReportedSegments {
 
 static_assert(std::is_trivially_copyable_v<ReportedSegments>);
 
-/// @brief The segment a solve whose node 0 is at `t_eff_ns` starts from
-///        (MD-58): the pending one from its own node 0 on — that is what the
+/// @brief The segment a solve whose node 0 is at `t_eff_ns` starts from:
+///        the pending one from its own node 0 on — that is what the
 ///        RT will be following then — else the one it follows now.
 ///
 /// The ONE statement of that rule. A segment planner's replan and a search
@@ -210,19 +209,18 @@ static_assert(std::is_trivially_copyable_v<ReportedSegments>);
                          reported.has_following ? &reported.following : nullptr, t_eff_ns);
 }
 
-/// What the planner does in a given supervisor mode (L3 §5.3). The segment MPC
-/// (MPC E1-F08) replans a followed plan's segment in every one of them but
+/// What the planner does in a given supervisor mode. The segment MPC
+/// replans a followed plan's segment in every one of them but
 /// kIdle, when it is configured.
 ///
 /// A PREDICATE over the mode, not an ordering test: `mode >= kCommitted` would
-/// silently change meaning the day a mode is inserted into the enum (L3 §5.3
-/// "isFrozen").
+/// silently change meaning the day a mode is inserted into the enum.
 enum class PlannerActivity : std::uint8_t {
   kIdle,     ///< nothing to plan for — wake, publish nothing
   kSearch,   ///< TRACKING / APPROACH: search candidates, publish a plan
-  kMonitor,  ///< COMMITTED / CLOSING: the plan is frozen; monitorOnly (§4.6)
+  kMonitor,  ///< COMMITTED / CLOSING: the plan is frozen; monitorOnly
   /// DECEL: nothing to search or monitor, but the segment MPC's post-catch
-  /// replans (MD-31) happen here — a no-op without a configured MPC segment planner.
+  /// replans happen here — a no-op without a configured MPC segment planner.
   kDecel,
 };
 
@@ -247,7 +245,7 @@ enum class PlannerActivity : std::uint8_t {
   return PlannerActivity::kIdle;
 }
 
-// ── RT-side admission (L3 §5.2 (a)–(f)) ─────────────────────────────────────
+// ── RT-side admission of a plan, checks (a)–(g) ──────────────────────────────
 
 /// Why the RT did not take the plan in the box. `kNone` = admitted.
 ///
@@ -258,12 +256,12 @@ enum class PlannerActivity : std::uint8_t {
 enum class PlanRefusal : std::uint8_t {
   kNone = 0,
   kInvalid,      ///< (a) `valid` false — the writer says there is no plan
-  kActivation,   ///< (b) stamped with another activation generation (D-23)
+  kActivation,   ///< (b) stamped with another activation generation
   kTrack,        ///< (c) computed from a different vision track than the RT holds
   kRepeat,       ///< (d) the plan the RT already took
   kAged,         ///< (e) published longer ago than the admission age bound
   kBeforeReset,  ///< (f) published before the RT's last trial reset
-  kTooLate,      ///< (g) its catch instant is already inside the freeze window (S7)
+  kTooLate,      ///< (g) its catch instant is already inside the freeze window
 };
 
 /// What the RT knows when it judges a plan. All of it is the RT's own state.
@@ -281,7 +279,7 @@ struct PlanAdmissionContext {
   /// Steady instant of the RT's last trial reset; plans published before it
   /// belong to the trial the reset ended. 0 = no reset yet.
   std::int64_t reset_floor_ns{0};
-  /// (g) T_freeze [ns] (L7 §4.1 R-ADMIT, #537 S7): a plan
+  /// (g) T_freeze [ns]: a plan
   /// whose t_c − now is not ABOVE this would commit on the tick it is taken —
   /// and with t_c ≤ now, decelerate the tick after — so the controller would
   /// commit to a catch it never approached. 0 disables the check (a profile
@@ -289,14 +287,14 @@ struct PlanAdmissionContext {
   std::int64_t t_freeze_ns{0};
 };
 
-/// The RT's memory of the last plan it admitted (payload-side, D-21 — never
+/// The RT's memory of the last plan it admitted (payload-side — never
 /// the SeqLock's own sequence).
 struct AdmittedPlan {
   bool seen{false};
   std::uint32_t plan_id{0};
 };
 
-/// Judge a plan the caller has already loaded (D-21: `Load()` once per tick,
+/// Judge a plan the caller has already loaded (`Load()` once per tick,
 /// unconditionally, then call this). Checks run in the order the enum lists
 /// them, so the refusal names the FIRST reason.
 [[nodiscard]] constexpr PlanRefusal JudgePlan(const PlanSnapshot& plan,
@@ -330,13 +328,13 @@ struct AdmittedPlan {
   return PlanRefusal::kNone;
 }
 
-// ── RT-side admission of a segment (MPC E1-F03, MD-27 · MD-32) ────────
+// ── RT-side admission of a segment ───────────────────────────────────────────
 
 /// Why the RT did not take the segment in the box. `kNone` = admitted.
 enum class SegmentRefusal : std::uint8_t {
   kNone = 0,
   kInvalid,      ///< `valid` false — the planner withdrew it (e.g. on a reset)
-  kActivation,   ///< another activation generation (D-23)
+  kActivation,   ///< another activation generation
   kPlan,         ///< not a segment of the plan the RT follows (id, t_c or — when
                  ///< the context names one — the plan's track differ)
   kRepeat,       ///< segment_seq not newer than the one the RT already took
@@ -356,19 +354,19 @@ struct SegmentAdmissionContext {
   NowReal now{0};
   /// Upper bound on `now − publish_ns` [ns]. NOT the trajectory's staleness
   /// bound: a segment is followed long after it was solved, so its age is
-  /// read once, at admission (MD-37 — the binding's kSegmentAdmissionMaxAgeNs).
+  /// read once, at admission (the binding's kSegmentAdmissionMaxAgeNs).
   /// 0 disables.
   std::int64_t max_age_ns{0};
   std::int64_t reset_floor_ns{0};
   /// Floor on the RT state the segment was PREDICTED from (`rt_state_ns`),
-  /// refused as kBeforeReset below it; 0 disables (MD-37). A planner that
+  /// refused as kBeforeReset below it; 0 disables. A planner that
   /// stamped its publish after the RT's reset can still have read the RT
   /// state of the tick before it: the publish floor alone lets that through.
   std::int64_t state_floor_ns{0};
-  /// Whether the RT follows segments with pre-catch nodes (n_pre > 0, MD-60).
+  /// Whether the RT follows segments with pre-catch nodes (n_pre > 0).
   /// Off, a segment that starts before t_c is refused as kMalformed. The
   /// catching controller turns it on: under `mode: mpc` it follows segments
-  /// from APPROACH (E1-F09).
+  /// from APPROACH.
   bool accept_pre_catch{false};
   /// The track of the plan the RT follows (its token's generation), checked
   /// against the segment's when `check_track` is set — refused as kPlan. An
@@ -391,7 +389,7 @@ struct AdmittedSegment {
   std::uint32_t segment_seq{0};
 };
 
-/// Judge a segment the caller has already loaded (D-21: Load() every
+/// Judge a segment the caller has already loaded (Load() every
 /// tick, unconditionally). Checks run in the enum's order; the node scan
 /// (kMalformed) is last because it is the only one that costs anything. A
 /// caller that admits a segment runs it once per segment_seq; one it DEFERS (a
@@ -462,8 +460,8 @@ struct AdmittedSegment {
 }
 
 /// Which segment the RT samples this tick (the effective-instant switch
-/// rule, MD-10 · MD-32). An admitted segment is PENDING until the tick's
-/// sample instant (now_lead + h, MD-40) reaches its node 0 (t0 = t_eff):
+/// rule). An admitted segment is PENDING until the tick's
+/// sample instant (now_lead + h, h the control period) reaches its node 0 (t0 = t_eff):
 /// before that the RT keeps sampling the segment it follows — the sampler
 /// refuses t < t0 anyway (jerk_segment.hpp). At t0 the pending one takes
 /// over (subject to the switch gate below); the planner built its node 0 as
@@ -484,10 +482,13 @@ enum class SegmentChoice : std::uint8_t {
   return current_valid ? SegmentChoice::kCurrent : SegmentChoice::kNone;
 }
 
-/// The continuity gate at a segment switch (MD-39). Per joint i, with
+/// The continuity gate at a segment switch. Per joint i, with
 /// d_i = (1 − η_v)·q̇_max,i — the velocity headroom the MPC leaves the CLIK's
-/// feedback (formulation §2.3) — the switch passes only when
-///   |q̇_c,i − q̇_ref,i| + K_p·|q_c,i − q_ref,i| ≤ ρ_max · d_i.
+/// feedback — the switch passes only when
+///   |q̇_c,i − q̇_ref,i| + K_p·|q_c,i − q_ref,i| ≤ ρ_max · d_i,
+/// (q_c, q̇_c) the RT's command, (q_ref, q̇_ref) the pending segment at the
+/// switch [rad, rad/s], K_p [1/s] the task gain bound, ρ_max
+/// `planner.segment.mpc.switch_margin`.
 /// Written multiplied and negated so a NaN on either side refuses, and a
 /// d_i that is not a positive finite number refuses rather than divides.
 /// K_p is an eigenvalue bound of the task gain, not a per-joint one: ρ is a

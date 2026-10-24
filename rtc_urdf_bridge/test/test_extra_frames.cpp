@@ -1,4 +1,4 @@
-// ── ModelConfig::extra_frames (dynamic_catching S2.3a, D-10/D-17) ────────────
+// ── ModelConfig::extra_frames ────────────────────────────────────────────────
 // The builder adds YAML-declared frames to the full model; every derived model
 // (sub / tree / actuated) is reduced from it and must carry the frame at the
 // same placement relative to its parent. Invalid declarations fail loudly.

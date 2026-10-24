@@ -1,6 +1,6 @@
-"""catching_sim_trials — the hand-near designs (dynamic_catching S8-F, #537).
+"""catching_sim_trials — the hand-near designs (#537).
 
-What must hold for the S8-F series to be a measurement: the same
+What must hold for the hand-near series to be a measurement: the same
 ``(dist, n, seed)`` replays the same launches against the same hand geometry
 (so a unit the host-load rule re-runs is the SAME unit), the grids cover every
 speed even when cut short, every accepted draw of the LHS box lies inside the

@@ -42,7 +42,7 @@
       extended: true
       closure_path: "robots/unitree_g1_p1b/urdf/g1_with_proto_1b_fixed_base.closure.yaml"
       sub_models:
-        # The catching SEARCH's model (dynamic_catching E3-F01): the chain
+        # The catching SEARCH's model for the catching planner: the chain
         # pelvis → the right palm — waist 3 + right arm 7, 10 DoF, the left arm
         # locked. Its tip, `l_palm_link`, is the parent of `catch_frame` below
         # and is upstream of the hand's joints, so the catch frame's FK and

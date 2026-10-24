@@ -1,4 +1,4 @@
-"""Hand step panel (dynamic_catching §13 S4).
+"""Hand step panel.
 
 The panel's whole job is to show the pose the CONTROLLER loaded, so the cases
 below are mostly about refusing to show anything else: a profile the controller

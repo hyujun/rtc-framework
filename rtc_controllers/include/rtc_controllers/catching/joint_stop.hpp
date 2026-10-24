@@ -1,11 +1,11 @@
-// ── Joint-space stop ramp: QP-independent (L7 §4.1, A-S5-10, S5.3) ───────────
+// ── Joint-space stop ramp: QP-independent ─────────────────────────────────────
 //
 // The task-space target (decel_target.hpp) is DECEL's reference: it goes
-// through L4 and L5 like any other reference. `ABORT_SAFE` never uses it — its
-// stop is always in joint space, whatever the cause (L7 §4.1). A task-space
-// stop would be exactly the wrong thing when the abort was CAUSED by that layer
-// (`QP_FAILED`), because it would route the stop through the component that
-// just failed, and one path for every cause is one path to verify.
+// through the reference generator and CLIK like any other reference.
+// `ABORT_SAFE` never uses it — its stop is always in joint space, whatever the
+// cause. A task-space stop would be exactly the wrong thing when the abort was
+// CAUSED by that layer (`QP_FAILED`), because it would route the stop through
+// the component that just failed, and one path for every cause is one path to verify.
 //
 // So this is that path: no QP, no task space, no model. It walks each
 // joint's commanded velocity to zero at its own acceleration limit and

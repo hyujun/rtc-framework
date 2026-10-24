@@ -40,7 +40,7 @@ RT / 비-RT 진입점 판정표: [architecture.md](../../agent_docs/architecture
 **3 — MPC thread 의 cross-mode swap (2026-09-19 기록).** `HandlerMPCThread::Solve` 는 phase 가 바뀌며 `ocp_type` 이 달라지면 그 스레드에서 `MPCFactory::Create` 로 handler 를 새로 만든다 — heap 할당·YAML 파싱·`try/catch`. DemoWbc 가 light·rich factory YAML 을 둘 다 넘기므로 production 에서 도달한다. 해소 경로 (두 handler 를 configure 에서 미리 생성해 swap 을 포인터 교체로) 는 별도 작업이고, 같은 스레드의 Aligator solve 자체의 할당은 미측정이다.
 ### Clock 예외의 승인 이력
 
-원격 예측 궤적의 물리 샘플 시각 예외는 dynamic_catching D-2 로 2026-09-19 에 E-1 승인됐고 구현은 S1.3·S5.2 다. 이 예외는 t_c·t_cmd 같은 deadline 판정을 stamp 에서 파생시키므로 wall clock 점프가 그대로 판정 오차가 된다 — 조건 ③ 의 실기 재확인은 S10. stamp 사용 계약: [L1_io.md](../dynamic_catching/ref/L1_io.md) §4.1.
+원격 예측 궤적의 물리 샘플 시각 예외는 2026-09-19 에 E-1 승인됐다. 이 예외는 t_c·t_cmd 같은 deadline 판정을 stamp 에서 파생시키므로 wall clock 점프가 그대로 판정 오차가 된다 — 조건 ③ 은 실기에서 다시 확인한다. stamp 사용 계약: [traj_input.hpp](../../integrated_bringup/include/integrated_bringup/controllers/catching/traj_input.hpp).
 
 ## RT Host / Runtime Preconditions
 

@@ -1,4 +1,4 @@
-// mpc_docking relative-state seams (E1-F13, #739): every derivative the docking
+// mpc_docking relative-state seams: every derivative the docking
 // core assembles into a QP row, against a central difference of the nonlinear
 // output it claims to differentiate; the crossing-plane covariance against a
 // Monte Carlo; the reference's sanity cases; and the allocation gate.
@@ -272,7 +272,7 @@ TEST(DockingRelativeState, RelativeStateMatchesFiniteDifferences) {
   }
 }
 
-// Reference §5.2 / §15 item 2: the LOCAL route gives the same ν^H.
+// The LOCAL route gives the same ν^H.
 TEST(DockingRelativeState, LocalJacobianRouteGivesTheSameRelativeVelocity) {
   for (const State& s : States()) {
     const Evaluated at = Evaluate(s, s.q, s.v);
@@ -526,7 +526,7 @@ TEST(DockingRelativeState, SanityStationaryHandAxialBallClosesAtItsSpeed) {
 
 // ── Crossing-plane covariance: Monte Carlo ───────────────────────────────────
 
-// Reference §15 item 5: linear relative motion, position noise. In that model
+// Linear relative motion, position noise. In that model
 // the crossing map is exactly Π δr, so this checks the ALGEBRA of Σ_ρ (signs,
 // indices, frames) — not the size of the first-order approximation, which the
 // next test records.
@@ -816,7 +816,7 @@ TEST(DockingRelativeState, ImpactMatchesFiniteDifferencesAndAnIndependentInertia
         "√E residual");
     EXPECT_GT(MaxAbs(at.impact.beta.dq), 1e-3) << "∂β_h/∂q is not exercised";
 
-    // Reference §7.2: adding inertia (armature) lowers β_h, so raises m_red.
+    // Adding inertia (armature) lowers β_h, so raises m_red.
     State heavier = s;
     heavier.model.armature = Eigen::VectorXd::Constant(n, 0.5);
     const ImpactEval heavy = EvaluateImpact(heavier, s.q, s.v, p_c_hand, m_ball, restitution);
@@ -952,7 +952,7 @@ TEST(DockingRelativeState, SizeMismatchIsRejected) {
   EXPECT_FALSE(ComputeDockingRelativeState(kin, s.p_b, s.v_b, rel));
 }
 
-// ── Derivatives with respect to the ball (E1-F14 PR 2, #740) ─────────────────
+// ── Derivatives with respect to the ball ─────────────────────────────────────
 // A catch instant that is a variable moves the ball the catch node's rows
 // read. Each gradient in (p_b, v_b) is checked against central differences of
 // the row's VALUE with the robot state held fixed — and its rate along a

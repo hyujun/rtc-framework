@@ -11,7 +11,7 @@ mujoco_simulator:
   ros__parameters:
     # ── Model ────────────────────────────────────────────────────────────────
     # scene_pedestal.xml = the same robot on a 0.7 m pedestal: the arm base at
-    # world z = 0.7, the floor at z = 0, no table (2026-10-09, #747). The
+    # world z = 0.7, the floor at z = 0, no table. The
     # siblings in that directory keep the base at the world origin:
     #   scene_with_table.xml — scene.xml + a 0.5x0.5 m work table (top at
     #                          z=0.05) under the palm-down startup pose's hand
@@ -48,13 +48,13 @@ mujoco_simulator:
     # PD servo tracks a ramp with a lag of exactly kd/kp whatever the inertia:
     # the hand_description MJCF's 2000/400 (size3) and 500/100 (size1) make the
     # sim arm a 0.2 s first-order lag. The catching design is derived for an
-    # arm lag of T_arm 0.05 s (the S3.5b gate map, T_freeze, horizon_min), and a
+    # arm lag of T_arm 0.05 s (the catchability map, T_freeze, horizon_min), and a
     # 0.2 s lag shut that map's frozen throw box (0/180 open at commit lead
     # 0.52) — so this profile runs the arm at kd/kp = 0.05 s instead: kd kept,
-    # kp x4. Decided 2026-09-24 (#537, dynamic_catching S8-B); measured tau-hat
+    # kp x4. Measured tau-hat (#537)
     # 50.2-50.9 ms on all six joints (least squares, R^2 >= 0.99), peak arm
     # torque 93 of 150 N m, no tick at the forcerange. This is a SIM choice, not
-    # the UR5e's lag — that is S10's identification (joint_cmd.lag.T_arm).
+    # the UR5e's lag — that is identified on hardware (joint_cmd.lag.T_arm).
     # The forcerange is the UR5e's max_effort (150 / 28 N m), so a RAW step
     # above ~19 mrad (arm) / ~14 mrad (wrist) now saturates (was ~75 / 56), and
     # the sim has no joint velocity cap: a 0.5 rad raw step peaks at ~7.7 rad/s.
@@ -122,7 +122,7 @@ mujoco_simulator:
     # 붙어 있어서 world 와 base 는 실제로 다른 프레임이고, 둘을 헷갈리면 물체가
     # x/y 부호가 뒤집힌 자리에 — 그럴듯해 보이는 자리에 — 찍힌다. 그 위험이
     # 사라진 게 아니라, **누구 기준의 ground truth 인가**를 world 로 정한 것이다
-    # (2026-09-09 결정): sim 이 아는 절대 좌표를 그대로 내보내고, 로봇 기준이
+    # sim 이 아는 절대 좌표를 그대로 내보내고, 로봇 기준이
     # 필요한 소비자가 자기가 아는 base pose 로 변환한다.
     #
     # 대가는 알고 쓴다: "world" 는 이 bringup 의 TF 트리에 없다 —
@@ -148,7 +148,7 @@ mujoco_simulator:
       # ITF Type 2 규격: 지름 6.54-6.86 cm, 질량 56.0-59.4 g. 아래는 그 중앙값이고
       # rtc_mujoco_sim 의 코드 기본값 (`projectile_ball.hpp`) 과 README 의 preset
       # 표가 이미 쓰던 값이다 — 종전 출하값 0.025 m / 0.05 kg 은 규격보다 작고
-      # 가벼운 공이라 이 두 YAML 에만 있던 덮어쓰기였다 (2026-09-20 사용자 지시).
+      # 가벼운 공이라 이 두 YAML 에만 있던 덮어쓰기였다.
       # 물성 preset (반발 0.75, Cd 0.55, C_L) 은 이 형상·질량 기준이다.
       radius_m: 0.0335
       mass_kg: 0.057

@@ -1,4 +1,4 @@
-"""catching_vision (dynamic_catching S8-E) — G8-B NEES binding and G8-C2 A/B, with positive controls.
+"""catching_vision — NEES binding and the A/B comparison, with positive controls.
 
 Every check here has a defect it must catch: a post-contact sample with a huge
 NEES that binding must drop (and a pre-launch one), NEES scaled away from 3
@@ -124,7 +124,7 @@ def test_g8b_without_bound_samples_says_so():
     assert g["horizons"]["500"]["verdict"].startswith("NOT_EVALUATED(no sample")
 
 
-# ── G8-C2 ────────────────────────────────────────────────────────────────────
+# ── A/B comparison ───────────────────────────────────────────────────────────
 
 G = np.array([0.0, 0.0, -9.81])
 

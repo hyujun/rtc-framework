@@ -209,7 +209,6 @@ PID=$(pidof -s integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 | [docs/tracing.md](docs/tracing.md) | LTTng trace 와 Perfetto 로 스레드 × 코어 보기 |
 | [docs/vscode-debugging.md](docs/vscode-debugging.md) | VS Code + GDB 디버깅 |
 | [docs/modification-procedures.md](docs/modification-procedures.md) | 컨트롤러 · 메시지 · 장치 · 스레드 · 패키지를 추가하는 절차 |
-| [docs/wbc_humanoid/](docs/wbc_humanoid/ALGORITHM_ANALYSIS.md) | 외부 `wb_humanoid_mpc` 알고리즘 분석 (이 저장소의 코드 설명 아님) |
 | [repo_scripts/README.md](repo_scripts/README.md) | 설치 · 빌드 · RT 스크립트 |
 | [AGENTS.md](AGENTS.md) · [CLAUDE.md](CLAUDE.md) · [agent_docs/](agent_docs/) · [docs/reference/](docs/reference/README.md) | 기여자 · AI coding assistant 용 규약 · 규범 · 근거 |
 

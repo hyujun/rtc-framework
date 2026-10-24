@@ -682,7 +682,7 @@ TEST(ProjectileBall, ObjectStateOmitsBallOnlyWhileParked) {
   EXPECT_FALSE(sim.GetObjectStateSamplesForTest()[ball_index].active) << "parked by reset";
 }
 
-// ── Stated launch (D-14, /sim/launch_ball_at) ───────────────────────────────
+// ── Stated launch (/sim/launch_ball_at) ─────────────────────────────────────
 
 TEST(ProjectileBall, RejectsNonFiniteLaunchCommand) {
   ProjectileBallLaunchCommand command;
@@ -881,7 +881,7 @@ TEST(ProjectileBall, StatedLaunchDoesNotDisturbTheSampledRngStream) {
   EXPECT_NE(clean[0][0], clean[1][0]);
 }
 
-// ── Clock phase lane (D-3 / S3.1a) ──────────────────────────────────────────
+// ── Clock phase lane ────────────────────────────────────────────────────────
 
 TEST(SimClockLane, StaysSilentUntilEnabled) {
   auto config = MakeFloorSceneConfigWithBall();
@@ -997,8 +997,8 @@ TEST(SimClockLane, CountsOverflowInsteadOfDroppingSilently) {
 
   // Never drain, so the ring fills and then overflows. This is the case that
   // matters: a lane that drops quietly under-reports exactly the tail — the
-  // large-delta, long-pause steps — that D-3 is trying to find, and it does so
-  // while still producing a full-looking CSV.
+  // large-delta, long-pause steps — that the phase measurement is trying to
+  // find, and it does so while still producing a full-looking CSV.
   const std::size_t capacity = MuJoCoSimulator::kClockLaneCapacity;
   const int steps = static_cast<int>(capacity) + 50;
   for (int s = 0; s < steps; ++s) {
@@ -1017,7 +1017,7 @@ TEST(SimClockLane, CountsOverflowInsteadOfDroppingSilently) {
   EXPECT_EQ(held + sim.ClockLaneDropped(), static_cast<std::uint64_t>(steps));
 }
 
-// ── Ball contact truth (S3.3) ───────────────────────────────────────────────
+// ── Ball contact truth ──────────────────────────────────────────────────────
 
 namespace {
 // Clear of the two-link arm in pool_scene.xml, so what the ball lands on is the
@@ -1377,7 +1377,7 @@ TEST(ProjectileBall, SampleStampsFollowSimTimeNotTheStepperRhythm) {
   std::int64_t max_lead_ns = 0;
   for (std::size_t i = 0; i < seen.size(); ++i) {
     // The stamp is off the wall by exactly the sim-vs-wall deficit THIS flight
-    // accumulated since its first sample — the phase error the D-3 clock lane
+    // accumulated since its first sample — the phase error the clock phase lane
     // measures — behind it while the stepper stalls, ahead while it catches
     // up. An offset larger than that would be a deficit carried in from
     // before the launch, and every catch time the controller derives from the

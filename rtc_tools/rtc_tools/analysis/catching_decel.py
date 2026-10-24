@@ -1,13 +1,13 @@
-"""DECEL stretch metrics of catching sim trials (MPC · dual-arm plan E0-F02, #625).
+"""DECEL stretch metrics of catching sim trials.
 
-The A/B of plan gate G-1 compares two ways of stopping the arm after the catch:
-v1's closed-form virtual target (L7 §4.3) and the MPC tail. This tool measures
+The non-inferiority A/B compares two ways of stopping the arm after the catch:
+the closed-form virtual target (DecelTarget) and the MPC tail. This tool measures
 the stop itself, per trial and per unit, from what a run already logs — the
 catching diag (``mode``, ``q_cmd_*``, ``q_meas_*``, ``ref_xd_*``) and the arm's
 device lane (``effort_*``) — so the same numbers can be read off either arm of
 the comparison.
 
-**The window is the arm's, not the mode's.** v1 leaves ``DECEL`` the tick its
+**The window is the arm's, not the mode's.** closed_form leaves ``DECEL`` the tick its
 virtual target stops, while the measured arm (a servo lag behind) still moves;
 an MPC stretch has its own length. Judging both by the ``DECEL`` rows would
 give each a different question. The window therefore runs
@@ -61,10 +61,10 @@ truth success is reported with the discordance rate ψ, its Wilson interval and
 the exact McNemar p. Each set has its own pooled block; the two are pooled
 TOGETHER only with ``--same-arm`` (two runs of one arm — two arms of a
 comparison are not one population). ψ between two runs of the same arm is what the paired
-non-inferiority test of G-1 needs for its sample size
+non-inferiority test needs for its sample size
 (:func:`paired_noninferiority_n`).
 
-Between two arms (MPC E1-F06, #632) the pairs also carry the test itself, per
+Between two arms the pairs also carry the test itself, per
 ``--margin``: Tango's score test of ``H0: p_b − p_a ≤ −margin``
 (:func:`tango_noninferiority`), its score interval (:func:`tango_score_ci`),
 the Wald interval (:func:`paired_difference`) and the exact power and size of
@@ -984,7 +984,7 @@ def noninferiority_block(
     power_diffs: Sequence[float],
     design_n: int | None = None,
 ) -> dict | None:
-    """Tango's test of b against a at ``margin``, its score interval and power (MPC E1-F06).
+    """Tango's test of b against a at ``margin``, its score interval and power.
 
     The score interval is at ``1 − 2·alpha``, the level whose lower end
     clears ``−margin`` exactly when the one-sided test rejects. Power rows are

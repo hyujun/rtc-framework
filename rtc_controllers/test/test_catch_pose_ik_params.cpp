@@ -1,4 +1,4 @@
-// ── Catch-pose IK schema (dynamic_catching S3.5a) ────────────────────────────
+// ── Catch-pose IK schema ─────────────────────────────────────────────────────
 //
 // The suite is built around three questions the parser can only answer wrongly
 // in silence:
@@ -19,10 +19,10 @@
 // 3. IS A TYPO DEFAULTED? `planner.search.grid.ik` is owned whole by this parser, so an
 //    unknown key there is refused. That is the one behaviour a permissive
 //    parser would get backwards, so it is asserted directly, and its converse
-//    too: the retired keys L3 §6 names are REPORTED, not refused.
+//    too: the retired keys are REPORTED, not refused.
 //
 // DocDefaultsAgreeWithStructDefaults is the only case that hardcodes numbers.
-// It is the doc-vs-code sensor: the literals are L3 §6's 기본값 column, so if
+// It is the doc-vs-code sensor: the literals are the documented defaults, so if
 // either side moves, that case — and not some downstream tuning surprise —
 // reports it.
 
@@ -94,7 +94,7 @@ void ExpectAllDefaults(const CatchPoseIkConfig& cfg, const char* what) {
   EXPECT_EQ(o.definition, kDefault.definition);
   EXPECT_DOUBLE_EQ(o.manipulability_min, kDefault.manipulability_min);
 
-  // The TBD record: alpha_max and arm_6row are open in L3 §6, arm_5row is not.
+  // The TBD record: alpha_max and arm_6row are open (TBD), arm_5row is not.
   EXPECT_TRUE(cfg.alpha_max.tbd);
   EXPECT_FALSE(cfg.manipulability_min_arm_5row.tbd);
   EXPECT_DOUBLE_EQ(cfg.manipulability_min_arm_5row.value, kDefault.manipulability_min);
@@ -154,7 +154,7 @@ TEST(CatchPoseIkParams, NullIkSectionGivesStructDefaults) {
 }
 
 TEST(CatchPoseIkParams, UnrelatedPlannerKeysAreIgnored) {
-  // planner.* at large belongs to other consumers (L3 §6 lists ~30 keys): this
+  // planner.* at large belongs to other consumers (about 30 keys): this
   // parser must not police it, only planner.search.grid.ik.
   YAML::Node root = YAML::Load(R"(
 planner:
@@ -169,13 +169,11 @@ planner:
 }
 
 TEST(CatchPoseIkParams, DocDefaultsAgreeWithStructDefaults) {
-  // The L3 §6 기본값 column, hardcoded on purpose: this is the doc-vs-code
-  // sensor. `alpha_max` IS here now — the discrepancy this parser surfaced
-  // (doc `TBD` vs a live struct default) was reconciled toward the code on
-  // 2026-09-21, so L3 §6 records `0.26 (provisional)` and the number is
-  // pinnable. It remains a `TbdDouble` in the config because what is still
-  // open is the evidence that closes it (the S3.5a map's `theta` distribution),
-  // not the value — that openness is asserted separately as a flag below.
+  // The documented defaults, hardcoded on purpose: this is the doc-vs-code
+  // sensor. `alpha_max` is pinned at its provisional 0.26. It remains a
+  // `TbdDouble` in the config because what is still open is the evidence that
+  // closes it (the catchability map's `theta` distribution), not the value —
+  // that openness is asserted separately as a flag below.
   EXPECT_DOUBLE_EQ(kDefault.alpha_max, 0.26);
   EXPECT_EQ(kDefault.max_iter, 20);
   EXPECT_DOUBLE_EQ(kDefault.eps_pos, 0.002);
@@ -303,7 +301,7 @@ TEST(CatchPoseIkParams, AlphaMaxNumberResolvesAndReachesTheStruct) {
 }
 
 TEST(CatchPoseIkParams, AlphaMaxAcceptsBothEndsOfItsRange) {
-  // L3 §6 gives 0–π/2, both inclusive.
+  // The range is 0–π/2, both inclusive.
   for (const double a : {0.0, 1.5707963267948966}) {
     YAML::Node root = IkRoot();
     root["planner"]["search"]["grid"]["ik"]["alpha_max"] = a;
@@ -349,7 +347,7 @@ TEST(CatchPoseIkParams, DefinitionArm5RowIsAcceptedExplicitly) {
 }
 
 TEST(CatchPoseIkParams, TbdActiveThresholdLeavesTheOptionsUnusable) {
-  // L3 §6's arm_6row default IS TBD, and there is no provisional stand-in in a
+  // The arm_6row default IS TBD, and there is no provisional stand-in in a
   // different unit to fall back on: the threshold must reach Solve() as
   // non-finite so it refuses the options rather than gating on the arm_5row
   // number. Both routes to that state are checked.
@@ -415,7 +413,7 @@ TEST(CatchPoseIkParams, RejectsUnknownKeyEvenWhenEveryRealKeyIsPresent) {
 }
 
 TEST(CatchPoseIkParams, RetiredKeysAreReportedNotRejected) {
-  // L3 §6: `lambda` and `manip_min` were removed in v0.5. A deployed config may
+  // `lambda` and `manip_min` were removed. A deployed config may
   // still carry them; their meaning is known, so they are migration reports.
   YAML::Node root = IkRoot();
   root["planner"]["search"]["grid"]["ik"]["lambda"] = 0.05;
@@ -448,7 +446,7 @@ TEST(CatchPoseIkParams, RetiredPointerIsOptional) {
   EXPECT_NO_THROW(static_cast<void>(ParseCatchPoseIkParams(root)));
 }
 
-// ── Out-of-range, per the L3 §6 범위 column ─────────────────────────────────
+// ── Out-of-range, per the documented ranges ─────────────────────────────────
 
 TEST(CatchPoseIkParams, RejectsOutOfRangeDoubles) {
   struct Case {
@@ -473,7 +471,7 @@ TEST(CatchPoseIkParams, RejectsOutOfRangeDoubles) {
 }
 
 TEST(CatchPoseIkParams, AcceptsTheInclusiveEndsOfBoundedRanges) {
-  // The complement of the case above: the bounds L3 §6 states as inclusive
+  // The complement of the case above: the bounds documented as inclusive
   // must parse, or the range check is one-sided in the wrong direction.
   struct Case {
     const char* key;
@@ -660,7 +658,7 @@ TEST(CatchPoseIkParams, SharedKeyOutOfRangeIsThrownHereAndReportedThere) {
   // This parser: `options` must be ready for Solve, so it refuses outright.
   ExpectRejectMentioning(root, "'planner.search.grid.catchability.manipulability_min.arm_5row'");
 
-  // The G0-C parser: the value PARSES, as written...
+  // The catching-params parser: the value PARSES, as written...
   rtc::catching::CatchingParams g0c;
   ASSERT_NO_THROW(g0c = rtc::catching::ParseCatchingParams(root));
   EXPECT_FALSE(g0c.planner_catchability_manip_min_arm5row.tbd);

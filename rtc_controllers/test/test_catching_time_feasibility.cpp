@@ -1,18 +1,13 @@
-// L3 reachability gates — G3-A, G3-B (docs/dynamic_catching/ref/L3_planner.md §9)
-// plus the S1.5 fixes (invalid-limit flag, directional-speed projection and
-// zero guards) and the error-budget / stopping-distance formulas.
+// Reachability gates (time_feasibility.hpp): minimum reach time, γ window,
+// plus the invalid-limit flag, directional-speed projection and zero guards,
+// and the error-budget / stopping-distance formulas.
 //
-// Ported from the reference test_l3.cpp with thresholds unchanged. The
-// reference also wrote cases.txt for its Python checker; that round trip only
-// compared the C++ closed form with its own output. G3-A's "fixed table vs the
-// script" is now a literal table (below) produced by that script's
-// independently written Python closed form `t_min`, whose agreement with the
+// The reach-time check is a literal table (below) produced by an independently
+// written Python closed form `t_min`, whose agreement with the
 // velocity/acceleration LP + bisection is ≤ 1.2e-5 s on these rows (LP grid
 // resolution). Generator: numpy default_rng(20260919),
 // q0, q1 ~ U(−2, 2), a ~ U(5, 20), w0 ~ U(−π, π), w_max = π, 40 rows, plus two
-// |w0| > w_max rows; values printed with %.17g. Both reference files were
-// removed from docs; read them with
-// `git show 482d18b3:docs/dynamic_catching/{test_l3.cpp,verify_l3.py}`.
+// |w0| > w_max rows; values printed with %.17g.
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
@@ -144,7 +139,7 @@ constexpr std::array<std::array<double, 6>, 42> kTMinTable{{
     {0.29999999999999999, -4.5, -1, 3.1415926535897931, 12, 0.54470254593850265},
 }};
 
-// ── G3-A ────────────────────────────────────────────────────────────────────
+// ── Reach time ──────────────────────────────────────────────────────────────
 
 TEST(CatchingTimeFeasibility, G3ATMinMatchesScriptTable) {
   double worst = 0.0;
@@ -187,8 +182,8 @@ TEST(CatchingTimeFeasibility, G3AOverspeedInitialStateFlagged) {
   EXPECT_TRUE(ok.Usable());
 }
 
-// S1.5 fix: invalid limits are a distinguishable flag with t = +∞ — the
-// reference returned an unflagged 0, a reach-time gate that always passed.
+// Invalid limits are a distinguishable flag with t = +∞ (an unflagged 0 would
+// make the reach-time gate always pass).
 TEST(CatchingTimeFeasibility, G3AInvalidLimitsFlaggedAndNeverPass) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const double inf = std::numeric_limits<double>::infinity();
@@ -229,7 +224,7 @@ TEST(CatchingTimeFeasibility, MaxJointTMinTakesWorstJointAndOrsFlags) {
   EXPECT_TRUE(MaxJointTMin(short_span, w0, q1, wm, am).input_invalid);
 }
 
-// Reach-time gate is on the lead axis (L3 §4.3, L0 §4.5): with T_arm ≠ 0 the
+// Reach-time gate is on the lead axis: with T_arm ≠ 0 the
 // same t_min that passes on the real axis fails once T_arm is subtracted.
 TEST(CatchingTimeFeasibility, ReachTimeGateOnLeadAxis) {
   constexpr std::int64_t kMs = 1'000'000;
@@ -241,7 +236,7 @@ TEST(CatchingTimeFeasibility, ReachTimeGateOnLeadAxis) {
   EXPECT_FALSE(ReachTimeFeasible(t_k, MakeNowLead(now, 0), -1, joints));  // bad margin
 }
 
-// ── G3-B ────────────────────────────────────────────────────────────────────
+// ── γ window ────────────────────────────────────────────────────────────────
 
 // γ_min value pinned — a boolean alone passes even if 1 − d/(vT) became
 // 0.9 − … (the clamp hides negatives).
@@ -252,7 +247,7 @@ TEST(CatchingTimeFeasibility, G3BGammaMinValueFixed) {
   EXPECT_LT(std::abs(w2.g_min - 0.75), 1e-12);
 }
 
-// [R1] sanity: stationary catch, 3 cm pocket, 6 m/s → T_close ≤ 5 ms. 5 ms
+// Sanity: stationary catch, 3 cm pocket, 6 m/s → T_close ≤ 5 ms. 5 ms
 // exactly is the g_min = g_max = 0 knife edge, so both sides are probed.
 TEST(CatchingTimeFeasibility, G3BR1PocketSanity) {
   const double v = 6.0;
@@ -281,7 +276,7 @@ TEST(CatchingTimeFeasibility, G3BRejectsNonPhysicalInput) {
   EXPECT_FALSE(ComputeGammaWindow(1.0, 1.0, 5.0, -0.01, 0.06).Feasible());  // d_eff < 0
 }
 
-// Regression C6 + D-9: the TCP speed bound really binds g_max, and the value the
+// Regression: the TCP speed bound really binds g_max, and the value the
 // planner passes is η_v · reference.v_max.
 TEST(CatchingTimeFeasibility, G3BTcpSpeedBindsAndIsEtaVTimesVmax) {
   const GammaWindow a = ComputeGammaWindow(4.0, 3.0, 3.0, 0.04, 0.06);
@@ -306,7 +301,7 @@ TEST(CatchingTimeFeasibility, G3BMaxCatchableSpeed) {
   EXPECT_EQ(MaxCatchableSpeed(1.5, 2.0, 0.04, 0.0), 0.0);  // invalid → nothing catchable
 }
 
-// §4.8 γ rollout: the reference table value (T_w = 0.30, γ_f = 0.4) → 33.0 m/s²
+// γ rollout: the reference table value (T_w = 0.30, γ_f = 0.4) → 33.0 m/s²
 // within ±5 %, peak unsaturated demand in the window [t_c − T_w, t_c].
 TEST(CatchingTimeFeasibility, G3BGammaRolloutTableReproducible) {
   constexpr double kDt = 2e-3;
@@ -341,7 +336,7 @@ TEST(CatchingTimeFeasibility, G3BGammaRolloutTableReproducible) {
   EXPECT_LT(std::abs(peak - 33.0), 0.05 * 33.0) << peak;
 }
 
-// Directional speed (L3 §4.5 v0.5): the numerator is the projection on v̂, not
+// Directional speed: the numerator is the projection on v̂, not
 // the norm — leakage off v̂ must not count as speed — and a reverse
 // projection is 0.
 TEST(CatchingTimeFeasibility, G3BDirectionalSpeedUsesProjection) {
@@ -382,7 +377,7 @@ TEST(CatchingTimeFeasibility, G3BDirectionalSpeedGuards) {
   EXPECT_TRUE(DirectionalSpeedMax(v_hat, jp, qdot_u, long_lim).input_invalid);
 }
 
-// ── stopping distance and error budget (L3 §4.9, §4.6) ─────────────────────
+// ── stopping distance and error budget ─────────────────────────────────────
 
 TEST(CatchingTimeFeasibility, StoppingPointAlongBallDirection) {
   const Eigen::Vector3d p_c(0.5, 0.0, 0.8);

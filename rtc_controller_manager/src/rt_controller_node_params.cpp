@@ -725,7 +725,7 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       }
     }
 
-    // ── Extra frames (urdf.extra_frames, dynamic_catching D-10/D-17) ─────────
+    // ── Extra frames (urdf.extra_frames) ───────────────────────────────────
     // Fail-closed, unlike the WARN-and-continue blocks above: a controller that
     // references a catch frame would otherwise discover its absence only at
     // its own configure (or, worse, fall back to another frame).
@@ -977,9 +977,9 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     // itself then reads its default. That made every activation gate keyed on
     // the profile (DemoWbc's MPC gate, the catching planner's) inert in a real
     // bring-up: an `enable_mpc:=false` launch activated SCHED_FIFO solver
-    // threads onto cores the shield had handed back. Found by dynamic_catching
-    // S6 R-1. Only propagated when the launch set it, so a controller's own
-    // default still applies to bring-ups that predate the profile.
+    // threads onto cores the shield had handed back. Only propagated when the
+    // launch set it, so a controller's own default still applies to bring-ups
+    // that predate the profile.
     if (has_parameter(kRtLayoutProfileParam)) {
       ctrl_lc_node->declare_parameter<std::string>(
           kRtLayoutProfileParam, get_parameter(kRtLayoutProfileParam).as_string());

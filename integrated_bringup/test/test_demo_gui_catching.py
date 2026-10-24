@@ -1,4 +1,4 @@
-"""Catching controller panel (dynamic_catching §13 S5).
+"""Catching controller panel.
 
 The panel's job is to show what the CONTROLLER reported, so most of these cases
 are about refusing to show anything else: a number for a block the tick did not
@@ -121,7 +121,7 @@ def test_a_feed_that_never_started_says_so_and_does_not_invent_a_mode():
     status = CatchingStatus()
     out = text(status)
     assert "never received" in out
-    # A parked controller also never publishes (A-S5-12): the panel names that
+    # A parked controller also never publishes: the panel names that
     # cause too, so a parked bring-up does not read as a dead topic.
     assert "parked" in out
     assert "IDLE" not in out
@@ -238,7 +238,7 @@ def test_a_request_the_tick_refuses_outright_stops_pending_and_shows_it():
 
 def test_a_stop_that_lowers_the_latch_is_shown_as_a_disagreement_and_named():
     # The failure this exists for: the operator armed the controller, the tick
-    # lowered the latch on an E-STOP (P-1 (c)), and a panel that painted the
+    # lowered the latch on an E-STOP, and a panel that painted the
     # REQUESTED value would show ARMED while nothing would happen.
     status = CatchingStatus()
     status.update(make_msg(armed=False, tick=1), now_s=100.0)
@@ -403,8 +403,8 @@ def test_no_plan_is_said_rather_than_drawn_as_the_origin():
 
 
 def test_no_plan_names_the_planners_reason_once_it_has_spoken():
-    # §13 S6: "탈락 사유". The planner's no-plan reason (its first bottleneck,
-    # decision E) rides plan_reason with plan_valid false; before the planner
+    # The planner's no-plan reason (its first bottleneck)
+    # rides plan_reason with plan_valid false; before the planner
     # has published anything this activation (plan_id 0) there is no reason to
     # name, and "NONE" would read as "nothing wrong".
     status = CatchingStatus()
@@ -444,13 +444,13 @@ def test_a_plan_reports_its_catch_point_and_instant():
     assert "p_c=(+0.500, -0.200, +0.900)" in out
     assert "t_c=+0.420 s" in out
     assert "gamma_f=0.30" in out
-    # §13 S6: w5, w6 and the plan's age as well.
+    # w5, w6 and the plan's age as well.
     assert "w5=0.147" in out
     assert "w6=0.0042" in out
     assert "age=31 ms" in out
 
 
-# ── S7: outcome, hand sequencer, fingertips ─────────────────────────────────
+# ── Outcome, hand sequencer, fingertips ─────────────────────────────────────
 
 
 def test_the_last_attempt_is_named_on_the_mode_line():
@@ -468,7 +468,7 @@ def test_outcome_names_follow_the_message_constants():
 
 
 def test_a_message_from_before_s7_reads_as_not_computed():
-    # make_msg carries no S7 fields: nothing about the hand or the tips is
+    # make_msg carries no outcome fields: nothing about the hand or the tips is
     # invented from their absence.
     status = CatchingStatus()
     status.update(make_msg(), now_s=100.0)
@@ -509,7 +509,7 @@ def test_the_tips_line_marks_contact_staleness_and_never_received():
     assert "middle: never" in line
 
 
-# ── S8 progress tally (L8 §11) ───────────────────────────────────────────────
+# ── Progress tally ───────────────────────────────────────────────────────────
 RETREAT = MODE_NAMES.index("RETREAT")
 ARMED = MODE_NAMES.index("ARMED")
 HOLD = MODE_NAMES.index("HOLD")
@@ -894,7 +894,7 @@ def test_the_search_done_callback_only_hands_the_value_to_the_tk_thread():
     assert state.refreshes == 0
 
 
-# ── Budgets of the selected planners and the withheld-plan hint (E1-F18 D5-a) ───
+# ── Budgets of the selected planners and the withheld-plan hint ─────────────
 
 
 def _live(**attrs):

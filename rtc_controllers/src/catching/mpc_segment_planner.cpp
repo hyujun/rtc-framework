@@ -1,4 +1,4 @@
-// MPC segment planner (MPC E1-F03, E1-F08). See mpc_segment_planner.hpp.
+// MPC segment planner. See mpc_segment_planner.hpp.
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 
 #include "rtc_controllers/catching/ball_node_samples.hpp"
@@ -66,7 +66,7 @@ void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
 }
 
 // Group g's partition for a core with n_pre pre-catch nodes at replan instance
-// k (E3-F02, D11): the pre-catch nodes in blocks of `blocks.pre`, the remainder
+// k: the pre-catch nodes in blocks of `blocks.pre`, the remainder
 // joining the last; then the group's stop partition at k.
 bool GroupBlocks(const MpcSegmentPlannerParams& p, int g, int n_pre, int k, BlockPattern& out) {
   BlockPattern b;
@@ -190,9 +190,9 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
     return fail("eta_v, T_arm or control_dt is outside its range");
   }
   // A plan is published only with a first segment that starts before t_c
-  // (MD-56), so a planner without a pre-catch grid has nothing to publish.
+  // so a planner without a pre-catch grid has nothing to publish.
   if (params.n_pre_max < 1) {
-    return fail("approach.n_pre_max is below 1 (a segment starts before t_c, MD-56)");
+    return fail("approach.n_pre_max is below 1 (a segment starts before t_c)");
   }
   if (params.k_max < 0 || params.k_max > kMaxMpcSegmentReplans || params.DtNs() <= 0) {
     return fail("k_max or dt_s is outside its range");
@@ -206,7 +206,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
     return fail("device_of_model is not a permutation of the arm joints");
   }
   const int n = model.nv;
-  // The joint groups (E3-F02): the device's, read in model order.
+  // The joint groups: the device's, read in model order.
   if (model.groups.n_groups != params.n_groups) {
     return fail("the arm's joint groups (" + std::to_string(model.groups.n_groups) +
                 ") are not the ones planner.segment.mpc was parsed with (" +
@@ -230,7 +230,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
       jerk_weight_model_[m] = params.jerk_weight[U(model.device_of_model[U(m)])];
     }
   }
-  // The groups' whole-body weights, spread over their joints (E3-F02); the
+  // The groups' whole-body weights, spread over their joints; the
   // rest posture is the wait pose's (device order).
   w_vel_model_.resize(0);
   w_rest_model_.resize(0);
@@ -264,7 +264,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   limits.q_max.resize(n);
   limits.qd_max.resize(n);
   limits.tau_max.resize(n);
-  // MD-25: armature is not used in control — the core receives an explicit
+  // Armature is not used in control — the core receives an explicit
   // zero, never an empty vector it would have to interpret.
   limits.armature = Eigen::VectorXd::Zero(n);
   for (int m = 0; m < n; ++m) {
@@ -402,7 +402,7 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
   limits.q_max.resize(n);
   limits.qd_max.resize(n);
   limits.tau_max.resize(n);
-  limits.armature = Eigen::VectorXd::Zero(n);  // MD-25
+  limits.armature = Eigen::VectorXd::Zero(n);
   for (int m = 0; m < n; ++m) {
     limits.q_min[m] = model.q_min[U(m)];
     limits.q_max[m] = model.q_max[U(m)];
@@ -442,7 +442,7 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
     // catch cores carry it (0 = off: the QP keeps its dimensions).
     mp.rho_v = params.rho_v;
     mp.v_rel_allow = params.v_rel_allow;
-    // The stop cores' box (MD-64): the stop core that takes over at t_c
+    // The stop cores' box: the stop core that takes over at t_c
     // refuses an initial state outside its own.
     mp.eta_v = consts_.eta_v;
     mp.eta_tau = params.eta_tau;
@@ -479,7 +479,7 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
 }
 
 bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string& why) {
-  // One solve per core near the middle of the joint range (MD-64): the first
+  // One solve per core near the middle of the joint range: the first
   // ProxQP solve of a core is its slowest. The stop cores solve a stop from
   // rest (no reference: pre-solve + solve); the catch cores a catch where
   // the ball already is — at the catch frame, along its +z — so every term
@@ -489,7 +489,7 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
   // An arm can stand at the middle with no joint loaded by gravity (a
   // vertical 7-joint arm at q = 0); the stop from rest is then degenerate
   // (z = 0, every torque row at 0). ProxQP's approximate infeasibility test
-  // called it infeasible (#857 D12, which moved the pose 1 % off the middle);
+  // called it infeasible (which moved the pose 1 % off the middle);
   // the cores run without that test (solver.eps_primal_inf 0, #880), and the
   // degenerate warm-up solves.
   const int n = nv_;
@@ -507,7 +507,7 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
     warmup_total_ns_ += ns;
     return ok;
   };
-  // Inside the cores' box (MD-64: every core has the same one), which a
+  // Inside the cores' box (every core has the same one), which a
   // joint narrower than 2·m_q collapses to its midpoint.
   const Eigen::VectorXd& lo = cores_[0]->PositionLow();
   const Eigen::VectorXd& hi = cores_[0]->PositionHigh();
@@ -614,7 +614,7 @@ bool MpcSegmentPlanner::SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::
   in.v_b = v_b;
   in.a_d = a_d;
   in.gamma_ref = params_.gamma_ref;
-  // MD-63: W_p from Σ_p, and w_Δ scheduled by tr Σ_p — or, without a usable
+  // W_p from Σ_p, and w_Δ scheduled by tr Σ_p — or, without a usable
   // Σ_p, the constant weight and the full pull. The ratio is checked finite
   // before it is clamped: std::clamp hands a NaN straight through.
   bool fallback = !ball.sigma_valid;
@@ -635,7 +635,7 @@ bool MpcSegmentPlanner::SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::
     scale = 1.0;
   }
   // The first solve's reference is a curve, not a previous solution worth
-  // staying near (formulation §1.3).
+  // staying near.
   in.w_delta_scale = first ? 0.0 : scale;
   rec.w_p_fallback = fallback;
   rec.w_delta_scale = in.w_delta_scale;
@@ -1103,7 +1103,7 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
       }
       // Into the core's box, as Replan does: a wait pose inside the m_q margin
       // of a limit would otherwise be refused on every wake, and with it the
-      // plan (MD-62).
+      // plan.
       const double q0 = std::clamp(reported, q_lo_[U(m)], q_hi_[U(m)]);
       rec.x0_clamped = rec.x0_clamped || q0 != reported;
       in.q0[m] = q0;
@@ -1208,7 +1208,7 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
 bool MpcSegmentPlanner::StartOnSource(const PlannerRtState& rt, const PlanSnapshot& plan,
                                       std::int64_t t_eff, int n_pre, int n_total, double t_span,
                                       MpcSegmentCoreInput& in, SegmentRecord& rec) const noexcept {
-  // The source is what the RT reports, never an inference (MD-58): the arm is
+  // The source is what the RT reports, never an inference: the arm is
   // on the followed plan's segments until the RT switches.
   const SegmentSnapshot* src = ring_.Source(rt, t_eff);
   if (src == nullptr) {
@@ -1319,7 +1319,7 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   }
   ring_.NoteReported(rt);
 
-  // The grid point the replan budget reaches (MD-54, MD-58). Recorded as
+  // The grid point the replan budget reaches. Recorded as
   // soon as it is chosen, so a withheld solve still says where it was.
   const std::int64_t t_c = rt.plan_t_c_ns;
   const std::int64_t earliest = start + t_arm_ns_ + replan_ns_ + 2 * h_ns_;
@@ -1348,7 +1348,7 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   const int n_total = rec.n_nodes;
   rec.kind = pre ? SegmentKind::kAdvance : SegmentKind::kStop;
 
-  // The source is what the RT reports, never an inference (MD-58).
+  // The source is what the RT reports, never an inference.
   const SegmentSnapshot* src = ring_.Source(rt, t_eff);
   if (src == nullptr) {
     rec.outcome = SegmentOutcome::kNotFollowed;
@@ -1386,7 +1386,7 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   MpcSegmentCoreInput& in = pre ? catch_inputs_[slot] : inputs_[slot];
   MpcSegmentCoreResult& res = pre ? catch_results_[slot] : results_[slot];
 
-  // x₀: the source at t_eff (MD-58), projected into the core's box —
+  // x₀: the source at t_eff, projected into the core's box —
   // a published node keeps the box only to the solver's tolerance.
   std::array<double, kMaxSegmentNv> q{};
   std::array<double, kMaxSegmentNv> qd{};

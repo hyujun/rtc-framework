@@ -19,11 +19,10 @@
         would no longer enumerate it.
 
      2. `catch_frame` is attached with BOTH a translation offset and a nonzero
-        rpy, so its local +z (the palm outward normal, [확정 D-17]) is not the
+        rpy, so its local +z (the palm outward normal) is not the
         flange z and not any base axis. A frame or row mix-up in the 5-row
         selection therefore changes the answer instead of cancelling — the
-        symmetry-breaking a fixture needs to pin a frame convention
-        (L3 §4.2).
+        symmetry-breaking a fixture needs to pin a frame convention.
 
      The link origins carry y-offsets so the chain is not planar in any
      configuration. Limits are finite and asymmetric so a step that walks into

@@ -1,11 +1,11 @@
 #pragma once
 
-// ── Hand-built APPROACH–stop segments (MPC E1-F04 · E1-F09 tests) ───────────
+// ── Hand-built APPROACH–stop segments ───────────────────────────────────────
 //
 // The suites that play the MPC segment planner (the oracle profile has no planner
 // thread, so the test is the segment box's one writer) need segments the RT can
 // follow from the command it holds. This builds one in closed form on the
-// two-spacing grid (MD-54): `n_pre` pre-catch intervals of Δ_pre before t_c,
+// two-spacing grid: `n_pre` pre-catch intervals of Δ_pre before t_c,
 // then kApproachNStop stop intervals of Δ_s. Node 0 is placed so that the
 // segment's state at a sample instant s inside its first interval is EXACTLY
 // (q_c, q̇_c, 0) — that interval has zero jerk, so the sampler's cubic from
@@ -28,7 +28,7 @@
 
 namespace integrated_bringup::testfx {
 
-inline constexpr std::int64_t kApproachDtPreNs = 100'000'000;  // Δ_pre (MD-54)
+inline constexpr std::int64_t kApproachDtPreNs = 100'000'000;  // Δ_pre
 inline constexpr std::int64_t kApproachDtNs = 50'000'000;      // Δ_s
 inline constexpr int kApproachNPre = 4;                        // pre-catch intervals, first segment
 inline constexpr int kApproachNStop = 7;                       // stop intervals (0.35 s)

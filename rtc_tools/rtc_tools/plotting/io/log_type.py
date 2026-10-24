@@ -44,7 +44,7 @@ def detect_log_type(filepath):
         # the three demo controllers.
         return "pull_estimator"
     elif stem == "compliance_diag" or stem.endswith("compliance_diag"):
-        # Per-tick §7 task-admittance diagnostics (#469 S4) — fixed instance
+        # Per-tick task-admittance diagnostics — fixed instance
         # stem, written only by demo_compliance_controller.
         return "compliance_diag"
     elif stem == "momentum_observer" or stem.endswith("momentum_observer"):
@@ -53,12 +53,12 @@ def detect_log_type(filepath):
         # (kMomentumObserverLogInstance) shared by the three demo controllers.
         return "momentum_observer"
     elif stem == "catching_diag" or stem.endswith("catching_diag"):
-        # Per-tick dynamic-catching record (S5.4): input snapshot token, L4
-        # reference, CLIK state, q_c vs q. Fixed instance stem, written only
+        # Per-tick dynamic-catching record: input snapshot token, reference,
+        # CLIK state, q_c vs q. Fixed instance stem, written only
         # by the catching controller.
         return "catching_diag"
     elif stem == "planner_events" or stem.endswith("planner_events"):
-        # Per-non-idle-wake planner search record (S6-B): candidate funnel,
+        # Per-non-idle-wake planner search record: candidate funnel,
         # judgement rejects, rank-gate bitmask, switching decision. Fixed
         # instance stem, written only by the catching controller's planner
         # thread (drained by the 1 Hz aux timer).
@@ -144,7 +144,7 @@ def detect_log_type_by_columns(columns):
     # the ordering below it is defence rather than necessity.
     if "track_err_rad" in cols and "ref_gamma" in cols:
         return "catching_diag"
-    # Planner-events (S6-B): per-non-idle-wake planner_events.csv. `n_in_window`
+    # Planner-events: per-non-idle-wake planner_events.csv. `n_in_window`
     # + `rank_error_budget` is the discriminating pair — no other POD emits
     # either. Neither carries the generic `_raw_`/`_filt_` token the
     # sensor_log fallback matches, so the ordering below it is defence rather

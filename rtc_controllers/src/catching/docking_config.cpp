@@ -30,7 +30,7 @@ std::string DockingConfigRefusal(const DockingConfig& config) {
     throw std::invalid_argument("DockingConfigRefusal: an input the selection reads is null");
   }
   const HandDockingParams& hand = *config.hand;
-  // The hand's identified values (E1-F15): nobody may guess one.
+  // The hand's identified values: nobody may guess one.
   if (const char* unset = hand.FirstUnset(); unset != nullptr) {
     return std::string("'catching.") + unset +
            "' is unset or TBD (the hand's identified capture set)";
@@ -46,11 +46,10 @@ std::string DockingConfigRefusal(const DockingConfig& config) {
   // code default, and a refusal that names one of those (the lead against a
   // default closing speed) would hide that the map is missing — or nothing
   // would refuse, and the search would run on defaults no profile wrote. The
-  // map has no decision key of its own to be unset (the catch box was the one,
-  // L3 §4.9), so what is asked for is the map and the core design inside it:
-  // that catches a profile without the search's fragment, and an overlay that
-  // wrote a leaf or two into the gap. It cannot tell a complete map from one
-  // that has a `core:` and little else.
+  // map has no decision key of its own to be unset (the catch box was the one), so what is asked
+  // for is the map and the core design inside it: that catches a profile without the search's
+  // fragment, and an overlay that wrote a leaf or two into the gap. It cannot tell a complete map
+  // from one that has a `core:` and little else.
   if (nlp) {
     // Const nodes throughout: a lookup must not create the key it asks about.
     const YAML::Node& catching = *config.catching;

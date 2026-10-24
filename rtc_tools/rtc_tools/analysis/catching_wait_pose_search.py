@@ -1,6 +1,6 @@
 """Wait-pose search: which posture gives the most catching speed toward its OWN axis.
 
-dynamic_catching S8-H/S8-I follow-up (#537-adjacent). ``catch_speed_budget``
+``catch_speed_budget``
 answers "how fast can the arm move with the ball at an ACCEPTED catch pose";
 this tool asks a narrower, offline, no-runtime question about the ONE pose the
 robot waits in before a throw is even seen — the IK seed and, until the arm
@@ -26,11 +26,11 @@ by ``directional_speed_lp``, the physical ceiling (its optimum, solved exactly
 by ``directional_speed_lp_value``). Both are reported for every row, the DLS
 never above the LP.
 
-``--objective robust`` (S8-I-2) ranks by the **neighbourhood** speed: the 10th
+``--objective robust`` ranks by the **neighbourhood** speed: the 10th
 percentile, over ``--robust-samples`` joint perturbations with
 ``|δ|∞ <= --robust-eps-rad``, of the DLS speed toward the NOMINAL pose's own
-inbound direction, capped by the nominal LP. S8-I measured why the point
-objective fails: its optimum was a needle next to a ``jw`` singularity — a
+inbound direction, capped by the nominal LP. The point
+objective fails because its optimum was a needle next to a ``jw`` singularity — a
 0.05 rad perturbation halved the DLS, and the IK catch posture the planner
 actually reached sat 0.3 rad away with a quarter of the speed (#537
 5852292540). The ball's direction is fixed when it is thrown at the wait
@@ -65,8 +65,7 @@ never touch mass) and is always zero.
 Method: uniform samples over the joint-limit box plus a log-scaled random walk
 from the reference pose, filtered by the CLI's position/orientation/height
 constraints, ranked by the self-consistent LP, then the top ``--refine-top``
-locally refined with Nelder-Mead under a constraint-violation penalty (same
-recipe as the private S8-H pre-analysis this tool productises).
+locally refined with Nelder-Mead under a constraint-violation penalty.
 
 Caveats (also written to the summary): the LP holds the approach-axis
 ROTATION RATE at zero — it does not evaluate whether holding that orientation
@@ -113,8 +112,7 @@ DEFAULT_SEED = 0
 DEFAULT_WALK_FRAC = 0.6
 DEFAULT_REFINE_TOP = 10
 NM_MAXITER = 1500
-# Penalty weights for the Nelder-Mead refine step (same order of magnitude as
-# the private S8-H pre-analysis this tool productises: position/limit/height
+# Penalty weights for the Nelder-Mead refine step (position/limit/height
 # violations dominate the objective, the axis tolerance is a softer nudge
 # since the sampler and the outer filter already enforce it before refining).
 PEN_POS = 50.0
@@ -130,8 +128,8 @@ LIMIT_TOL_RAD = 1e-9
 # plus 1e-6 m/s; anything larger is a real inconsistency.
 DLS_LP_REL_TOL = 1e-3
 DLS_LP_ABS_TOL = 1e-6
-# --objective robust: neighbourhood size, sample count and the percentile (S8-I-2).
-# 0.1 rad is twice the perturbation at which the S8-I point optimum had already
+# --objective robust: neighbourhood size, sample count and the percentile.
+# 0.1 rad is twice the perturbation at which the point optimum had already
 # halved and about the catch-posture excursion the shipped pose shows (0.12 rad).
 DEFAULT_ROBUST_EPS_RAD = 0.1
 DEFAULT_ROBUST_SAMPLES = 32
@@ -584,7 +582,7 @@ def search_wait_poses(
     ``DirectionalSpeedMax`` feeds the γ window, so the pose that maximises it
     maximises the planner's own γ_max), by ``v_dir_lp`` (the physical ceiling), or
     by ``v_dir_robust`` (the neighbourhood p10 of the DLS toward the nominal
-    direction, capped by the LP — S8-I-2). Both point numbers are reported for
+    direction, capped by the LP). Both point numbers are reported for
     every row either way; the robust one for every row when it is the objective.
     ``min_sigma`` drops candidates whose ``sigma_min`` (5-row Jacobian) is below it.
     """

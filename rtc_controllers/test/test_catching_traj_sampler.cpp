@@ -1,18 +1,15 @@
-// L2 predicted-trajectory sampler — gates G2-A..E, G2-G, G2-H
-// (docs/dynamic_catching/ref/L2_prediction.md §9) plus the count / NaN / spacing
-// items of L1 G1-A that belong to the ROS-free core.
+// Predicted-trajectory sampler (traj_sampler.hpp): interpolation accuracy,
+// continuity, horizon flags, hint cursor, format checks, and the count / NaN /
+// spacing checks of the ROS-free core.
 //
-// Ported from the reference test_l2.cpp with thresholds unchanged (removed
-// from docs; `git show 482d18b3:docs/dynamic_catching/test_l2.cpp`). Two
-// fixture changes, both forced by the port and approved at S1
-// kick-off:
-//  • the reference built 60 points at 1/60 s; the snapshot holds kCap = 40, so
-//    the fixture is 40 points (horizon 0.65 s) and every in-horizon sweep stops
-//    at the last sample instead of 0.9 s;
-//  • sample instants are integer steady ns now, so 1/60 s is rounded to the ns.
+// Fixture notes:
+//  • the snapshot holds kCap = 40 samples, so the fixture is 40 points at
+//    1/60 s (horizon 0.65 s) and every in-horizon sweep stops at the last
+//    sample;
+//  • sample instants are integer steady ns, so 1/60 s is rounded to the ns.
 //    The reference truth is therefore propagated to the ROUNDED instants — a
 //    truth taken at the unrounded time would differ by ‖v‖·0.5 ns ≈ 2.5e-9 m and
-//    swamp G2-C's 1e-10 m.
+//    swamp the 1e-10 m exactness bound of the drag-free case.
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
@@ -129,9 +126,9 @@ TrajLimits Limits(int n_min = 10) {
   return lim;
 }
 
-// ── ported reference cases ──────────────────────────────────────────────────
+// ── reference cases ─────────────────────────────────────────────────────────
 
-// G2-A: the interpolant reproduces p, v, a at BOTH ends of every interval.
+// The interpolant reproduces p, v, a at BOTH ends of every interval.
 // Checking s = 0 alone leaves every basis derivative except D1(0) unconstrained.
 TEST(CatchingTrajSampler, G2AReproducesSamplesAtBothEnds) {
   const TrajectorySnapshot tr = MakeTraj(kCap, kDrag);
@@ -153,7 +150,7 @@ TEST(CatchingTrajSampler, G2AReproducesSamplesAtBothEnds) {
   EXPECT_LT(ea, 1e-12);
 }
 
-// Supports G2-A: inside an interval v and a are the true derivatives of p,
+// Supports the case above: inside an interval v and a are the true derivatives of p,
 // which is what pins the D·/S· coefficients and their powers of h.
 TEST(CatchingTrajSampler, G2AVelocityAndAccelAreDerivativesInside) {
   const TrajectorySnapshot tr = MakeTraj(kCap, kDrag);
@@ -178,7 +175,7 @@ TEST(CatchingTrajSampler, G2AVelocityAndAccelAreDerivativesInside) {
   EXPECT_LT(ea, 1e-2);
 }
 
-// G2-B: C² — acceleration is continuous across sample boundaries.
+// C² — acceleration is continuous across sample boundaries.
 TEST(CatchingTrajSampler, G2BAccelContinuousAcrossSamples) {
   const TrajectorySnapshot tr = MakeTraj(kCap, kDrag);
   const std::int64_t d = 100;  // 0.1 µs
@@ -190,7 +187,7 @@ TEST(CatchingTrajSampler, G2BAccelContinuousAcrossSamples) {
   EXPECT_LT(jump, 1e-6);
 }
 
-// G2-C: a drag-free (quadratic) flight lies in the quintic basis — exact.
+// A drag-free (quadratic) flight lies in the quintic basis — exact.
 TEST(CatchingTrajSampler, G2CExactForPureGravity) {
   const TrajectorySnapshot tr = MakeTraj(kCap, 0.0);
   double worst = 0.0;
@@ -215,9 +212,9 @@ TEST(CatchingTrajSampler, DragModelErrorAt60HzSpacing) {
   EXPECT_LT(wp, 1e-9);
 }
 
-// L2 §7 S1.2b: re-measure the accuracy at the 0.05 s spacing of the sim
-// profile (D-15: 17 points, 0.8 s). Recorded, not gated — L2 has no threshold
-// for it; the value feeds S3.6's spacing choice.
+// Re-measure the accuracy at the 0.05 s spacing of the sim profile (17 points,
+// 0.8 s). Recorded, not gated — there is no threshold for it; the value informs
+// the spacing choice.
 TEST(CatchingTrajSampler, RecordsErrorAtSimProfileSpacing) {
   const TrajectorySnapshot tr = MakeTraj(17, kDrag, 50'000'000);
   double wp = 0.0;
@@ -236,7 +233,7 @@ TEST(CatchingTrajSampler, RecordsErrorAtSimProfileSpacing) {
   EXPECT_TRUE(std::isfinite(wp) && std::isfinite(wa));
 }
 
-// G2-D: horizon flags tell before from after; the last sample is not extrapolated.
+// Horizon flags tell before from after; the last sample is not extrapolated.
 TEST(CatchingTrajSampler, G2DHorizonFlagsDistinguishSides) {
   const TrajectorySnapshot tr = MakeTraj(20, kDrag);
   const SampleEval in = SampleAt(tr, NowLead{kT0 + 150'000'000});
@@ -252,7 +249,7 @@ TEST(CatchingTrajSampler, G2DHorizonFlagsDistinguishSides) {
   EXPECT_TRUE(end.valid);
 }
 
-// G2-D: the hint cursor gives exactly the binary-search answer.
+// The hint cursor gives exactly the binary-search answer.
 TEST(CatchingTrajSampler, G2DHintCursorMatchesFreshSearch) {
   const TrajectorySnapshot tr = MakeTraj(kCap, kDrag);
   int hint = 0;
@@ -267,7 +264,7 @@ TEST(CatchingTrajSampler, G2DHintCursorMatchesFreshSearch) {
   EXPECT_EQ(hint, 3);
 }
 
-// G2-D: format checker accepts a good snapshot and names a monotonicity break.
+// Format checker accepts a good snapshot and names a monotonicity break.
 TEST(CatchingTrajSampler, G2DFormatCheck) {
   TrajectorySnapshot tr = MakeTraj(kCap, kDrag);
   const TrajCheck ok = Check(tr, Limits());
@@ -284,7 +281,7 @@ TEST(CatchingTrajSampler, G2DFormatCheck) {
   EXPECT_EQ(bad.reason, TrajReject::kNonMonotonic);
 }
 
-// G2-G: a non-increasing pair is reported invalid, not silently returned.
+// A non-increasing pair is reported invalid, not silently returned.
 TEST(CatchingTrajSampler, G2GNonMonotonicPairIsInvalid) {
   TrajSample A{};
   TrajSample B{};
@@ -309,11 +306,11 @@ TEST(CatchingTrajSampler, G2GNonMonotonicPairIsInvalid) {
   }
 }
 
-// ── new regression cases (G2-H, G1-A count / NaN / spacing items) ───────────
+// ── new regression cases (count / NaN / spacing) ────────────────────────────
 
 // n beyond the capacity (or ≤ 0) is rejected BEFORE any indexing. Under the
 // sanitizer build (-D_GLIBCXX_ASSERTIONS + ASan) an out-of-range read here is a
-// hard failure, which is the half of G2-H a plain build cannot see.
+// hard failure, which a plain build cannot see.
 TEST(CatchingTrajSampler, G2HCountOutOfRangeRejectedBeforeIndexing) {
   TrajectorySnapshot tr = MakeTraj(kCap, kDrag);
   for (std::int32_t n : {kCap + 1, kCap + 1000, 0, -1, std::numeric_limits<std::int32_t>::max(),
@@ -331,7 +328,7 @@ TEST(CatchingTrajSampler, G2HCountOutOfRangeRejectedBeforeIndexing) {
 }
 
 // Limits that exceed the compile-time capacity, or a missing dt_min, are
-// themselves rejected (fail-closed: the S3.6 n_max must fit kCap).
+// themselves rejected (fail-closed: n_max must fit kCap).
 TEST(CatchingTrajSampler, G2HUnusableLimitsRejected) {
   const TrajectorySnapshot tr = MakeTraj(kCap, kDrag);
   TrajLimits lim = Limits();
@@ -388,7 +385,7 @@ TEST(CatchingTrajSampler, G2HSnapshotTypesAreTriviallyCopyable) {
   SUCCEED();
 }
 
-// Sampling is on the lead axis (L0 §4.5): with T_arm ≠ 0 the sample at
+// Sampling is on the lead axis: with T_arm ≠ 0 the sample at
 // MakeNowLead(now, T_arm) is the flight at now + T_arm, and the horizon flag
 // trips T_arm before the real axis reaches the last sample.
 TEST(CatchingTrajSampler, SamplesOnLeadAxisWithNonZeroTArm) {
@@ -404,9 +401,9 @@ TEST(CatchingTrajSampler, SamplesOnLeadAxisWithNonZeroTArm) {
   EXPECT_TRUE(SampleAt(tr, MakeNowLead(near_end, t_arm)).after_horizon);
 }
 
-// G2-E: the RT read path allocates nothing (operator new AND Eigen's own
+// The RT read path allocates nothing (operator new AND Eigen's own
 // allocator), and its cost is recorded: worst sample time and the bytes the
-// per-tick snapshot copy moves (D-21 copies the whole kCap snapshot each tick).
+// per-tick snapshot copy moves (the whole kCap snapshot is copied each tick).
 TEST(CatchingTrajSampler, G2ERtReadPathAllocationFreeAndRecorded) {
   const TrajectorySnapshot src = MakeTraj(kCap, kDrag);
   TrajectorySnapshot copy{};
@@ -456,7 +453,7 @@ TEST(CatchingTrajSampler, IntervalBelowStructuralFloorIsInvalid) {
 }
 
 // Wire timestamps at the int64 extremes: Check() and Interpolate() must
-// decide on them without signed overflow (UB — UBSan run in the S1 recipe
+// decide on them without signed overflow (UB — a UBSan run
 // traps it), reporting a saturated gap rather than a wrapped one.
 TEST(CatchingTrajSampler, ExtremeTimestampsDoNotOverflow) {
   constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();

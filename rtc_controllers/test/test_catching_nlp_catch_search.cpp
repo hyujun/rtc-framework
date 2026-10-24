@@ -1,8 +1,8 @@
-// NLP catch search (E1-F14 #740; reference §9.5, §11, §12.7, §17.11, §17.12).
+// NLP catch search.
 //
 // What is tested, and against what:
 //   1. screening — the IK verdict against CatchPoseIk called directly; the
-//      reach and closing-speed conditions against the reference's formulas
+//      reach and closing-speed conditions against the headers' formulas
 //      written out here on scalars (the pure functions' own boundaries are
 //      test_catching_nlp_catch_screening.cpp's).
 //   2. the choice — against an EXHAUSTIVE solve this file runs itself, on its
@@ -162,7 +162,7 @@ template <typename V>
   return out;
 }
 
-// ── The same arm as a CHAIN inside a wider device (E3-F01, #640) ─────────────
+// ── The same arm as a CHAIN inside a wider device ────────────────────────────
 // Nine device joints, six of them the model's: {0, 2, 3, 5, 6, 8}. Device
 // joints 1, 4 and 7 are no model joint's. The map is chosen so that the RANK
 // of a model joint's device index in that set is kDeviceOfModel — the column
@@ -766,7 +766,7 @@ TEST(NlpCatchSearchScreening, TheIkVerdictIsCatchPoseIksOwn) {
   }
 }
 
-// The reference's S4 for one joint, on scalars.
+// The joint-reach condition for one joint, on scalars.
 [[nodiscard]] bool ReachOk(double q_c, double q_0, double v_0, double v_max, double a_max,
                            bool accel, double T) {
   const bool by_velocity = std::fabs(q_c - q_0) <= v_max * T;
@@ -774,7 +774,7 @@ TEST(NlpCatchSearchScreening, TheIkVerdictIsCatchPoseIksOwn) {
   return by_velocity && by_acceleration;
 }
 
-// S4 as the reference writes it, for every candidate the IK accepted: first
+// The joint-reach condition for every candidate the IK accepted: first
 // failing joint and which condition, with T the time the arm MOVES.
 void ExpectReachIsTheFormula(const Rig& rig, const SearchStats& stats, int& passed, int& failed) {
   const NlpCatchSearchParams& p = rig.params;
@@ -1070,7 +1070,7 @@ TEST(NlpCatchSearchChoice, FromRestItIsTheExhaustiveSolvesArgMin) {
   const std::set<NlpReject> reasons = Reasons(rig->search);
   EXPECT_TRUE(reasons.contains(NlpReject::kLeadShort)) << Table(rig->search, w.stats);
   EXPECT_TRUE(reasons.contains(NlpReject::kReach)) << Table(rig->search, w.stats);
-  // No check judges where the catch point is (L3 §4.9): every candidate with a
+  // No check judges where the catch point is: every candidate with a
   // long enough lead reached the catch-pose IK, however far along the ball's
   // line its catch point lies.
   for (const Candidate& c : rig->search.Candidates()) {
@@ -2449,7 +2449,7 @@ TEST(NlpCatchSearchFollowing, TheStartStateIsTheReportedSegmentAtNodeZero) {
     if (c.reject == NlpReject::kLeadShort) {
       continue;
     }
-    // MD-58: the pending one from its node 0 on.
+    // The pending one from its node 0 on.
     const bool pending = c.t_s_ns >= arm->pending.t0_ns;
     const SegmentSnapshot& src = pending ? arm->pending : arm->following;
     (pending ? on_pending : on_following) += 1;
@@ -3119,7 +3119,7 @@ TEST(NlpCatchSearchMonitor, ReportsThePositionSpreadAtTheFollowedCatchInstant) {
   EXPECT_FALSE(stats.publish);
 }
 
-// ── 7a. The caller's cap on the wake's budget (E1-F17 #743) ──────────────────
+// ── 7a. The caller's cap on the wake's budget ────────────────────────────────
 //
 // CatchSearch::Plan's `budget_cap_ns`: a wake that has a replan to run behind
 // the search gives the search less than `budget_s`. The wake's budget is then
@@ -3366,7 +3366,7 @@ TEST(NlpCatchSearchAllocation, AWakeAllocatesNothingOutsideTheQpSolvers) {
   }
 }
 
-// ── 9. The search as it is, pinned bit for bit (E1-F14 PR 2, #740) ───────────
+// ── 9. The search as it is, pinned bit for bit ───────────────────────────────
 // The search gets a continuous solve per candidate (behind a switch) and a
 // window after adoption (behind another). With both off, a wake on which the
 // RT follows no plan must be the wake it was. These digests were taken BEFORE
@@ -3566,7 +3566,7 @@ struct PinnedSearchDigest {
 };
 
 /// PinnedSearches()' digests on the code BEFORE the continuous solve and the
-/// window after adoption (E1-F14 PR 2). Numbers to compare against, tied to
+/// window after adoption. Numbers to compare against, tied to
 /// where they were taken — the rule of kWholeCatchDigest
 /// (test_catching_approach_cycle.cpp): a change MEANT to alter what a wake
 /// leaves, with both switches off and the RT following no plan, replaces them
@@ -4563,8 +4563,7 @@ TEST(NlpCatchSearchContinuous, ThePinnedCellIsTheHalfOpenCellOfThePlansInstant) 
 
 // δt_c's box is the cell cut to the instants whose ball the screening passes,
 // and a catch instant that wants to go past that end rests on it. The end here
-// is the prediction's own: it stops 4 ms after a lattice instant. (Until that gate was removed, L3
-// §4.9, the end this test used was a wall of the catch box, which no longer exists.)
+// is the prediction's own: it stops 4 ms after a lattice instant.
 TEST(NlpCatchSearchContinuous, TheCatchInstantStaysInsideThePrediction) {
   auto probe = ContinuousRig();
   std::string err;
@@ -4971,8 +4970,8 @@ TEST(NlpCatchSearchContinuous, AWakeAllocatesNothingOutsideTheQpSolvers) {
   EXPECT_GT(log.stages, 100);
 }
 
-// ── 12. A chain inside a wider device (E3-F01, #640) ─────────────────────────
-// The search's model is six of a device's nine joints. Sprint Contract 2: what
+// ── 12. A chain inside a wider device ────────────────────────────────────────
+// The search's model is six of a device's nine joints. What
 // the other three hold — command, velocity, wait pose (configured and
 // reported), their columns of the followed segment — does not reach the
 // search. The statement here is stronger than "two wakes agree": with ANY

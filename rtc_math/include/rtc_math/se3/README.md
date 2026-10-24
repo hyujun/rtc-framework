@@ -90,7 +90,7 @@ body 의 한 축이 가리키는 방향만 구속하고 그 축 둘레 roll 은 
 | `kJacobianCapped` | `c < 0`, `sin_eps ≤ ‖z×a_d‖ < jacobian_sin_floor` | 정확 | floor 에서 평가한 `f`, `f'`: `‖J_a‖ ≲ π/floor`, floor 에서 연속 |
 | `kInvalidInput` | 비유한 · 비단위 입력 (`|‖v‖−1| > 1e-6`), `sin_eps` / floor 가 [1e-12, 1) 밖 | 0 | 0 |
 
-`J_a` 는 두 deadband 에서 `e_a` 가 상수라서 0 이다. 오차와 Jacobian 에 같은 `sin_eps` 를 넘겨 deadband 를 맞춘다. 기본값은 `sin_eps` 1e-6, `jacobian_sin_floor` 1e-3 (cap 은 ≈179.94° 이상에서만 시작). θ→π 에서 `J_a` 가 발산하는 것은 문제 자체의 성질 (회전축 미정의) 이라 숨기지 않고 cap 한다. 유도 · 구현 주의는 `axis_align.hpp` 헤더 주석과 [L4_reference.md](../../../../docs/dynamic_catching/ref/L4_reference.md) §4.5.
+`J_a` 는 두 deadband 에서 `e_a` 가 상수라서 0 이다. 오차와 Jacobian 에 같은 `sin_eps` 를 넘겨 deadband 를 맞춘다. 기본값은 `sin_eps` 1e-6, `jacobian_sin_floor` 1e-3 (cap 은 ≈179.94° 이상에서만 시작). θ→π 에서 `J_a` 가 발산하는 것은 문제 자체의 성질 (회전축 미정의) 이라 숨기지 않고 cap 한다. 유도 · 구현 주의는 `axis_align.hpp` 헤더 주석이 갖는다.
 
 ### 정의 고르기
 

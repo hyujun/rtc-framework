@@ -1,4 +1,4 @@
-// The docking segment planner (E1-F16 #742; mpc_docking_segment_planner.hpp).
+// The docking segment planner (mpc_docking_segment_planner.hpp).
 //
 // The planner is the second implementation of the SegmentPlanner interface:
 // the joint-node segments the RT follows, solved by MpcDockingSegmentCore on a
@@ -15,7 +15,7 @@
 //      segment the RT reports; the queries of the interface on what was
 //      published; and the decision this class exists to pin: NOTHING IS
 //      PUBLISHED AFTER THE CATCH.
-//   4a. the first segment of a REPLACEMENT (E1-F17 #743) — the RT follows a
+//   4a. the first segment of a REPLACEMENT — the RT follows a
 //      plan and the search replaces it: the new plan's first segment starts
 //      on the segment the RT reports, a search's solution is published only
 //      when it started there, and the followed plan's segments stay.
@@ -1194,7 +1194,7 @@ TEST(MpcDockingPlannerReplan, NothingIsPublishedAfterTheCatchOrWithinOneInterval
   }
 }
 
-// ── 4a. The first segment of a REPLACEMENT (E1-F17 #743) ─────────────────────
+// ── 4a. The first segment of a REPLACEMENT ───────────────────────────────────
 
 // A followed plan (Followed: seq 1) and the search's replacement of it: the
 // same throw 30 ms later, to be caught 30 ms later — the first problem shifted
@@ -2297,7 +2297,7 @@ TEST(MpcDockingPlannerCycle, AWholeWakeAllocatesNothingOutsideTheQpSolvers) {
   EXPECT_GT(log.stages, 3);
 }
 
-// ── 9. A search on a CHAIN of this planner's model (E3-F01, #640) ────────────
+// ── 9. A search on a CHAIN of this planner's model ───────────────────────────
 // The search's plan and solution name the joints they are of. When those are
 // some of this model's joints and not all, the solution is not a segment of
 // this model: it is not published — it is widened into the start of a solve.

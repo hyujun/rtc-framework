@@ -1,18 +1,18 @@
-// E3-F02 (#641): the whole-body terms of MpcDockingSegmentCore — the velocity
+// The whole-body terms of MpcDockingSegmentCore — the velocity
 // weight on both running sums, the stop-node rest toward q_nom and the
-// angular-momentum rate with its coefficients held from the start point on
-// (D12). Judged:
+// angular-momentum rate with its coefficients held from the start point on.
+// Judged:
 //   • off is the problem without them, to the bit; Init refuses what it cannot
 //     solve (with the catch instant a variable among it);
 //   • the solve's convergence contract keeps its meaning with them on: the
 //     assembled gradient is the merit's (finite differences, 2e-6), and
 //     restarts from its own solution contract to the coefficients' fixed
-//     point, where one converges at once (D14);
+//     point, where one converges at once;
 //   • the reported values are the direct sums — the angular one on the START
 //     point's coefficients after a Solve, on its own before any;
 //   • the same input gives the same answer whatever was solved before, and no
 //     stage outside the QP solver allocates;
-//   • per-group move blocking (D11): groups of one partition are the problem
+//   • per-group move blocking: groups of one partition are the problem
 //     without groups to the bit; with several the gradient is the merit's,
 //     a restart from its own solution converges at once, every joint's jerk
 //     is constant on its group's blocks and the nodes are its integral.
@@ -150,7 +150,7 @@ TEST(MpcDockingWholeBody, InitRefusesWhatItCannotSolve) {
            MpcDockingReason::kParamsInvalid;
   };
   MpcDockingSegmentCoreParams p = on;
-  p.catch_time_variable = true;  // the search's, which plans without them (D10′)
+  p.catch_time_variable = true;  // the search's, which plans without them
   EXPECT_TRUE(refused(p));
   p = on;
   p.w_ang_pre = p.w_ang_post = 0.0;
@@ -184,7 +184,7 @@ TEST(MpcDockingWholeBody, InitRefusesWhatItCannotSolve) {
   EXPECT_TRUE(refused(p));
 }
 
-// ── 2. The convergence contract (D12) ────────────────────────────────────────
+// ── 2. The convergence contract ──────────────────────────────────────────────
 
 // Every reference term on as in the core suite's gradient test, and the
 // whole-body terms; one real-time iteration from a start taken as given.
@@ -353,8 +353,8 @@ TEST(MpcDockingWholeBody, TheAssembledHessianIsTheQuadraticTermsSecondDifference
   EXPECT_GT(largest, 1e-3) << "the terms must carry part of the Hessian";
 }
 
-// D14 (#641, 2026-10-17): a Solve takes the angular coefficients at ITS start
-// point (D12), so a restart from a solution solves the problem held at that
+// A Solve takes the angular coefficients at ITS start
+// point, so a restart from a solution solves the problem held at that
 // solution — another one than the solve that produced it. Restarted on its
 // own solution, the core therefore runs a fixed-point iteration of the
 // coefficients: each restart moves the solution by a tenth or less of the
@@ -496,7 +496,7 @@ TEST(MpcDockingWholeBody, TheValuesAreTheDirectSumsOnTheStartPointsCoefficients)
   const auto near = [](double x, double y, double rel) {
     return std::abs(x - y) <= rel * std::max(1e-12, std::abs(y));
   };
-  // After a Solve: the angular term on the START point's coefficients (D12).
+  // After a Solve: the angular term on the START point's coefficients.
   const Sums held = DirectSums(rig, rig.params, kc, out.q, out.qd, out.qdd, q_start, qd_start);
   EXPECT_TRUE(near(out.cost.vel, held.vel, 1e-9)) << out.cost.vel << " vs " << held.vel;
   EXPECT_TRUE(near(out.cost.rest_stop, held.rest_stop, 1e-9));
@@ -655,7 +655,7 @@ void SetGroups(MpcDockingSegmentCoreParams& p, const std::array<BlockPattern, 3>
 TEST(MpcDockingGroups, GroupsOfOnePartitionAreTheProblemWithoutGroupsToTheBit) {
   dk::Rig rig = dk::MakeRig(fx::RealArm7());
   SetWholeBody(rig.params, rig.model.nv);
-  rig.params.w_ang_pre = rig.params.w_ang_post = 0.0;  // D14 aside: every other term
+  rig.params.w_ang_pre = rig.params.w_ang_post = 0.0;  // every other term
   MpcDockingSegmentCoreParams grouped = rig.params;
   SetGroups(grouped, {kBase, kBase, kBase});
   MpcDockingSegmentCore a, b;
@@ -857,13 +857,12 @@ TEST(MpcDockingGroups, NoStageAllocatesWithThreePartitionsAndTheTermsOn) {
   }
 }
 
-// ── 6. Judgement: counter-swing on the tree (#641 D2, D15) ──────────────────
+// ── 6. Judgement: counter-swing on the tree ─────────────────────────────────
 // A trunk and two arms; the second arm (model joints 10..16) is the group a
 // plan leaves out, at rest on its rest posture q_nom at x_0. Values: W⁻ / W⁺ =
 // 0.001 / 0.1, W_big = 100·W⁺, the stop rest 1 on that arm. No torque cost:
-// through the trunk's reaction it moves the other arm too (E3-F01's
-// observation, #641 D9′), and the control below must see the angular term
-// alone.
+// through the trunk's reaction it moves the other arm too, and the control below must see the
+// angular term alone.
 
 constexpr int kTreeOther = 10;
 
@@ -925,7 +924,7 @@ double TreeOtherOffRest(const TreeJudge& t, const MpcDockingSegmentCoreResult& r
       .maxCoeff();
 }
 
-// D2: the catch node's frame position, approach axis and velocity against
+// The catch node's frame position, approach axis and velocity against
 // the solve without the angular term (the test's own FK).
 bool TreeWithinD2(const TreeJudge& t, const MpcDockingSegmentCoreResult& a,
                   const MpcDockingSegmentCoreResult& b, std::string* why) {
@@ -958,7 +957,7 @@ TEST(MpcDockingJudgement, TheOtherArmSwingsAgainstTheReachAndTheCatchHardlyNotic
   EXPECT_LT(swing.cost.ang, locked.cost.ang);
   RecordProperty("swing_ang_rate_max", std::to_string(swing.cost.ang_rate_max));
   RecordProperty("locked_ang_rate_max", std::to_string(locked.cost.ang_rate_max));
-  // … and the catch node is within D2's tolerance of the solve without it.
+  // … and the catch node is within tolerance of the solve without it.
   EXPECT_TRUE(TreeWithinD2(*t, swing, off, &why)) << why;
   RecordProperty("swing_catch_difference", why);
   // Negative: locked, with the term weighted heavily on both phases, the
@@ -969,7 +968,7 @@ TEST(MpcDockingJudgement, TheOtherArmSwingsAgainstTheReachAndTheCatchHardlyNotic
 }
 
 // The allocation gate on the seventeen-joint tree with every whole-body term
-// on (D15's schedule): the 7-joint test above does not see a workspace sized
+// on: the 7-joint test above does not see a workspace sized
 // by the arm alone.
 TEST(MpcDockingWholeBody, NoStageAllocatesOnTheSeventeenJointTreeWithTheTermsOn) {
   const std::unique_ptr<TreeJudge> t = MakeTreeJudge();

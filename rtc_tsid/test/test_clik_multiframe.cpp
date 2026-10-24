@@ -1,5 +1,5 @@
 /// @file test_clik_multiframe.cpp
-/// @brief ClikReferenceGenerator's multi-frame Compute() overload (E2-F04, #636).
+/// @brief ClikReferenceGenerator's multi-frame Compute() overload.
 ///
 /// Three things are judged, each against something the overload did not
 /// produce:
@@ -810,7 +810,7 @@ TEST_F(ClikTreeTest, PostureGainsSetBeforeInitAreKept) {
 }
 
 TEST_F(ClikTreeTest, ConsistentReferencesReturnTheReferenceVelocity) {
-  // formulation §4 item 8: at q_c = q_ref, with each task's target the frame's
+  // At q_c = q_ref, with each task's target the frame's
   // own pose at q_ref, its feed-forward the frame's velocity under q̇_ref, and
   // the posture feed-forward q̇_ref, every term is zero at v = q̇_ref. Only the
   // damping pulls away from it, by μ²/(w_g + μ²) of it at most. Posture weights

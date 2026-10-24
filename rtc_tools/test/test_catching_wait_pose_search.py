@@ -1,4 +1,4 @@
-"""catching_wait_pose_search on a synthetic 6R arm (dynamic_catching S8-I).
+"""catching_wait_pose_search on a synthetic 6R arm.
 
 The fixture arm mirrors ``test_catch_speed_budget.py``'s (asymmetric link
 lengths, mixed joint axes) rather than the module docstring's illustrative "3R"
@@ -519,7 +519,7 @@ def test_missing_wait_pose_requires_reference_pose_override(tmp_path):
         )
 
 
-# ── (i) --objective robust (S8-I-2): neighbourhood p10, nominal direction, LP cap ──
+# ── (i) --objective robust: neighbourhood p10, nominal direction, LP cap ──────
 
 
 def test_robust_speed_matches_direct_oracle_and_uses_the_nominal_direction(tmp_path):

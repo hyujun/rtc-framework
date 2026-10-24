@@ -1,4 +1,4 @@
-"""Catching controller panel state for demo_controller_gui (dynamic_catching §13 S5).
+"""Catching controller panel state for demo_controller_gui.
 
 Pure Python — no Tk, no rclpy — so it is unit-testable without a display or a
 ROS graph, following ``demo_gui.ball_launch`` / ``demo_gui.hand_step``.
@@ -7,7 +7,7 @@ THREE THINGS THIS PANEL REFUSES TO COLLAPSE.
 
 **Observed arming against requested arming.** ``catching.enable`` is a
 parameter the operator writes, but the RT tick LOWERS the latch itself on
-E-STOP and on a latched fault (A-S5-3, P-1 (c)). So a successful parameter set
+E-STOP and on a latched fault. So a successful parameter set
 is not proof the controller armed, and the two values disagree exactly when
 something disarmed it out from under the operator — which is the case worth
 seeing. The panel shows the observed latch as the headline and the requested
@@ -48,7 +48,7 @@ from .ball_launch import PLACEHOLDER, FeedState, FeedStatus
 # demo_gui.hand_step, which targets the same controller).
 CATCHING_CONFIG_KEY = "demo_catching_controller"
 
-# The read-write arming parameter (A-S5-3). Not a message or a service: a new
+# The read-write arming parameter. Not a message or a service: a new
 # msg/srv for something a parameter already expresses would be an E-3 decision.
 CATCHING_ENABLE_PARAM = "catching.enable"
 
@@ -114,7 +114,7 @@ REASON_NAMES = {
 }
 
 # rtc::catching::PlanReason (rtc_msgs/CatchingState PLAN_REASON_*): why there is
-# no plan — the planner's first bottleneck (dynamic_catching S6, decision E).
+# no plan — the planner's first bottleneck.
 PLAN_REASON_NAMES = (
     "NONE",
     "UNCERTAINTY",
@@ -133,7 +133,7 @@ PLAN_REASON_NAMES = (
 )
 
 # rtc::catching::Outcome (rtc_msgs/CatchingState OUTCOME_*): how the LAST
-# attempt ended (S7.3). Kept across a re-arm by the controller.
+# attempt ended. Kept across a re-arm by the controller.
 OUTCOME_NAMES = (
     "NONE",
     "CAPTURED",
@@ -142,7 +142,7 @@ OUTCOME_NAMES = (
     "ABORTED",
 )
 
-# rtc::catching::HandPhase (rtc_msgs/CatchingState HAND_PHASE_*), S7.1.
+# rtc::catching::HandPhase (rtc_msgs/CatchingState HAND_PHASE_*).
 HAND_PHASE_NAMES = (
     "OPEN",
     "PRESHAPE",
@@ -395,7 +395,7 @@ class CatchingStatus:
     clik_solve_us: float = 0.0
     qp_fail_streak: int = 0
 
-    # S7: the attempt's verdict, the hand sequencer, the fingertips.
+    # The attempt's verdict, the hand sequencer, the fingertips.
     outcome: int = 0
     hand_phase_valid: bool = False
     hand_phase: int = 0
@@ -418,13 +418,13 @@ class CatchingStatus:
     request_tick: int = 0
     last_error: str = ""
 
-    #: S8 progress (L8 §11): attempts seen by THIS panel, by verdict. An
+    #: Progress: attempts seen by THIS panel, by verdict. An
     #: attempt is counted on the tick-published edge into RETREAT, where the
-    #: supervisor publishes the attempt's verdict (L7 §4.4) — the same edge the
+    #: supervisor publishes the attempt's verdict — the same edge the
     #: trial runner reads, so the panel and trial_results.json count alike. The
     #: verdict itself cannot be the edge: it is kept across a re-arm, so two
     #: Missed in a row would read as one. Local to the panel (no message field —
-    #: CatchingState is frozen since S5); a panel started mid-run counts from
+    #: CatchingState has none); a panel started mid-run counts from
     #: the first edge it sees, and restarting the panel starts a new count.
     attempt_tally: dict[str, int] = field(default_factory=dict)
     _prev_mode: int | None = None
@@ -496,7 +496,7 @@ class CatchingStatus:
         self.clik_solve_us = float(msg.clik_solve_us)
         self.qp_fail_streak = int(msg.qp_fail_streak)
 
-        # S7 fields. Read with defaults so a recording from before S7 (whose
+        # Read with defaults so an older recording (whose
         # values were published but always zero) and a duck-typed test message
         # without them both read as "not computed" rather than failing.
         self.outcome = int(getattr(msg, "outcome", 0))
@@ -575,7 +575,7 @@ class CatchingStatus:
         if state is FeedState.NEVER:
             return [
                 f"catching_state: never received (is /{CATCHING_CONFIG_KEY} active?)",
-                # A controller PARKED at configure (A-S5-1 / A-S5-12, or the
+                # A controller PARKED at configure (or the
                 # planner and the oracle both enabled) refuses activation and
                 # so never publishes: the robot is up, catching is not. Say
                 # where the reason is rather than leave "never received" to
@@ -705,7 +705,7 @@ class CatchingStatus:
         if self.ref_saturated:
             parts.append("reference SATURATED")
         if self.qp_fail_streak > 0:
-            # Trials in a row the solver ended (#537 S9b), not failed solves:
+            # Trials in a row the solver ended, not failed solves:
             # it stays up across good solves until a verdict or a fault reset.
             parts.append(f"QP fail streak {self.qp_fail_streak} trial(s)")
         return "  |  ".join(parts)

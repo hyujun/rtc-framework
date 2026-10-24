@@ -148,7 +148,7 @@ inline constexpr double kProjectileBallAirDensity = 1.204;
 [[nodiscard]] bool ShouldPublishProjectileBallSample(double sim_time_sec, double period_sec,
                                                      double& last_publish_time_sec) noexcept;
 
-// `SteadyNowNs` — the axis the RT path and the D-3 clock lane use — lives in
+// `SteadyNowNs` — the axis the RT path and the clock phase lane use — lives in
 // rtc_base/types/types.hpp, next to the age helpers that interpret it. This
 // header carried its own identical copy in the SAME namespace until
 // 2026-09-23, which is why the one in rtc_base could not be added without a
@@ -162,7 +162,7 @@ inline constexpr double kProjectileBallAirDensity = 1.204;
 /// burst-and-sleep rhythm the stepper ran with. The stamp differs from the
 /// wall by the phase error the flight accumulates after launch — behind it
 /// while the stepper stalls, ahead of it while it catches up — which is the
-/// quantity the D-3 clock lane measures, in both signs; consumers' future-skew
+/// quantity the clock phase lane measures, in both signs; consumers' future-skew
 /// tolerances must cover the lead in sim. (Clamping the stamp to the wall was
 /// tried and rejected: it re-introduces the wake jitter every time the sim
 /// runs ahead of its launch pace.) Anchoring at launch keeps any sim-vs-wall

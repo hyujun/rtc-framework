@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pass-point throw design: launches that cross a point beside the waiting hand (L3 §4.1).
+"""Pass-point throw design: launches that cross a point beside the waiting hand.
 
 ``catch_search_map`` judges throws; this designs them and says, without any
 search, which of them no search can accept. A throw is given by where it is

@@ -1,4 +1,4 @@
-// ── The segment planner, as one planner wake calls it (E1-F12 #738, ARCH-3) ──
+// ── The segment planner, as one planner wake calls it (ARCH-3) ────────────────
 //
 // What PlannerCycle knows of the planner that solves the joint-node segments
 // the RT follows from APPROACH to the end of the stop (planner_cycle.hpp "THE
@@ -13,7 +13,7 @@
 //
 // ── Contract ──────────────────────────────────────────────────────────────────
 //  • THREAD. Every member except SetClock is called from PlannerCycle::Run, on
-//    the planner thread — which may run SCHED_FIFO (D-7a). RT-1~10 apply to
+//    the planner thread — which may run SCHED_FIFO. RT-1~10 apply to
 //    them: no lock, no log, no throw, and no allocation of the
 //    implementation's own (a solver's internal ones are that implementation's
 //    recorded exception, not a licence). Buffers are sized when the object is
@@ -66,16 +66,16 @@ enum class SegmentOutcome : std::uint8_t {
   /// future): what it reports may no longer be what the arm does (an RT stall).
   kStaleState,
   kUpToDate,          ///< the published segment already starts at this t_eff or later
-  kPastReplanWindow,  ///< t_eff beyond t_c + k_max·Δ_s (MD-31)
+  kPastReplanWindow,  ///< t_eff beyond t_c + k_max·Δ_s
   kInputNonFinite,    ///< the predicted x₀ (w_⊥ > 0: or the ball's speed) is not finite
   kSolveFailed,       ///< the core refused or the QP failed (core_reason)
-  kBudget,            ///< solved after budget_s, or cut at the deadline (#887)
+  kBudget,            ///< solved after budget_s, or cut at the deadline
   kLate,              ///< t_eff passed while solving
-  kSlack,             ///< slack non-finite or over its threshold (MD-33)
+  kSlack,             ///< slack non-finite or over its threshold
   kReady,             ///< publishable; the cycle's re-check decides
   kPublished,         ///< stored (set by the cycle)
   kSuperseded,        ///< the trial or the followed plan moved during the solve (cycle)
-  // E1-F08 (#661). A solved segment whose packed form fails the terminal-rest
+  // A solved segment whose packed form fails the terminal-rest
   // or node check is kSolveFailed with core_reason kNone.
   kNotAtRest,    ///< first solve, no plan followed: max |q̇_cmd| above approach.rest_tol
   kTooLate,      ///< first solve: not even one pre-catch interval fits before t_c
@@ -136,11 +136,11 @@ enum class SegmentOutcome : std::uint8_t {
   return "unknown";
 }
 
-/// Which solve a record describes (E1-F08).
+/// Which solve a record describes.
 enum class SegmentKind : std::uint8_t {
   kNone = 0,  ///< no solve was chosen (the record's default)
-  kFirst,     ///< the first segment of a plan, solved with the search (MD-56)
-  kSame,      ///< a pre-catch grid point the source already starts at (MD-58)
+  kFirst,     ///< the first segment of a plan, solved in the search's wake
+  kSame,      ///< a pre-catch grid point the source already starts at
   kAdvance,   ///< a later pre-catch grid point
   kStop,      ///< a stop core: the catch node or a post-catch grid point
 };
@@ -321,7 +321,7 @@ struct SegmentRecord {
   double mpc_linearize_us{std::numeric_limits<double>::quiet_NaN()};
   double mpc_condense_us{std::numeric_limits<double>::quiet_NaN()};
   double mpc_qp_us{std::numeric_limits<double>::quiet_NaN()};
-  /// The mpc planner's closing-window path (#716), whatever `cost.w_path` is:
+  /// The mpc planner's closing-window path, whatever `cost.w_path` is:
   /// the catch core's window nodes, how many of them had a line on this solve,
   /// and the solution's catch frame against those lines [m] (FK) — the largest
   /// and the mean distance. 0 / NaN for every other solve and planner, and the
@@ -331,7 +331,7 @@ struct SegmentRecord {
   std::int32_t path_nodes{0};
   double path_dev_max{std::numeric_limits<double>::quiet_NaN()};
   double path_dev_mean{std::numeric_limits<double>::quiet_NaN()};
-  /// The mpc_docking planner's own account of the solve (E1-F18). Not a field
+  /// The mpc_docking planner's own account of the solve. Not a field
   /// of the trace digest.
   DockingSolveStats docking{};
 };
@@ -348,7 +348,7 @@ static_assert(std::is_trivially_copyable_v<SegmentRecord>);
 struct BallPrediction {
   const TrajectorySnapshot* traj{nullptr};
   const CovarianceSnapshot* cov{nullptr};
-  /// `cov` carries the same provenance token as `traj` (L3 §5.2). False: it
+  /// `cov` carries the same provenance token as `traj`. False: it
   /// is another snapshot's covariance and says nothing about this one.
   bool cov_matched{false};
 
@@ -374,8 +374,8 @@ class SegmentPlanner {
   ///        published segments with it (RT-safe).
   virtual void ResetTrial() noexcept = 0;
 
-  /// @brief The first segment of a plan the search just produced (RT-safe;
-  ///        MD-56). A plan is published only together with it.
+  /// @brief The first segment of a plan the search just produced (RT-safe).
+  ///        A plan is published only together with it.
   ///
   /// What `rt` reports decides where the segment starts:
   ///  - NO PLAN FOLLOWED (`rt.plan_active` false): the arm rests on its
@@ -415,7 +415,7 @@ class SegmentPlanner {
                                        const BallPrediction& ball, const CatchSolution* solution,
                                        SegmentSnapshot& out, SegmentRecord& rec) noexcept = 0;
 
-  /// @brief A later segment of the plan `rt` follows (RT-safe; MD-58).
+  /// @brief A later segment of the plan `rt` follows (RT-safe).
   /// @param ball the followed plan's ball as this wake read it, or an empty
   ///        view: after the catch, and when the trajectory in the box is not
   ///        that plan's track

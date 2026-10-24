@@ -1,4 +1,4 @@
-// E3-F02 (#641): the segment planners with joint groups (`planner.groups`) on
+// The segment planners with joint groups (`planner.groups`) on
 // a synthetic tree whose device order is the REVERSE of the model's — a reader
 // that skipped device_of_model would show on every joint but the middle one.
 // Judged: each model joint's group, the partition each core is built with, the

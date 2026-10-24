@@ -1,6 +1,5 @@
-// E1-F01 (#627): MPC segment core — jerk-input condensed QP with first-order
-// torque rows and slack (mpc_segment_core.hpp). Each #627 "Done when" item maps to a
-// named test here:
+// MPC segment core — jerk-input condensed QP with first-order torque rows and
+// slack (mpc_segment_core.hpp). The criteria map to named tests here:
 //   1 ZeroSolutionAtRest                 5 TheAllocationGatesAreArmed,
 //   2 ReducesToMinJerkClosedForm,          CoreAllocatesNothingOutsideTheQpSolver,
 //     PresolveMatchesClosedForm            PresolveAndRejectionPathsAllocateNothing
@@ -55,7 +54,7 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
 // Arms, limits and the rest input live in mpc_segment_core_fixture.hpp, shared with
-// the E1-F07 approach suite.
+// the approach suite.
 using rtc::testing::mpc_segment_core::ArmModel;
 using rtc::testing::mpc_segment_core::LimitsFromModel;
 using rtc::testing::mpc_segment_core::Percentile;
@@ -67,8 +66,8 @@ using rtc::testing::mpc_segment_core::RestInput;
 using rtc::testing::mpc_segment_core::Synthetic6R;
 using rtc::testing::mpc_segment_core::UseAsReference;
 
-// A solved trajectory shifted by `t_shift` onto the same grid (the E1-F03
-// warm start): node k of the new reference is the old trajectory at t_shift+kΔ.
+// A solved trajectory shifted by `t_shift` onto the same grid (the warm start): node k of the new
+// reference is the old trajectory at t_shift+kΔ.
 void ShiftReference(const MpcSegmentCoreResult& r, double dt, double t_shift,
                     MpcSegmentCoreInput& in) {
   const Eigen::Index n = r.q.rows();
@@ -275,7 +274,7 @@ Eigen::MatrixXd TerminalMatrixOracle(int n, int n_nodes, const std::vector<int>&
   return a;
 }
 
-// The same per joint (E3-F02, #641 D11): joint j on its own group's blocks,
+// The same per joint (joint groups): joint j on its own group's blocks,
 // its columns where `col(j, b)` puts them.
 Eigen::MatrixXd TerminalMatrixOracle(const std::vector<std::vector<int>>& blocks_of_joint,
                                      int n_nodes, double dt,
@@ -965,7 +964,7 @@ TEST(MpcSegmentCore, TorqueLinearizationErrorIsSecondOrder) {
   EXPECT_LT(ratio, 5.5) << "e(δ)=" << e1 << " e(δ/2)=" << e2;
 }
 
-// ── w_⊥ (D-5: implemented, default off) ─────────────────────────────────────
+// ── w_⊥ (implemented, default off) ──────────────────────────────────────────
 
 TEST(MpcSegmentCore, PerpendicularTermReducesOffLineError) {
   const ArmModel arm = RealArm6();
@@ -1861,7 +1860,7 @@ TEST(MpcSegmentCoreTiming, TimingDistribution6R) {
   const TorqueFixture f = MakeTorqueFixture(0.1);
   // Informational: with a binding torque row ProxQP still returns a few
   // false PRIMAL_INFEASIBLE verdicts on warm cycles (~3 % at ρ_τ = 10); the
-  // count is recorded, and the caller's fallback (MD-11) covers them.
+  // count is recorded, and the caller's fallback covers them.
   RunTiming(f.arm, f.params, f.limits, "real_6dof.torque_active", 200, nullptr, nullptr, false);
 }
 

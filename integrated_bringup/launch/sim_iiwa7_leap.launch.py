@@ -21,7 +21,7 @@ Usage:
   # profile ships none: write one outside the repo and pass its path
   ros2 launch integrated_bringup sim_iiwa7_leap.launch.py sim_overlay:=/path/to/arm.yaml
 
-  # Measurement lanes (S8): per-step clock phase + ball contact truth, written
+  # Measurement lanes: per-step clock phase + ball contact truth, written
   # to <session>/sim/{clock_lane,ball_contact_lane}.csv
   ros2 launch integrated_bringup sim_iiwa7_leap.launch.py sim_lanes:=true
 
@@ -146,7 +146,7 @@ def launch_setup(context, *args, **kwargs):
             "yes",
         )
 
-    # ── Measurement lanes (S8-D) — integrated_bringup.sim_lanes ─────────────
+    # ── Measurement lanes — integrated_bringup.sim_lanes ──────────────────────
     sim_overrides.update(
         sim_lane_overrides(LaunchConfiguration("sim_lanes").perform(context), session_dir)
     )

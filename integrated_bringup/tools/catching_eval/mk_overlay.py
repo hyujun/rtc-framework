@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Catching sim evaluation (first used for E1-F06, G-1, #632): write one arm's sim overlay.
+"""Catching sim evaluation (#632): write one arm's sim overlay.
 
     mk_overlay.py <out.yaml> <p1b|leap> <closed_form|mpc|mpc_docking> [grid|nlp [tennis|beanbag|hard]]
         [--set <key>=<value>]...

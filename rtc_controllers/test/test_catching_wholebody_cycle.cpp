@@ -1,14 +1,14 @@
-// E3-F02 (#641): the whole-body terms through whole catches of the planner
+// The whole-body terms through whole catches of the planner
 // cycle — the search on a chain (a trunk and one arm, 10 joints), the mpc
 // segment planner on the tree it is part of (the other arm too, 17), an RT
 // stand-in that takes every segment it is given, on a pinned clock. Judged
-// over the first segment and its replans (Done when "연속 wake"):
+// over the first segment and its replans:
 //   • the angular-momentum rate stays near the first wake's: every published
 //     segment's max ‖k̇_G‖ within (1 + ε) of the first's;
 //   • the other arm — the joints a plan leaves out — ends each segment near
 //     its rest posture;
 //   • the negative control: without its rest weight the arm drifts, further
-//     with every wake (what D9′ refuses at configure).
+//     with every wake (what a configure refuses).
 // k̇_G is evaluated here on the published nodes (pinocchio's centroidal map and
 // its central difference along q̇), none of the core's.
 #include "rtc_base/threading/seqlock.hpp"
@@ -61,7 +61,7 @@ constexpr int kChainNv = kTrunk + kArm;     // 10
 constexpr int kTreeNv = kTrunk + 2 * kArm;  // 17
 constexpr int kSegNv = rtc::catching::kMaxSegmentNv;
 
-// The judgement's values (#641 stage 0, D15): W⁻ / W⁺ = 0.001 / 0.1 at
+// The judgement's values: W⁻ / W⁺ = 0.001 / 0.1 at
 // s = 10 N·m, the left-out arm's rest weight 1; ε = 0.1, the end node within
 // 1e-2 rad of rest.
 constexpr double kAngPre = 0.001;

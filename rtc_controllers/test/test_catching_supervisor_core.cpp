@@ -1,6 +1,5 @@
-// L7 supervisor "pure pieces" (dynamic_catching S1.8): decel target (L7.2,
-// §4.3), transition table as data (L7.1, §4.1/§4.2), contact debounce (L7.3,
-// §4.4). Gate IDs are those of L7_supervisor.md §9.
+// Supervisor "pure pieces": decel target, transition table as data, contact
+// debounce.
 //
 // no_malloc_scope.hpp MUST precede every Eigen header (it installs the Eigen
 // allocation tripwire before <Eigen/Core> is ever seen) — see its own
@@ -57,7 +56,7 @@ using rtc::catching::TransitionRow;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// G7-B — decel target: exact continuity at entry, continuity at the stop
+// Decel target: exact continuity at entry, continuity at the stop
 // branch, acceleration consistent with finite differences of velocity.
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -98,7 +97,7 @@ TEST(DecelTarget, ContinuousAtTheStopBranchBoundary) {
   EXPECT_TRUE(at.v_v.isZero());
   EXPECT_TRUE(after.v_v.isZero());
 
-  // a_v is NOT continuous (§4.3: "기준 가속도는 불연속이다, jerk 무한") —
+  // a_v is NOT continuous (the reference acceleration is discontinuous, jerk unbounded) —
   // this is the documented discontinuity, not a bug.
   EXPECT_NEAR(before.a_v.norm(), kADec, 1e-9);
   EXPECT_TRUE(after.a_v.isZero());
@@ -181,8 +180,8 @@ TEST(DecelTarget, NonFiniteEntryStateIsRejectedFailClosed) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// G7-A — transition table completeness (the scenario-replay half of G7-A is
-// S7.2's RT supervisor body; this is the "전이표 완전성 검사 통과" half).
+// Transition table completeness (the scenario-replay half belongs to the RT
+// supervisor body; this is the table-completeness half).
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST(TransitionTable, ShippedTableIsComplete) {
@@ -251,7 +250,7 @@ TEST(TransitionTable, BrokenTableWithAnUnusedReasonIsDetected) {
 }
 
 TEST(TransitionTable, FaultLeavesOnlyViaFaultReset) {
-  // §4.1 P-1 / S5.1(d): the fault is a controller latch separate from E-STOP.
+  // The fault is a controller latch separate from E-STOP.
   // ClearEstop (Reason::kEstop) must keep kFault; only kFaultReset leaves it.
   Mode to = Mode::kIdle;
   ASSERT_TRUE(LookupTransition(kTransitionTable, Mode::kFault, Reason::kEstop, to));
@@ -295,7 +294,7 @@ TEST(TransitionTable, ASpentHorizonLeavesTrackingWhereItIs) {
 }
 
 TEST(TransitionTable, AHandTimeoutEndsTheReturnInIdleAndIsRecordedElsewhere) {
-  // #537 S8-C (D-S8-6 (a)): RETREAT's wait for the hand at q_pre times out
+  // RETREAT's wait for the hand at q_pre times out
   // into IDLE. CLOSING and DECEL keep their record-only self-loops, and IDLE
   // has no row — it never waits on the hand.
   Mode to = Mode::kArmed;
@@ -310,7 +309,7 @@ TEST(TransitionTable, AHandTimeoutEndsTheReturnInIdleAndIsRecordedElsewhere) {
 }
 
 TEST(TransitionTable, AnEscalationEndsAbortSafeAndRetreatInFaultAndNothingElse) {
-  // #537 S9b (D-S9-D1): the two motions the motion deadlines watch — the
+  // The two motions the motion deadlines watch — the
   // ABORT_SAFE ramp and the RETREAT stop/return — escalate to FAULT on the
   // one reason. No other mode answers it: the law modes reach FAULT only
   // through ABORT_SAFE, so a fault raised there still stops the arm first.
@@ -336,7 +335,7 @@ TEST(TransitionTable, LookupFindsEveryShippedRow) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// G7-C — contact debounce: synthetic noise false-alarm behaviour, exact-N
+// Contact debounce: synthetic noise false-alarm behaviour, exact-N
 // step confirmation, NaN handling.
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -477,7 +476,7 @@ TEST_F(ContactDebounceTest, GaussianNoiseNeverFiresWithALargeKSigmaMargin) {
   ContactDebouncer d;
   ContactDebounceConfig cfg = DefaultConfig();
   cfg.f_min = 0.0;
-  cfg.k_sigma = 10.0;  // generous margin — see G7-C: threshold is a user
+  cfg.k_sigma = 10.0;  // generous margin: the threshold is a user
                        // decision, this test only requires "never fires".
   cfg.n_debounce = 3;
   ASSERT_TRUE(d.Configure(cfg));
@@ -507,9 +506,9 @@ TEST_F(ContactDebounceTest, GaussianNoiseNeverFiresWithALargeKSigmaMargin) {
 }
 
 TEST_F(ContactDebounceTest, GaussianNoiseFalseAlarmRateAtTheDocDefaultKSigmaIsRecorded) {
-  // Same setup at the doc's default k_sigma=3.0 (kOne-sided ≈0.13% per
-  // sample under a Gaussian, §4.4) — recorded, not gated: "임계는 사용자
-  // 결정" (L7 §9 G7-C), so this test only requires the rate to be finite.
+  // Same setup at the default k_sigma=3.0 (kOne-sided ≈0.13% per
+  // sample under a Gaussian) — recorded, not gated: the threshold is a user
+  // decision, so this test only requires the rate to be finite.
   ContactDebouncer d;
   const ContactDebounceConfig cfg = DefaultConfig();  // k_sigma = 3.0
   ASSERT_TRUE(d.Configure(cfg));
@@ -540,10 +539,10 @@ TEST_F(ContactDebounceTest, GaussianNoiseFalseAlarmRateAtTheDocDefaultKSigmaIsRe
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// G7-D — zero RT allocation for the two per-tick pure pieces.
+// Zero RT allocation for the two per-tick pure pieces.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ── QP-independent joint-space stop (A-S5-10, S5.3) ─────────────────────────
+// ── QP-independent joint-space stop ─────────────────────────────────────────
 //
 // The path ABORT_SAFE takes when the abort was CAUSED by the joint command
 // layer (QP_FAILED), where routing the stop back through that layer is the one
@@ -690,7 +689,7 @@ TEST(GateG7D, DecelTargetAndContactDebounceAllocateNothing) {
   }
 }
 
-// ── Joint-space homing / return law (S7.2, #537 S7 Q3) ──────────────────────
+// ── Joint-space homing / return law ─────────────────────────────────────────
 
 namespace home {
 

@@ -1,9 +1,9 @@
-// E1-F08 (#661): the APPROACH–stop pair and replans as PlannerCycle runs them
+// The APPROACH–stop pair and replans as PlannerCycle runs them
 // (planner_cycle.hpp "THE MPC SEGMENT PLANNER'S PART") — the real search on a real
 // 6-joint arm, the MPC segment planner behind it, on the REAL steady clock (the
 // budgets are measured), with the test as the RT stand-in. RUN_SERIAL: a
 // loaded host stretches the solves the budgets judge. The planner's own
-// decisions are test_catching_approach_planner.cpp; the core alone is E1-F07's
+// decisions are test_catching_approach_planner.cpp; the core alone is
 // test_catching_mpc_segment_core_approach.cpp.
 //   pair        APairIsPublishedTogetherSegmentFirst, AWithheldSegmentWithholdsThePlan,
 //               ANewerSnapshotOfTheSameTrackStillPublishes, RightAfterAPairTheSearchWaits
@@ -12,7 +12,7 @@
 //               WithoutAReportNothingIsReplanned
 //   replacement ApproachCycleReplacement.* — the search's other plan goes out
 //               as a pair beside the followed plan's segments; every following
-//               wake searches first, then pairs or replans (E1-F17 #743; on
+//               wake searches first, then pairs or replans (on
 //               the settable clock)
 //   lifetime    ATrialResetWithdrawsTheSegment,
 //               WithoutASegmentBoxThePlanIsPublishedAlone
@@ -22,10 +22,10 @@
 //               not budgets, so no solve duration may decide it
 //   bit for bit AWholeCatchOnThePinnedClockIsUnchangedBitForBit — every wake's
 //               record and both boxes, digested; a refactor of what the cycle
-//               calls must leave the four numbers alone (E1-F12 #738)
+//               calls must leave the four numbers alone
 //
 // The RT stand-in reports the segment it holds pending and then follows, as
-// the RT does under `mode: mpc` (E1-F09); WithoutAReportNothingIsReplanned
+// the RT does under `mode: mpc`; WithoutAReportNothingIsReplanned
 // pins an RT that reports neither.
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/types/types.hpp"
@@ -730,7 +730,7 @@ TEST(ApproachCycle, TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch) {
   }
 }
 
-// ── The whole catch, bit for bit (E1-F12 #738) ───────────────────────────────
+// ── The whole catch, bit for bit ─────────────────────────────────────────────
 
 // One catch as the stop-line test above runs it (DriftingCatch) — the pair,
 // re-solves and grid advances against a drifting prediction, the freeze, the
@@ -752,7 +752,7 @@ CatchTrace RunCatch(Rig& r, FakeTime& time, bool rt_takes_replans) {
   CatchTrace t;
   rtc::testing::ValueDigest h;
   // RTC_WHOLE_CATCH_TRACE set: one line per wake of its discrete fields — what
-  // a digest change is read against (#857 S11).
+  // a digest change is read against.
   const bool trace = std::getenv("RTC_WHOLE_CATCH_TRACE") != nullptr;
   const auto note = [&](const PlannerCycleRecord& rec) {
     if (trace) {
@@ -815,7 +815,7 @@ enum class RigHistory : std::uint8_t {
 /// 0x74b66752c2b6a927, 0x47a6055faba0f13a, 0xf994bd4e88fc8518 /
 /// 0xb7132fe2c7363186, 0xb945046f48c1f383, 0x231a91137a556e3c, bit for bit
 /// (measured). Those six were taken on the code BEFORE the search and the MPC
-/// segment planner moved behind CatchSearch / SegmentPlanner (E1-F12 #738),
+/// segment planner moved behind CatchSearch / SegmentPlanner,
 /// when the cycle held both by value and a re-configure re-used the same two
 /// objects, so the chain back to that code is unbroken — up to #857, which
 /// replaced the six below on purpose (one torque slack per node: the QPs'
@@ -938,7 +938,7 @@ TEST(ApproachCycle, AnotherTracksBallIsNotTheFollowedPlansTarget) {
 TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {
   // An RT that took the plan but reports no segment — neither pending nor
   // followed (it dropped the one it had): the planner finds no source, and
-  // does not infer one (MD-58).
+  // does not infer one.
   auto r = std::make_unique<Rig>();
   r->rt.report_segment = false;
   r->StartTrajectory();
@@ -952,7 +952,7 @@ TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {
   EXPECT_EQ(r->cycle.LastSegmentSeq(), seq);
 }
 
-// ── A followed plan is replaced (E1-F17 #743) ────────────────────────────────
+// ── A followed plan is replaced ──────────────────────────────────────────────
 //
 // The real search and the real segment planner behind the cycle, on a pinned
 // clock (FakeTime): values are asserted, not budgets. In this rig the search's

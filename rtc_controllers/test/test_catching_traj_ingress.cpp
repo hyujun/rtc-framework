@@ -1,17 +1,17 @@
-// ── L1 ingress judgement (S5.2) ─────────────────────────────────────────────
+// ── Ingress judgement ───────────────────────────────────────────────────────
 //
 // What this suite pins, and why each case exists rather than being implied by
 // the one above it:
 //
-//   1. Order and validity (L1 §4.4, A-S5-4). The sequence expectation must
+//   1. Order and validity. The sequence expectation must
 //      survive a duplicate and must NOT survive a track change — the second
 //      half is the one that fails silently, as blindness after a vision
 //      restart rather than as an error.
-//   2. The two time axes (L0 §4.5). Staleness is judged on the receive axis
+//   2. The two time axes. Staleness is judged on the receive axis
 //      and horizon exhaustion on the lead axis, and every case here uses
 //      T_arm != 0 so the two cannot be confused: at T_arm = 0 they coincide
 //      and a test that mixed them would still pass.
-//   3. The activation gate (D-23). A snapshot received while the controller
+//   3. The activation gate. A snapshot received while the controller
 //      was inactive is refused on the first tick after re-activation.
 //   4. The jump diagnostic evaluates both predictions at ONE instant, which is
 //      what separates "the two predictions disagree" from "the ball moved".
@@ -83,7 +83,7 @@ TEST(CatchingIngressOrder, AcceptsTheFirstMessageAndThenOnlyIncreasingSequences)
 }
 
 TEST(CatchingIngressOrder, ATrackChangeResetsTheSequenceExpectation) {
-  // A-S5-4, and the case that fails SILENTLY without the rule: a vision
+  // The case that fails SILENTLY without the rule: a vision
   // restart numbers its new track from 1, and an expectation carried across
   // the change would refuse every message until the new track climbed past the
   // old high-water mark — blindness with no error anywhere.
@@ -177,7 +177,7 @@ TEST(CatchingIngressRead, TheFirstSnapshotIsNewEvenWhenItIsNumberedZero) {
 }
 
 TEST(CatchingIngressRead, ANewEpochReusingTheLastNumberIsStillNew) {
-  // A-S5-4: a new track epoch may restart its numbering at ANY value,
+  // A new track epoch may restart its numbering at ANY value,
   // including one the previous epoch already used. Judging newness on the
   // number alone then reads the first snapshot of the new ball as a repeat of
   // the last snapshot of the old one — and because the supervisor's
@@ -254,7 +254,7 @@ TEST(CatchingIngressRead, AnUnfilledOrNonPositiveThresholdFailsClosed) {
           .stale);
 }
 
-// ── 3. The activation gate (D-23) ───────────────────────────────────────────
+// ── 3. The activation gate ──────────────────────────────────────────────────
 
 TEST(CatchingIngressRead, ASnapshotFromAnEarlierActivationIsRefused) {
   // The subscription outlives deactivation (lifecycle gates publishers, not
@@ -305,13 +305,13 @@ TEST(CatchingIngressJump, RefusesToCompareAcrossTracksOrEmptySnapshots) {
   EXPECT_LT(JumpBetween(a, TrajectorySnapshot{}, 50 * kMs), 0.0);
 }
 
-// ── 5. The SeqLock hand-off (G1-C, G1-H) ────────────────────────────────────
+// ── 5. The SeqLock hand-off ─────────────────────────────────────────────────
 //
 // The trajectory crosses from the non-RT callback to the RT tick through
 // `rtc::SeqLock`, and two properties of that crossing are worth pinning here
 // rather than in the lock's own tests: the payload is large (a 40-sample
 // snapshot), which is what makes tearing observable at all, and the "is this
-// new" decision is made from INSIDE the payload (D-21) rather than from the
+// new" decision is made from INSIDE the payload rather than from the
 // lock's counter.
 
 TEST(CatchingIngressSeqLock, AConcurrentWriterNeverProducesATornSnapshot) {
@@ -365,12 +365,12 @@ TEST(CatchingIngressSeqLock, AConcurrentWriterNeverProducesATornSnapshot) {
   EXPECT_GT(reads.load(), 1000U) << "too few reads to mean anything";
   // The retry cost itself, recorded rather than asserted: it is a property of
   // the machine and the payload size, and a threshold here would be a
-  // measurement of the CI host. G1-C asks for the number, not for a bound.
+  // measurement of the CI host. The number is recorded, not bounded.
   ::testing::Test::RecordProperty("worst_load_ns", static_cast<int>(worst_load_ns));
 }
 
 TEST(CatchingIngressSeqLock, EveryStoreIsSeenExactlyOnceByAReaderThatLoadsEveryTick) {
-  // D-21 / G1-H. The hazard this excludes is an implementation that asks the
+  // The hazard this excludes is an implementation that asks the
   // LOCK whether anything is new (`sequence()`) and only then loads: a store
   // landing between those two calls pairs a new counter with an old payload,
   // and the newest snapshot is then invisible for as long as the pattern

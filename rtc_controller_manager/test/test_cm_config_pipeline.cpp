@@ -262,7 +262,7 @@ TEST_F(CmOverrideRefusalTest, AnOverrideBesideItsOwnParentKeyRefuses) {
 // Issue #350's profile reaches each controller's OWN node. The launches set it
 // on the CM node, and controller LifecycleNodes ignore the process's global
 // arguments, so without an explicit forward every profile-keyed activation
-// gate read its default — found by dynamic_catching S6 R-1.
+// gate read its default.
 TEST_F(CmConfigPipelineTest, LayoutProfileReachesTheControllersOwnNode) {
   auto node = MakeNode();
   DeclareArmDevice(*node);
@@ -514,7 +514,7 @@ TEST_F(CmConfigPipelineTest, SubModelResolvesLinksAndMergesUrdfLimits) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
-// ── urdf.extra_frames (dynamic_catching S2.3a) ──────────────────────────────
+// ── urdf.extra_frames ───────────────────────────────────────────────────────
 
 TEST_F(CmConfigPipelineTest, ExtraFramesParseAndSurviveReconfigure) {
   auto node = MakeNode();

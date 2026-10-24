@@ -81,8 +81,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/inference/compute.cpp
   src/controllers/inference/lifecycle.cpp
   src/controllers/inference/parameters.cpp
-  # dynamic_catching S4.0 binding: arm hold + unshaped hand step, sim-only.
-  # No law half in rtc_controllers yet — the catching law lands with S5.
+  # Catching controller binding, sim-only.
   src/controllers/catching/controller.cpp
   src/controllers/catching/traj_input.cpp
   src/controllers/catching/lifecycle.cpp
@@ -752,7 +751,7 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # ── dynamic_catching S4.0/S4.1: catching controller skeleton ───────────────
+  # ── Catching controller skeleton ───────────────────────────────────────────
   # URDF-free: this controller runs no model, so the suite needs neither
   # pinocchio nor a robot description. It DOES build a LifecycleNode (the
   # configure-time refusals are half of what it pins), hence ROS_DOMAIN_ID, and
@@ -801,19 +800,19 @@ if(BUILD_TESTING)
   # false-positive -Wmismatched-new-delete program-wide (alloc_gate.hpp item 2).
   target_compile_options(test_demo_catching_alloc PRIVATE -Wno-mismatched-new-delete)
 
-  # dynamic_catching S7 (G7-D): one gated tick in every ARMED mode of a trial
+  # One gated tick in every ARMED mode of a trial
   # on the real UR5e+P1b model (homing, law, freeze, hand sequencer, DECEL,
   # HOLD, return, joint-space stop). Own binary: alloc_gate.hpp replaces the
   # global operator new (one TU per binary).
-  ament_add_gtest(test_demo_catching_alloc_s7 test/test_demo_catching_alloc_s7.cpp
+  ament_add_gtest(test_demo_catching_alloc_armed test/test_demo_catching_alloc_armed.cpp
     ENV ROS_DOMAIN_ID=52)
-  target_include_directories(test_demo_catching_alloc_s7 PRIVATE
+  target_include_directories(test_demo_catching_alloc_armed PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
-  target_link_libraries(test_demo_catching_alloc_s7
+  target_link_libraries(test_demo_catching_alloc_armed
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
   )
-  ament_target_dependencies(test_demo_catching_alloc_s7
+  ament_target_dependencies(test_demo_catching_alloc_armed
     rclcpp
     rclcpp_lifecycle
     rtc_controllers
@@ -824,13 +823,13 @@ if(BUILD_TESTING)
     pinocchio
     Eigen3
   )
-  target_compile_options(test_demo_catching_alloc_s7 PRIVATE -Wno-mismatched-new-delete)
-  # The second robot's gate (E1-F17 D7) brings the controller up from the
+  target_compile_options(test_demo_catching_alloc_armed PRIVATE -Wno-mismatched-new-delete)
+  # The second robot's gate brings the controller up from the
   # shipped iiwa7_leap profile.
-  target_compile_definitions(test_demo_catching_alloc_s7 PRIVATE
+  target_compile_definitions(test_demo_catching_alloc_armed PRIVATE
     RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
 
-  # S7 G8-A2 (truth half): the reset table's rows hold at run time — every
+  # The reset table's rows hold at run time — every
   # RT-owned member poisoned, a reset run, each member checked against its row.
   ament_add_gtest(test_catching_reset_probe test/test_catching_reset_probe.cpp)
   target_link_libraries(test_catching_reset_probe ${PROJECT_NAME}_demo_controllers)
@@ -1173,7 +1172,7 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # dynamic_catching S2.3a: shipped urdf.extra_frames.catch_frame on the real
+  # Shipped urdf.extra_frames.catch_frame on the real
   # robot models (placement in every derived model, palm-normal sign, nv).
   ament_add_gtest(test_catch_frame_models test/test_catch_frame_models.cpp)
   target_compile_definitions(test_catch_frame_models PRIVATE
@@ -1534,7 +1533,7 @@ if(BUILD_TESTING)
     geometry_msgs
   )
 
-  # ── Vision ingress decode (S5.2, G1-A / G1-B) ─────────────────────────────
+  # ── Vision ingress decode ──────────────────────────────────────────────────
   # Owns the wire format: the ball_perception layout is reproduced in the
   # fixture on purpose, so this suite is what fails when the publisher moves.
   # The judgement half (order, staleness, the two time axes) is rtc_controllers'
@@ -1550,11 +1549,11 @@ if(BUILD_TESTING)
     sensor_msgs
   )
 
-  # ── Catching tracking law, closed loop on the real model (S5.3) ───────────
-  # G4-H / G5-A / G5-B. Drives the shipped ur5e_p1b model with a perfect servo
+  # ── Catching tracking law, closed loop on the real model ──────────────────
+  # Drives the shipped ur5e_p1b model with a perfect servo
   # and judges the result with a SECOND pinocchio model, so no assertion here
   # is the controller agreeing with itself. Sleeps one control period per tick
-  # (the controller reads the steady clock, L0 §4.5), so it runs in about a
+  # (the controller reads the steady clock), so it runs in about a
   # second rather than instantly.
   ament_add_gtest(test_catching_tracking test/test_catching_tracking.cpp
     ENV ROS_DOMAIN_ID=52)
@@ -1571,11 +1570,11 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
-  # ── dynamic_catching S7: the supervisor scenario table (L7 §9, G7-A/B/G) ──
+  # ── The supervisor scenario table ──────────────────────────────────────────
   # The whole trial cycle closed loop on the real model: each case asserts the
   # mode sequence and the reason/outcome that names its scenario — normal,
   # homing, missed, the stale/saturation/QP aborts, E-STOP, fault reset, and
-  # the S7 additions (disarm mid-return, stale across t_cmd..t_c, hand timeout
+  # the additions (disarm mid-return, stale across t_cmd..t_c, hand timeout
   # in HOLD, Q14 contact-then-abort, T_arm close timing, two trials, re-throw,
   # stale fingertip). Real-time ticks, ~20 s.
   ament_add_gtest(test_catching_supervisor_scenarios test/test_catching_supervisor_scenarios.cpp
@@ -1594,12 +1593,12 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
-  # ── dynamic_catching S6-A: the planner thread and the RT plan lane ────────
+  # ── The planner thread and the RT plan lane ────────────────────────────────
   # Thread half: eventfd coalescing, the reset drain, Join under a long
   # timeout, Pause. Lane half on the real UR5e+P1b model through CM's configure
   # path: the oracle reaching the law through the plan box, PlannerRtState
   # every tick, a previous-activation plan and a pre-E-STOP plan never
-  # consumed (G3-L), and the stub planner leaving TRACKING on NO_CATCHABLE_PLAN.
+  # consumed, and the stub planner leaving TRACKING on NO_CATCHABLE_PLAN.
   ament_add_gtest(test_catching_planner_lane test/test_catching_planner_lane.cpp
     ENV ROS_DOMAIN_ID=52)
   target_link_libraries(test_catching_planner_lane
@@ -1615,20 +1614,20 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
-  # ── dynamic_catching S6-C G3-C: 1000 synthetic throws through the planner ──
+  # ── 1000 synthetic throws through the planner ──────────────────────────────
   # The shipped ur5e_p1b planner profile on the real catch sub-model: p99 of
   # the planning cycle < planner.search.grid.budget_s (asserted), rejection distribution and
   # rank-gate counts recorded.
-  ament_add_gtest(test_catching_planner_g3c test/test_catching_planner_g3c.cpp
+  ament_add_gtest(test_catching_planner_timing test/test_catching_planner_timing.cpp
     TIMEOUT 300)
-  target_include_directories(test_catching_planner_g3c PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/test")
-  target_compile_definitions(test_catching_planner_g3c PRIVATE
+  target_include_directories(test_catching_planner_timing PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_catching_planner_timing PRIVATE
     RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
-  target_link_libraries(test_catching_planner_g3c
+  target_link_libraries(test_catching_planner_timing
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
   )
-  ament_target_dependencies(test_catching_planner_g3c
+  ament_target_dependencies(test_catching_planner_timing
     rclcpp
     rtc_controllers
     rtc_urdf_bridge
@@ -1636,7 +1635,7 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
-  # ── dynamic_catching E1-F13 (#739): the mpc_docking core on the shipped
+  # ── The mpc_docking core on the shipped
   # hand-locked sub-models ────────────────────────────────────────────────────
   # rtc_controllers solves on the plain arm URDFs; the catch sub-models are
   # xacro and only this package builds them. Recorded (no verdict): short-lead
@@ -1665,7 +1664,7 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
-  # ── dynamic_catching E1-F14 (#740): the NLP catch search on the shipped
+  # ── The NLP catch search on the shipped
   # hand-locked sub-models ────────────────────────────────────────────────────
   # What a wake costs on `ur5e_catch` and `iiwa7_catch`, against the real
   # clock. Recorded (no verdict): Configure's time and memory, a candidate's
@@ -1693,11 +1692,11 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
-  # ── The search on a chain, the segments on the device: g1_p1b (E3-F01, #640) ─
+  # ── The search on a chain, the segments on the device: g1_p1b ──────────────
   # The catch search runs on `g1_catch` (10 joints) and the segments are
   # planned on `g1` (17): the four combinations publish a pair in one planner
   # wake, the 17-joint solve agrees with the 10-joint one where the joints the
-  # chain lacks stand on the pose the chain model locks them at (D10), and the
+  # chain lacks stand on the pose the chain model locks them at, and the
   # solve times on the two models are recorded. The G1 model is
   # hand_description's (not a dependency): every test skips without it.
   ament_add_gtest(test_catching_search_segment_g1
@@ -1722,7 +1721,7 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
-  # ── The reach bound on the shipped catch sub-models (L3 §4.1) ──────────────
+  # ── The reach bound on the shipped catch sub-models ────────────────────────
   # The searches refuse a target beyond the bound without the IK: on the models
   # the planner is handed, no posture leaves the bound and a target it refuses
   # is one the shipped IK refuses too (both searches' options).
@@ -1747,7 +1746,7 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
-  # ── dynamic_catching S6-A R-1: the planner shares the `mpc` layout role ────
+  # ── The planner shares the `mpc` layout role ───────────────────────────────
   # DemoWbc's MPC thread and the catching planner in one process, switched in
   # CM's order (deactivate, activate): thread count by name, affinity against
   # the role's slot, Paused/Running per thread, policy when the host allows it
@@ -1798,7 +1797,7 @@ if(BUILD_TESTING)
 
   # ── UdpHandNativeBackend sensor lane test ─────────────────────────────────
   # The other producer of the fingertip lane's per-group receipt time and
-  # sample counter (dynamic_catching D-24 (a)), plus the inference-block decode
+  # sample counter plus the inference-block decode
   # those assertions stand on. Same domain as its mujoco counterpart.
   ament_add_gtest(test_udp_hand_native_backend test/test_udp_hand_native_backend.cpp
     ENV ROS_DOMAIN_ID=52)
@@ -1905,10 +1904,10 @@ if(BUILD_TESTING)
   # Behavioural twin of the two AST tests above: evaluates every launch
   # description instead of reading it.
   ament_add_pytest_test(test_sim_overlay test/test_sim_overlay.py)
-  # S8-B catch_lead_* overlays: a controller key one level off is created,
+  # catch_lead_* overlays: a controller key one level off is created,
   # never read, and the run is silently the shipped profile.
   ament_add_pytest_test(test_catch_lead_overlays test/test_catch_lead_overlays.py)
-  # The catching config in four files (MD-90): which key lives where,
+  # The catching config in four files: which key lives where,
   # and the Python loader against the CM's — the dump is the CM's loader as a
   # command the pytest can run.
   add_executable(controller_config_dump test/controller_config_dump.cpp)
@@ -1918,8 +1917,8 @@ if(BUILD_TESTING)
     test/test_shipped_catching_config.py
     ENV RTC_CONTROLLER_CONFIG_DUMP=$<TARGET_FILE:controller_config_dump>)
   ament_add_pytest_test(test_catching_sim_trials test/test_catching_sim_trials.py)
-  ament_add_pytest_test(test_catching_sim_trials_s8 test/test_catching_sim_trials_s8.py)
-  ament_add_pytest_test(test_catching_sim_trials_s8f test/test_catching_sim_trials_s8f.py)
+  ament_add_pytest_test(test_catching_sim_trials_driver test/test_catching_sim_trials_driver.py)
+  ament_add_pytest_test(test_catching_sim_trials_hand_near test/test_catching_sim_trials_hand_near.py)
   ament_add_pytest_test(test_catching_sim_trials_throw_list
     test/test_catching_sim_trials_throw_list.py)
   # #821: the shipped throw sets (config/<robot>/throw_sets/ — each arm's catch set of the
@@ -1948,7 +1947,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_catching test/test_demo_gui_catching.py)
   ament_add_pytest_test(test_demo_gui_latch_clear test/test_demo_gui_latch_clear.py)
   ament_add_pytest_test(test_demo_gui_dualarm test/test_demo_gui_dualarm.py)
-  # S7 G8-A2 (existence half): every RT-owned member of the catching
+  # Every RT-owned member of the catching
   # controller has a row in its header's reset table.
   ament_add_pytest_test(test_catching_reset_table test/test_catching_reset_table.py)
   # tools/catching_eval/summarize.py (not installed — read from the source
@@ -1982,7 +1981,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_catch_population_unit test/test_catch_population_unit.py)
   ament_add_pytest_test(test_catch_population_collect
     test/test_catch_population_collect.py)
-  # tools/docking_ident (not installed — read from the source tree, E1-F15): the
+  # tools/docking_ident (not installed — read from the source tree): the
   # rig's inputs out of the shipped profiles, its copy of the simulator's ball
   # against rtc_mujoco_sim's C++, and report.py on planted stores. The rig
   # itself needs mujoco: test_docking_ident_rig.py skips under colcon and is
@@ -2010,7 +2009,7 @@ if(BUILD_TESTING)
     test_demo_inference_real_model
     test_compliance_admittance_coupling
     test_demo_catching_controller
-    test_demo_catching_alloc_s7
+    test_demo_catching_alloc_armed
     test_catching_cm_services
     test_demo_wbc_tsid_path
     test_wbc_closed_chain_projection_sharing
@@ -2036,7 +2035,7 @@ if(BUILD_TESTING)
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99
-  #     (planner_g3c), a QP solve-time p99 / maximum (clik_sweep, tracking), a
+  #     (planner_timing), a QP solve-time p99 / maximum (clik_sweep, tracking), a
   #     join that must return within 200 ms (planner_lane), a phase that must
   #     end within 10-20 ms of its deadline on the real clock
   #     (supervisor_scenarios, the *RealClock fixtures). It must not share the
@@ -2048,7 +2047,7 @@ if(BUILD_TESTING)
   #     Durations that are only recorded are not protected: quote those from a
   #     run of that one test.
   set_tests_properties(
-    test_catching_planner_g3c
+    test_catching_planner_timing
     test_catching_clik_sweep
     test_catching_planner_lane
     test_catching_tracking

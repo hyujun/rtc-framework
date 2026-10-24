@@ -17,7 +17,7 @@
 //      refuse a chain their catch-pose IK cannot be sized for.
 // Not here: a first segment of the docking planner at 17 joints. It adopts a
 // search's solution or is solved from rest, and what it starts from when the
-// search ran on a narrower model is E3-F01's to define (#640).
+// search ran on a narrower model is not defined here.
 //
 // Mutation: with kMaxSegmentNv at 16 every "17 joints" case here fails.
 #include "rtc_base/types/types.hpp"
@@ -274,7 +274,7 @@ TEST(SegmentCapacity, TheMpcPlannerConfiguresOnSeventeenJoints) {
   EXPECT_EQ(planner.Nv(), kTreeNv);
 }
 
-// #880 D8 (i): the warm-ups at the middle of the tree's box (q = 0 on its
+// #880: the warm-ups at the middle of the tree's box (q = 0 on its
 // symmetric limits), per infeasibility threshold — recorded, and none fails at
 // the cores' own threshold; the replica is the planner's own warm-up at the
 // planner's pose.

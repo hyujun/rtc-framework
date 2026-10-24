@@ -1,6 +1,5 @@
-// E3-F02 (#641): MpcSegmentCore with joint groups — per-group move blocking
-// (formulation §1.1, MD-49; D11) on a synthetic tree (a trunk and two arms off
-// it, 17 joints, the catch frame on the first arm). The judged properties:
+// MpcSegmentCore with joint groups — per-group move blocking on a synthetic tree (a trunk and two
+// arms off it, 17 joints, the catch frame on the first arm). The judged properties:
 //   • groups that all have one partition are the problem without groups, to
 //     the bit (the layout folds them into one block class);
 //   • with different partitions the structured assembly matches the dense
@@ -609,7 +608,7 @@ TEST(MpcSegmentCoreWholeBody, TheReportedValuesAreTheDirectSumsAtTheSolution) {
   EXPECT_TRUE(near(r.whole_body.rest, rest[0] + rest[1] + rest[2]));
 }
 
-// formulation §4 item 5: at rest, the ball where the catch frame is and at
+// At rest, the ball where the catch frame is and at
 // rest, the held group at its rest posture — nothing to do, with every term
 // on, at both ends of the w_Δ schedule.
 TEST(MpcSegmentCoreWholeBody, AnExactStopStaysAtZeroWithTheTermsOn) {
@@ -734,7 +733,7 @@ TEST(MpcSegmentCoreWholeBody, SameInputGivesTheSameAnswerWhateverWasSolvedBefore
 
 // ── 5. Angular-momentum rate ─────────────────────────────────────────────────
 
-// The fixture's values (#641 stage 0): s = 10 N·m, W⁻ / W⁺ = 0.01 / 1.
+// The fixture's values: s = 10 N·m, W⁻ / W⁺ = 0.01 / 1.
 constexpr double kAngScale = 10.0;
 constexpr double kAngPre = 0.01;
 constexpr double kAngPost = 1.0;
@@ -1029,8 +1028,8 @@ TEST(MpcSegmentCoreAngularMomentum, TheTermAloneLinearisesAndAllocatesNothing) {
 }
 
 // ── 6. Record: the QP's iterations with and without the terms ────────────────
-// The stop rule of #641 (D13): the terms on may not more than double the
-// ProxQP iterations of the same input. Recorded here; judged in the issue.
+// Stop rule: the terms on may not more than double the ProxQP iterations of
+// the same input. Recorded here; judged in the issue.
 TEST(MpcSegmentCoreWholeBodyRecord, IterationsWithAndWithoutTheTerms) {
   const Fixture f = MakeFixture();
   const MpcSegmentCoreParams off = ThreePartitions();
@@ -1047,13 +1046,12 @@ TEST(MpcSegmentCoreWholeBodyRecord, IterationsWithAndWithoutTheTerms) {
   }
 }
 
-// ── 7. Judgement (#641 Done when; values fixed at stage 0) ──────────────────
+// ── 7. Judgement ────────────────────────────────────────────────────────────
 // The other arm (group 2) is the group a plan leaves out: held at its rest
 // posture by w_rest, moved only by the angular-momentum term. Its x_0 is its
 // rest posture, at rest.
 
-// The judgement's values (#641 stage 0, revised by D15 and D16 on
-// 2026-10-17): W⁻ / W⁺ = 0.001 / 0.1, W_big = 100·W⁺ for the negative
+// The judgement's values: W⁻ / W⁺ = 0.001 / 0.1, W_big = 100·W⁺ for the negative
 // control; the rest weight 1 for the arm a plan leaves out, 100 for the
 // locked limit's comparison.
 constexpr double kJudgePre = 0.001;
@@ -1147,7 +1145,7 @@ CatchNode CatchOf(const MpcSegmentCoreResult& r) {
   return {r.catch_pos_err, r.catch_v_rel, r.catch_axis_err};
 }
 
-// D2's tolerance on the catch-node values against the solve without the
+// The tolerance on the catch-node values against the solve without the
 // whole-body terms.
 bool WithinD2(const CatchNode& a, const CatchNode& b, std::string* why) {
   const double dp = (a.pos_err - b.pos_err).norm();
@@ -1233,7 +1231,7 @@ TEST(MpcSegmentCoreJudgement, TheTrunksTorqueRowsCarryTheOtherArmsReaction) {
   EXPECT_LE(worst, 1e-6 * std::max(1.0, largest));
 }
 
-// formulation §4 item 3: a large rest weight is the arm locked.
+// A large rest weight is the arm locked.
 TEST(MpcSegmentCoreJudgement, ALargeRestWeightIsTheOtherArmLocked) {
   const Fixture f = MakeFixture();
   ASSERT_TRUE(f.input.qd0.isZero(0.0));
@@ -1241,11 +1239,11 @@ TEST(MpcSegmentCoreJudgement, ALargeRestWeightIsTheOtherArmLocked) {
   const JudgeRun locked = Judge(f, 0.0, kJudgePre, kJudgePost, true);
   const JudgeRun free = Judge(f, 0.0, kJudgePre, kJudgePost, false);
   ASSERT_TRUE(held.ok && locked.ok && free.ok);
-  // The same chain solution, to #640 D10's tolerance …
+  // The same chain solution, to the chain solve's tolerance …
   EXPECT_LE(ChainDifference(held.r, locked.r), 1e-4);
   EXPECT_LE((held.r.catch_pos_err - locked.r.catch_pos_err).norm(), 1e-4);
   EXPECT_LE(OtherArmOffRest(f, locked.r), 1e-6) << "locked: to the QP's tolerance";
-  // … the arm converging on the locked one as its weight grows (D16: the
+  // … the arm converging on the locked one as its weight grows (the
   // limit, measured as a monotone fall to ≤ 1e-4 rad at the weight bound) …
   double last = std::numeric_limits<double>::infinity();
   for (const double w : {1.0, 10.0, 100.0, 1e3, rtc::catching::kWholeBodyWeightMax}) {
@@ -1262,7 +1260,7 @@ TEST(MpcSegmentCoreJudgement, ALargeRestWeightIsTheOtherArmLocked) {
   EXPECT_GT(OtherArmOffRest(f, free.r), 1e-3);
 }
 
-// formulation §4 item 7: with the other arm free the angular term swings it
+// With the other arm free the angular term swings it
 // against the reach, and the catch hardly notices; locked and weighted
 // heavily, the reach itself has to give.
 TEST(MpcSegmentCoreJudgement, TheOtherArmSwingsAgainstTheReachAndTheCatchHardlyNotices) {
@@ -1282,7 +1280,7 @@ TEST(MpcSegmentCoreJudgement, TheOtherArmSwingsAgainstTheReachAndTheCatchHardlyN
       << "free, the arm must lower the term the core minimises";
   RecordProperty("swing_ang_rate_max", std::to_string(swing.r.whole_body.ang_rate_max));
   RecordProperty("locked_ang_rate_max", std::to_string(locked.r.whole_body.ang_rate_max));
-  // … and the catch node is within D2's tolerance of the solve without it.
+  // … and the catch node is within tolerance of the solve without it.
   EXPECT_TRUE(WithinD2(CatchOf(swing.r), CatchOf(off.r), &why)) << why;
   RecordProperty("swing_catch_difference", why);
   // Negative: locked, with the term weighted heavily on both phases, the

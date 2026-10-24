@@ -4,13 +4,13 @@
 # merges it into that file's tree; every key keeps its full path.
 #
 # The search that solves the docking problem for each candidate catch instant
-# and chooses by the solve's cost (MPC · dual-arm plan E1-F14, #740). Read only
+# and chooses by the solve's cost (MPC · dual-arm plan #740). Read only
 # when `planner.search.mode: nlp` (the main file) — and then it needs a segment
 # planner: `planner.segment.mode` mpc or mpc_docking (nlp with closed_form
 # parks). Every key here is under planner.search.nlp, and the nlp search reads
 # its design values from here alone.
 #
-# PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the core's chance rows
+# PROVISIONAL, SIM ONLY. Set in sim (#745): the core's chance rows
 # (off), core.catch.nu_ref and the SQP's tol_kkt and mu_max, as in the
 # mpc_docking planner's core, the stop grid, and the budget (one solve a wake);
 # the other values are starting values, not tuned. A real-arm configuration
@@ -32,7 +32,7 @@ demo_catching_controller:
           t_lead_min: 0.40
           t_max: 0.90
           cand_capacity: 24
-          # No catch box (L3 §4.9, 2026-10-09): the search does not judge where the
+          # No catch box: the search does not judge where the
           # catch point is. `catch_box` is a removed key: the controller parks on it.
           # ── The arm grid ────────────────────────────────────────────────────
           # A candidate's trajectory has n_pre intervals of dt_pre_s before the
@@ -45,8 +45,8 @@ demo_catching_controller:
             min: 4
             max: 9
           dt_pre_s: 0.1
-          # The stop part is the mpc_docking planner's (4 x 0.0875 s, E1-F19
-          # part 2, #745): the reason and the numbers are with
+          # The stop part is the mpc_docking planner's (4 x 0.0875 s, #745):
+          # the reason and the numbers are with
           # planner.segment.mpc_docking.stop.
           stop:
             n_nodes: 4
@@ -55,7 +55,7 @@ demo_catching_controller:
           # ── Budget ──────────────────────────────────────────────────────────
           # One wake's whole budget, one candidate's share, the margin between
           # the budget's end and node 0, and the most solves a wake runs.
-          # ONE solve a wake, with a share that fits it (E1-F19, #745). With
+          # ONE solve a wake, with a share that fits it (#745). With
           # two (solve_s 0.018, max_solves 2) a wake that solved both took 32 -
           # 37 ms (median) and its plan met the next vision period: the cycle
           # dropped it as superseded in 34 of 78 and 58 of 97 such wakes,
@@ -72,7 +72,7 @@ demo_catching_controller:
           # of 216 wakes). Under planner.segment.mode mpc the ceiling is
           # 0.05 - 0.030 = 0.020 s (#716): this solve_s would run no solve
           # while a plan is followed.
-          # On the D-2 tuning set (E1-F19 part 2, the stop grid and the SQP
+          # On the tuning set (the stop grid and the SQP
           # values below) 180 of 257 candidate solves still ended at the
           # deadline: with no deadline a solve the search accepts needs 18.1 ms
           # (median) and one it refuses 20 ms, at the share. A share of 0.030 s
@@ -113,9 +113,9 @@ demo_catching_controller:
           # window, the contact point) are robot.hand.docking in the main file
           # and reach every core from there; the grid is this map's own keys
           # above. A per-joint weight is one number for every joint.
-          # Starting values: the weights the core's own suites solve with
-          # (E1-F13). E1-F19 (#745) did not tune them — it set the switches,
-          # the grid and the keys noted where they stand.
+          # Starting values: the weights the core's own suites solve with,
+          # not tuned — only the switches, the grid and the keys noted where
+          # they stand were set (#745).
           core:
             u_scale: 1.0e+3
             cost:
@@ -132,7 +132,7 @@ demo_catching_controller:
               # Reference relative velocity at the catch node, catch frame
               # [m/s]: straight down the approach axis, inside the hand's
               # closing-speed band (robot.hand.docking.speed — where the 2.0
-              # m/s comes from, E1-F19). on_configure parks when it leaves
+              # m/s comes from). on_configure parks when it leaves
               # the band.
               nu_ref: [0.0, 0.0, -2.0]
               q_rho_f: [1.0e+3, 1.0e+3]
@@ -146,7 +146,7 @@ demo_catching_controller:
               lambda1_v: 1.0
               lambda2_v: 0.0
             capture:
-              # Chance rows OFF (E1-F19, #745). `true` tightens the lateral,
+              # Chance rows OFF (#745). `true` tightens the lateral,
               # speed and timing rows by the ball's covariance at the catch
               # node; in sim that leaves the lateral set empty (its nearest
               # face is 2.3 mm from rho_ref) and every first solve ended at
@@ -164,7 +164,7 @@ demo_catching_controller:
               # one of the chance rows, so with chance off it is not built
               # whatever this says. NOTE for whoever turns chance back on:
               # robot.hand.docking.closure (delta_lo / delta_hi) is from the
-              # fly-ins at core.catch.nu_ref's speed (E1-F19 part 2, #802),
+              # fly-ins at core.catch.nu_ref's speed (#802),
               # where the hand's window is 8 ms wide.
               row: true
               eps_t: 0.05
@@ -188,7 +188,7 @@ demo_catching_controller:
               max_iterations: 50
               tol_violation: 1.0e-6
               # tol_kkt, mu_init and mu_max: the mpc_docking planner's core's
-              # (E1-F19 part 2, #745) — the reason and the numbers are there.
+              # (#745) — the reason and the numbers are there.
               tol_kkt: 1.0e-2
               mu_init: 1.0e+2
               mu_max: 1.0e+2

@@ -1,7 +1,6 @@
-// L6 hand sequencer (dynamic_catching S7.1, L6 §5.3). The close instant (G6-A),
-// the phase rules (Q4: open only while homing, wait at q_pre, release to q_pre),
-// ρ, the hold rule and the fail-closed paths. Deterministic: the sequencer
-// takes `now` as an argument, so every case below builds its own tick grid.
+// Hand sequencer. The close instant, the phase rules (open only while homing, wait at q_pre,
+// release to q_pre), ρ, the hold rule and the fail-closed paths. Deterministic: the sequencer takes
+// `now` as an argument, so every case below builds its own tick grid.
 //
 // no_malloc_scope.hpp MUST precede every Eigen header, and alloc_gate.hpp
 // defines the replacement global operators — exactly one TU per binary; this
@@ -145,7 +144,7 @@ TEST(HandSequencer, AProfileWithAnUnresolvedValueDoesNotConfigure) {
   EXPECT_FALSE(seq.Configure(HandSequencerConfig::FromProfile(p)));
 }
 
-// ── Phases (#537 S7 Q4) ─────────────────────────────────────────────────────
+// ── Phases ──────────────────────────────────────────────────────────────────
 
 TEST(HandSequencer, IsInactiveUntilToldAndHomesToOpenThenWaitsAtPre) {
   const HandSequencerConfig c = MakeConfig();
@@ -239,7 +238,7 @@ TEST(HandSequencer, ReadyCancelsACommitThatHasNotClosed) {
   }
 }
 
-// ── G6-A: the close command tick ────────────────────────────────────────────
+// ── The close command tick ──────────────────────────────────────────────────
 
 /// Run ticks from `t0` on the given grid until the close goes out; return the
 /// instant it did (or INT64_MIN).
@@ -372,7 +371,7 @@ TEST(HandSequencer, ARetimeToAnInstantAlreadyPastClosesOnTheNextTick) {
   EXPECT_TRUE(seq.Update(NowReal{500 * kMs + kH}, kH, s.Q(), s.Qd()).close_issued_now);
 }
 
-// ── Close → Hold (L6 §4.2) ──────────────────────────────────────────────────
+// ── Close → Hold ────────────────────────────────────────────────────────────
 
 TEST(HandSequencer, RhoIsTheMinimumOverCagingJointsWithEachJointsOwnSign) {
   const HandSequencerConfig c = MakeConfig();
@@ -457,7 +456,7 @@ TEST(HandSequencer, ANonFiniteReadingNeverClosesByRhoButTheTimeoutStillEndsTheCl
   EXPECT_TRUE(end.timeout);
 }
 
-// ── Hold rule (L6 §4.4, #537 S7 Q5) ─────────────────────────────────────────
+// ── Hold rule ───────────────────────────────────────────────────────────────
 
 HandSequencerOutput CloseToHold(HandSequencer& seq, const HandSequencerConfig& c,
                                 const HandState& caged) {
@@ -533,7 +532,7 @@ TEST(HandSequencer, HoldDeltaIsCheckedOnlyInTheModeThatReadsIt) {
   EXPECT_FALSE(seq.Configure(c));
 }
 
-// ── Release (#537 S7 Q4/Q12) ────────────────────────────────────────────────
+// ── Release ─────────────────────────────────────────────────────────────────
 
 TEST(HandSequencer, ReleaseOpensToPreAndWaitsThereOnlyOnceSettled) {
   const HandSequencerConfig c = MakeConfig();
@@ -610,7 +609,7 @@ TEST(HandSequencer, WithoutVelocitiesTheCloseStillEndsOnRhoAndHoldsFromTheReadin
   EXPECT_FALSE(out.at_target);
 }
 
-// ── RT: no allocation in Update (G7-D's pure half) ──────────────────────────
+// ── RT: no allocation in Update ─────────────────────────────────────────────
 
 TEST(HandSequencer, UpdateDoesNotAllocate) {
   const HandSequencerConfig c = MakeConfig();

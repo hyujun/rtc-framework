@@ -164,7 +164,7 @@ void PinocchioModelBuilder::BuildFullModel() {
   ValidateFullModelInertias();
 }
 
-// ── YAML 선언 extra frame (D-10, D-17) ───────────────────────────────────────
+// ── YAML 선언 extra frame ───────────────────────────────────────────────
 // full 모델에만 추가한다. sub/tree/actuated 는 모두 buildReducedModel(full) 이라
 // frame 을 상속하고, 부모 관절이 잠긴 모델에서는 가장 가까운 유지 조상 관절에
 // 같은 world placement 로 다시 붙는다. 새 frame 은 끝에 붙으므로 기존 frame id 는

@@ -1,36 +1,35 @@
 #!/usr/bin/env python3
-"""Pool catching_trials outputs across units and arms (dynamic_catching S8-E).
+"""Pool catching_trials outputs across units and arms.
 
-Stage S8-E, D-S8-16 (``docs/dynamic_catching/ID_INDEX.md`` §3, §5.4); L8 §9
-(G8-D definition, floor). One S8-E arm is several units (one sim
-session + one ``catching_sim_trials`` trials dir each, 50 throws per unit), and
-each unit has been through :mod:`rtc_tools.analysis.catching_trials`, which
-leaves ``catching_trials.csv`` (one row per trial, with ``invalid_reason``) and
-``catching_trials_summary.json`` in its output dir. This module pools those
-dirs per arm and judges the arm:
+One evaluation arm is several units (one sim session + one ``catching_sim_trials``
+trials dir each, 50 throws per unit), and each unit has been through
+:mod:`rtc_tools.analysis.catching_trials`, which leaves ``catching_trials.csv``
+(one row per trial, with ``invalid_reason``) and ``catching_trials_summary.json``
+in its output dir. This module pools those dirs per arm and judges the arm:
 
-* **truncation** (D-S8-16 ①b, the pre-declared top-up) — units are read IN THE
-  ORDER GIVEN (the pre-declared seed order, top-up units last) and trials by
-  ``idx``; trials count until the cumulative VALID count reaches
-  ``--n-valid-target``, and every trial after the target-th valid one is
-  ``beyond_target`` — out of both the valid and the ITT counts. Fewer valid
-  trials than the target in total → ``INSUFFICIENT_N``;
-* **G8-D** over the included valid trials: successes (sim truth), p̂, Wilson
-  two-sided interval, ``lower_975`` ≥ ``--floor`` → PASS / FAIL; ITT (invalid
-  counted as failure) over every included trial; supervisor × truth confusion;
-  per-unit breakdown;
-* the pooled covariates over the same trials: D-3 |δ(t_commit)|, |δ(t_c)|,
-  δ_max; tick overrun; G8-C3 streak distribution; G7-B3 impulse correlation;
-  gate-map whole / map-open subset when the rows carry ``map_open``;
+* **truncation** (the pre-declared top-up) — units are read IN THE ORDER GIVEN
+  (the pre-declared seed order, top-up units last) and trials by ``idx``;
+  trials count until the cumulative VALID count reaches ``--n-valid-target``,
+  and every trial after the target-th valid one is ``beyond_target`` — out of
+  both the valid and the ITT counts. Fewer valid trials than the target in
+  total → ``INSUFFICIENT_N``;
+* **truth verdict** over the included valid trials: successes (sim truth), p̂,
+  Wilson two-sided interval, ``lower_975`` ≥ ``--floor`` → PASS / FAIL; ITT
+  (invalid counted as failure) over every included trial; supervisor × truth
+  confusion; per-unit breakdown;
+* the pooled covariates over the same trials: clock phase |δ(t_commit)|,
+  |δ(t_c)|, δ_max; tick overrun; ``ref_saturated`` streak distribution; impulse
+  correlation; gate-map whole / map-open subset when the rows carry ``map_open``;
 * with ≥ 2 arms, an exact McNemar test per arm pair over the trials that are
-  included and valid in BOTH, paired by throw (D-S8-16 ④): a throw-list trial
-  on (the list's sha256, ``throw_id``), a seeded-series trial on ``(seed, idx)``;
-* the D-3 S3.1b count (D-S8-16 ⑤): trials with a clock covariate over all
-  arms against the ≥ 200 requirement; ``--extra-d3`` summaries (another
-  population) are listed beside it, not added;
-* G8-B (per-horizon pooled NEES, trial bootstrap) and G8-C2 (A⊥B, n ≥ 100)
-  recomputed from the pooled per-trial columns — :mod:`catching_vision` — and
-  each unit's ``time_alignment`` and the RTF covariates.
+  included and valid in BOTH, paired by throw: a throw-list trial on (the
+  list's sha256, ``throw_id``), a seeded-series trial on ``(seed, idx)``;
+* the clock-phase sample count: trials with a clock covariate over all arms
+  against the ≥ 200 requirement; ``--extra-d3`` summaries (another population)
+  are listed beside it, not added;
+* the NEES check (per-horizon pooled NEES, trial bootstrap) and the A⊥B check
+  (n ≥ 100), recomputed from the pooled per-trial columns —
+  :mod:`catching_vision` — and each unit's ``time_alignment`` and the RTF
+  covariates.
 
 The statistics are :mod:`catching_trials`' / :mod:`catching_vision`'s own (one
 implementation, P5).
@@ -53,8 +52,8 @@ from rtc_tools.analysis.catching_throw_list import throw_key
 
 TRIALS_CSV = "catching_trials.csv"
 SUMMARY_JSON = "catching_trials_summary.json"
-DEFAULT_N_VALID_TARGET = 200  # D-S8-3
-D3_S31B_N_MIN = 200  # S3.1b: trials with a clock covariate
+DEFAULT_N_VALID_TARGET = 200  # no truth verdict below this many valid trials
+D3_S31B_N_MIN = 200  # clock-phase sample: trials with a clock covariate
 POOL_COLUMNS = (
     "arm",
     "unit",
@@ -94,7 +93,7 @@ STRING_COLUMNS = frozenset(
         "throws_file_sha256",
     }
 )
-# Per-trial columns copied into pool_trials.csv when present (G8-B, G8-C2, RTF).
+# Per-trial columns copied into pool_trials.csv when present (NEES, A⊥B, RTF).
 POOL_COLUMN_PREFIXES = ("nees_h", "err_h", "c2_", "rtf_")
 
 
@@ -145,7 +144,7 @@ def read_unit(ct_dir: Path) -> Unit:
         if "invalid_reason" not in (reader.fieldnames or []):
             raise SystemExit(
                 f"{csv_path}: no invalid_reason column — written by a catching_trials older "
-                "than the D-S8-16 validity rules; re-run catching_trials on this unit"
+                "than the current validity rules; re-run catching_trials on this unit"
             )
         if "truth_success" not in (reader.fieldnames or []):
             raise SystemExit(f"{csv_path}: no truth_success column — run with a hold radius")
@@ -164,7 +163,7 @@ def read_unit(ct_dir: Path) -> Unit:
 
 
 def truncate(units: Sequence[Unit], n_valid_target: int) -> int:
-    """Mark every row included or ``beyond_target`` (D-S8-16 ①b); returns the beyond count."""
+    """Mark every row included or ``beyond_target``; returns the beyond count."""
     n_valid = 0
     beyond = 0
     for unit in units:
@@ -289,7 +288,7 @@ def check_unique_keys(label: str, units: Sequence[Unit]) -> None:
             if key in seen:
                 raise SystemExit(
                     f"arm {label}: throw {key} in both {seen[key]} and {u.ct_dir} — a "
-                    "re-run unit replaces its original (D-S8-16 ①), pass only one of them"
+                    "re-run unit replaces its original, pass only one of them"
                 )
             seen[key] = u.ct_dir
 
@@ -344,12 +343,12 @@ EXTRA_D3_COUNT_DEFINITION = (
 
 
 def d3_s31b_block(arms: Mapping[str, Sequence[Mapping]], extras: Sequence[Mapping]) -> dict:
-    """D-3 S3.1b (plan D-S8-16 ⑤): judged on the arms' own trials only.
+    """Clock-phase sample count (≥ 200): judged on the arms' own trials only.
 
     The arms count their included VALID trials with a finite clock covariate;
     an ``--extra-d3`` summary's ``d3.paired`` counts every accepted trial with
-    a lane launch — another population, so it is listed beside the verdict
-    (S8-B alongside S8-E), not summed into it.
+    a lane launch — another population, so it is listed beside the verdict,
+    not summed into it.
     """
     per_arm = {
         label: d3_block(_valid(rows))["n_with_clock_covariate"] for label, rows in arms.items()
@@ -463,7 +462,7 @@ def report(summary: Mapping) -> str:
         lines.append("  " + ct.verdict_line(tr))
         d3 = arm["d3"]
         lines.append(
-            f"  D-3 (covariate, p50/p95/max ms): {d3['n_with_clock_covariate']} trials · "
+            f"  clock covariate (p50/p95/max ms): {d3['n_with_clock_covariate']} trials · "
             f"|δ(t_commit)| {_q(d3['delta_commit_ms_abs_p50_p95_max'])} · |δ(t_c)| "
             f"{_q(d3['delta_tc_ms_abs_p50_p95_max'])} · δ_max {_q(d3['delta_max_ms_p50_p95_max'])}"
         )
@@ -494,7 +493,7 @@ def report(summary: Mapping) -> str:
         )
     s = summary["d3_s31b"]
     lines.append(
-        f"D-3 S3.1b: {s['total']} trials with a clock covariate (arms {s['per_arm']}) vs ≥ "
+        f"clock covariate: {s['total']} trials with a clock covariate (arms {s['per_arm']}) vs ≥ "
         f"{s['requirement_n']} → {'met' if s['met'] else 'NOT met'}"
     )
     for e in s["extra_sources"]:
@@ -528,7 +527,9 @@ def main(argv: list[str] | None = None) -> int:
         help="an arm: its label and its catching_trials output dirs IN THE PRE-DECLARED ORDER "
         "(top-up units last). Repeat per arm",
     )
-    ap.add_argument("--floor", type=float, required=True, help="G8-D floor (D-S8-3)")
+    ap.add_argument(
+        "--floor", type=float, required=True, help="success-rate floor for the truth verdict"
+    )
     ap.add_argument(
         "--n-valid-target",
         type=int,
@@ -553,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="SUMMARY_JSON",
         help="other sessions' catching_trials_summary.json: their d3 block is listed beside the "
-        "S3.1b verdict, which the arms alone decide (D-S8-16 ⑤)",
+        "clock-covariate verdict, which the arms alone decide",
     )
     args = ap.parse_args(argv)
     summary, trial_rows = pool(

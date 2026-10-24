@@ -136,7 +136,7 @@ TEST(DemoCatchingAlloc, ComputeAllocatesNothingOnTheStepPath) {
 }
 
 TEST(DemoCatchingAlloc, ComputeAllocatesNothingWhileServicingResets) {
-  // The S5.1 reset path is inside the tick (P-1 (a)), so it is inside the
+  // The reset path is inside the tick, so it is inside the
   // gate: the epoch reads, ResetTrialState, DiscardPendingTargets' mailbox
   // drain and the FSM lookup all run here. The hooks themselves are called
   // OUTSIDE the gate — they run off the RT thread on the real system, and

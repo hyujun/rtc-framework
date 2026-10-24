@@ -53,8 +53,8 @@ struct DeviceStateCache {
   std::array<float, kMaxInferenceValues> inference_data{};
   std::array<bool, kMaxSensorGroups> inference_enable{};
   int num_inference_groups{0};
-  // Per-group receipt time and sample counter of the inference lane
-  // (dynamic_catching D-24 (a)). Mirrors DeviceState::inference_recv_steady_ns
+  // Per-group receipt time and sample counter of the inference lane.
+  // Mirrors DeviceState::inference_recv_steady_ns
   // and ::inference_sequence; that declaration owns the contract, including
   // the "0 = never received" polarity and why `header.stamp` is not used.
   //

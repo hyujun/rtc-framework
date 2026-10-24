@@ -1,4 +1,4 @@
-// One planner wake (S6). See planner_cycle.hpp.
+// One planner wake. See planner_cycle.hpp.
 #include "rtc_controllers/catching/planner_cycle.hpp"
 
 #include "rtc_base/types/types.hpp"                 // rtc::SteadyNowNs
@@ -44,7 +44,7 @@ void PlannerCycle::RunReplan(const PlannerRtState& rt, const BallPrediction& bal
   // (JudgeSegment kPlan): the reset drops plan_active and plan ids are
   // monotone, so the segment names a plan the RT no longer follows — and the
   // next wake withdraws it (reset_seen in Run). The RT also refuses a segment
-  // PREDICTED from a state older than its floor (state_floor_ns, MD-37), so a
+  // PREDICTED from a state older than its floor (state_floor_ns), so a
   // stamp that postdates the reset cannot carry the stopped trial's state.
   //
   // The source is re-derived from the RT's newest report: a segment solved
@@ -87,7 +87,7 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
   // may publish it rather than solve again (SegmentPlanner::PlanFirst).
   const CatchSolution* const solution = search_ != nullptr ? search_->Solution() : nullptr;
   if (!segment_planner_->PlanFirst(rt, plan, ball, solution, segment_out_, rec.segment)) {
-    // Withheld together (MD-62): a plan without its segment would put the RT
+    // Withheld together: a plan without its segment would put the RT
     // in APPROACH with nothing to follow.
     rec.outcome = CycleOutcome::kHeld;
     return;
@@ -173,7 +173,7 @@ bool PlannerCycle::PublishReplacement(const PlannerRtState& rt, PlanSnapshot& pl
   const BallPrediction ball{&traj_, &cov_, rec.cov_matched};
   const CatchSolution* const solution = search_ != nullptr ? search_->Solution() : nullptr;
   if (!segment_planner_->PlanFirst(rt, plan, ball, solution, segment_out_, rec.segment)) {
-    // Withheld together (MD-62). The followed plan goes on, and the wake's
+    // Withheld together. The followed plan goes on, and the wake's
     // segment account is the replan's: this solve's is kept beside it.
     rec.replacement = rec.segment;
     rec.segment = SegmentRecord{};
@@ -265,7 +265,7 @@ PlanSnapshot PlannerCycle::PlanOnce(const TrajectorySnapshot& traj, const Covari
   static_cast<void>(cov);
   static_cast<void>(cov_matched);
   static_cast<void>(now);
-  // S6-A stub: provenance filled, no candidate. `reason` stays kNone — "no
+  // Stub: provenance filled, no candidate. `reason` stays kNone — "no
   // plan, and no gate is being named", because no gate ran. A stub that
   // reported a real gate's code would send the operator looking for a
   // bottleneck that does not exist.
@@ -288,15 +288,15 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     return rec;
   }
 
-  // ── 1. The RT state (L3 §5.3 step 2, read first: it says whether to plan) ─
+  // ── 1. The RT state ──────────────────────────────────────────────────────
   const PlannerRtState rt = io_.rt->Load();
   if (!rt.valid) {
     return rec;
   }
   rec.mode = rt.mode;
-  // A trial reset since the last wake. The planner has no per-trial state at
-  // S6-A, so noticing it is all there is to do; S6-B drops its per-trial
-  // search state here. Recorded before the activity gate so a reset is seen
+  // A trial reset since the last wake. The planner has no per-trial state
+  // yet, so noticing it is all there is to do; a search drops its per-trial
+  // state here. Recorded before the activity gate so a reset is seen
   // even when the new mode has nothing to plan for. (Signals raised for the
   // ended trial need no draining here: the wait already consumed them, and a
   // plan from that trial is refused by the RT's reset floor, JudgePlan (f).)
@@ -327,9 +327,9 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   }
   const PlannerActivity activity = ActivityFor(static_cast<Mode>(rt.mode));
   if (activity == PlannerActivity::kMonitor) {
-    // monitorOnly (§4.6): σ_ℓ at the committed t_c from the newest covariance.
+    // monitorOnly: σ_ℓ at the committed t_c from the newest covariance.
     // Recorded, never published: the RT does not take a new plan once
-    // committed, and σ_ℓ's consumer (L7 abort) is S7.2.
+    // committed, and σ_ℓ's consumer is the supervisor's abort.
     io_.traj->LoadInto(traj_);
     io_.cov->LoadInto(cov_);
     if (search_ != nullptr) {
@@ -340,7 +340,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
       // that follows nothing leaves — nothing to publish, σ_ℓ unknown.
       rec.search.publish = false;
     }
-    // The segment's replan, after σ_ℓ is recorded (MPC E1-F08) — still
+    // The segment's replan, after σ_ℓ is recorded — still
     // before t_c, so the ball is read.
     if (SegmentActive()) {
       RunReplan(rt, FollowedBall(rt), rec);
@@ -348,7 +348,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     return rec;
   }
   if (activity == PlannerActivity::kDecel) {
-    // Post-catch replans only (MD-31). The outcome stays kIdle (MD-29).
+    // Post-catch replans only. The outcome stays kIdle.
     if (SegmentActive()) {
       RunReplan(rt, BallPrediction{}, rec);
     }
@@ -378,7 +378,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
         return rec;
       }
       if (!SearchesWhileFollowing(rt, wake)) {
-        // The replan alone. It leaves the wake's outcome alone (MD-29).
+        // The replan alone. It leaves the wake's outcome alone.
         io_.traj->LoadInto(traj_);
         io_.cov->LoadInto(cov_);
         RunReplan(rt, FollowedBall(rt), rec);
@@ -388,7 +388,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     }
   }
 
-  // ── 2. The trajectory, then its covariance (L3 §5.2 read order) ──────────
+  // ── 2. The trajectory, then its covariance ───────────────────────────────
   io_.traj->LoadInto(traj_);
   if (!traj_.valid || traj_.token.activation_generation != rt.activation_generation) {
     rec.outcome = CycleOutcome::kNoInput;
@@ -408,7 +408,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   // in which the two disagree is one where the covariance is the newer one.
   // One re-read closes the common case (the writer landed between the two
   // loads); a second mismatch means the pair is not a pair, and it is not
-  // used (L3 §5.2: "그 조합은 쓰지 않는다").
+  // used.
   io_.cov->LoadInto(cov_);
   rec.cov_matched = cov_.valid && SameSnapshot(cov_.token, traj_.token);
   if (!rec.cov_matched) {
@@ -455,7 +455,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     return rec;
   }
 
-  // ── 4. Provenance re-check before publishing (L3 §5.2, planner side) ─────
+  // ── 4. Provenance re-check before publishing ─────────────────────────────
   // A newer trajectory means the eventfd has already been signalled for it,
   // so the next wake plans against it; publishing this one would hand the RT
   // a plan for a prediction that is no longer the latest. A moved reset epoch
@@ -468,13 +468,13 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     return rec;
   }
 
-  // The switching rule decided to keep the plan the RT is following (§4.7,
-  // freeze G): publishing nothing IS the decision.
+  // The switching rule decided to keep the plan the RT is following
+  // (replacement freeze): publishing nothing IS the decision.
   if (!rec.search.publish) {
     rec.outcome = CycleOutcome::kHeld;
     return rec;
   }
-  // A plan and its first segment go together (MPC E1-F08, MD-56). "No plan"
+  // A plan and its first segment go together. "No plan"
   // is published as before.
   if (SegmentActive() && plan.valid) {
     PublishPair(rt, plan, rec);

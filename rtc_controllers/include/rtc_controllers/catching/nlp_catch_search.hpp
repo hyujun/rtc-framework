@@ -1,14 +1,11 @@
 // ── The NLP catch search: one arm problem per candidate catch instant ─────────
-// (dynamic_catching E1-F14, #740; reference
-//  docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md §9.5, §11,
-//  §12.7, §17.11, §17.12)
 //
 // The second CatchSearch (catch_search.hpp). Where GridCatchSearch scores a
 // candidate catch point with closed-form gates, this one SOLVES the arm motion
 // that catches there — MpcDockingSegmentCore, the same problem the
 // mpc_docking segment planner solves — and chooses by that motion's cost. It
-// knows no ROS, no controller and no robot. Nothing installs it yet: the
-// planner cycle that would call it after the RT has adopted a plan is E1-F16.
+// knows no ROS, no controller and no robot; the binding installs it in place
+// of GridCatchSearch when the profile selects the nlp search.
 //
 // ── One wake (Plan) ───────────────────────────────────────────────────────────
 //  1. WHERE THE RESULT CAN START. t_0 = now + T_arm + budget + start_lead: the
@@ -34,12 +31,15 @@
 //     A state outside the core's box is projected into it and marked.
 //  5. SCREENING, every candidate, in lattice order — each a NECESSARY
 //     condition, the first that fails is the candidate's reason:
-//     lead (S1) → the ball at every node of its grid → covariance
+//     lead → the ball at every node of its grid → covariance
 //     → a source segment → the arm's reach bound on the IK's target
 //     (reach_bound.hpp — a target beyond it takes no IK) → catch-pose IK and
-//     its catchability gate → joint reach (S4) → closing-speed window (S3).
-//  6. RANK the survivors by J_time + J_switch + a proxy on the IK pose — the
-//     candidate of the followed plan's cell first, whatever its key (8) — and
+//     its catchability gate → joint reach (NlpReachCheck) → closing-speed window
+//     (NlpClosingSpeedWindow).
+//  6. RANK the survivors by J_time + J_switch + w_q‖q^c − q_0‖² + w_m ψ_m(q^c)
+//     (NlpTimeCost, NlpSwitchCost; q^c the IK pose, ψ_m as in
+//     ComputeDockingManipulability, w_q = `rank_w_q`, w_m = `rank_w_manip`) —
+//     the candidate of the followed plan's cell first, whatever its key (8) — and
 //     solve the best L, L = min(max_solves, ⌊(budget − screening)/solve_budget⌋).
 //     Each solve has its own deadline (its share), not the wake's — except
 //     under a caller's cap (below), where it is also no later than the wake's
@@ -144,7 +144,7 @@
 //    nothing of their own — pinned with a C-level malloc gate over a whole
 //    Plan. The QP solvers inside the IK and the cores DO allocate in their
 //    own update()/solve(): a recorded RT-1 violation, counted and not
-//    asserted (agent_docs/invariants.md §RT Path, #654).
+//    asserted (agent_docs/invariants.md §RT Path).
 //  • `now` is the axis of every instant here (the lattice, t_0, the RT
 //    state's age). The clock handed to Configure measures DURATIONS only — the
 //    budget and the solves' deadlines — so a test can step it.
@@ -228,7 +228,7 @@ struct NlpCatchSearchConstants {
 
 /// Tuning. Every field is validated by Configure.
 struct NlpCatchSearchParams {
-  // ── Candidates (§11.1) ──
+  // ── Candidates ──────────────────────────────────────────────────────────────
   double cand_dt{0.02};    ///< lattice spacing h [s], > 0
   double t_lead_min{0.2};  ///< T_min: smallest t_c − t_0 [s]; ≥ n_pre_min·dt_pre
   double t_max{0.6};       ///< T_max: largest t_c − t_0 [s]; ≤ n_pre_max·dt_pre
@@ -251,7 +251,7 @@ struct NlpCatchSearchParams {
   int n_stop_blocks{4};
   std::array<int, kMaxSegmentNodes> stop_block_sizes{1, 1, 2, 3};
 
-  // ── Budget (§11.2) ──
+  // ── Budget ──────────────────────────────────────────────────────────────────
   double budget_s{0.025};       ///< one wake's whole budget [s]
   double solve_budget_s{0.01};  ///< one candidate's share [s], ≤ budget_s
   /// Margin between the budget's end and t_0 [s], ≥ 0. It has to hold what
@@ -260,7 +260,7 @@ struct NlpCatchSearchParams {
   double start_lead_s{0.004};
   int max_solves{4};  ///< 1..kNlpMaxSolves
 
-  // ── Outer cost (§9.5) and the rank proxy (§11.3) ──
+  // ── Outer cost and the rank proxy ───────────────────────────────────────────
   double w_time{0.0};        ///< w_T ≥ 0
   double w_switch{0.0};      ///< w_sw ≥ 0
   double t_ref_s{0.5};       ///< T_ref > 0 [s] — the cost's time scale
@@ -417,10 +417,10 @@ class NlpCatchSearch final : public CatchSearch {
     MpcDockingCutSite cut_site{MpcDockingCutSite::kNone};
     DockingRowGroup worst_group{DockingRowGroup::kTorque};  ///< read on hard_row / chance
     double worst_violation{0.0};
-    /// Bit g set when row group g's violation exceeds tol_violation (#798).
+    /// Bit g set when row group g's violation exceeds tol_violation.
     std::uint16_t violated_mask{0};
     /// √λ_max of the ball's position covariance at the catch node, as given to
-    /// the solve; NaN when that node had no valid covariance (#798).
+    /// the solve; NaN when that node had no valid covariance.
     double sigma_c{std::numeric_limits<double>::quiet_NaN()};
     bool solved{false};  ///< the core returned an iterate
     bool feasible{false};
@@ -510,7 +510,7 @@ class NlpCatchSearch final : public CatchSearch {
 
   /// Called right before and right after every QP-solving call — the IK's
   /// Solve and a core's Solve — so that an allocation gate over a whole Plan
-  /// can be suspended exactly there (#654).
+  /// can be suspended exactly there.
   using SolverHook = void (*)(bool begin, void* user) noexcept;
 
   void SetSolverHookForTesting(SolverHook hook, void* user) noexcept {
@@ -580,7 +580,7 @@ class NlpCatchSearch final : public CatchSearch {
   /// The numbers of the solve a candidate stands on, from the core's result.
   static void RecordSolve(const MpcDockingSegmentCoreResult& res, double worst, int worst_group,
                           std::uint16_t violated_mask, CandidateRecord& c) noexcept;
-  /// The candidate's solve into the wake's record (#798): one entry per solved candidate.
+  /// The candidate's solve into the wake's record: one entry per solved candidate.
   static void RecordCandidate(const CandidateRecord& c, SearchStats& stats) noexcept;
   /// The solve with the catch instant free in the candidate's cell — or held
   /// at the followed plan's (`c.pinned`). `fixed` is this wake's fixed-grid

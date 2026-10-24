@@ -1,23 +1,20 @@
-// ── The planner's rank gates, one allocation-free core (dynamic_catching S6-B) ──
+// ── The planner's rank gates, one allocation-free core ───────────────────────
 //
-// Reach time (L3 §4.3), γ window (§4.5) and the stopping point (§4.9) for ONE
-// candidate that already has a catch posture. Two callers, one function:
+// Reach time (ReachTimeFeasible), γ window (ComputeGammaWindow) and the
+// stopping point (StoppingPoint) for ONE candidate that already has a catch
+// posture. Two callers, one function:
 //
-//   - the offline gate map (`catch_gate_batch`, S3.5b) — start state = the wait
-//     pose at rest;
-//   - the runtime planner (`PlannerCycle`, S6-B) — start state = the RT's
-//     current command (q_c, q̇_c), as §4.3 specifies.
+//   - the offline gate map (`catch_gate_batch`) — start state = the wait pose
+//     at rest;
+//   - the runtime planner (`PlannerCycle`) — start state = the RT's current
+//     command (q_c, q̇_c).
 //
-// That the two call the SAME code is the equivalence G3-I asks for (map and
-// runtime judge a candidate alike): before S6-B the body lived inside the
-// batch's `JudgeGates`, over `std::vector` and `Eigen::VectorXd`, which the
-// planner thread (RT-1~10) cannot use. It was moved here verbatim and
-// `JudgeGates` now wraps it.
+// Calling the SAME code makes map and runtime judge a candidate alike; the
+// batch's `JudgeGates` wraps it.
 //
-// Under D-27 these are RANK gates at runtime (decision C, 2026-09-23): a
-// candidate that fails one is penalised in the score, not removed — the map
-// keeps using them as a strict filter. The core only reports; the policy is the
-// caller's.
+// At runtime these are RANK gates: a candidate that fails one is penalised in
+// the score, not removed — the map keeps using them as a strict filter. The
+// core only reports; the policy is the caller's.
 #pragma once
 
 #include "rtc_controllers/catching/time_feasibility.hpp"
@@ -36,10 +33,10 @@ namespace rtc::catching {
 enum class GateReason : std::uint8_t {
   kNone = 0,          ///< every gate judged here passed
   kReachInvalid,      ///< reach-time inputs or limits unusable (fail closed)
-  kReachTime,         ///< the arm cannot be at q* by t_c (L3 §4.3)
+  kReachTime,         ///< the arm cannot be at q* by t_c (ReachTimeFeasible)
   kGammaInvalid,      ///< v_dir,max or the window inputs unusable (fail closed)
-  kGammaWindowEmpty,  ///< g_min > g_max, or the ball is inside the speed margin (§4.5)
-  kStopInvalid,       ///< the stopping point could not be formed (§4.9)
+  kGammaWindowEmpty,  ///< g_min > g_max, or the ball is inside the speed margin
+  kStopInvalid,       ///< the stopping point could not be formed
 };
 
 [[nodiscard]] constexpr std::string_view GateReasonName(GateReason reason) noexcept {
@@ -66,9 +63,9 @@ struct RankGateInputs {
   std::span<const double> q0;         ///< start posture [rad]
   std::span<const double> w0;         ///< start velocity [rad/s]
   std::span<const double> q_star;     ///< catch posture [rad]
-  std::span<const double> qdot_plan;  ///< η_v · q̇_max [rad/s] — the PLANNING limits (S4.4)
-  std::span<const double> qddot_max;  ///< D-16 acceleration box [rad/s²]
-  std::span<const double> qdot_u;     ///< DLS unit-speed joint velocity at q* (L3 §4.5)
+  std::span<const double> qdot_plan;  ///< η_v · q̇_max [rad/s] — the PLANNING limits
+  std::span<const double> qddot_max;  ///< joint acceleration box [rad/s²]
+  std::span<const double> qdot_u;     ///< DLS unit-speed joint velocity at q* (DirectionalSpeedMax)
   Eigen::Vector3d p_c{Eigen::Vector3d::Zero()};        ///< model world [m]
   Eigen::Vector3d v_ball{Eigen::Vector3d::Zero()};     ///< model world [m/s]
   Eigen::Vector3d jp_qdot_u{Eigen::Vector3d::Zero()};  ///< J_p q̇ᵘ [m/s]
@@ -97,18 +94,17 @@ struct RankGateResult {
   GateReason reason{GateReason::kReachInvalid};
 };
 
-/// Judge one candidate. Allocation-free, noexcept. Order and arithmetic are
-/// the S3.5b map's exactly (the map now calls this), so a change here changes
-/// both — which is the point.
+/// Judge one candidate. Allocation-free, noexcept. The gate map calls this
+/// too, so a change here changes both — which is the point.
 [[nodiscard]] inline RankGateResult JudgeRankGates(const RankGateInputs& in) noexcept {
   RankGateResult r;
 
-  // ── reach time (L3 §4.3): (q0, w0) → (q*, 0) ──────────────────────────────
+  // ── reach time: (q0, w0) → (q*, 0) ─────────────────────────────────────────
   r.reach = MaxJointTMin(in.q0, in.w0, in.q_star, in.qdot_plan, in.qddot_max);
   r.lead_s = LeadSecondsUntil(in.now_lead, in.t_k);
   r.reach_ok = ReachTimeFeasible(in.t_k, in.now_lead, in.t_margin_ns, r.reach);
 
-  // ── γ window (L3 §4.5) ─────────────────────────────────────────────────────
+  // ── γ window ───────────────────────────────────────────────────────────────
   const double speed = in.v_ball.norm();
   if (speed > 0.0 && std::isfinite(speed)) {
     const Eigen::Vector3d v_hat = in.v_ball / speed;
@@ -128,7 +124,7 @@ struct RankGateResult {
   }
   r.gamma_ok = r.gamma_usable && r.window.Feasible() && speed + in.gamma_margin <= r.max_catchable;
 
-  // ── stopping point (L3 §4.9), at both ends of the window ───────────────────
+  // ── stopping point, at both ends of the window ─────────────────────────────
   if (r.gamma_usable) {
     r.stop_gamma_min = StoppingPoint(in.p_c, in.v_ball, r.window.g_min, in.a_dec);
     r.stop_gamma_max = StoppingPoint(in.p_c, in.v_ball, r.window.g_max, in.a_dec);

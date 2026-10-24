@@ -493,7 +493,7 @@ MuJoCo 는 `(contype_A & conaffinity_B) || (contype_B & conaffinity_A)` 이면 �
 두 공 토픽 (`ground_truth_topic` · `camera_topic`) 의 `header.stamp` 는 발행 순간의 `now()` 가 아니라 **발사 순간을 기준으로 sim 시간축을 wall 에 얹은 값**이다: `발사 wall 시각 + (sim 시각 − 발사 sim 시각) / max_rtf`. 샘플 간격이 sim 축과 정확히 `1/sample_rate_hz` 이고, 발행 순간의 stepper wake 지터가 stamp 에 실리지 않는다 (소비자의 "5 점을 0.1 s 안에" 같은 init 창이 이 지터로 깨지던 것을 막는다). 소비자가 알아야 할 사실:
 
 - **epoch 은 wall 그대로** (ROS system time, `/clock` 없음) 다. 두 토픽이 같은 stamp 를 받으므로 truth ↔ camera stamp 짝짓기는 영향이 없다.
-- **stamp 는 wall 을 수십 ms 앞설 수 있다** (그 비행 안에서 stepper 가 따라잡은 양 — D-3 위상 오차). 그래서 sim 에서는 소비자의 future 허용치를 같은 자릿수로 둔다 (ball_perception `max_future_skew_s` 0.1 s, 컨트롤러 `sim.io.future_tol`).
+- **stamp 는 wall 을 수십 ms 앞설 수 있다** (그 비행 안에서 stepper 가 따라잡은 양 — 위상 오차). 그래서 sim 에서는 소비자의 future 허용치를 같은 자릿수로 둔다 (ball_perception `max_future_skew_s` 0.1 s, 컨트롤러 `sim.io.future_tol`).
 - 발사 전에 쌓인 sim ↔ wall 지연은 비행의 stamp 에 들어가지 않는다 (anchor 가 발사 순간).
 - **`max_rtf: 0` (무제한) 이면 종전처럼 발행 순간의 `now()`** 라 stamp 축의 동역학이 틀린다 — 추정기를 붙이는 run 은 `max_rtf: 1.0` 으로 돌린다.
 
@@ -521,11 +521,11 @@ ros2 service call /sim/reset_ball std_srvs/srv/Trigger   # 이후 발행이 멈�
 
 | 파라미터 | 기본값 | 설명 |
 |---|---|---|
-| `clock_lane.enabled` / `.csv_path` | `false` / `""` | 완료 step 마다 `step, sim_time_sec, steady_ns, dropped_total` — sim 클럭과 steady 클럭의 위상 오차 (D-3) 측정 |
+| `clock_lane.enabled` / `.csv_path` | `false` / `""` | 완료 step 마다 `step, sim_time_sec, steady_ns, dropped_total` — sim 클럭과 steady 클럭의 위상 오차 측정 |
 | `clock_lane.drain_rate_hz` | `20.0` | 노드가 링을 비우는 주기. `dropped_total > 0` 이면 올리고 다시 잰다 |
 | `ball_contact_lane.enabled` / `.csv_path` | `false` / `""` | 공 접촉 episode (연속 substep 구간) 마다 한 줄 |
 
-`ball_contact_lane` 열: `step`, `begin/end_sim_time_sec`, `substeps`, `impulse_{x,y,z}` (**공에 가해진** 충격량 [N·s], world), `peak_force_n`, `pos_*` · `vel_*` (첫 접촉 순간 공 상태), `first_body`, `distinct_bodies`, `dropped_total`. 설계 근거는 [sim-rationale.md](../docs/reference/sim-rationale.md#clock-phase-lane-d-3-측정).
+`ball_contact_lane` 열: `step`, `begin/end_sim_time_sec`, `substeps`, `impulse_{x,y,z}` (**공에 가해진** 충격량 [N·s], world), `peak_force_n`, `pos_*` · `vel_*` (첫 접촉 순간 공 상태), `first_body`, `distinct_bodies`, `dropped_total`. 설계 근거는 [sim-rationale.md](../docs/reference/sim-rationale.md#ball-contact-truth).
 
 ## 디렉토리
 

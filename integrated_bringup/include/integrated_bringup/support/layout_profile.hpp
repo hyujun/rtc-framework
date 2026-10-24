@@ -5,8 +5,8 @@
 // thread on the `mpc` layout role ─────────────────────────────────────────────
 //
 // Two controllers put a thread on that role: DemoWbcController (the MPC solver)
-// and DemoCatchingController (the catching planner — E-7 decision J, it takes
-// the MPC role rather than a role of its own). Both must refuse to activate
+// and DemoCatchingController (the catching planner takes the MPC role rather
+// than a role of its own). Both must refuse to activate
 // under a profile that returned the role's core to the system cpuset, and both
 // must read the profile the SAME way, or one of them ends up spawning a
 // SCHED_FIFO thread onto an unshielded core. Hence one definition here rather

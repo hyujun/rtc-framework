@@ -156,7 +156,7 @@ void MujocoNativeBackend::OnWrench(int finger_idx,
   // the question this answers is "how old is the force the controller is
   // about to use", so a dropped NaN message (above) must not refresh it — the
   // early return leaves the previous stamp with the previous force, which is
-  // the pair that is actually still in the mirror (D-24).
+  // the pair that is actually still in the mirror.
   tip.recv_steady_ns = rtc::SteadyNowNs();
   if (finger_idx + 1 > mirror.num_tips) {
     mirror.num_tips = finger_idx + 1;
@@ -172,10 +172,10 @@ void MujocoNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
   // The counters are read BEFORE the mirror, and the order is load-bearing.
   // OnWrench stores the mirror and THEN increments its counter, so a counter
   // read afterwards can be one ahead of the payload it is about to be paired
-  // with — the same counter/payload hazard D-21 documents on the catching
-  // ingress. Reading it first can only pair a counter with a payload at least
-  // as new, which under-reports newness for one tick instead of claiming a
-  // sample that is not there.
+  // with — the same counter/payload hazard the catching ingress avoids by
+  // judging newness from the payload. Reading it first can only pair a counter with a payload at
+  // least as new, which under-reports newness for one tick instead of claiming a sample that is not
+  // there.
   std::array<uint64_t, kMaxSensorGroups> seq_before{};
   for (std::size_t i = 0; i < seq_before.size(); ++i) {
     seq_before[i] = wrench_seq_[i].load(std::memory_order_acquire);
@@ -197,7 +197,7 @@ void MujocoNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
     const auto& tip = mirror.tips[fu];
     const bool fresh = tip.received_at_least_once && (rt_miss_count_[fu] < max_missed_ticks_);
     cache.inference_enable[fu] = fresh;
-    // D-24 (a): the age and the counter travel BESIDE the verdict, not
+    // The receipt time and the counter travel BESIDE the verdict, not
     // instead of it. `cur_seq` is the accepted-sample count this backend
     // already maintains for its own miss accounting, so it is the honest
     // sequence rather than a second counter that could disagree with it.

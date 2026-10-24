@@ -1,4 +1,4 @@
-"""Clear E-STOP / Reset fault header buttons for demo_controller_gui (S9a, D-S9-H).
+"""Clear E-STOP / Reset fault header buttons for demo_controller_gui.
 
 Two latches, two clears, deliberately separate (E-8, ``rtc_msgs/srv/ClearEstop.srv``
 and ``ResetFault.srv``): ``/rtc_cm/clear_estop`` lowers the CM's GLOBAL E-STOP

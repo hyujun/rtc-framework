@@ -1,5 +1,4 @@
 // ── Ball prediction at one planner node: mean and 6×6 covariance ───────────────
-// (dynamic_catching E1-F13, #739)
 //
 // A segment planner's grid is anchored at the catch instant, so its nodes fall
 // BETWEEN the samples of the vision prediction. This is the one place that

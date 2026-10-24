@@ -1,4 +1,4 @@
-// E3-F02 (#641): `planner.groups` — the parser (names and joint names as
+// `planner.groups` — the parser (names and joint names as
 // written), the resolution against the arm device's joints, and the model-order
 // map a segment planner reads.
 #include "rtc_controllers/catching/docking_params.hpp"
@@ -332,7 +332,7 @@ TEST(JointGroupsOfModel, ReadsTheGroupThroughDeviceOfModel) {
   EXPECT_FALSE(GroupsOfModel(g, reversed, 0, of_model));
 }
 
-// ── D9′: the groups a plan leaves free ───────────────────────────────────────
+// ── The groups a plan leaves free ─────────────────────────────────────────────
 
 TEST(JointGroupsLeftFree, NamesTheFirstGroupWithAJointOutsideThePlanAndNoRestWeight) {
   const std::vector<JointGroupSpec> specs = {
@@ -360,8 +360,8 @@ TEST(JointGroupsLeftFree, NamesTheFirstGroupWithAJointOutsideThePlanAndNoRestWei
   EXPECT_EQ(FirstGroupLeftFree(JointGroups{}, 7, 0b1111111, none), -1);
 }
 
-// The refusals a configure (and the offline batch) makes of D9′: the plan
-// holds trunk and one arm (group a, b), the other arm (c) is left out.
+// The refusals a configure (and the offline batch) makes of a plan that leaves a group free: the
+// plan holds trunk and one arm (group a, b), the other arm (c) is left out.
 struct LeftFreeRig {
   std::vector<JointGroupSpec> specs = {
       {"a", {"j0", "j1", "j2"}}, {"b", {"j3", "j4"}}, {"c", {"j5", "j6"}}};

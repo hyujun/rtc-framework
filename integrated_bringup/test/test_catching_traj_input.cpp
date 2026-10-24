@@ -1,4 +1,4 @@
-// ── Vision ingress: PointCloud2 decode and refusal (S5.2, G1-A / G1-B) ──────
+// ── Vision ingress: PointCloud2 decode and refusal ──────────────────────────
 //
 // The layout under test is ball_perception's, reproduced here from its own
 // `trajectory_layout` constants (384 B per point). That duplication is the
@@ -85,7 +85,7 @@ TEST_F(TrajInputTest, DecodesAWellFormedMessage) {
   EXPECT_EQ(snap_.token.activation_generation, kActivation);
   EXPECT_EQ(snap_.token.traj_recv_ns, kRecvSteady);
 
-  // D-2: the first sample's ball instant is (recv_steady − origin_delay) plus
+  // The first sample's ball instant is (recv_steady − origin_delay) plus
   // that point's horizon offset. Asserted as an equality rather than a range
   // because every deadline downstream is derived from it.
   const std::int64_t t_ref = kRecvSteady - 30 * kMs;
@@ -97,7 +97,7 @@ TEST_F(TrajInputTest, DecodesAWellFormedMessage) {
   EXPECT_DOUBLE_EQ(snap_.s[0].v[2], 3.0);
   EXPECT_DOUBLE_EQ(snap_.s[0].a[2], -9.81);
 
-  // The covariance rides its own snapshot with the SAME token (D-22), and an
+  // The covariance rides its own snapshot with the SAME token, and an
   // unknown element stays unknown rather than becoming a zero that reads as
   // certainty.
   EXPECT_EQ(cov_.token.snapshot_sequence, snap_.token.snapshot_sequence);
@@ -173,7 +173,7 @@ TEST_F(TrajInputTest, AnOffsetOnlyLayoutChangeIsFollowed) {
 }
 
 TEST_F(TrajInputTest, AShortHorizonIsDiagnosedNotRefused) {
-  // D-15: the message is well-formed and the ball is real; the prediction
+  // The message is well-formed and the ball is real; the prediction
   // simply does not reach far enough to commit on. Refusing it would hide a
   // vision-configuration problem behind a rejection counter.
   CloudSpec spec;
@@ -217,7 +217,7 @@ TEST_F(TrajInputTest, RefusesShapeAndSizeDefects) {
     CloudSpec s;
     // Above the snapshot capacity as well. The refusal must happen BEFORE any
     // point is indexed — the reference implementation indexed first and
-    // range-checked afterwards, which read past the end (S1.2, found by ASan).
+    // range-checked afterwards, which read past the end (found by ASan).
     s.n = 100;
     cases.push_back({"above kCap", s, CloudReject::kShape});
   }
@@ -244,7 +244,7 @@ TEST_F(TrajInputTest, RefusesShapeAndSizeDefects) {
   }
 }
 
-// ── No track (pre-S10 R4) ───────────────────────────────────────────────────
+// ── No track ────────────────────────────────────────────────────────────────
 
 TEST_F(TrajInputTest, AnEmptyCloudIsNoTrackNotAShapeDefect) {
   // What the publisher sends while it has no ball: one row, zero points, the
@@ -475,7 +475,7 @@ TEST_F(TrajInputTest, RefusesADuplicateOrOvertakenSnapshot) {
 }
 
 TEST_F(TrajInputTest, ANewTrackMayRestartItsNumbering) {
-  // A-S5-4: the silent failure this rule removes is blindness after a vision
+  // The silent failure this rule removes is blindness after a vision
   // restart, where every message of the new track is below the old track's
   // high-water mark.
   const auto first = MakeCloud({});
@@ -492,7 +492,7 @@ TEST_F(TrajInputTest, ANewTrackMayRestartItsNumbering) {
 // ── Stamp and content ───────────────────────────────────────────────────────
 
 TEST_F(TrajInputTest, RefusesAStampFromTheFuture) {
-  // The D-2 conversion subtracts the origin delay; a stamp ahead of receipt by
+  // The conversion subtracts the origin delay; a stamp ahead of receipt by
   // more than the tolerance means the two clocks disagree, and every deadline
   // derived from the conversion would inherit that disagreement.
   CloudSpec spec;

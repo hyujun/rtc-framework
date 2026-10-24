@@ -15,8 +15,7 @@
 //
 // Why a rotation vector and not z × a_d: ‖z × a_d‖ = sinθ is non-monotone —
 // the reference collapses near 180° and jumps at any antiparallel threshold.
-// ‖e_a‖ = θ is continuous and monotone (derivation and measurements:
-// docs/dynamic_catching/ref/L4_reference.md §4.5).
+// ‖e_a‖ = θ is continuous and monotone.
 //
 // Every function here returns FINITE values for every input, and reports the
 // branch it took in AxisAlignRegion (NUM-7: no clamp that silently launders a
@@ -26,7 +25,7 @@
 //     u⊥ ⟂ z (the axis is undefined; any perpendicular axis is a valid
 //     half-turn), J_a = 0. Both deadbands return J_a = 0 because e_a is
 //     constant inside them — a nonzero J_a there would no longer be the
-//     derivative of the returned e_a (L4 §4.5 "구현 주의 2").
+//     derivative of the returned e_a.
 //   - kJacobianCapped       c < 0 and sin_eps ≤ ‖m‖ < jacobian_sin_floor:
 //     e_a is exact, J_a evaluates f, f' at ‖m‖ = jacobian_sin_floor, which
 //     bounds ‖J_a‖ by ≈ π/jacobian_sin_floor and is continuous across the
@@ -37,7 +36,7 @@
 //
 // The small-angle series for f, f' is used ONLY when c > 0. sinθ vanishes at
 // θ→0 AND θ→π, so a series keyed on sinθ alone would silently replace the
-// divergent antiparallel value with ≈2.645 (L4 §4.5 "구현 주의 1").
+// divergent antiparallel value with ≈2.645.
 //
 // Pass the SAME sin_eps to AxisAlignError and AxisAlignJacobian. With
 // different values the deadbands disagree, and inside the band J_a would be
@@ -64,7 +63,7 @@ inline constexpr double kAxisAlignSinEps = 1e-6;
 /// Default floor on ‖z × a_d‖ for the Jacobian near antiparallel (c < 0).
 /// Below it f, f' are evaluated at the floor, so ‖J_a‖ ≲ π/1e-3 ≈ 3.1e3; the
 /// floor is crossed only above θ ≈ 179.94°, well outside the 1–170° range the
-/// finite-difference gate (G4-D) checks.
+/// finite-difference test checks.
 inline constexpr double kAxisAlignJacobianSinFloor = 1e-3;
 
 /// Tolerance on |‖v‖ − 1| for the unit-axis inputs.

@@ -1,4 +1,4 @@
-// ── The docking segment planner (E1-F16 #742) ────────────────────────────────
+// ── The docking segment planner ───────────────────────────────────────────────
 //
 // The second SegmentPlanner (segment_planner.hpp, ARCH-3): the joint-node
 // segments the RT follows, solved by MpcDockingSegmentCore — the nonlinear
@@ -90,8 +90,7 @@
 //    each (a core's first solve is the slow one).
 //  • PlanFirst / Replan and the queries are RT-safe apart from the QP solver:
 //    this planner allocates nothing in them; ProxQP allocates inside its own
-//    update()/solve() — a recorded RT-1 violation, counted and not asserted
-//    (agent_docs/invariants.md §RT Path, #654).
+//    update()/solve() — a known RT-1 violation, counted and not asserted.
 //  • Joint order: the RT speaks DEVICE order (PlannerRtState, the payload);
 //    the cores speak the model's pinocchio velocity order. The mapping is
 //    `device_of_model`, as for the search.
@@ -135,7 +134,7 @@ struct MpcDockingSegmentPlannerModel {
   std::array<double, kMaxPlanNv> qd_rating{};
   /// A pose the warm-up solves start from, DEVICE order (the wait pose).
   std::array<double, kMaxPlanNv> warm_pose{};
-  /// `planner.groups` resolved on the arm device (E3-F02); its group count
+  /// `planner.groups` resolved on the arm device; its group count
   /// must be the profile's (params.n_groups). No group = n_groups 0.
   JointGroups groups{};
 };
@@ -207,7 +206,7 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
 
   [[nodiscard]] int Nv() const noexcept { return nv_; }
 
-  /// The joint group of model joint m (E3-F02); 0 without groups.
+  /// The joint group of model joint m; 0 without groups.
   [[nodiscard]] int GroupOfModel(int m) const noexcept {
     return m < 0 || m >= nv_ ? -1 : group_of_model_[static_cast<std::size_t>(m)];
   }
@@ -247,7 +246,7 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
 
   /// Test seam: bracket every solver call (a core's Solve or Evaluate) with
   /// `hook(begin, user)` — what a C-level allocation gate has to step around,
-  /// since the QP solver allocates (#654). nullptr removes it.
+  /// since the QP solver allocates. nullptr removes it.
   using SolverHook = void (*)(bool begin, void* user) noexcept;
 
   void SetSolverHookForTesting(SolverHook hook, void* user) noexcept {

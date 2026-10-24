@@ -1,20 +1,21 @@
 #ifndef INTEGRATED_BRINGUP_CONTROLLERS_CATCHING_TRAJ_INPUT_H_
 #define INTEGRATED_BRINGUP_CONTROLLERS_CATCHING_TRAJ_INPUT_H_
 
-// ── Vision ingress: PointCloud2 → TrajectorySnapshot (S5.2, L1 §5.1/§5.2) ────
+// ── Vision ingress: PointCloud2 → TrajectorySnapshot ─────────────────────────
 //
-// The ROS half of L1. It owns the wire format and nothing else: every decision
-// it reaches — order, track epoch, validity — is delegated to
-// `rtc::catching`, which has no ROS dependency and is tested against structs
-// (D-1). What lives here is the part that cannot be: which bytes mean what.
+// The ROS half of the ingress. It owns the wire format and nothing else: every
+// decision it reaches — order, track epoch, validity — is delegated to
+// `rtc::catching`, which has no ROS dependency and is tested against structs.
+// What lives here is the part that cannot be: which bytes mean what. The wire
+// contract itself is documented on CatchingTrajInput.
 //
 // WHY A FIELD MAP RATHER THAN A STRUCT CAST. The publisher is a DEBUG topic of
 // another repository (`ball_perception`'s sim estimator) and is explicitly not
-// a stable ABI (W5-2). Its layout today is 384 bytes per point with known
+// a stable ABI. Its layout today is 384 bytes per point with known
 // offsets, and reading it as a packed struct would work — right up until the
 // day a field moves, at which point every number stays plausible and the ball
 // is somewhere else. So fields are located BY NAME and their datatype and
-// count are checked (L1 §4.6); offsets are read from the message.
+// count are checked; offsets are read from the message.
 //
 // The map is rebuilt only when the layout hash changes, so the steady-state
 // cost is a hash of the field array rather than a lookup per field per
@@ -24,8 +25,7 @@
 //
 // WHAT A HASH AND A NAME CANNOT CATCH is a change of MEANING — the same fields
 // in the same places with a different unit, frame or sign convention. Nothing
-// in this file can catch that; L1 §7's physical-consistency checks (S5.2c) are
-// where that belongs.
+// here catches that: the controller trusts the estimator's content.
 
 #include "rtc_controllers/catching/traj_ingress.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
@@ -52,8 +52,8 @@ enum class CloudReject : std::uint8_t {
   kFieldBounds,     // a field would read past point_step
   kFrameId,         // frame_id is not the frame this controller was configured for
   kFutureStamp,     // the origin delay is more negative than future_tol allows
-  kStampOverflow,   // the D-2 conversion did not fit in int64 (garbage stamp)
-  kNotEvaluated,    // at least one point is not VALID (C-1)
+  kStampOverflow,   // the stamp → steady conversion did not fit in int64 (garbage stamp)
+  kNotEvaluated,    // at least one point is not VALID (no partial acceptance)
   kStaleSequence,   // duplicate or overtaken snapshot_sequence within a track
   kInconsistentId,  // generation / sequence differ between points of one message
   kMalformed,       // failed the trajectory format check (finite, monotone, spacing)
@@ -116,7 +116,7 @@ struct TrajInputConfig {
   double j_warn_m{-1.0};  // negative ⇒ no jump warning configured
   std::string expected_frame{"world"};
   /// Vision world → MODEL world (the Pinocchio universe the planner and the
-  /// CLIK work in — L3 §4.2: on ur5e_p1b the model root is
+  /// CLIK work in; on ur5e_p1b the model root is
   /// `base_link`, a 180° turn about z from the sim world). Applied once per
   /// accepted message to p, v, a and the 6×6 [p; v] covariance, so everything
   /// downstream of the ingress is in model coordinates. `to_model` false ⇒ the
@@ -128,7 +128,7 @@ struct TrajInputConfig {
 
 /// Diagnostics a message leaves behind whether or not it was accepted.
 struct TrajInputDiagnostics {
-  std::int64_t origin_delay_ns{0};  // recv_wall − stamp (L1 §4.1); published, never judged on
+  std::int64_t origin_delay_ns{0};  // recv_wall − stamp; published, never judged on
   std::int64_t horizon_ns{0};
   std::int32_t n{0};
   /// Identity of the last ACCEPTED message. Exposed because "exactly one of
@@ -166,6 +166,57 @@ static_assert(std::is_trivially_copyable_v<CatchingIngressSnapshot>,
 
 /// Non-RT ingress. One instance per subscription, called only from the
 /// controller's non-RT callback group.
+///
+/// ## Input contract: predicted ball trajectory (`sensor_msgs/PointCloud2`)
+///
+/// Topic `catching.io.traj_topic`. One message = one prediction of one track:
+/// an unpadded single row (`height` 1, `is_bigendian` false,
+/// `row_step` = `point_step`·`width`, `data` exactly that long), one point per
+/// predicted sample. Fields are found BY NAME (offsets read from `fields`):
+///
+/// | field               | type × count | meaning [unit]                                   |
+/// |---------------------|--------------|--------------------------------------------------|
+/// | `x` `y` `z`         | FLOAT64 × 1  | ball position p [m]                              |
+/// | `vx` `vy` `vz`      | FLOAT64 × 1  | ball velocity v [m/s]                            |
+/// | `ax` `ay` `az`      | FLOAT64 × 1  | ball acceleration a [m/s²]                       |
+/// | `covariance`        | FLOAT64 × 36 | 6×6 covariance of [p; v], row-major (p_x..v_z)   |
+/// |                     |              | [m², m²/s, m²/s²]; NaN = unknown element         |
+/// | `horizon_ns`        | UINT32 × 1   | sample instant − `header.stamp` [ns]             |
+/// | `generation`        | UINT32 × 2   | track epoch; uint64 = low + 2³²·high             |
+/// | `snapshot_sequence` | UINT32 × 2   | prediction number in the track; same encoding    |
+/// | `validity`          | UINT8 × 1    | 1 = VALID; 0 = NOT_EVALUATED, other = unknown    |
+///
+/// - **Frame**: all vectors are in `header.frame_id`, which must equal
+///   `catching.io.expected_frame` (default `world`, the vision world). Each
+///   accepted message is mapped once into the model world by the placement of
+///   the model frame `scene_world` (r_model_world, t_model_world):
+///   p' = R p + t, v' = R v, a' = R a, Σ' = T Σ Tᵀ with T = blkdiag(R, R).
+///   An unplaced vision world leaves the lane inert (nothing is taken).
+/// - **Time**: `header.stamp` is the CLOCK_REALTIME instant of the prediction
+///   origin (sender and receiver share the host clock or a verified PTP sync).
+///   It is used once, to move the origin onto the steady axis:
+///   t_ref = t_recv^steady − (t_recv^wall − stamp); sample j's instant is
+///   t_j = t_ref + `horizon_ns`_j. Freshness is judged on the steady receive
+///   age, never on the stamp; recv_wall − stamp is a diagnostic only.
+/// - **Identity**: `generation` and `snapshot_sequence` describe the message
+///   and must be equal on every point. A new `generation` is a new track; in a
+///   track `snapshot_sequence` must strictly increase.
+/// - **Ordering and spacing**: points in time order, t_j strictly increasing,
+///   every interval ≥ dt_min = 0.1 × `prediction.dt_expected`
+///   (kTrajSpacingFloorFraction; 1 ms when unset); n = `width` ∈
+///   [`io.n_min` (default 2), kCap]. p, v, a finite.
+/// - **No track**: an empty row (`width` 0, `row_step` 0, `data` empty) means
+///   "no prediction"; counted as kNoTrack, nothing stored, not a defect.
+///
+/// Refused, in this order (each a CloudReject, nothing stored): big-endian →
+/// `frame_id` mismatch → `height` ≠ 1 → empty row with payload (kSize) → no
+/// track → `width` outside [n_min, n_max] → size mismatch → missing field /
+/// wrong datatype or count / field past `point_step` → a non-VALID point or
+/// points with different identity → duplicate or overtaken sequence →
+/// stamp more than `future_tol` in the future, or int64 overflow → non-finite,
+/// non-increasing or too dense samples (kMalformed). A horizon
+/// (t_last − t_first) below `io.horizon_min` is accepted and flagged
+/// (`horizon_short`), not refused.
 class CatchingTrajInput {
  public:
   void Configure(const TrajInputConfig& cfg) noexcept;
@@ -175,7 +226,7 @@ class CatchingTrajInput {
   /// the reason has been counted.
   ///
   /// `recv_steady` and `recv_wall_ns` must be sampled together, on arrival,
-  /// before any work — they are the pair the D-2 conversion stands on.
+  /// before any work — they are the pair the stamp conversion stands on.
   [[nodiscard]] CloudReject OnCloud(const sensor_msgs::msg::PointCloud2& msg,
                                     std::int64_t recv_steady_ns, std::int64_t recv_wall_ns,
                                     std::uint64_t activation_generation,

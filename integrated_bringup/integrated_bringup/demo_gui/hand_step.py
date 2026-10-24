@@ -1,8 +1,8 @@
-"""Hand step panel state for demo_controller_gui (dynamic_catching §13 S4).
+"""Hand step panel state for demo_controller_gui.
 
 Two buttons — *Step → preshape* and *Step → closed* — plus a live rho readout,
-for the S4.0 catching controller's diagnostic mode. It exists so the S4.1 hand
-postures can be LOOKED AT in sim before S4.2 measures anything with them: a
+for the catching controller's diagnostic mode. It exists so the hand
+postures can be LOOKED AT in sim before anything is measured with them: a
 posture that does not cage the ball produces a perfectly clean T_close
 distribution for a grasp that would drop it.
 

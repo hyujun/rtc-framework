@@ -1,4 +1,4 @@
-// ── DemoCatchingController (dynamic_catching S4.0/S4.1) ──────────────────────
+// ── DemoCatchingController ───────────────────────────────────────────────────
 //
 // What this suite pins, and why each one is here rather than assumed:
 //
@@ -7,12 +7,12 @@
 //      is asserted bit-exactly over many ticks with the measurement MOVING
 //      underneath — a controller that tracked the measurement would pass a
 //      one-tick check.
-//   2. The hand step reaches the wire UNSHAPED. G6-B says the slot target IS
+//   2. The hand step reaches the wire UNSHAPED. The slot target IS
 //      the backend command, and the CM half of that is already pinned in
 //      test_rt_loop_pipeline (it copies, it does not clamp or filter). What is
 //      left to prove is the binding half: what this controller writes equals
 //      clamp(target), bit for bit, from the tick the target is accepted. If it
-//      were shaped, S4.2 would be measuring the controller, not the hand.
+//      were shaped, a hand-step measurement would be measuring the controller, not the hand.
 //   3. The refusals refuse: a non-simulator backend, a hand target with the
 //      diagnostic off, and an arm target at any time.
 //   4. A target queued while Inactive does not leak into the next activation.
@@ -24,8 +24,8 @@
 // E-STOP safe-position ramp, which this controller does not have (it overrides
 // no E-STOP hook — that IS the E-8 decision). The momentum-observer embedding
 // suite does not apply either: this skeleton runs no arm dynamics and
-// registers no observer. Both are revisited in S5.1, when the controller grows
-// the law those suites are about.
+// registers no observer. Both apply once the controller runs the law those
+// suites are about.
 
 #include "catching_cloud_fixture.hpp"
 #include "csv_log_fixture.hpp"
@@ -168,7 +168,7 @@ topics:
 std::string ClearedYaml(bool hand_step) {
   std::string yaml = MinimalYaml(hand_step);
   // Replaces EVERY occurrence: the profile carries more than one provisional
-  // flag (the hand profile and the L4 reference block), and clearing only the
+  // flag (the hand profile and the reference block), and clearing only the
   // first leaves a "cleared" profile that a real arm still refuses — which
   // reads as the controller being broken rather than as the fixture being
   // half-written.
@@ -550,15 +550,12 @@ TEST_F(CatchingConfigureTest, ConfiguresOnAnAllMujocoProfile) {
   EXPECT_EQ(ctrl.GetHandDof(), kHandDof);
 }
 
-// ── Parking a real-arm configuration (A-S5-1) ───────────────────────────────
+// ── Parking a real-arm configuration ────────────────────────────────────────
 //
-// WHAT CHANGED AT S5.1, and why these tests keep their assertions. Through
-// S4.0 the rule was "refuse to activate unless every claimed device has proven
-// it is the simulator", standing in for the then-pending E-8 decision about
-// commanding a real arm at all. E-8 was approved on 2026-09-22, so the
-// stand-in is gone and what remains is the rule it stood in for: a provisional
-// or still-TBD value blocks a REAL-ARM configuration and only warns in sim
-// (L0 §5.3, L8 §5.4).
+// A provisional or still-TBD value blocks a REAL-ARM configuration and only
+// warns in sim. The rule once was "refuse to activate unless every claimed
+// device has proven it is the simulator"; commanding a real arm was later
+// approved (E-8, 2026-09-22), leaving this rule.
 //
 // The profile these tests load is provisional, so the OUTCOME for a real
 // backend is the same as before — parked at configure, activation refused —
@@ -662,7 +659,7 @@ TEST_F(CatchingConfigureTest, ADisabledInstanceRecoversWhenTheBackendsBecomeSim)
 // The case the previous rule could not express: E-8 is approved, so a real
 // arm whose profile is CLEARED configures and activates. Without this test the
 // suite would still pass on a controller that refuses hardware outright, which
-// is what S4.0 did and what S5.1 exists to stop doing.
+// is what the earlier rule did.
 TEST_F(CatchingConfigureTest, RealArmWithAClearedProfileConfiguresAndActivates) {
   DemoCatchingController ctrl{""};
   ctrl.SetDeviceNameConfigs(MakeConfigs("ur_driver_native", "udp_hand_native"));
@@ -674,12 +671,12 @@ TEST_F(CatchingConfigureTest, RealArmWithAClearedProfileConfiguresAndActivates) 
   EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
-// ── The arm latch (A-S5-3) and P-1 (c) ──────────────────────────────────────
+// ── The arm latch ───────────────────────────────────────────────────────────
 
 TEST_F(CatchingConfigureTest, ActivationDoesNotArmTheController) {
   // An activation is not an arming. A controller that armed itself here would
   // resume catching after any deactivate/activate cycle — including the one an
-  // E-STOP recovery goes through, which is precisely the resume P-1 (c) bans.
+  // E-STOP recovery goes through, which is precisely the resume the contract bans.
   DemoCatchingController ctrl{""};
   ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
   const rclcpp_lifecycle::State prev;
@@ -715,7 +712,7 @@ TEST_F(CatchingConfigureTest, TheEnableParameterArmsTheSupervisor) {
   EXPECT_EQ(ctrl.GetLastReason(), rtc::catching::Reason::kNone);
 
   // Disarming sends it back to IDLE through the documented reuse of
-  // kParamsTbd for "an ARMED precondition stopped holding" (L7 §4.5).
+  // kParamsTbd for "an ARMED precondition stopped holding".
   node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, false));
   (void)ctrl.Compute(MakeState(0.02));
   EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
@@ -723,7 +720,7 @@ TEST_F(CatchingConfigureTest, TheEnableParameterArmsTheSupervisor) {
 }
 
 TEST_F(CatchingConfigureTest, EstopDisarmsAndClearingItDoesNotResume) {
-  // G7-H (c). The point is what does NOT happen after the clear: the latch
+  // The point is what does NOT happen after the clear: the latch
   // stays down and the supervisor stays in IDLE for as long as anyone cares to
   // tick it. A controller that resumed on the clear would show kArmed here,
   // and on a real robot that is a catching attempt nobody asked for.
@@ -756,7 +753,7 @@ TEST_F(CatchingConfigureTest, EstopDisarmsAndClearingItDoesNotResume) {
   EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kArmed);
 }
 
-// ── The vision lane, end to end (S5.2: G1-B, G1-I, G1-J) ───────────────────
+// ── The vision lane, end to end ────────────────────────────────────────────
 //
 // These go through a REAL subscription rather than calling the decoder: what
 // they are about is the path — a message published on the configured topic,
@@ -804,7 +801,7 @@ class CatchingVisionTest : public CatchingConfigureTest {
   }
 
   /// Publish and let the callback run. The message's stamp is built from the
-  /// CURRENT wall clock so the D-2 conversion sees a plausible origin delay —
+  /// CURRENT wall clock so the conversion sees a plausible origin delay —
   /// a fixed stamp would be hundreds of seconds in the past by the time the
   /// test runs and would be refused as malformed rather than decoded.
   void PublishPrediction(std::uint64_t sequence, std::uint64_t generation = 42,
@@ -889,7 +886,7 @@ TEST_F(CatchingVisionTest, AStaleLaneSendsTrackingBackToArmed) {
 }
 
 TEST_F(CatchingVisionTest, ABacklogIsCollapsedToTheNewestSnapshot) {
-  // G1-I / ARCH-6. The callback is not spun while three predictions are
+  // ARCH-6. The callback is not spun while three predictions are
   // published, so they queue in the subscription — and a depth-1 KEEP_LAST
   // queue keeps the LAST one. A deeper queue would make the controller work
   // through stale predictions after any hiccup, each one arriving as "new".
@@ -911,7 +908,7 @@ TEST_F(CatchingVisionTest, ABacklogIsCollapsedToTheNewestSnapshot) {
 }
 
 TEST_F(CatchingVisionTest, ATrajectoryReceivedWhileInactiveIsNotConsumedOnReactivation) {
-  // G1-J / D-23. The subscription outlives deactivation — lifecycle gates
+  // The subscription outlives deactivation — lifecycle gates
   // publishers, not subscriptions — so the message IS decoded and stored while
   // the controller is inactive. The refusal has to happen at the RT read, on
   // the activation generation the snapshot carries.
@@ -952,7 +949,7 @@ TEST_F(CatchingConfigureTest, RefusesAnAbsentCatchingSection) {
 }
 
 TEST_F(CatchingConfigureTest, RefusesACagingJointThatDoesNotTravel) {
-  // L6 §4.2: rho divides by |q_close - q_pre| on the caging set.
+  // rho divides by |q_close - q_pre| on the caging set.
   DemoCatchingController ctrl{""};
   ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
   YAML::Node yaml = YAML::Load(MinimalYaml(true));
@@ -962,7 +959,7 @@ TEST_F(CatchingConfigureTest, RefusesACagingJointThatDoesNotTravel) {
 }
 
 TEST_F(CatchingConfigureTest, StillConfiguresWhileTCloseE2eIsTbd) {
-  // T_close_e2e is the number S4.2 produces WITH this controller; gating on it
+  // T_close_e2e is the number the hand-step measurement produces WITH this controller; gating on it
   // would make the measurement its own precondition. The minimal YAML above
   // ships it as TBD, so every passing case here already covers this — assert it
   // by name so a future widening of the gate is a red test and not a silent
@@ -983,7 +980,7 @@ TEST_F(CatchingConfigureTest, StillConfiguresWhileTCloseE2eIsTbd) {
 // runs, and a controller that skips it drops every step on the floor with no
 // error on any lane — the step simply never arrives. Asserting through
 // DeliverTargetMessage cannot see this, because that call bypasses the
-// subscription the operator and S4.2's runner actually publish to.
+// subscription the operator and the runner actually publish to.
 TEST_F(CatchingConfigureTest, ConfigureCreatesTheDeclaredJointGoalEndpoints) {
   DemoCatchingController ctrl{""};
   ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
@@ -1005,12 +1002,12 @@ TEST_F(CatchingConfigureTest, ConfigureCreatesTheDeclaredJointGoalEndpoints) {
   };
 
   EXPECT_TRUE(wait_for_subscriber("/hand/joint_goal"))
-      << "the hand step lane has no endpoint — S4.2 would publish into nothing";
+      << "the hand step lane has no endpoint — the hand command would publish into nothing";
   EXPECT_TRUE(wait_for_subscriber("/arm/joint_goal"))
       << "the arm lane has no endpoint, so its targets are never counted as rejected";
 }
 
-// ── 6. The shipped profiles (S4.1) ──────────────────────────────────────────
+// ── 6. The shipped profiles ─────────────────────────────────────────────────
 
 class ShippedCatchingProfile : public ::testing::TestWithParam<std::pair<std::string, int>> {};
 
@@ -1026,7 +1023,7 @@ TEST_P(ShippedCatchingProfile, ParsesWithinLimitsAndMatchesTheHandWidth) {
   EXPECT_FALSE(hand.tbd);
   EXPECT_FALSE(hand.q_open_tbd);
   EXPECT_FALSE(hand.eta_close.tbd);
-  EXPECT_TRUE(hand.provisional) << "S4.1 profiles are provisional until S4.2 confirms them";
+  EXPECT_TRUE(hand.provisional) << "hand profiles are provisional until the hardware confirms them";
 
   // Every pose inside the shipped device limits. The limits live in the
   // profile's device YAML, which is a different file — read it rather than
@@ -1049,7 +1046,7 @@ TEST_P(ShippedCatchingProfile, ParsesWithinLimitsAndMatchesTheHandWidth) {
   const YAML::Node hand_dev = devices[hand_group];
   ASSERT_TRUE(hand_dev) << profile << ": no device '" << hand_group << "'";
   EXPECT_EQ(static_cast<int>(hand_dev["joint_state_names"].size()), expected_dof)
-      << profile << ": profile width must equal the hand device's channel count (L6 §5.1)";
+      << profile << ": profile width must equal the hand device's channel count";
 
   const YAML::Node limits = hand_dev["joint_limits"];
   ASSERT_TRUE(limits) << profile << ": hand device declares no joint_limits";
@@ -1077,7 +1074,7 @@ using integrated_bringup::testfx::ShippedSimConfigs;
 //
 // Every other case in this suite configures a profile the TEST wrote, and
 // those all passed on 2026-09-22 while the shipped `ur5e_p1b` sim profile
-// refused to configure at all — S5.3 moved `reference.*` into the consumed
+// refused to configure at all — `reference.*` was moved into the consumed
 // subset and the shipped file had no `reference:` block, so a consumed TBD
 // refused the configure. CM latches `bring_up_failed` on ANY controller's
 // configure failure and then refuses to configure EVERY controller, so the
@@ -1086,7 +1083,7 @@ using integrated_bringup::testfx::ShippedSimConfigs;
 // This runs the same on_configure the CM runs, on the file that ships, with
 // the devices and the model the file declares, on the SIM axis — which is the
 // one that refuses rather than parks.
-// E3-F02: no shipped profile declares joint groups or a whole-body term, so
+// No shipped profile declares joint groups or a whole-body term, so
 // every value the feature added parses to its default — "off", the problem
 // every core solved before (the goldens pin that problem).
 TEST_P(ShippedCatchingProfile, DeclaresNoJointGroupAndNoWholeBodyTerm) {
@@ -1231,7 +1228,7 @@ TEST_P(ShippedCatchingProfile, IsStillParkedOnTheRealArmAxis) {
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
-      << profile << ": a real-arm configuration is PARKED, never refused (A-S5-1)";
+      << profile << ": a real-arm configuration is PARKED, never refused";
   EXPECT_TRUE(ctrl.IsRealArmConfig());
   EXPECT_TRUE(ctrl.IsSimOnlyDisabled())
       << profile << ": the provisional values stopped blocking a real arm";
@@ -1239,7 +1236,7 @@ TEST_P(ShippedCatchingProfile, IsStillParkedOnTheRealArmAxis) {
   ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
-// MD-89: the shipped law is `mpc`, which needs the arm model (its catch
+// The shipped law is `mpc`, which needs the arm model (its catch
 // sub-model and the CLIK). Without one the shipped profile still configures —
 // the robot comes up — but this controller parks and refuses to activate,
 // never falls back to the closed form. The positive control is
@@ -1268,13 +1265,12 @@ TEST_P(ShippedCatchingProfile, WithoutAModelTheShippedMpcLawParks) {
   ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
-// ── S6-A: the shipped profiles with the planner thread ──────────────────────
+// ── The shipped profiles with the planner thread ────────────────────────────
 //
 // The planner is ON in these cases whatever the file says (and the oracle
 // OFF), because the property under test is "the shipped profile runs the
-// planner through the whole lifecycle" — the ur5e_p1b file keeps its oracle on
-// until S6-B, and testing only what each file enables today would leave that
-// profile's planner path unexercised.
+// planner through the whole lifecycle" — testing only what each file enables
+// would leave a profile's planner path unexercised.
 
 YAML::Node ShippedWithPlanner(const std::string& profile, bool planner, bool oracle) {
   YAML::Node node =
@@ -1282,7 +1278,7 @@ YAML::Node ShippedWithPlanner(const std::string& profile, bool planner, bool ora
   node["catching"]["planner"]["enabled"] = planner;
   node["diagnostic"]["oracle_plan"]["enabled"] = oracle;
   if (!planner) {
-    // The shipped law (`mpc`, MD-89) follows the planner's segments, so a
+    // The shipped law (`mpc`) follows the planner's segments, so a
     // profile with the planner off runs v1's law — the only one it can.
     node["catching"]["planner"]["segment"]["mode"] = "closed_form";
   }
@@ -1330,7 +1326,7 @@ TEST_P(ShippedCatchingProfile, RunsThePlannerThroughTheWholeLifecycle) {
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
-  // MPC E1-F10 (MD-72, MD-74): the two values a tuning overlay moves per arm.
+  // The two values a tuning overlay moves per arm.
   // The lead floor is the commit lead while `planner.search.grid.slice.t_lead_min` is
   // absent and the key's value once it is set; every shipped profile runs the
   // dynamic CLIK form. Each case moves the loaded value off the shipped one,
@@ -1380,7 +1376,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
-  // S8-A: the trial runner reads the wait pose, T_freeze and the lead axis
+  // The trial runner reads the wait pose, T_freeze and the lead axis
   // from these read-only parameters instead of the installed YAML, because a
   // sim overlay changes them without changing the file. So the loaded values
   // are MOVED off the shipped ones here: a mirror that re-read the file (or a
@@ -1418,9 +1414,9 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.freeze.T_freeze").as_double(), t_freeze);
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("joint_cmd.lag.T_arm").as_double(), t_arm);
   EXPECT_EQ(node_handle->get_parameter("joint_cmd.lag.lead_enable").as_bool(), lead_enable);
-  // S8-C: RETREAT's hand timeout. A profile that does not set the key gets
+  // RETREAT's hand timeout. A profile that does not set the key gets
   // the DERIVED value (ur5e_p1b); one that sets it from a measurement gets
-  // exactly that (iiwa7_leap since S8-D, #537 — the derived 1.454 s was
+  // exactly that (iiwa7_leap, #537 — the derived 1.454 s was
   // shorter than its measured release). Either way the mirror is the only
   // place a reader can see the value the controller runs with.
   const auto& hand = ctrl.GetCatchingParams().hand;
@@ -1544,8 +1540,8 @@ TEST_P(ShippedCatchingProfile, RefusesToActivateThePlannerUnderTheMpcOffProfile)
 }
 
 TEST_P(ShippedCatchingProfile, AConsumedKeyLeftTbdParksTheSimProfileInsteadOfFailingIt) {
-  // A-S5-12, positive control: the shipped sim profile with one consumed key
-  // removed. Before A-S5-12 this refused the configure, and CM then refused
+  // Positive control: the shipped sim profile with one consumed key
+  // removed. This once refused the configure, and CM then refused
   // EVERY controller — no robot. Now the robot comes up and only this
   // controller declines to activate.
   const auto& [profile, expected_dof] = GetParam();
@@ -1559,7 +1555,7 @@ TEST_P(ShippedCatchingProfile, AConsumedKeyLeftTbdParksTheSimProfileInsteadOfFai
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
-      << profile << ": a consumed TBD in sim must park, not refuse (A-S5-12)";
+      << profile << ": a consumed TBD in sim must park, not refuse";
   EXPECT_FALSE(ctrl.IsRealArmConfig()) << "precondition: judged on the sim axis";
   EXPECT_TRUE(ctrl.IsSimOnlyDisabled());
   EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kConsumedValues);
@@ -1646,7 +1642,7 @@ TEST_P(ShippedCatchingProfile, ThePlannerAndTheOracleTogetherPark) {
 }
 
 TEST_P(ShippedCatchingProfile, AnUnsetPlannerDecisionParksInsteadOfGuessing) {
-  // S6-B: sub_model, T_freeze, d_eff and r_cap are decisions with no default.
+  // sub_model, T_freeze, d_eff and r_cap are decisions with no default.
   // Each one removed parks the controller and names the key; the robot still
   // comes up. Positive control: the shipped file itself does not
   // park (RunsThePlannerThroughTheWholeLifecycle).
@@ -1711,7 +1707,7 @@ TEST_P(ShippedCatchingProfile, TheWaitPoseIsOnePerArmJointAndInsideTheArmLimits)
   }
 }
 
-// ── S8-I: the wait pose the arm was switched in at ───────────────────────────
+// ── The wait pose the arm was switched in at ─────────────────────────────────
 namespace {
 
 constexpr int kP1bHandChannels = 10;
@@ -1720,8 +1716,8 @@ constexpr int kP1bHandChannels = 10;
 struct WaitPoseRig {
   explicit WaitPoseRig(const char* source, const std::string& node_name) {
     node = ShippedWithPlanner("ur5e_p1b", /*planner=*/true, /*oracle=*/false);
-    // No arm model here (the S8-I refusal below needs none), so not the
-    // shipped `mpc` law, which parks without one (MD-89): v1's law, as the
+    // No arm model here (the refusal below needs none), so not the
+    // shipped `mpc` law, which parks without one: v1's law, as the
     // profile shipped until then.
     node["catching"]["planner"]["segment"]["mode"] = "closed_form";
     if (source != nullptr) {
@@ -1763,10 +1759,10 @@ struct WaitPoseRig {
 }  // namespace
 
 TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
-  // MPC E1-F08 (#661, MD-54 · MD-55): the shipped profiles carry the
+  // The shipped profiles carry the
   // APPROACH–stop grid — 7 x 0.05 s after the catch, up to n x 0.1 s before
-  // it (n = 7 on ur5e_p1b, 6 on iiwa7_leap — #834). Since MD-89 (2026-10-03)
-  // they also ship the segment MPC on and DECEL on `mpc` — the law the grid
+  // it (n = 7 on ur5e_p1b, 6 on iiwa7_leap — #834). They
+  // also ship the segment MPC on and DECEL on `mpc` — the law the grid
   // serves; before it they shipped both off and the closed form. The CODE
   // defaults are neither (14 x 0.025, n_pre_max 0, `closed_form`), so only
   // reading the file shows what a robot runs.
@@ -1799,7 +1795,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
 }
 
 TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
-  // MPC MD-91: the relative-velocity slack row's keys are WRITTEN in
+  // The relative-velocity slack row's keys are WRITTEN in
   // catching/segment_mpc.yaml — not left to the code default — and both 0:
   // the row is off, so the shipped solve is the one before the keys existed.
   const auto& [profile, expected_dof] = GetParam();
@@ -1856,7 +1852,7 @@ TEST_P(ShippedCatchingProfile, TheSearchsCopiesAndTheMpcsEqualTheKeysTheyCopy) {
             rtc::catching::ParseCatchPoseIkParams(node["catching"]).options.v_eps)
       << profile;
   EXPECT_TRUE(rtc::catching::FindRenamedCatchingKeys(node["catching"]).empty()) << profile;
-  // Nor a key that was removed (the catch box, L3 §4.9).
+  // Nor a key that was removed (the catch box).
   EXPECT_TRUE(rtc::catching::FindRemovedCatchingKeys(node["catching"]).empty()) << profile;
 }
 
@@ -2239,7 +2235,7 @@ TEST_P(ShippedCatchingProfile, RefusesAJerkWeightListOfTheWrongLengthAtConfigure
 }
 
 TEST(DemoCatchingWaitPose, WithoutAnArmBoxTheSwitchedInPoseIsRefusedAndTheYamlPoseStands) {
-  // S8-I, the fail-closed half. This fixture has no arm model, so the arm has
+  // The fail-closed half. This fixture has no arm model, so the arm has
   // no margined joint box to admit a pose against: `current` must refuse (and
   // count) rather than adopt an unchecked pose. The adoption, E-STOP and
   // re-activation semantics run under a model in
@@ -2283,7 +2279,7 @@ TEST(DemoCatchingWaitPose, TheYamlSourceIsTheDefaultAndNeverAdopts) {
   ASSERT_EQ(rig.ctrl.on_cleanup(rig.prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
-// ── E1-F16: one search and one segment planner per configuration ────────────
+// ── One search and one segment planner per configuration ────────────────────
 //
 // The shipped profile with its two selectors set and some fragments LEFT OUT of
 // its include list: the controller file and the fragments are copied to a
@@ -2432,7 +2428,7 @@ class ConfigureLog {
 };
 
 TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheControllerThatRunsIt) {
-  // MD-90, E1-F16: the profile is a main file plus five `include:` fragments,
+  // The profile is a main file plus five `include:` fragments,
   // one per function. One mirrored key per fragment is moved in the composed
   // tree — the place a CM override writes — and read back from a controller
   // configured with a selection that RUNS that fragment's function: a function
@@ -2847,7 +2843,7 @@ TEST_P(ShippedCatchingProfile, TheLeadIsRunFromWhatTheFollowedSegmentsMakeOfTheC
 }
 
 // The nlp search's map has no decision key to be unset (the catch box was the
-// one, L3 §4.9). An overlay that writes a leaf into a profile without the
+// one). An overlay that writes a leaf into a profile without the
 // search's fragment makes the map exist and little else: every other value
 // would be a code default nobody wrote. Parked, the missing core named.
 TEST_P(ShippedCatchingProfile, AnNlpMapWithoutItsCoreParksNamingIt) {
@@ -3046,10 +3042,10 @@ INSTANTIATE_TEST_SUITE_P(BothCatchingRobots, ShippedCatchingProfile,
                                            std::pair<std::string, int>{"iiwa7_leap", 16}),
                          [](const auto& info) { return info.param.first; });
 
-// ── E3-F01 (#640): the search on a chain of the arm device ──────────────────
+// ── The search on a chain of the arm device (#640) ──────────────────────────
 //
 // No shipped profile names `planner.search.sub_model` yet (the G1 catching
-// profile is E3-F05's), so the configure path that resolves a second model
+// profile does not), so the configure path that resolves a second model
 // would run nowhere. These cases run it on the shipped ur5e_p1b profile with
 // one sub-model added to its model config: the arm from `shoulder_link` to
 // the catch frame's parent — the shipped catch sub-model with its first joint
@@ -3235,9 +3231,9 @@ TEST(CatchingSearchChainConfigure, RefusesAChainThatDoesNotEndOnTheCatchFramesPa
   EXPECT_TRUE(ConfigureLog::Said("tip_link ('tool0')")) << ConfigureLog::All();
 }
 
-// ── E3-F02 (#641): `planner.groups` on the arm device ───────────────────────
+// ── `planner.groups` on the arm device (#641) ───────────────────────────────
 //
-// No shipped profile declares groups yet (G1's catching profile is E3-F05's);
+// No shipped profile declares groups yet (G1's catching profile does not);
 // these cases add a declaration to the shipped ur5e_p1b profile. What is judged
 // is the configure — the groups resolved on the device's joint names, the
 // mirror, the refusals — not what a group's weights do.
@@ -3451,7 +3447,7 @@ TEST(CatchingJointGroupsConfigure, TheDockingAngularTermNeedsTheStopRestOfAGroup
   }
 }
 
-// ── 5. S5.1: the P-1 minimum E-STOP/fault contract (E-8) ────────────────────
+// ── 5. The minimum E-STOP/fault contract (E-8) ──────────────────────────────
 //
 // The four parts are tested separately because they fail separately: (a) is
 // about WHO writes, (b) about WHEN, (c) about what a clear does NOT do, and
@@ -3459,7 +3455,7 @@ TEST(CatchingJointGroupsConfigure, TheDockingAngularTermNeedsTheStopRestOfAGroup
 // pass with three of them broken.
 
 TEST(DemoCatchingEstop, HooksOnlyRequestAndTheTickIsTheWriter) {
-  // P-1 (a). The hooks are called here the way CM calls them — off the tick,
+  // The hooks are called here the way CM calls them — off the tick,
   // between ticks — and then NOTHING is allowed to have changed until a tick
   // runs. A hook that reset state directly would move the counter and the mode
   // on these lines, before any Compute().
@@ -3491,7 +3487,7 @@ TEST(DemoCatchingEstop, IsEstoppedTracksTheRequestWithoutATick) {
 }
 
 TEST(DemoCatchingEstop, ReactivationCommandsTheNewPoseNotTheOldOne) {
-  // G7-H (a). The controller is activated, holds a pose, is deactivated, the
+  // The controller is activated, holds a pose, is deactivated, the
   // arm is then moved by something else, and is reactivated. The first tick of
   // the new activation must command where the arm IS, not where it was.
   //
@@ -3523,7 +3519,7 @@ TEST(DemoCatchingEstop, ReactivationCommandsTheNewPoseNotTheOldOne) {
 }
 
 TEST(DemoCatchingEstop, EstopCycleReseedsTheHoldFromTheMeasuredPose) {
-  // P-1 (b) on the arm command lane. An E-STOP is not an activation, so the
+  // On the arm command lane. An E-STOP is not an activation, so the
   // generation does not move — the epoch is what carries the reset, and the
   // command after the cycle must come from the pose the arm is actually in.
   DemoCatchingController ctrl{""};
@@ -3568,7 +3564,7 @@ TEST(DemoCatchingEstop, ATriggerAndClearBetweenTwoTicksStillReseeds) {
 }
 
 TEST(DemoCatchingEstop, AQueuedHandStepDoesNotSurviveAnEstop) {
-  // P-1 (b) on the target lane. The base's generation gate drops goals queued
+  // On the target lane. The base's generation gate drops goals queued
   // across an ACTIVATION, but an E-STOP does not bump that generation — so
   // without DiscardPendingTargets a step issued just before the stop lands on
   // the hand just after it.
@@ -3628,10 +3624,10 @@ TEST(DemoCatchingEstop, AStepIssuedDuringAStopNeverReachesTheHand) {
 }
 
 TEST(DemoCatchingEstop, ResetFaultDoesNotClearTheEstopAndNoFaultIsLatchedByDefault) {
-  // P-1 (d), the half that is reachable at S5.1. The two paths are separate:
+  // The two paths are separate:
   // a fault reset must not lower the global stop. The other half — a LATCHED
   // fault surviving ClearEstop — needs a fault source, and the only one in the
-  // design is the QP failure streak that arrives with S5.3; this test would be
+  // design is the QP failure streak; this test would be
   // asserting on a latch nothing can raise.
   DemoCatchingController ctrl{""};
   BringUp(ctrl);
@@ -3644,17 +3640,17 @@ TEST(DemoCatchingEstop, ResetFaultDoesNotClearTheEstopAndNoFaultIsLatchedByDefau
   EXPECT_FALSE(ctrl.HasLatchedFault());
 }
 
-// ── 6. S5.1: the supervisor mode and the arm latch ──────────────────────────
+// ── 6. The supervisor mode and the arm latch ────────────────────────────────
 
 TEST(DemoCatchingEstop, ConcurrentHooksNeverResetOutsideATick) {
-  // G7-H (b). Hooks are hammered from other threads while ticks run, which is
+  // Hooks are hammered from other threads while ticks run, which is
   // what CM actually does: the E-STOP propagation and the reset service run on
   // executor threads with no relationship to the RT loop.
   //
   // The invariant that makes this test mean something is RESETS <= TICKS. The
   // tick performs at most one reset per tick by construction, so a count that
   // outran the ticks could only have come from a hook doing the work itself —
-  // which is the P-1 (a) violation, and the one that no single-threaded test
+  // which is the hooks-only-request violation, and the one that no single-threaded test
   // can see. (Run under TSAN as well: this asserts the COUNT, and TSAN is what
   // judges the accesses.)
   DemoCatchingController ctrl{""};
@@ -3699,7 +3695,7 @@ TEST(DemoCatchingEstop, ConcurrentHooksNeverResetOutsideATick) {
 }
 
 TEST(DemoCatchingSupervisor, StaysIdleWhileTheProfileIsNotArmable) {
-  // G0-C on the consumed subset: BringUp never runs on_configure, so nothing
+  // On the consumed subset: BringUp never runs on_configure, so nothing
   // has cleared the profile and the supervisor must not advance out of IDLE
   // however many ticks it gets.
   DemoCatchingController ctrl{""};
@@ -3711,7 +3707,7 @@ TEST(DemoCatchingSupervisor, StaysIdleWhileTheProfileIsNotArmable) {
   EXPECT_EQ(ctrl.GetLastReason(), rtc::catching::Reason::kParamsTbd);
 }
 
-// ── 9. The per-tick record (S5.4, D-20 + PROC-7) ────────────────────────────
+// ── 9. The per-tick record (PROC-7) ─────────────────────────────────────────
 //
 // PROC-7 says every tick publishes a body — including the ones that decide to
 // do nothing — and that a block the tick did not compute is CLEARED rather
@@ -3760,7 +3756,7 @@ TEST(DemoCatchingRecord, EstopTickPublishesThisTicksBody) {
   EXPECT_EQ(rec.tick, 2U) << "the stop tick did not publish a body of its own";
   EXPECT_TRUE(rec.estop_active);
   EXPECT_EQ(rec.reason, static_cast<std::uint8_t>(rtc::catching::Reason::kEstop));
-  EXPECT_FALSE(rec.armed) << "the tick must lower the arm latch on a stop (P-1 (c))";
+  EXPECT_FALSE(rec.armed) << "the tick must lower the arm latch on a stop";
 }
 
 TEST(DemoCatchingRecord, AStaleInputTickPublishesThisTicksBody) {
@@ -3779,7 +3775,7 @@ TEST(DemoCatchingRecord, AStaleInputTickPublishesThisTicksBody) {
 }
 
 TEST(DemoCatchingRecord, ANoPlanTickCarriesAnEmptyPlanBlock) {
-  // There is no planner before S6 and no oracle in this profile, so the plan
+  // There is no planner and no oracle in this profile, so the plan
   // block must be empty on every tick — not merely absent from the topic.
   DemoCatchingController ctrl{""};
   BringUp(ctrl);
@@ -3987,7 +3983,7 @@ TEST_F(CatchingVisionTest, TheIngressCountersReachThePublishSideWhetherOrNotAMes
   EXPECT_EQ(accepted.diag.accepted_sequence, 2U);
 }
 
-// ── pre-S10 R4: an empty cloud is the publisher's idle state ────────────────
+// ── An empty cloud is the publisher's idle state ────────────────────────────
 
 /// Every WARN that reaches the log, for the one test below that asserts on a
 /// line NOT being written. The handler is process-global; the test restores it.
@@ -4098,7 +4094,7 @@ TEST_F(CatchingVisionTest, AnEmptyCloudIsCountedAsNoTrackAndWarnsNobody) {
   EXPECT_EQ(WarnSink::Containing("vision message refused (frame_id)").size(), 1U);
 }
 
-// ── 10. catching_diag.csv (L8 §5.2) ─────────────────────────────────────────
+// ── 10. catching_diag.csv ───────────────────────────────────────────────────
 //
 // A BOUND HANDLE AND A REAL FILE. These fixtures bring the controller up
 // through LoadConfig, which leaves every production log handle unbound — and a
@@ -4203,7 +4199,7 @@ TEST(CatchingDiagLog, TheHeaderNamesTheJointsAndTipsItsColumnsAreIn) {
 }
 
 TEST(CatchingDiagLog, TheSegmentBlockIsWrittenAsNumbersAndIsZeroWhenTheLaneDidNotRun) {
-  // E1-F05 (#631): the tick record's segment block reaches the file. This
+  // The tick record's segment block reaches the file. This
   // controller runs `closed_form`, so the lane never judges a segment and the
   // block is the fresh POD's — which is what a reader sees on every tick of a
   // closed_form log. `segment_refusal` is a std::uint8_t: streamed without a

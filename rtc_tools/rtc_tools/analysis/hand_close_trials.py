@@ -1,6 +1,4 @@
-"""Drive N hand closure trials against a running bring-up (dynamic_catching S4.2).
-
-Stage S4a (``docs/dynamic_catching/ID_INDEX.md`` §3), law L6 §4.2.
+"""Drive N hand closure trials against a running bring-up.
 
 Publishes alternating preshape/closed step targets to the catching controller's
 hand group and leaves the recording to that controller's own ``DeviceStateLog``
@@ -19,10 +17,10 @@ commands the closed pose, waits ``--close-dwell``, commands the preshape pose,
 waits ``--open-dwell``. The analyser segments on the command lane, so the dwell
 only has to be long enough for the hand to finish moving — it does not have to
 be measured. Pick it from the expected T_close with a wide margin; too short
-silently truncates the tail of the distribution, which is the part S4.4 needs.
+silently truncates the tail of the distribution, which is the part that matters.
 
 This measures nothing by itself and decides nothing. 200 trials per hand is the
-sample size the plan asks for (a 99th percentile needs >= 100 successes).
+sample size (a 99th percentile needs >= 100 successes).
 """
 
 from __future__ import annotations

@@ -1,11 +1,11 @@
-// ── Joint groups of the arm device (dynamic_catching E3-F02, #641) ───────────
+// ── Joint groups of the arm device ───────────────────────────────────────────
 //
 // A segment core's terms and its move blocking can differ per joint group
-// (formulation §1.1, §1.3, MD-49): a group's velocity is damped, another's held
-// near a rest pose, each with its own block pattern. Which joints form a group
-// is the profile's (`planner.groups`, written once at the planner's level next
-// to `planner.wait_pose`); what a group is FOR is only the weights the segment
-// blocks give it. Nothing here knows a robot or a role.
+// (MpcSegmentCore's per-group terms and BlockLayout): a group's velocity is
+// damped, another's held near a rest pose, each with its own block pattern.
+// Which joints form a group is the profile's (`planner.groups`, written once at the planner's level
+// next to `planner.wait_pose`); what a group is FOR is only the weights the segment blocks give it.
+// Nothing here knows a robot or a role.
 //
 // The groups PARTITION the arm device's joints: every device joint is in
 // exactly one group. No `planner.groups` = one group of every joint, which is
@@ -81,7 +81,7 @@ struct JointGroups {
 /// A term that reads every joint of the segment model (the angular-momentum
 /// rate, a torque cost on such a joint) moves the joints a plan leaves out,
 /// and only a rest weight brings them back: without one they drift from
-/// solve to solve (#641 D9′). No group declared is one group, of rest weight 0.
+/// solve to solve. No group declared is one group, of rest weight 0.
 /// @param n_dev            the device's joint count
 /// @param plan_joints      the joints a plan holds (device indices)
 /// @param w_rest_of_group  each group's rest weight (Count() entries)

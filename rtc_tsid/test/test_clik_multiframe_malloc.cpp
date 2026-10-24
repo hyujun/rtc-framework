@@ -1,6 +1,6 @@
 /// @file test_clik_multiframe_malloc.cpp
 /// @brief C-level allocation count of ClikReferenceGenerator's multi-frame
-///        Compute() (E2-F04, #636; RT-1).
+///        Compute() (RT-1).
 ///
 /// Compute() is on the RT tick. An operator-new counter cannot carry an
 /// "allocates nothing" claim for it: Eigen allocates through its own aligned
@@ -15,8 +15,7 @@
 ///     checks, the relative Jacobians, the cost, the box, the braking bound and
 ///     the rows were all built — and the failure branch itself;
 ///   - the solve is ProxQP's. Its allocations are counted and RECORDED as a
-///     test property, not asserted (the boundary the MPC cores draw, MD-22;
-///     the solver's defaults are #654's).
+///     test property, not asserted (the same boundary the MPC cores draw).
 ///
 /// One translation unit: the gate defines non-inline C functions, and
 /// alloc_counter.hpp the global operator new.

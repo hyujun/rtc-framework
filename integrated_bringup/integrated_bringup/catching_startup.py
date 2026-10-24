@@ -18,7 +18,7 @@ WARN / ERROR / FATAL lines (the controller's ``refusing to configure`` / ``will
 refuse to activate``, the manager's ``Config load failed``) or carry no level at
 all (the launch's own output).
 
-**Modes** (#711, E1-F16). Every mode is said at configure — ``segment mode: mpc
+**Modes** (#711). Every mode is said at configure — ``segment mode: mpc
 — …``, ``search mode: nlp — …`` — so the expected line has to be PRESENT: the
 absence of the other ones proves nothing, a controller that never configured is
 just as silent.

@@ -9,8 +9,8 @@ mujoco_simulator:
   ros__parameters:
     # ── Model ────────────────────────────────────────────────────────────────
     # scene_right_pedestal.xml = the same robot on a 0.7 m pedestal: the arm
-    # base at world z = 0.7, the floor at z = 0, no table, no objects
-    # (2026-10-09, #747). The siblings keep the base at the world origin:
+    # base at world z = 0.7, the floor at z = 0, no table, no objects.
+    # The siblings keep the base at the world origin:
     #   scene_right_with_object.xml — a table and two objects in front of the arm
     #   scene_right.xml             — the bare robot-on-a-floor scene
     model_path: "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_pedestal.xml"
@@ -61,12 +61,11 @@ mujoco_simulator:
     #
     # A position PD tracks a ramp with a lag of exactly kd/kp whatever the
     # inertia, so the MJCF arm gains make this sim arm a 0.2 s first-order lag.
-    # The catching design assumes an arm lag of T_arm 0.05 s (gate map, T_freeze,
+    # The catching design assumes an arm lag of T_arm 0.05 s (catchability map, T_freeze,
     # horizon_min), and at 0.2 s the commit lead alone (T_close,tot 0.1047 +
     # 0.2 + margin 0.03 = 0.335 s) plus the first plan exceeds every flight the
-    # gate map opens. So, as ur5e_p1b did (D-S8-13), this profile runs the arm
-    # at kd/kp = 0.05 s: kd kept, kp x4. Decided 2026-09-26 (#537, dynamic_
-    # catching S8-D, D-S8-14). This is a SIM choice, not the iiwa's servo lag —
+    # gate map opens. So, as ur5e_p1b does, this profile runs the arm
+    # at kd/kp = 0.05 s: kd kept, kp x4. This is a SIM choice, not the iiwa's servo lag —
     # that is joint_cmd.lag.T_arm, identified on hardware.
     # The forcerange is +-200 N m on every arm joint, so a RAW step above
     # 200/12000 = ~17 mrad (A1-A4) / 200/3000 = ~67 mrad (A5-A7) saturates; no
@@ -92,7 +91,7 @@ mujoco_simulator:
     # ── Projectile ball ─────────────────────────────────────────────────────
     # 공은 rtc_mujoco_sim 이 기동 시 MJCF spec 에 직접 붙이므로 씬 XML 을 고칠 필요가
     # 없다. 뷰어 K 또는 /sim/launch_ball 은 아래 분포에서 샘플링하고,
-    # /sim/launch_ball_at 은 호출자가 준 (p0, v0, ω) 를 그대로 쓴다 (D-14).
+    # /sim/launch_ball_at 은 호출자가 준 (p0, v0, ω) 를 그대로 쓴다 .
     #
     # ⚠ 아래 값은 ur5e_p1b 설정의 복사가 아니라 이 모델에서 재유도한 것이다.
     # 두 로봇은 충돌 마스크 구조도 손 위치도 다르므로 복사하면 조용히 틀린다.
@@ -101,13 +100,13 @@ mujoco_simulator:
       body_name: "projectile_ball"
       # 물성 (관성 분포·반발·마찰·항력·양력) 은 preset 이 정한다. 형상·질량만 여기서.
       #
-      # ur5e_p1b 와 **같은 공**을 일부러 쓴다. S3.1a 는 로봇 2종을 비교하는데,
+      # ur5e_p1b 와 **같은 공**을 일부러 쓴다. 두 로봇을 비교하는데,
       # 공까지 다르면 차이가 로봇 탓인지 공 탓인지 갈라낼 수 없다.
       ball_type: "tennis"          # tennis | beanbag | hard
       # ITF Type 2 규격: 지름 6.54-6.86 cm, 질량 56.0-59.4 g. 아래는 그 중앙값이고
       # rtc_mujoco_sim 의 코드 기본값 (`projectile_ball.hpp`) 과 README 의 preset
       # 표가 이미 쓰던 값이다 — 종전 출하값 0.025 m / 0.05 kg 은 규격보다 작고
-      # 가벼운 공이라 이 두 YAML 에만 있던 덮어쓰기였다 (2026-09-20 사용자 지시).
+      # 가벼운 공이라 이 두 YAML 에만 있던 덮어쓰기였다.
       # 물성 preset (반발 0.75, Cd 0.55, C_L) 은 이 형상·질량 기준이다.
       radius_m: 0.0335
       mass_kg: 0.057
@@ -120,13 +119,13 @@ mujoco_simulator:
       collision_contype: 1
       collision_conaffinity: 1
       aerodynamics: true
-      # 투척 조건은 D-18 (S0.7) 에서 유도했다. 목표는 T_f = 1.0 s — 그보다 짧은
-      # 비행은 R2 지평 요구 (0.46–0.86 s) 를 못 덮어 애초에 계획이 안 선다.
+      # 목표는 T_f = 1.0 s — 그보다 짧은
+      # 비행은 계획 지평 요구 (0.46–0.86 s) 를 못 덮어 애초에 계획이 안 선다.
       #   포구점  = home 자세의 palm_lower xpos = (0.809, 0.038, 0.4255) [모델 실측]
-      #   수평거리 = 4.0 m (D-18), 발사 높이 = 1.75 m (D-18 의 1.5–2.0 m 중앙)
+      #   수평거리 = 4.0 m, 발사 높이 = 1.75 m (1.5–2.0 m 의 중앙)
       #   ⇒ vx = 4.0, vz = 3.58 ⇒ v0 = 5.37 m/s, 앙각 41.8°, 정점 2.40 m
-      # 무항력 해이므로 공력이 켜진 실제 비행은 조금 다르다 (S0.7 재계산 기준 v0 +3 %
-      # 쯤). 정확한 값은 S3.4 가 실측으로 닫는다.
+      # 무항력 해이므로 공력이 켜진 실제 비행은 조금 다르다 (재계산 기준 v0 +3 %
+      # 쯤). 정확한 값은 실측으로 닫는다.
       spawn_position_m: [4.81, 0.04, 1.75]
       park_position_m: [0.0, 0.0, -50.0]
       launch_direction: [-1.0, 0.0, 0.0]   # 로봇을 향해 (+x 쪽에서 원점 쪽으로)

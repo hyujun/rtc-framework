@@ -1,4 +1,4 @@
-"""Prediction-lane decoder and summaries (dynamic_catching S3.4 / D-4).
+"""Prediction-lane decoder and summaries .
 
 The decoder's job is to REFUSE a layout that is not the promised one, so most
 of these fixtures are near-misses: the same bytes with one field moved, one
@@ -84,7 +84,7 @@ def test_uint64_fields_are_reassembled_from_the_two_uint32_halves():
 
 
 def test_a_field_name_order_change_is_still_accepted():
-    """Name-based, not order-based: D-4 says parse by name."""
+    """Name-based, not order-based: fields are parsed by name."""
     flds = list(reversed(fields()))
     snap = decode(encode_point(), 1, flds)
     assert snap.n_points == 1
@@ -245,7 +245,7 @@ def test_first_flight_is_cut_at_the_receive_gap_and_compared_over_the_overlap():
     assert n == 4 and worst == pytest.approx(0.5)
 
 
-# ── T_det (detection latency, S3.6) ─────────────────────────────────────
+# ── T_det (detection latency) ───────────────────────────────────────────────
 
 MS = 1_000_000
 
@@ -363,7 +363,7 @@ def test_only_the_summarised_subscription_contributes(tmp_path):
 
 
 def test_a_ghost_track_from_the_previous_flight_is_not_this_flights_detection():
-    """TBD-VIS-07: a track that was already VALID keeps its generation."""
+    """A track that was already VALID keeps its generation."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as d:

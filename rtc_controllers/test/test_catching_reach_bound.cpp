@@ -1,4 +1,4 @@
-// ── The catch frame's reach bound (reach_bound.hpp, L3 §4.1) ─────────────────
+// ── The catch frame's reach bound (reach_bound.hpp) ──────────────────────────
 //
 //   1. It IS a bound: no posture inside the joint limits puts the frame farther
 //      from the centre than the radius — on a 6R wrist arm, a 7R arm and a

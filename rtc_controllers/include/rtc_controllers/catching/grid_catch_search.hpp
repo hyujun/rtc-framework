@@ -1,32 +1,53 @@
-// ── The planner's search: one cycle's candidates → one plan (S6-B, L3 §4) ────
+// ── The planner's search: one cycle's candidates → one plan ──────────────────
 //
 // The CatchSearch (catch_search.hpp) `PlannerCycle::PlanOnce` delegates to once
 // the binding has given it a model — the one implementation of that interface
-// today. Candidates are the vision samples themselves (L3 §5.3, thinned to
-// `planner.search.grid.slice.dt`) whose lead lies in [slice.t_lead_min, slice.t_max].
+// today. A 1-D search over the vision sample times with one IK per candidate,
+// not a joint (q*, t_c) optimisation.
 //
-// TWO KINDS OF GATE (decision C, D-27). JUDGEMENT gates remove a candidate —
-// they are about whether the arm can be put there at all: input finiteness,
-// the arm's reach bound (reach_bound.hpp — a necessary condition read off the
-// model, tested before the IK so that the IK is not spent on a point no pose
-// reaches), IK convergence and manipulability (the IK's own catchability gate,
-// D-18). No gate judges WHERE the catch point is (L3 §4.9): a point the IK
-// reaches inside the joint limits is a candidate wherever it lies, and the
-// reach bound removes none of those.
-// RANK gates do not remove: uncertainty, reach time, γ window, commit lead and
-// the error budget each add `score.penalty` to the candidate's score when they
-// fail (decision D). Under D-27 the system attempts what it can reach and
-// reports how often the attempt was doomed (S8 separates attempts from
-// successes); the offline map stays strict.
+// CANDIDATES. The vision samples themselves (no interpolation, so no covariance
+// needs interpolating), every n_s-th, whose lead lies in the window:
+//   n_s = max(1, round(Δ_slice / Δ_v))         (1 if Δ_v ≤ 0 or non-finite)
+//   T_lead,min ≤ ℓ_k = t_k − now ≤ T_lead,max
+// Δ_v [s] sample spacing, Δ_slice = `planner.search.grid.slice.dt`, T_lead,min =
+// `slice.t_lead_min` (unset: `freeze.T_freeze`; neither: no candidate),
+// T_lead,max = `slice.t_max`. ℓ_k [s] is read against the real now. The first
+// `n_settle` snapshots of a new track epoch plan nothing (kUncertainty).
 //
-// ORDER (L3 §4.1, with the IK budget of R-2). The cheap terms — input, reach
-// bound, uncertainty, lateness — are computed for every candidate
-// and give a PRE-score; IK (≈2 ms each on the development PC) runs on the best
-// `planner.search.grid.max_ik` of those, in pre-score order, until `planner.search.grid.budget_s`
-// is spent. Rank gates and the full score follow each successful IK. The best
-// full score wins (§4.10).
+// TWO KINDS OF GATE. JUDGEMENT gates remove a candidate —
+// they are about whether the arm can be put there at all: input finiteness
+// (and ‖v‖ ≥ `ik.v_eps`), the arm's reach bound (reach_bound.hpp — a necessary
+// condition read off the model, tested before the IK so that the IK is not
+// spent on a point no pose reaches), IK convergence and manipulability (the
+// IK's own catchability gate). No gate judges WHERE the catch point is: a
+// point the IK reaches inside the joint limits is a candidate wherever it
+// lies, and the reach bound removes none of those.
+// RANK gates do not remove: uncertainty, reach time, γ window, commit lead,
+// the error budget and the rollout each add w_pen = `score.penalty` to the
+// candidate's score when they fail (RankGateBit). The system attempts what it
+// can reach and reports how often the attempt was doomed; the offline map
+// stays strict.
 //
-// WHERE THE REACH STARTS (§4.3). The reach-time gate asks whether the arm gets
+// ORDER AND BUDGET. The cheap terms — input, reach bound, uncertainty,
+// lateness — are computed for every candidate and give a PRE-score
+//   J_pre,k = w_σ σ_k/r_cap + w_late (T_lead,max − ℓ_k) + w_pen·[¬(σ_k ≤ κ_σ r_cap)]
+// σ_k [m] = SigmaMax at sample k (NaN unknown — its term is dropped and the
+// bracket counts it as a failure), r_cap [m] capture radius, κ_σ =
+// `kappa_sigma`. IK (≈2 ms each on the development PC) runs on the best
+// `planner.search.grid.max_ik` in pre-score order — the followed plan's
+// candidate (|t_k − t_c,cur| ≤ n_s Δ_v / 2) first, so the switching rule
+// always gets its verdict. Before every candidate but the first the search
+// stops when elapsed + ĉ_IK + ĉ_roll > T_bud (T_bud = min(`budget_s`, the
+// caller's cap)), ĉ ← max(c_measured, ĉ − ĉ/8) the decaying-maximum cost of
+// one IK / one rollout. Rank gates and the full score follow each successful IK:
+//   J_k = w_σ σ_k/r_cap + w_t max_i t_min,i / (ℓ_k − T_arm) + w_q ‖q* − q_n‖²
+//         + w_late (T_lead,max − ℓ_k) − w_γ γ_f + w_pen · popcount(M_k)
+// the σ term only for a known σ_k, the t term only for a usable reach result
+// (TMinChecked) and ℓ_k > T_arm; q* the IK solution, q_n the IK seed (the wait
+// pose), M_k the failed RankGateBit set; weights are `score.w_*`. The lowest
+// J_k wins (a tie keeps the one evaluated first).
+//
+// WHERE THE REACH STARTS. The reach-time gate asks whether the arm gets
 // from its state at now_lead to the candidate's q* in the lead. Before a plan
 // that state is the command the RT reports. While the RT follows a segment
 // planner's segments it is the segment the RT will be on at now_lead — the
@@ -35,17 +56,23 @@
 // gate's start moves: the reference the rollout runs starts where it did, and
 // the switching rule is unchanged.
 //
-// SWITCHING (§4.7) AND FREEZE (decision G). When the RT is following a plan
-// this search published, a better candidate replaces it only if it improves
-// the score by more than `switch.delta_J` (or the current one is no longer
-// feasible) and the jump limits hold. Within `freeze.T_freeze` of the current
-// catch instant nothing replaces it. Holding is "publish nothing": the RT keeps
-// the plan it has.
+// SWITCHING AND FREEZE. When the RT is following a plan this search
+// published, nothing is published (the RT keeps the plan it has) unless:
+//   t_c,cur − now > T_freeze,  a candidate passed,  and either
+//   better ⇔ (current infeasible ∨ J_cur − J_best > Δ_J)  and the jump bound
+//            holds → replace, or
+//   ¬better, the best IS the current candidate and ‖Δp_c‖ > ε_term and the
+//            jump bound holds → refresh (the same candidate, moved prediction).
+// J_cur is the passed candidate within n_s Δ_v / 2 of t_c,cur (none: infeasible),
+// Δ_J = `switch.delta_J`, Δp_c = p_c,best − p_c,cur. The jump bound is
+// SwitchAccelStepBound ≤ η_jump·a_max at its worst over `switch.samples`
+// instants of [now_lead, now_lead + `budget_s` + 2h] (h the control period)
+// while the RT runs a valid γ ramp, else at now_lead only; it is not judged
+// while the arm follows segments.
 //
-// γ_f (S6-B). Without the rollout (S6-C, §4.8) γ_f is the window's lower end —
-// the least the arm must retreat to let the hand close in time — clipped to
-// what the arm can do when the window is empty. The rollout will choose within
-// the window.
+// γ_f AND T_w come from the γ rollout (ChooseGamma) over [min(γ_min, γ_max),
+// γ_max] — an empty window is searched at the arm's limit γ_max. A window
+// that cannot be judged skips the rollout: γ_f = 0, T_w = the longest ramp.
 //
 // RT-1~10: every buffer is sized in Configure; `Plan` allocates nothing,
 // throws nothing, logs nothing.
@@ -77,7 +104,7 @@ namespace rtc::catching {
 
 /// The arm model the search plans in (configure time, owned by the binding).
 struct GridCatchSearchModel {
-  /// The planner thread's own handle on the catch sub-model (R-3). No joint
+  /// The planner thread's own handle on the catch sub-model. No joint
   /// reorder may be installed on it (CatchPoseIk refuses one).
   rtc_urdf_bridge::RtModelHandle* handle{nullptr};
   pinocchio::FrameIndex catch_frame{0};
@@ -93,7 +120,7 @@ struct GridCatchSearchModel {
   /// PlanSnapshot::q_star); the model speaks its own.
   std::array<int, kMaxPlanNv> device_of_model{};
   std::array<double, kMaxPlanNv> qdot_max{};   ///< model order [rad/s], device ratings
-  std::array<double, kMaxPlanNv> qddot_max{};  ///< model order [rad/s²], the D-16 box
+  std::array<double, kMaxPlanNv> qddot_max{};  ///< model order [rad/s²], the acceleration box
   bool accel_box{false};                       ///< false: reach time is unjudgeable
 };
 
@@ -101,7 +128,7 @@ struct GridCatchSearchModel {
 /// binding. NaN marks a value the profile leaves TBD — every gate that needs
 /// it then fails (a rank gate) rather than using a guess.
 struct GridCatchSearchConstants {
-  double eta_v{0.9};  ///< `planner.search.grid.gamma.eta_v` (D-9)
+  double eta_v{0.9};  ///< `planner.search.grid.gamma.eta_v`
   double v_max{
       std::numeric_limits<double>::quiet_NaN()};  ///< `planner.search.grid.reference.v_max`
   double a_dec{std::numeric_limits<double>::quiet_NaN()};  ///< `planner.search.grid.stop.a_dec`
@@ -112,36 +139,37 @@ struct GridCatchSearchConstants {
   /// catch instant and the commit gate fails.
   double t_close_lead{std::numeric_limits<double>::quiet_NaN()};
   /// The MEASURED closure time, T_close,tot = `robot.hand.T_close_e2e` + h/2
-  /// (§4.5) — what the γ window and MaxCatchableSpeed use.
+  /// — what the γ window and MaxCatchableSpeed use.
   double t_close_total{std::numeric_limits<double>::quiet_NaN()};
   double ball_mass{0.0};  ///< `core.ball.mass` [kg] — the impulse estimate
-  /// The L4 reference (§4.8 rollout): ω, ζ, and the limits it is judged
-  /// against — `planner.search.grid.reference.{omega, zeta, a_max}`, the
-  /// search's own keys. NaN a_max → the rollout is unjudgeable (a rank failure).
+  /// The soft-catch reference the rollout runs (SoftCatchTranslation): ω, ζ,
+  /// and the limits it is judged against —
+  /// `planner.search.grid.reference.{omega, zeta, a_max}`, the search's own
+  /// keys. NaN a_max → the rollout is unjudgeable (a rank failure).
   double ref_omega{10.0};
   double ref_zeta{1.0};
   double ref_a_max{std::numeric_limits<double>::quiet_NaN()};
   double control_dt{0.002};  ///< the rollout's confirmation step [s]
   /// The arm follows a segment planner's segments (`planner.segment.mode` other
-  /// than closed_form). The η_jump bound of the switching rule (§4.7) is the
-  /// step a switch puts into the L4 reference's u_des — and there is no such
+  /// than closed_form). The η_jump bound of the switching rule is the step a
+  /// switch puts into the soft-catch reference's u_des — and there is no such
   /// reference under those modes (the RT reports none), so the bound is not
   /// judged: a switch is decided by ΔJ alone.
   bool follows_segments{false};
 };
 
-/// Rank-gate failure bits (decision E: the gate bitmask the CSV carries).
+/// Rank-gate failure bits (the gate bitmask the CSV carries).
 enum RankGateBit : std::uint16_t {
-  kRankUncertainty = 1U << 0,  ///< σ_max > κ_σ r_cap, or σ unknown (§4.4)
-  kRankReach = 1U << 1,        ///< t_min exceeds the lead (§4.3)
-  kRankGamma = 1U << 2,        ///< γ window empty or unjudgeable (§4.5)
-  kRankCommitLead = 1U << 3,   ///< lead < T_close,lead + h/2 + T_arm + margin (§4.11)
-  kRankErrorBudget = 1U << 4,  ///< n_σ σ_gap > r_cap (§4.6)
-  kRankRollout = 1U << 5,      ///< no (γ_f, T_w) passes the whole-interval rollout (§4.8)
+  kRankUncertainty = 1U << 0,  ///< σ_max > κ_σ r_cap, or σ unknown
+  kRankReach = 1U << 1,        ///< ReachTimeFeasible fails
+  kRankGamma = 1U << 2,        ///< γ window empty or unjudgeable
+  kRankCommitLead = 1U << 3,   ///< lead < T_close,lead + h/2 + T_arm + margin
+  kRankErrorBudget = 1U << 4,  ///< ¬(n_σ σ_gap ≤ r_cap), CatchErrorSigma
+  kRankRollout = 1U << 5,      ///< no (γ_f, T_w) passes the whole-interval rollout
 };
 
-/// The largest step a plan switch can put into the L4 reference's u_des
-/// (L3 §4.7, decision ⑥): the RT adopts a replacement with γ continuous but
+/// The largest step a plan switch can put into the soft-catch reference's
+/// acceleration u_des [m/s²]: the RT adopts a replacement with γ continuous but
 /// its quintic ramp restarted (γ̇ = γ̈ = 0, controller.cpp's adoption), so
 ///
 ///   Δu = ω²(1−γ) Δp_c − (2ζωγ̇ + γ̈)(o − p_c) − 2γ̇ v_o
@@ -200,7 +228,7 @@ class GridCatchSearch final : public CatchSearch {
   /// Always nullptr: this search solves no arm trajectory.
   [[nodiscard]] const CatchSolution* Solution() const noexcept override { return nullptr; }
 
-  /// monitorOnly (§4.6): σ_ℓ at the t_c of the plan the RT follows
+  /// Record only: σ_ℓ at the t_c of the plan the RT follows
   /// (`rt.plan_id`). RT-safe.
   void Monitor(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov, bool cov_matched,
                const PlannerRtState& rt, SearchStats& stats) const noexcept override;
@@ -215,7 +243,8 @@ class GridCatchSearch final : public CatchSearch {
   /// the settle count.
   void ResetTrial() noexcept override;
 
-  /// σ_max = √λ_max(Σ_pp) of sample k, or NaN when unknown (L3 §4.4).
+  /// σ_max = √λ_max(Σ_pp) [m] of sample k (Σ_pp its symmetrised position
+  /// block), or NaN when unknown.
   [[nodiscard]] static double SigmaMax(const CovarianceSnapshot& cov, int k) noexcept;
 
   /// The catch frame's reach bound, computed in Configure from the model. A
@@ -269,7 +298,7 @@ class GridCatchSearch final : public CatchSearch {
   RolloutSettings rollout_{};
   /// Recent per-candidate cost estimates [ns] — the budget check asks whether
   /// the NEXT candidate still fits, so the cycle overruns by at most the
-  /// estimate's error rather than by one whole candidate (G3-C).
+  /// estimate's error rather than by one whole candidate.
   std::int64_t ik_cost_ns_{0};
   std::int64_t rollout_cost_ns_{0};
   Eigen::VectorXd seed_;  // model order, sized in Configure; the seed in force this cycle
@@ -288,7 +317,7 @@ class GridCatchSearch final : public CatchSearch {
   std::array<Candidate, kCap> cands_{};
   std::array<int, kCap> order_{};
 
-  // Settle state (§4.4).
+  // Settle state (the first `n_settle` snapshots of a track epoch).
   bool track_known_{false};
   std::uint64_t track_generation_{0};
   std::uint64_t last_sequence_{0};
@@ -305,7 +334,7 @@ class GridCatchSearch final : public CatchSearch {
   };
 
   [[nodiscard]] Current Followed(const PlannerRtState& rt) const noexcept;
-  /// The §4.7 switch step bound (SwitchAccelStepBound) at its worst over the
+  /// The switch step bound (SwitchAccelStepBound) at its worst over the
   /// instants the RT may adopt this cycle's publish, on the ramp it runs.
   [[nodiscard]] double SwitchStep(const TrajectorySnapshot& traj, const PlannerRtState& rt,
                                   NowLead now_lead, double dp) const noexcept;

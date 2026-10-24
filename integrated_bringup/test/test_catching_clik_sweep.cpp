@@ -1,13 +1,13 @@
-// ── What the QP CLIK does across the ball envelope (S5.5 characterisation) ──
+// ── What the QP CLIK does across the ball envelope ──────────────────────────
 //
-// The S5.3 suite answers "does the law converge on ONE catch". This one asks
+// The tracking suite answers "does the law converge on ONE catch". This one asks
 // how its task-space POSITION and AXIS performance move as the ball changes,
-// which is the question the gate maps (S3.5b, L3 §4.2) leave open: they say
+// which is the question the catchability maps leave open: they say
 // which catch poses are reachable, not how well the law reaches them when the
 // ball gives it less time and a different approach direction.
 //
 // WHERE THE BALL ENTERS THE LAW. Two places, and only two:
-//   * `t_c` — the γ ramp spans [plan, t_c] (L4 §4.2), so a faster ball is a
+//   * `t_c` — the γ ramp spans [plan, t_c], so a faster ball is a
 //     shorter ramp. Here t_c = L/v with L the detection-to-catch distance, so
 //     speed sets the time budget directly.
 //   * the SAMPLE — with γ_f > 0 the reference blends toward the ball's own
@@ -17,18 +17,18 @@
 // ball — but by a BOUNDED angle (`kMaxTiltDeg`). Taking −v̂ outright is what a
 // first version of this sweep did, and it measured the wrong thing: it demands
 // a 42–87° reorientation from the arm's start pose, which is a REACHABILITY
-// question (S3.5a's catchability map, and S6's job to answer) and not a
+// question (the catchability map and the planner answer it) and not a
 // question about how well the QP tracks. The symptom was unmistakable — the
 // end-to-end error FELL as the ball got faster (280 mm at 2 m/s, 114 mm at
 // 4.85 m/s), because a faster ball simply gave the diverging axis task less
 // time to drag the hand away. A planner picks a pose it can hold; this sweep
 // gives the law the same courtesy and then asks how well it gets there.
 //
-// γ_f = 0 would drop the ball out of the dynamics entirely (L4 §5.3) and the
+// γ_f = 0 would drop the ball out of the dynamics entirely and the
 // sweep would measure the same step response 36 times.
 //
 // THE PROFILE IS THE SHIPPED ONE. `ur5e_p1b`'s reference gains (ω = 10, v_max
-// 3.5, a_max 30 since S8-G) rather than the S5.3 suite's faster ω = 20 — the question is
+// 3.5, a_max 30) rather than the tracking suite's faster ω = 20 — the question is
 // about the law that is deployed. ω = 10 is a ~0.4 s settling time, and the
 // fast end of this sweep gives it less than that, which is a result and not a
 // test failure. The assertions below are therefore about SOLVER HEALTH
@@ -96,13 +96,13 @@ constexpr double kDetectRangeM = 1.2;
 /// ball-derived in DIRECTION and bounded in magnitude — see the header note.
 constexpr double kMaxTiltDeg = 25.0;
 
-/// γ_f. L7 §4.5's worked example uses 0.25, and it is large enough that the
+/// γ_f. 0.25 is large enough that the
 /// ball's velocity is visible in the reference without making the terminal
 /// relative speed unphysical for a 57 g ball.
 constexpr double kGammaF = 0.25;
 
 /// The sweep axes. Speeds span the shipped sim's projectile (2.0 m/s) to the
-/// upper end the S3.5b gate map measured (4.85 m/s). Elevations are the
+/// upper end the catchability map measured (4.85 m/s). Elevations are the
 /// DESCENT angles at the catch; azimuths rotate the approach around the base.
 constexpr double kSpeeds[] = {2.0, 3.0, 4.0, 4.85};
 constexpr double kElevationsDeg[] = {35.0, 50.0, 63.0};
@@ -187,7 +187,7 @@ class ClikSweepTest : public ::testing::Test {
     const rclcpp_lifecycle::State prev;
     YAML::Node yaml = YAML::Load(TrackingYaml(topic_, p_c, a_d, kGammaF, t_c, kShipped));
     // This sweep measures the SOLVER across the ball envelope, up to the catch
-    // instant; the S7 supervisor's own gates are not what it is about, and
+    // instant; the supervisor's own gates are not what it is about, and
     // two of them would end cases before they measured anything:
     //  - admission (g) refuses a plan whose t_c is inside T_freeze, and the
     //    fast balls here are caught 0.25 s after detection — inside the
@@ -400,7 +400,7 @@ TEST_F(ClikSweepTest, TheSolverStaysHealthyAcrossTheBallEnvelope) {
                  " az=" + std::to_string(r.azimuth_deg));
     EXPECT_GT(r.ticks, 0) << "the law never ran — this case measured nothing";
     EXPECT_EQ(r.non_converged, 0) << "the QP failed to converge";
-    EXPECT_LT(r.solve_us_max, 1500.0) << "outside the G5-C max budget";
+    EXPECT_LT(r.solve_us_max, 1500.0) << "outside the max solve-time budget";
     EXPECT_TRUE(std::isfinite(r.catch_err_m) && std::isfinite(r.axis_err_deg))
         << "a non-finite pose reached the oracle";
   }
@@ -436,9 +436,9 @@ TEST_F(ClikSweepTest, HowLongTheShippedLawNeedsForOneCatchPose) {
   ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
   const rclcpp_lifecycle::State prev;
   // gamma_f = 0 here: this case is about the LAW's settling time, so the ball
-  // is taken out of the dynamics (L4 section 5.3) and the catch point is a
+  // is taken out of the dynamics and the catch point is a
   // static attractor. Leaving it in would measure the chase as well.
-  // t_c beyond the 3 s run: from S7 the catch instant ends the approach
+  // t_c beyond the 3 s run: the catch instant ends the approach
   // (DECEL at t_c), and this case measures how long the law needs to arrive.
   YAML::Node yaml = YAML::Load(TrackingYaml(topic_, p_c, a_d, /*gamma_f=*/0.0,
                                             /*t_c_offset_s=*/5.0, kShipped));

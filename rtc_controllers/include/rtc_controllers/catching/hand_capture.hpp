@@ -1,8 +1,8 @@
-// ── Hand-joint capture evidence (#537 S8-C, D-S8-8 (b)) ─────────────────────
-// The attempt verdict (L7 §4.4) reads the fingertips: m_min of them agreeing
+// ── Hand-joint capture evidence ─────────────────────────────────────────────
+// The supervisor's attempt verdict reads the fingertips: m_min of them agreeing
 // on contact. A ball that came to rest on the finger links or the palm makes
 // no fingertip contact and reads Missed although it is in the hand — in sim,
-// 43–57 % of the truth successes (D-S8-8). This core is the second
+// 43–57 % of the truth successes (#537). This core is the second
 // witness: a hand holding a ball has fingers that STOPPED on it.
 //
 // PER JOINT, every clause on the same joint i of the caging set C:

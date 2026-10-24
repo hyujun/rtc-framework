@@ -1,16 +1,16 @@
-"""Arm-budget attribution (dynamic_catching S8-G, #537).
+"""Arm-budget attribution.
 
 "The arm cannot get there" has four layers, and a catch that fails at t_c does
 not say which one bound:
 
 * **P** the plant — servo lag τ, torque headroom, joint speed actually reached;
-* **R** the L4 reference — ω (how fast the DS converges), ``a_max`` / ``v_max``
+* **R** the soft-catch reference — ω (how fast the DS converges), ``a_max`` / ``v_max``
   (where it saturates);
 * **C** the CLIK step — the joint velocity box (the device rating) and the
   acceleration constraint;
-* **B** the planner — the D-16 acceleration box its reach time judges with,
-  which since decision K (``joint_cmd.accel_constraint: dynamic``) is not what
-  the CLIK executes.
+* **B** the planner — the constant acceleration box its reach time judges with,
+  which with ``joint_cmd.accel_constraint: dynamic`` is not what the CLIK
+  executes.
 
 This tool reads one launch's UNIT (``catching_sim_trials`` output + its
 ``catching_trials`` evaluation) together with the controller session that
@@ -26,7 +26,7 @@ produced it and attributes, per trial and per unit:
   smoothed ``q̈_cmd`` over the active ticks) and how often the velocity box bound;
 * what the plant did: τ̂ per joint (``catching_trials.servo_lag_ls``), torque
   utilisation from the device lane, the joint speed reached;
-* the planner's reach time re-judged twice for the SAME motion — with the D-16
+* the planner's reach time re-judged twice for the SAME motion — with the
   box the controller loaded and with the executed envelope — against the lead
   it had, so the box's pessimism is a number, not an impression;
 * the rank-gate failure rates among the planner's valid plans.
@@ -41,7 +41,7 @@ diag's ``q_cmd_*`` columns, torque and velocity ratings from the profile's
 device roster (``_base.yaml``, with ``sim.yaml``'s overlay of the rating when it
 has one — the launch composes them the same way), ω / ``a_max`` / ``v_max`` /
 η_v / the acceleration box from the controller's read-only MIRROR in ``run_meta.json``
-when the runner recorded them (S8-G), else from the profile plus the overlays
+when the runner recorded them, else from the profile plus the overlays
 named on the command line. The source is reported.
 
 ``--write-envelope-box`` turns the pooled executed envelope into a sim override
@@ -82,11 +82,11 @@ COMMIT_JOIN_TOL_S = 0.02
 DEFAULT_N_BOOT = 200
 DEFAULT_SEED = 0
 PLANNER_TIME_MARGIN_S = (
-    0.03  # planner.search.grid.time.margin default (PlannerParams::time_margin, L3 §4.3)
+    0.03  # planner.search.grid.time.margin default (PlannerParams::time_margin)
 )
 
 
-# ── Reach time (L3 §4.3 closed form, the runtime's `TMinChecked`) ────────────
+# ── Reach time (closed form, the runtime's `TMinChecked`) ────────────────────
 def t_min_joint(d: float, w: float, w_max: float, a_max: float) -> float:
     """Minimum time from (0, w) to (d, 0) under |q̇| ≤ w_max, |q̈| ≤ a_max.
 
@@ -169,7 +169,7 @@ def _device_limits(config_dir: Path, device: str) -> tuple[dict, dict]:
     """``devices.<device>.joint_limits`` of ``_base.yaml`` with ``sim.yaml``'s keys laid over it.
 
     Overlays replace a key, so a sim profile that lifts the velocity rating
-    (dynamic_catching decision D) changes only that list; everything else is
+    changes only that list; everything else is
     the real roster's. Returns (limits, source-per-key).
     """
     limits: dict = {}
@@ -216,7 +216,7 @@ def resolve_budget(
 
     The file path composes what the launch composes, in its order: the
     controller YAML, then the robot config's ``sim.yaml`` (which may carry a
-    ``<controller>.catching`` override — R2 of D-S8-18 points the sim planner's
+    ``<controller>.catching`` override that points the sim planner's
     box there), then the ``--overlay`` files.
     """
     limits, lim_src = _device_limits(config_dir, profile.arm_device)
@@ -431,8 +431,8 @@ def _rank_rates(path: Path | None) -> dict:
     out["gamma_f_p50"] = (
         float(valid["gamma_f"].median()) if "gamma_f" in valid and len(valid) else math.nan
     )
-    # S8-I: the chosen candidate's γ window as the planner judged it (L3 §4.5),
-    # logged since #537 5850509543 — absent in older sessions (NaN then).
+    # The chosen candidate's γ window as the planner judged it;
+    # absent in older sessions (NaN then).
     for k in ("g_min", "g_max", "v_dir_max", "max_catchable"):
         out[f"{k}_p50"] = (
             float(valid[k].median()) if k in valid and valid[k].notna().any() else math.nan

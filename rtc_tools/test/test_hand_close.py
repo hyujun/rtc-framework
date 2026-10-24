@@ -1,4 +1,4 @@
-"""T_close,e2e analyser (dynamic_catching S4.2).
+"""T_close,e2e analyser.
 
 The oracle is a first-order closure whose crossing time is known in closed
 form: with q(t) = q_pre + (q_cls - q_pre)(1 - e^{-t/tau}), rho(t) = 1 - e^{-t/tau},

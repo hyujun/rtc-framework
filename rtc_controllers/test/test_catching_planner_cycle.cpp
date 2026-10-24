@@ -1,8 +1,8 @@
-// ── Planner data contract + one planner wake (dynamic_catching S6-A) ────────
+// ── Planner data contract + one planner wake ────────────────────────────────
 //
 // What this suite pins, and why each block is separate:
 //
-//   1. The RT admission rule (L3 §5.2 (a)-(f)). Each refusal is produced by a
+//   1. The RT admission rule (checks (a)-(f)). Each refusal is produced by a
 //      plan that passes every EARLIER check, so a case cannot pass because an
 //      earlier check happened to refuse it for another reason.
 //   2. The activity predicate. Enumerated over every mode, because the point
@@ -10,10 +10,10 @@
 //      silently change what the planner does in the others.
 //   3. `planner.*` parsing — defaults when absent, refusal (never a default)
 //      when present and malformed.
-//   4. The cycle's provenance handling (G3-L, planner side): what it publishes,
+//   4. The cycle's provenance handling (planner side): what it publishes,
 //      what it refuses to publish, and that ids are monotone per publish.
-//   5. The RT contract of one wake (G3-K): no heap, no Eigen allocation.
-//   6. The two interfaces (E1-F12 #738): with a fake CatchSearch and a fake
+//   5. The RT contract of one wake: no heap, no Eigen allocation.
+//   6. The two interfaces: with a fake CatchSearch and a fake
 //      SegmentPlanner installed, what a wake calls, in what order and with
 //      what — so the wake is shown to go through the interfaces alone.
 //
@@ -112,7 +112,7 @@ TEST(PlanAdmission, EachCheckRefusesOnItsOwn) {
     p.valid = false;
     EXPECT_EQ(JudgePlan(p, Context(), {}), PlanRefusal::kInvalid);
   }
-  // (b) D-23: a plan from the previous activation — the deactivate/Pause race
+  // (b) A plan from the previous activation — the deactivate/Pause race
   // publishes exactly this.
   {
     auto p = AdmissiblePlan();
@@ -154,7 +154,7 @@ TEST(PlanAdmission, EachCheckRefusesOnItsOwn) {
 }
 
 TEST(PlanAdmission, APlanWhoseCatchIsInsideTheFreezeWindowIsTooLate) {
-  // (g), S7: the boundary is exclusive — t_c − now == T_freeze would commit on
+  // (g) The boundary is exclusive — t_c − now == T_freeze would commit on
   // the tick the plan is taken.
   auto c = Context();
   c.t_freeze_ns = 360 * kMs;
@@ -189,7 +189,7 @@ TEST(PlannerActivityPredicate, SearchesOnlyInTrackingAndApproach) {
       {Mode::kApproach, PlannerActivity::kSearch},
       {Mode::kCommitted, PlannerActivity::kMonitor},
       {Mode::kClosing, PlannerActivity::kMonitor},
-      // MPC E1-F03 (MD-29): DECEL hosts the segment MPC's post-catch replans.
+      // DECEL hosts the segment MPC's post-catch replans.
       {Mode::kDecel, PlannerActivity::kDecel},
       {Mode::kHold, PlannerActivity::kIdle},
       {Mode::kRetreat, PlannerActivity::kIdle},
@@ -206,8 +206,8 @@ TEST(PlannerActivityPredicate, SearchesOnlyInTrackingAndApproach) {
 TEST(PlannerParams, AnAbsentSectionYieldsTheDocumentedDefaults) {
   const auto p = ParsePlannerParams(YAML::Load("io: {t_stale: 0.1}"));
   EXPECT_FALSE(p.enabled);
-  EXPECT_DOUBLE_EQ(p.wake_timeout_s, 0.05);  // decision H
-  EXPECT_DOUBLE_EQ(p.budget_s, 0.020);       // R-2
+  EXPECT_DOUBLE_EQ(p.wake_timeout_s, 0.05);
+  EXPECT_DOUBLE_EQ(p.budget_s, 0.020);
   EXPECT_EQ(p.wait_pose_n, 0);
 }
 
@@ -305,7 +305,7 @@ planner:
 }
 
 TEST(PlannerParams, TheWaitPoseSourceIsYamlOrCurrentAndNothingElse) {
-  // S8-I: `current` adopts the arm's switched-in pose; anything but the two
+  // `current` adopts the arm's switched-in pose; anything but the two
   // spellings is refused rather than silently read as the default.
   EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {wait_pose_source: yaml}")).wait_pose_source,
             rtc::catching::PlannerParams::WaitPoseSource::kYaml);
@@ -320,7 +320,7 @@ TEST(PlannerParams, TheWaitPoseSourceIsYamlOrCurrentAndNothingElse) {
 }
 
 TEST(PlannerParams, ADecisionLeftOutOrTbdIsUnsetNotDefaulted) {
-  // T_freeze, d_eff/r_cap are decisions (L3 §6 TBD): absent or TBD must read
+  // T_freeze, d_eff/r_cap are decisions (TBD in the config): absent or TBD must read
   // as UNSET so the binding parks, never as a plausible number.
   for (const char* yaml : {"planner: {enabled: true}",
                            "planner: {freeze: {T_freeze: TBD}, search: {grid: {hand: {d_eff: TBD, "
@@ -334,7 +334,7 @@ TEST(PlannerParams, ADecisionLeftOutOrTbdIsUnsetNotDefaulted) {
   }
 }
 
-// `planner.search.sub_model` (E3-F01, #640): the search's own model. Absent is
+// `planner.search.sub_model`: the search's own model. Absent is
 // "the segment model for both" — an empty string, never a copy of `sub_model`
 // (the binding decides what one model means) — and it is a NAME like
 // `sub_model`: TBD and the empty string are refused.
@@ -378,7 +378,7 @@ TEST(PlannerParams, AMalformedSearchKeyIsRefused) {
   }
 }
 
-// L3 §4.9: the search does not judge where the catch point is. The removed
+// The search does not judge where the catch point is. The removed
 // `workspace` map is not read and does not make the parser throw, whatever is
 // in it — the binding parks on the key (kRemovedCatchingKeys), which keeps the
 // robot up where a throw here would fail the whole configure.
@@ -522,7 +522,7 @@ TEST(PlannerCycleRun, NoTrajectoryOfThisActivationIsNoInput) {
   auto rig = std::make_unique<CycleRig>();
   rig->boxes.rt.Store(RtIn(Mode::kTracking));
   EXPECT_EQ(rig->cycle.Run(NowReal{1}).outcome, CycleOutcome::kNoInput);
-  // D-23: a trajectory the ingress stamped with the PREVIOUS activation.
+  // A trajectory the ingress stamped with the PREVIOUS activation.
   rig->boxes.traj.Store(Traj(3, kActivation - 1));
   EXPECT_EQ(rig->cycle.Run(NowReal{1}).outcome, CycleOutcome::kNoInput);
   EXPECT_EQ(rig->cycle.LastPlanId(), 0U);
@@ -538,7 +538,7 @@ TEST(PlannerCycleRun, ASearchWakePublishesTheStubsNoPlanWithFullProvenance) {
   ASSERT_EQ(rec.outcome, CycleOutcome::kPublished);
   EXPECT_TRUE(rec.cov_matched);
   EXPECT_EQ(rec.plan_id, 1U);
-  EXPECT_FALSE(rec.plan_valid) << "S6-A's search is a stub";
+  EXPECT_FALSE(rec.plan_valid) << "the search is a stub here";
   EXPECT_FALSE(rec.search_valid) << "a published \"no plan\" is not a valid search";
   EXPECT_EQ(rec.snapshot_sequence, 3U);
   EXPECT_EQ(rec.wake_ns, 1995 * kMs);
@@ -565,7 +565,7 @@ TEST(PlannerCycleRun, ACovarianceOfAnotherSnapshotIsNotPaired) {
   auto rig = std::make_unique<CycleRig>();
   rig->boxes.rt.Store(RtIn(Mode::kApproach));
   rig->boxes.traj.Store(Traj(4));
-  rig->boxes.cov.Store(Cov(3));  // N-1: the mix L3 §5.2 names
+  rig->boxes.cov.Store(Cov(3));  // N-1: a mixed covariance
   const auto rec = rig->cycle.Run(NowReal{1});
   EXPECT_EQ(rec.outcome, CycleOutcome::kPublished);
   EXPECT_FALSE(rec.cov_matched);
@@ -591,7 +591,7 @@ void Supersede(void* raw) noexcept {
 }
 
 TEST(PlannerCycleRun, AnythingThatMovesDuringTheSearchDropsThePublish) {
-  // G3-L, planner side: a newer snapshot during compute, a reset during
+  // Planner side: a newer snapshot during compute, a reset during
   // compute, and an activation boundary during compute. Each must drop the
   // publish — and must not consume a plan id, so the ids the RT sees stay a
   // record of what was PUBLISHED.
@@ -629,7 +629,7 @@ TEST(PlannerCycleRun, AResetIsSeenOnceEvenInAModeWithNothingToPlan) {
 
 TEST(PlannerCycleRun, EveryPublishedPlanIsRefusedByTheRtWhileTheSearchIsAStub) {
   // The end-to-end half of "wiring the thread changes no behaviour": whatever
-  // S6-A publishes, the RT's admission rule refuses as `kInvalid`.
+  // the stub search publishes, the RT's admission rule refuses as `kInvalid`.
   auto rig = std::make_unique<CycleRig>();
   rig->boxes.rt.Store(RtIn(Mode::kTracking));
   rig->boxes.traj.Store(Traj(3));
@@ -643,7 +643,7 @@ TEST(PlannerCycleRun, EveryPublishedPlanIsRefusedByTheRtWhileTheSearchIsAStub) {
   EXPECT_EQ(JudgePlan(rig->boxes.plan.Load(), c, {}), PlanRefusal::kInvalid);
 }
 
-// ── 5. RT contract (G3-K, stub part) ────────────────────────────────────────
+// ── 5. RT contract (stub part) ──────────────────────────────────────────────
 
 TEST(PlannerCycleRun, OneWakeAllocatesNothing) {
   auto rig = std::make_unique<CycleRig>();
@@ -671,7 +671,7 @@ TEST(PlannerCycleRun, OneWakeAllocatesNothing) {
   EXPECT_EQ(eigen, 0U);
 }
 
-// ── 6. The two interfaces (E1-F12 #738) ─────────────────────────────────────
+// ── 6. The two interfaces ───────────────────────────────────────────────────
 //
 // The fakes answer what the real implementations cannot — a catch point no arm
 // reaches, a control period of one second, a segment that "starts in time"
@@ -1149,7 +1149,7 @@ TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesBothInterfac
     EXPECT_EQ(g_calls.Taken(), (Calls{Call::kSetClock}));
   }
   EXPECT_TRUE(rig->cycle.SegmentPlannerConfigured());
-  // Installing nothing is the cleared state: the wake is the S6-A stub again,
+  // Installing nothing is the cleared state: the wake is the stub again,
   // and reads the clock once, for the "no plan" it publishes alone.
   rig->cycle.InstallSegmentPlanner(nullptr);
   rig->cycle.InstallSearch(nullptr);
@@ -1193,7 +1193,7 @@ TEST(PlannerCycleInterfaces, InstallSearchAndSetClockBothReachTheInstalledSearch
   EXPECT_FALSE(rig->cycle.SearchConfigured());
 }
 
-// ── While a plan is followed the search goes on (E1-F16) ─────────────────────
+// ── While a plan is followed the search goes on ──────────────────────────────
 
 // The cycle's parameters with the search allowed to run while a plan is
 // followed: until the catch instant is `t_stop_plan_s` away.
@@ -1319,7 +1319,7 @@ TEST(PlannerCycleFollowing, AFollowingWakeEndsInAReplanOrAPairWhateverTheTraject
   }
   // The trajectory moved during the search: a newer snapshot of the same
   // track. A wake with no plan followed would be superseded by it; a following
-  // wake is not — "superseded" counts what a publish re-check dropped (MD-29),
+  // wake is not — "superseded" counts what a publish re-check dropped,
   // and neither of the two things this wake goes on to is dropped for a newer
   // snapshot of the track.
   for (const bool replace : {false, true}) {
@@ -1547,7 +1547,7 @@ TEST(PlannerCycleInterfaces, AFollowedPlansWakeHandsOverThatPlansBallOrNone) {
   rig->boxes.traj.Store(Traj(4));
   rig->boxes.cov.Store(Cov(4));
   EXPECT_EQ(rig->Wake(), replan_published);
-  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kIdle) << "a replan changed the wake's outcome (MD-29)";
+  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kIdle) << "a replan changed the wake's outcome";
   EXPECT_FALSE(rig->rec.cov_matched);
   EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
   EXPECT_EQ(rig->rec.segment.segment_seq, 2U);
@@ -1656,7 +1656,7 @@ TEST(PlannerCycleInterfaces, RightAfterAPairTheSearchWaitsTheInstalledPlannersPe
   EXPECT_EQ(calls[1], Call::kSearchPlan);
 }
 
-// E1-F14 (#740): what the search and the segment planner hand each other goes
+// What the search and the segment planner hand each other goes
 // through the cycle untouched, in both directions, and the wake's order of
 // calls is the one the tests above assert — neither crossing is in that log.
 TEST(PlannerCycleInterfaces, TheSolutionAndTheReportedSegmentsCrossTheCycleUntouched) {
@@ -1739,7 +1739,7 @@ TEST(PlannerCycleInterfaces, TheSolutionAndTheReportedSegmentsCrossTheCycleUntou
 }
 
 TEST(PlannerCycleInterfaces, AWakeThroughTheInterfacesAllocatesNothing) {
-  // G3-K for the paths OneWakeAllocatesNothing does not reach — it runs the
+  // RT contract for the paths OneWakeAllocatesNothing does not reach — it runs the
   // stub and binds no segment box: the pair, the three kinds of replan and a
   // trial reset, with implementations installed. What an implementation
   // allocates is its own suite's (AFullSearchAllocatesNothing, the MPC segment
@@ -1785,7 +1785,7 @@ TEST(PlannerCycleInterfaces, AWakeThroughTheInterfacesAllocatesNothing) {
   EXPECT_FALSE(overflow);
   EXPECT_EQ(heap, 0U);
   EXPECT_EQ(eigen, 0U);
-  // The gated pairs carried both crossings (E1-F14): two reported segments in
+  // The gated pairs carried both crossings: two reported segments in
   // (copied into the cycle's scratch), the search's solution out.
   EXPECT_EQ(rig->segment->reported_calls, 1 + kRounds);
   EXPECT_EQ(rig->search->arm_pending_seq, kFakePendingSeq);
@@ -1794,7 +1794,7 @@ TEST(PlannerCycleInterfaces, AWakeThroughTheInterfacesAllocatesNothing) {
   EXPECT_EQ(rig->segment->first_solution, &rig->search->solution);
 }
 
-// ── A followed plan is replaced: the replacement pair (E1-F17 #743) ──────────
+// ── A followed plan is replaced: the replacement pair ────────────────────────
 //
 // A wake while the RT follows a plan runs the search FIRST and then one of two
 // things: the search chose another plan → its first segment is solved from the

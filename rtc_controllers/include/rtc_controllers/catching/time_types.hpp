@@ -1,4 +1,4 @@
-// ── Time axes of the catching core (dynamic_catching D-2, L0 §4.5) ───────────
+// ── Time axes of the catching core ───────────────────────────────────────────
 // Three strong types over one clock (absolute steady nanoseconds):
 //
 //   BallTime — a physical instant of the BALL: t_c, t_cmd, every predicted
@@ -7,11 +7,11 @@
 //   NowLead  — NowReal + T_arm: the instant at which an arm command issued now
 //              is realised.
 //
-// The point of the types is that every decision is pinned to the axis L0 §4.5
-// assigns it, at compile time. There is deliberately NO mixed-type comparison
+// The point of the types is that every decision is pinned to its axis (table
+// below) at compile time. There is deliberately NO mixed-type comparison
 // operator: a generic `NowReal < BallTime` would let a sampling decision be
 // written on the real axis and still compile, which is exactly the bug that
-// T_arm = 0 fixtures hide. Instead each §3 row is a named function taking the
+// T_arm = 0 fixtures hide. Instead each decision is a named function taking the
 // one now-type it is defined on:
 //
 //   | decision                              | axis     | function            |
@@ -21,14 +21,14 @@
 //   | trajectory horizon exhausted          | NowLead  | HorizonExceeded     |
 //   | APPROACH→COMMITTED                    | NowReal  | CommitDue           |
 //   | COMMITTED→CLOSING, hand close         | NowReal  | HandCommandDueRounded |
-//   | hand preshape (unused since S7 Q4)    | NowReal  | PreshapeDue         |
+//   | hand preshape (unused)                | NowReal  | PreshapeDue         |
 //   | contact window [t_cmd, t_c + T_conf]  | NowReal  | InContactWindow     |
 //   | message age / stale                   | NowReal  | AgeNs               |
 //
 // Message age is measured between two steady RECEIVE instants and never from a
 // BallTime or a header stamp (repo clock rule; AgeNs takes only NowReal).
 //
-// All types are trivially copyable (they ride SeqLock payloads, L0 §5.2).
+// All types are trivially copyable (they ride SeqLock payloads).
 // Relative double seconds are formed only here, at the numeric-core boundary,
 // and only as a difference on one axis.
 #pragma once
@@ -131,13 +131,13 @@ static_assert(std::is_trivially_copyable_v<NowLead>);
 }
 
 /// Horizon warning: the lead axis has run past the last predicted sample. The
-/// last sample itself is not extrapolation (L2 §4.6).
+/// last sample itself is not extrapolation.
 [[nodiscard]] constexpr bool HorizonExceeded(NowLead now_lead, BallTime last_sample) noexcept {
   return now_lead.ns > last_sample.ns;
 }
 
 /// APPROACH→COMMITTED: t_c − now ≤ T_freeze (real axis; T_freeze already
-/// includes T_arm in its lower bound, L0 §4.5).
+/// includes T_arm in its lower bound).
 [[nodiscard]] constexpr bool CommitDue(NowReal now, BallTime t_c,
                                        std::int64_t t_freeze_ns) noexcept {
   return detail::SatSub(t_c.ns, now.ns) <= t_freeze_ns;
@@ -150,7 +150,7 @@ static_assert(std::is_trivially_copyable_v<NowLead>);
   return now.ns >= t_cmd.ns;
 }
 
-/// The hand close command and COMMITTED→CLOSING (L6 §4.3, S7.1): now ≥ t_cmd −
+/// The hand close command and COMMITTED→CLOSING: now ≥ t_cmd −
 /// h/2, i.e. the tick NEAREST t_cmd rather than the first one at or after it —
 /// on a regular grid the error is then at most h/2 either side instead of up
 /// to h late. `h_ns` ≤ 0 degenerates to HandCommandDue.
@@ -178,13 +178,13 @@ static_assert(std::is_trivially_copyable_v<NowLead>);
   return detail::SatSub(now.ns, recv_steady.ns);
 }
 
-// ── D-2 (3): remote stamp → ball axis (E-1 recorded exception, S0.6) ─────────
+// ── Remote stamp → ball axis (E-1 recorded exception) ───────────────────────
 // The receive callback converts the publisher's `header.stamp` ONCE:
 //
 //   t_ref_steady = recv_steady − (recv_wall − stamp)
 //
 // This is the only use of a header stamp in the catching core, and it is the
-// recorded exception in agent_docs/invariants.md §Clock (approved 2026-09-19).
+// recorded exception in agent_docs/invariants.md §Clock.
 // Its conditions: (1) freshness / stale / watchdog use AgeNs() only, never this
 // value; (2) a stamp more than `future_tol` in the future is rejected and
 // counted — the conversion cannot be trusted; (3) sender and receiver share the

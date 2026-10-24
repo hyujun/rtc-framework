@@ -6,7 +6,7 @@ Runs ``rtc_tools.analysis.catching_trials`` over ``<unit>/session`` +
 ``<unit>/trials`` with ``decompose_at_tc`` wrapped, so the ctx / truth of every
 trial is seen exactly as the tool sees it, and writes one row per committed
 trial to ``<out.csv>`` (``vec.csv``): the gap at t_c split along and across the
-ball's travel (from E1-F10). With ``<ct_out_dir>`` the tool's own output
+ball's travel. With ``<ct_out_dir>`` the tool's own output
 (``catching_trials.csv``, the summary JSON) is kept there; otherwise it goes to
 a temporary directory. A unit that has ``probe/lane_prediction_dump.csv`` (run
 with the probe dump, #807) has it handed to ``catching_trials`` as

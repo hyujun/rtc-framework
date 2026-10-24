@@ -1,4 +1,4 @@
-// Ball prediction at a planner node (E1-F13, #739): the mean is SampleAt's, the
+// Ball prediction at a planner node: the mean is SampleAt's, the
 // covariance is F(Δ) Σ_i F(Δ)ᵀ from the NEAREST sample, and an unusable
 // covariance is reported as such instead of becoming zero.
 //

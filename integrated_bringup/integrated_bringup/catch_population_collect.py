@@ -12,7 +12,7 @@ This module turns the finished ones into an arm's two result files:
   the thrown throws the sim caught (``truth_success``) on at least one seed.
 
 **A catch set is "caught on that seed".** The same throw is caught under one
-estimator seed and missed under another (E1-F20), so every throw of the set
+estimator seed and missed under another, so every throw of the set
 carries ``caught_seeds`` and ``thrown_seeds``, and the meta carries, per seed,
 how many throws were thrown / invalid / had their plan–segment pair published /
 were caught. **A throw that was not thrown is not a missed throw**: the meta

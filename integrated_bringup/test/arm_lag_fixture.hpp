@@ -1,30 +1,22 @@
 #ifndef INTEGRATED_BRINGUP_TEST_ARM_LAG_FIXTURE_H_
 #define INTEGRATED_BRINGUP_TEST_ARM_LAG_FIXTURE_H_
 
-// ── A pure transport delay between command and measurement (G5-E, A-S5-9) ───
+// ── A pure transport delay between command and measurement ──────────────────
 //
-// WHY THIS EXISTS AND WHY IT IS ONLY HERE. The lead compensation (L5 §4.5)
-// reads the prediction at now + T_arm because the command it builds is
-// realised T_arm later. With no delay, leading and not leading produce the
-// same trajectory, and a "before/after" measurement of the compensation is
-// vacuous — which is exactly what G5-E was stuck on after S3.7 was dropped
-// (2026-09-20) and the sim was decided to have no lag.
+// The lead compensation reads the prediction at now + T_arm because the command
+// it builds is realised T_arm later. With no delay, leading and not leading
+// produce the same trajectory and a before/after measurement of the
+// compensation is vacuous, so the delay is supplied here, in a fixture, not in
+// the runtime. It lives under test/ and is never installed, so no production
+// target can reach it (the same isolation `catching_ball_fixture.hpp` uses).
+// The sim arm itself is a first-order lag of the servo's kd/kp (0.05 s on
+// ur5e_p1b), which the catch_lead sim overlays and the shipped YAML carry.
 //
-// The decision (2026-09-22, option ㄱ, #537) was to supply the delay in a
-// FIXTURE rather than in the runtime. This file is that fixture. It lives
-// under test/ and is never installed, so no production target can reach it —
-// the same isolation `catching_ball_fixture.hpp` uses for the ball model. The
-// shipped `joint_cmd.lag.T_arm` was 0 then. That premise, "the sim has no lag",
-// was false (corrected 2026-09-24): the sim arm is a first-order lag of the
-// servo's kd/kp (0.05 s on ur5e_p1b), which S8-B led through the catch_lead sim
-// overlays and the shipped YAML carries since #821. This fixture's pure delay
-// is still what G5-E is judged on.
-//
-// The model is a PURE delay, not the first-order-plus-delay of L5 §4.4: the
-// lead compensation is exactly the inverse of a pure delay, so this fixture
-// measures how much of the error the compensation can remove IN PRINCIPLE. A
-// plant with a time constant would fold the identification error of that
-// constant into the same number, which is an S10 question with real hardware.
+// The model is a PURE delay, not first-order-plus-delay: the lead compensation
+// is exactly the inverse of a pure delay, so this fixture measures how much of
+// the error the compensation can remove IN PRINCIPLE. A plant with a time
+// constant would fold the identification error of that constant into the same
+// number, which is a real-hardware question.
 
 #include <array>
 #include <cstddef>

@@ -45,7 +45,7 @@ inline constexpr double kUr5eDt = 0.002;
 
 // A non-singular UR5e posture — away from the zero configuration so fingertip
 // FK is a non-trivial function of the arm joints (a zero pose would let a wrong
-// frame chain pass by symmetry, the vacuity trap §3.3 of compliance-conventions).
+// frame chain pass by symmetry, the vacuity trap).
 inline constexpr std::array<double, kUr5eArmDof> kUr5eHome = {0.0, -1.2, 1.4, -1.7, -1.5, 0.0};
 
 inline rtc_urdf_bridge::ModelConfig MakeUr5eP1bModelConfig() {
@@ -58,7 +58,7 @@ inline rtc_urdf_bridge::ModelConfig MakeUr5eP1bModelConfig() {
   // just another serial robot and every closed-chain assertion would be vacuous.
   cfg.closure_yaml_path = share + "/robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml";
   cfg.sub_models.push_back({"ur5e", "base", "tool0"});
-  // Mirrors the shipped `_base.yaml` (dynamic_catching S6-B, R-3): the catching
+  // Mirrors the shipped `_base.yaml`: the catching
   // planner's sub-model, arm root → catch frame parent. After `ur5e`, which
   // controllers take as the arm (sub_models.front()).
   cfg.sub_models.push_back({"ur5e_catch", "base", "l_palm_link"});

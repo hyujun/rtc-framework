@@ -37,20 +37,20 @@ struct QPSolverConfig {
   // default (false) every real problem is solved under the placeholder's
   // scaling. Default false keeps existing callers bit-for-bit; a caller whose
   // matrices change scale between solves (or that relies on ProxQP's
-  // infeasibility verdict) should set it (dynamic_catching MPC E1-F01, #627).
+  // infeasibility verdict) should set it.
   bool update_preconditioner{false};
   // ProxQP's KKT backend. Automatic picks PrimalLDLT when constraints outnumber
   // variables, and that backend allocates inside solve() on every active-set
   // change (hundreds of C-level mallocs per solve at 126 vars / 434 rows,
-  // E1-F01 #627) and ran ~3× slower there than PrimalDualLDLT. Automatic keeps
+  // #627) and ran ~3× slower there than PrimalDualLDLT. Automatic keeps
   // existing callers unchanged.
   proxsuite::proxqp::DenseBackend dense_backend{proxsuite::proxqp::DenseBackend::Automatic};
   // Threshold of ProxQP's primal-infeasibility test (its own default). The
   // test accepts an APPROXIMATE Farkas certificate — ‖Aᵀδy + Cᵀδz‖ within this
   // fraction of ‖(δy, δz)‖ — so it also fires on feasible problems whose
   // multipliers grow fast (a QP with large linear penalties on elastic
-  // variables, dynamic_catching E1-F13 #739: PRIMAL_INFEASIBLE on a QP that is
-  // feasible by construction; dynamic_catching #880: a degenerate stop from
+  // variables, #739: PRIMAL_INFEASIBLE on a QP that is feasible by
+  // construction; #880: a degenerate stop from
   // rest, and thousands of first solves of a segment MPC). 0 leaves only an
   // EXACT certificate (‖Aᵀδy + Cᵀδz‖ = 0): a QP that is infeasible without one
   // runs to max_iter instead of being reported early — so a caller that sets
@@ -90,9 +90,8 @@ class QPSolverWrapper {
   // DIFFERENT problems — an offline sweep, a candidate loop, a map — because
   // then each answer depends on which problem happened to be solved before it,
   // and a solver that is asked the same question twice can give two answers.
-  // dynamic_catching's catch-pose IK is exactly that case: the offline
-  // catchability map (S3.5a) and the runtime planner (S6.2) must agree, so
-  // every candidate starts cold (L3 §4.2).
+  // A catch-pose IK whose offline map and runtime planner must agree is
+  // exactly that case, so every candidate starts cold.
   //
   // Only a settings enum changes — no allocation, safe on the RT path. This is
   // the same mechanism the non-finite-iterate guard already uses (#546); this

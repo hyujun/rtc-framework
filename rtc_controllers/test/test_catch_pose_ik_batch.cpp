@@ -1,11 +1,11 @@
-// ── Batch plumbing for the S3.5a map: CSV contract + batch purity ───────────
+// ── Batch plumbing for the catchability map: CSV contract + batch purity ────
 //
 // The map's credibility rests on two claims that `CatchPoseIk`'s own suite
 // cannot make, because they are about the batch layer rather than the solver:
 //
 //   1. the CSV carries the solver's numbers, not a rendering of them — a map
 //      whose w₅ column is rounded cannot be compared against a runtime that
-//      is not (G3-I);
+//      is not;
 //   2. a candidate's verdict does not depend on what ran before it, so python
 //      may shard, reorder and resume the grid freely.
 //
@@ -86,7 +86,7 @@ using rtc::catching::RunBatch;
 }
 
 /// Bit-identical, not almost-equal: a column that round-trips to 15 digits
-/// would still break the S6.2 equivalence oracle it is meant to serve.
+/// would still break the equivalence oracle it is meant to serve.
 [[nodiscard]] bool SameBits(double a, double b) {
   return std::memcmp(&a, &b, sizeof(double)) == 0;
 }

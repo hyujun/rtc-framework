@@ -789,6 +789,19 @@ expect_exit "validate_docs skips a missing --files target instead of crashing" "
 expect_not_contains "validate_docs does not traceback on a missing target" "$vout" "Traceback"
 rm -rf "$dir"
 
+# 26b. A doc untracked with `git rm --cached` and then ignored stays on disk and
+#      still lists as a deletion; its contents are no longer the repo's, so a
+#      defect in it must not block.
+dir=$(make_fixture)
+printf '# docs\n\nSee [missing](./nope.md).\n' >"$dir/agent_docs/notes.md"
+git -C "$dir" commit -qam "doc with a broken link"
+git -C "$dir" rm -q --cached "agent_docs/notes.md"
+echo 'agent_docs/notes.md' >>"$dir/.git/info/exclude"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "an untracked, ignored doc is not validated" "$out" "nope.md"
+expect_exit "an untracked, ignored doc does not block the turn" "$rc" 0
+rm -rf "$dir"
+
 # --- Filenames ---------------------------------------------------------------
 
 # 27. A path containing a space must survive as one path. Unquoted word
@@ -1066,11 +1079,10 @@ rm -rf "$ws" "$stub" "$bin" "$elsewhere"
 
 # --- A simulator running from the workspace ------------------------------------
 #
-# 2026-09-26: the S8-E success-rate sims ran as a background shell task; a hook
-# build beside them slows the sim below real time and the catches fail for the
-# rig's sake. A sim whose executable or command line lies under the workspace
-# DEFERS build/test (a sim, unlike a build, does not end on its own); one from
-# another workspace does not.
+# A hook build beside a background success-rate sim slows the sim below real
+# time and the catches fail for the rig's sake. A sim whose executable or
+# command line lies under the workspace DEFERS build/test (a sim, unlike a
+# build, does not end on its own); one from another workspace does not.
 
 # $1 = directory to hold the stand-in. The kernel truncates the process name to
 # 15 characters, so the stand-in named like the real node shows up as

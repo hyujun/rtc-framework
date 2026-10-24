@@ -1,4 +1,4 @@
-// The planner's search (S6-B). See grid_catch_search.hpp.
+// The planner's search. See grid_catch_search.hpp.
 #include "rtc_controllers/catching/grid_catch_search.hpp"
 
 #include "rtc_controllers/catching/ball_node_samples.hpp"
@@ -146,8 +146,8 @@ bool GridCatchSearch::Configure(const GridCatchSearchModel& model,
   }
   reach_ = ComputeReachBound(model.handle->GetModel(), model.catch_frame);
   unit_speed_.Resize(model.nv);
-  // The rollout's reference: the profile's ω and ζ, NO saturation (§4.8 —
-  // the peaks are what is judged against η_a a_max / η_v v_max).
+  // The rollout's reference: the profile's ω and ζ, NO saturation (the peaks are what is judged
+  // against η_a a_max / η_v v_max).
   rollout_ds_.emplace(
       SoftCatchTranslation::Params{constants.ref_omega, constants.ref_zeta, 1e9, 1e9});
   rollout_ = RolloutSettings{};
@@ -265,7 +265,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   plan.valid = false;
   plan.reason = PlanReason::kNone;
   current_ = Followed(rt);
-  // S8-I: the IK seed is the wait pose (D-18). With `wait_pose_source:
+  // The IK seed is the wait pose. With `wait_pose_source:
   // current` the RT adopts the arm's switched-in pose and hands it over here
   // (device order); otherwise the configure-time YAML seed stands — restored
   // every cycle, so a later activation that adopts nothing (refused, width
@@ -293,7 +293,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
     return plan;
   }
 
-  // ── Settle after a track change (§4.4) ────────────────────────────────────
+  // ── Settle after a track change ───────────────────────────────────────────
   if (!track_known_ || traj.token.generation != track_generation_) {
     track_known_ = true;
     track_generation_ = traj.token.generation;
@@ -314,7 +314,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   }
 
   const int n = std::clamp(traj.n, 0, static_cast<int>(kCap));
-  // Thin the vision grid to slice.dt (never interpolate at S6-B).
+  // Thin the vision grid to slice.dt (never interpolate).
   int stride = 1;
   if (n >= 2) {
     const double spacing = static_cast<double>(traj.s[1].t_ns - traj.s[0].t_ns) * kNsToS;
@@ -370,7 +370,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
     return plan;
   }
 
-  // ── Pre-filter: IK runs on the best `max_ik` by pre-score (R-2) ───────────
+  // ── Pre-filter: IK runs on the best `max_ik` by pre-score ─────────────────
   int n_order = 0;
   for (int i = 0; i < m; ++i) {
     if (cands_[static_cast<std::size_t>(i)].reject == JudgeReject::kNotEvaluated) {
@@ -402,7 +402,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   const int n_ik_max = std::min(n_order, params_.max_ik);
 
   const NowLead now_lead = MakeNowLead(now, SecondsToNs(constants_.t_arm_s));
-  // Where the arm's reach starts (§4.3), model order. While the RT follows a
+  // Where the arm's reach starts, model order. While the RT follows a
   // segment, that is the segment it will be on at now_lead (SourceSegmentAt)
   // read there by the RT's own evaluator; with none reported — or one that
   // cannot be read there — it is the reported command.
@@ -446,7 +446,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   const std::int64_t budget_ns =
       budget_cap_ns > 0 ? std::min(own_budget_ns, budget_cap_ns) : own_budget_ns;
 
-  // Where the reference starts (§4.8): its own state when it is running (a
+  // Where the reference starts: its own state when it is running (a
   // replacement continues from it), else the catch frame at the current
   // command, at rest — what the RT seeds the reference with on adoption.
   Eigen::Vector3d x0 = Eigen::Vector3d::Zero();
@@ -479,7 +479,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   for (int oi = 0; oi < n_ik_max; ++oi) {
     // Does the NEXT candidate still fit? Its cost is estimated from recent
     // ones (IK + rollout), so the cycle overruns by at most the estimate's
-    // error, not by a whole candidate (G3-C: p99 < budget_s).
+    // error, not by a whole candidate.
     // The first candidate always runs: the estimates only decay when an IK
     // runs, so a single slow solve (> budget) would otherwise stop every later
     // cycle at the first check and never relax (2026-09-23 /code-review).
@@ -511,7 +511,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
       q_star_[static_cast<std::size_t>(j)] = ik.q[j];
     }
 
-    // q̇ᵘ at q* and the shared rank-gate core (G3-I: the map's function).
+    // q̇ᵘ at q* and the shared rank-gate core.
     const double speed = v.norm();
     const Eigen::Vector3d v_hat = v / speed;
     const UnitSpeedResult us = unit_speed_.Compute(
@@ -540,7 +540,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
     in.a_dec = constants_.a_dec;
     const RankGateResult r = JudgeRankGates(in);
 
-    // γ_f and T_w from the rollout (§4.8, S6-C). The grid is restricted to
+    // γ_f and T_w from the rollout. The grid is restricted to
     // the γ window; an EMPTY window (g_min > g_max) is searched at the arm's
     // limit g_max — the most the arm can give, already a rank failure.
     double gamma_f = 0.0;
@@ -561,7 +561,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
       rollout_ok = rc.accepted;
       window_only = rc.window_only;
     }
-    // ── Rank gates (decision D) ─────────────────────────────────────────────
+    // ── Rank gates ──────────────────────────────────────────────────────────
     std::uint16_t mask = 0;
     if (!c.sigma_known || !(c.sigma <= kappa_rcap)) {
       mask |= kRankUncertainty;
@@ -586,7 +586,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
       mask |= kRankRollout;
     }
 
-    // ── Score (§4.10 + penalties) ───────────────────────────────────────────
+    // ── Score (plus penalties) ──────────────────────────────────────────────
     double score = w.w_late * (lead_max - c.lead_s) - w.w_gamma * gamma_f;
     if (c.sigma_known && r_cap > 0.0) {
       score += w.w_sigma * c.sigma / r_cap;
@@ -649,7 +649,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
     }
   }
 
-  // ── Switching (§4.7) and freeze (decision G) ──────────────────────────────
+  // ── Switching and freeze ──────────────────────────────────────────────────
   const bool following = current_.valid;
   if (following) {
     stats.publish = false;
@@ -680,10 +680,9 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
       const double dp = std::sqrt((bs.p[0] - current_.p_c[0]) * (bs.p[0] - current_.p_c[0]) +
                                   (bs.p[1] - current_.p_c[1]) * (bs.p[1] - current_.p_c[1]) +
                                   (bs.p[2] - current_.p_c[2]) * (bs.p[2] - current_.p_c[2]));
-      // The step the switch puts into u_des, held to η_jump·a_max (§4.7,
-      // decision ⑥), at its worst over the instants the RT may adopt it.
-      // Not judged when the arm follows segments: there is no L4 reference
-      // whose u_des a switch could step (GridCatchSearchConstants).
+      // The step the switch puts into u_des, held to η_jump·a_max, at its worst over the instants
+      // the RT may adopt it. Not judged when the arm follows segments: there is no reference whose
+      // u_des a switch could step (GridCatchSearchConstants).
       const double step = constants_.follows_segments ? 0.0 : SwitchStep(traj, rt, now_lead, dp);
       const bool jump_ok =
           constants_.follows_segments || step <= params_.switch_eta_jump * constants_.ref_a_max;
@@ -729,7 +728,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   // γ continues from where the reference is when replacing (no step in γ)
   // and ramps over the window the rollout chose, [t_c − T_w, t_c] clipped to
   // now_lead — the exact profile the rollout judged. Evaluated against
-  // now_lead (L0 §4.5).
+  // now_lead.
   plan.gamma_g0 = g0;
   plan.gamma_gf = best_gamma;
   plan.gamma_t0_ns = std::max(now_lead.ns, bs.t_ns - SecondsToNs(best_tw));

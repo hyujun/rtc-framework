@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Catching sim evaluation (from E1-F10): the t_c gap as VECTORS (along / across the ball's travel).
+"""Catching sim evaluation: the t_c gap as VECTORS (along / across the ball's travel).
 
     tc_vector.py <unit_dir> <config_dir> <out.csv> [<ct_out_dir>]
 

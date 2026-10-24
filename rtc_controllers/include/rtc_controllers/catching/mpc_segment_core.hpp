@@ -1,124 +1,145 @@
 // ── MPC segment core: jerk-input condensed QP, APPROACH to the stop ─────────────
-// (dynamic_catching MPC plan E1-F01 / #627 — the stop segment; E1-F07 / #660 —
-// the pre-catch grid and the catch terms; formulation §1.1–§1.3, §1.6)
+// One QP from the entry state x_0, through the catch node (n_pre > 0), to rest
+// at the end of the stop. With the defaults (n_pre = 0, catch_terms = false)
+// it is the stop problem alone. This is the numeric core the planner thread
+// calls through MpcSegmentPlanner (mpc_segment_planner.hpp); it knows no ROS,
+// no controller, no robot. The safety nets (closed-form DECEL in
+// decel_target.hpp, the QP-independent joint stop) are outside it.
 //
-// The segment is not only the stop (MD-48): with n_pre > 0 the horizon
-// starts before the catch. With the defaults (n_pre = 0, catch_terms = false)
-// this is exactly the E1-F01 stop problem described first below.
+// This header is the statement of the formulation as implemented. Callers and
+// tests refer to its terms by the names in the right-hand column below.
 //
-// Replaces nothing yet — the closed-form DECEL (decel_target.hpp) and the
-// QP-independent joint stop stay the safety nets (MD-11). This
-// is the numeric core the planner thread calls through MpcSegmentPlanner
-// (mpc_segment_planner.hpp, E1-F03); it knows no ROS, no controller, no robot.
+// ── Symbols, units, frames ────────────────────────────────────────────────────
+// n joints in the arm model's pinocchio velocity order (revolute or prismatic;
+// read [rad] as [m] for a prismatic joint). Nodes k = 0..N, N = n_pre +
+// n_nodes. Cartesian quantities are in the model's world frame: Jacobians are
+// LOCAL_WORLD_ALIGNED (world axes, origin at the frame).
+//   q_k, q̇_k, q̈_k   joint position [rad], velocity [rad/s], acceleration [rad/s²]
+//   u_k             jerk on interval [k, k+1] [rad/s³], constant there
+//   Δ_k             length of interval k [s]: Δ_a = dt_pre for k < k_c, Δ_s = dt
+//                   from k_c on; t_k = Σ_{i<k} Δ_i the node instant (NodeTime)
+//   k_c = n_pre     the catch node (CatchNode); 0 for the stop segment alone
+//   x̄_k             linearisation reference (q̄_k, q̄̇_k, q̄̈_k): the input's
+//                   q_ref / qd_ref / qdd_ref, or the kinematic pre-solve's answer
+//   p_C, J_v, J_ω   catch-frame position [m], the linear / angular rows of its
+//                   frame Jacobian; p_C^lin(q_k) = p_C(q̄_k) + J_v(q̄_k)(q_k − q̄_k)
+//   p̂_b, v̂_b        predicted ball position [m] and velocity [m/s] at the catch
 //
-// ── Problem ───────────────────────────────────────────────────────────────────
-// State x_k = (q_k, q̇_k, q̈_k) ∈ R^{3n} at nodes k = 0..N spaced Δ, input the
-// constant jerk u_k on [k, k+1]. x_0 is fixed (the stop starts there), so every
-// state and torque row lives on k = 1..N. Condensing: x_k = Φ_k x_0 + Γ_k u,
-// with move blocking u = E ũ (a block pattern {b_1..b_B}, Σb = N, shared by
-// all joints) and a variable scale ũ = u_scale·z. With z ordered block-major
-// (z_{b·n+j}) the triple integrator decouples per joint and every stage
-// matrix is a Kronecker product: G_{m,k} = ĝ_{m,k}ᵀ ⊗ I_n for m ∈ {q, q̇, q̈},
-// ĝ ∈ R^B. The solver works on z = [ũ/u_scale (nB); s (N)].
-// Per joint group (E3-F02, params.n_groups): each group may have its own
-// pattern. Joints whose groups share a pattern form one block class with the
-// structure above; z holds the classes one after another (BlockLayout), and a
-// term couples the classes through their own gains. One class — no groups, or
+// ── Dynamics and condensing ───────────────────────────────────────────────────
+// Per joint, the exact triple integrator under piecewise-constant jerk:
+//   q_{k+1} = q_k + Δ_k q̇_k + Δ_k²/2 q̈_k + Δ_k³/6 u_k
+//   q̇_{k+1} = q̇_k + Δ_k q̈_k + Δ_k²/2 u_k
+//   q̈_{k+1} = q̈_k + Δ_k u_k
+// x_0 is fixed (the input's q0, qd0, qdd0), so every state and torque row lives
+// on k = 1..N. Condensing: x_k = Φ_k x_0 + Γ_k u, Φ_k x_0 the free response
+// (q_0 + t_k q̇_0 + ½t_k² q̈_0, q̇_0 + t_k q̈_0, q̈_0). Move blocking: u = E ũ
+// with a block pattern {b_1..b_B}, Σb = N (u_k = ũ_b for k in block b), and
+// ũ = u_scale·z. With z ordered block-major (z_{b·n+j}) the joints decouple
+// and every stage matrix is a Kronecker product: G_{m,k} = ĝ_{m,k}ᵀ ⊗ I_n for
+// m ∈ {q, q̇, q̈}, ĝ ∈ R^B the scalar integrator's response to jerk u_scale held
+// over one block (StageGain; ComputeBlockStageGains in mpc_block_grid.hpp).
+// Per joint group (params.n_groups) each group may have its own pattern.
+// Joints whose groups share a pattern form one block class with the structure
+// above; z holds the classes one after another (BlockLayout), and a term
+// couples the classes through their own gains. One class — no groups, or
 // groups of one pattern — is the problem above to the bit.
 //
-//   min  ½ Σ_k Σ_j R_j (u_kj/u_scale)²                        jerk
-//      + ½ w_Δ Σ_k ‖q_k − q̄_k‖²                               stay near x̄
-//      + ½ w_⊥ Σ_k ‖P_⊥(p_C(q̄_k) + J_C(q̄_k)(q_k − q̄_k) − p_c)‖²   optional
-//      + ½ w_path Σ_k ‖P_k(p_C(q̄_k) + J_C(q̄_k)(q_k − q̄_k) − p_k)‖²  optional
-//      + ½ Σ_k Σ_j w_vel,j q̇_kj²                              optional (E3-F02)
-//      + ½ Σ_k Σ_j w_rest,j (q_kj − q_rest,j)²                 optional (E3-F02)
-//      + ½ Σ_k W(k)/s² ‖A_k q̈_k + d_k‖²                      optional (E3-F02)
-//      + ρ_τ Σ_k s_k                                          torque slack, per node
+// Decision variables: z = [z_u (n_u = Σ_c n_c·B_c, n·B with one class);
+// s_τ (N, one per node k = 1..N); s_v (1, only with ρ_v > 0)]. The result's
+// u_k is u_scale·z_u at k's block.
+//
+// ── Problem ───────────────────────────────────────────────────────────────────
+// Every quadratic term is ½-weighted least squares (ProxQP's ½zᵀHz + gᵀz);
+// slack penalties are linear. Sums over k run over k = 1..N unless written.
+// A term whose weight is off (0, empty, or all zero) leaves the QP the one
+// without it, bit for bit; w_⊥ = 0 and w_path = 0 read no line input.
+//
+//   min  ½ Σ_{k=0}^{N−1} (Δ_k/Δ_s) Σ_j R_j (u_kj/u_scale)²            jerk
+//      + ½ λ_Δ w_Δ Σ_k ‖q_k − q̄_k‖²                                   stay near x̄
+//      + ½ w_⊥ Σ_{k≥max(1,k_c)} ‖P_⊥(p_C^lin(q_k) − p_c)‖²            stop path
+//      + ½ w_path Σ_{k∈K_path} ‖P_k(p_C^lin(q_k) − p_k)‖²             closing window
+//      + ½ Σ_k Σ_j w_vel,j q̇_kj²                                       joint velocity
+//      + ½ Σ_k Σ_j w_rest,j (q_kj − q_rest,j)²                         rest
+//      + ½ Σ_k W(k)/s² ‖A_k q̈_k + d_k‖²                               angular momentum
+//      + the catch terms at k_c (below)
+//      + ρ_τ Σ_k s_τ,k                                                 torque slack
 //   s.t. q̇_N = q̈_N = 0                                         (2n, hard)
-//        max(q_min+m, q̄_k−δ) ≤ q_k ≤ min(q_max−m, q̄_k+δ)       (hard)
-//        |q̇_k| ≤ η_v q̇_max                                     (hard)
-//        |τ^lin_kj / τ_max,j| ≤ η_τ + s_k,  s_k ≥ 0  (every j; soft)
+//        max(q_lo,j, q̄_kj − δ) ≤ q_kj ≤ min(q_hi,j, q̄_kj + δ)   (hard)
+//        |q̇_kj| ≤ η_v q̇_max,j                                  (hard)
+//        |τ^lin_kj| / τ_max,j ≤ η_τ + s_τ,k,  s_τ,k ≥ 0         (every j; soft)
 //
-// τ^lin_k = τ̄_k + D_k (x_k − x̄_k), D_k = [∂τ/∂q  ∂τ/∂q̇  M] at the reference
-// node x̄_k (pinocchio computeRNEADerivatives on the caller's hand-locked arm
-// model with armature added). Torque rows and slack are scaled by 1/τ_max, so
-// the slack is a DIMENSIONLESS fraction of τ_max — unlike the CLIK torque rows
-// (unit-norm scaling), chosen here so the slack reads directly as "how far past
-// the limit". There is ONE slack per node (#857): the node's joints share
-// s_k, so where its rows bind s_k = max_j(|τ^lin_kj|/τ_max,j − η_τ)⁺ — the
-// node's worst excess, an ℓ∞ penalty within the node (one slack per joint
-// would pay the sum), and a joint below the worst may use η_τ + s_k. The
-// penalty is exact (s = 0 whenever the hard problem is feasible) only while
-// ρ_τ exceeds, on every node, the SUM of that node's torque-row multipliers
-// Σ_j (λ⁺_kj + λ⁻_kj) — not each multiplier alone.
+//  • jerk: R_j = jerk_weight (dimensionless; u_scale [rad/s³] sets the jerk's
+//    weight against the other terms). Δ_k/Δ_s makes a mixed grid approximate
+//    the same time integral; on the uniform grid it is 1.
+//  • stay near x̄: w_Δ = w_delta [1/rad²], λ_Δ = input.w_delta_scale ∈ [0, 1].
+//    Per node, not weighted by Δ_k — on a mixed grid the same value pulls the
+//    coarse part less per second. ρ_τ is per node likewise.
+//  • stop path: w_⊥ = w_perp [1/m²], the line through p_c along the unit d̂
+//    (input p_c, d_hat), P_⊥ = I − d̂d̂ᵀ. Only the stop segment: the line is
+//    where the hand stops, not how it approaches.
+//  • closing window: w_path [1/m²]; K_path = the nodes params.path_nodes marks
+//    (1..n_pre − 1 only: node 0 is x_0, and from k_c on w_⊥ holds the hand on
+//    the catch line) that input.path_on switches on. Node k has ITS OWN line,
+//    through p_k (path_p) along the unit d̂_k (path_d), P_k = I − d̂_k d̂_kᵀ —
+//    the caller's choice is the ball path near where the reference puts the
+//    hand at that node. Same form and storage as w_⊥ (disjoint node sets).
+//  • joint velocity / rest: w_vel,j [(rad/s)⁻²], w_rest,j [rad⁻²], q_rest
+//    [rad], per joint (the planner spreads a group's value over its joints).
+//    Constant Hessian, built at Init and added on every path of the full
+//    problem (H = h_kin + h_wb + λ_Δ·h_Δ included); q_rest is read only where
+//    w_rest > 0. The result's `whole_body` reports both at the solution.
+//  • angular momentum: the centroidal angular-momentum rate, linearised at the
+//    reference like the torque rows, k̇_G,k ≈ A_k q̈_k + d_k with A_k =
+//    A^ω_G(q̄_k) (the angular rows of the centroidal momentum matrix) and the
+//    constant d_k = Ȧ^ω_G(q̄_k, q̄̇_k) q̄̇_k, both from one pinocchio dccrba at
+//    x̄_k on the core's own model (it reads EVERY joint of the model). W(k) =
+//    w_ang_pre for k < k_c, w_ang_post from k_c on (all of 1..N without a
+//    pre-catch grid), s = ang_scale [N·m]; only nodes with W(k) > 0. The q / q̇
+//    dependence of A_k beyond the reference is not modelled. `whole_body`
+//    reports the term and max ‖k̇_G,k‖ on this LINEAR model at the solution.
+//  • position box: q_lo,j = q_min,j + m_j, q_hi,j = q_max,j − m_j, m_j =
+//    min(m_q, (q_max,j − q_min,j)/2) (PositionLow / PositionHigh), intersected
+//    with the trust region of half-width δ = delta_tr around q̄_k.
+//  • torque: τ^lin_k = τ̄_k + D_k (x_k − x̄_k), D_k = [∂τ/∂q  ∂τ/∂q̇  M] at x̄_k
+//    (LinearizeTorqueAt, mpc_segment_core_torque.hpp — pinocchio
+//    computeRNEADerivatives on the caller's hand-locked arm model with the
+//    limits' armature added). Rows and slack are scaled by 1/τ_max, so s_τ is
+//    a DIMENSIONLESS fraction of τ_max. One slack per node: where its rows bind,
+//    s_τ,k = max_j(|τ^lin_kj|/τ_max,j − η_τ)⁺ — an ℓ∞ penalty within the node
+//    (one slack per joint would pay the sum), and a joint below the worst may
+//    use η_τ + s_τ,k. The penalty is exact (s = 0 whenever the hard problem is
+//    feasible) only while ρ_τ exceeds, on every node, the SUM of that node's
+//    torque-row multipliers Σ_j (λ⁺_kj + λ⁻_kj). ρ_τ = 0: no torque rows, s_τ
+//    pinned at 0.
 //
-// ── Per-joint velocity and rest terms (E3-F02, #641; formulation §1.3) ────────
-// w_vel and w_rest are weights per joint (the planner spreads a joint group's
-// value over its joints), on every node k = 1..N, per node like w_Δ — no
-// interval-length weight. Both are quadratic in z with a CONSTANT Hessian:
-// that part is built at Init and enters H on every path, the w_delta_scale
-// one (H = h_kin + h_wb + scale·h_delta) included; the pre-solve (a kinematic
-// stop problem that only builds a reference) has neither. q_rest is read only
-// where w_rest > 0. Off (empty, or all zero) the QP is the one without the
-// term, bit for bit; the result's `whole_body` reports the terms' values at
-// the solution.
-//
-// The centroidal angular-momentum rate (formulation §1.3, §1.4) is linearised
-// at the reference like the torque rows: k̇_G,k ≈ A_k q̈_k + d_k with
-// A_k = A^ω_G(q̄_k) (the angular rows of the centroidal momentum matrix) and
-// the constant d_k = Ȧ^ω_G(q̄_k, q̄̇_k) q̄̇_k, both from one pinocchio dccrba at
-// x̄_k on the core's own model. It reads EVERY joint of the model. Its weight
-// is W(k)/s²: W = w_ang_pre on the nodes before the catch node, w_ang_post
-// from it on (all of 1..N without a pre-catch grid), s = ang_scale [N·m] —
-// per node, ½-weighted, like the terms above. The q / q̇ dependence of A_k
-// beyond the reference (the first-order centroidal derivatives) is not
-// modelled. The result's `whole_body` reports the term and max ‖k̇_G,k‖ over
-// the nodes it weights, on this LINEAR model at the solution (no evaluation
-// after the QP).
-//
-// ── The pre-catch grid and the catch terms (E1-F07) ───────────────────────────
-// With n_pre > 0 the horizon has n_pre nodes of spacing Δ_a (dt_pre) BEFORE the
-// catch node k_c = n_pre and n_nodes nodes of spacing Δ_s (dt) after it; the
-// total is N = n_pre + n_nodes and everything above holds with that N (the
-// terminal equality still sits at node N, the end of the stop). The grid is
-// anchored at the catch instant t_c: node k_c is AT t_c. Differences:
-//  • jerk cost is weighted by the interval length, ½ Σ_k (Δ_k/Δ_s) R (u_k/u_s)²,
-//    so a mixed grid approximates the same time integral (formulation §1.2).
-//    w_Δ and ρ_τ stay PER NODE, as the formulation writes them — on a mixed
-//    grid the same value therefore regularises the coarse part less per second.
-//  • a block may not cross the catch node, and at least 3 blocks must lie after
-//    it (the terminal equality takes two; formulation §1.1).
-//  • the stop-path term w_⊥ covers the stop segment only, nodes k_c..N: the
-//    line through p_c is where the hand stops, not how it approaches.
-//  • the closing-window path term w_path (#716, formulation §1.6) covers the
-//    pre-catch nodes the caller marks (params.path_nodes, 1..n_pre − 1 only:
-//    node 0 is x_0, and from k_c on w_⊥ holds the hand on the catch line),
-//    each against ITS OWN line (p_k, d̂_k; P_k = I − d̂_k d̂_kᵀ) — the caller's
-//    choice is the ball path near where the reference puts the hand at that
-//    node. Same form as w_⊥, same storage (the two node sets are disjoint).
-//    A marked node the input switches off (path_on) carries no term on that
-//    solve. With w_path = 0 no path input is read and the QP is the one
-//    without the term, bit for bit.
-// With catch_terms the cost gains three terms AT the catch node, linearised at
-// the reference x̄ (the same ½-weighted least-squares convention as above —
-// formulation §1.3 puts them inside the same ½[…]):
-//      ½ ‖p_C(q_kc) − p̂_b‖²_{W_p}                        position
-//    + ½ w_a ‖e_a(q_kc)‖²                                 approach axis
-//    + ½ ‖v_C − γ_ref v̂_b‖²_{W_v},  W_v = w_∥ d̂d̂ᵀ + w_⊥(I − d̂d̂ᵀ)   velocity
-//    + ρ_v s_v,   |v̂_b − v_C|_i ≤ v_allow (1 + s_v),  s_v ≥ 0   (ρ_v > 0 only)
-// with v_C = J_v(q̄) q̇_kc + H_v(q̄, q̄̇)(q_kc − q̄), H_v = ∂_q[J_v(q) q̄̇], d̂ the
-// ball's direction of travel, and e_a rtc_math's axis-alignment error of the
-// catch frame's +z against a_d (roll about the axis is free). The slack s_v is
-// DIMENSIONLESS (a fraction of v_allow, like the torque slack) and its rows are
-// always against v̂_b itself, not γ_ref v̂_b — with γ_ref < 1 the cost's own
-// optimum sits (1 − γ_ref)‖v̂_b‖ off those rows, so s_v > 0 is then structural.
+// ── The catch terms (params.catch_terms, n_pre ≥ 1) ───────────────────────────
+// Added to the cost at k_c, linearised at q̄ = q̄_kc, q̄̇ = q̄̇_kc
+// (LinearizeCatchAt, mpc_segment_core_catch.hpp):
+//      ½ ‖p_C^lin(q_kc) − p̂_b‖²_{W_p}                                 position
+//    + ½ w_a ‖e_a(q̄) + J_a J_ω(q̄)(q_kc − q̄)‖²                         approach axis
+//    + ½ ‖v_C − γ_ref v̂_b‖²_{W_v}                                      velocity
+//    + ρ_v s_v,  |v̂_b − v_C|_i ≤ v_allow (1 + s_v) (i = x, y, z),  s_v ≥ 0
+//                                                         (ρ_v > 0 only)
+//  • v_C = J_v(q̄) q̇_kc + H_v(q̄, q̄̇)(q_kc − q̄), H_v = ∂_q[J_v(q) q̄̇] — the
+//    catch-frame point velocity to first order (only the δq·δq̇ term dropped).
+//  • W_p [1/m²] symmetric PSD (input.w_p; CatchPositionWeight builds it from a
+//    covariance). w_a = w_axis [1/rad²]; e_a, J_a rtc_math's axis-alignment
+//    error of the catch frame's +z against the unit a_d and its Jacobian
+//    (roll about the axis is free).
+//  • W_v = w_v∥ d̂d̂ᵀ + w_v⊥ (I − d̂d̂ᵀ) [(m/s)⁻²], d̂ = v̂_b/‖v̂_b‖ the ball's
+//    direction of travel (W_v = w_v⊥ I when ‖v̂_b‖ ≤ 1e-6 m/s); w_v∥ = w_v_par,
+//    w_v⊥ = w_v_perp — not the stop path's w_⊥. γ_ref ∈ (0, 1].
+//  • s_v is DIMENSIONLESS (a fraction of v_allow = v_rel_allow, like s_τ) and
+//    its rows are always against v̂_b itself, not γ_ref v̂_b — with γ_ref < 1 the
+//    cost's own optimum sits (1 − γ_ref)‖v̂_b‖ off those rows, so s_v > 0 is
+//    then structural.
 // The catch terms need a reference: the kinematic pre-solve below is a STOP
 // problem and knows no catch point, so Solve() rejects reference_valid = false
 // (kReferenceRequired) instead of linearising a reach around "stay where you
 // are". Building the first reference (wait pose → the plan's posture at t_c)
 // is the caller's job. It need not be inside the velocity box: the box rows
-// and the trust region bend a reference that runs over it back (#819), as long
-// as its area over the box stays within 2·delta_tr of reach.
+// and the trust region bend a reference that runs over it back, as long as its
+// area over the box stays within 2·delta_tr of reach.
 // Limits are checked at the nodes only; between nodes of the coarse part the
 // velocity is a quadratic and may overshoot the box by a little.
 //
@@ -126,32 +147,35 @@
 //  • The horizon IS the stopping time. The cost has no time term, so the
 //    optimum always uses all of N·Δ: a longer horizon means a gentler but
 //    longer stop, never an earlier one. Choosing N and Δ is the caller's
-//    decision (`planner.segment.mpc.horizon`, MD-24), not this core's.
-//  • Blocks: B ≥ 3 (after the catch node, when n_pre > 0 — the Init rank
-//    self-test cannot see that rule, pre-catch blocks supply rank too; the
-//    explicit count is the guard). The terminal equality has rank 2n for any B ≥ 2; B = 2
-//    leaves no freedom (the terminal rows fix every block), so B ≥ 3 is the
-//    freedom rule, rejected as kBlocksTooFew. The rank itself is re-checked on
-//    the assembled matrix at Init as a self-test of the condensing.
+//    decision (`planner.segment.mpc.horizon`), not this core's.
+//  • Blocks: B ≥ 3 after the catch node (with n_pre > 0 the Init rank
+//    self-test cannot see that rule — pre-catch blocks supply rank too — so
+//    the explicit count is the guard), and no block crosses the catch node
+//    (kBlocksAcrossCatch). The terminal equality has rank 2n for any B ≥ 2;
+//    B = 2 leaves no freedom (the terminal rows fix every block), so B ≥ 3 is
+//    the freedom rule, rejected as kBlocksTooFew. The rank itself is
+//    re-checked on the assembled matrix at Init as a self-test of the
+//    condensing.
 //  • Terminal static torque: when the reference ends at rest, D_N reduces to
 //    [∂g/∂q 0 M] and the terminal equality kills the M term, so node N's torque
 //    rows ARE the static-torque check at the stop posture. Solve() therefore
 //    requires a supplied reference to end at rest (kReferenceNotAtRest).
 //  • No reference (reference_valid = false, e.g. the first cycle): a kinematic
-//    pre-solve (no torque rows, no trust region, no w_Δ/w_⊥) produces x̄, then
-//    the full problem is solved around it — two QPs that cycle only. The
-//    pre-solve always starts cold (a new stop is a new problem); every other
-//    QP warm-starts from the previous one.
-//  • Entry state: x_0 outside the core's own box (q_0 within the margin m of a
-//    limit, or |q̇_0| > η_v q̇_max) is rejected (kInitialStateOutsideBox), not
-//    relaxed — node 1 could not satisfy the hard rows. Keeping x_0 inside is
-//    the caller's policy (predict before entry, or fall back to closed form).
-//  • x_0 more than δ from x̄_0 (it drifted between cycles), or a trust-region
-//    row with lower > upper (x̄ left the box by more than δ), fails closed
-//    (kTrustRegionConflict) before any QP runs; the caller re-solves with
+//    pre-solve — the jerk term alone, under the terminal equality and the
+//    position and velocity boxes (no torque rows, no trust region, no other
+//    term) — produces x̄, then the full problem is solved around it: two QPs
+//    that cycle only. The pre-solve always starts cold (a new stop is a new
+//    problem); every other QP warm-starts from the previous one.
+//  • Entry state: x_0 outside the core's own box (q_0 outside [q_lo, q_hi], or
+//    |q̇_0| > η_v q̇_max) is rejected (kInitialStateOutsideBox), not relaxed —
+//    node 1 could not satisfy the hard rows. Keeping x_0 inside is the
+//    caller's policy (predict before entry, or fall back to closed form).
+//  • q_0 more than δ from q̄_0 (it drifted between cycles), or a trust-region
+//    row with lower > upper (q̄ left the box by more than δ), fails closed
+//    (kTrustRegionConflict); the caller re-solves with
 //    reference_valid = false. "Cannot stop within limits" shows up as slack:
-//    read slack_max / slack_terminal_max, the publish threshold is the
-//    caller's (MD-11).
+//    read slack_max / slack_terminal_max; the publish threshold is the
+//    caller's.
 //
 // ── Contracts ─────────────────────────────────────────────────────────────────
 //  • Init() is non-RT (copies the model, allocates everything). Solve() is
@@ -162,13 +186,13 @@
 //  • A warm main QP that fails is solved once more from zero
 //    (result.cold_retried): from iterates left by another problem ProxQP may
 //    not converge within solver.max_iter on a feasible QP (and, under an
-//    approximate infeasibility test, called such QPs infeasible — #880). A
-//    QP that is really infeasible fails both runs, so it costs two. cold_start
-//    on a new problem avoids paying for the failed run. A main QP that starts
-//    warm from the previous solve's iterates runs under solver_max_iter_warm
-//    (when set) instead of solver.max_iter, so a warm run that will not
-//    converge gives up early; the cold run, and a main QP warm-started by this
-//    solve's own pre-solve, keep solver.max_iter.
+//    approximate infeasibility test, called such QPs infeasible). A QP that
+//    is really infeasible fails both runs, so it costs two. cold_start on a
+//    new problem avoids paying for the failed run. A main QP that starts warm
+//    from the previous solve's iterates runs under solver_max_iter_warm (when
+//    set) instead of solver.max_iter, so a warm run that will not converge
+//    gives up early; the cold run, and a main QP warm-started by this solve's
+//    own pre-solve, keep solver.max_iter.
 //  • The deadline (input.deadline_ns, on the clock SetClock installs) is read
 //    before every QP: the pre-solve, the main QP and its cold run. Past it no
 //    QP is started and the solve fails kDeadline; `cut_site` says before
@@ -176,7 +200,7 @@
 //    solver's iteration caps — so a solve overruns its deadline by at most
 //    one QP. Cut before the cold run, the result keeps the warm run's status,
 //    iterations and time (cold_retried stays false). Without a clock or a
-//    deadline the clock is never read and nothing changes (#887).
+//    deadline the clock is never read and nothing changes.
 //  • Heap: this core allocates nothing in Solve(). Everything up to the QP
 //    (linearisation, FK, condensing) is pinned by a C-level malloc gate; the
 //    extraction after the QP shares its Solve with ProxQP, whose C mallocs
@@ -185,8 +209,7 @@
 //    its public update() copies the vector arguments and solve() allocates a
 //    few times per call (~7–18 C mallocs per Solve at n = 7). That is a
 //    recorded RT-1 violation shared with every QPSolverWrapper user
-//    (agent_docs/invariants.md §RT Path, #654; MD-22 / MD-23) — not a property
-//    of this file.
+//    (agent_docs/invariants.md) — not a property of this file.
 //  • The model is the arm in pinocchio velocity order (nq == nv, revolute /
 //    prismatic joints only). Mapping device order to that order is the
 //    caller's job (the same rule CatchPoseIk documents).
@@ -232,12 +255,12 @@ enum class MpcSegmentCoreReason : std::uint8_t {
   kPresolveFailed,
   kQpFailed,
   kSolutionNonFinite,
-  // E1-F07 — appended, the values above are stable.
+  // Appended; the values above are stable.
   kBlocksAcrossCatch,    ///< Init: a block spans the catch node
   kInputOutOfRange,      ///< W_p not symmetric PSD, γ_ref ∉ (0, 1], w_delta_scale ∉ [0, 1]
   kReferenceRequired,    ///< catch terms on and reference_valid = false
   kCatchAxisOutOfRange,  ///< the reference's axis error exceeds axis_theta_max
-  // #887 — appended.
+  // Appended.
   kDeadline,  ///< past input.deadline_ns before a QP (result.cut_site says which)
 };
 
@@ -262,7 +285,7 @@ struct MpcSegmentCoreParams {
   double dt_pre{0.0};  ///< Δ_a [s], > 0 when n_pre > 0
   int n_blocks{6};     ///< B (3 ≤ B ≤ min(N, kMaxSegmentNodes))
   std::array<int, kMaxSegmentNodes> block_sizes{1, 1, 2, 2, 3, 3};  ///< first B used, Σ = N
-  /// Per-group move blocking (E3-F02, formulation §1.1, MD-49). With n_groups
+  /// Per-group move blocking (header note). With n_groups
   /// ≤ 1 every joint follows n_blocks / block_sizes above. With 2..
   /// kMaxJointGroups, model joint j follows group_blocks[joint_group[j]] and
   /// n_blocks / block_sizes are not read; each partition a joint uses obeys
@@ -283,7 +306,7 @@ struct MpcSegmentCoreParams {
   /// bounds it where its cores still solve within solver.max_iter
   /// (kMpcSegmentStopPathWeightMax).
   double w_perp{0.0};
-  /// Closing-window path weight [1/m²]; 0 = off (header note, #716). Bounded
+  /// Closing-window path weight [1/m²]; 0 = off (header note). Bounded
   /// like w_perp.
   double w_path{0.0};
   /// The nodes the path term may sit on, indexed by node k. Only
@@ -308,9 +331,9 @@ struct MpcSegmentCoreParams {
   /// Torque slack penalty (per node); 0 = torque rows off. Exact only above
   /// every node's sum of torque-row multipliers (header note); larger values
   /// slow ProxQP (and, under an approximate infeasibility test, drew false
-  /// infeasibility verdicts — solver.eps_primal_inf below). The E1-F01 sweep
-  /// (#627) found 10 exact with one slack per joint and node; #857 records it
-  /// for one per node.
+  /// infeasibility verdicts — solver.eps_primal_inf below). 10 was measured
+  /// exact with one slack per joint and node (#627) and with one per node
+  /// (#857).
   double rho_tau{10.0};
   double eta_v{0.95};    ///< velocity row fraction of q̇_max, (0, 1]
   double eta_tau{0.7};   ///< torque row fraction of τ_max, (0, 1]
@@ -324,12 +347,12 @@ struct MpcSegmentCoreParams {
   /// early. ProxQP's approximate test (its default 1e-4) called feasible QPs
   /// of this core infeasible — every first solve it failed in the offline
   /// grid maps (5,452 of about 262,000, #880) and a vertical 7-joint arm's
-  /// stop from rest at q = 0 (#857 D12) solve without it. An infeasible QP
+  /// stop from rest at q = 0 (#857) solve without it. An infeasible QP
   /// then runs to max_iter: 60 outer steps keep every converging first solve
   /// of those maps (the hardest takes 31 – 40; 30 cuts one) and hold an
-  /// infeasible solve to about 0.1 s cold on a 7-joint arm (#880 D11). A
+  /// infeasible solve to about 0.1 s cold on a 7-joint arm (#880). A
   /// warm run before that cold run is held by solver_max_iter_warm, and the
-  /// cold run is not started past the solve's deadline (#887).
+  /// cold run is not started past the solve's deadline.
   /// Designated so a field added to QPSolverConfig cannot shift these.
   tsid::QPSolverConfig solver{.max_iter = 60,
                               .update_preconditioner = true,
@@ -384,8 +407,8 @@ struct MpcSegmentCoreInput {
   bool reference_valid{false};
   Eigen::Vector3d p_c{Eigen::Vector3d::Zero()};     ///< catch point [m]; read when w_⊥ > 0
   Eigen::Vector3d d_hat{Eigen::Vector3d::UnitX()};  ///< unit line direction; read when w_⊥ > 0
-  /// Pull toward the reference: w_Δ is multiplied by this, in [0, 1] (the
-  /// covariance-proportional schedule of formulation §1.3). Pass 0 on the first
+  /// λ_Δ: w_Δ is multiplied by this, in [0, 1] (the planner's
+  /// covariance-proportional schedule, mpc_segment_planner.hpp). Pass 0 on the first
   /// solve of a plan — the reference is then the caller's curve, not a previous
   /// solution worth staying near.
   double w_delta_scale{1.0};
@@ -408,7 +431,7 @@ struct MpcSegmentCoreInput {
   Eigen::Matrix3d w_p{Eigen::Matrix3d::Zero()};
   Eigen::Vector3d a_d{Eigen::Vector3d::UnitZ()};  ///< desired approach axis (unit, world)
   Eigen::Vector3d v_b{Eigen::Vector3d::Zero()};   ///< predicted ball velocity at t_c [m/s]
-  double gamma_ref{1.0};  ///< velocity cost target γ_ref·v̂_b, in (0, 1] (MD-53)
+  double gamma_ref{1.0};                          ///< velocity cost target γ_ref·v̂_b, in (0, 1]
   // ── Closing-window path: read (and validated) only with params.w_path > 0,
   //    and only at a node params.path_nodes marks AND path_on turns on ──
   std::array<bool, kMaxMpcNodes + 1> path_on{};
@@ -419,7 +442,7 @@ struct MpcSegmentCoreInput {
       Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
 };
 
-/// The whole-body terms at the returned solution (E3-F02), each with the
+/// The whole-body terms at the returned solution, each with the
 /// cost's ½: their total and their sum over each joint group (index =
 /// params.joint_group; group 0 holds every joint without groups).
 struct MpcSegmentWholeBodyCost {
@@ -616,7 +639,7 @@ class MpcSegmentCore {
   int n_pre_{0};     // k_c
   int n_blocks_{0};  // B of block class 0
   int nu_{0};        // Σ_c n_c·B_c (n·B with one class)
-  int n_s_{0};       // torque slack variables: one per node, N (#857)
+  int n_s_{0};       // torque slack variables: one per node, N
   int nz_{0};        // nu_ + n_s_ (+ 1 with the velocity slack)
   int n_eq_{0};      // 2n
   int n_in_{0};      // 4·n·N + n_s_ (+ 7 with the velocity slack)
@@ -653,7 +676,7 @@ class MpcSegmentCore {
   Eigen::MatrixXd h_kin_;    // jerk only (pre-solve)
   Eigen::MatrixXd h_main_;   // jerk + w_Δ (full problem, before w_⊥ and the catch terms)
   Eigen::MatrixXd h_delta_;  // the w_Δ part alone at scale 1 (used when w_delta_scale ≠ 1)
-  Eigen::MatrixXd h_wb_;     // the w_vel and w_rest parts (E3-F02); built only when one is on
+  Eigen::MatrixXd h_wb_;     // the w_vel and w_rest parts; built only when one is on
 
   tsid::QPSolverWrapper solver_;
   tsid::QPData qp_pre_;
@@ -685,7 +708,7 @@ class MpcSegmentCore {
   Eigen::Matrix<double, 3, Eigen::Dynamic> dag_v_;
   Eigen::Matrix<double, 3, Eigen::Dynamic> ag_k_;  // one node's A_k (workspace)
   Eigen::VectorXd w_vel_, w_rest_, q_rest_;  // n; zeros where off (q_rest_ 0 where w_rest = 0)
-  // Closing-window path (#716): w_path > 0 and a node marked; this solve's
+  // Closing-window path: w_path > 0 and a node marked; this solve's
   // nodes (marked and switched on), whether any is, and their lines.
   bool path_on_{false};
   std::array<bool, kMaxMpcNodes + 1> path_active_{};
@@ -696,7 +719,7 @@ class MpcSegmentCore {
       Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
   Eigen::Vector3d p_c_{Eigen::Vector3d::Zero()};
 
-  // Catch terms (E1-F07).
+  // Catch terms.
   bool catch_on_{false};
   bool vel_on_{false};       // w_v_par or w_v_perp > 0
   bool slack_v_on_{false};   // rho_v > 0: one more variable, seven more rows

@@ -1,19 +1,19 @@
-// ── The planner's search on a real 6R arm (dynamic_catching S6-B) ────────────
+// ── The planner's search on a real 6R arm ────────────────────────────────────
 //
-//   1. q̇ᵘ (G3-I's runtime half): the fixed-capacity producer equals an
+//   1. q̇ᵘ: the fixed-capacity producer equals an
 //      independent dynamic-size DLS built from the fixture's own Jacobian
 //      stack — the formula the offline map's python uses.
-//   2. Judgement vs rank (decisions C/D): a judgement gate removes a candidate
+//   2. Judgement vs rank: a judgement gate removes a candidate
 //      and names itself in the no-plan reason; a failed rank gate only sets
 //      its bit and adds the penalty — the candidate can still be chosen.
-//   3. Settle (§4.4), the IK budget (R-2 pre-filter / budget_s).
-//   4. Switching (§4.7) and freeze (decision G): hold on no improvement, on
+//   3. Settle, the IK budget (pre-filter / budget_s).
+//   4. Switching and freeze: hold on no improvement, on
 //      the freeze window, and replace when the current plan is infeasible.
-//   5. G3-K: a full search (IK + q̇ᵘ + gates) allocates nothing.
-//   5a. The arm (E1-F17): while the RT follows a segment the reach starts on
+//   5. RT: a full search (IK + q̇ᵘ + gates) allocates nothing.
+//   5a. The arm: while the RT follows a segment the reach starts on
 //      that segment at now_lead, bit for bit; with none readable, on the
 //      reported command.
-//   6. R-2 / G3-G: timing and IK acceptance recorded as integer µs / counts
+//   6. Timing and IK acceptance recorded as integer µs / counts
 //      (RecordProperty's to_string squashes small doubles).
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
@@ -190,7 +190,7 @@ TEST(PlannerUnitSpeed, MatchesAnIndependentDynamicSizeDls) {
 }
 
 // `planner.search.grid.gamma.unit_speed_damping` reaches the search's unit-speed
-// solve. The chosen candidate's v_dir,max (L3 §4.5) is recomputed here, from
+// solve. The chosen candidate's v_dir,max is recomputed here, from
 // its own posture and ball direction, with the damping the profile gave — and
 // the two dampings give different numbers, so a search that kept the constant
 // would match only one of them.
@@ -270,13 +270,13 @@ TEST(GridCatchSearchPlan, FindsTheReachableCatchPointOnTheTrajectory) {
   EXPECT_GE(plan.gamma_gf, 0.0);
   EXPECT_LE(plan.gamma_gf, 1.0);
   EXPECT_EQ(plan.gamma_t1_ns, plan.t_c_ns);
-  // S6-C: the rollout ran and chose the γ window the plan carries.
+  // The rollout ran and chose the γ window the plan carries.
   EXPECT_GT(stats.n_rollouts, 0);
   EXPECT_GT(stats.chosen_t_w, 0.0);
   EXPECT_EQ(plan.gamma_t0_ns,
             std::max<std::int64_t>(kNow, plan.t_c_ns - static_cast<std::int64_t>(
                                                            std::llround(stats.chosen_t_w * 1e9))));
-  // S8-I: the chosen candidate's γ window is reported as judged (L3 §4.5),
+  // The chosen candidate's γ window is reported as judged,
   // so an analysis reads it instead of rebuilding it from FK.
   const double speed = Eigen::Vector3d(plan.v_c[0], plan.v_c[1], plan.v_c[2]).norm();
   ASSERT_TRUE(std::isfinite(stats.chosen_v_dir_max));
@@ -294,7 +294,7 @@ TEST(GridCatchSearchPlan, FindsTheReachableCatchPointOnTheTrajectory) {
 }
 
 TEST(GridCatchSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
-  // S8-I (`planner.wait_pose_source: current`): the RT hands the adopted pose
+  // (`planner.wait_pose_source: current`): the RT hands the adopted pose
   // over in PlannerRtState; the search seeds its IK from it. Handing over the
   // configured pose changes nothing; a different pose still yields a plan.
   auto rig = std::make_unique<Rig>();
@@ -420,10 +420,10 @@ TEST(GridCatchSearchPlan, TheIkGateRemovesEveryCandidateItRunsOnAndNamesItself) 
 }
 
 TEST(GridCatchSearchPlan, OnlyTheInputAndTheReachBoundRemoveACandidateBeforeTheIk) {
-  // L3 §4.9: no gate judges WHERE a candidate's catch point is. Every candidate
+  // No gate judges WHERE a candidate's catch point is. Every candidate
   // in the lead window with a finite, moving ball reaches the IK, is left
   // outside its budget, or is farther from the arm than its kinematics can put
-  // the catch frame (L3 appendix B) — the three counts add up to the window.
+  // the catch frame (reach_bound.hpp) — the three counts add up to the window.
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
@@ -463,8 +463,8 @@ TEST(GridCatchSearchPlan, OnlyTheInputAndTheReachBoundRemoveACandidateBeforeTheI
 
 TEST(GridCatchSearchPlan, AFailedRankGatePenalisesButDoesNotRemove) {
   // An unknown covariance fails the uncertainty rank gate for EVERY candidate:
-  // decision D says the plan still exists, carries the bit, and costs the
-  // penalty; decision C says only judgement gates remove.
+  // the plan still exists, carries the bit, and costs the penalty — only
+  // judgement gates remove.
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
@@ -498,7 +498,7 @@ TEST(GridCatchSearchPlan, AnUnsetDecisionKeepsEveryCandidateOut) {
   EXPECT_EQ(stats.n_in_window, 0);
 }
 
-// ── 2a. The hand-close lead (E1-F16) ─────────────────────────────────────────
+// ── 2a. The hand-close lead ──────────────────────────────────────────────────
 
 // `robot.hand.T_close_lead` is what the hand sequencer subtracts from t_c; the
 // MEASURED closure time (`t_close_total`) only feeds the γ window. The command
@@ -537,7 +537,7 @@ TEST(GridCatchSearchPlan, TheCloseLeadDrivesTheCommandInstantAndTheCommitGate) {
   EXPECT_NE(unknown.chosen_rank_mask & rtc::catching::kRankCommitLead, 0);
 }
 
-// ── 2b. The monitored covariance (E1-F16) ────────────────────────────────────
+// ── 2b. The monitored covariance ─────────────────────────────────────────────
 
 // The followed plan's σ is read by the rule every planner reads the prediction
 // by: the nearest sample's covariance propagated to t_c, F Σ Fᵀ — not that
@@ -658,8 +658,8 @@ std::uint64_t SearchSequenceDigest(Rig& rig) {
 TEST(GridCatchSearchPlan, AReconfiguredSearchIsANewOne) {
   // Configure is a full reset: a search that has run and is configured again
   // answers exactly as one built and configured now. PlannerCycle relies on
-  // it — a configure installs a NEW search (MakeGridCatchSearch) every time (E1-F12
-  // #738) where it once configured the one in place again, and the two are
+  // it — a configure installs a NEW search (MakeGridCatchSearch) every time
+  // where it once configured the one in place again, and the two are
   // the same thing only if nothing a search did before survives its
   // Configure. n_settle 2 puts the per-trial part of that in view: a search
   // that kept its settle count would plan on the first snapshot.
@@ -705,7 +705,7 @@ TEST(GridCatchSearchPlan, TheBudgetStopsTheIkAndSaysSo) {
 }
 
 TEST(GridCatchSearchPlan, ACallersCapBelowItsBudgetIsTheBudgetItRunsOn) {
-  // CatchSearch::Plan's budget cap (E1-F17): a wake that has a replan to run
+  // CatchSearch::Plan's budget cap: a wake that has a replan to run
   // behind the search gives the search less than its own budget. On the fake
   // clock (3 ms a read) the cap decides how many candidates get their IK.
   const auto run = [](double budget_s, std::int64_t cap_ns) {
@@ -824,8 +824,8 @@ TEST(GridCatchSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall)
 }
 
 TEST(GridCatchSearchSwitch, UnderASegmentModeTheJumpLimitIsNotJudged) {
-  // E1-F16: the η_jump bound is the step a switch puts into the L4 reference's
-  // u_des. An arm that follows a segment planner's segments has no such
+  // The η_jump bound is the step a switch puts into the soft-catch
+  // reference's u_des. An arm that follows a segment planner's segments has no such
   // reference, so the 1 m switch the closed_form law holds (kHeldJump, the case
   // above) is decided by ΔJ alone there. Same search, same wake, one flag.
   for (const bool follows : {false, true}) {
@@ -855,9 +855,9 @@ TEST(GridCatchSearchSwitch, UnderASegmentModeTheJumpLimitIsNotJudged) {
   }
 }
 
-// ── 4a. The switch's acceleration budget (§4.7, decision ⑥) ─────────────────
+// ── 4a. The switch's acceleration budget ────────────────────────────────────
 
-/// Δu_des the RT's adoption actually produces: the L4 law evaluated before and
+/// Δu_des the RT's adoption actually produces: the soft-catch law evaluated before and
 /// after re-targeting at the same state and instant, the new ramp restarted
 /// from the current γ (what controller.cpp does on adoption).
 Eigen::Vector3d AdoptionStep(const Eigen::Vector3d& p_c, const Eigen::Vector3d& dp,
@@ -1127,7 +1127,7 @@ TEST(GridCatchSearchReview, SettlingWhileFollowingHoldsInsteadOfPublishingNoPlan
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldNoCandidate);
 }
 
-// ── 5. G3-K ──────────────────────────────────────────────────────────────────
+// ── 5. RT ────────────────────────────────────────────────────────────────────
 
 TEST(GridCatchSearchPlan, AFullSearchAllocatesNothing) {
   auto rig = std::make_unique<Rig>();
@@ -1159,7 +1159,7 @@ TEST(GridCatchSearchPlan, AFullSearchAllocatesNothing) {
   EXPECT_EQ(eigen, 0U);
 }
 
-// ── 5a. The arm: where the reach starts (E1-F17 #743) ────────────────────────
+// ── 5a. The arm: where the reach starts ──────────────────────────────────────
 
 // A segment of `nv` joints that is moving at every instant, with node values
 // that tell joint, node and derivative apart. Four 50 ms intervals from
@@ -1388,10 +1388,10 @@ TEST(GridCatchSearchArm, ASearchFromAFollowedSegmentAllocatesNothing) {
   EXPECT_EQ(eigen, 0U);
 }
 
-// ── 6. R-2 timing and G3-G acceptance (recorded) ─────────────────────────────
+// ── 6. Timing and IK acceptance (recorded) ───────────────────────────────────
 
 TEST(GridCatchSearchTiming, RecordsIkAndCycleTimesOnThisHost) {
-  // Not a pass/fail on time — dev-PC numbers are NOT the control PC's (S6-D).
+  // Not a pass/fail on time — dev-PC numbers are NOT the control PC's.
   // Recorded so the report and #537 cite a measurement, not an estimate.
   auto rig = std::make_unique<Rig>();
   rig->params.budget_s = 0.05;  // let every IK run: this measures cost, not policy
@@ -1433,7 +1433,7 @@ TEST(GridCatchSearchTiming, RecordsIkAndCycleTimesOnThisHost) {
   EXPECT_GT(ik_total, 0);
 }
 
-// ── 7. A chain inside a wider device (E3-F01, #640) ──────────────────────────
+// ── 7. A chain inside a wider device ─────────────────────────────────────────
 // The same arm, as six of the joints of a device three joints wider — the
 // model of a search that runs on one chain of a tree. What the search reads of
 // the RT's report, of the wait pose and of a reported segment is its own
@@ -1565,7 +1565,7 @@ struct ChainWake {
   return w;
 }
 
-// Sprint Contract 2 (#640): the joints outside the chain do not reach the
+// The joints outside the chain do not reach the
 // search. Their command, their velocity, their wait pose (configured and
 // adopted) and their columns of the followed segment all change between the
 // two wakes; the plan, the wake's record and the reach start do not, to the bit.

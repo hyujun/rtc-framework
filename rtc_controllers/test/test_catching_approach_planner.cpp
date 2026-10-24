@@ -1,9 +1,9 @@
-// E1-F08 (#661): the MPC segment planner's APPROACH–stop solves (mpc_segment_planner.hpp
-// §APPROACH–stop) on a fake clock — PlanFirst, Replan, the ball target, the
-// between-node speed check and the allocation boundary. NOT the E1-F07 core
+// The MPC segment planner's APPROACH–stop solves (mpc_segment_planner.hpp)
+// on a fake clock — PlanFirst, Replan, the ball target, the
+// between-node speed check and the allocation boundary. NOT the core
 // suite (test_catching_mpc_segment_core_approach.cpp drives MpcSegmentCore alone); the
 // cycle that wires these into a wake is test_catching_approach_cycle.cpp.
-// Spec on #661 (MD-55 – MD-64):
+// Tests by topic:
 //   configure      ConfigureBuildsCatchCoresInTheStopCoresBox, ...
 //   first solve    FirstSolvePicksTheLargestPreCatchCountThatFits, ...
 //   publish gates  EachGateWithholdsOnItsOwn, BetweenNodeSpeed*
@@ -11,10 +11,10 @@
 //                  PreCatchHandsOverToTheStopCores, TheSourceIsWhatTheRtReports, ...
 //   replacement    ApproachPlannerReplacement.* — the first segment of a plan
 //                  that replaces the followed one starts on the reported
-//                  segment, on a quintic reference (E1-F17 #743)
+//                  segment, on a quintic reference
 //   allocation     PathsBeforeTheSolveAllocateNothing, SolvesAllocateNothingOutsideProxQp
 //   configure      AReconfiguredPlannerIsANewOne — Configure is a full reset
-//   interface      TheViewEntriesSolveWhatTheValueEntriesSolve (E1-F12 #738)
+//   interface      TheViewEntriesSolveWhatTheValueEntriesSolve
 //
 // Fixtures break representation symmetries: the device order is a
 // non-identity permutation of the model order, T_arm ≠ 0 (real ≠ lead axis),
@@ -80,8 +80,8 @@ using rtc::catching::SegmentSnapshot;
 constexpr std::int64_t kMs = 1'000'000;
 constexpr std::int64_t kTArm = 30 * kMs;                   // T_arm ≠ 0
 constexpr std::int64_t kH = 2 * kMs;                       // control_dt
-constexpr std::int64_t kDtPre = 100 * kMs;                 // Δ_pre (MD-54)
-constexpr std::int64_t kDt = 50 * kMs;                     // Δ_s (MD-54)
+constexpr std::int64_t kDtPre = 100 * kMs;                 // Δ_pre
+constexpr std::int64_t kDt = 50 * kMs;                     // Δ_s
 constexpr std::int64_t kFirst = 35 * kMs;                  // budget.first_s
 constexpr std::int64_t kReplan = 25 * kMs;                 // budget.replan_s
 constexpr std::int64_t kT0 = 1'727'000'000'000'000'000LL;  // realistic steady ns
@@ -172,7 +172,7 @@ MpcSegmentPlannerConstants Consts() {
   return c;
 }
 
-// The shipped approach profile (MD-54): 7 × 0.05 s [1, 1, 2, 3] after the
+// The shipped approach profile: 7 × 0.05 s [1, 1, 2, 3] after the
 // catch, up to 6 × 0.1 s before it, k_max 2.
 MpcSegmentPlannerParams ApproachParams() {
   MpcSegmentPlannerParams p;
@@ -315,7 +315,7 @@ struct Rig {
   }
 };
 
-// Defined with the chain tests below (E3-F01): `plan` without device joint `held`.
+// Defined with the chain tests below: `plan` without device joint `held`.
 PlanSnapshot WithoutJoint(PlanSnapshot plan, int held, double junk);
 
 std::string Why(const SegmentRecord& r) {
@@ -372,13 +372,13 @@ TEST(ApproachPlanner, ConfigureBuildsCatchCoresInTheStopCoresBox) {
   for (Arm arm : {Arm6(), Arm7()}) {
     Rig r(std::move(arm));
     ASSERT_TRUE(r.planner.Configured());
-    // One stop core per stop grid point a segment may start at (MD-31): the
+    // One stop core per stop grid point a segment may start at: the
     // stop ends at t_c + N_s·Δ_s wherever it starts.
     for (int k = 0; k <= 2; ++k) {
       EXPECT_EQ(r.planner.Core(k).NumNodes(), 7 - k) << k;
       EXPECT_EQ(r.planner.Core(k).CatchNode(), 0) << k;
     }
-    // A successful Configure means every warm-up solve succeeded (MD-64): a
+    // A successful Configure means every warm-up solve succeeded: a
     // failed one fails the configure, so a measurement after it measures
     // warmed cores.
     for (int j = 1; j <= 6; ++j) {
@@ -402,7 +402,7 @@ TEST(ApproachPlanner, ConfigureBuildsCatchCoresInTheStopCoresBox) {
 }
 
 TEST(ApproachPlanner, WithoutAPreCatchGridItDoesNotConfigure) {
-  // MD-70: a plan is published only with a segment that starts before t_c,
+  // A plan is published only with a segment that starts before t_c,
   // so there is no planner to build without a pre-catch grid — and an
   // unconfigured one solves nothing.
   const Arm arm = Arm6();
@@ -481,7 +481,7 @@ TEST(ApproachPlanner, FirstSolvePicksTheLargestPreCatchCountThatFits) {
     EXPECT_EQ(r.rec.n_nodes, row.n_pre + 7);
     if (row.n_pre == 1) {
       // One pre-catch interval reaches little (the known limit of n_pre 1 –
-      // 2, #661): the catch gate may withhold it, and then says so.
+      // 2): the catch gate may withhold it, and then says so.
       if (!ok) {
         EXPECT_EQ(r.rec.outcome, SegmentOutcome::kCatchError) << Why(r.rec);
         std::printf("[ record ] n_pre 1 withheld: catch error %.1f mm\n",
@@ -816,7 +816,7 @@ TEST(ApproachPlanner, TheRecordCarriesTheCoresSplitOfEachSolve) {
   }
 }
 
-// MPC MD-91: `catch.rho_v` / `catch.v_rel_allow`, from the YAML to the cores.
+// `catch.rho_v` / `catch.v_rel_allow`, from the YAML to the cores.
 // The slack row sits at the catch node, so the catch cores get it — one more
 // variable and seven more rows each — and the stop cores stay as they were.
 TEST(ApproachPlanner, TheVelocitySlackKeysReachTheCatchCores) {
@@ -851,7 +851,7 @@ TEST(ApproachPlanner, TheVelocitySlackKeysReachTheCatchCores) {
   }
 }
 
-// s_v is recorded and never a publish gate (formulation §1.6): no threshold
+// s_v is recorded and never a publish gate: no threshold
 // is defined for it. The same catch is published with the row off (s_v 0)
 // and with it on against a bound a 5 m/s ball leaves far behind — the record
 // then carries the worst axis' excess over the bound, as a fraction of it.
@@ -1172,7 +1172,7 @@ TEST(ApproachPlanner, BetweenNodeSpeedFindsTheInteriorExtremum) {
 
 // ── 4. Replans ───────────────────────────────────────────────────────────────
 
-// The segment MPC never stretches the catch interval (E1-F14, #740): whatever
+// The segment MPC never stretches the catch interval: whatever
 // its output buffer held, the catch interval's length comes back 0 — on the
 // first segment, a pre-catch replan and a stop replan. The shared digest does
 // not read that field, so this is what pins it.
@@ -1336,7 +1336,7 @@ TEST(ApproachPlanner, TheSourceIsWhatTheRtReports) {
 }
 
 TEST(ApproachPlanner, TheReportedSegmentsAreCopiesOfThePublishedOnes) {
-  // What the cycle hands a search (SegmentPlanner::Reported, E1-F14 #740): the
+  // What the cycle hands a search (SegmentPlanner::Reported): the
   // two segments the RT reports, by value. SourceSegmentAt on the copies names
   // the segment SourceSeq names — one rule, read two ways.
   const auto digest = [](const SegmentSnapshot& p) {
@@ -1671,8 +1671,8 @@ TEST(ApproachPlanner, TheStopPathWeightReachesEveryCoreAndTheWarmUpsSolveOnOneLi
     Rig off(arm, params_of(""));
     ASSERT_TRUE(on.planner.Configured());  // every warm-up solved with the term on
     ASSERT_TRUE(off.planner.Configured());
-    // The warm-up pose: the middle of each box (#880; #857 D12 had moved it
-    // 1 % off, where ProxQP's approximate infeasibility test let the vertical
+    // The warm-up pose: the middle of each box (#880: it was once 1 % off the
+    // middle, where ProxQP's approximate infeasibility test let the vertical
     // arm's degenerate stop from rest solve).
     const Eigen::VectorXd& lo = on.planner.ApproachCore(1).PositionLow();
     const Eigen::VectorXd& hi = on.planner.ApproachCore(1).PositionHigh();
@@ -1765,9 +1765,9 @@ TEST(ApproachPlanner, TheWarmUpReplicaIsThePlannersWarmUp) {
   }
 }
 
-// #880 D8 (i): the warm-ups at the MIDDLE of the box — where a vertical 7-joint
+// #880: the warm-ups at the MIDDLE of the box — where a vertical 7-joint
 // arm stands with no joint loaded by gravity (q = 0) and its stop from rest is
-// degenerate (#857 D12) — per threshold, on the shipped arms and the two test
+// degenerate — per threshold, on the shipped arms and the two test
 // arms. Recorded per threshold; at the cores' own threshold (0) every one
 // solves, and ProxQP's default 1e-4 is the control: it calls the 7-joint
 // arm's degenerate stop infeasible.
@@ -2579,7 +2579,7 @@ TEST(ApproachBallTarget, RefusesWhatItCannotTrust) {
   EXPECT_FALSE(rtc::catching::MakeMpcSegmentBallTarget(t, c, true, mid, kNan).valid);
 }
 
-// ── 5a. Configure is a full reset (E1-F12 #738) ──────────────────────────────
+// ── 5a. Configure is a full reset ────────────────────────────────────────────
 
 // One fixed sequence — the first segment of a plan for a catch `reach` away,
 // then two replans from what the RT reports — published as the cycle does,
@@ -2817,7 +2817,7 @@ TEST(ApproachPlannerPath, ThePredictionGivesEachWindowNodeALineOnTheBallsPath) {
     EXPECT_NEAR(in.path_d.col(k).norm(), 1.0, 1e-12) << "node " << k;
     const Eigen::VectorXd q_ref = in.q_ref.col(k);
     const Eigen::Vector3d hand = FkPos(arm, q_ref);
-    // D2 a: two Newton steps reach the foot of the perpendicular from the
+    // Two Newton steps reach the foot of the perpendicular from the
     // hand to the ball's path (a ≈ 0) on every window node — the hand is far
     // ahead of the ball at the node's own instant, not beside it.
     const double along = (hand - in.path_p.col(k)).dot(in.path_d.col(k));
@@ -2930,7 +2930,7 @@ TEST(ApproachPlanner, AReconfiguredPlannerIsANewOne) {
   // Configure is a full reset: a planner that has solved and published and is
   // configured again answers exactly as one built and configured now.
   // PlannerCycle relies on it — a configure installs a NEW planner (MakeMpcSegmentPlanner)
-  // every time (E1-F12 #738) where it once configured the one in place again.
+  // every time where it once configured the one in place again.
   // The planner is first used on ANOTHER catch under the same plan id, catch
   // instant and seqs: a planner that kept its ring would then start a replan
   // from that catch's segment.
@@ -2957,7 +2957,7 @@ TEST(ApproachPlanner, AReconfiguredPlannerIsANewOne) {
   }
 }
 
-// ── 5b. The SegmentPlanner entries (E1-F12 #738) ─────────────────────────────
+// ── 5b. The SegmentPlanner entries ───────────────────────────────────────────
 
 // One solve's whole result as a number: the segment and the record, every
 // value (planner_trace_digest.hpp).
@@ -3076,7 +3076,7 @@ TEST(ApproachPlanner, TheViewEntriesSolveWhatTheValueEntriesSolve) {
 
 TEST(ApproachPlanner, TheFirstSolveDoesNotReadASearchsSolution) {
   // SegmentPlanner::PlanFirst is handed the arm trajectory the search solved
-  // for the plan, when it solved one (E1-F14 #740). This planner solves its own
+  // for the plan, when it solved one. This planner solves its own
   // problem and must not take anything from it: with the search installed
   // today the pointer is always null, so nothing in the cycle's own suites
   // would show a planner that started reading it. Here it is non-null and
@@ -3136,7 +3136,7 @@ TEST(ApproachPlanner, TheFirstSolveDoesNotReadASearchsSolution) {
   SetClock(kT0);
 }
 
-// ── 5a. The first segment of a REPLACEMENT (E1-F17 #743) ─────────────────────
+// ── 5a. The first segment of a REPLACEMENT ───────────────────────────────────
 // The RT follows a plan and the search replaces it. The new plan's first
 // segment starts where the arm will be at its node 0 — on the segment the RT
 // reports, read by the RT's own evaluator — not at rest on the command; its
@@ -3289,7 +3289,7 @@ TEST(ApproachPlannerReplacement, TheFirstSegmentStartsOnTheFollowedSegmentAtNode
   }
 }
 
-// ── A plan of SOME of the model's joints (E3-F01, #640) ──────────────────────
+// ── A plan of SOME of the model's joints ─────────────────────────────────────
 // A search that ran on a chain of this planner's device hands in a plan of the
 // chain's joints: q_star names their catch pose and says nothing of the
 // others. The planner holds those where they are.
@@ -3679,7 +3679,7 @@ TEST(ApproachPlannerReplacement, TheReferenceIsTheQuinticFromTheMovingStartToThe
   }
 }
 
-// ── 6. Allocation (MD-23) ────────────────────────────────────────────────────
+// ── 6. Allocation ────────────────────────────────────────────────────────────
 
 struct Counts {
   std::size_t op_new{0};
@@ -3756,7 +3756,7 @@ TEST(ApproachPlanner, PathsBeforeTheSolveAllocateNothing) {
 
 TEST(ApproachPlanner, SolvesAllocateNothingOutsideProxQp) {
   // Through the solve the C mallocs are ProxQP's (#654) and cannot be told
-  // apart from ours, so operator new is the gate (MD-23).
+  // apart from ours, so operator new is the gate.
   Rig r(Arm7());
   const Started s = StartPlan(r, kT0, 800 * kMs);  // warm-up outside the gates
   ASSERT_NE(s.seq, 0U);
@@ -3894,7 +3894,7 @@ TEST(ApproachPlannerReplacement, AllocatesNothingOutsideProxQp) {
 }
 
 // ── 7. Records (not judged): what the cores cost at configure, and what the
-// warm-up buys (MD-64). Quote these from a run of this suite alone.
+// warm-up buys. Quote these from a run of this suite alone.
 
 double RssMb() {
   std::ifstream f("/proc/self/statm");

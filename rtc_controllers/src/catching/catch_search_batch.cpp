@@ -826,7 +826,7 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
   const PlannerParams planner = ParsePlannerParams(catching, keys);
   std::array<int, kMaxPlanNv> device_of_model{};
   std::copy(seg_map.begin(), seg_map.end(), device_of_model.begin());
-  // The joint groups (E3-F02) on the device's joint names, as a controller
+  // The joint groups on the device's joint names, as a controller
   // resolves them: the segment model's joints are the device's, named alike,
   // so device joint d is the model joint device_of_model maps to it.
   JointGroups groups;
@@ -875,7 +875,7 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
       return out;
     }
   }
-  // #641 D9′ as a controller's configure refuses it, on the search model's
+  // As a controller's configure refuses it, on the search model's
   // joints (the plan's).
   {
     const int n_dev = binding.n_dev > 0 ? binding.n_dev : search_nv;

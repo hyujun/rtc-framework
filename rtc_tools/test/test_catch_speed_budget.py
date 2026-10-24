@@ -1,4 +1,4 @@
-"""catch_speed_budget (dynamic_catching S4.4) on synthetic models.
+"""catch_speed_budget on synthetic models.
 
 Oracles are independent of the code under test: closed forms for the LP, the
 stroke and the ramp; finite-difference FK for the speed solution; RNEA +
@@ -141,7 +141,7 @@ def test_lp_value_is_the_lp_optimum(n, monkeypatch):
 
 def test_dls_numerator_is_the_projection_on_v_hat_not_the_norm():
     # With heavy damping the DLS solution does not reach [v̂; 0]: part of what it achieves points
-    # off v̂. L3 §4.5 counts only the v̂ component — the norm would report speed the ball never sees.
+    # off v̂. The judge counts only the v̂ component — the norm would report speed the ball never sees.
     rng = np.random.default_rng(3)
     jp, jw = rng.normal(size=(3, 6)), rng.normal(size=(2, 6))
     v_hat = unit([0.3, -0.5, 0.8])
@@ -195,7 +195,7 @@ def test_speed_solution_moves_the_frame_along_v_hat_with_the_axis_held(arm):
 
 
 def test_direction_given_in_the_wrong_frame_gives_a_different_answer(arm):
-    # The fixture mounts the arm base half a turn from the model root, the trap L3 §4.2 records:
+    # The fixture mounts the arm base half a turn from the model root, a known trap:
     # a direction expressed in the base frame is NOT the same input as one in the model world.
     v_hat = unit([0.5, -0.3, -0.8])
     flipped = np.array([-v_hat[0], -v_hat[1], v_hat[2]])

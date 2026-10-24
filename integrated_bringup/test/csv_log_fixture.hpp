@@ -5,7 +5,7 @@
 //
 // Shared by every suite that asserts on a `logs:` channel. Extracted from
 // test_compliance_diag_log.cpp when the catching controller's per-tick record
-// (S5.4) needed the same three things: a private session directory, a CSV
+// needed the same three things: a private session directory, a CSV
 // split that does not lose empty trailing cells, and a lookup BY COLUMN NAME.
 // The session is rtc::testing::ScopedSessionDir (rtc_base's test isolation,
 // #935), included here so every suite reading a CSV back has it.

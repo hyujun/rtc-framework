@@ -1,14 +1,20 @@
-// ── Predicted-trajectory sampler (dynamic_catching S1.2, L2) ─────────────────
+// ── Predicted-trajectory sampler ─────────────────────────────────────────────
 // Samples the vision prediction at the RT lead instant. The controller does NOT
 // re-propagate the ball: it trusts the (p, v, a) samples vision sends and only
-// interpolates between them (L2 §4.1).
+// interpolates between them.
 //
 // Interpolation is quintic Hermite: matching p, v, a at both ends makes the
 // result C², so the feedforward term the reference generator builds from the
 // target acceleration does not step at sample boundaries (a one-sample Taylor
-// expansion p + v·dt + a·dt²/2 does — L2 §4.2).
+// expansion p + v·dt + a·dt²/2 does). Between samples A, B with h = t_B − t_A
+// [s] and s = (t − t_A)/h ∈ [0, 1] (Hermite5):
 //
-// Time: sample instants and the query are absolute steady ns (L0 §4.5). The
+//   p(t) = H0 p_A + H1 h v_A + H2 h² a_A + H3 p_B + H4 h v_B + H5 h² a_B
+//
+// and v, a are its first and second time derivatives. Outside the horizon the
+// nearest sample is Taylor-extrapolated (Extrapolate). Model world, SI units.
+//
+// Time: sample instants and the query are absolute steady ns. The
 // query is the NowLead of the tick; the only relative seconds formed are the
 // in-interval offset and length, both as differences of two instants of the
 // same snapshot, so no origins are mixed.
@@ -41,7 +47,7 @@ struct SampleEval {
   Eigen::Vector3d a{Eigen::Vector3d::Zero()};  // [m/s²]
   // Horizon side is kept apart: when vision's first point is not at offset 0
   // (or the snapshot is a little old) before_horizon is normal operation, so
-  // the supervisor watches after_horizon only (L2 §4.6).
+  // the supervisor watches after_horizon only.
   bool before_horizon{false};  // query < first sample
   bool after_horizon{false};   // query > last sample — catching forbidden here
   bool extrapolated{false};    // before_horizon || after_horizon
@@ -151,11 +157,11 @@ inline constexpr std::int64_t kMinInterpIntervalNs = 100'000;
   return e;
 }
 
-/// Sample the trajectory at the tick's lead instant (L0 §4.5: sampling is on the
-/// lead axis). `hint` is the interval index of the previous call on this
+/// Sample the trajectory at the tick's lead instant (sampling is on the lead
+/// axis). `hint` is the interval index of the previous call on this
 /// snapshot — RT ticks move forward in time, so this is O(1) on average; a
 /// stale hint recovers by binary search (O(log n)). Reset it to 0 when
-/// `token.snapshot_sequence` changes (L2 §5.2) — correctness does not depend on
+/// `token.snapshot_sequence` changes — correctness does not depend on
 /// it, the tick cost does.
 [[nodiscard]] inline SampleEval SampleAt(const TrajectorySnapshot& tr, NowLead now_lead,
                                          int& hint) noexcept {
@@ -209,7 +215,7 @@ inline constexpr std::int64_t kMinInterpIntervalNs = 100'000;
   return SampleAt(tr, now_lead, hint);
 }
 
-/// Acceptance limits for Check(). n_max is the run-time bound (S3.6) and must
+/// Acceptance limits for Check(). n_max is the run-time bound and must
 /// not exceed the compile-time capacity; dt_min is the smallest accepted sample
 /// spacing (prediction.dt_min).
 struct TrajLimits {

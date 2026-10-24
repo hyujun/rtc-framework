@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Catch speed budget: how fast a ball can each catch candidate actually take?
 
-dynamic_catching S4.4 (go / no-go). ``catchability_map`` answers "can the arm
+Go / no-go for the arm speed. ``catchability_map`` answers "can the arm
 REACH this catch pose"; this tool answers the next question for the poses it
 accepted — "can the arm move WITH the ball fast enough there that the hand
-closes in time". The planner's γ window (L3 §4.5) opens when
+closes in time". The planner's γ window (ComputeGammaWindow) opens when
 
     ‖v‖ + margin  ≤  v_arm  +  v_rel
 
@@ -14,7 +14,7 @@ catch posture q*, and ``v_rel`` is the relative speed the hand absorbs
 
 * ``v_dir_max_lp``  — max s with  J_p q̇ = s v̂,  approach-axis rate = 0,
   |q̇_i| ≤ η_v q̇_max,i.  The physical ceiling (linear program).
-* ``v_dir_max_dls`` — the L3 §4.5 minimum-norm (damped least squares) estimate,
+* ``v_dir_max_dls`` — the minimum-norm (damped least squares) estimate,
   i.e. what the runtime ``DirectionalSpeedMax`` is fed. Never above the LP;
   the gap is the redundancy the minimum-norm solution leaves unused.
 * torque-limited DIRECTIONAL acceleration along the speed ramp:
@@ -68,7 +68,7 @@ from rtc_tools.analysis.derive_accel_limits import (
 )
 
 DEFAULT_CATCH_FRAME = "catch_frame"
-DEFAULT_GAMMA_MARGIN_M_S = 0.1  # L3 §6 planner.search.grid.gamma.margin
+DEFAULT_GAMMA_MARGIN_M_S = 0.1  # planner.search.grid.gamma.margin
 DEFAULT_SPEED_STEP_M_S = 0.25
 DEFAULT_DLS_DAMPING = 1e-3
 # directional_speed_lp_value hands [J_p; J_w]·diag(q̇_max) to the LP instead of
@@ -184,7 +184,7 @@ def directional_speed_lp_value(
 def dls_unit_velocity(
     jp: np.ndarray, jw: np.ndarray, v_hat: np.ndarray, damping: float = DEFAULT_DLS_DAMPING
 ) -> np.ndarray:
-    """q̇ᵘ of L3 §4.5: damped least squares for unit speed along v̂, approach axis held."""
+    """q̇ᵘ: damped least squares for unit speed along v̂, approach axis held."""
     j5 = np.vstack([jp, jw])
     rhs = np.concatenate([v_hat, [0.0, 0.0]])
     return j5.T @ np.linalg.solve(j5 @ j5.T + damping**2 * np.eye(5), rhs)
@@ -197,7 +197,7 @@ def directional_speed_dls(
     qd_max: np.ndarray,
     damping: float = DEFAULT_DLS_DAMPING,
 ) -> DirectionalSpeed:
-    """L3 §4.5: max(0, v̂ᵀ J_p q̇ᵘ) / max_i(|q̇ᵘ_i| / q̇_max,i) for the DLS unit-speed solution."""
+    """max(0, v̂ᵀ J_p q̇ᵘ) / max_i(|q̇ᵘ_i| / q̇_max,i) for the DLS unit-speed solution."""
     n = jp.shape[1]
     qd_max = np.asarray(qd_max, dtype=float)
     if qd_max.shape != (n,) or not _limits_ok(qd_max):
@@ -317,7 +317,7 @@ def ramp_speed_limit(
 def min_flight_time(
     detection_s: float, latency_s: float, close_total_s: float, arm_delay_s: float, margin_s: float
 ) -> float:
-    """Commit lead (L1 §4.1 D-15): T_det + L + T_freeze, T_freeze = T_close,tot + T_arm + T_margin.
+    """Commit lead: T_det + L + T_freeze, T_freeze = T_close,tot + T_arm + T_margin.
 
     The hand's closing time is part of the lead: the posture freezes that long
     before the catch, and a plan has to exist before it can freeze.
@@ -667,7 +667,12 @@ def main(argv: list[str] | None = None) -> int:
         "the URDF <limit velocity> (the rating). No default: it is a decision",
     )
     ap.add_argument("--eta-v", type=float, required=True, help="speed margin, applied to q̇_max")
-    ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (L3 §4.3)")
+    ap.add_argument(
+        "--eta-tau",
+        type=float,
+        required=True,
+        help="torque fraction of the dynamic acceleration budget",
+    )
     ap.add_argument(
         "--rotor-inertia",
         type=_floats,

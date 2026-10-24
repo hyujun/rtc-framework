@@ -1,4 +1,4 @@
-"""S8-A additions to the sim-trial driver: the throws a run names, and the mirror.
+"""Sim-trial driver: the throws a run names, and the mirror.
 
 The frozen series of before #798 (``s35b`` · ``reference``) are gone: a run
 names its throws (``--throws-file`` or a ``--dist`` hand design) or is refused
@@ -104,7 +104,7 @@ def test_a_missing_mirror_value_or_a_wrong_length_pose_is_refused():
     ],
 )
 def test_a_function_that_does_not_run_owes_no_mirror(search, segment, absent):
-    # E1-F16: the controller mirrors only the functions it runs. Their names
+    # The controller mirrors only the functions it runs. Their names
     # being absent is the selection, not a parked configure.
     arm = load_arm_profile(os.path.join(CONFIG, "ur5e_p1b"))
     mirror = _mirror(list(arm.wait_pose))
@@ -170,7 +170,7 @@ def test_a_full_reply_is_read_in_one_call_and_not_set_reads_as_absent():
 def test_every_mirrored_parameter_type_decodes_to_a_value():
     """A mirror type the decoder does not know reads as ``None`` — the same answer
     as an undeclared parameter — so the runner would refuse a running controller
-    as parked. ``io.n_min`` is the first integer in the mirror (E0-F04)."""
+    as parked. ``io.n_min`` is the first integer in the mirror."""
     rcl = pytest.importorskip("rcl_interfaces.msg")
     t = rcl.ParameterType
     cases = [

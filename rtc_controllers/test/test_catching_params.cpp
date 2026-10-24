@@ -1,27 +1,23 @@
-// ── Catching parameter validator (S1.7, G0-C) ────────────────────────────────
+// ── Catching parameter validator ─────────────────────────────────────────────
 //
 // Every case below is pinned to a specific reason code and key (never just
 // `armable == false`), so a case that goes red for the wrong reason is
 // visible rather than masquerading as the intended failure.
 //
-// NOTE on the ω·h boundary (G0-C: "ωh≥0.828(100·500·5000 Hz 각각)"). L4 §6
-// bounds `reference.omega` to [1, 25] rad/s. At every control_rate in the
-// framework's own [100, 5000] Hz range, s = omega*h stays far below the
-// 0.8284271 discrete-stability limit for any omega in that range (max s is
-// 25 * (1/100) = 0.25). Reaching the instability boundary at 100/500/5000 Hz
-// therefore requires an omega outside L4 §6's declared range — the
-// DiscretizationBoundary test below does that deliberately and checks only
-// the discretization-specific reason code, ignoring the (expected,
-// independent) range violation that also fires. This is a doc-precision
-// finding reported alongside this change, not a bug in the validator: the
-// two checks are orthogonal by design and G0-C's boundary requirement is
-// about the formula, not about staying inside L4 §6's tuning range.
+// NOTE on the ω·h boundary (checked at 100 / 500 / 5000 Hz). `reference.omega`
+// is bounded to [1, 25] rad/s. At every control_rate in the framework's own
+// [100, 5000] Hz range, s = omega*h stays far below the 0.8284271
+// discrete-stability limit for any omega in that range (max s is
+// 25 * (1/100) = 0.25). Reaching the instability boundary therefore requires
+// an omega outside the declared range — the DiscretizationBoundary test below
+// does that deliberately and checks only the discretization-specific reason
+// code, ignoring the (expected, independent) range violation that also fires.
+// The two checks are orthogonal by design: the boundary requirement is about
+// the formula, not about staying inside the tuning range.
 //
-// NOTE on D-9 ("v_tcp_max mismatch"). CATCHING_MASTER §6 / L3 §4.5 fixed
-// v_tcp_max = eta_v * reference.v_max as a VALUE COMPUTED AT THE gammaWindow
-// CALL SITE, not a second stored YAML key — the old "same value" row it
-// replaced is exactly what S0.3 removed (no more paired keys to disagree).
-// There is therefore nothing to "mismatch": the D-9 cross-constraint reduces
+// NOTE on the v_tcp_max cross-constraint. v_tcp_max = eta_v * reference.v_max
+// is a VALUE COMPUTED AT THE gammaWindow CALL SITE, not a second stored YAML
+// key, so there are no paired keys to disagree. The cross-constraint reduces
 // to the eta_v range check below (0 < eta_v <= 1), which this suite tests at
 // both ends and at the inclusive upper boundary.
 
@@ -64,9 +60,8 @@ constexpr double kControlRateHz = 500.0;  // repo default (rtc::kDefaultControlR
 // Fully resolved, non-provisional, in-range config — every check below
 // mutates one field of this baseline rather than restating the whole tree.
 //
-// The `io:` / `prediction:` sections joined it with S5.2 and
-// `joint_cmd:` / `robot.arm:` / the two `supervisor:` keys with S5.3, as each
-// step made its own keys active. The baseline grows with the schema; the
+// The baseline grows with the schema (`io:` / `prediction:`, `joint_cmd:` /
+// `robot.arm:` and the two `supervisor:` keys joined as they became active); the
 // assertions on it (armable, zero failures, zero warnings) are unchanged,
 // which is what keeps "a clean config arms cleanly" meaning the same thing
 // before and after.
@@ -210,14 +205,14 @@ TEST(CatchingParams, FullyValidYamlArmsCleanlyOnRealArm) {
   EXPECT_EQ(r.warning_count, 0u);
 }
 
-// ── G0-C: active-config TBD blocks arming, inactive-config TBD passes ───────
+// ── Active-config TBD blocks arming, inactive-config TBD passes ─────────────
 
 TEST(CatchingParams, ActiveConfigTbdBlocksArming) {
   YAML::Node root = ValidRoot();
   root["core"]["ball"]["diameter"] = "TBD";
   const CatchingParams p = ParseCatchingParams(root);
 
-  // core.ball.* is active in both configurations (L0 §6).
+  // core.ball.* is active in both configurations.
   const CatchingValidationReport sim = ValidateCatchingParams(p, kControlRateHz, false);
   EXPECT_FALSE(sim.armable);
   EXPECT_TRUE(
@@ -245,7 +240,7 @@ TEST(CatchingParams, InactiveConfigTbdPasses) {
       ReportHasFailure(real, CatchingValidationReason::kActiveConfigTbd, "sim.ball.drag_k"));
 }
 
-// ── decision K: joint_cmd.accel_constraint ──────────────────────────────────
+// ── joint_cmd.accel_constraint ──────────────────────────────────────────────
 
 TEST(CatchingParams, AccelConstraintHasNoDefaultAndReadsEachForm) {
   // No form is assumed (#712). A profile that names none — the key absent, or
@@ -334,7 +329,7 @@ TEST(CatchingParams, AccelConstraintRejectsAnUnknownForm) {
   ExpectRejectMentioning(root, "joint_cmd.accel_constraint");
 }
 
-// ── MPC MD-34 · MD-39 · MD-44: planner.segment.mode / switch_margin ─────────
+// ── planner.segment.mode / switch_margin ────────────────────────────────────
 
 TEST(CatchingParams, SegmentModeDefaultsToClosedFormAndReadsMpc) {
   const CatchingParams absent = ParseCatchingParams(ValidRoot());
@@ -372,7 +367,7 @@ TEST(CatchingParams, SegmentModeReadsMpcDockingAndSaysWhichModesFollowSegments) 
   }
 }
 
-// ── E1-F16: planner.search.mode and what a selection is held to ─────────────
+// ── planner.search.mode and what a selection is held to ─────────────────────
 
 TEST(CatchingParams, SearchModeDefaultsToGridAndReadsNlp) {
   EXPECT_EQ(ParseCatchingParams(ValidRoot()).planner_search_mode, CatchingSearchMode::kGrid);
@@ -563,7 +558,7 @@ TEST(CatchingParams, TheGridSearchsKeysAreRequiredOnlyUnderGrid) {
   }
 }
 
-// ── E1-F16: robot.hand.T_close_lead — the design lead, apart from the closure time ──
+// ── robot.hand.T_close_lead — the design lead, apart from the closure time ──
 
 TEST(CatchingParams, AnAbsentCloseLeadIsTheClosureTime) {
   const CatchingParams p = ParseCatchingParams(ValidRoot());
@@ -616,7 +611,7 @@ TEST(CatchingParams, ACloseLeadIsHeldToItsOwnRange) {
 }
 
 TEST(CatchingParams, SegmentSwitchMarginMustBePositive) {
-  // Under the planner whose key it is (E1-F16: a key of a function that does
+  // Under the planner whose key it is (a key of a function that does
   // not run cannot fail the parse — AMalformedKeyOfAnUnselectedFunction… below).
   for (const char* bad : {"0.0", "-0.5", ".nan", ".inf"}) {
     YAML::Node root = ValidRoot();
@@ -701,7 +696,7 @@ TEST(CatchingRenamedKeys, EachOldPathIsFoundWithAnyValueAndTheNewLayoutIsClean) 
   }
 }
 
-// L3 §4.9: the catch box is gone and nothing took its place. Each of its two
+// The catch box is gone and nothing took its place. Each of its two
 // keys is found with any value — a box, `TBD`, an empty map — and a tree that
 // writes neither is clean.
 TEST(CatchingRemovedKeys, EachCatchBoxKeyIsFoundWithAnyValueAndATreeWithoutThemIsClean) {
@@ -988,7 +983,7 @@ TEST(CatchingParams, AFormsKeysUnderAnotherFormAreRefused) {
   ExpectRejectMentioning(dynamic, "joint_cmd.task_accel_max_linear");
 }
 
-// ── L6 §4.2: q_close != q_pre on caging joints ──────────────────────────────
+// ── q_close != q_pre on caging joints ───────────────────────────────────────
 
 TEST(CatchingParams, HandCagingGapIgnoredOffCagingMask) {
   YAML::Node root = ValidRoot();
@@ -1001,9 +996,9 @@ TEST(CatchingParams, HandCagingGapIgnoredOffCagingMask) {
                                 "robot.hand.q_close", 1));
 }
 
-// ── L6 §5.1/§6: q_open, eta_close, T_close_e2e (S4.1) ───────────────────────
+// ── q_open, eta_close, T_close_e2e ──────────────────────────────────────────
 //
-// The three fields S4a added to the profile. Each is active in both
+// Three profile fields. Each is active in both
 // configurations and each carries its own report line: a profile that is
 // half-drafted must say which key is missing, not fail as one lump.
 
@@ -1081,7 +1076,7 @@ TEST(CatchingParams, HandEtaCloseOutOfRangeFails) {
 }
 
 TEST(CatchingParams, HandEtaCloseAtBoundsPasses) {
-  // L6 §6 gives the range as 0.5–1, inclusive at both ends.
+  // The range is 0.5–1, inclusive at both ends.
   for (const double eta : {0.5, 1.0}) {
     YAML::Node root = ValidRoot();
     root["robot"]["hand"]["eta_close"] = eta;
@@ -1092,14 +1087,14 @@ TEST(CatchingParams, HandEtaCloseAtBoundsPasses) {
 }
 
 TEST(CatchingParams, HandTCloseE2eZeroPasses) {
-  // L6 §6 bounds it at >= 0; zero is a degenerate but in-range identification.
+  // It is bounded at >= 0; zero is a degenerate but in-range identification.
   //
   // `T_close_timeout` is given explicitly because this case is about the e2e
-  // key's own range: from S7.1 an absent timeout is DERIVED as a multiple of
+  // key's own range: an absent timeout is DERIVED as a multiple of
   // T_close_e2e, and a multiple of zero is a zero timeout — refused for being
   // a timeout, which is a different rule than the one this case pins.
   //
-  // `T_release_timeout` likewise (#537 S8-C): it is derived as a multiple of
+  // `T_release_timeout` likewise: it is derived as a multiple of
   // T_close_e2e too, and the zero it would derive is refused by its own rule.
   YAML::Node root = ValidRoot();
   root["robot"]["hand"]["T_close_e2e"] = 0.0;
@@ -1110,10 +1105,10 @@ TEST(CatchingParams, HandTCloseE2eZeroPasses) {
   EXPECT_TRUE(r.armable);
 }
 
-// ── Hand sequencer keys (S7.1, L6 §6) ───────────────────────────────────────
+// ── Hand sequencer keys ─────────────────────────────────────────────────────
 
 TEST(CatchingParams, HandSequencerKeysTakeTheirDefaultsAndDeriveTheTimeout) {
-  // The baseline names none of the S7.1 keys: each takes its documented
+  // The baseline names none of these keys: each takes its documented
   // default, and the timeout is DERIVED from the measured closure time.
   const CatchingParams p = ParseCatchingParams(ValidRoot());
   EXPECT_FALSE(p.hand.T_hold.tbd);
@@ -1154,7 +1149,7 @@ TEST(CatchingParams, HandCloseTimeoutJustAboveTheClosureTimePasses) {
   EXPECT_TRUE(ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false).armable);
 }
 
-// ── RETREAT release timeout (#537 S8-C, D-S8-6) ─────────────────────────────
+// ── RETREAT release timeout ─────────────────────────────────────────────────
 
 TEST(CatchingParams, ReleaseTimeoutMultipleTakesTheSlowerPlant) {
   // Torque-saturated plant: travel/η. First-order plant: ln(S/q_tol)/ln(1/(1−η)).
@@ -1200,7 +1195,7 @@ TEST(CatchingParams, ReleaseTimeoutExplicitValueOverridesTheDerivation) {
   EXPECT_DOUBLE_EQ(p.hand.T_release_timeout.value, 1.25);
 }
 
-// ── Hand-joint capture witness (#537 S8-C, D-S8-8 (b)) ──────────────────────
+// ── Hand-joint capture witness ──────────────────────────────────────────────
 
 YAML::Node CaptureRoot() {
   YAML::Node root = ValidRoot();
@@ -1321,7 +1316,7 @@ TEST(CatchingParams, CaptureMinJointsMustBeACountOfCagingJoints) {
 }
 
 TEST(CatchingParams, AProvisionalCaptureBlocksTheRealArmAndWarnsInSim) {
-  // A real hand driver's effort lane need not be a joint torque (S10).
+  // A real hand driver's effort lane need not be a joint torque.
   YAML::Node root = CaptureRoot();
   root["robot"]["hand"]["capture"]["provisional"] = true;
   const CatchingParams p = ParseCatchingParams(root);
@@ -1335,7 +1330,7 @@ TEST(CatchingParams, AProvisionalCaptureBlocksTheRealArmAndWarnsInSim) {
       ReportHasWarning(sim, CatchingValidationReason::kProvisionalWarning, "robot.hand.capture"));
 }
 
-// ── supervisor.deadline (#537 S9b, D-S9-D1) ─────────────────────────────────
+// ── supervisor.deadline ─────────────────────────────────────────────────────
 
 TEST(CatchingParams, MotionDeadlinesAreReadAndDefaultWhenAbsent) {
   const CatchingParams given = ParseCatchingParams(ValidRoot());
@@ -1354,7 +1349,7 @@ TEST(CatchingParams, MotionDeadlinesAreReadAndDefaultWhenAbsent) {
                    defaults.supervisor_deadline_return_s.value);
   // Fail-closed, like every provisional flag: silence is not a measurement.
   EXPECT_TRUE(absent.supervisor_deadline_provisional);
-  // The floor D-S9-D1 put under the S8-derived defaults.
+  // The floor under the derived defaults.
   EXPECT_GE(defaults.supervisor_deadline_stop_s.value, 0.5);
   EXPECT_GE(defaults.supervisor_deadline_return_s.value, 0.5);
 }
@@ -1394,7 +1389,7 @@ TEST(CatchingParams, ProvisionalMotionDeadlinesBlockTheRealArmAndWarnInSim) {
       ReportHasWarning(sim, CatchingValidationReason::kProvisionalWarning, "supervisor.deadline"));
 }
 
-// ── joint_cmd.lag.provisional (#537 pre-S10 R3, Q5) ─────────────────────────
+// ── joint_cmd.lag.provisional ───────────────────────────────────────────────
 
 TEST(CatchingParams, AProvisionalArmLagBlocksTheRealArmAndWarnsInSim) {
   // T_arm is a plant constant nobody has identified on the real arm yet. The
@@ -1507,14 +1502,14 @@ TEST(CatchingParams, HandHoldUnknownModeIsRefused) {
 }
 
 TEST(CatchingParams, HandPreshapeTimeKeyIsRefusedByName) {
-  // #537 S7 Q4: no timed preshape. A profile written for it is refused, not
+  // No timed preshape. A profile written for it is refused, not
   // quietly half-applied.
   YAML::Node root = ValidRoot();
   root["robot"]["hand"]["T_pre"] = 0.3;
   ExpectRejectMentioning(root, "robot.hand.T_pre");
 }
 
-// ── Supervisor driver keys (S7.2, L7 §6) ────────────────────────────────────
+// ── Supervisor driver keys ──────────────────────────────────────────────────
 
 TEST(CatchingParams, SupervisorDriverKeysTakeTheDecidedDefaults) {
   const CatchingParams p = ParseCatchingParams(ValidRoot());
@@ -1549,7 +1544,7 @@ TEST(CatchingParams, SupervisorDriverKeysOutsideTheirRangeFail) {
 }
 
 TEST(CatchingParams, ContactKeysTakeTheDecidedDefaults) {
-  // #537 S7 Q1 / D-S7-3, provisional (S8).
+  // Provisional defaults.
   const CatchingParams p = ParseCatchingParams(ValidRoot());
   EXPECT_DOUBLE_EQ(p.supervisor_contact_f_min, 0.2);
   EXPECT_DOUBLE_EQ(p.supervisor_contact_k_sigma, 3.0);
@@ -1600,7 +1595,7 @@ TEST(CatchingParams, TheDuplicateWaitPoseKeyIsRefusedByName) {
   ExpectRejectMentioning(root, "planner.wait_pose");
 }
 
-// ── Freeze window vs. closure (L3 §4.11, #537 S7) ───────────────────────────
+// ── Freeze window vs. closure ───────────────────────────────────────────────
 // T_freeze >= T_close_e2e + T_arm + h. Baseline: e2e 0.15, T_arm 0, h 2 ms.
 
 TEST(CatchingParams, FreezeWindowCoveringTheClosurePasses) {
@@ -1671,9 +1666,9 @@ TEST(CatchingParams, FreezeWindowUnsetIsLeftToItsOwnCheck) {
 //
 // Every row is a case that used to stand alone as TEST(CatchingParams, <name>)
 // and keeps that name as its row name: the baseline with one edit, judged on
-// ONE reason code at ONE key. A suffix names the decision the row enforces, so
+// ONE reason code at ONE key. A suffix names the rule the row enforces, so
 // one `--gtest_filter` finds all of its rows: D9 — 0 < eta_v <= 1 (see the
-// file-header NOTE); DS8_6 — the RETREAT release timeout (#537 S8-C, D-S8-6).
+// file-header NOTE); DS8_6 — the RETREAT release timeout.
 
 namespace {
 
@@ -1697,13 +1692,13 @@ CatchingValidationReport ValidateEdited(const OneReasonCase& row) {
 
 // The edit blocks arming, and does so for this row's reason at this row's key.
 constexpr OneReasonCase kBlocksArming[] = {
-    // L6 §4.2: q_close != q_pre on caging joints.
+    // q_close != q_pre on caging joints.
     {"HandCagingGapEqualToPreFails",
      [](YAML::Node& root) {
        root["robot"]["hand"]["q_close"][0] = 0.0;  // == q_pre[0], caging_mask[0] == true
      },
      CatchingValidationReason::kHandCagingGapTooSmall, "robot.hand.q_close", 0},
-    // L6 §5.1/§6 (S4.1).
+    // Hand closure keys.
     {"HandEtaCloseTbdBlocksArming",
      [](YAML::Node& root) { root["robot"]["hand"]["eta_close"] = "TBD"; },
      CatchingValidationReason::kActiveConfigTbd, "robot.hand.eta_close"},
@@ -1713,13 +1708,13 @@ constexpr OneReasonCase kBlocksArming[] = {
     {"HandTCloseE2eNegativeFails",
      [](YAML::Node& root) { root["robot"]["hand"]["T_close_e2e"] = -0.01; },
      CatchingValidationReason::kRangeViolation, "robot.hand.T_close_e2e"},
-    // Hand sequencer keys (S7.1, L6 §6).
+    // Hand sequencer keys.
     {"HandCloseTimeoutEqualToTheClosureTimeFails",
      [](YAML::Node& root) {
        root["robot"]["hand"]["T_close_timeout"] = 0.15;  // == T_close_e2e
      },
      CatchingValidationReason::kCloseTimeoutNotAboveE2e, "robot.hand.T_close_timeout"},
-    // RETREAT release timeout (#537 S8-C, D-S8-6).
+    // RETREAT release timeout.
     {"ReleaseTimeoutIsTbdWhenTheClosureTimeIs_DS8_6",
      [](YAML::Node& root) { root["robot"]["hand"]["T_close_e2e"] = "TBD"; },
      CatchingValidationReason::kActiveConfigTbd, "robot.hand.T_release_timeout"},
@@ -1735,20 +1730,20 @@ constexpr OneReasonCase kBlocksArming[] = {
        root["robot"]["hand"]["T_close_timeout"] = 0.1;
      },
      CatchingValidationReason::kRangeViolation, "robot.hand.T_release_timeout"},
-    // D-9: 0 < eta_v <= 1.
+    // 0 < eta_v <= 1.
     {"EtaVZeroFails_D9",
      [](YAML::Node& root) { root["planner"]["search"]["grid"]["gamma"]["eta_v"] = 0.0; },
      CatchingValidationReason::kEtaVOutOfRange, "planner.search.grid.gamma.eta_v"},
     {"EtaVAboveOneFails_D9",
      [](YAML::Node& root) { root["planner"]["search"]["grid"]["gamma"]["eta_v"] = 1.5; },
      CatchingValidationReason::kEtaVOutOfRange, "planner.search.grid.gamma.eta_v"},
-    // L7 §4.3: a_dec <= reference.a_max.
+    // a_dec <= reference.a_max.
     {"DecelExceedingAMaxFails",
      [](YAML::Node& root) {
        root["supervisor"]["decel"]["a_dec"] = 10.0;  // > a_max (5.0)
      },
      CatchingValidationReason::kDecelExceedsAMax, "supervisor.decel.a_dec"},
-    // L4 §4.4: reference.zeta must be exactly 1 in v1.
+    // reference.zeta must be exactly 1.
     {"ZetaNotOneFails", [](YAML::Node& root) { root["reference"]["zeta"] = 0.9; },
      CatchingValidationReason::kZetaNotCriticallyDamped, "reference.zeta"},
 };
@@ -1759,7 +1754,7 @@ constexpr OneReasonCase kSparesTheBound[] = {
     {"EtaVExactlyOnePasses_D9",
      [](YAML::Node& root) {
        root["planner"]["search"]["grid"]["gamma"]["eta_v"] =
-           1.0;  // upper bound is inclusive (D-9: 0 < eta_v <= 1)
+           1.0;  // upper bound is inclusive (0 < eta_v <= 1)
      },
      CatchingValidationReason::kEtaVOutOfRange, "planner.search.grid.gamma.eta_v"},
     {"DecelEqualToAMaxPasses",
@@ -1818,9 +1813,9 @@ TEST(CatchingParams, ControlRateAtBoundsPasses) {
                                 CatchingValidationReason::kControlRateOutOfRange, "control_rate"));
 }
 
-// ── L4 §4.7: s = omega*h discrete stability boundary, per control_rate ──────
+// ── s = omega*h discrete stability boundary, per control_rate ───────────────
 // See the file-header NOTE: reaching s >= 0.8284271 at these rates needs an
-// omega outside L4 §6's [1, 25] range, so a reference.omega range violation
+// omega outside the [1, 25] range, so a reference.omega range violation
 // is also expected here — only the discretization-specific code is asserted.
 
 class CatchingParamsDiscretization : public ::testing::TestWithParam<double> {};
@@ -1866,7 +1861,7 @@ TEST(CatchingParams, DiscretizationAccuracyWarningInRange) {
       ReportHasFailure(r, CatchingValidationReason::kUnstableDiscretization, "reference.omega"));
 }
 
-// ── L0 §5.3: provisional warns in sim, blocks the real arm ──────────────────
+// ── Provisional warns in sim, blocks the real arm ───────────────────────────
 
 TEST(CatchingParams, ProvisionalBallSimWarnsRealBlocks) {
   YAML::Node root = ValidRoot();
@@ -1914,12 +1909,10 @@ TEST(CatchingParams, ProvisionalHandSimWarnsRealBlocks) {
 }
 
 TEST(CatchingParams, ProvisionalReferenceSimWarnsRealBlocks) {
-  // Same rule, fourth flag (L4 §6). It exists because `reference.a_max` is
-  // deferred to the D-16 revision while `v_max` is decided, and one TBD in a
-  // consumed key refuses the configure in sim — which takes every controller
-  // on the robot down with it, because CM latches `bring_up_failed` on any
-  // controller's failure. The shipped ur5e_p1b sim did exactly that on
-  // 2026-09-22 before this flag existed.
+  // Same rule, fourth flag. It exists because `reference.a_max` is
+  // still open while `v_max` is decided, and one TBD in a consumed key refuses
+  // the configure in sim — which takes every controller on the robot down with
+  // it, because CM latches `bring_up_failed` on any controller's failure.
   YAML::Node root = ValidRoot();
   root["reference"]["provisional"] = true;
   const CatchingParams p = ParseCatchingParams(root);
@@ -1989,7 +1982,7 @@ TEST(CatchingParams, RejectsEmptyHandArrays) {
   ExpectRejectMentioning(root, "must not be empty");
 }
 
-// ── io / prediction: the vision ingress (S5.2) ──────────────────────────────
+// ── io / prediction: the vision ingress ─────────────────────────────────────
 
 TEST(CatchingParams, IoNMinMustBeResolvedAndWholeAndWithinCapacity) {
   {  // absent → active TBD, not a silent default
@@ -2077,7 +2070,7 @@ TEST(CatchingParams, JWarnIsDiagnosticAndDoesNotBlockArming) {
 }
 
 TEST(CatchingParams, TheSimFutureToleranceIsAnOverlayNotASecondRange) {
-  // A-S5-2. The two numbers are two orders of magnitude apart because they
+  // The two numbers are two orders of magnitude apart because they
   // measure different things: the sim ball lane's stamps ride the SIM time
   // axis and legitimately lead wall by the in-flight phase error, while a
   // camera stamps at capture and may lead wall only by the clock-sync error.
@@ -2117,7 +2110,7 @@ TEST(CatchingParams, TheSimOverrideIsNotJudgedOnARealArmConfig) {
       ReportHasFailure(sim, CatchingValidationReason::kRangeViolation, "sim.io.future_tol"));
 }
 
-// ── joint_cmd / robot.arm / supervisor: the CLIK step (S5.3) ────────────────
+// ── joint_cmd / robot.arm / supervisor: the CLIK step ───────────────────────
 
 TEST(CatchingParams, ClikWeightsMustKeepTheirOrdering) {
   // Each weight below is individually in range. The SET is wrong, and the
@@ -2170,7 +2163,7 @@ TEST(CatchingParams, EveryUnresolvedWeightIsReportedInOnePass) {
 }
 
 TEST(CatchingParams, TheSupervisorKeysTheJointLayerReportsToAreActive) {
-  // L7 owns both keys, but the joint command layer is what reports to them, so
+  // The supervisor owns both keys, but the joint command layer is what reports to them, so
   // they become active with it. A TBD `track_err_abort` would mean the tracking
   // watchdog has no threshold — the one thing standing between a diverging
   // command and the hardware.
@@ -2202,7 +2195,7 @@ TEST(CatchingParams, TheQpIterationCapMustBeAtLeastOne) {
 // ── Absent sections: defaults, never a foreign exception type ────────────────
 
 TEST(CatchingParams, RealArmConfigMayOmitSimSection) {
-  // sim.* is inactive on the real arm (G0-C); omitting the tree must parse
+  // sim.* is inactive on the real arm; omitting the tree must parse
   // and arm, not throw YAML::InvalidNode from subscripting a missing node.
   YAML::Node root = ValidRoot();
   root.remove("sim");
@@ -2218,7 +2211,7 @@ TEST(CatchingParams, EveryOtherAbsentSectionParsesButBlocksRealArm) {
   // Each non-sim section removed in turn: parsing must not throw anything,
   // and the real-arm config must refuse to arm — every one of these sections
   // holds a TBD default or a provisional flag defaulting to true. (In sim an
-  // absent `planner:` does arm: its values have doc defaults, L3 §6, and the
+  // absent `planner:` does arm: its values have documented defaults, and the
   // provisional flag only warns there.)
   for (const char* key : {"reference", "planner", "supervisor", "core", "robot"}) {
     YAML::Node root = ValidRoot();
@@ -2236,9 +2229,9 @@ TEST(CatchingParams, EveryOtherAbsentSectionParsesButBlocksRealArm) {
   }
 }
 
-// ── Catch frame provisional (D-17, S2.3a) ───────────────────────────────────
+// ── Catch frame provisional ─────────────────────────────────────────────────
 // The flag comes from the robot config's urdf.extra_frames, not from the
-// catching: section; the same L0 §5.3 rule applies — sim warns, real arm blocks.
+// catching: section; the same rule applies — sim warns, real arm blocks.
 TEST(CatchFrameProvisional, SimWarnsRealArmBlocks) {
   CatchingValidationReport sim;
   CheckCatchFrameProvisional(sim, /*catch_frame_provisional=*/true, /*real_arm_config=*/false);

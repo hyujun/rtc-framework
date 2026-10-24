@@ -27,7 +27,7 @@
 //      their own fields, and whether the shaping is skipped exactly when the
 //      adapter skips it.
 //
-// The observability here is as bad as the OSC's (plan §S4 R5): there is no
+// The observability here is as bad as the OSC's: there is no
 // f_cmd accessor, and GetDiagnosticsForTesting() exposes only the two flags. So
 // ImpedanceShim replicates the whole τ tail — Λ_S/Nᵀ, JᵀSᵀ, the posture task,
 // ĝ(q) — and the comparison is on the final per-joint torque. Everything it
@@ -46,7 +46,7 @@
 // pins the dynamics half — J, M, h, placement — on this same serial_7dof
 // fixture, and ReferenceHandles.IndependentHandlesAgreeOnTheReorderPathBitwise
 // (test_task_vel_core.cpp) pins the reorder half, which this shim also uses
-// (posture gather, torque scatter). Per plan §S4 R5 this slice REUSES both
+// (posture gather, torque scatter). This suite REUSES both
 // measurements rather than repeating them; that reuse is valid only while all
 // three files share serial7dof_fixture.hpp, which they do.
 //
@@ -127,7 +127,7 @@ constexpr double kDt = 0.002;
 
 // task_impedance_controller.cpp's file-local NUM-1 floor, applied at the point
 // of use by PR #270 (#257) — the shim has to reproduce the FLOORED argument,
-// because that floored form is what the golden vector fixes (plan §S4 R7).
+// because that floored form is what the golden vector fixes.
 constexpr double kMinMaxDamping = 1e-4;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -330,7 +330,7 @@ TEST(InertiaShaping, MatchesThePreExtractionInlineFormBitwise) {
 
   EXPECT_GT(peak, 1e-6) << "every compared row was ~0 — the draw generator degenerated";
   // The branches the law HAS, each measured to have run. Without these the suite
-  // could be pinning one path and calling it the law (plan §S4 R6).
+  // could be pinning one path and calling it the law.
   EXPECT_GT(counts.natural, 0) << "the natural (Λ_d := Λ_S ⇒ B = I) path never ran";
   EXPECT_GT(counts.shaped, 0) << "the shaped (diagonal Λ_d) path never ran";
   EXPECT_GT(counts.clamped, 0) << "the §5.2 deviation clamp never engaged";
