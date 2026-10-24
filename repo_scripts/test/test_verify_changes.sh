@@ -1066,11 +1066,10 @@ rm -rf "$ws" "$stub" "$bin" "$elsewhere"
 
 # --- A simulator running from the workspace ------------------------------------
 #
-# 2026-09-26: the S8-E success-rate sims ran as a background shell task; a hook
-# build beside them slows the sim below real time and the catches fail for the
-# rig's sake. A sim whose executable or command line lies under the workspace
-# DEFERS build/test (a sim, unlike a build, does not end on its own); one from
-# another workspace does not.
+# A hook build beside a background success-rate sim slows the sim below real
+# time and the catches fail for the rig's sake. A sim whose executable or
+# command line lies under the workspace DEFERS build/test (a sim, unlike a
+# build, does not end on its own); one from another workspace does not.
 
 # $1 = directory to hold the stand-in. The kernel truncates the process name to
 # 15 characters, so the stand-in named like the real node shows up as

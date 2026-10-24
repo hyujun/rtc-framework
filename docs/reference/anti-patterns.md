@@ -227,7 +227,8 @@
   유도하던 것을 접어, lifecycle 블록은 *무엇을 왜 거부하는가*, fixture 는 *무엇을 단언하는가*, pass
   선택 규칙은 **AP-PROC-9 한 곳**이 갖게 됐다
 - **세 번째 실측 — 규칙이 바뀌는 날 사본 수만큼 고친다 (#742)**: 손의 폐쇄 lead 를 어느 축의 값으로
-  실행하는가 (`mpc_docking` 아래의 환산) 가 L6_hand.md §4.3 · L3_planner.md §4.11 · integrated_bringup
+  실행하는가 (`mpc_docking` 아래의 환산) 가 두 설계 문서 · integrated_bringup
   README · 두 로봇 YAML 주석 (YAML 은 환산 수치까지) 다섯 곳에 있어, 규칙이 바뀌자 다섯 곳을 고치고
-  완료는 grep 으로만 확인할 수 있었다. 접은 뒤 규칙과 식은 [L6_hand.md](../dynamic_catching/ref/L6_hand.md) §4.3,
-  환산 수치는 L6_hand.md §4.6 측정 표 한 곳이 갖고 나머지는 자기 축만 적고 가리킨다
+  완료는 grep 으로만 확인할 수 있었다. 접은 뒤 규칙과 식은 `EntranceCloseLead`
+  ([docking_config.hpp](../../rtc_controllers/include/rtc_controllers/catching/docking_config.hpp)),
+  환산 수치는 측정 표 한 곳이 갖고 나머지는 자기 축만 적고 가리킨다

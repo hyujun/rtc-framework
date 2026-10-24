@@ -1,6 +1,6 @@
 # 포구 sim 시행 실행 안내
 
-`demo_catching_controller` 를 MuJoCo sim 에서 시험하는 방법이다. 투척 하나는 포구 순환 하나 (ARMED → 포구 → RETREAT → ARMED) 이고, 이 문서는 그 투척을 던지는 명령, 입력 파일 형식, 결과 파일과 읽는 법을 정리한다. 컨트롤러 설계는 [docs/dynamic_catching](dynamic_catching/README.md), 결과를 해석하는 규칙은 [분석 도구 판정 규칙](dynamic_catching/ref/analysis_tools.md), launch 인자는 [README](../integrated_bringup/README.md#launch-파일) 가 갖는다.
+`demo_catching_controller` 를 MuJoCo sim 에서 시험하는 방법이다. 투척 하나는 포구 순환 하나 (ARMED → 포구 → RETREAT → ARMED) 이고, 이 문서는 그 투척을 던지는 명령, 입력 파일 형식, 결과 파일과 읽는 법을 정리한다. 컨트롤러 진단 CSV 의 열은 [catching_diag_log_pod.hpp](../integrated_bringup/include/integrated_bringup/logging/catching_diag_log_pod.hpp), launch 인자는 [README](../integrated_bringup/README.md#launch-파일) 가 갖는다.
 
 ## 1. 한 번 던지기
 
@@ -116,7 +116,7 @@ ros2 run integrated_bringup catching_sim_trials <out> --dist hand_lhs --n 150 --
 - `err_q_at_throw` — 투척 순간의 대기 자세 정렬 오차. `armed_at_throw` — 투척 직전 컨트롤러가 발행한 무장 상태.
 - `truth_csv` — `<out>` 기준 파일 이름. `wall_t_relative_offset` — 이 기록을 `catching_diag.csv` 의 시간축에 잇는 오프셋 (sim 이 벽시계보다 느리면 흐른다).
 - 같은 시행의 컨트롤러 쪽 기록은 세션 폴더 (`logging_data/<세션>/controllers/demo_catching_controller/`) 에 있고, 두 기록을 잇고 성공률을 내는 것은 `rtc_tools` 의 `catching_trials` 다 ([rtc_tools README](../rtc_tools/README.md)). `sim_lanes:=true` 로 띄웠다면 `<세션>/sim/{clock_lane,ball_contact_lane}.csv` 도 같은 세션에 남아 `catching_trials` 가 시행에 잇는다.
-- 성공의 기준은 `final_outcome` 이 아니라 `catching_trials` 의 `truth_success` 다 ([판정 규칙](dynamic_catching/ref/analysis_tools.md)).
+- 성공의 기준은 `final_outcome` 이 아니라 `catching_trials` 의 `truth_success` 다 ([catching_trials.py](../rtc_tools/rtc_tools/analysis/catching_trials.py)). `final_outcome` 은 마지막으로 발행된 label 이라 새 순환이 시작되지 않은 투척에는 앞 투척의 값이 남는다.
 
 ## 5. 포구 모집단의 sim 단계 (`catch_population_trials`)
 
@@ -221,7 +221,7 @@ python3 integrated_bringup/tools/catch_frame/show_catch_frame.py <ur5e_p1b|iiwa7
 
 ### `tools/docking_ident/` — `mpc_docking` 의 손 · 포획 입력 식별
 
-`mpc_docking` 이 받는 값 (통과 평면 · lateral 집합 · 속도 집합 · 폐쇄 창) 을 sim 에서 재는 도구다. 팔을 대기 자세에 세우고 손을 `q_pre` 에 정착시킨 뒤 출하 sim 공을 catch frame 의 직선을 따라 날리고, 정해진 시각에 `q_close` 를 명령해 유지되는가를 본다. 값을 YAML 에 옮기는 것은 도구의 일이 아니다 — 보고서를 읽고 사람이 `robot.hand.docking` · `T_close_lead` 에 적는다 (판정 규칙: [L6 §4.6](dynamic_catching/ref/L6_hand.md)).
+`mpc_docking` 이 받는 값 (통과 평면 · lateral 집합 · 속도 집합 · 폐쇄 창) 을 sim 에서 재는 도구다. 팔을 대기 자세에 세우고 손을 `q_pre` 에 정착시킨 뒤 출하 sim 공을 catch frame 의 직선을 따라 날리고, 정해진 시각에 `q_close` 를 명령해 유지되는가를 본다. 값을 YAML 에 옮기는 것은 도구의 일이 아니다 — 보고서를 읽고 사람이 `robot.hand.docking` · `T_close_lead` 에 적는다.
 
 ```bash
 ( cd <workspace> \
@@ -247,5 +247,5 @@ python3 integrated_bringup/tools/catch_frame/show_catch_frame.py <ur5e_p1b|iiwa7
 | `time.max_future_skew_s` (0.1) | 컨트롤러 YAML (`catching:` 아래) `sim.io.future_tol` | 같은 자릿수 — 공 토픽의 stamp 축이 sim 축이라 wall 을 위상 오차만큼 앞설 수 있다 |
 | `measurement.position_covariance_m2` ((5 mm)² 대각) | `mujoco_simulator.yaml` `projectile_ball.publish.position_noise_stddev_m` | 짝 |
 
-요구 사양의 근거 (D-15) 는 [L1 §4.1](dynamic_catching/ref/L1_io.md) 의 지평 요구이고,
+예측 지평 · stamp 의 수신 계약은 [traj_input.hpp](../integrated_bringup/include/integrated_bringup/controllers/catching/traj_input.hpp) 가,
 공 토픽의 stamp 규약은 [rtc_mujoco_sim/README.md](../rtc_mujoco_sim/README.md) §Projectile Ball 의 stamp 항목이다.

@@ -13,8 +13,8 @@ Checks
 ------
 D1  link / file-reference target exists (markdown links + path-shaped inline
     code spans).  There is no allow marker: a history line that names a file
-    since deleted cites it by name or as ``git show <commit>:<path>`` (the
-    form docs/dynamic_catching/README.md uses), which stays true.  Header include shorthand (``rtc_base/types/types.hpp`` for
+    since deleted cites it by name or as ``git show <commit>:<path>``, which
+    stays true.  Header include shorthand (``rtc_base/types/types.hpp`` for
     ``rtc_base/include/rtc_base/types/types.hpp``) resolves via path-component
     suffix matching, so a genuinely wrong path such as
     ``integrated_bringup/support/owned_topics.cpp`` (missing ``src/``) is still

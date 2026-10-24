@@ -25,7 +25,7 @@ v4.1 이후 (v4.1 · v5 #349 · v6 #383) 는 `thread_layout.yaml` 의 버전 주
 
 mpc_worker 슬롯 회수 (#380) 는 [rt-setup-rationale.md](rt-setup-rationale.md) 가, `DegradationMode` 삭제 (#379) 는 `cpu_topology.hpp` 주석이 갖는다. 거기 없는 한 가지 — "MPC 를 돌리되 전용 코어 없이" 같은 제3 상태는 profile 이 role 을 drop 만 하므로 role 을 *수정*하는 신규 manifest 기능이고 E-7 이다.
 
-- **`mpc` role 의 두 tenant (dynamic_catching S6, E-7 결정 J)**: 포구 계획기 스레드 (`CatchingPlannerThread`, `DemoCatchingController` 소유) 가 `SelectThreadConfigs().mpc.main` 을 그대로 받는다. 한 코어에서 하나만 돈다는 것은 R-1 switch 테스트 `test_catching_mpc_role_switch` + sim 실측으로 확인했다. Aligator 의 OpenMP 워커도 생성 스레드 이름 `mpc_main` 을 물려받으므로 `verify_rt_runtime.sh` 가 고른 TID 가 유휴 워커일 수 있다.
+- **`mpc` role 의 두 tenant (E-7 승인)**: 포구 계획기 스레드 (`CatchingPlannerThread`, `DemoCatchingController` 소유) 가 `SelectThreadConfigs().mpc.main` 을 그대로 받는다. 한 코어에서 하나만 돈다는 것은 controller switch 테스트 `test_catching_mpc_role_switch` + sim 실측으로 확인했다. Aligator 의 OpenMP 워커도 생성 스레드 이름 `mpc_main` 을 물려받으므로 `verify_rt_runtime.sh` 가 고른 TID 가 유휴 워커일 수 있다.
 - **Launch profile (issue #350)**: `enable_mpc:=false` 로 띄우면 profile `mpc_off` 가 된다. 런타임 자동 감지가 불가능한 이유 — `mpc.enabled` 는 controller YAML 이고 스레드는 `on_activate` 에서 뜨므로 세션 중 controller switch 로 켜질 수 있다. profile 불일치를 첫 side effect 전에 거부하는 이유 — controller manager 는 실패한 target 에 `on_deactivate` 를 부르지 않으므로 그 앞에서 활성화된 것은 영구히 반쪽으로 남는다. tier 표 자체는 profile 과 무관하므로 C++ 상수·Python 미러는 불변이다. GRUB `nohz_full`/`rcu_nocbs` 가 profile 을 타지 않는 이유 — boot-static 이라 반영하려면 재부팅이 필요하고, 그러면 재부팅 없는 profile 전환이 깨진다 (결정 D11(a)).
 - **hand-private thread (issue #345)**: `hand_comm` 는 `SystemThreadConfigs` 에 필드가 없는 package-local 설정이고, 옛 `taskset -a` 전-스레드 스윕은 aux slot 의 `hand_aux_io` 를 도로 끌어오므로 제거됐다 — 근거는 `rtc_tools/launch/pinning.py` 주석이 소유한다.
 - **arm_driver (issue #343)**: 제어 루프의 핀 방식 (taskset 불가, CM 파라미터) 은 [rt-setup-rationale.md](rt-setup-rationale.md) 와 `cpu_shield.sh` 헤더가 갖는다.
@@ -48,8 +48,8 @@ Hybrid-CPU 감지 + BIOS 체크리스트: [rt-optimization.md](../rt-optimizatio
 
 ## Dependency Graph — 엣지의 이력
 
-- **`rtc_controllers` → `rtc_tsid` (2026-09-20, dynamic_catching D-26)**: catch-pose IK task step 이 `QPSolverWrapper` 경유 box-constrained QP 다. `rtc_tsid` 는 `rtc_controllers` 를 의존하지 않으므로 순환은 없지만, `rtc_controller_manager` 를 포함한 `rtc_controllers` 의 모든 소비자가 ProxSuite 를 끌어온다.
-- **`rtc_tools` → `rtc_controllers` exec_depend (2026-09-21)**: `catchability_map` 이 `rtc_controllers` 의 `catch_pose_ik_batch` 를 subprocess 로 부른다 — 오프라인 지도 (S3.5a) 와 런타임 계획기 (S6.2) 가 같은 판정 함수를 써야 하기 때문이다. exec 전용이고 `rtc_controllers` 는 `rtc_tools` 를 의존하지 않으므로 순환은 없다. 2026-09-22: `catch_gate_map` 도 같은 이유로 `catch_gate_batch` (S3.5b) 를 부른다.
+- **`rtc_controllers` → `rtc_tsid` (2026-09-20)**: catch-pose IK task step 이 `QPSolverWrapper` 경유 box-constrained QP 다. `rtc_tsid` 는 `rtc_controllers` 를 의존하지 않으므로 순환은 없지만, `rtc_controller_manager` 를 포함한 `rtc_controllers` 의 모든 소비자가 ProxSuite 를 끌어온다.
+- **`rtc_tools` → `rtc_controllers` exec_depend (2026-09-21)**: `catchability_map` 이 `rtc_controllers` 의 `catch_pose_ik_batch` 를 subprocess 로 부른다 — 오프라인 지도와 런타임 계획기가 같은 판정 함수를 써야 하기 때문이다. exec 전용이고 `rtc_controllers` 는 `rtc_tools` 를 의존하지 않으므로 순환은 없다. 2026-09-22: `catch_gate_map` 도 같은 이유로 `catch_gate_batch` 를 부른다.
 
 ## Controller Manager — E-STOP · command type 근거
 
