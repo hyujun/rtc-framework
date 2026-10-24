@@ -27,10 +27,11 @@ pair), so the rotation is not judged here — the unit tests pin it
 (``test_catching_planner_lane`` / ``test_catching_trials``, an asymmetric
 frame on both sides).
 
-Only scenes in ``robot_descriptions`` are compiled. A bring-up whose scene is in
-another package (``ur5e_p1b``'s are in ``hand_description``, a separate project
-this workspace does not depend on) is not a case of this lane at all: a test
-here never resolves a package outside the repo (#952).
+Only scenes in ``robot_descriptions`` are compiled (robot_descriptions_scenes.py).
+A bring-up whose scene is in another package (``ur5e_p1b``'s are in
+``hand_description``, a separate project this workspace does not depend on) is
+skipped with that reason: a test here never resolves a package outside the repo
+(#952), so those frames are checked by hand, not here.
 
 Like the keyframe lane of ``test_shipped_initial_qpos``, the scene lane is
 manual: a local ``colcon test`` runs under ``/usr/bin/python3``, which has no
@@ -49,6 +50,7 @@ from pathlib import Path
 import pytest
 import yaml
 from ament_index_python.packages import get_package_share_directory
+from robot_descriptions_scenes import is_scene_case, not_a_case_reason, scene_file
 
 from rtc_tools.analysis.catching_trials import (
     RETIRED_IO_FRAME_KEYS,
@@ -66,10 +68,6 @@ SIMULATOR = "mujoco_simulator"
 
 def _config_dir(profile: str) -> Path:
     return Path(get_package_share_directory("integrated_bringup")) / "config" / profile
-
-
-# The one package whose scenes the scene lane compiles.
-SCENE_PACKAGE = "robot_descriptions"
 
 
 def _bring_ups() -> list[tuple[str, str | None]]:
@@ -101,23 +99,10 @@ def _model_path(files: list[Path]) -> str:
     return str(model_path)
 
 
-def _scene_bring_ups() -> list[tuple[str, str | None]]:
-    """The bring-ups whose scene is in :data:`SCENE_PACKAGE`."""
-    prefix = f"package://{SCENE_PACKAGE}/"
-    return [c for c in _bring_ups() if _model_path(_layered(*c)).startswith(prefix)]
-
-
-def _scene_file(model_path: str) -> str:
-    """A :data:`SCENE_PACKAGE` ``package://`` URI -> the installed file (asserted to exist)."""
-    rel = model_path[len(f"package://{SCENE_PACKAGE}/") :]
-    path = os.path.join(get_package_share_directory(SCENE_PACKAGE), rel)
-    assert os.path.isfile(path), f"{model_path!r} is not installed at {path}"
-    return path
-
-
 def test_the_scene_lane_has_cases() -> None:
-    # Without this a filter that matched nothing would leave the lane vacuous.
-    assert {profile for profile, _ in _scene_bring_ups()} >= {"ur5e_p1a", "iiwa7_leap"}
+    # Without this a rule that matched nothing would leave the lane vacuous.
+    cases = {p for p, o in _bring_ups() if is_scene_case(_model_path(_layered(p, o)))}
+    assert cases >= {"ur5e_p1a", "iiwa7_leap"}
 
 
 @pytest.mark.parametrize("profile", CATCHING_PROFILES)
@@ -132,10 +117,13 @@ def test_no_catching_config_carries_the_retired_frame_keys(profile: str) -> None
         )
 
 
-@pytest.mark.parametrize(("profile", "overlay"), _scene_bring_ups())
+@pytest.mark.parametrize(("profile", "overlay"), _bring_ups())
 def test_scene_world_puts_the_arm_root_where_the_scene_does(
     profile: str, overlay: str | None
 ) -> None:
+    model_path = _model_path(_layered(profile, overlay))
+    if not is_scene_case(model_path):
+        pytest.skip(not_a_case_reason(model_path))
     mujoco = pytest.importorskip(
         "mujoco",
         reason=(
@@ -144,9 +132,9 @@ def test_scene_world_puts_the_arm_root_where_the_scene_does(
         ),
     )
     config_dir = _config_dir(profile)
-    overlays = [config_dir / "sim_overlays" / overlay] if overlay else []
+    overlays = _layered(profile, overlay)[1:]
     where = f"{profile}/{overlay or 'sim.yaml'}"
-    scene = _scene_file(_model_path(_layered(profile, overlay)))
+    scene = scene_file(model_path)
 
     params = robot_config_params(config_dir, overlays)
     parent, parent_t_world = vision_frame_from_params(params, where)

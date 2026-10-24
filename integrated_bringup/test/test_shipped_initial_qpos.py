@@ -19,10 +19,11 @@ drifting: the YAML now *wins*, so a keyframe edit that nobody mirrors here would
 silently have no effect on the sim. A scene with no keyframe is skipped by the
 same rule that checks the others, not by an exception listing its name.
 
-The lane compiles only scenes in ``robot_descriptions``. ``ur5e_p1b`` and
-``g1_p1b`` load theirs from ``hand_description``, a separate project this
-workspace does not depend on, so they are not cases of the lane at all — a test
-here never resolves a package outside the repo (#952).
+The lane compiles only scenes in ``robot_descriptions``
+(robot_descriptions_scenes.py). ``ur5e_p1b`` and ``g1_p1b`` load theirs from
+``hand_description``, a separate project this workspace does not depend on, so
+the lane skips them with that reason — a test here never resolves a package
+outside the repo (#952).
 
 Values are compared **by joint name**, never as a qpos slice. The LEAP hand is
 the reason: its joints occupy qpos addresses 8, 7, 9, 10, 12, 11, ... so
@@ -57,6 +58,7 @@ import os
 import pytest
 import yaml
 from ament_index_python.packages import get_package_share_directory
+from robot_descriptions_scenes import is_scene_case, not_a_case_reason, scene_file
 
 # Profile -> the MJCF that profile's mujoco_simulator.yaml loads. The path is
 # read out of the config itself rather than listed here, so this map only needs
@@ -75,28 +77,10 @@ def _robot_response(profile: str) -> dict:
     return params["mujoco_simulator"]["ros__parameters"]["robot_response"]
 
 
-# The one package whose scenes the keyframe lane compiles.
-SCENE_PACKAGE = "robot_descriptions"
-
-
 def _model_path(profile: str) -> str:
     with open(_config_path(profile)) as handle:
         params = yaml.safe_load(handle)
     return str(params["mujoco_simulator"]["ros__parameters"]["model_path"])
-
-
-def _scene_profiles() -> list[str]:
-    """The profiles whose scene is in :data:`SCENE_PACKAGE`."""
-    prefix = f"package://{SCENE_PACKAGE}/"
-    return [p for p in PROFILES if _model_path(p).startswith(prefix)]
-
-
-def _scene_file(model_path: str) -> str:
-    """A :data:`SCENE_PACKAGE` ``package://`` URI -> the installed file (asserted to exist)."""
-    rel = model_path[len(f"package://{SCENE_PACKAGE}/") :]
-    path = os.path.join(get_package_share_directory(SCENE_PACKAGE), rel)
-    assert os.path.isfile(path), f"{model_path!r} is not installed at {path}"
-    return path
 
 
 # ── Structural lane (PyYAML only) ────────────────────────────────────────────
@@ -140,12 +124,16 @@ def test_initial_qpos_entries_are_floats(profile: str) -> None:
 
 
 def test_the_keyframe_lane_has_cases() -> None:
-    # Without this a filter that matched nothing would leave the lane vacuous.
-    assert set(_scene_profiles()) >= {"ur5e_p1a", "iiwa7_leap"}
+    # Without this a rule that matched nothing would leave the lane vacuous.
+    cases = {p for p in PROFILES if is_scene_case(_model_path(p))}
+    assert cases >= {"ur5e_p1a", "iiwa7_leap"}
 
 
-@pytest.mark.parametrize("profile", _scene_profiles())
+@pytest.mark.parametrize("profile", PROFILES)
 def test_initial_qpos_matches_mjcf_keyframe(profile: str) -> None:
+    model_path = _model_path(profile)
+    if not is_scene_case(model_path):
+        pytest.skip(not_a_case_reason(model_path))
     mujoco = pytest.importorskip(
         "mujoco",
         reason=(
@@ -156,7 +144,7 @@ def test_initial_qpos_matches_mjcf_keyframe(profile: str) -> None:
     )
 
     response = _robot_response(profile)
-    path = _scene_file(_model_path(profile))
+    path = scene_file(model_path)
 
     model = mujoco.MjModel.from_xml_path(path)
     if model.nkey == 0:

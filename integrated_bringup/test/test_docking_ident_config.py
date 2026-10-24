@@ -31,18 +31,17 @@ sys.path.insert(0, str(REPO / "integrated_bringup" / "tools" / "docking_ident"))
 import report as rp  # noqa: E402
 import rig_config as rc  # noqa: E402
 import run_ident as ri  # noqa: E402
+from robot_descriptions_scenes import is_scene_case  # noqa: E402
 
 PROFILES = ["ur5e_p1b", "iiwa7_leap"]
-# The one package whose scenes a test here resolves.
-SCENE_PACKAGE = "robot_descriptions"
 
 
 def _load_rig_config(profile: str, monkeypatch) -> rc.RigConfig:
-    """load_rig_config, with a scene outside :data:`SCENE_PACKAGE` left as its URI."""
+    """load_rig_config, with a scene outside robot_descriptions left as its URI."""
     resolve = rc.resolve_model_path
 
     def scene(uri: str) -> str:
-        return resolve(uri) if uri.startswith(f"package://{SCENE_PACKAGE}/") else uri
+        return resolve(uri) if is_scene_case(uri) else uri
 
     monkeypatch.setattr(rc, "resolve_model_path", scene)
     return rc.load_rig_config(profile)
@@ -54,10 +53,11 @@ def _load_rig_config(profile: str, monkeypatch) -> rc.RigConfig:
 @pytest.mark.parametrize("profile", PROFILES)
 def test_a_shipped_profile_gives_the_rig_everything(profile, monkeypatch):
     cfg = _load_rig_config(profile, monkeypatch)
-    if cfg.model_path.startswith("package://"):
-        assert not cfg.model_path.startswith(f"package://{SCENE_PACKAGE}/")
-    else:
+    if is_scene_case(rc.simulator_parameters(rc.CONFIG_ROOT / profile)["model_path"]):
         assert Path(cfg.model_path).is_file()
+    else:
+        # Not opened here (#952): the rig at least has to be handed a scene.
+        assert cfg.model_path.startswith("package://") and cfg.model_path.endswith(".xml")
     assert cfg.control_period > 0.0 and cfg.n_substeps >= 1
 
     hand = len(cfg.hand_joints)
