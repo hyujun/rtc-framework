@@ -61,9 +61,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from colcon_scope import in_colcon_scope, is_skipped_dir, self_test_failures
 
-SKIP_DIRS = {"build", "install", "log", ".git", "__pycache__", ".venv"}
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 TEST_FILE_RE = re.compile(r"^test_[\w.-]*\.(cpp|cc|py|sh)$")
 BUILD_TYPE_RE = re.compile(r"<build_type>\s*([\w-]+)\s*</build_type>")
@@ -116,7 +116,7 @@ def cmake_packages(root: Path) -> list[Path]:
     """Directories holding a package.xml and a CMakeLists.txt, not ament_python."""
     found = []
     for xml in sorted(root.rglob("package.xml")):
-        if SKIP_DIRS & set(xml.relative_to(root).parts):
+        if not in_colcon_scope(xml, root):
             continue
         pkg = xml.parent
         if not (pkg / "CMakeLists.txt").is_file():
@@ -137,7 +137,7 @@ def test_files(pkg: Path) -> list[Path]:
         for p in test_dir.rglob("*")
         if p.is_file()
         and TEST_FILE_RE.match(p.name)
-        and not (SKIP_DIRS & set(p.relative_to(pkg).parts))
+        and not any(is_skipped_dir(part) for part in p.relative_to(pkg).parent.parts)
     )
 
 
@@ -296,6 +296,13 @@ def _write_synthetic_corpus(root: Path) -> None:
     (bare / "CMakeLists.txt").write_text("project(pkg_bare)\n")
     (bare / "test" / "test_bare.cpp").write_text("\n")
 
+    # Neither is a copy in a directory colcon never crawls (an agent worktree).
+    wt = root / ".claude" / "worktrees" / "agent-x" / "pkg_cmake"
+    (wt / "test").mkdir(parents=True)
+    (wt / "package.xml").write_text("<package><name>pkg_cmake</name></package>\n")
+    (wt / "CMakeLists.txt").write_text("project(pkg_cmake)\n")
+    (wt / "test" / "test_copy.cpp").write_text("\n")
+
     # A copy of a package under build/ is not the package.
     stray = root / "build" / "pkg_cmake"
     (stray / "test").mkdir(parents=True)
@@ -336,6 +343,7 @@ def _synthetic_corpus_failures() -> list[str]:
         ("pkg_python/test/test_collected.py", None),
         ("pkg_bare/test/test_bare.cpp", "UNREGISTERED"),
         ("build/pkg_cmake/test/test_stray.cpp", None),
+        (".claude/worktrees/agent-x/pkg_cmake/test/test_copy.cpp", None),
     ):
         got = verdict(rel)
         if got != want:
@@ -371,6 +379,7 @@ def self_test() -> int:
             failures.append(f"{name}: expected named={want}, got {got}")
 
     failures.extend(_synthetic_corpus_failures())
+    failures.extend(self_test_failures())
 
     violations, listing = analyse(REPO_ROOT)
     if violations:
