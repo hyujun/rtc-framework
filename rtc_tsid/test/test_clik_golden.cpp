@@ -1,12 +1,11 @@
 /// @file test_clik_golden.cpp
-/// @brief Golden-vector regression of ClikReferenceGenerator (dynamic_catching
-///        S2.2a, gate G5-A2 — docs/dynamic_catching/ref/L5_joint_cmd.md §5.1).
+/// @brief Golden-vector regression of ClikReferenceGenerator's default path.
 ///
-/// Pins the pre-extension behaviour so the S2.2b options can be added with
+/// Pins the pre-extension behaviour so the CLIK options can be added with
 /// "all options off ⇒ bit-identical output" checked, not assumed. The golden
 /// table (golden/clik_golden_data.inc) was recorded at 6d4a3561 — main
-/// f0e03c42 plus the QPSolverWrapper non-finite recovery fix, before any S2.2
-/// CLIK change — and must never be re-recorded to make this test pass: a
+/// f0e03c42 plus the QPSolverWrapper non-finite recovery fix, before any CLIK
+/// option existed — and must never be re-recorded to make this test pass: a
 /// mismatch means the default path changed (E-6 / PROC-6).
 ///
 /// Re-recorded once, for #779 (E-6 approved there): the registered-base
@@ -158,7 +157,7 @@ void WriteGolden(const std::vector<double>& values, const char* path) {
   f << "};\n// clang-format on\n";
 }
 
-// G5-A2 / S2.2a: default path reproduces the recorded table.
+// The default path reproduces the recorded table.
 TEST_F(ClikGoldenTest, DefaultPathMatchesRecordedTable) {
   const std::vector<double> got = RunAll();
   if (const char* out = std::getenv("RTC_CLIK_GOLDEN_OUT"); out != nullptr) {

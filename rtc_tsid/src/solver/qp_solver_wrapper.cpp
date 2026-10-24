@@ -133,12 +133,11 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   // is false, so its convergence test passes — and the caller received
   // converged = true with a NaN x_opt. Worse, every Solve() warm-starts from the
   // previous iterates, so every later (finite) solve started from NaN and
-  // failed too: one bad tick latched the caller's QP off for good
-  // (dynamic_catching S2.2a, F-B1). Treat non-finite iterates as a failed solve
-  // and start the next solve without an initial guess; the first finite result
-  // restores warm-starting. A failed solve with finite iterates (max_iter hit)
-  // keeps warm-starting, as before. Only a settings enum changes — no
-  // allocation.
+  // failed too: one bad tick latched the caller's QP off for good. Treat
+  // non-finite iterates as a failed solve and start the next solve without an
+  // initial guess; the first finite result restores warm-starting. A failed
+  // solve with finite iterates (max_iter hit) keeps warm-starting, as before.
+  // Only a settings enum changes — no allocation.
   const bool iterates_finite =
       qp_->results.x.allFinite() && qp_->results.y.allFinite() && qp_->results.z.allFinite();
   qp_->settings.initial_guess =

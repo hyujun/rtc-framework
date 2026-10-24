@@ -1,5 +1,4 @@
-// Axis-alignment error tests (dynamic_catching S2.1, gate G4-D —
-// docs/dynamic_catching/ref/L4_reference.md §4.5, §9).
+// Axis-alignment error tests (axis_align.hpp).
 //
 //   ExpIdentity            exp([e_a]×) z = a_d residual < 1e-12 (regular region)
 //   OmegaGridContinuity    1° grid ‖ω_ref‖ step < 1.5·K_a·π/180 over 0–180°
@@ -38,7 +37,7 @@ constexpr double kDeg = kPi / 180.0;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
-// G4-D gains from the L4 §4.5 comparison table.
+// Axis gain K_a [1/s] and ‖ω‖ limit w_max [rad/s] of the reference under test.
 constexpr double kAxisGain = 8.0;
 constexpr double kOmegaMax = 6.0;
 
@@ -74,7 +73,7 @@ Vec3 RotateBy(const Vec3& omega, double h, const Vec3& v) {
   return Eigen::AngleAxisd(h * w, omega / w) * v;
 }
 
-// ── G4-D: exact rotation ────────────────────────────────────────────────────
+// ── Exact rotation ──────────────────────────────────────────────────────────
 TEST(AxisAlign, ExpIdentity) {
   std::mt19937 rng(20260919);
   double worst = 0.0;
@@ -123,7 +122,7 @@ TEST(AxisAlign, DeadbandErrorValues) {
   EXPECT_TRUE(near.error.isApprox(opposite.error, 0.0));
 }
 
-// ── G4-D: 1° grid continuity of ‖ω_ref‖ ────────────────────────────────────
+// ── 1° grid continuity of ‖ω_ref‖ ──────────────────────────────────────────
 TEST(AxisAlign, OmegaGridContinuity) {
   std::mt19937 rng(11);
   const double limit = 1.5 * kAxisGain * kDeg;
@@ -148,7 +147,7 @@ TEST(AxisAlign, OmegaGridContinuity) {
   }
 }
 
-// ── G4-D: Jacobian vs finite difference, 1–170° ─────────────────────────────
+// ── Jacobian vs finite difference, 1–170° ───────────────────────────────────
 TEST(AxisAlign, JacobianFiniteDifference) {
   std::mt19937 rng(13);
   constexpr double kStep = 1e-6;
@@ -203,7 +202,7 @@ TEST(AxisAlign, JacobianSeriesBranchMatchesClosedForm) {
   }
 }
 
-// L4 §4.5 구현 주의 1: near θ = π the Jacobian must diverge, not fall back to the
+// Near θ = π the Jacobian must diverge, not fall back to the
 // small-angle series value (≈2.645). With the cap pushed below the probe, the
 // probe sees the real magnitude.
 TEST(AxisAlign, JacobianNearPiIsNotTheSeriesValue) {
@@ -218,7 +217,7 @@ TEST(AxisAlign, JacobianNearPiIsNotTheSeriesValue) {
   EXPECT_GT(jr.jacobian.norm(), 1e7);
 }
 
-// ── Finiteness in and around both deadbands (G4-D, S2.1) ────────────────────
+// ── Finiteness in and around both deadbands ─────────────────────────────────
 TEST(AxisAlign, OutputsFiniteAroundDeadbands) {
   std::mt19937 rng(23);
   const double cap_bound = 4.0 * kPi / se3::kAxisAlignJacobianSinFloor;

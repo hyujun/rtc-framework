@@ -148,7 +148,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_load_model_config test/test_load_model_config.cpp)
   target_link_libraries(test_load_model_config ${PROJECT_NAME})
 
-  # dynamic_catching S2.3a: YAML-declared extra frames (catch frame, D-10/D-17).
+  # YAML-declared extra frames (e.g. a catch frame).
   ament_add_gtest(test_extra_frames test/test_extra_frames.cpp)
   target_link_libraries(test_extra_frames ${PROJECT_NAME})
 

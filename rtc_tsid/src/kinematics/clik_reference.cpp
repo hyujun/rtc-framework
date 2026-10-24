@@ -540,7 +540,7 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int frame_idx,
                               axis_error_angle_ * axis_error_angle_);
 
   // Task references. The axis rows live in the frame's LOCAL x, y (S·R_WCᵀ);
-  // e_a ⟂ z_C, so dropping LOCAL z loses nothing (L5 §4.2).
+  // e_a ⟂ z_C, so dropping LOCAL z loses nothing.
   const Eigen::Vector3d r_p = kx_.head<3>().cwiseProduct(e_p) + v_ff;
   const Eigen::Vector3d w_ref_local = R_wc.transpose() * (k_axis_ * axis.error + w_ff);
 

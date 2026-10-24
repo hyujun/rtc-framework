@@ -355,7 +355,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter("projectile_ball.publish.position_noise_stddev_m",
                       std::vector<double>{0.0, 0.0, 0.0});
 
-    // Per-step clock phase lane (D-3 / S3.1a). See SimClockSample for why this
+    // Per-step clock phase lane. See SimClockSample for why this
     // exists rather than a sim-time stamp on the ball truth topic.
     declare_parameter("clock_lane.enabled", false);
     declare_parameter("clock_lane.csv_path", std::string(""));
@@ -1070,7 +1070,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     // stamp is therefore the sim-time axis laid onto the wall from the launch
     // instant (ProjectileBallSample::stamp_steady_ns): the same axis (ROS
     // system time, no /clock), off the wall only by the phase error the
-    // flight accumulates — what the D-3 clock lane measures, either sign —
+    // flight accumulates — what the clock phase lane measures, either sign —
     // never by the wake jitter. Both ball topics carry the same
     // stamp, so ball_perception's stamp pairing of truth and camera is
     // untouched. The guard keeps a clock that reads near zero (use_sim_time
@@ -1174,7 +1174,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     }
   }
 
-  // ── Clock phase lane (D-3 / S3.1a) ─────────────────────────────────────────
+  // ── Clock phase lane ───────────────────────────────────────────────────────
   //
   // The sim thread only ever pushes into a ring. Everything here — opening a
   // file, formatting, writing — happens on the node's executor, because none of
@@ -1236,7 +1236,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     }
   }
 
-  // ── Ball contact truth lane (S3.3) ────────────────────────────────────────
+  // ── Ball contact truth lane ───────────────────────────────────────────────
   void OpenBallContactCsv() {
     ball_contact_csv_.open(ball_contact_csv_path_, std::ios::out | std::ios::trunc);
     if (!ball_contact_csv_) {

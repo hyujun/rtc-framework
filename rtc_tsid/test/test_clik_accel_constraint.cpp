@@ -1,6 +1,5 @@
 /// @file test_clik_accel_constraint.cpp
-/// @brief ClikReferenceGenerator acceleration constraints kinematic / dynamic
-///        (dynamic_catching decision K, S6-C2).
+/// @brief ClikReferenceGenerator acceleration constraints kinematic / dynamic.
 ///
 /// The oracle is independent of the rows the generator builds: pinocchio's own
 /// RNEA (torque) and classical frame acceleration (task) on a FRESH Data, fed
@@ -218,7 +217,7 @@ class ClikAccelTest : public ::testing::Test {
 
   /// Worst ratio |τ_i| / (η τ_max,i) over the arm, across `ticks` perfectly
   /// tracked steps toward the SE3 target (cache at the command state and
-  /// velocity, D-6). Fails the test if a step fails.
+  /// velocity). Fails the test if a step fails.
   double WorstTorqueRatio(ClikReferenceGenerator& gen, const pinocchio::SE3& des, int ticks) {
     Eigen::VectorXd q = q_home_;
     Eigen::VectorXd v_prev = Eigen::VectorXd::Zero(kNv);

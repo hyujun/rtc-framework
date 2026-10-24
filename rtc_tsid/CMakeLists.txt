@@ -198,7 +198,7 @@ if(BUILD_TESTING)
   # world, judged against the same task stated in the world / as a relative task.
   add_tsid_gtest(test_rotated_base_frame)
 
-  # dynamic_catching S2.2a: golden-vector regression of the default CLIK path.
+  # Golden-vector regression of the default CLIK path.
   # Bit-exact only in the configuration the table was recorded in (Release, no
   # sanitizer); other builds compare with a relative tolerance (see the test
   # file header).
@@ -208,14 +208,14 @@ if(BUILD_TESTING)
     target_compile_definitions(test_clik_golden PRIVATE RTC_CLIK_GOLDEN_EXACT=1)
   endif()
 
-  # dynamic_catching S2.2b: CLIK options (each defaults off).
+  # CLIK options (each defaults off).
   add_tsid_gtest(test_clik_options)
 
-  # dynamic_catching decision K (S6-C2): kinematic / dynamic acceleration rows,
+  # Kinematic / dynamic acceleration rows,
   # judged against pinocchio's RNEA / classical acceleration on a fresh Data.
   add_tsid_gtest(test_clik_accel_constraint)
 
-  # E2-F04 (#636): the multi-frame Compute() overload. Replays the universe
+  # The multi-frame Compute() overload. Replays the universe
   # scenarios of the golden table through it (test/clik_golden_scenarios.hpp),
   # and runs on three models: the Panda, the 17-DoF tree above, and the
   # sibling rtc_urdf_bridge's serial 6-DoF fixture (source-tree path, test-only

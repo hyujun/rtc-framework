@@ -76,7 +76,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_se3_module test/test_se3_module.cpp)
   target_link_libraries(test_se3_module ${PROJECT_NAME})
 
-  # Axis-alignment error (dynamic_catching S2.1). Separate TU because the
+  # Axis-alignment error. Separate TU because the
   # zero-allocation gate must be included before any Eigen header; the gate is
   # rtc_base's never-installed test header (test_depend only — rtc_base does
   # not depend on rtc_math, so no cycle).
