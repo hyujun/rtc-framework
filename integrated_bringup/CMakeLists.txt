@@ -491,7 +491,8 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # The same binding on the real ur5e_p1b model (robot_descriptions, #457) and
+  # The same binding on the ur5e_p1b test model (robot_descriptions'
+  # p1b_surrogate: the shipped joint and frame names, made-up hand geometry) and
   # the SHIPPED controller YAML: link poses, the closed-chain fingertips, the
   # base ↔ base_link half turn and the reach gate need the model, and "the
   # shipped config observes the robot as the policy was trained" needs the file.
@@ -1697,8 +1698,9 @@ if(BUILD_TESTING)
   # planned on `g1` (17): the four combinations publish a pair in one planner
   # wake, the 17-joint solve agrees with the 10-joint one where the joints the
   # chain lacks stand on the pose the chain model locks them at, and the
-  # solve times on the two models are recorded. The G1 model is
-  # hand_description's (not a dependency): every test skips without it.
+  # solve times on the two models are recorded. They run on the profile's test
+  # model (robot_descriptions' G1 + the synthetic p1b_surrogate hand): the
+  # shipped one is hand_description's, which is not a dependency.
   ament_add_gtest(test_catching_search_segment_g1
     test/test_catching_search_segment_g1.cpp TIMEOUT 600)
   target_include_directories(test_catching_search_segment_g1 PRIVATE

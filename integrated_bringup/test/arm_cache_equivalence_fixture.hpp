@@ -24,6 +24,7 @@
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
+#include "p1b_surrogate_models.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 
@@ -55,9 +56,9 @@ inline const EquivConfig kIiwa7LeapEquiv{
 /// upstream of the loop).
 inline const EquivConfig kUr5eP1bEquiv{
     /*label=*/"ur5e_p1b",
-    /*urdf_rel=*/"robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro",
+    /*urdf_rel=*/kUr5eP1bUrdfRel,
     /*extended=*/true,
-    /*closure_rel=*/"robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml",
+    /*closure_rel=*/kUr5eP1bClosureRel,
     /*arm_submodel=*/"ur5e",
     /*tip_frame=*/"tool0",
     /*root_link=*/"base",
@@ -66,7 +67,7 @@ inline const EquivConfig kUr5eP1bEquiv{
 
 // Every fixture model lives in `robot_descriptions` — the package name is a
 // literal, not a config field, so validate_test_fixtures.py can prove where
-// this points instead of only checking that a skip guard exists (#457).
+// this points.
 inline rtc_urdf_bridge::ModelConfig MakeModelConfig(const EquivConfig& ec) {
   rtc_urdf_bridge::ModelConfig cfg;
   cfg.urdf_path =

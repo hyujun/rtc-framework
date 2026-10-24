@@ -21,7 +21,12 @@ few columns inside the 25 trial windows, so this script keeps exactly that:
   body (the ball's floor and table episodes are never read);
 * ``trials/`` — ``trial_results.json`` with ``truth_csv`` rewritten to the bare
   file name, and every ``truth_trial_NN.csv`` gzipped;
-* ``robot.urdf`` — the xacro-expanded URDF the pilot analysed;
+* ``robot.urdf`` — NOT the model the pilot ran: the xacro expansion of
+  ``robot_descriptions/robots/p1b_surrogate/urdf/ur5e_with_p1b_surrogate.urdf.xacro``,
+  the UR5e with a synthetic hand that has the real hand's link and joint names and
+  palm frame but made-up geometry (the real hand's files are not public, #952). The
+  analysis reads the arm, the catch frame's parent (the palm) and the link names
+  off it; the golden numbers were re-checked on it;
 * ``config/`` — only the keys ``catching_trials.load_profile`` reads, copied
   from the robot profile (test data may carry robot values; the module may not);
   ``sim.yaml`` carries the vision world ``urdf.extra_frames.scene_world`` (#779).
@@ -68,11 +73,13 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import yaml
+from ament_index_python.packages import get_package_share_directory
 
 from rtc_tools.analysis.catching_trials import (
     MODE_APPROACH,
@@ -242,7 +249,13 @@ def main() -> int:
             _write_gz(truth, trials_out / f"{name}.gz")
     (trials_out / "trial_results.json").write_text(json.dumps(records, indent=1) + "\n")
 
-    shutil.copyfile(args.pilot_dir / "p1b.urdf", args.out / "robot.urdf")
+    # The surrogate, never the pilot's own URDF: that one is the real hand's model.
+    surrogate = (
+        Path(get_package_share_directory("robot_descriptions"))
+        / "robots/p1b_surrogate/urdf/ur5e_with_p1b_surrogate.urdf.xacro"
+    )
+    urdf = subprocess.run(["xacro", str(surrogate)], check=True, capture_output=True, text=True)
+    (args.out / "robot.urdf").write_text(urdf.stdout)
     _config(args.config_dir, profile.controller, args.out / "config")
     total = sum(p.stat().st_size for p in args.out.rglob("*") if p.is_file())
     print(f"fixture written to {args.out} ({total / 1e6:.2f} MB)")

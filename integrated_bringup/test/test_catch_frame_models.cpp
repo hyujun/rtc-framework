@@ -20,10 +20,11 @@
 // profile's own declaration of two planner models — the search chain
 // `sub_models.g1_catch` and the device tree `tree_models.g1` — and that the
 // catch frame is the same frame in both. Its model is `hand_description`'s
-// too, so that case skips where the package is absent (optional_package.hpp).
+// too, so that case runs on the profile's test model (p1b_surrogate_models.hpp:
+// the G1 body, a synthetic hand) — what it checks does not depend on the hand.
 // The checks of the hand (the four fingertips, `provisional == false`) are NOT
 // made for it: the frame is still provisional on that robot.
-#include "optional_package.hpp"
+#include "p1b_surrogate_models.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -42,6 +43,7 @@
 #include <vector>
 
 namespace rub = rtc_urdf_bridge;
+namespace itf = integrated_bringup::testfx;
 
 namespace {
 
@@ -205,18 +207,17 @@ TEST(CatchFrameModels, Iiwa7Leap) {
 
 // ── g1_p1b: one catch frame, two planner models ──────────────────────────────
 
-// The profile's `urdf:` block as a ModelConfig: its package, files, sub-models,
-// tree models and extra frames, as shipped.
+// The profile's `urdf:` block as a ModelConfig — its sub-models, tree models
+// and extra frames as shipped, on the profile's test model
+// (p1b_surrogate_models.hpp: the shipped one is not in this workspace).
 rub::ModelConfig ShippedG1Config() {
   const YAML::Node urdf =
       YAML::LoadFile(kConfigDir + "/g1_p1b/_base.yaml")["/**"]["ros__parameters"]["urdf"];
-  // The literal is what the fixture gate reads; the profile must agree with it.
-  EXPECT_EQ(urdf["package"].as<std::string>(), "hand_description");
-  const std::string share = ament_index_cpp::get_package_share_directory("hand_description");
+  const std::string share = ament_index_cpp::get_package_share_directory("robot_descriptions");
   rub::ModelConfig cfg;
-  cfg.urdf_path = share + "/" + urdf["path"].as<std::string>();
+  cfg.urdf_path = share + "/" + itf::kG1P1bUrdfRel;
   cfg.root_joint_type = urdf["root_joint_type"].as<std::string>();
-  cfg.closure_yaml_path = share + "/" + urdf["closure_path"].as<std::string>();
+  cfg.closure_yaml_path = share + "/" + itf::kG1P1bClosureRel;
   for (const auto& kv : urdf["sub_models"]) {
     cfg.sub_models.push_back({kv.first.as<std::string>(), kv.second["root_link"].as<std::string>(),
                               kv.second["tip_link"].as<std::string>()});
@@ -237,7 +238,6 @@ rub::ModelConfig ShippedG1Config() {
 // both, fixed to the chain's tip, at the same place for the same joint angles —
 // and in the tree it does not move with a joint the chain lacks.
 TEST(CatchFrameModels, G1P1bTheSearchChainAndTheDeviceTreeCarryTheSameCatchFrame) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   const rub::ModelConfig cfg = ShippedG1Config();
   const rub::ExtraFrameConfig* cf = FindCatchFrame(cfg);
   ASSERT_NE(cf, nullptr) << "no urdf.extra_frames.catch_frame in g1_p1b/_base.yaml";
