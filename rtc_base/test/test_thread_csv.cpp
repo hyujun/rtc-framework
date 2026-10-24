@@ -11,11 +11,13 @@
 #include "rtc_base/logging/thread_csv_producer.hpp"
 
 #include <gtest/gtest.h>
+#include <stdlib.h>  // mkdtemp
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <ostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -38,11 +40,14 @@ void WriteRow(std::ostream& os, const TestRow& r) {
 
 class ScopedTempDir {
  public:
+  // mkdtemp, one directory per scope and no shared parent: a fixed parent
+  // outlived every run in the shared temp dir.
   ScopedTempDir() {
-    auto base = fs::temp_directory_path() / "rtc_thread_csv_test";
-    fs::create_directories(base);
-    dir_ = base / ("t_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFu));
-    fs::create_directories(dir_);
+    std::string pattern = (fs::temp_directory_path() / "rtc_thread_csv_XXXXXX").string();
+    if (::mkdtemp(pattern.data()) == nullptr) {
+      throw std::runtime_error("mkdtemp failed for " + pattern);
+    }
+    dir_ = pattern;
   }
 
   ~ScopedTempDir() {
