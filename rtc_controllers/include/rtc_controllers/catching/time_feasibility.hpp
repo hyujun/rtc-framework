@@ -158,7 +158,8 @@ struct TMinResult {
 ///   g_max = min(v_dir,max, v_tcp) / ‖v‖     arm speed limit
 /// ‖v‖ [m/s] ball speed at the catch, d_eff [m] usable pocket depth,
 /// T_close,tot [s] total hand-close time, v_dir,max [m/s] arm speed along v̂,
-/// v_tcp [m/s] planning TCP speed (PlanningTcpSpeed).
+/// v_tcp [m/s] planning TCP speed (PlanningTcpSpeed). Both ends are clamped to
+/// [0, 1].
 struct GammaWindow {
   double g_min{1.0};
   double g_max{0.0};

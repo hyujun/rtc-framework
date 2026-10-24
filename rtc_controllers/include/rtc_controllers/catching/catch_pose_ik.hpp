@@ -65,8 +65,8 @@
 //                  s.t. max(q_min−q, −dq_step_max) ≤ q̇ ≤ min(q_max−q, +dq_step_max)
 //
 //    so the joint limits and the step bound are CONSTRAINTS on the task step
-//    rather than a clamp applied to it afterwards (a joint already outside its
-//    limit gets a zero-width box). `DifferentialIk` stays, but only to form N
+//    rather than a clamp applied to it afterwards (a joint outside its limit by
+//    more than dq_step_max gets a zero-width box). `DifferentialIk` stays, but only to form N
 //    — the projector belongs to the law, not to the solver.
 //
 //    Measured (2 arms × 500 candidates): at μ = 1e-4 the QP accepts slightly
@@ -189,7 +189,7 @@ namespace rtc::catching {
 /// This selects the GATE only. The null-space ascent always climbs w₅,
 /// whichever definition is active, so q* does not depend on this field — which
 /// is what makes w₅ and w₆ at the returned q* two measurements of the same pose
-/// and therefore comparable. Under kArm6Row the gate is applied
+/// (their values are not interchangeable). Under kArm6Row the gate is applied
 /// to a quantity that was not itself maximised; that is intended, and is the
 /// point of keeping both numbers.
 enum class ManipDefinition : std::uint8_t {

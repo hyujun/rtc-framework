@@ -66,8 +66,9 @@
 // J_cur is the passed candidate within n_s Δ_v / 2 of t_c,cur (none: infeasible),
 // Δ_J = `switch.delta_J`, Δp_c = p_c,best − p_c,cur. The jump bound is
 // SwitchAccelStepBound ≤ η_jump·a_max at its worst over `switch.samples`
-// instants of [now_lead, now_lead + `budget_s` + 2h] (h the control period);
-// it is not judged while the arm follows segments.
+// instants of [now_lead, now_lead + `budget_s` + 2h] (h the control period)
+// while the RT runs a valid γ ramp, else at now_lead only; it is not judged
+// while the arm follows segments.
 //
 // γ_f AND T_w come from the γ rollout (ChooseGamma) over [min(γ_min, γ_max),
 // γ_max] — an empty window is searched at the arm's limit γ_max. A window

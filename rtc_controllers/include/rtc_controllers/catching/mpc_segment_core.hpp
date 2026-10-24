@@ -170,9 +170,9 @@
 //    |q̇_0| > η_v q̇_max) is rejected (kInitialStateOutsideBox), not relaxed —
 //    node 1 could not satisfy the hard rows. Keeping x_0 inside is the
 //    caller's policy (predict before entry, or fall back to closed form).
-//  • x_0 more than δ from x̄_0 (it drifted between cycles), or a trust-region
-//    row with lower > upper (x̄ left the box by more than δ), fails closed
-//    (kTrustRegionConflict) before any QP runs; the caller re-solves with
+//  • q_0 more than δ from q̄_0 (it drifted between cycles), or a trust-region
+//    row with lower > upper (q̄ left the box by more than δ), fails closed
+//    (kTrustRegionConflict); the caller re-solves with
 //    reference_valid = false. "Cannot stop within limits" shows up as slack:
 //    read slack_max / slack_terminal_max; the publish threshold is the
 //    caller's.
