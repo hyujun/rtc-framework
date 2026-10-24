@@ -122,10 +122,8 @@ inline std::map<std::string, rtc::DeviceNameConfig> ShippedSimConfigs(const std:
 }
 
 /// The profile's system model as the CM builds it: every entry of the shipped
-/// `urdf:` block, read from the file, except the model files when the profile
-/// names a package other than `robot_descriptions` — `ur5e_p1b` names
-/// `hand_description`, which this workspace does not depend on, and gets its
-/// test model instead (p1b_surrogate_models.hpp). The
+/// `urdf:` block, read from the file, except the model files of a profile whose
+/// model is not in this repo: those are its test model's (TestModelFiles). The
 /// shipped DECEL law is `mpc`, which parks without a model, so a bring-up
 /// test of the shipped file that left the model out would configure a
 /// controller production never builds.
@@ -136,23 +134,17 @@ inline rtc_urdf_bridge::ModelConfig ShippedModelConfig(const std::string& profil
   if (!urdf || !urdf.IsMap()) {
     throw std::runtime_error(profile + ": no shipped urdf block");
   }
-  std::string urdf_rel = urdf["path"].as<std::string>();
-  std::string closure_rel = urdf["closure_path"].as<std::string>("");
-  if (urdf["package"].as<std::string>("robot_descriptions") != "robot_descriptions") {
-    if (profile != "ur5e_p1b") {
-      throw std::runtime_error(profile + ": the shipped model is in package '" +
-                               urdf["package"].as<std::string>() +
-                               "', and this fixture has no test model for it");
-    }
-    urdf_rel = kUr5eP1bUrdfRel;
-    closure_rel = kUr5eP1bClosureRel;
-  }
+  const bool extended = urdf["extended"].as<bool>(false);
+  const ModelFiles files =
+      TestModelFiles(profile, urdf["package"].as<std::string>("robot_descriptions"),
+                     urdf["path"].as<std::string>(),
+                     extended ? urdf["closure_path"].as<std::string>() : std::string());
   const std::string share = ament_index_cpp::get_package_share_directory("robot_descriptions");
   rtc_urdf_bridge::ModelConfig cfg;
-  cfg.urdf_path = share + "/" + urdf_rel;
+  cfg.urdf_path = share + "/" + files.urdf_rel;
   cfg.root_joint_type = urdf["root_joint_type"].as<std::string>("fixed");
-  if (urdf["extended"].as<bool>(false)) {
-    cfg.closure_yaml_path = share + "/" + closure_rel;
+  if (extended) {
+    cfg.closure_yaml_path = share + "/" + files.closure_rel;
   }
   // Document order: controllers take the FIRST sub-model as the arm.
   for (auto it = urdf["sub_models"].begin(); it != urdf["sub_models"].end(); ++it) {

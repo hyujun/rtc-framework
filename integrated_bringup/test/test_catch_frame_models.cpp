@@ -10,8 +10,9 @@
 //   - the model dimensions (iiwa7_leap full nv 23).
 //
 // Only robots whose model this repository owns are listed. ur5e_p1b ships a
-// catch frame too, but its model belongs to `hand_description`: this
-// repository loads it and does not verify it (#682).
+// catch frame too, but its hand belongs to `hand_description` (#682), and the
+// test model's hand is synthetic: checking that ITS fingers flex towards the
+// frame's +z would say nothing about the real one.
 // That the declared frame reaches every derived model is this test's concern
 // only for iiwa7_leap; the mechanism itself is rtc_urdf_bridge's
 // test_extra_frames.
@@ -215,9 +216,12 @@ rub::ModelConfig ShippedG1Config() {
       YAML::LoadFile(kConfigDir + "/g1_p1b/_base.yaml")["/**"]["ros__parameters"]["urdf"];
   const std::string share = ament_index_cpp::get_package_share_directory("robot_descriptions");
   rub::ModelConfig cfg;
-  cfg.urdf_path = share + "/" + itf::kG1P1bUrdfRel;
+  const itf::ModelFiles files =
+      itf::TestModelFiles("g1_p1b", urdf["package"].as<std::string>(),
+                          urdf["path"].as<std::string>(), urdf["closure_path"].as<std::string>());
+  cfg.urdf_path = share + "/" + files.urdf_rel;
   cfg.root_joint_type = urdf["root_joint_type"].as<std::string>();
-  cfg.closure_yaml_path = share + "/" + itf::kG1P1bClosureRel;
+  cfg.closure_yaml_path = share + "/" + files.closure_rel;
   for (const auto& kv : urdf["sub_models"]) {
     cfg.sub_models.push_back({kv.first.as<std::string>(), kv.second["root_link"].as<std::string>(),
                               kv.second["tip_link"].as<std::string>()});
@@ -329,4 +333,22 @@ TEST(CatchFrameModels, G1P1bTheSearchChainAndTheDeviceTreeCarryTheSameCatchFrame
   EXPECT_EQ(outside, 7);  // the left arm
   RecordProperty("g1_p1b_search_chain_nv", chain->nv);
   RecordProperty("g1_p1b_segment_tree_nv", tree->nv);
+}
+
+// The test-model table refuses a profile whose shipped model it does not stand
+// in for, so a model that moves cannot leave the stand-in silently in place.
+TEST(CatchFrameModels, TheTestModelTableFollowsTheShippedModel) {
+  const itf::ModelFiles own =
+      itf::TestModelFiles("iiwa7_leap", "robot_descriptions", "robots/a.urdf", "");
+  EXPECT_EQ(own.urdf_rel, "robots/a.urdf");
+  EXPECT_TRUE(own.closure_rel.empty());
+  const itf::ModelFiles g1 =
+      itf::TestModelFiles("g1_p1b", "hand_description",
+                          "robots/unitree_g1_p1b/urdf/g1_with_proto_1b_fixed_base.urdf.xacro", "c");
+  EXPECT_EQ(g1.urdf_rel, itf::kG1P1bUrdfRel);
+  EXPECT_EQ(g1.closure_rel, itf::kG1P1bClosureRel);
+  EXPECT_THROW(itf::TestModelFiles("g1_p1b", "hand_description", "robots/moved.urdf", "c"),
+               std::runtime_error);
+  EXPECT_THROW(itf::TestModelFiles("other_robot", "hand_description", "robots/a.urdf", ""),
+               std::runtime_error);
 }

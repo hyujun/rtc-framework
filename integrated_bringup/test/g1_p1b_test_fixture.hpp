@@ -49,9 +49,12 @@ inline rtc_urdf_bridge::ModelConfig MakeG1P1bModelConfig() {
   const YAML::Node urdf = ShippedNodeParameters("g1_p1b/_base.yaml")["urdf"];
   const std::string share = ament_index_cpp::get_package_share_directory("robot_descriptions");
   rtc_urdf_bridge::ModelConfig cfg;
-  cfg.urdf_path = share + "/" + kG1P1bUrdfRel;
+  const ModelFiles files =
+      TestModelFiles("g1_p1b", urdf["package"].as<std::string>(), urdf["path"].as<std::string>(),
+                     urdf["closure_path"].as<std::string>());
+  cfg.urdf_path = share + "/" + files.urdf_rel;
   cfg.root_joint_type = urdf["root_joint_type"].as<std::string>();
-  cfg.closure_yaml_path = share + "/" + kG1P1bClosureRel;
+  cfg.closure_yaml_path = share + "/" + files.closure_rel;
   for (const auto& kv : urdf["sub_models"]) {
     cfg.sub_models.push_back({kv.first.as<std::string>(), kv.second["root_link"].as<std::string>(),
                               kv.second["tip_link"].as<std::string>()});
