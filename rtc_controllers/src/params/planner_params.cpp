@@ -79,7 +79,7 @@ double ReadBounded(const YAML::Node& sec, const char* key, const std::string& pa
   }
   if (!std::isfinite(d) || d < lo || d > hi) {
     Reject(Key(path) + " = " + Spelling(v) + " is outside [" + std::to_string(lo) + ", " +
-           std::to_string(hi) + "] (L3 §6)");
+           std::to_string(hi) + "]");
   }
   return d;
 }
@@ -405,9 +405,8 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
   // rather than silently run on the eta_jump default.
   for (const char* retired : {"e_jump_max", "ed_jump_max"}) {
     if (sw && sw.IsMap() && sw[retired]) {
-      Reject(
-          Key(std::string("search.grid.switch.") + retired) +
-          " was replaced by planner.search.grid.switch.eta_jump (L3 §4.7, an acceleration budget)");
+      Reject(Key(std::string("search.grid.switch.") + retired) +
+             " was replaced by planner.search.grid.switch.eta_jump (an acceleration budget)");
     }
   }
   out.switch_eta_jump =

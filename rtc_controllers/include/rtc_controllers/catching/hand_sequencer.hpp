@@ -185,7 +185,7 @@ class HandSequencer {
     ClearTrial();
   }
 
-  /// Homing: open to q_open (Q4: the one use of q_open).
+  /// Homing: open to q_open (the one use of q_open).
   void Home() noexcept { Enter(HandPhase::kOpen); }
 
   /// The arm is at its wait pose: wait at q_pre. Cancels a commit that has not
@@ -219,7 +219,7 @@ class HandSequencer {
     return true;
   }
 
-  /// Open to q_pre (Q4) and wait there. From any active phase; the Release
+  /// Open to q_pre and wait there. From any active phase; the Release
   /// ends in Preshape once the hand has settled.
   void Release() noexcept {
     if (!active_) {

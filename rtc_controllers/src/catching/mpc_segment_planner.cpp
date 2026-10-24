@@ -192,7 +192,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   // A plan is published only with a first segment that starts before t_c
   // so a planner without a pre-catch grid has nothing to publish.
   if (params.n_pre_max < 1) {
-    return fail("approach.n_pre_max is below 1 (a segment starts before t_c, MD-56)");
+    return fail("approach.n_pre_max is below 1 (a segment starts before t_c)");
   }
   if (params.k_max < 0 || params.k_max > kMaxMpcSegmentReplans || params.DtNs() <= 0) {
     return fail("k_max or dt_s is outside its range");

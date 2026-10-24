@@ -31,7 +31,7 @@ namespace {
 //   - `planner.search.grid.catchability.manipulability_min.provisional`
 //   - `robot.hand.provisional`
 //   - `supervisor.deadline.provisional`                     (both deadlines)
-//   - `joint_cmd.lag.provisional`                           (#537 Q5, T_arm)
+//   - `joint_cmd.lag.provisional`                           (T_arm)
 // All of them default to `true` (fail-closed: unconfirmed until the YAML says
 // otherwise), matching how every other provisional flag in this repo defaults
 // to blocking the real arm rather than trusting silence.
@@ -172,7 +172,7 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
   // ignored.
   if (hand_node["T_pre"]) {
     Reject(
-        "robot.hand.T_pre was removed (S7: the hand waits at q_pre, there is no timed "
+        "robot.hand.T_pre was removed (the hand waits at q_pre, there is no timed "
         "preshape) — delete the key");
   }
   out.T_hold = ReadTbdDouble(hand_node, "T_hold", out.T_hold);
@@ -322,7 +322,7 @@ BallSpec ReadBallSpec(const YAML::Node& ball_node) {
 
 CatchingParams ParseCatchingParams(const YAML::Node& node) {
   if (!node || !node.IsMap()) {
-    Reject("must be a map (the `catching:` tree, CATCHING_MASTER.md §6)");
+    Reject("must be a map (the `catching:` tree)");
   }
   CatchingParams out;
 
@@ -542,7 +542,7 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
 
   const YAML::Node sim = ReadSection(node, "sim");
   out.sim_ball_drag_k = ReadTbdDouble(ReadSection(sim, "ball"), "drag_k", out.sim_ball_drag_k);
-  // The sim OVERLAY of a shared key (A-S5-2). Nested under `sim:` for the same
+  // The sim OVERLAY of a shared key. Nested under `sim:` for the same
   // reason `sim.ball.drag_k` is: this YAML is loaded by both the sim and the
   // hardware bring-up, so "sim only" has to be said in the schema rather than
   // in which file the value happens to sit.
@@ -838,7 +838,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   }
 
   // future_tol: the shared key is active on both axes; the sim override is
-  // active only in sim (A-S5-2), exactly like sim.ball.drag_k.
+  // active only in sim, exactly like sim.ball.drag_k.
   if (CheckActiveTbd(report, params.io_future_tol, "io.future_tol", true)) {
     CheckRange(report, "io.future_tol", params.io_future_tol.value, 1e-4, 1e-2);
   }

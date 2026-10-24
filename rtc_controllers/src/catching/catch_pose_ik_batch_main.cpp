@@ -39,7 +39,7 @@ namespace {
 namespace rub = rtc_urdf_bridge;
 
 constexpr std::string_view kUsage =
-    R"(catch_pose_ik_batch — offline catch-pose judge (dynamic_catching S3.5a, L3 §4.2)
+    R"(catch_pose_ik_batch — offline catch-pose judge
 
   --model-config PATH   ModelConfig YAML (PinocchioModelBuilder::LoadModelConfig
                         schema, NOT the ros__parameters robot config). Must
@@ -61,7 +61,7 @@ constexpr std::string_view kUsage =
   --seeds PATH          seed CSV: seed_id,q0,... (one row per wait-pose candidate)
   --out PATH            output CSV (default: stdout)
   --dump-frame          print the catch frame placement relative to its parent
-                        and exit — the S2.3b check through the production builder
+                        and exit — the catch-frame check through the production builder
   -h, --help            this text
 )";
 

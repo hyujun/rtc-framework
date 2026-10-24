@@ -114,7 +114,7 @@ bool CatchPoseIk::StackJacobian(rtc_urdf_bridge::RtModelHandle& model,
   // origin's linear velocity in world axes (rows 0-2 — the block the position
   // task lives in), LOCAL gives the angular velocity in the frame's own axes
   // (rows 3-5 — the block e_a^C lives in, since AxisAlignError is evaluated
-  // against the frame's own ê_z). Mixing the two up is the trap S2 hit: the
+  // against the frame's own ê_z). Mixing the two up is a trap: the
   // result stays finite and smooth, so no norm or NaN sensor catches it.
   model.GetFrameJacobian(catch_frame, pinocchio::LOCAL_WORLD_ALIGNED, J6_);
   model.GetFrameJacobian(catch_frame, pinocchio::LOCAL, Jlocal_);

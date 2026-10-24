@@ -36,7 +36,7 @@ namespace {
 namespace rub = rtc_urdf_bridge;
 
 constexpr std::string_view kUsage =
-    R"(catch_search_batch — the planner's catch search, offline (dynamic_catching L3 §4.1)
+    R"(catch_search_batch — the planner's catch search, offline
 
 Every wake is the search's first look at an arm at rest on planner.wait_pose
 that follows no plan; the covariance is zero and the clock does not advance.

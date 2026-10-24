@@ -67,7 +67,7 @@ YAML::Node ReadSection(const YAML::Node& parent, const char* key, const std::str
 void CheckRange(const std::string& path, const YAML::Node& v, double d, const Range& r) {
   const bool lo_ok = r.lo_open ? (d > r.lo) : (d >= r.lo);
   if (!std::isfinite(d) || !lo_ok || d > r.hi) {
-    RejectMsg("'" + path + "' = " + Spelling(v) + " is outside the L3 §6 range " +
+    RejectMsg("'" + path + "' = " + Spelling(v) + " is outside the allowed range " +
               (r.lo_open ? "(" : "[") + std::to_string(r.lo) + ", " +
               (r.hi == kInf ? std::string("inf") : std::to_string(r.hi)) + "]");
   }
@@ -113,7 +113,7 @@ int ReadInt(const std::string& base, const YAML::Node& sec, const char* key, int
     RejectMsg("'" + path + "' must be an integer, got " + Spelling(v));
   }
   if (i < lo || i > hi) {
-    RejectMsg("'" + path + "' = " + Spelling(v) + " is outside the L3 §6 range [" +
+    RejectMsg("'" + path + "' = " + Spelling(v) + " is outside the allowed range [" +
               std::to_string(lo) + ", " + std::to_string(hi) + "]");
   }
   return i;
@@ -196,7 +196,7 @@ void SweepIkKeys(const std::string& base, const YAML::Node& ik, CatchPoseIkRetir
     }
     if (!known) {
       RejectMsg("unknown key '" + IkKey(base, name.c_str()) +
-                "' — L3 §6 defines no such parameter (typo?)");
+                "' — no such catch-pose IK parameter (typo?)");
     }
   }
 }
@@ -209,7 +209,7 @@ CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkReti
     *retired = CatchPoseIkRetiredKeys{};
   }
   if (!node || !node.IsMap()) {
-    RejectMsg("must be a map (the `catching:` tree, CATCHING_MASTER.md §6)");
+    RejectMsg("must be a map (the `catching:` tree)");
   }
   CatchPoseIkConfig out;
   CatchPoseIkRetiredKeys local_retired;

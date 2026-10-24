@@ -594,7 +594,7 @@ void ReadCore(const Reader& rd, const YAML::Node& m, const std::string& path, in
     if (!whole_body) {
       rd.Reject(Quote(pw) +
                 " is a whole-body term, which the search does not read: it plans the chain "
-                "alone (#641 D10'); the segment planner's is "
+                "alone; the segment planner's is "
                 "planner.segment.mpc_docking.core.cost.angular_momentum");
     }
     if (!ang.IsMap()) {
@@ -783,7 +783,7 @@ NlpCatchSearchParams ParseNlpSearchParams(const YAML::Node& catching, int nv) {
   // whole-body term (`core.cost.angular_momentum` is refused by ReadCore).
   if (nlp.IsMap() && nlp["groups"]) {
     rd.Reject(Quote(Join(b, "groups")) +
-              ": the search does not read joint groups — it plans the chain alone (#641 D10'); "
+              ": the search does not read joint groups — it plans the chain alone; "
               "the segment planner's are planner.segment.mpc_docking.groups");
   }
   rd.CheckKeys(nlp, b,
@@ -1079,7 +1079,7 @@ std::string MpcDockingLeftFreeRefusal(const MpcDockingSegmentPlannerParams& dock
          (groups.n_groups == 0 ? std::string("the arm, no planner.groups")
                                : "group '" + specs[static_cast<std::size_t>(g)].name + "'") +
          "), whose " + (free_pre >= 0 ? "pre-catch rest (w_q_nom)" : "stop rest (w_rest_stop)") +
-         " weight is 0 — give it one (#641 D9')";
+         " weight is 0 — give it one";
 }
 
 }  // namespace rtc::catching
