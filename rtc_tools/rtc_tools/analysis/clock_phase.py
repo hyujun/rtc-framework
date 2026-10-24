@@ -1,6 +1,6 @@
-"""Clock phase error per launch trial (dynamic_catching D-3 / S3.1a).
+"""Clock phase error per launch trial.
 
-Spec: L8 §4.5. D-3 is judged on the
+The sim keeps the wall clock; its timing is judged on the
 **per-trial clock phase error**, not on a rate. The existing RTF signal averages
 over 200 steps, so a 0.5 s flight carries one or two samples and a short stall is
 erased by the mean; and the throttle baseline is only reset when ``max_rtf``
@@ -8,8 +8,7 @@ changes, so a stall is followed by a catch-up stretch with RTF > 1. Neither
 survives as evidence.
 
 This reads the simulator's clock lane CSV
-(``clock_lane.csv_path``, written by ``rtc_mujoco_sim``) and computes, per trial,
-exactly what §5 defines:
+(``clock_lane.csv_path``, written by ``rtc_mujoco_sim``) and computes, per trial:
 
     delta(t)  = (steady(t) - steady_0) - (sim(t) - sim_0)
     delta_max = max |delta| over the flight
@@ -25,28 +24,25 @@ between throws as clock error and delta_max would grow with the gap rather than
 with the defect. Trials are cut by ``launch_seq`` and ``ball_active``, which the
 lane records for this reason.
 
-**delta is a COVARIATE, not a pass/fail (D-S8-4 (c), superseding the earlier
-NOT_EVALUATED-verdict stance).** The validity condition
+**delta is a COVARIATE, not a pass/fail.** The validity condition
 
     v_max * delta_max + 0.5 * a_bound * delta_max^2 <= eps_clk_alloc
     max pause                                       <= eps_clk_alloc / v_max
 
-still needs ``eps_clk_alloc``, the share of the L3 §4.6 error budget given to
-the clock term. That share is ``r_cap / n_sigma`` at the target speed and is
-provisional (L8 §4.5 re-judgement) — this tool does not pick it, and there is
-no verdict here. What changed is what the numbers are *for*: D-S8-4 (c) found
-that a direct delta-vs-outcome correlation has no power at the trial counts
-S8 collects (n 25-50; r 0.3 needs n ~85), so instead of chasing a threshold
-this tool reports the **distributions** — per-trial ``delta_max``, max-pause
-percentiles — as covariates that S8-B/E correlate against catch outcomes and
+still needs ``eps_clk_alloc``, the share of the catch error budget
+(CatchErrorSigma) given to the clock term. That share is ``r_cap / n_sigma``
+at the target speed and is provisional — this tool does not pick it, and there
+is no verdict here. A direct delta-vs-outcome correlation has no power at the
+evaluation's trial counts (n 25-50; r 0.3 needs n ~85), so instead of chasing a
+threshold this tool reports the **distributions** — per-trial ``delta_max``,
+max-pause percentiles — as covariates to correlate against catch outcomes and
 against a same-seed load A/B (affinity-on vs artificial load), and, only when
 the caller supplies a candidate ``eps_clk_alloc`` on the CLI, the fraction of
 observed trials that would satisfy the condition under it — reported as
 "valid under eps", explicitly not a verdict. The tool also still prints the
 smallest ``eps_clk_alloc`` that would admit a given fraction of the observed
-trials (the S3.1a inversion); that number remains a **proposal for the user to
-confirm** (L8 §4.5), not something this run adopts, and the output says
-so.
+trials (the inversion); that number remains a **proposal for the user to
+confirm**, not something this run adopts, and the output says so.
 """
 
 from __future__ import annotations
@@ -58,11 +54,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# L8 §4.5: v_max is the fastest ball speed in the target throw distribution and
-# a_bound is g plus the drag acceleration ceiling. Until S3.5b fixes the
-# distribution these are the S0.7 assumed values, and the provenance says so.
-DEFAULT_V_MAX_M_S = 8.4  # S0.7 sweep: catch speed up to 8.4 m/s at T_f 1.5 s
-DEFAULT_A_BOUND_M_S2 = 9.81 + 0.0229 * 8.4 * 8.4  # g + k|v|^2, k from L0 §4.1
+# v_max is the fastest ball speed in the target throw distribution and a_bound
+# is g plus the drag acceleration ceiling. Assumed values until the throw
+# distribution is fixed, and the provenance says so.
+DEFAULT_V_MAX_M_S = 8.4  # assumed sweep: catch speed up to 8.4 m/s at T_f 1.5 s
+DEFAULT_A_BOUND_M_S2 = 9.81 + 0.0229 * 8.4 * 8.4  # g + k|v|^2, k [1/m] representative drag
 
 
 @dataclass
@@ -150,7 +146,7 @@ def _summarise(seq: int, samples: list[tuple[float, float]]) -> Trial:
 
 
 def required_eps(trial: Trial, v_max: float, a_bound: float) -> float:
-    """Smallest eps_clk_alloc that would make this trial valid (L8 §4.5)."""
+    """Smallest eps_clk_alloc that would make this trial valid (the validity condition)."""
     from_delta = v_max * trial.delta_max_s + 0.5 * a_bound * trial.delta_max_s**2
     from_pause = trial.max_pause_s * v_max
     return max(from_delta, from_pause)
@@ -166,10 +162,10 @@ def quantile(values: list[float], q: float) -> float:
 
 @dataclass
 class CovariateSummary:
-    """D-S8-4 (c): what this tool reports about clock phase error now that it is
-    a covariate rather than a pass/fail. ``valid_fraction`` is populated only
-    when the caller supplies a candidate ``eps_clk_alloc`` (``eps_mm``) — it is
-    explicitly NOT a verdict: D-3 is judged by a same-seed load A/B, not a threshold.
+    """What this tool reports about clock phase error, a covariate rather than
+    a pass/fail. ``valid_fraction`` is populated only when the caller supplies a
+    candidate ``eps_clk_alloc`` (``eps_mm``) — it is explicitly NOT a verdict:
+    clock phase is judged by a same-seed load A/B, not a threshold.
     """
 
     n_trials: int
@@ -188,15 +184,14 @@ def covariate_summary(
     trials: list[Trial], v_max: float, a_bound: float, eps_mm: float | None = None
 ) -> CovariateSummary:
     """Per-trial delta_max / max-pause distributions, plus an optional
-    valid-under-eps fraction (L8 §4.5's condition, ``required_eps``).
+    valid-under-eps fraction (the validity condition, ``required_eps``).
 
-    This does not decide anything. The distributions are what S8-B/E correlate
-    against catch outcomes and against a same-seed load A/B (D-S8-4 (c) —
-    a direct delta-vs-outcome correlation has no statistical power at the
-    trial counts S8 collects). The fraction, when computed, describes the
-    OBSERVED trials under a CANDIDATE eps; reading it back as a pass rate
-    would make the threshold a restatement of the measurement that produced
-    it, which is exactly what D-S8-4 (c) moved away from.
+    This does not decide anything. The distributions are correlated against
+    catch outcomes and against a same-seed load A/B (a direct delta-vs-outcome
+    correlation has no statistical power at the evaluation's trial counts).
+    The fraction, when computed, describes the OBSERVED trials under a
+    CANDIDATE eps; reading it back as a pass rate would make the threshold a
+    restatement of the measurement that produced it.
     """
     deltas = [t.delta_max_s for t in trials]
     pauses = [t.max_pause_s for t in trials]

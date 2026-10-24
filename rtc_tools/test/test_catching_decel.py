@@ -1,4 +1,4 @@
-"""catching_decel — synthetic positive controls (MPC · dual-arm plan E0-F02, #625).
+"""catching_decel — synthetic positive controls .
 
 Every number the tool reports is planted first: a joint that stops along a
 smooth, closed-form deceleration (``q̈ = −A sin²(πt/T)``, so peak acceleration
@@ -733,7 +733,7 @@ def test_the_pilot_session_runs_through_the_real_fk(tmp_path):
     assert valid and all(isinstance(r["hold_no_abort"], bool) for r in valid)
 
 
-# ── Non-inferiority (MPC E1-F06, #632) ───────────────────────────────────────
+# ── Non-inferiority ─────────────────────────────────────────────────────────
 def _tables(seed: int, count: int, n_max: int = 300):
     rng = np.random.default_rng(seed)
     for _ in range(count):
@@ -787,7 +787,7 @@ def test_the_closed_form_restricted_mle_is_the_likelihoods_maximum():
 
 def test_the_e1_f10_confirmation_table():
     """Both 85 · mpc only 38 · closed_form only 48 · neither 29 (n 200), margin 0.10:
-    the values two independent computations agreed on (plan E1-F06)."""
+    the values two independent computations agreed on."""
     t = cd.tango_noninferiority(48, 38, 200, 0.10)
     assert t["z"] == pytest.approx(1.0826, abs=1e-4)
     assert t["p"] == pytest.approx(0.1395, abs=1e-4)

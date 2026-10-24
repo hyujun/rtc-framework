@@ -1,4 +1,4 @@
-"""Dynamic-catching per-tick diagnostics for the controller-owned catching_diag.csv (S5.4).
+"""Dynamic-catching per-tick diagnostics for the controller-owned catching_diag.csv.
 
 WHAT ONE FIGURE HAS TO ANSWER. The question a catching run is read for is
 "where was the hand told to go, where did it go, and why did the supervisor
@@ -17,14 +17,14 @@ reference realised and `ref_u_des` is what it wanted before saturation; a
 saturated interval is uninterpretable from either one alone, and `ref_saturated`
 alone says it happened without saying by how much.
 
-THE S7 CYCLE (L8 §11). Every panel carries the supervisor's mode
+THE MODE TRANSITIONS. Every panel carries the supervisor's mode
 transitions as thin vertical lines (derived from the per-tick `mode` column —
-there is no separate transition log, L7 §5.2), so an edge can be read against
+there is no separate transition log), so an edge can be read against
 the reference and the error it happened on. A second figure, `catching_hand`,
 stacks the hand sequencer (phase, ρ, timeout) and the fingertip lane (|F − b|,
 debounced contact, freshness) with the attempt's verdict.
 
-THE TWO LATCHES ARE SHADED (S9a, D-S9-H). Every panel of `catching_diag` shades
+THE TWO LATCHES ARE SHADED. Every panel of `catching_diag` shades
 the ticks with `estop_active` (the CM's global E-STOP) and `fault_latched` (this
 controller's own latch) set. They are separate latches with separate clears, so
 they get separate colours: a run where the fault was reset but the E-STOP was
@@ -33,7 +33,7 @@ cannot say this — an E-STOP does not move the supervisor to FAULT.
 
 WHAT IS NOT HERE. There is no ball-truth column in this file — the controller
 does not have one — so whether the verdict was RIGHT is not a question this
-plot answers. The sim trial analysis owns that (G7-E, L7 §9).
+plot answers. The sim trial analysis owns that.
 """
 
 from pathlib import Path
@@ -65,7 +65,7 @@ MODE_NAMES = (
 # rtc::catching::HandPhase / Outcome wire values (rtc_msgs/CatchingState).
 HAND_PHASE_NAMES = ("open", "preshape", "close", "hold", "release")
 OUTCOME_NAMES = ("none", "captured", "missed", "undetermined", "aborted")
-# The CSV-only fault columns (#537 S9b), CatchingDiagLogPod's enums in order.
+# The CSV-only fault columns (#537), CatchingDiagLogPod's enums in order.
 FAULT_CAUSE_NAMES = ("none", "qp_failures", "stop_deadline", "return_deadline")
 FAULT_RESET_REFUSAL_NAMES = ("none", "command_moving", "arm_moving", "velocity_unreadable")
 
@@ -129,7 +129,7 @@ def _named_counts(values, names):
 def mode_transitions(df):
     """(t, from_mode, to_mode) for every tick whose mode differs from the last.
 
-    Derived from the per-tick column rather than logged separately (L7 §5.2):
+    Derived from the per-tick column rather than logged separately:
     the CSV already carries the mode on every row, and a second log would be a
     second account of the same fact that could disagree with the first.
     """
@@ -601,7 +601,7 @@ def _draw_segment_lane(ax, df, t):
 
 
 def plot_catching_hand(df, save_dir=None):
-    """Hand sequencer and fingertip lane against the mode transitions (S7)."""
+    """Hand sequencer and fingertip lane against the mode transitions."""
     if "hand_phase" not in df.columns:
         print("  Skipping catching hand plot (hand_phase not found)")
         return
@@ -790,7 +790,7 @@ def print_catching_diag_statistics(df):
             print("Reasons fired: none")
         else:
             print("Reasons fired: " + ", ".join(f"{k}×{v}" for k, v in fired.items()))
-    # #537 S9b: every latch escalates as ABORT_ESCALATED, so the reason column
+    # Every latch escalates as ABORT_ESCALATED, so the reason column
     # cannot say what raised it — `fault_cause` can. One count per latch (its
     # first tick), and the resets the controller refused because the arm moved.
     if "fault_cause" in df.columns:
@@ -858,7 +858,7 @@ def print_catching_diag_statistics(df):
     solved = _solved(df)
     if len(solved) > 0 and "clik_solve_us" in solved.columns:
         us = solved["clik_solve_us"].astype(float)
-        # The G5-C budget is stated on p99 and max, so those are what is
+        # The CLIK solve budget is stated on p99 and max, so those are what is
         # printed — a mean would hide exactly the tail the budget is about.
         print(
             f"CLIK solve [µs]: median {us.median():.1f}  p99 {us.quantile(0.99):.1f}  "
@@ -871,7 +871,7 @@ def print_catching_diag_statistics(df):
         )
         print(f"CLIK solves that did not converge: {failed}")
     if "qp_fail_streak" in df.columns:
-        # Trials in a row ended by a CLIK failure (#537 S9b), not failed solves.
+        # Trials in a row ended by a CLIK failure, not failed solves.
         print(f"Longest QP failure streak (trials): {int(df['qp_fail_streak'].max())}")
     if "track_err_rad" in live.columns:
         err = live["track_err_rad"].astype(float)

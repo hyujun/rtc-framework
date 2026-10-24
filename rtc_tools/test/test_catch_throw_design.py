@@ -1,4 +1,4 @@
-"""catch_throw_design (dynamic_catching L3 §4.1).
+"""catch_throw_design (throw design over the search map).
 
 Pinned here: the grid's ids and the refinement between its points, the batch
 integrator and its reductions against the one-flight functions of

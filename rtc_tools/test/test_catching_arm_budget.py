@@ -1,4 +1,4 @@
-"""catching_arm_budget — synthetic positive controls (dynamic_catching S8-G, #537).
+"""catching_arm_budget — synthetic positive controls.
 
 A unit is built from KNOWN laws: a first-order plant of lag τ, a critically
 damped reference of frequency ω from a planted commit-time error, a planted
@@ -217,7 +217,7 @@ def make_session(root: Path, *, n_trials: int = 3, mirror: bool = True) -> tuple
             "rank_commit_lead": 0,
             "lead_s": 0.45,
             "gamma_f": 0.4,
-            # S8-I: the window as judged — open for the first 3 plans only
+            # the window as judged — open for the first 3 plans only
             "g_min": 0.8,
             "g_max": 0.9 if i < 3 else 0.4,
             "v_dir_max": 2.0 + 0.1 * i,
@@ -293,7 +293,7 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         w.writerows(rows)
 
 
-# ── closed-form reach time (L3 §4.3) ─────────────────────────────────────────
+# ── closed-form reach time ──────────────────────────────────────────────────
 @pytest.mark.parametrize(
     ("d", "w", "w_max", "a", "expected"),
     [
@@ -397,7 +397,7 @@ def test_the_planner_box_is_re_judged_against_the_envelope(synthetic):
     # the same motion: slow box → longer time than the executed envelope's
     assert pl["t_reach_box_p50_s"] > pl["t_reach_envelope_p50_s"] > 0.0
     assert pl["valid_plans"] == 10 and pl["rank_reach"] == pytest.approx(0.9)
-    # S8-I: the logged window is summarised over the valid plans only
+    # the logged window is summarised over the valid plans only
     assert pl["g_min_p50"] == pytest.approx(0.8) and pl["g_max_p50"] == pytest.approx(0.4)
     assert pl["v_dir_max_p50"] == pytest.approx(2.45) and pl["max_catchable_p50"] == pytest.approx(
         3.45
@@ -451,7 +451,7 @@ def test_without_a_mirror_the_budget_comes_from_the_profile_and_the_overlay(tmp_
 
 def test_without_a_mirror_sim_yaml_lies_between_the_profile_and_the_overlay(tmp_path):
     """The launch feeds sim.yaml to the RT node after the controller YAML and before
-    the overlay (R2 of D-S8-18 points the sim planner's box there), so the file
+    the overlay (it points the sim planner's box there), so the file
     path composes in that order: sim.yaml moves the box and the time margin, an
     overlay on top of it wins."""
     cfg = make_config(tmp_path / "share")

@@ -1,6 +1,6 @@
-"""Hand-near throw analysis (dynamic_catching S8-F, #537).
+"""Hand-near throw analysis.
 
-The S8-F question — how fast a ball passing within 0.2 m of the waiting hand
+The question — how fast a ball passing within 0.2 m of the waiting hand
 can still be caught — has two parts the planner answers separately: did it
 find a plan it could reach in time (COMMIT), and given a plan, did the hand
 hold the ball (CATCH). The two are fitted separately and multiplied; a single
@@ -40,7 +40,7 @@ from rtc_tools.analysis import catching_trials
 
 TOOL = "catching_hand_near"
 FACTORS = ("speed_m_s", "flight_time_s", "offset_m", "offset_angle_deg", "incidence_offset_deg")
-# The design centre the conditional v50(r) is quoted at (#537 S8-F-1): mid
+# The design centre the conditional v50(r) is quoted at: mid
 # flight time, face-on. ψ enters as (sin, cos) and is marginalised at 0.
 CENTRE_FLIGHT_TIME_S = 0.7
 CENTRE_INCIDENCE_OFFSET_DEG = 0.0
@@ -347,9 +347,9 @@ def load_unit(unit_dir: Path, planner_events: Path | None = None, *, ct_dir: str
 def planner_events_summary(path: Path) -> dict:
     """Rank-gate bits of the PUBLISHED plans and the judgement rejects, over a whole session.
 
-    ``rej_workspace`` is a column of sessions recorded before 2026-10-09
-    (L3 §4.9), when the search still had a catch box: there it was the sensor
-    that an overlay's widened box took effect. It is counted for a file that
+    ``rej_workspace`` is a column of older sessions, recorded while the search
+    still had a catch box: there it was the sensor that an overlay's widened
+    box took effect. It is counted for a file that
     has the column and left out for one that does not — a 0 would read as a
     gate that ran and refused nothing.
     """

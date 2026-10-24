@@ -74,7 +74,7 @@ def _check_header_matches_data(filepath: str) -> None:
 # Columns whose values are intentionally string/categorical — never coerce.
 # `phase` is the WbcDiagLog FSM-phase name (idle/approach/.../fallback).
 # `outcome`/`decision` are planner_events.csv's CycleOutcomeName/
-# SwitchDecisionName text (S6-B) — catching_diag.csv also has an `outcome`
+# SwitchDecisionName text — catching_diag.csv also has an `outcome`
 # column, but that one is an integer enum code that pandas already reads as
 # numeric dtype, so listing the name here is a no-op for that file (only
 # object-dtype columns are coerced below).

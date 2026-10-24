@@ -1,6 +1,4 @@
-"""Hand closure time T_close,e2e(eta) from a device state CSV (dynamic_catching S4.2).
-
-Stage S4a (``docs/dynamic_catching/ID_INDEX.md`` §3), law: L6 §4.2.
+"""Hand closure time T_close,e2e(eta) from a device state CSV.
 
     rho(t)          = min over the caging set C of
                       (q_i(t) - q_i^pre) * s_i / |q_i^cls - q_i^pre|,  s_i = sign(q_i^cls - q_i^pre)
@@ -16,8 +14,9 @@ TWO TIME AXES, BOTH REPORTED, because in a lock-step simulator they answer
 different questions and neither alone is honest:
 
   * ``steady``  — the CSV's ``t_relative_s``, the RT loop's steady clock. This
-    is what L6 §4.2 defines and what a real hand would be measured with, and in
-    sim it INCLUDES host stalls (S3a measured delta p95 4.9 ms, max 18.2 ms).
+    is the defining axis and what a real hand would be measured with, and in
+    sim it INCLUDES host stalls (measured clock phase delta p95 4.9 ms, max
+    18.2 ms).
   * ``tick``    — (row index difference) * dt, i.e. simulated time. Deterministic
     and free of host stalls, but it is not wall time and cannot be compared to a
     real-hardware measurement.
@@ -31,7 +30,7 @@ Beside the mean, maximum and p99 the report gives each axis's sample standard
 deviation and ``mean − T_close_lead`` (:func:`nominal_closure_offset`; an older
 sidecar without a lead falls back to ``T_close_e2e``): the
 spread and the nominal instant of the closure relative to the catch instant,
-which a planner with a closure WINDOW needs (dynamic_catching E1-F15, #741).
+which a planner with a closure WINDOW needs.
 
 The profile comes from a JSON sidecar written by ``run_hand_close_trials``,
 which reads it from the CONTROLLER's read-only parameters rather than from the
@@ -65,7 +64,7 @@ POSE_MATCH_BAND = 0.25
 
 @dataclass
 class HandProfile:
-    """The L6 §5.1 subset rho needs, as the controller loaded it."""
+    """The hand-profile subset rho needs, as the controller loaded it."""
 
     joint_names: list[str]
     q_pre: list[float]
@@ -214,7 +213,7 @@ def _nearest_pose(command: list[float], profile: HandProfile) -> str:
     alone, and a row that lands on 'close' OPENS A TRIAL. That trial never
     reaches eta, so it is counted as a timeout: it does not move the mean or
     the p99 (those filter NaN) but it inflates the trial count and the
-    exclusion count, which is exactly the success rate S4.2 hands onward.
+    exclusion count, which is exactly the success rate this tool reports.
 
     The margin is not hypothetical. On a shipped 10-joint hand profile the
     activation hold pose (every joint at zero in sim) sat 0.107% from being
@@ -355,15 +354,14 @@ def summarise_axis(values: list[float]) -> dict[str, float]:
 def nominal_closure_offset(mean_t_close_s: float, t_close_lead_s: float) -> float:
     """How long after the catch instant the closure is complete, on average.
 
-    The hand sequencer commands the close at ``t_c − T_close_lead`` (L6 §4.3), so
+    The hand sequencer commands the close at ``t_c − T_close_lead``, so
     a closure that takes ``mean_t_close_s`` completes ``mean − T_close_lead``
     after ``t_c``. ``t_close_lead_s`` is what the sequencer subtracted at the
     run: ``T_close_lead``, or ``T_close_e2e`` for a run that predates the split
     (``HandProfile.sequencer_lead`` picks). When the lead is a high quantile of
     the same distribution this is small and NEGATIVE: the hand is, on average,
     closed slightly before the instant it was timed for. It is the ``delta_0``
-    of a closure window measured from ``t_c`` (reference §8.4, §17.8). NaN when
-    either input is.
+    of a closure window measured from ``t_c``. NaN when either input is.
     """
     return mean_t_close_s - t_close_lead_s
 

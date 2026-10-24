@@ -2669,7 +2669,7 @@ class TestMomentumObserverStatistics:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# compliance_diag (#469 S4) — §7 task-admittance 진단 채널
+# compliance_diag — task-admittance 진단 채널
 # ═══════════════════════════════════════════════════════════════════════════
 
 # WriteComplianceDiagLogHeader 가 내보내는 컬럼, 그 순서 그대로. 손으로 적되
@@ -2910,7 +2910,7 @@ class TestComplianceDiagStatistics:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# catching_diag (S5.4) — 동적 포구 컨트롤러의 tick 레코드
+# catching_diag — 동적 포구 컨트롤러의 tick 레코드
 #
 # 이 채널의 특수성은 **모든 tick 이 한 행**이라는 것이다 (PROC-7). 법칙이 돌지
 # 않은 tick 도 `*_valid` 를 내린 채 행을 남기므로, 여기 통계는 그 플래그로 먼저
@@ -3008,7 +3008,7 @@ _CATCHING_DIAG_FIXED_COLUMNS = [
     "hand_effort_frac",
     "hand_blocked_s",
     "outcome_source",
-    # The tick record's segment block (MPC E1-F04 fields, E1-F05 columns).
+    # The tick record's segment block (MPC fields and columns).
     "segment_judged",
     "segment_refusal",
     "segment_event",
@@ -3287,7 +3287,7 @@ class TestCatchingDiagRoundTrip:
 
 
 class TestCatchingS7:
-    """S7 (L8 §11): mode transitions over every panel, the hand/contact
+    """Mode transitions over every panel, the hand/contact
     figure, and one verdict per attempt."""
 
     def _cycle_frame(self, outcomes=(1,)):
@@ -3369,7 +3369,7 @@ class TestCatchingS7:
 
 
 class TestCatchingLatchShading:
-    """S9a (D-S9-H): E-STOP and fault intervals shaded on the catching_diag
+    """E-STOP and fault intervals shaded on the catching_diag
     figure. The interval rule is "post" — a row's flag holds until the next
     row — so a band starts on the tick the latch rose and ends on the tick it
     was seen down, the same convention the mode trace is stepped with."""
@@ -3539,7 +3539,7 @@ class TestCatchingDiagStatistics:
     def test_fault_latches_are_counted_by_cause_and_refused_resets_by_reason(self, capsys):
         from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
 
-        # #537 S9b: two latches (a stop deadline, then — after a reset — a QP
+        # Two latches (a stop deadline, then — after a reset — a QP
         # streak), each held for several ticks, and two refused resets.
         df = _catching_diag_frame(n=30)
         cause = [0] * 30
@@ -3598,7 +3598,7 @@ class TestCatchingDiagStatistics:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# planner_events (S6-B) — 계획기 스레드의 non-idle wake 당 한 행
+# planner_events — 계획기 스레드의 non-idle wake 당 한 행
 #
 # catching_diag.csv 와 달리 **fixed 폭** 헤더다 (관절·지문 블록이 없음) — 계획기가
 # 다루는 값은 후보 funnel·rank-gate 비트마스크·switching decision 이지 관절
@@ -3684,7 +3684,7 @@ _PLANNER_EVENTS_COLUMNS = [
     "segment_w_p_fallback",
     "segment_w_delta_scale",
     "segment_source_seq",
-    # E1-F18 (#744): the NLP search's block, the docking core's block, the
+    # (#744) the NLP search's block, the docking core's block, the
     # replacement columns — appended, read by name.
     "nlp_ran",
     "nlp_reason",
@@ -3801,7 +3801,7 @@ _PLANNER_EVENTS_COLUMNS = [
     "segment_path_dev_mean",
 ]
 
-# What a recording from before E1-F18 has: the header up to `segment_source_seq`.
+# What a recording from before those columns has: the header up to `segment_source_seq`.
 # The fixtures below build THAT frame — they are the tests of the older
 # recording, and of a session whose search and planner fill none of the newer
 # columns. The newer columns have their own tests
@@ -3934,7 +3934,7 @@ class TestPlannerEventsDetection:
 
     def test_fingerprint_is_unique_to_this_pod(self):
         """지문이 `n_in_window` + `rank_error_budget` 인 근거 — 다른 producer 헤더는
-        둘 다 안 낸다. catching_diag 의 동형 테스트와 같은 취지 (S6-B)."""
+        둘 다 안 낸다. catching_diag 의 동형 테스트와 같은 취지."""
         from pathlib import Path
 
         logging_dir = (
@@ -4114,7 +4114,7 @@ class TestPlannerEventsStatistics:
         assert "rej_too_far×4" in out, out
 
     def test_a_session_from_before_the_catch_box_was_removed_still_names_its_rejects(self, capsys):
-        """The writer dropped `rej_workspace` on 2026-10-09 (L3 §4.9); a file
+        """The writer dropped `rej_workspace` on 2026-10-09; a file
         recorded before that carries the column, and its counts are reported."""
         from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
 
@@ -4513,8 +4513,8 @@ class TestPlannerEventsSegmentPlots(_SegmentPlotHelpers):
 
         from rtc_tools.plotting.plotters import planner_events as pe
 
-        # The schema before E1-F05: `segment_outcome` and no `segment_kind`, with
-        # the stop-only planner's `not_due` still in it (MD-70).
+        # The schema before `segment_kind`: `segment_outcome` and no `segment_kind`, with
+        # the stop-only planner's `not_due` still in it.
         columns = [
             c for c in _planner_events_columns() if c not in ("segment_kind", "search_valid")
         ]
@@ -4569,7 +4569,7 @@ class TestPlannerEventsSegmentPlots(_SegmentPlotHelpers):
             for c in full[: full.index("rollout_us_max") + 1]
             if c not in ("search_valid", "rej_too_far")
         ]
-        # That schema still had the catch box's reject count (removed with that gate — L3 §4.9).
+        # That schema still had the catch box's reject count (removed with that gate).
         old.insert(old.index("rej_manipulability") + 1, "rej_workspace")
         assert len(old) == 40
         df = self._frame(old)

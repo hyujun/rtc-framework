@@ -1,9 +1,8 @@
 """Capture-set identification: from fly-in verdicts to the planner's numbers.
 
-dynamic_catching E1-F15 (#741). The docking-style catch planner (reference
-``docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md`` §6, §8.4,
-§17.6 – §17.8) is told where the ball may cross the hand's entrance plane, how
-fast, and when the hand may be closed around it:
+The docking-style catch planner (``mpc_docking``) is told where the ball may
+cross the hand's entrance plane, how fast, and when the hand may be closed
+around it:
 
 * the entrance plane offset ``s_ent`` and the no-contact condition above it,
 * the lateral set ``C_perp`` — a convex polygon of at most eight faces with
@@ -631,7 +630,7 @@ class ApproachTable:
         """The lowest ``s_ent`` above which no approach of tilt up to ``tan_max``
         touches the open hand.
 
-        The reference's no-contact condition (§6.1): every approach — through
+        The no-contact condition: every approach — through
         every point of the lateral set, at every tilt the velocity set allows
         — is free of contact for ``s >= s_ent``. The plane is lowered from the
         top of the scan for as long as that holds, and the level it stops on is

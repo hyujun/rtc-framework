@@ -1,6 +1,6 @@
-"""Derive a constant joint-acceleration box from torque limits (dynamic_catching D-16).
+"""Derive a constant joint-acceleration box from torque limits.
 
-Spec: L3 §4.3. There are no
+There are no
 acceleration data for the arms, but there are torque limits
 (``devices.<group>.joint_limits.max_torque`` = URDF ``effort`` = MJCF
 ``forcerange``). For every sampled state (q, q̇) of the arm:
@@ -17,7 +17,7 @@ minimum over all samples, that does not follow the posture). That LP in the sing
 closed form s(q, q̇) = min_i τ_dyn,i / (|M| w)_i. The box is s* · w with
 s* = min over all samples; the row achieving the minimum is the binding joint.
 
-**Degenerate results are not adopted** (L3 §4.3 step 6): if any sample has
+**Degenerate results are not adopted** (final step): if any sample has
 τ_dyn,i ≤ 0 (gravity + velocity terms alone exceed the budget) or s* is below
 ``--min-accel``, the YAML carries ``adopted: false`` and the tool exits 2 — the
 user narrows the sampling range, changes η_τ or considers a pose-dependent
@@ -35,9 +35,9 @@ Scope and simplifications (all recorded in the provenance):
   hand's mass distribution only.
 * The sampling range defaults to the whole joint-limit box (URDF ∩ robot
   config) and ±max_velocity — the most conservative choice. Narrow it with
-  ``--q-center/--q-halfwidth`` once the wait pose is known (S3.5a).
+  ``--q-center/--q-halfwidth`` once the wait pose is known.
 
-Cross-checks (L3 §4.3): ``--check rnea`` recomputes τ = RNEA(q, q̇, σ·a) for
+Cross-checks: ``--check rnea`` recomputes τ = RNEA(q, q̇, σ·a) for
 every sign pattern σ at fresh samples (an independent code path from the
 |M|-bound above) and requires |τ_i| ≤ η_τ·τ_max,i. ``--check mujoco`` (needs the
 ``mujoco`` module and an MJCF whose joint names match) does the same with
@@ -502,8 +502,7 @@ def build_report(
                 "qdd_max": r(der.a_max),
                 "adopted": adopted,
                 # eta_tau, the sampling range and the weights await the user's
-                # confirmation (L3 §4.3, S2.5); the range becomes the wait-pose
-                # neighbourhood after S3.5a.
+                # confirmation; the range should become the wait-pose neighbourhood.
                 "provisional": True,
                 "degenerate_reasons": degenerate_reasons,
                 "cross_checks": checks,

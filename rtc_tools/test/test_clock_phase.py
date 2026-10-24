@@ -1,4 +1,4 @@
-"""Clock phase analysis (D-3 / S3.1a) — L8 §4.5.
+"""Clock phase analysis.
 
 The tool's whole job is to turn a lane CSV into per-trial numbers, so the
 fixtures here inject a KNOWN defect and check it comes back. A fixture whose
@@ -116,7 +116,7 @@ def test_drops_are_carried_through(tmp_path):
 
 
 def test_required_eps_takes_the_binding_half_of_the_condition():
-    """L8 §4.5 has two inequalities; the proposal must satisfy BOTH."""
+    """The condition has two inequalities; the proposal must satisfy BOTH."""
     from rtc_tools.analysis.clock_phase import Trial
 
     v_max, a_bound = 8.0, 12.0
@@ -135,7 +135,7 @@ def test_quantile_is_inclusive_at_the_top():
     assert quantile(values, 0.5) == 2.0
 
 
-# ── covariate summary (D-S8-4 (c): delta is a covariate, not a verdict) ──────
+# ── covariate summary (delta is a covariate, not a verdict) ──────────────────
 
 
 def test_covariate_summary_distributions_match_the_lane(tmp_path):

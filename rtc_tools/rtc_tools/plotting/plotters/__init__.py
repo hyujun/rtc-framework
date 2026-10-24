@@ -105,11 +105,11 @@ __all__ = [
     "plot_motor_positions",
     "plot_motor_velocities",
     "print_motor_statistics",
-    # dynamic-catching per-tick diagnostics (S5.4)
+    # dynamic-catching per-tick diagnostics
     "plot_catching_diag",
     "plot_catching_hand",
     "print_catching_diag_statistics",
-    # planner-events per-non-idle-wake search record (S6-B)
+    # planner-events per-non-idle-wake search record
     "plot_planner_events",
     "print_planner_events_statistics",
     # multi-frame CLIK per-tick diagnostics

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Vision-side S8-E gates: G8-B (prediction NEES) and G8-C2 (A⊥B), per trial.
+"""Vision-side checks: prediction NEES consistency and the error-budget A⊥B, per trial.
 
-D-S8-16 ②b/②c (``docs/dynamic_catching/ID_INDEX.md`` §5.4) and
-L8 §9.1 (G8-B, G8-C2). Pure functions over the files the S8-E capture leaves
+Pure functions over the files the sim evaluation capture leaves
 behind — no ROS, no pinocchio — called by
 :mod:`rtc_tools.analysis.catching_trials` (per session, one row per trial) and
 :mod:`rtc_tools.analysis.catching_pool` (per arm, from the pooled per-trial
@@ -16,16 +15,16 @@ columns). Frames and time axes are the caller's business; the contract here is:
 * every position is in the frame of the probe dump / capture (``world`` — the
   SIM world; the caller maps the controller's model-world ``p_c`` into it).
 
-**G8-B** (:func:`nees_by_trial`, :func:`g8b_summary`). A ``sim_capture_evaluate``
+**Prediction NEES** (:func:`nees_by_trial`, :func:`g8b_summary`). A ``sim_capture_evaluate``
 prediction sample is bound to a trial when its origin stamp is at or after the
 launch and its TARGET stamp (origin + horizon) is at or before the trial's first
 contact: after that the evaluator compares against the ball in the hand or
 reset, which says nothing about the prediction. Per horizon the pooled mean
 NEES is ``Σ NEES / Σ n`` over trials (exact from the per-trial means and
 counts), its CI a trial-cluster bootstrap; PASS when the CI contains the
-position dof 3 (D-S8-16 ②c).
+position dof 3.
 
-**G8-C2** (:func:`plan_point_stamp`, :func:`p_hat_at`, :func:`c2_summary`).
+**Error-budget A⊥B** (:func:`plan_point_stamp`, :func:`p_hat_at`, :func:`c2_summary`).
 ``A = p_true(t_c) − p̂_live(t_c)``, ``B = p̂_live(t_c) − p_c`` at the plan's catch
 instant, where p̂_live is the snapshot the RT tick committed on (diag
 ``input_snapshot_sequence`` / ``input_generation``, joined exactly to the dump's
@@ -46,9 +45,9 @@ from rtc_tools.analysis.table_cells import num as _num
 
 POSITION_DOF = 3
 CHI2_3_95 = 7.814727903251178  # scipy.stats.chi2.ppf(0.95, 3)
-NEES_NAN_MAX_SHARE = 0.10  # D-S8-16 ②c: a horizon bin with more NaN NEES is not evaluated
+NEES_NAN_MAX_SHARE = 0.10  # a horizon bin with more NaN NEES is not evaluated
 LAUNCH_TOL_NS = 1_000_000  # a sample stamped at the launch instant (float round-off)
-C2_N_MIN = 100  # L8 §9.1 G8-C2: n ≥ 100
+C2_N_MIN = 100  # A⊥B test: not evaluated below this many trials
 PLAN_POINT_TOL_M = 1e-3  # p_c is a trajectory sample of the plan's snapshot — exact up to I/O
 DUMP_SUB_PREFERENCE = ("reliable", "best_effort")
 _NEES_COL = re.compile(r"^nees_h(.+)ms_n$")
@@ -60,14 +59,14 @@ def horizon_label(horizon_ns: float) -> str:
     return f"{ms:g}"
 
 
-# ══ G8-B ══════════════════════════════════════════════════════════════════════
+# ══ Prediction NEES ═══════════════════════════════════════════════════════════
 
 
 def load_eval_samples(path: Path):
     """``sim_capture_evaluate`` ``eval_samples.csv``: the PREDICTION rows, sorted by origin.
 
-    ``state`` rows (horizon 0, the filter's own estimate) are not G8-B's
-    subject and are dropped.
+    ``state`` rows (horizon 0, the filter's own estimate) are not the NEES
+    check's subject and are dropped.
     """
     import pandas as pd  # noqa: PLC0415
 
@@ -134,14 +133,14 @@ def g8b_horizons(rows: Sequence[Mapping]) -> list[str]:
 def g8b_summary(
     rows: Sequence[Mapping], n_boot: int, seed: int, dof: int = POSITION_DOF
 ) -> dict | str:
-    """G8-B verdict per horizon over ``rows`` (one per trial, :func:`nees_by_trial` columns).
+    """NEES verdict per horizon over ``rows`` (one per trial, :func:`nees_by_trial` columns).
 
     The pooled mean is exact — ``Σ mean_i·m_i / Σ m_i`` with ``m_i`` the trial's
     finite NEES count — and its 95 % CI resamples whole trials. PASS when the
     CI contains ``dof``; ``NOT_EVALUATED(NaN > 10 %)`` when the bin's NaN share
     exceeds :data:`NEES_NAN_MAX_SHARE`. Coverage and the signed bias are
     reported, not judged (a gravity-only estimator has an expected long-horizon
-    bias, L8 §9.1).
+    bias).
     """
     labels = g8b_horizons(rows)
     if not labels:
@@ -227,7 +226,7 @@ def eval_report_horizons(path: Path) -> dict:
     return out
 
 
-# ══ G8-C2 ═════════════════════════════════════════════════════════════════════
+# ══ Error-budget A⊥B ══════════════════════════════════════════════════════════
 
 
 @dataclass
@@ -373,7 +372,7 @@ def c2_summary(
     clusters: Sequence | None = None,
     n_min: int = C2_N_MIN,
 ) -> dict | str:
-    """G8-C2 over ``rows`` (their ``c2_A_*`` / ``c2_B_*`` columns, metres).
+    """Error-budget A⊥B over ``rows`` (their ``c2_A_*`` / ``c2_B_*`` columns, metres).
 
     The orthogonality identity ``E|A+B|² = E|A|² + E|B|² + 2E[A·B]`` is reported
     with its cross term, and :func:`catching_trials.independence_test` (whitened

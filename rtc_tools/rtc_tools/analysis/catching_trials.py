@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Catching sim trials: offline per-trial evaluation (dynamic_catching S8-A).
+"""Catching sim trials: offline per-trial evaluation.
 
-Stage S8-A, the measurement substrate (``docs/dynamic_catching/ID_INDEX.md`` §3); L8 §9
-(G8-D success definition, S0.9 power table); L8 §4.5 (D-3 validity condition). One run of
-``catching_sim_trials`` leaves three things behind — the controller's session CSVs, the
+One run of ``catching_sim_trials`` leaves three things behind — the controller's session CSVs, the
 runner's trials directory (``trial_results.json`` + one ground-truth CSV per trial)
 and, when the sim was started with its lanes on, the clock and contact truth lanes.
 This module joins them into one row per trial:
@@ -31,22 +29,22 @@ This module joins them into one row per trial:
   wake that solved the segment the arm was on at ``t_c`` — how far ahead of the
   catch it looked and which vision snapshot it read
   (:func:`last_segment_columns`, :func:`wake_snapshot`).
-* **truth success** (G8-D, L8 §9) and the supervisor-vs-truth confusion
+* **truth success** and the supervisor-vs-truth confusion
   matrix — see :func:`truth_success`.
-* **D-3 covariate** (L8 §4.5, D-S8-4 (c)) from the clock lane, reusing
+* **clock-phase covariate** δ from the clock lane, reusing
   :mod:`rtc_tools.analysis.clock_phase`.
-* **first hand–ball contact episode** from the contact lane (G7-B3 input).
-* **``ref_saturated`` max streak** (G8-C3).
-* **plan validity rate** (G3-D (i), #537 S8-D) — the fraction of ``planner_
+* **first hand–ball contact episode** from the contact lane (input of the impulse check).
+* **``ref_saturated`` max streak**.
+* **plan validity rate** — the fraction of ``planner_
   events.csv`` cycles between launch and commit whose ``plan_valid`` is true;
   see :func:`plan_validity_window` for the metric and :func:`_planner_cycle_times`
   for how a planner wake (a steady-clock instant) is mapped onto the
   controller's ``t_relative_s`` axis (needs ``--clock-lane``).
-* **gate-map verdict** (S8-D, #537, optional ``--gate-map``) — whether a
+* **gate-map verdict** (optional ``--gate-map``) — whether a
   ``--dist`` box throw's nearest grid throw is open on the torque layer of a
   ``catch_gate_map`` output, and truth success over that open subset; see
   :func:`gate_map_verdict`.
-* **validity** (S8-E, D-S8-16 ①) — each trial's ``invalid_reason``
+* **validity** — each trial's ``invalid_reason``
   (a rig failure, one of :data:`INVALID_REASONS` in precedence order, "" =
   valid; see :func:`record_invalid_reason` and :func:`lane_invalid_reason`).
   Every summary statistic is over the valid trials; the ITT bound counts the
@@ -54,18 +52,18 @@ This module joins them into one row per trial:
   these outputs across units and arms.
 * **tick overrun** covariate from the RT loop's timing lane — see
   :func:`_cm_timing` for why it joins through the clock lane.
-* **time alignment** (S8-E) — with a clock lane every trial is put on the
+* **time alignment** — with a clock lane every trial is put on the
   lane's clocks (:class:`ClockLane`, :func:`estimate_sim_minus_t_rel`,
   :func:`align_trials_to_lane`) rather than on the runner's median wall
   offset, which drifts when the sim runs slower than the wall; plus the RTF
   covariates (:func:`trial_rtf`).
-* **G8-B / G8-C2** (S8-E, optional ``--eval-samples`` / ``--probe-dump``) —
+* **NEES / error-budget checks** (optional ``--eval-samples`` / ``--probe-dump``) —
   :mod:`rtc_tools.analysis.catching_vision` on the ball's stamp axis;
   :func:`c2_for_trial` for the per-trial join.
 
-and offers the statistics the S8 gates are judged with: Wilson intervals and
-the S0.9 power / required-n computation, a whitened cross-covariance test with
-a trial-cluster bootstrap (A⊥B, G8-C2) and an NEES summary (G8-B).
+and offers the statistics the verdicts are judged with: Wilson intervals and
+the power / required-n computation, a whitened cross-covariance test with
+a trial-cluster bootstrap (A⊥B) and an NEES summary.
 
 Frames. Ground truth is in the SIM WORLD; the controller's ``ref``, ``p_c`` and
 FK are in the MODEL WORLD (the URDF root). They are composed exactly the way
@@ -152,16 +150,16 @@ DEFAULT_N_BOOT = 2000
 DEFAULT_SEED = 0
 DEFAULT_HOLD_WINDOW_S = 0.1  # hand-joint capture calibration window before t_hold_end
 TRUTH_TIME_AXES = ("stamp", "recv")
-# Rig-failure (invalid) reasons, in precedence order — D-S8-16 ①: a
+# Rig-failure (invalid) reasons, in precedence order: a
 # trial gets the FIRST that matches, anything else that goes wrong (no plan,
 # abort, HAND_TIMEOUT, cycle not closed, supervisor Missed) is a FAILURE.
 INVALID_REASONS = ("srv_refused", "not_launched", "controller_silent", "lane_drop", "sim_stall")
 SIM_STALL_STEP_FACTOR = 5.0  # sim_stall: a sim_time_sec gap above this × the nominal step
 CM_TIMING_LOG = ("timing", "cm_timing_log.csv")  # the RT loop's per-tick timing lane
-STREAK_BIN_WIDTH = 10  # G8-C3 ref_saturated streak histogram bin width [ticks]
-B3_SPEARMAN_N_MIN = 50  # G7-B3: below this n the rank correlations are not evaluated
+STREAK_BIN_WIDTH = 10  # ref_saturated streak histogram bin width [ticks]
+B3_SPEARMAN_N_MIN = 50  # impulse check: below this n the rank correlations are not evaluated
 # The catchability_map / catch_gate_map throw-grid axes a --dist box trial's
-# raw JSON record carries (S8-D, #537) — see :func:`trial_axis_values`. Every
+# raw JSON record carries — see :func:`trial_axis_values`. Every
 # axis the map grid can vary must be here: an axis left out makes grid throws
 # that differ only on it tie, and the tie goes to the lowest index.
 GATE_MAP_AXES = (
@@ -181,7 +179,7 @@ def wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     """Wilson score interval for k successes in n trials.
 
     ``z`` is stated, never implied: 1.96 is the two-sided 95 % interval, whose
-    lower bound is the 97.5 % one-sided bound G8-D uses (L8 §9).
+    lower bound is the 97.5 % one-sided bound the truth verdict uses.
     """
     if n <= 0:
         return (math.nan, math.nan)
@@ -219,10 +217,10 @@ def wilson_power(n: int, p: float, floor: float, z: float = 1.96) -> float:
 def required_n(
     p: float, floor: float, power: float = 0.8, z: float = 1.96, n_max: int = 5000
 ) -> int | None:
-    """S0.9 required n: smallest n whose power stays ≥ ``power`` for every n' ≤ n_max.
+    """Required n: smallest n whose power stays ≥ ``power`` for every n' ≤ n_max.
 
     Power is saw-toothed in n, so the first n that crosses the target can fall
-    below it again; the S0.9 table takes the n after which it never does (up to
+    below it again; the required-n table takes the n after which it never does (up to
     ``n_max``). ``None`` when p ≤ floor or the target is never held.
     """
     if p <= floor:
@@ -237,10 +235,10 @@ def required_n(
 def floor_verdict(
     k: int, n: int, floor: float, n_valid_target: int | None = None, z: float = 1.96
 ) -> str:
-    """G8-D verdict: PASS when the Wilson lower bound of k/n is ≥ ``floor``.
+    """Truth verdict: PASS when the Wilson lower bound of k/n is ≥ ``floor``.
 
     ``INSUFFICIENT_N(<n> < <target>)`` first when a target n is given and not
-    reached (D-S8-3 n_valid 200) — the verdict is never taken on a short set.
+    reached — the verdict is never taken on a short set.
     """
     if n_valid_target is not None and n < n_valid_target:
         return f"INSUFFICIENT_N({n} < {n_valid_target})"
@@ -695,9 +693,9 @@ def load_profile(
     )
 
 
-# ══ Gate map (S8-D throw-box verdict, #537) ═══════════════════════════════════
+# ══ Gate map (throw-box verdict) ══════════════════════════════════════════════
 # A ``catch_gate_map`` output judges the ``catchability_map`` throw GRID the
-# S8-D box was drawn from (rtc_tools.analysis.catch_gate_map's module
+# gate-map throw box was drawn from (rtc_tools.analysis.catch_gate_map's module
 # docstring): each grid throw is OPEN on the torque layer when at least one of
 # its accepted candidates (at the map's one wait-pose ``seed_id`` —
 # ``catch_gate_map.py``'s ``accepted = [r for r in accepted if
@@ -713,7 +711,7 @@ def load_profile(
 @dataclass
 class GateMap:
     """What one ``catch_gate_map`` output + its ``catchability_map`` grid says
-    about the S8-D throw box, read once per run (:func:`load_gate_map`)."""
+    about the gate-map throw box, read once per run (:func:`load_gate_map`)."""
 
     map_dir: Path  # the catchability_map dir the gate map was judged from
     seed_id: int
@@ -892,7 +890,7 @@ class CatchFrameFk:
         """(position, rotation 3×3) of the catch frame in the SIM WORLD at arm posture ``q``.
 
         The rotation's third column is the catch frame +z — the hand's outward
-        normal, the approach axis a hand-near throw (S8-F) is aimed against.
+        normal, the approach axis a hand-near throw is aimed against.
         """
         rotation_model, p_model = self._arm.frame_placement(np.asarray(q, dtype=float))
         return transform_point(p_model, self.world_t_model), self.world_t_model[
@@ -954,26 +952,26 @@ DIAG_COLUMNS = (
     "ref_x_z",
     "hand_phase",
 )
-# The actuation-lag lead the RT tick ran with (L5 §4.5, ``t_arm_s``; 0 when
+# The actuation-lag lead the RT tick ran with (``t_arm_s``; 0 when
 # ``joint_cmd.lag.lead_enable`` is off). Optional so a diag recorded before the
 # column existed still reads — see :func:`lead_per_tick` for the fallback.
 DIAG_LEAD_COLUMN = "t_arm_s"
-# The hand-joint capture witness (#537 S8-C, D-S8-8 (b)), right after
+# The hand-joint capture witness, right after
 # ``hand_timeout`` in the diag schema. Optional like ``DIAG_LEAD_COLUMN`` so a
 # diag recorded before the columns existed still reads — see
 # :func:`hand_witness_at_verdict` for the NaN fallback.
 HAND_WITNESS_COLUMNS = ("hand_stalled_n", "hand_effort_frac", "hand_blocked_s", "outcome_source")
-# The vision snapshot the tick read (L8 §5.2) — G8-C2's exact join key into
+# The vision snapshot the tick read — the exact join key of the error-budget check into
 # the probe dump. Optional: a diag recorded before the columns has none.
 DIAG_INPUT_COLUMNS = ("input_snapshot_sequence", "input_generation")
 # How long ago the controller RECEIVED that snapshot, at the tick [s] (the tick's
 # ``TrajView::age_ns``; -1e-9 with none) — the prediction age a planner wake is
 # given through :func:`wake_snapshot`. Optional like the key columns.
 DIAG_INPUT_AGE_COLUMN = "input_age_s"
-# The tick record's segment block (MPC E1-F04; columns since E1-F05, #631): what
+# The tick record's segment block: what
 # the RT did with the MPC's segments. Optional, and each name on its own — a
-# diag recorded before the columns has none, and the E1-F09 measurement build
-# wrote the block WITHOUT ``segment_p_d_*``. See :func:`reference_at_lead` and
+# diag recorded before the columns has none, and some diags
+# lack ``segment_p_d_*``. See :func:`reference_at_lead` and
 # :func:`segment_lane_metrics`.
 DIAG_SEGMENT_COLUMNS = (
     "segment_judged",
@@ -1149,7 +1147,7 @@ def _truth_path(
     the OTHER run's file, with the same throw and a plausible shape; for those
     the local copy still wins, and a file whose first stamp is not within
     :data:`TRUTH_LAUNCH_TOL_S` of this trial's ``launch_wall_time`` is refused
-    as another run's (seen in the S8-E smoke: 1606 s apart). The first row is
+    as another run's. The first row is
     returned so the stamp anchor (:func:`align_trials_to_lane`) need not
     read the file again.
     """
@@ -1260,7 +1258,7 @@ class Truth:
     def first_impact(self, t_from: float, accel_limit: float) -> float:
         """First sample time after ``t_from`` whose |Δv|/Δt exceeds ``accel_limit``.
 
-        A free ball's acceleration is bounded by gravity plus drag (the D-3
+        A free ball's acceleration is bounded by gravity plus drag (the clock-phase
         ``a_bound``); a contact is not. ``+inf`` when the record shows none.
         """
         dt = np.diff(self.t)
@@ -1361,7 +1359,7 @@ class ClockLane:
     # sim-sync the offset drifts when RTF < 1, so a per-trial window uses its
     # own offset, not the session median (see :func:`_planner_cycle_times`).
     trial_offsets: dict[int, float] = field(default_factory=dict)
-    # Rig checks (D-S8-16 ① lane_drop / sim_stall) read EVERY row of a launch,
+    # Rig checks (lane_drop / sim_stall) read EVERY row of a launch,
     # not only the in-flight ones: launch_seq → (n, 3) [sim_s, steady_s,
     # dropped_total] in lane order, and the dropped_total of the row just
     # before that launch's first row (a drop that swallowed the launch rows
@@ -1445,7 +1443,7 @@ class ClockLane:
         return float(np.interp(sim_s, seg[:, 0], seg[:, 1])) - self.steady_offset
 
     def delta_at(self, seq: int, t_rel: float) -> float:
-        """δ(t) of L8 §4.5 (clock_phase's definition) at controller time ``t_rel``."""
+        """δ(t) (clock_phase's definition) at controller time ``t_rel``."""
         seg = self.segments[seq]
         if self.aligned:
             sim = t_rel + self.c_s
@@ -1683,7 +1681,7 @@ def estimate_sim_minus_t_rel(
     tick runs while the sim waits for its command, after the lane row of the
     state it was handed and before the next step, so the last lane row at or
     before that instant carries the tick's sim time: ``c = sim(row) − t``.
-    Checked on the S8-E smoke units of both robots (one ran at RTF 0.62) and
+    Checked on smoke units (one ran at RTF 0.62) and
     the pilot fixture: within a session every commit gave the same ``c`` (a
     whole number of ticks — how many steps the sim took before the CM's first
     tick, so it differs between sessions), matching the CM timing lane's
@@ -1868,7 +1866,7 @@ def truth_success(
     fk_at_tick,
     hold_radius_m: float,
 ) -> dict:
-    """G8-D truth success (L8 §9): the ball is in the hand from HOLD end to release.
+    """Truth success: the ball is in the hand from HOLD end to release.
 
     Operational definition (documented, not tuned):
 
@@ -1936,7 +1934,7 @@ def _hold_end_tick(mode: np.ndarray) -> int | None:
 
 
 def mode_path_verdict(mode: np.ndarray) -> dict:
-    """The trial's mode path over its window (MPC E1-F06, ``catching_decel --success hold``).
+    """The trial's mode path over its window (``catching_decel --success hold``).
 
     ``hold_verdict``: the HOLD → RETREAT step of :func:`_hold_end_tick` (the
     tick the controller judged the attempt); ``abort_in_window``: an
@@ -1958,7 +1956,7 @@ def hand_witness_at_verdict(
     outcome_source_tick: np.ndarray | None,
     supervisor: str | None,
 ) -> dict:
-    """The hand-joint witness the HOLD-end verdict rested on (#537 S8-C, D-S8-8 (b)).
+    """The hand-joint witness the HOLD-end verdict rested on.
 
     Two DIFFERENT rows, not one: ``JudgeOutcome`` runs (and decides
     ``outcome_source``) before the mode changes and before this tick's hand
@@ -2070,7 +2068,7 @@ class TrialContext:
     # Actuation-lag lead per tick [s] (``lead_per_tick``): the command and the
     # reference written at t are aimed at t + t_lead.
     t_lead: np.ndarray | None = None
-    # The hand-joint capture witness per tick (#537 S8-C, D-S8-8 (b); optional
+    # The hand-joint capture witness per tick (optional
     # — ``None`` on a diag recorded before the columns existed). See
     # :func:`hand_witness_at_verdict` for how they are read.
     hand_stalled_n: np.ndarray | None = None
@@ -2124,10 +2122,10 @@ def reference_at_lead(ctx: TrialContext, kl: int) -> tuple[np.ndarray | None, st
     """The Cartesian reference the command written at tick ``kl`` was aimed at,
     and which law it came from.
 
-    The RT hands the CLIK one of two references (MPC plan MD-65): the soft-catch
+    The RT hands the CLIK one of two references: the soft-catch
     law's ``ref_x`` (``closed_form``), or the followed MPC segment's sample
     ``segment_p_d`` (``mpc``, APPROACH to HOLD). Both are sampled one tick past
-    the lead instant (MD-40), so either is "what this tick's command tracks".
+    the lead instant, so either is "what this tick's command tracks".
 
     - ``"segment"`` — ``segment_following`` at ``kl`` and the ``segment_p_d_*``
       columns exist;
@@ -2135,7 +2133,7 @@ def reference_at_lead(ctx: TrialContext, kl: int) -> tuple[np.ndarray | None, st
     - ``"none"`` — neither. The reference is ``None`` and the columns read
       against it are NaN: on such a tick ``ref_x`` is the fresh record's zero
       vector, and a CLIK error taken against it is the catch frame's distance
-      from the origin (0.9 m on the E1-F09 ``mpc`` units, whose diag has
+      from the origin (0.9 m on an ``mpc`` diag that has
       ``segment_following`` but no ``segment_p_d``).
     """
     if (
@@ -2164,7 +2162,7 @@ def decompose_at_tc(
 
     **Lead.** With the actuation-lag lead on, the RT tick samples the reference
     (and the DECEL and γ-ramp clocks) at ``now + T_lead``, so ``q_cmd`` and
-    ``ref`` written at tick t are aimed at ``t + T_lead`` (L5 §4.5). The command
+    ``ref`` written at tick t are aimed at ``t + T_lead``. The command
     that was meant for t_c is therefore the one written at ``t_c − T_lead``
     (tick ``kl``), and the decomposition reads the command side there:
 
@@ -2181,8 +2179,7 @@ def decompose_at_tc(
 
     ``cmd_meas_gap_mm`` is the same-tick ``‖FK(q_meas(t_c)) − FK(q_cmd(t_c))‖``,
     recorded but not a servo error under lead: it adds the intended lead to the
-    residual, so lead-on reads WORSE even when the arm is closer (S8-B pre-check,
-    #537 5808509678). With the lead off ``kl == kc`` and the two are equal.
+    residual, so lead-on reads WORSE even when the arm is closer. With the lead off ``kl == kc`` and the two are equal.
 
     ``pred`` / ``total`` / ``ref_vs_true`` compare against where the ball WOULD
     be at t_c in free flight: when it has already hit the robot before t_c
@@ -2272,8 +2269,8 @@ def command_kinematics_at_tc(ctx: TrialContext, t_c: float, t_lead: float) -> di
     from FK(q_cmd) — no measurement, no reference).
 
     A position servo with a lag leaves ``½ τ² a`` of a command that is still
-    accelerating, which a time lead does not compensate (MPC E1-F05, #631:
-    the $t_c$ gap decomposition). These columns are that acceleration and where it comes from,
+    accelerating, which a time lead does not compensate (the $t_c$ gap
+    decomposition). These columns are that acceleration and where it comes from,
     the same quantity under either planner:
 
     - ``cmd_speed_tc`` [m/s] — the command's speed at the lead tick ``kl``;
@@ -2281,7 +2278,7 @@ def command_kinematics_at_tc(ctx: TrialContext, t_c: float, t_lead: float) -> di
     - ``cmd_accel_tc`` [m/s²] — ‖a‖ there;
     - ``cmd_hold_s`` [s] — from the first APPROACH tick to the first tick after
       it whose command speed exceeds ``CMD_MOVING_SPEED_M_S`` (under ``mpc``
-      the wait for the first segment's node 0, MD-68; ≈ 0 under
+      the wait for the first segment's node 0; ≈ 0 under
       ``closed_form``). NaN when the command never moved before ``kl``;
     - ``cmd_move_s`` [s] — from that tick to ``kl``: the time the command had
       to reach the catch (0 when it never moved).
@@ -3040,23 +3037,23 @@ def segment_lane_metrics(ctx: TrialContext) -> dict:
     Read off the tick record's ``segment_event`` (one value per tick), so every
     count is of EVENTS, not ticks: an admission, a replacement, a switch and a
     gate refusal each last one tick; a deferral (a segment for a later grid
-    point waiting in the box, MD-66) and an ``aged`` refusal repeat on every
+    point waiting in the box) and an ``aged`` refusal repeat on every
     tick the segment sits there, and are counted as runs of consecutive ticks —
-    as is, in logs from before MD-73, a ``catch_box`` refusal while TRACKING
+    as is, in older logs, a ``catch_box`` refusal while TRACKING
     judges the pair.
 
     - ``segment_n_followed`` — distinct ``segment_seq`` the RT followed;
     - ``segment_switches`` / ``_admitted`` / ``_replaced`` / ``_gate_refused``;
     - ``segment_deferred`` — waits in the box, ``segment_deferred_max_ticks`` the
       longest of them [ticks];
-    - ``segment_workspace_refused`` — stop paths outside ``catch_box`` (MD-43).
-      The RT dropped that check (MD-73): 0 in the logs written after it;
-    - ``segment_aged`` — segments dropped by the admission age bound (MD-37);
+    - ``segment_workspace_refused`` — stop paths outside ``catch_box``.
+      The RT no longer checks this: 0 in recent logs;
+    - ``segment_aged`` — segments dropped by the admission age bound;
     - ``segment_rho_first`` — the switch gate's ρ at the first switch (the seeded
       command against node 0), ``segment_rho_replan_max`` the largest over the
       later ones (NaN with a single switch);
     - ``segment_wait_node0_ms`` — first APPROACH tick → first switch: how long
-      the adopted pair held the seeded command before node 0 (MD-68). The wait
+      the adopted pair held the seeded command before node 0. The wait
       does not end with APPROACH: the mode can reach COMMITTED while the
       command is still held, so counting only the APPROACH ticks reads short.
 
@@ -3114,15 +3111,15 @@ def plan_validity_window(
     pair_attempt: np.ndarray | None = None,
     pair_published: np.ndarray | None = None,
 ) -> dict:
-    """G3-D (i): per-trial plan validity rate (L3 gate G3-D, #537 S8-D).
+    """Per-trial plan validity rate.
 
     ``plan_valid`` is "a valid plan was PUBLISHED on this wake", over EVERY
     recorded wake of the window. Under ``mode: mpc`` that reads low twice over:
-    a plan is published only together with its first segment (MPC plan MD-62),
+    a plan is published only together with its first segment,
     and once the RT follows a plan the wakes replan its segment without
     searching — rows that can never be "valid". The optional arrays (one entry
-    per wake, from :func:`_planner_cycle_times` on a log that has the E1-F05
-    columns) separate the three questions; without them their keys are absent:
+    per wake, from :func:`_planner_cycle_times` on a log that has the
+    segment columns) separate the three questions; without them their keys are absent:
 
     - ``search_valid`` + ``searched`` → ``search_cycles`` (wakes that ran a
       search), ``search_valid_cycles`` and ``search_valid_ratio`` = found /
@@ -3267,7 +3264,7 @@ def first_robot_contact(contacts, seg_sim, lane: ClockLane, seq: int) -> float:
 
 # |stamp-axis t_c − the t_c column| above which a row's decomposition is read
 # at another instant than the catch (#602). An unloaded run measured p95 1.25 /
-# max 5.1 ms, a host-loaded one p95 118 ms (S8-E tennis, 200 throws); 5 ms is
+# max 5.1 ms, a host-loaded one p95 118 ms (200 throws); 5 ms is
 # 24–35 mm of ball travel at 4.75–7 m/s.
 TC_SHIFT_MAX_MS = 5.0
 # The decomposition columns read at (or relative to) the t_c column.
@@ -3299,7 +3296,7 @@ class Settings:
     seed: int = DEFAULT_SEED
     window_margin_s: float = 0.05
     hold_window_s: float = DEFAULT_HOLD_WINDOW_S
-    floor: float | None = None  # G8-D floor (D-S8-3); None → no verdict
+    floor: float | None = None  # truth-verdict floor; None → no verdict
     n_valid_target: int | None = None  # verdict is INSUFFICIENT_N below this n_valid
     tc_shift_max_ms: float = TC_SHIFT_MAX_MS  # #602: beyond it a row's t_c columns are "shifted"
 
@@ -3362,8 +3359,8 @@ def analyse_session(
     lane's clocks (:func:`align_trials_to_lane`, ``time_alignment: "lane"``);
     without one, on the runner's median wall offset (``"median_offset"``,
     wrong by up to (1 − RTF) × the trial's length when the sim ran slow).
-    ``eval_samples_path`` (``sim_capture_evaluate``) adds G8-B,
-    ``probe_dump_path`` (``vision_lane_probe --dump``) G8-C2 —
+    ``eval_samples_path`` (``sim_capture_evaluate``) adds the NEES check,
+    ``probe_dump_path`` (``vision_lane_probe --dump``) the error-budget check —
     :mod:`rtc_tools.analysis.catching_vision`.
     """
     ctl = Path(session) / "controllers" / profile.controller
@@ -3445,7 +3442,7 @@ def analyse_session(
             row["throws_file_sha256"] = throws_file_sha256
         row["accepted"] = trial.accepted
         row["seed"] = record.get("seed")
-        # D-S8-16 ①: rules 1–3 from the record; 3's "no diag rows" and the
+        # Rules 1–3 from the record; 3's "no diag rows" and the
         # lane rules 4–5 below, once the window and the lane segment are known.
         reason = record_invalid_reason(record)
         row["invalid_reason"] = reason
@@ -3740,7 +3737,7 @@ def _effort_max(effort, trial: Trial, margin: float) -> float:
     return float(e[sel].max()) if sel.any() else math.nan
 
 
-# ══ Hand-joint capture calibration (#537 S8-C, D-S8-8 (b)) ════════════════════
+# ══ Hand-joint capture calibration ════════════════════════════════════════════
 # Offline mirror of rtc_controllers/catching/hand_capture.hpp's per-tick
 # EvaluateHandCapture, over a WINDOW instead of one tick, so rho_min/rho_max/
 # qd_tol/effort_frac_min can be re-derived from real closures rather than
@@ -3765,7 +3762,7 @@ class HandCagingProfile:
 def _calibration_skipped(profile: CatchingProfile, reason: str) -> None:
     """One-line stderr note + ``None``: the shared "give up on the OPTIONAL
     hand-hold-window calibration, not on the trial analysis" exit used by
-    every degrade path below (#537 S8-C code review) — the read of
+    every degrade path below — the read of
     ``catching.robot.hand``/the device roster/the hand device CSV can fail in
     several distinct ways (a length mismatch, a per-joint ``TBD``, a missing
     torque limit, an older CSV without the newer columns), and every one of
@@ -3993,7 +3990,7 @@ def capture_would_fire(
 
 
 def record_invalid_reason(record: Mapping) -> str:
-    """D-S8-16 ① rules 1–3 as far as the runner's record decides them ("" = none).
+    """Rig-failure rules 1–3 as far as the runner's record decides them ("" = none).
 
     1. ``srv_refused`` — the launch srv answered ``accepted == false``;
     2. ``not_launched`` — accepted, but the runner recorded no ground-truth
@@ -4027,7 +4024,7 @@ def trial_steady_end(lane: ClockLane, trial: Trial, seq: int, margin_s: float) -
 
 
 def lane_invalid_reason(lane: ClockLane, trial: Trial, margin_s: float) -> tuple[str, dict]:
-    """D-S8-16 ① rules 4–5 from the clock lane, and the diagnostics they read.
+    """Rig-failure rules 4–5 from the clock lane, and the diagnostics they read.
 
     4. ``lane_drop`` — no launch segment on the lane pairs with this trial
        (:func:`load_clock_lane`; a segment needs ≥ 2 in-flight rows), or
@@ -4103,7 +4100,7 @@ def tick_overrun(timing, steady_lo: float, steady_hi: float, dt: float) -> dict:
 def tick_overrun_summary(
     rows: Sequence[Mapping], status: str | None, dt: float | None
 ) -> dict | str:
-    """Tick-overrun covariate over ``rows`` (a covariate, not a verdict — S8-E)."""
+    """Tick-overrun covariate over ``rows`` (a covariate, not a verdict)."""
     if status is not None:
         return status
     have = [r for r in rows if np.isfinite(_num(r.get("tick_overrun_n")))]
@@ -4123,9 +4120,9 @@ def tick_overrun_summary(
 
 
 def streak_distribution(rows: Sequence[Mapping], bin_width: int = STREAK_BIN_WIDTH) -> dict:
-    """G8-C3 frequency distribution of per-trial ``ref_saturated_max_streak``.
+    """Frequency distribution of per-trial ``ref_saturated_max_streak``.
 
-    The gate was deleted (D-S8-16) — this is a record, not a verdict.
+    There is no gate on it — this is a record, not a verdict.
     Histogram bins: ``0``, then ``1-w``, ``w+1-2w``, … up to the largest streak.
     """
     values = [
@@ -4153,7 +4150,7 @@ def streak_distribution(rows: Sequence[Mapping], bin_width: int = STREAK_BIN_WID
 
 
 def impulse_correlation(rows: Sequence[Mapping], n_boot: int, seed: int) -> dict:
-    """G7-B3: predicted Δp = m·v_rel vs the measured contact impulse ∫F dt.
+    """Impulse check: predicted Δp = m·v_rel vs the measured contact impulse ∫F dt.
 
     First hand–ball contact episode only (:func:`first_hand_contact`), over
     the rows with both finite. OLS slope/intercept with a trial-bootstrap
@@ -4207,10 +4204,10 @@ def truth_block(
     n_valid_target: int | None = None,
     z: float = 1.96,
 ) -> dict:
-    """G8-D over the VALID trials, with the ITT bound (invalid counted as failure).
+    """Truth verdict over the VALID trials, with the ITT bound (invalid counted as failure).
 
     ``lower_975`` is the Wilson lower bound at ``z`` — the 97.5 % one-sided
-    bound at the default 1.96 (L8 §9).
+    bound at the default 1.96.
     """
     k = sum(1 for r in valid if _is_true(r.get("truth_success")))
     n = len(valid)
@@ -4273,7 +4270,7 @@ def gate_map_truth(rows: Sequence[Mapping], z: float = 1.96, with_truth: bool = 
 
 
 def validity_block(rows: Sequence[Mapping], lane_rules_evaluated: bool) -> dict:
-    """D-S8-16 ①: every trial counted once — valid, or invalid for exactly one reason."""
+    """Every trial counted once — valid, or invalid for exactly one reason."""
     n_invalid = dict.fromkeys(INVALID_REASONS, 0)
     for r in rows:
         reason = r.get("invalid_reason")
@@ -4301,7 +4298,7 @@ def refine_wall_offset(lane: ClockLane, diag, bridge: PlanBridge, dump, fk: Catc
     on the stamp axis; the planner row gives the same instant on the steady
     clock. Their difference is CLOCK_REALTIME − CLOCK_MONOTONIC (the ball
     stamps are steady instants shifted by it, ``mujoco_simulator_node.cpp``).
-    On the S8-E smoke units it matched the probe's own (wall, steady) receipt
+    On smoke units it matched the probe's own (wall, steady) receipt
     pairs to 1 µs.
     """
     t = diag["t_relative_s"].to_numpy(float)
@@ -4423,7 +4420,7 @@ def c2_for_trial(
     seq: int | None,
     fk: CatchFrameFk,
 ) -> dict:
-    """G8-C2 inputs of one trial: A = p_true − p̂_live and B = p̂_live − p_c at t_c.
+    """Error-budget inputs of one trial: A = p_true − p̂_live and B = p̂_live − p_c at t_c.
 
     All three in the SIM world (the dump's ``world``: ``p_c`` goes through the
     same ``world_t_model`` as the truth, and :func:`catching_vision.plan_point_stamp`
@@ -4564,9 +4561,9 @@ def _planner_events(ctl: Path) -> dict | None:
 class PlannerWakes(NamedTuple):
     """One entry per ``planner_events.csv`` row (:func:`_planner_cycle_times`).
 
-    The last four are ``None`` on a log from before the E1-F05 columns.
+    The last four are ``None`` on a log from before the segment columns.
     ``searched``: the wake ran a search — its ``outcome`` is neither ``idle``
-    nor ``no_input`` (a replan-only wake stays ``idle``, MPC plan MD-29).
+    nor ``no_input`` (a replan-only wake stays ``idle``).
     ``pair_attempt`` / ``pair_published``: the wake tried a plan's first
     segment (``segment_kind`` ``first``) / and published it.
     """
@@ -4581,8 +4578,8 @@ class PlannerWakes(NamedTuple):
 
 def _planner_cycle_times(ctl: Path, lane: ClockLane | None) -> PlannerWakes | None:
     """Every ``planner_events.csv`` wake as a STEADY-clock second, with its
-    ``plan_valid`` — what G3-D (i) (#537 S8-D) windows by trial after shifting
-    it onto ``t_relative_s`` — and, where the log has the E1-F05 columns, what
+    ``plan_valid`` — what the plan-validity rate windows by trial after shifting
+    it onto ``t_relative_s`` — and, where the log has the segment columns, what
     :class:`PlannerWakes` adds. ``None`` when either input is unavailable: a
     diag predating the planner, or no ``--clock-lane`` (below).
 
@@ -4598,8 +4595,8 @@ def _planner_cycle_times(ctl: Path, lane: ClockLane | None) -> PlannerWakes | No
     cpp:457-459), a pure simulator tick count decoupled from real elapsed
     time (the sim can run faster or slower than 1×). A steady-clock instant
     therefore has no FIXED additive offset to ``t_relative_s`` in general —
-    exactly the clock-drift problem the D-3 clock lane already exists to
-    measure (:class:`ClockLane`, L8 §4.5).
+    exactly the clock-drift problem the clock lane already exists to
+    measure (:class:`ClockLane`).
 
     The clock lane bridges the two clocks by recording ``(sim_time_sec,
     steady_ns)`` pairs from the SAME ``std::chrono::steady_clock``
@@ -4611,8 +4608,8 @@ def _planner_cycle_times(ctl: Path, lane: ClockLane | None) -> PlannerWakes | No
     median ``steady_offset``: when the sim runs below 1× the offset grows
     across a session, and a median shifts late trials' windows by that drift.
     Within one flight (~1 s) the drift is negligible. A trial the lane left
-    unpaired has no offset and gets no G3-D columns, the same rule as the D-3
-    clock covariate. See the golden test for a numerical check against real
+    unpaired has no offset and gets no plan-validity columns, the same rule as the clock-phase
+    covariate. See the golden test for a numerical check against real
     fixture data (every ``wake_ns`` of a trial with a commit lands inside that
     trial's own diag window once converted).
     """
@@ -4730,7 +4727,7 @@ def _wake_reject_reason(row: Mapping) -> str:
             return f"segment:{seg}" + (f"/{core}" if core not in ("", "none") else "")
         decision = text("decision")
         return f"cycle:{outcome}" + (f"/{decision}" if outcome == "held" and decision else "")
-    # The settle rule (grid, L3 §4.4) refuses the first wakes of a new track
+    # The settle rule (grid) refuses the first wakes of a new track
     # before any candidate exists and reports the uncertainty reason for it;
     # read as its own reason so that it is not counted as the candidates'.
     if _num(row.get("settling")) > 0.5:
@@ -5041,7 +5038,7 @@ def _summarise(
     rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_source, gate_map=None
 ) -> dict:
     run = [r for r in rows if r.get("accepted")]
-    # D-S8-16 ①: every statistic below is over the VALID trials — invalid is a
+    # Every statistic below is over the VALID trials — invalid is a
     # rig failure, not an attempt (the ITT bound is the one exception).
     valid = [r for r in rows if not r.get("invalid_reason")]
     on_axis = [r for r in valid if r.get("tc_axis") != "shifted"]
@@ -5102,7 +5099,7 @@ def _summarise(
         "g7b3": impulse_correlation(valid, settings.n_boot, settings.seed),
         "tc_axis": tc_axis_summary(valid, settings.tc_shift_max_ms),
     }
-    # Not a rig-failure rule (D-S8-16 ①): a valid trial whose truth file is
+    # Not a rig-failure rule: a valid trial whose truth file is
     # missing or belongs to another run counts as a failure — listed so a
     # pipeline fault is not read as a miss.
     summary["validity"]["valid_without_truth_file"] = [
@@ -5152,7 +5149,7 @@ def _summarise(
             "n_trials_with_cycles": len(with_cycles),
             # The search's own validity (over the wakes that searched) and how
             # often a first segment that was tried went out with its plan
-            # (mode mpc); None on a log without the E1-F05 columns.
+            # (mode mpc); None on a log without the segment columns.
             "search_valid_ratio_p50_p05_p95": _p50_p05_p95(searched, "search_valid_ratio"),
             "pair_published_ratio_p50_p05_p95": _p50_p05_p95(searched, "pair_published_ratio"),
             "plan_valid_ratio_p50_p05_p95": [

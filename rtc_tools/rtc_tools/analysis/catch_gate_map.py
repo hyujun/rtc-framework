@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
-"""Gate-catchable map: the rest of the planner's gate chain over a kinematic map (S3.5b).
+"""Gate-catchable map: the rest of the planner's gate chain over a kinematic map.
 
 ``catchability_map`` answers "is there a good catch posture". This takes its
-accepted candidates and asks what the planner asks next (L3 §4):
+accepted candidates and asks what the planner asks next:
 
-    commit lead (§4.11) is there a plan early enough to command the hand: the closing
+    commit lead         is there a plan early enough to command the hand: the closing
                         time, the arm delay and a margin all fit between the first plan and t_c
-    reach time (§4.3)   can the arm be at q* by t_c, starting at rest in the wait pose
-    γ window   (§4.5)   is there a γ both the hand (closing time) and the arm (speed) allow
-    stopping   (§4.9)   does the arm come to rest inside the workspace afterwards
+    reach time          can the arm be at q* by t_c, starting at rest in the wait pose
+    γ window            is there a γ both the hand (closing time) and the arm (speed) allow
+    stopping            does the arm come to rest inside the workspace afterwards
 
 The reach-time, γ-window and stopping-point VERDICTS are not computed here.
 They come from ``catch_gate_batch`` (rtc_controllers), which calls the runtime
 functions of ``time_feasibility.hpp`` — the map has to describe the system that
-flies, and a python re-derivation would describe a different one (G3-I). What
+flies, and a python re-derivation would describe a different one. What
 python owns is everything those functions take as input and leave as output:
 
 - the commit lead. It is one subtraction and has no runtime function to share
   (``CommitDue`` compares against a T_freeze that is still TBD), so the lower bound
-  T_close,tot + T_arm + T_margin of L3 §4.11 is applied here;
+  T_close,tot + T_arm + T_margin is applied here;
 - q̇ᵘ, the damped least-squares unit-speed joint velocity behind v_dir,max. It has
-  no runtime producer before S6.2, so it is computed here and handed over;
+  no runtime producer, so it is computed here and handed over;
 - whether p_stop is inside the workspace. The runtime search has no such gate (its catch
   box was removed, 2026-10-09), so the bound is this map's own: the reach sphere and the
   floor — the ones the kinematic map used. The sphere's centre and the world the floor is
   level in are the map's own frames (its ``provenance.yaml``, ``read_map_frames``), not
   arguments;
-- a second, PROVISIONAL reach layer (D-16 revision, L3 §4.3). The shipped
+- a second, PROVISIONAL reach layer. The shipped
   acceleration limit is one constant box from a worst-sign sufficient condition.
   This layer instead asks whether THIS move fits the torque limits: all joints
   follow one bang-bang / trapezoid path profile from the wait pose to q*, and the
@@ -35,7 +35,7 @@ python owns is everything those functions take as input and leave as output:
   straight, synchronised joint path is not time-optimal — and it has no runtime
   counterpart yet, which is why it is a layer next to the box and not a replacement.
 
-Not judged: the γ rollout (L3 §4.8, no function before S6.3). An open cell is
+Not judged: the γ rollout (no function to share). An open cell is
 therefore PASS(provisional); an empty map is conclusive.
 
 The acceleration box and the DLS damping are read from the controller YAML with the
@@ -396,12 +396,12 @@ def cell_table(rows: Sequence[Mapping], throws: Mapping[int, Mapping[str, str]])
 
 
 def open_candidate_stats(rows: Sequence[Mapping], layer: str) -> dict | None:
-    """Where the OPEN candidates of one layer sit in time — the vision-horizon input (S3.6).
+    """Where the OPEN candidates of one layer sit in time — the vision-horizon input.
 
     ``t_c_s`` is the catch time after release, i.e. the flight time the vision
     horizon has to cover; ``speed_m_s`` the ball speed at that point. The per-throw
     catch window is [min t_c, max t_c] over that throw's open candidates, and its
-    end is what the horizon requirement (S3.6, L1 §4.1) is read from. Spreads are
+    end is what the horizon requirement is read from. Spreads are
     ``catchability_map.distribution`` (finite values only, same keys as the
     kinematic map's summary). ``None`` when the layer opened nothing.
     """
@@ -671,7 +671,8 @@ def main(argv: list[str] | None = None) -> int:
         t_arm_s=args.arm_delay_s,
         t_margin_s=args.time_margin_s,
     )
-    commit_lead = args.close_total_s + args.arm_delay_s + args.time_margin_s  # L3 §4.11
+    # commit-lead lower bound
+    commit_lead = args.close_total_s + args.arm_delay_s + args.time_margin_s
     args.out_dir.mkdir(parents=True, exist_ok=True)
     gate_in = args.out_dir / "gate_candidates.csv"
     gate_in.write_text(gate_candidate_csv(inputs))

@@ -1,4 +1,4 @@
-"""S8-A dump mode: full per-point rows with the whole 6x6 covariance.
+"""Dump mode: full per-point rows with the whole 6x6 covariance.
 
 ``vision_lane_probe --dump`` writes these rows (``vision_lane.dump_prediction_rows``,
 ``vision_lane.DUMP_PREDICTION_COLUMNS``), but the decoding it depends on
@@ -102,7 +102,7 @@ def test_dump_rows_carry_every_point_with_distinguishable_values():
         assert row["ax"] == pytest.approx(10.0 * p + 6.0)
         assert row["ay"] == pytest.approx(10.0 * p + 7.0)
         assert row["az"] == pytest.approx(10.0 * p + 8.0)
-        # Row-major, matching D-4 / TrajectoryPoint.covariance — cov_{row}{col}
+        # Row-major, matching TrajectoryPoint.covariance — cov_{row}{col}
         # must equal the (row, col) entry of THIS point's matrix, not a
         # transposed or neighbouring point's.
         for r in range(6):
@@ -138,7 +138,7 @@ def test_an_invalid_snapshot_yields_no_dump_rows():
 
 def test_a_layout_missing_a_required_field_is_refused_with_a_clear_error():
     """The dump mode decodes through the same check_layout gate as the default
-    path (D-4) — it must not bypass it to get at the covariance."""
+    path — it must not bypass it to get at the covariance."""
     missing_covariance = [f for f in fields() if f[0] != "covariance"]
     with pytest.raises(LayoutMismatch) as excinfo:
         decode(encode_point(), 1, missing_covariance)

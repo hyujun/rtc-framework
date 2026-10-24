@@ -1,4 +1,4 @@
-"""catch_gate_map (dynamic_catching S3.5b).
+"""catch_gate_map.
 
 The gate verdicts themselves belong to ``catch_gate_batch`` (C++, tested in
 rtc_controllers). Pinned here: the torque-checked reach time against closed
@@ -172,7 +172,7 @@ def test_torque_reach_time_is_nan_when_gravity_alone_is_over_the_limit(arm):
 
 def test_gate_inputs_hand_over_what_the_dls_velocity_achieves_not_what_was_asked(arm):
     # With heavy damping q̇ᵘ falls well short of unit speed. The judge's numerator is
-    # v̂ᵀ(J_p q̇ᵘ): handing it v̂ instead would report a speed the arm cannot reach (L3 §4.5).
+    # v̂ᵀ(J_p q̇ᵘ): handing it v̂ instead would report a speed the arm cannot reach.
     q = base.Q_GENERIC
     v = -2.5 * arm.frame_axis(q)
     row = {"nv": "6", **{f"q{i}": repr(float(x)) for i, x in enumerate(q)}}
@@ -593,7 +593,7 @@ def test_each_constant_reaches_its_own_gate(tmp_path, arm):
     # One change per run and the gate that must flip. `also` names a gate that
     # legitimately shares the constant; every other gate must stay untouched.
     cases = {
-        # commit lead 0.50 + 0.05 + 0.03 > 0.7 − 0.24. T_close,tot also sets g_min (§4.5)
+        # commit lead 0.50 + 0.05 + 0.03 > 0.7 − 0.24. T_close,tot also sets g_min
         "commit": ({"--close-total-s": "0.50"}, "commit_lead", {"gamma"}),
         # budget 0.38 s: a 1e-4 scale of the box makes every move take tens of seconds
         "reach_box": ({"box_scale": 1e-4}, "reach_time", set()),

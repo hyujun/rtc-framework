@@ -1,4 +1,4 @@
-"""planner_events plotter — the E1-F18 panels and the cut-solve statistics.
+"""planner_events plotter — the NLP-search and docking-core panels and the cut-solve statistics.
 
 The columns are read out of the C++ header, so a frame here has exactly the
 names the controller writes; a recording from before the columns is the same

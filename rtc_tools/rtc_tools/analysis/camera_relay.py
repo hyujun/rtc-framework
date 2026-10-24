@@ -1,7 +1,7 @@
-"""Relay the sim camera lane with drop and delay injection (S3.4).
+"""Relay the sim camera lane with drop and delay injection.
 
-Stage S3.4 (``docs/dynamic_catching/ID_INDEX.md`` §3) — "지연·드롭
-주입" and the ghost-track question (L1 §4.5, TBD-VIS-07). The estimator is
+Injects transport delay and drops, and probes the ghost-track question (does
+the prediction stay VALID after its measurements stop?). The estimator is
 pointed at this relay's output instead of ``/sim/ball/camera_position`` and the
 relay decides, per message, whether and when it goes through. Stamps are never
 touched: a delayed message still says when it was captured, which is what a
@@ -59,7 +59,7 @@ class CameraRelay(Node):
         self.create_subscription(PointStamped, args.in_topic, self._on_msg, qos)
         if args.delay_s > 0.0:
             # 1 kHz release timer: a delay quantised to 1 ms is fine for the
-            # 10–50 ms delays S3.4 injects, and the quantisation is reported.
+            # 10–50 ms delays injected here, and the quantisation is reported.
             self.create_timer(0.001, self._release)
 
     def _on_msg(self, msg: PointStamped) -> None:

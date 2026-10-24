@@ -1,4 +1,4 @@
-"""catch_search_map (dynamic_catching L3 §4.1).
+"""catch_search_map (search map over throws).
 
 The search's verdicts belong to ``catch_search_batch`` (C++, tested in
 rtc_controllers). Pinned here: the throws and their list file, the wakes the

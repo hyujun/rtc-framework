@@ -1,10 +1,10 @@
-"""catching_trials (dynamic_catching S8-A) — golden pilot + statistics with positive controls.
+"""catching_trials — golden pilot + statistics with positive controls.
 
-The golden test replays the S8 pilot session ``260924_1218`` (25 throws at the
+The golden test replays the pilot session ``260924_1218`` (25 throws at the
 sim, lead off; fixture cut by ``data/catching_pilot_260924_1218/make_fixture.py``)
-and pins the numbers the S8 evaluation was built on (#537): τ̂ 200 ms on
+and pins the numbers the evaluation was built on (#537): τ̂ 200 ms on
 every arm joint, the t_c servo gap 122 mm, CLIK 2 mm, 25/25 supervisor Missed,
-D-3 ε 12 mm valid 7/25. Every statistic also gets a POSITIVE control — an
+clock-phase ε 12 mm valid 7/25. Every statistic also gets a POSITIVE control — an
 injected defect it must catch — because a test that only checks "passes on
 clean data" passes an implementation that always says pass.
 """
@@ -24,8 +24,8 @@ from rtc_tools.analysis import catchability_map as cm, catching_trials as ct
 
 FIXTURE = Path(__file__).parent / "data" / "catching_pilot_260924_1218"
 MODULE = Path(ct.__file__)
-# The fastest catch speed the S3.5b gate map opened for this
-# robot. The pilot's D-3 table (#537 5806998220) used it with clock_phase's
+# The fastest catch speed the gate map opened for this
+# robot. The pilot's clock-phase table (#537) used it with clock_phase's
 # default a_bound.
 PILOT_V_MAX_M_S = 3.85
 
@@ -58,7 +58,7 @@ def test_golden_servo_lag_is_200ms_on_every_joint(pilot):
 
 
 def test_golden_trial_end_closes_each_trial_before_the_next_launch(pilot):
-    """``t_end`` (MPC E1-F06: the end of the window a mode-path verdict reads) is
+    """``t_end`` (the end of the window a mode-path verdict reads) is
     on the lane clocks of ``t_launch``: after its own launch, before the next."""
     rows = sorted((r for r in pilot.rows if not r["invalid_reason"]), key=lambda r: r["idx"])
     assert len(rows) == 25
@@ -68,7 +68,7 @@ def test_golden_trial_end_closes_each_trial_before_the_next_launch(pilot):
 
 
 def test_golden_every_judged_trial_has_its_mode_path_verdict(pilot):
-    """``hold_verdict`` · ``abort_in_window`` (E1-F06) come from the window the truth
+    """``hold_verdict`` · ``abort_in_window`` come from the window the truth
     columns use, for every valid trial; the pilot is 25/25 Missed, so none aborted
     and every one reached a judged HOLD end or no RETREAT at all."""
     rows = [r for r in pilot.rows if not r["invalid_reason"]]
@@ -116,7 +116,7 @@ def test_golden_tc_decomposition(pilot):
 def test_golden_is_lead_off_so_the_lead_aware_servo_is_the_same_tick_gap(pilot):
     """The pilot ran without the lead and predates the diag ``t_arm_s`` column
     and the runner mirror, so T_lead falls back to 0 and the lead-aware servo
-    residual must equal the recorded same-tick gap on every trial (S8-B)."""
+    residual must equal the recorded same-tick gap on every trial."""
     assert pilot.summary["t_lead_source"] == "0 (no diag column, no runner mirror)"
     assert pilot.summary["t_lead_s_range"] == [0.0, 0.0]
     rows = [r for r in pilot.rows if r.get("accepted")]
@@ -212,7 +212,7 @@ def test_an_unpaired_trial_gets_no_clock_covariate_instead_of_a_borrowed_one():
 
 
 def test_an_unpaired_trial_has_no_contact_episode_instead_of_a_borrowed_one(monkeypatch):
-    """End to end: a trial the clock lane has no launch for (seen in S8-B,
+    """End to end: a trial the clock lane has no launch for (seen in a pilot,
     tuning t3) used to reach the contact-episode analysis with no lane segment
     of its own — a KeyError, and without it the previous trial's segment."""
     pytest.importorskip("pinocchio")
@@ -261,7 +261,7 @@ def test_arch1_module_has_no_robot_constants():
         assert literal not in source, literal
 
 
-# ── Wilson / S0.9 power ──────────────────────────────────────────────────────
+# ── Wilson / power ───────────────────────────────────────────────────────────
 
 
 def test_wilson_interval_known_values():
@@ -277,7 +277,7 @@ def test_wilson_interval_known_values():
     ("p", "floor", "n"), [(0.9, 0.7, 35), (0.8, 0.6, 44), (0.6, 0.5, 198), (0.95, 0.9, 254)]
 )
 def test_required_n_reproduces_the_s09_table(p, floor, n):
-    """Four cells of the S0.9 table (z 1.96, power 0.8)."""
+    """Four cells of the power table (z 1.96, power 0.8)."""
     assert ct.required_n(p, floor) == n
 
 
@@ -392,7 +392,7 @@ def test_nees_is_two_sided():
     assert not res.passed_raw and res.p_raw < 0.05
 
 
-# ── Lead-aware t_c decomposition (S8-B) ──────────────────────────────────────
+# ── Lead-aware t_c decomposition ─────────────────────────────────────────────
 
 
 class _IdentityFk:
@@ -463,7 +463,7 @@ def test_lead_aware_decomposition_recovers_the_injected_parts():
 
 def test_reading_the_same_trial_without_its_lead_is_the_false_fail():
     """Positive control: ignore the recorded lead and the servo residual is
-    the same-tick gap again — the S8-B pre-check's false G8-E FAIL."""
+    the same-tick gap again — the pre-check's false FAIL."""
     rec = _lead_trial(0.2, 0.0)
     assert rec["servo_mm"] == rec["cmd_meas_gap_mm"] > 300.0
     assert rec["ref_vs_true_mm"] > 300.0
@@ -475,7 +475,7 @@ def test_lead_off_trial_is_unchanged():
     assert rec["ref_vs_true_mm"] == pytest.approx(10.0, abs=0.2)
 
 
-# ── The reference a trial's law gave the CLIK (MPC E1-F05, #631) ────────────
+# ── The reference a trial's law gave the CLIK (#631) ─────────────────────────
 
 
 def _reference_trial(*, ref_valid, following, p_d, committed=True, ref_is_zero=None):
@@ -534,7 +534,7 @@ def test_a_soft_catch_trial_reads_ref_x_as_before():
 
 
 def test_a_tick_with_no_reference_is_not_measured_against_the_zero_vector():
-    """The E1-F09 measurement build: `segment_following` is recorded, the target
+    """The measurement build: `segment_following` is recorded, the target
     is not, and `ref_valid` is 0 under mpc. Read against ``ref_x`` — the fresh
     record's zeros — the CLIK term is the catch frame's distance from the
     origin; it must come out NaN instead, and say why."""
@@ -616,7 +616,7 @@ def test_segment_arrays_are_none_for_the_columns_a_diag_lacks():
     assert ct._segment_arrays(full.drop(columns="segment_p_d_z"))["segment_p_d"] is None
 
 
-# ── What the RT did with the segments (MPC E1-F05) ──────────────────────────
+# ── What the RT did with the segments ────────────────────────────────────────
 
 
 def _lane_ctx(n=200, **segment):
@@ -775,7 +775,7 @@ def test_the_segment_codes_this_tool_reads_are_the_cpp_enums_values():
     assert refusal[ct.SEGMENT_REFUSAL_AGED] == "aged"
 
 
-# ── The command at t_c (MPC E1-F05) ─────────────────────────────────────────
+# ── The command at t_c ───────────────────────────────────────────────────────
 
 
 def _command_ctx(position, *, t=None, approach_at=0.1):
@@ -1006,7 +1006,7 @@ def test_max_streak():
     assert ct.max_streak([]) == 0
 
 
-# ── Hand-joint capture witness (#537 S8-C, D-S8-8 (b)) ───────────────────────
+# ── Hand-joint capture witness ───────────────────────────────────────────────
 
 
 def _hold_then_retreat_mode(n_hold=2, n_retreat=2):
@@ -1205,7 +1205,7 @@ def test_hand_caging_profile_is_none_without_q_pre_q_close():
 
 
 def test_hand_caging_profile_degrades_when_joint_limits_are_missing(capsys):
-    """Regression (#537 S8-C code review): ``q_pre``/``q_close`` present but
+    """Regression: ``q_pre``/``q_close`` present but
     the hand device's ``joint_limits`` is entirely absent must NOT abort —
     this used to read the torque limit through
     ``derive_accel_limits.arm_spec_from_params``, which also requires
@@ -1228,7 +1228,7 @@ def test_hand_caging_profile_degrades_when_joint_limits_are_missing(capsys):
 
 
 def test_hand_caging_profile_degrades_on_a_per_joint_tbd(capsys):
-    """Regression (#537 S8-C code review round 2): a profile mid-search can
+    """Regression: a profile mid-search can
     have ``q_pre``/``q_close`` as LISTS whose elements are not all numbers yet
     (one joint still literally ``'TBD'``) — ``np.asarray(..., dtype=float)``
     would otherwise raise ``ValueError`` straight out of
@@ -1359,12 +1359,12 @@ def test_cli_writes_csv_and_json(tmp_path, capsys):
     assert rc == 0
     assert (tmp_path / "catching_trials.csv").is_file()
     summary = (tmp_path / "catching_trials_summary.json").read_text()
-    # Without --v-max the D-3 validity is not judged, and says so.
+    # Without --v-max the clock-phase validity is not judged, and says so.
     assert "NOT_EVALUATED(v_max not given)" in summary
     assert "supervisor verdicts" in capsys.readouterr().out
 
 
-# ── G3-D (i): per-trial plan validity ratio (#537 S8-D) ──────────────────────
+# ── per-trial plan validity ratio ────────────────────────────────────────────
 
 
 def test_plan_validity_window_counts_cycles_between_launch_and_commit():
@@ -1547,7 +1547,7 @@ def test_g3d_windows_each_trial_with_its_own_clock_offset(monkeypatch):
     session, so the session median is wrong for late trials. Push the median
     10 s off every trial's own offset: the per-trial windows must not move
     (trial 0 keeps its hand-checked pin). A trial the lane left without an
-    offset gets no G3-D columns rather than the median's."""
+    offset gets no plan-validity columns rather than the median's."""
     pytest.importorskip("pinocchio")
     real = ct.load_clock_lane
     state = {}
@@ -1582,7 +1582,7 @@ def test_g3d_windows_each_trial_with_its_own_clock_offset(monkeypatch):
 def test_analyse_session_has_no_g3d_without_a_clock_lane():
     """Without ``--clock-lane`` there is no established wake_ns -> t_relative_s
     conversion (sim-sync ``t_relative_s`` is a tick count, not a clock reading
-    — see :func:`ct._planner_cycle_times`), so G3-D must be entirely absent,
+    — see :func:`ct._planner_cycle_times`), so the plan-validity columns must be entirely absent,
     not guessed at."""
     pytest.importorskip("pinocchio")
     profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
@@ -1597,7 +1597,7 @@ def test_analyse_session_has_no_g3d_without_a_clock_lane():
     assert all("planner_cycles" not in r for r in result.rows if r.get("accepted"))
 
 
-# ── Gate-map verdict (S8-D, #537, optional --gate-map) ───────────────────────
+# ── Gate-map verdict (optional --gate-map) ───────────────────────────────────
 
 
 def _write_csv_rows(path: Path, rows: list[dict]) -> None:
@@ -1831,7 +1831,7 @@ def test_cli_gate_map_option_wires_through(tmp_path):
     assert '"map_dir"' in summary
 
 
-# ── robot config lookup (S8-D: a sim-only profile has no _base.yaml) ─────────
+# ── robot config lookup (a sim-only profile has no _base.yaml) ───────────────
 
 
 def _write_params(path, params):
@@ -1976,7 +1976,7 @@ def test_the_fixture_profile_reads_its_world_from_sim_yaml():
     np.testing.assert_allclose(profile.base_t_world, np.eye(4), atol=0.0)
 
 
-# ── Validity (D-S8-16 ①): rig failures are invalid, not failures ─────────────
+# ── Validity: rig failures are invalid, not failures ─────────────────────────
 
 
 def test_golden_every_trial_is_valid_and_truth_is_unchanged(pilot):
@@ -2180,7 +2180,7 @@ def test_wilson_lower_bound_hand_value_and_the_floor_line():
     # k=5, n=10, z=1.96: centre 0.5, half 1.96·√(0.025 + 3.8416/400)/1.38416.
     lo, hi = ct.wilson_interval(5, 10)
     assert lo == pytest.approx(0.2366, abs=1e-4) and hi == pytest.approx(0.7634, abs=1e-4)
-    # The S8-E pass line at floor 0.35 (L8 §9 G8-D: pass = ≥ 84/200).
+    # The pass line at floor 0.35: pass = ≥ 84/200.
     assert ct.wilson_interval(84, 200)[0] == pytest.approx(0.3537, abs=1e-4)
     assert ct.wilson_interval(83, 200)[0] == pytest.approx(0.3489, abs=1e-4)
     assert ct.floor_verdict(84, 200, 0.35, 200) == "PASS"
@@ -2254,7 +2254,7 @@ def test_impulse_correlation_below_50_is_not_evaluated():
     assert empty["n"] == 0 and math.isnan(empty["ols_slope"])
 
 
-# ── Lane time alignment (S8-E C3): robust to a sim slower than the wall ──────
+# ── Lane time alignment: robust to a sim slower than the wall ────────────────
 
 DT = 0.002
 C_TRUE = 7 * DT  # sim − t_relative_s: the steps the sim took before the CM's first tick
@@ -2267,7 +2267,7 @@ RECV_LATENCY_S = 0.001
 
 def _slow_sim_session(tmp: Path, idle_rtf: float = 1.0):
     """A lane, trials dir and truth CSVs of a sim that runs at TRIAL_RTF during each
-    trial — what the S8-E loaded unit did (RTF 0.62) — and at ``idle_rtf`` between
+    trial — what a loaded unit did (RTF 0.62) — and at ``idle_rtf`` between
     trials. Returns (lane path, trials dir, steady(sim) function)."""
     import json
 
@@ -2495,7 +2495,7 @@ def test_drifted_runner_offsets_do_not_move_the_lane_aligned_analysis(pilot, tmp
 
 
 def test_golden_g8b_and_c2_end_to_end(pilot, tmp_path):
-    """G8-B binding and G8-C2 through analyse_session on the pilot's own axes.
+    """NEES binding and the A/B comparison through analyse_session on the pilot's own axes.
 
     Samples: one at the launch (kept), one whose target is after the ball hit
     the robot and one from before the launch (both NEES 1e6 — they must be

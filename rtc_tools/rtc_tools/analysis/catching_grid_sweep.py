@@ -1,4 +1,4 @@
-"""Prediction-grid sweep of catching sim trials (MPC · dual-arm plan E0-F04, #647).
+"""Prediction-grid sweep of catching sim trials.
 
 The sweep runs the v1 planner on several vision prediction grids (horizon ×
 point count) and throws the SAME throws in every arm (same seeds), so the arms
@@ -31,7 +31,7 @@ Per arm:
   largest candidate and IK counts. The controller opens that file best-effort,
   so a unit without it is counted (``planner_events_missing``), not refused;
 * trials whose ``rtf_trial_min`` is below ``--rtf-min`` — the unit rule
-  (D-S8-17) reruns such a unit; this tool only counts them — and trials with
+  reruns such a unit with the same seed; this tool only counts them — and trials with
   no RTF value at all (``rtf_unknown``), which are not "fine".
 
 Between arms: trials are paired by ``(kind, seed, sample_idx)``

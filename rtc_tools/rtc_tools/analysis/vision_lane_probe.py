@@ -1,11 +1,10 @@
-"""Record the ball_perception prediction lane and its inputs to CSV (S3.4).
+"""Record the ball_perception prediction lane and its inputs to CSV.
 
-Stage S3.4 (``docs/dynamic_catching/ID_INDEX.md`` §3). This is the
-recording half; ``analyze_vision_lane`` reads what it writes. It subscribes to
+This is the recording half; ``analyze_vision_lane`` reads what it writes. It subscribes to
 
-* ``prediction/trajectory`` (PointCloud2, D-4 layout) **twice** — once
-  best-effort, once reliable, both KEEP_LAST(1) — so TBD-VIS-08 is answered by
-  what each subscription actually received rather than by what DDS promises;
+* ``prediction/trajectory`` (PointCloud2, decoded by field name) **twice** —
+  once best-effort, once reliable, both KEEP_LAST(1) — so the loss of each QoS
+  is answered by what each subscription actually received rather than by what DDS promises;
 * the sim camera lane and ground truth (to date every prediction against the
   last measurement — the ghost-track question — and to give the e2e gate a
   truth trajectory to compare across restarts);
@@ -21,14 +20,14 @@ It decides nothing. A layout mismatch is counted and the message dropped — the
 count is in the summary, because a lane that silently decoded nothing would
 look like a lane that published nothing.
 
-``--dump`` (S8-A, default off — the four CSVs above are unchanged either way)
+``--dump`` (default off — the four CSVs above are unchanged either way)
 additionally writes ``<prefix>_prediction_dump.csv`` (every horizon point of
 every prediction message, full 6x6 covariance — see
 ``vision_lane.dump_prediction_rows``) and subscribes to the estimator's
 ``debug/innovation`` (geometry_msgs/Vector3Stamped, stamped) and ``debug/nis``
-(std_msgs/Float64, **no stamp**, C-14) topics, each into its own CSV carrying
-this probe's steady and wall receive time. Neither is a producer of ν̄ (that
-stays unimplemented, D-S8-7 (a)) — this only records what the estimator
+(std_msgs/Float64, **no stamp**) topics, each into its own CSV carrying
+this probe's steady and wall receive time. Neither is a producer of ν̄ (not
+implemented) — this only records what the estimator
 already publishes for later, offline joining.
 """
 

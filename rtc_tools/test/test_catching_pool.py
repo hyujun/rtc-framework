@@ -1,11 +1,11 @@
-"""catching_pool (dynamic_catching S8-E) — pooling units and arms, with hand-built inputs.
+"""catching_pool — pooling units and arms, with hand-built inputs.
 
 Every unit here is a hand-written ``catching_trials`` output dir (the CSV and
 the summary JSON the pool reads), so each count the pool reports can be
-checked against a number written down in the test: the D-S8-16 ①b truncation
-(target reached mid-unit, ``beyond_target``, ``INSUFFICIENT_N``), the S8-E pass
+checked against a number written down in the test: the truncation
+(target reached mid-unit, ``beyond_target``, ``INSUFFICIENT_N``), the pass
 line (84/200 PASS vs 83/200 FAIL at floor 0.35), the exact McNemar over
-``(seed, idx)`` pairs, and the D-3 S3.1b count with ``--extra-d3``.
+``(seed, idx)`` pairs, and the clock-phase count with ``--extra-d3``.
 """
 
 from __future__ import annotations
@@ -174,7 +174,7 @@ def test_a_unit_from_before_the_validity_rules_is_refused(tmp_path):
 
 
 def test_d3_s31b_is_judged_on_the_arms_and_lists_the_extra_summaries(tmp_path):
-    """D-S8-16 ⑤: S8-E's own trials decide S3.1b. An --extra-d3 summary's
+    """The clock-phase count is judged on the arms' own trials. An --extra-d3 summary's
     d3.paired counts another population (every accepted trial with a lane
     launch) — listed with that definition, never added: 100 arm trials + 150
     extra is NOT met."""

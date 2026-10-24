@@ -203,7 +203,7 @@ def _cpp_segment_columns() -> tuple[list[str], list[str]]:
     )
 
 
-# `segment_*` columns added AFTER the rename (E1-F18, #744: the docking core's
+# `segment_*` columns added AFTER the rename (#744: the docking core's
 # account of a solve; #713: the stop against the ball's line; #716: the mpc
 # core's split of a solve and the closing window's path). They were never
 # written under a `decel_*` name, so they have no alias — and a `segment_*`

@@ -1,4 +1,4 @@
-"""catchability_map.aim_at_hand / closest_approach (dynamic_catching S8-F).
+"""catchability_map.aim_at_hand / closest_approach.
 
 Oracles independent of the code under test:
 
@@ -8,8 +8,8 @@ Oracles independent of the code under test:
   speed and direction — and a forward shooting solve (scipy, on the release
   velocity) must land on the same release velocity;
 * drag-free arrival against the closed-form parabola written out here;
-* the vacuum release differs from the drag release by the amount the S8-F
-  re-derivation measured (≈ 0.1 m at 5 m/s over 0.8 s), so a caller that
+* the vacuum release differs from the drag release by the amount
+  measured (≈ 0.1 m at 5 m/s over 0.8 s), so a caller that
   skipped the drag law would miss the hand by that much;
 * the floor refusal fires exactly when the ball surface would cross it;
 * closest_approach against a parabola sampled coarsely, where the minimum is
@@ -134,7 +134,7 @@ def test_drag_free_release_matches_the_parabola():
 
 
 def test_skipping_the_drag_law_misses_by_a_tenth_of_a_metre():
-    """The S8-F re-derivation (#537, 2026-09-26): the vacuum release for a
+    """The vacuum release for a
     5 m/s arrival over 0.8 s is ~0.1 m from the drag release. Anything aimed
     without drag would pass the hand by that much — far outside r_cap."""
     drag = aim()
@@ -156,13 +156,13 @@ def test_derived_release_values_are_consistent():
     )
     assert t.apex_z_m >= max(t.position_m[2], t.target_m[2])
     assert t.lowest_z_m <= min(t.position_m[2], t.target_m[2])
-    # Re-derivation table (§2b, drag on): v 5 · T 0.8 · face-on → d 3.00, Δz −0.36.
+    # Reference values (drag on): v 5 · T 0.8 · face-on → d 3.00, Δz −0.36.
     assert t.horizontal_distance_m == pytest.approx(3.000, abs=0.005)
     assert t.release_height_offset_m == pytest.approx(-0.357, abs=0.005)
 
 
 def test_the_floor_refuses_a_release_under_the_table_and_only_then():
-    # v 3 face-on over 0.8 s releases 1.5 m below the catch point (§2b): refused.
+    # v 3 face-on over 0.8 s releases 1.5 m below the catch point: refused.
     with pytest.raises(ValueError, match="floor"):
         aim(speed_m_s=3.0, flight_time_s=0.8, floor_z_m=0.05)
     # The same throw with no floor is computed (and says where it would start).

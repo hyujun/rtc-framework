@@ -11,9 +11,9 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>rtc_msgs</exec_depend>
-  <!-- /sim/reset_ball in the D-3 trial runner (analysis/clock_phase_trials.py). -->
+  <!-- /sim/reset_ball in the clock-phase trial runner (analysis/clock_phase_trials.py). -->
   <exec_depend>std_srvs</exec_depend>
-  <!-- S3.4 prediction-lane probe / camera relay (analysis/vision_lane_probe.py,
+  <!-- Prediction-lane probe / camera relay (analysis/vision_lane_probe.py,
        camera_relay.py): PointStamped camera lane, Odometry truth, the
        estimator's DiagnosticArray. -->
   <exec_depend>geometry_msgs</exec_depend>
@@ -22,16 +22,16 @@
   <!-- numpy / pandas / matplotlib / scipy / PyQt5 / mujoco: venv 책임 (requirements.lock).
        jazzy rosdep DB 미정의 + cross-workspace isolation 정책 (2026-05-23). -->
   <exec_depend>ament_index_python</exec_depend>
-  <!-- derive_accel_limits (dynamic_catching S2.5): Pinocchio python bindings for
+  <!-- derive_accel_limits: Pinocchio python bindings for
        M/g/c, xacro to expand the robot URDF. MuJoCo (optional cross-check) is a
        venv dependency like the other tools. -->
   <exec_depend>pinocchio</exec_depend>
   <exec_depend>xacro</exec_depend>
-  <!-- catchability_map (dynamic_catching S3.5a) shells out to the C++ judge
+  <!-- catchability_map shells out to the C++ judge
        `catch_pose_ik_batch`, found under this package's ament prefix at runtime.
        A runtime edge only: rtc_controllers does not depend on rtc_tools, so
        there is no cycle (ARCH-2). The verdict must come from the same
-       CatchPoseIk::Solve the runtime planner calls (L3 §4.2 / S1.9), so it
+       CatchPoseIk::Solve the runtime planner calls, so it
        cannot be reimplemented here. -->
   <exec_depend>rtc_controllers</exec_depend>
 

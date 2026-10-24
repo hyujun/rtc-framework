@@ -94,7 +94,7 @@ NLP_REJECT_REASONS = (
 
 #: Candidate reasons the search no longer has, still in the ``nlp_rej_*``
 #: columns and the ``nlp_reason`` of sessions recorded while it had them:
-#: ``workspace`` — the catch box, removed 2026-10-09 (L3 §4.9).
+#: ``workspace`` — the catch box, removed.
 NLP_RETIRED_REJECT_REASONS = ("workspace",)
 
 #: ReplaceStepName, in enum order.

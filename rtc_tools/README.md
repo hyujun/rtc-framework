@@ -7,7 +7,7 @@ RTC 로그 시각화, 포구 sim 평가 도구, MJCF/URDF 변환·비교, launch
 - 제어 로그 CSV 를 그리고 (`plot_rtc_log`), 동적 포구 sim 의 시행을 오프라인으로 평가하며 (`catching_*` · `catch_*`), MJCF/URDF 를 변환·비교한다.
 - 실행 파일은 `setup.py` 의 `console_scripts` 29 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
 - `launch/` 와 `utils/` 의 모듈은 다른 패키지의 launch 파일과 도구가 import 한다 (아래 [launch 헬퍼](#launch-헬퍼와-utils-모듈)).
-- 분석 CLI 가 낸 열과 판정을 읽는 법은 [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#rtc_tools) 가 갖는다. 이 README 는 실행 방법만 둔다.
+- 분석 CLI 의 판정 규칙은 [catching-analysis-rules.md](../docs/catching-analysis-rules.md), 열의 뜻은 각 도구의 머리 docstring 이 갖는다. 이 README 는 실행 방법만 둔다.
 - 컨트롤러 데모 GUI 는 이 패키지에 없다: [integrated_bringup/scripts/demo_controller_gui.py](../integrated_bringup/scripts/demo_controller_gui.py).
 
 ## 빠른 시작
@@ -111,7 +111,7 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all      # 모든 figur
 | `planner_events.csv` | planner_events (계획기 wake 당 한 행 — 지문 열 `n_in_window` + `rank_error_budget`) |
 | `dualarm_diag.csv` | dualarm_diag (다중 frame CLIK tick 레코드 — 지문 열 `clik_ran` + `<task>_err_lin`) |
 
-각 진단 CSV 의 열 · figure 해석은 [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#plot_rtc_log-로그-종류별-열과-figure) 에 있다.
+진단 CSV 를 읽는 규칙은 [catching-analysis-rules.md](../docs/catching-analysis-rules.md#plot_rtc_log) 에 있다.
 
 state/sensor/timing 로그의 figure 는 플래그로 고른다:
 
@@ -231,11 +231,11 @@ ros2 run rtc_tools derive_accel_limits \
   --eta-tau 0.8 --samples 20000 --check rnea --out /tmp/ur5e_p1b_accel_limits.yaml
 ```
 
-`--eta-tau` 는 기본값이 없다. 종료 코드: 퇴화 (`adopted: false`) 면 `2`, 교차 검증 실패면 `3`. `--check mujoco --mjcf <xml>` 은 venv 의 `mujoco` 가 필요하므로 `.venv/bin/python -m rtc_tools.analysis.derive_accel_limits` 로 부른다. 판정식과 해석: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#derive_accel_limits).
+`--eta-tau` 는 기본값이 없다. 종료 코드: 퇴화 (`adopted: false`) 면 `2`, 교차 검증 실패면 `3`. `--check mujoco --mjcf <xml>` 은 venv 의 `mujoco` 가 필요하므로 `.venv/bin/python -m rtc_tools.analysis.derive_accel_limits` 로 부른다. 판정식과 해석: [규칙](../docs/catching-analysis-rules.md#derive_accel_limits).
 
 ### clock_phase · hand_close · vision_lane
 
-sim 의 측정 lane 에서 D-3 (clock 위상), 손 폐쇄 시간, 예측 lane 을 잰다.
+sim 의 측정 lane 에서 clock 위상, 손 폐쇄 시간, 예측 lane 을 잰다.
 
 ```bash
 ros2 run rtc_tools run_clock_phase_trials --trials 200          # /sim/launch_ball_at 지정 발사 + 회수 반복
@@ -251,7 +251,7 @@ ros2 run rtc_tools camera_relay --drop-after-s 0.4              # 또는 --drop-
 ros2 run rtc_tools analyze_vision_lane <prefix>
 ```
 
-`sim_estimator_node` 는 `debug.enabled_topics` 에 `prediction/trajectory` 만 있으면 발행이 0 건이다. 다른 debug 토픽을 하나 더 켠다. 판정 규칙: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#clock_phase--hand_close--vision_lane).
+`sim_estimator_node` 는 `debug.enabled_topics` 에 `prediction/trajectory` 만 있으면 발행이 0 건이다. 다른 debug 토픽을 하나 더 켠다. [판정 규칙](../docs/catching-analysis-rules.md#clock_phase).
 
 ### hand_canfd_gate
 
@@ -280,12 +280,12 @@ ros2 run rtc_tools catching_trials <session> <trials_dir> --config-dir $CFG \
 # → <trials_dir>/catching_trials/{catching_trials.csv, catching_trials_summary.json, hand_hold_window.csv}
 ```
 
-- 필수는 `session` · `trials_dir` · `--config-dir` 이고 나머지는 선택이다. `--v-max` 는 기본값이 없다 (없으면 D-3 공변량이 `NOT_EVALUATED`).
-- 무효 시행 (rig 실패) · truth 성공 · $t_c$ 분해 · catch frame 분해 열의 뜻: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#catching_trials).
+- 필수는 `session` · `trials_dir` · `--config-dir` 이고 나머지는 선택이다. `--v-max` 는 기본값이 없다 (없으면 clock 위상 공변량이 `NOT_EVALUATED`).
+- 무효 시행 (rig 실패) · truth 성공 · $t_c$ 분해의 규칙: [catching_trials](../docs/catching-analysis-rules.md#catching_trials).
 
 ### catching_pool
 
-arm 마다 여러 unit 의 `catching_trials` 출력을 합쳐 G8-D 판정 · ITT · McNemar 를 낸다.
+arm 마다 여러 unit 의 `catching_trials` 출력을 합쳐 truth 성공 판정 · ITT · McNemar 를 낸다.
 
 ```bash
 ros2 run rtc_tools catching_pool \
@@ -295,7 +295,7 @@ ros2 run rtc_tools catching_pool \
 # → pool/{pool_summary.json, pool_trials.csv} + stdout 보고
 ```
 
-CT_DIR 은 **준 순서대로** (사전 선언 seed 순, 보충 unit 은 마지막) 읽는다. 규칙: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#catching_pool).
+CT_DIR 은 **준 순서대로** (사전 선언 seed 순, 보충 unit 은 마지막) 읽는다. [규칙](../docs/catching-analysis-rules.md#catching_pool).
 
 ### catching_hand_near
 
@@ -308,7 +308,7 @@ ros2 run rtc_tools catching_hand_near \
 # → hn/{hand_near_summary.json, hand_near_trials.csv, v50_map.csv, wilson_cells.csv}; rc 1 이면 조준 오차 초과
 ```
 
-`--ab` 의 두 이름은 unit 의 `run_meta.json` 에 남은 arm 라벨이다. 규칙: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#catching_hand_near).
+`--ab` 의 두 이름은 unit 의 `run_meta.json` 에 남은 arm 라벨이다. [규칙](../docs/catching-analysis-rules.md#catching_hand_near).
 
 ### catching_arm_budget
 
@@ -320,7 +320,7 @@ ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir 
 # → ab/{arm_budget_summary.json, arm_budget_trials.csv}; 리포트는 stdout
 ```
 
-`--write-envelope-box` 는 실행된 가속 envelope 를 sim override 조각 (`robot.arm.qdd_max`) 으로 쓴다 (sim 전용). 규칙: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#catching_arm_budget).
+`--write-envelope-box` 는 실행된 가속 envelope 를 sim override 조각 (`robot.arm.qdd_max`) 으로 쓴다 (sim 전용). [규칙](../docs/catching-analysis-rules.md#catching_arm_budget).
 
 ### catching_decel
 
@@ -333,7 +333,7 @@ ros2 run rtc_tools catching_decel --a units/*_a --b units/*_b --same-arm --confi
 # → decel/{decel_summary.json, decel_trials.csv}; 리포트는 stdout
 ```
 
-규칙 (창의 정의 · `--success hold` · Tango 검정): [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#catching_decel).
+규칙 (창의 정의 · `--success hold` · Tango 검정): [catching_decel](../docs/catching-analysis-rules.md#catching_decel).
 
 ### catching_grid_sweep
 
@@ -345,7 +345,7 @@ ros2 run rtc_tools catching_grid_sweep --arm L-50 units/L-50_* --arm L-25 units/
 # → sweep/{grid_sweep_summary.json, grid_sweep_trials.csv}; 리포트는 stdout
 ```
 
-규칙: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#catching_grid_sweep).
+[규칙](../docs/catching-analysis-rules.md#catching_grid_sweep).
 
 ### catching_wait_pose_search
 
@@ -359,7 +359,7 @@ ros2 run rtc_tools catching_wait_pose_search --config-dir $CFG --box '-1.1 -1.1 
 ros2 run rtc_tools catching_wait_pose_search --config-dir $CFG --evaluate-pose '0.212 -1.376 1.107 -1.978 -3.296 0.121'
 ```
 
-`--objective` 는 `dls` (기본) · `lp` · `robust` 다. 출력은 `wait_pose_candidates.csv` 와 `wait_pose_search_summary.yaml` (`overlay_snippet` 포함). 검증이 하나라도 실패하면 아무것도 쓰지 않는다. 규칙: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#catching_wait_pose_search).
+`--objective` 는 `dls` (기본) · `lp` · `robust` 다. 출력은 `wait_pose_candidates.csv` 와 `wait_pose_search_summary.yaml` (`overlay_snippet` 포함). 검증이 하나라도 실패하면 아무것도 쓰지 않는다. [규칙](../docs/catching-analysis-rules.md#catching_wait_pose_search).
 
 ### catchability_map · catch_speed_budget · catch_gate_map · catch_search_map
 
@@ -408,7 +408,7 @@ ros2 run rtc_tools catch_search_map --config-dir $CFG --search grid nlp --out-di
 
 - 항력계수 · 공기밀도 · 반지름 · 질량은 기본값이 없다. 값과 출처 라벨 (`file:line`) 을 함께 준다 (C++ preset 에만 있고 YAML 로 노출되지 않아, python 에 박으면 preset 이 바뀌어도 아무것도 실패하지 않는다).
 - 같은 투척 목록으로 세 도구를 잇는 법: `catchability_map … --throws-file <list.json> --out-dir <map>` → `catch_gate_map --map-dir <map> …` → `catch_search_map --throws-file <list.json> --gate-map <gate> …`.
-- `catchability_map` 출력: `candidates.csv` · `throw_summary.csv` · `reason_histogram.csv` · `throw_region.yaml` · `provenance.yaml` · `azimuth_coverage.png` · `manipulability.png`. `catch_search_map` 출력: `verdicts_<search>.csv` · `search_map_summary.json` 외. 열의 뜻과 headline 규약 (seed 하나의 수치, 분모는 전체 격자) 은 [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#catchability_map) 에 있다.
+- `catchability_map` 출력: `candidates.csv` · `throw_summary.csv` · `reason_histogram.csv` · `throw_region.yaml` · `provenance.yaml` · `azimuth_coverage.png` · `manipulability.png`. `catch_search_map` 출력: `verdicts_<search>.csv` · `search_map_summary.json` 외. headline 규약 (seed 하나의 수치, 분모는 전체 격자): [규칙](../docs/catching-analysis-rules.md#catchability_map).
 - `catchability_map` 은 python 에서 import 해서도 쓸 수 있다 (`rtc_tools.analysis.catchability_map`: `integrate_flight` · `generate_throw_grid` · `run_judge_batch` · `summarize_throws` 등).
 
 ### catch_throw_design · catch_population
@@ -438,7 +438,7 @@ ros2 run rtc_tools catch_population_report <result> [--show] [--max-flights 400]
 - 모집단 파이프라인: 설계 → 제한 → 모집단 → 탐색 → search 집단 → 구간 → segment 집단 → 뽑기 → 던질 묶음 → (2 단계: `catching_sim_trials` 로 sim) → 쌍 게시 → 포구.
 - 결과 폴더는 설정 하나의 것이다. 이어 돌리면 끝난 단계를 건너뛰고, 설정·입력 YAML 이 바뀌었으면 바뀐 파일을 대며 거부한다 (새 `--out` 을 쓴다). 설정 파일의 형식은 `rtc_tools/utils/catch_population.py` 의 docstring 이다.
 - 던질 묶음 (`<조합>/throws/chunk_NNN.json`) 은 `catching_sim_trials --throws-file` 이 읽는다 ([integrated_bringup](../integrated_bringup/README.md)).
-- 설계 열 · 사전 판정 · 집단 규칙: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#catch_throw_design) · [catch_population](../docs/dynamic_catching/ref/analysis_tools.md#catch_population).
+- 설계 열 · 사전 판정 · 집단 규칙: [catch_throw_design](../docs/catching-analysis-rules.md#catch_throw_design) · [catch_population](../docs/catching-analysis-rules.md#catch_population).
 
 ### launch 헬퍼와 utils 모듈
 
@@ -493,7 +493,7 @@ plots = get_session_subdir("plots")        # 환경변수만 읽는다, 없으�
 
 ## 더 읽기
 
-- 분석 CLI 의 열 · 판정 규칙: [analysis_tools.md](../docs/dynamic_catching/ref/analysis_tools.md#rtc_tools) · 시나리오: [docs/dynamic_catching](../docs/dynamic_catching/README.md)
+- 분석 CLI 의 판정 규칙: [catching-analysis-rules.md](../docs/catching-analysis-rules.md) · 시나리오: [catching-sim-trials.md](../docs/catching-sim-trials.md)
 - MJCF/URDF 비교 레퍼런스: [docs/mjcf-urdf-compare.md](docs/mjcf-urdf-compare.md)
 - trace 수집: [docs/tracing.md](../docs/tracing.md) · 테스트: [docs/testing.md](../docs/testing.md)
 

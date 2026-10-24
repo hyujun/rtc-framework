@@ -1,11 +1,10 @@
-"""Decode and summarise the ball_perception prediction lane (dynamic_catching S3.4).
+"""Decode and summarise the ball_perception prediction lane.
 
-Stage S3.4 (``docs/dynamic_catching/ID_INDEX.md`` §3) and D-4. S3.4
-**measures only** — every policy question (how to treat a rewinding
-``snapshot_sequence``, whether to accept partial ``validity``) belongs to S5.2.
-This module turns what ``sim_estimator_node`` publishes into numbers those
-decisions can be made from, and it does so **by field name**, which is the
-whole of D-4: the ``prediction/trajectory`` PointCloud2 layout is a promise
+This **measures only** — every policy question (how to treat a rewinding
+``snapshot_sequence``, whether to accept partial ``validity``) belongs to the
+controller's input stage. This module turns what ``sim_estimator_node``
+publishes into numbers those decisions can be made from, and it does so **by
+field name**: the ``prediction/trajectory`` PointCloud2 layout is a promise
 written in ball_perception's README, not a compile-time type, so a consumer
 checks name, offset, datatype, count, ``point_step`` and endianness and
 **refuses** a message that differs. A decoder that indexed by fixed offset would
@@ -19,15 +18,14 @@ Two halves, deliberately separable:
   contract is unit-testable without rclpy and so the same code decodes a
   message and a recorded buffer identically.
 * The ``summarise_*`` functions read the CSVs the probe writes
-  (``vision_lane_probe``) and answer the S3.4 questions: publish rate, N,
-  horizon (TBD-VIS-04), frame (TBD-VIS-06), what ``validity`` does after the
-  measurement stops (TBD-VIS-07, the ghost-track question) and whether a
-  best-effort subscription loses anything a reliable one gets (TBD-VIS-08).
+  (``vision_lane_probe``) and answer: publish rate, N, horizon, frame, what
+  ``validity`` does after the measurement stops (the ghost-track question) and
+  whether a best-effort subscription loses anything a reliable one gets.
 
-S8-A adds a dump mode: ``dump_prediction_rows`` turns one decoded snapshot into
-one row per horizon point with the full 6x6 covariance, for G8-B (NEES, reusing
-ball_perception's own evaluator, C-5) and G8-C2 (A⊥B). It stays a pure function
-here for the same reason ``decode_trajectory`` does — unit-testable without
+A dump mode: ``dump_prediction_rows`` turns one decoded snapshot into one row
+per horizon point with the full 6x6 covariance, for the NEES check (reusing
+ball_perception's own evaluator) and the error-budget A⊥B check. It stays a
+pure function here for the same reason ``decode_trajectory`` does — unit-testable without
 rclpy, and identical whether the probe or a replayed buffer feeds it.
 
 Nothing here decides a threshold. The report says what was observed.
@@ -231,11 +229,11 @@ TRUTH_COLUMNS = (
 )
 DIAG_COLUMNS = ("recv_ns", "status", "key", "value")
 
-# ── Dump mode (S8-A): full per-point rows, no summarising ──────────────────
+# ── Dump mode: full per-point rows, no summarising ─────────────────────────
 #
 # ``snapshot_row`` above keeps one row per MESSAGE (first point + a NaN bit)
-# because that is what a rate/frame/validity summary needs. G8-B (NEES) and
-# G8-C2 (A⊥B) need every horizon point's full 6x6 covariance instead, so this
+# because that is what a rate/frame/validity summary needs. The NEES and
+# A⊥B checks need every horizon point's full 6x6 covariance instead, so this
 # is long format: one row per POINT. An empty (INVALID) snapshot contributes
 # no rows here — its absence is already on record as n_points=0 in the
 # default prediction CSV, and a placeholder row of blank fields would look
@@ -272,12 +270,12 @@ NIS_COLUMNS = ("recv_ns", "recv_wall_ns", "value")
 def dump_prediction_rows(
     recv_ns: int, sub: str, snap: TrajectorySnapshot
 ) -> list[dict[str, object]]:
-    """One row per horizon point with the full 6x6 covariance (S8-A dump mode).
+    """One row per horizon point with the full 6x6 covariance (dump mode).
 
     Covariance is emitted row-major, ``cov_{row}{col}``, matching the layout's
-    own row-major promise (D-4) and ``TrajectoryPoint.covariance`` — a reader
+    own row-major promise and ``TrajectoryPoint.covariance`` — a reader
     joining this against ``ball_perception``'s own NEES evaluator needs the
-    same convention, not a transposed one. NaN entries (unknown, §4.3) pass
+    same convention, not a transposed one. NaN entries (unknown) pass
     through unchanged; this function does not interpret them.
     """
     rows = []
@@ -418,7 +416,7 @@ def summarise_prediction(path: Path, sub: str = "best_effort") -> LaneSummary:
 
 @dataclass
 class GhostSummary:
-    """What the lane does after the measurement stops (TBD-VIS-07).
+    """What the lane does after the measurement stops (ghost track).
 
     For every prediction snapshot, the age of the newest camera message that
     preceded it. A VALID snapshot published long after the last measurement is
@@ -485,7 +483,7 @@ def summarise_ghost(
 
 @dataclass
 class ReliabilitySummary:
-    """Did a best-effort KEEP_LAST(1) subscription miss anything (TBD-VIS-08)?
+    """Did a best-effort KEEP_LAST(1) subscription miss anything?
 
     Compared by (stamp_ns, snapshot_sequence) identity, not by count: two
     subscriptions can receive the same number of messages and different ones.
@@ -566,9 +564,9 @@ def first_flight(
 
 @dataclass(frozen=True)
 class DetectionLatency:
-    """One flight's T_det: launch → the first VALID prediction (S3.6).
+    """One flight's T_det: launch → the first VALID prediction.
 
-    Two axes, each computed WITHIN one clock, never across the two (D-2):
+    Two axes, each computed WITHIN one clock, never across the two:
 
     - ``t_det_recv_s`` — probe-side steady receive of the first ground-truth
       sample of the flight → probe-side steady receive of the first VALID
@@ -578,7 +576,7 @@ class DetectionLatency:
       the sim rig's precondition: the simulator stamps ground truth and the
       camera sample in the same statement (``PublishProjectileBall``), and the
       estimator copies that capture stamp onto the prediction it produces
-      (``stamp_is_capture_time``, measured in S3.4). If a producer ever stamps
+      (``stamp_is_capture_time``, measured). If a producer ever stamps
       predictions with its own clock instead, this axis becomes a cross-clock
       subtraction and must not be read — the recv axis stays valid either way.
 
@@ -633,7 +631,7 @@ def detection_latencies(
         # The next launch bounds this flight: a prediction that arrived after it
         # belongs to the next flight, not to a late detection of this one.
         limit = truth_recv[spans[k + 1][0]] if k + 1 < len(spans) else None
-        # A track that was already VALID before this launch is a ghost (TBD-VIS-07),
+        # A track that was already VALID before this launch is a ghost,
         # not a detection of this flight, and it carries the generation it had then.
         # Requiring a generation never seen before the launch is what separates the
         # two; a new flight forces a new track, so it always has one.

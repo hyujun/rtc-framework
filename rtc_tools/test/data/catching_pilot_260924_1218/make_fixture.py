@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Cut the catching_trials golden fixture out of the S8 pilot session.
+"""Cut the catching_trials golden fixture out of the pilot session.
 
-The pilot (dynamic_catching S8, session ``260924_1218``: 15 reference + 10
+The pilot (session ``260924_1218``: 15 reference + 10
 perturbed throws at the ``ur5e_p1b`` sim, lead off, clock and contact lanes on,
 non-RT dev PC) left ~700 MB of CSVs. ``test_catching_trials.py`` needs only a
 few columns inside the 25 trial windows, so this script keeps exactly that:

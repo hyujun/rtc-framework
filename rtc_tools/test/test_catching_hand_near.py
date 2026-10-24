@@ -1,9 +1,9 @@
-"""catching_hand_near (dynamic_catching S8-F) — synthetic positive controls.
+"""catching_hand_near — synthetic positive controls.
 
 Trials are generated from KNOWN logistic laws — a commit probability falling
 with speed and a catch-given-commit probability falling with speed and offset —
 and the analyser must recover the planted v50 values from 600 draws to within
-±0.2 m/s (the tolerance the S8-F spec asks of the positive control). The
+±0.2 m/s (the positive-control tolerance). The
 model-free tables are checked against direct counts; the McNemar pairing
 against hand-built discordant counts; the loader against a unit written the
 way the runner and catching_trials write theirs.
@@ -96,7 +96,7 @@ def synthetic_trials(
 def test_wilson_matches_the_known_interval():
     p, lo, hi = hn.wilson(93, 200)
     assert p == pytest.approx(0.465)
-    # 95 % two-sided Wilson for 93/200: [0.397, 0.534] (the S8-E G8-D numbers).
+    # 95 % two-sided Wilson for 93/200: [0.397, 0.534] (the pass-line numbers).
     assert lo == pytest.approx(0.3972, abs=5e-4) and hi == pytest.approx(0.5343, abs=5e-4)
     assert all(math.isnan(x) for x in hn.wilson(0, 0))
 
@@ -325,7 +325,7 @@ def _write_unit(
 
 
 def test_the_workspace_reject_count_is_read_from_a_file_that_has_it_and_only_then(tmp_path):
-    """The search lost its catch box on 2026-10-09 (L3 §4.9). A session
+    """The search lost its catch box on 2026-10-09. A session
     recorded before that carries ``rej_workspace`` and its count is read; one
     recorded after has no such column, and no count is reported for it — a 0
     would read as a gate that ran and refused nothing."""
