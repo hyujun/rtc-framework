@@ -188,6 +188,51 @@ TEST(FakeHandFirmwareCanFd, CmdFrame1_EchoesVerbatim_KeepsFeedforward_ModelUncha
   EXPECT_FLOAT_EQ(fw.last_feedforward()[9], 0.0f);
 }
 
+// ── cmd_ack none: applied, nothing sent back (#945 D65) ─────────────────────
+
+TEST(FakeHandFirmwareCanFd, CmdFrame0_NoneAck_AppliesWithoutEcho) {
+  FakeHandFirmware::Config cfg = DefaultConfig();
+  cfg.cmd_ack = CmdAck::kNone;
+  FakeHandFirmware fw(cfg);
+  const Motors target = Ramp(0.1f, 0.1f);
+  Frames out{};
+
+  EXPECT_EQ(SendCmd(fw, kNodeRightHand, 0, CmdBytes(target), out), 0u);
+  EXPECT_EQ(out[0].len, 0u) << "no echo written";
+  EXPECT_EQ(fw.target(), target);
+  const float alpha = static_cast<float>(fw.alpha());
+  for (std::size_t i = 0; i < kNumHandMotors; ++i)
+    EXPECT_FLOAT_EQ(fw.pos()[i], alpha * target[i]);
+  ExpectNoDrops(fw.canfd_counters());
+  // The REQ is answered as under echo.
+  EXPECT_EQ(SendReq(fw, kNodeRightHand, out), kNumRespFrames);
+}
+
+TEST(FakeHandFirmwareCanFd, CmdFrame1_NoneAck_KeepsFeedforwardWithoutEcho) {
+  FakeHandFirmware::Config cfg = DefaultConfig();
+  cfg.cmd_ack = CmdAck::kNone;
+  FakeHandFirmware fw(cfg);
+  const Motors ff = Ramp(0.05f, 0.01f);
+  Frames out{};
+
+  EXPECT_EQ(SendCmd(fw, kNodeRightHand, 1, CmdBytes(ff), out), 0u);
+  EXPECT_EQ(out[0].len, 0u) << "no echo written";
+  EXPECT_EQ(fw.last_feedforward(), ff);
+  EXPECT_EQ(fw.feedforward_count(), 1u);
+  ExpectNoDrops(fw.canfd_counters());
+}
+
+TEST(FakeHandFirmwareCanFd, Cmd_ZeroCapacity_StillApplies) {
+  FakeHandFirmware fw(DefaultConfig());
+  const Motors target = Ramp(0.2f, 0.0f);
+  const Bytes cmd = CmdBytes(target);
+  Frames out{};
+  EXPECT_EQ(fw.BuildCanFdResponse(CmdId(kNodeRightHand, 0), cmd.data(), cmd.size(), out.data(), 0),
+            0u);
+  EXPECT_EQ(out[0].len, 0u);
+  EXPECT_EQ(fw.target(), target) << "the command is applied though no echo fits";
+}
+
 // ── Hand side → node id (D51) · broadcast · other target ────────────────────
 
 TEST(FakeHandFirmwareCanFd, LeftHand_AnswersAsNode2_IgnoresRightTarget) {

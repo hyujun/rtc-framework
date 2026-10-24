@@ -42,16 +42,20 @@
 namespace {
 
 // Read the FakeHandFirmware::Config from ROS parameters (declared with defaults).
-// `hand_side` is declared for every protocol_version (it only matters on CAN FD);
-// an unparsable value is a configuration error — `hand_side_ok` reports it.
-// `proto` receives protocol_version (it selects the UDP / CAN FD shell in main).
+// `hand_side` and `cmd_ack` are declared for every protocol_version (they only
+// matter on CAN FD); an unparsable value is a configuration error —
+// `hand_side_ok` / `cmd_ack_ok` report it. `proto` receives protocol_version
+// (it selects the UDP / CAN FD shell in main).
 udp_hand_driver::FakeHandFirmware::Config LoadConfig(rclcpp::Node& node, std::string& proto,
-                                                     bool& hand_side_ok) {
+                                                     bool& hand_side_ok, bool& cmd_ack_ok) {
   udp_hand_driver::FakeHandFirmware::Config cfg;
   proto = node.declare_parameter<std::string>("protocol_version", "1a");
   cfg.proto_1b = (proto == "1b");
   const std::string side = node.declare_parameter<std::string>("hand_side", "right");
   hand_side_ok = udp_hand_driver::canfd::ParseHandSide(side, cfg.hand_side);
+  // Which firmware to mirror (#945 D65): "echo" echoes CMD frames, "none" does not.
+  const std::string ack = node.declare_parameter<std::string>("cmd_ack", "echo");
+  cmd_ack_ok = udp_hand_driver::canfd::ParseCmdAck(ack, cfg.cmd_ack);
   cfg.num_fingertips = static_cast<int>(
       node.declare_parameter<int64_t>("num_fingertips", udp_hand_driver::kDefaultNumFingertips));
   cfg.lpf_time_constant_s = node.declare_parameter<double>("lpf_time_constant_s", 0.1);
@@ -81,12 +85,12 @@ int RunCanFd(rclcpp::Node& node, udp_hand_driver::FakeHandFirmware& firmware,
                  std::strerror(errno));
     return 1;
   }
-  RCLCPP_INFO(node.get_logger(),
-              "fake_hand_firmware on CAN FD %s (protocol_version=2, node=%u, num_fingertips=%d, "
-              "step_rate=%.0f Hz)",
-              can_interface.c_str(),
-              static_cast<unsigned>(udp_hand_driver::canfd::NodeIdOf(cfg.hand_side)),
-              cfg.num_fingertips, cfg.step_rate_hz);
+  RCLCPP_INFO(
+      node.get_logger(),
+      "fake_hand_firmware on CAN FD %s (protocol_version=2, node=%u, cmd_ack=%s, "
+      "num_fingertips=%d, step_rate=%.0f Hz)",
+      can_interface.c_str(), static_cast<unsigned>(udp_hand_driver::canfd::NodeIdOf(cfg.hand_side)),
+      udp_hand_driver::canfd::CmdAckName(cfg.cmd_ack), cfg.num_fingertips, cfg.step_rate_hz);
 
   std::array<udp_hand_driver::FakeHandFirmware::CanFdFrame, udp_hand_driver::canfd::kNumRespFrames>
       out{};
@@ -130,9 +134,16 @@ int main(int argc, char** argv) {
   const std::string can_interface = node->declare_parameter<std::string>("can_interface", "vcan0");
   std::string proto;
   bool hand_side_ok = false;
-  const udp_hand_driver::FakeHandFirmware::Config cfg = LoadConfig(*node, proto, hand_side_ok);
+  bool cmd_ack_ok = false;
+  const udp_hand_driver::FakeHandFirmware::Config cfg =
+      LoadConfig(*node, proto, hand_side_ok, cmd_ack_ok);
   if (!hand_side_ok) {
     RCLCPP_ERROR(node->get_logger(), "hand_side must be \"right\" or \"left\"");
+    rclcpp::shutdown();
+    return 1;
+  }
+  if (!cmd_ack_ok) {
+    RCLCPP_ERROR(node->get_logger(), "cmd_ack must be \"echo\" or \"none\"");
     rclcpp::shutdown();
     return 1;
   }
