@@ -1,26 +1,17 @@
-// ── G3-C: 1000 synthetic throws through the planner (dynamic_catching S6-C) ──
+// ── 1000 synthetic throws through the shipped ur5e_p1b catch search ──────────
 //
-// The search as it ships: the real UR5e+P1b catch sub-model (`ur5e_catch`,
-// R-3), the shipped ur5e_p1b planner profile (parsed from the file that
-// ships, not restated), the shipped IK options and D-16 box. Each throw is a
-// ballistic prediction that passes through a catch point the arm CAN reach
-// (the catch frame of a configuration drawn around the wait pose, the ball
-// coming into the palm), with the time to the catch point and the ball speed
-// drawn at random. No box bounds the draw: the search judges no catch point by
-// where it is (L3 §4.9).
-// The arm starts at rest at the shipped wait pose. Many of these throws are too
-// fast or too far for the reach and γ rank gates: that is on purpose, since the
-// timing must cover the candidates that get as far as IK and the rollout.
+// Shipped sub-model, planner profile (parsed from the shipped file), IK options
+// and box. Each throw is a ballistic prediction through a catch point the arm
+// can reach (catch frame of a configuration drawn around the wait pose), with
+// random time-to-catch and ball speed; the arm starts at rest at the wait pose.
+// Many throws are too fast or far for the reach and γ rank gates on purpose, so
+// the timing covers candidates that reach IK and the rollout.
 //
-// G3-C asks two things and this suite answers both:
-//   * the planner's cycle time: p99 < `planner.search.grid.budget_s` — ASSERTED;
-//   * the rejection-reason distribution — RECORDED (RecordProperty, integer
-//     counts), together with the plan rate and the rank-gate failure counts of
-//     the chosen candidates. Those are measurements of the design under D-27,
-//     not pass/fail criteria (S8 reports attempts against successes).
+//   * ASSERTED: planner cycle p99 < `planner.search.grid.budget_s`.
+//   * RECORDED (RecordProperty): rejection-reason counts, plan rate, rank-gate
+//     failure counts of the chosen candidates — measurements, not criteria.
 //
-// Timing is on THIS host (the development PC); the control PC's numbers are
-// S6-D's (D-7a). The planner runs on the test thread, not a FIFO thread.
+// Timing is on this host, on the test thread (not a FIFO thread).
 
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
@@ -124,7 +115,7 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
     const auto q = static_cast<std::size_t>(model->joints[jid].idx_q());
     const auto d = static_cast<std::size_t>(std::distance(arm_names.begin(), it));
     pm.device_of_model[q] = static_cast<int>(d);
-    pm.qdot_max[q] = 3.1416;  // the ratings the S3.5b map used
+    pm.qdot_max[q] = 3.1416;  // the catchability map's ratings
     pm.qddot_max[q] = shipped.qdd_max.at(d);
   }
   pm.accel_box = true;

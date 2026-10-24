@@ -3,57 +3,41 @@
 # A fragment of ../demo_catching_controller.yaml (its `include:` list). The CM
 # merges it into that file's tree; every key keeps its full path.
 #
-# v1's law: the L4 soft-catch reference the arm follows up to t_c, the constant
-# deceleration after it (L7 DECEL). Followed when
+# The law: the soft-catch reference (SoftCatchTranslation) up to t_c, then the
+# constant-deceleration target (DecelTarget). Followed when
 # `planner.segment.mode: closed_form` (the main file).
 #
-# The search ranks its candidates by this law's rollout under both modes
-# (MD-46), on its own copy of these five values
-# (planner.search.grid.reference.*, planner.search.grid.stop.a_dec in
-# search_grid.yaml). Under closed_form the copy must equal what is written
-# here, or the controller parks.
+# The search ranks candidates by this law's rollout under every mode, on its
+# own copy of these five values (planner.search.grid.reference.*,
+# planner.search.grid.stop.a_dec in search_grid.yaml). Under closed_form the
+# copy must equal what is written here, or the controller parks.
 demo_catching_controller:
   catching:
-    # ── The L4 soft-catch reference (L4 §6, S5.3 consumes all four) ──────────
-    # `provisional: true` covers the BLOCK, which is the honest state: `v_max`
-    # is decided and `a_max` is not, and one TBD in a consumed key refuses the
-    # configure in sim — which, because CM latches `bring_up_failed` on ANY
-    # controller's configure failure, takes every other controller on the robot
-    # down with it. That is what the shipped p1b sim did on 2026-09-22 before
-    # this block existed. The provisional rule says the right thing instead:
-    # warn in sim, block a real arm (L0 §5.3).
+    # ── Soft-catch reference (SoftCatchTranslation) ─────────────────────────────
+    # `provisional: true` covers the block: `a_max` is not decided, and a TBD
+    # would refuse configure in sim, which (CM latches `bring_up_failed`) takes
+    # every controller on the robot down. Provisional warns in sim, blocks a
+    # real arm.
     reference:
       provisional: true
-      # rad/s. L5/L4 §6 default; omega*h = 0.02 << 0.828, so the discretisation
-      # gate is nowhere near its bound at 500 Hz.
+      # rad/s. omega*h = 0.02 at 500 Hz, far below the discretisation bound 0.828.
       omega: 10.0
-      # v1 requires exactly critically damped — the planner's closed-form
-      # terminal error assumes it (L4 §4.7).
+      # Critically damped; the planner's closed-form terminal error assumes it.
       zeta: 1.0
-      # m/s. NOT provisional in itself: L4 §6 records this as DERIVED and
-      # confirmed 2026-09-22 — the max LP v_dir,max over accepted catch
-      # candidates at the joint ratings, times eta_v = 0.9. S10 may only LOWER
-      # it once the real controller's TCP limit is identified.
+      # m/s. Derived: max v_dir,max over accepted catch candidates at the joint
+      # ratings, times eta_v = 0.9. A real arm may only lower it.
       v_max: 3.5
-      # m/s^2. Still provisional (the real arm's value is S10's). S4.4 measured
-      # torque-limited acceleration along v_hat at the catch pose as median 43,
-      # and 21-23 under a 10x rotor-inertia assumption; 21 shipped as the
-      # conservative end. dynamic_catching S8-G (2026-09-27, #537 5847236227)
-      # measured 21 against 30 on the sim plant at omega 10:
-      # 21 saturated the reference on 18-25 % of the active ticks and aborted
-      # 7-12 of 56 hand-near throws (REF_SATURATED), 30 saturated 1 % and
-      # aborted none, at the same catch rate (10 vs 11) and torque p99 0.70.
-      # Stays above `supervisor.decel.a_dec` = 10, which the validator requires.
-      # omega stays 10: 15 and 20 halve the reference's own residual but follow
-      # the live prediction's noise and lose 3/4 of the catches.
+      # m/s^2. Provisional. On the sim plant at omega 10, 21 saturated the
+      # reference on 18-25 % of active ticks and aborted 7-12 of 56 throws; 30
+      # saturated 1 % and aborted none at the same catch rate (#537). Must stay
+      # >= supervisor.decel.a_dec. omega 15-20 follow prediction noise and lose
+      # 3/4 of the catches.
       a_max: 30.0
 
-    # ── Deceleration (L7 §6 `supervisor.decel.a_dec`) ─────────────────────────
-    # The constant deceleration of the closed_form DECEL target (L7 §4.3). The
-    # stopping point the search reserves behind each candidate (L3 §4.9) reads
-    # its own copy, planner.search.grid.stop.a_dec.
-    # 10 m/s^2 is the value the S3.5b gate map ran with, confirmed 2026-09-22
-    # (#537). The validator requires a_dec <= reference.a_max.
+    # ── Deceleration (DecelTarget) ──────────────────────────────────────────────
+    # The closed_form DECEL target's constant deceleration. The search's
+    # stopping-point reservation reads its own copy,
+    # planner.search.grid.stop.a_dec. Requires a_dec <= reference.a_max.
     supervisor:
       decel:
         a_dec: 10.0

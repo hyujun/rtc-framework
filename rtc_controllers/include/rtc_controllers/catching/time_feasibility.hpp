@@ -1,28 +1,21 @@
-// ── Reachability gates of the catch planner (dynamic_catching S1.5, L3) ──────
-// Pure functions the planner (S6) and the catchability map tool (S3.5) share:
+// ── Reachability gates of the catch planner ──────────────────────────────────
+// Pure functions shared by the planner and the catchability map tool:
 //
 //   TMinChecked / MaxJointTMin — per-joint minimum time (q_c, q̇_c) → (q*, 0)
-//                                under box velocity / acceleration limits (§4.3)
+//                                under |q̇| ≤ w_max, |q̈| ≤ a_max
 //   ReachTimeFeasible          — t_k − now_lead − T_margin ≥ max_i t_min,i
-//   ComputeGammaWindow         — γ window [γ_min, γ_max] (§4.5), D-9 TCP speed
+//   ComputeGammaWindow         — γ window [γ_min, γ_max]
 //   DirectionalSpeedMax        — v_dir,max from a DLS unit-direction solution
 //   MaxCatchableSpeed          — ball speed above which the γ window is empty
-//   StoppingPoint              — stopping-distance reservation (§4.9)
-//   CatchErrorSigma            — catch error budget σ_gap (§4.6)
+//   StoppingPoint              — stopping-distance reservation
+//   CatchErrorSigma            — catch error budget σ_gap
 //
-// Ported from the reference time_feasibility.hpp (v0.4; removed from docs,
-// `git show 482d18b3:docs/dynamic_catching/time_feasibility.hpp`) with the
-// reference's silent failures made explicit (fail-closed, NUM-2/NUM-4):
-//  • invalid limits (a_max ≤ 0, w_max ≤ 0, NaN) used to return t = 0 with no
-//    flag — a reach-time gate that always passed. Now `limits_invalid` is set
-//    and t = +∞, so even a caller that ignores the flag rejects the candidate;
-//  • a zero ball speed used to be floored at 1e-6 and reported a feasible
-//    window; the window of a non-moving ball is undefined → input_invalid;
-//  • v_dir,max uses the projection v̂ᵀJ_p q̇ᵘ (not ‖J_p q̇ᵘ‖, not 1), with
-//    zero / NaN guards on the joint limits (L3 §4.5 v0.5).
+// γ ∈ [0, 1] is the velocity-matching ratio: at the catch the hand moves along
+// v̂ = v/‖v‖ at γ‖v‖, so the ball enters the hand at (1 − γ)‖v‖.
 //
-// All functions are allocation-free and noexcept (the planner may run
-// SCHED_FIFO, L3 §5.3).
+// Invalid input fails closed (NUM-2/NUM-4): invalid limits give t = +∞ with
+// `limits_invalid`; a ball at rest has no γ window. Allocation-free and
+// noexcept (the planner may run SCHED_FIFO).
 #pragma once
 
 #include "rtc_controllers/catching/time_types.hpp"
@@ -58,7 +51,7 @@ struct TMinResult {
   bool limits_invalid{false};  // w_max or a_max not positive-finite
   bool input_invalid{false};   // q0, w0 or q1 non-finite
 
-  /// The candidate may be kept only if none of the flags is set (L3 §4.3).
+  /// The candidate may be kept only if none of the flags is set.
   [[nodiscard]] bool Usable() const noexcept {
     return !w0_clamped && !limits_invalid && !input_invalid;
   }
@@ -147,9 +140,10 @@ struct TMinResult {
   return out;
 }
 
-/// Reach-time gate (L3 §4.3): t_k − now − T_arm − T_margin ≥ max_i t_min,i.
-/// Subtracting T_arm is comparing against now_lead (L0 §4.5), hence NowLead.
-/// Necessary, not sufficient — the γ rollout (§4.8) checks sufficiency.
+/// Reach-time gate: t_k − now − T_arm − T_margin ≥ max_i t_min,i (t_k the
+/// candidate's ball time, T_arm the arm command lead). Subtracting T_arm is
+/// comparing against now_lead, hence NowLead. Necessary, not sufficient — the
+/// γ rollout checks sufficiency.
 [[nodiscard]] inline bool ReachTimeFeasible(BallTime t_k, NowLead now_lead,
                                             std::int64_t t_margin_ns,
                                             const TMinResult& joints) noexcept {
@@ -158,9 +152,13 @@ struct TMinResult {
   return LeadSecondsUntil(now_lead, t_k) - static_cast<double>(t_margin_ns) * kNsToS >= joints.t;
 }
 
-/// γ window [g_min, g_max] (L3 §4.5).
-///   g_min = 1 − d_eff / (‖v‖·T_close,tot)          hand must close in the pocket
-///   g_max = min(v_dir,max, v_tcp) / ‖v‖           arm speed limit
+/// γ window [g_min, g_max]:
+///   g_min = 1 − d_eff / (‖v‖·T_close,tot)    the ball, entering at (1−γ)‖v‖,
+///                                           travels ≤ d_eff while the hand closes
+///   g_max = min(v_dir,max, v_tcp) / ‖v‖     arm speed limit
+/// ‖v‖ [m/s] ball speed at the catch, d_eff [m] usable pocket depth,
+/// T_close,tot [s] total hand-close time, v_dir,max [m/s] arm speed along v̂,
+/// v_tcp [m/s] planning TCP speed (PlanningTcpSpeed).
 struct GammaWindow {
   double g_min{1.0};
   double g_max{0.0};
@@ -169,10 +167,10 @@ struct GammaWindow {
   [[nodiscard]] bool Feasible() const noexcept { return !input_invalid && g_min <= g_max; }
 };
 
-/// The TCP speed the planner may use: η_v · reference.v_max, 0 < η_v ≤ 1
-/// (D-9). Planning at the limit itself would saturate L4 on the first
-/// prediction change, and with γ derate out of v1 (D-8) this margin is the only
-/// buffer. An invalid pair gives 0 (no arm speed — conservative).
+/// The TCP speed the planner may use: η_v · reference.v_max, 0 < η_v ≤ 1.
+/// Planning at the limit would saturate the TCP reference on the first
+/// prediction change; this margin is the only buffer. An invalid pair gives 0
+/// (no arm speed — conservative).
 [[nodiscard]] constexpr double PlanningTcpSpeed(double eta_v, double v_max) noexcept {
   if (!(eta_v > 0.0) || !(eta_v <= 1.0) || !(v_max > 0.0) || !(v_max < kInfTime))
     return 0.0;
@@ -182,8 +180,7 @@ struct GammaWindow {
 /// Clamping to [0, 1] is equivalent to the unclamped test only for physical
 /// inputs, so those are checked first: a negative v_dir,max (possible from the
 /// DLS estimate) would otherwise be clamped UP to 0 and flip the verdict. A
-/// ball speed ≤ 0 has no window (the reference floored it at 1e-6 and reported
-/// [0, 1] feasible).
+/// ball speed ≤ 0 has no window.
 [[nodiscard]] inline GammaWindow ComputeGammaWindow(double v_ball, double v_dir_max,
                                                     double v_tcp_max, double d_eff,
                                                     double t_close_total) noexcept {
@@ -220,7 +217,7 @@ struct DirectionalSpeed {
   bool undetermined{false};  // q̇ᵘ = 0: no joint motion needed, speed not determinable
 };
 
-/// v_dir,max ≈ max(0, v̂ᵀ J_p q̇ᵘ) / max_i (|q̇ᵘ_i| / q̇_max,i)   (L3 §4.5)
+/// v_dir,max ≈ max(0, v̂ᵀ J_p q̇ᵘ) / max_i (|q̇ᵘ_i| / q̇_max,i)
 ///
 /// q̇ᵘ is the damped least-squares joint velocity that asks for unit speed
 /// along v̂ with zero approach-axis rotation; `jp_qdot_u` = J_p q̇ᵘ is what it
@@ -264,10 +261,11 @@ struct StoppingReservation {
   bool valid{false};
 };
 
-/// Where the reference comes to rest after DECEL at a_dec (L3 §4.9):
+/// Where the reference comes to rest after DECEL at a_dec:
 ///   p_stop = p_c + (γ_f‖v‖)² / (2 a_dec) · v̂
-/// a_dec is the single shared key supervisor.decel.a_dec (L7 §4.3). A ball at
-/// rest at the catch point leaves nothing to stop (distance 0, p_stop = p_c).
+/// p_c [m] catch point (world), v [m/s] ball velocity there, γ_f the final γ,
+/// a_dec [m/s²] the shared key supervisor.decel.a_dec. A ball at rest at the
+/// catch point leaves nothing to stop (distance 0, p_stop = p_c).
 [[nodiscard]] inline StoppingReservation StoppingPoint(const Eigen::Vector3d& p_c,
                                                        const Eigen::Vector3d& v_c, double gamma_f,
                                                        double a_dec) noexcept {
@@ -286,7 +284,7 @@ struct StoppingReservation {
   return r;
 }
 
-/// Catch error budget σ_gap (L3 §4.6):
+/// Catch error budget σ_gap [m]:
 ///   σ_gap² = (1−γ)²σ_c² + (2γ − γ²)σ_ℓ² + σ_trk² + (‖v‖δ)²
 /// σ_c: commit-time sample std, σ_ℓ: latest sample std at the same instant
 /// (planning uses σ_ℓ = σ_c, an upper bound), σ_trk: tracking residual,
