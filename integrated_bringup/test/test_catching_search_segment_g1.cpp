@@ -1,5 +1,5 @@
 // The search on a chain, the segments on the device: the shipped g1_p1b models
-// through the planner (dynamic_catching E3-F01, #640 — Sprint Contract 3, 4, 5).
+// through the planner (#640).
 //
 // On G1 the catch SEARCH runs on `g1_catch` (pelvis → the right palm: waist 3 +
 // right arm 7, 10 joints, the left arm locked) and the SEGMENTS are planned on
@@ -37,7 +37,7 @@
 //              model) on this scene: the joints the chain lacks move 5e-2 rad,
 //              the chain's 3e-3 rad against 1e-4, three SQP iterations against
 //              one — the torque rows inactive all the while. Where G1's torque
-//              cost goes is E3-F02's (#641) to decide.
+//              cost goes is open (#641).
 //              With no torque row active and no torque cost, the dynamics is in
 //              neither problem: that the chain model IS the tree with its other
 //              joints on the locked pose is checked directly, by the two
@@ -45,10 +45,10 @@
 //   times      G1SearchSegmentTimes.* — one candidate of the nlp search on the
 //              chain, and the first solve of each segment planner on the tree,
 //              against the real clock. RECORDED, not judged: G1 has no budget
-//              yet (E3-F05), and the host is whatever this runs on.
+//              yet, and the host is whatever this runs on.
 //
 // WHAT IS BORROWED. g1_p1b ships no catching configuration (the wait pose, the
-// budgets and the hand's docking values are E3-F05's). The wait pose is the
+// budgets and the hand's docking values are not shipped). The wait pose is the
 // fixture's (kG1Home); the docking cores take the docking fixture's synthetic
 // capture set (mpc_docking::BaseParams); the grid search's and the mpc
 // planner's values, the nlp search's lattice and the two planners' grids are
@@ -272,7 +272,7 @@ struct Scene {
   JointSet chain{0};          // the search model's joints, as device indices
   std::vector<int> outside;   // the device joints the chain lacks
   std::vector<int> slot_map;  // search model joint m → its column in a chain solution
-  // E3-F02: the tree's segment planners built with planner.groups declared
+  // The tree's segment planners built with planner.groups declared
   // (waist, left arm, right arm — device order) and no key of a group's own.
   bool groups_declared{false};
   // ... and, with the groups, the whole-body terms of the tree's mpc planner:
@@ -433,7 +433,7 @@ std::unique_ptr<GridCatchSearch> MakeGrid(const Scene& s, Budget budget) {
     const auto u = static_cast<std::size_t>(m);
     pm.device_of_model[u] = arm.device_of_model[u];
     pm.qdot_max[u] = arm.rig.limits.qd_max[m];
-    // The D-16 box. G1 declares none (`robot.arm.qdd_max` is a catching key);
+    // The acceleration box. G1 declares none (`robot.arm.qdd_max` is a catching key);
     // this is the value rtc_controllers' cycle suite gives its arm.
     pm.qddot_max[u] = 20.0;
   }
@@ -1165,7 +1165,7 @@ void SolveDockingAtBothWidths(const Scene& s, DockingAtBothWidths& out) {
   RecordGap(cold, out.from_plan_gap);
 }
 
-// What Sprint Contract 4 says of mpc_docking, on a solved pair of widths.
+// What holds for mpc_docking, on a solved pair of widths.
 void ExpectTheChainsProblem(const DockingAtBothWidths& r) {
   // ONE SQP iteration: the widened chain solution already solves the tree's
   // problem, so the solve linearises once and takes no step.
@@ -1186,7 +1186,7 @@ void ExpectTheChainsProblem(const DockingAtBothWidths& r) {
 TEST(G1SearchSegmentAgreement, WithNoTorqueCostMpcDockingOnTheTreeIsTheChainsProblem) {
   RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   const PinnedClock pin(kPinnedNow);
-  // E3-F02: with planner.groups declared (no weights) the tree's problem is
+  // With planner.groups declared (no weights) the tree's problem is
   // the same one — the agreement holds either way.
   for (const bool groups : {false, true}) {
     SCOPED_TRACE(groups ? "groups declared" : "no groups");
@@ -1204,7 +1204,7 @@ TEST(G1SearchSegmentAgreement, WithNoTorqueCostMpcDockingOnTheTreeIsTheChainsPro
 
 // mpc: the same plan handed to the planner on the chain (10 joints, a device of
 // its own ten) and to the planner on the tree (17).
-// `groups`: the tree's planner with planner.groups declared (E3-F02, no
+// `groups`: the tree's planner with planner.groups declared (no
 // weights) — the same problem, so the same agreement.
 void RunMpcAgreement(bool groups) {
   auto s = std::make_unique<Scene>();
@@ -1324,9 +1324,9 @@ void RecordUs(const std::string& name, std::vector<std::int64_t> ns) {
   return v[v.size() / 2];
 }
 
-// ── E3-F02 (#641): whole catches with the whole-body terms (G1, a check) ────
+// ── Whole catches with the whole-body terms (#641; a check) ─────────────────
 // The grid search on the chain, the mpc planner on the tree with the groups
-// declared, the left arm's rest weight and the angular rate (D15's values);
+// declared, the left arm's rest weight and the angular rate;
 // an RT stand-in that follows the first plan and takes every segment of it.
 // The judging logic is the synthetic tree's (rtc_controllers
 // test_catching_wholebody_cycle.cpp); this runs it on the G1 model.
@@ -1627,7 +1627,7 @@ TEST(G1SearchSegmentTimes, RecordsTheSearchsCandidateAndTheFirstSolvesOnTheTree)
 #endif
 }
 
-// ── E3-F02 (#641): the 17-joint time baseline (a record, not a verdict) ──────
+// ── The 17-joint time baseline (#641; a record, not a verdict) ───────────────
 // Run only with RTC_WHOLEBODY_TIMING set, alone (ctest -j1). Four variants of
 // the tree's planners — the whole-body terms off / on × no own blocking / the
 // left arm's — solve the same plan and the same chain solution, in turns

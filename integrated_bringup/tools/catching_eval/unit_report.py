@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Catching sim evaluation: what ONE unit recorded, read off its logs (E1-F18, #744).
+"""Catching sim evaluation: what ONE unit recorded, read off its logs (#744).
 
     unit_report.py <unit dir>... [--json out.json]
 
@@ -10,7 +10,7 @@ nothing is judged here:
     (``trials/trial_results.json``: the modes each throw's ``mode_log`` names),
     and the count per ``final_outcome`` — the supervisor's LABEL as last
     published, not a verdict: a throw that starts no cycle keeps the previous
-    cycle's label (E1-F19). Success is ``catching_trials``' ``truth_success``.
+    cycle's label. Success is ``catching_trials``' ``truth_success``.
   * the planner's wakes by cycle outcome, and where replacement attempts ended
     (``planner_events.csv`` ``outcome`` / ``replace_step``)
   * segment solves by kind × outcome × core reason × infeasible row group:

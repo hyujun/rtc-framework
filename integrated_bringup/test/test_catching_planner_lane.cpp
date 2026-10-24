@@ -1,9 +1,9 @@
-// ── S6-A: the planner thread and the RT plan lane ───────────────────────────
+// ── The planner thread and the RT plan lane ─────────────────────────────────
 //
 // Two halves, because they fail for different reasons.
 //
-// THE THREAD (no controller). The wake source is an eventfd, and what G3-L
-// asks of it is coalescing: any number of signals between two wakes is ONE
+// THE THREAD (no controller). The wake source is an eventfd, and what
+// is asked of it is coalescing: any number of signals between two wakes is ONE
 // wake, and that wake reads the newest snapshot. Also: a signal raised during
 // the wake that sees a trial reset is kept for the next wake (it belongs to the
 // new trial), and Join does not wait out the wake timeout.
@@ -12,9 +12,9 @@
 // box every tick and adopts a plan only when JudgePlan admits it. The cases
 // drive the refusals that matter for safety through the CONTROLLER, not just
 // the pure function: a plan from the previous activation (the deactivate /
-// Pause race of D-23), a plan published before an E-STOP reset (which moves
-// no generation), and the oracle — which since S6-A reaches the law through
-// the same box, so its regression suites now exercise the adoption path.
+// Pause race), a plan published before an E-STOP reset (which moves
+// no generation), and the oracle — which reaches the law through the
+// same box, so its regression suites exercise the adoption path.
 
 #include "catching_cloud_fixture.hpp"
 #include "catching_planner_fixture.hpp"
@@ -290,7 +290,7 @@ void SignalDuringSearch(void* raw) noexcept {
 }
 
 TEST(CatchingPlannerThread, ASignalRaisedDuringAResetWakeIsNotLost) {
-  // L7 §4.8's "drain the wake signal on re-arm" is satisfied by the wait
+  // Draining the wake signal on re-arm is satisfied by the wait
   // itself: every signal raised BEFORE a wake is consumed by that wake's read.
   // A signal raised DURING the wake that first sees a reset belongs to the new
   // trial (a trajectory accepted after the reset), and dropping it would delay
@@ -334,7 +334,7 @@ TEST(CatchingPlannerThread, APausedThreadStopsPublishingAfterAtMostOneWake) {
   ASSERT_TRUE(WaitUntil([&] { return thread.PublishedCount() >= 3; }));
   thread.Pause();
   // One wake may already be past the pause check (PeriodicRtThread::Pause does
-  // not stop an iteration in flight — the reason D-23 exists).
+  // not stop an iteration in flight).
   std::this_thread::sleep_for(30ms);
   const auto settled = thread.PublishedCount();
   std::this_thread::sleep_for(60ms);
@@ -364,14 +364,14 @@ TEST(PlannerEventsCsv, EveryRowHasTheHeadersWidthAndIdleWakesAreSkipped) {
 }
 
 TEST(PlannerEventsCsv, ASegmentStepEarnsARowOnlyWhenItDidSomething) {
-  // MPC E1-F03: the segment columns are appended (readers select by name), and
+  // The segment columns are appended (readers select by name), and
   // a wake whose segment step only waited does not earn a row on its own.
   using rtc::catching::SegmentOutcome;
   std::ostringstream header;
   integrated_bringup::WritePlannerEventsHeader(header);
   EXPECT_NE(header.str().find(",max_catchable,segment_outcome,"), std::string::npos);
-  // E1-F05: the search's own validity beside the published plan's, and the
-  // E1-F08 record after the E1-F03 columns.
+  // The search's own validity beside the published plan's, and the
+  // segment record after the segment columns.
   EXPECT_NE(header.str().find(",plan_valid,search_valid,plan_reason,"), std::string::npos);
   EXPECT_NE(header.str().find(",segment_tau_ratio_max,segment_kind,"), std::string::npos);
   EXPECT_NE(header.str().find(",segment_catch_v_rel,segment_slack_v,"), std::string::npos);
@@ -396,7 +396,7 @@ TEST(PlannerEventsCsv, ASegmentStepEarnsARowOnlyWhenItDidSomething) {
   EXPECT_EQ(columns(header.str()), columns(row.str()));
   EXPECT_NE(row.str().find(",published,"), std::string::npos) << row.str();
   // A default record's kind is written by name, its uncomputed values as nan.
-  // (The row goes on after `segment_source_seq` — E1-F18 appended columns; the
+  // (The row goes on after `segment_source_seq` — later columns were appended; the
   // test below reads those by name.)
   EXPECT_NE(row.str().find(",none,0,0,0,0,nan,nan,nan,nan,nan,nan,nan,nan,nan,0,nan,0,"),
             std::string::npos)
@@ -461,7 +461,7 @@ TEST(PlannerEventsCsv, TheCutSiteIsWrittenByNameForTheSegmentAndForEachCandidate
   rec.segment.start_from_memory = true;
   EXPECT_EQ(from_memory_of(rec), "1");
   // ... and next to that: whether it started from the search's solution of a
-  // chain, widened (E3-F01). A column of its own — the other does not move.
+  // chain, widened. A column of its own — the other does not move.
   ASSERT_NE(memory_at + 1, names.end());
   EXPECT_EQ(*(memory_at + 1), "segment_start_from_search");
   const auto from_search_of = [&](const rtc::catching::PlannerCycleRecord& record) {
@@ -509,7 +509,7 @@ TEST(PlannerEventsCsv, TheCutSiteIsWrittenByNameForTheSegmentAndForEachCandidate
   EXPECT_EQ(distinct.size(), 6U);
 }
 
-// E1-F18: the NLP search's block, the docking core's block and the replacement
+// The NLP search's block, the docking core's block and the replacement
 // columns, read back by NAME — the way every reader selects them.
 TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
   const auto split = [](std::string s) {
@@ -859,11 +859,11 @@ class CatchingPlanLaneTest : public ::testing::Test {
     yaml["diagnostic"]["oracle_plan"]["enabled"] = oracle;
     yaml["catching"]["planner"]["enabled"] = planner;
     if (planner) {
-      // The shipped ur5e_p1b planner values (S6-B). The fixture's model config
-      // mirrors the shipped robot config, `ur5e_catch` included (R-3).
+      // The shipped ur5e_p1b planner values. The fixture's model config
+      // mirrors the shipped robot config, `ur5e_catch` included.
       YAML::Node pl = yaml["catching"]["planner"];
       pl["sub_model"] = "ur5e_catch";
-      // NOT the shipped wait pose: from S7 the supervisor HOMES to it, and
+      // NOT the shipped wait pose: the supervisor HOMES to it, and
       // this fixture holds the measured arm at kUr5eHome without a servo, so
       // the homing could never arrive. TrackingYaml's wait pose is that home
       // (the arm waits where it is), which is also the pose the reachable-
@@ -1007,8 +1007,8 @@ class CatchingPlanLaneTest : public ::testing::Test {
     return v;
   }
 
-  /// The shipped APPROACH–stop grid (MPC MD-54): 7 x 0.05 s after the catch,
-  /// up to 6 x 0.1 s before it. `mode: mpc` needs the pre-catch part (MD-45):
+  /// The shipped APPROACH–stop grid: 7 x 0.05 s after the catch,
+  /// up to 6 x 0.1 s before it. `mode: mpc` needs the pre-catch part:
   /// the RT takes a plan only with a segment that starts before t_c.
   static void ApproachGrid(YAML::Node& y) {
     YAML::Node d = y["catching"]["planner"]["segment"]["mpc"];
@@ -1086,7 +1086,7 @@ class CatchingPlanLaneTest : public ::testing::Test {
   std::string topic_;
   ControllerState state_{};
   std::uint64_t next_seq_{1};
-  /// Tick() servos both devices to their commands (MPC E1-F04's real-clock
+  /// Tick() servos both devices to their commands (the real-clock
   /// case needs the arm to reach DECEL; every other case holds it still).
   bool servo_{false};
   /// The ball the published prediction carries. Default: the decode suite's
@@ -1146,7 +1146,7 @@ TEST_F(CatchingPlanLaneTest, ThePlannerStateIsStoredEveryTickFromThatTick) {
 }
 
 TEST_F(CatchingPlanLaneTest, APlanFromThePreviousActivationIsNeverConsumed) {
-  // G3-L / D-23: the planner's Pause does not stop a wake in flight, so a plan
+  // The planner's Pause does not stop a wake in flight, so a plan
   // can land after on_deactivate. It must not be followed after re-activation.
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false));
   static_cast<void>(Tick());
@@ -1194,11 +1194,9 @@ TEST_F(CatchingPlanLaneTest, APlanPublishedBeforeAnEstopResetIsNotTakenAfterIt) 
 }
 
 TEST_F(CatchingPlanLaneTest, WithNoCatchablePointThePlannerKeepsTrackingOnNoCatchablePlan) {
-  // S6-A wrote this case against the stub search. Since S6-B the search is
-  // real, and the default prediction (the decode suite's diagonal) carries no
-  // catch point: every candidate is outside the catch box or the horizon. The
-  // outcome the RT sees is the same as the stub's — "no plan", refused as
-  // invalid, TRACKING self-looping on NO_CATCHABLE_PLAN — now for a reason.
+  // The default prediction (the decode suite's diagonal) carries no catch
+  // point: every candidate is outside the catch box or the horizon. The RT sees
+  // "no plan", refused as invalid, TRACKING self-looping on NO_CATCHABLE_PLAN.
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true));
   ASSERT_TRUE(ctrl_->IsGridCatchSearchConfigured()) << "the real model gave the search no model";
   const CatchingPlannerThread* thread = ctrl_->GetPlannerThread();
@@ -1222,7 +1220,7 @@ TEST_F(CatchingPlanLaneTest, WithNoCatchablePointThePlannerKeepsTrackingOnNoCatc
   EXPECT_EQ(ctrl_->GetLastPlanRefusal(), PlanRefusal::kInvalid);
   EXPECT_EQ(ctrl_->GetMode(), Mode::kTracking);
   EXPECT_EQ(ctrl_->GetLastReason(), rtc::catching::Reason::kNoCatchablePlan);
-  // §13 S6: the tick record (hence the state message) says WHY — the
+  // The tick record (hence the state message) says WHY — the
   // planner's first bottleneck — with the planner's id, and no plan.
   const auto record = ctrl_->GetLastTickRecord();
   EXPECT_FALSE(record.plan_valid);
@@ -1235,7 +1233,7 @@ TEST_F(CatchingPlanLaneTest, WithNoCatchablePointThePlannerKeepsTrackingOnNoCatc
 }
 
 TEST_F(CatchingPlanLaneTest, ThePlannerFindsAReachableCatchPointAndTheRtFollowsIt) {
-  // End to end on the real UR5e+P1b model (S6-B): a ball whose prediction
+  // End to end on the real UR5e+P1b model: a ball whose prediction
   // passes through a point the catch frame can reach, facing the palm. The
   // planner's search must publish a valid plan for it and the RT must adopt
   // it (TRACKING → APPROACH) through the same admission path the oracle uses.
@@ -1290,7 +1288,7 @@ TEST_F(CatchingPlanLaneTest, ThePlannerFindsAReachableCatchPointAndTheRtFollowsI
   EXPECT_NEAR(a_d.dot(z), 1.0, 1e-9);
 }
 
-// ── The segment MPC on the planner thread (MPC E1-F03, #629) ──────────────────
+// ── The segment MPC on the planner thread ───────────────────────────────────
 
 TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannerIsParkedWithoutThePlanner) {
   ctrl_ = std::make_unique<DemoCatchingController>("");
@@ -1301,7 +1299,7 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannerIsParkedWithoutThePlanner) {
       TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
   yaml["catching"]["planner"]["enabled"] = false;
   yaml["diagnostic"]["oracle_plan"]["enabled"] = false;  // no other writer of the segment box
-  // MD-44: the mpc segment planner's keys are read only under the law that follows them.
+  // The mpc segment planner's keys are read only under the law that follows them.
   yaml["catching"]["planner"]["segment"]["mode"] = "mpc";
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
@@ -1312,7 +1310,7 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannerIsParkedWithoutThePlanner) {
 }
 
 TEST_F(CatchingPlanLaneTest, TheMpcSegmentTorqueBoxAndSlackMustFitTheCliksTorqueBox) {
-  // MD-33: η'_τ + slack_max ≤ joint_cmd.eta_tau under the dynamic CLIK form.
+  // η'_τ + slack_max ≤ joint_cmd.eta_tau under the dynamic CLIK form.
   ctrl_ = std::make_unique<DemoCatchingController>("");
   ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
   ctrl_->SetSharedModelBuilder(builder_);
@@ -1326,7 +1324,7 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentTorqueBoxAndSlackMustFitTheCliksTorque
   pl["segment"]["mpc"]["publish"]["slack_max"] = 0.1;
   yaml["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
   yaml["catching"]["joint_cmd"]["eta_tau"] = 0.8;
-  yaml["catching"]["planner"]["segment"]["mode"] = "mpc";  // MD-44, as above
+  yaml["catching"]["planner"]["segment"]["mode"] = "mpc";  // as above
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
@@ -1335,17 +1333,17 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentTorqueBoxAndSlackMustFitTheCliksTorque
 }
 
 TEST_F(CatchingPlanLaneTest, AFittingMpcSegmentTorqueBoxConfiguresUnderTheDynamicClik) {
-  // The passing side of MD-33's configure check: 0.7 + 0.1 ≤ 0.8.
+  // The passing side of the configure check: 0.7 + 0.1 ≤ 0.8.
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
-    ApproachGrid(y);                                      // MD-45
-    y["catching"]["planner"]["segment"]["mode"] = "mpc";  // MD-44
+    ApproachGrid(y);
+    y["catching"]["planner"]["segment"]["mode"] = "mpc";
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
     y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
   }));
   EXPECT_TRUE(ctrl_->IsSegmentPlannerConfigured());
 }
 
-// ── planner.segment.mode (MPC E1-F04, MD-34 · MD-42 · MD-44) ────────────────
+// ── planner.segment.mode ────────────────────────────────────────────────────
 
 TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
   using integrated_bringup::CatchingParkReason;
@@ -1374,7 +1372,7 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
     y["catching"]["planner"]["search"]["grid"]["gamma"]["eta_v"] = 1.0;
     y["catching"]["planner"]["segment"]["mpc"]["eta_v"] = 1.0;  // the key the mpc gate reads
   });
-  // MD-45, MD-70: a plan goes out only with a segment that starts before
+  // A plan goes out only with a segment that starts before
   // t_c, so without a pre-catch grid there is no MPC segment planner to build.
   expect_park("an MPC segment planner without the pre-catch grid", true, [](YAML::Node& y) {
     y["catching"]["planner"]["segment"]["mpc"]["approach"]["n_pre_max"] = 0;
@@ -1389,7 +1387,7 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
 }
 
 TEST_F(CatchingPlanLaneTest, EachMissingMpcDockingPrerequisiteParksAndNamesItsOwnKey) {
-  // SegmentModeUnmet's docking branch (E1-F17): the same three prerequisites
+  // SegmentModeUnmet's docking branch: the same three prerequisites
   // the mpc test above parks on, read from the keys of the planner the arm
   // follows — and the log says which key. Under the shipped docking design
   // (the hand's capture set and the planner's fragment) the profile itself
@@ -1468,7 +1466,7 @@ TEST_F(CatchingPlanLaneTest, AMalformedSegmentModeOrSwitchMarginFailsTheConfigur
 }
 
 TEST_F(CatchingPlanLaneTest, ClosedFormBuildsNoMpcSegmentCoresEvenWhenTheyAreEnabled) {
-  // MD-44: the planner runs the closed form's part only.
+  // The planner runs the closed form's part only.
   for (const char* mode : {"closed_form", ""}) {
     const ConfigureVerdict v = ConfigureOnly(true, [mode](YAML::Node& y) {
       if (*mode == '\0') {
@@ -1485,7 +1483,7 @@ TEST_F(CatchingPlanLaneTest, ClosedFormBuildsNoMpcSegmentCoresEvenWhenTheyAreEna
 }
 
 TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnAnMpcSegmentSettingItNeverReads) {
-  // MD-44 (/code-review 2026-09-30): under closed_form no MPC segment core is built,
+  // Under closed_form no MPC segment core is built,
   // so an MPC segment torque box that would not fit the CLIK's is not a profile
   // mistake there — only the WARN that the MPC is not built. Under mpc the
   // same setting parks.
@@ -1510,7 +1508,7 @@ TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnAnMpcSegmentSettingItNeverRe
 }
 
 TEST_F(CatchingPlanLaneTest, TheLawIsChosenByPlannerSegmentModeAlone) {
-  // MPC MD-91: there is no `enabled` switch — the planner solves the segment
+  // There is no `enabled` switch — the planner solves the segment
   // MPC exactly when `planner.segment.mode` is mpc.
   using integrated_bringup::CatchingParkReason;
   using Return = DemoCatchingController::CallbackReturn;
@@ -1775,7 +1773,7 @@ TEST_F(CatchingPlanLaneTest, AReconfigureToClosedFormClearsTheMpcSegmentPlanners
 }
 
 TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannersBoxSitsInsideTheCliksMarginedBox) {
-  // MD-42. The fixture's elbow limit (±3.14) is inside the URDF's (±π), so the
+  // The fixture's elbow limit (±3.14) is inside the URDF's (±π), so the
   // CLIK's margined box (±3.09) is the binding side there — the case the
   // shipped iiwa7 A7 is on (device 3.0543 < URDF 3.05433).
   const ConfigureVerdict v = ConfigureOnly(true, nullptr);
@@ -1795,13 +1793,13 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannersBoxSitsInsideTheCliksMarginedB
 }
 
 void CatchingPlanLaneTest::RealClockPairCase(bool docking) {
-  // MPC E1-F09 (#662), planner in the loop, under mpc and (E1-F17) the real
+  // Planner in the loop, under mpc and the real
   // MpcDockingSegmentPlanner: a reachable throw, the
   // APPROACH–stop grid on, the arm servoed so the trial runs to its
   // end. The planner publishes the plan TOGETHER with its first segment — one
   // publish_ns, the segment starting before t_c — and the RT takes the two on
   // one tick. From there it reports the segment it holds, the planner replans
-  // from that report alone (MD-58), and the arm follows the planner's
+  // from that report alone, and the arm follows the planner's
   // segments from APPROACH through DECEL into HOLD. Structural claims — which
   // segment was taken and followed, and that the planner always found its
   // source — because a loaded host moves every timing here.
@@ -1876,7 +1874,7 @@ void CatchingPlanLaneTest::RealClockPairCase(bool docking) {
       d["budget"]["replan_s"] = 0.04;
       y["catching"]["planner"]["segment"]["mode"] = "mpc";
     }
-    // The shipped CLIK form (MD-7): the MPC bounds acceleration by torque
+    // The shipped CLIK form: the MPC bounds acceleration by torque
     // rows, so the CLIK that executes its segments must too — under the
     // fixture's constant box the command falls behind the segment.
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
@@ -2010,7 +2008,7 @@ void CatchingPlanLaneTest::RealClockPairCase(bool docking) {
   // The planner replanned from what the RT reported, every time.
   EXPECT_EQ(not_followed, 0) << "a replan wake found no source while the RT held a segment";
   EXPECT_GT(replans_with_a_source, 0) << "no replan wake was sampled while the plan was followed";
-  // The stop's end is fixed (MD-21): t_c + N_s·Δ_s, whichever segment ends it
+  // The stop's end is fixed: t_c + N_s·Δ_s, whichever segment ends it
   // — 0.35 s on both shipped grids (7 × 50 ms the mpc planner's, 4 × 87.5 ms
   // the docking planner's).
   const rtc::catching::SegmentSnapshot final_seg = ctrl_->GetFollowedSegmentForTesting();
@@ -2042,7 +2040,7 @@ TEST_F(CatchingPlanLaneTest,
   RealClockPairCase(/*docking=*/true);
 }
 
-// ── Vision world → model world (L3 §4.2, S6-C sim finding, #779) ────────────
+// ── Vision world → model world (#779) ───────────────────────────────────────
 
 class CatchingVisionFrameTest : public CatchingPlanLaneTest {
  protected:
@@ -2129,7 +2127,7 @@ class CatchingVisionFrameTest : public CatchingPlanLaneTest {
 
 TEST_F(CatchingVisionFrameTest, AWorldFramePredictionReachesThePlannerInModelCoordinates) {
   // The shipped ur5e_p1b frame: scene_world hangs off `base`, here with the
-  // base at the world origin (the identity the sim measured, §11).
+  // base at the world origin (the identity the sim measured).
   UseSceneWorld("base", Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
   SetUpWorldFrameBall();
   ASSERT_NO_FATAL_FAILURE(BringUp(false, true));
@@ -2185,7 +2183,7 @@ TEST_F(CatchingVisionFrameTest, AnAsymmetricSceneWorldComposesAsTheToolsDo) {
 
 TEST_F(CatchingVisionFrameTest, WithoutASceneWorldTheVisionLaneIsInert) {
   // #779 V3, replacing "without the frame keys the prediction is read as
-  // model coordinates — behind the arm" (the S6-C symptom): no world, no
+  // model coordinates — behind the arm": no world, no
   // prediction. Configure still succeeds (the CM refuses every controller
   // when one fails), the lane never subscribes, and no plan is ever made.
   UseNoSceneWorld();

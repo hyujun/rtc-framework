@@ -81,25 +81,17 @@ namespace {
 
 /// Whether a validation entry names a key this controller actually consumes.
 ///
-/// G0-C (L0 §5.3) blocks ARMING on a TBD active key. This controller does arm
-/// now, so the gate matters — but the key set it consumes at S5.1 is still
-/// small, and refusing to configure over a value that a LATER step decides
-/// would invert the dependency the plan's own DAG records (S4.2 → S4.4 →
-/// S3.5b: the measurement chain this controller feeds is what decides
-/// `reference.v_max`, `supervisor.decel.a_dec` and the planner's values).
+/// A provisional or TBD value blocks arming only when this controller reads
+/// it; refusing to configure over a value the measurement chain this
+/// controller feeds still has to decide (`reference.v_max`,
+/// `supervisor.decel.a_dec`, the planner's values) would make the measurement
+/// its own precondition. So the gate is the consumed subset and everything
+/// else is reported as a warning.
 ///
-/// So the gate is the consumed subset and everything else is reported as a
-/// warning naming the step that owns it. The subset grows with the
-/// controller: S5.2 adds `io.*` / `prediction.*`, S5.3 adds `joint_cmd.*`,
-/// `reference.*` and `robot.arm.*`, S6 adds `planner.*`, S7 the rest of
-/// `supervisor.*`.
-///
-/// `robot.hand.T_close_e2e` is excluded BY NAME: it is the number S4.2
-/// produces with this controller, so gating the CONFIGURE on it would make the
-/// measurement its own precondition. `T_close_timeout` and
-/// `T_release_timeout` (TBD exactly when T_close_e2e is, being derived from
-/// it) are excluded with it. Their consumer
-/// from S7.1 is the hand sequencer, and SupervisorValueMissing() parks a
+/// `robot.hand.T_close_e2e` is excluded BY NAME: it is measured with this
+/// controller. `T_close_timeout` and `T_release_timeout` (TBD exactly when
+/// T_close_e2e is, being derived from it) are excluded with it; their
+/// consumer is the hand sequencer, and SupervisorValueMissing() parks a
 /// configuration whose law is wired but whose closure time is not decided —
 /// the step rig (`diagnostic.hand_step`) needs neither.
 [[nodiscard]] bool ConsumedByCatchingSkeleton(const char* key) noexcept {
@@ -107,15 +99,15 @@ namespace {
   if (k == "control_rate") {
     return true;
   }
-  // S5.2's vision ingress and S5.3's tracking law. Each prefix joined this set
-  // in the step that started reading it — the gate and the code that consumes
-  // the value move together, or the gate stops meaning anything.
+  // The vision ingress and the tracking law. Each prefix joins this set when
+  // code starts reading it — the gate and the code that consumes the value
+  // move together, or the gate stops meaning anything.
   if (k.starts_with("io.") || k.starts_with("prediction.") || k.starts_with("joint_cmd.") ||
       k.starts_with("robot.arm.") || k.starts_with("reference.") ||
       k == "supervisor.track_err_abort" || k == "supervisor.n_qp") {
     return true;
   }
-  // #537 S9b (D-S9-D1): the motion deadlines, and — without a trailing dot,
+  // #537 S9b: the motion deadlines, and — without a trailing dot,
   // like `robot.hand` below — their block's provisional flag, which must be
   // consumed for the real-arm gate to see it.
   if (k == "supervisor.deadline" || k.starts_with("supervisor.deadline.")) {
@@ -125,18 +117,18 @@ namespace {
     return true;
   }
   // Same shape as `robot.hand` below: `reference` WITHOUT a trailing dot is
-  // the block-wide provisional flag's own key (L4 §6, L0 §5.3).
+  // the block-wide provisional flag's own key.
   if (k == "reference") {
     return true;
   }
   // `robot.hand` WITHOUT a trailing dot is the provisional flag's own key
   // (catching_params.cpp reports the profile as a whole, not a field of it).
   // Matching only the dotted prefix silently let a provisional hand profile
-  // through the real-arm gate — the one thing L0 §5.3 asks this gate to stop.
+  // through the real-arm gate — the one thing this gate exists to stop.
   if (k == "robot.hand") {
     return true;
   }
-  // The catch frame's flag (D-17). on_configure reports it only when a model
+  // The catch frame's flag. on_configure reports it only when a model
   // is configured — exactly when the tracking law reads the frame — so the key
   // is consumed whenever it appears. Left out of this set, a provisional frame
   // on a real arm ends as a "not consumed" warning and the arm goes on to arm.
@@ -147,7 +139,7 @@ namespace {
          k != "robot.hand.T_close_timeout" && k != "robot.hand.T_release_timeout";
 }
 
-/// Whether the catch frame still waits for the user's confirmation (D-17), or
+/// Whether the catch frame still waits for the user's confirmation, or
 /// nullopt when no model is configured: the arm is then held, not driven
 /// (SetupArmCommand), nothing reads the frame, and there is nothing to judge.
 /// The condition is AcquireModelBuilder's own.
@@ -169,7 +161,7 @@ namespace {
 }
 
 /// Read-only descriptor for the mirrored profile parameters. They exist so an
-/// off-process reader (the S4.2 runner, the GUI panel) uses what the CONTROLLER
+/// off-process reader (an analysis runner, the GUI panel) uses what the CONTROLLER
 /// loaded instead of re-reading the YAML — a run whose controller read
 /// something else must not be analysed against the file on disk.
 [[nodiscard]] rcl_interfaces::msg::ParameterDescriptor ReadOnlyDescriptor(std::string description) {
@@ -183,7 +175,7 @@ namespace {
 
 rtc::catching::SoftCatchTranslation::Params DemoCatchingController::ResolvedReferenceParams()
     const {
-  // A TBD a_max / v_max runs the struct default (L4 §6) — the one place that
+  // A TBD a_max / v_max runs the struct default — the one place that
   // says so, read by the reference's setup and by the mirror alike.
   rtc::catching::SoftCatchTranslation::Params p;
   p.omega = params_.reference_omega.value;
@@ -201,7 +193,7 @@ int DemoCatchingController::ResolvedTrajNMin() const {
 }
 
 double DemoCatchingController::ResolvedSearchGridEtaV() const {
-  // A TBD η_v runs the search's own default (D-9) — as above, one place.
+  // A TBD η_v runs the search's own default — as above, one place.
   return params_.planner_search_grid_gamma_eta_v.tbd
              ? rtc::catching::GridCatchSearchConstants{}.eta_v
              : params_.planner_search_grid_gamma_eta_v.value;
@@ -244,14 +236,14 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("hand.T_close_e2e", hand.T_close_e2e.value,
           "L6 §4.2 end-to-end closure time [s] — measured; bounds the timeouts");
   // What the sequencer subtracts from t_c, as run: the profile's own key, or
-  // the closure time when the profile gives none (E1-F16).
+  // the closure time when the profile gives none.
   declare("hand.T_close_lead", hand.CloseLead().value,
           "how long before the ball reaches the catch point the hand is told to close [s] "
           "(robot.hand.T_close_lead; T_close_e2e when the key is absent)");
   declare("hand.T_close_lead_from_t_c", ResolvedCloseLead(),
           "the same lead as the sequencer runs it, from a plan's catch instant [s]: shorter by "
           "s_ent / closing speed under mpc_docking, whose catch instant is the entrance crossing");
-  // What RETREAT actually waits (S8-C): usually DERIVED from the poses, η and
+  // What RETREAT actually waits: usually DERIVED from the poses, η and
   // q_tol, so the YAML alone does not show it.
   declare("hand.T_release_timeout", hand.T_release_timeout.value,
           "RETREAT wait for the hand at q_pre [s] (derived when the key is absent)");
@@ -264,7 +256,7 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("control.dt", GetDefaultDt(), "RT tick period [s] = 1/control_rate");
   declare("diagnostic.hand_step", hand_step_enabled_, "accept unshaped hand step targets (S4a)");
 
-  // The S8 trial runner's inputs (S8-A). A sim overlay can move the
+  // The S8 trial runner's inputs. A sim overlay can move the
   // wait pose and switch the lead axis on, and the installed YAML cannot tell
   // the runner which overlay the controller loaded: a runner that homed to the
   // file's pose would refuse every trial of an overlay run, and a summary that
@@ -284,7 +276,7 @@ void DemoCatchingController::DeclareProfileParameters() {
                           : "yaml"),
           "L3 §6 where the wait pose comes from: 'yaml' (planner.wait_pose) or 'current' (the "
           "arm's pose on each activation's first readable tick, S8-I)");
-  // The joint groups (E3-F02): a list of maps is not a parameter type, so one
+  // The joint groups: a list of maps is not a parameter type, so one
   // string array of the names and one per group of its joints, as written.
   if (!planner_params_.groups.empty()) {
     std::vector<std::string> names;
@@ -304,23 +296,22 @@ void DemoCatchingController::DeclareProfileParameters() {
           "while a plan is followed on segments, the search runs until the catch instant is "
           "this close [s] (T_freeze when the key is absent)");
   // T_arm is mirrored whether or not the lead is on: the freeze-window check
-  // reads it either way (C-25), so a lead-off run with T_arm 0.2 is a
+  // reads it either way, so a lead-off run with T_arm 0.2 is a
   // different configuration from one with T_arm 0.
   declare("joint_cmd.lag.T_arm",
           params_.joint_cmd_lag_t_arm.tbd ? nan : params_.joint_cmd_lag_t_arm.value,
           "L5 §6 arm lag T_arm [s] (NaN = TBD)");
   declare("joint_cmd.lag.lead_enable", params_.joint_cmd_lag_lead_enable,
           "L5 §4.5 lead axis on (now_lead = now + T_arm)");
-  // The arm-budget layers (dynamic_catching S8-G, #537): an overlay moves any
-  // of them, and an off-process analysis must read what THIS controller
-  // RUNS, not the file — the lesson the mirror exists for (S8-B: an overlay
-  // one level short ran the shipped profile with no warning). A TBD leaf is
+  // The arm-budget layers: an overlay moves any of them, and an off-process
+  // analysis must read what THIS controller RUNS, not the file (an overlay
+  // one level short runs the shipped profile with no warning). A TBD leaf is
   // therefore mirrored as the value the setup substituted for it (the
   // reference's struct default, the planner's η_v default), through the same
   // resolvers SetupArmCommand / SetupGridCatchSearch use.
   //
   // A mirror says what THIS controller runs, so only the selected functions
-  // have one (E1-F16): `reference.*` is the closed_form law's,
+  // have one: `reference.*` is the closed_form law's,
   // `planner.search.grid.*` the grid search's, `planner.segment.mpc.*` the mpc
   // segment planner's. A function that does not run would mirror its struct
   // defaults — a number nothing ran, under a name that says it did. A reader
@@ -360,7 +351,7 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("robot.arm.qdd_max", arm_qdd_max_,
           "acceleration box the planner's reach time judges with [rad/s²], arm joint "
           "order (empty = no box loaded)");
-  // The prediction grid the controller expects (E0-F04, #647). The
+  // The prediction grid the controller expects. The
   // vision profile sets the grid and these three must follow it, but nothing
   // checks the pair: a `planner.search.grid.slice.dt` left at 0.05 on a 25 ms grid thins
   // the candidates to every other point without a warning, and the run
@@ -374,7 +365,7 @@ void DemoCatchingController::DeclareProfileParameters() {
     declare("planner.search.grid.slice.dt", planner_params_.slice_dt,
             "L3 §4 candidate spacing [s]; the vision grid is thinned to it");
   }
-  // The two the E1-F10 tuning moves per arm (MD-72, MD-74): an
+  // The two the tuning moves per arm: an
   // overlay one level short would otherwise run the shipped value under the
   // candidate's name. One launch configures once, which is what a unit driver
   // reads; like every mirror here they keep the FIRST configure's value.
@@ -390,7 +381,7 @@ void DemoCatchingController::DeclareProfileParameters() {
           "key, also when the CLIK refused it and the arm is held. As of the FIRST configure of "
           "this node — read_only mirrors cannot follow a re-configure");
   if (mpc) {
-    // The segment MPC as run (MPC E1-F03): an off-process analysis must read the
+    // The segment MPC as run: an off-process analysis must read the
     // horizon, window and thresholds this controller used, not the file.
     const auto& mpc_segment = planner_params_.mpc_segment;
     declare("planner.segment.mpc.horizon.n_nodes", static_cast<std::int64_t>(mpc_segment.n_nodes),
@@ -401,7 +392,7 @@ void DemoCatchingController::DeclareProfileParameters() {
             std::vector<std::int64_t>(mpc_segment.blocks.begin(),
                                       mpc_segment.blocks.begin() + mpc_segment.n_blocks),
             "MPC segment planner move-blocking pattern of the stop part (sum = n_nodes)");
-    // Per joint group (E3-F02): each group's partition, as its catch and stop
+    // Per joint group: each group's partition, as its catch and stop
     // cores are built with (the block's own where the group has no key).
     for (int g = 0; g < mpc_segment.n_groups; ++g) {
       const auto& gp = mpc_segment.groups[static_cast<std::size_t>(g)];
@@ -430,7 +421,7 @@ void DemoCatchingController::DeclareProfileParameters() {
             "MPC segment planner publish threshold on the torque slack, nodes 1..N (MD-33)");
     declare("planner.segment.mpc.publish.slack_terminal_max", mpc_segment.slack_terminal_max,
             "MPC segment planner publish threshold on the terminal (static) torque slack (MD-33)");
-    // The APPROACH–stop keys (MPC E1-F08): all provisional.
+    // The APPROACH–stop keys: all provisional.
     declare(
         "planner.segment.mpc.approach.n_pre_max", static_cast<std::int64_t>(mpc_segment.n_pre_max),
         "MPC segment planner pre-catch intervals before t_c, at most (MD-54); 0 = no MPC segment "
@@ -530,24 +521,24 @@ void DemoCatchingController::DeclareProfileParameters() {
     declare("planner.segment.mpc.solver.eps_primal_inf", mpc_segment.solver_eps_primal_inf,
             "MPC segment planner ProxQP primal-infeasibility threshold (0 = exact certificate)");
   }
-  // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
+  // #537 S9b: what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.
   declare("supervisor.deadline.stop_s", params_.supervisor_deadline_stop_s.value,
           "D-S9-D1 motion deadline for a stop (ABORT_SAFE ramp, RETREAT stop stage) [s]");
   declare("supervisor.deadline.return_s", params_.supervisor_deadline_return_s.value,
           "D-S9-D1 motion deadline for RETREAT's return to the wait pose [s]");
-  // The segment mode (MPC MD-44): one per configuration, never mixed. Like every
+  // The segment mode: one per configuration, never mixed. Like every
   // mirror here, read_only — it keeps the FIRST configure's value.
   declare(
       "planner.segment.mode", std::string(rtc::catching::SegmentModeName(segment_mode_)),
       "MPC MD-44: what the arm follows — closed_form (v1: the RT's own reference), or the "
       "segments of a segment planner: mpc, mpc_docking. "
       "As of the FIRST configure of this node — read_only mirrors cannot follow a re-configure");
-  // Which search plans (E1-F16): one per configuration, like the segment mode.
+  // Which search plans: one per configuration, like the segment mode.
   declare("planner.search.mode", std::string(rtc::catching::SearchModeName(search_mode_)),
           "which search turns a predicted ball into a catch plan: grid or nlp. As of the FIRST "
           "configure of this node — read_only mirrors cannot follow a re-configure");
-  // The docking functions as run (E1-F16), each only when it runs. The hand's
+  // The docking functions as run, each only when it runs. The hand's
   // identified values are mirrored with them: an overlay can move any, and
   // `delta_0` is derived here, in no file at all.
   const bool nlp = search_mode_ == rtc::catching::CatchingSearchMode::kNlp;
@@ -592,7 +583,7 @@ void DemoCatchingController::DeclareProfileParameters() {
             "gate headroom, as run");
     declare("planner.segment.mpc_docking.switch_margin", segment_switch_margin_,
             "rho_max of the segment switch gate (mode mpc_docking)");
-    // The whole-body terms (E3-F02), as run.
+    // The whole-body terms, as run.
     declare("planner.segment.mpc_docking.core.cost.angular_momentum.w_pre", d.core.w_ang_pre,
             "E3-F02 mpc_docking angular-momentum rate weight on the pre-catch stages");
     declare("planner.segment.mpc_docking.core.cost.angular_momentum.w_post", d.core.w_ang_post,
@@ -742,7 +733,7 @@ void DemoCatchingController::BuildClikBoxes(int nv,
   };
 
   // ── Position box ────────────────────────────────────────────────────────
-  // The device's own limits, pulled `limit_margin` inwards (L5 §4.3): the
+  // The device's own limits, pulled `limit_margin` inwards: the
   // backend clamps to the device limits, so a CLIK box that reached them would
   // let the solver return a value the backend then changes — and the
   // difference would show up as a tracking error with no attributable cause.
@@ -780,7 +771,7 @@ void DemoCatchingController::BuildClikBoxes(int nv,
       place(base + i, q_min, lo);
       place(base + i, q_max, hi);
       // The arm half is kept in device order too: the QP-independent abort
-      // ramp (A-S5-10) has to clamp against the SAME box, and deriving it a
+      // ramp has to clamp against the SAME box, and deriving it a
       // second time there would be a second copy of this formula to keep in
       // step. Filled here rather than in a separate loop so a future edit
       // cannot narrow one and not the other.
@@ -824,11 +815,11 @@ void DemoCatchingController::BuildClikBoxes(int nv,
       // THE HAND IS LOCKED IN THIS SOLVE. Its joints are decision variables —
       // the catch frame hangs off the palm, so they appear in the frame's
       // Jacobian — but this controller does not command them: the sequencer
-      // does (L6, D-11). A solver allowed to use them would satisfy part of
+      // does. A solver allowed to use them would satisfy part of
       // the task with motion that never happens, and the arm would then
       // under-deliver by exactly that part. It shows up as a steady-state
       // position error that no gain fixes (measured 2.7 mm before this lock,
-      // against the 1 mm G5-A asks for).
+      // against the 1 mm target).
       //
       // Locked through the velocity box rather than by dropping the columns:
       // the box is the one place a joint can be told "you do not move" without
@@ -870,7 +861,7 @@ bool DemoCatchingController::ConfigureAccelConstraint(
       break;
   }
   // dynamic: τ_max is the ARM device's own `joint_limits.max_torque` — the
-  // same numbers the D-16 derivation spent (provenance in the derived file).
+  // same numbers the torque-box derivation spent (provenance in the derived file).
   // The hand entries are never read (the rows sit on the arm indices).
   const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
   const std::vector<double>* torque = nullptr;
@@ -956,7 +947,7 @@ void DemoCatchingController::SetupArmCommand() {
     return;
   }
 
-  // The catch frame is an `urdf.extra_frames` entry (D-10/D-17) and is the
+  // The catch frame is an `urdf.extra_frames` entry and is the
   // whole target of this controller: without it there is nothing to align.
   try {
     const auto frame_id = rtc::catching::ResolveCatchFrame(model, catch_frame_name_);
@@ -985,9 +976,9 @@ void DemoCatchingController::SetupArmCommand() {
   cfg.w_hand = params_.joint_cmd_w_arm.value;
   cfg.w_smooth = params_.joint_cmd_w_smooth.value;
   cfg.max_iter = params_.joint_cmd_max_iter;
-  // D-6: evaluate along the COMMANDED path. The measured state would fold the
-  // servo lag into the loop and double-count it against the lead compensation
-  // (L5 §4.2); `anchor_drift_max` must then stay off, and Init throws if it
+  // Evaluate along the COMMANDED path. The measured state would fold the
+  // servo lag into the loop and double-count it against the lead compensation;
+  // `anchor_drift_max` must then stay off, and Init throws if it
   // does not — the tracking watchdog (TRACK_ERR) is what supervises the gap.
   cfg.evaluate_at_command = true;
   cfg.anchor_drift_max = 0.0;
@@ -1017,7 +1008,7 @@ void DemoCatchingController::SetupArmCommand() {
   q_eval_ = Eigen::VectorXd::Zero(model.nq);
   v_eval_ = Eigen::VectorXd::Zero(nv);
 
-  // The L4 reference is the closed_form law's (E1-F16): a mode that follows
+  // The reference is the closed_form law's: a mode that follows
   // segments runs no reference, reads none of `reference.*`, and builds none —
   // the laws that step it check for it themselves.
   reference_.reset();
@@ -1081,7 +1072,7 @@ bool DemoCatchingController::ResolveVisionFrame(TrajInputConfig& cfg) {
     return false;
   }
   // The vision world is the scene's world, the model frame every task-goal
-  // controller converts `scene_world` goals through (#779) — read here with
+  // controller converts `scene_world` goals through — read here with
   // the model root as the base, since the planner and the CLIK work in the
   // Pinocchio universe. Its placement there IS model_world_T_world.
   TaskTargetFrames world;
@@ -1135,7 +1126,7 @@ void DemoCatchingController::SetupTrajInput() {
   TrajInputConfig cfg;
   cfg.n_min = ResolvedTrajNMin();
   // The snapshot capacity, because that is the only upper bound this schema
-  // carries: S3.6's 20 points is a property of the vision PROFILE (it is what
+  // carries: the 20-point prediction is a property of the vision PROFILE (it is what
   // ball_perception's sim profile is set to), not a limit the controller is
   // given a key for. A longer message is accepted up to the capacity and
   // refused above it — the capacity is what the decode can physically hold,
@@ -1165,12 +1156,12 @@ void DemoCatchingController::SetupTrajInput() {
   traj_horizon_min_ns_ = cfg.horizon_min_ns;
   traj_jump_warn_m_ = cfg.j_warn_m;
   t_stale_ns_ = params_.io_t_stale.tbd ? 0 : to_ns(params_.io_t_stale.value);
-  // The lead axis (L5 §4.5). OFF unless the profile says otherwise: leading a
+  // The lead axis. OFF unless the profile says otherwise: leading a
   // delay the arm does not have moves the command EARLY by exactly T_arm, and
-  // the real arm's T_arm is unidentified until S10. The sim arm is a
-  // first-order lag of the servo's kd/kp (0.05 s on ur5e_p1b, #537 D-S8-13),
-  // and S8-B runs it with the lead on through the catch_lead sim overlays; the
-  // G5-E fixture supplies its own pure delay.
+  // the real arm's T_arm is unidentified. The sim arm is a
+  // first-order lag of the servo's kd/kp (0.05 s on ur5e_p1b), and runs with
+  // the lead on through the catch_lead sim overlays; a test fixture supplies
+  // its own pure delay.
   t_arm_ns_ = 0;
   if (params_.joint_cmd_lag_lead_enable && !params_.joint_cmd_lag_t_arm.tbd) {
     t_arm_ns_ = static_cast<std::int64_t>(params_.joint_cmd_lag_t_arm.value * 1e9);
@@ -1179,12 +1170,12 @@ void DemoCatchingController::SetupTrajInput() {
   if (!node_ || traj_topic_.empty() || vision_inert_) {
     return;
   }
-  // best_effort KEEP_LAST(1), measured rather than assumed: S3.4 compared a
-  // best_effort subscription against a reliable one over 856 messages on two
-  // robots and found them identical, including under 50 ms delay and 30 %
-  // drop injection. Depth 1 is not a choice — ARCH-6 fixes it, and it is also
-  // what G1-I asserts: under a backlog the controller must take the NEWEST
-  // prediction, not work through a queue of old ones.
+  // best_effort KEEP_LAST(1), measured rather than assumed: best_effort and
+  // reliable subscriptions over 856 messages on two robots were identical,
+  // including under 50 ms delay and 30 % drop injection. Depth 1 is not a
+  // choice — ARCH-6 fixes it, and it is also what the ingress test asserts:
+  // under a backlog the controller must take the NEWEST prediction, not work
+  // through a queue of old ones.
   rclcpp::QoS qos{rclcpp::KeepLast(1)};
   qos.best_effort();
   traj_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -1210,7 +1201,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // reconfigure after the backends changed must not inherit the old verdict.
     sim_only_disabled_ = false;
     park_reason_ = CatchingParkReason::kNone;
-    // Launch layout profile (#350): the planner thread runs on the `mpc` role
+    // Launch layout profile: the planner thread runs on the `mpc` role
     // (E-7 J), so the same opt-out that stops DemoWbc's MPC thread stops it.
     if (node_) {
       SetLayoutProfile(ReadLayoutProfile(*node_));
@@ -1224,12 +1215,9 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       return CallbackReturn::FAILURE;
     }
 
-    // ── Which axis this configure is judged on (A-S5-1) ──────────────────
-    // S4.0 refused to ACTIVATE here unless every claimed device was the
-    // simulator, standing in for the then-pending E-8 decision. That decision
-    // was made on 2026-09-22, so the stand-in is gone and what is left is the
-    // rule it was standing in for: a provisional or still-TBD value blocks a
-    // REAL-ARM configuration and only warns in sim (L0 §5.3, L8 §5.4).
+    // ── Which axis this configure is judged on ───────────────────────────
+    // The rule: a provisional or still-TBD value blocks a
+    // REAL-ARM configuration and only warns in sim.
     //
     // ResolveDevices has already set `real_arm_config_` from the backends —
     // fail-closed, so a group whose config has not resolved yet counts as
@@ -1252,7 +1240,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       }
     }
 
-    // ── Hand profile (G0-C, L0 §5.3) ─────────────────────────────────────
+    // ── Hand profile ─────────────────────────────────────────────────────
     if (!catching_section_present_) {
       RCLCPP_ERROR(logger_,
                    "refusing to configure: no `catching:` section. The hand profile has no "
@@ -1269,7 +1257,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
         !removed_catch_box_keys_.empty()) {
       sim_only_disabled_ = true;
       park_reason_ = CatchingParkReason::kRemovedKey;
-      // A key that moved (#711) is no longer read: without this the new key
+      // A key that moved is no longer read: without this the new key
       // would run on its default — the shipped value, or closed_form — under
       // the old key's name.
       for (const rtc::catching::RenamedCatchingKey& key : renamed_keys_) {
@@ -1311,7 +1299,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // The catch frame's provisional flag lives in the robot config
     // (`urdf.extra_frames`), not in `catching:`, so the validator above cannot
     // see it. It follows the rule of every other provisional flag: it parks a
-    // real-arm configuration and warns in sim (L0 §5.3).
+    // real-arm configuration and warns in sim.
     if (const auto provisional = CatchFrameProvisional(GetSystemModelConfig(), catch_frame_name_);
         provisional.has_value()) {
       if (*provisional) {
@@ -1322,7 +1310,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       }
       rtc::catching::CheckCatchFrameProvisional(report_, *provisional, real_arm_config_);
     }
-    // The segment mode (MPC MD-44) — decided here, once, for the whole
+    // The segment mode — decided here, once, for the whole
     // configuration: the planner's setup below builds the MPC segment cores only
     // for it, and the tick never changes it.
     segment_mode_ = params_.planner_segment_mode;
@@ -1369,7 +1357,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       }
     }
     if (consumed_failure) {
-      // A real-arm configuration is PARKED, not refused (A-S5-1). The failure
+      // A real-arm configuration is PARKED, not refused. The failure
       // there is "this profile is not cleared for hardware", and refusing the
       // configure would take the whole robot down with it — sim and real share
       // `config/<variant>/controllers/`, and CM latches `bring_up_failed` on
@@ -1382,7 +1370,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       // holds in sim word for word, and it was observed there: on 2026-09-22 a
       // shipped sim profile whose consumed key was still TBD took the whole
       // robot down, and the symptom was "the robot does not start", not "the
-      // catching controller does not start" (A-S5-11). A TBD is the
+      // catching controller does not start". A TBD is the
       // normal state of a key whose owning step has not landed yet, and every
       // step that widens the consumed set can produce one.
       //
@@ -1409,7 +1397,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       }
       return CallbackReturn::FAILURE;
     }
-    // Two writers for one plan box (S6-A). The oracle stand-in and the planner
+    // Two writers for one plan box. The oracle stand-in and the planner
     // both STORE into it, and a SeqLock with two writers can hand the RT a
     // torn plan. Parked rather than refused for the same reason as above: the
     // mistake is in this controller's profile, and it must not take the rest
@@ -1423,7 +1411,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "controller will refuse to activate; the robot still comes up.");
       return CallbackReturn::SUCCESS;
     }
-    // A search and a segment mode that cannot run together (E1-F16): the nlp
+    // A search and a segment mode that cannot run together: the nlp
     // search's plan is the catch node of a joint trajectory, and the closed_form
     // law follows a γ ramp that search does not make. A profile mistake: park,
     // name both keys, keep the robot up.
@@ -1439,7 +1427,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    rtc::catching::SegmentModeName(segment_mode_));
       return CallbackReturn::SUCCESS;
     }
-    // The docking keys (E1-F16): the hand's identified capture set, and the
+    // The docking keys: the hand's identified capture set, and the
     // maps of the nlp search and the mpc_docking planner when one is selected.
     // A malformed key throws (the catch below refuses the configure, as for
     // every other parser); a profile on which a selected docking function
@@ -1466,7 +1454,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // SIM ONLY WHILE THE HAND'S CAPTURE SET IS PROVISIONAL. `robot.hand.docking`
     // is a sim identification until it is measured on the hand
     // (robot.hand.docking.provisional), like every other provisional block
-    // (L0 §5.3). Only the two docking functions read it, so it parks a real-arm
+    //. Only the two docking functions read it, so it parks a real-arm
     // configuration that selects one of the two and no other. Their QP solver
     // allocating inside a solve, on the planner thread, is not a condition
     // here: that is a recorded RT-1 violation (invariants.md, #654).
@@ -1528,11 +1516,11 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                     ResolvedSegmentMpcEtaV(), ResolvedSearchGridEtaV());
       }
     }
-    // The segment MPC (MPC E1-F03) runs on the planner thread, and its torque
-    // box plus publish slack must fit inside the CLIK's (MD-33). A profile
+    // The segment MPC runs on the planner thread, and its torque
+    // box plus publish slack must fit inside the CLIK's. A profile
     // mistake: park, name it, keep the robot up. Only under the law that runs
     // it and only with the planner on — closed_form builds no MPC segment core and
-    // reads none of its keys (MD-44), and a planner-less mpc profile is
+    // reads none of its keys, and a planner-less mpc profile is
     // SegmentModeUnmet's to judge (the oracle profile is exempt there).
     if (planner_params_.enabled && segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc) {
       if (const char* why = MpcSegmentConfigInvalid(); why != nullptr) {
@@ -1545,8 +1533,8 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
         return CallbackReturn::SUCCESS;
       }
     }
-    // The planner's DECISION values (S6-B) — values nobody may guess. Same rule
-    // as a consumed TBD: park, name the key, keep the robot up (A-S5-12).
+    // The planner's DECISION values — values nobody may guess. Same rule
+    // as a consumed TBD: park, name the key, keep the robot up.
     if (planner_params_.enabled) {
       if (const char* missing = PlannerDecisionMissing(); missing != nullptr) {
         sim_only_disabled_ = true;
@@ -1567,7 +1555,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
         return CallbackReturn::SUCCESS;
       }
     }
-    // One bool for the tick's arming question (§4.5-1).
+    // One bool for the tick's arming question.
     //
     // NOT `report_.armable`: that verdict covers every key the schema knows,
     // including the ones a LATER step decides (`reference.v_max`,
@@ -1601,7 +1589,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                 {hand_key, {hand_joint_names_, hand_motor_names_}},
             },
     };
-    // The per-tick record (S5.4). Always registered when the YAML asks for it:
+    // The per-tick record. Always registered when the YAML asks for it:
     // unlike grasp_diag there is no optional block to gate on — every tick of
     // this controller produces a row, including the ones that decide to do
     // nothing, which is the whole of PROC-7.
@@ -1638,10 +1626,10 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // controller that is going to fail configure never exposes a step lane.
     // Without this the YAML entry is inert: the topic name parses, the group
     // shows up in topic_config_, and no endpoint is ever created — the step
-    // then vanishes with no error anywhere (the step path is what S4.2
-    // measures through, so it fails as silence, not as a failure).
+    // then vanishes with no error anywhere (the step path is what the
+    // measurement runs through, so it fails as silence, not as a failure).
     CreateOwnedTopics(*this, owned_topics_);
-    // The state topic (D-20) sits directly under the controller's own
+    // The state topic sits directly under the controller's own
     // namespace rather than under a device group's: it describes the
     // CONTROLLER, not one device's lane, and the two groups it drives would
     // both have an equal claim to the prefix.
@@ -1678,7 +1666,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
 
     // The S7 supervisor's values (commit instant, wait pose, stop box, hand
     // sequencer). A configuration whose law is wired but which cannot run a
-    // TRIAL is parked, exactly like a consumed TBD (A-S5-12): the robot comes
+    // TRIAL is parked, exactly like a consumed TBD: the robot comes
     // up, this controller refuses to activate, and the log names the value.
     SetupSupervisor();
     if (clik_enabled_ && !trials_enabled_) {
@@ -1693,7 +1681,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       TearDownConfiguredResources();
       return CallbackReturn::SUCCESS;
     }
-    // MPC MD-34 / MD-44 / MD-45: under mpc the arm follows a segment from
+    // Under mpc the arm follows a segment from
     // APPROACH to the end of the stop, so a missing prerequisite would leave
     // every trial without one. Parked like any other profile mistake: the
     // robot comes up, this controller does not activate.
@@ -1716,12 +1704,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                     rtc::catching::SegmentModeName(segment_mode_));
       }
     }
-    // #537 pre-S10 R3 (Q4): the box the search and every joint-space ramp run
+    // #537 pre-S10 R3: the box the search and every joint-space ramp run
     // on is still provisional. Judged only on a box that LOADED — an
     // absent one is the supervisor's verdict above — and after it, so the
     // more basic refusal is the one the operator reads. The flag has no
     // validator row in `catching:`, hence not a validator failure; the park is
-    // the same one (L0 §5.3), and the log names the key.
+    // the same one, and the log names the key.
     if (!real_arm_config_ && !arm_qdd_max_.empty() && arm_qdd_provisional_) {
       RCLCPP_WARN(logger_,
                   "catching config warning: robot.arm.qdd_provisional — the acceleration box "
@@ -1810,7 +1798,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
   }
   // Base first, always: it bumps the activation generation and calls
   // ResetTargetInitialization, and the generation bump is what the first tick
-  // reads to know an activation boundary was crossed (D-23, #196 §3).
+  // reads to know an activation boundary was crossed.
   const auto ret = RTControllerInterface::on_activate(prev);
   if (ret != CallbackReturn::SUCCESS) {
     return ret;
@@ -1874,7 +1862,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_deactivate(
     const rclcpp_lifecycle::State& prev) noexcept {
   // Stop the planner burning its core while this controller is inactive. A
   // wake already in flight may still publish once; the RT refuses it by its
-  // activation generation (D-23), so Pause need not be synchronous.
+  // activation generation, so Pause need not be synchronous.
   if (planner_thread_) {
     planner_thread_->Pause();
   }
@@ -1886,7 +1874,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_deactivate(
 void DemoCatchingController::ResetLogState() noexcept {
   log_set_.Reset();
   // Reset() destroys every channel's drop counter, so the high-water mark has
-  // to go with it or the next session's first drop burst is swallowed (#238).
+  // to go with it or the next session's first drop burst is swallowed.
   log_drops_reported_ = 0;
   arm_state_log_handle_ = {};
   hand_state_log_handle_ = {};
@@ -1938,7 +1926,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_cleanup(
   return RTControllerInterface::on_cleanup(prev);
 }
 
-// ── Planner thread (S6-A) ───────────────────────────────────────────────────
+// ── Planner thread ───────────────────────────────────────────────────────
 
 void DemoCatchingController::StopPlannerThread() noexcept {
   planner_thread_.reset();
@@ -1972,7 +1960,7 @@ const char* DemoCatchingController::PlannerDecisionMissing() const noexcept {
 
 void DemoCatchingController::SetupSupervisor() {
   // T_freeze is the SUPERVISOR's commit instant as well as the planner's
-  // replacement freeze (decision G), so it is resolved whether or not the
+  // replacement freeze, so it is resolved whether or not the
   // planner runs — an oracle profile commits on it too.
   plan_freeze_ns_ = std::isfinite(planner_params_.t_freeze)
                         ? static_cast<std::int64_t>(std::llround(planner_params_.t_freeze * 1e9))
@@ -2031,7 +2019,7 @@ void DemoCatchingController::SetupSupervisor() {
     }
     hand_seq_enabled_ = hand_seq_.Configure(seq);
   }
-  // The contact lane (S7.3). The stride is the hand device's own sensor
+  // The contact lane. The stride is the hand device's own sensor
   // layout — the runtime SSoT (hand_sensor_layout.hpp) — or the 7-value union
   // when the device declares none.
   rtc::catching::ContactDebounceConfig contact_cfg;
@@ -2053,7 +2041,7 @@ void DemoCatchingController::SetupSupervisor() {
       static_cast<std::int64_t>(std::llround(params_.supervisor_contact_t_stale * 1e9));
   contact_t_confirm_ns_ =
       static_cast<std::int64_t>(std::llround(params_.supervisor_contact_t_confirm * 1e9));
-  // The hand-joint capture witness (D-S8-8 (b)). Its torque scale is the HAND
+  // The hand-joint capture witness. Its torque scale is the HAND
   // device's own joint_limits.max_torque, so no robot constant enters here; a
   // profile that asks for the witness on a device without those limits is
   // refused by SupervisorValueMissing, not silently judged by fingertips.
@@ -2078,7 +2066,7 @@ void DemoCatchingController::SetupSupervisor() {
     }
   }
   trials_enabled_ = clik_enabled_ && SupervisorValueMissing() == nullptr;
-  // The lead is its own key (E1-F16). A profile without it closes its hand the
+  // The lead is its own key. A profile without it closes its hand the
   // measured closure time before the catch — said, because for a hand that
   // holds only when it closes after the ball is in, that is the wrong instant.
   if (hand_seq_enabled_ && !params_.hand.T_close_lead_given) {
@@ -2137,7 +2125,7 @@ const char* DemoCatchingController::SupervisorValueMissing() const noexcept {
   if (!rtc::catching::FollowsSegments(segment_mode_) && !(decel_a_dec_ > 0.0)) {
     return "supervisor.decel.a_dec";
   }
-  // D-S9-D1: a trial whose stop or return has no deadline can hang in either
+  // A trial whose stop or return has no deadline can hang in either
   // with the arm commanded and nothing escalating.
   if (stop_deadline_ns_ <= 0 || return_deadline_ns_ <= 0) {
     return "supervisor.deadline.stop_s / return_s";
@@ -2210,7 +2198,7 @@ bool DemoCatchingController::SetupPlanner() {
                  planner_params_.wait_pose_n, arm_dof_);
     return false;
   }
-  // The joint groups (E3-F02) are the arm device's: resolved by its joint
+  // The joint groups are the arm device's: resolved by its joint
   // names here, where they are known, and handed to the segment planners.
   {
     std::string why;
@@ -2228,7 +2216,7 @@ bool DemoCatchingController::SetupPlanner() {
     }
     planner_wake_fd_.store(fd, std::memory_order_release);
   }
-  // ── The search and the segment planner (S6-B, R-3; E1-F16) ────────────────
+  // ── The search and the segment planner ─────────────────────────────────
   // One search and at most one segment planner per configuration, each built
   // here and handed to the cycle configured.
   planner_handle_.reset();
@@ -2239,7 +2227,7 @@ bool DemoCatchingController::SetupPlanner() {
         "(it publishes \"no plan\")%s",
         rtc::catching::FollowsSegments(segment_mode_) ? " and no segment planner runs" : "");
   } else {
-    // Two models (E3-F01): the segment model is the whole arm device; the
+    // Two models: the segment model is the whole arm device; the
     // search's is that same model unless `planner.search.sub_model` names a
     // chain inside it — the search then ranks candidates on the chain alone
     // and the segment planner widens what it chose. A chain's joints are the
@@ -2254,7 +2242,7 @@ bool DemoCatchingController::SetupPlanner() {
         !ResolvePlannerArm(search_name, /*chain=*/true, search_arm)) {
       return false;
     }
-    // D9′ (#641): a term that reads joints a plan (the search's) leaves out
+    // D9′: a term that reads joints a plan (the search's) leaves out
     // needs those joints' rest weight, or nothing brings them back between
     // solves — the rule is rtc_controllers' (the offline batch applies it too).
     const bool mpc_segment = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc;
@@ -2286,9 +2274,9 @@ bool DemoCatchingController::SetupPlanner() {
     if (!(grid ? SetupGridCatchSearch(search_arm) : SetupNlpCatchSearch(search_arm))) {
       return false;
     }
-    // MD-44: a segment planner exists only for a configuration that follows
+    // A segment planner exists only for a configuration that follows
     // its segments. Without a pre-catch grid there is no MPC segment planner to
-    // build (MD-70) — a profile mistake SegmentModeUnmet parks on, not a
+    // build — a profile mistake SegmentModeUnmet parks on, not a
     // configure failure. Nor is one built behind a search that refused.
     if (docking_refusal_.empty()) {
       if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc &&
@@ -2462,20 +2450,20 @@ bool DemoCatchingController::SetupGridCatchSearch(const PlannerArm& arm) {
   pc.v_max = val(params_.planner_search_grid_reference_v_max);
   pc.a_dec = val(params_.planner_search_grid_stop_a_dec);
   pc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
-  // Two values of the hand (E1-F16): the LEAD times the close command (the
+  // Two values of the hand: the LEAD times the close command (the
   // plan's t_cmd, the commit gate); the MEASURED closure time, with the tick
   // quantisation budget h/2, is what the closing hand absorbs (T_close,tot,
-  // L3 §4.5: the γ window).
+  // the γ window).
   pc.t_close_lead = ResolvedCloseLead();
   pc.t_close_total = val(params_.hand.T_close_e2e) + 0.5 * GetDefaultDt();
   pc.ball_mass = val(params_.ball.mass);
-  // The L4 reference the rollout replays (§4.8): the search's ω, ζ and a_max,
+  // The reference the rollout replays: the search's ω, ζ and a_max,
   // and the control period as the confirmation step.
   pc.ref_omega = val(params_.planner_search_grid_reference_omega);
   pc.ref_zeta = val(params_.planner_search_grid_reference_zeta);
   pc.ref_a_max = val(params_.planner_search_grid_reference_a_max);
   pc.control_dt = GetDefaultDt();
-  // Under a segment planner there is no L4 reference for a switch to step:
+  // Under a segment planner there is no reference for a switch to step:
   // the search decides a switch by ΔJ alone.
   pc.follows_segments = rtc::catching::FollowsSegments(segment_mode_);
 
@@ -2627,7 +2615,7 @@ bool DemoCatchingController::BuildDockingLimits(const PlannerArm& arm, double et
   if (arm.accel_box) {
     out.qdd_max.resize(n);
   }
-  // A segment has to be executable by the CLIK that follows it (MD-42): the
+  // A segment has to be executable by the CLIK that follows it: the
   // position box is the URDF's AND the CLIK's margined device box, and the
   // torque box is the CLIK's own — its margin under the dynamic form, the
   // ratings under the kinematic form, which has no torque box to exceed.
@@ -2819,7 +2807,7 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(const PlannerArm& pm) {
   dm.groups = joint_groups_;
   dm.rest_pose = planner_params_.wait_pose;
   dm.rest_pose_n = planner_params_.wait_pose_n;
-  // MD-42: the stop must be executable by the CLIK, so its position box is
+  // The stop must be executable by the CLIK, so its position box is
   // the URDF's AND the CLIK's margined device box (m_q then sits inside it).
   // URDF limits alone let a published node reach past the CLIK's box (iiwa7
   // A7 by 2.6e-5 rad on the shipped values).
@@ -2845,7 +2833,7 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(const PlannerArm& pm) {
   dc.control_dt = GetDefaultDt();
   // The ball's direction of travel is undefined below this floor.
   dc.v_eps = planner_params_.mpc_segment.v_eps;
-  // The closing window of `cost.w_path` (#716): the hand's lead and closure
+  // The closing window of `cost.w_path`: the hand's lead and closure
   // time, read from the profile here — the supervisor that otherwise resolves
   // them is set up after the planner. NaN (TBD) leaves the window empty, and
   // the planner refuses w_path > 0 then.
@@ -2980,7 +2968,7 @@ const char* DemoCatchingController::SegmentModeUnmet() const noexcept {
   if (static_cast<int>(arm_q_min_margined_.size()) != arm_dof_) {
     return "the CLIK's position box is off (device position limits incomplete)";
   }
-  // MD-45, MD-70: the arm follows a segment from APPROACH, and a plan is
+  // The arm follows a segment from APPROACH, and a plan is
   // published only together with one that starts before t_c. Without a
   // pre-catch grid no MPC segment planner is built — no trial would ever start. The
   // oracle profile has no planner: its test writes the box.
@@ -2992,7 +2980,7 @@ const char* DemoCatchingController::SegmentModeUnmet() const noexcept {
   if (!oracle_enabled_ && !(planner_params_.enabled && planner_cycle_.SegmentPlannerConfigured())) {
     return "no segment planner runs (planner.enabled is false, or no model the cores accept)";
   }
-  // MD-37: a segment for the next grid point waits in the box while the
+  // A segment for the next grid point waits in the box while the
   // pending slot holds the one before it — at most the replan lead and three
   // ticks (kSegmentAdmissionMaxAgeNs). An age bound below that would refuse
   // those segments.
@@ -3019,7 +3007,7 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
   }
   try {
     // The `mpc` layout role, exactly as DemoWbc's SpawnMpcThreadIfNeeded takes
-    // it (E-7 decision J): same slot, same scheduling, same thread name.
+    // it (E-7): same slot, same scheduling, same thread name.
     const auto thread_configs = rtc::SelectThreadConfigs();
     planner_thread_ = std::make_unique<CatchingPlannerThread>(
         planner_cycle_, fd, planner_params_.wake_timeout_s, planner_timing_, planner_events_);

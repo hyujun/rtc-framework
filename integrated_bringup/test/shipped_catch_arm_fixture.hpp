@@ -10,7 +10,7 @@
 // shipped YAML — so a change there moves every suite that includes this.
 //
 // The capture-set parameters are the docking fixture's synthetic ones
-// (mpc_docking::BaseParams): the identified values are E1-F15's.
+// (mpc_docking::BaseParams): the identified values are not shipped.
 #pragma once
 
 #include "iiwa7_leap_test_fixture.hpp"
@@ -40,7 +40,7 @@ struct ShippedArm {
   /// device's `joint_state_names` order against the model's velocity order).
   std::vector<int> device_of_model;
   /// The arm device's joint count: the model's when it is the whole device,
-  /// more when the model is a chain of it (a search model, E3-F01).
+  /// more when the model is a chain of it (a search model).
   int n_dev{0};
 };
 

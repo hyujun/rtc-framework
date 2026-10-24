@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""E1-F06 (G-1, #632): one robot's G-1 verdict from its judged units.
+"""One robot's verdict (#632) from its judged units.
 
     summarize.py --cfg <robot config dir> --overlay-cf <yaml> --overlay-mpc <yaml> \
         --cf <unit>... --mpc <unit>... [--regression pass|fail|unknown] [--json out.json]
 
-The rules are the ones fixed on #632 before the first throw (plan
-the #632 rules comment); this script applies them mechanically.
+The rules are the ones fixed on #632 before the first throw; this script
+applies them mechanically.
 ``--cf`` / ``--mpc`` are the JUDGED units (one per seed × arm, status DONE);
 retries are read off ``<unit>.fail<N>`` beside each. Needs ``<unit>/ct``
 (``analyse_unit.sh`` — catching_trials with ``t_end`` · ``hold_verdict`` ·

@@ -1,6 +1,6 @@
 # DemoDualArmController
 
-두 손 frame 과제와 자세 과제를 **QP 하나**로 푸는 바인딩입니다. 첫 device group 이 tree (몸통 + 양팔) 인 로봇에서 돌고, 코어는 `rtc_tsid` 의 다중 frame `ClikReferenceGenerator` 입니다. 정식화는 [mpc_multiframe_clik_formulation.md](../../docs/dynamic_catching/ref/mpc_multiframe_clik_formulation.md) §2 이고, 식마다 구현 · 테스트 · 다른 점은 그 문서 §11 의 표가 갖습니다 — 여기에는 운용 표면만 적습니다. 동작 계약은 [헤더 주석](../include/integrated_bringup/controllers/demo_dualarm_controller.hpp) 입니다.
+두 손 frame 과제와 자세 과제를 **QP 하나**로 푸는 바인딩입니다. 첫 device group 이 tree (몸통 + 양팔) 인 로봇에서 돌고, 코어는 `rtc_tsid` 의 다중 frame `ClikReferenceGenerator` 입니다. 식은 [`clik_reference.hpp`](../../rtc_tsid/include/rtc_tsid/kinematics/clik_reference.hpp) 가 갖고, 여기에는 운용 표면만 적습니다. 동작 계약은 [헤더 주석](../include/integrated_bringup/controllers/demo_dualarm_controller.hpp) 입니다.
 
 - **`g1_p1b` 만 YAML 을 싣습니다.** `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 라 다른 profile 에서는 인스턴스화되지 않습니다. `initial_controller` 는 그대로 `demo_joint_controller` 이고, 이 컨트롤러는 `/rtc_cm/switch_controller` 나 `initial_controller:=demo_dualarm_controller` 로 고릅니다 (명령은 [README](../README.md) 의 `g1_p1b` launch 절).
 - **군 `g1` (waist 3 + 팔 7 × 2) 은 QP 가 position 명령으로 내고, 군 `p1b` (손) 는 관절 공간 quintic** 으로 따라갑니다. 손 관절은 QP 변수에는 있되 속도 box 1e-9 로 잠깁니다.
@@ -79,6 +79,21 @@ ros2 param set /demo_dualarm_controller/demo_dualarm_controller tasks.right_hand
 
 세 pose 는 모두 **그 과제의 base frame** 입니다. `ref` = 이 tick 에 풀이가 받은 기준 $T^d(t)$, `cmd` = 풀이가 평가된 **명령 상태** (직전 tick 이 남긴 명령) 의 frame, `meas` = 이 tick 의 **측정** 관절 상태의 frame. `err_*` 는 `ref` 대 `cmd` — 풀이가 되먹임한 오차 그대로이고 **서보 지연은 들어 있지 않습니다**. 지연은 `cmd` 대 `meas` 를 시간을 밀어 맞대어 봅니다. 거부 · 버림 계수 (`reject_*` · `drop_*`) 는 누적입니다. 그림과 통계는 `ros2 run rtc_tools plot_rtc_log <그 CSV>` (`--stats` 로 통계만) — 과제 · 관절은 열 이름에서 읽으므로 그 run 의 YAML 이 필요 없습니다.
 
-## formulation 과의 차이
+## 코어 기본형과 다른 점
 
-식별 대조(식마다 구현 · 테스트 · 다른 점)는 [formulation §11](../../docs/dynamic_catching/ref/mpc_multiframe_clik_formulation.md) 의 표가 갖는다. 운용에서 보이는 것: QP 변수는 27 개 (몸통 17 + 손 10, 손은 속도 box 로 잠김), 오른손 base 는 `world` 가 아니라 `pelvis`, MPC 가 없어 기준은 task-space quintic, supervisor 와 충돌 damper 는 없다. E-STOP 은 sim 에서 걸 수단이 없어 gtest 로만 확인한다 ([docs/testing.md](../../docs/testing.md)).
+식은 [`clik_reference.hpp`](../../rtc_tsid/include/rtc_tsid/kinematics/clik_reference.hpp) 와 [`mpc_segment_core.hpp`](../../rtc_controllers/include/rtc_controllers/catching/mpc_segment_core.hpp) 가 갖는다. 이 바인딩이 다르게 한 곳:
+
+| 항목 | 이 컨트롤러 | 이유 |
+|---|---|---|
+| QP 변수 | 27 개 (몸통 17 + 손 10), 손은 속도 box 1e-9 로 잠금 | 다른 데모 컨트롤러와 같은 모델 cache 배선을 쓰기 위해서 |
+| 오른손 base | `world` 가 아니라 `pelvis` | 축이 world 와 같아 행은 같고 목표의 z 만 0.79 m 다름 |
+| 왼손 base | `torso_link` | 몸통 기준 과제는 waist 열이 0 이라 몸통을 밀지 않음 |
+| 기준 | 외부 정지 pose 로 가는 task-space quintic (MPC 없음) | 관절 기준을 만드는 MPC 가 이 컨트롤러에 없음 |
+| 자세 기준 | 정지한 목표 ($\dot q_{ref}$ 없음) | 자세군은 움직이는 궤적이 아니라 붙들기 용도 |
+| 가중 | 두 손 1.0 / 1.0, 자세 1e-3 · 1e-4 (튜닝하지 않은 출발값) | 두 과제가 열을 공유하지 않아 손 사이 우선순위는 결과에 무관 |
+| 목표 frame | `frame_id` 가 base 와 다르면 적용하는 tick 에 한 번 변환 | 이후 base 가 움직이면 목표가 따라가도록 |
+| 이득 상한 | $1/h$ 를 YAML · runtime 파라미터 · tick 에서 각각 검사 | 진동 없는 조건 $Kh\le1$ |
+| supervisor · 충돌 damper | 없음 (QP 실패 연속 시 controller-local fault 만) | 이 단계의 범위 밖 |
+| 자세 항 | $K_q>0$ 이라 정상점에 과제 오차가 남음 ($K_q=0$ 에서만 거의 0) | 자세 항이 과제를 끌 수 있음 |
+
+E-STOP 은 sim 에서 걸 수단이 없어 gtest 로만 확인한다 ([docs/testing.md](../../docs/testing.md)).

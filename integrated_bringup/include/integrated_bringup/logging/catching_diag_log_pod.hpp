@@ -1,14 +1,20 @@
 #ifndef INTEGRATED_BRINGUP_LOGGING_CATCHING_DIAG_LOG_POD_HPP_
 #define INTEGRATED_BRINGUP_LOGGING_CATCHING_DIAG_LOG_POD_HPP_
 
-// ── One tick of the catching controller (dynamic_catching L8 §5.2) ──────────
+// ── One tick of the catching controller ────────────────────────────────────
+//
+// This header is the definition of the `catching_diag.csv` columns: the
+// header row is spelled in WriteCatchingDiagLogHeader, and each field below
+// states its meaning and unit. Vectors are in the MODEL world (the Pinocchio
+// universe; the vision prediction is moved there on receipt), joint values
+// are in arm DEVICE order, ages and durations are on the steady clock.
 //
 // ONE POD, TWO CONSUMERS. The RT tick fills this once and hands the same
 // object to both the CSV ring (`catching_diag.csv`) and the SeqLock the
 // publish thread reads to build `rtc_msgs/CatchingState`. Two structs would
 // be two chances for the number on the operator's screen and the number in
 // the report to disagree about the same tick — the reason the GUI's ρ imports
-// `rtc_tools.analysis.hand_close` instead of recomputing it (L8 §11).
+// `rtc_tools.analysis.hand_close` instead of recomputing it.
 //
 // The state message carries ONE block this POD does not: the ingress
 // counters, which are updated by the subscription callback and would be a
@@ -19,8 +25,8 @@
 // EVERY TICK PUSHES A ROW (PROC-7). Including E-STOP ticks, stale-input
 // ticks, no-plan ticks and abort ticks. A tick that did not compute a block
 // leaves that block ZERO and its `*_valid` flag false rather than carrying the
-// previous tick's values forward — so a gap in the file means a dropped row
-// (#234 P-20), and a repeated value means the controller really recomputed it.
+// previous tick's values forward — so a gap in the file means a dropped row,
+// and a repeated value means the controller really recomputed it.
 // The RT tick gets this by construction: it default-constructs a fresh POD
 // per tick instead of mutating a member.
 //
@@ -52,17 +58,17 @@ struct CatchingDiagLogPod {
   static constexpr std::size_t kMaxTips = 8;
 
   // ── Timestamp (CM-provided, session-relative) ────────────────────────────
-  double t_relative_s{0.0};
+  double t_relative_s{0.0};  ///< session-relative tick time [s]
   std::uint64_t tick{0};
   /// T_arm [s] — the lead the reference is evaluated at. Recorded per row
   /// because a run whose T_arm was reconfigured mid-session cannot be read
   /// against one number from the YAML.
   double t_arm_s{0.0};
 
-  // ── Supervisor (L7) ──────────────────────────────────────────────────────
+  // ── Supervisor ───────────────────────────────────────────────────────────
   std::uint8_t mode{0};     // rtc::catching::Mode
   std::uint8_t reason{0};   // rtc::catching::Reason
-  std::uint8_t outcome{0};  // rtc::catching::Outcome (S8)
+  std::uint8_t outcome{0};  // rtc::catching::Outcome
   bool armed{false};
   bool estop_active{false};
   bool fault_latched{false};
@@ -70,69 +76,70 @@ struct CatchingDiagLogPod {
   bool law_enabled{false};
   bool real_arm_config{false};
 
-  // ── Vision input, as THIS TICK judged it (L1) ────────────────────────────
+  // ── Vision input, as THIS TICK judged it ─────────────────────────────────
   bool input_valid{false};
   bool input_stale{true};
   bool input_expired{false};
   bool input_new{false};
-  std::int32_t input_n{0};
+  std::int32_t input_n{0};  ///< samples in the held prediction
   std::uint64_t input_generation{0};
   std::uint64_t input_snapshot_sequence{0};
   std::uint64_t input_activation_generation{0};
-  /// Negative = never received (see CatchingState.msg). NOT 0, which on this
-  /// wire means "arrived this instant".
+  /// Steady receive age of the held prediction [s]. Negative = never received
+  /// (see CatchingState.msg). NOT 0, which on this wire means "arrived this
+  /// instant".
   double input_age_s{-1.0};
-  double input_horizon_s{0.0};
+  double input_horizon_s{0.0};  ///< last − first sample instant of the held prediction [s]
 
-  // ── Plan (L3; the S5 oracle stands in for the planner) ───────────────────
+  // ── Plan (the catch the arm follows) ─────────────────────────────────────
   bool plan_valid{false};
   std::uint32_t plan_id{0};
-  double plan_t_c_s{0.0};  // seconds from now to the catch instant
-  double plan_age_s{0.0};
-  std::array<double, 3> plan_p_c{};
-  std::array<double, 3> plan_a_d{};
-  std::array<double, 3> plan_v_c{};
-  double plan_gamma_f{0.0};
-  double plan_w5{0.0};
-  double plan_w6{0.0};
-  double plan_sigma_c{0.0};
-  double plan_score{0.0};
-  std::uint8_t plan_reason{0};  // rtc::catching::PlanReason
+  double plan_t_c_s{0.0};            ///< catch instant t_c − now [s]
+  double plan_age_s{0.0};            ///< now − plan publish instant [s]
+  std::array<double, 3> plan_p_c{};  ///< catch point p_c [m]
+  std::array<double, 3> plan_a_d{};  ///< desired approach axis (unit vector) [-]
+  std::array<double, 3> plan_v_c{};  ///< predicted ball velocity at t_c [m/s]
+  double plan_gamma_f{0.0};          ///< final velocity-matching ratio γ_f ∈ [0, 1] [-]
+  double plan_w5{0.0};               ///< √det(J₅J₅ᵀ) at the catch posture (gate measure)
+  double plan_w6{0.0};               ///< √det(J₆J₆ᵀ) at the catch posture (recorded only)
+  double plan_sigma_c{0.0};          ///< largest ball-position std at t_c [m]; 0 = unknown
+  double plan_score{0.0};            ///< the chosen candidate's search cost (lower wins) [-]
+  std::uint8_t plan_reason{0};       // rtc::catching::PlanReason
 
-  // ── Reference (L4) ───────────────────────────────────────────────────────
+  // ── Reference (SoftCatchTranslation) ─────────────────────────────────────
   // xdd is the REALISED acceleration, u_des the pre-saturation demand. Both,
   // because a saturated interval is uninterpretable from either alone.
   bool ref_valid{false};
   bool ref_saturated{false};
-  std::array<double, 3> ref_x{};
-  std::array<double, 3> ref_xd{};
-  std::array<double, 3> ref_xdd{};
-  std::array<double, 3> ref_u_des{};
-  std::array<double, 3> ref_e{};
-  std::array<double, 3> ref_ed{};
-  double ref_gamma{0.0};
-  double ref_gamma_d{0.0};
-  double ref_gamma_dd{0.0};
+  std::array<double, 3> ref_x{};      ///< reference catch-frame position x for t + dt [m]
+  std::array<double, 3> ref_xd{};     ///< reference velocity ẋ for t + dt [m/s]
+  std::array<double, 3> ref_xdd{};    ///< acceleration realised over [t, t + dt] [m/s²]
+  std::array<double, 3> ref_u_des{};  ///< pre-saturation demand u_des [m/s²]
+  std::array<double, 3> ref_e{};      ///< error e = (x − p_c) − γ(o − p_c) at t [m]
+  std::array<double, 3> ref_ed{};     ///< error rate ė at t [m/s]
+  double ref_gamma{0.0};              ///< γ [-]
+  double ref_gamma_d{0.0};            ///< γ̇ [1/s]
+  double ref_gamma_dd{0.0};           ///< γ̈ [1/s²]
 
-  // ── Joint command (L5, CLIK) ─────────────────────────────────────────────
+  // ── Joint command (CLIK) ─────────────────────────────────────────────────
   bool clik_ran{false};
   bool clik_converged{false};
   bool clik_command_mismatch{false};
   std::int32_t clik_status{-1};
   std::int32_t clik_iterations{0};
-  double clik_solve_us{0.0};
+  double clik_solve_us{0.0};  ///< CLIK solve time [µs]
   std::int32_t qp_fail_streak{0};
 
   // ── Tracking ─────────────────────────────────────────────────────────────
-  double track_err_rad{0.0};
+  double track_err_rad{0.0};  ///< ‖q_meas − q_cmd‖₂ over the arm joints [rad]
   std::uint8_t num_arm_joints{0};
   /// What went out on the wire, hold latch included; NaN on a tick that
-  /// commanded nothing. Mirrors the controller's own command selection.
+  /// commanded nothing. Mirrors the controller's own command selection. [rad]
   std::array<double, kMaxArmJoints> q_cmd{};
-  std::array<double, kMaxArmJoints> q_meas{};
+  std::array<double, kMaxArmJoints> q_meas{};  ///< measured arm joint positions [rad]
   bool abort_stopped{false};
 
-  // ── Fault latch (#537 S9b, D-S9-D1/D2/D3) ────────────────────────────────
+  // ── Fault latch ──────────────────────────────────────────────────────────
   /// What raised the fault latch that is up NOW (0 while it is down). The
   /// transition that follows is ABORT_ESCALATED whatever the cause, so this is
   /// the only place a reader can tell a QP failure streak from a motion that
@@ -148,7 +155,7 @@ struct CatchingDiagLogPod {
   std::uint32_t fault_latch_seq{0};
   /// Why a fault reset was REFUSED on this tick (0 on every other tick, and on
   /// a reset that cleared the latch). The latch stays up; the operator asks
-  /// again once the arm has stopped (D-S9-D3). CSV column.
+  /// again once the arm has stopped. CSV column.
   enum class FaultResetRefusal : std::uint8_t {
     kNone = 0,
     kCommandMoving = 1,       ///< the carried arm command still has a velocity
@@ -163,12 +170,14 @@ struct CatchingDiagLogPod {
   int fault_reset_refuse_joint{-1};
   double fault_reset_refuse_value{0.0};
 
-  // ── Hand (L6, from S7) ───────────────────────────────────────────────────
+  // ── Hand sequencer ───────────────────────────────────────────────────────
   bool hand_phase_valid{false};
-  std::uint8_t hand_phase{0};
+  std::uint8_t hand_phase{0};  // rtc::catching::HandPhase
+  /// Closure fraction ρ = min over caging joints of (q − q_pre)/(q_close − q_pre),
+  /// signed by the closing direction, clamped to [0, 1] [-].
   double hand_rho{0.0};
   bool hand_timeout{false};
-  /// D-S8-8 (b)'s hand-joint witness (#537 S8-C): caging joints stalled part-
+  /// The hand-joint capture witness: caging joints stalled part-
   /// way while pushing toward q_close, the largest signed τ/τ_max over them
   /// (NaN when not evaluated — not in Hold, a lane not vouched for, or the
   /// witness off), how long the current unbroken stall has lasted [s] as of
@@ -179,7 +188,7 @@ struct CatchingDiagLogPod {
   double hand_effort_frac{std::numeric_limits<double>::quiet_NaN()};
   double hand_blocked_s{0.0};
   std::uint8_t outcome_source{0};
-  /// S8-I (`planner.wait_pose_source`): the wait pose the trial homes to and
+  /// `planner.wait_pose_source`: the wait pose the trial homes to and
   /// the planner seeds from. `wait_pose_adopted` is 1 when it is the arm's
   /// switched-in pose (source `current`), 0 when it is the YAML's; the
   /// per-joint values below are the pose in force either way, so a reader
@@ -195,35 +204,35 @@ struct CatchingDiagLogPod {
     kOutsideBox = 2,  ///< a joint reading outside the margined box (or NaN)
     kMoving = 3,      ///< armed before the arm came to rest
     kEstop = 4,       ///< the deciding tick was under an E-STOP
-    /// Armed while nobody vouched for the arm's velocity lane (#537 Q9): a
+    /// Armed while nobody vouched for the arm's velocity lane: a
     /// reading that may be a hole is not a reading of rest.
     kVelocityUnreadable = 5,
   };
   /// The device's positions are readable but its VELOCITY lane has a hole
-  /// this tick (#537 pre-S10 R3). While it lasts the controller does not
+  /// this tick. While it lasts the controller does not
   /// enter ARMED, does not finish homing or the RETREAT return, does not
   /// adopt a switched-in wait pose (arm) and refuses a fault reset (arm). Not
   /// a CSV column: the publish thread warns on the edge.
   bool arm_velocity_unreadable{false};
   bool hand_velocity_unreadable{false};
   /// Whether this tick could JUDGE the lane at all, i.e. the device's
-  /// positions were readable (#610). With the position gate closed the flag
+  /// positions were readable. With the position gate closed the flag
   /// above is false whatever the lane holds, and the publish thread must keep
   /// the episode it is in rather than read that as a recovery.
   bool arm_velocity_judged{false};
   bool hand_velocity_judged{false};
   /// The activation this tick belongs to: the publish thread's edge memory
-  /// starts over with each one (#610). Not a CSV column.
+  /// starts over with each one. Not a CSV column.
   std::uint32_t velocity_report_activation{0};
   std::uint32_t wait_pose_refuse_seq{0};
   WaitPoseRefusal wait_pose_refuse_reason{WaitPoseRefusal::kNone};
   int wait_pose_refuse_joint{-1};
   double wait_pose_refuse_value{0.0};
-  std::array<double, kMaxArmJoints> wait_pose{};
+  std::array<double, kMaxArmJoints> wait_pose{};  ///< wait pose in force (`q_wait_*`) [rad]
 
-  // ── Segment MPC follower (MPC E1-F04) ──────────────────────────────────────
-  // Every field is a CSV column (E1-F05, #631). The state message carries
-  // none of them: its field set is frozen (D-20). `segment_event` and
+  // ── Segment MPC follower ─────────────────────────────────────────────────
+  // Every field is a CSV column. The state message carries none of them: its
+  // field set is frozen. `segment_event` and
   // `segment_refusal` are written as their integer values — the tables are in
   // the integrated_bringup README and in rtc_tools' catching plotter.
   /// What happened to a segment this tick. One value per tick: the
@@ -232,17 +241,17 @@ struct CatchingDiagLogPod {
   enum class SegmentEvent : std::uint8_t {
     kNone = 0,
     kAdmitted = 1,       ///< a segment entered the pending slot
-    kDeferred = 2,       ///< admissible, left in the box: the slot holds another grid point (MD-37)
-    kWorkspace = 3,      ///< retired (MD-73): the RT judged the stop against a catch box that
-                         ///< no longer exists (L3 §4.9). Never written; the number stays for
+    kDeferred = 2,       ///< admissible, left in the box: the slot holds another grid point
+    kWorkspace = 3,      ///< retired: the RT judged the stop against a catch box that
+                         ///< no longer exists. Never written; the number stays for
                          ///< the logs and tools that carry it
     kSwitched = 4,       ///< the pending segment became the followed one
-    kGateRefused = 5,    ///< pending dropped: the continuity gate refused it (MD-39)
-    kPlanMismatch = 6,   ///< a segment does not end the followed plan (MD-35)
+    kGateRefused = 5,    ///< pending dropped: the continuity gate refused it
+    kPlanMismatch = 6,   ///< a segment does not end the followed plan
     kSampleFailed = 7,   ///< a segment could not be sampled at now_lead + h
     kNotDue = 8,         ///< DECEL entry with a pending segment whose node 0 is later
-    kNoSegment = 9,      ///< nothing followed and nothing pending (→ ABORT_SAFE, MD-44)
-    kReplaced = 10,      ///< a newer segment for the pending one's node 0 took the slot (MD-58)
+    kNoSegment = 9,      ///< nothing followed and nothing pending (→ ABORT_SAFE)
+    kReplaced = 10,      ///< a newer segment for the pending one's node 0 took the slot
     kPairAdmitted = 11,  ///< APPROACH: a replacement plan entered the slot with its first segment
     kPlanSwitched = 12,  ///< that segment became the followed one and its plan the followed plan
   };
@@ -256,29 +265,24 @@ struct CatchingDiagLogPod {
   bool segment_following{false};
   std::uint32_t segment_seq{0};
   std::int32_t segment_k0{0};
-  std::array<double, 3> segment_p_d{};
-  std::array<double, 3> segment_v_ff{};
-  bool segment_held{false};  ///< past the last node (the stop is held)
+  std::array<double, 3> segment_p_d{};   ///< catch-frame position target [m]
+  std::array<double, 3> segment_v_ff{};  ///< catch-frame linear velocity feed-forward [m/s]
+  bool segment_held{false};              ///< past the last node (the stop is held)
   /// The switch gate's account on a tick that judged one (kSwitched or
-  /// kGateRefused): ρ, the largest |Δq|, |Δq̇| and the refusing joint (−1).
+  /// kGateRefused): ρ = max_i (|Δq̇_i| + K_p|Δq_i|) / ((1 − η_v) q̇_max,i) [-],
+  /// the largest |Δq| [rad], |Δq̇| [rad/s] and the refusing joint (−1).
   double segment_rho{0.0};
   double segment_dq_max{0.0};
   double segment_dqd_max{0.0};
   std::int32_t segment_gate_joint{-1};
 
-  // ── Fingertip sensors (D-24) ─────────────────────────────────────────────
-  // `tip_age_s` is filled from S5.4 because it is a MEASUREMENT — the D-24
-  // receipt instant minus now, needing no policy. `tip_fresh` and
-  // `tip_contact` are not, because both need a threshold L7 §4's TIP_STALE
-  // has not fixed yet, and a threshold invented here would be the one every
-  // later stage inherits (the same reason A-S5-5 deferred the ν̄ metric).
-  // S7.3's contact lane fills them now (`supervisor.contact.*`, L7 §4.4);
-  // before it, only `tip_age_s` was filled.
+  // ── Fingertip sensors ────────────────────────────────────────────────────
+  // Filled by the contact lane (`supervisor.contact.*`).
   std::uint8_t num_tips{0};
-  std::array<double, kMaxTips> tip_force{};
-  std::array<bool, kMaxTips> tip_contact{};
-  std::array<bool, kMaxTips> tip_fresh{};
-  std::array<double, kMaxTips> tip_age_s{};
+  std::array<double, kMaxTips> tip_force{};  ///< ‖F − bias‖ (‖F‖ before a bias exists) [N]
+  std::array<bool, kMaxTips> tip_contact{};  ///< debounced contact verdict
+  std::array<bool, kMaxTips> tip_fresh{};    ///< the tip's sample is fresh this tick
+  std::array<double, kMaxTips> tip_age_s{};  ///< steady receipt age [s]; −1 = never received
 };
 
 static_assert(std::is_trivially_copyable_v<CatchingDiagLogPod>,
@@ -333,7 +337,7 @@ struct CatchingDiagLogColumns {
 }
 
 /// Reason name for the CSV. Values mirror rtc::catching::Reason; 11 is
-/// unassigned there (#755) and reads "unknown".
+/// unassigned there and reads "unknown".
 [[nodiscard]] inline std::string_view CatchingReasonStr(std::uint8_t v) noexcept {
   switch (v) {
     case 0:
@@ -384,8 +388,8 @@ struct CatchingDiagLogColumns {
 namespace detail {
 
 /// Values only — the header spells its own column names as literals so the
-/// python-side oracle can read them back out of this file (#440's lesson,
-/// applied to a writer whose fixed block is large enough to drift silently).
+/// python-side oracle can read them back out of this file (a fixed block
+/// this large would otherwise drift silently).
 inline void WriteXyzRow(std::ostream& os, const std::array<double, 3>& v) {
   os << ',' << v[0] << ',' << v[1] << ',' << v[2];
 }
@@ -396,8 +400,8 @@ inline void WriteXyzRow(std::ostream& os, const std::array<double, 3>& v) {
 /// row writer must be handed the SAME value. The logger appends '\n'.
 ///
 /// `mode` / `reason` are written BOTH as the raw enum value and as a name
-/// (`mode_name` / `reason_name`), which is the convention the catchability-map
-/// CSV of this same epic already uses. The raw value is what survives an enum
+/// (`mode_name` / `reason_name`), the catchability-map CSV's convention. The
+/// raw value is what survives an enum
 /// gaining a member; the name is what makes the file readable without this
 /// build's header. A single string-valued `mode` column would instead collide
 /// with the plotter's global "these columns are categorical" set, which is

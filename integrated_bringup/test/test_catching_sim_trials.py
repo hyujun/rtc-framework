@@ -82,7 +82,7 @@ def test_a_cycle_is_closed_by_a_re_arm_after_retreat_whatever_follows():
 
 
 def test_the_fault_reset_names_the_controller_not_its_config_key():
-    # Measured 2026-10-08 (E1-F19): the driver sent the config key, the CM
+    # Measured 2026-10-08: the driver sent the config key, the CM
     # answered "'demo_catching_controller' is not the active controller
     # ('DemoCatchingController')", the latch stayed up and the unit ended at
     # the next trial's homing.

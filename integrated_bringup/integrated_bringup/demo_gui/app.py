@@ -348,7 +348,7 @@ class DemoControllerGUI(Node):
             SwitchController, "/rtc_cm/switch_controller"
         )
 
-        # The two latch clears (S9a, D-S9-H) — separate services for separate
+        # The two latch clears — separate services for separate
         # latches (E-8); see demo_gui.latch_clear. The flow object is touched on
         # the Tk thread only: service replies are marshalled there.
         self._clear_estop_client = self.create_client(ClearEstop, CLEAR_ESTOP_SERVICE)
@@ -356,18 +356,18 @@ class DemoControllerGUI(Node):
         self._estop_clear = EstopClearFlow()
         self._reset_fault_sent_at: float | None = None  # monotonic; None = no call pending
 
-        # Projectile ball (dynamic_catching §13 S3). Sim-only lanes: on hardware
+        # Projectile ball. Sim-only lanes: on hardware
         # nothing serves them and the panel stays on "never received", which is
         # the honest readout rather than a hidden error.
         self._ball_status = BallStatus()
 
-        # Hand step (dynamic_catching §13 S4). The panel holds only what the
+        # Hand step. The panel holds only what the
         # CATCHING controller reported; with no such controller configured it
         # stays empty and says so, which is the honest readout on a profile
         # that ships no catching YAML.
         self._hand_step = HandStepPanel()
 
-        # Catching controller state (dynamic_catching §13 S5). Subscribed on the
+        # Catching controller state. Subscribed on the
         # CATCHING controller's own namespace, not on the active one: the topic
         # is lifecycle-gated, so a profile that never runs this controller sees
         # "never received" — which is the honest readout — and switching away
@@ -2913,7 +2913,7 @@ class DemoControllerGUI(Node):
 
     # ---- Grasp tab builder -----------------------------------------------------
 
-    # ---- Projectile ball panel (dynamic_catching §13 S3) ----------------------
+    # ---- Projectile ball panel ------------------------------------------------
 
     def _ball_truth_cb(self, _msg) -> None:
         self._ball_status.truth.mark(time.monotonic())
@@ -3022,7 +3022,7 @@ class DemoControllerGUI(Node):
         self._prev_ball_text = text
         label.config(text=text)
 
-    # ---- Latch clears: Clear E-STOP / Reset fault (S9a, D-S9-H) --------------
+    # ---- Latch clears: Clear E-STOP / Reset fault -----------------------------
 
     def _build_latch_row(self, parent: tk.Frame) -> None:
         """Header row shared by every tab — both latches belong to whichever
@@ -3176,7 +3176,7 @@ class DemoControllerGUI(Node):
         self._reset_fault_sent_at = None
         self._show_latch_reply(summary)
 
-    # ---- Hand step panel (dynamic_catching §13 S4) ---------------------------
+    # ---- Hand step panel ------------------------------------------------------
 
     def _catching_state_cb(self, msg: CatchingState) -> None:
         """CatchingState handler — published by demo_catching_controller.
@@ -3341,7 +3341,7 @@ class DemoControllerGUI(Node):
         """Supervisor mode, input lane, tracking error, CLIK state, arm/disarm.
 
         THE TWO ARMING BUTTONS ARE NOT A TOGGLE. `catching.enable` is lowered by
-        the RT tick itself on E-STOP and on a latched fault (A-S5-3), so the
+        the RT tick itself on E-STOP and on a latched fault, so the
         operator's request and the controller's answer can differ — and a single
         toggle would have to pick one of them to display. Two explicit buttons
         plus a line that shows both keeps the disagreement visible, which is the
@@ -3430,7 +3430,7 @@ class DemoControllerGUI(Node):
         label.config(text=text, fg="#f38ba8" if alarm else "#a6adc8")
 
     def _build_hand_step_panel(self, parent: tk.Frame) -> None:
-        """Preshape/closed step buttons for the S4.0 catching controller.
+        """Preshape/closed step buttons for the catching controller.
 
         The poses are NOT entered here and not read from YAML: "Load profile"
         asks the catching controller for the read-only parameters it mirrored

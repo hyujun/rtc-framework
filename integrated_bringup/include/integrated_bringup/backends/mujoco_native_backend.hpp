@@ -99,7 +99,7 @@ class MujocoNativeBackend : public DeviceBackend {
     float fy{0.0F};
     float fz{0.0F};
     bool received_at_least_once{false};
-    // Steady-clock receipt time of the sample above (dynamic_catching D-24).
+    // Steady-clock receipt time of the sample above.
     // Stamped by OnWrench on the same lane that stamps `last_state_ns_` for
     // the joint callback, and carried out through DeviceStateCache so a
     // consumer can apply its OWN staleness deadline instead of inheriting

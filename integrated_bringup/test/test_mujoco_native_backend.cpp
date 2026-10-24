@@ -461,7 +461,7 @@ TEST(MujocoNativeBackendReorderTest, NamedShuffledJointState_ReadsBackInDeviceOr
   exec.remove_node(node->get_node_base_interface());
 }
 
-// ── Sensor-lane receipt time and sample counter (dynamic_catching D-24 (a)) ──
+// ── Sensor-lane receipt time and sample counter ──────────────────────────────
 //
 // These four pin the fields that let a consumer apply its OWN staleness
 // deadline instead of inheriting this backend's `max_consecutive_missed_ticks`.
@@ -500,7 +500,7 @@ TEST_F(MujocoNativeBackendTest, ReadSensorState_StampsReceiptAndAdvancesSequence
   EXPECT_LE(first.inference_recv_steady_ns[0], after);
   EXPECT_EQ(first.inference_sequence[0], 1U);
   // Untouched fingertips stay unclaimed — the lane is per tip, which is the
-  // whole point of D-24 (one finger can go quiet while the others report).
+  // whole point of the per-tip lane (one finger can go quiet while the others report).
   EXPECT_EQ(first.inference_recv_steady_ns[1], 0);
   EXPECT_EQ(first.inference_sequence[1], 0U);
 
@@ -524,8 +524,8 @@ TEST_F(MujocoNativeBackendTest, DroppedNaNWrench_DoesNotRefreshReceipt) {
   // EXACT equality, deliberately: the force that is still in the mirror is the
   // one from the accepted message, so the age must be that message's age. A
   // stamp refreshed by the rejected sample would report a fresh force that is
-  // in fact as old as the last good packet — the precise misreading D-24
-  // exists to prevent, and it would still pass an inequality-only assertion.
+  // in fact as old as the last good packet — the precise misreading the
+  // stamp exists to prevent, and it would still pass an inequality-only assertion.
   EXPECT_EQ(after.inference_recv_steady_ns[0], before.inference_recv_steady_ns[0]);
   // The sequence counts ACCEPTED samples, so it does not move either. (It is
   // sourced from the same counter the miss detector uses, which is why a

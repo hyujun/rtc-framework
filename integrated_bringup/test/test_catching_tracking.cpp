@@ -1,6 +1,6 @@
-// ── The catching tracking law, closed loop on the real model (S5.3) ─────────
+// ── The catching tracking law, closed loop on the real model ────────────────
 //
-// G4-H / G5-A / G5-B. What is under test is the CHAIN — sample → soft-catch
+// What is under test is the CHAIN — sample → soft-catch
 // reference → extended CLIK → arm command — against the shipped `ur5e_p1b`
 // model and its real `catch_frame`, not against a stub.
 //
@@ -12,12 +12,12 @@
 //
 // THE LOOP IS CLOSED WITH A PERFECT SERVO: the measured state of tick n+1 is
 // the command of tick n. The sim arm is not that (a first-order lag of the
-// servo's kd/kp, 0.05 s on ur5e_p1b, #537 D-S8-13); the perfect servo is
+// servo's kd/kp, 0.05 s on ur5e_p1b); the perfect servo is
 // deliberate, because it makes a position-error assertion mean "the law
 // converges" rather than "the plant is slow".
 //
 // TIME IS STEPPED WITH THE TICKS. The controller reads its clock per tick
-// (L0 §4.5 forbids tick×dt), and this file hands it a fake one
+// (tick×dt is forbidden), and this file hands it a fake one
 // (SetClockForTesting) that advances exactly one control period per tick. That
 // is what keeps the reference's own time axis and the integration step
 // consistent; a loop that spun with the REAL clock would advance `dt` per tick
@@ -110,7 +110,7 @@ class CatchingTrackingTest : public ::testing::Test {
   /// at the call site rather than buried in a second copy of the config.
   ///
   /// `t_c_offset_s` defaults to 5 s. These cases are about the APPROACH law,
-  /// and from S7 the catch instant ENDS the approach — COMMITTED at t_c −
+  /// and the catch instant ENDS the approach — COMMITTED at t_c −
   /// T_freeze, DECEL at t_c — so the default puts it beyond every run below.
   /// (It was 1 s while nothing happened at t_c.)
   void BringUp(const Eigen::Vector3d& p_c, const Eigen::Vector3d& a_d, double gamma_f = 0.0,
@@ -234,12 +234,12 @@ class CatchingTrackingTest : public ::testing::Test {
   std::array<double, 3> ball_vel_{1.0, 2.0, 3.0};
 };
 
-// ── G5-A: a static target converges ─────────────────────────────────────────
+// ── A static target converges ───────────────────────────────────────────────
 
 TEST_F(CatchingTrackingTest, ConvergesToAStaticCatchPointAndAxis) {
-  // γ_f = 0 makes the catch point the attractor for the whole run (L4 §5.3:
-  // with γ ≡ 0 the ball drops out of the dynamics entirely), which is what
-  // turns this into the static-target case G5-A asks for. The target is 6 cm
+  // γ_f = 0 makes the catch point the attractor for the whole run (with
+  // γ ≡ 0 the ball drops out of the dynamics entirely), which is what turns
+  // this into the static-target case. The target is 6 cm
   // from where the hand starts and the axis is tilted 15°, so both task rows
   // have work to do.
   const Eigen::Vector3d p_c = start_pose_.translation() + Eigen::Vector3d(0.04, 0.03, 0.02);
@@ -274,7 +274,7 @@ TEST_F(CatchingTrackingTest, ConvergesToAStaticCatchPointAndAxis) {
       << "the run aborted; last reason = " << static_cast<int>(ctrl_->GetLastReason());
 }
 
-// ── G5-B: the boxes hold ────────────────────────────────────────────────────
+// ── The boxes hold ──────────────────────────────────────────────────────────
 
 /// Under each form of the CLIK's acceleration bound (kinematic, dynamic).
 /// The run includes the tick
@@ -359,14 +359,14 @@ TEST_P(CatchingLimitsTest, RespectsTheJointAndStepLimitsThroughout) {
 
 INSTANTIATE_TEST_SUITE_P(Forms, CatchingLimitsTest, ::testing::Values("kinematic", "dynamic"));
 
-// ── Decision K (S6-C2): the dynamic form bounds the arm torque ──────────────
+// ── The dynamic form bounds the arm torque ──────────────────────────────────
 
 class CatchingTorqueTest : public CatchingTrackingTest {
  protected:
-  static constexpr double kEta = 0.8;  // joint_cmd.eta_tau default (D-16)
+  static constexpr double kEta = 0.8;  // joint_cmd.eta_tau default
 
-  /// Worst |τ_i| / (η·τ_max,i) over the arm across 300 ticks toward the G5-B
-  /// far target. The oracle is RNEA on the ACTUATED model (the one the
+  /// Worst |τ_i| / (η·τ_max,i) over the arm across 300 ticks toward the far
+  /// target. The oracle is RNEA on the ACTUATED model (the one the
   /// controller drives, see CatchFrameOracle), fed the commanded arm path:
   /// τ = RNEA(q_{n−1}, v_{n−1}, (v_n − v_{n−1})/dt), v_n = (q_n − q_{n−1})/dt —
   /// what the perfect servo would have to deliver. The hand sits at zero.
@@ -387,7 +387,7 @@ class CatchingTorqueTest : public CatchingTrackingTest {
     // t_c 5 s out, like BringUp's default: 300 ticks of APPROACH (see there).
     // And no REF_SATURATED abort: the far target saturates the reference for
     // most of the run BY DESIGN — that is the load this case measures — and
-    // S7's streak rule (L7 §4.2) would end the approach it is measuring.
+    // The supervisor's streak rule would end the approach it is measuring.
     BringUp(p_c, a_d, 0.0, 5.0, [&tweak](YAML::Node& y) {
       y["catching"]["supervisor"]["sat_ticks"] = 1000000;
       if (tweak) {
@@ -449,7 +449,7 @@ TEST_F(CatchingTorqueTest, WithoutAnAccelerationConstraintTheFarTargetBreaksTheB
   // run demands more than η·τ_max, so a green dynamic run is the rows' doing.
   //
   // "No binding constraint" is the kinematic form with bounds no run can
-  // reach, not a missing derived box: from S7 the supervisor's joint-space
+  // reach, not a missing derived box: the supervisor's joint-space
   // stop and homing ramp with that box, so a profile without it cannot run a
   // trial and is parked (SupervisorValueMissing) — and the kinematic form's
   // task rows replace the per-joint box in the solve, which is the absence
@@ -513,10 +513,10 @@ TEST_F(CatchingTrackingTest, TheFirstCommandedTickDoesNotJump) {
   }
 }
 
-// ── G5-C: the QP's share of the tick ────────────────────────────────────────
+// ── The QP's share of the tick ──────────────────────────────────────────────
 
 TEST_F(CatchingTrackingTest, QpSolveTimeStaysInsideItsBudget) {
-  // The budget (L5 §9 G5-C, 2026-09-22, provisional): p99 <= 400 us and max
+  // The budget (provisional): p99 <= 400 us and max
   // <= 1500 us against a 2000 us tick. Quantiles rather than a mean, because
   // what threatens a control loop is the tail — a mean of 200 us with a 3 ms
   // outlier is a missed tick, and the mean cannot see it.
@@ -556,11 +556,11 @@ TEST_F(CatchingTrackingTest, QpSolveTimeStaysInsideItsBudget) {
   EXPECT_LT(worst, 1500.0) << "max " << worst << " us";
 }
 
-// ── G7-H (d): the fault latch outlives an E-STOP clear ──────────────────────
+// ── The fault latch outlives an E-STOP clear ────────────────────────────────
 
 TEST_F(CatchingTrackingTest, AQpFailureStreakLatchesAFaultThatClearEstopDoesNotRelease) {
-  // The half of P-1 (d) S5.1 could not reach: it needed a fault SOURCE, and
-  // the QP failure streak is the one the design names (L7 §4.2).
+  // This needs a fault SOURCE, and the QP failure streak is the one the
+  // design names.
   //
   // The streak is provoked with a plan whose approach axis is not a unit
   // vector, which CLIK refuses before the solve. That is a real failure mode —
@@ -571,11 +571,10 @@ TEST_F(CatchingTrackingTest, AQpFailureStreakLatchesAFaultThatClearEstopDoesNotR
     yaml["diagnostic"]["oracle_plan"]["a_d"] = YAML::Load("[0.0, 0.0, 0.0]");
   }));
   // Each failure costs a cycle — APPROACH, ABORT_SAFE, RETREAT, ARMED,
-  // TRACKING, a fresh plan. From S7 each cycle also needs a NEW BALL: after a
-  // re-arm the supervisor refuses the track the last attempt was on (#537 S7
-  // Q15, R-TRACK), so the same prediction would park it in ARMED and the
-  // streak would never complete. The fixture throws a new ball (a new track
-  // generation) for every attempt, which is what a thrower retrying does.
+  // TRACKING, a fresh plan. Each cycle also needs a NEW BALL: after a
+  // re-arm the supervisor refuses the track the last attempt was on, so the same
+  // prediction would park it in ARMED and the streak would never complete. The fixture throws a new
+  // ball (a new track generation) for every attempt, which is what a thrower retrying does.
   bool planned = false;
   std::uint64_t generation = 42;
   std::uint64_t sequence = 1;
@@ -598,7 +597,7 @@ TEST_F(CatchingTrackingTest, AQpFailureStreakLatchesAFaultThatClearEstopDoesNotR
   EXPECT_TRUE(ctrl_->HasLatchedFault());
   EXPECT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kFault);
 
-  // P-1 (d): the two paths are separate. A global clear must not launder a
+  // The two paths are separate. A global clear must not launder a
   // controller fault.
   ctrl_->TriggerEstop();
   RunClosedLoop(1);
@@ -608,7 +607,7 @@ TEST_F(CatchingTrackingTest, AQpFailureStreakLatchesAFaultThatClearEstopDoesNotR
   EXPECT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kFault);
 
   // And the reset does release it, on the tick that services it — leaving the
-  // controller DISARMED, because a fault reset is not an arming (P-1 (c)).
+  // controller DISARMED, because a fault reset is not an arming.
   ctrl_->ResetFault();
   RunClosedLoop(2);
   EXPECT_FALSE(ctrl_->HasLatchedFault());
@@ -616,15 +615,15 @@ TEST_F(CatchingTrackingTest, AQpFailureStreakLatchesAFaultThatClearEstopDoesNotR
   EXPECT_FALSE(ctrl_->IsArmRequested());
 }
 
-// ── G5-E: the lead compensation, measured on an injected delay ──────────────
+// ── The lead compensation, measured on an injected delay ────────────────────
 
 TEST_F(CatchingTrackingTest, LeadCompensationReducesTheErrorUnderAnActuationDelay) {
-  // What this gate was stuck on: on a plant with no actuation lag (the
+  // On a plant with no actuation lag (the
   // 2026-09-20 premise about the sim, corrected 2026-09-24), leading and not
   // leading produce identical commands and the "before/after" comparison
   // measures nothing. The delay comes from a FIXTURE that only this test can
-  // reach (option ㄱ, #537), not from the shipped `T_arm` (the sim servo's lag
-  // since #821). The sim-runtime comparison is G8-E (S8-B).
+  // reach (#537), not from the shipped `T_arm` (the sim servo's lag
+  // since #821).
   //
   // The comparison is run TWICE against the same plant and the same ball, with
   // the compensation off and on. Asserting that the compensation HELPS, rather
@@ -808,7 +807,7 @@ TEST_F(CatchingTrackingTest, TheStopStaysInsideTheBoxTheSolverWasGiven) {
 
 TEST_F(CatchingTrackingTest, ANewBallReusingTheOldSequenceStillRetreats) {
   // TRACK_CHANGED had no test anywhere before this one, which is how a
-  // sequence-only newness rule survived: A-S5-4 lets a new epoch restart its
+  // sequence-only newness rule survived: a new epoch may restart its
   // numbering at any value, and the supervisor's epoch comparison lives inside
   // the `is_new` branch. So a new ball whose first snapshot happened to reuse
   // the last number was consumed — the controller tracked the NEW ball's
@@ -899,7 +898,7 @@ TEST_F(CatchingTrackingTest, AnAbortCompletesAndReArmsWithNoVisionLeft) {
   EXPECT_FALSE(ctrl_->IsPlanActive()) << "the aborted plan was never dropped";
 }
 
-// ── PROC-7: the per-tick record is rebuilt, not carried forward (S5.4) ──────
+// ── PROC-7: the per-tick record is rebuilt, not carried forward ─────────────
 
 TEST_F(CatchingTrackingTest, ATickThatDoesNotRunTheLawClearsTheBlocksItDidNotCompute) {
   // The one assertion that needs a real model: only a tick that actually
@@ -944,7 +943,7 @@ TEST_F(CatchingTrackingTest, ATickThatDoesNotRunTheLawClearsTheBlocksItDidNotCom
   EXPECT_DOUBLE_EQ(stopped.clik_solve_us, 0.0);
   EXPECT_DOUBLE_EQ(stopped.track_err_rad, 0.0);
   // And the plan is GONE, which is a different mechanism from the one above:
-  // the stop's reset (P-1 (b)) invalidates it, so the record shows the
+  // the stop's reset invalidates it, so the record shows the
   // invalidation rather than a plan the controller is no longer following.
   // Asserting it here is what keeps the two apart — the reference and solve
   // blocks are empty because this tick did not compute them, the plan block is
@@ -953,7 +952,7 @@ TEST_F(CatchingTrackingTest, ATickThatDoesNotRunTheLawClearsTheBlocksItDidNotCom
   EXPECT_DOUBLE_EQ(stopped.plan_p_c[0], 0.0);
 }
 
-// ── The catch frame's provisional flag (D-17) ───────────────────────────────
+// ── The catch frame's provisional flag ──────────────────────────────────────
 //
 // The flag is `urdf.extra_frames.<name>.provisional` in the ROBOT config, so
 // it reaches the controller through the model config and not through

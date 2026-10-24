@@ -528,8 +528,8 @@ void DemoWbcController::BuildClikJointIndexSets(int arm_dof, int full_dof, int n
                                                 const std::array<int, kMaxFullDof>& ext_to_pin_v,
                                                 std::vector<int>& arm_v_idx,
                                                 std::vector<int>& hand_v_idx) noexcept {
-  // Delegates since a second CLIK caller appeared (the catching controller,
-  // S5.3). The rule is one rule; this entry point stays because this suite's
+  // Delegates since a second CLIK caller appeared (the catching controller).
+  // The rule is one rule; this entry point stays because this suite's
   // tests and this controller's call sites are written against it.
   BuildArmHandVelocityIndexSets(arm_dof, full_dof, nv, ext_to_pin_v, arm_v_idx, hand_v_idx);
 }

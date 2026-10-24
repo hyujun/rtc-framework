@@ -142,7 +142,7 @@ void UdpHandNativeBackend::OnSensorState(rtc_msgs::msg::HandSensorState::SharedP
 
   auto ds = sensor_cache_.Load();
 
-  // One stamp for the whole message (dynamic_catching D-24 (a)). This lane is
+  // One stamp for the whole message. This lane is
   // one `HandSensorState` carrying every fingertip, so the groups it touches
   // are all exactly as old as each other — a per-tip clock read here would
   // only add jitter between values that arrived in one packet. Groups NOT in
@@ -179,7 +179,7 @@ void UdpHandNativeBackend::OnSensorState(rtc_msgs::msg::HandSensorState::SharedP
     // questions — the bit is the firmware's verdict on the value, the stamp is
     // when a sample last arrived — and folding them would make a disabled-but-
     // live lane indistinguishable from a dead one, which is the exact
-    // confusion D-24 exists to remove. The counter increments on the cached
+    // confusion the receipt stamp exists to remove. The counter increments on the cached
     // value so it is monotonic per group across the run.
     ds.inference_recv_steady_ns[static_cast<std::size_t>(f)] = recv_steady_ns;
     ++ds.inference_sequence[static_cast<std::size_t>(f)];
@@ -225,7 +225,7 @@ void UdpHandNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
   cache.inference_data = s.inference_data;
   cache.inference_enable = s.inference_enable;
   cache.num_inference_groups = s.num_inference_groups;
-  // D-24 (a) — same lane, same copy. Dropping either of these two here is the
+  // Receipt stamp and sequence — same lane, same copy. Dropping either of these two here is the
   // failure this backend can produce on its own (the CM copy is the other
   // one), and it looks like a permanently stale fingertip rather than a build
   // error.

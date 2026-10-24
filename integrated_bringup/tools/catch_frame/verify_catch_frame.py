@@ -1,11 +1,10 @@
-"""S2.3b gate: is the MJCF palm BODY frame the same frame as the URDF palm LINK?
+"""Is the MJCF palm BODY frame the same frame as the URDF palm LINK?
 
-The S4.5 pocket point was measured in MuJoCo, against the palm BODY frame
+The pocket point was measured in MuJoCo, against the palm BODY frame
 (`fk_pocket.py`: origin = xpos[palm], rot = xmat[palm] @ R_catch_in_palm). The
 YAML `urdf.extra_frames.catch_frame.xyz` it has to become is expressed in the
 URDF parent LINK frame and is consumed by Pinocchio. Those two conventions are
-NOT the same in general -- plan SS11 records UR5e `upper_arm_link` as a case
-where they differ -- so the number cannot be carried across without this check.
+NOT the same in general -- e.g. UR5e `upper_arm_link` -- so the number cannot be carried across without this check.
 
 Decomposition. If the MJCF arm root differs from the URDF one by a constant B
 (mj_root = urdf_root * B) and the palm by a constant P (mj_palm = urdf_palm * P),
@@ -20,8 +19,8 @@ does a pocket point measured in MuJoCo mean the same thing in the URDF model.
 
 Part 2 then converts the measured point to the YAML offset and verifies the
 round trip end to end (Pinocchio catch-frame origin in world == MuJoCo pocket
-point in world). Part 3 measures how much the *rejected* definition (plan SS10,
-"preshape fingertip centroid") depends on which body one calls the fingertip.
+point in world). Part 3 measures how much the *rejected* definition
+("preshape fingertip centroid") depends on which body one calls the fingertip.
 """
 
 from __future__ import annotations
@@ -67,7 +66,7 @@ ROBOTS = {
         ],
         # The planner's base frame is `base` (robot config sub_models.ur5e.
         # root_link). The MJCF body called `base` is the URDF `base_link`, which
-        # is the SAME frame turned 180 deg about z -- the plan SS11 trap. So the
+        # is the SAME frame turned 180 deg about z -- a known trap. So the
         # frame-equality comparison must be anchored on `base_link`, and the
         # difference between the two is what world_T_base then carries.
         "urdf_arm_root": "base_link",
@@ -142,7 +141,7 @@ Q_PRE = {
         ],
     },
     "iiwa7_leap": {
-        # LEAP controller slot -> URDF/MJCF joint name (digits), plan L6.
+        # LEAP controller slot -> URDF/MJCF joint name (digits).
         "order": [str(i) for i in [12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]],
         "q": [
             1.664695,

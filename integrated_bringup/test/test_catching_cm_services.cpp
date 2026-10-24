@@ -1,4 +1,4 @@
-// ── The CM's two latch services against the catching controller (S9a) ──────
+// ── The CM's two latch services against the catching controller ────────────
 //
 // WHAT IS UNDER TEST. /rtc_cm/clear_estop and /rtc_cm/reset_fault, called over
 // the wire, on a real RtControllerNode whose ACTIVE controller is the real
@@ -8,8 +8,8 @@
 // state; the catching suites (test_catching_supervisor_scenarios) pin the
 // supervisor against direct hook calls. Neither shows the seam between them:
 // that a CM-level clear or reset, answered "ok", leaves the catching
-// controller in the state its P-1 contract promises. That seam is what the
-// operator GUI (S9) will drive, so it is what this file pins:
+// controller in the state its E-STOP/fault contract promises. That seam is what the
+// operator GUI drives, so it is what this file pins:
 //   - an E-STOP latched by the CM's own trigger path reaches the catching
 //     controller, which goes to IDLE with reason Estop and is disarmed ON THE
 //     TICK that sees it, while the CM substitutes its hold (Phase 2c);
@@ -22,8 +22,8 @@
 //   - reset_fault refuses a wrong or missing name, clears the latch to IDLE
 //     (reason FaultReset) without re-arming, does not clear the global E-STOP
 //     and says so, and a FAULT is never promoted to a global E-STOP.
-// Nothing here changes production code: these are today's behaviours (P-1
-// contract, D-S9-A/B/C/E1) written down before the GUI builds on them.
+// Nothing here changes production code: these are today's behaviours (the
+// service contract) written down before the GUI builds on them.
 //
 // HOW THE CM IS STOOD UP. Not through on_configure: that needs a variant
 // config tree, registry-built device backends and a robot description, none of
@@ -221,7 +221,7 @@ constexpr const char* kConfigKey = "demo_catching_controller";
 
 // A device that has always just reported the same pose: the arm at the
 // fixture's home (which the profile also names as the wait pose, so arming
-// takes the Q13 skip), the hand at q_pre. Commands are counted, not obeyed —
+// takes the homing skip), the hand at q_pre. Commands are counted, not obeyed —
 // the cases are about latches, not about motion.
 class HeldPoseBackend : public rtc::DeviceBackend {
  public:
@@ -544,7 +544,7 @@ TEST_F(CatchingCmServicesTest, ClearEstopNeedsTheEchoedReasonAndDoesNotResumeCat
   // ── The stop, through the CM's own trigger path ──
   const std::size_t trig = HistorySize();
   Access::TriggerGlobalEstop(*node_, kEstopReason);
-  // P-1 (a): the hook only raised a request — the flag is up at once, and
+  // The hook only raised a request — the flag is up at once, and
   // nothing else has moved until a tick acts on it.
   EXPECT_TRUE(ctrl_->IsEstopped()) << "the CM did not propagate TriggerEstop";
   ASSERT_TRUE(WaitFor(
@@ -552,8 +552,8 @@ TEST_F(CatchingCmServicesTest, ClearEstopNeedsTheEchoedReasonAndDoesNotResumeCat
   ASSERT_TRUE(WaitTicks(20));
 
   // The FIRST tick that ran with the stop raised already shows IDLE / Estop /
-  // disarmed — the stop and the disarm land on that tick, not later (P-1 (b),
-  // D-S9-A). Every tick after it, while the latch is up, says the same.
+  // disarmed — the stop and the disarm land on that tick, not later (the
+  // service contract). Every tick after it, while the latch is up, says the same.
   const auto during = HistoryFrom(trig);
   const auto first = std::find_if(during.begin(), during.end(), [&](const TickObs& o) {
     return o.estop_ticks > estop_ticks_before;
@@ -587,7 +587,7 @@ TEST_F(CatchingCmServicesTest, ClearEstopNeedsTheEchoedReasonAndDoesNotResumeCat
   EXPECT_FALSE(Access::IsEstopped(*node_));
   EXPECT_FALSE(ctrl_->IsEstopped()) << "the CM did not propagate ClearEstop";
 
-  // ── No automatic resume (P-1 (c), D-S9-B) ──
+  // ── No automatic resume ───────────────────────────────────────────────────
   const std::size_t after_clear = HistorySize();
   const std::uint64_t substituted = Access::EstopSubstituted(*node_);
   ASSERT_TRUE(WaitTicks(100));
@@ -608,7 +608,7 @@ TEST_F(CatchingCmServicesTest, ClearEstopNeedsTheEchoedReasonAndDoesNotResumeCat
   ASSERT_NO_FATAL_FAILURE(ArmAndWaitForArmed());
 }
 
-// P-1 (d) seen from the CM: clearing the global latch must not launder the
+// Seen from the CM: clearing the global latch must not launder the
 // catching controller's own, and the operator has to be told the arm is still
 // held for another reason.
 TEST_F(CatchingCmServicesTest, ClearEstopLeavesTheCatchingFaultLatchedAndSaysSo) {
@@ -667,7 +667,7 @@ TEST_F(CatchingCmServicesTest, ResetFaultRefusesAWrongOrMissingNameAndKeepsTheLa
 // The happy path, and the two "no" rules around it: the reset does not re-arm
 // (an operator who set `catching.enable` while faulted must not find the
 // controller armed the moment the fault clears), and a FAULT never became a
-// global E-STOP in the first place (D-S9-E1).
+// global E-STOP in the first place.
 TEST_F(CatchingCmServicesTest, ResetFaultReturnsTheCatchingControllerToIdleDisarmed) {
   ASSERT_NO_FATAL_FAILURE(ArmAndWaitForArmed());
   ASSERT_NO_FATAL_FAILURE(LatchCatchingFault());

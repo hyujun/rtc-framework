@@ -1,4 +1,4 @@
-// Shared pieces of the catching closed-loop suites (S5.3 / S5.5).
+// Shared pieces of the catching closed-loop suites.
 //
 // Extracted from test_catching_tracking.cpp when the CLIK sweep
 // (test_catching_clik_sweep.cpp) needed the same model, the same independent
@@ -68,7 +68,7 @@ const Eigen::Vector3d kCatchXyz{0.015, 0.145, 0.052};
 constexpr const char* kModelRootLink = "base_link";
 
 /// The fixture's model config plus the catch frame, which the shared fixture
-/// does not carry (it predates D-10). Built here rather than added to the
+/// does not carry (it predates the catch frame). Built here rather than added to the
 /// shared fixture so the other suites keep the model they were written for.
 ///
 /// `with_scene_world` adds the vision world (#779) at the model root, so the
@@ -208,8 +208,8 @@ enum class AccelBoxFlag { kCleared, kProvisional, kAbsent };
 /// The `robot.arm.qdd_provisional` line TrackingYaml writes: the fixture is
 /// judged on the real-arm axis, where a provisional box parks the controller,
 /// so it ships the box CLEARED (the shipped file stays provisional until the
-/// real arm's box is identified, #537 Q4).
-/// The reference generator's gains. Defaulted to what the S5.3 suite was
+/// real arm's box is identified).
+/// The reference generator's gains. Defaulted to what the tracking suite was
 /// written against; the sweep passes the SHIPPED profile's values instead,
 /// because "how well does the law track" is a question about the law that is
 /// actually deployed, not about a faster one chosen to make a test converge.

@@ -148,14 +148,14 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
       // Issue #138: every controller-YAML publish entry is controller-owned.
       switch (pub.role) {
         case rtc::PublishRole::kRobotTransforms: {
-          // Single TF publisher per controller (D-2). YAML places the entry
-          // under the first group (D-10); duplicate entries in other groups
+          // Single TF publisher per controller. YAML places the entry
+          // under the first group; duplicate entries in other groups
           // are ignored to keep the "1 publisher per controller" invariant.
           if (handles.tf_pub) {
             break;
           }
           rclcpp::QoS tf_qos{1};
-          tf_qos.reliable();  // D-7: display purpose, not control
+          tf_qos.reliable();  // display purpose, not control
           handles.tf_pub = node->create_publisher<tf2_msgs::msg::TFMessage>(pub.topic_name, tf_qos);
           // Reserve capacity once; controller fills tf_slots[] later via
           // AppendArmTipSlot / AppendHandTipSlots / AppendVirtualTcpSlot.
@@ -867,7 +867,7 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
           break;
         case TfFrameSlot::Source::kWbcTipInBase:
         case TfFrameSlot::Source::kCustom:
-          // Phase 3 / D-5 — sources without RT producers yet. Skip.
+          // Phase 3 — sources without RT producers yet. Skip.
           break;
       }
       if (src_pose == nullptr) {

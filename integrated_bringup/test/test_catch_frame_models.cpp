@@ -1,14 +1,13 @@
-// ── Shipped catch frames on the real robot models (dynamic_catching S2.3a) ───
+// ── Shipped catch frames on the real robot models ────────────────────────────
 // Reads urdf.extra_frames from the SHIPPED robot configs (not a copy), builds
 // the same model topology the RT node builds, and checks:
 //   - the catch frame exists in every derived model at the declared placement
 //     relative to its parent (full / sub / tree / actuated),
 //   - its +z is the palm's outward normal: flexing every non-arm joint moves
 //     the fingertip centroid toward +z (the FK argument the axis proposal
-//     rests on, L5 §11),
-//   - it is still provisional (D-17: the user confirms in sim, S2.3b sets the
-//     pocket offset),
-//   - the model dimensions the plan quotes (iiwa7_leap full nv 23).
+//     rests on),
+//   - it is not provisional (the user confirmed it in sim),
+//   - the model dimensions (iiwa7_leap full nv 23).
 //
 // Only robots whose model this repository owns are listed. ur5e_p1b ships a
 // catch frame too, but its model belongs to `hand_description`: this
@@ -17,7 +16,7 @@
 // only for iiwa7_leap; the mechanism itself is rtc_urdf_bridge's
 // test_extra_frames.
 //
-// g1_p1b is here for ONE thing this repository does own (E3-F01, #640): the
+// g1_p1b is here for ONE thing this repository does own (#640): the
 // profile's own declaration of two planner models — the search chain
 // `sub_models.g1_catch` and the device tree `tree_models.g1` — and that the
 // catch frame is the same frame in both. Its model is `hand_description`'s
@@ -124,13 +123,12 @@ void CheckRobot(const RobotCase& rc) {
   const rub::ModelConfig cfg = MakeConfig(rc);
   const rub::ExtraFrameConfig* cf = FindCatchFrame(cfg);
   ASSERT_NE(cf, nullptr) << rc.label << ": no urdf.extra_frames.catch_frame in " << rc.config_rel;
-  // SPEC CHANGE 2026-09-21 (PROC-6): this asserted `provisional == true`, as a
-  // tripwire against shipping a confirmed-looking catch frame before S2.3b had
-  // produced an offset and the user had checked it in sim. Both happened — the
-  // offset is the S4.5 measured catch point (L5 §11) and the user confirmed the
-  // rendered frame — so the tripwire now points the other way: what ships must be
-  // the confirmed state. A new robot profile copied from these, or a revert to the
-  // placeholder, goes red here and has to be thought about rather than inherited.
+  // This once asserted `provisional == true`, as a tripwire against shipping a
+  // confirmed-looking catch frame before the offset was measured and the user
+  // had checked it in sim. Both happened, so the tripwire now points the other
+  // way: what ships must be the confirmed state. A new robot profile copied from
+  // these, or a revert to the placeholder, goes red here and has to be thought
+  // about rather than inherited.
   EXPECT_FALSE(cf->provisional)
       << rc.label << ": catch frame back to provisional — S2.3b and the user check are done";
 

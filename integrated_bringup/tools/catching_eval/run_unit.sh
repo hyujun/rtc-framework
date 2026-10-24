@@ -1,5 +1,5 @@
 #!/bin/bash
-# Catching sim evaluation, one unit (first used for E1-F06, G-1, #632). One launch = one unit:
+# Catching sim evaluation, one unit (#632). One launch = one unit:
 #   DATA=<data dir> BALL_SIM_WS=<estimator workspace> THROWS_FILE=<catching_throw_list/1 JSON> \
 #     run_unit.sh <out_dir> <robot p1b|leap> <overlay.yaml> <n_throws (ignored)> <seed>
 # Runs from the source tree of the workspace it measures: the repository is the
@@ -10,21 +10,21 @@
 # launch-minute stamp to $DATA/.last_minute.
 # <out_dir>, the overlay, DATA and PROFILE may be relative to the caller's
 # directory: they are made absolute before the script moves to the workspace.
-# E1-F06 addition: the planner's search budget (not a ROS parameter — only the
+# The planner's search budget (not a ROS parameter — only the
 # startup line "planner enabled: … budget X s" says it) goes into conditions.txt
-# as planner_budget_s; a unit without that line is refused (criterion 3 needs it).
-# E1-F10 additions: the unit is refused on a dirty rtc-framework tree
+# as planner_budget_s; a unit without that line is refused (the evaluation needs it).
+# The unit is also refused on a dirty rtc-framework tree
 # (ALLOW_DIRTY=1 overrides), unless the CLIK form mirror says `dynamic`
 # (EXPECT_CLIK), the mode mirror says EXPECT_MODE, and every `key=value` of
 # EXPECT_KV (';'-separated, mirror names) reads back from the controller.
-# E1-F17 addition: the docking planner's two budgets are in the mirror, so a plan line can
+# The docking planner's two budgets are in the mirror, so a plan line can
 # check an overlay that moves one (EXPECT_KV).
-# E1-F16 addition: the search-mode mirror says EXPECT_SEARCH (default grid) (search_mirror), and
+# The search-mode mirror says EXPECT_SEARCH (default grid) (search_mirror), and
 # so does the startup `search mode:` line (mode_log); EXPECT_MODE may be closed_form, mpc or
 # mpc_docking.
-# E1-F19 addition: ENABLE_VIEWER=1 opens the MuJoCo viewer (default 0 — a unit is headless); the
+# ENABLE_VIEWER=1 opens the MuJoCo viewer (default 0 — a unit is headless); the
 # unit's conditions.txt says which (viewer: on | off), because a viewer shares the host with the sim.
-# E1-F19 addition: the mirrors EXPECT_KV names are read too, whatever they are — the fixed list
+# The mirrors EXPECT_KV names are read too, whatever they are — the fixed list
 # below is what every unit records, not the only thing a plan may check (a hand.docking.* check
 # once failed on the name alone, with the value right: two units lost before a throw).
 # The overlay turns the APPROACH-stop MPC on in CLOSED LOOP: the planner stores
@@ -32,10 +32,10 @@
 # segments from APPROACH to the end of the stop (mode mpc, #662).
 # The controller's mirror must show mode mpc and the approach grid before a
 # single throw, or the unit is refused.
-# Two workspaces (MD-17): the sim and controller come from this workspace, the
+# Two workspaces: the sim and controller come from this workspace, the
 # estimator from $BALL_SIM_WS (its shipped catching profile is the default
 # PROFILE). The session's raw logs are copied into the unit at the end.
-# E1-F19 part 2 addition: EXPECT_NSTOP and EXPECT_DTSTOP are the docking planner's stop.n_nodes and stop.dt_s
+# EXPECT_NSTOP and EXPECT_DTSTOP are the docking planner's stop.n_nodes and stop.dt_s
 # the mirror must show. Their defaults are this robot's SHIPPED ones, read from its segment_mpc_docking.yaml in
 # the source tree. A tuning overlay may move the stop grid, as it may the approach grid (EXPECT_NPRE,
 # EXPECT_DTPRE) — it then states BOTH (an overlay that sets the count alone changes the length of the stop, and
@@ -184,7 +184,7 @@ cleanup() {
 
 # A failed attempt keeps its session WITH the attempt (<out>/session_failed):
 # every FAIL exit below leaves before the copy at the end, and without this the
-# session stayed in logging_data as an orphan (E0-F02/F04: five of them, 343 MB).
+# session stayed in logging_data as an orphan (five of them, 343 MB).
 keep_failed_session() {
   [ "$(cat "$OUT/status" 2>/dev/null)" == "DONE" ] && return
   local s; s=$(cat "$OUT/session.txt" 2>/dev/null)
@@ -290,7 +290,7 @@ echo "ball_type: $(ros2 param get /mujoco_simulator projectile_ball.ball_type 2>
 echo "viewer_input_enabled: $(ros2 param get /mujoco_simulator viewer_input_enabled 2>&1)" >> "$OUT/mirror.txt"
 why=""
 # The commit lead from the mirror, not the startup log: two processes share that
-# log and once split the "−" of its commit line (E0-F04 M-50_p1b_601.fail1).
+# log and once split the "−" of its commit line (M-50_p1b_601.fail1).
 grep -q "T_arm: Double value is: ${EXPECT_TARM}\$" "$OUT/mirror.txt" || why="$why T_arm"
 grep -q 'lead_enable: Boolean value is: True' "$OUT/mirror.txt" || why="$why lead"
 grep -q "ball_type: String value is: ${EXPECT_BALL}\$" "$OUT/mirror.txt" || why="$why ball_type"

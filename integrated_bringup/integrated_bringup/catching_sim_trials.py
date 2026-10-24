@@ -1,12 +1,10 @@
-"""Throw trials at the catching controller in sim, one full S7 cycle each.
+"""Throw trials at the catching controller in sim, one full cycle each.
 
-From S7.2 the controller homes itself: armed, it moves the arm to
+The controller homes itself: armed, it moves the arm to
 ``planner.wait_pose`` in joint space and waits there with the hand at q_pre
 (IDLE → ARMED), and after every trial it returns there (RETREAT → ARMED). The
-external alignment this driver used to do (#537 decision ④, "until S7.2" —
-switch to ``demo_joint_controller``, send the wait pose, switch back) is gone:
-a trial that starts elsewhere is now the controller's bug to show, not the
-driver's to hide.
+driver does no external alignment: a trial that starts elsewhere is the controller's bug to
+show, not the driver's to hide.
 
 Per trial:
 
@@ -18,7 +16,7 @@ Per trial:
    record ground truth and every mode transition.
 3. The trial ends when the controller is back in ARMED after a RETREAT (the
    cycle closed), or in IDLE / FAULT, or after ``record_s``. The attempt's
-   verdict is the ``outcome`` published on the RETREAT entry (L7 §4.4).
+   verdict is the ``outcome`` published on the RETREAT entry.
 4. Reset the ball.
 
 Ball-height end (``--end-on-ball-low``, opt-in, #747): a controller that never
@@ -43,19 +41,16 @@ names and state topic are that device's roster. The wait pose, the commit lead
 and the lead axis are what the RUNNING controller loaded — its read-only mirror
 parameters (``planner.wait_pose``, ``planner.freeze.T_freeze``,
 ``joint_cmd.lag.{T_arm,lead_enable}``, ``control.dt``) — because a sim overlay
-changes them without changing the installed YAML (S8-A). They are
+changes them without changing the installed YAML. They are
 written to ``run_meta.json`` and to every trial record.
 
 A run names its throws: ``--throws-file`` (the throw list — what every
 evaluation throws since #798) or ``--dist`` (a hand-near design). Neither is an
-argument error: the driver has no throws of its own. The frozen series of
-before #798 — ``reference`` (the S3.5b throw repeated, then perturbed) and
-``s35b`` (iid draws from a per-robot gate-map box) — were values of the old
-layout (the arm base at the floor) and are gone; a list file holds what they
-held, with its throws fixed and labelled (``integrated_bringup/config/<robot>/
-throw_sets/`` — since #821 the catch sets of the robot's throw population).
+argument error: the driver has no throws of its own. A list file holds fixed,
+labelled throws (``integrated_bringup/config/<robot>/throw_sets/`` — the catch sets of
+the robot's throw population).
 
-* ``hand_cliff`` / ``hand_lob`` / ``hand_lhs`` (dynamic_catching S8-F): throws
+* ``hand_cliff`` / ``hand_lob`` / ``hand_lhs`` (hand-near designs): throws
   specified by their ARRIVAL state at the catch frame of the wait pose the
   running controller loaded (speed, flight time, lateral offset, incidence),
   integrated backwards through the sim's drag model by
@@ -81,13 +76,13 @@ Host load (``--host-watch``, #601): a sim that runs slower than the wall (RTF < 
 another session's build or test on the same host) makes the ball's stamp fall
 behind the controller's steady clock, and the controller drops a healthy input
 as ``BALL_STALE`` — the success rate then measures the host, not the catch
-(D-S8-17). After every throw the runner reads the sim's speed off the
+(re-run rule). After every throw the runner reads the sim's speed off the
 truth rows it already records (stamp span / receive span, the slowest
 ``--host-window`` of sim time) and judges it against ``--host-rtf-min``:
 ``warn`` (default) records and logs, ``abort`` also ends the run with exit code
 ``EXIT_HOST_BUSY`` so the caller re-runs the unit with the same seed — a
 per-trial invalidation with a top-up throw would change the population
-(D-S8-17). ``off`` measures nothing and writes no key. The build / test
+(re-run rule). ``off`` measures nothing and writes no key. The build / test
 processes found on the host at that moment are recorded as the likely cause,
 never as the verdict.
 """
@@ -133,7 +128,7 @@ DEFAULT_SEED = 42
 # DeclareProfileParameters). A controller that parked at configure declares none
 # of them, and a run against it is not a trial.
 #
-# WHICH NAMES EXIST FOLLOWS THE SELECTION (E1-F16): the controller mirrors only
+# WHICH NAMES EXIST FOLLOWS THE SELECTION (search/segment mode): the controller mirrors only
 # the functions it runs, so a mirror the grid search or the closed_form law owns
 # is absent — not parked — under another search or segment mode. The two
 # selectors are mirrored under every selection and say which set to expect.
@@ -145,7 +140,7 @@ MIRROR_COMMON = (
     "joint_cmd.lag.lead_enable",
     "control.dt",
     "robot.arm.qdd_max",
-    # The prediction grid the controller expects (E0-F04, #647): the vision
+    # The prediction grid the controller expects (#647): the vision
     # profile sets the grid, and a sweep over it must record what the
     # controller was told to expect.
     "prediction.dt_expected",
@@ -155,8 +150,8 @@ MIRROR_COMMON = (
     # every selection like control.dt.
     "hand.T_close_e2e",
 )
-# The arm-budget layers (S8-G, #537): the reference's ω / a_max / v_max, the
-# grid search's speed margin, the D-16 box its reach time judges with and its
+# The arm-budget layers: the reference's ω / a_max / v_max, the
+# grid search's speed margin, the box its reach time judges with and its
 # slice. An overlay moves them, so run_meta.json must carry what the controller
 # ran — under the selection that runs them.
 MIRROR_OF_SEARCH = {
@@ -285,7 +280,7 @@ def alignment_error(q, qd, target) -> tuple[float, float]:
     )
 
 
-# ── Hand-near throws (dynamic_catching S8-F, #537) ────────────────────────────
+# ── Hand-near throws ─────────────────────────────────────────────────────
 #
 # A throw is specified by its ARRIVAL beside the waiting hand — speed v, flight
 # time T, offset (r, ψ) in the palm plane, incidence α off the approach axis —
@@ -330,11 +325,11 @@ class HandBox:
     incidence_offset_deg: tuple[float, float]
 
 
-# #537 S8-F-1 (2026-09-26): the cliff at the catch point, face-on, at the
+# The cliff at the catch point, face-on, at the
 # shortest flight the commit window allowed then (first plan 0.20 + T_freeze 0.37 +
 # margin); the lob arm for the slow balls a face-on throw cannot deliver above
 # the work table; the LHS box the v50(r) map is fitted on. Speeds below 3.5 m/s
-# face-on put the release under the table (the re-derivation's §2b).
+# face-on put the release under the table.
 HAND_DESIGNS: dict[str, HandGrid | HandBox] = {
     "hand_cliff": HandGrid(
         speeds_m_s=(3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 7.0), repeats=8, flight_time_s=0.65
@@ -694,7 +689,7 @@ def _parameter_value(value):
 
 
 def _cycle_closed(modes: list[str]) -> bool:
-    """Whether a trial's mode sequence re-armed after its RETREAT (one S7 cycle)."""
+    """Whether a trial's mode sequence re-armed after its RETREAT (one cycle)."""
     if "RETREAT" not in modes:
         return False
     return "ARMED" in modes[modes.index("RETREAT") + 1 :]
@@ -831,11 +826,11 @@ def reset_fault_failure(reply) -> str | None:
 
 HOST_WATCH_MODES = ("off", "warn", "abort")
 # The analyser's covariate (rtc_tools catching_trials ``rtf_trial_min``) and the
-# D-S8-17 re-run rule use the same window and threshold; a runner that judged
+# re-run rule use the same window and threshold; a runner that judged
 # differently would pass runs the analyser calls loaded.
 HOST_WATCH_RTF_MIN = 0.95
 HOST_WATCH_WINDOW_S = 0.25
-# What the S8-E driver looked for. A cause to report, not the verdict: the RTF
+# What the driver looks for. A cause to report, not the verdict: the RTF
 # is the symptom whatever slowed the sim.
 HOST_BUSY_PATTERN = r"\bcolcon\s+(build|test)\b|\bpytest\b|\bctest\b"
 EXIT_HOST_BUSY = 3
@@ -1270,13 +1265,13 @@ def _make_driver(profile: ArmProfile, args):
                 # False → True, not just True: the controller lowers its latch
                 # itself (E-STOP, fault, a supervisor disarm) and the parameter
                 # can still read true, so a bare `true` would re-set the value it
-                # already has. The edge is the request (A-S5-3).
+                # already has. The edge is the request.
                 if not self.set_enable(False):
                     raise RuntimeError("disarm before re-arm failed")
                 self.spin_for(0.05)
                 if not self.set_enable(True):
                     raise RuntimeError("arm failed")
-            # The controller homes itself (S7.2); ARMED means it says it is at
+            # The controller homes itself; ARMED means it says it is at
             # the wait pose with the hand at q_pre.
             if not self.wait_for_mode("ARMED", args.home_timeout):
                 err = alignment_error(self.q, self.qd, self.profile.wait_pose) if self.q else None
@@ -1411,17 +1406,17 @@ def _make_driver(profile: ArmProfile, args):
                     # Relative to the trials dir (the file sits next to
                     # trial_results.json): an absolute path breaks when the dir
                     # is renamed and silently reads ANOTHER run's file when its
-                    # old path is reused (S8-E smoke). The analyser still
+                    # old path is reused. The analyser still
                     # resolves the absolute paths of older records.
                     "truth_csv": os.path.basename(truth_csv),
                     # The supervisor's `outcome` field as last published — a
                     # LABEL, not this throw's verdict: it stays what the
                     # previous cycle set when this throw starts no cycle.
-                    # Success is catching_trials' truth_success (E1-F19).
+                    # Success is catching_trials' truth_success.
                     "final_outcome": (
                         OUTCOME_NAMES[self.outcome] if self.outcome is not None else None
                     ),
-                    # The attempt's verdict (L7 §4.4): published on RETREAT entry.
+                    # The attempt's verdict: published on RETREAT entry.
                     "outcome": (
                         OUTCOME_NAMES[self.retreat_outcome]
                         if self.retreat_outcome is not None
@@ -1474,7 +1469,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--n", type=int, default=25, help="throws drawn with --dist <box|hand_lhs>"
     )
-    # Hand-near (S8-F) inputs. The drag preset is a C++ constexpr the runner
+    # Hand-near inputs. The drag preset is a C++ constexpr the runner
     # cannot read, so it is passed with its file:line like catchability_map's
     # CLI does; the beanbag preset is 0.5 (projectile_ball.cpp:39).
     parser.add_argument("--arm", help="free label for run_meta.json (which overlay this unit ran)")

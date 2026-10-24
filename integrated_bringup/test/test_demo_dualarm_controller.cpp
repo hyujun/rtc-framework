@@ -273,7 +273,7 @@ TEST(DualArmConfigTest, TheRuntimeRefusesWhatTheModelOrDevicesCannotGive) {
   EXPECT_TRUE(ctrl->ConfigError().empty()) << ctrl->ConfigError();
 }
 
-// ── Standstill (formulation §4 item 5) ──────────────────────────────────────
+// ── Standstill ──────────────────────────────────────────────────────────────
 
 TEST(DualArmStandstill, NoGoalNoMotion) {
   Harness h;
@@ -325,7 +325,7 @@ TEST(DualArmStandstill, ReactivationSeedsFromTheMeasurementAgain) {
   EXPECT_LT(MaxAbsDiff(h.Command(), moved), 1e-9);
 }
 
-// ── Coupling (formulation §4 item 6) ────────────────────────────────────────
+// ── Coupling ────────────────────────────────────────────────────────────────
 
 /// Moves the left hand 5 cm and returns the largest change of the three trunk
 /// commands seen on the way.

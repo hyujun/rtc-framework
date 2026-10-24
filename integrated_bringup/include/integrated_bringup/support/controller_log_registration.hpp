@@ -184,7 +184,7 @@ struct LogRegistrationContext {
   // which is visible rather than mislabelled.
   std::vector<std::string> momentum_observer_joint_names{};
 
-  // CatchingDiagLog (dynamic_catching S5.4) — the per-tick record of the
+  // CatchingDiagLog — the per-tick record of the
   // catching controller. Single fixed instance (kCatchingDiagLogInstance),
   // gated on the controller having resolved its devices: the arm joint names
   // and the fingertip names NAME and COUNT the per-joint / per-tip column

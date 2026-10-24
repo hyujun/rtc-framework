@@ -1,9 +1,9 @@
-"""The catching controller's reset table covers every RT-owned member (G8-A2).
+"""The catching controller's reset table covers every RT-owned member.
 
-L7 §4.8 asks that EVERY stateful member the RT tick owns is either put back by
+Every stateful member the RT tick owns must be either put back by
 a reset or explicitly exempt, with the reason. The table lives as a comment in
 the controller header, next to the members; this test is the "existence"
-half of G8-A2 — a member declared inside an ``RT-OWNED BEGIN`` / ``RT-OWNED
+half — a member declared inside an ``RT-OWNED BEGIN`` / ``RT-OWNED
 END`` range that the table does not name is red. (Whether the table's CLAIMS
 are true is the runtime half: the poison test in
 test_catching_supervisor_scenarios / test_catching_reset_probe.)
@@ -58,7 +58,7 @@ def _reset_table(text: str) -> str:
 def test_the_header_marks_its_rt_owned_state():
     text = HEADER.read_text()
     assert text.count("RT-OWNED BEGIN") == text.count("RT-OWNED END") > 0
-    # Sanity: the ranges hold the members the S5 reset always handled, so an
+    # Sanity: the ranges hold the members the reset always handled, so an
     # emptied range cannot pass this test by accident.
     members = _rt_owned_members(text)
     for anchor in ("mode_", "plan_active_", "arm_q_cmd_", "hand_hold_", "outcome_"):

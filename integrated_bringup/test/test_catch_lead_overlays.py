@@ -15,7 +15,7 @@ So every leaf an override writes must name a key the shipped
 ``demo_catching_controller.yaml`` already has, with the same YAML type
 (``rtc_tools.utils.controller_config.unread_leaves`` — ``make_conditions.py`` uses
 the same rule). What ships of that kind is one thing: the sim
-robot config's controller override (the planner's envelope box, S8-G R2), pinned
+robot config's controller override (the planner's envelope box), pinned
 here.
 
 No catching overlay ships any more. The sim arm's lead — the ``catch_lead_on``
@@ -23,7 +23,7 @@ overlays of both robots, the runner's standard arm until #821 — is in the
 shipped controller YAML, and the tests that read those files went with them
 (2026-10-12). What they held is held on the shipped file below: the lag block,
 the commit window derived from ``T_arm``, and ur5e_p1b's ``T_freeze``. The
-experiment arms of S8-B/E/F/G/I were pruned earlier (2026-09-27, 2026-10-09).
+earlier experiment arms were pruned (2026-09-27, 2026-10-09).
 """
 
 from __future__ import annotations
@@ -179,8 +179,8 @@ def _shipped_catching(profile: str) -> dict:
 @pytest.mark.parametrize("profile", sorted(SHIPPED_LEAD))
 def test_the_shipped_controller_leads_the_sim_plant(profile):
     """The shipped lag block is the sim servo's lag with the lead on, and it stays
-    provisional: that flag is what parks a real arm until S10 identifies its own
-    T_arm (the validator's kProvisionalOnRealArm), whatever the value here."""
+    provisional: that flag is what parks a real arm until the real arm's own
+    T_arm is identified (the validator's kProvisionalOnRealArm), whatever the value here."""
     catching = _shipped_catching(profile)
     expected = SHIPPED_LEAD[profile]
     assert catching["joint_cmd"]["lag"] == {
@@ -204,7 +204,7 @@ def test_the_shipped_t_arm_is_the_sim_servo_lag(profile):
 
 
 def test_the_shipped_p1b_freeze_is_the_design_bound_rounded_up():
-    """ur5e_p1b's T_freeze moved with T_arm: the L3 §4.11 lower bound
+    """ur5e_p1b's T_freeze moved with T_arm: the lower bound
     T_close_lead + h/2 + T_arm + margin, rounded up to 10 ms."""
     catching = _shipped_catching("ur5e_p1b")
     base = _load(os.path.join(CONFIG_DIR, RATE_FILE["ur5e_p1b"]))
@@ -219,7 +219,7 @@ def test_the_shipped_p1b_freeze_is_the_design_bound_rounded_up():
     assert catching["planner"]["freeze"]["T_freeze"] == pytest.approx(math.ceil(bound * 100) / 100)
 
 
-# ── ur5e_p1b sim.yaml (S8-G R2: the planner's envelope box) ──────────────────
+# ── ur5e_p1b sim.yaml (the planner's envelope box) ───────────────────────────
 
 
 def test_sim_yaml_overrides_the_planner_box_with_float_keys_of_the_shipped_type(shipped):

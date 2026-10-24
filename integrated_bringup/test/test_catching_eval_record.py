@@ -256,7 +256,7 @@ def test_a_table_is_described_not_judged():
 
 
 def test_a_table_of_no_catch_at_all_is_described_and_an_empty_one_is_left_as_it_is():
-    # D-1: nobody catches. Tango alone would read 0 vs 0 as "non-inferior" (Z 3.8) —
+    # Nobody catches. Tango alone would read 0 vs 0 as "non-inferior" (Z 3.8) —
     # which is why it is a reference row beside the rates, not the record.
     d = sm.describe({"n": 130, "both": 0, "a_only": 0, "b_only": 0, "neither": 130})
     assert d["p_a"] == d["p_b"] == 0.0 and d["diff"] == 0.0

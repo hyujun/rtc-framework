@@ -1,6 +1,6 @@
 #pragma once
 
-// ── Fixtures for the S6-A planner tests ─────────────────────────────────────
+// ── Fixtures for the planner tests ──────────────────────────────────────────
 //
 // A model-free catching profile that CONFIGURES in sim (every consumed key
 // resolved, simulator backends) with the planner switchable, plus `/proc`

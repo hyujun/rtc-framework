@@ -6,7 +6,6 @@
 # 3 + left arm 7 + right arm 7); the hand group `p1b` is commanded in joint
 # space and is locked inside the QP.
 #
-# Formulation: docs/dynamic_catching/ref/mpc_multiframe_clik_formulation.md §2.
 # Every value below is a starting point that was fixed before the first run,
 # not a tuned one. Every key is required — there is no default.
 demo_dualarm_controller:

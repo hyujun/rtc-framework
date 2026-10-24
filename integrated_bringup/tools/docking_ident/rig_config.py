@@ -1,6 +1,6 @@
 """What the docking identification rig needs, read from a profile's SHIPPED config.
 
-dynamic_catching E1-F15 (#741). The rig (rig.py) flies the sim's ball into the
+The rig (rig.py) flies the sim's ball into the
 preshape hand of one robot profile. Nothing about that robot is written in
 this directory: a profile is named on the command line and everything else —
 the hand's postures and its closure time, the catch frame, the wait pose, the

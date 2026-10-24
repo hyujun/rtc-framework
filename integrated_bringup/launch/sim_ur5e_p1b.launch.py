@@ -28,7 +28,7 @@ Usage:
   # (bare name = config/ur5e_p1b/sim_overlays/<name>.yaml, or a path)
   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py sim_overlay:=inference_pole
 
-  # Measurement lanes (S8): per-step clock phase + ball contact truth, written
+  # Measurement lanes: per-step clock phase + ball contact truth, written
   # to <session>/sim/{clock_lane,ball_contact_lane}.csv
   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py sim_lanes:=true
 
@@ -172,7 +172,7 @@ def launch_setup(context, *args, **kwargs):
             raise RuntimeError(f"object_seed must be >= 0 (0 = seed from the OS), got {seed}")
         sim_overrides["object_pool.seed"] = seed
 
-    # ── Measurement lanes (S8-A) — integrated_bringup.sim_lanes ─────────────
+    # ── Measurement lanes — integrated_bringup.sim_lanes ─────────────────────
     sim_overrides.update(
         sim_lane_overrides(LaunchConfiguration("sim_lanes").perform(context), session_dir)
     )

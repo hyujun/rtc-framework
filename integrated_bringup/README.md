@@ -115,7 +115,7 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 
 빈 문자열 기본값은 YAML 의 값을 쓴다는 뜻이고, 값을 주면 YAML 을 덮는다. `sim_ur5e_p1b` 의 기본 scene 은 `scene_pedestal.xml` (0.7 m 받침대) 이다. 작업대 씬은 `model_path:=package://hand_description/robots/ur5e_p1b/mjcf/scene_with_table.xml` 로 고른다. 공 발사는 `ur5e_p1b` 와 `iiwa7_leap` 의 `mujoco_simulator.yaml` `projectile_ball:` 블록이 켠다 (launch 인자가 아니다). 발사 서비스 `/sim/launch_ball` · `/sim/launch_ball_at` 의 계약은 [LaunchBall.srv](../rtc_msgs/srv/LaunchBall.srv) 와 [rtc_mujoco_sim README](../rtc_mujoco_sim/README.md#projectile-ball-발사-공) 가 갖는다.
 
-공 추정기 (`ball_perception_sim` 의 `sim_estimator_node`) 는 ball_perception 의 별도 colcon workspace 에서 띄우며, 그 workspace 의 `install/setup.bash` 를 추가로 source 해야 한다. 실행 명령은 [포구 sim 시행 안내](../docs/catching-sim-trials.md#1-한-번-던지기) 에 있다. profile 의 값 중 이 저장소의 값과 맞아야 하는 것의 근거는 [L1 §4.1](../docs/dynamic_catching/ref/L1_io.md) 이다.
+공 추정기 (`ball_perception_sim` 의 `sim_estimator_node`) 는 ball_perception 의 별도 colcon workspace 에서 띄우며, 그 workspace 의 `install/setup.bash` 를 추가로 source 해야 한다. 실행 명령은 [포구 sim 시행 안내](../docs/catching-sim-trials.md#1-한-번-던지기) 에 있다.
 
 #### UR 캘리브레이션 (`kinematics_params_file`)
 
@@ -229,7 +229,7 @@ ros2 run integrated_bringup catching_sim_trials <out> \
 ros2 run integrated_bringup catch_population_trials --config <catch_population.yaml> --out <결과 폴더> --estimator-ws <추정기 workspace>
 ```
 
-sim · 공 추정기 · 컨트롤러 전환을 먼저 해 둬야 한다. 전체 순서, 투척 목록 JSON 형식, 러너 · 모집단 · 평가 도구 (`tools/`) 의 인자와 결과 읽기는 [포구 sim 시행 실행 안내](../docs/catching-sim-trials.md) 에 있다. 결과를 해석하는 규칙은 [분석 도구 판정 규칙](../docs/dynamic_catching/ref/analysis_tools.md) 이다.
+sim · 공 추정기 · 컨트롤러 전환을 먼저 해 둬야 한다. 전체 순서, 투척 목록 JSON 형식, 러너 · 모집단 · 평가 도구 (`tools/`) 의 인자와 결과 읽기는 [포구 sim 시행 실행 안내](../docs/catching-sim-trials.md) 에 있다.
 
 ### GUI 도구
 

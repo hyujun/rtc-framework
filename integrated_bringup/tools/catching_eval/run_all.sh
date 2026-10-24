@@ -1,5 +1,5 @@
 #!/bin/bash
-# Catching sim evaluation, a batch of units (first used for E1-F06, G-1, #632):
+# Catching sim evaluation, a batch of units (#632):
 #   DATA=<data dir> PLAN=<plan file> BALL_SIM_WS=<estimator workspace> run_all.sh
 # Launch it through repo_scripts/scripts/with_verify_hold.sh — the wrapper holds
 # the Stop hook's build/test for the whole run (the gap between two units has no

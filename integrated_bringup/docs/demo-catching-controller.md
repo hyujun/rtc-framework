@@ -2,7 +2,7 @@
 
 날아오는 물체를 잡는 동적 포구 컨트롤러다. vision 이 예측한 궤적을 받아 계획기가 포구점과 시각을 정하고, RT 가 확장 CLIK 으로 팔을 몰고, 손은 시퀀서가 닫는다. config_key 는 `demo_catching_controller`, YAML 은 `ur5e_p1b` · `iiwa7_leap` 이 싣는다.
 
-수학과 구조는 [docs/dynamic_catching/ref/](../../docs/dynamic_catching/ref/), 결정 ID · 게이트 ID 의 뜻은 [ID_INDEX.md](../../docs/dynamic_catching/ID_INDEX.md) 가 갖는다. 이 문서는 운용 표면만 적는다. 시행 러너와 평가 명령은 [README](../README.md) 의 Catching sim trials 절을 본다.
+수학은 각 헤더 (`rtc_controllers/include/rtc_controllers/catching/`) 가 갖는다. 이 문서는 운용 표면만 적는다. 시행 러너와 평가 명령은 [README](../README.md) 의 Catching sim trials 절을 본다.
 
 ## 동작
 
@@ -21,7 +21,7 @@ ros2 param set /demo_catching_controller/demo_catching_controller catching.enabl
 
 - **컨트롤러가 스스로 내린다.** E-STOP 발동 · 해제와 fault 래치에서 RT tick 이 latch 를 내리므로, 해제 후 재개는 다시 `true` 로 올려야 한다. 활성화만으로는 무장되지 않는다.
 - **E-STOP 과 fault 는 별개 경로다.** `/rtc_cm/clear_estop` 은 컨트롤러 fault 래치를 풀지 않고 `/rtc_cm/reset_fault` 는 E-STOP 을 풀지 않는다. fault 는 CLIK 실패로 끝난 시행이 연속 `supervisor.n_qp` 회이거나 정지 · 복귀가 `supervisor.deadline.stop_s` · `return_s` 를 넘길 때 선다. 원인은 CSV `fault_cause` 와 WARN 한 줄에 남는다.
-- **`ResetFault` 는 팔이 정지해 있어야 받는다** (명령 속도 0, 속도 lane 판독 가능, 측정 `|q̇| ≤ supervisor.homing.qd_tol`). 거부되면 latch 가 남고 CSV `fault_reset_refused` 와 WARN 이 이유를 남긴다. 정책 전문은 [L7 §4.1](../../docs/dynamic_catching/ref/L7_supervisor.md).
+- **`ResetFault` 는 팔이 정지해 있어야 받는다** (명령 속도 0, 속도 lane 판독 가능, 측정 `|q̇| ≤ supervisor.homing.qd_tol`). 거부되면 latch 가 남고 CSV `fault_reset_refused` 와 WARN 이 이유를 남긴다.
 
 ## Park (활성화 거부)
 
@@ -34,7 +34,7 @@ ros2 param set /demo_catching_controller/demo_catching_controller catching.enabl
 
 ## 설정 파일
 
-주 파일 `config/<robot>/controllers/demo_catching_controller.yaml` 이 `catching/` 아래 다섯 조각 — `search_grid.yaml` · `search_nlp.yaml` · `planner_closed_form.yaml` · `segment_mpc.yaml` · `segment_mpc_docking.yaml` — 을 `include:` 하고, CM 이 한 트리로 합친 뒤 override 를 적용한다 ([include 규칙](../../rtc_controller_manager/README.md#컨트롤러-yaml-을-여러-파일로-나누기--include)). 조각은 항상 모두 include 되고 무엇이 도는지는 위 두 선택자가 정한다. 선택된 기능의 키만 읽고 요구하며, 모르는 철자는 configure 에서 거부된다. 키별 설명은 YAML 주석과 [L8_bringup.md](../../docs/dynamic_catching/ref/L8_bringup.md) 이 갖는다.
+주 파일 `config/<robot>/controllers/demo_catching_controller.yaml` 이 `catching/` 아래 다섯 조각 — `search_grid.yaml` · `search_nlp.yaml` · `planner_closed_form.yaml` · `segment_mpc.yaml` · `segment_mpc_docking.yaml` — 을 `include:` 하고, CM 이 한 트리로 합친 뒤 override 를 적용한다 ([include 규칙](../../rtc_controller_manager/README.md#컨트롤러-yaml-을-여러-파일로-나누기--include)). 조각은 항상 모두 include 되고 무엇이 도는지는 위 두 선택자가 정한다. 선택된 기능의 키만 읽고 요구하며, 모르는 철자는 configure 에서 거부된다. 키별 설명은 YAML 주석이 갖는다.
 
 ## 입력
 
@@ -57,7 +57,7 @@ ros2 run rtc_tools plot_rtc_log <session>/controllers/demo_catching_controller/c
 
 기준 대 실현 가속도, 추종 오차, solve time, 슈퍼바이저 모드를 한 시간축에 그린다 (E-STOP 과 fault 구간은 색으로 음영). 구간 lane (`segment_*`) 은 `outcome_source` 뒤 17 열이고, lane 이 돌지 않은 tick 과 `closed_form` 에서는 0 이다. `mode: mpc` 에서 "기준" 은 `ref_x` 가 아니라 `segment_p_d_*` · `segment_v_ff_*` 다. `segment_event` · `segment_refusal` 의 enum 값은 pod 헤더가 갖는다. 열 이름이 `decel_*` 인 옛 recording 은 리더가 `segment_*` 로 읽는다.
 
-`planner_events.csv` 는 계획기 wake 마다 한 행이다 (후보 수 · IK 수 · 게이트별 탈락 수 · 교체 결정 · 탐색 시간 · 수신 → 게시 지연). `outcome` 은 `idle` · `no_input` · `published` · `superseded` · `held` 중 하나다. 상태 메시지에 없는 것은 이 CSV 에만 있고, plan 이 없을 때 그 사유 (`segment_outcome` · `segment_core_reason`) 도 여기서 본다. 열 해석은 [analysis_tools.md](../../docs/dynamic_catching/ref/analysis_tools.md#plot_rtc_log-로그-종류별-열과-figure) 와 [L8](../../docs/dynamic_catching/ref/L8_bringup.md) 에 있다.
+`planner_events.csv` 는 계획기 wake 마다 한 행이다 (후보 수 · IK 수 · 게이트별 탈락 수 · 교체 결정 · 탐색 시간 · 수신 → 게시 지연). `outcome` 은 `idle` · `no_input` · `published` · `superseded` · `held` 중 하나다. 상태 메시지에 없는 것은 이 CSV 에만 있고, plan 이 없을 때 그 사유 (`segment_outcome` · `segment_core_reason`) 도 여기서 본다. 열 해석과 판정 규칙은 [catching-analysis-rules.md](../../docs/catching-analysis-rules.md#plot_rtc_log) 가 갖는다.
 
 ## GUI
 

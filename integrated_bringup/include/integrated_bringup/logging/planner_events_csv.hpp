@@ -1,15 +1,15 @@
 #ifndef INTEGRATED_BRINGUP_LOGGING_PLANNER_EVENTS_CSV_HPP_
 #define INTEGRATED_BRINGUP_LOGGING_PLANNER_EVENTS_CSV_HPP_
 
-// ── planner_events.csv — one row per non-idle planner wake (S6-B, decision E) ─
+// ── planner_events.csv — one row per non-idle planner wake ───────────────────
 //
 // The planner's own account of each wake, drained from the thread's SPSC ring
 // by the controller's 1 Hz aux timer (never written on the planner thread).
-// What the frozen `CatchingState` message cannot carry lives here (D-20):
+// What the frozen `CatchingState` message cannot carry lives here:
 // candidate counts, the judgement-reject histogram, the chosen candidate's
 // rank-gate bitmask (one column per bit as well, for plotting), the switching
-// decision, the search time and the receive → publish latency D-7a is judged on
-// (L3 §5.3, G3-J's event record).
+// decision, the search time and the receive → publish latency the planner
+// thread's scheduling is judged on.
 //
 // Written to `<session>/controllers/<config_key>/planner_events.csv`, next to
 // the controller's tick record. Idle wakes (no RT state, a mode with nothing to
@@ -18,11 +18,11 @@
 //
 // `search_valid` says whether this wake's search produced a valid plan;
 // `plan_valid` says a valid plan was PUBLISHED. Under `mode: mpc` a plan whose
-// first segment is withheld is not published (MD-62): that wake reads
+// first segment is withheld is not published: that wake reads
 // search_valid 1, plan_valid 0, outcome held.
 //
-// The `segment_*` columns are the MPC segment planner's account of the wake (MPC
-// E1-F03 · E1-F08): which solve it was (`segment_kind`), how it ended
+// The `segment_*` columns are the MPC segment planner's account of the wake:
+// which solve it was (`segment_kind`), how it ended
 // (`segment_outcome`, `segment_core_reason`), and the catch node as solved —
 // position [m] and axis [rad] error, γ, ‖v_rel‖ [m/s], the velocity slack. A
 // value the wake did not compute is NaN (0 for a flag or a count).
@@ -31,7 +31,7 @@
 // A wake whose segment step only waited (off, up to date, past the replan
 // window) does not earn a row on its own.
 //
-// The `nlp_*` columns are the NLP search's own account of the wake (E1-F18):
+// The `nlp_*` columns are the NLP search's own account of the wake:
 // its reason (`nlp_reason` — the reason of the candidate that got farthest
 // when it chose none, `off` on a wake no NLP search ran), the candidate funnel,
 // how many candidates each check removed (`nlp_rej_*`), and the chosen
@@ -56,7 +56,7 @@
 // `segment_cut_site` names the QP that solve was kept from starting
 // (MpcDockingCutSiteName: `init_qp`, `iteration`, `cold_retry`,
 // `penalty_reset`, `penalty_probe`; `none` when the core did not cut it — and
-// on every `mpc` row: that core reads its deadline too (#887), but its cut
+// on every `mpc` row: that core reads its deadline too, but its cut
 // shows only as core reason `deadline`, outcome `budget`), and
 // `segment_start_from_memory` is 1 on a first solve the planner handed the
 // iterate the previous wake's solve of the same plan ended on (0: the
@@ -81,13 +81,13 @@
 // outcome, core reason, iterations and time are written: the docking block of
 // that solve is not (a second copy of those columns for a rare row).
 //
-// `cov_n` and `chosen_sigma_c` (#798, after the replacement columns) are the
+// `cov_n` and `chosen_sigma_c` (after the replacement columns) are the
 // wake's covariance box (its point count) and the raw √λ_max of the ball's
 // position covariance at the chosen candidate's catch node — NaN when no plan
 // was produced or the node had no valid covariance. `sigma_l` is the monitor's
-// column (a search wake leaves it NaN, #800): a search wake's σ is here.
+// column (a search wake leaves it NaN): a search wake's σ is here.
 //
-// The `segment_stop_*` columns (#713, at the tail) say how far the solve's
+// The `segment_stop_*` columns (at the tail) say how far the solve's
 // stop leaves the ball's line, whatever `cost.w_perp` is. `segment_stop_line_p_*`
 // [m] and `segment_stop_line_d_*` (unit) are that line in the model's world:
 // through the ball's predicted position at t_c along its direction of travel
@@ -103,7 +103,7 @@
 // solve withheld AFTER it ran (budget, slack, …) is measured like a published
 // one.
 //
-// The `segment_mpc_*_us` columns (#716, after the stop columns) are where the
+// The `segment_mpc_*_us` columns (after the stop columns) are where the
 // mpc planner's core spent the wake's own solve, on the core's clock [µs]: the
 // kinematic pre-solve (0 when it did not run), linearising, condensing, and
 // the QP solver (both runs when the core re-ran a failed warm QP cold).
@@ -114,7 +114,7 @@
 // split is `segment_start_us` … `segment_merit_us`) and for a solve withheld
 // before the core ran.
 //
-// The `segment_path_*` columns (#716, at the tail) are the mpc planner's
+// The `segment_path_*` columns (at the tail) are the mpc planner's
 // closing-window path, whatever `cost.w_path` is: `segment_path_window` the
 // catch core's pre-catch nodes inside the hand's closing window,
 // `segment_path_nodes` how many of them had a line from the prediction on this
@@ -123,7 +123,7 @@
 // lines. 0 / NaN on a stop solve, another planner's row and a solve withheld
 // before the core ran; the distances NaN on a solve that reached no solution.
 //
-// nlp_candidates.csv (same directory, #798 — E1-F19 part 2's instrument):
+// nlp_candidates.csv (same directory):
 // one row per candidate the NLP search SOLVED on a wake, drained from the same
 // record by the same timer. `wake_ns` and `snapshot_sequence` join it to the
 // wake's row here; `cand` is the solve order. `reject` is the candidate's

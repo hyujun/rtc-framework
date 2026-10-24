@@ -1,18 +1,18 @@
-# demo_catching_controller — UR5e + Proto-1b variant (dynamic_catching)
+# demo_catching_controller — UR5e + Proto-1b variant
 #
-# The whole catching cycle as of S7 (L7 §4.1): armed, the controller homes the
+# The whole catching cycle: armed, the controller homes the
 # arm to `planner.wait_pose` in joint space with the hand at q_pre, follows the
 # planner's plan, freezes it at t_c − T_freeze, closes the hand at t_cmd,
 # decelerates after t_c, holds for T_hold and returns to the wait pose.
 #
 # Loaded by sim_ur5e_p1b.launch.py; the real p1b bring-up instantiates it too
-# (sim and real share config/<variant>/controllers/). Since E-8 (2026-09-22)
-# the backend no longer gates activation: a value this controller consumes
-# that is provisional or TBD PARKS a real-arm configuration (configure SUCCESS,
-# activation refused) and only warns in sim (L0 §5.3, A-S5-1). The `provisional`
-# flags below are why a real arm does not run this file yet.
+# (sim and real share config/<variant>/controllers/). The backend does not
+# gate activation: a value this controller consumes that is provisional or TBD
+# PARKS a real-arm configuration (configure SUCCESS, activation refused) and
+# only warns in sim. The `provisional` flags below are why a real arm does not
+# run this file yet.
 #
-# ── How this config is laid out (MD-90) ──────────────────────────────────────
+# ── How this config is laid out ──────────────────────────────────────────────
 # This file holds the QP CLIK step (`catching.joint_cmd`), the bring-up
 # sections (ball, hand, vision ingress, supervisor thresholds, topics, logs),
 # the planner thread's own keys, the arm's acceleration box, and the two keys
@@ -53,19 +53,19 @@ include:
 demo_catching_controller:
   command_type: "position"
 
-  # ── S4a diagnostic mode ────────────────────────────────────────────────────
+  # ── Diagnostic mode ────────────────────────────────────────────────────────
   # Accept unshaped step position targets on the hand group's joint_goal, so
-  # S4.2 can identify T_close,e2e from the device CSV. False from S7.1: the
-  # hand sequencer owns the hand, and an operator step would race it. To
+  # T_close,e2e can be identified from the device CSV. False: the hand
+  # sequencer owns the hand, and an operator step would race it. To
   # re-measure T_close,e2e (rtc_tools hand_close_trials), turn this on for that
   # run — the controller then runs WITHOUT the sequencer, never both.
   diagnostic:
     hand_step: false
 
-    # ── S5.5 oracle plan (A-S5-8) ───────────────────────────────────────────
+    # ── Oracle plan ─────────────────────────────────────────────────────────
     # The stand-in for the planner: ONE fixed catch point, so the tracking
     # chain (sample -> soft-catch reference -> CLIK -> arm) can be exercised
-    # without a planner. Kept (off) as the S5.5 fixed-point check; it writes
+    # without a planner. Kept (off) as the fixed-point check; it writes
     # the same plan box the planner does, so only one of the two may be on.
     #
     # It is NOT a hazard on its own: the supervisor still needs a usable vision
@@ -74,18 +74,18 @@ demo_catching_controller:
     # this file.
     #
     # `p_c` is in the CLIK base frame (= world for this robot). Measured
-    # 2026-09-22 from the shipped sim start pose: the catch frame sits at
+    # from the shipped sim start pose: the catch frame sits at
     # (0.570, 0.127, 0.361), so this asks for a 7.5 cm move. `a_d` points
     # straight down — a 20 deg tilt from the start axis, so the approach-axis
     # rows have work to do as well as the position rows.
     #
     # `gamma_f: 0.0` makes the catch point the attractor for the whole run
-    # (L4 §5.3: with gamma == 0 the ball drops out of the DS), which is what
-    # turns this into the FIXED-catch-point check S5.5 asks for rather than a
-    # moving-target one.
+    # (SoftCatchTranslation: with gamma == 0 the ball drops out of the
+    # reference), which is what turns this into the FIXED-catch-point check
+    # rather than a moving-target one.
     oracle_plan:
-      # OFF since S6-B (R-4): the planner writes the plan box. Turn this on
-      # (and planner.enabled off) to rerun the fixed-point S5.5 check.
+      # OFF: the planner writes the plan box. Turn this on
+      # (and planner.enabled off) to rerun the fixed-point check.
       enabled: false
       p_c: [0.570, 0.190, 0.400]
       a_d: [0.0, 0.0, -1.0]
@@ -93,17 +93,15 @@ demo_catching_controller:
       gamma_f: 0.0
 
   catching:
-    # ── D-12 ball (L0 §6) ───────────────────────────────────────────────────
-    # The SIM ball, which is what the sim gates are judged against. It mirrors
-    # `mujoco_simulator.yaml`'s `projectile_ball` (radius 0.0335 m, mass
-    # 0.057 kg) and the `tennis` physics preset's restitution (0.75, ITF drop
-    # test 0.745) — a real ITF Type 2 ball as of 2026-09-20, where this file
-    # previously carried a 50 mm / 50 g ball and a restitution of 0.8 that
-    # matched no preset. Keep the three in sync: S4.5's d_eff / r_cap are
-    # derived FOR this diameter, so changing it invalidates them.
-    # provisional: the real D-12 spec is still open (this is the sim ball, not
-    # a decision about the hardware one), and S4.5 re-derives d_eff / r_cap
-    # when it closes (Q10, ID_INDEX.md §5.5).
+    # ── Ball ────────────────────────────────────────────────────────────────
+    # The SIM ball, which is what the sim results are judged against. It
+    # mirrors `mujoco_simulator.yaml`'s `projectile_ball` (radius 0.0335 m,
+    # mass 0.057 kg) and the `tennis` physics preset's restitution (0.75, ITF
+    # drop test 0.745) — an ITF Type 2 ball. Keep the three in sync: d_eff /
+    # r_cap (planner.search.grid.hand) are derived FOR this diameter, so
+    # changing it invalidates them.
+    # provisional: the hardware ball spec is still open (this is the sim ball),
+    # and d_eff / r_cap are re-derived when it closes.
     core:
       ball:
         diameter: 0.067
@@ -111,16 +109,15 @@ demo_catching_controller:
         restitution: 0.75
         provisional: true
 
-    # ── Hand profile (L6 §5.1/§6) ───────────────────────────────────────────
+    # ── Hand profile ────────────────────────────────────────────────────────
     # 10 actuated joints, in the `devices.p1b.joint_state_names` order:
     #   0 thumb_cmc_aa   1 thumb_cmc_fe  2 thumb_mcp      3 thumb_dip_fe
     #   4 index_mcp_aa   5 index_mcp_fe  6 index_dip_fe
     #   7 middle_mcp_fe  8 middle_dip_fe 9 ring_mcp_fe
     #
-    # PROVISIONAL, and provisional in the L0 §5.3 sense: this warns in sim and
-    # blocks a real-arm configuration.
+    # PROVISIONAL: this warns in sim and blocks a real-arm configuration.
     #
-    # q_pre / q_close are SEARCHED, not posed (2026-09-21). Two user-posed
+    # q_pre / q_close are SEARCHED, not posed. Two hand-posed
     # pairs — and 40 hand-built ones — held the shipped 67 mm ball in 0 of
     # ~3000 sim closures, and the traces said why: the three parallel fingers
     # arrive at different times and squirt the sphere out along +-x, where this
@@ -129,7 +126,7 @@ demo_catching_controller:
     # curling and wedge the ball back out. So the 20 numbers were evolved
     # directly against the honest test (ball placed on the preshape palm, step
     # to q_close, shake along +-g on all three catch-frame axes), seeded with
-    # the user's pairs. What it found differs from every posed pair in three
+    # the posed pairs. What it found differs from every posed pair in three
     # ways: the fingers close HALF as far (MCP -30..-43 deg, not -60..-80);
     # index_mcp_aa — the one joint no posed pair used — swings the index in
     # to block the x escape; and the thumb does not pinch, it rolls back
@@ -139,7 +136,7 @@ demo_catching_controller:
     # 214 held, see `planner.search.grid.hand` (catching/search_grid.yaml). It is a posture for THIS ball: it
     # holds 50-67 mm and nothing at 40 mm or below (the fingers no longer reach)
     # — one q_close cannot serve both under a bare position step; that needs
-    # the S7.1 hold rule (L6 §4.4). q_open is unchanged. Every value is inside
+    # a hold rule in the hand sequencer. q_open is unchanged. Every value is inside
     # `devices.p1b.joint_limits` ∩ URDF — index_mcp_aa sits AT the URDF/MJCF
     # bound (17 deg): the search asked for 20 and the joint stops at 17.
     robot:
@@ -147,9 +144,9 @@ demo_catching_controller:
         # CLIK's position box sits this far INSIDE the device limits, so the
         # backend's own clamp never fires: if it did, the solver's answer and
         # the command actually written would differ, and the difference would
-        # surface as a tracking error with no attributable cause (L5 §4.3).
+        # surface as a tracking error with no attributable cause.
         limit_margin: 0.05
-        # [rad/s², arm joint order] torque-derived (derive_accel_limits, eta_tau 0.8), 2026-09-20.
+        # [rad/s², arm joint order] torque-derived (derive_accel_limits, eta_tau 0.8).
         qdd_max: [2.03052, 2.03052, 2.03052, 2.03052, 2.03052, 2.03052]
         # Whether the box is cleared for the real arm. true parks a real-arm
         # configuration (sim only); absent or not a bool counts as true. This flag
@@ -172,22 +169,24 @@ demo_catching_controller:
         # middle -30.8/-46.4, ring -42.5): about where the fingers stall on a
         # 67 mm ball plus a little squeeze. NOT a fist — see the header.
         q_close: [ 0.651008,  0.523599,  0.134390, -0.434587,  0.296706, -0.523599, -0.523599, -0.537561, -0.809833, -0.741765]
-        # C (L6 §4.2): every joint travels more than rho_eps between these two
+        # Caging set C: every joint travels more than rho_eps between these two
         # postures (the smallest is index_dip_fe, 6.5 deg = 0.113 rad), and the
         # stall rho below was measured over all ten, so all ten are in C —
         # index_mcp_aa included, now that it moves.
         caging_mask: [true, true, true, true, true, true, true, true, true, true]
 
-        # eta is "the progress at which the ball can no longer escape"
-        # (L6 §4.2), MEASURED for this hand with these postures: over the 214
+        # eta is the closure progress rho (the minimum over C of the fraction of
+        # the q_pre -> q_close travel done) at which the ball can no longer
+        # escape, MEASURED for this hand with these postures: over the 214
         # placements that held, closure stalls at rho = 0.74 (median). eta sits
         # just under it so that rho >= eta is actually reached with a ball in
         # the hand; above 0.74 it would time a motion that never completes.
         eta_close: 0.7
 
-        # MEASURED, S4.2 re-run (2026-09-21) WITH the searched postures above:
+        # MEASURED WITH the searched postures above:
         # 200 step trials on the full sim bring-up, 0 CSV drops, at the eta
-        # above. steady axis (L6 §4.2's definition) mean 278.6 ms, max 280.7 ms,
+        # above. Steady-clock closure time (command tick to rho >= eta) mean
+        # 278.6 ms, max 280.7 ms,
         # p99 280.5 ms — a 2 ms spread, which is what a deterministic
         # position-servo step response looks like. The value below is the p99.
         # It is a property of THIS posture pair (the travel set changes with
@@ -195,7 +194,8 @@ demo_catching_controller:
         # Authority for the closure torque is the sim MJCF forcerange
         # (3.0 N·m); this hand is torque-saturation dominated, so an operating
         # limit of 1.5 N·m would stretch T_close by roughly √2.
-        # The analyser's tick axis is NOT usable here — see L6 §4.2.
+        # The analyser's tick axis is NOT usable here (a CSV row is not one
+        # tick); use the steady clock.
         #
         # This hand is the reason `analyze_hand_close` classifies a command row
         # as pre / close / OTHER instead of taking the nearer of two. With the
@@ -206,29 +206,25 @@ demo_catching_controller:
         # the first real step, and inflate that trial's T_close by the whole
         # hold. Re-check this margin whenever these two postures move.
         #
-        # THE MEASURED CLOSURE TIME, and only that (E1-F16, #742): the mean of
-        # the 200-trial re-measurement of E1-F15 (#741) — 278.000 ms on the
+        # THE MEASURED CLOSURE TIME, and only that (#742): the mean of
+        # the 200-trial re-measurement (#741) — 278.000 ms on the
         # steady and the tick axis alike, sample std 0.000 ms (the sim hand
         # closes on the same tick every time). It bounds how long a closure may
         # take (T_close_timeout, T_release_timeout are derived from it) and is
         # what the closing hand absorbs in the grid search's gamma window. It
-        # no longer times the close command: that is T_close_lead below. (It
-        # was 0.2805 — the p99 above — while it did both.)
+        # no longer times the close command: that is T_close_lead below.
         T_close_e2e: 0.278
         # HOW LONG BEFORE THE BALL REACHES THE CATCH POINT THE HAND IS TOLD TO
         # CLOSE — a design value, set from where the hand holds, MEASURED AT
-        # THE SPEEDS THE ARM CATCHES AT (E1-F19 part 2, #802): flown in at
+        # THE SPEEDS THE ARM CATCHES AT (#802): flown in at
         # 1.0 – 2.5 m/s, 16 fly-ins a cell of 0.1 m/s x 4 ms, the 8 ms the
         # closure held best in was "complete 28 – 20 ms BEFORE the ball centre
         # reaches the catch-frame origin" in every speed cell from 1.15 to
         # 2.45 m/s but one (1.95: 24 – 16 ms). The lead is the closure time
-        # and the middle of that window: 0.278 + 0.024. (It was 0.2805 — the
-        # middle of the window identified at 0.55 m/s, a closure complete
-        # 2.5 ms before the ball, outside the window above.) The window's
+        # and the middle of that window: 0.278 + 0.024. The window's
         # place does not move with the speed; how often the hand holds in it
         # does — of 32 fly-ins 0.75 – 0.94 up to 1.45 m/s, 0.66 – 0.78 to
-        # 1.75, 0.59 at 1.85 and 2.05 (0.41 at 1.95), about 0.4 above (L6
-        # §4.6).
+        # 1.75, 0.59 at 1.85 and 2.05 (0.41 at 1.95), about 0.4 above.
         # In the catching sim the new lead made no difference that three
         # same-seed pairs could show (#745): the plans published there miss
         # by position at the catch instant, not by the closing instant.
@@ -236,12 +232,11 @@ demo_catching_controller:
         # and the grid search's commit gate. Whose catch instant the lead is
         # subtracted from, and the one conversion the controller makes under
         # the mpc_docking segment planner (mirror hand.T_close_lead_from_t_c),
-        # are L6 §4.3's; this hand's converted lead and the docking cores'
-        # delta_0 are in L6 §4.6. Absent, the key is T_close_e2e (and the
-        # configure log says so). Provisional (sim).
+        # are in the controller's header. Absent, the key is T_close_e2e (and
+        # the configure log says so). Provisional (sim).
         T_close_lead: 0.302
 
-        # ── The docking capture set (E1-F15 #741, re-measured in E1-F16 #742) ──
+        # ── The docking capture set (#741, re-measured in #742) ─────────────
         # What the nlp search and the mpc_docking segment planner need to know
         # of THIS hand, identified in sim with tools/docking_ident (README):
         # the ball flown into the preshape hand along a line of the catch
@@ -249,7 +244,7 @@ demo_catching_controller:
         # closure. Read by every configuration, REQUIRED only when one of
         # those two functions is selected (a value left TBD parks it then).
         # PROVISIONAL — a sim identification: the sim hand's absorption and
-        # restitution are not the real hand's (L6 §4.5), and the lateral set
+        # restitution are not the real hand's, and the lateral set
         # is small against the resolution it was measured at (below).
         # Box w040: closing speed 0.5 – 0.6 m/s, 300 conditions drawn from the
         # set held 277 times (95 % lower bound 0.893); with the ball
@@ -296,7 +291,7 @@ demo_catching_controller:
           # not identified: the closing speed allowed at the entrance (the
           # band's top) and the relative braking the envelope assumes.
           # c_cap_max / c_ent_max are NOT the identified band's top (0.6, #742):
-          # E1-F19 (#745) widened them in sim. At 0.5 - 0.6 the planner
+          # they were widened in sim (#745). At 0.5 - 0.6 the planner
           # publishes, the arm follows and the hand holds 3 of 50 — at t_c the
           # hand is ~30 mm ahead of the plan along the approach axis, which at
           # 0.55 m/s is ~60 ms against a closure due ~10 ms after t_c. Held of
@@ -304,7 +299,7 @@ demo_catching_controller:
           # m/s: 3 / 5 / 15 / 27 / 20 (seed 801), and 29 at 2.0 on seed 821
           # (grid x mpc the same day: 23, 32). The top is where grid x mpc
           # holds in sim (1.0 - 2.1 m/s at the entrance). The hand was flown
-          # there since (E1-F19 part 2, #802): the closure window keeps its
+          # there since (#802): the closure window keeps its
           # place (T_close_lead above), and in its best 8 ms the hand holds
           # 0.59 at 1.85 and 2.05 m/s against 0.75 – 0.94 up to 1.45. By that
           # measurement's own rule (a run of two 4 ms cells that each hold
@@ -319,7 +314,7 @@ demo_catching_controller:
           # When the closure has to be complete, measured from the entrance
           # crossing [s]: the window, on the axis where the closure completes
           # T_close_e2e after its command. From the fly-ins at the cores'
-          # reference speed (E1-F19 part 2, #802; the 2.0 – 2.1 m/s cells of
+          # reference speed (#802; the 2.0 – 2.1 m/s cells of
           # 4 ms that held in at least half of 16): counted from the ORIGIN
           # the closure has to be complete 28 – 20 ms before the ball centre
           # arrives, and the entrance crossing is s_ent / c = 3.4 ms earlier
@@ -345,24 +340,24 @@ demo_catching_controller:
             restitution: 0.732
 
         # T_release_timeout is NOT set: absent, it is derived from this profile
-        # (L6 §6 — the slower of a torque-saturated and a first-order release,
+        # (the slower of a torque-saturated and a first-order release,
         # doubled): 2.34 s with the poses and eta_close above and q_tol at its
-        # default 0.01 (not set here — a new default moves it). S8-C sim
-        # (seeds 301-304, 200 throws): release -> q_pre 506-516 ms, p99 516 ms,
+        # default 0.01 (not set here — a new default moves it). Sim
+        # (200 throws): release -> q_pre 506-516 ms, p99 516 ms,
         # so twice the p99 is 1.03 s — inside the derived value, no hang.
 
-        # The hand-joint capture witness (L7 §4.4, #537 S8-C): a caging joint
+        # The hand-joint capture witness: a caging joint
         # stopped part-way (rho in [rho_min, rho_max], |qd| <= qd_tol) while
         # pushing toward q_close (effort >= effort_frac_min of the hand device's
         # max_torque) for t_persist makes the verdict Captured even when no
         # fingertip saw the ball.
-        # CALIBRATED on seeds 301/302 (100 throws, witness off): every truth
+        # CALIBRATED on 100 throws (witness off): every truth
         # failure ended with all joints at rho >= 0.9999 and effort <= 0.007 of
         # max_torque; every stalled joint of a truth success sat at rho
         # 0.797-0.924 with effort >= 0.999 (mostly thumb_cmc_fe, once ring_mcp).
         # The bounds are the midpoints of those gaps (rho_max between 0.924 and
         # 1, rho_min between a hand that never closed and 0.797, effort between
-        # 0.007 and 0.999). VALIDATED on seeds 303/304 (100 throws, frozen):
+        # 0.007 and 0.999). VALIDATED on 100 further throws (frozen):
         # false-Captured 0/52; false-Missed 8/48 (fingertips alone on the same
         # throws: 22/48; all 14 promotions were truth successes). Of the 8 left,
         # 6 are a ball the fingers closed over completely (every joint at
@@ -377,58 +372,57 @@ demo_catching_controller:
           effort_frac_min: 0.5
           t_persist: 0.1
 
-    # ── Vision ingress (L1 §6, S5.2) ────────────────────────────────────────
+    # ── Vision ingress ──────────────────────────────────────────────────────
     # The prediction lane this controller subscribes to, and the numbers it
-    # judges each message against. Values are S3.6's (ID_INDEX.md §3),
-    # all PROVISIONAL in the sense that they are derived from the sim profile
+    # judges each message against. All PROVISIONAL in the sense that they are
+    # derived from the sim profile
     # and one measured detection latency — they are re-derived, not re-guessed,
     # when either changes.
     io:
       # ball_perception `sim_estimator_node`'s debug prediction topic. A DEBUG
-      # topic with no stable ABI (W5-2), which is why the parser locates fields
+      # topic with no stable ABI, which is why the parser locates fields
       # by name rather than by offset.
       traj_topic: "/ball_perception/debug/prediction/trajectory"
-      # Measured, not assumed: S3.4 saw `world` on 856 messages across both
+      # Measured, not assumed: `world` was seen on 856 messages across both
       # robots. Compared on every message — a publisher that changes frame
       # keeps producing entirely plausible numbers in a different space.
       expected_frame: "world"
-      # Vision world → MODEL world (L3 §4.2) is not a key here: it is the
+      # Vision world → MODEL world is not a key here: it is the
       # model frame `scene_world` (#779), urdf.extra_frames in sim.yaml and in
       # every overlay that swaps the scene — the same world a `scene_world`
       # task goal names. The planner and the CLIK work in the Pinocchio
       # universe, whose root on this URDF is `base_link` — 180° about z from
       # `base`, the frame scene_world hangs off — so the ingress applies
-      # Rz(180°) and the pedestal's 0.7 m to every prediction (S6-C: without
+      # Rz(180°) and the pedestal's 0.7 m to every prediction (without
       # the turn every candidate landed behind the arm). No scene_world (a
-      # real arm until the camera is calibrated, S10) leaves the vision lane
+      # real arm until the camera is calibrated) leaves the vision lane
       # inert with one ERROR. The offline tools read the same frame (rtc_tools
       # catching_trials).
       # = ceil(horizon_min / dt_expected) + 1 = ceil(0.53 / 0.05) + 1. The +1 is
       # not a margin: n samples spaced dt apart span (n-1)*dt, so 11 points
       # cover 0.50 s and fall 30 ms SHORT of the window a commit decision
-      # needs — every minimal message would then trip the horizon warning
-      # (found by /code-review, 2026-09-22; S3.6's arithmetic dropped the term).
+      # needs — every minimal message would then trip the horizon warning.
       n_min: 12
-      # Three publish periods at the measured 30 Hz. S3.4: a 30 % drop
+      # Three publish periods at the measured 30 Hz. A 30 % drop
       # injection thins publishing to ~15 Hz at p95 (67 ms), so one dropped
       # message must not read as stale — and the ghost-track silence after a
       # lost ball (the last VALID prediction arrives within 34 ms, then
       # nothing) is read as loss inside this window.
       t_stale: 0.10
       # REAL-ARM value: the budget for clock disagreement between the vision PC
-      # and this one, which on hardware is a PTP/NTP question (TBD-NET-01, S10
-      # confirms it). The sim value is the `sim.io` override below.
+      # and this one, which on hardware is a PTP/NTP question (to be confirmed
+      # on the real rig). The sim value is the `sim.io` override below.
       future_tol: 0.001
-      # R1 (the commit condition): T_close,tot 0.303 (robot.hand.T_close_lead
+      # The commit condition: T_close,tot 0.303 (robot.hand.T_close_lead
       # 0.302 + h/2 0.001) + T_arm 0.05 + margin 0.03 + L 0.14 = 0.523, rounded
-      # UP to 10 ms. Rounding down would admit a prediction that misses R1 by
+      # UP to 10 ms. Rounding down would admit a prediction that misses it by
       # 3 ms. Nothing at configure ties this value to the lead: it moves by
       # hand when T_close_lead does. A shorter prediction is diagnosed, not
       # refused, and the sim estimator's predictions carry 1.0 s.
       horizon_min: 0.53
       track:
         # How far past the later origin two consecutive predictions are
-        # compared (L1 §4.4). Inside both windows, so neither is extrapolated.
+        # compared. Inside both windows, so neither is extrapolated.
         eval_offset: 0.05
         # TBD: the jump distribution has not been measured on this profile, and
         # a threshold invented here would warn about nothing or about
@@ -440,15 +434,15 @@ demo_catching_controller:
     # spacing floor the decoder refuses below is derived from it, and `n_min`
     # above is derived from it too. The sim profile is ball_perception's
     # `ball_perception_sim/config/sim_profile.catching.json` — that repository
-    # owns it (MD-18), so nothing here checks the pair; change both.
+    # owns it, so nothing here checks the pair; change both.
     prediction:
       dt_expected: 0.05
 
     # ── Sim-only overrides (active iff every claimed device is the simulator)
     # The sim ball lane's stamps ride the SIM time axis anchored at launch, so
     # they lead wall by the in-flight phase error — two orders of magnitude
-    # above any clock-sync budget (D-3,
-    # rtc_mujoco_sim/README.md §Projectile Ball stamp). 0.1 s is the same
+    # above any clock-sync budget (see rtc_mujoco_sim/README.md, Projectile
+    # Ball stamp). 0.1 s is the same
     # width the sim vision profile allows with
     # `time.max_future_skew_s`. On hardware this key is not read and
     # `io.future_tol` above applies.
@@ -456,15 +450,15 @@ demo_catching_controller:
       io:
         future_tol: 0.1
 
-    # ── The CLIK step (L5 §6, S5.3) ─────────────────────────────────────────
+    # ── The CLIK step ───────────────────────────────────────────────────────
     # Gains and weights, all provisional: they are the documented defaults
-    # (L5 §6) and have not been tuned on this robot. The ORDERING is not a
+    # and have not been tuned on this robot. The ORDERING is not a
     # preference — the validator refuses a profile where the posture weight
     # reaches the task weight, because that produces a controller which tracks
     # its own posture and treats the catch point as a suggestion.
     joint_cmd:
       K_p: 20.0      # 1/s, position rows
-      K_a: 8.0       # 1/s, approach-axis rows (L4 §6 reference.axis.k_axis)
+      K_a: 8.0       # 1/s, approach-axis rows (reference.axis.k_axis)
       K_n: 1.0       # 1/s, posture
       w_task: 1.0
       w_a: 0.5
@@ -473,28 +467,26 @@ demo_catching_controller:
       damping_sq: 0.0001
       qp:
         max_iter: 20
-      # Decision K form (L5 §4.3), chosen 2026-09-23 on a sim A/B with the arm
-      # aligned to planner.wait_pose before every throw (#537 comment
-      # 5789708503): ‖FK(q_cmd) − ref_x‖ p50 / p95 was 3.2 / 68 mm under
-      # `dynamic` against 163 / 624 mm under `box` — the constant D-16 box is
-      # the one that cannot keep up with the reference. eta_tau 0.8 is D-16's.
+      # `dynamic` form: per-tick torque rows M·v̇ + h within ±eta_tau·tau_max.
+      # Chosen on a sim A/B with the arm aligned to planner.wait_pose before
+      # every throw (#537): ‖FK(q_cmd) − ref_x‖ p50 / p95 was 3.2 / 68 mm under
+      # `dynamic` against 163 / 624 mm under `box` — the constant box
+      # (robot.arm.qdd_max) cannot keep up with the reference.
       accel_constraint: dynamic
       eta_tau: 0.8
       lag:
         # The SIM arm's lag, led: ../mujoco_simulator.yaml runs the position
-        # servo at kd/kp = 0.05 s (#537 D-S8-13), a first-order lag the S8-A
-        # least-squares fit reads as 50 ms on all six joints. Shipped since
-        # #821 (2026-10-11); until then these two were 0 / false here and the
-        # sim ran the lead through the catch_lead_on sim overlay (removed). T_arm is not
+        # servo at kd/kp = 0.05 s, a first-order lag a least-squares fit reads as
+        # 50 ms on all six joints (#537). T_arm is not
         # only the lead: the validator derives the commit window from it
         # (planner.freeze.T_freeze below).
         #
-        # A REAL arm's T_arm is not this number — S10 identifies it. The day
-        # it does, the sim's 0.05 needs a place of its own: this key cannot
+        # A REAL arm's T_arm is not this number — it is identified on hardware.
+        # The day it is, the sim's 0.05 needs a place of its own: this key cannot
         # hold both.
         #
-        # `provisional` is about the REAL arm's T_arm (#537 pre-S10 R3): sim
-        # warns, a real arm parks until S10 identifies it — whatever the value
+        # `provisional` is about the REAL arm's T_arm: sim warns, a real arm
+        # parks until it is identified — whatever the value
         # and with the lead off too, since T_arm also sits in the T_freeze
         # floor. Absent reads as true.
         provisional: true
@@ -502,49 +494,49 @@ demo_catching_controller:
         lead_enable: true
 
     supervisor:
-      # ── Thresholds the joint command layer reports to (L7 §6, S5.3) ───────
-      # ‖q_meas − q_cmd‖. D-6 keeps the measured state out of CLIK, so this
+      # ── Thresholds the joint command layer reports to ─────────────────────
+      # ‖q_meas − q_cmd‖. CLIK does not use the measured state, so this
       # watchdog is the ONLY thing that notices the arm is not where it was
       # told to be. PROVISIONAL (twice the observed peak): the
-      # S8-B sim runs (2026-09-24, #537 5810866922; 0.05 s sim servo, D-S8-13)
+      # sim runs (0.05 s sim servo, #537)
       # peaked at 0.21 rad before t_c in every 2x2 arm, lead on or off, and in
       # the 200-throw tuning set; RETREAT peaked at 0.058. The earlier 1.54
       # was measured on the MJCF's 0.2 s servo, and that servo (a launch with
       # use_yaml_servo_gains:=false) peaks near 0.77 rad — past this value, so
-      # it would abort almost every throw. S10 sets the real-arm value; the
-      # controller is parked on the real arm until then (A-S5-1).
+      # it would abort almost every throw. The real-arm value is set on
+      # hardware; the controller is parked on the real arm until then.
       track_err_abort: 0.42
       # How long COMMITTED/CLOSING may run on a stale prediction past io.t_stale
-      # before BALL_STALE_LONG (A-6). Kept at the S7 value: the tuning set's
+      # before BALL_STALE_LONG. Kept at its earlier value: the tuning set's
       # committed-snapshot age peaked at 65 ms, under t_stale, so no throw came
       # near it and the sim gives no reason to tighten it. Written here so the
       # value is owned by this file, not by the parser default.
       stale_committed_max_s: 0.10
-      # REF_SATURATED: consecutive saturated reference ticks (L7 §4.2). 60 fired
+      # REF_SATURATED: consecutive saturated reference ticks. 60 fired
       # on 3/200 tuning throws and 2/100 lead-on 2x2 throws, and 2 of those 3
       # had caught the ball. Re-run with the check off (same 200 throws): the
       # longest streak was 61, p99 58, and none reached 70. 80 leaves 19 ticks
-      # above that max. 200 throws cannot show the S8-B target of ≤ 0.5 % per
-      # throw on their own; S8-E re-reads the distribution.
+      # above that max. 200 throws cannot show a target of ≤ 0.5 % per
+      # throw on their own.
       sat_ticks: 80
       # Consecutive TRIALS ended by a CLIK failure before the controller
-      # latches a fault (L7 §4.2; per trial since #537 S9b, D-S9-D2 — a trial
+      # latches a fault (counted per trial — a trial
       # that reaches HOLD's verdict resets the count). Three trials the solver
       # ends in a row is not a transient, and retrying forever is how a
       # controller ends up aborting in a loop with nothing that escalates.
       n_qp: 3
-      # Motion deadlines (#537 S9b, D-S9-D1): past either, the supervisor
+      # Motion deadlines: past either, the supervisor
       # latches a fault (ABORT_ESCALATED -> FAULT). Twice the longest stage
-      # this robot ran in the S8 sim sessions (32 sessions, S8-E/F/G/I; the
+      # this robot ran in the sim sessions (32 sessions; the
       # envelope-qdd_max ones ramp faster and never set the max), floored at
       # 0.5 s:
       #   stop_s   = 2 x max(ABORT_SAFE ramp 1.546 s, RETREAT stop 2.138 s)
-      #            -> 4.28. The worst stop was a degraded S8-F abort cycle: the
+      #            -> 4.28. The worst stop was a degraded abort cycle: the
       #            command was already at rest and the arm took 2.1 s to catch
       #            up with it (track_err 0.47 > 0.42) — the catch-up, not the ramp.
-      #   return_s = 2 x RETREAT return 7.380 s (an S8-F reach-first catch
+      #   return_s = 2 x RETREAT return 7.380 s (a reach-first catch
       #            3.4 rad of wrist_3 from the wait pose at homing.v_max) -> 14.76.
-      # PROVISIONAL: sim values — the real arm's are S10's (D-S9-G), so a
+      # PROVISIONAL: sim values — the real arm's are set on hardware, so a
       # real-arm configuration stays parked until then.
       deadline:
         stop_s: 4.28
@@ -559,7 +551,7 @@ demo_catching_controller:
     # planner.segment.mpc_docking), all under this same `planner:` map.
     planner:
       search:
-        # THE SELECTOR of the search (E1-F16): which function turns a predicted
+        # THE SELECTOR of the search : which function turns a predicted
         # ball into a catch plan, chosen once per configuration. grid: one
         # candidate per vision sample, a closed-form gamma profile per
         # candidate (the code default, when the key is absent; its keys:
@@ -571,9 +563,10 @@ demo_catching_controller:
         mode: grid
       segment:
         # THE SELECTOR: what the arm follows from APPROACH to the end of the
-        # stop (MPC MD-44), chosen once per configuration and never mixed
-        # within it. closed_form: the RT tick makes the reference itself — v1's
-        # L4 soft-catch reference, then L7's virtual target (the code default,
+        # stop, chosen once per configuration and never mixed
+        # within it. closed_form: the RT tick makes the reference itself — the
+        # soft-catch reference (SoftCatchTranslation), then the decel target
+        # (DecelTarget) (the code default,
         # when the key is absent). mpc: the planner thread's mpc segment
         # planner publishes joint segments and the RT follows them (its keys:
         # planner.segment.mpc, catching/segment_mpc.yaml) — needs
@@ -585,28 +578,26 @@ demo_catching_controller:
         # — the docking problem per segment, nothing published after the
         # catch; needs robot.hand.docking and is sim only while
         # robot.hand.docking.provisional is true.
-        # Shipped mpc by the user's decision (MD-89, 2026-10-03)
-        # although gate G-1 failed here: catch success 0.58 against closed_form's 0.69 on the same 300 throws (E1-F06, #632).
-        # Set closed_form to run v1's law.
+        # Shipped mpc although closed_form catches more here: catch success
+        # 0.58 against 0.69 on the same 300 throws (#632).
+        # Set closed_form to run the closed-form law.
         mode: mpc
-      # ── Planner thread (L3 §6, S6-A) ──────────────────────────────────────
-      # ON since S6-B (R-4): the planner is the plan box's only writer — the
+      # ── Planner thread ────────────────────────────────────────────────────
+      # ON: the planner is the plan box's only writer — the
       # oracle plan above is off (a profile enabling both is parked).
       enabled: true
-      # The longest the planner sleeps without a new trajectory (decision H,
-      # 2026-09-23). It also re-plans on this cadence while vision is quiet.
+      # The longest the planner sleeps without a new trajectory. It also re-plans on this cadence while vision is quiet.
       wake_timeout_s: 0.05
-      # IK seed and wait pose, ARM joint order [rad]. Chosen by the user in the
-      # pedestal scene's viewer (2026-10-09, #747): in deg [-0.02, -32.13,
+      # IK seed and wait pose, ARM joint order [rad]. Chosen in the
+      # pedestal scene's viewer: in deg [-0.02, -32.13,
       # -128.82, -84.38, -90.83, -90.91] — the catch point 0.80 m above the
       # base axis, the palm facing +x of `base` and tilted 25 deg up. It
-      # replaces the S3.5b gate map's pose [0.212, -1.376, 1.107, -1.978,
-      # -3.296, 0.121] (decision L, 2026-09-23), and everything that was
-      # derived FROM that pose is stale until re-derived: both catch boxes
-      # (catching/search_*.yaml) and the frozen throw box. PROVISIONAL.
-      # Consumed as the IK seed (S6-B) and homed to (S7.2).
+      # replaces the catchability map's pose [0.212, -1.376, 1.107, -1.978,
+      # -3.296, 0.121], and everything that was derived FROM that pose is
+      # stale until re-derived: the frozen throw box. PROVISIONAL.
+      # Consumed as the IK seed and homed to.
       wait_pose: [-0.000375, -0.560813, -2.248387, -1.472702, -1.585359, -1.586749]
-      # Where the wait pose comes from (S8-I, #537 5850509543). `yaml` = the
+      # Where the wait pose comes from. `yaml` = the
       # list above. `current` = the arm's measured pose on the first readable
       # tick AT REST of each activation (a moving arm defers the decision; armed
       # while moving, under an E-STOP, or outside the margined box = refused
@@ -619,11 +610,11 @@ demo_catching_controller:
       # the trial runner (which aims at the mirror) refuses at its alignment
       # gate — run experiments with `yaml` and an overlay.
       wait_pose_source: yaml
-      # The robot config's catch sub-model (R-3): arm root → catch frame parent.
+      # The robot config's catch sub-model: arm root → catch frame parent.
       sub_model: "ur5e_catch"
       freeze:
-        # Decision G (2026-09-23): the L3 §4.11 lower bound — the close lead
-        # robot.hand.T_close_lead 0.302 (E1-F19 part 2) + h/2 0.001 + T_arm
+        # The lower bound — the close lead
+        # robot.hand.T_close_lead 0.302  + h/2 0.001 + T_arm
         # 0.05 (joint_cmd.lag) + margin 0.03 = 0.383, rounded up to 10 ms.
         # (0.36 while T_arm was 0 here, #821.) The grid search's commit-lead
         # rank gate (kRankCommitLead) uses the same sum and the lower end of
@@ -639,16 +630,15 @@ demo_catching_controller:
         # is T_freeze — the search stops where the plan freezes. A larger
         # value stops it earlier; one below T_freeze parks.
         # t_stop_plan: 0.39
-      # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
+      # The whole block is provisional: sim warns, a real arm parks.
       # That flag is the only one `planner:` has, across the fragments too — it
       # covers `hand.d_eff` and `hand.r_cap` (catching/search_grid.yaml), which
-      # carry no flag of their own (#537 pre-S10 R3: the parser never read one
-      # there).
+      # carry no flag of their own (the parser never reads one there).
       provisional: true
 
   # ── Topic configuration ────────────────────────────────────────────────────
   # Group order IS the controller's device index order: ur5e = 0 (held),
-  # p1b = 1 (stepped). No publishers: S4.0 emits no state message (D-20).
+  # p1b = 1 (stepped). No publishers: no state message is emitted.
   topics:
     ur5e:
       subscribe:
@@ -660,16 +650,16 @@ demo_catching_controller:
           role: "target"
 
   # ── Controller-owned CSV logs ──────────────────────────────────────────────
-  # The S4.2 measurement reads `p1b_state.csv` — `command_*` gives t_cmd (the
+  # The T_close measurement reads `p1b_state.csv` — `command_*` gives t_cmd (the
   # tick the step was accepted), `actual_pos_*` gives rho(t), and
-  # `t_relative_s` is the RT steady clock L6 §4.2 asks for. No dedicated
+  # `t_relative_s` is the RT steady clock. No dedicated
   # diagnostic channel: these columns already carry everything rho needs.
   logs:
     - msg_type: rtc_msgs/DeviceStateLog
       instance: ur5e_state
     - msg_type: rtc_msgs/DeviceStateLog
       instance: p1b_state
-    # Per-tick record (S5.4, L8 §5.2). One row per tick including the ticks
+    # Per-tick record. One row per tick including the ticks
     # that decide to do nothing — a gap in this file means a dropped row
     # and nothing else (#234 P-20).
     - msg_type: integrated_bringup/CatchingDiagLog

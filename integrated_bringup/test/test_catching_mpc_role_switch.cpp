@@ -1,4 +1,4 @@
-// ── R-1: the catching planner shares the `mpc` layout role (E-7 decision J) ──
+// ── The catching planner shares the `mpc` layout role ──────────────────────
 //
 // The planner takes DemoWbc's MPC slot and its thread name instead of a layout
 // role of its own. That is only safe if a controller switch leaves exactly ONE
@@ -20,7 +20,7 @@
 // RLIMIT_RTPRIO; without it ApplyThreadConfig leaves the thread on SCHED_OTHER
 // and carries on (its documented behaviour). The case then RECORDS
 // `NOT_EVALUATED(EPERM)` instead of passing silently or skipping — the policy
-// half of R-1 is judged on the control PC (S6-D).
+// half is judged on the control PC.
 
 #include "catching_planner_fixture.hpp"
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"

@@ -228,9 +228,8 @@ CloudReject CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& msg,
   };
 
   // ── Shape and layout, all of it BEFORE a single point is indexed ─────────
-  // The reference implementation indexed first and range-checked afterwards,
-  // which ASan found reading past the end on an over-long message (S1.2). The
-  // order here is the fix, and it is the reason every check below is a return
+  // Indexing before range-checking reads past the end on an over-long message
+  // (found by ASan). Hence the order here, and every check below is a return
   // rather than a flag.
   if (msg.is_bigendian) {
     return fail(CloudReject::kBigEndian);
@@ -238,9 +237,8 @@ CloudReject CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& msg,
   if (!cfg_.expected_frame.empty() && msg.header.frame_id != cfg_.expected_frame) {
     // Compared on EVERY message, not once: a publisher that changes frame
     // mid-run is publishing numbers in a different space, and the values stay
-    // entirely plausible. (S3.4 measured `world` on both robots, so this is a
-    // guard against change rather than a conversion — L1 §4.3's transform is
-    // not needed and is not implemented.)
+    // entirely plausible. The vision-world → model-world transform (below,
+    // `cfg_.to_model`) applies only after this check.
     return fail(CloudReject::kFrameId);
   }
   if (msg.height != 1) {
@@ -328,12 +326,12 @@ CloudReject CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& msg,
     return fail(CloudReject::kStaleSequence);
   }
 
-  // ── D-2 conversion, once ─────────────────────────────────────────────────
+  // ── Stamp conversion, once ──────────────────────────────────────────────
   const std::int64_t stamp_ns = static_cast<std::int64_t>(msg.header.stamp.sec) * 1'000'000'000LL +
                                 static_cast<std::int64_t>(msg.header.stamp.nanosec);
   const auto conv = rtc::catching::ConvertRemoteStamp(rtc::catching::NowReal{recv_steady_ns},
                                                       recv_wall_ns, stamp_ns, cfg_.future_tol_ns);
-  diag_.origin_delay_ns = conv.origin_delay_ns;  // diagnostic on BOTH paths (L1 §4.1)
+  diag_.origin_delay_ns = conv.origin_delay_ns;  // diagnostic on BOTH paths
   if (!conv.IsOk()) {
     return fail(conv.status == rtc::catching::StampStatus::kFutureStamp
                     ? CloudReject::kFutureStamp
@@ -375,7 +373,7 @@ CloudReject CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& msg,
                 sizeof(double) * CovarianceSnapshot::kElems);
   }
 
-  // ── Vision world → model world (L3 §4.2) ──────────────────────────────────
+  // ── Vision world → model world ───────────────────────────────────────────
   // Before the format check so the check, the jump diagnostic and every
   // consumer see one frame. A rotation of the covariance skips exact-zero
   // rotation coefficients: an unknown (NaN) element must stay confined to the
@@ -428,14 +426,14 @@ CloudReject CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& msg,
     }
   }
 
-  // ── Format check (L2's gate, the single owner of these rules) ────────────
+  // ── Format check (Check() is the single owner of these rules) ────────────
   const rtc::catching::TrajLimits limits{cfg_.n_min, cfg_.n_max, cfg_.dt_min_ns};
   const rtc::catching::TrajCheck check = rtc::catching::Check(decoded, limits);
   if (!check.ok) {
     return fail(CloudReject::kMalformed);
   }
 
-  // ── Token (D-22) and diagnostics ─────────────────────────────────────────
+  // ── Token and diagnostics ───────────────────────────────────────────────
   decoded.token.activation_generation = activation_generation;
   decoded.token.generation = generation;
   decoded.token.snapshot_sequence = sequence;

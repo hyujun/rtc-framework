@@ -1,4 +1,4 @@
-// mpc_docking numeric core on the SHIPPED catch sub-models (E1-F13, #739).
+// mpc_docking numeric core on the SHIPPED catch sub-models (#739).
 //
 // rtc_controllers' own suite solves on the plain arm URDFs, because the
 // hand-locked sub-models are xacro and only this package builds them. The
@@ -8,7 +8,7 @@
 // frame and the shipped joint ratings.
 //
 // RECORDED, not judged: the capture-set parameters are the synthetic ones of
-// the core's fixture (the identified values are E1-F15's), so a verdict here
+// the core's fixture (the identified values are not shipped), so a verdict here
 // would be a verdict on made-up numbers. What IS asserted is only that the
 // models are the shipped ones (name, frame, joint count, hand mass present)
 // and that every solve returns a result.

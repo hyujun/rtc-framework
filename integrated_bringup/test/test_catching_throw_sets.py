@@ -3,8 +3,8 @@
 A robot ships, per arm (search x segment planner), the CATCH SET of its throw
 population: the throws of the arm's segment set that the sim caught in the
 viewer runs of 2026-10-11 / 10-12 (``catch_population_trials --collect-only``
-over those units). They replace the #798 sets (D-1 · D-2 · candidate box, in
-the git history), and what that test file held is held here for the new ones:
+over those units). They replace the #798 sets (in the git
+history), and what that test file held is held here for the new ones:
 
 - every file is a ``catching_throw_list/1`` the sim driver and the offline map
   read as is (the shared loader validates it — ids unique, vectors finite), and

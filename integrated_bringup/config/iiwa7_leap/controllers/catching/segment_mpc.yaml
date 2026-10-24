@@ -4,8 +4,7 @@
 # merges it into that file's tree; every key keeps its full path.
 #
 # The APPROACH–stop MPC: the planner thread solves it and the RT follows its
-# joint segments from APPROACH to the end of the stop (MD-45,
-# MD-54 – MD-64). Read only when `planner.segment.mode: mpc` (the main file).
+# joint segments from APPROACH to the end of the stop. Read only when `planner.segment.mode: mpc` (the main file).
 # Every key here is under planner.segment.mpc, and the mpc segment planner
 # reads its design values from here alone.
 demo_catching_controller:
@@ -13,12 +12,11 @@ demo_catching_controller:
     planner:
       segment:
         mpc:
-          # rho_max of the mpc segment-switch gate (MD-39), per joint:
+          # rho_max of the mpc segment-switch gate, per joint:
           # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max. Read under mpc only.
-          # Not measured on this arm: E1-F10 had too few adopted trials here
-          # (E1-F10, #663).
+          # Not measured on this arm: too few adopted trials here (#663).
           switch_margin: 1.0
-          # The speed margin on the joint ratings (D-9): the MPC's velocity box is
+          # The speed margin on the joint ratings: the MPC's velocity box is
           # eta_v * qd_max, and the RT's segment-switch gate keeps (1 - eta_v) of
           # the rating as its headroom, so it must stay below 1. The search has its
           # own (planner.search.grid.gamma.eta_v); a different value here warns.
@@ -27,30 +25,29 @@ demo_catching_controller:
           # solve that needs the direction is withheld. The search's IK has its
           # own floor (planner.search.grid.ik.v_eps).
           v_eps: 1.0e-6
-          # MPC E1-F03 (#629) / E1-F08 (#661): the planner thread solves the
-          # APPROACH–stop MPC and publishes its segments as joint nodes (MD-45,
-          # MD-55 – MD-64). There is no switch here: the planner builds and runs
-          # it exactly when planner.segment.mode is mpc (MD-44) — shipped mpc
-          # (MD-89); under closed_form none of these keys is read. Under mode: mpc
+          # The planner thread solves the APPROACH–stop MPC and publishes its
+          # segments as joint nodes. There is no switch here: the planner builds
+          # and runs it exactly when planner.segment.mode is mpc (the shipped
+          # mode); under closed_form none of these keys is read. Under mode: mpc
           # the RT takes a plan only together with its first segment and follows
-          # the segments from APPROACH to the end of the stop (MPC E1-F09, MD-45)
-          # — the approach grid below (n_pre_max > 0) is then required.
+          # the segments from APPROACH to the end of the stop — the approach
+          # grid below (n_pre_max > 0) is then required.
           horizon:
-            # The stop part, after t_c (MD-54): N_s x dt_s IS the stopping time
-            # (MD-21), 0.35 s.
+            # The stop part, after t_c: N_s x dt_s IS the stopping time (the cost
+            # has no time term, so the solution uses the whole horizon), 0.35 s.
             n_nodes: 7
             dt_s: 0.05
             blocks: [1, 1, 2, 3]
           approach:
-            # The pre-catch part (MD-54): up to n_pre_max intervals of dt_pre_s
-            # before t_c. 0 = no MPC segment planner — mode: mpc then parks (MD-70).
+            # The pre-catch part: up to n_pre_max intervals of dt_pre_s
+            # before t_c. 0 = no MPC segment planner — mode: mpc then parks.
             # On THIS arm the plan first appears near a 0.21 s lead, which leaves
             # one 0.1 s node: that first solve is withheld and 186 of 200 sim
             # throws got no plan. 0.04 s spacing raised it to 70 of 200 — the
-            # pre-catch time, not the spacing, is short (E1-F10, #663). A later
+            # pre-catch time, not the spacing, is short (#663). A later
             # catch point does not buy it back: the first solve's rest-to-rest
-            # reference then falls further short of the catch pose (E1-F10 closed
-            # this arm as unmet, MD-76).
+            # reference then falls further short of the catch pose (the mpc
+            # tuning closed this arm as unmet).
             n_pre_max: 6
             dt_pre_s: 0.1
             # The first solve assumes the arm rests at its wait pose; above this
@@ -59,7 +56,7 @@ demo_catching_controller:
           budget:
             # A solve's ceiling, which is also the lead it is planned with [s]:
             # the first segment (same wake as the search) and every later one
-            # (MD-56). 0.040 / 0.030 since #716 (the code defaults keep 0.035 /
+            # 0.040 / 0.030 since #716 (the code defaults keep 0.035 /
             # 0.025). The solve time is set by the cost of one ProxQP
             # iteration, which doubles from 8 to 14 nodes, and the old replan
             # budget sat within a few ms of the shipped grids' replan p99.
@@ -76,15 +73,15 @@ demo_catching_controller:
             replan_s: 0.030
           replan:
             # Post-catch replans up to k_max grid points past t_c, stop end
-            # fixed (MD-31, MD-61). same_point: re-solve a pre-catch grid point
-            # with the newer prediction (MD-58).
+            # fixed. same_point: re-solve a pre-catch grid point
+            # with the newer prediction.
             k_max: 2
             same_point: true
           eta_tau: 0.7
           m_q: 0.05
           publish:
             # Largest torque slack (fraction of tau_max) a published segment may
-            # carry (MD-33). eta_tau + slack_max must not exceed joint_cmd.eta_tau
+            # carry. eta_tau + slack_max must not exceed joint_cmd.eta_tau
             # under the dynamic CLIK form (checked at configure). The terminal one
             # is a guard value, not a tuned one: in every recorded solve the
             # terminal slack stayed at numerical zero, so there is no
@@ -93,18 +90,18 @@ demo_catching_controller:
             # first solves.
             slack_max: 0.1
             slack_terminal_max: 0.1
-            # Largest catch-node position error [m] a segment may carry (MD-62).
+            # Largest catch-node position error [m] a segment may carry.
             catch_pos_err_max: 0.02
           catch:
-            # The core's catch terms at the catch node (E1-F07's measured values).
-            # E1-F10 adopted nothing on this arm (MD-75): too few plans were taken
+            # The core's catch terms at the catch node (measured values).
+            # The tuning adopted nothing on this arm: too few plans were taken
             # to compare candidates.
             w_axis: 100.0
             w_v_par: 1.0
             w_v_perp: 20.0
             gamma_ref: 1.0
             # W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 with eigenvalues capped
-            # at w_max [1/m^2]; w_const without a usable covariance (MD-63).
+            # at w_max [1/m^2]; w_const without a usable covariance.
             kappa: 1.0
             sigma_floor: 0.01
             w_max: 10000.0
@@ -116,7 +113,7 @@ demo_catching_controller:
             # |v_ball - v_hand| <= v_rel_allow (1 + s_v) per axis, penalised by
             # rho_v s_v. rho_v 0 = off (no slack variable, no rows); on, it needs
             # v_rel_allow > 0 [m/s] — what the hand absorbs, not measured yet
-            # (MD-52), so both ship 0.
+            # so both ship 0.
             # s_v is RECORDED (planner_events segment_slack_v), never a publish
             # gate: no threshold is defined for it, and with gamma_ref < 1 it is
             # above 0 by construction.
@@ -141,7 +138,7 @@ demo_catching_controller:
             # Penalty of the torque slack. 0 = the torque rows are off, and the
             # publish judgement's slack condition (publish.slack_max) is then
             # vacuous: no slack exists to bound. 10 was exact on every sampled
-            # stop with one slack per joint and node (E1-F01 sweep, #627). With
+            # stop with one slack per joint and node (sweep, #627). With
             # one per node (#857) it must cover the SUM of a node's torque-row
             # multipliers; not re-swept. Offline the slack turned on in 7 of
             # 130,247 first solves that one per joint kept at 0, and the
@@ -150,7 +147,7 @@ demo_catching_controller:
             # Stop-path weight [1/m^2], in [0, 3.0e3]: on the nodes from the
             # catch on, the squared distance of the catch frame from a line is
             # penalised. 0 = off — the solve is the one before this key existed.
-            # The line is the BALL's (decided 2026-10-03, #698): through its
+            # The line is the BALL's (#698): through its
             # predicted catch position along its direction of travel at t_c. A
             # replan at or after the catch keeps the line of the segment the RT
             # follows (not of a newer one that was published and not taken). A
@@ -187,7 +184,7 @@ demo_catching_controller:
             # the planner's own admission tolerance.
             reference_rest_tol: 1.0e-4
             # The first solve's reference (a rest-to-rest minimum-jerk reach per
-            # joint, MD-62) is shortened where its peak speed would pass this
+            # joint) is shortened where its peak speed would pass this
             # fraction of eta_v * qdot_max, in (0, 1.875]. Above 1 the reference
             # may run over the velocity box: the trust region (delta_tr) bends
             # it back, while a reference cut short of the catch pose is what
@@ -200,7 +197,7 @@ demo_catching_controller:
             # withheld); 1.3 and above fail half the first solves.
             # Measured with one torque slack per joint; one per node (#857) kept
             # the offline published first solves (5,060 of 16,230) and moved the sim
-            # published throws 685 -> 675 (three chunks, within the noise of S1).
+            # published throws 685 -> 675 (three chunks, within the sim noise).
             ref_speed_fraction: 1.2
           solver:
             # ProxQP: outer and inner iteration caps (>= 1) and tolerances. The
@@ -233,6 +230,6 @@ demo_catching_controller:
             # an exact certificate only). At ProxQP's default 1e-4 it called
             # feasible QPs infeasible: every first solve it failed in the offline
             # maps solves at 0 (#880), as does a vertical 7-joint arm's stop from
-            # rest (#857 D12) - the configure warm-up runs that stop at the box
+            # rest (#857) - the configure warm-up runs that stop at the box
             # middle, so a positive value can refuse the configure on such an arm.
             eps_primal_inf: 0.0

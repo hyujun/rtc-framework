@@ -1,4 +1,4 @@
-"""Render the shipped catch frame onto the preshape hand, for the S2.3b user check.
+"""Render the shipped catch frame onto the preshape hand, for a visual check.
 
 Reads `urdf.extra_frames.catch_frame` straight out of the robot config and
 `robot.hand.q_pre` out of the catching controller config -- so what you see is

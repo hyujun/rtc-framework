@@ -1,4 +1,4 @@
-"""The shipped catching config is one tree in six files (MD-90, E1-F16).
+"""The shipped catching config is one tree in six files.
 
 ``demo_catching_controller.yaml`` keeps the QP CLIK step, the bring-up sections
 (the hand's measured values among them), the arm's acceleration box and the two

@@ -1,4 +1,4 @@
-// ── The catching controller's reset table, checked at run time (G8-A2) ──────
+// ── The catching controller's reset table, checked at run time ──────────────
 //
 // test_catching_reset_table.py proves every RT-owned member HAS a row in the
 // header's reset table. This proves the rows are TRUE: every member is set to
@@ -44,7 +44,7 @@ class DemoCatchingControllerResetProbe {
     c_.reset_floor_ns_ = 5;
     c_.planner_reset_epoch_ = 10;
     c_.arm_cmd_seeded_ = true;
-    c_.wait_pose_adopted_ = true;  // S8-I: an adopted switched-in pose ...
+    c_.wait_pose_adopted_ = true;  // an adopted switched-in pose ...
     c_.wait_pose_decided_ = true;
     c_.wait_pose_yaml_[0] = 0.25;  // ... over this YAML pose
     c_.wait_pose_[0] = 9.0;
@@ -92,7 +92,7 @@ class DemoCatchingControllerResetProbe {
     c_.window_confirmed_seen_ = true;
     c_.window_stale_seen_ = true;
     c_.tick_now_ = rtc::catching::NowReal{kNs * 2};
-    // MPC E1-F04 (MD-35): the segment lane's segments and its admission memory.
+    // The segment lane's segments and its admission memory.
     c_.admitted_segment_ = rtc::catching::AdmittedSegment{true, 9};
     c_.segment_pending_.valid = true;
     c_.segment_pending_.segment_seq = 9;
@@ -100,9 +100,9 @@ class DemoCatchingControllerResetProbe {
     c_.segment_current_.valid = true;
     c_.segment_current_.segment_seq = 8;
     c_.segment_current_valid_ = true;
-    // MPC E1-F09: the pair verdict of the tick the reset lands on.
+    // The pair verdict of the tick the reset lands on.
     c_.segment_pair_ok_ = true;
-    // E1-F17: a replacement plan that waits on the pending segment.
+    // A replacement plan that waits on the pending segment.
     c_.plan_next_.valid = true;
     c_.plan_next_.plan_id = 77;
     c_.plan_next_valid_ = true;
@@ -167,7 +167,7 @@ class DemoCatchingControllerResetProbe {
     EXPECT_EQ(c.outcome_source_, DemoCatchingController::OutcomeSource::kBoth);
   }
 
-  /// RETREAT → IDLE (#537 S8-C): the trial's rows go back as on a re-arm, but
+  /// RETREAT → IDLE (#537): the trial's rows go back as on a re-arm, but
   /// the arm is not claimed to be at the wait pose — IDLE homes first.
   void CheckIdleFromRetreat() {
     Poison();
@@ -192,7 +192,7 @@ class DemoCatchingControllerResetProbe {
     EXPECT_TRUE(c_.plan_next_valid_);
   }
 
-  /// MD-35 / MD-38: ABORT_SAFE and RETREAT entry drop every segment; HOLD
+  /// ABORT_SAFE and RETREAT entry drop every segment; HOLD
   /// drops only the pending one and keeps following the stop it has.
   void CheckTheSegmentRowsOnModeEntry() {
     using rtc::catching::Mode;
@@ -313,31 +313,31 @@ class DemoCatchingControllerResetProbe {
     EXPECT_EQ(c.tip_last_seq_[0], 0U);
     EXPECT_FALSE(c.window_confirmed_seen_);
     EXPECT_FALSE(c.window_stale_seen_);
-    // E-8 (MD-35): an E-STOP / activation drops the segment lane's memory.
+    // E-8: an E-STOP / activation drops the segment lane's memory.
     ExpectNoSegments();
     // Exempt from every reset: written on ABORT_SAFE entry.
     EXPECT_TRUE(c.abort_stopped_);
   }
 
   void CheckEstopKeepsTheMode() {
-    // P-1 (d): a FAULT survives a stop — the reset must not force IDLE.
+    // A FAULT survives a stop — the reset must not force IDLE.
     Poison();
     c_.mode_ = rtc::catching::Mode::kFault;
     TrialReset(/*reset_mode=*/false);
     EXPECT_EQ(c_.mode_, rtc::catching::Mode::kFault);
-    // An E-STOP that lands on an attempt ends it as Aborted (L7 §4.1); the
+    // An E-STOP that lands on an attempt ends it as Aborted; the
     // poison left one under way (trial_active_).
     EXPECT_EQ(c_.outcome_, rtc::catching::Outcome::kAborted);
     EXPECT_FALSE(c_.trial_active_);
-    // E-8 (MD-35): the E-STOP path itself (reset_mode false) drops the segments.
+    // E-8: the E-STOP path itself (reset_mode false) drops the segments.
     ExpectNoSegments();
-    // S8-I: where the arm stopped is not a wait pose — the adopted one stays.
+    // Where the arm stopped is not a wait pose — the adopted one stays.
     EXPECT_TRUE(c_.wait_pose_adopted_);
     EXPECT_TRUE(c_.wait_pose_decided_);
     EXPECT_EQ(c_.wait_pose_[0], 9.0);
   }
 
-  /// #537 S9b (D-S9-D2): the QP-failure streak survives an E-STOP reset and is
+  /// The QP-failure streak survives an E-STOP reset and is
   /// cleared by an activation; the fault's cause is left to the fault reset,
   /// and the deadline clock restarts with the RETREAT stage T puts back.
   void CheckTheStreakAndTheFaultRowsAcrossResets() {
@@ -391,7 +391,7 @@ TEST(CatchingResetProbe, ResetTrialStatePutsBackEveryTrialRow) {
   p.CheckTrialReset();
 }
 
-// ── RETREAT → IDLE (#537 S8-C: a disarm or a release timeout on the return) ─
+// ── RETREAT → IDLE (a disarm or a release timeout on the return) ────────────
 
 TEST(CatchingResetProbe, RetreatToIdlePutsBackTheTrialButDoesNotClaimTheWaitPose) {
   DemoCatchingController ctrl{""};

@@ -1,26 +1,21 @@
 #ifndef UR5E_BRINGUP_CONTROLLERS_DEMO_CATCHING_CONTROLLER_H_
 #define UR5E_BRINGUP_CONTROLLERS_DEMO_CATCHING_CONTROLLER_H_
 
-// ── Catching controller: supervisor, laws, hand sequencer (dynamic_catching) ──
+// ── Catching controller: supervisor, laws, hand sequencer ──────────────────
 //
-// WHAT THIS IS. The catching controller: lifecycle, the P-1 minimum
-// E-STOP/fault contract (E-8, approved 2026-09-22), the supervisor mode driven
-// off S1.8's transition table, the operator arm/disarm latch, the tracking law
-// (CLIK, S5.3), the planner thread (S6) and, from S7, the whole trial cycle
-// with the hand sequencer owning the hand (THE S7 CYCLE below).
+// WHAT THIS IS. The catching controller: lifecycle, the minimum
+// E-STOP/fault contract (E-8), the supervisor mode driven off the transition
+// table (rtc::catching::LookupTransition), the operator arm/disarm latch, the
+// tracking law (CLIK), the planner thread and the whole trial cycle with the
+// hand sequencer owning the hand (THE TRIAL CYCLE below).
 //
-// WHY THE CONTRACT CAME FIRST. S5.1 opened the arm command path, and opening
-// it was the E-8 change. The contract had to be in place and testable BEFORE a
-// law wrote to it, or the first thing exercising the E-STOP path would also
-// have been the first thing moving the arm.
-//
-// THE P-1 CONTRACT (S5.1, L7 §4.1), in the four parts it was
-// approved in:
+// THE E-STOP / FAULT CONTRACT, in four parts — (a)..(d) below are what the
+// member comments cite:
 //   (a) TriggerEstop / ClearEstop / ResetFault / ResetTargetInitialization
 //       update an atomic REQUEST or epoch and nothing else. The one writer of
 //       the reset itself — the code that puts values back — is the RT tick.
 //   (b) Invalidation (plan, trajectory, covariance, hand, FSM, timers) is
-//       performed by that tick in D-23 order, keyed off the activation
+//       performed by that tick, keyed off the activation
 //       generation rather than off a quiescence wait: PeriodicRtThread::Pause
 //       does not stop an iteration already in flight, so "no tick is running"
 //       is not a state a lifecycle hook can establish.
@@ -28,7 +23,7 @@
 //       the operator's arm latch, so restarting requires a deliberate act.
 //   (d) ClearEstop does not touch the controller fault latch, and ResetFault
 //       does not touch the global E-STOP. They are separate paths on purpose
-//       (base contract, issue #260): one clear must not launder the other.
+//       (base contract): one clear must not launder the other.
 //
 // WHY EPOCHS RATHER THAN FLAGS. A flag cannot distinguish "still estopped"
 // from "estopped, cleared and estopped again between two ticks", and the
@@ -36,18 +31,13 @@
 // count moved since I last looked", which is answerable without a lock and
 // without the hook ever touching controller state.
 //
-// SIM-ONLY GUARD, REPLACED (A-S5-1, 2026-09-22). S4.0 refused to ACTIVATE
-// unless every claimed device was the `mujoco_native` backend, because
-// commanding a real arm at all was the pending E-8 decision. That decision has
-// been made, so the guard that stood in for it is gone. What remains is the
-// rule it was standing in for: L0 §5.3 / L8 §5.4 — a provisional value blocks
-// a REAL-ARM configuration and only warns in sim. So the backend check now
-// selects the validator's `real_arm_config` axis instead of gating activation
-// by itself, and a real-arm bring-up whose profile is still provisional lands
-// in the same DISABLED state (configure SUCCESS, activate refused) for a
-// reason that is about the VALUES rather than about the backend.
+// REAL ARM. The backend check selects the validator's `real_arm_config` axis:
+// a provisional value blocks a REAL-ARM configuration and only warns in sim.
+// A real-arm bring-up whose profile is still provisional lands in the
+// DISABLED state (configure SUCCESS, activate refused), for a reason that is
+// about the VALUES rather than about the backend.
 //
-// WHY DISABLED RATHER THAN A CONFIGURE REFUSAL (2026-09-21, unchanged). A
+// WHY DISABLED RATHER THAN A CONFIGURE REFUSAL. A
 // configure failure takes the whole robot down: sim and real share
 // `config/<variant>/controllers/`, so the real p1b bring-up instantiates this
 // controller too, and CM's Pass 3 latches `bring_up_failed` on ANY
@@ -55,15 +45,15 @@
 // controller (rt_controller_node_params.cpp). Nothing is commanded until a
 // controller is active, so refusing activation carries the intent exactly.
 //
-// THE ARM/DISARM CHANNEL (A-S5-3) is the read-write ROS parameter
+// THE ARM/DISARM CHANNEL is the read-write ROS parameter
 // `catching.enable` on this controller's node. It is not a message or a
-// service: §13's GUI needs one channel, and a new msg/srv here would be an E-3
+// service: the GUI needs one channel, and a new msg/srv here would be an E-3
 // decision for something a parameter already expresses. The parameter callback
 // stores an atomic; the RT tick is what acts on it, and the tick LOWERS it on
 // E-STOP and on a fault latch, which is what makes (c) mechanical rather than
 // a property of operator discipline.
 //
-// THE PLANNER THREAD (S6-A, D-7, E-7 decision J). With `planner.enabled` the
+// THE PLANNER THREAD. With `planner.enabled` the
 // controller owns a CatchingPlannerThread on the `mpc` layout role — thread name
 // `mpc_main`, the same core and scheduling as DemoWbc's MPC solver, because the
 // planner plays the same role. Lifecycle: buffers and the wake eventfd at
@@ -71,24 +61,25 @@
 // Resume at activate, Pause at deactivate, JOIN at cleanup — unlike DemoWbc's
 // MPC thread, which lives to the destructor, because a planner that outlived
 // its configuration would resume beside an oracle as a second box writer. The RT tick stores
-// `PlannerRtState` every tick and loads the plan box every tick (D-21); a published plan is taken
-// only when rtc::catching::JudgePlan admits it (L3 §5.2 (a)-(f)). The oracle plan (A-S5-8) writes
+// `PlannerRtState` every tick and loads the plan box every tick (newness is
+// judged from the payload); a published plan is taken
+// only when rtc::catching::JudgePlan admits it. The oracle plan writes
 // the SAME box from the RT tick, so there is one consumption path — and a profile enabling both
 // writers is parked.
 //
-// THE HAND STEP IS STILL A DIAGNOSTIC MODE, gated on `diagnostic.hand_step`.
-// From S7.1 the sequencer owns the hand and the default false makes an
+// THE HAND STEP IS A DIAGNOSTIC MODE, gated on `diagnostic.hand_step`.
+// The sequencer owns the hand and the default false makes an
 // operator step a refusal rather than a race. A profile that turns the step
-// on runs WITHOUT the sequencer (S4's measurement rig), so the two never
+// on runs WITHOUT the sequencer (the hand measurement rig), so the two never
 // command the hand at once.
 //
-// THE S7 CYCLE (L7 §4.1, #537 S7). Armed, the arm homes to `planner.wait_pose`
+// THE TRIAL CYCLE. Armed, the arm homes to `planner.wait_pose`
 // in joint space and the hand waits at q_pre (IDLE → ARMED); a plan is
 // followed (APPROACH), frozen at t_c − T_freeze (COMMITTED), the hand closes at
 // t_cmd (CLOSING), the reference decelerates to rest after t_c (DECEL), holds
 // for T_hold (HOLD), and the arm returns to the wait pose (RETREAT) and re-arms
 // through ResetForRearm. Which member each reset puts back, and which it
-// leaves, is the table below the RT members (G8-A2).
+// leaves, is the table below the RT members.
 
 #include "integrated_bringup/controllers/catching/planner_thread.hpp"
 #include "integrated_bringup/controllers/catching/traj_input.hpp"
@@ -156,17 +147,17 @@ using rtc::RTControllerInterface;
 /// Backend tag that marks a claimed device as the simulator. A registry tag,
 /// not a device name — robot-agnostic (ARCH-1).
 ///
-/// Since A-S5-1 this no longer gates activation: it selects the validator's
-/// `real_arm_config` axis (L0 §5.3 — provisional values warn in sim and block
+/// It does not gate activation: it selects the validator's
+/// `real_arm_config` axis (provisional values warn in sim and block
 /// a real arm). A device that declares no backend at all counts as NOT proven
 /// to be the simulator, so an unprovable config is judged by the stricter
 /// rule rather than the laxer one.
 inline constexpr const char* kCatchingSimBackendType = "mujoco_native";
 
-/// The operator arm/disarm channel (A-S5-3): a read-write ROS parameter on
+/// The operator arm/disarm channel: a read-write ROS parameter on
 /// this controller's own LifecycleNode (`/<config_key>/catching.enable`).
 ///
-/// A parameter rather than a message or a service because §13's GUI needs one
+/// A parameter rather than a message or a service because the GUI needs one
 /// channel and a new msg/srv would be an E-3 decision for something a
 /// parameter already expresses. The callback stores an atomic; the RT tick is
 /// what acts on it, and the tick also LOWERS it on E-STOP and on a fault
@@ -197,16 +188,15 @@ inline constexpr double kLockedJointVelocity = 1e-9;
 enum class CatchingParkReason : std::uint8_t {
   kNone = 0,
   /// A value this controller consumes is provisional or still TBD on a real
-  /// arm (L0 §5.3, A-S5-1), or still TBD in sim (A-S5-12).
+  /// arm, or still TBD in sim.
   kConsumedValues,
   /// `planner.enabled` and `diagnostic.oracle_plan.enabled` are both true: the
-  /// plan box would have two writers (S6-A).
+  /// plan box would have two writers.
   kPlannerOracleConflict,
   /// The planner is enabled but a value it cannot guess is unset or TBD
-  /// (`planner.sub_model`, `freeze.T_freeze`, `hand.d_eff`, `hand.r_cap`) —
-  /// S6-B.
+  /// (`planner.sub_model`, `freeze.T_freeze`, `hand.d_eff`, `hand.r_cap`).
   kPlannerUnset,
-  /// The tracking law is wired, so trials can run, but a value the S7
+  /// The tracking law is wired, so trials can run, but a value the
   /// supervisor needs for one is unset or wrong: `planner.freeze.T_freeze`
   /// (the commit instant, and at least T_close_e2e + T_arm + h), the
   /// `planner.wait_pose` homing target, the derived acceleration box the
@@ -216,16 +206,16 @@ enum class CatchingParkReason : std::uint8_t {
   /// `planner.segment.mode: mpc` with the planner on, but the segment MPC's
   /// torque box plus its publish slack exceeds the CLIK's torque box
   /// (`joint_cmd.eta_tau`), so a published stop could ask for torque the CLIK
-  /// refuses (MPC E1-F03, MD-33). A planner that is off is kSegmentModeUnmet's.
+  /// refuses. A planner that is off is kSegmentModeUnmet's.
   kMpcSegmentInvalid,
-  /// `planner.segment.mode: mpc` without one of its prerequisites (MPC
-  /// MD-34): the catch sub-model sampler, `joint_cmd.K_n` > 0, η_v < 1, the
+  /// `planner.segment.mode: mpc` without one of its prerequisites: the catch
+  /// sub-model sampler, `joint_cmd.K_n` > 0, η_v < 1, the
   /// arm's per-joint velocity ratings and the CLIK's per-joint velocity and
   /// position boxes, and an MPC segment planner
   /// (`approach.n_pre_max` > 0 with the
-  /// planner on — without a pre-catch grid none is built, MD-70; the oracle
+  /// planner on — without a pre-catch grid none is built; the oracle
   /// profile is exempt). Under mpc the arm follows a segment from APPROACH to the end of
-  /// the stop (MD-44, MD-45), so a missing prerequisite would leave every
+  /// the stop, so a missing prerequisite would leave every
   /// trial without one.
   kSegmentModeUnmet,
   /// The profile still sets a key or a value that no longer exists:
@@ -250,7 +240,7 @@ enum class CatchingParkReason : std::uint8_t {
   /// search under closed_form. The configure log names both keys.
   kSearchSegmentCombination,
   /// The nlp search or the mpc_docking segment planner is selected with the
-  /// planner on and cannot run on this profile (E1-F16): an identified value
+  /// planner on and cannot run on this profile: an identified value
   /// of `robot.hand.docking.*` is unset, the search's and the planner's grids
   /// differ, or a docking core refused its parameters at Init — the configure
   /// log names the key, or the core's own reason.
@@ -269,7 +259,7 @@ inline constexpr int kCatchingHandDeviceIdx = 1;
 inline constexpr int kDemoCatchingMaxArmDof = 32;
 inline constexpr int kDemoCatchingMaxHandDof = static_cast<int>(rtc::catching::kMaxHandDof);
 
-/// Upper bound on a segment's age when the RT admits it (MPC MD-37):
+/// Upper bound on a segment's age when the RT admits it:
 /// `now − publish_ns`, read once at admission. It filters a segment left in
 /// the box by a planner that stopped and an RT that stalled. A segment for
 /// the NEXT grid point waits in the box while the pending slot still holds
@@ -283,7 +273,7 @@ inline constexpr std::int64_t kSegmentAdmissionMaxAgeNs = 50'000'000;
 /// the ball's prediction.
 inline constexpr int kCloseRetimeMaxIterations = 8;
 
-class DemoCatchingControllerResetProbe;  // test_catching_reset_probe.cpp (G8-A2)
+class DemoCatchingControllerResetProbe;  // test_catching_reset_probe.cpp
 
 class DemoCatchingController final : public RTControllerInterface {
   // The reset table's runtime check: poisons the RT-owned members, runs a
@@ -304,7 +294,7 @@ class DemoCatchingController final : public RTControllerInterface {
 
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
-  /// Publish the catching state (D-20). Runs on CM's publish jthread —
+  /// Publish the catching state. Runs on CM's publish jthread —
   /// SCHED_OTHER, NOT the RT tick, despite the name.
   void PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept override;
 
@@ -321,11 +311,11 @@ class DemoCatchingController final : public RTControllerInterface {
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_cleanup(const rclcpp_lifecycle::State& prev) noexcept override;
 
-  // ── E-STOP and fault (P-1 minimum contract, E-8) ─────────────────────────
+  // ── E-STOP and fault (minimum contract, E-8) ─────────────────────────────
   // All four are called OFF the RT thread (CM service callbacks / the global
   // E-STOP propagation) and all four are wait-free stores. None of them
   // resets anything: they raise a request or bump an epoch, and Compute()
-  // is the single writer that acts on it — P-1 (a).
+  // is the single writer that acts on it — contract (a).
 
   void TriggerEstop() noexcept override;
   void ClearEstop() noexcept override;
@@ -350,19 +340,19 @@ class DemoCatchingController final : public RTControllerInterface {
 
   [[nodiscard]] bool IsHandStepEnabled() const noexcept { return hand_step_enabled_; }
 
-  // ── Planner (S6-A) ───────────────────────────────────────────────────────
+  // ── Planner ──────────────────────────────────────────────────────────────
 
   [[nodiscard]] const rtc::catching::PlannerParams& GetPlannerParams() const noexcept {
     return planner_params_;
   }
 
-  /// `planner.groups` resolved against the arm device at configure (E3-F02);
+  /// `planner.groups` resolved against the arm device at configure;
   /// no group declared = n_groups 0.
   [[nodiscard]] const rtc::catching::JointGroups& GetJointGroups() const noexcept {
     return joint_groups_;
   }
 
-  /// Record this run's layout profile (issue #350). on_configure reads it from
+  /// Record this run's layout profile. on_configure reads it from
   /// the `rt_layout_profile` node parameter; this setter exists for fixtures
   /// that bring the controller up through LoadConfig, which never reaches
   /// on_configure. Same shape as DemoWbcController::SetLayoutProfile.
@@ -391,8 +381,8 @@ class DemoCatchingController final : public RTControllerInterface {
     return plan_box_.Load();
   }
 
-  /// The segment box (MPC E1-F02/F03) as the RT loads it under
-  /// `planner.segment.mode: mpc` (E1-F04). Written by the planner thread only.
+  /// The segment box as the RT loads it under
+  /// `planner.segment.mode: mpc`. Written by the planner thread only.
   [[nodiscard]] rtc::catching::SegmentSnapshot GetPublishedSegment() const noexcept {
     return segment_box_.Load();
   }
@@ -403,7 +393,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return segment_box_;
   }
 
-  /// The segment mode this configure chose (MD-44).
+  /// The segment mode this configure chose (`planner.segment.mode`).
   [[nodiscard]] rtc::catching::CatchingSegmentMode GetSegmentMode() const noexcept {
     return segment_mode_;
   }
@@ -424,7 +414,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return segment_current_valid_;
   }
 
-  /// The MPC segment planner's joint position box as configured (MD-42), device
+  /// The MPC segment planner's joint position box as configured, device
   /// order, and the CLIK's margined arm box it must sit inside.
   [[nodiscard]] const std::array<double, rtc::catching::kMaxPlanNv>&
   GetMpcSegmentPlannerQMinForTesting() const noexcept {
@@ -502,24 +492,24 @@ class DemoCatchingController final : public RTControllerInterface {
         plan_refusal_observed_.load(std::memory_order_relaxed));
   }
 
-  /// The vision → model-world transform the ingress applies (L3 §4.2),
-  /// resolved at configure from the model frame `scene_world` (#779).
+  /// The vision → model-world transform the ingress applies,
+  /// resolved at configure from the model frame `scene_world`.
   [[nodiscard]] const TrajInputConfig& GetTrajInputConfig() const noexcept {
     return traj_input_.Config();
   }
 
   /// The vision lane takes no input: the model defines no `scene_world` (or
   /// it is provisional), so there is no vision world to read a prediction in
-  /// (#779 V3). Decided at configure, with one ERROR; nothing subscribes.
+  /// Decided at configure, with one ERROR; nothing subscribes.
   [[nodiscard]] bool IsVisionInert() const noexcept { return vision_inert_; }
 
-  /// Plans that replaced the one being followed in APPROACH (§4.7, S6-B).
+  /// Plans that replaced the one being followed in APPROACH.
 
   [[nodiscard]] std::uint64_t GetPlanReplacedCount() const noexcept {
     return plan_replaced_count_.load(std::memory_order_relaxed);
   }
 
-  /// Whether the planner has a model to search in (S6-B). False = the S6-A
+  /// Whether the planner has a model to search in. False = the
   /// stub ("no plan") — a profile with no system model, e.g. a unit fixture.
   /// It does not say WHICH search: see the typed accessors below.
   [[nodiscard]] bool IsGridCatchSearchConfigured() const noexcept {
@@ -528,7 +518,7 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// The search and the segment planner the last configure built and handed
   /// to the cycle, by their concrete type — nullptr for each one it did not
-  /// build (E1-F16: one search and at most one segment planner per
+  /// build (one search and at most one segment planner per
   /// configuration). Lifecycle / test callers only; good until the next
   /// configure or cleanup.
   [[nodiscard]] const rtc::catching::GridCatchSearch* GetGridCatchSearchForTesting()
@@ -567,8 +557,8 @@ class DemoCatchingController final : public RTControllerInterface {
   }
 
   /// The supervisor mode the last RT tick left behind, and the reason that put
-  /// it there. Read off the RT thread (tests, and the state message from
-  /// S5.4): a relaxed load of a value one writer stores, which is all a
+  /// it there. Read off the RT thread (tests, and the state message): a
+  /// relaxed load of a value one writer stores, which is all a
   /// diagnostic read needs. Mode::kIdle until the first tick runs.
   [[nodiscard]] rtc::catching::Mode GetMode() const noexcept {
     return static_cast<rtc::catching::Mode>(mode_observed_.load(std::memory_order_relaxed));
@@ -578,7 +568,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return static_cast<rtc::catching::Reason>(reason_observed_.load(std::memory_order_relaxed));
   }
 
-  // ── S7 supervisor (RT-owned; read off the RT thread by tests only) ───────
+  // ── Supervisor (RT-owned; read off the RT thread by tests only) ──────────
 
   /// The hand sequencer's output on the last tick (`active` false = the hand
   /// is on the controller's latch).
@@ -597,12 +587,12 @@ class DemoCatchingController final : public RTControllerInterface {
     return *std::min_element(tip_baseline_n_.begin(), tip_baseline_n_.begin() + n);
   }
 
-  /// How the last attempt ended (L7 §4.4). Kept across a re-arm — it is the
+  /// How the last attempt ended. Kept across a re-arm — it is the
   /// LAST attempt's verdict — and cleared by an activation or E-STOP reset.
   [[nodiscard]] rtc::catching::Outcome GetOutcomeForTesting() const noexcept { return outcome_; }
 
   /// Whether trials can run at all: the law is wired and every supervisor
-  /// value it needs is present (false = the S6 behaviour: hold arm and hand).
+  /// value it needs is present (false = hold arm and hand).
   [[nodiscard]] bool AreTrialsEnabled() const noexcept { return trials_enabled_; }
 
   [[nodiscard]] bool IsHomingForTesting() const noexcept { return homing_; }
@@ -621,7 +611,7 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// The operator arm latch (`catching.enable`) as the RT tick currently sees
   /// it. NOT the parameter's value: the tick lowers this on E-STOP and on a
-  /// fault latch (P-1 (c)), so the two disagree exactly when something has
+  /// fault latch (contract (c)), so the two disagree exactly when something has
   /// disarmed the controller out from under the operator — which is the case
   /// worth being able to observe.
   [[nodiscard]] bool IsArmRequested() const noexcept {
@@ -629,10 +619,10 @@ class DemoCatchingController final : public RTControllerInterface {
   }
 
   /// How many times the RT tick has performed a reset because a hook moved an
-  /// epoch (P-1 (a)/(b)). The counter exists so a race test can assert that a
+  /// epoch (contract (a)/(b)). The counter exists so a race test can assert that a
   /// burst of concurrent Trigger/Clear/deactivate calls produced resets only
   /// on tick boundaries, and that the reset writer is the tick.
-  /// S8-I test/diagnostic accessors: the wait pose in force and its origin.
+  /// Test/diagnostic accessors: the wait pose in force and its origin.
   [[nodiscard]] bool IsWaitPoseAdoptedForTesting() const noexcept { return wait_pose_adopted_; }
 
   [[nodiscard]] std::array<double, kDemoCatchingMaxArmDof> GetWaitPoseForTesting() const noexcept {
@@ -643,7 +633,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return wait_pose_refused_count_.load(std::memory_order_relaxed);
   }
 
-  /// #537 S9b (D-S9-D3): fault resets the tick refused because the arm had not
+  /// Fault resets the tick refused because the arm had not
   /// stopped (or its velocity could not be read). The latch stays up on each.
   [[nodiscard]] std::uint64_t GetFaultResetRefusedCount() const noexcept {
     return fault_reset_refused_count_.load(std::memory_order_relaxed);
@@ -662,8 +652,8 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] rtc::catching::TrajView GetTrajView() const noexcept { return traj_view_; }
 
   /// The last CLIK solve's diagnostics — status, iteration count, solve time.
-  /// Read off the RT thread; this is the input to the S5.4 state message and
-  /// to the G5-C timing gate.
+  /// Read off the RT thread; this is the input to the state message and to
+  /// the CLIK solve-time check.
   [[nodiscard]] const rtc::tsid::ClikReferenceGenerator::SolveDiagnostics& GetLastSolve()
       const noexcept {
     return clik_.LastSolve();
@@ -702,7 +692,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The unit fixtures bring the controller up through LoadConfig, which never
   /// reaches on_configure and therefore leaves every production log handle
   /// UNBOUND — and a row assertion written against that state passes with the
-  /// push deleted outright (#424). Same seam, same reason, as
+  /// push deleted outright. Same seam, same reason, as
   /// DemoComplianceController::SetComplianceDiagLogHandleForTesting.
   void SetCatchingDiagLogHandleForTesting(rtc::LogHandle<CatchingDiagLogPod> handle) noexcept {
     catching_diag_log_handle_ = std::move(handle);
@@ -748,14 +738,14 @@ class DemoCatchingController final : public RTControllerInterface {
   /// True once on_configure has parked this instance (GetParkReason() says
   /// why): a REAL-ARM configuration (no proof that every claimed device is the
   /// simulator) whose profile still carries a value this controller consumes as
-  /// provisional or TBD (L0 §5.3, A-S5-1); a SIM configuration whose consumed
-  /// value is still TBD (A-S5-12); or a profile that enables both the planner
-  /// and the oracle plan (S6-A). A disabled instance holds no step lane, no log
+  /// provisional or TBD; a SIM configuration whose consumed
+  /// value is still TBD; or a profile that enables both the planner
+  /// and the oracle plan. A disabled instance holds no step lane, no log
   /// channels and no profile parameters, and on_activate refuses — so it
   /// commands nothing.
   ///
-  /// The name is kept from S4.0, where the same state meant "not the
-  /// simulator" on its own; today it is about the VALUES. See IsRealArmConfig().
+  /// Despite the name it is about the VALUES, not the backend alone. See
+  /// IsRealArmConfig().
   [[nodiscard]] bool IsSimOnlyDisabled() const noexcept { return sim_only_disabled_; }
 
   /// Why IsSimOnlyDisabled() is true — kNone while it is false.
@@ -810,7 +800,7 @@ class DemoCatchingController final : public RTControllerInterface {
   void ResolveDevices();
 
   /// Mirror the loaded profile into read-only ROS parameters. Non-RT.
-  /// The L4 reference parameters as RUN: a TBD `a_max` / `v_max` is the struct
+  /// The soft-catch reference parameters as RUN: a TBD `a_max` / `v_max` is the struct
   /// default. Read by SetupArmCommand and mirrored by DeclareProfileParameters.
   [[nodiscard]] rtc::catching::SoftCatchTranslation::Params ResolvedReferenceParams() const;
   /// `planner.search.grid.gamma.eta_v` as RUN (the search's default when TBD):
@@ -824,7 +814,7 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] int ResolvedTrajNMin() const;
   void DeclareProfileParameters();
 
-  /// Close every CSV channel and unbind the handles (#238 — a re-configure
+  /// Close every CSV channel and unbind the handles (a re-configure
   /// must not land in a channel the previous configure owned).
   void ResetLogState() noexcept;
 
@@ -833,7 +823,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// by on_configure's own catch, so a throw cannot leave a half-built instance.
   void TearDownConfiguredResources() noexcept;
 
-  /// Declare / update the `catching.enable` parameter channel (A-S5-3) and
+  /// Declare / update the `catching.enable` parameter channel and
   /// install the set-parameter callback. Non-RT.
   void DeclareArmParameter();
 
@@ -850,14 +840,13 @@ class DemoCatchingController final : public RTControllerInterface {
   /// default, so an absent one is a configuration error and not something to
   /// substitute a default for; SupervisorValueMissing() is what judges the
   /// absence. A box that passes also takes the `provisional` flag (absent =
-  /// true), which on_configure parks a real-arm configuration on (#537
-  /// pre-S10 R3, Q4).
+  /// true), which on_configure parks a real-arm configuration on.
   void ApplyArmAccelBox();
 
   /// Assemble the position / velocity boxes CLIK is given, in Pinocchio order.
   /// Non-RT.
   void BuildClikBoxes(int nv, rtc::tsid::ClikReferenceGenerator::Config& cfg);
-  /// Decision K (S6-C2): puts `joint_cmd.accel_constraint`'s form into `cfg`
+  /// Puts `joint_cmd.accel_constraint`'s form into `cfg`
   /// after BuildClikBoxes. False (logged) when `dynamic` is selected but the
   /// arm device has no usable `joint_limits.max_torque`, or when the profile
   /// selects no form (on_configure parks such a profile first; this is the
@@ -870,7 +859,7 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] rtc::catching::Reason RunTrackingTick(
       const ControllerState& state, const rtc::catching::TrajectorySnapshot& snapshot) noexcept;
 
-  /// Walk the arm command to a stop without the QP (A-S5-10). RT only.
+  /// Walk the arm command to a stop without the QP. RT only.
   void RunJointSpaceAbort(const ControllerState& state) noexcept;
 
   /// Seed the command state, the CLIK anchor and the reference generator from
@@ -879,7 +868,7 @@ class DemoCatchingController final : public RTControllerInterface {
   void SeedArmCommand(const ControllerState& state) noexcept;
 
   /// Build the fixed plan the `diagnostic.oracle_plan` block describes
-  /// (A-S5-8) and STORE it in the plan box — the same box the planner writes,
+  /// and STORE it in the plan box — the same box the planner writes,
   /// so an oracle run exercises the same consumption path. RT only; called on
   /// every TRACKING tick without a plan, so the box always holds this tick's
   /// oracle plan rather than one built for an earlier instant.
@@ -906,7 +895,7 @@ class DemoCatchingController final : public RTControllerInterface {
   };
 
   /// Configure-time planner setup: arm-width checks, the wake eventfd, the
-  /// cycle's box binding, and (S6-B) the search's model on the catch
+  /// cycle's box binding, and the search's model on the catch
   /// sub-model. Non-RT. Returns false (and logs) on a configuration the
   /// planner cannot run with.
   [[nodiscard]] bool SetupPlanner();
@@ -921,13 +910,13 @@ class DemoCatchingController final : public RTControllerInterface {
   /// the planner cannot use.
   [[nodiscard]] bool SetupGridCatchSearch(const PlannerArm& arm);
 
-  /// Build the nlp search on the catch sub-model (E1-F16) and hand it to the
+  /// Build the nlp search on the catch sub-model and hand it to the
   /// cycle. Non-RT. False = a configure failure (logged); a refusal of the
   /// search's own parameters or of a docking core is NOT one — it is recorded
   /// in `docking_refusal_`, which on_configure parks on.
   [[nodiscard]] bool SetupNlpCatchSearch(const PlannerArm& arm);
 
-  /// Build the mpc_docking segment planner on the catch sub-model (E1-F16).
+  /// Build the mpc_docking segment planner on the catch sub-model.
   /// Same return rule as SetupNlpCatchSearch.
   [[nodiscard]] bool SetupMpcDockingSegmentPlanner(const PlannerArm& arm);
 
@@ -976,9 +965,9 @@ class DemoCatchingController final : public RTControllerInterface {
   /// planner on, or nullptr (MPC segment torque box + publish slack over the CLIK's).
   [[nodiscard]] const char* MpcSegmentConfigInvalid() const noexcept;
 
-  /// Build the MPC segment planner on the search's model (MPC E1-F03): the same
-  /// sub-model, frame and joint map, the arm device's max_torque, the D-16
-  /// box as the q̈-estimate cap. Non-RT; false (and logged) on a model or
+  /// Build the MPC segment planner on the search's model: the same
+  /// sub-model, frame and joint map, the arm device's max_torque, the
+  /// `robot.arm.qdd_max` box as the q̈-estimate cap. Non-RT; false (and logged) on a model or
   /// rating the cores refuse.
   [[nodiscard]] bool SetupMpcSegmentPlanner(const PlannerArm& arm);
 
@@ -1011,15 +1000,15 @@ class DemoCatchingController final : public RTControllerInterface {
   /// or a segment planner is built from. Non-RT; false (logged) as that.
   [[nodiscard]] bool ResolvePlannerArm(const std::string& name, bool chain, PlannerArm& arm);
 
-  /// `planner.segment.mode: mpc` (MPC E1-F04): bind the RT's segment
+  /// `planner.segment.mode: mpc`: bind the RT's segment
   /// sampler to the catch sub-model and cache what the switch gate reads.
   /// Non-RT; a failure is reported by SegmentModeUnmet.
   void SetupSegmentFollower();
 
-  /// The first `mode: mpc` prerequisite that is missing, or nullptr (MD-34).
+  /// The first `mode: mpc` prerequisite that is missing, or nullptr.
   [[nodiscard]] const char* SegmentModeUnmet() const noexcept;
 
-  /// Spawn the planner thread on the `mpc` role (E-7 J) once per
+  /// Spawn the planner thread on the `mpc` role once per
   /// configuration, and open its timing CSV + 1 Hz drain timer. Non-RT
   /// (on_activate). Idempotent within a configuration.
   void SpawnPlannerThreadIfNeeded() noexcept;
@@ -1035,7 +1024,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Copy this tick's verdict on the vision snapshot into the record. RT only.
   void RecordInputLane(const rtc::catching::TrajectorySnapshot& snapshot) noexcept;
 
-  /// Copy one L4 reference step into this tick's record. RT only — called
+  /// Copy one soft-catch reference step into this tick's record. RT only — called
   /// from the tracking tick at the moment the value exists, so a tick that
   /// never reached the generator leaves the block zero.
   void RecordReference(const rtc::catching::TranslationOutput& ref) noexcept;
@@ -1060,7 +1049,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// model's joint count) — and so before the ingress setup, whose
   /// vision-frame transform needs it before the subscription exists.
   void AcquireModelBuilder();
-  /// Fills `cfg`'s vision → model-world transform (L3 §4.2) from the model
+  /// Fills `cfg`'s vision → model-world transform from the model
   /// frame `scene_world`, or sets vision_inert_ when the model has none (or it
   /// is provisional). False (logged) on a malformed one: not rigid to the
   /// model root, or not finite.
@@ -1072,17 +1061,17 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Service any reset a lifecycle or E-STOP hook requested since the last
   /// tick, and return true if one was performed. RT tick only — this is the
-  /// single writer P-1 (a) names. The order is D-23's: decide on the
+  /// single writer contract (a) names. The order: decide on the
   /// activation generation and the epochs first, then invalidate, then reseed.
   bool ServiceResetRequests(const ControllerState& state) noexcept;
 
   /// Put every piece of per-trial state back to its start-of-trial value
-  /// (L7 §4.8's re-arm list, restricted to what exists so far). RT tick only.
+  /// (the reset table below). RT tick only.
   ///
   /// `reset_mode` says whether the supervisor mode is part of the reset. It is
   /// for an ACTIVATION (a fresh controller starts in IDLE) and it is not for
   /// an E-STOP, where the transition table decides — and where forcing IDLE
-  /// would erase a latched FAULT the table keeps through a stop (P-1 (d)).
+  /// would erase a latched FAULT the table keeps through a stop (contract (d)).
   void ResetTrialState(bool reset_mode) noexcept;
 
   /// What this tick tells the supervisor: a reason, and whether to take an
@@ -1092,8 +1081,8 @@ class DemoCatchingController final : public RTControllerInterface {
   /// things depending on where the controller is. In IDLE it is "ready,
   /// proceed to ARMED"; in ARMED with no ball in sight it is "nothing is
   /// wrong AND nothing should happen". Collapsing them would need a
-  /// nothing-to-report reason code in the table, which is a change to S1.8's
-  /// data for a decision that belongs to the driver.
+  /// nothing-to-report reason code in the transition table, which is a change
+  /// to its data for a decision that belongs to the driver.
   struct ReasonDecision {
     rtc::catching::Reason reason{rtc::catching::Reason::kNone};
     bool advance{false};
@@ -1103,20 +1092,21 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] ReasonDecision EvaluateReason(
       const ControllerState& state, const rtc::catching::TrajectorySnapshot& snapshot) noexcept;
 
-  /// Apply one (mode, reason) edge from S1.8's table. A reason with no row in
+  /// Apply one (mode, reason) edge from the transition table. A reason with no row in
   /// the current mode is inapplicable there and leaves the mode alone — that
   /// is the table's contract, not a silent failure.
   void AdvanceMode(rtc::catching::Reason reason) noexcept;
 
-  // ── S7 supervisor pieces (RT only unless noted) ──────────────────────────
+  // ── Supervisor pieces (RT only unless noted) ─────────────────────────────
 
   /// One tick of JointSpaceStopStep on the carried command. True once every
   /// joint's commanded velocity is zero (or there is no command to ramp).
   [[nodiscard]] bool RampArmToStop(const ControllerState& state) noexcept;
-  /// Evaluation-state prelude shared by every CLIK tick (D-6). False = the law
+  /// Evaluation-state prelude shared by every CLIK tick (CLIK evaluates at the
+  /// commanded q, not the measured one). False = the law
   /// cannot run this tick (nothing wired, arm unreadable).
   [[nodiscard]] bool PrepareLawTick(const ControllerState& state) noexcept;
-  /// L4 step toward `target` at profile time `t_rel`, then CLIK, command and
+  /// Soft-catch reference step toward `target` at profile time `t_rel`, then CLIK, command and
   /// TRACK_ERR — the half every CLIK tick shares. `count_saturation` feeds the
   /// REF_SATURATED streak (ball ticks only; DECEL/HOLD have no row for it).
   [[nodiscard]] rtc::catching::Reason StepReferenceAndSolve(
@@ -1135,13 +1125,13 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] rtc::catching::Reason RunDecelLawTick(const ControllerState& state) noexcept;
   /// Freeze the reference state as DECEL's entry and take the τ = 0 step.
   [[nodiscard]] rtc::catching::Reason EnterDecel(const ControllerState& state) noexcept;
-  /// `planner.segment.mode: mpc` (MD-37): load and judge the segment box on a
+  /// `planner.segment.mode: mpc`: load and judge the segment box on a
   /// lane tick. TRACKING: against the plan this tick could adopt — a verdict
   /// only (`segment_pair_ok_`), since the plan and its first segment are taken
-  /// together or not at all (E1-F09). APPROACH through DECEL: against the
+  /// together or not at all. APPROACH through DECEL: against the
   /// followed plan, admitting a segment into the pending slot — when it is
   /// empty, or when the newer segment starts at the pending one's node 0 (the
-  /// same grid point solved again, MD-58). In APPROACH, once a segment is
+  /// same grid point solved again). In APPROACH, once a segment is
   /// followed, a segment of ANOTHER plan is judged once more against the plan
   /// this tick loaded: when that plan is admissible too they are a
   /// replacement pair, which waits in the slot (`plan_next_`) until its node 0
@@ -1181,7 +1171,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// only when `segment_pair_ok_`.
   void AdoptFirstSegment() noexcept;
   /// The mpc law tick of every mode that follows a segment — APPROACH,
-  /// COMMITTED, CLOSING, DECEL, HOLD (MD-38, MD-44, MD-45): take the pending
+  /// COMMITTED, CLOSING, DECEL, HOLD: take the pending
   /// segment when its node 0 is due and the gate passes (not in HOLD), then
   /// follow the current one at now_lead + h. A pending segment that is a
   /// replacement's first one takes its plan with it on that tick (`plan_ =
@@ -1197,7 +1187,7 @@ class DemoCatchingController final : public RTControllerInterface {
       const ControllerState& state, bool entry,
       const rtc::catching::TrajectorySnapshot* ball) noexcept;
   /// The ball lane's verdict on a law tick: the sample of `snapshot` at the
-  /// lead instant, and the reason an unusable one names (L7 §4.2). Shared by
+  /// lead instant, and the reason an unusable one names. Shared by
   /// the soft-catch law, which tracks the sample, and the mpc follow tick,
   /// which only supervises on it.
   [[nodiscard]] rtc::catching::Reason SampleBallForLaw(
@@ -1212,29 +1202,29 @@ class DemoCatchingController final : public RTControllerInterface {
            plan_refusal_ == rtc::catching::PlanRefusal::kNone;
   }
 
-  /// Whether a segment belongs to the plan the RT follows (MD-35).
+  /// Whether a segment belongs to the plan the RT follows.
   [[nodiscard]] bool SegmentMatchesPlan(const rtc::catching::SegmentSnapshot& seg) const noexcept;
   /// Forget every segment (pending and followed), a replacement plan that
   /// waits on the pending one, and the admission memory — both resets, and
   /// every way out of a followed plan.
   void DropSegments() noexcept;
-  /// Per-mode decisions split out of EvaluateReason (R-ORDER).
+  /// Per-mode decisions split out of EvaluateReason.
   [[nodiscard]] ReasonDecision EvaluateIdle(const ControllerState& state) noexcept;
   [[nodiscard]] ReasonDecision EvaluateRetreat() noexcept;
   [[nodiscard]] ReasonDecision EvaluateCommitted(const ControllerState& state) noexcept;
   [[nodiscard]] ReasonDecision EvaluateDecelOrHold(const ControllerState& state) noexcept;
   /// A CLIK failure this tick ends the trial, and counts that trial toward the
-  /// n_qp fault latch (D-S9-D2).
+  /// n_qp fault latch.
   void NoteLawVerdict(rtc::catching::Reason law) noexcept;
-  /// Raise the fault latch and record why (#537 S9b). RT only; the latch's
-  /// only other writer is the fault reset, also on the tick (P-1 (d)).
+  /// Raise the fault latch and record why. RT only; the latch's
+  /// only other writer is the fault reset, also on the tick (contract (d)).
   void LatchFault(CatchingDiagLogPod::FaultCause cause) noexcept;
-  /// D-S9-D1: the motion deadline the current mode (and RETREAT stage) has
+  /// The motion deadline the current mode (and RETREAT stage) has
   /// overrun this tick, or kNone. ABORT_SAFE's ramp and RETREAT's stop answer
   /// to `supervisor.deadline.stop_s`, RETREAT's return to `return_s`; every
   /// other mode and RETREAT's release have none. RT only.
   [[nodiscard]] CatchingDiagLogPod::FaultCause MotionDeadlineOverrun() const noexcept;
-  /// D-S9-D3: why the arm is not at rest enough for a fault reset, or kNone —
+  /// Why the arm is not at rest enough for a fault reset, or kNone —
   /// the carried command must be stopped and every measured |q̇| within
   /// `supervisor.homing.qd_tol`, judged on this one tick. An arm whose
   /// velocity lane is not vouched for is refused (fail-closed). `joint` /
@@ -1257,7 +1247,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// hand back to the latch does not snap it to an older pose.
   void LatchHandFromSequencer() noexcept;
   [[nodiscard]] bool ArmAtWaitPose(const ControllerState& state) const noexcept;
-  /// S8-I: on the first readable tick of an activation, with
+  /// On the first readable tick of an activation, with
   /// `planner.wait_pose_source: current`, take the arm's measured pose as the
   /// wait pose. Adopted only when the arm is AT REST (every |q̇| within the
   /// homing arrival tolerance), not under an E-STOP, and inside the margined
@@ -1276,21 +1266,21 @@ class DemoCatchingController final : public RTControllerInterface {
   void SetupSupervisor();
   /// The first supervisor value a trial needs that is missing, or nullptr.
   [[nodiscard]] const char* SupervisorValueMissing() const noexcept;
-  /// RETREAT → ARMED (L7 §4.8, S7.4): ResetTrialScope, then the arm is at
+  /// RETREAT → ARMED: ResetTrialScope, then the arm is at
   /// the wait pose and the hand is told Ready. RT only, from OnModeEntered.
   void ResetForRearm() noexcept;
   /// Everything of the trial that just ended (the reset table's R column
-  /// minus the homing flags and the hand's Ready). RETREAT → IDLE runs it too
-  /// (#537 S8-C): a disarm or a release timeout during the return must not
+  /// minus the homing flags and the hand's Ready). RETREAT → IDLE runs it
+  /// too: a disarm or a release timeout during the return must not
   /// carry this trial's contact window into the next one. RT only.
   void ResetTrialScope() noexcept;
-  /// The fingertip lane (L7 §4.4, S7.3): baseline in ARMED/TRACKING at q_pre,
+  /// The fingertip lane: baseline in ARMED/TRACKING at q_pre,
   /// debounced contact from COMMITTED to HOLD, freshness (TIP_STALE) and the
   /// window [t_cmd, t_c + T_confirm]. Fed per SAMPLE (inference_sequence),
   /// not per tick. RT only, before the decision.
   void RunContactLane(const ControllerState& state) noexcept;
   /// Which witness a verdict rests on (diag `outcome_source`): the
-  /// fingertip agreement, the stalled hand joints (D-S8-8 (b)), or both.
+  /// fingertip agreement, the stalled hand joints, or both.
   enum class OutcomeSource : std::uint8_t { kNone = 0, kTips = 1, kHand = 2, kBoth = 3 };
 
   struct Judgement {
@@ -1298,9 +1288,10 @@ class DemoCatchingController final : public RTControllerInterface {
     OutcomeSource source{OutcomeSource::kNone};
   };
 
-  /// The attempt's verdict at the end of HOLD (L7 §4.4, + D-S8-8 (b)).
+  /// The attempt's verdict at the end of HOLD (fingertip agreement and the
+  /// hand-joint witness).
   [[nodiscard]] Judgement JudgeOutcome() const noexcept;
-  /// The hand-joint witness for this tick, after the sequencer (D-S8-8 (b)):
+  /// The hand-joint witness for this tick, after the sequencer:
   /// `hand_capture_now_` and the run it extends (`hand_blocked_since_ns_`).
   void UpdateHandCapture(const ControllerState& state) noexcept;
 
@@ -1347,7 +1338,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Set by on_configure, cleared by on_cleanup. See IsSimOnlyDisabled().
   bool sim_only_disabled_{false};
   CatchingParkReason park_reason_{CatchingParkReason::kNone};
-  /// Which validator axis this configure used (A-S5-1). Decided from the
+  /// Which validator axis this configure used. Decided from the
   /// claimed devices' backends, re-decided on every configure.
   bool real_arm_config_{true};
   std::vector<std::string> non_sim_groups_;
@@ -1376,7 +1367,7 @@ class DemoCatchingController final : public RTControllerInterface {
   // ── E-STOP / fault / arm request (non-RT writers, RT reader) ─────────────
   // Every one of these is a REQUEST. None of them is the state it asks about:
   // the tick owns that, and the tick is the only writer of anything these
-  // lead to (P-1 (a)).
+  // lead to (contract (a)).
   //
   // The two epochs are counters rather than booleans so a trigger→clear pair
   // that lands entirely between two ticks is still seen: the tick compares
@@ -1391,30 +1382,30 @@ class DemoCatchingController final : public RTControllerInterface {
   std::atomic<std::uint32_t> reset_requested_{0};
   std::atomic<std::uint32_t> fault_reset_epoch_{0};
   /// Raised by Compute() alone; the fault path is a latch, so nothing off the
-  /// RT thread may lower it except through fault_reset_epoch_ (P-1 (d)).
+  /// RT thread may lower it except through fault_reset_epoch_ (contract (d)).
   std::atomic<bool> fault_latched_{false};
   /// The operator arm latch (`catching.enable`). Written by the parameter
   /// callback (non-RT) AND by the tick, which lowers it on E-STOP or fault so
-  /// that a clear cannot resume anything by itself (P-1 (c)).
+  /// that a clear cannot resume anything by itself (contract (c)).
   std::atomic<bool> arm_requested_{false};
 
-  // Observation surface for off-RT readers (tests now, the S5.4 state message
-  // later). Stored by the tick, read with relaxed loads: one writer, and a
+  // Observation surface for off-RT readers (tests, the state message). Stored
+  // by the tick, read with relaxed loads: one writer, and a
   // diagnostic that is one tick stale is still the truth about a tick.
   std::atomic<std::uint8_t> mode_observed_{static_cast<std::uint8_t>(rtc::catching::Mode::kIdle)};
   std::atomic<std::uint8_t> reason_observed_{
       static_cast<std::uint8_t>(rtc::catching::Reason::kNone)};
   std::atomic<std::uint64_t> rt_reset_count_{0};
-  /// S8-I: switched-in poses refused as the wait pose (outside the margined box).
+  /// Switched-in poses refused as the wait pose (outside the margined box).
   std::atomic<std::uint64_t> wait_pose_refused_count_{0};
-  /// #537 S9b: fault resets refused because the arm was not at rest (D-S9-D3).
+  /// Fault resets refused because the arm was not at rest.
   std::atomic<std::uint64_t> fault_reset_refused_count_{0};
   std::atomic<std::uint64_t> estop_tick_count_{0};
   // RT-OWNED END
 
   // ── RT-owned supervisor state ────────────────────────────────────────────
   // Read and written by Compute() only. Not atomics: a second writer is
-  // exactly what P-1 (a) forbids, so making them atomic would advertise a
+  // exactly what contract (a) forbids, so making them atomic would advertise a
   // sharing that must not exist.
   // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   rtc::catching::Mode mode_{rtc::catching::Mode::kIdle};
@@ -1426,24 +1417,24 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Set when a fault reset was actually performed, consumed by the next
   /// EvaluateReason so the FSM edge and the state reset land on one tick.
   bool fault_reset_serviced_{false};
-  /// What raised the fault latch that is up (#537 S9b); kNone while it is
+  /// What raised the fault latch that is up; kNone while it is
   /// down. Written with the latch (LatchFault) and cleared with it.
   CatchingDiagLogPod::FaultCause fault_cause_{CatchingDiagLogPod::FaultCause::kNone};
   /// Moves once per LatchFault; the publish thread WARNs on its edge.
   std::uint32_t fault_latch_seq_{0};
-  /// The last refused fault reset (D-S9-D3), for the publish thread's WARN on
+  /// The last refused fault reset, for the publish thread's WARN on
   /// the sequence edge. The refusal tick's CSV column is written directly.
   std::uint32_t fault_reset_refuse_seq_{0};
   CatchingDiagLogPod::FaultResetRefusal fault_reset_refuse_reason_{
       CatchingDiagLogPod::FaultResetRefusal::kNone};
   int fault_reset_refuse_joint_{-1};
   double fault_reset_refuse_value_{0.0};
-  /// The activation generation the tick last reseeded for. D-23: a change here
+  /// The activation generation the tick last reseeded for. A change here
   /// is how the tick learns an activation boundary was crossed, without
   /// waiting for a quiescence the lifecycle thread cannot establish.
   std::uint32_t serviced_activation_generation_{0};
   bool activation_seen_{false};
-  /// G0-C verdict for the ACTIVE configuration, decided at configure. The tick
+  /// The validator's arming verdict for the ACTIVE configuration, decided at configure. The tick
   /// reads it rather than the report so the arming question is one bool.
   bool armable_{false};
   /// True while this tick's E-STOP request is up. Read once at the top of
@@ -1466,10 +1457,10 @@ class DemoCatchingController final : public RTControllerInterface {
   std::atomic<std::uint64_t> hand_step_applied_count_{0};
   // RT-OWNED END
 
-  // ── Vision ingress (S5.2) ────────────────────────────────────────────────
+  // ── Vision ingress ───────────────────────────────────────────────────────
   // The subscription is created by on_configure and lives on the controller
   // LifecycleNode's DEFAULT callback group, so it runs on the CM's non-RT
-  // executor (G1-6). It is NOT declared in the `topics:` block: that block's
+  // executor. It is NOT declared in the `topics:` block: that block's
   // `role:` vocabulary is a closed set owned by rtc_controller_interface, and
   // a PointCloud2 prediction lane is not one of its roles. Adding a role for a
   // single consumer is the same kind of change E-11 refuses on the publish
@@ -1478,13 +1469,12 @@ class DemoCatchingController final : public RTControllerInterface {
   //
   // It also stays alive while the controller is INACTIVE (lifecycle gates
   // publishers, not subscriptions), which is exactly why the snapshot carries
-  // an activation generation (D-23).
+  // an activation generation.
   std::string traj_topic_;
   /// Compared against every message's `frame_id`. A publisher that changes
   /// frame mid-run keeps publishing entirely plausible numbers in a different
-  /// space; S3.4 measured `world` on both robots, so this guards against a
-  /// change rather than performing a conversion (L1 §4.3's transform is not
-  /// implemented because nothing needs it).
+  /// space, so this guards against a change; the move into the model world
+  /// is the ingress's transform (ResolveVisionFrame), applied after it.
   std::string expected_frame_{"world"};
   /// No vision world on the model (IsVisionInert). Written by on_configure
   /// alone, before the subscription it suppresses would exist.
@@ -1494,12 +1484,12 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Non-RT writer (the callback), RT reader (the tick). The payloads are
   /// trivially copyable PODs; the covariance rides its own lock because the
-  /// tick never needs it and would otherwise copy 11.5 KB per cycle (A-3).
+  /// tick never needs it and would otherwise copy 11.5 KB per cycle.
   rtc::SeqLock<rtc::catching::TrajectorySnapshot> traj_box_{};
   rtc::SeqLock<rtc::catching::CovarianceSnapshot> cov_box_{};
 
-  /// RT-owned. The payload-side "have I seen this" memory D-21 requires
-  /// (never SeqLock::sequence()). It carries the epoch and an explicit `seen`
+  /// RT-owned. The payload-side "have I seen this" memory — newness is judged
+  /// from the payload, never SeqLock::sequence(). It carries the epoch and an explicit `seen`
   /// flag as well as the number — see `ConsumedToken` for why the number
   /// alone cannot express "nothing consumed yet".
   // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
@@ -1516,13 +1506,13 @@ class DemoCatchingController final : public RTControllerInterface {
   std::int64_t t_stale_ns_{0};
   std::int64_t t_arm_ns_{0};
   std::int64_t traj_horizon_min_ns_{0};
-  /// L1 §4.4's J threshold [m]; <= 0 disables the warning.
+  /// Warning threshold on the prediction jump J (JumpBetween) [m]; <= 0 disables it.
   double traj_jump_warn_m_{-1.0};
   double track_err_abort_rad_{0.0};
   int n_qp_fault_{0};
   double limit_margin_{0.05};
 
-  // ── Oracle plan (A-S5-8, the S5.3/S5.5 stand-in for the S6 planner) ──────
+  // ── Oracle plan (the fixed `diagnostic.oracle_plan`, a planner stand-in) ──
   /// `robot.arm.qdd_max` / `qdd_provisional` as LoadConfig read them, before
   /// they are judged against the arm's DOF (ApplyArmAccelBox).
   std::vector<double> arm_qdd_cfg_;
@@ -1534,11 +1524,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// them (kRemovedKey) — and on the removed `joint_cmd.accel_constraint: box`,
   /// which the parser carries in `params_`.
   std::vector<std::string> removed_arm_box_keys_;
-  /// Every key that moved (#711) and that LoadConfig still found at its old
+  /// Every key that moved and that LoadConfig still found at its old
   /// path; empty when none. on_configure parks on them (kRemovedKey), naming
   /// the old and the new path.
   std::vector<rtc::catching::RenamedCatchingKey> renamed_keys_;
-  /// Every removed catch-box key (L3 §4.9, kRemovedCatchingKeys) LoadConfig
+  /// Every removed catch-box key (kRemovedCatchingKeys) LoadConfig
   /// found, as the ERROR quotes it after `catching.`; empty when none.
   /// on_configure parks on them (kRemovedKey).
   std::vector<const char*> removed_catch_box_keys_;
@@ -1563,7 +1553,7 @@ class DemoCatchingController final : public RTControllerInterface {
   double oracle_t_c_offset_s_{1.0};
   double oracle_gamma_f_{0.3};
 
-  // ── Arm command path (S5.3) ──────────────────────────────────────────────
+  // ── Arm command path ─────────────────────────────────────────────────────
   // The model is the COMBINED arm+hand one, because the catch frame hangs off
   // the hand: a frame on a link the arm-only model does not contain cannot be
   // registered, let alone driven.
@@ -1585,27 +1575,26 @@ class DemoCatchingController final : public RTControllerInterface {
   Eigen::VectorXd q_eval_;     // [nq] evaluation state: q_c on the arm, measured on the hand
   Eigen::VectorXd v_eval_;     // [nv]
 
-  /// L4's soft-catch translational reference. Constructed at configure because
+  /// The soft-catch translational reference. Constructed at configure because
   /// its parameters are validated in the constructor — an optional rather than
   /// a default-constructed member so "not configured" is a state the tick can
   /// see instead of a silently wrong gain set.
   std::optional<rtc::catching::SoftCatchTranslation> reference_;
 
-  // ── Segment MPC follower (MPC E1-F04 · E1-F09, MD-34 – MD-45; configure,
-  // non-RT) ──
-  /// The planner this configuration follows — never mixed within it (MD-44).
+  // ── Segment MPC follower (configure, non-RT) ─────────────────────────────
+  /// The planner this configuration follows — never mixed within it.
   /// kMpc: the arm follows the planner's segments from APPROACH to the end of
-  /// the stop and the soft-catch reference never runs (MD-45).
+  /// the stop and the soft-catch reference never runs.
   rtc::catching::CatchingSegmentMode segment_mode_{rtc::catching::CatchingSegmentMode::kClosedForm};
   /// The search this configuration plans with (`planner.search.mode`) — one per
   /// configure, like the segment mode.
   rtc::catching::CatchingSearchMode search_mode_{rtc::catching::CatchingSearchMode::kGrid};
-  /// ρ_max of the switch gate (`planner.segment.mpc.switch_margin`, MD-39).
+  /// ρ_max of the switch gate (`planner.segment.mpc.switch_margin`).
   double segment_switch_margin_{1.0};
   /// η_v and K_p as the gate reads them (the planner's and the CLIK's).
   double segment_eta_v_{0.9};
   double segment_k_p_{0.0};
-  /// K_n of the posture row, as the mpc gate reads it: > 0 under mpc (MD-34),
+  /// K_n of the posture row, as the mpc gate reads it: > 0 under mpc,
   /// or the row has nothing pulling the null space back to the segment's q_ref.
   double segment_k_n_{1.0};
   /// The RT's segment sampler on the catch sub-model (owns its Data).
@@ -1613,10 +1602,10 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The arm's max_velocity, device order — the gate's headroom input.
   std::array<double, rtc::catching::kMaxSegmentNv> segment_qd_max_{};
   /// The CLIK's per-joint velocity box was built (every arm and hand joint
-  /// rated) — MD-34 asks for it, since the hand is locked through it.
+  /// rated) — mpc requires it, since the hand is locked through it.
   bool clik_v_box_complete_{false};
-  /// The MPC segment planner's position box as handed to its cores (device order,
-  /// MD-42), kept for the configure-time check and the tests.
+  /// The MPC segment planner's position box as handed to its cores (device
+  /// order), kept for the configure-time check and the tests.
   /// What SetupGridCatchSearch / SetupMpcSegmentPlanner handed over; reset by
   /// every configure. Read by the ForTesting getters only.
   rtc::catching::GridCatchSearchConstants grid_catch_search_constants_{};
@@ -1631,7 +1620,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// configure, once the arm's width is known (their per-joint weights are
   /// one scalar a joint).
   YAML::Node catching_node_;
-  /// `robot.hand.docking.*` — the hand's identified capture set (E1-F15).
+  /// `robot.hand.docking.*` — the hand's identified capture set.
   rtc::catching::HandDockingParams hand_docking_{};
   /// `planner.search.nlp.*` / `planner.segment.mpc_docking.*`, read only when
   /// selected (the defaults otherwise).
@@ -1647,7 +1636,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// the segment's q_ref. A work buffer, sized at configure.
   Eigen::VectorXd q_posture_segment_;
   /// [nv] posture velocity feed-forward of an mpc tick: the segment's q̇_ref on
-  /// the arm entries, 0 on the hand's, which no tick writes (MD-36). A work
+  /// the arm entries, 0 on the hand's, which no tick writes. A work
   /// buffer like the one above — rewritten on every tick that reads it.
   Eigen::VectorXd qd_posture_segment_;
 
@@ -1663,11 +1652,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The command as the law found it on this tick, and whether the law has
   /// replaced it since (SolveClikAndCommand). TRACK_ERR, REF_SATURATED and
   /// BALL_STALE_LONG are known only after that step; Compute puts these back
-  /// when the mode they lead to moves the command on the same tick (#749).
+  /// when the mode they lead to moves the command on the same tick.
   std::array<double, kDemoCatchingMaxArmDof> arm_q_cmd_before_law_{};
   std::array<double, kDemoCatchingMaxArmDof> arm_qd_cmd_before_law_{};
   bool law_stepped_cmd_{false};
-  /// S8-I: whether `wait_pose_` is the switched-in pose adopted on this
+  /// Whether `wait_pose_` is the switched-in pose adopted on this
   /// activation (source `current`). Cleared with the YAML restore on a fresh
   /// activation only — an E-STOP or fault reset keeps the adopted pose, so the
   /// arm does not learn "where it stopped" as its wait pose.
@@ -1684,11 +1673,11 @@ class DemoCatchingController final : public RTControllerInterface {
       CatchingDiagLogPod::WaitPoseRefusal::kNone};
   int wait_pose_refuse_joint_{-1};
   double wait_pose_refuse_value_{0.0};
-  /// The L4 generator is reset from the measured TCP pose on the first tick of
+  /// The reference generator is reset from the measured TCP pose on the first tick of
   /// a plan — not at seed time, because the pose it needs comes from the model
   /// cache and the cache is only current inside the tick.
   bool reference_seeded_{false};
-  /// Consecutive TRIALS ended by a CLIK failure (#537 S9b, D-S9-D2) —
+  /// Consecutive TRIALS ended by a CLIK failure —
   /// `supervisor.n_qp` of them latch a fault. A trial that reaches HOLD's
   /// verdict (Captured / Missed / Undetermined) puts it back to 0; an abort for
   /// any other reason leaves it alone. Counted per trial, not per solve: a
@@ -1702,13 +1691,13 @@ class DemoCatchingController final : public RTControllerInterface {
   double track_err_{0.0};
   // RT-OWNED END
 
-  // ── S7 supervisor: configuration (SetupSupervisor, non-RT) ───────────────
+  // ── Supervisor: configuration (SetupSupervisor, non-RT) ──────────────────
   rtc::catching::HandSequencer hand_seq_;
   /// The sequencer owns the hand: configured, and `diagnostic.hand_step` off.
   bool hand_seq_enabled_{false};
   /// A trial can run: the law is wired and every value below is present.
   bool trials_enabled_{false};
-  /// The wait pose in force: the YAML's, or (S8-I `planner.wait_pose_source:
+  /// The wait pose in force: the YAML's, or (`planner.wait_pose_source:
   /// current`) the arm's pose on this activation's first readable tick.
   /// Written by the RT tick (adoption, and the restore on a fresh activation)
   /// and read by homing, the ARMED check and the planner hand-over.
@@ -1734,14 +1723,14 @@ class DemoCatchingController final : public RTControllerInterface {
   /// (0) under mpc, the entrance plane (`robot.hand.docking.s_ent`) under
   /// mpc_docking. Read by RetimeClose only.
   double close_plane_s_{0.0};
-  /// RETREAT's wait for the hand at q_pre (D-S8-6); 0 = no timeout.
+  /// RETREAT's wait for the hand at q_pre; 0 = no timeout.
   std::int64_t t_release_timeout_ns_{0};
-  /// Motion deadlines (#537 S9b, D-S9-D1): a stop (ABORT_SAFE ramp, RETREAT
+  /// Motion deadlines: a stop (ABORT_SAFE ramp, RETREAT
   /// stop stage) and RETREAT's return. The validator refuses a missing or
   /// non-positive value, so a configuration that runs trials has both.
   std::int64_t stop_deadline_ns_{0};
   std::int64_t return_deadline_ns_{0};
-  /// The hand-joint capture witness (D-S8-8 (b)): the profile's thresholds and
+  /// The hand-joint capture witness: the profile's thresholds and
   /// the hand device's max_torque. Off without a valid `robot.hand.capture`.
   rtc::catching::HandCaptureConfig hand_capture_cfg_{};
   bool hand_capture_enabled_{false};
@@ -1749,9 +1738,9 @@ class DemoCatchingController final : public RTControllerInterface {
   std::int64_t stale_committed_max_ns_{0};
   int sat_ticks_{0};  // 0 = off until configure (supervisor.sat_ticks)
 
-  // ── S7 supervisor: RT-owned state ────────────────────────────────────────
+  // ── Supervisor: RT-owned state ───────────────────────────────────────────
   // Every member here is in the reset table below.
-  /// This tick's clock, read ONCE after the vision load (R-DECEL-ENTRY): the
+  /// This tick's clock, read ONCE after the vision load: the
   /// law, the sequencer and every edge judge the same instant. The plan
   /// admission alone reads its own (see Compute).
   // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
@@ -1762,9 +1751,9 @@ class DemoCatchingController final : public RTControllerInterface {
   bool homing_done_{false};  // IDLE: at the wait pose, hand told Ready
   enum class RetreatStage : std::uint8_t { kStop, kReturn, kRelease };
   /// kStop, then kReturn, then kRelease. The hand is released only on
-  /// arrival at kRelease, whatever the verdict (#537 S7, 2026-09-24).
+  /// arrival at kRelease, whatever the verdict.
   RetreatStage retreat_stage_{RetreatStage::kStop};
-  /// When the motion the deadlines watch began (#537 S9b, D-S9-D1): the entry
+  /// When the motion the deadlines watch began: the entry
   /// of ABORT_SAFE, of RETREAT (its stop stage) and of RETREAT's return. Each
   /// of those restarts the clock on its first tick, before anything reads it;
   /// ResetTrialState restarts it with the stage it puts back to kStop.
@@ -1775,11 +1764,11 @@ class DemoCatchingController final : public RTControllerInterface {
   bool trial_committed_{false};
   std::int64_t committed_t_c_ns_{0};
   std::int64_t committed_t_cmd_ns_{0};
-  /// R-TRACK (Q15): the track the frozen plan is about, and the last snapshot
+  /// The track the frozen plan is about, and the last snapshot
   /// of it — sampled after the freeze whatever the box holds.
   std::uint64_t committed_generation_{0};
   rtc::catching::TrajectorySnapshot law_snapshot_{};
-  /// R-TRACK (Q15): the previous trial's track, refused by ARMED until a new
+  /// The previous trial's track, refused by ARMED until a new
   /// one arrives.
   std::uint64_t last_trial_generation_{0};
   bool last_trial_generation_valid_{false};
@@ -1789,19 +1778,19 @@ class DemoCatchingController final : public RTControllerInterface {
   std::int64_t hold_entry_ns_{0};
   int sat_streak_{0};
   /// The law ran past the prediction's horizon this tick (recorded, COMMITTED
-  /// and CLOSING continue on the extrapolation — R-ORDER).
+  /// and CLOSING continue on the extrapolation).
   bool law_horizon_extrap_{false};
   rtc::catching::Outcome outcome_{rtc::catching::Outcome::kNone};
   OutcomeSource outcome_source_{OutcomeSource::kNone};
-  /// RETREAT's release instant (kReturn → kRelease); 0 before it (D-S8-6).
+  /// RETREAT's release instant (kReturn → kRelease); 0 before it.
   std::int64_t release_start_ns_{0};
   /// This tick's hand-joint witness and the tick its current unbroken run of
-  /// `blocked` began (0 = not blocked) — D-S8-8 (b).
+  /// `blocked` began (0 = not blocked).
   rtc::catching::HandCaptureReading hand_capture_now_{};
   std::int64_t hand_blocked_since_ns_{0};
   // RT-OWNED END
 
-  // ── S7.3 contact lane ────────────────────────────────────────────────────
+  // ── Contact lane ─────────────────────────────────────────────────────────
   // Configuration (SetupSupervisor, non-RT).
   rtc::catching::ContactDebouncer contact_;
   bool contact_configured_{false};
@@ -1836,25 +1825,25 @@ class DemoCatchingController final : public RTControllerInterface {
   // ResetTrialState (activation / E-STOP / explicit). "exempt" names why it
   // survives. R also runs on RETREAT → IDLE, minus the homing flags, the
   // hand's Ready and arm_qd_cmd_ — IDLE ramps a moving return down
-  // (ResetTrialScope, #537 S8-C).
+  // (ResetTrialScope).
   // test_catching_reset_table.py checks every member has a row;
   // test_catching_reset_probe.cpp checks the rows are true.
   // clang-format off
   //   arm_hold_, hand_hold_, hand_target_raw_, hand_target_width_     T
   //   mode_, last_reason_                        T (activation only; an E-STOP leaves the mode to the table)
   //   plan_, plan_active_, admitted_plan_        R, T
-  //   reset_floor_ns_, planner_reset_epoch_      R, T (same place, C-7)
+  //   reset_floor_ns_, planner_reset_epoch_      R, T (always together, in the same place)
   //   arm_cmd_seeded_, arm_q_cmd_                T; exempt from R: the carried command IS the wait pose
-  //   wait_pose_adopted_, wait_pose_decided_     T (activation only: the YAML pose is restored and the first readable tick decides again; an E-STOP keeps the adopted pose — S8-I)
-  //   wait_pose_adopt_seq_                       exempt: an edge counter the publish thread logs on (S8-I); never reset so no edge is missed
-  //   wait_pose_refused_count_                   exempt: a diagnostic counter (refused switched-in poses, S8-I), like rt_reset_count_
-  //   wait_pose_refuse_seq_                      exempt: an edge counter the publish thread warns on (S8-I); never reset so no edge is missed
+  //   wait_pose_adopted_, wait_pose_decided_     T (activation only: the YAML pose is restored and the first readable tick decides again; an E-STOP keeps the adopted pose)
+  //   wait_pose_adopt_seq_                       exempt: an edge counter the publish thread logs on; never reset so no edge is missed
+  //   wait_pose_refused_count_                   exempt: a diagnostic counter (refused switched-in poses), like rt_reset_count_
+  //   wait_pose_refuse_seq_                      exempt: an edge counter the publish thread warns on; never reset so no edge is missed
   //   wait_pose_refuse_reason_, wait_pose_refuse_joint_, wait_pose_refuse_value_   exempt: describe the LAST refusal, read only on the wait_pose_refuse_seq_ edge
   //   arm_qd_cmd_                                R, T
   //   law_stepped_cmd_                           exempt: rewritten every tick
   //   arm_q_cmd_before_law_, arm_qd_cmd_before_law_   exempt: written on the tick that reads them (law_stepped_cmd_ says whether)
   //   reference_seeded_, traj_hint_              R, T
-  //   qp_fail_streak_                            T (activation only) and the fault reset; exempt from R (C-29) and from an E-STOP (D-S9-D2)
+  //   qp_fail_streak_                            T (activation only) and the fault reset; exempt from R and from an E-STOP (it counts trials across re-arms)
   //   track_err_                                 R, T
   //   abort_stopped_                             exempt: written on every ABORT_SAFE / FAULT tick
   //   consumed_, last_track_generation_, track_seen_, traj_new_track_, traj_view_
@@ -1863,7 +1852,7 @@ class DemoCatchingController final : public RTControllerInterface {
   //   hand_out_                                  T; exempt from R: the hand stage rewrites it every tick
   //   homing_, homing_done_                      R (done), T
   //   retreat_stage_                             R, T
-  //   motion_start_ns_                           T (restarted with retreat_stage_, which T puts back to kStop); exempt from R: restarted on every ABORT_SAFE / RETREAT / return entry before it is read (D-S9-D1)
+  //   motion_start_ns_                           T (restarted with retreat_stage_, which T puts back to kStop); exempt from R: restarted on every ABORT_SAFE / RETREAT / return entry before it is read
   //   trial_active_, trial_committed_, committed_t_c_ns_, committed_t_cmd_ns_, committed_generation_
   //                                              R, T
   //   law_snapshot_                              R, T
@@ -1889,11 +1878,11 @@ class DemoCatchingController final : public RTControllerInterface {
   //   serviced_estop_epoch_, serviced_fault_reset_epoch_, serviced_reset_epoch_, fault_reset_serviced_,
   //   serviced_activation_generation_, activation_seen_
   //                                              exempt: the reset's own bookkeeping
-  //   armable_                                   exempt: the configure's G0-C verdict, read-only on the tick
+  //   armable_                                   exempt: the configure's arming verdict, read-only on the tick
   //   oracle_plan_id_                            exempt: monotone across trials (JudgePlan (d) never repeats)
   //   estop_requested_, estop_epoch_, reset_requested_, fault_reset_epoch_, arm_requested_
-  //                                              exempt: hook REQUESTS (P-1 (a)); the tick lowers arm_requested_
-  //   fault_latched_                             cleared only by a fault reset (P-1 (d))
+  //                                              exempt: hook REQUESTS (contract (a)); the tick lowers arm_requested_
+  //   fault_latched_                             cleared only by a fault reset (contract (d))
   //   fault_cause_                               cleared only with the latch it describes (the fault reset)
   //   fault_latch_seq_, fault_reset_refuse_seq_  exempt: edge counters the publish thread warns on; never reset so no edge is missed
   //   fault_reset_refuse_reason_, fault_reset_refuse_joint_, fault_reset_refuse_value_
@@ -1902,10 +1891,10 @@ class DemoCatchingController final : public RTControllerInterface {
   //   arm_target_reject_count_, hand_step_disabled_reject_count_, hand_target_width_reject_count_, task_target_reject_count_,
   //   hand_step_applied_count_, plan_refusal_observed_, plan_admitted_count_, plan_replaced_count_
   //                                              exempt: observation counters
-  //   planner wake eventfd                       exempt: never drained on any reset (C-7)
+  //   planner wake eventfd                       exempt: never drained on any reset
   // clang-format on
 
-  // ── The tick record (S5.4, D-20 + L8 §5.2) ───────────────────────────────
+  // ── The tick record (CatchingDiagLogPod) ─────────────────────────────────
   // ONE object feeds the CSV row and the state message, so the file and the
   // operator's screen cannot disagree about a tick. It is a member rather than
   // a tick-local so Compute()'s helpers can fill their own blocks without
@@ -1923,13 +1912,13 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Publish-thread (non-RT) memory of the last refusal it warned about.
   std::uint32_t wait_pose_refuse_logged_seq_{0};
   /// Publish-thread (non-RT) memory of whether each axis's unreadable velocity
-  /// lane has been reported (#537 pre-S10 R3): the WARN is on the edge.
+  /// lane has been reported: the WARN is on the edge.
   bool arm_velocity_unreadable_logged_{false};
   bool hand_velocity_unreadable_logged_{false};
-  /// ... and the activation that memory belongs to (#610).
+  /// ... and the activation that memory belongs to.
   std::uint32_t velocity_report_activation_{0};
   /// Publish-thread (non-RT) memory of the last fault latch / refused fault
-  /// reset it warned about (#537 S9b).
+  /// reset it warned about.
   std::uint32_t fault_latch_logged_seq_{0};
   std::uint32_t fault_reset_refuse_logged_seq_{0};
   /// Subscription writer, publish-thread reader. The counters advance on
@@ -1949,10 +1938,10 @@ class DemoCatchingController final : public RTControllerInterface {
   // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   rtc::catching::PlanSnapshot plan_{};
   bool plan_active_{false};
-  int traj_hint_{0};  // L2 sampler cursor, reset when the snapshot changes
+  int traj_hint_{0};  // trajectory sampler cursor, reset when the snapshot changes
   // RT-OWNED END
 
-  // ── Planner thread (S6-A, D-7, E-7 decision J) ───────────────────────────
+  // ── Planner thread ───────────────────────────────────────────────────────
   rtc::catching::PlannerParams planner_params_{};
   rtc::catching::JointGroups joint_groups_{};  // planner.groups on the arm device (SetupPlanner)
   /// The iteration body the thread calls. Owned here so it outlives the
@@ -1961,11 +1950,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// RT writer (every tick), planner reader.
   rtc::SeqLock<rtc::catching::PlannerRtState> planner_rt_box_;
   /// ONE writer — the planner thread, or the RT's oracle stand-in, never both
-  /// (a profile enabling both is parked). RT reader, every tick (D-21).
+  /// (a profile enabling both is parked). RT reader, every tick, unconditionally.
   rtc::SeqLock<rtc::catching::PlanSnapshot> plan_box_;
-  /// The segment MPC's segment (MPC E1-F02/F03, MD-27). ONE writer, the
+  /// The segment MPC's segment (its own SeqLock, not the plan's). ONE writer, the
   /// planner thread; the RT tick reads it under `planner.segment.mode: mpc`
-  /// — the segment lane, TRACKING through DECEL (E1-F09). Declared
+  /// — the segment lane, TRACKING through DECEL. Declared
   /// before planner_thread_ so the thread (which holds a pointer to it through
   /// the cycle) is destroyed first.
   rtc::SeqLock<rtc::catching::SegmentSnapshot> segment_box_;
@@ -1987,21 +1976,21 @@ class DemoCatchingController final : public RTControllerInterface {
   /// 1 Hz drain timer never dereferences planner_thread_ (which is joined and
   /// replaced across configurations while the timer may be mid-callback).
   CatchingPlannerThread::TimingBuffer planner_timing_{};
-  /// Per-wake planner records → planner_events.csv (decision E). Owned here
+  /// Per-wake planner records → planner_events.csv. Owned here
   /// for the same reason as the timing ring.
   CatchingPlannerThread::EventQueue planner_events_{};
   std::ofstream planner_events_file_;
-  std::ofstream nlp_candidates_file_;  ///< the per-candidate rows of the same records (#798)
+  std::ofstream nlp_candidates_file_;  ///< the per-candidate rows of the same records
   /// `planner.search.grid.ik.*` / `planner.search.grid.catchability.*` — the same parser and keys
-  /// the offline catchability map uses (S3.5a), so map and runtime solve alike.
+  /// the offline catchability map uses, so map and runtime solve alike.
   rtc::catching::CatchPoseIkConfig catch_pose_ik_config_{};
-  /// The planner thread's OWN model handle on the search's model (R-3,
-  /// thread-per-handle). Replaced only while no planner thread exists.
+  /// The planner thread's OWN model handle on the search's model
+  /// (thread-per-handle). Replaced only while no planner thread exists.
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> planner_handle_;
   /// `planner.freeze.T_freeze` in ns (0 = no freeze), the RT's own defence
-  /// against replacing a plan inside the freeze window (decision G).
+  /// against replacing a plan inside the freeze window.
   std::int64_t plan_freeze_ns_{0};
-  /// Launch layout profile dropped the `mpc` role's core (#350). Read at
+  /// Launch layout profile dropped the `mpc` role's core. Read at
   /// configure; see SetLayoutProfile.
   bool layout_profile_drops_mpc_{false};
   rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> planner_timing_logger_;
@@ -2009,7 +1998,7 @@ class DemoCatchingController final : public RTControllerInterface {
   rclcpp::TimerBase::SharedPtr planner_timing_timer_;
 
   // RT-owned plan lane state (Compute() only).
-  /// This tick's Load of the plan box (D-21: once per tick, unconditionally).
+  /// This tick's Load of the plan box (once per tick, unconditionally).
   // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   rtc::catching::PlanSnapshot plan_in_{};
   rtc::catching::PlanRefusal plan_refusal_{rtc::catching::PlanRefusal::kInvalid};
@@ -2020,7 +2009,7 @@ class DemoCatchingController final : public RTControllerInterface {
   std::int64_t reset_floor_ns_{0};
   /// Bumped on every trial reset and carried to the planner in PlannerRtState.
   std::uint32_t planner_reset_epoch_{0};
-  /// The oracle stand-in's own monotone plan id (A-S5-8).
+  /// The oracle stand-in's own monotone plan id.
   std::uint32_t oracle_plan_id_{0};
   std::atomic<std::uint8_t> plan_refusal_observed_{
       static_cast<std::uint8_t>(rtc::catching::PlanRefusal::kInvalid)};
@@ -2028,17 +2017,17 @@ class DemoCatchingController final : public RTControllerInterface {
   std::atomic<std::uint64_t> plan_replaced_count_{0};
   // RT-OWNED END
 
-  // RT-owned segment lane state (MPC E1-F04 · E1-F09; mode mpc only — closed_form never
+  // RT-owned segment lane state (mode mpc only — closed_form never
   // writes any of it).
   // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
-  /// This lane tick's Load of the segment box (D-21), and its verdict.
+  /// This lane tick's Load of the segment box, and its verdict.
   rtc::catching::SegmentSnapshot segment_in_{};
   rtc::catching::SegmentRefusal segment_refusal_{rtc::catching::SegmentRefusal::kInvalid};
   /// Payload-side memory of the last segment taken (or refused past
   /// JudgeSegment, so a refused one is not re-checked every tick).
   rtc::catching::AdmittedSegment admitted_segment_{};
-  /// Admitted, waiting for its node 0 (MD-37: one slot, filled when empty or
-  /// by a newer segment for the same node 0 instant, MD-58).
+  /// Admitted, waiting for its node 0 (one slot, filled when empty or
+  /// by a newer segment for the same node 0 instant).
   rtc::catching::SegmentSnapshot segment_pending_{};
   bool segment_pending_valid_{false};
   /// A replacement plan taken in APPROACH together with its first segment and
@@ -2068,8 +2057,8 @@ class DemoCatchingController final : public RTControllerInterface {
 
   // ── Controller-owned topics (`topics:` block) ────────────────────────────
   // The hand step arrives on the group's `joint_goal`, which only exists if
-  // CreateOwnedTopics runs — the YAML entry alone creates no endpoint. Since
-  // S5.4 it also holds the catching state publisher (D-20), which is why this
+  // CreateOwnedTopics runs — the YAML entry alone creates no endpoint. It
+  // also holds the catching state publisher, which is why this
   // controller has an on_activate/on_deactivate pair: a lifecycle gate applies
   // to publishers, and an inactive one drops every message while returning
   // normally.
@@ -2095,7 +2084,7 @@ class DemoCatchingController final : public RTControllerInterface {
   rclcpp::Clock log_clock_{RCL_STEADY_TIME};
   /// The controller's own reading of the steady clock (SetClockForTesting).
   ///
-  /// Read per tick rather than accumulated as `iteration * dt` (L0 §4.5): the
+  /// Read per tick rather than accumulated as `iteration * dt`: the
   /// two diverge by exactly the jitter and overrun this controller's deadlines
   /// are about, and the accumulated version cannot see a missed tick at all.
   /// The axis itself is `rtc::SteadyNowNs` — the same read the device backends

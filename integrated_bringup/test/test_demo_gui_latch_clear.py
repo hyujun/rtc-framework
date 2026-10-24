@@ -1,4 +1,4 @@
-"""Clear E-STOP / Reset fault header buttons (S9a, D-S9-H).
+"""Clear E-STOP / Reset fault header buttons.
 
 Three contracts are pinned here, all about the GUI never clearing a latch the
 operator did not see:

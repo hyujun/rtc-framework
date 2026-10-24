@@ -13,8 +13,8 @@
 // decided HERE is what the core is given, and what happens on the ticks it is
 // not called.
 //
-// Layout (docs/dynamic_catching/ref/mpc_multiframe_clik_formulation.md §2 is
-// the formulation; the differences are tabled in the package README):
+// Layout (the formulation is ClikReferenceGenerator's multi-frame call; the
+// differences are tabled in the package README):
 //   - model: the combined-model cache every demo controller shares. The body
 //     group's joints are the "arm" set of the solve; the hand group's joints
 //     are decision variables locked through their velocity box, because this

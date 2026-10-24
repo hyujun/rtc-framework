@@ -1,4 +1,4 @@
-"""Ball launch panel state for demo_controller_gui (dynamic_catching §13 S3).
+"""Ball launch panel state for demo_controller_gui.
 
 Two jobs, both of which exist because the alternative is a plausible-looking
 wrong answer.

@@ -52,14 +52,14 @@
         ur5e:
           root_link: "base"
           tip_link: "tool0"
-        # The catching planner's model (dynamic_catching S6-B, R-3): the arm
+        # The catching planner's model (the search model): the arm
         # from its root to the catch frame's PARENT. `ur5e` stops at the
         # flange, upstream of the palm, so the catch frame is not in it; the
         # reduced model locks everything past `l_palm_link` (the whole hand),
         # which is exact for the planner — the palm is upstream of the hand's
         # joints, so the catch frame's FK and Jacobian in the arm joints do not
         # depend on them. The offline catchability map uses this entry by name
-        # too, so map and runtime judge in one model (G3-I). Named by the
+        # too, so map and runtime judge in one model. Named by the
         # catching controller's `planner.sub_model`. Listed after `ur5e`:
         # controllers take the FIRST entry as the arm.
         ur5e_catch:
@@ -79,43 +79,40 @@
           root_link: "base"
           tip_links: ["l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"]
       # Frames the model builder adds to the full model (inherited by every
-      # derived model) — dynamic_catching D-10/D-17, L5 §11. Changing a value
+      # derived model). Changing a value
       # needs a controller re-configure (read at model build).
       extra_frames:
         catch_frame:
           parent: "l_palm_link"
-          # Pocket-centre offset (S2.3b, 2026-09-21) = the S4.5 MEASURED catch
-          # point, not the preshape fingertip centroid L5 §11 first proposed
-          # (rationale and the rejected alternative: L5 §11). In short: r_cap
-          # is the lateral allowance measured AROUND this point, and t_c is the
-          # instant the closing hand holds the ball, so the origin has to be
-          # where the ball ends up — not the pocket mouth, which is the S4.5
-          # pocket depth (0.095 m) away. (Not `planner.search.grid.hand.d_eff`: since
-          # 2026-09-22 that key is a speed allowance x T_close,tot, L6 §4.5.)
-          # L6 §4.5 states the point in CATCH-frame coordinates and this key is
-          # in the PARENT frame; rpy is zero here so the two coincide for this
+          # Pocket-centre offset = the MEASURED catch point (where the ball ends
+          # up), not the preshape fingertip centroid. r_cap is the lateral
+          # allowance measured AROUND this point and t_c is the instant the
+          # closing hand holds the ball, so the origin is not the pocket mouth,
+          # which is the pocket depth (0.095 m) away. (Not
+          # `planner.search.grid.hand.d_eff`: that key is a speed allowance
+          # x T_close,tot.)
+          # The point is measured in CATCH-frame coordinates and this key is in
+          # the PARENT frame; rpy is zero here so the two coincide for this
           # robot (they do NOT for iiwa7_leap, which carries a π turn).
-          # Cross-checked against the source of the measurement: the Pinocchio
-          # catch-frame origin and the MuJoCo pocket point agree to 1.4 mm over
-          # 16 random arm poses. That residual is ε_model,p1b (L3 §4.2, MJCF↔
-          # URDF dimensions), not a frame mismatch — the two palm frames agree
-          # to 3.4e-6 deg in orientation.
+          # Cross-checked against the measurement: the Pinocchio catch-frame
+          # origin and the MuJoCo pocket point agree to 1.4 mm over 16 random
+          # arm poses. The residual is the MJCF↔URDF dimension difference, not a
+          # frame mismatch — the two palm frames agree to 3.4e-6 deg.
           xyz: [0.015, 0.145, 0.052]
-          # +z = palm outward normal, so no rotation. Evidence (2026-09-21,
-          # shipped postures): the −z backstop under the pocket sits at catch
+          # +z = palm outward normal, so no rotation. Evidence (shipped
+          # postures): the −z backstop under the pocket sits at catch
           # z 0.0155 and the measured ball centre rests one ball radius above it
           # (0.0155 + 0.0335 = 0.049, measured 0.052); the preshape fingertip
           # centroid is on the same side (z 0.053).
-          # NOT the evidence, despite the older wording here: between the
-          # shipped q_pre and q_close the tip centroid moves toward −z
+          # NOT the evidence: between the shipped q_pre and q_close the tip
+          # centroid moves toward −z
           # (cos −0.58) — fingers curl back toward the palm. The monotone +z
           # rise test_catch_frame_models asserts (iiwa7_leap only since #682;
           # it held for this hand too) is a different motion (straight → far
           # joint limit), not this posture pair.
           rpy: [0.0, 0.0, 0.0]
-          # CONFIRMED by the user in sim, 2026-09-21 (D-17): the offset above was
-          # rendered onto the preshape hand with a ball-radius sphere at the frame
-          # origin and accepted. The catching controller reads this flag at
+          # Confirmed in sim: the offset above was rendered onto the preshape
+          # hand with a ball-radius sphere at the frame origin. The catching controller reads this flag at
           # configure: while it is true a real-arm configuration is parked
           # (it configures and refuses to activate) and sim only warns.
           provisional: false

@@ -1,7 +1,7 @@
 """The sim-trial runner's host load watch (#601).
 
 A sim that runs slower than the wall makes the controller drop a healthy ball
-as ``BALL_STALE`` (D-S8-17), so a loaded run measures the host. What is
+as ``BALL_STALE``, so a loaded run measures the host. What is
 pinned here:
 
 * the verdict is read off the truth rows the runner already records — a slow
@@ -122,8 +122,7 @@ def test_rows_that_decide_nothing_are_not_called_load():
 
 
 def test_receive_jitter_of_an_unloaded_run_stays_far_from_the_threshold():
-    # Receive − stamp of an unloaded run measured 0.1–4.0 ms (S8-G unit, 8
-    # throws, 2026-09-27). The worst case for a window is its two end rows
+    # Receive − stamp of an unloaded run measured 0.1–4.0 ms (8 throws, 2026-09-27). The worst case for a window is its two end rows
     # pulled apart by the whole spread.
     rows = truth_rows(REAL_TIME)
     jittered = [

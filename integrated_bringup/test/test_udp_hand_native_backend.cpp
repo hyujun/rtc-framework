@@ -1,10 +1,9 @@
 // ── UdpHandNativeBackend sensor lane ─────────────────────────────────────────
 //
-// This suite exists because of dynamic_catching D-24 (a): the fingertip lane
-// grew a per-group receipt time and sample counter, and this backend is one of
-// the two producers that has to fill them. Before D-24 the only receipt time
-// on this path was `last_state_ns_`, which the JOINT callback stamps — so a
-// hand whose joints keep arriving while the sensor stream stops looked fresh
+// This suite exists because the fingertip lane grew a per-group receipt time
+// and sample counter, and this backend is one of the two producers that has to
+// fill them. Before that the only receipt time on this path was `last_state_ns_`, which the JOINT
+// callback stamps — so a hand whose joints keep arriving while the sensor stream stops looked fresh
 // by every timestamp a controller could reach, and an old force read as a new
 // contact.
 //
@@ -199,7 +198,7 @@ TEST_F(UdpHandNativeBackendTest, DisabledFingertipStillRecordsReceipt) {
   // The two fields answer different questions: the flag is the firmware's
   // verdict on the VALUE, the stamp is when a sample last ARRIVED. Folding
   // them would make a live-but-disabled tip indistinguishable from a dead
-  // lane, which is the confusion D-24 exists to remove — so a disabled tip
+  // lane, which is the confusion the stamp exists to remove — so a disabled tip
   // still records its receipt.
   EXPECT_GT(cache.inference_recv_steady_ns[0], 0);
   EXPECT_EQ(cache.inference_sequence[0], 1U);
@@ -212,7 +211,7 @@ TEST_F(UdpHandNativeBackendTest, ShortMessageLeavesAbsentFingertipsUntouched) {
   ASSERT_EQ(full.inference_sequence[3], 1U);
 
   // A message that stops reporting the last fingertip — the per-finger quiet
-  // lane D-24 is about.
+  // lane.
   PublishSensorState(/*n_tips=*/2, /*enable_mask=*/0x3U);
   rtc::DeviceStateCache partial{};
   backend_->ReadSensorState(partial);

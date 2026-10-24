@@ -1,4 +1,4 @@
-"""Ball launch panel state (dynamic_catching §13 S3).
+"""Ball launch panel state.
 
 Two contracts are pinned here, and both are about the panel NOT reporting
 something that did not happen:

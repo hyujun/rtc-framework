@@ -577,9 +577,9 @@ def test_unknown_sim_overlay_is_rejected():
         _evaluate(P1B_SIM, {"sim_overlay": "no_such_overlay"})
 
 
-# ── sim_lanes (ur5e_p1b sim S8-A, iiwa7_leap sim S8-D) ───────────────────────
-# The lanes are the measurement substrate of every S8 trial run: the clock lane
-# is the D-3 covariate and the contact lane the G7-B3 impulse. What matters is
+# ── sim_lanes ────────────────────────────────────────────────────────────────
+# The lanes are the measurement substrate of every sim trial run: the clock lane
+# is the covariate and the contact lane the impulse. What matters is
 # that `sim_lanes:=true` turns BOTH on and points them INTO this run's session
 # tree (so a run's lanes sit next to the controller CSVs they are joined with),
 # and that the default leaves the sim exactly as it was. Both sims that run

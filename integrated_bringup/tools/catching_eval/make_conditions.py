@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E0-F04 (#647) condition set: profiles, overlays, the condition table and the unit plan.
+"""Condition set (#647): profiles, overlays, the condition table and the unit plan.
 
 Writes into $DATA/conditions (DATA has no default — the data directory of the
 evaluation, outside the repository):
@@ -15,7 +15,7 @@ The leaf rule is rtc_tools.utils.controller_config's `unread_leaves`.
 
 L-50 IS the shipped configuration: the installed profile itself, and an overlay
 whose three grid keys are refused unless they are the shipped values — so L-50
-is E0-F02's configuration with the profile moved. (Until #821 the overlays were
+is the shipped configuration with the profile moved. (Until #821 the overlays were
 the `catch_lead_on` overlay's leaves plus the grid keys; that overlay's values
 are in the shipped controller YAML now and the file is gone.)
 Refuses to write anything that fails: horizon an exact ns multiple of the step,
@@ -47,7 +47,7 @@ OUT = f"{DATA}/conditions"
 CONTROLLER = "demo_catching_controller"
 ROBOTS = {"p1b": "ur5e_p1b", "leap": "iiwa7_leap"}
 K_CAP = 40
-# name: (horizon_s, points) — formulation §1.7
+# name: (horizon_s, points) of the prediction grid
 CONDITIONS = {
     "L-50": (1.0, 20),
     "L-40": (1.0, 25),
@@ -117,7 +117,7 @@ def main():
                 f.write("\n")
         for short, robot in ROBOTS.items():
             cfg = f"{REPO}/integrated_bringup/config/{robot}"
-            # The shipped config is four files (MD-90): read it composed, as CM does.
+            # The shipped config is four files: read it composed, as CM does.
             shipped_ctrl = load_controller_config(
                 f"{cfg}/controllers/demo_catching_controller.yaml", config_key=CONTROLLER
             )[CONTROLLER]

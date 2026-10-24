@@ -1,4 +1,4 @@
-// ── The shipped g1_p1b models, as a test rig (dynamic_catching E3-F01, #640) ──
+// ── The shipped g1_p1b models, as a test rig ──────────────────────────────────
 //
 // The G1 + proto_1b model lives in `hand_description`, a package this
 // workspace does not depend on: EVERY TEST THAT INCLUDES THIS HEADER STARTS
@@ -10,7 +10,7 @@
 // `urdf:` block — the sub-models, the tree models, the closure sidecar), so a
 // change there moves every suite that includes this. What the profile does not
 // have yet is a catching configuration (the wait pose, the budgets and the
-// hand's docking values are E3-F05's): the posture below is this fixture's.
+// hand's docking values are not shipped): the posture below is this fixture's.
 #pragma once
 
 #include "optional_package.hpp"

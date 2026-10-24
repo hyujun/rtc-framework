@@ -4,13 +4,13 @@
 # merges it into that file's tree; every key keeps its full path.
 #
 # The segment planner that solves the docking problem per segment (MPC ·
-# dual-arm plan E1-F13, #739; wired in E1-F16, #742): the RT follows its joint
+# dual-arm plan #739; wired in #742): the RT follows its joint
 # segments from APPROACH through the catch to the end of the stop. Read only
 # when `planner.segment.mode: mpc_docking` (the main file). Every key here is
 # under planner.segment.mpc_docking, and the planner reads its design values
 # from here alone.
 #
-# PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the chance rows (off),
+# PROVISIONAL, SIM ONLY. Set in sim (#745): the chance rows (off),
 # publish.slack_v_max, core.catch.nu_ref, the stop grid and the SQP's tol_kkt
 # and mu_max; the other values are starting values, not tuned. A real-arm
 # configuration that selects this planner parks while
@@ -22,7 +22,7 @@ demo_catching_controller:
       segment:
         mpc_docking:
           # rho_max of the RT's segment-switch gate, per joint:
-          # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max (MD-39).
+          # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max.
           switch_margin: 1.0
           # The speed margin on the joint ratings: the cores' velocity box is
           # eta_v * qd_max and the RT's switch gate keeps (1 - eta_v) of the
@@ -42,9 +42,9 @@ demo_catching_controller:
             # segment [rad/s].
             rest_tol: 0.05
           # The stop part: 4 nodes of 0.0875 s in three move blocks — the 0.35 s
-          # it had as 7 x 0.05 s (E1-F19 part 2, #745). A solve's time is QP time
+          # it had as 7 x 0.05 s (#745). A solve's time is QP time
           # and follows the node count, and the stop part was 7 of the nodes:
-          # on the D-2 tuning set with no deadline a solve the nlp search
+          # on the tuning set with no deadline a solve the nlp search
           # accepts needed 27.9 ms (median) at 7 nodes and 20.6 ms at 4,
           # the same 13 throws accepted.
           # A coarser grid leaves more room between two nodes: a segment whose
@@ -65,7 +65,7 @@ demo_catching_controller:
           # The corridor and the speed envelope are soft in the problem: the
           # largest slack a published segment may lean on — the corridor's in
           # [m], the envelope's in the units of its row (c^2, [m^2/s^2]).
-          # slack_v_max (E1-F19, #745): at 0 every converged first solve was
+          # slack_v_max (#745): at 0 every converged first solve was
           # withheld. At the shipped band (robot.hand.docking.speed, top 2.1)
           # about a third of the published segments of a grid unit lean on
           # the envelope slack — 113 of 352, 100 of 325, 135 of 319 — and the
@@ -80,9 +80,9 @@ demo_catching_controller:
           # window, the contact point) are robot.hand.docking in the main file
           # and reach every core from there; the grid is this map's own keys
           # above. A per-joint weight is one number for every joint.
-          # Starting values: the weights the core's own suites solve with
-          # (E1-F13). E1-F19 (#745) did not tune them — it set the switches,
-          # the grid and the keys noted where they stand.
+          # Starting values: the weights the core's own suites solve with,
+          # not tuned — only the switches, the grid and the keys noted where
+          # they stand were set (#745).
           core:
             u_scale: 1.0e+3
             cost:
@@ -99,7 +99,7 @@ demo_catching_controller:
               # Reference relative velocity at the catch node, catch frame
               # [m/s]: straight down the approach axis, inside the hand's
               # closing-speed band (robot.hand.docking.speed — where the 2.0
-              # m/s comes from, E1-F19). on_configure parks when it leaves
+              # m/s comes from). on_configure parks when it leaves
               # the band.
               nu_ref: [0.0, 0.0, -2.0]
               q_rho_f: [1.0e+3, 1.0e+3]
@@ -113,7 +113,7 @@ demo_catching_controller:
               lambda1_v: 1.0
               lambda2_v: 0.0
             capture:
-              # Chance rows OFF (E1-F19, #745). `true` tightens the lateral,
+              # Chance rows OFF (#745). `true` tightens the lateral,
               # speed and timing rows by the ball's covariance at the catch
               # node; in sim that leaves the lateral set empty (its nearest
               # face is 2.3 mm from rho_ref) and every first solve ended at
@@ -131,7 +131,7 @@ demo_catching_controller:
               # one of the chance rows, so with chance off it is not built
               # whatever this says. NOTE for whoever turns chance back on:
               # robot.hand.docking.closure (delta_lo / delta_hi) is from the
-              # fly-ins at core.catch.nu_ref's speed (E1-F19 part 2, #802),
+              # fly-ins at core.catch.nu_ref's speed (#802),
               # where the hand's window is 8 ms wide.
               row: true
               eps_t: 0.05
@@ -143,11 +143,11 @@ demo_catching_controller:
             sqp:
               max_iterations: 50
               tol_violation: 1.0e-6
-              # tol_kkt and mu_max (E1-F19 part 2, #745). mu_max is the cap of
+              # tol_kkt and mu_max (#745). mu_max is the cap of
               # the elastic penalty; at the initial penalty (1e2, the code
               # default of mu_init) no penalty probe runs. A probe is one more
               # QP per iteration, and it is the solves that END REFUSED that
-              # ran them: on the D-2 tuning set with no deadline their median
+              # ran them: on the tuning set with no deadline their median
               # went from 57 to 20 ms, an accepted solve's from 20.6 to 18.1 ms.
               # The accepted throws did not change. The QP solver's own
               # tolerances and iteration cap (solver.eps_abs, eps_rel and
@@ -175,7 +175,7 @@ demo_catching_controller:
               # of the QP before it; past it the core runs the QP again from
               # zero, under max_iter (#803). Like max_iter it counts ProxQP's
               # OUTER iterations; the logged segment_qp_iterations is the
-              # inner total and does not show it. Without a cap, on the D-2
+              # inner total and does not show it. Without a cap, on the
               # tuning set (8 units: both robots, both searches) such a QP
               # either converged within a few outer iterations — 97 % of
               # 5 722 within 10, 99 % within 30 — or ran to max_iter without

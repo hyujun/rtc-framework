@@ -1,7 +1,7 @@
-// ── DemoCatchingController RT-1 zero-allocation gate, ARMED modes (S7, G7-D) ──
+// ── DemoCatchingController RT-1 zero-allocation gate, ARMED modes ─────────────
 //
 // test_demo_catching_alloc.cpp covers the disarmed hold and step paths on a
-// fixture with no model. This binary covers what S7 added to the tick: the
+// fixture with no model. This binary covers the armed tick: the
 // joint-space homing, the tracking law, the freeze, the hand sequencer, the
 // decelerating target, the hold, the return and the stop — one gated tick in
 // EVERY mode a trial passes through, on the real UR5e+P1b model.
@@ -13,7 +13,7 @@
 // covers the real Compute() in the integrated_bringup library. It does NOT see
 // Eigen's aligned_malloc (the CLIK's own allocation-freedom is gated in
 // rtc_tsid); a positive control shows the gate is armed. The per-tick worst
-// execution time is recorded alongside (G7-D asks for both).
+// execution time is recorded alongside.
 //
 // The predictions are published OUTSIDE the gate — DDS allocates on publish
 // (a known, accepted RT exception that is not this tick's) — and so is the
@@ -79,7 +79,7 @@ TEST(DemoCatchingAllocS7, TheGateSeesAnAllocation) {
   delete leak;  // NOLINT(cppcoreguidelines-owning-memory)
 }
 
-/// A ball that is `vel` at `p_ref` on the steady axis' `t_ref_ns` (E1-F17: the
+/// A ball that is `vel` at `p_ref` on the steady axis' `t_ref_ns` (the
 /// close re-timing needs one that crosses the catch frame's close plane).
 struct BallLine {
   std::array<double, 3> p_ref{};
@@ -114,7 +114,7 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
   }
 
   /// `s8c`: the hand-joint capture witness on (the hand device given its
-  /// max_torque) and a short RETREAT release timeout (#537 S8-C).
+  /// max_torque) and a short RETREAT release timeout (#537).
   void BringUp(bool s8c = false, const std::function<void(YAML::Node&)>& tweak = nullptr) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
     if (!real_clock_) {
@@ -293,8 +293,8 @@ struct GatedRig {
 };
 
 void RunGatedReplacementCase(const GatedRig& rig, const std::string& segment_mode) {
-  // E1-F17 (2f, 3d): TRACKING → pair → following → a replacement pair (the
-  // segment box, then the plan box — MD-56) → its admission tick, the waiting
+  // TRACKING → pair → following → a replacement pair (the
+  // segment box, then the plan box) → its admission tick, the waiting
   // ticks, the plan-switch tick → COMMITTED, where a ball that crosses the
   // close plane after t_c makes RetimeClose solve on every new snapshot and
   // move the close → HOLD. Every Compute is gated. The box writes (this test
@@ -526,7 +526,7 @@ TEST_F(DemoCatchingAllocS7Test, EveryModeOfATrialTicksWithoutAllocating) {
 }
 
 TEST_F(DemoCatchingAllocS7Test, TheHandWitnessAndTheReleaseTimeoutTickWithoutAllocating) {
-  // #537 S8-C: the same trial with the hand-joint witness evaluated on every
+  // The same trial with the hand-joint witness evaluated on every
   // Hold tick (a stalled, pushing finger — the full per-joint evaluation, not
   // its early exit) and a hand that never comes back to q_pre, so RETREAT ends
   // on the release timeout. Every tick is gated.
@@ -564,7 +564,7 @@ TEST_F(DemoCatchingAllocS7Test, TheHandWitnessAndTheReleaseTimeoutTickWithoutAll
 }
 
 TEST_F(DemoCatchingAllocS7Test, TheFaultLatchAndBothFaultResetAnswersTickWithoutAllocating) {
-  // #537 S9b: n_qp = 1 and a degenerate axis latch the fault on the first law
+  // n_qp = 1 and a degenerate axis latch the fault on the first law
   // tick; FAULT then runs, a reset is refused (the measured arm moves) and one
   // is accepted. Every tick is gated. On the real clock (file header).
   real_clock_ = true;
@@ -630,20 +630,20 @@ TEST_F(DemoCatchingAllocS7Test, TheJointSpaceStopTicksWithoutAllocating) {
   EXPECT_EQ(allocations, 0U);
 }
 
-/// The segment-following tick under each segment planner (E1-F17): the RT's
+/// The segment-following tick under each segment planner: the RT's
 /// lane is one code path for `mpc` and `mpc_docking`, so the gate is run on
 /// both.
 class DemoCatchingAllocS7SegmentTest : public DemoCatchingAllocS7Test,
                                        public ::testing::WithParamInterface<const char*> {};
 
 TEST_P(DemoCatchingAllocS7SegmentTest, TheMpcTicksFromThePairToTheHoldWithoutAllocating) {
-  // MPC E1-F09 (planner.segment.mode mpc; E1-F17: and mpc_docking): the segment lane's Load and
+  // planner.segment.mode mpc (and mpc_docking): the segment lane's Load and
   // judge in TRACKING and from APPROACH on, the stop part's node-wise catch-box FK, the pair's
   // adoption, the wait before node 0, a same-node-0 replacement, the first switch and two replan
   // switches with their gates, the segment sample and the posture feedforward in every mode that
   // follows — every tick gated. The box writes (this test plays the planner) are outside the gate.
   constexpr double kTcOffsetS = 0.7;  // BringUp's oracle t_c − now
-  constexpr double kBump = 0.08;      // rad/s: 1.6 rad/s² at the stop, inside the D-16 box
+  constexpr double kBump = 0.08;      // rad/s: 1.6 rad/s² at the stop, inside the acceleration box
   using integrated_bringup::testfx::kApproachDtPreNs;
   using integrated_bringup::testfx::kApproachNPre;
   using Event = integrated_bringup::CatchingDiagLogPod::SegmentEvent;
@@ -690,7 +690,7 @@ TEST_P(DemoCatchingAllocS7SegmentTest, TheMpcTicksFromThePairToTheHoldWithoutAll
   // trial above records its own worst tick (worst_tick_us).
   double us_pair = 0.0;    // the tick that took the plan and its segment (+ the stop part's FK)
   double us_wait = 0.0;    // APPROACH ticks holding the command before node 0
-  double us_admit = 0.0;   // ticks that admitted or replaced a segment (+ the FK, MD-43)
+  double us_admit = 0.0;   // ticks that admitted or replaced a segment (+ the FK)
   double us_switch = 0.0;  // ticks that switched segments (sample + gate)
   double us_follow = 0.0;  // other ticks that followed a segment
   double us_worst = 0.0;   // every mpc tick from TRACKING to the end of HOLD
@@ -709,7 +709,7 @@ TEST_P(DemoCatchingAllocS7SegmentTest, TheMpcTicksFromThePairToTheHoldWithoutAll
       stamp(base, 1);
       ctrl_->SegmentBoxForTesting().Store(base);
     } else if (adopted_at >= 0 && !replacement_written && t == adopted_at + 5) {
-      // The same node 0 solved again (MD-58): replaces the waiting segment.
+      // The same node 0 solved again: replaces the waiting segment.
       base = first_segment(base.plan_id, base.t_c_ns, 0.9 * kBump);
       stamp(base, 2);
       ctrl_->SegmentBoxForTesting().Store(base);

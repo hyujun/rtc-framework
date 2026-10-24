@@ -164,7 +164,7 @@ struct TfFrameSlot {
     kHandTip,       // group_commands[group_idx].task_link_poses[source_index]
     kVirtualTcp,    // group_commands[group_idx].virtual_tcp_pose
     kWbcTipInBase,  // (Phase 3) WBC tree, tip in base frame — slot reserved
-    kCustom,        // (D-5) future extension hook
+    kCustom,        // future extension hook
   };
 
   Source source{Source::kArmTip};
@@ -198,7 +198,7 @@ struct ControllerTopicHandles {
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::WbcState>::SharedPtr wbc_pub{};
   rtc_msgs::msg::WbcState wbc_msg{};
 
-  // Catching state publisher (dynamic_catching D-20) — at most one per demo
+  // Catching state publisher — at most one per demo
   // (the catching controller). Created via SetupCatchingStatePublisher, which
   // pre-sizes every per-joint / per-tip / per-reject array so the publish path
   // writes into existing elements only.
@@ -213,7 +213,7 @@ struct ControllerTopicHandles {
   rtc_msgs::msg::PayloadEstimate payload_msg{};
 
   // ── Per-controller TF publisher (kRobotTransforms) ────────────────────
-  // Single publisher per controller — D-2: controller당 1 토픽. The set of
+  // Single publisher per controller. The set of
   // frames is fixed at on_configure (parent/child frame_id + source slot)
   // so the publish path is allocation-free apart from TFMessage vector
   // resize; tf_msg.transforms is pre-reserved in CreateOwnedTopics.
@@ -295,7 +295,7 @@ bool AppendVirtualTcpSlot(ControllerTopicHandles& handles, const std::string& pa
                           int group_idx);
 
 // Append a placeholder slot (slot_valid = false) for future activation —
-// used by DemoWbcController for the D-5 "alpha" frame.
+// used by DemoWbcController for the "alpha" frame.
 bool AppendCustomPlaceholderSlot(ControllerTopicHandles& handles, const std::string& parent_frame,
                                  const std::string& child_frame);
 
@@ -315,7 +315,7 @@ void SetupWbcStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHan
 void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
                                const std::string& topic_name);
 
-// Create the catching state publisher (D-20) and pre-fill everything that is
+// Create the catching state publisher and pre-fill everything that is
 // fixed for the life of the configuration: the arm joint names the `q_cmd` /
 // `q_meas` arrays are in, the fingertip names, and the CloudReject names the
 // `input_reject_counts` histogram is indexed by. Every variable-length array

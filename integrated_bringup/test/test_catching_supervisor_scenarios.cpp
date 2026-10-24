@@ -1,4 +1,4 @@
-// ── The S7 supervisor, scenario by scenario, closed loop (L7 §9, G7-A/B/G) ──
+// ── The supervisor, scenario by scenario, closed loop ───────────────────────
 //
 // WHAT IS UNDER TEST. The whole trial cycle of DemoCatchingController — IDLE
 // homing, ARMED, TRACKING, APPROACH, the freeze (COMMITTED), the hand close
@@ -6,7 +6,7 @@
 // real Compute() on the shipped ur5e_p1b model, with the oracle plan
 // (`diagnostic.oracle_plan`) or a hand-stored plan box as the planner. Each
 // case asserts the MODE SEQUENCE the controller walked (consecutive duplicates
-// collapsed) against L7 §9's table, plus the reason / outcome that names the
+// collapsed) against the scenario table below, plus the reason / outcome that names the
 // scenario.
 //
 // THE PLANT. A perfect arm servo (measured q of tick n+1 = command of tick n),
@@ -278,11 +278,11 @@ struct TickRec {
   std::array<double, 3> ref_ed{};
   std::array<bool, kTips> tip_contact{};
   std::array<bool, kTips> tip_fresh{};
-  bool hand_blocked{false};                       // D-S8-8 (b): the stall has run unbroken
+  bool hand_blocked{false};                       // the stall has run unbroken
   std::uint8_t outcome_source{0};                 // 0 none, 1 fingertips, 2 hand, 3 both
   std::uint64_t iteration{0};                     // the state.iteration this tick was given
   double t_relative_s{0.0};                       // … and its t_relative_s
-  integrated_bringup::CatchingDiagLogPod body{};  // the row this tick published (G8-H)
+  integrated_bringup::CatchingDiagLogPod body{};  // the row this tick published
   // What the tick told the planner about the segments it holds (PlannerRtState).
   bool rt_segment_active{false};
   std::uint32_t rt_segment_seq{0};
@@ -427,7 +427,7 @@ class SupervisorScenarioTest : public ::testing::Test {
     }
     last_pub_ns_ = Now();
     // What the controller took from it: the snapshot's origin on the steady
-    // axis is the receive instant less the origin delay it measured (D-2), so
+    // axis is the receive instant less the origin delay it measured, so
     // a test can rebuild the very trajectory the RT samples.
     const auto ingress = ctrl_->GetIngressSnapshot();
     if (ball_line_ && ingress.accept_count > accepted_clouds_) {
@@ -461,7 +461,7 @@ class SupervisorScenarioTest : public ::testing::Test {
 
   /// One NEW sample per fingertip per tick. A tip whose stamp is frozen keeps
   /// its old receive instant while its value (and sequence) still change: the
-  /// fresh-looking OLD sample G7-G's negative control needs.
+  /// fresh-looking OLD sample the stale-fingertip negative control needs.
   void InjectTips() {
     auto& h = state_.devices[1];
     h.num_inference_groups = kTips;
@@ -586,7 +586,7 @@ class SupervisorScenarioTest : public ::testing::Test {
     }
     if (hand_stall_) {
       // One finger stopped on the ball while the sequencer holds q_close: it
-      // stays short of its command and pushes (D-S8-8 (b)). Outside Hold it
+      // stays short of its command and pushes. Outside Hold it
       // follows the servo and carries no load.
       auto& d = state_.devices[1];
       const auto j = static_cast<std::size_t>(hand_stall_->joint);
@@ -740,7 +740,7 @@ class SupervisorScenarioTest : public ::testing::Test {
     return true;
   }
 
-  /// The RETREAT release rule (#537 S7, 2026-09-24, replacing Q12/Q14's
+  /// The RETREAT release rule (2026-09-24, replacing the
   /// outcome split): a hand that closed stays closed through the whole return
   /// and lets go only once the arm is back at the wait pose — WHATEVER the
   /// verdict. `r` is the RETREAT entry; the log must already run to the re-arm.
@@ -775,7 +775,7 @@ class SupervisorScenarioTest : public ::testing::Test {
     EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kCaptured) << Transitions();
     ExpectDecelAtTc();
 
-    // G7-B: the DECEL entry step is τ = 0 from the reference's own state, so the
+    // The DECEL entry step is τ = 0 from the reference's own state, so the
     // reference error it records is zero.
     const int d = Entry(Mode::kDecel);
     ASSERT_GT(d, 0);
@@ -998,7 +998,7 @@ class SupervisorScenarioTest : public ::testing::Test {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// L7 §9 — the scenario table
+// The scenario table
 // ════════════════════════════════════════════════════════════════════════════
 
 TEST_F(SupervisorScenarioTest, NormalTrialIsCapturedAndReArms) {
@@ -1015,7 +1015,7 @@ TEST_F(SupervisorScenarioRealClockTest, NormalTrialIsCapturedAndReArms) {
   NormalTrialCase();
 }
 
-// ── MPC E1-F04 step 0: which reference instant the v1 command carries ───────
+// ── Which reference instant the v1 command carries ──────────────────────────
 
 /// FNV-1a over every tick's mode and the arm / hand commands it wrote — the
 /// digest a behaviour-preserving refactor must leave unchanged.
@@ -1069,7 +1069,7 @@ TEST_F(SupervisorScenarioTest, TheNormalTrialCommandTraceIsUnchanged) {
 }
 
 TEST_F(SupervisorScenarioTest, TheV1CommandsTimeOffsetFromItsReferenceIsMeasured) {
-  // MD-40, recorded rather than judged. The reference's output on tick n is
+  // Recorded rather than judged. The reference's output on tick n is
   // the reference for t_n + h; this measures which instant of it the command
   // leaving tick n sits at, along the reference velocity:
   //   label_n = h + (FK(q_n) − x(t_n + h))·ẋ / |ẋ|².
@@ -1134,13 +1134,13 @@ TEST_F(SupervisorScenarioTest, TheV1CommandsTimeOffsetFromItsReferenceIsMeasured
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// MPC E1-F09 — the arm follows the planner's segments from APPROACH to the end
-// of the stop (mode mpc, MD-44 · MD-45)
+// The arm follows the planner's segments from APPROACH to the end
+// of the stop (mode mpc)
 // ════════════════════════════════════════════════════════════════════════════
 //
 // The oracle profile: no planner thread, so these cases are the segment box's
 // one writer. In TRACKING they write the first segment of the plan the oracle
-// stores on the same tick — the PAIR a planner publishes (MD-56) — built from
+// stores on the same tick — the PAIR a planner publishes — built from
 // the arm state the RT last reported, at rest (catching_segment_
 // fixture.hpp). Replans are the same trajectory from a later node, or one
 // built from the command of the tick that takes it, which is what a planner
@@ -1161,8 +1161,8 @@ class SegmentScenarioBase : public SupervisorScenarioTest {
   static constexpr double kTcOffsetS = 0.6;  // the oracle's t_c − now
 
   /// A segment mode on the scenario profile: the catch sub-model the sampler
-  /// binds to, a wide catch box (the search's key — the RT does not read it,
-  /// MD-73), and the shipped torque rows (the fixture's derived box, 2.03
+  /// binds to, a wide catch box (the search's key — the RT does not read it),
+  /// and the shipped torque rows (the fixture's derived box, 2.03
   /// rad/s², would cap the follow's step). `mpc_docking` also reads the
   /// planner's fragment and the hand's capture set (the shipped ur5e_p1b
   /// ones, ApplyShippedDocking): the close lead it runs, the switch margin and
@@ -1313,7 +1313,7 @@ class SegmentScenarioBase : public SupervisorScenarioTest {
     EXPECT_FALSE(r.body.ref_valid) << "the soft-catch reference ran under mpc";
   }
 
-  /// A replacement of the followed plan and its first segment (E1-F17): the
+  /// A replacement of the followed plan and its first segment: the
   /// next plan id, the catch instant moved by `shift_ns`, and a segment with
   /// kApproachNPre pre-catch intervals whose node 0 is the command the RT holds
   /// now, at rest. That is the arm's state until the first segment's first
@@ -1346,7 +1346,7 @@ class SegmentScenarioBase : public SupervisorScenarioTest {
     return r;
   }
 
-  /// The planner's order (MD-56): the segment, then its plan.
+  /// The planner's order: the segment, then its plan.
   void StoreReplacement(const Replacement& r) {
     ctrl_->SegmentBoxForTesting().Store(r.seg);
     ctrl_->PlanBoxForTesting().Store(r.plan);
@@ -1390,7 +1390,7 @@ class SegmentScenarioBase : public SupervisorScenarioTest {
   static constexpr std::int64_t kFreezeNs = 360 * kMsNs;  // the fixture's T_freeze
 
   // ── The ball and the hand, independently of the controller ────────────────
-  // (M2, E1-F17) What the close is timed to is the instant the ball crosses a
+  // What the close is timed to is the instant the ball crosses a
   // plane of the catch frame. These evaluate that from the hand-built segment
   // (the sampler's joints and the fixture's own FK) and the cloud the
   // controller accepted — never from the controller's solve.
@@ -1520,7 +1520,7 @@ class SegmentScenarioBase : public SupervisorScenarioTest {
   SegmentSnapshot first_seg_{};
 };
 
-/// The scenarios below run under BOTH segment planners (E1-F17): the RT follows
+/// The scenarios below run under BOTH segment planners: the RT follows
 /// `mpc`'s segments and `mpc_docking`'s through one lane, so one body each.
 class MpcScenarioTest : public SegmentScenarioBase,
                         public ::testing::WithParamInterface<const char*> {
@@ -1660,7 +1660,7 @@ TEST_P(MpcScenarioTest, TheRtTakesThePairAndFollowsItFromApproachToTheRearm) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   ASSERT_NO_FATAL_FAILURE(TakeThePair());
   const SegmentSnapshot seg = first_seg_;
-  // HOLD takes no new segment (MD-38): one written on its entry is not followed.
+  // HOLD takes no new segment: one written on its entry is not followed.
   ASSERT_TRUE(TickUntilMode(Mode::kHold, 1500)) << Transitions();
   SegmentSnapshot late = integrated_bringup::testfx::ShiftSegment(seg, kApproachNPre + 2);
   Stamp(late, 2);
@@ -1704,7 +1704,7 @@ TEST_P(MpcScenarioTest, TheRtTakesThePairAndFollowsItFromApproachToTheRearm) {
     }
   }
 
-  // ── G7-B′ (MD-39 (1)): node 0 is the command the arm holds, so the switch is
+  // ── Node 0 is the command the arm holds, so the switch is
   // continuous to rounding ──
   const auto& entry = log_[static_cast<std::size_t>(sw)];
   const auto& before = log_[static_cast<std::size_t>(sw - 1)];
@@ -1777,7 +1777,7 @@ TEST_P(MpcScenarioTest, TheRtTakesThePairAndFollowsItFromApproachToTheRearm) {
     }
   }
 
-  // ── MD-40: following, the command leaving tick n is the segment at
+  // ── Following, the command leaving tick n is the segment at
   // now_lead + 2h (sampled at now_lead + h). Judged on the catch frame, where
   // the CLIK tracks with K_p and the twist feedforward; measured against the
   // neighbours h and 3h so the offset is resolved, not just bounded. The
@@ -1881,16 +1881,16 @@ TEST_P(MpcScenarioTest, APlanWithASegmentOfAnotherJointCountIsNotTaken) {
 }
 
 TEST_P(MpcScenarioTest, APlanWithASegmentPredictedBeforeTheResetIsNotTaken) {
-  // MD-37: published after the floor, predicted from an RT state before it.
+  // Published after the floor, predicted from an RT state before it.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   WritePair([](SegmentSnapshot& s) { s.rt_state_ns = 1; });
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(SegmentRefusal::kBeforeReset));
 }
 
-// ── Nothing to follow is ABORT_SAFE, from APPROACH on (MD-44) ───────────────
+// ── Nothing to follow is ABORT_SAFE, from APPROACH on ───────────────────────
 
 TEST_P(MpcScenarioTest, AFirstSegmentPastTheSwitchGateAbortsInApproach) {
-  // MD-39 (2): 0.05 rad off on one joint — K_p·Δq = 1 rad/s against a
+  // 0.05 rad off on one joint — K_p·Δq = 1 rad/s against a
   // headroom of (1 − 0.9)·2 = 0.2 rad/s. The pair is admissible (admission
   // does not compare node 0 with the command); the gate at node 0 refuses it,
   // and with no segment behind it the trial aborts where it stands.
@@ -1979,7 +1979,7 @@ TEST_P(MpcScenarioTest, AnotherPlanInApproachIsNotTaken) {
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
-// ── The pending slot (MD-37, MD-58) ─────────────────────────────────────────
+// ── The pending slot ────────────────────────────────────────────────────────
 
 TEST_P(MpcScenarioTest, ANewerSegmentForTheSameNodeZeroReplacesTheWaitingOne) {
   // The same grid point solved again on a newer prediction: here, the same
@@ -2016,7 +2016,7 @@ TEST_P(MpcScenarioTest, ANewerSegmentForTheSameNodeZeroReplacesTheWaitingOne) {
 }
 
 TEST_P(MpcScenarioTest, ASegmentForALaterNodeZeroWaitsInTheBoxUntilTheSlotIsFree) {
-  // MD-37: the next grid point's segment arrives while the slot still holds
+  // The next grid point's segment arrives while the slot still holds
   // the one before it. It is left in the box — taking it would leave the
   // instant in between nothing to follow — and admitted once the slot clears.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
@@ -2078,10 +2078,10 @@ TEST_P(MpcScenarioTest, ASegmentThatWaitsPastTheAgeBoundIsNeverTaken) {
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
-// ── Replans (MD-38, MD-39) ──────────────────────────────────────────────────
+// ── Replans ─────────────────────────────────────────────────────────────────
 
 TEST_P(MpcScenarioTest, AReplanBuiltFromTheMovingCommandSwitchesWithoutAStep) {
-  // G7-B′ on a moving arm (MD-39 (1)): one pre-catch interval before t_c the
+  // On a moving arm: one pre-catch interval before t_c the
   // arm is cruising on the first segment. A replan whose node 0 is made from
   // the command the switch tick starts from is continuous to rounding — in
   // the joints and in the hand's pose and twist.
@@ -2195,7 +2195,7 @@ TEST_P(MpcScenarioTest, AReplanPastTheGateIsDroppedAndTheFollowedSegmentGoesOn) 
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
-// ── A replacement plan with its first segment (E1-F17, #743) ────────────────
+// ── A replacement plan with its first segment (#743) ────────────────────────
 //
 // The oracle writes no plan once one is followed, so these cases are the plan
 // box's writer too. The first segment's node 0 is t_c − 0.4 s and the freeze
@@ -2529,7 +2529,7 @@ TEST_P(MpcScenarioTest, AWaitingReplacementGoesWithThePlanWhenTheTrackChanges) {
   EXPECT_FALSE(ctrl_->GetPlannerRtState().plan_pending);
 }
 
-// ── M2 (E1-F17): the close is re-timed to the ball's crossing of the close ──
+// ── The close is re-timed to the ball's crossing of the close ───────────────
 // plane until it is commanded. The ball is a straight line down the catch
 // frame's z axis at 1 m/s that crosses the plane s = 0 of the hand (as the
 // hand-built segment moves it) at a chosen instant; the expected crossing is
@@ -2721,7 +2721,7 @@ TEST_P(MpcScenarioTest, ACrossingOutsideTheWindowOrThePredictionLeavesTheInstant
   }
 }
 
-// ── E-STOP and reset (MD-35, E-8) ───────────────────────────────────────────
+// ── E-STOP and reset (E-8) ──────────────────────────────────────────────────
 
 class MpcEstopTest : public MpcScenarioTest {
  protected:
@@ -2879,12 +2879,12 @@ TEST_F(SupervisorScenarioTest, ActivatedOutsideTheWaitPoseHomesThenArms) {
         << "joint " << i << ": the carried command did not end on the wait pose";
   }
   EXPECT_FALSE(ctrl_->IsHomingForTesting());
-  // The hand opens to q_open while homing and waits at q_pre after (Q4).
+  // The hand opens to q_open while homing and waits at q_pre after.
   EXPECT_EQ(ctrl_->GetHandOutputForTesting().phase, HandPhase::kPreshape);
 }
 
 TEST_F(SupervisorScenarioTest, ASwitchedInPoseIsTheWaitPoseAndNeedsNoHoming) {
-  // S8-I (`planner.wait_pose_source: current`): activated OFF the YAML pose,
+  // `planner.wait_pose_source: current`: activated OFF the YAML pose,
   // the arm's own pose is the wait pose — IDLE → ARMED without one homing tick,
   // the carried command stays where the arm was, and the diag says adopted.
   std::array<double, kUr5eArmDof> off = kUr5eHome;
@@ -2901,7 +2901,7 @@ TEST_F(SupervisorScenarioTest, ASwitchedInPoseIsTheWaitPoseAndNeedsNoHoming) {
       << "homing to the pose the arm is already at";
   EXPECT_TRUE(ctrl_->IsWaitPoseAdoptedForTesting());
   EXPECT_TRUE(ctrl_->GetLastTickRecord().wait_pose_adopted);
-  // The Q13 skip holds the arm where it is (the hold latch, not the homing
+  // The homing skip holds the arm where it is (the hold latch, not the homing
   // law — the carried command is seeded later, by the first plan), so the
   // OUTPUT never leaves the switched-in pose.
   const ControllerOutput held = ctrl_->Compute(state_);
@@ -2917,7 +2917,7 @@ TEST_F(SupervisorScenarioTest, ASwitchedInPoseIsTheWaitPoseAndNeedsNoHoming) {
 }
 
 TEST_F(SupervisorScenarioTest, TheAdoptedWaitPoseSurvivesAnEstopAndIsRetakenOnActivation) {
-  // S8-I, the three edges of "once per activation": an E-STOP keeps the
+  // The three edges of "once per activation": an E-STOP keeps the
   // adopted pose (where the arm stopped is not a wait pose), a new activation
   // adopts wherever the arm is then, and a pose outside the margined joint box
   // is refused in favour of the YAML pose.
@@ -2980,7 +2980,7 @@ TEST_F(SupervisorScenarioTest, TheAdoptedWaitPoseSurvivesAnEstopAndIsRetakenOnAc
 }
 
 TEST_F(SupervisorScenarioTest, ATrialFromASwitchedInPoseReturnsToIt) {
-  // S8-I: RETREAT homes to the ADOPTED pose, not the YAML's — a full cycle from
+  // RETREAT homes to the ADOPTED pose, not the YAML's — a full cycle from
   // an off-YAML switch-in re-arms where it started.
   std::array<double, kUr5eArmDof> off = kUr5eHome;
   off[0] += 0.06;
@@ -3009,7 +3009,7 @@ TEST_F(SupervisorScenarioTest, ATrialFromASwitchedInPoseReturnsToIt) {
 }
 
 TEST_F(SupervisorScenarioTest, AMovingArmDefersTheAdoptionUntilItRests) {
-  // S8-I (2026-09-27 /code-review): a switch made while the previous
+  // A switch made while the previous
   // controller's motion is still running must not adopt a pose in passing.
   // Unarmed, the decision waits for rest and takes the pose the arm rests at.
   std::array<double, kUr5eArmDof> passing = kUr5eHome;
@@ -3271,7 +3271,7 @@ TEST_F(RefusedStopReferenceTest, InHoldItAbortsOnParamsTbd) {
 
 TEST_F(SupervisorScenarioTest, QpFailuresAbortAndTheThirdLatchesAFaultThatResetClears) {
   // A plan with a degenerate approach axis fails CLIK on its first law tick.
-  // Each retry needs a NEW ball (Q15), and n_qp = 3 in a row latches the fault.
+  // Each retry needs a NEW ball, and n_qp = 3 in a row latches the fault.
   ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
     y["diagnostic"]["oracle_plan"]["a_d"] = YAML::Load("[0.0, 0.0, 0.0]");
   }));
@@ -3315,7 +3315,7 @@ TEST_F(SupervisorScenarioTest, EstopGoesToIdleAndTheClearDoesNotResume) {
   ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(2.0), StartAxis(), 0.0, 1.0));
   ASSERT_TRUE(TickUntilMode(Mode::kApproach, 200)) << Transitions();
   // Moving, and already further from the wait pose than pose_tol, so the
-  // re-arm below cannot take the Q13 skip.
+  // re-arm below cannot take the homing skip.
   ASSERT_TRUE(TickUntil(
       [this] {
         double d = 0.0;
@@ -3358,19 +3358,19 @@ TEST_F(SupervisorScenarioTest, EstopGoesToIdleAndTheClearDoesNotResume) {
   EXPECT_GT(CountTicks([](const TickRec& t) { return t.homing; }, rearm), 0);
 }
 
-// ── E-STOP in every stage of an attempt (S9a, D-S9-A/B/C) ───────────────────
+// ── E-STOP in every stage of an attempt ─────────────────────────────────────
 //
 // The case above stops an APPROACH. These stop the stages after it, where the
-// hand is doing something: the reaction is the SAME in all of them (D-S9-B) —
+// hand is doing something: the reaction is the SAME in all of them —
 // IDLE on the stop tick, disarmed, no resume on the clear — and the hand is not
-// opened and not squeezed but held where it was measured (D-S9-A). In HOLD and
+// opened and not squeezed but held where it was measured. In HOLD and
 // RETREAT that pose is the closed one, which is the documented cost: under the
 // CM's hold the position servo has no gap left to push with, so the ball goes.
 //
 // WHAT THIS DOES NOT SEE. These are the CONTROLLER's outputs. Under a real
 // E-STOP the CM discards them and writes each device's measured position
 // itself (rt_controller_node_rt_loop.cpp, BuildHoldOutput); that substitution
-// has its own tests in rtc_controller_manager, and the sim run of S9a is what
+// has its own tests in rtc_controller_manager, and a sim run is what
 // sees both together. What the controller's side has to guarantee is that the
 // value it would fall back to is the same pose, so a CM that stopped
 // substituting would not turn the stop into a motion.
@@ -3379,7 +3379,7 @@ TEST_F(SupervisorScenarioTest, EstopGoesToIdleAndTheClearDoesNotResume) {
 // fixture's plant is a perfect servo — its next measurement is whatever it
 // was just commanded — so without this a controller that REPLAYED its last
 // command would be indistinguishable from one that held the MEASUREMENT, and
-// D-S9-A is about the measurement. The stop tick is given a pose a few mrad
+// the hold is about the measurement. The stop tick is given a pose a few mrad
 // away from the last command, and the snapshot compared against is that pose,
 // taken before the tick (never read back from the tick that follows).
 
@@ -3414,18 +3414,18 @@ class EstopInStageTest : public SupervisorScenarioTest {
     ctrl_->ClearEstop();
     Ticks(100);  // the ball is still being published
 
-    // D-S9-B: one reaction, on the stop tick.
+    // One reaction, on the stop tick.
     EXPECT_EQ(log_[trig].mode, Mode::kIdle) << Window(static_cast<int>(trig), 2);
     EXPECT_EQ(log_[trig].reason, Reason::kEstop) << Window(static_cast<int>(trig), 2);
     EXPECT_FALSE(log_[trig].armed_latch) << "the stop tick left the controller armed";
     for (std::size_t i = trig; i < clear; ++i) {
       ASSERT_EQ(log_[i].reason, Reason::kEstop) << Window(static_cast<int>(i), 2);
     }
-    // P-1 (c) / D-S9-C: the clear does not resume anything.
+    // The clear does not resume anything.
     ExpectSeq({stage, Mode::kIdle}, trig);
     EXPECT_FALSE(ctrl_->IsArmRequested()) << "the clear re-armed the controller";
     // An attempt still in progress ends Aborted, and says so for the whole
-    // stop. One already judged is NOT rewritten as Aborted (L7 §4.1): its
+    // stop. One already judged is NOT rewritten as Aborted: its
     // verdict went out on the RETREAT entry tick, which is where the trial
     // runner reads it, and the stop is not a second opinion on the catch.
     // (The CLEAR is a reset too and puts the field back to None — the next
@@ -3439,7 +3439,7 @@ class EstopInStageTest : public SupervisorScenarioTest {
       }
     }
 
-    // D-S9-A: the hand stays where it was measured — through the stop and after
+    // The hand stays where it was measured — through the stop and after
     // the clear, until an operator re-arms.
     for (std::size_t i = trig; i < log_.size(); ++i) {
       ASSERT_TRUE(log_[i].hand_out_valid) << "tick " << i << " silenced the hand";
@@ -3537,7 +3537,7 @@ TEST_F(SupervisorScenarioTest, AnUnarmableProfileParksAndAnUnarmedControllerStay
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// S7 additions (L7 §4.8, the S7.2 driver rules)
+// Driver-rule additions
 // ════════════════════════════════════════════════════════════════════════════
 
 TEST_F(SupervisorScenarioTest, DisarmDuringTheReturnRampsTheArmDownInIdle) {
@@ -3752,7 +3752,7 @@ TEST_F(SupervisorScenarioTest, AnAbortDuringTheReturnKeepsTheJudgedVerdict) {
 }
 
 TEST_F(SupervisorScenarioTest, ADisarmInTrackingWithAnAlignedArmLeavesAbortSafe) {
-  // The arm starts at the wait pose, so IDLE takes the Q13 skip and nothing
+  // The arm starts at the wait pose, so IDLE takes the homing skip and nothing
   // seeds the arm command before APPROACH. A disarm in TRACKING goes to
   // ABORT_SAFE with no command to ramp; its exit must still open.
   ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
@@ -3810,8 +3810,8 @@ TEST_F(SupervisorScenarioTest, AnArmGateClosedMidHomingIsNotATrackingError) {
 
 // An abort in HOLD, after the close: the verdict is Aborted, and the hand
 // keeps what it closed on until the arm is back — with or without confirmed
-// contact. Q14 made the contact the condition; the 2026-09-24 rule does not
-// ask (the fingertips' "no contact" is not "no ball"), so both runs below
+// contact. An earlier rule made the contact the condition; the 2026-09-24 rule does
+// not ask (the fingertips' "no contact" is not "no ball"), so both runs below
 // must hold to the wait pose.
 class AbortInHoldTest : public SupervisorScenarioTest {
  protected:
@@ -3896,7 +3896,7 @@ class StopEntryTest : public SupervisorScenarioTest,
     };
   }
 
-  /// G5-B's far target: the reference saturates from its first step and the
+  /// The far target: the reference saturates from its first step and the
   /// arm is still moving at every instant these cases stop it.
   Eigen::Vector3d FarPc() const {
     return start_pose_.translation() + Eigen::Vector3d(0.45, -0.35, 0.30);
@@ -4053,7 +4053,7 @@ TEST_P(StopEntryTest, ALongStaleInClosing) {
 
 // The normal end of a trial (HOLD → RETREAT once T_hold is over) is not in the
 // table above: it is not an abort, the law's step stays, and the command is
-// pinned as it is by kNormalTrialCommandDigest (L7 §4.1). What that leaves is
+// pinned as it is by kNormalTrialCommandDigest. What that leaves is
 // bounded here at the hold the parser defaults to and the shipped YAML does not
 // override: by then the command has settled, and the law's step plus the
 // ramp's is inside what one tick allows (measured 1.5e-7 rad the tick before
@@ -4279,7 +4279,7 @@ TEST_F(SupervisorScenarioTest, TwoConsecutiveTrialsShareNothingButThePose) {
   for (int i = 0; i < kP1bHandDof; ++i) {
     EXPECT_NEAR(state_.devices[1].positions[static_cast<std::size_t>(i)], 0.0, 1e-9);
   }
-  // Q15: the same ball keeps being published; ARMED does not start on it. The
+  // The same ball keeps being published; ARMED does not start on it. The
   // baseline is re-learned meanwhile (ResetForRearm emptied it).
   const std::size_t mark = log_.size();
   Ticks(40);
@@ -4362,8 +4362,8 @@ TEST_F(SupervisorScenarioTest, AnImmediateReThrowRefusesThePlansOfTheAbortedTria
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// #537 S8-C — the hand-joint capture witness (D-S8-8 (b)) and RETREAT's
-// release timeout (D-S8-6)
+// The hand-joint capture witness and RETREAT's
+// release timeout (#537)
 // ════════════════════════════════════════════════════════════════════════════
 
 constexpr double kHandTauMax = 3.0;
@@ -4462,7 +4462,7 @@ TEST_F(SupervisorScenarioTest, FingertipsAndAStalledHandAreRecordedAsBoth) {
 }
 
 TEST_F(SupervisorScenarioTest, TheHandWitnessDoesNotLiftAStaleFingertipLane) {
-  // G7-G with a stalled hand: a lane that could not judge stays Undetermined —
+  // With a stalled hand: a lane that could not judge stays Undetermined —
   // the hand adds evidence, it does not stand in for a stale fingertip.
   hand_max_torque_ = std::vector<double>(kP1bHandDof, kHandTauMax);
   hand_stall_ = HandStall{5, 0.6 * 0.5, 0.9 * kHandTauMax};
@@ -4480,7 +4480,7 @@ TEST_F(SupervisorScenarioTest, TheHandWitnessDoesNotLiftAStaleFingertipLane) {
 }
 
 TEST_F(SupervisorScenarioTest, ACaptureBlockWithoutTheHandTorqueLimitsParksTheTrials) {
-  // Asked for, but unusable: the controller is PARKED (A-S5-12 — the robot
+  // Asked for, but unusable: the controller is PARKED (the robot
   // comes up, this controller refuses to activate) rather than silently
   // judging by the fingertips alone.
   ctrl_ = std::make_unique<DemoCatchingController>("");
@@ -4522,7 +4522,7 @@ TEST_F(SupervisorScenarioTest, AReleaseTimeoutNotAboveTheCloseTimeParksTheTrials
 }
 
 TEST_F(SupervisorScenarioTest, AHandThatNeverReachesQPreEndsTheReturnInIdleDisarmed) {
-  // D-S8-6 (a): the hand freezes the moment it is released, so it never gets
+  // The hand freezes the moment it is released, so it never gets
   // back to q_pre. RETREAT waits T_release_timeout, then ends in IDLE,
   // disarmed on that same tick — and stays there until the operator re-arms.
   // Just above the fixture's T_close_e2e (0.28), which the validator requires.
@@ -4576,7 +4576,7 @@ TEST_F(SupervisorScenarioTest, AHandThatNeverReachesQPreEndsTheReturnInIdleDisar
 }
 
 TEST_F(SupervisorScenarioTest, AStaleFingertipIsNeverContactAndMakesTheOutcomeUndetermined) {
-  // G7-G. Fingertip 0 keeps delivering NEW samples carrying a contact force,
+  // Fingertip 0 keeps delivering NEW samples carrying a contact force,
   // but its receive stamp stops moving at the close: an old sample dressed as
   // new. Fingertip 1 is a genuine contact. m_min = 2, so without the freshness
   // gate the two would make a Captured.
@@ -4604,12 +4604,12 @@ TEST_F(SupervisorScenarioTest, AStaleFingertipIsNeverContactAndMakesTheOutcomeUn
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// G8-H — every branch that decides to do less publishes THIS tick's body
+// Every branch that decides to do less publishes THIS tick's body
 // ════════════════════════════════════════════════════════════════════════════
 //
-// PROC-7 (L8 §9, G8-H). Compute() has one exit and default-constructs the
+// Compute() has one exit and default-constructs the
 // record at the top of every tick, so a branch cannot skip the publish — but
-// that is a property of today's layout, and S8-E counted only two of the nine
+// that is a property of today's layout, and only two of the nine
 // branches (E-STOP, stale input: test_demo_catching_controller.cpp's
 // `DemoCatchingRecord`) as pinned by a test. These are the other seven, each
 // driven through the real supervisor rather than asserted from the layout.
@@ -4646,7 +4646,7 @@ class TickBodyTest : public SupervisorScenarioTest {
 
 TEST_F(TickBodyTest, AGenerationMismatchTickCarriesTheSnapshotItRefused) {
   // A snapshot received under the PREVIOUS activation is still in the box when
-  // the controller is re-activated (D-23: the subscription outlives the
+  // the controller is re-activated (the subscription outlives the
   // activation). The first tick after must judge it stale on the generation
   // alone — it is younger than t_stale — and say so in its own row.
   ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
@@ -4780,7 +4780,7 @@ TEST_F(TickBodyTest, AHandStageEarlyReturnEmptiesTheHandBlock) {
 }
 
 TEST_F(TickBodyTest, AHandTimeoutTickIsTheDisarmingTicksRow) {
-  // The HAND_TIMEOUT a test can reach is RETREAT's release timeout (D-S8-6 (a),
+  // The HAND_TIMEOUT a test can reach is RETREAT's release timeout (
   // the AHandThatNeverReachesQPre… setup): CLOSING/DECEL record the sequencer's
   // close timeout only if it fires inside them, and it cannot — it is
   // 2·T_close_e2e after the close, and CLOSING is T_close_e2e long. The edge
@@ -4811,7 +4811,7 @@ TEST_F(TickBodyTest, AHandTimeoutTickIsTheDisarmingTicksRow) {
 }
 
 TEST_F(TickBodyTest, TheHandWitnessIsThisTicksAndEmptyOnceTheHandLetsGo) {
-  // D-S8-8 (b): the hand-joint capture witness is computed only while the hand
+  // The hand-joint capture witness is computed only while the hand
   // is in Hold. Its rows carry this tick's reading while it is; the first tick
   // after the release carries NONE — NaN, not the last stall — because a
   // witness the tick did not compute must not read as one it did.
@@ -4842,22 +4842,22 @@ TEST_F(TickBodyTest, TheHandWitnessIsThisTicksAndEmptyOnceTheHandLetsGo) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// #537 S9b — the FAULT extension (D-S9-D1 / D2 / D3 / K / L)
+// The FAULT extension (#537)
 // ════════════════════════════════════════════════════════════════════════════
 //
-// What each decision adds, and the case that pins it:
-//   D1  a stop (ABORT_SAFE ramp, RETREAT stop) or a return that runs past its
-//       deadline latches a fault — ABORT_ESCALATED → FAULT — and FAULT brings
-//       the carried command to rest inside the acceleration box;
-//   K   RETREAT does not move an arm it cannot read: the return is ramped to
-//       rest and held, its deadline keeps running, and a readable arm resumes;
-//   D2  n_qp counts TRIALS ended by a CLIK failure — a failure after good
+// What each part adds, and the case that pins it:
+//   deadlines   a stop (ABORT_SAFE ramp, RETREAT stop) or a return that runs
+//       past its deadline latches a fault — ABORT_ESCALATED → FAULT — and FAULT
+//       brings the carried command to rest inside the acceleration box;
+//   unreadable arm   RETREAT does not move an arm it cannot read: the return is
+//       ramped to rest and held, its deadline keeps running, and a readable arm
+//       resumes;
+//   n_qp   counts TRIALS ended by a CLIK failure — a failure after good
 //       solves counts, a verdict at HOLD ends the run, nothing else does;
-//   D3  a fault reset is refused until the arm is at rest (command AND
+//   fault reset   is refused until the arm is at rest (command AND
 //       measurement, velocity lane vouched for);
-//   L   a reset under an E-STOP drops the latch at once and leaves FAULT on
-//       the clear.
-// The within-deadline counterparts of D1 are the existing cases that abort,
+//   reset under E-STOP   drops the latch at once and leaves FAULT on the clear.
+// The within-deadline counterparts of the deadlines are the existing cases that abort,
 // lag or return and re-arm: ATrackErrAbort…, AServoStillLagging… (the 60-tick
 // lag), and every trial that reaches ARMED again — all run with the default
 // deadlines, unchanged.
@@ -4919,7 +4919,7 @@ class FaultExtensionTest : public SupervisorScenarioTest {
 
   /// From ARMED on the current ball: a trial that the solver ends AFTER a run
   /// of good solves — a good plan, `good_ticks` law ticks, then a replacement
-  /// plan (§4.7) with an axis CLIK cannot solve. Ends on the ABORT_SAFE entry.
+  /// plan with an axis CLIK cannot solve. Ends on the ABORT_SAFE entry.
   void MidTrialClikFailure(int good_ticks = 20) {
     ASSERT_TRUE(TickUntilMode(Mode::kTracking, 200)) << Transitions();
     ctrl_->PlanBoxForTesting().Store(PlanFor(generation_, 2.0, false));
@@ -4997,8 +4997,8 @@ class FaultExtensionTest : public SupervisorScenarioTest {
     ASSERT_TRUE(TickUntilMode(Mode::kFault, 20)) << Transitions();
   }
 
-  /// From `from` on, the carried command only decelerates, inside the D-16
-  /// box (no one-tick velocity step), and ends at rest, holding still.
+  /// From `from` on, the carried command only decelerates, inside the
+  /// acceleration box (no one-tick velocity step), and ends at rest, holding still.
   void ExpectRampedToRestFrom(std::size_t from, const char* what) const {
     ASSERT_GT(from, 0U);
     const std::vector<double> qdd = DerivedQddMax();
@@ -5028,7 +5028,7 @@ class FaultExtensionTest : public SupervisorScenarioTest {
   std::uint32_t next_plan_id_{1};
 };
 
-// ── D-S9-D1: the motion deadlines ───────────────────────────────────────────
+// ── The motion deadlines ────────────────────────────────────────────────────
 
 TEST_F(FaultExtensionTest, AnAbortSafeRampPastTheStopDeadlineFaultsAndStillStops) {
   StopDeadlineCase();
@@ -5128,7 +5128,7 @@ TEST_F(FaultExtensionTest, AnEstopPairBetweenTwoTicksDoesNotTimeTheStopOnTheRetu
   EXPECT_FALSE(ctrl_->IsArmRequested());
 }
 
-// ── D-S9-K: an arm the controller cannot read ───────────────────────────────
+// ── An arm the controller cannot read ───────────────────────────────────────
 
 TEST_F(FaultExtensionTest, AnArmUnreadableDuringTheReturnIsStoppedAndFaultsAtTheDeadline) {
   constexpr double kReturnS = 0.3;
@@ -5175,7 +5175,7 @@ TEST_F(FaultExtensionTest, AnArmReadableAgainInsideTheDeadlineResumesTheReturn) 
   EXPECT_FALSE(ctrl_->HasLatchedFault());
 }
 
-// ── D-S9-D2: n_qp counts trials ─────────────────────────────────────────────
+// ── n_qp counts trials ──────────────────────────────────────────────────────
 
 TEST_F(FaultExtensionTest, ThreeTrialsInARowThatTheSolverEndsMidTrialLatchAFault) {
   // Each trial solves for a while first. A per-SOLVE streak (the old count)
@@ -5185,7 +5185,7 @@ TEST_F(FaultExtensionTest, ThreeTrialsInARowThatTheSolverEndsMidTrialLatchAFault
     ASSERT_NO_FATAL_FAILURE(MidTrialClikFailure()) << "trial " << k;
     EXPECT_EQ(log_.back().body.qp_fail_streak, k + 1) << "trial " << k;
     if (k < 2) {
-      ++generation_;  // the thrower retries with a new ball (Q15)
+      ++generation_;  // the thrower retries with a new ball
       ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
     }
   }
@@ -5228,7 +5228,7 @@ TEST_F(FaultExtensionTest, OnlyAVerdictOrAFaultResetEndsTheRunOfSolverEndedTrial
   ctrl_->ClearEstop();
   Ticks(5);
   EXPECT_EQ(streak(), 1) << "the clear cleared the count";
-  // The E-STOP reset forgot the last trial's ball (R-TRACK memory), so the new
+  // The E-STOP reset forgot the last trial's ball (last-track memory), so the new
   // ball must be in the box BEFORE the re-arm, or TRACKING starts on the old one.
   ++generation_;
   PublishNow();
@@ -5258,7 +5258,7 @@ TEST_F(FaultExtensionTest, OnlyAVerdictOrAFaultResetEndsTheRunOfSolverEndedTrial
   EXPECT_EQ(CountTicks([](const TickRec& r) { return r.mode == Mode::kFault; }), 0);
 }
 
-// ── D-S9-D3: no fault reset while the arm moves ─────────────────────────────
+// ── No fault reset while the arm moves ──────────────────────────────────────
 
 TEST_F(FaultExtensionTest, AFaultResetIsRefusedUntilTheArmIsAtRest) {
   ASSERT_NO_FATAL_FAILURE(FaultByTheStopDeadline());
@@ -5311,7 +5311,7 @@ TEST_F(FaultExtensionTest, AFaultResetIsRefusedUntilTheArmIsAtRest) {
   EXPECT_EQ(ctrl_->GetFaultResetRefusedCount(), 3U);
 }
 
-// ── D-S9-L and a latch that reached IDLE ────────────────────────────────────
+// ── A latch that reached IDLE ───────────────────────────────────────────────
 
 TEST_F(FaultExtensionTest, AFaultResetUnderAnEstopShowsFaultUntilTheClearThenIdle) {
   ASSERT_NO_FATAL_FAILURE(FaultByTheStopDeadline());
@@ -5399,7 +5399,7 @@ TEST_F(FaultExtensionTest, AFaultLatchedIntoIdleByAnEstopIsResetInIdleAndArmsAga
              Mode::kIdle, Mode::kArmed});
 }
 
-// ── pre-S10 R3 (#537 Q4 · Q5): what parks a real-arm configuration ──────────
+// ── What parks a real-arm configuration ─────────────────────────────────────
 //
 // The park's observable beyond the verdict IS the configure log: the operator
 // learns WHICH value is not cleared from that line and nowhere else (the park
@@ -5579,7 +5579,7 @@ TEST_F(SafetyGateParkTest, AReconfigureWithoutABoxDoesNotKeepTheLastOnes) {
 // ── the acceleration box's keys: `robot.arm.qdd_max` · `qdd_provisional` ─────
 
 TEST_F(SafetyGateParkTest, AProvisionalQddBoxParksTheRealArm) {
-  // Q4: the box is reviewed but still provisional — the real arm's is not
+  // The box is reviewed but still provisional — the real arm's is not
   // identified. Every ramp and the CLIK box run on it. Same park, same reason
   // code, and the log names the key.
   ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kProvisional), /*sim=*/false));
@@ -5866,7 +5866,7 @@ TEST_F(SafetyGateParkTest, EveryRemovedKeyAndValueIsNamedInOneConfigure) {
   ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
-// L3 §4.9: the catch box is gone — the searches do not judge where a catch
+// The catch box is gone — the searches do not judge where a catch
 // point is. An overlay that still writes one was tuned for that gate: parked
 // (never a configure failure, which would take every controller down), each
 // key named, whichever search runs.
@@ -5890,7 +5890,7 @@ TEST_F(SafetyGateParkTest, TheRemovedCatchBoxKeysParkAndAreNamed) {
 }
 
 TEST_F(SafetyGateParkTest, AProvisionalArmLagParksTheRealArm) {
-  // Q5: T_arm is not identified on the real arm. Parked whatever its value and
+  // T_arm is not identified on the real arm. Parked whatever its value and
   // with the lead compensation off, as the fixture has it.
   ASSERT_NO_FATAL_FAILURE(Configure(ProvisionalLag, /*sim=*/false));
   ExpectParked({"joint_cmd.lag"});
@@ -5902,7 +5902,7 @@ TEST_F(SafetyGateParkTest, AProvisionalArmLagOnlyWarnsInSim) {
   ExpectActivates();
 }
 
-// ── pre-S10 R3 (#537 Q9 · Q16): a velocity nobody vouches for ───────────────
+// ── A velocity nobody vouches for ───────────────────────────────────────────
 //
 // The position lane stays readable in every case here: what is missing is the
 // velocity lane's word, and the slots then hold whatever was there (zeros in
@@ -5954,7 +5954,7 @@ TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableDoesNotReArmAfterAT
   state_.devices[1].velocity_hole_mask = 1ULL << 3;
   ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
   const std::size_t retreat = log_.size();
-  // The way out is the release timeout (D-S8-6 (a)), into a disarmed IDLE —
+  // The way out is the release timeout, into a disarmed IDLE —
   // never the re-arm. The plant has long put the hand at q_pre by then.
   ASSERT_TRUE(TickUntil(
       [this] { return !log_.empty() && log_.back().reason == Reason::kHandTimeout; }, 3000))

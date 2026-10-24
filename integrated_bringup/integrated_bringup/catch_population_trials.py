@@ -35,7 +35,7 @@ whose header is the history of why:
    configuration (:func:`shipped_expectation`), not from a table in this file.
    The startup lines must say the same modes and grid (:func:`mirror_failures`).
 5. **Estimator**: ``ball_perception_sim``'s ``sim_estimator.launch.py`` from its
-   OWN workspace, sourced in the shell that starts it (two workspaces, MD-17);
+   OWN workspace, sourced in the shell that starts it (two workspaces);
    the seed is the estimator's alone — the sim takes none and the throws are a
    file, so two units of one chunk under two seeds differ in the estimator's
    noise only. Its profile is a file of that workspace, not of this repository:
