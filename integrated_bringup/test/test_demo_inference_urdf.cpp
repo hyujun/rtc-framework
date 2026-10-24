@@ -1,10 +1,13 @@
-// ── DemoInferenceController on the real ur5e_p1b model + the SHIPPED config ──
+// ── DemoInferenceController on the ur5e_p1b test model + the SHIPPED config ──
 //
 // The roster-fixture suite (test_demo_inference_controller.cpp) pins the
 // binding's contracts on made-up joint names. What it cannot see is whether the
-// shipped config, read against the real URDF, observes the robot the way the
-// policy was trained to: that needs the model (link poses, the closed-chain
-// fingertips, the base ↔ base_link half turn) and the shipped YAML itself.
+// shipped config, read against a URDF with the shipped joint and link names,
+// observes the robot the way the policy was trained to: that needs a model
+// (link poses, the closed-chain fingertips, the base ↔ base_link half turn) and
+// the shipped YAML itself. The model is the profile's test model
+// (p1b_surrogate_models.hpp): the UR5e and the palm frame are the real ones, the
+// hand past the palm is synthetic.
 //
 // The engine is still the fake — sized from the shipped declaration, not from
 // a literal — so everything here runs in CI without the policy file. The only
@@ -13,12 +16,14 @@
 //
 // ORACLE. Arm at the policy's pregrasp arm constant (C18) and hand at the
 // policy's synergy-0 hand constant (C20) mapped through the training asset's
-// joint signs: MuJoCo (ur5e_with_proto_1b.xml, mj_kinematics, 2026-09-11) puts
-// the palm and fingertips at the positions below, in the MJCF body `base`
-// frame (= URDF `base_link`). The passive joints there were the recorded
-// pregrasp's own values, whose loop gaps are 0.09–1.73 mm; the binding solves
-// them from the actuated joints instead, hence ±2 mm on the tips and ±1 mm on
-// the palm (upstream of every loop).
+// joint signs, positions in the MJCF body `base` frame (= URDF `base_link`).
+// The PALM is where MuJoCo puts it on the training asset (mj_kinematics,
+// 2026-09-11): it is upstream of the hand, so the synthetic hand does not move
+// it, and ±1 mm covers the four decimals. The FINGERTIPS and brackets cannot
+// come from that asset — the test model's hand is not the real one — so they
+// are the test model's own, computed outside this binding: python pinocchio on
+// the xacro-expanded URDF, every loop solved by Newton continuation from the
+// reference q = 0 (2026-10-25, #952). ±2 mm is kept from the MuJoCo oracle.
 //
 // The constants below are kept in the frame they were MEASURED in and crossed
 // into the policy frame (URDF `base`) with `fx::BaseFromBaseLink` at the point
@@ -88,19 +93,18 @@ constexpr std::array<std::array<double, 3>, 4> kC0 = {{{-0.013565, 0.037512, 0.0
 constexpr std::array<double, 3> kPalmPos = {0.6053, 0.0639, 0.2619};
 constexpr std::array<double, 4> kPalmQuatXyzw = {0.8892, 0.0761, -0.1590, -0.4223};
 const std::map<std::string, std::array<double, 3>> kTipPos = {
-    {"l_thumb_tip_link", {0.5906, 0.0844, 0.0973}},
-    {"l_index_tip_link", {0.6156, -0.0073, 0.0890}},
-    {"l_middle_tip_link", {0.5895, -0.0266, 0.0824}},
-    {"l_ring_tip_link", {0.5618, -0.0308, 0.1002}}};
-/// The fingertip BRACKETS at the same posture, measured the same way. The reach
-/// gate reads these, not the tip links 17.5 mm behind them: the recorded contact
-/// points sit on the face that touches, and that face is the bracket's
-/// neighbourhood (11.0 mm) rather than the tip link's (25.6 mm).
+    {"l_thumb_tip_link", {0.6178, 0.1552, 0.1782}},
+    {"l_index_tip_link", {0.6122, -0.0171, 0.0904}},
+    {"l_middle_tip_link", {0.5908, -0.0273, 0.0879}},
+    {"l_ring_tip_link", {0.5737, -0.0463, 0.1098}}};
+/// The fingertip BRACKETS at the same posture, computed the same way. The reach
+/// gate reads these, not the tip links behind them (22.8 mm on the test hand):
+/// the recorded contact points sit on the face that touches, the bracket's.
 const std::map<std::string, std::array<double, 3>> kBracketPos = {
-    {"l_thumb_tip_bracket", {0.5884, 0.0804, 0.0807}},
-    {"l_index_tip_bracket", {0.6098, -0.0020, 0.0734}},
-    {"l_middle_tip_bracket", {0.5842, -0.0209, 0.0667}},
-    {"l_ring_tip_bracket", {0.5566, -0.0251, 0.0851}}};
+    {"l_thumb_tip_bracket", {0.6141, 0.1703, 0.1616}},
+    {"l_index_tip_bracket", {0.6046, -0.0102, 0.0701}},
+    {"l_middle_tip_bracket", {0.5839, -0.0200, 0.0674}},
+    {"l_ring_tip_bracket", {0.5687, -0.0470, 0.0876}}};
 constexpr double kPalmTol = 1e-3;
 constexpr double kTipTol = 2e-3;
 
@@ -724,7 +728,57 @@ TEST_F(ShippedInference, TheArmIntegratorStartsAtTheMeasuredArm) {
 
 // ── Reach gate: wiring against the model (the formula is unit-tested) ──────
 
-TEST_F(ShippedInference, ReachPhaseMeasuresFromTheFingertipBracketsNotTheTipLinks) {
+/// The shipped `contact_obj` points were recorded on the real hand, and the
+/// test model's hand does not fit them (58 mm mean, the thumb 115 mm: the gate
+/// is shut). This case gives the controller a pattern built on the test hand's
+/// own brackets instead — each bracket moved kPatternOffset off it, at right
+/// angles to its tip link and the policy x axis, alternately in sign so the
+/// offsets do not cancel in the object fit — which puts the gate on its ramp
+/// with the brackets and the tip links far apart in what they would read.
+class ShippedInferenceOnTheTestHandsPattern : public ShippedInference {
+ protected:
+  static constexpr double kPatternOffset = 0.012;  // m
+  static constexpr std::array<double, 4> kPatternSign = {1.0, 1.0, -1.0, 1.0};
+
+  static const Eigen::Quaterniond& ObjectRotation() {
+    static const Eigen::Quaterniond q(Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX()));
+    return q;
+  }
+
+  /// The contact points, object frame, in the shipped tips' order.
+  static std::array<Eigen::Vector3d, 4> Pattern() {
+    const std::array<const char*, 4> fingers = {"thumb", "index", "middle", "ring"};
+    std::array<Eigen::Vector3d, 4> target{};
+    Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+    for (std::size_t i = 0; i < 4; ++i) {
+      const auto& b = kBracketPos.at(std::string("l_") + fingers[i] + "_tip_bracket");
+      const auto& l = kTipPos.at(std::string("l_") + fingers[i] + "_tip_link");
+      const Eigen::Vector3d bracket = fx::BaseFromBaseLink(Eigen::Vector3d(b[0], b[1], b[2]));
+      const Eigen::Vector3d link = fx::BaseFromBaseLink(Eigen::Vector3d(l[0], l[1], l[2]));
+      const Eigen::Vector3d off = (link - bracket).cross(Eigen::Vector3d::UnitX()).normalized();
+      target[i] = bracket + kPatternSign[i] * kPatternOffset * off;
+      centroid += bracket / 4.0;
+    }
+    std::array<Eigen::Vector3d, 4> pattern{};
+    for (std::size_t i = 0; i < 4; ++i) {
+      pattern[i] = ObjectRotation().inverse() * (target[i] - centroid);
+    }
+    return pattern;
+  }
+
+  void AdjustShippedConfig(YAML::Node& cfg) override {
+    const auto pattern = Pattern();
+    for (std::size_t i = 0; i < 4; ++i) {
+      for (std::size_t c = 0; c < 3; ++c) {
+        cfg["inference"]["reach_gate"]["tips"][i]["contact_obj"][c] =
+            pattern[i][static_cast<Eigen::Index>(c)];
+      }
+    }
+  }
+};
+
+TEST_F(ShippedInferenceOnTheTestHandsPattern,
+       ReachPhaseMeasuresFromTheFingertipBracketsNotTheTipLinks) {
   const auto state = MakePregraspState();
   // First step: object far away, to learn where the observed tip links are.
   InjectObjectInWorld({2.0, 2.0, 2.0}, Eigen::Quaterniond::Identity());
@@ -747,13 +801,12 @@ TEST_F(ShippedInference, ReachPhaseMeasuresFromTheFingertipBracketsNotTheTipLink
     bracket[i] = fx::BaseFromBaseLink(Eigen::Vector3d(b[0], b[1], b[2]));
   }
 
-  // Place the object where the recorded contact points sit closest to the
-  // BRACKETS (the pole upside down, as trained — Rx(pi) in the policy frame):
-  // the least-squares origin for a fixed orientation is the mean of p_i − R·c_i.
-  const Eigen::Quaterniond q_obj(Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX()));
-  const auto contact = [&](std::size_t i) {
-    return Eigen::Vector3d(kC0[i][0], kC0[i][1], kC0[i][2]);
-  };
+  // Place the object where the contact points sit closest to the BRACKETS (the
+  // pole upside down, as trained — Rx(pi) in the policy frame): the
+  // least-squares origin for a fixed orientation is the mean of p_i − R·c_i.
+  const Eigen::Quaterniond q_obj = ObjectRotation();
+  const auto pattern = Pattern();
+  const auto contact = [&](std::size_t i) { return pattern[i]; };
   Eigen::Vector3d p_obj = Eigen::Vector3d::Zero();
   for (std::size_t i = 0; i < 4; ++i) {
     p_obj += bracket[i] - (q_obj * contact(i));
@@ -778,7 +831,7 @@ TEST_F(ShippedInference, ReachPhaseMeasuresFromTheFingertipBracketsNotTheTipLink
   // Invert the gate to recover the distance the controller actually measured:
   // gate = exp(−(d/sigma)²) with no tactile hold armed, so d = sigma·sqrt(−ln gate).
   // Comparing DISTANCES rather than gate values is what makes this test about
-  // the frame: the two candidates are 17.5 mm apart, far outside the oracle's
+  // the frame: the two candidates are 22.8 mm apart, far outside the oracle's
   // own couple of millimetres.
   constexpr double kSigma = 0.030;
   const double d_seen = kSigma * std::sqrt(-std::log(gate));
