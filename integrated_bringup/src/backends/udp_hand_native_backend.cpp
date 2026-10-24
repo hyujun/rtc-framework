@@ -34,21 +34,27 @@ void UdpHandNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   sub_opts.callback_group = state_cb_group;
 
   if (!config_.state_topic.empty()) {
+    // GuardStateLane on all three lanes: CM drains them before destroying the
+    // backend (#941).
     state_sub_ = node->create_subscription<sensor_msgs::msg::JointState>(
         config_.state_topic, qos,
-        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); },
+        GuardStateLane(
+            [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); }),
         sub_opts);
   }
   if (!config_.motor_topic.empty()) {
     motor_sub_ = node->create_subscription<sensor_msgs::msg::JointState>(
         config_.motor_topic, qos,
-        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnMotorState(std::move(msg)); },
+        GuardStateLane(
+            [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnMotorState(std::move(msg)); }),
         sub_opts);
   }
   if (!config_.sensor_topic.empty()) {
     sensor_sub_ = node->create_subscription<rtc_msgs::msg::HandSensorState>(
         config_.sensor_topic, qos,
-        [this](rtc_msgs::msg::HandSensorState::SharedPtr msg) { OnSensorState(std::move(msg)); },
+        GuardStateLane([this](rtc_msgs::msg::HandSensorState::SharedPtr msg) {
+          OnSensorState(std::move(msg));
+        }),
         sub_opts);
   }
   if (!config_.command_topic.empty()) {

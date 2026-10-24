@@ -1813,6 +1813,23 @@ if(BUILD_TESTING)
     rtc_msgs
   )
 
+  # Every state lane of every shipped backend routes through DeviceBackend's
+  # gate: a message delivered after CloseStateLane() changes nothing (#941).
+  ament_add_gtest(test_state_lane_close test/test_state_lane_close.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_state_lane_close
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_state_lane_close
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_manager
+    rtc_base
+    rtc_msgs
+    geometry_msgs
+    sensor_msgs
+  )
+
   # ── Controller-owned RobotTarget cb_group invariant test ───────────────────
   # Spec §0d follow-up to Issue #100: locks that CreateOwnedTopics() routes
   # the controller-owned RobotTarget sub onto the LifecycleNode default
@@ -2013,6 +2030,7 @@ if(BUILD_TESTING)
     test_catching_planner_lane
     test_catching_mpc_role_switch
     test_udp_hand_native_backend
+    test_state_lane_close
     test_controller_target_cb_group_invariant
     test_payload_estimate_topic
     PROPERTIES RESOURCE_LOCK ros_domain_52)
