@@ -189,18 +189,22 @@ TEST(CatchingMpcRoleSwitch, TheTwoSolverThreadsShareTheRoleAndOnlyOneRunsAcrossA
   EXPECT_EQ(ThreadsNamed(name).size(), 2U) << "a switch spawned or lost a solver thread";
 
   // Teardown order mirrors a process exit: the planner joins in its
-  // controller's destructor.
+  // controller's destructor, then the MPC thread in its own. Both are waited
+  // out of /proc so the next case starts with none listed.
   ASSERT_EQ(wbc->on_deactivate(Inactive()), RTControllerInterface::CallbackReturn::SUCCESS);
   catching.ctrl.reset();
   EXPECT_EQ(WaitForThreadsNamed(name, 1).size(), 1U) << "the planner thread outlived its owner";
+  wbc.reset();
+  EXPECT_EQ(WaitForThreadsNamed(name, 0).size(), 0U) << "the MPC thread outlived its owner";
 }
 
 TEST(CatchingMpcRoleSwitch, UnderTheMpcOffProfileThePlannerNeverSpawns) {
   // Mirrors WbcLayoutProfileGate.RefusesMpcEnabledConfigUnderTheOptOutProfile
   // for the second tenant of the role. The count is taken before and after so
-  // a thread left by another case cannot mask a spawn here.
+  // a thread left by another case cannot mask a spawn here; the baseline waits
+  // for a thread another case just joined to leave /proc (ThreadsNamed).
   const std::string name = rtc::SelectThreadConfigs().mpc.main.name;
-  const auto before = ThreadsNamed(name).size();
+  const auto before = WaitForThreadsNamed(name, 0).size();
   auto catching = MakeCatching("r1_mpc_off_catching", DemoWbcController::kMpcOffLayoutProfile);
   EXPECT_EQ(catching.ctrl->on_activate(Inactive()), RTControllerInterface::CallbackReturn::FAILURE);
   EXPECT_EQ(catching.ctrl->GetPlannerThread(), nullptr);

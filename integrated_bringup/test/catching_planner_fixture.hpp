@@ -142,6 +142,12 @@ inline std::map<std::string, rtc::DeviceNameConfig> PlannerSimDevices() {
 // ── /proc thread helpers (Linux) ────────────────────────────────────────────
 
 /// TIDs of this process whose `comm` is exactly `name`.
+///
+/// A thread that was just joined can still be listed for a few ms: join
+/// returns on the CLONE_CHILD_CLEARTID wake, which the kernel sends before it
+/// unlinks the task from /proc (measured up to ~30 ms under load, #942). So a
+/// count taken right after a join — a baseline, or a check that a thread is
+/// gone — goes through WaitForThreadsNamed, not a single ThreadsNamed call.
 inline std::vector<pid_t> ThreadsNamed(const std::string& name) {
   std::vector<pid_t> out;
   for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
