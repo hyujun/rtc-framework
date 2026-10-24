@@ -1,21 +1,35 @@
-// ── Catch-pose IK + catchability judgement (dynamic_catching S1.9) ──────────
+// ── Catch-pose IK + catchability judgement ──────────────────────────────────
 // One call answers "can the arm meet a ball at p_c travelling along v̂, and how
 // well-conditioned is the pose it would have to hold": a 5-row IK onto the
-// catch frame, followed by the manipulability gate L3 §4.2 [확정 D-18] defines.
+// catch frame, followed by a manipulability gate.
 //
 // The 5 rows are 3 translation (LOCAL_WORLD_ALIGNED) + 2 approach-axis
 // (LOCAL x, y). Roll about the palm normal is deliberately NOT constrained —
 // a ball does not care how the hand is spun about its own approach axis — so a
 // 6-DoF arm keeps exactly one free degree of freedom at the solution.
 //
+// Symbols (model world unless noted):
+//   p_c [m]     target catch point;  p_C [m] catch-frame origin at q
+//   a_d         desired approach axis, a_d = −v_ball/‖v_ball‖
+//   a^C         a_d in the catch frame, a^C = R_WCᵀ a_d
+//   e_a^C [rad] rotation vector taking the frame's +z onto a^C
+//               (math::se3::AxisAlignError; ‖e_a^C‖ = θ, the cone angle, and
+//               its z component is zero)
+//   S           selects the x, y rows of e_a^C
+//   e           task residual, e = [p_c − p_C ; S e_a^C]
+//   J₅          5×nv: [J_p (LOCAL_WORLD_ALIGNED) ; x, y rows of J_ω (LOCAL)]
+//   J₆          6×nv: J₅ plus the z (roll) row of J_ω
+//   w₅, w₆      manipulability √det(J₅J₅ᵀ), √det(J₆J₆ᵀ) (unweighted, note 2)
+// A pose meets the task when ‖p_c − p_C‖ < eps_pos and θ ≤ alpha_max.
+//
 // ── What this function is for, and what it is NOT ───────────────────────────
-// It is the SINGLE function both the offline catchability map (S3.5a/b) and the
-// runtime planner (S6.2) call. That is a hard requirement, not a convenience:
-// the map's verdict is only meaningful if runtime reproduces it, so same seed +
-// same inputs + same options must give a bit-identical q*. Everything here that
+// It is the SINGLE function both the offline catchability map and the runtime
+// planner call. That is a hard requirement, not a convenience: the map's
+// verdict is only meaningful if runtime reproduces it, so same seed + same
+// inputs + same options must give a bit-identical q*. Everything here that
 // looks over-specified — no warm start between calls, no internal state
 // carried across Solve(), a deterministic finite-difference gradient — is in
-// service of that (L3 §4.2).
+// service of that.
 //
 // It is NOT a controller. It runs on the planner thread, which may be
 // SCHED_FIFO, so it obeys the RT path rules (RT-1 no heap, RT-2 no throw, RT-3
@@ -24,55 +38,47 @@
 // ── Seven places where the obvious reading is the wrong one ─────────────────
 //
 // 1. ρ WEIGHTS THE TASK, it does not scale the residual alone.
-//    L3 §4.2 prints the update as Δq = Jᵀ(JJᵀ+λ²I)⁻¹·[−(p_C−p_c); ρ·S·e_a^C],
-//    with ρ [m/rad] introduced as "the characteristic length that matches the
-//    two blocks' units under a single λ". Applied to the residual only, that is
-//    dimensionally inconsistent: the rotation rows of J·Δq are in rad while the
-//    rotation rows of the residual would be in m, and ρ would act as a step
-//    GAIN of 0.1 rather than a unit conversion — which also contradicts the
-//    same section's statement that ω^L = e_a^C applied for unit time aligns the
-//    axis EXACTLY in one step. Both properties hold, and ρ has its stated
-//    units, only if ρ weights the task on both sides:
+//    ρ [m/rad] is the characteristic length that brings the two axis rows into
+//    metres, so that one damping / regularisation acts on both blocks:
 //
-//        W = diag(1, 1, 1, ρ, ρ),   Δq = (W J₅)⁺ (W e),
-//        e = [p_c − p_C ; S e_a^C]
+//        W = diag(1, 1, 1, ρ, ρ),   task  W J₅ q̇ ≈ W e   (note 3)
 //
-//    Away from a singularity (λ² = 0) W cancels and the step is the exact
-//    one-step alignment §4.2 describes; near one it is what decides how the
-//    single λ splits damping between the metre block and the radian block,
-//    which is the role §4.2 assigns it. This is a correction of the printed
-//    formula, recorded in L3 §4.2.
+//    Applied to the residual only it would be dimensionally inconsistent (the
+//    rotation rows of J₅q̇ in rad, those of the residual in m) and would act as
+//    a step GAIN of ρ rather than a unit conversion, breaking the one-step
+//    alignment ω = e_a^C over unit time. Weighted on both sides, W cancels
+//    away from a singularity; near one it decides how the damping splits
+//    between the metre block and the radian block.
 //
 // 2. THE MANIPULABILITY MEASURE IS TAKEN ON THE UNWEIGHTED J₅.
-//    w₅ = √det(J₅J₅ᵀ) with J₅ exactly as §4.2 defines it — no W. The gate
-//    threshold (`planner.search.grid.catchability.manipulability_min.arm_5row` = 0.1,
+//    w₅ = √det(J₅J₅ᵀ) — no W. The gate threshold
+//    (`planner.search.grid.catchability.manipulability_min.arm_5row` = 0.1,
 //    provisional) was set against that mixed-unit definition, so weighting J
 //    here would silently move the gate by ρ² while every threshold in YAML
 //    stayed put. The weight belongs to the step, the measure belongs to the
 //    gate, and they are not the same object.
 //
 // 3. THE TASK STEP IS A CONSTRAINED QP, NOT A DAMPED PSEUDO-INVERSE.
-//    L3 §4.2 [확정 D-7d] said to reuse `DifferentialIk` for the whole update.
-//    That is reversed (D-26): q̇_clik comes from
+//    q̇_clik comes from
 //
 //        q̇_clik = argmin ½‖W(J₅q̇ − e)‖² + ½μ‖q̇‖²
 //                  s.t. max(q_min−q, −dq_step_max) ≤ q̇ ≤ min(q_max−q, +dq_step_max)
 //
 //    so the joint limits and the step bound are CONSTRAINTS on the task step
-//    rather than a clamp applied to it afterwards. `DifferentialIk` stays, but
-//    only to form N — the projector belongs to the law, not to the solver.
+//    rather than a clamp applied to it afterwards (a joint already outside its
+//    limit gets a zero-width box). `DifferentialIk` stays, but only to form N
+//    — the projector belongs to the law, not to the solver.
 //
-//    The measurement behind the reversal (2 arms × 500 candidates, D-26):
-//    at μ = 1e-4 the QP accepts slightly more candidates than the DLS step
-//    (99.2% vs 98.8% on the 6R, 98.8% vs 98.2% on the 7R) at the same w₅ and a
-//    comparable residual, for ~22% more time per call. μ is not free: at
-//    μ = 1e-8 the Hessian is near-singular, ProxQP fails to converge on most
-//    iterations, and the whole thing falls back — which is why `mu` is
-//    validated and its provisional default is recorded rather than guessed.
+//    Measured (2 arms × 500 candidates): at μ = 1e-4 the QP accepts slightly
+//    more candidates than the DLS step (99.2% vs 98.8% on the 6R, 98.8% vs
+//    98.2% on the 7R) at the same w₅ and a comparable residual, for ~22% more
+//    time per call. μ is not free: at μ = 1e-8 the Hessian is near-singular,
+//    ProxQP fails to converge on most iterations, and the whole thing falls
+//    back — which is why `mu` is validated and its provisional default is
+//    recorded rather than guessed.
 //
-//    Two things the QP does NOT buy, stated because the plan expected them:
-//    the limits still need a post-hoc clamp (note 4), and determinism needs an
-//    explicit cold start (note 5).
+//    Two things the QP does NOT buy: the limits still need a post-hoc clamp
+//    (note 4), and determinism needs an explicit cold start (note 5).
 //
 // 4. THE CONSTRAINT BOUNDS q̇_clik, BUT q̇_d IS WHAT MOVES.
 //    q̇_d = q̇_clik + q̇_n, and q̇_n is computed outside the QP, so the sum can
@@ -88,14 +94,14 @@
 //    a controller and wrong here: consecutive Solve() calls are DIFFERENT
 //    candidates, so a retained warm start would make each answer depend on
 //    which candidate was tried first and the offline map would stop agreeing
-//    with the runtime planner (L3 §4.2). `ResetWarmStart()` (added to rtc_tsid
-//    for this) is called once per Solve(); iterations WITHIN one Solve() do
-//    warm-start from each other, which is deterministic and wanted.
+//    with the runtime planner. `ResetWarmStart()` is called once per Solve();
+//    iterations WITHIN one Solve() do warm-start from each other, which is
+//    deterministic and wanted.
 //
 // 6. A SINGULAR POSE DOES NOT SHOW UP AS `DifferentialIk::Compute → ok=false`.
 //    J₅J₅ᵀ is positive semi-definite for any real J₅ and Eigen's LLT accepts a
 //    singular one, so a rank-deficient pose returns ok = true with σ_min ≈ 0
-//    (differential_ik.hpp #310). `ok = false` means one thing only: a non-finite
+//    (differential_ik.hpp). `ok = false` means one thing only: a non-finite
 //    J. Rank deficiency is therefore caught where it is actually visible — in
 //    the w computation, by a non-positive or non-finite LDLT pivot — and gets
 //    its own reason code. Reading `ok` as "the pose is fine" would pass every
@@ -117,15 +123,17 @@
 //    second, unreordered one over the same model.
 //
 // ── Maximising w₅ in the null space ─────────────────────────────────────────
-// [확정 D-18] said roll should be left to the seed and that choosing it by
-// manipulability was out of v1 scope. That is reversed (user decision
-// 2026-09-20, L3 §4.2): the step carries a null-space ascent term on
-// log w₅, so the free roll is spent on conditioning instead of on whatever the
-// seed happened to leave.
+// The step carries a null-space ascent term on log w₅, so the free roll is
+// spent on conditioning instead of on whatever the seed happened to leave.
 //
 //     q̇_sec  = k_manip·∇log w₅ + k_null·(q_n − q)     (the secondary task)
 //     q̇_n    = N·q̇_sec                                (a velocity IN the null space)
 //     q̇_d    = q̇_clik + q̇_n                           (what one iteration applies)
+//     q     ← clamp(q + s·q̇_d, q_min, q_max),   s = min(1, dq_step_max/‖q̇_d‖∞)
+//
+// N = I − J⁺J with J = W J₅ and J⁺ its damped pseudo-inverse, λ² by
+// AdaptiveDampingSquared(σ_min(W J₅), sigma0, lambda_max) (DifferentialIk).
+// ∇log w₅ is a central difference with step h = fd_step [rad] per joint.
 //
 // The law is a sum of JOINT VELOCITIES, not one opaque joint step: CLIK's own
 // output is q̇_clik, and the secondary task contributes q̇_n, which the projector
@@ -133,7 +141,8 @@
 // hides exactly the priority N exists to enforce. One iteration integrates q̇_d
 // over Δt = 1 — this is an offline root-finding iteration, not a servo tick, so
 // `dq_step_max` bounds ‖q̇_d‖∞ per iteration and the unit step is the whole
-// integrator.
+// integrator. The iteration stops when the task is met and ‖N∇log w₅‖ <
+// manip_grad_tol (k_manip = 0: as soon as the task is met), or at max_iter.
 //
 // log w₅ rather than w₅: the gradient then grows as the pose approaches a
 // singularity (∇log w = ∇w / w), which is where the push away from it is
@@ -146,19 +155,19 @@
 // determinism requirement above, and it is why the seed is an input rather than
 // something this function picks.
 //
-// k_manip = 0 recovers the original [확정 D-18] behaviour exactly, which is
-// what the k_null-only baseline in the test suite measures against.
+// k_manip = 0 recovers the pure task IK (roll left to the seed) exactly, which
+// is what the k_null-only baseline in the test suite measures against.
 //
 // q_n is the seed AS CLAMPED INTO THE MODEL'S LIMITS, not the raw argument.
-// L3 §4.2 names K_n(q_n − q) without ever defining q_n; with the seed being the
-// wait pose (the one posture the arm is known to rest in), "stay near where you
-// started" is the only posture reference this function has that does not invent
-// a new YAML key. The clamp matters because the first iterate is the clamped
-// seed: keeping the raw one as q_n would make an out-of-limit seed a posture
-// target the arm can never reach, so the term would never decay and would spend
-// every iteration pushing into a bound that the clamp then undoes. Clamped, q_n
-// is a configuration the arm can actually hold and the term vanishes there.
-// k_null defaults to 0, so it is inert unless a caller asks for it.
+// With the seed being the wait pose (the one posture the arm is known to rest
+// in), "stay near where you started" is the only posture reference this
+// function has that does not invent a new YAML key. The clamp matters because
+// the first iterate is the clamped seed: keeping the raw one as q_n would make
+// an out-of-limit seed a posture target the arm can never reach, so the term
+// would never decay and would spend every iteration pushing into a bound that
+// the clamp then undoes. Clamped, q_n is a configuration the arm can actually
+// hold and the term vanishes there. k_null defaults to 0, so it is inert unless
+// a caller asks for it.
 #pragma once
 
 #include "rtc_base/types/types.hpp"
@@ -180,7 +189,7 @@ namespace rtc::catching {
 /// This selects the GATE only. The null-space ascent always climbs w₅,
 /// whichever definition is active, so q* does not depend on this field — which
 /// is what makes w₅ and w₆ at the returned q* two measurements of the same pose
-/// and therefore comparable (C-3). Under kArm6Row the gate is applied
+/// and therefore comparable. Under kArm6Row the gate is applied
 /// to a quantity that was not itself maximised; that is intended, and is the
 /// point of keeping both numbers.
 enum class ManipDefinition : std::uint8_t {
@@ -210,25 +219,24 @@ enum class CatchPoseReason : std::uint8_t {
   kBelowManipMin,       ///< w(definition) < manipulability_min
 };
 
-/// Tuning for one Solve(). Defaults mirror L3 §6 where a key exists there; the
-/// rest are provisional and marked as such in the docs until S3.5a measures
-/// them. The YAML parser (the Q4 this comment used to leave open) is
-/// `ParseCatchPoseIkParams` in catch_pose_ik_params.hpp: the offline map and
+/// Tuning for one Solve(). Defaults are the shipped values; those marked
+/// provisional await measurement on the offline catchability map. The YAML
+/// parser is `ParseCatchPoseIkParams` in catch_pose_ik_params.hpp: the offline map and
 /// the planner binding both obtain this struct from it, so neither resolves a
 /// key on its own.
 struct CatchPoseIkOptions {
-  // ── Acceptance (L3 §4.2) ──────────────────────────────────────────────────
+  // ── Acceptance ────────────────────────────────────────────────────────────
   int max_iter{20};       ///< `planner.search.grid.ik.max_iter`
   double eps_pos{0.002};  ///< `planner.search.grid.ik.eps_pos` [m]
   double alpha_max{
-      0.26};  ///< `planner.search.grid.ik.alpha_max` [rad] — provisional ≈15° (L3 §6 too)
+      0.26};  ///< `planner.search.grid.ik.alpha_max` [rad] — provisional ≈15° until measured
 
-  // ── Step (L3 §4.2) ────────────────────────────────────────────────────────
+  // ── Step ──────────────────────────────────────────────────────────────────
   double rho{0.1};      ///< `planner.search.grid.ik.rho` [m/rad] — task weight, see note 1 above
-  double sigma0{1e-3};  ///< `planner.search.grid.ik.sigma0` — §6.5 damping shell entry
-  double lambda_max{1e-2};  ///< `planner.search.grid.ik.lambda_max` — §6.5 max damping
+  double sigma0{1e-3};  ///< `planner.search.grid.ik.sigma0` — σ₀, damping shell entry of N
+  double lambda_max{1e-2};  ///< `planner.search.grid.ik.lambda_max` — λ_max, max damping of N
   double dq_step_max{0.15};  ///< `planner.search.grid.ik.dq_step_max` [rad] — bound on ‖q̇_d‖∞
-  double mu{1e-4};           ///< `planner.search.grid.ik.mu` — task-QP regularisation, see note 4
+  double mu{1e-4};           ///< `planner.search.grid.ik.mu` — task-QP regularisation, see note 3
   double qp_eps_abs{1e-10};  ///< `planner.search.grid.ik.qp_eps_abs` — QP absolute tolerance
   int qp_max_iter{50};       ///< `planner.search.grid.ik.qp_max_iter` — QP iteration cap
   double k_null{0.0};        ///< `planner.search.grid.ik.k_null` — posture pull toward the seed
@@ -237,10 +245,10 @@ struct CatchPoseIkOptions {
       1e-4};  ///< `planner.search.grid.ik.manip_grad_tol` — ascent stop on ‖N∇log w₅‖
   double fd_step{1e-5};  ///< central-difference step h [rad] for ∇log w₅
 
-  // ── Input defence (NUM-7, L3 §4.2) ────────────────────────────────────────
+  // ── Input defence (NUM-7) ─────────────────────────────────────────────────
   double v_eps{1e-6};  ///< `planner.search.grid.ik.v_eps` [m/s] — floor on ‖v̂‖ before normalising
 
-  // ── Gate (L3 §4.2 [확정 D-18]) ────────────────────────────────────────────
+  // ── Gate ──────────────────────────────────────────────────────────────────
   ManipDefinition definition{ManipDefinition::kArm5Row};
   double manipulability_min{0.1};  ///< threshold for `definition`; mixed-unit, see note 2
 };
@@ -262,20 +270,20 @@ struct CatchPoseIkResult {
   double pos_error{0.0};  ///< ‖p_c − p_C‖ at q* [m]
   double theta{0.0};      ///< ‖e_a^C‖ at q* [rad] — the approach-axis cone angle
   double w5{0.0};         ///< √det(J₅J₅ᵀ) at q*, UNWEIGHTED (note 2)
-  double w6{0.0};         ///< √det(J₆J₆ᵀ) at q* — recorded for C-3 even when unused
+  double w6{0.0};         ///< √det(J₆J₆ᵀ) at q* — recorded even when the gate uses w₅
   bool w5_valid{false};   ///< the w₅ factorisation stayed finite and positive
   bool w6_valid{false};   ///< likewise for w₆
 
   /// False when the ascent was still improving w₅ at the iteration limit. NOT a
   /// rejection: a pose that meets the task is acceptable whether or not its
   /// conditioning had stopped climbing. It is the signal that max_iter is too
-  /// small, which is exactly what G3-G is meant to measure.
+  /// small.
   ///
   /// It is false for BOTH reasons the ascent can fail to settle — still
   /// climbing, and the gradient probe never produced a usable direction. Those
   /// are told apart by `manip_grad_failures`, not by this flag: an unusable
   /// probe leaves `manip_grad_norm` at 0, and reading that zero as "converged"
-  /// would make the G3-G signal report the exact opposite of what happened.
+  /// would make that signal report the exact opposite of what happened.
   bool manip_converged{false};
   double manip_grad_norm{0.0};  ///< ‖N ∇log w₅‖ at the final iterate
   int manip_grad_failures{0};   ///< iterations whose ∇log w₅ probe was unusable
@@ -300,7 +308,7 @@ namespace detail {
 /// Logs rather than the determinant itself: the ascent differentiates log w, and
 /// a product of five or six pivots underflows to zero for a w that is small but
 /// perfectly legitimate. `valid == false` is the rank-deficiency signal — see
-/// note 3 in the file header for why it cannot come from DifferentialIk.
+/// note 6 in the file header for why it cannot come from DifferentialIk.
 struct LogManip {
   double log_w{0.0};
   bool valid{false};
@@ -311,8 +319,8 @@ struct LogManip {
 /// Catch-pose IK and catchability gate for one candidate.
 ///
 /// Pre-allocated once with Resize(); every Solve() after that is heap-free,
-/// noexcept and silent. Holds no state between calls by design (determinism,
-/// L3 §4.2) — the buffers are scratch, never warm-start data.
+/// noexcept and silent. Holds no state between calls by design (determinism)
+/// — the buffers are scratch, never warm-start data.
 class CatchPoseIk {
  public:
   /// Size the buffers for an nv-DoF arm model. Off-RT (lifecycle / map setup):
@@ -323,19 +331,19 @@ class CatchPoseIk {
 
   /// Solve for the catch pose and judge it.
   ///
-  /// @param model       arm sub-model handle (Q1: `GetReducedModel("arm")`, catch
+  /// @param model       arm sub-model handle (`GetReducedModel("arm")`, catch
   ///                    frame included). Mutated — its Data holds this call's FK.
   ///                    The handle is the caller's; it must not be shared with
   ///                    another thread for the duration.
   /// @param catch_frame frame id of the catch frame in `model`, local +z being
-  ///                    the palm outward normal [확정 D-17].
-  /// @param p_c         target position in MODEL WORLD coordinates [m] (Q2: any
+  ///                    the palm outward normal.
+  /// @param p_c         target position in MODEL WORLD coordinates [m] (any
   ///                    base→world transform is the caller's job).
   /// @param v_ball      ball velocity at the candidate instant, model world [m/s].
   ///                    The approach axis is a_d = −v_ball/‖v_ball‖; this takes
   ///                    the raw velocity so the ‖v̂‖ ≥ v_eps defence happens here
   ///                    rather than in each caller (NUM-7).
-  /// @param q_seed      seed, nv entries — the wait pose [확정 D-18]. Clamped
+  /// @param q_seed      seed, nv entries — the wait pose. Clamped
   ///                    into the model's limits on entry; that clamped vector is
   ///                    both the first iterate and the posture reference q_n.
   /// @param opt         tuning; rejected as kOptionsInvalid if unusable.

@@ -1,7 +1,4 @@
 // ── MPC segment planner: the APPROACH–stop segments, on the planner thread ─────────
-// (dynamic_catching MPC plan E1-F03 #629 · E1-F08 #661; decisions MD-24 –
-// MD-33, MD-55 – MD-64, MD-70)
-//
 // The SegmentPlanner (segment_planner.hpp) PlannerCycle runs once a segment MPC
 // is configured — the one implementation of that interface today: solve the
 // joint-node segment the RT follows from APPROACH to the end of the stop
@@ -14,7 +11,7 @@
 // the plan's catch instant (MakeMpcSegmentBallTarget). The entry points that take
 // that value directly remain — the planner's own tests call them.
 //
-// ── The grid and the stop end (MD-10, MD-31, MD-54) ───────────────────────────
+// ── The grid and the stop end ─────────────────────────────────────────────────
 // Nodes sit on t_c − j·Δ_pre (pre-catch, j ≤ n_pre_max) and t_c + k·Δ_s
 // (stop), t_c the catch instant of the plan the segment belongs to. The stop
 // ends at t_c + N_s·Δ_s wherever a segment starts: a segment that starts at
@@ -23,7 +20,7 @@
 // from a later start would push the end out on every replan). Post-catch
 // replans happen only for k ≤ k_max.
 //
-// ── The two solves (MD-55 – MD-64) ────────────────────────────────────────────
+// ── The two solves ────────────────────────────────────────────────────────────
 //  • PlanFirst — the search's wake, for the plan it is about to publish.
 //    n_pre = min(n_pre_max, ⌊(t_c − now_lead − first − 2h)/Δ_pre⌋) ≥ 1
 //    (else kTooLate), t_c the NEW plan's; p̂_b, v̂_b, a_d are the plan's, Σ_p
@@ -33,9 +30,12 @@
 //        rest_tol, else kNotAtRest) — before a plan the RT reports the measured
 //        pose with no command behind it (cmd_seeded false), which is where it
 //        seeds the command on adoption. x₀ = (q_cmd, 0, 0); the reference is a
-//        per-joint minimum-jerk reach to q_star (clamped to the core's box,
-//        its peak capped at ref_speed_fraction·η_v·q̇_max — may be over the
-//        box, #819), held from the catch node on.
+//        per-joint minimum-jerk reach to q_star, held from the catch node on:
+//          q̄_k = q_0 + Δq (10s³ − 15s⁴ + 6s⁵),  s = min(k, n_pre)/n_pre,
+//        over T = n_pre·Δ_pre, Δq = clamp(q_star) − q_0 (q_star clamped to the
+//        core's box), |Δq| cut to ref_speed_fraction·η_v·q̇_max·T/1.875 (the
+//        reach's peak speed is 1.875|Δq|/T; ref_speed_fraction may exceed 1,
+//        so the reach may run over the velocity box).
 //      – A PLAN FOLLOWED (rt.plan_active): the segment is the first of that
 //        plan's REPLACEMENT, and the arm is moving. x₀ = (q, q̇, q̈) is the
 //        segment the RT reports pending or following (SourceSeq at node 0's
@@ -60,18 +60,26 @@
 //  • Publishable only when every check holds, each written as a positive
 //    comparison so a NaN fails: solved, within its budget (measured from the
 //    start of THIS solve, not from the wake), before t_eff on the lead axis,
-//    slack (MD-33), the catch-node position error (catch cores), the velocity
+//    slack (publish.slack_max / slack_terminal_max), the catch-node position
+//    error (catch cores, publish.catch_pos_err_max), the velocity
 //    extrema between nodes (≤ q̇_max), node N at rest to the core's reference
 //    tolerance (a published segment is the next solve's reference), and the
 //    packed payload passing ValidateSegmentNodes. The relative-velocity slack
 //    s_v (`catch.rho_v` > 0) is NOT among them: it is recorded
 //    (SegmentRecord::slack_v) and never judged — no threshold is defined for
 //    it, and with γ_ref < 1 it is above 0 by construction.
+//  • Catch inputs (SetCatchInputs): p̂_b, v̂_b, a_d as above, γ_ref, and from
+//    the ball's Σ_p [m²] the weight W_p = CatchPositionWeight(Σ_p; κ,
+//    σ_floor, w_max) and λ_Δ = w_delta_scale = clamp(tr Σ_p / σ_ref², 0, 1)
+//    (MpcSegmentCore's "stay near x̄" term). Without
+//    a usable Σ_p (sigma_valid false, a non-finite ratio, or the weight
+//    refused): W_p = w_const·I and λ_Δ = 1 (SegmentRecord::w_p_fallback). A
+//    first solve takes λ_Δ = 0 whatever Σ_p is.
 //
-// There is no stop-only planner (MD-70): a plan is published only with a
+// There is no stop-only planner: a plan is published only with a
 // first segment that starts before t_c, so Configure refuses n_pre_max < 1.
 //
-// ── The stop-path line (`cost.w_perp` > 0; #698) ──────────────────────────────
+// ── The stop-path line (`cost.w_perp` > 0) ────────────────────────────────────
 // With w_⊥ > 0 the cores penalise, on the nodes from the catch on, the catch
 // frame's distance from a line (MpcSegmentCoreInput::p_c, d_hat). The planner fills
 // that line on every solve; none runs on the input's default (origin, x).
@@ -97,7 +105,7 @@
 // With w_⊥ = 0 no core reads a line and no solve is withheld for one: the
 // cores' inputs keep their default.
 //
-// ── The record of the stop (every solve, whatever w_⊥ is; #713) ───────────────
+// ── The record of the stop (every solve, whatever w_⊥ is) ─────────────────────
 // The planner builds the same line on every solve and keeps it beside every
 // published segment — with w_⊥ = 0 too, where only the record reads it. A solve
 // that reached a solution is measured against it (SegmentRecord::stop_line_*,
@@ -110,7 +118,7 @@
 // A solve without a line (no direction; a stop core whose source carries none)
 // records NaN and, with w_⊥ = 0, solves as it always did.
 //
-// ── The closing-window path (`cost.w_path`; #716, formulation §1.6) ───────────
+// ── The closing-window path (`cost.w_path`) ───────────────────────────────────
 // The hand closes over [t_cmd, t_cmd + T_close,tot], t_cmd = t_c − T_close_lead
 // (the hand sequencer's rule, unchanged), and the hand should be on the ball's
 // path while it does. A catch core's pre-catch node k (1..n_pre − 1) is in that
@@ -134,17 +142,17 @@
 //    many were on, path_window how many the core has).
 //  • This work is inside the solve's budget clock. The record measures the
 //    solution's catch frame against each node's line (path_dev_max /
-//    path_dev_mean), whatever w_path is, as the stop line is (#713).
+//    path_dev_mean), whatever w_path is, as the stop line is.
 //
 // ── Contracts ─────────────────────────────────────────────────────────────────
 //  • Configure() is non-RT: it Inits the k_max + 1 stop cores and the
-//    n_pre_max catch cores (armature ZERO — MD-25: armature is not used in
+//    n_pre_max catch cores (armature ZERO: armature is not used in
 //    control), sizes every buffer, and solves each core once (a warm-up:
 //    ProxQP's first solve is the slowest); a warm-up that fails fails the
 //    configure.
 //  • PlanFirst() / Replan() are noexcept, log nothing, throw nothing, and
-//    allocate nothing outside ProxQP (MD-22 / MD-23 — ProxQP's own mallocs
-//    are a recorded RT-1 violation, #654).
+//    allocate nothing outside ProxQP (ProxQP's own mallocs are a recorded
+//    RT-1 violation).
 //  • Joint order: the RT speaks DEVICE order (PlannerRtState, the payload);
 //    the cores speak the model's pinocchio velocity order. The mapping is
 //    `device_of_model`, as for the search.
@@ -201,11 +209,11 @@ struct MpcSegmentPlannerModel {
   std::array<double, kMaxPlanNv> q_max{};     ///< [rad]
   std::array<double, kMaxPlanNv> qdot_max{};  ///< [rad/s], device ratings
   std::array<double, kMaxPlanNv> tau_max{};   ///< [N·m], device ratings
-  /// `planner.groups` resolved on the arm device (E3-F02); its group count
+  /// `planner.groups` resolved on the arm device; its group count
   /// must be the profile's (params.n_groups). No group = n_groups 0.
   JointGroups groups{};
   /// `planner.wait_pose` [rad], DEVICE order, rest_pose_n entries (0 = not
-  /// given): the posture a group's `w_rest` holds its joints near (E3-F02).
+  /// given): the posture a group's `w_rest` holds its joints near.
   std::array<double, kMaxPlanNv> rest_pose{};
   int rest_pose_n{0};
 };
@@ -226,7 +234,7 @@ struct MpcSegmentPlannerConstants {
 };
 
 /// The ball at a plan's catch instant as the solves take it
-/// (MD-63), MODEL world. `valid` covers p_b / v_b / a_d; `sigma_valid` the
+/// MODEL world. `valid` covers p_b / v_b / a_d; `sigma_valid` the
 /// position covariance, which only weights the position term.
 struct MpcSegmentBallTarget {
   bool valid{false};
@@ -238,7 +246,7 @@ struct MpcSegmentBallTarget {
 };
 
 /// @brief Whether a node trajectory's joint velocity stays within q̇_max
-///        BETWEEN its nodes too (RT-safe, pure; MD-62).
+///        BETWEEN its nodes too (RT-safe, pure).
 ///
 /// The QP bounds q̇ at the nodes only (by η_v·q̇_max). Between nodes k and
 /// k+1 q̇ is quadratic with an interior extremum only where q̈ changes sign,
@@ -266,7 +274,7 @@ struct MpcSegmentStopDeviation {
 };
 
 /// @brief The catch frame's distance from a line over the nodes
-///        `k_first`..`k_last` of a node trajectory (RT-safe; #713).
+///        `k_first`..`k_last` of a node trajectory (RT-safe).
 ///
 /// FK of each column of `q` on `data` (scratch — its contents are replaced).
 /// The distance is from the line through `p` along the unit `d`; `along_end`
@@ -302,7 +310,7 @@ class MpcSegmentPlanner final : public SegmentPlanner {
 
   /// @brief Build the k_max + 1 stop cores and the n_pre_max catch cores and
   ///        warm each up (non-RT). On failure — `params.n_pre_max` < 1
-  ///        included (MD-70) — the planner is unconfigured and `error` (if
+  ///        included — the planner is unconfigured and `error` (if
   ///        given) names the cause.
   [[nodiscard]] bool Configure(const MpcSegmentPlannerModel& model,
                                const MpcSegmentPlannerConstants& consts,
@@ -312,7 +320,7 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   [[nodiscard]] bool Configured() const noexcept { return configured_; }
 
   /// Replace the clock (tests pin it; the cycle forwards its own). Every core
-  /// reads its solve's deadline on it (#887).
+  /// reads its solve's deadline on it.
   void SetClock(ClockFn clock) noexcept override {
     if (clock != nullptr) {
       clock_ = clock;
@@ -328,7 +336,7 @@ class MpcSegmentPlanner final : public SegmentPlanner {
 
   [[nodiscard]] int Nv() const noexcept { return nv_; }
 
-  /// The joint group of model joint m (E3-F02); 0 without groups.
+  /// The joint group of model joint m; 0 without groups.
   [[nodiscard]] int GroupOfModel(int m) const noexcept {
     return m < 0 || m >= nv_ ? -1 : group_of_model_[static_cast<std::size_t>(m)];
   }
@@ -339,8 +347,8 @@ class MpcSegmentPlanner final : public SegmentPlanner {
     return *cores_[static_cast<std::size_t>(k)];
   }
 
-  /// @brief The first segment of a plan the search just produced (RT-safe;
-  ///        MD-56). With no plan followed the arm rests at the reported
+  /// @brief The first segment of a plan the search just produced (RT-safe). With no plan followed
+  /// the arm rests at the reported
   ///        command and the reference is a minimum-jerk reach to the plan's
   ///        q_star over the pre-catch part; with one followed
   ///        (`rt.plan_active`) the start is the reported segment at node 0's
@@ -373,7 +381,7 @@ class MpcSegmentPlanner final : public SegmentPlanner {
                                const BallPrediction& ball, const CatchSolution* solution,
                                SegmentSnapshot& out, SegmentRecord& rec) noexcept override;
 
-  /// @brief A later segment of the plan the RT follows (RT-safe; MD-58): the
+  /// @brief A later segment of the plan the RT follows (RT-safe): the
   ///        grid point the replan budget reaches, solved from the segment the
   ///        RT reports pending or following (SourceSeq).
   /// @param ball the ball at rt.plan_t_c_ns; read at pre-catch grid points
@@ -469,7 +477,7 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   /// profile's `linearization.reference_rest_tol` (tests and diagnostics).
   [[nodiscard]] double ReferenceRestTol() const noexcept { return rest_tol_ref_; }
 
-  /// The slowest and the summed configure-time warm-up solve [ns] (MD-64):
+  /// The slowest and the summed configure-time warm-up solve [ns]:
   /// each is a core's FIRST solve, the one a trial would otherwise pay for.
   [[nodiscard]] std::int64_t WarmUpMaxNs() const noexcept { return warmup_max_ns_; }
 
@@ -550,7 +558,7 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   double rest_tol_ref_{1e-4};          // the profile's linearization.reference_rest_tol
   Eigen::VectorXd jerk_weight_model_;  // cost.jerk_weight in model order; empty = all 1
   // The groups' w_vel / w_rest spread over their joints and the rest posture,
-  // model order (E3-F02); empty when every group's weight is 0.
+  // model order; empty when every group's weight is 0.
   Eigen::VectorXd w_vel_model_, w_rest_model_, q_rest_model_;
   std::int64_t warmup_max_ns_{0};
   std::int64_t warmup_total_ns_{0};

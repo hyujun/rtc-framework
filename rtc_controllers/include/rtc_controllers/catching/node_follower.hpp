@@ -1,6 +1,6 @@
-// ── RT sampler of the segment MPC's joint nodes (MPC plan E1-F02, #628) ────────
+// ── RT sampler of the segment MPC's joint nodes ─────────────────────────────────
 //
-// The planner publishes the stop segment as joint NODES only (MD-9) in a
+// The planner publishes the stop segment as joint NODES only in a
 // SegmentSnapshot (trajectory.hpp). This class is the RT side of that
 // payload: at an instant on the lead axis it evaluates the joint reference
 // q_ref, q̇_ref, q̈_ref in closed form between nodes (jerk_segment.hpp — exact
@@ -14,15 +14,14 @@
 // LOCAL_WORLD_ALIGNED), which IS ᵂJ_C q̇ without forming the Jacobian. The axes
 // are the ones ClikReferenceGenerator's twist_ff and PositionAxisTarget use.
 //
-// WHAT THIS DOES NOT CLAIM (MD-30). With q_c = q_ref the CLIK's hand task is
+// WHAT THIS DOES NOT CLAIM. With q_c = q_ref the CLIK's hand task is
 // satisfied by v* = q̇_ref, and so is its posture term once it is given q̇_ref
 // as well. The FK consistency above is what this sampler guarantees; feeding
 // q_ref and q̇_ref to the CLIK's posture row (its goal and its velocity
-// feed-forward, MD-36) is the RT caller's.
+// feed-forward) is the RT caller's.
 //
 // WIRING. The catching controller under `planner.segment.mode: mpc`:
-// Sample() on every tick that follows a segment — APPROACH through HOLD
-// (E1-F09).
+// Sample() on every tick that follows a segment — APPROACH through HOLD.
 //
 // RT CONTRACT. Init() is non-RT (copies nothing heavy: shares the model, owns
 // its own pinocchio::Data, sizes every buffer). Sample() is noexcept,

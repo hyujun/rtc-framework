@@ -1,17 +1,14 @@
 // ── NLP catch search: the candidate lattice, the necessary conditions and the
 //    outer cost, as pure functions ─────────────────────────────────────────────
-// (dynamic_catching E1-F14, #740; reference
-//  docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md §8.4, §9.5,
-//  §11.1, §11.3, §17.11)
 //
 // What NlpCatchSearch (nlp_catch_search.hpp) decides about a candidate catch
 // instant BEFORE it spends a solve on it, and the two terms it adds to the
 // solve's cost afterwards. Free functions of scalars and spans — no model, no
-// solver, no state — so that each inequality is tested against the reference's
-// formula on its own, and so that an offline map of "which throws does the
-// search accept" calls exactly what the search calls.
+// solver, no state — so that each inequality is tested on its own, and so
+// that an offline map of "which throws does the search accept" calls exactly
+// what the search calls.
 //
-// ── The lattice (§11.1) ───────────────────────────────────────────────────────
+// ── The lattice ───────────────────────────────────────────────────────────────
 // Candidates sit on a lattice of ABSOLUTE instants, t_c(i) = t_ref + i·h, fixed
 // for one catch attempt: a candidate keeps its index from wake to wake, which
 // is what lets a wake start a candidate's solve from that candidate's previous
@@ -30,12 +27,12 @@
 // All of it is integer nanoseconds — the same arithmetic on the same integers
 // wherever it is repeated.
 //
-// ── The necessary conditions (§11.3) ──────────────────────────────────────────
+// ── The necessary conditions ──────────────────────────────────────────────────
 // Each is NECESSARY: passing proves nothing, failing removes the candidate.
-//   (S4) reach. From (q_0, v_0) the catch pose q^c of the IK cannot be reached
+//   Reach. From (q_0, v_0) the catch pose q^c of the IK cannot be reached
 //        in T under |q̇| ≤ v_max unless |q^c − q_0| ≤ v_max·T, nor under
 //        |q̈| ≤ a_max unless |q^c − q_0 − v_0·T| ≤ ½ a_max·T².
-//   (S3) closing-speed window. The timing chance constraint wants the ball to
+//   Closing-speed window. The timing chance constraint wants the ball to
 //        cross fast, the impact limits want it slow; with both bounds taken at
 //        the IK pose the window max{c_min, c_t,lo} ≤ c ≤ min{c_cap,max, c_n,hi}
 //        must not be empty.
@@ -120,7 +117,7 @@ struct NlpCandidateGrid {
   return {static_cast<int>(n), t_s, t_s - t_0_ns};
 }
 
-// ── (S4) Reach ────────────────────────────────────────────────────────────────
+// ── Reach ─────────────────────────────────────────────────────────────────────
 
 /// Which of the two reach conditions a joint failed.
 enum class NlpReachLimit : std::uint8_t {
@@ -137,7 +134,7 @@ struct NlpReachVerdict {
   [[nodiscard]] constexpr bool Reachable() const noexcept { return limit == NlpReachLimit::kNone; }
 };
 
-/// @brief The reference's reach conditions (§11.3 S4), joint by joint.
+/// @brief The reach conditions, joint by joint.
 /// @param q_c the catch pose [rad]
 /// @param q_0 where the motion starts [rad]
 /// @param v_0 the velocity it starts with [rad/s]
@@ -168,7 +165,7 @@ struct NlpReachVerdict {
   return {};
 }
 
-// ── (S3) Closing-speed window ─────────────────────────────────────────────────
+// ── Closing-speed window ──────────────────────────────────────────────────────
 
 /// What the closing-speed window is built from, all evaluated at the IK pose.
 struct NlpSpeedWindowInput {
@@ -198,7 +195,11 @@ struct NlpSpeedWindow {
   bool empty{true};  ///< lo > hi, or a term could not be evaluated
 };
 
-/// @brief The closing-speed window of the reference's §8.4 (RT-safe).
+/// @brief The closing-speed window (RT-safe):
+///   lo = max{c_min, c_t,lo}, c_t,lo = σ_s / √(σ_max² − σ_τ²)   (timing rows)
+///   hi = min{c_cap,max, c_n,hi}, c_n,hi = min{√(2E_max/m_red), P_max/((1 + e)·m_red)}
+///                                                               (impact rows)
+/// c [m/s] the closing speed at the catch.
 /// @return `empty` true when lo > hi, and also when a term that is in force
 ///         cannot be evaluated: σ_max ≤ σ_τ (the latency jitter alone already
 ///         breaks the timing requirement), m_red not positive, or a NaN.
@@ -236,7 +237,7 @@ struct NlpSpeedWindow {
   return w;
 }
 
-// ── The outer cost (§9.5) ─────────────────────────────────────────────────────
+// ── The outer cost ────────────────────────────────────────────────────────────
 
 /// @brief J_time = w_T · T / T_ref: a mild preference for the earlier catch.
 /// @param t_ref_s T_ref > 0 [s] (the caller validates it once)

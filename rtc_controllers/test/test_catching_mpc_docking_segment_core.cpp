@@ -1,4 +1,4 @@
-// mpc_docking numeric core (E1-F13, #739) — the SQP on synthetic throws.
+// mpc_docking numeric core — the SQP on synthetic throws.
 //
 // Feasible cases are CONSTRUCTED (mpc_docking_fixture.hpp): a trajectory inside
 // every limit exists by construction, so "the solver did not converge" can
@@ -57,7 +57,7 @@ using rtc::catching::ValidateSegmentNodes;
 namespace fx = rtc::testing::mpc_segment_core;
 namespace dk = rtc::testing::mpc_docking;
 
-// Sprint Contract thresholds (#739) — judged on values recomputed OUTSIDE the
+// Thresholds — judged on values recomputed OUTSIDE the
 // core. The core's own tol_violation (1e-6, BaseParams) is tighter on purpose.
 constexpr double kViolationTol = 1e-5;
 constexpr double kTerminalRestTol = 1e-6;
@@ -665,7 +665,7 @@ TEST(MpcDockingSegmentCore, SolutionRoundTripsThroughThePayloadAndTheRtSampler) 
   // device_of_model[m]: a non-identity permutation, so a copy that skipped
   // the mapping would be seen.
   const std::array<int, 7> device_of_model{2, 0, 5, 1, 4, 3, 6};
-  // E3-F02 (#641): and with two joint groups on partitions of their own — the
+  // And with two joint groups on partitions of their own — the
   // payload carries nodes, so whatever blocks made them must not show.
   for (const bool two_groups : {false, true}) {
     for (dk::Rig rig : Rigs()) {
@@ -2458,7 +2458,7 @@ TEST(MpcDockingSegmentCore, RecordsSolveTimeByArmAndGrid) {
 #endif
 }
 
-// ── The catch instant as a variable (E1-F14 PR 2, #740) ──────────────────────
+// ── The catch instant as a variable ──────────────────────────────────────────
 // A core with catch_time_variable on a throw whose catch instant the test
 // knows: MakeThrow's constructed trajectory catches the ball at `t_true_ns`,
 // the prediction is that ball's (under gravity), and the core is anchored
@@ -3581,7 +3581,7 @@ TEST(MpcDockingSegmentCoreCatchTime, EveryStageOutsideTheSolverAllocatesNothing)
   }
 }
 
-// ── The core as it is, pinned bit for bit (E1-F14 PR 2, #740) ────────────────
+// ── The core as it is, pinned bit for bit ────────────────────────────────────
 // The catch instant becomes a variable of this core (δt_c). A core that leaves
 // it off must stay the core it was: same dimensions, same code path, same
 // bits. These digests were taken BEFORE that change, over every way a solve
@@ -3848,7 +3848,7 @@ std::vector<PinnedSolve> PinnedSolves() {
 }
 
 /// PinnedSolves()' digests on the code BEFORE the catch instant became a
-/// variable of the core (E1-F14 PR 2). Numbers to compare against, tied to
+/// variable of the core. Numbers to compare against, tied to
 /// where they were taken — the rule of kWholeCatchDigest
 /// (test_catching_approach_cycle.cpp): a change MEANT to alter what the core
 /// without δt_c computes replaces them in a commit of its own that says why; a

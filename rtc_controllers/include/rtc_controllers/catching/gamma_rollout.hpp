@@ -1,37 +1,41 @@
-// ── γ rollout: choosing (γ_f, T_w) by simulating the reference (L3 §4.8, S6-C) ──
+// ── γ rollout: choosing (γ_f, T_w) by simulating the reference ──────────────
 //
-// For one candidate the planner runs the L4 soft-catch reference WITHOUT
-// saturation, on the RT's own time axis (now_lead = now + T_arm, L0 §4.5),
-// against the target the RT will see — the vision snapshot sampled by
-// `SampleAt`, the same function the tick calls. It records the peak demanded
-// acceleration ‖u_des‖ (pre-saturation, L4 §5.2) and speed ‖ẋ‖, and the error
+// For one candidate the planner runs the soft-catch reference
+// (SoftCatchTranslation) WITHOUT saturation, on the RT's own time axis
+// (now_lead = now + T_arm), against the target the RT will see — the vision
+// snapshot sampled by `SampleAt`, the same function the tick calls. γ_f is the
+// final velocity-matching ratio, reached by a ramp g0 → γ_f over the window
+// [t_c − T_w, t_c]. It records the peak demanded acceleration ‖u_des‖
+// (pre-saturation) [m/s²] and speed ‖ẋ‖ [m/s], and the error
 // ‖e(t_c)‖ at the catch instant. A combination is ACCEPTED when
 //
-//     max‖u_des‖ ≤ η_a a_max,   max‖ẋ‖ ≤ η_v v_max,   ‖e(t_c)‖ ≤ ε_term.
+//     max‖u_des‖ ≤ η_a a_max,   max‖ẋ‖ ≤ η_v v_max,   ‖e(t_c)‖ ≤ ε_term
 //
-// Among accepted combinations the largest γ_f wins (soft catch, §4.10); on a
+// (a_max, v_max the reference limits, η_a, η_v ≤ 1 margins, ε_term [m]).
+// Among accepted combinations the largest γ_f wins (the softest catch); on a
 // tie, the smaller peak acceleration. If none is accepted, γ_min is tried once
-// more on its own (§4.8) — and if that fails too the rollout FAILS, which under
-// D-27 is a RANK failure (a penalty), not a removal (decision C).
+// more on its own — and if that fails too the rollout FAILS, which is a RANK
+// failure (a penalty), not a removal of the candidate.
 //
-// WHOLE INTERVAL vs WINDOW (S6-C finding). §4.8 judges the whole interval
+// WHOLE INTERVAL vs WINDOW. The verdict judges the whole interval
 // [now_lead, t_c], and that is kept as the verdict. But the approach phase —
 // the reference pulled from where the arm is toward p_c with γ = 0 — demands
 // ω²·‖x0 − p_c‖ (≈ 50 m/s² for 0.5 m at ω = 10) whatever γ_f is, so for any
 // real move every combination fails the whole-interval test and the choice of
 // γ_f would carry no information. When nothing passes whole, γ_f is chosen by
 // the same rule on the WINDOW peaks (inside [t_c − T_w, t_c], where γ acts —
-// the L3 table's own measure) and the verdict stays "failed" (the approach
-// will saturate: that is what the rank penalty and G3-E's sim count report).
+// RolloutPeaks::u_max_window) and the verdict stays "failed" (the approach
+// will saturate: that is what the rank penalty and the sim's saturation count
+// report).
 //
-// COARSE TO FINE (the budget, §4.8 "연산 예산"). Every combination is screened
+// COARSE TO FINE (the compute budget). Every combination is screened
 // at `dt_coarse`; only the winner is re-run at the control period to confirm.
 // The grid is the caller's (`planner.search.grid.gamma.grid`, `window_grid`).
 //
 // The screen judges the PEAKS only; ‖e(t_c)‖ is judged by the confirmation.
 // Semi-implicit Euler at the coarse step lags a moving target by about γ‖v‖·dt
-// — 3–11 mm at 10 ms on the G3-C throws against 0.2–1.5 mm at the control
-// period, with the peaks within 3 % of each other (2026-09-23). Judged coarse,
+// — 3–11 mm at 10 ms on the planner timing-test throws against 0.2–1.5 mm at
+// the control period, with the peaks within 3 % of each other. Judged coarse,
 // ε_term = 2 mm refused every soft catch on its own discretisation error.
 //
 // Allocation-free and noexcept (the planner may run SCHED_FIFO).
@@ -57,7 +61,7 @@ namespace rtc::catching {
 struct RolloutPeaks {
   double u_max{0.0};         ///< max ‖u_des‖ over [start, t_c] [m/s²]
   double v_max{0.0};         ///< max ‖ẋ‖ over [start, t_c] [m/s]
-  double u_max_window{0.0};  ///< the same, inside the γ window only (L3 §4.8 table)
+  double u_max_window{0.0};  ///< the same, inside the γ window [t_c − T_w, t_c] only
   double v_max_window{0.0};
   double e_term{std::numeric_limits<double>::infinity()};  ///< ‖e(t_c)‖ [m]
   int steps{0};
@@ -120,7 +124,7 @@ struct RolloutPeaks {
   return out;
 }
 
-/// Acceptance thresholds (L3 §4.8) and the grids.
+/// Acceptance thresholds (file header) and the grids.
 struct RolloutSettings {
   double a_max{0.0};       ///< `planner.search.grid.reference.a_max` [m/s²]
   double v_max{0.0};       ///< `planner.search.grid.reference.v_max` [m/s]
@@ -171,7 +175,7 @@ struct RolloutChoice {
 }
 
 /// Choose (γ_f, T_w) for one candidate over the grid restricted to
-/// [g_min, g_max] (§4.8). `accepted` false is the caller's RANK failure; on
+/// [g_min, g_max]. `accepted` false is the caller's RANK failure; on
 /// that path `gamma_f` is the window-rule choice if one exists, else γ_min
 /// (clipped to [0, 1]) with the longest window — the least the hand needs.
 [[nodiscard]] inline RolloutChoice ChooseGamma(
@@ -225,7 +229,7 @@ struct RolloutChoice {
     }
   }
   if (!whole.found && !window.found && lo <= hi) {
-    // §4.8: nothing on the grid — try γ_min itself once.
+    // Nothing on the grid — try γ_min itself once.
     best.tried_min = true;
     for (const double tw : s.window_grid) {
       consider(lo, tw);

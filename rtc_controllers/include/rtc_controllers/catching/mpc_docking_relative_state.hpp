@@ -1,6 +1,4 @@
 // ── mpc_docking: the ball in the capture frame, and every row built from it ────
-// (dynamic_catching E1-F13, #739; reference
-//  docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md §5–§9, §17)
 //
 // One node's nonlinear outputs and their first derivatives with respect to the
 // joint position q and velocity q̇, exposed as free functions so a test checks
@@ -40,7 +38,7 @@
 //
 // c̃ is a numerical guard: c ≥ c_min is itself a constraint the solver may
 // violate on the way, and Π diverges at c → 0. Wherever that constraint holds
-// (c > c_min) the guard is inactive and the expressions are the reference's.
+// (c > c_min) the guard is inactive.
 // Every standard deviation is √(variance + ε_σ²): at zero variance the plain
 // square root has no derivative.
 //
@@ -95,8 +93,7 @@ using DockingCovariance6 = Eigen::Matrix<double, 6, 6>;
 ///          Φ((δ_hi − δ₀)/σ) − Φ((δ_lo − δ₀)/σ) = 1 − ε_t.
 ///
 /// The left side decreases monotonically in σ when δ_lo < δ₀ < δ_hi, so the
-/// root is unique. With δ₀ centred it is the reference's
-/// (δ_hi − δ_lo) / (2 Φ⁻¹(1 − ε_t/2)).
+/// root is unique. With δ₀ centred it is (δ_hi − δ_lo) / (2 Φ⁻¹(1 − ε_t/2)).
 /// @return false unless δ_lo < δ₀ < δ_hi (strict), 0 < ε_t < 1, all finite.
 [[nodiscard]] bool DockingTimingSigmaMax(double delta_lo, double delta_hi, double delta_0,
                                          double eps_t, double& sigma_max) noexcept;
@@ -198,8 +195,8 @@ struct DockingBallGradient {
 ///
 /// ℓ⁺ is a numerical guard: ℓ ≥ 0 is itself a constraint the solver may
 /// violate on the way, and with ℓ < 0 the unguarded w can reach zero — then no
-/// slack s_c ≥ 0 satisfies the linearised row. For ℓ ≥ 0 it is the reference's
-/// row. ∂g/∂q̇ = 0.
+/// slack s_c ≥ 0 satisfies the linearised row. For ℓ ≥ 0 the guard is
+/// inactive. ∂g/∂q̇ = 0.
 /// @param[out] dg_ds_c ∂g/∂s_c = −2w
 void DockingCorridorRow(const DockingRelativeState& rel, double s_ent, double r_ent,
                         double tan_theta, double s_c, DockingScalar& g, double& dg_ds_c) noexcept;
@@ -218,7 +215,7 @@ void DockingEnvelopeRow(const DockingRelativeState& rel, double s_ent, double c_
 [[nodiscard]] double DockingEnvelopeMinSlack(const DockingRelativeState& rel, double s_ent,
                                              double c_ent_max, double a_brake) noexcept;
 
-// ── Crossing-plane distribution (reference §8.2) ───────────────────────────────
+// ── Crossing-plane distribution ───────────────────────────────────────────────
 
 struct DockingCrossing {
   Eigen::Matrix2d sigma_rho{Eigen::Matrix2d::Zero()};  ///< Σ_ρ [m²]
@@ -226,7 +223,7 @@ struct DockingCrossing {
   double sigma_s{0.0};                                 ///< √(var_s + ε_σ²) [m]
   double sigma_t{0.0};                                 ///< σ_s / c̃ [s]
   double c_tilde{0.0};                                 ///< max(c, c_min) [m/s]
-  bool c_guarded{false};  ///< c ≤ c_min: the guard is active (Π is not the reference's)
+  bool c_guarded{false};  ///< c ≤ c_min: the guard is active (Π uses c̃ ≠ c)
 };
 
 /// @brief Σ_ρ, σ_s and σ_t at this state (values only — the rows below carry
@@ -276,7 +273,7 @@ void DockingLateralSpeedRow(const DockingFrameKinematics& kin, const DockingRela
                             double kappa, double eps_sigma, DockingScalar& row,
                             DockingBallGradient* ball = nullptr) noexcept;
 
-// ── Impact (reference §7) ──────────────────────────────────────────────────────
+// ── Impact ────────────────────────────────────────────────────────────────────
 
 /// Workspace of ComputeDockingImpact; Init is non-RT.
 struct DockingImpactWork {
@@ -314,7 +311,7 @@ struct DockingImpact {
 /// @brief Normal impact quantities at the capture frame's contact point
 ///        p_c = p_h + R p^H_c with normal n = R e₃, on the model's own inertia
 ///        (armature included — pass the hand-locked arm for the conservative
-///        member of the reference's hierarchy).
+///        end of E_free links ≤ E_+armature ≤ E_+hand locked ≤ ½ m_b c_n²).
 ///
 /// β_h = fᵀ M⁻¹ f with f = J_cᵀ n, by Cholesky. Its gradient is
 ///   ∂β/∂q = 2 nᵀ ∂_q(J_c y)|_y + 2 (J_c y)ᵀ ∂_q n − yᵀ ∂_q(M y)|_y,  y = M⁻¹ f,
@@ -333,7 +330,7 @@ struct DockingImpact {
                                         double m_ball, double restitution, DockingImpactWork& work,
                                         DockingImpact& out) noexcept;
 
-// ── Manipulability regulariser (reference §9.2) ────────────────────────────────
+// ── Manipulability regulariser ────────────────────────────────────────────────
 
 /// Workspace of ComputeDockingManipulability; Init is non-RT.
 struct DockingManipulabilityWork {

@@ -1,4 +1,4 @@
-// Parser for the docking keys (E1-F16). See docking_params.hpp.
+// Parser for the docking keys. See docking_params.hpp.
 #include "rtc_controllers/catching/docking_params.hpp"
 
 #include "catching_yaml_read.hpp"
@@ -587,8 +587,8 @@ void ReadCore(const Reader& rd, const YAML::Node& m, const std::string& path, in
   core.manip_d_lin = rd.Number(cost, "manip_d_lin", pc, core.manip_d_lin, Positive());
   core.manip_d_ang = rd.Number(cost, "manip_d_ang", pc, core.manip_d_ang, Positive());
   core.manip_delta = rd.Number(cost, "manip_delta", pc, core.manip_delta, Positive());
-  // The angular-momentum rate (E3-F02): a whole-body term, the segment
-  // planner's only — the search plans the chain alone (#641 D10′).
+  // The angular-momentum rate: a whole-body term, the segment
+  // planner's only — the search plans the chain alone.
   if (const YAML::Node ang = cost["angular_momentum"]; ang) {
     const std::string pw = Join(pc, "angular_momentum");
     if (!whole_body) {
@@ -776,10 +776,10 @@ NlpCatchSearchParams ParseNlpSearchParams(const YAML::Node& catching, int nv) {
   const std::string b = "planner.search.nlp";
   // `mode` is the sibling `planner.search.mode`'s and `ik` is the sub-map the
   // catch-pose parser reads: neither is this parser's, neither is an error.
-  // `catch_box` is the removed catch box (L3 §4.9): not read, and not this
+  // `catch_box` is the removed catch box: not read, and not this
   // parser's to refuse — the binding parks on it (kRemovedCatchingKeys), which
   // keeps the robot up where a throw here would fail the whole configure.
-  // D10′ (#641): the search plans the chain alone — no joint group, no
+  // The search plans the chain alone — no joint group, no
   // whole-body term (`core.cost.angular_momentum` is refused by ReadCore).
   if (nlp.IsMap() && nlp["groups"]) {
     rd.Reject(Quote(Join(b, "groups")) +
@@ -919,7 +919,7 @@ MpcDockingSegmentPlannerParams ParseMpcDockingSegmentParams(
   out.slack_v_max = rd.Number(publish, "slack_v_max", pu, out.slack_v_max, NonNegative());
 
   ReadDockingCoreParams(mpc.IsMap() ? mpc["core"] : YAML::Node(), Join(b, "core"), nv, out.core);
-  // Per joint group (E3-F02): `groups.<name>`, a `planner.groups` name.
+  // Per joint group: `groups.<name>`, a `planner.groups` name.
   out.n_groups = static_cast<int>(groups.size());
   if (mpc.IsMap() && mpc["groups"]) {
     const YAML::Node gmap = mpc["groups"];

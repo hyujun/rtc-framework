@@ -36,7 +36,7 @@ URDF 기반 매니퓰레이터용 제어 법칙·궤적·estimator 라이브러�
 | inference | `inference/policy_io.hpp` · `reach_gate.hpp` · `params/policy_io_params.hpp` · `params/reach_gate_params.hpp` | 학습 정책 tensor marshalling · reach gate |
 | 공용 | `gain_floor.hpp` | 비음수 게인 floor `FloorNonNegativeGain` (NUM-6) |
 
-`catching/` 은 공 포구 플래너·감독자의 수치 코어입니다 (설계: [docs/dynamic_catching/](../docs/dynamic_catching/README.md)).
+`catching/` 은 공 포구 플래너·감독자의 수치 코어입니다 (수식은 각 헤더).
 
 | 묶음 | 헤더 (`catching/`) |
 |---|---|
@@ -167,7 +167,6 @@ rtc_controllers/
 
 - [docs/compliance-conventions.md](docs/compliance-conventions.md) — compliance 법칙·계약·부호 규약
 - [docs/grasp_tuning_guide.md](docs/grasp_tuning_guide.md) — GraspController 튜닝
-- [docs/dynamic_catching/](../docs/dynamic_catching/README.md) — 포구 설계·수식
 - [design-principles.md](../agent_docs/design-principles.md) — 코어/바인딩 3계층 경계 · [invariants.md](../agent_docs/invariants.md) — RT/NUM 규칙
 - [controllers-rationale.md](../docs/reference/controllers-rationale.md) — 코어 추출 근거
 - 각 법칙의 수식·계약은 해당 헤더 상단 주석이 SSoT 입니다

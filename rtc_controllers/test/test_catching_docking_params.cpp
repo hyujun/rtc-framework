@@ -1,4 +1,4 @@
-// E1-F16: the docking keys — `robot.hand.docking.*` (the hand's identified
+// The docking keys — `robot.hand.docking.*` (the hand's identified
 // capture set), `planner.search.nlp.*` and `planner.segment.mpc_docking.*`, and
 // the `core:` sub-map both functions share. Pure parsing: no model, no solver.
 // That the parsed structs are ACCEPTED by the core's Init needs a model and is
@@ -571,7 +571,7 @@ TEST(DockingParamsKeys, TheNlpMapToleratesItsTwoForeignKeys) {
   EXPECT_DOUBLE_EQ(p.cand_dt, 0.01);
 }
 
-// L3 §4.9: the search does not judge where the catch point is. The removed
+// The search does not judge where the catch point is. The removed
 // `catch_box` is not read and does not make the parser throw, whatever is in
 // it — the binding parks on the key (kRemovedCatchingKeys), which keeps the
 // robot up where a throw here would fail the whole configure.
@@ -1453,7 +1453,7 @@ TEST(DockingConfigCheck, TheEntranceLeadIsTheHandsLeadLessTheFlightFromTheEntran
   EXPECT_TRUE(std::isnan(EntranceCloseLead(0.1, r.hand, r.search.core)));
 }
 
-// ── E3-F02 (#641): joint groups and the whole-body terms ─────────────────────
+// ── Joint groups and the whole-body terms ───────────────────────────────────────
 
 std::string Refusal(const std::function<void()>& f) {
   try {
@@ -1569,7 +1569,7 @@ TEST(DockingParamsWholeBody, TheSegmentPlannersKeysAreRefusedByName) {
   EXPECT_EQ(weights.groups[0].w_vel, 0.5);
 }
 
-// D10′: the search plans the chain alone — its map takes neither groups nor a
+// The search plans the chain alone — its map takes neither groups nor a
 // whole-body term, and says where they belong.
 TEST(DockingParamsWholeBody, TheSearchRefusesGroupsAndTheAngularTerm) {
   const std::string groups = Refusal([] {

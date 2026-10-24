@@ -1,4 +1,4 @@
-// The NLP catch search (E1-F14 #740). See nlp_catch_search.hpp.
+// The NLP catch search. See nlp_catch_search.hpp.
 #include "rtc_controllers/catching/nlp_catch_search.hpp"
 
 #include "rtc_controllers/catching/node_follower.hpp"  // NodeTrajectoryFollower::SampleJoints
@@ -615,7 +615,7 @@ void NlpCatchSearch::Screen(const TrajectorySnapshot& traj, const CovarianceSnap
                             bool following, bool has_previous, std::int64_t t_c_prev_ns,
                             CandidateRecord& c, SearchStats& stats) noexcept {
   const std::size_t n = U(nv_);
-  // (S1) the lead. A candidate nearer than the minimum has too few pre-catch
+  // the lead. A candidate nearer than the minimum has too few pre-catch
   // intervals — or none — to solve on.
   if (c.t_c_ns - t_0_ns_ < t_lead_min_ns_ || c.n_pre < params_.n_pre_min) {
     c.reject = NlpReject::kLeadShort;
@@ -652,7 +652,7 @@ void NlpCatchSearch::Screen(const TrajectorySnapshot& traj, const CovarianceSnap
     return;
   }
 
-  // (S4) the catch pose: the frame's origin on the entrance plane's far side
+  // the catch pose: the frame's origin on the entrance plane's far side
   // of the ball (the ball is s_ent along +e₃ = −v̂ of it), +z against the ball.
   const Eigen::Vector3d v_hat = at_catch.v / speed;
   const Eigen::Vector3d target = at_catch.p + params_.core.s_ent * v_hat;
@@ -688,7 +688,7 @@ void NlpCatchSearch::Screen(const TrajectorySnapshot& traj, const CovarianceSnap
   c.w5 = ik.w5;
   c.w6 = ik.w6;
 
-  // (S4) reach, over the time the arm actually moves: its n_pre intervals.
+  // reach, over the time the arm actually moves: its n_pre intervals.
   const MpcDockingSegmentCore& core = *cores_[U(CoreSlot(c.n_pre))];
   const double t_move = static_cast<double>(c.t_c_ns - c.t_s_ns) / kNsPerSec;
   const NlpReachVerdict reach = NlpReachCheck(
@@ -704,7 +704,7 @@ void NlpCatchSearch::Screen(const TrajectorySnapshot& traj, const CovarianceSnap
     return;
   }
 
-  // (S3) the closing-speed window, every term at the IK pose.
+  // the closing-speed window, every term at the IK pose.
   NlpSpeedWindowInput w;
   w.c_min = params_.core.c_min;
   w.c_cap_max = params_.core.c_cap_max;

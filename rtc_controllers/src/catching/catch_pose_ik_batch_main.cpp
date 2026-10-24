@@ -1,16 +1,16 @@
-// ── `catch_pose_ik_batch` — offline catch-pose judge for the S3.5a map ──────
+// ── `catch_pose_ik_batch` — offline catch-pose judge for the catchability map ─
 //
 // Reads a candidate list, runs `rtc::catching::CatchPoseIk::Solve` on each with
 // the tuning `ParseCatchPoseIkParams` produces, and writes one CSV row per
 // candidate. The python side (`rtc_tools.analysis.catchability_map`) owns the
 // throw grid, the ballistic flight and the aggregation; the verdict is this
-// binary's, so the map and the runtime planner share one judgement (S1.9).
+// binary's, so the map and the runtime planner share one judgement.
 //
 // ARCH-7-exempt: an offline inspection tool, in the sense design-principles.md
 // §"ARCH-7 의 범위" gives that category — it knows no robot (every model, frame
 // and option comes from argv), owns no RT loop and no ROS node, and appears in
 // no launch file or bringup chain. It is the development tool that generates a
-// L3 §4.2 map and, later, the S6.2 equivalence oracle; it is never part of a
+// catchability map and the runtime-planner equivalence oracle; it is never part of a
 // running system.
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
@@ -144,7 +144,7 @@ struct Args {
         << '\n';
   }
   // An absent `planner` section is the parser's documented all-defaults case,
-  // and legitimate (the S4.0 controller configs ship without one) — but it is
+  // and legitimate (controller configs ship without one) — but it is
   // also what a wrongly-shaped file used to look like, so it is said out loud.
   const YAML::Node& node = tree.node;
   if (!node["planner"]) {
@@ -175,7 +175,7 @@ struct Args {
   }
 }
 
-/// The S2.3b check, through the production builder: does the frame the model
+/// The frame check, through the production builder: does the frame the model
 /// actually carries sit where the config says it should, relative to the parent
 /// the config names? Prints the residual and fails non-zero if it is not
 /// numerically zero, so a mis-declared offset cannot pass quietly.

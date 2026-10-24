@@ -32,7 +32,7 @@ find_package(Eigen3 REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(rtc_math REQUIRED)
 find_package(rtc_urdf_bridge REQUIRED)
-# dynamic_catching S1.9 (D-26): the catch-pose IK task step is a
+# The catch-pose IK task step is a
 # box-constrained QP solved through rtc_tsid's QPSolverWrapper. No cycle —
 # rtc_tsid does not depend on rtc_controllers (ARCH-2).
 find_package(rtc_tsid REQUIRED)
@@ -47,7 +47,7 @@ add_library(rtc_controllers STATIC
   src/controllers/estimation/momentum_observer.cpp
   src/controllers/estimation/inertial_estimator.cpp
   src/controllers/estimation/payload_estimator.cpp
-  # G2 schema layer (#236 S7c-1): gains PODs + YAML parsers, lifted out of the
+  # G2 schema layer: gains PODs + YAML parsers, lifted out of the
   # controllers/{direct,indirect} adapters so they would outlive them — which
   # they now do, the adapters having been deleted at S7c-2. Non-RT, yaml-cpp
   # only; a binding calls these once at configure time.
@@ -63,62 +63,62 @@ add_library(rtc_controllers STATIC
   # configure time.
   src/params/policy_io_params.cpp
   src/params/reach_gate_params.cpp
-  # dynamic_catching S1.7: YAML schema + G0-C validator for the catching core
+  # YAML schema + validator for the catching core
   # (rtc::catching). Same G2 schema-layer shape as the siblings above — POD +
   # yaml-cpp parser, non-RT, called once at configure time — plus a fixed-
-  # capacity, allocation-free ValidateCatchingParams() (L0 §5.3, §9 G0-C).
+  # capacity, allocation-free ValidateCatchingParams().
   src/params/catching_params.cpp
-  # dynamic_catching S3.5a: the `planner.search.grid.ik.*` / `planner.search.grid.catchability.*` half
-  # of the schema, producing the CatchPoseIkOptions S1.9 left without a parser.
-  # Sibling of catching_params.cpp, not part of it — the G0-C validator subset
+  # The `planner.search.grid.ik.*` / `planner.search.grid.catchability.*` half
+  # of the schema, producing the CatchPoseIkOptions.
+  # Sibling of catching_params.cpp, not part of it — the validator subset
   # declares planner.search.grid.ik.* out of its scope. Strict on unknown keys under the
   # section it wholly owns; retired keys are reported, as elsewhere in params/.
   src/params/catch_pose_ik_params.cpp
-  # dynamic_catching S1.9: 5-row catch-pose IK + the catchability gate
-  # (L3 §4.2). Pinocchio + Eigen only, no ROS and no controller types — the
-  # offline catchability map (S3.5a) links the same object the planner will, so
+  # 5-row catch-pose IK + the catchability gate
+  # Pinocchio + Eigen only, no ROS and no controller types — the
+  # offline catchability map links the same object the planner will, so
   # this deliberately stays a plain library unit rather than a controller.
   src/catching/catch_pose_ik.cpp
   # The catch frame's reach bound, read off the model: the necessary condition
-  # both searches test before the catch-pose IK (L3 §4.1).
+  # both searches test before the catch-pose IK.
   src/catching/reach_bound.cpp
-  # dynamic_catching S3.5a: candidate/seed CSV I/O and the batch loop the
+  # Candidate/seed CSV I/O and the batch loop the
   # offline map's judge is built on. In the library, not the executable, so
   # the CSV contract (bit-exact columns) and the batch's order-independence
   # are reachable from a gtest instead of only from a subprocess.
   src/catching/catch_pose_ik_batch.cpp
-  # dynamic_catching S3.5b: the rest of the planner's gate chain (reach time,
+  # The rest of the planner's gate chain (reach time,
   # γ window, stopping point) over CSV. In the library for the same reason as
   # the file above — the CSV contract and the verdicts are gtest-reachable.
   src/catching/catch_gate_batch.cpp
-  # dynamic_catching L3 §4.1: the search itself (CatchSearch::Plan) over the
+  # The search itself (CatchSearch::Plan) over the
   # wakes of a throw, from CSV. In the library for the same reason as the two
   # files above — the CSV contract, the wake inputs and the binding are
   # gtest-reachable.
   src/catching/catch_search_batch.cpp
-  # dynamic_catching S6: the planner thread's `planner.*` keys (sibling of the
+  # The planner thread's `planner.*` keys (sibling of the
   # two parsers above — this one describes how the thread runs, not what a
   # catch pose is) and one planner wake: inputs → PlanOnce → provenance
   # re-check → publish. ROS-free so the whole cycle is testable against plain
-  # SeqLocks; the thread that calls it lives in integrated_bringup (D-1).
+  # SeqLocks; the thread that calls it lives in integrated_bringup.
   src/params/planner_params.cpp
-  # dynamic_catching E1-F16: the docking keys — the hand's identified capture set
+  # The docking keys — the hand's identified capture set
   # (`robot.hand.docking.*`) and the two docking functions' own maps.
   src/params/docking_params.cpp
   # What only shows with the docking maps side by side (one check for a
   # controller's configure and the offline whole-wake batch).
   src/catching/docking_config.cpp
-  # dynamic_catching E3-F02 (#641): `planner.groups` resolved against the arm
+  # `planner.groups` resolved against the arm
   # device — the joint groups the segment cores weight and block per group.
   src/catching/joint_groups.cpp
   src/catching/planner_cycle.cpp
   src/catching/grid_catch_search.cpp
-  # dynamic_catching MPC E1-F01 (#627): the segment MPC numeric core — a jerk-input
+  # The segment MPC numeric core — a jerk-input
   # condensed QP over the stop segment with first-order torque rows (pinocchio
   # RNEA derivatives) and slack, solved through rtc_tsid's QPSolverWrapper. A
-  # plain library unit like catch_pose_ik.cpp; the planner thread calls it (E1-F03).
+  # plain library unit like catch_pose_ik.cpp; the planner thread calls it.
   src/catching/mpc_segment_core.cpp
-  # dynamic_catching E1-F13 (#739): the mpc_docking numeric core — the ball in
+  # The mpc_docking numeric core — the ball in
   # the capture frame and the rows built from it (relative state, corridor,
   # chance rows, impact, manipulability), each with its derivative.
   src/catching/mpc_docking_relative_state.cpp
@@ -126,19 +126,19 @@ add_library(rtc_controllers STATIC
   # dock and stop as one condensed jerk problem over ProxQP, with elastic hard
   # rows, an l1 merit and a deadline. Called by nothing but its tests yet.
   src/catching/mpc_docking_segment_core.cpp
-  # dynamic_catching E1-F14 (#740): the NLP catch search — the second
+  # The NLP catch search — the second
   # CatchSearch. One core per pre-catch node count; a wake screens the lattice
   # of absolute catch instants, solves the ranked candidates from the previous
   # wake's solutions and chooses by the solve's cost. Installed by nothing yet.
   src/catching/nlp_catch_search.cpp
-  # dynamic_catching MPC E1-F02 (#628): the RT side of the segment payload —
+  # The RT side of the segment payload —
   # closed-form joint reference between the published nodes, hand target by FK.
   src/catching/node_follower.cpp
-  # dynamic_catching MPC E1-F03 (#629): the stop segment on the planner thread —
+  # The stop segment on the planner thread —
   # x0 prediction at the effective instant, replan instances with a fixed stop
   # end, the publish gate. ROS-free; PlannerCycle runs it and publishes.
   src/catching/mpc_segment_planner.cpp
-  # dynamic_catching E1-F16 (#742): the second segment planner — the docking
+  # The second segment planner — the docking
   # problem per segment (MpcDockingSegmentCore), installed in PlannerCycle
   # under `planner.segment.mode: mpc_docking`.
   src/catching/mpc_docking_segment_planner.cpp
@@ -165,15 +165,15 @@ set_target_properties(rtc_controllers PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # ARCH-7-exempt: an offline inspection tool, the category design-principles.md
 # §"ARCH-7 의 범위" names (cf. rtc_inference_check). It knows no robot — model,
 # frame, options and candidates all arrive by argv — owns no RT loop and no ROS
-# node, and appears in no launch file or bringup chain. It exists so the S3.5a
-# catchability map and the S6.2 runtime planner reach their verdict through the
-# SAME CatchPoseIk::Solve and the same YAML keys (S1.9); re-deriving the
+# node, and appears in no launch file or bringup chain. It exists so the offline
+# catchability map and the runtime planner reach their verdict through the
+# SAME CatchPoseIk::Solve and the same YAML keys; re-deriving the
 # judgement in the python map tool is what this replaces.
 add_executable(catch_pose_ik_batch src/catching/catch_pose_ik_batch_main.cpp)
 target_link_libraries(catch_pose_ik_batch rtc_controllers)
 
 # ARCH-7-exempt: same category as above (an offline inspection tool) — the
-# S3.5b gate-catchable map's judge. It loads no model at all (limits and
+# gate-catchable map's judge. It loads no model at all (limits and
 # constants arrive by argv, postures by CSV) and calls the runtime gate
 # functions of time_feasibility.hpp.
 add_executable(catch_gate_batch src/catching/catch_gate_batch_main.cpp)
@@ -302,7 +302,7 @@ if(BUILD_TESTING)
   target_include_directories(test_momentum_observer_model_oracle PRIVATE
     ${rtc_urdf_bridge_test_include})
 
-  # dynamic_catching S1.9: catch-pose IK + catchability gate. Needs
+  # Catch-pose IK + catchability gate. Needs
   # ${rtc_urdf_bridge_test_include} for the URDF resolver and the two arm
   # fixtures (serial_6r_wrist for the roll sweep, serial_7dof for the redundant
   # case, serial_6dof as the rank-deficient negative). RT gate is two
@@ -317,7 +317,7 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catch_pose_ik PRIVATE -Wno-mismatched-new-delete)
 
-  # The catch frame's reach bound (L3 §4.1): a bound at any number of
+  # The catch frame's reach bound: a bound at any number of
   # iterations, tight on the revolute arms, infinite where it cannot be made.
   ament_add_gtest(test_catching_reach_bound test/test_catching_reach_bound.cpp)
   target_link_libraries(test_catching_reach_bound rtc_controllers)
@@ -474,7 +474,7 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_dls_convergence PRIVATE -Wno-mismatched-new-delete)
 
-  # G2 schema layer contract (#236 S7c-1). Drives the ParseXxxParams free
+  # G2 schema layer contract. Drives the ParseXxxParams free
   # functions directly — no controller, no URDF — so these cases outlive the
   # adapters. Also carries the over-long-sequence sensor that the adapter-driven
   # config suite structurally could not provide; see the file header.
@@ -497,13 +497,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_reach_gate test/test_reach_gate.cpp)
   target_link_libraries(test_reach_gate rtc_controllers)
 
-  # ── catching core (dynamic_catching S1, rtc::catching) ─────────────────────
-  # ROS-free numerical core for ball catching. The suites port the reference
-  # tests once under docs/dynamic_catching/ (removed; `git show 482d18b3:...`)
-  # with their thresholds unchanged; the gate
-  # IDs (G0-*, G2-*, G3-*, G4-*, G7-*) are those of the L0–L7 design docs.
+  # ── catching core (rtc::catching) ───────────────────────────────────────────
+  # ROS-free numerical core for ball catching.
   #
-  # Ball flight fixture (G0-A). Test-only: it generates the reference
+  # Ball flight fixture. Test-only: it generates the reference
   # trajectories the other catching suites compare against, and the controller
   # never re-propagates the ball, so it lives under the never-installed
   # test/include.
@@ -511,13 +508,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_catching_ball_fixture rtc_controllers)
   target_include_directories(test_catching_ball_fixture PRIVATE ${rtc_controllers_test_include})
 
-  # Time axes (G0-E): the cross-axis comparisons that must NOT compile are
+  # Time axes: the cross-axis comparisons that must NOT compile are
   # static_asserts in this TU, so a regression there is a build break rather
   # than a failed case.
   ament_add_gtest(test_catching_time_types test/test_catching_time_types.cpp)
   target_link_libraries(test_catching_time_types rtc_controllers)
 
-  # Trajectory snapshot + quintic Hermite sampler (G2-A..E, G2-G, G2-H). The RT
+  # Trajectory snapshot + quintic Hermite sampler. The RT
   # read path is gated by both allocation sensors (operator new and Eigen's own
   # allocator), hence both test include dirs and the program-wide
   # -Wmismatched-new-delete false positive of the alloc gate.
@@ -527,7 +524,7 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_traj_sampler PRIVATE -Wno-mismatched-new-delete)
 
-  # dynamic_catching E1-F13 (#739): the ball prediction at a planner node —
+  # The ball prediction at a planner node —
   # the shared sampler's mean plus the 6x6 covariance propagated from the
   # nearest sample. Header-only and RT-safe, hence both allocation sensors.
   ament_add_gtest(test_catching_ball_node_samples test/test_catching_ball_node_samples.cpp)
@@ -537,24 +534,24 @@ if(BUILD_TESTING)
   target_compile_options(test_catching_ball_node_samples PRIVATE -Wno-mismatched-new-delete)
 
   # L1 ingress judgement: order / track epoch / staleness / horizon / jump
-  # (S5.2, G1-E and the pure half of G1-H·G1-J). Header-only, no ROS: the
+  # Header-only, no ROS: the
   # PointCloud2 decode and the SeqLock live in the integration binding, and
   # what is testable against a struct is tested here.
   ament_add_gtest(test_catching_traj_ingress test/test_catching_traj_ingress.cpp)
   target_link_libraries(test_catching_traj_ingress rtc_controllers)
 
-  # Soft-catch translational reference (G4-A..C, G4-F, G4-G, G4-I). The γ-derate
-  # cases of the reference are not ported (D-8) and the axis-alignment cases
-  # (G4-D) belong to rtc_math se3 (S2.1). Same two-sensor allocation gate.
+  # Soft-catch translational reference. The γ-derate
+  # cases of the reference are not ported and the axis-alignment cases
+  # belong to rtc_math se3. Same two-sensor allocation gate.
   ament_add_gtest(test_catching_soft_catch test/test_catching_soft_catch.cpp)
   target_link_libraries(test_catching_soft_catch rtc_controllers)
   target_include_directories(test_catching_soft_catch PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_soft_catch PRIVATE -Wno-mismatched-new-delete)
 
-  # Reachability gates (G3-A, G3-B): minimum joint time against a fixed table
+  # Reachability gates: minimum joint time against a fixed table
   # from the reference script's (removed) independent closed form, γ window
-  # with the D-9 TCP speed, directional speed, stopping distance, error budget.
+  # with the TCP speed, directional speed, stopping distance, error budget.
   # Same two-sensor allocation gate (the planner may run SCHED_FIFO).
   ament_add_gtest(test_catching_time_feasibility test/test_catching_time_feasibility.cpp)
   target_link_libraries(test_catching_time_feasibility rtc_controllers)
@@ -562,8 +559,8 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_time_feasibility PRIVATE -Wno-mismatched-new-delete)
 
-  # L7 supervisor "pure pieces" (S1.8 / L7.1-L7.3): decel target (§4.3),
-  # transition table as data (§4.1/§4.2), contact debounce (§4.4). Same
+  # Supervisor "pure pieces": decel target,
+  # transition table as data, contact debounce. Same
   # global operator-new counting gate as the other RT-1 suites above
   # (${rtc_controllers_test_include}) PLUS rtc_base's Eigen allocation
   # tripwire (${rtc_base_test_include}) — the decel target math is
@@ -574,7 +571,7 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_supervisor_core PRIVATE -Wno-mismatched-new-delete)
 
-  # Hand sequencer (S7.1, L6 §5.3): G6-A close-tick rounding, phase rules,
+  # Hand sequencer: close-tick rounding, phase rules,
   # ρ, hold rule, no allocation in Update. alloc_gate.hpp → its own binary.
   ament_add_gtest(test_catching_hand_sequencer test/test_catching_hand_sequencer.cpp)
   target_link_libraries(test_catching_hand_sequencer rtc_controllers)
@@ -582,7 +579,7 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_hand_sequencer PRIVATE -Wno-mismatched-new-delete)
 
-  # Plane crossing (E1-F17): the instant the ball crosses a plane of the catch
+  # Plane crossing: the instant the ball crosses a plane of the catch
   # frame, by the secant method — closed-form roots, every refusal, no
   # allocation. alloc_gate.hpp → its own binary.
   ament_add_gtest(test_catching_plane_crossing test/test_catching_plane_crossing.cpp)
@@ -591,30 +588,30 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_plane_crossing PRIVATE -Wno-mismatched-new-delete)
 
-  # Hand-joint capture witness (#537 S8-C, D-S8-8 (b)): each clause, the
-  # fail-closed paths, no allocation, and G7-C's synthetic-noise false alarms.
+  # Hand-joint capture witness: each clause, the
+  # fail-closed paths, no allocation, and synthetic-noise false alarms.
   ament_add_gtest(test_catching_hand_capture test/test_catching_hand_capture.cpp)
   target_link_libraries(test_catching_hand_capture rtc_controllers)
   target_include_directories(test_catching_hand_capture PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_hand_capture PRIVATE -Wno-mismatched-new-delete)
 
-  # Parameter validator (S1.7, G0-C): active-config TBD, D-9/L7 §4.3 cross-
-  # constraints, ζ·ω·h discretization, hand caging gap (L6 §4.2), provisional
+  # Parameter validator: active-config TBD, cross-
+  # constraints, ζ·ω·h discretization, hand caging gap, provisional
   # gating. Model-free — no URDF fixture needed.
   ament_add_gtest(test_catching_params test/test_catching_params.cpp)
   target_link_libraries(test_catching_params rtc_controllers)
 
-  # Catch-pose IK schema (S3.5a): every planner.search.grid.ik.* / planner.search.grid.catchability.*
+  # Catch-pose IK schema: every planner.search.grid.ik.* / planner.search.grid.catchability.*
   # key reaches CatchPoseIkOptions, an absent section resolves to the struct's
   # own defaults (which is also how the doc-vs-code default agreement is
   # pinned), and a typo under planner.search.grid.ik is refused rather than defaulted.
   # Model-free — the parser touches no URDF and no solver.
-  # dynamic_catching MPC E1-F01 (#627): closed-form jerk segment (header-only).
+  # Closed-form jerk segment (header-only).
   ament_add_gtest(test_catching_jerk_segment test/test_catching_jerk_segment.cpp)
   target_link_libraries(test_catching_jerk_segment rtc_controllers)
 
-  # dynamic_catching MPC E1-F01 (#627): the MPC segment core. Its Solve() calls
+  # The MPC segment core. Its Solve() calls
   # into pinocchio (RNEA derivatives, frame Jacobian) and ProxQP — library code
   # whose Eigen/C allocations neither the operator-new gate nor rtc_base's Eigen
   # tripwire can see (testing-debug.md §RT-1). So the RT gate here is THREE
@@ -633,12 +630,12 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
-  # dynamic_catching MPC E1-F07 (#660): the pre-catch grid and the catch terms
+  # The pre-catch grid and the catch terms
   # of the same core. A separate binary — the malloc gate is one TU per binary,
   # and this suite's timing table needs its own timeout: a smoke by default,
-  # the full 200-sample table (plan MD-51) with RTC_MPC_SEGMENT_CORE_TIMING_FULL=1,
+  # the full 200-sample table with RTC_MPC_SEGMENT_CORE_TIMING_FULL=1,
   # which takes several minutes. Same three allocation sensors and the same arm
-  # fixtures (mpc_segment_core_fixture.hpp) as the E1-F01 suite above.
+  # fixtures (mpc_segment_core_fixture.hpp) as the segment-core suite above.
   ament_add_gtest(test_catching_mpc_segment_core_approach
     test/test_catching_mpc_segment_core_approach.cpp TIMEOUT 1500)
   target_link_libraries(test_catching_mpc_segment_core_approach rtc_controllers)
@@ -649,7 +646,7 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
-  # dynamic_catching E3-F02 (#641): the segment MPC core with joint groups —
+  # The segment MPC core with joint groups —
   # per-group move blocking and the whole-body terms, on a synthetic tree.
   ament_add_gtest(test_catching_mpc_segment_core_groups
     test/test_catching_mpc_segment_core_groups.cpp TIMEOUT 600)
@@ -669,7 +666,7 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_segment_groups PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
-  # dynamic_catching E1-F13 (#739): the mpc_docking relative-state seams — each
+  # The mpc_docking relative-state seams — each
   # derivative against a finite difference, the crossing-plane covariance
   # against a Monte Carlo, the reference's sanity cases. The seams call into
   # pinocchio's shared object, so the allocation claim needs the C-level malloc
@@ -699,7 +696,7 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
-  # dynamic_catching E3-F02 (#641): the docking core's whole-body terms — off,
+  # The docking core's whole-body terms — off,
   # the convergence contract, the values on the held coefficients, allocation.
   ament_add_gtest(test_catching_mpc_docking_segment_core_wholebody
     test/test_catching_mpc_docking_segment_core_wholebody.cpp TIMEOUT 900)
@@ -711,7 +708,7 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_mpc_docking_segment_core_wholebody PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
-  # dynamic_catching E1-F14 (#740): the NLP catch search on synthetic
+  # The NLP catch search on synthetic
   # predictions — the choice against an exhaustive solve by the core, order
   # independence of the solves, validity and reasons, the wakes after the RT
   # follows a plan, and the allocation gate over a whole Plan (C-level malloc
@@ -726,7 +723,7 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
-  # dynamic_catching E1-F16 (#742): the docking segment planner — configure and
+  # The docking segment planner — configure and
   # its refusals, the first segment (the search's solution adopted, or solved
   # from rest), replans, "nothing is published after the catch", the interface
   # queries, and the allocation gate over PlanFirst / Replan (C-level malloc
@@ -742,19 +739,19 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
-  # dynamic_catching E1-F14 (#740): the NLP catch search's lattice, its
+  # The NLP catch search's lattice, its
   # necessary conditions (reach, closing-speed window) and its outer cost —
   # pure functions of scalars, each checked against the reference's formula
   # from both sides of its boundary. Header-only: no model, no solver.
   ament_add_gtest(test_catching_nlp_catch_screening test/test_catching_nlp_catch_screening.cpp)
   target_link_libraries(test_catching_nlp_catch_screening rtc_controllers)
 
-  # dynamic_catching E1-F16 (#742): the ring of published segments both segment
+  # The ring of published segments both segment
   # planners keep (SegmentRing). Header-only pure logic: no model, no solver.
   ament_add_gtest(test_catching_segment_ring test/test_catching_segment_ring.cpp)
   target_link_libraries(test_catching_segment_ring rtc_controllers)
 
-  # dynamic_catching MPC E1-F02 (#628): the segment node payload and its RT
+  # The segment node payload and its RT
   # sampler. Sample() calls into pinocchio's shared object (FK), so its
   # allocation claim needs the C-level malloc gate as well as operator new;
   # the informational CLIK residual drives rtc_tsid's ClikReferenceGenerator.
@@ -766,7 +763,7 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_node_follower PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
-  # dynamic_catching #827: the segment payload's joint capacity — a model wider
+  # The segment payload's joint capacity — a model wider
   # than one arm (a tree built in code, 17 joints) through the payload, the RT
   # sampler and both segment planners' Configure, and the nlp search on the
   # 10-joint chain. No URDF: the joint count is the test's to choose.
@@ -778,17 +775,17 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_segment_capacity PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
-  # dynamic_catching MPC E1-F03 (#629): the planner.segment.mpc keys, and (the
+  # The planner.segment.mpc keys, and (the
   # second target) the RT's segment admission / switch rules. Pure functions —
   # no model, no solver. The MPC segment planner itself is
   # test_catching_approach_planner / _cycle below.
   ament_add_gtest(test_catching_mpc_segment_params test/test_catching_mpc_segment_params.cpp)
   target_link_libraries(test_catching_mpc_segment_params rtc_controllers)
   target_include_directories(test_catching_mpc_segment_params PRIVATE ${rtc_base_test_include})
-  # dynamic_catching E1-F16: the docking keys (`robot.hand.docking.*`,
+  # The docking keys (`robot.hand.docking.*`,
   # `planner.search.nlp.*`, `planner.segment.mpc_docking.*`). Pure parsing — no
   # model, no solver.
-  # dynamic_catching E3-F02 (#641): `planner.groups` — parsed, resolved
+  # `planner.groups` — parsed, resolved
   # against the device's joints, mapped to model order.
   ament_add_gtest(test_catching_joint_groups test/test_catching_joint_groups.cpp)
   target_link_libraries(test_catching_joint_groups rtc_controllers)
@@ -800,9 +797,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_catching_segment_admission rtc_controllers)
   target_include_directories(test_catching_segment_admission PRIVATE ${rtc_base_test_include})
 
-  # dynamic_catching MPC E1-F08 (#661): the MPC segment planner's APPROACH–stop
+  # The MPC segment planner's APPROACH–stop
   # solves on a fake clock (PlanFirst, Replan, the ball target, the publish
-  # gates, the allocation boundary). Not E1-F07's test_catching_mpc_segment_core_approach
+  # gates, the allocation boundary). Not test_catching_mpc_segment_core_approach
   # (the core alone). C-level malloc gate: one TU per binary.
   ament_add_gtest(test_catching_approach_planner test/test_catching_approach_planner.cpp
     TIMEOUT 300)
@@ -815,7 +812,7 @@ if(BUILD_TESTING)
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
   # ... and the cycle that pairs the first segment with the search's plan and
-  # replans it while the RT follows (E1-F08): the real search on the real
+  # replans it while the RT follows: the real search on the real
   # steady clock (RUN_SERIAL below).
   ament_add_gtest(test_catching_approach_cycle test/test_catching_approach_cycle.cpp TIMEOUT 300)
   target_link_libraries(test_catching_approach_cycle rtc_controllers)
@@ -825,7 +822,7 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_approach_cycle PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
-  # dynamic_catching E3-F02 (#641): the whole-body terms through whole catches
+  # The whole-body terms through whole catches
   # of the planner cycle (search on a chain, segments on the tree).
   ament_add_gtest(test_catching_wholebody_cycle test/test_catching_wholebody_cycle.cpp TIMEOUT 600)
   target_link_libraries(test_catching_wholebody_cycle rtc_controllers)
@@ -837,9 +834,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_catch_pose_ik_params test/test_catch_pose_ik_params.cpp)
   target_link_libraries(test_catch_pose_ik_params rtc_controllers)
 
-  # Batch layer for the S3.5a map (S1.9's Solve is tested in test_catch_pose_ik).
+  # Batch layer for the catchability map (Solve is tested in test_catch_pose_ik).
   # Two claims the solver's own suite cannot make: the CSV carries the solver's
-  # doubles bit-exactly (the S6.2 equivalence oracle needs that), and a
+  # doubles bit-exactly (the runtime-planner equivalence oracle needs that), and a
   # candidate's verdict is independent of batch order (python shards the grid).
   # Drives the real 6R arm, hence the URDF fixture include dirs and the same
   # program-wide -Wmismatched-new-delete false positive as its sibling.
@@ -849,12 +846,12 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catch_pose_ik_batch PRIVATE -Wno-mismatched-new-delete)
 
-  # dynamic_catching S3.5b: gate batch — CSV contract, verdict == direct call
+  # Gate batch — CSV contract, verdict == direct call
   # of the runtime gate functions, order independence, fail-closed settings.
   ament_add_gtest(test_catch_gate_batch test/test_catch_gate_batch.cpp)
   target_link_libraries(test_catch_gate_batch rtc_controllers)
 
-  # dynamic_catching L3 §4.1: search batch — a row is the direct Plan call's
+  # Search batch — a row is the direct Plan call's
   # result, the verdict of a throw does not depend on the order of the throws,
   # the CSV carries the doubles bit-exactly, the binding file is fail-closed.
   # Drives the real 6R arm (the grid search's rig), hence the fixture dirs.
@@ -868,10 +865,10 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catch_search_batch PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
-  # dynamic_catching S6-A: planner data contract + one planner wake. The RT
-  # admission rule (L3 §5.2 (a)-(f)), `planner.*` parsing, the cycle's
-  # provenance handling (G3-L: superseded trajectory, reset, activation) and
-  # its RT contract (G3-K: one cycle allocates nothing) — both allocation
+  # Planner data contract + one planner wake. The RT
+  # admission rule, `planner.*` parsing, the cycle's
+  # provenance handling (superseded trajectory, reset, activation) and
+  # its RT contract (one cycle allocates nothing) — both allocation
   # sensors, hence both test include dirs.
   ament_add_gtest(test_catching_planner_cycle test/test_catching_planner_cycle.cpp)
   target_link_libraries(test_catching_planner_cycle rtc_controllers)
@@ -879,22 +876,22 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_planner_cycle PRIVATE -Wno-mismatched-new-delete)
   # The cycle's two source files are read as text: they must not name a
-  # concrete search or segment planner (E1-F16).
+  # concrete search or segment planner.
   target_compile_definitions(test_catching_planner_cycle PRIVATE
     RTC_CONTROLLERS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
-  # dynamic_catching S6-B: the planner's search on the 6R wrist fixture — q̇ᵘ
-  # against an independent DLS (G3-I runtime half), judgement vs rank gates,
-  # settle, budget, switching/freeze, G3-K (a full search allocates nothing),
-  # and the R-2 timing record. Needs the URDF fixtures, hence the extra dir.
+  # The planner's search on the 6R wrist fixture — q̇ᵘ
+  # against an independent DLS, judgement vs rank gates,
+  # settle, budget, switching/freeze, no allocation in a full search,
+  # and the timing record. Needs the URDF fixtures, hence the extra dir.
   ament_add_gtest(test_catching_grid_catch_search test/test_catching_grid_catch_search.cpp)
   target_link_libraries(test_catching_grid_catch_search rtc_controllers)
   target_include_directories(test_catching_grid_catch_search PRIVATE
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_grid_catch_search PRIVATE -Wno-mismatched-new-delete)
 
-  # dynamic_catching S6-C: γ rollout — the L3 §4.8 table through the runtime
-  # sampler (G3-B), the choice rule, coarse-to-fine, and no allocation (G3-K).
+  # γ rollout — the reference table through the runtime
+  # sampler, the choice rule, coarse-to-fine, and no allocation.
   ament_add_gtest(test_catching_gamma_rollout test/test_catching_gamma_rollout.cpp)
   target_link_libraries(test_catching_gamma_rollout rtc_controllers)
   target_include_directories(test_catching_gamma_rollout PRIVATE

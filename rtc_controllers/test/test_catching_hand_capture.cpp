@@ -1,8 +1,8 @@
-// Hand-joint capture witness (#537 S8-C, D-S8-8 (b)). Every clause of the
+// Hand-joint capture witness. Every clause of the
 // per-joint stall test on its own (each one flipped must flip the answer),
 // the boundaries, the sign of the closing direction, NaN and narrow lanes,
-// `min_joints`, the config's fail-closed check, no allocation (G7-D's pure
-// half), and G7-C: the synthetic-noise false-alarm rate of an EMPTY hand.
+// `min_joints`, the config's fail-closed check, no allocation, and
+// the synthetic-noise false-alarm rate of an EMPTY hand.
 //
 // no_malloc_scope.hpp MUST precede every Eigen header, and alloc_gate.hpp
 // defines the replacement global operators — exactly one TU per binary; this
@@ -277,7 +277,7 @@ TEST(HandCapture, FromProfileNeedsTheBlockAndEveryTorqueLimit) {
       << "an empty hand does not reach ρ = 1 under measured_offset";
 }
 
-// ── RT: no allocation (G7-D's pure half) ────────────────────────────────────
+// ── RT: no allocation ───────────────────────────────────────────────────────
 
 TEST(HandCapture, EvaluateDoesNotAllocate) {
   const HandCaptureConfig c = MakeConfig();
@@ -297,7 +297,7 @@ TEST(HandCapture, EvaluateDoesNotAllocate) {
   EXPECT_TRUE(blocked);
 }
 
-// ── G7-C: synthetic noise (L7 §9 — a false-alarm RATE, recorded) ─────────────
+// ── Synthetic noise (a false-alarm RATE, recorded) ───────────────────────────
 //
 // The sim hand lanes carry no noise, so "false-Captured 0" in sim says nothing
 // about a real hand. This is the noise half: an EMPTY hand — resting at
@@ -354,8 +354,8 @@ TEST(HandCaptureG7C, AnEmptyHandUnderNoiseDoesNotReadAsHolding) {
   EXPECT_EQ(at_pre.fired, 0) << "rate " << Fixed(at_pre.Rate());
   // Per sample, the positive control is bounded by the q̇ clause: |N(0, 0.02)|
   // ≤ 0.05 holds with p ≈ 0.988. (A t_persist run needs every sample: over
-  // 0.1 s at 500 Hz that is ≈ 0.988^50 ≈ 0.54 — a real hand's q̇ noise is an
-  // S10 question for qd_tol and t_persist, not one the sim can answer.)
+  // 0.1 s at 500 Hz that is ≈ 0.988^50 ≈ 0.54 — a real hand's q̇ noise is a
+  // hardware question for qd_tol and t_persist, not one the sim can answer.)
   EXPECT_GT(positive.Rate(), 0.97) << "the positive control must fire under the same noise";
 }
 

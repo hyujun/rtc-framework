@@ -1,8 +1,9 @@
-// ── Segment MPC catch-node linearisation seam (E1-F07, formulation §1.2) ───────
-// The first-order models of the three nonlinear outputs the catch terms use,
-// at one reference point (q, v), exposed so a test can check each Jacobian
-// against a finite difference of the nonlinear output instead of only through
-// a QP answer (the same reason mpc_segment_core_torque.hpp exists):
+// ── Segment MPC catch-node linearisation seam ─────────────────────────────────
+// The first-order models of the three nonlinear outputs the catch terms use
+// (MpcSegmentCore, mpc_segment_core.hpp), at one reference point (q, v),
+// exposed so a test can check each Jacobian against a finite difference of
+// the nonlinear output instead of only through a QP answer (the same reason
+// mpc_segment_core_torque.hpp exists):
 //
 //   p_C(q + δq)          ≈ p + J_v δq                      catch-frame position
 //   e_a(q + δq)          ≈ e_a + L_a δq,  L_a = J_a J_ω    approach-axis error
@@ -60,8 +61,8 @@ struct CatchLinearization {
 /// @param dv_work        3 × n scratch (pinocchio's ∂/∂v output)
 /// @param[out] out       p_C, the approach axis and e_a at q
 /// @return kNone; kDimMismatch on a size mismatch; kCatchAxisOutOfRange when
-///         a_d is not unit, ‖e_a‖ > axis_theta_max, or the axes are
-///         antiparallel (the rotation axis is undefined there).
+///         a_d is not unit, ‖e_a‖ > axis_theta_max, the axes are antiparallel
+///         (the rotation axis is undefined there), or rtc_math caps J_a.
 /// @note RT-safe: no heap, noexcept. Every matrix argument must already be
 ///       sized; the outputs are unspecified when the return is not kNone.
 [[nodiscard]] MpcSegmentCoreReason LinearizeCatchAt(

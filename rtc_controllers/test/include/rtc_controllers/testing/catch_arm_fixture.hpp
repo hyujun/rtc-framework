@@ -1,4 +1,4 @@
-// ── Arm fixtures and oracles shared by the S1.9 catch-pose suites (test-only) ──
+// ── Arm fixtures and oracles shared by the catch-pose suites (test-only) ──
 // test_catch_pose_ik.cpp (the correctness suite) and bench_catch_pose_ik_qp.cpp
 // (the DLS-vs-QP measurement) must drive the SAME arms, build targets the same
 // way, and read manipulability off the same reference Jacobian — otherwise the

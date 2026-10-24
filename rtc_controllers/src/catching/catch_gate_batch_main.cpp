@@ -1,4 +1,4 @@
-// ── `catch_gate_batch` — offline gate judge for the S3.5b map ───────────────
+// ── `catch_gate_batch` — offline gate judge for the gate-catchable map ──────
 //
 // Reads kinematically accepted catch candidates (posture included) and runs the
 // runtime gate functions of `time_feasibility.hpp` on each — reach time, γ

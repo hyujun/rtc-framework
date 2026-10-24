@@ -1,9 +1,8 @@
 // ── The published segments of the followed plan and of its replacement ───────
-// (E1-F16 #742, E1-F17 #743)
 //
 // A segment planner solves a later segment from an earlier one: the initial
 // state of a replan is evaluated on the segment the RT reports pending or
-// following (MD-58), the first segment of a REPLACEMENT plan starts on one too,
+// following, the first segment of a REPLACEMENT plan starts on one too,
 // and the search is handed the same two (SegmentPlanner::Reported). So a
 // planner keeps what it published — and every planner keeps it the same way,
 // which is why it is here and not in each of them:
@@ -27,7 +26,7 @@
 //    what the RT reports. A report of a plan the ring holds nothing of finds
 //    nothing in it.
 //  • EIGHT segments, oldest first, however many plans they are of. When it
-//    is full the oldest one the RT did not last report is dropped (MD-58):
+//    is full the oldest one the RT did not last report is dropped:
 //    the RT reports at most two — the followed segment and the pending one,
 //    which while it holds a replacement is that replacement's first segment —
 //    and each is found under its own plan, so one of eight always qualifies,

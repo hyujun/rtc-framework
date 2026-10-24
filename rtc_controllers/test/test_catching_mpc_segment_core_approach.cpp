@@ -1,10 +1,9 @@
-// E1-F07 (#660): the single-arm MPC core from APPROACH to the stop — the
-// pre-catch grid and the catch terms added to MpcSegmentCore (mpc_segment_core.hpp;
-// formulation §1.6, MD-51 – MD-53). The stop-segment behaviour E1-F01
-// pinned stays in test_catching_mpc_segment_core.cpp; this suite owns what is new,
+// The single-arm MPC core from APPROACH to the stop — the pre-catch grid and
+// the catch terms of MpcSegmentCore (mpc_segment_core.hpp). The stop-segment
+// behaviour pinned stays in test_catching_mpc_segment_core.cpp; this suite owns what is new,
 // plus the regression that the new code leaves the old problem alone.
 //
-// The allocation gates: like the E1-F01 suite, this binary links THREE sensors
+// The allocation gates: like the stop-segment suite, this binary links THREE sensors
 // (CMakeLists note); rtc_base's malloc_gate.hpp is the one that sees
 // pinocchio's and ProxQP's own allocations.
 #include "rtc_base/testing/malloc_gate.hpp"
@@ -59,9 +58,9 @@ using rtc::testing::mpc_segment_core::RestInput;
 using rtc::testing::mpc_segment_core::Synthetic6R;
 using rtc::testing::mpc_segment_core::UseAsReference;
 
-// ── Golden regression: the E1-F01 problem is untouched ───────────────────────
+// ── Golden regression: the stop-segment problem is untouched ─────────────────
 // The values below were captured from the build of `main` at edc0fa4e, BEFORE
-// any E1-F07 change to the core, by running this test with
+// any change to the core, by running this test with
 // RTC_MPC_SEGMENT_CORE_GOLDEN_PRINT=1. They pin what "the new parameters default to
 // off" has to mean: with defaults the core assembles the SAME QP and returns
 // the same stop.
@@ -178,7 +177,7 @@ void ExpectGolden(const char* name, const Probe& p, const std::vector<double>& t
 }
 
 // A solved trajectory shifted by `t_shift` onto the same uniform grid (the
-// E1-F03 warm start), x_0 on it.
+// warm start), x_0 on it.
 void ShiftUniform(const MpcSegmentCoreResult& r, double dt, double t_shift,
                   MpcSegmentCoreInput& in) {
   const Eigen::Index n = r.q.rows();
@@ -333,7 +332,7 @@ TEST(MpcSegmentCoreGolden, DefaultCoreOnThePresolvePath) {
   ExpectGolden("kinematic_6r", probe, kGolden_kinematic_6r_tight, kGolden_kinematic_6r_loose);
 }
 
-// w_⊥ on (the frame-Jacobian path the E1-F01 dense oracle cannot check,
+// w_⊥ on (the frame-Jacobian path the dense oracle cannot check,
 // because both assemblies share AssemblePerp), a warm cycle on a shifted
 // reference, armature added.
 TEST(MpcSegmentCoreGolden, PerpendicularTermOnAWarmCycle) {
@@ -362,7 +361,7 @@ TEST(MpcSegmentCoreGolden, PerpendicularTermOnAWarmCycle) {
   ExpectGolden("perp_7r_warm", probe, kGolden_perp_7r_warm_tight, kGolden_perp_7r_warm_loose);
 }
 
-// The shipped stop horizon (MD-24) with a torque row that binds.
+// The shipped stop horizon with a torque row that binds.
 TEST(MpcSegmentCoreGolden, ShippedHorizonWithABindingTorqueRow) {
   const ArmModel arm = RealArm6();
   MpcSegmentCoreParams p;
@@ -1228,8 +1227,8 @@ TEST(MpcSegmentCoreApproach, StructuredCatchAssemblyMatchesDense) {
   MpcSegmentCore fast, dense;
   ASSERT_EQ(fast.Init(*f.arm.model, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
   ASSERT_EQ(dense.Init(*f.arm.model, f.arm.frame, pd, f.limits), MpcSegmentCoreReason::kNone);
-  // One slack variable and seven rows more than the E1-F01 layout (one
-  // torque slack per node — #857).
+  // One slack variable and seven rows more than the stop-segment layout (one
+  // torque slack per node).
   const int n = f.arm.model->nv;
   ASSERT_EQ(fast.MainQp().H.rows(), n * fast.NumBlocks() + fast.NumNodes() + 1);
   ASSERT_EQ(fast.MainQp().C.rows(), 4 * n * fast.NumNodes() + fast.NumNodes() + 7);
@@ -1264,7 +1263,7 @@ TEST(MpcSegmentCoreApproach, StructuredCatchAssemblyMatchesDense) {
 
 // ── 5. Behaviour ─────────────────────────────────────────────────────────────
 
-// formulation §4 item 5: nothing to do ⇒ do nothing. A sanity check only — every
+// Nothing to do ⇒ do nothing. A sanity check only — every
 // residual is zero, so this cannot see a sign or a transpose (sections 2–4 do).
 // It does run a_d == z exactly, i.e. the aligned-deadband branch, in a full solve.
 TEST(MpcSegmentCoreApproach, ZeroSolutionWhenAlreadyAtTheCatch) {
@@ -1433,7 +1432,7 @@ TEST(MpcSegmentCoreApproach, RtiConvergesOnAReach) {
   EXPECT_LE(res.slack_max, 1e-5);
 }
 
-// The velocity target is γ_ref·v̂_b (MD-53): the solution's γ follows it.
+// The velocity target is γ_ref·v̂_b: the solution's γ follows it.
 TEST(MpcSegmentCoreApproach, SolutionGammaFollowsGammaRef) {
   Reach6 f = MakeReach6();
   f.params.w_v_par = 2000.0;
@@ -1866,7 +1865,7 @@ TEST(MpcSegmentCoreApproach, TheAllocationGatesAreArmed) {
   }
 }
 
-// MD-22: the core's own path allocates nothing; ProxQP's allocations are
+// The core's own path allocates nothing; ProxQP's allocations are
 // recorded. The trust-region rejection runs the catch linearisation
 // (pinocchio's kinematics derivatives, the frame Jacobian, rtc_math) and the
 // WHOLE condensing — catch terms and the slack rows included — and stops only
@@ -2559,7 +2558,7 @@ TEST(CatchPositionWeightTest, RejectsNonFiniteAndNonPositiveArguments) {
   EXPECT_EQ(w, sentinel) << "the output is written only on success";
 }
 
-// ── 9. Timing: the measurement the grid decision reads (MD-51) ──────────
+// ── 9. Timing: the measurement the grid decision reads ───────────────────────
 // Informational: nothing here asserts a time. The grid is chosen from this
 // table by this rule (warm p99 ≤ 10 ms, cold p99 ≤ 12 ms, no failed
 // solve; Release, 7 dof, 200 samples) and confirmed by the user, because the
@@ -2582,7 +2581,7 @@ TEST(CatchPositionWeightTest, RejectsNonFiniteAndNonPositiveArguments) {
 //               warm runs fail and the core retries them from zero
 //               (cold_retried), so the series shows what leaving cold_start
 //               off costs.
-// No solve may fail (MD-51) — that is asserted; the times are not.
+// No solve may fail — that is asserted; the times are not.
 // The full table needs RTC_MPC_SEGMENT_CORE_TIMING_FULL=1 (200 samples per grid); the
 // default run is a smoke of the same code.
 
@@ -2596,7 +2595,7 @@ const TimingGrid kTimingGrids[] = {
     {"B1", {12, 0.05, 7, 0.05, 1, {1, 1, 2, 3}}},
     {"A2", {12, 0.05, 14, 0.025, 2, {1, 1, 2, 2, 4, 4}}},
     {"B2", {12, 0.05, 7, 0.05, 2, {1, 1, 2, 3}}},
-    // The grid MD-54 settled on: the pre-catch spacing doubled, so
+    // The shipped grid: the pre-catch spacing doubled, so
     // B2's jerk hold (0.1 s) with half its pre-catch nodes.
     {"C1", {6, 0.1, 7, 0.05, 1, {1, 1, 2, 3}}},
 };
@@ -2694,7 +2693,7 @@ void ReportSeries(const std::string& key, const Series& s) {
 }
 
 // The shipped-like catch weights of the measurement. Values are placeholders
-// for E1-F10's tuning; what matters here is that every term is assembled.
+// pending tuning; what matters here is that every term is assembled.
 void TimingCatchParams(MpcSegmentCoreParams& p, bool with_slack) {
   p.catch_terms = true;
   p.w_axis = 100.0;
@@ -2732,7 +2731,7 @@ struct ThrowSampler {
     ReachReference(mpc, arm.q_nominal, q_t, in);
     in.p_b = target.p + 0.01 * Eigen::Vector3d(uni(rng), uni(rng), uni(rng));
     in.a_d = TiltedAxis(target.z, 0.05, Eigen::Vector3d(uni(rng), uni(rng), uni(rng) + 2.0));
-    in.v_b = -(4.5 + 1.5 * uni(rng)) * in.a_d;  // a_d = −v̂_b/‖v̂_b‖ (formulation §0.2)
+    in.v_b = -(4.5 + 1.5 * uni(rng)) * in.a_d;  // a_d = −v̂_b/‖v̂_b‖
     in.w_p = w_p;
     in.w_delta_scale = 0.0;
     in.cold_start = true;
@@ -2892,7 +2891,7 @@ void RunGridTiming(const ArmModel& arm, const MpcSegmentCoreLimits& lim, const T
 
 // A warm solve from ANOTHER problem's iterates. Under ProxQP's approximate
 // infeasibility test about a quarter of these were called infeasible and
-// retried (formulation §1.6; E1-F07, #660); without it (#880) none of these
+// retried; without it (#880) none of these
 // 24 is — the stale start converges, to the cold solution. The retry stays for
 // a warm run that does not converge within max_iter (the timing fixture's
 // adv_stale, 5 – 10 %) and for a QP that really is infeasible, which fails
@@ -3036,9 +3035,9 @@ TEST(MpcSegmentCoreApproachTiming, GridTable6R) {
   }
 }
 
-// The velocity slack is off by default (MD-52); what turning it on costs,
+// The velocity slack is off by default; what turning it on costs,
 // and whether its penalty row provokes ProxQP's false-infeasible verdict, is
-// E1-F10's input.
+// recorded for tuning.
 TEST(MpcSegmentCoreApproachTiming, VelocitySlackOn7R) {
   const ArmModel arm = RealArm7();
   const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
@@ -3048,8 +3047,8 @@ TEST(MpcSegmentCoreApproachTiming, VelocitySlackOn7R) {
 
 // What the solve time depends on. Each variant changes ONE thing (two where
 // named) in the smallest decision grid; none is a recommendation — they locate
-// the cost for the decision recorded in E1-F07 (#660). Findings of the
-// 2026-10-01 run are there; in short: the time is the QP's (linearisation and
+// the cost of the grid choice. Findings of the
+// 2026-10-01 run, in short: the time is the QP's (linearisation and
 // condensing are ~0.1 ms), it halves without the torque rows and again with
 // half the pre-catch nodes, the solver tolerance and a pure variable rescaling
 // change nothing (ProxQP's own equilibration already does that), and a
@@ -3091,7 +3090,7 @@ TEST(MpcSegmentCoreApproachTiming, CostDrivers7R) {
                          p.u_scale = 1e2;
                        },
                        {}});
-  // Fewer nodes: a typical throw (the E0-F02 median entry is 0.44 s before the
+  // Fewer nodes: a typical throw (the median entry is 0.44 s before the
   // catch, not the 0.6 s the table sizes for), and the chosen grid without its
   // torque rows.
   const TimingGrid typical{"B2_pre9", {9, 0.05, 7, 0.05, 2, {1, 1, 2, 3}}};
@@ -3118,7 +3117,7 @@ TEST(MpcSegmentCoreApproachTiming, CostDrivers7R) {
 }
 
 // The B side's (and the infeasible family's) outer iteration cap:
-// RTC_MPC_MAX_ITER_B when set, else the params' own (#880 D10 α — the cap is
+// RTC_MPC_MAX_ITER_B when set, else the params' own (the cap is
 // what bounds an infeasible solve's time once the threshold is 0).
 void ApplyMaxIterB(MpcSegmentCoreParams& p) {
   if (const char* e = std::getenv("RTC_MPC_MAX_ITER_B"); e != nullptr && e[0] != '\0') {
@@ -3304,7 +3303,7 @@ TEST(MpcSegmentCoreApproachTiming, EpsPrimalInfPair6R) {
   }
 }
 
-// #880 D8 (iii): QPs that really are infeasible, timed per threshold. Without
+// #880: QPs that really are infeasible, timed per threshold. Without
 // a certificate inside eps_primal_inf ProxQP runs to max_iter outer steps of up
 // to max_iter_in + 1 inner ones (status 1); with one it stops early (status 2).
 // The family: a random posture inside the box, one random joint at the box's
@@ -3314,7 +3313,7 @@ TEST(MpcSegmentCoreApproachTiming, EpsPrimalInfPair6R) {
 // q̇₁ ≤ −2q̇₀: outside the velocity box for every α > 1/2, by more as α grows.
 //   main_cold  the catch core, the state's own rest as the reference, cold: one run
 //   main_warm  the same core warm from a feasible solve of the posture at rest:
-//              the warm run fails and the core retries cold — two runs (D3)
+//              the warm run fails and the core retries cold — two runs
 //   main_warm_dl  main_warm on a core with the replan budget as its deadline
 //              (#887): the cold run starts only if the warm run ended inside it.
 //              The same sample as main_warm, the two in alternating order

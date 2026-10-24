@@ -1,39 +1,36 @@
-// ── Fingertip contact debouncer (L7 §4.4, dynamic_catching S1.8 / L7.3) ─────
+// ── Fingertip contact debouncer ──────────────────────────────────────────────
 // Per fingertip i: a bias b_i and noise σ̂_i are estimated by a fixed-memory
 // moving average while the hand is settled at `q_pre` (ARMED/TRACKING window, driven by
 // the caller — this core does not know about FSM Mode). The live decision is
 //
 //   f_i(t) = ‖F_i(t) − b_i‖,   c_i(t) = 1[f_i > max(f_min, k_σ·σ̂_i)]
 //
-// and N_deb CONSECUTIVE true samples confirm contact on sensor i. §4.4 fixes
-// the sign convention (finger-on-object, both sim and hardware, no
-// normalization here) — this core only ever sees a magnitude/residual, so it
-// carries no sign logic to get wrong.
+// and N_deb CONSECUTIVE true samples confirm contact on sensor i. F_i [N] is
+// fingertip i's force (finger-on-object sign in sim and on hardware); the
+// decision sees only the magnitude of the residual, so it carries no sign
+// logic to get wrong.
 //
-// Fixed capacity `kMaxFingertips` (L0 §5.2). No heap, noexcept throughout.
+// Fixed capacity `kMaxFingertips`. No heap, noexcept throughout.
 //
-// ── Ambiguity resolutions (documented per task instruction) ─────────────────
-//  1. "이동평균" (moving average) is read as an exponential moving average
-//     over the RAW 3-vector for the bias, and an EMA of the squared residual
-//     norm for the noise variance — the doc does not fix a window shape, and
-//     EMA is the only O(1)-memory estimator that fits the RT no-heap
-//     constraint without also fixing a sample count up front (a fixed-window
-//     mean would need a ring buffer sized to the window, which §4.4 never
-//     specifies in samples). `baseline_alpha` is exposed as a caller-supplied
-//     constant rather than derived, so the actual window length is a
-//     deployment decision (S7.3/S8), not baked in here.
-//  2. A non-finite force sample must "not corrupt the estimates (reject +
-//     flag)" per the task; this core additionally treats a non-finite LIVE
-//     sample as breaking the debounce streak (resets the consecutive-true
-//     counter to 0) rather than leaving the streak untouched or counting it
-//     as a hit — fail-closed: a garbage reading must never contribute
-//     towards confirming contact, and "hold the streak" would let a later
-//     genuine sample complete a confirmation partly built on garbage.
+// ── Estimator and failure choices ────────────────────────────────────────────
+//  1. The moving average is an exponential moving average (EMA) of the RAW
+//     3-vector for the bias, and an EMA of the squared residual norm for the
+//     noise variance:
+//       b_i ← b_i + α (F_i − b_i),   σ̂_i² ← σ̂_i² + α (‖F_i − b_i‖² − σ̂_i²)
+//     (residual taken before the bias update; the first sample seeds b_i with
+//     σ̂_i² = 0). EMA is the only O(1)-memory estimator that fits the RT no-heap
+//     constraint without fixing a sample count up front. α = `baseline_alpha`
+//     is caller-supplied, so the effective window length is a deployment
+//     choice, not baked in here.
+//  2. A non-finite force sample is rejected without touching the estimates; a
+//     non-finite LIVE sample also breaks the debounce streak (resets the
+//     consecutive-true counter to 0) rather than leaving the streak untouched
+//     or counting it as a hit — fail-closed: a garbage reading must never
+//     contribute towards confirming contact, and "hold the streak" would let a
+//     later genuine sample complete a confirmation partly built on garbage.
 //  3. An out-of-range fingertip index is rejected (no state mutated, sample
-//     reported as not accepted) rather than clamped or asserted — the
-//     reference `traj_sampler.hpp` `n > kMaxSamples` defect this repo's own
-//     S1 port already found is exactly "log the overrun and keep indexing"; this core never
-//     indexes past `kMaxFingertips`.
+//     reported as not accepted) rather than clamped or asserted; this core
+//     never indexes past `kMaxFingertips`.
 #pragma once
 
 #include <Eigen/Core>
@@ -46,7 +43,7 @@
 
 namespace rtc::catching {
 
-/// Hand fingertip capacity (L0 §5.2, dynamic_catching).
+/// Hand fingertip capacity.
 inline constexpr std::size_t kMaxFingertips = 4;
 
 /// Per-fingertip bias/noise estimate, updated only while the caller judges
@@ -57,7 +54,7 @@ struct FingertipBaseline {
   bool initialized{false};                        ///< first sample seeds bias directly
 };
 
-/// Static contact-decision configuration (YAML `supervisor.contact.*`, L7 §6).
+/// Static contact-decision configuration (YAML `supervisor.contact.*`).
 struct ContactDebounceConfig {
   double f_min{0.0};            ///< [N] absolute force floor
   double k_sigma{3.0};          ///< noise multiplier
@@ -65,7 +62,7 @@ struct ContactDebounceConfig {
   double baseline_alpha{0.02};  ///< EMA rate for bias/variance, in (0, 1]
 
   /// A config is usable iff every field is finite and in its documented
-  /// range (L7 §6). `n_debounce == 0` is invalid — "0 consecutive samples"
+  /// range (below). `n_debounce == 0` is invalid — "0 consecutive samples"
   /// is not a debounce, it is "confirm immediately", which defeats the
   /// mechanism's purpose.
   [[nodiscard]] constexpr bool Valid() const noexcept {
@@ -77,7 +74,7 @@ struct ContactDebounceConfig {
 
 /// Fixed-capacity, per-attempt contact debouncer for up to `kMaxFingertips`
 /// sensors. One instance is owned by the supervisor and reset at
-/// RETREAT→ARMED (L7 §4.8: baseline window AND debounce counters both).
+/// RETREAT→ARMED (baseline window AND debounce counters both).
 class ContactDebouncer {
  public:
   /// Replace the configuration. Returns false (and leaves the previous
@@ -91,7 +88,7 @@ class ContactDebouncer {
     return true;
   }
 
-  /// L7 §4.8 rearm reset: bias/noise window AND debounce counters AND the
+  /// Rearm reset: bias/noise window AND debounce counters AND the
   /// latched confirmed flags. Split into the two calls below if a caller
   /// ever needs just one of the two lists independently.
   void ResetForRearm() noexcept {
@@ -99,15 +96,14 @@ class ContactDebouncer {
     ResetDebounceCounters();
   }
 
-  /// Empties the bias/noise moving-average window for every fingertip
-  /// (L7 §4.8 "L7 접촉 바이어스·잡음 창 원형 버퍼 비우기").
+  /// Empties the bias/noise moving-average window for every fingertip.
   void ResetBaselineWindow() noexcept {
     for (FingertipBaseline& b : baseline_)
       b = FingertipBaseline{};
   }
 
   /// Zeroes every fingertip's consecutive-true counter and latched
-  /// confirmation (L7 §4.8 "L7 접촉 debounce 카운터를 0 으로").
+  /// confirmation.
   void ResetDebounceCounters() noexcept {
     consecutive_true_.fill(0);
     confirmed_.fill(false);
@@ -143,10 +139,10 @@ class ContactDebouncer {
 
   /// Feed one live sample into fingertip `idx`'s contact decision and
   /// debounce counter. Call every tick regardless of Mode — the contact
-  /// window (§4.4 result judgement) is the caller's concern, not this core's.
+  /// window (the result judgement) is the caller's concern, not this core's.
   ///
   /// A non-finite sample or an out-of-range `idx` breaks the debounce streak
-  /// (ambiguity resolutions 2/3 above) and reports not confirmed; it never
+  /// (choices 2/3 above) and reports not confirmed; it never
   /// touches the baseline.
   ///
   /// @return true iff fingertip `idx` is confirmed in contact AFTER this

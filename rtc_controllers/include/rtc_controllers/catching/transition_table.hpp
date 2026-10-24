@@ -1,46 +1,30 @@
-// ── L7 supervisor state machine as data (L7 §4.1/§4.2, S1.8 / L7.1) ─────────
-// "전이는 (상태 × 사유) 표를 데이터로 둔다" — §4.1 and §4.2's two human-
-// readable tables are merged into ONE machine table here, and the RT
-// supervisor body (S7.2) is meant to be a thin driver over it: look up
-// (current Mode, evaluated Reason) and, if a row exists, take the
-// transition. This header ships that table plus a completeness check
-// (`CheckTransitionTableComplete`), which the `static_assert` at the end of
-// this file runs on the shipped table at compile time: a table that fails it
-// does not build. Nothing calls it at run time — it stays an ordinary
-// constexpr function so the tests can feed it deliberately broken tables.
+// ── Supervisor state machine as data ─────────────────────────────────────────
+// The (Mode × Reason) → Mode transitions are ONE machine table, and the RT
+// supervisor is a thin driver over it: look up (current Mode, evaluated
+// Reason) and, if a row exists, take the transition. This header ships that
+// table plus a completeness check (`CheckTransitionTableComplete`), which the
+// `static_assert` at the end of this file runs on the shipped table at compile
+// time: a table that fails it does not build. Nothing calls it at run time —
+// it stays an ordinary constexpr function so the tests can feed it
+// deliberately broken tables.
 //
-// ── Ambiguity resolutions (documented per task instruction) ─────────────────
-// The design doc's tables mix true (Mode × Reason) events (§4.2's abort
-// codes) with prose-only exit conditions that have no Reason in the closed
-// §5.1 enum ("유효 궤적 수신", "$t_c-now\le T_{freeze}$", …). Three choices
-// had no single unambiguous reading in the doc text, so S1.8 makes them
-// explicitly (§4.1 itself defers exactly this kind of call to "S1.8 전이표
-// 구현" for the IDLE-homing question, which is the same class of decision):
-//
+// ── Reading the table ───────────────────────────────────────────────────────
 //  1. `Reason::kNone` keys the single nominal forward advance out of every
 //     state that has one (IDLE→ARMED, ARMED→TRACKING, TRACKING→APPROACH, …).
 //     It is not "no reason happened" so much as "no FAILURE reason — the
-//     state's own §4.1 entry condition for the next state was met". The
-//     supervisor body decides when to query the table with kNone; this core
-//     only stores where that query goes.
+//     state's own entry condition for the next state was met". The supervisor
+//     body decides when to query the table with kNone; this core only stores
+//     where that query goes.
 //
-//  2. IDLE homing (§4.1 v0.4 note: "homing 을 IDLE 의 하위 단계로 둘지 별도
-//     Mode 로 둘지는 S1.8 전이표 구현에서 정한다") stays inside `kIdle` —
-//     the §5.1 Mode enum this table is pinned to has no separate homing
-//     state, so introducing one here would diverge from the interface the
-//     rest of L7 is written against. The pre-/post-validation split within
-//     IDLE is invisible to this table; IDLE→ARMED fires once homing AND
-//     §4.5 are both satisfied (again, the supervisor body's job).
+//  2. IDLE homing stays inside `kIdle` — Mode has no separate homing state.
+//     The pre-/post-validation split within IDLE is invisible to this table;
+//     IDLE→ARMED fires once homing AND the readiness conditions are both
+//     satisfied (the supervisor body's job).
 //
-//  3. ARMED's second exit ("§4.5 조건 위반 → IDLE") has no dedicated Reason
-//     in §4.2 either. §4.5 condition 1 is "L0 파라미터 검증 통과(TBD 없음)"
-//     — textually the same gate `PARAMS_TBD` already names for IDLE's entry
-//     — so this table reuses `kParamsTbd` for ARMED→IDLE rather than
-//     inventing a Reason absent from the closed enum. §4.2's own
-//     "발생 가능 상태: IDLE" column is read as "where this is currently
-//     OBSERVED", not a closed set, since it is not itself a completeness
-//     constraint the doc places on Reason applicability. S7.2 kept this
-//     reuse (no dedicated readiness-lost Reason; L7 §4.1).
+//  3. Readiness lost (parameter validation not passed, or `catching.enable`
+//     lowered) has no dedicated Reason: `kParamsTbd` — the gate that already
+//     keeps IDLE from arming — carries it (as it carries "a value the active
+//     law needs is missing"), so ARMED → IDLE on kParamsTbd.
 //
 //     The same reuse covers the MID-CYCLE modes, and there it is not a
 //     labelling choice but a safety one. Readiness can be lost while the arm
@@ -49,19 +33,18 @@
 //     stays, the driver stops calling the law, and the carried joint command
 //     freezes at whatever it held: a velocity step, i.e. exactly the one-tick
 //     infinite deceleration joint_stop.hpp says the controller must never
-//     emit (observed 2026-09-23, code review of this branch). So every mode
-//     that can be carrying motion routes readiness-lost through ABORT_SAFE,
-//     which owns the ramp and already knows how to leave once the arm has
-//     stopped. RETREAT is the exception: the arm is stopped by the time it is
-//     reached and RETREAT is the re-arm boundary, so there readiness-lost
-//     goes straight to IDLE and the cycle ends where a disarm should end it.
-//     ABORT_SAFE deliberately has NO row — its exit is the completion of the
-//     stop, and answering kParamsTbd there would strand the very stop that
-//     makes leaving safe (the driver must let it fall through).
+//     emit. So every mode that can be carrying motion routes readiness-lost
+//     through ABORT_SAFE, which owns the ramp and already knows how to leave
+//     once the arm has stopped. RETREAT is the exception: the arm is stopped
+//     by the time it is reached and RETREAT is the re-arm boundary, so there
+//     readiness-lost goes straight to IDLE and the cycle ends where a disarm
+//     should end it. ABORT_SAFE deliberately has NO row — its exit is the
+//     completion of the stop, and answering kParamsTbd there would strand the
+//     very stop that makes leaving safe (the driver must let it fall through).
 //
-// Every row below is grouped by its FROM state with an inline pointer to the
-// doc line it encodes, so a future reconciliation with a design doc edit can
-// find its counterpart without re-deriving this table from scratch.
+// Rows are grouped by their FROM state. "Fatal reasons" below are the ones
+// that abort from every moving mode: QP_FAILED, TRACK_ERR, SPEED_SCALING,
+// CLOCK_UNHEALTHY (→ ABORT_SAFE); "ESTOP clear" is ESTOP → IDLE.
 #pragma once
 
 #include <array>
@@ -71,8 +54,7 @@
 
 namespace rtc::catching {
 
-// ── §5.1 interface (verbatim: the enum lists are pinned 1:1 to §4.2's rows
-// plus Mode/Outcome, per the design doc's own C++ sketch) ───────────────────
+// ── Interface ───────────────────────────────────────────────────────────────
 
 enum class Mode : std::uint8_t {
   kIdle,
@@ -91,8 +73,8 @@ inline constexpr std::size_t kNumModes = 11;
 
 /// The values are the wire numbers of rtc_msgs/CatchingState REASON_* and of
 /// the logs, so they are written out and a removed reason leaves its number
-/// unassigned instead of renumbering the ones after it. 11 is unassigned
-/// (#755). A value is therefore NOT an index: iterate kAllReasons.
+/// unassigned instead of renumbering the ones after it. 11 is unassigned.
+/// A value is therefore NOT an index: iterate kAllReasons.
 enum class Reason : std::uint8_t {
   kNone = 0,
   kBallStale = 1,
@@ -158,8 +140,7 @@ inline constexpr std::array<Reason, kNumReasons> kAllReasons = {
 
 /// One (from, reason) → to edge. A well-formed table has at most one row per
 /// (from, reason) pair — `CheckTransitionTableComplete` flags a second row
-/// with the same key and a different `to` as a "duplicate cell" (ambiguity
-/// resolution: see the header comment's completeness-check section below).
+/// with the same key and a different `to` as a "duplicate cell".
 struct TransitionRow {
   Mode from;
   Reason reason;
@@ -169,25 +150,24 @@ struct TransitionRow {
 // ── The merged (Mode × Reason) → Mode table ─────────────────────────────────
 // clang-format off
 inline constexpr std::array<TransitionRow, 89> kTransitionTable = {{
-    // IDLE (§4.1 row 1; §4.2 PARAMS_TBD, CLOCK_UNHEALTHY "IDLE 진입 거부")
+    // IDLE (PARAMS_TBD, CLOCK_UNHEALTHY refuse entry to ARMED)
     {Mode::kIdle, Reason::kNone, Mode::kArmed},
     {Mode::kIdle, Reason::kParamsTbd, Mode::kIdle},
     {Mode::kIdle, Reason::kClockUnhealthy, Mode::kIdle},
     {Mode::kIdle, Reason::kEstop, Mode::kIdle},
 
-    // ARMED (§4.1 row 2; §4.2 CLOCK_UNHEALTHY "ARMED 진입 거부";
-    // ambiguity resolution 3 above for the §4.5 readiness-lost edge)
+    // ARMED (CLOCK_UNHEALTHY refuses entry to TRACKING; readiness lost →
+    // IDLE, note 3 above)
     {Mode::kArmed, Reason::kNone, Mode::kTracking},
     {Mode::kArmed, Reason::kParamsTbd, Mode::kIdle},
     {Mode::kArmed, Reason::kClockUnhealthy, Mode::kArmed},
     {Mode::kArmed, Reason::kEstop, Mode::kIdle},
 
-    // TRACKING (§4.1 row 3; §4.2 TRACK_CHANGED/BALL_STALE "TRACKING이면
-    // ARMED", PRED_INCONSISTENT id., NO_CATCHABLE_PLAN and HORIZON_EXTRAP
-    // self-loop + record — the supervisor raises HORIZON_EXTRAP here while the
-    // lane's horizon is spent, TRACKING only waits for a plan, and a lane that
-    // stays that way leaves through BALL_STALE — "전 구간" fatal reasons,
-    // ESTOP clear)
+    // TRACKING (TRACK_CHANGED/BALL_STALE/PRED_INCONSISTENT → ARMED;
+    // NO_CATCHABLE_PLAN and HORIZON_EXTRAP self-loop + record — the supervisor
+    // raises HORIZON_EXTRAP here while the lane's horizon is spent, TRACKING
+    // only waits for a plan, and a lane that stays that way leaves through
+    // BALL_STALE; fatal reasons, ESTOP clear)
     {Mode::kTracking, Reason::kNone, Mode::kApproach},
     {Mode::kTracking, Reason::kTrackChanged, Mode::kArmed},
     {Mode::kTracking, Reason::kBallStale, Mode::kArmed},
@@ -201,9 +181,8 @@ inline constexpr std::array<TransitionRow, 89> kTransitionTable = {{
     {Mode::kTracking, Reason::kEstop, Mode::kIdle},
     {Mode::kTracking, Reason::kParamsTbd, Mode::kAbortSafe},
 
-    // APPROACH (§4.1 row 4; §4.2 BALL_STALE/TRACK_CHANGED/HORIZON_EXTRAP/
-    // PRED_INCONSISTENT/PLAN_INVALID/REF_SATURATED "APPROACH면 RETREAT",
-    // "전 구간" fatal reasons, ESTOP clear)
+    // APPROACH (BALL_STALE/TRACK_CHANGED/HORIZON_EXTRAP/PRED_INCONSISTENT/
+    // PLAN_INVALID/REF_SATURATED → RETREAT; fatal reasons, ESTOP clear)
     {Mode::kApproach, Reason::kNone, Mode::kCommitted},
     {Mode::kApproach, Reason::kBallStale, Mode::kRetreat},
     {Mode::kApproach, Reason::kTrackChanged, Mode::kRetreat},
@@ -218,9 +197,9 @@ inline constexpr std::array<TransitionRow, 89> kTransitionTable = {{
     {Mode::kApproach, Reason::kEstop, Mode::kIdle},
     {Mode::kApproach, Reason::kParamsTbd, Mode::kAbortSafe},
 
-    // COMMITTED (§4.1 row 5; §4.2 BALL_STALE_LONG/REF_SATURATED "동결 후
-    // ABORT_SAFE", BALL_STALE_COMMITTED/HORIZON_EXTRAP/TIP_STALE self-loop +
-    // record, "전 구간" fatal reasons, ESTOP clear)
+    // COMMITTED (plan frozen: BALL_STALE_LONG/REF_SATURATED → ABORT_SAFE;
+    // BALL_STALE_COMMITTED/HORIZON_EXTRAP/TIP_STALE self-loop + record;
+    // fatal reasons, ESTOP clear)
     {Mode::kCommitted, Reason::kNone, Mode::kClosing},
     {Mode::kCommitted, Reason::kBallStaleLong, Mode::kAbortSafe},
     {Mode::kCommitted, Reason::kRefSaturated, Mode::kAbortSafe},
@@ -234,8 +213,8 @@ inline constexpr std::array<TransitionRow, 89> kTransitionTable = {{
     {Mode::kCommitted, Reason::kEstop, Mode::kIdle},
     {Mode::kCommitted, Reason::kParamsTbd, Mode::kAbortSafe},
 
-    // CLOSING (§4.1 row 6; §4.2 same "동결 후" set as COMMITTED plus
-    // HAND_TIMEOUT self-loop + record, "전 구간" fatal reasons, ESTOP clear)
+    // CLOSING (the same frozen-plan set as COMMITTED plus HAND_TIMEOUT
+    // self-loop + record; fatal reasons, ESTOP clear)
     {Mode::kClosing, Reason::kNone, Mode::kDecel},
     {Mode::kClosing, Reason::kBallStaleLong, Mode::kAbortSafe},
     {Mode::kClosing, Reason::kRefSaturated, Mode::kAbortSafe},
@@ -250,10 +229,9 @@ inline constexpr std::array<TransitionRow, 89> kTransitionTable = {{
     {Mode::kClosing, Reason::kEstop, Mode::kIdle},
     {Mode::kClosing, Reason::kParamsTbd, Mode::kAbortSafe},
 
-    // DECEL (§4.1 row 7; §4.2 HAND_TIMEOUT/TIP_STALE self-loop + record —
-    // REF_SATURATED/BALL_STALE_LONG do NOT apply here per their own
-    // "발생 가능 상태" columns (APPROACH/COMMITTED/CLOSING only), "전 구간"
-    // fatal reasons, ESTOP clear)
+    // DECEL (HAND_TIMEOUT/TIP_STALE self-loop + record — REF_SATURATED/
+    // BALL_STALE_LONG arise only in APPROACH/COMMITTED/CLOSING; fatal
+    // reasons, ESTOP clear)
     {Mode::kDecel, Reason::kNone, Mode::kHold},
     {Mode::kDecel, Reason::kHandTimeout, Mode::kDecel},
     {Mode::kDecel, Reason::kTipStale, Mode::kDecel},
@@ -264,8 +242,7 @@ inline constexpr std::array<TransitionRow, 89> kTransitionTable = {{
     {Mode::kDecel, Reason::kEstop, Mode::kIdle},
     {Mode::kDecel, Reason::kParamsTbd, Mode::kAbortSafe},
 
-    // HOLD (§4.1 row 8; TIP_STALE self-loop, "전 구간" fatal reasons, ESTOP
-    // clear)
+    // HOLD (TIP_STALE self-loop; fatal reasons, ESTOP clear)
     {Mode::kHold, Reason::kNone, Mode::kRetreat},
     {Mode::kHold, Reason::kTipStale, Mode::kHold},
     {Mode::kHold, Reason::kQpFailed, Mode::kAbortSafe},
@@ -275,7 +252,7 @@ inline constexpr std::array<TransitionRow, 89> kTransitionTable = {{
     {Mode::kHold, Reason::kEstop, Mode::kIdle},
     {Mode::kHold, Reason::kParamsTbd, Mode::kAbortSafe},
 
-    // RETREAT (§4.1 row 9; "전 구간" fatal reasons, ESTOP clear)
+    // RETREAT (fatal reasons, ESTOP clear)
     {Mode::kRetreat, Reason::kNone, Mode::kArmed},
     {Mode::kRetreat, Reason::kQpFailed, Mode::kAbortSafe},
     {Mode::kRetreat, Reason::kTrackErr, Mode::kAbortSafe},
@@ -283,26 +260,26 @@ inline constexpr std::array<TransitionRow, 89> kTransitionTable = {{
     {Mode::kRetreat, Reason::kClockUnhealthy, Mode::kAbortSafe},
     {Mode::kRetreat, Reason::kEstop, Mode::kIdle},
     {Mode::kRetreat, Reason::kParamsTbd, Mode::kIdle},
-    // #537 S8-C (D-S8-6 (a)): the hand did not reach q_pre within
-    // T_release_timeout of the release. RETREAT ends in IDLE and the driver
-    // disarms on the same tick — a hand that cannot settle must not re-arm on
-    // its own. IDLE has no row: it never waits on the hand.
+    // The hand did not reach q_pre within T_release_timeout of the release.
+    // RETREAT ends in IDLE and the driver disarms on the same tick — a hand
+    // that cannot settle must not re-arm on its own. IDLE has no row: it never
+    // waits on the hand.
     {Mode::kRetreat, Reason::kHandTimeout, Mode::kIdle},
-    // #537 S9b (D-S9-D1): the stop or the return did not finish within its
-    // motion deadline, or a fault latched while returning. RETREAT is a motion
-    // like ABORT_SAFE's ramp, and a motion that cannot finish is the same
-    // "abort that cannot recover" whichever of the two it happens in — so the
-    // same reason, and FAULT (which ramps the arm to rest and holds it).
+    // The stop or the return did not finish within its motion deadline, or a
+    // fault latched while returning. RETREAT is a motion like ABORT_SAFE's
+    // ramp, and a motion that cannot finish is the same "abort that cannot
+    // recover" whichever of the two it happens in — so the same reason, and
+    // FAULT (which ramps the arm to rest and holds it).
     {Mode::kRetreat, Reason::kAbortEscalated, Mode::kFault},
 
-    // ABORT_SAFE (§4.1 row 10; ABORT_ESCALATED → FAULT, ESTOP clear)
+    // ABORT_SAFE (ABORT_ESCALATED → FAULT, ESTOP clear)
     {Mode::kAbortSafe, Reason::kNone, Mode::kRetreat},
     {Mode::kAbortSafe, Reason::kAbortEscalated, Mode::kFault},
     {Mode::kAbortSafe, Reason::kEstop, Mode::kIdle},
 
-    // FAULT (§4.1 row 11; FAULT_RESET only). ESTOP is a self-loop here: the
-    // fault is a controller latch separate from E-STOP, and ClearEstop must
-    // not release it (§4.1 P-1, S5.1(d)) — only FAULT_RESET leaves FAULT.
+    // FAULT (FAULT_RESET only). ESTOP is a self-loop here: the fault is a
+    // controller latch separate from E-STOP, and ClearEstop must not release
+    // it — only FAULT_RESET leaves FAULT.
     {Mode::kFault, Reason::kFaultReset, Mode::kIdle},
     {Mode::kFault, Reason::kEstop, Mode::kFault},
 }};
@@ -324,8 +301,7 @@ inline constexpr std::array<TransitionRow, 89> kTransitionTable = {{
   return false;
 }
 
-/// Findings of the completeness check (§4.1: "기동 시 완전성을
-/// 검사한다"). `ok` is true iff every array below is all-false and
+/// Findings of the completeness check. `ok` is true iff every array below is all-false and
 /// `duplicate_cell` is false.
 struct CompletenessResult {
   /// [i] true iff Mode kAllModes[i] never appears as a `to` from a different

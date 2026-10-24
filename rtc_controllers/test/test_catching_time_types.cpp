@@ -1,14 +1,14 @@
-// G0-E — time axes of the catching core (L0 §4.5) and the D-2 stamp
-// conversion (L1 §4.1, E-1 recorded exception).
+// Time axes of the catching core (BallTime / NowReal / NowLead) and the stamp
+// conversion.
 //
 // Two halves:
 //  • compile-time: no comparison exists between different time types, and each
-//    §3 decision accepts only the now-type it is defined on. These are
+//    decision accepts only the now-type it is defined on. These are
 //    static_asserts on requires-expressions, so a regression is a build break.
 //  • run-time, on a T_arm ≠ 0 fixture: each decision flips at the instant its
 //    OWN axis says, and would flip at a different instant on the other axis.
 //    With T_arm = 0 the two axes coincide and none of these cases could tell a
-//    swapped axis apart (L0 §4.5).
+//    swapped axis apart.
 #include "rtc_controllers/catching/time_types.hpp"
 
 #include <gtest/gtest.h>
@@ -70,7 +70,7 @@ static_assert(!std::is_convertible_v<NowReal, NowLead> && !std::is_convertible_v
 static_assert(!std::is_convertible_v<NowReal, BallTime> &&
               !std::is_convertible_v<BallTime, NowLead>);
 
-// Each §3 decision takes exactly its own now-type.
+// Each decision takes exactly its own now-type.
 static_assert(std::is_invocable_v<decltype(&DecelDue), NowLead, BallTime>);
 static_assert(!std::is_invocable_v<decltype(&DecelDue), NowReal, BallTime>);
 static_assert(std::is_invocable_v<decltype(&HorizonExceeded), NowLead, BallTime>);
@@ -90,7 +90,7 @@ static_assert(
 static_assert(std::is_invocable_v<decltype(&AgeNs), NowReal, NowReal>);
 static_assert(!std::is_invocable_v<decltype(&AgeNs), NowReal, BallTime>);
 
-// SeqLock payload rule (G0-B).
+// SeqLock payload rule.
 static_assert(std::is_trivially_copyable_v<BallTime> && std::is_trivially_copyable_v<NowReal> &&
               std::is_trivially_copyable_v<NowLead>);
 
@@ -156,7 +156,7 @@ TEST(CatchingTimeTypes, HandCommandsOnRealAxis) {
   EXPECT_TRUE(PreshapeDue(NowReal{t_c.ns - t_pre}, t_c, t_pre));
 }
 
-// The close the sequencer issues (S7.1): the tick NEAREST t_cmd — up to h/2
+// The close the sequencer issues: the tick NEAREST t_cmd — up to h/2
 // early, never more. h ≤ 0 is the unrounded predicate.
 TEST(CatchingTimeTypes, HandCommandRoundsToTheNearestTick) {
   const BallTime t_cmd{1'940 * kMs};
@@ -188,7 +188,7 @@ TEST(CatchingTimeTypes, SecondsBetweenIsOriginFree) {
   EXPECT_DOUBLE_EQ(SecondsBetween(BallTime{-3 * kMs}, BallTime{-1 * kMs}), 0.002);
 }
 
-// ── D-2 (3) stamp conversion ────────────────────────────────────────────────
+// ── Stamp conversion ────────────────────────────────────────────────────────
 
 // t_ref_steady = recv_steady − (recv_wall − stamp): the transport delay is
 // carried over onto the steady axis.

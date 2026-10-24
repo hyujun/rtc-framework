@@ -1,7 +1,6 @@
 // NLP catch search — the lattice, the necessary conditions and the outer cost
-// (E1-F14 #740; reference §8.4, §9.5, §11.1, §11.3).
 //
-// Every expectation here is the reference's formula written out again in the
+// Every expectation here is the header's formula (nlp_catch_screening.hpp) written out again in the
 // test, on scalars, and every inequality is driven from BOTH sides of its
 // boundary: a condition tested on one side only passes with its sign flipped.
 // The arm in the reach tests has a different limit on every joint and a
@@ -116,7 +115,7 @@ TEST(NlpLattice, ACandidatesGridUsesTheMostIntervalsThatFitAndWaitsLessThanOne) 
   EXPECT_EQ(NlpCandidateGridAt(kT0 + 5 * kDt, kT0, 0).n_pre, 0);
 }
 
-// ── 2. (S4) Reach ────────────────────────────────────────────────────────────
+// ── 2. Reach ─────────────────────────────────────────────────────────────────
 
 struct ReachArm {
   // Distinct on every joint, and v_0 of both signs.
@@ -126,7 +125,7 @@ struct ReachArm {
   std::array<double, 4> a_max{8.0, 5.0, 12.0, 3.0};
 };
 
-// The reference's two conditions for one joint, written out again.
+// The header's two conditions for one joint, written out again.
 bool VelocityOk(double q_c, double q_0, double v_max, double T) {
   return std::fabs(q_c - q_0) <= v_max * T;
 }
@@ -278,7 +277,7 @@ TEST(NlpReach, UnusableInputIsNotReachable) {
   }
 }
 
-// ── 3. (S3) Closing-speed window ─────────────────────────────────────────────
+// ── 3. Closing-speed window ──────────────────────────────────────────────────
 
 NlpSpeedWindowInput SetOnly() {
   NlpSpeedWindowInput in;
@@ -447,7 +446,7 @@ TEST(NlpSpeedWindowTest, ATermThatCannotBeEvaluatedEmptiesTheWindow) {
   EXPECT_TRUE(broken([](NlpSpeedWindowInput& in) { in.c_cap_max = kNaN; }));
 }
 
-// ── 4. The outer cost (§9.5) ─────────────────────────────────────────────────
+// ── 4. The outer cost ────────────────────────────────────────────────────────
 
 TEST(NlpOuterCost, TimeAndSwitchTermsAreTheReferencesFormulas) {
   // J_time = w_T · T / T_ref.

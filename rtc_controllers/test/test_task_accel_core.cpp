@@ -34,7 +34,7 @@
 //
 // The shim reading J/M/h from a SECOND, independently built RtModelHandle is an
 // assumption, not a given, so ReferenceDynamics.IndependentHandlesAgreeBitwise
-// below measures it directly (plan §S2 R6) — if that ever fails, every
+// below measures it directly — if that ever fails, every
 // cross-check here is void and would need re-basing rather than re-tuning.
 //
 // Every bitwise suite carries a non-vacuity partner
@@ -100,8 +100,8 @@ using rtc::testing::BitsEqual;
 using rtc::testing::MakeRng;
 
 // The serial_7dof fixture and the measured-state sweep, shared with
-// test_task_vel_core.cpp (serial7dof_fixture.hpp). S3a reuses this file's
-// independent-handle measurement (plan §S3 R6), which is only valid while both
+// test_task_vel_core.cpp (serial7dof_fixture.hpp). test_task_vel_core.cpp reuses this
+// file's independent-handle measurement, which is only valid while both
 // files use the SAME fixture — sharing the definition is what makes that
 // structural rather than a pair of copies that happen to still agree.
 using rtc::testing::FillSweep;
@@ -584,7 +584,7 @@ TEST(TaskAccelLaw, BitwiseComparisonRejectsAReassociatedLaw) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// The assumption the cross-check rests on (plan §S2 R6)
+// The assumption the cross-check rests on
 // ═══════════════════════════════════════════════════════════════════════════
 
 // The shim cannot read the adapter's J/M/h — there are no accessors, and adding

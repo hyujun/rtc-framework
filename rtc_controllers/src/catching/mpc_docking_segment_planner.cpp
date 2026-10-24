@@ -1,4 +1,4 @@
-// The docking segment planner (E1-F16 #742). See mpc_docking_segment_planner.hpp.
+// The docking segment planner. See mpc_docking_segment_planner.hpp.
 #include "rtc_controllers/catching/mpc_docking_segment_planner.hpp"
 
 #include "rtc_controllers/catching/ball_node_samples.hpp"
@@ -102,7 +102,7 @@ void WarmUpStageHook(MpcDockingStage stage, bool begin, void* user) noexcept {
 }
 
 // Per joint group, the core's per-joint weights for that group's joints and
-// the whole-body weights (E3-F02): a value the group does not give keeps the
+// the whole-body weights: a value the group does not give keeps the
 // core's own; a weight vector left all zero is the core's "off" (empty).
 void ApplyGroupWeights(const MpcDockingSegmentPlannerParams& p,
                        const std::array<std::int8_t, kMaxPlanNv>& group_of_model, int n,
@@ -153,7 +153,7 @@ void ApplyGroupWeights(const MpcDockingSegmentPlannerParams& p,
   whole_body(c.w_rest_stop, &DockingGroupParams::w_rest_stop);
 }
 
-// Group g's partition for the core of n_pre pre-catch intervals (E3-F02, D11):
+// Group g's partition for the core of n_pre pre-catch intervals:
 // the pre-catch intervals in blocks of `blocks.pre`, the remainder joining the
 // last; then the group's stop partition (`stop.blocks` without one).
 BlockPattern GroupBlocks(const MpcDockingSegmentPlannerParams& p, int g, int n_pre) {
@@ -239,7 +239,7 @@ bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& mo
     return fail("mpc_docking planner: approach.rest_tol or a publish threshold is out of range");
   }
 
-  // The joint groups (E3-F02): the device's, read in model order.
+  // The joint groups: the device's, read in model order.
   if (model.groups.n_groups != p.n_groups) {
     return fail("mpc_docking planner: the arm's joint groups (" +
                 std::to_string(model.groups.n_groups) +
@@ -743,7 +743,7 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   std::array<double, kMaxSegmentNv> qdd0{};
   bool finite = true;
   if (following) {
-    // The source is what the RT reports, never an inference (MD-58): that
+    // The source is what the RT reports, never an inference: that
     // segment, read back by the RT's own evaluator at node 0's instant.
     const SegmentSnapshot* src = ring_.Source(rt, t_eff);
     if (src == nullptr) {
@@ -968,7 +968,7 @@ bool MpcDockingSegmentPlanner::Replan(const PlannerRtState& rt, const BallPredic
   rec.n_nodes = n_total;
   rec.kind = SegmentKind::kAdvance;
 
-  // The source is what the RT reports, never an inference (MD-58).
+  // The source is what the RT reports, never an inference.
   const SegmentSnapshot* src = ring_.Source(rt, t_eff);
   if (src == nullptr) {
     rec.outcome = SegmentOutcome::kNotFollowed;

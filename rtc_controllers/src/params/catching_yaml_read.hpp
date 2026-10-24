@@ -1,5 +1,5 @@
 // ── Shared YAML READING for the two `catching:` parsers (private) ───────────
-// `catching_params.cpp` (ParseCatchingParams, the G0-C subset) and
+// `catching_params.cpp` (ParseCatchingParams, the validator subset) and
 // `catch_pose_ik_params.cpp` (ParseCatchPoseIkParams, `planner.search.grid.ik.*` +
 // `planner.search.grid.catchability.*`) read the same tree, and overlap on one key. They
 // used to carry a private copy each of the helpers below, which is how two
@@ -8,7 +8,7 @@
 //
 // What is shared is strictly how a node is READ — which YAML shapes count as
 // "absent", which scalar is the `TBD` literal, that a non-finite number is
-// still-TBD (L0 §5.3). What is NOT shared, on purpose, is how a problem is
+// still-TBD. What is NOT shared, on purpose, is how a problem is
 // REPORTED: each helper returns a classification and never throws, so each
 // parser keeps its own wording and its own mechanism (ParseCatchingParams
 // defers a range violation to ValidateCatchingParams' report;
@@ -76,8 +76,8 @@ struct TbdRead {
   YAML::Node node{};  ///< the key's node when present, for the caller's message
 };
 
-/// Read a scalar the schema may leave open: the literal string `TBD`, or (per
-/// L0 §5.3) a non-finite number, both come back as `tbd = true`. A finite
+/// Read a scalar the schema may leave open: the literal string `TBD`, or a
+/// non-finite number, both come back as `tbd = true`. A finite
 /// number comes back resolved and UNCHECKED — range is the caller's business.
 [[nodiscard]] inline TbdRead ReadTbdScalar(const YAML::Node& sec, const char* key) {
   const YAML::Node v = sec[key];
@@ -94,7 +94,7 @@ struct TbdRead {
     return {TbdReadKind::kNotANumber, TbdDouble{}, v};
   }
   if (!std::isfinite(d)) {
-    return {TbdReadKind::kRead, TbdDouble{d, true}, v};  // NaN sentinel: still TBD (L0 §5.3)
+    return {TbdReadKind::kRead, TbdDouble{d, true}, v};  // NaN sentinel: still TBD
   }
   return {TbdReadKind::kRead, TbdDouble{d, false}, v};
 }

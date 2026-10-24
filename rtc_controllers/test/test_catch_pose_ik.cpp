@@ -1,5 +1,5 @@
-// ── dynamic_catching S1.9: catch-pose IK + catchability gate ────────────────
-// Suite for rtc::catching::CatchPoseIk (L3 §4.2, gates G3-G / G3-I / G3-K).
+// ── Catch-pose IK + catchability gate ───────────────────────────────────────
+// Suite for rtc::catching::CatchPoseIk.
 //
 // Two fixtures, and the pair is the point:
 //   • serial_6r_wrist — nv = 6, so the 5-row task leaves EXACTLY one free
@@ -209,7 +209,7 @@ struct RollSample {
 
 }  // namespace
 
-// ── 1. Convergence and step limiting (SPRINT 1) ──────────────────────────────
+// ── 1. Convergence and step limiting ─────────────────────────────────────────
 
 TEST(CatchPoseIk, ConvergesOnBothFixtures) {
   for (const bool six : {true, false}) {
@@ -238,7 +238,7 @@ TEST(CatchPoseIk, ConvergesOnBothFixtures) {
       EXPECT_LE(r.theta, BaseOptions().alpha_max) << "case " << c;
       EXPECT_TRUE(r.accepted);
     }
-    // Not a rate gate (that is G3-G, measured on real candidates) — just the
+    // Not a rate gate (the rate is measured on real candidates) — just the
     // assertion that reachable targets are overwhelmingly solved, so a later
     // regression that breaks the loop cannot hide behind "IK is hard".
     EXPECT_GE(solved, kCases - 3) << (six ? "6R" : "7R");
@@ -327,7 +327,7 @@ TEST(CatchPoseIk, TighterStepBoundCostsMoreIterations) {
   EXPECT_GT(r_tight.iterations, r_loose.iterations);
 }
 
-// ── 2. Null-space ascent on w₅ (SPRINT 2) ────────────────────────────────────
+// ── 2. Null-space ascent on w₅ ───────────────────────────────────────────────
 
 TEST(CatchPoseIk, AscentReachesTheRollSweepLocalMaximum) {
   Arm a = Arm6R();
@@ -392,7 +392,7 @@ TEST(CatchPoseIk, AscentNeverLowersManipulabilityVersusTheBaseline) {
       if (r_off.reason != CatchPoseReason::kNone || r_on.reason != CatchPoseReason::kNone)
         continue;
       ++compared;
-      // k_manip = 0 is the original [확정 D-18] behaviour. Turning the term on
+      // k_manip = 0 is the original behaviour. Turning the term on
       // may not make the pose worse conditioned.
       EXPECT_GE(r_on.w5, r_off.w5 * (1.0 - 1e-9)) << (six ? "6R" : "7R") << " case " << c;
     }
@@ -507,7 +507,7 @@ TEST(CatchPoseIk, RepeatedAndInterleavedSolvesAreBitIdentical) {
   // A DIFFERENT candidate in between. This is the leak a warm-started solver
   // would show: same inputs, different answer, because the previous problem's
   // state survived. The map and the planner would then disagree purely on
-  // search order (L3 §4.2).
+  // search order.
   const CatchPoseIkResult unrelated =
       ik.Solve(*a.handle, a.frame, other.p_c, other.v_ball, other_seed, o);
   const CatchPoseIkResult third = ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, seed, o);
@@ -523,7 +523,7 @@ TEST(CatchPoseIk, RepeatedAndInterleavedSolvesAreBitIdentical) {
   EXPECT_EQ(first.iterations, third.iterations);
 }
 
-// ── 3. w₅ / w₆ against independent oracles (SPRINT 4) ────────────────────────
+// ── 3. w₅ / w₆ against independent oracles ───────────────────────────────────
 
 TEST(CatchPoseIk, ManipulabilityMatchesADenseDeterminant) {
   for (const bool six : {true, false}) {
@@ -701,7 +701,7 @@ TEST(CatchPoseIk, TheSolutionDoesNotDependOnTheGateDefinition) {
   EXPECT_EQ(r5.w6, r6.w6);
 }
 
-// ── 4. Reason codes (SPRINT 5) ───────────────────────────────────────────────
+// ── 4. Reason codes ──────────────────────────────────────────────────────────
 
 TEST(CatchPoseIk, RejectionsCarryTheirOwnReason) {
   Arm a = Arm6R();
@@ -819,7 +819,7 @@ TEST(CatchPoseIk, AStructurallySingularArmIsRejectedNotScoredZero) {
   EXPECT_EQ(r.w5, 0.0);
 }
 
-// ── 5. RT contract (SPRINT 6, gate G3-K function part) ───────────────────────
+// ── 5. RT contract ───────────────────────────────────────────────────────────
 
 // Positive control for the two gates below. A gate that is inert reports zero
 // for everything, which is indistinguishable from success — and this suite's
@@ -1027,7 +1027,7 @@ TEST(CatchPoseIk, AnUnusableGradientProbeIsNotReportedAsAConvergedAscent) {
   // A failed probe leaves grad_norm at 0 because nothing was measured. Reading
   // that as ‖N∇log w₅‖ < tol would break the loop on the first iteration and
   // report manip_converged on a pose whose conditioning was never touched —
-  // the exact opposite of what G3-G is supposed to measure.
+  // the exact opposite of what the manipulability gate is supposed to measure.
   EXPECT_FALSE(r.manip_converged);
   EXPECT_EQ(r.manip_grad_failures, o.max_iter);
   EXPECT_EQ(r.iterations, o.max_iter);

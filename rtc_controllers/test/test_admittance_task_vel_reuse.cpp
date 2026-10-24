@@ -25,8 +25,8 @@
 //      the core materialises K⊙e and adds ν_c — the operands the other way
 //      round. Addition is commutative in IEEE-754, so the swap is claimed to be
 //      bitwise inert; this oracle is where that is MEASURED, on every run,
-//      rather than inherited from the session probe that chose D-S5a (plan §S5
-//      R3/R4, and the S3a M7 rule: one oracle per inline shape).
+//      rather than inherited from the probe that chose the operand order (one
+//      oracle per inline shape).
 //
 //   2. The live TaskAdmittanceController. TRANSIENT — RETIRED in #298 S7c-2
 //      with the adapter (see "Oracle 2 retired" below). Its job was
@@ -41,7 +41,7 @@
 // commands. The shim therefore does NOT re-derive the compliant frame or the
 // pseudoinverse — it instantiates the adapter's own public helpers
 // (compliance::AdmittanceIntegrator, compliance::DifferentialIk) and compares
-// both device-0 lanes directly (plan §S5 R5). What it does replicate is the
+// both device-0 lanes directly. What it does replicate is the
 // JOINT TAIL (velocity clamp → integrate → joint-limit clamp → rate re-bound →
 // dq recompute), because target_velocities is the round-tripped
 // (q_cmd − q_base)/dt and not the raw solve output. That tail is limits-and-
@@ -250,7 +250,7 @@ TEST(AdmittanceTaskVelReuse, MatchesThePreExtractionInlineFormBitwise) {
 // solveInPlace, so a mutant built that way would have proved nothing). This one
 // contracts each axis with std::fma, which computes kp·e + ν_c in ONE rounding
 // instead of two: algebraically the same value, a genuinely different
-// algorithm, and the same control the D-S5a probe used (622,794 of 1.2M doubles
+// algorithm, and the same control the operand-order probe used (622,794 of 1.2M doubles
 // differed). If bit equality could not tell these apart, the test above would be
 // pinning nothing — in particular it could not distinguish the operand swap it
 // exists to certify from a compiler that fused the expression.
@@ -320,7 +320,7 @@ constexpr int kShimTaskDim = 6;
 // Unlike S2a's and S4's shims this one does NOT re-derive the helpers it drives:
 // AdmittanceIntegrator and DifferentialIk are public, so it instantiates the
 // same classes the adapter holds and only the plumbing between them is written
-// twice (plan §S5 R5).
+// twice.
 class AdmittanceShim {
  public:
   AdmittanceShim() {

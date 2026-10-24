@@ -1,4 +1,4 @@
-// ── The record one search wake leaves (L3 §8) ────────────────────────────────
+// ── The record one search wake leaves ────────────────────────────────────────
 //
 // What a CatchSearch (catch_search.hpp) fills on every wake and PlannerCycle
 // carries out in its PlannerCycleRecord: the candidate funnel, why candidates
@@ -26,7 +26,7 @@ enum class JudgeReject : std::uint8_t {
   kNone = 0,
   kInput,           ///< non-finite p/v, or ‖v̂‖ below v_eps (NUM-7)
   kIk,              ///< IK did not converge / was refused
-  kManipulability,  ///< the IK's catchability gate (D-18)
+  kManipulability,  ///< the IK's catchability gate (arm manipulability)
   kNotEvaluated,    ///< outside the IK budget (pre-filter or budget_s)
   /// Farther from the arm than its kinematics can put the catch frame
   /// (reach_bound.hpp) — refused without running the IK.
@@ -37,17 +37,17 @@ inline constexpr std::size_t kJudgeRejectCount = 6;
 /// What the switching rule decided about the plan the RT is following.
 enum class SwitchDecision : std::uint8_t {
   kNoCurrent = 0,   ///< the RT follows no plan of ours — publish the best
-  kReplaced,        ///< a better candidate replaced it (§4.7)
+  kReplaced,        ///< a better candidate replaced it
   kHeldHysteresis,  ///< not better by delta_J
   /// Better — or the followed candidate with a moved prediction — but the
-  /// step the switch would put into u_des is over the budget (§4.7).
+  /// step the switch would put into u_des is over the budget.
   kHeldJump,
-  kHeldFreeze,       ///< within T_freeze of the current t_c (decision G)
+  kHeldFreeze,       ///< within T_freeze of the current t_c
   kHeldNoCandidate,  ///< no candidate passed; the RT keeps what it has
   /// The followed candidate is still the best, but its predicted catch point
   /// moved by more than `planner.search.grid.gamma.eps_term`: republished with the new
   /// p_c (jump limits and freeze still apply) — hysteresis must not pin a
-  /// catch point the prediction has left (2026-09-23 /code-review).
+  /// catch point the prediction has left.
   kRefreshed,
 };
 
@@ -80,7 +80,7 @@ enum class NlpReject : std::uint8_t {
   /// Outside the window around the cell of the first plan the RT followed on
   /// this track (`follow_window`) — the first check, before any other is run.
   kFollowWindow,
-  kLeadShort,    ///< t_c − t_0 below the minimum lead (S1)
+  kLeadShort,    ///< t_c − t_0 below the minimum lead
   kBallInvalid,  ///< the prediction cannot be sampled at one of its nodes, or is too slow
   kCovariance,   ///< chance rows are on and the catch-node covariance is not usable
   /// No reported segment to start from at this candidate's node 0 — as a
@@ -92,8 +92,8 @@ enum class NlpReject : std::uint8_t {
   kTooFar,
   kIk,              ///< the catch-pose IK did not converge or was refused
   kManipulability,  ///< the IK's catchability gate
-  kReach,           ///< the catch pose cannot be reached in the time (S4)
-  kSpeedWindow,     ///< the closing-speed window is empty (S3)
+  kReach,           ///< the catch pose cannot be reached in the time (NlpReachCheck)
+  kSpeedWindow,     ///< the closing-speed window is empty (NlpClosingSpeedWindow)
   kNotRanked,       ///< passed screening, outside the wake's solve budget
   kDeadline,        ///< its solve ran past its share of the budget
   kSolverRejected,  ///< the solve was refused before any iterate existed
@@ -153,8 +153,8 @@ inline constexpr std::size_t kNlpRejectCount = 20;
   return "unknown";
 }
 
-/// One candidate's solve, as the wake's record keeps it (#798 — E1-F19 part 2's
-/// instrument: what refused a candidate, group by group, and how long it took).
+/// One candidate's solve, as the wake's record keeps it: what refused it,
+/// group by group, and how long it took.
 /// The planner CSV writer unrolls these into `nlp_candidates.csv`, one row per
 /// solved candidate; the trivially-copyable record keeps the planner thread's
 /// path (SPSC → the controller's aux timer) unchanged.
@@ -192,7 +192,7 @@ struct NlpCandidateStat {
 /// fixed-shape record on the existing path, paid once per wake, not per row.
 inline constexpr int kNlpCandidateStatCount = 32;
 
-/// What a wake of the NLP search adds to SearchStats (E1-F14 #740). Left at
+/// What a wake of the NLP search adds to SearchStats. Left at
 /// its default by every other search (`ran` false).
 struct NlpSearchStats {
   bool ran{false};                     ///< an NLP search filled this block
@@ -241,12 +241,12 @@ struct NlpSearchStats {
   /// for [rad], [rad/s]. NaN when the RT reports following none.
   double cmd_gap_q{std::numeric_limits<double>::quiet_NaN()};
   double cmd_gap_qd{std::numeric_limits<double>::quiet_NaN()};
-  // ── The candidates this wake solved (#798), in solve order ──
+  // ── The candidates this wake solved, in solve order ────────────────────────
   std::uint16_t n_cands{0};
   std::array<NlpCandidateStat, kNlpCandidateStatCount> cands{};
 };
 
-/// One cycle's search diagnostics (L3 §8) — the planner CSV's body.
+/// One cycle's search diagnostics — the planner CSV's body.
 struct SearchStats {
   bool settling{false};          ///< inside n_settle after a track change
   std::uint16_t n_in_window{0};  ///< candidates whose lead is in the slice window
@@ -265,8 +265,7 @@ struct SearchStats {
   double chosen_gamma_f{0.0};
   double chosen_t_w{0.0};                  ///< the γ window the rollout chose [s]
   bool chosen_rollout_window_only{false};  ///< γ_f chosen on window peaks (approach saturates)
-  /// The chosen candidate's γ window (L3 §4.5) as judged — what an offline
-  /// analysis had to rebuild from FK before S8-I (#537 5847660329). NaN when
+  /// The chosen candidate's γ window (ComputeGammaWindow) as judged. NaN when
   /// the window was unjudgeable (`gamma_usable` false) or no plan was produced.
   double chosen_g_min{std::numeric_limits<double>::quiet_NaN()};
   double chosen_g_max{std::numeric_limits<double>::quiet_NaN()};
@@ -276,16 +275,15 @@ struct SearchStats {
   /// Whether the caller should publish the returned snapshot. False when the
   /// switching rule holds the RT's current plan.
   bool publish{true};
-  /// monitorOnly (§4.6): σ_ℓ at the committed t_c from the newest covariance.
+  /// monitorOnly: σ_ℓ at the committed t_c from the newest covariance.
   double sigma_l{std::numeric_limits<double>::quiet_NaN()};
   /// The covariance box the wake was given: its point count (0 = none).
   std::int32_t cov_n{0};
   /// √λ_max of the ball's position covariance at the chosen candidate's catch
-  /// node, raw (#798 — #800's finding: `sigma_l` is the monitor's column, so a
-  /// search wake never said whether its σ was NaN or large). NaN: no plan, or
-  /// the node carried no valid covariance.
+  /// node, raw (`sigma_l` is the monitor's column, not the search's). NaN: no
+  /// plan, or the node carried no valid covariance.
   double chosen_sigma_c{std::numeric_limits<double>::quiet_NaN()};
-  /// The NLP search's own account (E1-F14). Written to the planner CSV as the
+  /// The NLP search's own account. Written to the planner CSV as the
   /// `nlp_*` columns by the integration package; not part of the trace digest
   /// of the fields above.
   NlpSearchStats nlp{};

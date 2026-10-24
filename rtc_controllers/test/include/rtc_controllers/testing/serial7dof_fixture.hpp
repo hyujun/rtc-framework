@@ -1,7 +1,7 @@
 // ── The serial_7dof fixture shared by the #236 extraction suites (test-only) ──
-// test_task_accel_core.cpp (S2a) and test_task_vel_core.cpp (S3a) both drive a
-// shim against a live adapter and compare every lane BIT FOR BIT, and S3a reuses
-// S2a's independent-handle measurement instead of repeating it (plan §S3 R6).
+// test_task_accel_core.cpp and test_task_vel_core.cpp both drive a shim against
+// a live adapter and compare every lane BIT FOR BIT, and the second reuses the
+// first's independent-handle measurement instead of repeating it.
 // That reuse is only valid while both files use the SAME fixture and the SAME
 // handle path — so the fixture lives here once, rather than as a byte-identical
 // copy in each file that a later edit could silently split. A divergence would
@@ -9,10 +9,11 @@
 // from the other.
 //
 // serial_7dof.urdf: alternating Z/Y joint axes, so g(q) ≢ 0 and the Jacobian is
-// well-conditioned. serial_6dof.urdf is all-Z — g ≡ 0 and σ_min ≡ 0, the fixture
-// trap recorded in the plan's §제약·함정. nv = 7 > 6 also leaves a non-trivial
+// well-conditioned. serial_6dof.urdf is all-Z — g ≡ 0 and σ_min ≡ 0, a trap for
+// any test that needs gravity or a full-rank Jacobian. nv = 7 > 6 also leaves a non-trivial
 // null space, which is what makes the dynamically-consistent null-space branch
-// (S2a) and the null-space secondary task (S3a) meaningful rather than inert.
+// (task accel) and the null-space secondary task (task vel) meaningful rather
+// than inert.
 //
 // Test-only, NEVER installed: same never-installed, source-tree-path idiom as
 // bit_compare.hpp — ament's symlink install ignores install(PATTERN EXCLUDE), so
@@ -77,7 +78,7 @@ namespace rtc::testing {
 /// Slow enough that the adapter's output clamp stays inert — which the suites
 /// ASSERT per channel rather than assume, because a fired clamp voids a bitwise
 /// comparison instead of failing it informatively — but moving, so the Jacobian,
-/// the Coriolis term (S2a), the null-space posture error (S3a) and the finite
+/// the Coriolis term, the null-space posture error and the finite
 /// pose error are all non-trivial. Deterministic in `tick`, so a goal-derivation
 /// helper can ask "what is the TCP pose at tick N" without duplicating the
 /// formula.

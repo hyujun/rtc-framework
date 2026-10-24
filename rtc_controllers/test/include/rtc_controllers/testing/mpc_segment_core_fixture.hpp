@@ -1,6 +1,6 @@
 // ── Arm fixtures shared by the MPC segment core suites (test-only) ──────────────
-// test_catching_mpc_segment_core.cpp (E1-F01: the stop segment) and
-// test_catching_mpc_segment_core_approach.cpp (E1-F07: the pre-catch grid and the
+// test_catching_mpc_segment_core.cpp (the stop segment) and
+// test_catching_mpc_segment_core_approach.cpp (the pre-catch grid and the
 // catch terms) must load the SAME arms with the SAME limits and nominal
 // postures: the second suite's golden regression and timing table are read
 // against the first suite's, and two copies of these loaders would let them
@@ -65,7 +65,7 @@ inline ArmModel Synthetic6R() {
   return LoadArm(rtc::test::TestUrdfPath("serial_6r_wrist.urdf"), "catch_frame", q, "synthetic_6r");
 }
 
-// Real arm dimensions (#627 asks for the two target robots' n = 6 and n = 7).
+// Real arm dimensions (n = 6 and n = 7).
 inline ArmModel RealArm6() {
   Eigen::VectorXd q(6);
   q << 0.0, -1.2, 1.3, -1.6, -1.57, 0.0;

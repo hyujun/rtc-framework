@@ -1,15 +1,16 @@
-// ── γ rollout (L3 §4.8, dynamic_catching S6-C) ──────────────────────────────
+// ── γ rollout ───────────────────────────────────────────────────────────────
 //
-//   1. G3-B: the L3 §4.8 table is reproduced (±5 %) through the RUNTIME path —
+//   1. The reference table is reproduced (±5 %) through the RUNTIME path —
 //      a vision-style snapshot sampled by SampleAt, not the reference's exact
 //      ball — so the planner's rollout and the table measure the same thing.
 //   2. The choice rule: the largest accepted γ_f wins; with no accepted grid
 //      combination γ_min is tried once more; with nothing accepted the choice
-//      reports failure and carries γ_min (a RANK failure, decision C).
+//      reports failure and carries γ_min (a rank failure: it penalises the
+//      candidate, it does not remove it).
 //   3. Coarse-to-fine: the winner is re-run at the control period, and only
 //      that run judges the terminal error (the coarse step's own lag is not a
 //      verdict).
-//   4. G3-K: a full choice allocates nothing.
+//   4. RT: a full choice allocates nothing.
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
@@ -38,8 +39,7 @@ using rtc::catching::TrajectorySnapshot;
 constexpr double kTc = 0.8;
 constexpr double kK = 0.0229;
 
-// The reference scenario of test_l3.cpp (removed from docs;
-// `git show 482d18b3:docs/dynamic_catching/test_l3.cpp`).
+// The reference scenario: a quadratic-drag ball (k = 0.0229) caught at t = 0.8 s.
 fx::BallState BallAt(double t) {
   fx::BallState x;
   x << -2.5, 0.2, 0.8, 4.0, -0.2, 3.5, kK;
@@ -76,7 +76,7 @@ const Eigen::Vector3d kX0{0.3, 0.0, 0.6};
 constexpr std::int64_t kTcNs = 800'000'000;
 
 TEST(GammaRollout, ReproducesTheL3Table) {
-  // L3 §4.8: (T_w 0.30, γ_f 0.4) → 33.0 m/s² inside the window, ±5 %.
+  // Reference table: (T_w 0.30, γ_f 0.4) → 33.0 m/s² inside the window, ±5 %.
   const auto traj = Snapshot();
   auto ds = Unsaturated();
   const Eigen::Vector3d p_c = BallAt(kTc).head<3>();
@@ -174,7 +174,7 @@ TEST(GammaRollout, TheWindowBoundsTheGridAndAnEmptyAcceptanceIsAFailureAtGammaMi
 TEST(GammaRollout, TheTerminalErrorIsJudgedAtTheControlPeriodNotTheScreen) {
   // A soft catch the RT would land within ε_term = 2 mm, whose coarse screen
   // lags the moving target by more than that (≈ γ‖v‖·dt_coarse). Judged at the
-  // screen, the choice refused every soft catch in G3-C.
+  // screen, the choice refused every soft catch.
   const auto traj = Snapshot();
   auto ds = Unsaturated();
   const Eigen::Vector3d p_c = BallAt(kTc).head<3>();

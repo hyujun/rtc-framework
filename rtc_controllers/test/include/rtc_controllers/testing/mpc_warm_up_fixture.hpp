@@ -1,9 +1,8 @@
 // ── The MPC segment planner's configure warm-ups, solved again (test-only) ─────
 // #880: ProxQP's approximate primal-infeasibility test (eps_primal_inf) calls
-// some feasible QPs infeasible. The warm-ups are where it showed first (#857
-// D12): a stop from rest at a pose where no joint is loaded by gravity (a
-// vertical 7-joint arm at q = 0) is degenerate — z = 0 solves it, every torque
-// row sits at 0 — and ProxQP reported it infeasible after 3 iterations.
+// some feasible QPs infeasible. The warm-ups are where it showed first: a stop from rest at a pose
+// where no joint is loaded by gravity (a vertical 7-joint arm at q = 0) is degenerate — z = 0
+// solves it, every torque row sits at 0 — and ProxQP reported it infeasible after 3 iterations.
 //
 // WarmUpSolvesAt() re-solves every core's warm-up of a configured planner —
 // the planner's own core parameters and inputs — at a pose of the caller's
@@ -13,9 +12,9 @@
 // threshold) checks that the result is the planner's, bit for bit — the
 // copy cannot drift from WarmUp unnoticed.
 //
-// The suites that use it (approach planner, segment capacity, G1) record the
+// The suites that use it (approach planner, segment capacity) record the
 // verdict per threshold; RTC_MPC_EPS_GRID (comma-separated) widens the
-// thresholds to the selection grid of #880 D8.
+// thresholds to the selection grid of #880.
 //
 // Test-only, NEVER installed (mpc_segment_core_fixture.hpp: why).
 #pragma once
@@ -46,7 +45,7 @@ struct WarmUpSolve {
   bool same_as_planner{false};  ///< the solution equals the planner core's, bit for bit
 };
 
-/// The middle of the cores' box (every core has the same one, MD-64).
+/// The middle of the cores' box (every core has the same one).
 [[nodiscard]] inline Eigen::VectorXd BoxMiddle(const rtc::catching::MpcSegmentPlanner& planner) {
   const Eigen::VectorXd& lo = planner.Core(0).PositionLow();
   const Eigen::VectorXd& hi = planner.Core(0).PositionHigh();

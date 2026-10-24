@@ -1,21 +1,19 @@
 // ── mpc_docking numeric core: approach, dock, stop — an SQP over ProxQP ────────
-// (dynamic_catching E1-F13, #739; reference
-//  docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md §10, §17)
 //
-// The numeric core of the third segment planner and of the NLP catch search:
-// one arm trajectory from "now" through the catch instant t_c to rest, with the
-// ball's capture written in the hand's capture frame. It knows no ROS, no
-// controller and no robot; nothing calls it yet but its tests (the planner that
-// wraps it is E1-F16, the search that calls it per candidate E1-F14).
+// The numeric core of MpcDockingSegmentPlanner and of the NLP catch search (one
+// solve per candidate): one arm trajectory from "now" through the catch instant
+// t_c to rest, with the ball's capture written in the hand's capture frame. It
+// knows no ROS, no controller and no robot.
 //
 // ── Problem ───────────────────────────────────────────────────────────────────
 // Decision variable: the block-constant joint jerk ũ (move blocking, shared by
 // all joints), as in MpcSegmentCore — the states x_k = (q_k, q̇_k, q̈_k) are
-// eliminated, x_k = Φ_k x_0 + Γ_k E ũ, with the same stage gains. The grid is
-// anchored at the catch instant: n_pre intervals of Δ_a before the catch node
-// k_c = n_pre, n_stop intervals of Δ_s after it, N = n_pre + n_stop; node N is
-// at rest. With r^H, ν^H, s, ρ, c the ball in the capture frame
-// (mpc_docking_relative_state.hpp), ℓ = s − s_ent, and A the approach nodes:
+// eliminated, x_k = Φ_k x_0 + Γ_k E ũ, with the same stage gains
+// (ComputeBlockStageGains). The grid is anchored at the catch instant: n_pre
+// intervals of Δ_a before the catch node k_c = n_pre, n_stop intervals of Δ_s
+// after it, N = n_pre + n_stop; node N is at rest. With r^H, ν^H, s, ρ, c
+// the ball in the capture frame (mpc_docking_relative_state.hpp),
+// ℓ = s − s_ent, and A the approach nodes:
 //
 //   min   Δ_a Σ_{k<k_c} [ ‖τ_k‖²_Rτ + ‖q̈_k‖²_Ra + ‖u_k/u_s‖²_Rj
 //                          + ‖q_k − q_nom‖²_Qq + w_m ψ_m(q_k) ]          motion
@@ -37,10 +35,10 @@
 //         [g_n ≤ 0,  E_n ≤ E_max,  P_n ≤ P_max]                            impact
 //
 // ρ_T(t) = exp(−(t − t_c)²/2σ_T²), r_ref,k = r_ref + (t_c − t_k)(−ν_ref),
-// r_ref = (ρ_ref, s_ent). [·] rows exist only when enabled. The cost is the
-// reference's — no ½, running terms times the interval length — so J⋆ compares
-// across candidates as the reference intends; the stop segment's terms are
-// reported separately from the reference's.
+// r_ref = (ρ_ref, s_ent). [·] rows exist only when enabled. The cost has no ½
+// and weights each running term by its interval length, so J⋆ compares across
+// candidates; cost.reference holds the motion, near, terminal and slack terms,
+// and the stop and whole-body terms are reported apart.
 //
 // What is constant is not in the QP but IS in J⋆: node 0 is x_0, so its
 // torque, acceleration, posture, ψ_m and near terms are constants of the
@@ -49,18 +47,17 @@
 // single pre-catch interval (k_c = 1) the QP therefore has no running terms
 // and no approach rows: the problem is "dock, then stop".
 //
-// The whole-body terms (E3-F02, #641; formulation §1.3, §1.4) are optional and
-// reported apart (cost.whole_body — in `total`, not in `reference`): the
-// velocity weight Wv on both running sums, the rest weight Wr on the stop
-// nodes (the pre-catch posture term above is the other half), and the
-// centroidal angular-momentum rate k̇_G,k = A_k q̈_k + d_k. Its coefficients
-// A_k = A^ω_G(q_k), d_k = Ȧ^ω_G(q_k, q̇_k) q̇_k are taken ONCE per Solve, at
-// the start point, and held through every iteration and merit evaluation:
-// the term is then an exact quadratic of z, so the QP's gradient is the
-// merit's and `converged` keeps its meaning (#641 D12). Evaluate() uses the
-// coefficients the last Solve took (its own trajectory's before any Solve).
-// None of them is available with catch_time_variable (the search's; it plans
-// without them, #641 D10′).
+// The whole-body terms are optional and reported apart (cost.whole_body — in
+// `total`, not in `reference`): the velocity weight Wv on both running sums,
+// the rest weight Wr on the stop nodes (the pre-catch posture term above is
+// the other half), and the centroidal angular-momentum rate
+// k̇_G,k = A_k q̈_k + d_k. Its coefficients A_k = A^ω_G(q_k),
+// d_k = Ȧ^ω_G(q_k, q̇_k) q̇_k are taken ONCE per Solve, at the start point,
+// and held through every iteration and merit evaluation: the term is then an
+// exact quadratic of z, so the QP's gradient is the merit's and `converged`
+// keeps its meaning. Evaluate() uses the coefficients the last Solve took (its
+// own trajectory's before any Solve). None of them is available with
+// catch_time_variable (the search's; it plans without them).
 //
 // ── Method ────────────────────────────────────────────────────────────────────
 // SQP with a Gauss–Newton Hessian (positive definite: every R_j > 0). The
@@ -133,7 +130,7 @@
 //    ACCEPTED iterate with the numbers of the last QP whose step was judged.
 //    A probe cut short leaves the penalties as they were before it.
 //
-// ── The catch instant as a variable (catch_time_variable, E1-F14 #740) ────────
+// ── The catch instant as a variable (catch_time_variable) ─────────────────────
 // A search that keeps one candidate per lattice cell wants the best catch
 // instant INSIDE the cell. With `catch_time_variable` the core adds one
 // variable, δt_c: the catch node is at t̂ + δt_c, t̂ the instant the caller's
@@ -226,8 +223,7 @@
 //    iterate, whatever `reason` says.
 //  • Heap: this core allocates nothing in Solve() — pinned stage by stage with
 //    a C-level malloc gate (SetStageHook). ProxQP does allocate inside its own
-//    update()/solve(): a recorded RT-1 violation, counted and not asserted
-//    (agent_docs/invariants.md §RT Path, #654).
+//    update()/solve(): a known RT-1 violation, counted and not asserted.
 //  • One core per grid: the dimensions are fixed at Init (the solver's are).
 //    Only n_pre ≥ 1 is solved here; a replan after the catch is the stop
 //    problem MpcSegmentCore already solves.
@@ -360,7 +356,7 @@ struct MpcDockingSegmentCoreParams {
   int n_blocks{9};       ///< B ≤ kMaxSegmentNodes
   /// First B used, Σ = N. No block may span the catch node; at least 3 after it.
   std::array<int, kMaxSegmentNodes> block_sizes{1, 1, 1, 1, 1, 1, 2, 2, 2};
-  /// Per-group move blocking (E3-F02, D11), as MpcSegmentCoreParams': with
+  /// Per-group move blocking, as MpcSegmentCoreParams': with
   /// n_groups ≤ 1 every joint follows n_blocks / block_sizes; otherwise model
   /// joint j follows group_blocks[joint_group[j]] and groups of one partition
   /// share their variables' layout (BlockLayout) — groups that all have one
@@ -371,7 +367,7 @@ struct MpcDockingSegmentCoreParams {
   std::array<BlockPattern, kMaxJointGroups> group_blocks{};
   double u_scale{1e3};  ///< jerk scale u_s [rad/s³]; the variable is ũ/u_s
 
-  // ── Motion cost (reference §9.2), pre-catch stages ──
+  // ── Motion cost, pre-catch stages ───────────────────────────────────────────
   Eigen::VectorXd r_tau;      ///< R_τ diag [1/(N·m)²]; empty = off
   Eigen::VectorXd r_acc;      ///< R_a diag [1/(rad/s²)²]; empty = off
   Eigen::VectorXd r_jerk;     ///< R_j diag on u/u_s, > 0; empty = all 1
@@ -383,7 +379,7 @@ struct MpcDockingSegmentCoreParams {
   Eigen::VectorXd manip_d_q;  ///< D_q diag; empty = all 1
   double manip_delta{1e-3};   ///< δ
 
-  // ── Catch-vicinity and terminal cost (§9.3, §9.4) ──
+  // ── Catch-vicinity and terminal cost ────────────────────────────────────────
   Eigen::Vector3d q_p{Eigen::Vector3d::Zero()};      ///< Q_p diag [1/m²]
   Eigen::Vector3d q_v{Eigen::Vector3d::Zero()};      ///< Q_v diag [(m/s)⁻²]
   double sigma_T{0.1};                               ///< σ_T [s], > 0
@@ -394,7 +390,7 @@ struct MpcDockingSegmentCoreParams {
   double w_impact{0.0};                              ///< w_E; 0 = the impact cost is off
   double e_ref{1.0};                                 ///< E_ref [J], > 0
 
-  // ── Approach rows (§6.3, §6.4) ──
+  // ── Approach rows ───────────────────────────────────────────────────────────
   double approach_window{0.15};  ///< nodes with 0 < t_c − t_k ≤ window form A [s]
   double s_ent{0.05};            ///< entrance plane offset s_ent [m]
   double r_ent{0.03};            ///< corridor radius at the entrance [m], > 0
@@ -408,7 +404,7 @@ struct MpcDockingSegmentCoreParams {
   double lambda1_v{1.0};  ///< linear penalty on s_v [(m/s)⁻²]
   double lambda2_v{0.0};  ///< quadratic penalty on s_v [(m/s)⁻⁴]
 
-  // ── Capture set at the catch node (§6.1, §6.5, §8.3) ──
+  // ── Capture set at the catch node ───────────────────────────────────────────
   /// false: the ball is treated as known exactly (Σ = 0) — the chance rows
   /// reduce to their deterministic rows tightened by κ ε_σ, the timing row is
   /// not built, and no covariance is required.
@@ -428,7 +424,7 @@ struct MpcDockingSegmentCoreParams {
   double eps_nu{0.01};     ///< risk of each velocity row → κ_ν
   double eps_sigma{1e-4};  ///< ε_σ under every square root [m or m/s], > 0
 
-  // ── Timing row (§8.4) ──
+  // ── Timing row ──────────────────────────────────────────────────────────────
   bool timing_row{true};  ///< built only with `chance`
   double delta_lo{0.0};   ///< closure window after the crossing [s]
   double delta_hi{0.03};
@@ -436,7 +432,7 @@ struct MpcDockingSegmentCoreParams {
   double eps_t{0.05};     ///< timing risk
   double sigma_tau{0.0};  ///< closure latency jitter [s], ≥ 0
 
-  // ── Impact (§7) ──
+  // ── Impact ──────────────────────────────────────────────────────────────────
   Eigen::Vector3d contact_point_hand{Eigen::Vector3d::Zero()};  ///< p_c in the capture frame [m]
   double m_ball{0.058};                                         ///< [kg], > 0
   double restitution{0.5};                                      ///< e ∈ [0, 1]
@@ -447,7 +443,7 @@ struct MpcDockingSegmentCoreParams {
   Eigen::VectorXd r_jerk_stop;  ///< R_j,stop diag on u/u_s, > 0; empty = r_jerk
   double w_perp{0.0};           ///< stop-line weight [1/m²]; 0 = off
 
-  // ── Whole-body terms (header note; E3-F02) — not with catch_time_variable ──
+  // ── Whole-body terms (header note) — not with catch_time_variable ───────────
   /// Wv diag [(rad/s)⁻²] on both running sums; empty or all 0 = off. Each
   /// entry in [0, kWholeBodyWeightMax].
   Eigen::VectorXd w_vel;
@@ -602,10 +598,10 @@ struct MpcDockingSegmentCoreInput {
   std::int64_t delta_ref_ns{0};
 };
 
-/// J at the returned iterate, by term (the reference's cost: no ½).
+/// J at the returned iterate, by term (no ½).
 struct MpcDockingCost {
-  double total{0.0};      ///< reference + stop
-  double reference{0.0};  ///< motion + near + terminal + slack — the reference's J
+  double total{0.0};      ///< reference + stop (+ whole_body when on)
+  double reference{0.0};  ///< motion + near + terminal (impact included) + slack
   double stop{0.0};       ///< the stop segment's terms
   double tau{0.0}, acc{0.0}, jerk{0.0}, posture{0.0}, manip{0.0};  ///< motion
   double near{0.0};

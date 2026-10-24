@@ -1,4 +1,4 @@
-// ── How far the catch frame can ever be from the arm (L3 §4.1) ───────────────
+// ── How far the catch frame can ever be from the arm ─────────────────────────
 //
 // A necessary condition the searches test BEFORE the catch-pose IK: a target
 // farther from the arm than its kinematics can ever put the catch frame cannot

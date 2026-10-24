@@ -1,17 +1,11 @@
-// L4 soft-catch translational reference — gates G4-A, G4-B, G4-C, G4-F, G4-G,
-// G4-I (docs/dynamic_catching/ref/L4_reference.md §9) plus the reference's A5 and
-// reset() regressions.
+// Soft-catch translational reference (SoftCatchTranslation): terminal gap and
+// relative-speed table, re-prediction jump, discrete stability boundary,
+// saturation, NaN guard, retreat attractor, allocation freedom, and reset().
 //
-// Ported from the reference test_l4.cpp with thresholds unchanged (removed
-// from docs; `git show 482d18b3:docs/dynamic_catching/test_l4.cpp`).
-// Deliberately NOT ported:
-//  • D3a/D3b/D3c (γ derate) — the feature is out of v1 (D-8, G4-E); the tests
-//    go with it, they are not weakened;
-//  • the three §4.5 axis-alignment cases (G4-D) — the functions move to
-//    rtc_math se3 in S2.1 and are tested there.
-// One mechanical change: the reference read e/ė with step(…, dt = 0); dt ≤ 0 is
-// invalid now (L4 §5.1), so those reads use Evaluate(), which is the same
-// computation without the integration.
+// Not covered here: the γ derate (not part of the feature) and the axis-alignment
+// functions (tested with rtc_math se3).
+// Reads of e/ė use Evaluate() — the same computation as Step() without the
+// integration — because dt ≤ 0 is invalid for Step().
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
@@ -93,7 +87,7 @@ RunOut RunCatch(const Eigen::Vector3d& pred_offset, double gf, double Tw) {
   return {(o.x - xe.head<3>()).norm(), (xe.segment<3>(3) - o.xd).norm()};
 }
 
-// G4-A: §4.9 table — terminal gap (1−γ_f)·δ and relative speed (1−γ_f)·‖v‖.
+// Table: terminal gap (1−γ_f)·δ and relative speed (1−γ_f)·‖v‖.
 TEST(CatchingSoftCatch, G4ATerminalGapAndRelativeSpeedTable) {
   const double v_tc = BallAt(kTc).segment<3>(3).norm();
   constexpr double kEpsConv = 2e-3;  // [m] DS residual convergence at ω=10, t_c=0.8 s
@@ -112,7 +106,7 @@ TEST(CatchingSoftCatch, G4ATerminalGapAndRelativeSpeedTable) {
   }
 }
 
-// G4-B: re-prediction jump  e' = e − (1−γ)Δp,  ė' = ė + γ̇Δp.
+// Re-prediction jump:  e' = e − (1−γ)Δp,  ė' = ė + γ̇Δp.
 TEST(CatchingSoftCatch, G4BReplanJumpFormula) {
   SoftCatchTranslation ds(Prm(10.0, 1.0, 1e9, 1e9));
   ASSERT_TRUE(ds.Reset({0.3, 0.0, 0.6}, Eigen::Vector3d::Zero()));
@@ -136,9 +130,9 @@ TEST(CatchingSoftCatch, G4BReplanJumpFormula) {
   EXPECT_LT((b.ed - (a.ed + gd * dp)).norm(), 1e-9);
 }
 
-// G4-C: discrete stability boundary s = ω·h < 2√2 − 2 = 0.828427. The doc's
-// 0.80 / 0.85 pair has ±2.5 % resolution (damping 2.0ζω → 1.96ζω would still
-// pass), so the reference pins it at ±0.2 %.
+// Discrete stability boundary s = ω·h < 2√2 − 2 = 0.828427. A 0.80 / 0.85 pair
+// has ±2.5 % resolution (damping 2.0ζω → 1.96ζω would still pass), so the
+// boundary is pinned at ±0.2 %.
 TEST(CatchingSoftCatch, G4CDiscreteStabilityBoundary) {
   const auto diverges = [](double s) {
     const double h = 2e-3;
@@ -155,7 +149,7 @@ TEST(CatchingSoftCatch, G4CDiscreteStabilityBoundary) {
   EXPECT_TRUE(diverges(0.830));
 }
 
-// G4-F (regression C3): under velocity saturation xdd is the realised
+// Regression: under velocity saturation xdd is the realised
 // acceleration, not the demand.
 TEST(CatchingSoftCatch, G4FXddIsRealisedAccelUnderVelocitySaturation) {
   SoftCatchTranslation ds(Prm(10.0, 1.0, 1e9, 0.5));
@@ -168,7 +162,7 @@ TEST(CatchingSoftCatch, G4FXddIsRealisedAccelUnderVelocitySaturation) {
   EXPECT_TRUE(o.valid);
 }
 
-// A5: with γ = 0 the attractor is p_c, not the target (L4 §5.3) — a retreat
+// A5: with γ = 0 the attractor is p_c, not the target — a retreat
 // must move p_c.
 TEST(CatchingSoftCatch, RetreatAttractorIsInterceptNotTarget) {
   const auto converge = [](const Eigen::Vector3d& target, const Eigen::Vector3d& p_c) {
@@ -199,7 +193,7 @@ TEST(CatchingSoftCatch, ResetClearsInterceptAndGammaProfile) {
   EXPECT_EQ(o.gamma, 0.0);
 }
 
-// ── G4-I: NaN guard ─────────────────────────────────────────────────────────
+// ── NaN guard ───────────────────────────────────────────────────────────────
 
 // Twin runs: one sees a burst of bad inputs mid-flight, the other does not.
 // Bad ticks must be invalid, leave the state bit-identical, report saturated;
@@ -295,7 +289,7 @@ TEST(CatchingSoftCatch, DegenerateGammaRampIsFiniteStep) {
   EXPECT_EQ(gdd, 0.0);
 }
 
-// Time axis (L0 §4.5, L4 §5.2): γ is evaluated at now + T_arm. With the
+// Time axis: γ is evaluated at now + T_arm. With the
 // profile built from absolute instants and T_arm ≠ 0, the γ seen at real
 // instant `now` is the profile value at now + T_arm, not at now.
 TEST(CatchingSoftCatch, GammaEvaluatedOnLeadAxis) {
@@ -321,7 +315,7 @@ TEST(CatchingSoftCatch, GammaEvaluatedOnLeadAxis) {
   EXPECT_GT(std::abs(g_lead - g_real), 0.05);  // the two axes really differ here
 }
 
-// L4 §4.4: the closed form is the ζ = 1 error dynamics. Checked against a
+// The closed form is the ζ = 1 error dynamics. Checked against a
 // fine integration of e'' = −ω²e − 2ωė.
 TEST(CatchingSoftCatch, CriticallyDampedClosedFormMatchesIntegration) {
   const Eigen::Vector3d e0(0.05, -0.02, 0.01);
@@ -343,7 +337,7 @@ TEST(CatchingSoftCatch, CriticallyDampedClosedFormMatchesIntegration) {
   EXPECT_LT((edc - ed).norm(), 1e-5);
 }
 
-// G4-G: Step() / Evaluate() allocate nothing, worst tick time recorded.
+// Step() / Evaluate() allocate nothing, worst tick time recorded.
 TEST(CatchingSoftCatch, G4GStepAllocationFreeAndRecorded) {
   static_assert(noexcept(
       std::declval<SoftCatchTranslation&>().Step(std::declval<const TargetState&>(), 0.0, 0.0)));
@@ -383,7 +377,7 @@ TEST(CatchingSoftCatch, G4GStepAllocationFreeAndRecorded) {
               static_cast<long long>(worst_ns));
 }
 
-// ── numerical-audit regressions (S1 review) ─────────────────────────────────
+// ── numerical-audit regressions ─────────────────────────────────────────────
 
 // A directly constructed instance with invalid params must fail closed. Before
 // the fix, a_max < 0 with a zero demand made Evaluate() scale 0·(−∞) = NaN and

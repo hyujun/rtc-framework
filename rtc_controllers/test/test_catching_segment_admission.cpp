@@ -1,8 +1,8 @@
 // The RT-side admission and switch rules of a segment (planner_io.hpp:
 // JudgeSegment, ChooseSegment, JudgeSegmentSwitch) — the contract a segment is
 // taken under, whichever planner made it. Pure functions: no model, no solver.
-// (MPC E1-F03 #629. The payload's own checks and the pre-catch admission cases
-// are in test_catching_node_follower.cpp.)
+// (The payload's own checks and the pre-catch admission cases are in
+// test_catching_node_follower.cpp.)
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
 
@@ -29,7 +29,7 @@ using rtc::catching::SegmentSnapshot;
 using rtc::catching::SegmentSwitchVerdict;
 
 constexpr std::int64_t kMs = 1'000'000;
-constexpr std::int64_t kDt = 25 * kMs;                     // Δ_s (MD-24)
+constexpr std::int64_t kDt = 25 * kMs;                     // Δ_s
 constexpr std::int64_t kT0 = 1'727'000'000'000'000'000LL;  // realistic steady ns
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
 
@@ -122,7 +122,7 @@ TEST(SegmentAdmission, SegmentSwitchesAtItsEffectiveInstant) {
 }
 
 TEST(SegmentAdmission, AStatePredictedBeforeTheFloorIsBeforeReset) {
-  // MD-37: the planner stamps publish_ns after it reads the RT state, so a
+  // The planner stamps publish_ns after it reads the RT state, so a
   // segment can pass the publish floor and still come from the tick before
   // the reset. The state floor catches it; 0 leaves the check off.
   SegmentSnapshot p = AdmissibleSegment();
@@ -138,7 +138,7 @@ TEST(SegmentAdmission, AStatePredictedBeforeTheFloorIsBeforeReset) {
 }
 
 TEST(SegmentSwitch, PassesInsideTheHeadroomAndNamesTheFirstJointPastIt) {
-  // MD-39: |Δq̇_i| + K_p|Δq_i| ≤ ρ_max (1 − η_v) q̇_max,i per joint.
+  // |Δq̇_i| + K_p|Δq_i| ≤ ρ_max (1 − η_v) q̇_max,i per joint.
   const std::array<double, 3> qmax{2.0, 2.0, 4.0};  // headroom d = 0.2, 0.2, 0.4 at η_v 0.9
   std::array<double, 3> q_c{0.0, 0.0, 0.0};
   std::array<double, 3> qd_c{0.0, 0.0, 0.0};

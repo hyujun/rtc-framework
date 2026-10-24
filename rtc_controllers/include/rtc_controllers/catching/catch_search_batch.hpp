@@ -1,6 +1,6 @@
 // ── Offline batch of the planner's search: which throws it would accept ─────
-// dynamic_catching L3 §4.1. `catch_pose_ik_batch` judges a catch pose and
-// `catch_gate_batch` the gates behind it, one candidate at a time. This runs
+// `catch_pose_ik_batch` judges a catch pose and `catch_gate_batch` the gates
+// behind it, one candidate at a time. This runs
 // the SEARCH ITSELF — `CatchSearch::Plan`, whichever implementation the
 // configuration selects — over the wakes of a throw, exactly as a planner wake
 // calls it, and records what each wake decided. The verdict is the runtime

@@ -1,17 +1,15 @@
-// E1-F02 (#628): the segment node payload (SegmentSnapshot, trajectory.hpp) and
-// its RT sampler (NodeTrajectoryFollower, node_follower.hpp). Each #628
-// "Done when" item maps to a named test (spec on #628, MD-27 / MD-30):
+// The segment node payload (SegmentSnapshot, trajectory.hpp) and its RT sampler
+// (NodeTrajectoryFollower, node_follower.hpp). The criteria map to named tests:
 //   1 payload shape + C² sampling   PayloadFitsItsBudget, Validate*,
 //                                   SampleReproducesNodesAndIsContinuousAcrossThem,
 //                                   AbsoluteInstantsKeepNanosecondResolution
-//   2 FK consistency (MD-30)        FkConsistencyAlongTheSegment,
+//   2 FK consistency               FkConsistencyAlongTheSegment,
 //                                   DeviceOrderIsMappedBeforeFk
 //                                   (+ ClikResidualIsRecorded — informational)
 //   3 RT: no allocation, cost       SampleAllocatesNothing,
 //                                   ContendedCopyNeverTearsAndIsRecorded
-// E1-F08 (#661) adds §4: segments with pre-catch nodes at a second spacing
-// (MD-60) — node times, validation, sampling against an integrating oracle,
-// shape refusal, and the RT's accept_pre_catch switch.
+// Section 4 adds segments with pre-catch nodes at a second spacing — node times, validation,
+// sampling against an integrating oracle, shape refusal, and the RT's accept_pre_catch switch.
 //
 // Fixtures break the representation symmetries a mapping bug would hide in:
 // the device order is a non-identity permutation of the model order, and the
@@ -61,8 +59,8 @@ using rtc::catching::SegmentNodeSample;
 using rtc::catching::SegmentSnapshot;
 using rtc::catching::ValidateSegmentNodes;
 
-constexpr std::int64_t kDtNs = 25'000'000;                 // Δ_s 0.025 s (MD-24)
-constexpr int kNodes = 14;                                 // N_s (MD-24)
+constexpr std::int64_t kDtNs = 25'000'000;                 // Δ_s 0.025 s
+constexpr int kNodes = 14;                                 // N_s
 constexpr std::int64_t kTc = 1'727'000'000'123'456'789LL;  // realistic steady ns
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
 
@@ -172,7 +170,7 @@ class NodeFollowerTest : public ::testing::Test {
 // ── 1. Payload and sampling ──────────────────────────────────────────────────
 
 TEST(SegmentPayload, PayloadFitsItsBudget) {
-  // MD-27: 3 node blocks × 20 joints × 25 nodes × 8 B = 12.0 KB plus a header
+  // 3 node blocks × 20 joints × 25 nodes × 8 B = 12.0 KB plus a header
   // (#827 raised the joint capacity from 8, where the budget was 5 KB).
   EXPECT_LT(sizeof(SegmentSnapshot), 12U * 1024U);
   EXPECT_GE(sizeof(SegmentSnapshot), 3U * kMaxSegmentNv * (kMaxSegmentNodes + 1) * sizeof(double));
@@ -340,7 +338,7 @@ TEST(NodeFollowerInit, RejectsUnusableBindings) {
   EXPECT_TRUE(f.Initialized());
 }
 
-// ── 2. FK consistency (MD-30) ────────────────────────────────────────────────
+// ── 2. FK consistency ────────────────────────────────────────────────────────
 
 TEST_F(NodeFollowerTest, FkConsistencyAlongTheSegment) {
   // T_d = T(q_ref) and V_ff = ᵂJ(q_ref)·q̇_ref, against an independent path:
@@ -390,10 +388,10 @@ TEST_F(NodeFollowerTest, DeviceOrderIsMappedBeforeFk) {
 }
 
 TEST_F(NodeFollowerTest, ClikResidualIsRecorded) {
-  // Informational (MD-30): the CLIK's SE3 step at q_c = q_ref with the sampled
+  // Informational: the CLIK's SE3 step at q_c = q_ref with the sampled
   // target and twist_ff. The hand task alone would return v* = q̇_ref; the
   // posture term k_a(q_des − q) has no velocity feedforward, so |v* − q̇_ref|
-  // is what E1-F04's posture feedforward has to remove. Recorded, not bounded.
+  // is what a posture feedforward has to remove. Recorded, not bounded.
   const auto& model = arm_.model;
   rtc::tsid::PinocchioCache cache;
   rtc::tsid::ContactManagerConfig contact_cfg;
@@ -463,14 +461,14 @@ TEST_F(NodeFollowerTest, SampleAllocatesNothing) {
 }
 
 TEST_F(NodeFollowerTest, ContendedCopyNeverTearsAndIsRecorded) {
-  // The RT's per-tick work once E1-F04 wires it: a whole-payload SeqLock copy
-  // (D-21 — never gated on sequence()) plus one Sample, against a concurrent
+  // The RT's per-tick work: a whole-payload SeqLock copy
+  // (never gated on sequence()) plus one Sample, against a concurrent
   // planner store. Every stored payload is internally uniform (all q entries
   // derive from its seq), so a torn copy shows up as a non-uniform one. Two
-  // writer cadences (G1-C form: the numbers are recorded, not bounded):
+  // writer cadences (the numbers are recorded, not bounded):
   //   • back-to-back stores — the strongest tearing probe. It also shows why
   //     the planner must never store in a loop: SeqLock::Load has no retry
-  //     bound (L1 G1-8), and against a 12 KB back-to-back writer the reader
+  //     bound, and against a 12 KB back-to-back writer the reader
   //     completes only a few hundred copies in 300 ms on the development PC.
   //     So the read count is recorded here, and only required to be nonzero;
   //   • one store per millisecond — still 20× the planner's real rate (one per
@@ -543,17 +541,17 @@ TEST_F(NodeFollowerTest, ContendedCopyNeverTearsAndIsRecorded) {
   run(std::chrono::microseconds(1000), 1000U, "writer_1khz");
 }
 
-// ── 4. Two spacings: APPROACH–stop segments (E1-F08 #661, MD-60) ────────────
+// ── 4. Two spacings: APPROACH–stop segments ─────────────────────────────────
 //
 // A segment with pre-catch nodes carries n_pre intervals of Δ_pre before t_c
-// and n_nodes − n_pre of Δ_s after it (MD-54: 0.1 s and 0.05 s). The oracle
+// and n_nodes − n_pre of Δ_s after it (0.1 s and 0.05 s). The oracle
 // below integrates the jerks the builder drew, on its own list of interval
 // durations — it never reads the payload's spacing fields — so a sampler that
 // read the segment at one spacing, put the catch node one column off, or used
 // Δ_pre after t_c disagrees with it by O(1).
 
-constexpr std::int64_t kDtPreNs = 100'000'000;  // Δ_pre 0.1 s (MD-54)
-constexpr std::int64_t kDtStopNs = 50'000'000;  // Δ_s 0.05 s (MD-54)
+constexpr std::int64_t kDtPreNs = 100'000'000;  // Δ_pre 0.1 s
+constexpr std::int64_t kDtStopNs = 50'000'000;  // Δ_s 0.05 s
 
 struct MixedPlan {
   SegmentSnapshot p{};
@@ -891,7 +889,7 @@ TEST(SegmentAdmission, ASegmentForAnotherTrackIsNotThisPlans) {
   EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kNone);
 }
 
-// ── A catch interval with its own length (E1-F14 PR 2, #740) ─────────────────
+// ── A catch interval with its own length ─────────────────────────────────────
 // MakeMixedPlan's segment with its LAST pre-catch interval at `dt_catch_ns`
 // instead of Δ_pre: the nodes before it stay where they were and the catch
 // node is at t_c. The oracle integrates the drawn jerks over the builder's own
@@ -1159,7 +1157,7 @@ TEST_F(NodeFollowerTest, CatchIntervalSampleAllocatesNothing) {
   EXPECT_EQ(mallocs, 0U);
 }
 
-// ── The payload as it is, pinned bit for bit (E1-F14 PR 2, #740) ─────────────
+// ── The payload as it is, pinned bit for bit ─────────────────────────────────
 // The payload gets a third spacing (the catch interval's own length). A
 // payload that does not use it must be read as before — the validator's
 // verdict, every node instant and every sample, to the bit. The digest was
@@ -1232,8 +1230,8 @@ struct PinnedPayload {
   std::uint64_t digest;
 };
 
-/// Taken on the code BEFORE the payload learnt the catch interval's length
-/// (E1-F14 PR 2). Integer arithmetic and the closed-form jerk polynomial only:
+/// Taken on the code BEFORE the payload learnt the catch interval's length.
+/// Integer arithmetic and the closed-form jerk polynomial only:
 /// these do not depend on a solver. A change meant to alter how a payload
 /// WITHOUT that length is read replaces them in a commit of its own that says
 /// why (the rule of kWholeCatchDigest, test_catching_approach_cycle.cpp).

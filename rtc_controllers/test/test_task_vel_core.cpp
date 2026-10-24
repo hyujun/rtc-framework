@@ -32,8 +32,7 @@
 // trajectory SAMPLE, so ownership sits in the binding), the π-rotation split,
 // the segment transition, the damped pseudoinverse and the null-space task —
 // everything S3b and S7 still have to migrate — and compares all three lanes.
-// That makes this shim a prototype of the S7 binding, which is what plan §S3 R5
-// asked for.
+// That makes this shim a prototype of the S7 binding.
 //
 // The shim reads J from a SECOND, independently built RtModelHandle. That
 // assumption is measured, not assumed — in two places, because the two files
@@ -42,8 +41,8 @@
 //   • The DYNAMICS half (ComputeJacobians → GetFrameJacobian / GetFramePlacement,
 //     plus M and h) is pinned bit for bit by
 //     ReferenceDynamics.IndependentHandlesAgreeBitwise in
-//     test_task_accel_core.cpp, on this same serial_7dof.urdf fixture. Per plan
-//     §S3 R6 this slice REUSES that measurement rather than repeating it.
+//     test_task_accel_core.cpp, on this same serial_7dof.urdf fixture. This
+//     suite REUSES that measurement rather than repeating it.
 //
 //   • The REORDER half is NOT covered there — that test never calls Reorder* —
 //     and this shim does: it gathers the null-space posture error with
@@ -718,7 +717,7 @@ TEST(TaskVelLaw, BitwiseComparisonRejectsAFusedAccumulation) {
 
 // ReferenceDynamics.IndependentHandlesAgreeBitwise (test_task_accel_core.cpp)
 // pins J / M / h / placement across two independently built handles on this same
-// fixture, and this slice reuses that (plan §S3 R6). It does NOT touch Reorder*,
+// fixture, and this suite reuses that. It does NOT touch Reorder*,
 // though — and the shim does, on three lanes: the null-space posture error is
 // gathered device → Pinocchio with ReorderInput, and both q̇ lanes are scattered
 // back with ReorderOutput. A non-identity default order or a lazily built
@@ -796,7 +795,7 @@ TEST(ReferenceHandles, IndependentHandlesAgreeOnTheReorderPathBitwise) {
 // near-pi rotation split with the split and the segment transition asserted to
 // have fired; the null-space gate was asserted dormant on the two 6-DOF rows and
 // live on the 3-DOF one, so the sweep pinned the asymmetry rather than three of
-// four rows (plan §S3 R7). Oracle 2 retired in S7c.
+// four rows. Oracle 2 retired in S7c.
 //
 // They could not be migrated: oracle 2's unique job was the CORRELATED
 // transcription error, which by construction needs the shipped code to compare

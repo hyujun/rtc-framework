@@ -1,21 +1,22 @@
-// ── Offline batch judge for the S3.5b gate-catchable map ────────────────────
-// dynamic_catching L3 §4.2. `catch_pose_ik_batch` answers "is there a good
-// catch posture"; this answers the rest of the planner's chain for a candidate
-// that already has one — can the arm get there in time (L3 §4.3), is there a γ
-// that both the hand and the arm can live with (§4.5), and where would the arm
-// come to rest afterwards (§4.9). The verdicts are the runtime functions of
-// `time_feasibility.hpp`, called here and nowhere re-derived, so the map
-// describes the system that flies.
+// ── Offline batch judge for the gate-catchable map ──────────────────────────
+// `catch_pose_ik_batch` answers "is there a good catch posture"; this answers
+// the rest of the planner's chain for a candidate that already has one — can
+// the arm get there in time (ReachTimeFeasible), is there a γ that both the
+// hand and the arm can live with (ComputeGammaWindow), and where would the arm
+// come to rest afterwards (StoppingPoint). The verdicts are the runtime
+// functions of `time_feasibility.hpp`, called here and nowhere re-derived, so
+// the map describes the system that flies.
 //
 // What this does NOT judge, and the python side must not pretend it does:
-//   - the γ rollout (§4.8) — no such function exists before S6.3;
+//   - the γ rollout (gamma_rollout.hpp);
 //   - whether p_stop is somewhere the arm may stop — the runtime search has
-//     no such gate (L3 §4.9), so p_stop is reported and the caller applies its
+//     no such gate either, so p_stop is reported and the caller applies its
 //     own bound;
 //   - q̇ᵘ itself. It arrives as an input column (the map's python produces it);
-//     the runtime planner produces it with `UnitSpeedJointVelocity` (S6-B), the
-//     same DLS formula, and the gate verdict itself is one shared core —
-//     `JudgeRankGates` (rank_gates.hpp) — so G3-I holds by construction.
+//     the runtime planner produces it with `UnitSpeedJointVelocity`, the same
+//     DLS formula, and the gate verdict itself is one shared core —
+//     `JudgeRankGates` (rank_gates.hpp) — so map and runtime agree by
+//     construction.
 //
 // It knows no robot and no model: limits, timing and hand constants all come
 // from the caller, and a candidate row carries its own postures.
@@ -39,12 +40,12 @@ namespace rtc::catching {
 /// still produces a complete, plausible map.
 struct GateSettings {
   std::vector<double> qdot_max;   ///< joint velocity limits [rad/s], model joint order
-  std::vector<double> qddot_max;  ///< joint acceleration box [rad/s²] (L3 §4.3, D-16)
+  std::vector<double> qddot_max;  ///< joint acceleration box [rad/s²]
   double eta_v{
-      0.0};  ///< `planner.search.grid.gamma.eta_v`; applied to `qdot_max` AND `v_max` (S4.4)
+      0.0};  ///< `planner.search.grid.gamma.eta_v`, (0, 1]; applied to both `qdot_max` AND `v_max`
   double v_max{0.0};          ///< `planner.search.grid.reference.v_max` [m/s]
   double d_eff{0.0};          ///< `planner.search.grid.hand.d_eff` [m]
-  double t_close_total{0.0};  ///< T_close,e2e + h/2 [s] (L3 §4.5)
+  double t_close_total{0.0};  ///< T_close,tot = T_close,e2e + h/2, h the control period [s]
   double gamma_margin{0.0};   ///< `planner.search.grid.gamma.margin` [m/s]
   double a_dec{0.0};          ///< `planner.search.grid.stop.a_dec` [m/s²]
   double first_plan_s{0.0};   ///< when the first plan exists, from release: T_det + L [s]
@@ -69,7 +70,7 @@ struct GateCandidate {
 };
 
 // `GateReason` / `GateReasonName` live in rank_gates.hpp with the core that
-// produces them (S6-B) — the map and the runtime planner share both.
+// produces them — the map and the runtime planner share both.
 
 /// Every gate's own result, not just the first failure: the map's histogram has
 /// to be able to say how many candidates EACH gate would stop on its own.

@@ -263,7 +263,7 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
     }
   }
 
-  // Whole-body weights (E3-F02): per joint, bounded; the rest posture is read
+  // Whole-body weights: per joint, bounded; the rest posture is read
   // only where its weight is positive.
   const auto weights_ok = [nn](const Eigen::VectorXd& w) {
     if (w.size() == 0) {
@@ -869,7 +869,7 @@ void MpcSegmentCore::AssemblePath() noexcept {
   }
 }
 
-// ── Catch terms (E1-F07) ─────────────────────────────────────────────────────
+// ── Catch terms ──────────────────────────────────────────────────────────────
 
 MpcSegmentCoreReason LinearizeCatchAt(
     const pinocchio::Model& model, pinocchio::Data& data, pinocchio::FrameIndex frame,
@@ -1689,7 +1689,7 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
       }
     } else {
       // H is h_main_ from Init until a term or a scale touches it; rebuild it
-      // only then. At scale 1 it is the SAME matrix as before E1-F07.
+      // only then. At scale 1 it is the SAME matrix as without the catch terms.
       const bool scaled = w_delta_scale_ != 1.0;
       if (h_modified_ || scaled) {
         if (scaled) {

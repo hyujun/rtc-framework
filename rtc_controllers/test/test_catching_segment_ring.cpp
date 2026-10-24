@@ -1,5 +1,5 @@
-// The ring of published segments both segment planners keep (E1-F16 #742,
-// segment_ring.hpp). Header-only pure logic: no model, no solver.
+// The ring of published segments both segment planners keep
+// (segment_ring.hpp). Header-only pure logic: no model, no solver.
 //
 // What is tested: with no plan noted as followed the ring holds the segments
 // of ONE plan (a segment of another plan empties it); with one noted it holds

@@ -1,4 +1,4 @@
-// ── `catch_search_batch` — the planner's search, offline (L3 §4.1) ──────────
+// ── `catch_search_batch` — the planner's search, offline ────────────────────
 //
 // Builds the catch search a configuration selects on the catch sub-model, runs
 // `rtc::catching::CatchSearch::Plan` over the wakes of each throw, and writes

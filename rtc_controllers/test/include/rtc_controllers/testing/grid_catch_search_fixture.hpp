@@ -1,6 +1,6 @@
 // ── Inputs of the planner's search, shared by its suites (test-only) ─────────
 // test_catching_grid_catch_search.cpp drives GridCatchSearch alone; the APPROACH
-// cycle suite (test_catching_approach_cycle.cpp, E1-F08 #661) drives the same
+// cycle suite (test_catching_approach_cycle.cpp) drives the same
 // search through PlannerCycle with the MPC segment planner behind it. Both build the
 // search's three inputs — a ball trajectory through a catch point, its
 // covariance, the RT state of a TRACKING arm — and must build them the same

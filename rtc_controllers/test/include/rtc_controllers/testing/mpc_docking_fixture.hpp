@@ -1,4 +1,4 @@
-// ── mpc_docking core test fixture (test-only, E1-F13 #739) ─────────────────────
+// ── mpc_docking core test fixture (test-only) ────────────────────────────────
 // Two things the docking core's suite needs and must not take from the core:
 //
 //  1. Constructed-feasible throws. A trajectory inside every limit is built
@@ -194,7 +194,7 @@ inline Eigen::VectorXd JerkThrough(const MpcDockingSegmentCore& core, const Eige
   return z;
 }
 
-// ── A catch instant that is a variable (E1-F14 PR 2, #740) ───────────────────
+// ── A catch instant that is a variable ───────────────────────────────────────
 // A core with `catch_time_variable` rebuilds its gains and node instants at
 // the δt_c of whatever point it evaluated last, so NodesFromJerk / FillBall
 // (which read them) describe the δt_c = 0 grid only on a core that has not
@@ -203,7 +203,7 @@ inline Eigen::VectorXd JerkThrough(const MpcDockingSegmentCore& core, const Eige
 // The trajectory of scaled block jerks z from x0 on the grid whose last
 // pre-catch interval is Δ_a + delta, integrated interval by interval — read
 // from the PARAMETERS: each joint's partition is its group's when there are
-// groups (E3-F02), its variables where BlockLayout puts them.
+// groups, its variables where BlockLayout puts them.
 inline Nodes NodesFromJerkAt(const MpcDockingSegmentCoreParams& p, const Eigen::VectorXd& q0,
                              const Eigen::VectorXd& qd0, const Eigen::VectorXd& qdd0,
                              const Eigen::VectorXd& z, double delta);
@@ -346,7 +346,7 @@ struct HandState {
   Eigen::Matrix3d R;
 };
 
-// Pose and LOCAL velocity of the capture frame — the reference's §5.2 route,
+// Pose and LOCAL velocity of the capture frame — by the LOCAL route,
 // independent of the LOCAL_WORLD_ALIGNED one the core uses.
 inline HandState HandAt(const Rig& rig, const Eigen::VectorXd& q, const Eigen::VectorXd& v) {
   pinocchio::Data data(rig.model);
@@ -484,7 +484,7 @@ inline std::array<double, kNumDockingRowGroups> HardRowViolations(
         std::sqrt(core.TimingSigmaMax() * core.TimingSigmaMax() - p.sigma_tau * p.sigma_tau);
     note(DockingRowGroup::kTiming, -(rel.c * k_t - sigma_s));
   }
-  // Σ^H_ν = L Σ_b Lᵀ, L = [−[ω^H]× Rᵀ, Rᵀ] (reference §8.1).
+  // Σ^H_ν = L Σ_b Lᵀ, L = [−[ω^H]× Rᵀ, Rᵀ].
   Eigen::Matrix<double, 3, 6> l;
   l.leftCols<3>() = -Hat(h.w_local) * h.R.transpose();
   l.rightCols<3>() = h.R.transpose();

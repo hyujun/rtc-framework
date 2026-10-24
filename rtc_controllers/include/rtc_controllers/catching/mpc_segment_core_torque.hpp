@@ -1,6 +1,7 @@
-// ── Segment MPC torque linearisation seam (E1-F01, formulation §1.3) ───────────
-// One node's first-order torque model, exposed so a test can check the
-// derivative and the offset sign directly instead of only through a QP answer:
+// ── Segment MPC torque linearisation seam ─────────────────────────────────────
+// One node's first-order torque model (the torque rows of MpcSegmentCore,
+// mpc_segment_core.hpp), exposed so a test can check the derivative and the
+// offset sign directly instead of only through a QP answer:
 //
 //   τ(q, q̇, q̈) ≈ τ̄ + D (x − x̄),   D = [∂τ/∂q  ∂τ/∂q̇  M(q̄)]   (n × 3n)
 //

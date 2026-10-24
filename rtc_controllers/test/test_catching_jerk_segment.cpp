@@ -1,4 +1,4 @@
-// E1-F01 (#627): closed-form evaluation of a piecewise-constant-jerk joint
+// Closed-form evaluation of a piecewise-constant-jerk joint
 // trajectory (jerk_segment.hpp). The nodes below are built by propagating the
 // exact triple-integrator step, so a correct evaluator reproduces every node
 // from its predecessor — the C² claim is checked against independently

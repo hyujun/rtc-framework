@@ -1,4 +1,4 @@
-// ── Docking parameters (dynamic_catching E1-F16) ─────────────────────────────
+// ── Docking parameters ───────────────────────────────────────────────────────
 //
 // The YAML keys of the two docking-based functions, and the hand values both
 // share. Non-RT (`on_configure`); sibling of `planner_params.hpp`, which reads
@@ -166,7 +166,7 @@ void ReadDockingCoreParams(const YAML::Node& core_map, const std::string& path, 
 ///        (the caller fills them): `wait_pose`, `wait_pose_n`, `limits`, and
 ///        the hand's values in `.core`. `planner.search.nlp` absent = the
 ///        defaults. The siblings `mode` and `ik` of the map are other parsers'
-///        and tolerated, as is the removed `catch_box` (L3 §4.9 — the binding
+///        and tolerated, as is the removed `catch_box` (the binding
 ///        parks on it, kRemovedCatchingKeys); any other unknown key is refused.
 /// @throws std::invalid_argument as ReadDockingCoreParams, and for t_max ≤
 ///         t_lead_min, solve_s > budget_s, n_pre.max < n_pre.min, stop.blocks
@@ -174,8 +174,8 @@ void ReadDockingCoreParams(const YAML::Node& core_map, const std::string& path, 
 ///         kMaxSegmentNodes.
 [[nodiscard]] NlpCatchSearchParams ParseNlpSearchParams(const YAML::Node& catching, int nv);
 
-/// One joint group's keys under `planner.segment.mpc_docking.groups.<name>`
-/// (E3-F02, #641), `<name>` a `planner.groups` name: the per-joint weights of
+/// One joint group's keys under `planner.segment.mpc_docking.groups.<name>`,
+/// `<name>` a `planner.groups` name: the per-joint weights of
 /// `core:` for this group's joints (NaN = not given — the core's own value),
 /// the whole-body weights, and the group's move blocking. A group without an
 /// entry takes these defaults, which change nothing.
@@ -236,7 +236,7 @@ struct MpcDockingSegmentPlannerParams {
   double slack_v_max{0.0};
   /// `core:`.
   MpcDockingSegmentCoreParams core;
-  /// `groups.<name>` (E3-F02) at the index of `planner.groups`; n_groups is
+  /// `groups.<name>` at the index of `planner.groups`; n_groups is
   /// that list's length (0 = no groups).
   std::array<DockingGroupParams, kMaxJointGroups> groups{};
   int n_groups{0};

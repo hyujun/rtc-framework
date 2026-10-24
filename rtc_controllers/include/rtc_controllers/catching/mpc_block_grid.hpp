@@ -1,5 +1,4 @@
 // ── Move-blocked jerk grid shared by the segment cores ─────────────────────────
-// (dynamic_catching E1-F01 #627, E1-F07 #660, E1-F13 #739)
 //
 // MpcSegmentCore and MpcDockingSegmentCore condense the same joint-space triple
 // integrator onto the same kind of grid: N intervals split at a catch node
@@ -9,11 +8,10 @@
 // stage gains — so that a trajectory one core produces is a trajectory the
 // other (and the RT sampler behind both) reads the same way.
 //
-// Per joint group (E3-F02, #641; formulation §1.1, MD-49) each group may have
-// its own partition. Groups whose partitions are the same share one BLOCK
-// CLASS; BlockLayout says which class a joint is in and where each (joint,
-// block) jerk sits in the variable vector. One class of every joint is the
-// layout the cores had before groups, z_{b·n+j} (block-major), to the bit.
+// Per joint group each group may have its own partition. Groups whose
+// partitions are the same share one BLOCK CLASS; BlockLayout says which class a
+// joint is in and where each (joint, block) jerk sits in the variable vector.
+// With one class of every joint the layout is z_{b·n+j} (block-major).
 //
 // Non-RT: called from Init().
 #pragma once
@@ -101,7 +99,11 @@ inline void FillBlockOfInterval(int n_blocks, const std::array<int, kMaxSegmentN
 
 /// @brief Stage gains ĝ_{m,k}[b] of the scalar triple integrator: its response
 ///        (q, q̇, q̈ for m = 0, 1, 2) at node k to the jerk `u_scale` held over
-///        block b, all other blocks zero, from rest.
+///        block b, all other blocks zero, from rest. Exact for piecewise-constant
+///        jerk u_k on [k, k+1] (u_k = u_scale if interval k is in block b, else 0):
+///          q_{k+1} = q_k + Δ_k q̇_k + Δ_k²/2 q̈_k + Δ_k³/6 u_k
+///          q̇_{k+1} = q̇_k + Δ_k q̈_k + Δ_k²/2 u_k
+///          q̈_{k+1} = q̈_k + Δ_k u_k
 /// @param dt_interval       Δ_k of interval [k, k+1], N entries
 /// @param block_of_interval the block of each interval, N entries
 /// @param[out] gq, gv, ga   (N+1) × B; row 0 is zero

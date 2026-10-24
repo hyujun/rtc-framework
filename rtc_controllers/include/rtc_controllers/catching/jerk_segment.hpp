@@ -1,23 +1,21 @@
 // ── Piecewise-constant-jerk joint trajectory: closed-form evaluation ─────────
-// (dynamic_catching MPC plan E1-F01; formulation §1.5)
 //
-// The segment MPC (mpc_segment_core.hpp) publishes joint NODES (q_k, q̇_k, q̈_k) at a
-// fixed spacing Δ and nothing between them (MD-9). Between
-// node k and k+1 the jerk is constant, u_k = (q̈_{k+1} − q̈_k)/Δ, so for
-// τ ∈ [0, Δ]:
+// The segment MPC (mpc_segment_core.hpp) publishes joint NODES (q_k, q̇_k, q̈_k)
+// at a fixed spacing Δ and nothing between them. Between node k and k+1 the
+// jerk is constant, u_k = (q̈_{k+1} − q̈_k)/Δ, so for τ ∈ [0, Δ]:
 //
 //   q(τ)  = q_k + q̇_k τ + ½ q̈_k τ² + ⅙ u_k τ³
 //   q̇(τ)  = q̇_k + q̈_k τ + ½ u_k τ²
 //   q̈(τ)  = q̈_k + u_k τ
 //
 // This is EXACT for nodes produced by the MPC's own triple-integrator model
-// (the nodes are consistent), which is why the RT sampler (E1-F02) and the
-// planner's own-segment prediction (E1-F03, MD-28 path (i)) evaluate this
-// instead of interpolating: both then reproduce the trajectory the QP
-// optimised, and the result is C² at every node. (The planner's warm-start
-// shift needs no evaluation: the stop end is fixed, so it is a column copy.)
-// For inconsistent nodes (hand-made, or corrupted) position and velocity jump
-// at node k+1 — the caller that builds nodes owns consistency.
+// (the nodes are consistent), which is why the RT sampler and the planner's
+// own-segment prediction evaluate this instead of interpolating: both then
+// reproduce the trajectory the QP optimised, and the result is C² at every
+// node. (The planner's warm-start shift needs no evaluation: the stop end is
+// fixed, so it is a column copy.) For inconsistent nodes (hand-made, or
+// corrupted) position and velocity jump at node k+1 — the caller that builds
+// nodes owns consistency.
 //
 // Pure numeric core: Eigen only, no heap, noexcept, fail-closed.
 //  • Δ ≤ 0 or non-finite, and non-finite t, are invalid (NUM-2) — outputs are

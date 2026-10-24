@@ -12,12 +12,12 @@ namespace rtc::catching {
 
 namespace {
 
-// ── The L3 §6 ranges, in code, once ─────────────────────────────────────────// This block is the
-// code's single copy of the table's 범위 column for the rows this parser owns; the header
-// deliberately does not restate it (AP-DOC-1). `hi` is inclusive; `lo_open` distinguishes the
-// table's ">0" rows from its "≥0" rows, which is a real difference here — `lambda_max`, `k_null`,
+// ── The parameter ranges, in code, once ─────────────────────────────────────
+// This block is the single copy of the ranges of the keys this parser owns; the header
+// deliberately does not restate it. `hi` is inclusive; `lo_open` distinguishes the
+// ">0" rows from the "≥0" rows, which is a real difference here — `lambda_max`, `k_null`,
 // `k_manip` and `manip_grad_tol` are legitimately 0 (k_manip = 0 is what
-// recovers the pre-D-25 behaviour) while `mu` = 0 makes the task QP's Hessian
+// recovers the plain, ascent-free behaviour) while `mu` = 0 makes the task QP's Hessian
 // singular and `v_eps` = 0 removes the NUM-7 speed floor entirely.
 constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kPiOver2 = 1.5707963267948966;  // π/2, the alpha_max upper bound
@@ -119,8 +119,8 @@ int ReadInt(const std::string& base, const YAML::Node& sec, const char* key, int
   return i;
 }
 
-/// Read a scalar the schema may leave open as the literal string "TBD" (or, per
-/// L0 §5.3, an unparseable/non-finite number — treated the same way). The
+/// Read a scalar the schema may leave open as the literal string "TBD" (or,
+/// an unparseable/non-finite number — treated the same way). The
 /// READING is `params_detail::ReadTbdScalar`, the very function
 /// `ReadTbdDouble` in params/catching_params.cpp uses, so the two parsers
 /// cannot disagree about what a node means. What differs is what happens NEXT,
@@ -167,7 +167,7 @@ constexpr const char* kIkKeys[] = {
     "v_eps",    "dq_step_max", "fd_step",
 };
 
-/// Keys L3 §6 marks removed in v0.5. Present-but-retired is REPORTED, not
+/// Keys the schema has removed. Present-but-retired is REPORTED, not
 /// refused: the meaning is known, so a deployed config carrying one is a
 /// migration case and the caller logs it (rtc_controllers/README.md `params/`).
 void SweepIkKeys(const std::string& base, const YAML::Node& ik, CatchPoseIkRetiredKeys& retired) {
@@ -246,7 +246,7 @@ CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkReti
   // step would divide by it.
   o.fd_step = ReadDouble(base, ik, "fd_step", o.fd_step, kPositive);
 
-  // alpha_max: L3 §6 records `0.26 (provisional)`, which is the struct's own
+  // alpha_max: the schema's value is `0.26 (provisional)`, which is the struct's own
   // default (see the header's RESOLVED DISCREPANCY note). It is still read as a
   // TBD-capable value because an explicit `TBD` in a config must stay
   // representable: a TBD (or absent) key leaves the struct's provisional 0.26
@@ -286,7 +286,7 @@ CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkReti
 
   // The gate threshold is the row `definition` selects. An unresolved one is
   // left non-finite rather than filled from the other row: the two are
-  // different quantities in different units (L3 §6, catch_pose_ik.hpp note 2),
+  // different quantities in different units (catch_pose_ik.hpp note 2),
   // and `Solve` then refuses the options (kOptionsInvalid) instead of gating
   // against a number measured for the other definition. Under the defaults
   // this cannot fire — `arm_5row` resolves to the struct's own value.

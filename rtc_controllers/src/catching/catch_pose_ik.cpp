@@ -14,7 +14,7 @@ namespace {
 /// decomposition, checked once up front. A rejected option set is never
 /// repaired into a working one (NUM-7) — silently substituting a default would
 /// make the offline map and the runtime planner disagree about what they ran,
-/// which is the one failure mode L3 §4.2 exists to prevent.
+/// which is the failure this rejection prevents.
 [[nodiscard]] bool OptionsUsable(const CatchPoseIkOptions& o) noexcept {
   return o.max_iter > 0 &&                                              //
          std::isfinite(o.eps_pos) && o.eps_pos > 0.0 &&                 //
@@ -40,7 +40,7 @@ namespace {
 ///
 /// A pivot that is zero, negative or non-finite means the pose is rank
 /// deficient or the factorisation broke down, and BOTH are rejections. This is
-/// the fail-closed rule L3 §4.2 states: not `det > 0` on a materialised
+/// the fail-closed rule: not `det > 0` on a materialised
 /// determinant, which rounds to a small positive number about as often as to a
 /// negative one near a singularity, and which launders a NaN into a false
 /// comparison. Working in logs also keeps a legitimately small w from
@@ -216,7 +216,7 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
     r.reason = CatchPoseReason::kVelocityNonFinite;
     return r;
   }
-  // Both halves of the NUM-7 defence L3 §4.2 prescribes: finiteness above, and
+  // Both halves of the NUM-7 defence: finiteness above, and
   // the speed floor here. ‖v̂‖ below v_eps is a rejection, not a max() — a
   // clamped speed would hand the caller an approach axis derived from noise.
   const double speed = v_ball.norm();
@@ -281,7 +281,7 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
     const double pos_error = e_pos.norm();
     // θ = ‖e_a‖ by construction of the rotation-vector error, so this is the
     // cone test zᵀa_d ≥ cos α_max written in a form that stays well-conditioned
-    // at large angles (L3 §4.2).
+    // at large angles.
     const double theta = axis.error.norm();
     const bool meets_task = (pos_error < opt.eps_pos) && (theta <= opt.alpha_max);
     if (meets_task) {
@@ -351,7 +351,7 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
 
     // The update law, in the two pieces it is actually made of:
     //
-    //     q̇_clik = the box-constrained task QP's solution   (D-26)
+    //     q̇_clik = the box-constrained task QP's solution
     //     q̇_n    = N q̇_sec     — a joint velocity IN the null space
     //     q̇_d    = q̇_clik + q̇_n
     //
@@ -370,8 +370,8 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
       // rejected. With one already in hand, q_acc_ met both tolerances under
       // this same law and discarding it would turn a valid catch pose into a
       // rejection — the failure only means the run cannot continue improving,
-      // which is what stopping here records. That distinction only became
-      // reachable with the D-25 ascent: at k_manip = 0 the loop breaks on
+      // which is what stopping here records. That distinction is reachable
+      // only with the manipulability ascent (k_manip > 0): at k_manip = 0 the loop breaks on
       // meets_task before a second QP ever runs.
       qp_failures = 1;
       if (accepted_any)
@@ -464,9 +464,9 @@ bool CatchPoseIk::QpTaskStep(const pinocchio::Model& pin, const CatchPoseIkOptio
   //
   // μ is not cosmetic: J₅wᵀJ₅w is nv×nv but has rank ≤ 5, so it is singular for
   // every arm this runs on and the QP has no unique solution without it. It is
-  // what plays the role §6.5's adaptive λ plays for the projector — except that
+  // what plays the role the adaptive λ plays for the DLS projector — except that
   // it is a constant, which is why it is validated (> 0) and why its default is
-  // a measured provisional rather than a guess (D-26).
+  // a measured provisional rather than a guess.
   JtJ_.noalias() = J5w_.transpose() * J5w_;
   qp_data_.H = JtJ_;
   qp_data_.H.diagonal().array() += opt.mu;
