@@ -34,6 +34,10 @@
 //              window path, write without a REQ-side change for the E-Stop
 //   D26        E-Stop fire-and-forget: Frame 1 zeros then Frame 0 zeros
 //   D51        a left-hand comm never talks to a right-hand fake
+//   D63 · D64  cmd_ack none (#945): the write is the send (write_ok, not
+//   · D68      write_rx), no echo stage, the set keeps CMD + 2T after a write
+//              and REQ + T without one; echoes from an echoing firmware only
+//              count (echo_unexpected) — and the CmdAckMismatchDecision table
 //   DrainStale bounded drain, stale_drained accounting
 //   Tier 1     tx errno classification, closed link harmless, kRxMask bits,
 //              the vcan0 SIL detector's id set (#927 B),
@@ -90,7 +94,7 @@ CanFdHandCommConfig CommConfig(HandSide side = HandSide::kRight) {
   return cfg;
 }
 
-FakeHandFirmware::Config FakeConfig(HandSide side) {
+FakeHandFirmware::Config FakeConfig(HandSide side, CmdAck cmd_ack = CmdAck::kEcho) {
   FakeHandFirmware::Config cfg;
   cfg.num_fingertips = kDefaultNumFingertips;
   cfg.effort_stiffness = 2.0;
@@ -99,6 +103,7 @@ FakeHandFirmware::Config FakeConfig(HandSide side) {
   cfg.sensor_noise_stddev = kNoiseStddev;
   cfg.seed = 7;
   cfg.hand_side = side;
+  cfg.cmd_ack = cmd_ack;
   return cfg;
 }
 
@@ -234,9 +239,12 @@ class FakePeer {
  public:
   enum class Mode { kNormal, kDropFrame2, kReverse, kSilent, kRespFirst, kNoEcho, kLate };
 
+  // `cmd_ack` selects which firmware the real fake mirrors (#945): under kNone
+  // it never yields an echo, whatever `mode` does with the frames it yields.
   explicit FakePeer(HandSide side, Mode mode = Mode::kNormal,
-                    std::chrono::milliseconds late_unit = std::chrono::milliseconds(0))
-      : firmware_(FakeConfig(side)),
+                    std::chrono::milliseconds late_unit = std::chrono::milliseconds(0),
+                    CmdAck cmd_ack = CmdAck::kEcho)
+      : firmware_(FakeConfig(side, cmd_ack)),
         mode_(mode),
         late_unit_(late_unit),
         transport_(TargetedConfig(NodeIdOf(side))) {
@@ -371,8 +379,9 @@ class CanFdHandCommVcan : public ::testing::Test {
 
   std::unique_ptr<FakePeer> StartPeer(HandSide side = HandSide::kRight,
                                       FakePeer::Mode mode = FakePeer::Mode::kNormal,
-                                      std::chrono::milliseconds late_unit = 0ms) {
-    auto peer = std::make_unique<FakePeer>(side, mode, late_unit);
+                                      std::chrono::milliseconds late_unit = 0ms,
+                                      CmdAck cmd_ack = CmdAck::kEcho) {
+    auto peer = std::make_unique<FakePeer>(side, mode, late_unit, cmd_ack);
     EXPECT_TRUE(peer->open());
     return peer;
   }
@@ -517,6 +526,39 @@ TEST(CanFdHandCommTier1, VcanSilDetectorMatchesExactlyTheHandIds) {
   }
   // Same node but another message type (type field 3) is not the protocol.
   EXPECT_FALSE(IsHandTraffic((ReqId(kNodeRightHand) | 0x00C00000u) | CAN_EFF_FLAG));
+}
+
+// #945 D63: the WARN predicate. echo → a silent firmware needs enough echo
+// timeouts, no echoed write, no late echo and a live set stage; none → any
+// unexpected echo.
+TEST(CanFdHandCommTier1, CmdAckMismatchDecisionTable) {
+  using PerKind = UdpHandCommStats::PerKind;
+  const auto echo = [](const PerKind& w, uint64_t joint_ok, uint64_t unexpected) {
+    return CmdAckMismatchDecision(CmdAck::kEcho, w, joint_ok, unexpected);
+  };
+  PerKind all_timeout{};
+  all_timeout.timeout = kCmdAckMismatchMinWrites;
+  EXPECT_EQ(echo(all_timeout, 1, 0), CmdAckMismatch::kFirmwareSilent);
+  EXPECT_EQ(echo(all_timeout, 0, 0), CmdAckMismatch::kNone) << "dead link: the set fails too";
+  PerKind too_few{};
+  too_few.timeout = kCmdAckMismatchMinWrites - 1;
+  EXPECT_EQ(echo(too_few, 1, 0), CmdAckMismatch::kNone);
+  PerKind one_ok = all_timeout;
+  one_ok.ok = 1;
+  EXPECT_EQ(echo(one_ok, 1, 0), CmdAckMismatch::kNone) << "an echo arrived once";
+  PerKind one_error = all_timeout;
+  one_error.error = 1;
+  EXPECT_EQ(echo(one_error, 1, 0), CmdAckMismatch::kFirmwareSilent)
+      << "a send error does not hide a silent firmware";
+  EXPECT_EQ(echo(all_timeout, 1, 1), CmdAckMismatch::kNone)
+      << "late echoes: T is too short, the firmware does echo";
+  EXPECT_EQ(echo(PerKind{}, 1, 5), CmdAckMismatch::kNone);
+
+  EXPECT_EQ(CmdAckMismatchDecision(CmdAck::kNone, PerKind{}, 1, 1),
+            CmdAckMismatch::kFirmwareEchoes);
+  EXPECT_EQ(CmdAckMismatchDecision(CmdAck::kNone, PerKind{}, 1, 0), CmdAckMismatch::kNone);
+  EXPECT_EQ(CmdAckMismatchDecision(CmdAck::kNone, all_timeout, 1, 0), CmdAckMismatch::kNone)
+      << "none mode ignores the echo-stage record";
 }
 
 TEST(SensorProtocol2Test, CapabilitiesMatchTheWire) {
@@ -1078,6 +1120,7 @@ TEST_F(CanFdHandCommVcan, D59_ClassFourFramesOnlyCount) {
   EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
   EXPECT_EQ(s.recv_timeout, 0u);
   EXPECT_EQ(comm->canfd_stats().echo_payload_mismatch, 1u);  // the injected echo 0
+  EXPECT_EQ(comm->canfd_stats().echo_unexpected, 0u);  // every echo came while its stage was open
   EXPECT_EQ(comm->canfd_stats().assembler.outside_set, 0u);
   EXPECT_EQ(comm->canfd_stats().assembler.bad_index, 0u);
 }
@@ -1131,6 +1174,7 @@ TEST_F(CanFdHandCommVcan, D59_PayloadMismatchAndErrorFrameOnlyCountInTheWindow) 
   comm->PublishCommStats();
   const CanFdCommStats c = comm->canfd_stats();
   EXPECT_EQ(c.echo_payload_mismatch, 1u);  // the injected idx 1; the real idx 1 is then class ④
+  EXPECT_EQ(c.echo_unexpected, 1u);        // … arriving after the echo stage closed
   EXPECT_GE(c.error_frames, 1u);
   EXPECT_GE(c.bus_off, 1u);
   EXPECT_EQ(comm->comm_stats().cmd_mismatch, 1u);
@@ -1193,6 +1237,199 @@ TEST_F(CanFdHandCommVcan, D60_RunCycleWithoutCommandIsTheReadCycle) {
     EXPECT_FLOAT_EQ(fw.target()[9], 0.0f);  // no command reached the hand
     return 0;
   });
+}
+
+// ── cmd_ack none (#945 D63 · D64 · D68) ────────────────────────────────────
+
+namespace {
+CanFdHandCommConfig NoneConfig(double recv_timeout_ms = kStageTimeoutMs) {
+  CanFdHandCommConfig cfg = CommConfig();
+  cfg.cmd_ack = CmdAck::kNone;
+  cfg.recv_timeout_ms = recv_timeout_ms;
+  return cfg;
+}
+}  // namespace
+
+// On an echoing link the write is receive-confirmed: write_rx follows write_ok.
+TEST_F(CanFdHandCommVcan, D68_EchoWriteIsReceiveConfirmed) {
+  auto peer = StartPeer();
+  auto comm = OpenComm();
+  HandReadBuffers bufs{};
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.1f, 0.01f), HandMotorArray{}, bufs);
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_TRUE(out.write_rx);
+}
+
+// A silent firmware and cmd_ack none: the write is ok on its send (not a
+// receive), the command reached the hand, the set completes, and nothing waits
+// for an echo — the window is far shorter than T.
+TEST_F(CanFdHandCommVcan, D63_NoneWriteIsSendConfirmed) {
+  auto peer = StartPeer(HandSide::kRight, FakePeer::Mode::kNormal, 0ms, CmdAck::kNone);
+  auto comm = OpenComm(NoneConfig());
+  const HandMotorArray pos = Ramp(0.1f, 0.01f);
+  HandReadBuffers bufs{};
+  const auto t0 = std::chrono::steady_clock::now();
+  const HandReadOutcome out = Cycle(*comm, pos, HandMotorArray{}, bufs);
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_FALSE(out.write_rx) << "D68: a send is not a receive";
+  ASSERT_TRUE(out.joint_ok);
+  EXPECT_GE(out.write_end, t0);
+  EXPECT_LE(out.write_end, out.PhaseEnd(ReadPhase::kJoint));
+  EXPECT_LT(elapsed, std::chrono::milliseconds(static_cast<int>(kStageTimeoutMs / 2)));
+  peer->WithModel([&](const FakeHandFirmware& fw) {
+    for (std::size_t i = 0; i < pos.size(); ++i)
+      EXPECT_FLOAT_EQ(fw.target()[i], pos[i]);
+    return 0;
+  });
+
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).timeout, 0u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
+  EXPECT_EQ(s.recv_ok, 1u);  // the set stage only
+  EXPECT_EQ(s.recv_timeout, 0u);
+  EXPECT_EQ(s.cmd_mismatch, 0u);
+  EXPECT_EQ(comm->recv_error_count(), 0u);
+  EXPECT_EQ(comm->canfd_stats().echo_unexpected, 0u);
+}
+
+// cmd_ack none against an echoing firmware: both echoes land in the set stage
+// as class ④ (before RESP F2 — the hand answers in order), counted as
+// echo_unexpected; nothing fails, and the WARN predicate fires.
+TEST_F(CanFdHandCommVcan, D63_NoneCountsUnexpectedEchoes) {
+  auto peer = StartPeer();  // echoes
+  auto comm = OpenComm(NoneConfig());
+  HandReadBuffers bufs{};
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.1f, 0.01f), HandMotorArray{}, bufs);
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_TRUE(out.joint_ok);
+
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  const CanFdCommStats c = comm->canfd_stats();
+  EXPECT_EQ(c.echo_unexpected, 2u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).cmd_mismatch, 2u);
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).cmd_mismatch, 0u);
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok, 1u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
+  EXPECT_EQ(CmdAckMismatchDecision(CmdAck::kNone, Kind(s, RequestKind::kWriteEcho),
+                                   Kind(s, RequestKind::kJointRead).ok, c.echo_unexpected),
+            CmdAckMismatch::kFirmwareEchoes);
+}
+
+// cmd_ack echo against a silent firmware (the real fake under none): every
+// echo stage times out while the set completes, and after enough writes the
+// WARN predicate reads it as a silent firmware.
+TEST_F(CanFdHandCommVcan, D63_EchoAgainstSilentFirmwareReadsAsSilent) {
+  auto peer = StartPeer(HandSide::kRight, FakePeer::Mode::kNormal, 0ms, CmdAck::kNone);
+  CanFdHandCommConfig cfg = CommConfig();
+  cfg.recv_timeout_ms = 2.0;
+  auto comm = OpenComm(cfg);
+  HandReadBuffers bufs{};
+  for (uint64_t i = 0; i < kCmdAckMismatchMinWrites; ++i) {
+    const HandReadOutcome out = Cycle(*comm, Ramp(0.1f, 0.01f), HandMotorArray{}, bufs);
+    EXPECT_FALSE(out.write_ok);
+    EXPECT_FALSE(out.write_rx);
+  }
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).timeout, kCmdAckMismatchMinWrites);
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok, 0u);
+  EXPECT_GT(Kind(s, RequestKind::kJointRead).ok, 0u);
+  EXPECT_EQ(CmdAckMismatchDecision(CmdAck::kEcho, Kind(s, RequestKind::kWriteEcho),
+                                   Kind(s, RequestKind::kJointRead).ok,
+                                   comm->canfd_stats().echo_unexpected),
+            CmdAckMismatch::kFirmwareSilent);
+}
+
+// The write alone (no REQ) under none opens no stage at all: true at once,
+// even with nobody on the bus.
+TEST_F(CanFdHandCommVcan, D63_NoneWriteAloneReturnsAtOnce) {
+  auto comm = OpenComm(NoneConfig());
+  const auto t0 = std::chrono::steady_clock::now();
+  EXPECT_TRUE(comm->WriteCommandWithEcho(Ramp(0.0f, 0.1f), HandMotorArray{}));
+  EXPECT_LT(std::chrono::steady_clock::now() - t0, 10ms);
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok, 1u);
+  EXPECT_EQ(s.recv_ok, 0u);
+  EXPECT_EQ(s.recv_timeout, 0u);
+  EXPECT_EQ(comm->recv_error_count(), 0u);
+}
+
+// D64: after a write the set stage keeps the nominal CMD + 2T. The hand works
+// through the CMD before the REQ, so its burst lands later than REQ + T: here
+// 1.3 T after the CMD (kLate; the silent fake holds back no echo) — a REQ + T
+// deadline would miss it.
+TEST_F(CanFdHandCommVcan, D64_NoneSetDeadlineIsCmdPlusTwoT) {
+  constexpr auto kT = 100ms;
+  auto peer = StartPeer(HandSide::kRight, FakePeer::Mode::kLate, kT, CmdAck::kNone);
+  auto comm = OpenComm(NoneConfig(100.0));
+  HandReadBuffers bufs{};
+  const auto t0 = std::chrono::steady_clock::now();
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.0f, 0.1f), HandMotorArray{}, bufs);
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_TRUE(out.joint_ok);
+  EXPECT_LT(out.write_end - t0, kT / 10);  // the write closed on the send
+  EXPECT_GE(out.PhaseEnd(ReadPhase::kJoint) - t0, kT * 12 / 10);
+  EXPECT_LT(elapsed, kT * 2);
+  comm->PublishCommStats();
+  EXPECT_EQ(comm->comm_stats().recv_timeout, 0u);
+}
+
+// Nobody answers: under none the window after a write is the set stage's 2T.
+TEST_F(CanFdHandCommVcan, D64_NoneSilentPeerWindowIsTwoT) {
+  const auto k2T = std::chrono::milliseconds(static_cast<int>(2 * kStageTimeoutMs));
+  auto comm = OpenComm(NoneConfig());
+  HandReadBuffers bufs{};
+  const auto t0 = std::chrono::steady_clock::now();
+  const HandReadOutcome out = Cycle(*comm, Ramp(0.0f, 0.1f), HandMotorArray{}, bufs);
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_FALSE(out.joint_ok);
+  EXPECT_GE(elapsed, k2T * 9 / 10);
+  EXPECT_LT(elapsed, k2T * 15 / 10);
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).timeout, 1u);
+  EXPECT_EQ(s.recv_timeout, 1u);  // the set only — there is no echo stage to time out
+}
+
+// A tick without a command under none: the set stage alone, REQ + T.
+TEST_F(CanFdHandCommVcan, D64_NoneReadOnlyTickKeepsReqPlusT) {
+  const auto kT = std::chrono::milliseconds(static_cast<int>(kStageTimeoutMs));
+  auto comm = OpenComm(NoneConfig());
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  const auto t0 = std::chrono::steady_clock::now();
+  comm->RunCycle(SensorPlan(false), nullptr, nullptr, bufs, out);
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+  EXPECT_FALSE(out.joint_ok);
+  EXPECT_GE(elapsed, kT * 9 / 10);
+  EXPECT_LT(elapsed, kT * 15 / 10);
+}
+
+// D60 under none: RunCycle without a command is the read cycle, write fields
+// at their defaults.
+TEST_F(CanFdHandCommVcan, D60_NoneRunCycleWithoutCommandIsTheReadCycle) {
+  auto peer = StartPeer(HandSide::kRight, FakePeer::Mode::kNormal, 0ms, CmdAck::kNone);
+  auto comm = OpenComm(NoneConfig());
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  out.write_ok = true;
+  out.write_rx = true;
+  comm->RunCycle(SensorPlan(false), nullptr, nullptr, bufs, out);
+  EXPECT_FALSE(out.write_ok);
+  EXPECT_FALSE(out.write_rx);
+  EXPECT_EQ(out.write_end, HandReadOutcome::Clock::time_point{});
+  EXPECT_TRUE(out.joint_ok);
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kWriteEcho).ok + Kind(s, RequestKind::kWriteEcho).timeout, 0u);
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
 }
 
 TEST_F(CanFdHandCommVcan, D26_FireAndForgetSendsZeroFrame1ThenZeroFrame0) {

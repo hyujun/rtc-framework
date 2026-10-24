@@ -13,12 +13,14 @@
 //                             CMD Frame 0 (pos, rad) + Frame 1 (ff, A) when a
 //                             command came in, then REQ (DLC 0, D47), back to
 //                             back; one receive window collects the two echoes
-//                             (D41) and the RESP burst idx 0 1 2 in any order
-//                             (D57) under the deadline chain below
+//                             (D41, `cmd_ack` echo only) and the RESP burst idx
+//                             0 1 2 in any order (D57) under the deadline chain
+//                             below
 //                                                     → kWriteEcho · kJointRead,
 //                             and on a sensor cycle kBulkSensor too (D49: 1:1
 //                             with proto1's per-kind stats)
 //   WriteCommandWithEcho      the echo stage alone (no REQ)       → kWriteEcho
+//                             (`cmd_ack` none: the CMD pair's send alone)
 //   ReadCycle                 the set stage alone (REQ, no CMD) → kJointRead
 //   WriteCommandFireAndForget E-Stop: Frame 1 zeros, then Frame 0 zeros (D26),
 //                             nothing awaited — not a window
@@ -34,13 +36,27 @@
 // The hand answers each frame in turn, so the pipelined RESP burst lands at
 // about CMD + 1.3 ms; a set deadline of REQ + T would miss it every cycle.
 //
+// Command acknowledgement (#945 D61 · D63 · D64), CanFdHandCommConfig::cmd_ack
+// — it must match the firmware:
+//   echo  the SDO-like firmware echoes every CMD frame: the echo stage and the
+//         chain above.
+//   none  the PDO-like firmware applies a CMD silently: no echo stage opens, a
+//         write is ok (kWriteEcho ok, HandReadOutcome::write_ok) when both CMD
+//         frames were sent — write_rx stays false, since nothing came back
+//         (D68) — and the set stage keeps the nominal CMD + 2T (from the end of
+//         the CMD sends) when Frame 0 went out, since the hand still works
+//         through the CMD before the REQ; REQ + T otherwise. The 2T bound is the
+//         same in both modes.
+// A mismatch fails no stage outright, it shows in counters: echo against a
+// silent firmware times every echo stage out; none against an echoing firmware
+// sees each echo as class ④ and counts it in echo_unexpected.
+//
 // Frame classification (D41 · D58 · D59). Every frame the filter lets through:
 //   ① an error message frame (CAN_ERR_FLAG, subscribed through error_mask) →
 //      CanFdCommStats::error_frames / bus_off only;
 //   ② this node's echo with idx 0 or 1 not yet seen while the echo stage is
-//      open → accepted in any order; a payload that differs from what was sent
-//      only bumps echo_payload_mismatch (the hand applied its own copy —
-//      nothing to re-send);
+//      open (never in `cmd_ack` none) → accepted in any order; a payload that differs from what was
+//      sent only bumps echo_payload_mismatch (the hand applied its own copy — nothing to re-send);
 //   ③ this node's RESP while the set stage is open → RespSetAssembler::Feed
 //      (duplicates, bad index / length counted by it, D57);
 //   ④ anything else (an echo idx ≥ 2 or a repeated idx, a RESP outside an
@@ -48,6 +64,8 @@
 //      cmd_mismatch + last_unexpected_* only, attributed to kWriteEcho while
 //      the echo stage is open and to kJointRead otherwise — however many
 //      arrive, the open stages keep waiting (D58). Nothing is re-sent (D41).
+//      An echo while no echo stage is open (late, a read-only tick, or any
+//      echo under `cmd_ack` none) also bumps CanFdCommStats::echo_unexpected.
 // recv_ok counts the first frame of each open stage's id class — an echo id
 // for the echo stage, a RESP id for the set stage, whatever its index or
 // length (a frame-level arrival, as on UDP) — so ≤ 2 per cycle; every stage ends on exactly one
@@ -69,7 +87,7 @@
 // Statistics: the shared HandCommStatsPair (UdpHandCommStats, same JSON keys
 // and meaning: a frame-level arrival is recv_ok, a transaction result is
 // per_kind) plus CanFdCommStats for what only this link has (tx errno classes,
-// error frames, echo payload mismatches, the assembler's counters) behind its
+// error frames, echo payload mismatches and unexpected echoes, the assembler's counters) behind its
 // own SeqLock. canfd_stats() is not part of HandComm; the node reaches it
 // through a non-owning pointer to the concrete type it constructed.
 //
@@ -113,7 +131,10 @@ namespace udp_hand_driver {
 struct CanFdHandCommConfig {
   std::string interface_name{"can0"};
   canfd::HandSide hand_side{canfd::HandSide::kRight};  ///< D51: the only hand selector
-  /// Per-stage receive deadline (echo stage · RESP set stage), D42.
+  /// Whether the firmware echoes CMD frames (#945 D61) — see the header comment.
+  canfd::CmdAck cmd_ack{canfd::CmdAck::kEcho};
+  /// Per-stage receive deadline T (echo stage · RESP set stage), D42; under
+  /// `cmd_ack` none the set stage after a write gets the nominal 2T (D64).
   double recv_timeout_ms{2.0};
   /// Per-motor torque constant kt [Nm/A] (firmware motor order), D50. Must be
   /// > 0 with a finite reciprocal — Open() refuses otherwise (NUM-2). 1.0
@@ -137,16 +158,51 @@ struct CanFdCommStats {
   uint64_t bus_off{0};  ///< of which CAN_ERR_BUSOFF
   /// Echo frames (D41 class ②) whose 64 bytes differ from the command sent.
   uint64_t echo_payload_mismatch{0};
+  /// Echo frames of this node received while no echo stage was open (late
+  /// echoes, echoes on a read-only tick, every echo under `cmd_ack` none —
+  /// the sign of an echoing firmware behind `cmd_ack` none, D63). Each is
+  /// also a class-④ cmd_mismatch.
+  uint64_t echo_unexpected{0};
   /// RespSetAssembler counters, copied in at publish time.
   canfd::AssemblerStats assembler{};
 };
+
+/// A `cmd_ack` setting the firmware disagrees with, as the counters show it
+/// (#945 D63). The node evaluates it on each stats save and warns once per
+/// kind; it never switches the mode itself.
+enum class CmdAckMismatch : uint8_t {
+  kNone,
+  kFirmwareSilent,  ///< `cmd_ack` echo, but no write ever saw its echoes
+  kFirmwareEchoes,  ///< `cmd_ack` none, but echoes arrive
+};
+
+/// Writes an all-timeout echo record needs before it reads as a silent firmware
+/// rather than a start-up transient.
+inline constexpr uint64_t kCmdAckMismatchMinWrites = 100;
+
+/// echo: ≥ kCmdAckMismatchMinWrites echo timeouts and not one echoed write,
+/// while the RESP set still completes (a live hand — a dead link times out
+/// both) and no echo arrived late (echoes after T mean T is too short, not a
+/// silent firmware); a send error here and there does not hide it. none: any
+/// echo_unexpected.
+[[nodiscard]] constexpr CmdAckMismatch CmdAckMismatchDecision(
+    canfd::CmdAck ack, const UdpHandCommStats::PerKind& write_echo, uint64_t joint_read_ok,
+    uint64_t echo_unexpected) noexcept {
+  if (ack == canfd::CmdAck::kNone)
+    return echo_unexpected > 0 ? CmdAckMismatch::kFirmwareEchoes : CmdAckMismatch::kNone;
+  return (write_echo.ok == 0 && write_echo.timeout >= kCmdAckMismatchMinWrites &&
+          joint_read_ok > 0 && echo_unexpected == 0)
+             ? CmdAckMismatch::kFirmwareSilent
+             : CmdAckMismatch::kNone;
+}
 
 class CanFdHandComm final : public HandComm {
  public:
   using Clock = std::chrono::steady_clock;
 
   /// Max non-blocking reads per DrainStale() call: the controller's 10-frame
-  /// Rx FIFO plus a late echo pair, with headroom. A residual backlog is picked
+  /// Rx FIFO plus a late (or, under a `cmd_ack` mismatch, unawaited) echo
+  /// pair, with headroom. A residual backlog is picked
   /// up next cycle.
   static constexpr int kMaxDrainPerCall = 16;
 
@@ -336,6 +392,7 @@ class CanFdHandComm final : public HandComm {
       BuildCommandFrames(*cmd_pos, *cmd_ff);
     const WindowResult r = RunWindow(write, /*send_req=*/true, plan.sensors);
     out.write_ok = r.write_ok;
+    out.write_rx = r.write_ok && cfg_.cmd_ack == canfd::CmdAck::kEcho;  // D68
     out.write_end = r.write_end;
     FinishRead(r, plan, bufs, out);
   }
@@ -428,9 +485,9 @@ class CanFdHandComm final : public HandComm {
 
   /// What one receive window reported (see RunWindow).
   struct WindowResult {
-    bool write_ok{false};           ///< both echoes arrived (echo stage only)
+    bool write_ok{false};           ///< both echoes arrived (none: both CMD frames sent)
     bool set_ok{false};             ///< the RESP set completed (set stage only)
-    Clock::time_point write_end{};  ///< echo stage close (echoes, deadline or error)
+    Clock::time_point write_end{};  ///< echo stage close (echoes, deadline or error; none: sent)
     Clock::time_point set_end{};    ///< set stage close (complete, deadline or error)
   };
 
@@ -449,28 +506,49 @@ class CanFdHandComm final : public HandComm {
   /// (tx_frame0_/1_ already built) and / or the REQ — then receives until
   /// every stage that opened has closed. Deadline chain: echo stage CMD + T;
   /// set stage (echo close) + T, nominal CMD + 2T until the echoes arrive, REQ
-  /// + T when no echo stage opened. ppoll waits for the nearest open deadline.
+  /// + T when no CMD went out. `cmd_ack` none opens no echo stage: the write
+  /// is the send, the set stage keeps CMD + 2T when Frame 0 went out (D64).
+  /// ppoll waits for the nearest open deadline.
   [[nodiscard]] WindowResult RunWindow(bool send_cmd, bool send_req, bool sensors) noexcept {
     WindowResult r{};
     // ── Send stage ───────────────────────────────────────────────────────
     bool echo_open = false;
     Clock::time_point echo_deadline{};
+    // The set stage's upper bound, decided by what the CMD did: echo stage
+    // close + T (pulled in by SetDeadline when the echoes arrive); under
+    // cmd_ack none the end of the CMD sends + 2T once Frame 0 went out (D64);
+    // left at the epoch — REQ + T — when no CMD reached the bus.
+    Clock::time_point set_bound{};
     if (send_cmd) {
-      if (SendCounted(tx_frame0_) && SendCounted(tx_frame1_)) {
+      const bool frame0_sent = SendCounted(tx_frame0_);
+      const bool sent = frame0_sent && SendCounted(tx_frame1_);
+      const Clock::time_point t_sent = Clock::now();
+      if (cfg_.cmd_ack == canfd::CmdAck::kNone) {
+        if (sent) {
+          ++stats_.PerKind(RequestKind::kWriteEcho).ok;
+          r.write_ok = true;
+        } else {
+          stats_.CountRecvError(RequestKind::kWriteEcho);
+        }
+        r.write_end = t_sent;
+        if (frame0_sent)
+          set_bound = t_sent + 2 * stage_timeout_;
+      } else if (sent) {
         echo_open = true;
-        echo_deadline = Clock::now() + stage_timeout_;
+        echo_deadline = t_sent + stage_timeout_;
+        set_bound = echo_deadline + stage_timeout_;
       } else {
         stats_.CountRecvError(RequestKind::kWriteEcho);
-        r.write_end = Clock::now();
+        r.write_end = t_sent;
       }
     }
     bool set_open = false;
     if (send_req) {
       if (SendCounted(tx_req_)) {
         set_open = true;
-        // Upper bound of the chain; pulled in by SetDeadline when the echoes
-        // arrive. Begin() resets the assembler, so it is called once here.
-        assembler_.Begin((echo_open ? echo_deadline : Clock::now()) + stage_timeout_);
+        // Begin() resets the assembler, so it is called once here.
+        assembler_.Begin(set_bound != Clock::time_point{} ? set_bound
+                                                          : Clock::now() + stage_timeout_);
       } else {
         CountSetError(sensors);
         r.set_end = Clock::now();
@@ -573,6 +651,8 @@ class CanFdHandComm final : public HandComm {
         continue;
       }
       // ④
+      if (cls == RxClass::kEcho && !echo_open)
+        ++canfd_working_.echo_unexpected;
       stats_.CountCmdMismatch(echo_open ? RequestKind::kWriteEcho : RequestKind::kJointRead,
                               UnexpectedCmdOf(id), rx_.len);
     }

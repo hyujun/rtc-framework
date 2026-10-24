@@ -70,7 +70,9 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
     // Phase end minus the previous phase end. On a CAN FD write tick the
     // command and the request are pipelined (#919), so this is echo-stage
     // end -> RESP-set completion (0 when the set closed first), not the
-    // hand's round trip; a tick without a write keeps REQ -> set.
+    // hand's round trip — under cmd_ack none (#945) the write stage ends at
+    // the CMD send, so it is CMD send -> set completion and includes the
+    // hand's CMD handling; a tick without a write keeps REQ -> set.
     double read_all_joint_motor_us{0.0};
     double read_all_sensor_us{0.0};
     double sensor_proc_us{0.0};
