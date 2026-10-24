@@ -732,9 +732,10 @@ TEST_F(ShippedInference, TheArmIntegratorStartsAtTheMeasuredArm) {
 /// test model's hand does not fit them (58 mm mean, the thumb 115 mm: the gate
 /// is shut). This case gives the controller a pattern built on the test hand's
 /// own brackets instead — each bracket moved kPatternOffset off it, at right
-/// angles to its tip link and the policy x axis, alternately in sign so the
-/// offsets do not cancel in the object fit — which puts the gate on its ramp
-/// with the brackets and the tip links far apart in what they would read.
+/// angles to its tip link and the policy x axis, with the signs kPatternSign
+/// (picked so the four offsets do not cancel in the object fit) — which puts
+/// the gate on its ramp with the brackets and the tip links far apart in what
+/// they would read.
 class ShippedInferenceOnTheTestHandsPattern : public ShippedInference {
  protected:
   static constexpr double kPatternOffset = 0.012;  // m
@@ -755,7 +756,13 @@ class ShippedInferenceOnTheTestHandsPattern : public ShippedInference {
       const auto& l = kTipPos.at(std::string("l_") + fingers[i] + "_tip_link");
       const Eigen::Vector3d bracket = fx::BaseFromBaseLink(Eigen::Vector3d(b[0], b[1], b[2]));
       const Eigen::Vector3d link = fx::BaseFromBaseLink(Eigen::Vector3d(l[0], l[1], l[2]));
-      const Eigen::Vector3d off = (link - bracket).cross(Eigen::Vector3d::UnitX()).normalized();
+      const Eigen::Vector3d across = (link - bracket).cross(Eigen::Vector3d::UnitX());
+      // NUM-2: a tip link straight along x from its bracket has no such direction.
+      if (across.norm() < 1e-6) {
+        throw std::runtime_error(std::string(fingers[i]) +
+                                 ": tip link parallel to the policy x axis — pick another axis");
+      }
+      const Eigen::Vector3d off = across.normalized();
       target[i] = bracket + kPatternSign[i] * kPatternOffset * off;
       centroid += bracket / 4.0;
     }

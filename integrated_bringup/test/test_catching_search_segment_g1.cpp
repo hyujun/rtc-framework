@@ -1,5 +1,6 @@
-// The search on a chain, the segments on the device: the shipped g1_p1b models
-// through the planner (#640).
+// The search on a chain, the segments on the device: the g1_p1b models through
+// the planner (#640). The model is the profile's test model
+// (p1b_surrogate_models.hpp): the real G1 body, a synthetic hand past the palm.
 //
 // On G1 the catch SEARCH runs on `g1_catch` (pelvis → the right palm: waist 3 +
 // right arm 7, 10 joints, the left arm locked) and the SEGMENTS are planned on
@@ -32,9 +33,11 @@
 //              (user decision, 2026-10-14): a torque cost on the tree weighs
 //              the torque of the joints the chain lacks, and the chain's own
 //              torque depends on where those joints are, so the tree's
-//              optimum moves them and the two problems differ. Measured with
-//              the docking fixture's cost (`r_tau` 1e-4 on every joint of each
-//              model) on this scene: the joints the chain lacks move 5e-2 rad,
+//              optimum moves them and the two problems differ. Measured
+//              (2026-10-14, on the shipped model with the real hand, before
+//              the test model replaced it) with the docking fixture's cost
+//              (`r_tau` 1e-4 on every joint of each model) on this scene: the
+//              joints the chain lacks move 5e-2 rad,
 //              the chain's 3e-3 rad against 1e-4, three SQP iterations against
 //              one — the torque rows inactive all the while. Where G1's torque
 //              cost goes is open (#641).
