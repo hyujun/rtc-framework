@@ -15,6 +15,7 @@ geometry says nothing about the real robot.
 from __future__ import annotations
 
 import functools
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -30,16 +31,33 @@ _KEEP: list[tempfile.TemporaryDirectory] = []
 
 
 def retarget_model(config_dir: Path) -> None:
-    """Point the ``urdf`` block of ``config_dir/_base.yaml`` at the test model, in place."""
+    """Point the ``urdf`` block of ``config_dir/_base.yaml`` at the test model, in place.
+
+    Only the three scalars are rewritten, in the text: a YAML round trip through
+    PyYAML (1.1) would retype other values (``1e-3`` → a string) for the C++ and
+    ROS readers of the copy."""
     base = config_dir / "_base.yaml"
-    doc = yaml.safe_load(base.read_text())
-    urdf = doc["/**"]["ros__parameters"]["urdf"]
+    text = base.read_text()
+    urdf = yaml.safe_load(text)["/**"]["ros__parameters"]["urdf"]
     assert urdf["package"] == "hand_description", (
         f"{base}: the shipped model is no longer hand_description's — this copy has "
         "nothing left to retarget, so the helper is stale"
     )
-    urdf.update(package="robot_descriptions", path=TEST_URDF, closure_path=TEST_CLOSURE)
-    base.write_text(yaml.safe_dump(doc, sort_keys=False))
+    for key, value in (
+        ("package", "robot_descriptions"),
+        ("path", TEST_URDF),
+        ("closure_path", TEST_CLOSURE),
+    ):
+        line = re.compile(rf'^(\s+{key}:\s*)"{re.escape(str(urdf[key]))}"', re.MULTILINE)
+        text, n = line.subn(rf'\g<1>"{value}"', text)
+        assert n == 1, f"{base}: expected one quoted `{key}: {urdf[key]}` line, found {n}"
+    base.write_text(text)
+    retargeted = yaml.safe_load(text)["/**"]["ros__parameters"]["urdf"]
+    assert (retargeted["package"], retargeted["path"], retargeted["closure_path"]) == (
+        "robot_descriptions",
+        TEST_URDF,
+        TEST_CLOSURE,
+    )
 
 
 @functools.cache
