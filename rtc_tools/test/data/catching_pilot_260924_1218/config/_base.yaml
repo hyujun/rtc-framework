@@ -2,8 +2,8 @@
 /**:
   ros__parameters:
     urdf:
-      package: hand_description
-      path: robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro
+      package: robot_descriptions
+      path: robots/p1b_surrogate/urdf/ur5e_with_p1b_surrogate.urdf.xacro
       extra_frames:
         catch_frame:
           parent: l_palm_link

@@ -79,5 +79,7 @@ integrated_rt_controller:
           parent: "base"
           xyz: [0.0, 0.0, 0.0]
           rpy: [0.0, 0.0, 0.0]
-          # Checked against the scene (FK, #779) — not a placeholder.
+          # Checked against the scene (FK, #779) — not a placeholder. By hand:
+          # the scene is hand_description's, which test_shipped_base_T_world
+          # does not compile (#952).
           provisional: false

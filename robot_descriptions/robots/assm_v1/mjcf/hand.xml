@@ -1,3 +1,4 @@
+<!-- assm_v1 hand, MJCF. SYNTHETIC — a made-up geometric hand, not a model of the real assm v1 hand. -->
 <mujoco model="custom_hand">
   <compiler angle="radian"/>
 

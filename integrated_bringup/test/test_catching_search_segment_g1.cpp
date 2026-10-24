@@ -1,5 +1,6 @@
-// The search on a chain, the segments on the device: the shipped g1_p1b models
-// through the planner (#640).
+// The search on a chain, the segments on the device: the g1_p1b models through
+// the planner (#640). The model is the profile's test model
+// (p1b_surrogate_models.hpp): the real G1 body, a synthetic hand past the palm.
 //
 // On G1 the catch SEARCH runs on `g1_catch` (pelvis → the right palm: waist 3 +
 // right arm 7, 10 joints, the left arm locked) and the SEGMENTS are planned on
@@ -32,9 +33,11 @@
 //              (user decision, 2026-10-14): a torque cost on the tree weighs
 //              the torque of the joints the chain lacks, and the chain's own
 //              torque depends on where those joints are, so the tree's
-//              optimum moves them and the two problems differ. Measured with
-//              the docking fixture's cost (`r_tau` 1e-4 on every joint of each
-//              model) on this scene: the joints the chain lacks move 5e-2 rad,
+//              optimum moves them and the two problems differ. Measured
+//              (2026-10-14, on the shipped model with the real hand, before
+//              the test model replaced it) with the docking fixture's cost
+//              (`r_tau` 1e-4 on every joint of each model) on this scene: the
+//              joints the chain lacks move 5e-2 rad,
 //              the chain's 3e-3 rad against 1e-4, three SQP iterations against
 //              one — the torque rows inactive all the while. Where G1's torque
 //              cost goes is open (#641).
@@ -955,22 +958,18 @@ void ExpectAPairInOneWake(SearchKind search_kind, SegmentKindOf segment_kind) {
 }
 
 TEST(G1SearchSegmentPair, GridAndMpcPublishADeviceSegmentInOneWake) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   ExpectAPairInOneWake(SearchKind::kGrid, SegmentKindOf::kMpc);
 }
 
 TEST(G1SearchSegmentPair, GridAndMpcDockingPublishADeviceSegmentInOneWake) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   ExpectAPairInOneWake(SearchKind::kGrid, SegmentKindOf::kMpcDocking);
 }
 
 TEST(G1SearchSegmentPair, NlpAndMpcPublishADeviceSegmentInOneWake) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   ExpectAPairInOneWake(SearchKind::kNlp, SegmentKindOf::kMpc);
 }
 
 TEST(G1SearchSegmentPair, NlpAndMpcDockingPublishADeviceSegmentInOneWake) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   ExpectAPairInOneWake(SearchKind::kNlp, SegmentKindOf::kMpcDocking);
 }
 
@@ -1184,7 +1183,6 @@ void ExpectTheChainsProblem(const DockingAtBothWidths& r) {
 // right. (With a torque cost they are not one — the file's header has the
 // measurement.)
 TEST(G1SearchSegmentAgreement, WithNoTorqueCostMpcDockingOnTheTreeIsTheChainsProblem) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   const PinnedClock pin(kPinnedNow);
   // With planner.groups declared (no weights) the tree's problem is
   // the same one — the agreement holds either way.
@@ -1295,7 +1293,6 @@ void RunMpcAgreement(bool groups) {
 }
 
 TEST(G1SearchSegmentAgreement, MpcOnTheTreeSolvesTheChainsProblem) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   const PinnedClock pin(kPinnedNow);
   for (const bool groups : {false, true}) {
     SCOPED_TRACE(groups ? "groups declared" : "no groups");
@@ -1452,7 +1449,6 @@ struct WholeBodyWake {
 }
 
 TEST(G1WholeBodyCycle, TheRateStaysNearTheFirstWakesAndTheLeftArmEndsAtRest) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   const std::vector<WholeBodyWake> t = RunWholeBodyCatch(1.0);
   ASSERT_GE(t.size(), 6U) << "the first segment and five replans";
   RecordProperty("segments", static_cast<int>(t.size()));
@@ -1466,7 +1462,6 @@ TEST(G1WholeBodyCycle, TheRateStaysNearTheFirstWakesAndTheLeftArmEndsAtRest) {
 }
 
 TEST(G1WholeBodyCycle, WithoutItsRestWeightTheLeftArmIsNotBroughtBack) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   const std::vector<WholeBodyWake> t = RunWholeBodyCatch(0.0);
   ASSERT_GE(t.size(), 6U);
   double last = 0.0;
@@ -1490,7 +1485,6 @@ TEST(G1WholeBodyCycle, WithoutItsRestWeightTheLeftArmIsNotBroughtBack) {
 // threshold; the replica is the planner's own warm-up at the planner's pose
 // (mpc_warm_up_fixture.hpp).
 TEST(G1SearchSegmentAgreement, TheTreeWarmUpsAtTheBoxMiddlePerInfeasibilityThreshold) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   namespace wu = rtc::testing::mpc_warm_up;
   auto s = std::make_unique<Scene>();
   ASSERT_NO_FATAL_FAILURE(s->Build(fx::kG1Home));
@@ -1520,7 +1514,6 @@ TEST(G1SearchSegmentAgreement, TheTreeWarmUpsAtTheBoxMiddlePerInfeasibilityThres
 }
 
 TEST(G1SearchSegmentTimes, RecordsTheSearchsCandidateAndTheFirstSolvesOnTheTree) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   auto s = std::make_unique<Scene>();
   ASSERT_NO_FATAL_FAILURE(s->Build(fx::kG1Home));
   std::string err;
@@ -1683,7 +1676,6 @@ int ActiveRows(const rtc::tsid::QPData& qp, const Eigen::VectorXd& x) {
 }
 
 TEST(G1WholeBodyTimes, RecordsTheBaselineWithAndWithoutTheTerms) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   if (std::getenv("RTC_WHOLEBODY_TIMING") == nullptr) {
     GTEST_SKIP() << "a record: set RTC_WHOLEBODY_TIMING and run alone (ctest -j1)";
   }

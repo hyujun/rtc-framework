@@ -21,9 +21,15 @@ few columns inside the 25 trial windows, so this script keeps exactly that:
   body (the ball's floor and table episodes are never read);
 * ``trials/`` — ``trial_results.json`` with ``truth_csv`` rewritten to the bare
   file name, and every ``truth_trial_NN.csv`` gzipped;
-* ``robot.urdf`` — the xacro-expanded URDF the pilot analysed;
+* ``robot.urdf`` — NOT the model the pilot ran: the xacro expansion of
+  ``robot_descriptions/robots/p1b_surrogate/urdf/ur5e_with_p1b_surrogate.urdf.xacro``,
+  the UR5e with a synthetic hand that has the real hand's link and joint names and
+  palm frame but made-up geometry (the real hand's files are not public, #952). The
+  analysis reads the arm, the catch frame's parent (the palm) and the link names
+  off it; the golden numbers were re-checked on it;
 * ``config/`` — only the keys ``catching_trials.load_profile`` reads, copied
-  from the robot profile (test data may carry robot values; the module may not);
+  from the robot profile (test data may carry robot values; the module may not),
+  except ``urdf.package`` / ``urdf.path``, which name the test model ``robot.urdf`` is;
   ``sim.yaml`` carries the vision world ``urdf.extra_frames.scene_world`` (#779).
 
 Left out: the hand device log (its ``effort_*`` only feeds ``hand_effort_max``,
@@ -68,11 +74,13 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import yaml
+from ament_index_python.packages import get_package_share_directory
 
 from rtc_tools.analysis.catching_trials import (
     MODE_APPROACH,
@@ -91,6 +99,8 @@ from rtc_tools.utils.controller_config import load_controller_config
 HERE = Path(__file__).resolve().parent
 MARGIN_S = 0.1  # > the analysis window margin (0.05 s)
 FLOAT_FORMAT = "%.10g"
+# The model the fixture ships (robot.urdf) and its config names: the test model.
+TEST_URDF = "robots/p1b_surrogate/urdf/ur5e_with_p1b_surrogate.urdf.xacro"
 DERIVATIVE_PAD = 5  # ticks kept around the moving span (np.gradient needs ±1)
 RETREAT_STRIDE = 5  # one RETREAT tick per 10 ms truth sample at 2 ms ticks
 
@@ -151,8 +161,9 @@ def _config(config_dir: Path, controller: str, out: Path) -> None:
         "/**": {
             "ros__parameters": {
                 "urdf": {
-                    "package": urdf["package"],
-                    "path": urdf["path"],
+                    # The model robot.urdf is, not the profile's (#952).
+                    "package": "robot_descriptions",
+                    "path": TEST_URDF,
                     "extra_frames": {"catch_frame": urdf["extra_frames"]["catch_frame"]},
                 }
             }
@@ -242,7 +253,14 @@ def main() -> int:
             _write_gz(truth, trials_out / f"{name}.gz")
     (trials_out / "trial_results.json").write_text(json.dumps(records, indent=1) + "\n")
 
-    shutil.copyfile(args.pilot_dir / "p1b.urdf", args.out / "robot.urdf")
+    # The surrogate, never the pilot's own URDF: that one is the real hand's model.
+    # Expanded from the INSTALLED share (rebuild robot_descriptions first); the
+    # banner's absolute path is cut back to the share-relative one.
+    share = get_package_share_directory("robot_descriptions")
+    urdf = subprocess.run(
+        ["xacro", f"{share}/{TEST_URDF}"], check=True, capture_output=True, text=True
+    )
+    (args.out / "robot.urdf").write_text(urdf.stdout.replace(f"{share}/", "robot_descriptions/"))
     _config(args.config_dir, profile.controller, args.out / "config")
     total = sum(p.stat().st_size for p in args.out.rglob("*") if p.is_file())
     print(f"fixture written to {args.out} ({total / 1e6:.2f} MB)")

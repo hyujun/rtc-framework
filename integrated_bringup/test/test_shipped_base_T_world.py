@@ -27,6 +27,12 @@ pair), so the rotation is not judged here — the unit tests pin it
 (``test_catching_planner_lane`` / ``test_catching_trials``, an asymmetric
 frame on both sides).
 
+Only scenes in ``robot_descriptions`` are compiled (robot_descriptions_scenes.py).
+A bring-up whose scene is in another package (``ur5e_p1b``'s are in
+``hand_description``, a separate project this workspace does not depend on) is
+skipped with that reason: a test here never resolves a package outside the repo
+(#952), so those frames are checked by hand, not here.
+
 Like the keyframe lane of ``test_shipped_initial_qpos``, the scene lane is
 manual: a local ``colcon test`` runs under ``/usr/bin/python3``, which has no
 ``mujoco``. Run it after touching a scene, ``sim.yaml`` or an overlay::
@@ -44,6 +50,7 @@ from pathlib import Path
 import pytest
 import yaml
 from ament_index_python.packages import get_package_share_directory
+from robot_descriptions_scenes import is_scene_case, not_a_case_reason, scene_file
 
 from rtc_tools.analysis.catching_trials import (
     RETIRED_IO_FRAME_KEYS,
@@ -73,19 +80,10 @@ def _bring_ups() -> list[tuple[str, str | None]]:
     return cases
 
 
-def _resolve_package_uri(uri: str) -> str | None:
-    """``package://<pkg>/<rel>`` -> filesystem path, or None when unresolvable."""
-    if not uri.startswith("package://"):
-        return uri if os.path.isfile(uri) else None
-    pkg, _, rel = uri[len("package://") :].partition("/")
-    try:
-        share = get_package_share_directory(pkg)
-    except Exception:
-        # hand_description is a separate source tree that need not be present
-        # in every checkout — a missing package is a skip, not a failure.
-        return None
-    path = os.path.join(share, rel)
-    return path if os.path.isfile(path) else None
+def _layered(profile: str, overlay: str | None) -> list[Path]:
+    config_dir = _config_dir(profile)
+    overlays = [config_dir / "sim_overlays" / overlay] if overlay else []
+    return [config_dir / f"{SIMULATOR}.yaml", *overlays]
 
 
 def _model_path(files: list[Path]) -> str:
@@ -99,6 +97,12 @@ def _model_path(files: list[Path]) -> str:
             model_path = value
     assert model_path is not None, f"no {SIMULATOR} model_path in {[p.name for p in files]}"
     return str(model_path)
+
+
+def test_the_scene_lane_has_cases() -> None:
+    # Without this a rule that matched nothing would leave the lane vacuous.
+    cases = {p for p, o in _bring_ups() if is_scene_case(_model_path(_layered(p, o)))}
+    assert cases >= {"ur5e_p1a", "iiwa7_leap"}
 
 
 @pytest.mark.parametrize("profile", CATCHING_PROFILES)
@@ -117,6 +121,9 @@ def test_no_catching_config_carries_the_retired_frame_keys(profile: str) -> None
 def test_scene_world_puts_the_arm_root_where_the_scene_does(
     profile: str, overlay: str | None
 ) -> None:
+    model_path = _model_path(_layered(profile, overlay))
+    if not is_scene_case(model_path):
+        pytest.skip(not_a_case_reason(model_path))
     mujoco = pytest.importorskip(
         "mujoco",
         reason=(
@@ -125,12 +132,9 @@ def test_scene_world_puts_the_arm_root_where_the_scene_does(
         ),
     )
     config_dir = _config_dir(profile)
-    overlays = [config_dir / "sim_overlays" / overlay] if overlay else []
+    overlays = _layered(profile, overlay)[1:]
     where = f"{profile}/{overlay or 'sim.yaml'}"
-    model_path = _model_path([config_dir / f"{SIMULATOR}.yaml", *overlays])
-    scene = _resolve_package_uri(model_path)
-    if scene is None:
-        pytest.skip(f"{where}: model_path {model_path!r} is not resolvable here")
+    scene = scene_file(model_path)
 
     params = robot_config_params(config_dir, overlays)
     parent, parent_t_world = vision_frame_from_params(params, where)

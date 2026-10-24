@@ -15,16 +15,17 @@ and no NaN check catches -- had never run outside one developer machine.
 `agent_docs/testing-debug.md` already required fixtures to resolve models from
 `robot_descriptions/robots/<name>/`. The rule existed; the sensor did not.
 
-    A test may resolve a package CI cannot acquire only if it SKIPS when that
-    package is absent.
+    A test may not resolve a package CI cannot acquire -- not even behind a skip.
 
-Not "may not resolve it" -- an unacquirable package can still be the only place a
-model lives, and an explicit skip is an honest report of that gap rather than an
-invisible red. #457 retired the last such fixture (`hand_description`'s ur5e_p1b
-is vendored in `robot_descriptions/robots/ur5e_p1b/` now), so the corpus today
-resolves nothing it cannot prove. The rule stays because the next one will not
-announce itself, and the gate's own firing proof moved to a synthetic corpus in
---self-test rather than depending on a real violation staying alive.
+The first version of this gate accepted a resolution paired with a skip guard
+(`RTC_SKIP_IF_PACKAGE_MISSING`): an explicit skip is an honest report of the gap
+where an unguarded throw is an invisible red. #952 retired that allowance. A
+skip still leaves the path unverified everywhere the package is absent, and the
+package that needed it -- `hand_description`, whose G1 model the catching search
+tests skipped without -- is one whose files may not be published, so "vendor it
+instead" was not open either. Those tests now run on a synthetic hand
+(`robot_descriptions/robots/p1b_surrogate/`); the next fixture that needs an
+outside model gets the same treatment, or the test does not exist.
 
 Detection cannot be a literal scan. Before #457 the five parameterised fixtures
 reached the package through a struct field:
@@ -34,16 +35,15 @@ reached the package through a struct field:
 so `get_package_share_directory("hand_description")` appeared in 2 files while 8
 resolved it, and a literal-only gate would have passed six of the eight it exists
 to catch. So a NON-LITERAL argument counts as unresolvable too: the gate cannot
-prove where it points. That is also why those fixtures now name the package
-literally -- an `ok` verdict says where the path goes, a `guarded` one only says
-the test survives being wrong.
+prove where it points. That is also why those fixtures name the package
+literally -- an `ok` verdict says where the path goes.
 
 Fixtures live in headers that no CMake source list names, so includes are
-followed: a violation inside a `.hpp` is charged to every test `.cpp` that
-reaches it, and each of those must carry the guard.
+followed: a violation inside a `.hpp` is reported with every test `.cpp` that
+reaches it.
 
-Only code counts -- comments are stripped first, or this file's own prose and
-`optional_package.hpp`'s rationale would both register as violations.
+Only code counts -- comments are stripped first, or this file's own prose would
+register as violations.
 
 SCOPE, stated rather than implied: C++ test sources only. Python tests resolve
 packages too (`get_package_share_directory` in launch tests), and today every
@@ -69,7 +69,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# The guard every unresolvable resolution must be paired with.
+# The skip guard the first version of this gate accepted (#454) and #952 retired.
+# A test that still carries it is reported by name, so the fix is not mistaken
+# for "add the guard".
 GUARD_TOKEN = "RTC_SKIP_IF_PACKAGE_MISSING"
 
 # ament_index calls that turn a package name into a filesystem path. A test that
@@ -197,33 +199,32 @@ def analyse(root: Path) -> tuple[list[str], list[str]]:
     graph = build_include_graph(sources)
 
     code_of = {p: strip_comments(p.read_text(errors="replace")) for p in sources}
-    # The file that DEFINES the guard necessarily resolves an arbitrary package.
-    definers = {p for p, c in code_of.items() if f"define {GUARD_TOKEN}" in c}
 
     violations: list[str] = []
     listing: list[str] = []
 
     for src in sources:
-        if src in definers:
-            continue
         for line, arg, is_literal in find_resolutions(code_of[src]):
             rel = src.relative_to(root).as_posix()
             if is_literal and arg in acquirable:
                 listing.append(f"  ok       {rel}:{line}  {arg}")
                 continue
             what = f'"{arg}"' if is_literal else f"{arg} (non-literal)"
-            entries = reaching_entries(src, sources, graph) or {src}
-            unguarded = sorted(
-                e.relative_to(root).as_posix() for e in entries if GUARD_TOKEN not in code_of[e]
+            entries = sorted(
+                e.relative_to(root).as_posix()
+                for e in (reaching_entries(src, sources, graph) or {src})
             )
-            if unguarded:
-                violations.append(
-                    f"{rel}:{line}: resolves {what}, which CI cannot acquire, "
-                    f"and these reaching tests do not {GUARD_TOKEN}: {', '.join(unguarded)}"
-                )
-                listing.append(f"  VIOLATION {rel}:{line}  {what}")
-            else:
-                listing.append(f"  guarded  {rel}:{line}  {what}")
+            guarded = [e for e in entries if GUARD_TOKEN in code_of[root / e]]
+            note = (
+                f" ({GUARD_TOKEN} does not make it acceptable: {', '.join(guarded)})"
+                if guarded
+                else ""
+            )
+            violations.append(
+                f"{rel}:{line}: resolves {what}, which CI cannot acquire; reached by "
+                f"{', '.join(entries)}{note}"
+            )
+            listing.append(f"  VIOLATION {rel}:{line}  {what}")
 
     return violations, listing
 
@@ -254,7 +255,7 @@ def _write_synthetic_corpus(root: Path) -> None:
 
     # in-repo package, literal -> ok
     (test_dir / "ok.cpp").write_text('x = get_package_share_directory("mypkg");\n')
-    # unacquirable, guarded -> accepted
+    # unacquirable, skip-guarded -> violation all the same (#952)
     (test_dir / "guarded.cpp").write_text(
         f'x = get_package_share_directory("elsewhere");\n{GUARD_TOKEN}("elsewhere");\n'
     )
@@ -268,10 +269,10 @@ def _write_synthetic_corpus(root: Path) -> None:
 def _synthetic_corpus_failures() -> list[str]:
     """Prove end-to-end that the gate fires on what it must and accepts what it must.
 
-    The corpus this gate guards is expected to hold zero violations and (since
-    #457) zero guarded resolutions, so it cannot serve as its own positive
-    control -- asking for one would mean keeping a violation-shaped fixture alive
-    forever. A throwaway tree can hold all four cases at once instead.
+    The corpus this gate guards is expected to hold zero violations, so it
+    cannot serve as its own positive control -- asking for one would mean
+    keeping a violation-shaped fixture alive forever. A throwaway tree can hold
+    all four cases at once instead.
     """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -287,7 +288,7 @@ def _synthetic_corpus_failures() -> list[str]:
     failures = []
     for name, want in (
         ("ok.cpp", "ok"),
-        ("guarded.cpp", "guarded"),
+        ("guarded.cpp", "VIOLATION"),
         ("bare.cpp", "VIOLATION"),
         ("fixture.hpp", "VIOLATION"),
     ):
@@ -295,14 +296,16 @@ def _synthetic_corpus_failures() -> list[str]:
         if got != want:
             failures.append(f"synthetic {name}: expected verdict {want}, got {got}")
 
-    charged = [v for v in violations if "viainclude.cpp" in v]
-    if not charged:
+    if not any("fixture.hpp" in v and "viainclude.cpp" in v for v in violations):
         failures.append(
-            "synthetic fixture.hpp violation was not charged to the including "
+            "synthetic fixture.hpp violation does not name the including "
             "viainclude.cpp -- the include graph is not being followed"
         )
-    if any("guarded.cpp" in v for v in violations):
-        failures.append("synthetic guarded.cpp was reported as a violation")
+    if not any("guarded.cpp" in v and GUARD_TOKEN in v for v in violations):
+        failures.append(
+            f"synthetic guarded.cpp was not reported as a {GUARD_TOKEN}-guarded "
+            "violation -- a skip guard must not make an outside package acceptable"
+        )
     return failures
 
 
@@ -319,9 +322,9 @@ def self_test() -> int:
 
     failures.extend(_synthetic_corpus_failures())
 
-    # The real corpus must be clean. (Its *shape* proves nothing either way: after
-    # #457 it contains no guarded and no unacquirable resolution at all, which is
-    # the goal, not a weakness -- which is why the firing proof above is synthetic.)
+    # The real corpus must be clean. (Its *shape* proves nothing either way: it
+    # contains no unacquirable resolution at all, which is the goal, not a
+    # weakness -- which is why the firing proof above is synthetic.)
     violations, _ = analyse(REPO_ROOT)
     if violations:
         failures.append(f"repo corpus is not clean: {len(violations)} violation(s)")
@@ -359,13 +362,11 @@ def main() -> int:
         for v in violations:
             print(f"  {v}", file=sys.stderr)
         print(
-            f"\nA test that resolves a package CI cannot acquire must skip when it is\n"
-            f"absent. Prefer moving the fixture onto a model in\n"
-            f"robot_descriptions/robots/ -- that is what #457 did to the last one, and\n"
-            f"it is the only outcome that actually runs the path in CI. If the model\n"
-            f"genuinely cannot be vendored, make the test GTEST_SKIP when the package\n"
-            f'is absent behind a {GUARD_TOKEN}("<pkg>") macro (ament_index has no\n'
-            f"non-throwing query, so catch PackageNotFoundError and nothing wider).",
+            "\nA test may not resolve a package CI cannot acquire, and skipping when it\n"
+            "is absent does not make it acceptable (#952). Move the fixture onto a model\n"
+            "in robot_descriptions/robots/ -- vendored when its files may be published,\n"
+            "a synthetic stand-in when they may not (robots/p1b_surrogate/ is one). Name\n"
+            "the package literally: a non-literal argument cannot be proven in-repo.",
             file=sys.stderr,
         )
         return 1

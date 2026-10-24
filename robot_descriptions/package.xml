@@ -11,7 +11,8 @@
 
     Currently shipped:
     - robots/ur5e/         -- UR5e 6-DoF arm (URDF, MJCF, meshes)
-    - robots/assm_v1/      -- 10-DoF custom hand "assm v1" (URDF xacro, MJCF)
+    - robots/assm_v1/      -- synthetic 10-DoF hand, not the real "assm v1"
+                              (URDF xacro, MJCF)
     - robots/ur5e_assm_v1/ -- UR5e arm + assm_v1 hand combined
                               (URDF xacro, MJCF scene)
 

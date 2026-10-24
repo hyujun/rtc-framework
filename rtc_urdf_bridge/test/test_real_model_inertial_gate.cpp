@@ -47,14 +47,9 @@ std::string ModelPath(const std::string& relative) {
       .string();
 }
 
-/// 이 저장소가 소유한 실모델 — model_pairs.yaml 8 쌍의 URDF + panda. 로드
-/// 게이트는 *열리는 모든 URDF* 에 걸리므로 pairs 목록보다 넓은 것이 맞다.
-///
-/// `robots/ur5e_p1b/` (proto_1b 손) 은 넣지 않는다 (#682). 그 모델의 소유자는
-/// `hand_description` 이고 여기 있는 것은 테스트 입력으로 들여온 사본이다 —
-/// 이 저장소는 그 모델을 load 하지만 모델 자체를 검증하지 않는다. 관성이
-/// 깨진 사본은 그것을 입력으로 쓰는 테스트가 로드 게이트에서 던지므로 조용히
-/// 지나가지는 않는다.
+/// 이 저장소가 소유한 실모델 — model_pairs.yaml 8 쌍의 URDF + panda + 테스트
+/// fixture 의 합성 손 (`p1b_surrogate`, 그 UR5e · G1 결합). 로드 게이트는
+/// *열리는 모든 URDF* 에 걸리므로 pairs 목록보다 넓은 것이 맞다.
 const std::vector<std::string>& CleanModels() {
   static const std::vector<std::string> kModels = {
       "robots/ur5e/urdf/ur5e.urdf",
@@ -66,6 +61,9 @@ const std::vector<std::string>& CleanModels() {
       "robots/assm_v1/urdf/hand.urdf.xacro",
       "robots/ur5e_assm_v1/urdf/ur5e_with_hand.urdf.xacro",
       "robots/panda/urdf/panda.urdf",
+      "robots/p1b_surrogate/urdf/p1b_surrogate.urdf.xacro",
+      "robots/p1b_surrogate/urdf/ur5e_with_p1b_surrogate.urdf.xacro",
+      "robots/g1/urdf/g1_with_p1b_surrogate_fixed_base.urdf.xacro",
   };
   return kModels;
 }

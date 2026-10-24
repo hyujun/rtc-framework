@@ -1,3 +1,4 @@
+<!-- UR5e + the assm_v1 hand. SYNTHETIC — a made-up geometric hand, not a model of the real assm v1 hand. -->
 <mujoco model="ur5e_with_hand">
   <compiler angle="radian" meshdir="../../ur5e/meshes/assets" autolimits="true"/>
 

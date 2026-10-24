@@ -4,7 +4,9 @@ arithmetic between its raw verdicts and the report — without a simulator.
 Three things are pinned here, all under a plain ``colcon test`` (no ``mujoco``):
 
 * both shipped catching profiles give the rig everything it needs, with the
-  lengths that have to agree;
+  lengths that have to agree (the scene file itself is opened only when it is
+  in ``robot_descriptions``: ``ur5e_p1b``'s is in ``hand_description``, which a
+  test here never resolves, #952);
 * the rig's COPY of the simulator's ball (material constants and the way the
   contact is built live only in C++) still equals the C++;
 * report.py turns planted stores into the boxes, the lateral set and the
@@ -29,17 +31,33 @@ sys.path.insert(0, str(REPO / "integrated_bringup" / "tools" / "docking_ident"))
 import report as rp  # noqa: E402
 import rig_config as rc  # noqa: E402
 import run_ident as ri  # noqa: E402
+from robot_descriptions_scenes import is_scene_case  # noqa: E402
 
 PROFILES = ["ur5e_p1b", "iiwa7_leap"]
+
+
+def _load_rig_config(profile: str, monkeypatch) -> rc.RigConfig:
+    """load_rig_config, with a scene outside robot_descriptions left as its URI."""
+    resolve = rc.resolve_model_path
+
+    def scene(uri: str) -> str:
+        return resolve(uri) if is_scene_case(uri) else uri
+
+    monkeypatch.setattr(rc, "resolve_model_path", scene)
+    return rc.load_rig_config(profile)
 
 
 # ── The shipped profiles ──────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("profile", PROFILES)
-def test_a_shipped_profile_gives_the_rig_everything(profile):
-    cfg = rc.load_rig_config(profile)
-    assert Path(cfg.model_path).is_file()
+def test_a_shipped_profile_gives_the_rig_everything(profile, monkeypatch):
+    cfg = _load_rig_config(profile, monkeypatch)
+    if is_scene_case(rc.simulator_parameters(rc.CONFIG_ROOT / profile)["model_path"]):
+        assert Path(cfg.model_path).is_file()
+    else:
+        # Not opened here (#952): the rig at least has to be handed a scene.
+        assert cfg.model_path.startswith("package://") and cfg.model_path.endswith(".xml")
     assert cfg.control_period > 0.0 and cfg.n_substeps >= 1
 
     hand = len(cfg.hand_joints)
@@ -93,8 +111,8 @@ def test_a_profile_that_is_not_one_is_refused(tmp_path):
 
 
 @pytest.mark.parametrize("profile", PROFILES)
-def test_an_empty_caging_set_is_refused(profile):
-    cfg = rc.load_rig_config(profile)
+def test_an_empty_caging_set_is_refused(profile, monkeypatch):
+    cfg = _load_rig_config(profile, monkeypatch)
     with pytest.raises(SystemExit, match="caging_mask"):
         dataclasses.replace(cfg, caging_mask=tuple(False for _ in cfg.caging_mask))
 

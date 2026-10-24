@@ -36,6 +36,7 @@
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
+#include "p1b_surrogate_models.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
@@ -58,7 +59,7 @@ struct FreshnessConfig {
 
 // Every fixture model lives in `robot_descriptions` — the package name is a
 // literal, not a config field, so validate_test_fixtures.py can prove where
-// this points instead of only checking that a skip guard exists (#457).
+// this points.
 rub::ModelConfig MakeModelConfig(const FreshnessConfig& fc) {
   rub::ModelConfig cfg;
   cfg.urdf_path =
@@ -194,9 +195,9 @@ TEST(WbcFallbackOmfFreshness, Iiwa7Leap) {
 // upstream of the loop, so the arm TCP tracks measured identically to serial.
 TEST(WbcFallbackOmfFreshness, Ur5eP1b) {
   RunFreshness({/*label=*/"ur5e_p1b",
-                /*urdf_rel=*/"robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro",
+                /*urdf_rel=*/integrated_bringup::testfx::kUr5eP1bUrdfRel,
                 /*extended=*/true,
-                /*closure_rel=*/"robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml",
+                /*closure_rel=*/integrated_bringup::testfx::kUr5eP1bClosureRel,
                 /*arm_submodel=*/"ur5e",
                 /*tip_frame=*/"tool0",
                 /*root_link=*/"base",

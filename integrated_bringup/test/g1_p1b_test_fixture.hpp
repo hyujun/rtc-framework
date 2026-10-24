@@ -1,10 +1,10 @@
 // ── The shipped g1_p1b models, as a test rig ──────────────────────────────────
 //
-// The G1 + proto_1b model lives in `hand_description`, a package this
-// workspace does not depend on: EVERY TEST THAT INCLUDES THIS HEADER STARTS
-// WITH `RTC_SKIP_IF_PACKAGE_MISSING("hand_description")` (optional_package.hpp;
-// validate_test_fixtures.py holds the rule). Where the package is absent the
-// tests skip and what they cover is unverified there.
+// The shipped model is in `hand_description`, a package this workspace does not
+// depend on; the tests load its test model instead (p1b_surrogate_models.hpp):
+// the G1 body with the synthetic p1b_surrogate hand on the right wrist. The
+// hand's geometry is made up, so a number below that depends on it says nothing
+// about the real robot — the G1 chain and tree it hangs off are the real ones.
 //
 // The model topology is read from the SHIPPED profile (`g1_p1b/_base.yaml`'s
 // `urdf:` block — the sub-models, the tree models, the closure sidecar), so a
@@ -13,7 +13,7 @@
 // hand's docking values are not shipped): the posture below is this fixture's.
 #pragma once
 
-#include "optional_package.hpp"
+#include "p1b_surrogate_models.hpp"
 #include "shipped_catch_arm_fixture.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -43,17 +43,18 @@ inline constexpr std::array<double, kG1Dof> kG1Home = {
     0.25,  0.30,  0.10, 0.70, 0.10, -0.10, 0.0,    // left arm
     -0.45, -0.35, 0.20, 0.95, 0.15, -0.25, 0.10};  // right arm
 
-/// The profile's `urdf:` block as a ModelConfig (the catch frame is added by
-/// the loader that reads it).
+/// The profile's `urdf:` block as a ModelConfig, on the test model (the catch
+/// frame is added by the loader that reads it).
 inline rtc_urdf_bridge::ModelConfig MakeG1P1bModelConfig() {
   const YAML::Node urdf = ShippedNodeParameters("g1_p1b/_base.yaml")["urdf"];
-  // The literal is what the fixture gate reads; the profile must agree with it.
-  EXPECT_EQ(urdf["package"].as<std::string>(), "hand_description");
-  const std::string share = ament_index_cpp::get_package_share_directory("hand_description");
+  const std::string share = ament_index_cpp::get_package_share_directory("robot_descriptions");
   rtc_urdf_bridge::ModelConfig cfg;
-  cfg.urdf_path = share + "/" + urdf["path"].as<std::string>();
+  const ModelFiles files =
+      TestModelFiles("g1_p1b", urdf["package"].as<std::string>(), urdf["path"].as<std::string>(),
+                     urdf["closure_path"].as<std::string>());
+  cfg.urdf_path = share + "/" + files.urdf_rel;
   cfg.root_joint_type = urdf["root_joint_type"].as<std::string>();
-  cfg.closure_yaml_path = share + "/" + urdf["closure_path"].as<std::string>();
+  cfg.closure_yaml_path = share + "/" + files.closure_rel;
   for (const auto& kv : urdf["sub_models"]) {
     cfg.sub_models.push_back({kv.first.as<std::string>(), kv.second["root_link"].as<std::string>(),
                               kv.second["tip_link"].as<std::string>()});

@@ -12,20 +12,21 @@
 //   SetSystemModelConfig → SetSharedModelBuilder → SetControlRate →
 //   LoadConfig(yaml) → SetDeviceNameConfigs (triggers OnDeviceConfigsSet)
 //
-// The model is vendored in-repo at robot_descriptions/robots/ur5e_p1b/ (#457), so
-// these paths run in CI. It used to resolve `hand_description`, a separate project
-// present only on developer machines, which made every case below an invisible red
-// there and then an explicit skip (#454) — see that robot's README.md for the
-// vendoring rationale and for what tracking upstream costs.
+// The model is the profile's test model (p1b_surrogate_models.hpp): the shipped
+// one is in `hand_description`, which this workspace does not depend on — a test
+// that resolved it was red wherever that project is absent (#454), and the copy
+// #457 vendored instead published the hand's files (#952 removed it).
 //
-// Every value below mirrors config/ur5e_p1b/_base.yaml (`urdf:` + `devices:`) except
-// the package: the shipped profile still names `hand_description` because it drives
-// a real, separate robot, while this fixture needs a model CI can acquire. The
-// kinematics, closure sidecar and joint names are the same model either way.
+// Every value below mirrors config/ur5e_p1b/_base.yaml (`urdf:` + `devices:`)
+// except the model files. The joint names, the loops and the palm and fingertip
+// frame names are the shipped model's; the hand's geometry and mass are not, so
+// no number below that depends on them says anything about the real robot.
+//
 // The builder is a process-wide singleton for the same reason as the iiwa7 one:
 // the xacro→Pinocchio parse dominates, and production shares one builder.
 #pragma once
 
+#include "p1b_surrogate_models.hpp"
 #include "rtc_base/types/types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
@@ -51,12 +52,12 @@ inline constexpr std::array<double, kUr5eArmDof> kUr5eHome = {0.0, -1.2, 1.4, -1
 inline rtc_urdf_bridge::ModelConfig MakeUr5eP1bModelConfig() {
   rtc_urdf_bridge::ModelConfig cfg;
   const std::string share = ament_index_cpp::get_package_share_directory("robot_descriptions");
-  cfg.urdf_path = share + "/robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro";
+  cfg.urdf_path = share + "/" + kUr5eP1bUrdfRel;
   cfg.root_joint_type = "fixed";
   // The closure sidecar is what makes GetActuatedModel() non-null and the
   // reduced-dynamics provider configurable — without it this fixture would be
   // just another serial robot and every closed-chain assertion would be vacuous.
-  cfg.closure_yaml_path = share + "/robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml";
+  cfg.closure_yaml_path = share + "/" + kUr5eP1bClosureRel;
   cfg.sub_models.push_back({"ur5e", "base", "tool0"});
   // Mirrors the shipped `_base.yaml`: the catching
   // planner's sub-model, arm root → catch frame parent. After `ur5e`, which
@@ -96,7 +97,7 @@ inline std::map<std::string, rtc::DeviceNameConfig> MakeUr5eP1bDeviceConfigs() {
                            "wrist_1_joint",      "wrist_2_joint",       "wrist_3_joint"};
   rtc::DeviceUrdfConfig arm_urdf;
   arm_urdf.package = "robot_descriptions";
-  arm_urdf.path = "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro";
+  arm_urdf.path = kUr5eP1bUrdfRel;
   arm_urdf.root_link = "base";
   arm_urdf.tip_link = "tool0";
   arm.urdf = arm_urdf;

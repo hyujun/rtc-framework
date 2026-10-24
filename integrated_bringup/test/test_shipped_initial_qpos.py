@@ -14,11 +14,16 @@ but PyYAML, which is why it is the one that actually gates a local commit.
 **Keyframe agreement (needs the ``mujoco`` module).** ``ur5e_p1a`` and
 ``iiwa7_leap`` ship an ``initial_qpos`` that duplicates a pose their MJCF already
 carries as its first keyframe. That duplication is the price of making the key
-explicit for all three profiles, and this lane is what stops the two copies from
+explicit for every profile, and this lane is what stops the two copies from
 drifting: the YAML now *wins*, so a keyframe edit that nobody mirrors here would
-silently have no effect on the sim. ``ur5e_p1b`` has no keyframe at all — that is
-the whole reason the key exists — so it is skipped by the same rule that checks
-the others, not by an exception listing its name.
+silently have no effect on the sim. A scene with no keyframe is skipped by the
+same rule that checks the others, not by an exception listing its name.
+
+The lane compiles only scenes in ``robot_descriptions``
+(robot_descriptions_scenes.py). ``ur5e_p1b`` and ``g1_p1b`` load theirs from
+``hand_description``, a separate project this workspace does not depend on, so
+the lane skips them with that reason — a test here never resolves a package
+outside the repo (#952).
 
 Values are compared **by joint name**, never as a qpos slice. The LEAP hand is
 the reason: its joints occupy qpos addresses 8, 7, 9, 10, 12, 11, ... so
@@ -53,6 +58,7 @@ import os
 import pytest
 import yaml
 from ament_index_python.packages import get_package_share_directory
+from robot_descriptions_scenes import is_scene_case, not_a_case_reason, scene_file
 
 # Profile -> the MJCF that profile's mujoco_simulator.yaml loads. The path is
 # read out of the config itself rather than listed here, so this map only needs
@@ -71,20 +77,10 @@ def _robot_response(profile: str) -> dict:
     return params["mujoco_simulator"]["ros__parameters"]["robot_response"]
 
 
-def _resolve_package_uri(uri: str) -> str | None:
-    """``package://<pkg>/<rel>`` -> filesystem path, or None when unresolvable."""
-    if not uri.startswith("package://"):
-        return uri if os.path.isfile(uri) else None
-    pkg, _, rel = uri[len("package://") :].partition("/")
-    try:
-        share = get_package_share_directory(pkg)
-    except Exception:
-        # hand_description is a separate source tree that need not be present
-        # in every checkout (CI included) — a missing package is a skip, not a
-        # failure of this profile's YAML.
-        return None
-    path = os.path.join(share, rel)
-    return path if os.path.isfile(path) else None
+def _model_path(profile: str) -> str:
+    with open(_config_path(profile)) as handle:
+        params = yaml.safe_load(handle)
+    return str(params["mujoco_simulator"]["ros__parameters"]["model_path"])
 
 
 # ── Structural lane (PyYAML only) ────────────────────────────────────────────
@@ -127,8 +123,17 @@ def test_initial_qpos_entries_are_floats(profile: str) -> None:
 # ── Keyframe agreement lane (needs mujoco) ───────────────────────────────────
 
 
+def test_the_keyframe_lane_has_cases() -> None:
+    # Without this a rule that matched nothing would leave the lane vacuous.
+    cases = {p for p in PROFILES if is_scene_case(_model_path(p))}
+    assert cases >= {"ur5e_p1a", "iiwa7_leap"}
+
+
 @pytest.mark.parametrize("profile", PROFILES)
 def test_initial_qpos_matches_mjcf_keyframe(profile: str) -> None:
+    model_path = _model_path(profile)
+    if not is_scene_case(model_path):
+        pytest.skip(not_a_case_reason(model_path))
     mujoco = pytest.importorskip(
         "mujoco",
         reason=(
@@ -139,16 +144,11 @@ def test_initial_qpos_matches_mjcf_keyframe(profile: str) -> None:
     )
 
     response = _robot_response(profile)
-    with open(_config_path(profile)) as handle:
-        params = yaml.safe_load(handle)["mujoco_simulator"]["ros__parameters"]
-    path = _resolve_package_uri(params["model_path"])
-    if path is None:
-        pytest.skip(f"{profile}: model_path {params['model_path']!r} is not resolvable here")
+    path = scene_file(model_path)
 
     model = mujoco.MjModel.from_xml_path(path)
     if model.nkey == 0:
-        # ur5e_p1b lands here: nothing to agree with, which is exactly why its
-        # initial_qpos is the only source of a home pose.
+        # Nothing to agree with: the profile's initial_qpos is its only home pose.
         pytest.skip(f"{profile}: scene has no keyframe")
 
     for group in response["groups"]:

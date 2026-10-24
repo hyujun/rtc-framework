@@ -1,4 +1,7 @@
-name: ur5e_with_proto_1b
+# Loop closures of g1_with_p1b_surrogate_fixed_base.urdf.xacro (the synthetic
+# test hand on the G1's right wrist). Every loop is a point-on-point (contact_3d) pin of a planar four-bar,
+# so each has rank 2 of its 3 rows; the frames coincide at q = 0.
+name: g1_with_p1b_surrogate_fixed_base
 
 closures:
   - name: index_tip_loop
@@ -38,12 +41,23 @@ closures:
 
 actuation:
   actuated_joints:
-    - shoulder_pan_joint
-    - shoulder_lift_joint
-    - elbow_joint
-    - wrist_1_joint
-    - wrist_2_joint
-    - wrist_3_joint
+    - waist_yaw_joint
+    - waist_roll_joint
+    - waist_pitch_joint
+    - left_shoulder_pitch_joint
+    - left_shoulder_roll_joint
+    - left_shoulder_yaw_joint
+    - left_elbow_joint
+    - left_wrist_roll_joint
+    - left_wrist_pitch_joint
+    - left_wrist_yaw_joint
+    - right_shoulder_pitch_joint
+    - right_shoulder_roll_joint
+    - right_shoulder_yaw_joint
+    - right_elbow_joint
+    - right_wrist_roll_joint
+    - right_wrist_pitch_joint
+    - right_wrist_yaw_joint
     - thumb_cmc_aa_joint
     - thumb_cmc_fe_joint
     - thumb_mcp_joint
