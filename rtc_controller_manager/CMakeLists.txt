@@ -295,6 +295,18 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib)
   endif()
 
+  ament_add_gtest(test_state_lane_teardown
+    test/test_state_lane_teardown.cpp
+    ENV ROS_DOMAIN_ID=44)
+  if(TARGET test_state_lane_teardown)
+    target_include_directories(test_state_lane_teardown PRIVATE include test)
+    ament_target_dependencies(test_state_lane_teardown
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs
+      rtc_controller_interface rtc_base rtc_msgs)
+    target_link_libraries(test_state_lane_teardown
+      rtc_controller_manager_lib)
+  endif()
+
   ament_add_gtest(test_on_configure
     test/test_on_configure.cpp
     ENV ROS_DOMAIN_ID=44)

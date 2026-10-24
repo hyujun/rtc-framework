@@ -14,10 +14,10 @@
 // Precedent: #218 settled for a structural assertion where no deterministic
 // red test existed. Here one does exist, so we take it.
 //
-// Residual NOT covered (documented in ReleaseConfiguredResources): destroying a backend does
-// not join a callback already executing on the rt_callback executor, so a
-// write can still land in the two instructions between the reset and the
-// close. Closing that would need executor quiescence, which CM cannot request.
+// The residual this left — destroying a backend did not wait for a callback
+// already executing on the rt_callback executor — is issue #941's: the reset
+// now goes through DestroyDeviceBackends(), which closes and drains each lane
+// first. That half is pinned by test_state_lane_teardown.cpp, not here.
 
 #include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_test_access.hpp"

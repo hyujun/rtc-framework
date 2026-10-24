@@ -141,6 +141,14 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // these fds and outlives on_deactivate (issue #224). Shared by on_cleanup /
   // on_error / the destructor so the three paths cannot drift apart again.
   void CloseTeardownEventfds() noexcept;
+  // Destroys the device backends without destroying one under its own state
+  // callback (issue #941). Two passes: every backend's state lane is closed and
+  // drained first (DeviceBackend::CloseStateLane), then every backend is
+  // reset. A backend whose callback is still running at the bound is reported
+  // and leaked instead — see the helper for why that is the safe failure.
+  // Shared by on_cleanup / on_error / the configure refusals (via
+  // ReleaseConfiguredResources) and the destructor.
+  void DestroyDeviceBackends();
   // Shuts the drain lane (#935) — caller holds drain_mutex_. Disarms
   // DrainLog(), so a pass that starts later returns without touching anything;
   // reports what it would have reported (E-STOP status, the deferred E-STOP
@@ -660,9 +668,12 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // Atomic because the teardown paths (on_cleanup / on_error / destructor, on
   // the lifecycle executor) reset it to -1 while producers on other threads —
   // the rt_control loop and the backends' state-ready callback on
-  // cb_group_rt_callback_ — still read it as their write guard (issue #224).
-  // Producers must load once into a local: re-reading the member between the
-  // guard and the eventfd_write reintroduces the check-then-use gap.
+  // cb_group_rt_callback_ — read it as their write guard (issue #224). Since
+  // #941 both producers are quiesced before the reset (the loop is joined, the
+  // state lanes are drained by DestroyDeviceBackends()), so the atomic is the
+  // second line, not the first. Producers must still load once into a local:
+  // re-reading the member between the guard and the eventfd_write
+  // reintroduces the check-then-use gap.
   std::atomic<int> nrt_publish_eventfd_{-1};
 
   // ── Domain objects ────────────────────────────────────────────────────────
