@@ -27,6 +27,11 @@ pair), so the rotation is not judged here — the unit tests pin it
 (``test_catching_planner_lane`` / ``test_catching_trials``, an asymmetric
 frame on both sides).
 
+Only scenes in ``robot_descriptions`` are compiled. A bring-up whose scene is in
+another package (``ur5e_p1b``'s are in ``hand_description``, a separate project
+this workspace does not depend on) is not a case of this lane at all: a test
+here never resolves a package outside the repo (#952).
+
 Like the keyframe lane of ``test_shipped_initial_qpos``, the scene lane is
 manual: a local ``colcon test`` runs under ``/usr/bin/python3``, which has no
 ``mujoco``. Run it after touching a scene, ``sim.yaml`` or an overlay::
@@ -63,6 +68,10 @@ def _config_dir(profile: str) -> Path:
     return Path(get_package_share_directory("integrated_bringup")) / "config" / profile
 
 
+# The one package whose scenes the scene lane compiles.
+SCENE_PACKAGE = "robot_descriptions"
+
+
 def _bring_ups() -> list[tuple[str, str | None]]:
     """``(profile, overlay file name or None for sim.yaml alone)`` of every shipped sim bring-up."""
     cases: list[tuple[str, str | None]] = []
@@ -73,19 +82,10 @@ def _bring_ups() -> list[tuple[str, str | None]]:
     return cases
 
 
-def _resolve_package_uri(uri: str) -> str | None:
-    """``package://<pkg>/<rel>`` -> filesystem path, or None when unresolvable."""
-    if not uri.startswith("package://"):
-        return uri if os.path.isfile(uri) else None
-    pkg, _, rel = uri[len("package://") :].partition("/")
-    try:
-        share = get_package_share_directory(pkg)
-    except Exception:
-        # hand_description is a separate source tree that need not be present
-        # in every checkout — a missing package is a skip, not a failure.
-        return None
-    path = os.path.join(share, rel)
-    return path if os.path.isfile(path) else None
+def _layered(profile: str, overlay: str | None) -> list[Path]:
+    config_dir = _config_dir(profile)
+    overlays = [config_dir / "sim_overlays" / overlay] if overlay else []
+    return [config_dir / f"{SIMULATOR}.yaml", *overlays]
 
 
 def _model_path(files: list[Path]) -> str:
@@ -101,6 +101,25 @@ def _model_path(files: list[Path]) -> str:
     return str(model_path)
 
 
+def _scene_bring_ups() -> list[tuple[str, str | None]]:
+    """The bring-ups whose scene is in :data:`SCENE_PACKAGE`."""
+    prefix = f"package://{SCENE_PACKAGE}/"
+    return [c for c in _bring_ups() if _model_path(_layered(*c)).startswith(prefix)]
+
+
+def _scene_file(model_path: str) -> str:
+    """A :data:`SCENE_PACKAGE` ``package://`` URI -> the installed file (asserted to exist)."""
+    rel = model_path[len(f"package://{SCENE_PACKAGE}/") :]
+    path = os.path.join(get_package_share_directory(SCENE_PACKAGE), rel)
+    assert os.path.isfile(path), f"{model_path!r} is not installed at {path}"
+    return path
+
+
+def test_the_scene_lane_has_cases() -> None:
+    # Without this a filter that matched nothing would leave the lane vacuous.
+    assert {profile for profile, _ in _scene_bring_ups()} >= {"ur5e_p1a", "iiwa7_leap"}
+
+
 @pytest.mark.parametrize("profile", CATCHING_PROFILES)
 def test_no_catching_config_carries_the_retired_frame_keys(profile: str) -> None:
     path = _config_dir(profile) / "controllers" / f"{CONTROLLER}.yaml"
@@ -113,7 +132,7 @@ def test_no_catching_config_carries_the_retired_frame_keys(profile: str) -> None
         )
 
 
-@pytest.mark.parametrize(("profile", "overlay"), _bring_ups())
+@pytest.mark.parametrize(("profile", "overlay"), _scene_bring_ups())
 def test_scene_world_puts_the_arm_root_where_the_scene_does(
     profile: str, overlay: str | None
 ) -> None:
@@ -127,10 +146,7 @@ def test_scene_world_puts_the_arm_root_where_the_scene_does(
     config_dir = _config_dir(profile)
     overlays = [config_dir / "sim_overlays" / overlay] if overlay else []
     where = f"{profile}/{overlay or 'sim.yaml'}"
-    model_path = _model_path([config_dir / f"{SIMULATOR}.yaml", *overlays])
-    scene = _resolve_package_uri(model_path)
-    if scene is None:
-        pytest.skip(f"{where}: model_path {model_path!r} is not resolvable here")
+    scene = _scene_file(_model_path(_layered(profile, overlay)))
 
     params = robot_config_params(config_dir, overlays)
     parent, parent_t_world = vision_frame_from_params(params, where)
