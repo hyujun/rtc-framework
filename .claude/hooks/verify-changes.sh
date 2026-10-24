@@ -1335,7 +1335,9 @@ fi  # PURE_FORMAT guard for Phase 1
 DOC_FAILURES=""
 DOC_FILES=()
 while IFS= read -r d; do
-  [ -n "$d" ] && [ -f "$d" ] && DOC_FILES+=("$d")
+  # A doc untracked with `git rm --cached` and then ignored still lists as a
+  # deletion and still exists on disk; it is out of the repo, like any ignored file.
+  [ -n "$d" ] && [ -f "$d" ] && ! git check-ignore -q -- "$d" 2>/dev/null && DOC_FILES+=("$d")
 done <<< "$CHANGED_DOCS"
 # Resolved relative to this hook, not to PROJECT_DIR: the script ships in the
 # same repository as the hook, so this works when the two point at different

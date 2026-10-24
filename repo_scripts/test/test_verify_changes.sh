@@ -789,6 +789,19 @@ expect_exit "validate_docs skips a missing --files target instead of crashing" "
 expect_not_contains "validate_docs does not traceback on a missing target" "$vout" "Traceback"
 rm -rf "$dir"
 
+# 26b. A doc untracked with `git rm --cached` and then ignored stays on disk and
+#      still lists as a deletion; its contents are no longer the repo's, so a
+#      defect in it must not block.
+dir=$(make_fixture)
+printf '# docs\n\nSee [missing](./nope.md).\n' >"$dir/agent_docs/notes.md"
+git -C "$dir" commit -qam "doc with a broken link"
+git -C "$dir" rm -q --cached "agent_docs/notes.md"
+echo 'agent_docs/notes.md' >>"$dir/.git/info/exclude"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "an untracked, ignored doc is not validated" "$out" "nope.md"
+expect_exit "an untracked, ignored doc does not block the turn" "$rc" 0
+rm -rf "$dir"
+
 # --- Filenames ---------------------------------------------------------------
 
 # 27. A path containing a space must survive as one path. Unquoted word
