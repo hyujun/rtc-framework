@@ -3,7 +3,7 @@
 #
 #   run_hand_canfd_gate.sh [--sil] [--iface can0] [--sides right,left]
 #                          [--duration 300] [--rate 250] [--recv-timeout 0.9]
-#                          [--cmd-ack echo] [--out DIR]
+#                          [--cmd-ack none] [--out DIR]
 #
 # Records the bus, launches udp_hand_node (one node, `hand_sides`) — with
 # --sil also one fake_hand_firmware per side on vcan0 — waits until every
@@ -30,7 +30,7 @@ SIDES=right,left
 DURATION=300
 RATE=250
 RECV_TIMEOUT=0.9
-CMD_ACK="echo"
+CMD_ACK="none"
 OUT=""
 
 usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
