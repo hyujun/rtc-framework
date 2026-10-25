@@ -24,7 +24,7 @@ paths:
 
 # RT path 절대 금지 (정기 tick — `control_rate` YAML)
 
-**구속 대상은 RT 정기 tick / SCHED_FIFO dedicated-core 경로뿐**이다 (`integrated_bringup` 에서는 device backend 의 rt_callback lane 과 controller `Compute()`, `udp_hand_driver` 에서는 CommLoop 의 `RunCommCycle` 과 그것이 부르는 `HandComm` RT 메서드) — 비-RT 코드 (`on_configure`/`on_activate` 등 lifecycle 콜백, `DrainLog()` aux thread, 1 Hz aux 타이머, 파라미터 콜백, **test / init 코드**) 는 면제. RT path 정의·전체 목록·탐지 패턴·복구·false-positive 판정 절차는 [invariants.md](../../agent_docs/invariants.md) §RT Path Invariants 가 SSoT. RT tick 경로에서 다음을 쓰지 않는다 (위반이 필요하면 AGENTS.md §6 의 `[CONCERN]`):
+**구속 대상은 RT 정기 tick / SCHED_FIFO dedicated-core 경로뿐**이다 (`integrated_bringup` 에서는 device backend 의 rt_callback lane 과 controller `Compute()`, `udp_hand_driver` 에서는 `HandCommLoop::OnTick` 이하 전부 (controller · `HandComm`)) — 비-RT 코드 (`on_configure`/`on_activate` 등 lifecycle 콜백, `DrainLog()` aux thread, 1 Hz aux 타이머, 파라미터 콜백, **test / init 코드**) 는 면제. RT path 정의·전체 목록·탐지 패턴·복구·false-positive 판정 절차는 [invariants.md](../../agent_docs/invariants.md) §RT Path Invariants 가 SSoT. RT tick 경로에서 다음을 쓰지 않는다 (위반이 필요하면 AGENTS.md §6 의 `[CONCERN]`):
 
 - **RT-1** `new` / `malloc` / `push_back` / `emplace_back` / `resize` — pre-allocated fixed-size 사용. invariants.md 에 기록된 알려진 위반은 새 RT 코드의 할당 근거가 아니다
 - **RT-2** `throw` / `catch` — error code, `std::optional`, `std::expected`

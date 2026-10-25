@@ -84,7 +84,7 @@ CM RT loop · MPC thread · hand comm thread · rt_callback 이 **같은** gener
 | Execution context | Scheduler | RT? | 허용 연산 |
 |---|---|---|---|
 | `rt_control` loop (`ControlLoop`, `Compute`, mailbox drain, inline `WriteCommand`) | SCHED_FIFO | **RT** | RT-1~10 전면 구속. alloc/throw/log/lock 금지 |
-| MPC thread (`MPCThread::OnTick` → `HandlerMPCThread::Solve`), 포구 계획기 (`CatchingPlannerThread::OnTick` → `PlannerCycle::Run`, 같은 `mpc` role), `UdpHandController::RunCommCycle` | SCHED_FIFO, dedicated core | **RT** | 동일. 계획기의 대기는 eventfd `poll` |
+| MPC thread (`MPCThread::OnTick` → `HandlerMPCThread::Solve`), 포구 계획기 (`CatchingPlannerThread::OnTick` → `PlannerCycle::Run`, 같은 `mpc` role), `HandCommLoop::OnTick` 이하 | SCHED_FIFO, dedicated core | **RT** | 동일. 계획기의 대기는 eventfd `poll` |
 | DeviceBackend state/motor/sensor 구독 콜백 (`cb_group_rt_callback_`) | SCHED_FIFO | **RT** | **mailbox-only** — SeqLock/atomic store, memcpy, steady_clock 캡처까지 |
 | `nrt_publish_thread` (`NrtPublishLoopEntry` → `PublishNonRtSnapshot`) | SCHED_OTHER | 비-RT | ROS publish 포함 자유. executor 콜백이 **아님** (std::jthread + eventfd) |
 | Controller-owned RobotTarget 구독, `grasp_command` 서비스, **`SetDeviceTarget` marshal** (base `DeliverTargetMessage` 경유) (controller LifecycleNode default group) | SCHED_OTHER | 비-RT | 자유. 단 RT loop 와 공유하는 상태는 SeqLock/SPSC 경유 — target 은 base mailbox (`PushPendingTarget`) 가 그 경유를 소유하고, RT tick 의 `DrainPendingTargets()` 가 유일한 소비자다 |
