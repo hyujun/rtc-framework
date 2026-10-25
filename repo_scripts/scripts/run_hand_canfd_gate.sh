@@ -185,7 +185,7 @@ import sys
 from pathlib import Path
 
 out, sides = Path(sys.argv[1]), sys.argv[2:]
-parts, overlap = [], None
+parts, overlap, xcheck = [], None, None
 for side in sides:
     p = out / f"gate_{side}.json"
     if not p.exists():
@@ -193,17 +193,26 @@ for side in sides:
         continue
     doc = json.loads(p.read_text())
     parts.append(f"{side} {doc['verdict']}")
-    overlap = overlap or doc.get("overlap")
+    if overlap is None and doc.get("overlap"):
+        overlap = doc["overlap"]
+        xcheck = next((c for c in doc["checks"] if c["key"] == "x.broadcast_sets"), None)
     for c in doc["checks"]:
         if c["verdict"] not in ("PASS", "NOT_EVALUATED"):
             parts.append(f"  {side}:{c['key']}={c['verdict']} ({c['value']})")
 line = " · ".join(p for p in parts if not p.startswith("  "))
 if overlap:
     gap = overlap.get("estop_gap_ms")
-    label = "x.broadcast_sets" if "broadcast" in overlap else "overlap"
-    line += f" · {label} {overlap['violations']} · zero-write gap " + (
-        "missing" if gap is None else f"{gap:+.3f} ms"
-    )
+    b = overlap.get("broadcast")
+    if b is not None:
+        # The violations count leaves out the one-hand-missing rate: show the verdict.
+        verdict = xcheck["verdict"] if xcheck else "NO_CHECK"
+        line += (
+            f" · x.broadcast_sets {verdict} (violations {overlap['violations']} · "
+            f"one-hand-missing {b['one_hand_missing']}/{b['windows']})"
+        )
+    else:
+        line += f" · overlap {overlap['violations']}"
+    line += " · zero-write gap " + ("missing" if gap is None else f"{gap:+.3f} ms")
 print(f"hand gate: {line}  [{out}]")
 for p in parts:
     if p.startswith("  "):
