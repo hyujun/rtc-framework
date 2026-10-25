@@ -491,10 +491,17 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                  protocol_version.c_str());
     return CallbackReturn::FAILURE;
   }
-  if (req_broadcast) {
-    // One hand is allowed: its REQ simply goes to 0xFF.
+  // Every powered hand on the bus answers the 0xFF REQ, configured here or
+  // not. One configured hand is allowed, but then another hand on the same
+  // bus still bursts every tick and can push this hand's set back.
+  if (req_broadcast && sides.size() == 1) {
+    RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                "req_mode broadcast with one configured hand: every powered hand on the bus "
+                "answers the 0xFF REQ — size recv_timeout_ms for all of them");
+  } else if (req_broadcast) {
     RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
-                "req_mode broadcast: one REQ to node 0xFF per tick, %zu hand(s) answer",
+                "req_mode broadcast: one REQ to node 0xFF per tick, every hand on the bus answers "
+                "(%zu configured)",
                 sides.size());
   }
 
@@ -512,12 +519,6 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                    "cmd_ack '%s' must be \"echo\" (firmware echoes CMD frames) or \"none\"",
                    cmd_ack.c_str());
-      return CallbackReturn::FAILURE;
-    }
-    if (req_broadcast && common.cmd_ack != udp_hand_driver::canfd::CmdAck::kNone) {
-      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                   "req_mode broadcast needs cmd_ack none — the shared-REQ tick has no echo "
-                   "stage (#956 D81)");
       return CallbackReturn::FAILURE;
     }
     if (common.interface_name.empty() || common.interface_name.size() >= IFNAMSIZ) {
@@ -565,7 +566,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     // Under cmd_ack none the one set stage after a write is bounded by the
     // nominal 2T itself (D64), so the bound is the same. Under req_mode
     // broadcast every hand waits in ONE window anchored at the shared REQ
-    // (#956 D83), so the slot pays for one 2T whatever N is.
+    // (#956 D83), so the slot pays for one 2T whatever N is. What runs
+    // before the anchor (each hand's drain and CMD sends) and after the window
+    // (the tails) is outside this bound in both modes — the 10 % warning below
+    // is the room left for it.
     const double slot_ms = 1000.0 / loop_rate_hz * static_cast<double>(comm_dec_guarded);
     const std::size_t windows = req_broadcast ? 1 : sides.size();
     const double margin_ms = udp_hand_driver::CommSlotMarginMs(slot_ms, windows, recv_timeout_ms);
@@ -755,9 +759,12 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
       // refusal — see the canfd_comm member note).
       auto comm = std::make_unique<udp_hand_driver::CanFdHandComm>(canfd_cfgs[h]);
       const udp_hand_driver::CanFdHandComm* raw = comm.get();
+      // The link decides (one rule, SupportsBroadcastReq): CAN FD serves the
+      // shared-REQ tick under cmd_ack none only — it has no echo stage.
       if (req_broadcast && !raw->SupportsBroadcastReq()) {
         RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                     "%sreq_mode broadcast is not supported by this CAN FD link configuration",
+                     "%sreq_mode broadcast is not supported by this CAN FD link — it needs "
+                     "cmd_ack none (#956 D81)",
                      u.log_tag.c_str());
         return CallbackReturn::FAILURE;
       }

@@ -1708,4 +1708,26 @@ TEST_F(CanFdHandCommVcan, Bc956_FailedReqIsASetErrorWithoutAWindow) {
   }
 }
 
+// Review #2: the pre-feed reads at most kMaxDrainPerCall queued frames, so a
+// stream of duplicates cannot hold ReceiveSet past its bound — it then times
+// out and drains the rest.
+TEST_F(CanFdHandCommVcan, Bc956_PreFeedIsBoundedByTheDrainCap) {
+  auto comm = OpenComm(BcConfig(HandSide::kRight));
+  rtc::CanFdTransport injector(InjectorConfig());
+  ASSERT_TRUE(injector.Open());
+  constexpr int kExtra = 4;
+  for (int i = 0; i < CanFdHandComm::kMaxDrainPerCall + kExtra; ++i)
+    ASSERT_TRUE(injector.SendFrame(DataFrame(RespId(kNodeRightHand, 0), 0x01)));
+  std::this_thread::sleep_for(5ms);  // let every injected frame reach the queue
+  const auto t_req = std::chrono::steady_clock::now() - 1s;  // the bound is long gone
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  comm->ReceiveSet(SensorPlan(false), bufs, out, SharedRequest{t_req, true, false});
+  EXPECT_FALSE(out.joint_ok);
+  comm->PublishCommStats();
+  const UdpHandCommStats s = comm->comm_stats();
+  EXPECT_EQ(Kind(s, RequestKind::kJointRead).timeout, 1u);
+  EXPECT_EQ(s.stale_drained, static_cast<uint64_t>(kExtra)) << "the pre-feed read past its cap";
+}
+
 }  // namespace udp_hand_driver::test

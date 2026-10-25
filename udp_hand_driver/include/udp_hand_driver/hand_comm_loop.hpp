@@ -27,21 +27,28 @@
 //
 // Shared request (#956, the node's `req_mode broadcast`, D82). One REQ that
 // every hand answers replaces the per-hand REQs, so the tick is no longer one
-// whole cycle per hand but three passes over the hands:
+// whole cycle per hand but four passes over the hands:
 //   1. PrepareSharedReqCycle() per hand, in Add() order: the cycle head
 //      (E-Stop · decimation · fake · drain · latch) and that hand's CMD pair
 //      — every hand drains before the REQ draws any answer;
-//   2. SendSharedReq() on the first hand that takes part: the one REQ;
-//   3. FinishSharedReqCycle() per taking-part hand: its receive stage against
-//      the bound anchored at that REQ, then the cycle tail.
+//   2. SendSharedReq() on the first hand that takes part: the one REQ — when
+//      that send fails, the next taking-part hand's socket tries, so one
+//      socket's tx fault does not fail every hand's set;
+//   3. ReceiveSharedReq() per taking-part hand: its receive stage against the
+//      bound anchored at that REQ — back to back, before any tail, so a later
+//      hand starts receiving within microseconds of the earlier one's close
+//      and a frame queued by then arrived by then (a tail between them would
+//      let a frame that came after the bound pass as in time);
+//   4. FinishSharedReqCycle() per taking-part hand: the cycle tail.
 // A hand that does not take part (decimated skip, fake model — its whole
-// cycle ran in step 1) gets no step 3; with none taking part no REQ goes out.
-// E-Stop (E-8): the latch is re-checked before every Prepare after the first
-// (each hand also checks it at its own head), right before the REQ, and
-// between Finishes. An abort before the REQ leaves no burst on the bus; one
-// after it skips the remaining Finishes (receive only — the frames left queued
-// are dropped by the next run's drain). Either way the abort is the same one
-// sequence as above, with the same worst case: a period plus one window.
+// cycle ran in step 1) gets no step 3 or 4; with none taking part no REQ goes
+// out. E-Stop (E-8): the latch is re-checked before every Prepare after the
+// first (each hand also checks it at its own head), right before the REQ, and
+// before every later Receive and every Finish. An abort before the REQ leaves
+// no burst on the bus; one after it skips the remaining steps (receive and
+// bookkeeping only — the frames left queued are dropped by the next run's
+// drain). Either way the abort is the same one sequence as above, with the
+// same worst case: a period plus one window.
 
 #include "rtc_base/threading/periodic_rt_thread.hpp"
 #include "udp_hand_driver/hand_comm.hpp"
@@ -88,12 +95,16 @@ class HandCommLoopMember {
   /// Step 1: the cycle head and this hand's command, no request.
   [[nodiscard]] virtual SharedReqPrep PrepareSharedReqCycle() noexcept = 0;
 
-  /// Step 2, on one hand only: the request every hand answers. `t_sent` is set
-  /// either way; false when the send failed.
+  /// Step 2: the request every hand answers, on one hand's link (the next
+  /// taking-part hand's after a failed send). `t_sent` is set either way;
+  /// false when the send failed.
   [[nodiscard]] virtual bool SendSharedReq(HandReadOutcome::Clock::time_point& t_sent) noexcept = 0;
 
-  /// Step 3: this hand's answer to `req`, then the rest of its cycle.
-  virtual void FinishSharedReqCycle(const SharedRequest& req) noexcept = 0;
+  /// Step 3: this hand's answer to `req` (receive only).
+  virtual void ReceiveSharedReq(const SharedRequest& req) noexcept = 0;
+
+  /// Step 4: the rest of this hand's cycle.
+  virtual void FinishSharedReqCycle() noexcept = 0;
 
  protected:
   HandCommLoopMember() = default;
@@ -265,8 +276,9 @@ class HandCommLoop final : public rtc::PeriodicRtThread {
     return estop_flag_ != nullptr && estop_flag_->load(std::memory_order_acquire);
   }
 
-  // The shared-request tick (header comment): Prepare × N → one REQ → Finish
-  // for every hand that takes part, with the latch re-checked in between.
+  // The shared-request tick (header comment): Prepare × N → one REQ →
+  // Receive, then Finish, for every hand that takes part, with the latch
+  // re-checked in between.
   void RunSharedReqTick() noexcept {
     std::size_t ran = 0;
     std::size_t first = kMaxHands;  // first hand that takes part — sends the REQ
@@ -295,19 +307,33 @@ class HandCommLoop final : public rtc::PeriodicRtThread {
         return;
       }
       SharedRequest req{};
-      req.sent = members_[first]->SendSharedReq(req.t_sent);
+      for (std::size_t i = first; i < count_ && !req.sent; ++i) {
+        if (takes_part_[i]) {
+          req.sent = members_[i]->SendSharedReq(req.t_sent);
+        }
+      }
       req.after_write = any_wrote;
-      bool finished = false;
+      bool received = false;
       for (std::size_t i = first; i < count_; ++i) {
         if (!takes_part_[i]) {
           continue;
         }
-        if (finished && EstopLatched()) {
+        if (received && EstopLatched()) {
           AbortForEstop();
           return;
         }
-        members_[i]->FinishSharedReqCycle(req);
-        finished = true;
+        members_[i]->ReceiveSharedReq(req);
+        received = true;
+      }
+      for (std::size_t i = first; i < count_; ++i) {
+        if (!takes_part_[i]) {
+          continue;
+        }
+        if (EstopLatched()) {
+          AbortForEstop();
+          return;
+        }
+        members_[i]->FinishSharedReqCycle();
       }
     }
     if (ran > 0 && suppress_votes_ >= ran) {

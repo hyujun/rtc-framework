@@ -788,7 +788,8 @@ class UdpHandController final : public HandCommLoopMember {
   // FinishBulkCycle | individual: RunIndividualCycle) → EndCommCycle. Whole on
   // a per-hand tick (RunCommCycle); split across the loop's three passes on a
   // shared-request tick (#956: the transaction becomes SendCommandOnly in
-  // Prepare, the loop's one REQ, and ReceiveSet in Finish). The working state
+  // Prepare, the loop's one REQ, and ReceiveSet in Receive; Finish is the
+  // rest). The working state
   // between the steps lives in cyc_. CommLoop thread only; noexcept and
   // allocation-free (RT path).
 
@@ -838,17 +839,24 @@ class UdpHandController final : public HandCommLoopMember {
     return {.takes_part = true, .wrote = wrote};
   }
 
-  // Step 2, on the first hand that takes part: the one REQ every hand answers.
+  // Step 2, on the first hand that takes part (the next one after a failed
+  // send): the one REQ every hand answers.
   bool SendSharedReq(HandReadOutcome::Clock::time_point& t_sent) noexcept override {
     RTC_TRACE_SCOPE("hand_bc_req");
     return comm_->SendBroadcastReq(t_sent);
   }
 
   // Step 3: this hand's answer (ReceiveSet keeps the write result Prepare left
-  // in read_outcome_ — S1), then the rest of the cycle as on a per-hand tick.
-  void FinishSharedReqCycle(const SharedRequest& req) noexcept override {
-    RTC_TRACE_SCOPE("hand_bc_finish");
+  // in read_outcome_ — S1). Receive only: the loop runs every hand's receive
+  // before any tail.
+  void ReceiveSharedReq(const SharedRequest& req) noexcept override {
+    RTC_TRACE_SCOPE("hand_bc_receive");
     comm_->ReceiveSet(read_plan_, read_bufs_, read_outcome_, req);
+  }
+
+  // Step 4: the rest of the cycle as on a per-hand tick.
+  void FinishSharedReqCycle() noexcept override {
+    RTC_TRACE_SCOPE("hand_bc_finish");
     FinishBulkCycle();
     EndCommCycle();
   }

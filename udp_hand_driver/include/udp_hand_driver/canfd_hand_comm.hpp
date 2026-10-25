@@ -457,7 +457,11 @@ class CanFdHandComm final : public HandComm {
   ///
   /// Frames already queued are fed first, whatever the clock says (S5): when
   /// an earlier hand's window ran past this bound, the set that arrived in
-  /// time must not time out unread. Only then does the bound decide.
+  /// time must not time out unread. Only then does the bound decide. The loop
+  /// calls every hand's ReceiveSet back to back (no tail in between), so what
+  /// is queued at this call had arrived by the earlier window's close. The
+  /// pre-feed reads at most kMaxDrainPerCall frames, so a stream of
+  /// duplicates or error frames cannot keep it from reaching the bound.
   void ReceiveSet(const HandReadPlan& plan, HandReadBuffers& bufs, HandReadOutcome& out,
                   const SharedRequest& req) noexcept override {
     RTC_TRACE_SCOPE("hand_set_window");
@@ -477,7 +481,7 @@ class CanFdHandComm final : public HandComm {
     }
     w.set_open = true;
     assembler_.Begin(req.t_sent + (req.after_write ? 2 : 1) * stage_timeout_);
-    while (w.set_open) {
+    for (int i = 0; i < kMaxDrainPerCall && w.set_open; ++i) {
       const ssize_t n = transport_.RecvFrameNonBlocking(rx_);
       if (n == 0)
         break;

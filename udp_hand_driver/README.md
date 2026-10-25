@@ -135,7 +135,7 @@ ros2 topic echo /hand/calibration/status
 
 `hand_sides: [right, left]` (`2` 전용) 면 노드 하나가 손마다 컨트롤러 · CAN 소켓 · failure detector 를 두고, `hand_comm` 스레드 하나가 tick 마다 목록 순서로 한 손씩 트랜잭션을 끝낸다. 이 순서가 버스 직렬화라 두 손의 프레임은 겹치지 않는다. 비어 있으면 위의 한 손 경로와 바이트 동일하다.
 
-`req_mode: broadcast` (`cmd_ack none` 전용) 면 tick 이 손마다 CMD → REQ 하나 (노드 0xFF, 모든 손이 답한다) → 손마다 그 REQ 기준 수신 (REQ + T, write tick 은 2T) 순서로 돈다. 순서와 E-Stop 재확인 자리는 `hand_comm_loop.hpp` 헤더.
+`req_mode: broadcast` (`cmd_ack none` 전용) 면 tick 이 손마다 CMD → REQ 하나 (노드 0xFF, 모든 손이 답한다) → 손마다 그 REQ 기준 수신 (REQ + T, write tick 은 2T) → 손마다 꼬리 순서로 돈다. 순서와 E-Stop 재확인 자리는 `hand_comm_loop.hpp` 헤더.
 
 - 토픽: 상대 이름에 `<side>/` 가 붙는다 (`/hand/right/joint_states` …). 손이 둘이면 손별 토픽에 절대 이름을 주면 configure 가 거부한다 (두 손이 한 토픽이 된다)
 - E-Stop: `/hand/estop` 하나. latch 는 손마다 cycle 머리에서, loop 가 손 사이에서 다시 본다. 두 손 모두 멈춘 뒤 손 순서대로 zero-write 를 1회씩 보낸다. 최악 지연은 주기 + 한 손의 수신 창이다 (250 Hz · 0.9 ms: 5.8 ms)
@@ -260,7 +260,7 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 
 ### 로깅 (Logging)
 
-레벨 분류 · 공통 규칙은 [conventions.md §Logging](../agent_docs/conventions.md#logging). 패키지 규칙은 hot path (`RunCommCycle` · `PrepareSharedReqCycle` · `FinishSharedReqCycle` · `UdpHandTransport::Send/Recv` · `PreFilter/ApplyFilters` · `FingertipFTInferencer::Infer`, 모두 `loop_rate_hz` 폴링) 에서 정상 경로의 직접 `INFO`/`WARN` 과 `RCLCPP_*_ONCE` 를 금지하고 `*_THROTTLE` 만 쓰는 것이다. THROTTLE 상수는 `udp_hand_logging.hpp` 가 SSoT.
+레벨 분류 · 공통 규칙은 [conventions.md §Logging](../agent_docs/conventions.md#logging). 패키지 규칙은 hot path (`RunCommCycle` · `*SharedReq*` · `UdpHandTransport::Send/Recv` · `PreFilter/ApplyFilters` · `FingertipFTInferencer::Infer`, 모두 `loop_rate_hz` 폴링) 에서 정상 경로의 직접 `INFO`/`WARN` 과 `RCLCPP_*_ONCE` 를 금지하고 `*_THROTTLE` 만 쓰는 것이다. THROTTLE 상수는 `udp_hand_logging.hpp` 가 SSoT.
 
 | 서브-로거 | 사용처 |
 |---|---|
