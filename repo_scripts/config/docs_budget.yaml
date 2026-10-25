@@ -27,7 +27,7 @@
 AGENTS.md: 17408
 CLAUDE.md: 4096
 
-agent_docs/architecture.md: 17982  # lowered from 17985: on_cleanup row rewritten for the state-lane drain (#941); before: raised from 17977: the hand link is UDP or CAN FD (#903); 17574 -> 17977 #779 one external world (scene_world) shared by every consumer, no per-consumer copy; 17391 -> 17574 helper-thread affinity (#851)
+agent_docs/architecture.md: 17978  # lowered from 17982: hand RT row names HandCommLoop::OnTick (covers the #956 shared-REQ tick); before: lowered from 17985: on_cleanup row rewritten for the state-lane drain (#941); before: raised from 17977: the hand link is UDP or CAN FD (#903); 17574 -> 17977 #779 one external world (scene_world) shared by every consumer, no per-consumer copy; 17391 -> 17574 helper-thread affinity (#851)
 agent_docs/controllers.md: 16157  # raised from 15612: #779 RobotTarget task-goal frame rule (producers and frame-contract controllers apply it)
 agent_docs/conventions.md: 11938  # raised from 11512: test-only shared headers stay under test/include and are consumed via CONFIG_EXTRAS -- the rule lived only in a rtc_base CMake comment and a second package forked an installed-header mechanism (#898); before: 9962 -> 11512: README contract (reader, content in/out, H2 skeleton, shape, language) -- READMEs had become every doc update's default destination (#869); before: 9800 -> 9962 output-field consumer comment and per-lane QoS
 agent_docs/design-principles.md: 15377
@@ -38,6 +38,6 @@ agent_docs/testing-debug.md: 16772  # raised from 14610: L1/L2 span, executor-ca
 
 .claude/rules/arch-build-meta.md: 2632
 .claude/rules/arch-source.md: 3693
-.claude/rules/rt-path.md: 3707  # raised from 3472: glob + 구속 대상에 udp_hand_driver (CommLoop SCHED_FIFO) — #919 에서 RT 코드를 고치는 동안 rule 이 로드되지 않았다
+.claude/rules/rt-path.md: 3695  # lowered from 3707: udp_hand_driver 구속 대상을 HandCommLoop::OnTick 이하로 (#956 shared-REQ 메서드 포함); before: raised from 3472: glob + 구속 대상에 udp_hand_driver (CommLoop SCHED_FIFO) — #919 에서 RT 코드를 고치는 동안 rule 이 로드되지 않았다
 
 .claude/skills/adding-component/SKILL.md: 5315
