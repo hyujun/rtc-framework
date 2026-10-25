@@ -32,7 +32,7 @@
 README.md: 12443 strict  # raised from 12431: udp_hand_driver row names both transports (UDP · CAN FD)
 docs/reference/README.md: 6815  # raised from 6563: why skills are D12-budgeted (verify skill removal); before: 6289 -> 6563 sim-rationale.md, 5924 -> 6289 build-rationale.md
 integrated_bringup/README.md: 37746 strict  # raised from 37635: per-robot initial_controller default and the startup log line (moved in when the verify skill was removed)
-repo_scripts/README.md: 26993 strict  # raised from 25904: CAN FD host scripts (setup_vcan · install_ixxat_socketcan · setup_can_interface, issue #896) added to the script tables and the RT PC steps
+repo_scripts/README.md: 27240 strict  # raised from 26993: run_hand_canfd_gate.sh row (two-hand gate driver, #954)
 robot_descriptions/README.md: 6588 strict  # raised from 6464: the vendored ur5e_p1b row became two (p1b_surrogate, g1), and the assm_v1 rows say the hand is synthetic (#952 D6)
 robot_descriptions/robots/g1/README.md: 1800 strict
 robot_descriptions/robots/p1b_surrogate/README.md: 2600 strict
@@ -49,10 +49,10 @@ rtc_math/include/rtc_math/se3/README.md: 9116 strict
 rtc_mpc/README.md: 7651 strict
 rtc_msgs/README.md: 6141 strict
 rtc_mujoco_sim/README.md: 42500 strict
-rtc_tools/README.md: 39354 strict  # raised from 39291: hand_canfd_gate cmd_ack 한 줄 (none 판정 규칙)
+rtc_tools/README.md: 39566 strict  # raised from 39354: hand_canfd_gate 두 손 한 줄 (x.no_overlap · --timing-suffix · 측정 드라이버)
 rtc_tsid/README.md: 11550 strict
 rtc_urdf_bridge/README.md: 17451 strict
 shape_estimation/README.md: 6548 strict
 shape_estimation_msgs/README.md: 1597 strict
-udp_hand_driver/README.md: 25456 strict  # raised from 25140: cmd_ack (launch · YAML 표 · stats 키 · phase 정의 · 문제 해결 행)
+udp_hand_driver/README.md: 27657 strict  # raised from 25456: 두 손 (hand_sides 절 · launch 인자 2 행 · 빠른 시작 명령)
 ur5e_bt_coordinator/README.md: 19469 strict

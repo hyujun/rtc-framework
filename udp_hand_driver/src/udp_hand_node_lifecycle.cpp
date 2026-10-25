@@ -9,18 +9,20 @@
 
 #include <net/if.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <vector>
 
 using namespace std::chrono_literals;
 
 UdpHandNode::UdpHandNode(const rclcpp::NodeOptions& options)
     : LifecycleNode("udp_hand_node", options) {
   // Lifecycle design: the constructor allocates no *resources* — publishers,
-  // subscriptions, timers and the controller are on_configure's job.
+  // subscriptions, timers and the hands are on_configure's job.
   //
   // The two exceptions below describe the process *thread layout*, which main()
   // must know before it spins and therefore before any lifecycle transition can
@@ -50,9 +52,9 @@ UdpHandNode::~UdpHandNode() {
   // invoked (e.g. SIGTERM without graceful shutdown).
   //
   // Reuse StopRuntime() instead of open-coding the teardown: it is the one place
-  // that cancels the aux timers, joins the detector and then takes the quiesce
+  // that cancels the aux timers, joins the detectors and then takes the quiesce
   // barrier in that order, so a destructor running while the aux executor is
-  // still live cannot free controller_ under an in-flight callback. Open-coding
+  // still live cannot free a hand under an in-flight callback. Open-coding
   // it here previously skipped the barrier entirely and only worked because
   // main() happens to cancel and join the aux executor first (issue #345).
   StopRuntime();
@@ -60,21 +62,22 @@ UdpHandNode::~UdpHandNode() {
 }
 
 UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
-  // A FAILURE below returns to Unconfigured without on_cleanup, so a stale
-  // observer from a previous attempt must not survive into this one (it would
-  // dangle once controller_ is replaced). Nulled before anything else.
-  canfd_comm_ = nullptr;
-
-  // Per-configuration state (#927): this may be a second configure on the same
-  // node, which must not inherit the previous configuration's command-name map
-  // (joint_state_names may have changed), link edge or decimation phase, and
-  // has not run yet.
-  cmd_name_reorder_ready_ = false;
-  prev_link_ok_ = true;
-  link_cycle_counter_ = 0;
-  publish_count_ = 0;
+  // A FAILURE below returns to Unconfigured without on_cleanup, so the hands
+  // of a previous attempt must not survive into this one. The loop is not
+  // running outside Active, so its Clear() cannot be refused; the hands go
+  // with it (each controller's destructor joins the idle loop — no wait).
+  if (!comm_loop_.Clear()) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "on_configure: the comm loop is still running");
+    return CallbackReturn::FAILURE;
+  }
   {
+    // Per-configuration state (#927): this may be a second configure on the
+    // same node, which must not inherit the previous configuration's hands
+    // (and with them their command-name maps, link edges and decimation
+    // phases), and has not run yet.
     std::lock_guard<std::mutex> lock(aux_lane_mutex_);
+    units_.clear();
     has_run_ = false;
   }
 
@@ -154,7 +157,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_once("hand_fingertip_names", std::vector<std::string>{});
 
   // Per-joint position offset in degrees (joint_state_names order, 10 values).
-  // Converted to radians into joint_offset_rad_ below. Empty → all-zero.
+  // Converted to radians into each hand's joint_offset_rad below. Empty → all-zero.
   declare_once("joint_position_offsets_deg", std::vector<double>{});
 
   declare_once("communication_mode", std::string{"individual"});
@@ -169,6 +172,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   //   hand_side       "right" | "left" → node id (D51). Declared for every
   //                   protocol because an explicit value also suffixes the
   //                   stats / timing file names.
+  //   hand_sides      ["right", "left"] — two hands on one bus, one loop (epic
+  //                   #906 D71); empty = the hand_side mode. Typed string
+  //                   array explicitly: the empty default is what makes the
+  //                   declaration typed at all.
   //   feedforward_kt  per-motor torque constant Nm/A, firmware motor order
   //                   (D50); JointCommand.feedforward [Nm] / kt → wire [A].
   //   cmd_ack         "echo" | "none" — whether the firmware echoes CMD
@@ -178,6 +185,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   //                   cmd_ack none the set stage after a write gets 2T).
   declare_once("can_interface", std::string{"can0"});
   declare_once("hand_side", std::string{"right"});
+  declare_once("hand_sides", std::vector<std::string>{});
   // The default mirrors udp_hand.launch.py's _FW_CMD_ACK_DEFAULT (D62).
   declare_once("cmd_ack", std::string{"echo"});
   declare_once("feedforward_kt",
@@ -214,9 +222,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
 
   // ── Sensor protocol (firmware version seam: 1a / 1b / 2) ─────────────
   // Resolved before the endpoint because the transport — and so which
-  // endpoint fields matter — follows from the protocol (D11).
+  // endpoint fields matter — follows from the protocol (D11). Each hand gets
+  // its own instance below; this one answers the node-level questions.
   const std::string protocol_version = get_parameter("protocol_version").as_string();
-  auto sensor_protocol = udp_hand_driver::CreateSensorProtocol(protocol_version);
+  const auto sensor_protocol = udp_hand_driver::CreateSensorProtocol(protocol_version);
   if (!sensor_protocol) {
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                  "Unsupported protocol_version '%s' (expected \"1a\", \"1b\" or \"2\")",
@@ -240,28 +249,90 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     return CallbackReturn::FAILURE;
   }
 
-  // ── hand_side (every protocol: it names the forensic files; on 2 the node id)
+  // ── The hands (D51 · D71) ────────────────────────────────────────────
+  // hand_side (every protocol: it names the forensic files; on 2 the node id)
+  // is the one-hand mode; a non-empty hand_sides replaces it with one hand per
+  // entry, each under its own topic prefix and stats-file suffix.
+  const auto overrides = get_node_parameters_interface()->get_parameter_overrides();
   const std::string hand_side_str = get_parameter("hand_side").as_string();
-  udp_hand_driver::canfd::HandSide hand_side{};
-  if (!udp_hand_driver::canfd::ParseHandSide(hand_side_str, hand_side)) {
-    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                 "Invalid hand_side '%s' (expected \"right\" or \"left\")", hand_side_str.c_str());
-    return CallbackReturn::FAILURE;
+  const std::vector<std::string> hand_sides = get_parameter("hand_sides").as_string_array();
+  const bool sides_mode = !hand_sides.empty();
+  std::vector<std::string> sides;
+  std::vector<udp_hand_driver::canfd::HandSide> side_ids;
+  if (!sides_mode) {
+    udp_hand_driver::canfd::HandSide hand_side{};
+    if (!udp_hand_driver::canfd::ParseHandSide(hand_side_str, hand_side)) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "Invalid hand_side '%s' (expected \"right\" or \"left\")",
+                   hand_side_str.c_str());
+      return CallbackReturn::FAILURE;
+    }
+    sides.push_back(hand_side_str);
+    side_ids.push_back(hand_side);
+  } else {
+    // Two ways of naming the hands at once would leave one of them unread.
+    if (overrides.count("hand_side") != 0) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "hand_side and hand_sides are both set — hand_sides names every hand; "
+                   "remove hand_side");
+      return CallbackReturn::FAILURE;
+    }
+    if (hand_sides.size() > udp_hand_driver::HandCommLoop::kMaxHands) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "hand_sides has %zu entries (at most %zu hands share one bus)",
+                   hand_sides.size(), udp_hand_driver::HandCommLoop::kMaxHands);
+      return CallbackReturn::FAILURE;
+    }
+    for (const auto& side : hand_sides) {
+      udp_hand_driver::canfd::HandSide id{};
+      if (!udp_hand_driver::canfd::ParseHandSide(side, id)) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                     "Invalid hand_sides entry '%s' (expected \"right\" or \"left\")",
+                     side.c_str());
+        return CallbackReturn::FAILURE;
+      }
+      if (std::find(sides.begin(), sides.end(), side) != sides.end()) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                     "hand_sides names '%s' twice — one node id answers one hand", side.c_str());
+        return CallbackReturn::FAILURE;
+      }
+      sides.push_back(side);
+      side_ids.push_back(id);
+    }
+    // Two hands share one bus only on CAN FD; the UDP endpoint is one device.
+    if (sides.size() > 1 && !is_canfd) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "hand_sides with %zu hands needs protocol_version \"2\" (got \"%s\")",
+                   sides.size(), protocol_version.c_str());
+      return CallbackReturn::FAILURE;
+    }
   }
-  // "Explicit" = the value came from YAML / launch / NodeOptions, not from the
-  // declare default: only then do the artifact names carry the side, so a
-  // one-hand deployment keeps hand_stats.json / hand_timing_log.csv.
-  hand_file_suffix_.clear();
-  if (get_node_parameters_interface()->get_parameter_overrides().count("hand_side") != 0) {
-    hand_file_suffix_ = "_" + hand_side_str;
+
+  // Forensic file names. "Explicit" hand_side = the value came from YAML /
+  // launch / NodeOptions, not from the declare default: only then do the
+  // artifact names carry the side, so a one-hand deployment keeps
+  // hand_stats.json / hand_timing_log.csv. Under hand_sides every hand's JSON
+  // is suffixed and the one CSV is not (D72).
+  std::string one_hand_suffix;
+  if (!sides_mode && overrides.count("hand_side") != 0) {
+    one_hand_suffix = "_" + hand_side_str;
+  }
+  timing_file_suffix_ = sides_mode ? std::string{} : one_hand_suffix;
+  std::string hands_key = sides_mode ? "[" : hand_side_str;
+  if (sides_mode) {
+    for (std::size_t i = 0; i < sides.size(); ++i) {
+      hands_key += (i > 0 ? "," : "");
+      hands_key += sides[i];
+    }
+    hands_key += "]";
   }
   if (!hand_timing_opened_) {
-    artifact_hand_side_ = hand_side_str;
-  } else if (hand_side_str != artifact_hand_side_) {
+    artifact_hands_ = hands_key;
+  } else if (hands_key != artifact_hands_) {
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                  "hand_side '%s' differs from '%s', which names this process's forensic files "
                  "— restart the node to change sides",
-                 hand_side_str.c_str(), artifact_hand_side_.c_str());
+                 hands_key.c_str(), artifact_hands_.c_str());
     return CallbackReturn::FAILURE;
   }
 
@@ -353,8 +424,6 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   const double drift_threshold = get_parameter("drift_threshold").as_double();
   const int drift_window_size = static_cast<int>(get_parameter("drift_window_size").as_int());
 
-  // ── UdpHandController ─────────────────────────────────────────────────
-  const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
   num_fingertips_ = udp_hand_driver::kDefaultNumFingertips;
   // use_fake_hand_ was derived from sil_mode in the target_ip block above.
   const int comm_decimation = static_cast<int>(get_parameter("comm_decimation").as_int());
@@ -370,133 +439,134 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                  loop_rate_hz);
     return CallbackReturn::FAILURE;
   }
+  loop_rate_hz_ = loop_rate_hz;
 
   // Effective comm decimation, shared by the D42 slot below and the link_status
   // decimation further down so the two cannot disagree on the cycle period.
   const int comm_dec_guarded = udp_hand_driver::ClampCommDecimation(comm_decimation);
 
+  // Per-hand key: `<side>.<name>` under hand_sides when it is set, else the
+  // flat `<name>` every hand shares (D71). The one-hand mode reads the flat key.
+  const auto hand_key = [&](std::size_t i, const std::string& name) {
+    if (!sides_mode) {
+      return name;
+    }
+    const std::string key = sides[i] + "." + name;
+    const auto& v = get_parameter(key);
+    const bool empty = (v.get_type() == rclcpp::ParameterType::PARAMETER_STRING_ARRAY)
+                           ? v.as_string_array().empty()
+                           : v.as_double_array().empty();
+    return empty ? name : key;
+  };
+  if (sides_mode) {
+    for (const auto& side : sides) {
+      declare_once(side + ".joint_state_names", std::vector<std::string>{});
+      declare_once(side + ".motor_state_names", std::vector<std::string>{});
+      declare_once(side + ".hand_fingertip_names", std::vector<std::string>{});
+      declare_once(side + ".joint_position_offsets_deg", std::vector<double>{});
+      declare_once(side + ".feedforward_kt", std::vector<double>{});
+    }
+  }
+
   // ── CAN FD link validity (protocol_version "2") ────────────────────────
-  // Everything the link needs is checked here, before the controller or any
+  // Everything the link needs is checked here, before a controller or any
   // publisher exists, so a bad configuration ends in Unconfigured with one
   // actionable line instead of an on_activate Open() failure.
-  udp_hand_driver::CanFdHandCommConfig canfd_cfg{};
+  std::vector<udp_hand_driver::CanFdHandCommConfig> canfd_cfgs(sides.size());
   if (is_canfd) {
-    canfd_cfg.interface_name = endpoint.can_interface;
-    canfd_cfg.hand_side = hand_side;
-    canfd_cfg.recv_timeout_ms = recv_timeout_ms;
+    udp_hand_driver::CanFdHandCommConfig common{};
+    common.interface_name = endpoint.can_interface;
+    common.recv_timeout_ms = recv_timeout_ms;
     const std::string cmd_ack = get_parameter("cmd_ack").as_string();
-    if (!udp_hand_driver::canfd::ParseCmdAck(cmd_ack, canfd_cfg.cmd_ack)) {
+    if (!udp_hand_driver::canfd::ParseCmdAck(cmd_ack, common.cmd_ack)) {
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                    "cmd_ack '%s' must be \"echo\" (firmware echoes CMD frames) or \"none\"",
                    cmd_ack.c_str());
       return CallbackReturn::FAILURE;
     }
-    if (canfd_cfg.interface_name.empty() || canfd_cfg.interface_name.size() >= IFNAMSIZ) {
+    if (common.interface_name.empty() || common.interface_name.size() >= IFNAMSIZ) {
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                    "can_interface '%s' is not a valid interface name (1..%d chars)",
-                   canfd_cfg.interface_name.c_str(), IFNAMSIZ - 1);
+                   common.interface_name.c_str(), IFNAMSIZ - 1);
       return CallbackReturn::FAILURE;
     }
     // loopmodel never opens the socket, so a dev box without CAN can still run
     // the in-process model under protocol 2; every other mode needs the device.
-    if (sil_mode != "loopmodel" && ::if_nametoindex(canfd_cfg.interface_name.c_str()) == 0) {
+    if (sil_mode != "loopmodel" && ::if_nametoindex(common.interface_name.c_str()) == 0) {
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                    "CAN interface '%s' not found (%s) — protocol_version 2 needs it up "
                    "(sil_mode=firmware: vcan0, see repo_scripts/README.md)",
-                   canfd_cfg.interface_name.c_str(), std::strerror(errno));
+                   common.interface_name.c_str(), std::strerror(errno));
       return CallbackReturn::FAILURE;
     }
-    const auto kt = get_parameter("feedforward_kt").as_double_array();
-    if (kt.size() != canfd_cfg.feedforward_kt.size()) {
-      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                   "feedforward_kt must have %zu values (got %zu)", canfd_cfg.feedforward_kt.size(),
-                   kt.size());
-      return CallbackReturn::FAILURE;
-    }
-    for (std::size_t i = 0; i < kt.size(); ++i) {
-      const auto kt_f = static_cast<float>(kt[i]);
-      if (!udp_hand_driver::CanFdHandComm::IsValidFeedforwardKt(kt_f)) {
+    for (std::size_t h = 0; h < sides.size(); ++h) {
+      auto& cfg = canfd_cfgs[h];
+      cfg = common;
+      cfg.hand_side = side_ids[h];
+      const auto kt = get_parameter(hand_key(h, "feedforward_kt")).as_double_array();
+      if (kt.size() != cfg.feedforward_kt.size()) {
         RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                     "feedforward_kt[%zu] = %g is not a usable torque constant (must be > 0 "
-                     "with a finite reciprocal)",
-                     i, kt[i]);
+                     "%s feedforward_kt must have %zu values (got %zu)", sides[h].c_str(),
+                     cfg.feedforward_kt.size(), kt.size());
         return CallbackReturn::FAILURE;
       }
-      canfd_cfg.feedforward_kt[i] = kt_f;
+      for (std::size_t i = 0; i < kt.size(); ++i) {
+        const auto kt_f = static_cast<float>(kt[i]);
+        if (!udp_hand_driver::CanFdHandComm::IsValidFeedforwardKt(kt_f)) {
+          RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                       "%s feedforward_kt[%zu] = %g is not a usable torque constant (must be > 0 "
+                       "with a finite reciprocal)",
+                       sides[h].c_str(), i, kt[i]);
+          return CallbackReturn::FAILURE;
+        }
+        cfg.feedforward_kt[i] = kt_f;
+      }
     }
-    // D42: two receive stages per cycle (echo, RESP set), each bounded by
-    // recv_timeout_ms, must fit the comm slot — otherwise one slow cycle
-    // overruns the next tick by construction rather than by a fault. Under
-    // cmd_ack none the one set stage after a write is bounded by the nominal
-    // 2T itself (D64), so the bound is the same.
+    // D42, generalized to N hands (D71): each hand's cycle has two receive
+    // stages (echo, RESP set), each bounded by recv_timeout_ms, and the loop
+    // runs the hands back to back — so N × 2T must fit the comm slot, or one
+    // slow tick overruns the next by construction rather than by a fault.
+    // Under cmd_ack none the one set stage after a write is bounded by the
+    // nominal 2T itself (D64), so the bound is the same.
     const double slot_ms = 1000.0 / loop_rate_hz * static_cast<double>(comm_dec_guarded);
-    if (!(recv_timeout_ms > 0.0) || !(2.0 * recv_timeout_ms < slot_ms)) {
+    const double margin_ms =
+        udp_hand_driver::CommSlotMarginMs(slot_ms, sides.size(), recv_timeout_ms);
+    if (!(recv_timeout_ms > 0.0) || !(margin_ms > 0.0)) {
       // The declare default (10 ms) is UDP's and can never pass here: a proto2
       // configuration must set recv_timeout_ms itself (the shipped YAML: 0.4).
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                   "recv_timeout_ms=%.3f: protocol_version 2 needs 0 < 2 × recv_timeout_ms < "
-                   "comm slot %.3f ms (1000 / loop_rate_hz × comm_decimation) — D42; set it in "
-                   "the YAML (the declare default is the UDP value)",
-                   recv_timeout_ms, slot_ms);
+                   "recv_timeout_ms=%.3f: protocol_version 2 needs 0 < %zu × 2 × "
+                   "recv_timeout_ms < comm slot %.3f ms (1000 / loop_rate_hz × comm_decimation) "
+                   "— D42; set it in the YAML (the declare default is the UDP value)",
+                   recv_timeout_ms, sides.size(), slot_ms);
       return CallbackReturn::FAILURE;
+    }
+    // Under a tenth of the slot left, the scheduler's own jitter can push a
+    // worst-case tick over (#906 S1). Not refused: the operator may know the
+    // stages close early on this rig; a nanosecond of slack keeps the exact
+    // 10 % boundary (250 Hz · 0.9 ms · two hands) quiet.
+    constexpr double kSlotMarginWarnFraction = 0.1;
+    constexpr double kBoundarySlackMs = 1e-6;
+    if (margin_ms + kBoundarySlackMs < kSlotMarginWarnFraction * slot_ms) {
+      RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                  "comm slot %.3f ms leaves %.3f ms after %zu × 2 × recv_timeout_ms (%.3f) — "
+                  "under 10 %% of the slot; a jittery tick can overrun",
+                  slot_ms, margin_ms, sides.size(), recv_timeout_ms);
     }
   }
 
   const double fake_lpf_time_constant_s = get_parameter("fake_lpf_time_constant_s").as_double();
   const double fake_effort_stiffness = get_parameter("fake_effort_stiffness").as_double();
   const double fake_effort_damping = get_parameter("fake_effort_damping").as_double();
-  controller_ =
-      std::make_unique<udp_hand_driver::UdpHandController>(udp_hand_driver::UdpHandControllerConfig{
-          .target_ip = target_ip,
-          .target_port = target_port,
-          .local_ip = local_ip,
-          .local_interface = local_interface,
-          .recv_timeout_ms = recv_timeout_ms,
-          .sensor_decimation = sensor_decimation,
-          .num_fingertips = num_fingertips_,
-          .use_fake_hand = use_fake_hand_,
-          .fingertip_names = ft_names,
-          .communication_mode = comm_mode,
-          .tof_lpf_enabled = tof_lpf_enabled,
-          .tof_lpf_cutoff_hz = tof_lpf_cutoff_hz,
-          .baro_lpf_enabled = baro_lpf_enabled,
-          .baro_lpf_cutoff_hz = baro_lpf_cutoff_hz,
-          .ft_config = std::move(ft_config),
-          .drift_detection_enabled = drift_enabled,
-          .drift_threshold = drift_threshold,
-          .drift_window_size = drift_window_size,
-          .comm_decimation = comm_decimation,
-          .loop_rate_hz = loop_rate_hz,
-          .fake_lpf_time_constant_s = fake_lpf_time_constant_s,
-          .fake_effort_stiffness = fake_effort_stiffness,
-          .fake_effort_damping = fake_effort_damping,
-      });
-  controller_->SetSensorProtocol(std::move(sensor_protocol));
-  if (is_canfd) {
-    // Constructed in every sil_mode so the stats JSON has its canfd block even
-    // under loopmodel (which never calls Open()); the socket is opened by the
-    // controller's Start(). The raw pointer is taken before the move and kept
-    // only if the controller accepted the comm (SetHandComm destroys it on
-    // refusal — see the canfd_comm_ member note).
-    auto comm = std::make_unique<udp_hand_driver::CanFdHandComm>(canfd_cfg);
-    const udp_hand_driver::CanFdHandComm* raw = comm.get();
-    if (!controller_->SetHandComm(std::move(comm))) {
-      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                   "Failed to install the CAN FD link on the controller");
-      controller_.reset();
-      return CallbackReturn::FAILURE;
-    }
-    canfd_comm_ = raw;
-  }
-  // The CommLoop polls this flag every tick (E-8). Handed over once here, on
-  // the controller that will run; on_activate clears the latch before Start().
-  controller_->SetEstopFlag(&estop_flag_);
 
   // ── Topic names ──────────────────────────────────────────────────
   // Relative by default (D53): the node namespace supplies the prefix, so the
-  // standalone launch (`-r __ns:=/hand`) still lands on /hand/* and a second
-  // hand only needs a different namespace. Absolute names remain accepted as
-  // overrides (the robot overlays pin /p1a/*, /p1b/* that way).
+  // standalone launch (`-r __ns:=/hand`) still lands on /hand/*. Under
+  // hand_sides every hand's relative names get its `<side>/` prefix (D71), so
+  // the right hand publishes /hand/right/joint_states; the E-Stop topic is one
+  // for all hands (D70) and is not prefixed. Absolute names remain accepted as
+  // overrides (the robot overlays pin /p1a/*, /p1b/* that way) and are taken
+  // as written.
   declare_once("command_topic", std::string("joint_command"));
   declare_once("joint_state_topic", std::string("joint_states"));
   declare_once("motor_state_topic", std::string("motor_states"));
@@ -515,32 +585,29 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   const std::string calib_cmd_topic = get_parameter("calibration_command_topic").as_string();
   const std::string calib_status_topic = get_parameter("calibration_status_topic").as_string();
   const double calib_status_rate_hz = get_parameter("calibration_status_rate_hz").as_double();
+  // A per-hand topic named absolutely would be one topic for both hands — every
+  // command driving both, two hands' states interleaved — so two hands take
+  // relative names only (the E-Stop topic is shared on purpose).
+  if (sides.size() > 1) {
+    for (const auto* name :
+         {"command_topic", "joint_state_topic", "motor_state_topic", "sensor_topic",
+          "link_status_topic", "calibration_command_topic", "calibration_status_topic"}) {
+      const std::string value = get_parameter(name).as_string();
+      if (udp_hand_driver::PrefixRelativeTopic("x/", value) == value) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                     "%s '%s' is not a relative name: with %zu hands it would be one topic for "
+                     "all of them",
+                     name, value.c_str(), sides.size());
+        return CallbackReturn::FAILURE;
+      }
+    }
+  }
 
-  // ── Publishers (LifecyclePublisher — gated by lifecycle state) ─────
-  rclcpp::QoS sensor_pub_qos{1};
-  sensor_pub_qos.best_effort();
-
-  joint_state_pub_ =
-      create_publisher<sensor_msgs::msg::JointState>(joint_state_topic, sensor_pub_qos);
-  motor_state_pub_ =
-      create_publisher<sensor_msgs::msg::JointState>(motor_state_topic, sensor_pub_qos);
-  sensor_state_pub_ =
-      create_publisher<rtc_msgs::msg::HandSensorState>(sensor_topic, sensor_pub_qos);
-
-  sensor_monitor_pub_ =
-      create_publisher<rtc_msgs::msg::HandSensorState>(sensor_topic + "/monitor", rclcpp::QoS{1});
-
-  // Link status: standalone rclcpp::Publisher (NOT LifecyclePublisher).
-  // Must remain publishable in any lifecycle state — link status is a
-  // safety-relevant signal that should report even when Inactive.
-  rclcpp::QoS link_pub_qos{1};
-  link_pub_qos.transient_local();
-  link_status_pub_ = rclcpp::create_publisher<std_msgs::msg::Bool>(
-      this->get_node_topics_interface(), link_status_topic, link_pub_qos);
   // Convert the time-based link-fail budget to a cycle count once here; the three
   // consumers (failure detector CheckLink, publish link_ok, stats JSON link_ok)
   // all read this single member so they cannot drift. loop_rate_hz /
-  // comm_decimation are the on_configure locals above.
+  // comm_decimation are the on_configure locals above. Every hand runs at the
+  // loop's rate, so one pair serves them all.
   {
     const double link_fail_timeout_ms = get_parameter("link_fail_timeout_ms").as_double();
     // Motor/joint attempted every comm cycle → comm-rate cycles. Sensor attempted
@@ -561,49 +628,6 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
 
   ft_enabled_ = ft_config.enabled;
 
-  // ── Hand joint/motor/fingertip names ────────────────────────────────
-  auto joint_names = get_parameter("joint_state_names").as_string_array();
-  if (joint_names.empty()) {
-    joint_names = udp_hand_driver::kDefaultHandMotorNames;
-  }
-  joint_names_ = joint_names;
-  auto motor_names = get_parameter("motor_state_names").as_string_array();
-  if (motor_names.empty()) {
-    motor_names = udp_hand_driver::kDefaultHandMotorNames;
-  }
-  motor_names_ = motor_names;
-  auto fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
-  if (fingertip_names.empty()) {
-    fingertip_names = udp_hand_driver::kDefaultFingertipNames;
-  }
-  fingertip_names_ = fingertip_names;
-
-  // ── Joint position offsets (degree YAML → radian) ──────────────────
-  // Boundary conversion (degrees only at the config edge; radians internal).
-  // Applied at +offset on publish and −offset on command so the round-trip
-  // is identity. Size must match kNumHandMotors; otherwise fall back to zero
-  // (same lenient pattern as the *_names params above).
-  joint_offset_rad_.fill(0.0f);
-  {
-    const auto offsets_deg = get_parameter("joint_position_offsets_deg").as_double_array();
-    if (!offsets_deg.empty()) {
-      if (offsets_deg.size() != static_cast<std::size_t>(udp_hand_driver::kNumHandMotors)) {
-        RCLCPP_WARN(
-            ::udp_hand_driver::logging::NodeLogger(),
-            "joint_position_offsets_deg size %zu (expected %d) — ignoring, using zero offset",
-            offsets_deg.size(), udp_hand_driver::kNumHandMotors);
-      } else {
-        constexpr double kDeg2Rad = M_PI / 180.0;
-        for (std::size_t i = 0; i < offsets_deg.size(); ++i) {
-          joint_offset_rad_[i] = static_cast<float>(offsets_deg[i] * kDeg2Rad);
-        }
-        RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
-                    "Joint position offsets applied (%d joints, degree YAML → radian)",
-                    udp_hand_driver::kNumHandMotors);
-      }
-    }
-  }
-
   // ── Link status decimation ─────────────────────────────────────────
   // link_status is decimated relative to the CommLoop cadence: one link_status
   // publish per (loop_rate_hz / publish_rate) state cycles (e.g. 500/100 = 5 →
@@ -619,133 +643,296 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   link_decimation_ =
       (publish_rate > 0.0) ? std::max(1, static_cast<int>(effective_state_hz / publish_rate)) : 1;
 
-  // ── Pre-allocate ROS2 messages ─────────────────────────────────────
-  PreallocateMessages();
+  // ── One hand per side ──────────────────────────────────────────────
+  rclcpp::QoS sensor_pub_qos{1};
+  sensor_pub_qos.best_effort();
+  rclcpp::QoS link_pub_qos{1};
+  link_pub_qos.transient_local();
+  rclcpp::QoS cmd_sub_qos{1};
+  cmd_sub_qos.best_effort();
+  rclcpp::QoS calib_status_qos{1};
+  calib_status_qos.reliable().transient_local();
+
+  for (std::size_t h = 0; h < sides.size(); ++h) {
+    auto unit = std::make_unique<HandUnit>();
+    HandUnit& u = *unit;
+    u.side = sides[h];
+    u.topic_prefix = sides_mode ? sides[h] + "/" : std::string{};
+    u.file_suffix = sides_mode ? "_" + sides[h] : one_hand_suffix;
+    u.log_tag = sides_mode ? "[" + sides[h] + "] " : std::string{};
+    u.link_desc = is_canfd ? ("CAN FD " + endpoint.can_interface + " (" + sides[h] + ")")
+                           : (target_ip + ":" + std::to_string(target_port));
+
+    // ── UdpHandController ───────────────────────────────────────────
+    const auto ft_names = get_parameter(hand_key(h, "hand_fingertip_names")).as_string_array();
+    u.controller = std::make_unique<udp_hand_driver::UdpHandController>(
+        udp_hand_driver::UdpHandControllerConfig{
+            .target_ip = target_ip,
+            .target_port = target_port,
+            .local_ip = local_ip,
+            .local_interface = local_interface,
+            .recv_timeout_ms = recv_timeout_ms,
+            .sensor_decimation = sensor_decimation,
+            .num_fingertips = num_fingertips_,
+            .use_fake_hand = use_fake_hand_,
+            .fingertip_names = ft_names,
+            .communication_mode = comm_mode,
+            .tof_lpf_enabled = tof_lpf_enabled,
+            .tof_lpf_cutoff_hz = tof_lpf_cutoff_hz,
+            .baro_lpf_enabled = baro_lpf_enabled,
+            .baro_lpf_cutoff_hz = baro_lpf_cutoff_hz,
+            .ft_config = ft_config,
+            .drift_detection_enabled = drift_enabled,
+            .drift_threshold = drift_threshold,
+            .drift_window_size = drift_window_size,
+            .comm_decimation = comm_decimation,
+            .loop_rate_hz = loop_rate_hz,
+            .fake_lpf_time_constant_s = fake_lpf_time_constant_s,
+            .fake_effort_stiffness = fake_effort_stiffness,
+            .fake_effort_damping = fake_effort_damping,
+        });
+    u.controller->SetSensorProtocol(udp_hand_driver::CreateSensorProtocol(protocol_version));
+    if (is_canfd) {
+      // Constructed in every sil_mode so the stats JSON has its canfd block even
+      // under loopmodel (which never calls Open()); the socket is opened by the
+      // controller's Start(). The raw pointer is taken before the move and kept
+      // only if the controller accepted the comm (SetHandComm destroys it on
+      // refusal — see the canfd_comm member note).
+      auto comm = std::make_unique<udp_hand_driver::CanFdHandComm>(canfd_cfgs[h]);
+      const udp_hand_driver::CanFdHandComm* raw = comm.get();
+      if (!u.controller->SetHandComm(std::move(comm))) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                     "%sFailed to install the CAN FD link on the controller", u.log_tag.c_str());
+        return CallbackReturn::FAILURE;
+      }
+      u.canfd_comm = raw;
+    }
+    // The CommLoop polls this flag at the head of every hand's cycle (E-8).
+    // Handed over once here, on the controller that will run; on_activate
+    // clears the latch before the hands start.
+    u.controller->SetEstopFlag(&estop_flag_);
+    // The node's loop drives every hand, in this order (D69).
+    if (!u.controller->AttachLoop(&comm_loop_)) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "%sFailed to attach the controller to the comm loop", u.log_tag.c_str());
+      return CallbackReturn::FAILURE;
+    }
+
+    // ── Publishers (LifecyclePublisher — gated by lifecycle state) ─────
+    const auto topic = [&u](const std::string& name) {
+      return udp_hand_driver::PrefixRelativeTopic(u.topic_prefix, name);
+    };
+    u.joint_state_pub =
+        create_publisher<sensor_msgs::msg::JointState>(topic(joint_state_topic), sensor_pub_qos);
+    u.motor_state_pub =
+        create_publisher<sensor_msgs::msg::JointState>(topic(motor_state_topic), sensor_pub_qos);
+    u.sensor_state_pub =
+        create_publisher<rtc_msgs::msg::HandSensorState>(topic(sensor_topic), sensor_pub_qos);
+    u.sensor_monitor_pub = create_publisher<rtc_msgs::msg::HandSensorState>(
+        topic(sensor_topic) + "/monitor", rclcpp::QoS{1});
+
+    // Link status: standalone rclcpp::Publisher (NOT LifecyclePublisher).
+    // Must remain publishable in any lifecycle state — link status is a
+    // safety-relevant signal that should report even when Inactive.
+    u.link_status_pub = rclcpp::create_publisher<std_msgs::msg::Bool>(
+        this->get_node_topics_interface(), topic(link_status_topic), link_pub_qos);
+
+    // ── Hand joint/motor/fingertip names ────────────────────────────────
+    auto joint_names = get_parameter(hand_key(h, "joint_state_names")).as_string_array();
+    if (joint_names.empty()) {
+      joint_names = udp_hand_driver::kDefaultHandMotorNames;
+    }
+    u.joint_names = joint_names;
+    auto motor_names = get_parameter(hand_key(h, "motor_state_names")).as_string_array();
+    if (motor_names.empty()) {
+      motor_names = udp_hand_driver::kDefaultHandMotorNames;
+    }
+    u.motor_names = motor_names;
+    auto fingertip_names = ft_names;
+    if (fingertip_names.empty()) {
+      fingertip_names = udp_hand_driver::kDefaultFingertipNames;
+    }
+    u.fingertip_names = fingertip_names;
+
+    // ── Joint position offsets (degree YAML → radian) ──────────────────
+    // Boundary conversion (degrees only at the config edge; radians internal).
+    // Applied at +offset on publish and −offset on command so the round-trip
+    // is identity. Size must match kNumHandMotors; otherwise fall back to zero
+    // (same lenient pattern as the *_names params above).
+    u.joint_offset_rad.fill(0.0f);
+    {
+      const auto offsets_deg =
+          get_parameter(hand_key(h, "joint_position_offsets_deg")).as_double_array();
+      if (!offsets_deg.empty()) {
+        if (offsets_deg.size() != static_cast<std::size_t>(udp_hand_driver::kNumHandMotors)) {
+          RCLCPP_WARN(
+              ::udp_hand_driver::logging::NodeLogger(),
+              "%sjoint_position_offsets_deg size %zu (expected %d) — ignoring, using zero offset",
+              u.log_tag.c_str(), offsets_deg.size(), udp_hand_driver::kNumHandMotors);
+        } else {
+          constexpr double kDeg2Rad = M_PI / 180.0;
+          for (std::size_t i = 0; i < offsets_deg.size(); ++i) {
+            u.joint_offset_rad[i] = static_cast<float>(offsets_deg[i] * kDeg2Rad);
+          }
+          RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                      "%sJoint position offsets applied (%d joints, degree YAML → radian)",
+                      u.log_tag.c_str(), udp_hand_driver::kNumHandMotors);
+        }
+      }
+    }
+
+    // ── Pre-allocate ROS2 messages ─────────────────────────────────────
+    PreallocateMessages(u);
+    // A new controller restarts its SeqLock sequence at 0.
+    u.last_published_seq = u.controller->state_sequence();
+
+    // ── Subscriptions ──────────────────────────────────────────────────
+    HandUnit* const up = unit.get();  // the unit outlives its subscriptions
+    u.joint_command_sub = create_subscription<rtc_msgs::msg::JointCommand>(
+        topic(cmd_topic), cmd_sub_qos, [this, up](rtc_msgs::msg::JointCommand::SharedPtr msg) {
+          HandUnit& hu = *up;
+          if (!hu.controller->IsRunning()) {
+            return;
+          }
+          if (msg->values.size() < static_cast<std::size_t>(udp_hand_driver::kNumHandMotors)) {
+            RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                        "%sJointCommand values size %zu (expected %d)", hu.log_tag.c_str(),
+                        msg->values.size(), udp_hand_driver::kNumHandMotors);
+            return;
+          }
+          // L2 under the executor's ros2:callback_* (L1) — the name-reorder +
+          // offset + SendCommandAndRequestStates body (guards excluded above).
+          RTC_TRACE_SCOPE("hand_joint_command_cb");
+          // The publisher labels values in its own (controller / URDF) joint_names
+          // order, which can differ from this hand's firmware slot order
+          // (joint_names = joint_state_names). Build the firmware-slot ← message
+          // map once and remap; fall back to positional consumption (with a
+          // one-shot warning) when the message omits names or a firmware joint is
+          // unmatched.
+          if (!hu.cmd_name_reorder_ready && !msg->joint_names.empty()) {
+            hu.cmd_name_reorder =
+                udp_hand_driver::BuildCommandNameReorder(hu.joint_names, msg->joint_names);
+            bool complete = true;
+            for (std::size_t i = 0; i < static_cast<std::size_t>(udp_hand_driver::kNumHandMotors);
+                 ++i) {
+              if (hu.cmd_name_reorder[i] < 0) {
+                complete = false;
+                break;
+              }
+            }
+            if (complete) {
+              hu.cmd_name_reorder_ready = true;
+            } else {
+              RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                          "%sJointCommand joint_names do not cover all %d hand joints — using "
+                          "positional order",
+                          hu.log_tag.c_str(), udp_hand_driver::kNumHandMotors);
+            }
+          }
+          // Pick each source value by name (firmware slot i ← published index),
+          // then subtract the per-joint offset: controller frame → firmware
+          // frame. offset stays aligned to firmware slot order (joint_names).
+          const auto cmd = udp_hand_driver::ApplyCommandNameReorder(
+              hu.cmd_name_reorder, hu.cmd_name_reorder_ready, msg->values, hu.joint_offset_rad);
+          // D39: the feedforward (Nm) rides the same name map with NO offset (a
+          // position-frame correction has no business in a torque). Absent →
+          // zeros silently; any other size → zeros, one throttled warning and a
+          // counter (the position is still applied). command_type / kp / kd are
+          // not consumed. The UDP comms ignore ff; the CAN FD comm sends it.
+          udp_hand_driver::HandMotorArray ff{};
+          if (msg->feedforward.size() == msg->values.size()) {
+            ff = udp_hand_driver::ApplyCommandNameReorder(
+                hu.cmd_name_reorder, hu.cmd_name_reorder_ready, msg->feedforward,
+                udp_hand_driver::HandMotorArray{});
+          } else if (!msg->feedforward.empty()) {
+            hu.feedforward_size_mismatch.fetch_add(1, std::memory_order_relaxed);
+            RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::NodeLogger(), *get_clock(), 1000,
+                                 "%sJointCommand feedforward size %zu != values size %zu — "
+                                 "feedforward zeroed (position applied)",
+                                 hu.log_tag.c_str(), msg->feedforward.size(), msg->values.size());
+          }
+          // A NaN / ±inf feedforward would be serialized as-is into the current
+          // frame (the comm only scales by 1/kt): zero that entry, count, warn.
+          bool nonfinite = false;
+          for (auto& v : ff) {
+            if (!std::isfinite(v)) {
+              v = 0.0f;
+              nonfinite = true;
+            }
+          }
+          if (nonfinite) {
+            hu.feedforward_nonfinite.fetch_add(1, std::memory_order_relaxed);
+            RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::NodeLogger(), *get_clock(), 1000,
+                                 "%sJointCommand feedforward carried a non-finite value — that "
+                                 "entry zeroed (position applied)",
+                                 hu.log_tag.c_str());
+          }
+          hu.controller->SendCommandAndRequestStates(cmd, ff);
+        });
+
+    u.calib_cmd_sub = create_subscription<rtc_msgs::msg::CalibrationCommand>(
+        topic(calib_cmd_topic), rclcpp::QoS(1).reliable(),
+        [up](rtc_msgs::msg::CalibrationCommand::SharedPtr msg) {
+          HandUnit& hu = *up;
+          if (!hu.controller || !hu.controller->IsRunning()) {
+            RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                        "%sCalibration command ignored: controller not running",
+                        hu.log_tag.c_str());
+            return;
+          }
+          RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                      "%sCalibration command: sensor_type=%u action=%u sample_count=%u",
+                      hu.log_tag.c_str(), static_cast<unsigned>(msg->sensor_type),
+                      static_cast<unsigned>(msg->action), static_cast<unsigned>(msg->sample_count));
+          hu.controller->RequestCalibration(msg->sensor_type, msg->action, msg->sample_count);
+        });
+
+    u.calib_status_pub = create_publisher<rtc_msgs::msg::CalibrationStatus>(
+        topic(calib_status_topic), calib_status_qos);
+
+    {
+      std::string names_str;
+      for (std::size_t i = 0; i < motor_names.size(); ++i) {
+        if (i > 0)
+          names_str += ", ";
+        names_str += motor_names[i];
+      }
+      RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "%sHand motor order (%zu): [%s]",
+                  u.log_tag.c_str(), motor_names.size(), names_str.c_str());
+    }
+
+    std::lock_guard<std::mutex> lock(aux_lane_mutex_);
+    units_.push_back(std::move(unit));
+  }
+  // One latch for every hand: the loop re-checks it between hands (D70).
+  comm_loop_.SetEstopFlag(&estop_flag_);
 
   // ── NRT publish lane ───────────────────────────────────────────────
-  // Pull, not push (issue #345). The CommLoop stores a POD snapshot into the
-  // SeqLock and nothing else; this timer polls the sequence from the default
-  // executor thread and publishes whatever the latest snapshot is.
+  // Pull, not push (issue #345). The CommLoop stores a POD snapshot into each
+  // hand's SeqLock and nothing else; this timer polls the sequences from the
+  // default executor thread and publishes whatever the latest snapshots are.
   //
   // Poll faster than the producer. With a same-rate poll, producer and consumer
   // drift in and out of phase and every coincidence where two comm cycles land
   // between two polls costs a publish that is never recovered — the topic rate
   // would sit measurably below loop_rate_hz. Oversampling makes "at most one new
   // sample per poll" the common case instead of the lossy one, at the price of
-  // wakeups that cost one atomic load when there is nothing new.
-  last_published_seq_ = controller_->state_sequence();
+  // wakeups that cost one atomic load per hand when there is nothing new.
   const auto publish_period = std::chrono::duration<double>(
       1.0 / (loop_rate_hz * udp_hand_driver::kPublishPollOversampling));
   publish_timer_ =
       create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(publish_period),
                         [this]() { PollAndPublish(); });
 
-  // ── Subscriptions ──────────────────────────────────────────────────
-  rclcpp::QoS cmd_sub_qos{1};
-  cmd_sub_qos.best_effort();
-
-  joint_command_sub_ = create_subscription<rtc_msgs::msg::JointCommand>(
-      cmd_topic, cmd_sub_qos, [this](rtc_msgs::msg::JointCommand::SharedPtr msg) {
-        if (!controller_->IsRunning()) {
-          return;
-        }
-        if (msg->values.size() < static_cast<std::size_t>(udp_hand_driver::kNumHandMotors)) {
-          RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                      "JointCommand values size %zu (expected %d)", msg->values.size(),
-                      udp_hand_driver::kNumHandMotors);
-          return;
-        }
-        // L2 under the executor's ros2:callback_* (L1) — the name-reorder +
-        // offset + SendCommandAndRequestStates body (guards excluded above).
-        RTC_TRACE_SCOPE("hand_joint_command_cb");
-        // The publisher labels values in its own (controller / URDF) joint_names
-        // order, which can differ from this hand's firmware slot order
-        // (joint_names_ = joint_state_names). Build the firmware-slot ← message
-        // map once and remap; fall back to positional consumption (with a
-        // one-shot warning) when the message omits names or a firmware joint is
-        // unmatched.
-        if (!cmd_name_reorder_ready_ && !msg->joint_names.empty()) {
-          cmd_name_reorder_ =
-              udp_hand_driver::BuildCommandNameReorder(joint_names_, msg->joint_names);
-          bool complete = true;
-          for (std::size_t i = 0; i < static_cast<std::size_t>(udp_hand_driver::kNumHandMotors);
-               ++i) {
-            if (cmd_name_reorder_[i] < 0) {
-              complete = false;
-              break;
-            }
-          }
-          if (complete) {
-            cmd_name_reorder_ready_ = true;
-          } else {
-            RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                        "JointCommand joint_names do not cover all %d hand joints — using "
-                        "positional order",
-                        udp_hand_driver::kNumHandMotors);
-          }
-        }
-        // Pick each source value by name (firmware slot i ← published index),
-        // then subtract the per-joint offset: controller frame → firmware
-        // frame. offset stays aligned to firmware slot order (joint_names_).
-        const auto cmd = udp_hand_driver::ApplyCommandNameReorder(
-            cmd_name_reorder_, cmd_name_reorder_ready_, msg->values, joint_offset_rad_);
-        // D39: the feedforward (Nm) rides the same name map with NO offset (a
-        // position-frame correction has no business in a torque). Absent →
-        // zeros silently; any other size → zeros, one throttled warning and a
-        // counter (the position is still applied). command_type / kp / kd are
-        // not consumed. The UDP comms ignore ff; the CAN FD comm sends it.
-        udp_hand_driver::HandMotorArray ff{};
-        if (msg->feedforward.size() == msg->values.size()) {
-          ff = udp_hand_driver::ApplyCommandNameReorder(cmd_name_reorder_, cmd_name_reorder_ready_,
-                                                        msg->feedforward,
-                                                        udp_hand_driver::HandMotorArray{});
-        } else if (!msg->feedforward.empty()) {
-          feedforward_size_mismatch_.fetch_add(1, std::memory_order_relaxed);
-          RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::NodeLogger(), *get_clock(), 1000,
-                               "JointCommand feedforward size %zu != values size %zu — "
-                               "feedforward zeroed (position applied)",
-                               msg->feedforward.size(), msg->values.size());
-        }
-        // A NaN / ±inf feedforward would be serialized as-is into the current
-        // frame (the comm only scales by 1/kt): zero that entry, count, warn.
-        bool nonfinite = false;
-        for (auto& v : ff) {
-          if (!std::isfinite(v)) {
-            v = 0.0f;
-            nonfinite = true;
-          }
-        }
-        if (nonfinite) {
-          feedforward_nonfinite_.fetch_add(1, std::memory_order_relaxed);
-          RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::NodeLogger(), *get_clock(), 1000,
-                               "JointCommand feedforward carried a non-finite value — that "
-                               "entry zeroed (position applied)");
-        }
-        controller_->SendCommandAndRequestStates(cmd, ff);
-      });
-
-  calib_cmd_sub_ = create_subscription<rtc_msgs::msg::CalibrationCommand>(
-      calib_cmd_topic, rclcpp::QoS(1).reliable(),
-      [this](rtc_msgs::msg::CalibrationCommand::SharedPtr msg) {
-        if (!controller_ || !controller_->IsRunning()) {
-          RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                      "Calibration command ignored: controller not running");
-          return;
-        }
-        RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
-                    "Calibration command: sensor_type=%u action=%u sample_count=%u",
-                    static_cast<unsigned>(msg->sensor_type), static_cast<unsigned>(msg->action),
-                    static_cast<unsigned>(msg->sample_count));
-        controller_->RequestCalibration(msg->sensor_type, msg->action, msg->sample_count);
-      });
-
   // E-Stop input (E-8). Latch-only: `true` sets the flag the CommLoop polls
-  // every tick (zero-write + self-exit, UdpHandController::RunCommCycle);
-  // `false` is ignored — the only way back is deactivate → activate, which
-  // clears the latch right before Start(). Reliable depth 1 so a single
-  // publish is not dropped the way the best-effort command stream may be.
-  // Node-level only: nothing here knows whether a loop is running — a `true`
-  // received while Inactive is discarded by the next on_activate.
+  // at the head of every hand's cycle and between hands (zero-write of every
+  // hand + self-exit, UdpHandController::RunCommCycle / HandCommLoop); `false`
+  // is ignored — the only way back is deactivate → activate, which clears the
+  // latch right before the hands start. Reliable depth 1 so a single publish
+  // is not dropped the way the best-effort command stream may be. One topic
+  // for every hand (D70). Node-level only: nothing here knows whether a loop
+  // is running — a `true` received while Inactive is discarded by the next
+  // on_activate.
   estop_sub_ = create_subscription<std_msgs::msg::Bool>(
       estop_topic, rclcpp::QoS(1).reliable(), [this](std_msgs::msg::Bool::SharedPtr msg) {
         if (!msg->data) {
@@ -754,7 +941,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
         if (estop_flag_.exchange(true, std::memory_order_acq_rel)) {
           return;  // already latched
         }
-        if (controller_ && controller_->IsRunning()) {
+        const bool any_running = std::any_of(units_.begin(), units_.end(), [](const auto& u) {
+          return u->controller && u->controller->IsRunning();
+        });
+        if (any_running) {
           RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                       "E-Stop received: the CommLoop zero-writes once and stops; "
                       "deactivate → activate to resume");
@@ -765,38 +955,34 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
         }
       });
 
-  rclcpp::QoS calib_status_qos{1};
-  calib_status_qos.reliable().transient_local();
-  calib_status_pub_ =
-      create_publisher<rtc_msgs::msg::CalibrationStatus>(calib_status_topic, calib_status_qos);
-
   const int status_period_ms =
       (calib_status_rate_hz > 0.0) ? static_cast<int>(1000.0 / calib_status_rate_hz) : 200;
   calib_status_timer_ = create_wall_timer(std::chrono::milliseconds(status_period_ms),
                                           [this]() { PublishCalibrationStatus(); });
 
   // Cache config values needed by on_activate / the stats JSON
-  link_desc_ = is_canfd ? ("CAN FD " + endpoint.can_interface + " (" + hand_side_str + ")")
-                        : (target_ip + ":" + std::to_string(target_port));
   comm_mode_str_ = comm_mode_str;
   protocol_version_ = protocol_version;
 
-  {
-    std::string names_str;
-    for (std::size_t i = 0; i < motor_names.size(); ++i) {
-      if (i > 0)
-        names_str += ", ";
-      names_str += motor_names[i];
-    }
-    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand motor order (%zu): [%s]",
-                motor_names.size(), names_str.c_str());
+  std::string links;
+  for (const auto& u : units_) {
+    links += (links.empty() ? "" : ", ");
+    links += u->link_desc;
   }
-
   RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
               "UdpHandNode configured: link %s, direct publish from EventLoop, comm=%s, "
               "protocol=%s",
-              link_desc_.c_str(), comm_mode_str.c_str(), protocol_version.c_str());
+              links.c_str(), comm_mode_str.c_str(), protocol_version.c_str());
   return CallbackReturn::SUCCESS;
+}
+
+bool UdpHandNode::StartHand(std::size_t index) {
+  return units_.at(index)->controller->Start();
+}
+
+bool UdpHandNode::HandRunning(std::size_t index) const {
+  return index < units_.size() && units_[index]->controller &&
+         units_[index]->controller->IsRunning();
 }
 
 UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::State& state) {
@@ -804,15 +990,17 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   LifecycleNode::on_activate(state);
 
   // ── Per-tick timing CSV setup ──────────────────────────────────────
-  // Inject producer before Start() so the CommLoop thread sees a non-null
-  // producer on its first iteration. The CommLoop (PeriodicRtThread) computes
-  // jitter against its own loop_rate_hz period budget.
-  controller_->SetTimingProducer(&hand_timing_producer_);
+  // Inject producer before the loop starts so the CommLoop thread sees a
+  // non-null producer on its first iteration. The loop (PeriodicRtThread)
+  // computes jitter against its own loop_rate_hz period budget.
+  comm_loop_.SetTimingProducer(&hand_timing_producer_);
 
-  // Per-run counters, reset where the controller resets its own (Start →
+  // Per-run counters, reset where the controllers reset their own (Start →
   // PrepareRun → ResetCommStats) so one stats JSON never mixes two runs.
-  feedforward_size_mismatch_.store(0, std::memory_order_relaxed);
-  feedforward_nonfinite_.store(0, std::memory_order_relaxed);
+  for (auto& u : units_) {
+    u->feedforward_size_mismatch.store(0, std::memory_order_relaxed);
+    u->feedforward_nonfinite.store(0, std::memory_order_relaxed);
+  }
 
   // Every run starts untripped (see the estop_flag_ member note). A `true`
   // that lands after this exchange and before the first tick still stops the
@@ -822,29 +1010,63 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
                 "Discarding the E-Stop received while Inactive: this activate is the resume");
   }
 
-  if (!controller_->Start()) {
-    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Failed to start UdpHandController (%s)",
-                 link_desc_.c_str());
+  // Every hand starts before the loop thread does, so a hand whose start fails
+  // ends the activate with no hand transacting: the hands already started are
+  // stopped again (their links closed) and the loop never runs (#906 B3).
+  for (std::size_t i = 0; i < units_.size(); ++i) {
+    if (!StartHand(i)) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "%sFailed to start UdpHandController (%s)", units_[i]->log_tag.c_str(),
+                   units_[i]->link_desc.c_str());
+      for (std::size_t j = 0; j < i; ++j) {
+        units_[j]->controller->Stop();
+      }
+      comm_loop_.SetTimingProducer(static_cast<rtc::HandTimingBuffer*>(nullptr));
+      LifecycleNode::on_deactivate(state);  // back to Inactive with inactive publishers
+      return CallbackReturn::FAILURE;
+    }
+  }
+  // The controllers are attached, so their Start() prepared each run but left
+  // the thread to us: started only once every hand on the loop has started.
+  comm_loop_.Start(
+      {.thread_config = udp_hand_driver::kHandCommThreadConfig, .frequency_hz = loop_rate_hz_});
+  if (!comm_loop_.Running()) {
+    // PeriodicRtThread::Start() is a silent no-op on a bad rate or a loop that
+    // still runs; neither is reachable from configure, but a dead loop must
+    // not pass for an active node.
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "CommLoop thread did not start");
+    for (auto& u : units_) {
+      u->controller->Stop();
+    }
+    comm_loop_.SetTimingProducer(static_cast<rtc::HandTimingBuffer*>(nullptr));
+    LifecycleNode::on_deactivate(state);
     return CallbackReturn::FAILURE;
   }
+  RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+              "CommLoop thread started (mode=%s, loop_rate=%.1f Hz, hands=%zu)",
+              comm_mode_str_.c_str(), loop_rate_hz_, units_.size());
   // A run has started: from here the stats JSON describes it, without the
-  // previous run's failure verdict (#927 I-1). Not before Start() — a failed
+  // previous run's failure verdict (#927 I-1). Not before the start — a failed
   // start leaves the previous run's JSON and verdict to the teardown save.
   {
     std::lock_guard<std::mutex> lock(aux_lane_mutex_);
-    failure_latched_ = false;
     has_run_ = true;
-    // The counters behind the cmd_ack WARN were reset with this run.
-    warned_cmd_ack_silent_ = false;
-    warned_cmd_ack_echoes_ = false;
+    for (auto& u : units_) {
+      u->failure_latched = false;
+      // The counters behind the cmd_ack WARN were reset with this run.
+      u->warned_cmd_ack_silent = false;
+      u->warned_cmd_ack_echoes = false;
+    }
   }
 
-  // Fake mode needs no node-side self-tick: the controller's CommLoop RT thread
-  // self-clocks at loop_rate_hz exactly as in real mode and latches the staged
+  // Fake mode needs no node-side self-tick: the CommLoop RT thread self-clocks
+  // at loop_rate_hz exactly as in real mode and latches each hand's staged
   // command each cycle (see UdpHandController::RunFakeCommCycle). Commands flow
   // through the normal command sub → SendCommandAndRequestStates staging path.
 
-  // Failure Detector (skipped in fake mode)
+  // Failure Detector — one per hand, no cross-hand propagation (D74): a link
+  // down on one hand saves that hand's stats and stops nothing else. Skipped
+  // in fake mode.
   const bool enable_fd = get_parameter("enable_failure_detector").as_bool() && !use_fake_hand_;
   if (enable_fd) {
     udp_hand_driver::UdpHandFailureDetector::Config fd_cfg;
@@ -854,7 +1076,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     // 1b force layout → detector checks fx,fy,fz in sensor_force, not the int32
     // sensor_data buffer (which stays zero on 1b and would false-trigger).
     fd_cfg.sensor_force_layout = sensor_uses_force_layout_;
-    // The rate detector measures controller_.cycle_count() growth, which
+    // The rate detector measures controller.cycle_count() growth, which
     // increments once per comm cycle — i.e. at loop_rate_hz / comm_decimation,
     // since decimated skip cycles do no I/O and no cycle accounting. A
     // min_rate_hz set against the nominal loop rate would therefore false-
@@ -894,18 +1116,22 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     auto cfgs = rtc::SelectThreadConfigs();
     auto fd_thread_cfg = cfgs.nrt_logging;
     fd_thread_cfg.cpu_core = -1;
-    failure_detector_ = std::make_unique<udp_hand_driver::UdpHandFailureDetector>(
-        *controller_, fd_cfg, fd_thread_cfg);
-    failure_detector_->SetFailureCallback([this](const std::string& reason) {
-      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Hand failure detected: %s",
-                   reason.c_str());
-      // Persist the forensic counters at failure time — the process may be
-      // torn down (E-STOP) before any graceful-teardown save runs.
-      SaveCommStats();
-    });
-    failure_detector_->Start();
-    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
-                "UdpHandFailureDetector started (50 Hz, threshold=%d)", fd_cfg.failure_threshold);
+    for (auto& unit : units_) {
+      HandUnit* const up = unit.get();
+      unit->failure_detector = std::make_unique<udp_hand_driver::UdpHandFailureDetector>(
+          *unit->controller, fd_cfg, fd_thread_cfg);
+      unit->failure_detector->SetFailureCallback([this, up](const std::string& reason) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "%sHand failure detected: %s",
+                     up->log_tag.c_str(), reason.c_str());
+        // Persist the forensic counters at failure time — the process may be
+        // torn down (E-STOP) before any graceful-teardown save runs.
+        SaveCommStats(*up, /*verbose=*/true);
+      });
+      unit->failure_detector->Start();
+      RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                  "%sUdpHandFailureDetector started (50 Hz, threshold=%d)", unit->log_tag.c_str(),
+                  fd_cfg.failure_threshold);
+    }
   }
 
   // ── Periodic stats save (crash-safety) ─────────────────────────────
@@ -926,7 +1152,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // on one flag would either skip on_deactivate's straggler drain (if the flag
   // were cleared) or leave the timer dead after deactivate -> activate (if not).
   if (!hand_timing_opened_) {
-    if (!hand_timing_logger_.Open(hand_file_suffix_)) {
+    if (!hand_timing_logger_.Open(timing_file_suffix_)) {
       RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                   "UdpHandTimingLogger::Open() failed — timing CSV disabled");
     } else {
@@ -953,7 +1179,7 @@ void UdpHandNode::DrainHandTiming() {
   // timer and waits out any in-flight callback before on_deactivate drains, and
   // this lock enforces the invariant rather than relying on that ordering (#345).
   std::lock_guard lock(aux_lane_mutex_);
-  if (!controller_)
+  if (units_.empty())
     return;
   hand_timing_producer_.Drain(
       [this](const rtc::RtTickTimingSample& s) { hand_timing_logger_.Log(s); });
@@ -969,11 +1195,9 @@ void UdpHandNode::DrainHandTiming() {
 
 UdpHandNode::CallbackReturn UdpHandNode::on_deactivate(const rclcpp_lifecycle::State& state) {
   StopRuntime();
-  if (controller_) {
-    // Drop the producer pointer so a stopped EventLoop cannot push into a
-    // potentially-recreated buffer on a future activation.
-    controller_->SetTimingProducer(nullptr);
-  }
+  // Drop the producer pointer so a stopped loop cannot push into a
+  // potentially-recreated buffer on a future activation.
+  comm_loop_.SetTimingProducer(static_cast<rtc::HandTimingBuffer*>(nullptr));
   // Drain any stragglers so the CSV reflects everything pushed before stop. Safe
   // as the sole consumer here: StopRuntime() above cancelled the aux timer and
   // waited out any in-flight aux callback (issue #345).
@@ -995,8 +1219,8 @@ UdpHandNode::CallbackReturn UdpHandNode::on_cleanup(const rclcpp_lifecycle::Stat
   // ordering it left the guarantee resting on an invariant nothing enforced —
   // and on_shutdown's guard silently failed to hold it (issue #345). Every
   // branch inside StopRuntime() is null-guarded and both Stop()s are idempotent,
-  // so the configure -> cleanup path (controller built, never started) is a
-  // no-op beyond one "stopped: 0 cycles" log line.
+  // so the configure -> cleanup path (hands built, never started) is a
+  // no-op beyond one "stopped: 0 cycles" log line per hand.
   StopRuntime();
   SaveCommStats();
   ReleaseResources();
@@ -1035,9 +1259,9 @@ void UdpHandNode::StopRuntime() {
   // Quiesce the aux lane first. cancel() guarantees no *further* invocation, but
   // says nothing about one already running on the hand_aux_io thread, so take
   // aux_lane_mutex_ empty as a barrier once no new callback can start. The
-  // detector is joined before the barrier because its failure callback is the
-  // third SaveCommStats caller — joining it first makes the barrier conclusive
-  // rather than a snapshot (issue #345).
+  // detectors are joined before the barrier because their failure callbacks
+  // are the third SaveCommStats caller — joining them first makes the barrier
+  // conclusive rather than a snapshot (issue #345).
   if (stats_save_timer_) {
     stats_save_timer_->cancel();
     stats_save_timer_.reset();
@@ -1048,62 +1272,69 @@ void UdpHandNode::StopRuntime() {
     hand_timing_timer_->cancel();
     hand_timing_timer_.reset();
   }
-  if (failure_detector_) {
-    // Join outside the lock: the detector's failure callback is itself a
-    // SaveCommStats caller, so it can be blocked on aux_lane_mutex_ — joining
-    // while holding that mutex would deadlock against the thread being joined.
-    failure_detector_->Stop();
+  for (auto& u : units_) {
+    if (u->failure_detector) {
+      // Join outside the lock: the detector's failure callback is itself a
+      // SaveCommStats caller, so it can be blocked on aux_lane_mutex_ — joining
+      // while holding that mutex would deadlock against the thread being joined.
+      u->failure_detector->Stop();
+    }
   }
   {
     // Barrier and destruction share one critical section. An aux callback that
     // already entered SaveCommStats holds this mutex and dereferences
-    // failure_detector_ directly (it is a unique_ptr, so the reader gets no
+    // failure_detector directly (it is a unique_ptr, so the reader gets no
     // ownership), which means a reset placed before the barrier frees the
     // object out from under a live reader.
     std::lock_guard<std::mutex> quiesce(aux_lane_mutex_);
-    // The verdict outlives the detector: the teardown save after this
-    // (on_cleanup / on_error / ~UdpHandNode) must still report it (#927 I-1).
-    // Only a live detector updates it — a second StopRuntime() in the same
-    // teardown finds none and keeps the first one's verdict.
-    if (failure_detector_) {
-      failure_latched_ = failure_detector_->failed();
+    for (auto& u : units_) {
+      // The verdict outlives the detector: the teardown save after this
+      // (on_cleanup / on_error / ~UdpHandNode) must still report it (#927 I-1).
+      // Only a live detector updates it — a second StopRuntime() in the same
+      // teardown finds none and keeps the first one's verdict.
+      if (u->failure_detector) {
+        u->failure_latched = u->failure_detector->failed();
+      }
+      u->failure_detector.reset();
     }
-    failure_detector_.reset();
   }
-  // Call Stop() unconditionally (it is idempotent). The IsRunning() guard was
-  // removed because the E-Stop self-exit path now clears running_ from inside
-  // the CommLoop (#4), so a guarded Stop() would skip the required Join() +
-  // socket close + stats log after an E-Stop.
-  if (controller_) {
-    controller_->Stop();
+  // The loop first: its thread runs every hand's cycle, so no comm a
+  // controller closes in Stop() may still be in use (Stop() joins it too —
+  // idempotent — but the order is the node's to state). Stop() is called
+  // unconditionally (it is idempotent): the E-Stop self-exit clears running_
+  // from inside the CommLoop (#4), so an IsRunning() guard would skip the
+  // required socket close + stats log after an E-Stop.
+  comm_loop_.Join();
+  for (auto& u : units_) {
+    if (u->controller) {
+      u->controller->Stop();
+    }
   }
 }
 
 void UdpHandNode::ReleaseResources() {
   // Aux-lane timers first, for the same reason StopRuntime() cancels them: their
-  // callbacks run on the hand_aux_io thread and touch controller_, which this
-  // function resets below (issue #345).
+  // callbacks run on the hand_aux_io thread and touch the hands, which this
+  // function destroys below (issue #345).
   //
   // Precondition — every caller (on_cleanup, on_error) runs StopRuntime() first,
-  // so by the time controller_ is reset the aux timers are gone, the detector is
-  // joined, and the quiesce barrier has waited out any in-flight callback. That
-  // ordering is what makes the reset below safe; it is deliberately not
-  // re-established here, because controller_'s destructor joins the CommLoop and
-  // holding aux_lane_mutex_ across a join is the deadlock shape StopRuntime()
-  // documents.
+  // so by the time the hands go the aux timers are gone, the detectors are
+  // joined, the loop is joined, and the quiesce barrier has waited out any
+  // in-flight callback. That ordering is what makes the clear below safe.
   stats_save_timer_.reset();
   hand_timing_timer_.reset();
   calib_status_timer_.reset();
   publish_timer_.reset();
   estop_sub_.reset();
-  calib_cmd_sub_.reset();
-  joint_command_sub_.reset();
-  link_status_pub_.reset();
-  sensor_monitor_pub_.reset();
-  sensor_state_pub_.reset();
-  motor_state_pub_.reset();
-  joint_state_pub_.reset();
-  calib_status_pub_.reset();
-  canfd_comm_ = nullptr;  // observes an object controller_ owns — drop it first
-  controller_.reset();
+  // The loop forgets the hands first (joined by StopRuntime(), so this cannot
+  // be refused), the same order as on_configure.
+  (void)comm_loop_.Clear();
+  {
+    // Each unit drops its subscriptions and publishers, then its controller
+    // (whose destructor joins the already-joined loop — no wait under the
+    // lock). No detector is alive here (StopRuntime() reset them): a live one
+    // would be joined under this lock while its failure callback waits on it.
+    std::lock_guard<std::mutex> lock(aux_lane_mutex_);
+    units_.clear();
+  }
 }

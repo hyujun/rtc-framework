@@ -29,13 +29,16 @@ from rtc_tools.analysis.hand_canfd_gate import (
     UNDECIDED,
     Thresholds,
     _artifacts,
+    _overlap_check,
     analyse_bus,
+    analyse_overlap,
     judge,
     load_comm_stats,
     load_timing_csv,
     main,
     overall,
     render_markdown,
+    silent_req_budget,
     summarise_timing,
 )
 from rtc_tools.utils.session_dir import PRE_F08_HAND_STEMS
@@ -814,3 +817,183 @@ def test_loaders_reject_the_wrong_inputs(tmp_path):
     udp.write_text(json.dumps({"comm_stats": {"transport": "udp"}}))
     with pytest.raises(ValueError):
         load_comm_stats(udp)
+
+
+# ── two hands on one bus (x, G-5 / epic #906) ───────────────────────────────
+
+RIGHT = node_id_of("right")
+LEFT = node_id_of("left")
+
+
+def hand_tx(
+    node: int, t: float, write: bool = False, echo: bool = True, complete: bool = True
+) -> list[str]:
+    """One comm cycle of `node` in row order: [CMD 0 · CMD 1] · REQ · [echoes] · RESP."""
+    out: list[str] = []
+    if write:
+        out += [line(t, cmd_id(node, 0), NONZERO44), line(t + 4e-5, cmd_id(node, 1), NONZERO44)]
+    out.append(line(t + 8e-5, req_id(node)))
+    if write and echo:
+        out += [
+            line(t + 5e-4, echo_id(node, 0), NONZERO44),
+            line(t + 7.7e-4, echo_id(node, 1), NONZERO44),
+        ]
+    resp = [line(t + 4e-4 + 1.3e-4 * i, resp_id(node, i), "11" * 8) for i in range(3)]
+    return out + (resp if complete else resp[:2])
+
+
+def two_hand_estop(t: float, with_echoes: bool = True) -> list[str]:
+    """OnLoopAborted: right F1 · F0 zeros, then left — echoes arrive after both pairs."""
+    out = [
+        line(t, cmd_id(RIGHT, 1), ZERO44),
+        line(t + 4e-5, cmd_id(RIGHT, 0), ZERO44),
+        line(t + 2e-4, cmd_id(LEFT, 1), ZERO44),
+        line(t + 2.4e-4, cmd_id(LEFT, 0), ZERO44),
+    ]
+    if with_echoes:
+        out += [
+            line(t + 5e-4, echo_id(RIGHT, 1), ZERO44),
+            line(t + 6e-4, echo_id(RIGHT, 0), ZERO44),
+            line(t + 7e-4, echo_id(LEFT, 1), ZERO44),
+            line(t + 8e-4, echo_id(LEFT, 0), ZERO44),
+        ]
+    return out
+
+
+def two_hand_lines(n_ticks: int = 20, echo: bool = True) -> list[str]:
+    """250 Hz ticks, right then left; every other tick writes both hands."""
+    lines: list[str] = []
+    for i in range(n_ticks):
+        t = 1.0 + i * 0.004
+        lines += hand_tx(RIGHT, t, write=i % 2 == 0, echo=echo)
+        lines += hand_tx(LEFT, t + 0.0015, write=i % 2 == 0, echo=echo)
+    return lines + two_hand_estop(1.0 + n_ticks * 0.004, with_echoes=echo)
+
+
+def overlap_of(lines: list[str], tmp_path: Path):
+    log = tmp_path / "g5.log"
+    log.write_text("\n".join(lines) + "\n")
+    frames, _ = read_candump(log)
+    return analyse_overlap(frames)
+
+
+def test_two_hands_back_to_back_have_no_overlap(tmp_path):
+    o = overlap_of(two_hand_lines(), tmp_path)
+    assert o.two_hands
+    assert o.transactions == {"right": 20, "left": 20}
+    assert o.violations == []
+    # D78: the left pair follows the right one, reported in ms.
+    assert o.estop_gap_ms == pytest.approx(0.2, abs=1e-6)
+    checks = run_judge(tmp_path, lines=two_hand_lines(), overlap=o)
+    assert checks["x.no_overlap"].verdict == PASS
+
+
+def test_another_hands_resp_inside_a_transaction_is_one_intrusion(tmp_path):
+    lines = hand_tx(RIGHT, 1.0)
+    lines.insert(2, line(1.00045, resp_id(LEFT, 0), "11" * 8))  # REQ · RESP 0 · stray · …
+    lines += hand_tx(LEFT, 1.0015)
+    o = overlap_of(lines, tmp_path)
+    assert [(v.intruder, v.victim, v.kind) for v in o.violations] == [("left", "right", "resp")]
+    c = _overlap_check(o)
+    assert c.verdict == FAIL
+    assert "left -> right x1" in c.note
+
+
+def test_a_req_before_the_set_completes_counts_the_late_tail(tmp_path):
+    # The host sent the left REQ while the right set was still arriving: the
+    # right hand's late frames fall into the left window and count against it.
+    right = hand_tx(RIGHT, 1.0)  # REQ, RESP 0, 1, 2
+    lines = right[:2] + [line(1.0006, req_id(LEFT))] + right[2:]
+    lines += [line(1.0012 + 1.3e-4 * i, resp_id(LEFT, i), "11" * 8) for i in range(3)]
+    o = overlap_of(lines, tmp_path)
+    assert o.by_pair == {"right -> left": 2}
+
+
+def test_a_late_echo_in_the_next_hands_write_is_the_late_hands(tmp_path):
+    right = hand_tx(RIGHT, 1.0, write=True)  # CMD0 CMD1 REQ E0 E1 R0 R1 R2
+    late_echo = right.pop(4)  # E1 lands after the left tick started
+    left = hand_tx(LEFT, 1.0015, write=True)
+    lines = right + left[:1] + [late_echo] + left[1:]
+    o = overlap_of(lines, tmp_path)
+    assert [(v.intruder, v.victim, v.kind) for v in o.violations] == [("right", "left", "echo")]
+
+
+def test_a_set_without_frame_2_then_the_next_hand_is_no_overlap(tmp_path):
+    lines = hand_tx(RIGHT, 1.0, complete=False) + hand_tx(LEFT, 1.0015)
+    lines += hand_tx(RIGHT, 1.004) + hand_tx(LEFT, 1.0055)
+    assert overlap_of(lines, tmp_path).violations == []
+
+
+def test_cmd_ack_none_two_hands_have_no_overlap(tmp_path):
+    o = overlap_of(two_hand_lines(echo=False), tmp_path)
+    assert o.violations == []
+    assert o.transactions == {"right": 20, "left": 20}
+
+
+def test_the_estop_echoes_after_the_cut_are_not_judged(tmp_path):
+    # The four zero frames go out back to back, every echo after them.
+    o = overlap_of(two_hand_lines(n_ticks=2), tmp_path)
+    assert o.violations == []
+    assert o.estop_line is not None
+    assert set(o.estop_f1_t) == {"right", "left"}
+
+
+def test_one_hand_on_the_bus_reads_as_before(tmp_path):
+    lines = good_bus_lines()
+    o = overlap_of(lines, tmp_path)
+    assert not o.two_hands
+    timing = summarise_timing(timing_rows(150_001), TH.p99_limit_us, TH.period_us)
+    bus = bus_from(lines, tmp_path)
+    comm = comm_stats()
+    plain = judge(timing, comm, bus, TH, link_down_lines=0, link_status_false=0)
+    with_o = judge(timing, comm, bus, TH, link_down_lines=0, link_status_false=0, overlap=o)
+    assert [c.key for c in with_o] == [c.key for c in plain]
+    assert render_markdown(with_o, timing, comm, bus, TH, o) == render_markdown(
+        plain, timing, comm, bus, TH
+    )
+
+
+def test_two_hands_on_the_bus_but_one_transacting_is_not_evaluated(tmp_path):
+    lines: list[str] = []
+    for i in range(5):
+        lines += hand_tx(RIGHT, 1.0 + i * 0.004)
+    lines += two_hand_estop(1.03)  # the left hand appears only after the cut
+    o = overlap_of(lines, tmp_path)
+    assert o.two_hands
+    assert _overlap_check(o).verdict == NOT_EVALUATED
+
+
+def test_silent_req_budget_follows_the_rate():
+    assert silent_req_budget(100.0, 500.0) == TH.silent_req_max == 50
+    assert silent_req_budget(100.0, 250.0) == 25
+    assert silent_req_budget(100.0, 500.0, comm_decimation=2) == 25
+    assert silent_req_budget(0.1, 500.0) == 1
+    # Half-way counts round up, as std::lround does in the node.
+    assert silent_req_budget(100.0, 125.0) == 13
+    assert silent_req_budget(10.0, 250.0) == 3
+    assert silent_req_budget(100.0, 500.0, comm_decimation=0) == 50
+
+
+def test_main_judges_one_hand_of_a_two_hand_session(tmp_path, capsys):
+    # hand_sides run: one unsuffixed CSV at 250 Hz, a suffixed JSON per hand.
+    session = write_session(tmp_path, rows=timing_rows(75_001, period_ns=4_000_000))
+    for side in ("right", "left"):
+        (session / "device" / f"{STATS_STEM}_{side}.json").write_text(
+            json.dumps({"comm_stats": comm_stats(total_cycles=75_000), "timing_stats": {}})
+        )
+    log = tmp_path / "g5.log"
+    log.write_text("\n".join(two_hand_lines()) + "\n")
+    out_json = tmp_path / "g5.json"
+    args = [str(session), str(log), "--explicit-side", "--timing-suffix", ""]
+    args += ["--loop-rate-hz", "250", "--json-out", str(out_json)]
+    for side in ("right", "left"):
+        assert main([*args, "--hand-side", side]) == 0, side
+        text = capsys.readouterr().out
+        assert f"{STATS_STEM}_{side}.json" in text
+        assert "## G-5 verdict: **PASS**" in text
+        assert "| `x.no_overlap` | PASS |" in text
+        assert "| < 25 |" in text  # silent REQ budget at 250 Hz
+        assert "E-Stop zero-write gap, right CMD F1 -> left CMD F1 | +0.200 ms" in text
+        payload = json.loads(out_json.read_text())
+        assert payload["overlap"]["violations"] == 0
+        assert payload["thresholds"]["silent_req_max"] == 25

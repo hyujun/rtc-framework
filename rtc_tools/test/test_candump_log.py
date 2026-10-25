@@ -134,3 +134,29 @@ def test_read_candump_counts_unparsed_lines(tmp_path: Path):
     frames, unparsed = read_candump(log)
     assert [f.can_id for f in frames] == [0x00404000, 0x00800040]
     assert unparsed == 1
+
+
+# ── recorder line format (a candump -L stand-in for a PC without can-utils) ──
+
+
+@pytest.mark.parametrize(
+    ("can_id", "data", "fd", "want_id", "want_fd"),
+    [
+        (0x80000000 | req_id(RIGHT), b"", True, req_id(RIGHT), True),
+        (0x80000000 | resp_id(LEFT, 2), bytes(range(64)), True, resp_id(LEFT, 2), True),
+        (0x20000004, bytes(8), False, 0x4, False),  # SocketCAN error frame
+        (0x123, b"\xde\xad", False, 0x123, False),  # classic standard id
+    ],
+)
+def test_recorder_lines_parse_back_to_the_same_frame(can_id, data, fd, want_id, want_fd):
+    from rtc_tools.analysis.candump_log import format_candump_line
+
+    text = format_candump_line(1697000000.123456, "vcan0", can_id, data, fd, flags=1)
+    frame = parse_candump_line(text)
+    assert frame is not None, text
+    assert frame.t == pytest.approx(1697000000.123456, abs=1e-6)
+    assert frame.interface == "vcan0"
+    assert frame.can_id == want_id
+    assert frame.is_error == bool(can_id & ERR_FLAG)
+    assert frame.fd == want_fd
+    assert frame.data == data

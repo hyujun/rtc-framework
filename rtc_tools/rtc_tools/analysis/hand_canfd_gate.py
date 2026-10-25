@@ -19,6 +19,26 @@ real hand must satisfy, all at once:
                   2 ms of the first zero frame, and no command after it; with
                   ``cmd_ack: none`` the hand sends no echoes, so the pair's own
                   order and spacing (F1 -> F0 < 2 ms) replace the echo timing
+  (x) overlap   — two hands on one bus only (G-5, epic #906): no frame of one
+                  hand inside the other hand's transaction (below). Absent from
+                  a one-hand report, which therefore reads as before.
+
+Two hands (G-5). One node drives both hands, back to back every tick (D69),
+so their transactions must not interleave on the bus. A transaction of a hand
+opens at the host's first frame to it — CMD frame 0 of a write tick, the REQ of
+a read-only tick — and closes at that hand's RESP frame 2; when frame 2 never
+comes, the host's first frame to the OTHER hand closes it (the host moved on
+after the deadline, which is not an overlap). A violation is a frame FROM a hand
+(echo or RESP) that lands while the other hand's transaction is open: it is
+attributed to the hand that sent it (the intruder), so a late tail of one hand
+falling into the next hand's window counts against the late hand. Order is the
+candump row order, not timestamps. Everything from the first E-Stop zero frame
+on is outside the check: the abort zero-writes every hand fire-and-forget, so
+their echoes may interleave by design, and the loop has stopped. The gap
+between the two hands' E-Stop zero frames is reported, not judged (D78). Each
+hand is judged by its own run of this tool (``--hand-side``); under
+``hand_sides`` the stats JSON carries ``_<side>`` and the one timing CSV does
+not, hence ``--explicit-side --timing-suffix ""``.
 
 Why each definition is what it is (the reviewed corrections of H1-F06):
 
@@ -84,6 +104,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from rtc_tools.analysis.candump_log import (
+    NODE_LEFT_HAND,
+    NODE_RIGHT_HAND,
     Frame,
     Kind,
     classify,
@@ -128,7 +150,9 @@ class Thresholds:
     estop_window_ms: float = 2.0
     # A silent REQ streak of this many is the link-fail budget: 100 ms at
     # 500 Hz, the shipped link_fail_timeout_ms (a streak that long would have
-    # tripped the node's own link_ok, which is why the two must agree).
+    # tripped the node's own link_ok, which is why the two must agree). The
+    # CLI derives it from --link-fail-timeout-ms and the run's rate
+    # (silent_req_budget) unless --silent-req-max is given.
     silent_req_max: int = 50
 
     @property
@@ -205,6 +229,62 @@ class BusSummary:
     rtt_req_f2_readonly_ms: list[float] = field(default_factory=list)
     estop: EstopEvent | None = None
     estop_candidates: int = 0
+
+
+HAND_NODES = (NODE_RIGHT_HAND, NODE_LEFT_HAND)
+HAND_NAMES = {NODE_RIGHT_HAND: "right", NODE_LEFT_HAND: "left"}
+
+
+@dataclass
+class Violation:
+    line_no: int
+    intruder: str  # the hand that sent the frame
+    victim: str  # the hand whose transaction was open
+    kind: str
+
+
+@dataclass
+class OverlapSummary:
+    """The two-hand bus check (x); see the module note."""
+
+    hands_on_bus: list[str] = field(default_factory=list)
+    transactions: dict[str, int] = field(default_factory=dict)
+    violations: list[Violation] = field(default_factory=list)
+    # Candump line of the first E-Stop zero frame; the check stops there.
+    estop_line: int | None = None
+    # Each hand's E-Stop Frame 1 zeros time (D78: right -> left gap, reported).
+    estop_f1_t: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def two_hands(self) -> bool:
+        return len(self.hands_on_bus) >= 2
+
+    @property
+    def by_pair(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for v in self.violations:
+            key = f"{v.intruder} -> {v.victim}"
+            out[key] = out.get(key, 0) + 1
+        return out
+
+    @property
+    def estop_gap_ms(self) -> float:
+        r = self.estop_f1_t.get("right")
+        left = self.estop_f1_t.get("left")
+        if r is None or left is None:
+            return math.nan
+        return (left - r) * 1e3
+
+
+def silent_req_budget(
+    link_fail_timeout_ms: float, loop_rate_hz: float, comm_decimation: int = 1
+) -> int:
+    """The node's link-fail cycle count (LinkFailCyclesFromTimeoutMs): REQs per budget.
+
+    Rounded half away from zero like std::lround (Python's round() takes 12.5
+    to 12), decimation clamped to >= 1 like ClampCommDecimation."""
+    dec = max(1, comm_decimation)
+    return max(1, math.floor(link_fail_timeout_ms / 1000.0 * loop_rate_hz / dec + 0.5))
 
 
 # ── timing CSV ───────────────────────────────────────────────────────────────
@@ -432,6 +512,82 @@ def _echoes_between(
     return t0, t1
 
 
+# ── two hands on one bus (x) ────────────────────────────────────────────────
+
+
+def _hand_of(frame: Frame) -> tuple[int | None, Kind]:
+    """(hand node, kind) of a hand-protocol frame of either hand, else (None, OTHER)."""
+    for node in HAND_NODES:
+        k = classify(frame, node)
+        if k in (Kind.CMD, Kind.ECHO, Kind.REQ, Kind.RESP):
+            return node, k
+        if k is Kind.ERROR:
+            return None, k
+    return None, Kind.OTHER
+
+
+def _estop_rows(frames: list[Frame], roles: list[tuple[int | None, Kind]]) -> dict[int, int]:
+    """Each hand's first E-Stop pair: row of CMD Frame 1 zeros, when CMD Frame 0
+    zeros is the next command frame to that hand with no REQ to it in between."""
+    out: dict[int, int] = {}
+    pending: dict[int, int] = {}  # hand -> row of a zero F1 awaiting its F0
+    for i, ((node, k), f) in enumerate(zip(roles, frames, strict=True)):
+        if node is None or node in out:
+            continue
+        if k is Kind.REQ:
+            pending.pop(node, None)
+        elif k is Kind.CMD:
+            if f.frame_idx == 1 and f.all_zero:
+                pending[node] = i
+            elif f.frame_idx == 0 and f.all_zero and node in pending:
+                out[node] = pending.pop(node)
+            else:
+                pending.pop(node, None)
+    return out
+
+
+def analyse_overlap(frames: list[Frame]) -> OverlapSummary:
+    """Frames of one hand inside the other hand's open transaction (module note)."""
+    s = OverlapSummary()
+    roles = [_hand_of(f) for f in frames]
+    on_bus = {node for node, _ in roles if node is not None}
+    s.hands_on_bus = [HAND_NAMES[n] for n in HAND_NODES if n in on_bus]
+    estops = _estop_rows(frames, roles)
+    for node, row in estops.items():
+        s.estop_f1_t[HAND_NAMES[node]] = frames[row].t
+    cut = min(estops.values()) if estops else len(frames)
+    if estops:
+        s.estop_line = frames[cut].line_no
+
+    latest: int | None = None  # hand of the most recently opened transaction
+    is_open = False
+    has_req = False
+    has_f1 = False
+    for f, (node, k) in zip(frames[:cut], roles[:cut], strict=True):
+        if node is None:
+            continue
+        if k in (Kind.CMD, Kind.REQ):
+            starts = (
+                latest != node
+                or (k is Kind.CMD and f.frame_idx == 0)
+                or (k is Kind.REQ and has_req)
+                or (k is Kind.CMD and f.frame_idx == 1 and has_f1)
+            )
+            if starts:
+                latest, is_open, has_req, has_f1 = node, True, False, False
+                name = HAND_NAMES[node]
+                s.transactions[name] = s.transactions.get(name, 0) + 1
+            has_req = has_req or k is Kind.REQ
+            has_f1 = has_f1 or (k is Kind.CMD and f.frame_idx == 1)
+            continue
+        # A frame from a hand (echo or RESP).
+        if latest is not None and is_open and node != latest:
+            s.violations.append(Violation(f.line_no, HAND_NAMES[node], HAND_NAMES[latest], str(k)))
+        elif node == latest and k is Kind.RESP and f.frame_idx == 2:
+            is_open = False
+    return s
+
+
 # ── side files ───────────────────────────────────────────────────────────────
 
 
@@ -501,6 +657,7 @@ def judge(
     link_down_lines: int | None,
     link_status_false: int | None,
     failure_reasons: list[str] | None = None,
+    overlap: OverlapSummary | None = None,
 ) -> list[Check]:
     checks: list[Check] = []
     none_mode = _cmd_ack(comm) == "none"
@@ -697,7 +854,30 @@ def judge(
         checks.append(
             Check("e.estop", PASS if ok else FAIL, value, estop_threshold, "; ".join(notes))
         )
+
+    # (x) two hands on one bus
+    if overlap is not None and overlap.two_hands:
+        checks.append(_overlap_check(overlap))
     return checks
+
+
+def _overlap_check(o: OverlapSummary) -> Check:
+    threshold = "0 frames of a hand inside the other hand's transaction"
+    tx = ", ".join(f"{k} {v}" for k, v in sorted(o.transactions.items()))
+    if len(o.transactions) < 2:
+        return Check(
+            "x.no_overlap",
+            NOT_EVALUATED,
+            f"NOT_EVALUATED(transactions before the E-Stop: {tx or 'none'})",
+            threshold,
+        )
+    n = len(o.violations)
+    value = f"{n} intrusion(s) over transactions {tx}"
+    note = ""
+    if n:
+        pairs = ", ".join(f"{k} x{v}" for k, v in sorted(o.by_pair.items()))
+        note = f"intruder -> victim: {pairs}; first at line {o.violations[0].line_no}"
+    return Check("x.no_overlap", PASS if n == 0 else FAIL, value, threshold, note)
 
 
 def overall(checks: list[Check]) -> str:
@@ -722,11 +902,17 @@ def _dist(values: list[float]) -> str:
 
 
 def render_markdown(
-    checks: list[Check], timing: TimingSummary, comm: dict, bus: BusSummary, th: Thresholds
+    checks: list[Check],
+    timing: TimingSummary,
+    comm: dict,
+    bus: BusSummary,
+    th: Thresholds,
+    overlap: OverlapSummary | None = None,
 ) -> str:
     not_evaluated = [c.key for c in checks if c.verdict == NOT_EVALUATED]
     tail = f" — not evaluated: {', '.join(not_evaluated)}" if not_evaluated else ""
-    out = [f"## G-3 verdict: **{overall(checks)}**{tail}", ""]
+    gate = "G-5" if overlap is not None and overlap.two_hands else "G-3"
+    out = [f"## {gate} verdict: **{overall(checks)}**{tail}", ""]
     out += ["| check | verdict | value | threshold | note |", "|---|---|---|---|---|"]
     for c in checks:
         out.append(f"| `{c.key}` | {c.verdict} | {c.value} | {c.threshold} | {c.note} |")
@@ -806,6 +992,17 @@ def render_markdown(
             f"| E-Stop frames (t rel. to CMD F1) | CMD F0 +{(e.t_cmd0 - e.t_cmd1) * 1e3:.3f} ms"
             f"{echoes} | — |"
         )
+    if overlap is not None and overlap.two_hands:
+        tx = " / ".join(str(overlap.transactions.get(h, 0)) for h in ("right", "left"))
+        pairs = ", ".join(f"{k} x{v}" for k, v in sorted(overlap.by_pair.items())) or "none"
+        gap = overlap.estop_gap_ms
+        gap_text = "missing" if math.isnan(gap) else f"{gap:+.3f} ms"
+        out += [
+            f"| transactions right / left (before the E-Stop) | {tx} | about equal |",
+            f"| overlap intrusions (intruder -> victim) | {pairs} | none |",
+            f"| E-Stop zero-write gap, right CMD F1 -> left CMD F1 | {gap_text} "
+            f"| reported only (D78) |",
+        ]
     return "\n".join(out) + "\n"
 
 
@@ -829,20 +1026,24 @@ def _rel(t: float | None, t0: float) -> str:
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
-def _artifacts(session: Path, suffix: str) -> tuple[Path, Path]:
+def _artifacts(session: Path, suffix: str, timing_suffix: str | None = None) -> tuple[Path, Path]:
     """Resolve the (timing CSV, comm-stats JSON) pair of one run.
+
+    `timing_suffix` (default: `suffix`) names the CSV on its own — a two-hand
+    run writes one unsuffixed CSV beside a suffixed JSON per hand (D72).
 
     The pre-F08 names (#905, PRE_F08_HAND_STEMS) are used only when BOTH exist
     and NEITHER current file does; every other mix resolves to the current
     names, so a session holding one run's CSV next to another run's JSON is an
     exit-3 "missing file" (naming what the node writes today), never a verdict
     assembled from two runs."""
+    tsuffix = suffix if timing_suffix is None else timing_suffix
     current = (
-        session / "timing" / f"{TIMING_STEM}{suffix}.csv",
+        session / "timing" / f"{TIMING_STEM}{tsuffix}.csv",
         session / "device" / f"{STATS_STEM}{suffix}.json",
     )
     legacy = (
-        session / "timing" / f"{PRE_F08_HAND_STEMS[TIMING_STEM]}{suffix}.csv",
+        session / "timing" / f"{PRE_F08_HAND_STEMS[TIMING_STEM]}{tsuffix}.csv",
         session / "device" / f"{PRE_F08_HAND_STEMS[STATS_STEM]}{suffix}.json",
     )
     if all(p.exists() for p in legacy) and not any(p.exists() for p in current):
@@ -865,6 +1066,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="hand_side was set explicitly on the node: artifacts carry _<side> (D51)",
     )
+    parser.add_argument(
+        "--timing-suffix",
+        default=None,
+        help="timing CSV suffix when it differs from the JSON's: '' for a hand_sides run (D72)",
+    )
     parser.add_argument("--node-log", type=Path, default=None, help="node console log")
     parser.add_argument(
         "--link-status", type=Path, default=None, help="`ros2 topic echo .../link_status` capture"
@@ -877,7 +1083,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--undecided-sigmas", type=float, default=Thresholds.undecided_sigmas)
     parser.add_argument("--period-tolerance", type=float, default=Thresholds.period_tolerance)
     parser.add_argument("--estop-window-ms", type=float, default=Thresholds.estop_window_ms)
-    parser.add_argument("--silent-req-max", type=int, default=Thresholds.silent_req_max)
+    parser.add_argument(
+        "--link-fail-timeout-ms",
+        type=float,
+        default=100.0,
+        help="the node's link_fail_timeout_ms; with the rate it sets --silent-req-max",
+    )
+    parser.add_argument(
+        "--silent-req-max",
+        type=int,
+        default=None,
+        help="silent REQ streak that fails (b); default link_fail_timeout_ms x rate / 1000",
+    )
     parser.add_argument(
         "--json-out", type=Path, default=None, help="write checks + figures as JSON"
     )
@@ -891,12 +1108,11 @@ def main(argv: list[str] | None = None) -> int:
         undecided_sigmas=args.undecided_sigmas,
         period_tolerance=args.period_tolerance,
         estop_window_ms=args.estop_window_ms,
-        silent_req_max=args.silent_req_max,
     )
     suffix = args.suffix
     if suffix is None:
         suffix = f"_{args.hand_side}" if args.explicit_side else ""
-    csv_path, json_path = _artifacts(args.session, suffix)
+    csv_path, json_path = _artifacts(args.session, suffix, args.timing_suffix)
 
     try:
         rows = load_timing_csv(csv_path)
@@ -914,7 +1130,15 @@ def main(argv: list[str] | None = None) -> int:
         if not rows:
             print(f"error: no rows with run_id {args.run_id} in {csv_path}", file=sys.stderr)
             return 3
+    th.silent_req_max = (
+        args.silent_req_max
+        if args.silent_req_max is not None
+        else silent_req_budget(
+            args.link_fail_timeout_ms, th.loop_rate_hz, int(comm.get("comm_decimation", 1))
+        )
+    )
     timing = summarise_timing(rows, th.p99_limit_us, th.period_us)
+    overlap = analyse_overlap(frames)
     bus = analyse_bus(
         frames, node_id_of(args.hand_side), unparsed, cmd_req_max_s=th.period_us * 0.5e-6
     )
@@ -926,6 +1150,7 @@ def main(argv: list[str] | None = None) -> int:
         link_down_lines=link_down,
         link_status_false=link_false,
         failure_reasons=reasons,
+        overlap=overlap,
     )
 
     print(f"session : {args.session}")
@@ -933,7 +1158,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"stats   : {json_path}")
     print(f"candump : {args.candump}")
     print()
-    print(render_markdown(checks, timing, comm, bus, th))
+    print(render_markdown(checks, timing, comm, bus, th, overlap))
 
     if args.json_out is not None:
         payload = {
@@ -959,6 +1184,16 @@ def main(argv: list[str] | None = None) -> int:
                 "rtt_cmd_f2_ms": _dist(bus.rtt_cmd_f2_ms),
             },
         }
+        if overlap.two_hands:
+            payload["overlap"] = {
+                "hands_on_bus": overlap.hands_on_bus,
+                "transactions": overlap.transactions,
+                "violations": len(overlap.violations),
+                "by_pair": overlap.by_pair,
+                "first_violations": [asdict(v) for v in overlap.violations[:20]],
+                "estop_line": overlap.estop_line,
+                "estop_gap_ms": overlap.estop_gap_ms,
+            }
         args.json_out.write_text(json.dumps(_json_safe(payload), indent=2) + "\n")
 
     verdict = overall(checks)

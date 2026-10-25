@@ -12,44 +12,47 @@ namespace {
 constexpr int kCycleLogInterval = 500;
 }  // namespace
 
-void UdpHandNode::PreallocateMessages() {
-  joint_js_msg_.name = joint_names_;
-  joint_js_msg_.position.resize(udp_hand_driver::kNumHandMotors);
-  joint_js_msg_.velocity.resize(udp_hand_driver::kNumHandMotors);
-  joint_js_msg_.effort.resize(udp_hand_driver::kNumHandMotors);
+void UdpHandNode::PreallocateMessages(HandUnit& unit) {
+  unit.joint_js_msg.name = unit.joint_names;
+  unit.joint_js_msg.position.resize(udp_hand_driver::kNumHandMotors);
+  unit.joint_js_msg.velocity.resize(udp_hand_driver::kNumHandMotors);
+  unit.joint_js_msg.effort.resize(udp_hand_driver::kNumHandMotors);
 
-  motor_js_msg_.name = motor_names_;
-  motor_js_msg_.position.resize(udp_hand_driver::kNumHandMotors);
-  motor_js_msg_.velocity.resize(udp_hand_driver::kNumHandMotors);
-  motor_js_msg_.effort.resize(udp_hand_driver::kNumHandMotors);
+  unit.motor_js_msg.name = unit.motor_names;
+  unit.motor_js_msg.position.resize(udp_hand_driver::kNumHandMotors);
+  unit.motor_js_msg.velocity.resize(udp_hand_driver::kNumHandMotors);
+  unit.motor_js_msg.effort.resize(udp_hand_driver::kNumHandMotors);
 
-  sensor_msg_.fingertips.resize(static_cast<std::size_t>(num_fingertips_));
+  unit.sensor_msg.fingertips.resize(static_cast<std::size_t>(num_fingertips_));
   for (int f = 0; f < num_fingertips_; ++f) {
-    auto& fs = sensor_msg_.fingertips[static_cast<std::size_t>(f)];
-    fs.name = (static_cast<std::size_t>(f) < fingertip_names_.size())
-                  ? fingertip_names_[static_cast<std::size_t>(f)]
+    auto& fs = unit.sensor_msg.fingertips[static_cast<std::size_t>(f)];
+    fs.name = (static_cast<std::size_t>(f) < unit.fingertip_names.size())
+                  ? unit.fingertip_names[static_cast<std::size_t>(f)]
                   : "f" + std::to_string(f);
   }
 }
 
 void UdpHandNode::PollAndPublish() {
-  if (!controller_)
-    return;
+  for (auto& unit : units_) {
+    HandUnit& u = *unit;
+    if (!u.controller)
+      continue;
 
-  // Mask the low bit down to the last *completed* write: an odd sequence means
-  // the CommLoop is mid-Store, and treating that as progress would both
-  // mis-count cycles and desynchronise the even-valued baseline. Load() itself
-  // retries past a torn read, so the snapshot below is at least as new as `seq`.
-  const std::uint32_t seq = udp_hand_driver::LastCompletedWrite(controller_->state_sequence());
-  const std::uint32_t cycles = udp_hand_driver::CyclesBetween(last_published_seq_, seq);
-  if (cycles == 0)
-    return;  // no comm cycle completed since the last poll
-  last_published_seq_ = seq;
+    // Mask the low bit down to the last *completed* write: an odd sequence means
+    // the CommLoop is mid-Store, and treating that as progress would both
+    // mis-count cycles and desynchronise the even-valued baseline. Load() itself
+    // retries past a torn read, so the snapshot below is at least as new as `seq`.
+    const std::uint32_t seq = udp_hand_driver::LastCompletedWrite(u.controller->state_sequence());
+    const std::uint32_t cycles = udp_hand_driver::CyclesBetween(u.last_published_seq, seq);
+    if (cycles == 0)
+      continue;  // no comm cycle of this hand completed since the last poll
+    u.last_published_seq = seq;
 
-  PublishState(controller_->GetLatestState(), controller_->GetLatestFTState(), cycles);
+    PublishState(u, u.controller->GetLatestState(), u.controller->GetLatestFTState(), cycles);
+  }
 }
 
-void UdpHandNode::PublishState(const udp_hand_driver::UdpHandState& state,
+void UdpHandNode::PublishState(HandUnit& u, const udp_hand_driver::UdpHandState& state,
                                const udp_hand_driver::FingertipFTState& ft_state,
                                std::uint32_t cycles) {
   // Stamped on the consumer thread. This is the publish time, not the sample
@@ -58,38 +61,38 @@ void UdpHandNode::PublishState(const udp_hand_driver::UdpHandState& state,
   const auto stamp = this->now();
 
   if (state.joint_valid) {
-    joint_js_msg_.header.stamp = stamp;
+    u.joint_js_msg.header.stamp = stamp;
     for (int i = 0; i < udp_hand_driver::kNumHandMotors; ++i) {
       const auto iu = static_cast<std::size_t>(i);
       // Add the per-joint offset: firmware frame → controller frame.
       // Position-only; velocity/effort are unaffected by a constant offset.
-      joint_js_msg_.position[iu] =
-          static_cast<double>(state.joint_positions[iu] + joint_offset_rad_[iu]);
-      joint_js_msg_.velocity[iu] = static_cast<double>(state.joint_velocities[iu]);
-      joint_js_msg_.effort[iu] = static_cast<double>(state.joint_currents[iu]);
+      u.joint_js_msg.position[iu] =
+          static_cast<double>(state.joint_positions[iu] + u.joint_offset_rad[iu]);
+      u.joint_js_msg.velocity[iu] = static_cast<double>(state.joint_velocities[iu]);
+      u.joint_js_msg.effort[iu] = static_cast<double>(state.joint_currents[iu]);
     }
-    joint_state_pub_->publish(joint_js_msg_);
+    u.joint_state_pub->publish(u.joint_js_msg);
   }
 
   if (state.motor_valid) {
-    motor_js_msg_.header.stamp = stamp;
+    u.motor_js_msg.header.stamp = stamp;
     for (int i = 0; i < udp_hand_driver::kNumHandMotors; ++i) {
       const auto iu = static_cast<std::size_t>(i);
-      motor_js_msg_.position[iu] = static_cast<double>(state.motor_positions[iu]);
-      motor_js_msg_.velocity[iu] = static_cast<double>(state.motor_velocities[iu]);
-      motor_js_msg_.effort[iu] = static_cast<double>(state.motor_currents[iu]);
+      u.motor_js_msg.position[iu] = static_cast<double>(state.motor_positions[iu]);
+      u.motor_js_msg.velocity[iu] = static_cast<double>(state.motor_velocities[iu]);
+      u.motor_js_msg.effort[iu] = static_cast<double>(state.motor_currents[iu]);
     }
-    motor_state_pub_->publish(motor_js_msg_);
+    u.motor_state_pub->publish(u.motor_js_msg);
   }
 
   if (state.num_fingertips > 0) {
-    sensor_msg_.header.stamp = stamp;
+    u.sensor_msg.header.stamp = stamp;
 
     const bool ft_valid = ft_enabled_ && ft_state.valid;
 
-    for (int f = 0; f < state.num_fingertips && f < static_cast<int>(sensor_msg_.fingertips.size());
-         ++f) {
-      auto& fs = sensor_msg_.fingertips[static_cast<std::size_t>(f)];
+    for (int f = 0;
+         f < state.num_fingertips && f < static_cast<int>(u.sensor_msg.fingertips.size()); ++f) {
+      auto& fs = u.sensor_msg.fingertips[static_cast<std::size_t>(f)];
 
       if (sensor_uses_force_layout_) {
         // ── 1b: per-fingertip force vector [fx,fy,fz] measured by firmware ──
@@ -150,8 +153,8 @@ void UdpHandNode::PublishState(const udp_hand_driver::UdpHandState& state,
         fs.u = {};
       }
     }
-    sensor_state_pub_->publish(sensor_msg_);
-    sensor_monitor_pub_->publish(sensor_msg_);
+    u.sensor_state_pub->publish(u.sensor_msg);
+    u.sensor_monitor_pub->publish(u.sensor_msg);
   }
 
   // Link status (decimated — not every cycle).
@@ -163,52 +166,54 @@ void UdpHandNode::PublishState(const udp_hand_driver::UdpHandState& state,
   // the remainder, so the intended link_status rate holds even when polls slip.
   // The publish itself stays capped at once per invocation — a poll that jumped
   // three cycles reports link state once, not three times.
-  if (udp_hand_driver::AdvanceDecimation(link_cycle_counter_, cycles, link_decimation_)) {
+  if (udp_hand_driver::AdvanceDecimation(u.link_cycle_counter, cycles, link_decimation_)) {
     // Strict per-channel link health (#1): mirrors the detector's E-STOP decision
     // exactly (same UdpHandController::LinkDown, same thresholds) so the
     // link_status Bool never disagrees with hand_link_down.
-    const bool link_ok = !controller_->LinkDown(static_cast<uint32_t>(link_fail_threshold_),
-                                                static_cast<uint32_t>(link_fail_threshold_sensor_));
-    if (link_ok != prev_link_ok_) {
+    const bool link_ok =
+        !u.controller->LinkDown(static_cast<uint32_t>(link_fail_threshold_),
+                                static_cast<uint32_t>(link_fail_threshold_sensor_));
+    if (link_ok != u.prev_link_ok) {
       if (link_ok) {
-        RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand link UP");
+        RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "%sHand link UP", u.log_tag.c_str());
       } else {
         RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                    "Hand link DOWN (consecutive_recv_failures=%lu)",
-                    static_cast<unsigned long>(controller_->consecutive_recv_failures()));
+                    "%sHand link DOWN (consecutive_recv_failures=%lu)", u.log_tag.c_str(),
+                    static_cast<unsigned long>(u.controller->consecutive_recv_failures()));
       }
-      prev_link_ok_ = link_ok;
+      u.prev_link_ok = link_ok;
     }
-    link_msg_.data = link_ok;
-    link_status_pub_->publish(link_msg_);
+    u.link_msg.data = link_ok;
+    u.link_status_pub->publish(u.link_msg);
   }
 
   // Same accumulate-and-carry reason as the link decimation above: `% 500` on an
   // invocation counter would fire at an unrelated rate once one invocation
   // stopped meaning one cycle. Same helper too — this used to hand-copy the
   // arithmetic because the counter was std::size_t and the helper takes int&.
-  if (udp_hand_driver::AdvanceDecimation(publish_count_, cycles, kCycleLogInterval)) {
+  if (udp_hand_driver::AdvanceDecimation(u.publish_count, cycles, kCycleLogInterval)) {
     RCLCPP_DEBUG(::udp_hand_driver::logging::NodeLogger(), "cycles: %zu",
-                 controller_->cycle_count());
+                 u.controller->cycle_count());
   }
 }
 
 void UdpHandNode::PublishCalibrationStatus() {
-  if (!controller_ || !calib_status_pub_)
-    return;
-
   static constexpr std::array<uint8_t, 1> kTrackedSensors = {
       udp_hand_driver::calibration::kSensorBarometer,
   };
 
-  for (const auto sensor_type : kTrackedSensors) {
-    const auto snap = controller_->GetCalibrationStatus(sensor_type);
-    rtc_msgs::msg::CalibrationStatus msg;
-    msg.header.stamp = this->now();
-    msg.sensor_type = snap.sensor_type;
-    msg.state = snap.state;
-    msg.progress_count = snap.progress_count;
-    msg.target_count = snap.target_count;
-    calib_status_pub_->publish(msg);
+  for (const auto& unit : units_) {
+    if (!unit->controller || !unit->calib_status_pub)
+      continue;
+    for (const auto sensor_type : kTrackedSensors) {
+      const auto snap = unit->controller->GetCalibrationStatus(sensor_type);
+      rtc_msgs::msg::CalibrationStatus msg;
+      msg.header.stamp = this->now();
+      msg.sensor_type = snap.sensor_type;
+      msg.state = snap.state;
+      msg.progress_count = snap.progress_count;
+      msg.target_count = snap.target_count;
+      unit->calib_status_pub->publish(msg);
+    }
   }
 }

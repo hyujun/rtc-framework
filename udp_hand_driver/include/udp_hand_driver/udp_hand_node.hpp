@@ -1,5 +1,6 @@
 #pragma once
 
+#include "udp_hand_driver/hand_comm_loop.hpp"
 #include "udp_hand_driver/udp_hand_controller.hpp"
 #include "udp_hand_driver/udp_hand_failure_detector.hpp"
 #include "udp_hand_driver/udp_hand_timing_logger.hpp"
@@ -17,6 +18,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -27,9 +29,16 @@
 // Unified hand node using request-response protocol over UDP (protocol_version
 // 1a / 1b) or CAN FD (protocol_version 2, epic #895).
 //
-// Owns a UdpHandController with a self-clocked CommLoop that polls the hand
-// device at loop_rate_hz (default 500 Hz):
+// Owns one UdpHandController per hand and the self-clocked HandCommLoop
+// (`hand_comm`) they all run on, which polls the hands at loop_rate_hz
+// (default 500 Hz):
 //   [write position (only when commanded)] -> read motors -> read sensors
+//
+// One hand (`hand_side`, the default) or two (`hand_sides: [right, left]` —
+// epic #906 D69 · D71): one process, one loop, one CAN socket per hand, and
+// per hand its own topics under `<side>/`, stats JSON and failure detector.
+// The loop runs the hands back to back in list order every tick, which
+// serializes the bus; one E-Stop topic stops all of them.
 //
 // The CommLoop publishes nothing itself: it stores a POD snapshot into a SeqLock
 // and a timer on the executor thread polls that sequence and publishes (issue
@@ -195,6 +204,26 @@ inline const rtc::ThreadConfig kHandAuxIoConfig{.cpu_core = -1,
                                                 .sched_priority = 0,
                                                 .nice_value = 0,
                                                 .name = "hand_aux_io"};
+
+/// Topic name of one hand: a relative `name` gets the hand's `prefix`
+/// (`"right/"` under `hand_sides`, epic #906 D71); an absolute (`/…`) or
+/// private (`~…`) override is taken as written, and an empty prefix — the
+/// one-hand mode — changes nothing.
+[[nodiscard]] inline std::string PrefixRelativeTopic(const std::string& prefix,
+                                                     const std::string& name) {
+  if (prefix.empty() || name.empty() || name.front() == '/' || name.front() == '~') {
+    return name;
+  }
+  return prefix + name;
+}
+
+/// Free room left in the comm slot once every hand's two receive stages are
+/// paid for (D42 generalized to N hands, D71): `slot − N × 2T`, in ms.
+/// Configure refuses a non-positive result and warns below 10 % of the slot.
+[[nodiscard]] constexpr double CommSlotMarginMs(double slot_ms, std::size_t hands,
+                                                double recv_timeout_ms) noexcept {
+  return slot_ms - static_cast<double>(hands) * 2.0 * recv_timeout_ms;
+}
 }  // namespace udp_hand_driver
 
 class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
@@ -237,8 +266,133 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   CallbackReturn on_shutdown(const rclcpp_lifecycle::State& state) override;
   CallbackReturn on_error(const rclcpp_lifecycle::State& state) override;
 
+ protected:
+  /// Start hand `index` of this configuration (on_activate, in hand order):
+  /// prepares its run on the shared loop, whose thread starts only after every
+  /// hand did. Virtual solely as the test seam for the activate rollback — a
+  /// hand whose start fails must leave the hands before it closed (#906 B3).
+  [[nodiscard]] virtual bool StartHand(std::size_t index);
+
+  /// Whether hand `index`'s controller is running. Tests of the rollback.
+  [[nodiscard]] bool HandRunning(std::size_t index) const;
+
  private:
-  // Drain the EventLoop's timing producer into the CSV (1 Hz, non-RT).
+  // Everything one hand owns (epic #906 D69): its controller and detector,
+  // its topics, its stats JSON, its command-name map. One hand per entry of
+  // `hand_sides`, or the single hand of the `hand_side` mode. Not movable (the
+  // atomics, and the callbacks that hold a pointer to it) — units_ holds them
+  // by unique_ptr. Destroyed by the next on_configure or ReleaseResources().
+  struct HandUnit {
+    // "right" | "left" — the CAN FD node id (D51).
+    std::string side;
+    // Prefix of this hand's relative topic names: empty in the hand_side mode
+    // (the namespace alone, D53), "<side>/" under hand_sides (D71).
+    std::string topic_prefix;
+    // Stats JSON suffix: "_<side>" under hand_sides or for an explicit
+    // hand_side, else empty so the one-hand default name stays (D51).
+    std::string file_suffix;
+    // Log tag: "[<side>] " under hand_sides, empty otherwise, so one-hand logs
+    // read as before.
+    std::string log_tag;
+    // The link in words ("192.168.0.100:55151" or "CAN FD can0 (right)").
+    std::string link_desc;
+
+    std::unique_ptr<udp_hand_driver::UdpHandController> controller;
+    // Declared after controller: it holds a reference to it, so it goes first.
+    std::unique_ptr<udp_hand_driver::UdpHandFailureDetector> failure_detector;
+
+    // The detector's verdict for the current run, kept past the detector itself
+    // (#927 I-1): StopRuntime() destroys the detector, and the teardown save that
+    // follows reports this instead of a default `false`. Written by StopRuntime()
+    // from a live detector only, cleared by on_activate once a new run has
+    // started (a failed start keeps the previous run's verdict); guarded by
+    // aux_lane_mutex_ like failure_detector.
+    bool failure_latched{false};
+
+    // Non-owning view of the CAN FD link when protocol_version is "2" (null
+    // otherwise): SaveHandStats reads CanFdHandComm::canfd_stats() through it,
+    // which HandComm deliberately does not expose. The controller owns the comm,
+    // so this pointer is valid exactly while `controller` holds the object it was
+    // taken from: assigned only after SetHandComm() accepted the comm, and the
+    // unit (with both) is destroyed as a whole.
+    const udp_hand_driver::CanFdHandComm* canfd_comm{nullptr};
+
+    // #945 D63: whether SaveHandStats already warned that `cmd_ack` disagrees
+    // with the firmware (silent firmware under echo / echoes under none) — each
+    // once per run, like the counters it reads. Written and read only under
+    // aux_lane_mutex_ (in the const save, hence mutable); cleared by
+    // on_activate with has_run_.
+    mutable bool warned_cmd_ack_silent{false};
+    mutable bool warned_cmd_ack_echoes{false};
+
+    // D39: JointCommand messages whose feedforward size matched neither 0 nor
+    // values.size() (feedforward zeroed, position applied), and messages whose
+    // feedforward carried a NaN / ±inf (that entry zeroed — a non-finite current
+    // command must never reach the wire; the position is still applied). Per
+    // run: reset in on_activate beside the controller's own counters. Written on
+    // the command callback thread, read by the save on the aux lane → atomic.
+    std::atomic<std::uint64_t> feedforward_size_mismatch{0};
+    std::atomic<std::uint64_t> feedforward_nonfinite{0};
+
+    // Data publishers — LifecyclePublisher (gated by lifecycle state).
+    rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub;
+    rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr motor_state_pub;
+    rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::HandSensorState>::SharedPtr
+        sensor_state_pub;
+    rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::HandSensorState>::SharedPtr
+        sensor_monitor_pub;
+    rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::CalibrationStatus>::SharedPtr
+        calib_status_pub;
+    // Link status — standalone rclcpp::Publisher (NOT LifecyclePublisher).
+    // Safety-relevant: must remain publishable in any lifecycle state.
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr link_status_pub;
+    rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr joint_command_sub;
+    rclcpp::Subscription<rtc_msgs::msg::CalibrationCommand>::SharedPtr calib_cmd_sub;
+
+    // NRT publish lane: the last *completed* SeqLock write consumed (always
+    // even). Baselined in on_configure, where the controller is new and its
+    // sequence restarts at 0.
+    std::uint32_t last_published_seq{0};
+    std::vector<std::string> joint_names;
+    std::vector<std::string> motor_names;
+    std::vector<std::string> fingertip_names;
+
+    // Per-joint position offset (URDF/controller frame − firmware zero), radians.
+    // Parsed once in on_configure from `joint_position_offsets_deg` (degrees,
+    // joint_state_names order). Applied at the two ROS boundaries only:
+    //   read/publish : controller_pos = udp_pos + offset  (PublishState)
+    //   command/write: udp_cmd        = controller_cmd − offset  (command sub)
+    // so the round-trip is identity. Zero by default → backward compatible.
+    // Position-only: velocity/effort and motor-space positions are untouched.
+    std::array<float, udp_hand_driver::kNumHandMotors> joint_offset_rad{};
+
+    // Firmware-slot ← command-index map for incoming joint_command. The
+    // publisher (controller/backend) labels the message in its own joint_names
+    // order (URDF / _base.yaml) and — per the "receiver reorders by name"
+    // convention that the backend already applies to joint_states — this node
+    // remaps each value into firmware slot order (joint_names = joint_state_names,
+    // the wire order) before the positional CommLoop write. Built once from the
+    // first message that carries joint_names; -1 / no-names ⇒ positional
+    // fallback. Callback-thread only (no cross-thread access), so no atomic.
+    std::array<int, udp_hand_driver::kNumHandMotors> cmd_name_reorder{};
+    bool cmd_name_reorder_ready{false};
+
+    bool prev_link_ok{true};
+
+    // Pre-allocated messages (PreallocateMessages).
+    sensor_msgs::msg::JointState joint_js_msg;
+    sensor_msgs::msg::JointState motor_js_msg;
+    rtc_msgs::msg::HandSensorState sensor_msg;
+    std_msgs::msg::Bool link_msg;
+
+    // Link-status and cycle-log decimation. Same type so both feed
+    // AdvanceDecimation; both carry modulo their interval, so the value range is
+    // bounded by that interval and never approaches the int range.
+    int link_cycle_counter{0};
+    int publish_count{0};
+  };
+
+  // Drain the loop's timing producer into the CSV (1 Hz, non-RT).
   // Runs on the `hand_aux_io` executor thread via cb_group_aux_ (issue #345),
   // NOT on the default executor thread — the burst is a blocking file write.
   // Deliberately not noexcept: the body takes aux_lane_mutex_, and
@@ -246,174 +400,119 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // std::terminate() instead of a catchable error.
   void DrainHandTiming();
 
-  // Pre-allocate ROS2 messages once in on_configure (non-RT).
-  // Avoids dynamic allocation on the EventLoop publish path.
-  void PreallocateMessages();
+  // Pre-allocate one hand's ROS2 messages once in on_configure (non-RT).
+  // Avoids dynamic allocation on the publish path.
+  void PreallocateMessages(HandUnit& unit);
 
   // NRT publish lane (issue #345). Runs on the default executor thread, driven
-  // by publish_timer_: reads the CommLoop's SeqLock sequence and publishes the
+  // by publish_timer_: reads each hand's SeqLock sequence and publishes the
   // latest snapshot when it has advanced. Nothing here runs on the RT thread.
   void PollAndPublish();
 
-  // Publish one snapshot. `cycles` is how many comm cycles the snapshot advanced
-  // by — 1 in the common case, more when polling lost a race, 0 never. Rate-
-  // derived decimation accumulates it instead of counting invocations, because
-  // "one invocation == one comm cycle" stopped being true with the pull model.
-  // Uses pre-allocated messages to avoid dynamic allocation.
-  void PublishState(const udp_hand_driver::UdpHandState& state,
+  // Publish one snapshot of `unit`. `cycles` is how many comm cycles the
+  // snapshot advanced by — 1 in the common case, more when polling lost a
+  // race, 0 never. Rate-derived decimation accumulates it instead of counting
+  // invocations, because "one invocation == one comm cycle" stopped being true
+  // with the pull model. Uses pre-allocated messages.
+  void PublishState(HandUnit& unit, const udp_hand_driver::UdpHandState& state,
                     const udp_hand_driver::FingertipFTState& ft_state, std::uint32_t cycles);
 
   void PublishCalibrationStatus();
 
-  // Persist comm/timing stats to <session>/device/hand_stats.json.
-  // Three concurrent call contexts, serialized by aux_lane_mutex_:
+  // Persist comm/timing stats to <session>/device/hand_stats<suffix>.json, one
+  // file per hand. Three concurrent call contexts, serialized by
+  // aux_lane_mutex_:
   //   1. the periodic timer, on the `hand_aux_io` thread (cb_group_aux_)
-  //   2. the failure-detector thread, from its failure callback
+  //   2. a failure-detector thread, from its failure callback (that hand only)
   //   3. lifecycle teardown (on_deactivate / on_cleanup / on_error / ~UdpHandNode),
   //      on the default executor thread
   // The lane split moved (1) off the default executor thread, so (1) and (3) are
-  // now genuinely concurrent rather than serialized by being the same thread.
+  // genuinely concurrent rather than serialized by being the same thread.
   // verbose=false (periodic saves) skips the INFO summary logs.
   // Defined in udp_hand_node_stats.cpp.
   void SaveCommStats(bool verbose = true) const;
+  void SaveCommStats(const HandUnit& unit, bool verbose) const;
+  // The body of both: caller holds aux_lane_mutex_ and has checked has_run_.
+  void SaveHandStatsLocked(const HandUnit& unit, bool verbose) const;
 
-  // Cancel timers and stop the worker threads (failure detector + comm loop),
-  // leaving controller_ constructed for possible reactivation. Idempotent;
+  // Cancel timers and stop the worker threads (failure detectors + comm loop),
+  // leaving the hands constructed for possible reactivation. Idempotent;
   // shared by on_deactivate and on_error.
   void StopRuntime();
 
-  // Release all publisher/subscription/timer handles and the controller.
+  // Release all publisher/subscription/timer handles and the hands.
   // Idempotent; shared by on_cleanup and on_error.
   void ReleaseResources();
 
   // Guards every aux-lane callback body (stats JSON save, timing CSV drain) and
   // is taken empty by StopRuntime() as a quiesce barrier. Before the lane split
   // these callbacks and lifecycle teardown were the same thread and could not
-  // overlap; now they can, and they share `controller_` and the SPSC timing ring
+  // overlap; now they can, and they share the hands and the SPSC timing ring
   // (single-consumer). One mutex rather than two: neither callback calls the
   // other, so there is no lock order to get wrong, and both are non-RT (issue #345).
   //
   // Declared before every member it guards on purpose: members are destroyed in
-  // reverse declaration order, so a mutex declared after controller_ / the aux
+  // reverse declaration order, so a mutex declared after units_ / the aux
   // timers would be destroyed while they still exist — an aux callback racing
   // ~UdpHandNode would then lock a destroyed mutex rather than merely observe a
   // half-torn-down node.
   mutable std::mutex aux_lane_mutex_;
 
-  // E-Stop latch (E-8). Set to true by the estop_topic subscription callback
-  // (executor thread), read by the CommLoop every tick through the pointer
-  // handed over with SetEstopFlag() in on_configure, cleared by on_activate
-  // right before Start() so every run begins untripped — a `true` received
-  // while Inactive has no loop to stop and must not become a zero-write on the
-  // next activate before the first state read (the startup no-jump contract).
-  // Declared before controller_: the CommLoop dereferences it until the
-  // controller's destructor has joined that thread, so the flag has to outlive
-  // the controller (members are destroyed in reverse declaration order).
+  // E-Stop latch (E-8), shared by every hand (D70). Set to true by the
+  // estop_topic subscription callback (executor thread), read by the CommLoop
+  // at the head of every hand's cycle and between hands, through the pointer
+  // handed over with SetEstopFlag() in on_configure; cleared by on_activate
+  // right before the hands start so every run begins untripped — a `true`
+  // received while Inactive has no loop to stop and must not become a
+  // zero-write on the next activate before the first state read (the startup
+  // no-jump contract). Declared before the loop and the hands: the loop
+  // dereferences it until it is joined, so the flag has to outlive both
+  // (members are destroyed in reverse declaration order).
   std::atomic<bool> estop_flag_{false};
 
-  std::unique_ptr<udp_hand_driver::UdpHandController> controller_;
-  std::unique_ptr<udp_hand_driver::UdpHandFailureDetector> failure_detector_;
+  // The process's one comm thread (`hand_comm`, SCHED_FIFO 65 — epic #906
+  // D69). Every hand is attached to it in on_configure and it is started in
+  // on_activate once every hand has started. Declared after the latch it reads
+  // and before units_: a controller's destructor joins it (Stop()), so it has
+  // to outlive the controllers, and its thread dereferences them, so
+  // StopRuntime() joins it before any of them goes.
+  udp_hand_driver::HandCommLoop comm_loop_;
+  // loop_rate_hz as configured — the loop's frequency at on_activate.
+  double loop_rate_hz_{500.0};
 
-  // The detector's verdict for the current run, kept past the detector itself
-  // (#927 I-1): StopRuntime() destroys the detector, and the teardown save that
-  // follows reports this instead of a default `false`. Written by StopRuntime()
-  // from a live detector only, cleared by on_activate once a new run has
-  // started (a failed Start() keeps the previous run's verdict); guarded by
-  // aux_lane_mutex_ like failure_detector_.
-  bool failure_latched_{false};
+  // The hands of this configuration, in tick order (hand_sides order; one
+  // entry in the hand_side mode).
+  std::vector<std::unique_ptr<HandUnit>> units_;
 
   // Whether the current configuration has run (#927): set by on_activate once
-  // controller_->Start() succeeded, cleared by on_configure. The stats JSON
-  // describes a run, so a teardown save without one — configure → cleanup on
-  // a node that already ran — would overwrite that run's JSON with an empty,
-  // clean report; SaveCommStats skips it. Guarded by aux_lane_mutex_.
+  // every hand started, cleared by on_configure. The stats JSON describes a
+  // run, so a teardown save without one — configure → cleanup on a node that
+  // already ran — would overwrite that run's JSON with an empty, clean report;
+  // the save skips it. Guarded by aux_lane_mutex_.
   bool has_run_{false};
 
-  // Non-owning view of the CAN FD link when protocol_version is "2" (null
-  // otherwise): SaveCommStats reads CanFdHandComm::canfd_stats() through it,
-  // which HandComm deliberately does not expose. The controller owns the comm,
-  // so this pointer is valid exactly while controller_ holds the object it was
-  // taken from: assigned only after SetHandComm() accepted the comm, nulled on
-  // the first line of on_configure (a FAILURE return leaves controller_ for
-  // the next configure to replace) and in ReleaseResources() before
-  // controller_.reset(); read under aux_lane_mutex_ after the controller_ null
-  // check like every other controller access there.
-  const udp_hand_driver::CanFdHandComm* canfd_comm_{nullptr};
+  // File suffix of the timing CSV: the one-hand mode follows that hand's
+  // stats suffix (D51); under hand_sides it is empty — one loop, one CSV (D72).
+  // Fixed in on_configure before any timer runs; read in on_activate.
+  std::string timing_file_suffix_;
 
-  // #945 D63: whether SaveCommStats already warned that `cmd_ack` disagrees
-  // with the firmware (silent firmware under echo / echoes under none) — each
-  // once per run, like the counters it reads. Written and read only under
-  // aux_lane_mutex_ (in the const SaveCommStats, hence mutable); cleared by
-  // on_activate with has_run_.
-  mutable bool warned_cmd_ack_silent_{false};
-  mutable bool warned_cmd_ack_echoes_{false};
+  // The hands the forensic files are named for ("right", or "right,left"
+  // under hand_sides, which a "[…]" marks). Follows each configure until the
+  // timing CSV opens (once per process, hand_timing_opened_); from then on a
+  // configure with other hands is refused, or one run's artifacts would split
+  // across two names. Executor thread only.
+  std::string artifact_hands_;
 
-  // D39: JointCommand messages whose feedforward size matched neither 0 nor
-  // values.size() (feedforward zeroed, position applied), and messages whose
-  // feedforward carried a NaN / ±inf (that entry zeroed — a non-finite current
-  // command must never reach the wire; the position is still applied). Per
-  // run: reset in on_activate beside the controller's own counters. Written on
-  // the command callback thread, read by SaveCommStats on the aux lane → atomic.
-  std::atomic<std::uint64_t> feedforward_size_mismatch_{0};
-  std::atomic<std::uint64_t> feedforward_nonfinite_{0};
-
-  // File suffix of the forensic artifacts (stats JSON, timing CSV): "_<side>"
-  // when `hand_side` was set explicitly (a parameter override exists), else
-  // empty so the default names stay as they were (D51). Fixed in on_configure
-  // before any timer runs; read on the aux lane and in on_activate.
-  std::string hand_file_suffix_;
-
-  // hand_side the forensic files are named for. Follows each configure until
-  // the timing CSV opens (once per process, hand_timing_opened_); from then on
-  // a configure with another side is refused, or one hand's artifacts would
-  // split across two names. Executor thread only.
-  std::string artifact_hand_side_;
-
-  // Data publishers — LifecyclePublisher (gated by lifecycle state).
-  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
-  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr motor_state_pub_;
-  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::HandSensorState>::SharedPtr sensor_state_pub_;
-  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::HandSensorState>::SharedPtr
-      sensor_monitor_pub_;
-  rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr joint_command_sub_;
-  rclcpp::Subscription<rtc_msgs::msg::CalibrationCommand>::SharedPtr calib_cmd_sub_;
+  // E-Stop input, one for every hand (D70).
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
-  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::CalibrationStatus>::SharedPtr
-      calib_status_pub_;
   rclcpp::TimerBase::SharedPtr calib_status_timer_;
 
   // NRT publish lane (issue #345). Default callback group, so this runs on the
   // main executor thread — the same hand_driver core the CommLoop is on, which
   // is fine because that lane is light once the file I/O left for hand_aux_io.
-  // `last_published_seq_` is the last *completed* SeqLock write consumed (always
-  // even); it is re-baselined in on_configure because a new controller restarts
-  // its sequence at 0.
+  // One timer serves every hand.
   rclcpp::TimerBase::SharedPtr publish_timer_;
-  std::uint32_t last_published_seq_{0};
-  std::vector<std::string> joint_names_;
-  std::vector<std::string> motor_names_;
-  std::vector<std::string> fingertip_names_;
   int num_fingertips_{udp_hand_driver::kDefaultNumFingertips};
-
-  // Per-joint position offset (URDF/controller frame − firmware zero), radians.
-  // Parsed once in on_configure from the `joint_position_offsets_deg` YAML list
-  // (degrees, joint_state_names order). Applied at the two ROS boundaries only:
-  //   read/publish : controller_pos = udp_pos + offset  (PublishState)
-  //   command/write: udp_cmd        = controller_cmd − offset  (command sub)
-  // so the round-trip is identity. Zero by default → backward compatible.
-  // Position-only: velocity/effort and motor-space positions are untouched.
-  std::array<float, udp_hand_driver::kNumHandMotors> joint_offset_rad_{};
-
-  // Firmware-slot ← command-index map for incoming /…/joint_command. The
-  // publisher (controller/backend) labels the message in its own joint_names
-  // order (URDF / _base.yaml) and — per the "receiver reorders by name"
-  // convention that the backend already applies to /…/joint_states — this node
-  // remaps each value into firmware slot order (joint_names_ = joint_state_names,
-  // the UDP wire order) before the positional CommLoop write. Built once from
-  // the first message that carries joint_names; -1 / no-names ⇒ positional
-  // fallback. Callback-thread only (no cross-thread access), so no atomic.
-  std::array<int, udp_hand_driver::kNumHandMotors> cmd_name_reorder_{};
-  bool cmd_name_reorder_ready_{false};
 
   // Sensor-message layout selector, cached from the SensorProtocol capability
   // at on_configure (off the hot path). true → publish the 1b per-fingertip
@@ -422,37 +521,22 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // never a version string (ARCH-3).
   bool sensor_uses_force_layout_{false};
 
-  // Link status — standalone rclcpp::Publisher (NOT LifecyclePublisher).
-  // Safety-relevant: must remain publishable in any lifecycle state.
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr link_status_pub_;
   bool ft_enabled_{false};
   // Per-channel link-down thresholds (strict, #1). Computed once in on_configure
   // from link_fail_timeout_ms at each channel's effective attempt rate; the SSoT
   // the detector cfg + publish + stats all read (via UdpHandController::LinkDown)
   // so the E-STOP decision and the link_status Bool cannot disagree. comm =
   // motor/joint (every comm cycle); sensor = the shorter sensor-rate budget.
+  // Shared: every hand runs at the loop's rate.
   uint64_t link_fail_threshold_{10};
   uint64_t link_fail_threshold_sensor_{10};
-  bool prev_link_ok_{true};
 
-  // Pre-allocated messages
-  sensor_msgs::msg::JointState joint_js_msg_;
-  sensor_msgs::msg::JointState motor_js_msg_;
-  rtc_msgs::msg::HandSensorState sensor_msg_;
-  std_msgs::msg::Bool link_msg_;
-
-  // Link status decimation
+  // Link status decimation (loop cycles per link_status publish).
   int link_decimation_{5};
-  int link_cycle_counter_{0};
 
-  // Cycle-log decimation. Same type as link_cycle_counter_ so both feed
-  // AdvanceDecimation; both carry modulo their interval, so the value range is
-  // bounded by that interval and never approaches the int range.
-  int publish_count_{0};
-
-  // Fake-hand standalone support. The controller's CommLoop RT thread self-clocks
-  // and runs the LPF model in fake mode (UdpHandController::RunFakeCommCycle), so
-  // the node needs no self-tick timer or command cache — commands flow through the
+  // Fake-hand standalone support. The CommLoop RT thread self-clocks and runs
+  // the LPF model in fake mode (UdpHandController::RunFakeCommCycle), so the
+  // node needs no self-tick timer or command cache — commands flow through the
   // normal command sub → SendCommandAndRequestStates path.
   bool use_fake_hand_{false};
 
@@ -461,14 +545,12 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // is a fixed constant — see on_activate (no ROS param on purpose).
   rclcpp::TimerBase::SharedPtr stats_save_timer_;
 
-  // Cached config for on_activate logging: the link in words ("192.168.0.100:55151"
-  // or "CAN FD can0 (right)") and the protocol tag.
-  std::string link_desc_;
+  // Cached config for on_activate logging and the stats JSON.
   std::string comm_mode_str_;
   std::string protocol_version_;
 
-  // ── Per-EventLoop-tick timing CSV (mpc_timing_log pattern) ─────────────
-  // Producer (filled on the EventLoop thread) → 1 Hz drain on aux timer →
+  // ── Per-tick timing CSV (mpc_timing_log pattern) ───────────────────────
+  // Producer (filled on the CommLoop thread) → 1 Hz drain on aux timer →
   // rtc::ThreadTimingCsvLogger writes one row per tick to
   // <session>/timing/hand_timing_log.csv. Open() runs once on the first
   // on_activate and is gated by `hand_timing_opened_` so reactivation does
