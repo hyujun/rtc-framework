@@ -50,12 +50,18 @@ is each hand's REQ for (a)–(e) — without it a hand would see no REQ, and two
 consecutive zero writes (F0 F1 | REQ | F0 F1) would read as E-Stop pairs. The
 transaction check cannot apply (both bursts answer one frame), so (x) becomes
 ``x.broadcast_sets``, per window from one broadcast REQ to the next, cut at the
-first E-Stop zero frame exactly as above: (1) no hand's RESP index twice in a
-window and (2) no host CMD between the REQ and the window's last RESP (the host
-sent during the burst) — either FAILS — and (3) the windows where exactly one
-hand's set is incomplete while the other's is complete, judged as a rate with
-(d)'s threshold and UNDECIDED band; windows where every set is missing are (d)'s
-per hand. A last window the cut leaves incomplete is not judged for (3). The
+first E-Stop zero frame exactly as above. The window's tick part ends at the
+first host CMD more than half a period after the REQ (the next tick's write):
+a RESP after that point came after the host gave up on the set — the node
+counted a set timeout, which (d) judges — so it is reported as late, is no
+violation and does not complete the set. Within the tick part (1) no hand's
+RESP index twice and (2) no host CMD before the tick part's last RESP (the host
+sent during its own tick's burst) — either FAILS — and (3) the windows where
+exactly one hand's set is incomplete while the other's is complete, judged as a
+rate with (d)'s threshold and UNDECIDED band; windows where every set is
+missing are (d)'s per hand. A RESP later than the next REQ falls into the next
+window and is judged there. A last window the cut leaves incomplete is not
+judged for (3). The
 RESP order, the per-hand REQ -> own frame 2 (the later hand's figure includes
 the other hand's burst) and the write tick's first CMD frame 0 -> last frame 2
 are reported. A bus that contradicts the mode — a broadcast REQ judged as
@@ -275,7 +281,9 @@ class Violation:
 class BroadcastSummary:
     """The two-hand bus check (x) of a ``req_mode: broadcast`` run; see the module note.
 
-    A window runs from one broadcast REQ to the next (or to the E-Stop cut).
+    A window runs from one broadcast REQ to the next (or to the E-Stop cut);
+    its tick part ends at the first host CMD more than `cmd_req_max_s` after
+    the REQ, and RESP frames after that are late (counted, not judged).
     When the cut leaves a set of the last window incomplete, that window is
     checked for (1) and (2) but not judged for (3): its set was cut short, not
     lost."""
@@ -287,8 +295,11 @@ class BroadcastSummary:
     all_missing: int = 0  # every hand's set incomplete — (d) judges these per hand
     missing: dict[str, int] = field(default_factory=dict)  # per hand, any incomplete window
     one_hand_missing_by_hand: dict[str, int] = field(default_factory=dict)
-    duplicates: int = 0  # (1) a hand's RESP idx twice in one window
-    cmd_in_burst: int = 0  # (2) a host CMD between the REQ and the window's last RESP
+    duplicates: int = 0  # (1) a hand's RESP idx twice in one tick part
+    cmd_in_burst: int = 0  # (2) a host CMD of this tick before the tick part's last RESP
+    # RESP frames after the next tick's write, before the next REQ: the host had
+    # given up on the set (a set timeout, judged by (d)); per hand, reported only.
+    late_resp: dict[str, int] = field(default_factory=dict)
     order: dict[str, int] = field(default_factory=dict)  # RESP pattern (R/L per frame) -> windows
     # REQ (0xFF) -> each hand's own RESP frame 2: the later hand's figure
     # includes the other hand's burst.
@@ -698,6 +709,7 @@ def _analyse_broadcast(
     b = BroadcastSummary(
         missing={HAND_NAMES[n]: 0 for n in hands},
         one_hand_missing_by_hand={HAND_NAMES[n]: 0 for n in hands},
+        late_resp={HAND_NAMES[n]: 0 for n in hands},
         req_f2_ms={HAND_NAMES[n]: [] for n in hands},
     )
     bcast = broadcast_req_id()
@@ -717,11 +729,25 @@ def _analyse_broadcast(
         hi = req_rows[w + 1] if w + 1 < len(req_rows) else cut
         cut_short = cut_by_estop and w + 1 == len(req_rows)
         t_req = frames[lo].t
+        # The tick part ends at the next tick's write: the first host CMD more
+        # than cmd_req_max_s after this REQ.
+        tick_end = next(
+            (
+                j
+                for j in range(lo + 1, hi)
+                if roles[j][1] is Kind.CMD and frames[j].t - t_req > cmd_req_max_s
+            ),
+            hi,
+        )
+        for j in range(tick_end, hi):
+            nodes, k = roles[j]
+            if k is Kind.RESP and len(nodes) == 1 and next(iter(nodes)) in hands:
+                b.late_resp[HAND_NAMES[next(iter(nodes))]] += 1
         seen: dict[int, set[int]] = {n: set() for n in hands}
         t_f2: dict[int, float] = {}
         pattern: list[str] = []
         last_resp = None
-        for j in range(lo + 1, hi):
+        for j in range(lo + 1, tick_end):
             nodes, k = roles[j]
             if k is not Kind.RESP or len(nodes) != 1:
                 continue
@@ -738,8 +764,9 @@ def _analyse_broadcast(
             seen[node].add(idx)
             if idx == 2 and node not in t_f2:
                 t_f2[node] = frames[j].t
-        # (2) a host CMD before the window's last RESP; the ones after it are the
-        # next tick's write, sent ahead of the next REQ.
+        # (2) a host CMD of this tick (all CMDs before tick_end are within
+        # cmd_req_max_s) before the tick part's last RESP; the ones after it are
+        # the next tick's write, sent ahead of the next REQ.
         next_lo = lo + 1 if last_resp is None else last_resp + 1
         for j in range(lo + 1, next_lo):
             nodes, k = roles[j]
@@ -1264,6 +1291,7 @@ def _order_text(order: dict[str, int]) -> str:
 def _broadcast_rows(b: BroadcastSummary) -> list[str]:
     missing = " / ".join(str(b.missing.get(h, 0)) for h in ("right", "left"))
     one = " / ".join(str(b.one_hand_missing_by_hand.get(h, 0)) for h in ("right", "left"))
+    late = " / ".join(str(b.late_resp.get(h, 0)) for h in ("right", "left"))
     rows = [
         f"| broadcast windows judged / cut by the E-Stop | {b.windows} / {b.truncated} | — |",
         f"| windows complete / one hand missing / every hand missing | {b.complete} / "
@@ -1271,6 +1299,8 @@ def _broadcast_rows(b: BroadcastSummary) -> list[str]:
         f"| windows with the set missing, right / left (one hand missing: {one}) | {missing} "
         f"| reported only |",
         f"| duplicate RESP / host CMD in the burst | {b.duplicates} / {b.cmd_in_burst} | 0 / 0 |",
+        f"| late RESP after the next tick's write, right / left (set already timed out) "
+        f"| {late} | reported only |",
         f"| RESP order (R right, L left frame, per window) | {_order_text(b.order) or 'none'} "
         f"| reported only |",
     ]

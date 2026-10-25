@@ -1177,6 +1177,48 @@ def test_host_cmd_inside_the_burst_fails_and_the_next_write_does_not(tmp_path):
     assert _broadcast_check(o.broadcast, TH).verdict == FAIL
 
 
+def test_a_resp_after_the_next_ticks_write_is_late_not_a_violation(tmp_path):
+    # Left RESP 2 of tick 10 arrives after tick 11's CMD pair (the host timed
+    # out and moved on): reported late, the window is one-hand-missing, no FAIL.
+    tick = bcast_tick(1.040, drop=((LEFT, 2),))
+    nxt = bcast_tick(1.044, write=True)  # CMD R0 R1 L0 L1 · REQ · RESP x6
+    late = line(1.04413, resp_id(LEFT, 2), "11" * 8)
+    lines = bcast_lines(10, estop_end=False) + tick + nxt[:4] + [late] + nxt[4:]
+    lines += bcast_tick(1.048) + two_hand_estop(1.052, with_echoes=False)
+    o = bcast_overlap(lines, tmp_path)
+    b = o.broadcast
+    assert o.violations == []
+    assert (b.duplicates, b.cmd_in_burst) == (0, 0)
+    assert b.late_resp == {"right": 0, "left": 1}
+    assert b.one_hand_missing == 1
+    assert b.one_hand_missing_by_hand == {"right": 0, "left": 1}
+    assert b.windows == 13
+    assert "duplicate RESP 0, CMD in burst 0; one-hand-missing 1 / 13" in (
+        _broadcast_check(b, TH).value
+    )
+
+
+@pytest.mark.parametrize(("gap_s", "in_burst", "late"), [(0.0019, 1, 0), (0.0021, 0, 1)])
+def test_a_cmd_within_half_a_period_before_a_resp_is_in_the_burst(tmp_path, gap_s, in_burst, late):
+    # A host CMD 1.9 ms after the REQ (half period 2 ms at 250 Hz) followed by a
+    # RESP is the host sending during its own tick's burst; at 2.1 ms it is the
+    # next tick's write and the RESP after it is late.
+    tick = bcast_tick(1.040)  # REQ R0 R1 R2 L0 L1 L2
+    t_req = 1.04016
+    lines = bcast_lines(10, estop_end=False) + tick[:6]
+    lines += [
+        line(t_req + gap_s, cmd_id(LEFT, 0), NONZERO44),
+        line(t_req + gap_s + 1e-5, resp_id(LEFT, 2), "11" * 8),
+    ]
+    lines += bcast_tick(1.044) + two_hand_estop(1.048, with_echoes=False)
+    b = bcast_overlap(lines, tmp_path).broadcast
+    assert b.cmd_in_burst == in_burst
+    assert b.late_resp["left"] == late
+    assert b.one_hand_missing == late
+    if in_burst:
+        assert _broadcast_check(b, TH).verdict == FAIL
+
+
 def test_estop_before_the_left_resp_is_cut_not_judged(tmp_path):
     tick = bcast_tick(1.040)  # REQ R0 R1 R2 L0 L1 L2
     lines = bcast_lines(10, estop_end=False) + tick[:4]
