@@ -351,4 +351,24 @@ TEST(UdpHandPublishMath, PublishPollOversamplesTheProducer) {
   EXPECT_GT(udp_hand_driver::kPublishPollOversampling, 1.0);
 }
 
+// ── Two-hand helpers (epic #906 D71) ─────────────────────────────────────────
+
+TEST(PrefixRelativeTopic, PrefixesOnlyRelativeNamesOfAPrefixedHand) {
+  using udp_hand_driver::PrefixRelativeTopic;
+  EXPECT_EQ(PrefixRelativeTopic("", "joint_states"), "joint_states") << "one-hand mode";
+  EXPECT_EQ(PrefixRelativeTopic("right/", "joint_states"), "right/joint_states");
+  EXPECT_EQ(PrefixRelativeTopic("left/", "calibration/command"), "left/calibration/command");
+  EXPECT_EQ(PrefixRelativeTopic("right/", "/p1b/joint_states"), "/p1b/joint_states")
+      << "an absolute override is taken as written";
+  EXPECT_EQ(PrefixRelativeTopic("right/", "~/private"), "~/private");
+}
+
+TEST(CommSlotMarginMs, IsTheSlotLeftAfterEveryHandsTwoStages) {
+  using udp_hand_driver::CommSlotMarginMs;
+  EXPECT_NEAR(CommSlotMarginMs(4.0, 2, 0.9), 0.4, 1e-9);  // 250 Hz, two hands: 10 %
+  EXPECT_NEAR(CommSlotMarginMs(2.0, 1, 0.9), 0.2, 1e-9);  // 500 Hz, one hand
+  EXPECT_LT(CommSlotMarginMs(2.0, 2, 0.9), 0.0);          // 500 Hz cannot hold two
+  EXPECT_NEAR(CommSlotMarginMs(5.0, 2, 0.9), 1.4, 1e-9);  // 200 Hz fallback (D77)
+}
+
 }  // namespace

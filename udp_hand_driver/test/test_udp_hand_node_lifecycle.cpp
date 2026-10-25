@@ -1247,4 +1247,224 @@ TEST_F(UdpHandNodeLifecycleTest, FinalStatsJsonKeepsALatchedFailureAcrossTeardow
   exec_.remove_node(node->get_node_base_interface());
 }
 
+// ── Two hands, one node (epic #906 D69 · D70 · D71) ─────────────────────────
+// hand_sides puts both hands in one process: one loop, per-hand topics under
+// `<side>/`, per-hand stats JSON, one timing CSV, one E-Stop for all. Run in
+// loopmodel (no socket) at 2 kHz so the two-hand slot check passes with a
+// short recv_timeout_ms — what is pinned is the wiring, not the wire, which
+// the vcan0 SIL run covers.
+
+// The node with its test seams opened: HandRunning() reads, and StartHand()
+// can be made to fail for one hand.
+class TestableHandNode : public UdpHandNode {
+ public:
+  using UdpHandNode::HandRunning;
+  using UdpHandNode::UdpHandNode;
+
+  void FailStartOf(int index) { fail_index_ = index; }
+
+ protected:
+  bool StartHand(std::size_t index) override {
+    if (static_cast<int>(index) == fail_index_) {
+      return false;
+    }
+    return UdpHandNode::StartHand(index);
+  }
+
+ private:
+  int fail_index_{-1};
+};
+
+rclcpp::NodeOptions TwoHandOptions(std::vector<rclcpp::Parameter> extra = {}) {
+  std::vector<rclcpp::Parameter> params = {
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("hand_sides", std::vector<std::string>{"right", "left"}),
+      rclcpp::Parameter("loop_rate_hz", 2000.0),
+      rclcpp::Parameter("publish_rate", 2000.0),
+      // 2 hands × 2 stages × 0.1 ms = 0.4 ms of the 0.5 ms slot.
+      rclcpp::Parameter("recv_timeout_ms", 0.1),
+  };
+  params.insert(params.end(), extra.begin(), extra.end());
+  auto options = Proto2Options(params);
+  options.arguments({"--ros-args", "-r", std::string("__ns:=") + kTestNamespace});
+  return options;
+}
+
+int ThreadsNamed(const std::string& wanted) {
+  int n = 0;
+  for (const auto& task : std::filesystem::directory_iterator("/proc/self/task")) {
+    std::ifstream comm(task.path() / "comm");
+    std::string name;
+    std::getline(comm, name);
+    n += (name == wanted) ? 1 : 0;
+  }
+  return n;
+}
+
+TEST_F(UdpHandNodeLifecycleTest, TwoHandsRunOnOneLoopUnderTheirSidePrefixes) {
+  std::error_code ec;
+  for (const char* name :
+       {"hand_timing_log.csv", "hand_timing_log_right.csv", "hand_timing_log_left.csv"}) {
+    std::filesystem::remove(session_dir_ / "timing" / name, ec);
+  }
+  for (const char* name : {"hand_stats_right.json", "hand_stats_left.json"}) {
+    std::filesystem::remove(session_dir_ / "device" / name, ec);
+  }
+  const std::vector<std::string> left_names = {"l0", "l1", "l2", "l3", "l4",
+                                               "l5", "l6", "l7", "l8", "l9"};
+  auto node = std::make_shared<UdpHandNode>(
+      TwoHandOptions({rclcpp::Parameter("left.joint_state_names", left_names)}));
+  auto probe = std::make_shared<rclcpp::Node>("hand_two_hand_probe");
+  exec_.add_node(node->get_node_base_interface());
+  exec_.add_node(probe);
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  for (const char* side : {"right", "left"}) {
+    const std::string base = std::string(kTestNamespace) + "/" + side + "/";
+    for (const char* out : {"joint_states", "motor_states", "sensor_states",
+                            "sensor_states/monitor", "link_status", "calibration/status"}) {
+      EXPECT_EQ(node->count_publishers(base + out), 1u) << "no publisher on " << base + out;
+    }
+    for (const char* in : {"joint_command", "calibration/command"}) {
+      EXPECT_EQ(node->count_subscribers(base + in), 1u) << "no subscription on " << base + in;
+    }
+  }
+  // One E-Stop for every hand, and nothing left on the one-hand names.
+  EXPECT_EQ(node->count_subscribers("/hand/estop"), 1u);
+  EXPECT_EQ(node->count_publishers("/hand/joint_states"), 0u);
+  EXPECT_EQ(node->count_subscribers("/hand/joint_command"), 0u);
+
+  std::map<std::string, std::vector<std::string>> names;
+  std::map<std::string, int> received;
+  std::vector<rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr> subs;
+  for (const std::string side : {"right", "left"}) {
+    subs.push_back(probe->create_subscription<sensor_msgs::msg::JointState>(
+        "/hand/" + side + "/joint_states", rclcpp::QoS(1).best_effort(),
+        [&, side](sensor_msgs::msg::JointState::SharedPtr msg) {
+          names[side] = msg->name;
+          ++received[side];
+        }));
+  }
+
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  EXPECT_EQ(ThreadsNamed("hand_comm"), 1) << "two hands must share one comm thread";
+  ASSERT_TRUE(SpinUntil([&] { return received["right"] >= 5 && received["left"] >= 5; }, 10s));
+  // D71: the left hand reads its own key, the right one falls back to the flat
+  // key's declare default.
+  EXPECT_EQ(names["left"], left_names);
+  EXPECT_EQ(names["right"].size(), 10u);
+  EXPECT_NE(names["right"], left_names);
+
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  subs.clear();
+  exec_.remove_node(probe);
+  exec_.remove_node(node->get_node_base_interface());
+
+  // D71 · D72: a stats JSON per hand, one timing CSV with no suffix.
+  for (const char* name : {"hand_stats_right.json", "hand_stats_left.json"}) {
+    const auto path = session_dir_ / "device" / name;
+    ASSERT_TRUE(std::filesystem::exists(path)) << path;
+    EXPECT_NE(ReadFile(path).find("\"transport\": \"canfd\""), std::string::npos) << path;
+  }
+  EXPECT_TRUE(std::filesystem::exists(session_dir_ / "timing" / "hand_timing_log.csv"));
+  EXPECT_FALSE(std::filesystem::exists(session_dir_ / "timing" / "hand_timing_log_right.csv"));
+  EXPECT_FALSE(std::filesystem::exists(session_dir_ / "timing" / "hand_timing_log_left.csv"));
+}
+
+// D70: one `true` on the one estop topic stops both hands and the loop.
+TEST_F(UdpHandNodeLifecycleTest, OneEstopStopsBothHands) {
+  auto node = std::make_shared<TestableHandNode>(TwoHandOptions());
+  auto probe = std::make_shared<rclcpp::Node>("hand_two_hand_estop_probe");
+  auto estop_pub =
+      probe->create_publisher<std_msgs::msg::Bool>("/hand/estop", rclcpp::QoS(1).reliable());
+  exec_.add_node(node->get_node_base_interface());
+  exec_.add_node(probe);
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  ASSERT_TRUE(node->HandRunning(0));
+  ASSERT_TRUE(node->HandRunning(1));
+  ASSERT_TRUE(SpinUntil([&] { return estop_pub->get_subscription_count() > 0; }, 10s));
+
+  std_msgs::msg::Bool msg;
+  msg.data = true;
+  estop_pub->publish(msg);
+  ASSERT_TRUE(SpinUntil([&] { return !node->HandRunning(0) && !node->HandRunning(1); }, 10s));
+  EXPECT_TRUE(SpinUntil([] { return ThreadsNamed("hand_comm") == 0; }, 5s))
+      << "the comm loop kept running after the E-Stop";
+  EXPECT_EQ(node->get_current_state().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+
+  // deactivate → activate resumes both.
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  EXPECT_TRUE(node->HandRunning(0));
+  EXPECT_TRUE(node->HandRunning(1));
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(probe);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// #906 B3: a hand that fails to start ends the activate with no hand running
+// and no comm thread; the hand before it is stopped again. With the fault
+// gone, the same node activates.
+TEST_F(UdpHandNodeLifecycleTest, AHandThatFailsToStartLeavesNoHandRunning) {
+  auto node = std::make_shared<TestableHandNode>(TwoHandOptions());
+  exec_.add_node(node->get_node_base_interface());
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+
+  node->FailStartOf(1);
+  EXPECT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  EXPECT_FALSE(node->HandRunning(0)) << "the first hand was left running";
+  EXPECT_FALSE(node->HandRunning(1));
+  EXPECT_EQ(ThreadsNamed("hand_comm"), 0) << "the loop started without every hand";
+
+  node->FailStartOf(-1);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  EXPECT_TRUE(node->HandRunning(0));
+  EXPECT_TRUE(node->HandRunning(1));
+  EXPECT_EQ(ThreadsNamed("hand_comm"), 1);
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// D71: the configurations a two-hand node refuses, each ending in Unconfigured.
+TEST_F(UdpHandNodeLifecycleTest, TwoHandConfigurationsThatAreRefused) {
+  const auto sides = [](std::vector<std::string> v) {
+    return rclcpp::Parameter("hand_sides", std::move(v));
+  };
+  const std::vector<std::pair<std::string, std::vector<rclcpp::Parameter>>> cases = {
+      {"a side named twice", {sides({"right", "right"})}},
+      {"an unknown side", {sides({"right", "middle"})}},
+      {"more hands than one bus serves", {sides({"right", "left", "right"})}},
+      {"hand_side beside hand_sides", {rclcpp::Parameter("hand_side", "left")}},
+      {"two hands over UDP", {rclcpp::Parameter("protocol_version", "1b")}},
+      // An absolute name would be one topic for both hands.
+      {"an absolute per-hand topic", {rclcpp::Parameter("joint_state_topic", "/p1b/joint_states")}},
+      // 2 × 2 × 0.9 = 3.6 ms > the 2 ms slot of 500 Hz — one hand fits (below).
+      {"N × 2T over the slot",
+       {rclcpp::Parameter("loop_rate_hz", 500.0), rclcpp::Parameter("recv_timeout_ms", 0.9)}},
+  };
+  for (const auto& [what, extra] : cases) {
+    auto node = std::make_shared<UdpHandNode>(TwoHandOptions(extra));
+    exec_.add_node(node->get_node_base_interface());
+    EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+        << what;
+    exec_.remove_node(node->get_node_base_interface());
+  }
+
+  // The same timing with one hand is the shipped single-hand rig setting.
+  auto one = std::make_shared<UdpHandNode>(Proto2Options({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("loop_rate_hz", 500.0),
+      rclcpp::Parameter("recv_timeout_ms", 0.9),
+  }));
+  exec_.add_node(one->get_node_base_interface());
+  EXPECT_EQ(one->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(one->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  exec_.remove_node(one->get_node_base_interface());
+}
+
 }  // namespace

@@ -54,8 +54,8 @@
                                       # CAN FD(protocol_version "2") 에서는 stage 별 deadline T
                                       # (echo: CMD + T, RESP set: echo 끝 + T — 체인, D42 · D59;
                                       # cmd_ack none 은 echo 단계 없이 RESP set CMD + 2T):
-                                      # 최악 2 × 값 < 1000/loop_rate_hz × comm_decimation 이어야
-                                      # configure 를 통과한다.
+                                      # 최악 손 수 × 2 × 값 < 1000/loop_rate_hz × comm_decimation
+                                      # 이어야 configure 를 통과한다 (두 손 · 0.9 는 250 Hz).
                                       # 실기 proto2 는 launch 로 0.9 를 준다 (H1-F06 실측, D6):
                                       # 손의 REQ→RESP 왕복 p99 0.73 / max 0.76 ms (read-only),
                                       # write 동시엔 echo max 1.46 ms 가 15만 사이클에 22번 →
@@ -75,8 +75,14 @@
     #                 불일치는 실패가 아니라 카운터로 드러난다 — echo 인데 펌웨어가
     #                 조용하면 per_request.write_echo.timeout 이 전부, none 인데 echo 가
     #                 오면 canfd.echo_unexpected 가 오르고, 노드가 WARN 을 한 번 낸다.
+    # hand_sides    : 두 손 — 예 ["right", "left"]. 노드 하나 · CommLoop 하나가 두 손을
+    #                 목록 순서로 돌린다 (README "두 손"). 토픽은 <side>/ 접두, 손별 키는
+    #                 right.joint_state_names 처럼 <side>. 접두 (없으면 아래 flat 키).
+    #                 hand_side 와 함께 쓰지 않는다. 빈 배열을 여기 적지 말 것 — 타입 없는
+    #                 빈 배열은 string 배열 선언과 어긋난다 (launch `hand_sides:=right,left`).
     can_interface: "can0"
     # hand_side: "right"
+    # hand_sides: ["right", "left"]
     cmd_ack: "echo"
     feedforward_kt: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
