@@ -38,7 +38,7 @@ ros2 topic echo /hand/joint_states --once
 
 # 실제 손 (IP 는 필요한 것만 override)
 ros2 launch udp_hand_driver udp_hand.launch.py target_ip:=192.168.0.100
-# 실제 손, CAN FD (실측 확정값 — can0 은 repo_scripts/scripts/setup_can_interface.sh)
+# 실제 손, CAN FD (실측 확정값 — can0 은 repo_scripts/scripts/setup_can_interface.sh; echo 펌웨어는 cmd_ack:=echo)
 ros2 launch udp_hand_driver udp_hand.launch.py protocol_version:=2 hand_side:=right recv_timeout_ms:=0.9
 ros2 topic echo /hand/link_status --once        # data: true 면 링크 정상
 # 두 손, CAN FD (노드 하나 — /hand/right/* · /hand/left/*)
@@ -68,7 +68,7 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | `can_interface` | `can0` | `2` 의 SocketCAN 장치 (`firmware` 는 `vcan0` 로 강제) |
 | `hand_side` | — (노드 기본 `right`) | `right` \| `left`. 명시하면 통계 · 타이밍 파일명에 `_<side>` 접미사. firmware 에도 전파 |
 | `hand_sides` | — | 두 손: `right,left` (쉼표 목록). `hand_side` 와 함께 주면 거부. `firmware` 는 fake 를 손마다 (`fake_hand_firmware_<side>`) |
-| `cmd_ack` | — (노드 기본 `echo`) | `echo` \| `none`: `2` 펌웨어의 CMD echo 여부. firmware 에도 전파 |
+| `cmd_ack` | — (노드 기본 `none`) | `echo` \| `none`: `2` 펌웨어의 CMD echo 여부. firmware 에도 전파 |
 | `sil_mode` | `off` | `off` \| `loopmodel` \| `firmware` ([SIL 모드](#sil-모드-sil_mode)) |
 | `use_cpu_affinity` | `true` | 프로세스 내부 pin on/off ([스레드 모델](#스레드-모델) 의 경고). `aux_cpu_slot` 은 YAML 전용 |
 
@@ -195,7 +195,7 @@ ros2 topic echo /hand/link_status --once     # 별도 터미널
 | `publish_rate` | `100.0` | `link_status` decimation 기준 (`loop_rate_hz / publish_rate`) |
 | `comm_decimation` / `sensor_decimation` | `1` / `1` | 위 [통신 decimation](#통신-decimation-comm_decimation) · 센서 read 감쇠 |
 | `protocol_version` | `"1b"` | `"1a"` \| `"1b"` \| `"2"` (따옴표 필수) |
-| `can_interface` / `feedforward_kt` / `cmd_ack` | `"can0"` / 10 × `1.0` / `"echo"` | `"2"` 전용: SocketCAN 장치 / 모터별 토크 상수 [Nm/A] / CMD echo 여부. `hand_side` 는 YAML 에 주석 (기본 `right`) |
+| `can_interface` / `feedforward_kt` / `cmd_ack` | `"can0"` / 10 × `1.0` / `"none"` | `"2"` 전용: SocketCAN 장치 / 모터별 토크 상수 [Nm/A] / CMD echo 여부. `hand_side` 는 YAML 에 주석 (기본 `right`) |
 | `baro_lpf_enabled` / `baro_lpf_cutoff_hz` | `true` / `100.0` | barometer 4차 Bessel LPF |
 | `tof_lpf_enabled` / `tof_lpf_cutoff_hz` | `true` / `15.0` | ToF LPF |
 | `drift_detection_enabled` | `false` | OLS 드리프트 감지 (`drift_threshold` 5.0, `drift_window_size` 2500) |

@@ -60,6 +60,9 @@
                                       # 손의 REQ→RESP 왕복 p99 0.73 / max 0.76 ms (read-only),
                                       # write 동시엔 echo max 1.46 ms 가 15만 사이클에 22번 →
                                       # 0.9 에서 타임아웃 0.016 %. 0.4 는 매 사이클 타임아웃.
+                                      # none 펌웨어 실측 (2026-10-25, 500 Hz write 300 s): read-only
+                                      # max 0.744 ms < T, write 세트 CMD F0→RESP F2 max 1.141 ms
+                                      # < 2T, 세트 타임아웃 0 → 0.9 유지 (D62 · D64).
 
     # -- CAN FD 링크 (protocol_version "2" 전용 — 1a / 1b 에서는 무시) --
     # can_interface : SocketCAN 장치. sil_mode=firmware 는 vcan0 로 강제한다.
@@ -70,8 +73,8 @@
     #                 JointCommand.feedforward [Nm] / kt → wire [A]. 1.0 = pass-through.
     #                 각 값은 > 0 이고 역수가 유한해야 한다.
     # cmd_ack       : 펌웨어가 CMD Frame 0/1 을 echo 하는지 — 펌웨어와 일치해야 한다.
-    #                 "echo" = 현 펌웨어 (SDO 형: echo 2 개를 기다려 write 검증),
-    #                 "none" = echo 없는 펌웨어 (PDO 형: 송신 성공이 write 성공).
+    #                 "echo" = 구 펌웨어 (SDO 형: echo 2 개를 기다려 write 검증),
+    #                 "none" = 현 펌웨어 (PDO 형: 송신 성공이 write 성공) — 기본값 (D62).
     #                 불일치는 실패가 아니라 카운터로 드러난다 — echo 인데 펌웨어가
     #                 조용하면 per_request.write_echo.timeout 이 전부, none 인데 echo 가
     #                 오면 canfd.echo_unexpected 가 오르고, 노드가 WARN 을 한 번 낸다.
@@ -83,7 +86,7 @@
     can_interface: "can0"
     # hand_side: "right"
     # hand_sides: ["right", "left"]
-    cmd_ack: "echo"
+    cmd_ack: "none"
     feedforward_kt: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
     # -- 통신 모드 --

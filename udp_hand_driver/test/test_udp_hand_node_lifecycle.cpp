@@ -841,7 +841,7 @@ TEST_F(UdpHandNodeLifecycleTest, Proto2StatsJsonKeysMatchTheProto2FixtureExactly
   // The tags say what ran; the proto1 superset still holds (nothing dropped).
   EXPECT_NE(json.find("\"protocol_version\": \"2\""), std::string::npos);
   EXPECT_NE(json.find("\"transport\": \"canfd\""), std::string::npos);
-  EXPECT_NE(json.find("\"cmd_ack\": \"echo\""), std::string::npos);  // the declare default
+  EXPECT_NE(json.find("\"cmd_ack\": \"none\""), std::string::npos);  // the declare default (D62)
   for (const auto& k : ReadFixtureLines(fixtures / "hand_stats_keys.txt")) {
     if (k.rfind("timing_stats.read_", 0) == 0) {
       continue;  // individual-mode timing keys — bulk writes its own set
