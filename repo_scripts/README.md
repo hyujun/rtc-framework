@@ -101,6 +101,7 @@ RT 호스트 설정의 절차와 근거는 [docs/rt-optimization.md](../docs/rt-
 |---------|------|------|
 | `setup_vcan.sh [IFACE]` | 개발 PC 의 가상 CAN FD (`vcan0`, MTU 72) — `rtc_communication` CAN 테스트와 proto2 SIL 이 요구. `rtc-vcan-<iface>.service` 가 재부팅 뒤 재생성 | 필수 |
 | `install_ixxat_socketcan.sh <build·install·status>` | IXXAT USB-to-CAN FD 드라이버 `ix_usb_can` 을 실행 커널 헤더로 빌드 · 설치 (DKMS 아님 — 커널을 바꾸면 다시). 소스는 `<rtc_ws>/deps/src/` | `install` 만 |
+| `run_hand_canfd_gate.sh [--sil] [--iface · --sides · --duration · --rate · --recv-timeout]` | 손 CAN FD 게이트 한 run: 버스 기록 · 노드 기동 · E-Stop 종료 · 손마다 판정 ([testing.md](../docs/testing.md)) | 불필요 |
 | `setup_can_interface.sh [IFACE] [--bitrate · --dbitrate · --txqueuelen · --restart-ms]` | `can0` 를 1 M / 8 M BRS `fd on` 으로 올리고 `rtc-can-<iface>.service` + udev 로 재부팅 · 재연결마다 재적용, can-utils 설치. 기본값은 제안값이고 실기 측정이 고친다 | 필수 |
 
 **런타임 · 검증**

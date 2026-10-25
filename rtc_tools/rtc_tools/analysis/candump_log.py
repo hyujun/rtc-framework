@@ -20,11 +20,20 @@ right one, and the two-hand gate (G-5) needs exactly that.
 Timestamps are candump's: the socket's receive time, which for a frame this
 host transmitted is the TX-done stamp of the loopback copy. Round trips
 measured here are therefore a LOWER bound on what the node experiences.
+
+``python3 -m rtc_tools.analysis.candump_log <iface> <out.log>`` records the same
+``-L`` lines from a raw CAN FD socket (kernel receive stamps) for a PC without
+can-utils — the development PC's vcan0 SIL; the rig has candump. It stops on
+SIGINT or SIGTERM and flushes every line.
 """
 
 from __future__ import annotations
 
 import re
+import signal
+import socket
+import struct
+import sys
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -189,3 +198,94 @@ def classify(frame: Frame, node: int) -> Kind:
     if base == resp_id(node, 0):
         return Kind.RESP
     return Kind.OTHER
+
+
+# ── recorder (a candump -L stand-in) ────────────────────────────────────────
+
+_CAN_EFF_FLAG = 0x80000000
+_CAN_ERR_FLAG = 0x20000000
+_CAN_SFF_MASK = 0x7FF
+_CAN_ERR_MASK = 0x1FFFFFFF
+_CANFD_MTU = 72
+# linux/can/raw.h; the socket module does not export it.
+_CAN_RAW_ERR_FILTER = getattr(socket, "CAN_RAW_ERR_FILTER", 2)
+# asm-generic/socket.h (SO_TIMESTAMP_OLD: struct timeval); not exported either.
+_SO_TIMESTAMP = getattr(socket, "SO_TIMESTAMP", 29)
+
+
+def format_candump_line(
+    t: float, interface: str, can_id: int, data: bytes, fd: bool, flags: int = 0
+) -> str:
+    """One ``candump -L`` line for a frame as SocketCAN delivers it (flag bits in `can_id`)."""
+    sec = int(t)
+    usec = int(round((t - sec) * 1e6))
+    if usec >= 1_000_000:
+        sec, usec = sec + 1, usec - 1_000_000
+    if can_id & _CAN_ERR_FLAG:
+        id_hex = f"{(can_id & EFF_MASK) | ERR_FLAG:08X}"
+    elif can_id & _CAN_EFF_FLAG:
+        id_hex = f"{can_id & EFF_MASK:08X}"
+    else:
+        id_hex = f"{can_id & _CAN_SFF_MASK:03X}"
+    body = f"#{flags & 0xF:X}{data.hex().upper()}" if fd else data.hex().upper()
+    return f"({sec}.{usec:06d}) {interface} {id_hex}#{body}"
+
+
+def record(interface: str, path: Path) -> int:
+    """Write every frame on `interface` to `path` until SIGINT / SIGTERM; frame count."""
+    sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+    sock.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FD_FRAMES, 1)
+    sock.setsockopt(socket.SOL_CAN_RAW, _CAN_RAW_ERR_FILTER, _CAN_ERR_MASK)
+    sock.setsockopt(socket.SOL_SOCKET, _SO_TIMESTAMP, 1)
+    sock.bind((interface,))
+
+    def stop(_signum, _frame):
+        raise KeyboardInterrupt
+
+    # Both, explicitly: a background job of a non-interactive shell starts with
+    # SIGINT ignored, and Python then installs no handler of its own.
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    count = 0
+    tv = struct.Struct("@ll")
+    with path.open("w", buffering=1) as out:
+        try:
+            while True:
+                data, ancdata, _flags, _addr = sock.recvmsg(_CANFD_MTU, socket.CMSG_SPACE(tv.size))
+                t = None
+                for level, kind, cdata in ancdata:
+                    if level == socket.SOL_SOCKET and kind == _SO_TIMESTAMP:
+                        sec, usec = tv.unpack(cdata[: tv.size])
+                        t = sec + usec / 1e6
+                if t is None:
+                    continue
+                can_id, length, fd_flags = struct.unpack("=IBB2x", data[:8])
+                payload = data[8 : 8 + length]
+                out.write(
+                    format_candump_line(
+                        t, interface, can_id, payload, len(data) == _CANFD_MTU, fd_flags
+                    )
+                    + "\n"
+                )
+                count += 1
+        except KeyboardInterrupt:
+            pass
+        finally:
+            sock.close()
+    return count
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 2:
+        print(
+            "usage: python3 -m rtc_tools.analysis.candump_log <iface> <out.log>", file=sys.stderr
+        )
+        return 2
+    n = record(args[0], Path(args[1]))
+    print(f"{n} frames from {args[0]} -> {args[1]}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

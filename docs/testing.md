@@ -132,6 +132,21 @@ grep -rE "rc=22|setaffinity failed|Thread config failed" ~/.ros/log/<run>/   # �
 
 두 번째 런치 로그에 `CPU shield already active (cset user cpuset present)` 가 보이면 게이트가 활성 shield 를 다시 만들지 않은 것이다.
 
+### CAN FD 손 게이트 (G-5 두 손)
+
+한 run 은 [run_hand_canfd_gate.sh](../repo_scripts/scripts/run_hand_canfd_gate.sh) 하나다: 버스 기록 → 노드 기동 (`hand_sides`) → 손마다 `link_status` true 대기 → `--duration` 초 → `/hand/estop` true (run 은 E-Stop 으로 끝난다) → 노드에 SIGINT → 손마다 `analyze_hand_canfd_gate` → 요약 한 줄. 산출물은 `--out` (기본 `./hand_gate_<시각>`) 아래 `bus.log` · `node.log` · `session/` · `gate_<side>.md` · `.json` 이다.
+
+```bash
+# 개발 PC, vcan0 SIL (fake 둘) — colcon test 와 동시에 돌리지 않는다
+./repo_scripts/scripts/run_hand_canfd_gate.sh --sil --duration 60
+# 실기 (테스트 PC): can0 1 M / 8 M FD, 손 node id 1 · 2
+./repo_scripts/scripts/run_hand_canfd_gate.sh --iface can0 --duration 300 --rate 250 --recv-timeout 0.9
+```
+
+- 실기 전에 두 손이 각각 REQ 에 답하는지 본다: `candump can0` 을 띄우고 `cansend can0 00404000##1` (오른손) · `cansend can0 00408000##1` (왼손) 에 RESP 3 프레임 (`0080004x` · `0080008x`) 이 오는지
+- PASS: 손마다 (a)–(e) PASS, `x.no_overlap` 0, link down 0. 250 Hz 에서 (c) 가 미달이면 `--rate 200` 으로 다시 잰다 (D77). 두 손 zero-write 간격 행은 보고만 한다 (D78)
+- 종료 코드 0 PASS · 1 FAIL · 2 UNDECIDED (한 번 재측정) · 3 run 불가. candump 이 없는 PC 는 같은 형식의 python 기록기로 대신한다
+
 ### Tracing
 
 thread 별 core 사용이나 callback 소요 시간은 CSV 로 알 수 없다. LTTng 트레이스를 캡처해 본다. 명령 전체는 [tracing.md](tracing.md).
