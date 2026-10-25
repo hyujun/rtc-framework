@@ -30,16 +30,21 @@
 #include <std_msgs/msg/bool.hpp>
 
 #include <gtest/gtest.h>
+#include <rcutils/logging.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -842,7 +847,8 @@ TEST_F(UdpHandNodeLifecycleTest, Proto2StatsJsonKeysMatchTheProto2FixtureExactly
   EXPECT_NE(json.find("\"protocol_version\": \"2\""), std::string::npos);
   EXPECT_NE(json.find("\"transport\": \"canfd\""), std::string::npos);
   EXPECT_NE(json.find("\"cmd_ack\": \"none\""), std::string::npos);  // the declare default (D62)
-  EXPECT_NE(json.find("\"req_mode\": \"per_hand\""), std::string::npos);  // #956 default
+  // req_mode auto with one hand (#956 D86).
+  EXPECT_NE(json.find("\"req_mode\": \"per_hand\""), std::string::npos);
   for (const auto& k : ReadFixtureLines(fixtures / "hand_stats_keys.txt")) {
     if (k.rfind("timing_stats.read_", 0) == 0) {
       continue;  // individual-mode timing keys — bulk writes its own set
@@ -1584,6 +1590,146 @@ TEST_F(UdpHandNodeLifecycleTest, BroadcastLoopmodelRunsBothHandsAndStatsNameTheM
     EXPECT_NE(json.find("\"joint_read\": { \"ok\": 0, \"timeout\": 0, \"error\": 0"),
               std::string::npos)
         << path;
+  }
+}
+
+// ── req_mode auto (#956 D86) ───────────────────────────────────────────────
+
+// auto names no mode of its own: the stats JSON carries what it resolved to.
+// The file is written once the hand has run (activate → deactivate).
+TEST_F(UdpHandNodeLifecycleTest, ReqModeAutoResolvesToTheModeTheStatsJsonNames) {
+  struct Case {
+    const char* what;
+    bool two_hands;
+    const char* cmd_ack;
+    const char* expected;
+  };
+
+  const Case cases[] = {
+      {"two hands, cmd_ack none", true, "none", "broadcast"},
+      {"two hands, cmd_ack echo", true, "echo", "per_hand"},
+      {"one hand", false, "none", "per_hand"},
+  };
+  for (const auto& c : cases) {
+    const char* file = c.two_hands ? "hand_stats_right.json" : "hand_stats.json";
+    std::error_code ec;
+    std::filesystem::remove(session_dir_ / "device" / file, ec);
+    const auto ack = rclcpp::Parameter("cmd_ack", c.cmd_ack);
+    auto node = std::make_shared<UdpHandNode>(
+        c.two_hands ? TwoHandOptions({ack})
+                    : Proto2Options({rclcpp::Parameter("sil_mode", "loopmodel"), ack}));
+    exec_.add_node(node->get_node_base_interface());
+    ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) << c.what;
+    ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) << c.what;
+    ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+    ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+    exec_.remove_node(node->get_node_base_interface());
+    const auto path = session_dir_ / "device" / file;
+    ASSERT_TRUE(std::filesystem::exists(path)) << c.what;
+    EXPECT_NE(ReadFile(path).find(std::string("\"req_mode\": \"") + c.expected + "\""),
+              std::string::npos)
+        << c.what;
+  }
+}
+
+// The two-hand default (D86): 400 Hz with T 1.2 fits the one shared window
+// (2.4 < 2.5 ms) the default resolves to; the same values per_hand do not.
+TEST_F(UdpHandNodeLifecycleTest, TwoHandDefaultRateFitsOnlyTheSharedWindow) {
+  for (const auto& [req_mode, accepted] : {std::pair{"auto", true}, std::pair{"per_hand", false}}) {
+    auto node = std::make_shared<UdpHandNode>(TwoHandOptions({
+        rclcpp::Parameter("loop_rate_hz", 400.0),
+        rclcpp::Parameter("publish_rate", 400.0),
+        rclcpp::Parameter("recv_timeout_ms", 1.2),
+        rclcpp::Parameter("req_mode", req_mode),
+    }));
+    exec_.add_node(node->get_node_base_interface());
+    const auto state = node->configure().id();
+    if (accepted) {
+      EXPECT_EQ(state, lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) << req_mode;
+      ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+    } else {
+      EXPECT_EQ(state, lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED) << req_mode;
+    }
+    exec_.remove_node(node->get_node_base_interface());
+  }
+}
+
+// Captures WARN lines for one scope and hands every line on to the handler it
+// replaced. The D86 warning below changes no state and no counter, so the log
+// is its only observable.
+class WarnCapture {
+ public:
+  WarnCapture() : previous_(rcutils_logging_get_output_handler()) {
+    Active() = this;
+    rcutils_logging_set_output_handler(&WarnCapture::Handler);
+  }
+
+  ~WarnCapture() {
+    rcutils_logging_set_output_handler(previous_);
+    Active() = nullptr;
+  }
+
+  WarnCapture(const WarnCapture&) = delete;
+  WarnCapture& operator=(const WarnCapture&) = delete;
+
+  int Count(const std::string& needle) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return static_cast<int>(std::count_if(lines_.begin(), lines_.end(), [&](const auto& line) {
+      return line.find(needle) != std::string::npos;
+    }));
+  }
+
+ private:
+  static WarnCapture*& Active() {
+    static WarnCapture* active = nullptr;
+    return active;
+  }
+
+  static void Handler(const rcutils_log_location_t* location, int severity, const char* name,
+                      rcutils_time_point_value_t timestamp, const char* format, va_list* args) {
+    WarnCapture* self = Active();
+    if (self == nullptr) {
+      return;
+    }
+    if (severity == RCUTILS_LOG_SEVERITY_WARN) {
+      std::array<char, 1024> buf{};
+      va_list copy;
+      va_copy(copy, *args);
+      (void)std::vsnprintf(buf.data(), buf.size(), format, copy);
+      va_end(copy);
+      const std::lock_guard<std::mutex> lock(self->mutex_);
+      self->lines_.emplace_back(buf.data());
+    }
+    if (self->previous_ != nullptr) {
+      self->previous_(location, severity, name, timestamp, format, args);
+    }
+  }
+
+  rcutils_logging_output_handler_t previous_;
+  std::mutex mutex_;
+  std::vector<std::string> lines_;
+};
+
+// D86: a broadcast T under the rig's later-hand arrival (1.154 ms) is named at
+// configure — it would miss that hand's set every tick — but not refused.
+TEST_F(UdpHandNodeLifecycleTest, BroadcastWithAShortRecvTimeoutWarnsButConfigures) {
+  for (const auto& [recv_timeout_ms, warns] : {std::pair{0.9, true}, std::pair{1.2, false}}) {
+    auto node = std::make_shared<UdpHandNode>(TwoHandOptions({
+        rclcpp::Parameter("loop_rate_hz", 250.0),
+        rclcpp::Parameter("publish_rate", 250.0),
+        rclcpp::Parameter("recv_timeout_ms", recv_timeout_ms),
+    }));
+    exec_.add_node(node->get_node_base_interface());
+    int warned = 0;
+    {
+      WarnCapture capture;
+      EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
+          << recv_timeout_ms;
+      warned = capture.Count("under req_mode broadcast");
+    }
+    EXPECT_EQ(warned, warns ? 1 : 0) << recv_timeout_ms;
+    ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+    exec_.remove_node(node->get_node_base_interface());
   }
 }
 

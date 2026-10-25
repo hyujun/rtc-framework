@@ -55,7 +55,7 @@
                                       # (echo: CMD + T, RESP set: echo 끝 + T — 체인, D42 · D59;
                                       # cmd_ack none 은 echo 단계 없이 RESP set CMD + 2T):
                                       # 최악 손 수 × 2 × 값 < 1000/loop_rate_hz × comm_decimation
-                                      # 이어야 configure 를 통과한다 (두 손 · 0.9 는 250 Hz).
+                                      # 이어야 configure 를 통과한다 (두 손 per_hand · 0.9 는 250 Hz).
                                       # 실기 proto2 는 launch 로 0.9 를 준다 (H1-F06 실측, D6):
                                       # 손의 REQ→RESP 왕복 p99 0.73 / max 0.76 ms (read-only),
                                       # write 동시엔 echo max 1.46 ms 가 15만 사이클에 22번 →
@@ -65,8 +65,10 @@
                                       # < 2T, 세트 타임아웃 0 → 0.9 유지 (D62 · D64).
                                       # req_mode broadcast (#956) 는 두 손이 한 창을 함께 쓴다:
                                       # REQ + T (write 뒤 2T), 예산은 손 수와 무관하게 2 × 값 <
-                                      # slot. 뒤에 답하는 손은 앞 손 버스트 뒤에 오므로 실기 값은
-                                      # 1.4 (probe 2026-10-25: 왼손 REQ→F2 max 1.154 ms × 1.2).
+                                      # slot. 뒤에 답하는 손은 앞 손 버스트 뒤에 오므로 1.2 이상
+                                      # (probe 2026-10-25: 왼손 REQ→F2 max 1.154 ms, 미만이면
+                                      # configure WARN). 두 손 기본은 400 Hz · 1.2 (2.4 < 2.5,
+                                      # run 5 broadcast write tick max 2.02 ms — D86).
 
     # -- CAN FD 링크 (protocol_version "2" 전용 — 1a / 1b 에서는 무시) --
     # can_interface : SocketCAN 장치. sil_mode=firmware 는 vcan0 로 강제한다.
@@ -82,9 +84,11 @@
     #                 불일치는 실패가 아니라 카운터로 드러난다 — echo 인데 펌웨어가
     #                 조용하면 per_request.write_echo.timeout 이 전부, none 인데 echo 가
     #                 오면 canfd.echo_unexpected 가 오르고, 노드가 WARN 을 한 번 낸다.
-    # req_mode      : "per_hand" (기본) | "broadcast" (#956). broadcast 는 tick 마다 손별
-    #                 CMD 뒤 REQ 하나를 노드 0xFF 로 보내 모든 손이 답한다 — cmd_ack "none"
-    #                 전용 (echo 와 함께면 configure 거부), recv_timeout_ms 는 위 1.4.
+    # req_mode      : "auto" (기본) | "per_hand" | "broadcast" (#956). broadcast 는 tick 마다
+    #                 손별 CMD 뒤 REQ 하나를 노드 0xFF 로 보내 모든 손이 답한다 — cmd_ack
+    #                 "none" 전용 (명시한 broadcast 가 echo 와 함께면 configure 거부),
+    #                 recv_timeout_ms 는 위 1.2. auto 는 "2" · 두 손 · none 이면 broadcast,
+    #                 그 밖 (한 손 · echo · 1a / 1b) 은 per_hand (D86).
     # hand_sides    : 두 손 — 예 ["right", "left"]. 노드 하나 · CommLoop 하나가 두 손을
     #                 목록 순서로 돌린다 (README "두 손"). 토픽은 <side>/ 접두, 손별 키는
     #                 right.joint_state_names 처럼 <side>. 접두 (없으면 아래 flat 키).
@@ -94,7 +98,7 @@
     # hand_side: "right"
     # hand_sides: ["right", "left"]
     cmd_ack: "none"
-    req_mode: "per_hand"
+    req_mode: "auto"
     feedforward_kt: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
     # -- 통신 모드 --

@@ -226,6 +226,26 @@ inline const rtc::ThreadConfig kHandAuxIoConfig{.cpu_core = -1,
                                                 double recv_timeout_ms) noexcept {
   return slot_ms - static_cast<double>(windows) * 2.0 * recv_timeout_ms;
 }
+
+/// The tick shape req_mode `auto` (the default, #956 D86) stands for:
+/// broadcast where it is served and pays — protocol 2, two or more hands,
+/// cmd_ack none — and per_hand otherwise. One hand gains nothing (one REQ per
+/// tick either way) and would still hear every other powered hand's burst; an
+/// echo firmware cannot serve it (D81). Any other value is returned as
+/// written, for configure to validate.
+[[nodiscard]] inline std::string ResolveReqMode(const std::string& req_mode, bool is_canfd,
+                                                std::size_t hands, bool cmd_ack_none) {
+  if (req_mode != "auto") {
+    return req_mode;
+  }
+  return (is_canfd && hands > 1 && cmd_ack_none) ? "broadcast" : "per_hand";
+}
+
+/// Under req_mode broadcast the later hand's set follows the earlier hand's
+/// burst: its REQ → frame 2 reached 1.154 ms on the rig (#956 probe
+/// 2026-10-25). A recv_timeout_ms below this draws a configure warning, not a
+/// refusal — the figure is that firmware's, not a protocol bound (D86).
+inline constexpr double kBroadcastRecvTimeoutWarnMs = 1.2;
 }  // namespace udp_hand_driver
 
 class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
@@ -550,7 +570,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Cached config for on_activate logging and the stats JSON.
   std::string comm_mode_str_;
   std::string protocol_version_;
-  std::string req_mode_{"per_hand"};  ///< #956: stats JSON canfd.req_mode
+  std::string req_mode_{"per_hand"};  ///< #956: stats JSON canfd.req_mode, as resolved (D86)
 
   // ── Per-tick timing CSV (mpc_timing_log pattern) ───────────────────────
   // Producer (filled on the CommLoop thread) → 1 Hz drain on aux timer →

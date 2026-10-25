@@ -181,13 +181,15 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   //   cmd_ack         "echo" | "none" — whether the firmware echoes CMD
   //                   frames (#945 D61); must match the firmware. Default
   //                   none: the PDO-like firmware, measured 2026-10-25 (D62).
-  //   req_mode        "per_hand" | "broadcast" (#956 D81) — broadcast sends
-  //                   one REQ to node 0xFF per tick and every hand answers it
-  //                   (protocol 2 with cmd_ack none only). recv_timeout_ms
-  //                   then bounds that one shared window (2T < slot instead of
-  //                   N × 2T) and must cover the later hand, whose burst
-  //                   follows the earlier one's: 1.4 ms on the rig (probe
-  //                   2026-10-25) against per_hand's 0.9.
+  //   req_mode        "auto" | "per_hand" | "broadcast" (#956 D81 · D86) —
+  //                   broadcast sends one REQ to node 0xFF per tick and every
+  //                   hand answers it (protocol 2 with cmd_ack none only).
+  //                   recv_timeout_ms then bounds that one shared window (2T <
+  //                   slot instead of N × 2T) and must cover the later hand,
+  //                   whose burst follows the earlier one's: 1.4 ms on the rig
+  //                   (probe 2026-10-25) against per_hand's 0.9. auto (the
+  //                   default) is broadcast for two hands on protocol 2 with
+  //                   cmd_ack none, per_hand otherwise (ResolveReqMode).
   //   recv_timeout_ms is shared with UDP: on CAN FD it is the per-stage
   //                   deadline (echo stage, RESP-set stage — D42; under
   //                   cmd_ack none the set stage after a write gets 2T).
@@ -196,7 +198,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_once("hand_sides", std::vector<std::string>{});
   // The default mirrors udp_hand.launch.py's _FW_CMD_ACK_DEFAULT (D62).
   declare_once("cmd_ack", std::string{"none"});
-  declare_once("req_mode", std::string{"per_hand"});
+  declare_once("req_mode", std::string{"auto"});
   declare_once("feedforward_kt",
                std::vector<double>(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 1.0));
 
@@ -477,12 +479,22 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     }
   }
 
-  // ── REQ mode (#956 D81) ──────────────────────────────────────────────
-  const std::string req_mode = get_parameter("req_mode").as_string();
-  if (req_mode != "per_hand" && req_mode != "broadcast") {
+  // ── REQ mode (#956 D81 · D86) ────────────────────────────────────────
+  // auto never refuses: an echo firmware or one hand resolves to per_hand. An
+  // explicit broadcast is held to the rules below.
+  const std::string req_mode_param = get_parameter("req_mode").as_string();
+  if (req_mode_param != "auto" && req_mode_param != "per_hand" && req_mode_param != "broadcast") {
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                 "req_mode '%s' must be \"per_hand\" or \"broadcast\"", req_mode.c_str());
+                 "req_mode '%s' must be \"auto\", \"per_hand\" or \"broadcast\"",
+                 req_mode_param.c_str());
     return CallbackReturn::FAILURE;
+  }
+  const std::string req_mode = udp_hand_driver::ResolveReqMode(
+      req_mode_param, is_canfd, sides.size(), get_parameter("cmd_ack").as_string() == "none");
+  if (req_mode_param == "auto" && is_canfd) {
+    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                "req_mode auto → %s (%zu hand(s), cmd_ack %s; #956 D86)", req_mode.c_str(),
+                sides.size(), get_parameter("cmd_ack").as_string().c_str());
   }
   const bool req_broadcast = (req_mode == "broadcast");
   if (req_broadcast && !is_canfd) {
@@ -603,6 +615,17 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                   "comm slot %.3f ms leaves %.3f ms after %zu × 2 × recv_timeout_ms (%.3f) — "
                   "under 10 %% of the slot; a jittery tick can overrun",
                   slot_ms, margin_ms, windows, recv_timeout_ms);
+    }
+    // The per_hand T carried over to broadcast misses the later hand's set
+    // every tick — link down, then E-Stop. That stops safely but says nothing
+    // about why, so it is named here (D86); not refused, the figure is the
+    // rig firmware's.
+    if (req_broadcast && recv_timeout_ms < udp_hand_driver::kBroadcastRecvTimeoutWarnMs) {
+      RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                  "recv_timeout_ms=%.3f under req_mode broadcast: the later hand's set arrived "
+                  "up to 1.154 ms after the shared REQ on the rig (#956) — below %.1f ms it can "
+                  "miss its window every tick (link down → E-Stop); the rig runs 1.4",
+                  recv_timeout_ms, udp_hand_driver::kBroadcastRecvTimeoutWarnMs);
     }
   }
 
