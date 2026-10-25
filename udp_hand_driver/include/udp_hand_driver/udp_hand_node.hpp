@@ -27,8 +27,8 @@
 // Unified hand node using request-response protocol over UDP (protocol_version
 // 1a / 1b) or CAN FD (protocol_version 2, epic #895).
 //
-// Owns a UdpHandController with a self-clocked CommLoop that polls the hand
-// device at loop_rate_hz (default 500 Hz):
+// Owns a UdpHandController and the self-clocked HandCommLoop (`hand_comm`) it
+// runs on, which polls the hand device at loop_rate_hz (default 500 Hz):
 //   [write position (only when commanded)] -> read motors -> read sensors
 //
 // The CommLoop publishes nothing itself: it stores a POD snapshot into a SeqLock
@@ -310,6 +310,16 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // controller's destructor has joined that thread, so the flag has to outlive
   // the controller (members are destroyed in reverse declaration order).
   std::atomic<bool> estop_flag_{false};
+
+  // The process's one comm thread (`hand_comm`, SCHED_FIFO 65 — epic #906
+  // D69). The controller is attached to it in on_configure and it is started
+  // in on_activate once the controller has started. Declared after the latch
+  // it reads and before controller_: the controller's destructor joins it
+  // (Stop()), so it has to outlive the controller, and its thread dereferences
+  // the controller, so StopRuntime() joins it before the controller goes.
+  udp_hand_driver::HandCommLoop comm_loop_;
+  // loop_rate_hz as configured — the loop's frequency at on_activate.
+  double loop_rate_hz_{500.0};
 
   std::unique_ptr<udp_hand_driver::UdpHandController> controller_;
   std::unique_ptr<udp_hand_driver::UdpHandFailureDetector> failure_detector_;

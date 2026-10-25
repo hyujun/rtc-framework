@@ -195,6 +195,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_udp_hand_controller udp_hand_protocol)
   ament_target_dependencies(test_udp_hand_controller rtc_base rtc_inference rclcpp)
 
+  # HandCommLoop with scripted members: tick order, the shared E-Stop latch,
+  # the abort sequence, the timing-row vote (epic #906 D69 · D70 · D72).
+  ament_add_gtest(test_hand_comm_loop test/test_hand_comm_loop.cpp)
+  target_include_directories(test_hand_comm_loop PRIVATE include)
+  rtc_base_add_test_includes(test_hand_comm_loop)
+  ament_target_dependencies(test_hand_comm_loop rtc_base)
+
   ament_add_gtest(test_udp_hand_failure_detector test/test_udp_hand_failure_detector.cpp)
   target_include_directories(test_udp_hand_failure_detector PRIVATE include)
   target_link_libraries(test_udp_hand_failure_detector udp_hand_protocol)

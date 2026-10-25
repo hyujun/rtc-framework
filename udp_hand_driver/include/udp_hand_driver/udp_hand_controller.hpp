@@ -5,10 +5,12 @@
 //
 // All link I/O goes through the injected HandComm (hand_comm.hpp — the
 // communication-cycle seam, epic #895 D25); the default is UdpHandComm over a
-// single UDP socket. A dedicated rtc::PeriodicRtThread (CommLoop) drives one
-// RunCommCycle() per period at a fixed `loop_rate_hz` (default 500 Hz) — the
-// read/state-publish cadence is autonomous and does NOT depend on how often
-// commands arrive.
+// single UDP socket. A self-clocked HandCommLoop (hand_comm_loop.hpp — the
+// CommLoop) drives one RunCommCycle() per period at a fixed `loop_rate_hz`
+// (default 500 Hz) — the read/state-publish cadence is autonomous and does NOT
+// depend on how often commands arrive. The controller owns a loop of its own
+// (Start() runs it), or joins one the caller owns (AttachLoop() — the node runs
+// every hand of the process on one loop, epic #906 D69).
 //
 // Per comm cycle (bulk mode, UDP proto1 request names):
 //   1. Write position (0x01) + recv echo — ONLY when a command is pending
@@ -36,7 +38,6 @@
 //   - Command handoff is a lock-free SeqLock store + release-ordered flag;
 //     no eventfd / condition_variable on the RT producer path.
 
-#include "rtc_base/threading/periodic_rt_thread.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
@@ -46,6 +47,7 @@
 #include "udp_hand_driver/fake_hand_lpf.hpp"
 #include "udp_hand_driver/fingertip_ft_inferencer.hpp"
 #include "udp_hand_driver/hand_comm.hpp"
+#include "udp_hand_driver/hand_comm_loop.hpp"
 #include "udp_hand_driver/protocol/sensor_protocol.hpp"
 #include "udp_hand_driver/udp_hand_comm.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
@@ -181,7 +183,7 @@ struct UdpHandControllerConfig {
   double fake_effort_damping{0.1};       ///< effort kd: −kd·vel
 };
 
-class UdpHandController {
+class UdpHandController final : public HandCommLoopMember {
  public:
   explicit UdpHandController(UdpHandControllerConfig cfg) noexcept
       : thread_cfg_(cfg.thread_cfg),
@@ -208,13 +210,20 @@ class UdpHandController {
             num_fingertips_, sensor_decimation_, cfg.tof_lpf_enabled, cfg.tof_lpf_cutoff_hz,
             cfg.baro_lpf_enabled, cfg.baro_lpf_cutoff_hz, cfg.drift_detection_enabled,
             cfg.drift_threshold, cfg.drift_window_size}) {
+    // The own loop runs exactly this hand. Cannot fail: empty, not running.
+    (void)own_loop_.Add(this);
     const int name_count = static_cast<int>(fingertip_names_.size());
     if (name_count < num_fingertips_) {
       num_fingertips_ = name_count;
     }
   }
 
-  ~UdpHandController() { Stop(); }
+  ~UdpHandController() override {
+    Stop();
+    // Off the shared loop (joined by Stop()): its StopAll() must never reach a
+    // destroyed hand, whatever order the hands are destroyed in.
+    (void)loop_->Remove(this);
+  }
 
   UdpHandController(const UdpHandController&) = delete;
   UdpHandController& operator=(const UdpHandController&) = delete;
@@ -391,18 +400,25 @@ class UdpHandController {
     return true;
   }
 
+  /// Prepare and begin a run. On the own loop (no AttachLoop) this also
+  /// launches the CommLoop thread; on an attached loop it does not — the loop
+  /// owner starts that thread once every hand on it has started (a hand whose
+  /// Start() failed must not leave the others transacting).
   [[nodiscard]] bool Start() {
     if (!PrepareRun()) {
       return false;
     }
     BeginRun();
+    if (loop_ != &own_loop_) {
+      return true;
+    }
 
-    // Self-clocked comm loop: PeriodicRtThread ticks RunCommCycle() at
+    // Self-clocked comm loop: HandCommLoop ticks RunCommCycle() at
     // loop_rate_hz_ (clock_nanosleep TIMER_ABSTIME + overrun recovery). The
     // per-tick RtTickTimingPayload is pushed by the base after each OnTick
-    // (see MarkStateAcquired/MarkComputeDone in RunCommCycle).
-    comm_loop_.SetTimingProducer(timing_producer_);
-    comm_loop_.Start({.thread_config = thread_cfg_, .frequency_hz = loop_rate_hz_});
+    // (see MarkState/MarkCompute in RunCommCycle).
+    own_loop_.SetTimingProducer(timing_producer_);
+    own_loop_.Start({.thread_config = thread_cfg_, .frequency_hz = loop_rate_hz_});
     RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
                 "CommLoop thread started (mode=%s, loop_rate=%.1f Hz)",
                 is_bulk_ ? "bulk" : "individual", loop_rate_hz_);
@@ -444,10 +460,13 @@ class UdpHandController {
     running_.store(false, std::memory_order_release);
     // Join() requests stop (cooperative stop_token) and waits for the CommLoop
     // to exit its current tick + clock_nanosleep. Idempotent; safe on a loop
-    // that already self-exited via the E-Stop path (RequestLoopExit in
+    // that already self-exited via the E-Stop path (AbortForEstop in
     // RunCommCycle) — the zero-write has run by the time Join() returns.
     // Runs in fake mode too — the CommLoop thread is started there as well.
-    comm_loop_.Join();
+    // On an attached loop this stops every hand on it (StopAll marks each of
+    // them not running): the comm below must not close under a tick that is
+    // still running, and the loop owner stops all of them together anyway.
+    loop_->StopAll();
     if (!use_fake_hand_) {
       comm_->Close();
     }
@@ -511,8 +530,9 @@ class UdpHandController {
   /// Inject a producer for the unified per-tick timing CSV (see
   /// rtc/timing/rt_tick_timing_sample.hpp). Owned by the caller; must
   /// outlive this controller. Pass nullptr to disable. Call before Start()
-  /// (Start() forwards it to the CommLoop base). Jitter is computed by the
-  /// CommLoop base against its own loop_rate_hz_ period budget.
+  /// (Start() forwards it to the own loop). Jitter is computed by the loop
+  /// against its own loop_rate_hz_ period budget. An attached loop takes its
+  /// producer from its owner instead — this one is then unused.
   void SetTimingProducer(rtc::HandTimingBuffer* producer) noexcept { timing_producer_ = producer; }
 
   [[nodiscard]] rtc::HandTimingBuffer* TimingProducer() const noexcept { return timing_producer_; }
@@ -524,7 +544,34 @@ class UdpHandController {
   /// must outlive this controller. Call before Start(). nullptr disables the
   /// check. Clearing the latch is the owner's job (the node does it before
   /// each Start()); this class only reads it.
-  void SetEstopFlag(std::atomic<bool>* flag) noexcept { estop_flag_ = flag; }
+  void SetEstopFlag(std::atomic<bool>* flag) noexcept {
+    estop_flag_ = flag;
+    own_loop_.SetEstopFlag(flag);
+  }
+
+  // ── Comm loop (non-RT — call before Start()) ──────────────────────────
+
+  /// Run this hand on `loop`, owned by the caller, instead of its own loop.
+  /// `loop` must outlive this controller (Stop() and the destructor join it).
+  /// The caller starts the loop thread after Start() and sets the loop's
+  /// timing producer, thread config and E-Stop latch itself — this
+  /// controller's `thread_cfg` and timing producer apply to its own loop only. nullptr returns to
+  /// the own loop (it does not take this hand off `loop` — HandCommLoop::Clear() does). Refused
+  /// (false) while running, or when `loop` refuses the member (full, running, already a member).
+  [[nodiscard]] bool AttachLoop(HandCommLoop* loop) noexcept {
+    if (running_.load(std::memory_order_acquire)) {
+      return false;
+    }
+    if (loop == nullptr) {
+      loop_ = &own_loop_;
+      return true;
+    }
+    if (!loop->Add(this)) {
+      return false;
+    }
+    loop_ = loop;
+    return true;
+  }
 
   // ── State readiness ─────────────────────────────────────────────────────
 
@@ -734,50 +781,14 @@ class UdpHandController {
   }
 
  private:
-  // ── Self-clocked comm loop (PeriodicRtThread subclass) ───────────────────
-  // CommLoop ticks OnTick() -> owner_->RunCommCycle() once per loop_rate_hz_
-  // period (clock_nanosleep TIMER_ABSTIME + overrun recovery in the base). The
-  // base captures t0 before OnTick and t3 after; MarkState()/MarkCompute()
-  // forward the intra-tick breakpoints so the base can push one
-  // RtTickTimingPayload per tick. Nested so it can reach the owner's private
-  // members through the back-pointer.
-  class CommLoop final : public rtc::PeriodicRtThread {
-   public:
-    explicit CommLoop(UdpHandController* owner) noexcept : owner_(owner) {}
-
-    // Forwarders: RunCommCycle lives on the owner (not this subclass), so it
-    // cannot reach the base's protected MarkStateAcquired/MarkComputeDone
-    // directly. These expose them for the state / compute breakpoints.
-    void MarkState() noexcept { MarkStateAcquired(); }
-
-    void MarkCompute() noexcept { MarkComputeDone(); }
-
-    // Forwarders for the base's protected RT-safe controls, so RunCommCycle
-    // (which lives on the owner) can drive them: RequestLoopExit() is the
-    // pure-atomic self-exit used by the E-Stop path (no pause-mutex / cv);
-    // SuppressTiming() drops the current tick's timing row (skip / E-Stop).
-    void RequestLoopExit() noexcept { PeriodicRtThread::RequestLoopExit(); }
-
-    void SuppressTiming() noexcept { SuppressTimingThisTick(); }
-
-   protected:
-    void OnTick() override { owner_->RunCommCycle(); }
-
-    // Terminal-exit hook: the base invokes this once on the loop thread after
-    // RunCommCycle requested RequestLoopExit() (E-Stop). Performs the zero-write
-    // off the RT hot path (moved out of the E-Stop branch per review #2-A).
-    void OnLoopAborted() noexcept override { owner_->OnCommLoopAborted(); }
-
-   private:
-    UdpHandController* owner_;
-  };
-
   // One self-clocked comm cycle — the CommLoop tick body. Runs on the CommLoop
   // SCHED_FIFO thread every loop_rate_hz_ period (RT hot path). Order:
   //   decimation decision → E-Stop → (skip? return) → latch command →
   //   command-gated write → reads → sensor post-process → publish → forensics.
   // Allocation-free; logging is THROTTLE-only with RT-safe (primitive-arg) msgs.
-  void RunCommCycle() noexcept {
+  // A HandCommLoopMember override: private here, called through the member
+  // interface by the loop.
+  void RunCommCycle() noexcept override {
     // RT-tick span: the CommLoop pthread boundary (analog of rt_control_tick /
     // sim_step). Covers the whole tick incl. decimated-skip and E-Stop early
     // returns and the fake-mode dispatch below. No-op unless RTC_TRACING_ENABLED.
@@ -794,6 +805,7 @@ class UdpHandController {
 
     // E-Stop (checked every tick, before the decimation skip): zero-write once
     // and self-stop the loop. Terminal — semantically the old EventLoop `break`.
+    // On a shared loop the abort stops every hand on it (D70).
     if (estop_flag_ && estop_flag_->load(std::memory_order_acquire)) {
       RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), throttle_clock_,
                            ::udp_hand_driver::logging::kThrottleFastMs,
@@ -801,14 +813,14 @@ class UdpHandController {
       // #4 Mark not-running so command / calibration subscriber callbacks (which
       // gate on IsRunning()) stop feeding a loop that is about to exit.
       running_.store(false, std::memory_order_release);
-      // #5 This terminal cycle does no representative I/O — keep its degenerate
-      // phase timings out of the per-tick timing CSV.
-      comm_loop_.SuppressTiming();
-      // #2-A RT-safe self-exit: a pure atomic store (no pause-mutex / condition
-      // variable, unlike RequestStop()). The base drops out of its loop after
-      // this tick and runs OnLoopAborted() → OnCommLoopAborted(), which performs
-      // the zero-write off this RT hot path.
-      comm_loop_.RequestLoopExit();
+      // #5 This terminal cycle does no representative I/O — the abort keeps its
+      // degenerate phase timings out of the per-tick timing CSV.
+      // #2-A RT-safe self-exit: pure stores (no pause-mutex / condition
+      // variable, unlike RequestStop()). Every hand on the loop is marked not
+      // running first, the loop drops out after this tick, and its
+      // OnLoopAborted() runs OnCommLoopAborted() for each hand — the zero-write
+      // stays off this RT hot path.
+      loop_->AbortForEstop();
       return;
     }
 
@@ -819,7 +831,7 @@ class UdpHandController {
       comm_skip_count_.fetch_add(1, std::memory_order_relaxed);
       // #5 A decimated skip cycle does no UDP I/O — keep its degenerate phase
       // timings out of the per-tick timing CSV.
-      comm_loop_.SuppressTiming();
+      loop_->SuppressTiming();
       return;
     }
 
@@ -989,7 +1001,7 @@ class UdpHandController {
       // read_all_sensor_us keeps its pre-seam meaning (recv + decode) and
       // sensor_proc_us starts where it did.
       const auto t3 = std::chrono::steady_clock::now();
-      comm_loop_.MarkState();  // end of the read phase (base t1)
+      loop_->MarkState();  // end of the read phase (base t1)
 
       // Bulk-only state fields (1b / 2 firmware-computed force, 2 contact; 0 for
       // 1a). Set before the shared tail so the SeqLock store captures them.
@@ -1109,7 +1121,7 @@ class UdpHandController {
       // Read-phase end stamped after the finger cache copies (pre-seam
       // placement) — see the bulk branch.
       const auto t4 = std::chrono::steady_clock::now();
-      comm_loop_.MarkState();  // end of the read phase (base t1)
+      loop_->MarkState();  // end of the read phase (base t1)
 
       const CommCycleTailResult tail =
           RunCommCycleTail(state, cached_sensor_data_raw, any_recv_ok, is_sensor_cycle);
@@ -1278,7 +1290,7 @@ class UdpHandController {
     if (is_sensor_cycle)
       ++sensor_seq_;
 
-    comm_loop_.MarkState();  // end of the (fake) read phase (base t1)
+    loop_->MarkState();  // end of the (fake) read phase (base t1)
 
     std::array<int32_t, udp_hand_driver::kMaxHandSensors> sensor_data_raw{};
     const CommCycleTailResult tail =
@@ -1323,15 +1335,21 @@ class UdpHandController {
     state.received_joint_mode = static_cast<uint8_t>(joint_io_mode_);
   }
 
-  // Terminal E-Stop zero-write, invoked once by CommLoop::OnLoopAborted() on
-  // the loop thread as the loop unwinds (moved out of RunCommCycle's E-Stop
+  // HandCommLoopMember: the loop is about to exit on an E-Stop (this hand's
+  // own head check or another hand's — D70). Subscriber callbacks gate on
+  // IsRunning(), so they stop feeding a loop that is about to exit; ordered
+  // before any hand's zero-write by the loop.
+  void MarkLoopStopping() noexcept override { running_.store(false, std::memory_order_release); }
+
+  // Terminal E-Stop zero-write, invoked once by HandCommLoop::OnLoopAborted()
+  // on the loop thread as the loop unwinds (moved out of RunCommCycle's E-Stop
   // branch per review #2-A so the hot path stays free of the write + its recv).
   // Fire-and-forget through the HandComm seam: zero position AND zero
   // feedforward, no echo wait, allocation-free, noexcept. E-STOP path (E-8):
   // the UDP comm sends the same single datagram as before the seam; the CAN FD
   // comm sends Frame 1 zeros → Frame 0 zeros (epic #895 D26 · D33).
-  void OnCommLoopAborted() noexcept {
-    // Sibling of hand_comm_tick, NOT a child — CommLoop::OnLoopAborted() calls
+  void OnCommLoopAborted() noexcept override {
+    // Sibling of hand_comm_tick, NOT a child — HandCommLoop::OnLoopAborted() calls
     // this after the tick loop has unwound, so it lands on the loop thread's
     // lane outside any hand_comm_tick span.
     RTC_TRACE_SCOPE("hand_estop_zero_write");
@@ -1374,7 +1392,7 @@ class UdpHandController {
     }
 
     result.compute_done = std::chrono::steady_clock::now();
-    comm_loop_.MarkCompute();  // end of compute phase (base t2)
+    loop_->MarkCompute();  // end of compute phase (base t2)
 
     state.sensor_data_raw = sensor_data_raw;
     state.sensor_data = cached_sensor_data_;
@@ -1694,10 +1712,16 @@ class UdpHandController {
   // RunCommCycle) — this only moves the terminate off the RT loop.
   rclcpp::Clock throttle_clock_{RCL_STEADY_TIME};
 
-  // Self-clocked comm thread. Declared last so ~PeriodicRtThread joins the loop
-  // before any member it touches (comm_, sensor_processor_, …) is
-  // destroyed. Stop()/~UdpHandController also Join() it explicitly.
-  CommLoop comm_loop_{this};
+  // Self-clocked comm thread of a controller that runs alone. Declared last so
+  // ~HandCommLoop joins the loop before any member it touches (comm_,
+  // sensor_processor_, …) is destroyed. Stop()/~UdpHandController also Join()
+  // it explicitly.
+  HandCommLoop own_loop_;
+
+  // The loop this hand runs on: own_loop_, or the one handed to AttachLoop().
+  // Every RunCommCycle call into the loop goes through it. Non-RT writes only
+  // while not running.
+  HandCommLoop* loop_{&own_loop_};
 };
 
 }  // namespace udp_hand_driver

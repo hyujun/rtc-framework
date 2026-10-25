@@ -1643,4 +1643,84 @@ TEST(HandCommSeam, DefaultReadCycleIndividual_NothingReadFlagsFalse) {
   }
 }
 
+// ── Shared comm loop (epic #906 D69 · D70) ─────────────────────────────────
+// Two fake hands attached to one caller-owned HandCommLoop: Start() prepares
+// each run without a thread of its own, the loop drives both, and one latch
+// stops both. The loop is declared first so it outlives the controllers, whose
+// destructors join it.
+
+namespace {
+
+std::unique_ptr<UdpHandController> MakeFakeHand() {
+  return std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .num_fingertips = 4,
+      .use_fake_hand = true,
+      .fake_lpf_time_constant_s = 0.0,
+  });
+}
+
+rtc::PeriodicRtThreadConfig SharedLoopConfig() {
+  rtc::ThreadConfig thread = kHandCommThreadConfig;
+  thread.sched_policy = SCHED_OTHER;  // CI has no SCHED_FIFO; order is what is tested
+  thread.sched_priority = 0;
+  return {.thread_config = thread, .frequency_hz = 500.0};
+}
+
+}  // namespace
+
+TEST(HandControllerSharedLoop, AttachedStartLeavesTheThreadToTheLoopOwner) {
+  HandCommLoop loop;
+  auto right = MakeFakeHand();
+  auto left = MakeFakeHand();
+  ASSERT_TRUE(right->AttachLoop(&loop));
+  ASSERT_TRUE(left->AttachLoop(&loop));
+  EXPECT_EQ(loop.Count(), 2U);
+
+  ASSERT_TRUE(right->Start());
+  ASSERT_TRUE(left->Start());
+  EXPECT_FALSE(right->AttachLoop(nullptr)) << "a running hand changed loops";
+  std::this_thread::sleep_for(50ms);
+  EXPECT_EQ(right->cycle_count(), 0U) << "an attached Start() launched a thread";
+  EXPECT_FALSE(loop.Running());
+
+  loop.Start(SharedLoopConfig());
+  EXPECT_TRUE(PollUntil([&] { return right->cycle_count() >= 5 && left->cycle_count() >= 5; }, 2s));
+  right->Stop();  // joins the shared loop: both hands stop transacting
+  const auto right_cycles = right->cycle_count();
+  const auto left_cycles = left->cycle_count();
+  EXPECT_FALSE(loop.Running());
+  // One tick runs both hands, and a stop lands between ticks.
+  EXPECT_EQ(right_cycles, left_cycles);
+  // The loop that ran the left hand is gone: it must not read as running.
+  EXPECT_FALSE(left->IsRunning());
+  left->Stop();
+}
+
+TEST(HandControllerSharedLoop, OneLatchStopsBothHands) {
+  HandCommLoop loop;
+  std::atomic<bool> estop{false};
+  auto right = MakeFakeHand();
+  auto left = MakeFakeHand();
+  right->SetEstopFlag(&estop);
+  left->SetEstopFlag(&estop);
+  loop.SetEstopFlag(&estop);
+  ASSERT_TRUE(right->AttachLoop(&loop));
+  ASSERT_TRUE(left->AttachLoop(&loop));
+  ASSERT_TRUE(right->Start());
+  ASSERT_TRUE(left->Start());
+  loop.Start(SharedLoopConfig());
+  ASSERT_TRUE(PollUntil([&] { return left->cycle_count() >= 5; }, 2s));
+
+  estop.store(true);
+  ASSERT_TRUE(PollUntil([&] { return !right->IsRunning() && !left->IsRunning(); }, 1s));
+  ASSERT_TRUE(PollUntil([&] { return !loop.Running(); }, 1s)) << "the loop did not self-exit";
+  const auto right_cycles = right->cycle_count();
+  const auto left_cycles = left->cycle_count();
+  std::this_thread::sleep_for(50ms);
+  EXPECT_EQ(right->cycle_count(), right_cycles);
+  EXPECT_EQ(left->cycle_count(), left_cycles);
+  right->Stop();
+  left->Stop();
+}
+
 }  // namespace udp_hand_driver::test

@@ -64,6 +64,13 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // observer from a previous attempt must not survive into this one (it would
   // dangle once controller_ is replaced). Nulled before anything else.
   canfd_comm_ = nullptr;
+  // The loop is not running outside Active, so this cannot be refused; the
+  // previous configuration's controller (replaced below) leaves with it.
+  if (!comm_loop_.Clear()) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "on_configure: the comm loop is still running");
+    return CallbackReturn::FAILURE;
+  }
 
   // Per-configuration state (#927): this may be a second configure on the same
   // node, which must not inherit the previous configuration's command-name map
@@ -370,6 +377,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                  loop_rate_hz);
     return CallbackReturn::FAILURE;
   }
+  loop_rate_hz_ = loop_rate_hz;
 
   // Effective comm decimation, shared by the D42 slot below and the link_status
   // decimation further down so the two cannot disagree on the cycle period.
@@ -491,6 +499,16 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // The CommLoop polls this flag every tick (E-8). Handed over once here, on
   // the controller that will run; on_activate clears the latch before Start().
   controller_->SetEstopFlag(&estop_flag_);
+  // The node's loop drives the controller (D69); it re-checks the same latch
+  // between hands.
+  if (!controller_->AttachLoop(&comm_loop_)) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "Failed to attach the controller to the comm loop");
+    canfd_comm_ = nullptr;
+    controller_.reset();
+    return CallbackReturn::FAILURE;
+  }
+  comm_loop_.SetEstopFlag(&estop_flag_);
 
   // ── Topic names ──────────────────────────────────────────────────
   // Relative by default (D53): the node namespace supplies the prefix, so the
@@ -804,10 +822,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   LifecycleNode::on_activate(state);
 
   // ── Per-tick timing CSV setup ──────────────────────────────────────
-  // Inject producer before Start() so the CommLoop thread sees a non-null
-  // producer on its first iteration. The CommLoop (PeriodicRtThread) computes
-  // jitter against its own loop_rate_hz period budget.
-  controller_->SetTimingProducer(&hand_timing_producer_);
+  // Inject producer before the loop starts so the CommLoop thread sees a
+  // non-null producer on its first iteration. The loop (PeriodicRtThread)
+  // computes jitter against its own loop_rate_hz period budget.
+  comm_loop_.SetTimingProducer(&hand_timing_producer_);
 
   // Per-run counters, reset where the controller resets its own (Start →
   // PrepareRun → ResetCommStats) so one stats JSON never mixes two runs.
@@ -827,6 +845,13 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
                  link_desc_.c_str());
     return CallbackReturn::FAILURE;
   }
+  // The controller is attached, so its Start() prepared the run but left the
+  // thread to us: started only once every hand on the loop has started.
+  comm_loop_.Start(
+      {.thread_config = udp_hand_driver::kHandCommThreadConfig, .frequency_hz = loop_rate_hz_});
+  RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+              "CommLoop thread started (mode=%s, loop_rate=%.1f Hz)", comm_mode_str_.c_str(),
+              loop_rate_hz_);
   // A run has started: from here the stats JSON describes it, without the
   // previous run's failure verdict (#927 I-1). Not before Start() — a failed
   // start leaves the previous run's JSON and verdict to the teardown save.
@@ -969,11 +994,9 @@ void UdpHandNode::DrainHandTiming() {
 
 UdpHandNode::CallbackReturn UdpHandNode::on_deactivate(const rclcpp_lifecycle::State& state) {
   StopRuntime();
-  if (controller_) {
-    // Drop the producer pointer so a stopped EventLoop cannot push into a
-    // potentially-recreated buffer on a future activation.
-    controller_->SetTimingProducer(nullptr);
-  }
+  // Drop the producer pointer so a stopped loop cannot push into a
+  // potentially-recreated buffer on a future activation.
+  comm_loop_.SetTimingProducer(static_cast<rtc::HandTimingBuffer*>(nullptr));
   // Drain any stragglers so the CSV reflects everything pushed before stop. Safe
   // as the sole consumer here: StopRuntime() above cancelled the aux timer and
   // waited out any in-flight aux callback (issue #345).
@@ -1074,6 +1097,10 @@ void UdpHandNode::StopRuntime() {
   // removed because the E-Stop self-exit path now clears running_ from inside
   // the CommLoop (#4), so a guarded Stop() would skip the required Join() +
   // socket close + stats log after an E-Stop.
+  // The loop first: its thread runs the controller's cycle, so the comm the
+  // controller closes in Stop() must not be in use (Stop() joins it too —
+  // idempotent — but the order is the node's to state).
+  comm_loop_.Join();
   if (controller_) {
     controller_->Stop();
   }
@@ -1106,4 +1133,6 @@ void UdpHandNode::ReleaseResources() {
   calib_status_pub_.reset();
   canfd_comm_ = nullptr;  // observes an object controller_ owns — drop it first
   controller_.reset();
+  // Joined by StopRuntime(), so this cannot be refused: no dangling member.
+  (void)comm_loop_.Clear();
 }
