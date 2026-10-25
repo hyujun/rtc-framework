@@ -1445,8 +1445,11 @@ TEST_F(UdpHandNodeLifecycleTest, TwoHandConfigurationsThatAreRefused) {
       // An absolute name would be one topic for both hands.
       {"an absolute per-hand topic", {rclcpp::Parameter("joint_state_topic", "/p1b/joint_states")}},
       // 2 × 2 × 0.9 = 3.6 ms > the 2 ms slot of 500 Hz — one hand fits (below).
+      // per_hand named: two hands default to broadcast (#956 D86), whose one
+      // shared window (1.8 ms) fits.
       {"N × 2T over the slot",
-       {rclcpp::Parameter("loop_rate_hz", 500.0), rclcpp::Parameter("recv_timeout_ms", 0.9)}},
+       {rclcpp::Parameter("loop_rate_hz", 500.0), rclcpp::Parameter("recv_timeout_ms", 0.9),
+        rclcpp::Parameter("req_mode", "per_hand")}},
   };
   for (const auto& [what, extra] : cases) {
     auto node = std::make_shared<UdpHandNode>(TwoHandOptions(extra));
