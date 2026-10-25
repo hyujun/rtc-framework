@@ -12,7 +12,12 @@ and classifies each frame against the hand protocol id layout (Proto §2, as
 
     priority[28:26] · msg_type[25:22] · target[21:14] · source[13:6] · frame_idx[5:0]
 
-The host is node 0; the right hand is node 1 and the left hand node 2 (D51).
+The host is node 0; the right hand is node 1 and the left hand node 2 (D51);
+target 0xFF is every node. The one broadcast frame the host sends is the REQ
+(``req_mode: broadcast``, #956): every hand answers it with its own RESP set,
+so ``classify(..., broadcast_req=True)`` reads it as each hand's REQ. A
+broadcast CMD is never sent (the hand side writes it to flash) and is never a
+CMD here — its target is no hand's node id.
 The id arithmetic is re-derived here rather than copied as a table of
 constants: a reader that has to be told its ids cannot tell a left hand from a
 right one, and the two-hand gate (G-5) needs exactly that.
@@ -45,6 +50,7 @@ ERR_FLAG = 0x20000000
 NODE_HOST = 0x00
 NODE_RIGHT_HAND = 0x01
 NODE_LEFT_HAND = 0x02
+NODE_BROADCAST = 0xFF
 
 _PRIORITY_SHIFT = 26
 _MSG_TYPE_SHIFT = 22
@@ -98,6 +104,11 @@ def req_id(node: int) -> int:
 def resp_id(node: int, frame_idx: int) -> int:
     """`node` → host: telemetry response frame 0, 1, 2."""
     return make_can_id(0, _MSG_RESP, NODE_HOST, node, frame_idx)
+
+
+def broadcast_req_id() -> int:
+    """host → every hand: telemetry request (``req_mode: broadcast``), 0x007FC000."""
+    return make_can_id(0, _MSG_REQ, NODE_BROADCAST, NODE_HOST, 0)
 
 
 class Kind(StrEnum):
@@ -180,14 +191,17 @@ def read_candump(path: Path) -> tuple[list[Frame], int]:
     return frames, unparsed
 
 
-def classify(frame: Frame, node: int) -> Kind:
+def classify(frame: Frame, node: int, *, broadcast_req: bool = False) -> Kind:
     """Which hand-protocol frame this is, for the hand at `node`.
 
     Frames of another node (a second hand on the same bus) are OTHER, so the
-    per-hand analyses stay per hand.
+    per-hand analyses stay per hand. With `broadcast_req` the broadcast REQ is
+    this hand's REQ too (every hand answers it); without, it is OTHER.
     """
     if frame.is_error:
         return Kind.ERROR
+    if broadcast_req and frame.can_id == broadcast_req_id():
+        return Kind.REQ
     base = frame.can_id & ~_FRAME_INDEX_MASK
     if base == cmd_id(node, 0):
         return Kind.CMD

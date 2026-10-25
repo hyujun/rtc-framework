@@ -21,7 +21,8 @@ real hand must satisfy, all at once:
                   order and spacing (F1 -> F0 < 2 ms) replace the echo timing
   (x) overlap   — two hands on one bus only (G-5, epic #906): no frame of one
                   hand inside the other hand's transaction (below). Absent from
-                  a one-hand report, which therefore reads as before.
+                  a one-hand report, which therefore reads as before. Under
+                  ``req_mode: broadcast`` it is ``x.broadcast_sets`` instead.
 
 Two hands (G-5). One node drives both hands, back to back every tick (D69),
 so their transactions must not interleave on the bus. A transaction of a hand
@@ -39,6 +40,27 @@ between the two hands' E-Stop zero frames is reported, not judged (D78). Each
 hand is judged by its own run of this tool (``--hand-side``); under
 ``hand_sides`` the stats JSON carries ``_<side>`` and the one timing CSV does
 not, hence ``--explicit-side --timing-suffix ""``.
+
+Broadcast REQ (#956). With ``req_mode: broadcast`` (stats JSON
+``canfd.req_mode``, absent in older archives and then read as ``per_hand``;
+``--req-mode`` overrides) the host sends each hand its own CMD pair and then
+ONE REQ to target 0xFF (``0x007FC000``), which both hands answer with their own
+RESP set; the hands' arbitration, not the host, orders the two bursts. That REQ
+is each hand's REQ for (a)–(e) — without it a hand would see no REQ, and two
+consecutive zero writes (F0 F1 | REQ | F0 F1) would read as E-Stop pairs. The
+transaction check cannot apply (both bursts answer one frame), so (x) becomes
+``x.broadcast_sets``, per window from one broadcast REQ to the next, cut at the
+first E-Stop zero frame exactly as above: (1) no hand's RESP index twice in a
+window and (2) no host CMD between the REQ and the window's last RESP (the host
+sent during the burst) — either FAILS — and (3) the windows where exactly one
+hand's set is incomplete while the other's is complete, judged as a rate with
+(d)'s threshold and UNDECIDED band; windows where every set is missing are (d)'s
+per hand. A last window the cut leaves incomplete is not judged for (3). The
+RESP order, the per-hand REQ -> own frame 2 (the later hand's figure includes
+the other hand's burst) and the write tick's first CMD frame 0 -> last frame 2
+are reported. A bus that contradicts the mode — a broadcast REQ judged as
+per_hand, or a per-hand REQ judged as broadcast — or an explicit ``--req-mode``
+the stats JSON contradicts is exit 3 (unusable input), never a verdict.
 
 Why each definition is what it is (the reviewed corrections of H1-F06):
 
@@ -108,9 +130,11 @@ from rtc_tools.analysis.candump_log import (
     NODE_RIGHT_HAND,
     Frame,
     Kind,
+    broadcast_req_id,
     classify,
     node_id_of,
     read_candump,
+    req_id,
 )
 from rtc_tools.analysis.hand_close import quantile
 from rtc_tools.utils.session_dir import HAND_STATS_STEM, HAND_TIMING_STEM, PRE_F08_HAND_STEMS
@@ -132,6 +156,10 @@ SENSOR_HEURISTIC_REASONS = ("hand_sensor_all_zero", "hand_sensor_duplicate")
 # udp_hand_driver/test/fixtures/hand_stats_keys_proto2.txt lists the full
 # set; cmd_mismatch / mode_mismatch are per frame and excluded on purpose).
 ATTEMPT_COUNTERS = ("ok", "timeout", "error", "short_or_decode")
+# Values of the node's `req_mode` (stats JSON canfd.req_mode, #956).
+REQ_PER_HAND = "per_hand"
+REQ_BROADCAST = "broadcast"
+REQ_MODES = (REQ_PER_HAND, REQ_BROADCAST)
 
 
 @dataclass
@@ -244,16 +272,45 @@ class Violation:
 
 
 @dataclass
+class BroadcastSummary:
+    """The two-hand bus check (x) of a ``req_mode: broadcast`` run; see the module note.
+
+    A window runs from one broadcast REQ to the next (or to the E-Stop cut).
+    When the cut leaves a set of the last window incomplete, that window is
+    checked for (1) and (2) but not judged for (3): its set was cut short, not
+    lost."""
+
+    windows: int = 0  # judged windows
+    truncated: int = 0  # the last window, when the E-Stop cut left a set incomplete (0 or 1)
+    complete: int = 0  # every hand's set complete
+    one_hand_missing: int = 0  # exactly one hand's set incomplete — the judged count ((3))
+    all_missing: int = 0  # every hand's set incomplete — (d) judges these per hand
+    missing: dict[str, int] = field(default_factory=dict)  # per hand, any incomplete window
+    one_hand_missing_by_hand: dict[str, int] = field(default_factory=dict)
+    duplicates: int = 0  # (1) a hand's RESP idx twice in one window
+    cmd_in_burst: int = 0  # (2) a host CMD between the REQ and the window's last RESP
+    order: dict[str, int] = field(default_factory=dict)  # RESP pattern (R/L per frame) -> windows
+    # REQ (0xFF) -> each hand's own RESP frame 2: the later hand's figure
+    # includes the other hand's burst.
+    req_f2_ms: dict[str, list[float]] = field(default_factory=dict)
+    # Write ticks: first CMD frame 0 before the REQ -> the last RESP frame 2.
+    cmd_f2_ms: list[float] = field(default_factory=list)
+
+
+@dataclass
 class OverlapSummary:
     """The two-hand bus check (x); see the module note."""
 
     hands_on_bus: list[str] = field(default_factory=list)
     transactions: dict[str, int] = field(default_factory=dict)
+    # per_hand: intrusions; broadcast: (1) duplicate RESP and (2) CMD in the burst.
     violations: list[Violation] = field(default_factory=list)
     # Candump line of the first E-Stop zero frame; the check stops there.
     estop_line: int | None = None
     # Each hand's E-Stop Frame 1 zeros time (D78: right -> left gap, reported).
     estop_f1_t: dict[str, float] = field(default_factory=dict)
+    # Set in broadcast mode only: the per-window check replaces the transactions.
+    broadcast: BroadcastSummary | None = None
 
     @property
     def two_hands(self) -> bool:
@@ -370,15 +427,23 @@ def stage_timeouts(comm: dict, kind: str) -> int:
 
 
 def analyse_bus(
-    frames: list[Frame], node: int, unparsed_lines: int = 0, cmd_req_max_s: float = 1e-3
+    frames: list[Frame],
+    node: int,
+    unparsed_lines: int = 0,
+    cmd_req_max_s: float = 1e-3,
+    *,
+    broadcast_req: bool = False,
 ) -> BusSummary:
     """Per-hand counts, REQ -> RESP completeness, round trips and the E-Stop event.
 
     `cmd_req_max_s` bounds how long after CMD frame 0 the write tick's own REQ
     may follow (half a period from the CLI): a tick whose REQ never left
-    (send failure) must not borrow the next read-only tick's REQ."""
+    (send failure) must not borrow the next read-only tick's REQ.
+    `broadcast_req` (``req_mode: broadcast``) makes the broadcast REQ this
+    hand's REQ, so the sets, the write ticks and the E-Stop order read as they
+    do per hand."""
     s = BusSummary(frames=len(frames), unparsed_lines=unparsed_lines)
-    kinds = [classify(f, node) for f in frames]
+    kinds = [classify(f, node, broadcast_req=broadcast_req) for f in frames]
     for f, k in zip(frames, kinds, strict=True):
         if k is Kind.ERROR:
             s.error_frames += 1
@@ -515,28 +580,43 @@ def _echoes_between(
 # ── two hands on one bus (x) ────────────────────────────────────────────────
 
 
-def _hand_of(frame: Frame) -> tuple[int | None, Kind]:
-    """(hand node, kind) of a hand-protocol frame of either hand, else (None, OTHER)."""
+Role = tuple[frozenset[int], Kind]
+_NO_HAND: frozenset[int] = frozenset()
+
+
+def _hand_of(frame: Frame) -> Role:
+    """(hand nodes, kind) of a hand-protocol frame, else (empty, OTHER).
+
+    One node for every frame but the broadcast REQ, which is a REQ to every
+    hand (#956)."""
+    if not frame.is_error and frame.can_id == broadcast_req_id():
+        return frozenset(HAND_NODES), Kind.REQ
     for node in HAND_NODES:
         k = classify(frame, node)
         if k in (Kind.CMD, Kind.ECHO, Kind.REQ, Kind.RESP):
-            return node, k
+            return frozenset((node,)), k
         if k is Kind.ERROR:
-            return None, k
-    return None, Kind.OTHER
+            return _NO_HAND, k
+    return _NO_HAND, Kind.OTHER
 
 
-def _estop_rows(frames: list[Frame], roles: list[tuple[int | None, Kind]]) -> dict[int, int]:
+def _estop_rows(frames: list[Frame], roles: list[Role]) -> dict[int, int]:
     """Each hand's first E-Stop pair: row of CMD Frame 1 zeros, when CMD Frame 0
-    zeros is the next command frame to that hand with no REQ to it in between."""
+    zeros is the next command frame to that hand with no REQ to it in between
+    (a broadcast REQ is a REQ to every hand)."""
     out: dict[int, int] = {}
     pending: dict[int, int] = {}  # hand -> row of a zero F1 awaiting its F0
-    for i, ((node, k), f) in enumerate(zip(roles, frames, strict=True)):
-        if node is None or node in out:
-            continue
+    for i, ((nodes, k), f) in enumerate(zip(roles, frames, strict=True)):
         if k is Kind.REQ:
-            pending.pop(node, None)
-        elif k is Kind.CMD:
+            for n in nodes:
+                pending.pop(n, None)
+            continue
+        if len(nodes) != 1:
+            continue
+        (node,) = nodes
+        if node in out:
+            continue
+        if k is Kind.CMD:
             if f.frame_idx == 1 and f.all_zero:
                 pending[node] = i
             elif f.frame_idx == 0 and f.all_zero and node in pending:
@@ -546,11 +626,19 @@ def _estop_rows(frames: list[Frame], roles: list[tuple[int | None, Kind]]) -> di
     return out
 
 
-def analyse_overlap(frames: list[Frame]) -> OverlapSummary:
-    """Frames of one hand inside the other hand's open transaction (module note)."""
+def analyse_overlap(
+    frames: list[Frame], req_mode: str = REQ_PER_HAND, cmd_req_max_s: float = 1e-3
+) -> OverlapSummary:
+    """Frames of one hand inside the other hand's open transaction (module note).
+
+    In ``broadcast`` mode the per-window check (`BroadcastSummary`) replaces
+    the transactions; `cmd_req_max_s` bounds its write-tick figure as in
+    `analyse_bus`."""
     s = OverlapSummary()
     roles = [_hand_of(f) for f in frames]
-    on_bus = {node for node, _ in roles if node is not None}
+    # A hand is on the bus when a frame to or from it alone is: the broadcast
+    # REQ names every hand whether it is fitted or not.
+    on_bus = {n for nodes, _ in roles if len(nodes) == 1 for n in nodes}
     s.hands_on_bus = [HAND_NAMES[n] for n in HAND_NODES if n in on_bus]
     estops = _estop_rows(frames, roles)
     for node, row in estops.items():
@@ -559,13 +647,21 @@ def analyse_overlap(frames: list[Frame]) -> OverlapSummary:
     if estops:
         s.estop_line = frames[cut].line_no
 
+    if req_mode == REQ_BROADCAST:
+        hands = [n for n in HAND_NODES if n in on_bus]
+        s.broadcast = _analyse_broadcast(
+            frames, roles, hands, cut, bool(estops), cmd_req_max_s, s.violations
+        )
+        return s
+
     latest: int | None = None  # hand of the most recently opened transaction
     is_open = False
     has_req = False
     has_f1 = False
-    for f, (node, k) in zip(frames[:cut], roles[:cut], strict=True):
-        if node is None:
+    for f, (nodes, k) in zip(frames[:cut], roles[:cut], strict=True):
+        if len(nodes) != 1:
             continue
+        (node,) = nodes
         if k in (Kind.CMD, Kind.REQ):
             starts = (
                 latest != node
@@ -586,6 +682,93 @@ def analyse_overlap(frames: list[Frame]) -> OverlapSummary:
         elif node == latest and k is Kind.RESP and f.frame_idx == 2:
             is_open = False
     return s
+
+
+def _analyse_broadcast(
+    frames: list[Frame],
+    roles: list[Role],
+    hands: list[int],
+    cut: int,
+    cut_by_estop: bool,
+    cmd_req_max_s: float,
+    violations: list[Violation],
+) -> BroadcastSummary:
+    """Per broadcast-REQ window: (1) duplicate RESP, (2) host CMD in the burst,
+    (3) one hand's set missing while the other's is complete (module note)."""
+    b = BroadcastSummary(
+        missing={HAND_NAMES[n]: 0 for n in hands},
+        one_hand_missing_by_hand={HAND_NAMES[n]: 0 for n in hands},
+        req_f2_ms={HAND_NAMES[n]: [] for n in hands},
+    )
+    bcast = broadcast_req_id()
+    req_rows = [i for i in range(cut) if roles[i][1] is Kind.REQ and frames[i].can_id == bcast]
+    letter = {NODE_RIGHT_HAND: "R", NODE_LEFT_HAND: "L"}
+
+    def first_f0(lo: int, hi: int) -> float | None:
+        for j in range(lo, hi):
+            if roles[j][1] is Kind.CMD and frames[j].frame_idx == 0:
+                return frames[j].t
+        return None
+
+    # The write CMDs of a tick go out before its REQ: before the first REQ, and
+    # after the previous window's last RESP for every later one.
+    pre_f0 = first_f0(0, req_rows[0]) if req_rows else None
+    for w, lo in enumerate(req_rows):
+        hi = req_rows[w + 1] if w + 1 < len(req_rows) else cut
+        cut_short = cut_by_estop and w + 1 == len(req_rows)
+        t_req = frames[lo].t
+        seen: dict[int, set[int]] = {n: set() for n in hands}
+        t_f2: dict[int, float] = {}
+        pattern: list[str] = []
+        last_resp = None
+        for j in range(lo + 1, hi):
+            nodes, k = roles[j]
+            if k is not Kind.RESP or len(nodes) != 1:
+                continue
+            (node,) = nodes
+            if node not in seen:
+                continue
+            last_resp = j
+            idx = frames[j].frame_idx
+            pattern.append(letter[node])
+            if idx in seen[node]:
+                b.duplicates += 1
+                name = HAND_NAMES[node]
+                violations.append(Violation(frames[j].line_no, name, name, "duplicate_resp"))
+            seen[node].add(idx)
+            if idx == 2 and node not in t_f2:
+                t_f2[node] = frames[j].t
+        # (2) a host CMD before the window's last RESP; the ones after it are the
+        # next tick's write, sent ahead of the next REQ.
+        next_lo = lo + 1 if last_resp is None else last_resp + 1
+        for j in range(lo + 1, next_lo):
+            nodes, k = roles[j]
+            if k is Kind.CMD:
+                b.cmd_in_burst += 1
+                victim = HAND_NAMES[next(iter(nodes))]
+                violations.append(Violation(frames[j].line_no, "host", victim, "cmd_in_burst"))
+        this_f0, pre_f0 = pre_f0, first_f0(next_lo, hi)
+        incomplete = [n for n in hands if not seen[n] >= {0, 1, 2}]
+        if cut_short and incomplete:
+            b.truncated += 1
+            continue
+        b.windows += 1
+        key = "".join(pattern) or "-"
+        b.order[key] = b.order.get(key, 0) + 1
+        for n in incomplete:
+            b.missing[HAND_NAMES[n]] += 1
+        if not incomplete:
+            b.complete += 1
+        elif len(incomplete) == len(hands):
+            b.all_missing += 1
+        elif len(incomplete) == 1:
+            b.one_hand_missing += 1
+            b.one_hand_missing_by_hand[HAND_NAMES[incomplete[0]]] += 1
+        for n, t in t_f2.items():
+            b.req_f2_ms[HAND_NAMES[n]].append((t - t_req) * 1e3)
+        if this_f0 is not None and t_req - this_f0 <= cmd_req_max_s and len(t_f2) == len(hands):
+            b.cmd_f2_ms.append((max(t_f2.values()) - this_f0) * 1e3)
+    return b
 
 
 # ── side files ───────────────────────────────────────────────────────────────
@@ -619,6 +802,41 @@ def failure_reasons(path: Path | None) -> list[str] | None:
 def _cmd_ack(comm: dict) -> str:
     """``canfd.cmd_ack`` of the stats JSON; archives that predate it are echo mode."""
     return comm.get("canfd", {}).get("cmd_ack", "echo")
+
+
+def resolve_req_mode(requested: str, comm: dict) -> str:
+    """``--req-mode``, or with ``auto`` the stats JSON ``canfd.req_mode``;
+    archives that predate the key are per_hand. Raises ValueError on a value
+    the gate does not know or an explicit mode the JSON contradicts."""
+    recorded = comm.get("canfd", {}).get("req_mode")
+    if recorded is not None and recorded not in REQ_MODES:
+        raise ValueError(f"stats JSON canfd.req_mode {recorded!r} is not one of {REQ_MODES}")
+    if requested == "auto":
+        return recorded or REQ_PER_HAND
+    if recorded is not None and recorded != requested:
+        raise ValueError(
+            f"req_mode mismatch: --req-mode {requested} but the stats JSON says {recorded}"
+        )
+    return requested
+
+
+def req_mode_mismatch(frames: list[Frame], req_mode: str) -> str | None:
+    """Why the bus contradicts `req_mode`, or None (a REQ of the other mode is on it)."""
+    per_hand_ids = {req_id(n) for n in HAND_NODES}
+    bcast = broadcast_req_id()
+    n_bcast = sum(1 for f in frames if not f.is_error and f.can_id == bcast)
+    n_per_hand = sum(1 for f in frames if not f.is_error and f.can_id in per_hand_ids)
+    if req_mode == REQ_PER_HAND and n_bcast:
+        return (
+            f"req_mode mismatch: judged as per_hand but the bus carries {n_bcast} broadcast "
+            f"REQ(s) {bcast:08X} — pass --req-mode broadcast"
+        )
+    if req_mode == REQ_BROADCAST and n_per_hand:
+        return (
+            f"req_mode mismatch: judged as broadcast but the bus carries {n_per_hand} per-hand "
+            f"REQ(s) — pass --req-mode per_hand"
+        )
+    return None
 
 
 def _rate_check(key: str, count: int, denominator: int, th: Thresholds, what: str) -> Check:
@@ -857,7 +1075,10 @@ def judge(
 
     # (x) two hands on one bus
     if overlap is not None and overlap.two_hands:
-        checks.append(_overlap_check(overlap))
+        if overlap.broadcast is not None:
+            checks.append(_broadcast_check(overlap.broadcast, th))
+        else:
+            checks.append(_overlap_check(overlap))
     return checks
 
 
@@ -878,6 +1099,25 @@ def _overlap_check(o: OverlapSummary) -> Check:
         pairs = ", ".join(f"{k} x{v}" for k, v in sorted(o.by_pair.items()))
         note = f"intruder -> victim: {pairs}; first at line {o.violations[0].line_no}"
     return Check("x.no_overlap", PASS if n == 0 else FAIL, value, threshold, note)
+
+
+def _broadcast_check(b: BroadcastSummary, th: Thresholds) -> Check:
+    """x.broadcast_sets: (1) + (2) must be 0; (3) is a rate judged like (d)."""
+    key = "x.broadcast_sets"
+    rate = _rate_check(key, b.one_hand_missing, b.windows, th, "broadcast windows")
+    hard = b.duplicates + b.cmd_in_burst
+    value = (
+        f"duplicate RESP {b.duplicates}, CMD in burst {b.cmd_in_burst}; "
+        f"one-hand-missing {rate.value}"
+    )
+    threshold = f"duplicate 0, CMD in burst 0; one-hand-missing {rate.threshold}"
+    by_hand = ", ".join(f"{k} {v}" for k, v in sorted(b.one_hand_missing_by_hand.items()))
+    notes = [f"one-hand-missing by hand: {by_hand}"] if b.one_hand_missing else []
+    if rate.note:
+        notes.append(rate.note)
+    if hard:
+        return Check(key, FAIL, value, threshold, "; ".join(notes))
+    return Check(key, rate.verdict, value, threshold, "; ".join(notes))
 
 
 def overall(checks: list[Check]) -> str:
@@ -908,6 +1148,7 @@ def render_markdown(
     bus: BusSummary,
     th: Thresholds,
     overlap: OverlapSummary | None = None,
+    req_mode: str | None = None,
 ) -> str:
     not_evaluated = [c.key for c in checks if c.verdict == NOT_EVALUATED]
     tail = f" — not evaluated: {', '.join(not_evaluated)}" if not_evaluated else ""
@@ -934,6 +1175,11 @@ def render_markdown(
         "| figure | value | expected |",
         "|---|---|---|",
         f"| protocol / transport | {comm.get('protocol_version')} / {comm.get('transport')} | 2 / canfd |",
+        *(
+            [f"| req_mode (--req-mode, else JSON canfd.req_mode) | {req_mode} | — |"]
+            if req_mode is not None
+            else []
+        ),
         f"| recv_timeout_ms (as run) | {comm.get('recv_timeout_ms')} | {d42} |",
         f"| total_cycles / timing rows | {total_cycles} / {timing.rows} | about equal |",
         f"| median tick period | {timing.period_us_median:.0f} us | {th.period_us:.0f} us |",
@@ -993,17 +1239,52 @@ def render_markdown(
             f"{echoes} | — |"
         )
     if overlap is not None and overlap.two_hands:
-        tx = " / ".join(str(overlap.transactions.get(h, 0)) for h in ("right", "left"))
-        pairs = ", ".join(f"{k} x{v}" for k, v in sorted(overlap.by_pair.items())) or "none"
         gap = overlap.estop_gap_ms
         gap_text = "missing" if math.isnan(gap) else f"{gap:+.3f} ms"
-        out += [
-            f"| transactions right / left (before the E-Stop) | {tx} | about equal |",
-            f"| overlap intrusions (intruder -> victim) | {pairs} | none |",
+        if overlap.broadcast is not None:
+            out += _broadcast_rows(overlap.broadcast)
+        else:
+            tx = " / ".join(str(overlap.transactions.get(h, 0)) for h in ("right", "left"))
+            pairs = ", ".join(f"{k} x{v}" for k, v in sorted(overlap.by_pair.items())) or "none"
+            out += [
+                f"| transactions right / left (before the E-Stop) | {tx} | about equal |",
+                f"| overlap intrusions (intruder -> victim) | {pairs} | none |",
+            ]
+        out.append(
             f"| E-Stop zero-write gap, right CMD F1 -> left CMD F1 | {gap_text} "
-            f"| reported only (D78) |",
-        ]
+            f"| reported only (D78) |"
+        )
     return "\n".join(out) + "\n"
+
+
+def _order_text(order: dict[str, int]) -> str:
+    return ", ".join(f"{k} ×{v}" for k, v in sorted(order.items(), key=lambda kv: -kv[1]))
+
+
+def _broadcast_rows(b: BroadcastSummary) -> list[str]:
+    missing = " / ".join(str(b.missing.get(h, 0)) for h in ("right", "left"))
+    one = " / ".join(str(b.one_hand_missing_by_hand.get(h, 0)) for h in ("right", "left"))
+    rows = [
+        f"| broadcast windows judged / cut by the E-Stop | {b.windows} / {b.truncated} | — |",
+        f"| windows complete / one hand missing / every hand missing | {b.complete} / "
+        f"{b.one_hand_missing} / {b.all_missing} | (x) judges the middle, (d) the last |",
+        f"| windows with the set missing, right / left (one hand missing: {one}) | {missing} "
+        f"| reported only |",
+        f"| duplicate RESP / host CMD in the burst | {b.duplicates} / {b.cmd_in_burst} | 0 / 0 |",
+        f"| RESP order (R right, L left frame, per window) | {_order_text(b.order) or 'none'} "
+        f"| reported only |",
+    ]
+    for h in ("right", "left"):
+        if h in b.req_f2_ms:
+            rows.append(
+                f"| REQ(0xFF) -> {h} RESP frame 2 (bus, lower bound; the later hand's figure "
+                f"includes the other hand's burst) | {_dist(b.req_f2_ms[h])} | — |"
+            )
+    rows.append(
+        f"| first CMD frame 0 -> last RESP frame 2, write ticks (bus, lower bound) | "
+        f"{_dist(b.cmd_f2_ms)} | — |"
+    )
+    return rows
 
 
 def _json_safe(obj):
@@ -1056,6 +1337,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("session", type=Path, help="session directory (device/ + timing/)")
     parser.add_argument("candump", type=Path, help="candump -L log of the run")
     parser.add_argument("--hand-side", choices=("right", "left"), default="right")
+    parser.add_argument(
+        "--req-mode",
+        choices=("auto", *REQ_MODES),
+        default="auto",
+        help="the node's req_mode; auto = stats JSON canfd.req_mode, per_hand when absent",
+    )
     parser.add_argument(
         "--suffix",
         default=None,
@@ -1121,8 +1408,13 @@ def main(argv: list[str] | None = None) -> int:
         link_down = count_needle(args.node_log, LINK_DOWN_NEEDLE)
         reasons = failure_reasons(args.node_log)
         link_false = count_needle(args.link_status, "data: false")
+        req_mode = resolve_req_mode(args.req_mode, comm)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 3
+    mismatch = req_mode_mismatch(frames, req_mode)
+    if mismatch is not None:
+        print(f"error: {mismatch}", file=sys.stderr)
         return 3
 
     if args.run_id is not None:
@@ -1138,9 +1430,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     timing = summarise_timing(rows, th.p99_limit_us, th.period_us)
-    overlap = analyse_overlap(frames)
+    cmd_req_max_s = th.period_us * 0.5e-6
+    overlap = analyse_overlap(frames, req_mode, cmd_req_max_s)
     bus = analyse_bus(
-        frames, node_id_of(args.hand_side), unparsed, cmd_req_max_s=th.period_us * 0.5e-6
+        frames,
+        node_id_of(args.hand_side),
+        unparsed,
+        cmd_req_max_s=cmd_req_max_s,
+        broadcast_req=req_mode == REQ_BROADCAST,
     )
     checks = judge(
         timing,
@@ -1158,11 +1455,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"stats   : {json_path}")
     print(f"candump : {args.candump}")
     print()
-    print(render_markdown(checks, timing, comm, bus, th, overlap))
+    print(render_markdown(checks, timing, comm, bus, th, overlap, req_mode))
 
     if args.json_out is not None:
         payload = {
             "verdict": overall(checks),
+            "req_mode": req_mode,
             "checks": [asdict(c) for c in checks],
             "thresholds": asdict(th),
             "timing": asdict(timing),
@@ -1194,6 +1492,13 @@ def main(argv: list[str] | None = None) -> int:
                 "estop_line": overlap.estop_line,
                 "estop_gap_ms": overlap.estop_gap_ms,
             }
+            b = overlap.broadcast
+            if b is not None:
+                payload["overlap"]["broadcast"] = {
+                    **{k: v for k, v in asdict(b).items() if k not in ("req_f2_ms", "cmd_f2_ms")},
+                    "req_f2_ms": {h: _dist(v) for h, v in b.req_f2_ms.items()},
+                    "cmd_f2_ms": _dist(b.cmd_f2_ms),
+                }
         args.json_out.write_text(json.dumps(_json_safe(payload), indent=2) + "\n")
 
     verdict = overall(checks)
