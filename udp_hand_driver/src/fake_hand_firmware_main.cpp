@@ -53,8 +53,9 @@ udp_hand_driver::FakeHandFirmware::Config LoadConfig(rclcpp::Node& node, std::st
   cfg.proto_1b = (proto == "1b");
   const std::string side = node.declare_parameter<std::string>("hand_side", "right");
   hand_side_ok = udp_hand_driver::canfd::ParseHandSide(side, cfg.hand_side);
-  // Which firmware to mirror (#945 D65): "echo" echoes CMD frames, "none" does not.
-  const std::string ack = node.declare_parameter<std::string>("cmd_ack", "echo");
+  // Which firmware to mirror (#945 D65): "echo" echoes CMD frames, "none" (the
+  // default since D62) does not.
+  const std::string ack = node.declare_parameter<std::string>("cmd_ack", "none");
   cmd_ack_ok = udp_hand_driver::canfd::ParseCmdAck(ack, cfg.cmd_ack);
   cfg.num_fingertips = static_cast<int>(
       node.declare_parameter<int64_t>("num_fingertips", udp_hand_driver::kDefaultNumFingertips));

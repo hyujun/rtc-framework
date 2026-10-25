@@ -67,8 +67,8 @@ VALID_SIL_MODES = ("off", "loopmodel", "firmware")
 _FW_PORT_DEFAULT = 55151
 _FW_PROTO_DEFAULT = "1a"
 _FW_HAND_SIDE_DEFAULT = "right"
-# 노드 C++ declare_once("cmd_ack", "echo") 기본값의 거울 — 기본값을 바꿀 때 둘 다 바꾼다.
-_FW_CMD_ACK_DEFAULT = "echo"
+# 노드 C++ declare_once("cmd_ack", "none") 기본값의 거울 — 기본값을 바꿀 때 둘 다 바꾼다 (D62).
+_FW_CMD_ACK_DEFAULT = "none"
 # fake_hand_firmware.yaml 에 seed 가 없을 때 (fake_hand_firmware_main.cpp 의 declare 기본과 일치).
 _FW_SEED_DEFAULT = 42
 # protocol_version "2" 의 firmware SIL 이 쓰는 vcan 장치 — 노드 쪽 상수
@@ -370,7 +370,7 @@ def generate_launch_description():
             "cmd_ack",
             default_value="",
             description=(
-                "yaml cmd_ack override (빈 값=yaml, 노드 기본 echo): echo | none. protocol_version "
+                "yaml cmd_ack override (빈 값=yaml, 노드 기본 none): echo | none. protocol_version "
                 "2 펌웨어가 CMD frame 을 echo 하는지 — 펌웨어와 일치해야 한다. firmware peer 에도 "
                 "전파."
             ),

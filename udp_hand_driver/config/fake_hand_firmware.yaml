@@ -20,9 +20,9 @@
     # -- CAN FD 소켓 (protocol_version 2) --
     can_interface: "vcan0"            # SocketCAN 인터페이스 (MTU 72 — setup_vcan.sh)
     hand_side: "right"                # "right" | "left" — 노드 id (D51). 노드의 hand_side 와 일치
-    # "echo": 현 펌웨어처럼 CMD Frame 0/1 을 echo / "none": 새 펌웨어처럼 적용만 하고
-    # 응답 없음. 노드의 cmd_ack 와 일치 (udp_hand.launch.py 는 같은 값을 넘긴다)
-    cmd_ack: "echo"
+    # "echo": 구 펌웨어처럼 CMD Frame 0/1 을 echo / "none": 현 펌웨어처럼 적용만 하고
+    # 응답 없음 (기본, D62). 노드의 cmd_ack 와 일치 (udp_hand.launch.py 는 같은 값을 넘긴다)
+    cmd_ack: "none"
 
     # -- 프로토콜 --
     # "1a": barometer/ToF int32 센서 (259B bulk 응답). MODE strict verify → 모든

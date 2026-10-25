@@ -179,7 +179,8 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   //   feedforward_kt  per-motor torque constant Nm/A, firmware motor order
   //                   (D50); JointCommand.feedforward [Nm] / kt → wire [A].
   //   cmd_ack         "echo" | "none" — whether the firmware echoes CMD
-  //                   frames (#945 D61); must match the firmware.
+  //                   frames (#945 D61); must match the firmware. Default
+  //                   none: the PDO-like firmware, measured 2026-10-25 (D62).
   //   recv_timeout_ms is shared with UDP: on CAN FD it is the per-stage
   //                   deadline (echo stage, RESP-set stage — D42; under
   //                   cmd_ack none the set stage after a write gets 2T).
@@ -187,7 +188,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_once("hand_side", std::string{"right"});
   declare_once("hand_sides", std::vector<std::string>{});
   // The default mirrors udp_hand.launch.py's _FW_CMD_ACK_DEFAULT (D62).
-  declare_once("cmd_ack", std::string{"echo"});
+  declare_once("cmd_ack", std::string{"none"});
   declare_once("feedforward_kt",
                std::vector<double>(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 1.0));
 
