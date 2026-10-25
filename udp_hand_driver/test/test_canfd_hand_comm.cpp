@@ -39,8 +39,14 @@
 //              and REQ + T without one; echoes from an echoing firmware only
 //              count (echo_unexpected) — and the CmdAckMismatchDecision table
 //   DrainStale bounded drain, stale_drained accounting
+//   #956       the shared-request split (D81 · D83): one broadcast REQ
+//              (sniffed id 0x007FC000) completes both hands' sets; the bound
+//              is anchored at the REQ, not at ReceiveSet's call; queued
+//              frames are taken after the bound has passed; 2T after a
+//              write; a failed REQ is a set error, not a timeout; the write
+//              result survives ReceiveSet
 //   Tier 1     tx errno classification, closed link harmless, kRxMask bits,
-//              the vcan0 SIL detector's id set (#927 B),
+//              the vcan0 SIL detector's id set (#927 B), SupportsBroadcastReq,
 //              SensorProtocol2 decode (signs, metres, length guard, clamp)
 // ─────────────────────────────────────────────────────────────────────────────
 #include "rtc_communication/can/canfd_transport.hpp"
@@ -116,6 +122,16 @@ rtc::CanFdTransportConfig TargetedConfig(uint8_t target) {
   cfg.bitrate_switch = true;
   cfg.rx_can_id = static_cast<canid_t>(target) << kTargetShift;
   cfg.rx_can_mask = kTargetFieldMask;
+  return cfg;
+}
+
+// The peer's view: frames to its node and to the broadcast node 0xFF (#956).
+// One kernel filter with id = mask = the node's target bits passes a target
+// that has every bit of the node set — the node itself and 0xFF; the host
+// (0x00) and the other hand (0x01 vs 0x02) do not pass.
+rtc::CanFdTransportConfig PeerConfig(uint8_t node) {
+  rtc::CanFdTransportConfig cfg = TargetedConfig(node);
+  cfg.rx_can_mask = static_cast<canid_t>(node) << kTargetShift;
   return cfg;
 }
 
@@ -234,10 +250,21 @@ canfd_frame DataFrame(uint32_t bare_id, uint8_t fill) {
 //   kLate        holds the echoes until 0.6 x `late_unit` after CMD 0 arrived
 //                and the RESP burst until 1.3 x `late_unit` (the D59 chain:
 //                within (echo close) + T, outside REQ + T)
+//   kDelayedResp answers a REQ `late_unit` after it arrived (#956: a hand
+//                whose set lands past one bound and inside another)
 // Model reads go through WithModel() (mutex — test code, not RT).
 class FakePeer {
  public:
-  enum class Mode { kNormal, kDropFrame2, kReverse, kSilent, kRespFirst, kNoEcho, kLate };
+  enum class Mode {
+    kNormal,
+    kDropFrame2,
+    kReverse,
+    kSilent,
+    kRespFirst,
+    kNoEcho,
+    kLate,
+    kDelayedResp
+  };
 
   // `cmd_ack` selects which firmware the real fake mirrors (#945): under kNone
   // it never yields an echo, whatever `mode` does with the frames it yields.
@@ -247,7 +274,7 @@ class FakePeer {
       : firmware_(FakeConfig(side, cmd_ack)),
         mode_(mode),
         late_unit_(late_unit),
-        transport_(TargetedConfig(NodeIdOf(side))) {
+        transport_(PeerConfig(NodeIdOf(side))) {
     open_ = transport_.Open();
     if (open_)
       thread_ = std::thread([this] { Run(); });
@@ -289,6 +316,7 @@ class FakePeer {
       const ssize_t n = transport_.RecvFrameWithTimeout(rx, poll);
       if (n <= 0)
         continue;
+      const Clock::time_point t_rx = Clock::now();
       const bool is_req = MsgTypeOf(rx.can_id) == static_cast<uint8_t>(MsgType::kReq);
       if (MsgTypeOf(rx.can_id) == static_cast<uint8_t>(MsgType::kCmd) &&
           FrameIndexOf(rx.can_id) == 0)
@@ -327,6 +355,10 @@ class FakePeer {
             Send(f);
           held.clear();
           std::this_thread::sleep_until(t_cmd0 + late_unit_ * 13 / 10);
+          break;
+        case Mode::kDelayedResp:
+          if (is_req)
+            std::this_thread::sleep_until(t_rx + late_unit_);
           break;
         case Mode::kNormal:
         case Mode::kDropFrame2:
@@ -473,6 +505,20 @@ TEST(CanFdHandCommTier1, ClosedLinkRtMethodsAreHarmlessAndCountNothing) {
   EXPECT_EQ(c.tx_other, 0u);
   EXPECT_EQ(c.error_frames, 0u);
 
+  // #956: the shared-request split on a closed link sends nothing, a failed
+  // REQ is not counted as anything the hands did, and ReceiveSet keeps the
+  // write result while it resets the read fields.
+  HandReadOutcome::Clock::time_point t_req{};
+  EXPECT_FALSE(comm.SendCommandOnly(zeros, zeros, out));
+  EXPECT_FALSE(comm.SendBroadcastReq(t_req));
+  EXPECT_NE(t_req, HandReadOutcome::Clock::time_point{});
+  out.write_ok = true;
+  out.joint_ok = true;
+  comm.ReceiveSet(plan, bufs, out, SharedRequest{t_req, true, false});
+  EXPECT_TRUE(out.write_ok);
+  EXPECT_FALSE(out.joint_ok);
+  EXPECT_EQ(out.PhaseEnd(ReadPhase::kMotor), t_req);
+
   EXPECT_FALSE(comm.SupportsIndividualMode());
   EXPECT_TRUE(comm.InitializeSensors());
   EXPECT_DOUBLE_EQ(comm.recv_timeout_ms(), kStageTimeoutMs);
@@ -524,6 +570,10 @@ TEST(CanFdHandCommTier1, VcanSilDetectorMatchesExactlyTheHandIds) {
     EXPECT_FALSE(IsHandTraffic(id | CAN_EFF_FLAG)) << std::hex << id;
     EXPECT_NE(id & kHandTrafficFilterMask, 0u) << std::hex << id;
   }
+  // The broadcast REQ (#956) is left out on purpose: a broadcast SIL is seen
+  // through its RESP bursts, and a REQ to 0xFF from this probe would draw both
+  // hands' answers from any firmware fake on the bus anyway.
+  EXPECT_NE(ReqId(kNodeBroadcast) & kHandTrafficFilterMask, 0u);
   // Same node but another message type (type field 3) is not the protocol.
   EXPECT_FALSE(IsHandTraffic((ReqId(kNodeRightHand) | 0x00C00000u) | CAN_EFF_FLAG));
 }
@@ -1492,6 +1542,170 @@ TEST_F(CanFdHandCommVcan, D51_LeftHandCommTalksOnlyToTheLeftFake) {
     EXPECT_FLOAT_EQ(fw.target()[9], 0.9f);
     return 0;
   });
+}
+
+// ═══════════════════ #956 shared request (broadcast REQ) ═══════════════════
+
+TEST(CanFdHandCommTier1, SupportsBroadcastReqOnlyWithoutCmdEcho) {
+  CanFdHandCommConfig cfg = CommConfig();
+  cfg.cmd_ack = CmdAck::kEcho;
+  EXPECT_FALSE(CanFdHandComm(cfg).SupportsBroadcastReq());
+  cfg.cmd_ack = CmdAck::kNone;
+  EXPECT_TRUE(CanFdHandComm(cfg).SupportsBroadcastReq());
+}
+
+namespace {
+CanFdHandCommConfig BcConfig(HandSide side) {
+  CanFdHandCommConfig cfg = NoneConfig();
+  cfg.hand_side = side;
+  return cfg;
+}
+}  // namespace
+
+// One REQ to 0xFF, both hands answer, each comm completes its own set — and
+// the REQ on the bus is the broadcast id, nothing else to 0xFF.
+TEST_F(CanFdHandCommVcan, Bc956_OneBroadcastReqCompletesBothSets) {
+  rtc::CanFdTransport sniffer(TargetedConfig(kNodeBroadcast));
+  ASSERT_TRUE(sniffer.Open());
+  auto right_peer = StartPeer(HandSide::kRight, FakePeer::Mode::kNormal, 0ms, CmdAck::kNone);
+  auto left_peer = StartPeer(HandSide::kLeft, FakePeer::Mode::kNormal, 0ms, CmdAck::kNone);
+  auto right = OpenComm(BcConfig(HandSide::kRight));
+  auto left = OpenComm(BcConfig(HandSide::kLeft));
+  EXPECT_EQ(right->DrainStale(), 0);
+  EXPECT_EQ(left->DrainStale(), 0);
+
+  HandReadOutcome::Clock::time_point t_req{};
+  ASSERT_TRUE(right->SendBroadcastReq(t_req));
+  const SharedRequest req{t_req, true, false};
+  HandReadBuffers rb{};
+  HandReadBuffers lb{};
+  HandReadOutcome ro{};
+  HandReadOutcome lo{};
+  right->ReceiveSet(SensorPlan(true), rb, ro, req);
+  left->ReceiveSet(SensorPlan(true), lb, lo, req);
+  EXPECT_TRUE(ro.joint_ok);
+  EXPECT_TRUE(lo.joint_ok);
+  EXPECT_EQ(ro.sensor_recvd, static_cast<ssize_t>(sizeof(RespSet)));
+  EXPECT_EQ(lo.sensor_recvd, static_cast<ssize_t>(sizeof(RespSet)));
+  EXPECT_EQ(ro.PhaseEnd(ReadPhase::kMotor), t_req);  // S3: kMotor at the anchor
+  EXPECT_GE(lo.PhaseEnd(ReadPhase::kJoint), t_req);
+
+  const timespec wait{0, 200'000'000};
+  canfd_frame rx{};
+  ASSERT_EQ(sniffer.RecvFrameWithTimeout(rx, wait), static_cast<ssize_t>(CANFD_MTU));
+  EXPECT_EQ(rx.can_id & kExtIdMask, 0x007FC000u);
+  EXPECT_EQ(rx.len, 0);
+  EXPECT_EQ(sniffer.RecvFrameNonBlocking(rx), 0);  // one frame to 0xFF, no broadcast CMD
+
+  for (auto* comm : {right.get(), left.get()}) {
+    comm->PublishCommStats();
+    const UdpHandCommStats s = comm->comm_stats();
+    EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
+    EXPECT_EQ(Kind(s, RequestKind::kBulkSensor).ok, 1u);
+    EXPECT_EQ(s.recv_timeout + s.recv_error + s.cmd_mismatch, 0u);
+  }
+}
+
+// The bound is REQ + T, not (ReceiveSet call) + T. The right hand's window
+// stands in for 0.6 T; the left peer answers 1.5 T after the REQ, so a bound
+// anchored at the call (1.6 T) would take it.
+TEST_F(CanFdHandCommVcan, Bc956_BoundIsAnchoredAtTheReqNotTheCall) {
+  const auto kT = std::chrono::milliseconds(static_cast<int>(kStageTimeoutMs));
+  auto left_peer =
+      StartPeer(HandSide::kLeft, FakePeer::Mode::kDelayedResp, kT * 3 / 2, CmdAck::kNone);
+  auto left = OpenComm(BcConfig(HandSide::kLeft));
+  HandReadOutcome::Clock::time_point t_req{};
+  ASSERT_TRUE(left->SendBroadcastReq(t_req));
+  std::this_thread::sleep_until(t_req + kT * 6 / 10);
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  left->ReceiveSet(SensorPlan(false), bufs, out, SharedRequest{t_req, true, false});
+  const auto closed = std::chrono::steady_clock::now() - t_req;
+  EXPECT_FALSE(out.joint_ok);
+  EXPECT_GE(closed, kT * 9 / 10);
+  EXPECT_LT(closed, kT * 14 / 10);
+  left->PublishCommStats();
+  EXPECT_EQ(Kind(left->comm_stats(), RequestKind::kJointRead).timeout, 1u);
+}
+
+// A set that arrived in time is taken even when ReceiveSet starts after the
+// bound: the right hand's set never completes (bound T), the left set has
+// been queued since long before.
+TEST_F(CanFdHandCommVcan, Bc956_QueuedSetIsTakenAfterTheBoundPassed) {
+  auto right_peer = StartPeer(HandSide::kRight, FakePeer::Mode::kDropFrame2, 0ms, CmdAck::kNone);
+  auto left_peer = StartPeer(HandSide::kLeft, FakePeer::Mode::kNormal, 0ms, CmdAck::kNone);
+  auto right = OpenComm(BcConfig(HandSide::kRight));
+  auto left = OpenComm(BcConfig(HandSide::kLeft));
+  HandReadOutcome::Clock::time_point t_req{};
+  ASSERT_TRUE(right->SendBroadcastReq(t_req));
+  const SharedRequest req{t_req, true, false};
+  HandReadBuffers bufs{};
+  HandReadOutcome ro{};
+  HandReadOutcome lo{};
+  right->ReceiveSet(SensorPlan(false), bufs, ro, req);
+  EXPECT_FALSE(ro.joint_ok);
+  const auto t_left = std::chrono::steady_clock::now();
+  left->ReceiveSet(SensorPlan(false), bufs, lo, req);
+  EXPECT_TRUE(lo.joint_ok);
+  EXPECT_LT(std::chrono::steady_clock::now() - t_left, 5ms);  // no wait: it was queued
+  left->PublishCommStats();
+  EXPECT_EQ(Kind(left->comm_stats(), RequestKind::kJointRead).timeout, 0u);
+}
+
+// After a write the bound is REQ + 2T for every hand (D83), also for a hand
+// that did not write itself; the write result survives ReceiveSet (S1).
+TEST_F(CanFdHandCommVcan, Bc956_AfterAWriteEveryHandGetsTwoT) {
+  const auto kT = std::chrono::milliseconds(static_cast<int>(kStageTimeoutMs));
+  auto right_peer = StartPeer(HandSide::kRight, FakePeer::Mode::kNormal, 0ms, CmdAck::kNone);
+  auto left_peer =
+      StartPeer(HandSide::kLeft, FakePeer::Mode::kDelayedResp, kT * 3 / 2, CmdAck::kNone);
+  auto right = OpenComm(BcConfig(HandSide::kRight));
+  auto left = OpenComm(BcConfig(HandSide::kLeft));
+  HandReadOutcome ro{};
+  HandReadOutcome lo{};
+  ASSERT_TRUE(right->SendCommandOnly(Ramp(0.0f, 0.1f), HandMotorArray{}, ro));
+  EXPECT_TRUE(ro.write_ok);
+  EXPECT_FALSE(ro.write_rx);
+  const auto write_end = ro.write_end;
+  HandReadOutcome::Clock::time_point t_req{};
+  ASSERT_TRUE(right->SendBroadcastReq(t_req));
+  const SharedRequest req{t_req, true, true};
+  HandReadBuffers bufs{};
+  right->ReceiveSet(SensorPlan(false), bufs, ro, req);
+  left->ReceiveSet(SensorPlan(false), bufs, lo, req);
+  EXPECT_TRUE(ro.joint_ok);
+  EXPECT_TRUE(ro.write_ok);  // S1: kept through ReceiveSet
+  EXPECT_EQ(ro.write_end, write_end);
+  EXPECT_TRUE(lo.joint_ok);
+  EXPECT_GE(lo.PhaseEnd(ReadPhase::kJoint) - t_req, kT * 14 / 10);
+  right_peer->WithModel([](const FakeHandFirmware& fw) {
+    EXPECT_FLOAT_EQ(fw.target()[9], 0.9f);  // the command reached the right hand
+    return 0;
+  });
+  right->PublishCommStats();
+  EXPECT_EQ(Kind(right->comm_stats(), RequestKind::kWriteEcho).ok, 1u);
+}
+
+// A REQ that never left: every hand's set is an error at once, not a timeout
+// (S4), and no window opens.
+TEST_F(CanFdHandCommVcan, Bc956_FailedReqIsASetErrorWithoutAWindow) {
+  auto right = OpenComm(BcConfig(HandSide::kRight));
+  auto left = OpenComm(BcConfig(HandSide::kLeft));
+  const SharedRequest req{std::chrono::steady_clock::now(), false, false};
+  HandReadBuffers bufs{};
+  HandReadOutcome out{};
+  const auto t0 = std::chrono::steady_clock::now();
+  right->ReceiveSet(SensorPlan(true), bufs, out, req);
+  left->ReceiveSet(SensorPlan(true), bufs, out, req);
+  EXPECT_LT(std::chrono::steady_clock::now() - t0, 5ms);
+  EXPECT_FALSE(out.joint_ok);
+  for (auto* comm : {right.get(), left.get()}) {
+    comm->PublishCommStats();
+    const UdpHandCommStats s = comm->comm_stats();
+    EXPECT_EQ(Kind(s, RequestKind::kJointRead).error, 1u);
+    EXPECT_EQ(Kind(s, RequestKind::kBulkSensor).error, 1u);
+    EXPECT_EQ(s.recv_timeout, 0u);
+  }
 }
 
 }  // namespace udp_hand_driver::test

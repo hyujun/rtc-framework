@@ -39,6 +39,14 @@
 // path before the loop launches or after it joined. comm_stats() may be read
 // from any thread — it is a SeqLock snapshot published by PublishCommStats().
 //
+// Shared request (#956, the node's `req_mode broadcast`). RunCycle cut at the
+// request: the loop sends every hand's command (SendCommandOnly), then ONE
+// request that every hand on the link answers (SendBroadcastReq, on the first
+// taking-part hand's comm), then receives each hand's answer (ReceiveSet)
+// against a bound anchored at that one send. A link without such a request
+// keeps the defaults and says so through SupportsBroadcastReq(); the node
+// refuses the mode for it, so the defaults never run on a tick.
+//
 // The pre-existing UDP type names are kept (UdpHandCommStats, RequestKind);
 // they moved here unchanged so this header does not pull in the socket headers.
 
@@ -337,6 +345,17 @@ struct HandReadOutcome {
   }
 };
 
+/// The one request of a shared-request tick (#956), as the loop hands it to
+/// every hand's ReceiveSet.
+struct SharedRequest {
+  /// When the request was sent — the anchor of every hand's receive bound.
+  HandReadOutcome::Clock::time_point t_sent{};
+  bool sent{false};  ///< the send succeeded
+  /// Some hand's command reached the link this tick: each hand works through
+  /// its command before it answers, so the bound is 2T instead of T (D83).
+  bool after_write{false};
+};
+
 // ── Interface ────────────────────────────────────────────────────────────────
 
 class HandComm {
@@ -385,6 +404,11 @@ class HandComm {
   /// UdpHandController::PrepareRun() refuses to start `individual` on a comm
   /// that returns false, so a non-UDP link never runs the default below.
   [[nodiscard]] virtual bool SupportsIndividualMode() const noexcept { return false; }
+
+  /// Whether the shared-request split (SendCommandOnly · SendBroadcastReq ·
+  /// ReceiveSet) is implemented for this link's configuration. The node
+  /// evaluates it once at configure and refuses `req_mode broadcast` on false.
+  [[nodiscard]] virtual bool SupportsBroadcastReq() const noexcept { return false; }
 
   // ── RT (CommLoop thread, every tick) — noexcept, allocation-free ─────────
 
@@ -446,6 +470,38 @@ class HandComm {
     out = HandReadOutcome{};
   }
 
+  // ── Shared-request split (#956) — gated by SupportsBroadcastReq() ───────
+
+  /// The command alone: no request, no wait. Fills `out.write_ok` /
+  /// `out.write_rx` / `out.write_end` as RunCycle does and leaves the rest of
+  /// `out` alone. Returns whether any of the command reached the link (then
+  /// SharedRequest::after_write). Default: unsupported, nothing sent.
+  [[nodiscard]] virtual bool SendCommandOnly(const HandMotorArray& /*pos*/,
+                                             const HandMotorArray& /*ff_nm*/,
+                                             HandReadOutcome& out) noexcept {
+    out.write_end = HandReadOutcome::Clock::now();
+    return false;
+  }
+
+  /// The request every hand on the link answers, once per tick. `t_sent` is
+  /// set either way; false when the send failed (counted by the link).
+  /// Default: unsupported, nothing sent.
+  [[nodiscard]] virtual bool SendBroadcastReq(HandReadOutcome::Clock::time_point& t_sent) noexcept {
+    t_sent = HandReadOutcome::Clock::now();
+    return false;
+  }
+
+  /// This hand's answer to the shared request. Keeps the write fields of `out`
+  /// (SendCommandOnly filled them this tick) and resets the rest; then fills
+  /// `bufs` / `out` as ReadCycle does, with kMotor at `req.t_sent`. Default:
+  /// unsupported, nothing received.
+  virtual void ReceiveSet(const HandReadPlan& /*plan*/, HandReadBuffers& /*bufs*/,
+                          HandReadOutcome& out, const SharedRequest& req) noexcept {
+    ResetReadFields(out);
+    out.phase_end[static_cast<std::size_t>(ReadPhase::kMotor)] = req.t_sent;
+    out.StampPhase(ReadPhase::kJoint);
+  }
+
   /// Mutable working copy for the CommLoop's own per-cycle writes (total_cycles
   /// stamp). CommLoop thread only — published via PublishCommStats().
   [[nodiscard]] virtual UdpHandCommStats& comm_stats_mut() noexcept = 0;
@@ -457,6 +513,18 @@ class HandComm {
   /// (same-thread reads of the working copy).
   [[nodiscard]] virtual uint8_t last_unexpected_cmd() const noexcept = 0;
   [[nodiscard]] virtual uint16_t last_unexpected_len() const noexcept = 0;
+
+ protected:
+  /// ReceiveSet's reset: everything but the write result of this tick.
+  static void ResetReadFields(HandReadOutcome& out) noexcept {
+    const bool write_ok = out.write_ok;
+    const bool write_rx = out.write_rx;
+    const HandReadOutcome::Clock::time_point write_end = out.write_end;
+    out = HandReadOutcome{};
+    out.write_ok = write_ok;
+    out.write_rx = write_rx;
+    out.write_end = write_end;
+  }
 };
 
 }  // namespace udp_hand_driver
