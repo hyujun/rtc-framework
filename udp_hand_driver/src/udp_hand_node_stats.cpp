@@ -179,12 +179,14 @@ void UdpHandNode::SaveHandStatsLocked(const HandUnit& unit, bool verbose) const 
 
   // CAN FD-only counters (tx errno classes, error frames, echo payload
   // mismatches and unexpected echoes, RESP-set assembler) — the link's own
-  // SeqLock snapshot, taken above — and the configured cmd_ack (#945). Absent
+  // SeqLock snapshot, taken above — and the configured cmd_ack (#945) and
+  // req_mode (#956; the gate judge's `--req-mode auto` reads it). Absent
   // on UDP so the
   // proto1 key set is exactly what it was.
   if (unit.canfd_comm != nullptr) {
     ofs << "    \"canfd\": {\n"
         << "      \"cmd_ack\": \"" << udp_hand_driver::canfd::CmdAckName(cmd_ack) << "\",\n"
+        << "      \"req_mode\": \"" << req_mode_ << "\",\n"
         << "      \"tx_eagain\": " << cs.tx_eagain << ",\n"
         << "      \"tx_enobufs\": " << cs.tx_enobufs << ",\n"
         << "      \"tx_enetdown\": " << cs.tx_enetdown << ",\n"

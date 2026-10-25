@@ -104,6 +104,7 @@ _OVERRIDE_ARGS = [
     ("can_interface", str),
     ("hand_side", str),
     ("cmd_ack", str),
+    ("req_mode", str),
     ("loop_rate_hz", float),
     ("use_cpu_affinity", _as_bool),
 ]
@@ -373,6 +374,15 @@ def generate_launch_description():
                 "yaml cmd_ack override (빈 값=yaml, 노드 기본 none): echo | none. protocol_version "
                 "2 펌웨어가 CMD frame 을 echo 하는지 — 펌웨어와 일치해야 한다. firmware peer 에도 "
                 "전파."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "req_mode",
+            default_value="",
+            description=(
+                "yaml req_mode override (빈 값=yaml, 노드 기본 per_hand): per_hand | broadcast "
+                "(#956). broadcast 는 tick 마다 REQ 하나를 노드 0xFF 로 보내 두 손이 함께 답한다 — "
+                "protocol_version 2 · cmd_ack none 전용, recv_timeout_ms 는 1.4 (실기 probe)."
             ),
         ),
         DeclareLaunchArgument(

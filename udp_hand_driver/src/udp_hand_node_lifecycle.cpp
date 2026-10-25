@@ -181,6 +181,13 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   //   cmd_ack         "echo" | "none" — whether the firmware echoes CMD
   //                   frames (#945 D61); must match the firmware. Default
   //                   none: the PDO-like firmware, measured 2026-10-25 (D62).
+  //   req_mode        "per_hand" | "broadcast" (#956 D81) — broadcast sends
+  //                   one REQ to node 0xFF per tick and every hand answers it
+  //                   (protocol 2 with cmd_ack none only). recv_timeout_ms
+  //                   then bounds that one shared window (2T < slot instead of
+  //                   N × 2T) and must cover the later hand, whose burst
+  //                   follows the earlier one's: 1.4 ms on the rig (probe
+  //                   2026-10-25) against per_hand's 0.9.
   //   recv_timeout_ms is shared with UDP: on CAN FD it is the per-stage
   //                   deadline (echo stage, RESP-set stage — D42; under
   //                   cmd_ack none the set stage after a write gets 2T).
@@ -189,6 +196,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_once("hand_sides", std::vector<std::string>{});
   // The default mirrors udp_hand.launch.py's _FW_CMD_ACK_DEFAULT (D62).
   declare_once("cmd_ack", std::string{"none"});
+  declare_once("req_mode", std::string{"per_hand"});
   declare_once("feedforward_kt",
                std::vector<double>(static_cast<std::size_t>(udp_hand_driver::kNumHandMotors), 1.0));
 
@@ -469,6 +477,27 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     }
   }
 
+  // ── REQ mode (#956 D81) ──────────────────────────────────────────────
+  const std::string req_mode = get_parameter("req_mode").as_string();
+  if (req_mode != "per_hand" && req_mode != "broadcast") {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "req_mode '%s' must be \"per_hand\" or \"broadcast\"", req_mode.c_str());
+    return CallbackReturn::FAILURE;
+  }
+  const bool req_broadcast = (req_mode == "broadcast");
+  if (req_broadcast && !is_canfd) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "req_mode broadcast needs protocol_version \"2\" (got \"%s\")",
+                 protocol_version.c_str());
+    return CallbackReturn::FAILURE;
+  }
+  if (req_broadcast) {
+    // One hand is allowed: its REQ simply goes to 0xFF.
+    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                "req_mode broadcast: one REQ to node 0xFF per tick, %zu hand(s) answer",
+                sides.size());
+  }
+
   // ── CAN FD link validity (protocol_version "2") ────────────────────────
   // Everything the link needs is checked here, before a controller or any
   // publisher exists, so a bad configuration ends in Unconfigured with one
@@ -483,6 +512,12 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                    "cmd_ack '%s' must be \"echo\" (firmware echoes CMD frames) or \"none\"",
                    cmd_ack.c_str());
+      return CallbackReturn::FAILURE;
+    }
+    if (req_broadcast && common.cmd_ack != udp_hand_driver::canfd::CmdAck::kNone) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "req_mode broadcast needs cmd_ack none — the shared-REQ tick has no echo "
+                   "stage (#956 D81)");
       return CallbackReturn::FAILURE;
     }
     if (common.interface_name.empty() || common.interface_name.size() >= IFNAMSIZ) {
@@ -528,18 +563,29 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     // runs the hands back to back — so N × 2T must fit the comm slot, or one
     // slow tick overruns the next by construction rather than by a fault.
     // Under cmd_ack none the one set stage after a write is bounded by the
-    // nominal 2T itself (D64), so the bound is the same.
+    // nominal 2T itself (D64), so the bound is the same. Under req_mode
+    // broadcast every hand waits in ONE window anchored at the shared REQ
+    // (#956 D83), so the slot pays for one 2T whatever N is.
     const double slot_ms = 1000.0 / loop_rate_hz * static_cast<double>(comm_dec_guarded);
-    const double margin_ms =
-        udp_hand_driver::CommSlotMarginMs(slot_ms, sides.size(), recv_timeout_ms);
+    const std::size_t windows = req_broadcast ? 1 : sides.size();
+    const double margin_ms = udp_hand_driver::CommSlotMarginMs(slot_ms, windows, recv_timeout_ms);
     if (!(recv_timeout_ms > 0.0) || !(margin_ms > 0.0)) {
       // The declare default (10 ms) is UDP's and can never pass here: a proto2
       // configuration must set recv_timeout_ms itself (the shipped YAML: 0.4).
-      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                   "recv_timeout_ms=%.3f: protocol_version 2 needs 0 < %zu × 2 × "
-                   "recv_timeout_ms < comm slot %.3f ms (1000 / loop_rate_hz × comm_decimation) "
-                   "— D42; set it in the YAML (the declare default is the UDP value)",
-                   recv_timeout_ms, sides.size(), slot_ms);
+      if (req_broadcast) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                     "recv_timeout_ms=%.3f: req_mode broadcast needs 0 < 2 × recv_timeout_ms < "
+                     "comm slot %.3f ms (1000 / loop_rate_hz × comm_decimation) — one shared "
+                     "window (#956 D83); set it in the YAML (the declare default is the UDP "
+                     "value)",
+                     recv_timeout_ms, slot_ms);
+      } else {
+        RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                     "recv_timeout_ms=%.3f: protocol_version 2 needs 0 < %zu × 2 × "
+                     "recv_timeout_ms < comm slot %.3f ms (1000 / loop_rate_hz × comm_decimation) "
+                     "— D42; set it in the YAML (the declare default is the UDP value)",
+                     recv_timeout_ms, sides.size(), slot_ms);
+      }
       return CallbackReturn::FAILURE;
     }
     // Under a tenth of the slot left, the scheduler's own jitter can push a
@@ -552,7 +598,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
       RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                   "comm slot %.3f ms leaves %.3f ms after %zu × 2 × recv_timeout_ms (%.3f) — "
                   "under 10 %% of the slot; a jittery tick can overrun",
-                  slot_ms, margin_ms, sides.size(), recv_timeout_ms);
+                  slot_ms, margin_ms, windows, recv_timeout_ms);
     }
   }
 
@@ -654,6 +700,14 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   rclcpp::QoS calib_status_qos{1};
   calib_status_qos.reliable().transient_local();
 
+  // The loop's tick shape (#956 D82): one whole cycle per hand, or the
+  // shared-REQ passes. Set before any hand attaches; the loop is not running.
+  if (!comm_loop_.SetSharedReq(req_broadcast)) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "Failed to set req_mode on the comm loop (still running)");
+    return CallbackReturn::FAILURE;
+  }
+
   for (std::size_t h = 0; h < sides.size(); ++h) {
     auto unit = std::make_unique<HandUnit>();
     HandUnit& u = *unit;
@@ -701,6 +755,12 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
       // refusal — see the canfd_comm member note).
       auto comm = std::make_unique<udp_hand_driver::CanFdHandComm>(canfd_cfgs[h]);
       const udp_hand_driver::CanFdHandComm* raw = comm.get();
+      if (req_broadcast && !raw->SupportsBroadcastReq()) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                     "%sreq_mode broadcast is not supported by this CAN FD link configuration",
+                     u.log_tag.c_str());
+        return CallbackReturn::FAILURE;
+      }
       if (!u.controller->SetHandComm(std::move(comm))) {
         RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                      "%sFailed to install the CAN FD link on the controller", u.log_tag.c_str());
@@ -964,6 +1024,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // Cache config values needed by on_activate / the stats JSON
   comm_mode_str_ = comm_mode_str;
   protocol_version_ = protocol_version;
+  req_mode_ = req_mode;
 
   std::string links;
   for (const auto& u : units_) {

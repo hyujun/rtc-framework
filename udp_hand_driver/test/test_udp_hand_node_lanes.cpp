@@ -369,6 +369,8 @@ TEST(CommSlotMarginMs, IsTheSlotLeftAfterEveryHandsTwoStages) {
   EXPECT_NEAR(CommSlotMarginMs(2.0, 1, 0.9), 0.2, 1e-9);  // 500 Hz, one hand
   EXPECT_LT(CommSlotMarginMs(2.0, 2, 0.9), 0.0);          // 500 Hz cannot hold two
   EXPECT_NEAR(CommSlotMarginMs(5.0, 2, 0.9), 1.4, 1e-9);  // 200 Hz fallback (D77)
+  // req_mode broadcast (#956 D83): the hands share one window, so one 2T.
+  EXPECT_NEAR(CommSlotMarginMs(4.0, 1, 1.4), 1.2, 1e-9);  // 250 Hz, T from the rig probe
 }
 
 }  // namespace

@@ -3,7 +3,10 @@
 // the loop's own contract is pinned without a link: tick order, the shared
 // E-Stop latch between hands, the abort sequence (every hand stops before any
 // zero-write, each zero-write once), the timing-row vote, and that one hand
-// behaves exactly like the per-controller loop it replaced.
+// behaves exactly like the per-controller loop it replaced. The shared-request
+// tick (#956): Prepare per hand → one REQ from the first hand that takes part →
+// Finish per taking-part hand, and the E-Stop re-checks before every Prepare
+// after the first, right before the REQ and between Finishes.
 
 #include "rtc_base/testing/wait_until.hpp"
 #include "rtc_base/threading/thread_config.hpp"
@@ -23,9 +26,11 @@ namespace {
 
 using udp_hand_driver::HandCommLoop;
 using udp_hand_driver::HandCommLoopMember;
+using udp_hand_driver::SharedReqPrep;
+using udp_hand_driver::SharedRequest;
 using namespace std::chrono_literals;
 
-enum class What { kRun, kStop, kAbort };
+enum class What { kRun, kStop, kAbort, kPrepare, kReq, kFinish };
 
 struct Event {
   int hand;
@@ -67,7 +72,31 @@ class ScriptedHand final : public HandCommLoopMember {
 
   void VoteSuppress(bool vote) { suppress_.store(vote); }
 
+  // Shared-request tick script (#956): whether Prepare takes part / wrote,
+  // whether SendSharedReq succeeds, and a latch raised on the n-th call of a
+  // step (kPrepare, kReq or kFinish).
+  void TakesPart(bool v) { takes_part_ = v; }
+
+  void Writes(bool v) { writes_ = v; }
+
+  void ReqSends(bool v) { req_sends_ = v; }
+
+  void RaiseLatchOnStep(std::atomic<bool>* latch, What step, int n) {
+    step_latch_ = latch;
+    latch_step_ = step;
+    latch_step_n_ = n;
+  }
+
   [[nodiscard]] int Runs() const { return runs_.load(); }
+
+  [[nodiscard]] int Prepares() const { return prepares_.load(); }
+
+  [[nodiscard]] int Finishes() const { return finishes_.load(); }
+
+  [[nodiscard]] SharedRequest LastReq() const {
+    std::lock_guard lock(req_mutex_);
+    return last_req_;
+  }
 
  private:
   void RunCommCycle() noexcept override {
@@ -85,6 +114,42 @@ class ScriptedHand final : public HandCommLoopMember {
     }
   }
 
+  SharedReqPrep PrepareSharedReqCycle() noexcept override {
+    if (head_latch_ != nullptr && head_latch_->load()) {
+      loop_.AbortForEstop();
+      return {};
+    }
+    const int n = prepares_.fetch_add(1) + 1;
+    log_.Add(id_, What::kPrepare);
+    MaybeRaise(What::kPrepare, n);
+    return {.takes_part = takes_part_, .wrote = writes_};
+  }
+
+  bool SendSharedReq(
+      udp_hand_driver::HandReadOutcome::Clock::time_point& t_sent) noexcept override {
+    const int n = reqs_.fetch_add(1) + 1;
+    log_.Add(id_, What::kReq);
+    t_sent = udp_hand_driver::HandReadOutcome::Clock::now();
+    MaybeRaise(What::kReq, n);
+    return req_sends_;
+  }
+
+  void FinishSharedReqCycle(const SharedRequest& req) noexcept override {
+    const int n = finishes_.fetch_add(1) + 1;
+    log_.Add(id_, What::kFinish);
+    {
+      std::lock_guard lock(req_mutex_);
+      last_req_ = req;
+    }
+    MaybeRaise(What::kFinish, n);
+  }
+
+  void MaybeRaise(What step, int n) {
+    if (step_latch_ != nullptr && step == latch_step_ && n == latch_step_n_) {
+      step_latch_->store(true);
+    }
+  }
+
   void MarkLoopStopping() noexcept override { log_.Add(id_, What::kStop); }
 
   void OnCommLoopAborted() noexcept override { log_.Add(id_, What::kAbort); }
@@ -97,6 +162,17 @@ class ScriptedHand final : public HandCommLoopMember {
   const std::atomic<bool>* head_latch_{nullptr};
   std::atomic<bool> suppress_{false};
   std::atomic<int> runs_{0};
+  bool takes_part_{true};
+  bool writes_{false};
+  bool req_sends_{true};
+  std::atomic<bool>* step_latch_{nullptr};
+  What latch_step_{What::kRun};
+  int latch_step_n_{0};
+  std::atomic<int> prepares_{0};
+  std::atomic<int> reqs_{0};
+  std::atomic<int> finishes_{0};
+  mutable std::mutex req_mutex_;
+  SharedRequest last_req_{};
 };
 
 // CFS, no pin: the contract under test is ordering, not latency, and CI has
@@ -350,6 +426,206 @@ TEST(HandCommLoop, StopAllMarksEveryHandAndRemoveKeepsTheOrder) {
   ASSERT_TRUE(rtc::testing::WaitUntil([&] { return left.Runs() >= left_before + 3; }));
   EXPECT_FALSE(loop.Remove(&left)) << "removed from a running loop";
   loop.Join();
+}
+
+// ═══════════════════ #956 shared-request tick ═══════════════════
+
+// The events of one shared-request tick, in order, as "P0 P1 R0 F0 F1".
+std::vector<std::vector<Event>> SplitTicks(const std::vector<Event>& events, int first_hand) {
+  std::vector<std::vector<Event>> ticks;
+  for (const Event& e : events) {
+    if (e.what == What::kPrepare && e.hand == first_hand) {
+      ticks.emplace_back();
+    }
+    if (!ticks.empty()) {
+      ticks.back().push_back(e);
+    }
+  }
+  return ticks;
+}
+
+bool Is(const Event& e, int hand, What what) {
+  return e.hand == hand && e.what == what;
+}
+
+// D82: Prepare for every hand in Add() order, then ONE REQ from the first
+// hand, then Finish for every hand; the REQ's result reaches every Finish.
+TEST(HandCommLoopSharedReq, PrepareEachThenOneReqThenFinishEach) {
+  EventLog log;
+  HandCommLoop loop;
+  ScriptedHand right(0, log, loop);
+  ScriptedHand left(1, log, loop);
+  ASSERT_TRUE(loop.Add(&right));
+  ASSERT_TRUE(loop.Add(&left));
+  ASSERT_TRUE(loop.SetSharedReq(true));
+  left.Writes(true);  // one hand's write grows every hand's bound (D83)
+  rtc::HandTimingBuffer timing;
+  loop.SetTimingProducer(&timing);
+
+  loop.Start(LoopConfig());
+  EXPECT_FALSE(loop.SetSharedReq(false)) << "changed under a running loop";
+  ASSERT_TRUE(rtc::testing::WaitUntil([&] { return left.Finishes() >= 10; }));
+  loop.Join();
+
+  const auto events = log.Snapshot();
+  EXPECT_EQ(CountOf(events, 0, What::kRun) + CountOf(events, 1, What::kRun), 0u);
+  const auto ticks = SplitTicks(events, 0);
+  ASSERT_GE(ticks.size(), 10u);
+  for (std::size_t t = 0; t < ticks.size(); ++t) {
+    const auto& k = ticks[t];
+    ASSERT_EQ(k.size(), 5u) << "tick " << t;
+    EXPECT_TRUE(Is(k[0], 0, What::kPrepare));
+    EXPECT_TRUE(Is(k[1], 1, What::kPrepare));
+    EXPECT_TRUE(Is(k[2], 0, What::kReq)) << "the first hand sends the one REQ";
+    EXPECT_TRUE(Is(k[3], 0, What::kFinish));
+    EXPECT_TRUE(Is(k[4], 1, What::kFinish));
+  }
+  const SharedRequest req = left.LastReq();
+  EXPECT_TRUE(req.sent);
+  EXPECT_TRUE(req.after_write);
+  EXPECT_NE(req.t_sent, udp_hand_driver::HandReadOutcome::Clock::time_point{});
+  EXPECT_EQ(DrainRows(timing), loop.TickCount());
+}
+
+// A failed REQ is handed to every Finish (each counts its set error — S4).
+TEST(HandCommLoopSharedReq, AFailedReqReachesEveryFinish) {
+  EventLog log;
+  HandCommLoop loop;
+  ScriptedHand right(0, log, loop);
+  ScriptedHand left(1, log, loop);
+  ASSERT_TRUE(loop.Add(&right));
+  ASSERT_TRUE(loop.Add(&left));
+  ASSERT_TRUE(loop.SetSharedReq(true));
+  right.ReqSends(false);
+  loop.Start(LoopConfig());
+  ASSERT_TRUE(rtc::testing::WaitUntil([&] { return left.Finishes() >= 3; }));
+  loop.Join();
+  EXPECT_FALSE(right.LastReq().sent);
+  EXPECT_FALSE(left.LastReq().sent);
+  EXPECT_FALSE(left.LastReq().after_write);
+}
+
+// A hand that does not take part (fake model, decimated skip — S6) gets no
+// Finish; the REQ comes from the first hand that does.
+TEST(HandCommLoopSharedReq, TheFirstTakingPartHandSendsTheReq) {
+  EventLog log;
+  HandCommLoop loop;
+  ScriptedHand right(0, log, loop);
+  ScriptedHand left(1, log, loop);
+  ASSERT_TRUE(loop.Add(&right));
+  ASSERT_TRUE(loop.Add(&left));
+  ASSERT_TRUE(loop.SetSharedReq(true));
+  right.TakesPart(false);
+  loop.Start(LoopConfig());
+  ASSERT_TRUE(rtc::testing::WaitUntil([&] { return left.Finishes() >= 5; }));
+  loop.Join();
+
+  const auto events = log.Snapshot();
+  EXPECT_EQ(CountOf(events, 0, What::kFinish), 0u);
+  EXPECT_EQ(CountOf(events, 0, What::kReq), 0u);
+  for (const auto& k : SplitTicks(events, 0)) {
+    ASSERT_EQ(k.size(), 4u);
+    EXPECT_TRUE(Is(k[2], 1, What::kReq));
+    EXPECT_TRUE(Is(k[3], 1, What::kFinish));
+  }
+}
+
+// Nobody takes part: no REQ goes out at all.
+TEST(HandCommLoopSharedReq, NoHandTakingPartSendsNoReq) {
+  EventLog log;
+  HandCommLoop loop;
+  ScriptedHand right(0, log, loop);
+  ScriptedHand left(1, log, loop);
+  ASSERT_TRUE(loop.Add(&right));
+  ASSERT_TRUE(loop.Add(&left));
+  ASSERT_TRUE(loop.SetSharedReq(true));
+  right.TakesPart(false);
+  left.TakesPart(false);
+  loop.Start(LoopConfig());
+  ASSERT_TRUE(rtc::testing::WaitUntil([&] { return left.Prepares() >= 5; }));
+  loop.Join();
+  const auto events = log.Snapshot();
+  EXPECT_EQ(CountOf(events, 0, What::kReq) + CountOf(events, 1, What::kReq), 0u);
+  EXPECT_EQ(CountOf(events, 0, What::kFinish) + CountOf(events, 1, What::kFinish), 0u);
+}
+
+// The abort sequence ends a shared-request tick like a per-hand one: every
+// hand stops, then each zero-writes once, and nothing transacts after.
+void ExpectOneAbortSequence(const std::vector<Event>& events) {
+  for (const int hand : {0, 1}) {
+    EXPECT_EQ(CountOf(events, hand, What::kStop), 1u) << "hand " << hand;
+    EXPECT_EQ(CountOf(events, hand, What::kAbort), 1u) << "hand " << hand;
+  }
+  ASSERT_GE(events.size(), 4u);
+  const auto n = events.size();
+  EXPECT_EQ(events[n - 4].what, What::kStop);
+  EXPECT_EQ(events[n - 3].what, What::kStop);
+  EXPECT_TRUE(Is(events[n - 2], 0, What::kAbort));
+  EXPECT_TRUE(Is(events[n - 1], 1, What::kAbort));
+}
+
+struct AbortRun {
+  int right_prepares, left_prepares, reqs, right_finishes, left_finishes;
+};
+
+// Runs a two-hand shared-request loop until `raiser` raises the latch on the
+// third call of `step`; returns what each hand did.
+AbortRun RunUntilLatch(int raiser, What step, std::vector<Event>& events) {
+  EventLog log;
+  HandCommLoop loop;
+  std::atomic<bool> latch{false};
+  ScriptedHand right(0, log, loop);
+  ScriptedHand left(1, log, loop);
+  (raiser == 0 ? right : left).RaiseLatchOnStep(&latch, step, 3);
+  right.CheckLatchAtHead(&latch);
+  left.CheckLatchAtHead(&latch);
+  EXPECT_TRUE(loop.Add(&right));
+  EXPECT_TRUE(loop.Add(&left));
+  EXPECT_TRUE(loop.SetSharedReq(true));
+  loop.SetEstopFlag(&latch);
+  loop.Start(LoopConfig());
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return !loop.Running(); }))
+      << "the loop did not self-exit on the E-Stop";
+  loop.Join();
+  events = log.Snapshot();
+  return {right.Prepares(), left.Prepares(), static_cast<int>(CountOf(events, 0, What::kReq)),
+          right.Finishes(), left.Finishes()};
+}
+
+// S7 (a): the latch rises in hand 0's Prepare — the check before hand 1's
+// Prepare aborts: no REQ, no Finish that tick.
+TEST(HandCommLoopSharedReq, LatchInTheFirstPrepareStopsBeforeTheReq) {
+  std::vector<Event> events;
+  const AbortRun r = RunUntilLatch(0, What::kPrepare, events);
+  EXPECT_EQ(r.right_prepares, 3);
+  EXPECT_EQ(r.left_prepares, 2);
+  EXPECT_EQ(r.reqs, 2);
+  EXPECT_EQ(r.right_finishes, 2);
+  EXPECT_EQ(r.left_finishes, 2);
+  ExpectOneAbortSequence(events);
+}
+
+// S7 (b): the latch rises in the last Prepare — the re-check right before the
+// REQ aborts, so no hand is made to burst.
+TEST(HandCommLoopSharedReq, LatchAfterThePreparesStopsBeforeTheReq) {
+  std::vector<Event> events;
+  const AbortRun r = RunUntilLatch(1, What::kPrepare, events);
+  EXPECT_EQ(r.right_prepares, 3);
+  EXPECT_EQ(r.left_prepares, 3);
+  EXPECT_EQ(r.reqs, 2) << "the REQ went out after the latch rose";
+  EXPECT_EQ(r.right_finishes, 2);
+  EXPECT_EQ(r.left_finishes, 2);
+  ExpectOneAbortSequence(events);
+}
+
+// S7 (c): the latch rises in hand 0's Finish — hand 1's Finish is skipped.
+TEST(HandCommLoopSharedReq, LatchInAFinishSkipsTheRemainingFinishes) {
+  std::vector<Event> events;
+  const AbortRun r = RunUntilLatch(0, What::kFinish, events);
+  EXPECT_EQ(r.reqs, 3);
+  EXPECT_EQ(r.right_finishes, 3);
+  EXPECT_EQ(r.left_finishes, 2);
+  ExpectOneAbortSequence(events);
 }
 
 }  // namespace

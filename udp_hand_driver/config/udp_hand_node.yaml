@@ -63,6 +63,10 @@
                                       # none 펌웨어 실측 (2026-10-25, 500 Hz write 300 s): read-only
                                       # max 0.744 ms < T, write 세트 CMD F0→RESP F2 max 1.141 ms
                                       # < 2T, 세트 타임아웃 0 → 0.9 유지 (D62 · D64).
+                                      # req_mode broadcast (#956) 는 두 손이 한 창을 함께 쓴다:
+                                      # REQ + T (write 뒤 2T), 예산은 손 수와 무관하게 2 × 값 <
+                                      # slot. 뒤에 답하는 손은 앞 손 버스트 뒤에 오므로 실기 값은
+                                      # 1.4 (probe 2026-10-25: 왼손 REQ→F2 max 1.154 ms × 1.2).
 
     # -- CAN FD 링크 (protocol_version "2" 전용 — 1a / 1b 에서는 무시) --
     # can_interface : SocketCAN 장치. sil_mode=firmware 는 vcan0 로 강제한다.
@@ -78,6 +82,9 @@
     #                 불일치는 실패가 아니라 카운터로 드러난다 — echo 인데 펌웨어가
     #                 조용하면 per_request.write_echo.timeout 이 전부, none 인데 echo 가
     #                 오면 canfd.echo_unexpected 가 오르고, 노드가 WARN 을 한 번 낸다.
+    # req_mode      : "per_hand" (기본) | "broadcast" (#956). broadcast 는 tick 마다 손별
+    #                 CMD 뒤 REQ 하나를 노드 0xFF 로 보내 모든 손이 답한다 — cmd_ack "none"
+    #                 전용 (echo 와 함께면 configure 거부), recv_timeout_ms 는 위 1.4.
     # hand_sides    : 두 손 — 예 ["right", "left"]. 노드 하나 · CommLoop 하나가 두 손을
     #                 목록 순서로 돌린다 (README "두 손"). 토픽은 <side>/ 접두, 손별 키는
     #                 right.joint_state_names 처럼 <side>. 접두 (없으면 아래 flat 키).
@@ -87,6 +94,7 @@
     # hand_side: "right"
     # hand_sides: ["right", "left"]
     cmd_ack: "none"
+    req_mode: "per_hand"
     feedforward_kt: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
     # -- 통신 모드 --

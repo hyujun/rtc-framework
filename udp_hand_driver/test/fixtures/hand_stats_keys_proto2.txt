@@ -19,6 +19,7 @@ comm_stats.canfd.cmd_ack
 comm_stats.canfd.echo_payload_mismatch
 comm_stats.canfd.echo_unexpected
 comm_stats.canfd.error_frames
+comm_stats.canfd.req_mode
 comm_stats.canfd.tx_eagain
 comm_stats.canfd.tx_enetdown
 comm_stats.canfd.tx_enobufs

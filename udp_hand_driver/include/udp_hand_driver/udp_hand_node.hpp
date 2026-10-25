@@ -217,12 +217,14 @@ inline const rtc::ThreadConfig kHandAuxIoConfig{.cpu_core = -1,
   return prefix + name;
 }
 
-/// Free room left in the comm slot once every hand's two receive stages are
-/// paid for (D42 generalized to N hands, D71): `slot − N × 2T`, in ms.
-/// Configure refuses a non-positive result and warns below 10 % of the slot.
-[[nodiscard]] constexpr double CommSlotMarginMs(double slot_ms, std::size_t hands,
+/// Free room left in the comm slot once every receive window's two stages are
+/// paid for (D42 generalized to N hands, D71): `slot − windows × 2T`, in ms —
+/// `windows` is the hand count per_hand and 1 under req_mode broadcast, whose
+/// hands share one window (#956 D83). Configure refuses a non-positive result
+/// and warns below 10 % of the slot.
+[[nodiscard]] constexpr double CommSlotMarginMs(double slot_ms, std::size_t windows,
                                                 double recv_timeout_ms) noexcept {
-  return slot_ms - static_cast<double>(hands) * 2.0 * recv_timeout_ms;
+  return slot_ms - static_cast<double>(windows) * 2.0 * recv_timeout_ms;
 }
 }  // namespace udp_hand_driver
 
@@ -548,6 +550,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Cached config for on_activate logging and the stats JSON.
   std::string comm_mode_str_;
   std::string protocol_version_;
+  std::string req_mode_{"per_hand"};  ///< #956: stats JSON canfd.req_mode
 
   // ── Per-tick timing CSV (mpc_timing_log pattern) ───────────────────────
   // Producer (filled on the CommLoop thread) → 1 Hz drain on aux timer →

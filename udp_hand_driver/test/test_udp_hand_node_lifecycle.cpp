@@ -842,6 +842,7 @@ TEST_F(UdpHandNodeLifecycleTest, Proto2StatsJsonKeysMatchTheProto2FixtureExactly
   EXPECT_NE(json.find("\"protocol_version\": \"2\""), std::string::npos);
   EXPECT_NE(json.find("\"transport\": \"canfd\""), std::string::npos);
   EXPECT_NE(json.find("\"cmd_ack\": \"none\""), std::string::npos);  // the declare default (D62)
+  EXPECT_NE(json.find("\"req_mode\": \"per_hand\""), std::string::npos);  // #956 default
   for (const auto& k : ReadFixtureLines(fixtures / "hand_stats_keys.txt")) {
     if (k.rfind("timing_stats.read_", 0) == 0) {
       continue;  // individual-mode timing keys — bulk writes its own set
@@ -1465,6 +1466,122 @@ TEST_F(UdpHandNodeLifecycleTest, TwoHandConfigurationsThatAreRefused) {
   EXPECT_EQ(one->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
   ASSERT_EQ(one->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
   exec_.remove_node(one->get_node_base_interface());
+}
+
+// ── req_mode (#956 D81 · D83) ──────────────────────────────────────────────
+
+// "per_hand" | "broadcast" exactly; broadcast only on protocol 2 with cmd_ack
+// none; one hand is allowed.
+TEST_F(UdpHandNodeLifecycleTest, ReqModeValuesAndTheCombinationsThatAreRefused) {
+  for (const char* bad : {"Broadcast", "both", "broadcast ", ""}) {
+    auto node = std::make_shared<UdpHandNode>(Proto2Options({
+        rclcpp::Parameter("sil_mode", "loopmodel"),
+        rclcpp::Parameter("req_mode", bad),
+    }));
+    exec_.add_node(node->get_node_base_interface());
+    EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+        << "req_mode '" << bad << "'";
+    exec_.remove_node(node->get_node_base_interface());
+  }
+  const std::vector<std::pair<std::string, std::vector<rclcpp::Parameter>>> refused = {
+      {"broadcast over UDP",
+       {rclcpp::Parameter("protocol_version", "1b"), rclcpp::Parameter("recv_timeout_ms", 10.0)}},
+      {"broadcast with cmd_ack echo", {rclcpp::Parameter("cmd_ack", "echo")}},
+  };
+  for (const auto& [what, extra] : refused) {
+    std::vector<rclcpp::Parameter> params = {rclcpp::Parameter("sil_mode", "loopmodel"),
+                                             rclcpp::Parameter("req_mode", "broadcast")};
+    params.insert(params.end(), extra.begin(), extra.end());
+    auto node = std::make_shared<UdpHandNode>(Proto2Options(params));
+    exec_.add_node(node->get_node_base_interface());
+    EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+        << what;
+    exec_.remove_node(node->get_node_base_interface());
+  }
+  for (const char* ok : {"per_hand", "broadcast"}) {
+    auto one = std::make_shared<UdpHandNode>(Proto2Options({
+        rclcpp::Parameter("sil_mode", "loopmodel"),
+        rclcpp::Parameter("req_mode", ok),
+    }));
+    exec_.add_node(one->get_node_base_interface());
+    EXPECT_EQ(one->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) << ok;
+    ASSERT_EQ(one->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+    exec_.remove_node(one->get_node_base_interface());
+  }
+}
+
+// D83: under broadcast the slot pays for ONE window — two hands at 250 Hz
+// with the rig's T 1.4 ms (2.8 < 4.0) configure, the same values per_hand
+// (2 × 2.8 = 5.6 > 4.0) do not, and 2 × 2.1 > 4.0 is refused either way.
+TEST_F(UdpHandNodeLifecycleTest, BroadcastBudgetIsOneSharedWindow) {
+  struct Case {
+    const char* req_mode;
+    double recv_timeout_ms;
+    bool accepted;
+  };
+
+  const Case cases[] = {
+      {"broadcast", 1.4, true}, {"per_hand", 1.4, false}, {"broadcast", 2.1, false}};
+  for (const auto& c : cases) {
+    auto node = std::make_shared<UdpHandNode>(TwoHandOptions({
+        rclcpp::Parameter("loop_rate_hz", 250.0),
+        rclcpp::Parameter("publish_rate", 250.0),
+        rclcpp::Parameter("recv_timeout_ms", c.recv_timeout_ms),
+        rclcpp::Parameter("req_mode", c.req_mode),
+    }));
+    exec_.add_node(node->get_node_base_interface());
+    const auto state = node->configure().id();
+    if (c.accepted) {
+      EXPECT_EQ(state, lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
+          << c.req_mode << " " << c.recv_timeout_ms;
+      ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+    } else {
+      EXPECT_EQ(state, lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+          << c.req_mode << " " << c.recv_timeout_ms;
+    }
+    exec_.remove_node(node->get_node_base_interface());
+  }
+}
+
+// loopmodel under broadcast: the fake hands take no part in the shared REQ
+// (S6) — their whole cycle runs in the Prepare pass — so both still publish,
+// and each stats JSON names the mode.
+TEST_F(UdpHandNodeLifecycleTest, BroadcastLoopmodelRunsBothHandsAndStatsNameTheMode) {
+  std::error_code ec;
+  for (const char* name : {"hand_stats_right.json", "hand_stats_left.json"}) {
+    std::filesystem::remove(session_dir_ / "device" / name, ec);
+  }
+  auto node =
+      std::make_shared<UdpHandNode>(TwoHandOptions({rclcpp::Parameter("req_mode", "broadcast")}));
+  auto probe = std::make_shared<rclcpp::Node>("hand_broadcast_probe");
+  exec_.add_node(node->get_node_base_interface());
+  exec_.add_node(probe);
+  std::map<std::string, int> received;
+  std::vector<rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr> subs;
+  for (const std::string side : {"right", "left"}) {
+    subs.push_back(probe->create_subscription<sensor_msgs::msg::JointState>(
+        "/hand/" + side + "/joint_states", rclcpp::QoS(1).best_effort(),
+        [&, side](sensor_msgs::msg::JointState::SharedPtr) { ++received[side]; }));
+  }
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  EXPECT_EQ(ThreadsNamed("hand_comm"), 1);
+  EXPECT_TRUE(SpinUntil([&] { return received["right"] >= 5 && received["left"] >= 5; }, 10s));
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  subs.clear();
+  exec_.remove_node(probe);
+  exec_.remove_node(node->get_node_base_interface());
+  for (const char* name : {"hand_stats_right.json", "hand_stats_left.json"}) {
+    const auto path = session_dir_ / "device" / name;
+    ASSERT_TRUE(std::filesystem::exists(path)) << path;
+    const std::string json = ReadFile(path);
+    EXPECT_NE(json.find("\"req_mode\": \"broadcast\""), std::string::npos) << path;
+    // No REQ was ever attempted on the never-opened links.
+    EXPECT_NE(json.find("\"joint_read\": { \"ok\": 0, \"timeout\": 0, \"error\": 0"),
+              std::string::npos)
+        << path;
+  }
 }
 
 }  // namespace
