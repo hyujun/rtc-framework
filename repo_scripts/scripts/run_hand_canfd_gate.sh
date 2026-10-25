@@ -2,8 +2,8 @@
 # run_hand_canfd_gate.sh — one CAN FD hand gate run, end to end (G-5 / G-3).
 #
 #   run_hand_canfd_gate.sh [--sil] [--iface can0] [--sides right,left]
-#                          [--duration 300] [--rate 250] [--recv-timeout 0.9]
-#                          [--cmd-ack none] [--req-mode per_hand] [--out DIR]
+#                          [--duration 300] [--rate 400] [--recv-timeout 1.2]
+#                          [--cmd-ack none] [--req-mode broadcast] [--out DIR]
 #
 # Records the bus, launches udp_hand_node (one node, `hand_sides`) — with
 # --sil also one fake_hand_firmware per side on vcan0 — waits until every
@@ -13,11 +13,13 @@
 # and prints one summary line. Exit 0 when every hand passes, 1 on any FAIL,
 # 2 on UNDECIDED without FAIL, 3 when the run could not be made.
 #
-# --req-mode broadcast (#956) sends one REQ to both hands per tick (launch
-# `req_mode:=broadcast`, judged with `--req-mode broadcast`, (x) becomes
-# x.broadcast_sets). Both bursts share that one receive window, so
-# --recv-timeout defaults to 1.4 ms there and below 1.2 is refused: the left
-# hand's REQ -> frame 2 was measured up to 1.154 ms on the rig.
+# --req-mode broadcast (the default, #956 D86) sends one REQ to both hands per
+# tick (launch `req_mode:=broadcast`, judged with `--req-mode broadcast`, (x)
+# becomes x.broadcast_sets). Both bursts share that one receive window, so
+# --recv-timeout defaults to 1.2 ms there and below 1.2 is refused: the left
+# hand's REQ -> frame 2 was measured up to 1.154 ms on the rig. --rate
+# defaults to 400 Hz (2 x 1.2 < 2.5 ms). --req-mode per_hand runs one hand
+# after the other: --rate 250 and --recv-timeout 0.9 are its defaults.
 #
 # Everything lands in --out (default ./hand_gate_<YYMMDD_HHMMSS>): bus.log
 # (candump -L), node.log, link_<side>.log, session/ (RTC_SESSION_DIR — the
@@ -34,13 +36,13 @@ SIL=0
 IFACE=can0
 SIDES=right,left
 DURATION=300
-RATE=250
+RATE=""
 RECV_TIMEOUT=""
 CMD_ACK="none"
-REQ_MODE=per_hand
+REQ_MODE=broadcast
 OUT=""
 
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -60,9 +62,13 @@ while [ $# -gt 0 ]; do
 done
 [ "$SIL" -eq 1 ] && IFACE=vcan0
 case "$REQ_MODE" in
-  per_hand) RECV_TIMEOUT=${RECV_TIMEOUT:-0.9} ;;
+  per_hand)
+    RATE=${RATE:-250}
+    RECV_TIMEOUT=${RECV_TIMEOUT:-0.9}
+    ;;
   broadcast)
-    RECV_TIMEOUT=${RECV_TIMEOUT:-1.4}
+    RATE=${RATE:-400}
+    RECV_TIMEOUT=${RECV_TIMEOUT:-1.2}
     if awk -v t="$RECV_TIMEOUT" 'BEGIN { exit !(t + 0 < 1.2) }'; then
       echo "error: --req-mode broadcast needs --recv-timeout >= 1.2 (got $RECV_TIMEOUT):" \
         "the left hand's REQ -> frame 2 reaches 1.154 ms after the right burst" >&2
