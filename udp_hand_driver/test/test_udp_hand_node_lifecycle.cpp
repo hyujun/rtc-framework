@@ -20,6 +20,7 @@
 #include "rtc_base/testing/isolated_session_dir.hpp"
 #include "silent_loopback_socket.hpp"
 #include "udp_hand_driver/udp_hand_node.hpp"
+#include "warn_capture.hpp"
 #include <rtc_msgs/msg/calibration_command.hpp>
 #include <rtc_msgs/msg/calibration_status.hpp>
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
@@ -30,21 +31,16 @@
 #include <std_msgs/msg/bool.hpp>
 
 #include <gtest/gtest.h>
-#include <rcutils/logging.h>
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
-#include <cstdarg>
-#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -1654,62 +1650,6 @@ TEST_F(UdpHandNodeLifecycleTest, TwoHandDefaultRateFitsOnlyTheSharedWindow) {
   }
 }
 
-// Captures WARN lines for one scope and hands every line on to the handler it
-// replaced. The D86 warning below changes no state and no counter, so the log
-// is its only observable.
-class WarnCapture {
- public:
-  WarnCapture() : previous_(rcutils_logging_get_output_handler()) {
-    Active() = this;
-    rcutils_logging_set_output_handler(&WarnCapture::Handler);
-  }
-
-  ~WarnCapture() {
-    rcutils_logging_set_output_handler(previous_);
-    Active() = nullptr;
-  }
-
-  WarnCapture(const WarnCapture&) = delete;
-  WarnCapture& operator=(const WarnCapture&) = delete;
-
-  int Count(const std::string& needle) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return static_cast<int>(std::count_if(lines_.begin(), lines_.end(), [&](const auto& line) {
-      return line.find(needle) != std::string::npos;
-    }));
-  }
-
- private:
-  static WarnCapture*& Active() {
-    static WarnCapture* active = nullptr;
-    return active;
-  }
-
-  static void Handler(const rcutils_log_location_t* location, int severity, const char* name,
-                      rcutils_time_point_value_t timestamp, const char* format, va_list* args) {
-    WarnCapture* self = Active();
-    if (self == nullptr) {
-      return;
-    }
-    if (severity == RCUTILS_LOG_SEVERITY_WARN) {
-      std::array<char, 1024> buf{};
-      va_list copy;
-      va_copy(copy, *args);
-      (void)std::vsnprintf(buf.data(), buf.size(), format, copy);
-      va_end(copy);
-      const std::lock_guard<std::mutex> lock(self->mutex_);
-      self->lines_.emplace_back(buf.data());
-    }
-    if (self->previous_ != nullptr) {
-      self->previous_(location, severity, name, timestamp, format, args);
-    }
-  }
-
-  rcutils_logging_output_handler_t previous_;
-  std::mutex mutex_;
-  std::vector<std::string> lines_;
-};
-
 // D86: a broadcast T under the rig's later-hand arrival (1.154 ms) is named at
 // configure — it would miss that hand's set every tick — but not refused.
 TEST_F(UdpHandNodeLifecycleTest, BroadcastWithAShortRecvTimeoutWarnsButConfigures) {
@@ -1722,7 +1662,7 @@ TEST_F(UdpHandNodeLifecycleTest, BroadcastWithAShortRecvTimeoutWarnsButConfigure
     exec_.add_node(node->get_node_base_interface());
     int warned = 0;
     {
-      WarnCapture capture;
+      udp_hand_driver::test_support::WarnCapture capture;
       EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
           << recv_timeout_ms;
       warned = capture.Count("under req_mode broadcast");

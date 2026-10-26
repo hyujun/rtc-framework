@@ -182,7 +182,7 @@ ros2 topic echo /hand/link_status --once     # 별도 터미널
 
 `protocol_version:=2` 는 FD vcan0 (MTU 72, `repo_scripts/scripts/setup_vcan.sh`) 이 없으면 launch 가 거부한다. `test_canfd_hand_comm` 이 같은 vcan0 · 같은 노드 id 를 쓰므로 proto2 SIL 과 `colcon test` 를 동시에 돌리지 않는다.
 
-한계: µs loopback latency 라 timing 검증엔 부적합하고, driver decoder 의 거울상이라 실제 펌웨어와의 일치는 보장하지 못하며, commander 없이 돌리면 모터가 rest(0) 에 머물러 failure detector 의 all-zero / duplicate 경고가 뜬다 (명령이 오면 해소).
+한계: µs loopback latency 라 timing 검증엔 부적합하고, driver decoder 의 거울상이라 실제 펌웨어와의 일치는 보장하지 못하며, commander 없이 돌리면 모터가 rest(0) 에 머물러 failure detector 의 all-zero / duplicate 경고가 뜬다.
 
 ## 설정
 
@@ -243,7 +243,7 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 |---|---|---|
 | `/hand/link_status` 가 `false`, recv timeout | IP · NIC 불일치, 포트 차단 | `target_ip` 확인 (YAML 은 `192.168.0.100`). `hand_stats.json` 의 `recv_timeout` · `recv_error` 확인 |
 | `sil_mode:=firmware` 인데 timeout 만 반복 | YAML 의 `local_interface` 가 실 NIC 에 소켓을 고정 | 노드가 `firmware` 모드에서 binding 을 해제하고 INFO 로 원래 값을 남긴다. 해당 NIC 이 없는 PC 에서는 `Open()` 이 ENODEV 로 실패한다 |
-| failure detector 가 all-zero / duplicate 경고 | commander 없이 단독 실행 (SIL 모터가 0 에 머묾) | 명령을 보내면 해소된다 |
+| failure detector 가 all-zero / duplicate 경고 | commander 없이 단독 실행 (SIL 모터가 0 에 머묾) · 센서 없는 손 | 명령을 보내면 해소된다 |
 | `1b` · `2` 에서 `on_configure` FAILURE | [프로토콜](#센서-프로토콜-버전-protocol_version) 절의 거부 조건 | ERROR 한 줄이 원인을 적는다. 값을 고쳐 `ros2 param set` 뒤 다시 configure 하면 된다 |
 | `2` 의 write 가 전부 `write_echo.timeout`, 또는 `echo_unexpected` 증가 | `cmd_ack` 가 펌웨어와 불일치 | 노드 WARN 이 맞는 값을 적는다 |
 | `broadcast` 에서 한 손만 세트 timeout | 중재에 진 RESP 를 펌웨어가 버림, 또는 T 가 뒤 손 버스트보다 짧음 | `per_hand` (250 Hz · T 0.9) 로 돌리고 펌웨어 · T 확인 |

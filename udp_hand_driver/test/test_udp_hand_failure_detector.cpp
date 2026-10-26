@@ -4,6 +4,7 @@
 // Tests run the detector's 50Hz thread and verify failure detection.
 
 #include "udp_hand_driver/udp_hand_failure_detector.hpp"
+#include "warn_capture.hpp"
 
 #include <arpa/inet.h>
 #include <gtest/gtest.h>
@@ -207,6 +208,34 @@ TEST_F(HandFailureDetectorTest, SensorForceAllZero_TriggersFailure) {
 
   EXPECT_TRUE(detector.failed());
   EXPECT_NE(failure_reason.find("hand_sensor_all_zero"), std::string::npos);
+}
+
+// A sensor that stays all-zero logs its onset once, not on every check — on
+// the rig a sensorless hand repeated both sensor warnings at the detector rate
+// for good (#956 400 Hz run). 400 ms of fresh zero reads is ≈ 20 checks past
+// a threshold of 3, well inside one kFailureRelogChecks period.
+TEST_F(HandFailureDetectorTest, PersistentSensorAllZeroWarnsOnlyAtItsOnset) {
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.failure_threshold = 3;
+  cfg.check_motor = false;
+  cfg.check_sensor = true;
+  cfg.sensor_force_layout = true;
+  cfg.check_link = false;
+  cfg.min_rate_hz = 0.0;
+
+  UdpHandFailureDetector detector(*controller_, cfg);
+  test_support::WarnCapture capture;
+  std::array<float, kNumHandMotors> cmd{};
+  detector.Start();
+  for (int i = 0; i < 80; ++i) {
+    controller_->StepFakeCycleForTest(cmd);
+    std::this_thread::sleep_for(5ms);
+  }
+  detector.Stop();
+
+  EXPECT_TRUE(detector.failed());
+  EXPECT_EQ(capture.Count("Sensor all-zero detected"), 1);
+  EXPECT_LE(capture.Count("Sensor duplicate detected"), 1);
 }
 
 TEST_F(HandFailureDetectorTest, SensorForceDuplicate_TriggersFailure) {
@@ -596,6 +625,21 @@ TEST_F(HandFailureDetectorTest, RateLowFiresWhileCommLoopRunning) {
 // The node converts the time-based link-fail budget into the cycle count the
 // detector's CheckLink consumes: cycles = ms/1000 · loop_rate_hz / comm_dec,
 // floored at 1. Verified directly on the free function.
+
+// The onset (the check that reaches the threshold, where the failure is also
+// raised), then one line per kFailureRelogChecks while the condition holds.
+TEST(ShouldLogStreak, OnsetThenOncePerRelogPeriod) {
+  EXPECT_FALSE(ShouldLogStreak(4, 5));
+  EXPECT_TRUE(ShouldLogStreak(5, 5));
+  EXPECT_FALSE(ShouldLogStreak(6, 5));
+  EXPECT_FALSE(ShouldLogStreak(5 + kFailureRelogChecks - 1, 5));
+  EXPECT_TRUE(ShouldLogStreak(5 + kFailureRelogChecks, 5));
+  EXPECT_TRUE(ShouldLogStreak(5 + 2 * kFailureRelogChecks, 5));
+  // The link warning counts down checks from 1.
+  EXPECT_FALSE(ShouldLogStreak(0, 1));
+  EXPECT_TRUE(ShouldLogStreak(1, 1));
+  EXPECT_FALSE(ShouldLogStreak(2, 1));
+}
 
 TEST(LinkFailCyclesFromTimeoutMs, NominalRate) {
   // 100 ms at 500 Hz, no decimation → 50 cycles.

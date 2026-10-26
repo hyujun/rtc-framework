@@ -9,6 +9,8 @@
 //   2. Duplicate (unchanged) data for N consecutive checks
 //
 // On failure, invokes a registered callback (typically triggers global E-Stop).
+// A condition that persists is logged when it first reaches its threshold and
+// then every kFailureRelogChecks checks (ShouldLogStreak), not on every pass.
 
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
@@ -73,6 +75,22 @@ struct UdpHandFailureDetectorConfig {
   const double cycles =
       timeout_ms / 1000.0 * loop_rate_hz / (static_cast<double>(dec) * static_cast<double>(extra));
   return std::max(1, static_cast<int>(std::lround(cycles)));
+}
+
+// Checks between two WARN lines of a condition that keeps holding: ≈ 5 s at
+// the 50 Hz detector (longer for the sensor checks, which run only on a fresh
+// sensor read). Logging every pass filled the terminal and the node log — a
+// rig hand without fingertip sensors held sensor all-zero and duplicate
+// forever, ≈ 200 lines/s for two hands (#956 400 Hz run, 2026-10-26).
+inline constexpr int kFailureRelogChecks = 250;
+
+// Whether a condition that has held for `streak` consecutive checks logs on
+// this one: at the check that reaches `threshold` (the onset, which is also
+// where the failure is raised), then every kFailureRelogChecks while it holds.
+// A streak that breaks and builds up again logs its onset again. Free function
+// for direct unit testing.
+[[nodiscard]] constexpr bool ShouldLogStreak(int streak, int threshold) noexcept {
+  return streak >= threshold && (streak - threshold) % kFailureRelogChecks == 0;
 }
 
 class UdpHandFailureDetector {
@@ -234,15 +252,19 @@ class UdpHandFailureDetector {
     prev_motor_valid_ = true;
 
     if (motor_zero_count_ >= cfg_.failure_threshold) {
-      RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
-                  "Motor all-zero detected (count=%d, threshold=%d)", motor_zero_count_,
-                  cfg_.failure_threshold);
+      if (ShouldLogStreak(motor_zero_count_, cfg_.failure_threshold)) {
+        RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
+                    "Motor all-zero detected (count=%d, threshold=%d)", motor_zero_count_,
+                    cfg_.failure_threshold);
+      }
       RaiseFailure("hand_motor_all_zero (count=" + std::to_string(motor_zero_count_) + ")");
     }
     if (motor_dup_count_ >= cfg_.failure_threshold) {
-      RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
-                  "Motor duplicate detected (count=%d, threshold=%d)", motor_dup_count_,
-                  cfg_.failure_threshold);
+      if (ShouldLogStreak(motor_dup_count_, cfg_.failure_threshold)) {
+        RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
+                    "Motor duplicate detected (count=%d, threshold=%d)", motor_dup_count_,
+                    cfg_.failure_threshold);
+      }
       RaiseFailure("hand_motor_duplicate (count=" + std::to_string(motor_dup_count_) + ")");
     }
   }
@@ -281,15 +303,19 @@ class UdpHandFailureDetector {
     }
 
     if (sensor_zero_count_ >= cfg_.failure_threshold) {
-      RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
-                  "Sensor all-zero detected (count=%d, threshold=%d)", sensor_zero_count_,
-                  cfg_.failure_threshold);
+      if (ShouldLogStreak(sensor_zero_count_, cfg_.failure_threshold)) {
+        RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
+                    "Sensor all-zero detected (count=%d, threshold=%d)", sensor_zero_count_,
+                    cfg_.failure_threshold);
+      }
       RaiseFailure("hand_sensor_all_zero (count=" + std::to_string(sensor_zero_count_) + ")");
     }
     if (sensor_dup_count_ >= cfg_.failure_threshold) {
-      RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
-                  "Sensor duplicate detected (count=%d, threshold=%d)", sensor_dup_count_,
-                  cfg_.failure_threshold);
+      if (ShouldLogStreak(sensor_dup_count_, cfg_.failure_threshold)) {
+        RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
+                    "Sensor duplicate detected (count=%d, threshold=%d)", sensor_dup_count_,
+                    cfg_.failure_threshold);
+      }
       RaiseFailure("hand_sensor_duplicate (count=" + std::to_string(sensor_dup_count_) + ")");
     }
   }
@@ -364,9 +390,11 @@ class UdpHandFailureDetector {
     }
 
     if (rate_fail_count_ >= cfg_.rate_fail_threshold) {
-      RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
-                  "Polling rate low: %.1f Hz (min=%.1f Hz, fail_count=%d)", rate_hz,
-                  cfg_.min_rate_hz, rate_fail_count_);
+      if (ShouldLogStreak(rate_fail_count_, cfg_.rate_fail_threshold)) {
+        RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
+                    "Polling rate low: %.1f Hz (min=%.1f Hz, fail_count=%d)", rate_hz,
+                    cfg_.min_rate_hz, rate_fail_count_);
+      }
       RaiseFailure("hand_polling_rate_low (rate=" + std::to_string(rate_hz) +
                    " Hz, min=" + std::to_string(cfg_.min_rate_hz) + " Hz)");
     }
@@ -376,13 +404,17 @@ class UdpHandFailureDetector {
     const auto comm_thr = static_cast<uint32_t>(std::max(0, cfg_.link_fail_threshold));
     const auto sensor_thr = static_cast<uint32_t>(std::max(0, cfg_.link_fail_threshold_sensor));
     if (!controller_.LinkDown(comm_thr, sensor_thr)) {
+      link_down_checks_ = 0;
       return;
     }
+    ++link_down_checks_;
     // Name the latched channels + their streaks for the log/E-STOP reason.
     // Non-RT detector thread — string building is fine here.
     const std::string detail = LinkDownChannelDetail(comm_thr, sensor_thr);
-    RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(), "Hand link failure latched (%s)",
-                detail.c_str());
+    if (ShouldLogStreak(link_down_checks_, 1)) {
+      RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(), "Hand link failure latched (%s)",
+                  detail.c_str());
+    }
     if (!link_dump_done_) {
       link_dump_done_ = true;
       DumpLinkForensics();
@@ -510,6 +542,8 @@ class UdpHandFailureDetector {
 
   // Link-down forensic dump one-shot latch (detector thread only)
   bool link_dump_done_{false};
+  // Consecutive checks that found the link down — paces its WARN only.
+  int link_down_checks_{0};
 };
 
 }  // namespace udp_hand_driver
