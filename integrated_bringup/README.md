@@ -271,7 +271,7 @@ ros2 run integrated_bringup demo_controller_gui --robot g1_p1b       # G1 상체
 
 #### motion_editor_gui
 
-모션 시퀀스 편집기입니다 (PyQt5).
+모션 시퀀스 편집기입니다 (PyQt5 · x86_64 전용 — aarch64 venv 는 PyQt5 를 설치하지 않는다).
 
 ```bash
 ros2 run integrated_bringup motion_editor_gui
