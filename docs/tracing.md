@@ -82,7 +82,7 @@ colcon build --cmake-args -DRTC_ENABLE_TRACING=ON   # 직접 빌드할 때 (colc
 | `nrt_publish` (같은 프로세스) | `nrt_publish_drain` | `owned_topics_publish` |
 | `sim_thread` (`mujoco_simulator_node`) | `sim_step` | `sim_wait_command` · `sim_substep` |
 | `viewer` (같은 노드) | `viewer_frame` | `viewer_sync` · `viewer_render` · `viewer_swap` |
-| CommLoop · `failure_detector` (`udp_hand_node`) | `hand_comm_tick` (손마다 하나 — 두 손이면 tick 당 둘) · `hand_detector_tick` | `hand_cycle_txn` (bulk 의 한 cycle 트랜잭션; CAN FD 는 그 안의 `hand_cycle_window`) · `hand_read_*` · `hand_write_echo` · `hand_detector_check` |
+| CommLoop · `failure_detector` (`udp_hand_node`) | `hand_comm_tick` (손마다 하나 — 두 손이면 tick 당 둘; `req_mode broadcast` 면 대신 손마다 `hand_bc_prepare` · 한 번 `hand_bc_req` · 손마다 `hand_bc_receive` · 손마다 `hand_bc_finish`) · `hand_detector_tick` | `hand_cycle_txn` (bulk 의 한 cycle 트랜잭션; CAN FD 는 그 안의 `hand_cycle_window`; broadcast 는 `hand_cmd_send` · `hand_set_window`) · `hand_read_*` · `hand_write_echo` · `hand_detector_check` |
 
 executor 콜백 본문에도 L2 span 이 있다. 새 계측점은 함수 첫 줄에 `RTC_TRACE_SCOPE("Name");` 한 줄이면 된다 (RAII 라 early-return 에도 닫힘). span 계층과 cadence 판정의 규칙은 [testing-debug.md](../agent_docs/testing-debug.md#tracing), 그 근거와 계측 제외 대상은 [tracing-rationale.md](reference/tracing-rationale.md).
 

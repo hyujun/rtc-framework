@@ -2,8 +2,8 @@
 # run_hand_canfd_gate.sh — one CAN FD hand gate run, end to end (G-5 / G-3).
 #
 #   run_hand_canfd_gate.sh [--sil] [--iface can0] [--sides right,left]
-#                          [--duration 300] [--rate 250] [--recv-timeout 0.9]
-#                          [--cmd-ack none] [--out DIR]
+#                          [--duration 300] [--rate 400] [--recv-timeout 1.2]
+#                          [--cmd-ack none] [--req-mode broadcast] [--out DIR]
 #
 # Records the bus, launches udp_hand_node (one node, `hand_sides`) — with
 # --sil also one fake_hand_firmware per side on vcan0 — waits until every
@@ -12,6 +12,14 @@
 # would lose the CSV tail), then judges each hand with analyze_hand_canfd_gate
 # and prints one summary line. Exit 0 when every hand passes, 1 on any FAIL,
 # 2 on UNDECIDED without FAIL, 3 when the run could not be made.
+#
+# --req-mode broadcast (the default, #956 D86) sends one REQ to both hands per
+# tick (launch `req_mode:=broadcast`, judged with `--req-mode broadcast`, (x)
+# becomes x.broadcast_sets). Both bursts share that one receive window, so
+# --recv-timeout defaults to 1.2 ms there and below 1.2 is refused: the left
+# hand's REQ -> frame 2 was measured up to 1.154 ms on the rig. --rate
+# defaults to 400 Hz (2 x 1.2 < 2.5 ms). --req-mode per_hand runs one hand
+# after the other: --rate 250 and --recv-timeout 0.9 are its defaults.
 #
 # Everything lands in --out (default ./hand_gate_<YYMMDD_HHMMSS>): bus.log
 # (candump -L), node.log, link_<side>.log, session/ (RTC_SESSION_DIR — the
@@ -28,12 +36,13 @@ SIL=0
 IFACE=can0
 SIDES=right,left
 DURATION=300
-RATE=250
-RECV_TIMEOUT=0.9
+RATE=""
+RECV_TIMEOUT=""
 CMD_ACK="none"
+REQ_MODE=broadcast
 OUT=""
 
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -44,6 +53,7 @@ while [ $# -gt 0 ]; do
     --rate) RATE=$2; shift ;;
     --recv-timeout) RECV_TIMEOUT=$2; shift ;;
     --cmd-ack) CMD_ACK=$2; shift ;;
+    --req-mode) REQ_MODE=$2; shift ;;
     --out) OUT=$2; shift ;;
     -h | --help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 3 ;;
@@ -51,6 +61,22 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ "$SIL" -eq 1 ] && IFACE=vcan0
+case "$REQ_MODE" in
+  per_hand)
+    RATE=${RATE:-250}
+    RECV_TIMEOUT=${RECV_TIMEOUT:-0.9}
+    ;;
+  broadcast)
+    RATE=${RATE:-400}
+    RECV_TIMEOUT=${RECV_TIMEOUT:-1.2}
+    if awk -v t="$RECV_TIMEOUT" 'BEGIN { exit !(t + 0 < 1.2) }'; then
+      echo "error: --req-mode broadcast needs --recv-timeout >= 1.2 (got $RECV_TIMEOUT):" \
+        "the left hand's REQ -> frame 2 reaches 1.154 ms after the right burst" >&2
+      exit 3
+    fi
+    ;;
+  *) echo "error: --req-mode must be per_hand or broadcast, got $REQ_MODE" >&2; exit 3 ;;
+esac
 
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 REPO=$(cd "$(dirname "$SELF")/../.." && pwd)
@@ -90,7 +116,7 @@ if ! kill -0 "$REC" 2>/dev/null; then
 fi
 
 LAUNCH_ARGS=(protocol_version:=2 "hand_sides:=$SIDES" "loop_rate_hz:=$RATE"
-  "recv_timeout_ms:=$RECV_TIMEOUT" "cmd_ack:=$CMD_ACK")
+  "recv_timeout_ms:=$RECV_TIMEOUT" "cmd_ack:=$CMD_ACK" "req_mode:=$REQ_MODE")
 if [ "$SIL" -eq 1 ]; then
   LAUNCH_ARGS+=(sil_mode:=firmware)
 else
@@ -146,6 +172,7 @@ for side in "${SIDE_LIST[@]}"; do
   grep -F "[$side] " "$OUT/node.log" >"$OUT/node_$side.log"
   ros2 run rtc_tools analyze_hand_canfd_gate "$OUT/session" "$OUT/bus.log" \
     --hand-side "$side" --explicit-side --timing-suffix "" --loop-rate-hz "$RATE" \
+    --req-mode "$REQ_MODE" \
     --min-duration-s "$DURATION" --node-log "$OUT/node_$side.log" \
     --link-status "$OUT/link_$side.log" --json-out "$OUT/gate_$side.json" \
     >"$OUT/gate_$side.md" 2>&1
@@ -164,7 +191,7 @@ import sys
 from pathlib import Path
 
 out, sides = Path(sys.argv[1]), sys.argv[2:]
-parts, overlap = [], None
+parts, overlap, xcheck = [], None, None
 for side in sides:
     p = out / f"gate_{side}.json"
     if not p.exists():
@@ -172,16 +199,26 @@ for side in sides:
         continue
     doc = json.loads(p.read_text())
     parts.append(f"{side} {doc['verdict']}")
-    overlap = overlap or doc.get("overlap")
+    if overlap is None and doc.get("overlap"):
+        overlap = doc["overlap"]
+        xcheck = next((c for c in doc["checks"] if c["key"] == "x.broadcast_sets"), None)
     for c in doc["checks"]:
         if c["verdict"] not in ("PASS", "NOT_EVALUATED"):
             parts.append(f"  {side}:{c['key']}={c['verdict']} ({c['value']})")
 line = " · ".join(p for p in parts if not p.startswith("  "))
 if overlap:
     gap = overlap.get("estop_gap_ms")
-    line += f" · overlap {overlap['violations']} · zero-write gap " + (
-        "missing" if gap is None else f"{gap:+.3f} ms"
-    )
+    b = overlap.get("broadcast")
+    if b is not None:
+        # The violations count leaves out the one-hand-missing rate: show the verdict.
+        verdict = xcheck["verdict"] if xcheck else "NO_CHECK"
+        line += (
+            f" · x.broadcast_sets {verdict} (violations {overlap['violations']} · "
+            f"one-hand-missing {b['one_hand_missing']}/{b['windows']})"
+        )
+    else:
+        line += f" · overlap {overlap['violations']}"
+    line += " · zero-write gap " + ("missing" if gap is None else f"{gap:+.3f} ms")
 print(f"hand gate: {line}  [{out}]")
 for p in parts:
     if p.startswith("  "):

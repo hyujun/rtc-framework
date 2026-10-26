@@ -369,6 +369,24 @@ TEST(CommSlotMarginMs, IsTheSlotLeftAfterEveryHandsTwoStages) {
   EXPECT_NEAR(CommSlotMarginMs(2.0, 1, 0.9), 0.2, 1e-9);  // 500 Hz, one hand
   EXPECT_LT(CommSlotMarginMs(2.0, 2, 0.9), 0.0);          // 500 Hz cannot hold two
   EXPECT_NEAR(CommSlotMarginMs(5.0, 2, 0.9), 1.4, 1e-9);  // 200 Hz fallback (D77)
+  // req_mode broadcast (#956 D83): the hands share one window, so one 2T.
+  EXPECT_NEAR(CommSlotMarginMs(4.0, 1, 1.4), 1.2, 1e-9);  // 250 Hz, T from the rig probe
+  // The two-hand default (#956 D86): 400 Hz, T 1.2 — inside, under 10 %.
+  EXPECT_NEAR(CommSlotMarginMs(2.5, 1, 1.2), 0.1, 1e-9);
+  EXPECT_LT(CommSlotMarginMs(2.5, 1, 1.4), 0.0);  // the 250 Hz T does not fit 400 Hz
+}
+
+// #956 D86: auto is broadcast only for two hands on protocol 2 with cmd_ack
+// none; an explicit value passes through untouched (configure validates it).
+TEST(ResolveReqMode, AutoIsBroadcastOnlyWhereItIsServedAndPays) {
+  using udp_hand_driver::ResolveReqMode;
+  EXPECT_EQ(ResolveReqMode("auto", true, 2, true), "broadcast");
+  EXPECT_EQ(ResolveReqMode("auto", true, 1, true), "per_hand");   // one hand
+  EXPECT_EQ(ResolveReqMode("auto", true, 2, false), "per_hand");  // cmd_ack echo
+  EXPECT_EQ(ResolveReqMode("auto", false, 1, true), "per_hand");  // 1a / 1b
+  EXPECT_EQ(ResolveReqMode("per_hand", true, 2, true), "per_hand");
+  EXPECT_EQ(ResolveReqMode("broadcast", true, 1, false), "broadcast");
+  EXPECT_EQ(ResolveReqMode("Auto", true, 2, true), "Auto");
 }
 
 }  // namespace

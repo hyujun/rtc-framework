@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from rtc_tools.analysis.candump_log import (
+    broadcast_req_id,
     cmd_id,
     echo_id,
     node_id_of,
@@ -29,6 +30,7 @@ from rtc_tools.analysis.hand_canfd_gate import (
     UNDECIDED,
     Thresholds,
     _artifacts,
+    _broadcast_check,
     _overlap_check,
     analyse_bus,
     analyse_overlap,
@@ -38,6 +40,8 @@ from rtc_tools.analysis.hand_canfd_gate import (
     main,
     overall,
     render_markdown,
+    req_mode_mismatch,
+    resolve_req_mode,
     silent_req_budget,
     summarise_timing,
 )
@@ -997,3 +1001,309 @@ def test_main_judges_one_hand_of_a_two_hand_session(tmp_path, capsys):
         payload = json.loads(out_json.read_text())
         assert payload["overlap"]["violations"] == 0
         assert payload["thresholds"]["silent_req_max"] == 25
+
+
+# ── req_mode broadcast (#956) ────────────────────────────────────────────────
+
+BCAST_REQ = broadcast_req_id()
+
+
+def bcast_tick(
+    t: float,
+    write: bool = False,
+    order: str = "RRRLLL",
+    drop: tuple[tuple[int, int], ...] = (),
+    data_hex: str = NONZERO44,
+) -> list[str]:
+    """One broadcast tick: [right CMD 0 · 1, left CMD 0 · 1] · REQ(0xFF) · both
+    RESP sets in `order` (R / L = the next frame of that hand); (node, idx) in
+    `drop` never arrive. cmd_ack none: no echoes."""
+    out: list[str] = []
+    if write:
+        out += [
+            line(t, cmd_id(RIGHT, 0), data_hex),
+            line(t + 4e-5, cmd_id(RIGHT, 1), data_hex),
+            line(t + 8e-5, cmd_id(LEFT, 0), data_hex),
+            line(t + 1.2e-4, cmd_id(LEFT, 1), data_hex),
+        ]
+    out.append(line(t + 1.6e-4, BCAST_REQ))
+    nxt = {RIGHT: 0, LEFT: 0}
+    for k, c in enumerate(order):
+        node = RIGHT if c == "R" else LEFT
+        idx = nxt[node]
+        nxt[node] += 1
+        if (node, idx) not in drop:
+            out.append(line(t + 4e-4 + 1.3e-4 * k, resp_id(node, idx), "11" * 8))
+    return out
+
+
+def bcast_lines(n_ticks: int = 20, estop_end: bool = True, **per_tick) -> list[str]:
+    """250 Hz broadcast ticks, every other one a write; `per_tick[i]` overrides tick i."""
+    lines: list[str] = []
+    for i in range(n_ticks):
+        kw = {"write": i % 2 == 0, **per_tick.get(f"t{i}", {})}
+        lines += bcast_tick(1.0 + i * 0.004, **kw)
+    if estop_end:
+        lines += two_hand_estop(1.0 + n_ticks * 0.004, with_echoes=False)
+    return lines
+
+
+def frames_of(lines: list[str], tmp_path: Path):
+    log = tmp_path / "bcast.log"
+    log.write_text("\n".join(lines) + "\n")
+    return read_candump(log)[0]
+
+
+def bcast_overlap(lines: list[str], tmp_path: Path):
+    return analyse_overlap(frames_of(lines, tmp_path), "broadcast", cmd_req_max_s=0.002)
+
+
+def write_two_hand_session(tmp_path: Path, lines: list[str], req_mode: str | None) -> Path:
+    """hand_sides run at 250 Hz, cmd_ack none; `req_mode` None = an archive without the key."""
+    session = write_session(tmp_path, rows=timing_rows(75_001, period_ns=4_000_000))
+    comm = none_comm_stats(total_cycles=75_000)
+    if req_mode is not None:
+        comm["canfd"]["req_mode"] = req_mode
+    for side in ("right", "left"):
+        (session / "device" / f"{STATS_STEM}_{side}.json").write_text(
+            json.dumps({"comm_stats": comm, "timing_stats": {}})
+        )
+    (tmp_path / "bus.log").write_text("\n".join(lines) + "\n")
+    return session
+
+
+def run_main(tmp_path: Path, session: Path, side: str, *extra: str) -> tuple[int, dict | None]:
+    out_json = tmp_path / f"gate_{side}.json"
+    out_json.unlink(missing_ok=True)
+    args = [str(session), str(tmp_path / "bus.log"), "--explicit-side", "--timing-suffix", ""]
+    args += ["--loop-rate-hz", "250", "--json-out", str(out_json), "--hand-side", side, *extra]
+    rc = main(args)
+    return rc, json.loads(out_json.read_text()) if out_json.exists() else None
+
+
+def test_broadcast_req_is_every_hands_req_only_when_asked(tmp_path):
+    assert BCAST_REQ == 0x007FC000
+    frames = frames_of(bcast_lines(10), tmp_path)
+    for node in (RIGHT, LEFT):
+        bus = analyse_bus(frames, node, broadcast_req=True)
+        assert (bus.req, bus.resp, bus.complete_sets, bus.incomplete_sets) == (10, 30, 10, 0)
+        assert bus.write_pairs == 5
+        assert len(bus.rtt_cmd_f2_ms) == 5
+        assert len(bus.rtt_req_f2_readonly_ms) == 5
+        assert bus.estop_candidates == 1
+        assert bus.estop is not None and bus.estop.cmd_frames_after == 0
+        # Default (per_hand): the broadcast REQ is another node's frame.
+        assert analyse_bus(frames, node).req == 0
+
+
+def test_complete_broadcast_run_passes_end_to_end(tmp_path, capsys):
+    order = {f"t{i}": {"order": "LRRRLL"} for i in range(0, 20, 4)}
+    lines = bcast_lines(20, **order)
+    session = write_two_hand_session(tmp_path, lines, "broadcast")
+    for side in ("right", "left"):
+        rc, payload = run_main(tmp_path, session, side)  # auto: from canfd.req_mode
+        text = capsys.readouterr().out
+        assert rc == 0, text
+        assert "## G-5 verdict: **PASS**" in text
+        assert "| `x.broadcast_sets` | PASS |" in text
+        assert "x.no_overlap" not in text
+        assert "| req_mode (--req-mode, else JSON canfd.req_mode) | broadcast |" in text
+        assert "RRRLLL ×15, LRRRLL ×5" in text
+        assert "the later hand's figure includes the other hand's burst" in text
+        assert payload["req_mode"] == "broadcast"
+        assert payload["overlap"]["violations"] == 0
+        assert payload["overlap"]["estop_gap_ms"] == pytest.approx(0.2, abs=1e-6)
+        b = payload["overlap"]["broadcast"]
+        assert (b["windows"], b["truncated"], b["complete"]) == (20, 0, 20)
+        assert b["order"] == {"RRRLLL": 15, "LRRRLL": 5}
+        assert b["req_f2_ms"]["right"].startswith("n=20 ")
+        assert b["req_f2_ms"]["left"].startswith("n=20 ")
+        assert b["cmd_f2_ms"].startswith("n=10 ")
+        assert payload["bus"]["req"] == 20
+        assert payload["bus"]["complete_sets"] == 20
+
+
+@pytest.mark.parametrize(
+    ("n_missing", "verdict"), [(0, PASS), (4, PASS), (10, UNDECIDED), (16, FAIL)]
+)
+def test_one_hand_missing_rate_uses_the_d_band(tmp_path, n_missing, verdict):
+    # 200 windows at a 5 % threshold: limit 10, band 1.65 x sqrt(200 x 0.05 x 0.95) = 5.09
+    # -> 0..4 PASS, 5..15 UNDECIDED, 16+ FAIL. Two more windows lose BOTH sets:
+    # (d) judges those per hand, they are not one-hand-missing.
+    per_tick = {f"t{i}": {"drop": ((LEFT, 1),)} for i in range(n_missing)}
+    per_tick["t196"] = per_tick["t197"] = {"drop": ((RIGHT, 2), (LEFT, 2))}
+    lines = bcast_lines(200, **per_tick)
+    o = bcast_overlap(lines, tmp_path)
+    b = o.broadcast
+    assert (b.windows, b.one_hand_missing, b.all_missing) == (200, n_missing, 2)
+    assert b.missing == {"right": 2, "left": n_missing + 2}
+    assert b.one_hand_missing_by_hand == {"right": 0, "left": n_missing}
+    if n_missing:
+        assert b.order["RRRLL"] == n_missing
+    c = _broadcast_check(b, Thresholds(timeout_rate_max=0.05))
+    assert c.verdict == verdict, c
+    assert f"{n_missing} / 200" in c.value
+    # The same windows are the left hand's incomplete sets for (b) / (d).
+    left = analyse_bus(frames_of(lines, tmp_path), LEFT, broadcast_req=True)
+    assert left.incomplete_sets == n_missing + 2
+
+
+def test_duplicate_resp_in_a_window_fails(tmp_path):
+    assert bcast_overlap(bcast_lines(10), tmp_path).broadcast.duplicates == 0
+    tick = bcast_tick(1.012)  # REQ R0 R1 R2 L0 L1 L2
+    tick.insert(5, tick[4])  # left RESP 0 twice
+    lines = bcast_lines(3, estop_end=False) + tick + two_hand_estop(1.02, with_echoes=False)
+    o = bcast_overlap(lines, tmp_path)
+    assert o.broadcast.duplicates == 1
+    assert [(v.intruder, v.victim, v.kind) for v in o.violations] == [
+        ("left", "left", "duplicate_resp")
+    ]
+    c = _broadcast_check(o.broadcast, TH)
+    assert c.verdict == FAIL
+    assert "duplicate RESP 1" in c.value
+
+
+def test_host_cmd_inside_the_burst_fails_and_the_next_write_does_not(tmp_path):
+    # Next tick's write after the last RESP is fine (every write tick in bcast_lines).
+    assert bcast_overlap(bcast_lines(10), tmp_path).broadcast.cmd_in_burst == 0
+    tick = bcast_tick(1.040)  # REQ R0 R1 R2 L0 L1 L2
+    tick.insert(4, line(1.04085, cmd_id(LEFT, 0), NONZERO44))  # after R2, before L0
+    lines = bcast_lines(10, estop_end=False) + tick + two_hand_estop(1.05, with_echoes=False)
+    o = bcast_overlap(lines, tmp_path)
+    assert o.broadcast.cmd_in_burst == 1
+    assert [(v.intruder, v.victim, v.kind) for v in o.violations] == [
+        ("host", "left", "cmd_in_burst")
+    ]
+    assert _broadcast_check(o.broadcast, TH).verdict == FAIL
+
+
+def test_a_resp_after_the_next_ticks_write_is_late_not_a_violation(tmp_path):
+    # Left RESP 2 of tick 10 arrives after tick 11's CMD pair (the host timed
+    # out and moved on): reported late, the window is one-hand-missing, no FAIL.
+    tick = bcast_tick(1.040, drop=((LEFT, 2),))
+    nxt = bcast_tick(1.044, write=True)  # CMD R0 R1 L0 L1 · REQ · RESP x6
+    late = line(1.04413, resp_id(LEFT, 2), "11" * 8)
+    lines = bcast_lines(10, estop_end=False) + tick + nxt[:4] + [late] + nxt[4:]
+    lines += bcast_tick(1.048) + two_hand_estop(1.052, with_echoes=False)
+    o = bcast_overlap(lines, tmp_path)
+    b = o.broadcast
+    assert o.violations == []
+    assert (b.duplicates, b.cmd_in_burst) == (0, 0)
+    assert b.late_resp == {"right": 0, "left": 1}
+    assert b.one_hand_missing == 1
+    assert b.one_hand_missing_by_hand == {"right": 0, "left": 1}
+    assert b.windows == 13
+    assert "duplicate RESP 0, CMD in burst 0; one-hand-missing 1 / 13" in (
+        _broadcast_check(b, TH).value
+    )
+
+
+@pytest.mark.parametrize(("gap_s", "in_burst", "late"), [(0.0019, 1, 0), (0.0021, 0, 1)])
+def test_a_cmd_within_half_a_period_before_a_resp_is_in_the_burst(tmp_path, gap_s, in_burst, late):
+    # A host CMD 1.9 ms after the REQ (half period 2 ms at 250 Hz) followed by a
+    # RESP is the host sending during its own tick's burst; at 2.1 ms it is the
+    # next tick's write and the RESP after it is late.
+    tick = bcast_tick(1.040)  # REQ R0 R1 R2 L0 L1 L2
+    t_req = 1.04016
+    lines = bcast_lines(10, estop_end=False) + tick[:6]
+    lines += [
+        line(t_req + gap_s, cmd_id(LEFT, 0), NONZERO44),
+        line(t_req + gap_s + 1e-5, resp_id(LEFT, 2), "11" * 8),
+    ]
+    lines += bcast_tick(1.044) + two_hand_estop(1.048, with_echoes=False)
+    b = bcast_overlap(lines, tmp_path).broadcast
+    assert b.cmd_in_burst == in_burst
+    assert b.late_resp["left"] == late
+    assert b.one_hand_missing == late
+    if in_burst:
+        assert _broadcast_check(b, TH).verdict == FAIL
+
+
+def test_estop_before_the_left_resp_is_cut_not_judged(tmp_path):
+    tick = bcast_tick(1.040)  # REQ R0 R1 R2 L0 L1 L2
+    lines = bcast_lines(10, estop_end=False) + tick[:4]
+    lines += two_hand_estop(1.0409, with_echoes=False)
+    lines += [line(1.0412 + 1e-5 * i, resp_id(LEFT, i), "11" * 8) for i in range(3)]
+    o = bcast_overlap(lines, tmp_path)
+    b = o.broadcast
+    assert o.estop_line is not None
+    assert (b.windows, b.truncated, b.cmd_in_burst, b.one_hand_missing) == (10, 1, 0, 0)
+    assert o.violations == []
+    assert _broadcast_check(b, TH).verdict == PASS
+
+
+def test_left_zero_writes_with_broadcast_reqs_are_not_estops(tmp_path):
+    # Every tick writes zeros (F0 F1 | REQ(0xFF) | F0 F1 ...) and no E-Stop follows.
+    lines: list[str] = []
+    for i in range(10):
+        lines += bcast_tick(1.0 + i * 0.004, write=True, data_hex=ZERO44)
+    frames = frames_of(lines, tmp_path)
+    left = analyse_bus(frames, LEFT, broadcast_req=True)
+    assert left.estop_candidates == 0
+    assert left.estop is None
+    assert left.write_pairs == 10
+    o = analyse_overlap(frames, "broadcast")
+    assert o.estop_line is None
+    assert o.estop_f1_t == {}
+    # Read per hand, the same bus has no REQ between the pairs: E-Stop look-alikes.
+    assert analyse_bus(frames, LEFT).estop_candidates == 9
+
+
+def test_per_hand_two_hand_run_is_judged_as_before(tmp_path, capsys):
+    session = write_two_hand_session(tmp_path, two_hand_lines(echo=False), None)
+    for side in ("right", "left"):
+        rc_auto, auto = run_main(tmp_path, session, side)
+        text = capsys.readouterr().out
+        rc_explicit, explicit = run_main(tmp_path, session, side, "--req-mode", "per_hand")
+        capsys.readouterr()
+        assert rc_auto == rc_explicit == 0
+        assert auto == explicit
+        assert auto["req_mode"] == "per_hand"
+        assert "| `x.no_overlap` | PASS |" in text
+        assert "x.broadcast_sets" not in text
+        overlap = dict(auto["overlap"])
+        assert overlap.pop("estop_gap_ms") == pytest.approx(0.2, abs=1e-6)
+        assert overlap.pop("estop_line") is not None
+        assert overlap == {
+            "hands_on_bus": ["right", "left"],
+            "transactions": {"right": 20, "left": 20},
+            "violations": 0,
+            "by_pair": {},
+            "first_violations": [],
+        }
+
+
+def test_req_mode_resolution():
+    assert resolve_req_mode("auto", comm_stats()) == "per_hand"  # archive without the key
+    comm = comm_stats()
+    comm["canfd"]["req_mode"] = "broadcast"
+    assert resolve_req_mode("auto", comm) == "broadcast"
+    assert resolve_req_mode("broadcast", comm) == "broadcast"
+    with pytest.raises(ValueError, match="req_mode mismatch"):
+        resolve_req_mode("per_hand", comm)
+    comm["canfd"]["req_mode"] = "round_robin"
+    with pytest.raises(ValueError):
+        resolve_req_mode("auto", comm)
+
+
+def test_per_hand_mode_on_a_broadcast_bus_is_exit_3(tmp_path, capsys):
+    # An archive without canfd.req_mode reads as per_hand: the broadcast bus contradicts it.
+    session = write_two_hand_session(tmp_path, bcast_lines(5), None)
+    rc, payload = run_main(tmp_path, session, "right")
+    assert rc == 3
+    assert payload is None
+    assert "req_mode mismatch" in capsys.readouterr().err
+    # Told it is broadcast, the same archive is judged.
+    rc, payload = run_main(tmp_path, session, "right", "--req-mode", "broadcast")
+    assert rc != 3
+    assert payload["req_mode"] == "broadcast"
+
+
+def test_broadcast_mode_on_a_per_hand_bus_is_exit_3(tmp_path, capsys):
+    session = write_two_hand_session(tmp_path, two_hand_lines(n_ticks=5, echo=False), None)
+    rc, payload = run_main(tmp_path, session, "left", "--req-mode", "broadcast")
+    assert rc == 3
+    assert payload is None
+    assert "req_mode mismatch" in capsys.readouterr().err
+    frames = frames_of(two_hand_lines(n_ticks=5), tmp_path)
+    assert req_mode_mismatch(frames, "per_hand") is None

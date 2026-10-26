@@ -1723,4 +1723,150 @@ TEST(HandControllerSharedLoop, OneLatchStopsBothHands) {
   left->Stop();
 }
 
+// ── Shared-request tick (#956) ─────────────────────────────────────────────
+// Two real-mode hands on one loop in shared-request mode, each with a scripted
+// comm that implements the split: the loop must call the split, never
+// RunCycle; the first hand sends the one REQ per tick; one hand's write grows
+// the other hand's bound; and the write result Prepare put in the outcome
+// survives to the cycle's masks (S1 — a reset between the steps would clear
+// the write-echo ok bit while the comm's own counters stay clean).
+
+namespace {
+
+class SharedReqHandComm final : public ScriptedHandComm {
+ public:
+  std::atomic<int> run_cycle_calls{0};
+  std::atomic<int> cmd_only_calls{0};
+  std::atomic<int> req_calls{0};
+  std::atomic<int> receive_calls{0};
+  std::atomic<int> receive_after_write{0};
+
+  [[nodiscard]] bool SupportsBroadcastReq() const noexcept override { return true; }
+
+  void RunCycle(const HandReadPlan& plan, const HandMotorArray* cmd_pos,
+                const HandMotorArray* cmd_ff, HandReadBuffers& bufs,
+                HandReadOutcome& out) noexcept override {
+    ++run_cycle_calls;
+    HandComm::RunCycle(plan, cmd_pos, cmd_ff, bufs, out);
+  }
+
+  [[nodiscard]] bool SendCommandOnly(const HandMotorArray& /*pos*/, const HandMotorArray& /*ff_nm*/,
+                                     HandReadOutcome& out) noexcept override {
+    ++cmd_only_calls;
+    out.write_ok = script_write_ok;
+    out.write_rx = false;
+    out.write_end = HandReadOutcome::Clock::now();
+    return true;
+  }
+
+  [[nodiscard]] bool SendBroadcastReq(
+      HandReadOutcome::Clock::time_point& t_sent) noexcept override {
+    ++req_calls;
+    t_sent = HandReadOutcome::Clock::now();
+    return true;
+  }
+
+  void ReceiveSet(const HandReadPlan& plan, HandReadBuffers& bufs, HandReadOutcome& out,
+                  const SharedRequest& req) noexcept override {
+    ++receive_calls;
+    if (req.after_write)
+      ++receive_after_write;
+    ResetReadFields(out);
+    FillMotorPattern(bufs);
+    out.phase_end[static_cast<std::size_t>(ReadPhase::kMotor)] = req.t_sent;
+    out.joint_ok = script_joint_ok;
+    out.StampPhase(ReadPhase::kJoint);
+    out.sensor_recvd = plan.sensors ? script_sensor_recvd : -1;
+  }
+};
+
+struct SharedReqHand {
+  std::unique_ptr<UdpHandController> ctrl;
+  SharedReqHandComm* comm{nullptr};
+};
+
+SharedReqHand MakeSharedReqHand() {
+  SharedReqHand h;
+  h.ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 1,
+      .recv_timeout_ms = 1.0,
+      .num_fingertips = 0,
+      .communication_mode = HandCommunicationMode::kBulk,
+  });
+  auto comm = std::make_unique<SharedReqHandComm>();
+  h.comm = comm.get();
+  EXPECT_TRUE(h.ctrl->SetHandComm(std::move(comm)));
+  return h;
+}
+
+}  // namespace
+
+TEST(HandControllerSharedLoop, SharedReqTickSplitsTheCycleAndKeepsTheWriteResult) {
+  HandCommLoop loop;
+  ASSERT_TRUE(loop.SetSharedReq(true));
+  auto right = MakeSharedReqHand();
+  auto left = MakeSharedReqHand();
+  ASSERT_TRUE(right.ctrl->AttachLoop(&loop));
+  ASSERT_TRUE(left.ctrl->AttachLoop(&loop));
+  ASSERT_TRUE(right.ctrl->Start());
+  ASSERT_TRUE(left.ctrl->Start());
+  loop.Start(SharedLoopConfig());
+  ASSERT_TRUE(PollUntil([&] { return right.ctrl->HasStateBeenRead(); }, 2s));
+  right.ctrl->SendCommandAndRequestStates(HandMotorArray{});
+  ASSERT_TRUE(PollUntil([&] { return right.comm->cmd_only_calls >= 1; }, 2s));
+  const auto at_write = right.ctrl->cycle_count();
+  ASSERT_TRUE(PollUntil([&] { return right.ctrl->cycle_count() >= at_write + 3; }, 2s));
+  right.ctrl->Stop();
+  left.ctrl->Stop();
+
+  const auto cycles = right.ctrl->cycle_count();
+  EXPECT_EQ(left.ctrl->cycle_count(), cycles);
+  EXPECT_EQ(right.comm->run_cycle_calls + left.comm->run_cycle_calls, 0);
+  EXPECT_EQ(static_cast<std::size_t>(right.comm->req_calls.load()), cycles);
+  EXPECT_EQ(left.comm->req_calls, 0) << "only the first hand sends the shared REQ";
+  EXPECT_EQ(static_cast<std::size_t>(right.comm->receive_calls.load()), cycles);
+  EXPECT_EQ(static_cast<std::size_t>(left.comm->receive_calls.load()), cycles);
+  EXPECT_EQ(right.comm->cmd_only_calls, 1);
+  EXPECT_EQ(left.comm->cmd_only_calls, 0);
+  EXPECT_EQ(left.comm->receive_after_write, 1)
+      << "the right hand's write did not reach the left bound";
+  EXPECT_EQ(right.comm->drain_calls, static_cast<int>(cycles));
+
+  bool saw_write = false;
+  const CycleOutcomeRing ring = right.ctrl->GetCycleOutcomeRing();
+  const std::size_t n = std::min<std::size_t>(ring.count, CycleOutcomeRing::kCapacity);
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto& e = ring.entries[i];
+    if ((e.attempted_mask & RequestKindBit(RequestKind::kWriteEcho)) != 0) {
+      saw_write = true;
+      EXPECT_NE(e.ok_mask & RequestKindBit(RequestKind::kWriteEcho), 0u)
+          << "the write result was lost between Prepare and Finish";
+    }
+  }
+  EXPECT_TRUE(saw_write);
+  EXPECT_EQ(right.ctrl->channel_consec_fail(RequestKind::kWriteEcho), 0u);
+  EXPECT_EQ(right.ctrl->channel_consec_fail(RequestKind::kJointRead), 0u);
+}
+
+// S6: fake hands take no part in the shared REQ — their whole cycle runs in
+// the Prepare pass — so a shared-request loop of fake hands still cycles both.
+TEST(HandControllerSharedLoop, SharedReqLoopOfFakeHandsCyclesBoth) {
+  HandCommLoop loop;
+  ASSERT_TRUE(loop.SetSharedReq(true));
+  auto right = MakeFakeHand();
+  auto left = MakeFakeHand();
+  ASSERT_TRUE(right->AttachLoop(&loop));
+  ASSERT_TRUE(left->AttachLoop(&loop));
+  ASSERT_TRUE(right->Start());
+  ASSERT_TRUE(left->Start());
+  loop.Start(SharedLoopConfig());
+  EXPECT_TRUE(PollUntil([&] { return right->cycle_count() >= 5 && left->cycle_count() >= 5; }, 2s));
+  right->Stop();
+  EXPECT_EQ(right->cycle_count(), left->cycle_count());
+  EXPECT_TRUE(right->HasStateBeenRead());
+  EXPECT_TRUE(left->HasStateBeenRead());
+  left->Stop();
+}
+
 }  // namespace udp_hand_driver::test

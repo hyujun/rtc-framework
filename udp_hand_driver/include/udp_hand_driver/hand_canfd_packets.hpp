@@ -232,6 +232,8 @@ static_assert(EchoId(kNodeRightHand, 0) == 0x00000040u, "Proto §3.6 echo Frame 
 static_assert(EchoId(kNodeLeftHand, 1) == 0x00000081u, "Proto §3.6 echo Frame 1, left hand");
 static_assert(ReqId(kNodeRightHand) == 0x00404000u, "Proto §3.1 REQ, right hand");
 static_assert(ReqId(kNodeLeftHand) == 0x00408000u, "Frame §2.2 REQ, left hand");
+static_assert(ReqId(kNodeBroadcast) == 0x007FC000u,
+              "#956 broadcast REQ (rig-confirmed 2026-10-25)");
 static_assert(RespId(kNodeRightHand, 0) == 0x00800040u, "Proto §4.1 RESP Frame 0, right hand");
 static_assert(RespId(kNodeRightHand, 2) == 0x00800042u, "Proto §4.3 RESP Frame 2, right hand");
 static_assert(RespId(kNodeLeftHand, 1) == 0x00800081u, "Frame §4.1 RESP Frame 1, left hand");

@@ -32,9 +32,10 @@
 # 노드는 하나다. `hand_sides:=right,left` (쉼표 목록) 를 주면 그 노드가 두 손을
 # 한 loop 로 돌리고 토픽은 /hand/right/* · /hand/left/*, E-Stop 은 /hand/estop 하나다.
 # protocol_version "2" 전용 (노드가 거부한다). 빈 값이면 파라미터를 넘기지 않아
-# yaml / `hand_side` 의 한 손 경로 그대로다. `loop_rate_hz:=` 로 두 손의 출발값
-# 250 Hz 를 준다 (노드 configure 가 `손 수 × 2 × recv_timeout_ms < 1000/loop_rate_hz`
-# 를 검사한다).
+# yaml / `hand_side` 의 한 손 경로 그대로다. 두 손은 req_mode auto 가 broadcast 로
+# 풀리므로 `loop_rate_hz:=400 recv_timeout_ms:=1.2` 를 준다 (#956 D86 — 노드
+# configure 가 `창 수 × 2 × recv_timeout_ms < 1000/loop_rate_hz` 를 검사하고,
+# broadcast 는 창 1 개, per_hand 는 손 수).
 #
 # ── 지원 범위 (issue #345) ────────────────────────────────────────────────
 # 이 런치는 **프로세스 내부 pin 만** 다룬다 — 노드가 스스로 main 스레드를
@@ -104,6 +105,7 @@ _OVERRIDE_ARGS = [
     ("can_interface", str),
     ("hand_side", str),
     ("cmd_ack", str),
+    ("req_mode", str),
     ("loop_rate_hz", float),
     ("use_cpu_affinity", _as_bool),
 ]
@@ -376,6 +378,16 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "req_mode",
+            default_value="",
+            description=(
+                "yaml req_mode override (빈 값=yaml, 노드 기본 auto): auto | per_hand | broadcast "
+                "(#956). broadcast 는 tick 마다 REQ 하나를 노드 0xFF 로 보내 두 손이 함께 답한다 — "
+                "protocol_version 2 · cmd_ack none 전용, recv_timeout_ms 는 1.2 이상 (실기 probe). "
+                "auto 는 2 · 두 손 · none 이면 broadcast, 그 밖은 per_hand (D86)."
+            ),
+        ),
+        DeclareLaunchArgument(
             "hand_sides",
             default_value="",
             description=(
@@ -388,8 +400,9 @@ def generate_launch_description():
             "loop_rate_hz",
             default_value="",
             description=(
-                "yaml loop_rate_hz override (빈 값=yaml). 두 손은 250 에서 출발한다 — 손 수 × 2 × "
-                "recv_timeout_ms < 1000/loop_rate_hz 여야 configure 를 지난다."
+                "yaml loop_rate_hz override (빈 값=yaml). 두 손은 400 (broadcast · T 1.2), "
+                "per_hand 는 250 (T 0.9) — 창 수 × 2 × recv_timeout_ms < 1000/loop_rate_hz 여야 "
+                "configure 를 지난다 (broadcast 는 창 1 개)."
             ),
         ),
         DeclareLaunchArgument(

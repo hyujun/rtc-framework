@@ -43,7 +43,7 @@ ros2 launch udp_hand_driver udp_hand.launch.py protocol_version:=2 hand_side:=ri
 ros2 topic echo /hand/link_status --once        # data: true 면 링크 정상
 # 두 손, CAN FD (노드 하나 — /hand/right/* · /hand/left/*)
 ros2 launch udp_hand_driver udp_hand.launch.py protocol_version:=2 hand_sides:=right,left \
-    loop_rate_hz:=250 recv_timeout_ms:=0.9
+    loop_rate_hz:=400 recv_timeout_ms:=1.2
 ```
 
 launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 수동으로 다루려면 `ros2 lifecycle set /hand/udp_hand_node deactivate` · `activate` 를 쓴다. 실제 손에 처음 붙일 때는 `/hand/link_status` 가 `true` 이고 `/hand/joint_states` 가 나오는지 먼저 확인하고, 안 되면 [문제 해결](#문제-해결) 의 표를 본다.
@@ -63,12 +63,13 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | `communication_mode` | `bulk` | `bulk` \| `individual` |
 | `recv_timeout_ms` | `0.4` | 수신 타임아웃 [ms] (UDP: ppoll · CAN FD: stage 별 deadline, 체인 최악 2 ×). CAN FD 실기는 `0.9` (H1-F06 실측) |
 | `publish_rate` | `100.0` | `link_status` decimation 기준 [Hz] |
-| `loop_rate_hz` | `500.0` | CommLoop 주기 [Hz]. 두 손은 `250` 에서 출발 |
+| `loop_rate_hz` | `500.0` | CommLoop 주기 [Hz]. 두 손은 `400` (`per_hand` 는 `250`) |
 | `protocol_version` | `1b` | `1a` \| `1b` \| `2`. 노드와 `fake_hand_firmware` 양쪽에 전파 |
 | `can_interface` | `can0` | `2` 의 SocketCAN 장치 (`firmware` 는 `vcan0` 로 강제) |
 | `hand_side` | — (노드 기본 `right`) | `right` \| `left`. 명시하면 통계 · 타이밍 파일명에 `_<side>` 접미사. firmware 에도 전파 |
 | `hand_sides` | — | 두 손: `right,left` (쉼표 목록). `hand_side` 와 함께 주면 거부. `firmware` 는 fake 를 손마다 (`fake_hand_firmware_<side>`) |
 | `cmd_ack` | — (노드 기본 `none`) | `echo` \| `none`: `2` 펌웨어의 CMD echo 여부. firmware 에도 전파 |
+| `req_mode` | `auto` | `auto` (두 손 · `cmd_ack none` 이면 `broadcast`, 그 밖 `per_hand`) \| `per_hand` \| `broadcast` ([두 손](#두-손-hand_sides)) |
 | `sil_mode` | `off` | `off` \| `loopmodel` \| `firmware` ([SIL 모드](#sil-모드-sil_mode)) |
 | `use_cpu_affinity` | `true` | 프로세스 내부 pin on/off ([스레드 모델](#스레드-모델) 의 경고). `aux_cpu_slot` 은 YAML 전용 |
 
@@ -126,7 +127,7 @@ ros2 topic echo /hand/calibration/status
 | `feedforward` | 무시 | 무시 | 전송 (Frame 1, `feedforward_kt` 로 Nm → A) |
 | 통신 모드 | individual / bulk | **bulk 전용** | **bulk 전용** |
 
-`1b` · `2` + `individual` 조합은 `on_configure` 가 FAILURE 를 반환한다. `2` 는 그 밖에도 `can_interface` 가 없을 때 (`loopmodel` 제외), `feedforward_kt` 가 10개가 아니거나 양수가 아닐 때, `cmd_ack` 가 `echo` · `none` 이 아닐 때, `손 수 × 2 × recv_timeout_ms` 가 comm 슬롯 (`1000 / loop_rate_hz × comm_decimation` ms) 을 넘을 때 거부한다 (남는 여유가 슬롯의 10 % 미만이면 WARN). YAML 의 값은 반드시 `"2"` 로 따옴표를 친다 (정수는 파라미터 선언에서 예외).
+`1b` · `2` + `individual` 조합은 `on_configure` 가 FAILURE 를 반환한다. `2` 는 그 밖에도 `can_interface` 가 없을 때 (`loopmodel` 제외), `feedforward_kt` 가 10개가 아니거나 양수가 아닐 때, `cmd_ack` 가 `echo` · `none` 이 아닐 때, 명시한 `req_mode broadcast` 가 `cmd_ack echo` 와 함께일 때, `손 수 × 2 × recv_timeout_ms` (`broadcast` 는 `2 ×`) 가 comm 슬롯 (`1000 / loop_rate_hz × comm_decimation` ms) 을 넘을 때 거부한다 (남는 여유가 슬롯의 10 % 미만이면 WARN). YAML 의 값은 반드시 `"2"` 로 따옴표를 친다 (정수는 파라미터 선언에서 예외).
 
 `2` 의 `JointCommand.feedforward` 는 `values` 와 크기가 같을 때만 같은 이름 맵으로 재정렬되어 전송되고 (joint offset 은 적용하지 않음), 비어 있으면 0, 그 외 크기면 0 + 경고 + `feedforward_size_mismatch` 카운터, NaN · ±inf 항목은 0 + `feedforward_nonfinite` 카운터다. `command_type` · `kp` · `kd` 는 소비하지 않는다. wire 포맷의 SSoT 는 [hand_canfd_packets.hpp](include/udp_hand_driver/hand_canfd_packets.hpp) 주석이다.
 
@@ -134,10 +135,12 @@ ros2 topic echo /hand/calibration/status
 
 `hand_sides: [right, left]` (`2` 전용) 면 노드 하나가 손마다 컨트롤러 · CAN 소켓 · failure detector 를 두고, `hand_comm` 스레드 하나가 tick 마다 목록 순서로 한 손씩 트랜잭션을 끝낸다. 이 순서가 버스 직렬화라 두 손의 프레임은 겹치지 않는다. 비어 있으면 위의 한 손 경로와 바이트 동일하다.
 
+`req_mode: broadcast` (두 손의 기본) 면 tick 이 손마다 CMD → REQ 하나 (노드 0xFF, 모든 손이 답한다) → 손마다 그 REQ 기준 수신 (REQ + T, write tick 은 2T) → 손마다 꼬리 순서로 돈다. 순서와 E-Stop 재확인 자리는 `hand_comm_loop.hpp` 헤더.
+
 - 토픽: 상대 이름에 `<side>/` 가 붙는다 (`/hand/right/joint_states` …). 손이 둘이면 손별 토픽에 절대 이름을 주면 configure 가 거부한다 (두 손이 한 토픽이 된다)
-- E-Stop: `/hand/estop` 하나. latch 는 손마다 cycle 머리에서, loop 가 손 사이에서 다시 본다. 두 손 모두 멈춘 뒤 손 순서대로 zero-write 를 1회씩 보낸다. 최악 지연은 주기 + 한 손의 수신 창이다 (250 Hz · 0.9 ms: 5.8 ms)
+- E-Stop: `/hand/estop` 하나. latch 는 손마다 cycle 머리에서, loop 가 손 사이에서 다시 본다. 두 손 모두 멈춘 뒤 손 순서대로 zero-write 를 1회씩 보낸다. 최악 지연은 주기 + 한 손의 수신 창이다 (400 Hz · 1.2 ms: 4.9 ms)
 - 손별 키: `<side>.joint_state_names` · `motor_state_names` · `hand_fingertip_names` · `joint_position_offsets_deg` · `feedforward_kt`. 없거나 비면 flat 키를 쓴다
-- 파일: `hand_stats_<side>.json` 이 손마다, `hand_timing_log.csv` 는 하나다. CSV 의 `t_total_us` 는 두 트랜잭션을 담은 tick 이고 `t_state_us` 는 마지막 손의 read 끝까지다
+- 파일: `hand_stats_<side>.json` 이 손마다, `hand_timing_log.csv` 는 하나다. CSV 의 `t_total_us` 는 두 트랜잭션을 담은 tick 이고 `t_state_us` 는 마지막 손의 read 끝까지다. `broadcast` 의 손별 `total_us` 는 앞 손의 수신 창을 포함한다
 - link down 은 그 손의 detector 만 판정하고 다른 손을 멈추지 않는다
 - activate 중 한 손의 시작이 실패하면 앞 손도 닫고 FAILURE 다 (loop 는 시작하지 않는다)
 
@@ -243,6 +246,7 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 | failure detector 가 all-zero / duplicate 경고 | commander 없이 단독 실행 (SIL 모터가 0 에 머묾) | 명령을 보내면 해소된다 |
 | `1b` · `2` 에서 `on_configure` FAILURE | [프로토콜](#센서-프로토콜-버전-protocol_version) 절의 거부 조건 | ERROR 한 줄이 원인을 적는다. 값을 고쳐 `ros2 param set` 뒤 다시 configure 하면 된다 |
 | `2` 의 write 가 전부 `write_echo.timeout`, 또는 `echo_unexpected` 증가 | `cmd_ack` 가 펌웨어와 불일치 | 노드 WARN 이 맞는 값을 적는다 |
+| `broadcast` 에서 한 손만 세트 timeout | 중재에 진 RESP 를 펌웨어가 버림, 또는 T 가 뒤 손 버스트보다 짧음 | `per_hand` (250 Hz · T 0.9) 로 돌리고 펌웨어 · T 확인 |
 | F/T 가 항상 0, grasp 이 안 잡힘 | `ft_inferencer.enabled=false` 인데 capability=true | [capability lockstep](#onnx-ft-추론) |
 | `recv_error` 가 증가 | 손 쪽 포트 닫힘 (ICMP port-unreachable → `ECONNREFUSED`) | 펌웨어 · 전원 · 케이블 확인. timeout 과 구분되는 결정적 link-down 신호다 |
 
@@ -252,11 +256,11 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 
 `last_unexpected_cmd` 에 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처다. `timing_stats` 는 성공한 패킷의 latency 만 집계한다. per-tick 타이밍은 `<session>/timing/hand_timing_log.csv`. `2` write tick 의 `read_all_joint_motor` 는 echo 끝 (`cmd_ack none`: CMD 송신) → 세트 완료 (profiler 헤더).
 
-`protocol_version` · `transport` (`udp` \| `canfd`, 설치된 링크 — `loopmodel` 은 기록하지 않음) · `feedforward_size_mismatch` · `feedforward_nonfinite` 는 모든 프로토콜에 있고, `"2"` 는 `canfd` 블록 (`cmd_ack` · tx errno · error frame · `echo_payload_mismatch` · `echo_unexpected` · assembler 카운터) 을 더한다. `hand_side` 를 명시하면 두 파일이 `hand_stats_<side>.json` · `hand_timing_log_<side>.csv` 가 된다 (`hand_sides` 는 [두 손](#두-손-hand_sides)). 키 집합은 `test/fixtures/hand_stats_keys*.txt` 가 고정한다.
+`protocol_version` · `transport` (`udp` \| `canfd`, 설치된 링크 — `loopmodel` 은 기록하지 않음) · `feedforward_size_mismatch` · `feedforward_nonfinite` 는 모든 프로토콜에 있고, `"2"` 는 `canfd` 블록 (`cmd_ack` · `req_mode` · tx errno · error frame · `echo_payload_mismatch` · `echo_unexpected` · assembler 카운터) 을 더한다. `hand_side` 를 명시하면 두 파일이 `hand_stats_<side>.json` · `hand_timing_log_<side>.csv` 가 된다 (`hand_sides` 는 [두 손](#두-손-hand_sides)). 키 집합은 `test/fixtures/hand_stats_keys*.txt` 가 고정한다.
 
 ### 로깅 (Logging)
 
-레벨 분류 · 공통 규칙은 [conventions.md §Logging](../agent_docs/conventions.md#logging). 패키지 규칙은 hot path (`RunCommCycle` · `UdpHandTransport::Send/Recv` · `PreFilter/ApplyFilters` · `FingertipFTInferencer::Infer`, 모두 `loop_rate_hz` 폴링) 에서 정상 경로의 직접 `INFO`/`WARN` 과 `RCLCPP_*_ONCE` 를 금지하고 `*_THROTTLE` 만 쓰는 것이다. THROTTLE 상수는 `udp_hand_logging.hpp` 가 SSoT.
+레벨 분류 · 공통 규칙은 [conventions.md §Logging](../agent_docs/conventions.md#logging). 패키지 규칙은 hot path (`RunCommCycle` · `*SharedReq*` · `UdpHandTransport::Send/Recv` · `PreFilter/ApplyFilters` · `FingertipFTInferencer::Infer`, 모두 `loop_rate_hz` 폴링) 에서 정상 경로의 직접 `INFO`/`WARN` 과 `RCLCPP_*_ONCE` 를 금지하고 `*_THROTTLE` 만 쓰는 것이다. THROTTLE 상수는 `udp_hand_logging.hpp` 가 SSoT.
 
 | 서브-로거 | 사용처 |
 |---|---|
