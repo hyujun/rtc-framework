@@ -36,7 +36,8 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
-  <!-- PyQt5: venv 책임 (requirements.lock, cross-workspace isolation 정책 2026-05-23) -->
+  <!-- PyQt5: venv 책임 (requirements.lock, cross-workspace isolation 정책 2026-05-23).
+       x86_64 전용 마커 — aarch64 venv 에는 없으므로 motion_editor_gui 는 x86_64 에서만 돈다. -->
   <exec_depend>repo_scripts</exec_depend>
   <exec_depend>rtc_tools</exec_depend>
   <exec_depend>robot_descriptions</exec_depend>

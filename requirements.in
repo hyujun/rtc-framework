@@ -14,7 +14,9 @@
 # Kilted (numpy 2.x baseline). Bump only with rclpy import smoke test.
 #
 # Lock generation:
-#   uv pip compile requirements.in --generate-hashes -o requirements.lock
+#   uv pip compile requirements.in --universal --generate-hashes -o requirements.lock
+#   (--universal: 아래 platform_machine 마커를 lock 에 보존한다. 기존 lock 위에
+#   in-place 로 돌려 핀을 유지한다 — 새 파일로 돌리면 전체 핀이 움직인다.)
 #
 # Sync on a new machine: ./install.sh 가 수행 (install_python.sh 의 ensure_venv +
 #   install_python_deps). 손으로 할 때의 명령, 그리고 --python 을 버전이 아니라
@@ -25,7 +27,10 @@ numpy<2
 scipy
 matplotlib
 pandas
-PyQt5
+# PyQt5 (motion_editor_gui 전용) 는 Linux x86_64 wheel 만 배포된다 — pyqt5-qt5 는
+# aarch64 wheel 도 sdist 도 없다. aarch64 (Jetson 등 제어 전용 PC) 는 GUI 를 돌리지
+# 않으므로 마커로 제외한다; 거기서 GUI 가 필요하면 apt python3-pyqt5 를 상속한다.
+PyQt5; platform_machine == "x86_64"
 
 # Simulation + build tooling
 mujoco==3.7.0

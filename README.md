@@ -90,7 +90,7 @@ MAKEFLAGS=-j6 colcon build --symlink-install --parallel-workers 1 --cmake-args -
 `install.sh` 가 `uv` 로 `.venv` 를 만들고 `requirements.lock` 과 정확히 맞춘다. ROS 2 Python (`rclpy` 등) 은 `--system-site-packages` 로 시스템 것을 쓴다.
 
 ```bash
-uv pip compile requirements.in --generate-hashes -o requirements.lock   # 의존성을 바꿨을 때
+uv pip compile requirements.in --universal --generate-hashes -o requirements.lock   # 의존성을 바꿨을 때 (기존 lock 위에 in-place)
 uv venv --python /usr/bin/python3.12 --system-site-packages .venv       # 새 머신 (install.sh 가 한다)
 source .venv/bin/activate && uv pip sync requirements.lock
 ```

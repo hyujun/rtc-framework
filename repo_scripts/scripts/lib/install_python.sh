@@ -13,7 +13,8 @@
 #
 # 정책 (2026-05-23, scientific stack venv 이전):
 #   - venv 생성·sync 모두 uv (pip 미사용)
-#   - lock은 requirements.lock (uv pip compile --generate-hashes 산출)
+#   - lock은 requirements.lock (uv pip compile --universal --generate-hashes 산출;
+#     PyQt5 는 platform_machine == x86_64 마커 — aarch64 venv 에는 들어가지 않는다)
 #   - numpy/scipy/matplotlib/pandas/PyQt5는 venv 안에 핀-버전으로 설치 →
 #     다른 workspace 의 시스템 패키지 변경에 영향 안 받음 (cross-workspace 격리).
 #     numpy<2 핀은 ros-jazzy-rclpy ABI 호환용 (requirements.in 주석 참조).
