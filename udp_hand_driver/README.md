@@ -255,7 +255,7 @@ include 의 각 헤더는 상단 주석에 역할과 동작 계약이 있다. `p
 
 `<session>/device/hand_stats.json` 에 통신 · 타이밍 통계를 쓴다. 10 s 주기 저장 (SIGKILL 대비), failure 발생 즉시 1회, 정상 teardown 때 저장한다. `comm_stats` 에 cycle · recv ok / timeout / error · mismatch · `stale_drained` · `comm_decimation` 이 있고, `per_request` 는 request kind (`write_echo` · `motor_read` · `joint_read` · `sensor_read` · `bulk_sensor` · `set_mode`) 별 집계다.
 
-`last_unexpected_cmd` 에 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처다. `timing_stats` 는 성공한 패킷의 latency 만 집계한다. per-tick 타이밍은 `<session>/timing/hand_timing_log.csv`. `2` write tick 의 `read_all_joint_motor` 는 echo 끝 (`cmd_ack none`: CMD 송신) → 세트 완료 (profiler 헤더).
+`last_unexpected_cmd` 에 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처다. `timing_stats` 는 성공한 패킷의 latency 만 집계한다. per-tick 타이밍은 `<session>/timing/hand_timing_log.csv`. `2` 에서 `read_all_motor` 는 항상 0, write tick 의 `read_all_joint_motor` 는 echo 끝 (`cmd_ack none`: CMD 송신) → 세트 완료, broadcast tick 의 `read_all_sensor` 는 그 손의 decode 만이고 `total` 은 tick 전체라 두 손이 같다 (profiler 헤더). 로그 `Hand timing` 의 칸은 모두 평균 µs 다.
 
 `protocol_version` · `transport` (`udp` \| `canfd`, 설치된 링크 — `loopmodel` 은 기록하지 않음) · `feedforward_size_mismatch` · `feedforward_nonfinite` 는 모든 프로토콜에 있고, `"2"` 는 `canfd` 블록 (`cmd_ack` · `req_mode` · tx errno · error frame · `echo_payload_mismatch` · `echo_unexpected` · assembler 카운터) 을 더한다. `hand_side` 를 명시하면 두 파일이 `hand_stats_<side>.json` · `hand_timing_log_<side>.csv` 가 된다 (`hand_sides` 는 [두 손](#두-손-hand_sides)). 키 집합은 `test/fixtures/hand_stats_keys*.txt` 가 고정한다.
 

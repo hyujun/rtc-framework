@@ -12,6 +12,7 @@
 #include "rtc_base/threading/seqlock.hpp"
 #include "silent_loopback_socket.hpp"
 #include "udp_hand_driver/hand_comm.hpp"
+#include "udp_hand_driver/protocol/sensor_protocol_canfd.hpp"
 #include "udp_hand_driver/udp_hand_comm.hpp"
 #include "udp_hand_driver/udp_hand_controller.hpp"
 
@@ -1740,6 +1741,7 @@ class SharedReqHandComm final : public ScriptedHandComm {
   std::atomic<int> req_calls{0};
   std::atomic<int> receive_calls{0};
   std::atomic<int> receive_after_write{0};
+  std::chrono::microseconds receive_delay{0};  // set before Start()
 
   [[nodiscard]] bool SupportsBroadcastReq() const noexcept override { return true; }
 
@@ -1771,6 +1773,8 @@ class SharedReqHandComm final : public ScriptedHandComm {
     ++receive_calls;
     if (req.after_write)
       ++receive_after_write;
+    if (receive_delay.count() > 0)
+      std::this_thread::sleep_for(receive_delay);
     ResetReadFields(out);
     FillMotorPattern(bufs);
     out.phase_end[static_cast<std::size_t>(ReadPhase::kMotor)] = req.t_sent;
@@ -1847,6 +1851,39 @@ TEST(HandControllerSharedLoop, SharedReqTickSplitsTheCycleAndKeepsTheWriteResult
   EXPECT_TRUE(saw_write);
   EXPECT_EQ(right.ctrl->channel_consec_fail(RequestKind::kWriteEcho), 0u);
   EXPECT_EQ(right.ctrl->channel_consec_fail(RequestKind::kJointRead), 0u);
+}
+
+// On a shared-request tick the hands receive back to back before any finish,
+// so the first hand's finish waits out the later hand's receive. That wait
+// belongs to the tick total, not to the first hand's read_all_sensor phase.
+TEST(HandControllerSharedLoop, SharedReqSensorPhaseLeavesOutTheLaterHandsReceive) {
+  constexpr auto kLeftDelay = std::chrono::microseconds{2000};
+  HandCommLoop loop;
+  ASSERT_TRUE(loop.SetSharedReq(true));
+  auto right = MakeSharedReqHand();
+  auto left = MakeSharedReqHand();
+  for (SharedReqHand* h : {&right, &left}) {
+    h->ctrl->SetSensorProtocol(std::make_unique<SensorProtocol2>());
+    h->comm->script_sensor_recvd = static_cast<ssize_t>(sizeof(canfd::RespSet));
+  }
+  left.comm->receive_delay = kLeftDelay;
+  ASSERT_TRUE(right.ctrl->AttachLoop(&loop));  // right receives first
+  ASSERT_TRUE(left.ctrl->AttachLoop(&loop));
+  ASSERT_TRUE(right.ctrl->Start());
+  ASSERT_TRUE(left.ctrl->Start());
+  loop.Start(SharedLoopConfig());
+  ASSERT_TRUE(PollUntil([&] { return right.ctrl->cycle_count() >= 10; }, 2s));
+  right.ctrl->Stop();
+  left.ctrl->Stop();
+
+  const auto r = right.ctrl->timing_stats();
+  const auto l = left.ctrl->timing_stats();
+  ASSERT_GT(r.count, 0u);
+  ASSERT_GT(r.read_all_sensor.max_us, 0.0) << "the sensor phase was never recorded";
+  EXPECT_LT(r.read_all_sensor.max_us, 500.0) << "the left hand's receive leaked into it";
+  EXPECT_GE(r.max_us, static_cast<double>(kLeftDelay.count())) << "total is the tick total";
+  ASSERT_GT(l.read_all_sensor.max_us, 0.0);
+  EXPECT_LT(l.read_all_sensor.max_us, 500.0);
 }
 
 // S6: fake hands take no part in the shared REQ — their whole cycle runs in

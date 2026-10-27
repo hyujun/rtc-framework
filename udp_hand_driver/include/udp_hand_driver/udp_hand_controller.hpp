@@ -830,6 +830,7 @@ class UdpHandController final : public HandCommLoopMember {
     if (!BeginCommCycle()) {
       return {};
     }
+    cyc_.shared_req = true;
     BeginBulkCycle();  // the node allows broadcast on protocol 2 only: bulk
     read_outcome_ = HandReadOutcome{};
     bool wrote = false;
@@ -857,6 +858,7 @@ class UdpHandController final : public HandCommLoopMember {
   // Step 4: the rest of the cycle as on a per-hand tick.
   void FinishSharedReqCycle() noexcept override {
     RTC_TRACE_SCOPE("hand_bc_finish");
+    cyc_.finish_start = std::chrono::steady_clock::now();
     FinishBulkCycle();
     EndCommCycle();
   }
@@ -1079,8 +1081,11 @@ class UdpHandController final : public HandCommLoopMember {
 
     // Read-phase end is stamped HERE, after the decode + cache copies, so
     // read_all_sensor_us keeps its pre-seam meaning (recv + decode) and
-    // sensor_proc_us starts where it did.
+    // sensor_proc_us starts where it did. On a shared-request tick the hands
+    // receive back to back before any finish, so the phase starts at this
+    // hand's finish: decode only, not the wait for the later hands' sets.
     const auto t3 = std::chrono::steady_clock::now();
+    const auto sensor_base = cyc_.shared_req ? std::max(t2j, cyc_.finish_start) : t2j;
     loop_->MarkState();  // end of the read phase (base t1)
 
     // Bulk-only state fields (1b / 2 firmware-computed force, 2 contact; 0 for
@@ -1095,7 +1100,7 @@ class UdpHandController final : public HandCommLoopMember {
     pt.write_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
     pt.read_all_motor_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
     pt.read_all_joint_motor_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
-    pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
+    pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - sensor_base).count();
     pt.write_ok = write_ok;
     pt.read_all_motor_ok = read_all_motor_ok;
     pt.read_all_joint_motor_ok = read_all_joint_motor_ok;
@@ -1776,6 +1781,10 @@ class UdpHandController final : public HandCommLoopMember {
     bool write_ok{false};
     bool is_sensor_cycle{false};
     bool motor_space_attempted{false};
+    // Shared-request tick only: set by PrepareSharedReqCycle, stamped at the
+    // head of FinishSharedReqCycle (read_all_sensor_us base).
+    bool shared_req{false};
+    std::chrono::steady_clock::time_point finish_start{};
   };
 
   CycleScratch cyc_{};
