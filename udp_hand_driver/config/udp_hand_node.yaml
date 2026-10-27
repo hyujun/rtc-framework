@@ -63,15 +63,18 @@
                                       # none 펌웨어 실측 (2026-10-25, 500 Hz write 300 s): read-only
                                       # max 0.744 ms < T, write 세트 CMD F0→RESP F2 max 1.141 ms
                                       # < 2T, 세트 타임아웃 0 → 0.9 유지 (D62 · D64).
-                                      # req_mode broadcast (#956) 는 두 손이 한 창을 함께 쓴다:
-                                      # REQ + T (write 뒤 2T), 예산은 손 수와 무관하게 2 × 값 <
-                                      # slot. 뒤에 답하는 손은 앞 손 버스트 뒤에 오므로 1.2 이상
-                                      # (probe 2026-10-25: 왼손 REQ→F2 max 1.154 ms, 미만이면
-                                      # configure WARN). 두 손 기본은 400 Hz · 1.2 (2.4 < 2.5,
-                                      # run 5 broadcast write tick max 2.02 ms — D86). 그 값은
-                                      # IXXAT USB 실기 (PC#2) 의 것이다. 네이티브 CAN 호스트
-                                      # (Jetson Thor mttcan, 2026-10-26) 는 왼손 REQ→F2 max
-                                      # 0.943 ms · write tick p99 1658 µs 라 450 Hz · 1.0 (D87).
+                                      # req_mode broadcast (#956) 는 이 값을 쓰지 않는다 — 수신
+                                      # 마감이 tick 시작 + (slot − broadcast_tail_guard_ms) 다
+                                      # (D89). 두 손 기본은 400 Hz (IXXAT USB 실기, PC#2). 운용
+                                      # 주기는 write tick (CMD 4 → REQ → RESP 6) t_total p99 ×
+                                      # 1.1 로 호스트마다 잡는다: 네이티브 CAN 호스트 (Jetson
+                                      # Thor mttcan, 2026-10-28) 는 p99 1521 µs 라 500 Hz.
+    broadcast_tail_guard_ms: 0.05     # req_mode broadcast 전용: 수신 창 = slot - 이 값 [ms].
+                                      # 창 뒤 꼬리 (디코드 · 센서 후처리 · FT 추론) 의 자리다 —
+                                      # FT 추론을 켜면 그 시간만큼 올린다. 0 < 값 < slot 이
+                                      # 아니면 configure 가 거부한다. per_hand 는 쓰지 않는다.
+                                      # 창 < 1.6 ms (가장 빠른 실측 write tick) 이거나 FT 추론이
+                                      # 켜져 있으면 configure WARN.
 
     # -- CAN FD 링크 (protocol_version "2" 전용 — 1a / 1b 에서는 무시) --
     # can_interface : SocketCAN 장치. sil_mode=firmware 는 vcan0 로 강제한다.
@@ -90,7 +93,7 @@
     # req_mode      : "auto" (기본) | "per_hand" | "broadcast" (#956). broadcast 는 tick 마다
     #                 손별 CMD 뒤 REQ 하나를 노드 0xFF 로 보내 모든 손이 답한다 — cmd_ack
     #                 "none" 전용 (명시한 broadcast 가 echo 와 함께면 configure 거부),
-    #                 recv_timeout_ms 는 위 1.2. auto 는 "2" · 두 손 · none 이면 broadcast,
+    #                 창은 slot - broadcast_tail_guard_ms (D89). auto 는 "2" · 두 손 · none 이면 broadcast,
     #                 그 밖 (한 손 · echo · 1a / 1b) 은 per_hand (D86).
     # hand_sides    : 두 손 — 예 ["right", "left"]. 노드 하나 · CommLoop 하나가 두 손을
     #                 목록 순서로 돌린다 (README "두 손"). 토픽은 <side>/ 접두, 손별 키는

@@ -35,7 +35,11 @@
 //      that send fails, the next taking-part hand's socket tries, so one
 //      socket's tx fault does not fail every hand's set;
 //   3. ReceiveSharedReq() per taking-part hand: its receive stage against the
-//      bound anchored at that REQ — back to back, before any tail, so a later
+//      one bound of the tick — the tick start plus the set window
+//      (SetSharedReq, D89: the comm slot less the tail guard, so a tick whose
+//      set never closes still ends inside its slot whatever was written
+//      before the REQ, as long as the guard holds the tick's wake lag and the
+//      tails) — back to back, before any tail, so a later
 //      hand starts receiving within microseconds of the earlier one's close
 //      and a frame queued by then arrived by then (a tail between them would
 //      let a frame that came after the bound pass as in time);
@@ -64,7 +68,6 @@ class HandCommLoop;
 /// What PrepareSharedReqCycle() reports to the loop (#956).
 struct SharedReqPrep {
   bool takes_part{false};  ///< this hand waits for the shared REQ's answer
-  bool wrote{false};       ///< its command reached the link (the bound grows to 2T)
 };
 
 /// One hand as HandCommLoop sees it. UdpHandController implements it; tests
@@ -112,8 +115,8 @@ class HandCommLoopMember {
 
 class HandCommLoop final : public rtc::PeriodicRtThread {
  public:
-  /// Hands one bus can serve per tick (D69: W4 budget, `N × 2T < slot`; one
-  /// shared-request window `2T < slot` under #956).
+  /// Hands one bus can serve per tick (D69: W4 budget, `N × 2T < slot`; under
+  /// #956 one shared window inside the slot, D89).
   static constexpr std::size_t kMaxHands = 2;
 
   HandCommLoop() = default;
@@ -166,16 +169,26 @@ class HandCommLoop final : public rtc::PeriodicRtThread {
   }
 
   /// Tick in shared-request mode (#956) or one whole cycle per hand (the
-  /// default). Refused (false) while running.
-  [[nodiscard]] bool SetSharedReq(bool on) noexcept {
-    if (Running()) {
+  /// default). `window` is how long after its start a shared-request tick
+  /// waits for the sets (D89; the node passes the comm slot less
+  /// broadcast_tail_guard_ms) and must be positive when `on` — a zero window
+  /// would close every set at the tick start, before the REQ is out, and time
+  /// every set out. Refused (false) while running or for `on` with a
+  /// non-positive window; `on` false ignores it.
+  [[nodiscard]] bool SetSharedReq(bool on, HandReadOutcome::Clock::duration window = {}) noexcept {
+    if (Running() || (on && window <= HandReadOutcome::Clock::duration::zero())) {
       return false;
     }
     shared_req_ = on;
+    shared_req_window_ = on ? window : HandReadOutcome::Clock::duration::zero();
     return true;
   }
 
   [[nodiscard]] bool shared_req() const noexcept { return shared_req_; }
+
+  [[nodiscard]] HandReadOutcome::Clock::duration shared_req_window() const noexcept {
+    return shared_req_window_;
+  }
 
   /// Forget every member. Refused (false) while running.
   [[nodiscard]] bool Clear() noexcept {
@@ -280,9 +293,18 @@ class HandCommLoop final : public rtc::PeriodicRtThread {
   // Receive, then Finish, for every hand that takes part, with the latch
   // re-checked in between.
   void RunSharedReqTick() noexcept {
+    // The bound starts here, before any drain or CMD send, so what the
+    // Prepare pass spends is inside the window rather than added to it. It
+    // is the actual wake, not the scheduled one (the base keeps that to
+    // itself): a late wake moves the bound by its lag, which the tail guard
+    // has to hold besides the tails. A tick that still runs over makes the
+    // next one start late by the excess, and that excess shrinks tick by
+    // tick while lag + tails stay under the guard — it grows only when the
+    // guard is too small, which the base's overrun count shows.
+    const HandReadOutcome::Clock::time_point deadline =
+        HandReadOutcome::Clock::now() + shared_req_window_;
     std::size_t ran = 0;
     std::size_t first = kMaxHands;  // first hand that takes part — sends the REQ
-    bool any_wrote = false;
     for (std::size_t i = 0; i < count_; ++i) {
       if (i > 0 && EstopLatched()) {
         AbortForEstop();
@@ -297,7 +319,6 @@ class HandCommLoop final : public rtc::PeriodicRtThread {
       if (prep.takes_part && first == kMaxHands) {
         first = i;
       }
-      any_wrote = any_wrote || prep.wrote;
     }
     if (first < kMaxHands) {
       // The REQ draws every hand's burst: a latch raised while the commands
@@ -307,12 +328,12 @@ class HandCommLoop final : public rtc::PeriodicRtThread {
         return;
       }
       SharedRequest req{};
+      req.deadline = deadline;
       for (std::size_t i = first; i < count_ && !req.sent; ++i) {
         if (takes_part_[i]) {
           req.sent = members_[i]->SendSharedReq(req.t_sent);
         }
       }
-      req.after_write = any_wrote;
       bool received = false;
       for (std::size_t i = first; i < count_; ++i) {
         if (!takes_part_[i]) {
@@ -344,7 +365,9 @@ class HandCommLoop final : public rtc::PeriodicRtThread {
   std::array<HandCommLoopMember*, kMaxHands> members_{};
   std::size_t count_{0};
   const std::atomic<bool>* estop_flag_{nullptr};
-  bool shared_req_{false};  // set before Start(), read by the loop thread only while running
+  // Set before Start(), read by the loop thread only while running.
+  bool shared_req_{false};
+  HandReadOutcome::Clock::duration shared_req_window_{};
 
   // Loop thread only.
   std::size_t suppress_votes_{0};

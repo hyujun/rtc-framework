@@ -105,6 +105,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // the link_status decimation ratio below).
   declare_once("loop_rate_hz", 500.0);
   declare_once("recv_timeout_ms", 10.0);
+  declare_once("broadcast_tail_guard_ms", 0.05);
   declare_once("enable_failure_detector", true);
   declare_once("failure_threshold", 5);
   declare_once("check_motor", true);
@@ -184,15 +185,18 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   //   req_mode        "auto" | "per_hand" | "broadcast" (#956 D81 · D86) —
   //                   broadcast sends one REQ to node 0xFF per tick and every
   //                   hand answers it (protocol 2 with cmd_ack none only).
-  //                   recv_timeout_ms then bounds that one shared window (2T <
-  //                   slot instead of N × 2T) and must cover the later hand,
-  //                   whose burst follows the earlier one's: 1.4 ms on the rig
-  //                   (probe 2026-10-25) against per_hand's 0.9. auto (the
-  //                   default) is broadcast for two hands on protocol 2 with
-  //                   cmd_ack none, per_hand otherwise (ResolveReqMode).
-  //   recv_timeout_ms is shared with UDP: on CAN FD it is the per-stage
-  //                   deadline (echo stage, RESP-set stage — D42; under
-  //                   cmd_ack none the set stage after a write gets 2T).
+  //                   auto (the default) is broadcast for two hands on
+  //                   protocol 2 with cmd_ack none, per_hand otherwise
+  //                   (ResolveReqMode).
+  //   recv_timeout_ms is shared with UDP: on CAN FD per_hand it is the
+  //                   per-stage deadline (echo stage, RESP-set stage — D42;
+  //                   under cmd_ack none the set stage after a write gets
+  //                   2T). Unused under broadcast.
+  //   broadcast_tail_guard_ms  req_mode broadcast (D89): every set of a tick
+  //                   closes by the tick start + comm slot − this guard, the
+  //                   room left for the tails (decode, sensor post-process,
+  //                   FT inference — raise it by the inference time when FT
+  //                   is on). Must be in (0, slot).
   declare_once("can_interface", std::string{"can0"});
   declare_once("hand_side", std::string{"right"});
   declare_once("hand_sides", std::vector<std::string>{});
@@ -509,7 +513,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   if (req_broadcast && sides.size() == 1) {
     RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                 "req_mode broadcast with one configured hand: every powered hand on the bus "
-                "answers the 0xFF REQ — size recv_timeout_ms for all of them");
+                "answers the 0xFF REQ — size loop_rate_hz for all of them");
   } else if (req_broadcast) {
     RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
                 "req_mode broadcast: one REQ to node 0xFF per tick, every hand on the bus answers "
@@ -522,6 +526,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // publisher exists, so a bad configuration ends in Unconfigured with one
   // actionable line instead of an on_activate Open() failure.
   std::vector<udp_hand_driver::CanFdHandCommConfig> canfd_cfgs(sides.size());
+  double broadcast_set_window_ms = 0.0;  // req_mode broadcast only (D89)
   if (is_canfd) {
     udp_hand_driver::CanFdHandCommConfig common{};
     common.interface_name = endpoint.can_interface;
@@ -571,63 +576,87 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
         cfg.feedforward_kt[i] = kt_f;
       }
     }
-    // D42, generalized to N hands (D71): each hand's cycle has two receive
-    // stages (echo, RESP set), each bounded by recv_timeout_ms, and the loop
-    // runs the hands back to back — so N × 2T must fit the comm slot, or one
-    // slow tick overruns the next by construction rather than by a fault.
-    // Under cmd_ack none the one set stage after a write is bounded by the
-    // nominal 2T itself (D64), so the bound is the same. Under req_mode
-    // broadcast every hand waits in ONE window anchored at the shared REQ
-    // (#956 D83), so the slot pays for one 2T whatever N is. What runs
-    // before the anchor (each hand's drain and CMD sends) and after the window
-    // (the tails) is outside this bound in both modes — the 10 % warning below
-    // is the room left for it.
     const double slot_ms = 1000.0 / loop_rate_hz * static_cast<double>(comm_dec_guarded);
-    const std::size_t windows = req_broadcast ? 1 : sides.size();
-    const double margin_ms = udp_hand_driver::CommSlotMarginMs(slot_ms, windows, recv_timeout_ms);
-    if (!(recv_timeout_ms > 0.0) || !(margin_ms > 0.0)) {
-      // The declare default (10 ms) is UDP's and can never pass here: a proto2
-      // configuration must set recv_timeout_ms itself (the shipped YAML: 0.4).
-      if (req_broadcast) {
+    // The link's Open() refuses T ≤ 0 in every mode. The declare default
+    // (10 ms) is UDP's and fails the per_hand budget below: a proto2
+    // configuration must set recv_timeout_ms itself (the shipped YAML: 0.4).
+    // Broadcast never waits on T, so there the default passes unused; the
+    // same file under per_hand (one hand, cmd_ack echo) is refused below.
+    if (!(recv_timeout_ms > 0.0)) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                   "recv_timeout_ms=%.3f: protocol_version 2 needs recv_timeout_ms > 0",
+                   recv_timeout_ms);
+      return CallbackReturn::FAILURE;
+    }
+    if (req_broadcast) {
+      // D89: every set of the tick shares one bound at the tick start + the
+      // set window, so the slot itself is the budget and recv_timeout_ms plays
+      // no part (the 2T of D83 was the echo era's two stages). The guard is
+      // what is left for the tails once a set has run to the bound.
+      const double guard_ms = get_parameter("broadcast_tail_guard_ms").as_double();
+      if (!(guard_ms > 0.0) || !(guard_ms < slot_ms)) {
         RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                     "recv_timeout_ms=%.3f: req_mode broadcast needs 0 < 2 × recv_timeout_ms < "
-                     "comm slot %.3f ms (1000 / loop_rate_hz × comm_decimation) — one shared "
-                     "window (#956 D83); set it in the YAML (the declare default is the UDP "
-                     "value)",
-                     recv_timeout_ms, slot_ms);
-      } else {
+                     "broadcast_tail_guard_ms=%.3f: req_mode broadcast needs 0 < "
+                     "broadcast_tail_guard_ms < comm slot %.3f ms (1000 / loop_rate_hz × "
+                     "comm_decimation) — D89",
+                     guard_ms, slot_ms);
+        return CallbackReturn::FAILURE;
+      }
+      broadcast_set_window_ms = udp_hand_driver::BroadcastSetWindowMs(slot_ms, guard_ms);
+      RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                  "req_mode broadcast: every set closes by %.3f ms after the tick start (comm "
+                  "slot %.3f − broadcast_tail_guard_ms %.3f; recv_timeout_ms unused — D89)",
+                  broadcast_set_window_ms, slot_ms, guard_ms);
+      // Not refused, both: the figures are hosts' and models', not the
+      // protocol's. A window under the fastest measured write tick times
+      // every write tick's sets out (link down → E-Stop); FT inference runs
+      // in every hand's tail after the window, inside the guard.
+      if (broadcast_set_window_ms < udp_hand_driver::kBroadcastSetWindowWarnMs) {
+        RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                    "req_mode broadcast set window %.3f ms is under the fastest measured write "
+                    "tick (%.3f ms, native CAN host — D89): its sets can miss the bound every "
+                    "write tick (link down → E-Stop); lower loop_rate_hz or "
+                    "broadcast_tail_guard_ms",
+                    broadcast_set_window_ms, udp_hand_driver::kBroadcastSetWindowWarnMs);
+      }
+      if (ft_config.enabled) {
+        RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                    "req_mode broadcast with FT inference on: broadcast_tail_guard_ms %.3f must "
+                    "also hold %zu hand(s)' inference after the window (Hand timing ft_infer) or "
+                    "a tick whose set times out overruns the slot",
+                    guard_ms, sides.size());
+      }
+    } else {
+      // D42, generalized to N hands (D71): each hand's cycle has two receive
+      // stages (echo, RESP set), each bounded by recv_timeout_ms, and the loop
+      // runs the hands back to back — so N × 2T must fit the comm slot, or one
+      // slow tick overruns the next by construction rather than by a fault.
+      // Under cmd_ack none the one set stage after a write is bounded by the
+      // nominal 2T itself (D64), so the bound is the same. What runs before
+      // each window (drain, CMD sends) and after it (the tail) is outside this
+      // bound — the 10 % warning below is the room left for it.
+      const double margin_ms =
+          udp_hand_driver::CommSlotMarginMs(slot_ms, sides.size(), recv_timeout_ms);
+      if (!(margin_ms > 0.0)) {
         RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                      "recv_timeout_ms=%.3f: protocol_version 2 needs 0 < %zu × 2 × "
                      "recv_timeout_ms < comm slot %.3f ms (1000 / loop_rate_hz × comm_decimation) "
                      "— D42; set it in the YAML (the declare default is the UDP value)",
                      recv_timeout_ms, sides.size(), slot_ms);
+        return CallbackReturn::FAILURE;
       }
-      return CallbackReturn::FAILURE;
-    }
-    // Under a tenth of the slot left, the scheduler's own jitter can push a
-    // worst-case tick over (#906 S1). Not refused: the operator may know the
-    // stages close early on this rig; a nanosecond of slack keeps the exact
-    // 10 % boundary (250 Hz · 0.9 ms · two hands) quiet.
-    constexpr double kSlotMarginWarnFraction = 0.1;
-    constexpr double kBoundarySlackMs = 1e-6;
-    if (margin_ms + kBoundarySlackMs < kSlotMarginWarnFraction * slot_ms) {
-      RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                  "comm slot %.3f ms leaves %.3f ms after %zu × 2 × recv_timeout_ms (%.3f) — "
-                  "under 10 %% of the slot; a jittery tick can overrun",
-                  slot_ms, margin_ms, windows, recv_timeout_ms);
-    }
-    // The per_hand T carried over to broadcast misses the later hand's set
-    // every tick — link down, then E-Stop. That stops safely but says nothing
-    // about why, so it is named here (D86); not refused, the figure is the
-    // host's CAN path (IXXAT USB rig 1.154 ms; a native CAN host 0.943 ms
-    // runs 1.0 — D87), not the protocol's.
-    if (req_broadcast && recv_timeout_ms < udp_hand_driver::kBroadcastRecvTimeoutWarnMs) {
-      RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                  "recv_timeout_ms=%.3f under req_mode broadcast: on the IXXAT USB rig the later "
-                  "hand's set arrived up to 1.154 ms after the shared REQ (#956, the rig runs "
-                  "%.1f) — below that it can miss its window every tick there (link down → "
-                  "E-Stop); a native CAN host measured 0.943 ms and runs 1.0 (D87)",
-                  recv_timeout_ms, udp_hand_driver::kBroadcastRecvTimeoutWarnMs);
+      // Under a tenth of the slot left, the scheduler's own jitter can push a
+      // worst-case tick over (#906 S1). Not refused: the operator may know the
+      // stages close early on this rig; a nanosecond of slack keeps the exact
+      // 10 % boundary (250 Hz · 0.9 ms · two hands) quiet.
+      constexpr double kSlotMarginWarnFraction = 0.1;
+      constexpr double kBoundarySlackMs = 1e-6;
+      if (margin_ms + kBoundarySlackMs < kSlotMarginWarnFraction * slot_ms) {
+        RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                    "comm slot %.3f ms leaves %.3f ms after %zu × 2 × recv_timeout_ms (%.3f) — "
+                    "under 10 %% of the slot; a jittery tick can overrun",
+                    slot_ms, margin_ms, sides.size(), recv_timeout_ms);
+      }
     }
   }
 
@@ -731,7 +760,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
 
   // The loop's tick shape (#956 D82): one whole cycle per hand, or the
   // shared-REQ passes. Set before any hand attaches; the loop is not running.
-  if (!comm_loop_.SetSharedReq(req_broadcast)) {
+  const auto set_window =
+      std::chrono::duration_cast<udp_hand_driver::HandReadOutcome::Clock::duration>(
+          std::chrono::duration<double, std::milli>(broadcast_set_window_ms));
+  if (!comm_loop_.SetSharedReq(req_broadcast, set_window)) {
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
                  "Failed to set req_mode on the comm loop (still running)");
     return CallbackReturn::FAILURE;

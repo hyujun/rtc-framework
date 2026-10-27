@@ -43,7 +43,7 @@ ros2 launch udp_hand_driver udp_hand.launch.py protocol_version:=2 hand_side:=ri
 ros2 topic echo /hand/link_status --once        # data: true 면 링크 정상
 # 두 손, CAN FD (노드 하나 — /hand/right/* · /hand/left/*)
 ros2 launch udp_hand_driver udp_hand.launch.py protocol_version:=2 hand_sides:=right,left \
-    loop_rate_hz:=400 recv_timeout_ms:=1.2
+    loop_rate_hz:=400
 ```
 
 launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 수동으로 다루려면 `ros2 lifecycle set /hand/udp_hand_node deactivate` · `activate` 를 쓴다. 실제 손에 처음 붙일 때는 `/hand/link_status` 가 `true` 이고 `/hand/joint_states` 가 나오는지 먼저 확인하고, 안 되면 [문제 해결](#문제-해결) 의 표를 본다.
@@ -61,7 +61,8 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | `target_port` | `55151` | 손 컨트롤러 포트 |
 | `local_ip` / `local_interface` | `""` / `""` | 제어 PC source address (bind) / egress NIC (`SO_BINDTODEVICE`) |
 | `communication_mode` | `bulk` | `bulk` \| `individual` |
-| `recv_timeout_ms` | `0.4` | 수신 타임아웃 [ms] (UDP: ppoll · CAN FD: stage 별 deadline, 체인 최악 2 ×). CAN FD 실기는 `0.9` (H1-F06 실측) |
+| `recv_timeout_ms` | `0.4` | 수신 타임아웃 [ms] (UDP: ppoll · CAN FD: stage 별 deadline, 체인 최악 2 ×). CAN FD 실기는 `0.9` (H1-F06 실측). `broadcast` 는 쓰지 않는다 |
+| `broadcast_tail_guard_ms` | `0.05` | `broadcast` 전용: 수신 창 = 슬롯 − 이 값 [ms]. 꼬리(디코드 · 후처리 · FT 추론)의 자리라 FT 를 켜면 추론 시간만큼 올린다. `0 < 값 < 슬롯` 아니면 거부 |
 | `publish_rate` | `100.0` | `link_status` decimation 기준 [Hz] |
 | `loop_rate_hz` | `500.0` | CommLoop 주기 [Hz]. 두 손은 `400` (`per_hand` 는 `250`) |
 | `protocol_version` | `1b` | `1a` \| `1b` \| `2`. 노드와 `fake_hand_firmware` 양쪽에 전파 |
@@ -127,7 +128,7 @@ ros2 topic echo /hand/calibration/status
 | `feedforward` | 무시 | 무시 | 전송 (Frame 1, `feedforward_kt` 로 Nm → A) |
 | 통신 모드 | individual / bulk | **bulk 전용** | **bulk 전용** |
 
-`1b` · `2` + `individual` 조합은 `on_configure` 가 FAILURE 를 반환한다. `2` 는 그 밖에도 `can_interface` 가 없을 때 (`loopmodel` 제외), `feedforward_kt` 가 10개가 아니거나 양수가 아닐 때, `cmd_ack` 가 `echo` · `none` 이 아닐 때, 명시한 `req_mode broadcast` 가 `cmd_ack echo` 와 함께일 때, `손 수 × 2 × recv_timeout_ms` (`broadcast` 는 `2 ×`) 가 comm 슬롯 (`1000 / loop_rate_hz × comm_decimation` ms) 을 넘을 때 거부한다 (남는 여유가 슬롯의 10 % 미만이면 WARN). YAML 의 값은 반드시 `"2"` 로 따옴표를 친다 (정수는 파라미터 선언에서 예외).
+`1b` · `2` + `individual` 조합은 `on_configure` 가 FAILURE 를 반환한다. `2` 는 그 밖에도 `can_interface` 가 없을 때 (`loopmodel` 제외), `feedforward_kt` 가 10개가 아니거나 양수가 아닐 때, `cmd_ack` 가 `echo` · `none` 이 아닐 때, 명시한 `req_mode broadcast` 가 `cmd_ack echo` 와 함께일 때, `per_hand` 에서 `손 수 × 2 × recv_timeout_ms` 가 comm 슬롯 (`1000 / loop_rate_hz × comm_decimation` ms) 을 넘을 때, `broadcast` 에서 `0 < broadcast_tail_guard_ms < 슬롯` 이 아닐 때 거부한다. YAML 의 값은 반드시 `"2"` 로 따옴표를 친다 (정수는 파라미터 선언에서 예외).
 
 `2` 의 `JointCommand.feedforward` 는 `values` 와 크기가 같을 때만 같은 이름 맵으로 재정렬되어 전송되고 (joint offset 은 적용하지 않음), 비어 있으면 0, 그 외 크기면 0 + 경고 + `feedforward_size_mismatch` 카운터, NaN · ±inf 항목은 0 + `feedforward_nonfinite` 카운터다. `command_type` · `kp` · `kd` 는 소비하지 않는다. wire 포맷의 SSoT 는 [hand_canfd_packets.hpp](include/udp_hand_driver/hand_canfd_packets.hpp) 주석이다.
 
@@ -135,14 +136,14 @@ ros2 topic echo /hand/calibration/status
 
 `hand_sides: [right, left]` (`2` 전용) 면 노드 하나가 손마다 컨트롤러 · CAN 소켓 · failure detector 를 두고, `hand_comm` 스레드 하나가 tick 마다 목록 순서로 한 손씩 트랜잭션을 끝낸다. 이 순서가 버스 직렬화라 두 손의 프레임은 겹치지 않는다. 비어 있으면 위의 한 손 경로와 바이트 동일하다.
 
-`req_mode: broadcast` (두 손의 기본) 면 tick 이 손마다 CMD → REQ 하나 (노드 0xFF, 모든 손이 답한다) → 손마다 그 REQ 기준 수신 (REQ + T, write tick 은 2T) → 손마다 꼬리 순서로 돈다. 순서와 E-Stop 재확인 자리는 `hand_comm_loop.hpp` 헤더.
+`req_mode: broadcast` (두 손의 기본) 면 tick 이 손마다 CMD → REQ 하나 (노드 0xFF, 모든 손이 답한다) → 손마다 tick 시작 + (슬롯 − `broadcast_tail_guard_ms`) 까지 수신 (write 여부와 무관, D89) → 손마다 꼬리 순서로 돈다. 순서와 E-Stop 재확인 자리는 `hand_comm_loop.hpp` 헤더.
 
 - 토픽: 상대 이름에 `<side>/` 가 붙는다 (`/hand/right/joint_states` …). 손이 둘이면 손별 토픽에 절대 이름을 주면 configure 가 거부한다 (두 손이 한 토픽이 된다)
-- E-Stop: `/hand/estop` 하나. latch 는 손마다 cycle 머리에서, loop 가 손 사이에서 다시 본다. 두 손 모두 멈춘 뒤 손 순서대로 zero-write 를 1회씩 보낸다. 최악 지연은 주기 + 한 손의 수신 창이다 (400 Hz · 1.2 ms: 4.9 ms)
+- E-Stop: `/hand/estop` 하나. latch 는 손마다 cycle 머리에서, loop 가 손 사이에서 다시 본다. 두 손 모두 멈춘 뒤 손 순서대로 zero-write 를 1회씩 보낸다. 최악 지연은 주기 + 수신 창이다
 - 손별 키: `<side>.joint_state_names` · `motor_state_names` · `hand_fingertip_names` · `joint_position_offsets_deg` · `feedforward_kt`. 없거나 비면 flat 키를 쓴다
 - 파일: `hand_stats_<side>.json` 이 손마다, `hand_timing_log.csv` 는 하나다. CSV 의 `t_total_us` 는 두 트랜잭션을 담은 tick 이고 `t_state_us` 는 마지막 손의 read 끝까지다. `broadcast` 의 손별 `total_us` 는 앞 손의 수신 창을 포함한다
 - link down 은 그 손의 detector 만 판정하고 다른 손을 멈추지 않는다
-- rate · T 는 호스트별 실측값이다: IXXAT USB 400 · 1.2, 네이티브 CAN 450 · 1.0 (D87, [docs/testing.md](../docs/testing.md) G-5)
+- `broadcast` rate 는 write tick (CMD 4 → REQ → RESP 6) 의 `t_total` p99 × 1.1 로 호스트마다 잡는다: IXXAT USB 400, 네이티브 CAN (Thor) 500 (D89, [docs/testing.md](../docs/testing.md) G-5)
 - activate 중 한 손의 시작이 실패하면 앞 손도 닫고 FAILURE 다 (loop 는 시작하지 않는다)
 
 ### 통신 decimation (`comm_decimation`)

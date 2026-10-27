@@ -348,12 +348,12 @@ struct HandReadOutcome {
 /// The one request of a shared-request tick (#956), as the loop hands it to
 /// every hand's ReceiveSet.
 struct SharedRequest {
-  /// When the request was sent — the anchor of every hand's receive bound.
+  /// When the request was sent (kMotor's phase end).
   HandReadOutcome::Clock::time_point t_sent{};
   bool sent{false};  ///< the send succeeded
-  /// Some hand's command reached the link this tick: each hand works through
-  /// its command before it answers, so the bound is 2T instead of T (D83).
-  bool after_write{false};
+  /// Every hand's receive bound: the tick start plus the loop's set window
+  /// (D89) — the same whether or not a command went out this tick.
+  HandReadOutcome::Clock::time_point deadline{};
 };
 
 // ── Interface ────────────────────────────────────────────────────────────────
@@ -474,8 +474,8 @@ class HandComm {
 
   /// The command alone: no request, no wait. Fills `out.write_ok` /
   /// `out.write_rx` / `out.write_end` as RunCycle does and leaves the rest of
-  /// `out` alone. Returns whether any of the command reached the link (then
-  /// SharedRequest::after_write). Default: unsupported, nothing sent.
+  /// `out` alone. Returns whether any of the command reached the link.
+  /// Default: unsupported, nothing sent.
   [[nodiscard]] virtual bool SendCommandOnly(const HandMotorArray& /*pos*/,
                                              const HandMotorArray& /*ff_nm*/,
                                              HandReadOutcome& out) noexcept {

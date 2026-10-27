@@ -263,7 +263,7 @@ ros2 run rtc_tools analyze_hand_canfd_gate <session> g3.log --node-log node.log 
     --link-status link.log --hand-side right [--explicit-side] [--json-out g3.json]
 ```
 
-- (a) 기간 ≥ 300 s · run_id 1 · tick 누락 0 — (b) link down 0: JSON `link_ok`, 노드 로그 "Hand link DOWN" 0, 완전한 RESP 세트 없는 연속 REQ < `--link-fail-timeout-ms` × 주기 수 (500 Hz 50 · 250 Hz 25), `link_status` false 0 — (c) `t_total_us` p99 < 0.8 × 주기, 제외 없음 — (d) RESP 세트 타임아웃 / 사이클 과 echo 타임아웃 / write 시도 가 **각각** < 0.1 % (집계 `recv_timeout` 은 상한만) — (e) candump 의 Frame 1 zeros → Frame 0 zeros (정상 write 와 반대 순서) → echo 2 개 가 2 ms 안, 그 뒤 명령 없음.
+- (a) 기간 ≥ 300 s · run_id 1 · tick 누락 0 — (b) link down 0: JSON `link_ok`, 노드 로그 "Hand link DOWN" 0, 완전한 RESP 세트 없는 연속 REQ < `--link-fail-timeout-ms` × 주기 수 (500 Hz 50 · 250 Hz 25), `link_status` false 0 — (c) `t_total_us` p99 < 주기 / 1.1, 제외 없음 — (d) RESP 세트 타임아웃 / 사이클 과 echo 타임아웃 / write 시도 가 **각각** < 0.1 % (집계 `recv_timeout` 은 상한만) — (e) candump 의 Frame 1 zeros → Frame 0 zeros (정상 write 와 반대 순서) → echo 2 개 가 2 ms 안, 그 뒤 명령 없음.
 - `cmd_ack` (JSON `canfd.cmd_ack`, 없으면 `echo`): `none` 이면 echo 타임아웃은 `NOT_EVALUATED`, (e) 는 두 zeros 의 순서 · 간격 < 2 ms · 이후 명령 0 으로 판정한다.
 - 두 손 (G-5): 버스에 두 손이 보이면 (x) `x.no_overlap` 이 붙는다 — 한 손의 트랜잭션 (첫 호스트 프레임 … RESP F2) 안에 다른 손의 echo · RESP 가 0. 첫 E-Stop 프레임부터는 보지 않고, 두 손 zero-write 간격은 보고만 한다. 손마다 `--hand-side <side> --explicit-side --timing-suffix ""` 로 한 번씩 돌린다. run 전체는 `repo_scripts/scripts/run_hand_canfd_gate.sh` ([testing.md](../docs/testing.md)). candump 없는 PC 는 `python3 -m rtc_tools.analysis.candump_log <iface> <out.log>`.
 - `--req-mode auto|per_hand|broadcast` (`auto` = `canfd.req_mode`, 없으면 `per_hand`): `broadcast` 면 0xFF REQ 가 두 손의 REQ 이고 (x) 는 `x.broadcast_sets` (RESP 중복 · 버스트 중 CMD · 한 손만 빠진 창 비율).
