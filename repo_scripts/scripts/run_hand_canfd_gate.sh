@@ -4,6 +4,7 @@
 #   run_hand_canfd_gate.sh [--sil] [--iface can0] [--sides right,left]
 #                          [--duration 300] [--rate 400] [--recv-timeout 1.2]
 #                          [--cmd-ack none] [--req-mode broadcast] [--out DIR]
+#   run_hand_canfd_gate.sh --iface can1 --rate 450 --recv-timeout 1.0   # native CAN host (Thor, D87)
 #
 # Records the bus, launches udp_hand_node (one node, `hand_sides`) — with
 # --sil also one fake_hand_firmware per side on vcan0 — waits until every
@@ -16,8 +17,12 @@
 # --req-mode broadcast (the default, #956 D86) sends one REQ to both hands per
 # tick (launch `req_mode:=broadcast`, judged with `--req-mode broadcast`, (x)
 # becomes x.broadcast_sets). Both bursts share that one receive window, so
-# --recv-timeout defaults to 1.2 ms there and below 1.2 is refused: the left
-# hand's REQ -> frame 2 was measured up to 1.154 ms on the rig. --rate
+# --recv-timeout defaults to 1.2 ms there: the left hand's REQ -> frame 2 was
+# measured up to 1.154 ms on the IXXAT USB rig (PC#2). That floor is the rig's
+# CAN path, not the protocol's — a native CAN host (Jetson Thor, mttcan) measured
+# 0.943 ms and runs `--rate 450 --recv-timeout 1.0` (D87) — so a shorter T only
+# warns here; (d) and link down judge it. What is refused is
+# windows x 2 x T >= period, which the node's configure rejects anyway. --rate
 # defaults to 400 Hz (2 x 1.2 < 2.5 ms). --req-mode per_hand runs one hand
 # after the other: --rate 250 and --recv-timeout 0.9 are its defaults.
 #
@@ -70,13 +75,23 @@ case "$REQ_MODE" in
     RATE=${RATE:-400}
     RECV_TIMEOUT=${RECV_TIMEOUT:-1.2}
     if awk -v t="$RECV_TIMEOUT" 'BEGIN { exit !(t + 0 < 1.2) }'; then
-      echo "error: --req-mode broadcast needs --recv-timeout >= 1.2 (got $RECV_TIMEOUT):" \
-        "the left hand's REQ -> frame 2 reaches 1.154 ms after the right burst" >&2
-      exit 3
+      echo "warning: --recv-timeout $RECV_TIMEOUT is under the IXXAT rig's broadcast floor 1.2" \
+        "(its left hand's REQ -> frame 2 reaches 1.154 ms); a native CAN host (Thor: 0.943 ms)" \
+        "runs 1.0 — (d) and link down judge it" >&2
     fi
     ;;
   *) echo "error: --req-mode must be per_hand or broadcast, got $REQ_MODE" >&2; exit 3 ;;
 esac
+# The node's configure refuses `windows x 2 x T >= 1000 / rate` (broadcast: one
+# window, per_hand: one per hand). Say so now rather than after the link wait.
+WINDOWS=1
+[ "$REQ_MODE" = per_hand ] && WINDOWS=$(echo "$SIDES" | tr ',' '\n' | grep -c .)
+PERIOD_MS=$(awk -v r="$RATE" 'BEGIN { printf "%.3f", 1000 / r }')
+if awk -v t="$RECV_TIMEOUT" -v p="$PERIOD_MS" -v w="$WINDOWS" 'BEGIN { exit !(w * 2 * t >= p + 0) }'; then
+  echo "error: $WINDOWS x 2 x --recv-timeout $RECV_TIMEOUT >= period $PERIOD_MS ms at --rate $RATE:" \
+    "the node's configure refuses it" >&2
+  exit 3
+fi
 
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 REPO=$(cd "$(dirname "$SELF")/../.." && pwd)
