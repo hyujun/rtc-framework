@@ -619,12 +619,14 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     // The per_hand T carried over to broadcast misses the later hand's set
     // every tick — link down, then E-Stop. That stops safely but says nothing
     // about why, so it is named here (D86); not refused, the figure is the
-    // rig firmware's.
+    // host's CAN path (IXXAT USB rig 1.154 ms; a native CAN host 0.943 ms
+    // runs 1.0 — D87), not the protocol's.
     if (req_broadcast && recv_timeout_ms < udp_hand_driver::kBroadcastRecvTimeoutWarnMs) {
       RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                  "recv_timeout_ms=%.3f under req_mode broadcast: the later hand's set arrived "
-                  "up to 1.154 ms after the shared REQ on the rig (#956) — below %.1f ms it can "
-                  "miss its window every tick (link down → E-Stop); the rig runs 1.4",
+                  "recv_timeout_ms=%.3f under req_mode broadcast: on the IXXAT USB rig the later "
+                  "hand's set arrived up to 1.154 ms after the shared REQ (#956, the rig runs "
+                  "%.1f) — below that it can miss its window every tick there (link down → "
+                  "E-Stop); a native CAN host measured 0.943 ms and runs 1.0 (D87)",
                   recv_timeout_ms, udp_hand_driver::kBroadcastRecvTimeoutWarnMs);
     }
   }

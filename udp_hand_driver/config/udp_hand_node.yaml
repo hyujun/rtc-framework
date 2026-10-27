@@ -68,7 +68,10 @@
                                       # slot. 뒤에 답하는 손은 앞 손 버스트 뒤에 오므로 1.2 이상
                                       # (probe 2026-10-25: 왼손 REQ→F2 max 1.154 ms, 미만이면
                                       # configure WARN). 두 손 기본은 400 Hz · 1.2 (2.4 < 2.5,
-                                      # run 5 broadcast write tick max 2.02 ms — D86).
+                                      # run 5 broadcast write tick max 2.02 ms — D86). 그 값은
+                                      # IXXAT USB 실기 (PC#2) 의 것이다. 네이티브 CAN 호스트
+                                      # (Jetson Thor mttcan, 2026-10-26) 는 왼손 REQ→F2 max
+                                      # 0.943 ms · write tick p99 1658 µs 라 450 Hz · 1.0 (D87).
 
     # -- CAN FD 링크 (protocol_version "2" 전용 — 1a / 1b 에서는 무시) --
     # can_interface : SocketCAN 장치. sil_mode=firmware 는 vcan0 로 강제한다.

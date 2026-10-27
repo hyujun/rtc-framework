@@ -142,6 +142,7 @@ ros2 topic echo /hand/calibration/status
 - 손별 키: `<side>.joint_state_names` · `motor_state_names` · `hand_fingertip_names` · `joint_position_offsets_deg` · `feedforward_kt`. 없거나 비면 flat 키를 쓴다
 - 파일: `hand_stats_<side>.json` 이 손마다, `hand_timing_log.csv` 는 하나다. CSV 의 `t_total_us` 는 두 트랜잭션을 담은 tick 이고 `t_state_us` 는 마지막 손의 read 끝까지다. `broadcast` 의 손별 `total_us` 는 앞 손의 수신 창을 포함한다
 - link down 은 그 손의 detector 만 판정하고 다른 손을 멈추지 않는다
+- rate · T 는 호스트별 실측값이다: IXXAT USB 400 · 1.2, 네이티브 CAN 450 · 1.0 (D87, [docs/testing.md](../docs/testing.md) G-5)
 - activate 중 한 손의 시작이 실패하면 앞 손도 닫고 FAILURE 다 (loop 는 시작하지 않는다)
 
 ### 통신 decimation (`comm_decimation`)
