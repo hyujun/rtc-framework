@@ -54,5 +54,5 @@ rtc_tsid/README.md: 11550 strict
 rtc_urdf_bridge/README.md: 17451 strict
 shape_estimation/README.md: 6548 strict
 shape_estimation_msgs/README.md: 1597 strict
-udp_hand_driver/README.md: 28703 strict  # raised from 28563: 두 손 절에 호스트별 rate · T 포인터 한 줄 (D87, 네이티브 CAN 호스트 450 Hz · 1.0 — 실측은 docs/testing.md); before: 27690 -> 28563 req_mode broadcast — "순서가 버스 직렬화" 가 거짓이 되는 tick 한 단락 · launch 행 · 거부 조건 · 장애 행 · 두 손 기본 auto → broadcast 400 Hz (D86); before: 27657 -> 27690 cmd_ack 기본값 none — echo 펌웨어 명령 주석
+udp_hand_driver/README.md: 28911 strict  # raised from 28703: 통계 절 phase 한 문장 확장 (proto2 read_all_motor 0 · broadcast tick read_all_sensor = decode · total = tick 전체 · Summary µs); before: 28563 -> 28703 두 손 절에 호스트별 rate · T 포인터 한 줄 (D87, 네이티브 CAN 호스트 450 Hz · 1.0 — 실측은 docs/testing.md); before: 27690 -> 28563 req_mode broadcast — "순서가 버스 직렬화" 가 거짓이 되는 tick 한 단락 · launch 행 · 거부 조건 · 장애 행 · 두 손 기본 auto → broadcast 400 Hz (D86); before: 27657 -> 27690 cmd_ack 기본값 none — echo 펌웨어 명령 주석
 ur5e_bt_coordinator/README.md: 19469 strict

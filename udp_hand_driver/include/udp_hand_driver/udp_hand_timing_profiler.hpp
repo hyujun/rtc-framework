@@ -8,9 +8,14 @@
 // logic (covers [0,5000) µs at 20 µs resolution; overflow bucket catches the
 // rest).
 //
-// Phase measurements:
+// Phase measurements (µs; names are the UDP phases, CAN FD maps onto them):
 //   Individual: write -> read_pos -> read_vel -> read_sensor -> total
-//   Bulk:       write -> read_all_motor -> read_all_sensor -> total
+//   Bulk:       write -> read_all_motor -> read_all_joint_motor
+//               -> read_all_sensor -> total
+// On CAN FD bulk, read_all_motor stays 0 (the motor stage ends at the REQ
+// send), read_all_joint_motor is REQ (or write stage end) -> this hand's set,
+// and read_all_sensor is the decode. On a shared-request tick (#956) total
+// is the whole tick, so every hand on the tick records the same total.
 //
 // Thread safety:
 //   Update() is called only from the EventLoop thread (single producer).
@@ -66,6 +71,7 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
     double read_vel_us{0.0};
     double read_sensor_us{0.0};
     // Bulk mode phases
+    // 0 on CAN FD: the motor-read stage ends at the REQ send.
     double read_all_motor_us{0.0};
     // Phase end minus the previous phase end. On a CAN FD write tick the
     // command and the request are pipelined (#919), so this is echo-stage
@@ -74,9 +80,13 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
     // the CMD send, so it is CMD send -> set completion and includes the
     // hand's CMD handling; a tick without a write keeps REQ -> set.
     double read_all_joint_motor_us{0.0};
+    // Receive tail + decode; on a shared-request tick, from this hand's finish
+    // (decode only — the hands receive back to back before any finish).
     double read_all_sensor_us{0.0};
     double sensor_proc_us{0.0};
     double ft_infer_us{0.0};
+    // Cycle head -> tail done. On a shared-request tick that spans every
+    // hand's receive and the earlier hands' finishes, so it is the tick total.
     double total_us{0.0};
     bool is_sensor_cycle{false};
     bool is_bulk_mode{false};
@@ -264,8 +274,9 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
                     "min=%.0f\xc2\xb5s"
                     "  max=%.0f\xc2\xb5s  p95=%.0f\xc2\xb5s  p99=%.0f\xc2\xb5s"
                     "  over_budget=%lu (%.1f%%)"
-                    "  | write=%.0f  all_motor=%.0f  all_joint_motor=%.0f"
-                    "  all_sensor=%.0f  proc=%.0f\xc2\xb5s",
+                    "  | write=%.0f\xc2\xb5s  all_motor=%.0f\xc2\xb5s"
+                    "  all_joint_motor=%.0f\xc2\xb5s  all_sensor=%.0f\xc2\xb5s"
+                    "  proc=%.0f\xc2\xb5s",
                     static_cast<unsigned long>(s.count), s.mean_us, s.min_us, s.max_us, s.p95_us,
                     s.p99_us, static_cast<unsigned long>(s.over_budget), over_pct, s.write.mean_us,
                     s.read_all_motor.mean_us, s.read_all_joint_motor.mean_us,
@@ -275,8 +286,8 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
                     "Hand timing: count=%lu  mean=%.0f\xc2\xb5s  min=%.0f\xc2\xb5s"
                     "  max=%.0f\xc2\xb5s  p95=%.0f\xc2\xb5s  p99=%.0f\xc2\xb5s"
                     "  over_budget=%lu (%.1f%%)"
-                    "  | write=%.0f  pos=%.0f  joint_pos=%.0f  vel=%.0f"
-                    "  sensor=%.0f  proc=%.0f\xc2\xb5s",
+                    "  | write=%.0f\xc2\xb5s  pos=%.0f\xc2\xb5s  joint_pos=%.0f\xc2\xb5s"
+                    "  vel=%.0f\xc2\xb5s  sensor=%.0f\xc2\xb5s  proc=%.0f\xc2\xb5s",
                     static_cast<unsigned long>(s.count), s.mean_us, s.min_us, s.max_us, s.p95_us,
                     s.p99_us, static_cast<unsigned long>(s.over_budget), over_pct, s.write.mean_us,
                     s.read_pos.mean_us, s.read_joint_pos.mean_us, s.read_vel.mean_us,
