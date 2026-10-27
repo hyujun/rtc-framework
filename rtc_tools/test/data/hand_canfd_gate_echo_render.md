@@ -9,7 +9,7 @@
 | `b.log_link_down` | PASS | 0 line(s) | 0 |  |
 | `b.bus_silent_req` | PASS | max 1 consecutive REQ without a complete RESP set | < 50 |  |
 | `b.topic_false` | PASS | 0 false sample(s) | 0 |  |
-| `c.cycle_p99` | PASS | 500 us (max 500, >= limit 0, >= period 0) | < 1600 us (0.8 x 2000 us) |  |
+| `c.cycle_p99` | PASS | 500 us (max 500, >= limit 0, >= period 0) | < 1818 us (period / 1.1, period 2000 us) |  |
 | `d.resp_set_timeout` | PASS | 3 / 150000 = 0.0020% | < 0.1% (= 150.0 ± 20.2 of 150000) |  |
 | `d.echo_timeout` | PASS | 0 / 10 = 0.0000% | < 0.1% (= 0.0 ± 0.2 of 10) |  |
 | `e.estop` | PASS | Δt(first zero CMD -> last echo) = 1.500 ms, candump-to-candump | 1 pair, both echoes, < 2 ms |  |

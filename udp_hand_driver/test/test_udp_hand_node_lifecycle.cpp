@@ -36,6 +36,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -1515,34 +1516,40 @@ TEST_F(UdpHandNodeLifecycleTest, ReqModeValuesAndTheCombinationsThatAreRefused) 
   }
 }
 
-// D83: under broadcast the slot pays for ONE window — two hands at 250 Hz
-// with the rig's T 1.4 ms (2.8 < 4.0) configure, the same values per_hand
-// (2 × 2.8 = 5.6 > 4.0) do not, and 2 × 2.1 > 4.0 is refused either way.
-TEST_F(UdpHandNodeLifecycleTest, BroadcastBudgetIsOneSharedWindow) {
+// D89: under broadcast the budget is the slot less broadcast_tail_guard_ms,
+// whatever recv_timeout_ms is. Two hands at 250 Hz (slot 4.0 ms): T 2.1 ms
+// configures under broadcast and is refused per_hand (2 × 2 × 2.1 > 4.0);
+// a guard outside (0, slot) is refused.
+TEST_F(UdpHandNodeLifecycleTest, BroadcastBudgetIsTheSlotLessTheTailGuard) {
   struct Case {
     const char* req_mode;
     double recv_timeout_ms;
+    double guard_ms;
     bool accepted;
   };
 
   const Case cases[] = {
-      {"broadcast", 1.4, true}, {"per_hand", 1.4, false}, {"broadcast", 2.1, false}};
+      {"broadcast", 2.1, 0.05, true}, {"per_hand", 2.1, 0.05, false},
+      {"broadcast", 1.0, 3.9, true},  {"broadcast", 1.0, 4.0, false},
+      {"broadcast", 1.0, 0.0, false}, {"broadcast", 1.0, -0.1, false},
+  };
   for (const auto& c : cases) {
     auto node = std::make_shared<UdpHandNode>(TwoHandOptions({
         rclcpp::Parameter("loop_rate_hz", 250.0),
         rclcpp::Parameter("publish_rate", 250.0),
         rclcpp::Parameter("recv_timeout_ms", c.recv_timeout_ms),
+        rclcpp::Parameter("broadcast_tail_guard_ms", c.guard_ms),
         rclcpp::Parameter("req_mode", c.req_mode),
     }));
     exec_.add_node(node->get_node_base_interface());
     const auto state = node->configure().id();
     if (c.accepted) {
       EXPECT_EQ(state, lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
-          << c.req_mode << " " << c.recv_timeout_ms;
+          << c.req_mode << " T " << c.recv_timeout_ms << " guard " << c.guard_ms;
       ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
     } else {
       EXPECT_EQ(state, lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
-          << c.req_mode << " " << c.recv_timeout_ms;
+          << c.req_mode << " T " << c.recv_timeout_ms << " guard " << c.guard_ms;
     }
     exec_.remove_node(node->get_node_base_interface());
   }
@@ -1628,8 +1635,9 @@ TEST_F(UdpHandNodeLifecycleTest, ReqModeAutoResolvesToTheModeTheStatsJsonNames) 
   }
 }
 
-// The two-hand default (D86): 400 Hz with T 1.2 fits the one shared window
-// (2.4 < 2.5 ms) the default resolves to; the same values per_hand do not.
+// The two-hand default (D86): 400 Hz with T 1.2 configures under the
+// broadcast the default resolves to (no T budget, D89); the same values
+// per_hand do not (2 × 2 × 1.2 > 2.5 ms).
 TEST_F(UdpHandNodeLifecycleTest, TwoHandDefaultRateFitsOnlyTheSharedWindow) {
   for (const auto& [req_mode, accepted] : {std::pair{"auto", true}, std::pair{"per_hand", false}}) {
     auto node = std::make_shared<UdpHandNode>(TwoHandOptions({
@@ -1650,10 +1658,50 @@ TEST_F(UdpHandNodeLifecycleTest, TwoHandDefaultRateFitsOnlyTheSharedWindow) {
   }
 }
 
-// D86: a broadcast T under the rig's later-hand arrival (1.154 ms) is named at
-// configure — it would miss that hand's set every tick — but not refused.
-TEST_F(UdpHandNodeLifecycleTest, BroadcastWithAShortRecvTimeoutWarnsButConfigures) {
-  for (const auto& [recv_timeout_ms, warns] : {std::pair{0.9, true}, std::pair{1.2, false}}) {
+// D89: the broadcast budget's two configure warnings — a set window under the
+// fastest measured write tick, and FT inference on (its time must fit the
+// guard) — name the cause without refusing.
+TEST_F(UdpHandNodeLifecycleTest, BroadcastWarnsOnAShortWindowAndOnFtInference) {
+  struct Case {
+    double guard_ms;
+    bool ft;
+    const char* needle;
+    int warns;
+  };
+
+  // 500 Hz: slot 2.0 ms, so guard 0.5 leaves a 1.5 ms window.
+  const Case cases[] = {{0.05, false, "set window", 0},
+                        {0.5, false, "set window", 1},
+                        {0.05, false, "FT inference on", 0},
+                        {0.05, true, "FT inference on", 1}};
+  for (const auto& c : cases) {
+    auto node = std::make_shared<UdpHandNode>(TwoHandOptions({
+        rclcpp::Parameter("loop_rate_hz", 500.0),
+        rclcpp::Parameter("publish_rate", 500.0),
+        rclcpp::Parameter("broadcast_tail_guard_ms", c.guard_ms),
+        rclcpp::Parameter("ft_inferencer.enabled", c.ft),
+    }));
+    exec_.add_node(node->get_node_base_interface());
+    int warned = 0;
+    std::uint8_t state = 0;
+    {
+      udp_hand_driver::test_support::WarnCapture capture;
+      state = node->configure().id();
+      warned = capture.Count(c.needle);
+    }
+    EXPECT_EQ(warned, c.warns) << c.needle << " guard " << c.guard_ms << " ft " << c.ft;
+    if (state == lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
+      ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+    }
+    exec_.remove_node(node->get_node_base_interface());
+  }
+}
+
+// D89: recv_timeout_ms is no part of the broadcast budget, so a T that would
+// have missed the later hand (0.9, and 0.3 — under 10 % of the old 2T slot)
+// draws no warning about it; the slot margin warning is per_hand's.
+TEST_F(UdpHandNodeLifecycleTest, BroadcastDoesNotWarnAboutRecvTimeoutMs) {
+  for (const double recv_timeout_ms : {0.3, 0.9, 1.9}) {
     auto node = std::make_shared<UdpHandNode>(TwoHandOptions({
         rclcpp::Parameter("loop_rate_hz", 250.0),
         rclcpp::Parameter("publish_rate", 250.0),
@@ -1665,9 +1713,9 @@ TEST_F(UdpHandNodeLifecycleTest, BroadcastWithAShortRecvTimeoutWarnsButConfigure
       udp_hand_driver::test_support::WarnCapture capture;
       EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
           << recv_timeout_ms;
-      warned = capture.Count("under req_mode broadcast");
+      warned = capture.Count("recv_timeout_ms");
     }
-    EXPECT_EQ(warned, warns ? 1 : 0) << recv_timeout_ms;
+    EXPECT_EQ(warned, 0) << recv_timeout_ms;
     ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
     exec_.remove_node(node->get_node_base_interface());
   }
