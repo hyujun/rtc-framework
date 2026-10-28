@@ -122,32 +122,39 @@ fatal() {
 
 # ── Physical-core ranking (every sysfs topology reader goes through this) ──
 # One rule for "physical core N", the same as rtc_base cpu_topology.hpp:
-#   * the sibling source is chosen ONCE, from cpu0: topology/core_cpus_list,
-#     else topology/thread_siblings_list, else the pkg:core_id pair;
-#   * a physical core's key is its lowest logical cpu (the minimum of the cpu's
-#     sibling list; for pkg:core_id, the lowest cpu sharing that pair);
-#   * physical cores sorted by key ascending: rank N == "physical core N" == slot N.
+#   * the sibling source is chosen ONCE, from the first cpu with a topology
+#     directory (cpu0 may be absent): topology/core_cpus_list, else
+#     topology/thread_siblings_list, else the pkg:core_id pair;
+#   * cpus are grouped by the minimum of their sibling list (for pkg:core_id,
+#     by the pair; a missing package id counts as 0);
+#   * a physical core's key is its lowest member cpu; physical cores sorted by
+#     key ascending: rank N == "physical core N" == slot N.
 # core_id is not a usable key on its own: an SoC that reports the same core_id
 # on every CPU folds them all into one core, and x86 firmware numbers cores with
 # gaps or puts cpu0's core mid-sequence -- a core_id *number* is never a slot.
 # Every cpuN directory present is visited (a missing cpu does not end the walk);
 # a cpu whose source file is missing or empty is left out.
 # Output: one line per physical core, "rank key member,member,..." (members
-# ascending); nothing when no cpu has topology. `lscpu -p=Core` numbers cores
-# the same way, which is why get_physical_cores may still ask it first.
+# ascending, key == first member); nothing when no cpu has topology.
+# `lscpu -p=Core` numbers cores the same way, which is why get_physical_cores
+# may still ask it first.
 # $1 = cpu root (default: ${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu).
 _rt_rank_physical_cores() {
   local cpu_root="${1:-${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu}"
-  local src="core_id"
-  if [[ -r "$cpu_root/cpu0/topology/core_cpus_list" ]]; then
-    src="core_cpus_list"
-  elif [[ -r "$cpu_root/cpu0/topology/thread_siblings_list" ]]; then
-    src="thread_siblings_list"
-  fi
+  local src=""
 
   local -A members=() pair_key=()
   local cpu raw key id pkg core pair
   for cpu in $(_rt_enumerate_online_cpus "$cpu_root"); do
+    if [[ -z "$src" ]]; then
+      [[ -d "$cpu_root/cpu${cpu}/topology" ]] || continue
+      src="core_id"
+      if [[ -r "$cpu_root/cpu${cpu}/topology/core_cpus_list" ]]; then
+        src="core_cpus_list"
+      elif [[ -r "$cpu_root/cpu${cpu}/topology/thread_siblings_list" ]]; then
+        src="thread_siblings_list"
+      fi
+    fi
     if [[ "$src" == "core_id" ]]; then
       core=$(_rt_read_trim "$cpu_root/cpu${cpu}/topology/core_id")
       [[ -z "$core" ]] && continue
@@ -168,11 +175,14 @@ _rt_rank_physical_cores() {
     members[$key]="${members[$key]:+${members[$key]},}${cpu}"
   done
 
-  local rank=0
-  for key in $(printf '%s\n' "${!members[@]}" | sort -n); do
-    echo "${rank} ${key} ${members[$key]}"
+  # Rank by lowest member (a list may name a cpu that is not present).
+  local rank=0 first list
+  while read -r first list; do
+    echo "${rank} ${first} ${list}"
     rank=$((rank + 1))
-  done
+  done < <(for key in "${!members[@]}"; do
+             echo "${members[$key]%%,*} ${members[$key]}"
+           done | sort -n -k1,1)
 }
 
 # ── Physical CPU core count (SMT/HT 제외) ──────────────────────────────────
@@ -375,7 +385,9 @@ compute_irq_affinity_mask() {
   local os_end="${OS_PHYS_END:-0}"
 
   # 물리 코어 번호는 _rt_rank_physical_cores 의 rank 다 (core_id 값이 아니다).
-  # $RTC_SYSFS_ROOT 를 따른다.
+  # 이 member 순회만 $RTC_SYSFS_ROOT 를 따르고, 위 SMT 판정은 호스트의
+  # nproc / get_physical_cores (lscpu 우선) 를 본다 — 테스트는 PATH stub 으로
+  # 둘 다 mock 에 맞춘다.
   local mask=0 rank _key members cpu
   while read -r rank _key members; do
     (( rank <= os_end )) || continue
@@ -2211,7 +2223,7 @@ _rt_populate_physical_core_slots() {
   fi
 
   # Non-hybrid (AMD SMT, SMT-off Intel, ARM SoC, container). Slot N is the
-  # key (lowest logical cpu) of physical core rank N — the "primary" of that
+  # key (lowest member cpu) of physical core rank N — the "primary" of that
   # core; a sibling, if any, has a higher logical id and is skipped.
   local _rank key _members
   while read -r _rank key _members; do

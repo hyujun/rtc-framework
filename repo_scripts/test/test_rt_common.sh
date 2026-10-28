@@ -1353,8 +1353,9 @@ test_shield_helpers_follow_the_layout_profile() {
 
 # ── Physical-core ranking (_rt_rank_physical_cores) ───────────────────────
 # Rule (same as rtc_base cpu_topology.hpp): sibling source chosen once from
-# cpu0 (core_cpus_list → thread_siblings_list → pkg:core_id), a core's key is
-# its lowest logical cpu, rank N = key order = physical core N = slot N. The
+# the first cpu with topology (core_cpus_list → thread_siblings_list →
+# pkg:core_id), a core's key is its lowest member cpu, rank N = key order =
+# physical core N = slot N. The
 # cases below run in both suite modes with the same expectations, except the
 # list-file assertions that prove which source was read.
 
@@ -1576,7 +1577,7 @@ test_same_core_id_soc() {
     "$(RTC_PROC_CPUINFO="$ci" on_sysfs_only "$root" get_rt_cores_with_siblings)"
 }
 
-# Source priority, decided once from cpu0.
+# Source priority, decided once from the first cpu with topology.
 test_rank_source_priority() {
   # (a) core_cpus_list wins over thread_siblings_list and core_id: lists say
   #     four single-cpu cores, thread_siblings_list (deliberately contradicting)
@@ -1614,6 +1615,53 @@ test_rank_source_priority() {
   mock_add_cpu_lists "$root" 3 0 "3" ""
   mock_add_cpu_lists "$root" 4 0 ""  "4"
   expect_eq "prio.once.ranks" "0 0 0|1 1 1|2 3 3" \
+    "$(_rt_rank_physical_cores "$root/devices/system/cpu" | paste -sd'|')"
+
+  # (d) cpu0 has no topology (offline): the source comes from cpu1, so the
+  #     same-core_id SoC still splits into one core per cpu.
+  root="$TMP/prio_no_cpu0"
+  mock_reset "$root"
+  mkdir -p "$root/devices/system/cpu/cpu0"
+  for i in 1 2 3; do
+    mock_add_cpu_lists "$root" "$i" 0 "$i" ""
+  done
+  expect_eq "prio.no_cpu0.ranks" "0 1 1|1 2 2|2 3 3" \
+    "$(_rt_rank_physical_cores "$root/devices/system/cpu" | paste -sd'|')"
+}
+
+# Inconsistent sysfs: the same answers as ReadPhysicalCoreGroups in rtc_base
+# (test_cpu_topology.cpp CoreGroupingTest) — key and slot are the lowest
+# member actually present, an empty list drops its cpu, a missing package id
+# counts as 0.
+test_rank_inconsistent_sysfs() {
+  # (a) cpu7's list names cpu1, which is absent: the core is {7}, key 7, and
+  #     it ranks after cpu 6.
+  local root="$TMP/incons_absent" i
+  mock_reset "$root"
+  for i in 0 6; do mock_add_cpu_lists "$root" "$i" "$i" "$i" ""; done
+  mock_add_cpu_lists "$root" 7 1 "1,7" ""
+  expect_eq "incons.absent.ranks" "0 0 0|1 6 6|2 7 7" \
+    "$(_rt_rank_physical_cores "$root/devices/system/cpu" | paste -sd'|')"
+  _restore_physical_cores
+  RTC_PROC_CPUINFO="$TMP/soc_cpuinfo" RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    on_sysfs_only "$root" detect_hybrid_capability
+  expect_eq "incons.absent.slots" "0 6 7" "$PHYSICAL_CORE_SLOTS"
+
+  # (b) cpu1's list file is empty: cpu1 is left out.
+  root="$TMP/incons_empty"
+  mock_reset "$root"
+  for i in 0 2; do mock_add_cpu_lists "$root" "$i" "$i" "$i" ""; done
+  mock_add_cpu_lists "$root" 1 1 "" ""
+  : >"$root/devices/system/cpu/cpu1/topology/core_cpus_list"
+  expect_eq "incons.empty.ranks" "0 0 0|1 2 2" \
+    "$(_rt_rank_physical_cores "$root/devices/system/cpu" | paste -sd'|')"
+
+  # (c) core_id fallback without physical_package_id: package 0.
+  root="$TMP/incons_nopkg"
+  mock_reset "$root"
+  for i in 0 1 2 3; do mock_add_cpu_lists "$root" "$i" $(( i % 2 )) "" ""; done
+  rm -f "$root"/devices/system/cpu/cpu*/topology/physical_package_id
+  expect_eq "incons.nopkg.ranks" "0 0 0,2|1 1 1,3" \
     "$(_rt_rank_physical_cores "$root/devices/system/cpu" | paste -sd'|')"
 }
 
@@ -1675,6 +1723,7 @@ TOPO_MODE=""
 # These fixtures write their own sibling lists — one mode only.
 test_same_core_id_soc
 test_rank_source_priority
+test_rank_inconsistent_sysfs
 
 test_slot_to_logical_cpu
 test_mask_to_cpus

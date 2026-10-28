@@ -250,14 +250,17 @@ inline bool CpuinfoHasHybridFlag(const std::filesystem::path& cpuinfo) noexcept 
 // Physical cores as groups of logical CPUs (each group ascending), ordered by
 // the group's lowest logical id — rank N is "physical core N", i.e. slot N.
 //
-// A CPU's group comes from its sibling list, the source chosen once from cpu0:
-// topology/core_cpus_list, else thread_siblings_list (older kernels), else the
-// CPUs sharing (physical_package_id, core_id). core_id alone is no core
-// identity — it is unique only inside a cluster, and an SoC that reports the
-// same core_id on every CPU collapses into one core under it. The key is the
-// list's lowest logical id, so neither the grouping nor the order depends on
-// core_id numbering. A CPU without a topology directory (offline) is skipped,
-// not taken for the end of the enumeration. Empty when sysfs has no topology.
+// A CPU's group comes from its sibling list, the source chosen once from the
+// first CPU with a topology directory (cpu0 may be absent): topology/
+// core_cpus_list, else thread_siblings_list (older kernels), else the CPUs
+// sharing (physical_package_id, core_id). core_id alone is no core identity —
+// it is unique only inside a cluster, and an SoC that reports the same core_id
+// on every CPU collapses into one core under it. CPUs are grouped by their
+// list's lowest id, so neither the grouping nor the order depends on core_id
+// numbering. Left out: a CPU without a topology directory (offline; the walk
+// goes on past it), a CPU whose list is empty or missing, and in the core_id
+// fallback a CPU without core_id (a missing package id counts as 0). Empty
+// when sysfs has no topology.
 //
 // Must match the shell ranking in rt_common.sh, which places the same slots.
 inline std::vector<std::vector<int>> ReadPhysicalCoreGroups(
@@ -265,30 +268,34 @@ inline std::vector<std::vector<int>> ReadPhysicalCoreGroups(
   namespace fs = std::filesystem;
   const auto topo = [&](int cpu) { return cpu_root / ("cpu" + std::to_string(cpu)) / "topology"; };
   std::error_code ec;
-  std::string list_name;
-  for (const char* name : {"core_cpus_list", "thread_siblings_list"}) {
-    if (fs::exists(topo(0) / name, ec)) {
-      list_name = name;
-      break;
-    }
-  }
+  bool source_chosen = false;
+  std::string list_name;  // empty: the pkg:core_id fallback
 
   std::map<long, std::vector<int>> by_key;
   for (int cpu = 0; cpu < 1024; ++cpu) {
     const fs::path dir = topo(cpu);
     if (!fs::exists(dir, ec))
       continue;
+    if (!source_chosen) {
+      for (const char* name : {"core_cpus_list", "thread_siblings_list"}) {
+        if (fs::exists(dir / name, ec)) {
+          list_name = name;
+          break;
+        }
+      }
+      source_chosen = true;
+    }
     long key = -1;
     if (!list_name.empty()) {
       const auto list = ParseCpuList(ReadFileTrim(dir / list_name));
-      key = cpu;
-      for (const int sibling : list)
-        key = std::min<long>(key, sibling);
-    } else {
-      const int pkg = ReadInt(dir / "physical_package_id");
-      const int core = ReadInt(dir / "core_id");
-      if (pkg < 0 || core < 0)
+      if (list.empty())
         continue;
+      key = *std::min_element(list.begin(), list.end());
+    } else {
+      const int core = ReadInt(dir / "core_id");
+      if (core < 0)
+        continue;
+      const int pkg = ReadInt(dir / "physical_package_id", /*fallback=*/0);
       key = static_cast<long>(pkg) * 100000L + core;
     }
     by_key[key].push_back(cpu);

@@ -959,6 +959,58 @@ TEST_F(CoreGroupingTest, MissingCpuInTheMiddleDoesNotEndTheEnumeration) {
   EXPECT_EQ(t.num_physical_cores, 3);
 }
 
+TEST_F(CoreGroupingTest, SourceComesFromTheFirstCpuWithTopology) {
+  // cpu0 offline (directory without topology): cpu1's core_cpus_list still
+  // picks the source, so one core_id everywhere does not fold the cores.
+  MockSysfs m(tmp_root_);
+  fs::create_directories(tmp_root_ / "devices/system/cpu/cpu0");
+  for (int cpu = 1; cpu < 4; ++cpu)
+    m.AddRawCpu(cpu, /*core_id=*/0, std::to_string(cpu), /*thread_siblings_list=*/"");
+  const std::vector<std::vector<int>> expected{{1}, {2}, {3}};
+  EXPECT_EQ(rtc::internal::topology::ReadPhysicalCoreGroups(tmp_root_ / "devices/system/cpu"),
+            expected);
+  EXPECT_EQ(rtc::GetPhysicalCpuCount(tmp_root_.string()), 3);
+}
+
+// Inconsistent sysfs: the same answers as _rt_rank_physical_cores in
+// rt_common.sh (test_rank_inconsistent_sysfs), which places the same slots.
+TEST_F(CoreGroupingTest, ListNamingAnAbsentCpuRanksByTheCpuPresent) {
+  MockSysfs m(tmp_root_);
+  for (const int cpu : {0, 6})
+    m.AddRawCpu(cpu, cpu, std::to_string(cpu), "");
+  m.AddRawCpu(7, 1, "1,7", "");
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+  const std::vector<int> expected{0, 6, 7};
+  EXPECT_EQ(t.physical_core_slots, expected);
+}
+
+TEST_F(CoreGroupingTest, EmptySiblingListLeavesTheCpuOut) {
+  MockSysfs m(tmp_root_);
+  for (const int cpu : {0, 2})
+    m.AddRawCpu(cpu, cpu, std::to_string(cpu), "");
+  m.AddRawCpu(1, 1, "", "");
+  std::ofstream(tmp_root_ / "devices/system/cpu/cpu1/topology/core_cpus_list") << "\n";
+  const std::vector<std::vector<int>> expected{{0}, {2}};
+  EXPECT_EQ(rtc::internal::topology::ReadPhysicalCoreGroups(tmp_root_ / "devices/system/cpu"),
+            expected);
+}
+
+TEST_F(CoreGroupingTest, CoreIdFallbackCountsAMissingPackageIdAsZero) {
+  MockSysfs m(tmp_root_);
+  for (int cpu = 0; cpu < 4; ++cpu) {
+    m.AddRawCpu(cpu, /*core_id=*/cpu % 2, "", "");
+    fs::remove(tmp_root_ / "devices/system/cpu" / ("cpu" + std::to_string(cpu)) /
+               "topology/physical_package_id");
+  }
+  const std::vector<std::vector<int>> expected{{0, 2}, {1, 3}};
+  EXPECT_EQ(rtc::internal::topology::ReadPhysicalCoreGroups(tmp_root_ / "devices/system/cpu"),
+            expected);
+  EXPECT_EQ(rtc::GetPhysicalCpuCount(tmp_root_.string()), 2);
+}
+
 TEST_F(CoreGroupingTest, NoTopologyFallsBackToTheCgroupQuotaUnderTheSameRoot) {
   fs::create_directories(tmp_root_ / "fs/cgroup");
   std::ofstream(tmp_root_ / "fs/cgroup/cpu.max") << "400000 100000\n";
