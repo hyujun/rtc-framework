@@ -1,7 +1,8 @@
 # udp_hand.launch.py -- UdpHandNode 런치 (단일 yaml 입력, SIL 진입점 단일화)
 # Event-driven request-response polling 기반 통합 핸드 UDP 노드.
 #
-# 입력 config 는 `config/udp_hand_node.yaml` 1개(+ 예시용 fingertip_ft_inferencer.yaml).
+# 입력 config 는 hand-node yaml 1개(+ 예시용 fingertip_ft_inferencer.yaml) — 기본은
+# `config/udp_hand_node.yaml`, `params_file:=<경로>` 를 주면 그 파일이 대신한다 (아래).
 # SIL 모드는 그 yaml 의 `sil_mode` 파라미터가 SSoT 이고, 노드 C++ on_configure 가
 # 해석한다 (use_fake_hand / target_ip 파생). launch 인자는 yaml 값의 override 로만
 # 작동한다 — 미지정(빈 문자열)이면 yaml 값을 그대로 쓴다.
@@ -21,6 +22,14 @@
 #
 # `sil_mode:=firmware` 처럼 CLI 로 준 값이 yaml 의 sil_mode 를 이긴다.
 #
+# ── 설정 파일 (params_file) ─────────────────────────────────────────────────
+# `params_file` 은 generic yaml 을 **대체**한다 (합치지 않는다) — robot 별 손 설정
+# (integrated_bringup/config/<robot>/udp_hand_node_*.yaml) 을 이 런치로 띄우는 길이다.
+# 그 파일에 없는 키는 노드 C++ 기본값이 된다. 최상위 키는 `/**` 여야 한다: launch 가
+# sil_mode · protocol_version · hand_sides 를 그 키에서 읽어 fake firmware 를 구성하므로,
+# 파일이 없거나 · 파싱되지 않거나 · `/**` 가 없으면 조용히 기본값으로 가지 않고 거부한다.
+# 빈 값 (기본) 은 generic yaml 이다.
+#
 # ── 네임스페이스 (D53) ──────────────────────────────────────────────────────
 # 토픽 기본값은 상대 이름 (`joint_states` …) 이고 노드 네임스페이스가 접두다.
 # `namespace` 인자는 유일한 **비-override** 인자로 기본 `/hand` — 그래서 런타임
@@ -29,8 +38,9 @@
 # _launch_setup 이 거부한다.
 #
 # ── 두 손 (epic #906 D69 · D73) ─────────────────────────────────────────────
-# 노드는 하나다. `hand_sides:=right,left` (쉼표 목록) 를 주면 그 노드가 두 손을
-# 한 loop 로 돌리고 토픽은 /hand/right/* · /hand/left/*, E-Stop 은 /hand/estop 하나다.
+# 노드는 하나다. `hand_sides:=right,left` (쉼표 목록) 또는 yaml 의 `hand_sides` 가
+# 있으면 (CLI 가 yaml 을 이긴다) 그 노드가 두 손을 한 loop 로 돌리고 토픽은
+# /hand/right/* · /hand/left/*, E-Stop 은 /hand/estop 하나다.
 # protocol_version "2" 전용 (노드가 거부한다). 빈 값이면 파라미터를 넘기지 않아
 # yaml / `hand_side` 의 한 손 경로 그대로다. 두 손은 req_mode auto 가 broadcast 로
 # 풀리므로 `loop_rate_hz:=400` 을 준다 (#956 D86 — IXXAT USB
@@ -145,23 +155,99 @@ def _parse_hand_sides(val):
     return [s.strip() for s in val.split(",") if s.strip()]
 
 
-def _load_ros_params(yaml_path):
-    """hand-node yaml(`/**` wildcard)의 ros__parameters dict 반환 (실패 시 {})."""
+def _load_ros_params(yaml_path, strict=False):
+    """hand-node yaml(`/**` wildcard)의 ros__parameters dict 반환.
+
+    strict 가 아니면 실패를 {} 로 삼킨다 (설치된 generic · fake firmware yaml). `params_file`
+    로 받은 yaml 은 strict 다 — 경로 오타나 노드 이름 최상위 키를 {} 로 넘기면 sil_mode ·
+    hand_sides 를 놓쳐 fake 없이, 또는 한 손으로 뜬다.
+    """
     try:
         with open(yaml_path) as f:
             data = yaml.safe_load(f) or {}
-        return data.get("/**", {}).get("ros__parameters", {}) or {}
-    except (OSError, yaml.YAMLError):
+    except (OSError, yaml.YAMLError) as exc:
+        if strict:
+            raise RuntimeError(f"params_file '{yaml_path}' unreadable: {exc}") from exc
         return {}
+    wildcard = data.get("/**") if isinstance(data, dict) else None
+    params = wildcard.get("ros__parameters") if isinstance(wildcard, dict) else None
+    if isinstance(params, dict):
+        return params
+    if strict:
+        raise RuntimeError(
+            f"params_file '{yaml_path}' has no '/**: ros__parameters' mapping; the launch reads "
+            "sil_mode · protocol_version · hand_sides only from that key"
+        )
+    return {}
+
+
+def _resolve_hand_config(pkg_share, params_file):
+    """hand-node yaml 경로 — `params_file` 이 비면 generic `config/udp_hand_node.yaml`."""
+    if not params_file:
+        return os.path.join(pkg_share, "config", "udp_hand_node.yaml")
+    if not os.path.isfile(params_file):
+        raise RuntimeError(f"params_file '{params_file}' does not exist")
+    return params_file
+
+
+def _resolve_hand_sides(cli_val, yaml_params):
+    """손 목록: CLI `hand_sides` 가 있으면 그것, 비면 yaml 의 `hand_sides`, 둘 다 없으면 [].
+
+    노드는 yaml 의 hand_sides 를 직접 읽는다 — launch 가 CLI 만 보면 yaml 로 두 손을 준
+    실행에서 fake 가 한 손 몫만 뜬다. 값 검증은 _parse_hand_sides 와 같이 노드 몫이다.
+    """
+    cli_sides = _parse_hand_sides(cli_val)
+    if cli_sides:
+        return cli_sides
+    yaml_sides = yaml_params.get("hand_sides", [])
+    if not isinstance(yaml_sides, list):
+        raise RuntimeError(f"yaml hand_sides must be a list (got {yaml_sides!r})")
+    return [str(s) for s in yaml_sides]
+
+
+def _effective(key, overrides, yaml_params, default):
+    """CLI override → yaml → default 순의 값."""
+    return overrides.get(key, yaml_params.get(key, default))
+
+
+def _firmware_fakes(overrides, yaml_params, hand_sides, fw_seed):
+    """sil_mode=firmware 의 fake 목록 [(노드 이름, 파라미터)] — 한 손이면 하나, 손 목록이면 손마다.
+
+    1a / 1b: target_port 를 bind 하고 선택된 protocol_version 을 echo → 노드와 wire 일치.
+    "2": vcan0 에 노드와 같은 hand_side · cmd_ack 로 붙는다 (port 는 쓰이지 않는다).
+    """
+    fw_proto = str(_effective("protocol_version", overrides, yaml_params, _FW_PROTO_DEFAULT))
+    if fw_proto != "2":
+        if hand_sides:
+            raise RuntimeError(
+                f"hand_sides needs protocol_version 2 (got {fw_proto!r}); two hands share "
+                "one bus only on CAN FD"
+            )
+        fw_port = int(_effective("target_port", overrides, yaml_params, _FW_PORT_DEFAULT))
+        return [("fake_hand_firmware", {"port": fw_port, "protocol_version": fw_proto})]
+    base = {
+        "protocol_version": "2",
+        "can_interface": _FW_CAN_INTERFACE,
+        "cmd_ack": str(_effective("cmd_ack", overrides, yaml_params, _FW_CMD_ACK_DEFAULT)),
+    }
+    if not hand_sides:
+        fw_side = str(_effective("hand_side", overrides, yaml_params, _FW_HAND_SIDE_DEFAULT))
+        return [("fake_hand_firmware", {**base, "hand_side": fw_side})]
+    # 손마다 seed 를 달리해 두 fake 의 센서 합성이 같은 수열이 되지 않게 한다.
+    return [
+        (f"fake_hand_firmware_{side}", {**base, "hand_side": side, "seed": fw_seed + i})
+        for i, side in enumerate(hand_sides)
+    ]
 
 
 def _launch_setup(context):
     pkg_share = get_package_share_directory("udp_hand_driver")
-    hand_config = os.path.join(pkg_share, "config", "udp_hand_node.yaml")
+    params_file = LaunchConfiguration("params_file").perform(context)
+    hand_config = _resolve_hand_config(pkg_share, params_file)
     # 예시용(enabled:false) F/T inferencer config — 실제 추론은 off 지만 튜닝 템플릿.
     ft_config = os.path.join(pkg_share, "config", "fingertip_ft_inferencer.yaml")
     firmware_config = os.path.join(pkg_share, "config", "fake_hand_firmware.yaml")
-    yaml_params = _load_ros_params(hand_config)
+    yaml_params = _load_ros_params(hand_config, strict=bool(params_file))
 
     # sil_mode: CLI(빈 문자열 아님) 우선, 아니면 yaml, 아니면 off.
     cli_sil = LaunchConfiguration("sil_mode").perform(context)
@@ -185,10 +271,12 @@ def _launch_setup(context):
         if val:
             overrides[key] = caster(val)
     # 빈 목록은 넘기지 않는다: 빈 배열 파라미터는 타입을 잃어 노드의 string-array
-    # 선언과 어긋나고, 비어 있음은 곧 한 손 경로다.
-    hand_sides = _parse_hand_sides(LaunchConfiguration("hand_sides").perform(context))
-    if hand_sides:
-        overrides["hand_sides"] = hand_sides
+    # 선언과 어긋나고, 비어 있음은 곧 한 손 경로다. yaml 의 hand_sides 는 yaml 이 이미
+    # 넘기므로 override 는 CLI 값뿐이고, fake 구성은 둘을 해석한 hand_sides 를 쓴다.
+    cli_hand_sides = LaunchConfiguration("hand_sides").perform(context)
+    if cli_sides := _parse_hand_sides(cli_hand_sides):
+        overrides["hand_sides"] = cli_sides
+    hand_sides = _resolve_hand_sides(cli_hand_sides, yaml_params)
 
     node_params = [hand_config, ft_config]
     if overrides:
@@ -207,50 +295,11 @@ def _launch_setup(context):
     actions = []
 
     # ── Device-side firmware simulator (sil_mode=firmware 일 때만) ──────────
-    # 1a / 1b: target_port 를 bind 하고 선택된 protocol_version 을 echo → 노드와 wire
-    # 일치. "2": vcan0 에 노드와 같은 hand_side · cmd_ack 로 붙는다 (port 는 쓰이지 않는다).
     if eff_sil == "firmware":
-        fw_proto = str(
-            overrides.get(
-                "protocol_version", yaml_params.get("protocol_version", _FW_PROTO_DEFAULT)
-            )
-        )
-        # (fake 이름, 파라미터) — 한 손이면 하나, hand_sides 면 손마다 하나.
-        fakes = []
-        if fw_proto == "2":
+        if str(_effective("protocol_version", overrides, yaml_params, _FW_PROTO_DEFAULT)) == "2":
             _check_fd_vcan(_FW_CAN_INTERFACE)
-            fw_ack = str(overrides.get("cmd_ack", yaml_params.get("cmd_ack", _FW_CMD_ACK_DEFAULT)))
-            base = {
-                "protocol_version": "2",
-                "can_interface": _FW_CAN_INTERFACE,
-                "cmd_ack": fw_ack,
-            }
-            if hand_sides:
-                # 손마다 seed 를 달리해 두 fake 의 센서 합성이 같은 수열이 되지 않게 한다.
-                fw_seed = int(_load_ros_params(firmware_config).get("seed", _FW_SEED_DEFAULT))
-                for i, side in enumerate(hand_sides):
-                    fakes.append(
-                        (
-                            f"fake_hand_firmware_{side}",
-                            {**base, "hand_side": side, "seed": fw_seed + i},
-                        )
-                    )
-            else:
-                fw_side = str(
-                    overrides.get("hand_side", yaml_params.get("hand_side", _FW_HAND_SIDE_DEFAULT))
-                )
-                fakes.append(("fake_hand_firmware", {**base, "hand_side": fw_side}))
-        else:
-            if hand_sides:
-                raise RuntimeError(
-                    f"hand_sides needs protocol_version 2 (got {fw_proto!r}); two hands share "
-                    "one bus only on CAN FD"
-                )
-            fw_port = int(
-                overrides.get("target_port", yaml_params.get("target_port", _FW_PORT_DEFAULT))
-            )
-            fakes.append(("fake_hand_firmware", {"port": fw_port, "protocol_version": fw_proto}))
-        for fw_name, fw_params in fakes:
+        fw_seed = int(_load_ros_params(firmware_config).get("seed", _FW_SEED_DEFAULT))
+        for fw_name, fw_params in _firmware_fakes(overrides, yaml_params, hand_sides, fw_seed):
             actions.append(
                 Node(
                     package="udp_hand_driver",
@@ -307,6 +356,15 @@ def generate_launch_description():
         ),
     )
     override_arg_decls = [
+        DeclareLaunchArgument(
+            "params_file",
+            default_value="",
+            description=(
+                "hand-node yaml 경로 (빈 값=설치된 config/udp_hand_node.yaml). generic yaml 을 "
+                "대체하고 (합치지 않는다), 최상위 키 `/**` 가 없거나 읽히지 않으면 거부한다. "
+                "아래 override 인자는 이 파일의 값을 이긴다."
+            ),
+        ),
         DeclareLaunchArgument(
             "sil_mode",
             default_value="",
@@ -405,7 +463,8 @@ def generate_launch_description():
             description=(
                 "두 손 (protocol_version 2 전용): 쉼표 목록, 예 right,left. 노드 하나가 손마다 "
                 "<namespace>/<side>/* 토픽을 쓰고, sil_mode=firmware 면 fake 를 손마다 띄운다. "
-                "빈 값이면 넘기지 않는다 (hand_side 의 한 손 경로). hand_side 와 함께 주면 노드가 거부한다."
+                "빈 값이면 넘기지 않는다 (yaml 의 hand_sides, 없으면 hand_side 의 한 손 경로). "
+                "hand_side 와 함께 주면 노드가 거부한다."
             ),
         ),
         DeclareLaunchArgument(

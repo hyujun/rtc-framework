@@ -17,6 +17,11 @@ weaker instrument and is guarded the way ``test_shipped_sim_param_declared``
 guards it — comments are stripped first, and the scan must find known keys
 before its result is trusted, so a regex that stops matching fails loudly
 instead of passing vacuously.
+
+A hand config run through ``udp_hand.launch.py`` (``params_file`` +
+``namespace:=``) is the opposite case: there the namespace is the prefix, and
+with two hands an absolute per-hand topic is refused at configure (both hands
+would share it). Those files must leave every topic relative.
 """
 
 from __future__ import annotations
@@ -28,10 +33,15 @@ import pytest
 import yaml
 from ament_index_python.packages import get_package_share_directory
 
-# Robot profile → overlay file. Only the ur5e profiles run udp_hand_node.
+# Robot profile → overlay file a robot launch hands to udp_hand_node (namespace="").
 OVERLAYS = {
     "ur5e_p1a": "udp_hand_node_p1a.yaml",
     "ur5e_p1b": "udp_hand_node_p1b.yaml",
+}
+
+# Profile → hand config run through udp_hand.launch.py params_file with namespace:=.
+NAMESPACED_CONFIGS = {
+    "b7_p2": "udp_hand_node_p2.yaml",
 }
 
 # Topic keys that have shipped in both overlays for a long time; their absence
@@ -67,9 +77,9 @@ def declared_topics() -> set[str]:
     return keys
 
 
-def _params(profile: str) -> dict:
+def _params(profile: str, filename: str) -> dict:
     share = get_package_share_directory("integrated_bringup")
-    with open(os.path.join(share, "config", profile, OVERLAYS[profile])) as handle:
+    with open(os.path.join(share, "config", profile, filename)) as handle:
         return yaml.safe_load(handle)["/**"]["ros__parameters"]
 
 
@@ -77,7 +87,7 @@ def _params(profile: str) -> dict:
 def test_every_declared_topic_is_set_under_the_robot_namespace(
     profile: str, declared_topics: set[str]
 ) -> None:
-    params = _params(profile)
+    params = _params(profile, OVERLAYS[profile])
     prefix = f"/{profile.split('_')[-1]}/"
     for key in sorted(declared_topics):
         assert key in params, (
@@ -89,3 +99,20 @@ def test_every_declared_topic_is_set_under_the_robot_namespace(
         assert isinstance(value, str) and value.startswith(prefix), (
             f"{OVERLAYS[profile]}: '{key}' = {value!r} must be an absolute name under {prefix}"
         )
+
+
+@pytest.mark.parametrize("profile", sorted(NAMESPACED_CONFIGS))
+def test_namespaced_config_leaves_every_topic_relative(
+    profile: str, declared_topics: set[str]
+) -> None:
+    filename = NAMESPACED_CONFIGS[profile]
+    params = _params(profile, filename)
+    absolute = {
+        key: params[key]
+        for key in sorted(declared_topics)
+        if isinstance(params.get(key), str) and params[key].startswith("/")
+    }
+    assert not absolute, (
+        f"{filename}: {absolute} — this file runs under namespace:=, where an absolute "
+        "topic escapes the namespace (and two hands refuse it at configure)"
+    )

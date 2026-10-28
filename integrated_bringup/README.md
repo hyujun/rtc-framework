@@ -9,7 +9,7 @@
 ### 구성
 
 - **launch**: 로봇마다 실로봇용 `robot_<robot>.launch.py` 와 MuJoCo 용 `sim_<robot>.launch.py` (아래 매트릭스). CPU 격리, DDS 스레드 핀닝, 세션 디렉토리 생성도 launch 가 합니다.
-- **설정**: `config/<robot>/` 에 로봇별 `_base.yaml` (mode 공통) 과 `robot.yaml` / `sim.yaml` (mode 차이), 컨트롤러별 `controllers/*.yaml`.
+- **설정**: `config/<robot>/` 에 로봇별 `_base.yaml` (mode 공통) 과 `robot.yaml` / `sim.yaml` (mode 차이), 컨트롤러별 `controllers/*.yaml`. 손 설정만 있는 `config/b7_p2/` 는 `udp_hand.launch.py` 의 `params_file` 로 띄웁니다.
 - **데모 컨트롤러**: `DemoJointController` · `DemoTaskController` · `DemoComplianceController` · `DemoWbcController` (TSID + MPC) · `DemoDualArmController` · `DemoCatchingController` · `DemoInferenceController` (ONNX 정책). 등록 목록은 `src/controllers/controller_registration.cpp`.
 - **GUI**: `demo_controller_gui` (컨트롤러 전환 · 게인 튜닝 · 상태 모니터링) 와 `motion_editor_gui`.
 - **세션 로그**: `logging_data/YYMMDD_HHMM/` (`timing/`, `device/`, `controllers/<config_key>/`) 에 자동 저장되고 보관 수는 `max_log_sessions` (기본 10) 입니다.
@@ -244,7 +244,7 @@ ros2 run integrated_bringup demo_controller_gui --robot iiwa7_leap   # iiwa7 + L
 ros2 run integrated_bringup demo_controller_gui --robot g1_p1b       # G1 상체 + proto_1b 오른손
 ```
 
-- `--robot <key>` 는 arm / hand joint 스키마와 TCP tf frame 을 고릅니다. `key` 는 `config/<key>/` 디렉토리명과 같고, 잘못된 key 는 즉시 에러로 종료합니다. 별칭은 `--ur5e` · `--p1b` · `--iiwa` · `--g1` 입니다.
+- `--robot <key>` 는 arm / hand joint 스키마와 TCP tf frame 을 고릅니다. `key` 는 `controllers/` 가 있는 `config/<key>/` 디렉토리명과 같고, 잘못된 key 는 즉시 에러로 종료합니다. 별칭은 `--ur5e` · `--p1b` · `--iiwa` · `--g1` 입니다.
 - 컨트롤러가 publish 하는 joint span 이 프로파일과 어긋나면 `/rosout` 에 WARN 이 한 번 나옵니다. 맞는 `--robot` 으로 다시 실행합니다.
 - `--session <dir>` 은 `demo_dualarm_controller` 의 상태 판독이 따라갈 세션 디렉토리입니다. 그 컨트롤러가 없는 프로파일에서는 쓰이지 않습니다.
 - 새 로봇은 `integrated_bringup/demo_gui/discovery.py` 의 `ROBOT_PROFILES` 에 항목을 추가합니다.
@@ -407,7 +407,8 @@ integrated_bringup/
 │   ├── ur5e_p1a/
 │   ├── ur5e_p1b/
 │   ├── iiwa7_leap/
-│   └── g1_p1b/
+│   ├── g1_p1b/
+│   └── b7_p2/       # 손 설정만 (params_file)
 ├── launch/          # robot_* / sim_* launch
 ├── include/         # 공개 헤더
 ├── src/             # 컨트롤러 · backend 구현
