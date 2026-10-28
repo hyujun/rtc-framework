@@ -239,9 +239,10 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
     CPU_ZERO(&cpuset);
     CPU_SET(static_cast<std::size_t>(logical_cpu), &cpuset);
 
-    if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+    // pthread_* return the error number instead of setting errno.
+    if (const int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset); rc != 0) {
       full_success = false;
-      warnings += "CPU affinity failed: " + SafeStrerror(errno) + "; ";
+      warnings += "CPU affinity failed: " + SafeStrerror(rc) + "; ";
     }
   }
 
@@ -251,12 +252,11 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
 
   if (cfg.sched_policy == SCHED_FIFO || cfg.sched_policy == SCHED_RR) {
     param.sched_priority = cfg.sched_priority;
-    if (pthread_setschedparam(pthread_self(), cfg.sched_policy, &param) == 0) {
+    if (const int rc = pthread_setschedparam(pthread_self(), cfg.sched_policy, &param); rc == 0) {
       rt_success = true;
     } else {
       full_success = false;
-      warnings +=
-          "RT scheduling failed, falling back to SCHED_OTHER: " + SafeStrerror(errno) + "; ";
+      warnings += "RT scheduling failed, falling back to SCHED_OTHER: " + SafeStrerror(rc) + "; ";
     }
   }
 
@@ -282,12 +282,12 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   std::strncpy(name_buf, cfg.name, sizeof(name_buf) - 1);
   name_buf[sizeof(name_buf) - 1] = '\0';
 #ifdef __APPLE__
-  if (pthread_setname_np(name_buf) != 0) {
-    warnings += "Thread name setting failed: " + SafeStrerror(errno) + "; ";
+  if (const int rc = pthread_setname_np(name_buf); rc != 0) {
+    warnings += "Thread name setting failed: " + SafeStrerror(rc) + "; ";
   }
 #else
-  if (pthread_setname_np(pthread_self(), name_buf) != 0) {
-    warnings += "Thread name setting failed: " + SafeStrerror(errno) + "; ";
+  if (const int rc = pthread_setname_np(pthread_self(), name_buf); rc != 0) {
+    warnings += "Thread name setting failed: " + SafeStrerror(rc) + "; ";
   }
 #endif
 
