@@ -50,7 +50,7 @@ from rtc_tools.utils.session_dir import PRE_F08_HAND_STEMS
 NODE = node_id_of("right")
 TH = Thresholds()
 PERIOD_US = 2000.0
-LIMIT_US = 1600.0
+LIMIT_US = PERIOD_US / 1.1  # 1818.18 us
 
 
 # ── fixture builders ─────────────────────────────────────────────────────────
@@ -332,7 +332,7 @@ def test_p99_boundary_is_strict(tmp_path):
     # Nearest-rank p99 of n samples is the ceil(0.99 n)-th order statistic; put
     # exactly the top 1 % at the probe value so that statistic equals it.
     top = n - (int(0.99 * n + 0.999999) - 1)
-    for probe, verdict in ((1599, PASS), (1600, FAIL)):
+    for probe, verdict in ((1818, PASS), (1819, FAIL)):
         total = [500] * (n - top) + [probe] * top
         assert run_judge(tmp_path, rows=timing_rows(n, total))["c.cycle_p99"].verdict == verdict
 
@@ -800,6 +800,18 @@ def test_main_exit_codes_and_suffix(tmp_path):
     assert main([str(session), str(log), "--suffix", "_left"]) == 2
     # Missing artifacts are a usage error, not a verdict.
     assert main([str(tmp_path / "nowhere"), str(log)]) == 3
+
+
+def test_p99_fraction_must_be_positive(tmp_path):
+    # D89 renders (c) as "period / 1.1"; a zero fraction is a usage error, not a crash.
+    log = tmp_path / "g3.log"
+    log.write_text("\n".join(good_bus_lines()) + "\n")
+    for bad in ("0", "-0.5"):
+        with pytest.raises(SystemExit) as exc:
+            main([str(tmp_path), str(log), "--p99-fraction", bad])
+        assert exc.value.code == 2
+    c = run_judge(tmp_path, th=Thresholds(p99_fraction=0.0))["c.cycle_p99"]
+    assert c.verdict == FAIL
 
 
 def test_run_id_selection(tmp_path):

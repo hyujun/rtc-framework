@@ -218,14 +218,29 @@ inline const rtc::ThreadConfig kHandAuxIoConfig{.cpu_core = -1,
 }
 
 /// Free room left in the comm slot once every receive window's two stages are
-/// paid for (D42 generalized to N hands, D71): `slot − windows × 2T`, in ms —
-/// `windows` is the hand count per_hand and 1 under req_mode broadcast, whose
-/// hands share one window (#956 D83). Configure refuses a non-positive result
-/// and warns below 10 % of the slot.
+/// paid for (D42 generalized to N hands, D71): `slot − windows × 2T`, in ms,
+/// with one window per hand — req_mode per_hand only (broadcast:
+/// BroadcastSetWindowMs). Configure refuses a non-positive result and warns
+/// below 10 % of the slot.
 [[nodiscard]] constexpr double CommSlotMarginMs(double slot_ms, std::size_t windows,
                                                 double recv_timeout_ms) noexcept {
   return slot_ms - static_cast<double>(windows) * 2.0 * recv_timeout_ms;
 }
+
+/// How long a req_mode broadcast tick waits for the sets, in ms (D89): the
+/// comm slot less the tail guard. Measured from the tick start, so the CMD
+/// sends and the REQ are inside it and a set that never closes still leaves
+/// the guard for the tails (decode, sensor post-process, FT inference) before
+/// the next slot. Configure refuses a guard outside (0, slot).
+[[nodiscard]] constexpr double BroadcastSetWindowMs(double slot_ms, double tail_guard_ms) noexcept {
+  return slot_ms - tail_guard_ms;
+}
+
+/// The fastest write tick measured under req_mode broadcast (CMD 4 → REQ →
+/// RESP 6, t_total max 1.600 ms on a native CAN host, 2026-10-28). A set
+/// window below it draws a configure warning, not a refusal — the figure is
+/// that host's CAN path, not a protocol bound (D89).
+inline constexpr double kBroadcastSetWindowWarnMs = 1.6;
 
 /// The tick shape req_mode `auto` (the default, #956 D86) stands for:
 /// broadcast where it is served and pays — protocol 2, two or more hands,
@@ -240,12 +255,6 @@ inline const rtc::ThreadConfig kHandAuxIoConfig{.cpu_core = -1,
   }
   return (is_canfd && hands > 1 && cmd_ack_none) ? "broadcast" : "per_hand";
 }
-
-/// Under req_mode broadcast the later hand's set follows the earlier hand's
-/// burst: its REQ → frame 2 reached 1.154 ms on the rig (#956 probe
-/// 2026-10-25). A recv_timeout_ms below this draws a configure warning, not a
-/// refusal — the figure is that firmware's, not a protocol bound (D86).
-inline constexpr double kBroadcastRecvTimeoutWarnMs = 1.2;
 }  // namespace udp_hand_driver
 
 class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {

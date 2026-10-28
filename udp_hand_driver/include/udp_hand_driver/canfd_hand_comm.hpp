@@ -26,14 +26,16 @@
 //   SendBroadcastReq ·        broadcast, `cmd_ack` none only): the CMD pair
 //   ReceiveSet                alone → kWriteEcho; one REQ to target 0xFF
 //                             that every hand answers; this hand's set stage
-//                             against a bound anchored at that REQ (REQ + T,
-//                             + 2T after any hand's write) → kJointRead
+//                             against the loop's one bound for the tick
+//                             (tick start + set window, D89) → kJointRead
 //   WriteCommandFireAndForget E-Stop: Frame 1 zeros, then Frame 0 zeros (D26),
 //                             nothing awaited — not a window
 //   DrainStale                non-blocking drain of the queue (≤ kMaxDrainPerCall)
 //                             + assembler reset
 //
-// Deadline chain (D42 · D59). Each stage has one deadline of length T =
+// Deadline chain (D42 · D59) — RunCycle, i.e. req_mode per_hand; a
+// shared-request set takes the loop's bound instead (ReceiveSet, D89). Each
+// stage has one deadline of length T =
 // recv_timeout_ms: the echo stage closes at CMD + T (or on both echoes), the
 // set stage at (echo stage close) + T — re-based with SetDeadline when the
 // echoes arrive, left at the nominal CMD + 2T when they do not — so the worst
@@ -445,15 +447,18 @@ class CanFdHandComm final : public HandComm {
   }
 
   /// Shared-request tick, step 3: this hand's RESP set (the set stage alone)
-  /// against the bound `req.t_sent` + T, or + 2T after a write (D83).
+  /// against the tick's one bound `req.deadline` (D89) — recv_timeout_ms
+  /// plays no part here.
   ///
-  /// Why the anchor is the broadcast send and not this call: the hands answer
-  /// the one REQ concurrently, so a later hand's set is on the bus — and in
-  /// this socket's queue — while an earlier hand's window is still open;
-  /// anchoring at this call would hand every later hand a bound up to a whole
-  /// window too late. A write tick puts the CMD frames on the bus before the
-  /// REQ: the rig probe (#956, 2026-10-25) measured first CMD F0 → last F2 at
-  /// 1.919 ms max, inside 2T = 2.8 ms at the probe's T 1.4.
+  /// Why the bound is the loop's and not this call's: the hands answer the one
+  /// REQ concurrently, so a later hand's set is on the bus — and in this
+  /// socket's queue — while an earlier hand's window is still open; a bound
+  /// taken at this call would hand every later hand one up to a whole window
+  /// too late. It is a deadline in the slot rather than REQ + a stage
+  /// timeout because the CMD frames of a write tick go out ahead of the REQ
+  /// (their bus time is part of the wait) and a set that never closes must
+  /// still leave the tick inside its slot — the old REQ + 2T after a write
+  /// (D83) was the echo era's two stages (D42), with no measurement behind it.
   ///
   /// Frames already queued are fed first, whatever the clock says (S5): when
   /// an earlier hand's window ran past this bound, the set that arrived in
@@ -480,7 +485,7 @@ class CanFdHandComm final : public HandComm {
       return;
     }
     w.set_open = true;
-    assembler_.Begin(req.t_sent + (req.after_write ? 2 : 1) * stage_timeout_);
+    assembler_.Begin(req.deadline);
     for (int i = 0; i < kMaxDrainPerCall && w.set_open; ++i) {
       const ssize_t n = transport_.RecvFrameNonBlocking(rx_);
       if (n == 0)

@@ -73,12 +73,10 @@ class ScriptedHand final : public HandCommLoopMember {
 
   void VoteSuppress(bool vote) { suppress_.store(vote); }
 
-  // Shared-request tick script (#956): whether Prepare takes part / wrote,
+  // Shared-request tick script (#956): whether Prepare takes part,
   // whether SendSharedReq succeeds, and a latch raised on the n-th call of a
   // step (kPrepare, kReq, kReceive or kFinish).
   void TakesPart(bool v) { takes_part_ = v; }
-
-  void Writes(bool v) { writes_ = v; }
 
   void ReqSends(bool v) { req_sends_ = v; }
 
@@ -127,7 +125,7 @@ class ScriptedHand final : public HandCommLoopMember {
     const int n = prepares_.fetch_add(1) + 1;
     log_.Add(id_, What::kPrepare);
     MaybeRaise(What::kPrepare, n);
-    return {.takes_part = takes_part_, .wrote = writes_};
+    return {.takes_part = takes_part_};
   }
 
   bool SendSharedReq(
@@ -174,7 +172,6 @@ class ScriptedHand final : public HandCommLoopMember {
   std::atomic<bool> suppress_{false};
   std::atomic<int> runs_{0};
   bool takes_part_{true};
-  bool writes_{false};
   bool req_sends_{true};
   std::atomic<bool>* step_latch_{nullptr};
   What latch_step_{What::kRun};
@@ -189,6 +186,10 @@ class ScriptedHand final : public HandCommLoopMember {
 
 // CFS, no pin: the contract under test is ordering, not latency, and CI has
 // no SCHED_FIFO.
+// A set window for scripted shared-REQ loops: the scripted hands never wait
+// on it, so it only has to outlast the Prepare pass of a loaded test box.
+constexpr auto kSharedWindow = std::chrono::seconds(1);
+
 rtc::PeriodicRtThreadConfig LoopConfig() {
   rtc::ThreadConfig thread{};
   thread.cpu_core = -1;
@@ -470,13 +471,13 @@ TEST(HandCommLoopSharedReq, PrepareEachThenOneReqThenFinishEach) {
   ScriptedHand left(1, log, loop);
   ASSERT_TRUE(loop.Add(&right));
   ASSERT_TRUE(loop.Add(&left));
-  ASSERT_TRUE(loop.SetSharedReq(true));
-  left.Writes(true);  // one hand's write grows every hand's bound (D83)
+  ASSERT_TRUE(loop.SetSharedReq(true, kSharedWindow));
   rtc::HandTimingBuffer timing;
   loop.SetTimingProducer(&timing);
 
   loop.Start(LoopConfig());
   EXPECT_FALSE(loop.SetSharedReq(false)) << "changed under a running loop";
+  EXPECT_FALSE(loop.SetSharedReq(true, kSharedWindow * 2)) << "changed under a running loop";
   ASSERT_TRUE(rtc::testing::WaitUntil([&] { return left.Finishes() >= 10; }));
   loop.Join();
 
@@ -497,8 +498,12 @@ TEST(HandCommLoopSharedReq, PrepareEachThenOneReqThenFinishEach) {
   }
   const SharedRequest req = left.LastReq();
   EXPECT_TRUE(req.sent);
-  EXPECT_TRUE(req.after_write);
   EXPECT_NE(req.t_sent, udp_hand_driver::HandReadOutcome::Clock::time_point{});
+  // D89: the bound is the tick start + the window, so it lies after the REQ
+  // (sent after every Prepare) by at most the window.
+  EXPECT_GT(req.deadline, req.t_sent);
+  EXPECT_LE(req.deadline - req.t_sent, kSharedWindow);
+  EXPECT_EQ(right.LastReq().deadline, req.deadline) << "the hands got different bounds";
   EXPECT_EQ(DrainRows(timing), loop.TickCount());
 }
 
@@ -511,7 +516,7 @@ TEST(HandCommLoopSharedReq, AFailedReqSendFallsBackToTheNextHand) {
   ScriptedHand left(1, log, loop);
   ASSERT_TRUE(loop.Add(&right));
   ASSERT_TRUE(loop.Add(&left));
-  ASSERT_TRUE(loop.SetSharedReq(true));
+  ASSERT_TRUE(loop.SetSharedReq(true, kSharedWindow));
   right.ReqSends(false);
   loop.Start(LoopConfig());
   ASSERT_TRUE(rtc::testing::WaitUntil([&] { return left.Receives() >= 3; }));
@@ -531,7 +536,7 @@ TEST(HandCommLoopSharedReq, AFailedReqReachesEveryReceive) {
   ScriptedHand left(1, log, loop);
   ASSERT_TRUE(loop.Add(&right));
   ASSERT_TRUE(loop.Add(&left));
-  ASSERT_TRUE(loop.SetSharedReq(true));
+  ASSERT_TRUE(loop.SetSharedReq(true, kSharedWindow));
   right.ReqSends(false);
   left.ReqSends(false);
   loop.Start(LoopConfig());
@@ -539,7 +544,23 @@ TEST(HandCommLoopSharedReq, AFailedReqReachesEveryReceive) {
   loop.Join();
   EXPECT_FALSE(right.LastReq().sent);
   EXPECT_FALSE(left.LastReq().sent);
-  EXPECT_FALSE(left.LastReq().after_write);
+  EXPECT_NE(left.LastReq().deadline, udp_hand_driver::HandReadOutcome::Clock::time_point{})
+      << "a failed REQ still carries the tick's bound";
+}
+
+// D89: shared-request mode needs a positive window (a zero one would close
+// every set before the REQ is out); per-hand mode needs none and keeps none.
+TEST(HandCommLoopSharedReq, SharedReqModeNeedsAPositiveWindow) {
+  using Duration = udp_hand_driver::HandReadOutcome::Clock::duration;
+  HandCommLoop loop;
+  EXPECT_FALSE(loop.SetSharedReq(true));
+  EXPECT_FALSE(loop.SetSharedReq(true, std::chrono::microseconds(-1)));
+  EXPECT_FALSE(loop.shared_req());
+  EXPECT_TRUE(loop.SetSharedReq(true, std::chrono::microseconds(1950)));
+  EXPECT_TRUE(loop.shared_req());
+  EXPECT_EQ(loop.shared_req_window(), std::chrono::microseconds(1950));
+  EXPECT_TRUE(loop.SetSharedReq(false));
+  EXPECT_EQ(loop.shared_req_window(), Duration::zero());
 }
 
 // A hand that does not take part (fake model, decimated skip — S6) gets no
@@ -551,7 +572,7 @@ TEST(HandCommLoopSharedReq, TheFirstTakingPartHandSendsTheReq) {
   ScriptedHand left(1, log, loop);
   ASSERT_TRUE(loop.Add(&right));
   ASSERT_TRUE(loop.Add(&left));
-  ASSERT_TRUE(loop.SetSharedReq(true));
+  ASSERT_TRUE(loop.SetSharedReq(true, kSharedWindow));
   right.TakesPart(false);
   loop.Start(LoopConfig());
   ASSERT_TRUE(rtc::testing::WaitUntil([&] { return left.Finishes() >= 5; }));
@@ -576,7 +597,7 @@ TEST(HandCommLoopSharedReq, NoHandTakingPartSendsNoReq) {
   ScriptedHand left(1, log, loop);
   ASSERT_TRUE(loop.Add(&right));
   ASSERT_TRUE(loop.Add(&left));
-  ASSERT_TRUE(loop.SetSharedReq(true));
+  ASSERT_TRUE(loop.SetSharedReq(true, kSharedWindow));
   right.TakesPart(false);
   left.TakesPart(false);
   loop.Start(LoopConfig());
@@ -621,7 +642,7 @@ AbortRun RunUntilLatch(int raiser, What step, std::vector<Event>& events) {
   left.CheckLatchAtHead(&latch);
   EXPECT_TRUE(loop.Add(&right));
   EXPECT_TRUE(loop.Add(&left));
-  EXPECT_TRUE(loop.SetSharedReq(true));
+  EXPECT_TRUE(loop.SetSharedReq(true, kSharedWindow));
   loop.SetEstopFlag(&latch);
   loop.Start(LoopConfig());
   EXPECT_TRUE(rtc::testing::WaitUntil([&] { return !loop.Running(); }))

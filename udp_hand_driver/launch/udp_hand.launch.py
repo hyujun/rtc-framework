@@ -33,10 +33,11 @@
 # 한 loop 로 돌리고 토픽은 /hand/right/* · /hand/left/*, E-Stop 은 /hand/estop 하나다.
 # protocol_version "2" 전용 (노드가 거부한다). 빈 값이면 파라미터를 넘기지 않아
 # yaml / `hand_side` 의 한 손 경로 그대로다. 두 손은 req_mode auto 가 broadcast 로
-# 풀리므로 `loop_rate_hz:=400 recv_timeout_ms:=1.2` 를 준다 (#956 D86 — IXXAT USB
-# 실기값; 네이티브 CAN 호스트 (Jetson Thor) 는 450 · 1.0, D87 — 노드 configure 가
-# `창 수 × 2 × recv_timeout_ms < 1000/loop_rate_hz` 를 검사하고, broadcast 는 창
-# 1 개, per_hand 는 손 수).
+# 풀리므로 `loop_rate_hz:=400` 을 준다 (#956 D86 — IXXAT USB
+# 실기값; 네이티브 CAN 호스트 (Jetson Thor) 는 500, D89 — broadcast 의 수신 마감은
+# tick 시작 + (slot − broadcast_tail_guard_ms) 라 recv_timeout_ms 를 쓰지 않는다.
+# per_hand 만 노드 configure 가 `손 수 × 2 × recv_timeout_ms < 1000/loop_rate_hz`
+# 를 검사한다).
 #
 # ── 지원 범위 (issue #345) ────────────────────────────────────────────────
 # 이 런치는 **프로세스 내부 pin 만** 다룬다 — 노드가 스스로 main 스레드를
@@ -102,6 +103,7 @@ _OVERRIDE_ARGS = [
     ("publish_rate", float),
     ("communication_mode", str),
     ("recv_timeout_ms", float),
+    ("broadcast_tail_guard_ms", float),
     ("protocol_version", str),
     ("can_interface", str),
     ("hand_side", str),
@@ -345,6 +347,14 @@ def generate_launch_description():
             description="yaml recv_timeout_ms override (빈 값=yaml)",
         ),
         DeclareLaunchArgument(
+            "broadcast_tail_guard_ms",
+            default_value="",
+            description=(
+                "yaml broadcast_tail_guard_ms override (빈 값=yaml) — broadcast 수신 창 = "
+                "slot − 이 값 [ms], FT 추론을 켜면 그 시간만큼 올린다 (D89)"
+            ),
+        ),
+        DeclareLaunchArgument(
             "protocol_version",
             default_value="",
             description=(
@@ -384,8 +394,8 @@ def generate_launch_description():
             description=(
                 "yaml req_mode override (빈 값=yaml, 노드 기본 auto): auto | per_hand | broadcast "
                 "(#956). broadcast 는 tick 마다 REQ 하나를 노드 0xFF 로 보내 두 손이 함께 답한다 — "
-                "protocol_version 2 · cmd_ack none 전용, recv_timeout_ms 는 호스트 실측 (IXXAT 실기 1.2, "
-                "네이티브 CAN 1.0 — D87). "
+                "protocol_version 2 · cmd_ack none 전용, 수신 마감은 slot − broadcast_tail_guard_ms "
+                "(recv_timeout_ms 는 쓰지 않는다 — D89). "
                 "auto 는 2 · 두 손 · none 이면 broadcast, 그 밖은 per_hand (D86)."
             ),
         ),
@@ -402,9 +412,9 @@ def generate_launch_description():
             "loop_rate_hz",
             default_value="",
             description=(
-                "yaml loop_rate_hz override (빈 값=yaml). 두 손은 400 (broadcast · T 1.2), "
-                "per_hand 는 250 (T 0.9) — 창 수 × 2 × recv_timeout_ms < 1000/loop_rate_hz 여야 "
-                "configure 를 지난다 (broadcast 는 창 1 개)."
+                "yaml loop_rate_hz override (빈 값=yaml). 두 손 broadcast 는 400 (IXXAT; Thor 500, "
+                "write tick p99 × 1.1), per_hand 는 250 (T 0.9) — per_hand 는 손 수 × 2 × "
+                "recv_timeout_ms < 1000/loop_rate_hz 여야 configure 를 지난다."
             ),
         ),
         DeclareLaunchArgument(

@@ -369,11 +369,14 @@ TEST(CommSlotMarginMs, IsTheSlotLeftAfterEveryHandsTwoStages) {
   EXPECT_NEAR(CommSlotMarginMs(2.0, 1, 0.9), 0.2, 1e-9);  // 500 Hz, one hand
   EXPECT_LT(CommSlotMarginMs(2.0, 2, 0.9), 0.0);          // 500 Hz cannot hold two
   EXPECT_NEAR(CommSlotMarginMs(5.0, 2, 0.9), 1.4, 1e-9);  // 200 Hz fallback (D77)
-  // req_mode broadcast (#956 D83): the hands share one window, so one 2T.
-  EXPECT_NEAR(CommSlotMarginMs(4.0, 1, 1.4), 1.2, 1e-9);  // 250 Hz, T from the rig probe
-  // The two-hand default (#956 D86): 400 Hz, T 1.2 — inside, under 10 %.
-  EXPECT_NEAR(CommSlotMarginMs(2.5, 1, 1.2), 0.1, 1e-9);
-  EXPECT_LT(CommSlotMarginMs(2.5, 1, 1.4), 0.0);  // the 250 Hz T does not fit 400 Hz
+}
+
+// req_mode broadcast (D89): the sets wait out the slot less the tail guard.
+TEST(BroadcastSetWindowMs, IsTheSlotLessTheTailGuard) {
+  using udp_hand_driver::BroadcastSetWindowMs;
+  EXPECT_NEAR(BroadcastSetWindowMs(2.0, 0.05), 1.95, 1e-9);  // 500 Hz, the default guard
+  EXPECT_NEAR(BroadcastSetWindowMs(2.5, 0.05), 2.45, 1e-9);  // 400 Hz
+  EXPECT_NEAR(BroadcastSetWindowMs(4.0, 0.3), 3.7, 1e-9);    // comm_decimation 2 at 500 Hz
 }
 
 // #956 D86: auto is broadcast only for two hands on protocol 2 with cmd_ack

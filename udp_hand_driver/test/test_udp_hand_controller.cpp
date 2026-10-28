@@ -1740,7 +1740,7 @@ class SharedReqHandComm final : public ScriptedHandComm {
   std::atomic<int> cmd_only_calls{0};
   std::atomic<int> req_calls{0};
   std::atomic<int> receive_calls{0};
-  std::atomic<int> receive_after_write{0};
+  std::atomic<int64_t> last_deadline_ns{0};    // SharedRequest::deadline, epoch ns
   std::chrono::microseconds receive_delay{0};  // set before Start()
 
   [[nodiscard]] bool SupportsBroadcastReq() const noexcept override { return true; }
@@ -1771,8 +1771,7 @@ class SharedReqHandComm final : public ScriptedHandComm {
   void ReceiveSet(const HandReadPlan& plan, HandReadBuffers& bufs, HandReadOutcome& out,
                   const SharedRequest& req) noexcept override {
     ++receive_calls;
-    if (req.after_write)
-      ++receive_after_write;
+    last_deadline_ns = req.deadline.time_since_epoch().count();
     if (receive_delay.count() > 0)
       std::this_thread::sleep_for(receive_delay);
     ResetReadFields(out);
@@ -1808,7 +1807,7 @@ SharedReqHand MakeSharedReqHand() {
 
 TEST(HandControllerSharedLoop, SharedReqTickSplitsTheCycleAndKeepsTheWriteResult) {
   HandCommLoop loop;
-  ASSERT_TRUE(loop.SetSharedReq(true));
+  ASSERT_TRUE(loop.SetSharedReq(true, std::chrono::seconds(1)));
   auto right = MakeSharedReqHand();
   auto left = MakeSharedReqHand();
   ASSERT_TRUE(right.ctrl->AttachLoop(&loop));
@@ -1833,8 +1832,9 @@ TEST(HandControllerSharedLoop, SharedReqTickSplitsTheCycleAndKeepsTheWriteResult
   EXPECT_EQ(static_cast<std::size_t>(left.comm->receive_calls.load()), cycles);
   EXPECT_EQ(right.comm->cmd_only_calls, 1);
   EXPECT_EQ(left.comm->cmd_only_calls, 0);
-  EXPECT_EQ(left.comm->receive_after_write, 1)
-      << "the right hand's write did not reach the left bound";
+  EXPECT_NE(left.comm->last_deadline_ns, 0);
+  EXPECT_EQ(left.comm->last_deadline_ns, right.comm->last_deadline_ns)
+      << "the hands of one tick got different bounds (D89)";
   EXPECT_EQ(right.comm->drain_calls, static_cast<int>(cycles));
 
   bool saw_write = false;
@@ -1859,7 +1859,7 @@ TEST(HandControllerSharedLoop, SharedReqTickSplitsTheCycleAndKeepsTheWriteResult
 TEST(HandControllerSharedLoop, SharedReqSensorPhaseLeavesOutTheLaterHandsReceive) {
   constexpr auto kLeftDelay = std::chrono::microseconds{2000};
   HandCommLoop loop;
-  ASSERT_TRUE(loop.SetSharedReq(true));
+  ASSERT_TRUE(loop.SetSharedReq(true, std::chrono::seconds(1)));
   auto right = MakeSharedReqHand();
   auto left = MakeSharedReqHand();
   for (SharedReqHand* h : {&right, &left}) {
@@ -1890,7 +1890,7 @@ TEST(HandControllerSharedLoop, SharedReqSensorPhaseLeavesOutTheLaterHandsReceive
 // the Prepare pass — so a shared-request loop of fake hands still cycles both.
 TEST(HandControllerSharedLoop, SharedReqLoopOfFakeHandsCyclesBoth) {
   HandCommLoop loop;
-  ASSERT_TRUE(loop.SetSharedReq(true));
+  ASSERT_TRUE(loop.SetSharedReq(true, std::chrono::seconds(1)));
   auto right = MakeFakeHand();
   auto left = MakeFakeHand();
   ASSERT_TRUE(right->AttachLoop(&loop));

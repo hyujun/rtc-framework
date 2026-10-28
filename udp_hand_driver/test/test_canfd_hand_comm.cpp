@@ -41,10 +41,10 @@
 //   DrainStale bounded drain, stale_drained accounting
 //   #956       the shared-request split (D81 · D83): one broadcast REQ
 //              (sniffed id 0x007FC000) completes both hands' sets; the bound
-//              is anchored at the REQ, not at ReceiveSet's call; queued
-//              frames are taken after the bound has passed; 2T after a
-//              write; a failed REQ is a set error, not a timeout; the write
-//              result survives ReceiveSet
+//              is the request's deadline (D89), not ReceiveSet's call, and
+//              the same after a write; queued frames are taken after the
+//              bound has passed; a failed REQ is a set error, not a timeout;
+//              the write result survives ReceiveSet
 //   Tier 1     tx errno classification, closed link harmless, kRxMask bits,
 //              the vcan0 SIL detector's id set (#927 B), SupportsBroadcastReq,
 //              SensorProtocol2 decode (signs, metres, length guard, clamp)
@@ -514,7 +514,7 @@ TEST(CanFdHandCommTier1, ClosedLinkRtMethodsAreHarmlessAndCountNothing) {
   EXPECT_NE(t_req, HandReadOutcome::Clock::time_point{});
   out.write_ok = true;
   out.joint_ok = true;
-  comm.ReceiveSet(plan, bufs, out, SharedRequest{t_req, true, false});
+  comm.ReceiveSet(plan, bufs, out, SharedRequest{t_req, true, t_req});
   EXPECT_TRUE(out.write_ok);
   EXPECT_FALSE(out.joint_ok);
   EXPECT_EQ(out.PhaseEnd(ReadPhase::kMotor), t_req);
@@ -1560,6 +1560,14 @@ CanFdHandCommConfig BcConfig(HandSide side) {
   cfg.hand_side = side;
   return cfg;
 }
+
+// A request sent at `t_req` whose bound — the loop's tick start + set window
+// in production (D89) — lies one stage timeout after it.
+SharedRequest Shared(HandReadOutcome::Clock::time_point t_req, bool sent = true) {
+  const auto window = std::chrono::duration_cast<HandReadOutcome::Clock::duration>(
+      std::chrono::duration<double, std::milli>(kStageTimeoutMs));
+  return {t_req, sent, t_req + window};
+}
 }  // namespace
 
 // One REQ to 0xFF, both hands answer, each comm completes its own set — and
@@ -1576,7 +1584,7 @@ TEST_F(CanFdHandCommVcan, Bc956_OneBroadcastReqCompletesBothSets) {
 
   HandReadOutcome::Clock::time_point t_req{};
   ASSERT_TRUE(right->SendBroadcastReq(t_req));
-  const SharedRequest req{t_req, true, false};
+  const SharedRequest req = Shared(t_req);
   HandReadBuffers rb{};
   HandReadBuffers lb{};
   HandReadOutcome ro{};
@@ -1606,10 +1614,10 @@ TEST_F(CanFdHandCommVcan, Bc956_OneBroadcastReqCompletesBothSets) {
   }
 }
 
-// The bound is REQ + T, not (ReceiveSet call) + T. The right hand's window
-// stands in for 0.6 T; the left peer answers 1.5 T after the REQ, so a bound
-// anchored at the call (1.6 T) would take it.
-TEST_F(CanFdHandCommVcan, Bc956_BoundIsAnchoredAtTheReqNotTheCall) {
+// The bound is the request's deadline (here REQ + T), not (ReceiveSet call)
+// + T. The right hand's window stands in for 0.6 T; the left peer answers
+// 1.5 T after the REQ, so a bound taken at the call (1.6 T) would take it.
+TEST_F(CanFdHandCommVcan, Bc956_BoundIsTheRequestsDeadlineNotTheCall) {
   const auto kT = std::chrono::milliseconds(static_cast<int>(kStageTimeoutMs));
   auto left_peer =
       StartPeer(HandSide::kLeft, FakePeer::Mode::kDelayedResp, kT * 3 / 2, CmdAck::kNone);
@@ -1619,7 +1627,7 @@ TEST_F(CanFdHandCommVcan, Bc956_BoundIsAnchoredAtTheReqNotTheCall) {
   std::this_thread::sleep_until(t_req + kT * 6 / 10);
   HandReadBuffers bufs{};
   HandReadOutcome out{};
-  left->ReceiveSet(SensorPlan(false), bufs, out, SharedRequest{t_req, true, false});
+  left->ReceiveSet(SensorPlan(false), bufs, out, Shared(t_req));
   const auto closed = std::chrono::steady_clock::now() - t_req;
   EXPECT_FALSE(out.joint_ok);
   EXPECT_GE(closed, kT * 9 / 10);
@@ -1638,7 +1646,7 @@ TEST_F(CanFdHandCommVcan, Bc956_QueuedSetIsTakenAfterTheBoundPassed) {
   auto left = OpenComm(BcConfig(HandSide::kLeft));
   HandReadOutcome::Clock::time_point t_req{};
   ASSERT_TRUE(right->SendBroadcastReq(t_req));
-  const SharedRequest req{t_req, true, false};
+  const SharedRequest req = Shared(t_req);
   HandReadBuffers bufs{};
   HandReadOutcome ro{};
   HandReadOutcome lo{};
@@ -1652,9 +1660,10 @@ TEST_F(CanFdHandCommVcan, Bc956_QueuedSetIsTakenAfterTheBoundPassed) {
   EXPECT_EQ(Kind(left->comm_stats(), RequestKind::kJointRead).timeout, 0u);
 }
 
-// After a write the bound is REQ + 2T for every hand (D83), also for a hand
-// that did not write itself; the write result survives ReceiveSet (S1).
-TEST_F(CanFdHandCommVcan, Bc956_AfterAWriteEveryHandGetsTwoT) {
+// After a write the bound is the same deadline as without one (D89 — no
+// longer REQ + 2T, D83): the left set, 1.5 T after the REQ, misses a T bound
+// even though the right hand wrote; the write result survives ReceiveSet (S1).
+TEST_F(CanFdHandCommVcan, Bc956_AfterAWriteTheBoundStaysTheDeadline) {
   const auto kT = std::chrono::milliseconds(static_cast<int>(kStageTimeoutMs));
   auto right_peer = StartPeer(HandSide::kRight, FakePeer::Mode::kNormal, 0ms, CmdAck::kNone);
   auto left_peer =
@@ -1669,15 +1678,19 @@ TEST_F(CanFdHandCommVcan, Bc956_AfterAWriteEveryHandGetsTwoT) {
   const auto write_end = ro.write_end;
   HandReadOutcome::Clock::time_point t_req{};
   ASSERT_TRUE(right->SendBroadcastReq(t_req));
-  const SharedRequest req{t_req, true, true};
+  const SharedRequest req = Shared(t_req);
   HandReadBuffers bufs{};
   right->ReceiveSet(SensorPlan(false), bufs, ro, req);
   left->ReceiveSet(SensorPlan(false), bufs, lo, req);
+  const auto closed = std::chrono::steady_clock::now() - t_req;
   EXPECT_TRUE(ro.joint_ok);
   EXPECT_TRUE(ro.write_ok);  // S1: kept through ReceiveSet
   EXPECT_EQ(ro.write_end, write_end);
-  EXPECT_TRUE(lo.joint_ok);
-  EXPECT_GE(lo.PhaseEnd(ReadPhase::kJoint) - t_req, kT * 14 / 10);
+  EXPECT_FALSE(lo.joint_ok);
+  EXPECT_GE(closed, kT * 9 / 10);
+  EXPECT_LT(closed, kT * 14 / 10);
+  left->PublishCommStats();
+  EXPECT_EQ(Kind(left->comm_stats(), RequestKind::kJointRead).timeout, 1u);
   right_peer->WithModel([](const FakeHandFirmware& fw) {
     EXPECT_FLOAT_EQ(fw.target()[9], 0.9f);  // the command reached the right hand
     return 0;
@@ -1691,7 +1704,7 @@ TEST_F(CanFdHandCommVcan, Bc956_AfterAWriteEveryHandGetsTwoT) {
 TEST_F(CanFdHandCommVcan, Bc956_FailedReqIsASetErrorWithoutAWindow) {
   auto right = OpenComm(BcConfig(HandSide::kRight));
   auto left = OpenComm(BcConfig(HandSide::kLeft));
-  const SharedRequest req{std::chrono::steady_clock::now(), false, false};
+  const SharedRequest req = Shared(std::chrono::steady_clock::now(), false);
   HandReadBuffers bufs{};
   HandReadOutcome out{};
   const auto t0 = std::chrono::steady_clock::now();
@@ -1722,7 +1735,7 @@ TEST_F(CanFdHandCommVcan, Bc956_PreFeedIsBoundedByTheDrainCap) {
   const auto t_req = std::chrono::steady_clock::now() - 1s;  // the bound is long gone
   HandReadBuffers bufs{};
   HandReadOutcome out{};
-  comm->ReceiveSet(SensorPlan(false), bufs, out, SharedRequest{t_req, true, false});
+  comm->ReceiveSet(SensorPlan(false), bufs, out, Shared(t_req));
   EXPECT_FALSE(out.joint_ok);
   comm->PublishCommStats();
   const UdpHandCommStats s = comm->comm_stats();

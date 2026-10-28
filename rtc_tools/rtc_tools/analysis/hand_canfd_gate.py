@@ -8,7 +8,7 @@ real hand must satisfy, all at once:
                   "Hand link DOWN" lines in the node log, no silent REQ streak on
                   the bus that reaches the link-fail budget, no `false` on
                   /…/link_status
-  (c) cycle p99 — t_total_us p99 < 0.8 x period (1600 us at 500 Hz), nothing
+  (c) cycle p99 — t_total_us p99 < period / 1.1 (1818 us at 500 Hz), nothing
                   excluded
   (d) timeouts  — RESP-set timeouts / comm cycles < 0.1 % AND echo timeouts /
                   write attempts < 0.1 %, each on its own denominator; with
@@ -172,7 +172,7 @@ REQ_MODES = (REQ_PER_HAND, REQ_BROADCAST)
 class Thresholds:
     min_duration_s: float = 300.0
     loop_rate_hz: float = 500.0
-    p99_fraction: float = 0.8
+    p99_fraction: float = 1 / 1.1  # D89: period = p99 x 1.1
     timeout_rate_max: float = 1e-3
     # Half-width of the UNDECIDED band around the threshold count, in binomial
     # standard deviations sqrt(n p (1 - p)) of the threshold rate: 1.65 sigma is
@@ -196,6 +196,11 @@ class Thresholds:
     @property
     def p99_limit_us(self) -> float:
         return self.p99_fraction * self.period_us
+
+
+def _p99_rule(fraction: float) -> str:
+    """The (c) limit as written: ``period / 1.1`` for the default (D89)."""
+    return f"period / {1 / fraction:g}" if fraction > 0 else f"{fraction:g} x period"
 
 
 @dataclass
@@ -1026,7 +1031,8 @@ def judge(
             PASS if period_ok and p99 < th.p99_limit_us else FAIL,
             f"{p99:.0f} us (max {timing.max_total_us:.0f}, >= limit {timing.over_limit}, "
             f">= period {timing.over_period})",
-            f"< {th.p99_limit_us:.0f} us ({th.p99_fraction:g} x {th.period_us:.0f} us)",
+            f"< {th.p99_limit_us:.0f} us ({_p99_rule(th.p99_fraction)}, "
+            f"period {th.period_us:.0f} us)",
             period_note,
         )
     )
@@ -1193,6 +1199,11 @@ def render_markdown(
     bound = (rt + re_) / total_cycles if total_cycles else math.nan
     none_mode = _cmd_ack(comm) == "none"
     d42 = "D42: 2 x T < period (nominal; no echo stage)" if none_mode else "D42: 2 x T < period"
+    recv_expect = (
+        "unused under broadcast (D89: window = slot - broadcast_tail_guard_ms)"
+        if req_mode == REQ_BROADCAST
+        else d42
+    )
     echo_handling = (
         "shares its window with the CMD sends since #919"
         if none_mode
@@ -1207,7 +1218,7 @@ def render_markdown(
             if req_mode is not None
             else []
         ),
-        f"| recv_timeout_ms (as run) | {comm.get('recv_timeout_ms')} | {d42} |",
+        f"| recv_timeout_ms (as run) | {comm.get('recv_timeout_ms')} | {recv_expect} |",
         f"| total_cycles / timing rows | {total_cycles} / {timing.rows} | about equal |",
         f"| median tick period | {timing.period_us_median:.0f} us | {th.period_us:.0f} us |",
         f"| t_total_us p50 / p99 / max | {timing.p50_total_us:.0f} / {timing.p99_total_us:.0f} / "
@@ -1416,6 +1427,8 @@ def main(argv: list[str] | None = None) -> int:
         "--json-out", type=Path, default=None, help="write checks + figures as JSON"
     )
     args = parser.parse_args(argv)
+    if not args.p99_fraction > 0:
+        parser.error(f"--p99-fraction must be > 0, got {args.p99_fraction:g}")
 
     th = Thresholds(
         min_duration_s=args.min_duration_s,

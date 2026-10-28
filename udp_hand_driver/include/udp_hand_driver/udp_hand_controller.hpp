@@ -833,11 +833,12 @@ class UdpHandController final : public HandCommLoopMember {
     cyc_.shared_req = true;
     BeginBulkCycle();  // the node allows broadcast on protocol 2 only: bulk
     read_outcome_ = HandReadOutcome{};
-    bool wrote = false;
     if (cyc_.write_gate_open) {
-      wrote = comm_->SendCommandOnly(pending_cmd_, pending_ff_, read_outcome_);
+      // What went out is in read_outcome_ (write_ok / write_end); the set's
+      // bound does not depend on it (D89).
+      (void)comm_->SendCommandOnly(pending_cmd_, pending_ff_, read_outcome_);
     }
-    return {.takes_part = true, .wrote = wrote};
+    return {.takes_part = true};
   }
 
   // Step 2, on the first hand that takes part (the next one after a failed
