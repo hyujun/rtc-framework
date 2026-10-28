@@ -20,9 +20,20 @@ source "${LIB_DIR}/rt_common.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/assert.sh"
 
+# The topology suite runs twice (run_topology_suite below); tag its failures
+# with the mode so the two runs' identical labels stay tellable apart.
+TOPO_MODE=""
+eval "$(declare -f fail | sed '1s/^fail/_assert_fail/')"
+fail() { _assert_fail "${TOPO_MODE:+(${TOPO_MODE}) }$1"; }
+
 # ── Mock sysfs builder ──────────────────────────────────────────────────────
 # Creates $ROOT/devices/system/cpu/cpuN/topology/{physical_package_id,core_id}
 # and cpufreq/cpuinfo_max_freq, plus types/{intel_core,intel_atom}/cpus.
+# MOCK_SIBLING_LISTS=1 also writes topology/core_cpus_list for every cpu, in
+# the kernel's cpulist format ("0,6", "0-1"), from the fixture's own core_id
+# pairing — the same machine seen through the source the kernel prefers.
+
+MOCK_SIBLING_LISTS=0
 
 mock_reset() {
   local root="$1"
@@ -40,6 +51,39 @@ mock_add_cpu() {
   if (( max_freq > 0 )); then
     echo "$max_freq" >"$d/cpufreq/cpuinfo_max_freq"
   fi
+  if (( MOCK_SIBLING_LISTS == 1 )); then
+    # Rewrite the list of every cpu sharing this core_id (siblings may be
+    # added before or after this cpu).
+    local f cid c sibs=() list
+    for f in "$root"/devices/system/cpu/cpu[0-9]*/topology/core_id; do
+      read -r cid <"$f"
+      [[ "$cid" == "$core_id" ]] || continue
+      c="${f%/topology/core_id}"
+      sibs+=("${c##*/cpu}")
+    done
+    # shellcheck disable=SC2046  # one id per word
+    list=$(_format_cpu_range $(printf '%s\n' "${sibs[@]}" | sort -n))
+    for c in "${sibs[@]}"; do
+      echo "$list" >"$root/devices/system/cpu/cpu${c}/topology/core_cpus_list"
+    done
+  fi
+}
+
+# Write one cpu of an SoC-style tree: explicit sibling lists, any core_id.
+# $1=root $2=cpu $3=core_id $4=core_cpus_list ("" = no file)
+# $5=thread_siblings_list ("" = no file) $6=max_freq_khz
+mock_add_cpu_lists() {
+  local root="$1" cpu="$2" core_id="$3" ccl="$4" tsl="$5" max_freq="${6:-0}"
+  local d="$root/devices/system/cpu/cpu${cpu}"
+  mkdir -p "$d/topology" "$d/cpufreq"
+  echo "0" >"$d/topology/physical_package_id"
+  echo "$core_id" >"$d/topology/core_id"
+  [[ -n "$ccl" ]] && echo "$ccl" >"$d/topology/core_cpus_list"
+  [[ -n "$tsl" ]] && echo "$tsl" >"$d/topology/thread_siblings_list"
+  if (( max_freq > 0 )); then
+    echo "$max_freq" >"$d/cpufreq/cpuinfo_max_freq"
+  fi
+  return 0
 }
 
 mock_set_types() {
@@ -75,6 +119,35 @@ mock_write_cpuinfo() {
 
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
+
+# ── sysfs-only host: no lscpu, nproc counts the mock tree ──────────────────
+# get_physical_cores asks lscpu first, which answers for the HOST. A failing
+# stand-in on PATH sends it to the sysfs path under $RTC_SYSFS_ROOT; nproc is
+# stood in too so compute_cpu_layout's logical count comes from the same tree.
+SYSFS_ONLY_BIN="$TMP/sysfs_only_bin"
+mkdir -p "$SYSFS_ONLY_BIN"
+printf '#!/bin/bash\nexit 1\n' >"$SYSFS_ONLY_BIN/lscpu"
+cat >"$SYSFS_ONLY_BIN/nproc" <<'EOF'
+#!/bin/bash
+n=0
+for d in "${RTC_SYSFS_ROOT:?}"/devices/system/cpu/cpu[0-9]*; do [[ -d "$d" ]] && n=$((n+1)); done
+echo "$n"
+EOF
+chmod +x "$SYSFS_ONLY_BIN/lscpu" "$SYSFS_ONLY_BIN/nproc"
+
+# Later tests shadow get_physical_cores (_force_physical_cores); keep the real
+# one so the sysfs-path tests can put it back.
+eval "$(declare -f get_physical_cores | sed '1s/^get_physical_cores/_real_get_physical_cores/')"
+_restore_physical_cores() {
+  eval "$(declare -f _real_get_physical_cores | sed '1s/^_real_get_physical_cores/get_physical_cores/')"
+}
+
+# Run "$@" against mock tree $1 as a host with no lscpu.
+# Functions run in this shell, so globals they set (compute_cpu_layout) stay.
+on_sysfs_only() {
+  local root="$1"; shift
+  PATH="$SYSFS_ONLY_BIN:$PATH" RTC_SYSFS_ROOT="$root" "$@"
+}
 
 # ── Test 1: NUC 13 Pro i7-1360P (4P + 8E) ──────────────────────────────────
 test_nuc13_i7_1360p() {
@@ -740,7 +813,7 @@ test_sanity_check_disagreement() {
 #
 # These exercise the layout v4.1 SSoT helpers consumed by setup_grub_rt.sh
 # (nohz_full / rcu_nocbs) and cpu_shield.sh (cset shield range). The helper
-# walks $RTC_SYSFS_ROOT/devices/system/cpu/cpu*/topology/core_id; we build a
+# ranks the physical cores of $RTC_SYSFS_ROOT (_rt_rank_physical_cores); we build a
 # fake topology and shadow get_physical_cores() per tier so the helper sees
 # the desired core count without touching the host CPU.
 #
@@ -1278,7 +1351,278 @@ test_shield_helpers_follow_the_layout_profile() {
   done
 }
 
+# ── Physical-core ranking (_rt_rank_physical_cores) ───────────────────────
+# Rule (same as rtc_base cpu_topology.hpp): sibling source chosen once from
+# cpu0 (core_cpus_list → thread_siblings_list → pkg:core_id), a core's key is
+# its lowest logical cpu, rank N = key order = physical core N = slot N. The
+# cases below run in both suite modes with the same expectations, except the
+# list-file assertions that prove which source was read.
+
+# Line N (0-based) of the ranking of mock tree $1.
+_rank_line() {
+  _rt_rank_physical_cores "$1/devices/system/cpu" | sed -n "$(( $2 + 1 ))p"
+}
+
+_list_of() {
+  cat "$1/devices/system/cpu/cpu$2/topology/core_cpus_list" 2>/dev/null || echo "absent"
+}
+
+test_rank_reads_sibling_lists() {
+  local root="$TMP/rank_i7"
+  local want_list
+  # i7-8700 6C/12T: cpu i and i+6 share a core → kernel list "0,6".
+  _mock_sysfs_smt "$root" 6
+  want_list=$([[ "$MOCK_SIBLING_LISTS" == 1 ]] && echo "0,6" || echo "absent")
+  expect_eq "rank.i7.list_file"   "$want_list" "$(_list_of "$root" 0)"
+  expect_eq "rank.i7.count"       "6"          "$(_rt_rank_physical_cores "$root/devices/system/cpu" | wc -l)"
+  expect_eq "rank.i7.r0"          "0 0 0,6"    "$(_rank_line "$root" 0)"
+  expect_eq "rank.i7.r5"          "5 5 5,11"   "$(_rank_line "$root" 5)"
+
+  # AMD interleaved 8C/16T: cpu 2i, 2i+1 share a core → kernel list "0-1".
+  root="$TMP/rank_amd"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5400000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5400000
+  done
+  want_list=$([[ "$MOCK_SIBLING_LISTS" == 1 ]] && echo "0-1" || echo "absent")
+  expect_eq "rank.amd.list_file"  "$want_list" "$(_list_of "$root" 0)"
+  expect_eq "rank.amd.r0"         "0 0 0,1"    "$(_rank_line "$root" 0)"
+  expect_eq "rank.amd.r7"         "7 14 14,15" "$(_rank_line "$root" 7)"
+
+  # NUC14 non-monotonic firmware: cpu 0 pairs with cpu 5 → kernel list "0,5";
+  # rank follows the lowest logical cpu, not the core_id number (100..105).
+  root="$TMP/rank_nuc14"
+  mock_reset "$root"
+  mock_add_cpu "$root" 1 100; mock_add_cpu "$root" 2 100
+  mock_add_cpu "$root" 3 101; mock_add_cpu "$root" 4 101
+  mock_add_cpu "$root" 0 102; mock_add_cpu "$root" 5 102
+  mock_add_cpu "$root" 6 103; mock_add_cpu "$root" 7 103
+  want_list=$([[ "$MOCK_SIBLING_LISTS" == 1 ]] && echo "0,5" || echo "absent")
+  expect_eq "rank.nuc14.list_file" "$want_list" "$(_list_of "$root" 0)"
+  expect_eq "rank.nuc14.r0"        "0 0 0,5"    "$(_rank_line "$root" 0)"
+  expect_eq "rank.nuc14.r1"        "1 1 1,2"    "$(_rank_line "$root" 1)"
+  expect_eq "rank.nuc14.r2"        "2 3 3,4"    "$(_rank_line "$root" 2)"
+  expect_eq "rank.nuc14.r3"        "3 6 6,7"    "$(_rank_line "$root" 3)"
+}
+
+# get_physical_cores' sysfs path and the OS-core helpers (IRQ mask,
+# get_os_logical_cpus → check_rt_setup IS_RT_LOGICAL_CPU, compute_expected_isolated
+# → setup_nvidia_rt) on a host without lscpu. Values here did not change with
+# the ranking rule; they pin that the helpers now read $RTC_SYSFS_ROOT.
+test_sysfs_only_layout_helpers() {
+  _restore_physical_cores
+  local root="$TMP/layout_i7"
+  _mock_sysfs_smt "$root" 6
+  expect_eq "layout.i7.phys"     "6"          "$(on_sysfs_only "$root" get_physical_cores)"
+  on_sysfs_only "$root" compute_cpu_layout
+  expect_eq "layout.i7.smt"      "1"          "$HAS_SMT"
+  expect_eq "layout.i7.os_cpus"  "0 6"        "$(on_sysfs_only "$root" get_os_logical_cpus)"
+  expect_eq "layout.i7.irq_mask" "41"         "$IRQ_AFFINITY_MASK"
+  expect_eq "layout.i7.isolated" "1-5,7-11"   "$(on_sysfs_only "$root" compute_expected_isolated)"
+
+  root="$TMP/layout_amd"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5400000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5400000
+  done
+  expect_eq "layout.amd.phys"     "8"     "$(on_sysfs_only "$root" get_physical_cores)"
+  on_sysfs_only "$root" compute_cpu_layout
+  expect_eq "layout.amd.os_cpus"  "0 1"   "$(on_sysfs_only "$root" get_os_logical_cpus)"
+  expect_eq "layout.amd.irq_mask" "3"     "$IRQ_AFFINITY_MASK"
+  expect_eq "layout.amd.isolated" "2-15"  "$(on_sysfs_only "$root" compute_expected_isolated)"
+
+  # NUC13 Pro hybrid (4P HT + 8E): 12 physical cores.
+  root="$TMP/layout_nuc13"
+  mock_reset "$root"
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5000000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5000000
+  done
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((8+i)) $((4+i)) 3800000
+  done
+  expect_eq "layout.nuc13.phys"     "12"   "$(on_sysfs_only "$root" get_physical_cores)"
+  on_sysfs_only "$root" compute_cpu_layout
+  expect_eq "layout.nuc13.os_cpus"  "0 1"  "$(on_sysfs_only "$root" get_os_logical_cpus)"
+  expect_eq "layout.nuc13.irq_mask" "3"    "$IRQ_AFFINITY_MASK"
+
+  root="$TMP/layout_nonsmt"
+  _mock_sysfs_non_smt "$root" 4
+  expect_eq "layout.nonsmt.phys"     "4"   "$(on_sysfs_only "$root" get_physical_cores)"
+  on_sysfs_only "$root" compute_cpu_layout
+  expect_eq "layout.nonsmt.smt"      "0"   "$HAS_SMT"
+  expect_eq "layout.nonsmt.os_cpus"  "0"   "$(on_sysfs_only "$root" get_os_logical_cpus)"
+  expect_eq "layout.nonsmt.irq_mask" "1"   "$IRQ_AFFINITY_MASK"
+  expect_eq "layout.nonsmt.isolated" "1-3" "$(on_sysfs_only "$root" compute_expected_isolated)"
+}
+
+# Non-hybrid firmware giving cpu 0 core_id 16 (C++ test 19a-bis). Slots were
+# already logical-ascending; the core_id-keyed helpers were not: OS core was
+# cpu 2 (core_id 0) and nohz_full "2-3" (core_id 1 = cpu 3, 2/3 missing).
+test_nonmonotonic_cpu0_core_id_16() {
+  _restore_physical_cores
+  local root="$TMP/cid16"
+  mock_reset "$root"
+  mock_add_cpu "$root" 0 16 3000000
+  mock_add_cpu "$root" 1 17 3000000
+  mock_add_cpu "$root" 2 0  3000000
+  mock_add_cpu "$root" 3 1  3000000
+  mock_write_cpuinfo "$TMP/cid16_cpuinfo" "false"
+  local ci="$TMP/cid16_cpuinfo"
+  RTC_PROC_CPUINFO="$ci" RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    on_sysfs_only "$root" detect_hybrid_capability
+  expect_eq "cid16.slots"     "0 1 2 3" "$PHYSICAL_CORE_SLOTS"
+  on_sysfs_only "$root" compute_cpu_layout
+  expect_eq "cid16.os_cpus"   "0"       "$(on_sysfs_only "$root" get_os_logical_cpus)"
+  expect_eq "cid16.irq_mask"  "1"       "$IRQ_AFFINITY_MASK"
+  expect_eq "cid16.nohz_full" "1-3"     "$(on_sysfs_only "$root" get_rt_cores_with_siblings)"
+}
+
+# Approved change 1 — NUC14 Pro firmware with cpu 0's core mid-sequence
+# (core_id 100..105, cpu 0 paired with cpu 5). Before: no cpu had core_id 0,
+# so the OS core was empty — IRQ mask 0, IS_RT_LOGICAL_CPU / setup_nvidia_rt
+# isolated set "0-21" (cpu 0 included), nohz_full "1-3" (pass-through ids).
+test_nuc14_nonmonotonic_os_core() {
+  _restore_physical_cores
+  local root="$TMP/nuc14_os"
+  mock_reset "$root"
+  mock_add_cpu "$root" 1  100 5000000; mock_add_cpu "$root" 2  100 5000000
+  mock_add_cpu "$root" 3  101 5000000; mock_add_cpu "$root" 4  101 5000000
+  mock_add_cpu "$root" 0  102 5000000; mock_add_cpu "$root" 5  102 5000000
+  mock_add_cpu "$root" 6  103 5000000; mock_add_cpu "$root" 7  103 5000000
+  mock_add_cpu "$root" 8  104 5000000; mock_add_cpu "$root" 9  104 5000000
+  mock_add_cpu "$root" 10 105 5000000; mock_add_cpu "$root" 11 105 5000000
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((12+i)) $((200+i)) 3800000
+  done
+  mock_add_cpu "$root" 20 208 2500000
+  mock_add_cpu "$root" 21 209 2500000
+  mock_set_types "$root" "0-11" "12-21"
+  mock_write_cpuinfo "$TMP/nuc14_os_cpuinfo" "true" "6" "170"
+  local ci="$TMP/nuc14_os_cpuinfo"
+
+  on_sysfs_only "$root" compute_cpu_layout
+  expect_eq "nuc14os.phys"      "16"         "$TOTAL_CORES"
+  expect_eq "nuc14os.os_cpus"   "0 5"        "$(on_sysfs_only "$root" get_os_logical_cpus)"
+  expect_eq "nuc14os.irq_mask"  "21"         "$IRQ_AFFINITY_MASK"
+  expect_eq "nuc14os.isolated"  "1-4,6-21"   "$(on_sysfs_only "$root" compute_expected_isolated)"
+  expect_eq "nuc14os.nohz_full" "1-4,6-7" \
+    "$(RTC_PROC_CPUINFO="$ci" on_sysfs_only "$root" get_rt_cores_with_siblings)"
+  # GRUB now covers exactly the cpus the shield isolates (slot 1-3 → 1,3,6 + siblings).
+  expect_eq "nuc14os.shield"    "1-4,6-7" \
+    "$(RTC_PROC_CPUINFO="$ci" RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+       on_sysfs_only "$root" get_rt_shield_cpus)"
+}
+
+# Approved change 2 — AMD with gaps in core_id (Ryzen 5 3600 style: two CCX,
+# core_id 0,1,2,4,5,6; cpu i and i+6 are siblings). Before: nohz_full asked
+# core_id 3, found none and passed "3" through without its sibling → "1-3,7-8".
+test_amd_core_id_gap_nohz_full() {
+  _restore_physical_cores
+  local root="$TMP/amd_gap"
+  mock_reset "$root"
+  local i=0 c
+  for c in 0 1 2 4 5 6; do
+    mock_add_cpu "$root" "$i"       "$c" 4200000
+    mock_add_cpu "$root" $((i + 6)) "$c" 4200000
+    i=$((i + 1))
+  done
+  mock_write_cpuinfo "$TMP/amd_gap_cpuinfo" "false"
+  local ci="$TMP/amd_gap_cpuinfo"
+  expect_eq "amdgap.nohz_full" "1-3,7-9" "$(on_sysfs_only "$root" get_rt_cores_with_siblings)"
+  expect_eq "amdgap.shield"    "1-3,7-9" \
+    "$(RTC_PROC_CPUINFO="$ci" RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+       on_sysfs_only "$root" get_rt_shield_cpus)"
+}
+
+# ── SoC that reports the same core_id on every CPU (single mode: own lists) ──
+# 14 CPUs, no SMT, core_id 0 and package 0 everywhere, core_cpus_list and
+# thread_siblings_list = the cpu itself, equal cpufreq (not hybrid). Before:
+# everything folded into one physical core — shield 0-13 (the whole machine),
+# IRQ mask 0x3fff, a single slot.
+_mock_same_core_id_soc() {
+  local root="$1" i
+  mock_reset "$root"
+  for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13; do
+    mock_add_cpu_lists "$root" "$i" 0 "$i" "$i" 2601000
+  done
+  printf 'processor\t: 0\nBogoMIPS\t: 2000.00\nFeatures\t: fp asimd\n' >"$TMP/soc_cpuinfo"
+}
+
+test_same_core_id_soc() {
+  _restore_physical_cores
+  local root="$TMP/soc14" ci="$TMP/soc_cpuinfo"
+  _mock_same_core_id_soc "$root"
+  expect_eq "soc.phys" "14" "$(on_sysfs_only "$root" get_physical_cores)"
+  RTC_PROC_CPUINFO="$ci" RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    on_sysfs_only "$root" detect_hybrid_capability
+  expect_eq "soc.is_hybrid" "0" "$IS_HYBRID"
+  expect_eq "soc.slots" "0 1 2 3 4 5 6 7 8 9 10 11 12 13" "$PHYSICAL_CORE_SLOTS"
+  on_sysfs_only "$root" compute_cpu_layout
+  expect_eq "soc.smt"      "0"    "$HAS_SMT"
+  expect_eq "soc.os_cpus"  "0"    "$(on_sysfs_only "$root" get_os_logical_cpus)"
+  expect_eq "soc.irq_mask" "1"    "$IRQ_AFFINITY_MASK"
+  expect_eq "soc.isolated" "1-13" "$(on_sysfs_only "$root" compute_expected_isolated)"
+  # Tier 14: RT slots 1-3 → logical 1-3, no siblings.
+  expect_eq "soc.shield" "1-3" \
+    "$(RTC_PROC_CPUINFO="$ci" RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+       on_sysfs_only "$root" get_rt_shield_cpus)"
+  expect_eq "soc.nohz_full" "1-3" \
+    "$(RTC_PROC_CPUINFO="$ci" on_sysfs_only "$root" get_rt_cores_with_siblings)"
+}
+
+# Source priority, decided once from cpu0.
+test_rank_source_priority() {
+  # (a) core_cpus_list wins over thread_siblings_list and core_id: lists say
+  #     four single-cpu cores, thread_siblings_list (deliberately contradicting)
+  #     says pairs, core_id says one core.
+  local root="$TMP/prio_ccl" i
+  mock_reset "$root"
+  for i in 0 1 2 3; do
+    mock_add_cpu_lists "$root" "$i" 0 "$i" "$(( i / 2 * 2 ))-$(( i / 2 * 2 + 1 ))"
+  done
+  expect_eq "prio.ccl.count" "4" "$(_rt_rank_physical_cores "$root/devices/system/cpu" | wc -l)"
+  expect_eq "prio.ccl.r3"    "3 3 3" "$(_rank_line "$root" 3)"
+
+  # (b) only thread_siblings_list: pairs {0,2} {1,3}, core_id 0 everywhere.
+  root="$TMP/prio_tsl"
+  mock_reset "$root"
+  mock_add_cpu_lists "$root" 0 0 "" "0,2"
+  mock_add_cpu_lists "$root" 1 0 "" "1,3"
+  mock_add_cpu_lists "$root" 2 0 "" "0,2"
+  mock_add_cpu_lists "$root" 3 0 "" "1,3"
+  expect_eq "prio.tsl.r0" "0 0 0,2" "$(_rank_line "$root" 0)"
+  expect_eq "prio.tsl.r1" "1 1 1,3" "$(_rank_line "$root" 1)"
+  _restore_physical_cores
+  expect_eq "prio.tsl.phys"    "2"   "$(on_sysfs_only "$root" get_physical_cores)"
+  on_sysfs_only "$root" compute_cpu_layout
+  expect_eq "prio.tsl.os_cpus" "0 2" "$(on_sysfs_only "$root" get_os_logical_cpus)"
+  expect_eq "prio.tsl.irq"     "5"   "$IRQ_AFFINITY_MASK"
+
+  # (c) the source is cpu0's: a cpu missing core_cpus_list is left out rather
+  #     than falling back to its core_id, and a missing cpu (cpu 2 absent) does
+  #     not end the walk.
+  root="$TMP/prio_once"
+  mock_reset "$root"
+  mock_add_cpu_lists "$root" 0 0 "0" ""
+  mock_add_cpu_lists "$root" 1 0 "1" ""
+  mock_add_cpu_lists "$root" 3 0 "3" ""
+  mock_add_cpu_lists "$root" 4 0 ""  "4"
+  expect_eq "prio.once.ranks" "0 0 0|1 1 1|2 3 3" \
+    "$(_rt_rank_physical_cores "$root/devices/system/cpu" | paste -sd'|')"
+}
+
 # ── Run all ─────────────────────────────────────────────────────────────────
+# The topology suite runs twice with the same expectations: core_id only
+# (pkg:core_id fallback) and with core_cpus_list written for every cpu.
+run_topology_suite() {
+MOCK_SIBLING_LISTS="$1"
+TOPO_MODE="$2"
 test_cpulist_parser
 test_nuc13_i7_1360p
 test_bios_ht_off
@@ -1307,6 +1651,31 @@ test_sanity_check_disagreement
 test_get_rt_cores_with_siblings_non_smt
 test_get_rt_cores_with_siblings_smt_6c12t
 test_get_rt_cores_with_siblings_smt_12c24t
+test_get_rt_shield_cpus_non_smt
+test_get_rt_shield_cpus_smt_primaries_first
+test_get_rt_shield_cpus_smt_interleaved
+test_get_rt_shield_cpus_low_core_no_phantom
+test_get_cm_shield_cpus_nuc13_hybrid
+test_get_cm_shield_cpus_non_smt
+test_get_cm_shield_cpus_degraded_drops_os_slot
+test_shield_helpers_follow_the_layout_profile
+
+# Physical-core ranking — sysfs-only host (no lscpu).
+test_rank_reads_sibling_lists
+test_sysfs_only_layout_helpers
+test_nonmonotonic_cpu0_core_id_16
+test_nuc14_nonmonotonic_os_core
+test_amd_core_id_gap_nohz_full
+}
+run_topology_suite 0 "core_id"
+run_topology_suite 1 "core_cpus_list"
+MOCK_SIBLING_LISTS=0
+TOPO_MODE=""
+
+# These fixtures write their own sibling lists — one mode only.
+test_same_core_id_soc
+test_rank_source_priority
+
 test_slot_to_logical_cpu
 test_mask_to_cpus
 test_classify_external_rt_ok
@@ -1325,14 +1694,6 @@ test_classify_layout_unnamed_thread_must_be_on_driver_core
 test_classify_layout_degraded_tier_collapse
 test_classify_layout_no_threads
 test_classify_layout_spec_names_match_the_verifier
-test_get_rt_shield_cpus_non_smt
-test_get_rt_shield_cpus_smt_primaries_first
-test_get_rt_shield_cpus_smt_interleaved
-test_get_rt_shield_cpus_low_core_no_phantom
-test_get_cm_shield_cpus_nuc13_hybrid
-test_get_cm_shield_cpus_non_smt
-test_get_cm_shield_cpus_degraded_drops_os_slot
-test_shield_helpers_follow_the_layout_profile
 
 # ── Phase 1 safety primitives: write_file_if_changed / with_temporary_disable ──
 

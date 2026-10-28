@@ -32,7 +32,7 @@
 README.md: 12443 strict  # raised from 12431: udp_hand_driver row names both transports (UDP · CAN FD)
 docs/reference/README.md: 6815  # raised from 6563: why skills are D12-budgeted (verify skill removal); before: 6289 -> 6563 sim-rationale.md, 5924 -> 6289 build-rationale.md
 integrated_bringup/README.md: 37746 strict  # raised from 37635: per-robot initial_controller default and the startup log line (moved in when the verify skill was removed)
-repo_scripts/README.md: 27240 strict  # raised from 26993: run_hand_canfd_gate.sh row (two-hand gate driver, #954)
+repo_scripts/README.md: 27231 strict  # lowered from 27240: get_physical_cores row names the sysfs sibling-list fallback, rt_common intro trimmed; before: raised from 26993: run_hand_canfd_gate.sh row (two-hand gate driver, #954)
 robot_descriptions/README.md: 6588 strict  # raised from 6464: the vendored ur5e_p1b row became two (p1b_surrogate, g1), and the assm_v1 rows say the hand is synthetic (#952 D6)
 robot_descriptions/robots/g1/README.md: 1800 strict
 robot_descriptions/robots/p1b_surrogate/README.md: 2600 strict

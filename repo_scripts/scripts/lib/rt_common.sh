@@ -120,10 +120,67 @@ fatal() {
   exit 1
 }
 
+# ── Physical-core ranking (every sysfs topology reader goes through this) ──
+# One rule for "physical core N", the same as rtc_base cpu_topology.hpp:
+#   * the sibling source is chosen ONCE, from cpu0: topology/core_cpus_list,
+#     else topology/thread_siblings_list, else the pkg:core_id pair;
+#   * a physical core's key is its lowest logical cpu (the minimum of the cpu's
+#     sibling list; for pkg:core_id, the lowest cpu sharing that pair);
+#   * physical cores sorted by key ascending: rank N == "physical core N" == slot N.
+# core_id is not a usable key on its own: an SoC that reports the same core_id
+# on every CPU folds them all into one core, and x86 firmware numbers cores with
+# gaps or puts cpu0's core mid-sequence -- a core_id *number* is never a slot.
+# Every cpuN directory present is visited (a missing cpu does not end the walk);
+# a cpu whose source file is missing or empty is left out.
+# Output: one line per physical core, "rank key member,member,..." (members
+# ascending); nothing when no cpu has topology. `lscpu -p=Core` numbers cores
+# the same way, which is why get_physical_cores may still ask it first.
+# $1 = cpu root (default: ${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu).
+_rt_rank_physical_cores() {
+  local cpu_root="${1:-${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu}"
+  local src="core_id"
+  if [[ -r "$cpu_root/cpu0/topology/core_cpus_list" ]]; then
+    src="core_cpus_list"
+  elif [[ -r "$cpu_root/cpu0/topology/thread_siblings_list" ]]; then
+    src="thread_siblings_list"
+  fi
+
+  local -A members=() pair_key=()
+  local cpu raw key id pkg core pair
+  for cpu in $(_rt_enumerate_online_cpus "$cpu_root"); do
+    if [[ "$src" == "core_id" ]]; then
+      core=$(_rt_read_trim "$cpu_root/cpu${cpu}/topology/core_id")
+      [[ -z "$core" ]] && continue
+      pkg=$(_rt_read_trim "$cpu_root/cpu${cpu}/topology/physical_package_id")
+      pair="${pkg:-0}:${core}"
+      # cpus arrive ascending, so the first cpu of a pair is its lowest.
+      [[ -z "${pair_key[$pair]+x}" ]] && pair_key[$pair]="$cpu"
+      key="${pair_key[$pair]}"
+    else
+      raw=$(_rt_read_trim "$cpu_root/cpu${cpu}/topology/${src}")
+      key=""
+      for id in $(_rt_parse_cpulist "$raw"); do
+        [[ "$id" =~ ^[0-9]+$ ]] || continue
+        if [[ -z "$key" ]] || (( id < key )); then key="$id"; fi
+      done
+      [[ -z "$key" ]] && continue
+    fi
+    members[$key]="${members[$key]:+${members[$key]},}${cpu}"
+  done
+
+  local rank=0
+  for key in $(printf '%s\n' "${!members[@]}" | sort -n); do
+    echo "${rank} ${key} ${members[$key]}"
+    rank=$((rank + 1))
+  done
+}
+
 # ── Physical CPU core count (SMT/HT 제외) ──────────────────────────────────
 # nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
 # 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
 # thread_config.hpp의 코어 레이아웃은 물리 코어 기준이므로 반드시 물리 코어를 사용해야 한다.
+# sysfs 경로는 $RTC_SYSFS_ROOT (default /sys) 를 따른다 — 테스트는 PATH stub 으로
+# lscpu 를 빼야 그 경로를 탄다.
 get_physical_cores() {
   # 방법 1: lscpu (가장 빠름).
   # `-p=Core,Socket` 는 헤더(`#` 시작) 외에 일반적으로 빈 줄을 emit 하지 않지만,
@@ -137,25 +194,12 @@ get_physical_cores() {
       return
     fi
   fi
-  # 방법 2: sysfs topology 직접 파싱
-  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
-    local seen=""
-    local count=0
-    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-      local pkg_file="${cpu_dir}topology/physical_package_id"
-      local core_file="${cpu_dir}topology/core_id"
-      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
-      local key
-      key="$(cat "$pkg_file"):$(cat "$core_file")"
-      if [[ ! " $seen " == *" $key "* ]]; then
-        seen="$seen $key"
-        ((count++))
-      fi
-    done
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
+  # 방법 2: sysfs topology — _rt_rank_physical_cores 가 센 물리 코어 수
+  local ranked
+  ranked=$(_rt_rank_physical_cores)
+  if [[ -n "$ranked" ]]; then
+    printf '%s\n' "$ranked" | wc -l
+    return
   fi
   # 방법 3: 최후 수단 (VM, 컨테이너 등에서 sysfs 미지원 시)
   nproc --all
@@ -330,37 +374,31 @@ compute_irq_affinity_mask() {
   # OS_PHYS_END 는 compute_cpu_layout 이 설정. 단독 호출 시 0 fallback.
   local os_end="${OS_PHYS_END:-0}"
 
-  local mask=0
-  for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-    local cpu_num
-    cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
-    local core_file="${cpu_dir}topology/core_id"
-    [[ -f "$core_file" ]] || continue
-    local core_id
-    core_id=$(cat "$core_file" 2>/dev/null)
-    if [[ "$core_id" -ge 0 && "$core_id" -le "$os_end" ]]; then
-      mask=$((mask | (1 << cpu_num)))
-    fi
-  done
+  # 물리 코어 번호는 _rt_rank_physical_cores 의 rank 다 (core_id 값이 아니다).
+  # $RTC_SYSFS_ROOT 를 따른다.
+  local mask=0 rank _key members cpu
+  while read -r rank _key members; do
+    (( rank <= os_end )) || continue
+    for cpu in ${members//,/ }; do
+      mask=$((mask | (1 << cpu)))
+    done
+  done < <(_rt_rank_physical_cores)
 
   printf '%x' "$mask"
 }
 
 # ── OS 물리 코어에 속하는 논리 CPU 목록 ────────────────────────────────────
+# 물리 코어 (rank, _rt_rank_physical_cores) OS_PHYS_START..OS_PHYS_END 의 논리
+# CPU, 공백 구분 오름차순. $RTC_SYSFS_ROOT 를 따른다.
 get_os_logical_cpus() {
-  local os_cpus=""
-  for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-    local cpu_num
-    cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
-    local core_file="${cpu_dir}topology/core_id"
-    [[ -f "$core_file" ]] || continue
-    local core_id
-    core_id=$(cat "$core_file" 2>/dev/null)
-    if [[ "$core_id" -ge "$OS_PHYS_START" && "$core_id" -le "$OS_PHYS_END" ]]; then
-      os_cpus="${os_cpus} ${cpu_num}"
-    fi
-  done
-  echo "$os_cpus"
+  local start="${OS_PHYS_START:-0}" end="${OS_PHYS_END:-0}"
+  local os_cpus=() rank _key members
+  while read -r rank _key members; do
+    (( rank >= start && rank <= end )) || continue
+    # shellcheck disable=SC2206  # split on the commas of the member list
+    os_cpus+=(${members//,/ })
+  done < <(_rt_rank_physical_cores)
+  echo "${os_cpus[*]}"
 }
 
 # ── isolcpus 기대값 계산 (SMT 시블링 포함) ─────────────────────────────────
@@ -1202,8 +1240,9 @@ get_mpc_main_core() {
 # that includes each core's HT sibling (when SMT is enabled).
 #
 # Inputs:
-#   $1 — physical core id list, accepts CSV ("1,2,3"), range ("1-3"), or mix
-#        ("1-3,5"). Whitespace is tolerated.
+#   $1 — physical core id list (ranks of _rt_rank_physical_cores, i.e. slot
+#        numbers), accepts CSV ("1,2,3"), range ("1-3"), or mix ("1-3,5").
+#        Whitespace is tolerated.
 # Outputs (stdout):
 #   - non-SMT: same logical id set as input, normalized to range notation
 #     (e.g. "1,2,3" → "1-3").
@@ -1230,32 +1269,24 @@ _rt_expand_smt_siblings() {
   phys_ids=$(_rt_parse_cpulist "$raw")
   [[ -z "$phys_ids" ]] && { echo ""; return 0; }
 
-  # Build core_id → "cpu0 cpu1 ..." map from sysfs topology.
-  local -A core_to_cpus=()
-  local cpu_dir cpu cid
-  for cpu_dir in "$cpu_root"/cpu[0-9]*; do
-    [[ -d "$cpu_dir" ]] || continue
-    cpu="${cpu_dir##*/cpu}"
-    [[ "$cpu" =~ ^[0-9]+$ ]] || continue
-    cid=$(_rt_read_trim "$cpu_dir/topology/core_id")
-    [[ -z "$cid" ]] && continue
-    if [[ -z "${core_to_cpus[$cid]+x}" ]]; then
-      core_to_cpus[$cid]="$cpu"
-    else
-      core_to_cpus[$cid]="${core_to_cpus[$cid]} $cpu"
-    fi
-  done
+  # Physical core id == rank of _rt_rank_physical_cores (not the core_id value).
+  local -A rank_to_cpus=()
+  local rank _key members
+  while read -r rank _key members; do
+    rank_to_cpus[$rank]="${members//,/ }"
+  done < <(_rt_rank_physical_cores "$cpu_root")
 
   # Resolve each requested physical core to its full sibling set.
   local result_cpus=()
   local pid sib
   for pid in $phys_ids; do
-    if [[ -n "${core_to_cpus[$pid]+x}" ]]; then
-      for sib in ${core_to_cpus[$pid]}; do
+    if [[ -n "${rank_to_cpus[$pid]+x}" ]]; then
+      for sib in ${rank_to_cpus[$pid]}; do
         result_cpus+=("$sib")
       done
     else
-      # Fallback: sysfs missing or core_id mismatch — pass through input id.
+      # Fallback: no topology, or more physical cores asked than exist —
+      # pass through input id.
       result_cpus+=("$pid")
     fi
   done
@@ -1473,9 +1504,9 @@ rt_classify_external_thread_layout() {
 }
 
 # Expand a CSV/range list of LOGICAL cpu ids to include each one's SMT siblings
-# (cpus sharing the same physical_package_id + core_id), sorted + range-collapsed.
-# Distinct from _rt_expand_smt_siblings(), which takes *physical core ids* and
-# matches them against core_id; this takes already-resolved logical cpus. Honors
+# (the other cpus of its physical core, _rt_rank_physical_cores), sorted +
+# range-collapsed. Distinct from _rt_expand_smt_siblings(), which takes
+# *physical core ids* (ranks); this takes already-resolved logical cpus. Honors
 # $RTC_SYSFS_ROOT for unit tests.
 _rt_expand_logical_siblings() {
   local raw="$1"
@@ -1484,33 +1515,25 @@ _rt_expand_logical_siblings() {
   ids=$(_rt_parse_cpulist "$raw")
   [[ -z "$ids" ]] && { echo ""; return 0; }
 
-  # Build (pkg,core_id) → "cpuA cpuB ..." map from sysfs topology.
-  local -A key_to_cpus=()
-  local cpu_dir cpu pkg core key
-  for cpu_dir in "$cpu_root"/cpu[0-9]*; do
-    [[ -d "$cpu_dir" ]] || continue
-    cpu="${cpu_dir##*/cpu}"
-    [[ "$cpu" =~ ^[0-9]+$ ]] || continue
-    core=$(_rt_read_trim "$cpu_dir/topology/core_id")
-    [[ -z "$core" ]] && continue
-    pkg=$(_rt_read_trim "$cpu_dir/topology/physical_package_id")
-    key="${pkg:-0}_${core}"
-    key_to_cpus[$key]="${key_to_cpus[$key]:+${key_to_cpus[$key]} }$cpu"
-  done
+  # logical cpu → its physical core's members, from _rt_rank_physical_cores.
+  local -A cpu_to_sibs=()
+  local _rank _key members cpu
+  while read -r _rank _key members; do
+    for cpu in ${members//,/ }; do
+      cpu_to_sibs[$cpu]="${members//,/ }"
+    done
+  done < <(_rt_rank_physical_cores "$cpu_root")
 
   # Resolve each logical cpu to its full sibling set.
   local result_cpus=()
-  local lg pkgl corel keyl sib
+  local lg sib
   for lg in $ids; do
-    corel=$(_rt_read_trim "$cpu_root/cpu${lg}/topology/core_id")
-    pkgl=$(_rt_read_trim "$cpu_root/cpu${lg}/topology/physical_package_id")
-    keyl="${pkgl:-0}_${corel}"
-    if [[ -n "$corel" && -n "${key_to_cpus[$keyl]+x}" ]]; then
-      for sib in ${key_to_cpus[$keyl]}; do
+    if [[ -n "${cpu_to_sibs[$lg]+x}" ]]; then
+      for sib in ${cpu_to_sibs[$lg]}; do
         result_cpus+=("$sib")
       done
     elif [[ -d "$cpu_root/cpu${lg}" ]]; then
-      # cpuN 디렉토리는 있으나 topology(core_id) 만 없음 — 그대로 통과.
+      # cpuN 디렉토리는 있으나 topology 만 없음 — 그대로 통과.
       result_cpus+=("$lg")
     fi
     # cpuN 디렉토리 자체가 없으면 존재하지 않는 코어(저코어 머신에서 degraded
@@ -1534,9 +1557,11 @@ _rt_expand_logical_siblings() {
 # Range-collapsed CSV (e.g. "1-3" non-SMT, "2-7" interleaved SMT, "1-3,7-9"
 # primaries-first SMT).
 #
-# NOTE: get_rt_cores_with_siblings() (GRUB nohz_full/rcu_nocbs) still expands via
-# core_id, not slot→logical. The two agree on primaries-first enumeration but can
-# diverge on interleaved/hybrid layouts — unifying GRUB onto this logical basis is
+# NOTE: get_rt_cores_with_siblings() (GRUB nohz_full/rcu_nocbs) expands physical
+# core ranks, not slot→logical. On non-hybrid machines rank N is slot N, so the
+# two agree; they can still diverge on a hybrid whose E-cores are numbered below
+# some P-cores (slots go P → E, ranks go by logical id) and on phantom slots
+# (passed through here, dropped there). Unifying GRUB onto this logical basis is
 # tracked as a follow-up (needs its own real-hardware validation).
 #
 # $1 = launch profile (issue #350), default `rtc_default_profile`. A profile
@@ -2073,13 +2098,17 @@ _rt_populate_hybrid_from_cpus() {
 
   [[ -z "$p_cpus" ]] && return 0
 
-  # Group P-cores by topology/core_id; within each group, the lowest logical
-  # id is the "physical" representative and the second is the SMT sibling.
-  local -A core_to_cpus=()
-  local cpu cid
+  # Group P-cores by physical core (_rt_rank_physical_cores key); within each
+  # group, the lowest logical id is the "physical" representative and the
+  # second is the SMT sibling.
+  local -A cpu_key=() core_to_cpus=()
+  local cpu cid _rank members
+  while read -r _rank cid members; do
+    for cpu in ${members//,/ }; do cpu_key[$cpu]="$cid"; done
+  done < <(_rt_rank_physical_cores "$cpu_root")
   for cpu in $p_cpus; do
-    cid=$(_rt_read_trim "$cpu_root/cpu${cpu}/topology/core_id")
-    [[ -z "$cid" ]] && continue
+    [[ -z "${cpu_key[$cpu]+x}" ]] && continue
+    cid="${cpu_key[$cpu]}"
     if [[ -z "${core_to_cpus[$cid]+x}" ]]; then
       core_to_cpus[$cid]="$cpu"
     else
@@ -2087,15 +2116,15 @@ _rt_populate_hybrid_from_cpus() {
     fi
   done
 
-  # Build (physical, sibling) pairs from each core_id group, then emit the list
-  # sorted by *physical logical id ascending*. Without this outer sort, BIOSes
-  # that assign a non-monotonic core_id to cpu 0 (e.g. some NUC 14 Pro Meteor
-  # Lake firmware: cpu 0 shares core_id with cpu 5, so its group lands in the
-  # middle of the iteration) produce a P-physical list like [1, 3, 0, 6, 8, 10]
-  # — and the v4.1 layout assumption "slot 0 == lowest logical cpu == OS"
-  # breaks. Sorting by physical restores the invariant on every enumeration
-  # order, while keeping each (physical, sibling) pair contiguous.
-  local pairs="" cid cpus sorted_cpus first second
+  # Build (physical, sibling) pairs from each group, then emit the list sorted
+  # by *physical logical id ascending* (associative-array order is arbitrary).
+  # Firmware that puts cpu 0's core mid-sequence (e.g. some NUC 14 Pro Meteor
+  # Lake firmware: cpu 0 shares a core with cpu 5) would otherwise give a
+  # P-physical list like [1, 3, 0, 6, 8, 10] — and the v4.1 layout assumption
+  # "slot 0 == lowest logical cpu == OS" breaks. Sorting by physical restores
+  # the invariant on every enumeration order, while keeping each (physical,
+  # sibling) pair contiguous.
+  local pairs="" cpus sorted_cpus first second
   for cid in "${!core_to_cpus[@]}"; do
     cpus="${core_to_cpus[$cid]}"
     sorted_cpus=$(printf '%s\n' $cpus | sort -n | tr '\n' ' ')
@@ -2163,7 +2192,8 @@ _rt_populate_hybrid_from_cpus() {
 # physical core. Mirrors CpuTopology::physical_core_slots (cpu_topology.hpp).
 # Sequence:
 #   hybrid     → P-physical → E-core → LP-E (already split by sysfs/freq path)
-#   non-hybrid → first logical of each (pkg, core_id) group, cpu ascending
+#   non-hybrid → lowest logical of each physical core, in rank order
+#                (_rt_rank_physical_cores: sibling list, else pkg:core_id)
 # Consumed by RT thread-affinity translation (ApplyThreadConfig in C++).
 # Excludes SMT siblings so RT thread pinning by slot index never lands on a
 # P-core's hyperthread.
@@ -2180,27 +2210,13 @@ _rt_populate_physical_core_slots() {
     return 0
   fi
 
-  # Non-hybrid (AMD SMT, SMT-off Intel, container). Walk cpus ascending and
-  # record the first cpu that introduces each unique (pkg, core_id) pair —
-  # that cpu is the "primary" of its physical core (sibling, if any, has
-  # a higher logical id and is skipped).
-  local cpu_dir cpu pkg core key
-  declare -A _seen_keys=()
-  local sorted_cpu_dirs
-  sorted_cpu_dirs=$(ls -d "$cpu_root"/cpu[0-9]* 2>/dev/null | sort -V)
-  while IFS= read -r cpu_dir; do
-    [[ -d "$cpu_dir" ]] || continue
-    cpu="${cpu_dir##*/cpu}"
-    [[ "$cpu" =~ ^[0-9]+$ ]] || continue
-    pkg=$(_rt_read_trim "$cpu_dir/topology/physical_package_id")
-    core=$(_rt_read_trim "$cpu_dir/topology/core_id")
-    [[ -z "$pkg" || -z "$core" ]] && continue
-    key="${pkg}_${core}"
-    if [[ -z "${_seen_keys[$key]+x}" ]]; then
-      _seen_keys[$key]=1
-      PHYSICAL_CORE_SLOTS="${PHYSICAL_CORE_SLOTS:+$PHYSICAL_CORE_SLOTS }${cpu}"
-    fi
-  done <<<"$sorted_cpu_dirs"
+  # Non-hybrid (AMD SMT, SMT-off Intel, ARM SoC, container). Slot N is the
+  # key (lowest logical cpu) of physical core rank N — the "primary" of that
+  # core; a sibling, if any, has a higher logical id and is skipped.
+  local _rank key _members
+  while read -r _rank key _members; do
+    PHYSICAL_CORE_SLOTS="${PHYSICAL_CORE_SLOTS:+$PHYSICAL_CORE_SLOTS }${key}"
+  done < <(_rt_rank_physical_cores "$cpu_root")
   return 0
 }
 
