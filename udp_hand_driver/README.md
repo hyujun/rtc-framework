@@ -57,6 +57,7 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | 인자 | YAML 값 | 설명 |
 |---|---|---|
 | `namespace` | — (launch 기본 `/hand`) | 노드 FQN · 상대 토픽 이름의 접두. 빈 값은 거부 |
+| `params_file` | — | 위 YAML 을 **대체** 할 yaml (없는 키는 노드 기본값). 없음 · 파싱 실패 · `/**` 없음은 거부 |
 | `target_ip` | `192.168.0.100` | 손 컨트롤러 IP |
 | `target_port` | `55151` | 손 컨트롤러 포트 |
 | `local_ip` / `local_interface` | `""` / `""` | 제어 PC source address (bind) / egress NIC (`SO_BINDTODEVICE`) |
@@ -68,7 +69,7 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | `protocol_version` | `1b` | `1a` \| `1b` \| `2`. 노드와 `fake_hand_firmware` 양쪽에 전파 |
 | `can_interface` | `can0` | `2` 의 SocketCAN 장치 (`firmware` 는 `vcan0` 로 강제) |
 | `hand_side` | — (노드 기본 `right`) | `right` \| `left`. 명시하면 통계 · 타이밍 파일명에 `_<side>` 접미사. firmware 에도 전파 |
-| `hand_sides` | — | 두 손: `right,left` (쉼표 목록). `hand_side` 와 함께 주면 거부. `firmware` 는 fake 를 손마다 (`fake_hand_firmware_<side>`) |
+| `hand_sides` | — | 두 손: `right,left` (쉼표 목록). 비면 yaml 의 `hand_sides`. `hand_side` 와 함께 주면 거부. `firmware` 는 fake 를 손마다 (`fake_hand_firmware_<side>`) |
 | `cmd_ack` | — (노드 기본 `none`) | `echo` \| `none`: `2` 펌웨어의 CMD echo 여부. firmware 에도 전파 |
 | `req_mode` | `auto` | `auto` (두 손 · `cmd_ack none` 이면 `broadcast`, 그 밖 `per_hand`) \| `per_hand` \| `broadcast` ([두 손](#두-손-hand_sides)) |
 | `sil_mode` | `off` | `off` \| `loopmodel` \| `firmware` ([SIL 모드](#sil-모드-sil_mode)) |
@@ -160,11 +161,11 @@ UDP 부하를 강제로 줄여 보는 테스트용 knob 이다 (기본 `1`). `se
 
 > ⚠️ **capability lockstep.** 컨슈머의 device YAML `devices.<hand_group>.sensor_layout.has_native_contact` · `has_native_displacement` 는 `ft_inferencer.enabled` 와 함께 켜고 꺼야 한다. 추론이 꺼진 채 capability=true 이면 컨트롤러가 항상 0 인 contact probability 를 native signal 로 오인해 grasp detection 이 조용히 무력화된다.
 
-> ⚠️ **텐서는 positional 로 바인딩된다.** `F` 와 `u` 는 둘 다 `[1,3]` 이라 head 순서가 바뀐 `.onnx` 를 검출하지 못한다 (힘과 방향이 조용히 뒤바뀜). 실모델을 받으면 `ros2 run rtc_inference rtc_inference_check <model>.onnx` 로 텐서 이름을 확인해 `fingertip_ft_inferencer.hpp` 의 `model_config.inputs` / `.outputs` 에 채운다 ([rtc_inference](../rtc_inference/README.md#텐서를-이름으로-바인딩하는-이유)). 현재 두 config 의 `model_paths` 는 전부 `""` 다.
+> ⚠️ **텐서는 positional 로 바인딩된다.** `F` 와 `u` 는 둘 다 `[1,3]` 이라 head 순서가 바뀐 `.onnx` 를 검출하지 못한다 (힘과 방향이 조용히 뒤바뀜). 실모델을 받으면 `ros2 run rtc_inference rtc_inference_check <model>.onnx` 로 텐서 이름을 확인해 `fingertip_ft_inferencer.hpp` 의 `model_config.inputs` / `.outputs` 에 채운다 ([rtc_inference](../rtc_inference/README.md#텐서를-이름으로-바인딩하는-이유)).
 
 ### SIL 모드 (`sil_mode`)
 
-하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 하나**로 고른다. `sil_mode` 는 노드 파라미터 (YAML) 이고 launch 인자 `sil_mode:=` 가 override 한다. 노드 `on_configure` 가 `use_fake_hand` 와 실효 endpoint 를 파생하고, `fake_hand_firmware` 는 launch 가 `sil_mode` 를 읽어 조건부로 띄운다. `integrated_bringup` 의 `robot_ur5e_p1a.launch.py` · `robot_ur5e_p1b.launch.py` 도 같은 `sil_mode:=` 를 지원한다.
+하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 하나**로 고른다. `sil_mode` 는 노드 파라미터 (YAML) 이고 launch 인자 `sil_mode:=` 가 override 한다. 노드 `on_configure` 가 `use_fake_hand` 와 실효 endpoint 를 파생하고, `fake_hand_firmware` 는 launch 가 `sil_mode` 를 읽어 조건부로 띄운다. `integrated_bringup` 의 robot launch 도 같은 `sil_mode:=` 를 지원한다.
 
 | `sil_mode` | 계층 | `use_fake_hand` | firmware | 네트워크 endpoint | 검증 대상 |
 |---|---|:---:|:---:|---|---|
@@ -188,14 +189,14 @@ ros2 topic echo /hand/link_status --once     # 별도 터미널
 
 ## 설정
 
-[config/udp_hand_node.yaml](config/udp_hand_node.yaml) 이 launch 가 읽는 파일이고 키 설명은 파일 주석이 갖는다. 아래는 **이 YAML 에 실제로 들어 있는 값** 이다 (YAML 에 없는 키는 노드 기본값).
+[config/udp_hand_node.yaml](config/udp_hand_node.yaml) 이 launch 의 기본 파일이고 키 설명은 파일 주석이 갖는다. 아래는 **이 YAML 에 실제로 들어 있는 값** 이다 (YAML 에 없는 키는 노드 기본값).
 
 | 파라미터 | YAML 값 | 설명 |
 |---|---|---|
 | `target_ip` / `target_port` | `"192.168.0.100"` / `55151` | 핸드 컨트롤러 endpoint |
 | `local_ip` / `local_interface` | `""` / `""` | `""` = 커널 선택 / 라우팅 테이블에 위임. 같은 subnet 에 NIC 이 둘 이상일 때만 설정 |
 | `recv_timeout_ms` | `0.4` | ppoll 타임아웃 (sub-ms). `"2"` 의 deadline 체인은 [launch 인자](#launch-인자-udp_handlaunchpy) 표 |
-| `communication_mode` | `"bulk"` | `"individual"` 도 가능. 노드 C++ 기본값은 `individual` 이므로 YAML 없이 띄우면 달라진다 |
+| `communication_mode` | `"bulk"` | 노드 기본값은 `"individual"` — YAML 없이 띄우면 달라진다 |
 | `loop_rate_hz` | `500.0` | CommLoop 주기 |
 | `publish_rate` | `100.0` | `link_status` decimation 기준 (`loop_rate_hz / publish_rate`) |
 | `comm_decimation` / `sensor_decimation` | `1` / `1` | 위 [통신 decimation](#통신-decimation-comm_decimation) · 센서 read 감쇠 |
@@ -222,7 +223,7 @@ ros2 topic echo /hand/link_status --once     # 별도 터미널
 |---|---|---|
 | `ft_inferencer.enabled` | `false` | ONNX 추론 |
 | `ft_inferencer.num_fingertips` / `history_length` | `4` / `12` | 핑거팁 수 / FIFO history |
-| `ft_inferencer.model_paths` | `["","","",""]` | per-fingertip ONNX 경로. 상대 경로는 설치된 `share/udp_hand_driver/models/` 기준인데 현재 이 디렉토리는 저장소에 없으므로 **절대경로** 를 준다 |
+| `ft_inferencer.model_paths` | `["","","",""]` | per-fingertip ONNX 경로. 상대 경로의 기준 `share/udp_hand_driver/models/` 가 저장소에 없으므로 **절대경로** 를 준다 |
 | `ft_inferencer.calibration_enabled` / `calibration_samples` | `true` / `500` | baseline 자동 보정 (센서 cycle 기준) |
 | `ft_inferencer.{thumb,index,middle,ring}_max` | `40000.0` × 16 | 핑거 정규화 최댓값 |
 

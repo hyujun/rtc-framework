@@ -258,6 +258,12 @@ if(BUILD_TESTING)
   # rtc_base's IsolatedSessionDir, which ScopedSessionDir also needs. Covers
   # only the test targets defined above it. Keep this call last.
   rtc_base_isolate_test_sessions()
+
+  # udp_hand.launch.py's config resolution: params_file, the yaml hand_sides
+  # fallback the fake firmware spawn follows, and the strict load that refuses
+  # a params_file the launch cannot read sil_mode / hand_sides from.
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_udp_hand_launch_config test/test_udp_hand_launch_config.py)
 endif()
 
 ament_package()
