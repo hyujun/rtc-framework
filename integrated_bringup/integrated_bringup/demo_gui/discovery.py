@@ -398,6 +398,7 @@ class RobotProfile:
 
 
 # key matches the config/<key>/ directory name so --robot mirrors the bringup config.
+# Only directories with controllers/ are bringups; a hand-only config has no entry.
 ROBOT_PROFILES: dict[str, RobotProfile] = {
     "ur5e_p1a": RobotProfile(
         shape=RobotShape.default_ur5e_assm(),

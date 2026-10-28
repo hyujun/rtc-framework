@@ -244,7 +244,7 @@ ros2 run integrated_bringup demo_controller_gui --robot iiwa7_leap   # iiwa7 + L
 ros2 run integrated_bringup demo_controller_gui --robot g1_p1b       # G1 상체 + proto_1b 오른손
 ```
 
-- `--robot <key>` 는 arm / hand joint 스키마와 TCP tf frame 을 고릅니다. `key` 는 `config/<key>/` 디렉토리명과 같고, 잘못된 key 는 즉시 에러로 종료합니다. 별칭은 `--ur5e` · `--p1b` · `--iiwa` · `--g1` 입니다.
+- `--robot <key>` 는 arm / hand joint 스키마와 TCP tf frame 을 고릅니다. `key` 는 `controllers/` 가 있는 `config/<key>/` 디렉토리명과 같고, 잘못된 key 는 즉시 에러로 종료합니다. 별칭은 `--ur5e` · `--p1b` · `--iiwa` · `--g1` 입니다.
 - 컨트롤러가 publish 하는 joint span 이 프로파일과 어긋나면 `/rosout` 에 WARN 이 한 번 나옵니다. 맞는 `--robot` 으로 다시 실행합니다.
 - `--session <dir>` 은 `demo_dualarm_controller` 의 상태 판독이 따라갈 세션 디렉토리입니다. 그 컨트롤러가 없는 프로파일에서는 쓰이지 않습니다.
 - 새 로봇은 `integrated_bringup/demo_gui/discovery.py` 의 `ROBOT_PROFILES` 에 항목을 추가합니다.

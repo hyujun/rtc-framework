@@ -176,15 +176,48 @@ def test_for_robot_unknown_raises():
         raise AssertionError("expected ValueError for unknown robot key")
 
 
+def _config_dirs():
+    config = os.path.join(get_package_share_directory("integrated_bringup"), "config")
+    return {
+        d: os.path.join(config, d)
+        for d in os.listdir(config)
+        if os.path.isdir(os.path.join(config, d))
+    }
+
+
 def test_registry_keys_match_config_dirs():
     """--robot keys mirror the config/<key>/ bringup directory names, in both
     directions: a profile with no bringup behind it, and a bringup the GUI has
     no profile for. Read from the installed tree rather than listed here — a
     list is a third copy, and the one that was here could only say which robots
-    existed when it was written."""
-    config = os.path.join(get_package_share_directory("integrated_bringup"), "config")
-    shipped = {d for d in os.listdir(config) if os.path.isdir(os.path.join(config, d))}
+    existed when it was written.
+
+    A bringup is a directory with ``controllers/`` — the same rule the C++
+    DiscoverProfiles in test_registered_controllers_have_shipped_config uses.
+    A hand-only config (one ``udp_hand_node_*.yaml`` run through
+    udp_hand.launch.py ``params_file``) has no controller for the GUI to drive."""
+    shipped = {
+        d for d, path in _config_dirs().items() if os.path.isdir(os.path.join(path, "controllers"))
+    }
     assert set(ROBOT_PROFILES) == shipped
+
+
+_LAUNCH_ENTRY_CONFIGS = ("_base.yaml", "robot.yaml", "sim.yaml")
+
+
+def test_config_dirs_without_controllers_are_not_bringups():
+    """Canary for the filter above: a directory it skips must not be a robot
+    bringup that merely lost its ``controllers/``. Every robot / sim launch
+    loads one of ``_LAUNCH_ENTRY_CONFIGS`` from its profile directory, so a
+    skipped directory carrying one would drop a real robot out of the registry
+    check without failing it."""
+    leaked = {
+        d
+        for d, path in _config_dirs().items()
+        if not os.path.isdir(os.path.join(path, "controllers"))
+        and any(os.path.exists(os.path.join(path, f)) for f in _LAUNCH_ENTRY_CONFIGS)
+    }
+    assert not leaked
 
 
 # issue #137 finding 2: the GUI's pre-catalog fallback groups must come from
