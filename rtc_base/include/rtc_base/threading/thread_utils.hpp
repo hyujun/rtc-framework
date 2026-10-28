@@ -16,10 +16,11 @@
 #include <cstdint>    // std::uint8_t (ThreadHealthFlag underlying type)
 #include <cstdio>     // fopen, fclose, fscanf
 #include <cstring>
-#include <map>      // std::map
-#include <numeric>  // std::accumulate
-#include <set>      // std::set
+#include <filesystem>  // std::filesystem::path (GetPhysicalCpuCount sysfs root)
+#include <map>         // std::map
+#include <numeric>     // std::accumulate
 #include <string>
+#include <string_view>
 #include <tuple>    // std::tuple
 #include <utility>  // std::pair
 #include <vector>   // std::vector
@@ -591,7 +592,8 @@ inline int GetOnlineCpuCount() noexcept {
 }
 
 // Returns the number of physical CPU cores (excluding SMT/HT siblings).
-// Parses sysfs topology to count unique (socket_id, core_id) pairs.
+// Counts the sysfs core groups of internal::topology::ReadPhysicalCoreGroups
+// (sibling lists, not core_id — an SoC may report one core_id on every CPU).
 // Falls back to cgroup CPU quota or GetOnlineCpuCount() if sysfs topology
 // is unavailable (containers, VMs, restricted environments).
 //
@@ -604,51 +606,19 @@ inline int GetOnlineCpuCount() noexcept {
 //   2. cgroup v2 cpu.max (Docker, Kubernetes with CPU limits)
 //   3. cgroup v1 cpu.cfs_quota_us / cpu.cfs_period_us
 //   4. sysconf(_SC_NPROCESSORS_ONLN) final fallback
-inline int GetPhysicalCpuCount() noexcept {
+// `sysfs_root` is "/sys" outside tests; the cgroup paths live under it too.
+inline int GetPhysicalCpuCount(std::string_view sysfs_root = "/sys") noexcept {
+  const std::filesystem::path root{std::string(sysfs_root)};
+
   // ── Stage 1: sysfs topology (preferred) ──────────────────────────────
-  std::set<std::pair<int, int>> unique_cores;
-
-  for (int cpu = 0; cpu < 1024; ++cpu) {
-    char pkg_path[128];
-    char core_path[128];
-
-    std::snprintf(pkg_path, sizeof(pkg_path),
-                  "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", cpu);
-    std::snprintf(core_path, sizeof(core_path), "/sys/devices/system/cpu/cpu%d/topology/core_id",
-                  cpu);
-
-    FILE* pkg_file = std::fopen(pkg_path, "r");
-    if (!pkg_file) {
-      break;  // No more CPUs
-    }
-    int socket_id = 0;
-    if (std::fscanf(pkg_file, "%d", &socket_id) != 1) {
-      std::fclose(pkg_file);
-      break;
-    }
-    std::fclose(pkg_file);
-
-    FILE* core_file = std::fopen(core_path, "r");
-    if (!core_file) {
-      break;
-    }
-    int core_id = 0;
-    if (std::fscanf(core_file, "%d", &core_id) != 1) {
-      std::fclose(core_file);
-      break;
-    }
-    std::fclose(core_file);
-
-    unique_cores.insert({socket_id, core_id});
-  }
-
-  if (!unique_cores.empty()) {
-    return static_cast<int>(unique_cores.size());
+  const auto core_groups = internal::topology::ReadPhysicalCoreGroups(root / "devices/system/cpu");
+  if (!core_groups.empty()) {
+    return static_cast<int>(core_groups.size());
   }
 
   // ── Stage 2: cgroup v2 cpu.max ───────────────────────────────────────
   {
-    FILE* f = std::fopen("/sys/fs/cgroup/cpu.max", "r");
+    FILE* f = std::fopen((root / "fs/cgroup/cpu.max").c_str(), "r");
     if (f) {
       char max_str[32]{};
       int period = 0;
@@ -668,14 +638,14 @@ inline int GetPhysicalCpuCount() noexcept {
   {
     int quota = -1;
     int period = 0;
-    FILE* fq = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r");
+    FILE* fq = std::fopen((root / "fs/cgroup/cpu/cpu.cfs_quota_us").c_str(), "r");
     if (fq) {
       if (std::fscanf(fq, "%d", &quota) != 1) {
         quota = -1;
       }
       std::fclose(fq);
     }
-    FILE* fp = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r");
+    FILE* fp = std::fopen((root / "fs/cgroup/cpu/cpu.cfs_period_us").c_str(), "r");
     if (fp) {
       if (std::fscanf(fp, "%d", &period) != 1) {
         period = 0;

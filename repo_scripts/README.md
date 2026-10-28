@@ -207,13 +207,13 @@ source setup_env.sh
 
 ### rt_common.sh
 
-모든 스크립트가 `source` 하는 라이브러리 (`build.sh` · `install.sh` 포함) 이며 직접 실행할 수 없다. 함수마다의 계약은 파일 안 주석이 갖는다. 개발 쉘에서 직접 부를 만한 것은 아래와 같다.
+모든 스크립트가 `source` 하는 라이브러리이며 직접 실행할 수 없다. 함수마다의 계약은 파일 안 주석이 갖는다. 개발 쉘에서 직접 부를 만한 것은 아래와 같다.
 
 예: `source repo_scripts/scripts/lib/rt_common.sh; get_role_slot rt_control "$(get_physical_cores)"`
 
 | 함수 | 용도 |
 |------|------|
-| `get_physical_cores` · `detect_physical_nic` | 물리 코어 수 (SMT 제외) · 물리 NIC 자동 탐색 |
+| `get_physical_cores` · `detect_physical_nic` | 물리 코어 수 (`lscpu`, 없으면 sysfs 형제 목록) · 물리 NIC 자동 탐색 |
 | `get_default_build_jobs` · `resolve_build_makeflags [N]` | 기본 make job 수 · export 할 `MAKEFLAGS` (CLI `-j` > `RTC_BUILD_JOBS` > 기존 `-j` > 기본값) |
 | `get_build_mem_max` · `print_build_host_summary` | 빌드 RAM 상한 · job 수 / 메모리 상한 / ccache 가용성 보고 |
 | `get_system_python` | CMake 와 `.venv` 가 쓰는 배포판 python (`RTC_SYSTEM_PYTHON` 으로 덮어씀) |

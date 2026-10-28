@@ -150,6 +150,7 @@ dkms status nvidia    # 현재 커널에 installed
 ## 3. 코어 배치
 
 - 코어 번호는 **slot** 이다. 커널 logical CPU 번호가 아니며, SMT 형제와 hybrid 의 E-core 를 피하도록 실제 CPU 로 변환된다.
+- 물리 코어는 sysfs 형제 목록 (`core_cpus_list`, 없으면 `thread_siblings_list`, 둘 다 없을 때만 `core_id`) 으로 묶고, 가장 낮은 logical CPU 순으로 센 N 번째가 slot N 이다 (hybrid 는 P-core 다음 E-core). `core_id` 번호는 slot 이 아니다 — 모든 CPU 에 같은 값을 내는 SoC, 번호에 빈칸이 있거나 cpu0 의 코어를 중간에 두는 펌웨어가 있다.
 - OS · DDS · IRQ 는 slot 0 하나를 쓴다. RT 스레드 (`rt_control` · `rt_callback` · `mpc_main`) 는 그 위의 연속 코어에 고정되고, 드라이버 프로세스와 non-RT 스레드는 그 밖에 놓인다.
 - 코어 수가 늘어도 RT 클러스터는 같고, 달라지는 것은 드라이버 쪽 배치뿐이다. 4 · 6 코어는 일부 스레드가 코어를 공유하는 degraded 구성이다.
 - 값의 SSoT 는 [thread_layout.yaml](../repo_scripts/config/thread_layout.yaml), tier 별 표는 [rtc_base/README.md](../rtc_base/README.md). **이 PC 에 실제로 적용되는 배치**는 `cpu_shield.sh status` 가 출력한다. 스크립트에서 한 역할의 slot 만 보려면:

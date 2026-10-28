@@ -69,11 +69,13 @@ int main(int argc, char** argv) {
       cpu_set_t cpuset;
       CPU_ZERO(&cpuset);
       CPU_SET(static_cast<std::size_t>(logical_cpu), &cpuset);
-      if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+      // pthread_* return the error number instead of setting errno.
+      const int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+      if (rc != 0) {
         RCLCPP_WARN(logger,
                     "Main thread CPU affinity to hand_driver core "
-                    "(slot %d -> logical %d) failed (errno=%d)",
-                    hand_slot, logical_cpu, errno);
+                    "(slot %d -> logical %d) failed (%d: %s)",
+                    hand_slot, logical_cpu, rc, std::strerror(rc));
       }
     }
   }
