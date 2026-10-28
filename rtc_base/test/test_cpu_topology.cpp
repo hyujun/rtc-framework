@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -70,17 +71,22 @@ class ScopedUnsetEnv {
 // Mock sysfs tree builder. Writes the minimum files that DetectCpuTopology
 // consults: per-cpu topology/{physical_package_id,core_id},
 // cpufreq/cpuinfo_max_freq, and types/{intel_core,intel_atom}/cpus.
+// With `sibling_lists`, every cpu also gets topology/core_cpus_list in the
+// kernel's cpulist form ("0-1" adjacent, "0,6" apart) — the source the core
+// grouping prefers; without it the grouping falls back to core_id.
 class MockSysfs {
  public:
-  explicit MockSysfs(const fs::path& root) : root_(root) {
+  explicit MockSysfs(const fs::path& root, bool sibling_lists = false)
+      : root_(root), sibling_lists_(sibling_lists) {
     fs::create_directories(root_ / "devices/system/cpu");
   }
 
   // Add a P-core physical core with optional SMT sibling.
   void AddPCore(int core_id, int primary_cpu, int sibling_cpu = -1, int max_freq_khz = 5000000) {
-    AddCpu(primary_cpu, core_id, max_freq_khz);
+    const std::string list = CpuList(primary_cpu, sibling_cpu);
+    AddCpu(primary_cpu, core_id, max_freq_khz, list);
     if (sibling_cpu >= 0)
-      AddCpu(sibling_cpu, core_id, max_freq_khz);
+      AddCpu(sibling_cpu, core_id, max_freq_khz, list);
     p_cpus_.push_back(primary_cpu);
     if (sibling_cpu >= 0)
       p_cpus_.push_back(sibling_cpu);
@@ -89,8 +95,20 @@ class MockSysfs {
   // Add an E-core (single logical, Gracemont-style). LP-E is just an E-core
   // with a noticeably lower cpuinfo_max_freq (<70% of the max E-core freq).
   void AddECore(int core_id, int cpu, int max_freq_khz = 3800000) {
-    AddCpu(cpu, core_id, max_freq_khz);
+    AddCpu(cpu, core_id, max_freq_khz, std::to_string(cpu));
     e_cpus_.push_back(cpu);
+  }
+
+  // Add one logical cpu with explicit topology files, written regardless of
+  // `sibling_lists`. An empty list name skips that file.
+  void AddRawCpu(int cpu, int core_id, const std::string& core_cpus_list,
+                 const std::string& thread_siblings_list, int max_freq_khz = 3000000) {
+    AddCpu(cpu, core_id, max_freq_khz, /*list=*/"");
+    const fs::path topo = root_ / "devices/system/cpu" / ("cpu" + std::to_string(cpu)) / "topology";
+    if (!core_cpus_list.empty())
+      WriteFile(topo / "core_cpus_list", core_cpus_list);
+    if (!thread_siblings_list.empty())
+      WriteFile(topo / "thread_siblings_list", thread_siblings_list);
   }
 
   // Finalize: write types/intel_core/cpus and types/intel_atom/cpus.
@@ -127,11 +145,21 @@ class MockSysfs {
   }
 
  private:
-  void AddCpu(int cpu, int core_id, int max_freq_khz) {
+  static std::string CpuList(int primary, int sibling) {
+    if (sibling < 0)
+      return std::to_string(primary);
+    const int lo = std::min(primary, sibling);
+    const int hi = std::max(primary, sibling);
+    return std::to_string(lo) + (hi == lo + 1 ? "-" : ",") + std::to_string(hi);
+  }
+
+  void AddCpu(int cpu, int core_id, int max_freq_khz, const std::string& list) {
     const fs::path cpu_dir = root_ / "devices/system/cpu" / ("cpu" + std::to_string(cpu));
     fs::create_directories(cpu_dir / "topology");
     WriteFile(cpu_dir / "topology/physical_package_id", "0");
     WriteFile(cpu_dir / "topology/core_id", std::to_string(core_id));
+    if (sibling_lists_ && !list.empty())
+      WriteFile(cpu_dir / "topology/core_cpus_list", list);
     if (max_freq_khz > 0) {
       fs::create_directories(cpu_dir / "cpufreq");
       WriteFile(cpu_dir / "cpufreq/cpuinfo_max_freq", std::to_string(max_freq_khz));
@@ -156,11 +184,12 @@ class MockSysfs {
   }
 
   fs::path root_;
+  bool sibling_lists_;
   std::vector<int> p_cpus_;
   std::vector<int> e_cpus_;
 };
 
-class CpuTopologyTest : public ::testing::Test {
+class TmpSysfsTest : public ::testing::Test {
  protected:
   void SetUp() override {
     tmp_root_ = fs::temp_directory_path() /
@@ -177,6 +206,17 @@ class CpuTopologyTest : public ::testing::Test {
   static inline int counter_{0};
 };
 
+// Every mock-sysfs case runs twice with the same expectations: with
+// core_cpus_list (the grouping's preferred source) and with core_id alone (its
+// fallback). Both must describe the same cores.
+class CpuTopologyTest : public TmpSysfsTest, public ::testing::WithParamInterface<bool> {
+ protected:
+  bool SiblingLists() const { return GetParam(); }
+};
+
+// Cases where the sibling-list source itself is the subject.
+using CoreGroupingTest = TmpSysfsTest;
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -192,24 +232,25 @@ TEST(CpuTopology, SmtSiblingInvariant) {
   for (std::size_t i = 0; i < t.p_core_physical_ids.size(); ++i) {
     const int phys = t.p_core_physical_ids[i];
     const int sib = t.p_core_sibling_ids[i];
-    const fs::path phys_core_p =
-        fs::path("/sys/devices/system/cpu") / ("cpu" + std::to_string(phys)) / "topology/core_id";
-    const fs::path sib_core_p =
-        fs::path("/sys/devices/system/cpu") / ("cpu" + std::to_string(sib)) / "topology/core_id";
-    const int phys_core = rtc::internal::topology::ReadInt(phys_core_p);
-    const int sib_core = rtc::internal::topology::ReadInt(sib_core_p);
-    EXPECT_GE(phys_core, 0);
-    EXPECT_EQ(phys_core, sib_core)
-        << "P-core index " << i << " SMT mismatch: cpu" << phys << "(core_id=" << phys_core
-        << ") vs cpu" << sib << "(core_id=" << sib_core << ")";
+    // The kernel's own sibling list, not core_id: the pairing is built from it.
+    const auto list = [](int cpu) {
+      return rtc::internal::topology::ReadFileTrim(fs::path("/sys/devices/system/cpu") /
+                                                   ("cpu" + std::to_string(cpu)) /
+                                                   "topology/core_cpus_list");
+    };
+    const std::string phys_list = list(phys);
+    const std::string sib_list = list(sib);
+    EXPECT_FALSE(phys_list.empty());
+    EXPECT_EQ(phys_list, sib_list) << "P-core index " << i << " SMT mismatch: cpu" << phys << "("
+                                   << phys_list << ") vs cpu" << sib << "(" << sib_list << ")";
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. NUC13_i7_1360P_Mock — 4P + 8E, P-core SMT on, no LP-E.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, NUC13_i7_1360P_Mock) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, NUC13_i7_1360P_Mock) {
+  MockSysfs m(tmp_root_, SiblingLists());
   // 4 P-cores, each with SMT sibling. core_id 0..3, cpus 0..7.
   m.AddPCore(0, 0, 1);
   m.AddPCore(1, 2, 3);
@@ -250,8 +291,8 @@ TEST_F(CpuTopologyTest, NUC13_i7_1360P_Mock) {
 //    IS_HYBRID stays true (E-core side is SMT-free anyway), but
 //    p_core_has_smt becomes false → generation RAPTOR_LAKE_P_HT_OFF.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, BIOS_HT_Off_Mock) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, BIOS_HT_Off_Mock) {
+  MockSysfs m(tmp_root_, SiblingLists());
   m.AddPCore(0, 0);  // no sibling = HT off
   m.AddPCore(1, 1);
   m.AddPCore(2, 2);
@@ -276,8 +317,8 @@ TEST_F(CpuTopologyTest, BIOS_HT_Off_Mock) {
 // 4. ContainerFallback_NoSysfsTypes — /sys/.../types missing, no cpuinfo
 //    hybrid flag. Detector must stay conservative (is_hybrid=false).
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, ContainerFallback_NoSysfsTypes) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, ContainerFallback_NoSysfsTypes) {
+  MockSysfs m(tmp_root_, SiblingLists());
   // Only topology files, no types/intel_core or types/intel_atom directory.
   for (int cpu = 0; cpu < 8; ++cpu)
     m.AddPCore(cpu, cpu);
@@ -297,8 +338,8 @@ TEST_F(CpuTopologyTest, ContainerFallback_NoSysfsTypes) {
 // 5. AMD_Ryzen_Mock — no hybrid flag, no intel_core/intel_atom types.
 //    Must regression-preserve num_effective_cores() == num_physical_cores.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, AMD_Ryzen_Mock) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, AMD_Ryzen_Mock) {
+  MockSysfs m(tmp_root_, SiblingLists());
   // 8 physical cores with SMT siblings = 16 logical.
   for (int core = 0; core < 8; ++core) {
     m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5400000);
@@ -324,9 +365,9 @@ TEST_F(CpuTopologyTest, AMD_Ryzen_Mock) {
 //    topology id-lists as-detected. Guards against env-var-driven misuse in
 //    production images.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, EnvVarOverridesGenerationOnly) {
+TEST_P(CpuTopologyTest, EnvVarOverridesGenerationOnly) {
   // Plain AMD-looking mock: no hybrid evidence whatsoever.
-  MockSysfs m(tmp_root_);
+  MockSysfs m(tmp_root_, SiblingLists());
   for (int core = 0; core < 8; ++core) {
     m.AddPCore(core, core * 2, core * 2 + 1);
   }
@@ -363,8 +404,8 @@ TEST(CpuTopologyClassifier, ClassifyGeneration) {
 //    2 LP-E @ 2.5G). Fallback must reconstruct the split and land on
 //    METEOR_LAKE with detect_source == CPUFREQ_CLUSTER.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, FreqFallback_MeteorLake_185H) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, FreqFallback_MeteorLake_185H) {
+  MockSysfs m(tmp_root_, SiblingLists());
   // 6 P-cores with SMT siblings — cpus 0..11.
   for (int core = 0; core < 6; ++core) {
     m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5100000);
@@ -405,8 +446,8 @@ TEST_F(CpuTopologyTest, FreqFallback_MeteorLake_185H) {
 // 8. FreqFallback_AMD_Negative — regression guard: homogeneous AMD must
 //    remain NOT_NUC_HYBRID. Uniform freq → spread 0% → fallback rejects.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, FreqFallback_AMD_Negative) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, FreqFallback_AMD_Negative) {
+  MockSysfs m(tmp_root_, SiblingLists());
   for (int core = 0; core < 8; ++core) {
     m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5400000);
   }
@@ -427,8 +468,8 @@ TEST_F(CpuTopologyTest, FreqFallback_AMD_Negative) {
 //    present, detect_source must be SYSFS_TYPES (not CPUFREQ_CLUSTER), even
 //    if the freqs would otherwise also support a split.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, DetectSource_SysfsPrimary) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, DetectSource_SysfsPrimary) {
+  MockSysfs m(tmp_root_, SiblingLists());
   m.AddPCore(0, 0, 1, /*freq*/ 5000000);
   m.AddPCore(1, 2, 3, /*freq*/ 5000000);
   for (int i = 0; i < 4; ++i)
@@ -459,8 +500,8 @@ TEST(CpuTopologyClassifier, HybridDetectSourceToString) {
 //     must distinguish them in platform_label even though `generation` stays
 //     RAPTOR_LAKE_P. This is the user-reported desktop case.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PlatformLabel_RaptorLake_S_Desktop) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PlatformLabel_RaptorLake_S_Desktop) {
+  MockSysfs m(tmp_root_, SiblingLists());
   // 8 P-cores with SMT siblings — i9-13900K layout.
   for (int core = 0; core < 8; ++core)
     m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5800000);
@@ -490,8 +531,8 @@ TEST_F(CpuTopologyTest, PlatformLabel_RaptorLake_S_Desktop) {
 //     but CPUID model 0xC6 must set platform_no_ht_by_design=true so the
 //     verifier PASSes instead of suggesting an impossible BIOS toggle.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PlatformLabel_ArrowLake_S_Desktop) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PlatformLabel_ArrowLake_S_Desktop) {
+  MockSysfs m(tmp_root_, SiblingLists());
   // 8 P-cores, no SMT (Lion Cove has no HT).
   for (int core = 0; core < 8; ++core)
     m.AddPCore(core, core, /*sibling=*/-1, /*freq*/ 5700000);
@@ -517,8 +558,8 @@ TEST_F(CpuTopologyTest, PlatformLabel_ArrowLake_S_Desktop) {
 // 12. PlatformLabel_UnknownModel — future / unmapped silicon stays in the
 //     existing classifier flow with platform_label empty + no_ht=false.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PlatformLabel_UnknownModel) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PlatformLabel_UnknownModel) {
+  MockSysfs m(tmp_root_, SiblingLists());
   for (int core = 0; core < 4; ++core)
     m.AddPCore(core, core, /*sibling=*/-1, /*freq*/ 3000000);
   const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, /*family=*/6, /*model=*/0xFF);
@@ -537,8 +578,8 @@ TEST_F(CpuTopologyTest, PlatformLabel_UnknownModel) {
 //     lookup must return empty platform_label even though family/model
 //     fields are populated.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PlatformLabel_AmdVendor) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PlatformLabel_AmdVendor) {
+  MockSysfs m(tmp_root_, SiblingLists());
   for (int core = 0; core < 4; ++core)
     m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 4800000);
   const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, /*family=*/25, /*model=*/33,
@@ -558,8 +599,8 @@ TEST_F(CpuTopologyTest, PlatformLabel_AmdVendor) {
 // 14. PlatformLabel_MissingFields — legacy mock (no family/model lines).
 //     Defaults must be safe zeros / empty so existing tests round-trip.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PlatformLabel_MissingFields) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PlatformLabel_MissingFields) {
+  MockSysfs m(tmp_root_, SiblingLists());
   for (int core = 0; core < 4; ++core)
     m.AddPCore(core, core, /*sibling=*/-1, /*freq*/ 3000000);
   // family=-1, model=-1 → no CPUID lines emitted.
@@ -608,8 +649,8 @@ TEST(CpuTopologyClassifier, LookupPlatformLabel) {
 //     then E-cores, sibling excluded so RT threads never pin to a P-core's
 //     SMT sibling.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PhysicalCoreSlots_Hybrid_4P8E_HtOn) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PhysicalCoreSlots_Hybrid_4P8E_HtOn) {
+  MockSysfs m(tmp_root_, SiblingLists());
   // 4 P-cores with SMT siblings: cpu 0..7 — P-physical = 0,2,4,6; sib = 1,3,5,7
   m.AddPCore(0, 0, 1);
   m.AddPCore(1, 2, 3);
@@ -634,8 +675,8 @@ TEST_F(CpuTopologyTest, PhysicalCoreSlots_Hybrid_4P8E_HtOn) {
 // 17. PhysicalCoreSlots_DesktopHybrid_8P16E — i9-13900K layout: 8 P-physical,
 //     16 E-cores, no LP-E. Tests slot ordering when num_p_physical is large.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PhysicalCoreSlots_DesktopHybrid_8P16E) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PhysicalCoreSlots_DesktopHybrid_8P16E) {
+  MockSysfs m(tmp_root_, SiblingLists());
   // 8 P-cores with SMT siblings: cpu 0..15 — P-physical = 0,2,4,...,14
   for (int core = 0; core < 8; ++core)
     m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5800000);
@@ -659,8 +700,8 @@ TEST_F(CpuTopologyTest, PhysicalCoreSlots_DesktopHybrid_8P16E) {
 // 18. PhysicalCoreSlots_AmdSmt — non-hybrid SMT (AMD Ryzen 8C/16T). Sibling
 //     must still be excluded — slot list collapses to even logicals only.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PhysicalCoreSlots_AmdSmt) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PhysicalCoreSlots_AmdSmt) {
+  MockSysfs m(tmp_root_, SiblingLists());
   // 8 physical cores with SMT siblings — cpu 0,1 share core_id 0, etc.
   for (int core = 0; core < 8; ++core)
     m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5400000);
@@ -680,8 +721,8 @@ TEST_F(CpuTopologyTest, PhysicalCoreSlots_AmdSmt) {
 //     mapping must be identity (slot N → cpu N), preserving legacy 4-core
 //     fallback behaviour.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PhysicalCoreSlots_SmtOff_Identity) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PhysicalCoreSlots_SmtOff_Identity) {
+  MockSysfs m(tmp_root_, SiblingLists());
   for (int cpu = 0; cpu < 4; ++cpu)
     m.AddPCore(cpu, cpu, /*sibling=*/-1, /*freq*/ 3000000);
   const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
@@ -705,8 +746,8 @@ TEST_F(CpuTopologyTest, PhysicalCoreSlots_SmtOff_Identity) {
 //          pinned the expected logical CPU. The sort must run regardless of
 //          detection path.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PhysicalCoreSlots_NonHybrid_NonMonotonicCoreId) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PhysicalCoreSlots_NonHybrid_NonMonotonicCoreId) {
+  MockSysfs m(tmp_root_, SiblingLists());
   m.AddPCore(16, 0, /*sibling=*/-1, /*freq=*/3000000);  // cpu0 → core_id 16
   m.AddPCore(17, 1, /*sibling=*/-1, /*freq=*/3000000);
   m.AddPCore(0, 2, /*sibling=*/-1, /*freq=*/3000000);  // cpu2 → core_id 0
@@ -733,8 +774,8 @@ TEST_F(CpuTopologyTest, PhysicalCoreSlots_NonHybrid_NonMonotonicCoreId) {
 //      가 cpu 0 으로 매핑되어 layout v4.1 의 "slot 0 = OS" 가정이 깨짐.
 //      (physical, sibling) pair 를 physical ascending 으로 sort 해야 한다.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_F(CpuTopologyTest, PhysicalCoreSlots_NonStandardCoreIdEnum) {
-  MockSysfs m(tmp_root_);
+TEST_P(CpuTopologyTest, PhysicalCoreSlots_NonStandardCoreIdEnum) {
+  MockSysfs m(tmp_root_, SiblingLists());
   // P-core pairs with non-monotonic core_id grouping. cpu 0 lands in the
   // middle (core_id 102) rather than the first group.
   m.AddPCore(100, 1, 2, /*freq*/ 5000000);    // core_id 100 → cpus {1, 2}
@@ -815,9 +856,9 @@ TEST(SlotToLogicalCpu, AllBranches) {
 
 // Fallback primitive — direct ClusterByMaxFreq coverage. Guards the
 // threshold constants against drift (85% P-core, 15% min spread).
-TEST_F(CpuTopologyTest, ClusterByMaxFreq_Thresholds) {
+TEST_P(CpuTopologyTest, ClusterByMaxFreq_Thresholds) {
   using rtc::internal::topology::ClusterByMaxFreq;
-  MockSysfs m(tmp_root_);
+  MockSysfs m(tmp_root_, SiblingLists());
   // Two tiers: 3×5000 MHz + 3×3500 MHz. Spread = 30%, p_threshold=4250.
   for (int i = 0; i < 3; ++i)
     m.AddPCore(i, i, -1, /*freq*/ 5000000);
@@ -831,7 +872,7 @@ TEST_F(CpuTopologyTest, ClusterByMaxFreq_Thresholds) {
   EXPECT_EQ(e[2], 5);
 
   // Near-homogeneous (spread < 15%) must reject the split.
-  MockSysfs m2(tmp_root_ / "homogeneous");
+  MockSysfs m2(tmp_root_ / "homogeneous", SiblingLists());
   for (int i = 0; i < 4; ++i)
     m2.AddPCore(i, i, -1, /*freq*/ 5000000);
   // +2% spread — well under 15% threshold.
@@ -841,4 +882,85 @@ TEST_F(CpuTopologyTest, ClusterByMaxFreq_Thresholds) {
   auto [p2, e2] = ClusterByMaxFreq(tmp_root_ / "homogeneous/devices/system/cpu", online2);
   EXPECT_TRUE(p2.empty());
   EXPECT_TRUE(e2.empty());
+}
+
+INSTANTIATE_TEST_SUITE_P(SiblingSource, CpuTopologyTest, ::testing::Bool(),
+                         [](const ::testing::TestParamInfo<bool>& param_info) {
+                           return param_info.param ? "CoreCpusList" : "CoreIdOnly";
+                         });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 21. Core grouping by sibling list. core_id is unique only inside a cluster —
+//     an SoC that reports core_id 0 on every CPU must still count one core per
+//     CPU, which only the sibling lists can say.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CoreGroupingTest, SameCoreIdEverywhere_ListsSeparateTheCores) {
+  MockSysfs m(tmp_root_);
+  for (int cpu = 0; cpu < 14; ++cpu)
+    m.AddRawCpu(cpu, /*core_id=*/0, std::to_string(cpu), std::to_string(cpu));
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, -1, -1, /*vendor=*/"");
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_FALSE(t.is_hybrid);
+  EXPECT_EQ(t.num_physical_cores, 14);
+  EXPECT_EQ(t.num_logical_cores, 14);
+  EXPECT_FALSE(t.smt_active);
+  std::vector<int> identity;
+  for (int cpu = 0; cpu < 14; ++cpu)
+    identity.push_back(cpu);
+  EXPECT_EQ(t.physical_core_slots, identity);
+  // The tier dispatch counts the same cores (14-core tier, not the 4-core one).
+  EXPECT_EQ(rtc::GetPhysicalCpuCount(tmp_root_.string()), 14);
+}
+
+TEST_F(CoreGroupingTest, ThreadSiblingsListWhenCoreCpusListIsAbsent) {
+  // i7-8700 shape (6C/12T, sibling of cpu N is N+6) with one core_id for all,
+  // so only the list can pair the CPUs.
+  MockSysfs m(tmp_root_);
+  for (int cpu = 0; cpu < 12; ++cpu) {
+    const int core = cpu % 6;
+    m.AddRawCpu(cpu, /*core_id=*/0, /*core_cpus_list=*/"",
+                std::to_string(core) + "," + std::to_string(core + 6));
+  }
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_EQ(t.num_physical_cores, 6);
+  EXPECT_EQ(t.num_logical_cores, 12);
+  EXPECT_TRUE(t.smt_active);
+  const std::vector<int> expected{0, 1, 2, 3, 4, 5};
+  EXPECT_EQ(t.physical_core_slots, expected);
+  EXPECT_EQ(rtc::GetPhysicalCpuCount(tmp_root_.string()), 6);
+}
+
+TEST_F(CoreGroupingTest, CoreCpusListWinsOverThreadSiblingsList) {
+  MockSysfs m(tmp_root_);
+  for (int cpu = 0; cpu < 4; ++cpu)
+    m.AddRawCpu(cpu, cpu / 2, std::to_string(cpu), cpu < 2 ? "0-1" : "2-3");
+  EXPECT_EQ(rtc::GetPhysicalCpuCount(tmp_root_.string()), 4);
+}
+
+TEST_F(CoreGroupingTest, MissingCpuInTheMiddleDoesNotEndTheEnumeration) {
+  // cpu2 offline: its directory carries no topology. cpu3 is still a core.
+  MockSysfs m(tmp_root_);
+  for (const int cpu : {0, 1, 3})
+    m.AddRawCpu(cpu, cpu, std::to_string(cpu), std::to_string(cpu));
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  const std::vector<int> expected{0, 1, 3};
+  EXPECT_EQ(t.physical_core_slots, expected);
+  EXPECT_EQ(t.num_physical_cores, 3);
+}
+
+TEST_F(CoreGroupingTest, NoTopologyFallsBackToTheCgroupQuotaUnderTheSameRoot) {
+  fs::create_directories(tmp_root_ / "fs/cgroup");
+  std::ofstream(tmp_root_ / "fs/cgroup/cpu.max") << "400000 100000\n";
+  EXPECT_EQ(rtc::GetPhysicalCpuCount(tmp_root_.string()), 4);
 }

@@ -99,8 +99,8 @@ struct CpuTopology {
 
   // Logical CPU id lists. Invariant (when p_core_has_smt == true):
   //   For each i: p_core_physical_ids[i] and p_core_sibling_ids[i] belong
-  //   to the same physical core (identical core_id in sysfs topology).
-  //   Verified by test TEST(CpuTopology, SmtSiblingInvariant).
+  //   to the same physical core (same sysfs sibling list — see
+  //   ReadPhysicalCoreGroups). Verified by TEST(CpuTopology, SmtSiblingInvariant).
   std::vector<int> p_core_physical_ids;
   std::vector<int> p_core_sibling_ids;
   std::vector<int> e_core_ids;
@@ -247,6 +247,62 @@ inline bool CpuinfoHasHybridFlag(const std::filesystem::path& cpuinfo) noexcept 
   return false;
 }
 
+// Physical cores as groups of logical CPUs (each group ascending), ordered by
+// the group's lowest logical id — rank N is "physical core N", i.e. slot N.
+//
+// A CPU's group comes from its sibling list, the source chosen once from cpu0:
+// topology/core_cpus_list, else thread_siblings_list (older kernels), else the
+// CPUs sharing (physical_package_id, core_id). core_id alone is no core
+// identity — it is unique only inside a cluster, and an SoC that reports the
+// same core_id on every CPU collapses into one core under it. The key is the
+// list's lowest logical id, so neither the grouping nor the order depends on
+// core_id numbering. A CPU without a topology directory (offline) is skipped,
+// not taken for the end of the enumeration. Empty when sysfs has no topology.
+//
+// Must match the shell ranking in rt_common.sh, which places the same slots.
+inline std::vector<std::vector<int>> ReadPhysicalCoreGroups(
+    const std::filesystem::path& cpu_root) noexcept {
+  namespace fs = std::filesystem;
+  const auto topo = [&](int cpu) { return cpu_root / ("cpu" + std::to_string(cpu)) / "topology"; };
+  std::error_code ec;
+  std::string list_name;
+  for (const char* name : {"core_cpus_list", "thread_siblings_list"}) {
+    if (fs::exists(topo(0) / name, ec)) {
+      list_name = name;
+      break;
+    }
+  }
+
+  std::map<long, std::vector<int>> by_key;
+  for (int cpu = 0; cpu < 1024; ++cpu) {
+    const fs::path dir = topo(cpu);
+    if (!fs::exists(dir, ec))
+      continue;
+    long key = -1;
+    if (!list_name.empty()) {
+      const auto list = ParseCpuList(ReadFileTrim(dir / list_name));
+      key = cpu;
+      for (const int sibling : list)
+        key = std::min<long>(key, sibling);
+    } else {
+      const int pkg = ReadInt(dir / "physical_package_id");
+      const int core = ReadInt(dir / "core_id");
+      if (pkg < 0 || core < 0)
+        continue;
+      key = static_cast<long>(pkg) * 100000L + core;
+    }
+    by_key[key].push_back(cpu);
+  }
+
+  std::vector<std::vector<int>> groups;
+  groups.reserve(by_key.size());
+  for (auto& [key, cpus] : by_key)
+    groups.push_back(std::move(cpus));  // cpus ascending: pushed in cpu order
+  std::sort(groups.begin(), groups.end(),
+            [](const auto& a, const auto& b) { return a.front() < b.front(); });
+  return groups;
+}
+
 // Frequency-clustering fallback. Returns (p_cpus, e_cpus) when the CPU
 // set splits into two frequency tiers — highest-tier ids go to p_cpus,
 // the rest to e_cpus. Returns empty vectors if the heterogeneity is too
@@ -305,28 +361,31 @@ inline std::pair<std::vector<int>, std::vector<int>> ClusterByMaxFreq(
 
 // Derive P-core SMT pairing, E/LP-E split, and all hybrid counters from a
 // (p_cpus, e_cpus) split. Shared between the sysfs-primary and freq-fallback
-// paths so their outputs are identical shape.
+// paths so their outputs are identical shape. `core_groups` is
+// ReadPhysicalCoreGroups(cpu_root): P-cores pair by it, not by core_id.
 inline void PopulateHybridFromCpus(CpuTopology& t, const std::filesystem::path& cpu_root,
+                                   const std::vector<std::vector<int>>& core_groups,
                                    const std::vector<int>& p_cpus,
                                    const std::vector<int>& e_cpus) noexcept {
   if (!p_cpus.empty()) {
-    std::map<int, std::vector<int>> p_core_id_to_cpus;
+    std::map<int, int> cpu_to_core;  // logical cpu → rank in core_groups
+    for (std::size_t rank = 0; rank < core_groups.size(); ++rank)
+      for (const int cpu : core_groups[rank])
+        cpu_to_core[cpu] = static_cast<int>(rank);
+    std::map<int, std::vector<int>> p_core_to_cpus;
     for (const int cpu : p_cpus) {
-      const int cid = ReadInt(cpu_root / ("cpu" + std::to_string(cpu)) / "topology/core_id");
-      if (cid >= 0)
-        p_core_id_to_cpus[cid].push_back(cpu);
+      const auto it = cpu_to_core.find(cpu);
+      if (it != cpu_to_core.end())
+        p_core_to_cpus[it->second].push_back(cpu);
     }
-    // Build (physical, sibling) pairs from each core_id group, then sort the
-    // *list of pairs by physical logical id ascending*. Without this outer
-    // sort, BIOSes that assign a non-monotonic core_id to cpu 0 (e.g. some
-    // NUC 14 Pro Meteor Lake firmware: cpu 0 shares core_id with cpu 5, so
-    // its group lands in the middle of the iteration) produce a P-physical
-    // list like [1, 3, 0, 6, 8, 10] — and the v4.1 layout assumption
-    // "slot 0 == lowest logical cpu == OS" breaks. Sorting by physical
-    // restores the invariant on every enumeration order.
+    // Build (physical, sibling) pairs from each core group, then sort the
+    // *list of pairs by physical logical id ascending*. The rank order of
+    // core_groups already is that order; the sort keeps the invariant
+    // "slot 0 == lowest logical cpu == OS" independent of it (some NUC 14
+    // Pro Meteor Lake firmware pairs cpu 0 with cpu 5).
     std::vector<std::pair<int, int>> pairs;
-    pairs.reserve(p_core_id_to_cpus.size());
-    for (auto& [cid, cpus] : p_core_id_to_cpus) {
+    pairs.reserve(p_core_to_cpus.size());
+    for (auto& [core, cpus] : p_core_to_cpus) {
       std::sort(cpus.begin(), cpus.end());
       const int phys = cpus.front();
       const int sib = (cpus.size() >= 2) ? cpus[1] : -1;
@@ -338,7 +397,7 @@ inline void PopulateHybridFromCpus(CpuTopology& t, const std::filesystem::path& 
       if (sib >= 0)
         t.p_core_sibling_ids.push_back(sib);
     }
-    t.num_p_physical = static_cast<int>(p_core_id_to_cpus.size());
+    t.num_p_physical = static_cast<int>(p_core_to_cpus.size());
     t.num_p_logical = static_cast<int>(p_cpus.size());
     t.p_core_has_smt = (t.num_p_logical > t.num_p_physical) &&
                        (t.p_core_sibling_ids.size() == t.p_core_physical_ids.size());
@@ -549,24 +608,11 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
     t.platform_no_ht_by_design = no_ht;
   }
 
-  // Step 1: enumerate logical CPUs + group by (pkg, core_id).
-  std::map<long, std::vector<int>> core_id_to_logicals;
-  for (int cpu = 0; cpu < 1024; ++cpu) {
-    const fs::path topo = cpu_root / ("cpu" + std::to_string(cpu)) / "topology";
-    const fs::path pkg_p = topo / "physical_package_id";
-    const fs::path core_p = topo / "core_id";
-    std::error_code ec;
-    if (!fs::exists(pkg_p, ec))
-      break;
-    const int pkg = ReadInt(pkg_p);
-    const int core = ReadInt(core_p);
-    if (pkg < 0 || core < 0)
-      break;
-    const long key = static_cast<long>(pkg) * 100000L + core;
-    core_id_to_logicals[key].push_back(cpu);
-    t.num_logical_cores = cpu + 1;
-  }
-  t.num_physical_cores = static_cast<int>(core_id_to_logicals.size());
+  // Step 1: enumerate logical CPUs grouped into physical cores.
+  const auto core_groups = ReadPhysicalCoreGroups(cpu_root);
+  for (const auto& group : core_groups)
+    t.num_logical_cores += static_cast<int>(group.size());
+  t.num_physical_cores = static_cast<int>(core_groups.size());
   t.smt_active = t.num_logical_cores > t.num_physical_cores;
 
   if (t.num_logical_cores == 0) {
@@ -601,8 +647,8 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
     // where CONFIG_INTEL_HFI_THERMAL / SCHED_MC_PRIO / SCHED_CLUSTER were
     // stripped, or pre-6.10 kernels on Meteor/Arrow Lake.
     std::vector<int> online_cpus;
-    for (const auto& [key, logicals] : core_id_to_logicals)
-      for (const int cpu : logicals)
+    for (const auto& group : core_groups)
+      for (const int cpu : group)
         online_cpus.push_back(cpu);
     std::sort(online_cpus.begin(), online_cpus.end());
     auto [p_fb, e_fb] = ClusterByMaxFreq(cpu_root, online_cpus);
@@ -617,7 +663,7 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
   // Step 3: derive SMT sibling pairing + E/LP-E split from the chosen split.
   //        Shared helper keeps the two paths byte-identical in output shape.
   if (t.is_hybrid)
-    PopulateHybridFromCpus(t, cpu_root, p_cpus, e_cpus);
+    PopulateHybridFromCpus(t, cpu_root, core_groups, p_cpus, e_cpus);
 
   // Step 4: classify generation + apply env hint override.
   t.generation = ClassifyGeneration(t.is_hybrid, t.p_core_has_smt, t.has_lp_e_cores);
@@ -628,8 +674,8 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
   //         layouts that index by slot land on P-physical first and spill
   //         over to E-cores only when slot index exceeds the P-physical
   //         count. Non-hybrid and SMT-off systems collapse to the
-  //         "first logical of each (pkg, core_id) group" rule, which is
-  //         identity on SMT-off and "even logicals only" on AMD SMT.
+  //         "first logical of each core group" rule, which is identity on
+  //         SMT-off and "even logicals only" on AMD SMT.
   if (t.is_hybrid) {
     t.physical_core_slots.reserve(t.p_core_physical_ids.size() + t.e_core_ids.size() +
                                   t.lpe_core_ids.size());
@@ -640,27 +686,13 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
     for (const int cpu : t.lpe_core_ids)
       t.physical_core_slots.push_back(cpu);
   } else {
-    // Collect first-logical-id of every physical core, then sort the result
-    // by logical id ascending. The outer sort is required because std::map
-    // iterates in (pkg, core_id) order, which is NOT the same as logical-id
-    // order on BIOSes that emit non-monotonic core_id (e.g. some Meteor /
-    // Raptor Lake firmware: cpu0.core_id=16 places cpu0's group at the end
-    // of the iteration even though slot 0 must map to logical 0). Without
-    // this sort, RT thread pinning by slot lands on an unrelated logical
-    // CPU and pthread_setaffinity_np returns EINVAL. The hybrid branch
-    // above already sorts pairs by physical id; this keeps both paths
-    // consistent.
-    std::vector<int> primaries;
-    primaries.reserve(core_id_to_logicals.size());
-    for (const auto& [key, logicals] : core_id_to_logicals) {
-      if (logicals.empty())
-        continue;
-      auto sorted = logicals;
-      std::sort(sorted.begin(), sorted.end());
-      primaries.push_back(sorted.front());
-    }
-    std::sort(primaries.begin(), primaries.end());
-    t.physical_core_slots = std::move(primaries);
+    // First logical id of every core group, already in logical-id order —
+    // not core_id order, which is non-monotonic on some Meteor / Raptor Lake
+    // firmware (cpu0.core_id=16): slot 0 must map to logical 0, or RT pinning
+    // by slot lands on an unrelated CPU.
+    t.physical_core_slots.reserve(core_groups.size());
+    for (const auto& group : core_groups)
+      t.physical_core_slots.push_back(group.front());
   }
 
   return t;
