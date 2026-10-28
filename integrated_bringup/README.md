@@ -9,7 +9,7 @@
 ### 구성
 
 - **launch**: 로봇마다 실로봇용 `robot_<robot>.launch.py` 와 MuJoCo 용 `sim_<robot>.launch.py` (아래 매트릭스). CPU 격리, DDS 스레드 핀닝, 세션 디렉토리 생성도 launch 가 합니다.
-- **설정**: `config/<robot>/` 에 로봇별 `_base.yaml` (mode 공통) 과 `robot.yaml` / `sim.yaml` (mode 차이), 컨트롤러별 `controllers/*.yaml`.
+- **설정**: `config/<robot>/` 에 로봇별 `_base.yaml` (mode 공통) 과 `robot.yaml` / `sim.yaml` (mode 차이), 컨트롤러별 `controllers/*.yaml`. 손 설정만 있는 `config/b7_p2/` 는 `udp_hand.launch.py` 의 `params_file` 로 띄웁니다.
 - **데모 컨트롤러**: `DemoJointController` · `DemoTaskController` · `DemoComplianceController` · `DemoWbcController` (TSID + MPC) · `DemoDualArmController` · `DemoCatchingController` · `DemoInferenceController` (ONNX 정책). 등록 목록은 `src/controllers/controller_registration.cpp`.
 - **GUI**: `demo_controller_gui` (컨트롤러 전환 · 게인 튜닝 · 상태 모니터링) 와 `motion_editor_gui`.
 - **세션 로그**: `logging_data/YYMMDD_HHMM/` (`timing/`, `device/`, `controllers/<config_key>/`) 에 자동 저장되고 보관 수는 `max_log_sessions` (기본 10) 입니다.
@@ -407,7 +407,8 @@ integrated_bringup/
 │   ├── ur5e_p1a/
 │   ├── ur5e_p1b/
 │   ├── iiwa7_leap/
-│   └── g1_p1b/
+│   ├── g1_p1b/
+│   └── b7_p2/       # 손 설정만 (params_file)
 ├── launch/          # robot_* / sim_* launch
 ├── include/         # 공개 헤더
 ├── src/             # 컨트롤러 · backend 구현

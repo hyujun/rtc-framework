@@ -1,0 +1,86 @@
+# b7_p2/udp_hand_node_p2.yaml -- b7 본체의 proto2 (CAN FD) 두 손 설정
+#
+# 완전 독립(self-contained) 파일이다. b7 robot launch 는 아직 없고, 이 파일은
+# udp_hand_driver 의 standalone launch 에 params_file 로 넘겨 띄운다:
+#
+#   ros2 launch udp_hand_driver udp_hand.launch.py namespace:=/p2 \
+#       params_file:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/b7_p2/udp_hand_node_p2.yaml
+#
+# params_file 은 generic udp_hand_driver/config/udp_hand_node.yaml 을 대체한다 (base+overlay
+# 아님) — 여기서 명시하지 않은 키는 udp_hand_node 의 C++ 기본값이다. launch 는 이 뒤에 예시용
+# fingertip_ft_inferencer.yaml (enabled: false) 을 붙인다. CLI 인자 (sil_mode:=firmware 등) 는
+# 이 파일의 값을 이긴다.
+#
+# 토픽 (네임스페이스 /p2 + 손별 <side>/ 접두):
+#   /p2/right/{joint_states, sensor_states, link_status, joint_command, ...}
+#   /p2/left/{...}
+#   /p2/estop   — 두 손이 공유하는 E-Stop 하나
+# 토픽 키는 적지 않는다: C++ 기본이 상대 이름이고, 두 손은 손별 토픽의 절대 이름을 configure 가
+# 거부한다 (두 손이 한 토픽이 된다). ur5e_p1{a,b} overlay 가 절대 이름을 쓰는 것은 robot launch 가
+# namespace="" 로 띄우기 때문이다 — 이 파일은 namespace:=/p2 로 띄운다.
+#
+# 생략한 키:
+#   - 관절 · 모터 · 핑거팁 이름: 노드 기본 이름 (아래 offsets 주석의 순서). YAML 에 빈 배열을
+#     적으면 타입이 없어 string 배열 선언과 어긋나므로 키 자체를 뺀다.
+#   - target_ip · target_port · local_ip · local_interface: UDP (1a · 1b) 전용.
+#   - baro/tof LPF · drift · fake_* (loopmodel): 1a / loopmodel 전용, C++ 기본값.
+#   - aux_cpu_slot · use_cpu_affinity: 기본값 (slot 은 rtc_base thread layout tier 가 정한다).
+/**:
+  ros__parameters:
+    # -- SIL mode --
+    # off=실 HW / loopmodel=in-process LPF / firmware=vcan0 의 fake_hand_firmware 두 개
+    # (launch 가 hand_sides 를 읽어 손마다 띄운다; vcan0 은 repo_scripts/scripts/setup_vcan.sh).
+    sil_mode: "off"
+
+    # -- 프로토콜 --
+    protocol_version: "2"             # CAN FD. 반드시 따옴표 — 정수 2 는 선언에서 예외
+    communication_mode: "bulk"        # "2" 는 bulk 전용 (C++ 기본 individual 은 configure 실패)
+
+    # -- CAN FD 링크 --
+    can_interface: "can1"             # 네이티브 CAN (Jetson Thor mttcan). sil_mode=firmware 는 vcan0 강제
+    hand_sides: ["right", "left"]     # 노드 하나 · CommLoop 하나가 목록 순서로 두 손을 돌린다
+    cmd_ack: "none"                   # 현 펌웨어 (PDO 형, echo 없음)
+    req_mode: "auto"                  # 두 손 · none → broadcast (REQ 하나를 노드 0xFF 로)
+
+    # -- 수신 마감 --
+    # broadcast 의 수신 창은 tick 시작 + (slot − broadcast_tail_guard_ms) 라 recv_timeout_ms 를
+    # 쓰지 않는다 (D89). FT 추론을 켜면 tail guard 를 추론 시간만큼 올린다.
+    broadcast_tail_guard_ms: 0.05
+    # per_hand 폴백 (req_mode:=per_hand) 용 stage deadline — 실기 proto2 실측값 (H1-F06).
+    # per_hand 는 손 수 × 2 × 이 값 < 1000/loop_rate_hz 여야 configure 를 지나므로
+    # loop_rate_hz:=250 도 함께 준다.
+    recv_timeout_ms: 0.9
+
+    # -- 루프 주기 --
+    # broadcast write tick (CMD 4 → REQ → RESP 6) 의 t_total p99 × 1.1 로 호스트마다 잡는다:
+    # 네이티브 CAN 호스트 p99 1521 µs → 500 Hz (D89). IXXAT USB 호스트라면 400.
+    loop_rate_hz: 500.0
+    publish_rate: 100.0               # link_status decimation 기준 (500/100 = 5)
+    comm_decimation: 1
+    sensor_decimation: 1
+
+    # -- 모터 토크 상수 [Nm/A] (펌웨어 모터 순서 10개) --
+    # flat 키라 두 손이 함께 쓴다. 손마다 달라지면 right.feedforward_kt / left.feedforward_kt.
+    feedforward_kt: [0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55]
+
+    # -- 손별 joint position offset [deg] --
+    # 관절 순서 = 노드 기본 이름: thumb_cmc_aa, thumb_cmc_fe, thumb_mcp_fe, index_mcp_aa,
+    # index_mcp_fe, index_dip_fe, middle_mcp_aa, middle_mcp_fe, middle_dip_fe, ring_mcp_fe.
+    # 수신 udp_pos + offset, 송신 cmd − offset. 실기 보정 전 초기값 0.
+    right:
+      joint_position_offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    left:
+      joint_position_offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # -- Failure Detector (50Hz non-RT jthread) — 손마다 하나, link down 은 그 손만 판정 --
+    enable_failure_detector: true
+    failure_threshold: 5
+    check_motor: true
+    check_sensor: true
+    min_rate_hz: 30.0                 # comm_decimation 으로 on_activate 에서 자동 스케일
+    rate_fail_threshold: 5
+    check_link: true
+    link_fail_timeout_ms: 100.0       # 채널별 link-down budget (500 Hz 에서 50 cycle)
+    startup_grace_ms: 1000.0
+    link_startup_grace_ms: 100.0
+    sensor_startup_grace_ms: 0.0
