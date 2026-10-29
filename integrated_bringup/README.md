@@ -408,7 +408,7 @@ integrated_bringup/
 │   ├── ur5e_p1b/
 │   ├── iiwa7_leap/
 │   ├── g1_p1b/
-│   └── b7_p2/       # 손 설정만 (params_file)
+│   └── b7_p2/       # 손 설정만 (params_file · 명령 GUI)
 ├── launch/          # robot_* / sim_* launch
 ├── include/         # 공개 헤더
 ├── src/             # 컨트롤러 · backend 구현

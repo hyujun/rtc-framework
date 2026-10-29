@@ -4,11 +4,11 @@ RTC 로그 시각화, 포구 sim 평가 도구, MJCF/URDF 변환·비교, launch
 
 ## 개요
 
-- 제어 로그 CSV 를 그리고 (`plot_rtc_log`), 동적 포구 sim 의 시행을 오프라인으로 평가하며 (`catching_*` · `catch_*`), MJCF/URDF 를 변환·비교한다.
-- 실행 파일은 `setup.py` 의 `console_scripts` 29 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
+- 제어 로그 CSV 를 그리고 (`plot_rtc_log`), 동적 포구 sim 의 시행을 오프라인으로 평가하며 (`catching_*` · `catch_*`), MJCF/URDF 를 변환·비교하고, 손 관절을 슬라이더로 명령한다 (`joint_command_gui`).
+- 실행 파일은 `setup.py` 의 `console_scripts` 30 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
 - `launch/` 와 `utils/` 의 모듈은 다른 패키지의 launch 파일과 도구가 import 한다 (아래 [launch 헬퍼](#launch-헬퍼와-utils-모듈)).
 - 분석 CLI 의 판정 규칙은 [catching-analysis-rules.md](../docs/catching-analysis-rules.md), 열의 뜻은 각 도구의 머리 docstring 이 갖는다. 이 README 는 실행 방법만 둔다.
-- 컨트롤러 데모 GUI 는 이 패키지에 없다: [integrated_bringup/scripts/demo_controller_gui.py](../integrated_bringup/scripts/demo_controller_gui.py).
+- 컨트롤러 데모 GUI 는 이 패키지에 없다 (손 관절 명령 GUI `joint_command_gui` 만 있다): [integrated_bringup/scripts/demo_controller_gui.py](../integrated_bringup/scripts/demo_controller_gui.py).
 
 ## 빠른 시작
 
@@ -48,6 +48,7 @@ ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.
 | `analyze_hand_close` | 손 폐쇄 시간 $T_{close,e2e}$ 분석 | `analyze_hand_close <hand>_state.csv --profile run.json` |
 | `run_hand_close_trials` | 손 preshape↔closed 계단 N 회 러너 | `run_hand_close_trials --group … --joint-names … --out run.json` |
 | `analyze_hand_canfd_gate` | CAN FD 손 실기 run 의 G-3 게이트 판정 (D55) | `analyze_hand_canfd_gate <session> g3.log --node-log node.log` |
+| `joint_command_gui` | 손 관절 슬라이더 명령 GUI (`joint_state_publisher_gui` 류) | 아래 절 |
 | `analyze_vision_lane` | 예측 lane 프로브 CSV 요약 | `analyze_vision_lane <prefix>` |
 | `vision_lane_probe` | 예측 · 카메라 · truth lane 을 CSV 로 기록 | `vision_lane_probe <prefix> --dump` |
 | `camera_relay` | 카메라 lane 릴레이 + 드롭·지연 주입 | `camera_relay --drop-after-s 0.4` |
@@ -268,6 +269,19 @@ ros2 run rtc_tools analyze_hand_canfd_gate <session> g3.log --node-log node.log 
 - 두 손 (G-5): 버스에 두 손이 보이면 (x) `x.no_overlap` 이 붙는다 — 한 손의 트랜잭션 (첫 호스트 프레임 … RESP F2) 안에 다른 손의 echo · RESP 가 0. 첫 E-Stop 프레임부터는 보지 않고, 두 손 zero-write 간격은 보고만 한다. 손마다 `--hand-side <side> --explicit-side --timing-suffix ""` 로 한 번씩 돌린다. run 전체는 `repo_scripts/scripts/run_hand_canfd_gate.sh` ([testing.md](../docs/testing.md)). candump 없는 PC 는 `python3 -m rtc_tools.analysis.candump_log <iface> <out.log>`.
 - `--req-mode auto|per_hand|broadcast` (`auto` = `canfd.req_mode`, 없으면 `per_hand`): `broadcast` 면 0xFF REQ 가 두 손의 REQ 이고 (x) 는 `x.broadcast_sets` (RESP 중복 · 버스트 중 CMD · 한 손만 빠진 창 비율).
 - (d) 는 문턱 건수 ±1.65 σ 안이면 UNDECIDED (한 번 재측정). 못 본 항목은 `NOT_EVALUATED(<사유>)` 이고 통과 아님. 종료 코드 0 / 1 (FAIL) / 2 (UNDECIDED) / 3 (입력 불가 · `req_mode` 불일치).
+
+### joint_command_gui
+
+손 노드의 `joint_states` 를 받아 관절마다 측정 위치 (deg) 를 슬라이더 위에 보이고, 사용자가 Enable 한 손에만 `joint_command` (`position`, rad) 를 `publish_rate_hz` 로 보낸다. 손 노드와 다른 PC 에서 돌려도 된다.
+
+```bash
+colcon build --packages-select rtc_msgs rtc_tools    # GUI 만 쓰는 PC
+ros2 run rtc_tools joint_command_gui --ros-args -p config:=<gui yaml>
+```
+
+- 설정 예: [hand_joint_command_gui.yaml](../integrated_bringup/config/b7_p2/hand_joint_command_gui.yaml). YAML 키 · 기본값 · 안전 규칙 (Enable 조건 · slew · 자동 Disable · 범위 편집) 은 [joint_command_model.py](rtc_tools/gui/joint_command_model.py) 의 docstring 이 갖는다. 관절 수와 이름은 `joint_states` 에서 읽는다.
+- 원격 PC: 두 PC 의 `RMW_IMPLEMENTATION` 과 `ROS_DOMAIN_ID` 가 같아야 하고, `ROS_AUTOMATIC_DISCOVERY_RANGE` 가 `LOCALHOST` 이면 안 된다. 손 패널이 안 뜨면 GUI PC 에서 `ros2 topic list` 로 손 토픽부터 본다.
+- **사용 조건**: 손 노드는 configure 뒤 처음 받은 `joint_command` 의 `joint_names` 로 이름 → 슬롯 대응을 고정한다. 그 전에 다른 순서로 보낸 발행자가 있었다면 GUI 를 쓰기 전에 손 노드를 다시 configure 한다.
 
 ### catching_trials
 
@@ -501,6 +515,6 @@ plots = get_session_subdir("plots")        # 환경변수만 읽는다, 없으�
 
 ## 의존성
 
-[package.xml](package.xml) 이 ROS 쪽 (`rclpy` · `rtc_msgs` · `ament_index_python` 외) 을 갖는다. numpy · scipy · matplotlib · pandas · PyQt5 · `mujoco` 는 cross-workspace 격리 정책상 `package.xml` 이 아니라 venv ([requirements.in](../requirements.in) → [requirements.lock](../requirements.lock)) 책임이다. `rclpy` 만 ROS Jazzy 가 제공한다. MIT.
+[package.xml](package.xml) 이 ROS 쪽 (`rclpy` · `rtc_msgs` · `ament_index_python` · `python_qt_binding` 외) 을 갖는다. numpy · scipy · matplotlib · pandas · PyQt5 · `mujoco` 는 cross-workspace 격리 정책상 `package.xml` 이 아니라 venv ([requirements.in](../requirements.in) → [requirements.lock](../requirements.lock)) 책임이다. `rclpy` 만 ROS Jazzy 가 제공한다. MIT.
 
 테스트는 `./build.sh --tests -p rtc_tools` 로 빌드한 뒤 `colcon test --packages-select rtc_tools` 다. `colcon.pkg` 가 pytest 에 `-n 4` 를 넘긴다 ([testing-debug.md](../agent_docs/testing-debug.md) "패키지 안 병렬").
