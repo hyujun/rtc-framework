@@ -2,8 +2,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rtc_tools</name>
-  <version>5.24.0</version>
-  <description>Python development utilities for the RTC framework: log plotter (plot_rtc_log), controller GUI, MJCF/URDF comparison tool, and URDF-to-MJCF converter.</description>
+  <version>5.25.0</version>
+  <description>Python development utilities for the RTC framework: log plotter (plot_rtc_log), hand joint-command GUI (joint_command_gui), MJCF/URDF comparison tool, and URDF-to-MJCF converter.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 
@@ -22,6 +22,11 @@
   <!-- numpy / pandas / matplotlib / scipy / PyQt5 / mujoco: venv 책임 (requirements.lock).
        jazzy rosdep DB 미정의 + cross-workspace isolation 정책 (2026-05-23). -->
   <exec_depend>ament_index_python</exec_depend>
+  <!-- joint_command_gui (gui/joint_command_view.py): Qt through python_qt_binding.
+       It runs from `ros2 run` under /usr/bin/python3, so the binding (and the
+       PyQt5 it pulls in) is the ROS apt one; the venv PyQt5 above serves the
+       python3 -m tools. -->
+  <exec_depend>python_qt_binding</exec_depend>
   <!-- derive_accel_limits: Pinocchio python bindings for
        M/g/c, xacro to expand the robot URDF. MuJoCo (optional cross-check) is a
        venv dependency like the other tools. -->
