@@ -20,8 +20,8 @@
 # namespace="" 로 띄우기 때문이다 — 이 파일은 namespace:=/p2 로 띄운다.
 #
 # 생략한 키:
-#   - 관절 · 모터 · 핑거팁 이름: 노드 기본 이름 (아래 offsets 주석의 순서). YAML 에 빈 배열을
-#     적으면 타입이 없어 string 배열 선언과 어긋나므로 키 자체를 뺀다.
+#   - 모터 · 핑거팁 이름: 노드 기본 이름. YAML 에 빈 배열을 적으면 타입이 없어 string 배열
+#     선언과 어긋나므로 키 자체를 뺀다. 관절 이름은 아래 손별 블록에 적는다.
 #   - target_ip · target_port · local_ip · local_interface: UDP (1a · 1b) 전용.
 #   - baro/tof LPF · drift · fake_* (loopmodel): 1a / loopmodel 전용, C++ 기본값.
 #   - aux_cpu_slot · use_cpu_affinity: 기본값 (slot 은 rtc_base thread layout tier 가 정한다).
@@ -63,13 +63,36 @@
     # flat 키라 두 손이 함께 쓴다. 손마다 달라지면 right.feedforward_kt / left.feedforward_kt.
     feedforward_kt: [0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55]
 
-    # -- 손별 joint position offset [deg] --
-    # 관절 순서 = 노드 기본 이름: thumb_cmc_aa, thumb_cmc_fe, thumb_mcp_fe, index_mcp_aa,
-    # index_mcp_fe, index_dip_fe, middle_mcp_aa, middle_mcp_fe, middle_dip_fe, ring_mcp_fe.
-    # 수신 udp_pos + offset, 송신 cmd − offset. 실기 보정 전 초기값 0.
+    # -- 손별 관절 이름 · joint position offset [deg] --
+    # joint_state_names 는 펌웨어 모터 slot 0..9 의 이름이다 — hand_description 의
+    # cloid_b7_hand.urdf.xacro 구동 관절 순서 · 이름 그대로 (좌우 URDF 의 이름이 일부 다르다).
+    # joint_command 의 joint_names 도 이 이름으로 slot 에 대응한다.
+    # offsets 도 같은 순서. 수신 udp_pos + offset, 송신 cmd − offset. 실기 보정 전 초기값 0.
     right:
+      joint_state_names:
+        - "right_cmc_01_joint"
+        - "right_cmc_02_joint"
+        - "right_thumb_mcp_joint"
+        - "right_active_thumb_pip_link02_joint"
+        - "right_index_mcp_rotate_joint"
+        - "right_index_mcp_joint"
+        - "right_active_index_pip_joint"
+        - "right_middle_mcp_joint"
+        - "right_active_middle_pip_joint"
+        - "right_active_ring_mcp_joint"
       joint_position_offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     left:
+      joint_state_names:
+        - "left_cmc_01_joint"
+        - "left_cmc_02_joint"
+        - "left_thumb_mcp_joint"
+        - "left_active_thumb_pip_link02_joint"
+        - "left_index_mcp_rotate_joint"
+        - "left_index_mcp_joint"
+        - "left_active_index_pip_link02_joint"
+        - "left_middle_mcp_joint"
+        - "left_active_middle_pip_link02_joint"
+        - "left_active_ring_mcp_joint"
       joint_position_offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     # -- Failure Detector (50Hz non-RT jthread) — 손마다 하나, link down 은 그 손만 판정 --
