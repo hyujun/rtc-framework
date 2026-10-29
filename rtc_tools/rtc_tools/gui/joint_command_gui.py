@@ -13,6 +13,10 @@ Usage::
 
 The YAML keys, defaults and safety rules are documented in
 ``joint_command_model``; the threading in ``joint_command_ros``.
+
+Not a generalisation of ``rtc_digital_twin``'s ``joint_gui``: that tool
+publishes URDF joints as ``JointState`` for visualisation and has no notion
+of a measured state, an enabled hand or a safety stop.
 """
 
 from __future__ import annotations
