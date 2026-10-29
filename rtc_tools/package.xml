@@ -27,6 +27,8 @@
        PyQt5 it pulls in) is the ROS apt one; the venv PyQt5 above serves the
        python3 -m tools. -->
   <exec_depend>python_qt_binding</exec_depend>
+  <!-- yaml: GUI config (gui/joint_command_model.py) and the launch helpers. -->
+  <exec_depend>python3-yaml</exec_depend>
   <!-- derive_accel_limits: Pinocchio python bindings for
        M/g/c, xacro to expand the robot URDF. MuJoCo (optional cross-check) is a
        venv dependency like the other tools. -->
@@ -44,7 +46,6 @@
        compare_mjcf_urdf 를 발사한다 (#392 재발 방지 게이트). 데이터 전용
        패키지이므로 <depend> 가 아니라 test 축으로만 건다 (ARCH-5). -->
   <test_depend>robot_descriptions</test_depend>
-  <test_depend>python3-yaml</test_depend>
   <!-- 조합 모델(ur5e_assm_v1, iiwa7_leap, assm_v1)의 URDF 는 *.urdf.xacro 라
        게이트가 테스트 시점에 확장한다 (#414). -->
   <test_depend>xacro</test_depend>
