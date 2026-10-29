@@ -13,7 +13,7 @@ namespace: /p2
 sides: [right, left]
 
 publish_rate_hz: 50.0    # 활성 손마다 JointCommand 발행 주기 [Hz] (1 ~ 1000)
-slew_rate_deg_s: 90.0    # 명령이 목표를 따라가는 최대 속도 [deg/s] (0 = 제한 없음)
+slew_rate_deg_s: 180.0    # 명령이 목표를 따라가는 최대 속도 [deg/s] (0 = 제한 없음)
 stale_timeout_ms: 100.0  # joint_states 가 이보다 오래되면 그 손을 자동 Disable [ms]
 
 # 손별 · 관절별 슬라이더 초기 범위 [deg] — {관절 이름: [min, max]}, 절대 상한 ±180.
@@ -29,13 +29,13 @@ stale_timeout_ms: 100.0  # joint_states 가 이보다 오래되면 그 손을 �
 ranges_deg:
   right:
     thumb_cmc_aa: [-120.0, -5.0]
-    thumb_cmc_fe: [-86.0, -9.0]
-    thumb_mcp_fe: [7.0, 167.0]
+    thumb_cmc_fe: [-85.0, -5.0]
+    thumb_mcp_fe: [5.0, 175.0]
     index_mcp_aa: [5.0, 85.0]
     index_mcp_fe: [2.0, 14.0]
-    index_dip_fe: [-85.0, -6.0]
-    middle_mcp_aa: [-84.0, -6.0]
-    middle_mcp_fe: [-86.0, -6.0]
-    middle_dip_fe: [-85.0, -6.0]
-    ring_mcp_fe: [6.0, 82.0]
+    index_dip_fe: [-85.0, -5.0]
+    middle_mcp_aa: [-85.0, -5.0]
+    middle_mcp_fe: [-85.0, -5.0]
+    middle_dip_fe: [-85.0, -5.0]
+    ring_mcp_fe: [5.0, 85.0]
   left: {}
