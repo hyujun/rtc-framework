@@ -17,37 +17,38 @@ slew_rate_deg_s: 360.0  # 명령이 목표를 따라가는 최대 속도 [deg/s]
 stale_timeout_ms: 100.0  # joint_states 가 이보다 오래되면 그 손을 자동 Disable [ms]
 
 # 손별 · 관절별 슬라이더 초기 범위 [deg] — {관절 이름: [min, max]}, 절대 상한 ±180.
-# 관절 이름은 손 노드의 joint_states 이름이다 (udp_hand_node_p2.yaml 의 offsets 주석 순서).
+# 관절 이름은 손 노드의 joint_states 이름이다 (udp_hand_node_p2.yaml 의 손별 joint_state_names).
 # 적지 않은 관절은 GUI 가 처음 받은 측정 위치 ±10 deg 로 시작한다. GUI 에서 바꾼 범위는
 # 저장되지 않는다 (Reset ranges 로 이 값으로 돌아간다).
 #
 # right: 2026-10-29 PC#3 run 두 번 (hand_gui_261029_114329 · hand_gui2_261029_151906) 에서
 # 측정 위치가 실제로 간 구간을 기준으로 정한 값.
-# left: right 와 같은 크기, 부호는 hand_gui2_261029_151906 의 왼손 측정 — index_mcp_aa 만 같고
-# 나머지 9 개는 반대다. 오른손 값을 그대로 옮기지 않는다.
-# 상한이 기구 끝단 너머일 수 있다: 오른손 ring_mcp_fe 는 첫 run 에서 82.7 deg 에 멈추고 ~1 A 를
-# 유지했다 (명령 88.9). 끝단에 닿으면 전류가 포화된 채 남으니 목표를 끝단 안쪽으로 둔다.
+# left: right 와 같은 크기, 부호는 hand_gui2_261029_151906 의 왼손 측정 —
+# right_ · left_active_thumb_pip_link02_joint 만 같고 나머지 9 개는 반대다. 오른손 값을 그대로
+# 옮기지 않는다.
+# 상한이 기구 끝단 너머일 수 있다: right_active_ring_mcp_joint 는 첫 run 에서 82.7 deg 에 멈추고
+# ~1 A 를 유지했다 (명령 88.9). 끝단에 닿으면 전류가 포화된 채 남으니 목표를 끝단 안쪽으로 둔다.
 # Enable 순간의 측정 위치가 범위 밖이면 Enable 이 거부된다 — Disable 상태에서 그 관절을 넓힌다.
 ranges_deg:
   right:
-    thumb_cmc_aa: [-120.0, -5.0]
-    thumb_cmc_fe: [-85.0, -5.0]
-    thumb_mcp_fe: [5.0, 175.0]
-    index_mcp_aa: [5.0, 85.0]
-    index_mcp_fe: [2.0, 14.0]
-    index_dip_fe: [-85.0, -5.0]
-    middle_mcp_aa: [-85.0, -5.0]
-    middle_mcp_fe: [-85.0, -5.0]
-    middle_dip_fe: [-85.0, -5.0]
-    ring_mcp_fe: [5.0, 85.0]
+    right_cmc_01_joint: [-120.0, -5.0]
+    right_cmc_02_joint: [-85.0, -5.0]
+    right_thumb_mcp_joint: [5.0, 175.0]
+    right_active_thumb_pip_link02_joint: [5.0, 85.0]
+    right_index_mcp_rotate_joint: [2.0, 14.0]
+    right_index_mcp_joint: [-85.0, -5.0]
+    right_active_index_pip_joint: [-85.0, -5.0]
+    right_middle_mcp_joint: [-85.0, -5.0]
+    right_active_middle_pip_joint: [-85.0, -5.0]
+    right_active_ring_mcp_joint: [5.0, 85.0]
   left:
-    thumb_cmc_aa: [5.0, 120.0]
-    thumb_cmc_fe: [5.0, 85.0]
-    thumb_mcp_fe: [-175.0, -5.0]
-    index_mcp_aa: [5.0, 85.0]
-    index_mcp_fe: [-14.0, -2.0]
-    index_dip_fe: [5.0, 85.0]
-    middle_mcp_aa: [5.0, 85.0]
-    middle_mcp_fe: [5.0, 85.0]
-    middle_dip_fe: [5.0, 85.0]
-    ring_mcp_fe: [-85.0, -5.0]
+    left_cmc_01_joint: [5.0, 120.0]
+    left_cmc_02_joint: [5.0, 85.0]
+    left_thumb_mcp_joint: [-175.0, -5.0]
+    left_active_thumb_pip_link02_joint: [5.0, 85.0]
+    left_index_mcp_rotate_joint: [-14.0, -2.0]
+    left_index_mcp_joint: [5.0, 85.0]
+    left_active_index_pip_link02_joint: [5.0, 85.0]
+    left_middle_mcp_joint: [5.0, 85.0]
+    left_active_middle_pip_link02_joint: [5.0, 85.0]
+    left_active_ring_mcp_joint: [-85.0, -5.0]
