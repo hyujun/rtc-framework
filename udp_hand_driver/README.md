@@ -15,13 +15,13 @@
 
 | 스레드 | 스케줄러 | 하는 일 |
 |---|---|---|
-| `hand_comm` (CommLoop) | **SCHED_FIFO 65**, `hand_driver` slot | 링크 I/O (손이 둘이면 tick 마다 목록 순서로) · 센서 처리 · ONNX 추론 · SeqLock store |
-| main (executor) | CFS, `hand_driver` slot | publish (SeqLock 을 당겨서 발행), 명령 · calib 구독 |
+| `hand_comm` (CommLoop) | **SCHED_FIFO 65**, hand slot 상속 | 링크 I/O (손이 둘이면 tick 마다 목록 순서로) · 센서 처리 · ONNX 추론 · SeqLock store |
+| main (executor) | CFS, hand slot (`hand_cpu_slot`) | publish (SeqLock 을 당겨서 발행), 명령 · calib 구독 |
 | failure detector | CFS nice −5, 상속 | 50 Hz 감시 |
 | `hand_aux_io` | CFS, aux slot (`aux_cpu_slot`) | 타이밍 CSV drain, stats JSON — blocking 파일 쓰기 |
 | DDS | CFS, `hand_driver` slot | launch `pin_dds_threads_to_slot` 이 co-pin (robot launch 전용) |
 
-publish 는 RT tick 이 호출하는 push 가 아니라 executor 가 `loop_rate_hz × 2` 로 SeqLock 을 폴링하는 pull 이다. mailbox 는 latest-wins 라 밀린 구간의 중간 샘플은 덮인다. `hand_comm` 와 detector 는 `cpu_core=-1` 로 프로세스 affinity 를 상속하며, main 과 `hand_aux_io` 는 노드가 스스로 pin 한다.
+publish 는 RT tick 이 호출하는 push 가 아니라 executor 가 `loop_rate_hz × 2` 로 SeqLock 을 폴링하는 pull 이다. mailbox 는 latest-wins 라 밀린 구간의 중간 샘플은 덮인다. `hand_comm` 와 detector 는 `cpu_core=-1` 로 프로세스 affinity 를 상속하며, main 과 `hand_aux_io` 는 노드가 스스로 pin 한다. hand slot 의 기본값은 tier 표의 `hand_driver` slot 이고, **단독 launch 에서만** yaml 의 `hand_cpu_slot` 이 그것을 바꾼다 — robot launch 는 두 slot 을 tier 값으로 yaml 뒤에 명시 전달하므로 yaml 로는 움직이지 않는다 (DDS co-pin 과 같은 출처).
 
 > ⚠️ **실기 RT 배포에서는 `use_cpu_affinity:=false` 를 쓰지 말 것.** 이 스위치는 프로세스 내부 pin 2개만 끄고 스케줄링 정책은 그대로 둔다. pin 없는 FIFO 65 CommLoop 은 아무 코어로나 이주할 수 있고, `mpc_main` (FIFO 60) 이 핀된 코어에 올라가면 우선순위가 더 높아 **그 solve 를 선점**한다 (`rt_control` 90 · `rt_callback` 70 은 영향 없음). 개발 노트북 · 컨테이너 · cpuset 없는 CI 처럼 격리가 아예 없는 환경 전용이다.
 
@@ -73,7 +73,7 @@ launch 는 노드를 띄운 뒤 **자동으로 configure → activate** 한다. 
 | `cmd_ack` | — (노드 기본 `none`) | `echo` \| `none`: `2` 펌웨어의 CMD echo 여부. firmware 에도 전파 |
 | `req_mode` | `auto` | `auto` (두 손 · `cmd_ack none` 이면 `broadcast`, 그 밖 `per_hand`) \| `per_hand` \| `broadcast` ([두 손](#두-손-hand_sides)) |
 | `sil_mode` | `off` | `off` \| `loopmodel` \| `firmware` ([SIL 모드](#sil-모드-sil_mode)) |
-| `use_cpu_affinity` | `true` | 프로세스 내부 pin on/off ([스레드 모델](#스레드-모델) 의 경고). `aux_cpu_slot` 은 YAML 전용 |
+| `use_cpu_affinity` | `true` | 프로세스 내부 pin on/off ([스레드 모델](#스레드-모델) 의 경고). `hand_cpu_slot` · `aux_cpu_slot` 은 YAML 전용 |
 
 ### 토픽
 
@@ -213,7 +213,7 @@ ros2 topic echo /hand/link_status --once     # 별도 터미널
 | `startup_grace_ms` / `link_startup_grace_ms` / `sensor_startup_grace_ms` | `1000.0` / `100.0` / `0.0` | 기동 직후 rate / link / 센서 검사 유예 [ms] |
 | `sil_mode` | `"off"` | [SIL 모드](#sil-모드-sil_mode) |
 | `fake_lpf_time_constant_s` · `fake_effort_stiffness` · `fake_effort_damping` | `0.1` · `1.0` · `0.1` | `loopmodel` 전용 |
-| `aux_cpu_slot` / `use_cpu_affinity` | `0` / `true` | `hand_aux_io` 가 붙을 slot (`-1` = pin 안 함) / 프로세스 내부 pin on-off. 이 둘만 노드 생성자에서 declare 된다 |
+| `hand_cpu_slot` / `aux_cpu_slot` / `use_cpu_affinity` | tier `hand_driver` slot / `0` / `true` | main 레인 (hand_comm 이 상속) 이 붙을 slot — 단독 launch 전용, robot launch 는 덮어쓴다 / `hand_aux_io` 가 붙을 slot / 프로세스 내부 pin on-off. 정수 slot 인덱스, `-1` = 그 레인 pin 안 함. 이 셋만 노드 생성자에서 declare 된다 |
 
 ### `fingertip_ft_inferencer.yaml`
 

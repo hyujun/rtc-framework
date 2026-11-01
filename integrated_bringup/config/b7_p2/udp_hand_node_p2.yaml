@@ -24,7 +24,9 @@
 #     선언과 어긋나므로 키 자체를 뺀다. 관절 이름은 아래 손별 블록에 적는다.
 #   - target_ip · target_port · local_ip · local_interface: UDP (1a · 1b) 전용.
 #   - baro/tof LPF · drift · fake_* (loopmodel): 1a / loopmodel 전용, C++ 기본값.
-#   - aux_cpu_slot · use_cpu_affinity: 기본값 (slot 은 rtc_base thread layout tier 가 정한다).
+#   - hand_cpu_slot · aux_cpu_slot · use_cpu_affinity: 기본값 (slot 은 rtc_base thread layout
+#     tier 가 정한다). 이 파일은 udp_hand.launch.py `params_file:=` 로 단독 띄우므로
+#     `hand_cpu_slot: N` (정수 slot) 을 적으면 그 코어로 간다 — generic yaml 의 설명 참조.
 /**:
   ros__parameters:
     # -- SIL mode --
