@@ -147,6 +147,16 @@ struct DualArmConfig {
   double joint_velocity_max{0.0};  ///< [rad/s], caps the device rating
   bool brake_enabled{false};
   double brake_margin{1.0};
+  /// `clik.collision_damper` (#642): the capsule distance rows of the solve
+  /// (rtc_tsid Config::collision_damper). Absent or `enabled: false` = none.
+  struct CollisionDamper {
+    bool enabled{false};
+    std::string capsules_file;  ///< robot-level capsule spec (absolute, package://, or under the share config dir)
+    double d_influence{0.0};    ///< [m]
+    double d_safe{0.0};         ///< [m]
+    double xi{0.0};             ///< [m/s]
+  };
+  CollisionDamper collision_damper;
 
   double linear_speed{0.0};       ///< [m/s]
   double angular_speed{0.0};      ///< [rad/s]
@@ -340,6 +350,9 @@ class DemoDualArmController final : public rtc::RTControllerInterface {
 
   // ── Model and solve (built by BuildRuntime) ──────────────────────────────
   std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
+  /// The capsule spec path of `clik.collision_damper.capsules_file` (#642).
+  [[nodiscard]] static std::string ResolveCapsulesPath(const std::string& spec);
+
   std::unique_ptr<CombinedModelCache> combined_cache_;
   rtc::tsid::ClikReferenceGenerator clik_;
   bool clik_ready_{false};

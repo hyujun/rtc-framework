@@ -8,7 +8,10 @@
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/hand_fk_wiring.hpp"
 #include "integrated_bringup/support/model_config_lookup.hpp"
+#include "rtc_urdf_bridge/collision/capsule_model.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+
+#include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include <rclcpp/logging.hpp>
 
@@ -18,6 +21,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace integrated_bringup {
@@ -136,6 +140,28 @@ DualArmConfig ParseDualArmConfig(const YAML::Node& cfg) {
     out.brake_margin = RequireDouble(brake, "margin", "clik.brake.");
     RequireRange(out.brake_margin > 0.0 && out.brake_margin <= 1.0, "clik.brake.margin",
                  "in (0, 1]");
+  }
+  // The collision damper (#642): an optional block — the one key of this
+  // controller with a default, off, because a profile without the capsule spec
+  // has nothing to damp. Present, every key of it is required.
+  if (clik["collision_damper"]) {
+    const YAML::Node damper = Require(clik, "collision_damper", "clik.");
+    const YAML::Node enabled = Require(damper, "enabled", "clik.collision_damper.");
+    try {
+      out.collision_damper.enabled = enabled.as<bool>();
+    } catch (const std::exception&) {
+      Fail("'clik.collision_damper.enabled' is not a boolean");
+    }
+    out.collision_damper.capsules_file =
+        RequireString(damper, "capsules_file", "clik.collision_damper.");
+    out.collision_damper.d_influence =
+        RequireDouble(damper, "d_influence", "clik.collision_damper.");
+    out.collision_damper.d_safe = RequireDouble(damper, "d_safe", "clik.collision_damper.");
+    out.collision_damper.xi = RequireDouble(damper, "xi", "clik.collision_damper.");
+    RequireRange(out.collision_damper.d_safe >= 0.0, "clik.collision_damper.d_safe", ">= 0");
+    RequireRange(out.collision_damper.d_influence > out.collision_damper.d_safe,
+                 "clik.collision_damper.d_influence", "> d_safe");
+    RequireRange(out.collision_damper.xi > 0.0, "clik.collision_damper.xi", "> 0");
   }
 
   // ── target frames ─────────────────────────────────────────────────────────
@@ -405,10 +431,35 @@ std::string DemoDualArmController::BuildRuntime() {
   clik_ready_ = true;
   RCLCPP_INFO(logger_,
               "[dualarm] ready: %zu task(s), %zu posture group(s), body %d + hand %d joints, "
-              "eta_tau %.2f, braking bound %s",
+              "eta_tau %.2f, braking bound %s, collision damper %s",
               num_tasks_, num_posture_groups_, body_dof_, hand_dof_, cfg_.eta_tau,
-              cfg_.brake_enabled ? "on" : "off");
+              cfg_.brake_enabled ? "on" : "off", cfg_.collision_damper.enabled ? "on" : "off");
   return {};
+}
+
+// `package://pkg/rel` through ament; an absolute path as it is; a relative
+// one under this package's share config directory (where the profiles live).
+std::string DemoDualArmController::ResolveCapsulesPath(const std::string& spec) {
+  constexpr std::string_view kPackage = "package://";
+  if (spec.rfind(kPackage, 0) == 0) {
+    const std::string rest = spec.substr(kPackage.size());
+    const std::size_t slash = rest.find('/');
+    const std::string pkg = rest.substr(0, slash);
+    const std::string rel = slash == std::string::npos ? std::string{} : rest.substr(slash + 1);
+    try {
+      return ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+    } catch (const std::exception&) {
+      return spec;  // left as given: the loader names it when it cannot open it
+    }
+  }
+  if (!spec.empty() && spec.front() == '/') {
+    return spec;
+  }
+  try {
+    return ament_index_cpp::get_package_share_directory("integrated_bringup") + "/config/" + spec;
+  } catch (const std::exception&) {
+    return spec;
+  }
 }
 
 std::string DemoDualArmController::SetupModel() {
@@ -707,6 +758,23 @@ std::string DemoDualArmController::SetupClik() {
   cfg.eta_tau = 1.0;
   cfg.brake_from_torque = cfg_.brake_enabled;
   cfg.brake_margin = cfg_.brake_enabled ? cfg_.brake_margin : 1.0;
+
+  // ── collision damper (#642) ───────────────────────────────────────────────
+  // The spec file is the robot-level one both consumers read; the workspace
+  // binds it to the control model the cache carries.
+  if (cfg_.collision_damper.enabled) {
+    const std::string path = ResolveCapsulesPath(cfg_.collision_damper.capsules_file);
+    try {
+      cfg.collision_damper.capsules = rtc_urdf_bridge::CapsuleModel::LoadYaml(path);
+    } catch (const std::exception& e) {
+      return "clik.collision_damper.capsules_file '" + path + "': " + e.what();
+    }
+    cfg.collision_damper.enabled = true;
+    cfg.collision_damper.model = combined_cache_->model();
+    cfg.collision_damper.d_influence = cfg_.collision_damper.d_influence;
+    cfg.collision_damper.d_safe = cfg_.collision_damper.d_safe;
+    cfg.collision_damper.xi = cfg_.collision_damper.xi;
+  }
 
   clik_.Init(nv, cfg);  // throws on a config it refuses; BuildRuntime reports it
   // After Init: before it only groups 0 and 1 exist to take a gain.

@@ -299,6 +299,50 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
     throw std::runtime_error(
         "ClikReferenceGenerator: brake_margin is set but brake_from_torque is off");
   }
+  // The collision damper (header note): the spec binds to the cache's model
+  // here (non-RT), one row per pair. Off, every field must be unset — a value
+  // set for a damper that is not on is refused rather than silently unused.
+  const Config::CollisionDamper& cd = config.collision_damper;
+  damper_ws_ = rtc_urdf_bridge::CapsuleWorkspace{};
+  n_damper_rows_max_ = 0;
+  if (cd.enabled) {
+    if (!cd.capsules || !cd.model) {
+      throw std::runtime_error(
+          "ClikReferenceGenerator: collision_damper needs the capsule spec and the model");
+    }
+    if (cd.model->nv != nv) {
+      throw std::runtime_error("ClikReferenceGenerator: collision_damper model nv " +
+                               std::to_string(cd.model->nv) + " != nv " + std::to_string(nv));
+    }
+    if (!std::isfinite(cd.d_safe) || cd.d_safe < 0.0 || !std::isfinite(cd.d_influence) ||
+        !(cd.d_influence > cd.d_safe) || !std::isfinite(cd.xi) || !(cd.xi > 0.0)) {
+      throw std::runtime_error(
+          "ClikReferenceGenerator: collision_damper needs 0 <= d_safe < d_influence and xi > 0, "
+          "got d_safe " +
+          std::to_string(cd.d_safe) + ", d_influence " + std::to_string(cd.d_influence) + ", xi " +
+          std::to_string(cd.xi));
+    }
+    rtc_urdf_bridge::CapsuleWorkspace::BindOptions opt;
+    opt.with_ball = false;  // the damper sees no ball: a ball at the origin would be avoided
+    if (damper_ws_.Bind(cd.capsules, *cd.model, opt) != rtc_urdf_bridge::CapsuleBindStatus::kOk) {
+      throw std::runtime_error("ClikReferenceGenerator: collision_damper: " +
+                               damper_ws_.BindError());
+    }
+    if (damper_ws_.NumSelfPairs() == 0) {
+      throw std::runtime_error(
+          "ClikReferenceGenerator: collision_damper: the capsule spec has no pair");
+    }
+    n_damper_rows_max_ = static_cast<int>(damper_ws_.NumSelfPairs());
+  } else if (cd.capsules || cd.model || cd.d_influence != 0.0 || cd.d_safe != 0.0 ||
+             cd.xi != 0.0) {  // NaN lands here too
+    throw std::runtime_error(
+        "ClikReferenceGenerator: collision_damper fields are set but it is not enabled");
+  }
+  damper_on_ = cd.enabled;
+  damper_d_i_ = cd.d_influence;
+  damper_d_s_ = cd.d_safe;
+  damper_xi_ = cd.xi;
+  n_damper_rows_ = 0;
 
   nv_ = nv;
   arm_v_idx_ = config.arm_v_idx;
@@ -394,7 +438,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   // per tick. Dim fields are fixed so QPSolverWrapper only update()s on the RT
   // path (no re-init / heap alloc). kKinematic / kDynamic add their rows BELOW
   // the box (rewritten each tick); kNone adds none, so its QP is the legacy one.
-  const int n_ineq = nv_ + n_accel_rows_max_;
+  const int n_ineq = nv_ + n_accel_rows_max_ + n_damper_rows_max_;
   qp_data_.Init(nv_, 0, n_ineq);
   qp_data_.C.topLeftCorner(nv_, nv_).setIdentity();
   if (n_accel_rows_max_ > 0) {
@@ -408,6 +452,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   QPSolverConfig solver_cfg;
   solver_cfg.max_iter = config.max_iter;
   qp_solver_.Init(nv_, 0, n_ineq, solver_cfg);
+  InertDamperRows();
 }
 
 bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_idx,
@@ -680,8 +725,12 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache,
   AddPostureAndDamping();
 
   AssembleBox(cache.q, in.dt);
-  if (!ApplyBrakeBound(cache, in.dt) || !AssembleAccelRows(cache, in.tasks, in.dt)) {
-    last_solve_.non_finite = true;  // a non-finite M, h, v or drift
+  // The damper rows before the accel rows: a torque row that is not finite
+  // then fails the call AFTER the damper's path ran, which is how the
+  // allocation gate measures that path without a solve.
+  if (!ApplyBrakeBound(cache, in.dt) || !AssembleDamperRows(cache) ||
+      !AssembleAccelRows(cache, in.tasks, in.dt)) {
+    last_solve_.non_finite = true;  // a non-finite M, h, v, drift or distance row
     return Fail(cache);
   }
   return SolveAndIntegrate(cache, in.dt, in.reseed_anchor);
@@ -1068,6 +1117,7 @@ bool ClikReferenceGenerator::ApplyBrakeBound(const PinocchioCache& cache, double
 bool ClikReferenceGenerator::AssembleAccelRows(const PinocchioCache& cache,
                                                const PinocchioCache::RegisteredFrame& rf, double dt,
                                                bool axis_rows) noexcept {
+  InertDamperRows();  // the single-task overloads carry no damper row
   n_accel_rows_ = 0;
   if (accel_constraint_ == AccelConstraint::kNone) {
     return true;  // the legacy QP: no rows, nothing touched
@@ -1220,7 +1270,7 @@ bool ClikReferenceGenerator::Fail(const PinocchioCache& cache) noexcept {
   v_ref_.setZero();
   anchor_initialized_ = false;  // force a measured re-anchor on recovery
   v_prev_.setZero();            // the command this tick was v_ref = 0
-  if (n_accel_rows_max_ > 0) {
+  if (n_accel_rows_max_ > 0 || n_damper_rows_max_ > 0) {
     // With coupling rows a failed solve's duals are no start for the next
     // tick: warm-started from them ProxQP kept reporting PRIMAL_INFEASIBLE
     // after one bad tick. kNone keeps the legacy warm start (golden).
@@ -1235,21 +1285,106 @@ bool ClikReferenceGenerator::AccelRowsHold(const Eigen::VectorXd& v) noexcept {
   constexpr double kAbs = 1e-6;
   constexpr double kRel = 1e-6;
   const int N = nv_;
-  int binding = 0;
-  bool hold = true;
-  for (int k = 0; k < n_accel_rows_; ++k) {
-    const double r = qp_data_.C.row(N + k).dot(v);
-    const double lo = qp_data_.l(N + k);
-    const double hi = qp_data_.u(N + k);
+  const auto check = [&](int row, bool& hold, int& binding) {
+    const double r = qp_data_.C.row(row).dot(v);
+    const double lo = qp_data_.l(row);
+    const double hi = qp_data_.u(row);
     const double tol = kAbs + kRel * std::max(std::abs(lo), std::abs(hi));
     if (!(r >= lo - tol) || !(r <= hi + tol)) {  // NaN → broken
       hold = false;
     } else if (r <= lo + tol || r >= hi - tol) {
       ++binding;
     }
+  };
+  int binding = 0;
+  bool hold = true;
+  for (int k = 0; k < n_accel_rows_; ++k) {
+    check(N + k, hold, binding);
   }
   last_solve_.accel_rows_binding = binding;
-  return hold;
+  last_solve_.accel_rows_violated = !hold;
+  // The damper rows: the inert ones hold by their open bounds; a binding one
+  // is a pair the solution moves apart at exactly the allowed approach speed.
+  int damper_binding = 0;
+  bool damper_hold = true;
+  for (int k = 0; k < n_damper_rows_max_; ++k) {
+    check(N + n_accel_rows_max_ + k, damper_hold, damper_binding);
+  }
+  last_solve_.damper_rows_binding = damper_binding;
+  last_solve_.damper_rows_violated = !damper_hold;
+  return hold && damper_hold;
+}
+
+bool ClikReferenceGenerator::AssembleDamperRows(const PinocchioCache& cache) noexcept {
+  n_damper_rows_ = 0;
+  last_solve_.damper_rows = 0;
+  last_solve_.damper_pairs_invalid = 0;
+  last_solve_.damper_min_distance = std::numeric_limits<double>::quiet_NaN();
+  if (!damper_on_) {
+    return true;
+  }
+  // The cache's model is the one the workspace binds (the fingerprint says
+  // so), and its Update() left oMi and J at the command state.
+  if (!cache.model_ptr || !damper_ws_.UpdatePlacements(*cache.model_ptr, cache.data)) {
+    return false;
+  }
+  last_solve_.damper_pairs_invalid = static_cast<int>(damper_ws_.EvaluateDistances());
+  if (!damper_ws_.EvaluateGradients(*cache.model_ptr, cache.data)) {
+    return false;
+  }
+  const int N = nv_;
+  const int R0 = nv_ + n_accel_rows_max_;
+  const double inf = std::numeric_limits<double>::infinity();
+  const double inv_band = 1.0 / (damper_d_i_ - damper_d_s_);
+  double d_min = inf;
+  bool any = false;
+  bool finite = true;
+  for (int k = 0; k < n_damper_rows_max_; ++k) {
+    const auto p = static_cast<std::size_t>(k);
+    const int row = R0 + k;
+    qp_data_.C.row(row).setZero();
+    qp_data_.l(row) = -inf;
+    qp_data_.u(row) = inf;
+    if (!damper_ws_.PairValid(p)) {
+      continue;
+    }
+    const double d = damper_ws_.Distance(p);
+    any = true;
+    d_min = std::min(d_min, d);
+    if (!(d < damper_d_i_)) {
+      continue;  // outside the influence distance: inert
+    }
+    const Eigen::Ref<const Eigen::VectorXd> g = damper_ws_.Gradient(p);
+    const double norm = g.norm();
+    if (!(norm > 1e-9)) {
+      continue;  // no column moves the pair apart (coincident axes, one body): inert
+    }
+    // ∇dᵀ v ≥ −ξ (d − d_s)/(d_i − d_s), capped at ξ inside d_s — a pair already
+    // inside is asked to separate at ξ, not faster than the box allows.
+    const double rhs = std::min(damper_xi_, -damper_xi_ * (d - damper_d_s_) * inv_band);
+    const double s = 1.0 / norm;
+    qp_data_.C.row(row).head(N) = g.transpose() * s;
+    qp_data_.l(row) = rhs * s;
+    finite = finite && std::isfinite(rhs * s) && qp_data_.C.row(row).allFinite();
+    ++n_damper_rows_;
+  }
+  last_solve_.damper_rows = n_damper_rows_;
+  last_solve_.damper_min_distance = any ? d_min : std::numeric_limits<double>::quiet_NaN();
+  return finite;
+}
+
+void ClikReferenceGenerator::InertDamperRows() noexcept {
+  n_damper_rows_ = 0;
+  if (n_damper_rows_max_ == 0) {
+    return;
+  }
+  const double inf = std::numeric_limits<double>::infinity();
+  const int R0 = nv_ + n_accel_rows_max_;
+  for (int k = 0; k < n_damper_rows_max_; ++k) {
+    qp_data_.C.row(R0 + k).setZero();
+    qp_data_.l(R0 + k) = -inf;
+    qp_data_.u(R0 + k) = inf;
+  }
 }
 
 bool ClikReferenceGenerator::SolveAndIntegrate(const PinocchioCache& cache, double dt,
@@ -1267,10 +1402,10 @@ bool ClikReferenceGenerator::SolveAndIntegrate(const PinocchioCache& cache, doub
     return Fail(cache);
   }
   v_ref_ = res.x_opt.head(N);
-  if (n_accel_rows_ > 0 && !AccelRowsHold(v_ref_)) {
+  if ((n_accel_rows_ > 0 || n_damper_rows_ > 0) && !AccelRowsHold(v_ref_)) {
     // Converged but off a row: the rows and the velocity ∩ position box could
     // not hold together. A command that breaks the constraint is not returned.
-    last_solve_.accel_rows_violated = true;
+    // AccelRowsHold flagged the block (accel_rows_violated / damper_rows_violated).
     last_solve_.converged = false;
     return Fail(cache);
   }

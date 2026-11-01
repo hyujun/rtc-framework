@@ -20,6 +20,7 @@
 | `clik.limit_margin` | rad | 몸통 군 위치 box 를 device 한계에서 좁히는 폭 (>= 0). 범위가 뒤집히면 configure 거부. 손은 한계 그대로. 이 띠 안에 있는 관절에서는 풀이를 시작하지 않습니다 (아래 "시드") | YAML 전용 |
 | `clik.joint_velocity_max` | rad/s | device 정격 위의 상한 (> 0). 속도 box = 둘 중 작은 값 | YAML 전용 |
 | `clik.brake.{enabled,margin}` | – | 토크에서 얻은 감속도로 한계 앞 속도를 묶습니다. margin (0, 1] | YAML 전용 |
+| `clik.collision_damper.{enabled,capsules_file,d_influence,d_safe,xi}` | – · 경로 · m · m · m/s | 충돌 damper (#642): capsule 쌍마다 $\nabla d^\top v \ge -\xi\,(d-d_s)/(d_i-d_s)$ ($d < d_i$ 일 때, $d_s$ 안쪽은 $\xi$ 로 상한). `capsules_file` 은 로봇 수준 spec (`config/g1_p1b/collision_capsules.yaml`; 절대경로 · `package://` · share `config/` 상대). 블록이 없으면 **꺼짐** — 유일한 기본값. `d_influence > d_safe >= 0`, `xi > 0`. 행을 못 지키는 tick 은 풀이 실패 (`damper_rows_violated`) | YAML 전용 |
 | `clik.target_frames` | – | 목표가 **표현될** 수 있는 frame 이름 (<= 8). 아래 "목표의 frame" | YAML 전용 |
 | `clik.tasks[]` `name` | – | 과제 이름 = 토픽 토큰 `[A-Za-z][A-Za-z0-9_]*`. <= 4 개 | YAML 전용 |
 | `…` `frame` · `base_frame` · `kind` | – | 움직이는 frame · 목표 / 오차 / 행을 잴 frame (다른 frame 이어야 하고 둘 다 이름이 있어야 합니다) · `se3` 만 | YAML 전용 |
@@ -93,7 +94,8 @@ ros2 param set /demo_dualarm_controller/demo_dualarm_controller tasks.right_hand
 | 가중 | 두 손 1.0 / 1.0, 자세 1e-3 · 1e-4 (튜닝하지 않은 출발값) | 두 과제가 열을 공유하지 않아 손 사이 우선순위는 결과에 무관 |
 | 목표 frame | `frame_id` 가 base 와 다르면 적용하는 tick 에 한 번 변환 | 이후 base 가 움직이면 목표가 따라가도록 |
 | 이득 상한 | $1/h$ 를 YAML · runtime 파라미터 · tick 에서 각각 검사 | 진동 없는 조건 $Kh\le1$ |
-| supervisor · 충돌 damper | 없음 (QP 실패 연속 시 controller-local fault 만) | 이 단계의 범위 밖 |
+| supervisor | 없음 (QP 실패 연속 시 controller-local fault 만) | 이 단계의 범위 밖 |
+| 충돌 damper | `clik.collision_damper` (#642) — capsule 쌍의 접근 속도 제한, 기본 꺼짐 | 쌍 선택 · 이득 튜닝은 범위 밖 |
 | 자세 항 | $K_q>0$ 이라 정상점에 과제 오차가 남음 ($K_q=0$ 에서만 거의 0) | 자세 항이 과제를 끌 수 있음 |
 
 E-STOP 은 sim 에서 걸 수단이 없어 gtest 로만 확인한다 ([docs/testing.md](../../docs/testing.md)).

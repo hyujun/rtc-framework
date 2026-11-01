@@ -42,6 +42,7 @@
 #include "clik_test_util.hpp"
 #include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
+#include "rtc_urdf_bridge/collision/capsule_workspace.hpp"
 #include "tree_fixture.hpp"
 
 namespace rtc::tsid {
@@ -104,6 +105,47 @@ class ClikMultiFrameMallocTest : public ::testing::Test {
     cfg.accel_constraint = Mode::kKinematic;
     cfg.task_accel_max_linear = 8.0;
     cfg.task_accel_max_angular = 20.0;
+    return cfg;
+  }
+
+  /// The torque rows plus the collision damper over the two arms (#642): the
+  /// rows read the workspace's coal distances and pinocchio Jacobians, both in
+  /// shared objects the C-level gate is here for.
+  [[nodiscard]] Clik::Config DamperConfig() const {
+    Clik::Config cfg = DynamicConfig();
+    cfg.collision_damper.enabled = true;
+    cfg.collision_damper.capsules = rtc_urdf_bridge::CapsuleModel::ParseYaml(R"(
+collision_capsules:
+  capsules:
+    - {name: torso, link: torso, p0: [0, 0, -0.1], p1: [0, 0, 0.35], radius: 0.1}
+    - {name: a_upper, link: arm_a_link_3, p0: [0, 0, 0], p1: [0.02, 0, -0.24], radius: 0.05}
+    - {name: a_fore, link: arm_a_link_5, p0: [0, 0, 0], p1: [0, 0, -0.16], radius: 0.04}
+    - {name: a_hand, link: arm_a_link_7, p0: [0, 0, 0], p1: [0, 0, -0.1], radius: 0.04}
+    - {name: b_upper, link: arm_b_link_3, p0: [0, 0, 0], p1: [0.02, 0, -0.24], radius: 0.05}
+    - {name: b_fore, link: arm_b_link_5, p0: [0, 0, 0], p1: [0, 0, -0.16], radius: 0.04}
+    - {name: b_hand, link: arm_b_link_7, p0: [0, 0, 0], p1: [0, 0, -0.1], radius: 0.04}
+  pairs:
+    - [a_upper, b_upper]
+    - [a_upper, b_fore]
+    - [a_upper, b_hand]
+    - [a_fore, b_upper]
+    - [a_fore, b_fore]
+    - [a_fore, b_hand]
+    - [a_hand, b_upper]
+    - [a_hand, b_fore]
+    - [a_hand, b_hand]
+    - [a_fore, torso]
+    - [a_hand, torso]
+    - [b_fore, torso]
+    - [b_hand, torso]
+)",
+                                                                             "malloc");
+    cfg.collision_damper.model = model_;
+    // Wide enough that every pair is inside the influence distance at the
+    // home posture: every row assembled, nothing inert.
+    cfg.collision_damper.d_influence = 2.0;
+    cfg.collision_damper.d_safe = 0.01;
+    cfg.collision_damper.xi = 0.2;
     return cfg;
   }
 
@@ -233,6 +275,28 @@ TEST_F(ClikMultiFrameMallocTest, EverythingBeforeTheSolveAllocatesNothingWithTor
   EXPECT_EQ(gen.LastSolve().tasks, 2);
   EXPECT_NE(gen.LastSolve().fb_saturated, 0U) << "premise: the cap path ran";
   EXPECT_EQ(c.c_malloc, 0U);
+  EXPECT_EQ(c.operator_new, 0);
+}
+
+TEST_F(ClikMultiFrameMallocTest, EverythingBeforeTheSolveAllocatesNothingWithDamperRows) {
+  Clik gen;
+  gen.Init(kNv, DamperConfig());
+  const std::array<Clik::FrameTask, 2> tasks = Tasks(true);
+  const Clik::MultiFrameInput in = Input(tasks);
+  WarmUp(gen, in);
+  ASSERT_FALSE(HasFatalFailure());
+  ASSERT_GT(gen.LastSolve().damper_rows, 0) << "premise: every pair inside d_influence";
+
+  // The same off-diagonal NaN as the torque-rows case: the damper rows are
+  // assembled first (distances, gradients, the rows), then the torque rows
+  // fail the call — the last step before the solve.
+  cache_.M(arm_a_[0], arm_a_[1]) = std::numeric_limits<double>::quiet_NaN();
+  const Counts c = Measure(gen, in);
+  EXPECT_FALSE(c.ok);
+  EXPECT_TRUE(gen.LastSolve().non_finite);
+  EXPECT_FALSE(gen.LastSolve().reached_solve) << "premise: the solver did not run";
+  EXPECT_GT(gen.LastSolve().damper_rows, 0) << "premise: the damper's path ran";
+  EXPECT_EQ(c.c_malloc, 0U) << "the damper's distance / gradient path allocates";
   EXPECT_EQ(c.operator_new, 0);
 }
 

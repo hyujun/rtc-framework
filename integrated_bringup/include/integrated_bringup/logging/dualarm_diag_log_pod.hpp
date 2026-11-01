@@ -29,6 +29,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -126,6 +127,14 @@ struct DualArmDiagLogPod {
   std::uint32_t rot_near_pi{0};   ///< bit k = task k
   std::uint64_t brake_active{0};  ///< bit i = model velocity index i
   std::uint64_t brake_static_infeasible{0};
+  /// `clik.collision_damper` (#642): rows active this tick (pairs inside
+  /// d_influence), how many the solution sat on, whether one broke (the
+  /// solve then failed), and the smallest pair distance at the command
+  /// state [m] (NaN: off, or no pair evaluated).
+  std::int32_t damper_rows{0};
+  std::int32_t damper_rows_binding{0};
+  bool damper_rows_violated{false};
+  double damper_min_dist{std::numeric_limits<double>::quiet_NaN()};
 
   // ── Supervision ───────────────────────────────────────────────────────────
   std::int32_t qp_fail_streak{0};
@@ -166,7 +175,8 @@ inline void WriteDualArmDiagLogHeader(std::ostream& os, const std::vector<std::s
         "hand_readable,reseeded";
   os << ",reached_solve,converged,rejected_input,non_finite,command_mismatch,accel_rows_violated,"
         "brake_box_empty,status,iterations,solve_time_us,accel_rows,accel_rows_binding,"
-        "fb_saturated,rot_near_pi,brake_active,brake_static_infeasible";
+        "fb_saturated,rot_near_pi,brake_active,brake_static_infeasible,"
+        "damper_rows,damper_rows_binding,damper_rows_violated,damper_min_dist";
   os << ",qp_fail_streak,track_err,group_goal_rejects";
   for (std::size_t k = 0; k < cols.tasks; ++k) {
     const std::string& n = task_names[k];
@@ -200,7 +210,8 @@ inline void WriteDualArmDiagLogRow(std::ostream& os, const DualArmDiagLogPod& p,
      << bit(p.accel_rows_violated) << ',' << bit(p.brake_box_empty) << ',' << p.status << ','
      << p.iterations << ',' << p.solve_time_us << ',' << p.accel_rows << ',' << p.accel_rows_binding
      << ',' << p.fb_saturated << ',' << p.rot_near_pi << ',' << p.brake_active << ','
-     << p.brake_static_infeasible;
+     << p.brake_static_infeasible << ',' << p.damper_rows << ',' << p.damper_rows_binding << ','
+     << bit(p.damper_rows_violated) << ',' << p.damper_min_dist;
   os << ',' << p.qp_fail_streak << ',' << p.track_err << ',' << p.group_goal_rejects;
   for (std::size_t k = 0; k < cols.tasks; ++k) {
     const auto& t = p.tasks[k];
@@ -227,7 +238,7 @@ inline void WriteDualArmDiagLogRow(std::ostream& os, const DualArmDiagLogPod& p,
 /// and the row to the same width.
 [[nodiscard]] constexpr std::size_t DualArmDiagLogColumnCount(
     const DualArmDiagLogColumns& cols) noexcept {
-  constexpr std::size_t kFixed = 10 + 16 + 3;
+  constexpr std::size_t kFixed = 10 + 20 + 3;
   constexpr std::size_t kPerTask = 5 + 7 + 7 + 8 + 7;
   return kFixed + (cols.tasks * kPerTask) + cols.joints;
 }

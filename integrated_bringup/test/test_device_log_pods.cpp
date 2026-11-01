@@ -1231,7 +1231,7 @@ TEST(DualArmDiagLogPod, HeaderColumnsMatchRowAndNameTheTasksAndJoints) {
   for (const char* column :
        {"right_hand_err_lin", "left_hand_err_ang", "left_hand_ref_qw", "right_hand_cmd_z",
         "left_hand_meas_valid", "right_hand_reject_unknown_frame", "left_hand_drop_unusable",
-        "q_cmd_j_c", "brake_static_infeasible", "track_err"}) {
+        "q_cmd_j_c", "brake_static_infeasible", "damper_min_dist", "track_err"}) {
     EXPECT_NE(hdr.find(column), std::string::npos) << column;
   }
   // The last column is the last joint's command.
@@ -2148,10 +2148,13 @@ const std::vector<std::string> kDualArmDiagTasks = {"right_hand", "left_hand"};
 const std::vector<std::string> kDualArmDiagJoints = {"j_a", "j_b", "j_c", "j_d", "j_e"};
 
 const std::vector<std::string> kDualArmDiagGlobalBools = {
-    "clik_ran",       "estop",      "fault_latched",    "body_readable",
-    "hand_readable",  "reseeded",   "reached_solve",    "converged",
-    "rejected_input", "non_finite", "command_mismatch", "accel_rows_violated",
-    "brake_box_empty"};
+    "clik_ran",         "estop",
+    "fault_latched",    "body_readable",
+    "hand_readable",    "reseeded",
+    "reached_solve",    "converged",
+    "rejected_input",   "non_finite",
+    "command_mismatch", "accel_rows_violated",
+    "brake_box_empty",  "damper_rows_violated"};
 
 std::vector<std::string> DualArmDiagBools() {
   auto bools = kDualArmDiagGlobalBools;
@@ -2219,6 +2222,9 @@ PodCells<DualArmPod> DualArmDiagBase() {
   integer("rot_near_pi", p.rot_near_pi);
   integer("brake_active", p.brake_active);
   integer("brake_static_infeasible", p.brake_static_infeasible);
+  integer("damper_rows", p.damper_rows);
+  integer("damper_rows_binding", p.damper_rows_binding);
+  b.Real("damper_min_dist", p.damper_min_dist);
   integer("qp_fail_streak", p.qp_fail_streak);
   b.Real("track_err", p.track_err);
   integer("group_goal_rejects", p.group_goal_rejects);
@@ -2269,7 +2275,8 @@ TEST(DualArmDiagLogPod, BoolColumnsAreOneHot) {
                                      {"non_finite", &Pod::non_finite},
                                      {"command_mismatch", &Pod::command_mismatch},
                                      {"accel_rows_violated", &Pod::accel_rows_violated},
-                                     {"brake_box_empty", &Pod::brake_box_empty}});
+                                     {"brake_box_empty", &Pod::brake_box_empty},
+                                     {"damper_rows_violated", &Pod::damper_rows_violated}});
   const std::pair<const char*, bool Pod::Task::*> per_task[] = {
       {"_valid", &Pod::Task::valid},
       {"_traj_active", &Pod::Task::traj_active},

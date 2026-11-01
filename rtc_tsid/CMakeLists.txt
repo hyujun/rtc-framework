@@ -226,6 +226,13 @@ if(BUILD_TESTING)
   target_include_directories(test_clik_multiframe PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/test ${_rtc_urdf_bridge_test_include})
 
+  # The collision damper of the multi-frame Compute() (#642): one hand sent
+  # through the other on the tree, judged by the test's own CapsuleWorkspace
+  # at the command state; the capped separation speed, the inert zero-gradient
+  # row, the failure branch and the Init refusals.
+  add_tsid_gtest(test_clik_collision_damper)
+  target_include_directories(test_clik_collision_damper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
+
   # RT-1 for the multi-frame Compute(): the C-level malloc gate, which sees
   # allocations made inside librtc_tsid / libpinocchio / ProxQP — an
   # operator-new counter does not (Eigen has its own allocator). The gate is

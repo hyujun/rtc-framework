@@ -165,6 +165,13 @@ struct Knobs {
   double track_err_max = 0.0;
   std::vector<std::string> target_frames = {"world", "pelvis", "torso_link"};
   bool with_hand = true;
+  /// `clik.collision_damper` (#642): the block is written when `damper` is
+  /// set, on `damper_capsules_file` (absolute).
+  bool damper = false;
+  std::string damper_capsules_file;
+  double damper_d_influence = 0.08;
+  double damper_d_safe = 0.02;
+  double damper_xi = 0.2;
   bool with_logs = false;
   bool log_entry_without_instance = false;  ///< a `logs` entry on_configure refuses
 };
@@ -195,8 +202,13 @@ inline std::string Yaml(const Knobs& k = {}) {
      << "  qp: {max_iter: 20}\n  accel_constraint: " << k.accel_constraint
      << "\n  eta_tau: " << k.eta_tau << "\n  limit_margin: " << k.limit_margin
      << "\n  joint_velocity_max: " << k.joint_velocity_max
-     << "\n  brake: {enabled: " << (k.brake ? "true" : "false") << ", margin: 0.9}\n"
-     << "  target_frames: [" << JoinQuoted(k.target_frames) << "]\n  tasks:\n";
+     << "\n  brake: {enabled: " << (k.brake ? "true" : "false") << ", margin: 0.9}\n";
+  if (k.damper) {
+    os << "  collision_damper: {enabled: true, capsules_file: \"" << k.damper_capsules_file
+       << "\", d_influence: " << k.damper_d_influence << ", d_safe: " << k.damper_d_safe
+       << ", xi: " << k.damper_xi << "}\n";
+  }
+  os << "  target_frames: [" << JoinQuoted(k.target_frames) << "]\n  tasks:\n";
   if (k.left_first) {
     task("left_hand", k.left_frame, k.left_base, k.weight_left);
     task("right_hand", k.right_frame, k.right_base, k.weight_right);

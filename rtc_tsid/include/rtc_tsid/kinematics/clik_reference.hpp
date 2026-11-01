@@ -4,6 +4,7 @@
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
+#include "rtc_urdf_bridge/collision/capsule_workspace.hpp"
 
 #include <Eigen/Cholesky>
 #include <Eigen/Core>
@@ -306,6 +307,33 @@ class ClikReferenceGenerator {
     // along the motion (file header) — a caller turning the bound on should
     // set it below 1. Must be 1 (unset) when brake_from_torque is off.
     double brake_margin{1.0};
+
+    // ── Collision damper (the multi-frame call only; #642). Off, every field
+    //    below unset, the QP is the one without it (n_ineq unchanged). ──
+    // For every pair j of the capsule spec with d_j(q_c) < d_influence a row
+    //   ∇d_j(q_c)ᵀ v ≥ −ξ (d_j − d_safe) / (d_influence − d_safe)
+    // (unit-norm; the right-hand side capped at ξ where d_j < d_safe), the
+    // others inert — one row per pair, allocated at Init. The distances and
+    // gradients are the CapsuleWorkspace's over the cache's model at the
+    // COMMAND state the cache is updated at (evaluate_at_command). A pair
+    // whose gradient vanishes on every column (coincident axes, capsules on
+    // one rigid body) keeps an inert row. A solve that cannot hold a row with
+    // the boxes and the torque rows fails the call like a broken torque row
+    // (SolveDiagnostics::damper_rows_violated → Fail()). The spec's pairs are
+    // all checked; narrowing them to the ones another planner marks active
+    // is not this core's (E3-F04 · F05).
+    struct CollisionDamper {
+      bool enabled{false};
+      /// The capsule spec (required when enabled). The workspace binds it to
+      /// `model`, which must be the model the Compute() cache carries.
+      std::shared_ptr<const rtc_urdf_bridge::CapsuleModel> capsules;
+      std::shared_ptr<const pinocchio::Model> model;
+      double d_influence{0.0};  ///< d_i [m], > d_safe
+      double d_safe{0.0};       ///< d_s [m], ≥ 0
+      double xi{0.0};           ///< ξ [m/s], > 0: the largest approach speed a row allows
+    };
+
+    CollisionDamper collision_damper;
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
@@ -540,6 +568,16 @@ class ClikReferenceGenerator {
     /// The bound left a joint no admissible velocity (only outside the
     /// position envelope); it was given v = 0 clamped into its box.
     bool brake_box_empty{false};
+    /// Config::collision_damper (the multi-frame call): rows active this call
+    /// (pairs inside d_influence with a usable gradient), how many the
+    /// solution sits on, whether it broke one (then the call failed), the
+    /// smallest pair distance at the command state [m] (NaN: off, or no
+    /// pair evaluated) and the pairs whose distance failed.
+    int damper_rows{0};
+    int damper_rows_binding{0};
+    bool damper_rows_violated{false};
+    double damper_min_distance{std::numeric_limits<double>::quiet_NaN()};
+    int damper_pairs_invalid{0};
   };
 
   [[nodiscard]] const SolveDiagnostics& LastSolve() const noexcept { return last_solve_; }
@@ -553,7 +591,7 @@ class ClikReferenceGenerator {
     anchor_initialized_ = false;
     command_check_armed_ = false;
     v_prev_.setZero();
-    if (n_accel_rows_max_ > 0) {
+    if (n_accel_rows_max_ > 0 || n_damper_rows_max_ > 0) {
       qp_solver_.ResetWarmStart();  // a new trial's rows start cold (kNone: legacy)
     }
   }
@@ -620,8 +658,15 @@ class ClikReferenceGenerator {
   // unit.
   [[nodiscard]] bool BuildTaskRows(const PinocchioCache& cache, const FrameTask& task, int k,
                                    TaskDiagnostics& diag) noexcept;
-  // Post-solve: every accel row holds at v (within tolerance); counts binding.
+  // Post-solve: every accel row and every damper row holds at v (within
+  // tolerance); counts the binding ones and flags the block that broke.
   [[nodiscard]] bool AccelRowsHold(const Eigen::VectorXd& v) noexcept;
+  // Config::collision_damper: the rows below the accel block from the
+  // workspace at the cache's state (no-op when off). Returns false when the
+  // cache's model is not the one the workspace binds, or a row is not finite.
+  [[nodiscard]] bool AssembleDamperRows(const PinocchioCache& cache) noexcept;
+  // The single-task overloads carry no damper row: every row inert.
+  void InertDamperRows() noexcept;
   // The failure outputs: q_ref = cache.q, v_ref = 0, re-anchor, v_prev = 0,
   // and (with accel rows) a cold solver start. Returns false for the caller.
   bool Fail(const PinocchioCache& cache) noexcept;
@@ -644,9 +689,17 @@ class ClikReferenceGenerator {
   AccelConstraint accel_constraint_{AccelConstraint::kNone};
   double task_a_lin_{0.0};  // kKinematic row bounds
   double task_a_ang_{0.0};
-  Eigen::VectorXd tau_bound_;        // [nv] eta_tau·tau_max (kDynamic)
-  int n_accel_rows_max_{0};          // extra QP rows allocated below the box
-  int n_accel_rows_{0};              // rows assembled by the current call
+  Eigen::VectorXd tau_bound_;  // [nv] eta_tau·tau_max (kDynamic)
+  int n_accel_rows_max_{0};    // extra QP rows allocated below the box
+  int n_accel_rows_{0};        // rows assembled by the current call
+  // Config::collision_damper: one row per spec pair below the accel block.
+  bool damper_on_{false};
+  int n_damper_rows_max_{0};
+  int n_damper_rows_{0};  // rows active in the current call
+  double damper_d_i_{0.0};
+  double damper_d_s_{0.0};
+  double damper_xi_{0.0};
+  rtc_urdf_bridge::CapsuleWorkspace damper_ws_;
   bool evaluate_at_command_{false};  // cache.q is the command state q_c
   double w_axis_{0.5};               // approach-axis rows weight
   double k_axis_{0.0};               // approach-axis gain K_a
