@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rtc_urdf_bridge VERSION 5.17.0 LANGUAGES CXX)
+project(rtc_urdf_bridge VERSION 5.18.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
