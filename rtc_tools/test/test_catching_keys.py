@@ -266,6 +266,15 @@ _SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME = (
     "segment_path_nodes",
     "segment_path_dev_max",
     "segment_path_dev_mean",
+    "segment_coll_rows",
+    "segment_coll_fallback",
+    "segment_coll_min_dist",
+    "segment_coll_active_nodes",
+    "segment_coll_slack_max",
+    "segment_coll_eps_lin",
+    "segment_ball_min_dist",
+    "segment_ball_active_nodes",
+    "segment_ball_inert_nodes",
 )
 
 
@@ -273,16 +282,18 @@ def test_the_column_alias_targets_are_the_segment_columns_the_cpp_headers_write(
     diag, events = _cpp_segment_columns()
     cpp_new = {c for c in [*diag, *events] if c.startswith("segment_")}
     added = set(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME)
-    assert len(added) == len(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME) == 57
+    # 57 → 66 with the collision rows' nine columns (#642, PROC-6: re-pinned
+    # in its own commit).
+    assert len(added) == len(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME) == 66
     assert added <= cpp_new
     assert len(ck.RENAMED_COLUMNS) == 49
     # Every renamed column, and nothing else: what the headers write beyond the
     # alias targets is exactly the columns added after the rename.
     assert set(ck.RENAMED_COLUMNS.values()) == cpp_new - added
     # 17 + 33 renamed columns, `segment_seq` is in both files; the events file
-    # has the 57 added ones as well.
+    # has the 66 added ones as well.
     assert len([c for c in diag if c.startswith("segment_")]) == 17
-    assert len([c for c in events if c.startswith("segment_")]) == 33 + 57
+    assert len([c for c in events if c.startswith("segment_")]) == 33 + 66
     # No header writes an old name any more; no old name is also a new one.
     assert not [c for c in [*diag, *events] if c in ck.RENAMED_COLUMNS]
     assert not set(ck.RENAMED_COLUMNS) & set(ck.RENAMED_COLUMNS.values())
