@@ -562,9 +562,9 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   void SetCollisionInputs(const BallPrediction& prediction, std::int64_t t_c, int n_pre,
                           const MpcSegmentCore& core, MpcSegmentCoreInput& in,
                           SegmentRecord& rec) const noexcept;
-  [[nodiscard]] SegmentOutcome Judge(MpcSegmentCore& core, const MpcSegmentCoreResult& r, bool ok,
-                                     int n_pre, int n_total, bool catch_core, std::int64_t start,
-                                     std::int64_t end, std::int64_t budget_ns, std::int64_t t_eff,
+  [[nodiscard]] SegmentOutcome Judge(const MpcSegmentCoreResult& r, bool ok, int n_pre, int n_total,
+                                     bool catch_core, std::int64_t start, std::int64_t end,
+                                     std::int64_t budget_ns, std::int64_t t_eff,
                                      SegmentRecord& rec) const noexcept;
   void PackSegment(const PlannerRtState& rt, std::uint64_t track_generation, std::uint32_t plan_id,
                    std::int64_t t_c, std::int64_t t_eff, int n_pre, int k0, int n_total,

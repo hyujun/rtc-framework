@@ -6,12 +6,11 @@
 
 #include "integrated_bringup/controllers/demo_dualarm_controller.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
+#include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/hand_fk_wiring.hpp"
 #include "integrated_bringup/support/model_config_lookup.hpp"
 #include "rtc_urdf_bridge/collision/capsule_model.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
-
-#include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include <rclcpp/logging.hpp>
 
@@ -437,31 +436,6 @@ std::string DemoDualArmController::BuildRuntime() {
   return {};
 }
 
-// `package://pkg/rel` through ament; an absolute path as it is; a relative
-// one under this package's share config directory (where the profiles live).
-std::string DemoDualArmController::ResolveCapsulesPath(const std::string& spec) {
-  constexpr std::string_view kPackage = "package://";
-  if (spec.rfind(kPackage, 0) == 0) {
-    const std::string rest = spec.substr(kPackage.size());
-    const std::size_t slash = rest.find('/');
-    const std::string pkg = rest.substr(0, slash);
-    const std::string rel = slash == std::string::npos ? std::string{} : rest.substr(slash + 1);
-    try {
-      return ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
-    } catch (const std::exception&) {
-      return spec;  // left as given: the loader names it when it cannot open it
-    }
-  }
-  if (!spec.empty() && spec.front() == '/') {
-    return spec;
-  }
-  try {
-    return ament_index_cpp::get_package_share_directory("integrated_bringup") + "/config/" + spec;
-  } catch (const std::exception&) {
-    return spec;
-  }
-}
-
 std::string DemoDualArmController::SetupModel() {
   const auto* sys_cfg = GetSystemModelConfig();
   if (sys_cfg == nullptr || sys_cfg->urdf_path.empty()) {
@@ -763,7 +737,7 @@ std::string DemoDualArmController::SetupClik() {
   // The spec file is the robot-level one both consumers read; the workspace
   // binds it to the control model the cache carries.
   if (cfg_.collision_damper.enabled) {
-    const std::string path = ResolveCapsulesPath(cfg_.collision_damper.capsules_file);
+    const std::string path = ResolveShareConfigPath(cfg_.collision_damper.capsules_file);
     try {
       cfg.collision_damper.capsules = rtc_urdf_bridge::CapsuleModel::LoadYaml(path);
     } catch (const std::exception& e) {

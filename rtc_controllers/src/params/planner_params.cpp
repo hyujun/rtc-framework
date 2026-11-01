@@ -19,6 +19,7 @@ namespace rtc::catching {
 
 namespace {
 
+using params_detail::FindUnknownKey;
 using params_detail::ReadSectionNode;
 using params_detail::SectionKind;
 using params_detail::Spelling;
@@ -59,23 +60,12 @@ std::string Shown(const YAML::Node& sec, const char* key, double value) {
 /// and under `segment.mpc` a default can mean a safety row left off (#642 D12).
 void CheckKeys(const YAML::Node& sec, const std::string& path,
                std::initializer_list<const char*> known) {
-  if (!sec || !sec.IsMap()) {
-    return;
-  }
-  for (const auto& kv : sec) {
-    const YAML::Node k = kv.first;
-    const std::string name = k.IsScalar() ? k.Scalar() : std::string("<non-scalar key>");
-    bool found = false;
+  if (const auto unknown = FindUnknownKey(sec, known)) {
+    std::string list;
     for (const char* a : known) {
-      found = found || name == a;
+      list += (list.empty() ? "" : ", ") + std::string(a);
     }
-    if (!found) {
-      std::string list;
-      for (const char* a : known) {
-        list += (list.empty() ? "" : ", ") + std::string(a);
-      }
-      Reject(Key(path + "." + name) + " is not a key of " + Key(path) + " (" + list + ")");
-    }
+    Reject(Key(path + "." + *unknown) + " is not a key of " + Key(path) + " (" + list + ")");
   }
 }
 

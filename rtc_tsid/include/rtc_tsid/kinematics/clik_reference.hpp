@@ -693,7 +693,6 @@ class ClikReferenceGenerator {
   int n_accel_rows_max_{0};    // extra QP rows allocated below the box
   int n_accel_rows_{0};        // rows assembled by the current call
   // Config::collision_damper: one row per spec pair below the accel block.
-  bool damper_on_{false};
   int n_damper_rows_max_{0};
   int n_damper_rows_{0};  // rows active in the current call
   double damper_d_i_{0.0};

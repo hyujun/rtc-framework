@@ -127,7 +127,9 @@ struct MpcSegmentGroupParams {
 /// spec names ball capsules).
 struct MpcSegmentCollisionPlannerParams {
   /// `capsules_file` — the robot-level capsule YAML (rtc_urdf_bridge
-  /// CapsuleModel; absolute, or relative to the process's working directory).
+  /// CapsuleModel), as the loader opens it: the binding resolves the
+  /// profile's spelling (`package://`, absolute, share `config/` relative)
+  /// before handing it here.
   /// Empty (the default) = no collision rows: the QP is the one before them.
   std::string capsules_file;
   double d_safe{0.02};       ///< `d_safe` [m] — self-pair safe distance, [0, 1]

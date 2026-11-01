@@ -346,7 +346,6 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
     throw std::runtime_error(
         "ClikReferenceGenerator: collision_damper fields are set but it is not enabled");
   }
-  damper_on_ = cd.enabled;
   damper_d_i_ = cd.d_influence;
   damper_d_s_ = cd.d_safe;
   damper_xi_ = cd.xi;
@@ -1336,7 +1335,8 @@ bool ClikReferenceGenerator::AssembleDamperRows(const PinocchioCache& cache) noe
   last_solve_.damper_rows = 0;
   last_solve_.damper_pairs_invalid = 0;
   last_solve_.damper_min_distance = std::numeric_limits<double>::quiet_NaN();
-  if (!damper_on_) {
+  InertDamperRows();  // every row open; the active ones are written below
+  if (n_damper_rows_max_ == 0) {
     return true;
   }
   // The cache's model is the one the workspace binds (the fingerprint says
@@ -1346,7 +1346,8 @@ bool ClikReferenceGenerator::AssembleDamperRows(const PinocchioCache& cache) noe
     return false;
   }
   last_solve_.damper_pairs_invalid = static_cast<int>(damper_ws_.EvaluateDistances());
-  if (!damper_ws_.EvaluateGradients(*cache.model_ptr, cache.data)) {
+  // Gradients only inside the influence distance: the rows beyond it are inert.
+  if (!damper_ws_.EvaluateGradients(*cache.model_ptr, cache.data, damper_d_i_)) {
     last_solve_.rejected_input = true;
     return false;
   }
@@ -1360,9 +1361,6 @@ bool ClikReferenceGenerator::AssembleDamperRows(const PinocchioCache& cache) noe
   for (int k = 0; k < n_damper_rows_max_; ++k) {
     const auto p = static_cast<std::size_t>(k);
     const int row = R0 + k;
-    qp_data_.C.row(row).setZero();
-    qp_data_.l(row) = -inf;
-    qp_data_.u(row) = inf;
     if (!damper_ws_.PairValid(p)) {
       continue;
     }

@@ -44,6 +44,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import yaml
 
+from rtc_tools.utils.rotations import rpy_matrix
+
 _STL_BINARY_HEADER = 80
 _STL_BINARY_RECORD = 50
 
@@ -78,17 +80,6 @@ def read_stl_vertices(path: pathlib.Path) -> np.ndarray:
     if verts.size == 0:
         raise ValueError(f"{path}: no vertex")
     return np.unique(verts, axis=0)
-
-
-def _rpy_matrix(rpy: list[float]) -> np.ndarray:
-    r, p, y = rpy
-    cr, sr = math.cos(r), math.sin(r)
-    cp, sp = math.cos(p), math.sin(p)
-    cy, sy = math.cos(y), math.sin(y)
-    rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
-    ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
-    rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
-    return rz @ ry @ rx
 
 
 @dataclass
@@ -188,7 +179,7 @@ def link_vertices(
         if path.suffix.lower() != ".stl":
             return None, f"not an STL: {path.name}"
         v = read_stl_vertices(path) * np.asarray(ref.scale)
-        v = v @ _rpy_matrix(ref.rpy).T + np.asarray(ref.xyz)
+        v = v @ rpy_matrix(ref.rpy).T + np.asarray(ref.xyz)
         chunks.append(v)
     return np.vstack(chunks), "ok"
 

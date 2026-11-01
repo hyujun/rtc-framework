@@ -358,7 +358,6 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   n_cp_ = 0;
   n_bp_ = 0;
   n_sd_ = 0;
-  n_coll_rows_ = 0;
   coll_var0_ = nz_;
   coll_row0_ = n_in_;
   collision_error_.clear();
@@ -385,9 +384,8 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   }
   if (collision_on_) {
     n_sd_ = n_nodes_;
-    n_coll_rows_ = n_sd_ + n_nodes_ * n_cp_ + n_pre_ * n_bp_;
     nz_ += n_sd_;
-    n_in_ += n_coll_rows_;
+    n_in_ += n_sd_ + n_nodes_ * n_cp_ + n_pre_ * n_bp_;  // slack rows, self rows, ball rows
   }
 
   model_ = arm;
@@ -585,10 +583,6 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
     coll_grad_.setZero(nn, np * N1);
     coll_valid_.setZero(np, N1);
     coll_thresh_.setZero(np, N1);
-    coll_lever_.setZero(nn, np);
-    for (Eigen::Index p = 0; p < np; ++p) {
-      coll_lever_.col(p) = ws_.Pair(static_cast<std::size_t>(p)).lever_arm;
-    }
     ball_radius_ = 0.0;
     ball_valid_.fill(false);
     ball_margin_.fill(0.0);
@@ -881,17 +875,30 @@ void MpcSegmentCore::AssembleCollisionConstant(tsid::QPData& qp) const noexcept 
   }
 }
 
-bool MpcSegmentCore::LinearizeCollisionAt(Eigen::Index k) noexcept {
-  const auto u = static_cast<std::size_t>(k);
-  pinocchio::computeJointJacobians(model_, data_, qr_.col(k));
+bool MpcSegmentCore::PoseWorkspaceAt(Eigen::Index k, bool& ball_posed) noexcept {
   if (!ws_.UpdatePlacements(model_, data_)) {
     return false;
   }
-  const bool ball = n_bp_ > 0 && k <= n_pre_ && ball_valid_[u];
-  if (ball) {
+  ball_posed = n_bp_ > 0 && k <= n_pre_ && ball_valid_[static_cast<std::size_t>(k)];
+  if (ball_posed) {
     ws_.SetBall(ball_p0_.col(k), ball_p1_.col(k), ball_radius_);
   }
   static_cast<void>(ws_.EvaluateDistances());  // a failed pair is an inert row
+  return true;
+}
+
+bool MpcSegmentCore::LinearizeCollisionAt(Eigen::Index k) noexcept {
+  const auto u = static_cast<std::size_t>(k);
+  // The joint Jacobians at x̄_k: computeRNEADerivatives (the torque rows, run
+  // first at this node) fills data.oMi and data.J for the same q̄_k, so the
+  // pass is only needed without it.
+  if (!torque_on_) {
+    pinocchio::computeJointJacobians(model_, data_, qr_.col(k));
+  }
+  bool ball = false;
+  if (!PoseWorkspaceAt(k, ball)) {
+    return false;
+  }
   if (!ws_.EvaluateGradients(model_, data_)) {
     return false;
   }
@@ -920,7 +927,8 @@ bool MpcSegmentCore::LinearizeCollisionAt(Eigen::Index k) noexcept {
     coll_d_(p, k) = ws_.Distance(static_cast<std::size_t>(p));
     coll_grad_.col(CollCol(p, k)) = ws_.Gradient(static_cast<std::size_t>(p));
     const double base = self ? c.d_safe + c.margin : c.ball_d_safe + ball_margin_[u];
-    coll_thresh_(p, k) = base + 0.5 * dk * coll_lever_.col(p).dot(work_n_);
+    coll_thresh_(p, k) =
+        base + 0.5 * dk * ws_.Pair(static_cast<std::size_t>(p)).lever_arm.dot(work_n_);
   }
   return true;
 }
@@ -1039,6 +1047,9 @@ void MpcSegmentCore::EvaluateCollision(MpcSegmentCoreResult& out) noexcept {
   out.ball_min_distance = any_ball ? ball_min : std::numeric_limits<double>::quiet_NaN();
   out.coll_residual_min = any_self ? self_res : std::numeric_limits<double>::quiet_NaN();
   out.ball_residual_min = any_ball ? ball_res : std::numeric_limits<double>::quiet_NaN();
+  // The real distances at the solution — the gate's read (the QP guarantees
+  // the linear model only).
+  out.collision_check = RecheckCollision(q_out_, out.coll_slack);
 }
 
 MpcSegmentCollisionCheck MpcSegmentCore::RecheckCollision(
@@ -1062,17 +1073,12 @@ MpcSegmentCollisionCheck MpcSegmentCore::RecheckCollision(
   bool any_ball = false;
   bool any_lin = false;
   for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
-    const auto u = static_cast<std::size_t>(k);
     pinocchio::forwardKinematics(model_, data_, q.col(k));
-    if (!ws_.UpdatePlacements(model_, data_)) {
+    bool ball = false;
+    if (!PoseWorkspaceAt(k, ball)) {
       c.evaluated = false;
       return c;
     }
-    const bool ball = n_bp_ > 0 && k <= n_pre_ && ball_valid_[u];
-    if (ball) {
-      ws_.SetBall(ball_p0_.col(k), ball_p1_.col(k), ball_radius_);
-    }
-    static_cast<void>(ws_.EvaluateDistances());
     const double s = slack.size() != 0 ? slack[k - 1] : 0.0;
     work_n_ = q.col(k) - qr_.col(k);
     for (Eigen::Index p = 0; p < np; ++p) {

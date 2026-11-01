@@ -82,39 +82,13 @@ int OtherArm(int j) {
   return kTrunk + kArm + j;
 }
 
-// The model with a BODY frame per joint (the spec names links; the synthetic
-// tree declares none). Device order = model order here.
+// Device order = model order here.
 fx::ArmModel WithLinkFrames() {
-  fx::ArmModel arm = SyntheticTree(kTrunk, kArm, 2);
-  auto model = std::make_shared<pinocchio::Model>(*arm.model);
-  for (pinocchio::JointIndex j = 1; j < static_cast<pinocchio::JointIndex>(model->njoints); ++j) {
-    model->addJointFrame(j);
-    model->addBodyFrame(model->names[j] + "_link", j);
-  }
-  arm.model = model;
-  return arm;
+  return rtc::testing::SyntheticTreeWithLinkFrames(kTrunk, kArm, 2);
 }
 
 std::string SpecYaml(bool with_ball) {
-  std::string y = "collision_capsules:\n  capsules:\n";
-  y += "    - {name: trunk, link: trunk_2_link, p0: [0, 0, 0], p1: [0, 0, 0.1], radius: 0.05}\n";
-  for (int b = 0; b < 2; ++b) {
-    for (int j = 0; j < kArm; ++j) {
-      y += "    - {name: a" + std::to_string(b) + "_" + std::to_string(j) + ", link: arm_" +
-           std::to_string(b) + "_" + std::to_string(j) +
-           "_link, p0: [0, 0, 0], p1: [0.1, 0, 0], radius: 0.03}\n";
-    }
-  }
-  y += "  pairs:\n";
-  for (const int i : {1, 3, 5}) {
-    for (const int j : {1, 3, 5}) {
-      y += "    - [a0_" + std::to_string(i) + ", a1_" + std::to_string(j) + "]\n";
-    }
-  }
-  if (with_ball) {
-    y += "  ball_capsules: [a1_2, a1_4, a1_6]\n";
-  }
-  return y;
+  return rtc::testing::SyntheticTreeCapsuleYaml(kTrunk, kArm, false, with_ball);
 }
 
 // The spec written to a file the planner loads (`capsules_file`).

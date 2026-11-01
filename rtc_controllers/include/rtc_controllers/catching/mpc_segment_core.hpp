@@ -596,6 +596,10 @@ struct MpcSegmentCoreResult {
   double ball_min_distance{std::numeric_limits<double>::quiet_NaN()};
   int ball_active_nodes{0};
   int ball_inert_nodes{0};
+  /// The REAL distances re-measured at the solution (RecheckCollision on
+  /// `q` with `coll_slack`): the publish gate's read, filled by every valid
+  /// Solve of a core with the rows.
+  MpcSegmentCollisionCheck collision_check;
   double presolve_us{0.0};
   double linearize_us{0.0};
   double condense_us{0.0};
@@ -657,12 +661,6 @@ class MpcSegmentCore {
 
   /// Why Init returned kCollisionInvalid (non-RT; empty otherwise).
   [[nodiscard]] const std::string& CollisionError() const noexcept { return collision_error_; }
-
-  /// The core's workspace (tests: the control group's distances are measured
-  /// with it). Meaningless before Init with collision rows.
-  [[nodiscard]] const rtc_urdf_bridge::CapsuleWorkspace& CollisionWorkspace() const noexcept {
-    return ws_;
-  }
 
   /// @brief The REAL capsule distances along a node trajectory (RT-safe): FK
   ///        at every column 1..N of `q` on the core's own data, the ball posed
@@ -745,6 +743,11 @@ class MpcSegmentCore {
   // Collision rows (header note).
   void AssembleCollisionConstant(tsid::QPData& qp) const noexcept;
   [[nodiscard]] bool LinearizeCollisionAt(Eigen::Index k) noexcept;
+  /// The workspace placed on data_ (FK done by the caller), the ball of node
+  /// k posed when it has one, the distances evaluated; false when the
+  /// workspace refuses the model. `ball_posed` tells whether the ball rows of
+  /// node k read (a valid sample on a ball node).
+  [[nodiscard]] bool PoseWorkspaceAt(Eigen::Index k, bool& ball_posed) noexcept;
   void AssembleCollisionRows() noexcept;
   void AssembleCollisionRowsDense() noexcept;
   void EvaluateCollision(MpcSegmentCoreResult& out) noexcept;
@@ -915,12 +918,11 @@ class MpcSegmentCore {
 
   // Collision rows (header note). Off: every count 0 and nothing below is read.
   bool collision_on_{false};
-  int n_cp_{0};         // self pairs
-  int n_bp_{0};         // ball pairs (n_pre ≥ 1 and ball capsules in the spec)
-  int n_sd_{0};         // collision slack variables: N when on
-  int coll_var0_{0};    // first collision slack column
-  int coll_row0_{0};    // first collision row (the N slack rows, then self, then ball)
-  int n_coll_rows_{0};  // n_sd_ + N·n_cp_ + k_c·n_bp_
+  int n_cp_{0};       // self pairs
+  int n_bp_{0};       // ball pairs (n_pre ≥ 1 and ball capsules in the spec)
+  int n_sd_{0};       // collision slack variables: N when on
+  int coll_var0_{0};  // first collision slack column
+  int coll_row0_{0};  // first collision row (the N slack rows, then self, then ball)
   std::string collision_error_;
   rtc_urdf_bridge::CapsuleWorkspace ws_;
   // Per solve: the linearisation at x̄ — d_j(q̄_k), ∇d_j (n × pairs·(N+1),
@@ -930,7 +932,6 @@ class MpcSegmentCore {
   Eigen::MatrixXd coll_grad_;                                               // n × pairs·(N+1)
   Eigen::Matrix<std::uint8_t, Eigen::Dynamic, Eigen::Dynamic> coll_valid_;  // pairs × (N+1)
   Eigen::MatrixXd coll_thresh_;                                             // pairs × (N+1)
-  Eigen::MatrixXd coll_lever_;  // n × pairs: per-joint lever arms c_ij
   // The ball of this solve (copied from the input: RecheckCollision re-poses it).
   double ball_radius_{0.0};
   std::array<bool, kMaxMpcNodes + 1> ball_valid_{};

@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/model_config_lookup.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/task_target_frames.hpp"
@@ -2842,9 +2843,15 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(const PlannerArm& pm) {
   dc.ball_radius = params_.ball.diameter.tbd ? std::numeric_limits<double>::quiet_NaN()
                                              : 0.5 * params_.ball.diameter.value;
   mpc_segment_planner_constants_ = dc;
+  // The capsule spec's path as the profile writes it (package:// · absolute ·
+  // share config relative) — the same rule the dual-arm demo's damper reads
+  // the same file by.
+  rtc::catching::MpcSegmentPlannerParams mp = planner_params_.mpc_segment;
+  if (mp.collision.On()) {
+    mp.collision.capsules_file = ResolveShareConfigPath(mp.collision.capsules_file);
+  }
   std::string error;
-  auto planner = rtc::catching::MakeMpcSegmentPlanner(dm, dc, planner_params_.mpc_segment,
-                                                      &rtc::SteadyNowNs, &error);
+  auto planner = rtc::catching::MakeMpcSegmentPlanner(dm, dc, mp, &rtc::SteadyNowNs, &error);
   if (planner == nullptr) {
     RCLCPP_ERROR(logger_, "planner.segment.mpc: %s", error.c_str());
     return false;

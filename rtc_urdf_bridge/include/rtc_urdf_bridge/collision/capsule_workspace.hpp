@@ -135,8 +135,9 @@ class CapsuleWorkspace {
 
   /// @brief 모든 유효 쌍의 ∇_q d (nv). EvaluateDistances 뒤, data.J 는 같은 q 의 것.
   /// @return false — 지문 불일치 (아무것도 쓰지 않는다).
-  [[nodiscard]] bool EvaluateGradients(const pinocchio::Model& model,
-                                       const pinocchio::Data& data) noexcept;
+  [[nodiscard]] bool EvaluateGradients(
+      const pinocchio::Model& model, const pinocchio::Data& data,
+      double d_cutoff = std::numeric_limits<double>::infinity()) noexcept;
 
   // ── 결과 ────────────────────────────────────────────────────────────────
 
@@ -212,9 +213,7 @@ class CapsuleWorkspace {
   Eigen::MatrixXd gradient_;  ///< nv × n_pairs
 
   // 스크래치
-  Eigen::Matrix<double, 6, Eigen::Dynamic> J_a_;  ///< 6 × nv
-  Eigen::Matrix<double, 6, Eigen::Dynamic> J_b_;
-  Eigen::Matrix<double, 3, Eigen::Dynamic> Jp_;  ///< 3 × nv
+  Eigen::Matrix<double, 6, Eigen::Dynamic> J_;  ///< 6 × nv, one joint at a time
 };
 
 }  // namespace rtc_urdf_bridge

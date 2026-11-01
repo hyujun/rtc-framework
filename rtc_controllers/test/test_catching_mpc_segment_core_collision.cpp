@@ -74,45 +74,13 @@ constexpr double kBallDSafe = 0.02;
 constexpr double kBallRadius = 0.035;
 constexpr double kBallMargin = 0.005;
 
-// The model with a BODY frame per joint ("<joint>_link"): the capsule spec
-// names links, and the synthetic tree declares none.
 ArmModel WithLinkFrames() {
-  ArmModel arm = SyntheticTree(kTrunk, kArm, 2);
-  auto model = std::make_shared<pinocchio::Model>(*arm.model);
-  for (pinocchio::JointIndex j = 1; j < static_cast<pinocchio::JointIndex>(model->njoints); ++j) {
-    model->addJointFrame(j);
-    model->addBodyFrame(model->names[j] + "_link", j);
-  }
-  arm.model = model;
-  return arm;
+  return rtc::testing::SyntheticTreeWithLinkFrames(kTrunk, kArm, 2);
 }
 
-// Capsules on the trunk's top link and on every other link of both arms
-// (0.1 m links along +x of their joint frame); the cross pairs and the trunk
-// pairs; the ball against the OTHER arm's links (the catch arm may not carry
-// one: it would avoid the ball).
+// The cross pairs, the trunk pairs, the ball against the OTHER arm.
 std::string SpecYaml() {
-  std::string y = "collision_capsules:\n  capsules:\n";
-  y += "    - {name: trunk, link: trunk_2_link, p0: [0, 0, 0], p1: [0, 0, 0.1], radius: 0.05}\n";
-  for (int b = 0; b < 2; ++b) {
-    for (int j = 0; j < kArm; ++j) {
-      y += "    - {name: a" + std::to_string(b) + "_" + std::to_string(j) + ", link: arm_" +
-           std::to_string(b) + "_" + std::to_string(j) +
-           "_link, p0: [0, 0, 0], p1: [0.1, 0, 0], radius: 0.03}\n";
-    }
-  }
-  y += "  pairs:\n";
-  for (const int i : {1, 3, 5}) {
-    for (const int j : {1, 3, 5}) {
-      y += "    - [a0_" + std::to_string(i) + ", a1_" + std::to_string(j) + "]\n";
-    }
-  }
-  for (const int j : {3, 5}) {
-    y += "    - [trunk, a1_" + std::to_string(j) + "]\n    - [trunk, a0_" + std::to_string(j) +
-         "]\n";
-  }
-  y += "  ball_capsules: [a1_2, a1_4, a1_6]\n";
-  return y;
+  return rtc::testing::SyntheticTreeCapsuleYaml(kTrunk, kArm, true, true);
 }
 
 MpcSegmentCoreParams BaseParams(bool collision,

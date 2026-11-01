@@ -945,11 +945,10 @@ bool MpcSegmentBetweenNodeSpeedOk(const Eigen::Ref<const Eigen::MatrixXd>& qd,
   return ok;
 }
 
-SegmentOutcome MpcSegmentPlanner::Judge(MpcSegmentCore& core, const MpcSegmentCoreResult& r,
-                                        bool ok, int n_pre, int n_total, bool catch_core,
-                                        std::int64_t start, std::int64_t end,
-                                        std::int64_t budget_ns, std::int64_t t_eff,
-                                        SegmentRecord& rec) const noexcept {
+SegmentOutcome MpcSegmentPlanner::Judge(const MpcSegmentCoreResult& r, bool ok, int n_pre,
+                                        int n_total, bool catch_core, std::int64_t start,
+                                        std::int64_t end, std::int64_t budget_ns,
+                                        std::int64_t t_eff, SegmentRecord& rec) const noexcept {
   rec.solve_ns = end - start;
   SetCoreReason(rec, r.reason);
   rec.presolved = r.presolved;
@@ -1001,7 +1000,7 @@ SegmentOutcome MpcSegmentPlanner::Judge(MpcSegmentCore& core, const MpcSegmentCo
     if (!(std::isfinite(r.coll_slack_max) && r.coll_slack_max <= collision_slack_max_)) {
       return SegmentOutcome::kSlack;
     }
-    const MpcSegmentCollisionCheck chk = core.RecheckCollision(r.q, r.coll_slack);
+    const MpcSegmentCollisionCheck& chk = r.collision_check;
     rec.coll_min_distance = chk.self_min;
     rec.coll_eps_lin = chk.eps_lin;
     rec.ball_min_distance = chk.ball_min;
@@ -1300,7 +1299,7 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
   NoteSolve(ok, true, n_pre, t_eff, plan.plan_id, plan.t_c_ns);
   RecordStop(line, res, ok, n_pre, n_total, rec);
   RecordPath(in, res, ok, n_pre, rec);
-  rec.outcome = Judge(core, res, ok, n_pre, n_total, true, start, end, first_ns_, t_eff, rec);
+  rec.outcome = Judge(res, ok, n_pre, n_total, true, start, end, first_ns_, t_eff, rec);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;
   }
@@ -1600,7 +1599,7 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   if (pre) {
     RecordPath(in, res, ok, n_pre, rec);
   }
-  rec.outcome = Judge(core, res, ok, n_pre, n_total, pre, start, end, replan_ns_, t_eff, rec);
+  rec.outcome = Judge(res, ok, n_pre, n_total, pre, start, end, replan_ns_, t_eff, rec);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;
   }

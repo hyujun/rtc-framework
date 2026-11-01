@@ -63,11 +63,12 @@ bool IsPrismatic(const pinocchio::Model& model, pinocchio::JointIndex j) {
 // offsets. Two models of the same sizes and a different tree (a mirrored
 // arm, a reordered chain) would place the capsules on the wrong joints.
 std::size_t TreeHash(const pinocchio::Model& model) noexcept {
+  // Plain vectors of the model (no joint-variant dispatch): this runs per node.
   std::size_t h = static_cast<std::size_t>(model.njoints);
-  for (pinocchio::JointIndex j = 1; j < static_cast<pinocchio::JointIndex>(model.njoints); ++j) {
+  for (std::size_t j = 1; j < static_cast<std::size_t>(model.njoints); ++j) {
     h = h * 1000003U + static_cast<std::size_t>(model.parents[j]);
-    h = h * 1000003U + static_cast<std::size_t>(model.joints[j].idx_v());
-    h = h * 1000003U + static_cast<std::size_t>(model.joints[j].nv());
+    h = h * 1000003U + static_cast<std::size_t>(model.idx_vs[j]);
+    h = h * 1000003U + static_cast<std::size_t>(model.nvs[j]);
   }
   return h;
 }
@@ -120,9 +121,7 @@ void CapsuleWorkspace::Swap(CapsuleWorkspace& o) noexcept {
   swap(nearest_, o.nearest_);
   swap(normal_, o.normal_);
   gradient_.swap(o.gradient_);
-  J_a_.swap(o.J_a_);
-  J_b_.swap(o.J_b_);
-  Jp_.swap(o.Jp_);
+  J_.swap(o.J_);
 }
 
 void CapsuleWorkspace::LeverArmBound(const pinocchio::Model& model, pinocchio::JointIndex joint_a,
@@ -309,9 +308,7 @@ CapsuleBindStatus CapsuleWorkspace::Bind(std::shared_ptr<const CapsuleModel> spe
   nearest_.assign(2 * np, Eigen::Vector3d::Zero());
   normal_.assign(np, Eigen::Vector3d::Zero());
   gradient_.setZero(nv_, static_cast<Eigen::Index>(np));
-  J_a_.setZero(6, nv_);
-  J_b_.setZero(6, nv_);
-  Jp_.setZero(3, nv_);
+  J_.setZero(6, nv_);
 
   bind_error_.clear();
   bound_ = true;
@@ -388,39 +385,39 @@ std::size_t CapsuleWorkspace::EvaluateDistances() noexcept {
   return invalid;
 }
 
-bool CapsuleWorkspace::EvaluateGradients(const pinocchio::Model& model,
-                                         const pinocchio::Data& data) noexcept {
+bool CapsuleWorkspace::EvaluateGradients(const pinocchio::Model& model, const pinocchio::Data& data,
+                                         double d_cutoff) noexcept {
   if (!FingerprintMatches(model)) {
     return false;
   }
-  // 점 Jacobian 의 기여를 g 에 더한다: g += sign · nᵀ (J_v − [r]× J_ω). 열 단위 cross 로
-  // Eigen 의 GEMM 경로 (임시 버퍼) 를 피한다.
-  const auto accumulate =
-      [&](pinocchio::JointIndex joint, const Eigen::Vector3d& point, const Eigen::Vector3d& n,
-          double sign, Eigen::Matrix<double, 6, Eigen::Dynamic>& J, Eigen::Ref<Eigen::VectorXd> g) {
-        if (joint == 0) {
-          return;
-        }
-        J.setZero();
-        pinocchio::getJointJacobian(model, data, joint, pinocchio::LOCAL_WORLD_ALIGNED, J);
-        const Eigen::Vector3d r = point - data.oMi[joint].translation();
-        for (Eigen::Index c = 0; c < J.cols(); ++c) {
-          const Eigen::Vector3d v = J.col(c).head<3>();
-          const Eigen::Vector3d w = J.col(c).tail<3>();
-          g[c] += sign * n.dot(v - r.cross(w));
-        }
-      };
+  // 점 Jacobian 의 기여: nᵀ (J_v − [r]× J_ω) = (n, r × n)ᵀ J — 6 벡터 하나와 Jᵀ 곱이라
+  // 열 루프도 GEMM 임시 버퍼도 없다.
+  const auto accumulate = [&](pinocchio::JointIndex joint, const Eigen::Vector3d& point,
+                              const Eigen::Vector3d& n, double sign,
+                              Eigen::Ref<Eigen::VectorXd> g) {
+    if (joint == 0) {
+      return;
+    }
+    J_.setZero();
+    pinocchio::getJointJacobian(model, data, joint, pinocchio::LOCAL_WORLD_ALIGNED, J_);
+    const Eigen::Vector3d r = point - data.oMi[joint].translation();
+    Eigen::Matrix<double, 6, 1> c6;
+    c6 << sign * n, sign * r.cross(n);
+    g.noalias() += J_.transpose() * c6;
+  };
   for (std::size_t p = 0; p < pairs_.size(); ++p) {
     Eigen::Ref<Eigen::VectorXd> g = gradient_.col(static_cast<Eigen::Index>(p));
     g.setZero();
-    if (valid_[p] == 0) {
+    // A pair at or beyond the caller's cutoff keeps a zero gradient: a consumer
+    // that makes no row of it (the damper beyond d_i) pays no Jacobian for it.
+    if (valid_[p] == 0 || !(distance_[p] < d_cutoff)) {
       continue;
     }
     const CapsulePairInfo& info = pairs_[p];
     const Eigen::Vector3d& n = normal_[p];
-    accumulate(info.joint_b, nearest_[2 * p + 1], n, +1.0, J_b_, g);
+    accumulate(info.joint_b, nearest_[2 * p + 1], n, +1.0, g);
     if (!info.is_ball) {
-      accumulate(info.joint_a, nearest_[2 * p], n, -1.0, J_a_, g);
+      accumulate(info.joint_a, nearest_[2 * p], n, -1.0, g);
     }
   }
   return true;
