@@ -106,6 +106,7 @@ SEGMENT_OUTCOME_ORDER = (
     "no_ball",
     "catch_error",
     "speed",
+    "collision",
     "unknown",
 )
 

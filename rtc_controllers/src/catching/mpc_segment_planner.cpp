@@ -6,6 +6,7 @@
 #include "rtc_controllers/catching/time_types.hpp"  // SecondsToNs, CeilDiv
 #include "rtc_controllers/catching/traj_sampler.hpp"
 
+#include <Eigen/Eigenvalues>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 
@@ -41,7 +42,15 @@ constexpr double kMaxCloseTimingS = 5.0;
 // values and keep the core's own setting.
 void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
                      const Eigen::VectorXd& jerk_weight_model, const Eigen::VectorXd& w_vel,
-                     const Eigen::VectorXd& w_rest, const Eigen::VectorXd& q_rest) {
+                     const Eigen::VectorXd& w_rest, const Eigen::VectorXd& q_rest,
+                     const std::shared_ptr<const rtc_urdf_bridge::CapsuleModel>& capsules) {
+  // The collision rows (#642): every core carries the self rows over the one
+  // spec; a null spec is the core without them.
+  mp.collision.capsules = capsules;
+  mp.collision.d_safe = p.collision.d_safe;
+  mp.collision.margin = p.collision.margin;
+  mp.collision.rho_d = p.collision.rho_d;
+  mp.collision.ball_d_safe = p.collision.ball_d_safe;
   mp.jerk_weight = jerk_weight_model;
   mp.w_vel = w_vel;
   mp.w_rest = w_rest;
@@ -169,6 +178,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   catch_results_.clear();
   catch_params_.clear();
   stop_params_.clear();
+  capsules_.reset();
   ResetTrial();
   const auto fail = [error](const std::string& why) {
     if (error != nullptr) {
@@ -178,6 +188,24 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   };
   if (clock == nullptr) {
     return fail("no clock");
+  }
+  // The collision rows' spec (#642): one file, bound by every core. Loaded
+  // here (non-RT) so a bad file names itself at configure.
+  if (params.collision.On()) {
+    try {
+      capsules_ = rtc_urdf_bridge::CapsuleModel::LoadYaml(params.collision.capsules_file);
+    } catch (const std::exception& e) {
+      return fail("planner.segment.mpc.collision.capsules_file '" + params.collision.capsules_file +
+                  "': " + e.what());
+    }
+    if (capsules_->NumBallCapsules() > 0 &&
+        !(std::isfinite(consts.ball_radius) && consts.ball_radius > 0.0)) {
+      return fail(
+          "planner.segment.mpc.collision: the capsule spec names ball capsules, which need the "
+          "ball's radius (core.ball.diameter)");
+    }
+    collision_slack_max_ = std::isfinite(params.collision_slack_max) ? params.collision_slack_max
+                                                                     : params.collision.margin;
   }
   if (!model.arm || model.nv < 1 || model.nv > kMaxSegmentNv || model.arm->nv != model.nv) {
     return fail("the arm model is missing or its joint count is outside 1.." +
@@ -279,7 +307,8 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   results_.resize(U(params.k_max + 1));
   for (int k = 0; k <= params.k_max; ++k) {
     MpcSegmentCoreParams mp;
-    ApplyCoreDesign(mp, params, jerk_weight_model_, w_vel_model_, w_rest_model_, q_rest_model_);
+    ApplyCoreDesign(mp, params, jerk_weight_model_, w_vel_model_, w_rest_model_, q_rest_model_,
+                    capsules_);
     mp.n_nodes = params.n_nodes - k;
     mp.dt = static_cast<double>(params.DtNs()) * 1e-9;
     if (!MpcSegmentBlocksFor(params, k, mp.block_sizes, mp.n_blocks) ||
@@ -293,7 +322,8 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
     const MpcSegmentCoreReason r = core->Init(*model.arm, model.catch_frame, mp, limits);
     if (r != MpcSegmentCoreReason::kNone) {
       return fail("MpcSegmentCore::Init for replan instance " + std::to_string(k) +
-                  " (N = " + std::to_string(mp.n_nodes) + "): " + MpcSegmentCoreReasonName(r));
+                  " (N = " + std::to_string(mp.n_nodes) + "): " + MpcSegmentCoreReasonName(r) +
+                  (core->CollisionError().empty() ? "" : " — " + core->CollisionError()));
     }
     core->ResizeResult(results_[U(k)]);
     MpcSegmentCoreInput& in = inputs_[U(k)];
@@ -416,7 +446,8 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
   catch_params_.reserve(count);
   for (int j = 1; j <= params.n_pre_max; ++j) {
     MpcSegmentCoreParams mp;
-    ApplyCoreDesign(mp, params, jerk_weight_model_, w_vel_model_, w_rest_model_, q_rest_model_);
+    ApplyCoreDesign(mp, params, jerk_weight_model_, w_vel_model_, w_rest_model_, q_rest_model_,
+                    capsules_);
     mp.n_pre = j;
     mp.dt_pre = static_cast<double>(dt_pre_ns_) * 1e-9;
     mp.n_nodes = params.n_nodes;
@@ -459,7 +490,8 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
     const MpcSegmentCoreReason r = core->Init(*model.arm, model.catch_frame, mp, limits);
     if (r != MpcSegmentCoreReason::kNone) {
       why = "MpcSegmentCore::Init for the catch core n_pre = " + std::to_string(j) + ": " +
-            MpcSegmentCoreReasonName(r);
+            MpcSegmentCoreReasonName(r) +
+            (core->CollisionError().empty() ? "" : " — " + core->CollisionError());
       return false;
     }
     const int cols = core->NumNodes() + 1;
@@ -560,6 +592,10 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
     in.v_b = v_ball;
     in.w_p = params_.w_const * Eigen::Matrix3d::Identity();
     in.gamma_ref = params_.gamma_ref;
+    // The collision rows' ball: no sample at the warm-up (inert rows), the
+    // radius set once for every later solve.
+    in.ball_radius = std::isfinite(consts_.ball_radius) ? consts_.ball_radius : 0.0;
+    in.ball_valid = {};
     if (perp_on_) {
       in.p_c = in.p_b;
       in.d_hat = d_ball;
@@ -751,6 +787,63 @@ void MpcSegmentPlanner::SetPathInputs(const BallPrediction& prediction, std::int
   rec.path_nodes = on;
 }
 
+void MpcSegmentPlanner::SetCollisionInputs(const BallPrediction& prediction, std::int64_t t_c,
+                                           int n_pre, const MpcSegmentCore& core,
+                                           MpcSegmentCoreInput& in,
+                                           SegmentRecord& rec) const noexcept {
+  in.ball_valid = {};
+  if (core.NumBallPairs() == 0) {
+    return;
+  }
+  in.ball_radius = consts_.ball_radius;
+  int inert = 0;
+  bool fallback = false;
+  int hint = 0;
+  for (int k = 1; k <= n_pre; ++k) {
+    const auto u = U(k);
+    // Node k sits (n_pre − k) intervals before t_c; its row covers the ball's
+    // path over [t_{k−1}, t_k] as a segment, and the margin is the covariance
+    // at t_k. A node without a usable sample at either end keeps an inert row.
+    const std::int64_t t_k = t_c - static_cast<std::int64_t>(n_pre - k) * dt_pre_ns_;
+    const std::int64_t t_prev = t_k - dt_pre_ns_;
+    if (prediction.Empty()) {
+      ++inert;
+      continue;
+    }
+    const BallNodeSample a = SampleBallNode(*prediction.traj, prediction.cov,
+                                            prediction.cov_matched, BallTime{t_prev}, hint);
+    const BallNodeSample b = SampleBallNode(*prediction.traj, prediction.cov,
+                                            prediction.cov_matched, BallTime{t_k}, hint);
+    if (!a.valid || a.after_horizon || !b.valid || b.after_horizon || !a.p.allFinite() ||
+        !b.p.allFinite()) {
+      ++inert;
+      continue;
+    }
+    // m^ball_k = n_σ √λ_max(Σ_p(t_k)); the fixed fallback without a usable Σ_p.
+    double margin = params_.collision.ball_margin_fallback;
+    bool node_fallback = true;
+    if (b.cov_valid) {
+      const Eigen::Matrix3d sp = b.cov.topLeftCorner<3, 3>();
+      if (sp.allFinite()) {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es;  // fixed size: no heap
+        es.compute(0.5 * (sp + sp.transpose()), Eigen::EigenvaluesOnly);
+        const double lam = es.info() == Eigen::Success ? es.eigenvalues().maxCoeff() : -1.0;
+        if (std::isfinite(lam) && lam >= 0.0) {
+          margin = params_.collision.ball_n_sigma * std::sqrt(lam);
+          node_fallback = false;
+        }
+      }
+    }
+    fallback = fallback || node_fallback;
+    in.ball_valid[u] = true;
+    in.ball_p0.col(k) = a.p;
+    in.ball_p1.col(k) = b.p;
+    in.ball_margin[u] = margin;
+  }
+  rec.ball_inert_nodes = inert;
+  rec.coll_fallback = fallback || inert > 0;
+}
+
 void MpcSegmentPlanner::RecordPath(const MpcSegmentCoreInput& in, const MpcSegmentCoreResult& r,
                                    bool solved, int n_pre, SegmentRecord& rec) noexcept {
   if (!solved || rec.path_nodes == 0) {
@@ -849,10 +942,11 @@ bool MpcSegmentBetweenNodeSpeedOk(const Eigen::Ref<const Eigen::MatrixXd>& qd,
   return ok;
 }
 
-SegmentOutcome MpcSegmentPlanner::Judge(const MpcSegmentCoreResult& r, bool ok, int n_pre,
-                                        int n_total, bool catch_core, std::int64_t start,
-                                        std::int64_t end, std::int64_t budget_ns,
-                                        std::int64_t t_eff, SegmentRecord& rec) const noexcept {
+SegmentOutcome MpcSegmentPlanner::Judge(MpcSegmentCore& core, const MpcSegmentCoreResult& r,
+                                        bool ok, int n_pre, int n_total, bool catch_core,
+                                        std::int64_t start, std::int64_t end,
+                                        std::int64_t budget_ns, std::int64_t t_eff,
+                                        SegmentRecord& rec) const noexcept {
   rec.solve_ns = end - start;
   SetCoreReason(rec, r.reason);
   rec.presolved = r.presolved;
@@ -892,6 +986,26 @@ SegmentOutcome MpcSegmentPlanner::Judge(const MpcSegmentCoreResult& r, bool ok, 
                         r.slack_terminal_max <= params_.slack_terminal_max;
   if (!slack_ok) {
     return SegmentOutcome::kSlack;
+  }
+  // The collision rows (#642): the linear model's slack against its threshold,
+  // then the REAL distances at the solution — the QP guarantees the linear
+  // model only, and a segment that penetrates by the linearisation error is
+  // not published (kCollision).
+  if (r.collision_evaluated) {
+    rec.coll_active_nodes = r.coll_active_nodes;
+    rec.coll_slack_max = r.coll_slack_max;
+    rec.ball_active_nodes = r.ball_active_nodes;
+    if (!(std::isfinite(r.coll_slack_max) && r.coll_slack_max <= collision_slack_max_)) {
+      return SegmentOutcome::kSlack;
+    }
+    const MpcSegmentCollisionCheck chk = core.RecheckCollision(r.q, r.coll_slack);
+    rec.coll_min_distance = chk.self_min;
+    rec.coll_eps_lin = chk.eps_lin;
+    rec.ball_min_distance = chk.ball_min;
+    const double tol = kCollisionActiveTol * params_.solver_eps_abs;
+    if (!MpcSegmentCollisionClear(chk, tol)) {
+      return SegmentOutcome::kCollision;
+    }
   }
   if (catch_core && !(r.catch_evaluated && std::isfinite(rec.catch_pos_err) &&
                       rec.catch_pos_err <= params_.catch_pos_err_max)) {
@@ -1174,6 +1288,8 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
   // The closing-window path from the newest prediction (header note) — the
   // catch terms above are the plan's.
   SetPathInputs(prediction, plan.t_c_ns, n_pre, in, rec);
+  SetCollisionInputs(prediction, plan.t_c_ns, n_pre, core, in, rec);
+  rec.coll_rows = core.CollisionTermActive();
   // No retry: a catch core cannot be solved without its reference.
   in.deadline_ns = start + first_ns_;
   const bool ok = core.Solve(in, res);
@@ -1181,7 +1297,7 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
   NoteSolve(ok, true, n_pre, t_eff, plan.plan_id, plan.t_c_ns);
   RecordStop(line, res, ok, n_pre, n_total, rec);
   RecordPath(in, res, ok, n_pre, rec);
-  rec.outcome = Judge(res, ok, n_pre, n_total, true, start, end, first_ns_, t_eff, rec);
+  rec.outcome = Judge(core, res, ok, n_pre, n_total, true, start, end, first_ns_, t_eff, rec);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;
   }
@@ -1456,7 +1572,9 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   // core has no window node.
   if (pre) {
     SetPathInputs(prediction, t_c, n_pre, in, rec);
+    SetCollisionInputs(prediction, t_c, n_pre, core, in, rec);
   }
+  rec.coll_rows = core.CollisionTermActive();
   // One deadline for the wake: a re-solve below gets what the first left.
   in.deadline_ns = start + replan_ns_;
   bool ok = core.Solve(in, res);
@@ -1479,7 +1597,7 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   if (pre) {
     RecordPath(in, res, ok, n_pre, rec);
   }
-  rec.outcome = Judge(res, ok, n_pre, n_total, pre, start, end, replan_ns_, t_eff, rec);
+  rec.outcome = Judge(core, res, ok, n_pre, n_total, pre, start, end, replan_ns_, t_eff, rec);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;
   }

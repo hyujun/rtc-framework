@@ -678,6 +678,17 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_segment_groups PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
+  # ... and the mpc segment planner with collision rows (#642): the capsule
+  # file at configure, a first segment through the catch arm, the ball rows
+  # from a prediction, and the publish gate on the real distances.
+  ament_add_gtest(test_catching_segment_collision test/test_catching_segment_collision.cpp
+    TIMEOUT 600)
+  target_link_libraries(test_catching_segment_collision rtc_controllers)
+  target_include_directories(test_catching_segment_collision PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_definitions(test_catching_segment_collision PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
   # The mpc_docking relative-state seams — each
   # derivative against a finite difference, the crossing-plane covariance
   # against a Monte Carlo, the reference's sanity cases. The seams call into

@@ -186,7 +186,8 @@ template <typename T>
   if (b.kind == SegmentBatchKind::kMpc) {
     RefuseUnknownKeys(map, own,
                       {"q_min", "q_max", "qdot_max", "tau_max", "eta_v", "t_arm_s", "control_dt",
-                       "t_close_lead", "t_close_total"});
+                       "t_close_lead", "t_close_total"},
+                      {"ball_diameter"});
     b.q_min = JointVector(map, "q_min", own, nv, false);
     b.q_max = JointVector(map, "q_max", own, nv, false);
     b.qdot_max = JointVector(map, "qdot_max", own, nv, false);
@@ -196,6 +197,10 @@ template <typename T>
     // solve with no window where the controller has one.
     b.t_close_lead = Value<double>(map, "t_close_lead", own);
     b.t_close_total = Value<double>(map, "t_close_total", own);
+    // The collision rows' ball (#642): r_b from the diameter; absent = unknown
+    // (a spec with ball capsules then refuses to configure).
+    b.ball_diameter = map["ball_diameter"] ? Value<double>(map, "ball_diameter", own)
+                                           : std::numeric_limits<double>::quiet_NaN();
   } else {
     RefuseUnknownKeys(map, own,
                       {"t_arm_s", "control_dt", "qd_rating", "hand_t_close_e2e",
@@ -417,7 +422,10 @@ constexpr const char* kCycleColumns =
     "segment_iterations,segment_from_search,segment_start_from_search,segment_ref_scaled,"
     "segment_ref_scale,"
     "segment_slack_max,segment_slack_terminal_max,segment_catch_pos_err,segment_catch_axis_err,"
-    "segment_speed_ratio_max,segment_tau_ratio_max";
+    "segment_speed_ratio_max,segment_tau_ratio_max,"
+    "segment_coll_rows,segment_coll_fallback,segment_coll_min_dist,segment_coll_active_nodes,"
+    "segment_coll_slack_max,segment_coll_eps_lin,segment_ball_min_dist,segment_ball_active_nodes,"
+    "segment_ball_inert_nodes";
 
 [[nodiscard]] std::string CsvHeader(int nv, bool cycle) {
   std::string out =
@@ -491,7 +499,10 @@ constexpr const char* kCycleColumns =
            Flag(g.from_search) + ',' + Flag(g.start_from_search) + ',' + Flag(g.ref_scaled) + ',' +
            Num(g.ref_scale) + ',' + Num(g.slack_max) + ',' + Num(g.slack_terminal_max) + ',' +
            Num(g.catch_pos_err) + ',' + Num(g.catch_axis_err) + ',' + Num(g.speed_ratio_max) + ',' +
-           Num(g.tau_ratio_max);
+           Num(g.tau_ratio_max) + ',' + Flag(g.coll_rows) + ',' + Flag(g.coll_fallback) + ',' +
+           Num(g.coll_min_distance) + ',' + std::to_string(g.coll_active_nodes) + ',' +
+           Num(g.coll_slack_max) + ',' + Num(g.coll_eps_lin) + ',' + Num(g.ball_min_distance) +
+           ',' + std::to_string(g.ball_active_nodes) + ',' + std::to_string(g.ball_inert_nodes);
   }
   out += ',' + Num(row.wall_us);
   return out;
@@ -916,6 +927,7 @@ PlanBatchBuild MakePlanBatch(const std::shared_ptr<const pinocchio::Model>& arm,
     consts.v_eps = planner.mpc_segment.v_eps;
     consts.t_close_lead = sb.t_close_lead;
     consts.t_close_total = sb.t_close_total;
+    consts.ball_radius = 0.5 * sb.ball_diameter;
     segment_planner = MakeMpcSegmentPlanner(model, consts, planner.mpc_segment, &WakeClock, &error);
   } else {
     if (sb.qd_rating.size() != n) {

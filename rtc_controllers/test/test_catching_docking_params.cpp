@@ -1571,6 +1571,24 @@ TEST(DockingParamsWholeBody, TheSegmentPlannersKeysAreRefusedByName) {
 
 // The search plans the chain alone — its map takes neither groups nor a
 // whole-body term, and says where they belong.
+// The collision rows are the mpc segment planner's alone (#642 D3): the
+// docking core and the nlp search's core refuse the key by name.
+TEST(DockingParamsWholeBody, CollisionIsNotAKeyOfTheDockingOrNlpCores) {
+  const std::string dock = Refusal([] {
+    (void)ParseMpcDockingSegmentParams(
+        YAML::Load("{planner: {segment: {mpc_docking: {core: {collision: {d_safe: 0.02}}}}}}"), kNv,
+        kGroups);
+  });
+  EXPECT_NE(dock.find("'planner.segment.mpc_docking.core.collision' is not a key"),
+            std::string::npos)
+      << dock;
+  const std::string nlp = Refusal([] {
+    (void)ParseNlpSearchParams(
+        YAML::Load("{planner: {search: {nlp: {core: {collision: {d_safe: 0.02}}}}}}"), kNv);
+  });
+  EXPECT_NE(nlp.find("'planner.search.nlp.core.collision' is not a key"), std::string::npos) << nlp;
+}
+
 TEST(DockingParamsWholeBody, TheSearchRefusesGroupsAndTheAngularTerm) {
   const std::string groups = Refusal([] {
     (void)ParseNlpSearchParams(YAML::Load("{planner: {search: {nlp: {groups: {a: {}}}}}}"), kNv);

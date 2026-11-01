@@ -2837,6 +2837,10 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(const PlannerArm& pm) {
   dc.t_close_total = params_.hand.T_close_e2e.tbd
                          ? std::numeric_limits<double>::quiet_NaN()
                          : params_.hand.T_close_e2e.value + 0.5 * GetDefaultDt();
+  // The collision rows' ball (#642): r_b from the profile's diameter; a TBD
+  // leaves it unknown, which a spec with ball capsules refuses.
+  dc.ball_radius = params_.ball.diameter.tbd ? std::numeric_limits<double>::quiet_NaN()
+                                             : 0.5 * params_.ball.diameter.value;
   mpc_segment_planner_constants_ = dc;
   std::string error;
   auto planner = rtc::catching::MakeMpcSegmentPlanner(dm, dc, planner_params_.mpc_segment,
