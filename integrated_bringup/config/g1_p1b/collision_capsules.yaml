@@ -1,0 +1,95 @@
+# g1_p1b — collision capsules (#642 E3-F03)
+#
+# The robot-level capsule spec the collision consumers read by path:
+#   planner.segment.mpc.collision.capsules_file   (the catching MPC's rows, E3-F05)
+#   clik.collision_damper.capsules_file           (demo_dualarm_controller's damper)
+# It is NOT an `include:` fragment (a fragment belongs to one controller; two
+# controllers read this file). Schema: rtc_urdf_bridge/collision/capsule_model.hpp
+# (`capsules` on URDF links, end points in the link frame [m]; explicit `pairs`;
+# `ball_capsules` the links the ball row is measured against — never the
+# catching arm's).
+#
+# Drafted with `fit_capsules fit --tighten` on the G1 body meshes (the public
+# Unitree G1 assets, hand_description/robots/unitree_g1/meshes) and trimmed:
+# one capsule per link that matters for the arm–arm and arm–trunk pairs; the
+# shoulder housings and the wrists' small links are inside their neighbours'
+# radii and carry none. The trunk is a slab (0.15 m deep, 0.22 m wide,
+# 0.31 m tall) that one capsule can only cover with a 0.15 m radius — which
+# reaches the forearms hanging at the sides — so it is THREE vertical columns
+# whose union contains every vertex (`fit_capsules check` judges a link by the
+# union of its capsules). The pelvis is the fixed base: its pairs are the ones
+# that read the waist (the trunk moves with the arms, so trunk pairs do not).
+# The right hand is the p1b_surrogate's palm box (0.09 x 0.12 x 0.03 at +y of
+# l_palm_link, which is +z of base_adapter), on `base_adapter` because the `g1`
+# tree model ends there; the real hand's capsule is the hand profile's to fit
+# (hand_description is not read here).
+# `fit_capsules check --mesh-root hand_description=…` on these values against
+# the body meshes: 10 links checked, 0 failed, 1 skipped (the surrogate palm
+# has no mesh) — 2026-11-01. The right-hand box IS inside its capsule by
+# construction (half-diagonal 0.047 m < 0.05 m).
+#
+# Pairs: P_A the two arms against each other (upper arm · forearm · wrist · hand,
+# 4 x 4), P_B the forearms, wrists and hands against the trunk columns, the
+# pelvis and (the hands) the head. The waist enters through the pelvis pairs.
+collision_capsules:
+  capsules:
+    - {name: torso_c, link: torso_link, p0: [0.0085, 0.0, 0.05], p1: [0.0085, 0.0, 0.25], radius: 0.0835}
+    - {name: torso_l, link: torso_link, p0: [0.0085, 0.07, 0.05], p1: [0.0085, 0.07, 0.25], radius: 0.0835}
+    - {name: torso_r, link: torso_link, p0: [0.0085, -0.07, 0.05], p1: [0.0085, -0.07, 0.25], radius: 0.0835}
+    - {name: pelvis, link: pelvis, p0: [0.0, 0.0, -0.079], p1: [0.0, 0.0, -0.079], radius: 0.092}
+    - {name: head, link: head_link, p0: [0.0259, 0.0, 0.4644], p1: [0.0062, 0.0001, 0.3693], radius: 0.0935}
+    - {name: l_upper, link: left_shoulder_yaw_link, p0: [0.0032, -0.001, -0.0136], p1: [0.0113, -0.0219, -0.0797], radius: 0.0579}
+    - {name: l_fore, link: left_elbow_link, p0: [0.0101, 0.0244, -0.0018], p1: [0.0738, 0.0027, -0.0126], radius: 0.0401}
+    - {name: l_wrist, link: left_wrist_yaw_link, p0: [0.024, 0.0015, -0.0201], p1: [0.021, 0.0011, 0.0079], radius: 0.0422}
+    - {name: l_hand, link: left_rubber_hand, p0: [0.0501, -0.0038, 0.0122], p1: [0.09, -0.0167, 0.0042], radius: 0.0587}
+    - {name: r_upper, link: right_shoulder_yaw_link, p0: [0.0033, 0.001, -0.0136], p1: [0.0114, 0.022, -0.0798], radius: 0.0578}
+    - {name: r_fore, link: right_elbow_link, p0: [0.0108, -0.0245, -0.0018], p1: [0.0732, -0.0037, -0.0125], radius: 0.0408}
+    - {name: r_wrist, link: right_wrist_yaw_link, p0: [0.021, -0.001, 0.0027], p1: [0.025, -0.0018, -0.0136], radius: 0.0444}
+    - {name: r_hand, link: base_adapter, p0: [0.0, 0.0, 0.0], p1: [0.0, 0.0, 0.12], radius: 0.05}
+  pairs:
+    # P_A — arm against arm
+    - [l_upper, r_upper]
+    - [l_upper, r_fore]
+    - [l_upper, r_wrist]
+    - [l_upper, r_hand]
+    - [l_fore, r_upper]
+    - [l_fore, r_fore]
+    - [l_fore, r_wrist]
+    - [l_fore, r_hand]
+    - [l_wrist, r_upper]
+    - [l_wrist, r_fore]
+    - [l_wrist, r_wrist]
+    - [l_wrist, r_hand]
+    - [l_hand, r_upper]
+    - [l_hand, r_fore]
+    - [l_hand, r_wrist]
+    - [l_hand, r_hand]
+    # P_B — arm against the trunk columns, the pelvis (reads the waist) and the head
+    - [l_fore, torso_c]
+    - [l_fore, torso_l]
+    - [l_fore, torso_r]
+    - [l_fore, pelvis]
+    - [l_wrist, torso_c]
+    - [l_wrist, torso_l]
+    - [l_wrist, torso_r]
+    - [l_wrist, pelvis]
+    - [l_hand, torso_c]
+    - [l_hand, torso_l]
+    - [l_hand, torso_r]
+    - [l_hand, pelvis]
+    - [r_fore, torso_c]
+    - [r_fore, torso_l]
+    - [r_fore, torso_r]
+    - [r_fore, pelvis]
+    - [r_wrist, torso_c]
+    - [r_wrist, torso_l]
+    - [r_wrist, torso_r]
+    - [r_wrist, pelvis]
+    - [r_hand, torso_c]
+    - [r_hand, torso_l]
+    - [r_hand, torso_r]
+    - [r_hand, pelvis]
+    - [l_hand, head]
+    - [r_hand, head]
+  # The left arm keeps clear of the ball; the right (catching) arm must not.
+  ball_capsules: [l_upper, l_fore, l_wrist, l_hand]

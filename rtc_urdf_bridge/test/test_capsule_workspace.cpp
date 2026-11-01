@@ -7,6 +7,7 @@
 //
 // 제외 (기록): |d| < 1e-3 (최근접점이 반지름 경계를 지나는 점 — 미분 불연속) 과 두 축이
 // 서로 교차하는 자세 (축 사이 거리 < 1e-3 — 최근접점 비유일). 제외 수는 출력에 남긴다.
+#include "capsule_fd_gate.hpp"
 #include "rtc_urdf_bridge/collision/capsule_workspace.hpp"
 #include "test_urdf_path.hpp"
 
@@ -38,10 +39,6 @@ using rtc::test::TestUrdfPath;
 
 namespace {
 
-constexpr double kFdStep = 1e-6;
-constexpr double kFdAbs = 1e-7;
-constexpr double kFdRel = 1e-5;
-constexpr double kExclude = 1e-3;
 constexpr int kSamples = 200;
 constexpr double kQRange = 1.2;
 
@@ -172,129 +169,17 @@ Eigen::VectorXd RandomQ(const pinocchio::Model& model, std::mt19937& rng) {
   return q;
 }
 
-// 선분–선분 최소 거리 (Ericson, Real-Time Collision Detection 5.1.9) — coal 과 독립인 구현.
-double SegmentDistance(const Eigen::Vector3d& p1, const Eigen::Vector3d& q1,
-                       const Eigen::Vector3d& p2, const Eigen::Vector3d& q2) {
-  const Eigen::Vector3d d1 = q1 - p1;
-  const Eigen::Vector3d d2 = q2 - p2;
-  const Eigen::Vector3d r = p1 - p2;
-  const double a = d1.dot(d1);
-  const double e = d2.dot(d2);
-  const double f = d2.dot(r);
-  constexpr double eps = 1e-30;
-  double s = 0.0;
-  double t = 0.0;
-  if (a <= eps && e <= eps) {
-    return (p1 - p2).norm();
-  }
-  if (a <= eps) {
-    t = std::clamp(f / e, 0.0, 1.0);
-  } else {
-    const double c = d1.dot(r);
-    if (e <= eps) {
-      s = std::clamp(-c / a, 0.0, 1.0);
-    } else {
-      const double b = d1.dot(d2);
-      const double denom = a * e - b * b;
-      s = denom != 0.0 ? std::clamp((b * f - c * e) / denom, 0.0, 1.0) : 0.0;
-      t = (b * s + f) / e;
-      if (t < 0.0) {
-        t = 0.0;
-        s = std::clamp(-c / a, 0.0, 1.0);
-      } else if (t > 1.0) {
-        t = 1.0;
-        s = std::clamp((b - c) / a, 0.0, 1.0);
-      }
-    }
-  }
-  return ((p1 + d1 * s) - (p2 + d2 * t)).norm();
-}
-
-struct FdStats {
-  int separated{0};
-  int penetrating{0};
-  int excluded_near_zero{0};
-  int excluded_axis_cross{0};
-  int excluded_out_of_range{0};
-  double worst_ratio{0.0};
-};
-
-// 모든 쌍 · 모든 sample 의 FD 대조. want_penetrating 이면 침범 구간만, 아니면 분리 구간만 센다.
-FdStats CheckGradientsAgainstFd(Fixture& fx, bool want_penetrating, std::mt19937& rng) {
-  FdStats st;
-  const Eigen::Index nv = fx.model.nv;
-  EXPECT_EQ(fx.model.nq, nv) << "이 fixture 는 revolute 만 — q 와 v 가 같은 좌표";
-  const std::size_t np = fx.ws.NumPairs();
-  std::vector<Eigen::VectorXd> fd(np, Eigen::VectorXd::Zero(nv));
-  std::vector<double> d_plus(np);
-  std::vector<double> d_minus(np);
-  for (int s = 0; s < kSamples; ++s) {
-    const Eigen::VectorXd q = RandomQ(fx.model, rng);
-    fx.DistancesAndGradients(q);
-    std::vector<double> d(np);
-    std::vector<Eigen::VectorXd> g(np);
-    std::vector<bool> use(np, true);
-    for (std::size_t p = 0; p < np; ++p) {
-      d[p] = fx.ws.Distance(p);
-      g[p] = fx.ws.Gradient(p);
-      Eigen::Vector3d a0, a1, b0, b1;
-      double ra = 0.0;
-      double rb = 0.0;
-      fx.PairEndpoints(p, a0, a1, b0, b1, ra, rb);
-      const double axis = SegmentDistance(a0, a1, b0, b1);
-      if (std::abs(d[p]) < kExclude) {
-        use[p] = false;
-        ++st.excluded_near_zero;
-      } else if (axis < kExclude) {
-        use[p] = false;
-        ++st.excluded_axis_cross;
-      } else if (want_penetrating) {
-        if (d[p] > 0.0 || d[p] < -(ra + rb) + kExclude) {
-          use[p] = false;
-          ++st.excluded_out_of_range;
-        }
-      } else if (d[p] < 0.0) {
-        use[p] = false;
-        ++st.excluded_out_of_range;
-      }
-    }
-    for (Eigen::Index j = 0; j < nv; ++j) {
-      Eigen::VectorXd qp = q;
-      qp[j] += kFdStep;
-      fx.Distances(qp);
-      for (std::size_t p = 0; p < np; ++p) {
-        d_plus[p] = fx.ws.Distance(p);
-      }
-      qp[j] = q[j] - kFdStep;
-      fx.Distances(qp);
-      for (std::size_t p = 0; p < np; ++p) {
-        d_minus[p] = fx.ws.Distance(p);
-      }
-      for (std::size_t p = 0; p < np; ++p) {
-        fd[p][j] = (d_plus[p] - d_minus[p]) / (2.0 * kFdStep);
-      }
-    }
-    for (std::size_t p = 0; p < np; ++p) {
-      if (!use[p]) {
-        continue;
-      }
-      (d[p] > 0.0 ? st.separated : st.penetrating) += 1;
-      const double err = (fd[p] - g[p]).cwiseAbs().maxCoeff();
-      const double tol = kFdAbs + kFdRel * g[p].cwiseAbs().maxCoeff();
-      st.worst_ratio = std::max(st.worst_ratio, err / tol);
-      EXPECT_LE(err, tol) << "sample " << s << " pair " << p << " d=" << d[p]
-                          << "\n  fd=" << fd[p].transpose() << "\n  an=" << g[p].transpose();
-    }
-  }
-  return st;
-}
-
-void PrintStats(const char* what, const FdStats& st) {
-  std::cout << "[FD " << what << "] separated=" << st.separated << " penetrating=" << st.penetrating
-            << " excluded(|d|<1e-3)=" << st.excluded_near_zero
-            << " excluded(axis cross)=" << st.excluded_axis_cross
-            << " excluded(out of range)=" << st.excluded_out_of_range
-            << " worst err/tol=" << st.worst_ratio << "\n";
+// 공유 게이트의 옵션: 이 fixture 의 공과 표본 상자.
+rtc::test::CapsuleFdOptions FdOptions(bool penetrating, unsigned seed) {
+  rtc::test::CapsuleFdOptions opt;
+  opt.samples = kSamples;
+  opt.penetrating = penetrating;
+  opt.seed = seed;
+  opt.with_ball = true;
+  opt.ball_p0 = kBallP0;
+  opt.ball_p1 = kBallP1;
+  opt.ball_radius = kBallRadius;
+  return opt;
 }
 
 }  // namespace
@@ -472,7 +357,7 @@ TEST(CapsuleWorkspace, PlacementPathMatchesIndependentSegmentDistance) {
       double ra = 0.0;
       double rb = 0.0;
       fx.PairEndpoints(p, a0, a1, b0, b1, ra, rb);
-      const double expected = SegmentDistance(a0, a1, b0, b1) - ra - rb;
+      const double expected = rtc::test::SegmentDistance(a0, a1, b0, b1) - ra - rb;
       ASSERT_TRUE(fx.ws.PairValid(p));
       EXPECT_NEAR(fx.ws.Distance(p), expected, 1e-12) << "pair " << p;
       // 최근접점은 각 형상 위에 있고 normal 은 o1 → o2, d = n · (p2 − p1).
@@ -508,9 +393,9 @@ TEST(CapsuleWorkspace, FingerprintMismatchRejected) {
 TEST(CapsuleWorkspace, GradientMatchesFiniteDifferenceSeparated) {
   Fixture fx;
   fx.Bind(SpecYaml(1.0, false, kPairs, {"l_upper", "l_fore", "l_hand"}), true);
-  std::mt19937 rng(1);
-  const FdStats st = CheckGradientsAgainstFd(fx, false, rng);
-  PrintStats("separated", st);
+  const rtc::test::CapsuleFdStats st = rtc::test::CheckCapsuleGradientsAgainstFd(
+      fx.model, fx.data, *fx.spec, fx.ws, FdOptions(false, 1));
+  rtc::test::PrintCapsuleFdStats("separated", st);
   EXPECT_GE(st.separated, 1500) << "분리 구간 표본이 너무 적다 — fixture 를 확인";
 }
 
@@ -518,9 +403,9 @@ TEST(CapsuleWorkspace, GradientMatchesFiniteDifferencePenetrating) {
   // 반지름 ×3 — 이웃 쌍이 침범 구간 [−(r1+r2)+1e-3, −1e-3] 에 자주 든다.
   Fixture fx;
   fx.Bind(SpecYaml(3.0, false, kPairs, {"l_upper", "l_fore", "l_hand"}), true);
-  std::mt19937 rng(2);
-  const FdStats st = CheckGradientsAgainstFd(fx, true, rng);
-  PrintStats("penetrating", st);
+  const rtc::test::CapsuleFdStats st = rtc::test::CheckCapsuleGradientsAgainstFd(
+      fx.model, fx.data, *fx.spec, fx.ws, FdOptions(true, 2));
+  rtc::test::PrintCapsuleFdStats("penetrating", st);
   EXPECT_GE(st.penetrating, 100) << "침범 구간 표본이 너무 적다 — fixture 를 확인";
 }
 
@@ -542,9 +427,9 @@ TEST(CapsuleWorkspace, DegenerateCapsuleBothOrders) {
           << "pair " << p;
     }
   }
-  std::mt19937 rng_fd(4);
-  const FdStats st = CheckGradientsAgainstFd(rev, false, rng_fd);
-  PrintStats("degenerate", st);
+  const rtc::test::CapsuleFdStats st = rtc::test::CheckCapsuleGradientsAgainstFd(
+      rev.model, rev.data, *rev.spec, rev.ws, FdOptions(false, 4));
+  rtc::test::PrintCapsuleFdStats("degenerate", st);
   EXPECT_GE(st.separated, 300);
 }
 
