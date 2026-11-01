@@ -65,6 +65,7 @@ ros2 run rtc_urdf_bridge example_rt_integration $CFG/serial_arm_config.yaml   # 
 | `closed_chain_handle.hpp` | 폐쇄 체인 축약 동역학 질의 (**non-RT**) |
 | `rt_closed_chain_handle.hpp` | 폐쇄 체인 RT-safe FK + 축약 동역학 (warm-start + 고정 K 사영) |
 | `inertial_validation.hpp` | 관성 실현가능성 판정 (V5 / V6 로드 게이트) |
+| `collision/capsule_model.hpp` · `collision/capsule_workspace.hpp` | 충돌 capsule spec (YAML, 불변 · 공유) / 소유자별 거리 · 기울기 평가기 (pinocchio geometry + coal, RT) — 아래 "충돌 capsule" |
 | `xacro_processor.hpp` · `urdf_logging.hpp` | xacro 전처리 (`ProcessXacro`) / `urdf.*` sub-logger |
 
 ### 모델 종류
@@ -131,6 +132,18 @@ const auto & M = handle.GetMassMatrix();      // n_a × n_a
 > **`ClosedChainHandle::Update()` 는 non-RT** 다. 반복 사영 · SVD 를 하므로 RT 핫패스에서 매 tick 호출하지 않는다. RT 에서는 `RtClosedChainHandle::UpdateDynamics(v_a)` 를 쓰고, 개방 체인은 `RtModelHandle` 이다.
 
 소비자 배선용으로 `IsFrameDownstreamOfLoop(fid)` 는 프레임 상류에 loop-passive 관절이 있는지 알려 준다. loop 상류가 없는 프레임은 `RtModelHandle` 로 두고, 있는 프레임만 closed-chain FK 로 배선한다.
+
+### 충돌 capsule (`CapsuleModel` · `CapsuleWorkspace`)
+
+링크에 붙은 capsule 쌍의 signed 거리와 기울기 $\nabla_q d$ 를 RT 에서 평가한다 (MPC 충돌 행 · CLIK damper 의 코어). 거리는 coal 의 capsule–capsule 닫힌식 (구는 길이 0 capsule), 기울기는 coal normal 과 최근접점의 점 Jacobian. spec (`CapsuleModel`, YAML `collision_capsules`, 불변) 은 소비자끼리 공유하고 workspace 는 소비자마다 자기 모델에 대해 짓는다 — pinocchio `GeometryData` 는 복사하면 dangling 이다. 계약 · 호출 순서 · 거부 목록은 헤더 Doxygen, 게이트는 `test_capsule_*` (중앙차분 · lever arm 상한 · MuJoCo oracle · malloc 0).
+
+```cpp
+auto spec = rub::CapsuleModel::LoadYaml(path);                 // [non-RT]
+ws.Bind(spec, model, {.with_ball = true, .catch_frame = fid});
+pinocchio::computeJointJacobians(model, data, q);              // [RT] FK + J
+ws.UpdatePlacements(model, data);  ws.SetBall(p0, p1, r_b);   // 공: 구간 swept capsule
+ws.EvaluateDistances();  ws.EvaluateGradients(model, data);   // Distance(j) · Gradient(j)
+```
 
 ## 설정
 
@@ -249,7 +262,7 @@ rtc_urdf_bridge/
 └── test/
 ```
 
-`test/urdf/` 에 테스트용 URDF · `*.closure.yaml` · MJCF 가 있다.
+`test/urdf/` 에 테스트용 URDF · `*.closure.yaml` · MJCF 가, `test/data/` 에 MuJoCo 가 기록한 capsule 거리 oracle (`capsule_oracle_*.csv`) 이 있다. 충돌 capsule 코어는 `include/rtc_urdf_bridge/collision/` · `src/collision/`.
 
 ## 문제 해결
 
@@ -288,4 +301,4 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"   # 콘�
 
 ## 의존성
 
-[package.xml](package.xml) · MIT. pinocchio · Eigen3 · yaml-cpp · tinyxml2 · rclcpp / sensor_msgs (`closure_state_publisher` 만) · xacro (exec).
+[package.xml](package.xml) · MIT. pinocchio · coal (충돌 capsule) · Eigen3 · yaml-cpp · tinyxml2 · rclcpp / sensor_msgs (`closure_state_publisher` 만) · xacro (exec).

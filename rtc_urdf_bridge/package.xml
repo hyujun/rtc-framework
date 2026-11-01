@@ -13,6 +13,8 @@
   <depend>sensor_msgs</depend>
   <depend>eigen</depend>
   <depend>pinocchio</depend>
+  <!-- Capsule distance core includes coal shape / distance headers directly. -->
+  <depend>coal</depend>
   <depend>yaml-cpp</depend>
   <depend>tinyxml2</depend>
 
@@ -23,6 +25,9 @@
        ament share dir 런타임 lookup 이다 (rtc_controller_manager 선례와 동일). -->
   <test_depend>ament_index_cpp</test_depend>
   <test_depend>robot_descriptions</test_depend>
+  <!-- C-level malloc gate for the capsule workspace RT path (never-installed
+       test header; rtc_base does not depend on this package, so no cycle). -->
+  <test_depend>rtc_base</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
