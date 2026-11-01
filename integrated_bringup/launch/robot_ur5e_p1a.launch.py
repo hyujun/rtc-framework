@@ -72,6 +72,7 @@ from rtc_tools.launch.session import max_log_sessions_from_yaml, open_session
 from rtc_tools.launch.thread_layout import (
     get_arm_driver_core,
     get_hand_driver_core,
+    get_os_slot,
     get_rt_callback_core,
 )
 from rtc_tools.launch.trace_action import make_trace_action
@@ -598,6 +599,15 @@ def generate_launch_description():
                     LaunchConfiguration("use_cpu_affinity"), value_type=bool
                 )
             },
+            # Core placement is the tier table's, not the YAML's. The node's
+            # hand_cpu_slot defaults to the same tier slot, but a YAML value
+            # would override that default — and only the standalone launch
+            # (udp_hand_driver/launch/udp_hand.launch.py) is meant to honour one.
+            # Passing both slots here, after the YAML file, makes the robot
+            # launch immune to it and keeps the DDS co-pin below (hand_driver_slot)
+            # and the main-thread self-pin on the same source. Plain ints: the
+            # node declares both as integers.
+            {"hand_cpu_slot": hand_driver_slot, "aux_cpu_slot": get_os_slot()},
         ],
         emulate_tty=True,
     )

@@ -33,7 +33,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 
-from rtc_tools.launch.thread_layout_generated import ROLE_SPECS, tier_for_cores
+from rtc_tools.launch.thread_layout_generated import OS_SLOT, ROLE_SPECS, tier_for_cores
 
 
 @dataclass(frozen=True)
@@ -119,3 +119,14 @@ def get_viewer_core(physical_cores: int | None = None) -> int:
 def get_rt_callback_core(physical_cores: int | None = None) -> int:
     """Core index for the ``rt_callback`` RT thread; DDS recv co-pins here."""
     return select_thread_layout(physical_cores).rt_callback_core
+
+
+def get_os_slot() -> int:
+    """Slot index of the OS / housekeeping core (``rt_common.sh::get_os_cores``).
+
+    Tier-independent: every tier keeps slot ``OS_SLOT`` for the OS, DDS, IRQs and
+    the CFS lanes that must not share an RT core. The robot launches pass it to
+    udp_hand_node as ``aux_cpu_slot`` so the hand_aux_io lane lands where the
+    tier table says, whatever the hand YAML contains.
+    """
+    return OS_SLOT

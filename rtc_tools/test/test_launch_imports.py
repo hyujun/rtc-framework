@@ -35,10 +35,11 @@ def test_trace_action_helper_importable() -> None:
 
 
 def test_thread_layout_helpers_importable() -> None:
-    """The four ``get_*_core`` accessors are used by the launch files."""
+    """The ``get_*_core`` accessors and ``get_os_slot`` are used by the launch files."""
     from rtc_tools.launch.thread_layout import (
         get_arm_driver_core,
         get_hand_driver_core,
+        get_os_slot,
         get_sim_core,
         get_viewer_core,
     )
@@ -47,6 +48,7 @@ def test_thread_layout_helpers_importable() -> None:
         assert callable(fn)
         result = fn(12)  # canonical tier
         assert isinstance(result, int)
+    assert isinstance(get_os_slot(), int)
 
 
 def test_session_dir_helpers_importable() -> None:
