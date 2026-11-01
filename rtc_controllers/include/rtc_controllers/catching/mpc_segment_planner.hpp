@@ -241,13 +241,16 @@ struct MpcSegmentPlannerConstants {
 /// @brief Whether the real distances a collision re-check measured clear the
 ///        rows' safe distances to `tol` (RT-safe, pure): the self clearance
 ///        (the slack honoured) and, when there are ball rows, the ball
-///        clearance both ≥ −tol. False for a check that was not evaluated.
+///        clearance both ≥ −tol. False for a check that was not evaluated and
+///        for one with a pair the distance could not be measured on
+///        (`invalid_pairs`): a row that could not be checked is not clear.
+///        A NaN clearance with no invalid pair means no row of that kind
+///        exists, and passes.
 [[nodiscard]] inline bool MpcSegmentCollisionClear(const MpcSegmentCollisionCheck& chk,
                                                    double tol) noexcept {
-  if (!chk.evaluated) {
+  if (!chk.evaluated || chk.invalid_pairs > 0) {
     return false;
   }
-  // Written as "passes", so a NaN clearance fails.
   const bool self_ok = std::isnan(chk.self_clearance) || chk.self_clearance >= -tol;
   const bool ball_ok = std::isnan(chk.ball_clearance) || chk.ball_clearance >= -tol;
   return self_ok && ball_ok;

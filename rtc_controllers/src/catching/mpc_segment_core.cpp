@@ -348,6 +348,7 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   nu_ = layout_.nu;
   n_s_ = n_nodes_;
   nz_ = nu_ + n_s_ + (slack_v_on_ ? 1 : 0);
+  sv_col_ = slack_v_on_ ? nu_ + n_s_ : -1;  // the collision slacks come after it
   n_eq_ = 2 * n;
   sv_row_ = 4 * n * n_nodes_ + n_s_;
   n_in_ = sv_row_ + (slack_v_on_ ? 7 : 0);
@@ -373,11 +374,16 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
     n_cp_ = static_cast<int>(c.capsules->NumPairs());
     n_bp_ = n_pre_ >= 1 ? static_cast<int>(c.capsules->NumBallCapsules()) : 0;
     if (n_cp_ + n_bp_ == 0) {
-      collision_error_ =
-          "the capsule spec has no pair for this core (no pairs, and no ball "
-          "capsules or no pre-catch node)";
-      return MpcSegmentCoreReason::kCollisionInvalid;
+      if (c.capsules->NumBallCapsules() == 0) {
+        collision_error_ = "the capsule spec has neither pairs nor ball capsules";
+        return MpcSegmentCoreReason::kCollisionInvalid;
+      }
+      // Ball capsules only and no pre-catch node (a stop core): nothing to
+      // constrain here — the rows are off on this core, not refused.
+      collision_on_ = false;
     }
+  }
+  if (collision_on_) {
     n_sd_ = n_nodes_;
     n_coll_rows_ = n_sd_ + n_nodes_ * n_cp_ + n_pre_ * n_bp_;
     nz_ += n_sd_;
@@ -703,7 +709,7 @@ void MpcSegmentCore::AssembleSlackVConstant(tsid::QPData& qp) const noexcept {
     return;
   }
   const Eigen::Index base = sv_row_;
-  const Eigen::Index sv = nz_ - 1;
+  const Eigen::Index sv = sv_col_;
   for (Eigen::Index i = 0; i < 3; ++i) {
     qp.C(base + i, sv) = -1.0;
     qp.C(base + 3 + i, sv) = 1.0;
@@ -1099,6 +1105,8 @@ MpcSegmentCollisionCheck MpcSegmentCore::RecheckCollision(
       }
     }
   }
+  // NaN = no row of that kind was measured (none exists, or every one was
+  // invalid — `invalid_pairs` tells them apart, and the gate reads it).
   const double nan = std::numeric_limits<double>::quiet_NaN();
   c.self_min = any_self ? self_min : nan;
   c.self_clearance = any_self ? self_clear : nan;
@@ -1558,7 +1566,7 @@ void MpcSegmentCore::EvaluateCatch(MpcSegmentCoreResult& out) noexcept {
   out.catch_v_rel = v_b_ - v_c;
   const double speed = v_b_.norm();
   out.catch_gamma = speed > kMinBallSpeed ? v_b_.dot(v_c) / (speed * speed) : 0.0;
-  out.slack_v = slack_v_on_ ? z_[nz_ - 1] : 0.0;
+  out.slack_v = slack_v_on_ ? z_[sv_col_] : 0.0;
   out.catch_evaluated = true;
 }
 
@@ -1744,7 +1752,7 @@ void MpcSegmentCore::AssembleGradient(tsid::QPData& qp, bool main) noexcept {
     qp.g.segment(nu_, n_s_).setConstant(params_.rho_tau);
   }
   if (slack_v_on_) {
-    qp.g[nz_ - 1] = params_.rho_v;
+    qp.g[sv_col_] = params_.rho_v;
   }
   if (collision_on_) {
     qp.g.segment(coll_var0_, n_sd_).setConstant(params_.collision.rho_d);

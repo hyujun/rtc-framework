@@ -176,6 +176,8 @@ class CapsuleWorkspace {
   [[nodiscard]] const std::shared_ptr<const CapsuleModel>& Spec() const noexcept { return spec_; }
 
  private:
+  void Swap(CapsuleWorkspace& o) noexcept;
+
   struct Shapes;  // coal 형상 (헤더에 coal 을 노출하지 않는다)
 
   [[nodiscard]] bool FingerprintMatches(const pinocchio::Model& model) const noexcept;
@@ -200,6 +202,7 @@ class CapsuleWorkspace {
   int nv_{0};
   int njoints_{0};
   int nframes_{0};
+  std::size_t tree_hash_{0};  ///< parents · idx_v · nv of every joint
 
   // 결과 버퍼 (Bind 에서 크기 고정)
   std::vector<double> distance_;

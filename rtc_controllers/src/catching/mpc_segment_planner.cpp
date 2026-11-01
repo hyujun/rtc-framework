@@ -827,7 +827,10 @@ void MpcSegmentPlanner::SetCollisionInputs(const BallPrediction& prediction, std
       if (sp.allFinite()) {
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es;  // fixed size: no heap
         es.compute(0.5 * (sp + sp.transpose()), Eigen::EigenvaluesOnly);
-        const double lam = es.info() == Eigen::Success ? es.eigenvalues().maxCoeff() : -1.0;
+        double lam = es.info() == Eigen::Success ? es.eigenvalues().maxCoeff() : -1.0;
+        if (lam < 0.0 && lam > -1e-12) {
+          lam = 0.0;  // a rank-deficient Σ_p rounds to a tiny negative eigenvalue
+        }
         if (std::isfinite(lam) && lam >= 0.0) {
           margin = params_.collision.ball_n_sigma * std::sqrt(lam);
           node_fallback = false;

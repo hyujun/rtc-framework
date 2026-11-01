@@ -331,7 +331,7 @@ TEST_F(ClikDamperTest, APairInsideDSafeSeparatesAtTheRowsSpeedAndNoFasterThanXi)
 
 // ── 4. A vanishing gradient keeps an inert row ──────────────────────────────
 
-TEST_F(ClikDamperTest, AZeroGradientPairIsInert) {
+TEST_F(ClikDamperTest, AnUnmeasurablePairIsInert) {
   // Two spheres kept coincident by their links: arm_a_link_6's at the
   // origin of joint arm_a_7, arm_a_link_7's at its own origin. Their distance
   // is −(r1 + r2) at every q, with no normal — the row stays inert and the
@@ -363,8 +363,12 @@ collision_capsules:
   const Clik::MultiFrameInput in = Input(tasks);
   cache_.Update(q_home_, Eigen::VectorXd::Zero(kNv));
   ASSERT_TRUE(on.Compute(cache_, in));
-  EXPECT_NEAR(on.LastSolve().damper_min_distance, -0.06, 1e-9);
-  EXPECT_EQ(on.LastSolve().damper_rows, 0) << "a row with no column to move stays inert";
+  // Coincident spheres: coal's nearest points coincide and its normal is zero,
+  // which the workspace reports as an invalid pair (no distance, no gradient)
+  // — the row stays inert and the diagnostics count the pair.
+  EXPECT_EQ(on.LastSolve().damper_pairs_invalid, 1);
+  EXPECT_TRUE(std::isnan(on.LastSolve().damper_min_distance));
+  EXPECT_EQ(on.LastSolve().damper_rows, 0) << "a pair with no column to move stays inert";
   cache_.Update(q_home_, Eigen::VectorXd::Zero(kNv));
   ASSERT_TRUE(off.Compute(cache_, in));
   EXPECT_TRUE(test::BitEqual(on.VRef(), off.VRef()));
@@ -436,7 +440,12 @@ TEST_F(ClikDamperTest, InitRefusesAnInconsistentDamper) {
   }
   {
     Clik::Config cfg = DamperConfig(0.02, 0.02, 0.2);  // d_i == d_s
-    EXPECT_NE(refusal(cfg).find("d_safe < d_influence"), std::string::npos);
+    EXPECT_NE(refusal(cfg).find("d_influence - d_safe >="), std::string::npos);
+  }
+  {
+    // A band below the floor: 1/(d_i − d_s) would overflow the rhs.
+    Clik::Config cfg = DamperConfig(0.02 + 1e-9, 0.02, 0.2);
+    EXPECT_NE(refusal(cfg).find("d_influence - d_safe >="), std::string::npos);
   }
   {
     Clik::Config cfg = DamperConfig(0.08, 0.02, 0.0);  // xi 0

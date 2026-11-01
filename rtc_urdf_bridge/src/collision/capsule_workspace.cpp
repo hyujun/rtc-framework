@@ -53,8 +53,23 @@ Eigen::Matrix3d RotationWithZ(const Eigen::Vector3d& axis) {
 }
 
 bool IsPrismatic(const pinocchio::Model& model, pinocchio::JointIndex j) {
+  // Exact names: a prefix match would take JointModelPlanar (one rotation) too.
   const std::string name = model.joints[j].shortname();
-  return name.find("JointModelP") == 0;  // PX · PY · PZ · PrismaticUnaligned
+  return name == "JointModelPX" || name == "JointModelPY" || name == "JointModelPZ" ||
+         name == "JointModelPrismaticUnaligned";
+}
+
+// The tree the workspace was bound to, beyond the sizes: parents and v
+// offsets. Two models of the same sizes and a different tree (a mirrored
+// arm, a reordered chain) would place the capsules on the wrong joints.
+std::size_t TreeHash(const pinocchio::Model& model) noexcept {
+  std::size_t h = static_cast<std::size_t>(model.njoints);
+  for (pinocchio::JointIndex j = 1; j < static_cast<pinocchio::JointIndex>(model.njoints); ++j) {
+    h = h * 1000003U + static_cast<std::size_t>(model.parents[j]);
+    h = h * 1000003U + static_cast<std::size_t>(model.joints[j].idx_v());
+    h = h * 1000003U + static_cast<std::size_t>(model.joints[j].nv());
+  }
+  return h;
 }
 
 bool Contains(const pinocchio::Model::IndexVector& v, pinocchio::JointIndex j) {
@@ -66,8 +81,49 @@ bool Contains(const pinocchio::Model::IndexVector& v, pinocchio::JointIndex j) {
 CapsuleWorkspace::CapsuleWorkspace() : shapes_(std::make_unique<Shapes>()) {}
 
 CapsuleWorkspace::~CapsuleWorkspace() = default;
-CapsuleWorkspace::CapsuleWorkspace(CapsuleWorkspace&&) noexcept = default;
-CapsuleWorkspace& CapsuleWorkspace::operator=(CapsuleWorkspace&&) noexcept = default;
+
+// A moved-from workspace is a fresh one (unbound, with its own Shapes): the
+// default move would leave it "bound" with null geometry.
+CapsuleWorkspace::CapsuleWorkspace(CapsuleWorkspace&& other) noexcept : CapsuleWorkspace() {
+  Swap(other);
+}
+
+CapsuleWorkspace& CapsuleWorkspace::operator=(CapsuleWorkspace&& other) noexcept {
+  if (this != &other) {
+    CapsuleWorkspace fresh;
+    Swap(fresh);  // this ← fresh, fresh ← old this (destroyed below)
+    Swap(other);  // this ← other, other ← fresh
+  }
+  return *this;
+}
+
+void CapsuleWorkspace::Swap(CapsuleWorkspace& o) noexcept {
+  using std::swap;
+  swap(spec_, o.spec_);
+  swap(geom_model_, o.geom_model_);
+  swap(geom_data_, o.geom_data_);
+  swap(shapes_, o.shapes_);
+  swap(pairs_, o.pairs_);
+  swap(geom_of_capsule_, o.geom_of_capsule_);
+  swap(n_robot_geoms_, o.n_robot_geoms_);
+  swap(ball_geom_, o.ball_geom_);
+  swap(n_self_pairs_, o.n_self_pairs_);
+  swap(with_ball_, o.with_ball_);
+  swap(bound_, o.bound_);
+  swap(bind_error_, o.bind_error_);
+  swap(nv_, o.nv_);
+  swap(njoints_, o.njoints_);
+  swap(nframes_, o.nframes_);
+  swap(tree_hash_, o.tree_hash_);
+  swap(distance_, o.distance_);
+  swap(valid_, o.valid_);
+  swap(nearest_, o.nearest_);
+  swap(normal_, o.normal_);
+  gradient_.swap(o.gradient_);
+  J_a_.swap(o.J_a_);
+  J_b_.swap(o.J_b_);
+  Jp_.swap(o.Jp_);
+}
 
 void CapsuleWorkspace::LeverArmBound(const pinocchio::Model& model, pinocchio::JointIndex joint_a,
                                      pinocchio::JointIndex joint_b, double reach_a, double reach_b,
@@ -116,6 +172,10 @@ CapsuleBindStatus CapsuleWorkspace::Bind(std::shared_ptr<const CapsuleModel> spe
     pairs_.clear();
     geom_of_capsule_.clear();
     spec_.reset();
+    n_robot_geoms_ = 0;
+    ball_geom_ = 0;
+    n_self_pairs_ = 0;
+    with_ball_ = false;
     return st;
   };
   if (bound_) {
@@ -185,6 +245,11 @@ CapsuleBindStatus CapsuleWorkspace::Bind(std::shared_ptr<const CapsuleModel> spe
   }
   n_self_pairs_ = pairs_.size();
 
+  if (options.catch_frame >= static_cast<pinocchio::FrameIndex>(model.nframes)) {
+    return fail(CapsuleBindStatus::kLinkMissing,
+                "catch_frame index " + std::to_string(options.catch_frame) +
+                    " 가 모델의 frame 수 " + std::to_string(model.nframes) + " 를 넘습니다");
+  }
   with_ball_ = options.with_ball;
   if (with_ball_) {
     if (s.ball_capsules.empty()) {
@@ -236,6 +301,7 @@ CapsuleBindStatus CapsuleWorkspace::Bind(std::shared_ptr<const CapsuleModel> spe
   nv_ = model.nv;
   njoints_ = model.njoints;
   nframes_ = model.nframes;
+  tree_hash_ = TreeHash(model);
 
   const std::size_t np = pairs_.size();
   distance_.assign(np, std::numeric_limits<double>::quiet_NaN());
@@ -253,7 +319,8 @@ CapsuleBindStatus CapsuleWorkspace::Bind(std::shared_ptr<const CapsuleModel> spe
 }
 
 bool CapsuleWorkspace::FingerprintMatches(const pinocchio::Model& model) const noexcept {
-  return bound_ && model.nv == nv_ && model.njoints == njoints_ && model.nframes == nframes_;
+  return bound_ && model.nv == nv_ && model.njoints == njoints_ && model.nframes == nframes_ &&
+         TreeHash(model) == tree_hash_;
 }
 
 bool CapsuleWorkspace::UpdatePlacements(const pinocchio::Model& model,
@@ -279,7 +346,10 @@ void CapsuleWorkspace::SetBall(const Eigen::Vector3d& p0_world, const Eigen::Vec
   }
   const Eigen::Vector3d axis = p1_world - p0_world;
   shapes_->ball->halfLength = 0.5 * axis.norm();
-  shapes_->ball->radius = radius;
+  // A negative or non-finite radius makes the ball pairs invalid (inert rows)
+  // rather than a wrong distance.
+  shapes_->ball->radius =
+      std::isfinite(radius) && radius >= 0.0 ? radius : std::numeric_limits<double>::quiet_NaN();
   geom_data_->oMg[ball_geom_].rotation() = RotationWithZ(axis);
   geom_data_->oMg[ball_geom_].translation() = 0.5 * (p0_world + p1_world);
 }
@@ -298,8 +368,12 @@ std::size_t CapsuleWorkspace::EvaluateDistances() noexcept {
     const double d = geom_data_->distance_functors[p](
         pinocchio::toCoalTransform3s(geom_data_->oMg[cp.first]),
         pinocchio::toCoalTransform3s(geom_data_->oMg[cp.second]), req, res);
+    // A unit normal is part of validity: when the nearest points coincide
+    // (deep penetration — a ball centre on a capsule axis) coal returns a zero
+    // normal with a finite distance, which would pass as a zero gradient.
     const bool ok = std::isfinite(d) && res.normal.allFinite() &&
-                    res.nearest_points[0].allFinite() && res.nearest_points[1].allFinite();
+                    std::abs(res.normal.norm() - 1.0) < 1e-6 && res.nearest_points[0].allFinite() &&
+                    res.nearest_points[1].allFinite();
     valid_[p] = ok ? 1 : 0;
     if (!ok) {
       ++invalid;

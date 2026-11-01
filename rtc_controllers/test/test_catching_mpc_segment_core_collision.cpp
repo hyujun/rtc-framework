@@ -472,6 +472,34 @@ TEST(MpcSegmentCoreCollision, BallRowsHoldAndInvalidSamplesAreInert) {
             << " eps_lin=" << chk.eps_lin << "\n";
 }
 
+TEST(MpcSegmentCoreCollision, TheVelocitySlackKeepsItsColumnBesideTheCollisionSlacks) {
+  // The collision slacks are appended after s_v. A ball the catch frame
+  // cannot match (3 m/s against a 0.3 m/s allowance) needs s_v > 0; the other
+  // arm at rest keeps every self row inactive, so the collision slacks stay
+  // zero. Read through the wrong column, s_v would show up as the last
+  // node's collision slack.
+  Fixture f;
+  MpcSegmentCoreParams on = BaseParams(true, f.spec);
+  on.catch_terms = true;
+  on.rho_v = 2.0;
+  on.v_rel_allow = 0.3;
+  MpcSegmentCore core;
+  ASSERT_EQ(core.Init(*f.arm.model, f.arm.frame, on, f.limits), MpcSegmentCoreReason::kNone)
+      << core.CollisionError();
+  MpcSegmentCoreResult r;
+  core.ResizeResult(r);
+  MpcSegmentCoreInput in = f.CrossingInput(f.arm.q_nominal);
+  in.p_b = Eigen::Vector3d(0.3, 0.0, 1.0);
+  in.v_b = Eigen::Vector3d(0.0, 0.0, -3.0);
+  ASSERT_TRUE(core.Solve(in, r)) << MpcSegmentCoreReasonName(r.reason);
+  ASSERT_TRUE(r.collision_evaluated);
+  EXPECT_GT(r.slack_v, 0.1) << "the arm cannot match the ball: s_v carries the rows";
+  EXPECT_EQ(r.coll_active_nodes, 0);
+  EXPECT_LT(r.coll_slack.maxCoeff(), 10.0 * ActiveTol(on)) << r.coll_slack.transpose();
+  std::cout << "[collision + s_v] slack_v=" << r.slack_v
+            << " coll_slack_max=" << r.coll_slack.maxCoeff() << "\n";
+}
+
 // ── Assembly oracles ─────────────────────────────────────────────────────────
 
 TEST(MpcSegmentCoreCollision, DenseOracleAndTorqueOffAssembleTheSameRows) {

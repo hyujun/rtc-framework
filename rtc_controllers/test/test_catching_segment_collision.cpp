@@ -359,6 +359,41 @@ collision_capsules:
     EXPECT_NE(err.find("collision_invalid"), std::string::npos) << err;
     EXPECT_NE(err.find("a0_5"), std::string::npos) << err;
   }
+  {
+    // Ball capsules only: the catch cores carry the ball rows, the stop core
+    // (no pre-catch node) has nothing to constrain and is off, not refused.
+    const std::filesystem::path path =
+        std::filesystem::path(::testing::TempDir()) / "rtc_capsules_ball_only.yaml";
+    std::ofstream(path) << R"(
+collision_capsules:
+  capsules:
+    - {name: a1_4, link: arm_1_4_link, p0: [0, 0, 0], p1: [0.1, 0, 0], radius: 0.03}
+  pairs: []
+  ball_capsules: [a1_4])";
+    MpcSegmentPlanner planner;
+    std::string err;
+    ASSERT_TRUE(
+        planner.Configure(ModelOf(sc.tree), Consts(), Params(path.string()), &FixedClock, &err))
+        << err;
+    EXPECT_FALSE(planner.Core(0).CollisionTermActive());
+    EXPECT_EQ(planner.Core(0).NumCollisionPairs(), 0);
+    EXPECT_TRUE(planner.ApproachCore(3).CollisionTermActive());
+    EXPECT_EQ(planner.ApproachCore(3).NumCollisionPairs(), 0);
+    EXPECT_EQ(planner.ApproachCore(3).NumBallPairs(), 1);
+    // ... and a spec with neither is refused.
+    const std::filesystem::path empty =
+        std::filesystem::path(::testing::TempDir()) / "rtc_capsules_empty.yaml";
+    std::ofstream(empty) << R"(
+collision_capsules:
+  capsules:
+    - {name: a1_4, link: arm_1_4_link, p0: [0, 0, 0], p1: [0.1, 0, 0], radius: 0.03}
+  pairs: []
+  ball_capsules: [])";
+    MpcSegmentPlanner none;
+    EXPECT_FALSE(
+        none.Configure(ModelOf(sc.tree), Consts(), Params(empty.string()), &FixedClock, &err));
+    EXPECT_NE(err.find("neither pairs nor ball capsules"), std::string::npos) << err;
+  }
 }
 
 // ── A first segment through the catch arm ────────────────────────────────────
@@ -528,4 +563,15 @@ TEST(SegmentCollision, TheGateReadsTheRealClearances) {
   EXPECT_TRUE(MpcSegmentCollisionClear(chk, 1e-5));
   chk.self_clearance = -std::numeric_limits<double>::infinity();
   EXPECT_FALSE(MpcSegmentCollisionClear(chk, 1e-5));
+  // A pair the distance could not be measured on is not clear, whatever the
+  // measured ones say — "every pair invalid" reads as NaN clearances too.
+  chk.self_clearance = 0.01;
+  chk.ball_clearance = 0.01;
+  chk.invalid_pairs = 1;
+  EXPECT_FALSE(MpcSegmentCollisionClear(chk, 1e-5)) << "an unmeasured pair";
+  chk.self_clearance = std::numeric_limits<double>::quiet_NaN();
+  chk.ball_clearance = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(MpcSegmentCollisionClear(chk, 1e-5)) << "every pair unmeasured";
+  chk.invalid_pairs = 0;
+  EXPECT_TRUE(MpcSegmentCollisionClear(chk, 1e-5)) << "no pair at all";
 }

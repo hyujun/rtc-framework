@@ -10,6 +10,14 @@
 #include <stdexcept>
 #include <string>
 
+namespace {
+// Collision damper (#642): a row whose gradient norm is below this is inert —
+// its capped rhs ξ/‖g‖ would otherwise ask for a separation speed no velocity
+// box gives (m/rad). And the band d_i − d_s the rhs divides by has a floor.
+constexpr double kDamperMinGradNorm = 1e-6;
+constexpr double kDamperMinBand = 1e-6;
+}  // namespace
+
 namespace rtc::tsid {
 
 void ClikReferenceGenerator::Init(int nv, const Config& config) {
@@ -315,12 +323,12 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
                                std::to_string(cd.model->nv) + " != nv " + std::to_string(nv));
     }
     if (!std::isfinite(cd.d_safe) || cd.d_safe < 0.0 || !std::isfinite(cd.d_influence) ||
-        !(cd.d_influence > cd.d_safe) || !std::isfinite(cd.xi) || !(cd.xi > 0.0)) {
+        !(cd.d_influence - cd.d_safe >= kDamperMinBand) || !std::isfinite(cd.xi) ||
+        !(cd.xi > 0.0)) {
       throw std::runtime_error(
-          "ClikReferenceGenerator: collision_damper needs 0 <= d_safe < d_influence and xi > 0, "
-          "got d_safe " +
-          std::to_string(cd.d_safe) + ", d_influence " + std::to_string(cd.d_influence) + ", xi " +
-          std::to_string(cd.xi));
+          "ClikReferenceGenerator: collision_damper needs 0 <= d_safe, d_influence - d_safe >= " +
+          std::to_string(kDamperMinBand) + " and xi > 0, got d_safe " + std::to_string(cd.d_safe) +
+          ", d_influence " + std::to_string(cd.d_influence) + ", xi " + std::to_string(cd.xi));
     }
     rtc_urdf_bridge::CapsuleWorkspace::BindOptions opt;
     opt.with_ball = false;  // the damper sees no ball: a ball at the origin would be avoided
@@ -730,7 +738,9 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache,
   // allocation gate measures that path without a solve.
   if (!ApplyBrakeBound(cache, in.dt) || !AssembleDamperRows(cache) ||
       !AssembleAccelRows(cache, in.tasks, in.dt)) {
-    last_solve_.non_finite = true;  // a non-finite M, h, v, drift or distance row
+    // A non-finite M, h, v, drift or distance row — unless the damper refused
+    // the cache's model (rejected_input), which is a configuration error.
+    last_solve_.non_finite = !last_solve_.rejected_input;
     return Fail(cache);
   }
   return SolveAndIntegrate(cache, in.dt, in.reseed_anchor);
@@ -1285,14 +1295,20 @@ bool ClikReferenceGenerator::AccelRowsHold(const Eigen::VectorXd& v) noexcept {
   constexpr double kAbs = 1e-6;
   constexpr double kRel = 1e-6;
   const int N = nv_;
+  // Each side is checked only where its bound is finite — an open side
+  // would put an infinite tolerance on both, and a one-sided row (the damper
+  // rows are [l, +inf)) would always hold and always count as binding.
   const auto check = [&](int row, bool& hold, int& binding) {
     const double r = qp_data_.C.row(row).dot(v);
     const double lo = qp_data_.l(row);
     const double hi = qp_data_.u(row);
-    const double tol = kAbs + kRel * std::max(std::abs(lo), std::abs(hi));
-    if (!(r >= lo - tol) || !(r <= hi + tol)) {  // NaN → broken
+    const bool lo_finite = std::isfinite(lo);
+    const bool hi_finite = std::isfinite(hi);
+    const double tol =
+        kAbs + kRel * std::max(lo_finite ? std::abs(lo) : 0.0, hi_finite ? std::abs(hi) : 0.0);
+    if (!std::isfinite(r) || (lo_finite && r < lo - tol) || (hi_finite && r > hi + tol)) {
       hold = false;
-    } else if (r <= lo + tol || r >= hi - tol) {
+    } else if ((lo_finite && r <= lo + tol) || (hi_finite && r >= hi - tol)) {
       ++binding;
     }
   };
@@ -1326,10 +1342,12 @@ bool ClikReferenceGenerator::AssembleDamperRows(const PinocchioCache& cache) noe
   // The cache's model is the one the workspace binds (the fingerprint says
   // so), and its Update() left oMi and J at the command state.
   if (!cache.model_ptr || !damper_ws_.UpdatePlacements(*cache.model_ptr, cache.data)) {
+    last_solve_.rejected_input = true;  // the cache's model is not the one the damper bound
     return false;
   }
   last_solve_.damper_pairs_invalid = static_cast<int>(damper_ws_.EvaluateDistances());
   if (!damper_ws_.EvaluateGradients(*cache.model_ptr, cache.data)) {
+    last_solve_.rejected_input = true;
     return false;
   }
   const int N = nv_;
@@ -1356,8 +1374,11 @@ bool ClikReferenceGenerator::AssembleDamperRows(const PinocchioCache& cache) noe
     }
     const Eigen::Ref<const Eigen::VectorXd> g = damper_ws_.Gradient(p);
     const double norm = g.norm();
-    if (!(norm > 1e-9)) {
-      continue;  // no column moves the pair apart (coincident axes, one body): inert
+    if (!(norm > kDamperMinGradNorm)) {
+      // No column moves the pair apart to speak of (coincident axes, one body,
+      // a near-degenerate normal): inert. Below this the capped rhs ξ/‖g‖
+      // would be a separation speed no velocity box can give.
+      continue;
     }
     // ∇dᵀ v ≥ −ξ (d − d_s)/(d_i − d_s), capped at ξ inside d_s — a pair already
     // inside is asked to separate at ξ, not faster than the box allows.

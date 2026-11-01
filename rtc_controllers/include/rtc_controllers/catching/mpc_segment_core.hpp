@@ -806,7 +806,8 @@ class MpcSegmentCore {
   int n_blocks_{0};  // B of block class 0
   int nu_{0};        // Σ_c n_c·B_c (n·B with one class)
   int n_s_{0};       // torque slack variables: one per node, N
-  int nz_{0};        // nu_ + n_s_ (+ 1 with the velocity slack)
+  int nz_{0};        // nu_ + n_s_ (+ 1 with the velocity slack) (+ n_sd_ with collision slacks)
+  int sv_col_{-1};   // column of the velocity slack s_v (−1 when off); fixed at Init
   int n_eq_{0};      // 2n
   int n_in_{0};      // 4·n·N + n_s_ (+ 7 with the velocity slack)
   int sv_row_{0};    // first velocity-slack row, 4·n·N + n_s_

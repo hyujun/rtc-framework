@@ -29,9 +29,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rub = rtc_urdf_bridge;
@@ -471,4 +473,87 @@ TEST(CapsuleWorkspace, LeverArmBoundBoundsDistanceChange) {
   }
   std::cout << "[lever arm] worst |Δd| / (Σ_i c_ij |Δq_i|) = " << worst << "\n";
   EXPECT_GT(worst, 0.05) << "상한이 너무 느슨하면 여유가 과보수가 된다 — 기록";
+}
+
+// ── 퇴화 · 소유권 ────────────────────────────────────────────────────────────
+
+TEST(CapsuleWorkspace, DeepPenetrationIsInvalidNotAZeroGradient) {
+  // 두 축이 한 점을 공유하는 깊은 침범 (최근접점 일치 — 이웃 링크의 capsule 끝점처럼): coal 은
+  // d = −(r_a + r_b) 와 함께 0 normal 을 돌려준다. 그 쌍은 '유효 · 기울기 0' 이 아니라 invalid
+  // 다 — 행은 inert 가 되고 소비자 (RecheckCollision · damper 진단) 가 invalid 수로 그것을 본다.
+  // (축 위의 점 — 길이 0 공 — 이나 일반 위치의 교차는 coal 이 방향을 골라 유효하다.)
+  Fixture fx;
+  fx.Bind(SpecYaml(1.0, false, kPairs, {"l_fore"}), true);
+  pinocchio::computeJointJacobians(fx.model, fx.data, pinocchio::neutral(fx.model));
+  pinocchio::updateFramePlacements(fx.model, fx.data);
+  ASSERT_TRUE(fx.ws.UpdatePlacements(fx.model, fx.data));
+  const std::size_t ball_pair = fx.ws.NumSelfPairs();
+  const rub::CapsulePairInfo& info = fx.ws.Pair(ball_pair);
+  ASSERT_TRUE(info.is_ball);
+  const double r_fore = fx.spec->Spec().capsules[info.capsule_b].radius;
+  Eigen::Vector3d a0;
+  Eigen::Vector3d a1;
+  fx.WorldEndpoints(info.capsule_b, a0, a1);
+  const Eigen::Vector3d axis = (a1 - a0).normalized();
+  Eigen::Vector3d t = axis.cross(Eigen::Vector3d::UnitZ());
+  if (t.norm() < 0.1) {
+    t = axis.cross(Eigen::Vector3d::UnitX());
+  }
+  t.normalize();
+  const Eigen::Vector3d n = axis.cross(t).normalized();
+  // The ball's swept segment starts at the capsule's endpoint: invalid, and
+  // the invalid count says so.
+  fx.ws.SetBall(a0, a0 + 0.05 * t, 0.01);
+  EXPECT_EQ(fx.ws.EvaluateDistances(), 1U);
+  EXPECT_FALSE(fx.ws.PairValid(ball_pair));
+  ASSERT_TRUE(fx.ws.EvaluateGradients(fx.model, fx.data));
+  EXPECT_EQ(fx.ws.Gradient(ball_pair).norm(), 0.0);
+  // Shifted off the endpoint by a millimetre, still deep inside: valid, with
+  // the distance −(r_a + r_b) + 1 mm and a gradient.
+  fx.ws.SetBall(a0 + 1e-3 * n, a0 + 0.05 * t + 1e-3 * n, 0.01);
+  EXPECT_EQ(fx.ws.EvaluateDistances(), 0U);
+  EXPECT_TRUE(fx.ws.PairValid(ball_pair));
+  EXPECT_NEAR(fx.ws.Distance(ball_pair), -(r_fore + 0.01) + 1e-3, 1e-9);
+  ASSERT_TRUE(fx.ws.EvaluateGradients(fx.model, fx.data));
+  EXPECT_GT(fx.ws.Gradient(ball_pair).norm(), 0.0);
+  // A ball radius that is not a radius: the pair is invalid, not wrong.
+  fx.ws.SetBall(kBallP0, kBallP1, -0.01);
+  EXPECT_EQ(fx.ws.EvaluateDistances(), 1U);
+  fx.ws.SetBall(kBallP0, kBallP1, std::numeric_limits<double>::quiet_NaN());
+  EXPECT_EQ(fx.ws.EvaluateDistances(), 1U);
+  fx.ws.SetBall(kBallP0, kBallP1, kBallRadius);
+  EXPECT_EQ(fx.ws.EvaluateDistances(), 0U);
+}
+
+TEST(CapsuleWorkspace, AMovedFromWorkspaceIsAFreshOne) {
+  Fixture fx;
+  fx.Bind(SpecYaml(1.0, false, kPairs, {}), false);
+  const std::size_t n = fx.ws.NumPairs();
+  rub::CapsuleWorkspace moved(std::move(fx.ws));
+  EXPECT_TRUE(moved.IsBound());
+  EXPECT_EQ(moved.NumPairs(), n);
+  EXPECT_FALSE(fx.ws.IsBound());
+  EXPECT_EQ(fx.ws.NumPairs(), 0U);
+  EXPECT_EQ(fx.ws.NumBallPairs(), 0U);
+  EXPECT_FALSE(fx.ws.UpdatePlacements(fx.model, fx.data));
+  // ... and binds again.
+  EXPECT_EQ(fx.ws.Bind(fx.spec, fx.model, {}), rub::CapsuleBindStatus::kOk) << fx.ws.BindError();
+  EXPECT_EQ(fx.ws.NumPairs(), n);
+  // Move assignment: the target takes the binding, the source is fresh.
+  rub::CapsuleWorkspace target;
+  target = std::move(moved);
+  EXPECT_TRUE(target.IsBound());
+  EXPECT_FALSE(moved.IsBound());
+  EXPECT_EQ(moved.Bind(fx.spec, fx.model, {}), rub::CapsuleBindStatus::kOk) << moved.BindError();
+  // A failed Bind leaves the counters at zero (no underflowing NumBallPairs).
+  rub::CapsuleWorkspace bad;
+  rub::CapsuleWorkspace::BindOptions opt;
+  opt.with_ball = true;  // the spec has no ball capsule
+  EXPECT_EQ(bad.Bind(fx.spec, fx.model, opt), rub::CapsuleBindStatus::kBallWithoutSpec);
+  EXPECT_EQ(bad.NumSelfPairs(), 0U);
+  EXPECT_EQ(bad.NumBallPairs(), 0U);
+  EXPECT_FALSE(bad.HasBall());
+  opt.catch_frame = static_cast<pinocchio::FrameIndex>(fx.model.nframes);  // out of range
+  EXPECT_EQ(bad.Bind(fx.spec, fx.model, opt), rub::CapsuleBindStatus::kLinkMissing);
+  EXPECT_NE(bad.BindError().find("catch_frame"), std::string::npos) << bad.BindError();
 }
