@@ -29,17 +29,26 @@ UdpHandNode::UdpHandNode(const rclcpp::NodeOptions& options)
   // occur (issue #345):
   //   - cb_group_aux_ is handed to the aux executor at startup, and must be the
   //     same object across an on_cleanup -> on_configure cycle (see the member).
-  //   - aux_cpu_slot / use_cpu_affinity configure the threads main() pins before
-  //     it spins. Launch / YAML values are applied at declare time, so declaring
-  //     here still picks up the configured value.
+  //   - hand_cpu_slot / aux_cpu_slot / use_cpu_affinity configure the threads
+  //     main() pins before it spins. Launch / YAML values are applied at declare
+  //     time, so declaring here still picks up the configured value. The hand
+  //     slot defaults to the tier table (DefaultHandCpuSlot); the robot launches
+  //     pass it explicitly so only the standalone launch honours a YAML value.
   cb_group_aux_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
                                         /*automatically_add_to_executor_with_node=*/false);
-  declare_parameter("aux_cpu_slot", 0);
+  declare_parameter("hand_cpu_slot",
+                    udp_hand_driver::DefaultHandCpuSlot(rtc::SelectThreadConfigs()));
+  declare_parameter("aux_cpu_slot", rtc::kOsSlot);
   declare_parameter("use_cpu_affinity", true);
 }
 
 bool UdpHandNode::UseCpuAffinity() const {
   return get_parameter("use_cpu_affinity").as_bool();
+}
+
+int UdpHandNode::HandCpuSlot() const {
+  return udp_hand_driver::ResolvePinSlot(static_cast<int>(get_parameter("hand_cpu_slot").as_int()),
+                                         UseCpuAffinity());
 }
 
 int UdpHandNode::AuxCpuSlot() const {
