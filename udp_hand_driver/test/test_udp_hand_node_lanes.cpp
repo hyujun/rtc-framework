@@ -14,6 +14,8 @@
 // a second executor that can therefore claim it.
 
 #include "udp_hand_driver/udp_hand_node.hpp"
+#include <rtc_base/threading/thread_config.hpp>
+#include <rtc_base/threading/thread_utils.hpp>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -88,6 +90,52 @@ TEST_F(UdpHandNodeLaneTest, AuxGroupSurvivesBeingClaimedBeforeAddNode) {
 TEST_F(UdpHandNodeLaneTest, AuxCpuSlotDefaultsToTheOsSlot) {
   auto node = MakeNode();
   EXPECT_EQ(node->AuxCpuSlot(), 0);
+}
+
+// ── hand_cpu_slot contract ──────────────────────────────────────────────────
+//
+// The default is the tier table's hand_driver slot. Pinned against *literals*
+// per tier (thread_layout.yaml v6) so that the test cannot pass by comparing
+// two reads of the same machine: a regression that made the default, say, 0 on
+// every tier would still satisfy `default == SelectThreadConfigs().hand_driver`.
+TEST(UdpHandPinPolicy, DefaultHandCpuSlotIsTheTierHandDriverSlot) {
+  EXPECT_EQ(udp_hand_driver::DefaultHandCpuSlot(rtc::SelectThreadConfigsForCoreCount(8)), 5);
+  EXPECT_EQ(udp_hand_driver::DefaultHandCpuSlot(rtc::SelectThreadConfigsForCoreCount(6)), 4);
+  EXPECT_EQ(udp_hand_driver::DefaultHandCpuSlot(rtc::SelectThreadConfigsForCoreCount(4)), 0);
+}
+
+// The wiring half: the node's declared default is what DefaultHandCpuSlot()
+// says for *this* machine's tier (the literal half is the test above).
+TEST_F(UdpHandNodeLaneTest, HandCpuSlotDefaultsToTheTierHandDriverSlot) {
+  auto node = MakeNode();
+  EXPECT_EQ(node->HandCpuSlot(), udp_hand_driver::DefaultHandCpuSlot(rtc::SelectThreadConfigs()));
+}
+
+// A YAML / launch value replaces the tier slot — this is what the standalone
+// launch relies on (the robot launches pass the tier slot explicitly instead).
+TEST_F(UdpHandNodeLaneTest, HandCpuSlotHonoursParameterOverride) {
+  auto node = MakeNode();
+  node->set_parameter(rclcpp::Parameter("hand_cpu_slot", 7));
+  EXPECT_EQ(node->HandCpuSlot(), 7);
+}
+
+// -1 means "do not pin the main lane": hand_comm then inherits whatever
+// affinity the process was started with (taskset / none).
+TEST_F(UdpHandNodeLaneTest, HandCpuSlotPassesThroughTheNoPinSentinel) {
+  auto node = MakeNode();
+  node->set_parameter(rclcpp::Parameter("hand_cpu_slot", -1));
+  EXPECT_EQ(node->HandCpuSlot(), udp_hand_driver::kNoPinSlot);
+}
+
+// The process-wide switch still wins over an explicit slot, exactly as for the
+// aux lane: both lanes go through ResolvePinSlot.
+TEST_F(UdpHandNodeLaneTest, DisablingAffinitySuppressesTheHandPin) {
+  auto node = MakeNode();
+  node->set_parameter(rclcpp::Parameter("hand_cpu_slot", 7));
+  ASSERT_EQ(node->HandCpuSlot(), 7);
+
+  node->set_parameter(rclcpp::Parameter("use_cpu_affinity", false));
+  EXPECT_EQ(node->HandCpuSlot(), udp_hand_driver::kNoPinSlot);
 }
 
 TEST_F(UdpHandNodeLaneTest, AuxCpuSlotHonoursParameterOverride) {

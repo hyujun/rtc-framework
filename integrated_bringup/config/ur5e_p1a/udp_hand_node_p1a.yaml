@@ -12,7 +12,9 @@
 #   - can_interface · feedforward_kt · cmd_ack: protocol_version "2" (CAN FD) 전용 — 1a 는 무시.
 #   - hand_side: 명시하면 hand_stats.json · hand_timing_log.csv 이름에 `_<side>` 가
 #     붙는다. 생략 = 기본 right, 접미사 없음 (기존 로그 이름 유지).
-#   - aux_cpu_slot · use_cpu_affinity: 기본값 사용, use_cpu_affinity 는 launch 인자가 준다.
+#   - hand_cpu_slot · aux_cpu_slot · use_cpu_affinity: robot launch 가 tier slot 과 launch
+#     인자를 yaml 뒤에 명시 전달한다 — 여기 적어도 그 launch 아래에서는 무시된다 (단독
+#     udp_hand.launch.py 로 띄울 때만 yaml 의 hand_cpu_slot 이 쓰인다).
 #   - local_ip · local_interface · sensor_startup_grace_ms: 기본값 (바인딩 없음 · 0).
 #
 # 동작 모드 (self-clocked):

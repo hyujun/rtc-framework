@@ -51,12 +51,17 @@
 #
 # ── 지원 범위 (issue #345) ────────────────────────────────────────────────
 # 이 런치는 **프로세스 내부 pin 만** 다룬다 — 노드가 스스로 main 스레드를
-# hand_driver slot 에, hand_aux_io 를 aux slot 에 붙이고, `use_cpu_affinity`
-# 로 그것을 끌 수 있다. integrated_bringup 의 robot 런치에 있는 것들 —
-# cset shield, CM adopt, DDS 스레드 co-pin — 은 **여기 없다.** 즉 이 런치로
-# 띄운 프로세스는 shield 밖에서 돌고, DDS 스레드는 어디로든 흩어진다.
-# 실기 RT 구성은 robot_ur5e_p1{a,b}.launch.py 를 쓸 것. 이 런치는 개발 PC
-# 에서 노드 하나만 띄워 보는 용도다.
+# hand slot 에, hand_aux_io 를 aux slot 에 붙이고, `use_cpu_affinity`
+# 로 그것을 끌 수 있다. 그 slot 은 yaml 의 `hand_cpu_slot` · `aux_cpu_slot`
+# (정수 slot 인덱스) 이 정하고 — launch 인자는 없다, yaml 전용 — 생략하면
+# tier 표의 hand_driver slot · OS slot 이다. yaml 로 코어를 고르는 길은 **이
+# 런치에서만** 열려 있다: robot 런치는 두 slot 을 tier 값으로 yaml 뒤에 명시
+# 전달하므로 같은 yaml 을 거기서 써도 배치는 바뀌지 않는다.
+# integrated_bringup 의 robot 런치에 있는 것들 — cset shield, CM adopt, DDS
+# 스레드 co-pin — 은 **여기 없다.** 즉 이 런치로 띄운 프로세스는 shield
+# 밖에서 돌고, DDS 스레드는 어디로든 흩어진다. 실기 RT 구성은
+# robot_ur5e_p1{a,b}.launch.py 를 쓸 것. 이 런치는 개발 PC 에서 노드 하나만
+# 띄워 보는 용도다.
 import os
 
 import yaml

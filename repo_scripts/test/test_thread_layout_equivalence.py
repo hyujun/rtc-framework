@@ -195,9 +195,13 @@ def main() -> int:
         fail.check(f"ncpu={ncpu} os slot", str(manifest.os_slot), shell[ncpu]["os_cores"])
 
         # The launch mirror's public API is what integrated_bringup imports.
-        from rtc_tools.launch.thread_layout import select_thread_layout  # noqa: PLC0415
+        from rtc_tools.launch.thread_layout import (  # noqa: PLC0415
+            get_os_slot,
+            select_thread_layout,
+        )
 
         layout = select_thread_layout(ncpu)
+        fail.check(f"ncpu={ncpu} launch os slot", manifest.os_slot, get_os_slot())
         fail.check(
             f"ncpu={ncpu} launch arm", tier.specs["arm_driver"].slot, layout.arm_driver_core
         )

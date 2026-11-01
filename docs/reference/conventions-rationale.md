@@ -7,7 +7,7 @@
 규범: [conventions.md](../../agent_docs/conventions.md) §Code Conventions
 
 - **Method split 을 consumer 이름으로 하는 근거** — stage 명 (`Phase3a`, `Step2`) 은 body 의 목적을 감춰 "이 method 가 왜 존재하나" 를 다른 문서에서 찾게 만들지만, consumer-named method 아래의 모든 라인은 그 consumer 를 위한 것임이 자명하다. 같은 필드를 공유 helper 로 빼지 않고 양쪽에서 독립적으로 write 하는 것은 공유 추출이 ordering drift 를 부르고 그 비용이 중복 write 비용보다 크기 때문이다. 실례: `demo_joint_controller.hpp` 의 `WriteJointCommand` 선언 위 주석.
-- **Tier 0 예외의 근거** — executor 에 넘길 callback group 은 on_cleanup→on_configure 사이클에서 같은 객체여야 하므로 configure 에서 만들 수 없다. 예외의 근거는 "생성자가 편해서" 가 아니라 "configure 가 오기 전에 이미 필요해서" 이고, 후자가 아니면 Tier 1 이다. 현재 유일한 사례는 `UdpHandNode` (`cb_group_aux_` + `aux_cpu_slot`·`use_cpu_affinity`, issue #345).
+- **Tier 0 예외의 근거** — executor 에 넘길 callback group 은 on_cleanup→on_configure 사이클에서 같은 객체여야 하므로 configure 에서 만들 수 없다. 예외의 근거는 "생성자가 편해서" 가 아니라 "configure 가 오기 전에 이미 필요해서" 이고, 후자가 아니면 Tier 1 이다. 현재 유일한 사례는 `UdpHandNode` (`cb_group_aux_` + `hand_cpu_slot`·`aux_cpu_slot`·`use_cpu_affinity`, issue #345).
 - **uncrustify 금지의 근거** — uncrustify 의 ROS 2 / Eclipse-CDT 표준 스타일 (Allman braces, `T *p`, `T &r`) 이 clang-format Google base 와 영구 충돌한다. `set(ament_cmake_uncrustify_FOUND TRUE)` 스킵 트릭은 작동하지 않는다 (extras hook 이 무조건 등록됨). 대응은 `rtc_controller_interface/CMakeLists.txt` 의 NOTE 주석. 기존 패키지에서 uncrustify 를 떼낸 직후엔 `build/<pkg>/test_results/<pkg>/uncrustify.xunit.xml` 이 남을 수 있으므로 `rm -rf build/<pkg>/test_results` 후 colcon test 로 검증.
 - **Include grouping** — 분류 우선순위 목록의 SSoT 는 [`.clang-format`](../../.clang-format) (`IncludeCategories`). 단 `#ifdef ... #endif` 사이에 낀 include 는 clang-format 이 grouping 못 해 blank line 이 살아 있다.
 

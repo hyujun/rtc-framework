@@ -1,4 +1,4 @@
-"""The robot launches hand ``use_cpu_affinity`` down to udp_hand_node (issue #345).
+"""The robot launches hand ``use_cpu_affinity`` and the tier slots down to udp_hand_node.
 
 The hand process now pins its own threads: the main thread to the ``hand_driver``
 slot and ``hand_aux_io`` to the aux slot. Those pins live inside the process, so
@@ -165,6 +165,94 @@ def test_use_cpu_affinity_is_forwarded_as_a_bool(filename: str) -> None:
         f"{filename} forwards use_cpu_affinity without value_type=bool "
         f"(found {value_types or 'nothing'}); the node would receive a string"
     )
+
+
+# ── The hand/aux slots come from the tier table, not the hand YAML ───────────
+#
+# udp_hand_node's `hand_cpu_slot` defaults to the tier slot, but a YAML value
+# overrides a default. That is the standalone launch's feature and the robot
+# launch's hazard: an `hand_cpu_slot: 2` left in a robot hand yaml would move
+# hand_comm (SCHED_FIFO) onto whatever slot 2 is on that tier, with the DDS
+# co-pin still aimed at the tier slot. The robot launches therefore pass both
+# slots explicitly, *after* the YAML file, from the same Python mirror the DDS
+# co-pin reads. Both halves are asserted: the value expression (a call to the
+# getter, not a literal that could drift from the table) and the order (a dict
+# before the YAML file would be overridden by it).
+
+_SLOT_GETTERS = {"hand_cpu_slot": "get_hand_driver_core", "aux_cpu_slot": "get_os_slot"}
+
+
+def _parameters_list(call: ast.Call) -> list[ast.expr]:
+    for kw in call.keywords:
+        if kw.arg == "parameters":
+            assert isinstance(kw.value, ast.List), "parameters= is not a list literal"
+            return kw.value.elts
+    return []
+
+
+def _callee_name(value: ast.expr) -> str | None:
+    """``f(...)`` -> ``f``; ``mod.f(...)`` -> ``f``; anything else -> None."""
+    if not isinstance(value, ast.Call):
+        return None
+    if isinstance(value.func, ast.Name):
+        return value.func.id
+    if isinstance(value.func, ast.Attribute):
+        return value.func.attr
+    return None
+
+
+def _slot_source_name(value: ast.expr, tree: ast.Module) -> str | None:
+    """The getter a slot value traces back to: a direct call, or a Name bound to one."""
+    if (name := _callee_name(value)) is not None:
+        return name
+    if isinstance(value, ast.Name):
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == value.id
+            ):
+                return _callee_name(node.value)
+    return None
+
+
+@pytest.mark.parametrize("filename", HAND_LAUNCH_FILES)
+@pytest.mark.parametrize(("key", "getter"), sorted(_SLOT_GETTERS.items()))
+def test_hand_slots_are_passed_from_the_tier_table(filename: str, key: str, getter: str) -> None:
+    source = _source(filename)
+    call = _hand_node_call(source)
+    assert call is not None
+    value = _parameter_expr(call, key)
+    assert value is not None, (
+        f"{filename} does not pass {key} to udp_hand_node; a value in the hand yaml "
+        "would move the lane off the tier slot under the robot launch"
+    )
+    assert _slot_source_name(value, ast.parse(source)) == getter, (
+        f"{filename}: {key} is not {getter}(...) (got {ast.dump(value)}); a literal or a "
+        "different source can drift from the tier table the DDS co-pin uses"
+    )
+
+
+@pytest.mark.parametrize("filename", HAND_LAUNCH_FILES)
+def test_hand_slots_come_after_the_yaml_file(filename: str) -> None:
+    """Later entries win in launch_ros ``parameters=[...]``; before the YAML they lose."""
+    call = _hand_node_call(_source(filename))
+    assert call is not None
+    elements = _parameters_list(call)
+    yaml_positions = [i for i, e in enumerate(elements) if not isinstance(e, ast.Dict)]
+    assert yaml_positions, f"{filename}: no YAML file entry in the hand node's parameters"
+    for key in _SLOT_GETTERS:
+        slot_positions = [
+            i
+            for i, e in enumerate(elements)
+            if isinstance(e, ast.Dict)
+            and any(isinstance(k, ast.Constant) and k.value == key for k in e.keys)
+        ]
+        assert slot_positions, f"{filename}: {key} not in the hand node's parameters"
+        assert min(slot_positions) > max(yaml_positions), (
+            f"{filename}: {key} dict precedes the YAML file, so the YAML would override it"
+        )
 
 
 @pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)

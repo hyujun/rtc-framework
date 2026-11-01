@@ -149,18 +149,29 @@
     publish_rate: 100.0
 
     # -- 스레드 레이아웃 / CPU affinity (issue #345) --
-    # 이 둘만 노드 *생성자* 에서 declare 된다 — main() 이 spin 하기 전에, 즉 어떤
+    # 이 셋만 노드 *생성자* 에서 declare 된다 — main() 이 spin 하기 전에, 즉 어떤
     # lifecycle transition 보다 먼저 읽어야 하는 프로세스 스레드 배치이기 때문이다.
+    # 셋 다 **정수** slot 인덱스 (논리 CPU 번호가 아니다 — rt_common.sh::
+    # slot_to_logical_cpu 가 번역한다; 개발 PC 는 `bash -c 'source
+    # repo_scripts/scripts/lib/rt_common.sh; slot_to_logical_cpu N'` 로 확인).
+    #   hand_cpu_slot    : main 스레드 (executor + DDS) 가 붙을 slot. CommLoop
+    #                      (hand_comm, SCHED_FIFO 65) 과 failure detector 가 이 affinity 를
+    #                      상속하므로 사실상 "손 코어" 다. 생략 = tier 표의 hand_driver
+    #                      slot (SSoT rtc::SystemThreadConfigs.hand_driver; 8 코어↑ 5,
+    #                      6 코어 4, 4 코어 0). -1 이면 main 레인을 pin 하지 않는다.
+    #                      **단독 launch (udp_hand.launch.py) 전용** — robot launch
+    #                      (integrated_bringup) 는 tier slot 을 yaml 뒤에 명시 전달하므로
+    #                      여기 값은 그 아래에서 무시된다. RT 레인 (rt_control ·
+    #                      rt_callback · mpc_main) 의 slot 을 주면 노드가 WARN 한다.
     #   aux_cpu_slot     : blocking 파일 I/O 전용 hand_aux_io 스레드(타이밍 CSV
-    #                      drain + stats JSON)가 붙을 slot. slot 인덱스이며 shell
-    #                      쪽 SSoT 는 rt_common.sh::get_os_cores() (= 0). -1 이면
-    #                      이 레인만 pin 하지 않는다. main 스레드(executor+DDS)는
-    #                      별도로 hand_driver slot 에 붙는다 (SSoT 는
-    #                      rtc::SystemThreadConfigs.hand_driver).
+    #                      drain + stats JSON)가 붙을 slot. shell 쪽 SSoT 는
+    #                      rt_common.sh::get_os_cores() (= 0). -1 이면 이 레인만
+    #                      pin 하지 않는다. robot launch 는 이것도 명시 전달한다.
     #   use_cpu_affinity : 위 두 pin 을 한꺼번에 끈다. 스케줄링 *정책* 은 그대로라
     #                      CommLoop 은 여전히 SCHED_FIFO 65 다 — 코어 confinement
     #                      만 사라지므로 실기 RT 배포에서는 끄지 말 것
     #                      (README "스레드 모델" 절의 경고 참조).
+    # hand_cpu_slot: 2      # 예: 개발 PC 에서 손을 slot 2 에 (주석을 풀어 쓴다)
     aux_cpu_slot: 0
     use_cpu_affinity: true
 

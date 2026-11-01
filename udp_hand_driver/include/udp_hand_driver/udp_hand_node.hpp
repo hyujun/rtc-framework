@@ -4,6 +4,7 @@
 #include "udp_hand_driver/udp_hand_controller.hpp"
 #include "udp_hand_driver/udp_hand_failure_detector.hpp"
 #include "udp_hand_driver/udp_hand_timing_logger.hpp"
+#include <rtc_base/threading/thread_config.hpp>  // rtc::SystemThreadConfigs
 #include <rtc_msgs/msg/calibration_command.hpp>
 #include <rtc_msgs/msg/calibration_status.hpp>
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
@@ -62,7 +63,8 @@
 //   timers (including the NRT publish poll), pre-allocated messages.
 // Tier 2 (on_activate): controller Start, fake tick timer, failure detector.
 // Tier 0 (constructor): *only* what main() must know before it spins — the aux
-//   callback group and the thread-layout parameter. See UdpHandNode().
+//   callback group and the three thread-layout parameters (hand_cpu_slot,
+//   aux_cpu_slot, use_cpu_affinity). See UdpHandNode().
 
 // Non-RT auxiliary I/O lane (issue #345). The blocking file writes — the timing
 // CSV drain (up to kHandTimingBufferCapacity rows in a single 1 Hz burst) and
@@ -70,7 +72,7 @@
 // which also serves the joint-command subscription. CFS: this lane must never
 // preempt the CommLoop, and it is the only hand thread that leaves the
 // hand_driver core. `cpu_core` is filled at runtime from the `aux_cpu_slot`
-// parameter, whose default 0 mirrors the shell SSoT
+// parameter, whose default rtc::kOsSlot mirrors the shell SSoT
 // repo_scripts/scripts/lib/rt_common.sh::get_os_cores (the OS/housekeeping slot,
 // which `get_cm_shield_cpus` excludes from the shield — so pinning here needs no
 // cpuset change and cannot EINVAL under an active `cset shield`).
@@ -92,6 +94,19 @@ inline constexpr int kNoPinSlot = -1;
 /// core (issue #345).
 [[nodiscard]] constexpr int ResolvePinSlot(int configured_slot, bool affinity_enabled) noexcept {
   return affinity_enabled ? configured_slot : kNoPinSlot;
+}
+
+/// Default of the `hand_cpu_slot` parameter: the tier table's hand_driver slot
+/// (repo_scripts/config/thread_layout.yaml via thread_config_generated.hpp).
+///
+/// Pure so the default is testable against tier *literals* — a test that
+/// compares the node's default to SelectThreadConfigs() on the same machine
+/// would pass whatever either side returned. The robot launches pass this same
+/// slot explicitly (from the Python mirror get_hand_driver_core()), so under
+/// integrated_bringup a YAML value cannot move the hand lanes; only the
+/// standalone launch leaves the parameter to the YAML.
+[[nodiscard]] constexpr int DefaultHandCpuSlot(const rtc::SystemThreadConfigs& configs) noexcept {
+  return configs.hand_driver.cpu_core;
 }
 
 // How much faster than loop_rate_hz the NRT publish lane polls the state
@@ -276,6 +291,14 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   [[nodiscard]] rclcpp::CallbackGroup::SharedPtr GetAuxCallbackGroup() const {
     return cb_group_aux_;
   }
+
+  /// Slot main() pins its own thread to — the `hand_cpu_slot` parameter passed
+  /// through ResolvePinSlot, so it is kNoPinSlot when affinity is off. The
+  /// CommLoop (hand_comm, SCHED_FIFO) and the failure detector inherit it, which
+  /// is what makes this *the* hand core. Default: DefaultHandCpuSlot(); a YAML
+  /// override only takes effect in the standalone launch — the robot launches
+  /// pass the tier slot explicitly, after the YAML, so it wins there.
+  [[nodiscard]] int HandCpuSlot() const;
 
   /// Slot the `hand_aux_io` thread should pin to — the `aux_cpu_slot` parameter
   /// passed through ResolvePinSlot, so it is kNoPinSlot when affinity is off.
