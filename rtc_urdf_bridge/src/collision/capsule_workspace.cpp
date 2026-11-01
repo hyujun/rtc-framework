@@ -69,34 +69,40 @@ CapsuleWorkspace::~CapsuleWorkspace() = default;
 CapsuleWorkspace::CapsuleWorkspace(CapsuleWorkspace&&) noexcept = default;
 CapsuleWorkspace& CapsuleWorkspace::operator=(CapsuleWorkspace&&) noexcept = default;
 
-double CapsuleWorkspace::LeverArmBound(const pinocchio::Model& model, pinocchio::JointIndex joint_a,
-                                       pinocchio::JointIndex joint_b, double reach_a,
-                                       double reach_b) {
+void CapsuleWorkspace::LeverArmBound(const pinocchio::Model& model, pinocchio::JointIndex joint_a,
+                                     pinocchio::JointIndex joint_b, double reach_a, double reach_b,
+                                     Eigen::VectorXd& per_v, double& sum) {
   // 한쪽 capsule 의 관절 사슬 (supports: 0 … joint) 에서 다른 쪽 사슬에 없는 관절마다, 그 관절
   // 원점에서 capsule 의 어느 점까지의 거리 상한 = (그 관절 아래 사슬의 placement 평행이동 노름
-  // 합) + reach. 공통 조상은 두 capsule 을 같이 움직이므로 거리에 기여하지 않는다.
+  // 합) + reach. 공통 조상은 두 capsule 을 같이 움직이므로 거리에 기여하지 않는다. 관절의 v
+  // 좌표 전부에 같은 값을 쓴다 (1 자유도 관절이 보통이다).
+  per_v.setZero(model.nv);
+  sum = 0.0;
   const auto side = [&](pinocchio::JointIndex mine, pinocchio::JointIndex other, double reach) {
     const pinocchio::Model::IndexVector& chain = model.supports[mine];
     const pinocchio::Model::IndexVector& other_chain = model.supports[other];
-    double sum = 0.0;
     for (std::size_t k = 0; k < chain.size(); ++k) {
       const pinocchio::JointIndex j = chain[k];
       if (j == 0 || Contains(other_chain, j)) {
         continue;
       }
-      if (IsPrismatic(model, j)) {
-        sum += 1.0;
-        continue;
+      double lever = 1.0;
+      if (!IsPrismatic(model, j)) {
+        lever = reach;
+        for (std::size_t m = k + 1; m < chain.size(); ++m) {
+          lever += model.jointPlacements[chain[m]].translation().norm();
+        }
       }
-      double lever = reach;
-      for (std::size_t m = k + 1; m < chain.size(); ++m) {
-        lever += model.jointPlacements[chain[m]].translation().norm();
+      const Eigen::Index v0 = model.joints[j].idx_v();
+      const Eigen::Index nv = model.joints[j].nv();
+      for (Eigen::Index v = v0; v < v0 + nv; ++v) {
+        per_v[v] += lever;
       }
       sum += lever;
     }
-    return sum;
   };
-  return side(joint_a, joint_b, reach_a) + side(joint_b, joint_a, reach_b);
+  side(joint_a, joint_b, reach_a);
+  side(joint_b, joint_a, reach_b);
 }
 
 CapsuleBindStatus CapsuleWorkspace::Bind(std::shared_ptr<const CapsuleModel> spec,
@@ -173,7 +179,8 @@ CapsuleBindStatus CapsuleWorkspace::Bind(std::shared_ptr<const CapsuleModel> spe
     info.is_ball = false;
     info.joint_a = ja;
     info.joint_b = jb;
-    info.lever_arm_bound = LeverArmBound(model, ja, jb, reach_of_capsule[ia], reach_of_capsule[ib]);
+    LeverArmBound(model, ja, jb, reach_of_capsule[ia], reach_of_capsule[ib], info.lever_arm,
+                  info.lever_arm_bound);
     pairs_.push_back(info);
   }
   n_self_pairs_ = pairs_.size();
@@ -208,7 +215,7 @@ CapsuleBindStatus CapsuleWorkspace::Bind(std::shared_ptr<const CapsuleModel> spe
       info.is_ball = true;
       info.joint_a = 0;
       info.joint_b = jb;
-      info.lever_arm_bound = LeverArmBound(model, 0, jb, 0.0, reach_of_capsule[ib]);
+      LeverArmBound(model, 0, jb, 0.0, reach_of_capsule[ib], info.lever_arm, info.lever_arm_bound);
       pairs_.push_back(info);
     }
   }
@@ -216,6 +223,12 @@ CapsuleBindStatus CapsuleWorkspace::Bind(std::shared_ptr<const CapsuleModel> spe
   // GeometryData — distance functor (coal 닫힌식 조회) 가 여기서 만들어진다. 지원하지 않는 쌍이면
   // coal 이 throw 하지만 capsule–capsule 뿐이라 일어나지 않는다 (non-RT).
   geom_data_ = std::make_unique<pinocchio::GeometryData>(*geom_model_);
+  // pinocchio's SE3 default constructor leaves the rotation uninitialised: a
+  // geom read before its first placement (the ball before SetBall) would feed
+  // garbage to coal. Every placement starts at the identity.
+  for (pinocchio::SE3& m : geom_data_->oMg) {
+    m.setIdentity();
+  }
   for (coal::DistanceRequest& req : geom_data_->distanceRequests) {
     req.enable_signed_distance = true;  // 침범이면 d < 0, normal · 최근접점은 그대로 유효
   }

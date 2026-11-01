@@ -573,11 +573,17 @@ TEST(CapsuleWorkspace, LeverArmBoundBoundsDistanceChange) {
     const double inf = dq.cwiseAbs().maxCoeff();
     for (std::size_t p = 0; p < d0.size(); ++p) {
       const double change = std::abs(fx.ws.Distance(p) - d0[p]);
-      const double bound = fx.ws.Pair(p).lever_arm_bound * inf;
-      worst = std::max(worst, change / bound);
-      EXPECT_LE(change, bound + 1e-12) << "pair " << p;
+      const rub::CapsulePairInfo& info = fx.ws.Pair(p);
+      // 관절별 벡터 (소비자가 쓰는 것) 와 그 합의 스칼라 — 둘 다 상한이다.
+      ASSERT_EQ(info.lever_arm.size(), fx.model.nv);
+      const double bound_v = info.lever_arm.dot(dq.cwiseAbs());
+      const double bound = info.lever_arm_bound * inf;
+      EXPECT_NEAR(info.lever_arm.sum(), info.lever_arm_bound, 1e-12);
+      worst = std::max(worst, change / bound_v);
+      EXPECT_LE(change, bound_v + 1e-12) << "pair " << p;
+      EXPECT_LE(bound_v, bound + 1e-12);
     }
   }
-  std::cout << "[lever arm] worst |Δd| / (c_j ‖Δq‖∞) = " << worst << "\n";
+  std::cout << "[lever arm] worst |Δd| / (Σ_i c_ij |Δq_i|) = " << worst << "\n";
   EXPECT_GT(worst, 0.05) << "상한이 너무 느슨하면 여유가 과보수가 된다 — 기록";
 }

@@ -68,10 +68,13 @@ struct CapsulePairInfo {
   bool is_ball{false};       ///< 공 쌍: o1 = 공, o2 = capsule_b
   pinocchio::JointIndex joint_a{0};
   pinocchio::JointIndex joint_b{0};
-  /// 노드 사이 여유의 lever arm 상한 c_j [m/rad] — formulation §1.3 (#642 D5). 두 capsule 사이
-  /// 경로 위의 관절마다 (그 관절에서 capsule 끝점까지의 placement 평행이동 노름 합 + capsule
-  /// 끝점 노름 + 반지름) 을 더한 값. prismatic 관절은 1 을 더한다. 관절 하나가 1 rad 돌 때
-  /// 쌍의 거리가 변하는 양의 상한이다 — 보수적이다 (lever arm 이 모두 최대로 정렬된 경우).
+  /// 노드 사이 여유의 lever arm 상한 [m/rad] — formulation §1.3 (#642 D5). 두 capsule 사이
+  /// 경로 위의 관절 i 마다 (그 관절에서 capsule 끝점까지의 placement 평행이동 노름 합 + capsule
+  /// 끝점 노름 + 반지름) 이고 (prismatic 은 1), 경로 밖의 관절은 0. 관절 i 가 Δq_i 돌 때 쌍의
+  /// 거리가 변하는 양의 상한이 lever_arm[i]·|Δq_i| 다 — 보수적이다 (lever arm 이 전부 최대로
+  /// 정렬된 경우). `lever_arm` 은 v 좌표 순서 (nv), `lever_arm_bound` 는 그 합 c_j (‖Δq‖∞ 에
+  /// 곱하는 스칼라 — 관절 수가 많으면 매우 보수적이라 소비자는 벡터를 쓴다).
+  Eigen::VectorXd lever_arm;
   double lever_arm_bound{0.0};
 };
 
@@ -176,10 +179,9 @@ class CapsuleWorkspace {
   struct Shapes;  // coal 형상 (헤더에 coal 을 노출하지 않는다)
 
   [[nodiscard]] bool FingerprintMatches(const pinocchio::Model& model) const noexcept;
-  [[nodiscard]] static double LeverArmBound(const pinocchio::Model& model,
-                                            pinocchio::JointIndex joint_a,
-                                            pinocchio::JointIndex joint_b, double reach_a,
-                                            double reach_b);
+  static void LeverArmBound(const pinocchio::Model& model, pinocchio::JointIndex joint_a,
+                            pinocchio::JointIndex joint_b, double reach_a, double reach_b,
+                            Eigen::VectorXd& per_v, double& sum);
 
   std::shared_ptr<const CapsuleModel> spec_;
   std::unique_ptr<pinocchio::GeometryModel> geom_model_;
