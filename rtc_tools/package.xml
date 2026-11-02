@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rtc_tools</name>
-  <version>5.27.0</version>
+  <version>5.28.0</version>
   <description>Python development utilities for the RTC framework: log plotter (plot_rtc_log), hand joint-command GUI (joint_command_gui), MJCF/URDF comparison tool, and URDF-to-MJCF converter.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
@@ -27,7 +27,7 @@
        PyQt5 it pulls in) is the ROS apt one; the venv PyQt5 above serves the
        python3 -m tools. -->
   <exec_depend>python_qt_binding</exec_depend>
-  <!-- yaml: GUI config (gui/joint_command_model.py) and the launch helpers. -->
+  <!-- yaml: GUI config (gui/joint_command_model.py), pose files (gui/joint_command_poses.py) and the launch helpers. -->
   <exec_depend>python3-yaml</exec_depend>
   <!-- derive_accel_limits: Pinocchio python bindings for
        M/g/c, xacro to expand the robot URDF. MuJoCo (optional cross-check) is a

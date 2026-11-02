@@ -294,6 +294,8 @@ ros2 run rtc_tools joint_command_gui --ros-args -p config:=<gui yaml>
 ```
 
 - 설정 예: [hand_joint_command_gui.yaml](../integrated_bringup/config/b7_p2/hand_joint_command_gui.yaml). YAML 키 · 기본값 · 안전 규칙 (Enable 조건 · slew · 자동 Disable · 범위 편집) 은 [joint_command_model.py](rtc_tools/gui/joint_command_model.py) 의 docstring 이 갖는다. 관절 수와 이름은 `joint_states` 에서 읽는다.
+- 포즈 목록 (패널 아래 표, 손별): `Save pose` 는 보이는 값 (Enabled 면 목표, 아니면 측정) 을 저장하고 `Play` 는 목록을 순서대로 재생한다 — 명령이 포즈에 도달하면 `dwell` 만큼 머문 뒤 다음, 마지막 포즈는 유지 (`Go to` 는 한 포즈, dwell 없음). 재생 중 슬라이더 · 범위 · 목록은 잠기고 `Stop` 은 그 자리에 멈춘다 (목표 ← 현재 명령); 손이 Disable 되면 (사용자 · 자동) 재생도 그 주기에 끝난다. 범위 밖 포즈가 하나라도 있으면 Play 가 거부된다 (clamp 없음). 파일은 손마다 하나 (`Save…` / `Load…`, YAML, 관절 이름 키, deg; `poses_files` 로 시작 시 자동 로드). 파일 형식 · 검증 · 재생 규칙은 [joint_command_poses.py](rtc_tools/gui/joint_command_poses.py) 의 docstring.
+- SIL 확인 (`sil_mode:=firmware`, vcan0): 가짜 펌웨어는 0 deg 에서 시작하므로 b7_p2 YAML 의 범위로는 Enable 이 거부된다 — `ranges_deg` 없는 GUI YAML (`namespace: /p2`, `sides: [right, left]`) 로 띄워 ±10 deg 안의 포즈를 저장 · 재생하고 `ros2 topic echo /p2/right/joint_command` 로 순서 · dwell 을 본다.
 - 원격 PC: 두 PC 의 `RMW_IMPLEMENTATION` 과 `ROS_DOMAIN_ID` 가 같아야 하고, `ROS_AUTOMATIC_DISCOVERY_RANGE` 가 `LOCALHOST` 이면 안 된다. 손 패널이 안 뜨면 GUI PC 에서 `ros2 topic list` 로 손 토픽부터 본다.
 - **사용 조건**: 손 노드는 configure 뒤 처음 받은 `joint_command` 의 `joint_names` 로 이름 → 슬롯 대응을 고정한다. 그 전에 다른 순서로 보낸 발행자가 있었다면 GUI 를 쓰기 전에 손 노드를 다시 configure 한다.
 

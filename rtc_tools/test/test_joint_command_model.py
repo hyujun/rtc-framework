@@ -6,12 +6,14 @@ Runs on a fake clock (plain floats) — no rclpy, no Qt.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
 from rtc_tools.gui.joint_command_model import (
     ABS_LIMIT_DEG,
     DEFAULT_RANGE_HALF_DEG,
+    MAX_DWELL_S,
     MAX_PUBLISH_RATE_HZ,
     MAX_TICK_DT_S,
     MIN_PUBLISH_RATE_HZ,
@@ -65,6 +67,8 @@ def test_defaults():
     assert cfg.publish_rate_hz == 50.0
     assert cfg.slew_rate_deg_s == 90.0
     assert cfg.stale_timeout_s == pytest.approx(0.1)
+    assert cfg.replay_dwell_s == 1.0
+    assert cfg.poses_files == {}
 
 
 def test_full_config(tmp_path):
@@ -78,6 +82,8 @@ def test_full_config(tmp_path):
         "ranges_deg:\n"
         "  a: {j0: [-5, 5]}\n"
         "  single:\n"
+        "replay_dwell_s: 0\n"
+        "poses_files: {a: poses/a.yaml, single: /abs/s.yaml}\n"
     )
     cfg = load_config(path)
     assert cfg.namespace == "/p"
@@ -86,6 +92,19 @@ def test_full_config(tmp_path):
     assert cfg.slew_rate_deg_s == 0.0
     assert cfg.stale_timeout_s == pytest.approx(0.25)
     assert cfg.ranges_deg == {"a": {"j0": (-5.0, 5.0)}, "single": {}}
+    assert cfg.replay_dwell_s == 0.0
+    # relative to the YAML's directory, absolute left alone
+    assert cfg.poses_files == {"a": tmp_path / "poses/a.yaml", "single": Path("/abs/s.yaml")}
+
+
+def test_poses_file_home_path_is_expanded():
+    cfg = parse_config({"poses_files": {"right": "~/p/right.yaml"}}, "/cfg")
+    assert cfg.poses_files["right"] == Path.home() / "p/right.yaml"
+
+
+def test_dwell_bounds_are_inclusive():
+    assert parse_config({"replay_dwell_s": MAX_DWELL_S}).replay_dwell_s == MAX_DWELL_S
+    assert parse_config({"replay_dwell_s": 0}).replay_dwell_s == 0.0
 
 
 def test_publish_rate_bounds_are_inclusive():
@@ -120,6 +139,14 @@ def test_empty_path_is_defaults():
         {"ranges_deg": {"right": {"j0": [-181, 0]}}},
         {"ranges_deg": {"right": {"j0": [0, "x"]}}},
         {"ranges_deg": {"right": [1, 2]}},
+        {"replay_dwell_s": -0.01},
+        {"replay_dwell_s": MAX_DWELL_S + 0.01},
+        {"replay_dwell_s": float("inf")},
+        {"replay_dwell_s": "1"},
+        {"poses_files": {"nobody": "x.yaml"}},
+        {"poses_files": {"right": ""}},
+        {"poses_files": {"right": 3}},
+        {"poses_files": ["x.yaml"]},
     ],
 )
 def test_config_errors(data):
@@ -410,6 +437,27 @@ def test_slew_zero_is_no_limit():
     c.set_target(0, 70.0)
     out = c.tick(0.02)
     assert math.degrees(out[0]) == pytest.approx(70.0)
+    assert c.command_deg == c.target_deg
+
+
+def test_arrival_is_exact():
+    # the last step snaps: `c + (t - c)` would miss 2.6 by one ulp
+    c = enabled(ranges={"j0": (-90.0, 90.0)}, slew=90.0)
+    c.command_deg[0] = -3.799999999999982
+    c.set_target(0, 2.6)
+    t = 0.0
+    for _ in range(10):
+        t += 0.02
+        c.on_sample(sample((0.0, 0.0, 0.0), t))
+        c.tick(t)
+    assert c.command_deg[0] == 2.6
+    assert c.command_deg == c.target_deg
+    # and not before: the step before arrival is still short of the target
+    c.set_target(0, 10.0)
+    c.on_sample(sample((0.0, 0.0, 0.0), t + 0.02))
+    c.tick(t + 0.02)
+    assert c.command_deg[0] == pytest.approx(4.4)
+    assert c.command_deg != c.target_deg
 
 
 def test_first_tick_after_enable_holds():

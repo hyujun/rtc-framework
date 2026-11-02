@@ -34,6 +34,10 @@ Contract of one hand (``HandController``):
   position. Ranges are editable at runtime (not saved) and never exceed
   ``ABS_LIMIT_DEG``. While enabled, an edit that would leave the current
   target or command outside the new range is rejected.
+- Arrival is exact: the last slew step snaps the command onto the target, so
+  ``command_deg == target_deg`` is the "reached" test of ``joint_command_poses``
+  (the per-hand pose list and its replay; its YAML keys are ``replay_dwell_s``
+  and ``poses_files``, see that module).
 """
 
 from __future__ import annotations
@@ -57,6 +61,8 @@ MAX_TICK_DT_S = 0.1
 # publish_rate_hz bounds: the publish QTimer takes whole milliseconds.
 MIN_PUBLISH_RATE_HZ = 1.0
 MAX_PUBLISH_RATE_HZ = 1000.0
+# Longest dwell (s) a pose may ask for between arrival and the next pose.
+MAX_DWELL_S = 60.0
 
 _CONFIG_KEYS = {
     "namespace",
@@ -65,6 +71,8 @@ _CONFIG_KEYS = {
     "slew_rate_deg_s",
     "stale_timeout_ms",
     "ranges_deg",
+    "replay_dwell_s",
+    "poses_files",
 }
 
 
@@ -81,6 +89,10 @@ class GuiConfig:
     stale_timeout_s: float = 0.1
     # hand label -> joint name -> (min_deg, max_deg)
     ranges_deg: Mapping[str, Mapping[str, tuple[float, float]]] = field(default_factory=dict)
+    # dwell (s) written into a pose when it is saved
+    replay_dwell_s: float = 1.0
+    # hand label -> pose file loaded once that hand's joint names are known
+    poses_files: Mapping[str, Path] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -101,12 +113,13 @@ class HandSample:
     received_s: float
 
 
-def _number(value, what: str) -> float:
+def _number(value, what: str, error: type[ValueError] = ConfigError) -> float:
+    """``value`` as a finite float; bool is not a number. Raises ``error``."""
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ConfigError(f"{what} must be a number, got {value!r}")
+        raise error(f"{what} must be a number, got {value!r}")
     value = float(value)
     if not math.isfinite(value):
-        raise ConfigError(f"{what} must be finite, got {value!r}")
+        raise error(f"{what} must be finite, got {value!r}")
     return value
 
 
@@ -139,8 +152,19 @@ def normalize_namespace(namespace) -> str:
     return namespace.rstrip("/") or "/"
 
 
-def parse_config(data) -> GuiConfig:
-    """Build a ``GuiConfig`` from the parsed YAML mapping (None = defaults)."""
+def dwell_error(value: float) -> str | None:
+    """Why ``value`` (s) is not a valid dwell, or None."""
+    if not math.isfinite(value) or not 0.0 <= value <= MAX_DWELL_S:
+        return f"dwell_s must be in [0, {MAX_DWELL_S:g}], got {value!r}"
+    return None
+
+
+def parse_config(data, base_dir: str | Path | None = None) -> GuiConfig:
+    """Build a ``GuiConfig`` from the parsed YAML mapping (None = defaults).
+
+    A relative ``poses_files`` path is resolved against ``base_dir`` (the
+    directory of the YAML; None = the current directory).
+    """
     if data is None:
         return GuiConfig()
     if not isinstance(data, dict):
@@ -192,6 +216,22 @@ def parse_config(data) -> GuiConfig:
             for name, value in joints.items()
         }
 
+    dwell = _number(data.get("replay_dwell_s", default.replay_dwell_s), "replay_dwell_s")
+    reason = dwell_error(dwell)
+    if reason:
+        raise ConfigError(f"replay_dwell_s: {reason}")
+
+    files_in = data.get("poses_files") or {}
+    if not isinstance(files_in, dict):
+        raise ConfigError("poses_files must map a hand label to a pose file path")
+    files: dict[str, Path] = {}
+    for label, path in files_in.items():
+        if label not in labels:
+            raise ConfigError(f"poses_files: unknown hand {label!r} (known: {sorted(labels)})")
+        if not isinstance(path, str) or not path:
+            raise ConfigError(f"poses_files.{label} must be a file path, got {path!r}")
+        files[label] = Path(base_dir or ".") / Path(path).expanduser()
+
     return GuiConfig(
         namespace=namespace,
         sides=tuple(sides),
@@ -199,6 +239,8 @@ def parse_config(data) -> GuiConfig:
         slew_rate_deg_s=slew,
         stale_timeout_s=stale_ms / 1000.0,
         ranges_deg=ranges,
+        replay_dwell_s=dwell,
+        poses_files=files,
     )
 
 
@@ -213,7 +255,7 @@ def load_config(path: str | Path | None) -> GuiConfig:
         raise ConfigError(f"cannot read {path}: {exc}") from exc
     except yaml.YAMLError as exc:
         raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
-    return parse_config(data)
+    return parse_config(data, Path(path).parent)
 
 
 def hand_topics(config: GuiConfig) -> list[HandTopics]:
@@ -443,7 +485,11 @@ class HandController:
         step = math.inf if self._slew_deg_s == 0.0 else self._slew_deg_s * dt
         for i, target in enumerate(self.target_deg):
             delta = target - self.command_deg[i]
-            self.command_deg[i] += max(-step, min(step, delta))
+            if abs(delta) <= step:
+                # snap, not `+= delta`: the sum can miss the target by one ulp
+                self.command_deg[i] = target
+            else:
+                self.command_deg[i] += math.copysign(step, delta)
 
         for name, deg, (lo, hi) in zip(
             self.joint_names, self.command_deg, self.ranges, strict=True

@@ -16,6 +16,15 @@ publish_rate_hz: 50.0    # 활성 손마다 JointCommand 발행 주기 [Hz] (1 ~
 slew_rate_deg_s: 360.0  # 명령이 목표를 따라가는 최대 속도 [deg/s] (0 = 제한 없음)
 stale_timeout_ms: 100.0  # joint_states 가 이보다 오래되면 그 손을 자동 Disable [ms]
 
+# 포즈 목록 (손별 Save pose · Play): 저장되는 포즈의 dwell [s] (0 ~ 60, 포즈마다 표에서 고친다).
+replay_dwell_s: 1.0
+# 손별 포즈 파일 — GUI 가 손의 관절 이름을 받은 뒤 자동으로 읽는다 (상대 경로는 이 파일 기준).
+# 파일은 GUI 의 Save… 로 만든다 (hand: <side> · poses: [{name, dwell_s, joints_deg: {관절 이름: deg}}]);
+# 실기에서 만드는 것이라 repo 에는 없다. 형식의 SSoT 는 rtc_tools/gui/joint_command_poses.py.
+# poses_files:
+#   right: hand_poses_right.yaml
+#   left: hand_poses_left.yaml
+
 # 손별 · 관절별 슬라이더 초기 범위 [deg] — {관절 이름: [min, max]}, 절대 상한 ±180.
 # 관절 이름은 손 노드의 joint_states 이름이다 (udp_hand_node_p2.yaml 의 손별 joint_state_names).
 # 적지 않은 관절은 GUI 가 처음 받은 측정 위치 ±10 deg 로 시작한다. GUI 에서 바꾼 범위는
