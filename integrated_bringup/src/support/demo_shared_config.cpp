@@ -13,6 +13,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace integrated_bringup {
@@ -643,6 +644,29 @@ void BuildPullForceEstimator(const DemoSharedConfig& cfg, double control_rate_hz
     built->SetPullDirection(cfg.pull_direction);
   }
   estimator = std::move(built);
+}
+
+std::string ResolveShareConfigPath(const std::string& spec) {
+  constexpr std::string_view kPackage = "package://";
+  if (spec.rfind(kPackage, 0) == 0) {
+    const std::string rest = spec.substr(kPackage.size());
+    const std::size_t slash = rest.find('/');
+    const std::string pkg = rest.substr(0, slash);
+    const std::string rel = slash == std::string::npos ? std::string{} : rest.substr(slash + 1);
+    try {
+      return ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+    } catch (const std::exception&) {
+      return spec;
+    }
+  }
+  if (!spec.empty() && spec.front() == '/') {
+    return spec;
+  }
+  try {
+    return ament_index_cpp::get_package_share_directory("integrated_bringup") + "/config/" + spec;
+  } catch (const std::exception&) {
+    return spec;
+  }
 }
 
 }  // namespace integrated_bringup

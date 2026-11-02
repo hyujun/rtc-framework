@@ -317,6 +317,13 @@ struct GraspModeSwitchState {
 void BuildPullForceEstimator(const DemoSharedConfig& cfg, double control_rate_hz,
                              std::unique_ptr<rtc::grasp::PullForceEstimator>& estimator);
 
+/// A config file path as the profiles write it, resolved for the loader:
+/// `package://pkg/rel` through ament, an absolute path as it is, a relative
+/// one under this package's share `config/` (where the profiles live). A
+/// package ament cannot find leaves the spec as given — the loader names it.
+/// Non-RT (configure).
+[[nodiscard]] std::string ResolveShareConfigPath(const std::string& spec);
+
 }  // namespace integrated_bringup
 
 #endif  // UR5E_BRINGUP_SUPPORT_DEMO_SHARED_CONFIG_HPP_

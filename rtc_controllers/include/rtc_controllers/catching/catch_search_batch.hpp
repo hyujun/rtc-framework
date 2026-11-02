@@ -163,7 +163,11 @@ struct SearchBatchRow {
 /// SegmentRecord::start_from_search), `segment_ref_scaled`,
 /// `segment_ref_scale`, `segment_slack_max`, `segment_slack_terminal_max`,
 /// `segment_catch_pos_err`, `segment_catch_axis_err`,
-/// `segment_speed_ratio_max`, `segment_tau_ratio_max`.
+/// `segment_speed_ratio_max`, `segment_tau_ratio_max`, and the collision rows'
+/// `segment_coll_rows`, `segment_coll_fallback`, `segment_coll_min_dist`,
+/// `segment_coll_active_nodes`, `segment_coll_slack_max`, `segment_coll_eps_lin`,
+/// `segment_ball_min_dist`, `segment_ball_active_nodes`, `segment_ball_inert_nodes`
+/// (planner_events.csv's columns of the same names, #642).
 ///
 /// `search_valid` is the SEARCH's verdict on the wake; the plan columns are
 /// filled only where a pair was published (`outcome` published and
@@ -211,6 +215,8 @@ struct SegmentBatchBinding {
   /// (MpcSegmentPlannerConstants; NaN = TBD).
   double t_close_lead{std::numeric_limits<double>::quiet_NaN()};
   double t_close_total{std::numeric_limits<double>::quiet_NaN()};
+  /// `ball_diameter` [m] for the collision rows' ball (#642); NaN = not given.
+  double ball_diameter{std::numeric_limits<double>::quiet_NaN()};
   // ── mpc_docking ──
   MpcDockingSegmentCoreLimits limits{};  ///< `armature` is zero
   std::vector<double> qd_rating;         ///< device ratings [rad/s]

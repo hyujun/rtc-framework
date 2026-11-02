@@ -19,6 +19,7 @@ namespace rtc::catching {
 
 namespace {
 
+using params_detail::FindUnknownKey;
 using params_detail::ReadSectionNode;
 using params_detail::SectionKind;
 using params_detail::Spelling;
@@ -138,20 +139,9 @@ class Reader {
   /// Refuse a key of `sec` that is not in `allowed`, by name.
   void CheckKeys(const YAML::Node& sec, const std::string& base,
                  std::initializer_list<const char*> allowed) const {
-    if (!sec.IsMap()) {
-      return;
-    }
-    for (auto it = sec.begin(); it != sec.end(); ++it) {
-      const YAML::Node k = it->first;
-      const std::string name = k.IsScalar() ? k.Scalar() : std::string("<non-scalar key>");
-      bool known = false;
-      for (const char* a : allowed) {
-        known = known || name == a;
-      }
-      if (!known) {
-        Reject(Quote(Join(base, name)) + " is not a key of " + Quote(base) +
-               (key_hints_ ? KeyHint(name) : std::string()));
-      }
+    if (const auto name = FindUnknownKey(sec, allowed)) {
+      Reject(Quote(Join(base, *name)) + " is not a key of " + Quote(base) +
+             (key_hints_ ? KeyHint(*name) : std::string()));
     }
   }
 

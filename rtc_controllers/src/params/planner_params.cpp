@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <initializer_list>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -18,6 +19,7 @@ namespace rtc::catching {
 
 namespace {
 
+using params_detail::FindUnknownKey;
 using params_detail::ReadSectionNode;
 using params_detail::SectionKind;
 using params_detail::Spelling;
@@ -51,6 +53,20 @@ std::string Shown(const YAML::Node& sec, const char* key, double value) {
   return std::all_of(s.begin(), s.end(), [](char c) {
     return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
   });
+}
+
+/// Refuse a key of the map `sec` that is not in `known`, by name — a
+/// misspelt key would otherwise fall back to its default without a word,
+/// and under `segment.mpc` a default can mean a safety row left off (#642 D12).
+void CheckKeys(const YAML::Node& sec, const std::string& path,
+               std::initializer_list<const char*> known) {
+  if (const auto unknown = FindUnknownKey(sec, known)) {
+    std::string list;
+    for (const char* a : known) {
+      list += (list.empty() ? "" : ", ") + std::string(a);
+    }
+    Reject(Key(path + "." + *unknown) + " is not a key of " + Key(path) + " (" + list + ")");
+  }
 }
 
 /// The section under `parent`, empty when absent; refuses a non-map.
@@ -449,6 +465,32 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
   const YAML::Node mpc =
       selection.segment_mpc ? Section(segment, "mpc", "segment.mpc") : YAML::Node();
   MpcSegmentPlannerParams& d = out.mpc_segment;
+  // Every map under `segment.mpc` admits its known keys only (#642 D12):
+  // `switch_margin` and `eta_v` are ParseCatchingParams', the rest is read
+  // below. A key the shipped profiles write must be in these lists.
+  CheckKeys(mpc, "segment.mpc",
+            {"switch_margin", "eta_v", "v_eps", "horizon", "approach", "budget", "replan", "groups",
+             "eta_tau", "m_q", "publish", "catch", "cost", "linearization", "solver", "collision"});
+  CheckKeys(Section(mpc, "horizon", "segment.mpc.horizon"), "segment.mpc.horizon",
+            {"n_nodes", "dt_s", "blocks"});
+  CheckKeys(Section(mpc, "approach", "segment.mpc.approach"), "segment.mpc.approach",
+            {"n_pre_max", "dt_pre_s", "rest_tol"});
+  CheckKeys(Section(mpc, "budget", "segment.mpc.budget"), "segment.mpc.budget",
+            {"first_s", "replan_s"});
+  CheckKeys(Section(mpc, "replan", "segment.mpc.replan"), "segment.mpc.replan",
+            {"k_max", "same_point"});
+  CheckKeys(Section(mpc, "publish", "segment.mpc.publish"), "segment.mpc.publish",
+            {"slack_max", "slack_terminal_max", "catch_pos_err_max", "collision_slack_max"});
+  CheckKeys(Section(mpc, "catch", "segment.mpc.catch"), "segment.mpc.catch",
+            {"w_axis", "w_v_par", "w_v_perp", "gamma_ref", "kappa", "sigma_floor", "w_max",
+             "w_const", "sigma_ref", "rho_v", "v_rel_allow", "axis_theta_max"});
+  CheckKeys(
+      Section(mpc, "cost", "segment.mpc.cost"), "segment.mpc.cost",
+      {"jerk_weight", "u_scale", "w_delta", "rho_tau", "w_perp", "w_path", "angular_momentum"});
+  CheckKeys(Section(mpc, "linearization", "segment.mpc.linearization"), "segment.mpc.linearization",
+            {"delta_tr", "reference_rest_tol", "ref_speed_fraction"});
+  CheckKeys(Section(mpc, "solver", "segment.mpc.solver"), "segment.mpc.solver",
+            {"max_iter", "max_iter_in", "max_iter_warm", "eps_abs", "eps_rel", "eps_primal_inf"});
   const YAML::Node horizon = Section(mpc, "horizon", "segment.mpc.horizon");
   // From the section's kind, not the node: an absent section reads as an
   // empty but DEFINED node (catching_yaml_read.hpp).
@@ -608,6 +650,35 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
   d.catch_pos_err_max =
       ReadBounded(publish, "catch_pos_err_max", "segment.mpc.publish.catch_pos_err_max",
                   d.catch_pos_err_max, 1e-6, 1.0);
+  d.collision_slack_max =
+      ReadBounded(publish, "collision_slack_max", "segment.mpc.publish.collision_slack_max",
+                  d.collision_slack_max, 0.0, 1.0);
+
+  // The collision rows (#642): the capsule file turns them on; the values
+  // ship whether or not it is given.
+  const YAML::Node coll = Section(mpc, "collision", "segment.mpc.collision");
+  CheckKeys(coll, "segment.mpc.collision",
+            {"capsules_file", "d_safe", "margin", "rho_d", "ball_d_safe", "ball_n_sigma",
+             "ball_margin_fallback"});
+  if (const YAML::Node f = coll["capsules_file"]; f) {
+    if (!f.IsScalar() || f.Scalar().empty()) {
+      Reject(Key("segment.mpc.collision.capsules_file") + " must be a non-empty path, got " +
+             Spelling(f));
+    }
+    d.collision.capsules_file = f.Scalar();
+  }
+  d.collision.d_safe =
+      ReadBounded(coll, "d_safe", "segment.mpc.collision.d_safe", d.collision.d_safe, 0.0, 1.0);
+  d.collision.margin =
+      ReadBounded(coll, "margin", "segment.mpc.collision.margin", d.collision.margin, 0.0, 1.0);
+  d.collision.rho_d = ReadPositive(coll, "rho_d", "segment.mpc.collision.rho_d", d.collision.rho_d);
+  d.collision.ball_d_safe = ReadBounded(coll, "ball_d_safe", "segment.mpc.collision.ball_d_safe",
+                                        d.collision.ball_d_safe, 0.0, 1.0);
+  d.collision.ball_n_sigma = ReadBounded(coll, "ball_n_sigma", "segment.mpc.collision.ball_n_sigma",
+                                         d.collision.ball_n_sigma, 0.0, 10.0);
+  d.collision.ball_margin_fallback =
+      ReadBounded(coll, "ball_margin_fallback", "segment.mpc.collision.ball_margin_fallback",
+                  d.collision.ball_margin_fallback, 0.0, 1.0);
 
   // The pre-catch part. Its nodes and the stop's share the
   // payload's node capacity and the core's block array.

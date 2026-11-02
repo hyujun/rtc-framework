@@ -470,7 +470,27 @@ def plot_dualarm_diag_limits(df, save_dir=None):
             color="C3",
             label="rows binding",
         )
-    axes[0].set_ylabel("acceleration rows")
+    # The collision damper's rows (#642), when the recording has them.
+    if "damper_rows" in df.columns:
+        axes[0].step(
+            t,
+            _masked(df, "damper_rows", solved),
+            where="post",
+            linewidth=1.0,
+            linestyle=":",
+            color="C2",
+            label="damper rows",
+        )
+    if "damper_rows_binding" in df.columns:
+        axes[0].step(
+            t,
+            _masked(df, "damper_rows_binding", solved),
+            where="post",
+            linewidth=1.2,
+            color="C1",
+            label="damper rows binding",
+        )
+    axes[0].set_ylabel("acceleration / damper rows")
     _count_axis(axes[0])
     axes[0].legend(fontsize=8)
     axes[0].grid(True, alpha=0.3)
@@ -671,6 +691,12 @@ def print_dualarm_diag_statistics(df):
         if col in df.columns:
             bits = _set_bits(df[col])
             print(f"{col} — model velocity indices ever set: {bits if bits else 'none'}")
+    if "damper_rows_binding" in df.columns:
+        print(f"Ticks with a binding damper row: {int((df['damper_rows_binding'] > 0).sum())}")
+    if "damper_min_dist" in df.columns:
+        dist = df["damper_min_dist"].to_numpy(dtype=float)
+        if np.isfinite(dist).any():
+            print(f"Smallest capsule pair distance at the command state: {np.nanmin(dist):.4f} m")
 
     tasks = detect_task_prefixes(df)
     print(f"\nTasks ({len(tasks)}): {', '.join(tasks) if tasks else 'none'}")

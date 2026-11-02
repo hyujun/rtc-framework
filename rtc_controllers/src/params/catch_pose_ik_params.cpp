@@ -187,14 +187,7 @@ void SweepIkKeys(const std::string& base, const YAML::Node& ik, CatchPoseIkRetir
       retired.manip_min = true;
       continue;
     }
-    bool known = false;
-    for (const char* k : kIkKeys) {
-      if (name == k) {
-        known = true;
-        break;
-      }
-    }
-    if (!known) {
+    if (std::find(std::begin(kIkKeys), std::end(kIkKeys), name) == std::end(kIkKeys)) {
       RejectMsg("unknown key '" + IkKey(base, name.c_str()) +
                 "' — no such catch-pose IK parameter (typo?)");
     }

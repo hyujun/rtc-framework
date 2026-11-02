@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(integrated_bringup VERSION 5.19.0 LANGUAGES CXX)
+project(integrated_bringup VERSION 5.20.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -1722,6 +1722,22 @@ if(BUILD_TESTING)
     rtc_base
     ament_index_cpp
   )
+
+  # ── The shipped g1_p1b capsule spec on the segment model (#642) ───────────
+  # Binds, the real model's ∇_q d against the central-difference gate
+  # (rtc_urdf_bridge/test/capsule_fd_gate.hpp), the lever-arm bound. Skips
+  # without the g1_p1b test model.
+  ament_add_gtest(test_g1_collision_capsules test/test_g1_collision_capsules.cpp TIMEOUT 600)
+  target_include_directories(test_g1_collision_capsules PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_compile_definitions(test_g1_collision_capsules PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+  target_link_libraries(test_g1_collision_capsules ${PROJECT_NAME}_demo_controllers yaml-cpp)
+  ament_target_dependencies(test_g1_collision_capsules
+    rclcpp rtc_controllers rtc_urdf_bridge rtc_base ament_index_cpp)
 
   # ── The reach bound on the shipped catch sub-models ────────────────────────
   # The searches refuse a target beyond the bound without the IK: on the models

@@ -171,6 +171,7 @@
 #include <pinocchio/multibody/model.hpp>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -231,7 +232,29 @@ struct MpcSegmentPlannerConstants {
   /// T_close,tot = `robot.hand.T_close_e2e` + h/2 [s]: how long the close
   /// takes from t_cmd. NaN: unknown.
   double t_close_total{std::numeric_limits<double>::quiet_NaN()};
+  /// The ball's radius r_b [m] (`core.ball.diameter` / 2) for the collision
+  /// rows' swept capsule. NaN: unknown — a profile with ball capsules then
+  /// refuses to configure.
+  double ball_radius{std::numeric_limits<double>::quiet_NaN()};
 };
+
+/// @brief Whether the real distances a collision re-check measured clear the
+///        rows' safe distances to `tol` (RT-safe, pure): the self clearance
+///        (the slack honoured) and, when there are ball rows, the ball
+///        clearance both ≥ −tol. False for a check that was not evaluated and
+///        for one with a pair the distance could not be measured on
+///        (`invalid_pairs`): a row that could not be checked is not clear.
+///        A NaN clearance with no invalid pair means no row of that kind
+///        exists, and passes.
+[[nodiscard]] inline bool MpcSegmentCollisionClear(const MpcSegmentCollisionCheck& chk,
+                                                   double tol) noexcept {
+  if (!chk.evaluated || chk.invalid_pairs > 0) {
+    return false;
+  }
+  const bool self_ok = std::isnan(chk.self_clearance) || chk.self_clearance >= -tol;
+  const bool ball_ok = std::isnan(chk.ball_clearance) || chk.ball_clearance >= -tol;
+  return self_ok && ball_ok;
+}
 
 /// The ball at a plan's catch instant as the solves take it
 /// MODEL world. `valid` covers p_b / v_b / a_d; `sigma_valid` the
@@ -473,6 +496,15 @@ class MpcSegmentPlanner final : public SegmentPlanner {
 
   [[nodiscard]] const MpcSegmentPlannerConstants& Constants() const noexcept { return consts_; }
 
+  /// The collision rows are on (a capsule spec was loaded at Configure).
+  [[nodiscard]] bool CollisionOn() const noexcept { return capsules_ != nullptr; }
+
+  /// The capsule spec the cores were built over; null when off.
+  [[nodiscard]] const std::shared_ptr<const rtc_urdf_bridge::CapsuleModel>& Capsules()
+      const noexcept {
+    return capsules_;
+  }
+
   /// The rest tolerance Judge holds a published segment's node N to — the
   /// profile's `linearization.reference_rest_tol` (tests and diagnostics).
   [[nodiscard]] double ReferenceRestTol() const noexcept { return rest_tol_ref_; }
@@ -523,6 +555,13 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   [[nodiscard]] bool StartOnSource(const PlannerRtState& rt, const PlanSnapshot& plan,
                                    std::int64_t t_eff, int n_pre, int n_total, double t_span,
                                    MpcSegmentCoreInput& in, SegmentRecord& rec) const noexcept;
+  /// The ball of the collision rows for a catch core's solve (header note):
+  /// per pre-catch node the prediction's path over the node's interval and the
+  /// covariance margin at the node; a node without a usable sample keeps an
+  /// inert row and is recorded. Nothing without ball rows.
+  void SetCollisionInputs(const BallPrediction& prediction, std::int64_t t_c, int n_pre,
+                          const MpcSegmentCore& core, MpcSegmentCoreInput& in,
+                          SegmentRecord& rec) const noexcept;
   [[nodiscard]] SegmentOutcome Judge(const MpcSegmentCoreResult& r, bool ok, int n_pre, int n_total,
                                      bool catch_core, std::int64_t start, std::int64_t end,
                                      std::int64_t budget_ns, std::int64_t t_eff,
@@ -539,6 +578,10 @@ class MpcSegmentPlanner final : public SegmentPlanner {
                  std::int64_t t_c) noexcept;
 
   MpcSegmentPlannerConstants consts_{};
+  // The collision rows (#642): the spec every core binds its own workspace
+  // over, and the publish gate's slack threshold (NaN = the margin).
+  std::shared_ptr<const rtc_urdf_bridge::CapsuleModel> capsules_;
+  double collision_slack_max_{0.0};
   // n_pre = j + 1 for index j. Same box as the stop cores (η_v, η_τ, m_q):
   // at t_c the stop core takes over a state the catch core left inside it.
   std::vector<std::unique_ptr<MpcSegmentCore>> catch_cores_;

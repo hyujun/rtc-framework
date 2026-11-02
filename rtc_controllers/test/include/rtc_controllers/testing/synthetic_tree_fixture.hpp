@@ -91,4 +91,56 @@ namespace rtc::testing {
   return arm;
 }
 
+/// @brief SyntheticTree with a BODY frame "<joint>_link" on every joint: a
+///        capsule spec names links, and the synthetic tree declares none.
+[[nodiscard]] inline mpc_segment_core::ArmModel SyntheticTreeWithLinkFrames(int n_trunk,
+                                                                            int n_branch,
+                                                                            int n_branches) {
+  mpc_segment_core::ArmModel arm = SyntheticTree(n_trunk, n_branch, n_branches);
+  auto model = std::make_shared<pinocchio::Model>(*arm.model);
+  for (pinocchio::JointIndex j = 1; j < static_cast<pinocchio::JointIndex>(model->njoints); ++j) {
+    model->addJointFrame(j);
+    model->addBodyFrame(model->names[j] + "_link", j);
+  }
+  arm.model = model;
+  return arm;
+}
+
+/// @brief A capsule spec (rtc_urdf_bridge CapsuleModel YAML) for
+///        SyntheticTreeWithLinkFrames(n_trunk, n_branch ≥ 7, 2): a capsule on
+///        the trunk's top link and on every link of both arms (0.1 m along +x
+///        of the joint frame), the cross pairs a0_{1,3,5} × a1_{1,3,5}, the
+///        trunk pairs with a{0,1}_{3,5} when `trunk_pairs`, and the OTHER
+///        arm's links a1_{2,4,6} as the ball capsules when `with_ball` (the
+///        catch arm may not carry one: it would avoid the ball).
+[[nodiscard]] inline std::string SyntheticTreeCapsuleYaml(int n_trunk, int n_branch,
+                                                          bool trunk_pairs, bool with_ball) {
+  std::string y = "collision_capsules:\n  capsules:\n";
+  y += "    - {name: trunk, link: trunk_" + std::to_string(n_trunk - 1) +
+       "_link, p0: [0, 0, 0], p1: [0, 0, 0.1], radius: 0.05}\n";
+  for (int b = 0; b < 2; ++b) {
+    for (int j = 0; j < n_branch; ++j) {
+      y += "    - {name: a" + std::to_string(b) + "_" + std::to_string(j) + ", link: arm_" +
+           std::to_string(b) + "_" + std::to_string(j) +
+           "_link, p0: [0, 0, 0], p1: [0.1, 0, 0], radius: 0.03}\n";
+    }
+  }
+  y += "  pairs:\n";
+  for (const int i : {1, 3, 5}) {
+    for (const int j : {1, 3, 5}) {
+      y += "    - [a0_" + std::to_string(i) + ", a1_" + std::to_string(j) + "]\n";
+    }
+  }
+  if (trunk_pairs) {
+    for (const int j : {3, 5}) {
+      y += "    - [trunk, a1_" + std::to_string(j) + "]\n    - [trunk, a0_" + std::to_string(j) +
+           "]\n";
+    }
+  }
+  if (with_ball) {
+    y += "  ball_capsules: [a1_2, a1_4, a1_6]\n";
+  }
+  return y;
+}
+
 }  // namespace rtc::testing

@@ -4,7 +4,7 @@ package_name = "rtc_tools"
 
 setup(
     name=package_name,
-    version="5.26.0",
+    version="5.27.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
@@ -24,6 +24,8 @@ setup(
             "plot_ur_trajectory = rtc_tools.plotting.plot_rtc_log:main",
             "hand_udp_sender_example = rtc_tools.utils.hand_udp_sender_example:main",
             "compare_mjcf_urdf = rtc_tools.validation.compare_mjcf_urdf:main",
+            "fit_capsules = rtc_tools.validation.fit_capsules:main",
+            "gen_capsule_oracle = rtc_tools.validation.gen_capsule_oracle:main",
             "urdf_to_mjcf = rtc_tools.conversion.urdf_to_mjcf:main",
             "derive_accel_limits = rtc_tools.analysis.derive_accel_limits:main",
             "catchability_map = rtc_tools.analysis.catchability_map:main",

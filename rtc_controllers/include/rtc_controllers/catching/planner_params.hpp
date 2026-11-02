@@ -37,6 +37,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -118,6 +119,31 @@ struct MpcSegmentGroupParams {
   /// `w_rest` [rad⁻²] — the group's joints held near `planner.wait_pose` on
   /// every node (½ w Σ_k ‖q_g,k − q_g^rest‖²); 0 = off. Needs `wait_pose`.
   double w_rest{0.0};
+};
+
+/// `planner.segment.mpc.collision.*` — the mpc segment planner's collision
+/// rows (#642): a capsule spec file turns them on. Every core of the planner
+/// carries the self-pair rows; the catch cores the ball rows too (when the
+/// spec names ball capsules).
+struct MpcSegmentCollisionPlannerParams {
+  /// `capsules_file` — the robot-level capsule YAML (rtc_urdf_bridge
+  /// CapsuleModel), as the loader opens it: the binding resolves the
+  /// profile's spelling (`package://`, absolute, share `config/` relative)
+  /// before handing it here.
+  /// Empty (the default) = no collision rows: the QP is the one before them.
+  std::string capsules_file;
+  double d_safe{0.02};       ///< `d_safe` [m] — self-pair safe distance, [0, 1]
+  double margin{0.01};       ///< `margin` [m] — m, covers the linearisation error, [0, 1]
+  double rho_d{10.0};        ///< `rho_d` — slack penalty per node, > 0
+  double ball_d_safe{0.02};  ///< `ball_d_safe` [m] — ball-pair safe distance, [0, 1]
+  /// `ball_n_sigma` — m^ball_k = n_σ √λ_max(Σ_p(t_k)) from the prediction's
+  /// position covariance at the node, [0, 10].
+  double ball_n_sigma{2.0};
+  /// `ball_margin_fallback` [m] — m^ball_k without a usable covariance
+  /// (recorded as coll_fallback), [0, 1].
+  double ball_margin_fallback{0.05};
+
+  [[nodiscard]] bool On() const noexcept { return !capsules_file.empty(); }
 };
 
 struct MpcSegmentPlannerParams {
@@ -207,6 +233,11 @@ struct MpcSegmentPlannerParams {
   /// optimum sits off the rows, so s_v > 0 is then structural.
   double rho_v{0.0};
   double v_rel_allow{0.0};
+  /// `publish.collision_slack_max` [m] — the largest collision slack s_d,k a
+  /// published segment may carry; NaN (the default) = `collision.margin`.
+  double collision_slack_max{std::numeric_limits<double>::quiet_NaN()};
+  /// `collision.*` (above); off unless `capsules_file` is given.
+  MpcSegmentCollisionPlannerParams collision;
 
   // ── The core's own design values (YAML keys) ───────────────────────────────
   // Each default equals MpcSegmentCoreParams' (a test pins it), so a profile without

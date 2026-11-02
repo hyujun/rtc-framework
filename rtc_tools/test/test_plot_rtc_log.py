@@ -3799,6 +3799,15 @@ _PLANNER_EVENTS_COLUMNS = [
     "segment_path_nodes",
     "segment_path_dev_max",
     "segment_path_dev_mean",
+    "segment_coll_rows",
+    "segment_coll_fallback",
+    "segment_coll_min_dist",
+    "segment_coll_active_nodes",
+    "segment_coll_slack_max",
+    "segment_coll_eps_lin",
+    "segment_ball_min_dist",
+    "segment_ball_active_nodes",
+    "segment_ball_inert_nodes",
 ]
 
 # What a recording from before those columns has: the header up to `segment_source_seq`.

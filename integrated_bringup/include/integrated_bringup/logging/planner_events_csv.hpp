@@ -123,6 +123,19 @@
 // lines. 0 / NaN on a stop solve, another planner's row and a solve withheld
 // before the core ran; the distances NaN on a solve that reached no solution.
 //
+// The `segment_coll_*` / `segment_ball_*` columns (after them) are the mpc
+// planner's collision rows (#642), whatever the profile sets:
+// `segment_coll_rows` 1 when the solve ran with the rows (set before the
+// solve, so every outcome counts it), `segment_coll_min_dist` [m] the smallest
+// REAL self-pair distance re-measured at the solution, `segment_coll_active_nodes`
+// and `segment_coll_slack_max` [m] on the linear model, `segment_coll_eps_lin`
+// [m] the largest linearisation error over the rows, and the ball rows'
+// `segment_ball_min_dist` [m] (real), `segment_ball_active_nodes`,
+// `segment_ball_inert_nodes` (pre-catch nodes without a usable ball sample) and
+// `segment_coll_fallback` (a margin fell back, or a node was inert). 0 / NaN
+// without the rows and for a solve withheld before the core ran; the distances
+// NaN when the solve reached no solution or failed its slack gate.
+//
 // nlp_candidates.csv (same directory):
 // one row per candidate the NLP search SOLVED on a wake, drained from the same
 // record by the same timer. `wake_ns` and `snapshot_sequence` join it to the
@@ -209,7 +222,10 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "segment_stop_dev_max,segment_stop_dev_end,segment_stop_along_end,"
         "segment_mpc_presolve_us,segment_mpc_linearize_us,segment_mpc_condense_us,"
         "segment_mpc_qp_us,segment_path_window,segment_path_nodes,segment_path_dev_max,"
-        "segment_path_dev_mean\n";
+        "segment_path_dev_mean,"
+        "segment_coll_rows,segment_coll_fallback,segment_coll_min_dist,segment_coll_active_nodes,"
+        "segment_coll_slack_max,segment_coll_eps_lin,segment_ball_min_dist,"
+        "segment_ball_active_nodes,segment_ball_inert_nodes\n";
 }
 
 /// nlp_candidates.csv — one row per solved candidate of a wake (header note).
@@ -422,7 +438,12 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
      << d.mpc_qp_us;
   // ── The closing-window path of the wake's own solve ──
   os << ',' << d.path_window << ',' << d.path_nodes << ',' << d.path_dev_max << ','
-     << d.path_dev_mean << '\n';
+     << d.path_dev_mean;
+  // ── The collision rows of the wake's own solve (#642) ──
+  os << ',' << (d.coll_rows ? 1 : 0) << ',' << (d.coll_fallback ? 1 : 0) << ','
+     << d.coll_min_distance << ',' << d.coll_active_nodes << ',' << d.coll_slack_max << ','
+     << d.coll_eps_lin << ',' << d.ball_min_distance << ',' << d.ball_active_nodes << ','
+     << d.ball_inert_nodes << '\n';
 }
 
 }  // namespace integrated_bringup

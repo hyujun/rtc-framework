@@ -296,6 +296,7 @@ ros2 run integrated_bringup motion_editor_gui
 | `urdf:` · `devices:` roster · limits | `_base.yaml` |
 | `devices.<g>.backend` · `has_native_*` · `joint_command_names` | `robot.yaml` / `sim.yaml` |
 | 컨트롤러 게인 · 토픽 · 공통 파라미터 | `controllers/demo_*_controller.yaml` · `demo_shared.yaml` |
+| 충돌 capsule spec (포구 MPC 의 `collision.capsules_file` · dual-arm 의 `collision_damper.capsules_file` 가 같이 읽음) | `collision_capsules.yaml` (g1_p1b) |
 
 `sub_models` / `tree_models` 의 map 키는 `devices` 의 디바이스 그룹 이름과 같아야 합니다 (예: sub_model `ur5e` = device `ur5e`).
 

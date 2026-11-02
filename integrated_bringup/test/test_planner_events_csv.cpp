@@ -153,6 +153,8 @@ const std::vector<std::string> kPlannerBools{
     "segment_c_guarded",
     "segment_start_from_memory",
     "segment_start_from_search",
+    "segment_coll_rows",
+    "segment_coll_fallback",
 };
 
 // A record in which every conditional column was computed, and the cells its
@@ -308,6 +310,16 @@ StrictRecord MakeStrictRecord() {
   Int("segment_path_nodes", d.path_nodes);
   b.Real("segment_path_dev_max", d.path_dev_max);
   b.Real("segment_path_dev_mean", d.path_dev_mean);
+  // ── The collision rows of that solve (#642) ──
+  Flag("segment_coll_rows", d.coll_rows, false);
+  Flag("segment_coll_fallback", d.coll_fallback, false);
+  b.Real("segment_coll_min_dist", d.coll_min_distance);
+  Int("segment_coll_active_nodes", d.coll_active_nodes);
+  b.Real("segment_coll_slack_max", d.coll_slack_max);
+  b.Real("segment_coll_eps_lin", d.coll_eps_lin);
+  b.Real("segment_ball_min_dist", d.ball_min_distance);
+  Int("segment_ball_active_nodes", d.ball_active_nodes);
+  Int("segment_ball_inert_nodes", d.ball_inert_nodes);
 
   // ── The docking core's account of that solve ──
   auto& k = d.docking;
@@ -427,7 +439,9 @@ std::vector<std::string> DockingColumns() {
 TEST(PlannerEvents, EveryColumnByNameWhenEverythingWasComputed) {
   const auto strict = MakeStrictRecord();
   const std::string hdr = PlannerHeader();
-  EXPECT_EQ(integrated_bringup::testfx::SplitCsv(hdr).size(), 191U);
+  // 191 → 200 with the collision rows' nine columns (#642, PROC-6: a spec
+  // change, re-pinned in its own commit).
+  EXPECT_EQ(integrated_bringup::testfx::SplitCsv(hdr).size(), 200U);
   EXPECT_TRUE(RowMatchesByName(hdr, PlannerRow(strict.rec), strict.want, kPlannerBools,
                                /*strict=*/true));
 }
@@ -535,6 +549,8 @@ TEST(PlannerEvents, BoolColumnsAreOneHot) {
       {{"segment_c_guarded"}, [](Rec& r) { r.segment.docking.c_guarded = true; }},
       {{"segment_start_from_memory"}, [](Rec& r) { r.segment.start_from_memory = true; }},
       {{"segment_start_from_search"}, [](Rec& r) { r.segment.start_from_search = true; }},
+      {{"segment_coll_rows"}, [](Rec& r) { r.segment.coll_rows = true; }},
+      {{"segment_coll_fallback"}, [](Rec& r) { r.segment.coll_fallback = true; }},
       {{"nlp_follow_anchor_set"}, [](Rec& r) { r.search.nlp.follow_anchor_set = true; }},
       // The chosen candidate's flags are written only beside nlp_ran: a search
       // that ran and chose (reason none) lights nlp_ran alone, and each flag on

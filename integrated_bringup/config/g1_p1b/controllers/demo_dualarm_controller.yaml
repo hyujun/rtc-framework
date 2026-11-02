@@ -35,6 +35,18 @@ demo_dualarm_controller:
     brake:
       enabled: true
       margin: 0.9             # fraction of the available deceleration, (0, 1]
+    # Collision damper (#642): one row per capsule pair of the robot-level spec
+    # with distance below d_influence — grad(d)·v >= -xi (d - d_safe) /
+    # (d_influence - d_safe), the right-hand side capped at xi inside d_safe —
+    # at the command state. OFF by default (MD-14): the MPC's collision margin
+    # is the planned-for counterpart, and a row the velocity box cannot meet
+    # fails the solve like a torque row. Every pair of the spec is checked.
+    collision_damper:
+      enabled: false
+      capsules_file: "g1_p1b/collision_capsules.yaml"   # under the share config dir
+      d_influence: 0.08       # m, rows switch on below this pair distance
+      d_safe: 0.02            # m, the distance the rows hold
+      xi: 0.2                 # m/s, the largest approach speed a row allows
 
     # Frames a task goal may be EXPRESSED in (header.frame_id of
     # <task>/task_goal). A goal in another frame than its task's base frame is

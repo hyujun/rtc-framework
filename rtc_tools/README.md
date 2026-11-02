@@ -27,6 +27,7 @@ ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.
 |---|---|
 | 세션 로그를 그린다 | `plot_rtc_log` |
 | MJCF 가 URDF 와 같은 모델인지 확인한다 | `compare_mjcf_urdf` |
+| 충돌 capsule 을 링크 mesh 에서 만들고 검사한다 | `fit_capsules` |
 | URDF/xacro 로 MJCF 를 만든다 | `urdf_to_mjcf` |
 | LTTng trace 를 Perfetto 로 본다 | `ctf_to_chrome_trace` (`python3 -m`) |
 | 포구 sim 시행을 평가한다 | `catching_trials` → `catching_pool` 외 |
@@ -42,6 +43,8 @@ ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.
 | `hand_udp_sender_example` | 10-DOF 손 UDP 프로토콜 라이브러리 + 대화형 예제 | `hand_udp_sender_example` |
 | `compare_mjcf_urdf` | MJCF 와 URDF 의 물리 파라미터 비교 | `compare_mjcf_urdf --robot-pkg robot_descriptions --robot-name ur5e` |
 | `urdf_to_mjcf` | URDF/xacro → MJCF 변환 | `urdf_to_mjcf --input robot.urdf --output robot.xml` |
+| `fit_capsules` | 링크 mesh → 충돌 capsule 초안 (`fit`) · capsule ⊃ mesh 정점 검사 (`check`) | `fit_capsules check --urdf g1.urdf --capsules collision_capsules.yaml` |
+| `gen_capsule_oracle` | MuJoCo `mj_geomDistance` 로 capsule 거리 oracle fixture 기록 (rtc_urdf_bridge 테스트) | `gen_capsule_oracle rtc_urdf_bridge/test/data --robot-mjcf ur5e.xml --robot-name ur5e` |
 | `derive_accel_limits` | 토크 한계에서 관절 가속 box 를 도출 | `derive_accel_limits --robot-config … --group ur5e --eta-tau 0.8` |
 | `analyze_clock_phase` | sim clock lane 의 시행별 위상 오차 | `analyze_clock_phase clock_lane.csv --plot out.png` |
 | `run_clock_phase_trials` | 지정 발사 N 회 러너 (clock 위상 시행 생성) | `run_clock_phase_trials --trials 200` |
@@ -159,6 +162,17 @@ python3 -m rtc_tools.validation.compare_mjcf_urdf --mjcf robot.xml --urdf robot.
 - 주요 옵션: `--link-map` (이름이 엇갈리는 link 쌍 · 접힌 link `fuse:`) · `--tip-frames` (tool 프레임 직접 비교) · `--joints` · `--tolerance` (기본 1e-4).
 - `robot_descriptions/robots/model_pairs.yaml` 의 쌍은 `test/test_real_model_pairs.py` 가 자동 검사한다.
 - 비교 항목 · 허용오차 · MJCF 를 읽는 규칙 · 읽지 않는 것: [docs/mjcf-urdf-compare.md](docs/mjcf-urdf-compare.md).
+
+### fit_capsules
+
+충돌 capsule 파일 (`collision_capsules.yaml`, 스키마는 rtc_urdf_bridge README "충돌 capsule") 의 초안과 검사. `fit` 은 링크마다 collision mesh (없으면 visual) 의 정점을 링크 좌표계로 옮겨 PCA 축 · 양 끝 투영 · 최대 수직 거리로 capsule 하나를 만들고 (`--tighten` 은 정점이 다 들어가는 한 끝을 안으로 줄인다), `pairs` · `ball_capsules` 는 비워 둔다 — 쌍은 사람이 고른다. `check` 는 capsule 마다 mesh 정점의 최대 거리가 `radius + --tol` 안인지 보고, mesh 가 없는 링크는 SKIP 으로 센다 (게이트 기록에 run/skip 수를 적는다). `package://pkg/…` 는 `--mesh-root pkg=DIR` 로 푼다; `.xacro` 는 PATH 의 `xacro` 로 편다.
+
+```bash
+fit_capsules fit --urdf g1.urdf --mesh-root hand_description=../hand-description --tighten \
+  --links torso_link left_elbow_link right_elbow_link --out capsules_draft.yaml
+fit_capsules check --urdf g1.urdf --mesh-root hand_description=../hand-description \
+  --capsules integrated_bringup/config/g1_p1b/collision_capsules.yaml
+```
 
 ### urdf_to_mjcf
 

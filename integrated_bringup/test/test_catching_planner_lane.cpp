@@ -528,8 +528,8 @@ TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
   const std::vector<std::string> names = split(header.str());
   // #798 appended cov_n and chosen_sigma_c after the replacement columns, #713
   // the stop columns after those, #716 the mpc core's split and the closing
-  // window's path after those.
-  EXPECT_EQ(names.back(), "segment_path_dev_mean");
+  // window's path after those, #642 the collision rows' block after those.
+  EXPECT_EQ(names.back(), "segment_ball_inert_nodes");
   // No name twice: a reader that selects by name would take one of them.
   EXPECT_EQ(std::set<std::string>(names.begin(), names.end()).size(), names.size());
   const auto row_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
@@ -801,15 +801,24 @@ TEST(PlannerEventsCsv, ThePathColumnsCarryTheSegmentRecordByName) {
   const std::vector<std::string> names = split(header.str());
   const std::vector<std::string> path = {"segment_path_window", "segment_path_nodes",
                                          "segment_path_dev_max", "segment_path_dev_mean"};
-  ASSERT_GE(names.size(), path.size() + 1);
-  EXPECT_EQ(std::vector<std::string>(names.end() - 4, names.end()), path);
-  EXPECT_EQ(names[names.size() - 5], "segment_mpc_qp_us");
+  // The block sits after the mpc split and before the collision rows' block
+  // (#642 appended nine columns after it): found by name, as a reader would.
+  const auto first = std::find(names.begin(), names.end(), path.front());
+  ASSERT_NE(first, names.end());
+  const auto at = static_cast<std::size_t>(first - names.begin());
+  ASSERT_GE(names.size(), at + path.size());
+  EXPECT_EQ(std::vector<std::string>(first, first + 4), path);
+  EXPECT_EQ(names[at - 1], "segment_mpc_qp_us");
+  EXPECT_EQ(names[at + 4], "segment_coll_rows");
   const auto tail_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
     std::ostringstream row;
     integrated_bringup::WritePlannerEventsRow(row, rec);
     const std::vector<std::string> cells = split(row.str());
     EXPECT_EQ(cells.size(), names.size());
-    return cells.size() < 4 ? cells : std::vector<std::string>(cells.end() - 4, cells.end());
+    return cells.size() < at + 4
+               ? cells
+               : std::vector<std::string>(cells.begin() + static_cast<std::ptrdiff_t>(at),
+                                          cells.begin() + static_cast<std::ptrdiff_t>(at + 4));
   };
 
   rtc::catching::PlannerCycleRecord rec{};

@@ -6,9 +6,12 @@ Two sources of columns, on purpose:
     (20 before the first goal, 100 after) cut from a g1_p1b sim session of
     demo_dualarm_controller — two tasks, 17 body joints. Rows were cut, never
     thinned or edited: a thinned file has tick gaps, and a tick gap is what this
-    log uses to say a row was dropped. This is the header the column fallback
-    used to classify as a WBC device log. Stored gzipped (the repo ignores
-    `*.csv`) and unpacked per test under the file names the session had.
+    log uses to say a row was dropped. The one edit: the four `damper_*`
+    columns (#642) were inserted with the writer's values for a damper that is
+    off (0, 0, 0, nan), as the session predates them. This is the header the
+    column fallback used to classify as a WBC device log. Stored gzipped (the
+    repo ignores `*.csv`) and unpacked per test under the file names the
+    session had.
   - SYNTHETIC headers with other task and joint counts, because the point of the
     pipeline is that it reads both off the header.
 """
@@ -116,6 +119,10 @@ _FIXED = [
     "rot_near_pi",
     "brake_active",
     "brake_static_infeasible",
+    "damper_rows",
+    "damper_rows_binding",
+    "damper_rows_violated",
+    "damper_min_dist",
     "qp_fail_streak",
     "track_err",
     "group_goal_rejects",

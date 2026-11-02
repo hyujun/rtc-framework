@@ -215,12 +215,41 @@
 //    caller's job (the same rule CatchPoseIk documents).
 //  • Result matrices are sized by ResizeResult() (non-RT); Solve() rejects a
 //    wrongly sized result instead of resizing it.
+//
+// ── Collision rows (params.collision.capsules, #642) ──────────────────────────
+// Capsule pairs of the model (rtc_urdf_bridge CapsuleModel; one CapsuleWorkspace
+// per core) and, on the catch cores, a ball. Linearised at x̄ like the torque
+// rows — d_j(q̄_k) and ∇_q d_j from the workspace at every node (FK + joint
+// Jacobians there, unconditionally: with ρ_τ = 0 nothing else refreshes the
+// other arm's placements):
+//   self pair j, k = 1..N (soft, one slack per node like s_τ):
+//     d_j(q̄_k) + ∇d_jᵀ (q_k − q̄_k) + s_d,k ≥ d_safe + m + ½ Δ_k Σ_i c_ij |q̇̄_k,i|,  s_d,k ≥ 0
+//   ball pair j, k = 1..k_c (hard):
+//     d_j(q̄_k) + ∇d_jᵀ (q_k − q̄_k) ≥ d_safe^ball + m^ball_k + ½ Δ_k Σ_i c_ij |q̇̄_k,i|
+//   cost + ρ_d Σ_k s_d,k
+// d is the signed surface distance (negative when penetrating), m the margin
+// that covers the linearisation error, c_ij the pair's static per-joint
+// lever-arm bound (CapsulePairInfo::lever_arm), Δ_k the longer of the two
+// intervals at node k: the rows hold at the nodes only, and between nodes the
+// pair's distance changes by at most ½ Δ Σ_i c_ij |q̇_i| from the nearer node
+// (the formulation's ‖q̇‖∞ c_j, c_j = Σ_i c_ij, is the same bound at every
+// joint's worst speed — recorded as too conservative for a wide model). The ball at node k is the
+// swept capsule of the ball's path over [t_{k−1}, t_k] (input.ball_p0 / ball_p1, radius
+// input.ball_radius), posed by the caller; m^ball_k is the caller's (from Σ_p(t_k)). A node whose
+// ball sample is invalid, and a pair whose distance failed, keep an INERT row (zero coefficients,
+// −∞ ≤ 0): the QP's dimensions never change within a core. The pre-solve carries no collision row
+// (every row inert, the slack pinned at 0). Without `capsules` nothing is added: the QP is the one
+// without the rows, bit for bit. After the solve the result reports, on the LINEAR model, each
+// row's activity — its residual within kCollisionActiveTol·eps_abs of 0 — and the slack;
+// RecheckCollision() re-measures the real distances along a node trajectory for the caller's
+// publish gate (the linear model's guarantee is not the nonlinear one's).
 #pragma once
 
 #include "rtc_controllers/catching/mpc_block_grid.hpp"  // BlockLayout, BlockPattern
 #include "rtc_controllers/catching/trajectory.hpp"      // kMaxSegmentNodes, kMaxPlanNv
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
+#include "rtc_urdf_bridge/collision/capsule_workspace.hpp"
 
 #include <Eigen/Core>
 #include <pinocchio/multibody/data.hpp>
@@ -228,6 +257,9 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
+#include <memory>
+#include <string>
 
 namespace rtc::catching {
 
@@ -262,6 +294,24 @@ enum class MpcSegmentCoreReason : std::uint8_t {
   kCatchAxisOutOfRange,  ///< the reference's axis error exceeds axis_theta_max
   // Appended.
   kDeadline,  ///< past input.deadline_ns before a QP (result.cut_site says which)
+  // Appended.
+  /// Init: a collision parameter out of range, or the capsule spec does not
+  /// bind to this model (CollisionError() names the pair or link).
+  kCollisionInvalid,
+};
+
+/// A collision row counts as active when its residual at the solution is
+/// within this many solver.eps_abs of zero (the solver's own tolerance).
+inline constexpr double kCollisionActiveTol = 10.0;
+
+/// The collision rows' design values (header note). `capsules` null = off.
+struct MpcSegmentCollisionParams {
+  /// The capsule spec (shared; the core builds its own workspace over it).
+  std::shared_ptr<const rtc_urdf_bridge::CapsuleModel> capsules;
+  double d_safe{0.0};       ///< self-pair safe distance [m], ≥ 0
+  double margin{0.0};       ///< m: linearisation-error margin added to d_safe [m], ≥ 0
+  double rho_d{1.0};        ///< slack penalty per node, > 0 (exact above the rows' multipliers)
+  double ball_d_safe{0.0};  ///< ball-pair safe distance [m], ≥ 0 (the ball's radius is the input's)
 };
 
 /// The QP a solve that failed kDeadline did not start (header note). kNone on
@@ -390,6 +440,8 @@ struct MpcSegmentCoreParams {
   /// problem, same answer to rounding — the oracle for the structured path
   /// and the "before" of its timing.
   bool reference_assembly{false};
+  /// Collision rows (header note); `collision.capsules` null = none.
+  MpcSegmentCollisionParams collision;
 };
 
 /// Joint limits in pinocchio velocity order (n each).
@@ -440,6 +492,37 @@ struct MpcSegmentCoreInput {
       Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
   Eigen::Matrix<double, 3, kMaxMpcNodes + 1> path_d{
       Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
+  // ── The ball for the collision rows: read (and validated) only on a core
+  //    with ball pairs (collision on, ball capsules, n_pre ≥ 1), at the nodes
+  //    1..k_c whose ball_valid is set; the others keep inert rows ──
+  double ball_radius{0.0};  ///< r_b [m], ≥ 0
+  std::array<bool, kMaxMpcNodes + 1> ball_valid{};
+  /// Column k: the ball's path over [t_{k−1}, t_k] as a segment [m], model world.
+  Eigen::Matrix<double, 3, kMaxMpcNodes + 1> ball_p0{
+      Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
+  Eigen::Matrix<double, 3, kMaxMpcNodes + 1> ball_p1{
+      Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
+  /// m^ball_k [m], ≥ 0 (the caller's covariance margin at t_k).
+  std::array<double, kMaxMpcNodes + 1> ball_margin{};
+};
+
+/// The real distances along a node trajectory (RecheckCollision).
+struct MpcSegmentCollisionCheck {
+  bool evaluated{false};  ///< the core has collision rows and the shapes matched
+  /// Smallest real self-pair distance over nodes 1..N [m], and the smallest
+  /// of d_true − (d_safe − s_d,k) — the slack the solve took is honoured, the
+  /// margins are not: ≥ 0 means the linearisation's margin covered its error.
+  double self_min{std::numeric_limits<double>::quiet_NaN()};
+  double self_clearance{std::numeric_limits<double>::quiet_NaN()};
+  /// The same over the ball pairs on nodes 1..k_c with a valid ball; NaN with
+  /// none (no ball pair, or every node inert).
+  double ball_min{std::numeric_limits<double>::quiet_NaN()};
+  double ball_clearance{std::numeric_limits<double>::quiet_NaN()};
+  /// ε_lin = max over rows of (d_lin − d_true), d_lin the last solve's
+  /// linearisation at this trajectory [m] — the error the margin must cover.
+  double eps_lin{std::numeric_limits<double>::quiet_NaN()};
+  int worst_node{0};     ///< node of self_clearance
+  int invalid_pairs{0};  ///< pairs whose distance failed along the trajectory
 };
 
 /// The whole-body terms at the returned solution, each with the
@@ -488,6 +571,35 @@ struct MpcSegmentCoreResult {
   double slack_v{0.0};      ///< s_v, fraction of v_rel_allow (linear model)
   /// Written by every valid Solve (zeros for the terms that are off).
   MpcSegmentWholeBodyCost whole_body;
+  // ── Collision rows at the solution, LINEAR model (header note); written
+  //    by every valid Solve of a core with the rows (collision_evaluated) ──
+  bool collision_evaluated{false};
+  Eigen::VectorXd coll_slack;  ///< s_d,k, N (entry k−1 = node k) [m]
+  double coll_slack_max{0.0};
+  /// Smallest linearised self-pair distance at the solution, and smallest
+  /// reference distance d_j(q̄_k) the rows were linearised at, nodes 1..N [m].
+  double coll_min_distance{std::numeric_limits<double>::quiet_NaN()};
+  double coll_min_distance_ref{std::numeric_limits<double>::quiet_NaN()};
+  int coll_active_nodes{0};  ///< nodes with an active self row
+  int coll_active_rows{0};
+  /// Smallest row residual at the solution over the self rows (d_lin + s_d,k
+  /// − T_kj) and the ball rows (d_lin − T_kj) [m]: ≥ −kCollisionActiveTol·
+  /// eps_abs when the solver honoured them. NaN with no such row.
+  double coll_residual_min{std::numeric_limits<double>::quiet_NaN()};
+  double ball_residual_min{std::numeric_limits<double>::quiet_NaN()};
+  /// Row activity per pair (self pairs first, then ball pairs — the
+  /// workspace's order) and node: 1 = active at the solution.
+  Eigen::Matrix<std::uint8_t, Eigen::Dynamic, Eigen::Dynamic> coll_active;
+  /// Smallest linearised ball-pair distance over nodes 1..k_c with a valid
+  /// ball [m] (NaN with none), the nodes with an active ball row, and the
+  /// nodes 1..k_c whose ball rows were inert (invalid sample).
+  double ball_min_distance{std::numeric_limits<double>::quiet_NaN()};
+  int ball_active_nodes{0};
+  int ball_inert_nodes{0};
+  /// The REAL distances re-measured at the solution (RecheckCollision on
+  /// `q` with `coll_slack`): the publish gate's read, filled by every valid
+  /// Solve of a core with the rows.
+  MpcSegmentCollisionCheck collision_check;
   double presolve_us{0.0};
   double linearize_us{0.0};
   double condense_us{0.0};
@@ -537,6 +649,30 @@ class MpcSegmentCore {
   [[nodiscard]] bool RestTermActive() const noexcept { return rest_on_; }
 
   [[nodiscard]] bool AngularMomentumTermActive() const noexcept { return ang_on_; }
+
+  /// The collision rows are on (params.collision.capsules bound).
+  [[nodiscard]] bool CollisionTermActive() const noexcept { return collision_on_; }
+
+  /// Self pairs and ball pairs the rows cover (0 when off; ball pairs only on
+  /// a core with n_pre ≥ 1 and a spec with ball capsules).
+  [[nodiscard]] int NumCollisionPairs() const noexcept { return n_cp_; }
+
+  [[nodiscard]] int NumBallPairs() const noexcept { return n_bp_; }
+
+  /// Why Init returned kCollisionInvalid (non-RT; empty otherwise).
+  [[nodiscard]] const std::string& CollisionError() const noexcept { return collision_error_; }
+
+  /// @brief The REAL capsule distances along a node trajectory (RT-safe): FK
+  ///        at every column 1..N of `q` on the core's own data, the ball posed
+  ///        as the last Solve had it, the rows' thresholds as that Solve set
+  ///        them. `slack` (N, s_d,k; empty = zeros) is honoured in the
+  ///        clearance. The caller's publish gate reads this, since the QP
+  ///        guarantees the linear model only.
+  /// @return evaluated = false when the core has no collision rows or the
+  ///         shapes do not match (nothing is measured).
+  [[nodiscard]] MpcSegmentCollisionCheck RecheckCollision(
+      const Eigen::Ref<const Eigen::MatrixXd>& q,
+      const Eigen::Ref<const Eigen::VectorXd>& slack) noexcept;
 
   /// N = n_pre + n_nodes: results hold N + 1 node columns.
   [[nodiscard]] int NumNodes() const noexcept { return n_nodes_; }
@@ -604,6 +740,39 @@ class MpcSegmentCore {
   void AccumulateAccelNodeTerm(Eigen::Index k, double w, const Eigen::Vector3d& r) noexcept;
   void EvaluateWholeBody(MpcSegmentCoreResult& out) const noexcept;
   void EvaluateCatch(MpcSegmentCoreResult& out) noexcept;
+  // Collision rows (header note).
+  void AssembleCollisionConstant(tsid::QPData& qp) const noexcept;
+  [[nodiscard]] bool LinearizeCollisionAt(Eigen::Index k) noexcept;
+  /// The workspace placed on data_ (FK done by the caller), the ball of node
+  /// k posed when it has one, the distances evaluated; false when the
+  /// workspace refuses the model. `ball_posed` tells whether the ball rows of
+  /// node k read (a valid sample on a ball node).
+  [[nodiscard]] bool PoseWorkspaceAt(Eigen::Index k, bool& ball_posed) noexcept;
+  void AssembleCollisionRows() noexcept;
+  void AssembleCollisionRowsDense() noexcept;
+  void EvaluateCollision(MpcSegmentCoreResult& out) noexcept;
+
+  /// Pair p's row at node k (self pairs p < n_cp_, ball pairs after).
+  [[nodiscard]] Eigen::Index CollRow(Eigen::Index p, Eigen::Index k) const noexcept {
+    return p < n_cp_ ? coll_row0_ + n_sd_ + (k - 1) * n_cp_ + p
+                     : coll_row0_ + n_sd_ + n_nodes_ * n_cp_ + (k - 1) * n_bp_ + (p - n_cp_);
+  }
+
+  /// Column of the collision slack of node k0 + 1.
+  [[nodiscard]] Eigen::Index CollSlackIdx(Eigen::Index k0) const noexcept {
+    return coll_var0_ + k0;
+  }
+
+  /// Column of pair p's linearisation at node k in coll_grad_.
+  [[nodiscard]] Eigen::Index CollCol(Eigen::Index p, Eigen::Index k) const noexcept {
+    return p * (n_nodes_ + 1) + k;
+  }
+
+  /// Whether pair p has a row at node k (ball pairs: k ≤ k_c only).
+  [[nodiscard]] bool CollRowExists(Eigen::Index p, Eigen::Index k) const noexcept {
+    return p < n_cp_ || k <= n_pre_;
+  }
+
   [[nodiscard]] bool AssembleBounds(tsid::QPData& qp, bool main) noexcept;
   void AssembleGradient(tsid::QPData& qp, bool main) noexcept;
   /// warm_capped: a warm start runs under solver_max_iter_warm.
@@ -640,7 +809,8 @@ class MpcSegmentCore {
   int n_blocks_{0};  // B of block class 0
   int nu_{0};        // Σ_c n_c·B_c (n·B with one class)
   int n_s_{0};       // torque slack variables: one per node, N
-  int nz_{0};        // nu_ + n_s_ (+ 1 with the velocity slack)
+  int nz_{0};        // nu_ + n_s_ (+ 1 with the velocity slack) (+ n_sd_ with collision slacks)
+  int sv_col_{-1};   // column of the velocity slack s_v (−1 when off); fixed at Init
   int n_eq_{0};      // 2n
   int n_in_{0};      // 4·n·N + n_s_ (+ 7 with the velocity slack)
   int sv_row_{0};    // first velocity-slack row, 4·n·N + n_s_
@@ -745,6 +915,31 @@ class MpcSegmentCore {
   Eigen::Matrix<double, 3, Eigen::Dynamic> l_dense_;      // 3 × nB (dense oracle)
   Eigen::Matrix<double, 3, Eigen::Dynamic> wl_dense_;     // 3 × nB
   Eigen::Matrix<double, 3, Eigen::Dynamic> perp_l_;       // 3 × n (one node's L_k)
+
+  // Collision rows (header note). Off: every count 0 and nothing below is read.
+  bool collision_on_{false};
+  int n_cp_{0};       // self pairs
+  int n_bp_{0};       // ball pairs (n_pre ≥ 1 and ball capsules in the spec)
+  int n_sd_{0};       // collision slack variables: N when on
+  int coll_var0_{0};  // first collision slack column
+  int coll_row0_{0};  // first collision row (the N slack rows, then self, then ball)
+  std::string collision_error_;
+  rtc_urdf_bridge::CapsuleWorkspace ws_;
+  // Per solve: the linearisation at x̄ — d_j(q̄_k), ∇d_j (n × pairs·(N+1),
+  // CollCol), validity, and each row's threshold T_kj (the right-hand side
+  // before the linearisation's constant).
+  Eigen::MatrixXd coll_d_;                                                  // pairs × (N+1)
+  Eigen::MatrixXd coll_grad_;                                               // n × pairs·(N+1)
+  Eigen::Matrix<std::uint8_t, Eigen::Dynamic, Eigen::Dynamic> coll_valid_;  // pairs × (N+1)
+  Eigen::MatrixXd coll_thresh_;                                             // pairs × (N+1)
+  // The ball of this solve (copied from the input: RecheckCollision re-poses it).
+  double ball_radius_{0.0};
+  std::array<bool, kMaxMpcNodes + 1> ball_valid_{};
+  std::array<double, kMaxMpcNodes + 1> ball_margin_{};
+  Eigen::Matrix<double, 3, kMaxMpcNodes + 1> ball_p0_{
+      Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
+  Eigen::Matrix<double, 3, kMaxMpcNodes + 1> ball_p1_{
+      Eigen::Matrix<double, 3, kMaxMpcNodes + 1>::Zero()};
 };
 
 /// @brief Position weight W_p = κ (Σ_p + σ_floor² I)⁻¹ from a predicted

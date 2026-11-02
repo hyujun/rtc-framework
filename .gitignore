@@ -22,6 +22,8 @@ __pycache__/
 # Logs and data
 *.log
 *.csv
+# Recorded test oracles are fixtures, not logs (rtc_urdf_bridge capsule distances, #642).
+!rtc_urdf_bridge/test/data/*.csv
 *.bag
 
 # IDE

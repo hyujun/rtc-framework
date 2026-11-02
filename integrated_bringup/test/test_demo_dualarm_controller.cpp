@@ -28,6 +28,8 @@
 #include "dualarm_test_rig.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_tsid/kinematics/se3_error.hpp"
+#include "rtc_urdf_bridge/collision/capsule_model.hpp"
+#include "rtc_urdf_bridge/collision/capsule_workspace.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -37,7 +39,12 @@
 #include <pinocchio/algorithm/kinematics.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -1698,3 +1705,153 @@ TEST_F(DualArmLifecycle, ConfiguresItsTopicsAndRefusesAnUnresolvedFrame) {
 }
 
 }  // namespace
+
+// ── The collision damper (#642) ──────────────────────────────────────────────
+// The left tool sent onto the torso capsule's axis: without the damper the
+// command state's smallest pair distance goes inside d_safe, with it the
+// distance never does and the rows are active. Distances are the test's own
+// CapsuleWorkspace over the full model at the command state — not the
+// controller's. The tick time with the damper on is recorded (the damper's
+// rows are 6 pairs here; the shipped G1 spec has 42).
+
+namespace {
+
+const char* const kDamperSpec = R"(
+collision_capsules:
+  capsules:
+    - {name: torso, link: torso_link, p0: [0, 0, 0], p1: [0, 0, 0.25], radius: 0.08}
+    - {name: l_fore, link: left_elbow_link, p0: [0, 0, 0], p1: [0.1, 0, 0], radius: 0.035}
+    - {name: l_hand, link: left_wrist_yaw_link, p0: [0, 0, 0], p1: [0.05, 0.01, 0], radius: 0.03}
+    - {name: r_fore, link: right_elbow_link, p0: [0, 0, 0], p1: [0.11, 0, 0], radius: 0.035}
+    - {name: r_hand, link: hand_base, p0: [0, 0, 0], p1: [0.06, 0, 0.03], radius: 0.03}
+  pairs:
+    - [l_hand, r_hand]
+    - [l_hand, r_fore]
+    - [l_fore, r_hand]
+    - [l_fore, r_fore]
+    - [l_hand, torso]
+    - [r_hand, torso]
+)";
+
+std::string WriteDamperSpec() {
+  const std::filesystem::path path =
+      std::filesystem::path(::testing::TempDir()) / "rtc_dualarm_damper_capsules.yaml";
+  std::ofstream(path) << kDamperSpec;
+  return path.string();
+}
+
+struct DamperRun {
+  double min_distance{std::numeric_limits<double>::infinity()};
+  int ticks_with_rows{0};
+  int ticks_binding{0};
+  int failures{0};
+  double tick_p99_us{0.0};
+  double tick_max_us{0.0};
+};
+
+// The run: `ticks` ticks toward the goal, the smallest pair distance at every
+// command state.
+DamperRun RunIntoTheTorso(Harness& h, int ticks) {
+  const auto model = Builder()->GetFullModel();
+  pinocchio::Data data(*model);
+  rtc_urdf_bridge::CapsuleWorkspace ws;
+  EXPECT_EQ(ws.Bind(rtc_urdf_bridge::CapsuleModel::ParseYaml(kDamperSpec, "rig"), *model, {}),
+            rtc_urdf_bridge::CapsuleBindStatus::kOk)
+      << ws.BindError();
+  h.Run(10);
+  // The goal: the left tool on the torso capsule's axis at its own height,
+  // its orientation kept (the torso is in reach of the arm, the other hand is
+  // not). The reference keeps pushing after the trajectory ends, which is the
+  // case the damper is for: a reference that disagrees with the clearance.
+  const pinocchio::SE3 start = FramePose(kBodyQ, kHandQ, kLeftBase, kLeftFrame);
+  const pinocchio::SE3 goal(start.rotation(), Eigen::Vector3d(0.0, 0.0, start.translation().z()));
+  EXPECT_EQ(h.ctrl->DeliverTaskGoal(kLeft, TaskGoalMsg(goal)), TaskGoalReject::kNone);
+  DamperRun r;
+  std::vector<double> us;
+  us.reserve(static_cast<std::size_t>(ticks));
+  for (int k = 0; k < ticks; ++k) {
+    h.FillState();
+    const auto t0 = std::chrono::steady_clock::now();
+    h.out = h.ctrl->Compute(h.state);
+    us.push_back(
+        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
+    h.AfterCompute();
+    const auto& pod = h.ctrl->LastTick();
+    r.failures += pod.clik_ran && !pod.converged ? 1 : 0;
+    r.ticks_with_rows += pod.damper_rows > 0 ? 1 : 0;
+    r.ticks_binding += pod.damper_rows_binding > 0 ? 1 : 0;
+    pinocchio::forwardKinematics(*model, data, FullQ(h.Command(), h.hand_q));
+    EXPECT_TRUE(ws.UpdatePlacements(*model, data));
+    EXPECT_EQ(ws.EvaluateDistances(), 0U);
+    r.min_distance = std::min(r.min_distance, ws.MinDistance());
+  }
+  std::sort(us.begin(), us.end());
+  r.tick_p99_us = us[static_cast<std::size_t>(0.99 * static_cast<double>(us.size() - 1))];
+  r.tick_max_us = us.back();
+  return r;
+}
+
+}  // namespace
+
+TEST(DualArmDamper, KeepsTheCommandStateOutsideDSafeWhereTheControlGoesIn) {
+  Knobs knobs;
+  knobs.linear_speed = 0.5;  // the hands meet within the run
+  Harness control(knobs);
+  const DamperRun off = RunIntoTheTorso(control, 3000);
+  EXPECT_LT(off.min_distance, 0.02) << "the control never came close — the gate is vacuous";
+  EXPECT_EQ(off.ticks_with_rows, 0);
+
+  knobs.damper = true;
+  knobs.damper_capsules_file = WriteDamperSpec();
+  Harness damped(knobs);
+  const DamperRun on = RunIntoTheTorso(damped, 3000);
+  EXPECT_EQ(on.failures, 0);
+  EXPECT_GE(on.min_distance, knobs.damper_d_safe - 1e-3) << "the command state went inside d_safe";
+  EXPECT_GE(on.ticks_with_rows, 1);
+  EXPECT_GE(on.ticks_binding, 1);
+  EXPECT_FALSE(damped.ctrl->LastTick().fault_latched);
+  std::cout << "[dualarm damper] control min " << off.min_distance << " m, damped min "
+            << on.min_distance << " m, ticks with rows " << on.ticks_with_rows << ", binding "
+            << on.ticks_binding << "; tick p99 off/on " << off.tick_p99_us << "/" << on.tick_p99_us
+            << " us, max off/on " << off.tick_max_us << "/" << on.tick_max_us << " us\n";
+}
+
+TEST(DualArmDamper, TheBlockIsOptionalAndRefusedByName) {
+  // Absent: off (the one default of this controller's config).
+  {
+    Harness h;
+    h.Run(5);
+    EXPECT_TRUE(h.ctrl->ConfigError().empty()) << h.ctrl->ConfigError();
+    EXPECT_EQ(h.ctrl->LastTick().damper_rows, 0);
+    EXPECT_TRUE(std::isnan(h.ctrl->LastTick().damper_min_dist));
+  }
+  // Present with a file that does not exist: the configure names the key and
+  // the path.
+  {
+    Knobs knobs;
+    knobs.damper = true;
+    knobs.damper_capsules_file = "/nonexistent/capsules.yaml";
+    auto ctrl = BringUp(knobs);
+    ASSERT_FALSE(ctrl->ConfigError().empty());
+    EXPECT_NE(ctrl->ConfigError().find("collision_damper"), std::string::npos)
+        << ctrl->ConfigError();
+    EXPECT_NE(ctrl->ConfigError().find("/nonexistent/capsules.yaml"), std::string::npos)
+        << ctrl->ConfigError();
+  }
+  // Present with d_influence not above d_safe: refused at the YAML (a range
+  // refusal throws out of LoadConfig, as the other range keys do).
+  {
+    Knobs knobs;
+    knobs.damper = true;
+    knobs.damper_capsules_file = WriteDamperSpec();
+    knobs.damper_d_influence = 0.02;
+    knobs.damper_d_safe = 0.02;
+    try {
+      (void)BringUp(knobs);
+      ADD_FAILURE() << "the configuration was accepted";
+    } catch (const std::exception& e) {
+      EXPECT_NE(std::string(e.what()).find("clik.collision_damper.d_influence"), std::string::npos)
+          << e.what();
+    }
+  }
+}

@@ -738,6 +738,10 @@ void DemoDualArmController::FillTickRecord() noexcept {
     tick_.rot_near_pi = solve.rot_near_pi;
     tick_.brake_active = solve.brake_active;
     tick_.brake_static_infeasible = solve.brake_static_infeasible;
+    tick_.damper_rows = solve.damper_rows;
+    tick_.damper_rows_binding = solve.damper_rows_binding;
+    tick_.damper_rows_violated = solve.damper_rows_violated;
+    tick_.damper_min_dist = solve.damper_min_distance;
   } else if (estop_active_) {
     tick_.hold = Hold::kEstop;
   } else if (!clik_ready_) {

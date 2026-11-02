@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rtc_urdf_bridge VERSION 5.17.0 LANGUAGES CXX)
+project(rtc_urdf_bridge VERSION 5.18.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,6 +29,11 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(pinocchio REQUIRED)
+# Capsule distance core (collision/): coal shapes + closed-form distances. The
+# pinocchio::pinocchio target already carries pinocchio_collision and coal::coal
+# (and the PINOCCHIO_WITH_COLLISION definition GeometryData's layout needs);
+# the explicit find keeps the direct coal include an honest dependency (PROC-1).
+find_package(coal REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(tinyxml2 QUIET)
@@ -56,6 +61,10 @@ add_library(${PROJECT_NAME} SHARED
   src/closed_chain_model.cpp
   src/closed_chain_handle.cpp
   src/rt_closed_chain_handle.cpp
+  # Capsule distance core (#642 E3-F03): immutable YAML spec + per-owner
+  # pinocchio GeometryModel/GeometryData evaluator (distance + ∇_q d).
+  src/collision/capsule_model.cpp
+  src/collision/capsule_workspace.cpp
 )
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -68,6 +77,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 ament_target_dependencies(${PROJECT_NAME} rclcpp pinocchio)
 target_link_libraries(${PROJECT_NAME}
   pinocchio::pinocchio
+  coal::coal
   Eigen3::Eigen
   yaml-cpp
   tinyxml2::tinyxml2
@@ -126,7 +136,7 @@ install(
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 # sensor_msgs is an executable-only dep (see closure_state_publisher target) —
 # not exported, so downstream consumers of the core lib don't inherit it.
-ament_export_dependencies(rclcpp pinocchio Eigen3 yaml-cpp tinyxml2)
+ament_export_dependencies(rclcpp pinocchio coal Eigen3 yaml-cpp tinyxml2)
 ament_export_include_directories(include)
 
 # ── Tests ────────────────────────────────────────────────────────────────────
@@ -220,6 +230,36 @@ if(BUILD_TESTING)
   # Phase 11 (MJCF 교차검증)
   ament_add_gtest(test_mjcf_comparison test/test_mjcf_comparison.cpp)
   target_link_libraries(test_mjcf_comparison ${PROJECT_NAME})
+
+  # ── Capsule distance core (#642 E3-F03) ─────────────────────────────────────
+  # YAML spec parser: every rejection rule, by name.
+  ament_add_gtest(test_capsule_model_yaml test/test_capsule_model_yaml.cpp)
+  target_link_libraries(test_capsule_model_yaml ${PROJECT_NAME})
+
+  # Bind rejections, ∇_q d against central differences (separated AND penetrating
+  # ranges, degenerate zero-length capsules both orders), lever-arm bound, and the
+  # model-placement path against an independent segment-segment distance.
+  ament_add_gtest(test_capsule_workspace test/test_capsule_workspace.cpp)
+  target_link_libraries(test_capsule_workspace ${PROJECT_NAME})
+
+  # Shape distances against MuJoCo's mj_geomDistance (fixture recorded by
+  # rtc_tools/rtc_tools/validation/gen_capsule_oracle.py). Shape level at 1e-9
+  # on MuJoCo's own geom transforms; the model-placement path (MJCF → pinocchio
+  # → oMg) at 1e-8 on the real-robot MJCF looked up from robot_descriptions
+  # (ARCH-5: runtime share lookup, skip when absent).
+  ament_add_gtest(test_capsule_mujoco_oracle test/test_capsule_mujoco_oracle.cpp)
+  target_link_libraries(test_capsule_mujoco_oracle ${PROJECT_NAME} ament_index_cpp::ament_index_cpp)
+
+  # RT-1 for the per-node evaluation path (placements · ball · distances ·
+  # gradients): the C-level malloc gate, which sees allocations inside coal /
+  # pinocchio / Eigen — an operator-new counter does not (Eigen has its own
+  # allocator). rtc_base's never-installed test header (test_depend only;
+  # rtc_base does not depend on rtc_urdf_bridge, so no cycle). It defines
+  # malloc in the executable, hence a binary of its own.
+  find_package(rtc_base REQUIRED)
+  ament_add_gtest(test_capsule_workspace_alloc test/test_capsule_workspace_alloc.cpp)
+  target_link_libraries(test_capsule_workspace_alloc ${PROJECT_NAME})
+  rtc_base_add_test_includes(test_capsule_workspace_alloc)
 endif()
 
 ament_package()

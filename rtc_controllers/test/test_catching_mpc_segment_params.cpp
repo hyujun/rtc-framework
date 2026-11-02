@@ -674,4 +674,115 @@ TEST(MpcSegmentParams, RejectsTheClosingWindowPathWeightByName) {
   EXPECT_TRUE(has(message("cost: {w_path: [1.0]}"), key + " must be a number"));
 }
 
+// ── The collision rows' keys (#642) and the whole-map key check (D12) ─────────
+
+TEST(MpcSegmentParams, CollisionKeysDefaultOffAndParse) {
+  const auto absent = ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {}}}"));
+  const auto& c = absent.mpc_segment.collision;
+  EXPECT_FALSE(c.On());
+  EXPECT_TRUE(c.capsules_file.empty());
+  EXPECT_DOUBLE_EQ(c.d_safe, 0.02);
+  EXPECT_DOUBLE_EQ(c.margin, 0.01);
+  EXPECT_DOUBLE_EQ(c.rho_d, 10.0);
+  EXPECT_DOUBLE_EQ(c.ball_d_safe, 0.02);
+  EXPECT_DOUBLE_EQ(c.ball_n_sigma, 2.0);
+  EXPECT_DOUBLE_EQ(c.ball_margin_fallback, 0.05);
+  EXPECT_TRUE(std::isnan(absent.mpc_segment.collision_slack_max));
+  const auto p = ParsePlannerParams(
+      YAML::Load("planner: {segment: {mpc: {collision: {capsules_file: /cfg/g1/collision_capsules."
+                 "yaml, d_safe: 0.03, margin: 0.015, rho_d: 20.0, ball_d_safe: 0.025, "
+                 "ball_n_sigma: 3.0, ball_margin_fallback: 0.08}, publish: {collision_slack_max: "
+                 "0.02}}}}"));
+  const auto& d = p.mpc_segment.collision;
+  EXPECT_TRUE(d.On());
+  EXPECT_EQ(d.capsules_file, "/cfg/g1/collision_capsules.yaml");
+  EXPECT_DOUBLE_EQ(d.d_safe, 0.03);
+  EXPECT_DOUBLE_EQ(d.margin, 0.015);
+  EXPECT_DOUBLE_EQ(d.rho_d, 20.0);
+  EXPECT_DOUBLE_EQ(d.ball_d_safe, 0.025);
+  EXPECT_DOUBLE_EQ(d.ball_n_sigma, 3.0);
+  EXPECT_DOUBLE_EQ(d.ball_margin_fallback, 0.08);
+  EXPECT_DOUBLE_EQ(p.mpc_segment.collision_slack_max, 0.02);
+}
+
+TEST(MpcSegmentParams, RejectsACollisionKeyByName) {
+  const auto message = [](const std::string& yaml) -> std::string {
+    try {
+      static_cast<void>(ParsePlannerParams(YAML::Load(yaml)));
+    } catch (const std::invalid_argument& e) {
+      return e.what();
+    }
+    return {};
+  };
+  const auto has = [](const std::string& text, const std::string& part) {
+    return text.find(part) != std::string::npos;
+  };
+  const std::string base = "planner: {segment: {mpc: {collision: {";
+  for (const char* key : {"d_safe", "margin", "ball_d_safe", "ball_margin_fallback"}) {
+    for (const char* bad : {"-0.01", "1.5", ".nan", ".inf"}) {
+      const std::string why = message(base + key + ": " + bad + "}}}}");
+      ASSERT_FALSE(why.empty()) << key << ": " << bad << " was accepted";
+      EXPECT_TRUE(has(why, std::string("'planner.segment.mpc.collision.") + key + "'")) << why;
+    }
+  }
+  for (const char* bad : {"0.0", "-1.0", ".nan"}) {
+    const std::string why = message(base + "rho_d: " + std::string(bad) + "}}}}");
+    ASSERT_FALSE(why.empty()) << "rho_d: " << bad << " was accepted";
+    EXPECT_TRUE(has(why, "'planner.segment.mpc.collision.rho_d'")) << why;
+  }
+  EXPECT_TRUE(
+      has(message(base + "ball_n_sigma: 11}}}}"), "'planner.segment.mpc.collision.ball_n_sigma'"));
+  EXPECT_TRUE(has(message(base + "capsules_file: ''}}}}"),
+                  "'planner.segment.mpc.collision.capsules_file'"));
+  EXPECT_TRUE(has(message(base + "capsules_file: [a]}}}}"),
+                  "'planner.segment.mpc.collision.capsules_file'"));
+  EXPECT_TRUE(has(message("planner: {segment: {mpc: {publish: {collision_slack_max: 2.0}}}}"),
+                  "'planner.segment.mpc.publish.collision_slack_max'"));
+  // A key of the block that is not one: named, and the block's keys listed.
+  const std::string why = message(base + "dsafe: 0.02}}}}");
+  EXPECT_TRUE(has(why, "'planner.segment.mpc.collision.dsafe'")) << why;
+  EXPECT_TRUE(has(why, "is not a key of 'planner.segment.mpc.collision'")) << why;
+  EXPECT_TRUE(has(why, "capsules_file")) << why;
+}
+
+TEST(MpcSegmentParams, EveryMapUnderMpcRefusesAnUnknownKeyByName) {
+  const auto message = [](const std::string& yaml) -> std::string {
+    try {
+      static_cast<void>(ParsePlannerParams(YAML::Load(yaml)));
+    } catch (const std::invalid_argument& e) {
+      return e.what();
+    }
+    return {};
+  };
+  const auto has = [](const std::string& text, const std::string& part) {
+    return text.find(part) != std::string::npos;
+  };
+  // A misspelt block at the top: before this check it fell back to the
+  // defaults without a word — the collision rows silently off (#642 D12).
+  const std::string top = message("planner: {segment: {mpc: {colision: {capsules_file: x.yaml}}}}");
+  EXPECT_TRUE(has(top, "'planner.segment.mpc.colision'")) << top;
+  EXPECT_TRUE(has(top, "is not a key of 'planner.segment.mpc'")) << top;
+
+  // ... and in every section.
+  struct Case {
+    const char* section;
+    const char* bad;
+  };
+
+  for (const Case& c :
+       {Case{"horizon", "n_node: 7"}, Case{"approach", "n_pre: 6"}, Case{"budget", "first: 0.04"},
+        Case{"replan", "kmax: 2"}, Case{"publish", "slackmax: 0.1"}, Case{"catch", "w_vpar: 1.0"},
+        Case{"cost", "w_perpendicular: 1.0"}, Case{"linearization", "delta: 0.1"},
+        Case{"solver", "maxiter: 60"}, Case{"collision", "dsafe: 0.02"}}) {
+    const std::string why =
+        message(std::string("planner: {segment: {mpc: {") + c.section + ": {" + c.bad + "}}}}");
+    ASSERT_FALSE(why.empty()) << c.section << " accepted " << c.bad;
+    EXPECT_TRUE(has(why, std::string("'planner.segment.mpc.") + c.section + ".")) << why;
+    EXPECT_TRUE(has(why, std::string("is not a key of 'planner.segment.mpc.") + c.section + "'"))
+        << why;
+  }
+  // The keys ParseCatchingParams owns under the same map are known here.
+  EXPECT_TRUE(message("planner: {segment: {mpc: {switch_margin: 1.0, eta_v: 0.9}}}").empty());
+}
+
 }  // namespace

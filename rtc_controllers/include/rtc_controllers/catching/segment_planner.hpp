@@ -84,6 +84,10 @@ enum class SegmentOutcome : std::uint8_t {
   kNoBall,       ///< no usable ball at t_c (pre-catch point); w_⊥ > 0: no stop-path line
   kCatchError,   ///< catch-node position error not finite or over catch_pos_err_max
   kSpeed,        ///< a between-node velocity extremum over q̇_max
+  /// The mpc planner's collision rows: the REAL capsule distances re-measured
+  /// at the solution are inside the safe distance (less the slack the solve
+  /// took) — the linear model passed, the nonlinear one did not (#642).
+  kCollision,
   // kNoBall is NOT pre-catch only. With `cost.w_perp` > 0 it is also what a
   // solve reports when it has no stop-path line to run on (header note): the
   // first solve or a pre-catch replan whose ball is slower than v_eps at t_c,
@@ -132,6 +136,8 @@ enum class SegmentOutcome : std::uint8_t {
       return "catch_error";
     case SegmentOutcome::kSpeed:
       return "speed";
+    case SegmentOutcome::kCollision:
+      return "collision";
   }
   return "unknown";
 }
@@ -331,6 +337,27 @@ struct SegmentRecord {
   std::int32_t path_nodes{0};
   double path_dev_max{std::numeric_limits<double>::quiet_NaN()};
   double path_dev_mean{std::numeric_limits<double>::quiet_NaN()};
+  /// The mpc planner's collision rows (#642), whatever the profile sets: whether
+  /// this solve ran with the rows (`coll_rows`, set before the solve so every
+  /// failure outcome counts it), the smallest REAL self-pair distance at the
+  /// solution [m] (re-measured — RecheckCollision), the nodes with an active
+  /// self row and the largest node slack s_d,k [m] (linear model), ε_lin =
+  /// max(d_lin − d_true) over the rows [m], and the ball rows: the smallest
+  /// real ball distance over the nodes with a valid ball, the active nodes,
+  /// the pre-catch nodes whose ball sample was invalid (inert rows), and
+  /// `coll_fallback` — a ball margin fell back to its fixed value (no usable
+  /// covariance) or a node was inert. 0 / false / NaN for every other
+  /// planner and for a solve withheld before the core ran. Not fields of the
+  /// trace digest.
+  bool coll_rows{false};
+  bool coll_fallback{false};
+  double coll_min_distance{std::numeric_limits<double>::quiet_NaN()};
+  std::int32_t coll_active_nodes{0};
+  double coll_slack_max{std::numeric_limits<double>::quiet_NaN()};
+  double coll_eps_lin{std::numeric_limits<double>::quiet_NaN()};
+  double ball_min_distance{std::numeric_limits<double>::quiet_NaN()};
+  std::int32_t ball_active_nodes{0};
+  std::int32_t ball_inert_nodes{0};
   /// The mpc_docking planner's own account of the solve. Not a field
   /// of the trace digest.
   DockingSolveStats docking{};

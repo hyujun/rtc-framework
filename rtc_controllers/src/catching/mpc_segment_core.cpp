@@ -10,7 +10,9 @@
 #include <Eigen/QR>
 #include <pinocchio/algorithm/centroidal.hpp>
 #include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/jacobian.hpp>
 #include <pinocchio/algorithm/kinematics-derivatives.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/algorithm/rnea-derivatives.hpp>
 
 #include <algorithm>
@@ -100,6 +102,8 @@ const char* MpcSegmentCoreReasonName(MpcSegmentCoreReason reason) noexcept {
       return "catch_axis_out_of_range";
     case MpcSegmentCoreReason::kDeadline:
       return "deadline";
+    case MpcSegmentCoreReason::kCollisionInvalid:
+      return "collision_invalid";
   }
   return "unknown";
 }
@@ -344,9 +348,45 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   nu_ = layout_.nu;
   n_s_ = n_nodes_;
   nz_ = nu_ + n_s_ + (slack_v_on_ ? 1 : 0);
+  sv_col_ = slack_v_on_ ? nu_ + n_s_ : -1;  // the collision slacks come after it
   n_eq_ = 2 * n;
   sv_row_ = 4 * n * n_nodes_ + n_s_;
   n_in_ = sv_row_ + (slack_v_on_ ? 7 : 0);
+  // Collision rows (header note): variables and rows only with a spec, so the
+  // QP without one is the one before the rows existed, bit for bit.
+  collision_on_ = params.collision.capsules != nullptr;
+  n_cp_ = 0;
+  n_bp_ = 0;
+  n_sd_ = 0;
+  coll_var0_ = nz_;
+  coll_row0_ = n_in_;
+  collision_error_.clear();
+  if (collision_on_) {
+    const MpcSegmentCollisionParams& c = params.collision;
+    if (!std::isfinite(c.d_safe) || c.d_safe < 0.0 || !std::isfinite(c.margin) || c.margin < 0.0 ||
+        !std::isfinite(c.rho_d) || !(c.rho_d > 0.0) || !std::isfinite(c.ball_d_safe) ||
+        c.ball_d_safe < 0.0) {
+      collision_error_ =
+          "collision.d_safe / margin / ball_d_safe must be finite and >= 0, rho_d > 0";
+      return MpcSegmentCoreReason::kCollisionInvalid;
+    }
+    n_cp_ = static_cast<int>(c.capsules->NumPairs());
+    n_bp_ = n_pre_ >= 1 ? static_cast<int>(c.capsules->NumBallCapsules()) : 0;
+    if (n_cp_ + n_bp_ == 0) {
+      if (c.capsules->NumBallCapsules() == 0) {
+        collision_error_ = "the capsule spec has neither pairs nor ball capsules";
+        return MpcSegmentCoreReason::kCollisionInvalid;
+      }
+      // Ball capsules only and no pre-catch node (a stop core): nothing to
+      // constrain here — the rows are off on this core, not refused.
+      collision_on_ = false;
+    }
+  }
+  if (collision_on_) {
+    n_sd_ = n_nodes_;
+    nz_ += n_sd_;
+    n_in_ += n_sd_ + n_nodes_ * n_cp_ + n_pre_ * n_bp_;  // slack rows, self rows, ball rows
+  }
 
   model_ = arm;
   // ADDED to whatever the model already carries (pinocchio's URDF parser
@@ -354,6 +394,25 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   // motor-side term the model lacks, not a replacement.
   model_.armature = arm.armature + limits.armature;
   data_ = pinocchio::Data(model_);
+  if (collision_on_) {
+    // This core's own workspace over the shared spec (a GeometryData is not
+    // copied: its functors point into its model). The catch frame's support
+    // and subtree may not carry a ball capsule (the hand would avoid the ball).
+    ws_ = rtc_urdf_bridge::CapsuleWorkspace{};
+    rtc_urdf_bridge::CapsuleWorkspace::BindOptions opt;
+    opt.with_ball = n_bp_ > 0;
+    opt.catch_frame = catch_frame;
+    if (ws_.Bind(params.collision.capsules, model_, opt) !=
+        rtc_urdf_bridge::CapsuleBindStatus::kOk) {
+      collision_error_ = ws_.BindError();
+      return MpcSegmentCoreReason::kCollisionInvalid;
+    }
+    if (static_cast<int>(ws_.NumSelfPairs()) != n_cp_ ||
+        static_cast<int>(ws_.NumBallPairs()) != n_bp_) {
+      collision_error_ = "the workspace's pair count is not the spec's";
+      return MpcSegmentCoreReason::kCollisionInvalid;
+    }
+  }
 
   // Effective box: the margin never inverts a narrow (or locked) joint's range.
   q_lo_.resize(nn);
@@ -518,6 +577,18 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
   v_out_.setZero(nn, N1);
   a_out_.setZero(nn, N1);
   tau_lin_.setZero(nn * n_nodes_);
+  {
+    const Eigen::Index np = n_cp_ + n_bp_;
+    coll_d_.setConstant(np, N1, std::numeric_limits<double>::quiet_NaN());
+    coll_grad_.setZero(nn, np * N1);
+    coll_valid_.setZero(np, N1);
+    coll_thresh_.setZero(np, N1);
+    ball_radius_ = 0.0;
+    ball_valid_.fill(false);
+    ball_margin_.fill(0.0);
+    ball_p0_.setZero();
+    ball_p1_.setZero();
+  }
   jv_c_.setZero(3, nn);
   jw_c_.setZero(3, nn);
   hv_c_.setZero(3, nn);
@@ -550,6 +621,9 @@ void MpcSegmentCore::ResizeResult(MpcSegmentCoreResult& result) const {
   result.u.setZero(nn, n_nodes_);
   result.slack.setZero(n_nodes_);
   result.tau_ratio.setZero(nn, n_nodes_);
+  result.coll_slack.setZero(n_sd_);
+  result.coll_active.setZero(n_cp_ + n_bp_, collision_on_ ? n_nodes_ + 1 : 0);
+  result.collision_evaluated = false;
   result.valid = false;
   result.reason =
       initialized_ ? MpcSegmentCoreReason::kNone : MpcSegmentCoreReason::kNotInitialized;
@@ -621,6 +695,7 @@ void MpcSegmentCore::AssembleConstant(tsid::QPData& qp, bool main) noexcept {
   }
   AssembleTorqueSlackConstant(qp);
   AssembleSlackVConstant(qp);
+  AssembleCollisionConstant(qp);
 }
 
 void MpcSegmentCore::AssembleSlackVConstant(tsid::QPData& qp) const noexcept {
@@ -628,7 +703,7 @@ void MpcSegmentCore::AssembleSlackVConstant(tsid::QPData& qp) const noexcept {
     return;
   }
   const Eigen::Index base = sv_row_;
-  const Eigen::Index sv = nz_ - 1;
+  const Eigen::Index sv = sv_col_;
   for (Eigen::Index i = 0; i < 3; ++i) {
     qp.C(base + i, sv) = -1.0;
     qp.C(base + 3 + i, sv) = 1.0;
@@ -701,6 +776,7 @@ void MpcSegmentCore::AssembleConstantDense(tsid::QPData& qp, bool main) noexcept
   }
   AssembleTorqueSlackConstant(qp);
   AssembleSlackVConstant(qp);
+  AssembleCollisionConstant(qp);
 }
 
 void MpcSegmentCore::FreeResponse() noexcept {
@@ -772,8 +848,278 @@ bool MpcSegmentCore::Linearize() noexcept {
       ag_.middleCols(nn * k, nn) = data_.Ag.middleRows<3>(pinocchio::Force::ANGULAR);
       dag_v_.col(k).noalias() = data_.dAg.middleRows<3>(pinocchio::Force::ANGULAR) * vr_.col(k);
     }
+    // The collision rows: FK and the joint Jacobians of EVERY joint at x̄_k,
+    // unconditionally — with ρ_τ = 0 and no other term nothing above refreshed
+    // the other arm's placements (#642).
+    if (collision_on_ && !LinearizeCollisionAt(k)) {
+      return false;
+    }
   }
   return true;
+}
+
+// ── Collision rows (header note) ─────────────────────────────────────────────
+
+// The slack columns: +1 on the node's self rows and on its own s ≥ 0 row.
+// Constant, so both assemblies share it; nothing without the rows.
+void MpcSegmentCore::AssembleCollisionConstant(tsid::QPData& qp) const noexcept {
+  if (!collision_on_) {
+    return;
+  }
+  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    const Eigen::Index s = CollSlackIdx(k - 1);
+    for (Eigen::Index p = 0; p < n_cp_; ++p) {
+      qp.C(CollRow(p, k), s) = 1.0;
+    }
+    qp.C(coll_row0_ + k - 1, s) = 1.0;
+  }
+}
+
+bool MpcSegmentCore::PoseWorkspaceAt(Eigen::Index k, bool& ball_posed) noexcept {
+  if (!ws_.UpdatePlacements(model_, data_)) {
+    return false;
+  }
+  ball_posed = n_bp_ > 0 && k <= n_pre_ && ball_valid_[static_cast<std::size_t>(k)];
+  if (ball_posed) {
+    ws_.SetBall(ball_p0_.col(k), ball_p1_.col(k), ball_radius_);
+  }
+  static_cast<void>(ws_.EvaluateDistances());  // a failed pair is an inert row
+  return true;
+}
+
+bool MpcSegmentCore::LinearizeCollisionAt(Eigen::Index k) noexcept {
+  const auto u = static_cast<std::size_t>(k);
+  // The joint Jacobians at x̄_k: computeRNEADerivatives (the torque rows, run
+  // first at this node) fills data.oMi and data.J for the same q̄_k, so the
+  // pass is only needed without it.
+  if (!torque_on_) {
+    pinocchio::computeJointJacobians(model_, data_, qr_.col(k));
+  }
+  bool ball = false;
+  if (!PoseWorkspaceAt(k, ball)) {
+    return false;
+  }
+  if (!ws_.EvaluateGradients(model_, data_)) {
+    return false;
+  }
+  // Between-node margin: ½ Δ Σ_i c_ij |q̇̄_k,i| with Δ the longer interval at
+  // node k — the per-joint lever arms against the reference's own joint
+  // speeds (the scalar ‖q̇̄‖∞ Σ_i c_ij of the formulation is the same bound
+  // with every joint at the fastest one's speed: on a 17-joint model it ran to
+  // half a metre and the slack absorbed the rows, #642 record).
+  const double dk = std::max(dt_node_[u - 1], k < n_nodes_ ? dt_node_[u] : 0.0);
+  work_n_ = vr_.col(k).cwiseAbs();
+  const MpcSegmentCollisionParams& c = params_.collision;
+  const Eigen::Index np = n_cp_ + n_bp_;
+  for (Eigen::Index p = 0; p < np; ++p) {
+    if (!CollRowExists(p, k)) {
+      continue;
+    }
+    const bool self = p < n_cp_;
+    const bool valid = ws_.PairValid(static_cast<std::size_t>(p)) && (self || ball);
+    coll_valid_(p, k) = valid ? 1 : 0;
+    if (!valid) {
+      coll_d_(p, k) = std::numeric_limits<double>::quiet_NaN();
+      coll_grad_.col(CollCol(p, k)).setZero();
+      coll_thresh_(p, k) = 0.0;
+      continue;
+    }
+    coll_d_(p, k) = ws_.Distance(static_cast<std::size_t>(p));
+    coll_grad_.col(CollCol(p, k)) = ws_.Gradient(static_cast<std::size_t>(p));
+    const double base = self ? c.d_safe + c.margin : c.ball_d_safe + ball_margin_[u];
+    coll_thresh_(p, k) =
+        base + 0.5 * dk * ws_.Pair(static_cast<std::size_t>(p)).lever_arm.dot(work_n_);
+  }
+  return true;
+}
+
+// Row (p, k): ∇d_jᵀ G_q,k z — per joint i, block b ≤ the node's: ∇d_j[i]·ĝ_q,k[b]
+// at Col(i, b). An inert row keeps zero coefficients (its bounds are open).
+void MpcSegmentCore::AssembleCollisionRows() noexcept {
+  const Eigen::Index nn = n_;
+  const Eigen::Index np = n_cp_ + n_bp_;
+  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    for (Eigen::Index p = 0; p < np; ++p) {
+      if (!CollRowExists(p, k)) {
+        continue;
+      }
+      const Eigen::Index row = CollRow(p, k);
+      qp_main_.C.block(row, 0, 1, nu_).setZero();
+      if (coll_valid_(p, k) == 0) {
+        continue;
+      }
+      const Eigen::Index gc = CollCol(p, k);
+      for (Eigen::Index i = 0; i < nn; ++i) {
+        const double g = coll_grad_(i, gc);
+        if (g == 0.0) {
+          continue;
+        }
+        const ClassStages& st = stage_[ClassOf(i)];
+        const Eigen::Index last_block = st.block_of_node[U(k - 1)];
+        for (Eigen::Index b = 0; b <= last_block; ++b) {
+          qp_main_.C(row, Col(i, b)) = g * st.gq(k, b);
+        }
+      }
+    }
+  }
+}
+
+void MpcSegmentCore::AssembleCollisionRowsDense() noexcept {
+  // The "before": the row is ∇d_jᵀ times the dense G_q,k.
+  const Eigen::Index nn = n_;
+  const Eigen::Index np = n_cp_ + n_bp_;
+  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    for (Eigen::Index p = 0; p < np; ++p) {
+      if (!CollRowExists(p, k)) {
+        continue;
+      }
+      const Eigen::Index row = CollRow(p, k);
+      qp_main_.C.block(row, 0, 1, nu_).setZero();
+      if (coll_valid_(p, k) == 0) {
+        continue;
+      }
+      qp_main_.C.block(row, 0, 1, nu_).noalias() =
+          coll_grad_.col(CollCol(p, k)).transpose() * g_dense_.middleRows(3 * nn * k, nn);
+    }
+  }
+}
+
+void MpcSegmentCore::EvaluateCollision(MpcSegmentCoreResult& out) noexcept {
+  const Eigen::Index np = n_cp_ + n_bp_;
+  const double tol = kCollisionActiveTol * params_.solver.eps_abs;
+  out.collision_evaluated = true;
+  out.coll_active.setZero();
+  out.coll_slack_max = 0.0;
+  out.coll_active_nodes = 0;
+  out.coll_active_rows = 0;
+  out.ball_active_nodes = 0;
+  out.ball_inert_nodes = 0;
+  double min_lin = kInf;
+  double min_ref = kInf;
+  double ball_min = kInf;
+  double self_res = kInf;
+  double ball_res = kInf;
+  bool any_self = false;
+  bool any_ball = false;
+  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    const auto u = static_cast<std::size_t>(k);
+    const double s = z_[CollSlackIdx(k - 1)];
+    out.coll_slack[k - 1] = s;
+    out.coll_slack_max = std::max(out.coll_slack_max, s);
+    if (n_bp_ > 0 && k <= n_pre_ && !ball_valid_[u]) {
+      ++out.ball_inert_nodes;
+    }
+    bool node_active = false;
+    bool ball_node_active = false;
+    work_n_ = q_out_.col(k) - qr_.col(k);
+    for (Eigen::Index p = 0; p < np; ++p) {
+      if (!CollRowExists(p, k) || coll_valid_(p, k) == 0) {
+        continue;
+      }
+      const double d_lin = coll_d_(p, k) + coll_grad_.col(CollCol(p, k)).dot(work_n_);
+      if (p < n_cp_) {
+        any_self = true;
+        min_lin = std::min(min_lin, d_lin);
+        min_ref = std::min(min_ref, coll_d_(p, k));
+        const double res = d_lin + s - coll_thresh_(p, k);
+        self_res = std::min(self_res, res);
+        if (res <= tol) {
+          out.coll_active(p, k) = 1;
+          node_active = true;
+          ++out.coll_active_rows;
+        }
+      } else {
+        any_ball = true;
+        ball_min = std::min(ball_min, d_lin);
+        const double res = d_lin - coll_thresh_(p, k);
+        ball_res = std::min(ball_res, res);
+        if (res <= tol) {
+          out.coll_active(p, k) = 1;
+          ball_node_active = true;
+        }
+      }
+    }
+    out.coll_active_nodes += node_active ? 1 : 0;
+    out.ball_active_nodes += ball_node_active ? 1 : 0;
+  }
+  out.coll_min_distance = any_self ? min_lin : std::numeric_limits<double>::quiet_NaN();
+  out.coll_min_distance_ref = any_self ? min_ref : std::numeric_limits<double>::quiet_NaN();
+  out.ball_min_distance = any_ball ? ball_min : std::numeric_limits<double>::quiet_NaN();
+  out.coll_residual_min = any_self ? self_res : std::numeric_limits<double>::quiet_NaN();
+  out.ball_residual_min = any_ball ? ball_res : std::numeric_limits<double>::quiet_NaN();
+  // The real distances at the solution — the gate's read (the QP guarantees
+  // the linear model only).
+  out.collision_check = RecheckCollision(q_out_, out.coll_slack);
+}
+
+MpcSegmentCollisionCheck MpcSegmentCore::RecheckCollision(
+    const Eigen::Ref<const Eigen::MatrixXd>& q,
+    const Eigen::Ref<const Eigen::VectorXd>& slack) noexcept {
+  MpcSegmentCollisionCheck c;
+  const Eigen::Index nn = n_;
+  if (!initialized_ || !collision_on_ || q.rows() != nn || q.cols() < n_nodes_ + 1 ||
+      (slack.size() != 0 && slack.size() != n_nodes_)) {
+    return c;
+  }
+  c.evaluated = true;
+  const Eigen::Index np = n_cp_ + n_bp_;
+  const MpcSegmentCollisionParams& cp = params_.collision;
+  double self_min = kInf;
+  double self_clear = kInf;
+  double ball_min = kInf;
+  double ball_clear = kInf;
+  double eps = -kInf;
+  bool any_self = false;
+  bool any_ball = false;
+  bool any_lin = false;
+  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    pinocchio::forwardKinematics(model_, data_, q.col(k));
+    bool ball = false;
+    if (!PoseWorkspaceAt(k, ball)) {
+      c.evaluated = false;
+      return c;
+    }
+    const double s = slack.size() != 0 ? slack[k - 1] : 0.0;
+    work_n_ = q.col(k) - qr_.col(k);
+    for (Eigen::Index p = 0; p < np; ++p) {
+      const bool self = p < n_cp_;
+      if (!CollRowExists(p, k) || (!self && !ball)) {
+        continue;
+      }
+      if (!ws_.PairValid(static_cast<std::size_t>(p))) {
+        ++c.invalid_pairs;
+        continue;
+      }
+      const double d_true = ws_.Distance(static_cast<std::size_t>(p));
+      if (coll_valid_(p, k) != 0) {
+        const double d_lin = coll_d_(p, k) + coll_grad_.col(CollCol(p, k)).dot(work_n_);
+        eps = std::max(eps, d_lin - d_true);
+        any_lin = true;
+      }
+      if (self) {
+        any_self = true;
+        self_min = std::min(self_min, d_true);
+        const double clear = d_true - (cp.d_safe - s);
+        if (clear < self_clear) {
+          self_clear = clear;
+          c.worst_node = static_cast<int>(k);
+        }
+      } else {
+        any_ball = true;
+        ball_min = std::min(ball_min, d_true);
+        ball_clear = std::min(ball_clear, d_true - cp.ball_d_safe);
+      }
+    }
+  }
+  // NaN = no row of that kind was measured (none exists, or every one was
+  // invalid — `invalid_pairs` tells them apart, and the gate reads it).
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  c.self_min = any_self ? self_min : nan;
+  c.self_clearance = any_self ? self_clear : nan;
+  c.ball_min = any_ball ? ball_min : nan;
+  c.ball_clearance = any_ball ? ball_clear : nan;
+  c.eps_lin = any_lin ? eps : nan;
+  return c;
 }
 
 void MpcSegmentCore::AssembleTorqueRows() noexcept {
@@ -1226,7 +1572,7 @@ void MpcSegmentCore::EvaluateCatch(MpcSegmentCoreResult& out) noexcept {
   out.catch_v_rel = v_b_ - v_c;
   const double speed = v_b_.norm();
   out.catch_gamma = speed > kMinBallSpeed ? v_b_.dot(v_c) / (speed * speed) : 0.0;
-  out.slack_v = slack_v_on_ ? z_[nz_ - 1] : 0.0;
+  out.slack_v = slack_v_on_ ? z_[sv_col_] : 0.0;
   out.catch_evaluated = true;
 }
 
@@ -1339,6 +1685,35 @@ bool MpcSegmentCore::AssembleBounds(tsid::QPData& qp, bool main) noexcept {
       qp.u[base + 6] = 0.0;
     }
   }
+  if (collision_on_) {
+    // Rows on the main problem only; the pre-solve keeps every row inert and
+    // its slack pinned (a free, cost-less direction otherwise).
+    for (Eigen::Index s = 0; s < n_sd_; ++s) {
+      qp.l[coll_row0_ + s] = 0.0;
+      qp.u[coll_row0_ + s] = main ? kInf : 0.0;
+    }
+    const Eigen::Index np = n_cp_ + n_bp_;
+    for (Eigen::Index k = 1; k <= N; ++k) {
+      if (main) {
+        work_n_ = qf_.col(k) - qr_.col(k);
+      }
+      for (Eigen::Index p = 0; p < np; ++p) {
+        if (!CollRowExists(p, k)) {
+          continue;
+        }
+        const Eigen::Index row = CollRow(p, k);
+        if (!main || coll_valid_(p, k) == 0) {
+          qp.l[row] = -kInf;
+          qp.u[row] = kInf;
+          continue;
+        }
+        // d_j(q̄) + ∇d_jᵀ(Φ_k x_0 − q̄) is the row's constant; T_kj its threshold.
+        const double constant = coll_d_(p, k) + coll_grad_.col(CollCol(p, k)).dot(work_n_);
+        qp.l[row] = coll_thresh_(p, k) - constant;
+        qp.u[row] = kInf;
+      }
+    }
+  }
   return true;
 }
 
@@ -1383,7 +1758,10 @@ void MpcSegmentCore::AssembleGradient(tsid::QPData& qp, bool main) noexcept {
     qp.g.segment(nu_, n_s_).setConstant(params_.rho_tau);
   }
   if (slack_v_on_) {
-    qp.g[nz_ - 1] = params_.rho_v;
+    qp.g[sv_col_] = params_.rho_v;
+  }
+  if (collision_on_) {
+    qp.g.segment(coll_var0_, n_sd_).setConstant(params_.collision.rho_d);
   }
 }
 
@@ -1483,7 +1861,9 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
   // Shapes.
   if (out.q.rows() != nn || out.q.cols() != N1 || out.qd.rows() != nn || out.qd.cols() != N1 ||
       out.qdd.rows() != nn || out.qdd.cols() != N1 || out.u.rows() != nn || out.u.cols() != N ||
-      out.slack.size() != N || out.tau_ratio.rows() != nn || out.tau_ratio.cols() != N) {
+      out.slack.size() != N || out.tau_ratio.rows() != nn || out.tau_ratio.cols() != N ||
+      out.coll_slack.size() != n_sd_ || out.coll_active.rows() != n_cp_ + n_bp_ ||
+      out.coll_active.cols() != (collision_on_ ? N1 : 0)) {
     return fail(MpcSegmentCoreReason::kDimMismatch);
   }
   if (in.q0.size() != nn || in.qd0.size() != nn || in.qdd0.size() != nn) {
@@ -1533,6 +1913,28 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
   }
   if (!(in.w_delta_scale >= 0.0 && in.w_delta_scale <= 1.0)) {
     return fail(MpcSegmentCoreReason::kInputOutOfRange);
+  }
+  // The ball of the collision rows: finite where it is read (NUM-7).
+  if (n_bp_ > 0) {
+    if (!std::isfinite(in.ball_radius)) {
+      return fail(MpcSegmentCoreReason::kNonFinite);
+    }
+    if (in.ball_radius < 0.0) {
+      return fail(MpcSegmentCoreReason::kInputOutOfRange);
+    }
+    for (Eigen::Index k = 1; k <= n_pre_; ++k) {
+      const auto u = static_cast<std::size_t>(k);
+      if (!in.ball_valid[u]) {
+        continue;
+      }
+      if (!in.ball_p0.col(k).allFinite() || !in.ball_p1.col(k).allFinite() ||
+          !std::isfinite(in.ball_margin[u])) {
+        return fail(MpcSegmentCoreReason::kNonFinite);
+      }
+      if (in.ball_margin[u] < 0.0) {
+        return fail(MpcSegmentCoreReason::kInputOutOfRange);
+      }
+    }
   }
   Eigen::Matrix3d w_p_sym = Eigen::Matrix3d::Zero();
   if (catch_on_) {
@@ -1611,6 +2013,19 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
     path_d_ = in.path_d;
   }
   w_delta_scale_ = in.w_delta_scale;
+  if (n_bp_ > 0) {
+    ball_radius_ = in.ball_radius;
+    ball_valid_.fill(false);
+    for (Eigen::Index k = 1; k <= n_pre_; ++k) {
+      const auto u = static_cast<std::size_t>(k);
+      ball_valid_[u] = in.ball_valid[u];
+      if (ball_valid_[u]) {
+        ball_p0_.col(k) = in.ball_p0.col(k);
+        ball_p1_.col(k) = in.ball_p1.col(k);
+        ball_margin_[u] = in.ball_margin[u];
+      }
+    }
+  }
   if (catch_on_) {
     p_b_ = in.p_b;
     a_d_ = in.a_d;
@@ -1665,7 +2080,9 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
   // Linearise at x̄ (torque derivatives, and FK for w_⊥).
   {
     const auto t0 = Clock::now();
-    const bool ok = (torque_on_ || w_perp_on_ || path_solve_on_ || ang_on_) ? Linearize() : true;
+    const bool ok = (torque_on_ || w_perp_on_ || path_solve_on_ || ang_on_ || collision_on_)
+                        ? Linearize()
+                        : true;
     const MpcSegmentCoreReason catch_why =
         (ok && catch_on_) ? LinearizeCatch() : MpcSegmentCoreReason::kNone;
     out.linearize_us = MicrosSince(t0);
@@ -1687,6 +2104,9 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
       if (torque_on_) {
         AssembleTorqueRowsDense();
       }
+      if (collision_on_) {
+        AssembleCollisionRowsDense();
+      }
     } else {
       // H is h_main_ from Init until a term or a scale touches it; rebuild it
       // only then. At scale 1 it is the SAME matrix as without the catch terms.
@@ -1705,6 +2125,9 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
       h_modified_ = w_perp_on_ || path_solve_on_ || catch_on_ || ang_on_ || scaled;
       if (torque_on_) {
         AssembleTorqueRows();
+      }
+      if (collision_on_) {
+        AssembleCollisionRows();
       }
     }
     if (slack_v_on_) {
@@ -1816,6 +2239,10 @@ bool MpcSegmentCore::Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& 
     EvaluateCatch(out);
   }
   EvaluateWholeBody(out);
+  out.collision_evaluated = false;
+  if (collision_on_) {
+    EvaluateCollision(out);
+  }
   out.reason = MpcSegmentCoreReason::kNone;
   out.valid = true;
   return true;

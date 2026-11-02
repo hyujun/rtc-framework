@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rtc_controllers VERSION 5.17.0 LANGUAGES CXX)
+project(rtc_controllers VERSION 5.18.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -657,6 +657,18 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_mpc_segment_core_groups PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
+  # The segment MPC core with collision rows (#642): counter-swing and ball
+  # fixtures on the synthetic tree, the real-distance re-check, the dense
+  # oracle, and the C-level gate up to the QP.
+  ament_add_gtest(test_catching_mpc_segment_core_collision
+    test/test_catching_mpc_segment_core_collision.cpp TIMEOUT 600)
+  target_link_libraries(test_catching_mpc_segment_core_collision rtc_controllers)
+  target_include_directories(test_catching_mpc_segment_core_collision PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_mpc_segment_core_collision PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_mpc_segment_core_collision PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
   # ... and the segment planners with joint groups, on a synthetic tree whose
   # device order is the reverse of the model's.
   ament_add_gtest(test_catching_segment_groups test/test_catching_segment_groups.cpp TIMEOUT 600)
@@ -664,6 +676,17 @@ if(BUILD_TESTING)
   target_include_directories(test_catching_segment_groups PRIVATE
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_definitions(test_catching_segment_groups PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
+  # ... and the mpc segment planner with collision rows (#642): the capsule
+  # file at configure, a first segment through the catch arm, the ball rows
+  # from a prediction, and the publish gate on the real distances.
+  ament_add_gtest(test_catching_segment_collision test/test_catching_segment_collision.cpp
+    TIMEOUT 600)
+  target_link_libraries(test_catching_segment_collision rtc_controllers)
+  target_include_directories(test_catching_segment_collision PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_definitions(test_catching_segment_collision PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
   # The mpc_docking relative-state seams — each

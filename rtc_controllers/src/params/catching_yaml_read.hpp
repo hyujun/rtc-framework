@@ -23,7 +23,9 @@
 #include <yaml-cpp/yaml.h>
 
 #include <cmath>
+#include <initializer_list>
 #include <limits>
+#include <optional>
 #include <string>
 
 namespace rtc::catching::params_detail {
@@ -104,6 +106,29 @@ struct TbdRead {
 /// The value as the YAML file spells it, for a message that quotes what was
 /// written rather than a reformatted double (1e-10 through `std::to_string` is
 /// "0.000000", which reads as a different complaint than the one being made).
+/// The first key of the map `sec` that is not in `allowed`, by name (a
+/// non-scalar key reads as "<non-scalar key>"); nullopt when `sec` is not a
+/// map or every key is known. The caller words the refusal — a misspelt key
+/// would otherwise fall back to its default without a word (#642 D12).
+[[nodiscard]] inline std::optional<std::string> FindUnknownKey(
+    const YAML::Node& sec, std::initializer_list<const char*> allowed) {
+  if (!sec || !sec.IsMap()) {
+    return std::nullopt;
+  }
+  for (const auto& kv : sec) {
+    const YAML::Node k = kv.first;
+    const std::string name = k.IsScalar() ? k.Scalar() : std::string("<non-scalar key>");
+    bool known = false;
+    for (const char* a : allowed) {
+      known = known || name == a;
+    }
+    if (!known) {
+      return name;
+    }
+  }
+  return std::nullopt;
+}
+
 [[nodiscard]] inline std::string Spelling(const YAML::Node& v) {
   if (v.IsScalar()) {
     return "'" + v.Scalar() + "'";
