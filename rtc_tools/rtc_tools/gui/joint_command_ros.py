@@ -7,6 +7,11 @@ and the publishing run on the caller's thread through ``CommandLoop.step``
 (the Qt main thread in the GUI, a plain loop in a headless check), so the
 controllers of ``joint_command_model`` are never touched by two threads.
 
+Each hand's ``PoseSequencer`` (``joint_command_poses``) runs in the same
+``step`` right after the controller's ``tick``, so a replay sees the arrival
+and any auto-disable of that period; its pose file (``poses_files``) is
+loaded once the hand's joint names are known.
+
 ``joint_states`` arrives at the hand's loop rate (hundreds of Hz per hand)
 but is read once per publish period, so it is subscribed raw, only the
 message a step actually reads is deserialized, and ``SpinThread`` prefers
@@ -44,6 +49,7 @@ from rtc_tools.gui.joint_command_model import (
     load_config,
     normalize_namespace,
 )
+from rtc_tools.gui.joint_command_poses import PoseSequencer
 
 DISCOVERY_PERIOD_S = 1.0
 FOREIGN_CHECK_PERIOD_S = 0.1
@@ -191,6 +197,7 @@ class CommandLoop:
     def __init__(self, node: JointCommandNode) -> None:
         self.node = node
         self.controllers: dict[str, HandController] = {}
+        self.sequencers: dict[str, PoseSequencer] = {}
         self._fed_seq: dict[str, int] = {}
 
     def step(self, now_s: float) -> list[str]:
@@ -200,6 +207,7 @@ class CommandLoop:
             ctrl = self.controllers.get(label)
             if ctrl is None:
                 ctrl = self.controllers[label] = HandController(label, self.node.config)
+                self.sequencers[label] = PoseSequencer(ctrl, self.node.config.replay_dwell_s)
                 self._fed_seq[label] = 0
                 new.append(label)
             if inputs.state_seq != self._fed_seq[label]:
@@ -208,12 +216,25 @@ class CommandLoop:
                 self._fed_seq[label] = inputs.state_seq
                 if ctrl.ready and not was_ready:
                     self._report_layout(ctrl)
+                    self._load_poses(label)
             ctrl.set_link(inputs.link_ok)
             ctrl.set_foreign_publisher(inputs.foreign_publisher)
             values = ctrl.tick(now_s)
             if values is not None:
                 self.node.publish(label, ctrl.joint_names, values)
+            self.sequencers[label].step(now_s)
         return new
+
+    def _load_poses(self, label: str) -> None:
+        path = self.node.config.poses_files.get(label)
+        if path is None:
+            return
+        log = self.node.get_logger()
+        reason = self.sequencers[label].load_file(path)
+        if reason:
+            log.warning(f"hand '{label}': poses file not loaded — {reason}")
+        else:
+            log.info(f"hand '{label}': {self.sequencers[label].message}")
 
     def _report_layout(self, ctrl: HandController) -> None:
         log = self.node.get_logger()

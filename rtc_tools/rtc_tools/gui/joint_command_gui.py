@@ -4,7 +4,10 @@ Like ``joint_state_publisher_gui``, but for a hand node that publishes
 ``sensor_msgs/JointState`` and consumes ``rtc_msgs/JointCommand`` per hand:
 it finds the hands that are up, shows one slider per joint with the measured
 position above it, and — only for a hand the user enabled — publishes the
-slider targets as a position ``JointCommand`` at ``publish_rate_hz``.
+slider targets as a position ``JointCommand`` at ``publish_rate_hz``. Below
+the sliders each hand keeps a pose list: save the current targets, reorder
+and edit them, go to one, replay them in order with a dwell between poses,
+and load/save the list as a YAML pose file (``joint_command_poses``).
 
 Usage::
 
@@ -12,7 +15,8 @@ Usage::
     ros2 run rtc_tools joint_command_gui --ros-args -p namespace:=/hand
 
 The YAML keys, defaults and safety rules are documented in
-``joint_command_model``; the threading in ``joint_command_ros``.
+``joint_command_model`` (poses: ``joint_command_poses``); the threading in
+``joint_command_ros``.
 
 Not a generalisation of ``rtc_digital_twin``'s ``joint_gui``: that tool
 publishes URDF joints as ``JointState`` for visualisation and has no notion
@@ -58,7 +62,7 @@ def main(args=None) -> int:
 
     def step() -> None:
         for label in loop.step(time.monotonic()):
-            window.add_hand(loop.controllers[label], topics[label])
+            window.add_hand(loop.controllers[label], loop.sequencers[label], topics[label])
 
     publish_timer = QTimer()
     publish_timer.setTimerType(Qt.PreciseTimer)  # a coarse timer may run 5 % slow

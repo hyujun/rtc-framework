@@ -27,7 +27,7 @@
        PyQt5 it pulls in) is the ROS apt one; the venv PyQt5 above serves the
        python3 -m tools. -->
   <exec_depend>python_qt_binding</exec_depend>
-  <!-- yaml: GUI config (gui/joint_command_model.py) and the launch helpers. -->
+  <!-- yaml: GUI config (gui/joint_command_model.py), pose files (gui/joint_command_poses.py) and the launch helpers. -->
   <exec_depend>python3-yaml</exec_depend>
   <!-- derive_accel_limits: Pinocchio python bindings for
        M/g/c, xacro to expand the robot URDF. MuJoCo (optional cross-check) is a
