@@ -36,7 +36,9 @@
 #       a directory (<= 2 levels below the package) added or removed, package.xml
 #       (NON-BLOCKING; a file add/del inside an existing directory is not one,
 #       so READMEs stop growing per-file trees, #869 D4; a tracked header whose
-#       changed lines are all comment lines is not one either); a new .cpp
+#       changed lines are all comment lines is not one either, nor a tracked
+#       package.xml whose changed lines are all <version> / <test_depend> /
+#       comments, #982); a new .cpp
 #       must be in CMakeLists.txt, a new find_package() in package.xml
 #       (blocking).
 #   1b. changed *.md -> validate_docs.py --files, findings narrowed to added
@@ -1284,6 +1286,17 @@ for pkg_dir in $CHANGED_PKGS; do
     fi
   done
   PKG_PKGXML=$(echo "$CHANGED" | grep -E "^${pkg_dir}/package.xml$" || true)
+  # A tracked package.xml whose changed lines are all <version> (every PR bumps
+  # it: chore(multi-pkg): Bump versions), <test_depend> (a test edge no user
+  # sees) or comment lines carries no surface a README reflects -- the reminder
+  # fired on the version bump of every package in every PR and taught the
+  # reader to skip the checklist (#982). Same shape as the comment-only header
+  # rule above; a new package.xml is surface as before.
+  if [ -n "$PKG_PKGXML" ] && git cat-file -e "${VERIFY_BASE}:${PKG_PKGXML}" 2>/dev/null \
+     && [ -z "$(git diff -U0 "$VERIFY_BASE" -- "$PKG_PKGXML" | grep -E '^[-+][^-+]' \
+               | grep -vE '^[-+][[:space:]]*(<version>|<test_depend>|<!--|-->|$)' | head -n 1)" ]; then
+    PKG_PKGXML=""
+  fi
   if [ -n "$PKG_PUBLIC" ] || [ -n "$PKG_STRUCT" ] || [ -n "$PKG_PKGXML" ]; then
     if ! echo "$CHANGED" | grep -q "^${pkg_dir}/README.md$"; then
       CHECKLIST="${CHECKLIST}  - ${pkg_dir}: public surface changed (header / launch / config / directory add-del / dep) — confirm README.md's user-facing parts (interface · config · directory) reflect it, or note in your report why no doc change is needed\n"
