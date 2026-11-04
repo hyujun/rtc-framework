@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from conftest import robots_dir
 
 from rtc_tools.validation.compare_mjcf_urdf import (
     _detect_joints,
@@ -36,24 +37,7 @@ from rtc_tools.validation.compare_mjcf_urdf import (
     compare,
 )
 
-
-def _robots_dir() -> Path | None:
-    """ament share 우선, 없으면 in-source 레이아웃."""
-    try:
-        from ament_index_python.packages import get_package_share_directory
-
-        share = Path(get_package_share_directory("robot_descriptions")) / "robots"
-        if (share / "model_pairs.yaml").is_file():
-            return share
-    except Exception:
-        pass
-    in_source = Path(__file__).resolve().parents[2] / "robot_descriptions" / "robots"
-    if (in_source / "model_pairs.yaml").is_file():
-        return in_source
-    return None
-
-
-ROBOTS = _robots_dir()
+ROBOTS = robots_dir()
 
 
 def _pairs():

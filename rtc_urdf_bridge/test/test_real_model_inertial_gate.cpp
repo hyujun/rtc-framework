@@ -47,7 +47,7 @@ std::string ModelPath(const std::string& relative) {
       .string();
 }
 
-/// 이 저장소가 소유한 실모델 — model_pairs.yaml 8 쌍의 URDF + panda + 테스트
+/// 이 저장소가 소유한 실모델 — model_pairs.yaml 9 쌍의 URDF + panda + 테스트
 /// fixture 의 합성 손 (`p1b_surrogate`, 그 UR5e · G1 결합). 로드 게이트는
 /// *열리는 모든 URDF* 에 걸리므로 pairs 목록보다 넓은 것이 맞다.
 const std::vector<std::string>& CleanModels() {
@@ -64,6 +64,7 @@ const std::vector<std::string>& CleanModels() {
       "robots/p1b_surrogate/urdf/p1b_surrogate.urdf.xacro",
       "robots/p1b_surrogate/urdf/ur5e_with_p1b_surrogate.urdf.xacro",
       "robots/g1/urdf/g1_with_p1b_surrogate_fixed_base.urdf.xacro",
+      "robots/g1/urdf/g1_29dof_floating.urdf",
   };
   return kModels;
 }

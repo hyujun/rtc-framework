@@ -1,0 +1,6 @@
+# Vendored upstream descriptions must stay byte-identical to upstream (their
+# MANIFEST.sha256 is the gate, rtc_tools/test/test_vendored_manifests.py), so
+# git never eol-converts anything in them — one line per vendored folder. The
+# meshes are ASCII STL and are also kept out of text diffs.
+robots/g1/unitree_g1_29dof/** -text
+robots/**/*.[sS][tT][lL] binary

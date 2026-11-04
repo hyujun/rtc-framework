@@ -31,6 +31,7 @@ console script 의 shebang 은 `/usr/bin/python3` 이고 `mujoco` 는 workspace 
 
 ## 판정 규칙
 
+- **free 관절 (부동 베이스) 의 6 DoF 는 따로 센다**. URDF 는 root 를 고정한 채 두고 loader 가 부동 관절을 붙이므로 (`rtc_urdf_bridge` `urdf.root_joint_type`), DoF 비교는 MJCF `nv` 에서 free 관절 6 개씩을 뺀 관절 DoF 를 URDF 의 non-fixed 관절 수와 대조하고 양쪽 개수를 `(free joints: MJCF=n  URDF floating=m)` 으로 알린다. MJCF 에만 free 관절이 있으면 warning 이다 (`model_pairs.yaml` 의 `expect_warnings` 로 고정 — 고정 베이스 쌍에 섞여 든 free 관절이 조용히 지나가지 않게). URDF 가 `type="floating"` 을 스스로 선언했는데 MJCF 에 free 관절이 없으면 mismatch 다. free 관절의 `range` 는 읽지 않는다.
 - **massless URDF 프레임**은 mismatch 로 세지 않고 `[NOTE]` 로 알린다. 면제는 MuJoCo 가 실제로 body 를 만들지 않은 것에 한정된다. 질량을 가진 link 의 소실은 mismatch 다.
 - **질량 · 주모멘트는 크기에 맞춘 허용오차**로 비교한다. `|Δ| ≤ min(tolerance, tolerance × 크기)` 이고 크기는 질량이면 두 값 중 큰 쪽, 관성이면 그 link 의 가장 큰 주모멘트다. 1 kg · 1 kg·m² 이상에서는 절대 한계가, 그 아래에서는 상대 한계가 걸린다 (작은 link 가 절대 한계에 가려지지 않게). 양쪽이 정확히 0 이면 통과, 한쪽만 0 이면 불일치다.
 - **관성은 두 번 비교한다**. 주모멘트는 회전 불변이라 어느 모멘트가 틀렸는지 짚지만 주축의 방향은 못 본다. 그래서 주모멘트가 맞은 link 는 텐서를 world frame 에서 성분별로 다시 비교하고, 틀리면 `INERTIA TENSOR MISMATCH (world)` 를 찍는다. 주모멘트 둘이 같은 link 는 그 평면 안의 주축이 어디든 같은 텐서라 불일치가 아니다. MuJoCo 의 URDF 로더는 `<inertial><origin rpy>` 를 읽지 않으므로 rpy 가 있는 URDF 를 변환한 MJCF 가 여기서 걸릴 수 있다.
@@ -52,7 +53,7 @@ console script 의 shebang 은 `/usr/bin/python3` 이고 `mujoco` 는 workspace 
 
 ## 읽지 않는 것
 
-`model_pairs.yaml` 의 로봇 MJCF 에는 아래가 없다. 씬 · 물체 MJCF 에는 `<include>` · ball / free 관절 · geom 관성이 있다.
+`model_pairs.yaml` 의 로봇 MJCF 에는 아래가 없다 (부동 베이스 로봇의 root free 관절은 DoF 비교가 따로 센다 — 판정 규칙). 씬 · 물체 MJCF 에는 `<include>` · ball 관절 · geom 관성이 있다.
 
 - **`<include>` 를 따라가지 않는다**. include 로만 들어오는 관절 · body 는 비교 대상이 아니고, root 에 적힌 관절도 include 된 `<compiler>` · `<default>` · `<actuator>` 를 못 읽어 틀린 값으로 읽힐 수 있다 (거짓 불일치 또는 거짓 OK).
 - **`joint` 전달이 아닌 actuator** (`jointinparent` · tendon · site · slider-crank · body) 를 읽지 않는다. 파일에 있으면 `[WARN]` 이 나열한다.

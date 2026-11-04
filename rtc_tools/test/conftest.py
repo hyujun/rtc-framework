@@ -17,6 +17,8 @@ switch, this file turns copy-on-write ON, so that the colcon lane fails where
 the runtime does.
 """
 
+from pathlib import Path
+
 import pandas as pd
 
 _XDIST_MISSING = "rtc_tools_xdist_missing"
@@ -62,3 +64,24 @@ def pytest_report_header(config):
             "as the venv's pandas 3 behaves"
         )
     return lines or None
+
+
+def robots_dir() -> Path | None:
+    """``robot_descriptions/robots``: ament share first, then the in-source tree.
+
+    Shared by the gates that fire on the shipped robot assets
+    (``test_real_model_pairs.py``, ``test_vendored_manifests.py``), so the two
+    cannot drift onto different copies of the same directory.
+    """
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        share = Path(get_package_share_directory("robot_descriptions")) / "robots"
+        if (share / "model_pairs.yaml").is_file():
+            return share
+    except Exception:
+        pass
+    in_source = Path(__file__).resolve().parents[2] / "robot_descriptions" / "robots"
+    if (in_source / "model_pairs.yaml").is_file():
+        return in_source
+    return None

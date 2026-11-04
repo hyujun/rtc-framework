@@ -8,7 +8,7 @@
 - 테스트는 기본으로 빌드되지 않는다 — `./build.sh --tests [-p <pkg>]` 가 먼저다. 테스트 없이 빌드한 패키지는 실패가 아니라 "0 tests" 를 보고한다.
 - `rtc_base` / `rtc_msgs` 변경은 전체 downstream 이다 (PROC-3).
 - **skip 은 통과가 아니라 미검증이다.** 정책 파일 · optional dep · HW 가 있어야 도는 테스트가 skip 됐으면 그 사실을 보고한다.
-- `robot_descriptions/` 의 MJCF / URDF 를 고쳤으면 `rtc_tools` 의 `test_real_model_pairs.py` 가 실제 게이트다. 로컬 colcon 은 pytest 를 시스템 python 으로 돌려 이를 skip 하므로 `.venv` python 으로 직접 돌린다.
+- `robot_descriptions/` 의 MJCF / URDF 를 고쳤으면 `rtc_tools` 의 `test_real_model_pairs.py` 가 실제 게이트다. 로컬 colcon 은 pytest 를 시스템 python 으로 돌려 이를 skip 하므로 `.venv` python 으로 직접 돌린다. 모델 하나의 내용 계약을 다른 패키지의 gtest 가 박았으면 (sensor matrix 의 `robot_descriptions/` 행) 그것도 돌린다.
 - launch 를 고쳤으면 평가 센서 (`test_launch_description_evaluates`) 를 돌린다 — import 스모크로는 `OpaqueFunction` 본문이 실행되지 않는다.
 - 컨트롤러·프로필·backend 를 추가했으면 per-X 공유 스위트가 그 이름을 아는지 확인한다 (AP-PROC-7).
 

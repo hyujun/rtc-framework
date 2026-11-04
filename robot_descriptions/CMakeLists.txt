@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(robot_descriptions VERSION 5.17.0)
+project(robot_descriptions VERSION 5.18.0)
 
 find_package(ament_cmake REQUIRED)
 
@@ -14,8 +14,11 @@ find_package(ament_cmake REQUIRED)
 #   mjcf/    — MuJoCo XML scenes      (rtc_mujoco_sim)
 #   meshes/  — DAE / STL / OBJ        (RViz visual, MuJoCo collision/visual)
 #   <name>.link_map.yaml — optional MJCF-body ↔ URDF-link declaration, only
-#            when the two files name the same link differently
-#            (compare_mjcf_urdf --link-map; see robots/ur5e/ for the case)
+#            when the two files name the same link differently (robots/ur5e/)
+#            or the MJCF folds fixed-joint children into a parent body
+#            (`fuse:`, robots/g1/) — compare_mjcf_urdf --link-map
+#   <vendor_dir>/MANIFEST.sha256 — an upstream description copied in whole
+#            stays byte-identical; rtc_tools' test_vendored_manifests.py checks
 #
 # The shipped robot list lives in README.md ("현재 입주한 robots" table) -- an enumeration here
 # goes stale the moment a directory is added, and this one had already lost

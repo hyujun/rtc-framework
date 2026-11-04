@@ -97,3 +97,19 @@ pairs:
     # MJCF 가 visual mesh 를 쪼개고(20 vs 14), palm placeholder 관성
     # (왜 안 고치는지는 위 assm_v1_hand 주석).
     expect_warnings: 2
+
+  # 부동 베이스 휴머노이드. MJCF 는 pelvis 를 z 0.793 에 두고 freejoint 로 띄우며
+  # URDF 는 pelvis 가 root (부동 관절은 loader 가 붙인다) — 같은 프레임인 pelvis
+  # 로 정렬하고, freejoint 의 6 DoF 는 도구가 따로 센다.
+  - name: g1_29dof_floating
+    mjcf: g1/mjcf/g1_29dof_floating.xml
+    urdf: g1/urdf/g1_29dof_floating.urdf
+    align_frames: [pelvis, pelvis]
+    # 원본 MJCF 가 접어 둔 fixed 자식 5 개 (head · logo · pelvis_contour · rubber_hand ×2).
+    link_map: g1/g1.link_map.yaml
+    # 2026-11-04 확인. free 관절 (MJCF 1 · URDF 0 — root 는 loader 가 붙인다) 1 건과
+    # URDF 쪽 사실 셋: geom 수 (URDF visual+collision 71 vs
+    # MJCF 66 — 발 sphere 4 × 2 → sole box 1 × 2, 접힌 link 의 geom) 1 건과 양 발목
+    # ankle_roll 의 관성 plausibility (선언 trace 가 4 sphere 의 추정보다 2.6 × 작다
+    # — Unitree 값이며 #413 규율대로 고치지 않는다) 2 건.
+    expect_warnings: 4
