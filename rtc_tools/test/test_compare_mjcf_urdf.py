@@ -1675,6 +1675,77 @@ class TestMasslessFrameAccounting:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Floating base: a free joint's 6 DoF are not URDF joints
+#
+# The loader supplies the root joint of a floating-base URDF
+# (rtc_urdf_bridge `urdf.root_joint_type`), so the URDF keeps a fixed root
+# while the MJCF carries a `<joint type="free"/>`. The DoF comparison sets
+# those 6 aside; a URDF that declares `type="floating"` itself must find a
+# free joint on the MJCF side.
+# ═══════════════════════════════════════════════════════════════════════════
+
+MJCF_STRUCT_FREE = MJCF_STRUCT.replace(
+    '<body name="base">',
+    '<body name="base">\n      <joint name="base_free" type="free"/>',
+)
+
+URDF_STRUCT_FLOATING = URDF_STRUCT.replace(
+    '<link name="tool0"/>',
+    '<link name="tool0"/>\n  <link name="world"/>\n'
+    '  <joint name="base_floating" type="floating">\n'
+    '    <parent link="world"/><child link="base_link_inertia"/>\n'
+    '    <origin xyz="0 0 0" rpy="0 0 0"/>\n'
+    "  </joint>",
+)
+
+
+class TestFreeJointDof:
+    def _run(self, tmp_path, capsys, urdf_text=URDF_STRUCT, mjcf_text=MJCF_STRUCT):
+        mjcf = tmp_path / "s.xml"
+        mjcf.write_text(mjcf_text)
+        urdf = tmp_path / "s.urdf"
+        urdf.write_text(urdf_text)
+        n = compare(mjcf, urdf, link_map=STRUCT_LINK_MAP, joint_names=STRUCT_JOINTS)
+        return n, capsys.readouterr().out
+
+    def test_mjcf_free_joint_is_set_aside_and_warned(self, tmp_path, capsys):
+        """Set aside for the DoF count, but a warning: a free joint that strays
+        into a fixed-base pair must show up in expect_warnings, not vanish
+        into a note."""
+        pytest.importorskip("mujoco")
+        n, out = self._run(tmp_path, capsys, mjcf_text=MJCF_STRUCT_FREE)
+        assert "DoF: 1  OK  (free joints: MJCF=1  URDF floating=0)" in out
+        assert "[MISMATCH] DoF" not in out
+        assert "[WARN] free joints: MJCF=1  URDF floating=0" in out
+        assert n == 0
+
+    def test_without_free_joint_nv_is_compared_as_before(self, tmp_path, capsys):
+        pytest.importorskip("mujoco")
+        n, out = self._run(tmp_path, capsys)
+        assert "DoF: 1  OK" in out
+        assert "free joints" not in out
+        assert n == 0
+
+    def test_urdf_floating_without_mjcf_free_joint_is_a_mismatch(self, tmp_path, capsys):
+        pytest.importorskip("mujoco")
+        n, out = self._run(tmp_path, capsys, urdf_text=URDF_STRUCT_FLOATING)
+        assert (
+            "[MISMATCH] DoF: URDF non-fixed joints=1  MJCF articulated=1 (nv=1)"
+            "  (free joints: MJCF=0  URDF floating=1)"
+        ) in out
+        assert n >= 1
+
+    def test_urdf_floating_matched_by_mjcf_free_joint(self, tmp_path, capsys):
+        pytest.importorskip("mujoco")
+        n, out = self._run(
+            tmp_path, capsys, urdf_text=URDF_STRUCT_FLOATING, mjcf_text=MJCF_STRUCT_FREE
+        )
+        assert "DoF: 1  OK  (free joints: MJCF=1  URDF floating=1)" in out
+        assert "[WARN] free joints" not in out
+        assert n == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # UNVERIFIED accounting (#392)
 #
 # Without mujoco the structural section checks nothing, yet the run used to end

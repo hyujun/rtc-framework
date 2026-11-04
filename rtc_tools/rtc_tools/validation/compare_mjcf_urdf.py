@@ -1718,14 +1718,38 @@ def _compare_structure(
         print(f"  body count: {actual_bodies}  OK{excused}")
 
     # DoF / actuator
-    if model.nv != len(urdf_active_joints):
+    #
+    # A free joint (floating base) has no URDF counterpart when the loader
+    # supplies the root joint (rtc_urdf_bridge `urdf.root_joint_type`), so its
+    # 6 DoF are set aside and the articulated count is what gets compared. A
+    # URDF that declares the base itself (`type="floating"`) must find a free
+    # joint on the MJCF side. The reverse (MJCF free, URDF fixed-root) is the
+    # layout the loader is for — a warning, so model_pairs.yaml pins it with
+    # expect_warnings and a free joint that strays into a fixed-base pair
+    # cannot pass as an uncounted note.
+    n_free = int(sum(1 for t in model.jnt_type if t == mujoco.mjtJoint.mjJNT_FREE))
+    n_urdf_floating = sum(1 for j in urdf_root.findall("joint") if j.get("type") == "floating")
+    mjcf_articulated = model.nv - 6 * n_free
+    free_note = (
+        f"  (free joints: MJCF={n_free}  URDF floating={n_urdf_floating})"
+        if n_free or n_urdf_floating
+        else ""
+    )
+    if mjcf_articulated != len(urdf_active_joints) or n_urdf_floating > n_free:
         print(
             f"  [MISMATCH] DoF: URDF non-fixed joints={len(urdf_active_joints)}  "
-            f"MJCF nv={model.nv}"
+            f"MJCF articulated={mjcf_articulated} (nv={model.nv}){free_note}"
         )
         mismatches += 1
     else:
-        print(f"  DoF: {model.nv}  OK")
+        print(f"  DoF: {mjcf_articulated}  OK{free_note}")
+    if n_free > n_urdf_floating:
+        print(
+            f"  [WARN] free joints: MJCF={n_free}  URDF floating={n_urdf_floating} — "
+            "the URDF root is fixed and the loader supplies the floating base "
+            "(urdf.root_joint_type); pin with expect_warnings"
+        )
+        warnings += 1
 
     if model.nu != len(urdf_active_joints):
         print(
