@@ -34,7 +34,7 @@ agent_docs/design-principles.md: 15377
 agent_docs/handoff.md: 5045
 agent_docs/invariants.md: 38266  # raised from 38043: RT-9 lifecycle exemption, the RT-HOST-3 missing-thread FAIL and the ARCH-3 review signal -- stated only in the rationale docs before (docs/reference prune, #851)
 agent_docs/modification-guide.md: 15230
-agent_docs/testing-debug.md: 16772  # raised from 14610: L1/L2 span, executor-callback L2 and begin-to-begin cadence rules, pass controls and mutant checks in test design, three false-green paths in test measurement -- stated only in testing/tracing rationale before (docs/reference prune, #851)
+agent_docs/testing-debug.md: 16950  # raised from 16772: a model's content contract pinned by another package's gtest is a sensor of that model too (#975); before: 14610: L1/L2 span, executor-callback L2 and begin-to-begin cadence rules, pass controls and mutant checks in test design, three false-green paths in test measurement -- stated only in testing/tracing rationale before (docs/reference prune, #851)
 
 .claude/rules/arch-build-meta.md: 2632
 .claude/rules/arch-source.md: 3693

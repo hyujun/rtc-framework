@@ -33,6 +33,11 @@
   <!-- Session directory helper used by mujoco_sim.launch.py -->
   <exec_depend>rtc_tools</exec_depend>
 
+  <!-- test_g1_floating_stance.cpp opens the floating-base humanoid MJCF from
+       robot_descriptions through the ament index (data-only package: a test
+       edge, never <depend> / find_package — ARCH-5). -->
+  <test_depend>robot_descriptions</test_depend>
+
   <!-- MuJoCo >= 3.2 (optional C++ library — not a ROS2 package; install
        separately). The 3.2 floor comes from the object pool's mjSpec attach
        API; see rtc_mujoco_sim/CMakeLists.txt.

@@ -296,6 +296,19 @@ if(mujoco_FOUND)
         SERVO_ARM_CTRL_LIMITED_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/servo_arm_ctrl_limited.xml")
     endif()
 
+    # Floating-base humanoid plant model (W0-F01, #975): the derived MJCF under
+    # robot_descriptions must carry the agreed sole / sensor / servo / keyframe
+    # contract and stand still on its own. Pure MuJoCo C API — no node, no ROS.
+    # The model comes through the ament index at run time (robot_descriptions
+    # is data-only, ARCH-5: test_depend + lookup, never find_package). Four
+    # 10 s runs of a 29-DoF model with mesh collision take ~4 s here; 120 s
+    # keeps a slow host from turning that into a timeout.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_g1_floating_stance.cpp")
+      ament_add_gtest(test_g1_floating_stance test/test_g1_floating_stance.cpp TIMEOUT 120)
+      target_link_libraries(test_g1_floating_stance
+        mujoco::mujoco ament_index_cpp::ament_index_cpp)
+    endif()
+
     # Object pool against a compiled model: needs a scene with a floor and a
     # keyframe, plus a directory of candidate objects.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_object_pool.cpp")
