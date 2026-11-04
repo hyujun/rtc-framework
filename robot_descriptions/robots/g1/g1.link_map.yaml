@@ -1,0 +1,18 @@
+# g1_29dof_floating — MJCF body ↔ URDF link 선언 (`compare_mjcf_urdf --link-map`)
+#
+# 이 파일은 **예외 목록**이지 비교 대상 목록이 아니다 (#411) — 동명 쌍은 전부
+# 비교된다. 이름은 양쪽이 같아 `links` 는 비어 있고, 선언이 필요한 것은 `fuse`
+# 뿐이다.
+#
+# fuse — MJCF 가 부모 body 에 접은 fixed joint 자식 (#412)
+#   Unitree 의 원본 MJCF 는 질량 있는 fixed 자식 5 개를 부모에 합쳐 두었다 —
+#   mesh geom 은 부모에 남고 body 는 없다 (예: left_wrist_yaw_link 0.0846 +
+#   left_rubber_hand 0.17 = 0.2546 kg). 비교 도구는 접힌 자식의 질량 · 관성을
+#   평행축으로 합성해 부모와 대조한다. 파생 MJCF 는 이 구조를 원본 그대로 둔다.
+links: {}
+
+fuse:
+  pelvis: [pelvis_contour_link]
+  torso_link: [logo_link, head_link]
+  left_wrist_yaw_link: [left_rubber_hand]
+  right_wrist_yaw_link: [right_rubber_hand]

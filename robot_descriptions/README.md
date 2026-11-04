@@ -23,7 +23,7 @@ C++ 헤더·CMake target·robot-specific 코드는 없고 `robots/<name>/` 하�
 | `schunk_hand/` | Schunk SVH 5-finger hand (left/right) — URDF, mesh (MJCF 없음) |
 | `panda/` | kinematics-only 테스트 fixture — [README](robots/panda/README.md) |
 | `p1b_surrogate/` | 합성 폐쇄 체인 손 + UR5e — 테스트 fixture, [README](robots/p1b_surrogate/README.md) |
-| `g1/` | G1 상체 + 합성 손 — 테스트 fixture, [README](robots/g1/README.md) |
+| `g1/` | Unitree G1 29-DoF — 원본 (바이트 동일) · 부동 베이스 파생 MJCF/URDF · 상체 + 합성 손 fixture, [README](robots/g1/README.md) |
 
 로봇마다 필요한 자산만 갖는다 (hand 계열은 primitive geometry 라 mesh 가 없고, fixture 는 URDF 만 갖는다). 파일 목록은 직접 조회한다.
 
@@ -69,13 +69,14 @@ robot_descriptions/
 └── object_sim/      upstream submodule (수정 금지)
 ```
 
-- `robots/model_pairs.yaml` — MJCF 와 URDF 의 짝 선언. `*.link_map.yaml` 은 두 파일이 같은 link 를 다르게 부를 때만 둔다.
+- `robots/model_pairs.yaml` — MJCF 와 URDF 의 짝 선언. `*.link_map.yaml` 은 두 파일이 같은 link 를 다르게 부르거나 한쪽이 fixed 자식을 접었을 때만 둔다.
+- upstream 을 통째로 들인 폴더는 `MANIFEST.sha256` 을 갖고 바이트 동일을 유지한다 (`rtc_tools/test/test_vendored_manifests.py`). 고칠 것은 옆의 파생본에 한다.
 - `objects/` 는 `object_sim` 과 같은 `<name>/object.xml` 레이아웃이라 `rtc_mujoco_sim` object_pool 의 `directory` 를 `package://robot_descriptions/objects` 로 지정하면 그대로 쓴다. upstream submodule 에는 추가할 수 없어 이 저장소 소유 물체는 여기에 둔다. 물체의 기하가 정책·overlay 와 맞물린 계약이므로, 옮기거나 고치기 전에 각 `object.xml` 의 주석을 읽는다.
 - `ur5e/urdf/ur5e.urdf` 는 `ur_description` xacro 에서 미리 생성한 파일이다. 다시 만들려면 `ros-jazzy-ur-description` · `ros-jazzy-xacro` 가 필요하다.
 
 ### MJCF 와 URDF 일관성
 
-sim(MJCF) 과 컨트롤러 모델(URDF) 이 어긋나면 튜닝한 게인이 모델 오차를 보상하게 되므로 URDF 를 SSoT 로 맞춘다. 비교 도구는 `ros2 run rtc_tools compare_mjcf_urdf` 이고 사용법은 [rtc_tools README](../rtc_tools/README.md) 에 있다. `robots/model_pairs.yaml` 의 모든 쌍을 [test_real_model_pairs.py](../rtc_tools/test/test_real_model_pairs.py) 가 자동 검사하므로, 이 패키지의 MJCF/URDF 를 고쳤다면 그 테스트가 sensor 다. 로봇을 새로 들이면 `model_pairs.yaml` 에 한 줄을 추가한다.
+sim(MJCF) 과 컨트롤러 모델(URDF) 이 어긋나면 튜닝한 게인이 모델 오차를 보상하게 되므로 URDF 를 SSoT 로 맞춘다. 비교 도구는 `ros2 run rtc_tools compare_mjcf_urdf` 이고 사용법은 [rtc_tools README](../rtc_tools/README.md) 에 있다. `robots/model_pairs.yaml` 의 모든 쌍을 [test_real_model_pairs.py](../rtc_tools/test/test_real_model_pairs.py) 가 자동 검사하므로, 이 패키지의 MJCF/URDF 를 고쳤다면 그 테스트가 sensor 다 (모델별 추가 sensor 는 [docs/testing.md](../docs/testing.md) 의 `robot_descriptions/` 행). 로봇을 새로 들이면 `model_pairs.yaml` 에 한 줄을 추가한다.
 
 ## 문제 해결
 
