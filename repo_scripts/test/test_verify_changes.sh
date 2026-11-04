@@ -3459,5 +3459,22 @@ else
   skip "84: formatter drift before the build (no clang-format/uvx)"
 fi
 
+# 85. A package.xml edit that only bumps <version> (every PR carries one),
+#     adds a <test_depend> or changes a comment is not public surface: the
+#     README reminder fired on the version bump of every package in every PR
+#     (#982). A <depend> / <exec_depend> line in the same file still asks -- the
+#     control keeps the absence from holding because the filter ate everything.
+dir=$(make_fixture)
+sed -i 's#<version>0.0.1</version>#<version>0.0.2</version>#' "$dir/rtc_demo/package.xml"
+out=$(run_hook "$dir")
+expect_not_contains "85a: a version-only package.xml bump raises no README checklist" "$out" "public surface changed"
+sed -i 's#</package>#  <!-- a test edge only -->\n  <test_depend>rtc_other</test_depend>\n</package>#' "$dir/rtc_demo/package.xml"
+out=$(run_hook "$dir")
+expect_not_contains "85b: a <test_depend> + comment add raises none either" "$out" "public surface changed"
+sed -i 's#</package>#  <exec_depend>rtc_other</exec_depend>\n</package>#' "$dir/rtc_demo/package.xml"
+out=$(run_hook "$dir")
+expect_contains "85c: an <exec_depend> in that package.xml still raises it" "$out" "public surface changed"
+rm -rf "$dir"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
