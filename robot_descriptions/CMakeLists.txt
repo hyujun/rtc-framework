@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(robot_descriptions VERSION 5.17.0)
+project(robot_descriptions VERSION 5.18.0)
 
 find_package(ament_cmake REQUIRED)
 
