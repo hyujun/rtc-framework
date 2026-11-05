@@ -12,11 +12,15 @@
 //   - published JointCommand carries joint_names == joint_command_names and
 //     values[i] == slot.commands[i] — no command-side reorder
 
+#include "integrated_bringup/backends/floating_base_conventions.hpp"
 #include "integrated_bringup/backends/mujoco_native_backend.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
+#include "rtc_base/types/types.hpp"
 #include "rtc_controller_manager/device_backend.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
 #include <rtc_msgs/msg/joint_command.hpp>
+#include <rtc_msgs/msg/sim_sensor.hpp>
+#include <rtc_msgs/msg/sim_sensor_state.hpp>
 
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -24,8 +28,10 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
@@ -555,6 +561,387 @@ TEST_F(MujocoNativeBackendTest, StaleTip_KeepsReceiptSoAgeStaysComputable) {
   // into "never existed".
   EXPECT_EQ(stale.inference_recv_steady_ns[0], fresh.inference_recv_steady_ns[0]);
   EXPECT_EQ(stale.inference_sequence[0], fresh.inference_sequence[0]);
+}
+
+// ── Floating-base lane (WD-16, #976) ─────────────────────────────────────────
+//
+// The backend looks the configured MJCF sensor names up in a SimSensorState,
+// guards them, and hands the arrays to floating_base_conventions.hpp. These
+// cases pin what reaches DeviceStateCache: the converted values (against the
+// header, which has its own test), the verdict / stamp / counter contract the
+// wrench lane already has, and the two ways a sample is refused.
+
+// The lane is not claimed by the fixture above (no base_state.* params).
+TEST_F(MujocoNativeBackendTest, HasFloatingBase_FalseWithoutBaseStateConfig) {
+  EXPECT_FALSE(backend_->HasFloatingBase());
+  rtc::DeviceStateCache cache{};
+  backend_->ReadBaseState(cache);
+  EXPECT_FALSE(cache.base_valid);
+  EXPECT_EQ(cache.base_sequence, 0U);
+  EXPECT_EQ(cache.base_recv_steady_ns, 0);
+}
+
+constexpr const char* kBaseGroup = "test_floating";
+constexpr const char* kBaseTopic = "/test_mujoco_base/sim_sensors";
+// Robot-neutral stand-ins for the MJCF sensor names; the names reach the
+// backend only through YAML, which is the ARCH-1 boundary.
+constexpr const char* kPosName = "root_pos";
+constexpr const char* kQuatName = "root_quat";
+constexpr const char* kLinvelName = "root_linvel";
+constexpr const char* kAngvelName = "root_angvel";
+const std::vector<std::string> kGyroNames = {"imu_a_gyro", "imu_b_gyro"};
+const std::vector<std::string> kAccelNames = {"imu_a_accel", "imu_b_accel"};
+
+struct BaseInputs {
+  std::array<double, 3> pos{0.1, -0.2, 0.75};
+  // (w, x, y, z), unit, all components distinct and non-zero.
+  std::array<double, 4> quat_wxyz{0.8, 0.2, -0.4, 0.4};  // |q|² = 0.64+0.04+0.16+0.16 = 1
+  std::array<double, 3> linvel_w{1.0, -2.0, 0.5};
+  std::array<double, 3> angvel_w{0.3, 0.6, -0.9};
+  std::array<std::array<double, 3>, 2> gyro{{{1.0, 2.0, 3.0}, {-1.0, -2.0, -3.0}}};
+  std::array<std::array<double, 3>, 2> accel{{{4.0, 5.0, 6.0}, {-4.0, -5.0, -6.0}}};
+};
+
+rtc_msgs::msg::SimSensor Sensor(const std::string& name, const std::vector<double>& values) {
+  rtc_msgs::msg::SimSensor s;
+  s.name = name;
+  s.values = values;
+  return s;
+}
+
+// A message in a deliberately shuffled order, with an unrelated sensor first,
+// so a backend that trusted positions instead of names would read the wrong
+// quantity.
+rtc_msgs::msg::SimSensorState BaseMessage(const BaseInputs& in, int num_imu = 2) {
+  rtc_msgs::msg::SimSensorState msg;
+  msg.sensors.push_back(Sensor("unrelated_touch", {42.0}));
+  msg.sensors.push_back(Sensor(kAngvelName, {in.angvel_w[0], in.angvel_w[1], in.angvel_w[2]}));
+  for (int s = 0; s < num_imu; ++s) {
+    const auto su = static_cast<std::size_t>(s);
+    msg.sensors.push_back(
+        Sensor(kAccelNames[su], {in.accel[su][0], in.accel[su][1], in.accel[su][2]}));
+    msg.sensors.push_back(Sensor(kGyroNames[su], {in.gyro[su][0], in.gyro[su][1], in.gyro[su][2]}));
+  }
+  msg.sensors.push_back(
+      Sensor(kQuatName, {in.quat_wxyz[0], in.quat_wxyz[1], in.quat_wxyz[2], in.quat_wxyz[3]}));
+  msg.sensors.push_back(Sensor(kPosName, {in.pos[0], in.pos[1], in.pos[2]}));
+  msg.sensors.push_back(Sensor(kLinvelName, {in.linvel_w[0], in.linvel_w[1], in.linvel_w[2]}));
+  return msg;
+}
+
+class MujocoBaseLaneTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    rclcpp::NodeOptions options;
+    const std::string prefix = std::string("devices.") + kBaseGroup + ".backend";
+    options.parameter_overrides({
+        rclcpp::Parameter(prefix + ".max_consecutive_missed_ticks",
+                          static_cast<int64_t>(kMaxMissedTicks)),
+        rclcpp::Parameter(prefix + ".base_state.sensor_topic", std::string(kBaseTopic)),
+        rclcpp::Parameter(prefix + ".base_state.pos", std::string(kPosName)),
+        rclcpp::Parameter(prefix + ".base_state.quat", std::string(kQuatName)),
+        rclcpp::Parameter(prefix + ".base_state.linvel", std::string(kLinvelName)),
+        rclcpp::Parameter(prefix + ".base_state.angvel", std::string(kAngvelName)),
+        rclcpp::Parameter(prefix + ".base_state.imu_gyro", kGyroNames),
+        rclcpp::Parameter(prefix + ".base_state.imu_accel", kAccelNames),
+    });
+    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_mujoco_base_lane", options);
+    state_cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    rtc::DeviceBackendConfig cfg;
+    cfg.group_name = kBaseGroup;
+    cfg.type = "mujoco_native";
+    cfg.state_topic = "/test_mujoco_base/joint_states";
+    cfg.command_topic = "/test_mujoco_base/joint_command";
+    backend_ = std::make_unique<rtc::MujocoNativeBackend>();
+    backend_->Configure(node_.get(), cfg, state_cb_group_);
+
+    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    executor_->add_node(node_->get_node_base_interface());
+
+    rclcpp::QoS qos{1};
+    qos.best_effort();
+    pub_ = node_->create_publisher<rtc_msgs::msg::SimSensorState>(kBaseTopic, qos);
+    pub_->on_activate();
+  }
+
+  void TearDown() override {
+    pub_.reset();
+    executor_->remove_node(node_->get_node_base_interface());
+    executor_.reset();
+    backend_.reset();
+    node_.reset();
+  }
+
+  // Publishes and pumps until the backend's sequence moves past `seq_before`
+  // (or, for a sample the backend must refuse, for a fixed grace period).
+  void Publish(const rtc_msgs::msg::SimSensorState& msg, bool expect_accept) {
+    rtc::DeviceStateCache probe{};
+    backend_->ReadBaseState(probe);
+    const uint64_t seq_before = probe.base_sequence;
+    pub_->publish(msg);
+    const auto deadline = std::chrono::steady_clock::now() + (expect_accept ? 2000ms : 300ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+      executor_->spin_some(20ms);
+      if (expect_accept) {
+        backend_->ReadBaseState(probe);
+        if (probe.base_sequence != seq_before)
+          return;
+      }
+    }
+    if (expect_accept) {
+      FAIL() << "base sample never accepted";
+    }
+  }
+
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+  rclcpp::CallbackGroup::SharedPtr state_cb_group_;
+  rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
+  std::unique_ptr<rtc::MujocoNativeBackend> backend_;
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::SimSensorState>::SharedPtr pub_;
+};
+
+TEST_F(MujocoBaseLaneTest, HasFloatingBase_TrueWithBaseStateConfig) {
+  EXPECT_TRUE(backend_->HasFloatingBase());
+}
+
+TEST_F(MujocoBaseLaneTest, BeforeAnyMessage_IdentityPoseInvalidNoReceipt) {
+  rtc::DeviceStateCache cache{};
+  backend_->ReadBaseState(cache);
+  EXPECT_FALSE(cache.base_valid);
+  EXPECT_EQ(cache.base_sequence, 0U);
+  EXPECT_EQ(cache.base_recv_steady_ns, 0);
+  EXPECT_EQ(cache.num_imu_sites, 0);
+  // The mirror's default is the identity pose, the same no-claim default
+  // DeviceState documents: a consumer that copies before checking the flag
+  // gets a rotation, not a zero quaternion.
+  EXPECT_DOUBLE_EQ(cache.base_pose[6], 1.0);
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_DOUBLE_EQ(cache.base_pose[i], 0.0) << i;
+  }
+}
+
+// 1 message → pose · twist · imu equal the header's conversion to 1e-12,
+// base_valid true, sequence 1, receipt stamped on the steady clock.
+TEST_F(MujocoBaseLaneTest, OneMessage_ConvertedValuesValidSequenceAndStamp) {
+  const BaseInputs in;
+  const int64_t before = rtc::SteadyNowNs();
+  Publish(BaseMessage(in), /*expect_accept=*/true);
+  const int64_t after = rtc::SteadyNowNs();
+
+  rtc::DeviceStateCache cache{};
+  backend_->ReadBaseState(cache);
+  ASSERT_TRUE(cache.base_valid);
+  EXPECT_EQ(cache.base_sequence, 1U);
+  EXPECT_GE(cache.base_recv_steady_ns, before);
+  EXPECT_LE(cache.base_recv_steady_ns, after);
+
+  const auto expect = rtc::MujocoFrameToPinocchio(in.pos, in.quat_wxyz, in.linvel_w, in.angvel_w);
+  for (std::size_t i = 0; i < expect.pose.size(); ++i) {
+    EXPECT_NEAR(cache.base_pose[i], expect.pose[i], 1e-12) << "pose[" << i << "]";
+  }
+  for (std::size_t i = 0; i < expect.twist.size(); ++i) {
+    EXPECT_NEAR(cache.base_twist[i], expect.twist[i], 1e-12) << "twist[" << i << "]";
+  }
+  // Order pinned independently of the header: q_xyzw ends with w = 0.8, and
+  // the twist is NOT the world vector (the quaternion is not the identity).
+  EXPECT_DOUBLE_EQ(cache.base_pose[6], 0.8);
+  EXPECT_DOUBLE_EQ(cache.base_pose[3], 0.2);
+  EXPECT_GT(std::abs(cache.base_twist[0] - in.linvel_w[0]) +
+                std::abs(cache.base_twist[1] - in.linvel_w[1]),
+            1e-3);
+
+  ASSERT_EQ(cache.num_imu_sites, 2);
+  for (std::size_t s = 0; s < 2; ++s) {
+    for (std::size_t i = 0; i < 3; ++i) {
+      EXPECT_DOUBLE_EQ(cache.imu[s][i], in.gyro[s][i]) << "site " << s << " gyro " << i;
+      EXPECT_DOUBLE_EQ(cache.imu[s][3 + i], in.accel[s][i]) << "site " << s << " accel " << i;
+    }
+  }
+}
+
+TEST_F(MujocoBaseLaneTest, SecondMessage_AdvancesSequenceByOne) {
+  BaseInputs in;
+  Publish(BaseMessage(in), true);
+  in.pos[2] = 0.5;
+  Publish(BaseMessage(in), true);
+  rtc::DeviceStateCache cache{};
+  backend_->ReadBaseState(cache);
+  EXPECT_EQ(cache.base_sequence, 2U);
+  EXPECT_DOUBLE_EQ(cache.base_pose[2], 0.5);
+}
+
+// max_consecutive_missed_ticks empty RT reads → base_valid false, values and
+// stamp kept (the DeviceState contract: the flag is a verdict, not a gate).
+TEST_F(MujocoBaseLaneTest, Stale_AfterMaxMissedTicks_ClearsValidKeepsValues) {
+  const BaseInputs in;
+  Publish(BaseMessage(in), true);
+  rtc::DeviceStateCache fresh{};
+  backend_->ReadBaseState(fresh);
+  ASSERT_TRUE(fresh.base_valid);
+  ASSERT_GT(fresh.base_recv_steady_ns, 0);
+
+  // RT reads since the sample arrived: Publish()'s acceptance probe was the
+  // first (miss 0), `fresh` above the second (miss 1). The verdict holds up
+  // to miss max-1 and flips AT miss == max — the same count the wrench lane's
+  // Stale_AfterMaxMissedTicks_DisablesEnable pins, offset by the probe.
+  rtc::DeviceStateCache cache{};
+  for (int i = 0; i < kMaxMissedTicks - 2; ++i) {
+    backend_->ReadBaseState(cache);
+    EXPECT_TRUE(cache.base_valid) << "after " << (i + 2) << " misses";
+  }
+  backend_->ReadBaseState(cache);  // miss == kMaxMissedTicks
+  EXPECT_FALSE(cache.base_valid);
+  EXPECT_EQ(cache.base_pose, fresh.base_pose);
+  EXPECT_EQ(cache.base_twist, fresh.base_twist);
+  EXPECT_EQ(cache.base_recv_steady_ns, fresh.base_recv_steady_ns);
+  EXPECT_EQ(cache.base_sequence, fresh.base_sequence);
+
+  // Recovery on the next accepted sample.
+  Publish(BaseMessage(in), true);
+  backend_->ReadBaseState(cache);
+  EXPECT_TRUE(cache.base_valid);
+  EXPECT_EQ(cache.base_sequence, 2U);
+}
+
+// A non-finite component anywhere in the sample drops the WHOLE sample:
+// values, stamp and counter stay those of the last accepted one.
+TEST_F(MujocoBaseLaneTest, NonFiniteSample_DroppedValuesAndStampUnchanged) {
+  const BaseInputs good;
+  Publish(BaseMessage(good), true);
+  rtc::DeviceStateCache before{};
+  backend_->ReadBaseState(before);
+  ASSERT_TRUE(before.base_valid);
+
+  BaseInputs bad = good;
+  bad.pos[0] = 9.0;  // would be visible if the sample got through …
+  bad.linvel_w[1] = std::numeric_limits<double>::quiet_NaN();  // … but this refuses it
+  Publish(BaseMessage(bad), /*expect_accept=*/false);
+
+  BaseInputs bad_imu = good;
+  bad_imu.pos[0] = 8.0;
+  bad_imu.gyro[1][2] = std::numeric_limits<double>::infinity();
+  Publish(BaseMessage(bad_imu), false);
+
+  rtc::DeviceStateCache after{};
+  backend_->ReadBaseState(after);
+  EXPECT_EQ(after.base_sequence, before.base_sequence);
+  EXPECT_EQ(after.base_recv_steady_ns, before.base_recv_steady_ns);
+  EXPECT_EQ(after.base_pose, before.base_pose);
+  EXPECT_EQ(after.base_twist, before.base_twist);
+  EXPECT_EQ(after.imu, before.imu);
+}
+
+TEST_F(MujocoBaseLaneTest, ZeroQuaternion_Dropped) {
+  const BaseInputs good;
+  Publish(BaseMessage(good), true);
+  BaseInputs bad = good;
+  bad.quat_wxyz = {0.0, 0.0, 0.0, 0.0};
+  Publish(BaseMessage(bad), false);
+  rtc::DeviceStateCache cache{};
+  backend_->ReadBaseState(cache);
+  EXPECT_EQ(cache.base_sequence, 1U);
+  EXPECT_DOUBLE_EQ(cache.base_pose[6], 0.8);
+}
+
+// A configured name the message does not carry: nothing is accepted, so the
+// lane never becomes valid and the counter never moves (plus a one-shot WARN
+// that this test cannot observe — it is for the launch log).
+TEST_F(MujocoBaseLaneTest, MissingConfiguredName_LaneStaysInvalid) {
+  const BaseInputs in;
+  auto msg = BaseMessage(in);
+  // Remove the linvel sensor.
+  for (auto it = msg.sensors.begin(); it != msg.sensors.end(); ++it) {
+    if (it->name == kLinvelName) {
+      msg.sensors.erase(it);
+      break;
+    }
+  }
+  Publish(msg, /*expect_accept=*/false);
+
+  rtc::DeviceStateCache cache{};
+  backend_->ReadBaseState(cache);
+  EXPECT_FALSE(cache.base_valid);
+  EXPECT_EQ(cache.base_sequence, 0U);
+  EXPECT_EQ(cache.base_recv_steady_ns, 0);
+
+  // A wrong dimension under the right name is the same failure.
+  auto msg2 = BaseMessage(in);
+  for (auto& s : msg2.sensors) {
+    if (s.name == kQuatName)
+      s.values = {1.0, 0.0, 0.0};  // 3 values, not 4
+  }
+  Publish(msg2, false);
+  backend_->ReadBaseState(cache);
+  EXPECT_FALSE(cache.base_valid);
+  EXPECT_EQ(cache.base_sequence, 0U);
+
+  // And a missing IMU sensor refuses the sample as a whole, not just the IMU.
+  auto msg3 = BaseMessage(in, /*num_imu=*/1);
+  Publish(msg3, false);
+  backend_->ReadBaseState(cache);
+  EXPECT_FALSE(cache.base_valid);
+  EXPECT_EQ(cache.base_sequence, 0U);
+}
+
+// `base_state.max_consecutive_missed_ticks` is the base lane's OWN budget:
+// here 2 while the shared key stays at kMaxMissedTicks (5), so the verdict
+// flips after 2 silent ticks, not 5. (The fixture above leaves it unset and
+// so pins the fallback to the shared value.)
+TEST(MujocoBaseLaneBudgetTest, OwnMissBudgetOverridesSharedOne) {
+  constexpr const char* kGroup = "test_floating_budget";
+  constexpr const char* kTopic = "/test_mujoco_base_budget/sim_sensors";
+  rclcpp::NodeOptions options;
+  const std::string prefix = std::string("devices.") + kGroup + ".backend";
+  options.parameter_overrides({
+      rclcpp::Parameter(prefix + ".max_consecutive_missed_ticks",
+                        static_cast<int64_t>(kMaxMissedTicks)),
+      rclcpp::Parameter(prefix + ".base_state.max_consecutive_missed_ticks",
+                        static_cast<int64_t>(2)),
+      rclcpp::Parameter(prefix + ".base_state.sensor_topic", std::string(kTopic)),
+      rclcpp::Parameter(prefix + ".base_state.pos", std::string(kPosName)),
+      rclcpp::Parameter(prefix + ".base_state.quat", std::string(kQuatName)),
+      rclcpp::Parameter(prefix + ".base_state.linvel", std::string(kLinvelName)),
+      rclcpp::Parameter(prefix + ".base_state.angvel", std::string(kAngvelName)),
+  });
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_mujoco_base_budget", options);
+  auto group = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  rtc::DeviceBackendConfig cfg;
+  cfg.group_name = kGroup;
+  cfg.type = "mujoco_native";
+  cfg.state_topic = "/test_mujoco_base_budget/joint_states";
+  cfg.command_topic = "/test_mujoco_base_budget/joint_command";
+  auto backend = std::make_unique<rtc::MujocoNativeBackend>();
+  backend->Configure(node.get(), cfg, group);
+  ASSERT_TRUE(backend->HasFloatingBase());
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  rclcpp::QoS qos{1};
+  qos.best_effort();
+  auto pub = node->create_publisher<rtc_msgs::msg::SimSensorState>(kTopic, qos);
+  pub->on_activate();
+
+  // No IMU names configured → a message without IMU sensors is complete.
+  const BaseInputs in;
+  rtc::DeviceStateCache cache{};
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    pub->publish(BaseMessage(in, /*num_imu=*/0));
+    exec.spin_some(20ms);
+    backend->ReadBaseState(cache);  // this read, on arrival, is miss 0
+    if (cache.base_sequence > 0)
+      break;
+  }
+  ASSERT_TRUE(cache.base_valid) << "base sample never accepted";
+  EXPECT_EQ(cache.num_imu_sites, 0);
+
+  backend->ReadBaseState(cache);  // miss 1
+  EXPECT_TRUE(cache.base_valid);
+  backend->ReadBaseState(cache);  // miss 2 == own budget → invalid (shared would allow 5)
+  EXPECT_FALSE(cache.base_valid);
+
+  exec.remove_node(node->get_node_base_interface());
 }
 
 }  // namespace

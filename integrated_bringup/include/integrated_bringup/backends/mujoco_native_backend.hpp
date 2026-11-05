@@ -1,11 +1,13 @@
 #ifndef INTEGRATED_BRINGUP_BACKENDS_MUJOCO_NATIVE_BACKEND_H_
 #define INTEGRATED_BRINGUP_BACKENDS_MUJOCO_NATIVE_BACKEND_H_
 
+#include "integrated_bringup/backends/floating_base_conventions.hpp"
 #include "integrated_bringup/backends/joint_state_reorder.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_manager/device_backend.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
 #include <rtc_msgs/msg/joint_command.hpp>
+#include <rtc_msgs/msg/sim_sensor_state.hpp>
 
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <rclcpp/clock.hpp>
@@ -17,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace rtc {
@@ -37,6 +40,23 @@ namespace rtc {
 //   - Direct copy: `slot.commands` is already in `joint_command_names` order
 //     (the message label order). Wire-order differences are absorbed by the
 //     receiver, which reorders by `joint_names`.
+//
+// Floating-base lane (WD-16, #976) — optional, YAML-enabled:
+//   - `devices.<group>.backend.base_state.sensor_topic` names the group's
+//     SimSensorState topic (rtc_mujoco_sim `sensor_topic`); `.pos` / `.quat` /
+//     `.linvel` / `.angvel` name the MJCF framepos / framequat / framelinvel /
+//     frameangvel sensors of the base body, and `.imu_gyro` / `.imu_accel` are
+//     parallel lists (index = IMU site) of gyro / accelerometer sensor names.
+//     The names are the MJCF's own (ARCH-1: nothing here knows a robot).
+//   - Empty `sensor_topic` → HasFloatingBase() false and the lane is not
+//     claimed; the controller reads DeviceState's identity default.
+//   - Conversion (quaternion order, twist frame) lives in ONE place:
+//     floating_base_conventions.hpp. This backend only looks sensors up by
+//     name, guards them, and hands the arrays over.
+//   - Same shape as the wrench lane: SeqLock mirror written on the rt_callback
+//     lane, read on the RT tick with a miss counter (`max_consecutive_missed_
+//     ticks`, shared with the wrench lane) that clears `base_valid` while the
+//     values stay in place.
 class MujocoNativeBackend : public DeviceBackend {
  public:
   MujocoNativeBackend() = default;
@@ -69,6 +89,13 @@ class MujocoNativeBackend : public DeviceBackend {
   [[nodiscard]] bool AcceptsCommandType(CommandType /*ct*/) const noexcept override { return true; }
 
   void ReadSensorState(DeviceStateCache& cache) noexcept override;
+
+  // Floating-base lane — claimed only when `base_state.sensor_topic` is set
+  // (see the class banner). CM derives DeviceCapability::kFloatingBase from
+  // this at configure, so the answer must not change after Configure().
+  [[nodiscard]] bool HasFloatingBase() const noexcept override { return base_lane_enabled_; }
+
+  void ReadBaseState(DeviceStateCache& cache) noexcept override;
 
   // Safe output (issue #198 Phase 4). This lane is position-only on the wire,
   // so the safest thing it can emit without a controller output is the last
@@ -158,6 +185,67 @@ class MujocoNativeBackend : public DeviceBackend {
   // INFO). Steady clock so RCLCPP_*_THROTTLE works without a node clock.
   rclcpp::Logger logger_{rclcpp::get_logger("mujoco_native_backend")};
   rclcpp::Clock clock_{RCL_STEADY_TIME};
+
+  // ── Floating-base lane ─────────────────────────────────────────────────────
+  void OnSimSensorState(rtc_msgs::msg::SimSensorState::ConstSharedPtr msg) noexcept;
+
+  // The MJCF sensor names this group's base lane looks up, from YAML
+  // `base_state.*`. Fixed after Configure; read on the rt_callback lane.
+  struct BaseLaneNames {
+    std::string pos;
+    std::string quat;
+    std::string linvel;
+    std::string angvel;
+    std::array<std::string, kMaxImuSites> imu_gyro{};
+    std::array<std::string, kMaxImuSites> imu_accel{};
+    int num_imu_sites{0};
+  };
+
+  // Latest accepted base sample, already in DeviceState's convention.
+  // `recv_steady_ns` is stamped on the rt_callback lane for an ACCEPTED sample
+  // only — the same rule as FingertipForceMirror::recv_steady_ns, for the
+  // same reason (a dropped sample must not refresh the age of the one still
+  // in the mirror).
+  struct BaseMirror {
+    FloatingBaseSample sample{};
+    std::array<std::array<double, kImuChannelsPerSite>, kMaxImuSites> imu{};
+    int num_imu_sites{0};
+    int64_t recv_steady_ns{0};
+    bool received_at_least_once{false};
+  };
+
+  static_assert(std::is_trivially_copyable_v<BaseMirror>,
+                "BaseMirror must be trivially copyable for SeqLock");
+
+  bool base_lane_enabled_{false};
+  BaseLaneNames base_names_{};
+
+  // SPSC like the wrench lane: OnSimSensorState (rt_callback, MutuallyExclusive
+  // group) stores the mirror THEN bumps the counter; ReadBaseState (RT tick)
+  // reads the counter BEFORE the mirror.
+  SeqLock<BaseMirror> base_mirror_{};
+  std::atomic<uint64_t> base_seq_{0};
+  // rt_callback-lane local: where each configured name was last found in the
+  // message (-1 = not yet), so a steady layout costs one compare per name.
+  static constexpr std::size_t kBaseSlotPos = 0;
+  static constexpr std::size_t kBaseSlotQuat = 1;
+  static constexpr std::size_t kBaseSlotLinvel = 2;
+  static constexpr std::size_t kBaseSlotAngvel = 3;
+  static constexpr std::size_t kBaseSlotImu = 4;  // gyro s at +2s, accel s at +2s+1
+  std::array<int, kBaseSlotImu + 2 * static_cast<std::size_t>(kMaxImuSites)> base_sensor_idx_{};
+
+  // RT-thread local — only ReadBaseState touches these. The base lane has its
+  // own tick budget (`base_state.max_consecutive_missed_ticks`, defaulting to
+  // the wrench lane's) because the two topics need not share a rate.
+  uint64_t rt_base_last_seen_seq_{0};
+  int rt_base_miss_count_{0};
+  int base_max_missed_ticks_{5};
+
+  // Declared LAST so it is destroyed FIRST: a callback still in flight at
+  // destruction must find the mirror and names above it alive (the wrench and
+  // joint subs follow the same rule relative to their mirrors). CloseStateLane
+  // normally makes this moot; the order keeps it true when it was not called.
+  rclcpp::Subscription<rtc_msgs::msg::SimSensorState>::SharedPtr base_sub_;
 };
 
 }  // namespace rtc
