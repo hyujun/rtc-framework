@@ -232,6 +232,27 @@ class DeviceBackend {
   /// HasSensorState() is true.
   virtual void ReadSensorState(DeviceStateCache& /*cache*/) noexcept {}
 
+  /// True when this backend fills the floating-base lane (WD-16, #976) —
+  /// `base_pose` / `base_twist` / `imu` and their stamp, counter and flag in
+  /// DeviceStateCache — from a source of its own (a simulator's ground-truth
+  /// sensors, an estimator, a vehicle's localisation). CM derives
+  /// DeviceCapability::kFloatingBase from this answer at configure, exactly
+  /// as it derives kMotorState / kSensorData from the two above, and the RT
+  /// copy of the lane is gated on it; a fixed-base backend keeps the default
+  /// and its controllers read the lane as "never received".
+  ///
+  /// A separate lane rather than part of ReadState() because its source is
+  /// not the joint-state message: it arrives on its own subscription at its
+  /// own rate, with its own miss counter, so it needs its own SeqLock and its
+  /// own read, the same shape the motor and sensor lanes already have.
+  [[nodiscard]] virtual bool HasFloatingBase() const noexcept { return false; }
+
+  /// RT-safe floating-base read. Default no-op; only meaningful when
+  /// HasFloatingBase() is true. Same contract as ReadSensorState: latest
+  /// value, never blocks, never allocates, and `base_valid` is this backend's
+  /// own freshness verdict — values are left in place when it goes false.
+  virtual void ReadBaseState(DeviceStateCache& /*cache*/) noexcept {}
+
   /// Last time a state message arrived on this backend (steady clock). Used
   /// by CM's E-STOP watchdog. RT-safe.
   ///

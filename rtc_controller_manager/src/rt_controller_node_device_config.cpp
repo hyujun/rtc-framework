@@ -760,6 +760,8 @@ void RtControllerNode::CreateDeviceBackends() {
         cap |= static_cast<uint16_t>(urtc::DeviceCapability::kInference);
       }
     }
+    if (backend->HasFloatingBase())
+      cap |= static_cast<uint16_t>(urtc::DeviceCapability::kFloatingBase);
     slot_to_capability_[uslot] = cap;
 
     backends_[uslot] = std::move(backend);
