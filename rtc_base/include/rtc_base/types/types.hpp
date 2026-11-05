@@ -85,6 +85,22 @@ inline constexpr double kDefaultControlDtSec = 1.0 / kDefaultControlRateHz;  // 
 inline constexpr int kMaxSensorGroups = 8;
 inline constexpr int kMaxTaskLinks = 8;
 
+// Floating-base lane widths (WD-16, #976).
+//
+// kMaxImuSites        : IMU sites per device in `DeviceState::imu` — the one
+//                       CAPACITY here. Two covers a trunk-mounted pair; a third
+//                       site raises the constant, never a branch on it.
+// kBasePoseDim        : p_xyz + q_xyzw — the free-flyer configuration width.
+// kBaseTwistDim       : v_xyz + ω_xyz.
+// kImuChannelsPerSite : gyro 3 + accelerometer 3.
+// The last three are geometry, not capacity: they name the layout a consumer
+// indexes by, so they are spelled once here rather than as 7 / 6 / 6 literals
+// at the producer, the mirror seam and every reader.
+inline constexpr int kMaxImuSites = 2;
+inline constexpr int kBasePoseDim = 7;
+inline constexpr int kBaseTwistDim = 6;
+inline constexpr int kImuChannelsPerSite = 6;
+
 // ── C++20 Concepts
 // ───────────────────────────────────────────────────────────── Constrains
 // template parameters to floating-point types (double, float, etc.). Used for
@@ -248,6 +264,46 @@ struct DeviceState {
   // reads as "never received" and fails closed rather than silently fresh.
   std::array<int64_t, kMaxSensorGroups> inference_recv_steady_ns{};
   std::array<uint64_t, kMaxSensorGroups> inference_sequence{};
+  // Floating-base lane (WD-16, #976): base pose · twist · IMU for a device
+  // group whose description has a free-flyer root. A fixed-base group leaves
+  // every field at its zero-init and `base_valid` false — the same "no claim"
+  // polarity the hole masks and receipt stamps above use, so every producer
+  // and fixture that predates this lane reports exactly what it knows.
+  //
+  // `base_pose` is p_xyz then q_xyzw — the pinocchio free-flyer configuration
+  // order, so a consumer can copy it straight into the head of q. `base_twist`
+  // is v then ω expressed in the BASE frame (pinocchio LOCAL), never world:
+  // the PRODUCER converts, so every consumer reads one convention instead of
+  // each guessing the frame. `imu[s]` is gyro xyz then accelerometer xyz in
+  // site s's own frame, for the first `num_imu_sites` sites; the rest stay
+  // zero.
+  //
+  // `base_pose` defaults to the IDENTITY pose (zero translation, q = (0,0,0,1))
+  // rather than all zeros, the one departure from the zero-init rule above: a
+  // zero quaternion is not a rotation, and a consumer that copies the lane
+  // into q before looking at `base_valid` would hand pinocchio one. The
+  // identity is wrong too — it is a pose the robot is not in — but it is a
+  // well-formed wrong, and `base_recv_steady_ns == 0` (never received) is
+  // the field that says so; `IsBaseFresh` below reads it.
+  //
+  // `base_recv_steady_ns` / `base_sequence` are the per-lane twins of
+  // `inference_recv_steady_ns` / `inference_sequence` — same steady receipt
+  // axis, same 0 = never received, same monotonic-within-a-run counter — read
+  // that comment for the why. `base_valid` is the producer's OWN verdict (its
+  // miss counter), the same split from the consumer's deadline that
+  // `inference_enable` + age makes. Values are HELD under a false flag, not
+  // zeroed: "stale" and "never received" are different answers.
+  //
+  // Mirror seam: DeviceStateCache holds the twin of every field and
+  // RtControllerNode copies them under DeviceCapability::kFloatingBase; the
+  // test that spans the seam is named in architecture-rationale.md.
+  std::array<double, kBasePoseDim> base_pose{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+  std::array<double, kBaseTwistDim> base_twist{};
+  std::array<std::array<double, kImuChannelsPerSite>, kMaxImuSites> imu{};
+  int num_imu_sites{0};
+  int64_t base_recv_steady_ns{0};
+  uint64_t base_sequence{0};
+  bool base_valid{false};
   bool valid{false};
 };
 
@@ -315,6 +371,33 @@ struct DeviceState {
     return false;
   }
   const int64_t age = SensorGroupAgeNs(dev, group, now_steady_ns);
+  return age >= 0 && age <= max_age_ns;
+}
+
+// Age of the floating-base lane's most recent sample, or negative when it has
+// never reported — SensorGroupAgeNs for the base lane (WD-16). Spelled here,
+// once, so the "never received is not infinitely old" distinction above is not
+// re-derived by each consumer of `base_recv_steady_ns`.
+[[nodiscard]] constexpr int64_t BaseAgeNs(const DeviceState& dev, int64_t now_steady_ns) noexcept {
+  if (dev.base_recv_steady_ns <= 0) {
+    return -1;
+  }
+  return now_steady_ns - dev.base_recv_steady_ns;
+}
+
+// Whether the floating-base lane is both valid by its producer's verdict AND
+// younger than `max_age_ns` — IsSensorGroupFresh for the base lane, with the
+// same two terms for the same reason (the flag carries the producer's miss
+// counter, the age carries the consumer's deadline) and the same fail-closed
+// readings: never received is not fresh, and a non-positive `max_age_ns`
+// withholds the lane rather than lifting the limit.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+[[nodiscard]] constexpr bool IsBaseFresh(const DeviceState& dev, int64_t now_steady_ns,
+                                         int64_t max_age_ns) noexcept {
+  if (max_age_ns <= 0 || !dev.base_valid) {
+    return false;
+  }
+  const int64_t age = BaseAgeNs(dev, now_steady_ns);
   return age >= 0 && age <= max_age_ns;
 }
 
@@ -565,10 +648,11 @@ struct DeviceNameConfig {
 
 enum class DeviceCapability : uint16_t {
   kNone = 0,
-  kJointState = 1 << 0,  ///< positions / velocities / efforts
-  kMotorState = 1 << 1,  ///< motor_positions / motor_velocities / motor_efforts
-  kSensorData = 1 << 2,  ///< sensor_data / sensor_data_raw
-  kInference = 1 << 3,   ///< inference_data / inference_enable
+  kJointState = 1 << 0,    ///< positions / velocities / efforts
+  kMotorState = 1 << 1,    ///< motor_positions / motor_velocities / motor_efforts
+  kSensorData = 1 << 2,    ///< sensor_data / sensor_data_raw
+  kInference = 1 << 3,     ///< inference_data / inference_enable
+  kFloatingBase = 1 << 4,  ///< base_pose / base_twist / imu (WD-16)
 };
 
 [[nodiscard]] inline constexpr uint16_t operator|(DeviceCapability lhs,
