@@ -66,9 +66,9 @@ auto snapshot = state_lock.Load();            // 다른 스레드, lock-free
 
 프레임워크 전체가 공유하는 컴파일 타임 상수, 데이터 구조, 열거형입니다. `rtc_base` 에는 robot/sensor-agnostic 타입만 둡니다 (hand 전용 상수·`UdpHandState` 는 `udp_hand_driver`, grasp/wbc/ToF POD 는 각 controller 패키지).
 
-> **trivially copyable 계약** — `DeviceState`, `ControllerState`, `DeviceOutput`, `ControllerOutput`, `Pose` (기본 zero-initialized) 와 controller 의 gains struct 는 trivially copyable 이어야 합니다 (`std::string` / `std::vector` / virtual 금지). `SeqLock<T>` 와 `SpscQueue<T, N>` 이 `static_assert` 로 요구하며, 개념은 `rtc::TriviallyCopyableType` 입니다.
+> **trivially copyable 계약** — `DeviceState`, `ControllerState`, `DeviceOutput`, `ControllerOutput`, `Pose` (zero-init) 와 controller 의 gains struct 는 trivially copyable 이어야 합니다 (`std::string` / `std::vector` / virtual 금지). `SeqLock<T>` · `SpscQueue<T, N>` 의 `static_assert` 가 요구합니다 (concept `rtc::TriviallyCopyableType`).
 
-> **명명 규약 (capacity vs default)** — `kNum*` 는 YAML 이 필드를 생략했을 때의 **기본값**이고 실제 채널 수는 런타임 `DeviceState::num_channels` 가 정합니다. `kMax*` 는 `std::array` 멤버의 컴파일 타임 **상한 용량**입니다. 코드는 실제 카운트가 `kNum*` 와 같다고 가정하지 않고, 상한을 넘는 로봇은 상한을 올리되 코드에 분기를 추가하지 않습니다.
+> **명명 규약 (capacity vs default)** — `kNum*` 는 YAML 생략 시 **기본값**이고 실제 채널 수는 런타임 `DeviceState::num_channels` 가 정합니다. `kMax*` 는 `std::array` 멤버의 컴파일 타임 **상한 용량**입니다. 실제 카운트가 `kNum*` 와 같다고 가정하지 않고, 상한을 넘으면 상한을 올리되 분기를 추가하지 않습니다.
 
 | 상수 | 값 | 분류 |
 |------|---|------|
@@ -77,7 +77,8 @@ auto snapshot = state_lock.Load();            // 다른 스레드, lock-free
 | `kNumRobotJoints` | 6 | default |
 | `kMaxRobotDOF` | 12 | capacity |
 | `kMaxDeviceChannels` / `kMaxSensorChannels` / `kMaxInferenceValues` | 64 / 128 / 64 | capacity |
-| `kMaxSensorGroups` / `kMaxTaskLinks` | 8 / 8 | capacity |
+| `kMaxSensorGroups` / `kMaxTaskLinks` / `kMaxImuSites` | 8 / 8 / 2 | capacity |
+| `kBasePoseDim` / `kBaseTwistDim` / `kImuChannelsPerSite` | 7 / 6 / 6 | 레이아웃 (p·q_xyzw / v·ω / gyro·accel) |
 | `ControllerState::kMaxDevices` · `ControllerOutput::kMaxDevices` · `PublishSnapshot::kMaxGroups` | 8 | capacity (구조체 스코프) |
 | `kDefaultMaxJointVelocity` / `kDefaultMaxJointTorque` | 2.0 rad/s / 150.0 N·m | default |
 
@@ -86,15 +87,15 @@ auto snapshot = state_lock.Load();            // 다른 스레드, lock-free
 | `CommandType` | `kPosition`, `kTorque`, `kPdFeedforward` (PD 위치 서보 + `DeviceOutput::feedforward` 오버레이) |
 | `GoalType` | `kJoint`, `kTask` |
 | `PublishRole` | `kRobotTransforms` (`tf2_msgs/TFMessage`). 구독 역할은 `target` 하나뿐이라 enum 이 없다 |
-| `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference` (비트마스크) |
+| `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference`, `kFloatingBase` (비트마스크) |
 | `StateLane` · `IsLaneReadable` · `IsDeviceReadable` | lane 별 hole_mask 로 슬롯 freshness 판정 |
-| `SteadyNowNs` · `SensorGroupAgeNs` · `IsSensorGroupFresh` | 수신축 (`steady_clock`) 나이·freshness. 판정 규범은 [invariants.md](../agent_docs/invariants.md) |
+| `SteadyNowNs` · `SensorGroupAgeNs` · `IsSensorGroupFresh` · `BaseAgeNs` · `IsBaseFresh` | 수신축 (`steady_clock`) 나이·freshness. 판정 규범은 [invariants.md](../agent_docs/invariants.md) |
 
 `GoalTypeToString()` / `CommandTypeToString()` / `PublishRoleToString()` 는 `constexpr` 이고, `CommandTypeToString()` 은 `JointCommand.command_type` 와 같은 와이어 문자열 (`"position"` / `"torque"` / `"pd_feedforward"`) 을 반환합니다.
 
 | 구조체 | 역할 |
 |--------|------|
-| `DeviceState` / `ControllerState` | 가변 채널 디바이스 상태 (position·velocity·effort, motor, sensor, inference) / `devices[8]` + `dt`, `iteration`, `t_relative_s` |
+| `DeviceState` / `ControllerState` | 가변 채널 디바이스 상태 (position·velocity·effort, motor, sensor, inference, 부동 베이스 `base_*`) / `devices[8]` + `dt`, `iteration`, `t_relative_s` |
 | `DeviceOutput` / `ControllerOutput` | 디바이스별 command·goal·target·trajectory·feedforward / `devices[8]` + task-space 값 + TF 발행용 SE3 |
 | `Pose` | RT-safe SE3 (`position[3]`, Hamilton quaternion w,x,y,z) |
 | `DeviceNameConfig` | 디바이스 이름·joint/sensor 이름·`DeviceUrdfConfig`·`DeviceJointLimits`·`DeviceSensorLayout`·`safe_position` |

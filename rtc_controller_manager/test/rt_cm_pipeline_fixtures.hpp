@@ -159,6 +159,19 @@ class PipelineTestController : public RTControllerInterface {
   // that copies a scalar instead of the array, is visible.
   static inline std::atomic<int64_t> observed_inference_recv_ns_g1{0};
   static inline std::atomic<uint64_t> observed_inference_sequence_g1{0};
+  // The floating-base lane as seen by Compute (WD-16, #976) — the read end of
+  // PipelineStubBackend::kBasePose / kBaseTwist / kImuSite1 and the base_*
+  // knobs. EVERY field, not a sample of them: this seam fails one field at a
+  // time, and a dropped field reads as 0 / false here, so only an assertion on
+  // that field at this end can see it. IMU site 1 rather than site 0 for the
+  // same reason the fingertip observers read group 1.
+  static inline std::array<std::atomic<double>, kBasePoseDim> observed_base_pose{};
+  static inline std::array<std::atomic<double>, kBaseTwistDim> observed_base_twist{};
+  static inline std::array<std::atomic<double>, kImuChannelsPerSite> observed_imu_site1{};
+  static inline std::atomic<int> observed_num_imu_sites{0};
+  static inline std::atomic<int64_t> observed_base_recv_ns{0};
+  static inline std::atomic<uint64_t> observed_base_sequence{0};
+  static inline std::atomic<bool> observed_base_valid{false};
 
   // Not noexcept: the base RTControllerInterface ctor is not, and marking this
   // one noexcept would turn a throwing base subobject into std::terminate
@@ -193,6 +206,16 @@ class PipelineTestController : public RTControllerInterface {
     observed_effort_hole_mask.store(0, std::memory_order_relaxed);
     observed_inference_recv_ns_g1.store(0, std::memory_order_relaxed);
     observed_inference_sequence_g1.store(0, std::memory_order_relaxed);
+    for (auto& v : observed_base_pose)
+      v.store(0.0, std::memory_order_relaxed);
+    for (auto& v : observed_base_twist)
+      v.store(0.0, std::memory_order_relaxed);
+    for (auto& v : observed_imu_site1)
+      v.store(0.0, std::memory_order_relaxed);
+    observed_num_imu_sites.store(0, std::memory_order_relaxed);
+    observed_base_recv_ns.store(0, std::memory_order_relaxed);
+    observed_base_sequence.store(0, std::memory_order_relaxed);
+    observed_base_valid.store(false, std::memory_order_relaxed);
   }
 
   CallbackReturn on_configure(const rclcpp_lifecycle::State& prev,
@@ -263,6 +286,20 @@ class PipelineTestController : public RTControllerInterface {
                                         std::memory_order_relaxed);
     observed_inference_sequence_g1.store(state.devices[0].inference_sequence[1],
                                          std::memory_order_relaxed);
+    const auto& dev0 = state.devices[0];
+    for (std::size_t i = 0; i < observed_base_pose.size(); ++i) {
+      observed_base_pose[i].store(dev0.base_pose[i], std::memory_order_relaxed);
+    }
+    for (std::size_t i = 0; i < observed_base_twist.size(); ++i) {
+      observed_base_twist[i].store(dev0.base_twist[i], std::memory_order_relaxed);
+    }
+    for (std::size_t i = 0; i < observed_imu_site1.size(); ++i) {
+      observed_imu_site1[i].store(dev0.imu[1][i], std::memory_order_relaxed);
+    }
+    observed_num_imu_sites.store(dev0.num_imu_sites, std::memory_order_relaxed);
+    observed_base_recv_ns.store(dev0.base_recv_steady_ns, std::memory_order_relaxed);
+    observed_base_sequence.store(dev0.base_sequence, std::memory_order_relaxed);
+    observed_base_valid.store(dev0.base_valid, std::memory_order_relaxed);
     const int sleep_us = compute_sleep_us.load(std::memory_order_relaxed);
     if (sleep_us > 0) {
       std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
@@ -430,6 +467,33 @@ class PipelineStubBackend : public DeviceBackend {
   static inline std::atomic<int64_t> sensor_recv_steady_ns_g1{0};
   static inline std::atomic<uint64_t> sensor_sequence_g1{0};
 
+  // Floating-base lane (WD-16, #976). Opt-in per test: HasFloatingBase() is
+  // what CM derives kFloatingBase from at configure, and the default stays
+  // false so every TU sharing this fixture keeps the capability set it already
+  // asserted against (and so the gate itself is testable — see
+  // FloatingBaseLaneIsWithheldWithoutTheCapability).
+  //
+  // The values are DISTINCT per slot and per lane on purpose: a copy that
+  // assigns the pose array to the twist, or site 0 to site 1, must not pass.
+  // Site 0 is left ZERO and only site 1 is filled, with num_imu_sites = 2, so
+  // a copy bounded to one site, or one that copies a single site where the
+  // array was meant, is visible at the far end.
+  static inline std::atomic<bool> has_floating_base{false};
+  // ReadBaseState() calls CM has made. The withheld-capability test asserts
+  // this at 0 so the READ gate has an assertion of its own: without it, a copy
+  // block made unconditional and a read gate removed are each invisible
+  // alone, because an un-read cache copied through is all zeros too.
+  static inline std::atomic<int> read_base_calls{0};
+  static inline std::atomic<int64_t> base_recv_steady_ns{0};
+  static inline std::atomic<uint64_t> base_sequence{0};
+  static inline std::atomic<bool> base_valid{false};
+  static constexpr std::array<double, kBasePoseDim> kBasePose{0.125,    -0.25,  0.9375,    0.015625,
+                                                              -0.03125, 0.0625, 0.99609375};
+  static constexpr std::array<double, kBaseTwistDim> kBaseTwist{1.5,   -2.5,  3.5,
+                                                                -0.75, 0.875, -0.9375};
+  static constexpr std::array<double, kImuChannelsPerSite> kImuSite1{0.1,  -0.2,  0.3,
+                                                                     9.81, -0.01, 0.02};
+
   static void ResetStateChannels() {
     state_num_channels.store(2, std::memory_order_relaxed);
     state_position_nan.store(false, std::memory_order_relaxed);
@@ -438,6 +502,11 @@ class PipelineStubBackend : public DeviceBackend {
     state_effort_hole_mask.store(0, std::memory_order_relaxed);
     sensor_recv_steady_ns_g1.store(0, std::memory_order_relaxed);
     sensor_sequence_g1.store(0, std::memory_order_relaxed);
+    has_floating_base.store(false, std::memory_order_relaxed);
+    read_base_calls.store(0, std::memory_order_relaxed);
+    base_recv_steady_ns.store(0, std::memory_order_relaxed);
+    base_sequence.store(0, std::memory_order_relaxed);
+    base_valid.store(false, std::memory_order_relaxed);
   }
 
   // Full per-test reset for this backend — the counterpart to
@@ -490,6 +559,21 @@ class PipelineStubBackend : public DeviceBackend {
     cache.inference_enable[0] = true;
     cache.inference_recv_steady_ns[1] = sensor_recv_steady_ns_g1.load(std::memory_order_relaxed);
     cache.inference_sequence[1] = sensor_sequence_g1.load(std::memory_order_relaxed);
+  }
+
+  bool HasFloatingBase() const noexcept override {
+    return has_floating_base.load(std::memory_order_relaxed);
+  }
+
+  void ReadBaseState(DeviceStateCache& cache) noexcept override {
+    read_base_calls.fetch_add(1, std::memory_order_relaxed);
+    cache.base_pose = kBasePose;
+    cache.base_twist = kBaseTwist;
+    cache.num_imu_sites = 2;
+    cache.imu[1] = kImuSite1;
+    cache.base_recv_steady_ns = base_recv_steady_ns.load(std::memory_order_relaxed);
+    cache.base_sequence = base_sequence.load(std::memory_order_relaxed);
+    cache.base_valid = base_valid.load(std::memory_order_relaxed);
   }
 
   void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,

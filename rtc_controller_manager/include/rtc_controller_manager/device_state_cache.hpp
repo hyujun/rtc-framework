@@ -65,6 +65,25 @@ struct DeviceStateCache {
   // that always reports TIP_STALE rather than a crash.
   std::array<int64_t, kMaxSensorGroups> inference_recv_steady_ns{};
   std::array<uint64_t, kMaxSensorGroups> inference_sequence{};
+  // Floating-base lane (WD-16, #976). Mirrors DeviceState::base_pose,
+  // ::base_twist, ::imu, ::num_imu_sites, ::base_recv_steady_ns,
+  // ::base_sequence and ::base_valid; that declaration owns the contract —
+  // field order (p_xyz · q_xyzw; v · ω in the BASE frame), the IDENTITY
+  // default of `base_pose` (a zero quaternion is not a rotation), the "0 =
+  // never received" stamp polarity, and values held under a false `base_valid`.
+  //
+  // The mirror-seam warning on `hole_mask` above applies to every one of
+  // these: a field dropped from RtControllerNode's copy compiles and keeps the
+  // backend's own tests green, and a controller then reads a zero pose with an
+  // identity-less quaternion and `base_valid` false forever — fail-closed, but
+  // with nothing to say why.
+  std::array<double, kBasePoseDim> base_pose{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+  std::array<double, kBaseTwistDim> base_twist{};
+  std::array<std::array<double, kImuChannelsPerSite>, kMaxImuSites> imu{};
+  int num_imu_sites{0};
+  int64_t base_recv_steady_ns{0};
+  uint64_t base_sequence{0};
+  bool base_valid{false};
   bool valid{false};
 };
 

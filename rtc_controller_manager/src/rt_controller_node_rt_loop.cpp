@@ -511,6 +511,8 @@ void RtControllerNode::ControlLoop() {
           backends_[slot]->ReadMotorState(cache);
         if (backends_[slot]->HasSensorState())
           backends_[slot]->ReadSensorState(cache);
+        if (backends_[slot]->HasFloatingBase())
+          backends_[slot]->ReadBaseState(cache);
       }
       // The bounded count is written back into DeviceState, not just used as
       // the copy length: controllers read state.devices[i].num_channels and
@@ -531,7 +533,8 @@ void RtControllerNode::ControlLoop() {
       // would just read a permanent 0, which this field's polarity spells
       // "no holes" and hands the #284 gap straight back. The sensor for that
       // is PerSlotFreshnessReachesTheControllerUnclipped in this package's
-      // test_rt_loop_pipeline.cpp; it is the only test that spans this seam.
+      // test_rt_loop_pipeline.cpp — one of the seam tests listed in
+      // docs/reference/architecture-rationale.md, one per lane copied here.
       dev.hole_mask = cache.hole_mask;
       dev.velocity_hole_mask = cache.velocity_hole_mask;
       dev.effort_hole_mask = cache.effort_hole_mask;
@@ -572,6 +575,25 @@ void RtControllerNode::ControlLoop() {
         std::copy_n(cache.inference_recv_steady_ns.data(), ngrp,
                     dev.inference_recv_steady_ns.data());
         std::copy_n(cache.inference_sequence.data(), ngrp, dev.inference_sequence.data());
+      }
+      if (urtc::HasCapability(cap, urtc::DeviceCapability::kFloatingBase)) {
+        // Floating-base lane (WD-16, #976). Pose and twist are fixed-width and
+        // copied whole; the IMU block is bounded by the site count the backend
+        // reports, and that bounded count is written back for the same reason
+        // num_channels is above. `base_valid` travels WITH the values rather
+        // than gating this copy: the contract is "values held, flag down" for
+        // a stale lane, and withholding the values here would turn "stale"
+        // into "never received" one package away from the producer that knows
+        // the difference. The seam test for every field here is
+        // FloatingBaseLaneReachesTheControllerBitExact (test_rt_loop_pipeline).
+        const auto nsites = BoundedCount(cache.num_imu_sites, urtc::kMaxImuSites);
+        dev.num_imu_sites = static_cast<int>(nsites);
+        dev.base_pose = cache.base_pose;
+        dev.base_twist = cache.base_twist;
+        std::copy_n(cache.imu.data(), nsites, dev.imu.data());
+        dev.base_recv_steady_ns = cache.base_recv_steady_ns;
+        dev.base_sequence = cache.base_sequence;
+        dev.base_valid = cache.base_valid;
       }
       dev.valid = cache.valid;
       ++di;

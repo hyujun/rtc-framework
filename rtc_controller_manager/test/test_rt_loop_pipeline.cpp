@@ -294,6 +294,100 @@ TEST_F(RtLoopPipelineTest, SensorLaneReceiptReachesTheControllerPerGroup) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// The same seam for the floating-base lane (WD-16, #976).
+//
+// A FOURTH seam test, for the same reason the third was not folded into the
+// first two: this lane has its own copy block, gated on its own capability
+// bit, and a field dropped from it reads here as 0 / false — the pose as the
+// origin with a zero (not identity) quaternion, the stamp as "never received".
+// Every field is asserted, bit-exact (EXPECT_EQ on the doubles, not NEAR):
+// the seam is a copy, and a copy that changes a bit is a different defect from
+// one that drops a field, but both are defects.
+//
+// IMU site 1 with site 0 left zero by the stub, and num_imu_sites = 2, so the
+// bounded copy is pinned at BOTH ends: a copy of one site passes site 0 and
+// fails here; a count clipped to 1 fails on num_imu_sites.
+TEST_F(RtLoopPipelineTest, FloatingBaseLaneReachesTheControllerBitExact) {
+  constexpr int64_t kRecvNs = 2'345'678'901LL;
+  constexpr uint64_t kSeq = 7U;
+  PipelineStubBackend::has_floating_base.store(true, std::memory_order_relaxed);
+  PipelineStubBackend::base_recv_steady_ns.store(kRecvNs, std::memory_order_relaxed);
+  PipelineStubBackend::base_sequence.store(kSeq, std::memory_order_relaxed);
+  PipelineStubBackend::base_valid.store(true, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  for (std::size_t i = 0; i < PipelineStubBackend::kBasePose.size(); ++i) {
+    EXPECT_EQ(PipelineStubBackend::kBasePose[i],
+              PipelineTestController::observed_base_pose[i].load(std::memory_order_relaxed))
+        << "base_pose[" << i << "]";
+  }
+  for (std::size_t i = 0; i < PipelineStubBackend::kBaseTwist.size(); ++i) {
+    EXPECT_EQ(PipelineStubBackend::kBaseTwist[i],
+              PipelineTestController::observed_base_twist[i].load(std::memory_order_relaxed))
+        << "base_twist[" << i << "]";
+  }
+  for (std::size_t i = 0; i < PipelineStubBackend::kImuSite1.size(); ++i) {
+    EXPECT_EQ(PipelineStubBackend::kImuSite1[i],
+              PipelineTestController::observed_imu_site1[i].load(std::memory_order_relaxed))
+        << "imu[1][" << i << "]";
+  }
+  EXPECT_EQ(2, PipelineTestController::observed_num_imu_sites.load(std::memory_order_relaxed));
+  EXPECT_EQ(kRecvNs, PipelineTestController::observed_base_recv_ns.load(std::memory_order_relaxed));
+  EXPECT_EQ(kSeq, PipelineTestController::observed_base_sequence.load(std::memory_order_relaxed));
+  EXPECT_TRUE(PipelineTestController::observed_base_valid.load(std::memory_order_relaxed));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// The capability gate on that lane. CM derives kFloatingBase from
+// HasFloatingBase() at configure and must neither call ReadBaseState nor copy
+// the block without it — otherwise a fixed-base backend's zero-initialised
+// cache would still be "copied" and the gate would be decoration. The stub's
+// knobs are set as if a sample had landed; only the capability is withheld.
+//
+// The two gates get SEPARATE assertions. The copy gate is pinned by the
+// controller-side observers (an un-gated copy of an un-read cache is still all
+// zeros, so those alone cannot see the read gate); the read gate is pinned by
+// the stub's call counter. The pose observer reads q_w and expects the
+// IDENTITY default, 1.0 — the lane's one non-zero default, and the value a
+// consumer that ignores `base_valid` would hand pinocchio.
+TEST_F(RtLoopPipelineTest, FloatingBaseLaneIsWithheldWithoutTheCapability) {
+  PipelineStubBackend::has_floating_base.store(false, std::memory_order_relaxed);
+  PipelineStubBackend::base_recv_steady_ns.store(1, std::memory_order_relaxed);
+  PipelineStubBackend::base_sequence.store(1, std::memory_order_relaxed);
+  PipelineStubBackend::base_valid.store(true, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_FALSE(PipelineTestController::observed_base_valid.load(std::memory_order_relaxed));
+  EXPECT_EQ(0U, PipelineTestController::observed_base_sequence.load(std::memory_order_relaxed));
+  EXPECT_EQ(0, PipelineTestController::observed_base_recv_ns.load(std::memory_order_relaxed));
+  EXPECT_EQ(0, PipelineTestController::observed_num_imu_sites.load(std::memory_order_relaxed));
+  EXPECT_EQ(1.0, PipelineTestController::observed_base_pose[6].load(std::memory_order_relaxed));
+  EXPECT_EQ(0, PipelineStubBackend::read_base_calls.load(std::memory_order_relaxed));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 // ── Out-of-contract channel counts are bounded before any copy (issue #196) ──
 //
 // ControllerOutput::num_channels and DeviceStateCache::num_channels are filled
