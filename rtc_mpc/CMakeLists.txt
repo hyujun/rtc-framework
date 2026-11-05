@@ -186,6 +186,7 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_mpc_factory)
   add_mpc_gtest(test_mpc_thread_integration)
   add_mpc_gtest(test_mpc_handler_alloc_tracer)
+  add_mpc_gtest(test_aligator_api)
 
   # Aligator's ProxDDP solve path allocates via mimalloc but frees can route
   # through glibc (and vice-versa) across the pinocchio/aligator boundary; with
@@ -201,7 +202,7 @@ if(BUILD_TESTING)
     foreach(_solve_test
         test_contact_light_ocp test_contact_rich_ocp test_contact_light_mpc
         test_contact_rich_mpc test_mpc_factory test_mpc_thread_integration
-        test_mpc_handler_alloc_tracer)
+        test_mpc_handler_alloc_tracer test_aligator_api)
       if(TEST ${_solve_test})
         set_property(TEST ${_solve_test} APPEND PROPERTY
             ENVIRONMENT "LD_PRELOAD=${RTC_MPC_MIMALLOC}")
