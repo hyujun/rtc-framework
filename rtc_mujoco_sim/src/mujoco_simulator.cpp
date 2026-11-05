@@ -1241,6 +1241,31 @@ bool MuJoCoSimulator::Initialize() noexcept {
             viewer_sleep_ms_);
   }
 
+  // ── Start keyframe (reset_keyframe) ─────────────────────────────────────
+  // Resolved by NAME, not index: a scene may carry several keys and the one
+  // the bringup wants need not be the first. An unknown name is a hard
+  // failure — silently falling back to qpos0 is precisely the behaviour the
+  // key was added to make impossible.
+  reset_key_id_ = -1;
+  if (!cfg_.reset_keyframe.empty()) {
+    reset_key_id_ = mj_name2id(model_, mjOBJ_KEY, cfg_.reset_keyframe.c_str());
+    if (reset_key_id_ < 0) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] ERROR: reset_keyframe '%s' is not a keyframe of the model "
+              "(%d keyframe%s)\n",
+              cfg_.reset_keyframe.c_str(), static_cast<int>(model_->nkey),
+              model_->nkey == 1 ? "" : "s");
+      return false;
+    }
+  }
+  // Take the scene to its start now, the same way every later reset will.
+  // Without a keyframe this is mj_resetData on data fresh from mj_makeData —
+  // a no-op that keeps the historical behaviour bit-for-bit.
+  ResetDataToStart();
+  // The keyframe the command-joint fallback reads when YAML gives no
+  // initial_qpos: the configured one, else the first (historical).
+  const int fallback_key_id = reset_key_id_ >= 0 ? reset_key_id_ : (model_->nkey > 0 ? 0 : -1);
+
   // ── Per-group servo gains & initial positions ───────────────────────────
   for (auto& g : groups_) {
     if (!g->is_robot)
@@ -1288,9 +1313,11 @@ bool MuJoCoSimulator::Initialize() noexcept {
     // them, which is the whole point of the key: a scene may carry a keyframe
     // that a given bringup does not want (or, as with a scene that has none,
     // no usable pose at all) and cannot edit.
-    if (model_->nkey > 0 && !g->has_yaml_initial_qpos) {
+    if (fallback_key_id >= 0 && !g->has_yaml_initial_qpos) {
+      const mjtNum* key_qpos =
+          model_->key_qpos + static_cast<std::ptrdiff_t>(fallback_key_id) * model_->nq;
       for (std::size_t i = 0; i < ncj; ++i) {
-        g->initial_qpos[i] = static_cast<double>(model_->key_qpos[g->qpos_indices[i]]);
+        g->initial_qpos[i] = static_cast<double>(key_qpos[g->qpos_indices[i]]);
       }
     }
 
@@ -1310,14 +1337,19 @@ bool MuJoCoSimulator::Initialize() noexcept {
   // source for one of them. Which pose the robot started in is the first thing
   // checked when a sim comes up somewhere unexpected, so it must be truthful.
   {
-    const char* key_name = model_->nkey > 0 ? mj_id2name(model_, mjOBJ_KEY, 0) : nullptr;
+    const char* key_name =
+        fallback_key_id >= 0 ? mj_id2name(model_, mjOBJ_KEY, fallback_key_id) : nullptr;
+    if (reset_key_id_ >= 0) {
+      fprintf(stdout, "[MuJoCoSimulator] start / reset keyframe '%s' (whole qpos, id %d)\n",
+              key_name ? key_name : "(unnamed)", reset_key_id_);
+    }
     for (const auto& g : groups_) {
       if (!g->is_robot)
         continue;
       const char* source = g->has_yaml_initial_qpos ? "YAML initial_qpos"
-                           : model_->nkey > 0       ? "MJCF keyframe"
+                           : fallback_key_id >= 0   ? "MJCF keyframe"
                                                     : "zeros (no keyframe, no YAML)";
-      if (!g->has_yaml_initial_qpos && model_->nkey > 0) {
+      if (!g->has_yaml_initial_qpos && fallback_key_id >= 0) {
         fprintf(stdout, "[MuJoCoSimulator] [%s] initial positions from %s '%s'\n", g->name.c_str(),
                 source, key_name ? key_name : "(unnamed)");
       } else {
@@ -1991,6 +2023,28 @@ void MuJoCoSimulator::ResetForTest() noexcept {
     return;
   reset_requested_.store(false, std::memory_order_relaxed);
   HandleReset();
+}
+
+std::vector<double> MuJoCoSimulator::GetQposForTest() const noexcept {
+  if (!model_ || !data_)
+    return {};
+  return std::vector<double>(data_->qpos, data_->qpos + model_->nq);
+}
+
+std::vector<double> MuJoCoSimulator::GetQpos0ForTest() const noexcept {
+  if (!model_)
+    return {};
+  return std::vector<double>(model_->qpos0, model_->qpos0 + model_->nq);
+}
+
+std::vector<double> MuJoCoSimulator::GetKeyQposForTest(const std::string& key_name) const noexcept {
+  if (!model_)
+    return {};
+  const int key_id = mj_name2id(model_, mjOBJ_KEY, key_name.c_str());
+  if (key_id < 0)
+    return {};
+  const mjtNum* key_qpos = model_->key_qpos + static_cast<std::ptrdiff_t>(key_id) * model_->nq;
+  return std::vector<double>(key_qpos, key_qpos + model_->nq);
 }
 
 double MuJoCoSimulator::GetActuatorForceForTest(std::size_t group_idx,

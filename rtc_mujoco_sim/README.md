@@ -257,6 +257,7 @@ robot-specific 값 (`model_path`, `robot_response.groups`, joint 이름, 토픽,
 | `control_rate` | `500.0` | [Hz]. `physics_timestep == 1/control_rate` 가 아니면 기동 FATAL |
 | `physics_timestep` | `0.002` | 제어 주기 [s]. `0.0` 이면 XML 값 사용 |
 | `n_substeps` | `3` | 제어 주기당 물리 서브스텝 수. `substep_dt = physics_timestep / n_substeps` |
+| `reset_keyframe` | `""` | 기동 · 리셋이 돌아가는 MJCF `<key name>` — keyframe **상태 전체** (freejoint 포함 qpos · qvel · act · ctrl · mocap, `time` 은 0). 비면 현행. 없는 이름은 configure 실패 ([초기 자세](#초기-자세-initial_qpos)) |
 | `use_yaml_servo_gains` | `false` | `true` 면 YAML `servo_kp` / `servo_kd`, `false` 면 XML gainprm / biasprm. `false` + XML `<motor>` 이면 position 명령이 그대로 토크로 들어가 기동 때 경고 |
 | `servo_kp` / `servo_kd` | (bringup 이 정함) | Position servo 게인 (글로벌). 그룹마다 DoF 가 다르면 그룹별로 지정한다 |
 | `robot_response.groups` / `fake_response.groups` | `[]` | 물리 / LPF 그룹 이름 목록 |
@@ -329,6 +330,8 @@ XML 의 조인트가 모든 robot 그룹의 `state_joint_names` 합집합에 없
 ```
 
 **값이 전부 0 이어도 YAML 이 이긴다** — "설정됐는가" 는 값이 아니라 키의 존재로 판정한다. keyframe 이 있는 씬에 이 키를 쓰면 그 그룹에 한해 keyframe 은 무시된다.
+
+위 표는 **command joint 만** 다룬다 — freejoint 는 `qpos0` (XML body 자세) 로 리셋된다. 부동 베이스 씬은 최상위 `reset_keyframe: <key name>` 을 둔다: 기동 · 리셋이 그 keyframe 의 qpos 전체로 가고, 2 순위도 그 keyframe 을 읽으며, `initial_qpos` 는 그 위에 덮는다 ([근거](../docs/reference/sim-rationale.md#initial_qpos)).
 
 ```yaml
 robot_response:

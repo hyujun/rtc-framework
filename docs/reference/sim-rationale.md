@@ -59,6 +59,8 @@ contact point 시각화 크기는 `ApplySolverConfig()` 가 모델 로드 직후
 
 씬에 keyframe 이 없으면 `qpos0` 에서 시작하는데 arm 은 그것이 뻗은 자세이고, MJCF 가 다른 패키지 소유라 keyframe 을 추가할 수 없는 bringup 도 있다. 반대로 keyframe 이 있는 씬에 이 키를 쓰면 keyframe 은 그 그룹에 한해 무시되므로 두 값을 같이 두려면 테스트로 고정한다 (`integrated_bringup/test/test_shipped_initial_qpos.py`). 소수점이 없는 `[0, -1, 1]` 은 정수 배열이 되어 선언된 double 배열과 타입이 달라 `on_configure` 전, 노드 생성 시점에 예외로 죽는다 (ROS 2 params YAML 은 시퀀스 타입을 원소에서 추론한다).
 
+`reset_keyframe` 이 별도 키인 이유: `initial_qpos` 의 fallback 은 keyframe 의 command joint 값만 읽고, 리셋의 바탕은 `mj_resetData` (= `qpos0`) 였다. 고정 베이스에서는 둘이 같은 자세지만 freejoint 가 있으면 `qpos0` 는 XML body 자세 (보통 원점 · 단위 quaternion) 라 keyframe 의 base 자세로 돌아가지 않았고, 이 결함은 부동 베이스 모델이 들어오기 전에는 보이지 않았다 (#976). 기본값을 "keyframe 이 있으면 그것으로" 로 바꾸지 않은 것은 keyframe 이 있는 고정 베이스 씬의 object pool · 공 park 가 `qpos0` 를 전제하고, 기존 bringup 의 리셋이 바뀌는 것을 원치 않아서다 — 이름을 적은 씬만 바뀐다. 이름 해석 (index 0 가 아님) 과 없는 이름의 configure 실패는 `test_reset_keyframe` 이 고정한다.
+
 ## Object Pool
 
 - 목적: [scene_right_with_object.xml](../../robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_with_object.xml) 에 주석으로 박힌 5단계 수작업 (mesh 항목 복사, mesh 이름 prefix, body 블록 복제, 모든 keyframe 에 freejoint qpos 7 개 append) 중 4 단계를 로드 시점에 자동화한다. object_sim 은 `contact0` 같은 generic 이름을 57 개 object 가 공유해서 prefix 가 필요하다.

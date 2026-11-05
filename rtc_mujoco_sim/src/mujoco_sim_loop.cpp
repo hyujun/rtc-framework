@@ -748,13 +748,33 @@ void MuJoCoSimulator::ClearContactForces() noexcept {
 
 // ── HandleReset ───────────────────────────────────────────────────────────────
 
+void MuJoCoSimulator::ResetDataToStart() noexcept {
+  if (reset_key_id_ >= 0) {
+    // The keyframe's whole state — qpos (free joints included), qvel, act,
+    // ctrl, mocap — not qpos alone. mj_resetData below would put a floating
+    // base at the XML body pose (qpos0) and leave the keyframe's stance to the
+    // command-joint loop only, which is the W0-F02 defect this key closes;
+    // the keyframe's ctrl is what keeps actuators the loop does not own on
+    // the stance from the first step.
+    mj_resetDataKeyframe(model_, data_, reset_key_id_);
+    // A keyframe may carry `time`; the sim clock starts every episode at 0
+    // (sim_time_sec_, the RTF anchor and the stamps all assume it), so the
+    // key's time is not taken.
+    data_->time = 0.0;
+  } else {
+    mj_resetData(model_, data_);
+  }
+}
+
 void MuJoCoSimulator::HandleReset() noexcept {
   // One-shot span fired only on a reset request. Depending on the call site it
   // is either a sibling before sim_step (pre-publish reset) or a child of
   // sim_step (post-wait reset) — both short-circuit the iteration with continue.
   RTC_TRACE_SCOPE("MuJoCoSimulator::HandleReset");
-  mj_resetData(model_, data_);
+  ResetDataToStart();
 
+  // Command joints: initial_qpos on top of the keyframe (or of qpos0), the
+  // same precedence Initialize applies — YAML > keyframe > zeros.
   for (auto& g : groups_) {
     if (!g->is_robot)
       continue;
