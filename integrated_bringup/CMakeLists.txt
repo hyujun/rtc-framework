@@ -1521,6 +1521,9 @@ if(BUILD_TESTING)
   # Layer C: verifies HasSensorState / ReadSensorState / OnWrench contract —
   # stride-7 inference_data packing, stale detection, NaN guard, per-tip
   # miss counter independence, recovery, and dead-slot zero-fill.
+  # Plus the floating-base lane (WD-16, #976): base_state.* names looked up in
+  # a SimSensorState, converted once, with the same verdict / stamp / counter
+  # contract as the wrench lane.
   ament_add_gtest(test_mujoco_native_backend test/test_mujoco_native_backend.cpp
     ENV ROS_DOMAIN_ID=52)
   target_link_libraries(test_mujoco_native_backend
@@ -1531,7 +1534,21 @@ if(BUILD_TESTING)
     rclcpp_lifecycle
     rtc_controller_manager
     rtc_base
+    rtc_msgs
     geometry_msgs
+  )
+
+  # MuJoCo ↔ pinocchio floating-base conventions (W0-F02, #976): the one
+  # conversion header, header-only, no ROS. Directed cases (yaw 90°, the
+  # cyclic axis permutation) plus 1000 seeded random round trips at 1e-12.
+  ament_add_gtest(test_floating_base_conventions test/test_floating_base_conventions.cpp)
+  target_include_directories(test_floating_base_conventions PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${EIGEN3_INCLUDE_DIR}
+  )
+  ament_target_dependencies(test_floating_base_conventions
+    rtc_base
+    Eigen3
   )
 
   # ── Vision ingress decode ──────────────────────────────────────────────────

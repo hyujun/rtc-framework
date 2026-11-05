@@ -266,6 +266,18 @@ if(mujoco_FOUND)
         KEYFRAME_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/keyframe_scene.xml")
     endif()
 
+    # reset_keyframe (W0-F02, #976): the whole qpos — free joint included —
+    # starts at and resets to a NAMED keyframe, bit-exact; initial_qpos still
+    # overrides the command joints on top; the unset key keeps qpos0 + first
+    # keyframe. Needs a scene with a free joint and two keyframes.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_reset_keyframe.cpp")
+      ament_add_gtest(test_reset_keyframe test/test_reset_keyframe.cpp)
+      target_link_libraries(test_reset_keyframe mujoco_simulator_lib)
+      target_compile_definitions(test_reset_keyframe PRIVATE
+        MINIMAL_MJCF_PATH="${MJCF_FIXTURE}"
+        FLOATING_KEYFRAME_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/floating_keyframe_scene.xml")
+    endif()
+
     # Per-body gravcomp regression: needs a scene with both a robot and a
     # free body.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_gravcomp_scene.cpp")

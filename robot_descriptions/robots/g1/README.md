@@ -9,7 +9,7 @@ Unitree G1 29-DoF 휴머노이드. 공개 원본 (전신) 과 그 파생 부동 
 `mjcf/g1_29dof_floating.xml` · `urdf/g1_29dof_floating.urdf` 는 보행 MPC 의 plant 로 쓰는 파생본이다. 원본과의 차이는 각 파일 머리 주석이 적는다. 요지:
 
 - 손목 6 관절을 없애 강체로 (actuated 23). URDF 는 root 가 pelvis 그대로다 — 부동 관절은 loader 가 붙인다 (`rtc_urdf_bridge` `urdf.root_joint_type`)
-- 발 sphere 4 점 → sole box 1 개, `<motor>` → `<position>` (다리 · 허리 kp 200 / kv 5, 팔 100 / 2), pelvis 의 framepos · framequat · framelinvel · frameangvel, keyframe `stand`, `implicitfast` · timestep 0.002/3
+- 발 sphere 4 점 → sole box 1 개, `<motor>` → `<position>` (다리 · 허리 kp 200 / kv 5, 팔 100 / 2), pelvis 의 framepos · framequat · framelinvel · frameangvel (`objtype="xbody"` — body 프레임; `body` 는 관성 프레임), keyframe `stand`, `implicitfast` · timestep 0.002/3
 - 두 원본이 서로 어긋난 곳 (pelvis · torso 질량 1 g, 발목 · 허리 effort 50 vs 35) 은 URDF 를 SSoT 로 따랐다
 
 `g1_without_right_hand_fixed_base.urdf` 는 `g1_p1b` 프로파일의 테스트가 여는 상체 모델이다. 출하 손은 공개하지 않으므로 [`p1b_surrogate`](../p1b_surrogate/README.md) (**합성 — 실제 손이 아니다**) 를 붙인다.

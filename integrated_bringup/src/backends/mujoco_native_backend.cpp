@@ -81,6 +81,14 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   }
   max_missed_ticks_ = std::max(1, max_miss);
 
+  // SPSC guard shared by the two optional SeqLock-writing lanes below (wrench:
+  // load-modify-store; base: whole-struct Store that still needs a single
+  // writer). Each lane WARNs (does not abort) only when it is actually
+  // configured, so dev builds can opt into Reentrant for diagnosis with the
+  // trade-off visible and a joint-only group is not told about lanes it lacks.
+  const bool single_writer_group =
+      !state_cb_group || state_cb_group->type() == rclcpp::CallbackGroupType::MutuallyExclusive;
+
   if (wrench_topics.empty()) {
     // Documented fallback: HasSensorState() still reports true, but
     // ReadSensorState publishes num_inference_groups=0. Surface once so
@@ -93,9 +101,8 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
     // same FIFO 70 thread the executor wires up. Mismatched-QoS warnings are
     // logged by rclcpp; we keep BEST_EFFORT to mirror the simulator publisher.
     // SPSC guard: OnWrench's load-modify-store on sensor_mirror_ is safe only
-    // when this cb_group is MutuallyExclusive. WARN (do not abort) so dev
-    // builds can opt into Reentrant for diagnosis with the trade-off visible.
-    if (state_cb_group && state_cb_group->type() != rclcpp::CallbackGroupType::MutuallyExclusive) {
+    // when this cb_group is MutuallyExclusive.
+    if (!single_writer_group) {
       RCLCPP_WARN(logger_,
                   "[mujoco_native:%s] wrench cb_group is not MutuallyExclusive — "
                   "OnWrench SPSC guarantee is broken; concurrent callbacks may "
@@ -116,6 +123,257 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
           wrench_opts));
     }
   }
+
+  // Floating-base lane (WD-16, #976): `devices.<group>.backend.base_state.*`.
+  // Same parameter channel as the wrench topics; absent → lane not claimed.
+  const std::string base_prefix = param_prefix + ".base_state.";
+  const auto read_string = [node, &base_prefix](const char* key) {
+    const std::string full = base_prefix + key;
+    if (node->has_parameter(full)) {
+      return node->get_parameter(full).as_string();
+    }
+    return node->declare_parameter<std::string>(full, std::string{});
+  };
+  const auto read_string_array = [node, &base_prefix](const char* key) {
+    const std::string full = base_prefix + key;
+    if (node->has_parameter(full)) {
+      return node->get_parameter(full).as_string_array();
+    }
+    return node->declare_parameter<std::vector<std::string>>(full, std::vector<std::string>{});
+  };
+  const std::string base_topic = read_string("sensor_topic");
+  {
+    // Own tick budget: the SimSensorState topic need not run at the wrench
+    // lane's rate. Defaults to the shared value so a bringup that sets only
+    // `max_consecutive_missed_ticks` keeps one number for both.
+    const std::string key = base_prefix + "max_consecutive_missed_ticks";
+    int base_miss = max_missed_ticks_;
+    if (node->has_parameter(key)) {
+      base_miss = static_cast<int>(node->get_parameter(key).as_int());
+    } else {
+      base_miss = static_cast<int>(node->declare_parameter<int>(key, base_miss));
+    }
+    base_max_missed_ticks_ = std::max(1, base_miss);
+  }
+  base_names_.pos = read_string("pos");
+  base_names_.quat = read_string("quat");
+  base_names_.linvel = read_string("linvel");
+  base_names_.angvel = read_string("angvel");
+  const std::vector<std::string> imu_gyro = read_string_array("imu_gyro");
+  const std::vector<std::string> imu_accel = read_string_array("imu_accel");
+
+  if (base_topic.empty()) {
+    return;  // Fixed-base group (the default): nothing more to bind.
+  }
+  if (base_names_.pos.empty() || base_names_.quat.empty() || base_names_.linvel.empty() ||
+      base_names_.angvel.empty()) {
+    // Refused at configure rather than discovered per message: a lane that
+    // can never become valid would otherwise look like a quiet publisher.
+    RCLCPP_ERROR(logger_,
+                 "[mujoco_native:%s] base_state.sensor_topic is set but pos/quat/linvel/angvel "
+                 "sensor names are not all given — floating-base lane NOT claimed",
+                 config_.group_name.c_str());
+    return;
+  }
+  if (imu_gyro.size() != imu_accel.size()) {
+    RCLCPP_ERROR(logger_,
+                 "[mujoco_native:%s] base_state.imu_gyro (%zu) and imu_accel (%zu) must be "
+                 "parallel lists (index = IMU site) — floating-base lane NOT claimed",
+                 config_.group_name.c_str(), imu_gyro.size(), imu_accel.size());
+    return;
+  }
+  if (imu_gyro.size() > static_cast<std::size_t>(kMaxImuSites)) {
+    RCLCPP_WARN(logger_,
+                "[mujoco_native:%s] base_state lists %zu IMU sites, DeviceState carries %d — "
+                "the rest are ignored",
+                config_.group_name.c_str(), imu_gyro.size(), kMaxImuSites);
+  }
+  base_names_.num_imu_sites =
+      static_cast<int>(std::min(imu_gyro.size(), static_cast<std::size_t>(kMaxImuSites)));
+  for (int s = 0; s < base_names_.num_imu_sites; ++s) {
+    const auto su = static_cast<std::size_t>(s);
+    base_names_.imu_gyro[su] = imu_gyro[su];
+    base_names_.imu_accel[su] = imu_accel[su];
+  }
+
+  if (!single_writer_group) {
+    RCLCPP_WARN(logger_,
+                "[mujoco_native:%s] base_state cb_group is not MutuallyExclusive — the base "
+                "mirror's single-writer SeqLock guarantee is broken; concurrent callbacks may "
+                "tear it",
+                config_.group_name.c_str());
+  }
+  base_sensor_idx_.fill(-1);
+  rclcpp::SubscriptionOptions base_opts;
+  base_opts.callback_group = state_cb_group;  // rt_callback lane, like the two above.
+  base_sub_ = node->create_subscription<rtc_msgs::msg::SimSensorState>(
+      base_topic, qos, GuardStateLane([this](rtc_msgs::msg::SimSensorState::ConstSharedPtr msg) {
+        OnSimSensorState(std::move(msg));
+      }),
+      base_opts);
+  base_lane_enabled_ = true;
+  RCLCPP_INFO(logger_, "[mujoco_native:%s] floating-base lane on '%s' (%d IMU site%s)",
+              config_.group_name.c_str(), base_topic.c_str(), base_names_.num_imu_sites,
+              base_names_.num_imu_sites == 1 ? "" : "s");
+}
+
+namespace {
+
+// Index of `name` in `msg.sensors`, trying `hint` first. The simulator
+// publishes its sensors in a fixed order, so after the first message the hint
+// is right and the lookup is one string compare per name; a layout change
+// (or a first message) falls back to the linear scan. -1 when absent. No
+// allocation either way, so it can run on the rt_callback lane.
+[[nodiscard]] int FindSensor(const rtc_msgs::msg::SimSensorState& msg, const std::string& name,
+                             int hint) noexcept {
+  const auto n = static_cast<int>(msg.sensors.size());
+  if (hint >= 0 && hint < n && msg.sensors[static_cast<std::size_t>(hint)].name == name) {
+    return hint;
+  }
+  for (int i = 0; i < n; ++i) {
+    if (msg.sensors[static_cast<std::size_t>(i)].name == name) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// Copies the `Dim` values of sensor `idx` out. False when absent (idx < 0),
+// of another dimension, or non-finite — the three ways a configured sensor can
+// fail to be the quantity the lane claims it is.
+template <std::size_t Dim>
+[[nodiscard]] bool CopySensorAt(const rtc_msgs::msg::SimSensorState& msg, int idx,
+                                std::array<double, Dim>& out, bool& non_finite) noexcept {
+  if (idx < 0) {
+    return false;
+  }
+  const auto& s = msg.sensors[static_cast<std::size_t>(idx)];
+  if (s.values.size() != Dim) {
+    return false;
+  }
+  for (std::size_t i = 0; i < Dim; ++i) {
+    if (!std::isfinite(s.values[i])) {
+      non_finite = true;
+      return false;
+    }
+    out[i] = s.values[i];
+  }
+  return true;
+}
+
+}  // namespace
+
+void MujocoNativeBackend::OnSimSensorState(
+    rtc_msgs::msg::SimSensorState::ConstSharedPtr msg) noexcept {
+  // L2 under the rt_callback executor's ros2:callback_* (L1) — the base-lane
+  // decode + SeqLock write on the rt_callback lane. Same CSV as the joint and
+  // wrench lanes (#349): it is load on the same FIFO thread.
+  RTC_TRACE_SCOPE("MujocoNativeBackend::OnSimSensorState");
+  StateLaneTimingScope timing_scope(*this);
+
+  // Slot k of base_sensor_idx_ caches where name k was last found.
+  auto lookup = [&](std::size_t slot, const std::string& name) {
+    base_sensor_idx_[slot] = FindSensor(*msg, name, base_sensor_idx_[slot]);
+    return base_sensor_idx_[slot];
+  };
+
+  std::array<double, 3> pos{};
+  std::array<double, 4> quat{};
+  std::array<double, 3> linvel{};
+  std::array<double, 3> angvel{};
+  bool non_finite = false;
+  bool found =
+      CopySensorAt(*msg, lookup(kBaseSlotPos, base_names_.pos), pos, non_finite) &&
+      CopySensorAt(*msg, lookup(kBaseSlotQuat, base_names_.quat), quat, non_finite) &&
+      CopySensorAt(*msg, lookup(kBaseSlotLinvel, base_names_.linvel), linvel, non_finite) &&
+      CopySensorAt(*msg, lookup(kBaseSlotAngvel, base_names_.angvel), angvel, non_finite);
+  std::array<std::array<double, kImuChannelsPerSite>, kMaxImuSites> imu{};
+  for (int s = 0; found && s < base_names_.num_imu_sites; ++s) {
+    const auto su = static_cast<std::size_t>(s);
+    std::array<double, 3> gyro{};
+    std::array<double, 3> accel{};
+    found = CopySensorAt(*msg, lookup(kBaseSlotImu + 2 * su, base_names_.imu_gyro[su]), gyro,
+                         non_finite) &&
+            CopySensorAt(*msg, lookup(kBaseSlotImu + 2 * su + 1, base_names_.imu_accel[su]), accel,
+                         non_finite);
+    if (found) {
+      imu[su] = {gyro[0], gyro[1], gyro[2], accel[0], accel[1], accel[2]};
+    }
+  }
+  if (found && !IsUnitQuaternionWxyz(quat)) {
+    non_finite = true;  // A zero quaternion is not a rotation (NUM-2) — same verdict.
+    found = false;
+  }
+
+  if (!found) {
+    if (non_finite) {
+      // Drop — mirror, stamp and counter untouched, so the RT side keeps the
+      // last accepted sample and its honest age. Throttled WARN so a flooding
+      // bad publisher stays visible without spamming (mirrors OnWrench).
+      RCLCPP_WARN_THROTTLE(logger_, clock_, 1000,
+                           "[mujoco_native:%s] non-finite or non-unit base sample, dropping",
+                           config_.group_name.c_str());
+    } else {
+      // A configured sensor name the message does not carry (or carries at
+      // another dimension) is a configuration error, not a transient: no
+      // sample is ever accepted, so base_valid stays false, and this line
+      // says why — repeated at a slow throttle so a log opened later still
+      // shows it.
+      RCLCPP_WARN_THROTTLE(logger_, clock_, 5000,
+                           "[mujoco_native:%s] base_state sensor names not all found in "
+                           "SimSensorState (pos='%s' quat='%s' linvel='%s' angvel='%s', %d IMU "
+                           "site(s)) — lane stays invalid",
+                           config_.group_name.c_str(), base_names_.pos.c_str(),
+                           base_names_.quat.c_str(), base_names_.linvel.c_str(),
+                           base_names_.angvel.c_str(), base_names_.num_imu_sites);
+    }
+    return;
+  }
+
+  BaseMirror mirror;
+  mirror.sample = MujocoFrameToPinocchio(pos, quat, linvel, angvel);
+  mirror.imu = imu;
+  mirror.num_imu_sites = base_names_.num_imu_sites;
+  mirror.received_at_least_once = true;
+  // Stamped here, for an ACCEPTED sample only (see BaseMirror::recv_steady_ns).
+  mirror.recv_steady_ns = rtc::SteadyNowNs();
+  base_mirror_.Store(mirror);
+  base_seq_.fetch_add(1, std::memory_order_release);
+}
+
+void MujocoNativeBackend::ReadBaseState(DeviceStateCache& cache) noexcept {
+  // L3 under CM::ReadDeviceState — RT-tick base-mirror load.
+  RTC_TRACE_SCOPE("MujocoNativeBackend::ReadBaseState");
+  // Counter BEFORE mirror — the same ordering argument as ReadSensorState:
+  // the writer stores the payload then bumps the counter, so reading the
+  // counter first can only pair it with a payload at least as new.
+  const uint64_t cur_seq = base_seq_.load(std::memory_order_acquire);
+  const BaseMirror mirror = base_mirror_.Load();
+
+  if (cur_seq != rt_base_last_seen_seq_) {
+    rt_base_last_seen_seq_ = cur_seq;
+    rt_base_miss_count_ = 0;
+  } else if (rt_base_miss_count_ < base_max_missed_ticks_) {
+    ++rt_base_miss_count_;  // saturates — no overflow on a long silence.
+  }
+
+  // Values are copied whether or not the verdict is fresh: `base_valid` is
+  // the flag, not a gate on the payload (DeviceState contract — a consumer
+  // deciding what to do about a stale base needs the last pose and HOW old
+  // it is, and `base_recv_steady_ns` / `base_sequence` carry that).
+  cache.base_pose = mirror.sample.pose;
+  cache.base_twist = mirror.sample.twist;
+  cache.imu = mirror.imu;
+  cache.num_imu_sites = mirror.num_imu_sites;
+  cache.base_recv_steady_ns = mirror.recv_steady_ns;
+  cache.base_sequence = cur_seq;
+  // `cur_seq != 0` closes the one-tick window in which the first sample's
+  // Store has landed but its counter bump has not: the mirror would already
+  // say "received" while `base_sequence` still reads the "never received"
+  // 0 the DeviceState contract documents. Valid and sequence 0 must not be
+  // reported together, so the verdict waits for the counter.
+  cache.base_valid = mirror.received_at_least_once && cur_seq != 0 &&
+                     (rt_base_miss_count_ < base_max_missed_ticks_);
 }
 
 void MujocoNativeBackend::OnWrench(int finger_idx,

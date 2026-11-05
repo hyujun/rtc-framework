@@ -317,6 +317,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter("n_substeps", 1);
     declare_parameter("viewer_refresh_rate", 60.0);
     declare_parameter("viewer_input_enabled", true);
+    declare_parameter("reset_keyframe", std::string(""));
     declare_parameter("viewer_camera.lookat", std::vector<double>{0.0, 0.0, 0.0});
     declare_parameter("viewer_camera.distance", 2.5);
     declare_parameter("viewer_camera.azimuth_deg", 90.0);
@@ -408,6 +409,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     n_substeps_ = get_parameter("n_substeps").as_int();
     viewer_refresh_rate_ = get_parameter("viewer_refresh_rate").as_double();
     viewer_input_enabled_ = get_parameter("viewer_input_enabled").as_bool();
+    reset_keyframe_ = get_parameter("reset_keyframe").as_string();
     viewer_camera_.lookat = LoadVec3Param("viewer_camera.lookat");
     viewer_camera_.distance = get_parameter("viewer_camera.distance").as_double();
     viewer_camera_.azimuth_deg = get_parameter("viewer_camera.azimuth_deg").as_double();
@@ -838,6 +840,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         .object_pool = object_pool_config_,
         .object_state = object_state_config_,
         .projectile_ball = projectile_ball_config_,
+        .reset_keyframe = reset_keyframe_,
         .clock_lane_enabled = clock_lane_enabled_,
         .ball_contact_lane_enabled = ball_contact_lane_enabled_,
         .groups = group_configs_,
@@ -1679,6 +1682,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
 
   // Parameters
   std::string model_path_;
+  std::string reset_keyframe_;  // Config::reset_keyframe; empty = qpos0 + initial_qpos
   bool enable_viewer_{true};
   double sync_timeout_ms_{50.0};
   double max_rtf_{0.0};

@@ -1,0 +1,54 @@
+<!-- Scene fixture for `reset_keyframe` (W0-F02, #976): a free-floating body
+     with one actuated hinge, and TWO keyframes.
+
+     What each property is for:
+
+       - the <freejoint>, because the defect under test is specific to it:
+         mj_resetData restores qpos0 (the <body pos>, here the origin with the
+         identity quaternion) and the command-joint loop only ever wrote
+         `initial_qpos` — so a floating base could never come back to a
+         keyframe. The fixture's keyframe bases are far from the origin and
+         rotated, so "returned to qpos0" and "returned to the keyframe" are
+         different vectors in every one of the seven slots;
+
+       - two keyframes, with the one the tests select ("stand") SECOND, so a
+         resolution by index 0 instead of by name lands on "other" and fails;
+
+       - distinct, non-zero hinge values in both keys (0.40 / -0.90) and a
+         base pose whose quaternion is not axis-aligned, so a copy into the
+         wrong slot cannot land on a plausible value;
+
+       - no floor and gravity on, so a few steps from either keyframe move
+         the base (it falls) — the positive control that a reset which did
+         nothing would fail. -->
+<mujoco model="floating_keyframe_scene_test">
+  <compiler angle="radian"/>
+  <option timestep="0.002" solver="Newton" iterations="20"/>
+
+  <worldbody>
+    <body name="base" pos="0 0 0">
+      <freejoint name="root"/>
+      <inertial pos="0 0 0" mass="2.0" diaginertia="0.02 0.02 0.02"/>
+      <geom type="box" size="0.1 0.1 0.05" rgba="0.2 0.4 0.8 1" contype="0" conaffinity="0"/>
+      <body name="arm" pos="0.1 0 0">
+        <joint name="j1" type="hinge" axis="0 1 0" range="-1.57 1.57"/>
+        <inertial pos="0.1 0 0" mass="0.5" diaginertia="0.005 0.005 0.005"/>
+        <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" rgba="0.8 0.2 0.2 1"
+              contype="0" conaffinity="0"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="m1" joint="j1" kp="50" ctrlrange="-1.57 1.57"/>
+  </actuator>
+
+  <keyframe>
+    <!-- Index 0: the decoy. Base at (−1, 2, 0.5), yaw 90° (w = z = √½). -->
+    <key name="other" qpos="-1.0 2.0 0.5 0.70710678118654752 0 0 0.70710678118654752 -0.90"/>
+    <!-- Index 1: the one the tests name. Base at (0.3, −0.2, 1.25), rotated
+         about (1,1,1) by 120° — every quaternion component equal, every
+         position component distinct. -->
+    <key name="stand" qpos="0.3 -0.2 1.25 0.5 0.5 0.5 0.5 0.40"/>
+  </keyframe>
+</mujoco>

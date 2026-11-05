@@ -46,6 +46,14 @@ mujoco_simulator:
     physics_timestep: 0.002  # seconds (control period)
     n_substeps: 3            # physics substeps per control cycle
 
+    # ── Start / reset keyframe ───────────────────────────────────────────────
+    # MJCF <key name> the scene starts at and the reset (viewer R) returns to,
+    # for the WHOLE qpos — a floating base included. Empty keeps the default
+    # (qpos0, then each group's initial_qpos on its command joints), which is
+    # right for fixed-base arms and wrong for a free-floating robot whose
+    # stance lives in a keyframe. An unknown name fails configure.
+    reset_keyframe: ""
+
     # ── Position servo gains (override per robot) ────────────────────────────
     use_yaml_servo_gains: false
     # servo_kp: [...]   # set per robot in robot-specific YAML

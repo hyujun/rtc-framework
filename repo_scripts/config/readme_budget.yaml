@@ -31,7 +31,7 @@
 
 README.md: 12443 strict  # raised from 12431: udp_hand_driver row names both transports (UDP · CAN FD)
 docs/reference/README.md: 6815  # raised from 6563: why skills are D12-budgeted (verify skill removal); before: 6289 -> 6563 sim-rationale.md, 5924 -> 6289 build-rationale.md
-integrated_bringup/README.md: 37930 strict  # raised from 37759: the collision capsule spec row of the config table (a new kind of robot-level file); before: 37746 -> 37759 the b7_p2 tree comment names the joint_command_gui config; before: 37635 -> 37746 per-robot initial_controller default and the startup log line
+integrated_bringup/README.md: 38522 strict  # raised from 37930: the devices.<g>.backend.base_state row of the config table (new backend YAML surface, #976); before: 37759: the collision capsule spec row of the config table (a new kind of robot-level file); before: 37746 -> 37759 the b7_p2 tree comment names the joint_command_gui config; before: 37635 -> 37746 per-robot initial_controller default and the startup log line
 repo_scripts/README.md: 27231 strict  # lowered from 27240: get_physical_cores row names the sysfs sibling-list fallback, rt_common intro trimmed; before: raised from 26993: run_hand_canfd_gate.sh row (two-hand gate driver, #954)
 robot_descriptions/README.md: 7000 strict  # raised from 6588: the g1 row names the vendored original and the floating pair, and a vendored-folder rule (MANIFEST.sha256) joined the directory notes (#975); before: 6464: the vendored ur5e_p1b row became two (p1b_surrogate, g1), and the assm_v1 rows say the hand is synthetic (#952 D6)
 robot_descriptions/robots/g1/README.md: 3500 strict  # raised from 1800: the folder now holds the vendored Unitree original and the derived floating-base pair next to the fixed-base fixture (#975)
@@ -48,7 +48,7 @@ rtc_math/README.md: 2944 strict  # raised from 2571: skeleton sections the old R
 rtc_math/include/rtc_math/se3/README.md: 9116 strict
 rtc_mpc/README.md: 7651 strict
 rtc_msgs/README.md: 6141 strict
-rtc_mujoco_sim/README.md: 42500 strict
+rtc_mujoco_sim/README.md: 43142 strict  # raised from 42500: the reset_keyframe row of the node-parameter table and its two-sentence note under 초기 자세 (new public surface, #976)
 rtc_tools/README.md: 43992 strict  # raised from 42792: joint_command_gui 절에 포즈 목록 · 재생 · SIL 확인 두 항목 (#972); before: raised from 41209: fit_capsules 절 + 도구 표 두 행 (충돌 capsule 초안 · 검사 · MuJoCo oracle, #642); before: raised from 39650: joint_command_gui 절 (실행 · 원격 DDS 점검 · 손 노드 이름 대응표의 사용 조건) — joint_gui 와의 비교는 모듈 docstring 으로; before: 39566 -> 39650 hand_canfd_gate --req-mode 한 줄
 rtc_tsid/README.md: 11550 strict
 rtc_urdf_bridge/README.md: 18991 strict  # raised from 17451: collision capsule core section (CapsuleModel · CapsuleWorkspace public headers, #642)

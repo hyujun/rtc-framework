@@ -637,6 +637,17 @@ class MuJoCoSimulator {
 
     ProjectileBallConfig projectile_ball;
 
+    /// MJCF keyframe the scene starts from and the reset (viewer `R`,
+    /// RequestReset) returns to — the keyframe's whole state (qpos with free
+    /// joints, qvel, act, ctrl, mocap; its `time` is not taken, the sim clock
+    /// restarts at 0). Empty (the default) keeps the historical path: mj_resetData to qpos0,
+    /// then each robot group's initial_qpos on its command joints — which
+    /// puts a free-floating base back at the XML body pose, never at a
+    /// keyframe (W0-F02, #976). A name the model does not define fails
+    /// Initialize. `initial_qpos` still overrides the command joints on top
+    /// of the keyframe, in the same precedence as before.
+    std::string reset_keyframe;
+
     // Per-step clock phase lane. Off by default: it costs a ring
     // write per step and a file on disk, and nothing outside a measurement run
     // wants either.
@@ -886,6 +897,12 @@ class MuJoCoSimulator {
   // the SimLoop owns this mutation, so a test that is not running the SimLoop
   // needs an inline entry point.
   void ResetForTest() noexcept;
+  // The whole qpos (free joints included), the compiled qpos0, and a named
+  // keyframe's qpos — what `reset_keyframe` promises to restore bit-exactly
+  // (empty when the name is not a keyframe). Not RT: they allocate.
+  [[nodiscard]] std::vector<double> GetQposForTest() const noexcept;
+  [[nodiscard]] std::vector<double> GetQpos0ForTest() const noexcept;
+  [[nodiscard]] std::vector<double> GetKeyQposForTest(const std::string& key_name) const noexcept;
   [[nodiscard]] double GetActuatorForceForTest(std::size_t group_idx,
                                                std::size_t joint_idx) const noexcept;
   [[nodiscard]] double GetAppliedForceForTest(std::size_t group_idx,
@@ -1154,6 +1171,15 @@ class MuJoCoSimulator {
   Config cfg_;
   mjModel* model_{nullptr};
   mjData* data_{nullptr};
+  // mjOBJ_KEY id of Config::reset_keyframe, -1 when unset. Resolved once at
+  // Initialize; read by ResetDataToStart on the SimLoop thread.
+  int reset_key_id_{-1};
+
+  // mj_resetDataKeyframe(reset_key_id_) when a keyframe is configured, else
+  // mj_resetData — the ONE place both Initialize and HandleReset take the
+  // scene back to its start, so the two cannot drift (the pre-#976 Initialize
+  // never reset at all and relied on mj_makeData being qpos0).
+  void ResetDataToStart() noexcept;
 
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> step_count_{0};

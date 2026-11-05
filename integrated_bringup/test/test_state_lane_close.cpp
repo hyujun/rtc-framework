@@ -16,6 +16,7 @@
 //
 // Lanes (one subscription each, all on the state callback group):
 //   mujoco_native     joint (/joint_states)           wrench (fingertip topics)
+//                     base (base_state.sensor_topic — SimSensorState)
 //   ur_driver_native  joint
 //   udp_hand_native   joint · motor · sensor
 
@@ -26,6 +27,8 @@
 #include "rtc_controller_manager/device_backend.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
+#include <rtc_msgs/msg/sim_sensor.hpp>
+#include <rtc_msgs/msg/sim_sensor_state.hpp>
 
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -253,6 +256,65 @@ TEST(StateLaneClose, MujocoWrenchLaneIgnoresMessagesAfterClose) {
   EXPECT_EQ(after.inference_sequence[0], 1U) << "closed wrench lane still counted a sample (#941)";
   EXPECT_FLOAT_EQ(after.inference_data[1], 1.0F)
       << "closed wrench lane still wrote the mirror (#941)";
+}
+
+// Floating-base lane (WD-16, #976): base_state.sensor_topic → SimSensorState.
+constexpr const char* kMujocoBaseTopic = "/sl_mj/base/sim_sensors";
+
+rclcpp::NodeOptions MujocoBaseOptions() {
+  rclcpp::NodeOptions options;
+  const std::string prefix = std::string("devices.") + kMujocoGroup + ".backend";
+  options.parameter_overrides({
+      rclcpp::Parameter(prefix + ".max_consecutive_missed_ticks", static_cast<int64_t>(1000)),
+      rclcpp::Parameter(prefix + ".base_state.sensor_topic", std::string(kMujocoBaseTopic)),
+      rclcpp::Parameter(prefix + ".base_state.pos", std::string("b_pos")),
+      rclcpp::Parameter(prefix + ".base_state.quat", std::string("b_quat")),
+      rclcpp::Parameter(prefix + ".base_state.linvel", std::string("b_linvel")),
+      rclcpp::Parameter(prefix + ".base_state.angvel", std::string("b_angvel")),
+  });
+  return options;
+}
+
+rtc_msgs::msg::SimSensorState BaseSampleAtX(double x) {
+  const auto sensor = [](const char* name, std::vector<double> v) {
+    rtc_msgs::msg::SimSensor s;
+    s.name = name;
+    s.values = std::move(v);
+    return s;
+  };
+  rtc_msgs::msg::SimSensorState msg;
+  msg.sensors.push_back(sensor("b_pos", {x, 0.0, 0.0}));
+  msg.sensors.push_back(sensor("b_quat", {1.0, 0.0, 0.0, 0.0}));
+  msg.sensors.push_back(sensor("b_linvel", {0.0, 0.0, 0.0}));
+  msg.sensors.push_back(sensor("b_angvel", {0.0, 0.0, 0.0}));
+  return msg;
+}
+
+TEST(StateLaneClose, MujocoBaseLaneIgnoresMessagesAfterClose) {
+  Harness h("mj_base", MujocoBaseOptions());
+  rtc::MujocoNativeBackend backend;
+  backend.Configure(h.node.get(), MujocoConfig("base"), h.group);
+  ASSERT_TRUE(backend.HasFloatingBase()) << "fixture did not claim the lane";
+
+  auto lane = h.OpenLane<rtc_msgs::msg::SimSensorState>(kMujocoBaseTopic);
+  ASSERT_TRUE(h.DeliverUntil(*lane, BaseSampleAtX(1.0), [&backend] {
+    rtc::DeviceStateCache c{};
+    backend.ReadBaseState(c);
+    return c.base_sequence == 1U;
+  })) << "open base lane never decoded the first message";
+  rtc::DeviceStateCache before{};
+  backend.ReadBaseState(before);
+  ASSERT_EQ(before.base_sequence, 1U);
+  ASSERT_DOUBLE_EQ(before.base_pose[0], 1.0);
+
+  ASSERT_TRUE(backend.CloseStateLane());
+
+  ASSERT_TRUE(h.DeliverToClosedLane(*lane, BaseSampleAtX(10.0)))
+      << "second base sample never delivered";
+  rtc::DeviceStateCache after{};
+  backend.ReadBaseState(after);
+  EXPECT_EQ(after.base_sequence, 1U) << "closed base lane still counted a sample (#941)";
+  EXPECT_DOUBLE_EQ(after.base_pose[0], 1.0) << "closed base lane still wrote the mirror (#941)";
 }
 
 // ── ur_driver_native ─────────────────────────────────────────────────────────
