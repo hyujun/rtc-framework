@@ -265,10 +265,10 @@
   </actuator>
 
   <sensor>
-    <framepos name="pelvis_pos" objtype="body" objname="pelvis"/>
-    <framequat name="pelvis_quat" objtype="body" objname="pelvis"/>
-    <framelinvel name="pelvis_linvel" objtype="body" objname="pelvis"/>
-    <frameangvel name="pelvis_angvel" objtype="body" objname="pelvis"/>
+    <framepos name="pelvis_pos" objtype="xbody" objname="pelvis"/>
+    <framequat name="pelvis_quat" objtype="xbody" objname="pelvis"/>
+    <framelinvel name="pelvis_linvel" objtype="xbody" objname="pelvis"/>
+    <frameangvel name="pelvis_angvel" objtype="xbody" objname="pelvis"/>
     <gyro name="imu-torso-angular-velocity" site="imu_in_torso" noise="5e-4" cutoff="34.9"/>
     <accelerometer name="imu-torso-linear-acceleration" site="imu_in_torso" noise="1e-2" cutoff="157"/>
     <gyro name="imu-pelvis-angular-velocity" site="imu_in_pelvis" noise="5e-4" cutoff="34.9"/>

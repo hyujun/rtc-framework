@@ -166,7 +166,7 @@ TEST_F(G1FloatingModel, PelvisGroundTruthSensors) {
     const int s = Id(mjOBJ_SENSOR, name);
     ASSERT_GE(s, 0) << name;
     EXPECT_EQ(m_->sensor_type[s], type) << name;
-    EXPECT_EQ(m_->sensor_objtype[s], mjOBJ_BODY) << name;
+    EXPECT_EQ(m_->sensor_objtype[s], mjOBJ_XBODY) << name;
     EXPECT_EQ(m_->sensor_objid[s], pelvis) << name;
   }
 }
