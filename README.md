@@ -100,7 +100,7 @@ venv 의 base 는 배포판 python **경로**로 고정한다 — `--python 3.12
 ### 실행
 
 ```bash
-# MuJoCo 시뮬레이션 (로봇별 launch: sim_ur5e_p1a · sim_ur5e_p1b · sim_iiwa7_leap · sim_g1_p1b)
+# MuJoCo 시뮬레이션 (로봇별 launch: sim_ur5e_p1a · sim_ur5e_p1b · sim_iiwa7_leap · sim_g1_p1b · sim_g1_loco)
 ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
 
 # 실제 로봇

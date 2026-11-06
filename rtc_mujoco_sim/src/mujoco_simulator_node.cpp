@@ -167,6 +167,22 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
           response->success = true;
           response->message = "projectile ball reset requested";
         });
+    // Whole-scene reset — the viewer's `R` without a viewer. The sim loop
+    // drains the request on its synchronous path (pending commands are
+    // dropped, the control mode persists) and returns to reset_keyframe /
+    // initial_qpos, so a headless run can reproduce its start state (#977).
+    reset_srv_ = create_service<std_srvs::srv::Trigger>(
+        "/sim/reset", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+                             std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+          if (!sim_) {
+            response->success = false;
+            response->message = "simulator is not configured";
+            return;
+          }
+          sim_->RequestReset();
+          response->success = true;
+          response->message = "scene reset requested";
+        });
 
     RCLCPP_INFO(get_logger(),
                 "[MuJoCoSimulatorNode] Configured — model: %s  viewer: %s  "
@@ -244,6 +260,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     launch_ball_srv_.reset();
     launch_ball_at_srv_.reset();
     reset_ball_srv_.reset();
+    reset_srv_.reset();
     ground_truth_pub_.reset();
     camera_position_pub_.reset();
     sim_.reset();
@@ -296,6 +313,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     launch_ball_srv_.reset();
     launch_ball_at_srv_.reset();
     reset_ball_srv_.reset();
+    reset_srv_.reset();
     ground_truth_pub_.reset();
     camera_position_pub_.reset();
     sim_.reset();
@@ -1666,6 +1684,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr launch_ball_srv_;
   rclcpp::Service<rtc_msgs::srv::LaunchBall>::SharedPtr launch_ball_at_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_ball_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srv_;
 
   rclcpp::TimerBase::SharedPtr status_timer_;
   rclcpp::TimerBase::SharedPtr clock_lane_timer_;

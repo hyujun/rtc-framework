@@ -50,6 +50,8 @@ ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.
 | `run_clock_phase_trials` | 지정 발사 N 회 러너 (clock 위상 시행 생성) | `run_clock_phase_trials --trials 200` |
 | `analyze_hand_close` | 손 폐쇄 시간 $T_{close,e2e}$ 분석 | `analyze_hand_close <hand>_state.csv --profile run.json` |
 | `run_hand_close_trials` | 손 preshape↔closed 계단 N 회 러너 | `run_hand_close_trials --group … --joint-names … --out run.json` |
+| `run_stance_metrics` | 부동 베이스 로봇의 정지 지표 recorder (sim sensor 토픽 → CSV + JSON) | 아래 절 |
+| `analyze_stance_metrics` | 그 CSV 를 다시 판정 (`--settle` · `--z-ref` 바꿔 재계산) | `analyze_stance_metrics stance.csv --z-ref 0.764431` |
 | `analyze_hand_canfd_gate` | CAN FD 손 실기 run 의 G-3 게이트 판정 (D55) | `analyze_hand_canfd_gate <session> g3.log --node-log node.log` |
 | `joint_command_gui` | 손 관절 슬라이더 명령 GUI (`joint_state_publisher_gui` 류) | 아래 절 |
 | `analyze_vision_lane` | 예측 lane 프로브 CSV 요약 | `analyze_vision_lane <prefix>` |
@@ -267,6 +269,22 @@ ros2 run rtc_tools analyze_vision_lane <prefix>
 ```
 
 `sim_estimator_node` 는 `debug.enabled_topics` 에 `prediction/trajectory` 만 있으면 발행이 0 건이다. 다른 debug 토픽을 하나 더 켠다. [판정 규칙](../docs/catching-analysis-rules.md#clock_phase).
+
+### stance_metrics
+
+부동 베이스 로봇이 servo PD 로 서 있는 동안의 네 지표 — `stance_hold_s` · `foot_slip_max` [m] · `base_height_dev_max` [m] · `base_tilt_max` [rad] — 와 모든 발이 내내 하중을 받았는지 (`steps_without_all_feet`) 를 sim 의 `rtc_msgs/SimSensorState` 토픽에서 잰다. 센서 이름은 전부 인자다 (base 의 framepos · framequat, 발마다 framepos 하나와 `<contact>` 센서 하나 — contact 의 `force` 는 values 1..3, `--contact-sign -1` 이 발이 바닥을 누르는 힘을 양수로 만든다). 문턱은 이 도구에 없다 — 이슈가 정한 수치에 JSON 을 대 본다.
+
+```bash
+# 컨트롤러의 첫 pd_feedforward 명령에서 11 s 를 녹음하고 (모드 전환 transient 는 창 밖), 1 s 뒤부터 10 s 를 잰다
+# — --duration 은 녹음 전체, 판정 창 = duration − settle
+ros2 run rtc_tools run_stance_metrics --sensor-topic /<group>/sim_sensors --command-topic /<group>/joint_command \
+    --pos <base>_pos --quat <base>_quat --foot-pos <l>_sole_pos <r>_sole_pos --contact <l>_sole_contact <r>_sole_contact \
+    --duration 11 --settle 1 --z-ref <keyframe z> --csv stance.csv --json stance.json
+ros2 run rtc_tools run_stance_metrics … --start-now                     # 첫 메시지부터 (리셋 뒤 재현 확인)
+ros2 run rtc_tools analyze_stance_metrics stance.csv --settle 2.0       # 같은 CSV, 다른 창
+```
+
+slip 과 높이의 기준은 창의 **첫 샘플** (높이는 `--z-ref` 가 있으면 그것) 이라 창 앞의 transient 는 지표에 들어가지 않는다. `/sim/reset` 은 감지하지 않는다 — 리셋 뒤에 새로 돌린다. 구독은 다른 토픽처럼 KEEP_LAST 1 이라 호스트가 sensor rate 를 못 따라가면 샘플이 빠진다 — JSON 의 `sample_dt_median_s` · `sample_gap_max_s` 가 그것을 보이고, 간격이 주기의 3 배를 넘으면 경고를 찍는다. 시작 조건이나 첫 샘플이 `--wait-timeout` (기본 60 s) 안에 안 오면 에러로 끝난다. 순수 계산은 `rtc_tools.analysis.stance_metrics` (ROS 없음, pytest 가 본다), recorder 는 `stance_metrics_recorder` (rclpy).
 
 ### hand_canfd_gate
 

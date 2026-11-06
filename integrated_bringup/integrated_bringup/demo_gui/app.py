@@ -6029,7 +6029,7 @@ def _parse_args(argv):
         "--robot",
         default="ur5e_p1a",
         help="robot profile selecting arm/hand joint schema + TCP frames "
-        "(ur5e_p1a | ur5e_p1b | iiwa7_leap | g1_p1b)",
+        "(ur5e_p1a | ur5e_p1b | iiwa7_leap | g1_p1b | g1_loco)",
     )
     parser.add_argument(
         "--session",

@@ -135,7 +135,7 @@ sudo ./cpu_shield.sh off                           # 해제
 ```
 
 - 범위는 `get_cm_shield_cpus()` (RT ∪ nrt, OS 코어 제외) 이고 non-SMT 는 전 tier `1-3` 이다. `arm_driver` · `hand_driver` 는 shield 밖 전용 코어의 별도 프로세스다.
-- `integrated_bringup` 의 launch 5개 (`robot_ur5e_p1a` · `robot_ur5e_p1b` · `sim_ur5e_p1a` · `sim_ur5e_p1b` · `sim_iiwa7_leap`) 가 노드 기동 **전에** 자동 호출하므로 launch 시작이 cset 소요만큼 늦다 (정상). `rtc_mujoco_sim` 단독 launch 는 호출하지 않고, `build.sh` · `install.sh` 는 빌드 전에 shield 를 푼다.
+- `integrated_bringup` 의 launch 7개 (`robot_ur5e_p1a` · `robot_ur5e_p1b` · `sim_ur5e_p1a` · `sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco`) 가 노드 기동 **전에** 자동 호출하므로 launch 시작이 cset 소요만큼 늦다 (정상). `rtc_mujoco_sim` 단독 launch 는 호출하지 않고, `build.sh` · `install.sh` 는 빌드 전에 shield 를 푼다.
 - `adopt <pid>` (launch 가 CM 을 shield 안으로 옮길 때) 의 종료 코드가 계약이다: 양성 no-op (cset 미설치 · shield 비활성 · PID 부재) 은 0, 필요했는데 실패하면 non-zero 이며 launch 는 ACTIVATE 를 거부한다.
 
 ### check_rt_setup.sh · verify_rt_runtime.sh

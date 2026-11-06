@@ -23,7 +23,7 @@ position_output = quintic(t, q_start, q_goal, duration)
 | `hand_trajectory_speed` | `3.14` rad/s | 손 궤적 속도 |
 | `robot_max_traj_velocity` | `3.14` rad/s | 팔 최대 관절 속도 (peak 제한). `iiwa7_leap` 은 `1.71` |
 | `hand_max_traj_velocity` | `6.28` rad/s | 손 최대 관절 속도 |
-| `command_type` | `"position"` | 출력 타입 (`"position"` 또는 `"torque"`) |
+| `command_type` | `"position"` | 출력 타입: `"position"` · `"torque"` · `"pd_feedforward"` (PD 목표 + feedforward τ — sim 은 그 군의 중력 보상을 끈다). 다른 값은 configure 거부 |
 
 게인 업데이트 레이아웃 (4 원소): `[robot_trajectory_speed, hand_trajectory_speed, robot_max_traj_velocity, hand_max_traj_velocity]`. 값은 로봇별 YAML 이 정한다 (표는 `ur5e_p1a` 기준).
 

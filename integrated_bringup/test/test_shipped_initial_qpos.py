@@ -63,7 +63,7 @@ from robot_descriptions_scenes import is_scene_case, not_a_case_reason, scene_fi
 # Profile -> the MJCF that profile's mujoco_simulator.yaml loads. The path is
 # read out of the config itself rather than listed here, so this map only needs
 # to name the profiles.
-PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap", "g1_p1b"]
+PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap", "g1_p1b", "g1_loco"]
 
 
 def _config_path(profile: str) -> str:
@@ -126,7 +126,7 @@ def test_initial_qpos_entries_are_floats(profile: str) -> None:
 def test_the_keyframe_lane_has_cases() -> None:
     # Without this a rule that matched nothing would leave the lane vacuous.
     cases = {p for p in PROFILES if is_scene_case(_model_path(p))}
-    assert cases >= {"ur5e_p1a", "iiwa7_leap"}
+    assert cases >= {"ur5e_p1a", "iiwa7_leap", "g1_loco"}
 
 
 @pytest.mark.parametrize("profile", PROFILES)

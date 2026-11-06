@@ -351,6 +351,40 @@ def test_g1_p1b_profile_frames_and_groups():
     assert g1.extra_switchable_controllers == ("demo_dualarm_controller",)
 
 
+def test_g1_loco_shape_matches_the_wire_rosters():
+    """Same failure mode as g1_p1b's: a roster that drifts from the YAML reads
+    zeros and commands the wrong joint without any error."""
+    profile = RobotProfile.for_robot("g1_loco")
+    shape = profile.shape
+    assert (shape.arm_dof, shape.hand_dof) == (23, 10)
+    assert shape.arm_joint_names == _base_joint_state_names("g1_loco", profile.arm_group)
+    assert shape.hand_motor_names == _base_joint_state_names("g1_loco", profile.hand_group)
+    # Same hand layout as g1_p1b, so the same finger columns.
+    assert shape.hand_finger_groups == RobotShape.default_g1_p1b().hand_finger_groups
+
+
+def test_g1_loco_joint_groups_are_the_five_limbs_in_wire_order():
+    shape = RobotShape.default_g1_loco()
+    assert [(label, len(joints)) for label, joints in shape.arm_joint_groups] == [
+        ("Left leg", 6),
+        ("Right leg", 6),
+        ("Waist", 3),
+        ("Left arm", 4),
+        ("Right arm", 4),
+    ]
+    flat = tuple(j for _, joints in shape.arm_joint_groups for j in joints)
+    assert flat == shape.arm_joint_names
+
+
+def test_g1_loco_profile_frames_and_groups():
+    g1 = RobotProfile.for_robot("g1_loco")
+    assert g1.fallback_groups() == ("g1", "p1b")
+    assert (g1.tcp_parent, g1.tcp_child) == ("pelvis", "base_adapter_actual")
+    assert g1.extra_switchable_controllers == ()
+    # Another body on the same hand group as g1_p1b: its presets are its own.
+    assert g1.preset_token() == "g1_loco"
+
+
 def test_preset_files_are_not_shared_between_different_robots():
     """A preset stores a robot target and a controller name beside the hand
     pose. Two profiles with the same hand on different bodies would otherwise

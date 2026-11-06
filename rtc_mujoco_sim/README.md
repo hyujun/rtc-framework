@@ -93,6 +93,7 @@ launch 인자 (빈 값 = YAML 값 사용):
 | `/sim/launch_ball` | `std_srvs/srv/Trigger` | 설정 분포에서 샘플링해 공 발사 (뷰어 `K` 와 같은 경로). 공이 비활성이면 `success: false` |
 | `/sim/launch_ball_at` | `rtc_msgs/srv/LaunchBall` | 호출자가 준 `(p0, v0, ω)` (world) 로 발사. RNG 를 쓰지 않는다. 거부 시 `accepted: false` 이고 아무것도 바뀌지 않는다 |
 | `/sim/reset_ball` | `std_srvs/srv/Trigger` | 공을 park 위치로 회수. 공이 비활성이면 `success: false` |
+| `/sim/reset` | `std_srvs/srv/Trigger` | 씬 전체를 [초기 자세](#초기-자세-initial_qpos) 로 리셋 (뷰어 `R` 과 같은 경로 — 헤드리스에서 쓴다). 대기 중 명령은 버리고 제어 모드는 유지 |
 
 #### 외력 주입 (`/sim/set_external_wrench`)
 
@@ -314,7 +315,7 @@ XML 의 조인트가 모든 robot 그룹의 `state_joint_names` 합집합에 없
 
 ### 초기 자세 (`initial_qpos`)
 
-그룹의 기동 자세이자 뷰어 `R` 리셋이 돌아가는 자세다. 우선순위:
+그룹의 기동 자세이자 뷰어 `R` · `/sim/reset` 리셋이 돌아가는 자세다. 우선순위:
 
 | 순위 | 소스 | 비고 |
 |---|---|---|

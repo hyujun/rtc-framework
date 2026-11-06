@@ -1,0 +1,82 @@
+# g1_loco/sim.yaml — MuJoCo-simulation delta (overlaid on _base.yaml)
+# Used by sim_g1_loco.launch.py. Loaded AFTER _base.yaml, which holds the
+# mode-agnostic config (model topology, joint & sensor rosters, limits,
+# control_rate, logging). This file owns only what a simulation run adds:
+# MuJoCo backends + sim topics, the floating-base ground-truth lane, sim-time
+# sync, relaxed E-STOP/timeouts, and the startup controller.
+/**:
+  ros__parameters:
+    # ── Initial controller ────────────────────────────────────────────────────
+    # The only controller this profile ships. It holds the measured pose and
+    # sends `pd_feedforward` commands (controllers/demo_joint_controller.yaml):
+    # the simulator's position servos carry the stance, the controller's
+    # feedforward torque is zero until something writes it.
+    initial_controller: "demo_joint_controller"
+
+    # ── Initialization timeout ────────────────────────────────────────────────
+    init_timeout_sec: 0.0 # s. 0 = disabled (no real hardware init in sim)
+
+    # ── Simulation sync ──────────────────────────────────────────────────────
+    use_sim_time_sync: true       # CV-based wakeup (sim); false = clock_nanosleep (real)
+    sim_sync_timeout_sec: 5.0     # s. Shut down if no state arrives within this
+    # The hand is a fake_response (LPF) group in this sim: it completes no
+    # physics step, so the tick waits for the body alone.
+    sim_sync_tick_devices: ["g1"]
+
+    # ── E-STOP configuration (relaxed for simulation) ────────────────────────
+    enable_estop: false # Disabled for simulation
+    device_timeout_values: [10000.0, 10000.0] # ms, device_timeout_names order — relaxed for sim startup
+
+    # ── Device backends (MuJoCo bridge) ───────────────────────────────────────
+    # Both groups must be claimed by the active controller: the sim waits for a
+    # command from the body every step, and the fake hand echoes its command.
+    devices:
+      g1:
+        backend:
+          type: "mujoco_native"
+          state_topic: "/g1/joint_states"
+          command_topic: "/g1/joint_command"
+          # ── Foot contact on the contact wrench lane ────────────────────────
+          # The name is the hand's; the lane is any group's contact wrench lane
+          # (WD-16). Slot f of the inference lane = list index f, so this is
+          # LEFT then RIGHT, fx/fy/fz in slots 1..3 (stride 7). Sign:
+          # foot-on-floor, i.e. a standing foot reads a negative fz.
+          #
+          # No shipped controller reads this lane yet — demo_joint_controller
+          # reads fingertip data from the hand group only. It is wired here so
+          # the plant exposes foot contact the way its consumer (the standing /
+          # walking controllers) will read it; today's measurement tool
+          # (run_stance_metrics) reads the raw sensor topic below instead.
+          fingertip_wrench_topics:
+            - "/g1/left_sole_contact/contact_wrench"
+            - "/g1/right_sole_contact/contact_wrench"
+          # Consecutive missed RT ticks before inference_enable[f] goes false.
+          # 500 Hz × 5 = 10 ms freshness budget.
+          max_consecutive_missed_ticks: 5
+          # ── Floating-base ground truth (#976) ──────────────────────────────
+          # Read from the simulator's SimSensorState topic of this group
+          # (mujoco_simulator.yaml robot_response.g1.sensor_topic). Names are
+          # the MJCF's (robots/g1/mjcf/g1_29dof_floating.xml): the pelvis frame
+          # sensors are `objtype="xbody"` (body frame), and the two IMU lists
+          # are parallel (index = site: 0 pelvis, 1 torso).
+          base_state:
+            sensor_topic: "/g1/sim_sensors"
+            pos: "pelvis_pos"
+            quat: "pelvis_quat"
+            linvel: "pelvis_linvel"
+            angvel: "pelvis_angvel"
+            imu_gyro: ["imu-pelvis-angular-velocity", "imu-torso-angular-velocity"]
+            imu_accel: ["imu-pelvis-linear-acceleration", "imu-torso-linear-acceleration"]
+        # The mujoco backend synthesizes neither a contact probability nor a
+        # displacement vector; consumers derive contact from |force|.
+        sensor_layout:
+          has_native_contact:  false
+          has_native_displacement: false
+      p1b:
+        backend:
+          type: "mujoco_native"            # the sim's fake_response group — same topics, LPF echo
+          state_topic: "/p1b/joint_states"
+          command_topic: "/p1b/joint_command"
+        sensor_layout:
+          has_native_contact:  false
+          has_native_displacement: false

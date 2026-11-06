@@ -4,7 +4,7 @@ package_name = "rtc_tools"
 
 setup(
     name=package_name,
-    version="5.29.0",
+    version="5.30.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
@@ -50,6 +50,8 @@ setup(
             "catching_decel = rtc_tools.analysis.catching_decel:main",
             "catching_grid_sweep = rtc_tools.analysis.catching_grid_sweep:main",
             "catching_wait_pose_search = rtc_tools.analysis.catching_wait_pose_search:main",
+            "run_stance_metrics = rtc_tools.analysis.stance_metrics_recorder:main",
+            "analyze_stance_metrics = rtc_tools.analysis.stance_metrics:main",
             "joint_command_gui = rtc_tools.gui.joint_command_gui:main",
         ],
     },

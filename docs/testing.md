@@ -43,7 +43,8 @@ colcon 의 pytest 는 시스템 python 이라 `.venv` 에만 있는 의존성 (m
 | `shape_estimation*/` | ToF + exploration gtest | `/shape/estimate` echo, `/shape/explore` 액션 |
 | `integrated_bringup/` demo FSM | demo_wbc · demo_joint · demo_task · grasp_phase_manager · virtual_tcp gtest | BT coordinator 통합 |
 | `integrated_bringup/` demo_joint 군 0 · dualarm | `test_joint_tree_primary_group` · `test_demo_dualarm_controller` · `test_demo_dualarm_alloc` | sim_g1_p1b 로 launch 후 GUI 확인 |
-| `integrated_bringup/` demo GUI · profile | `test_demo_gui_dualarm` · `test_robot_profiles` | `demo_controller_gui --robot g1_p1b` (Tk 배치는 pytest 가 못 본다) |
+| `integrated_bringup/` g1_loco 부동 베이스 profile | `test_g1_loco_configure` (출하 profile 로 configure + floating root 대조군) · `test_shipped_*` · `test_launch_*` 의 profile 목록 | `sim_g1_loco` 기동 → `run_stance_metrics` 10 s (문턱은 #977) · `/sim/reset` 뒤 재현 |
+| `integrated_bringup/` demo GUI · profile | `test_demo_gui_dualarm` · `test_robot_profiles` | `demo_controller_gui --robot g1_p1b` · `--robot g1_loco` (Tk 배치는 pytest 가 못 본다) |
 | `integrated_bringup/` FK · arm tip · hand sensor_layout | `test_hand_fk_wiring` · `test_arm_tip_resolution` · `test_hand_sensor_layout_gate` | `iiwa7_leap` sim 에서 손 목표 smoke |
 | `integrated_bringup/` compliance · catching | `test_compliance_admittance_coupling` · `test_demo_catching_controller` (configure — 사슬 탐색 · 관절군 · D9′) · `test_demo_catching_alloc` · `test_catching_search_segment_g1` (G1 탐색 · 구간 · 전신 항 — G1 + 합성 손 `robots/p1b_surrogate` 위) | sim 외부 렌치 → `compliance_diag.csv`; 17 관절 시간 기록은 `RTC_WHOLEBODY_TIMING=1` 로 단독 실행 |
 | `integrated_bringup/` inference · observer | `test_demo_inference_controller` · `test_momentum_observer_wiring` · `test_payload_estimator` | `test_demo_inference_real_model` (로컬) |
