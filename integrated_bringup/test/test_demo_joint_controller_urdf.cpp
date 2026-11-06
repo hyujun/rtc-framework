@@ -21,6 +21,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -307,6 +308,35 @@ TEST(JointArmDofSourceTest, MissingEstopSectionThrowsFromTheSharedParser) {
   const std::string msg = JointLoadConfigError([](YAML::Node& cfg) { cfg.remove("estop"); });
   EXPECT_NE(msg.find("demo_joint_controller"), std::string::npos) << msg;
   EXPECT_NE(msg.find("estop"), std::string::npos) << msg;
+}
+
+// ── command_type is parsed fail-closed ───────────────────────────────────────
+//
+// Anything but the three names used to fall back to position without a word.
+// On a floating-base sim that silently keeps the body gravity-compensated, so a
+// typo in `pd_feedforward` would pass a standing test for the wrong reason.
+
+TEST(JointCommandTypeTest, TheThreeNamesReachTheController) {
+  const std::array<std::pair<const char*, rtc::CommandType>, 3> cases{{
+      {"position", rtc::CommandType::kPosition},
+      {"torque", rtc::CommandType::kTorque},
+      {"pd_feedforward", rtc::CommandType::kPdFeedforward},
+  }};
+  for (const auto& [name, expected] : cases) {
+    DemoJointController ctrl{""};
+    ctrl.SetControlRate(1.0 / kDt);
+    YAML::Node cfg = YAML::Load(kJointYaml);
+    cfg["command_type"] = name;
+    ctrl.LoadConfig(cfg);
+    EXPECT_EQ(ctrl.GetCommandType(), expected) << name;
+  }
+}
+
+TEST(JointCommandTypeTest, AnUnknownNameThrowsNamingTheKey) {
+  const std::string msg =
+      JointLoadConfigError([](YAML::Node& cfg) { cfg["command_type"] = "pd_feedfoward"; });
+  EXPECT_NE(msg.find("command_type"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("pd_feedfoward"), std::string::npos) << msg;
 }
 
 TEST(JointArmDofSourceTest, ArmDofAboveTheControllerCapThrows) {

@@ -967,8 +967,21 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
   }
 
   if (cfg["command_type"]) {
+    // Fail-closed: a misspelt mode used to fall back to position silently, and
+    // on a floating-base sim that keeps the body under gravity compensation —
+    // the stance metrics then pass for the wrong reason. LoadConfig is a
+    // lifecycle path, so a throw is the right refusal.
     const auto s = cfg["command_type"].as<std::string>();
-    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+    if (s == "position") {
+      command_type_ = CommandType::kPosition;
+    } else if (s == "torque") {
+      command_type_ = CommandType::kTorque;
+    } else if (s == "pd_feedforward") {
+      command_type_ = CommandType::kPdFeedforward;
+    } else {
+      throw std::runtime_error("demo_joint_controller: command_type '" + s +
+                               "' is not one of position | torque | pd_feedforward");
+    }
   }
 
   BuildGraspController(shared, grasp_controller_);
