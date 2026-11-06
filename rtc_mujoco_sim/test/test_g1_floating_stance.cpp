@@ -6,10 +6,13 @@
 // Plain MuJoCo C API — no simulator node, no ROS. The model is the fixture and
 // comes through the ament index (robot_descriptions is data-only, ARCH-5), so
 // what is pinned here is the asset's contract, not this package's code:
-//   model  — freejoint 1 · sole box 2 (the upstream 4 spheres per foot) ·
+//   model  — freejoint 1 · sole box 2 (the upstream 4 spheres per foot) with a
+//            contact sensor, a framepos and an FT reference site each (#977) ·
 //            pelvis framepos/framequat/framelinvel/frameangvel · gyro +
 //            accelerometer on both IMU sites · <position> 23 with the agreed
-//            gains (wrists rigid) · keyframe "stand" · implicitfast · dt 0.002/3
+//            gains (wrists rigid) · keyframe "stand" · implicitfast · <option
+//            timestep> 0.002 = the control period the simulator divides by its
+//            n_substeps (3) — the stance below steps at that substep, 0.002/3
 //   stance — mj_resetDataKeyframe("stand"), then pure mj_step for 10 s: the
 //            feet do not slip, the pelvis stays up and level, both feet carry
 //            load, no joint sags away from its target, no actuator saturates,
@@ -38,7 +41,11 @@ namespace {
 constexpr const char* kModelRel = "/robots/g1/mjcf/g1_29dof_floating.xml";
 
 // ── Sprint Contract v3 (#975) ────────────────────────────────────────────────
-constexpr double kTimestep = 0.002 / 3.0;  // physics_timestep / n_substeps of the sim YAML
+constexpr double kControlPeriod =
+    0.002;  // <option timestep>: what the simulator reads as its control period
+constexpr int kSimSubsteps = 3;  // n_substeps of the g1_loco sim YAML
+constexpr double kTimestep =
+    kControlPeriod / kSimSubsteps;  // the physics substep the stance runs at
 constexpr double kSimSeconds = 10.0;
 constexpr double kSettleSeconds = 1.0;  // metrics are judged on t >= 1 s
 constexpr double kFootSlipMaxM = 0.005;
@@ -76,6 +83,10 @@ class G1FloatingModel : public ::testing::Test {
     ASSERT_NE(m_, nullptr) << path << ": " << err.data();
     d_ = mj_makeData(m_);
     ASSERT_NE(d_, nullptr);
+    ASSERT_NEAR(m_->opt.timestep, kControlPeriod, 1e-12) << "asset contract: control period";
+    // Step at the simulator's physics substep, not at the control period the
+    // asset declares — RunStance is then the same integration the sim runs.
+    m_->opt.timestep = kTimestep;
   }
 
   void TearDown() override {
@@ -185,7 +196,40 @@ TEST_F(G1FloatingModel, ImuGyroAndAccelerometerOnBothSites) {
     EXPECT_EQ(m_->sensor_objtype[s], mjOBJ_SITE) << name;
     EXPECT_EQ(m_->sensor_objid[s], Id(mjOBJ_SITE, site)) << name << " site " << site;
   }
-  EXPECT_EQ(m_->nsensor, 8) << "4 ground-truth + 4 IMU, nothing else";
+}
+
+TEST_F(G1FloatingModel, SoleContactSensorsFramePosAndReferenceSites) {
+  // The simulator's contact wrench lane needs: a mjSENS_CONTACT of 17 values
+  // (data="found force torque dist pos normal tangent", num=1, netforce) named
+  // <target>_contact, and a site <target>_ft_site to express the wrench in.
+  constexpr int kContactSensorDim = 17;
+  for (std::size_t k = 0; k < 2; ++k) {
+    const std::string stem = std::string(kSole[k]);
+    const int sole = Id(mjOBJ_GEOM, kSole[k]);
+    const int foot = Id(mjOBJ_BODY, kAnkleRoll[k]);
+    const int contact = Id(mjOBJ_SENSOR, (stem + "_contact").c_str());
+    ASSERT_GE(contact, 0) << stem;
+    EXPECT_EQ(m_->sensor_type[contact], mjSENS_CONTACT) << stem;
+    EXPECT_EQ(m_->sensor_dim[contact], kContactSensorDim) << stem;
+    EXPECT_EQ(m_->sensor_objtype[contact], mjOBJ_GEOM) << stem;
+    EXPECT_EQ(m_->sensor_objid[contact], sole) << stem << " must watch its own sole geom";
+    const int pos = Id(mjOBJ_SENSOR, (stem + "_pos").c_str());
+    ASSERT_GE(pos, 0) << stem;
+    EXPECT_EQ(m_->sensor_type[pos], mjSENS_FRAMEPOS) << stem;
+    EXPECT_EQ(m_->sensor_objtype[pos], mjOBJ_GEOM) << stem;
+    EXPECT_EQ(m_->sensor_objid[pos], sole) << stem;
+    const int site = Id(mjOBJ_SITE, (stem + "_ft_site").c_str());
+    ASSERT_GE(site, 0) << stem;
+    EXPECT_EQ(m_->site_bodyid[site], foot) << stem << " site hangs under " << kAnkleRoll[k];
+    // On the sole's bottom face: box centre z minus its half-height, in the foot frame.
+    EXPECT_NEAR(m_->site_pos[3 * site + 0], m_->geom_pos[3 * sole + 0], 1e-12) << stem;
+    EXPECT_NEAR(m_->site_pos[3 * site + 1], m_->geom_pos[3 * sole + 1], 1e-12) << stem;
+    EXPECT_NEAR(m_->site_pos[3 * site + 2],
+                m_->geom_pos[3 * sole + 2] - m_->geom_size[3 * sole + 2], 1e-12)
+        << stem;
+  }
+  EXPECT_EQ(m_->nsensor, 12)
+      << "4 ground-truth + 4 IMU + 2 sole contact + 2 sole framepos, nothing else";
 }
 
 TEST_F(G1FloatingModel, PositionServosWithContractGains) {
@@ -220,6 +264,8 @@ TEST_F(G1FloatingModel, KeyframeIntegratorTimestep) {
   EXPECT_EQ(m_->nkey, 1);
   EXPECT_GE(Id(mjOBJ_KEY, "stand"), 0);
   EXPECT_EQ(m_->opt.integrator, mjINT_IMPLICITFAST);
+  // SetUp already asserted <option timestep> == kControlPeriod and lowered the
+  // in-memory step to the physics substep; this pins the substep the stance uses.
   EXPECT_NEAR(m_->opt.timestep, kTimestep, 1e-12);
 }
 
