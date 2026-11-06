@@ -1909,6 +1909,35 @@ if(BUILD_TESTING)
     RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   ament_target_dependencies(test_shipped_sim_config rclcpp)
 
+  # The shipped g1_loco profile (#977): demo_joint_controller configures on the
+  # whole-body tree + closed-chain surrogate hand with pd_feedforward, and the
+  # same model with a floating root refuses — the premise the profile keeps its
+  # fixed root under. Reads _base.yaml + sim.yaml + controllers/ as the CM does.
+  ament_add_gtest(test_g1_loco_configure test/test_g1_loco_configure.cpp
+    TIMEOUT 180
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_g1_loco_configure PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_g1_loco_configure PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_g1_loco_configure
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_g1_loco_configure
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── demo_controller_gui static robot profiles (pure-Python) ────────────────
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_robot_profiles test/test_robot_profiles.py)
@@ -2067,6 +2096,7 @@ if(BUILD_TESTING)
     test_state_lane_close
     test_controller_target_cb_group_invariant
     test_payload_estimate_topic
+    test_g1_loco_configure
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99

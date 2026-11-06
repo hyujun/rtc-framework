@@ -276,13 +276,80 @@ class RobotShape:
                 ),
             ),
         )
-        hand_groups = _P1B_HAND_GROUPS
+        return cls._from_groups(joint_groups, _P1B_HAND_GROUPS)
+
+    @classmethod
+    def _from_groups(
+        cls,
+        joint_groups: tuple[tuple[str, tuple[str, ...]], ...],
+        hand_groups: tuple[tuple[str, tuple[str, ...]], ...],
+    ) -> RobotShape:
+        """A shape whose primary group is laid out as limbs: both rosters are
+        the groups flattened in order (the wire order the controller publishes)."""
         return cls(
             arm_joint_names=tuple(j for _, joints in joint_groups for j in joints),
             hand_motor_names=tuple(m for _, motors in hand_groups for m in motors),
             hand_finger_groups=hand_groups,
             arm_joint_groups=joint_groups,
         )
+
+    @classmethod
+    def default_g1_loco(cls) -> RobotShape:
+        """Unitree G1 whole body (23 joints, floating pelvis in the sim) +
+        synthetic p1b_surrogate hand on the right wrist.
+
+        The primary device group ``g1`` is a tree off the pelvis: left leg (6),
+        right leg (6), waist (3), left arm (4), right arm (4) in that order —
+        the roster the controller republishes on ``/rtc_cm/g1/joint_states``
+        (``config/g1_loco/_base.yaml`` g1 ``joint_state_names``; the wrists are
+        rigid in this model). ``arm_joint_groups`` lays it out as five limbs.
+
+        The hand is the same layout as ``default_g1_p1b``'s.
+        """
+        joint_groups = (
+            (
+                "Left leg",
+                (
+                    "left_hip_pitch_joint",
+                    "left_hip_roll_joint",
+                    "left_hip_yaw_joint",
+                    "left_knee_joint",
+                    "left_ankle_pitch_joint",
+                    "left_ankle_roll_joint",
+                ),
+            ),
+            (
+                "Right leg",
+                (
+                    "right_hip_pitch_joint",
+                    "right_hip_roll_joint",
+                    "right_hip_yaw_joint",
+                    "right_knee_joint",
+                    "right_ankle_pitch_joint",
+                    "right_ankle_roll_joint",
+                ),
+            ),
+            ("Waist", ("waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint")),
+            (
+                "Left arm",
+                (
+                    "left_shoulder_pitch_joint",
+                    "left_shoulder_roll_joint",
+                    "left_shoulder_yaw_joint",
+                    "left_elbow_joint",
+                ),
+            ),
+            (
+                "Right arm",
+                (
+                    "right_shoulder_pitch_joint",
+                    "right_shoulder_roll_joint",
+                    "right_shoulder_yaw_joint",
+                    "right_elbow_joint",
+                ),
+            ),
+        )
+        return cls._from_groups(joint_groups, _P1B_HAND_GROUPS)
 
     @classmethod
     def from_joint_names(
@@ -453,6 +520,22 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # Same hand group as ur5e_p1b, another body and another controller set:
         # its presets must not be read as that robot's, nor the reverse.
         preset_scope="g1_p1b",
+    ),
+    "g1_loco": RobotProfile(
+        shape=RobotShape.default_g1_loco(),
+        # Same frames as g1_p1b: the pelvis is the parent of every measured
+        # frame (the controller model's root is fixed there; the simulator's
+        # floating base is not a TF this GUI reads), and the hand mount is the
+        # end of the tree's right-arm branch (config/g1_loco/_base.yaml
+        # tree_models.g1).
+        tcp_parent="pelvis",
+        tcp_child="base_adapter_actual",
+        hand_group="p1b",
+        arm_group="g1",
+        # One controller ships (demo_joint_controller), already in GAIN_DEFS.
+        # Another body than g1_p1b's (23 joints, not 17): its presets must not
+        # be read as that robot's, nor the reverse.
+        preset_scope="g1_loco",
     ),
 }
 

@@ -1,0 +1,151 @@
+# g1_loco/_base.yaml — mode-agnostic config: Unitree G1 whole body (floating
+# base in the simulator) + the synthetic p1b_surrogate hand on the RIGHT wrist.
+#
+# Loaded first; sim.yaml overlays the simulation delta on top. There is no
+# robot.yaml — this profile is sim-only (the plant of the walking-MPC work, #977).
+#
+# Shape of this robot, and how it differs from g1_p1b:
+#   - the whole body is driven: legs (12) + waist (3) + arms (4 + 4; the wrists
+#     are rigid in this model) are ONE device group, `g1`, in that order — the
+#     URDF's, the MJCF's actuator order and the `stand` keyframe's. The group is
+#     a kinematic TREE off the pelvis (four branches), so it is declared under
+#     `tree_models`
+#   - the hand, `p1b`, is the synthetic p1b_surrogate (robot_descriptions), not
+#     a real hand; in the sim it is an LPF echo (no hand in the public MJCF)
+#   - the controller model's root is FIXED (`root_joint_type: "fixed"`): the
+#     floating base is the simulator's, and its ground truth reaches the
+#     controller through the `g1` device's base_state lane (sim.yaml), which is
+#     independent of the kinematic model. A free-flyer root would be locked as a
+#     passive joint by the closure builder and the hand's closed-chain handle
+#     refuses (dependent DoF > constraint rows) — the floating controller model
+#     is a later milestone with its own loader
+/**:
+  ros__parameters:
+    config_variant: "g1_loco"
+
+    # ── Control loop ─────────────────────────────────────────────────────────
+    control_rate: 500.0 # Hz — timer period = 1e6/rate us. Range: see agent_docs/invariants.md §RT Path
+
+    # ── Device timeout rosters (values are per-mode: see sim.yaml) ────────────
+    device_timeout_names: ["g1", "p1b"]
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+    enable_logging: true
+    enable_timing_log: true
+    enable_device_log: true # auto-creates per-device log files
+    max_log_sessions: 10 # session folders kept (YYMMDD_HHMM); the sim launch reads this too
+
+    # ── Robot model ──────────────────────────────────────────────────────────
+    # The public floating-base G1 (robots/g1/urdf/g1_29dof_floating.urdf, wrists
+    # rigid) with the synthetic hand on the right wrist. Both files are this
+    # repository's.
+    urdf:
+      package: "robot_descriptions"
+      path: "robots/g1/urdf/g1_29dof_floating_with_p1b_surrogate.urdf.xacro"
+      # Fixed root — see the header. The base lane does not depend on it.
+      root_joint_type: "fixed"
+      # Extended URDF: the hand's five loop closures come from the sidecar.
+      # Loaded model: 43 revolute joints, 33 actuated (23 + 10), 10 loop-passive.
+      extended: true
+      closure_path: "robots/g1/urdf/g1_29dof_floating_with_p1b_surrogate.closure.yaml"
+      tree_models:
+        # Device group `g1`: pelvis → both soles, the left wrist and the hand
+        # mount, 23 DoF. Model joint order is legs, waist, arms — the URDF's.
+        #
+        # The right arm ends at `base_adapter`, the link the hand is mounted
+        # on, NOT at right_wrist_yaw_link: the two differ by a fixed transform
+        # (p = [0.0415, -0.003, 0], rpy = [90°, 0, 90°]), and the hand tree
+        # below is rooted at base_adapter. DemoJointController reads the hand's
+        # mount off that root, so fingertip poses compose exactly.
+        g1:
+          root_link: "pelvis"
+          tip_links: ["left_ankle_roll_link", "right_ankle_roll_link", "left_wrist_yaw_link", "base_adapter"]
+        # Device group `p1b`: tip order = controller-facing finger order
+        # (thumb, index, middle, ring).
+        p1b:
+          root_link: "base_adapter"
+          tip_links: ["l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"]
+
+    # ── Devices ──────────────────────────────────────────────────────────────
+    devices:
+      g1:
+        # Order = the tree model's joint order (see tree_models.g1) = the MJCF
+        # actuator order = the `stand` keyframe's ctrl order.
+        joint_state_names:
+          - "left_hip_pitch_joint"
+          - "left_hip_roll_joint"
+          - "left_hip_yaw_joint"
+          - "left_knee_joint"
+          - "left_ankle_pitch_joint"
+          - "left_ankle_roll_joint"
+          - "right_hip_pitch_joint"
+          - "right_hip_roll_joint"
+          - "right_hip_yaw_joint"
+          - "right_knee_joint"
+          - "right_ankle_pitch_joint"
+          - "right_ankle_roll_joint"
+          - "waist_yaw_joint"
+          - "waist_roll_joint"
+          - "waist_pitch_joint"
+          - "left_shoulder_pitch_joint"
+          - "left_shoulder_roll_joint"
+          - "left_shoulder_yaw_joint"
+          - "left_elbow_joint"
+          - "right_shoulder_pitch_joint"
+          - "right_shoulder_roll_joint"
+          - "right_shoulder_yaw_joint"
+          - "right_elbow_joint"
+        # All four rows are the URDF's values (g1_29dof_floating.urdf), 23
+        # entries each. The controller manager takes the tighter of these and
+        # the URDF, so a looser number here has no effect.
+        joint_limits:
+          # rad/s. The URDF's motor ratings. Today the only consumer is the
+          # E-STOP ramp; no trajectory is planned against them.
+          max_velocity: [32.0, 20.0, 32.0, 20.0, 30.0, 30.0, 32.0, 20.0, 32.0, 20.0, 30.0, 30.0, 32.0, 30.0, 30.0, 37.0, 37.0, 37.0, 37.0, 37.0, 37.0, 37.0, 37.0]
+          # N·m. Ankles and waist roll / pitch are 35 (the URDF; the MJCF plant
+          # follows it, WD-15).
+          max_torque: [88.0, 139.0, 88.0, 139.0, 35.0, 35.0, 88.0, 139.0, 88.0, 139.0, 35.0, 35.0, 88.0, 35.0, 35.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0]
+          # rad. Note the hip roll and shoulder roll ranges mirror between sides.
+          position_lower: [-2.5307, -0.5236, -2.7576, -0.087267, -0.87267, -0.2618, -2.5307, -2.9671, -2.7576, -0.087267, -0.87267, -0.2618, -2.618, -0.52, -0.52, -3.0892, -1.5882, -2.618, -1.0472, -3.0892, -2.2515, -2.618, -1.0472]
+          position_upper: [2.8798, 2.9671, 2.7576, 2.8798, 0.5236, 0.2618, 2.8798, 0.5236, 2.7576, 2.8798, 0.5236, 0.2618, 2.618, 0.52, 0.52, 2.6704, 2.2515, 2.618, 2.0944, 2.6704, 1.5882, 2.618, 2.0944]
+        # Foot contact rides this group's inference lane (sim.yaml
+        # fingertip_wrench_topics — the name is the hand's, the lane is any
+        # group's contact wrench lane): slot 0 contact flag, 1..3 force, 4..6
+        # displacement, 7 wide per sole; the sim backend fills 1..3.
+        sensor_layout:
+          primary_count_per_group: 0
+          secondary_count_per_group: 0
+          values_per_group: 0
+          inference_values_per_group: 7
+      p1b:
+        # Controller-facing order: thumb (4), index (3), middle (2), ring (1).
+        joint_state_names:
+          - "thumb_cmc_aa_joint"
+          - "thumb_cmc_fe_joint"
+          - "thumb_mcp_joint"
+          - "thumb_dip_fe_joint"
+          - "index_mcp_aa_joint"
+          - "index_mcp_fe_joint"
+          - "index_dip_fe_joint"
+          - "middle_mcp_fe_joint"
+          - "middle_dip_fe_joint"
+          - "ring_mcp_fe_joint"
+        sensor_names:
+          - "thumb"
+          - "index"
+          - "middle"
+          - "ring"
+        joint_limits:
+          max_velocity: [10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384] # rad/s
+          max_torque: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0] # N·m
+          # rad — the surrogate's URDF values (the same as g1_p1b's hand).
+          position_lower: [0.0, -1.5707963, -1.5707963, -1.5707963, -0.122173, -1.5707963, -1.5707963, -1.5707963, -1.5707963, -1.5707963]
+          position_upper: [2.3561945, 1.5707963, 1.5707963, 0.0, 0.296706, 0.0, 0.0, 0.0, 0.0, 0.0]
+        # Sensor-lane geometry (values per fingertip group). The sim hand is an
+        # LPF echo with no sensors; the layout is the hand's so the controller's
+        # fingertip parser accepts it (stride 7, slots 1..3 force).
+        sensor_layout:
+          primary_count_per_group: 0
+          secondary_count_per_group: 0
+          values_per_group: 0
+          inference_values_per_group: 7

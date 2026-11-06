@@ -1,0 +1,182 @@
+# MuJoCo Simulator — Unitree G1 whole body, floating base (+ fake hand)
+# ──────────────────────────────────────────────────────────────────────────
+# Robot-specific overrides for the agnostic mujoco_simulator_node.
+# Loaded by integrated_bringup/launch/sim_g1_loco.launch.py.
+#
+# Agnostic defaults + solver SSoT live in rtc_mujoco_sim/config/solver_param.yaml
+# (loaded first; this file overrides the robot-specific keys).
+# RTC controller param overrides live in integrated_bringup/config/g1_loco/sim.yaml.
+#
+# Every numeric array below is written with decimal points: a ROS 2 params
+# sequence takes its type from its entries, and one integer literal turns a
+# double array into an integer array the node refuses at construction.
+
+mujoco_simulator:
+  ros__parameters:
+    # ── Model ────────────────────────────────────────────────────────────────
+    # The public floating-base plant (robot_descriptions): freejoint on the
+    # pelvis, floor, 23 <position> servos, keyframe "stand", pelvis ground-truth
+    # sensors + 2 IMU sites + one contact sensor and one framepos per sole. No
+    # hand in the scene — the hand group is a fake_response below.
+    model_path: "package://robot_descriptions/robots/g1/mjcf/g1_29dof_floating.xml"
+
+    # ── Sync timeout ─────────────────────────────────────────────────────────
+    # ms. Max time to wait for a controller command per step.
+    sync_timeout_ms: 50.0
+
+    # ── Max Real-Time Factor ──────────────────────────────────────────────────
+    max_rtf: 1.0 # 0.0 = unlimited
+
+    # ── Viewer ───────────────────────────────────────────────────────────────
+    enable_viewer: true
+    viewer_refresh_rate: 60.0  # Hz
+
+    # ── Physics Timestep ──────────────────────────────────────────────────────
+    # The MJCF's <option timestep> is 0.002 = this control period (the node
+    # refuses a scene whose timestep × control_rate ≠ 1); the physics substep
+    # is 0.002 / 3, the one the model's stance gtest integrates at.
+    physics_timestep: 0.002 # s — control period (= 1 / control_rate)
+    n_substeps: 3           # physics substeps per control cycle (substep = physics_timestep / n_substeps)
+
+    # ── Start / reset state ──────────────────────────────────────────────────
+    # The whole keyframe (freejoint pose, joint angles, ctrl) — the only way the
+    # pelvis starts at standing height; initial_qpos below covers the command
+    # joints alone and is kept equal to the keyframe (test_shipped_initial_qpos).
+    reset_keyframe: "stand"
+
+    # ── Position Servo Gains ─────────────────────────────────────────────────
+    # The MJCF's own <position kp kv> (legs & waist 200 / 5, arms 100 / 2) —
+    # the gains the model's stance gtest stands on. SIM choices, not the G1's
+    # servo behaviour. With `pd_feedforward` commands the controller's
+    # feedforward torque is injected on top of this PD (qfrc_applied) and the
+    # group's gravity compensation is off, so standing is the servos' work.
+    use_yaml_servo_gains: false
+
+    # No projectile ball on this profile (the default is disabled): there is
+    # nothing to catch it with. /sim/launch_ball answers success: false.
+
+    # ── Robot Response (MuJoCo physics) ──────────────────────────────────────
+    # command_joint_names: matched to actuators by XML joint name. The union
+    #   over the robot groups must equal the model's actuated joints (23) or
+    #   Initialize() fails.
+    # state_joint_names:   published joints — spelled out so the freejoint
+    #   (not a command joint) never lands on the topic.
+    robot_response:
+      groups: ["g1"]
+      g1:
+        command_joint_names:
+          - left_hip_pitch_joint
+          - left_hip_roll_joint
+          - left_hip_yaw_joint
+          - left_knee_joint
+          - left_ankle_pitch_joint
+          - left_ankle_roll_joint
+          - right_hip_pitch_joint
+          - right_hip_roll_joint
+          - right_hip_yaw_joint
+          - right_knee_joint
+          - right_ankle_pitch_joint
+          - right_ankle_roll_joint
+          - waist_yaw_joint
+          - waist_roll_joint
+          - waist_pitch_joint
+          - left_shoulder_pitch_joint
+          - left_shoulder_roll_joint
+          - left_shoulder_yaw_joint
+          - left_elbow_joint
+          - right_shoulder_pitch_joint
+          - right_shoulder_roll_joint
+          - right_shoulder_yaw_joint
+          - right_elbow_joint
+        state_joint_names:
+          - left_hip_pitch_joint
+          - left_hip_roll_joint
+          - left_hip_yaw_joint
+          - left_knee_joint
+          - left_ankle_pitch_joint
+          - left_ankle_roll_joint
+          - right_hip_pitch_joint
+          - right_hip_roll_joint
+          - right_hip_yaw_joint
+          - right_knee_joint
+          - right_ankle_pitch_joint
+          - right_ankle_roll_joint
+          - waist_yaw_joint
+          - waist_roll_joint
+          - waist_pitch_joint
+          - left_shoulder_pitch_joint
+          - left_shoulder_roll_joint
+          - left_shoulder_yaw_joint
+          - left_elbow_joint
+          - right_shoulder_pitch_joint
+          - right_shoulder_roll_joint
+          - right_shoulder_yaw_joint
+          - right_elbow_joint
+        command_topic: "/g1/joint_command"
+        state_topic: "/g1/joint_states"
+        # Startup + reset pose of the command joints (rad, command_joint_names
+        # order) = the `stand` keyframe (hips −0.3, knees 0.6, ankles −0.3,
+        # everything else 0). The keyframe wins for the freejoint; these must
+        # agree with it or the YAML silently overrides the keyframe edit.
+        initial_qpos: [-0.3, 0.0, 0.0, 0.6, -0.3, 0.0, -0.3, 0.0, 0.0, 0.6, -0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        # ── Sensors ──────────────────────────────────────────────────────────
+        # Every sensor of the MJCF, by name (not "auto", so a sensor added to
+        # the scene later does not silently widen the topic): the pelvis ground
+        # truth and the two IMUs feed the controller's base_state lane
+        # (sim.yaml), the two sole contact sensors are picked up by the contact
+        # wrench lane below and also published raw here (17 values each:
+        # found, force[3], torque[3], dist, pos[3], normal[3], tangent[3]),
+        # and the two sole framepos give the foot positions for slip metrics.
+        sensor_topic: "/g1/sim_sensors"
+        sensor_names:
+          - "pelvis_pos"
+          - "pelvis_quat"
+          - "pelvis_linvel"
+          - "pelvis_angvel"
+          - "imu-pelvis-angular-velocity"
+          - "imu-pelvis-linear-acceleration"
+          - "imu-torso-angular-velocity"
+          - "imu-torso-linear-acceleration"
+          - "left_sole_contact"
+          - "right_sole_contact"
+          - "left_sole_pos"
+          - "right_sole_pos"
+        contact_wrench:
+          enabled: true
+          topic_prefix: "/g1"
+          # target_name = the MJCF contact sensor's name, so the topics are
+          #   /g1/<side>_sole_contact/contact_wrench
+          # The suffix pair maps sensor → reference site:
+          #   "left_sole_contact" -(strip "_contact")-> "left_sole"
+          #                       -(append "_ft_site")-> site "left_sole_ft_site"
+          sensor_name_suffixes: ["_contact"]
+          reference_site_suffixes: ["_ft_site"]
+          # The site sits on the sole's bottom face, axes = the foot's.
+          reference_frame: "site"
+          publish_state: true   # adds /g1/<target>/contact_state (Bool, edge-triggered)
+          publish_debug: false  # true also emits contact_point + contact_depth
+          visualize: true         # orange force arrows in the viewer (Shift+F toggles)
+          visualize_scale: 0.001  # m/N — a standing foot (≈ 160 N) draws 16 cm
+
+    # ── Fake Response (LPF echo, no physics) ─────────────────────────────────
+    # The public scene has no hand; the hand group echoes its command through a
+    # first-order LPF so the controller sees a live device. Excluded from the
+    # controller manager's sim_sync_tick_devices (sim.yaml).
+    fake_response:
+      groups: ["p1b"]
+      p1b:
+        command_joint_names:
+          - thumb_cmc_aa_joint
+          - thumb_cmc_fe_joint
+          - thumb_mcp_joint
+          - thumb_dip_fe_joint
+          - index_mcp_aa_joint
+          - index_mcp_fe_joint
+          - index_dip_fe_joint
+          - middle_mcp_fe_joint
+          - middle_dip_fe_joint
+          - ring_mcp_fe_joint
+        # state_joint_names: left empty = command_joint_names
+        command_topic: "/p1b/joint_command"
+        state_topic: "/p1b/joint_states"
+        filter_alpha: 0.1

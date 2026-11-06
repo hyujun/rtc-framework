@@ -61,6 +61,7 @@ SIM_LAUNCH_FILES = [
     "sim_ur5e_p1b.launch.py",
     "sim_iiwa7_leap.launch.py",
     "sim_g1_p1b.launch.py",
+    "sim_g1_loco.launch.py",
 ]
 
 ROBOT_LAUNCH_FILES = [
@@ -73,6 +74,10 @@ LAUNCH_FILES = SIM_LAUNCH_FILES + ROBOT_LAUNCH_FILES
 P1B_SIM = "sim_ur5e_p1b.launch.py"
 LEAP_SIM = "sim_iiwa7_leap.launch.py"
 G1_SIM = "sim_g1_p1b.launch.py"
+G1_LOCO_SIM = "sim_g1_loco.launch.py"
+# The two G1 sims ship no demo_wbc_controller config and take `enable_mpc` for
+# the CPU layout alone.
+G1_SIMS = (G1_SIM, G1_LOCO_SIM)
 
 # Argument combinations, not just defaults. Every override argument declares an
 # empty default and is applied only when non-empty, so a defaults-only run never
@@ -112,9 +117,9 @@ ROBOT_COMBOS: list[tuple[str, dict[str, str]]] = [
 
 
 # Arguments not every launch can be driven with. `sim_overlay` and `sim_lanes`
-# are declared by the p1b, iiwa7_leap and g1_p1b sims (not p1a); `sim_overlay`
+# are declared by the p1b, iiwa7_leap and both G1 sims (not p1a); `sim_overlay`
 # drives an overlay that profile ships (iiwa7_leap ships none since #821, like
-# g1_p1b, so only its lanes and catching arguments are driven). The two
+# the G1 sims, so only its lanes and catching arguments are driven). The two
 # catching planner arguments (#821) are declared by the two sims that run the
 # throw population: p1b and iiwa7_leap.
 CATCH_MODES = {"catch_search_mode": "nlp", "catch_segment_mode": "mpc_docking"}
@@ -130,19 +135,23 @@ EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
         ("catch_modes", CATCH_MODES),
         ("catch_segment_mode", {"catch_segment_mode": "mpc"}),
     ],
-    # g1_p1b declares both arguments but ships no overlay to name, so only the
-    # lanes are driven here.
+    # The G1 sims declare both arguments but ship no overlay to name, so only
+    # the lanes are driven here.
     "sim_g1_p1b.launch.py": [
+        ("sim_lanes", {"sim_lanes": "true"}),
+    ],
+    "sim_g1_loco.launch.py": [
         ("sim_lanes", {"sim_lanes": "true"}),
     ],
 }
 
 
 # Arguments a launch does not take, although its siblings do. `mpc_engine`
-# selects the MPC engine of demo_wbc_controller, and g1_p1b ships no config for
-# that controller — the argument has nothing to reach there.
+# selects the MPC engine of demo_wbc_controller, and the G1 sims ship no config
+# for that controller — the argument has nothing to reach there.
 ARGUMENTS_NOT_TAKEN: dict[str, set[str]] = {
     "sim_g1_p1b.launch.py": {"mpc_engine"},
+    "sim_g1_loco.launch.py": {"mpc_engine"},
 }
 
 # The sims whose RT node takes an `mpc_engine` override.
@@ -425,17 +434,19 @@ def test_arguments_a_launch_does_not_take_are_not_declared(filename):
         assert (argument in declared) is expected, (filename, argument, sorted(declared))
 
 
+@pytest.mark.parametrize("filename", G1_SIMS)
 @pytest.mark.parametrize("enable_mpc", ["", "true", "false"])
-def test_g1_sim_sends_the_wbc_controller_nothing(enable_mpc):
-    """g1_p1b ships no demo_wbc_controller config, so nothing addresses it.
+def test_g1_sim_sends_the_wbc_controller_nothing(filename, enable_mpc):
+    """Neither G1 profile ships a demo_wbc_controller config, so nothing
+    addresses it.
 
-    `enable_mpc` stays on this launch for the CPU layout alone: it must reach
-    `rt_layout_profile` and no controller parameter.
+    `enable_mpc` stays on these launches for the CPU layout alone: it must
+    reach `rt_layout_profile` and no controller parameter.
     """
     overrides = {"use_cpu_affinity": "false"}
     if enable_mpc:
         overrides["enable_mpc"] = enable_mpc
-    nodes, context = _nodes_by_name(overrides, G1_SIM)
+    nodes, context = _nodes_by_name(overrides, filename)
     values = _override_values(nodes["integrated_rt_controller"], context)
     assert not [k for k in values if k.startswith("demo_wbc_controller")], sorted(values)
     # The default is "false" on this launch: no MPC cores shielded.
@@ -584,8 +595,8 @@ def test_unknown_sim_overlay_is_rejected():
 # tree (so a run's lanes sit next to the controller CSVs they are joined with),
 # and that the default leaves the sim exactly as it was. Both sims that run
 # catching trials share integrated_bringup.sim_lanes, and both are driven here —
-# as is g1_p1b, which declares the argument ahead of its catching controller.
-LANED_SIMS = (P1B_SIM, LEAP_SIM, G1_SIM)
+# as are the two G1 sims, which declare the argument ahead of any consumer.
+LANED_SIMS = (P1B_SIM, LEAP_SIM, G1_SIM, G1_LOCO_SIM)
 LANES = ("clock_lane", "ball_contact_lane")
 
 
