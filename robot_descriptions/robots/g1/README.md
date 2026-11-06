@@ -9,10 +9,13 @@ Unitree G1 29-DoF 휴머노이드. 공개 원본 (전신) 과 그 파생 부동 
 `mjcf/g1_29dof_floating.xml` · `urdf/g1_29dof_floating.urdf` 는 보행 MPC 의 plant 로 쓰는 파생본이다. 원본과의 차이는 각 파일 머리 주석이 적는다. 요지:
 
 - 손목 6 관절을 없애 강체로 (actuated 23). URDF 는 root 가 pelvis 그대로다 — 부동 관절은 loader 가 붙인다 (`rtc_urdf_bridge` `urdf.root_joint_type`)
-- 발 sphere 4 점 → sole box 1 개, `<motor>` → `<position>` (다리 · 허리 kp 200 / kv 5, 팔 100 / 2), pelvis 의 framepos · framequat · framelinvel · frameangvel (`objtype="xbody"` — body 프레임; `body` 는 관성 프레임), keyframe `stand`, `implicitfast` · timestep 0.002/3
+- 발 sphere 4 점 → sole box 1 개. sole 마다 `<contact>` 센서 (`*_sole_contact`, netforce 17 값 — sim 의 contact wrench lane 이 자동 발견) · `<framepos>` (`*_sole_pos`) · 바닥면의 `*_sole_ft_site` (wrench 기준 site)
+- `<motor>` → `<position>` (다리 · 허리 kp 200 / kv 5, 팔 100 / 2), keyframe `stand`
+- pelvis 의 framepos · framequat · framelinvel · frameangvel (`objtype="xbody"` — body 프레임; `body` 는 관성 프레임) + IMU 4 → sensor 12
+- `implicitfast` · timestep 0.002 = **제어 주기** (sim 은 `<option timestep>` 을 제어 주기로 읽어 `n_substeps` 로 나눈다; 단독 `mj_step` 은 0.002/3 로 덮어 쓴다)
 - 두 원본이 서로 어긋난 곳 (pelvis · torso 질량 1 g, 발목 · 허리 effort 50 vs 35) 은 URDF 를 SSoT 로 따랐다
 
-`g1_without_right_hand_fixed_base.urdf` 는 `g1_p1b` 프로파일의 테스트가 여는 상체 모델이다. 출하 손은 공개하지 않으므로 [`p1b_surrogate`](../p1b_surrogate/README.md) (**합성 — 실제 손이 아니다**) 를 붙인다.
+`g1_without_right_hand_fixed_base.urdf` 는 `g1_p1b` 프로파일의 테스트가 여는 상체 모델이고, `g1_29dof_floating_with_p1b_surrogate.urdf.xacro` 는 `g1_loco` 프로파일 (부동 베이스 sim) 의 CM 모델이다. 출하 손은 공개하지 않으므로 둘 다 [`p1b_surrogate`](../p1b_surrogate/README.md) (**합성 — 실제 손이 아니다**) 를 붙인다.
 
 | 파일 | 내용 |
 |---|---|
@@ -23,6 +26,8 @@ Unitree G1 29-DoF 휴머노이드. 공개 원본 (전신) 과 그 파생 부동 
 | `urdf/g1_without_right_hand_fixed_base.urdf` | 상체 고정 모델. `hand_description` 의 같은 파일과 바이트 동일 (sha256 `a73d7872…`) |
 | `urdf/g1_with_p1b_surrogate_fixed_base.urdf.xacro` | 상체 + 합성 손. 장착 변환은 `g1_p1b/_base.yaml` 의 값 |
 | `urdf/g1_with_p1b_surrogate_fixed_base.closure.yaml` | 손의 loop 5 + actuated 27 (G1 17 · 손 10) |
+| `urdf/g1_29dof_floating_with_p1b_surrogate.urdf.xacro` | 부동 베이스 전신 (`urdf/g1_29dof_floating.urdf` 그대로) + 합성 손. `g1_loco/_base.yaml` 의 CM 모델 (root 는 loader 가 정한다) |
+| `urdf/g1_29dof_floating_with_p1b_surrogate.closure.yaml` | 같은 loop 5 + actuated 33 (G1 23 · 손 10) — closure builder 는 목록 밖 관절을 passive 로 잠근다 |
 
 ## 디렉토리
 
@@ -32,7 +37,7 @@ g1/
 ├── g1.link_map.yaml
 ├── unitree_g1_29dof/    원본 (meshes/, MANIFEST.sha256)
 ├── mjcf/                파생 부동 MJCF
-└── urdf/                파생 부동 URDF · 상체 fixture
+└── urdf/                파생 URDF · fixture · 합성 손 xacro
 ```
 
 ## 문제 해결

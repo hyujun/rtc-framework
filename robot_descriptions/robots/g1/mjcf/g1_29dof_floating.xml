@@ -2,9 +2,12 @@
   g1_29dof_floating.xml — derived from ../unitree_g1_29dof/g1_29dof_rev_1_0.xml (sha256 165fa7a52757…).
   Diff against the original (robots/g1/README.md has the rationale):
     - meshdir -> ../unitree_g1_29dof/meshes (meshes are not duplicated)
-    - <option integrator="implicitfast" timestep="0.002/3"/> (physics_timestep / n_substeps of the sim config)
-    - wrist joints + motors removed (6): wrists are rigid, 23 actuated joints remain
+    - <option integrator="implicitfast" timestep="0.002"/> — the control period; the simulator divides it by
+      its n_substeps (3 -> physics substep 0.002/3). A standalone mj_step at 0.002 is coarser than the sim
     - the 4 foot contact spheres per foot -> one box geom (left_sole / right_sole)
+    - per sole: a <contact> sensor (<name>_sole_contact, netforce, 17 values) and a <framepos> of the sole
+      geom (<name>_sole_pos); <name>_sole_ft_site on the sole's bottom face is the wrench reference site
+    - wrist joints + motors removed (6): wrists are rigid, 23 actuated joints remain
     - <motor> -> <position kp kv>: legs & waist 200/5, arms 100/2
     - framepos/framequat/framelinvel/frameangvel of pelvis (ground truth), IMU sensors kept
     - keyframe "stand"
@@ -14,7 +17,7 @@
 -->
 <mujoco model="g1_29dof_floating">
   <compiler angle="radian" meshdir="../unitree_g1_29dof/meshes"/>
-  <option integrator="implicitfast" timestep="0.00066666666666666667"/>
+  <option integrator="implicitfast" timestep="0.002"/>
 
   <asset>
     <mesh name="pelvis" file="pelvis.STL"/>
@@ -92,6 +95,7 @@
                   <joint name="left_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.2618 0.2618" actuatorfrcrange="-35 35"/>
                   <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.2 0.2 0.2 1" mesh="left_ankle_roll_link"/>
                   <geom name="left_sole" type="box" size="0.09 0.03 0.005" pos="0.035 0 -0.03" rgba="0.2 0.2 0.2 1"/>
+                  <site name="left_sole_ft_site" pos="0.035 0 -0.035" size="0.005" group="4"/>
                 </body>
               </body>
             </body>
@@ -128,6 +132,7 @@
                   <joint name="right_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.2618 0.2618" actuatorfrcrange="-35 35"/>
                   <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.2 0.2 0.2 1" mesh="right_ankle_roll_link"/>
                   <geom name="right_sole" type="box" size="0.09 0.03 0.005" pos="0.035 0 -0.03" rgba="0.2 0.2 0.2 1"/>
+                  <site name="right_sole_ft_site" pos="0.035 0 -0.035" size="0.005" group="4"/>
                 </body>
               </body>
             </body>
@@ -273,6 +278,10 @@
     <accelerometer name="imu-torso-linear-acceleration" site="imu_in_torso" noise="1e-2" cutoff="157"/>
     <gyro name="imu-pelvis-angular-velocity" site="imu_in_pelvis" noise="5e-4" cutoff="34.9"/>
     <accelerometer name="imu-pelvis-linear-acceleration" site="imu_in_pelvis" noise="1e-2" cutoff="157"/>
+    <contact name="left_sole_contact" geom1="left_sole" num="1" data="found force torque dist pos normal tangent" reduce="netforce"/>
+    <contact name="right_sole_contact" geom1="right_sole" num="1" data="found force torque dist pos normal tangent" reduce="netforce"/>
+    <framepos name="left_sole_pos" objtype="geom" objname="left_sole"/>
+    <framepos name="right_sole_pos" objtype="geom" objname="right_sole"/>
   </sensor>
 
 
