@@ -4,6 +4,7 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 
 #include <chrono>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -23,7 +24,10 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     return ret;
   }
   try {
-    CreateOwnedTopics(*this, owned_topics_);
+    // One body group plus a hand lane per further `topics:` group, of which
+    // there are kDemoJointMaxHands (#715). A longer list throws here, before
+    // any subscription exists, and the catch below turns it into FAILURE.
+    CreateOwnedTopics(*this, owned_topics_, 1 + static_cast<std::size_t>(kDemoJointMaxHands));
 
     // ── Controller-owned non-RT publishers (no YAML role mapping) ─────────
     // GraspState rides under the secondary device's namespace, robot-agnostic
@@ -109,8 +113,20 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     const auto primary = GetPrimaryDeviceName();
     const auto secondary = GetSecondaryDeviceName();
     const auto primary_state_key = primary + "_state";
-    const auto secondary_state_key = secondary.empty() ? std::string{} : secondary + "_state";
     const auto secondary_sensor_key = secondary.empty() ? std::string{} : secondary + "_sensor";
+    // One DeviceStateLog instance per device group, keyed `<group>_state` — a
+    // second hand logs under its own group name exactly like the first (#715).
+    std::map<std::string, std::pair<std::vector<std::string>, std::vector<std::string>>> state_logs{
+        {primary_state_key, {primary_joint_names_, std::vector<std::string>{}}}};
+    for (int h = 0; h < kDemoJointMaxHands; ++h) {
+      const std::string hand = HandDeviceName(h);
+      if (hand.empty()) {
+        continue;
+      }
+      const auto hi = static_cast<std::size_t>(h);
+      state_logs.emplace(hand + "_state",
+                         std::make_pair(hand_joint_names_[hi], hand_motor_names_[hi]));
+    }
 
     // An arm model whose tip frame did not resolve: the normal tick would
     // publish the identity pose as the arm tip and the E-STOP tick the universe
@@ -163,11 +179,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     LogRegistrationContext ctx{
         .logger = logger_,
         .log_set = log_set_,
-        .state_logs =
-            {
-                {primary_state_key, {primary_joint_names_, std::vector<std::string>{}}},
-                {secondary_state_key, {secondary_joint_names_, secondary_motor_names_}},
-            },
+        .state_logs = std::move(state_logs),
         .sensor_logs =
             {
                 {secondary_sensor_key,
@@ -191,9 +203,13 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     if (auto it = reg.handles.state.find(primary_state_key); it != reg.handles.state.end()) {
       primary_state_log_handle_ = std::move(it->second);
     }
-    if (!secondary_state_key.empty()) {
-      if (auto it = reg.handles.state.find(secondary_state_key); it != reg.handles.state.end()) {
-        secondary_state_log_handle_ = std::move(it->second);
+    for (int h = 0; h < kDemoJointMaxHands; ++h) {
+      const std::string hand = HandDeviceName(h);
+      if (hand.empty()) {
+        continue;
+      }
+      if (auto it = reg.handles.state.find(hand + "_state"); it != reg.handles.state.end()) {
+        hand_state_log_handles_[static_cast<std::size_t>(h)] = std::move(it->second);
       }
     }
     if (!secondary_sensor_key.empty()) {
@@ -311,7 +327,9 @@ void DemoJointController::ResetLogState() noexcept {
   // silently swallows the fresh session's first drop burst (#238).
   log_drops_reported_ = 0;
   primary_state_log_handle_ = {};
-  secondary_state_log_handle_ = {};
+  for (auto& handle : hand_state_log_handles_) {
+    handle = {};
+  }
   secondary_sensor_log_handle_ = {};
   pull_estimator_log_handle_ = {};
   momentum_observer_log_handle_ = {};

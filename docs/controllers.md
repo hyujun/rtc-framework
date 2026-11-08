@@ -12,7 +12,7 @@ RTC 의 컨트롤러는 두 층이다. `rtc_controllers` 는 프레임워크에 
 
 | 컨트롤러 | Type | 용도 | 출하 로봇 (`config/<robot>/controllers/`) |
 |---|---|---|---|
-| `demo_joint_controller` | Position | 관절 궤적 (quintic) + 손. 손 모드 `grasp_controller_type` 선택 | 전부. 새 로봇은 이것으로 bring-up |
+| `demo_joint_controller` | Position | 관절 궤적 (quintic) + 손 (device group 최대 2 — 센서 · FK 는 첫 손만). 손 모드 `grasp_controller_type` 선택 | 전부. 새 로봇은 이것으로 bring-up |
 | `demo_task_controller` | Position | Cartesian CLIK + 궤적 + 손 | `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` |
 | `demo_compliance_controller` | Position | task 컨트롤러 + 외부 렌치 admittance. 렌치는 손 레인의 pull 추정 | `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` |
 | `demo_wbc_controller` | Position | TSID/CLIK-QP whole-body + 손 phase FSM. 상세: [DemoWbcController](../integrated_bringup/docs/demo-wbc-controller.md) | `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` |

@@ -340,7 +340,9 @@ void DemoDualArmController::LoadConfig(const YAML::Node& cfg) {
       parsed_log_entries_.push_back(std::move(e));
     }
   }
-  if (topic_config_.groups.empty() || topic_config_.groups.size() > kMaxOwnedGroups) {
+  // One body and at most one hand (#637) — the same bound on_configure passes
+  // to CreateOwnedTopics, checked here too so the parse names the key.
+  if (topic_config_.groups.empty() || topic_config_.groups.size() > kArmAndHandGroups) {
     Fail("'topics' must name one or two device groups (the body group first, then the hand)");
   }
 

@@ -117,7 +117,8 @@ void PrefillWbcMessage(const rtc::DeviceNameConfig* cfg, rtc_msgs::msg::WbcState
 
 }  // namespace
 
-void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles) {
+void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                       std::size_t max_groups) {
   auto node = ctrl.get_lifecycle_node();
   if (!node) {
     throw std::runtime_error(
@@ -125,23 +126,39 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
         "yet called?)");
   }
 
+  const auto& groups = ctrl.GetTopicConfig().groups;
+  // Refused, not truncated (#715): a group past the controller's bound used to
+  // be skipped without a log line — or, past a looser bound, subscribed and its
+  // goals accepted while no output lane ever wrote that device. Either way the
+  // only trace was a simulator that never left its first step because that
+  // group's command never arrived. One check, one number, for every controller.
+  if (max_groups > kMaxOwnedGroups) {
+    throw std::runtime_error("CreateOwnedTopics: " + std::string(ctrl.Name()) + " declares " +
+                             std::to_string(max_groups) +
+                             " device groups; the target array holds " +
+                             std::to_string(kMaxOwnedGroups));
+  }
+  if (groups.size() > max_groups) {
+    throw std::runtime_error("CreateOwnedTopics: 'topics' names " + std::to_string(groups.size()) +
+                             " device groups; " + std::string(ctrl.Name()) + " drives at most " +
+                             std::to_string(max_groups));
+  }
+
   int group_idx = 0;
-  for (const auto& [group_name, group] : ctrl.GetTopicConfig().groups) {
+  for (const auto& [group_name, group] : groups) {
     const auto gi = static_cast<std::size_t>(group_idx);
 
     for (const auto& sub : group.subscribe) {
       // Issue #138: every controller-YAML subscribe entry is controller-owned.
       // Phase 4 trailing cleanup: SubscribeRole enum dropped — the only
       // remaining subscribe lane is the controller target (RobotTarget).
-      if (gi < kMaxOwnedGroups) {
-        const std::string name_capture = group_name;
-        const int idx_capture = group_idx;
-        handles.target_subs[gi] = node->create_subscription<rtc_msgs::msg::RobotTarget>(
-            sub.topic_name, 1,
-            [&ctrl, name_capture, idx_capture](rtc_msgs::msg::RobotTarget::SharedPtr msg) {
-              ctrl.DeliverTargetMessage(name_capture, idx_capture, *msg);
-            });
-      }
+      const std::string name_capture = group_name;
+      const int idx_capture = group_idx;
+      handles.target_subs[gi] = node->create_subscription<rtc_msgs::msg::RobotTarget>(
+          sub.topic_name, 1,
+          [&ctrl, name_capture, idx_capture](rtc_msgs::msg::RobotTarget::SharedPtr msg) {
+            ctrl.DeliverTargetMessage(name_capture, idx_capture, *msg);
+          });
     }
 
     for (const auto& pub : group.publish) {

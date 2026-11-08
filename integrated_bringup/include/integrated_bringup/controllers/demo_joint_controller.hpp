@@ -66,6 +66,16 @@ inline constexpr int kDemoJointMaxHandDof = 32;
 // Combined arm+hand actuated model capacity — sizes the ext↔Pinocchio reorder
 // maps (unified kin&dyn Phase 5). Actual full_dof_ resolved at runtime.
 inline constexpr int kDemoJointMaxFullDof = kDemoJointMaxArmDof + kDemoJointMaxHandDof;
+// Hand device groups this controller drives — `topics:` groups 1..N, device
+// index h + 1 for lane h (#715). Every lane has its own hold seed, target
+// row, trajectory, F5 readability gate, E-STOP hold and DeviceStateLog, on the
+// shared hand gains. What reads a hand's SENSORS or its KINEMATICS stays on
+// lane 0 alone (GetSecondaryDeviceName): fingertip FK + TF slots, GraspState,
+// contact-stop, Force-PI, the combined arm+hand model. A second hand is
+// position-commanded only.
+inline constexpr int kDemoJointMaxHands = 2;
+static_assert(kDemoJointMaxHands + 1 <= ControllerState::kMaxDevices,
+              "every hand lane must map onto a ControllerState device slot");
 
 // Unified trajectory-based position controller for UR5e arm + hand.
 //
@@ -138,8 +148,12 @@ class DemoJointController final : public RTControllerInterface {
 
   // V5 (#779): joint goals only. A task goal's x, y, z, r, p, y would be
   // commanded as joint radians; DeliverTargetMessage refuses and counts it.
-  [[nodiscard]] GoalKinds AcceptedGoalKinds(int /*device_idx*/) const noexcept override {
-    return {.joint = true, .task = false};
+  // Only the body and the kDemoJointMaxHands hand lanes accept one at all
+  // (#715): a goal for a device past the last lane would be written into a
+  // target row no trajectory reads, so it is refused and counted instead of
+  // being swallowed.
+  [[nodiscard]] GoalKinds AcceptedGoalKinds(int device_idx) const noexcept override {
+    return {.joint = device_idx >= 0 && device_idx <= kDemoJointMaxHands, .task = false};
   }
 
   [[nodiscard]] std::string_view Name() const noexcept override { return "DemoJointController"; }
@@ -401,6 +415,18 @@ class DemoJointController final : public RTControllerInterface {
     return owned_topics_.grasp_msg.header.frame_id;
   }
 
+  /// Test-only: how many device groups on_configure subscribed a target for.
+  /// The `topics:` list is owned in full or the configure is refused (#715) —
+  /// a group that is owned but never subscribed is a simulator that never
+  /// leaves its first step, with nothing in the log.
+  [[nodiscard]] std::size_t OwnedTargetSubscriptionCountForTesting() const noexcept {
+    std::size_t n = 0;
+    for (const auto& sub : owned_topics_.target_subs) {
+      n += sub ? 1U : 0U;
+    }
+    return n;
+  }
+
  private:
   // ── Phase 1→2 intermediate: parsed sensor data ──────────────────────────
   // Backend = hardware raw, controller = behavior: force/in_contact for
@@ -435,7 +461,8 @@ class DemoJointController final : public RTControllerInterface {
   };
 
   ComputedTrajectory robot_computed_{};
-  ComputedTrajectory hand_computed_{};
+  // Per hand lane: [h] belongs to device h + 1 (kDemoJointMaxHands).
+  std::array<ComputedTrajectory, kDemoJointMaxHands> hand_computed_{};
 
   // ── Hand fingertip FK dispatch (serial hand_handle_ ↔ closed_hand_fk_) ────
   // #121: single branch point for closed-chain vs serial hand FK so every call
@@ -520,21 +547,25 @@ class DemoJointController final : public RTControllerInterface {
 
   rtc::SeqLock<TargetSlot> target_seqlock_;
   // Per-device self-init flags. The arm (device 0) is seeded immediately on the
-  // first tick; the hand (device 1) hold-seed is DEFERRED until it first reports
-  // a valid measured state. A single shared flag used to flip true after the
-  // arm seed even when the hand was still coming up, leaving targets[1] at its
-  // zero init and driving every finger to 0 (ur5e fine / p1b collapse). Split so
-  // the hand seed retries each tick until device 1 is valid.
+  // first tick; each hand lane's hold-seed is DEFERRED until ITS device first
+  // reports a readable measured state. A single shared flag used to flip true
+  // after the arm seed even when the hand was still coming up, leaving
+  // targets[1] at its zero init and driving every finger to 0 (ur5e fine / p1b
+  // collapse). Split so each hand seed retries each tick until its device is
+  // readable — one latch per lane (#715), because a shared hand latch would
+  // seed a second hand from zeros the tick the first became readable.
   std::atomic<bool> arm_target_initialized_{false};
-  std::atomic<bool> hand_target_initialized_{false};
+  std::array<std::atomic<bool>, kDemoJointMaxHands> hand_target_initialized_{};
 
-  // Base hook — every activation re-arms both self-init paths so a re-activated
+  // Base hook — every activation re-arms every self-init path so a re-activated
   // controller holds where the robot actually is, not where it was commanded
   // before the switch. Previously duplicated inside on_activate; centralising it
   // here keeps every controller's reset on one contract (#196 §3).
   void ResetTargetInitialization() noexcept override {
     arm_target_initialized_.store(false, std::memory_order_release);
-    hand_target_initialized_.store(false, std::memory_order_release);
+    for (auto& flag : hand_target_initialized_) {
+      flag.store(false, std::memory_order_release);
+    }
   }
 
   // RT-thread-only working copy of the current TargetSlot; ComputeControl /
@@ -626,19 +657,51 @@ class DemoJointController final : public RTControllerInterface {
   void InitArmModel(const rtc_urdf_bridge::ModelConfig& config);
   void InitHandModel(const rtc_urdf_bridge::ModelConfig& config);
 
+  /// Device group of hand lane `h` (device index h + 1, `topics:` order), or ""
+  /// when the config declares no such group. Lane 0 is GetSecondaryDeviceName().
+  /// Config-time only — returns a string.
+  [[nodiscard]] std::string HandDeviceName(int h) const {
+    const auto gi = static_cast<std::size_t>(h) + 1;
+    return gi < topic_config_.groups.size() ? topic_config_.groups[gi].first : std::string{};
+  }
+
+  /// RT tick: the device of hand lane `h` when this tick carries one and it is
+  /// valid, else nullptr. The one definition of "this lane has a device to
+  /// drive this tick", shared by the trajectory block, the three output fills
+  /// and the E-STOP hold. The lane's F5 gate (hand_readable_[h]) is a separate,
+  /// narrower question each site asks itself.
+  [[nodiscard]] static const rtc::DeviceState* HandLaneDevice(const ControllerState& state,
+                                                              int h) noexcept {
+    const auto d = static_cast<std::size_t>(h) + 1;
+    if (static_cast<int>(d) >= state.num_devices || !state.devices[d].valid) {
+      return nullptr;
+    }
+    return &state.devices[d];
+  }
+
+  /// RT tick: the F5 gate-closed diagnostics (width, holes — #307, #284) for
+  /// hand lane H. A template on the lane so each lane owns its RCLCPP_*_THROTTLE
+  /// windows — the macro keeps its state at the expansion point, and one shared
+  /// expansion would let a hand that is closed every tick consume the window
+  /// the other hand's first report needs.
+  template <std::size_t H>
+  void WarnHandGateClosed(const ControllerState& state) noexcept;
+
   CommandType command_type_{CommandType::kPosition};
 
   // ── Trajectory ───────────────────────────────────────────────────────────
   // RT-thread-only flags; SetDeviceTarget marshals through the base mailbox and
-  // ApplyPendingTarget flips these when a device-0 / device-1 entry is drained.
+  // ApplyPendingTarget flips these when a device-0 / device-(h+1) entry is
+  // drained. Hand members are per lane: [h] belongs to device h + 1.
   bool robot_new_target_pending_{false};
-  bool hand_new_target_pending_{false};
+  std::array<bool, kDemoJointMaxHands> hand_new_target_pending_{};
   // Templates fixed at compile-time capacity; only the first arm_dof_ /
-  // hand_dof_ slots are initialised + read at runtime (caller-trim pattern).
+  // hand_dof_[h] slots are initialised + read at runtime (caller-trim pattern).
   trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof> robot_trajectory_;
-  trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof> hand_trajectory_;
+  std::array<trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>, kDemoJointMaxHands>
+      hand_trajectory_;
   double robot_trajectory_time_{0.0};
-  double hand_trajectory_time_{0.0};
+  std::array<double, kDemoJointMaxHands> hand_trajectory_time_{};
 
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_lower_;
@@ -837,16 +900,17 @@ class DemoJointController final : public RTControllerInterface {
   /// RT-thread-only, like estop_active_ — no synchronisation needed.
   bool arm_readable_{false};
 
-  /// The same F5 gate on the SECONDARY axis (issue #291). arm_readable_ is
-  /// device 0's policy and deliberately does not silence the hand (§3.7,
-  /// "secondary passthrough 유지"); this flag is the hand's answer about
-  /// ITSELF. False means device 1 did not report the hand_dof_ channels the
-  /// hand loops read — hand_dof_ comes from YAML joint_state_names.size()
-  /// while num_channels is the wire length, so a start-up mismatch would read
-  /// the unreported finger joints as a finite 0 and ramp them origin-ward.
-  /// The answer is the same as the arm's: silence device 1 (zero-length) with
-  /// the reference lanes held at the measurement. RT-thread-only.
-  bool hand_readable_{false};
+  /// The same F5 gate on each HAND axis (issue #291), one flag per lane
+  /// (#715). arm_readable_ is device 0's policy and deliberately does not
+  /// silence the hands (§3.7, "secondary passthrough 유지"); hand_readable_[h]
+  /// is hand h's answer about ITSELF, and no other lane's. False means device
+  /// h + 1 did not report the hand_dof_[h] channels its loops read —
+  /// hand_dof_[h] comes from YAML joint_state_names.size() while num_channels
+  /// is the wire length, so a start-up mismatch would read the unreported
+  /// finger joints as a finite 0 and ramp them origin-ward. The answer is the
+  /// same as the arm's: silence that device (zero-length) with the reference
+  /// lanes held at the measurement. RT-thread-only.
+  std::array<bool, kDemoJointMaxHands> hand_readable_{};
 
   /// Arm joint position the E-STOP path drives to. Authoritative source is
   /// LoadConfig(cfg["estop"]["arm_safe_position"]); only the first
@@ -857,19 +921,19 @@ class DemoJointController final : public RTControllerInterface {
 
   // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +
   // device configs). arm_dof_ has ONE source — the YAML `arm_dof` key, which
-  // #340 made required with no fallback. hand_dof_ has TWO: the secondary
-  // group's joint_state_names size when that group declares them (CM's parser
+  // #340 made required with no fallback. hand_dof_[h] has TWO: that hand
+  // group's joint_state_names size when the group declares them (CM's parser
   // treats the key as optional), otherwise the device's own first reported
   // num_channels, filled on the RT path. RT-path loops iterate over these.
   int arm_dof_{0};
-  int hand_dof_{0};
-  // Which of hand_dof_'s two sources won (#307). The diagnostic needs it: a
+  std::array<int, kDemoJointMaxHands> hand_dof_{};
+  // Which of hand_dof_[h]'s two sources won (#307). The diagnostic needs it: a
   // shortfall against a DECLARED width is a config mismatch the operator fixes
   // in joint_state_names, while a shortfall against the device's own first
   // report means the backend narrowed mid-session and there is no key to edit.
   // Written off-RT in OnDeviceConfigsSet, read on the RT path — same lifetime
   // and same thread story as hand_dof_ itself.
-  bool hand_dof_from_config_{false};
+  std::array<bool, kDemoJointMaxHands> hand_dof_from_config_{};
 
   // Sensor capability cache — populated in OnDeviceConfigsSet from
   // GetSensorLayout(secondary). RT path (ReadState) reads only these bools,
@@ -940,7 +1004,9 @@ class DemoJointController final : public RTControllerInterface {
   // DrainControllerLogs warns once per new burst rather than once per drain.
   std::uint64_t log_drops_reported_{0};
   rtc::LogHandle<integrated_bringup::DeviceStateLogPod> primary_state_log_handle_;
-  rtc::LogHandle<integrated_bringup::DeviceStateLogPod> secondary_state_log_handle_;
+  // One DeviceStateLog per hand lane (`<group>_state`); sensors log lane 0 only.
+  std::array<rtc::LogHandle<integrated_bringup::DeviceStateLogPod>, kDemoJointMaxHands>
+      hand_state_log_handles_;
   rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;
   rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator_log_handle_;
   rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> momentum_observer_log_handle_;
@@ -952,8 +1018,8 @@ class DemoJointController final : public RTControllerInterface {
 
   // Captured at on_configure for header expansion (not RT).
   std::vector<std::string> primary_joint_names_;
-  std::vector<std::string> secondary_joint_names_;
-  std::vector<std::string> secondary_motor_names_;
+  std::array<std::vector<std::string>, kDemoJointMaxHands> hand_joint_names_;
+  std::array<std::vector<std::string>, kDemoJointMaxHands> hand_motor_names_;
   std::vector<std::string> secondary_sensor_names_;
   /// Hand DeviceSensorLayout stride, cached for the CSV header/row writers. 0
   /// on a force-only hand → no barometer/ToF columns at all.

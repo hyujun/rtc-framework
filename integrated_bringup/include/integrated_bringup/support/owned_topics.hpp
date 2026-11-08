@@ -144,9 +144,19 @@ struct TaskGoalSubscriptionRequest {
   TaskGoalIngress* ingress{nullptr};
 };
 
-// Up to two device groups per demo (ur5e, hand). Expand if/when a demo
-// introduces a third group.
-inline constexpr std::size_t kMaxOwnedGroups = 2;
+// Capacity of the target-subscription array: the bound the controller state
+// itself carries (#715). It is NOT a controller's contract — every controller
+// passes the number of `topics:` groups it actually drives to
+// CreateOwnedTopics, which refuses a longer list rather than skipping its
+// tail or accepting goals for a group no output lane writes. Both of those
+// have no symptom but silence: the simulator waits on that group forever.
+inline constexpr std::size_t kMaxOwnedGroups =
+    static_cast<std::size_t>(rtc::ControllerState::kMaxDevices);
+
+// The bound of every controller written for one arm (or body) group plus one
+// hand group — task, compliance, wbc, catching, dualarm. demo_joint passes its
+// own (1 + kDemoJointMaxHands).
+inline constexpr std::size_t kArmAndHandGroups = 2;
 
 // Upper bound on TFMessage transforms broadcast by a single controller, with
 // headroom over any one controller's frame list.
@@ -174,7 +184,7 @@ struct TfFrameSlot {
 };
 
 struct ControllerTopicHandles {
-  // Target subscriptions — one per device group (ur5e, hand).
+  // Target subscriptions — one per device group, in `topics:` order.
   std::array<rclcpp::Subscription<rtc_msgs::msg::RobotTarget>::SharedPtr, kMaxOwnedGroups>
       target_subs{};
 
@@ -228,7 +238,11 @@ struct ControllerTopicHandles {
 // controller-owned, issue #138). Subscriptions route through
 // ctrl.DeliverTargetMessage(group_name, group_idx, msg). Throws on
 // allocation failure — callers must wrap in try/catch.
-void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles);
+/// `max_groups` is the number of `topics:` device groups THIS controller
+/// drives (≤ kMaxOwnedGroups). A longer list throws (the lifecycle catch turns
+/// it into a configure FAILURE) before any subscription is created.
+void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                       std::size_t max_groups);
 
 // Create one `<name>/task_goal` subscription per request on the controller's
 // LifecycleNode — default callback group (non-RT), QoS depth 1 — and keep them

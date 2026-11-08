@@ -1626,7 +1626,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // shows up in topic_config_, and no endpoint is ever created — the step
     // then vanishes with no error anywhere (the step path is what the
     // measurement runs through, so it fails as silence, not as a failure).
-    CreateOwnedTopics(*this, owned_topics_);
+    CreateOwnedTopics(*this, owned_topics_, kArmAndHandGroups);
     // The state topic sits directly under the controller's own
     // namespace rather than under a device group's: it describes the
     // CONTROLLER, not one device's lane, and the two groups it drives would

@@ -229,23 +229,32 @@ void DemoJointController::OnDeviceConfigsSet() {
                    arm_dof_, primary.c_str(), js_size);
     }
   }
-  hand_dof_ = 0;
-  if (!secondary.empty()) {
-    if (auto* cfg = GetDeviceNameConfig(secondary); cfg) {
-      hand_dof_ = static_cast<int>(cfg->joint_state_names.size());
+  // One lane per hand group (#715): lane h is `topics:` group h + 1 and device
+  // h + 1. A lane whose group is not declared keeps 0 and never seeds.
+  for (int h = 0; h < kDemoJointMaxHands; ++h) {
+    const auto hi = static_cast<std::size_t>(h);
+    const std::string hand = HandDeviceName(h);
+    hand_dof_[hi] = 0;
+    if (!hand.empty()) {
+      if (auto* cfg = GetDeviceNameConfig(hand); cfg) {
+        hand_dof_[hi] = static_cast<int>(cfg->joint_state_names.size());
+      }
     }
+    if (hand_dof_[hi] < 0 || hand_dof_[hi] > kDemoJointMaxHandDof) {
+      RCLCPP_ERROR(logger_,
+                   "[joint] hand lane %d ('%s') DoF %d exceeds capacity "
+                   "kDemoJointMaxHandDof=%d — clamping",
+                   h, hand.c_str(), hand_dof_[hi], kDemoJointMaxHandDof);
+      hand_dof_[hi] = std::min(std::max(hand_dof_[hi], 0), kDemoJointMaxHandDof);
+    }
+    // #307: `> 0` HERE is exactly "the config won", because the RT fallback
+    // (DrainTargetSlot) fires only on `hand_dof_[h] == 0`. Reading it off the
+    // final value rather than off the branch keeps the two in step through the
+    // clamp — a group that declares an empty joint_state_names leaves 0 and
+    // gets the device's width, so the diagnostic must not send its operator to
+    // that key either.
+    hand_dof_from_config_[hi] = hand_dof_[hi] > 0;
   }
-  if (hand_dof_ < 0 || hand_dof_ > kDemoJointMaxHandDof) {
-    RCLCPP_ERROR(logger_, "[joint] hand DoF %d exceeds capacity kDemoJointMaxHandDof=%d — clamping",
-                 hand_dof_, kDemoJointMaxHandDof);
-    hand_dof_ = std::min(std::max(hand_dof_, 0), kDemoJointMaxHandDof);
-  }
-  // #307: `> 0` HERE is exactly "the config won", because the RT fallback below
-  // fires only on `hand_dof_ == 0`. Reading it off the final value rather than
-  // off the branch keeps the two in step through the clamp — a group that
-  // declares an empty joint_state_names leaves 0 and gets the device's width,
-  // so the diagnostic must not send its operator to that key either.
-  hand_dof_from_config_ = hand_dof_ > 0;
 
   // ── Primary group root / tip: link names, then frame ids ───────────────
   // The names come from the device config (the CM resolves them from
@@ -341,7 +350,7 @@ void DemoJointController::OnDeviceConfigsSet() {
   // must run here (configure) — before the first RT cache.Update() locks
   // registration. The arm-model frame ids address the same physical frames in
   // the combined model (proven by test_wbc_arm_tcp_cache_equivalence).
-  full_dof_ = arm_dof_ + hand_dof_;
+  full_dof_ = arm_dof_ + hand_dof_[0];
   {
     const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
     const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
@@ -378,10 +387,22 @@ void DemoJointController::OnDeviceConfigsSet() {
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     primary_joint_names_ = cfg->joint_state_names;
   }
+  for (int h = 0; h < kDemoJointMaxHands; ++h) {
+    const auto hi = static_cast<std::size_t>(h);
+    hand_joint_names_[hi].clear();
+    hand_motor_names_[hi].clear();
+    const std::string hand = HandDeviceName(h);
+    if (hand.empty()) {
+      continue;
+    }
+    if (auto* cfg = GetDeviceNameConfig(hand); cfg) {
+      hand_joint_names_[hi] = cfg->joint_state_names;
+      hand_motor_names_[hi] = cfg->motor_state_names;
+    }
+  }
+  // Fingertip sensors are read off the FIRST hand only (kDemoJointMaxHands).
   if (!secondary.empty()) {
     if (auto* cfg = GetDeviceNameConfig(secondary); cfg) {
-      secondary_joint_names_ = cfg->joint_state_names;
-      secondary_motor_names_ = cfg->motor_state_names;
       secondary_sensor_names_ = cfg->sensor_names;
     }
   }
@@ -449,6 +470,49 @@ void DemoJointController::OnDeviceConfigsSet() {
   }
 }
 
+template <std::size_t H>
+void DemoJointController::WarnHandGateClosed(const ControllerState& state) noexcept {
+  static_assert(H < static_cast<std::size_t>(kDemoJointMaxHands));
+  constexpr std::size_t kDevice = H + 1;
+  if (static_cast<int>(kDevice) >= state.num_devices) {
+    return;
+  }
+  const auto& dev = state.devices[kDevice];
+  const int dof = hand_dof_[H];
+  // #307: a gate closed by WIDTH is closed from the first tick and never opens,
+  // and its only other trace is an absence. Name the pair AND the key to fix —
+  // which depends on where hand_dof_[H] came from (see Compute's arm variant).
+  if (rtc::IsGateClosedByWidth(dev, dof)) {
+    // The tail is SELECTED, not assembled — a `const char*` argument is on
+    // RT-3's allowed list, and one format string keeps this call site at one
+    // expansion point, so both variants share the single throttle window the
+    // site is entitled to. An if/else around two macros would split it in two.
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "F5 gate closed: hand device reports num_channels=%d < hand_dof=%d — "
+                         "hand device %d is silenced every tick; %s",
+                         dev.num_channels, dof, static_cast<int>(kDevice),
+                         hand_dof_from_config_[H]
+                             ? "fix the hand group's 'joint_state_names' or the backend's "
+                               "reported channel count"
+                             : "hand_dof came from this device's own first report, so the "
+                               "backend has narrowed mid-session; declare the hand group's "
+                               "'joint_state_names' to pin the expected width");
+  }
+  // #284: the gate's third closure cause. Not an else-if — the two are mutually
+  // exclusive by construction (IsGateClosedByHoles requires the width test to
+  // have PASSED), so chaining them would only hide that.
+  if (rtc::IsGateClosedByHoles(dev, dof)) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "F5 gate closed: hand device slot %d was never written although "
+                         "num_channels=%d >= hand_dof=%d — hand device %d is silenced every "
+                         "tick; the state message carries no joint named at that position of "
+                         "the hand group's 'joint_command_names' (defaults to "
+                         "'joint_state_names')",
+                         rtc::FirstHoleSlot(dev, dof), dev.num_channels, dof,
+                         static_cast<int>(kDevice));
+  }
+}
+
 ControllerOutput DemoJointController::Compute(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoJointController::Compute");
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
@@ -469,14 +533,20 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
   // bypasses YAML; IsDeviceReadable then degrades to a plain validity check,
   // which is the honest answer while nothing is known to be missing.
   arm_readable_ = rtc::IsDeviceReadable(state.devices[0], arm_dof_);
-  // Same gate on the secondary axis (#291). Separate flag, not a widening of
-  // arm_readable_: §3.7 keeps the hand commandable when the ARM goes missing,
-  // and this answers the different question of whether the HAND reported the
-  // hand_dof_ channels its own loops read. `num_devices > 1` folds in here so
-  // the read sites carry one predicate instead of a two-term guard. hand_dof_
-  // may still be 0 in a fixture that bypasses YAML, and IsDeviceReadable then
-  // degrades to the plain validity check those sites used before.
-  hand_readable_ = state.num_devices > 1 && rtc::IsDeviceReadable(state.devices[1], hand_dof_);
+  // Same gate on each hand axis (#291), one flag per lane (#715). Separate
+  // flags, not a widening of arm_readable_: §3.7 keeps a hand commandable when
+  // the ARM goes missing, and each answers the different question of whether
+  // THAT hand reported the hand_dof_[h] channels its own loops read. The
+  // `device exists` term folds in here so the read sites carry one predicate
+  // instead of a two-term guard. hand_dof_[h] may still be 0 in a fixture that
+  // bypasses YAML, and IsDeviceReadable then degrades to the plain validity
+  // check those sites used before.
+  for (int h = 0; h < kDemoJointMaxHands; ++h) {
+    const auto hi = static_cast<std::size_t>(h);
+    const auto d = hi + 1;
+    hand_readable_[hi] = static_cast<int>(d) < state.num_devices &&
+                         rtc::IsDeviceReadable(state.devices[d], hand_dof_[hi]);
+  }
   // #307: a gate closed by WIDTH is closed from the first tick and never opens,
   // and its only other trace is an absence (the arm-tip frame stops appearing).
   // Name the pair AND the key to fix. The two axes are NOT symmetric there:
@@ -498,22 +568,11 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
                          "reported channel count",
                          state.devices[0].num_channels, arm_dof_);
   }
-  if (state.num_devices > 1 && rtc::IsGateClosedByWidth(state.devices[1], hand_dof_)) {
-    // The tail is SELECTED, not assembled — a `const char*` argument is on
-    // RT-3's allowed list, and one format string keeps this call site at one
-    // expansion point, so both variants share the single throttle window the
-    // site is entitled to. An if/else around two macros would split it in two.
-    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
-                         "F5 gate closed: hand device reports num_channels=%d < hand_dof=%d — "
-                         "the hand is silenced every tick; %s",
-                         state.devices[1].num_channels, hand_dof_,
-                         hand_dof_from_config_
-                             ? "fix the hand group's 'joint_state_names' or the backend's "
-                               "reported channel count"
-                             : "hand_dof came from this device's own first report, so the "
-                               "backend has narrowed mid-session; declare the hand group's "
-                               "'joint_state_names' to pin the expected width");
-  }
+  // Hand lanes: one expansion of WarnHandGateClosed per lane (see its
+  // declaration for why a loop would not do), width then holes inside.
+  [&]<std::size_t... H>(std::index_sequence<H...>) {
+    (WarnHandGateClosed<H>(state), ...);
+  }(std::make_index_sequence<static_cast<std::size_t>(kDemoJointMaxHands)>{});
   // #284: the gate's third closure cause. Separate from the width branch above
   // and not an else-if — the two are mutually exclusive by construction
   // (IsGateClosedByHoles requires the width test to have PASSED), so chaining
@@ -529,15 +588,6 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
                          "group's 'joint_command_names' (defaults to 'joint_state_names')",
                          rtc::FirstHoleSlot(state.devices[0], arm_dof_),
                          state.devices[0].num_channels, arm_dof_);
-  }
-  if (state.num_devices > 1 && rtc::IsGateClosedByHoles(state.devices[1], hand_dof_)) {
-    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
-                         "F5 gate closed: hand device slot %d was never written although "
-                         "num_channels=%d >= hand_dof=%d — the hand is silenced every tick; the "
-                         "state message carries no joint named at that position of the hand "
-                         "group's 'joint_command_names' (defaults to 'joint_state_names')",
-                         rtc::FirstHoleSlot(state.devices[1], hand_dof_),
-                         state.devices[1].num_channels, hand_dof_);
   }
 
   ReadState(state);
@@ -569,10 +619,12 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
       FillDeviceStateLogPod(state, out, /*device_idx=*/0, pod);
       primary_state_log_handle_.Push(pod);
     }
-    if (secondary_state_log_handle_) {
-      integrated_bringup::DeviceStateLogPod pod{};
-      FillDeviceStateLogPod(state, out, /*device_idx=*/1, pod);
-      secondary_state_log_handle_.Push(pod);
+    for (std::size_t h = 0; h < hand_state_log_handles_.size(); ++h) {
+      if (hand_state_log_handles_[h]) {
+        integrated_bringup::DeviceStateLogPod pod{};
+        FillDeviceStateLogPod(state, out, /*device_idx=*/static_cast<int>(h) + 1, pod);
+        hand_state_log_handles_[h].Push(pod);
+      }
     }
     if (secondary_sensor_log_handle_) {
       integrated_bringup::DeviceSensorLogPod pod{};
@@ -615,10 +667,12 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
     FillDeviceStateLogPod(state, output, /*device_idx=*/0, pod);
     primary_state_log_handle_.Push(pod);
   }
-  if (secondary_state_log_handle_) {
-    integrated_bringup::DeviceStateLogPod pod{};
-    FillDeviceStateLogPod(state, output, /*device_idx=*/1, pod);
-    secondary_state_log_handle_.Push(pod);
+  for (std::size_t h = 0; h < hand_state_log_handles_.size(); ++h) {
+    if (hand_state_log_handles_[h]) {
+      integrated_bringup::DeviceStateLogPod pod{};
+      FillDeviceStateLogPod(state, output, /*device_idx=*/static_cast<int>(h) + 1, pod);
+      hand_state_log_handles_[h].Push(pod);
+    }
   }
   if (secondary_sensor_log_handle_) {
     integrated_bringup::DeviceSensorLogPod pod{};
@@ -658,12 +712,15 @@ void DemoJointController::ApplyPendingTarget(int device_idx, std::span<const dou
   for (std::size_t i = 0; i < values.size() && i < row.size(); ++i) {
     row[i] = values[i];
   }
-  // Device 0 is the arm, device 1 the hand: each has its own trajectory that
-  // must be re-planned from the new goal on this tick.
+  // Device 0 is the arm, device h + 1 is hand lane h: each has its own
+  // trajectory that must be re-planned from the new goal on this tick. A
+  // device past the last lane can only get here through SetDeviceTarget from
+  // code — the RobotTarget lane refuses it upstream (AcceptedGoalKinds) and
+  // counts the refusal — so no lane is flagged and the row is left unread.
   if (device_idx == 0) {
     robot_new_target_pending_ = true;
-  } else if (device_idx == 1) {
-    hand_new_target_pending_ = true;
+  } else if (device_idx >= 1 && device_idx <= kDemoJointMaxHands) {
+    hand_new_target_pending_[static_cast<std::size_t>(device_idx - 1)] = true;
   }
 }
 
@@ -713,56 +770,62 @@ void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept
     slot_dirty = true;
   }
 
-  // ── Hand (device 1) self-init — DEFERRED until device 1 is first READABLE ───
-  // Seeding while the hand is still coming up would lock targets[1] to its zero
-  // init and drive every finger to 0. Retried each tick until readable; when no
-  // hand device is configured the flag latches true immediately.
+  // ── Hand lanes (device h + 1) self-init — DEFERRED until THAT device is first
+  // READABLE, one latch per lane (#715). Seeding while a hand is still coming
+  // up would lock its targets row to the zero init and drive every finger to
+  // 0. Retried each tick until readable; a lane with no device latches true at
+  // once.
   //
-  // hand_readable_, not `valid` (#291): the hold seed below runs hand_dof_ deep,
-  // so a hand that reported only part of its channels passes `valid` and seeds
-  // the unreported fingers from a phantom 0. This is the hand's T1/T2 (#265) —
-  // and it is WORSE than the per-tick read sites, because the flag LATCHES on
-  // success: an ordinary A site re-poisons every tick and therefore heals the
-  // tick the gate goes true, while a poisoned seed here is never re-seeded.
-  if (!hand_target_initialized_.load(std::memory_order_acquire)) {
-    if (state.num_devices <= 1) {
-      hand_target_initialized_.store(true, std::memory_order_release);
-    } else if (hand_readable_) {
-      // The OTHER source of hand_dof_ (#307). hand_dof_from_config_ stays false
-      // here by construction — OnDeviceConfigsSet set it from `hand_dof_ > 0`,
-      // and reaching this line means it was 0.
-      // Readable width, not wire width — same #284 reason as the arm above, and
-      // this is the axis where it is reachable outside fixtures: a hand group
-      // that declares `joint_command_names` without `joint_state_names` lands
-      // here with an active reorder map.
-      if (hand_dof_ == 0) {
-        hand_dof_ = rtc::SelfReportedChannelBound(state.devices[1], kDemoJointMaxHandDof);
-      }
-      for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-        const auto& dev = state.devices[d];
-        if (!dev.valid) {
-          continue;
-        }
-        for (std::size_t i = 0;
-             i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
-          current_target_slot_.targets[d][i] = dev.positions[i];
-        }
-        if (d == 1) {
-          trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State hold_state;
-          for (int i = 0; i < hand_dof_; ++i) {
-            const auto idx = static_cast<std::size_t>(i);
-            hold_state.positions[idx] = dev.positions[idx];
-            hold_state.velocities[idx] = 0.0;
-            hold_state.accelerations[idx] = 0.0;
-          }
-          hand_trajectory_.initialize(hold_state, hold_state, 0.01);
-          hand_trajectory_time_ = 0.0;
-          hand_new_target_pending_ = false;
-        }
-      }
-      hand_target_initialized_.store(true, std::memory_order_release);
-      slot_dirty = true;
+  // The lane's OWN hand_readable_[h], not `valid` (#291) and not another
+  // lane's flag: the hold seed below runs hand_dof_[h] deep, so a hand that
+  // reported only part of its channels passes `valid` and seeds the unreported
+  // fingers from a phantom 0. One shared flag used to gate every row from
+  // device 1's answer, so a second hand still coming up was seeded from its
+  // zero init the tick the first hand became readable. This is the hand's
+  // T1/T2 (#265) — and it is WORSE than the per-tick read sites, because the
+  // flag LATCHES on success: an ordinary A site re-poisons every tick and
+  // therefore heals the tick the gate goes true, while a poisoned seed here is
+  // never re-seeded.
+  for (int h = 0; h < kDemoJointMaxHands; ++h) {
+    const auto hi = static_cast<std::size_t>(h);
+    const auto d = hi + 1;
+    if (hand_target_initialized_[hi].load(std::memory_order_acquire)) {
+      continue;
     }
+    if (static_cast<int>(d) >= state.num_devices) {
+      hand_target_initialized_[hi].store(true, std::memory_order_release);
+      continue;
+    }
+    if (!hand_readable_[hi]) {
+      continue;
+    }
+    // The OTHER source of hand_dof_[h] (#307). hand_dof_from_config_[h] stays
+    // false here by construction — OnDeviceConfigsSet set it from
+    // `hand_dof_[h] > 0`, and reaching this line means it was 0.
+    // Readable width, not wire width — same #284 reason as the arm above, and
+    // this is the axis where it is reachable outside fixtures: a hand group
+    // that declares `joint_command_names` without `joint_state_names` lands
+    // here with an active reorder map.
+    if (hand_dof_[hi] == 0) {
+      hand_dof_[hi] = rtc::SelfReportedChannelBound(state.devices[d], kDemoJointMaxHandDof);
+    }
+    const auto& dev = state.devices[d];
+    for (std::size_t i = 0;
+         i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
+      current_target_slot_.targets[d][i] = dev.positions[i];
+    }
+    trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State hold_state;
+    for (int i = 0; i < hand_dof_[hi]; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      hold_state.positions[idx] = dev.positions[idx];
+      hold_state.velocities[idx] = 0.0;
+      hold_state.accelerations[idx] = 0.0;
+    }
+    hand_trajectory_[hi].initialize(hold_state, hold_state, 0.01);
+    hand_trajectory_time_[hi] = 0.0;
+    hand_new_target_pending_[hi] = false;
+    hand_target_initialized_[hi].store(true, std::memory_order_release);
+    slot_dirty = true;
   }
 
   // Base drain: pops everything queued, drops what a later activation

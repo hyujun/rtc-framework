@@ -79,6 +79,13 @@
 
 배선된 컨트롤러 목록은 [docs/controllers.md](../docs/controllers.md#배선된-컨트롤러). 아래는 그중 **깨면 조용히 틀리는** 것이다.
 
+**DemoJointController** (joint trajectory, 몸통 1 군 + 손 ≤ `kDemoJointMaxHands` 군 — #715):
+
+- `topics:` 의 두 번째 이후 군은 전부 **손 lane** 이다 (lane h = device h + 1). lane 마다 hold seed · target row · 궤적 · F5 게이트 · E-STOP hold · `<group>_state` 로그가 따로 있고 게인은 공유한다. 손 수가 `kDemoJointMaxHands` 를 넘는 `topics:` 는 configure 거부다 — 소유만 하고 명령하지 않는 군은 sim 을 첫 step 에 영원히 세운다.
+- seed 는 **그 lane 의** readable 로만 연다. 다른 lane 의 플래그나 `valid` 로 열면 아직 안 올라온 손이 0 으로 seed 되어 래치된다 (#291 유형 — 공유 플래그 하나가 그 결함이었다).
+- **비대칭**: 손끝 FK · TF slot · GraspState · contact-stop · Force-PI · 결합 arm+hand 모델은 **첫 손 (lane 0) 뿐**이다. 두 번째 손은 위치 지령 lane 만 있다.
+- E-STOP 손 블록은 readable 을 보지 않고 측정값을 hold 한다 — #715 이전 device 1 의 계약을 두 번째 손에 그대로 복제했다 (바꾸려면 E-8).
+
 **DemoComplianceController** (task-space admittance):
 
 - SAFE_STOP 은 **래치** 이고 유일한 탈출구는 `/rtc_cm/reset_fault` 다. 재활성화는 래치를 풀지 않으며 활성화 경계에서 미소비 요청을 버린다 (자동 복구 금지). 요청은 atomic flag 로 받아 tick 머리에서 E-STOP 분기보다 앞서 소비한다.

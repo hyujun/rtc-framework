@@ -12,6 +12,7 @@
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/virtual_tcp_params.hpp"
+#include <rtc_msgs/msg/robot_target.hpp>
 
 #include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp_lifecycle/state.hpp>
@@ -27,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <numbers>
 #include <string>
 
@@ -1670,4 +1672,234 @@ TEST_F(JointGraspDiagLogTest, DisabledGateRegistersNoChannelAndWritesNoFile) {
 
   EXPECT_TRUE(log_set_.empty()) << "a disabled gate must not register the channel";
   EXPECT_TRUE(CsvPath().empty());
+}
+
+// ── Three device groups: a second hand lane (#715) ──────────────────────────
+//
+// Every hand lane has its own hold seed, target row, trajectory and F5 gate.
+// The pre-#715 controller had ONE hand readability flag and ONE seed latch
+// gating a loop over every device past the first, so a second hand that was
+// still coming up — or reporting fewer channels than its group declares — was
+// seeded from its zero-initialised state the tick the FIRST hand became
+// readable, and that seed latched (#291, the hand's T1/T2). These cases pin
+// that each lane waits for ITS OWN device, and that the E-STOP hold and the
+// goal following reach the second lane the same way they reach the first.
+//
+// No URDF: hand widths come from the declared joint_state_names (the shipped
+// shape), so "narrower than declared" is a state the gate must refuse.
+
+namespace {
+
+constexpr int kThreeArmDof = 6;
+constexpr int kFirstHandDof = 10;
+constexpr int kSecondHandDof = 4;
+constexpr int kNarrowSecondHand = 3;
+
+double MeasuredFirstHand(std::size_t i) {
+  return 0.50 + 0.01 * static_cast<double>(i);
+}
+
+double MeasuredSecondHand(std::size_t i) {
+  return 0.70 + 0.01 * static_cast<double>(i);
+}
+
+std::string ThreeGroupYaml() {
+  return "arm_dof: " + std::to_string(kThreeArmDof) +
+         "\n"
+         // Fast hand gains so a 10 rad goal (the clamp case) is reached well
+         // inside a few hundred ticks: duration = max(0.01, 10/50, 1.875·10/50).
+         "hand_trajectory_speed: 50.0\n"
+         "hand_max_traj_velocity: 50.0\n"
+         "estop:\n  arm_safe_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n"
+         "fsm:\n  contact_stop_release_eps: 0.005\n  contact_stop_lpf_cutoff_hz: 20.0\n"
+         "command_type: \"position\"\n"
+         "topics:\n"
+         "  arm:\n    subscribe:\n      - {topic: \"arm/joint_goal\", role: \"target\"}\n"
+         "  hand:\n    subscribe:\n      - {topic: \"hand/joint_goal\", role: \"target\"}\n"
+         "  hand2:\n    subscribe:\n      - {topic: \"hand2/joint_goal\", role: \"target\"}\n";
+}
+
+std::map<std::string, rtc::DeviceNameConfig> ThreeGroupConfigs() {
+  std::map<std::string, rtc::DeviceNameConfig> configs;
+  const auto declare = [&](const char* name, const char* prefix, int dof) {
+    rtc::DeviceNameConfig cfg;
+    cfg.device_name = name;
+    for (int i = 0; i < dof; ++i) {
+      cfg.joint_state_names.push_back(prefix + std::to_string(i));
+    }
+    configs[name] = std::move(cfg);
+  };
+  declare("arm", "a", kThreeArmDof);
+  declare("hand", "h", kFirstHandDof);
+  declare("hand2", "g", kSecondHandDof);
+  return configs;
+}
+
+// Arm + two hands, every device valid and at a non-zero rest pose. ONLY the
+// reported channels carry a measurement (the rest stay at DeviceState's zero
+// init) — that is what the phantom-seed hazard looks like on the wire.
+ControllerState MakeThreeGroupState(int second_hand_channels = kSecondHandDof) {
+  ControllerState state{};
+  state.num_devices = 3;
+  state.dt = 0.002;
+  state.iteration = 1;
+  auto& dev0 = state.devices[0];
+  dev0.num_channels = kThreeArmDof;
+  dev0.valid = true;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kThreeArmDof); ++i) {
+    dev0.positions[i] = 0.10 + 0.02 * static_cast<double>(i);
+  }
+  auto& dev1 = state.devices[1];
+  dev1.num_channels = kFirstHandDof;
+  dev1.valid = true;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kFirstHandDof); ++i) {
+    dev1.positions[i] = MeasuredFirstHand(i);
+  }
+  auto& dev2 = state.devices[2];
+  dev2.num_channels = second_hand_channels;
+  dev2.valid = true;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(second_hand_channels); ++i) {
+    dev2.positions[i] = MeasuredSecondHand(i);
+  }
+  return state;
+}
+
+void ExpectFirstHandHeld(const ControllerOutput& out) {
+  ASSERT_EQ(out.devices[1].num_channels, kFirstHandDof);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kFirstHandDof); ++i) {
+    EXPECT_NEAR(out.devices[1].commands[i], MeasuredFirstHand(i), 1e-9) << "first hand " << i;
+  }
+}
+
+void ExpectSecondHandHeld(const ControllerOutput& out) {
+  ASSERT_EQ(out.devices[2].num_channels, kSecondHandDof);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kSecondHandDof); ++i) {
+    EXPECT_NEAR(out.devices[2].commands[i], MeasuredSecondHand(i), 1e-9) << "second hand " << i;
+  }
+}
+
+class JointThreeGroupTest : public ::testing::Test {
+ protected:
+  DemoJointController ctrl_{""};
+
+  void SetUp() override {
+    ASSERT_NO_THROW(ctrl_.LoadConfig(YAML::Load(ThreeGroupYaml())));
+    ctrl_.SetDeviceNameConfigs(ThreeGroupConfigs());
+  }
+};
+
+}  // namespace
+
+// The second hand is not valid yet while the first is: the first seeds, the
+// second does not — and when it arrives it is seeded from ITS measurement, not
+// from the zeros the shared latch used to lock in.
+TEST_F(JointThreeGroupTest, SecondHandSeedWaitsForItsOwnDevice) {
+  ControllerState state = MakeThreeGroupState();
+  state.devices[2].valid = false;
+  ControllerOutput out = ctrl_.Compute(state);
+  ExpectFirstHandHeld(out);
+  EXPECT_EQ(out.devices[2].num_channels, 0) << "an invalid device gets no command";
+
+  state.devices[2].valid = true;
+  state.iteration = 2;
+  out = ctrl_.Compute(state);
+  ExpectFirstHandHeld(out);
+  ExpectSecondHandHeld(out);
+}
+
+// The second hand reports fewer channels than its group declares: its gate is
+// closed (zero-length, not three or four values), the FIRST hand is unaffected,
+// and the seed waits — so when the full width arrives every channel, including
+// the one that was unreported, is seeded from the measurement.
+TEST_F(JointThreeGroupTest, ANarrowSecondHandIsSilencedAndNotSeededFromPhantomZeros) {
+  ControllerState narrow = MakeThreeGroupState(kNarrowSecondHand);
+  ControllerOutput out = ctrl_.Compute(narrow);
+  ExpectFirstHandHeld(out);
+  EXPECT_EQ(out.devices[2].num_channels, 0);
+  // The silenced lane's telemetry parks at the measurement it DID report.
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kNarrowSecondHand); ++i) {
+    EXPECT_NEAR(out.devices[2].trajectory_positions[i], MeasuredSecondHand(i), 1e-9) << i;
+  }
+
+  ControllerState full = MakeThreeGroupState();
+  full.iteration = 2;
+  out = ctrl_.Compute(full);
+  ExpectFirstHandHeld(out);
+  ExpectSecondHandHeld(out);
+  // The channel the narrow report left out is at its measurement, not at the
+  // phantom 0 a seed taken during the narrow tick would have latched.
+  EXPECT_NEAR(out.devices[2].commands[kSecondHandDof - 1], MeasuredSecondHand(kSecondHandDof - 1),
+              1e-9);
+  EXPECT_NEAR(out.devices[2].goal_positions[kSecondHandDof - 1],
+              MeasuredSecondHand(kSecondHandDof - 1), 1e-9);
+}
+
+// A second hand that narrows mid-session is silenced on its own; the first
+// hand keeps being commanded — the two gates are separate flags.
+TEST_F(JointThreeGroupTest, ASecondHandThatNarrowsIsSilencedAlone) {
+  ControllerState state = MakeThreeGroupState();
+  (void)ctrl_.Compute(state);
+
+  ControllerState narrow = MakeThreeGroupState(kNarrowSecondHand);
+  narrow.iteration = 2;
+  const ControllerOutput out = ctrl_.Compute(narrow);
+  EXPECT_EQ(out.devices[2].num_channels, 0);
+  ExpectFirstHandHeld(out);
+  EXPECT_EQ(out.devices[0].num_channels, kThreeArmDof);
+}
+
+TEST_F(JointThreeGroupTest, EstopHoldsBothHandsAtTheirOwnMeasurement) {
+  ControllerState state = MakeThreeGroupState();
+  (void)ctrl_.Compute(state);
+
+  ctrl_.TriggerEstop();
+  state.iteration = 2;
+  const ControllerOutput out = ctrl_.Compute(state);
+  ASSERT_TRUE(ctrl_.IsEstopped());
+  ExpectFirstHandHeld(out);
+  ExpectSecondHandHeld(out);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kSecondHandDof); ++i) {
+    EXPECT_NEAR(out.devices[2].goal_positions[i], MeasuredSecondHand(i), 1e-9) << i;
+  }
+}
+
+// A goal for the second lane moves the second lane only, through its own
+// trajectory, and is clamped by the second device's own limits (the ±2π
+// fallback here — no joint_limits were declared).
+TEST_F(JointThreeGroupTest, SecondHandFollowsItsOwnGoalAndIsClampedByItsOwnLimits) {
+  ControllerState state = MakeThreeGroupState();
+  (void)ctrl_.Compute(state);
+
+  const std::array<double, kSecondHandDof> goal = {0.9, -0.9, 1.2, 10.0};
+  ctrl_.SetDeviceTarget(2, goal);
+  ControllerOutput out{};
+  for (int t = 0; t < 300; ++t) {
+    state.iteration = static_cast<uint64_t>(t + 2);
+    out = ctrl_.Compute(state);
+  }
+  ASSERT_EQ(out.devices[2].num_channels, kSecondHandDof);
+  EXPECT_NEAR(out.devices[2].commands[0], 0.9, 1e-6);
+  EXPECT_NEAR(out.devices[2].commands[1], -0.9, 1e-6);
+  EXPECT_NEAR(out.devices[2].commands[2], 1.2, 1e-6);
+  EXPECT_NEAR(out.devices[2].commands[3], 6.2832, 1e-6) << "clamped at the ±2π fallback";
+  ExpectFirstHandHeld(out);
+}
+
+// A RobotTarget for a device past the last hand lane has no trajectory to land
+// in; it is refused and counted at the ingress, not written into a row nothing
+// reads. The control case right beside it — the same goal for the last lane —
+// is accepted.
+TEST_F(JointThreeGroupTest, AGoalForADevicePastTheLastLaneIsRefusedAndCounted) {
+  ControllerState state = MakeThreeGroupState();
+  (void)ctrl_.Compute(state);
+
+  rtc_msgs::msg::RobotTarget msg;
+  msg.goal_type = "joint";
+  msg.joint_target = {0.1, 0.2, 0.3, 0.4};
+  const auto before = ctrl_.GetTargetRejectCount();
+  ctrl_.DeliverTargetMessage("hand2", 2, msg);
+  EXPECT_EQ(ctrl_.GetTargetRejectCount(), before) << "the last lane takes a joint goal";
+  ctrl_.DeliverTargetMessage("hand3", 3, msg);
+  EXPECT_EQ(ctrl_.GetTargetRejectCount(), before + 1)
+      << "a device past the last lane must be refused, not swallowed";
 }
