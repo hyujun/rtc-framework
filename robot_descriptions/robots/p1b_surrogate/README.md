@@ -14,8 +14,10 @@
 
 ```
 p1b_surrogate/
-└── urdf/   손 · UR5e 결합 xacro, closure.yaml
+└── urdf/   손 · UR5e 결합 xacro, 각각의 closure.yaml
 ```
+
+`p1b_surrogate.urdf.xacro` 는 단독으로도 처리된다 (root `base_adapter`, 팔 없음). 짝인 `p1b_surrogate.closure.yaml` 은 결합 모델과 같은 loop 다섯에 actuated 를 손 관절 10 개로 줄인 것 — 손 하나가 자기 device group 만으로 폐쇄 체인을 사영하는 테스트 (`hand_joint_controller`) 의 fixture 다.
 
 G1 에 붙인 결합 모델은 [`robots/g1/`](../g1/README.md) 에 있다.
 
