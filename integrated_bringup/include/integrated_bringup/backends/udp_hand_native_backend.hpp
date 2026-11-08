@@ -30,7 +30,11 @@ namespace rtc {
 //                    + ML inference output per fingertip)
 //
 // Single publish lane:
-//   - command_topic: rtc_msgs/JointCommand    (joint position commands)
+//   - command_topic: rtc_msgs/JointCommand    (joint position target +, on a
+//                    pd_feedforward command, the per-joint feedforward torque
+//                    in N·m — udp_hand_driver's CAN FD protocol sends it as a
+//                    current through its per-motor torque constant; the UDP
+//                    proto1 firmware ignores the field)
 //
 // Sensor packing layout (DeviceSensorLayout) is forwarded via
 // SetSensorLayout() before Configure() — the layout originates from the
@@ -62,13 +66,22 @@ class UdpHandNativeBackend : public DeviceBackend {
   void ReadMotorState(DeviceStateCache& cache) noexcept override;
   void ReadSensorState(DeviceStateCache& cache) noexcept override;
 
-  // Safe output (issue #198 Phase 4). This lane is position-only on the wire,
-  // so the safest thing it can emit without a controller output is the last
-  // command it is known to have published — an explicit "stay put" rather
-  // than the silence CM used to send, which the receiver cannot distinguish
-  // from a stalled publisher. There is no disable or torque-off to reach for
-  // here; if the hardware ever gains one, it belongs in this function.
+  // Safe output (issue #198 Phase 4). The wire carries a position target (plus
+  // a feedforward overlay the firmware's own PD sits under), so the safest
+  // thing it can emit without a controller output is the last command it is
+  // known to have published — an explicit "stay put" rather than the silence
+  // CM used to send, which the receiver cannot distinguish from a stalled
+  // publisher. There is no disable or torque-off to reach for here; if the
+  // hardware ever gains one, it belongs in this function.
   void WriteSafeCommand() noexcept override;
+
+  // The wire carries a position target either way; `pd_feedforward` adds the
+  // feedforward field, which the CAN FD driver consumes and the UDP firmware
+  // ignores (a position target still reaches it, so nothing is reinterpreted).
+  // kTorque is refused: there is no torque lane on this wire.
+  [[nodiscard]] bool AcceptsCommandType(CommandType ct) const noexcept override {
+    return ct == CommandType::kPosition || ct == CommandType::kPdFeedforward;
+  }
 
   [[nodiscard]] std::chrono::steady_clock::time_point LastStateStamp() const noexcept override {
     const auto ns = last_state_ns_.load(std::memory_order_acquire);
