@@ -131,7 +131,7 @@ ros2 topic echo /hand/calibration/status
 
 `1b` · `2` + `individual` 조합은 `on_configure` 가 FAILURE 를 반환한다. `2` 는 그 밖에도 `can_interface` 가 없을 때 (`loopmodel` 제외), `feedforward_kt` 가 10개가 아니거나 양수가 아닐 때, `cmd_ack` 가 `echo` · `none` 이 아닐 때, 명시한 `req_mode broadcast` 가 `cmd_ack echo` 와 함께일 때, `per_hand` 에서 `손 수 × 2 × recv_timeout_ms` 가 comm 슬롯 (`1000 / loop_rate_hz × comm_decimation` ms) 을 넘을 때, `broadcast` 에서 `0 < broadcast_tail_guard_ms < 슬롯` 이 아닐 때 거부한다. YAML 의 값은 반드시 `"2"` 로 따옴표를 친다 (정수는 파라미터 선언에서 예외).
 
-`2` 의 `JointCommand.feedforward` 는 `values` 와 크기가 같을 때만 같은 이름 맵으로 재정렬되어 전송되고 (joint offset 은 적용하지 않음), 비어 있으면 0, 그 외 크기면 0 + 경고 + `feedforward_size_mismatch` 카운터, NaN · ±inf 항목은 0 + `feedforward_nonfinite` 카운터다. `command_type` · `kp` · `kd` 는 소비하지 않는다. wire 포맷의 SSoT 는 [hand_canfd_packets.hpp](include/udp_hand_driver/hand_canfd_packets.hpp) 주석이다.
+`2` 의 `JointCommand.feedforward` 는 `values` 와 크기가 같을 때만 같은 이름 맵으로 재정렬되어 전송되고 (joint offset 은 적용하지 않고 `joint_direction_signs` 는 적용), 비어 있으면 0, 그 외 크기면 0 + 경고 + `feedforward_size_mismatch` 카운터, NaN · ±inf 항목은 0 + `feedforward_nonfinite` 카운터다. `command_type` · `kp` · `kd` 는 소비하지 않는다. wire 포맷의 SSoT 는 [hand_canfd_packets.hpp](include/udp_hand_driver/hand_canfd_packets.hpp) 주석이다.
 
 ### 두 손 (`hand_sides`)
 
@@ -141,7 +141,7 @@ ros2 topic echo /hand/calibration/status
 
 - 토픽: 상대 이름에 `<side>/` 가 붙는다 (`/hand/right/joint_states` …). 손이 둘이면 손별 토픽에 절대 이름을 주면 configure 가 거부한다 (두 손이 한 토픽이 된다)
 - E-Stop: `/hand/estop` 하나. latch 는 손마다 cycle 머리에서, loop 가 손 사이에서 다시 본다. 두 손 모두 멈춘 뒤 손 순서대로 zero-write 를 1회씩 보낸다. 최악 지연은 주기 + 수신 창이다
-- 손별 키: `<side>.joint_state_names` · `motor_state_names` · `hand_fingertip_names` · `joint_position_offsets_deg` · `feedforward_kt`. 없거나 비면 flat 키를 쓴다
+- 손별 키: `<side>.joint_state_names` · `motor_state_names` · `hand_fingertip_names` · `joint_position_offsets_deg` · `joint_direction_signs` · `feedforward_kt`. 없거나 비면 flat 키를 쓴다
 - 파일: `hand_stats_<side>.json` 이 손마다, `hand_timing_log.csv` 는 하나다. CSV 의 `t_total_us` 는 두 트랜잭션을 담은 tick 이고 `t_state_us` 는 마지막 손의 read 끝까지다. `broadcast` 의 손별 `total_us` 는 앞 손의 수신 창을 포함한다
 - link down 은 그 손의 detector 만 판정하고 다른 손을 멈추지 않는다
 - `broadcast` rate 는 write tick (CMD 4 → REQ → RESP 6) 의 `t_total` p99 × 1.1 로 호스트마다 잡는다: IXXAT USB 400, 네이티브 CAN (Thor) 500 (D89, [docs/testing.md](../docs/testing.md) G-5)
@@ -207,6 +207,7 @@ ros2 topic echo /hand/link_status --once     # 별도 터미널
 | `drift_detection_enabled` | `false` | OLS 드리프트 감지 (`drift_threshold` 5.0, `drift_window_size` 2500) |
 | `joint_state_names` / `motor_state_names` / `hand_fingertip_names` | YAML 에 10 / 10 / 4개 | 비우면 기본 이름 |
 | `joint_position_offsets_deg` | (YAML 에 없음, 빈 배열 = 0) | `joint_state_names` 순서 10개 [deg]. 수신 시 `+offset`, 송신 시 `−offset`. 크기가 안 맞으면 무시 |
+| `joint_direction_signs` | (YAML 에 없음, 빈 배열 = 전부 +1) | `joint_state_names` 순서 10개, 각 `1.0` \| `-1.0` (double). 수신 `sign·pos + offset` (vel · effort 도 sign), 송신 `sign·(cmd − offset)`, feedforward `sign·ff`. 크기나 값이 어긋나면 전부 무시 (+1) + WARN |
 | `enable_failure_detector` | `true` | `failure_threshold` 5, `check_motor` · `check_sensor` · `check_link` true |
 | `min_rate_hz` / `rate_fail_threshold` | `30.0` / `5` | polling rate 하한 / 연속 미달 횟수 |
 | `link_fail_timeout_ms` | `100.0` | link-down 시간 budget. cycle 수는 `ms/1000 × loop_rate_hz / comm_decimation` (센서는 `/ sensor_decimation` 추가) |

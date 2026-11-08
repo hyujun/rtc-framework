@@ -49,16 +49,20 @@ inline std::array<int, kNumHandMotors> BuildCommandNameReorder(
 }
 
 // Apply a BuildCommandNameReorder map to one JointCommand array (`values` or
-// `feedforward`): out[i] = values[map[i]] − offset[i] in firmware slot order.
-// `ready` false ⇒ positional (source index i); a source index past the end of
-// `values` reads as 0. One function for the position (offset =
-// joint_position_offsets) and the feedforward (offset zero — D39: the offset is
-// a position-frame correction and must not touch a torque), so the two cannot
-// drift; the node's command callback and the reorder gtest share it. Fixed-size
-// output, no heap.
+// `feedforward`): out[i] = sign[i] · (values[map[i]] − offset[i]) in firmware
+// slot order. `ready` false ⇒ positional (source index i); a source index past
+// the end of `values` reads as 0. One function for the position (offset =
+// joint_position_offsets, sign = joint_direction_signs) and the feedforward
+// (offset zero — D39: the offset is a position-frame correction and must not
+// touch a torque — but the SAME sign: a torque flips with the joint's
+// direction), so the two cannot drift; the node's command callback and the
+// reorder gtest share it. The sign is applied AFTER the offset: the offset is
+// stated in the controller (URDF) frame, where the operator measures it.
+// Fixed-size output, no heap.
 inline std::array<float, kNumHandMotors> ApplyCommandNameReorder(
     const std::array<int, kNumHandMotors>& map, bool ready, const std::vector<double>& values,
-    const std::array<float, kNumHandMotors>& offset) noexcept {
+    const std::array<float, kNumHandMotors>& offset,
+    const std::array<float, kNumHandMotors>& sign) noexcept {
   std::array<float, kNumHandMotors> out{};
   for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
     std::size_t src = i;
@@ -66,9 +70,25 @@ inline std::array<float, kNumHandMotors> ApplyCommandNameReorder(
       src = static_cast<std::size_t>(map[i]);
     }
     const float value = (src < values.size()) ? static_cast<float>(values[src]) : 0.0f;
-    out[i] = value - offset[i];
+    out[i] = sign[i] * (value - offset[i]);
   }
   return out;
+}
+
+/// All-ones sign vector: the identity direction map (the default when
+/// `joint_direction_signs` is absent).
+[[nodiscard]] inline std::array<float, kNumHandMotors> UnitJointSigns() noexcept {
+  std::array<float, kNumHandMotors> s{};
+  s.fill(1.0f);
+  return s;
+}
+
+/// The offset-only form (direction identity), kept for callers and tests that
+/// predate the sign.
+inline std::array<float, kNumHandMotors> ApplyCommandNameReorder(
+    const std::array<int, kNumHandMotors>& map, bool ready, const std::vector<double>& values,
+    const std::array<float, kNumHandMotors>& offset) noexcept {
+  return ApplyCommandNameReorder(map, ready, values, offset, UnitJointSigns());
 }
 
 // ── Hand UDP packet layout (16 uint32 values per fingertip) ──────────────────

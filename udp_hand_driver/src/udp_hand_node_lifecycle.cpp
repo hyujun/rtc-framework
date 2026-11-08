@@ -169,6 +169,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // Per-joint position offset in degrees (joint_state_names order, 10 values).
   // Converted to radians into each hand's joint_offset_rad below. Empty → all-zero.
   declare_once("joint_position_offsets_deg", std::vector<double>{});
+  // Per-joint direction sign (joint_state_names order, 10 values of +1.0 / -1.0).
+  // Empty → +1 everywhere. Parsed next to the offsets below.
+  declare_once("joint_direction_signs", std::vector<double>{});
 
   declare_once("communication_mode", std::string{"individual"});
 
@@ -488,6 +491,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
       declare_once(side + ".motor_state_names", std::vector<std::string>{});
       declare_once(side + ".hand_fingertip_names", std::vector<std::string>{});
       declare_once(side + ".joint_position_offsets_deg", std::vector<double>{});
+      declare_once(side + ".joint_direction_signs", std::vector<double>{});
       declare_once(side + ".feedforward_kt", std::vector<double>{});
     }
   }
@@ -915,6 +919,37 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
       }
     }
 
+    // ── Joint direction signs (+1 / −1 per joint) ────────────────────────
+    // Same leniency as the offsets for a wrong SIZE (ignored, +1 kept), but a
+    // wrong VALUE is refused as a whole: a 0 or a 0.5 is not a direction, and
+    // applying the valid entries while dropping one would flip some joints
+    // and not others with no symptom but a finger that moves the wrong way.
+    u.joint_sign = udp_hand_driver::UnitJointSigns();
+    {
+      const auto signs = get_parameter(hand_key(h, "joint_direction_signs")).as_double_array();
+      if (!signs.empty()) {
+        bool valid = signs.size() == static_cast<std::size_t>(udp_hand_driver::kNumHandMotors);
+        for (const double s : signs) {
+          valid = valid && (s == 1.0 || s == -1.0);
+        }
+        if (!valid) {
+          RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                      "%sjoint_direction_signs must be %d entries of +1.0 / -1.0 (got %zu) — "
+                      "ignoring, keeping +1 on every joint",
+                      u.log_tag.c_str(), udp_hand_driver::kNumHandMotors, signs.size());
+        } else {
+          int flipped = 0;
+          for (std::size_t i = 0; i < signs.size(); ++i) {
+            u.joint_sign[i] = static_cast<float>(signs[i]);
+            flipped += (signs[i] < 0.0) ? 1 : 0;
+          }
+          RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                      "%sJoint direction signs applied (%d of %d joints reversed)",
+                      u.log_tag.c_str(), flipped, udp_hand_driver::kNumHandMotors);
+        }
+      }
+    }
+
     // ── Pre-allocate ROS2 messages ─────────────────────────────────────
     PreallocateMessages(u);
     // A new controller restarts its SeqLock sequence at 0.
@@ -964,20 +999,23 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
             }
           }
           // Pick each source value by name (firmware slot i ← published index),
-          // then subtract the per-joint offset: controller frame → firmware
-          // frame. offset stays aligned to firmware slot order (joint_names).
+          // subtract the per-joint offset, then apply the direction sign:
+          // controller frame → firmware frame. offset and sign stay aligned to
+          // firmware slot order (joint_names).
           const auto cmd = udp_hand_driver::ApplyCommandNameReorder(
-              hu.cmd_name_reorder, hu.cmd_name_reorder_ready, msg->values, hu.joint_offset_rad);
+              hu.cmd_name_reorder, hu.cmd_name_reorder_ready, msg->values, hu.joint_offset_rad,
+              hu.joint_sign);
           // D39: the feedforward (Nm) rides the same name map with NO offset (a
-          // position-frame correction has no business in a torque). Absent →
-          // zeros silently; any other size → zeros, one throttled warning and a
+          // position-frame correction has no business in a torque) but the SAME
+          // sign (a torque flips with the joint's direction). Absent → zeros
+          // silently; any other size → zeros, one throttled warning and a
           // counter (the position is still applied). command_type / kp / kd are
           // not consumed. The UDP comms ignore ff; the CAN FD comm sends it.
           udp_hand_driver::HandMotorArray ff{};
           if (msg->feedforward.size() == msg->values.size()) {
             ff = udp_hand_driver::ApplyCommandNameReorder(
                 hu.cmd_name_reorder, hu.cmd_name_reorder_ready, msg->feedforward,
-                udp_hand_driver::HandMotorArray{});
+                udp_hand_driver::HandMotorArray{}, hu.joint_sign);
           } else if (!msg->feedforward.empty()) {
             hu.feedforward_size_mismatch.fetch_add(1, std::memory_order_relaxed);
             RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::NodeLogger(), *get_clock(), 1000,
