@@ -87,13 +87,14 @@ rtc::RTControllerInterface::CallbackReturn HandJointController::on_configure(
     RCLCPP_ERROR(logger_, "HandJointController on_configure failed: unknown");
     return CallbackReturn::FAILURE;
   }
+  const Gains g = gains_lock_.Load();
   RCLCPP_INFO(logger_,
               "[hand_joint] configured: group '%s' (%d joints), model %s, %zu fingertip frame(s) "
-              "under '%s', gravity_ff %s (gain %.3f, max_abs %.4f N·m)",
+              "under '%s', mode %s, gravity_ff %s (gain %.3f, max_abs %.4f N·m)",
               GetPrimaryDeviceName().c_str(), dof_,
               closed_handle_ ? "closed-chain (reduced g_a)" : "plain tree", num_tips_,
-              root_link_.c_str(), cfg_.ff.enabled ? "on" : "off", cfg_.ff.gravity_gain,
-              cfg_.ff.max_abs);
+              root_link_.c_str(), HandJointModeName(g.mode).data(), g.ff_enabled ? "on" : "off",
+              g.ff_gain, cfg_.ff.max_abs);
   return CallbackReturn::SUCCESS;
 }
 

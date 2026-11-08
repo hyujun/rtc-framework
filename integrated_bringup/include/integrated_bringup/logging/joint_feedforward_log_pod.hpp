@@ -15,8 +15,10 @@
 //
 // What the judge reads (rtc_tools analyze_hand_gravity_ff): `ff_enabled` to
 // split an A/B/A run into segments, and `q_ref_*` − `q_*` for the steady-state
-// error per joint. The raw model term `g_*` is logged next to `tau_ff_*` so a
-// clamp or a gain below 1 is visible in the file rather than inferred.
+// error per joint (meaningful in mode 0 only — in the damping modes the
+// reference IS the measurement; plot_rtc_log shades those stretches). The raw model term `g_*` is
+// logged next to `tau_ff_*` so a clamp or a gain below 1 is visible in the file rather than
+// inferred.
 //
 // SPSC constraint: trivially copyable. No rtc_msgs/.msg — this is
 // controller-internal. YAML `msg_type` id is
@@ -52,6 +54,10 @@ struct JointFeedforwardLogPod {
   bool seeded{false};       ///< the reference has been seeded since activation
   bool traj_active{false};  ///< a joint goal is still being followed
   bool ff_enabled{false};   ///< the lane was switched on (gravity_ff.enabled)
+  /// The controller's mode this tick: 0 tracking, 1 damping (reference =
+  /// measurement, torque 0), 2 damping_feedforward (reference = measurement,
+  /// lane on). The enum is HandJointMode; the codes are append-only.
+  std::uint8_t mode{0};
   /// The torque on the wire came out of a finite model term this tick. False
   /// on E-STOP, before the first valid projection, and when the law retracted
   /// a non-finite term.
@@ -93,8 +99,8 @@ struct JointFeedforwardLogColumns {
 inline void WriteJointFeedforwardLogHeader(std::ostream& os,
                                            const std::vector<std::string>& joint_names,
                                            const JointFeedforwardLogColumns& cols) {
-  os << "t_relative_s,tick,estop,readable,seeded,traj_active,ff_enabled,ff_finite,model_fresh,"
-        "held,held_ticks,singular,closure_error,clamped_mask,num_joints";
+  os << "t_relative_s,tick,estop,readable,seeded,traj_active,ff_enabled,mode,ff_finite,"
+        "model_fresh,held,held_ticks,singular,closure_error,clamped_mask,num_joints";
   for (const char* prefix : {"q_", "q_ref_", "g_", "tau_ff_"}) {
     for (std::size_t i = 0; i < cols.joints; ++i) {
       os << ',' << prefix << joint_names[i];
@@ -109,9 +115,10 @@ inline void WriteJointFeedforwardLogRow(std::ostream& os, const JointFeedforward
                                         const JointFeedforwardLogColumns& cols) {
   os << p.t_relative_s << ',' << p.tick << ',' << (p.estop ? 1 : 0) << ',' << (p.readable ? 1 : 0)
      << ',' << (p.seeded ? 1 : 0) << ',' << (p.traj_active ? 1 : 0) << ',' << (p.ff_enabled ? 1 : 0)
-     << ',' << (p.ff_finite ? 1 : 0) << ',' << (p.model_fresh ? 1 : 0) << ',' << (p.held ? 1 : 0)
-     << ',' << p.held_ticks << ',' << (p.singular ? 1 : 0) << ',' << p.closure_error << ','
-     << p.clamped_mask << ',' << static_cast<unsigned>(p.num_joints);
+     << ',' << static_cast<unsigned>(p.mode) << ',' << (p.ff_finite ? 1 : 0) << ','
+     << (p.model_fresh ? 1 : 0) << ',' << (p.held ? 1 : 0) << ',' << p.held_ticks << ','
+     << (p.singular ? 1 : 0) << ',' << p.closure_error << ',' << p.clamped_mask << ','
+     << static_cast<unsigned>(p.num_joints);
   const std::size_t reported =
       std::min(static_cast<std::size_t>(p.num_joints), JointFeedforwardLogPod::kMaxJoints);
   auto emit = [&](const std::array<double, JointFeedforwardLogPod::kMaxJoints>& a) {

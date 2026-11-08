@@ -11,6 +11,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -44,6 +45,24 @@ double RequireDouble(const YAML::Node& cfg, const char* key) {
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
+HandJointMode ParseHandJointMode(std::string_view text) {
+  for (std::size_t i = 0; i < kHandJointModeNames.size(); ++i) {
+    if (text == kHandJointModeNames[i]) {
+      return static_cast<HandJointMode>(i);
+    }
+  }
+  std::string msg = "hand_joint_controller: 'mode' must be one of";
+  for (const auto name : kHandJointModeNames) {
+    msg += " \"" + std::string(name) + "\"";
+  }
+  throw std::runtime_error(msg + " (got \"" + std::string(text) + "\")");
+}
+
+std::string_view HandJointModeName(HandJointMode mode) noexcept {
+  const auto i = static_cast<std::size_t>(mode);
+  return i < kHandJointModeNames.size() ? kHandJointModeNames[i] : kHandJointModeNames[0];
+}
+
 HandJointConfig ParseHandJointConfig(const YAML::Node& cfg) {
   if (!cfg || !cfg.IsMap()) {
     Fail("the controller configuration is missing or not a map");
@@ -75,6 +94,13 @@ HandJointConfig ParseHandJointConfig(const YAML::Node& cfg) {
   }
   rtc::params::ParseDynamicsFeedforwardParams(cfg[std::string(kHandJointFfBlockKey)],
                                               kHandJointFfBlockKey, out.ff);
+  // Optional; the shipped YAML spells it out. Off-whitelist throws (naming
+  // the three values) — a typo must not fall back to tracking silently.
+  if (cfg["mode"]) {
+    // A key with no value parses as "" and is refused with the whitelist.
+    out.mode =
+        ParseHandJointMode(cfg["mode"].IsScalar() ? cfg["mode"].as<std::string>() : std::string());
+  }
   return out;
 }
 
@@ -126,6 +152,7 @@ void HandJointController::LoadConfig(const YAML::Node& cfg) {
   gains.max_traj_velocity = cfg_.max_traj_velocity;
   gains.ff_enabled = cfg_.ff.enabled;
   gains.ff_gain = cfg_.ff.gravity_gain;
+  gains.mode = cfg_.mode;
   gains_lock_.Store(gains);
 
   InitModel();
@@ -309,8 +336,11 @@ void HandJointController::SetDeviceTarget(int device_idx, std::span<const double
 void HandJointController::ApplyPendingTarget(int device_idx, std::span<const double> values,
                                              bool is_task) noexcept {
   // Also while a re-seed is pending: the seed would overwrite the goal, so it
-  // is counted as refused rather than accepted and lost.
-  if (device_idx != 0 || is_task || !seeded_ || need_reseed_ || estop_active_ ||
+  // is counted as refused rather than accepted and lost. A non-tracking mode
+  // refuses too (the reference is the measurement there) — unlike E-STOP,
+  // whose goals never reach this function (Compute discards them).
+  if (device_idx != 0 || is_task || !seeded_ || need_reseed_.load(std::memory_order_relaxed) ||
+      estop_active_ || gains_tick_.mode != HandJointMode::kTracking ||
       static_cast<int>(values.size()) != dof_) {
     goal_rejects_.fetch_add(1, std::memory_order_relaxed);
     return;
@@ -356,7 +386,7 @@ void HandJointController::ApplyPendingTarget(int device_idx, std::span<const dou
 }
 
 void HandJointController::ResetTargetInitialization() noexcept {
-  need_reseed_ = true;
+  need_reseed_.store(true, std::memory_order_relaxed);
 }
 
 // ── E-STOP ──────────────────────────────────────────────────────────────────
@@ -382,8 +412,16 @@ ControllerOutput HandJointController::Compute(const ControllerState& state) noex
   const bool was_estopped = estop_active_;
   estop_active_ = estopped_.load(std::memory_order_acquire);
   if (was_estopped && !estop_active_) {
-    need_reseed_ = true;  // release: the reference restarts from the measurement
+    // release: the reference restarts from the measurement
+    need_reseed_.store(true, std::memory_order_relaxed);
   }
+  // Mode edge, judged here and not in AdvanceReference (which returns early
+  // on an unreadable tick and would miss or double-consume the edge): back to
+  // tracking re-seeds, the goal becomes "here".
+  if (mode_prev_ != HandJointMode::kTracking && gains_tick_.mode == HandJointMode::kTracking) {
+    need_reseed_.store(true, std::memory_order_relaxed);
+  }
+  mode_prev_ = gains_tick_.mode;
   readable_ = state.num_devices > 0 && rtc::IsDeviceReadable(state.devices[0], dof_);
   if (state.num_devices > 0 && rtc::IsGateClosedByWidth(state.devices[0], dof_)) {
     RCLCPP_WARN_THROTTLE(logger_, log_clock_, logging::kThrottleSlowMs,
@@ -394,7 +432,8 @@ ControllerOutput HandJointController::Compute(const ControllerState& state) noex
   }
 
   // Goals: applied only on a tick the reference is live; otherwise dropped
-  // (E-STOP) so they do not land on the tick the hand resumes.
+  // (E-STOP) so they do not land on the tick the hand resumes. A non-tracking
+  // mode drains them and ApplyPendingTarget refuses each (counted).
   if (estop_active_) {
     DiscardPendingTargets();
   } else {
@@ -464,20 +503,17 @@ void HandJointController::AdvanceReference(const ControllerState& state, double 
     return;  // frozen: last reference, trajectory clock stopped
   }
   const auto& dev = state.devices[0];
-  if (estop_active_) {
-    // The measured pose is commanded (the controller manager substitutes its
-    // own hold on the wire anyway); the goal becomes "here".
-    for (int i = 0; i < dof_; ++i) {
-      const auto ui = static_cast<std::size_t>(i);
-      q_ref_[ui] = dev.positions[ui];
-      qd_ref_[ui] = 0.0;
-      goal_[ui] = q_ref_[ui];
-    }
-    traj_active_ = false;
-    traj_time_ = 0.0;
+  if (estop_active_ || gains_tick_.mode != HandJointMode::kTracking) {
+    // E-STOP: the measured pose is commanded (the controller manager
+    // substitutes its own hold on the wire anyway). damping /
+    // damping_feedforward: the measured pose IS the command.
+    HoldAtMeasurement(state);
     return;
   }
-  if (need_reseed_ || !seeded_) {
+  // exchange, not load + store: an on_activate store landing between the two
+  // would be erased (it would ask for what this tick does anyway, but the
+  // consume should not be able to lose a request).
+  if (need_reseed_.exchange(false, std::memory_order_relaxed) || !seeded_) {
     for (int i = 0; i < dof_; ++i) {
       const auto ui = static_cast<std::size_t>(i);
       q_ref_[ui] = std::clamp(dev.positions[ui], q_min_[ui], q_max_[ui]);
@@ -487,7 +523,6 @@ void HandJointController::AdvanceReference(const ControllerState& state, double 
     traj_active_ = false;
     traj_time_ = 0.0;
     seeded_ = true;
-    need_reseed_ = false;
     return;
   }
   if (!traj_active_) {
@@ -511,11 +546,35 @@ void HandJointController::AdvanceReference(const ControllerState& state, double 
   }
 }
 
+void HandJointController::HoldAtMeasurement(const ControllerState& state) noexcept {
+  const auto& dev = state.devices[0];
+  // Not clamped to the position limits: a finger pushed past one is not
+  // pulled back (that would be a servo error, not a hold). The re-seed on
+  // the return to tracking clamps, as every tracking reference does.
+  for (int i = 0; i < dof_; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    q_ref_[ui] = dev.positions[ui];
+    qd_ref_[ui] = 0.0;
+    goal_[ui] = q_ref_[ui];
+  }
+  traj_active_ = false;
+  traj_time_ = 0.0;
+  // A hold is a seed: a controller activated in a non-tracking mode has a
+  // valid output from its first readable tick (an invalid one for 0.1 s is a
+  // global E-STOP by the controller manager). The pending re-seed is spent
+  // here; the mode edge / E-STOP release re-arm it.
+  seeded_ = true;
+  (void)need_reseed_.exchange(false, std::memory_order_relaxed);
+}
+
 void HandJointController::ComputeFeedforward() noexcept {
   clamped_mask_ = 0;
   ff_finite_ = false;
   const auto n = static_cast<std::size_t>(std::max(dof_, 0));
-  if (estop_active_ || !have_g_ || !gains_tick_.ff_enabled) {
+  // One OR chain, appended to: `damping` zeroes the lane like the switch does;
+  // `damping_feedforward` leaves it to the switch and the E-STOP.
+  if (estop_active_ || !have_g_ || !gains_tick_.ff_enabled ||
+      gains_tick_.mode == HandJointMode::kDamping) {
     std::fill_n(tau_ff_.begin(), n, 0.0);
     return;
   }
@@ -573,6 +632,7 @@ void HandJointController::FillTickRecord(const ControllerState& state) noexcept 
   tick_.seeded = seeded_;
   tick_.traj_active = traj_active_;
   tick_.ff_enabled = gains_tick_.ff_enabled;
+  tick_.mode = static_cast<std::uint8_t>(gains_tick_.mode);
   tick_.ff_finite = ff_finite_;
   tick_.model_fresh = model_fresh_;
   tick_.held = kin_status_.held;

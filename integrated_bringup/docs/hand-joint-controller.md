@@ -14,6 +14,21 @@
 - **Extended URDF** (loop closure sidecar): 중력항은 `RtClosedChainHandle` 의 축약 g_a = Gᵀg 를 측정 actuated 위치에서 구한 것이고, 같은 사영을 핑거팁 FK 가 빌려 쓴다 (`ClosedChainHandFk` borrowed — tick 당 사영 1 회). 사영의 독립 관절은 **전부 이 군의 관절**이어야 한다 (이름 브릿지, 순서 무관); 아니면 configure 거부.
 - **Plain URDF**: tree 모델이 곧 모델이다 — serial 핸들의 g(q) 와 FK, 장치 관절 순서를 설치. tree 의 관절을 장치가 정확히 한 번씩 덮지 않으면 거부.
 
+## 모드 (`mode`)
+
+장치의 PD 게인은 이 컨트롤러가 바꿀 수 없다 — 모드는 **두 lane 이 무엇을 싣는지**만 고른다. YAML 키이자 런타임 파라미터 (`ros2 param set … mode damping`), 언제든 (active · E-STOP 중에도) 바꿀 수 있고 E-STOP 이 모드에 우선한다. 용어는 모터 펌웨어의 "damping mode" (kp 0 · kd 만, Unitree · MAB) 에서 왔다.
+
+| 모드 | `commands` | `feedforward` | `joint_goal` |
+|---|---|---|---|
+| `tracking` (기본) | 마지막 goal 로 가는 quintic reference | 중력 lane (아래 hold 정책) | 수락 |
+| `damping` | **매 tick 측정 위치** (목표 = 지금 자리) | 0 — 장치의 kd 만 작용 | **거부 + `GoalRejectCount`** |
+| `damping_feedforward` | 매 tick 측정 위치 | `tracking` 과 같은 lane (`gravity_ff.enabled` · gain · clamp · hold) — servo 오차 없이 lane 만 검증 | 거부 + count |
+
+- 비‑tracking 의 goal 거부는 E-STOP 의 **조용한 폐기** (count 없음) 와 다른 정책이다 — 운영자가 보낸 goal 이 사라졌다는 사실이 카운터에 남는다.
+- `tracking` 으로 돌아오는 첫 tick 에 reference 를 측정값에서 재시드한다 (goal = 지금 자리); `tracking` 을 떠나면 진행 중인 궤적은 버려진다 (reference 가 측정값으로 점프 — 크기는 그 순간의 추종 오차).
+- 비‑tracking 모드로 활성화해도 첫 readable tick 부터 출력이 valid 다 (hold 가 seed 를 겸한다 — 0.1 s 동안 invalid 면 CM 의 global E-STOP).
+- 판정은 `plot_rtc_log joint_ff.csv` 로 수동 — `mode` 열이 비‑tracking 구간을 음영으로 칠하고 그 구간의 drift (q(end) − q(start) · 평균 |Δq/Δt| · 평균 |τ_ff|) 를 통계로 낸다. **`analyze_hand_gravity_ff` 의 A/B/A 게이트 run 은 `tracking` 에서만** 돌린다 — 비‑tracking 행은 q_ref = q 라 |q_ref − q| 판정을 0 으로 끌어 왜곡하므로, 판정 창에 `mode != 0` 행이 있으면 게이트가 `g.mode` 로 FAIL 한다 (`mode` 열이 없는 옛 CSV 는 그 검사가 없다). demo GUI 의 패널은 [demo-controller-gui.md](demo-controller-gui.md#손-전용-프로파일-hand_joint_controller---robot-p2).
+
 ## Hold 정책 (feedforward)
 
 | 상황 | wire 의 `feedforward` |
@@ -23,6 +38,7 @@
 | 법칙이 비유한 항을 만남 | 전 관절 0 (all-or-nothing) |
 | `gravity_ff.enabled: false` (YAML · 런타임 파라미터) | 0, command type 은 그대로 `pd_feedforward` |
 | E-STOP | 0, `commands` = 측정값. 해제 시 측정값에서 재시드, 목표는 "지금 자리" |
+| `mode: damping` | 0 (`damping_feedforward` 는 이 표의 나머지 행을 그대로 따른다) |
 
 A/B 비교는 `gravity_ff.enabled` 로만 한다 — command type 을 position 으로 바꾸면 sim 이 그 군의 자체 중력 보상을 다시 켜 다른 plant 가 된다.
 
@@ -30,6 +46,7 @@ A/B 비교는 `gravity_ff.enabled` 로만 한다 — command type 을 position �
 
 | 키 | 의미 |
 |---|---|
+| `mode` | `tracking` · `damping` · `damping_feedforward` (위 표). 생략 = `tracking`, 오타는 load 거부. 런타임 파라미터 |
 | `trajectory_speed` · `max_traj_velocity` | rad/s. quintic 의 duration = 최대 거리 / speed, 피크 속도 (15/8 · Δq / T) 가 cap 안이 되도록 연장. 전자는 런타임 파라미터, 후자는 read-only |
 | `gravity_ff.enabled` · `gravity_ff.gain` · `gravity_ff.max_abs` | 런타임 파라미터 둘 + **필수** 상한 (N·m). 적용 상한은 `min(max_abs, devices.<g>.joint_limits.max_torque)` — device rating 이 placeholder 여도 YAML 키가 wire 를 묶는다 |
 | `closure_error_threshold` | m. 핑거팁 FK 가 사영을 신뢰하는 ‖φ‖ 상한 (토크 hold 는 핸들의 held/singular 가 정한다) |
@@ -39,7 +56,7 @@ A/B 비교는 `gravity_ff.enabled` 로만 한다 — command type 을 position �
 
 ## 로그와 판정
 
-`joint_ff.csv` 의 열은 [controller-logs.md](controller-logs.md#csv-로그). sim 의 hold 게이트는 `ros2 run rtc_tools analyze_hand_gravity_ff <session>` — `ff_enabled` 로 on/off 구간을 나눠 마지막 3 s 의 `|q_ref − q|` 를 관절급별 문턱에 대 본다 (문턱 · 관절 목록은 그 도구의 CLI 기본값, 근거는 [testing.md](../../docs/testing.md) 의 p2 행). 그림은 `plot_rtc_log joint_ff.csv`.
+`joint_ff.csv` 의 열은 [controller-logs.md](controller-logs.md#csv-로그) (`mode` 열 = 0 tracking · 1 damping · 2 damping_feedforward). sim 의 hold 게이트는 `ros2 run rtc_tools analyze_hand_gravity_ff <session>` — `ff_enabled` 로 on/off 구간을 나눠 마지막 3 s 의 `|q_ref − q|` 를 관절급별 문턱에 대 본다 (문턱 · 관절 목록은 그 도구의 CLI 기본값, 근거는 [testing.md](../../docs/testing.md) 의 p2 행). 그림은 `plot_rtc_log joint_ff.csv`.
 
 ## 실기 (proto2, CAN FD)
 
