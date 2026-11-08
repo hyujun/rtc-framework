@@ -1903,3 +1903,34 @@ TEST_F(JointThreeGroupTest, AGoalForADevicePastTheLastLaneIsRefusedAndCounted) {
   EXPECT_EQ(ctrl_.GetTargetRejectCount(), before + 1)
       << "a device past the last lane must be refused, not swallowed";
 }
+
+// A hand that reports MORE channels than its group declares (the wire is the
+// authority on width; the declaration is the model) must hold the extra
+// channels where they are. They used to be copied out of the unwritten tail of
+// the computed buffer — a fresh zero, i.e. a command to the origin — on both
+// lanes; the arm has held its tail at the measurement since #265.
+TEST_F(JointThreeGroupTest, AHandReportingMoreChannelsThanDeclaredHoldsTheExtraAtMeasured) {
+  constexpr int kWideFirstHand = kFirstHandDof + 2;
+  constexpr int kWideSecondHand = kSecondHandDof + 2;
+  ControllerState state = MakeThreeGroupState(kWideSecondHand);
+  state.devices[1].num_channels = kWideFirstHand;
+  for (std::size_t i = static_cast<std::size_t>(kFirstHandDof);
+       i < static_cast<std::size_t>(kWideFirstHand); ++i) {
+    state.devices[1].positions[i] = MeasuredFirstHand(i);
+  }
+
+  ControllerOutput out = ctrl_.Compute(state);
+  for (int t = 0; t < 5; ++t) {
+    state.iteration = static_cast<uint64_t>(t + 2);
+    out = ctrl_.Compute(state);
+  }
+
+  ASSERT_EQ(out.devices[1].num_channels, kWideFirstHand);
+  ASSERT_EQ(out.devices[2].num_channels, kWideSecondHand);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kWideFirstHand); ++i) {
+    EXPECT_NEAR(out.devices[1].commands[i], MeasuredFirstHand(i), 1e-9) << "first hand " << i;
+  }
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kWideSecondHand); ++i) {
+    EXPECT_NEAR(out.devices[2].commands[i], MeasuredSecondHand(i), 1e-9) << "second hand " << i;
+  }
+}

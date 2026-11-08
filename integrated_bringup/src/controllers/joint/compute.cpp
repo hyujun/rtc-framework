@@ -371,6 +371,14 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
       hand_computed_[hi].positions[idx] = hand_traj.positions[idx];
       hand_computed_[hi].velocities[idx] = hand_traj.velocities[idx];
     }
+    // Channels the device reports but this lane does not model — the
+    // `nc > hand_dof_[h]` direction, a NORMAL input (num_channels is the wire
+    // length). Unwritten they are a fresh zero, and every output fill copies
+    // hand_computed_[h] nc wide, so a hand reporting more channels than its
+    // group declares was commanded to the origin on the extra ones. The same
+    // tail policy the arm gets above (#265 audit J3): hold where the joint is.
+    rtc::FillCommandTail(hand_computed_[hi].positions, dof, dev.num_channels, command_type_,
+                         dev.positions);
   }
 
   // ── Arm FK: base → tip (from the unified combined-model cache) ────────
