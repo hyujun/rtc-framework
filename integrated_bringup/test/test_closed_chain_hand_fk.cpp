@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -86,6 +87,55 @@ TEST(ClosedChainHandFk, ActiveFingertipMatchesConvergedOracle) {
   }
   ASSERT_GT(n, 100);
   EXPECT_LT(max_err, 1e-3);
+}
+
+// ── 브릿지는 device index 로 읽는다 — 독립 관절이 세 번째 lane 에 있어도 (#715) ────
+// 한 sidecar 가 모델 전체를 닫으므로 두 손 로봇에서는 두 번째 손의 actuated 관절도 독립
+// 관절이다. 그 관절은 device 2 (손 lane 1) 에 실려 오고, 브릿지는 그 (device, channel) 을
+// 읽어야 한다 — device 0 · 1 만 주면 kInactiveBridgeIncomplete 로 serial 경로에 떨어진다.
+TEST(ClosedChainHandFk, IndependentJointOnAThirdLaneIsBridged) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  const Eigen::VectorXd seed = ConvergedSeed(ccm, model);
+  rub::ClosedChainHandle oracle(model, ccm.constraints, ccm.actuated_joint_ids, {});
+
+  ib::ClosedChainHandFk fk;
+  // device 0 · 1 의 roster 에는 없고 device 2 의 channel 1 에만 있다.
+  const std::vector<std::vector<std::string>> lanes{
+      {"body_a"}, {"other_hand"}, {"filler", "j_crank"}};
+  ASSERT_EQ(fk.Configure(model, ccm.constraints, ccm.actuated_joint_ids, seed, lanes,
+                         std::vector<std::string>{"c1"}, kHandRoot),
+            ib::HandFkWiringResult::kActive);
+
+  // 두 lane 만 주면 (옛 배선) 브릿지가 미완성이다 — 이 테스트가 지키는 경계.
+  ib::ClosedChainHandFk two_lanes;
+  EXPECT_EQ(
+      two_lanes.Configure(model, ccm.constraints, ccm.actuated_joint_ids, seed,
+                          {{"body_a"}, {"other_hand"}}, std::vector<std::string>{"c1"}, kHandRoot),
+      ib::HandFkWiringResult::kInactiveBridgeIncomplete);
+  EXPECT_EQ(two_lanes.missing_joint(), "j_crank");
+
+  const auto fid_c1 = oracle.GetFrameId("c1");
+  const auto fid_root = oracle.GetFrameId(kHandRoot);
+  rtc::ControllerState state;
+  state.num_devices = 3;
+  for (std::size_t d = 0; d < 3; ++d) {
+    state.devices[d].num_channels = 2;
+    state.devices[d].valid = true;
+  }
+  constexpr double kQ = 0.23;
+  state.devices[2].positions[1] = kQ;
+  state.devices[2].positions[0] = 9.0;  // the filler channel must not be read as q
+  for (int t = 0; t < 50; ++t) {
+    fk.Update(state);
+  }
+  const auto st_ref = oracle.Update(std::vector<double>{kQ});
+  ASSERT_TRUE(st_ref.converged);
+  pinocchio::SE3 T_ft;
+  ASSERT_TRUE(fk.GetFingertipHandRootPose(0, T_ft));
+  const pinocchio::SE3 ref =
+      oracle.GetFramePlacement(fid_root).actInv(oracle.GetFramePlacement(fid_c1));
+  EXPECT_LT((T_ft.translation() - ref.translation()).norm(), 1e-3);
 }
 
 // ── #1: 활성 시 혼합 손 — loop-상류 fingertip 도 (serial 등가로) 서비스된다 ──────

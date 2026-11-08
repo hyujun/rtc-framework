@@ -415,6 +415,15 @@ class DemoJointController final : public RTControllerInterface {
     return owned_topics_.grasp_msg.header.frame_id;
   }
 
+  /// Test-only: the per-device rosters the closed-chain q_a bridge is wired
+  /// from — index = device index (primary, then one per hand lane). A sidecar
+  /// closes the whole model, so a two-hand robot's second hand must be here or
+  /// its actuated joints are "not in any device" and the loop-consistent
+  /// fingertip FK silently falls back to the serial one (#715).
+  [[nodiscard]] std::vector<std::vector<std::string>> BridgeDeviceRostersForTesting() const {
+    return BridgeDeviceRosters();
+  }
+
   /// Test-only: how many device groups on_configure subscribed a target for.
   /// The `topics:` list is owned in full or the configure is refused (#715) —
   /// a group that is owned but never subscribed is a simulator that never
@@ -653,6 +662,11 @@ class DemoJointController final : public RTControllerInterface {
   std::array<FingertipVtcpInput, kNumFingertips> vtcp_inputs_{};  ///< Pre-allocated
 
   void UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp, const Gains& gains) noexcept;
+
+  /// Config-time: joint_state_names of every device lane, primary first, one
+  /// entry per hand lane (empty when the lane has no group). The q_a bridge
+  /// source list of ConfigureClosedChainHandFk.
+  [[nodiscard]] std::vector<std::vector<std::string>> BridgeDeviceRosters() const;
 
   void InitArmModel(const rtc_urdf_bridge::ModelConfig& config);
   void InitHandModel(const rtc_urdf_bridge::ModelConfig& config);
