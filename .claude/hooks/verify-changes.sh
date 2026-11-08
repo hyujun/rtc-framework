@@ -35,10 +35,10 @@
 #   1.  README reminder on a public-surface change -- header / launch / config,
 #       a directory (<= 2 levels below the package) added or removed, package.xml
 #       (NON-BLOCKING; a file add/del inside an existing directory is not one,
-#       so READMEs stop growing per-file trees, #869 D4; a tracked header whose
-#       changed lines are all comment lines is not one either, nor a tracked
-#       package.xml whose changed lines are all <version> / <test_depend> /
-#       comments, #982); a new .cpp
+#       so READMEs stop growing per-file trees, #869 D4; a tracked header /
+#       config YAML / launch file whose changed lines are all comment lines is
+#       not one either (#905, PR #992), nor a tracked package.xml whose changed
+#       lines are all <version> / <test_depend> / comments, #982); a new .cpp
 #       must be in CMakeLists.txt, a new find_package() in package.xml
 #       (blocking).
 #   1b. changed *.md -> validate_docs.py --files, findings narrowed to added
@@ -1253,19 +1253,23 @@ for pkg_dir in $CHANGED_PKGS; do
                  | grep -vE '\.md$|^repo_scripts/config/[a-z_]+_budget\.yaml$' || true)
   # A tracked header whose changed lines are all comment lines (`//`, `/*`,
   # `*`) carries no interface delta the README could reflect (a thread renamed
-  # inside a comment asked for a README it did not need, #905). A code line
-  # with a trailing comment still counts; a header new since the baseline is
-  # surface as before.
+  # inside a comment asked for a README it did not need, #905). Likewise a
+  # tracked config YAML or launch file whose changed lines are all `#` comments
+  # (a rationale comment rewritten in a profile config asked for one, PR #992).
+  # A code or value line with a trailing comment still counts; a file new since
+  # the baseline is surface as before.
   if [ -n "$PKG_PUBLIC" ]; then
     PKG_PUBLIC=$(echo "$PKG_PUBLIC" | while IFS= read -r f; do
+      comment_re=""
       case "$f" in
-        */include/*.h|*/include/*.hpp)
-          if git cat-file -e "${VERIFY_BASE}:${f}" 2>/dev/null \
-             && [ -z "$(git diff -U0 "$VERIFY_BASE" -- "$f" | grep -E '^[-+][^-+]' \
-                       | grep -vE '^[-+][[:space:]]*(//|/\*|\*)' | head -n 1)" ]; then
-            continue
-          fi ;;
+        */include/*.h|*/include/*.hpp) comment_re='^[-+][[:space:]]*(//|/\*|\*)' ;;
+        */config/*.yaml|*/config/*.yml|*/launch/*.py|*/launch/*.yaml) comment_re='^[-+][[:space:]]*#' ;;
       esac
+      if [ -n "$comment_re" ] && git cat-file -e "${VERIFY_BASE}:${f}" 2>/dev/null \
+         && [ -z "$(git diff -U0 "$VERIFY_BASE" -- "$f" | grep -E '^[-+][^-+]' \
+                   | grep -vE "$comment_re" | head -n 1)" ]; then
+        continue
+      fi
       printf '%s\n' "$f"
     done)
   fi
