@@ -1,0 +1,113 @@
+# DemoJointController — b7_loco (b7 humanoid whole body, floating base in sim,
+# + proto2 hands on both wrists)
+#
+# Per-device joint-space quintic trajectories with hand fingertip FK. On this
+# robot the primary group `b7` is the whole body (legs 6 + 6 + arms 7 + 7),
+# so "arm" below means that 26-joint group. The two hands are the second and
+# third device groups: each follows its own `<hand>/joint_goal`, holds its own
+# measured pose on activation and ramps on its own in an E-STOP (#715); the
+# fingertip FK, TF and contact-stop follow the first hand (`p2_right`) only.
+# The controller holds the measured pose; what keeps the robot standing is the
+# simulator's position servos (mujoco_simulator.yaml), fed the hold through
+# `pd_feedforward`.
+#
+# Shared demo parameters (virtual TCP, grasp, finger map) live in demo_shared.yaml.
+demo_joint_controller:
+  # Primary group width. Must equal devices.b7.joint_state_names (26) and the
+  # length of estop.arm_safe_position. Capacity: 32.
+  arm_dof: 26
+
+  # ── Trajectory generation ─────────────────────────────────────────────────
+  # Quintic rest-to-rest. Duration = max joint distance / speed, then extended
+  # until the peak velocity (15/8 × Δq / T) is within the max below.
+  robot_trajectory_speed: 0.78      # rad/s, > 0
+  hand_trajectory_speed: 1.0        # rad/s, > 0 — half the finger motors' 2 rad/s rating
+  robot_max_traj_velocity: 3.14     # rad/s — well under the 11–18 rad/s joint ratings
+  hand_max_traj_velocity: 2.0       # rad/s — the finger motors' rating
+
+  # ── Hand contact-stop (required block — LoadConfig throws on a missing key) ─
+  # Same values as g1_loco. The sim hands have no sensors, so the guard never
+  # fires here.
+  fsm:
+    contact_stop_release_eps: 0.005 # rad, hand contact-stop release hysteresis
+    contact_stop_lpf_cutoff_hz: 15.0 # Hz, Bessel LPF cutoff for latched hold
+    contact_stop_force_lpf_cutoff_hz: 50.0 # Hz, Bessel LPF on the fingertip force
+    contact_stop_force_guard_delta_n: 4.0 # N, per-axis |Δ| reject threshold, (0, 1000]
+    contact_stop_force_guard_max_hold_ticks: 6 # ticks, [0, 1000]
+
+  # ── E-STOP ────────────────────────────────────────────────────────────────
+  estop:
+    # rad, 26 values in devices.b7.joint_state_names order; the length must
+    # equal arm_dof. The MJCF `stand` keyframe — the pose the robot stands in,
+    # so an E-STOP ramps toward standing rather than toward a straight-leg
+    # pose the servos would have to catch. The hands hold their measured pose.
+    arm_safe_position:
+      - -0.2528 # left_hip_pitch
+      - 0.0     # left_hip_roll
+      - 0.0     # left_hip_yaw
+      - 0.6     # left_knee
+      - -0.3472 # left_ankle_pitch
+      - 0.0     # left_ankle_roll
+      - -0.2528 # right_hip_pitch
+      - 0.0     # right_hip_roll
+      - 0.0     # right_hip_yaw
+      - 0.6     # right_knee
+      - -0.3472 # right_ankle_pitch
+      - 0.0     # right_ankle_roll
+      - 0.0     # left_shoulder_pitch
+      - 0.0     # left_shoulder_roll
+      - 0.0     # left_shoulder_yaw
+      - 0.0     # left_elbow
+      - 0.0     # left_wrist_yaw
+      - 0.0     # left_wrist_pitch
+      - 0.0     # left_wrist_roll
+      - 0.0     # right_shoulder_pitch
+      - 0.0     # right_shoulder_roll
+      - 0.0     # right_shoulder_yaw
+      - 0.0     # right_elbow
+      - 0.0     # right_wrist_yaw
+      - 0.0     # right_wrist_pitch
+      - 0.0     # right_wrist_roll
+
+  # PD position target + per-joint feedforward torque (zero from this
+  # controller). The simulator switches each group to its PD-feedforward
+  # mode on the first such command and turns that group's gravity compensation
+  # off, so the servos carry the full weight — the plant the walking MPC will
+  # drive. Anything but position | torque | pd_feedforward is refused.
+  command_type: "pd_feedforward"
+
+  # ── Topics ────────────────────────────────────────────────────────────────
+  # All three groups are claimed (each has a target subscription): the sim
+  # waits for a command from every group each step. Order = device index:
+  # 0 the body, 1 the first hand (fingertip FK, TF, GUI), 2 the second hand.
+  topics:
+    b7:
+      subscribe:
+        - topic: "b7/joint_goal"
+          role: "target"
+      publish:
+        # One TF publisher per controller. Frames (parent `pelvis`):
+        #   right_hand_palm_actual                 — the arm tip / first hand's mount
+        #   right_hand_<finger>_virtual_axis_actual — the first hand's four fingertips
+        - topic: "transforms"
+          role: "robot_transforms"
+    p2_right:
+      subscribe:
+        - topic: "p2_right/joint_goal"
+          role: "target"
+    p2_left:
+      subscribe:
+        - topic: "p2_left/joint_goal"
+          role: "target"
+
+  # ── Controller-owned CSV logs ─────────────────────────────────────────────
+  # Instance = <device group>_state; the files land in the session directory.
+  # b7_state carries all 26 joints; one file per hand. No *_sensor: the sim
+  # hands have no lane.
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: b7_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p2_right_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p2_left_state

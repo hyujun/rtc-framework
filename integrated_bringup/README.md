@@ -23,8 +23,9 @@
 | `iiwa7_leap` | — | `sim_iiwa7_leap.launch.py` | `demo_wbc_controller` | joint · task · compliance · wbc · catching |
 | `g1_p1b` | — | `sim_g1_p1b.launch.py` | `demo_joint_controller` | joint · dualarm |
 | `g1_loco` | — | `sim_g1_loco.launch.py` | `demo_joint_controller` | joint |
+| `b7_loco` | — | `sim_b7_loco.launch.py` | `demo_joint_controller` | joint |
 
-- 실로봇은 UR5e 두 종 (`ur5e_p1a`, `ur5e_p1b`) 만 지원합니다. `iiwa7_leap` · `g1_p1b` · `g1_loco` 는 sim 전용입니다.
+- 실로봇은 UR5e 두 종 (`ur5e_p1a`, `ur5e_p1b`) 만 지원합니다. `iiwa7_leap` · `g1_p1b` · `g1_loco` · `b7_loco` 는 sim 전용입니다. `g1_p1b` · `b7_loco` 의 모델은 비공개 `hand_description` 패키지의 것이라 그 패키지가 설치되어 있어야 뜹니다.
 - YAML 이 없는 로봇에서는 `demo_joint_controller` 외 컨트롤러가 인스턴스화되지 않고 목록에도 나타나지 않습니다.
 - 시작 컨트롤러는 `initial_controller:=<key>` 로 바꿉니다 (sim launch 공통 인자).
 
@@ -48,7 +49,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
 # viewer 없이: enable_viewer:=false
 ```
 
-다른 터미널에서 GUI 를 엽니다. 로봇을 바꿨으면 `--robot` 을 맞춥니다 (`ur5e_p1a` | `ur5e_p1b` | `iiwa7_leap` | `g1_p1b` | `g1_loco`).
+다른 터미널에서 GUI 를 엽니다. 로봇을 바꿨으면 `--robot` 을 맞춥니다 (`ur5e_p1a` | `ur5e_p1b` | `iiwa7_leap` | `g1_p1b` | `g1_loco` | `b7_loco`).
 
 ```bash
 ros2 run integrated_bringup demo_controller_gui                  # ur5e_p1a
@@ -72,6 +73,7 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 | `sim_iiwa7_leap.launch.py` | MuJoCo sim 의 iiwa7 + LEAP 손 (손 sensor 스택 없음). 공 발사 있음 | `ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_viewer:=false enable_mpc:=true` |
 | `sim_g1_p1b.launch.py` | MuJoCo sim 의 Unitree G1 상체 (fixed base) + proto_1b 오른손. 실기 launch 없음 | `ros2 launch integrated_bringup sim_g1_p1b.launch.py use_cpu_affinity:=false` |
 | `sim_g1_loco.launch.py` | MuJoCo sim 의 Unitree G1 전신 (부동 베이스, `stand` keyframe 에서 servo PD 로 서 있음) + 합성 손 (LPF). 보행 MPC 의 plant. 실기 launch 없음 | `ros2 launch integrated_bringup sim_g1_loco.launch.py use_cpu_affinity:=false` |
+| `sim_b7_loco.launch.py` | MuJoCo sim 의 b7 전신 (부동 베이스, `stand` keyframe 에서 servo PD) + proto2 두 손 (물리, device group 셋). 보행 MPC 의 둘째 plant. 모델은 비공개 패키지. 실기 launch 없음 | `ros2 launch integrated_bringup sim_b7_loco.launch.py use_cpu_affinity:=false` |
 
 실기 launch 의 `use_mock_hardware:=true` 는 모의 하드웨어로 띄운다 (UR 드라이버의 mock). sudo 없는 머신은 sim 에 `use_cpu_affinity:=false` 를 준다. launch 가 선언하지 않은 인자는 에러 없이 무시된다 — 이름을 `ros2 launch <pkg> <file> --show-args` 로 확인한다.
 
@@ -106,11 +108,11 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 | `sync_timeout_ms` · `max_rtf` · `use_yaml_servo_gains` | `""` (YAML) | sync 타임아웃 (ms) · 최대 실시간 배율 (0 = 무제한) · YAML vs XML 서보 게인 |
 | `use_cpu_affinity` | `true` | Tier 1 CPU 격리 + MuJoCo 핀닝 |
 | `max_log_sessions` | `10` (그 profile 의 YAML) | 세션 폴더 최대 보관 수 |
-| `initial_controller` | `""` (YAML) | 시작 컨트롤러. 기본은 `ur5e_p1a` · `iiwa7_leap` 이 `demo_wbc_controller`, `ur5e_p1b` · `g1_p1b` · `g1_loco` 가 `demo_joint_controller`. 기동 완료 신호는 `RtControllerNode reached Active state` 로그 |
-| `enable_mpc` | `""` (YAML) | `demo_wbc_controller` 의 `mpc.enabled` 를 launch 시점에 덮는다. `sim_iiwa7_leap` 은 `false` 가 YAML 기본, `sim_g1_p1b` · `sim_g1_loco` 는 CPU layout 만 고르고 기본 `false` |
-| `mpc_engine` | `""` (YAML) | `mock` / `handler` (`demo_wbc_controller` 의 MPC 엔진). `sim_g1_p1b` · `sim_g1_loco` 에는 없다 |
-| `sim_overlay` | `""` | 출하 씬을 건드리지 않고 바꾸는 overlay (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco`). [Scene overlay](#scene-overlay-sim_overlay--출하-씬을-건드리지-않고-바꾸기) |
-| `sim_lanes` | `false` | clock 위상 · 공 접촉 측정 lane 을 켜고 `<session>/sim/` 에 쓴다 (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco`) |
+| `initial_controller` | `""` (YAML) | 시작 컨트롤러. 기본은 `ur5e_p1a` · `iiwa7_leap` 이 `demo_wbc_controller`, `ur5e_p1b` · `g1_p1b` · `g1_loco` · `b7_loco` 가 `demo_joint_controller`. 기동 완료 신호는 `RtControllerNode reached Active state` 로그 |
+| `enable_mpc` | `""` (YAML) | `demo_wbc_controller` 의 `mpc.enabled` 를 launch 시점에 덮는다. `sim_iiwa7_leap` 은 `false` 가 YAML 기본, `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` 는 CPU layout 만 고르고 기본 `false` |
+| `mpc_engine` | `""` (YAML) | `mock` / `handler` (`demo_wbc_controller` 의 MPC 엔진). `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` 에는 없다 |
+| `sim_overlay` | `""` | 출하 씬을 건드리지 않고 바꾸는 overlay (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco`). [Scene overlay](#scene-overlay-sim_overlay--출하-씬을-건드리지-않고-바꾸기) |
+| `sim_lanes` | `false` | clock 위상 · 공 접촉 측정 lane 을 켜고 `<session>/sim/` 에 쓴다 (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco`) |
 | `catch_search_mode` · `catch_segment_mode` | `""` (출하값) | 포구 탐색 `grid` \| `nlp` 와 구간 계획기 `closed_form` \| `mpc` \| `mpc_docking` 선택 (`sim_ur5e_p1b` · `sim_iiwa7_leap`) |
 | `object_pool` · `object` · `object_seed` | `""` (YAML) | `object_pool` 스폰 설정 오버라이드. **`sim_ur5e_p1b` 에만** 있다 |
 | `enable_tracing` · `trace_*` | 실기와 같다 | LTTng trace |
@@ -173,6 +175,23 @@ ros2 service call /sim/reset std_srvs/srv/Trigger                               
 
 GUI 는 `ros2 run integrated_bringup demo_controller_gui --robot g1_loco`.
 
+#### `sim_b7_loco` — b7 전신 (부동 베이스) + proto2 두 손
+
+```bash
+ros2 launch integrated_bringup sim_b7_loco.launch.py                                              # viewer
+ros2 launch integrated_bringup sim_b7_loco.launch.py enable_viewer:=false use_cpu_affinity:=false   # headless · sudo 없음
+ros2 service call /sim/reset std_srvs/srv/Trigger                                                  # keyframe 으로 리셋
+```
+
+- 보행 MPC 의 둘째 plant 다 (결정 · 측정 이슈는 [더 읽기](#더-읽기)). device group 이 **셋**이다: `b7` (왼다리 6 + 오른다리 6 + 왼팔 7 + 오른팔 7 = 26 관절, 이 순서 — 허리는 강체) 과 `p2_right` · `p2_left` (proto2 손, 각 10 관절 — `config/b7_p2/udp_hand_node_p2.yaml` 과 같은 이름 · 순서, 토픽은 그 드라이버의 `/p2/<side>/…`). 두 손 다 sim 의 물리 (MJCF `<position>` servo) 라 `fake_response` 군이 없고 `sim_sync_tick_devices` 도 비워 세 군 전부를 기다린다.
+- 모델 (URDF · MJCF · closure sidecar) 은 **비공개 `hand_description` 패키지**의 것이다 (`g1_p1b` 와 같은 방식 — 출하 YAML 의 `package://` URI 가 가리키고 이 패키지는 의존하지 않는다). 그 패키지가 없으면 두 노드가 뜨지 않는 것이 의도다 — 공개 대리 모델은 아직 없다. 그래서 `test_shipped_initial_qpos` 의 keyframe lane 은 이 profile 을 skip 하고, 출하 profile 의 configure gtest (`test_g1_loco_configure` 류) 도 없다.
+- 서 있는 것은 sim 의 `stand` keyframe (`reset_keyframe`) + MJCF `<position>` servo 다. `demo_joint_controller` (유일한 컨트롤러) 는 세 군의 측정 자세를 `pd_feedforward` 로 hold 하고 feedforward 는 0 이다. 손은 군마다 자기 `<hand>/joint_goal` 을 따르고 자기 측정값으로 hold · E-STOP 한다; 손끝 FK · TF · grasp state 는 **첫 손 (`p2_right`) 만** 이다 ([controllers.md](../docs/controllers.md)).
+- 컨트롤러 모델의 root 는 **고정** (`urdf.root_joint_type: "fixed"`) 이고 부동 베이스의 ground truth 는 `devices.b7.backend.base_state` lane (IMU site 하나) 으로, 발 접촉은 `fingertip_wrench_topics` 의 두 sole 토픽 (`/b7/{left,right}_sole_contact/contact_wrench`) 으로 들어온다 — `g1_loco` 와 같다.
+- MJCF 의 `<option timestep>` 0.002 는 **제어 주기**다 (sim 이 `n_substeps` 3 으로 나눈다). `use_yaml_servo_gains` 는 `false` 가 기본이고 YAML 은 `servo_kp` / `servo_kd` 를 싣지 않는다.
+- `enable_mpc` 는 CPU layout 만 고른다 (기본 `false`). `mpc_engine` 인자는 없다.
+
+GUI 는 `ros2 run integrated_bringup demo_controller_gui --robot b7_loco` (오른손만 — 왼손은 `p2_left/joint_goal` 을 직접 publish).
+
 #### 기동 자세
 
 시뮬레이터의 기동 자세는 각 그룹의 `initial_qpos` (rad, `command_joint_names` 순서) 가 정하며 MJCF keyframe 보다 우선한다 ([rtc_mujoco_sim README](../rtc_mujoco_sim/README.md#초기-자세-initial_qpos)). 값을 고칠 때 **모든 원소에 소수점을 찍는다** — 정수 리터럴이 하나라도 있으면 시퀀스 전체가 정수 배열로 읽혀 노드 생성 시점에 죽는다. 길이와 keyframe 일치는 `test/test_shipped_initial_qpos.py` 가 고정한다 (keyframe 일치 레인은 mujoco 가 필요해 `colcon test` 에서 skip — [testing.md](../docs/testing.md#test-commands) 참조).
@@ -183,7 +202,7 @@ GUI 는 `ros2 run integrated_bringup demo_controller_gui --robot g1_loco`.
 
 | config_key | 하는 일 | YAML 을 싣는 로봇 | 상세 |
 |---|---|---|---|
-| `demo_joint_controller` | 관절 공간 quintic 궤적 + 손. 새 로봇 bring-up 용 | `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` · `g1_p1b` · `g1_loco` | [demo-joint-controller.md](docs/demo-joint-controller.md) |
+| `demo_joint_controller` | 관절 공간 quintic 궤적 + 손 (device group 최대 2). 새 로봇 bring-up 용 | `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` · `g1_p1b` · `g1_loco` · `b7_loco` | [demo-joint-controller.md](docs/demo-joint-controller.md) |
 | `demo_task_controller` | Cartesian CLIK + TCP 궤적 + 손 | `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` | [demo-task-controller.md](docs/demo-task-controller.md) |
 | `demo_compliance_controller` | task 컨트롤러 + 외부 렌치 admittance (렌치는 손 레인의 pull 추정) | `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` | [demo-compliance-controller.md](docs/demo-compliance-controller.md) |
 | `demo_wbc_controller` | TSID / CLIK-QP whole-body + 손 phase FSM (+ 선택적 MPC) | `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` | [demo-wbc-controller.md](docs/demo-wbc-controller.md) |
@@ -261,6 +280,7 @@ ros2 run integrated_bringup demo_controller_gui --robot ur5e_p1b     # ur5e + pr
 ros2 run integrated_bringup demo_controller_gui --robot iiwa7_leap   # iiwa7 + LEAP
 ros2 run integrated_bringup demo_controller_gui --robot g1_p1b       # G1 상체 + proto_1b 오른손
 ros2 run integrated_bringup demo_controller_gui --robot g1_loco      # G1 전신 (부동 베이스 sim) + 합성 손
+ros2 run integrated_bringup demo_controller_gui --robot b7_loco      # b7 전신 (부동 베이스 sim) + proto2 오른손
 ```
 
 - `--robot <key>` 는 arm / hand joint 스키마와 TCP tf frame 을 고릅니다. `key` 는 `controllers/` 가 있는 `config/<key>/` 디렉토리명과 같고, 잘못된 key 는 즉시 에러로 종료합니다. 별칭은 `--ur5e` · `--p1b` · `--iiwa` · `--g1` 입니다.
@@ -314,7 +334,7 @@ ros2 run integrated_bringup motion_editor_gui
 |---|---|
 | `urdf:` · `devices:` roster · limits | `_base.yaml` |
 | `devices.<g>.backend` · `has_native_*` · `joint_command_names` | `robot.yaml` / `sim.yaml` |
-| `devices.<g>.backend.base_state.*` — 부동 베이스 군의 ground-truth lane (mujoco_native 만, 아래; `g1_loco`) | `sim.yaml` |
+| `devices.<g>.backend.base_state.*` — 부동 베이스 군의 ground-truth lane (mujoco_native 만, 아래; `g1_loco` · `b7_loco`) | `sim.yaml` |
 | 컨트롤러 게인 · 토픽 · 공통 파라미터 | `controllers/demo_*_controller.yaml` · `demo_shared.yaml` |
 | 충돌 capsule spec (포구 MPC 의 `collision.capsules_file` · dual-arm 의 `collision_damper.capsules_file` 가 같이 읽음) | `collision_capsules.yaml` (g1_p1b) |
 
@@ -432,6 +452,7 @@ integrated_bringup/
 │   ├── iiwa7_leap/
 │   ├── g1_p1b/
 │   ├── g1_loco/     # 부동 베이스 전신 sim
+│   ├── b7_loco/     # 부동 베이스 전신 sim, 군 셋 (모델은 비공개 패키지)
 │   └── b7_p2/       # 손 설정만 (params_file · 명령 GUI)
 ├── launch/          # robot_* / sim_* launch
 ├── include/         # 공개 헤더
@@ -451,7 +472,7 @@ integrated_bringup/
 - [rtc_urdf_bridge README](../rtc_urdf_bridge/README.md) — 모델 빌더와 관절 분류
 - [architecture.md](../agent_docs/architecture.md) — 의존성 그래프와 threading model
 - [docs/controllers.md](../docs/controllers.md) — 컨트롤러 계약
-- `g1_loco` 프로파일의 결정 · 측정: #977 (W0-F03), 계획: #974
+- `g1_loco` 프로파일의 결정 · 측정: #977 (W0-F03), `b7_loco`: #980 (W0-F06), 계획: #974
 
 ## 의존성
 

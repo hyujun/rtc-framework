@@ -1,0 +1,57 @@
+# Shared demo parameters — b7_loco (b7 humanoid whole body + two proto2 hands)
+#
+# Read by every demo controller of this profile; today that is
+# demo_joint_controller, the one controller this profile ships. The file is
+# deliberately small: only the hand facts the controller needs to accept the
+# hand (finger map, release gate) are here, laid out for the FIRST hand
+# (`p2_right`, the one the fingertip FK and contact-stop follow). Grasp
+# postures, force-PI gains and the pull estimator were never tuned on this
+# robot and are left out — keys left out take the compiled defaults. Add them
+# when a task on this robot needs them.
+demo_shared:
+  # ── Virtual TCP ───────────────────────────────────────────────────────────
+  # A point fixed in the arm-end frame — here right_hand_palm, the first
+  # hand's mount. No task on this robot defines one yet, so the frame is not
+  # published; switch to "constant" with measured numbers when one does.
+  # mode: "disabled" (default) | "constant" | "centroid" | "weighted"
+  virtual_tcp_mode: "disabled"
+
+  # ── Grasp detection ───────────────────────────────────────────────────────
+  grasp_contact_threshold: 0.1   # native contact probability threshold, 0..1 (unused in sim)
+  grasp_force_threshold: 0.4     # N, |F| above this counts the fingertip as in contact
+  grasp_min_fingertips: 3        # fingertips in contact for grasp_detected, 1..4
+
+  # No grasp controller on this profile yet: the hands follow joint targets.
+  grasp_controller_type: "none"
+
+  # ── Hand joint ↔ finger map ───────────────────────────────────────────────
+  # Rows = fingers (thumb, index, middle, ring); entries = indices into
+  # devices.p2_right.joint_state_names. The proto2 hand has the same 4/3/2/1
+  # finger layout as proto_1b, so the columns are the same; the left hand's
+  # roster has the same layout at the same indices.
+  hand_finger_joint_map:
+    - [0, 1, 2, 3]  # thumb:  CMC_01, CMC_02, MCP, active PIP
+    - [4, 5, 6]     # index:  MCP rotate, MCP, active PIP
+    - [7, 8]        # middle: MCP, active PIP
+    - [9]           # ring:   active MCP
+
+  # ── Contact-stop release gate ─────────────────────────────────────────────
+  # One joint per finger decides whether a latched contact-stop may release.
+  # loosen_sign > 0: the finger opens when q increases; < 0: when q decreases.
+  # Signs are the RIGHT hand's: zero is the open hand (the `stand` keyframe)
+  # and each gate joint's range lies on one side of it, so "loosen" is
+  # "toward zero". The left hand mirrors them, but the gate follows the
+  # first hand only. No sensors in the sim, so the gate never engages.
+  hand_release_gate:
+    - { joint_index: 1, loosen_sign: 1 }    # right_cmc_02_joint (range ≤ 0)
+    - { joint_index: 5, loosen_sign: -1 }   # right_index_mcp_joint (range ≥ 0)
+    - { joint_index: 7, loosen_sign: -1 }   # right_middle_mcp_joint (range ≥ 0)
+    - { joint_index: 9, loosen_sign: 1 }    # right_active_ring_mcp_joint (range ≤ 0)
+
+  # ── Estimators: both off ──────────────────────────────────────────────────
+  # The pull estimator needs a tuned grasp to mean anything; the momentum
+  # observer needs gains identified for this robot.
+  pull_estimator:
+    enabled: false
+  momentum_observer:
+    enabled: false

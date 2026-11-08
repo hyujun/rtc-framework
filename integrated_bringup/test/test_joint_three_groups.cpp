@@ -362,6 +362,25 @@ TEST_F(JointThreeGroupsLifecycle, ConfigureSubscribesATargetForEveryGroup) {
   ExpectHeldAt(out.devices[2], kLeftQ, "left hand after on_configure");
 }
 
+// The closed-chain q_a bridge is wired from every lane, not from the primary
+// and the first hand alone. One sidecar closes the whole model, so a two-hand
+// robot's second hand contributes actuated (independent) joints too; a roster
+// list two entries long leaves them "not in any device" and the loop-consistent
+// fingertip FK silently falls back to the serial one (a WARN at configure is
+// the only symptom). This fixture carries no closure, so the list itself is
+// what is pinned: index = device index, the left hand on lane 2.
+TEST_F(JointThreeGroupsLifecycle, TheBridgeRostersCoverEveryHandLane) {
+  const Rig rig = ThreeGroupRig();
+  auto ctrl = PreConfigure(rig, "three_groups_bridge_rosters");
+  ASSERT_EQ(Configure(*ctrl, rig), DemoJointController::CallbackReturn::SUCCESS);
+
+  const auto rosters = ctrl->BridgeDeviceRostersForTesting();
+  ASSERT_EQ(rosters.size(), 1U + static_cast<std::size_t>(integrated_bringup::kDemoJointMaxHands));
+  EXPECT_EQ(rosters[0], kBodyJoints);
+  EXPECT_EQ(rosters[1], kRightJoints);
+  EXPECT_EQ(rosters[2], kLeftJoints);
+}
+
 // One body and kDemoJointMaxHands hands is the whole contract: a fourth group
 // would be subscribed and then never commanded, which is exactly the silent
 // failure this file exists to close. Refused — and the control case right

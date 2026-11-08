@@ -157,28 +157,30 @@ void DemoJointController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*co
 
 // ── #121: closed-chain hand FK wiring (non-RT configure + RT dispatch) ────────
 
+std::vector<std::vector<std::string>> DemoJointController::BridgeDeviceRosters() const {
+  // Index order must match the lanes Compute() reads: primary = 0, hand lane
+  // h = device h + 1 (#715). The closed handle's independent joints may span
+  // every device: one sidecar closes the whole model, so with two hands it
+  // names the second hand's actuated joints too, and the bridge reads each off
+  // its own (device, channel) at tick time. The rosters are the ones
+  // OnDeviceConfigsSet cached just before this is called; a lane with no
+  // device keeps its empty roster so the indices stay aligned.
+  std::vector<std::vector<std::string>> dev_names;
+  dev_names.reserve(1 + hand_joint_names_.size());
+  dev_names.push_back(primary_joint_names_);
+  for (const auto& hand : hand_joint_names_) {
+    dev_names.push_back(hand);
+  }
+  return dev_names;
+}
+
 void DemoJointController::ConfigureClosedChainHandFk() {
   if (!builder_) {
     return;
   }
-  const auto primary = GetPrimaryDeviceName();
   const auto secondary = GetSecondaryDeviceName();
 
-  // device_joint_names index order must match Compute()'s dev0/dev1: primary=0,
-  // secondary=1. The closed handle's independent joints may span both devices.
-  std::vector<std::vector<std::string>> dev_names;
-  if (auto* c = GetDeviceNameConfig(primary); c) {
-    dev_names.push_back(c->joint_state_names);
-  } else {
-    dev_names.emplace_back();
-  }
-  if (!secondary.empty()) {
-    if (auto* c = GetDeviceNameConfig(secondary); c) {
-      dev_names.push_back(c->joint_state_names);
-    } else {
-      dev_names.emplace_back();
-    }
-  }
+  const std::vector<std::vector<std::string>> dev_names = BridgeDeviceRosters();
 
   // fingertip links + hand-root frame from the secondary tree-model definition.
   std::vector<std::string> tips;

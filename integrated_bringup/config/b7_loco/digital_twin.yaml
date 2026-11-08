@@ -1,0 +1,51 @@
+# b7_loco/digital_twin.yaml — b7 humanoid whole body + two proto2 hands digital-twin config
+#
+# Layered on top of `rtc_digital_twin/config/digital_twin.yaml`:
+#
+#   ros2 launch rtc_digital_twin digital_twin.launch.py \
+#       config_file:=$(ros2 pkg prefix --share integrated_bringup)/config/b7_loco/digital_twin.yaml
+#
+# Robot identity (URDF, joint topics, fingertip names) lives here per ARCH-1;
+# rtc_digital_twin stays robot-agnostic. The URDF is the private
+# hand_description package's (the same arrangement as g1_p1b).
+#
+# Each hand is a genuine 5-loop closed chain (urdf.extended in _base.yaml).
+# `closure_path` makes digital_twin.launch.py spawn a `closure_state_publisher`
+# (rtc_urdf_bridge) that reconstructs the loop-passive joints from the actuated
+# q, so RViz renders the closed chains. The controller model's root is fixed at
+# the pelvis, so RViz shows the robot standing in place: the simulator's
+# floating base is not a TF this twin reads.
+
+/**:
+  ros__parameters:
+    # ── Robot description (hand_description, b7 whole body + proto2 hands) ──
+    robot_description_package: "hand_description"
+    robot_description_path: "robots/cloid_b7_hand/urdf/cloid_b7_hand.urdf"
+
+    # ── Loop-closure sidecar (enables closure_state_publisher) ─────────
+    # pkg-relative to robot_description_package.
+    closure_path: "robots/cloid_b7_hand/urdf/cloid_b7_hand.closure.yaml"
+
+    # ── Joint state sources ────────────────────────────────────────────
+    # The controller manager publishes per-device joint states on
+    # /rtc_cm/<group>/joint_states (device groups: b7, p2_right, p2_left).
+    num_sources: 3
+
+    source_0.topic: "/rtc_cm/b7/joint_states"
+    source_0.joint_names: [""]        # empty/"" = accept all joints from topic
+
+    source_1.topic: "/rtc_cm/p2_right/joint_states"
+    source_1.joint_names: [""]
+
+    source_2.topic: "/rtc_cm/p2_left/joint_states"
+    source_2.joint_names: [""]
+
+    # No sensor visualization: the hands carry no fingertip sensors in the
+    # sim (sensor_viz.sensor_topic stays at the agnostic default, "").
+
+    # ── TCP visualization ─────────────────────────────────────────────
+    # tf2 lookup `pelvis → right_hand_palm_actual`: the frame
+    # demo_joint_controller publishes for the arm tip = the first hand's mount.
+    tcp_viz.source_topic: "right_hand_palm_actual"
+    # tcp_viz.frame_id unset: the parent is the frame the controller publishes
+    # right_hand_palm_actual under (pelvis).

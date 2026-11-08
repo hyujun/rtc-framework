@@ -61,6 +61,63 @@ _P1B_HAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Ring", ("ring_mcp_fe_joint",)),
 )
 
+# The two legs of a humanoid, six joints each in hip-to-ankle order. The same
+# names on every legged body this GUI knows (g1_loco, b7_loco): the leg rosters
+# of their _base.yaml agree, so the limb groups are shared rather than copied.
+_LEG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Left leg",
+        (
+            "left_hip_pitch_joint",
+            "left_hip_roll_joint",
+            "left_hip_yaw_joint",
+            "left_knee_joint",
+            "left_ankle_pitch_joint",
+            "left_ankle_roll_joint",
+        ),
+    ),
+    (
+        "Right leg",
+        (
+            "right_hip_pitch_joint",
+            "right_hip_roll_joint",
+            "right_hip_yaw_joint",
+            "right_knee_joint",
+            "right_ankle_pitch_joint",
+            "right_ankle_roll_joint",
+        ),
+    ),
+)
+
+# proto2 RIGHT hand roster — the first hand of b7_loco (the GUI drives one hand;
+# the left hand, `p2_left`, is a device group of the controller but not of this
+# GUI). Names mirror config/b7_loco/_base.yaml p2_right ``joint_state_names``
+# (= the firmware motor slot order of config/b7_p2/udp_hand_node_p2.yaml).
+# Finger groups are explicit for the same reason as _P1B_HAND_GROUPS: the names
+# carry the side, not the finger, as their prefix. 4/3/2/1 across
+# Thumb/Index/Middle/Ring, like proto_1b.
+_P2_RIGHT_HAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Thumb",
+        (
+            "right_cmc_01_joint",
+            "right_cmc_02_joint",
+            "right_thumb_mcp_joint",
+            "right_active_thumb_pip_link02_joint",
+        ),
+    ),
+    (
+        "Index",
+        (
+            "right_index_mcp_rotate_joint",
+            "right_index_mcp_joint",
+            "right_active_index_pip_joint",
+        ),
+    ),
+    ("Middle", ("right_middle_mcp_joint", "right_active_middle_pip_joint")),
+    ("Ring", ("right_active_ring_mcp_joint",)),
+)
+
 
 def short_joint_labels(joint_names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
     """Row labels for one on-screen joint group: each name without the
@@ -307,28 +364,7 @@ class RobotShape:
         The hand is the same layout as ``default_g1_p1b``'s.
         """
         joint_groups = (
-            (
-                "Left leg",
-                (
-                    "left_hip_pitch_joint",
-                    "left_hip_roll_joint",
-                    "left_hip_yaw_joint",
-                    "left_knee_joint",
-                    "left_ankle_pitch_joint",
-                    "left_ankle_roll_joint",
-                ),
-            ),
-            (
-                "Right leg",
-                (
-                    "right_hip_pitch_joint",
-                    "right_hip_roll_joint",
-                    "right_hip_yaw_joint",
-                    "right_knee_joint",
-                    "right_ankle_pitch_joint",
-                    "right_ankle_roll_joint",
-                ),
-            ),
+            *_LEG_GROUPS,
             ("Waist", ("waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint")),
             (
                 "Left arm",
@@ -350,6 +386,46 @@ class RobotShape:
             ),
         )
         return cls._from_groups(joint_groups, _P1B_HAND_GROUPS)
+
+    @classmethod
+    def default_b7_loco(cls) -> RobotShape:
+        """b7 humanoid whole body (26 joints, floating pelvis in the sim) +
+        proto2 hands on both wrists; this GUI drives the right one.
+
+        The primary device group ``b7`` is a tree off the pelvis: left leg (6),
+        right leg (6), left arm (7), right arm (7) in that order — the roster
+        the controller republishes on ``/rtc_cm/b7/joint_states``
+        (``config/b7_loco/_base.yaml`` b7 ``joint_state_names``; the waist is
+        rigid in this model). ``arm_joint_groups`` lays it out as four limbs.
+        """
+        joint_groups = (
+            *_LEG_GROUPS,
+            (
+                "Left arm",
+                (
+                    "left_shoulder_pitch_joint",
+                    "left_shoulder_roll_joint",
+                    "left_shoulder_yaw_joint",
+                    "left_elbow_joint",
+                    "left_wrist_yaw_joint",
+                    "left_wrist_pitch_joint",
+                    "left_wrist_roll_joint",
+                ),
+            ),
+            (
+                "Right arm",
+                (
+                    "right_shoulder_pitch_joint",
+                    "right_shoulder_roll_joint",
+                    "right_shoulder_yaw_joint",
+                    "right_elbow_joint",
+                    "right_wrist_yaw_joint",
+                    "right_wrist_pitch_joint",
+                    "right_wrist_roll_joint",
+                ),
+            ),
+        )
+        return cls._from_groups(joint_groups, _P2_RIGHT_HAND_GROUPS)
 
     @classmethod
     def from_joint_names(
@@ -536,6 +612,25 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # Another body than g1_p1b's (23 joints, not 17): its presets must not
         # be read as that robot's, nor the reverse.
         preset_scope="g1_loco",
+    ),
+    "b7_loco": RobotProfile(
+        shape=RobotShape.default_b7_loco(),
+        # The pelvis is the parent of every measured frame (the controller
+        # model's root is fixed there; the simulator's floating base is not a
+        # TF this GUI reads), and the arm tip is the right hand's mount — the
+        # root of the first hand's tree (config/b7_loco/_base.yaml
+        # tree_models.p2_right).
+        tcp_parent="pelvis",
+        tcp_child="right_hand_palm_actual",
+        # Three device groups on the controller; this GUI binds one hand. The
+        # right hand is the first hand (fingertip FK, grasp state); the left
+        # hand follows its own joint_goal without a GUI (#715 W7).
+        hand_group="p2_right",
+        arm_group="b7",
+        # One controller ships (demo_joint_controller), already in GAIN_DEFS.
+        # Another body and another hand than every other profile: its presets
+        # are its own.
+        preset_scope="b7_loco",
     ),
 }
 

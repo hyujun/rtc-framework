@@ -83,7 +83,7 @@
 
 - `topics:` 의 두 번째 이후 군은 전부 **손 lane** 이다 (lane h = device h + 1). lane 마다 hold seed · target row · 궤적 · F5 게이트 · E-STOP hold · `<group>_state` 로그가 따로 있고 게인은 공유한다. 손 수가 `kDemoJointMaxHands` 를 넘는 `topics:` 는 configure 거부다 — 소유만 하고 명령하지 않는 군은 sim 을 첫 step 에 영원히 세운다.
 - seed 는 **그 lane 의** readable 로만 연다. 다른 lane 의 플래그나 `valid` 로 열면 아직 안 올라온 손이 0 으로 seed 되어 래치된다 (#291 유형 — 공유 플래그 하나가 그 결함이었다).
-- **비대칭**: 손끝 FK · TF slot · GraspState · contact-stop · Force-PI · 결합 arm+hand 모델은 **첫 손 (lane 0) 뿐**이다. 두 번째 손은 위치 지령 lane 만 있다.
+- **비대칭**: 손끝 FK · TF slot · GraspState · contact-stop · Force-PI · 결합 arm+hand 모델은 **첫 손 (lane 0) 뿐**이다. 두 번째 손은 위치 지령 lane 만 있다. 단 closed-chain 손 FK 의 q_a 브릿지는 **모든 lane** 을 본다 — sidecar 하나가 모델 전체를 닫으므로 두 번째 손의 actuated 관절도 독립 관절이고, 그 lane 을 빼면 브릿지 미완성으로 serial FK 에 떨어진다.
 - E-STOP 손 블록은 readable 을 보지 않고 측정값을 hold 한다 — #715 이전 device 1 의 계약을 두 번째 손에 그대로 복제했다 (바꾸려면 E-8).
 
 **DemoComplianceController** (task-space admittance):
