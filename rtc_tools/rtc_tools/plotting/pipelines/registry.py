@@ -114,6 +114,9 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     "dualarm_diag": [
         PlotEntry("print_dualarm_diag_stats", plotters.print_dualarm_diag_statistics),
     ],
+    "joint_ff": [
+        PlotEntry("print_joint_ff_stats", plotters.print_joint_ff_statistics),
+    ],
     "cm_timing": list(_TIMING_STATS),
     "mpc_timing": list(_TIMING_STATS),
 }
@@ -256,6 +259,14 @@ PIPELINES: dict[str, list[PlotEntry]] = {
             available=has_goal_counter_activity,
         ),
         PlotEntry("dualarm_diag_joint_cmd", plotters.plot_dualarm_diag_joint_cmd),
+    ],
+    # Every figure sizes itself from the header (a panel per joint). The
+    # PASS/FAIL judgement of an A/B/A run is analyze_hand_gravity_ff, not a
+    # figure here.
+    "joint_ff": [
+        PlotEntry("joint_ff_tracking", plotters.plot_joint_ff_tracking),
+        PlotEntry("joint_ff_torque", plotters.plot_joint_ff_torque),
+        PlotEntry("joint_ff_status", plotters.plot_joint_ff_status),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

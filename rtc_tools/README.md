@@ -5,7 +5,7 @@ RTC 로그 시각화, 포구 sim 평가 도구, MJCF/URDF 변환·비교, launch
 ## 개요
 
 - 제어 로그 CSV 를 그리고 (`plot_rtc_log`), 동적 포구 sim 의 시행을 오프라인으로 평가하며 (`catching_*` · `catch_*`), MJCF/URDF 를 변환·비교하고, 손 관절을 슬라이더로 명령한다 (`joint_command_gui`).
-- 실행 파일은 `setup.py` 의 `console_scripts` 30 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
+- 실행 파일은 `setup.py` 의 `console_scripts` 35 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
 - `launch/` 와 `utils/` 의 모듈은 다른 패키지의 launch 파일과 도구가 import 한다 (아래 [launch 헬퍼](#launch-헬퍼와-utils-모듈)).
 - 분석 CLI 의 판정 규칙은 [catching-analysis-rules.md](../docs/catching-analysis-rules.md), 열의 뜻은 각 도구의 머리 docstring 이 갖는다. 이 README 는 실행 방법만 둔다.
 - 컨트롤러 데모 GUI 는 이 패키지에 없다 (손 관절 명령 GUI `joint_command_gui` 만 있다): [integrated_bringup/scripts/demo_controller_gui.py](../integrated_bringup/scripts/demo_controller_gui.py).
@@ -53,6 +53,7 @@ ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.
 | `run_stance_metrics` | 부동 베이스 로봇의 정지 지표 recorder (sim sensor 토픽 → CSV + JSON) | 아래 절 |
 | `analyze_stance_metrics` | 그 CSV 를 다시 판정 (`--settle` · `--z-ref` 바꿔 재계산) | `analyze_stance_metrics stance.csv --z-ref 0.764431` |
 | `analyze_hand_canfd_gate` | CAN FD 손 실기 run 의 G-3 게이트 판정 (D55) | `analyze_hand_canfd_gate <session> g3.log --node-log node.log` |
+| `analyze_hand_gravity_ff` | 손 중력 feedforward A/B/A run (`joint_ff.csv`) 의 PASS / FAIL 판정 | `analyze_hand_gravity_ff <session> --json-out ff.json` |
 | `joint_command_gui` | 손 관절 슬라이더 명령 GUI (`joint_state_publisher_gui` 류) | 아래 절 |
 | `analyze_vision_lane` | 예측 lane 프로브 CSV 요약 | `analyze_vision_lane <prefix>` |
 | `vision_lane_probe` | 예측 · 카메라 · truth lane 을 CSV 로 기록 | `vision_lane_probe <prefix> --dump` |
@@ -89,6 +90,7 @@ ros2 run rtc_tools plot_rtc_log mpc_timing_log.csv                # MPC main loo
 ros2 run rtc_tools plot_rtc_log momentum_observer.csv --stats
 ros2 run rtc_tools plot_rtc_log planner_events.csv
 ros2 run rtc_tools plot_rtc_log dualarm_diag.csv
+ros2 run rtc_tools plot_rtc_log joint_ff.csv
 # 같은 분에 재기동해 한 파일에 런이 둘 이상이면 (기본: 마지막 런) 특정 런 선택
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --run-id 260808143052
 # 창 없이 PNG 만 저장
@@ -116,6 +118,7 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all      # 모든 figur
 | `catching_diag.csv` | catching_diag (동적 포구 tick 레코드 — 지문 열 `track_err_rad` + `ref_gamma`) |
 | `planner_events.csv` | planner_events (계획기 wake 당 한 행 — 지문 열 `n_in_window` + `rank_error_budget`) |
 | `dualarm_diag.csv` | dualarm_diag (다중 frame CLIK tick 레코드 — 지문 열 `clik_ran` + `<task>_err_lin`) |
+| `joint_ff.csv` | joint_ff (중력 feedforward 관절 레코드 q · q_ref · g · tau_ff — 지문 열 `ff_enabled` + `tau_ff_<joint>`) |
 
 진단 CSV 를 읽는 규칙은 [catching-analysis-rules.md](../docs/catching-analysis-rules.md#plot_rtc_log) 에 있다.
 
@@ -301,6 +304,20 @@ ros2 run rtc_tools analyze_hand_canfd_gate <session> g3.log --node-log node.log 
 - 두 손 (G-5): 버스에 두 손이 보이면 (x) `x.no_overlap` 이 붙는다 — 한 손의 트랜잭션 (첫 호스트 프레임 … RESP F2) 안에 다른 손의 echo · RESP 가 0. 첫 E-Stop 프레임부터는 보지 않고, 두 손 zero-write 간격은 보고만 한다. 손마다 `--hand-side <side> --explicit-side --timing-suffix ""` 로 한 번씩 돌린다. run 전체는 `repo_scripts/scripts/run_hand_canfd_gate.sh` ([testing.md](../docs/testing.md)). candump 없는 PC 는 `python3 -m rtc_tools.analysis.candump_log <iface> <out.log>`.
 - `--req-mode auto|per_hand|broadcast` (`auto` = `canfd.req_mode`, 없으면 `per_hand`): `broadcast` 면 0xFF REQ 가 두 손의 REQ 이고 (x) 는 `x.broadcast_sets` (RESP 중복 · 버스트 중 CMD · 한 손만 빠진 창 비율).
 - (d) 는 문턱 건수 ±1.65 σ 안이면 UNDECIDED (한 번 재측정). 못 본 항목은 `NOT_EVALUATED(<사유>)` 이고 통과 아님. 종료 코드 0 / 1 (FAIL) / 2 (UNDECIDED) / 3 (입력 불가 · `req_mode` 불일치).
+
+### hand_gravity_ff_gate
+
+손 관절 컨트롤러 (`hand_joint_controller`) 가 쓴 `joint_ff.csv` 한 run — feedforward 를 켠 채 · 끈 채 · 다시 켠 채 (A/B/A) 자세를 유지한 것 — 을 PASS / FAIL / UNDECIDED 로 판정한다. 문턱은 모두 옵션이고 사전 등록 값이 기본값이다.
+
+```bash
+ros2 run rtc_tools analyze_hand_gravity_ff <session>            # <session>/**/joint_ff.csv 하나를 찾는다
+ros2 run rtc_tools analyze_hand_gravity_ff joint_ff.csv --big cmc_01_joint,… --small … --json-out ff.json
+```
+
+- 구간: `ff_enabled` 가 바뀌는 곳마다 자르고, `--min-segment-s` (10 s) 보다 짧은 구간은 버린다. 켠 구간과 끈 구간이 하나씩은 있어야 하며 없으면 UNDECIDED. 통계는 구간 **끝 `--window-s` (3 s)** 의 `readable = 1` · `estop = 0` 행에서만 내고, 관절별 지표는 $|q_{ref} - q|$ 의 창 평균 (최대도 보고). 구간이 여럿이면 켠 쪽은 가장 나쁜 평균, 끈 쪽은 가장 작은 평균을 쓴다.
+- 관절 분류 (`--big` · `--small` · `--exclude`, 쉼표 목록, 열 이름 끝 일치): 큰 관절은 전제 끈 평균 ≥ `--big-off-min-rad` (0.010, 아니면 그 관절 UNDECIDED — 끈 채로 처지지 않는 관절은 판별력이 없다) 뒤에 켠 평균 ≤ `--big-on-max-rad` (0.001) 와 켠 / 끈 ≤ `--big-ratio-max` (0.05). 작은 관절은 전제 ≥ `--small-off-min-rad` (0.003) 뒤에 켠 평균 ≤ `--small-on-max-rad` (0.001). `--exclude` 는 보고만 한다. 기본 목록은 열 손 관절에서 `index_mcp_rotate_joint` 를 뺀 것이고, 목록 이름이 어느 관절과도 안 맞으면 exit 3 이다.
+- 전역: 켠 창의 모든 행이 `ff_finite = 1`, 모든 창 행이 `held = 0` (아니면 FAIL, `held_ticks` 최대를 적는다). `--loop-discriminator` (기본 `ring_mcp_joint`) 는 그 관절 행에 폐루프 일관성 판별자라는 메모만 단다.
+- 종료 코드 0 / 1 (FAIL) / 2 (UNDECIDED) / 3 (입력 불가: `joint_ff.csv` 가 없거나 여럿인데 `--csv` 없음, 열 누락, 목록 이름 불일치). 그림은 `plot_rtc_log joint_ff.csv` 가 그린다.
 
 ### joint_command_gui
 

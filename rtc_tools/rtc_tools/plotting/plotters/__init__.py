@@ -34,6 +34,12 @@ from .grasp import (
     plot_grasp_diag,
     print_grasp_diag_statistics,
 )
+from .joint_ff import (
+    plot_joint_ff_status,
+    plot_joint_ff_torque,
+    plot_joint_ff_tracking,
+    print_joint_ff_statistics,
+)
 from .momentum import (
     plot_momentum_observer,
     plot_momentum_payload,
@@ -125,6 +131,11 @@ __all__ = [
     # grasp diagnostics
     "plot_grasp_diag",
     "print_grasp_diag_statistics",
+    # gravity-feedforward joint log
+    "plot_joint_ff_status",
+    "plot_joint_ff_torque",
+    "plot_joint_ff_tracking",
+    "print_joint_ff_statistics",
     # momentum observer (#135 Layer 1b / 2A, #455 Layer 2B)
     "plot_momentum_observer",
     "plot_momentum_payload",
