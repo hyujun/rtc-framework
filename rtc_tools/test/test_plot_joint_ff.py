@@ -67,6 +67,7 @@ _FIXED = [
     "seeded",
     "traj_active",
     "ff_enabled",
+    "mode",
     "ff_finite",
     "model_fresh",
     "held",
@@ -79,8 +80,8 @@ _FIXED = [
 _PREFIXES = ("q_", "q_ref_", "g_", "tau_ff_")
 
 
-def _header(joints):
-    cols = list(_FIXED)
+def _header(joints, with_mode=True):
+    cols = [c for c in _FIXED if with_mode or c != "mode"]
     for prefix in _PREFIXES:
         cols += [f"{prefix}{j}" for j in joints]
     return cols
@@ -119,8 +120,8 @@ def _write(path, header, rows):
         writer.writerows(rows)
 
 
-def _synthetic(tmp_path, joints, n=8, per_row=None, name="joint_ff.csv"):
-    header = _header(joints)
+def _synthetic(tmp_path, joints, n=8, per_row=None, name="joint_ff.csv", with_mode=True):
+    header = _header(joints, with_mode)
     rows = [_row(header, i, joints, (per_row or (lambda _i: {}))(i)) for i in range(n)]
     path = tmp_path / name
     _write(path, header, rows)
@@ -271,6 +272,73 @@ class TestFigures:
         t = df["timestamp"].to_numpy()
         assert (bands["extent"].x0, bands["extent"].x1) == pytest.approx((t[3], t[6]))
 
+    def test_mode_stretches_are_shaded_in_their_own_colours(self, tmp_path, monkeypatch):
+        """Tracking, damping, damping_feedforward: two bands, none for tracking,
+        on each joint panel, next to (not instead of) the feedforward-off band."""
+
+        def per_row(i):
+            return {"mode": 1 if 2 <= i < 4 else 2 if 5 <= i < 7 else 0}
+
+        df = _synthetic(tmp_path, ["a", "b"], n=9, per_row=per_row)
+        seen = {}
+        real_savefig = plt.savefig
+
+        def spy(*args, **kwargs):
+            ax = plt.gcf().get_axes()[0]
+            seen["per_axis"] = [len(a.collections) for a in plt.gcf().get_axes()]
+            seen["extents"] = [c.get_paths()[0].get_extents() for c in ax.collections]
+            seen["colors"] = [tuple(c.get_facecolor()[0][:3]) for c in ax.collections]
+            return real_savefig(*args, **kwargs)
+
+        monkeypatch.setattr(plt, "savefig", spy)
+        joint_ff_plots.plot_joint_ff_tracking(df, str(tmp_path))
+        assert seen["per_axis"] == [2, 2]
+        t = df["timestamp"].to_numpy()
+        spans = [(e.x0, e.x1) for e in seen["extents"]]
+        assert spans[0] == pytest.approx((t[2], t[4]))
+        assert spans[1] == pytest.approx((t[5], t[7]))
+        assert seen["colors"][0] != seen["colors"][1]
+
+    def test_mode_shading_tolerates_the_nan_rows_of_a_line_break(self, tmp_path):
+        ticks = [0, 1, 2, 500, 501]
+        df = _synthetic(
+            tmp_path,
+            ["a"],
+            n=len(ticks),
+            per_row=lambda i: {
+                "tick": ticks[i],
+                "t_relative_s": 0.002 * ticks[i],
+                "mode": 1,
+            },
+        )
+        broken = joint_ff_plots._with_line_breaks(df)
+        assert broken["mode"].isna().any()
+        _, ax = plt.subplots()
+        handles = joint_ff_plots._shade_modes([ax], broken)
+        assert [h.get_label() for h in handles] == ["damping"]
+        assert len(ax.collections) == 1
+
+    def test_all_tracking_has_no_mode_band_and_status_gets_a_mode_lane(self, tmp_path):
+        df = _synthetic(tmp_path, ["a"])
+        _, ax = plt.subplots()
+        assert joint_ff_plots._shade_modes([ax], df) == []
+        out = tmp_path / "png"
+        out.mkdir()
+        joint_ff_plots.plot_joint_ff_status(df, str(out))
+        assert (out / "joint_ff_status.png").exists()
+
+    def test_mode_is_not_a_status_flag_lane(self):
+        assert "mode" not in [col for col, _ in joint_ff_plots.STATUS_LANES]
+
+    def test_a_file_without_mode_still_renders_every_figure(self, tmp_path):
+        df = _synthetic(tmp_path, ["a", "b"], with_mode=False)
+        assert "mode" not in df.columns
+        out = tmp_path / "png"
+        out.mkdir()
+        assert _render_all(df, out) == sorted(ALL_FIGURES)
+        _, ax = plt.subplots()
+        assert joint_ff_plots._shade_modes([ax], df) == []
+
     def test_an_all_on_run_has_no_band(self, tmp_path):
         df = _synthetic(tmp_path, ["a"])
         _, ax = plt.subplots()
@@ -330,11 +398,46 @@ class TestStatistics:
         assert "Rows: 9" in out
         assert "Tick gaps: none" in out
         assert "Joints (1): a" in out
-        assert "Segments by ff_enabled (3):" in out
-        assert "[3:5] ff off" in out
+        assert "Segments by (ff_enabled, mode) (3):" in out
+        assert "[3:5] ff off mode=tracking" in out
         assert "a: |q_ref − q| mean=0.02000 max=0.02000 rad" in out
         assert "ff_enabled: 6/9 ticks" in out
         assert "analyze_hand_gravity_ff" in out
+
+    def test_without_mode_the_output_is_the_old_one(self, tmp_path, capsys):
+        def per_row(i):
+            return {"ff_enabled": 0, "q_a": 0.48} if 3 <= i < 6 else {}
+
+        print_joint_ff_statistics(
+            _synthetic(tmp_path, ["a"], n=9, per_row=per_row, with_mode=False)
+        )
+        out = capsys.readouterr().out
+        assert "Segments by ff_enabled (3):" in out
+        assert "[3:5] ff off t=0.01..0.01 s" in out
+        assert "drift" not in out
+        assert "a: |q_ref − q| mean=0.02000 max=0.02000 rad" in out
+
+    def test_segments_split_by_mode_and_non_tracking_prints_drift(self, tmp_path, capsys):
+        def per_row(i):
+            if 3 <= i < 6:  # damping: q_ref follows q, q creeps 0.001 rad per 2 ms tick
+                q = 0.5 + 0.001 * (i - 3)
+                return {"mode": 1, "q_a": q, "q_ref_a": q, "tau_ff_a": 0.0}
+            if i >= 6:
+                q = 0.5
+                return {"mode": 2, "q_a": q, "q_ref_a": q, "tau_ff_a": 0.04}
+            return {}
+
+        print_joint_ff_statistics(_synthetic(tmp_path, ["a"], n=9, per_row=per_row))
+        out = capsys.readouterr().out
+        assert "Segments by (ff_enabled, mode) (3):" in out
+        assert "[0:2] ff on  mode=tracking" in out
+        assert "[3:5] ff on  mode=damping" in out
+        assert "[6:8] ff on  mode=damping_feedforward" in out
+        assert "a: drift q(end) − q(start)=+0.00200 rad mean |dq/dt|=0.50000 rad/s" in out
+        assert "mean |tau_ff|=0.00000 N·m" in out
+        assert "mean |tau_ff|=0.04000 N·m" in out
+        # the tracking error is printed for the tracking segment only
+        assert out.count("|q_ref − q|") == 1
 
     def test_error_is_taken_on_readable_non_estop_rows_only(self, tmp_path, capsys):
         def per_row(i):
