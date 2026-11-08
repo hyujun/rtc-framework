@@ -419,6 +419,16 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
     // so the round-trip is identity. Zero by default → backward compatible.
     // Position-only: velocity/effort and motor-space positions are untouched.
     std::array<float, udp_hand_driver::kNumHandMotors> joint_offset_rad{};
+    // Per-joint direction sign (+1 / −1), `joint_direction_signs` (joint_state_names
+    // order). Parsed once in on_configure; +1 everywhere by default. Applied
+    // at the same two boundaries, OUTSIDE the offset:
+    //   read/publish : controller_pos = sign · udp_pos + offset (vel · effort: sign only)
+    //   command/write: udp_cmd        = sign · (controller_cmd − offset)
+    //   feedforward  : udp_ff         = sign · controller_ff   (no offset — D39)
+    // so a joint whose firmware sense is opposite to the URDF's reads and
+    // commands in the URDF's sense without touching the firmware. The E-Stop
+    // zero-write in the comm layer does not pass through here (0 is 0).
+    std::array<float, udp_hand_driver::kNumHandMotors> joint_sign{};
 
     // Firmware-slot ← command-index map for incoming joint_command. The
     // publisher (controller/backend) labels the message in its own joint_names

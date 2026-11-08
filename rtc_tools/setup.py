@@ -4,7 +4,7 @@ package_name = "rtc_tools"
 
 setup(
     name=package_name,
-    version="5.30.0",
+    version="5.31.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
@@ -39,6 +39,7 @@ setup(
             "run_clock_phase_trials = rtc_tools.analysis.clock_phase_trials:main",
             "analyze_hand_close = rtc_tools.analysis.hand_close:main",
             "analyze_hand_canfd_gate = rtc_tools.analysis.hand_canfd_gate:main",
+            "analyze_hand_gravity_ff = rtc_tools.analysis.hand_gravity_ff_gate:main",
             "run_hand_close_trials = rtc_tools.analysis.hand_close_trials:main",
             "analyze_vision_lane = rtc_tools.analysis.vision_lane:main",
             "vision_lane_probe = rtc_tools.analysis.vision_lane_probe:main",

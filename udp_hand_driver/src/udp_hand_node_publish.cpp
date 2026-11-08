@@ -64,12 +64,14 @@ void UdpHandNode::PublishState(HandUnit& u, const udp_hand_driver::UdpHandState&
     u.joint_js_msg.header.stamp = stamp;
     for (int i = 0; i < udp_hand_driver::kNumHandMotors; ++i) {
       const auto iu = static_cast<std::size_t>(i);
-      // Add the per-joint offset: firmware frame → controller frame.
-      // Position-only; velocity/effort are unaffected by a constant offset.
+      // Direction sign, then the per-joint offset: firmware frame → controller
+      // frame (the inverse of the command path). The offset is position-only;
+      // the sign flips velocity and effort with the position.
+      const float sign = u.joint_sign[iu];
       u.joint_js_msg.position[iu] =
-          static_cast<double>(state.joint_positions[iu] + u.joint_offset_rad[iu]);
-      u.joint_js_msg.velocity[iu] = static_cast<double>(state.joint_velocities[iu]);
-      u.joint_js_msg.effort[iu] = static_cast<double>(state.joint_currents[iu]);
+          static_cast<double>(sign * state.joint_positions[iu] + u.joint_offset_rad[iu]);
+      u.joint_js_msg.velocity[iu] = static_cast<double>(sign * state.joint_velocities[iu]);
+      u.joint_js_msg.effort[iu] = static_cast<double>(sign * state.joint_currents[iu]);
     }
     u.joint_state_pub->publish(u.joint_js_msg);
   }

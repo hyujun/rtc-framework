@@ -170,3 +170,57 @@ int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// ── Direction sign (joint_direction_signs) ──────────────────────────────────
+// out[i] = sign[i] · (value − offset[i]): the sign sits OUTSIDE the offset,
+// so an offset stated in the controller frame stays a controller-frame number
+// on a reversed joint too.
+
+TEST(CommandNameReorder, SignFlipsAfterTheOffset) {
+  const auto map = BuildCommandNameReorder(kWire, kWire);
+  std::vector<double> values(static_cast<std::size_t>(kNumHandMotors), 0.0);
+  values[2] = 0.5;
+  std::array<float, kNumHandMotors> offset{};
+  offset[2] = 0.1f;
+  auto sign = udp_hand_driver::UnitJointSigns();
+  sign[2] = -1.0f;
+  const auto out = ApplyCommandNameReorder(map, true, values, offset, sign);
+  EXPECT_NEAR(out[2], -(0.5f - 0.1f), 1e-6f);
+  // An unflipped neighbour is the plain offset-only result.
+  values[3] = 0.25;
+  const auto out2 = ApplyCommandNameReorder(map, true, values, offset, sign);
+  EXPECT_NEAR(out2[3], 0.25f, 1e-6f);
+}
+
+TEST(CommandNameReorder, UnitSignsAreTheOffsetOnlyForm) {
+  const auto map = BuildCommandNameReorder(kWire, kWire);
+  std::vector<double> values(static_cast<std::size_t>(kNumHandMotors), 0.0);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = 0.1 * static_cast<double>(i) - 0.3;
+  }
+  std::array<float, kNumHandMotors> offset{};
+  offset.fill(0.05f);
+  const auto a = ApplyCommandNameReorder(map, true, values, offset);
+  const auto b =
+      ApplyCommandNameReorder(map, true, values, offset, udp_hand_driver::UnitJointSigns());
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    EXPECT_FLOAT_EQ(a[i], b[i]) << i;
+  }
+}
+
+TEST(CommandNameReorder, SignFollowsTheFirmwareSlotNotThePublishedIndex) {
+  // Published order swaps slots 0 and 1; the sign of firmware slot 1 must
+  // apply to the value that LANDS in slot 1, wherever it was published.
+  std::vector<std::string> published(kWire.begin(), kWire.end());
+  std::swap(published[0], published[1]);
+  const auto map = BuildCommandNameReorder(kWire, published);
+  std::vector<double> values(static_cast<std::size_t>(kNumHandMotors), 0.0);
+  values[0] = 0.7;  // published first = kWire[1] → firmware slot 1
+  values[1] = 0.2;  // published second = kWire[0] → firmware slot 0
+  auto sign = udp_hand_driver::UnitJointSigns();
+  sign[1] = -1.0f;
+  const auto out =
+      ApplyCommandNameReorder(map, true, values, std::array<float, kNumHandMotors>{}, sign);
+  EXPECT_FLOAT_EQ(out[0], 0.2f);
+  EXPECT_FLOAT_EQ(out[1], -0.7f);
+}

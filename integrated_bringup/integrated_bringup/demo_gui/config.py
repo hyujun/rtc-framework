@@ -121,8 +121,9 @@ NO_EXTERNAL_COMMAND_CONTROLLERS = frozenset(
 # the hand is driven through Hand Motor Target and there is no grasp FSM behind
 # the Grasp tab's buttons. Unlike NO_EXTERNAL_COMMAND_CONTROLLERS they do accept
 # targets, so they cannot ride that set — it would switch the target panels off
-# with the buttons.
-NO_GRASP_COMMAND_CONTROLLERS = frozenset({"demo_dualarm_controller"})
+# with the buttons. hand_joint_controller (profile p2) is the hand alone: a
+# joint-goal trajectory follower with no grasp FSM and no srv.
+NO_GRASP_COMMAND_CONTROLLERS = frozenset({"demo_dualarm_controller", "hand_joint_controller"})
 
 
 def target_panel_states(ctrl_idx: str) -> tuple[bool, bool]:

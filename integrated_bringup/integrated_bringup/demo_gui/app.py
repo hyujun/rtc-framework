@@ -5574,6 +5574,13 @@ class DemoControllerGUI(Node):
         # the entries still hold whatever text was last in them, and the
         # controller would have to guess which frame authored it.
         task_on = self._task_space_ready(idx)
+        # Hand-only profile (getattr: the goal-frame test stubs carry no arm_dof).
+        if getattr(self._shape, "arm_dof", 1) == 0:
+            # Hand-only profile: arm_group IS the hand group, so robot_cmd_pub
+            # is bound to the hand's own joint_goal topic. The robot half would
+            # be an empty RobotTarget sent to the hand — the hand half below is
+            # the whole command.
+            joint_on = task_on = False
 
         if self.robot_cmd_pub is None:
             self.get_logger().warn("robot_cmd_pub not yet bound — waiting for active controller")
@@ -5741,6 +5748,10 @@ class DemoControllerGUI(Node):
             if (
                 not frame_blocked
                 and not kind_blocked
+                # A hand-only profile (arm_dof 0) stores an empty robot_target
+                # that would otherwise pass the length check and go out as an
+                # empty RobotTarget on the hand's topic (see _publish_target).
+                and getattr(self._shape, "arm_dof", 1) > 0
                 and len(robot_target_vals) == self._shape.arm_dof
             ):
                 robot_msg = RobotTarget()
@@ -6029,7 +6040,7 @@ def _parse_args(argv):
         "--robot",
         default="ur5e_p1a",
         help="robot profile selecting arm/hand joint schema + TCP frames "
-        "(ur5e_p1a | ur5e_p1b | iiwa7_leap | g1_p1b | g1_loco | b7_loco)",
+        "(ur5e_p1a | ur5e_p1b | iiwa7_leap | g1_p1b | g1_loco | b7_loco | p2)",
     )
     parser.add_argument(
         "--session",

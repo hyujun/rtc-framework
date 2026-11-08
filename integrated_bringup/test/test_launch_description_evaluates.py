@@ -63,11 +63,15 @@ SIM_LAUNCH_FILES = [
     "sim_g1_p1b.launch.py",
     "sim_g1_loco.launch.py",
     "sim_b7_loco.launch.py",
+    "sim_p2.launch.py",
 ]
 
 ROBOT_LAUNCH_FILES = [
     "robot_ur5e_p1a.launch.py",
     "robot_ur5e_p1b.launch.py",
+    # The hand-only robot: no UR driver, so no CM RT parameter file — it is
+    # deliberately NOT in test_launch_session_wiring's robot list.
+    "robot_p2.launch.py",
 ]
 
 LAUNCH_FILES = SIM_LAUNCH_FILES + ROBOT_LAUNCH_FILES
@@ -77,9 +81,10 @@ LEAP_SIM = "sim_iiwa7_leap.launch.py"
 G1_SIM = "sim_g1_p1b.launch.py"
 G1_LOCO_SIM = "sim_g1_loco.launch.py"
 B7_LOCO_SIM = "sim_b7_loco.launch.py"
-# The two G1 sims and the b7 sim ship no demo_wbc_controller config and take
-# `enable_mpc` for the CPU layout alone.
-LAYOUT_ONLY_SIMS = (G1_SIM, G1_LOCO_SIM, B7_LOCO_SIM)
+P2_SIM = "sim_p2.launch.py"
+# The two G1 sims, the b7 sim and the hand-only p2 sim ship no
+# demo_wbc_controller config and take `enable_mpc` for the CPU layout alone.
+LAYOUT_ONLY_SIMS = (G1_SIM, G1_LOCO_SIM, B7_LOCO_SIM, P2_SIM)
 
 # Argument combinations, not just defaults. Every override argument declares an
 # empty default and is applied only when non-empty, so a defaults-only run never
@@ -149,6 +154,9 @@ EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     "sim_b7_loco.launch.py": [
         ("sim_lanes", {"sim_lanes": "true"}),
     ],
+    "sim_p2.launch.py": [
+        ("sim_lanes", {"sim_lanes": "true"}),
+    ],
 }
 
 
@@ -159,6 +167,7 @@ ARGUMENTS_NOT_TAKEN: dict[str, set[str]] = {
     "sim_g1_p1b.launch.py": {"mpc_engine"},
     "sim_g1_loco.launch.py": {"mpc_engine"},
     "sim_b7_loco.launch.py": {"mpc_engine"},
+    "sim_p2.launch.py": {"mpc_engine"},
 }
 
 # The sims whose RT node takes an `mpc_engine` override.
@@ -604,7 +613,7 @@ def test_unknown_sim_overlay_is_rejected():
 # catching trials share integrated_bringup.sim_lanes, and both are driven here —
 # as are the two G1 sims and the b7 sim, which declare the argument ahead of
 # any consumer.
-LANED_SIMS = (P1B_SIM, LEAP_SIM, G1_SIM, G1_LOCO_SIM, B7_LOCO_SIM)
+LANED_SIMS = (P1B_SIM, LEAP_SIM, G1_SIM, G1_LOCO_SIM, B7_LOCO_SIM, P2_SIM)
 LANES = ("clock_lane", "ball_contact_lane")
 
 

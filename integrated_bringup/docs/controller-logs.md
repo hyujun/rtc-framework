@@ -18,7 +18,7 @@ non-RT 외부 통신 토픽은 **컨트롤러가 소유**한다. 아래 경로�
 | `state` (group 별 `joint_states`) | CM | `/rtc_cm/<group>/joint_states` (`JointState`) |
 | device-wire command (`joint_command`, `ros2_command`) | DeviceBackend | `devices.<group>.backend:` — backend 구현체가 직접 publish |
 
-`robot_transforms` 의 frame: DemoJoint / DemoTask / DemoCompliance 는 `base→tool0_actual` + `base→{thumb,index,middle,ring}_tip_link_actual` + `base→virtual_tcp_actual` 6 개, DemoWbc 는 `tool0_actual` + 핑거팁 넷 + `wbc_alpha_actual` (placeholder, `valid=false`) 이다. active 컨트롤러만 publisher 가 활성이다.
+`robot_transforms` 의 frame: DemoJoint / DemoTask / DemoCompliance 는 `base→tool0_actual` + `base→{thumb,index,middle,ring}_tip_link_actual` + `base→virtual_tcp_actual` 6 개, DemoWbc 는 `tool0_actual` + 핑거팁 넷 + `wbc_alpha_actual` (placeholder, `valid=false`), HandJoint 는 손 tree root (`p2` 는 `palm`) → `<tip>_actual` 핑거팁 넷뿐이다 (팔 tip 없음). active 컨트롤러만 publisher 가 활성이다.
 
 외부 도구 (BT bridge · GUI · digital_twin · shape_estimation) 는 `/active_controller_name` (TRANSIENT_LOCAL) 을 구독해 런타임에 토픽 네임스페이스를 다시 연결해야 한다. 컨트롤러를 전환하면 각 소유 토픽이 이전 네임스페이스에서 침묵하고 새 네임스페이스에서 살아난다.
 
@@ -44,6 +44,7 @@ non-RT 외부 통신 토픽은 **컨트롤러가 소유**한다. 아래 경로�
 | `compliance_diag.csv` | compliance | task-admittance 진단. [demo-compliance-controller.md](demo-compliance-controller.md#로그) |
 | `inference_diag.csv` | inference | hold 사유와 정책 입력. [demo-inference-controller.md](demo-inference-controller.md#로그) |
 | `dualarm_diag.csv` | dualarm | 열 묶음은 [demo-dualarm-controller.md](demo-dualarm-controller.md#로그와-tf-판독) |
+| `joint_ff.csv` | hand_joint | tick 당 feedforward 기록: 상태 lane (`estop` · `readable` · `seeded` · `traj_active` · `ff_enabled` · `ff_finite` · `model_fresh` · 폐쇄 체인 `held` · `held_ticks` · `singular` · `closure_error` · `clamped_mask`) 뒤에 관절별 `q_*` · `q_ref_*` · `g_*` (모델 중력항, N·m) · `tau_ff_*` (wire 의 feedforward). E-STOP · unreadable tick 도 행을 남기고 (`ff_finite=0` / `readable=0`), `tau_ff_*` 는 그 tick 에 wire 로 나간 값이다. `analyze_hand_gravity_ff` 가 `ff_enabled` 로 A/B 구간을 나눠 `q_ref_* − q_*` 를 판정한다 ([hand-joint-controller.md](hand-joint-controller.md)) |
 | `catching_diag.csv` · `planner_events.csv` | catching | [demo-catching-controller.md](demo-catching-controller.md#tick-레코드-csv) |
 
 `mpc` 스레드의 타이밍은 `<session>/timing/mpc_timing_log.csv` 에, CM 의 스레드별 타이밍은 `<session>/timing/` 아래에 쌓인다 ([rtc_controller_manager README](../../rtc_controller_manager/README.md)).

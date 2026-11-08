@@ -1,0 +1,60 @@
+# Loop closures of p1b_surrogate.urdf.xacro processed ON ITS OWN (the synthetic
+# test hand rooted at base_adapter, no arm). The same five point-on-point
+# (contact_3d) pins as ur5e_with_p1b_surrogate.closure.yaml — the frames live
+# on the hand — with the actuation reduced to the hand's ten joints. This is
+# the in-repo stand-in for a hand-only extended model (a hand whose closed
+# chain is projected from its own device group, e.g. integrated_bringup's
+# hand_joint_controller tests): the arm model's sidecar lists the arm joints
+# as independent too, which a hand-only device group cannot bridge.
+name: p1b_surrogate
+
+closures:
+  - name: index_tip_loop
+    type: contact_3d
+    frame_1: l_index_tip_constraint_ab
+    frame_2: l_index_tip_constraint_ba
+    reference_frame: LOCAL
+    baumgarte: { Kp: 20.0, Kd: 5.0 }
+
+  - name: ring_pip_loop
+    type: contact_3d
+    frame_1: l_ring_pip_b_constraint_ab
+    frame_2: l_ring_pip_b_constraint_ba
+    reference_frame: LOCAL
+    baumgarte: { Kp: 20.0, Kd: 5.0 }
+
+  - name: ring_tip_loop
+    type: contact_3d
+    frame_1: l_ring_tip_constraint_ab
+    frame_2: l_ring_tip_constraint_ba
+    reference_frame: LOCAL
+    baumgarte: { Kp: 20.0, Kd: 5.0 }
+
+  - name: thumb_tip_loop
+    type: contact_3d
+    frame_1: l_thumb_tip_constraint_ab
+    frame_2: l_thumb_tip_constraint_ba
+    reference_frame: LOCAL
+    baumgarte: { Kp: 20.0, Kd: 5.0 }
+
+  - name: middle_tip_loop
+    type: contact_3d
+    frame_1: l_middle_tip_constraint_ab
+    frame_2: l_middle_tip_constraint_ba
+    reference_frame: LOCAL
+    baumgarte: { Kp: 20.0, Kd: 5.0 }
+
+actuation:
+  actuated_joints:
+    - thumb_cmc_aa_joint
+    - thumb_cmc_fe_joint
+    - thumb_mcp_joint
+    - thumb_dip_fe_joint
+    - index_mcp_aa_joint
+    - index_mcp_fe_joint
+    - index_dip_fe_joint
+    - middle_mcp_fe_joint
+    - middle_dip_fe_joint
+    - ring_mcp_fe_joint
+
+joint_substitutions: []

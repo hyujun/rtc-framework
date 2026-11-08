@@ -31,6 +31,7 @@
 #include "integrated_bringup/logging/dualarm_diag_log_pod.hpp"
 #include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
 #include "integrated_bringup/logging/inference_diag_log_pod.hpp"
+#include "integrated_bringup/logging/joint_feedforward_log_pod.hpp"
 #include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/task_diag_log_pod.hpp"
@@ -212,6 +213,13 @@ struct LogRegistrationContext {
   bool dualarm_diag_enabled{false};
   std::vector<std::string> dualarm_diag_task_names{};
   std::vector<std::string> dualarm_diag_joint_names{};
+
+  // JointFeedforwardLog — the per-tick record of a feedforward-torque joint
+  // controller (HandJointController). Single fixed instance
+  // (kJointFeedforwardLogInstance), gated by the controller that fills it. The
+  // device joint names NAME and COUNT the per-joint column blocks.
+  bool joint_ff_enabled{false};
+  std::vector<std::string> joint_ff_joint_names{};
 };
 
 // ⚠ Two separate hazards, two separate fixes — keep both (#428).
@@ -307,6 +315,8 @@ struct RegisteredLogHandles {
   rtc::LogHandle<integrated_bringup::CatchingDiagLogPod> catching_diag;
   // Single fixed instance (kDualArmDiagLogInstance), same reason.
   rtc::LogHandle<integrated_bringup::DualArmDiagLogPod> dualarm_diag;
+  // Single fixed instance (kJointFeedforwardLogInstance), same reason.
+  rtc::LogHandle<integrated_bringup::JointFeedforwardLogPod> joint_ff;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -623,12 +633,33 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.dualarm_diag = std::move(handle);
+    } else if (entry.msg_type == kJointFeedforwardLogMsgType) {
+      if (!ctx.joint_ff_enabled || entry.instance != kJointFeedforwardLogInstance) {
+        continue;
+      }
+      const auto joint_names = ctx.joint_ff_joint_names;
+      // One derivation, both writers (#440).
+      const auto cols = integrated_bringup::JointFeedforwardLogColumnsFor(joint_names);
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::JointFeedforwardLogPod>(
+          entry.instance,
+          [joint_names, cols](std::ostream& os) {
+            integrated_bringup::WriteJointFeedforwardLogHeader(os, joint_names, cols);
+          },
+          [cols](std::ostream& os, const integrated_bringup::JointFeedforwardLogPod& pod) {
+            integrated_bringup::WriteJointFeedforwardLogRow(os, pod, cols);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open joint_ff CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.joint_ff = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,
     // PullEstimatorLog, TaskDiagLog, GraspDiagLog, MomentumObserverLog,
-    // ComplianceDiagLog, InferenceDiagLog, CatchingDiagLog, DualArmDiagLog}; reaching here
-    // is a YAML parser bug. Silently ignore.
+    // ComplianceDiagLog, InferenceDiagLog, CatchingDiagLog, DualArmDiagLog,
+    // JointFeedforwardLog}; reaching here is a YAML parser bug. Silently ignore.
   }
 
   return result;

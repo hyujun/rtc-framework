@@ -18,9 +18,16 @@ void UdpHandNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
                                      rclcpp::CallbackGroup::SharedPtr state_cb_group) {
   config_ = config;
 
+  // Pre-size values AND feedforward once here so WriteCommand (RT thread) only
+  // fills them in place — no allocation on the actuator-publish path (RT-1).
+  // feedforward is sized to the command width even for a position-only
+  // controller: udp_hand_driver reads the field only when its size equals
+  // values' and treats zeros as absent, so a same-length zero vector is the
+  // honest "no feedforward" on the wire.
   if (!config_.joint_command_names.empty()) {
     cmd_msg_.joint_names = config_.joint_command_names;
     cmd_msg_.values.assign(config_.joint_command_names.size(), 0.0);
+    cmd_msg_.feedforward.assign(config_.joint_command_names.size(), 0.0);
   }
   cmd_msg_.command_type = "position";
 
@@ -241,12 +248,13 @@ void UdpHandNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot&
   if (nc <= 0)
     return;
 
-  // The proto1 (UDP) hand firmware is position-only: udp_hand_driver ignores
-  // command_type / feedforward / kp / kd and servos toward values[] as a joint
-  // position target. The proto2 (CAN FD) driver does accept feedforward (Nm,
-  // same name order as values, D39 / D50 of epic #895), but this backend still
-  // does not fill it — wiring the controller stack's feedforward through here
-  // is the H2 track (D56). The mode is labelled honestly on the wire either way.
+  // values[] is the joint position target on every mode. feedforward[] (N·m,
+  // same name order as values) is filled only on a pd_feedforward command and
+  // zeroed otherwise: udp_hand_driver's CAN FD protocol converts it to a
+  // per-motor current through feedforward_kt and treats zero as absent; the
+  // UDP proto1 firmware ignores the field and command_type / kp / kd alike.
+  // The mode is labelled honestly on the wire either way.
+  const bool pd_ff = (command_type == CommandType::kPdFeedforward);
   cmd_msg_.command_type = CommandTypeToString(command_type);
 
   // Stamp the JointCommand header from the RT-loop wall-clock capture (integer
@@ -259,8 +267,12 @@ void UdpHandNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot&
   // order the message labels carry) — wire-order differences are the
   // receiver's job (udp_hand_node reorders by joint_names).
   const std::size_t n = std::min(static_cast<std::size_t>(nc), cmd_msg_.values.size());
-  for (std::size_t i = 0; i < n; ++i)
+  const std::size_t nff = std::min(n, cmd_msg_.feedforward.size());
+  for (std::size_t i = 0; i < n; ++i) {
     cmd_msg_.values[i] = slot.commands[i];
+    if (i < nff)
+      cmd_msg_.feedforward[i] = pd_ff ? slot.feedforward[i] : 0.0;
+  }
   cmd_pub_->publish(cmd_msg_);
   cmd_published_ = true;
 }
@@ -276,9 +288,17 @@ void UdpHandNativeBackend::WriteSafeCommand() noexcept {
   if (!cmd_pub_ || !cmd_published_) {
     return;
   }
-  // Re-publish the last command known to have gone out. Physically this
-  // leaves the device where the silent path left it — the difference is that
-  // the intent is now explicit on the wire and the lane stays live.
+  // Re-publish the last POSITION target known to have gone out, with the
+  // feedforward ZEROED: the torque was computed for an earlier tick's pose,
+  // and on the CAN FD lane it would become a real motor current held
+  // open-loop on exactly the tick the CM declared it has no honest command.
+  // Zero is what the CM's own hold path puts on this field too. Physically
+  // the position target leaves the device where the silent path left it — the
+  // difference is that the intent is now explicit on the wire and the lane
+  // stays live.
+  for (double& ff : cmd_msg_.feedforward) {
+    ff = 0.0;
+  }
   cmd_pub_->publish(cmd_msg_);
 }
 

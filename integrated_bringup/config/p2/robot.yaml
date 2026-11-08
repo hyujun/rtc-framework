@@ -1,0 +1,45 @@
+# p2/robot.yaml — real-hardware delta (overlaid on _base.yaml)
+# Used by robot_p2.launch.py (udp_hand_driver over CAN FD, no arm driver).
+# Loaded AFTER _base.yaml, which holds all mode-agnostic config (model, roster,
+# limits, control_rate, logging). This file owns ONLY what differs from the
+# simulation: the real backend + wire topics, the fingertip sensor lane,
+# E-STOP enablement, and hardware init timing.
+/**:
+  ros__parameters:
+    # ── Initial controller ────────────────────────────────────────────────────
+    initial_controller: "hand_joint_controller"
+
+    # ── Initialization timeout ────────────────────────────────────────────────
+    init_timeout_sec: 10.0 # s — the hand has no homing; this covers the CAN link coming up
+
+    # ── E-STOP configuration ──────────────────────────────────────────────────
+    enable_estop: true
+    device_timeout_values: [1000.0] # ms — tight for the real HW watchdog
+
+    # ── Device backend + wire topics ──────────────────────────────────────────
+    # The driver runs under namespace "" with absolute per-hand topics
+    # (config/p2/udp_hand_node_p2.yaml), the same names the sim uses.
+    devices:
+      p2_right:
+        backend:
+          type: "udp_hand_native"
+          state_topic: "/p2/right/joint_states"
+          command_topic: "/p2/right/joint_command"
+          motor_topic: "/p2/right/motor_states"
+          sensor_topic: "/p2/right/sensor_states"
+        # Fingertip sensor lane, the proto_1b layout (the proto2 stream is the
+        # same force-only inference lane: contact(1) + F(3) + u(3) = 7, no
+        # barometer / ToF). hand_joint_controller reads none of it; the lane is
+        # declared so the device log and the GUI see the fingertips.
+        sensor_names:
+          - "thumb"
+          - "index"
+          - "middle"
+          - "ring"
+        sensor_layout:
+          primary_count_per_group: 0
+          secondary_count_per_group: 0
+          values_per_group: 0
+          inference_values_per_group: 7
+          has_native_contact: false
+          has_native_displacement: false

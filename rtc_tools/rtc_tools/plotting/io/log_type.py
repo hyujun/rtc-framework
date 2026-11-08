@@ -68,6 +68,11 @@ def detect_log_type(filepath):
         # and why), the solve's diagnostics, and per task frame the error and
         # the reference / commanded / measured pose. Fixed instance stem.
         return "dualarm_diag"
+    elif stem.endswith("joint_ff"):
+        # Per-tick gravity-feedforward joint record: what the model evaluation
+        # did, and per joint q / q_ref / g / tau_ff. Fixed instance stem
+        # (kJointFeedforwardLogInstance), written by the hand joint controller.
+        return "joint_ff"
     elif stem.endswith("state_log"):
         return "state_log"
     elif stem.endswith("sensor_log"):
@@ -164,6 +169,17 @@ def detect_log_type_by_columns(columns):
     # every such file has at least one `_err_lin` column.
     if "clik_ran" in cols and any(c.endswith("_err_lin") for c in cols):
         return "dualarm_diag"
+    # Gravity-feedforward joint log: per-tick joint_ff.csv. MUST precede the
+    # state_log / sensor_log branches — its per-joint blocks are `q_<joint>`,
+    # `q_ref_<joint>`, `g_<joint>`, `tau_ff_<joint>`, and a joint name that
+    # happens to carry the generic `_raw_` / `_filt_` token would otherwise
+    # land in the sensor_log pipeline. `ff_enabled` + one `tau_ff_` column is
+    # the discriminating pair — no other POD emits either — and two are
+    # required so a single rename is a detection failure (exit 1), not a
+    # near-miss into another pipeline. `q_ref_` is NOT part of the fingerprint:
+    # it is a plausible name for any future reference block.
+    if "ff_enabled" in cols and any(c.startswith("tau_ff_") for c in cols):
+        return "joint_ff"
     # WBC device state: superset of state_log with TSID a_opt acceleration.
     # The `accel_*` prefix is unique to DeviceWbcLog, so it disambiguates the
     # WBC arm/hand state CSVs from the generic state_log before that branch.

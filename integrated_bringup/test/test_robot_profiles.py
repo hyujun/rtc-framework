@@ -424,6 +424,51 @@ def test_b7_loco_profile_frames_and_groups():
     assert b7.preset_token() == "b7_loco"
 
 
+# ── p2: the proto2 hand alone (one device group, no arm) ────────────────────
+
+
+def test_p2_shape_matches_the_wire_roster():
+    """Same failure mode as b7_loco's hand: a roster that drifts from the YAML
+    reads zeros and commands the wrong motor without any error. The names are
+    the hand description's own (unprefixed) — not the right_* spelling b7_loco
+    mounts it under — so the two rosters are checked against their own YAML
+    and asserted disjoint, not shared."""
+    profile = RobotProfile.for_robot("p2")
+    shape = profile.shape
+    assert (shape.arm_dof, shape.hand_dof) == (0, 10)
+    assert shape.arm_joint_names == ()
+    assert shape.hand_motor_names == _base_joint_state_names("p2", profile.hand_group)
+    assert [(label, len(m)) for label, m in shape.hand_finger_groups] == [
+        ("Thumb", 4),
+        ("Index", 3),
+        ("Middle", 2),
+        ("Ring", 1),
+    ]
+    assert not set(shape.hand_motor_names) & set(RobotShape.default_b7_loco().hand_motor_names)
+    assert set(shape.hand_name_to_idx) == set(shape.hand_motor_names)
+
+
+def test_p2_has_an_empty_unlabelled_joint_column():
+    """What keeps the joint widgets from failing on a shape with no arm: one
+    unlabelled group with no joints, the same layout a serial arm gets, so the
+    builders loop zero times instead of taking the labelled-limb branch."""
+    shape = RobotShape.default_p2()
+    assert shape.arm_joint_groups == (("", ()),)
+    assert shape.arm_name_to_idx == {}
+
+
+def test_p2_profile_frames_and_groups():
+    p2 = RobotProfile.for_robot("p2")
+    # arm_group is the hand group on purpose: the GUI builds topic names from
+    # both tokens, and an empty one would yield "/<ctrl>//joint_goal".
+    assert p2.fallback_groups() == ("p2_right", "p2_right")
+    assert (p2.tcp_parent, p2.tcp_child) == ("palm", "index_virtual_axis_actual")
+    assert p2.extra_switchable_controllers == ("hand_joint_controller",)
+    # Same hand group token as b7_loco; the preset files must still be its own.
+    assert p2.preset_token() == "p2"
+    assert p2.preset_token() != RobotProfile.for_robot("b7_loco").preset_token()
+
+
 def test_preset_files_are_not_shared_between_different_robots():
     """A preset stores a robot target and a controller name beside the hand
     pose. Two profiles with the same hand on different bodies would otherwise

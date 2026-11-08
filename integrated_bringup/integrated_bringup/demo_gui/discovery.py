@@ -118,6 +118,29 @@ _P2_RIGHT_HAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Ring", ("right_active_ring_mcp_joint",)),
 )
 
+# proto2 hand on its own (profile p2): the same ten motors as _P2_RIGHT_HAND_GROUPS
+# under the names the hand's own description uses — no side prefix, because the
+# bringup mounts one hand and nothing else. Names mirror config/p2/_base.yaml
+# p2_right ``joint_state_names``, which is why this is a second tuple and not
+# b7_loco's: a GUI roster that drifts from the YAML reads zeros without any
+# error. Finger groups are explicit for the same reason as the other two hand
+# rosters (``cmc_*`` carries no finger prefix). 4/3/2/1 across
+# Thumb/Index/Middle/Ring.
+_P2_HAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Thumb",
+        (
+            "cmc_01_joint",
+            "cmc_02_joint",
+            "thumb_mcp_joint",
+            "thumb_pip_link02_joint",
+        ),
+    ),
+    ("Index", ("index_mcp_rotate_joint", "index_mcp_joint", "index_pip_joint")),
+    ("Middle", ("middle_mcp_joint", "middle_pip_joint")),
+    ("Ring", ("ring_mcp_joint",)),
+)
+
 
 def short_joint_labels(joint_names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
     """Row labels for one on-screen joint group: each name without the
@@ -428,6 +451,19 @@ class RobotShape:
         return cls._from_groups(joint_groups, _P2_RIGHT_HAND_GROUPS)
 
     @classmethod
+    def default_p2(cls) -> RobotShape:
+        """proto2 hand alone (10 motors), no arm.
+
+        The bringup has ONE device group, ``p2_right``, and it is the hand; the
+        GUI's "first device group" (the ``arm_*`` fields) is therefore empty.
+        An empty ``arm_joint_names`` is a legal shape: the joint columns build
+        zero rows and the robot half of every publish is skipped by
+        ``arm_dof == 0`` in app.py. The hand roster is ``_P2_HAND_GROUPS``
+        (``config/p2/_base.yaml`` p2_right ``joint_state_names``).
+        """
+        return cls._from_groups((), _P2_HAND_GROUPS)
+
+    @classmethod
     def from_joint_names(
         cls,
         arm_joint_names: list[str] | tuple[str, ...] | None,
@@ -541,7 +577,9 @@ class RobotProfile:
 
 
 # key matches the config/<key>/ directory name so --robot mirrors the bringup config.
-# Only directories with controllers/ are bringups; a hand-only config has no entry.
+# Only directories with controllers/ are bringups: a hand-only DRIVER config (an
+# udp_hand_node_*.yaml run through udp_hand.launch.py) has no entry, while a
+# hand-only BRINGUP (p2, which ships a controller for its one device group) does.
 ROBOT_PROFILES: dict[str, RobotProfile] = {
     "ur5e_p1a": RobotProfile(
         shape=RobotShape.default_ur5e_assm(),
@@ -631,6 +669,29 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # Another body and another hand than every other profile: its presets
         # are its own.
         preset_scope="b7_loco",
+    ),
+    "p2": RobotProfile(
+        shape=RobotShape.default_p2(),
+        # The controller broadcasts the four fingertip virtual axes with the
+        # palm as parent and no arm tip (there is no arm); the index axis is the
+        # one the End-Effector Pose readout follows.
+        tcp_parent="palm",
+        tcp_child="index_virtual_axis_actual",
+        # ONE device group, the hand. arm_group names the same group on
+        # purpose: the GUI builds its topic names from both tokens and an empty
+        # arm_group would produce "/<ctrl>//joint_goal"; with arm_dof == 0 the
+        # arm-side publishers and subscriptions bind but are never used for a
+        # robot goal (app.py skips the robot half of every publish).
+        hand_group="p2_right",
+        arm_group="p2_right",
+        # The only controller that ships here. It has no gain panel — its
+        # runtime parameters (trajectory_speed, gravity_ff.*) are set with
+        # `ros2 param`, so GAIN_DEFS is the wrong place to name it.
+        extra_switchable_controllers=("hand_joint_controller",),
+        # Same hand group token as b7_loco (p2_right), another bringup and
+        # another roster spelling: its presets must not be read as that
+        # robot's, nor the reverse.
+        preset_scope="p2",
     ),
 }
 

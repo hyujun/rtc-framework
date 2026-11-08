@@ -21,6 +21,7 @@ URDF 기반 매니퓰레이터용 제어 법칙·궤적·estimator 라이브러�
 |---|---|---|
 | joint | `joint/joint_pd_law.hpp` · `params/joint_pd_params.hpp` | 관절 PD (+ 중력/코리올리 피드포워드, torque lane 한정) |
 | joint | `joint/posture_law.hpp` | 영공간 posture 법칙 `τ₀ = Kp(q_null−q) − Kd q̇` |
+| joint | `joint/dynamics_feedforward_law.hpp` · `params/dynamics_feedforward_params.hpp` | 동역학 피드포워드 `τ_ff = clamp(k_g·g + k_c·C q̇, ±τ_max)` — `pd_feedforward` lane (장치 PD 위의 overlay) |
 | task | `task/task_vel_law.hpp` · `params/clik_params.hpp` | CLIK 태스크 속도 법칙 `K_p ⊙ e + ν_ff` (Position 출력) |
 | task | `task/task_accel_law.hpp` · `params/osc_params.hpp` | OSC 태스크 가속도 법칙 (Torque 출력, task inertia Λ 사용) |
 | compliance | `compliance/impedance_law.hpp` · `inertia_shaping.hpp` · `params/task_impedance_params.hpp` | 태스크 임피던스 (Jacobian-transpose, 선택적 관성 성형) |

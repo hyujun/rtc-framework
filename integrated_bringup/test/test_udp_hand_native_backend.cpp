@@ -17,9 +17,16 @@
 // test_mujoco_native_backend.cpp; the seam BETWEEN a backend and a controller
 // (the DeviceStateCache → DeviceState copy) is spanned by
 // rtc_controller_manager's test_rt_loop_pipeline.
+//
+// The command-lane suite at the bottom pins the feedforward field: a
+// pd_feedforward command carries slot.feedforward (N·m) name-aligned with
+// values, every other mode carries zeros of the same length (the driver treats
+// a same-length zero vector as "no feedforward"), and the backend declares
+// both modes to the controller manager's pairing check.
 
 #include "integrated_bringup/backends/udp_hand_native_backend.hpp"
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
+#include <rtc_msgs/msg/joint_command.hpp>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -225,6 +232,167 @@ TEST_F(UdpHandNativeBackendTest, ShortMessageLeavesAbsentFingertipsUntouched) {
   // this backend copies the firmware's bit and no bit arrived to clear it.
   EXPECT_EQ(partial.inference_sequence[3], full.inference_sequence[3]);
   EXPECT_EQ(partial.inference_recv_steady_ns[3], full.inference_recv_steady_ns[3]);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Command lane — WriteCommand
+// ═══════════════════════════════════════════════════════════════════════════
+
+const std::vector<std::string> kCmdNames = {"j_a", "j_b", "j_c", "j_d"};
+
+class UdpHandBackendWriteCommandTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_udp_hand_backend_cmd");
+    state_cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    rtc::DeviceBackendConfig cfg;
+    cfg.group_name = "test_hand_cmd";
+    cfg.type = "udp_hand_native";
+    cfg.state_topic = "/test_udp_hand_cmd/joint_states";
+    cfg.command_topic = "/test_udp_hand_cmd/joint_command";
+    cfg.joint_command_names = kCmdNames;
+    backend_ = std::make_unique<rtc::UdpHandNativeBackend>();
+    backend_->Configure(node_.get(), cfg, state_cb_group_);
+    backend_->Activate();  // LifecyclePublisher publishes only when active.
+
+    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    executor_->add_node(node_->get_node_base_interface());
+
+    rclcpp::QoS qos{1};
+    qos.best_effort();
+    cmd_sub_ = node_->create_subscription<rtc_msgs::msg::JointCommand>(
+        cfg.command_topic, qos,
+        [this](rtc_msgs::msg::JointCommand::SharedPtr msg) { received_.push_back(*msg); });
+  }
+
+  void TearDown() override {
+    cmd_sub_.reset();
+    executor_->remove_node(node_->get_node_base_interface());
+    executor_.reset();
+    backend_.reset();
+    node_.reset();
+  }
+
+  rtc_msgs::msg::JointCommand WriteAndReceive(const rtc::PublishSnapshot::GroupCommandSlot& slot,
+                                              rtc::CommandType command_type) {
+    received_.clear();
+    backend_->WriteCommand(slot, command_type);
+    const auto deadline = std::chrono::steady_clock::now() + 500ms;
+    while (received_.empty() && std::chrono::steady_clock::now() < deadline) {
+      executor_->spin_some(20ms);
+    }
+    EXPECT_FALSE(received_.empty()) << "JointCommand not delivered within timeout";
+    return received_.empty() ? rtc_msgs::msg::JointCommand{} : received_.back();
+  }
+
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+  rclcpp::CallbackGroup::SharedPtr state_cb_group_;
+  rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
+  std::unique_ptr<rtc::UdpHandNativeBackend> backend_;
+  rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr cmd_sub_;
+  std::vector<rtc_msgs::msg::JointCommand> received_;
+};
+
+// A position command carries values only: feedforward goes out as a
+// same-length ZERO vector (what the driver reads as "no feedforward"), never
+// as the slot's content and never empty.
+TEST_F(UdpHandBackendWriteCommandTest, PositionMode_ZeroesFeedforwardAtCommandWidth) {
+  rtc::PublishSnapshot::GroupCommandSlot slot{};
+  slot.num_channels = static_cast<int>(kCmdNames.size());
+  const std::vector<double> cmds = {0.1, -0.2, 0.3, -0.4};
+  for (std::size_t i = 0; i < cmds.size(); ++i) {
+    slot.commands[i] = cmds[i];
+    slot.feedforward[i] = 100.0 + static_cast<double>(i);  // must NOT leak out
+  }
+
+  const auto msg = WriteAndReceive(slot, rtc::CommandType::kPosition);
+
+  EXPECT_EQ(msg.command_type, "position");
+  EXPECT_EQ(msg.joint_names, kCmdNames);
+  ASSERT_EQ(msg.values.size(), kCmdNames.size());
+  ASSERT_EQ(msg.feedforward.size(), kCmdNames.size());
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    EXPECT_DOUBLE_EQ(msg.values[i], cmds[i]) << "i=" << i;
+    EXPECT_DOUBLE_EQ(msg.feedforward[i], 0.0) << "i=" << i;
+  }
+}
+
+// A pd_feedforward command carries slot.feedforward index-aligned with values
+// (the driver re-orders both by joint_names, so the alignment here is what
+// keeps a torque on the joint it was computed for).
+TEST_F(UdpHandBackendWriteCommandTest, PdFeedforwardMode_CopiesFeedforward) {
+  rtc::PublishSnapshot::GroupCommandSlot slot{};
+  slot.num_channels = static_cast<int>(kCmdNames.size());
+  const std::vector<double> cmds = {1.0, 2.0, 3.0, 4.0};
+  const std::vector<double> ffs = {-0.05, 0.025, -0.0125, 0.00625};
+  for (std::size_t i = 0; i < cmds.size(); ++i) {
+    slot.commands[i] = cmds[i];
+    slot.feedforward[i] = ffs[i];
+  }
+
+  const auto msg = WriteAndReceive(slot, rtc::CommandType::kPdFeedforward);
+
+  EXPECT_EQ(msg.command_type, "pd_feedforward");
+  ASSERT_EQ(msg.values.size(), kCmdNames.size());
+  ASSERT_EQ(msg.feedforward.size(), kCmdNames.size());
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    EXPECT_DOUBLE_EQ(msg.values[i], cmds[i]) << "i=" << i;
+    EXPECT_DOUBLE_EQ(msg.feedforward[i], ffs[i]) << "i=" << i;
+  }
+}
+
+// Switching back to a position command after a pd_feedforward one clears the
+// field: the message object is reused across ticks, so a stale torque would
+// otherwise ride on every later position command.
+TEST_F(UdpHandBackendWriteCommandTest, PositionAfterPdFeedforward_ClearsStaleFeedforward) {
+  rtc::PublishSnapshot::GroupCommandSlot slot{};
+  slot.num_channels = static_cast<int>(kCmdNames.size());
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    slot.commands[i] = 0.5;
+    slot.feedforward[i] = 0.07;
+  }
+  (void)WriteAndReceive(slot, rtc::CommandType::kPdFeedforward);
+  const auto msg = WriteAndReceive(slot, rtc::CommandType::kPosition);
+  ASSERT_EQ(msg.feedforward.size(), kCmdNames.size());
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    EXPECT_DOUBLE_EQ(msg.feedforward[i], 0.0) << "i=" << i;
+  }
+}
+
+// The safe output replays the last position target but never the last torque:
+// a feedforward computed for an earlier pose must not be held open-loop on the
+// tick the controller manager has no honest command.
+TEST_F(UdpHandBackendWriteCommandTest, SafeCommand_ReplaysPositionWithZeroFeedforward) {
+  rtc::PublishSnapshot::GroupCommandSlot slot{};
+  slot.num_channels = static_cast<int>(kCmdNames.size());
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    slot.commands[i] = 0.3 + static_cast<double>(i);
+    slot.feedforward[i] = 0.07;
+  }
+  (void)WriteAndReceive(slot, rtc::CommandType::kPdFeedforward);
+  received_.clear();
+  backend_->WriteSafeCommand();
+  const auto deadline = std::chrono::steady_clock::now() + 500ms;
+  while (received_.empty() && std::chrono::steady_clock::now() < deadline) {
+    executor_->spin_some(20ms);
+  }
+  ASSERT_FALSE(received_.empty());
+  const auto& msg = received_.back();
+  ASSERT_EQ(msg.values.size(), kCmdNames.size());
+  ASSERT_EQ(msg.feedforward.size(), kCmdNames.size());
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    EXPECT_DOUBLE_EQ(msg.values[i], 0.3 + static_cast<double>(i)) << "i=" << i;
+    EXPECT_DOUBLE_EQ(msg.feedforward[i], 0.0) << "i=" << i;
+  }
+}
+
+// The pairing check: both position-bearing modes are declared, torque is not.
+TEST(UdpHandNativeBackendCommandTypes, AcceptsPositionAndPdFeedforwardOnly) {
+  rtc::UdpHandNativeBackend backend;
+  EXPECT_TRUE(backend.AcceptsCommandType(rtc::CommandType::kPosition));
+  EXPECT_TRUE(backend.AcceptsCommandType(rtc::CommandType::kPdFeedforward));
+  EXPECT_FALSE(backend.AcceptsCommandType(rtc::CommandType::kTorque));
 }
 
 }  // namespace

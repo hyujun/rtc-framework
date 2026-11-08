@@ -31,6 +31,7 @@ from ament_index_python.packages import get_package_share_directory
 HAND_LAUNCH_FILES = [
     "robot_ur5e_p1a.launch.py",
     "robot_ur5e_p1b.launch.py",
+    "robot_p2.launch.py",
 ]
 
 SIM_LAUNCH_FILES = [
@@ -40,6 +41,7 @@ SIM_LAUNCH_FILES = [
     "sim_g1_p1b.launch.py",
     "sim_g1_loco.launch.py",
     "sim_b7_loco.launch.py",
+    "sim_p2.launch.py",
 ]
 
 

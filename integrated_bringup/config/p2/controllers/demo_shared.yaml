@@ -1,0 +1,10 @@
+# Shared demo parameters — p2 (proto2 right hand on its own)
+#
+# No demo controller reads this file on this profile: the one controller it
+# ships (hand_joint_controller) has no grasp FSM, virtual TCP or estimator. The
+# file exists because a `controllers/` directory IS a robot profile to the
+# bring-up (test_registered_controllers_have_shipped_config), and the key
+# below keeps a demo controller added later from inheriting a grasp mode the
+# hand's sensors cannot back (the sim hand has none).
+demo_shared:
+  grasp_controller_type: "none"
