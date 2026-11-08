@@ -684,9 +684,10 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # robot goal (app.py skips the robot half of every publish).
         hand_group="p2_right",
         arm_group="p2_right",
-        # The only controller that ships here. It has no gain panel — its
-        # runtime parameters (trajectory_speed, gravity_ff.*) are set with
-        # `ros2 param`, so GAIN_DEFS is the wrong place to name it.
+        # The only controller that ships here. Its gain rows (trajectory_speed,
+        # gravity_ff.*) are registered at GUI start for this profile
+        # (hand_joint.hand_joint_gain_rows), not in GAIN_DEFS, which would put
+        # its radio on every robot.
         extra_switchable_controllers=("hand_joint_controller",),
         # Same hand group token as b7_loco (p2_right), another bringup and
         # another roster spelling: its presets must not be read as that

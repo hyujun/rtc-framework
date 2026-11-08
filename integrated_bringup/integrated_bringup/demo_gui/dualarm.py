@@ -185,6 +185,7 @@ class GainRow:
     default: float
     read_only: bool
     group: str  # title of the box it is shown in
+    is_bool: bool = False  # a checkbox row; the parameter is BOOL
 
 
 _POSTURE_GROUP_TITLE = "Posture gain [1/s]"
