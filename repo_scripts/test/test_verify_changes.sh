@@ -3476,5 +3476,26 @@ out=$(run_hook "$dir")
 expect_contains "85c: an <exec_depend> in that package.xml still raises it" "$out" "public surface changed"
 rm -rf "$dir"
 
+# 86. A tracked config YAML (or launch file) whose changed lines are all `#`
+#     comments is not public surface: a rationale comment rewritten in a profile
+#     config asked for a README it did not need (PR #992). A value line in the
+#     same file still asks -- the control keeps the absence from holding because
+#     the filter ate everything -- and a config file new since the baseline is
+#     surface as before (nothing at the baseline to diff against).
+dir=$(make_fixture)
+printf '# servo gain\ngain: 1.0\n' >"$dir/rtc_demo/config/demo.yaml"
+git -C "$dir" add -A && git -C "$dir" commit -qm "config"
+printf '# servo gain (N*m/rad), measured\ngain: 1.0\n' >"$dir/rtc_demo/config/demo.yaml"
+out=$(run_hook "$dir")
+expect_not_contains "86a: a comment-only config YAML edit raises no README checklist" "$out" "public surface changed"
+printf '# servo gain (N*m/rad), measured\ngain: 2.0\n' >"$dir/rtc_demo/config/demo.yaml"
+out=$(run_hook "$dir")
+expect_contains "86b: a value line in that config YAML still raises it" "$out" "public surface changed"
+git -C "$dir" checkout -q -- rtc_demo/config/demo.yaml
+printf '# a comment is all it holds\n' >"$dir/rtc_demo/config/fresh.yaml"
+out=$(run_hook "$dir")
+expect_contains "86c: a config YAML new since the baseline is surface" "$out" "public surface changed"
+rm -rf "$dir"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
