@@ -52,6 +52,9 @@ add_library(rtc_controllers STATIC
   # they now do, the adapters having been deleted at S7c-2. Non-RT, yaml-cpp
   # only; a binding calls these once at configure time.
   src/params/joint_pd_params.cpp
+  # pd_feedforward lane: the feedforward-torque block (enabled / gain / required
+  # max_abs) behind joint/dynamics_feedforward_law.hpp.
+  src/params/dynamics_feedforward_params.cpp
   src/params/osc_params.cpp
   src/params/clik_params.cpp
   src/params/task_impedance_params.cpp
@@ -358,6 +361,15 @@ if(BUILD_TESTING)
   target_link_libraries(test_joint_pd_core rtc_controllers)
   target_include_directories(test_joint_pd_core PRIVATE ${rtc_controllers_test_include})
   target_compile_options(test_joint_pd_core PRIVATE -Wno-mismatched-new-delete)
+
+  # Dynamics feedforward law (pd_feedforward lane) + its schema: gain / clamp /
+  # all-or-nothing non-finite / tail policy / Coriolis slot, and the required
+  # max_abs. Same alloc gate as test_joint_pd_core, same program-wide
+  # -Wmismatched-new-delete false positive.
+  ament_add_gtest(test_dynamics_feedforward_core test/test_dynamics_feedforward_core.cpp)
+  target_link_libraries(test_dynamics_feedforward_core rtc_controllers)
+  target_include_directories(test_dynamics_feedforward_core PRIVATE ${rtc_controllers_test_include})
+  target_compile_options(test_dynamics_feedforward_core PRIVATE -Wno-mismatched-new-delete)
 
   # #236 S2a golden-vector suite for the task-space acceleration core: bitwise
   # against a literal copy of the pre-extraction inline form (durable oracle).
