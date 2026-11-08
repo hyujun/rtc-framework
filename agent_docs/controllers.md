@@ -109,3 +109,9 @@
 - 엔진은 생성자 주입이고 `is_initialized()` 게이트가 configure 를 막는다.
 
 **DemoCatchingController**: 소비 키가 provisional / TBD 이거나 계획기와 oracle 이 함께 켜지면 configure 는 성공하고 activate 만 거부한다 (park).
+
+**HandJointController** (손 1 군, `pd_feedforward` = 관절 reference + 모델 중력 feedforward):
+
+- feedforward hold: 첫 유효 모델항 전 0, held · singular · unreadable tick 은 **직전 유효 토크 유지** (walk-in 마다 0 으로 떨어뜨리면 활성화마다 손이 처진다), 비유한이면 전 관절 0, E-STOP 0.
+- A/B 스위치는 `gravity_ff.enabled` 다 — command type 을 position 으로 바꾸면 sim 이 자기 중력 보상을 다시 켜 plant 가 달라진다. 토크 상한은 `gravity_ff.max_abs` (필수) 와 device `max_torque` 의 min.
+- 폐쇄 체인의 독립 관절은 **전부 이 군의 관절**이어야 한다 (이름 브릿지) — 팔까지 닫는 sidecar 의 손만 떼면 거부. 핑거팁 FK 는 같은 사영을 빌린다 (tick 당 1 회).

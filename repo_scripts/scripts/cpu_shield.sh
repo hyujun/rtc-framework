@@ -29,9 +29,9 @@
 #                      released cores under CFS (cpu_core=-1 on every tier).
 #
 # 실행 시점:
-#   - 런치: integrated_bringup 의 launch 파일 8개가 rtc_tools.launch.cpu_shield 를 통해
-#           자동 호출 (robot_ur5e_p1a/p1b · sim_ur5e_p1a/p1b · sim_iiwa7_leap · sim_g1_p1b ·
-#           sim_g1_loco · sim_b7_loco).
+#   - 런치: integrated_bringup 의 launch 파일 10개가 rtc_tools.launch.cpu_shield 를 통해
+#           자동 호출 (robot_ur5e_p1a/p1b · robot_p2 · sim_ur5e_p1a/p1b · sim_iiwa7_leap ·
+#           sim_g1_p1b · sim_g1_loco · sim_b7_loco · sim_p2).
 #           rtc_mujoco_sim/launch/mujoco_sim.launch.py 는 agnostic 단독 launch 라 호출하지
 #           않는다 (design-principles P1).
 #           핀을 거는 액션은 전부 이 프로세스의 OnProcessExit 에 걸려 있어 무장이
