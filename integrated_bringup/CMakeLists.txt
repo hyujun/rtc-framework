@@ -1295,6 +1295,34 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # DemoJointController on THREE device groups — a body tree and a hand on
+  # each branch (#715). Runs on a synthetic fixture owned by this repository —
+  # rtc_urdf_bridge/test/urdf/trunk_two_hands.urdf, reached through the same
+  # never-installed test_urdf_path.hpp. Two cases run on_configure on a real
+  # LifecycleNode (target subscriptions per group, the group bound), hence the
+  # package ROS_DOMAIN_ID.
+  ament_add_gtest(test_joint_three_groups
+    test/test_joint_three_groups.cpp
+    TIMEOUT 120
+    ENV ROS_DOMAIN_ID=52)
+  target_include_directories(test_joint_three_groups PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_link_libraries(test_joint_three_groups
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_joint_three_groups
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # DemoDualArmController (#637): several task frames of one device group in
   # one QP. Runs on a synthetic fixture owned by this repository —
   # rtc_urdf_bridge/test/urdf/dual_arm_trunk_hand.urdf (a trunk with two arms
@@ -2081,6 +2109,7 @@ if(BUILD_TESTING)
     test_momentum_observer_embedding
     test_joint_tf_slot_frames
     test_joint_tree_primary_group
+    test_joint_three_groups
     test_demo_dualarm_controller
     test_hand_fk_wiring
     test_arm_tip_resolution

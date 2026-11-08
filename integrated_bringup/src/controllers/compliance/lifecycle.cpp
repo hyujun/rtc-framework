@@ -56,7 +56,7 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
       }
     }
 
-    CreateOwnedTopics(*this, owned_topics_);
+    CreateOwnedTopics(*this, owned_topics_, kArmAndHandGroups);
 
     // ── Controller-owned non-RT publishers (no YAML role mapping) ─────────
     // GraspState rides under the secondary device's namespace (e.g.

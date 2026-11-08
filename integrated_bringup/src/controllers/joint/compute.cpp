@@ -38,7 +38,7 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
   // what keeps unread state out of the model.
   if (!estop_active_ && arm_readable_ && combined_cache_.reorder_valid() &&
       arm_tcp_frame_idx_ >= 0) {
-    combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
+    combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_[0]);
   }
 
   // Robot arm joint positions (used for FK logging in WriteOutput)
@@ -313,35 +313,44 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
                          dev0.positions);
   }
 
-  // ── Hand motor trajectory ──────────────────────────────────────────────
-  if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto& dev1 = state.devices[1];
+  // ── Hand motor trajectories — one lane per hand device group (#715) ─────
+  // Every lane runs the same law on the shared hand gains; only the lane's own
+  // state (target row, trajectory, gate) differs. Lane h is device h + 1.
+  for (int h = 0; h < kDemoJointMaxHands; ++h) {
+    const auto* dev_ptr = HandLaneDevice(state, h);
+    if (dev_ptr == nullptr) {
+      continue;
+    }
+    const auto& dev = *dev_ptr;
+    const auto hi = static_cast<std::size_t>(h);
+    const auto d = hi + 1;
+    const int dof = hand_dof_[hi];
 
-    // hand_readable_ joins the pending flag rather than replacing the enclosing
-    // guard (#291): this seed is the only dev1 read in the hand trajectory
-    // block, and it runs hand_dof_ deep, so a narrow hand would start the ramp
-    // from a phantom origin and drive the unreported fingers origin-ward over
-    // `duration`. Scoping it here — not early-returning — keeps the trajectory
-    // evaluation below running. The flag stays pending, so the seed is retried
-    // the tick the hand becomes readable (the arm's arm_target_initialized_
-    // deferral, #265 audit T1/T2, on the hand axis).
-    if (hand_new_target_pending_ && hand_readable_) {
+    // hand_readable_[h] joins the pending flag rather than replacing the
+    // enclosing guard (#291): this seed is the only device read in the hand
+    // trajectory block, and it runs hand_dof_[h] deep, so a narrow hand would
+    // start the ramp from a phantom origin and drive the unreported fingers
+    // origin-ward over `duration`. Scoping it here — not skipping the lane —
+    // keeps the trajectory evaluation below running. The flag stays pending,
+    // so the seed is retried the tick the hand becomes readable (the arm's
+    // arm_target_initialized_ deferral, #265 audit T1/T2, on the hand axis).
+    if (hand_new_target_pending_[hi] && hand_readable_[hi]) {
       trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State start_state;
       trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State goal_state;
 
       double max_dist = 0.0;
-      for (int i = 0; i < hand_dof_; ++i) {
+      for (int i = 0; i < dof; ++i) {
         const auto idx = static_cast<std::size_t>(i);
-        start_state.positions[idx] = dev1.positions[idx];
+        start_state.positions[idx] = dev.positions[idx];
         start_state.velocities[idx] = 0.0;
         start_state.accelerations[idx] = 0.0;
 
-        goal_state.positions[idx] = current_target_slot_.targets[1][idx];
+        goal_state.positions[idx] = current_target_slot_.targets[d][idx];
         goal_state.velocities[idx] = 0.0;
         goal_state.accelerations[idx] = 0.0;
 
-        max_dist = std::max(max_dist,
-                            std::abs(current_target_slot_.targets[1][idx] - dev1.positions[idx]));
+        max_dist =
+            std::max(max_dist, std::abs(current_target_slot_.targets[d][idx] - dev.positions[idx]));
       }
 
       const double T_speed = max_dist / gains.hand_trajectory_speed;
@@ -349,19 +358,27 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
                                ? (1.875 * max_dist / gains.hand_max_traj_velocity)
                                : 0.0;
       const double duration = std::max({0.01, T_speed, T_vel});
-      hand_trajectory_.initialize(start_state, goal_state, duration);
-      hand_trajectory_time_ = 0.0;
-      hand_new_target_pending_ = false;
+      hand_trajectory_[hi].initialize(start_state, goal_state, duration);
+      hand_trajectory_time_[hi] = 0.0;
+      hand_new_target_pending_[hi] = false;
     }
 
-    const auto hand_traj = hand_trajectory_.compute(hand_trajectory_time_);
-    hand_trajectory_time_ += dt;
+    const auto hand_traj = hand_trajectory_[hi].compute(hand_trajectory_time_[hi]);
+    hand_trajectory_time_[hi] += dt;
 
-    for (int i = 0; i < hand_dof_; ++i) {
+    for (int i = 0; i < dof; ++i) {
       const auto idx = static_cast<std::size_t>(i);
-      hand_computed_.positions[idx] = hand_traj.positions[idx];
-      hand_computed_.velocities[idx] = hand_traj.velocities[idx];
+      hand_computed_[hi].positions[idx] = hand_traj.positions[idx];
+      hand_computed_[hi].velocities[idx] = hand_traj.velocities[idx];
     }
+    // Channels the device reports but this lane does not model — the
+    // `nc > hand_dof_[h]` direction, a NORMAL input (num_channels is the wire
+    // length). Unwritten they are a fresh zero, and every output fill copies
+    // hand_computed_[h] nc wide, so a hand reporting more channels than its
+    // group declares was commanded to the origin on the extra ones. The same
+    // tail policy the arm gets above (#265 audit J3): hold where the joint is.
+    rtc::FillCommandTail(hand_computed_[hi].positions, dof, dev.num_channels, command_type_,
+                         dev.positions);
   }
 
   // ── Arm FK: base → tip (from the unified combined-model cache) ────────
@@ -447,14 +464,14 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     // hole, and it is the only evidence that would survive the incident.
     if (grasp_mode_changed && contact_latched_ && !run_contact_stop) {
       trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State hold_state;
-      for (int i = 0; i < hand_dof_; ++i) {
+      for (int i = 0; i < hand_dof_[0]; ++i) {
         const auto idx = static_cast<std::size_t>(i);
         current_target_slot_.targets[1][idx] = hand_hold_position_[idx];
         // This tick too, not just the next one: the hand trajectory block ran
         // earlier in ComputeControl, so hand_computed_ already holds a step
         // toward the old goal.
-        hand_computed_.positions[idx] = hand_hold_position_[idx];
-        hand_computed_.velocities[idx] = 0.0;
+        hand_computed_[0].positions[idx] = hand_hold_position_[idx];
+        hand_computed_[0].velocities[idx] = 0.0;
         hold_state.positions[idx] = hand_hold_position_[idx];
         hold_state.velocities[idx] = 0.0;
         hold_state.accelerations[idx] = 0.0;
@@ -463,10 +480,10 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
       // Duration only has to be non-zero: start state == goal state, so the
       // quintic is a constant. Same value DrainTargetSlot's hold-seed uses.
       constexpr double kHoldSeedDuration = 0.01;
-      hand_trajectory_.initialize(hold_state, hold_state, kHoldSeedDuration);
-      hand_trajectory_time_ = 0.0;
+      hand_trajectory_[0].initialize(hold_state, hold_state, kHoldSeedDuration);
+      hand_trajectory_time_[0] = 0.0;
       // The goal now equals the trajectory, so nothing is left pending.
-      hand_new_target_pending_ = false;
+      hand_new_target_pending_[0] = false;
       contact_latched_ = false;
       RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
                            "[grasp] mode left contact_stop while LATCHED -> re-seeded hand hold "
@@ -508,9 +525,9 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
           for (int j = 0; j < commands.dof[static_cast<std::size_t>(f)]; ++j) {
             const auto mi = static_cast<std::size_t>(
                 finger_joint_map_[static_cast<std::size_t>(f)][static_cast<std::size_t>(j)]);
-            hand_computed_.positions[mi] =
+            hand_computed_[0].positions[mi] =
                 commands.q[static_cast<std::size_t>(f)][static_cast<std::size_t>(j)];
-            hand_computed_.velocities[mi] = 0.0;
+            hand_computed_[0].velocities[mi] = 0.0;
           }
         }
       }
@@ -552,14 +569,14 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
       // a zero-init here — contact_latched_ is only ever set inside this
       // readable branch, so an always-unreadable hand leaves it false and the
       // else-if a no-op.
-      if (hand_readable_) {
+      if (hand_readable_[0]) {
         const auto& dev1 = state.devices[1];
 
         // LPF the measured hand position. Run every readable tick (not just
         // while latched) so the IIR state stays warm and latch entry has no
         // transient.
         std::array<double, kDemoJointMaxHandDof> hand_meas{};
-        for (int i = 0; i < hand_dof_; ++i) {
+        for (int i = 0; i < hand_dof_[0]; ++i) {
           hand_meas[static_cast<std::size_t>(i)] = dev1.positions[static_cast<std::size_t>(i)];
         }
         const std::array<double, kDemoJointMaxHandDof> hand_filt =
@@ -602,13 +619,13 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
             // (compliant) and snapshot it as the hold target; once contact drops
             // keep the last hold target fixed (no random-walk drift) until the
             // release gate fires.
-            for (int i = 0; i < hand_dof_; ++i) {
+            for (int i = 0; i < hand_dof_[0]; ++i) {
               const auto idx = static_cast<std::size_t>(i);
               if (contact_now) {
                 hand_hold_position_[idx] = hand_filt[idx];
               }
-              hand_computed_.positions[idx] = hand_hold_position_[idx];
-              hand_computed_.velocities[idx] = 0.0;
+              hand_computed_[0].positions[idx] = hand_hold_position_[idx];
+              hand_computed_[0].velocities[idx] = 0.0;
             }
             // gate errors (target - actual) encode both the actual position and
             // the overshoot beyond target, enough to diagnose contact_stop engage.
@@ -627,10 +644,10 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
       } else if (contact_latched_) {
         // Hand-state dropout while latched: hold the last commanded position
         // rather than let the trajectory drive the hand (safety).
-        for (int i = 0; i < hand_dof_; ++i) {
+        for (int i = 0; i < hand_dof_[0]; ++i) {
           const auto idx = static_cast<std::size_t>(i);
-          hand_computed_.positions[idx] = hand_hold_position_[idx];
-          hand_computed_.velocities[idx] = 0.0;
+          hand_computed_[0].positions[idx] = hand_hold_position_[idx];
+          hand_computed_[0].velocities[idx] = 0.0;
         }
       }
     }
@@ -763,29 +780,36 @@ ControllerOutput DemoJointController::WriteJointCommand(const ControllerState& s
     rtc::SilenceDeviceOutput(out0);
   }
 
-  if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto& dev1 = state.devices[1];
-    const int nc1 = dev1.num_channels;
-    auto& out1 = output.devices[1];
-    out1.goal_type = GoalType::kJoint;
-    if (!hand_readable_) {
-      // F5 on the SECONDARY axis (#291), the same answer the arm gets above and
-      // for the same reason: hand_computed_ was withheld this tick, so the only
+  // Hand lanes: device h + 1 (#715), each on its own gate and limits.
+  for (int h = 0; h < kDemoJointMaxHands; ++h) {
+    const auto* dev_ptr = HandLaneDevice(state, h);
+    if (dev_ptr == nullptr) {
+      continue;
+    }
+    const auto& dev = *dev_ptr;
+    const auto hi = static_cast<std::size_t>(h);
+    const auto d = hi + 1;
+    const int nc = dev.num_channels;
+    auto& outd = output.devices[d];
+    outd.goal_type = GoalType::kJoint;
+    if (!hand_readable_[hi]) {
+      // F5 on a HAND axis (#291), the same answer the arm gets above and for
+      // the same reason: hand_computed_[h] was withheld this tick, so the only
       // thing left to command would be a stale or zero-init buffer. Zero-length
-      // is "no update" — the hand holds its previous setpoint. nc1 zeros would
+      // is "no update" — the hand holds its previous setpoint. nc zeros would
       // be a real command to the origin, i.e. every finger slammed open.
-      rtc::SilenceDeviceOutput(out1);
+      rtc::SilenceDeviceOutput(outd);
       // The log lane is bounded by the DEVICE's channel count, so an untouched
       // reference row would be recorded as zeros and read as exactly that
       // origin command. Report where the fingers are parked instead.
-      rtc::HoldTelemetryAtMeasured(out1, nc1, dev1.positions);
+      rtc::HoldTelemetryAtMeasured(outd, nc, dev.positions);
     } else {
-      out1.num_channels = nc1;
-      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-        out1.commands[i] = hand_computed_.positions[i];
+      outd.num_channels = nc;
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc); ++i) {
+        outd.commands[i] = hand_computed_[hi].positions[i];
       }
-      rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
-                             std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
+      rtc::utils::ClampRange(outd.commands, nc, std::span<const double>(device_position_lower_[d]),
+                             std::span<const double>(device_position_upper_[d]), -6.2832, 6.2832);
     }
   }
 
@@ -844,26 +868,32 @@ void DemoJointController::FillLogOutput(const ControllerState& state, Controller
   // Joint mode: no explicit task goal from GUI, mirror FK result.
   output.task_goal_positions = output.actual_task_positions;
 
-  if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto& dev1 = state.devices[1];
-    const int nc1 = dev1.num_channels;
-    auto& out1 = output.devices[1];
-    if (hand_readable_) {
-      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-        out1.trajectory_positions[i] = hand_computed_.positions[i];
-        out1.trajectory_velocities[i] = hand_computed_.velocities[i];
+  for (int h = 0; h < kDemoJointMaxHands; ++h) {
+    const auto* dev_ptr = HandLaneDevice(state, h);
+    if (dev_ptr == nullptr) {
+      continue;
+    }
+    const auto& dev = *dev_ptr;
+    const auto hi = static_cast<std::size_t>(h);
+    const auto d = hi + 1;
+    const int nc = dev.num_channels;
+    auto& outd = output.devices[d];
+    if (hand_readable_[hi]) {
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc); ++i) {
+        outd.trajectory_positions[i] = hand_computed_[hi].positions[i];
+        outd.trajectory_velocities[i] = hand_computed_[hi].velocities[i];
       }
     } else {
-      // No hand reference this tick — hand_computed_ still holds the last
+      // No hand reference this tick — hand_computed_[h] still holds the last
       // readable tick's values (#291, the hand's T7), so publishing it would
       // date-stamp stale numbers. Report the parked position instead of leaving
       // a row of zeros that reads as a command to the origin.
-      rtc::HoldTelemetryAtMeasured(out1, nc1, dev1.positions);
+      rtc::HoldTelemetryAtMeasured(outd, nc, dev.positions);
     }
     // The goal survives the gate on this axis too: a finger target the operator
     // set does not stop existing because the hand went unreadable.
-    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.goal_positions[i] = current_target_slot_.targets[1][i];
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc); ++i) {
+      outd.goal_positions[i] = current_target_slot_.targets[d][i];
     }
   }
 
@@ -1060,26 +1090,33 @@ void DemoJointController::FillPublishOutput(const ControllerState& state, Contro
     }
   }
 
-  if (state.num_devices > 1 && state.devices[1].valid) {
-    const int nc1 = state.devices[1].num_channels;
-    auto& out1 = output.devices[1];
-    if (hand_readable_) {
-      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-        out1.target_positions[i] = hand_computed_.positions[i];
-        out1.target_velocities[i] = hand_computed_.velocities[i];
-        out1.trajectory_positions[i] = hand_computed_.positions[i];
-        out1.trajectory_velocities[i] = hand_computed_.velocities[i];
+  for (int h = 0; h < kDemoJointMaxHands; ++h) {
+    const auto* dev_ptr = HandLaneDevice(state, h);
+    if (dev_ptr == nullptr) {
+      continue;
+    }
+    const auto& dev = *dev_ptr;
+    const auto hi = static_cast<std::size_t>(h);
+    const auto d = hi + 1;
+    const int nc = dev.num_channels;
+    auto& outd = output.devices[d];
+    if (hand_readable_[hi]) {
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc); ++i) {
+        outd.target_positions[i] = hand_computed_[hi].positions[i];
+        outd.target_velocities[i] = hand_computed_[hi].velocities[i];
+        outd.trajectory_positions[i] = hand_computed_[hi].positions[i];
+        outd.trajectory_velocities[i] = hand_computed_[hi].velocities[i];
       }
     } else {
-      // Stale hand_computed_ must not be date-stamped as this tick's reference
-      // (#291) — park the reference lanes at the measurement. Velocities stay
-      // at their fresh zero: a parked finger is not moving.
-      rtc::HoldTelemetryAtMeasured(out1, nc1, state.devices[1].positions);
+      // Stale hand_computed_[h] must not be date-stamped as this tick's
+      // reference (#291) — park the reference lanes at the measurement.
+      // Velocities stay at their fresh zero: a parked finger is not moving.
+      rtc::HoldTelemetryAtMeasured(outd, nc, dev.positions);
     }
     // The goal survives the gate on this axis too: a finger target the operator
     // set does not stop existing because the hand went unreadable.
-    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.goal_positions[i] = current_target_slot_.targets[1][i];
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc); ++i) {
+      outd.goal_positions[i] = current_target_slot_.targets[d][i];
     }
   }
 }
@@ -1133,18 +1170,25 @@ ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state)
     rtc::HoldTelemetryAtMeasured(out0, nc0, dev0.positions);
   }
 
-  // Hand: hold current position during E-Stop
-  if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto& dev1 = state.devices[1];
-    const int nc1 = dev1.num_channels;
-    auto& out1 = output.devices[1];
-    out1.num_channels = nc1;
-    out1.goal_type = GoalType::kJoint;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.commands[i] = dev1.positions[i];
-      out1.goal_positions[i] = dev1.positions[i];
-      out1.target_positions[i] = dev1.positions[i];
-      out1.trajectory_positions[i] = dev1.positions[i];
+  // Hands: hold the current position during E-Stop — every lane, the same way
+  // (#715). The lane's F5 gate is deliberately not consulted on this path; that
+  // is the pre-#715 contract for device 1, replicated unchanged for device 2.
+  for (int h = 0; h < kDemoJointMaxHands; ++h) {
+    const auto* dev_ptr = HandLaneDevice(state, h);
+    if (dev_ptr == nullptr) {
+      continue;
+    }
+    const auto& dev = *dev_ptr;
+    const auto d = static_cast<std::size_t>(h) + 1;
+    const int nc = dev.num_channels;
+    auto& outd = output.devices[d];
+    outd.num_channels = nc;
+    outd.goal_type = GoalType::kJoint;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc); ++i) {
+      outd.commands[i] = dev.positions[i];
+      outd.goal_positions[i] = dev.positions[i];
+      outd.target_positions[i] = dev.positions[i];
+      outd.trajectory_positions[i] = dev.positions[i];
     }
   }
 

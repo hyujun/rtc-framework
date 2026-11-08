@@ -47,7 +47,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
   // reserved — the same thing every launch got before the profile existed.
   SetLayoutProfile(ReadLayoutProfile(*node));
   try {
-    CreateOwnedTopics(*this, owned_topics_);
+    CreateOwnedTopics(*this, owned_topics_, kArmAndHandGroups);
 
     // ── Controller-owned non-RT publisher (no YAML role mapping) ─────────
     // WbcState rides under the secondary device's namespace (e.g.

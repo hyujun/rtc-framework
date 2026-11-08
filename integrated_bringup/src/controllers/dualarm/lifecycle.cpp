@@ -36,7 +36,7 @@ CallbackReturn DemoDualArmController::on_configure(const rclcpp_lifecycle::State
       return CallbackReturn::FAILURE;
     }
 
-    CreateOwnedTopics(*this, owned_topics_);
+    CreateOwnedTopics(*this, owned_topics_, kArmAndHandGroups);
     {
       std::vector<TaskGoalSubscriptionRequest> requests;
       for (std::size_t k = 0; k < num_tasks_; ++k) {

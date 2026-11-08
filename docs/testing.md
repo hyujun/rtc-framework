@@ -42,7 +42,7 @@ colcon 의 pytest 는 시스템 python 이라 `.venv` 에만 있는 의존성 (m
 | `repo_scripts/` · `.claude/hooks/` | `test_rt_common` · `test_install_deps` · `test_install_python` · `test_build_jobs` · `test_can_setup` + shell unit test. hook · `validate_test_*.py` · 그 import 를 고쳤으면 `bash repo_scripts/test/test_verify_changes.sh` (CI 전용 — `colcon test` 도 `--run` 도 돌리지 않는다) | `check_rt_setup.sh --summary` |
 | `shape_estimation*/` | ToF + exploration gtest | `/shape/estimate` echo, `/shape/explore` 액션 |
 | `integrated_bringup/` demo FSM | demo_wbc · demo_joint · demo_task · grasp_phase_manager · virtual_tcp gtest | BT coordinator 통합 |
-| `integrated_bringup/` demo_joint 군 0 · dualarm | `test_joint_tree_primary_group` · `test_demo_dualarm_controller` · `test_demo_dualarm_alloc` | sim_g1_p1b 로 launch 후 GUI 확인 |
+| `integrated_bringup/` demo_joint 군 0 · 손 2 군 · dualarm | `test_joint_tree_primary_group` · `test_joint_three_groups` (몸통 + 손 2 — 군별 target 구독 · hold · E-STOP · 4 군 거부) · `test_demo_joint_controller` 의 `JointThreeGroupTest` (두 번째 손의 지연 · 협폭 seed) · `test_demo_dualarm_controller` · `test_demo_dualarm_alloc` | sim_g1_p1b 로 launch 후 GUI 확인 |
 | `integrated_bringup/` g1_loco 부동 베이스 profile | `test_g1_loco_configure` (출하 profile 로 configure + floating root 대조군) · `test_shipped_*` · `test_launch_*` 의 profile 목록 | `sim_g1_loco` 기동 → `run_stance_metrics` 10 s (문턱은 #977) · `/sim/reset` 뒤 재현 |
 | `integrated_bringup/` demo GUI · profile | `test_demo_gui_dualarm` · `test_robot_profiles` | `demo_controller_gui --robot g1_p1b` · `--robot g1_loco` (Tk 배치는 pytest 가 못 본다) |
 | `integrated_bringup/` FK · arm tip · hand sensor_layout | `test_hand_fk_wiring` · `test_arm_tip_resolution` · `test_hand_sensor_layout_gate` | `iiwa7_leap` sim 에서 손 목표 smoke |
