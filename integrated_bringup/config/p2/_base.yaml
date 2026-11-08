@@ -1,0 +1,94 @@
+# p2/_base.yaml — mode-agnostic config: the proto2 (CAN FD) RIGHT hand on its
+# own, with no arm.
+#
+# Loaded first; sim.yaml (MuJoCo) or robot.yaml (hardware) overlays the mode
+# delta on top. The purpose of this profile is the hand's joint controller
+# itself: `hand_joint_controller` sends a joint position reference plus a
+# feedforward torque from the hand's dynamic model (gravity first; the law
+# carries a Coriolis slot for later), to be tuned in the simulator and on the
+# hardware with the device's PD at LOW gains and no sag.
+#
+# Shape of this robot:
+#   - ONE device group, `p2_right`: the ten firmware motors of the right hand,
+#     in the proto2 motor-slot order (thumb 4, index 3, middle 2, ring 1).
+#     Joint names are the hand URDF's (unprefixed) — NOT the `right_*` roster
+#     of config/b7_p2, which belongs to the whole-body model;
+#   - the model is the private `hand_description` package's
+#     `robots/proto2/urdf/proto2_right.urdf.xacro`, processed with its default
+#     xacro arguments (base_link → palm with rpy (0, 0, π/2)): in that model the
+#     palm normal is +X and the fingers point +Z of the root, so the model's
+#     default gravity (−Z of the root frame) is a hand mounted FINGERS UP.
+#     The simulator scene (mujoco_simulator.yaml) points its gravity the same
+#     way in the MJCF's frame; hardware is whatever the bench mounts;
+#   - extended URDF: the five four-bar loop closures come from the sidecar
+#     next to the URDF. The controller's gravity term is the reduced g_a of
+#     the closed chain, so the loop-passive joints' weight is included.
+/**:
+  ros__parameters:
+    config_variant: "p2"
+
+    # ── Control loop ─────────────────────────────────────────────────────────
+    # 500 Hz on both sides: the CAN FD driver's loop_rate_hz (config/b7_p2) and
+    # the simulator's control period (mujoco_simulator.yaml physics_timestep).
+    control_rate: 500.0 # Hz — timer period = 1e6/rate us. Range: see agent_docs/invariants.md §RT Path
+
+    # ── Device timeout rosters (values are per-mode: see sim.yaml / robot.yaml) ──
+    device_timeout_names: ["p2_right"]
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+    enable_logging: true
+    enable_timing_log: true
+    enable_device_log: true # auto-creates per-device log files
+    max_log_sessions: 10 # session folders kept (YYMMDD_HHMM); the sim launch reads this too
+
+    # ── Robot model ──────────────────────────────────────────────────────────
+    urdf:
+      package: "hand_description"
+      # The xacro itself (default arguments); the controller manager runs xacro
+      # at configure. `extended` resolves the sidecar as <stem>.closure.yaml by
+      # dropping ".urdf.xacro" — spelled out below so a rename is loud.
+      path: "robots/proto2/urdf/proto2_right.urdf.xacro"
+      root_joint_type: "fixed"
+      extended: true
+      closure_path: "robots/proto2/urdf/proto2_right.closure.yaml"
+      tree_models:
+        # Device group `p2_right`: palm → the four fingertip frames. Tip order =
+        # controller-facing finger order (thumb, index, middle, ring); the
+        # `*_virtual_axis` links are the fingertip end-effector frames of the
+        # URDF (not the four-bar pins). The root is the palm, not base_link:
+        # base_link only carries the mounting rotation, and the palm is the
+        # frame the MJCF places at its world origin, so fingertip poses are
+        # comparable between controller and simulator without a transform.
+        p2_right:
+          root_link: "palm"
+          tip_links: ["thumb_virtual_axis", "index_virtual_axis", "middle_virtual_axis", "ring_virtual_axis"]
+
+    # ── Devices ──────────────────────────────────────────────────────────────
+    devices:
+      p2_right:
+        # Firmware motor slot 0..9 = this order (udp_hand_node's
+        # joint_state_names for the right hand must list the same names in the
+        # same order — robot.yaml's driver config does).
+        joint_state_names:
+          - "cmc_01_joint"
+          - "cmc_02_joint"
+          - "thumb_mcp_joint"
+          - "thumb_pip_link02_joint"
+          - "index_mcp_rotate_joint"
+          - "index_mcp_joint"
+          - "index_pip_joint"
+          - "middle_mcp_joint"
+          - "middle_pip_joint"
+          - "ring_mcp_joint"
+        joint_limits:
+          max_velocity: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0] # rad/s — the URDF's rating
+          # N·m — the URDF's `effort` (a placeholder, not a measured rating).
+          # The feedforward torque bound in force is min(this,
+          # hand_joint_controller.yaml gravity_ff.max_abs), so this value alone
+          # never bounds the torque.
+          max_torque: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+          # rad — the URDF's values (= the MJCF's ranges). Zero is the extended
+          # hand; the driving joints flex toward the negative side except the
+          # index/middle mcp/pip pairs (see the URDF header).
+          position_lower: [-1.5708, -1.5708, -1.5708, -1.5708, -0.2, 0.0, 0.0, 0.0, 0.0, -1.5708]
+          position_upper: [0.0, 0.0, 1.5708, 0.0, 0.0, 1.5708, 1.5708, 1.5708, 1.5708, 0.0]

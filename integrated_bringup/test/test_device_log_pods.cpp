@@ -11,6 +11,7 @@
 #include "integrated_bringup/logging/dualarm_diag_log_pod.hpp"
 #include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
 #include "integrated_bringup/logging/inference_diag_log_pod.hpp"
+#include "integrated_bringup/logging/joint_feedforward_log_pod.hpp"
 #include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
@@ -700,6 +701,87 @@ TEST(DeviceWbcLogPod, AccelColumnRoundTrips) {
   const std::string row = row_os.str();
   EXPECT_NE(row.find("3.25"), std::string::npos);
   EXPECT_NE(row.find("-1.5"), std::string::npos);
+}
+
+// ── JointFeedforwardLogPod ──────────────────────────────────────────────────
+
+TEST(JointFeedforwardLogPod, IsTriviallyCopyable) {
+  EXPECT_TRUE(std::is_trivially_copyable_v<integrated_bringup::JointFeedforwardLogPod>);
+}
+
+TEST(JointFeedforwardLogPod, HeaderColumnsMatchRowAndNameTheJoints) {
+  const std::vector<std::string> joints = {"cmc_01_joint", "index_mcp_joint", "ring_mcp_joint"};
+  const auto cols = integrated_bringup::JointFeedforwardLogColumnsFor(joints);
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteJointFeedforwardLogHeader(hdr_os, joints, cols);
+  const std::string hdr = hdr_os.str();
+
+  integrated_bringup::JointFeedforwardLogPod pod{};
+  pod.t_relative_s = 1.25;
+  pod.tick = 77;
+  pod.readable = true;
+  pod.seeded = true;
+  pod.ff_enabled = true;
+  pod.ff_finite = true;
+  pod.model_fresh = true;
+  pod.held_ticks = 3;
+  pod.closure_error = 0.5;
+  pod.clamped_mask = 5;
+  pod.num_joints = 3;
+  pod.q = {0.25, 0.5, 0.75};
+  pod.q_ref = {1.25, 1.5, 1.75};
+  pod.g = {2.25, 2.5, 2.75};
+  pod.tau_ff = {3.25, 3.5, 3.75};
+  std::ostringstream row_os;
+  integrated_bringup::WriteJointFeedforwardLogRow(row_os, pod, cols);
+  const std::string row = row_os.str();
+
+  EXPECT_TRUE(HeaderRowAligned(hdr, row));
+  EXPECT_EQ(SplitCsv(hdr).front(), "t_relative_s");
+  EXPECT_EQ(ColumnValue(hdr, row, "tick"), "77");
+  EXPECT_EQ(ColumnValue(hdr, row, "ff_enabled"), "1");
+  EXPECT_EQ(ColumnValue(hdr, row, "estop"), "0");
+  EXPECT_EQ(ColumnValue(hdr, row, "held_ticks"), "3");
+  EXPECT_EQ(ColumnValue(hdr, row, "clamped_mask"), "5");
+  EXPECT_EQ(ColumnValue(hdr, row, "num_joints"), "3");
+  // The four per-joint blocks are named by the joint and ordered q, q_ref, g,
+  // tau_ff — a consumer (plot_rtc_log, analyze_hand_gravity_ff) addresses them
+  // by exactly these names.
+  EXPECT_EQ(ColumnValue(hdr, row, "q_index_mcp_joint"), "0.5");
+  EXPECT_EQ(ColumnValue(hdr, row, "q_ref_index_mcp_joint"), "1.5");
+  EXPECT_EQ(ColumnValue(hdr, row, "g_ring_mcp_joint"), "2.75");
+  EXPECT_EQ(ColumnValue(hdr, row, "tau_ff_cmc_01_joint"), "3.25");
+}
+
+TEST(JointFeedforwardLogPod, ShortRuntimeJointCountPadsRatherThanNarrowsTheRow) {
+  const std::vector<std::string> joints = NumberedJoints(4);
+  const auto cols = integrated_bringup::JointFeedforwardLogColumnsFor(joints);
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteJointFeedforwardLogHeader(hdr_os, joints, cols);
+  integrated_bringup::JointFeedforwardLogPod pod{};
+  pod.num_joints = 2;
+  pod.tau_ff = {0.25, 0.5, 9.0, 9.0};  // the tail holds data the row must not emit
+  std::ostringstream row_os;
+  integrated_bringup::WriteJointFeedforwardLogRow(row_os, pod, cols);
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row_os.str()));
+  EXPECT_EQ(ColumnValue(hdr_os.str(), row_os.str(), "tau_ff_" + joints[1]), "0.5");
+  EXPECT_EQ(ColumnValue(hdr_os.str(), row_os.str(), "tau_ff_" + joints[3]), "0");
+  EXPECT_EQ(ColumnValue(hdr_os.str(), row_os.str(), "num_joints"), "2");
+}
+
+TEST(JointFeedforwardLogPod, AGroupWiderThanTheCapacityTruncatesToIt) {
+  const std::vector<std::string> joints =
+      NumberedJoints(integrated_bringup::JointFeedforwardLogPod::kMaxJoints + 3);
+  const auto cols = integrated_bringup::JointFeedforwardLogColumnsFor(joints);
+  EXPECT_EQ(cols.joints, integrated_bringup::JointFeedforwardLogPod::kMaxJoints);
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteJointFeedforwardLogHeader(hdr_os, joints, cols);
+  integrated_bringup::JointFeedforwardLogPod pod{};
+  pod.num_joints =
+      static_cast<std::uint8_t>(integrated_bringup::JointFeedforwardLogPod::kMaxJoints);
+  std::ostringstream row_os;
+  integrated_bringup::WriteJointFeedforwardLogRow(row_os, pod, cols);
+  EXPECT_TRUE(HeaderRowAligned(hdr_os.str(), row_os.str()));
 }
 
 // ── WbcDiagLogPod ──────────────────────────────────────────────────────────

@@ -34,12 +34,14 @@ from ament_index_python.packages import get_package_share_directory
 LAUNCH_FILES = [
     "robot_ur5e_p1a.launch.py",
     "robot_ur5e_p1b.launch.py",
+    "robot_p2.launch.py",
     "sim_ur5e_p1a.launch.py",
     "sim_ur5e_p1b.launch.py",
     "sim_iiwa7_leap.launch.py",
     "sim_g1_p1b.launch.py",
     "sim_g1_loco.launch.py",
     "sim_b7_loco.launch.py",
+    "sim_p2.launch.py",
 ]
 
 

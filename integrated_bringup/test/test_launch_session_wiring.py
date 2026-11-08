@@ -63,6 +63,7 @@ SIM_LAUNCH_FILES = [
     "sim_g1_p1b.launch.py",
     "sim_g1_loco.launch.py",
     "sim_b7_loco.launch.py",
+    "sim_p2.launch.py",
 ]
 ROBOT_LAUNCH_FILES = [
     "robot_ur5e_p1a.launch.py",

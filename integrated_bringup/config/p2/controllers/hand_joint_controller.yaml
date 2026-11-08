@@ -1,0 +1,61 @@
+# HandJointController — p2 (proto2 right hand on its own, fingers up)
+#
+# Joint goals follow a quintic from the current reference; every tick the
+# command is `pd_feedforward`: the reference as the position target plus the
+# model's gravity torque as the feedforward (N·m, device joint order). The
+# device's PD (simulator <position> servo at the low gains of
+# mujoco_simulator.yaml; the firmware's PD on the hardware) carries the error,
+# the feedforward carries the weight. Columns of the per-tick record are in
+# docs/controller-logs.md (joint_ff.csv).
+hand_joint_controller:
+  # ── Trajectory generation ─────────────────────────────────────────────────
+  # Quintic rest-to-rest. Duration = max joint distance / speed, extended
+  # until the peak velocity (15/8 × Δq / T) is within max_traj_velocity.
+  trajectory_speed: 1.0       # rad/s, > 0 — half the finger motors' 2 rad/s rating
+  max_traj_velocity: 2.0      # rad/s — the finger motors' rating (read-only parameter)
+
+  # ── Feedforward torque lane ──────────────────────────────────────────────
+  # τ_ff = clamp(gain · g_a(q_meas), ±min(max_abs, devices.p2_right max_torque)).
+  #   enabled  — runtime parameter `gravity_ff.enabled`; false sends 0 N·m with
+  #              the command type unchanged (the A/B switch of the sim gate —
+  #              switching the command type would let the simulator re-enable
+  #              its own gravity compensation and change the plant).
+  #   gain     — runtime parameter `gravity_ff.gain`, [0, 2]. 1 = the model.
+  #   max_abs  — REQUIRED bound, N·m. The model's largest gravity torque on
+  #              this hand is ≈ 0.08 N·m (cmc_01 / cmc_02 at the mid pose,
+  #              fingers up); 0.15 leaves room for gain tuning and is 0.27 A
+  #              at the firmware's 0.55 N·m/A — well inside the motors.
+  gravity_ff:
+    enabled: true
+    gain: 1.0
+    max_abs: 0.15
+
+  # ‖φ‖ (m) above which a closed-chain projection is not trusted for the
+  # fingertip FK (the torque hold follows the projection's own held/singular).
+  closure_error_threshold: 0.001
+
+  # The only lane this controller speaks. Anything else is refused.
+  command_type: "pd_feedforward"
+
+  # ── Topics ────────────────────────────────────────────────────────────────
+  # One group. The controller's LifecycleNode lives under /hand_joint_controller/.
+  topics:
+    p2_right:
+      subscribe:
+        - topic: "p2_right/joint_goal"
+          role: "target"
+      publish:
+        # One TF publisher per controller. Frames (parent `palm`):
+        #   <finger>_virtual_axis_actual × 4 — the fingertips, closed-chain FK
+        - topic: "transforms"
+          role: "robot_transforms"
+
+  # ── Controller-owned CSV logs ─────────────────────────────────────────────
+  # p2_right_state: the generic per-device state file. joint_ff: this
+  # controller's per-tick feedforward record (q, q_ref, g, tau_ff per joint +
+  # the projection status) — what analyze_hand_gravity_ff judges.
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p2_right_state
+    - msg_type: integrated_bringup/JointFeedforwardLog
+      instance: joint_ff

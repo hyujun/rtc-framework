@@ -90,6 +90,9 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/dualarm/compute.cpp
   src/controllers/dualarm/lifecycle.cpp
   src/controllers/dualarm/parameters.cpp
+  src/controllers/hand_joint/controller.cpp
+  src/controllers/hand_joint/lifecycle.cpp
+  src/controllers/hand_joint/parameters.cpp
   src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
   src/support/pull_estimator_wiring.cpp
@@ -1383,6 +1386,64 @@ if(BUILD_TESTING)
   # false-positive -Wmismatched-new-delete program-wide (alloc_gate.hpp item 2).
   target_compile_options(test_demo_dualarm_alloc PRIVATE -Wno-mismatched-new-delete)
 
+  # HandJointController: one hand, joint goals + the model's feedforward
+  # torque. The closed-chain rig is robot_descriptions' p1b_surrogate hand on
+  # its own (hand-only sidecar), the plain rig rtc_urdf_bridge's tree_hand.urdf;
+  # the oracle is the potential-energy gradient on loop-consistent
+  # configurations. The lifecycle cases run on_configure on a real
+  # LifecycleNode, hence the domain.
+  ament_add_gtest(test_hand_joint_controller
+    test/test_hand_joint_controller.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52)
+  target_include_directories(test_hand_joint_controller PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_compile_definitions(test_hand_joint_controller PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_hand_joint_controller
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_hand_joint_controller
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # HandJointController's allocation gate (RT-1). Own binary: it defines the
+  # global operator new (alloc_gate.hpp) AND the C malloc family (rtc_base's
+  # malloc_gate.hpp) — each is one TU per executable. No node, so no domain.
+  ament_add_gtest(test_hand_joint_alloc test/test_hand_joint_alloc.cpp
+    TIMEOUT 120)
+  target_include_directories(test_hand_joint_alloc PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  rtc_base_add_test_includes(test_hand_joint_alloc)
+  target_link_libraries(test_hand_joint_alloc
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_hand_joint_alloc
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+  target_compile_options(test_hand_joint_alloc PRIVATE -Wno-mismatched-new-delete)
+
   # Hand fingertip FK wiring (#685): the device's joint order on the serial
   # hand handle and the constant arm tip → hand root mount, as
   # support/hand_fk_wiring resolves them (synthetic fixture, reached through the
@@ -2111,6 +2172,7 @@ if(BUILD_TESTING)
     test_joint_tree_primary_group
     test_joint_three_groups
     test_demo_dualarm_controller
+    test_hand_joint_controller
     test_hand_fk_wiring
     test_arm_tip_resolution
     test_hand_sensor_layout_gate

@@ -1,0 +1,36 @@
+# p2/sim.yaml — MuJoCo-simulation delta (overlaid on _base.yaml)
+# Used by sim_p2.launch.py. Loaded AFTER _base.yaml, which holds the
+# mode-agnostic config (model, roster, limits, control_rate, logging). This
+# file owns only what a simulation run adds: the MuJoCo backend + sim topics,
+# sim-time sync, relaxed E-STOP/timeouts, and the startup controller.
+/**:
+  ros__parameters:
+    # ── Initial controller ────────────────────────────────────────────────────
+    # The only controller this profile ships: joint goals + the model's
+    # feedforward torque, sent as `pd_feedforward`. The simulator's position
+    # servos (mujoco_simulator.yaml servo_kp/kd, deliberately LOW) carry the
+    # error; the feedforward carries the weight. The simulator turns the
+    # group's own gravity compensation OFF on the first such command, so what
+    # holds the fingers up is this controller's torque — which is the point.
+    initial_controller: "hand_joint_controller"
+
+    # ── Initialization timeout ────────────────────────────────────────────────
+    init_timeout_sec: 0.0 # s. 0 = disabled (no real hardware init in sim)
+
+    # ── Simulation sync ──────────────────────────────────────────────────────
+    use_sim_time_sync: true       # CV-based wakeup (sim); false = clock_nanosleep (real)
+    sim_sync_timeout_sec: 5.0     # s. Shut down if no state arrives within this
+
+    # ── E-STOP configuration (relaxed for simulation) ────────────────────────
+    enable_estop: false # Disabled for simulation
+    device_timeout_values: [10000.0] # ms, device_timeout_names order — relaxed for sim startup
+
+    # ── Device backend (MuJoCo bridge) ────────────────────────────────────────
+    # Topics are the proto2 driver's layout for one hand under namespace ""
+    # (/p2/right/...), so robot.yaml swaps the backend type and keeps the names.
+    devices:
+      p2_right:
+        backend:
+          type: "mujoco_native"
+          state_topic: "/p2/right/joint_states"
+          command_topic: "/p2/right/joint_command"

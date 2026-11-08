@@ -16,9 +16,9 @@ GUI 시작 시:
 
 **switchable ≠ tunable.** 라디오 집합은 `GAIN_DEFS` 키 (= GUI 에 게인 패널이 있는 컨트롤러) 에 `RobotProfile.extra_switchable_controllers` 를 더한 것입니다 (`RobotProfile.switchable_controllers()`). 두 축이 갈라진 이유는 `demo_inference_controller` 입니다 — 전환은 되지만 ROS 파라미터를 하나도 선언하지 않아 튜닝할 게 없습니다.
 
-필터가 **catalog 가 아니라 프로파일**에서 오는 것이 핵심입니다: CM 은 등록된 컨트롤러를 로봇과 무관하게 인스턴스화하고, 로봇마다 다른 것은 *어느 컨트롤러가 config YAML 을 갖는가* 이며, 그래서 그 사실은 `discovery.py` 의 프로파일에 있습니다. `demo_inference_controller` 는 `config/ur5e_p1b/controllers/` 에만 YAML 이 있으므로 **`--robot ur5e_p1b` 에서만** 라디오에 뜹니다 (`test_robot_profiles.py` 가 설치된 config 트리와 양방향 대조).
+필터가 **catalog 가 아니라 프로파일**에서 오는 것이 핵심입니다: CM 은 등록된 컨트롤러를 로봇과 무관하게 인스턴스화하고, 로봇마다 다른 것은 *어느 컨트롤러가 config YAML 을 갖는가* 이며, 그래서 그 사실은 `discovery.py` 의 프로파일에 있습니다. `demo_inference_controller` 는 `config/ur5e_p1b/controllers/` 에만 YAML 이 있으므로 **`--robot ur5e_p1b` 에서만** 라디오에 뜹니다 (`test_robot_profiles.py` 가 설치된 config 트리와 양방향 대조). 같은 이유로 `hand_joint_controller` 는 `config/p2/controllers/` 에만 YAML 이 있어 **`--robot p2` 에서만** 뜹니다 ([손 전용 프로파일](#손-전용-프로파일-hand_joint_controller---robot-p2)).
 
-**예외 하나 — `/rtc_cm/list_controllers` 응답이 세 프로파일에서 동일하지는 않습니다.** `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 로 등록된 컨트롤러 (`demo_joint_controller` 를 뺀 전부 — `demo_task` · `demo_wbc` · `demo_compliance` · `demo_inference` · `demo_catching` · `demo_dualarm`) 는 그 프로파일에 YAML 이 없으면 **인스턴스화되지 않고**, 따라서 목록에도 없습니다. 기본값으로 돌 수 없는 컨트롤러이기 때문입니다. 이유는 셋입니다: 정책 파일 경로도 IO 스키마도 없이 기본값으로 도는 정책 컨트롤러는 의미가 없고 (`demo_inference` · `demo_catching`), 과제 frame · 자세군의 관절 이름이 로봇마다 달라 기본값이 있을 수 없고 (`demo_dualarm` — 지금은 `g1_p1b` 만 싣습니다), 팔을 **사슬 하나** (`urdf.sub_models`) 로 전제하는 컨트롤러는 첫 device group 이 tree 인 로봇 (`g1_p1b`) 에서 모델을 만들지 못합니다 (`demo_task` · `demo_wbc` · `demo_compliance`). 그렇다고 bring-up 을 거부하면 그 로봇의 **나머지 컨트롤러까지** 못 뜹니다 (실제로 `ur5e_p1a`·`iiwa7_leap` 이 `demo_inference` 때문에 그 상태였습니다). `demo_joint_controller` 만 종전대로 YAML 이 없으면 내장 기본값으로 돕니다. 게이트는 `test_registered_controllers_have_shipped_config.cpp`.
+**예외 하나 — `/rtc_cm/list_controllers` 응답이 세 프로파일에서 동일하지는 않습니다.** `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 로 등록된 컨트롤러 (지금은 전부 — `demo_joint` 도 손 하나뿐인 `p2` 프로파일이 생기면서 그렇게 됐다) 는 그 프로파일에 YAML 이 없으면 **인스턴스화되지 않고**, 따라서 목록에도 없습니다. 기본값으로 돌 수 없는 컨트롤러이기 때문입니다. 이유는 셋입니다: 정책 파일 경로도 IO 스키마도 없이 기본값으로 도는 정책 컨트롤러는 의미가 없고 (`demo_inference` · `demo_catching`), 과제 frame · 자세군의 관절 이름이 로봇마다 달라 기본값이 있을 수 없고 (`demo_dualarm` — 지금은 `g1_p1b` 만 싣습니다), 팔을 **사슬 하나** (`urdf.sub_models`) 로 전제하는 컨트롤러는 첫 device group 이 tree 인 로봇 (`g1_p1b`) 에서 모델을 만들지 못합니다 (`demo_task` · `demo_wbc` · `demo_compliance`). 그렇다고 bring-up 을 거부하면 그 로봇의 **나머지 컨트롤러까지** 못 뜹니다 (실제로 `ur5e_p1a`·`iiwa7_leap` 이 `demo_inference` 때문에 그 상태였습니다). `demo_joint_controller` 는 몸통 군 (`arm_dof` · `estop.arm_safe_position`) 이 있어야 뜨므로 손 하나뿐인 `p2` 에는 싣지 않고, 그 밖의 모든 프로파일이 싣습니다. 게이트는 `test_registered_controllers_have_shipped_config.cpp`.
 
 preset combo 는 라디오 집합에서 **목표를 받지 않는 컨트롤러를 뺀** 것입니다 — preset 은 robot target 을 저장하는데, `joint_goal` 을 구독하지 않는 컨트롤러 앞으로 저장된 preset 은 재생할 곳이 없습니다.
 
@@ -115,6 +115,18 @@ phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC pub
 - **자세 · 손 목표**는 Control 탭 그대로입니다: `Joint Target` 이 첫 군의 관절 전부 (limb 마다 한 열), `Hand Motor Target` 이 손 관절 전부를 싣고 `Send Command` 가 둘을 보냅니다. Control 탭의 `Task Target` 은 이 컨트롤러에서 꺼져 있습니다 (군 토픽의 task 목표는 컨트롤러가 거부합니다).
 
 
+## 손 전용 프로파일 (`hand_joint_controller`, `--robot p2`)
+
+proto2 손 하나가 bringup 의 전부인 프로파일입니다 — device group 은 `p2_right` 하나이고 팔이 없습니다 (`RobotShape.default_p2()`, `arm_dof == 0`). 이 bringup 이 싣는 컨트롤러는 `hand_joint_controller` 뿐이며, 나머지 radio 는 catalog 가 오면 사라집니다 (그 프로파일에 YAML 이 없는 컨트롤러는 인스턴스화되지 않습니다).
+
+- **topic 은 손 하나로 모입니다.** GUI 는 (arm, hand) 두 토큰으로 토픽을 만드는데 이 프로파일은 둘 다 `p2_right` 라 (`RobotProfile.arm_group` 이 비면 `/<ctrl>//joint_goal` 이 됩니다) 목표는 `/hand_joint_controller/p2_right/joint_goal`, 상태는 `/rtc_cm/p2_right/joint_states` 입니다. `Send Command` 와 preset 은 **손 절반만** 보내고 robot 절반은 건너뜁니다 — 빈 `RobotTarget` 이 손 토픽으로 나가지 않게 (`app.py` 의 `arm_dof == 0` 가드).
+- **Control 탭**: `Joint Target` · `Joint Positions` 는 행이 없는 빈 열이고 `Task Target` 은 꺼져 있습니다. `Hand Motor Target` 이 `config/p2/_base.yaml` `p2_right.joint_state_names` 순서의 열 개 (Thumb 4 · Index 3 · Middle 2 · Ring 1) 를 싣습니다 — 이름은 `cmc_01_joint` 처럼 접두사 없는 손 description 의 것이며 `b7_loco` 의 `right_*` roster 와 다릅니다.
+- **Gains 패널은 비어 있습니다.** 이 컨트롤러는 `GAIN_DEFS` 에 없고 (`RobotProfile.extra_switchable_controllers` 로만 radio 에 오릅니다), 런타임 파라미터 `trajectory_speed` · `gravity_ff.enabled` · `gravity_ff.gain` 은 `ros2 param set /hand_joint_controller/hand_joint_controller …` 로 바꿉니다. `Virtual TCP` 패널도 비활성입니다.
+- **End-Effector Pose** 는 컨트롤러가 `/hand_joint_controller/transforms` 로 보내는 `palm → index_virtual_axis_actual` 입니다 (`tcp_parent`/`tcp_child`; 엄지 · 중지 · 약지의 `*_virtual_axis_actual` 도 같은 메시지에 실리지만 readout 은 검지 하나를 따릅니다).
+- **Grasp 탭**의 `▶ Grasp` / `■ Release` 는 꺼집니다 — `grasp_command` 서비스가 없습니다 (`config.py` `NO_GRASP_COMMAND_CONTROLLERS`).
+- **preset · 단축키 설정 파일**은 `hand_presets_p2.json` · `demo_gui_settings_p2.json` 입니다 (`preset_scope="p2"`; hand group 토큰 `p2_right` 는 `b7_loco` 와 같아 이름을 나눕니다). preset 은 **`Include robot` 을 끄고** 저장하세요: 컨트롤러 이름이 든 preset 은 `GAIN_DEFS` 에 있는 컨트롤러만 단축키 토글의 사전 조건을 통과하므로, `hand_joint_controller` 를 적은 preset 은 `Send Preset` 으로는 손 목표가 나가지만 토글에서는 `unknown controller` 로 보류됩니다.
+
+
 ## 기타 기능
 
 
@@ -123,4 +135,4 @@ phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC pub
 - E-STOP 상태 (`/system/estop_status`), 실시간 TCP/관절 위치 표시
 - 헤더의 **Clear E-STOP** / **Reset fault** (S9a) — 모든 탭 공용. Clear E-STOP 은 두 번 부른다: 빈 `reason_ack` 로 `/rtc_cm/clear_estop` 의 거부 메시지에서 latch 사유를 읽어 보여주고, 운영자가 확인하면 그 사유를 그대로 echo 한다 (사유는 어느 토픽에도 없다; 읽을 수 없는 응답이면 추측하지 않고 멈춘다). Reset fault 는 활성 컨트롤러의 `Name()` (`list_controllers` 의 `name`, config key 아님) 으로 `/rtc_cm/reset_fault` 를 부른다. 둘 다 응답을 그대로 표시하며 다른 latch 가 남았다는 문구가 있으면 경고색이다. 어느 것도 무장을 되살리지 않는다 — 구현 [demo_gui/latch_clear.py](../integrated_bringup/demo_gui/latch_clear.py)
 - 핸드 자세 프리셋 저장/로드 (JSON)
-- 센서 캘리브레이션 (`/<hand_group>/calibration/command` — `--robot` 프로파일의 hand group 으로 파생: p1a→`/p1a/`, p1b→`/p1b/`)
+- 센서 캘리브레이션 (`/<hand_group>/calibration/command` — `--robot` 프로파일의 hand group 으로 파생: p1a→`/p1a/`, p1b→`/p1b/`, p2→`/p2_right/`)

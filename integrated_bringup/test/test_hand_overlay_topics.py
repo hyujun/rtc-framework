@@ -37,6 +37,7 @@ from ament_index_python.packages import get_package_share_directory
 OVERLAYS = {
     "ur5e_p1a": "udp_hand_node_p1a.yaml",
     "ur5e_p1b": "udp_hand_node_p1b.yaml",
+    "p2": "udp_hand_node_p2.yaml",
 }
 
 # Profile → hand config run through udp_hand.launch.py params_file with namespace:=.

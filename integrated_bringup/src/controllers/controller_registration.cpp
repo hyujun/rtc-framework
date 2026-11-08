@@ -11,13 +11,20 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
+#include "integrated_bringup/controllers/hand_joint_controller.hpp"
 #include "rtc_controller_interface/controller_registry.hpp"
 #include "rtc_inference/onnx/onnx_engine.hpp"
 
 #include <memory>
 
-RTC_REGISTER_CONTROLLER(demo_joint_controller, "", "integrated_bringup",
-                        std::make_unique<integrated_bringup::DemoJointController>(urdf))
+// REQUIRING_CONFIG since the hand-only profile (p2): demo_joint_controller
+// requires a body group (`arm_dof`, `estop.arm_safe_position`) and a robot
+// that is ONE hand has none to give it. Every other profile still ships its
+// YAML and is instantiated exactly as before; on p2 "no YAML" means "this
+// robot does not run it", the same contract as every other entry here.
+RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
+    demo_joint_controller, "", "integrated_bringup",
+    std::make_unique<integrated_bringup::DemoJointController>(urdf))
 
 // REQUIRING_CONFIG for the three arm-chain controllers below (task / wbc /
 // compliance). Each builds its arm model as ONE serial chain — the
@@ -31,8 +38,6 @@ RTC_REGISTER_CONTROLLER(demo_joint_controller, "", "integrated_bringup",
 // demo_joint_controller down with it. With the flag, "this profile ships no
 // YAML for it" means "this robot does not run it". Nothing changes for the
 // profiles that do ship the YAML: they are instantiated exactly as before.
-// (demo_joint_controller stays plain: every profile ships its YAML, and it is
-// the one controller a new robot is brought up on.)
 RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(demo_task_controller, "", "integrated_bringup",
                                          std::make_unique<integrated_bringup::DemoTaskController>(
                                              urdf, integrated_bringup::DemoTaskController::Gains{}))
@@ -85,3 +90,12 @@ RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
 RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
     demo_dualarm_controller, "", "integrated_bringup",
     std::make_unique<integrated_bringup::DemoDualArmController>(urdf))
+
+// One hand on its own: joint goals + a feedforward torque from the hand's
+// dynamic model (pd_feedforward). REQUIRING_CONFIG: its model is the tree
+// model named after its single device group and its torque bound has no
+// default, so a profile that ships no YAML for it does not run it (today only
+// the hand-only p2 profile does).
+RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
+    hand_joint_controller, "", "integrated_bringup",
+    std::make_unique<integrated_bringup::HandJointController>(urdf))

@@ -1,0 +1,85 @@
+# p2/udp_hand_node_p2.yaml -- proto2 (CAN FD) 오른손 단독 드라이버 설정
+#
+# robot_p2.launch.py 가 udp_hand_node 를 namespace="" 로 띄우며 넘기는 overlay 다
+# (ur5e_p1{a,b} 의 udp_hand_node_p1{a,b}.yaml 과 같은 방식). 그래서 토픽은 전부
+# **절대 이름** `/p2/right/...` 로 적는다 — _base.yaml / robot.yaml / sim.yaml 의
+# 토픽과 같아 sim 과 실기가 같은 컨트롤러 설정을 쓴다. 두 손짜리
+# config/b7_p2/udp_hand_node_p2.yaml 은 udp_hand.launch.py `namespace:=/p2` 로
+# 띄우는 상대 토픽 파일이라 여기와 다르고, 이 파일은 그 launch 로 띄우지 않는다
+# (한 손이라 절대 per-hand 토픽을 configure 가 받는다).
+#
+# 생략한 키 (노드 C++ 기본값): 모터 · 핑거팁 이름, UDP 전용 키 (target_ip 등),
+# baro/tof LPF · drift · fake_* (1a / loopmodel 전용), hand_cpu_slot · aux_cpu_slot
+# (robot launch 가 tier 표에서 넘긴다).
+/**:
+  ros__parameters:
+    # -- SIL mode --
+    # off=실 HW / loopmodel=in-process LPF / firmware=vcan0 의 fake_hand_firmware
+    # (robot_p2.launch.py 가 띄운다; vcan0 은 repo_scripts/scripts/setup_vcan.sh).
+    # launch 의 sil_mode:= 가 이 값을 이긴다.
+    sil_mode: "off"
+
+    # -- 프로토콜 --
+    protocol_version: "2"             # CAN FD. 반드시 따옴표 — 정수 2 는 선언에서 예외
+    communication_mode: "bulk"        # "2" 는 bulk 전용
+
+    # -- CAN FD 링크 (한 손) --
+    can_interface: "can1"             # 네이티브 CAN (Jetson Thor mttcan). sil_mode=firmware 는 vcan0 강제
+    hand_sides: ["right"]             # 손 하나 — 목록 모드지만 per-hand 토픽을 절대 이름으로 둘 수 있다
+    cmd_ack: "none"                   # 현 펌웨어 (PDO 형, echo 없음)
+    req_mode: "auto"                  # 한 손 → per_hand
+
+    # -- 수신 마감 · 루프 주기 (config/b7_p2 와 같은 실측값) --
+    broadcast_tail_guard_ms: 0.05
+    recv_timeout_ms: 0.9
+    loop_rate_hz: 500.0               # = _base.yaml control_rate
+    publish_rate: 100.0
+    comm_decimation: 1
+    sensor_decimation: 1
+
+    # -- 토픽 (절대 이름, namespace "") --
+    command_topic: "/p2/right/joint_command"
+    joint_state_topic: "/p2/right/joint_states"
+    motor_state_topic: "/p2/right/motor_states"
+    sensor_topic: "/p2/right/sensor_states"
+    link_status_topic: "/p2/right/link_status"
+    estop_topic: "/p2/estop"
+    calibration_command_topic: "/p2/right/calibration/command"
+    calibration_status_topic: "/p2/right/calibration/status"
+
+    # -- 모터 토크 상수 [Nm/A] (펌웨어 모터 순서 10개; 펌웨어 작성자 제공값) --
+    # JointCommand.feedforward (N·m) 를 전류로 바꾸는 상수. hand_joint_controller 의
+    # gravity_ff.max_abs 0.15 N·m 는 0.27 A 다.
+    feedforward_kt: [0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55]
+
+    # -- 관절 이름 · offset · 부호 (펌웨어 모터 slot 0..9 순서 = _base.yaml joint_state_names) --
+    # 이름은 손 URDF (robots/proto2) 의 접두 없는 관절 이름이다 — config/b7_p2 의 `right_*`
+    # 는 전신 모델의 것이라 여기서 쓰지 않는다. joint_command 의 joint_names 도 이 이름이다.
+    joint_state_names:
+      - "cmc_01_joint"
+      - "cmc_02_joint"
+      - "thumb_mcp_joint"
+      - "thumb_pip_link02_joint"
+      - "index_mcp_rotate_joint"
+      - "index_mcp_joint"
+      - "index_pip_joint"
+      - "middle_mcp_joint"
+      - "middle_pip_joint"
+      - "ring_mcp_joint"
+    # 수신 sign·pos + offset, 송신 sign·(cmd − offset), feedforward sign·ff. 실기 보정 전 초기값:
+    # offset 0, 부호 +1. 확정 절차는 integrated_bringup/docs/hand-joint-controller.md 의 실기 절.
+    joint_position_offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    joint_direction_signs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+    # -- Failure Detector (50Hz non-RT jthread) --
+    enable_failure_detector: true
+    failure_threshold: 5
+    check_motor: true
+    check_sensor: true
+    min_rate_hz: 30.0
+    rate_fail_threshold: 5
+    check_link: true
+    link_fail_timeout_ms: 100.0
+    startup_grace_ms: 1000.0
+    link_startup_grace_ms: 100.0
+    sensor_startup_grace_ms: 0.0
