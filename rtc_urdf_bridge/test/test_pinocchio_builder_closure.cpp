@@ -1,10 +1,13 @@
 // ── test_pinocchio_builder_closure — Extended-URDF sidecar 를 PinocchioModelBuilder
 //    경로로 로드 (ModelConfig::closure_yaml_path). CM 이 bring-up 시 밟는 경로. ──────
+#include "rtc_urdf_bridge/loop_verification.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 #include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
+
+#include <vector>
 
 namespace rub = rtc_urdf_bridge;
 using rtc::test::TestUrdfPath;
@@ -43,8 +46,10 @@ TEST(PinocchioBuilderClosure, ExtendedUrdfPopulatesClosure) {
   ASSERT_NE(full, nullptr);
   EXPECT_EQ(builder.GetClosureReferenceConfig().size(), full->nq);
 
-  // four_bar 는 nominal 조립 상태로 설계 → projection 수렴하지만, neutral 근방 평면
-  // 4-bar 는 대칭 특이형상이라 singular 로 표시된다 (converged 와 singular 는 별개 신호).
+  // four_bar 는 nominal 조립 상태로 설계 → projection 수렴하지만, q_ref 에서 passive 열
+  // Jc_D 가 column rank 를 잃는 조립 특이라 singular 로 표시된다 (converged 와 singular 는
+  // 별개 신호). 평면 loop 의 구속 중복 (행 결손) 은 singular 에 포함되지 않는다 —
+  // PlanarRedundantLoopIsNotSingular.
   // converged=true ⇒ acceptable=true (#250 — strict 충족은 항상 수용).
   EXPECT_TRUE(builder.IsClosureReferenceConverged());
   EXPECT_TRUE(builder.IsClosureReferenceAcceptable());
@@ -167,6 +172,21 @@ TEST(PinocchioBuilderClosure, PlainUrdfLeavesClosureEmpty) {
   EXPECT_GT(full->nq, 0);
 }
 
+// ── 구속 중복 ≠ 조립 특이 (빌더 경로): 순수 평면 4-bar 의 contact_3d 는 축방향 행이 항등 0
+//    이라 Jc 행 rank 가 결손이지만 passive 열은 full rank → IsClosureReferenceSingular 는
+//    false. 행 rank 판정은 이 모델 (평면 loop 전부가 해당) 을 특이로 오판했다. ────────────
+TEST(PinocchioBuilderClosure, PlanarRedundantLoopIsNotSingular) {
+  rub::ModelConfig cfg;
+  cfg.urdf_path = TestUrdfPath("planar_four_bar_tree.urdf");
+  cfg.closure_yaml_path = TestUrdfPath("planar_four_bar_tree.closure.yaml");
+  const rub::PinocchioModelBuilder builder(cfg);
+
+  ASSERT_EQ(builder.GetConstraintModels().size(), 1u);
+  EXPECT_TRUE(builder.IsClosureReferenceConverged());
+  EXPECT_TRUE(builder.IsClosureReferenceAcceptable());
+  EXPECT_FALSE(builder.IsClosureReferenceSingular());
+}
+
 // ── 사용자 시나리오: arm + hand 를 xacro 로 병합해도 standalone hand 의 closure
 //    sidecar 가 병합 모델에서 resolve 되어 constraint 가 build 되는가. ──────────────
 TEST(PinocchioBuilderClosure, CombinedXacroResolvesHandClosure) {
@@ -203,4 +223,34 @@ TEST(PinocchioBuilderClosure, CombinedXacroResolvesHandClosure) {
   EXPECT_TRUE(builder.IsClosureReferenceConverged());
   EXPECT_TRUE(builder.IsClosureReferenceAcceptable());
   EXPECT_TRUE(builder.IsClosureReferenceSingular());
+}
+
+// ── loop-passive 집합은 loop 멤버만: 두 끝의 공통 조상 (arm_joint — floating root 와 같은 역할)
+//    은 Jc 열이 0 이라 passive 로 세지 않는다 (세면 dep > rows 로 모든 병합·floating 모델이
+//    특이가 된다). actuated 를 loop 밖 관절로 주면 loop DoF 4 > rows 3 → 구조적 singular.
+TEST(PinocchioBuilderClosure, CombinedModelCountsOnlyLoopMembersAsPassive) {
+  const rub::PinocchioModelBuilder builder(CombinedArmHandConfig());
+  const auto full = builder.GetFullModel();
+  ASSERT_NE(full, nullptr);
+  pinocchio::Data data(*full);
+  const Eigen::VectorXd& q_ref = builder.GetClosureReferenceConfig();
+
+  // sidecar actuated (joint_a): passive = joint_ab, joint_c, joint_cd — arm_joint 제외.
+  const rub::JacobianReport rep = rub::AnalyzeConstraintJacobian(
+      *full, data, builder.GetConstraintModels(), q_ref, builder.GetClosureActuatedJointIds());
+  EXPECT_EQ(rep.rows, 3);
+  EXPECT_EQ(rep.passive_cols, 3);
+  EXPECT_TRUE(rep.reduction_singular);  // four_bar 고유 (joint_cd 자유 passive)
+  EXPECT_EQ(rep.passive_cols,
+            static_cast<int>(rub::LoopPassiveVelocityIndices(*full, builder.GetConstraintModels(),
+                                                             builder.GetClosureActuatedJointIds())
+                                 .size()));
+
+  // loop 밖 관절만 actuated: loop 의 4 DoF 전부 passive → dep > rows, σ 0 sentinel.
+  const std::vector<pinocchio::JointIndex> arm_only{full->getJointId("arm_joint")};
+  const rub::JacobianReport rep_arm =
+      rub::AnalyzeConstraintJacobian(*full, data, builder.GetConstraintModels(), q_ref, arm_only);
+  EXPECT_EQ(rep_arm.passive_cols, 4);
+  EXPECT_EQ(rep_arm.sigma_min_reduction, 0.0);
+  EXPECT_TRUE(rep_arm.reduction_singular);
 }

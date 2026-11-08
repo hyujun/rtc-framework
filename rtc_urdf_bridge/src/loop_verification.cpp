@@ -16,8 +16,11 @@
 #include <Eigen/Dense>
 
 #include <algorithm>
+#include <cstddef>
+#include <iterator>
 #include <limits>
 #include <span>
+#include <vector>
 
 namespace rtc_urdf_bridge {
 
@@ -165,9 +168,51 @@ std::vector<ClosureError> ComputeClosureErrors(
   return errors;
 }
 
+std::vector<int> LoopPassiveVelocityIndices(
+    const pinocchio::Model& model, const std::vector<pinocchio::RigidConstraintModel>& constraints,
+    std::span<const pinocchio::JointIndex> actuated_joint_ids) {
+  // loop 멤버 = 어떤 constraint 의 두 끝 사이 경로 위 관절 (support 대칭차; supports 는 universe
+  // 부터 오름차순). 공통 조상은 두 끝을 같이 움직여 Jc 열이 0 — loop 가 결정하는 DoF 가 아니다.
+  std::vector<bool> member(static_cast<std::size_t>(model.njoints), false);
+  for (const auto& cm : constraints) {
+    const auto& s1 = model.supports[cm.joint1_id];
+    const auto& s2 = model.supports[cm.joint2_id];
+    std::vector<pinocchio::JointIndex> path;
+    std::set_symmetric_difference(s1.begin(), s1.end(), s2.begin(), s2.end(),
+                                  std::back_inserter(path));
+    for (const auto jid : path) {
+      member[static_cast<std::size_t>(jid)] = true;
+    }
+  }
+  std::vector<int> passive_v;
+  for (int jid = 1; jid < model.njoints; ++jid) {  // jid 오름차순 ⇒ idx_vs 오름차순
+    const auto jidx = static_cast<std::size_t>(jid);
+    if (!member[jidx] || model.nvs[jidx] == 0) {
+      continue;
+    }
+    const bool is_actuated =
+        std::find(actuated_joint_ids.begin(), actuated_joint_ids.end(),
+                  static_cast<pinocchio::JointIndex>(jid)) != actuated_joint_ids.end();
+    if (is_actuated) {
+      continue;
+    }
+    for (int k = 0; k < model.nvs[jidx]; ++k) {
+      passive_v.push_back(model.idx_vs[jidx] + k);
+    }
+  }
+  return passive_v;
+}
+
 JacobianReport AnalyzeConstraintJacobian(
     const pinocchio::Model& model, pinocchio::Data& data,
     const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q) {
+  return AnalyzeConstraintJacobian(model, data, constraints, q, {});
+}
+
+JacobianReport AnalyzeConstraintJacobian(
+    const pinocchio::Model& model, pinocchio::Data& data,
+    const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q,
+    std::span<const pinocchio::JointIndex> actuated_joint_ids) {
   const ConstraintKinematics kin = ComputeConstraintKinematics(model, data, constraints, q);
 
   JacobianReport report;
@@ -178,13 +223,36 @@ JacobianReport AnalyzeConstraintJacobian(
     return report;
   }
 
-  // rank + 최소 특이값
+  // 행 rank (SVD 상대 임계) · 최소 특이값 · 구속 중복 행 수.
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(kin.Jc);
   const Eigen::VectorXd sv = svd.singularValues();
   report.smallest_singular_value = sv.size() > 0 ? sv(sv.size() - 1) : 0.0;
-  Eigen::FullPivLU<Eigen::MatrixXd> lu(kin.Jc);
-  report.rank = static_cast<int>(lu.rank());
+  if (sv.size() > 0 && sv(0) > 0.0) {
+    report.rank = static_cast<int>((sv.array() > kJacobianRankRelTol * sv(0)).count());
+  }
   report.full_rank = report.rank == report.rows;
+  report.redundant_rows = report.rows - report.rank;
+
+  // 열 판정: loop-passive 열 Jc_D 의 σ_min. actuated 가 비면 passive 집합이 정의되지 않아 건너뛴다.
+  if (!actuated_joint_ids.empty()) {
+    const std::vector<int> dep_cols =
+        LoopPassiveVelocityIndices(model, constraints, actuated_joint_ids);
+    const int dep = static_cast<int>(dep_cols.size());
+    report.passive_cols = dep;
+    if (dep > report.rows) {
+      // 열이 행보다 많으면 column rank < dep 이 형상 무관으로 성립 — actuated 가 loop DoF 를
+      // 다 결정하지 못한다 (핸들은 이 경우 생성 자체를 거부한다).
+      report.sigma_min_reduction = 0.0;
+    } else if (dep > 0) {
+      Eigen::MatrixXd Jc_D(report.rows, dep);
+      for (int r = 0; r < dep; ++r) {
+        Jc_D.col(r) = kin.Jc.col(dep_cols[static_cast<std::size_t>(r)]);
+      }
+      Eigen::JacobiSVD<Eigen::MatrixXd> svd_d(Jc_D);
+      report.sigma_min_reduction = svd_d.singularValues().minCoeff();
+    }
+    report.reduction_singular = report.sigma_min_reduction < kClosedChainSingularSvThreshold;
+  }
 
   // Delassus D = Jc M⁻¹ Jcᵀ 의 조건수. crba 는 upper 만 채우므로 대칭화.
   pinocchio::crba(model, data, q);
@@ -194,8 +262,8 @@ JacobianReport AnalyzeConstraintJacobian(
   const Eigen::MatrixXd MinvJt = M.ldlt().solve(kin.Jc.transpose());  // nv × rows
   const Eigen::MatrixXd delassus = kin.Jc * MinvJt;                   // rows × rows
 
-  Eigen::JacobiSVD<Eigen::MatrixXd> svd_d(delassus);
-  const Eigen::VectorXd sd = svd_d.singularValues();
+  Eigen::JacobiSVD<Eigen::MatrixXd> svd_dl(delassus);
+  const Eigen::VectorXd sd = svd_dl.singularValues();
   if (sd.size() > 0 && sd(sd.size() - 1) > 0.0) {
     report.delassus_condition = sd(0) / sd(sd.size() - 1);
   } else {

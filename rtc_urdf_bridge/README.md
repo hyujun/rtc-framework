@@ -198,7 +198,7 @@ builder.GetClosureReferenceConfig();    // loop-consistent q_ref
 builder.GetClosureActuatedJointIds();   // actuated_joints → JointIndex
 builder.GetClosurePassiveLockNames();   // loop-passive 관절 (movable − actuated)
 builder.IsClosureReferenceAcceptable(); // false 면 q_ref 사용 금지
-builder.IsClosureReferenceSingular();   // true 면 q_ref 를 operating config 로 쓰지 말 것
+builder.IsClosureReferenceSingular();   // true 면 q_ref 조립 특이 — operating config 금지
 ```
 
 bringup 에서는 system YAML `urdf:` 블록의 `extended: true` 가 이 경로를 켠다. sidecar 는 URDF 옆 `<stem>.closure.yaml` 이고 `closure_path:` 로 override 한다 ([rtc_controller_manager](../rtc_controller_manager/README.md)). `extended: true` 인데 sidecar 가 없으면 `RCLCPP_ERROR` 후 loop constraint 없이 진행한다.
@@ -244,7 +244,7 @@ ros2 run rtc_urdf_bridge closure_state_publisher --ros-args \
 | `root_joint_type` | `"fixed"` | `fixed` \| `floating` |
 | `input_topic` | `/digital_twin/actuated_joint_states` | actuated `JointState` 입력 |
 | `output_topic` | `/digital_twin/joint_states` | loop-consistent full `JointState` 출력 |
-| `warn_on_singular` | `true` | 기준 형상이 특이하면 기동 경고 |
+| `warn_on_singular` | `true` | q_ref 가 조립 특이면 기동 경고 |
 | `max_iterations` / `tolerance` | `100` / `1e-10` | 사영 반복 상한 / strict 수렴 임계 |
 | `acceptance_tolerance` | `1e-6` | 결과 수용 임계 [m]. strict 미달이어도 이 이내면 커밋한다. 정지를 풀려고 `tolerance` 를 올리지 말 것 |
 | `max_actuated_increment` | `0.05` | continuation sub-step 당 actuated 증분 상한 [rad]. `≤0` 이면 비활성 |

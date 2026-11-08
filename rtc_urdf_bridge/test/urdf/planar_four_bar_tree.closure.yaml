@@ -1,0 +1,17 @@
+# planar_four_bar_tree.closure.yaml — Extended-URDF sidecar (planar_four_bar_tree.urdf 짝).
+# 순수 평면 4-bar 에 contact_3d: 축방향(z) 행이 항등 0 인 **구속 중복** 이지만 passive 열은
+# full rank — 조립 특이가 아니다 (두 판정을 가르는 회귀 fixture).
+name: planar_four_bar_tree
+
+closures:
+  - name: planar_pin
+    type: contact_3d          # 평면 핀 (in-plane 2성분 유효, 축방향 행 자명 0)
+    frame_1: c1
+    frame_2: c2
+    reference_frame: LOCAL
+    baumgarte: { Kp: 20.0, Kd: 5.0 }
+
+actuation:
+  actuated_joints: [j_crank]  # 나머지(j_coupler, j_rocker)는 passive
+
+joint_substitutions: []

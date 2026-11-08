@@ -14,6 +14,7 @@
 
 #include <Eigen/Core>
 
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -49,20 +50,58 @@ struct ClosureError {
     const pinocchio::Model& model, pinocchio::Data& data,
     const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q);
 
-/// @brief constraint Jacobian rank / Delassus 조건수 리포트.
+/// @brief constraint Jacobian 의 rank 리포트 — 서로 다른 두 결손을 구분한다.
+///   · **구속 중복** (행 종속, `redundant_rows > 0`): 평면 loop 에 contact_3d 를 걸었을 때의
+///     축방향 항등-0 행처럼 자세와 무관한 구조적 중복. Delassus 기반 solver (constraintDynamics
+///     plain overload) 만 특이해지고, 축약 핸들 (Jc_D 좌-역) 에는 영향이 없다.
+///   · **조립 특이** (열 결손, `reduction_singular`): loop-passive 열 Jc_D (@ref
+///     LoopPassiveVelocityIndices) 가 column rank 를 잃어 passive 속도가 actuated 로 결정되지
+///     않는 자세. @ref ClosedChainHandle / @ref RtClosedChainHandle 의 `Status::singular` 와 같은
+///     임계 (@ref kClosedChainSingularSvThreshold). actuated 를 받는 overload 만 채운다.
 struct JacobianReport {
   int rows{0};                          // Σ dim
-  int rank{0};                          // rank(Jc)
+  int rank{0};                          // rank(Jc) — SVD, σ > kJacobianRankRelTol · σ_max
   bool full_rank{false};                // rank == rows
+  int redundant_rows{0};                // rows − rank (구속 중복 행 수)
   double delassus_condition{0.0};       // cond(Jc M⁻¹ Jcᵀ); 특이 시 +inf
-  double smallest_singular_value{0.0};  // Jc 의 최소 특이값 (특이형상 근접 지표)
+  double smallest_singular_value{0.0};  // σ_min(Jc) (행 기준 특이형상 근접 지표)
+  int passive_cols{0};                  // loop-passive 열 수 (actuated 미지정이면 0)
+  // σ_min(Jc_D), loop-passive 열만. actuated 미지정 또는 passive 없음 → +inf (판정 안 함);
+  // passive_cols > rows → 0 (column rank 결손이 형상 무관으로 성립 — actuated 가 부족하다).
+  double sigma_min_reduction{std::numeric_limits<double>::infinity()};
+  bool reduction_singular{false};  // sigma_min_reduction < kClosedChainSingularSvThreshold
 };
 
-/// @brief Jc rank 충족 + Delassus 조건수 계산. 특이형상(4-bar 정렬) 근처 경고.
+/// @brief Jc 행 rank 의 SVD 상대 임계 (σ > kJacobianRankRelTol · σ_max 를 rank 로). Eigen
+/// FullPivLU 의 기본 임계 (ε · diagonalSize) 는 반올림 크기의 null 행을 rank 로 세어 다중 평면
+/// loop 의 중복 수를 잘못 보고했다. 조립 특이 판정은 @ref kClosedChainSingularSvThreshold.
+inline constexpr double kJacobianRankRelTol = 1e-9;
+
+/// @brief loop-passive velocity 인덱스 (오름차순): 어떤 constraint 의 두 끝 frame 사이 경로
+///   (두 parent joint 의 support 대칭차) 위에 있는 movable 관절 중 @p actuated_joint_ids 에 없는
+///   것. 두 끝의 **공통 조상** (floating root, loop 상류의 arm 관절) 은 Jc 열이 항등 0 이라 loop 가
+///   결정하는 DoF 가 아니므로 제외한다.
+///   ⚠ @ref ClosedChainHandle::Initialize 의 종속 집합 ("모든 movable ∧ ¬actuated") 보다 좁다 —
+///   핸들은 loop 밖 비구동 관절이 있으면 dep > m 으로 생성을 거부하므로 두 정의가 갈리는 모델은
+///   핸들로 만들 수 없고, 빌더 진단은 그 모델 (병합 arm+hand · floating base) 도 판정해야 한다.
+[[nodiscard]] std::vector<int> LoopPassiveVelocityIndices(
+    const pinocchio::Model& model, const std::vector<pinocchio::RigidConstraintModel>& constraints,
+    std::span<const pinocchio::JointIndex> actuated_joint_ids);
+
+/// @brief Jc 행 rank + Delassus 조건수. 열 판정 (passive_cols · reduction_*) 은 채우지 않는다
+///   (actuated 를 모르면 passive 집합을 정의할 수 없다) — 아래 overload 에 빈 actuated 로 위임.
 /// @note 로드 타임 전용.
 [[nodiscard]] JacobianReport AnalyzeConstraintJacobian(
     const pinocchio::Model& model, pinocchio::Data& data,
     const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q);
+
+/// @brief 위 + loop-passive 열 Jc_D 의 σ_min 으로 조립 특이 판정 (@ref LoopPassiveVelocityIndices).
+///   @p actuated_joint_ids 가 비면 열 판정 필드는 기본값 (0 / +inf / false) 으로 남는다.
+/// @note 로드 타임 전용.
+[[nodiscard]] JacobianReport AnalyzeConstraintJacobian(
+    const pinocchio::Model& model, pinocchio::Data& data,
+    const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q,
+    std::span<const pinocchio::JointIndex> actuated_joint_ids);
 
 /// @brief 모든 constraint dim 합 (CONTACT_6D→6, else 3).
 [[nodiscard]] int TotalConstraintDim(

@@ -60,6 +60,67 @@ TEST(LoopClosedChain, NominalConfigDetectedAsSingular) {
   EXPECT_EQ(rep.rows, 3);
   EXPECT_LT(rep.smallest_singular_value, 1e-6);  // 특이 (rank < rows)
   EXPECT_LT(rep.rank, rep.rows);
+  EXPECT_EQ(rep.redundant_rows, 1);  // x-translation 행 1 개가 0
+  // actuated 를 모르는 overload 는 열 판정을 채우지 않는다 (0 / +inf / false).
+  EXPECT_EQ(rep.passive_cols, 0);
+  EXPECT_TRUE(std::isinf(rep.sigma_min_reduction));
+  EXPECT_FALSE(rep.reduction_singular);
+
+  // 열 판정 (passive = joint_ab, joint_c, joint_cd): four_bar 는 q_ref 에서 행·열 결손이 동시에
+  // 성립하는 fixture 다 — joint_cd 는 c2 의 위치를 바꾸지 못하는 자유 passive 라 Jc_D 가
+  // column rank 를 잃는다 (핸들의 Status::singular 가 보는 것과 같은 결손).
+  const rub::JacobianReport rep_cols =
+      rub::AnalyzeConstraintJacobian(ccm.model, data, ccm.constraints, q0, ccm.actuated_joint_ids);
+  EXPECT_EQ(rep_cols.rank, rep.rank);
+  EXPECT_EQ(rep_cols.redundant_rows, rep.redundant_rows);
+  EXPECT_EQ(rep_cols.passive_cols, 3);
+  EXPECT_LT(rep_cols.sigma_min_reduction, rub::kClosedChainSingularSvThreshold);
+  EXPECT_TRUE(rep_cols.reduction_singular);
+}
+
+// ── actuated 가 비면 passive 집합이 정의되지 않는다 — 열 판정을 하지 않고 singular=false 를
+//    유지한다 (행 결손이 있는 four_bar 로도 flag 가 켜지지 않아야 한다).
+TEST(LoopClosedChain, EmptyActuationSkipsSingularityJudgement) {
+  rub::ClosureSpec spec = rub::LoadClosureYaml(TestUrdfPath("four_bar.closure.yaml"));
+  spec.actuated_joints.clear();
+  const pinocchio::Model model = LoadCcm().model;
+
+  const rub::ClosedChainData data = rub::BuildClosedChainData(model, spec);
+  EXPECT_TRUE(data.actuated_joint_ids.empty());
+  EXPECT_TRUE(data.q_ref_converged);
+  EXPECT_FALSE(data.q_ref_singular);
+}
+
+// ── 구속 중복 ≠ 조립 특이: 순수 평면 4-bar (planar_four_bar_tree) 는 contact_3d 의 축방향 행이
+//    항등 0 이라 행 rank 2 < rows 3 (FullPivLU · SVD 모두) 이지만, passive 열 Jc_D (j_coupler,
+//    j_rocker) 는 full column rank 다 → 빌더의 q_ref_singular 는 false 여야 한다. 행 판정만 쓰면
+//    이 fixture 를 특이로 오판한다 (가르는 케이스; 기대값은 오프라인 SVD 로 사전 측정:
+//    full σ ≈ [0.58, 0.16, 0], Jc_D σ ≈ [0.40, 0.15]).
+TEST(LoopClosedChain, PlanarLoopIsRedundantButNotAssemblySingular) {
+  const rub::ClosedChainModel cc = rub::BuildClosedChainModelFromExtendedUrdf(
+      TestUrdfPath("planar_four_bar_tree.urdf"), TestUrdfPath("planar_four_bar_tree.closure.yaml"));
+  EXPECT_TRUE(cc.q_ref_converged);
+  EXPECT_TRUE(cc.q_ref_acceptable);
+  EXPECT_FALSE(cc.q_ref_singular) << "구속 중복을 조립 특이로 오판";
+
+  pinocchio::Data data(cc.model);
+  for (const double crank : {0.0, 0.3, -0.3}) {
+    Eigen::VectorXd q_seed = pinocchio::neutral(cc.model);
+    q_seed[cc.model.idx_qs[cc.model.getJointId("j_crank")]] = crank;
+    const rub::ProjectionResult proj =
+        rub::ProjectToConstraint(cc.model, data, cc.constraints, q_seed);
+    ASSERT_TRUE(proj.converged) << "crank=" << crank;
+
+    const rub::JacobianReport rep = rub::AnalyzeConstraintJacobian(cc.model, data, cc.constraints,
+                                                                   proj.q, cc.actuated_joint_ids);
+    EXPECT_EQ(rep.rows, 3) << "crank=" << crank;
+    EXPECT_EQ(rep.rank, 2) << "crank=" << crank;  // 행 판정은 결손
+    EXPECT_FALSE(rep.full_rank) << "crank=" << crank;
+    EXPECT_EQ(rep.redundant_rows, 1) << "crank=" << crank;
+    EXPECT_EQ(rep.passive_cols, 2) << "crank=" << crank;
+    EXPECT_FALSE(rep.reduction_singular) << "crank=" << crank;
+    EXPECT_GT(rep.sigma_min_reduction, 0.1) << "crank=" << crank;  // 측정 ≈ 0.15
+  }
 }
 
 // ── Phase 9: 일반(operating) 형상에서 Jc full-rank + Delassus 조건수 유한 ──────
@@ -192,6 +253,25 @@ rub::ProjectionResult ProjectFrom(const rub::ClosedChainModel& cc, pinocchio::Da
   return rub::ProjectToConstraint(cc.model, data, cc.constraints, q_init, opts);
 }
 }  // namespace
+
+// ── 평면 crank-rocker 조립 자세: 행 rank 2 < 3 (축방향 항등 0) 이지만 passive 열은 full
+//    rank — 핸들 테스트가 "crank=0.2 는 비특이" 로 고정한 자세와 빌더 판정이 일치한다.
+//    (사전 측정 crank=0.2: full σ ≈ [0.62, 0.23, 0], Jc_D σ ≈ [0.43, 0.18].)
+TEST(LoopClosedChain, CrankRockerAssembledIsRedundantNotSingular) {
+  const rub::ClosedChainModel cc = rtc::test::CrankRocker();
+  pinocchio::Data data(cc.model);
+  const rub::ProjectionResult res = ProjectFrom(cc, data, 0.2);
+  ASSERT_TRUE(res.converged);
+
+  const rub::JacobianReport rep =
+      rub::AnalyzeConstraintJacobian(cc.model, data, cc.constraints, res.q, cc.actuated_joint_ids);
+  EXPECT_EQ(rep.rows, 3);
+  EXPECT_EQ(rep.rank, 2);
+  EXPECT_EQ(rep.redundant_rows, 1);
+  EXPECT_EQ(rep.passive_cols, 2);
+  EXPECT_FALSE(rep.reduction_singular);
+  EXPECT_GT(rep.sigma_min_reduction, 0.1);
+}
 
 // ── 상태 1 (strictly converged): floor 없는 기구 — converged 와 acceptable 둘 다 true. ──
 TEST(LoopClosedChain, AcceptanceStrictConvergenceSetsBothFlags) {
