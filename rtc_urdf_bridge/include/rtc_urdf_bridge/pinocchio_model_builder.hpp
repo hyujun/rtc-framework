@@ -101,8 +101,10 @@ class PinocchioModelBuilder {
   /// 항상 true. false 면 q_ref 를 정상 결과로 쓰지 말 것. closure sidecar 미사용 시 false.
   [[nodiscard]] bool IsClosureReferenceAcceptable() const noexcept;
 
-  /// q_ref 가 rank 결손(특이 조립형상) 인지. true 면 이 형상에서 constraintDynamics 의
-  /// KKT 가 특이해져 NaN 을 낼 수 있으므로 operating configuration 으로 바로 쓰면 안 된다.
+  /// q_ref 가 조립 특이 (passive 열 Jc_D 의 rank 결손 — ClosedChainHandle 의 Status::singular
+  /// 와 같은 임계) 인지. true 면 passive 가 actuated 로 결정되지 않아 축약 핸들이 damped 값을
+  /// 돌려주므로 operating configuration 으로 바로 쓰면 안 된다. 구속 중복 (평면 loop 의
+  /// 항등-0 행) 은 포함하지 않는다. closure sidecar 미사용 시 false.
   [[nodiscard]] bool IsClosureReferenceSingular() const noexcept;
 
   // ── 관성 게이트 (V5 / V6) 결과 ─────────────────────────────────────────────

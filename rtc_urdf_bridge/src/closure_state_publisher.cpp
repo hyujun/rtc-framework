@@ -93,8 +93,8 @@ ClosureStatePublisher::ClosureStatePublisher(const rclcpp::NodeOptions& options)
   }
   if (warn_on_singular && builder.IsClosureReferenceSingular()) {
     RCLCPP_WARN(get_logger(),
-                "closure 기준 형상(q_ref)이 특이(rank 결손)합니다 — neutral 근방에서 미수렴 시 "
-                "직전 해를 hold 합니다 (NaN 방지).");
+                "closure 기준 형상(q_ref)이 조립 특이 (passive 열 Jc_D rank 결손) 입니다 — "
+                "neutral 근방에서 미수렴 시 직전 해를 hold 합니다 (NaN 방지).");
   }
 
   // ── 출력 관절 캐시: 전체 model 의 단일-DoF 관절 (universe(0) 제외) ──────────────

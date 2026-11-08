@@ -36,9 +36,11 @@ struct ClosedChainModel {
   // true. converged=false && acceptable=true 는 URDF 좌표 불일치 등의 residual floor —
   // q_ref 는 사용 가능하다 (#250). 둘 다 false 면 q_ref 를 정상 결과로 소비 금지.
   bool q_ref_acceptable{false};
-  // q_ref 가 rank 결손(특이 조립형상) 인지. true 면 constraintDynamics 의 KKT 가 특이해져
-  // NaN 을 낼 수 있으므로 q_ref 를 operating configuration 으로 바로 쓰면 안 된다.
-  // (converged=true 여도 대칭 조립형상은 특이할 수 있다 — neutral 근방 4-bar 등.)
+  // q_ref 가 조립 특이 (passive 열 Jc_D 의 rank 결손, σ_min < kClosedChainSingularSvThreshold)
+  // 인지. true 면 passive 가 actuated 로 결정되지 않아 축약 핸들이 damped 값을 돌려주므로
+  // q_ref 를 operating configuration 으로 바로 쓰면 안 된다. (converged=true 여도 대칭
+  // 조립형상은 특이할 수 있다 — neutral 근방 4-bar 등.) 구속 중복 (행 종속; 평면 loop 의
+  // contact_3d 축방향 행) 은 여기 포함되지 않는다 — 로드 로그 INFO 로만 보고된다.
   bool q_ref_singular{false};
 };
 
@@ -51,7 +53,7 @@ struct ClosedChainData {
   Eigen::VectorXd q_ref;        // loop-consistent (projection 통과)
   bool q_ref_converged{false};  // projection strict 수렴 여부
   bool q_ref_acceptable{false};  // q_ref 소비 가능 (residual floor 포함 — ClosedChainModel 참조)
-  bool q_ref_singular{false};  // rank 결손 조립형상 (KKT 특이 → NaN 위험)
+  bool q_ref_singular{false};  // 조립 특이 (passive 열 rank 결손 — ClosedChainModel 참조)
 };
 
 /// @brief 이미 빌드된 model + ClosureSpec → closure 파이프라인 (§4b 이후 단계).
@@ -60,7 +62,7 @@ struct ClosedChainData {
 ///   1. BuildRigidConstraints — RigidConstraintModel 생성 (§4b placement)
 ///   2. actuated_joints → JointIndex 해석
 ///   3. q_ref = ProjectToConstraint(neutral(model)) — loop-consistent 사영
-///   4. q_ref 특이성 검사 (q_ref_singular 세팅 + 경고)
+///   4. q_ref 특이성 검사 (조립 특이 → q_ref_singular + WARN, 구속 중복 → INFO)
 ///
 /// URDF/xacro 파싱과 model 빌드는 호출자 책임 (이 함수는 model 을 소비만 한다).
 /// @throws std::runtime_error frame/joint 미존재 시.

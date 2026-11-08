@@ -92,10 +92,11 @@ mujoco_simulator:
         # Startup + reset pose (rad, command_joint_names order): the MID pose
         # of every range, which is also the hold pose the gate is measured at.
         # NOT the extended hand (all zeros): zero sits ON the range end of five
-        # joints and is the four-bar loops' singular reference assembly, and
-        # with the low servo gain below the constraint solver and the joint
-        # limits fought there at start-up and threw the fingers across their
-        # ranges (measured 2026-11-08: cmc_01 reached 10 rad within 1 s).
+        # joints. Reset places only the command joints here and leaves the loop
+        # passives at the model's qpos0, so the four-bar loops start open and
+        # the equality constraints snap them shut in the first few ms: a
+        # velocity spike in the first logged samples, over within ~0.2 s, and
+        # the controller holds its feedforward through the walk-in anyway.
         initial_qpos: [-0.785, -0.785, 0.0, -0.785, -0.1, 0.785, 0.785, 0.785, 0.785, -0.785]
         # Per-group servo PD, one per command joint (use_yaml_servo_gains).
         servo_kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
