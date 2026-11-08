@@ -722,6 +722,7 @@ TEST(JointFeedforwardLogPod, HeaderColumnsMatchRowAndNameTheJoints) {
   pod.readable = true;
   pod.seeded = true;
   pod.ff_enabled = true;
+  pod.mode = 2;
   pod.ff_finite = true;
   pod.model_fresh = true;
   pod.held_ticks = 3;
@@ -740,6 +741,7 @@ TEST(JointFeedforwardLogPod, HeaderColumnsMatchRowAndNameTheJoints) {
   EXPECT_EQ(SplitCsv(hdr).front(), "t_relative_s");
   EXPECT_EQ(ColumnValue(hdr, row, "tick"), "77");
   EXPECT_EQ(ColumnValue(hdr, row, "ff_enabled"), "1");
+  EXPECT_EQ(ColumnValue(hdr, row, "mode"), "2");
   EXPECT_EQ(ColumnValue(hdr, row, "estop"), "0");
   EXPECT_EQ(ColumnValue(hdr, row, "held_ticks"), "3");
   EXPECT_EQ(ColumnValue(hdr, row, "clamped_mask"), "5");

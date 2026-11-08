@@ -214,6 +214,8 @@ def _panel(world_answer=None):
         "_show_root_task_goal",
         "_task_entries_as_root_preset",
         "_publish_target",
+        "_publish_hand",
+        "_hand_goal_block",
     ):
         setattr(state, name, types.MethodType(getattr(DemoControllerGUI, name), state))
     state._profile = types.SimpleNamespace(tcp_parent=ROOT)
@@ -234,6 +236,8 @@ def _panel(world_answer=None):
     state.current_task_positions = list(POSE_ROOT)
     state._task_target_entries = [_FakeEntry() for _ in range(6)]
     state._hand_target_entries = []
+    state._hand_joint_modes = {}
+    state._active_ctrl = TASK_CTRL
     state.robot_cmd_pub = _FakePub()
     state.hand_cmd_pub = _FakePub()
     state._logger = _FakeLogger()

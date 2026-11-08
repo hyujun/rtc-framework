@@ -15,8 +15,10 @@
 //
 // Everything else: the hold policy (zero before the first valid term, last
 // value through a held / unreadable tick, zero under E-STOP and with the lane
-// off), the clamp against the YAML bound, the goal lane, the refusals at
-// configure, the shipped p2 YAML, and on_configure on a real LifecycleNode.
+// off), the clamp against the YAML bound, the goal lane, the three modes
+// (tracking / damping / damping_feedforward: what the two lanes carry), the
+// refusals at configure, the shipped p2 YAML, and on_configure on a real
+// LifecycleNode.
 #include "hand_joint_test_rig.hpp"
 #include "rtc_urdf_bridge/closed_chain_handle.hpp"
 
@@ -53,8 +55,17 @@
 namespace {
 
 using namespace hand_joint_rig;  // NOLINT(google-build-using-namespace)
+using integrated_bringup::HandJointMode;
+using integrated_bringup::HandJointModeName;
 using integrated_bringup::JointFeedforwardLogPod;
 using integrated_bringup::ParseHandJointConfig;
+using integrated_bringup::ParseHandJointMode;
+
+void SetMode(HandJointController& ctrl, HandJointMode mode) {
+  auto gains = ctrl.GetGains();
+  gains.mode = mode;
+  ctrl.SetGains(gains);
+}
 
 constexpr double kTauTol = 1e-4;  // N·m, the pre-registered oracle tolerance
 
@@ -496,6 +507,164 @@ TEST(HandJointGoals, ARetargetMidMotionRestartsFromRestWithinTheCap) {
   EXPECT_NEAR(prev, near[0], 1e-9);
 }
 
+// ── Modes ───────────────────────────────────────────────────────────────────
+
+TEST(HandJointModes, DampingCommandsTheMeasurementZeroesTheTorqueAndRefusesGoals) {
+  const Rig rig = ClosedRig();
+  auto ctrl = BringUp(rig);
+  (void)TickUntilFresh(*ctrl, rig.q);
+  ASSERT_TRUE(ctrl->LastTick().ff_finite);
+  SetMode(*ctrl, HandJointMode::kDamping);
+  // The hand is moved by hand: the command follows, nothing pulls it back.
+  std::vector<double> moved = rig.q;
+  moved[1] += 0.05;
+  moved[7] -= 0.03;
+  const ControllerOutput out = ctrl->Compute(MakeState(moved, true, 3000));
+  EXPECT_TRUE(out.valid);
+  EXPECT_EQ(out.command_type, rtc::CommandType::kPdFeedforward);
+  EXPECT_EQ(ctrl->LastTick().mode, 1u);
+  EXPECT_FALSE(ctrl->LastTick().estop);
+  EXPECT_FALSE(ctrl->LastTick().traj_active);
+  EXPECT_FALSE(ctrl->LastTick().ff_finite);
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(out.devices[0].commands[ui], moved[ui]) << ui;
+    EXPECT_DOUBLE_EQ(out.devices[0].trajectory_velocities[ui], 0.0) << ui;
+    EXPECT_DOUBLE_EQ(out.devices[0].goal_positions[ui], moved[ui]) << ui;
+    EXPECT_DOUBLE_EQ(out.devices[0].feedforward[ui], 0.0) << ui;
+  }
+  // A goal in this mode is drained and refused (counted) — not E-STOP's
+  // silent discard — and the command stays the measurement.
+  const auto rejects = ctrl->GoalRejectCount();
+  ctrl->SetDeviceTarget(0, rig.q);
+  const ControllerOutput next = ctrl->Compute(MakeState(moved, true, 3001));
+  EXPECT_EQ(ctrl->GoalRejectCount(), rejects + 1);
+  EXPECT_FALSE(ctrl->LastTick().traj_active);
+  EXPECT_DOUBLE_EQ(next.devices[0].commands[1], moved[1]);
+}
+
+TEST(HandJointModes, DampingFeedforwardCommandsTheMeasurementAndKeepsTrackingsTorque) {
+  const Rig rig = ClosedRig();
+  auto ctrl = BringUp(rig);
+  (void)TickUntilFresh(*ctrl, rig.q);
+  // Let the projection settle past its first "fresh" tick (it keeps refining
+  // by a Newton step per tick for a while) so the two outputs compared below
+  // differ by the mode alone.
+  ControllerOutput tracking{};
+  for (std::uint64_t t = 3000; t < 3100; ++t) {
+    tracking = ctrl->Compute(MakeState(rig.q, true, t));
+  }
+  ASSERT_TRUE(ctrl->LastTick().ff_finite);
+  SetMode(*ctrl, HandJointMode::kDampingFeedforward);
+  const ControllerOutput ff = ctrl->Compute(MakeState(rig.q, true, 3100));
+  EXPECT_TRUE(ff.valid);
+  EXPECT_EQ(ctrl->LastTick().mode, 2u);
+  EXPECT_TRUE(ctrl->LastTick().ff_finite);
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(ff.devices[0].commands[ui], rig.q[ui]) << ui;
+    // The same law on the same tick's term (gain 1, no clamp): exact. Against
+    // the settled tracking tick: the lane, not the mode, decides the torque.
+    EXPECT_DOUBLE_EQ(ff.devices[0].feedforward[ui], ctrl->LastTick().g[ui]) << ui;
+    EXPECT_NEAR(ff.devices[0].feedforward[ui], tracking.devices[0].feedforward[ui], 1e-9) << ui;
+  }
+  // The lane's own switch still rules it.
+  auto gains = ctrl->GetGains();
+  gains.ff_enabled = false;
+  ctrl->SetGains(gains);
+  const ControllerOutput off = ctrl->Compute(MakeState(rig.q, true, 3101));
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    EXPECT_DOUBLE_EQ(off.devices[0].feedforward[static_cast<std::size_t>(i)], 0.0);
+  }
+  gains.ff_enabled = true;
+  ctrl->SetGains(gains);
+  // E-STOP dominates the mode: every joint 0.
+  ctrl->TriggerEstop();
+  const ControllerOutput stop = ctrl->Compute(MakeState(rig.q, true, 3102));
+  EXPECT_TRUE(ctrl->LastTick().estop);
+  EXPECT_EQ(ctrl->LastTick().mode, 2u);
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(stop.devices[0].feedforward[ui], 0.0) << ui;
+    EXPECT_DOUBLE_EQ(stop.devices[0].commands[ui], rig.q[ui]) << ui;
+  }
+  ctrl->ClearEstop();
+  (void)TickUntilFresh(*ctrl, rig.q);
+  EXPECT_TRUE(ctrl->LastTick().ff_finite) << "the lane comes back after release";
+}
+
+TEST(HandJointModes, ActivatedInDampingTheOutputIsValidFromTheFirstReadableTick) {
+  // The hold counts as a seed: an output invalid for 0.1 s would be a global
+  // E-STOP by the controller manager.
+  const Rig rig = PlainRig(Yaml() + "mode: damping\n");
+  auto ctrl = BringUp(rig);
+  ASSERT_EQ(ctrl->ConfigError(), "");
+  EXPECT_EQ(ctrl->GetGains().mode, HandJointMode::kDamping);
+  const ControllerOutput first = ctrl->Compute(MakeState(rig.q, true, 1));
+  EXPECT_TRUE(first.valid);
+  EXPECT_TRUE(ctrl->LastTick().seeded);
+  EXPECT_EQ(ctrl->LastTick().mode, 1u);
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(first.devices[0].commands[ui], rig.q[ui]) << ui;
+    EXPECT_DOUBLE_EQ(first.devices[0].feedforward[ui], 0.0) << ui;
+  }
+  // An unreadable tick holds the last command, as in tracking.
+  const ControllerOutput held = ctrl->Compute(MakeState(rig.q, false, 2));
+  EXPECT_TRUE(held.valid);
+  EXPECT_DOUBLE_EQ(held.devices[0].commands[0], rig.q[0]);
+}
+
+TEST(HandJointModes, ReturningToTrackingReseedsFromTheMeasurementAndAcceptsGoals) {
+  const Rig rig = PlainRig();
+  auto ctrl = BringUp(rig);
+  (void)TickUntilFresh(*ctrl, rig.q, 5);
+  // A goal under way, then the mode leaves tracking: the trajectory is dropped.
+  std::vector<double> goal = rig.q;
+  goal[0] += 1.0;
+  ctrl->SetDeviceTarget(0, goal);
+  (void)ctrl->Compute(MakeState(rig.q, true, 10));
+  ASSERT_TRUE(ctrl->LastTick().traj_active);
+  SetMode(*ctrl, HandJointMode::kDamping);
+  std::vector<double> moved = rig.q;
+  moved[0] += 0.2;
+  (void)ctrl->Compute(MakeState(moved, true, 11));
+  EXPECT_FALSE(ctrl->LastTick().traj_active);
+  // Back to tracking: the first tick re-seeds at the measurement (goal =
+  // "here"), nothing moves, and the next goal is accepted.
+  SetMode(*ctrl, HandJointMode::kTracking);
+  const ControllerOutput back = ctrl->Compute(MakeState(moved, true, 12));
+  EXPECT_EQ(ctrl->LastTick().mode, 0u);
+  EXPECT_FALSE(ctrl->LastTick().traj_active);
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(back.devices[0].commands[ui], moved[ui]) << ui;
+    EXPECT_DOUBLE_EQ(back.devices[0].goal_positions[ui], moved[ui]) << ui;
+  }
+  const auto rejects = ctrl->GoalRejectCount();
+  ctrl->SetDeviceTarget(0, goal);
+  (void)ctrl->Compute(MakeState(moved, true, 13));
+  EXPECT_EQ(ctrl->GoalRejectCount(), rejects);
+  EXPECT_TRUE(ctrl->LastTick().traj_active);
+}
+
+TEST(HandJointModes, TheModeParsesFromTheYamlAndATypoIsRefused) {
+  EXPECT_EQ(ParseHandJointMode("tracking"), HandJointMode::kTracking);
+  EXPECT_EQ(ParseHandJointMode("damping"), HandJointMode::kDamping);
+  EXPECT_EQ(ParseHandJointMode("damping_feedforward"), HandJointMode::kDampingFeedforward);
+  EXPECT_THROW((void)ParseHandJointMode("dampng"), std::runtime_error);
+  EXPECT_THROW((void)ParseHandJointMode(""), std::runtime_error);
+  for (const auto m :
+       {HandJointMode::kTracking, HandJointMode::kDamping, HandJointMode::kDampingFeedforward}) {
+    EXPECT_EQ(ParseHandJointMode(HandJointModeName(m)), m);
+  }
+  // Omitted → tracking; spelled → that mode; a typo throws at load.
+  EXPECT_EQ(ParseHandJointConfig(YAML::Load(Yaml())).mode, HandJointMode::kTracking);
+  EXPECT_EQ(ParseHandJointConfig(YAML::Load(Yaml() + "mode: damping_feedforward\n")).mode,
+            HandJointMode::kDampingFeedforward);
+  EXPECT_THROW((void)ParseHandJointConfig(YAML::Load(Yaml() + "mode: hold\n")), std::runtime_error);
+}
+
 // ── The shipped p2 YAML ─────────────────────────────────────────────────────
 
 TEST(HandJointShipped, TheP2YamlParsesAndNamesOneGroup) {
@@ -506,6 +675,7 @@ TEST(HandJointShipped, TheP2YamlParsesAndNamesOneGroup) {
   const YAML::Node cfg = root["hand_joint_controller"];
   ASSERT_TRUE(cfg);
   const auto parsed = ParseHandJointConfig(cfg);
+  EXPECT_EQ(parsed.mode, HandJointMode::kTracking) << "the shipped mode is spelled out";
   EXPECT_TRUE(parsed.ff.enabled);
   EXPECT_DOUBLE_EQ(parsed.ff.gravity_gain, 1.0);
   EXPECT_GT(parsed.ff.max_abs, 0.0);
@@ -538,6 +708,19 @@ TEST(HandJointLifecycle, ConfiguresDeclaresParametersAndCleansUp) {
   EXPECT_TRUE(node->has_parameter("gravity_ff.enabled"));
   EXPECT_TRUE(node->has_parameter("gravity_ff.gain"));
   EXPECT_TRUE(node->has_parameter("trajectory_speed"));
+  EXPECT_TRUE(node->has_parameter("mode"));
+  EXPECT_EQ(node->get_parameter("mode").as_string(), "tracking");
+  // The mode reaches the tick's gains; a typo is refused with the whitelist
+  // in the reason and the mode kept.
+  const auto damp = node->set_parameter(rclcpp::Parameter("mode", "damping_feedforward"));
+  EXPECT_TRUE(damp.successful) << damp.reason;
+  EXPECT_EQ(ctrl->GetGains().mode, HandJointMode::kDampingFeedforward);
+  const auto typo = node->set_parameter(rclcpp::Parameter("mode", "dampng"));
+  EXPECT_FALSE(typo.successful);
+  EXPECT_NE(typo.reason.find("damping_feedforward"), std::string::npos) << typo.reason;
+  EXPECT_EQ(ctrl->GetGains().mode, HandJointMode::kDampingFeedforward);
+  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("mode", "tracking")).successful);
+  EXPECT_EQ(ctrl->GetGains().mode, HandJointMode::kTracking);
   // The runtime switch reaches the tick's gains.
   const auto res = node->set_parameter(rclcpp::Parameter("gravity_ff.enabled", false));
   EXPECT_TRUE(res.successful) << res.reason;

@@ -8,6 +8,17 @@
 # the feedforward carries the weight. Columns of the per-tick record are in
 # docs/controller-logs.md (joint_ff.csv).
 hand_joint_controller:
+  # ── Mode ──────────────────────────────────────────────────────────────────
+  # What the two lanes carry (runtime parameter `mode`, settable any time;
+  # E-STOP dominates). The device's PD gains are not this controller's.
+  #   tracking             — joint_goal followed by a quintic + gravity feedforward
+  #   damping              — target = measured position every tick, feedforward 0:
+  #                          only the device's kd acts (joint_goal refused)
+  #   damping_feedforward  — target = measured position, feedforward lane as in
+  #                          tracking: the lane under test (joint_goal refused)
+  # Omitted → tracking. A/B/A gate runs (analyze_hand_gravity_ff) stay in tracking.
+  mode: tracking
+
   # ── Trajectory generation ─────────────────────────────────────────────────
   # Quintic rest-to-rest. Duration = max joint distance / speed, extended
   # until the peak velocity (15/8 × Δq / T) is within max_traj_velocity.

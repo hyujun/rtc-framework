@@ -118,7 +118,7 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all      # 모든 figur
 | `catching_diag.csv` | catching_diag (동적 포구 tick 레코드 — 지문 열 `track_err_rad` + `ref_gamma`) |
 | `planner_events.csv` | planner_events (계획기 wake 당 한 행 — 지문 열 `n_in_window` + `rank_error_budget`) |
 | `dualarm_diag.csv` | dualarm_diag (다중 frame CLIK tick 레코드 — 지문 열 `clik_ran` + `<task>_err_lin`) |
-| `joint_ff.csv` | joint_ff (중력 feedforward 관절 레코드 q · q_ref · g · tau_ff — 지문 열 `ff_enabled` + `tau_ff_<joint>`) |
+| `joint_ff.csv` | joint_ff (중력 feedforward 관절 레코드 q · q_ref · g · tau_ff — 지문 열 `ff_enabled` + `tau_ff_<joint>`; `mode` 열이 있으면 비-tracking 구간 음영 · drift 통계) |
 
 진단 CSV 를 읽는 규칙은 [catching-analysis-rules.md](../docs/catching-analysis-rules.md#plot_rtc_log) 에 있다.
 

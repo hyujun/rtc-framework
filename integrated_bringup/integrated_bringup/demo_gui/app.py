@@ -186,6 +186,16 @@ from .goal_frame import (
     frame_labels,
     parse_scene_world,
 )
+from .hand_joint import (
+    HAND_JOINT_GAIN_LAYOUT,
+    HAND_JOINT_MODE_PARAM,
+    HAND_JOINT_MODES,
+    HAND_JOINT_OWNERS,
+    HAND_JOINT_READOUT,
+    format_mode_readout,
+    goal_block_reason,
+    hand_joint_gain_rows,
+)
 from .hand_step import (
     CATCHING_CONFIG_KEY,
     PROFILE_PARAMETERS,
@@ -274,6 +284,15 @@ def _toggle_stage(method):
     return wrapper
 
 
+def _result_fg(ok: bool | None) -> str:
+    """Colour of a panel's outcome line. ``None`` is in flight: a request that
+    has left the GUI is not a change that happened, so it gets the unknown
+    colour rather than the accepted one."""
+    if ok is None:
+        return GRASP_MODE_FG_UNKNOWN
+    return GRASP_MODE_FG_ACTIVE if ok else GRASP_MODE_FG_BLOCKED
+
+
 class DemoControllerGUI(Node):
     def __init__(self, robot: str = "ur5e_p1a", session_dir: str | None = None):
         super().__init__("demo_controller_gui")
@@ -289,6 +308,7 @@ class DemoControllerGUI(Node):
         # Read before the controller catalog is built, because its gain rows
         # are what makes the catalog count it as tunable.
         self._dualarm_spec: DualArmSpec | None = self._load_dualarm_spec(robot)
+        self._register_hand_joint_gains()
         self._dualarm_goal_pubs: dict[str, rclpy.publisher.Publisher] = {}
         # TF child frame -> the task whose measured pose it carries.
         self._dualarm_children: dict[str, TaskSpec] = {}
@@ -445,6 +465,13 @@ class DemoControllerGUI(Node):
         # (config_key, values) last written into the panel's input widgets; see
         # vtcp.seed_due.
         self._vtcp_seeded: tuple[str, VtcpConfigView | None] | None = None
+        # config_key -> hand_joint_controller's `mode`, cached like the VTCP
+        # values. The send guard reads it (_hand_goal_block), the panel paints it.
+        self._hand_joint_modes: dict[str, str] = {}
+        self._hand_joint_reader = self._make_reader(
+            HAND_JOINT_READOUT, self._hand_joint_modes, self._paint_hand_joint
+        )
+        self._hand_joint_seeded: tuple[str, str | None] | None = None
         # #779: the frame the Task Target panel states its goal in. The world is
         # not in TF, so the CM's scene_world parameters are read (goal_frame)
         # and carry the live base-frame pose into it. None until read, and
@@ -667,6 +694,7 @@ class DemoControllerGUI(Node):
             # already IS the newly active controller (select X, then Switch), and
             # that is exactly the case whose Virtual TCP Apply must now close.
             self._apply_vtcp_state()
+            self._apply_hand_joint_state()
 
         self.root.after(0, _on_tk)
 
@@ -1257,11 +1285,7 @@ class DemoControllerGUI(Node):
         if not hasattr(self, "_grasp_mode_result_var"):
             return  # Grasp tab not built yet (startup ordering)
         self._grasp_mode_result_var.set(text)
-        if ok is None:
-            fg = GRASP_MODE_FG_UNKNOWN
-        else:
-            fg = GRASP_MODE_FG_ACTIVE if ok else GRASP_MODE_FG_BLOCKED
-        self._grasp_mode_result_label.config(fg=fg)
+        self._grasp_mode_result_label.config(fg=_result_fg(ok))
 
     # ── Virtual TCP panel (#847) ──────────────────────────────────────────
 
@@ -1501,11 +1525,174 @@ class DemoControllerGUI(Node):
             return  # panel not built yet (startup ordering)
         self._vtcp_result_ctrl = self.selected_ctrl.get()
         self._vtcp_result_var.set(text)
-        if ok is None:
-            fg = GRASP_MODE_FG_UNKNOWN
-        else:
-            fg = GRASP_MODE_FG_ACTIVE if ok else GRASP_MODE_FG_BLOCKED
-        self._vtcp_result_label.config(fg=fg)
+        self._vtcp_result_label.config(fg=_result_fg(ok))
+
+    # ── Hand Joint panel ──────────────────────────────────────────────────
+
+    def _register_hand_joint_gains(self) -> None:
+        """Give hand_joint_controller its Gains panel on the profile that
+        ships it. Registered here, not in GAIN_DEFS: a static entry would put the
+        controller's radio on every robot. Must run before ``_known_schema_keys``
+        is read."""
+        for ctrl in HAND_JOINT_OWNERS & set(self._profile.extra_switchable_controllers):
+            try:
+                register_scalar_gain_schema(ctrl, hand_joint_gain_rows(), HAND_JOINT_GAIN_LAYOUT)
+            except ValueError as exc:
+                self.get_logger().warn(f"{ctrl} gain rows not registered — {exc}")
+
+    def _build_hand_joint_panel(self, parent) -> None:
+        """Control tab: read and set hand_joint_controller's ``mode``.
+
+        Gated on the selected controller owning ``mode`` only — unlike the
+        Virtual TCP panel, the controller accepts a mode set while active.
+        """
+        frame = ttk.LabelFrame(parent, text="Hand Joint", padding=4)
+        frame.pack(fill="x", padx=8, pady=2)
+        row = tk.Frame(frame, bg="#1e1e2e")
+        row.pack(fill="x")
+        tk.Label(row, text="Mode:", bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8)).pack(
+            side="left", padx=(6, 2)
+        )
+        self._hand_joint_mode_combo = ttk.Combobox(
+            row, values=list(HAND_JOINT_MODES), width=20, state="readonly"
+        )
+        self._hand_joint_mode_combo.set("")
+        self._hand_joint_mode_combo.pack(side="left", padx=2)
+        self._hand_joint_set_btn = ttk.Button(
+            row, text="Set Mode", command=self._send_hand_joint_mode
+        )
+        self._hand_joint_set_btn.pack(side="left", padx=(8, 2))
+        self._hand_joint_load_btn = ttk.Button(
+            row, text="Load Mode", command=self._request_load_hand_joint
+        )
+        self._hand_joint_load_btn.pack(side="left", padx=2)
+        self._hand_joint_readout_var = tk.StringVar(value=format_mode_readout(None))
+        tk.Label(
+            frame,
+            textvariable=self._hand_joint_readout_var,
+            bg="#1e1e2e",
+            fg="#a6e3a1",
+            font=("Segoe UI", 8),
+            anchor="w",
+        ).pack(fill="x", padx=6, pady=(2, 0))
+        self._hand_joint_result_var = tk.StringVar(value="")
+        self._hand_joint_result_label = tk.Label(
+            frame,
+            textvariable=self._hand_joint_result_var,
+            bg="#1e1e2e",
+            fg=GRASP_MODE_FG_UNKNOWN,
+            font=("Segoe UI", 7),
+            anchor="w",
+        )
+        self._hand_joint_result_label.pack(fill="x", padx=6)
+        # Controller the outcome line speaks about; cleared when the selection moves.
+        self._hand_joint_result_ctrl = ""
+
+    def _apply_hand_joint_state(self) -> None:
+        """Open or close the panel for the selected controller, and the Send
+        button for the mode of the active one. Tk thread only."""
+        if not hasattr(self, "_hand_joint_load_btn") or not hasattr(self, "_send_cmd_btn"):
+            return  # panel not built yet (startup ordering)
+        ctrl = self.selected_ctrl.get()
+        owner = ctrl in HAND_JOINT_OWNERS
+        self._hand_joint_set_btn.config(state="normal" if owner else "disabled")
+        self._hand_joint_load_btn.config(state="normal" if owner else "disabled")
+        self._hand_joint_mode_combo.config(state="readonly" if owner else "disabled")
+        if self._hand_joint_result_ctrl != ctrl:
+            self._hand_joint_result_ctrl = ""
+            self._hand_joint_result_var.set("")
+        reason = self._hand_goal_block()
+        self._send_cmd_btn.config(state="disabled" if reason else "normal")
+        self._send_block_var.set(reason)
+
+    def _hand_goal_block(self) -> str:
+        """Why a hand target must not be sent now ("" = may be). The hand
+        publishers serve the ACTIVE controller, so its last read mode decides;
+        unknown fails open (hand_joint.goal_block_reason)."""
+        return goal_block_reason(self._hand_joint_modes.get(self._active_ctrl))
+
+    def _publish_hand(self, msg, what: str) -> str:
+        """Every hand RobotTarget leaves through here: publish unless the active
+        controller's mode refuses joint goals, and return why it was withheld
+        ("" = published, logged by the caller)."""
+        reason = self._hand_goal_block()
+        if reason:
+            self.get_logger().warn(f"{what} withheld — {reason}")
+            return reason
+        self.hand_cmd_pub.publish(msg)
+        return ""
+
+    def _refresh_hand_joint(self, ctrl: str, *, force: bool = False) -> None:
+        self._hand_joint_reader.refresh(ctrl, force=force)
+
+    def _paint_hand_joint(self, ctrl: str, mode: str | None) -> None:
+        """Show ``mode`` as ``ctrl``'s current mode. Tk thread only. The
+        combobox is re-seeded only when the mode (or controller) changed, so an
+        unapplied pick survives a poll."""
+        if not hasattr(self, "_hand_joint_readout_var"):
+            return  # panel not built yet (startup ordering)
+        if ctrl == self.selected_ctrl.get():
+            self._hand_joint_readout_var.set(
+                format_mode_readout(mode) if ctrl in HAND_JOINT_OWNERS else "current: —"
+            )
+            if seed_due(self._hand_joint_seeded, ctrl, mode):
+                self._hand_joint_seeded = (ctrl, mode)
+                self._hand_joint_mode_combo.config(state="normal")
+                self._hand_joint_mode_combo.set(mode or "")
+        # The send guard follows the ACTIVE controller, not the selected one;
+        # this also puts the combobox back to readonly after a seed.
+        self._apply_hand_joint_state()
+
+    def _request_load_hand_joint(self) -> None:
+        """Load Mode: re-read past the cache (the mode also changes through
+        `ros2 param set`) and overwrite the combobox."""
+        self._hand_joint_seeded = None
+        self._refresh_hand_joint(self.selected_ctrl.get(), force=True)
+
+    def _send_hand_joint_mode(self) -> None:
+        """Set Mode: one set_parameters_atomically; a refusal is shown verbatim."""
+        ctrl = self.selected_ctrl.get()
+        mode = self._hand_joint_mode_combo.get()
+        if ctrl not in HAND_JOINT_OWNERS:
+            return
+        if mode not in HAND_JOINT_MODES:
+            self._set_hand_joint_result(
+                "select a mode first (Load Mode reads the current one)", False
+            )
+            return
+        client = self._get_param_client(ctrl)
+        if not client.services_are_ready():
+            self._set_hand_joint_result(f"parameter services for /{ctrl} unavailable", False)
+            return
+        future = client.set_parameters_atomically(
+            [Parameter(name=HAND_JOINT_MODE_PARAM, type_=Parameter.Type.STRING, value=mode)]
+        )
+        self._set_hand_joint_result("setting …", None)
+
+        def _on_set_done(fut):
+            try:
+                result = fut.result().result
+                ok = bool(result.successful)
+                message = f"mode set: {mode}" if ok else f"refused: {result.reason}"
+            except Exception as exc:  # noqa: BLE001 — surfaced in the label
+                ok, message = False, f"set failed: {exc}"
+            self.root.after(0, self._after_hand_joint_set, ctrl, ok, message)
+
+        future.add_done_callback(_on_set_done)
+
+    def _after_hand_joint_set(self, ctrl: str, ok: bool, message: str) -> None:
+        """Report the outcome and re-read past the cache. Tk thread only."""
+        log = self.get_logger().info if ok else self.get_logger().warn
+        log(f"/{ctrl} {HAND_JOINT_MODE_PARAM} {message}")
+        if ctrl == self.selected_ctrl.get():
+            self._set_hand_joint_result(message, ok)
+        self._refresh_hand_joint(ctrl, force=True)
+
+    def _set_hand_joint_result(self, text: str, ok: bool | None) -> None:
+        """Write the outcome line for the selected controller. Tk thread only."""
+        self._hand_joint_result_ctrl = self.selected_ctrl.get()
+        self._hand_joint_result_var.set(text)
+        self._hand_joint_result_label.config(fg=_result_fg(ok))
 
     def _schedule_refresh(self):
         """Periodic GUI refresh scheduled on the Tk event loop (thread-safe)."""
@@ -2026,6 +2213,7 @@ class DemoControllerGUI(Node):
         self._gains_applied_inner.pack(fill="x", padx=2, pady=(0, 2))
 
         self._build_vtcp_panel(control_tab)
+        self._build_hand_joint_panel(control_tab)
 
         # Target Inputs
         pos_frame = ttk.LabelFrame(control_tab, text="Target Inputs", padding=4)
@@ -2426,9 +2614,19 @@ class DemoControllerGUI(Node):
         ttk.Button(
             btn_frame, text="Copy Current → Target", command=self._copy_current_to_target
         ).pack(side="left", padx=4)
-        ttk.Button(
+        self._send_cmd_btn = ttk.Button(
             btn_frame, text="Send Command", style="Send.TButton", command=self._publish_target
-        ).pack(side="left", padx=4)
+        )
+        self._send_cmd_btn.pack(side="left", padx=4)
+        # Why Send is off, when hand_joint_controller's mode refuses goals.
+        self._send_block_var = tk.StringVar(value="")
+        tk.Label(
+            control_tab,
+            textvariable=self._send_block_var,
+            bg="#1e1e2e",
+            fg=GRASP_MODE_FG_BLOCKED,
+            font=("Segoe UI", 8, "italic"),
+        ).pack()
 
         # The catching controller's panels (ball launch, hand step, state)
         # have their own tab.
@@ -3547,7 +3745,8 @@ class DemoControllerGUI(Node):
         msg.goal_type = "joint"
         msg.joint_names = list(self._shape.hand_motor_names)
         msg.joint_target = [float(v) for v in target]
-        self.hand_cmd_pub.publish(msg)
+        if reason := self._publish_hand(msg, "Hand step"):
+            self._hand_step.last_error = f"step refused: {reason}"
         self._refresh_hand_step_panel()
 
     def _refresh_hand_step_panel(self) -> None:
@@ -5026,7 +5225,9 @@ class DemoControllerGUI(Node):
             self._refresh_grasp_mode(current)
             # Same reasons, same path: retries the read once the CM is up.
             self._refresh_vtcp(current)
+            self._refresh_hand_joint(current)
         self._apply_vtcp_state()
+        self._apply_hand_joint_state()
 
         if current:
             self._paint_active_status()
@@ -5048,6 +5249,10 @@ class DemoControllerGUI(Node):
         # Apply depends on whether that one is the active controller.
         self._refresh_vtcp(idx)
         self._apply_vtcp_state()
+        # The Hand Joint panel is gated on the selection alone (owner), and the
+        # send guard follows the mode of the controller the publishers serve.
+        self._refresh_hand_joint(idx)
+        self._apply_hand_joint_state()
 
     def _on_switch_controller(self, on_complete=None):
         idx = self.selected_ctrl.get()
@@ -5642,7 +5847,8 @@ class DemoControllerGUI(Node):
         if self.hand_cmd_pub is None:
             self.get_logger().warn("hand_cmd_pub not yet bound — waiting for active controller")
             return
-        self.hand_cmd_pub.publish(hand_msg)
+        if self._publish_hand(hand_msg, "Send Command"):
+            return
         self.get_logger().info(f"Sent hand cmd: {[f'{v:.4f}' for v in hand_values]}")
 
     # ---- Preset actions --------------------------------------------------------
@@ -5683,6 +5889,8 @@ class DemoControllerGUI(Node):
             failure = None
             if self.estop_active:
                 failure = "E-STOP is active"
+            elif reason := self._hand_goal_block():
+                failure = reason
             elif ctrl_name and ctrl_name not in GAIN_DEFS:
                 failure = f"unknown controller '{ctrl_name}'"
             elif selected_ctrl in NO_EXTERNAL_COMMAND_CONTROLLERS:
@@ -5794,6 +6002,12 @@ class DemoControllerGUI(Node):
             )
             return
 
+        if reason := self._hand_goal_block():
+            self.get_logger().warn(f"Preset '{name}' withheld — {reason}")
+            if on_complete is not None:
+                on_complete(False)
+            return
+
         # Guard: a preset whose positions_deg length != the active hand DoF
         # would publish a RobotTarget with mismatched joint_names/joint_target
         # (issue #137 finding 3). Reject with a clear warning — the robot
@@ -5864,8 +6078,7 @@ class DemoControllerGUI(Node):
         hand_msg.joint_target = positions_rad
         if self.hand_cmd_pub is None:
             self.get_logger().warn("hand_cmd_pub not yet bound — waiting for active controller")
-        else:
-            self.hand_cmd_pub.publish(hand_msg)
+        elif not self._publish_hand(hand_msg, f"Preset '{name}'"):
             self.get_logger().info(
                 f"Sent preset '{name}' ({data.get('type', 'open')}): "
                 f"{[f'{v:.2f}' for v in positions_deg]} deg"

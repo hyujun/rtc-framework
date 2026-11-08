@@ -676,9 +676,10 @@ def register_scalar_gain_schema(ctrl: str, rows, layout: list[list[str]]) -> Non
     them through this function, after which the Gains panel, Load Gain and
     Apply Gains treat the controller like any other.
 
-    ``rows`` are scalar double parameters: objects with ``label`` (unique within
-    the controller), ``param`` (declared ROS parameter name), ``default``,
-    ``read_only`` and ``group`` — ``demo_gui.dualarm.GainRow``.
+    ``rows`` are scalar parameters, double or (``is_bool``) bool: objects with
+    ``label`` (unique within the controller), ``param`` (declared ROS parameter
+    name), ``default``, ``read_only``, ``group`` and ``is_bool`` —
+    ``demo_gui.dualarm.GainRow``.
 
     The tables are process-wide and a GUI process serves one robot, so the
     schema lasts for the process. A key that already has a schema is refused: a
@@ -690,9 +691,13 @@ def register_scalar_gain_schema(ctrl: str, rows, layout: list[list[str]]) -> Non
     labels = [row.label for row in rows]
     if len(set(labels)) != len(labels):
         raise ValueError(f"'{ctrl}' gain rows repeat a label: {labels}")
-    GAIN_DEFS[ctrl] = [(row.label, 1, [row.default], False, row.group) for row in rows]
+    GAIN_DEFS[ctrl] = [(row.label, 1, [row.default], row.is_bool, row.group) for row in rows]
     GAIN_PARAM_DISPATCH[ctrl] = {
-        row.label: (row.param, _read_only if row.read_only else _set_double) for row in rows
+        row.label: (
+            row.param,
+            _read_only if row.read_only else _set_bool if row.is_bool else _set_double,
+        )
+        for row in rows
     }
     GAIN_ROW_NAMES[ctrl] = {}
     GAIN_GROUP_LAYOUT[ctrl] = [list(row) for row in layout]

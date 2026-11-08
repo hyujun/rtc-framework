@@ -114,6 +114,19 @@ TEST(HandJointAlloc, EveryTickAfterTheFirstIsAllocationFree) {
   expect_clean(MakeState(rig.q, true, t++), "estop");
   ctrl->ClearEstop();
   expect_clean(MakeState(rig.q, true, t++), "release (reseed)");
+  // The two non-tracking modes, a refused goal in one, and the way back.
+  gains = ctrl->GetGains();
+  gains.mode = integrated_bringup::HandJointMode::kDamping;
+  ctrl->SetGains(gains);
+  expect_clean(MakeState(rig.q, true, t++), "damping");
+  ctrl->SetDeviceTarget(0, goal);
+  expect_clean(MakeState(rig.q, true, t++), "damping (goal refused)");
+  gains.mode = integrated_bringup::HandJointMode::kDampingFeedforward;
+  ctrl->SetGains(gains);
+  expect_clean(MakeState(rig.q, true, t++), "damping_feedforward");
+  gains.mode = integrated_bringup::HandJointMode::kTracking;
+  ctrl->SetGains(gains);
+  expect_clean(MakeState(rig.q, true, t++), "return to tracking (reseed)");
 }
 
 TEST(HandJointAlloc, ThePlainPathIsAllocationFreeToo) {

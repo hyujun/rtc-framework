@@ -48,6 +48,23 @@
 //     uses — switching the COMMAND TYPE instead would let the simulator
 //     re-enable its own gravity compensation and change the plant.
 //
+// Modes (`mode`, YAML key and runtime parameter; the device's PD gains are
+// not this controller's to change, so a mode only chooses what the two lanes
+// carry):
+//   - `tracking` (default): the two lanes above — joint goals are followed;
+//   - `damping`: `commands` = the measured positions every tick and
+//     `feedforward` = 0, so only the device's own derivative gain acts (a
+//     "damping mode" in the sense of the Unitree / MAB motor firmwares: kp
+//     effectively 0, kd as the device has it);
+//   - `damping_feedforward`: `commands` = the measured positions, the
+//     feedforward lane stays as in `tracking` (gravity_ff.enabled, gain,
+//     clamp, hold policy) — the lane under test, with no servo error under it.
+//   A joint goal while the mode is not `tracking` is drained and refused
+//   (GoalRejectCount) — unlike E-STOP, which discards pending goals silently.
+//   On the tick the mode returns to `tracking` the reference is re-seeded from
+//   the measurement (goal = "here"); leaving `tracking` drops a running
+//   trajectory. E-STOP dominates every mode.
+//
 // E-STOP: the measured positions are commanded and the feedforward is 0; on
 // release the reference is re-seeded from the measurement and the goal
 // becomes "where the hand is now". An unreadable device holds the last
@@ -92,6 +109,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace integrated_bringup {
@@ -106,11 +124,30 @@ inline constexpr std::size_t kHandJointMaxTips = std::min<std::size_t>(
 /// Floor of the trajectory speed (NUM-4): a speed divides a distance.
 inline constexpr double kHandJointMinSpeed = 1e-6;
 
+/// What the two lanes carry (header banner "Modes"). The integer values are
+/// the `mode` column of joint_ff.csv — append only.
+enum class HandJointMode : std::uint8_t {
+  kTracking = 0,            ///< reference follows joint goals, feedforward lane on
+  kDamping = 1,             ///< reference = measurement, feedforward 0
+  kDampingFeedforward = 2,  ///< reference = measurement, feedforward lane on
+};
+
+/// The YAML / parameter spelling of each mode, indexed by the enum value. The
+/// one place the words live (demo_controller_gui pins its list to these).
+inline constexpr std::array<std::string_view, 3> kHandJointModeNames = {"tracking", "damping",
+                                                                        "damping_feedforward"};
+
+/// Spelling → mode. Non-RT: throws std::runtime_error naming the three
+/// accepted values on anything else.
+[[nodiscard]] HandJointMode ParseHandJointMode(std::string_view text);
+[[nodiscard]] std::string_view HandJointModeName(HandJointMode mode) noexcept;
+
 /// The controller's YAML, parsed and range-checked. Pure data.
 struct HandJointConfig {
-  double trajectory_speed{1.0};               ///< [rad/s], > 0
-  double max_traj_velocity{2.0};              ///< [rad/s], ≥ trajectory_speed
-  rtc::params::DynamicsFeedforwardParams ff;  ///< the `gravity_ff` block
+  double trajectory_speed{1.0};                  ///< [rad/s], > 0
+  double max_traj_velocity{2.0};                 ///< [rad/s], ≥ trajectory_speed
+  rtc::params::DynamicsFeedforwardParams ff;     ///< the `gravity_ff` block
+  HandJointMode mode{HandJointMode::kTracking};  ///< `mode` key, default tracking
   /// ‖φ‖ above which a closed-chain projection is not trusted for the
   /// fingertip FK (ClosedChainHandFk). The torque hold is the handle's own
   /// `held` / `singular`, not this.
@@ -130,12 +167,17 @@ inline constexpr std::string_view kHandJointFfBlockKey = "gravity_ff";
 class HandJointController final : public rtc::RTControllerInterface {
  public:
   /// Runtime-tunable values, as the tick reads them (trivially copyable).
+  /// `mode` is the enum, never the string: the parse lives in the parameter
+  /// layer and the tick only compares.
   struct Gains {
     double trajectory_speed{1.0};
     double max_traj_velocity{2.0};
     bool ff_enabled{true};
     double ff_gain{1.0};
+    HandJointMode mode{HandJointMode::kTracking};
   };
+
+  static_assert(std::is_trivially_copyable_v<Gains>, "Gains rides a SeqLock");
 
   explicit HandJointController(std::string_view urdf_path);
   ~HandJointController() override;
@@ -237,6 +279,10 @@ class HandJointController final : public rtc::RTControllerInterface {
   // ── RT tick steps ────────────────────────────────────────────────────────
   void EvaluateModel(const rtc::ControllerState& state) noexcept;
   void AdvanceReference(const rtc::ControllerState& state, double dt) noexcept;
+  /// Reference = the measurement, velocity 0, goal = "here", trajectory off.
+  /// E-STOP and the two non-tracking modes. Counts as a seed (the output is
+  /// valid from this tick).
+  void HoldAtMeasurement(const rtc::ControllerState& state) noexcept;
   void ComputeFeedforward() noexcept;
   void FillOutput(const rtc::ControllerState& state, rtc::ControllerOutput& out) noexcept;
   void FillTickRecord(const rtc::ControllerState& state) noexcept;
@@ -279,7 +325,12 @@ class HandJointController final : public rtc::RTControllerInterface {
   bool estop_active_{false};
   bool readable_{false};
   bool seeded_{false};
-  bool need_reseed_{true};
+  /// Set by ResetTargetInitialization (lifecycle thread) and by the tick
+  /// (E-STOP release, return to tracking); consumed by the tick. Atomic for
+  /// the first writer, relaxed: it is a flag, not a hand-off of data.
+  std::atomic<bool> need_reseed_{true};
+  /// The mode the previous tick ran in: the edge detector of the re-seed.
+  HandJointMode mode_prev_{HandJointMode::kTracking};
   std::array<double, kHandJointMaxDof> q_ref_{};
   std::array<double, kHandJointMaxDof> qd_ref_{};
   std::array<double, kHandJointMaxDof> goal_{};
@@ -298,6 +349,10 @@ class HandJointController final : public rtc::RTControllerInterface {
   JointFeedforwardLogPod tick_{};
 
   // ── Cross-thread ─────────────────────────────────────────────────────────
+  /// One logical writer: LoadConfig, DeclareGainParametersImpl, the parameter
+  /// callback and SetGains all run on the lifecycle / executor side, never
+  /// concurrently with each other (rclcpp serializes parameter sets); the tick
+  /// only Loads.
   rtc::SeqLock<Gains> gains_lock_;
   std::atomic<bool> estopped_{false};
   std::atomic<std::uint32_t> goal_rejects_{0};

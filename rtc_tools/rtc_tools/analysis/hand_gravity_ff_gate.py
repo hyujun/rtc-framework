@@ -31,7 +31,10 @@ knob; every one is a CLI flag so a deviation is visible on the command line.
              ``on_mean <= --small-on-max-rad``.
   Excluded   reported, never judged.
   Global     every on-window row has ``ff_finite == 1``; every window row
-             (on and off) has ``held == 0``.
+             (on and off) has ``held == 0``; when the file has a ``mode``
+             column, every window row has ``mode == 0`` (tracking) — in the
+             other modes the reference IS the measurement, so e_j == 0 by
+             construction and a PASS would say nothing about the servo.
 
 ``--loop-discriminator`` names the joint whose row is annotated as the
 loop-consistency discriminator (a closed-chain joint whose gravity term is
@@ -294,6 +297,8 @@ class Summary:
     window_rows: int  # on + off windows
     held_rows: int  # window rows with held == 1
     held_ticks_max: int
+    has_mode: bool = False  # the file carries the `mode` column
+    non_tracking_rows: int = 0  # window rows with mode != 0
 
 
 def summarise(table: Table, th: Thresholds) -> Summary:
@@ -302,6 +307,8 @@ def summarise(table: Table, th: Thresholds) -> Summary:
     stats = {j: JointStat(j) for j in table.joints}
     ff_finite_violations = on_window_rows = window_total = held_rows = held_ticks_max = 0
     usable_on = usable_off = 0
+    has_mode = "mode" in table.columns
+    non_tracking_rows = 0
     for seg in segments:
         usable = seg.span_s >= th.min_segment_s
         win = window_rows(seg, th.window_s) if usable else []
@@ -337,6 +344,8 @@ def summarise(table: Table, th: Thresholds) -> Summary:
             held_rows += s.held_rows
             held_ticks_max = max(held_ticks_max, s.held_ticks_max)
             window_total += len(win)
+            if has_mode:
+                non_tracking_rows += sum(1 for r in win if r["mode"] != 0)
             if seg.ff_on:
                 s.ff_finite_violations = sum(1 for r in win if r["ff_finite"] != 1)
                 ff_finite_violations += s.ff_finite_violations
@@ -352,6 +361,8 @@ def summarise(table: Table, th: Thresholds) -> Summary:
         window_total,
         held_rows,
         held_ticks_max,
+        has_mode,
+        non_tracking_rows,
     )
 
 
@@ -525,6 +536,19 @@ def judge(
         )
     else:
         checks.append(Check("g.held", NOT_EVALUATED, "no window rows", "0", "no usable segment"))
+    if summary.has_mode and summary.window_rows:
+        checks.append(
+            Check(
+                "g.mode",
+                PASS if summary.non_tracking_rows == 0 else FAIL,
+                f"{summary.non_tracking_rows} / {summary.window_rows} window rows not in "
+                "tracking (mode != 0)",
+                "0",
+                ""
+                if summary.non_tracking_rows == 0
+                else "a damping mode makes q_ref = q: this gate judges tracking runs only",
+            )
+        )
     return checks
 
 

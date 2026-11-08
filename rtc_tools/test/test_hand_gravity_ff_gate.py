@@ -134,17 +134,17 @@ def aba(on_err=GOOD_ON, off_err=GOOD_OFF, spans=(12.0, 12.0, 12.0), per_row=None
     return rows
 
 
-def write_csv(path: Path, rows: list[dict]) -> Path:
+def write_csv(path: Path, rows: list[dict], header: list[str] = HEADER) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=HEADER)
+        w = csv.DictWriter(f, fieldnames=header)
         w.writeheader()
         w.writerows(rows)
     return path
 
 
-def run_judge(tmp_path, rows, th=TH, **kw):
-    table = load_joint_ff_csv(write_csv(tmp_path / "joint_ff.csv", rows))
+def run_judge(tmp_path, rows, th=TH, header: list[str] = HEADER, **kw):
+    table = load_joint_ff_csv(write_csv(tmp_path / "joint_ff.csv", rows, header))
     classes = classify(table.joints, DEFAULT_BIG, DEFAULT_SMALL, DEFAULT_EXCLUDE)
     return by_key(judge(summarise(table, th), classes, th, **kw))
 
@@ -441,6 +441,41 @@ def test_held_must_be_zero_on_every_window_row_on_or_off(tmp_path):
     assert held["g.held"].verdict == FAIL
     assert held["g.held"].note == "held_ticks max 7"
     assert overall(held.values()) == FAIL
+
+
+# The producer writes `mode` right after `ff_enabled`; the judge reads by name.
+HEADER_WITH_MODE = (
+    HEADER[: HEADER.index("ff_enabled") + 1] + ["mode"] + HEADER[HEADER.index("ff_enabled") + 1 :]
+)
+
+
+def test_a_file_without_mode_has_no_mode_check(tmp_path):
+    assert "g.mode" not in run_judge(tmp_path, aba())
+
+
+def test_window_rows_must_be_in_tracking_when_mode_is_logged(tmp_path):
+    clean = run_judge(tmp_path, aba(per_row=lambda t: {"mode": 0}), header=HEADER_WITH_MODE)
+    assert clean["g.mode"].verdict == PASS
+    assert clean["g.mode"].value == "0 / 903 window rows not in tracking (mode != 0)"
+
+    # A damping_feedforward stretch inside an on window: q_ref == q there, so
+    # the per-joint error would pass trivially — the gate must say so instead.
+    def damped_tail(t_in_seg):
+        return {"mode": 2} if t_in_seg >= 11.0 else {"mode": 0}
+
+    rows = aba(on_err=0.0, per_row=damped_tail)
+    damped = run_judge(tmp_path, rows, header=HEADER_WITH_MODE)
+    assert damped["g.mode"].verdict == FAIL
+    assert damped["g.mode"].value.startswith("303 / 903")  # 1.0 s + 1 row x 3 segments
+    assert "tracking runs only" in damped["g.mode"].note
+    assert overall(damped.values()) == FAIL
+    # outside the window it is not judged
+    early = run_judge(
+        tmp_path,
+        aba(per_row=lambda t: {"mode": 1} if t < 1.0 else {"mode": 0}),
+        header=HEADER_WITH_MODE,
+    )
+    assert early["g.mode"].verdict == PASS
 
 
 def test_overall_precedence():

@@ -18,6 +18,15 @@ FAIL judgement of such a run is `analyze_hand_gravity_ff`
 (rtc_tools.analysis.hand_gravity_ff_gate) — these figures show, they do not
 judge, and the statistics printed here are whole-segment numbers, not the
 judge's trailing windows.
+
+THE `mode` COLUMN IS OPTIONAL. When present it is an integer code of the
+controller's run mode: 0 tracking (the reference is the commanded one), 1
+damping (the reference follows the measurement, feedforward zero), 2
+damping_feedforward (the reference follows the measurement, the feedforward
+lane stays active). Non-tracking stretches are shaded, the status figure gets a
+mode lane, and the statistics split segments by `(ff_enabled, mode)`; in a
+non-tracking segment q_ref equals q by construction, so drift is printed
+instead of the tracking error. A file without the column renders as before.
 """
 
 from pathlib import Path
@@ -52,6 +61,11 @@ STATUS_LANES = (
 
 _OFF_COLOR = "0.5"
 _OFF_ALPHA = 0.12
+
+# Wire codes of the `mode` column: code -> (name, shade colour or None).
+MODE_NAMES = {0: "tracking", 1: "damping", 2: "damping_feedforward"}
+_MODE_COLORS = {1: "tab:orange", 2: "tab:purple"}
+_MODE_ALPHA = 0.14
 
 
 def _finish(save_dir, stem):
@@ -145,6 +159,36 @@ def _shade_off(axes, df):
     return [Patch(color=_OFF_COLOR, alpha=0.3, label="feedforward off")]
 
 
+def _mode_codes(df):
+    """Integer mode code per row, -1 where the cell is NaN (a line-break row or
+    an unparsed cell). All -1 without a `mode` column."""
+    if "mode" not in df.columns:
+        return np.full(len(df), -1, dtype=np.int64)
+    return df["mode"].fillna(-1).to_numpy(dtype=float).astype(np.int64)
+
+
+def _mode_name(code):
+    return MODE_NAMES.get(int(code), f"mode {int(code)}")
+
+
+def _shade_modes(axes, df):
+    """Shade the non-tracking `mode` stretches on all `axes`; returns legend handles.
+
+    NaN rows (inserted by `_with_line_breaks`) belong to no mode and stay
+    unshaded. Tracking is not shaded.
+    """
+    codes = _mode_codes(df)
+    t = df["timestamp"].to_numpy(dtype=float)
+    handles = []
+    for code in sorted(set(codes.tolist()) - {0, -1}):
+        color = _MODE_COLORS.get(code, "tab:red")
+        where = codes == code
+        for ax in axes:
+            _shade(ax, t, where, color, _MODE_ALPHA)
+        handles.append(Patch(color=color, alpha=0.3, label=_mode_name(code)))
+    return handles
+
+
 def _raster(ax, t, rows):
     """Draw `rows` = [(label, bool mask), ...] as one tick-mark lane each."""
     for i, (_, mask) in enumerate(rows):
@@ -191,7 +235,7 @@ def plot_joint_ff_tracking(df, save_dir=None):
         ax.set_ylabel("position (rad)")
         ax.grid(True, alpha=0.3)
     hide_unused_axes(axes, len(joints))
-    handles = _shade_off(axes[: len(joints)], df)
+    handles = _shade_off(axes[: len(joints)], df) + _shade_modes(axes[: len(joints)], df)
     lines, labels = axes[0].get_legend_handles_labels()
     axes[0].legend(
         handles=lines + handles, labels=labels + [h.get_label() for h in handles], fontsize=8
@@ -230,7 +274,7 @@ def plot_joint_ff_torque(df, save_dir=None):
         ax.set_ylabel("torque (N·m)")
         ax.grid(True, alpha=0.3)
     hide_unused_axes(axes, len(joints))
-    handles = _shade_off(axes[: len(joints)], df)
+    handles = _shade_off(axes[: len(joints)], df) + _shade_modes(axes[: len(joints)], df)
     lines, labels = axes[0].get_legend_handles_labels()
     axes[0].legend(
         handles=lines + handles, labels=labels + [h.get_label() for h in handles], fontsize=8
@@ -245,7 +289,10 @@ def plot_joint_ff_status(df, save_dir=None):
         return
 
     df = _with_line_breaks(df)
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+    has_mode = "mode" in df.columns
+    fig, axes = plt.subplots(
+        4 if has_mode else 3, 1, figsize=(14, 12 if has_mode else 10), sharex=True
+    )
     fig.suptitle("Gravity Feedforward — Status", fontsize=16, fontweight="bold")
     t = df["timestamp"]
     t_np = t.to_numpy(dtype=float)
@@ -268,23 +315,54 @@ def plot_joint_ff_status(df, save_dir=None):
     if "closure_error" in df.columns:
         axes[2].plot(t, df["closure_error"], linewidth=1.0, color="C4")
     axes[2].set_ylabel("closure_error")
-    axes[2].set_xlabel("Time (s)   —   grey band: feedforward off")
     axes[2].grid(True, alpha=0.3)
 
-    handles = _shade_off(axes, df)
+    if has_mode:
+        axes[3].step(t, df["mode"], where="post", linewidth=1.2, color="C5")
+        axes[3].set_yticks(list(MODE_NAMES))
+        axes[3].set_yticklabels([MODE_NAMES[k] for k in MODE_NAMES], fontsize=8)
+        axes[3].set_ylim(-0.4, max(MODE_NAMES) + 0.4)
+        axes[3].set_ylabel("mode")
+        axes[3].grid(True, alpha=0.3)
+    axes[-1].set_xlabel("Time (s)   —   grey band: feedforward off")
+
+    handles = _shade_off(axes, df) + _shade_modes(axes, df)
     if handles:
         axes[1].legend(handles=handles, fontsize=8, loc="upper right")
     _finish(save_dir, "joint_ff_status")
 
 
 def _segments(df):
-    """(ff_on, first row, last row) of each contiguous run of `ff_enabled`."""
+    """(ff_on, mode, first row, last row) of each contiguous run of `ff_enabled`,
+    split further where `mode` changes when the column exists (`mode` is None
+    otherwise)."""
     if "ff_enabled" not in df.columns or len(df) == 0:
         return []
     on = _flag(df, "ff_enabled")
-    starts = np.concatenate(([0], np.flatnonzero(np.diff(on.astype(np.int8)) != 0) + 1))
+    change = np.diff(on.astype(np.int64)) != 0
+    modes = None
+    if "mode" in df.columns:
+        modes = _mode_codes(df)
+        change |= np.diff(modes) != 0
+    starts = np.concatenate(([0], np.flatnonzero(change) + 1))
     ends = np.concatenate((starts[1:] - 1, [len(df) - 1]))
-    return [(bool(on[s]), int(s), int(e)) for s, e in zip(starts, ends, strict=True)]
+    return [
+        (bool(on[s]), None if modes is None else int(modes[s]), int(s), int(e))
+        for s, e in zip(starts, ends, strict=True)
+    ]
+
+
+def _drift_line(name, q, t):
+    """`name: drift … rad, mean |dq/dt| … rad/s` over the rows given, or None."""
+    ok = np.isfinite(q) & np.isfinite(t)
+    q, t = q[ok], t[ok]
+    if q.size < 2:
+        return None
+    dt = np.diff(t)
+    valid = dt > 0
+    rate = np.abs(np.diff(q))[valid] / dt[valid]
+    rate_txt = f"{np.mean(rate):.5f}" if rate.size else "n/a"
+    return f"    {name}: drift q(end) − q(start)={q[-1] - q[0]:+.5f} rad mean |dq/dt|={rate_txt} rad/s"
 
 
 def print_joint_ff_statistics(df):
@@ -315,14 +393,27 @@ def print_joint_ff_statistics(df):
     joints = joints_of(df)
     segments = _segments(df)
     print(f"\nJoints ({len(joints)}): {', '.join(joints) if joints else 'none'}")
-    print(f"Segments by ff_enabled ({len(segments)}):")
+    split_by = "(ff_enabled, mode)" if "mode" in df.columns else "ff_enabled"
+    print(f"Segments by {split_by} ({len(segments)}):")
     usable = _flag(df, "readable") & ~_flag(df, "estop")
-    for ff_on, s, e in segments:
+    for ff_on, mode, s, e in segments:
         rows = usable[s : e + 1]
+        mode_txt = "" if mode is None else f" mode={_mode_name(mode)}"
         print(
-            f"  [{s}:{e}] ff {'on ' if ff_on else 'off'} t={t[s]:.2f}..{t[e]:.2f} s "
+            f"  [{s}:{e}] ff {'on ' if ff_on else 'off'}{mode_txt} t={t[s]:.2f}..{t[e]:.2f} s "
             f"({t[e] - t[s]:.2f} s, {int(rows.sum())}/{e - s + 1} readable non-E-STOP rows)"
         )
+        if mode not in (None, 0):
+            # q_ref == q by construction here, so the tracking error says nothing.
+            for j in joints:
+                q = df[f"{Q_PREFIX}{j}"].to_numpy(dtype=float)[s : e + 1][rows]
+                line = _drift_line(j, q, t[s : e + 1][rows])
+                if line:
+                    tau = np.abs(df[f"{TAU_FF_PREFIX}{j}"].to_numpy(dtype=float)[s : e + 1][rows])
+                    if np.isfinite(tau).any():
+                        line += f" mean |tau_ff|={np.nanmean(tau):.5f} N·m"
+                    print(line)
+            continue
         for j in joints:
             err = np.abs(
                 df[f"{Q_REF_PREFIX}{j}"].to_numpy(dtype=float)[s : e + 1]
