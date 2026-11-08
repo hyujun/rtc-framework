@@ -1,0 +1,227 @@
+# MuJoCo Simulator — b7 humanoid whole body, floating base, two proto2 hands
+# ──────────────────────────────────────────────────────────────────────────
+# Robot-specific overrides for the agnostic mujoco_simulator_node.
+# Loaded by integrated_bringup/launch/sim_b7_loco.launch.py.
+#
+# Agnostic defaults + solver SSoT live in rtc_mujoco_sim/config/solver_param.yaml
+# (loaded first; this file overrides the robot-specific keys).
+# RTC controller param overrides live in integrated_bringup/config/b7_loco/sim.yaml.
+#
+# Every numeric array below is written with decimal points: a ROS 2 params
+# sequence takes its type from its entries, and one integer literal turns a
+# double array into an integer array the node refuses at construction.
+
+mujoco_simulator:
+  ros__parameters:
+    # ── Model ────────────────────────────────────────────────────────────────
+    # The private hand_description package's floating-base plant (the same
+    # arrangement as g1_p1b's scene): freejoint on the pelvis, floor, 46
+    # <position> servos (26 body + 10 per hand), keyframe "stand", pelvis
+    # ground-truth sensors + one torso IMU site + one contact sensor and one
+    # framepos per sole. Without that package the node does not start —
+    # intended; there is no public surrogate for this robot.
+    model_path: "package://hand_description/robots/cloid_b7_hand/mjcf/cloid_b7_floating.xml"
+
+    # ── Sync timeout ─────────────────────────────────────────────────────────
+    # ms. Max time to wait for a controller command per step.
+    sync_timeout_ms: 50.0
+
+    # ── Max Real-Time Factor ──────────────────────────────────────────────────
+    max_rtf: 1.0 # 0.0 = unlimited
+
+    # ── Viewer ───────────────────────────────────────────────────────────────
+    enable_viewer: true
+    viewer_refresh_rate: 60.0  # Hz
+
+    # ── Physics Timestep ──────────────────────────────────────────────────────
+    # The MJCF's <option timestep> is 0.002 = this control period (the node
+    # refuses a scene whose timestep × control_rate ≠ 1); the physics substep
+    # is 0.002 / 3, the one the model's own stance check integrates at.
+    physics_timestep: 0.002 # s — control period (= 1 / control_rate)
+    n_substeps: 3           # physics substeps per control cycle (substep = physics_timestep / n_substeps)
+
+    # ── Start / reset state ──────────────────────────────────────────────────
+    # The whole keyframe (freejoint pose, joint angles, ctrl) — the only way the
+    # pelvis starts at standing height; initial_qpos below covers the command
+    # joints alone and is kept equal to the keyframe (test_shipped_initial_qpos
+    # — its keyframe lane skips this profile: the scene is not in
+    # robot_descriptions, #952).
+    reset_keyframe: "stand"
+
+    # ── Position Servo Gains ─────────────────────────────────────────────────
+    # The MJCF's own <position kp kv> (legs 1000 / 20, arms 100 / 2, fingers
+    # 20 / 0.4) — SIM choices, not the robot's servo behaviour. With
+    # `pd_feedforward` commands the controller's feedforward torque is
+    # injected on top of this PD (qfrc_applied) and the group's gravity
+    # compensation is off, so standing is the servos' work.
+    use_yaml_servo_gains: false
+
+    # No projectile ball on this profile (the default is disabled): there is
+    # nothing to catch it with. /sim/launch_ball answers success: false.
+
+    # ── Robot Response (MuJoCo physics) ──────────────────────────────────────
+    # command_joint_names: matched to actuators by XML joint name. The union
+    #   over the robot groups must equal the model's actuated joints (46) or
+    #   Initialize() fails. The MJCF's actuator order interleaves the hands
+    #   after each arm; the groups below are matched by name, not position.
+    # state_joint_names:   published joints — spelled out so neither the
+    #   freejoint nor the hands' loop-passive joints land on a topic.
+    robot_response:
+      groups: ["b7", "p2_right", "p2_left"]
+      b7:
+        command_joint_names:
+          - left_hip_pitch_joint
+          - left_hip_roll_joint
+          - left_hip_yaw_joint
+          - left_knee_joint
+          - left_ankle_pitch_joint
+          - left_ankle_roll_joint
+          - right_hip_pitch_joint
+          - right_hip_roll_joint
+          - right_hip_yaw_joint
+          - right_knee_joint
+          - right_ankle_pitch_joint
+          - right_ankle_roll_joint
+          - left_shoulder_pitch_joint
+          - left_shoulder_roll_joint
+          - left_shoulder_yaw_joint
+          - left_elbow_joint
+          - left_wrist_yaw_joint
+          - left_wrist_pitch_joint
+          - left_wrist_roll_joint
+          - right_shoulder_pitch_joint
+          - right_shoulder_roll_joint
+          - right_shoulder_yaw_joint
+          - right_elbow_joint
+          - right_wrist_yaw_joint
+          - right_wrist_pitch_joint
+          - right_wrist_roll_joint
+        state_joint_names:
+          - left_hip_pitch_joint
+          - left_hip_roll_joint
+          - left_hip_yaw_joint
+          - left_knee_joint
+          - left_ankle_pitch_joint
+          - left_ankle_roll_joint
+          - right_hip_pitch_joint
+          - right_hip_roll_joint
+          - right_hip_yaw_joint
+          - right_knee_joint
+          - right_ankle_pitch_joint
+          - right_ankle_roll_joint
+          - left_shoulder_pitch_joint
+          - left_shoulder_roll_joint
+          - left_shoulder_yaw_joint
+          - left_elbow_joint
+          - left_wrist_yaw_joint
+          - left_wrist_pitch_joint
+          - left_wrist_roll_joint
+          - right_shoulder_pitch_joint
+          - right_shoulder_roll_joint
+          - right_shoulder_yaw_joint
+          - right_elbow_joint
+          - right_wrist_yaw_joint
+          - right_wrist_pitch_joint
+          - right_wrist_roll_joint
+        command_topic: "/b7/joint_command"
+        state_topic: "/b7/joint_states"
+        # Startup + reset pose of the command joints (rad, command_joint_names
+        # order) = the `stand` keyframe (hips −0.2528, knees 0.6, ankles
+        # −0.3472, arms 0). The keyframe wins for the freejoint; these must
+        # agree with it or the YAML silently overrides the keyframe edit.
+        initial_qpos: [-0.2528, 0.0, 0.0, 0.6, -0.3472, 0.0, -0.2528, 0.0, 0.0, 0.6, -0.3472, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        # ── Sensors ──────────────────────────────────────────────────────────
+        # Every sensor of the MJCF, by name (not "auto", so a sensor added to
+        # the scene later does not silently widen the topic): the pelvis ground
+        # truth and the torso IMU feed the controller's base_state lane
+        # (sim.yaml), the two sole contact sensors are picked up by the contact
+        # wrench lane below and also published raw here (17 values each:
+        # found, force[3], torque[3], dist, pos[3], normal[3], tangent[3]),
+        # and the two sole framepos give the foot positions for slip metrics.
+        sensor_topic: "/b7/sim_sensors"
+        sensor_names:
+          - "pelvis_pos"
+          - "pelvis_quat"
+          - "pelvis_linvel"
+          - "pelvis_angvel"
+          - "imu_torso_angular_velocity"
+          - "imu_torso_linear_acceleration"
+          - "left_sole_contact"
+          - "right_sole_contact"
+          - "left_sole_pos"
+          - "right_sole_pos"
+        contact_wrench:
+          enabled: true
+          topic_prefix: "/b7"
+          # target_name = the MJCF contact sensor's name, so the topics are
+          #   /b7/<side>_sole_contact/contact_wrench
+          # The suffix pair maps sensor → reference site:
+          #   "left_sole_contact" -(strip "_contact")-> "left_sole"
+          #                       -(append "_ft_site")-> site "left_sole_ft_site"
+          sensor_name_suffixes: ["_contact"]
+          reference_site_suffixes: ["_ft_site"]
+          # The site sits on the sole's bottom face, axes = the foot's.
+          reference_frame: "site"
+          publish_state: true   # adds /b7/<target>/contact_state (Bool, edge-triggered)
+          publish_debug: false  # true also emits contact_point + contact_depth
+          visualize: true         # orange force arrows in the viewer (Shift+F toggles)
+          visualize_scale: 0.001  # m/N — a standing foot (≈ 320 N) draws 32 cm
+      # The two hands: ten actuated joints each (the proto2 motor slot order
+      # of config/b7_p2/udp_hand_node_p2.yaml); the loop-passive joints are
+      # driven by the MJCF's equality constraints and are not published.
+      # Topics follow the proto2 driver's layout (/p2/<side>/...).
+      p2_right:
+        command_joint_names:
+          - right_cmc_01_joint
+          - right_cmc_02_joint
+          - right_thumb_mcp_joint
+          - right_active_thumb_pip_link02_joint
+          - right_index_mcp_rotate_joint
+          - right_index_mcp_joint
+          - right_active_index_pip_joint
+          - right_middle_mcp_joint
+          - right_active_middle_pip_joint
+          - right_active_ring_mcp_joint
+        state_joint_names:
+          - right_cmc_01_joint
+          - right_cmc_02_joint
+          - right_thumb_mcp_joint
+          - right_active_thumb_pip_link02_joint
+          - right_index_mcp_rotate_joint
+          - right_index_mcp_joint
+          - right_active_index_pip_joint
+          - right_middle_mcp_joint
+          - right_active_middle_pip_joint
+          - right_active_ring_mcp_joint
+        command_topic: "/p2/right/joint_command"
+        state_topic: "/p2/right/joint_states"
+        # Open hand = the `stand` keyframe's zeros.
+        initial_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      p2_left:
+        command_joint_names:
+          - left_cmc_01_joint
+          - left_cmc_02_joint
+          - left_thumb_mcp_joint
+          - left_active_thumb_pip_link02_joint
+          - left_index_mcp_rotate_joint
+          - left_index_mcp_joint
+          - left_active_index_pip_link02_joint
+          - left_middle_mcp_joint
+          - left_active_middle_pip_link02_joint
+          - left_active_ring_mcp_joint
+        state_joint_names:
+          - left_cmc_01_joint
+          - left_cmc_02_joint
+          - left_thumb_mcp_joint
+          - left_active_thumb_pip_link02_joint
+          - left_index_mcp_rotate_joint
+          - left_index_mcp_joint
+          - left_active_index_pip_link02_joint
+          - left_middle_mcp_joint
+          - left_active_middle_pip_link02_joint
+          - left_active_ring_mcp_joint
+        command_topic: "/p2/left/joint_command"
+        state_topic: "/p2/left/joint_states"
+        initial_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # No fake_response groups: every device of this profile is physics.

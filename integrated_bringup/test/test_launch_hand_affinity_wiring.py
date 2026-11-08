@@ -39,6 +39,7 @@ SIM_LAUNCH_FILES = [
     "sim_iiwa7_leap.launch.py",
     "sim_g1_p1b.launch.py",
     "sim_g1_loco.launch.py",
+    "sim_b7_loco.launch.py",
 ]
 
 
