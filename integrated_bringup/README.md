@@ -205,7 +205,7 @@ ros2 param set /hand_joint_controller/hand_joint_controller mode damping        
 ```
 
 - device group 은 `p2_right` 하나 (관절 10, URDF 의 접두 없는 이름 — `b7_loco` 의 `right_*` roster 와 다르다). 컨트롤러는 `hand_joint_controller` 뿐이다 ([hand-joint-controller.md](docs/hand-joint-controller.md)): `joint_goal` 을 quintic 으로 따르고 매 tick `pd_feedforward` 로 폐쇄 체인 모델의 중력 토크 g_a 를 feedforward 에 싣는다.
-- 모델은 비공개 `hand_description` 의 `robots/proto2` (xacro 기본 인자 → 손가락 +Z, 손바닥 +X, 기본 중력 −Z = **손가락 위** 장착). sim scene (`scene_right_p2.xml`) 은 MJCF 프레임에서 중력을 (0, −9.81, 0) 으로 두고 timestep 을 0.002 로 덮어 같은 장착 · 500 Hz 를 만든다. 그 패키지가 없으면 두 노드가 뜨지 않는 것이 의도다 — configure gtest 는 in-repo 대리 손 (`robots/p1b_surrogate` 단독 sidecar) 위에서 돈다.
+- 모델은 비공개 `hand_description` 의 `robots/proto2` (xacro 기본 인자 → 손가락 +Z, 손바닥 +X, 기본 중력 −Z = **손가락 위** 장착). sim scene (`scene_right_p2.xml`) 도 같은 규약이라 기본 중력 −Z 가 같은 장착이고, timestep 만 0.002 로 덮어 500 Hz 를 만든다. 그 패키지가 없으면 두 노드가 뜨지 않는 것이 의도다 — configure gtest 는 in-repo 대리 손 (`robots/p1b_surrogate` 단독 sidecar) 위에서 돈다.
 - sim 의 servo 는 **일부러 낮다** (`servo_kp` 1 · `servo_kd` 0.05, `use_yaml_servo_gains: true`): MJCF 자체의 kp 20 은 feedforward 없이도 손가락을 들어 올려 결함을 가린다. 판정은 mid 자세 hold 에서 `gravity_ff.enabled` 를 on → off → on 으로 돌린 `joint_ff.csv` 를 `analyze_hand_gravity_ff <session>` 이 읽는다 (큰 5 관절 |e| ≤ 1 mrad 이고 off 의 5 % 이하 등 — 문턱은 그 도구의 기본값, 근거는 [testing.md](../docs/testing.md)).
 - `enable_mpc` 는 CPU layout 만 고른다 (기본 `false`). `mpc_engine` 인자는 없다. GUI 는 `--robot p2` (팔 열이 비고 손 10 개만; Hand Joint 패널이 `mode` 를, Gains 패널이 `gravity_ff.*` · `trajectory_speed` 를 쓴다).
 
