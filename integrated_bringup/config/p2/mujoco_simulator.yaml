@@ -17,14 +17,13 @@ mujoco_simulator:
     # The private hand_description package's hand-only scene: the right hand's
     # MJCF with its four-bar loops closed at the p1b pins (the same loops as
     # the URDF sidecar the controller's model uses), palm fixed at the world
-    # origin. The scene file is the one place two things are overridden AFTER
-    # the hand's <include> (MuJoCo merges repeated <option> in document order):
-    #   - gravity: (0, −9.81, 0) in the MJCF frame. The MJCF's fingers point +Y
-    #     and its palm normal is +Z, so this is the FINGERS-UP mount the
-    #     controller's URDF model implies (fingers +Z, default gravity −Z);
-    #   - timestep: 0.002 (the hand file's own is 0.001), so that one control
-    #     period is one timestep at 500 Hz — the node refuses a scene whose
-    #     timestep × control_rate ≠ 1. The physics substep below is 0.001.
+    # origin in the URDF root convention — fingers +Z, palm face +X — so the
+    # scene's DEFAULT gravity (0, 0, −9.81) is the FINGERS-UP mount the
+    # controller's model implies (p2/_base.yaml). The scene overrides one thing
+    # AFTER the hand's <include> (MuJoCo merges repeated <option> in document
+    # order): timestep 0.002 (the hand file's own is 0.001), so that one
+    # control period is one timestep at 500 Hz — the node refuses a scene
+    # whose timestep × control_rate ≠ 1. The physics substep below is 0.001.
     # Without that package the node does not start — intended; there is no
     # public surrogate for this hand.
     model_path: "package://hand_description/robots/proto2/mjcf/scene_right_p2.xml"

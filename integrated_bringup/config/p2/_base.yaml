@@ -18,8 +18,9 @@
 #     xacro arguments (base_link → palm with rpy (0, 0, π/2)): in that model the
 #     palm normal is +X and the fingers point +Z of the root, so the model's
 #     default gravity (−Z of the root frame) is a hand mounted FINGERS UP.
-#     The simulator scene (mujoco_simulator.yaml) points its gravity the same
-#     way in the MJCF's frame; hardware is whatever the bench mounts;
+#     The simulator scene (mujoco_simulator.yaml) places the hand in the same
+#     root convention, so its default gravity is the same mount; hardware is
+#     whatever the bench mounts;
 #   - extended URDF: the five four-bar loop closures come from the sidecar
 #     next to the URDF. The controller's gravity term is the reduced g_a of
 #     the closed chain, so the loop-passive joints' weight is included.
@@ -56,9 +57,11 @@
         # controller-facing finger order (thumb, index, middle, ring); the
         # `*_virtual_axis` links are the fingertip end-effector frames of the
         # URDF (not the four-bar pins). The root is the palm, not base_link:
-        # base_link only carries the mounting rotation, and the palm is the
-        # frame the MJCF places at its world origin, so fingertip poses are
-        # comparable between controller and simulator without a transform.
+        # base_link only carries the mounting rotation. The palm frame is NOT
+        # the simulator's world frame: the sim places the hand in the
+        # base_link convention (fingers +Z, palm face +X), so a fingertip pose
+        # of this model is the sim's world pose rotated by the xacro's
+        # base_link → palm rpy (0, 0, π/2).
         p2_right:
           root_link: "palm"
           tip_links: ["thumb_virtual_axis", "index_virtual_axis", "middle_virtual_axis", "ring_virtual_axis"]
