@@ -45,6 +45,7 @@ void TrajectoryInterpolator::Interpolate(uint64_t now_ns, Eigen::Ref<Eigen::Vect
                                          InterpMeta& meta_out) noexcept {
   meta_out.valid = false;
   meta_out.beyond_horizon = false;
+  meta_out.floating_unsupported = false;
   meta_out.progress = 0.0;
 
   if (!has_solution_) {

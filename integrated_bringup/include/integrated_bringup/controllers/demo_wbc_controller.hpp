@@ -32,6 +32,7 @@
 #include "rtc_mpc/logging/mpc_timing_logger.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
+#include "rtc_mpc/model/wb_layout.hpp"
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
 #include "rtc_mpc/thread/mock_mpc_thread.hpp"
 #include "rtc_mpc/thread/mpc_thread.hpp"

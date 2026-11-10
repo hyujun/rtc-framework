@@ -120,6 +120,24 @@ TEST_F(ContactLightMPCTest, InitSucceedsOnValidContext) {
   EXPECT_EQ(mpc.n_contact_vars(), 6);  // 2×3
 }
 
+TEST_F(ContactLightMPCTest, InitRejectsFloatingBaseModel) {
+  // The shipped OCPs are fixed-base torque models; a free-flyer model's
+  // kinodynamic input would not match them, so Init refuses it explicitly.
+  const pinocchio::Model floating = rtc::mpc::test_utils::BuildPandaFreeFlyer();
+  rtc::mpc::RobotModelHandler handler;
+  ASSERT_EQ(handler.Init(floating, YAML::Load(R"(
+end_effector_frame: panda_hand
+base_frame: universe
+contact_frames: []
+)")),
+            rtc::mpc::RobotModelInitError::kNoError);
+  ASSERT_TRUE(handler.floating_base());
+  rtc::mpc::ContactLightMPC mpc;
+  EXPECT_EQ(mpc.Init(solver_cfg_, handler, limits_, ctx_),
+            rtc::mpc::MPCInitError::kFloatingBaseUnsupported);
+  EXPECT_FALSE(mpc.Initialised());
+}
+
 TEST_F(ContactLightMPCTest, InitRejectsUninitialisedModel) {
   rtc::mpc::RobotModelHandler empty;
   rtc::mpc::ContactLightMPC mpc;

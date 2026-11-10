@@ -24,6 +24,7 @@
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/multibody.hpp>
+#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
 namespace rtc::mpc::test_utils {
@@ -41,6 +42,14 @@ contact_frames:
   - name: panda_rightfinger
     dim: 3
 )";
+
+/// The Panda on a free-flyer root: the suites' floating-base model (nq = nv + 1).
+/// The URDF-missing GTEST_SKIP stays in each SetUp (see the file comment).
+inline pinocchio::Model BuildPandaFreeFlyer() {
+  pinocchio::Model model;
+  pinocchio::urdf::buildModel(kPandaUrdf, pinocchio::JointModelFreeFlyer(), model);
+  return model;
+}
 
 /// The end-effector pose at the neutral configuration — the suites' default
 /// ee_target.

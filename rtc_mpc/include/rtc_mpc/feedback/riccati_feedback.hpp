@@ -4,18 +4,24 @@
 /// @file riccati_feedback.hpp
 /// @brief Riccati-gain feedback for robustifying the MPC reference.
 ///
-/// Computes @f$ u_{fb} = s \cdot K \cdot \Delta x @f$ where
-/// @f$ \Delta x = \begin{bmatrix} q_{curr} - q_{ref} \\ v_{curr} - v_{ref}
-/// \end{bmatrix} @f$,
-/// `K` is the Riccati gain at the current node (nearest-neighbour lookup,
-/// never interpolated — linear interpolation of gain matrices is not
-/// guaranteed to preserve the stabilising property), and `s ∈ [0, 1]` is a
-/// runtime-tunable scale so the feedback can be smoothly faded in.
+/// Computes @f$ u_{fb} = s \cdot K \cdot \Delta x @f$ where `K` is the Riccati
+/// gain at the current node (nearest-neighbour lookup, never interpolated —
+/// linear interpolation of gain matrices is not guaranteed to preserve the
+/// stabilising property) and `s ∈ [0, 1]` is a runtime-tunable scale so the
+/// feedback can be smoothly faded in. `Δx` is the state-tangent difference
+/// (`ndx = 2·nv` columns of `K`), obtained one of two ways:
+/// - @ref Compute forms the Euclidean @f$ \Delta x = [q_{curr} - q_{ref};
+///   v_{curr} - v_{ref}] @f$ itself — valid only when every joint has
+///   `nq == nv` (then `nq + nv == ndx`); otherwise it writes zeros.
+/// - @ref ComputeFromDelta takes a ready `Δx`, e.g. from
+///   `WbLayout::StateDifference` (tangent difference on a free-flyer base).
 ///
-/// Two consumption modes:
-/// - `accel_only = true` (default): only the first `nv` rows of `u_fb` are
-///   written. Intended for downstream TSID task feedforward where the
-///   Riccati output is fused with the interpolator's `a_ff` term.
+/// Which rows of `u_fb` are written:
+/// - `accel_only = true` (default): only the joint-acceleration rows of the
+///   gain output, `[acc_row_offset, acc_row_offset + n_acc)`, copied to the
+///   front of `u_fb_out`. @ref Init sets the fixed-base torque default (row
+///   0, `max_nv` rows); a kinodynamic layout sets them with @ref SetAccelRows
+///   so the wrench rows are never mistaken for accelerations.
 /// - `accel_only = false`: the full `nu`-dim feedback is written; caller
 ///   handles both acceleration and contact-force feedforward.
 ///
@@ -69,39 +75,63 @@ class RiccatiFeedback {
   RiccatiFeedback& operator=(RiccatiFeedback&&) = delete;
 
   /// @brief Allocate workspace. Call once during controller Init.
-  /// @param max_nv  velocity dim (upper bound; @ref Compute accepts any
-  ///                `nv ≤ max_nv`)
-  /// @param max_nu  control-input dim
-  /// @param max_nx  state dim (typically `nq + nv`)
-  void Init(int max_nv, int max_nu, int max_nx);
+  /// @param max_nv   velocity dim upper bound (@ref Compute accepts any
+  ///                 `nv ≤ max_nv`; also the default accel row count)
+  /// @param max_nu   control-input dim upper bound (gain rows)
+  /// @param max_ndx  state-tangent dim upper bound (gain columns)
+  void Init(int max_nv, int max_nu, int max_ndx);
 
   /// @brief Install a new Riccati gain matrix.
-  /// @param K_data  pointer to row-major `nu × nx` data, read as
-  ///                `K_data[row * nx + col]` — the row stride is the actual
-  ///                `nx`, the layout @ref PackRiccatiGainRowMajor writes
+  /// @param K_data  pointer to row-major `nu × ndx` data, read as
+  ///                `K_data[row * ndx + col]` — the row stride is the actual
+  ///                `ndx`, the layout @ref PackRiccatiGainRowMajor writes
   /// @param nu      actual control dim (must satisfy `nu ≤ max_nu`)
-  /// @param nx      actual state dim (must satisfy `nx ≤ max_nx`)
-  /// @note No-op if bounds are violated.
-  void SetGain(const double* K_data, int nu, int nx) noexcept;
+  /// @param ndx     actual state-tangent dim (must satisfy `ndx ≤ max_ndx`)
+  /// @note No-op (gain cleared) if bounds are violated or the data is not
+  ///       finite — a NaN in `K` would poison every output even at zero error.
+  void SetGain(const double* K_data, int nu, int ndx) noexcept;
 
-  /// @brief Compute @f$ u_{fb} = s \cdot K \cdot \Delta x @f$.
+  /// @brief Compute @f$ u_{fb} = s \cdot K \cdot \Delta x @f$ from the
+  ///        Euclidean difference of configurations and velocities.
   ///
   /// @param q_curr   current joint position (size nq)
   /// @param v_curr   current joint velocity (size nv)
   /// @param q_ref    reference joint position (size nq)
   /// @param v_ref    reference joint velocity (size nv)
-  /// @param u_fb_out output buffer; at minimum `nv` entries are written,
-  ///                 `nu` entries when @ref SetAccelOnly(false)
+  /// @param u_fb_out output buffer; the accel rows are written in accel-only
+  ///                 mode, `nu` entries otherwise; the rest is zeroed
   ///
-  /// On @f$ \|\Delta x\| > `max_delta_x_norm_` @f$, `Δx` is scaled so the
-  /// effective @f$ u_{fb} @f$ magnitude stays bounded.
+  /// Writes zeros when `nq + nv != ndx` (a configuration with more
+  /// coordinates than tangent entries has no Euclidean `Δq`; use
+  /// @ref ComputeFromDelta). On @f$ \|\Delta x\| > @f$ `max_delta_x_norm_`,
+  /// `Δx` is scaled so the effective @f$ u_{fb} @f$ magnitude stays bounded.
   void Compute(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
                const Eigen::Ref<const Eigen::VectorXd>& v_curr,
                const Eigen::Ref<const Eigen::VectorXd>& q_ref,
                const Eigen::Ref<const Eigen::VectorXd>& v_ref,
                Eigen::Ref<Eigen::VectorXd> u_fb_out) noexcept;
 
-  /// @brief Runtime gain scale, clamped to `[0, 1]`.
+  /// @brief Compute @f$ u_{fb} = s \cdot K \cdot \Delta x @f$ from a ready
+  ///        state-tangent difference (size `ndx`, as installed by
+  ///        @ref SetGain). Same scaling, cap and row selection as
+  ///        @ref Compute.
+  /// @return false (zeros written) when there is no gain, `dx` has the wrong
+  ///         size, or `dx` is not finite.
+  [[nodiscard]] bool ComputeFromDelta(const Eigen::Ref<const Eigen::VectorXd>& dx,
+                                      Eigen::Ref<Eigen::VectorXd> u_fb_out) noexcept;
+
+  /// @brief Which gain-output rows are the joint accelerations (accel-only
+  ///        mode copies exactly these to the front of `u_fb_out`).
+  /// @param offset  first acceleration row of `u`
+  /// @param n       number of acceleration rows
+  /// @return false (unchanged) when the block does not fit `max_nu`.
+  [[nodiscard]] bool SetAccelRows(int offset, int n) noexcept;
+
+  [[nodiscard]] int AccelRowOffset() const noexcept { return acc_row_offset_; }
+
+  [[nodiscard]] int AccelRows() const noexcept { return acc_rows_; }
+
+  /// @brief Runtime gain scale, clamped to `[0, 1]`; a non-finite value is ignored.
   void SetGainScale(double scale) noexcept;
 
   [[nodiscard]] double GainScale() const noexcept { return gain_scale_; }
@@ -117,18 +147,25 @@ class RiccatiFeedback {
 
   [[nodiscard]] double MaxDeltaXNorm() const noexcept { return max_delta_x_norm_; }
 
-  [[nodiscard]] bool HasGain() const noexcept { return nu_ > 0 && nx_ > 0; }
+  [[nodiscard]] bool HasGain() const noexcept { return nu_ > 0 && ndx_ > 0; }
 
  private:
-  Eigen::MatrixXd K_;         // nu × nx (allocated max_nu × max_nx)
-  Eigen::VectorXd dx_;        // nx     (allocated max_nx)
+  /// Shared tail of both Compute paths: cap, scale, multiply, select rows.
+  /// Zeros the output and returns false when `dx_` is not finite.
+  bool Apply(Eigen::Ref<Eigen::VectorXd> u_fb_out) noexcept;
+
+  Eigen::MatrixXd K_;         // nu × ndx (allocated max_nu × max_ndx)
+  Eigen::VectorXd dx_;        // ndx    (allocated max_ndx)
   Eigen::VectorXd u_fb_raw_;  // nu     (allocated max_nu)
 
   int max_nv_{0};
   int max_nu_{0};
-  int max_nx_{0};
-  int nu_{0};  ///< Actual gain rows after SetGain (0 == uninitialised)
-  int nx_{0};  ///< Actual gain columns (state-tangent dim)
+  int max_ndx_{0};
+  int nu_{0};   ///< Actual gain rows after SetGain (0 == uninitialised)
+  int ndx_{0};  ///< Actual gain columns (state-tangent dim)
+
+  int acc_row_offset_{0};
+  int acc_rows_{0};  ///< set by Init (fixed-base default) or SetAccelRows
 
   double gain_scale_{1.0};
   bool accel_only_{true};

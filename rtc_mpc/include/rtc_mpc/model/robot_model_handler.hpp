@@ -18,6 +18,7 @@
 /// - `Init` never throws; validation failures return an error code so
 ///   callers on the solve-preparation path can degrade gracefully.
 
+#include "rtc_mpc/model/wb_layout.hpp"
 #include "rtc_mpc/types/contact_plan_types.hpp"
 
 #pragma GCC diagnostic push
@@ -41,11 +42,12 @@ namespace rtc::mpc {
 enum class RobotModelInitError {
   kNoError = 0,
   kModelAlreadyInitialised,
-  kMissingEndEffectorFrame,  ///< YAML `end_effector_frame` not in model
-  kMissingContactFrame,      ///< a YAML `contact_frames[i].name` not in model
-  kInvalidContactDim,        ///< contact frame dim ∉ {3, 6}
-  kInvalidYamlSchema,        ///< structure missing required keys
-  kMissingBaseFrame,         ///< YAML `base_frame` set but not in model
+  kMissingEndEffectorFrame,         ///< YAML `end_effector_frame` not in model
+  kMissingContactFrame,             ///< a YAML `contact_frames[i].name` not in model
+  kInvalidContactDim,               ///< contact frame dim ∉ {3, 6}
+  kInvalidYamlSchema,               ///< structure missing required keys
+  kMissingBaseFrame,                ///< YAML `base_frame` set but not in model
+  kBaseFrameNotUniverseOnFloating,  ///< floating-base model with a `base_frame` other than universe
 };
 
 /// YAML schema expected by @ref RobotModelHandler::Init:
@@ -64,7 +66,11 @@ enum class RobotModelInitError {
 ///
 /// All frame names must exist in the `pinocchio::Model` passed to `Init`.
 /// Missing `base_frame` is reported as @c kInvalidYamlSchema (no implicit
-/// universe fallback — that was removed in F-4).
+/// universe fallback — that was removed in F-4). On a floating-base model
+/// `base_frame` must be `universe`: the base pose is part of the state, so no
+/// body frame is q-independent and @ref base_oMf would be meaningless
+/// (@c kBaseFrameNotUniverseOnFloating). Task targets relative to the base are
+/// the consumer's transform.
 class RobotModelHandler {
  public:
   RobotModelHandler() = default;
@@ -90,10 +96,23 @@ class RobotModelHandler {
   // ── Dimension accessors (all require Initialised()==true) ────────────────
   [[nodiscard]] int nq() const noexcept;
   [[nodiscard]] int nv() const noexcept;
-  /// @brief Control dim. For fixed-base manipulators `nu == nv`. When/if
-  /// rtc_mpc gains floating-base support this will diverge from `nv`; keep
-  /// callers using `nu()` rather than `nv()` for control sizing.
-  [[nodiscard]] int nu() const noexcept;
+
+  /// @brief Control dim. Fixed base: identity torque input, `nu == nv`.
+  /// Floating base: the kinodynamic input `[W_1 … W_nc; q̈_j]`, so
+  /// `nu == Σ contact_frames[i].dim + nv − n_base_v()`. Size controls with
+  /// `nu()`, never `nv()`. The arithmetic lives in @ref WbLayout.
+  [[nodiscard]] int nu() const noexcept { return layout_.nu; }
+
+  /// @return true when the model's root is a free-flyer.
+  [[nodiscard]] bool floating_base() const noexcept { return layout_.floating_base(); }
+
+  /// @return tangent entries the base occupies at the front of `v`: the
+  ///         free-flyer's six, or 0 on a fixed base.
+  [[nodiscard]] int n_base_v() const noexcept { return layout_.n_base_v; }
+
+  /// @return the whole-body layout of this model and its contact frames,
+  ///         computed once at @ref Init (empty before).
+  [[nodiscard]] const WbLayout& layout() const noexcept { return layout_; }
 
   [[nodiscard]] int n_contacts() const noexcept { return static_cast<int>(contact_frames_.size()); }
 
@@ -116,7 +135,8 @@ class RobotModelHandler {
 
   /// @return World pose of the base frame, computed at @ref Init with the
   /// model's neutral configuration. Valid because base_frame must be a
-  /// fixed (q-independent) frame — placement does not change with q.
+  /// fixed (q-independent) frame — placement does not change with q; on a
+  /// floating-base model only universe qualifies, which @ref Init enforces.
   /// Identity when @ref base_frame_is_universe is true.
   [[nodiscard]] const pinocchio::SE3& base_oMf() const noexcept { return base_oMf_; }
 
@@ -129,6 +149,7 @@ class RobotModelHandler {
  private:
   const pinocchio::Model* model_{nullptr};
   int ee_frame_id_{-1};
+  WbLayout layout_{};
   // Base frame for SE3 control. Always 0..nframes-1 after Init (F-4 strict).
   // base_is_universe_=true ⇔ base_frame_id_=0 (Pinocchio universe).
   int base_frame_id_{0};

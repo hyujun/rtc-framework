@@ -1210,7 +1210,8 @@ void DemoWbcController::ConfigureMpc(const YAML::Node& cfg) {
     mpc_lambda_ref_ = Eigen::VectorXd::Zero(std::max(1, mpc_n_contact));
     mpc_u_fb_ = Eigen::VectorXd::Zero(mpc_nv);
 
-    mpc_manager_.Init(mpc_cfg, mpc_nq, mpc_nv, mpc_n_contact);
+    mpc_manager_.Init(mpc_cfg,
+                      rtc::mpc::WbLayout::FromModel(*combined_cache_.model(), mpc_n_contact));
     const char* active_engine = (mpc_engine_ == MpcEngine::kHandler) ? "handler" : "mock";
     RCLCPP_INFO(logger_,
                 "MPC integration: enabled=%d engine=%s (yaml=%s) nq=%d nv=%d "

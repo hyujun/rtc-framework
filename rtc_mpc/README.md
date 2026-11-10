@@ -27,7 +27,8 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `types/` | `mpc_solution_types.hpp` | `MPCSolution` · `MPCStateSnapshot` (trivially copyable, 고정 용량 — free-flyer + 관절 + 접촉 변수 상한, `SolverStatus` · 잔차 · provenance 포함) |
 | `types/` | `wbc_reference.hpp` | `WbcReference` — 하류 whole-body 컨트롤러에 넘기는 tick 당 참조 POD (규약은 헤더) |
 | `types/` | `contact_plan_types.hpp` | `ContactFrameInfo` · `ContactPhase` · `ContactPlan` (non-RT, OCP 빌드 경로) |
-| `model/` | `robot_model_handler.hpp` | `pinocchio::Model` 래퍼 + YAML frame 해석 |
+| `model/` | `robot_model_handler.hpp` | `pinocchio::Model` 래퍼 + YAML frame 해석 (부동 베이스 감지, kinodynamic `nu`) |
+| `model/` | `wb_layout.hpp` | 전신 상태 · 입력 layout 한 곳 — free-flyer `[p, q_xyzw]` · LOCAL twist · `[W_1 … W_nc; q̈_j]` · tangent 상태 차 (`StateDifference`) |
 | `phase/` | `phase_manager_base.hpp` | 순수 가상 FSM 경계. 구체 구현은 하위 bringup 패키지가 갖는다 |
 | `phase/` | `phase_cost_config.hpp` | cost POD + no-throw YAML factory |
 | `phase/` | `phase_context.hpp` | manager 가 OCP builder 에 넘기는 묶음 (`ocp_type` dispatch key 포함) |
@@ -51,9 +52,9 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 
 - Robot-agnostic: 고정 DoF · 로봇 이름 · frame 문자열 하드코딩이 없다. 토폴로지는 `pinocchio::Model` + YAML 에서만 온다 (ARCH-1).
 - RT 데이터는 trivially copyable 이다: `MPCSolution` · `MPCStateSnapshot` · `WbcReference` 는 SeqLock / TripleBuffer 로 건너가므로 동적 멤버가 없다. `TripleBuffer` 슬롯과 보간기의 사본은 생성 · Init 때 heap 에 한 번 잡고 (MPC thread 의 scratch · 이전 해는 인라인), 매 solve 는 Riccati gain 을 앞 노드 몇 개만 싣는다.
-- Fixed-base 만 지원한다: cubic Hermite 는 Euclidean `q` 를 가정하며 floating-base quaternion 보간은 범위 밖이다.
+- 계약 (타입 · layout · Riccati) 은 부동 베이스를 포함하지만 **보간은 fixed-base 만**이다: cubic Hermite 는 Euclidean `q` 를 가정하므로 부동 layout 으로 `Init` 된 manager 는 `ComputeReference` 를 거부한다 (`InterpMeta::floating_unsupported`).
 - `RobotModelHandler::Init` 은 throw 하지 않고 `RobotModelInitError` 를 돌려준다.
-- `end_effector_frame` 과 `base_frame` 이 모두 필수다. `base_frame` 누락은 `kInvalidYamlSchema`, 해석 불가 이름은 `kMissingBaseFrame` 이며 world 기준은 `base_frame: "universe"` 로 명시한다. `PhaseContext::ee_target` 은 `base_frame` 기준이다.
+- `end_effector_frame` 과 `base_frame` 이 모두 필수다. `base_frame` 누락은 `kInvalidYamlSchema`, 해석 불가 이름은 `kMissingBaseFrame` 이며 world 기준은 `base_frame: "universe"` 로 명시한다. 부동 베이스 모델은 `universe` 만 받는다 (`kBaseFrameNotUniverseOnFloating`). `PhaseContext::ee_target` 은 `base_frame` 기준이다.
 
 ### 관측성
 
