@@ -37,7 +37,7 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `ocp/` | `grasp_quality_provider.hpp` | grasp-quality residual 확장 seam (구체 provider 는 아직 없다) |
 | `comm/` | `triple_buffer.hpp` | lock-free triple buffer, zero-copy consumer |
 | `interpolation/` | `trajectory_interpolator.hpp` | OCP 노드 사이 cubic Hermite 보간 |
-| `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` (accel-only 모드 선택) |
+| `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` (accel-only 모드 선택) · 평탄화된 gain layout 의 writer `PackRiccatiGainRowMajor` ↔ reader `SetGain` |
 | `manager/` | `mpc_solution_manager.hpp` | TripleBuffer + Interpolator + Feedback + SeqLock facade |
 | `thread/` | `mpc_thread.hpp` | `PeriodicRtThread` 기반 solve loop. 서브클래스가 `Solve(state, out)` 구현, `MockMPCThread` 는 테스트용 |
 | `thread/` | `handler_mpc_thread.hpp` | `PhaseManagerBase` FSM 과 `MPCHandlerBase` solver 를 묶는 구체 thread |

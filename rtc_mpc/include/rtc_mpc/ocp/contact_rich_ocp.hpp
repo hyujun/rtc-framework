@@ -20,9 +20,10 @@
 /// - control `u = τ` ∈ R^{nv} (identity actuation; contact forces emerge
 ///   from the rigid-contact proximal solve as Lagrange multipliers λ, NOT
 ///   part of `u`)
-/// - Riccati gain from Aligator: `K ∈ R^{nu × ndx}` with `ndx = 2·nv`;
-///   fixed-base → `nu = nv`, so `rtc::mpc::RiccatiFeedback::SetGain`
-///   `accel_only` reads the full `K`.
+/// - Riccati gain from Aligator: `K ∈ R^{nu × ndx}` with `ndx = 2·nv`,
+///   packed row-major with stride `ndx` (`PackRiccatiGainRowMajor`);
+///   fixed-base → `nu = nv` and `nx = ndx`, so
+///   `rtc::mpc::RiccatiFeedback::SetGain` `accel_only` consumes every row.
 
 #include "rtc_mpc/ocp/cost_factory.hpp"
 #include "rtc_mpc/ocp/ocp_handler_base.hpp"
