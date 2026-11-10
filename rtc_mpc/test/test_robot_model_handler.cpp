@@ -251,4 +251,61 @@ base_frame: panda_link4
   EXPECT_GT(handler.base_oMf().translation().norm(), 0.1);
 }
 
+// ── Floating base ──────────────────────────────────────────────────────
+
+class RobotModelHandlerFloatingTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    if (!std::filesystem::exists(kPandaUrdf)) {
+      GTEST_SKIP() << "Panda URDF not installed at " << kPandaUrdf;
+    }
+    model_ = rtc::mpc::test_utils::BuildPandaFreeFlyer();
+  }
+
+  pinocchio::Model model_{};
+};
+
+TEST_F(RobotModelHandlerFloatingTest, FloatingModelIsDetectedAndNuIsKinodynamic) {
+  EXPECT_TRUE(rtc::mpc::IsFloatingBaseModel(model_));
+  auto cfg = YAML::Load(R"(
+end_effector_frame: panda_hand
+base_frame: universe
+contact_frames:
+  - name: panda_leftfinger
+    dim: 3
+  - name: panda_rightfinger
+    dim: 6
+)");
+  rtc::mpc::RobotModelHandler handler;
+  ASSERT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kNoError);
+  EXPECT_TRUE(handler.floating_base());
+  EXPECT_EQ(handler.n_base_v(), model_.joints[1].nv());
+  EXPECT_EQ(handler.nq(), model_.nq);
+  EXPECT_EQ(handler.nv(), model_.nv);
+  // [W_1 … W_nc; q̈_j]: contact dims plus the actuated tangent.
+  EXPECT_EQ(handler.nu(), 3 + 6 + model_.nv - handler.n_base_v());
+  EXPECT_NE(handler.nu(), handler.nv());
+  EXPECT_TRUE(handler.base_frame_is_universe());
+}
+
+TEST_F(RobotModelHandlerFloatingTest, FloatingModelRejectsABodyBaseFrame) {
+  auto cfg = YAML::Load(R"(
+end_effector_frame: panda_hand
+base_frame: panda_link0
+contact_frames: []
+)");
+  rtc::mpc::RobotModelHandler handler;
+  EXPECT_EQ(handler.Init(model_, cfg),
+            rtc::mpc::RobotModelInitError::kBaseFrameNotUniverseOnFloating);
+  EXPECT_FALSE(handler.Initialised()) << "a refused Init leaves the handler untouched";
+
+  // Control: the same body frame is fine on the fixed-base model.
+  pinocchio::Model fixed;
+  pinocchio::urdf::buildModel(kPandaUrdf, fixed);
+  rtc::mpc::RobotModelHandler fixed_handler;
+  EXPECT_EQ(fixed_handler.Init(fixed, cfg), rtc::mpc::RobotModelInitError::kNoError);
+  EXPECT_FALSE(fixed_handler.floating_base());
+  EXPECT_EQ(fixed_handler.n_base_v(), 0);
+  EXPECT_EQ(fixed_handler.nu(), fixed_handler.nv());
+}
 }  // namespace

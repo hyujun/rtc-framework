@@ -25,16 +25,21 @@ namespace rtc::mpc {
 /// and YAML at runtime (ARCH-1). The derived ones are spelled as expressions
 /// of the primary ones so they cannot drift apart; the asserts below state
 /// the relations a reader may rely on.
+/// A pinocchio free-flyer root: `[p_xyz, quaternion_xyzw]` in the configuration,
+/// a six-dimensional spatial velocity in the tangent.
+inline constexpr int kFreeFlyerNq = 7;
+inline constexpr int kFreeFlyerNv = 6;
+
 inline constexpr int kMaxHorizon = 64;
-inline constexpr int kMaxNv = 36;  ///< max tangent (velocity) dim: free-flyer 6 + joints
-inline constexpr int kMaxNq =
-    kMaxNv + 1;  ///< max configuration dim: the free-flyer quaternion adds one
+inline constexpr int kMaxNv = 36;  ///< max tangent (velocity) dim: free-flyer + joints
+/// Max configuration dim: the free-flyer quaternion adds one coordinate.
+inline constexpr int kMaxNq = kMaxNv + (kFreeFlyerNq - kFreeFlyerNv);
 inline constexpr int kMaxNdx =
     2 * kMaxNv;  ///< max state-tangent dim `[δq; δv]` — Riccati gain columns
 inline constexpr int kMaxContactVars = 24;  ///< max Σ(contact_dim) over the contact frames
 /// Max control dim. Kinodynamic input `[W_1 … W_nc, q̈_j]` is
-/// `Σ contact_dim + nv − 6`; the fixed-base torque input `nu = nv` is smaller.
-inline constexpr int kMaxNu = kMaxNv - 6 + kMaxContactVars;
+/// `Σ contact_dim + nv − n_base_v`; the fixed-base torque input `nu = nv` is smaller.
+inline constexpr int kMaxNu = kMaxNv - kFreeFlyerNv + kMaxContactVars;
 /// Riccati gain nodes stored per solution (a capacity — the actual count is
 /// `MPCSolution::gain_nodes`). The consumer applies the gain of the node
 /// nearest in time, so only the leading nodes are ever read; shipping every
@@ -42,6 +47,7 @@ inline constexpr int kMaxNu = kMaxNv - 6 + kMaxContactVars;
 inline constexpr int kMaxGainNodes = 4;
 
 static_assert(kMaxNu >= kMaxNv, "fixed-base torque input (nu == nv) must fit");
+static_assert(kMaxNv > kFreeFlyerNv, "a floating base needs at least one actuated joint");
 static_assert(kMaxGainNodes >= 1 && kMaxGainNodes <= kMaxHorizon,
               "at least the first node's gain is shipped, never more than the horizon");
 

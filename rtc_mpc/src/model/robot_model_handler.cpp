@@ -74,6 +74,10 @@ RobotModelInitError RobotModelHandler::Init(const pinocchio::Model& model,
   }
   const int base_id = *resolved;
   const bool base_is_universe = (base_id == 0);
+  const bool floating = IsFloatingBaseModel(model);
+  if (floating && !base_is_universe) {
+    return RobotModelInitError::kBaseFrameNotUniverseOnFloating;
+  }
 
   std::vector<ContactFrameInfo> contacts;
   const YAML::Node cf_node = cfg["contact_frames"];
@@ -130,6 +134,7 @@ RobotModelInitError RobotModelHandler::Init(const pinocchio::Model& model,
   base_is_universe_ = base_is_universe;
   base_oMf_ = base_oMf;
   contact_frames_ = std::move(contacts);
+  layout_ = WbLayout::FromHandler(*this);
   return RobotModelInitError::kNoError;
 }
 
@@ -139,11 +144,6 @@ int RobotModelHandler::nq() const noexcept {
 
 int RobotModelHandler::nv() const noexcept {
   return model_ != nullptr ? static_cast<int>(model_->nv) : 0;
-}
-
-int RobotModelHandler::nu() const noexcept {
-  // Fixed-base manipulators only (Phase 1 scope; see header note).
-  return nv();
 }
 
 std::optional<int> RobotModelHandler::FrameId(std::string_view name) const noexcept {

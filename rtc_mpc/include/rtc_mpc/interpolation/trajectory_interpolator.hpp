@@ -58,6 +58,11 @@ struct InterpMeta {
   /// Consumers typically treat this as a signal to request a fresh MPC
   /// solve or fall back to a safe reference.
   bool beyond_horizon{false};
+  /// True when the reference was refused because the layout has a floating
+  /// base: this interpolator is Euclidean in `q` and would mix the base
+  /// quaternion with angular velocity, so a floating layout gets no
+  /// reference until a manifold-aware sampler exists. `valid` is false.
+  bool floating_unsupported{false};
 };
 
 /// @brief Interpolates between MPC solution nodes at RT rate.

@@ -43,6 +43,7 @@ MPCSolution MakeSolution(uint64_t timestamp = 1) {
   sol.nx = kNq + kNv;
   sol.ndx = 2 * kNv;
   sol.n_contact_vars = kNc;
+  sol.gain_nodes = 1;  // node 0 carries the identity gain below
 
   for (int k = 0; k <= kHorizon; ++k) {
     const double t = static_cast<double>(k) * kDtNode;
@@ -171,6 +172,7 @@ TEST_F(MpcSolutionManagerTest, PlanFromAnotherModelEpochIsNotInstalled) {
   mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
   EXPECT_EQ(mgr_.ActivePlanId(), 0u);
   EXPECT_EQ(mgr_.EpochRejections(), 0u);
+  EXPECT_EQ(mgr_.DimensionRejections(), 0u);
 }
 
 TEST_F(MpcSolutionManagerTest, UnusablePlanIsNotInstalledAndDoesNotResetStaleness) {
@@ -193,6 +195,85 @@ TEST_F(MpcSolutionManagerTest, UnusablePlanIsNotInstalledAndDoesNotResetStalenes
   EXPECT_EQ(mgr_.StaleCount(), 1) << "a rejected plan is a tick without a fresh one";
   EXPECT_EQ(mgr_.ActivePlanId(), 1u);
   EXPECT_EQ(mgr_.ActiveObservationStampNs(), 5u);
+}
+
+TEST_F(MpcSolutionManagerTest, LayoutInitMatchesTheFixedBaseConvenienceOverload) {
+  MPCSolutionManager by_layout;
+  by_layout.Init(MakeConfig(true), WbLayout::FixedBase(kNq, kNv, kNc));
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  EXPECT_FALSE(mgr_.Layout().floating_base());
+  EXPECT_EQ(mgr_.Layout().nu, kNv);
+
+  const MPCSolution sol = MakeSolution();
+  by_layout.PublishSolution(sol);
+  mgr_.PublishSolution(sol);
+  Eigen::VectorXd q2(kNq), v2(kNv), a2(kNv), l2(std::max(1, kNc)), u2(kNv);
+  InterpMeta m2{};
+  q_curr_.setConstant(0.2);
+  ASSERT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, 5'000'000, q_ref_, v_ref_, a_ff_, lambda_ref_,
+                                    u_fb_, meta_));
+  ASSERT_TRUE(by_layout.ComputeReference(q_curr_, v_curr_, 5'000'000, q2, v2, a2, l2, u2, m2));
+  EXPECT_EQ(q2, q_ref_) << "same layout, same reference, bit-exact";
+  EXPECT_EQ(u2, u_fb_);
+}
+
+TEST_F(MpcSolutionManagerTest, InvalidLayoutLeavesTheManagerDisabled) {
+  // A factory that refused its inputs returns an empty layout; the YAML
+  // switch alone must not turn such a manager on.
+  mgr_.Init(MakeConfig(true), WbLayout::FixedBase(0, 0, 0));
+  EXPECT_FALSE(mgr_.Layout().valid());
+  EXPECT_FALSE(mgr_.Enabled());
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+}
+
+TEST_F(MpcSolutionManagerTest, FloatingLayoutIsRefusedBeforeInterpolation) {
+  WbLayout floating = WbLayout::FixedBase(kNq + 7, kNv + 6, kNc);
+  floating.n_base_q = 7;
+  floating.n_base_v = 6;
+  floating.n_acc = kNv;
+  floating.n_wrench_u = kNc;
+  floating.acc_u_offset = kNc;
+  floating.nu = kNc + kNv;
+  mgr_.Init(MakeConfig(true), floating);
+  EXPECT_TRUE(mgr_.Layout().floating_base());
+
+  MPCSolution sol = MakeSolution();
+  sol.nq = kNq + 7;
+  sol.nv = kNv + 6;
+  mgr_.PublishSolution(sol);
+  Eigen::VectorXd q(kNq + 7), v(kNv + 6), q_ref(kNq + 7), v_ref(kNv + 6), a_ff(kNv + 6),
+      u_fb(kNv + 6);
+  q.setZero();
+  v.setZero();
+  EXPECT_FALSE(mgr_.ComputeReference(q, v, 0, q_ref, v_ref, a_ff, lambda_ref_, u_fb, meta_));
+  EXPECT_TRUE(meta_.floating_unsupported);
+  EXPECT_FALSE(meta_.valid);
+  EXPECT_FALSE(mgr_.HasEverReceivedSolution()) << "refused before any plan is acquired";
+}
+
+TEST_F(MpcSolutionManagerTest, PlanWhoseDimensionsDisagreeWithTheLayoutIsRejected) {
+  // The Riccati workspace is sized by the layout; a plan with another input
+  // dimension is refused and counted instead of being silently dropped by
+  // SetGain (or worse, installed against the wrong layout).
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  MPCSolution sol = MakeSolution();
+  sol.nu = kNv + 2;
+  mgr_.PublishSolution(sol);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.DimensionRejections(), 1u);
+  EXPECT_EQ(mgr_.EpochRejections(), 0u);
+  EXPECT_FALSE(mgr_.HasEverReceivedSolution());
+
+  // The matching plan installs and its gain reaches u_fb.
+  sol.nu = kNv;
+  mgr_.PublishSolution(sol);
+  q_curr_(0) = 0.25;  // position error on joint 0 at t = 0 (q_ref = 0 there)
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_DOUBLE_EQ(u_fb_(0), 0.25);
+  EXPECT_EQ(mgr_.DimensionRejections(), 1u);
 }
 
 TEST_F(MpcSolutionManagerTest, DisabledShortCircuits) {

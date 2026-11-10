@@ -20,6 +20,7 @@
 #include "rtc_mpc/comm/triple_buffer.hpp"
 #include "rtc_mpc/feedback/riccati_feedback.hpp"
 #include "rtc_mpc/interpolation/trajectory_interpolator.hpp"
+#include "rtc_mpc/model/wb_layout.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
 #include <Eigen/Core>
@@ -43,14 +44,26 @@ class MPCSolutionManager {
   MPCSolutionManager& operator=(MPCSolutionManager&&) = delete;
 
   /// @brief Configure the manager and allocate all buffers.
-  /// @param cfg             YAML node with `mpc:` keys:
-  ///                        `enabled`, `max_stale_solutions`,
-  ///                        `riccati.{enabled, gain_scale, accel_only,
-  ///                         max_delta_x_norm}`.
-  /// @param nq              joint-position dim
-  /// @param nv              joint-velocity dim
-  /// @param n_contact_vars  total contact-force dim
-  void Init(const YAML::Node& cfg, int nq, int nv, int n_contact_vars);
+  /// @param cfg     YAML node with `mpc:` keys:
+  ///                `enabled`, `max_stale_solutions`,
+  ///                `riccati.{enabled, gain_scale, accel_only,
+  ///                 max_delta_x_norm}`.
+  /// @param layout  state / input layout of the model the consumer runs
+  ///                (`WbLayout::FromModel` or `FromHandler`). A floating
+  ///                layout is accepted but @ref ComputeReference refuses to
+  ///                produce a reference for it (`InterpMeta::floating_unsupported`)
+  ///                until a manifold-aware sampler replaces the Euclidean
+  ///                interpolator; the fixed-base path is unchanged. A layout
+  ///                that is not `valid()` (a failed factory) leaves the
+  ///                manager disabled.
+  void Init(const YAML::Node& cfg, const WbLayout& layout);
+
+  /// @brief Fixed-base convenience: `Init(cfg, WbLayout::FixedBase(nq, nv, n_contact_vars))`.
+  void Init(const YAML::Node& cfg, int nq, int nv, int n_contact_vars) {
+    Init(cfg, WbLayout::FixedBase(nq, nv, n_contact_vars));
+  }
+
+  [[nodiscard]] const WbLayout& Layout() const noexcept { return layout_; }
 
   /// @brief Runtime toggle for MPC consumption. When false,
   ///        @ref ComputeReference reports invalid immediately. Any thread
@@ -107,11 +120,17 @@ class MPCSolutionManager {
   ///         `model_epoch` was not the current one. Consumer thread.
   [[nodiscard]] uint64_t EpochRejections() const noexcept { return epoch_rejections_; }
 
+  /// @return plans refused by @ref ComputeReference because their `nq` / `nv`
+  ///         / `ndx` / `nu` disagree with the layout given to @ref Init.
+  ///         Consumer thread.
+  [[nodiscard]] uint64_t DimensionRejections() const noexcept { return dimension_rejections_; }
+
   /// @brief Try to compute the MPC-derived reference for the current tick.
   ///
   /// On success writes q_ref / v_ref / a_ff / lambda_ref / u_fb and returns
-  /// true. On fallback (MPC disabled, no solution yet, or too many stale
-  /// cycles) returns false and sets @p meta_out.valid = false.
+  /// true. On fallback (MPC disabled, floating-base layout, no solution yet,
+  /// or too many stale cycles) returns false and sets @p meta_out.valid =
+  /// false.
   ///
   /// @param q_curr     current position (size nq)
   /// @param v_curr     current velocity (size nv)
@@ -220,9 +239,7 @@ class MPCSolutionManager {
   int stale_count_{0};
   bool has_ever_received_solution_{false};
 
-  int nq_{0};
-  int nv_{0};
-  int n_contact_vars_{0};
+  WbLayout layout_{};
 
   uint64_t state_sequence_{0};  // RT thread only (WriteState)
   uint32_t contact_mask_{0};    // RT thread only (SetContactMask / WriteState)
@@ -232,6 +249,7 @@ class MPCSolutionManager {
   // Consumer-side provenance not carried by the plan itself (consumer thread only).
   uint64_t active_receive_stamp_ns_{0};
   uint64_t epoch_rejections_{0};
+  uint64_t dimension_rejections_{0};
 
   TripleBuffer<MPCSolution> solution_buffer_;
   TrajectoryInterpolator interpolator_;

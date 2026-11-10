@@ -5,12 +5,16 @@
 
 namespace rtc::mpc {
 
-void MPCSolutionManager::Init(const YAML::Node& cfg, int nq, int nv, int n_contact_vars) {
-  nq_ = nq;
-  nv_ = nv;
-  n_contact_vars_ = n_contact_vars;
+void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout) {
+  layout_ = layout;
+  const int nq = layout.nq;
+  const int nv = layout.nv;
+  const int n_contact_vars = layout.n_contact_vars;
 
-  enabled_.store(cfg["enabled"] && cfg["enabled"].as<bool>(), std::memory_order_relaxed);
+  // A layout the factory refused has no dimensions: nothing downstream can
+  // be sized, so the manager stays off regardless of the YAML switch.
+  enabled_.store(layout.valid() && cfg["enabled"] && cfg["enabled"].as<bool>(),
+                 std::memory_order_relaxed);
   if (cfg["max_stale_solutions"]) {
     max_stale_solutions_ = cfg["max_stale_solutions"].as<int>();
     if (max_stale_solutions_ < 1) {
@@ -24,8 +28,11 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, int nq, int nv, int n_conta
   const YAML::Node r = cfg["riccati"];
   riccati_enabled_ = !r || !r["enabled"] || r["enabled"].as<bool>();
 
-  const int nx = nq + nv;
-  riccati_.Init(nv, nv, nx);  // nu == nv in accel-only mode
+  // Workspace sized by the layout: the gain has `nu` rows (more than nv on a
+  // kinodynamic input) and `ndx` columns. A plan whose dimensions disagree
+  // with the layout is refused at acceptance rather than silently dropped.
+  riccati_.Init(nv, std::max(layout.nu, 1), std::max(layout.ndx, 1));
+  (void)riccati_.SetAccelRows(layout.acc_u_offset, layout.n_acc);
 
   if (r && r["gain_scale"]) {
     riccati_.SetGainScale(r["gain_scale"].as<double>());
@@ -43,6 +50,7 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, int nq, int nv, int n_conta
   plan_counter_ = 0;
   active_receive_stamp_ns_ = 0;
   epoch_rejections_ = 0;
+  dimension_rejections_ = 0;
 }
 
 void MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
@@ -150,22 +158,34 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
                                           InterpMeta& meta_out) noexcept {
   meta_out.valid = false;
   meta_out.beyond_horizon = false;
+  meta_out.floating_unsupported = false;
   meta_out.progress = 0.0;
   u_fb.setZero();
 
   if (!enabled_.load(std::memory_order_relaxed)) {
     return false;
   }
+  // The interpolator is Euclidean in q: on a floating base it would blend
+  // the quaternion with the angular velocity. Refuse explicitly rather than
+  // hand a broken q_ref to the Riccati feedback.
+  if (layout_.floating_base()) {
+    meta_out.floating_unsupported = true;
+    return false;
+  }
 
   // Try to pick up a newly published solution. One acceptance decision: the
-  // plan must be consumable (IsValid) and computed against the model the RT
-  // side runs now; only an accepted plan touches the interpolator, the gain,
-  // the stale counter and the provenance.
+  // plan must be consumable (IsValid), computed against the model the RT
+  // side runs now, and laid out like this manager's layout; only an accepted
+  // plan touches the interpolator, the gain, the stale counter and the
+  // provenance.
   const MPCSolution* fresh = solution_buffer_.TryAcquireLatest();
   bool accepted = false;
   if (fresh != nullptr) {
     if (fresh->model_epoch != model_epoch_.load(std::memory_order_acquire)) {
       ++epoch_rejections_;
+    } else if (fresh->nq != layout_.nq || fresh->nv != layout_.nv || fresh->ndx != layout_.ndx ||
+               fresh->nu != layout_.nu) {
+      ++dimension_rejections_;
     } else {
       accepted = interpolator_.SetSolution(*fresh, now_ns);
     }
@@ -176,8 +196,7 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
     // is the state-tangent dim the writer packed with, not the state vector
     // length — they differ as soon as a joint has nq != nv.
     if (riccati_enabled_ && fresh->gain_nodes > 0) {
-      const int nu = fresh->nu > 0 ? fresh->nu : fresh->nv;
-      riccati_.SetGain(fresh->K_riccati[0].data(), nu, fresh->ndx);
+      riccati_.SetGain(fresh->K_riccati[0].data(), fresh->nu, fresh->ndx);
     }
     stale_count_ = 0;
     has_ever_received_solution_ = true;

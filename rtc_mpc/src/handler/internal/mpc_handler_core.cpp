@@ -53,6 +53,11 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   if (!model.Initialised()) {
     return MPCInitError::kModelNotInitialised;
   }
+  // The shipped OCPs are fixed-base torque models (nu == nv); a free-flyer
+  // model's kinodynamic nu would not match their control dimension.
+  if (model.floating_base()) {
+    return MPCInitError::kFloatingBaseUnsupported;
+  }
   if (solver_cfg.prim_tol <= 0.0 || solver_cfg.dual_tol <= 0.0 || solver_cfg.mu_init <= 0.0 ||
       solver_cfg.max_iters <= 0 || solver_cfg.max_al_iters <= 0) {
     return MPCInitError::kInvalidSolverConfig;

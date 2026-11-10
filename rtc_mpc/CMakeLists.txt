@@ -50,6 +50,7 @@ add_library(rtc_mpc STATIC
   src/thread/mock_mpc_thread.cpp
   src/thread/handler_mpc_thread.cpp
   src/model/robot_model_handler.cpp
+  src/model/wb_layout.cpp
   src/phase/phase_cost_config.cpp
   src/ocp/cost_factory.cpp
   src/ocp/contact_light_ocp.cpp
@@ -175,6 +176,8 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_trajectory_interpolator)
   add_mpc_gtest(test_riccati_feedback)
   add_mpc_gtest(test_riccati_gain_layout)
+  add_mpc_gtest(test_wb_layout)
+  add_mpc_gtest(test_mpc_layout_alloc_gate)
   add_mpc_gtest(test_mpc_solution_manager)
   add_mpc_gtest(test_mpc_timing_logger)
   add_mpc_gtest(test_mpc_thread_skeleton)

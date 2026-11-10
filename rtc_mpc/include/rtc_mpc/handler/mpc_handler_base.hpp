@@ -71,11 +71,12 @@ struct MPCSolverConfig {
 ///        loop.
 enum class MPCInitError {
   kNoError = 0,
-  kModelNotInitialised,  ///< RobotModelHandler.Initialised() == false
-  kOCPBuildFailed,       ///< underlying OCPHandlerBase::Build rejected
-  kSolverSetupFailed,    ///< Aligator's setup() threw (caught internally)
-  kInvalidSolverConfig,  ///< tolerances / max_iters out of range
-  kOcpTypeMismatch,      ///< ctx.ocp_type != this handler's dispatch key
+  kModelNotInitialised,      ///< RobotModelHandler.Initialised() == false
+  kOCPBuildFailed,           ///< underlying OCPHandlerBase::Build rejected
+  kSolverSetupFailed,        ///< Aligator's setup() threw (caught internally)
+  kInvalidSolverConfig,      ///< tolerances / max_iters out of range
+  kOcpTypeMismatch,          ///< ctx.ocp_type != this handler's dispatch key
+  kFloatingBaseUnsupported,  ///< free-flyer root; the shipped OCPs are fixed-base torque models
 };
 
 /// @brief Failure modes for @ref MPCHandlerBase::Solve. **Never thrown** —
