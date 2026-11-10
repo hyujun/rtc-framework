@@ -234,6 +234,7 @@ PREEMPT_RT + cset shield 에서 Max 가 50 µs 미만이면 정상이다. `check
 |---|---|---|
 | `Thread config failed for 'rt_control' (need realtime permissions)` | realtime 그룹·limits 미적용 | `groups \| grep realtime`, `ulimit -r` 이 99 인지 확인. 안 맞으면 `./install.sh robot --rt` 후 **재로그인** |
 | 컨트롤러가 `inactive` 에서 안 넘어감 | cset 격리로 옮기기 실패 (sudoers 없음 · cset 미설치) | `./install.sh robot --rt` 로 sudoers · cset 설치, `cpu_shield.sh status` 확인 |
+| `cpu_shield.sh on` 이 `mount of cpuset filesystem failed` 로 실패 | 커널에 `CONFIG_CPUSETS_V1` 없음 (6.12+ 에서 분리, 기본 꺼짐) | `grep CPUSETS_V1 /boot/config-$(uname -r)` 가 `=y` 가 아니면 `build_rt_kernel.sh --force-step 4` 로 다시 빌드·설치 후 재부팅 |
 | RT 스레드의 PSR 이 RT 코어 밖으로 움직임 | 격리 미적용 | `/proc/cmdline` 에 `nohz_full` 이 없으면 `setup_grub_rt.sh` + 재부팅. `cpu_shield.sh status` 로 shield 활성 확인 |
 | 지터가 큼 | 일반 커널 | `uname -v \| grep -iE 'lowlatency\|PREEMPT_RT'` 가 비면 2.2 |
 | 지터가 큼 | RT 코어로 IRQ 유입 | `/proc/interrupts` 에서 RT 코어 열을 본다. 많으면 `setup_irq_affinity.sh` |

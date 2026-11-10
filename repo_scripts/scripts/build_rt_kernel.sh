@@ -269,8 +269,7 @@ is_step4_done() {
 is_step5_done() {
   # linux-image .deb 존재 (dbg 제외)
   local found
-  found=$(find "${BUILD_DIR}" -maxdepth 1 -name "linux-image-${KERNEL_VERSION}*.deb" \
-    ! -name "*dbg*" 2>/dev/null | head -1)
+  found=$(newest_file_matching "${BUILD_DIR}" "linux-image-${KERNEL_VERSION}*.deb" "*dbg*")
   [[ -n "$found" ]]
 }
 
@@ -473,6 +472,7 @@ show_verify() {
       "CONFIG_PREEMPT_NONE=:PREEMPT_NONE 비활성화"
       "CONFIG_PREEMPT_VOLUNTARY=:PREEMPT_VOLUNTARY 비활성화"
       "CONFIG_IKCONFIG_PROC=y:/proc/config.gz 노출 (진단용)"
+      "CONFIG_CPUSETS_V1=y:legacy cpuset fs (cset shield 필수)"
     )
     case "$EFFECTIVE_PROFILE" in
       nuc)
@@ -538,11 +538,11 @@ show_verify() {
   # ── [5/7] 빌드 결과 ────────────────────────────────────────────────────
   echo -e "${BOLD}[5/7] 커널 빌드 (make bindeb-pkg)${NC}"
   local deb_image
-  deb_image=$(find "${BUILD_DIR}" -maxdepth 1 -name "linux-image-${KERNEL_VERSION}*.deb" \
-    ! -name "*dbg*" 2>/dev/null | head -1)
+  deb_image=$(newest_file_matching "${BUILD_DIR}" "linux-image-${KERNEL_VERSION}*.deb" "*dbg*")
+  [[ -n "$deb_image" ]] && deb_image="${BUILD_DIR}/${deb_image}"
   local deb_headers
-  deb_headers=$(find "${BUILD_DIR}" -maxdepth 1 -name "linux-headers-${KERNEL_VERSION}*.deb" \
-    2>/dev/null | head -1)
+  deb_headers=$(newest_file_matching "${BUILD_DIR}" "linux-headers-${KERNEL_VERSION}*.deb")
+  [[ -n "$deb_headers" ]] && deb_headers="${BUILD_DIR}/${deb_headers}"
   if [[ -n "$deb_image" ]]; then
     local sz
     sz=$(du -h "$deb_image" 2>/dev/null | awk '{print $1}')
@@ -895,6 +895,13 @@ else
   scripts/config --enable CONFIG_IKCONFIG
   scripts/config --enable CONFIG_IKCONFIG_PROC
 
+  # legacy cpuset 파일시스템 — cpu_shield.sh 의 cset 은 `mount -t cpuset` 으로
+  # 동작한다. 6.12 가 이를 CONFIG_CPUSETS_V1 (default n) 로 분리했고, 6.12 미만
+  # 배포판 config 에는 이 심볼이 없어 olddefconfig 가 조용히 n 으로 둔다 → 부팅은
+  # 되지만 `cset shield` 가 "mount of cpuset filesystem failed" 로 죽는다.
+  scripts/config --enable CONFIG_CPUSETS
+  scripts/config --enable CONFIG_CPUSETS_V1
+
   # multi-core scheduler (모든 x86 SMP 에 유효)
   scripts/config --enable CONFIG_SCHED_MC
 
@@ -939,7 +946,7 @@ else
 
   # Post-verify: profile별 필수 옵션이 실제로 = y 인지 점검 (olddefconfig 가
   # 의존성 불만족으로 드롭시킬 수 있음 — 그 경우 사용자에게 알림, fail-soft).
-  _required_keys=("CONFIG_PREEMPT_RT" "CONFIG_IKCONFIG_PROC")
+  _required_keys=("CONFIG_PREEMPT_RT" "CONFIG_IKCONFIG_PROC" "CONFIG_CPUSETS_V1")
   case "$EFFECTIVE_PROFILE" in
     nuc)           _required_keys+=("CONFIG_SCHED_MC_PRIO" "CONFIG_SCHED_CLUSTER" "CONFIG_INTEL_HFI_THERMAL" "CONFIG_X86_INTEL_PSTATE") ;;
     desktop-intel) _required_keys+=("CONFIG_X86_INTEL_PSTATE") ;;
@@ -987,8 +994,7 @@ info "━━━ [5/7] 커널 빌드 ━━━"
 
 if should_skip 5 is_step5_done; then
   success "커널이 이미 빌드되어 있습니다 (.deb 존재) — 건너뜀"
-  DEB_IMAGE=$(find "${BUILD_DIR}" -maxdepth 1 -name "linux-image-${KERNEL_VERSION}*.deb" \
-    ! -name "*dbg*" -printf '%f\n' 2>/dev/null | head -1)
+  DEB_IMAGE=$(newest_file_matching "${BUILD_DIR}" "linux-image-${KERNEL_VERSION}*.deb" "*dbg*")
   info "기존 빌드: ${DEB_IMAGE}"
 else
   cd "${KERNEL_SRC_DIR}"
@@ -1011,9 +1017,11 @@ if should_skip 6 is_step6_done; then
 else
   cd "${BUILD_DIR}"
 
-  # 현재 빌드에 해당하는 .deb만 설치 (이전 빌드와 구분)
-  DEB_IMAGE=$(find . -maxdepth 1 -name "linux-image-${KERNEL_VERSION}*.deb" ! -name "*dbg*" -printf '%f\n' 2>/dev/null | head -1)
-  DEB_HEADERS=$(find . -maxdepth 1 -name "linux-headers-${KERNEL_VERSION}*.deb" -printf '%f\n' 2>/dev/null | head -1)
+  # 가장 최근에 빌드된 .deb 만 설치한다. 재빌드 (--force-step 4/5) 는 이전
+  # revision 의 .deb 를 옆에 남기는데, 그것을 집으면 방금 고친 config 가 빠진
+  # 커널이 "설치 완료" 로 다시 깔린다.
+  DEB_IMAGE=$(newest_file_matching . "linux-image-${KERNEL_VERSION}*.deb" "*dbg*")
+  DEB_HEADERS=$(newest_file_matching . "linux-headers-${KERNEL_VERSION}*.deb")
 
   if [[ -z "$DEB_IMAGE" ]]; then
     error "linux-image .deb 패키지를 찾을 수 없습니다. 빌드를 먼저 실행하세요: $0 --force-step 5"
@@ -1122,8 +1130,7 @@ if should_skip 7 is_step7_done; then
   fi
 else
   # .deb 파일명에서 RT 커널 버전 추출
-  DEB_IMAGE=$(find "${BUILD_DIR}" -maxdepth 1 -name "linux-image-${KERNEL_VERSION}*.deb" \
-    ! -name "*dbg*" -printf '%f\n' 2>/dev/null | head -1)
+  DEB_IMAGE=$(newest_file_matching "${BUILD_DIR}" "linux-image-${KERNEL_VERSION}*.deb" "*dbg*")
   RT_KERNEL_VER=$(echo "$DEB_IMAGE" | sed -n 's/linux-image-\(.*\)_.*\.deb/\1/p')
 
   # .deb에서 추출 실패 시 RT_KERNEL_FULL 사용
