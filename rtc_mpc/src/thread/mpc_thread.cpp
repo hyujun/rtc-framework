@@ -47,11 +47,13 @@ void MPCThread::OnTick() noexcept {
     MarkStateAcquired();
   }
 
-  // Phase 2: solve.
+  // Phase 2: solve — only once the RT side has stored a state at all.
   bool ok = false;
   {
     RTC_TRACE_SCOPE("mpc_solve");
-    ok = Solve(state, scratch_);
+    if (state.valid) {
+      ok = Solve(state, scratch_);
+    }
     MarkComputeDone();
   }
 

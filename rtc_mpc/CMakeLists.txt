@@ -169,6 +169,8 @@ if(BUILD_TESTING)
 
   add_mpc_gtest(test_scaffold)
   add_mpc_gtest(test_mpc_types)
+  add_mpc_gtest(test_wbc_reference)
+  add_mpc_gtest(test_mpc_solution_copy_cost)
   add_mpc_gtest(test_triple_buffer)
   add_mpc_gtest(test_trajectory_interpolator)
   add_mpc_gtest(test_riccati_feedback)

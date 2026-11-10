@@ -3,6 +3,7 @@
 #include "rtc_mpc/feedback/riccati_feedback.hpp"
 
 #include <algorithm>
+#include <cstring>
 
 namespace rtc::mpc {
 
@@ -57,16 +58,20 @@ bool MockMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out_sol) {
   const double horizon_sec = static_cast<double>(horizon) * dt;
   Eigen::VectorXd velocity = (target.head(nq) - q0) / horizon_sec;
 
-  out_sol = MPCSolution{};  // zero-init
+  std::memset(&out_sol, 0, sizeof(MPCSolution));  // zero-init without a stack temporary
   out_sol.horizon_length = horizon;
   out_sol.dt_node = dt;
-  out_sol.converged = true;
+  MarkSolved(out_sol, true);
+  out_sol.observation_stamp_ns = state.timestamp_ns;
+  out_sol.observation_sequence = state.sequence;
+  out_sol.model_epoch = state.model_epoch;
   out_sol.nq = nq;
   out_sol.nv = nv;
   out_sol.nu = nv;
   out_sol.nx = nq + nv;
   out_sol.ndx = 2 * nv;
   out_sol.n_contact_vars = 0;
+  out_sol.gain_nodes = 1;
   out_sol.timestamp_ns = state.timestamp_ns;
 
   const int n_coupled = std::min(nq, nv);

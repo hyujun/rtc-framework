@@ -11,6 +11,7 @@
 //       between the sequence number and the payload).
 
 #include "rtc_mpc/comm/triple_buffer.hpp"
+#include "rtc_mpc/types/mpc_solution_types.hpp"
 
 #include <gtest/gtest.h>
 
@@ -36,6 +37,11 @@ struct Message {
 };
 
 static_assert(std::is_trivially_copyable_v<Message>);
+
+// Slots live on the heap: the container stays pointer-sized plus indices
+// even for the largest payload it carries.
+static_assert(sizeof(TripleBuffer<MPCSolution>) < 64,
+              "TripleBuffer must not embed its slots inline");
 
 TEST(TripleBuffer, EmptyOnInit) {
   TripleBuffer<Message> buf;

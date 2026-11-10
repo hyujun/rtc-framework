@@ -78,6 +78,11 @@ class MPCHandlerCore {
   [[nodiscard]] int n_contact_vars() const noexcept { return n_contact_vars_; }
 
  private:
+  /// @brief Solve body; `Solve` wraps it to stamp `out.status` once from the
+  ///        returned error.
+  [[nodiscard]] MPCSolveError SolveImpl(const PhaseContext& ctx, const MPCStateSnapshot& state,
+                                        OCPHandlerBase& ocp, MPCSolution& out) noexcept;
+
   /// @brief Recompute @p n_contact_vars_ from the model's configured
   ///        `ContactFrameInfo` list — the sum of per-frame `dim` values.
   void RecomputeContactVarDim(const RobotModelHandler& model) noexcept;
@@ -96,10 +101,11 @@ class MPCHandlerCore {
   ///        cannot be packed is zeroed, never left stale.
   void PackRiccatiGain(std::size_t k, MPCSolution& out) const noexcept;
 
-  /// @brief Pack xs/us/lams/K_riccati + metadata into @p out after a
-  ///        successful solve. Non-allocating.
-  void PackSolution(const OCPHandlerBase& ocp, MPCSolution& out, bool converged,
-                    std::uint64_t solve_duration_ns) const noexcept;
+  /// @brief Pack xs/us/lams/K_riccati + metadata (status, residuals, the
+  ///        provenance of @p state) into @p out after a successful solve.
+  ///        Non-allocating.
+  void PackSolution(const OCPHandlerBase& ocp, const MPCStateSnapshot& state, MPCSolution& out,
+                    bool converged, std::uint64_t solve_duration_ns) const noexcept;
 
   // ── State ────────────────────────────────────────────────────────────
   bool initialised_{false};

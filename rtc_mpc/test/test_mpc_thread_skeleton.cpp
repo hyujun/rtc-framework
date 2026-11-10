@@ -44,9 +44,18 @@ YAML::Node MinimalConfig() {
   return cfg;
 }
 
+/// The solve loop only runs once the RT side has stored a state (a snapshot
+/// that was never written is not solved), so every lifecycle test seeds one.
+void StoreOneState(MPCSolutionManager& mgr) {
+  const Eigen::VectorXd q = Eigen::VectorXd::Zero(1);
+  const Eigen::VectorXd v = Eigen::VectorXd::Zero(1);
+  mgr.WriteState(q, v, 1);
+}
+
 TEST(MpcThreadLifecycle, StartAndStopCleanly) {
   MPCSolutionManager mgr;
   mgr.Init(MinimalConfig(), 1, 1, 0);
+  StoreOneState(mgr);
 
   MpcThreadLaunchConfig launch{};
   launch.main.cpu_core = -1;           // no pinning
@@ -75,6 +84,7 @@ TEST(MpcThreadLifecycle, StartAndStopCleanly) {
 TEST(MpcThreadLifecycle, DoubleJoinIsSafe) {
   MPCSolutionManager mgr;
   mgr.Init(MinimalConfig(), 1, 1, 0);
+  StoreOneState(mgr);
 
   MpcThreadLaunchConfig launch{};
   launch.main.cpu_core = -1;
@@ -102,6 +112,7 @@ TEST(MpcThreadLifecycle, StartBeforeInitIsNoOp) {
 TEST(MpcThreadLifecycle, PauseFreezesSolveLoop) {
   MPCSolutionManager mgr;
   mgr.Init(MinimalConfig(), 1, 1, 0);
+  StoreOneState(mgr);
 
   MpcThreadLaunchConfig launch{};
   launch.main.cpu_core = -1;
@@ -146,6 +157,7 @@ TEST(MpcThreadLifecycle, PauseFreezesSolveLoop) {
 TEST(MpcThreadLifecycle, PauseResumeIdempotent) {
   MPCSolutionManager mgr;
   mgr.Init(MinimalConfig(), 1, 1, 0);
+  StoreOneState(mgr);
 
   MpcThreadLaunchConfig launch{};
   launch.main.cpu_core = -1;
@@ -178,6 +190,7 @@ TEST(MpcThreadLifecycle, PauseResumeIdempotent) {
 TEST(MpcThreadLifecycle, RequestStopWakesPausedThread) {
   MPCSolutionManager mgr;
   mgr.Init(MinimalConfig(), 1, 1, 0);
+  StoreOneState(mgr);
 
   MpcThreadLaunchConfig launch{};
   launch.main.cpu_core = -1;

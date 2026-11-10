@@ -26,6 +26,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -52,10 +53,11 @@ class MPCSolutionManager {
   void Init(const YAML::Node& cfg, int nq, int nv, int n_contact_vars);
 
   /// @brief Runtime toggle for MPC consumption. When false,
-  ///        @ref ComputeReference reports invalid immediately.
-  void SetEnabled(bool enabled) noexcept { enabled_ = enabled; }
+  ///        @ref ComputeReference reports invalid immediately. Any thread
+  ///        (atomic): parameter callbacks set it, the RT tick reads it.
+  void SetEnabled(bool enabled) noexcept { enabled_.store(enabled, std::memory_order_relaxed); }
 
-  [[nodiscard]] bool Enabled() const noexcept { return enabled_; }
+  [[nodiscard]] bool Enabled() const noexcept { return enabled_.load(std::memory_order_relaxed); }
 
   /// @brief Runtime tuning of the Riccati scale (0..1).
   void SetRiccatiGainScale(double scale) noexcept { riccati_.SetGainScale(scale); }
@@ -64,7 +66,8 @@ class MPCSolutionManager {
 
   // ── Producer (MPC thread) ──────────────────────────────────────────
 
-  /// @brief Publish a freshly computed solution.
+  /// @brief Publish a freshly computed solution. The published copy gets a
+  ///        monotonic `plan_id`; @p sol itself is left untouched.
   /// @note Called on the MPC thread. Non-blocking.
   void PublishSolution(const MPCSolution& sol) noexcept;
 
@@ -74,10 +77,35 @@ class MPCSolutionManager {
 
   // ── Consumer (RT thread) ───────────────────────────────────────────
 
-  /// @brief Publish the current RT-thread state for the MPC thread.
+  /// @brief Publish the current RT-thread state for the MPC thread. Each
+  ///        store carries an incrementing `sequence`, the current model
+  ///        epoch and contact mask, and `valid = true`.
   /// @note Called on the RT thread. Wait-free.
   void WriteState(const Eigen::Ref<const Eigen::VectorXd>& q,
                   const Eigen::Ref<const Eigen::VectorXd>& v, uint64_t timestamp_ns) noexcept;
+
+  /// @brief Contact mask stamped into the next @ref WriteState (one bit per
+  ///        contact frame, model-handler order). Same thread as WriteState.
+  void SetContactMask(uint32_t mask) noexcept { contact_mask_ = mask; }
+
+  /// @brief Model generation the RT side runs. Stamped into every state
+  ///        snapshot, carried back in the plan, and **enforced** in
+  ///        @ref ComputeReference: a plan whose epoch differs from the
+  ///        current one is not installed (counted in @ref EpochRejections,
+  ///        treated like a missing solution). Any thread; release / acquire
+  ///        so whatever the caller changed before bumping the epoch is
+  ///        visible to the RT side that observes the new value.
+  void SetModelEpoch(uint32_t epoch) noexcept {
+    model_epoch_.store(epoch, std::memory_order_release);
+  }
+
+  [[nodiscard]] uint32_t ModelEpoch() const noexcept {
+    return model_epoch_.load(std::memory_order_acquire);
+  }
+
+  /// @return plans refused by @ref ComputeReference because their
+  ///         `model_epoch` was not the current one. Consumer thread.
+  [[nodiscard]] uint64_t EpochRejections() const noexcept { return epoch_rejections_; }
 
   /// @brief Try to compute the MPC-derived reference for the current tick.
   ///
@@ -112,6 +140,29 @@ class MPCSolutionManager {
   /// @return true if a valid solution has ever been installed.
   [[nodiscard]] bool HasEverReceivedSolution() const noexcept {
     return has_ever_received_solution_;
+  }
+
+  /// Provenance of the plan the consumer currently samples from (the last
+  /// one accepted in @ref ComputeReference), read from the held solution;
+  /// zero until the first acceptance, reset by @ref Init. The receive stamp
+  /// is in the clock the consumer hands to @ref WriteState /
+  /// @ref ComputeReference — the same clock as the plan's observation stamp,
+  /// so their difference is the policy age. Consumer thread only.
+  [[nodiscard]] uint64_t ActivePlanId() const noexcept {
+    const MPCSolution* s = interpolator_.Solution();
+    return s != nullptr ? s->plan_id : 0;
+  }
+
+  [[nodiscard]] uint64_t ActiveReceiveStampNs() const noexcept { return active_receive_stamp_ns_; }
+
+  [[nodiscard]] uint64_t ActiveObservationStampNs() const noexcept {
+    const MPCSolution* s = interpolator_.Solution();
+    return s != nullptr ? s->observation_stamp_ns : 0;
+  }
+
+  [[nodiscard]] uint32_t ActiveModelEpoch() const noexcept {
+    const MPCSolution* s = interpolator_.Solution();
+    return s != nullptr ? s->model_epoch : 0;
   }
 
   // ── Solve-timing probe (consumer-side perf monitor) ────────────────────
@@ -163,7 +214,7 @@ class MPCSolutionManager {
   // via rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload>.
 
  private:
-  bool enabled_{false};
+  std::atomic<bool> enabled_{false};
   bool riccati_enabled_{true};
   int max_stale_solutions_{5};
   int stale_count_{0};
@@ -172,6 +223,15 @@ class MPCSolutionManager {
   int nq_{0};
   int nv_{0};
   int n_contact_vars_{0};
+
+  uint64_t state_sequence_{0};  // RT thread only (WriteState)
+  uint32_t contact_mask_{0};    // RT thread only (SetContactMask / WriteState)
+  std::atomic<uint32_t> model_epoch_{0};
+  uint64_t plan_counter_{0};  // MPC thread only (PublishSolution)
+
+  // Consumer-side provenance not carried by the plan itself (consumer thread only).
+  uint64_t active_receive_stamp_ns_{0};
+  uint64_t epoch_rejections_{0};
 
   TripleBuffer<MPCSolution> solution_buffer_;
   TrajectoryInterpolator interpolator_;
