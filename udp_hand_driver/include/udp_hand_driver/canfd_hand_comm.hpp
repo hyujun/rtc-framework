@@ -10,7 +10,7 @@
 // stages open with what was sent:
 //
 //   RunCycle                  the cycle transaction (D49 (b) · D59 · D60):
-//                             CMD Frame 0 (pos, rad) + Frame 1 (ff, A) when a
+//                             CMD Frame 0 (pos, rad) + Frame 2 (ff, A) when a
 //                             command came in, then REQ (DLC 0, D47), back to
 //                             back; one receive window collects the two echoes
 //                             (D41, `cmd_ack` echo only) and the RESP burst idx
@@ -28,7 +28,7 @@
 //                             that every hand answers; this hand's set stage
 //                             against the loop's one bound for the tick
 //                             (tick start + set window, D89) → kJointRead
-//   WriteCommandFireAndForget E-Stop: Frame 1 zeros, then Frame 0 zeros (D26),
+//   WriteCommandFireAndForget E-Stop: FF (Frame 2) zeros, then position (Frame 0) zeros (D26),
 //                             nothing awaited — not a window
 //   DrainStale                non-blocking drain of the queue (≤ kMaxDrainPerCall)
 //                             + assembler reset
@@ -62,12 +62,13 @@
 // Frame classification (D41 · D58 · D59). Every frame the filter lets through:
 //   ① an error message frame (CAN_ERR_FLAG, subscribed through error_mask) →
 //      CanFdCommStats::error_frames / bus_off only;
-//   ② this node's echo with idx 0 or 1 not yet seen while the echo stage is
+//   ② this node's echo of the position (idx 0) or feedforward (idx 2) frame,
+//      not yet seen, while the echo stage is
 //      open (never in `cmd_ack` none) → accepted in any order; a payload that differs from what was
 //      sent only bumps echo_payload_mismatch (the hand applied its own copy — nothing to re-send);
 //   ③ this node's RESP while the set stage is open → RespSetAssembler::Feed
 //      (duplicates, bad index / length counted by it, D57);
-//   ④ anything else (an echo idx ≥ 2 or a repeated idx, a RESP outside an
+//   ④ anything else (an echo of any other idx or a repeated one, a RESP outside an
 //      open set stage, a late echo after its stage closed, another type) →
 //      cmd_mismatch + last_unexpected_* only, attributed to kWriteEcho while
 //      the echo stage is open and to kJointRead otherwise — however many
@@ -248,10 +249,10 @@ class CanFdHandComm final : public HandComm {
         assembler_(node_),
         echo_base_(canfd::EchoId(node_, 0)),
         resp_base_(canfd::RespId(node_, 0)) {
-    tx_frame0_.can_id = canfd::CmdId(node_, 0) | CAN_EFF_FLAG;
-    tx_frame1_.can_id = canfd::CmdId(node_, 1) | CAN_EFF_FLAG;
-    tx_frame0_.len = tx_frame1_.len = static_cast<__u8>(canfd::kFrameLen);
-    tx_frame0_.flags = tx_frame1_.flags = CANFD_BRS;
+    tx_pos_.can_id = canfd::CmdId(node_, canfd::kCmdPositionIdx) | CAN_EFF_FLAG;
+    tx_ff_.can_id = canfd::CmdId(node_, canfd::kCmdFeedforwardIdx) | CAN_EFF_FLAG;
+    tx_pos_.len = tx_ff_.len = static_cast<__u8>(canfd::kFrameLen);
+    tx_pos_.flags = tx_ff_.flags = CANFD_BRS;
     tx_req_.can_id = canfd::ReqId(node_) | CAN_EFF_FLAG;
     tx_req_.len = 0;  // D47: the REQ carries no data
     tx_req_.flags = CANFD_BRS;
@@ -366,8 +367,8 @@ class CanFdHandComm final : public HandComm {
       return;
     BuildCommandFrames(pos, ff_nm);
     // D26: the feedforward goes to zero first, then the position.
-    (void)SendCounted(tx_frame1_);
-    (void)SendCounted(tx_frame0_);
+    (void)SendCounted(tx_ff_);
+    (void)SendCounted(tx_pos_);
   }
 
   /// REQ → RESP set (the set stage alone). No motor-space read exists on this
@@ -424,8 +425,8 @@ class CanFdHandComm final : public HandComm {
       return false;
     }
     BuildCommandFrames(pos, ff_nm);
-    const bool frame0_sent = SendCounted(tx_frame0_);
-    const bool sent = frame0_sent && SendCounted(tx_frame1_);
+    const bool frame0_sent = SendCounted(tx_pos_);
+    const bool sent = frame0_sent && SendCounted(tx_ff_);
     out.write_end = Clock::now();
     if (sent) {
       ++stats_.PerKind(RequestKind::kWriteEcho).ok;
@@ -545,6 +546,22 @@ class CanFdHandComm final : public HandComm {
     return ts;
   }
 
+  /// Window::echo_got bits. The echo stage waits for the echoes of the two
+  /// frames the host sends, whatever their indices are — a mask of its own, not
+  /// canfd::FrameBit (that one numbers the RESP burst).
+  static constexpr uint8_t kEchoPosBit = 0x01;
+  static constexpr uint8_t kEchoFfBit = 0x02;
+
+  /// Bit of the echo of CMD frame `idx`; 0 for an index the host never sends
+  /// (class ④).
+  [[nodiscard]] static constexpr uint8_t EchoBit(uint8_t idx) noexcept {
+    if (idx == canfd::kCmdPositionIdx)
+      return kEchoPosBit;
+    if (idx == canfd::kCmdFeedforwardIdx)
+      return kEchoFfBit;
+    return 0;
+  }
+
   /// Forensic "cmd" of a frame that is not what the stage waits for.
   [[nodiscard]] static uint8_t UnexpectedCmdOf(uint32_t id) noexcept {
     return static_cast<uint8_t>((canfd::MsgTypeOf(id) << 4) | (canfd::FrameIndexOf(id) & 0x0Fu));
@@ -554,8 +571,8 @@ class CanFdHandComm final : public HandComm {
     std::array<float, canfd::kWireMotorCount> ff_a{};
     for (std::size_t i = 0; i < ff_a.size(); ++i)
       ff_a[i] = FeedforwardToAmps(i, ff_nm[i]);
-    canfd::SerializeFrame(canfd::MakeCmdMotorFrame(pos), tx_frame0_.data);
-    canfd::SerializeFrame(canfd::MakeCmdMotorFrame(ff_a), tx_frame1_.data);
+    canfd::SerializeFrame(canfd::MakeCmdMotorFrame(pos), tx_pos_.data);
+    canfd::SerializeFrame(canfd::MakeCmdMotorFrame(ff_a), tx_ff_.data);
   }
 
   /// SendFrame with the tx errno counters; false on failure (errno kept).
@@ -616,13 +633,13 @@ class CanFdHandComm final : public HandComm {
     bool sensors{false};  ///< the set stage also closes a kBulkSensor attempt
     bool echo_first{true};
     bool set_first{true};
-    uint8_t echo_got{0};
+    uint8_t echo_got{0};  ///< EchoBit() of every echo accepted so far
     Clock::time_point echo_deadline{};
     WindowResult r{};
   };
 
   /// The receive window (D59). Sends what the flags ask for — the CMD pair
-  /// (tx_frame0_/1_ already built) and / or the REQ — then receives until
+  /// (tx_pos_ / tx_ff_ already built) and / or the REQ — then receives until
   /// every stage that opened has closed. Deadline chain: echo stage CMD + T;
   /// set stage (echo close) + T, nominal CMD + 2T until the echoes arrive, REQ
   /// + T when no CMD went out. `cmd_ack` none opens no echo stage: the write
@@ -638,8 +655,8 @@ class CanFdHandComm final : public HandComm {
     // left at the epoch — REQ + T — when no CMD reached the bus.
     Clock::time_point set_bound{};
     if (send_cmd) {
-      const bool frame0_sent = SendCounted(tx_frame0_);
-      const bool sent = frame0_sent && SendCounted(tx_frame1_);
+      const bool frame0_sent = SendCounted(tx_pos_);
+      const bool sent = frame0_sent && SendCounted(tx_ff_);
       const Clock::time_point t_sent = Clock::now();
       if (cfg_.cmd_ack == canfd::CmdAck::kNone) {
         if (sent) {
@@ -736,14 +753,15 @@ class CanFdHandComm final : public HandComm {
         stats_.CountRecvOk();
         w.echo_first = false;
       }
-      if (idx < 2 && (w.echo_got & canfd::FrameBit(idx)) == 0) {  // ②
-        w.echo_got = static_cast<uint8_t>(w.echo_got | canfd::FrameBit(idx));
-        const canfd_frame& sent = (idx == 0) ? tx_frame0_ : tx_frame1_;
+      const uint8_t bit = EchoBit(idx);
+      if (bit != 0 && (w.echo_got & bit) == 0) {  // ②
+        w.echo_got = static_cast<uint8_t>(w.echo_got | bit);
+        const canfd_frame& sent = (bit == kEchoPosBit) ? tx_pos_ : tx_ff_;
         if (rx_.len != canfd::kFrameLen ||
             std::memcmp(rx_.data, sent.data, canfd::kFrameLen) != 0) {
           ++canfd_working_.echo_payload_mismatch;
         }
-        if (w.echo_got == (canfd::FrameBit(0) | canfd::FrameBit(1))) {
+        if (w.echo_got == (kEchoPosBit | kEchoFfBit)) {
           ++stats_.PerKind(RequestKind::kWriteEcho).ok;
           w.echo_open = false;
           w.r.write_ok = true;
@@ -753,7 +771,7 @@ class CanFdHandComm final : public HandComm {
         }
         return;
       }
-      // ④ (idx ≥ 2 or a repeated idx) — falls through to the mismatch below
+      // ④ (an idx the host did not send, or a repeated one) — falls through to the mismatch below
     } else if (cls == RxClass::kResp && w.set_open) {  // ③
       if (w.set_first) {
         stats_.CountRecvOk();
@@ -858,8 +876,8 @@ class CanFdHandComm final : public HandComm {
 
   // Scratch reused every cycle (allocation-free RT path). The ids / lengths /
   // flags are fixed in the constructor; only the payloads change.
-  canfd_frame tx_frame0_{};
-  canfd_frame tx_frame1_{};
+  canfd_frame tx_pos_{};  ///< CMD position (CmdFrame::kPosition)
+  canfd_frame tx_ff_{};   ///< CMD feedforward current (CmdFrame::kFeedforward)
   canfd_frame tx_req_{};
   canfd_frame tx_req_bc_{};  ///< the broadcast REQ (#956) — the only frame to target 0xFF
   canfd_frame rx_{};

@@ -946,7 +946,7 @@ class UdpHandController final : public HandCommLoopMember {
 
     // 1. Write command + recv echo (the comm applies joint_io_mode_: 1a=kJoint,
     // 1b=kMotor; pending_ff_ is the per-motor feedforward torque of the same
-    // command — the UDP comm ignores it, the CAN FD comm sends it as Frame 1).
+    // command — the UDP comm ignores it, the CAN FD comm sends it as the feedforward frame).
     // Gated on BOTH the first state read (startup no-jump contract) AND a
     // pending command. has_pending_write_ is cleared only inside the open
     // gate, so a command staged before the first state read is held (not lost)
@@ -1451,7 +1451,7 @@ class UdpHandController final : public HandCommLoopMember {
   // Fire-and-forget through the HandComm seam: zero position AND zero
   // feedforward, no echo wait, allocation-free, noexcept. E-STOP path (E-8):
   // the UDP comm sends the same single datagram as before the seam; the CAN FD
-  // comm sends Frame 1 zeros → Frame 0 zeros (epic #895 D26 · D33).
+  // comm sends feedforward zeros → position zeros (epic #895 D26 · D33).
   void OnCommLoopAborted() noexcept override {
     // Sibling of hand_comm_tick, NOT a child — HandCommLoop::OnLoopAborted() calls
     // this after the tick loop has unwound, so it lands on the loop thread's

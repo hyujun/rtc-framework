@@ -84,7 +84,7 @@
     # feedforward_kt: 모터별 토크 상수 [Nm/A], 펌웨어 모터 순서 10개 (D50).
     #                 JointCommand.feedforward [Nm] / kt → wire [A]. 1.0 = pass-through.
     #                 각 값은 > 0 이고 역수가 유한해야 한다.
-    # cmd_ack       : 펌웨어가 CMD Frame 0/1 을 echo 하는지 — 펌웨어와 일치해야 한다.
+    # cmd_ack       : 펌웨어가 CMD 프레임 (위치 · FF) 을 echo 하는지 — 펌웨어와 일치해야 한다.
     #                 "echo" = 구 펌웨어 (SDO 형: echo 2 개를 기다려 write 검증),
     #                 "none" = 현 펌웨어 (PDO 형: 송신 성공이 write 성공) — 기본값 (D62).
     #                 불일치는 실패가 아니라 카운터로 드러난다 — echo 인데 펌웨어가
