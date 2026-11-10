@@ -37,6 +37,10 @@ their own modules.
                        scene_world (header.frame_id, #779); the world is read
                        from the CM's urdf.extra_frames.scene_world.* params
                        (demo_gui.goal_frame) and the pose shown and seeded in it
+- Posture sequence   → the Sequence tab plays a list of hand presets in order
+                       (demo_gui.sequence): per-step move time and dwell on a
+                       0.01 s grid, once or looped, hand targets only — the arm
+                       is not commanded
 - Multi-frame CLIK   → on a profile that ships demo_dualarm_controller: gain
                        rows built from its YAML, one <task>/task_goal publisher
                        per task, and a status readout from the tail of its
@@ -235,6 +239,26 @@ from .pull import (
     PullSnapshot,
     build_render,
 )
+from .sequence import (
+    MAX_TIME_S,
+    MAX_TOLERANCE_DEG,
+    MIN_TIME_S,
+    MIN_TOLERANCE_DEG,
+    MODE_LOOP,
+    MODE_ONCE,
+    SequenceFile,
+    SequenceRunner,
+    SequenceStep,
+    clamp_dwell,
+    clamp_time,
+    clamp_tolerance,
+    load_sequence_file,
+    moved,
+    resolve_steps,
+    save_sequence_file,
+    step_problem,
+    with_all_times,
+)
 from .task_frame import TaskFrameSelector
 from .vtcp import (
     VTCP_MODE_PARAM,
@@ -287,6 +311,10 @@ def _toggle_stage(method):
 
     return wrapper
 
+
+# Period of the Sequence tab's run loop. Step times are set on a 0.01 s grid, so
+# the loop that decides "this step is over" may not be coarser than that.
+SEQUENCE_TICK_MS = 10
 
 # A preset's hand goal waits for the speed set this long before it is sent
 # anyway — a parameter service that never answers must not hold the goal (or the
@@ -647,6 +675,25 @@ class DemoControllerGUI(Node):
         self._toggle_capture_window = None
         self._toggle_bindtag = f"PresetToggle{id(self)}"
 
+        # Posture sequence (demo_gui.sequence), one list per preset scope. The
+        # runner and everything below are touched on the Tk thread only, except
+        # _hand_state_stamp, which the joint-state callback writes.
+        self._sequence_path = os.path.join(
+            os.path.dirname(self._preset_path),
+            f"demo_gui_sequences_{self._profile.preset_token()}.json",
+        )
+        self._sequence: SequenceFile = load_sequence_file(self._sequence_path)
+        self._sequence_runner = SequenceRunner()
+        self._sequence_ctrl = ""  # controller the playing run sends to
+        self._sequence_after = None
+        self._sequence_message = ""  # outcome line while nothing is playing
+        self._sequence_toggle_warned = False  # the shortcut's refusal, once per run
+        self._sequence_editor_row: int | None = None  # row last loaded into the editor
+        self._sequence_painted: tuple[str, str, int] | None = None
+        # monotonic arrival time of the last hand joint state (None = never):
+        # a sequence step is not "reached" on a measurement that stopped coming.
+        self._hand_state_stamp: float | None = None
+
         # Dirty-check caches for GUI refresh (avoid redundant Tk redraws)
         self._prev_status = [""] * self._shape.arm_dof
         self._prev_task = [""] * 6  # task-space is always 6-D (X,Y,Z,R,P,Y)
@@ -978,6 +1025,7 @@ class DemoControllerGUI(Node):
                 self.current_hand_positions = reordered
             else:
                 self.current_hand_positions = list(msg.joint_positions[:hand_dof])
+            self._hand_state_stamp = time.monotonic()
 
     def _estop_cb(self, msg: Bool):
         self.estop_active = msg.data
@@ -1975,7 +2023,9 @@ class DemoControllerGUI(Node):
         self.root.geometry("1000x900" if len(joint_groups) == 1 else "1320x900")
         self.root.resizable(True, True)
         self.root.configure(bg="#1e1e2e")
-        self.root.bind_class(self._toggle_bindtag, "<KeyPress>", self._on_toggle_key_press)
+        self.root.bind_class(
+            self._toggle_bindtag, "<KeyPress>", self._toggle_press_unless_sequence
+        )
         self.root.bind_class(self._toggle_bindtag, "<KeyRelease>", self._on_toggle_key_release)
 
         style = ttk.Style()
@@ -2058,6 +2108,20 @@ class DemoControllerGUI(Node):
             "TCombobox",
             fieldbackground=[("readonly", "#313244")],
             foreground=[("readonly", "#cdd6f4")],
+        )
+        # Sequence tab's time fields; greyed while a run plays.
+        style.configure(
+            "TSpinbox",
+            fieldbackground="#313244",
+            background="#313244",
+            foreground="#cdd6f4",
+            arrowcolor="#cdd6f4",
+            insertcolor="#cdd6f4",
+        )
+        style.map(
+            "TSpinbox",
+            fieldbackground=[("disabled", "#1e1e2e")],
+            foreground=[("disabled", "#6c7086")],
         )
 
         # Scrollable wrapper
@@ -2144,6 +2208,10 @@ class DemoControllerGUI(Node):
 
         catching_tab = tk.Frame(notebook, bg="#1e1e2e")
         notebook.add(catching_tab, text="  Catching  ")
+
+        sequence_tab = tk.Frame(notebook, bg="#1e1e2e")
+        notebook.add(sequence_tab, text="  Sequence  ")
+        self._build_sequence_tab(sequence_tab)
 
         grasp_tab = tk.Frame(notebook, bg="#1e1e2e")
         notebook.add(grasp_tab, text="  Grasp  ")
@@ -2661,7 +2729,10 @@ class DemoControllerGUI(Node):
             btn_frame, text="Copy Current → Target", command=self._copy_current_to_target
         ).pack(side="left", padx=4)
         self._send_cmd_btn = ttk.Button(
-            btn_frame, text="Send Command", style="Send.TButton", command=self._publish_target
+            btn_frame,
+            text="Send Command",
+            style="Send.TButton",
+            command=self._unless_sequence(self._publish_target, "Send Command"),
         )
         self._send_cmd_btn.pack(side="left", padx=4)
         # Why Send is off, when hand_joint_controller's mode refuses goals.
@@ -3695,9 +3766,11 @@ class DemoControllerGUI(Node):
             ("Step -> preshape", StepPose.PRESHAPE),
             ("Step -> closed", StepPose.CLOSED),
         ):
-            ttk.Button(btn_row, text=label, command=lambda p=pose: self._send_hand_step(p)).pack(
-                side="left", padx=4
-            )
+            ttk.Button(
+                btn_row,
+                text=label,
+                command=self._unless_sequence(lambda p=pose: self._send_hand_step(p), "Hand step"),
+            ).pack(side="left", padx=4)
 
         self._hand_step_label = tk.Label(
             frame,
@@ -4464,7 +4537,10 @@ class DemoControllerGUI(Node):
         action_frame.pack(fill="x", padx=4, pady=(2, 0))
 
         ttk.Button(
-            action_frame, text="Send Preset", style="Send.TButton", command=self._send_preset
+            action_frame,
+            text="Send Preset",
+            style="Send.TButton",
+            command=self._unless_sequence(self._send_preset, "Send Preset"),
         ).pack(side="left", padx=4)
         ttk.Button(
             action_frame,
@@ -4582,6 +4658,8 @@ class DemoControllerGUI(Node):
             )
         if hasattr(self, "_toggle_close_combo"):
             self._refresh_toggle_controls()
+        if hasattr(self, "_sequence_tree"):
+            self._refresh_sequence_view()
 
     def _refresh_toggle_controls(self, save: bool = True):
         close_name, open_name = resolve_preset_pair(
@@ -4674,6 +4752,25 @@ class DemoControllerGUI(Node):
             self._toggle_in_flight = True
             self._request_toggle_preset(role)
         return "break"
+
+    def _toggle_press_unless_sequence(self, event):
+        """The bound key-press handler: the toggle shortcut is swallowed while a
+        posture sequence plays (its preset would be overwritten by the next
+        step), everything else goes to ``_on_toggle_key_press``."""
+        if (
+            self._sequence_runner.running
+            and self._toggle_capture_window is None
+            and self._toggle_event_matches(event)
+            and not is_text_input_widget(event.widget.winfo_class())
+        ):
+            # Key auto-repeat: say it once per run.
+            if not self._sequence_toggle_warned:
+                self._sequence_toggle_warned = True
+                self.get_logger().warn(
+                    "Preset toggle ignored — a posture sequence is playing (Stop it first)"
+                )
+            return "break"
+        return self._on_toggle_key_press(event)
 
     def _on_toggle_key_release(self, event):
         if self._toggle_capture_window is not None or not self._toggle_event_matches(event):
@@ -6185,11 +6282,13 @@ class DemoControllerGUI(Node):
         self._set_hand_speed_then(ctrl, max_dist, grasp_time, f"Preset '{name}'", _send_hand_goal)
 
     def _set_hand_speed_then(
-        self, ctrl: str, max_dist: float, grasp_time: float, what: str, then
+        self, ctrl: str, max_dist: float, grasp_time: float, what: str, then, on_plan=None
     ) -> None:
         """Set ``ctrl``'s hand trajectory speed for a move of ``max_dist`` [rad]
         in ``grasp_time`` [s], then call ``then()`` on the Tk thread — exactly
-        once, whatever the parameter services do.
+        once, whatever the parameter services do. ``on_plan(plan)`` is called
+        before it when the speed was set, and only then: a caller that times the
+        move learns the plan's ``min_duration`` only when it is in force.
 
         The goal used to be published while the set was still in flight, so the
         trajectory could be planned at the previous speed. The cap is read
@@ -6240,6 +6339,8 @@ class DemoControllerGUI(Node):
                     f"{what}: {speed_param} {describe_plan(plan, grasp_time, max_dist)}"
                 )
                 self._show_param_value(ctrl, speed_param, plan.speed)
+                if on_plan is not None:
+                    on_plan(plan)
             else:
                 self.get_logger().error(
                     f"{what}: set {speed_param}={plan.speed:.4f} refused ({reason}) — the "
@@ -6283,6 +6384,518 @@ class DemoControllerGUI(Node):
             self.root.after(0, _after_cap, cap)
 
         client.get_parameters([cap_param]).add_done_callback(_on_cap_done)
+
+    # ---- Posture sequence (demo_gui.sequence) --------------------------------
+
+    def _unless_sequence(self, action, what: str):
+        """``action`` as a button command that is refused while a sequence
+        plays: a goal sent by hand in between would be overwritten by the next
+        step, and the run would go on judging "reached" against its own target."""
+
+        def run() -> None:
+            if self._sequence_runner.running:
+                self.get_logger().warn(
+                    f"{what} ignored — a posture sequence is playing (Stop it first)"
+                )
+                return
+            action()
+
+        return run
+
+    def _build_sequence_tab(self, parent: tk.Frame) -> None:
+        frame = ttk.LabelFrame(parent, text="Posture Sequence (hand)", padding=4)
+        frame.pack(fill="x", expand=False, padx=8, pady=(4, 4))
+
+        def label(row, text: str, padx=(8, 2)) -> None:
+            tk.Label(row, text=text, bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8)).pack(
+                side="left", padx=padx
+            )
+
+        tk.Label(
+            frame,
+            text=(
+                "Sends the listed presets' HAND targets in order to the active controller. "
+                "The arm is not commanded: a preset's controller and robot target are not used.\n"
+                "Time = duration of the move to the step, Dwell = rest before the next one "
+                "(0.01 s steps). A step ends when its time has passed and the hand is within "
+                "the tolerance."
+            ),
+            bg="#1e1e2e",
+            fg="#a6adc8",
+            font=("Segoe UI", 8),
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=4, pady=(0, 4))
+
+        tree_frame = tk.Frame(frame, bg="#1e1e2e")
+        tree_frame.pack(fill="x", expand=False, padx=4, pady=(0, 4))
+        columns = ("preset", "time", "dwell", "note")
+        self._sequence_tree = ttk.Treeview(
+            tree_frame, columns=columns, show="tree headings", height=8, selectmode="browse"
+        )
+        self._sequence_tree.heading("#0", text="#", anchor="center")
+        self._sequence_tree.heading("preset", text="Preset", anchor="w")
+        self._sequence_tree.heading("time", text="Time (s)", anchor="center")
+        self._sequence_tree.heading("dwell", text="Dwell (s)", anchor="center")
+        self._sequence_tree.heading("note", text="", anchor="w")
+        self._sequence_tree.column("#0", width=40, minwidth=30, anchor="center")
+        self._sequence_tree.column("preset", width=200, minwidth=100)
+        self._sequence_tree.column("time", width=70, minwidth=50, anchor="center")
+        self._sequence_tree.column("dwell", width=70, minwidth=50, anchor="center")
+        self._sequence_tree.column("note", width=360, minwidth=120)
+        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self._sequence_tree.yview)
+        self._sequence_tree.configure(yscrollcommand=scroll.set)
+        self._sequence_tree.pack(side="left", fill="x", expand=True)
+        scroll.pack(side="right", fill="y")
+        self._sequence_tree.bind("<<TreeviewSelect>>", self._on_sequence_select)
+
+        # ── Step editor ──────────────────────────────────────────────────
+        edit_row = tk.Frame(frame, bg="#1e1e2e")
+        edit_row.pack(fill="x", padx=4, pady=2)
+        label(edit_row, "Preset:", padx=(0, 2))
+        self._sequence_preset_var = tk.StringVar()
+        self._sequence_preset_combo = ttk.Combobox(
+            edit_row, textvariable=self._sequence_preset_var, width=20, state="readonly"
+        )
+        self._sequence_preset_combo.pack(side="left", padx=2)
+        self._sequence_preset_combo.bind("<<ComboboxSelected>>", self._on_sequence_preset_picked)
+        label(edit_row, "Time (s):")
+        self._sequence_time_spin = ttk.Spinbox(
+            edit_row,
+            from_=MIN_TIME_S,
+            to=MAX_TIME_S,
+            increment=0.01,
+            format="%.2f",
+            width=8,
+            justify="center",
+        )
+        self._sequence_time_spin.set("1.00")
+        self._sequence_time_spin.pack(side="left", padx=2)
+        label(edit_row, "Dwell (s):")
+        self._sequence_dwell_spin = ttk.Spinbox(
+            edit_row,
+            from_=0.0,
+            to=MAX_TIME_S,
+            increment=0.01,
+            format="%.2f",
+            width=8,
+            justify="center",
+        )
+        self._sequence_dwell_spin.set("0.00")
+        self._sequence_dwell_spin.pack(side="left", padx=2)
+
+        self._sequence_edit_buttons = []
+
+        def button(row, text: str, command, style: str = "Preset.TButton", padx=4):
+            btn = ttk.Button(row, text=text, style=style, command=command)
+            btn.pack(side="left", padx=padx)
+            return btn
+
+        # Two rows: the five buttons do not fit beside the fields at the
+        # default window width.
+        list_row = tk.Frame(frame, bg="#1e1e2e")
+        list_row.pack(fill="x", padx=4, pady=2)
+        for text, command in (
+            ("Add", self._add_sequence_step),
+            ("Update", self._update_sequence_step),
+            ("Remove", self._remove_sequence_step),
+            ("Up", lambda: self._move_sequence_step(-1)),
+            ("Down", lambda: self._move_sequence_step(1)),
+        ):
+            self._sequence_edit_buttons.append(button(list_row, text, command))
+
+        # ── Every step at once ───────────────────────────────────────────
+        bulk_row = tk.Frame(frame, bg="#1e1e2e")
+        bulk_row.pack(fill="x", padx=4, pady=2)
+        label(bulk_row, "All steps — apply the Time / Dwell above to every step:", padx=(0, 2))
+        for text, command in (
+            ("Set Time (all)", lambda: self._set_all_sequence_times(time=True)),
+            ("Set Dwell (all)", lambda: self._set_all_sequence_times(dwell=True)),
+        ):
+            self._sequence_edit_buttons.append(button(bulk_row, text, command))
+
+        # ── Run ──────────────────────────────────────────────────────────
+        run_row = tk.Frame(frame, bg="#1e1e2e")
+        run_row.pack(fill="x", padx=4, pady=(6, 2))
+        label(run_row, "Tolerance (deg):", padx=(0, 2))
+        self._sequence_tolerance_spin = ttk.Spinbox(
+            run_row,
+            from_=MIN_TOLERANCE_DEG,
+            to=MAX_TOLERANCE_DEG,
+            increment=0.1,
+            format="%.1f",
+            width=6,
+            justify="center",
+        )
+        self._sequence_tolerance_spin.set(f"{self._sequence.tolerance_deg:.1f}")
+        self._sequence_tolerance_spin.pack(side="left", padx=2)
+        self._sequence_play_buttons = [
+            button(
+                run_row, "Play once", lambda: self._play_sequence(MODE_ONCE), "Send.TButton", 8
+            ),
+            button(run_row, "Play loop", lambda: self._play_sequence(MODE_LOOP), "Send.TButton"),
+        ]
+        self._sequence_stop_btn = button(run_row, "Stop", self._stop_sequence)
+
+        self._sequence_status_var = tk.StringVar(value="idle")
+        self._sequence_status_label = tk.Label(
+            frame,
+            textvariable=self._sequence_status_var,
+            bg="#1e1e2e",
+            fg=GRASP_MODE_FG_UNKNOWN,
+            font=("Courier New", 9),
+            justify="left",
+            anchor="w",
+            wraplength=900,
+        )
+        self._sequence_status_label.pack(fill="x", padx=4, pady=(4, 0))
+
+        self._refresh_sequence_view()
+        self._apply_sequence_lock()
+
+    def _refresh_sequence_view(self, select: int | None = None) -> None:
+        """Repaint the step table and the preset choices from the model."""
+        tree = self._sequence_tree
+        if select is None:
+            select = self._selected_sequence_index()
+        tree.delete(*tree.get_children())
+        for i, step in enumerate(self._sequence.steps):
+            tree.insert(
+                "",
+                "end",
+                iid=str(i),
+                text=str(i + 1),
+                values=(
+                    step.preset,
+                    f"{step.time_s:.2f}",
+                    f"{step.dwell_s:.2f}",
+                    step_problem(step, self._presets, self._shape.hand_dof),
+                ),
+            )
+        names = list(self._presets)
+        self._sequence_preset_combo.configure(values=names)
+        if self._sequence_preset_var.get() not in self._presets:
+            self._sequence_preset_var.set(names[0] if names else "")
+        if select is not None and 0 <= select < len(self._sequence.steps):
+            tree.selection_set(str(select))
+            tree.see(str(select))
+
+    def _selected_sequence_index(self) -> int | None:
+        selection = self._sequence_tree.selection()
+        return int(selection[0]) if selection else None
+
+    def _on_sequence_select(self, _event=None) -> None:
+        """Show the selected row in the editor — not while playing, when the
+        selection follows the run and the editor is the operator's."""
+        index = self._selected_sequence_index()
+        if index is None or self._sequence_runner.running:
+            return
+        # A repaint re-selects the row; that must not replace what the operator
+        # is typing. Only a selection of ANOTHER row loads the editor.
+        if index == self._sequence_editor_row or index >= len(self._sequence.steps):
+            return
+        self._sequence_editor_row = index
+        step = self._sequence.steps[index]
+        if step.preset in self._presets:
+            self._sequence_preset_var.set(step.preset)
+        self._sequence_time_spin.set(f"{step.time_s:.2f}")
+        self._sequence_dwell_spin.set(f"{step.dwell_s:.2f}")
+
+    def _on_sequence_preset_picked(self, _event=None) -> None:
+        """Offer the picked preset's own grasp_time as the step's time."""
+        data = self._presets.get(self._sequence_preset_var.get())
+        if data is None:
+            return
+        with contextlib.suppress(TypeError, ValueError):
+            self._sequence_time_spin.set(f"{clamp_time(float(data.get('grasp_time', 1.0))):.2f}")
+
+    def _sequence_spin_value(self, spin, what: str, clamp, fmt: str = "{:.2f}") -> float | None:
+        """A Spinbox's number, clamped and written back; None (and a dialog)
+        when it is not a number."""
+        try:
+            value = float(spin.get())
+            if not math.isfinite(value):
+                raise ValueError(value)
+        except ValueError:
+            messagebox.showerror("Invalid Input", f"{what} must be a number.")
+            return None
+        value = clamp(value)
+        spin.set(fmt.format(value))
+        return value
+
+    def _sequence_editor_step(self) -> SequenceStep | None:
+        preset = self._sequence_preset_var.get()
+        if preset not in self._presets:
+            messagebox.showwarning("No Preset", "Pick a preset for the step.")
+            return None
+        time_s = self._sequence_spin_value(self._sequence_time_spin, "Time", clamp_time)
+        if time_s is None:
+            return None
+        dwell_s = self._sequence_spin_value(self._sequence_dwell_spin, "Dwell", clamp_dwell)
+        if dwell_s is None:
+            return None
+        return SequenceStep(preset, time_s, dwell_s)
+
+    def _commit_sequence(
+        self, steps=None, select: int | None = None, tolerance_deg: float | None = None
+    ) -> None:
+        """Replace the list (and/or the tolerance), save it and repaint."""
+        self._sequence = SequenceFile(
+            self._sequence.steps if steps is None else tuple(steps),
+            self._sequence.tolerance_deg if tolerance_deg is None else tolerance_deg,
+        )
+        try:
+            save_sequence_file(self._sequence_path, self._sequence)
+        except OSError as exc:
+            self.get_logger().error(f"Failed to save the posture sequence: {exc}")
+        self._sequence_editor_row = None  # the rows changed: show the selected one again
+        self._refresh_sequence_view(select)
+
+    def _sequence_edit_refused(self) -> bool:
+        return self._sequence_runner.running
+
+    def _add_sequence_step(self) -> None:
+        """Insert the editor's step after the selected row (at the end without one)."""
+        if self._sequence_edit_refused():
+            return
+        step = self._sequence_editor_step()
+        if step is None:
+            return
+        steps = list(self._sequence.steps)
+        index = self._selected_sequence_index()
+        at = len(steps) if index is None else index + 1
+        steps.insert(at, step)
+        self._commit_sequence(steps, at)
+
+    def _update_sequence_step(self) -> None:
+        if self._sequence_edit_refused():
+            return
+        index = self._selected_sequence_index()
+        if index is None:
+            messagebox.showwarning("No Selection", "Select a step first.")
+            return
+        step = self._sequence_editor_step()
+        if step is None:
+            return
+        steps = list(self._sequence.steps)
+        steps[index] = step
+        self._commit_sequence(steps, index)
+
+    def _remove_sequence_step(self) -> None:
+        if self._sequence_edit_refused():
+            return
+        index = self._selected_sequence_index()
+        if index is None:
+            messagebox.showwarning("No Selection", "Select a step first.")
+            return
+        steps = list(self._sequence.steps)
+        del steps[index]
+        self._commit_sequence(steps, min(index, len(steps) - 1))
+
+    def _move_sequence_step(self, offset: int) -> None:
+        if self._sequence_edit_refused():
+            return
+        index = self._selected_sequence_index()
+        if index is None:
+            return
+        steps, at = moved(self._sequence.steps, index, offset)
+        self._commit_sequence(steps, at)
+
+    def _set_all_sequence_times(self, *, time: bool = False, dwell: bool = False) -> None:
+        """Give every step the editor's Time and/or Dwell."""
+        if self._sequence_edit_refused() or not self._sequence.steps:
+            return
+        time_s = dwell_s = None
+        if time:
+            time_s = self._sequence_spin_value(self._sequence_time_spin, "Time", clamp_time)
+            if time_s is None:
+                return
+        if dwell:
+            dwell_s = self._sequence_spin_value(self._sequence_dwell_spin, "Dwell", clamp_dwell)
+            if dwell_s is None:
+                return
+        self._commit_sequence(with_all_times(self._sequence.steps, time_s, dwell_s))
+
+    def _apply_sequence_lock(self) -> None:
+        """Editing and Play are off while a run plays; Stop is on only then."""
+        running = self._sequence_runner.running
+        idle_state = "disabled" if running else "normal"
+        for widget in (*self._sequence_edit_buttons, *self._sequence_play_buttons):
+            widget.config(state=idle_state)
+        for spin in (
+            self._sequence_time_spin,
+            self._sequence_dwell_spin,
+            self._sequence_tolerance_spin,
+        ):
+            spin.config(state=idle_state)
+        self._sequence_preset_combo.config(state="disabled" if running else "readonly")
+        self._sequence_stop_btn.config(state="normal" if running else "disabled")
+
+    def _sequence_start_block(self, ctrl: str) -> str:
+        """Why a run must not start on ``ctrl`` ("" = it may)."""
+        if self.estop_active:
+            return "E-STOP is active"
+        if self._shape.hand_dof == 0:
+            return "this profile has no hand"
+        if not ctrl:
+            return "no active controller has been reported yet"
+        if ctrl in NO_EXTERNAL_COMMAND_CONTROLLERS:
+            return f"{ctrl} accepts no external target"
+        if self._toggle_in_flight:
+            return "a preset toggle is still in flight"
+        if reason := self._hand_goal_block():
+            return reason
+        with self._owned_topics_lock:
+            if not self._toggle_publishers_matched(ctrl, False):
+                return f"the hand goal publisher is not bound to /{ctrl} and subscribed to yet"
+        if self._hand_state_stamp is None:
+            return "no hand joint state has been received yet"
+        return ""
+
+    def _sequence_run_block(self) -> str:
+        """Why the playing run must end now ("" = go on)."""
+        if self.estop_active:
+            return "E-STOP is active"
+        if self._active_ctrl != self._sequence_ctrl:
+            return (
+                f"the active controller changed from {self._sequence_ctrl} to "
+                f"{self._active_ctrl or 'none'}"
+            )
+        return self._hand_goal_block()
+
+    def _play_sequence(self, mode: str) -> None:
+        runner = self._sequence_runner
+        if runner.running:
+            return
+        tolerance = self._sequence_spin_value(
+            self._sequence_tolerance_spin, "Tolerance", clamp_tolerance, "{:.1f}"
+        )
+        if tolerance is None:
+            return
+        if tolerance != self._sequence.tolerance_deg:
+            self._commit_sequence(tolerance_deg=tolerance)
+        ctrl = self._active_ctrl
+        steps, failure = resolve_steps(self._sequence.steps, self._presets, self._shape.hand_dof)
+        failure = (
+            failure
+            or self._sequence_start_block(ctrl)
+            or runner.start(steps, mode, tolerance, self._shape.hand_motor_names)
+        )
+        if failure:
+            self._sequence_message = f"not started — {failure}"
+            self.get_logger().warn(f"Posture sequence not started — {failure}")
+            self._paint_sequence(ok=False)
+            return
+        self._sequence_ctrl = ctrl
+        self._sequence_toggle_warned = False
+        self.get_logger().info(
+            f"Posture sequence: playing {len(steps)} steps ({mode}) on {ctrl}, "
+            f"tolerance {tolerance:.1f} deg"
+        )
+        self._apply_sequence_lock()
+        # One tick chain: a tick left over from the previous run must not
+        # run beside the one started here.
+        if self._sequence_after is not None:
+            self.root.after_cancel(self._sequence_after)
+        self._sequence_tick()
+
+    def _stop_sequence(self) -> None:
+        """No further step is sent. A trajectory already started runs to its end."""
+        self._sequence_runner.stop()
+
+    def _sequence_tick(self) -> None:
+        """Run loop on the Tk thread; reschedules itself while a run plays."""
+        self._sequence_after = None
+        runner = self._sequence_runner
+        try:
+            now = time.monotonic()
+            stamp = self._hand_state_stamp
+            step = runner.tick(
+                now,
+                list(self.current_hand_positions),
+                None if stamp is None else now - stamp,
+                self._sequence_run_block(),
+            )
+            if step is not None:
+                self._send_sequence_step(step, runner.token)
+            if runner.running:
+                self._paint_sequence()
+                self._sequence_after = self.root.after(SEQUENCE_TICK_MS, self._sequence_tick)
+        except Exception as exc:
+            # An exception here would otherwise leave the tab locked for good.
+            runner.stop(f"stopped by an internal error ({exc!r})")
+            self._sequence_finished()
+            raise
+        if not runner.running:
+            self._sequence_finished()
+
+    def _sequence_finished(self) -> None:
+        runner = self._sequence_runner
+        self._sequence_message = runner.result
+        # Unlock before anything that can raise: a locked tab outlives the run.
+        self._apply_sequence_lock()
+        self._paint_sequence(ok=not runner.aborted)
+        text = f"Posture sequence {runner.result} ({runner.cycle} full cycles)"
+        # Two call sites: rclpy refuses one that changes severity between calls.
+        if runner.aborted:
+            self.get_logger().warn(text)
+        else:
+            self.get_logger().info(text)
+
+    def _paint_sequence(self, ok: bool | None = None) -> None:
+        """Status line and the row being played; dirty-checked, the run loop
+        calls this every tick."""
+        runner = self._sequence_runner
+        running = runner.running
+        text = runner.status(time.monotonic()) if running else (self._sequence_message or "idle")
+        fg = _result_fg(None if running else ok)
+        painted = (text, fg, runner.index if running else -1)
+        if painted == self._sequence_painted:
+            return
+        previous = self._sequence_painted
+        self._sequence_painted = painted
+        self._sequence_status_var.set(text)
+        self._sequence_status_label.config(fg=fg)
+        if running and (previous is None or previous[2] != runner.index):
+            self._sequence_tree.selection_set(str(runner.index))
+            self._sequence_tree.see(str(runner.index))
+
+    def _send_sequence_step(self, step, token: int) -> None:
+        """Send one step's hand target: set the speed its time asks for, then
+        publish — from the completion of the set, like a preset send. The
+        runner hears back exactly once (``on_sent``), published or not."""
+        runner = self._sequence_runner
+        ctrl = self._sequence_ctrl
+        what = f"Sequence '{step.preset}' ({runner.index + 1})"
+        max_dist = 0.0
+        for target, current in zip(step.target_rad, self.current_hand_positions, strict=False):
+            max_dist = max(max_dist, abs(target - current))
+
+        hand_msg = RobotTarget()
+        hand_msg.goal_type = "joint"
+        hand_msg.joint_names = list(self._shape.hand_motor_names)
+        hand_msg.joint_target = list(step.target_rad)
+
+        planned: dict[str, float | None] = {"min_duration": None}
+
+        def _on_plan(plan) -> None:
+            planned["min_duration"] = plan.min_duration
+
+        def _send_step_goal() -> None:
+            """Tk thread, once the speed set has answered (or was skipped):
+            whatever could have changed meanwhile is asked again."""
+            if not runner.awaiting(token):
+                return  # stopped while the speed was being set — nothing goes out
+            refusal = self._sequence_run_block()
+            if not refusal and self.hand_cmd_pub is None:
+                refusal = "the hand goal publisher is not bound"
+            if not refusal:
+                refusal = self._publish_hand(hand_msg, what)
+            runner.on_sent(token, time.monotonic(), refusal, planned["min_duration"])
+
+        self._set_hand_speed_then(
+            ctrl, max_dist, step.time_s, what, _send_step_goal, on_plan=_on_plan
+        )
 
     def _confirm_preset_overwrite(self, name: str) -> bool:
         """True if saving under ``name`` may proceed — either the name is new,
@@ -6424,6 +7037,8 @@ class DemoControllerGUI(Node):
         doing it here raced the still-spinning executor and left ``ros2 run``
         alive because ``try_shutdown`` — the only thing that wakes spin — was
         sequenced after a teardown that could hang."""
+        # A speed set still in flight must not publish a step after the close.
+        self._sequence_runner.stop("stopped — the window was closed")
         with contextlib.suppress(Exception):
             self.root.destroy()
         # Thread-safe; wakes rclpy.spin on the main thread, which then runs the

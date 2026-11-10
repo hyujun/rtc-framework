@@ -71,6 +71,19 @@ Preset 패널의 `Toggle Close` / `Open` 콤보에 고른 두 preset 을 키 하
 - 토글 도중 예외가 나면 잠금을 풀고 `Preset toggle (...) aborted` 를 error 로그에 남깁니다. 재시작 없이 다시 누를 수 있습니다.
 - 두 콤보에 같은 preset 을 고르면 패널에 경고가 표시됩니다.
 
+## Sequence 탭 (손 posture 순차 실행)
+
+저장된 preset 을 목록에 담아 **손 목표만** 차례로 보냅니다. 팔은 명령하지 않습니다: preset 에 적힌 `controller` 와 `robot_target` 은 쓰지 않고, 컨트롤러 전환도 하지 않습니다. 목표는 재생을 시작한 시점의 active controller 로 갑니다.
+
+- **목록**: `Preset` 콤보에서 고르고 `Add` (선택한 행 뒤, 선택이 없으면 끝) · `Update` (선택한 행을 편집 칸 값으로) · `Remove` · `Up` · `Down`. 같은 preset 을 여러 번 넣을 수 있습니다. 목록과 허용오차는 preset 파일 옆 `demo_gui_sequences_<scope>.json` 에 저장됩니다 (프로파일당 목록 하나).
+- **Time / Dwell**: step 마다 `Time` (그 자세까지의 이동 시간, 0.01 s 이상) 과 `Dwell` (도착 뒤 다음 step 까지 쉬는 시간, 0 이상) 을 **0.01 s 단위**로 둡니다. preset 의 `grasp_time` 은 콤보에서 고를 때 `Time` 칸에 채워지는 초깃값일 뿐이고, 재생에는 step 의 값이 쓰입니다. `Set Time (all)` · `Set Dwell (all)` 은 편집 칸의 값을 **모든 step 에 한꺼번에** 넣습니다.
+- **재생**: `Play once` 는 목록을 한 번 돌고 마지막 자세에서 끝납니다. `Play loop` 는 마지막 step 뒤 첫 step 으로 돌아가 `Stop` 까지 반복합니다 (돌아가는 이동에는 첫 step 의 `Time` 이 쓰입니다). `Stop` 은 **더 보내지 않을 뿐**이고, 이미 시작한 궤적은 끝까지 갑니다.
+- **step 이 끝나는 조건**: 컨트롤러는 궤적 완료를 알리지 않으므로, `Time` 이 지났고 측정한 손 관절이 모두 목표의 `Tolerance (deg)` (기본 2.0°) 안에 있을 때 다음 step 으로 넘어갑니다. 이동 시간은 [Preset 의 hand 속도](#preset-의-hand-속도-grasp_time) 와 같은 방식으로 속도 파라미터로 바뀌며, 상한에 걸린 step 은 설정한 `Time` 보다 오래 걸립니다 (상태 줄의 `moving x / y s` 에서 `y` 가 그 하한). `y` 는 하한일 뿐입니다: 컨트롤러가 관절별 속도 정격으로 궤적을 더 늘리면 (`hand_joint_controller`) GUI 는 그 값을 모르고, step 은 실제로 도착했을 때 끝납니다 — 짧은 `Time` 이 지켜지는지는 로그의 step 간격으로 확인합니다. step 마다 속도 set 왕복이 들어가므로 한 바퀴는 `Σ(Time + Dwell)` 보다 조금 깁니다.
+- **스스로 중단하는 경우** (상태 줄과 로그에 사유): E-STOP, active controller 변경, `hand_joint_controller` 의 mode 가 `tracking` 이 아님, 전송 거부, 그리고 **도달 timeout** (예상 소요의 2배 + 1 s). timeout 사유는 가장 먼 관절과 남은 오차를 적습니다 — 컨트롤러가 관절 한계로 clamp 했거나 기구 끝단에 막혀 목표에 못 닿는 preset 은 여기서 멈추므로, preset 을 닿는 값으로 고치거나 `Tolerance` 를 넓힙니다. 손 joint state 가 0.5 s 넘게 오지 않으면 도달로 치지 않습니다.
+- **시작이 거부되는 경우**: 빈 목록, 지워졌거나 손 DoF 가 다른 preset 을 가리키는 step (표의 오른쪽 칸에 표시), E-STOP, 목표를 받지 않는 컨트롤러, 손 목표 publisher 가 아직 active controller 에 묶이지 않았거나 구독자가 없음.
+- **재생 중 잠금**: 목록 편집, `Send Command`, `Send Preset`, 단축키 토글, hand step 은 재생 중 무시되고 로그에 남습니다. `Switch Controller` 와 E-STOP 은 막지 않으며 위의 중단 사유가 됩니다. 재생은 시작할 때의 preset 값을 쓰므로 재생 중 preset 을 고쳐도 진행 중인 재생은 바뀌지 않습니다.
+- 재생이 끝나도 마지막으로 set 한 hand 속도는 컨트롤러에 남습니다 (`Send Preset` 과 같습니다).
+
 
 ## Grasp / Release 버튼
 
