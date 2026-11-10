@@ -8,6 +8,7 @@
 //   * Stale counter increments when no new publish arrives; resets on
 //     fresh publish; fallback engages at the configured threshold.
 
+#include "rtc_mpc/feedback/riccati_feedback.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 
 #include <Eigen/Core>
@@ -40,6 +41,7 @@ MPCSolution MakeSolution(uint64_t timestamp = 1) {
   sol.nv = kNv;
   sol.nu = kNv;
   sol.nx = kNq + kNv;
+  sol.ndx = 2 * kNv;
   sol.n_contact_vars = kNc;
 
   for (int k = 0; k <= kHorizon; ++k) {
@@ -51,10 +53,10 @@ MPCSolution MakeSolution(uint64_t timestamp = 1) {
       sol.v_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] = 1.0;
     }
   }
-  // Identity Riccati gain (nu x nx) at node 0.
-  for (int i = 0; i < kNv; ++i) {
-    sol.K_riccati[0][static_cast<std::size_t>(i * (kNq + kNv) + i)] = 1.0;
-  }
+  // Identity Riccati gain (nu × ndx) at node 0, in the shared flat layout.
+  Eigen::MatrixXd K = Eigen::MatrixXd::Zero(kNv, 2 * kNv);
+  K.topLeftCorner(kNv, kNv).setIdentity();
+  EXPECT_TRUE(PackRiccatiGainRowMajor(K, sol.K_riccati[0].data(), sol.K_riccati[0].size()));
   return sol;
 }
 

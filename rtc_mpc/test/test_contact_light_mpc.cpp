@@ -163,6 +163,37 @@ TEST_F(ContactLightMPCTest, SolveReturnsValidSolutionOnFirstCall) {
   }
 }
 
+// The solver-side packer must lay `K_riccati[k]` out exactly as
+// `RiccatiFeedback::SetGain` reads it: row-major with stride = actual ndx.
+// With the capacity stride every row past the first would land beyond
+// `nu · ndx`, so "nothing written past nu · ndx" pins the layout without
+// reaching into the solver's private results.
+TEST_F(ContactLightMPCTest, SolvePacksRiccatiGainWithActualTangentStride) {
+  rtc::mpc::ContactLightMPC mpc;
+  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);
+
+  const auto state = MakeStateSnapshot();
+  rtc::mpc::MPCSolution out{};
+  ASSERT_EQ(mpc.Solve(ctx_, state, out), rtc::mpc::MPCSolveError::kNoError);
+
+  const int ndx = 2 * out.nv;
+  // Fixed-base: the column count the manager hands to SetGain (`nx`) is the
+  // writer's stride (`ndx`). Pins the precondition the reader relies on.
+  ASSERT_EQ(out.nx, ndx);
+  ASSERT_GT(out.nu, 1) << "need at least two gain rows to observe the stride";
+  const std::size_t used = static_cast<std::size_t>(out.nu) * static_cast<std::size_t>(ndx);
+  ASSERT_LT(used, out.K_riccati[0].size());
+
+  bool any_nonzero_past_first_row = false;
+  for (std::size_t i = static_cast<std::size_t>(ndx); i < used; ++i) {
+    any_nonzero_past_first_row = any_nonzero_past_first_row || out.K_riccati[0][i] != 0.0;
+  }
+  EXPECT_TRUE(any_nonzero_past_first_row) << "rows after the first must be written inside nu·ndx";
+  for (std::size_t i = used; i < out.K_riccati[0].size(); ++i) {
+    ASSERT_DOUBLE_EQ(out.K_riccati[0][i], 0.0) << "flat index " << i << " is past nu·ndx";
+  }
+}
+
 TEST_F(ContactLightMPCTest, SolveRejectsStateDimMismatch) {
   rtc::mpc::ContactLightMPC mpc;
   ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);

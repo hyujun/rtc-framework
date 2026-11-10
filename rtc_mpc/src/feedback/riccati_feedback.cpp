@@ -5,6 +5,24 @@
 
 namespace rtc::mpc {
 
+bool PackRiccatiGainRowMajor(const RiccatiGainBlockRef& K, double* flat,
+                             std::size_t flat_capacity) noexcept {
+  if (flat == nullptr) {
+    return false;
+  }
+  const std::size_t rows = static_cast<std::size_t>(K.rows());
+  const std::size_t cols = static_cast<std::size_t>(K.cols());
+  if (rows * cols > flat_capacity) {
+    return false;
+  }
+  // The row-major contract lives in the Map's type: element (i, j) lands at
+  // flat[i * cols + j]. Plain assignment, no temporary.
+  using RowMajorMap =
+      Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>;
+  RowMajorMap(flat, K.rows(), K.cols()) = K;
+  return true;
+}
+
 void RiccatiFeedback::Init(int max_nv, int max_nu, int max_nx) {
   if (max_nv <= 0 || max_nu <= 0 || max_nx <= 0) {
     max_nv_ = 0;

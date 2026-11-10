@@ -16,8 +16,12 @@
 #include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_mpc/feedback/riccati_feedback.hpp"
+
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <vector>
 
 namespace rtc::mpc::internal {
 
@@ -147,7 +151,7 @@ MPCSolveError MPCHandlerCore::Solve(const PhaseContext& ctx, const MPCStateSnaps
     return MPCSolveError::kRebuildRequired;
   }
   if (!CapacityOk(horizon_length_, kMaxHorizon) || !CapacityOk(nq_, kMaxNq) ||
-      !CapacityOk(nv_, kMaxNv) || !CapacityOk(nu_, kMaxNu) ||
+      !CapacityOk(nv_, kMaxNv) || !CapacityOk(nu_, kMaxNu) || !CapacityOk(ndx_, kMaxNx) ||
       !CapacityOk(n_contact_vars_, kMaxContactVars)) {
     return MPCSolveError::kSolutionTruncated;
   }
@@ -296,23 +300,28 @@ void MPCHandlerCore::SeedWarmStart(const MPCSolution& prev, OCPHandlerBase& ocp)
 }
 
 void MPCHandlerCore::PackRiccatiGain(std::size_t k, MPCSolution& out) const noexcept {
-  const auto& gains = solver_->results_.gains_;
-  if (k >= gains.size())
+  // `out` is a reused slot, so a node we cannot pack must not keep the gain
+  // of an earlier solve under this solve's dimensions: clear it instead.
+  std::array<double, MPCSolution::kRiccatiGainFlatSize>& flat = out.K_riccati[k];
+  const std::vector<Eigen::MatrixXd>& gains = solver_->results_.gains_;
+  if (k >= gains.size()) {
+    flat.fill(0.0);
     return;
-  const auto& gk = gains[k];
-  if (gk.rows() < nu_ || gk.cols() < ndx_ + 1)
+  }
+  const Eigen::MatrixXd& gk = gains[k];
+  if (gk.rows() < nu_ || gk.cols() < ndx_ + 1) {
+    flat.fill(0.0);
     return;
+  }
 
-  // gains_[k] is (nu + nc + ndx2) × (1 + ndx1) ColMajor.
-  // Top-nu rows, right-ndx cols = feedback gain block in control-space.
-  const auto block = gk.topRightCorner(nu_, ndx_);
-  auto& flat = out.K_riccati[k];
-  // Row-major write: K_row[i, j] = block(i, j).
-  for (int i = 0; i < nu_; ++i) {
-    for (int j = 0; j < ndx_; ++j) {
-      flat[static_cast<std::size_t>(i) * static_cast<std::size_t>(kMaxNx) +
-           static_cast<std::size_t>(j)] = block(i, j);
-    }
+  // gains_[k] is (nu + nc + ndx2) × (1 + ndx1) ColMajor: column 0 is the
+  // feedforward term, the top-nu × right-ndx block is the feedback gain.
+  // The flat layout (row-major, stride = actual ndx) is owned by
+  // PackRiccatiGainRowMajor so writer and reader share one definition.
+  // Solve() has already checked nu_ and ndx_ against the capacities, so a
+  // false here means the capacity check and the pack disagree — clear.
+  if (!PackRiccatiGainRowMajor(gk.topRightCorner(nu_, ndx_), flat.data(), flat.size())) {
+    flat.fill(0.0);
   }
 }
 
@@ -335,6 +344,7 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, MPCSolution& out, b
   out.nv = nv_;
   out.nu = nu_;
   out.nx = nq_ + nv_;
+  out.ndx = ndx_;
   out.n_contact_vars = n_contact_vars_;
 
   // State + control trajectories.

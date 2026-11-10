@@ -152,10 +152,12 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
   const MPCSolution* fresh = solution_buffer_.TryAcquireLatest();
   if (fresh != nullptr) {
     interpolator_.SetSolution(*fresh, now_ns);
-    // Install gains from the first Riccati node (nearest-node policy).
+    // Install gains from the first Riccati node (nearest-node policy). The
+    // column count is the state-tangent dim the writer packed with, not the
+    // state vector length — they differ as soon as a joint has nq != nv.
     if (riccati_enabled_ && fresh->horizon_length > 0) {
       const int nu = fresh->nu > 0 ? fresh->nu : fresh->nv;
-      riccati_.SetGain(fresh->K_riccati[0].data(), nu, fresh->nx);
+      riccati_.SetGain(fresh->K_riccati[0].data(), nu, fresh->ndx);
     }
     stale_count_ = 0;
     has_ever_received_solution_ = true;

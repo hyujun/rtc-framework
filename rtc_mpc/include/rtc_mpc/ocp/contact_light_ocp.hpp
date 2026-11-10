@@ -18,9 +18,11 @@
 /// - control `u = τ` ∈ R^{nv} (identity actuation; contact forces emerge
 ///   from the rigid-contact proximal solve as Lagrange multipliers, NOT
 ///   part of `u`)
-/// - Riccati gain from Aligator: `K ∈ R^{nu × ndx}` with `ndx = 2·nv`;
+/// - Riccati gain from Aligator: `K ∈ R^{nu × ndx}` with `ndx = 2·nv`,
+///   packed row-major with stride `ndx` (`PackRiccatiGainRowMajor`);
+///   fixed-base → `nu = nv` and `nx = ndx`, so
 ///   `rtc::mpc::RiccatiFeedback::SetGain(K, nu, nx)` with `accel_only`
-///   reads all of `K` since `nu = nv` (fixed-base).
+///   consumes every row.
 ///
 /// Phase-3 scope intentionally omits joint-box / torque-box / friction-cone
 /// constraints — rigid-contact dynamics alone enforces non-negative normal

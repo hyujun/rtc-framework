@@ -1,5 +1,7 @@
 #include "rtc_mpc/thread/mock_mpc_thread.hpp"
 
+#include "rtc_mpc/feedback/riccati_feedback.hpp"
+
 #include <algorithm>
 
 namespace rtc::mpc {
@@ -63,6 +65,7 @@ bool MockMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out_sol) {
   out_sol.nv = nv;
   out_sol.nu = nv;
   out_sol.nx = nq + nv;
+  out_sol.ndx = 2 * nv;
   out_sol.n_contact_vars = 0;
   out_sol.timestamp_ns = state.timestamp_ns;
 
@@ -78,12 +81,14 @@ bool MockMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out_sol) {
     }
   }
 
-  // Identity Riccati (position rows only) for the first node.
-  for (int i = 0; i < n_coupled; ++i) {
-    const std::size_t flat = static_cast<std::size_t>(i) * static_cast<std::size_t>(out_sol.nx) +
-                             static_cast<std::size_t>(i);
-    out_sol.K_riccati[0][flat] = 1.0;
-  }
+  // Identity Riccati (position rows only) for the first node, written
+  // through the shared packer so the mock cannot drift from the real one.
+  // Solve() of this mock is off the RT path (it already takes a mutex), so
+  // the local matrix is acceptable here.
+  Eigen::MatrixXd identity_gain = Eigen::MatrixXd::Zero(nv, out_sol.ndx);
+  identity_gain.topLeftCorner(n_coupled, n_coupled).setIdentity();
+  (void)PackRiccatiGainRowMajor(identity_gain, out_sol.K_riccati[0].data(),
+                                out_sol.K_riccati[0].size());
   return true;
 }
 

@@ -30,7 +30,33 @@
 
 #include <Eigen/Core>
 
+#include <cstddef>
+
 namespace rtc::mpc {
+
+/// @brief Flatten a Riccati feedback block `K` into the layout
+///        @ref RiccatiFeedback::SetGain reads: row-major with the row stride
+///        equal to the block's **actual** column count (the state-tangent
+///        dim), never a capacity constant. This is the single writer-side
+///        definition of the `MPCSolution::K_riccati[k]` layout — every
+///        producer (solver handler, mocks, test helpers) goes through it so
+///        writer and reader cannot drift apart.
+/// @param K              feedback block (`nu × ndx`). The fully dynamic
+///                       stride lets any direct-access ColMajor view — a
+///                       corner block as well as one with a non-unit inner
+///                       stride — bind without a temporary, where a plain
+///                       `Ref<const MatrixXd>` would silently heap-allocate.
+///                       A RowMajor expression is still copied (storage order
+///                       must match); the solver's gains are ColMajor
+/// @param flat           destination buffer
+/// @param flat_capacity  number of doubles available at `flat`
+/// @return false (buffer untouched) when `K.rows() · K.cols()` exceeds
+///         `flat_capacity` or `flat` is null. RT-safe: no allocation, no
+///         exception.
+using RiccatiGainBlockRef =
+    Eigen::Ref<const Eigen::MatrixXd, 0, Eigen::Stride<Eigen::Dynamic, Eigen::Dynamic>>;
+[[nodiscard]] bool PackRiccatiGainRowMajor(const RiccatiGainBlockRef& K, double* flat,
+                                           std::size_t flat_capacity) noexcept;
 
 class RiccatiFeedback {
  public:
@@ -50,7 +76,9 @@ class RiccatiFeedback {
   void Init(int max_nv, int max_nu, int max_nx);
 
   /// @brief Install a new Riccati gain matrix.
-  /// @param K_data  pointer to row-major `nu × nx` data
+  /// @param K_data  pointer to row-major `nu × nx` data, read as
+  ///                `K_data[row * nx + col]` — the row stride is the actual
+  ///                `nx`, the layout @ref PackRiccatiGainRowMajor writes
   /// @param nu      actual control dim (must satisfy `nu ≤ max_nu`)
   /// @param nx      actual state dim (must satisfy `nx ≤ max_nx`)
   /// @note No-op if bounds are violated.
@@ -99,8 +127,8 @@ class RiccatiFeedback {
   int max_nv_{0};
   int max_nu_{0};
   int max_nx_{0};
-  int nu_{0};  ///< Actual gain columns after SetGain (0 == uninitialised)
-  int nx_{0};  ///< Actual gain rows
+  int nu_{0};  ///< Actual gain rows after SetGain (0 == uninitialised)
+  int nx_{0};  ///< Actual gain columns (state-tangent dim)
 
   double gain_scale_{1.0};
   bool accel_only_{true};

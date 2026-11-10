@@ -34,9 +34,16 @@ inline constexpr int kMaxContactVars = 24;  ///< max Σ(contact_dim)
 /// - State trajectory `(q, v)` has length `horizon_length + 1` (nodes 0..H).
 /// - Control, contact-force, and feedforward-acceleration trajectories have
 ///   length `horizon_length` (nodes 0..H-1).
-/// - `K_riccati[k]` is stored row-major as `nu × nx`.
-/// - `horizon_length` / `nq` / `nv` / `nu` / `nx` / `n_contact_vars` are the
-///   **actual** sizes used for this solve; consumers must not read past them.
+/// - `K_riccati[k]` is stored row-major as `nu × ndx` (`ndx = 2·nv`, the
+///   state-tangent dim) with **row stride = the actual `ndx`**, never the
+///   capacity constant. `rtc_mpc/feedback/riccati_feedback.hpp` owns the
+///   layout (writer `PackRiccatiGainRowMajor`, reader
+///   `RiccatiFeedback::SetGain`). `ndx` equals `nx` only when every joint
+///   has `nq == nv`; the reader must take its column count from `ndx`, not
+///   from `nx`.
+/// - `horizon_length` / `nq` / `nv` / `nu` / `nx` / `ndx` / `n_contact_vars`
+///   are the **actual** sizes used for this solve; consumers must not read
+///   past them.
 struct MPCSolution {
   // ── Metadata ────────────────────────────────────────────────────────
   uint64_t timestamp_ns{0};       ///< wall-clock time solve completed
@@ -50,7 +57,8 @@ struct MPCSolution {
   int nq{0};
   int nv{0};
   int nu{0};
-  int nx{0};
+  int nx{0};   ///< state vector length `nq + nv`
+  int ndx{0};  ///< state-tangent dim `2·nv` — the `K_riccati[k]` column count and row stride
   int n_contact_vars{0};
 
   // ── Trajectories (see header-level comment for index conventions) ──
@@ -60,8 +68,9 @@ struct MPCSolution {
   std::array<std::array<double, kMaxContactVars>, kMaxHorizon> lambda_traj{};
   std::array<std::array<double, kMaxNv>, kMaxHorizon> a_ff_traj{};
 
-  /// Riccati gains K[k] (nu × nx, row-major). Flattened length computed in
-  /// std::size_t to avoid implicit widening on capacity arithmetic.
+  /// Riccati gains K[k] (nu × ndx, row-major, stride = actual ndx — see the
+  /// struct comment). Flattened capacity computed in std::size_t to avoid
+  /// implicit widening on capacity arithmetic.
   static constexpr std::size_t kRiccatiGainFlatSize =
       static_cast<std::size_t>(kMaxNu) * static_cast<std::size_t>(kMaxNx);
   std::array<std::array<double, kRiccatiGainFlatSize>, kMaxHorizon> K_riccati{};

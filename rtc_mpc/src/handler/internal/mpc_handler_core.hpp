@@ -89,8 +89,11 @@ class MPCHandlerCore {
   void ColdSeedGuess(const Eigen::VectorXd& q_current, const Eigen::VectorXd& x_current) noexcept;
 
   /// @brief Copy the top-nu × right-ndx block of `results_.gains_[k]`
-  ///        (ColMajor) into the row-major slot of `out.K_riccati[k]`.
-  ///        ndx is captured from the OCP at Init.
+  ///        (ColMajor) into `out.K_riccati[k]` in the shared row-major
+  ///        layout (stride = ndx, see `PackRiccatiGainRowMajor`). `ndx_` is
+  ///        the model's state-tangent dim (`2·nv`, set at Init), which is
+  ///        also what the OCP's multibody phase space uses. A node that
+  ///        cannot be packed is zeroed, never left stale.
   void PackRiccatiGain(std::size_t k, MPCSolution& out) const noexcept;
 
   /// @brief Pack xs/us/lams/K_riccati + metadata into @p out after a
