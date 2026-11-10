@@ -51,6 +51,11 @@ MPCSolution MakeLinearSolution(double slope) {
   return sol;
 }
 
+// The active-solution copy lives on the heap (allocated in Init); the
+// interpolator object itself must stay small enough for any stack frame.
+static_assert(sizeof(TrajectoryInterpolator) < 1024,
+              "TrajectoryInterpolator must not embed an MPCSolution inline");
+
 class TrajectoryInterpolatorTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -78,13 +83,26 @@ TEST_F(TrajectoryInterpolatorTest, NoSolutionBeforeSet) {
 
 TEST_F(TrajectoryInterpolatorTest, InvalidSolutionRejected) {
   MPCSolution sol{};  // horizon_length = 0 → IsValid() = false
-  interp_.SetSolution(sol, kReceiveNs);
+  EXPECT_FALSE(interp_.SetSolution(sol, kReceiveNs));
   EXPECT_FALSE(interp_.HasSolution());
+  EXPECT_EQ(interp_.Solution(), nullptr);
+}
+
+TEST_F(TrajectoryInterpolatorTest, InvalidSolutionDoesNotEvictTheActiveOne) {
+  const MPCSolution good = MakeLinearSolution(1.0);
+  ASSERT_TRUE(interp_.SetSolution(good, kReceiveNs));
+  ASSERT_NE(interp_.Solution(), nullptr);
+
+  MPCSolution bad = good;
+  bad.status = SolverStatus::kDiverged;
+  EXPECT_FALSE(interp_.SetSolution(bad, kReceiveNs + 1));
+  EXPECT_TRUE(interp_.HasSolution());
+  EXPECT_EQ(interp_.Solution()->status, SolverStatus::kOk);
 }
 
 TEST_F(TrajectoryInterpolatorTest, NodeZeroReproducesExactValues) {
   const double slope = 2.0;
-  interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs);
+  ASSERT_TRUE(interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs));
 
   interp_.Interpolate(kReceiveNs, q_ref_, v_ref_, a_ff_, lambda_ref_, meta_);
   ASSERT_TRUE(meta_.valid);
@@ -104,7 +122,7 @@ TEST_F(TrajectoryInterpolatorTest, NodeZeroReproducesExactValues) {
 
 TEST_F(TrajectoryInterpolatorTest, LinearTrajectoryReproducedExactly) {
   const double slope = 3.14;
-  interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs);
+  ASSERT_TRUE(interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs));
 
   // Sample at 3 non-node times; expect exact reproduction because the
   // underlying signal is linear.
@@ -125,7 +143,7 @@ TEST_F(TrajectoryInterpolatorTest, LinearTrajectoryReproducedExactly) {
 
 TEST_F(TrajectoryInterpolatorTest, BeyondHorizonFreezesLastNode) {
   const double slope = 1.0;
-  interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs);
+  ASSERT_TRUE(interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs));
 
   // 1 s past the horizon (horizon = 10 * 10ms = 100 ms).
   const uint64_t now = kReceiveNs + 1'000'000'000;
@@ -145,7 +163,7 @@ TEST_F(TrajectoryInterpolatorTest, BeyondHorizonFreezesLastNode) {
 
 TEST_F(TrajectoryInterpolatorTest, NegativeTimeClampedToOrigin) {
   const double slope = 1.5;
-  interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs);
+  ASSERT_TRUE(interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs));
 
   // now_ns earlier than receive_ns — should clamp to t_local = 0.
   interp_.Interpolate(kReceiveNs - 500'000'000, q_ref_, v_ref_, a_ff_, lambda_ref_, meta_);
@@ -157,7 +175,7 @@ TEST_F(TrajectoryInterpolatorTest, NegativeTimeClampedToOrigin) {
 }
 
 TEST_F(TrajectoryInterpolatorTest, RemainingHorizonMonotoneDecrease) {
-  interp_.SetSolution(MakeLinearSolution(1.0), kReceiveNs);
+  ASSERT_TRUE(interp_.SetSolution(MakeLinearSolution(1.0), kReceiveNs));
 
   const double r0 = interp_.RemainingHorizonSec(kReceiveNs);
   const double r_mid = interp_.RemainingHorizonSec(kReceiveNs + 50'000'000);   // +50 ms
@@ -196,7 +214,7 @@ MPCSolution MakeCubicSolution(double c0, double c1, double c2, double c3) {
 
 TEST_F(TrajectoryInterpolatorTest, HermiteReproducesCubicExactly) {
   const double c0 = 0.5, c1 = 1.2, c2 = -0.3, c3 = 0.7;
-  interp_.SetSolution(MakeCubicSolution(c0, c1, c2, c3), kReceiveNs);
+  ASSERT_TRUE(interp_.SetSolution(MakeCubicSolution(c0, c1, c2, c3), kReceiveNs));
 
   // Sample at 7 non-node times spanning multiple segments.
   const std::array<double, 7> offsets{0.0015, 0.0049, 0.023, 0.038, 0.061, 0.077, 0.091};
@@ -224,7 +242,7 @@ TEST_F(TrajectoryInterpolatorTest, HermiteC1ContinuityAtNodeBoundary) {
   // at node boundaries. We compare the limit from the left of node k+1
   // (t = (k+1)·Δt - ε) with the value at that node.
   const double c0 = 0.0, c1 = 2.0, c2 = 0.5, c3 = -0.8;
-  interp_.SetSolution(MakeCubicSolution(c0, c1, c2, c3), kReceiveNs);
+  ASSERT_TRUE(interp_.SetSolution(MakeCubicSolution(c0, c1, c2, c3), kReceiveNs));
 
   const uint64_t dt_ns = static_cast<uint64_t>(kDtNode * 1e9);
   for (int k = 1; k < kHorizon; ++k) {
@@ -254,7 +272,7 @@ TEST_F(TrajectoryInterpolatorTest, HermiteReducesToLinearForLinearInput) {
   // with the linear interpolation test from Step 4. This pins down the
   // baseline we upgraded from.
   const double slope = 2.5;
-  interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs);
+  ASSERT_TRUE(interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs));
 
   for (double t_offset : {0.003, 0.017, 0.076}) {
     const uint64_t now = kReceiveNs + static_cast<uint64_t>(t_offset * 1e9);
@@ -275,7 +293,7 @@ TEST_F(TrajectoryInterpolatorTest, InitWithOutOfRangeDimsClearsState) {
   interp_.Init(kMaxNq + 1, kNv, kNc);  // nq too large
   EXPECT_FALSE(interp_.HasSolution());
 
-  interp_.SetSolution(MakeLinearSolution(1.0), kReceiveNs);
+  ASSERT_TRUE(interp_.SetSolution(MakeLinearSolution(1.0), kReceiveNs));
   interp_.Interpolate(kReceiveNs, q_ref_, v_ref_, a_ff_, lambda_ref_, meta_);
   // With nq_ == 0, q_ref_ entries are untouched (meta may still be valid).
   // Guard: the vector the caller provided must not be corrupted.

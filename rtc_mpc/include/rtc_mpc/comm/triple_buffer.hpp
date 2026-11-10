@@ -23,12 +23,16 @@
 ///
 /// Contract:
 ///   * Exactly one producer thread, one consumer thread.
-///   * `T` must be trivially copyable (buffers are default-constructed in
+///   * `T` must be trivially copyable (buffers are value-initialised in
 ///     the container, not placement-new'd).
+///   * The three slots live on the heap, allocated once by the constructor
+///     (an object holding a TripleBuffer stays small enough for a stack or
+///     a member even when `T` is large). The hot path only dereferences.
 
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <type_traits>
 
 namespace rtc::mpc {
@@ -38,7 +42,11 @@ class TripleBuffer {
   static_assert(std::is_trivially_copyable_v<T>, "TripleBuffer requires a trivially copyable type");
 
  public:
-  TripleBuffer() noexcept = default;
+  /// @brief Allocate the three slots (value-initialised, so @ref Current
+  ///        before the first acquire reads a default-constructed `T`).
+  ///        May throw `std::bad_alloc` — construction is an init-time act.
+  TripleBuffer() : buffers_(std::make_unique<std::array<T, 3>>()) {}
+
   ~TripleBuffer() = default;
 
   TripleBuffer(const TripleBuffer&) = delete;
@@ -50,7 +58,7 @@ class TripleBuffer {
 
   /// @brief Writable reference to the producer-owned slot.
   /// @note Valid until the next @ref FinishWrite call.
-  [[nodiscard]] T& StartWrite() noexcept { return buffers_[writing_]; }
+  [[nodiscard]] T& StartWrite() noexcept { return (*buffers_)[writing_]; }
 
   /// @brief Publish the currently-written slot as `latest`.
   ///
@@ -87,14 +95,14 @@ class TripleBuffer {
       return nullptr;
     }
     reading_ = static_cast<uint8_t>(previous & kIndexMask);
-    return &buffers_[reading_];
+    return &(*buffers_)[reading_];
   }
 
   /// @brief Access the slot most recently acquired by the consumer.
   /// @warning Only meaningful after a successful @ref TryAcquireLatest.
   ///          Before the first successful acquire the returned buffer is
   ///          default-constructed.
-  [[nodiscard]] const T& Current() const noexcept { return buffers_[reading_]; }
+  [[nodiscard]] const T& Current() const noexcept { return (*buffers_)[reading_]; }
 
   /// @brief Query whether a new buffer is waiting.
   /// @note Advisory only — `TryAcquireLatest` is the authoritative path.
@@ -109,7 +117,7 @@ class TripleBuffer {
   // The three indices {writing_, latest_, reading_} are always distinct.
   // `writing_` and `reading_` are owned by the producer and consumer
   // respectively (single-threaded access), so they need not be atomic.
-  std::array<T, 3> buffers_{};
+  std::unique_ptr<std::array<T, 3>> buffers_;
   uint8_t writing_{0};
   std::atomic<uint8_t> latest_{1};
   uint8_t reading_{2};

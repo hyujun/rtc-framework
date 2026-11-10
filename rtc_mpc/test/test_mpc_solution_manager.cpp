@@ -91,6 +91,110 @@ class MpcSolutionManagerTest : public ::testing::Test {
   InterpMeta meta_{};
 };
 
+// The manager (TripleBuffer slots, interpolator copy) must stay small enough
+// to live on a stack or as a controller member: the payloads are on the heap.
+static_assert(sizeof(MPCSolutionManager) < 64 * 1024,
+              "MPCSolutionManager must not embed MPCSolution payloads inline");
+
+TEST_F(MpcSolutionManagerTest, WriteStateStampsSequenceEpochMaskAndValid) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  EXPECT_FALSE(mgr_.ReadState().valid) << "nothing stored yet";
+
+  mgr_.SetModelEpoch(3);
+  EXPECT_EQ(mgr_.ModelEpoch(), 3u);
+  mgr_.SetContactMask(0b10u);
+  mgr_.WriteState(q_curr_, v_curr_, 100);
+  const MPCStateSnapshot first = mgr_.ReadState();
+  EXPECT_TRUE(first.valid);
+  EXPECT_EQ(first.sequence, 1u);
+  EXPECT_EQ(first.model_epoch, 3u);
+  EXPECT_EQ(first.contact_mask, 0b10u);
+  EXPECT_EQ(first.timestamp_ns, 100u);
+
+  mgr_.SetContactMask(0b11u);
+  mgr_.WriteState(q_curr_, v_curr_, 200);
+  const MPCStateSnapshot second = mgr_.ReadState();
+  EXPECT_EQ(second.sequence, 2u) << "sequence increments per store";
+  EXPECT_EQ(second.contact_mask, 0b11u);
+  EXPECT_EQ(second.model_epoch, 3u);
+}
+
+TEST_F(MpcSolutionManagerTest, PublishStampsMonotonicPlanIdWithoutTouchingTheSource) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  MPCSolution sol = MakeSolution();
+  sol.observation_stamp_ns = 55;
+  sol.model_epoch = 4;
+  ASSERT_EQ(sol.plan_id, 0u);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u) << "nothing acquired yet";
+
+  mgr_.SetModelEpoch(4);
+  mgr_.PublishSolution(sol);
+  EXPECT_EQ(sol.plan_id, 0u) << "the caller's copy is left untouched";
+  ASSERT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, 60, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_,
+                                    meta_));
+  EXPECT_EQ(mgr_.ActivePlanId(), 1u);
+  EXPECT_EQ(mgr_.ActiveReceiveStampNs(), 60u) << "stamped with the consumer's own clock";
+  EXPECT_EQ(mgr_.ActiveObservationStampNs(), 55u);
+  EXPECT_EQ(mgr_.ActiveModelEpoch(), 4u);
+
+  // Two more publishes before the consumer looks again: it sees the newest.
+  mgr_.PublishSolution(sol);
+  mgr_.PublishSolution(sol);
+  ASSERT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, 61, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_,
+                                    meta_));
+  EXPECT_EQ(mgr_.ActivePlanId(), 3u);
+  EXPECT_EQ(mgr_.ActiveReceiveStampNs(), 61u);
+}
+
+TEST_F(MpcSolutionManagerTest, PlanFromAnotherModelEpochIsNotInstalled) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  MPCSolution sol = MakeSolution();
+  sol.model_epoch = 1;
+
+  // Current epoch is 0: the plan is refused and counted, nothing is sampled.
+  mgr_.PublishSolution(sol);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.EpochRejections(), 1u);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_FALSE(mgr_.HasEverReceivedSolution());
+
+  // The same plan under the matching epoch installs.
+  mgr_.SetModelEpoch(1);
+  mgr_.PublishSolution(sol);
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.EpochRejections(), 1u);
+  EXPECT_EQ(mgr_.ActiveModelEpoch(), 1u);
+
+  // Re-Init forgets the active plan and the counters.
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_EQ(mgr_.EpochRejections(), 0u);
+}
+
+TEST_F(MpcSolutionManagerTest, UnusablePlanIsNotInstalledAndDoesNotResetStaleness) {
+  mgr_.Init(MakeConfig(true, 2), kNq, kNv, kNc);
+  MPCSolution good = MakeSolution();
+  good.observation_stamp_ns = 5;
+  mgr_.PublishSolution(good);
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.ActivePlanId(), 1u);
+
+  // A diverged plan arrives: it must not replace the good one, nor count as
+  // a fresh solution — the consumer keeps sampling and ageing the old plan.
+  MPCSolution bad = MakeSolution();
+  bad.status = SolverStatus::kDiverged;
+  bad.observation_stamp_ns = 6;
+  mgr_.PublishSolution(bad);
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StaleCount(), 1) << "a rejected plan is a tick without a fresh one";
+  EXPECT_EQ(mgr_.ActivePlanId(), 1u);
+  EXPECT_EQ(mgr_.ActiveObservationStampNs(), 5u);
+}
+
 TEST_F(MpcSolutionManagerTest, DisabledShortCircuits) {
   mgr_.Init(MakeConfig(false), kNq, kNv, kNc);
   EXPECT_FALSE(mgr_.Enabled());

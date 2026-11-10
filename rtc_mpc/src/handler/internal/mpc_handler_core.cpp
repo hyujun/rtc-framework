@@ -139,8 +139,37 @@ void MPCHandlerCore::ColdSeedGuess(const Eigen::VectorXd& q_current,
   }
 }
 
+namespace {
+
+/// `out` is a reused slot: a failed tick must leave it with a status that
+/// matches the error it reports, so the slot never looks like a solve that
+/// happened. Mapped once here, written once at Solve's exit.
+[[nodiscard]] constexpr SolverStatus StatusForError(MPCSolveError err) noexcept {
+  switch (err) {
+    case MPCSolveError::kSolutionTruncated:
+      return SolverStatus::kTruncated;
+    case MPCSolveError::kSolverException:
+      return SolverStatus::kException;
+    case MPCSolveError::kSolverDiverged:
+      return SolverStatus::kDiverged;
+    default:
+      return SolverStatus::kNotSolved;
+  }
+}
+
+}  // namespace
+
 MPCSolveError MPCHandlerCore::Solve(const PhaseContext& ctx, const MPCStateSnapshot& state,
                                     OCPHandlerBase& ocp, MPCSolution& out) noexcept {
+  const MPCSolveError err = SolveImpl(ctx, state, ocp, out);
+  if (err != MPCSolveError::kNoError) {
+    out.status = StatusForError(err);
+  }
+  return err;
+}
+
+MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateSnapshot& state,
+                                        OCPHandlerBase& ocp, MPCSolution& out) noexcept {
   if (!initialised_ || solver_ == nullptr || model_ == nullptr) {
     return MPCSolveError::kNotInitialised;
   }
@@ -151,7 +180,7 @@ MPCSolveError MPCHandlerCore::Solve(const PhaseContext& ctx, const MPCStateSnaps
     return MPCSolveError::kRebuildRequired;
   }
   if (!CapacityOk(horizon_length_, kMaxHorizon) || !CapacityOk(nq_, kMaxNq) ||
-      !CapacityOk(nv_, kMaxNv) || !CapacityOk(nu_, kMaxNu) || !CapacityOk(ndx_, kMaxNx) ||
+      !CapacityOk(nv_, kMaxNv) || !CapacityOk(nu_, kMaxNu) || !CapacityOk(ndx_, kMaxNdx) ||
       !CapacityOk(n_contact_vars_, kMaxContactVars)) {
     return MPCSolveError::kSolutionTruncated;
   }
@@ -253,7 +282,7 @@ MPCSolveError MPCHandlerCore::Solve(const PhaseContext& ctx, const MPCStateSnaps
     return MPCSolveError::kSolverDiverged;
   }
 
-  PackSolution(ocp, out, converged, dur_ns);
+  PackSolution(ocp, state, out, converged, dur_ns);
   return MPCSolveError::kNoError;
 }
 
@@ -325,7 +354,8 @@ void MPCHandlerCore::PackRiccatiGain(std::size_t k, MPCSolution& out) const noex
   }
 }
 
-void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, MPCSolution& out, bool converged,
+void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const MPCStateSnapshot& state,
+                                  MPCSolution& out, bool converged,
                                   std::uint64_t solve_duration_ns) const noexcept {
   const auto& results = solver_->results_;
   const auto& xs = results.xs;
@@ -338,8 +368,18 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, MPCSolution& out, b
   out.solve_duration_ns = solve_duration_ns;
   out.horizon_length = horizon_length_;
   out.dt_node = dt_;
-  out.converged = converged;
+  // The solver returned finite iterates (the caller rejected NaN), so a
+  // non-converged solve is a budget-exhausted, still-usable one.
+  MarkSolved(out, converged);
   out.iterations = static_cast<int>(results.num_iters);
+  out.residuals.prim_inf = results.prim_infeas;
+  out.residuals.dual_inf = results.dual_infeas;
+  out.residuals.traj_cost = results.traj_cost_;
+  out.residuals.merit = results.merit_value_;
+  out.observation_stamp_ns = state.timestamp_ns;
+  out.observation_sequence = state.sequence;
+  out.model_epoch = state.model_epoch;
+  // plan_id is stamped by the publisher; the receive stamp by the consumer.
   out.nq = nq_;
   out.nv = nv_;
   out.nu = nu_;
@@ -395,8 +435,9 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, MPCSolution& out, b
     }
   }
 
-  // Riccati gains.
-  for (std::size_t k = 0; k < H; ++k) {
+  // Riccati gains — only the leading nodes are shipped (see kMaxGainNodes).
+  out.gain_nodes = std::min(horizon_length_, kMaxGainNodes);
+  for (std::size_t k = 0; k < static_cast<std::size_t>(out.gain_nodes); ++k) {
     PackRiccatiGain(k, out);
   }
 }

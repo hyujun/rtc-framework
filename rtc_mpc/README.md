@@ -24,7 +24,8 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 
 | 모듈 | 헤더 | 역할 |
 |---|---|---|
-| `types/` | `mpc_solution_types.hpp` | `MPCSolution` · `MPCStateSnapshot` (trivially copyable, 고정 용량) |
+| `types/` | `mpc_solution_types.hpp` | `MPCSolution` · `MPCStateSnapshot` (trivially copyable, 고정 용량 — free-flyer + 관절 + 접촉 변수 상한, `SolverStatus` · 잔차 · provenance 포함) |
+| `types/` | `wbc_reference.hpp` | `WbcReference` — 하류 whole-body 컨트롤러에 넘기는 tick 당 참조 POD (규약은 헤더) |
 | `types/` | `contact_plan_types.hpp` | `ContactFrameInfo` · `ContactPhase` · `ContactPlan` (non-RT, OCP 빌드 경로) |
 | `model/` | `robot_model_handler.hpp` | `pinocchio::Model` 래퍼 + YAML frame 해석 |
 | `phase/` | `phase_manager_base.hpp` | 순수 가상 FSM 경계. 구체 구현은 하위 bringup 패키지가 갖는다 |
@@ -49,7 +50,7 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 ### 설계 약속
 
 - Robot-agnostic: 고정 DoF · 로봇 이름 · frame 문자열 하드코딩이 없다. 토폴로지는 `pinocchio::Model` + YAML 에서만 온다 (ARCH-1).
-- RT 데이터는 trivially copyable 이다: `MPCSolution` · `MPCStateSnapshot` 은 SeqLock / TripleBuffer 로 건너가므로 동적 멤버가 없다.
+- RT 데이터는 trivially copyable 이다: `MPCSolution` · `MPCStateSnapshot` · `WbcReference` 는 SeqLock / TripleBuffer 로 건너가므로 동적 멤버가 없다. `TripleBuffer` 슬롯과 보간기의 사본은 생성 · Init 때 heap 에 한 번 잡고 (MPC thread 의 scratch · 이전 해는 인라인), 매 solve 는 Riccati gain 을 앞 노드 몇 개만 싣는다.
 - Fixed-base 만 지원한다: cubic Hermite 는 Euclidean `q` 를 가정하며 floating-base quaternion 보간은 범위 밖이다.
 - `RobotModelHandler::Init` 은 throw 하지 않고 `RobotModelInitError` 를 돌려준다.
 - `end_effector_frame` 과 `base_frame` 이 모두 필수다. `base_frame` 누락은 `kInvalidYamlSchema`, 해석 불가 이름은 `kMissingBaseFrame` 이며 world 기준은 `base_frame: "universe"` 로 명시한다. `PhaseContext::ee_target` 은 `base_frame` 기준이다.

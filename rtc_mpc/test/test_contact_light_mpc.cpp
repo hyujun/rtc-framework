@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <vector>
@@ -192,6 +193,40 @@ TEST_F(ContactLightMPCTest, SolvePacksRiccatiGainWithActualTangentStride) {
   for (std::size_t i = used; i < out.K_riccati[0].size(); ++i) {
     ASSERT_DOUBLE_EQ(out.K_riccati[0][i], 0.0) << "flat index " << i << " is past nu·ndx";
   }
+}
+
+TEST_F(ContactLightMPCTest, SolveFillsStatusResidualsProvenanceAndGainNodes) {
+  rtc::mpc::ContactLightMPC mpc;
+  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);
+
+  rtc::mpc::MPCStateSnapshot state = MakeStateSnapshot();
+  state.timestamp_ns = 777;
+  state.sequence = 9;
+  state.model_epoch = 2;
+  rtc::mpc::MPCSolution out{};
+  ASSERT_EQ(mpc.Solve(ctx_, state, out), rtc::mpc::MPCSolveError::kNoError);
+
+  EXPECT_EQ(out.status,
+            out.converged ? rtc::mpc::SolverStatus::kOk : rtc::mpc::SolverStatus::kMaxIters)
+      << "converged and status must describe the same outcome";
+  EXPECT_TRUE(out.IsValid());
+  EXPECT_TRUE(std::isfinite(out.residuals.prim_inf));
+  EXPECT_TRUE(std::isfinite(out.residuals.dual_inf));
+  EXPECT_TRUE(std::isfinite(out.residuals.traj_cost));
+  EXPECT_EQ(out.observation_stamp_ns, 777u);
+  EXPECT_EQ(out.observation_sequence, 9u);
+  EXPECT_EQ(out.model_epoch, 2u);
+  EXPECT_EQ(out.plan_id, 0u) << "plan_id is the publisher's, not the solver's";
+  EXPECT_EQ(out.ndx, 2 * out.nv);
+
+  EXPECT_EQ(out.gain_nodes, std::min(cfg_.horizon_length, rtc::mpc::kMaxGainNodes));
+  // The last shipped node carries a gain; a solution slot pre-filled with a
+  // sentinel beyond it is not touched by the packer.
+  bool last_node_written = false;
+  for (const double v : out.K_riccati[static_cast<std::size_t>(out.gain_nodes - 1)]) {
+    last_node_written = last_node_written || v != 0.0;
+  }
+  EXPECT_TRUE(last_node_written);
 }
 
 TEST_F(ContactLightMPCTest, SolveRejectsStateDimMismatch) {

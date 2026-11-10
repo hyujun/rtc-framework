@@ -164,8 +164,7 @@ class HandlerMPCThread final : public MPCThread {
   Eigen::VectorXd sensor_scratch_{};  // zero-length in Phase 6
 
   // Last-published solution, used to seed the next handler on cross-mode swap.
-  // MPCSolution is trivially copyable (~17 KB std::array bundle) so `=` is an
-  // alloc-free memcpy.
+  // MPCSolution is trivially copyable, so `=` is an alloc-free memcpy.
   MPCSolution prev_out_{};
   bool has_prev_out_{false};
 

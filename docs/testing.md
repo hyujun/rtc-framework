@@ -33,7 +33,7 @@ colcon 의 pytest 는 시스템 python 이라 `.venv` 에만 있는 의존성 (m
 | `rtc_controllers/` gains · config | 위 + controller YAML 로드 smoke | `ros2 topic echo /rtc_cm/active_controller_name` |
 | `rtc_controllers/` catching core | `--ctest-args -R test_catching` | ASan/UBSan 은 별도 build base (rationale 참조) |
 | `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) · teardown (`test_eventfd_teardown_order` · `test_state_lane_teardown`) | `cm_timing_log.csv` p99 |
-| `rtc_tsid/` · `rtc_mpc/` | QP · task · constraint gtest · MPC gtest (Riccati · SolutionManager) | TSID performance · `mpc_timing_log.csv` p99 회귀 |
+| `rtc_tsid/` · `rtc_mpc/` | QP · task · constraint gtest · MPC gtest (Riccati · SolutionManager) | TSID performance · `mpc_timing_log.csv` p99 회귀 · `RTC_RUN_TIMING_GATES=1` 로 `test_mpc_solution_copy_cost` (Release, 고정 코어 — payload 복사 비용 판정, 평소엔 출력만) |
 | `rtc_mujoco_sim/` | 패키지 전체 + `test_motor_servo_gains` · `test_torque_mode_ctrl_range`; 기동 · 리셋 자세는 `test_initial_qpos` (command joint) · `test_reset_keyframe` (`reset_keyframe` — freejoint 포함 qpos 전체 bit-exact + 미설정 대조군) | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` smoke |
 | `rtc_urdf_bridge/` | 패키지 전체 + `test_frame_jacobian_fd_oracle` · `test_inertial_validation` · `test_real_model_inertial_gate` | 실제 robot 모델 로드 smoke |
 | `rtc_communication/` · `rtc_inference/` · `rtc_digital_twin/` | UDP · CAN (vcan0 없으면 skip) · RS485 PTY · ONNX · pytest | vcan0 설정 후 CAN, 실제 모델 · RViz2 smoke |

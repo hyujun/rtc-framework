@@ -94,7 +94,8 @@ class MPCThread : public rtc::PeriodicRtThread {
   virtual bool Solve(const MPCStateSnapshot& state, MPCSolution& out_sol) = 0;
 
   // PeriodicRtThread hook: drives one ReadState → Solve → PublishSolution
-  // iteration on the base's thread.
+  // iteration on the base's thread. A tick that reads a snapshot the RT
+  // side has never stored (`valid == false`) skips the solve.
   void OnTick() noexcept override;
 
  private:

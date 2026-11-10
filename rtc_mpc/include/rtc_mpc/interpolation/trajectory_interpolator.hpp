@@ -42,6 +42,7 @@
 #include <Eigen/Core>
 
 #include <cstdint>
+#include <memory>
 
 namespace rtc::mpc {
 
@@ -81,8 +82,9 @@ class TrajectoryInterpolator {
   TrajectoryInterpolator(TrajectoryInterpolator&&) = delete;
   TrajectoryInterpolator& operator=(TrajectoryInterpolator&&) = delete;
 
-  /// @brief Allocate working buffers. Call once during controller Init,
-  ///        before any hot-path calls.
+  /// @brief Allocate working buffers (the heap slot that holds the active
+  ///        solution copy). Call once during controller Init, before any
+  ///        hot-path calls; the object itself stays small.
   /// @param nq              joint-position dimension
   /// @param nv              joint-velocity dimension
   /// @param n_contact_vars  total contact-force dimension (Σ contact_dim)
@@ -95,7 +97,17 @@ class TrajectoryInterpolator {
   /// @param receive_ns    wall-clock time (ns) corresponding to node 0 of
   ///                      this solution; subsequent @ref Interpolate calls
   ///                      use this as the time origin
-  void SetSolution(const MPCSolution& sol, uint64_t receive_ns) noexcept;
+  /// @return false when @p sol is not consumable (`IsValid()` false) or
+  ///         @ref Init has not allocated the slot; the solution installed
+  ///         before, if any, stays active.
+  [[nodiscard]] bool SetSolution(const MPCSolution& sol, uint64_t receive_ns) noexcept;
+
+  /// @return the solution installed by the last accepted @ref SetSolution
+  ///         (its provenance fields included), or nullptr when there is
+  ///         none.
+  [[nodiscard]] const MPCSolution* Solution() const noexcept {
+    return has_solution_ ? sol_.get() : nullptr;
+  }
 
   /// @brief Interpolate the active solution at absolute time @p now_ns.
   ///
@@ -129,7 +141,7 @@ class TrajectoryInterpolator {
                           Eigen::Ref<Eigen::VectorXd> v_ref, Eigen::Ref<Eigen::VectorXd> a_ff,
                           Eigen::Ref<Eigen::VectorXd> lambda_ref) noexcept;
 
-  MPCSolution sol_{};
+  std::unique_ptr<MPCSolution> sol_;
   uint64_t receive_ns_{0};
   bool has_solution_{false};
 

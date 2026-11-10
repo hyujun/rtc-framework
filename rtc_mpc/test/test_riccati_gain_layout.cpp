@@ -21,12 +21,12 @@
 namespace rtc::mpc {
 namespace {
 
-// nu ≠ nx ≠ kMaxNx so a stride mistake in either direction is visible.
+// nu ≠ nx ≠ kMaxNdx so a stride mistake in either direction is visible.
 constexpr int kNq = 4;
 constexpr int kNv = 3;
 constexpr int kNx = kNq + kNv;
 constexpr int kNu = 3;
-static_assert(kNu != kNx && kNx != kMaxNx && kNu != kMaxNx);
+static_assert(kNu != kNx && kNx != kMaxNdx && kNu != kMaxNdx);
 
 /// Distinct value per element so a misplaced entry cannot alias another.
 Eigen::MatrixXd DistinctGain() {
@@ -128,7 +128,7 @@ TEST_F(RiccatiGainLayoutTest, CapacityStrideIsNotTheReaderLayout) {
   const Eigen::MatrixXd K = DistinctGain();
   for (int i = 0; i < kNu; ++i) {
     for (int j = 0; j < kNx; ++j) {
-      flat_[static_cast<std::size_t>(i) * static_cast<std::size_t>(kMaxNx) +
+      flat_[static_cast<std::size_t>(i) * static_cast<std::size_t>(kMaxNdx) +
             static_cast<std::size_t>(j)] = K(i, j);
     }
   }

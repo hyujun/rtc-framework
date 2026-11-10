@@ -10,7 +10,7 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, int nq, int nv, int n_conta
   nv_ = nv;
   n_contact_vars_ = n_contact_vars;
 
-  enabled_ = cfg["enabled"] && cfg["enabled"].as<bool>();
+  enabled_.store(cfg["enabled"] && cfg["enabled"].as<bool>(), std::memory_order_relaxed);
   if (cfg["max_stale_solutions"]) {
     max_stale_solutions_ = cfg["max_stale_solutions"].as<int>();
     if (max_stale_solutions_ < 1) {
@@ -39,11 +39,16 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, int nq, int nv, int n_conta
 
   stale_count_ = 0;
   has_ever_received_solution_ = false;
+  state_sequence_ = 0;
+  plan_counter_ = 0;
+  active_receive_stamp_ns_ = 0;
+  epoch_rejections_ = 0;
 }
 
 void MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
   MPCSolution& slot = solution_buffer_.StartWrite();
   std::memcpy(&slot, &sol, sizeof(MPCSolution));
+  slot.plan_id = ++plan_counter_;
   solution_buffer_.FinishWrite();
 
   // Timing probe — record the just-published solve_duration into the
@@ -128,6 +133,10 @@ void MPCSolutionManager::WriteState(const Eigen::Ref<const Eigen::VectorXd>& q,
   snap.nq = nq;
   snap.nv = nv;
   snap.timestamp_ns = timestamp_ns;
+  snap.sequence = ++state_sequence_;
+  snap.model_epoch = model_epoch_.load(std::memory_order_relaxed);
+  snap.contact_mask = contact_mask_;
+  snap.valid = true;
   state_lock_.Store(snap);
 }
 
@@ -144,18 +153,29 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
   meta_out.progress = 0.0;
   u_fb.setZero();
 
-  if (!enabled_) {
+  if (!enabled_.load(std::memory_order_relaxed)) {
     return false;
   }
 
-  // Try to pick up a newly published solution.
+  // Try to pick up a newly published solution. One acceptance decision: the
+  // plan must be consumable (IsValid) and computed against the model the RT
+  // side runs now; only an accepted plan touches the interpolator, the gain,
+  // the stale counter and the provenance.
   const MPCSolution* fresh = solution_buffer_.TryAcquireLatest();
+  bool accepted = false;
   if (fresh != nullptr) {
-    interpolator_.SetSolution(*fresh, now_ns);
-    // Install gains from the first Riccati node (nearest-node policy). The
-    // column count is the state-tangent dim the writer packed with, not the
-    // state vector length — they differ as soon as a joint has nq != nv.
-    if (riccati_enabled_ && fresh->horizon_length > 0) {
+    if (fresh->model_epoch != model_epoch_.load(std::memory_order_acquire)) {
+      ++epoch_rejections_;
+    } else {
+      accepted = interpolator_.SetSolution(*fresh, now_ns);
+    }
+  }
+  if (accepted) {
+    active_receive_stamp_ns_ = now_ns;
+    // Install the first node's gain (nearest-node policy). The column count
+    // is the state-tangent dim the writer packed with, not the state vector
+    // length — they differ as soon as a joint has nq != nv.
+    if (riccati_enabled_ && fresh->gain_nodes > 0) {
       const int nu = fresh->nu > 0 ? fresh->nu : fresh->nv;
       riccati_.SetGain(fresh->K_riccati[0].data(), nu, fresh->ndx);
     }
