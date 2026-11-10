@@ -14,11 +14,11 @@ real hand must satisfy, all at once:
                   write attempts < 0.1 %, each on its own denominator; with
                   ``cmd_ack: none`` there is no echo stage, so the echo row is
                   NOT_EVALUATED and only the RESP-set rate is judged
-  (e) E-Stop    — on the bus: Frame 1 zeros -> Frame 0 zeros (the D26 order,
+  (e) E-Stop    — on the bus: CMD FF zeros -> CMD pos zeros (the D26 order,
                   which is the REVERSE of a normal write) -> both echoes, within
                   2 ms of the first zero frame, and no command after it; with
                   ``cmd_ack: none`` the hand sends no echoes, so the pair's own
-                  order and spacing (F1 -> F0 < 2 ms) replace the echo timing
+                  order and spacing (FF -> pos < 2 ms) replace the echo timing
   (x) overlap   — two hands on one bus only (G-5, epic #906): no frame of one
                   hand inside the other hand's transaction (below). Absent from
                   a one-hand report, which therefore reads as before. Under
@@ -47,7 +47,7 @@ Broadcast REQ (#956). With ``req_mode: broadcast`` (stats JSON
 ONE REQ to target 0xFF (``0x007FC000``), which both hands answer with their own
 RESP set; the hands' arbitration, not the host, orders the two bursts. That REQ
 is each hand's REQ for (a)–(e) — without it a hand would see no REQ, and two
-consecutive zero writes (F0 F1 | REQ | F0 F1) would read as E-Stop pairs. The
+consecutive zero writes (pos FF | REQ | pos FF) would read as E-Stop pairs. The
 transaction check cannot apply (both bursts answer one frame), so (x) becomes
 ``x.broadcast_sets``, per window from one broadcast REQ to the next, cut at the
 first E-Stop zero frame exactly as above. The window's tick part ends at the
@@ -79,9 +79,9 @@ Why each definition is what it is (the reviewed corrections of H1-F06):
     truncates is the round trip, not the tick. (c) excludes nothing.
   * A zero payload alone does not identify the E-Stop: a run that commands zeros
     at 500 Hz (Run B-2) writes zero pairs all along. The ORDER does — a normal
-    write sends Frame 0 then Frame 1, the E-Stop sends Frame 1 then Frame 0
+    write sends CMD pos then CMD FF, the E-Stop sends CMD FF then CMD pos
     (D26 · D33) — and the loop exits after it, so nothing may follow.
-  * Since #919 (D49 (b) · D59) a write tick is pipelined: CMD 0 · CMD 1 · REQ
+  * Since #919 (D49 (b) · D59) a write tick is pipelined: CMD pos · CMD FF · REQ
     go out back to back and the echoes and the RESP burst share one receive
     window, so echoes and RESP frames may interleave on the bus (echo mode;
     with ``cmd_ack: none`` only the RESP burst remains). The REQ -> RESP round
@@ -152,6 +152,12 @@ NOT_EVALUATED = "NOT_EVALUATED"
 
 TIMING_STEM = HAND_TIMING_STEM
 STATS_STEM = HAND_STATS_STEM
+# CMD frame indices the host sends (hand_canfd_packets.hpp CmdFrame — the wire
+# contract's SSoT): a normal write is pos then FF, the E-Stop FF then pos.
+# Captures of firmware older than the 2026-11 frame-index table carry the FF
+# as idx 1 and are not read by this judge.
+CMD_POS_IDX = 0
+CMD_FF_IDX = 2
 LINK_DOWN_NEEDLE = "Hand link DOWN"
 FAILURE_NEEDLE = "Hand failure detected: "
 # Failure-detector reasons that judge the SENSOR payload, not the link: a hand
@@ -230,17 +236,17 @@ class TimingSummary:
 
 @dataclass
 class EstopEvent:
-    t_cmd1: float
-    t_cmd0: float
-    t_echo1: float | None
-    t_echo0: float | None
+    t_cmd_ff: float
+    t_cmd_pos: float
+    t_echo_ff: float | None
+    t_echo_pos: float | None
     cmd_frames_after: int
 
     @property
     def delta_ms(self) -> float:
-        if self.t_echo0 is None or self.t_echo1 is None:
+        if self.t_echo_pos is None or self.t_echo_ff is None:
             return math.nan
-        return (max(self.t_echo0, self.t_echo1) - self.t_cmd1) * 1e3
+        return (max(self.t_echo_pos, self.t_echo_ff) - self.t_cmd_ff) * 1e3
 
 
 @dataclass
@@ -257,7 +263,7 @@ class BusSummary:
     complete_sets: int = 0
     incomplete_sets: int = 0
     max_silent_req_streak: int = 0
-    write_pairs: int = 0  # normal Frame 0 -> Frame 1 command pairs seen on the bus
+    write_pairs: int = 0  # normal CMD pos -> CMD FF command pairs seen on the bus
     rtt_req_f2_ms: list[float] = field(default_factory=list)
     rtt_cmd_echo_ms: list[float] = field(default_factory=list)
     # Write tick, pipelined (#919): CMD frame 0 -> RESP frame 2 of the REQ that
@@ -323,8 +329,8 @@ class OverlapSummary:
     violations: list[Violation] = field(default_factory=list)
     # Candump line of the first E-Stop zero frame; the check stops there.
     estop_line: int | None = None
-    # Each hand's E-Stop Frame 1 zeros time (D78: right -> left gap, reported).
-    estop_f1_t: dict[str, float] = field(default_factory=dict)
+    # Each hand's E-Stop CMD FF zeros time (D78: right -> left gap, reported).
+    estop_ff_t: dict[str, float] = field(default_factory=dict)
     # Set in broadcast mode only: the per-window check replaces the transactions.
     broadcast: BroadcastSummary | None = None
 
@@ -342,8 +348,8 @@ class OverlapSummary:
 
     @property
     def estop_gap_ms(self) -> float:
-        r = self.estop_f1_t.get("right")
-        left = self.estop_f1_t.get("left")
+        r = self.estop_ff_t.get("right")
+        left = self.estop_ff_t.get("left")
         if r is None or left is None:
             return math.nan
         return (left - r) * 1e3
@@ -513,9 +519,9 @@ def analyse_bus(
                 t_f2 = f.t
     close_set()
 
-    # CMD pairs and their echoes. Normal write: frame 0 then frame 1 (both
-    # echoed, D41). E-Stop: frame 1 then frame 0, both zero (D26 · D33). Two
-    # consecutive normal writes also put a frame 1 next to a frame 0 — but a
+    # CMD pairs and their echoes. Normal write: pos then FF (both echoed,
+    # D41). E-Stop: FF then pos, both zero (D26 · D33). Two consecutive
+    # normal writes also put an FF frame next to a pos frame — but a
     # REQ always lies between them (every comm cycle sends its REQ after the
     # CMD pair, pipelined since #919 or sequential before), whereas the E-Stop
     # pair is sent back to back with no REQ (the loop exits), so "no REQ in
@@ -540,11 +546,11 @@ def analyse_bus(
     write_reqs: set[int] = set()
     for n, ((i_a, a), (i_b, b)) in enumerate(zip(cmd_frames, cmd_frames[1:], strict=False)):
         window_end = cmd_frames[n + 2][0] if n + 2 < len(cmd_frames) else len(frames)
-        if a.frame_idx == 0 and b.frame_idx == 1 and not req_between(i_a, i_b):
+        if a.frame_idx == CMD_POS_IDX and b.frame_idx == CMD_FF_IDX and not req_between(i_a, i_b):
             s.write_pairs += 1
-            t0, t1 = _echoes_between(frames, kinds, i_a, window_end)
-            if t0 is not None and t1 is not None:
-                s.rtt_cmd_echo_ms.append((max(t0, t1) - a.t) * 1e3)
+            t_pos, t_ff = _echoes_between(frames, kinds, i_a, window_end)
+            if t_pos is not None and t_ff is not None:
+                s.rtt_cmd_echo_ms.append((max(t_pos, t_ff) - a.t) * 1e3)
             # The write tick's REQ is the first after the pair, before the next
             # command and within cmd_req_max_s of CMD frame 0 (not the next
             # tick's); its frame 2 (when the set completed) closes the tick's
@@ -555,19 +561,19 @@ def analyse_bus(
                 if i_req in f2_by_req:
                     s.rtt_cmd_f2_ms.append((f2_by_req[i_req][1] - a.t) * 1e3)
         elif (
-            a.frame_idx == 1
-            and b.frame_idx == 0
+            a.frame_idx == CMD_FF_IDX
+            and b.frame_idx == CMD_POS_IDX
             and a.all_zero
             and b.all_zero
             and not req_between(i_a, i_b)
         ):
             s.estop_candidates += 1
-            t0, t1 = _echoes_between(frames, kinds, i_a, window_end)
+            t_pos, t_ff = _echoes_between(frames, kinds, i_a, window_end)
             s.estop = EstopEvent(
-                t_cmd1=a.t,
-                t_cmd0=b.t,
-                t_echo1=t1,
-                t_echo0=t0,
+                t_cmd_ff=a.t,
+                t_cmd_pos=b.t,
+                t_echo_ff=t_ff,
+                t_echo_pos=t_pos,
                 cmd_frames_after=len(cmd_frames) - (n + 2),
             )
     s.rtt_req_f2_readonly_ms = [
@@ -579,18 +585,18 @@ def analyse_bus(
 def _echoes_between(
     frames: list[Frame], kinds: list[Kind], start: int, end: int
 ) -> tuple[float | None, float | None]:
-    """Timestamps of the first echo of frame 0 and of frame 1 in frames (start, end)."""
-    t0: float | None = None
-    t1: float | None = None
+    """Timestamps of the first echo of CMD pos and of CMD FF in frames (start, end)."""
+    t_pos: float | None = None
+    t_ff: float | None = None
     for f, k in zip(frames[start + 1 : end], kinds[start + 1 : end], strict=True):
         if k is Kind.ECHO:
-            if f.frame_idx == 0 and t0 is None:
-                t0 = f.t
-            elif f.frame_idx == 1 and t1 is None:
-                t1 = f.t
-            if t0 is not None and t1 is not None:
+            if f.frame_idx == CMD_POS_IDX and t_pos is None:
+                t_pos = f.t
+            elif f.frame_idx == CMD_FF_IDX and t_ff is None:
+                t_ff = f.t
+            if t_pos is not None and t_ff is not None:
                 break
-    return t0, t1
+    return t_pos, t_ff
 
 
 # ── two hands on one bus (x) ────────────────────────────────────────────────
@@ -617,11 +623,11 @@ def _hand_of(frame: Frame) -> Role:
 
 
 def _estop_rows(frames: list[Frame], roles: list[Role]) -> dict[int, int]:
-    """Each hand's first E-Stop pair: row of CMD Frame 1 zeros, when CMD Frame 0
+    """Each hand's first E-Stop pair: row of CMD FF zeros, when CMD pos
     zeros is the next command frame to that hand with no REQ to it in between
     (a broadcast REQ is a REQ to every hand)."""
     out: dict[int, int] = {}
-    pending: dict[int, int] = {}  # hand -> row of a zero F1 awaiting its F0
+    pending: dict[int, int] = {}  # hand -> row of a zero CMD FF awaiting its CMD pos
     for i, ((nodes, k), f) in enumerate(zip(roles, frames, strict=True)):
         if k is Kind.REQ:
             for n in nodes:
@@ -633,9 +639,9 @@ def _estop_rows(frames: list[Frame], roles: list[Role]) -> dict[int, int]:
         if node in out:
             continue
         if k is Kind.CMD:
-            if f.frame_idx == 1 and f.all_zero:
+            if f.frame_idx == CMD_FF_IDX and f.all_zero:
                 pending[node] = i
-            elif f.frame_idx == 0 and f.all_zero and node in pending:
+            elif f.frame_idx == CMD_POS_IDX and f.all_zero and node in pending:
                 out[node] = pending.pop(node)
             else:
                 pending.pop(node, None)
@@ -658,7 +664,7 @@ def analyse_overlap(
     s.hands_on_bus = [HAND_NAMES[n] for n in HAND_NODES if n in on_bus]
     estops = _estop_rows(frames, roles)
     for node, row in estops.items():
-        s.estop_f1_t[HAND_NAMES[node]] = frames[row].t
+        s.estop_ff_t[HAND_NAMES[node]] = frames[row].t
     cut = min(estops.values()) if estops else len(frames)
     if estops:
         s.estop_line = frames[cut].line_no
@@ -673,7 +679,7 @@ def analyse_overlap(
     latest: int | None = None  # hand of the most recently opened transaction
     is_open = False
     has_req = False
-    has_f1 = False
+    has_ff = False
     for f, (nodes, k) in zip(frames[:cut], roles[:cut], strict=True):
         if len(nodes) != 1:
             continue
@@ -681,16 +687,16 @@ def analyse_overlap(
         if k in (Kind.CMD, Kind.REQ):
             starts = (
                 latest != node
-                or (k is Kind.CMD and f.frame_idx == 0)
+                or (k is Kind.CMD and f.frame_idx == CMD_POS_IDX)
                 or (k is Kind.REQ and has_req)
-                or (k is Kind.CMD and f.frame_idx == 1 and has_f1)
+                or (k is Kind.CMD and f.frame_idx == CMD_FF_IDX and has_ff)
             )
             if starts:
-                latest, is_open, has_req, has_f1 = node, True, False, False
+                latest, is_open, has_req, has_ff = node, True, False, False
                 name = HAND_NAMES[node]
                 s.transactions[name] = s.transactions.get(name, 0) + 1
             has_req = has_req or k is Kind.REQ
-            has_f1 = has_f1 or (k is Kind.CMD and f.frame_idx == 1)
+            has_ff = has_ff or (k is Kind.CMD and f.frame_idx == CMD_FF_IDX)
             continue
         # A frame from a hand (echo or RESP).
         if latest is not None and is_open and node != latest:
@@ -1071,13 +1077,13 @@ def judge(
     # (e) E-Stop on the bus
     e = bus.estop
     estop_threshold = (
-        f"1 pair, F1 -> F0 zeros, < {th.estop_window_ms:g} ms, no CMD after"
+        f"1 pair, FF -> pos zeros, < {th.estop_window_ms:g} ms, no CMD after"
         if none_mode
         else f"1 pair, both echoes, < {th.estop_window_ms:g} ms"
     )
     if e is None:
         checks.append(
-            Check("e.estop", FAIL, "no Frame 1 zeros -> Frame 0 zeros pair", estop_threshold)
+            Check("e.estop", FAIL, "no CMD FF zeros -> CMD pos zeros pair", estop_threshold)
         )
     else:
         notes = []
@@ -1091,13 +1097,13 @@ def judge(
                 f"{e.cmd_frames_after} command frame(s) after the pair — loop did not stop"
             )
         if none_mode:
-            delta_ms = (e.t_cmd0 - e.t_cmd1) * 1e3
-            value = f"Δt(CMD F1 zeros -> CMD F0 zeros) = {delta_ms:.3f} ms, candump-to-candump"
-            if not (e.t_cmd0 > e.t_cmd1 and delta_ms < th.estop_window_ms):
+            delta_ms = (e.t_cmd_pos - e.t_cmd_ff) * 1e3
+            value = f"Δt(CMD FF zeros -> CMD pos zeros) = {delta_ms:.3f} ms, candump-to-candump"
+            if not (e.t_cmd_pos > e.t_cmd_ff and delta_ms < th.estop_window_ms):
                 ok = False
         else:
             value = f"Δt(first zero CMD -> last echo) = {e.delta_ms:.3f} ms, candump-to-candump"
-            if e.t_echo0 is None or e.t_echo1 is None:
+            if e.t_echo_pos is None or e.t_echo_ff is None:
                 ok = False
                 notes.append("echo missing")
             elif not e.delta_ms < th.estop_window_ms:
@@ -1270,10 +1276,10 @@ def render_markdown(
         echoes = (
             ""
             if none_mode
-            else f", echo F1 {_rel(e.t_echo1, e.t_cmd1)}, echo F0 {_rel(e.t_echo0, e.t_cmd1)}"
+            else f", echo FF {_rel(e.t_echo_ff, e.t_cmd_ff)}, echo pos {_rel(e.t_echo_pos, e.t_cmd_ff)}"
         )
         out.append(
-            f"| E-Stop frames (t rel. to CMD F1) | CMD F0 +{(e.t_cmd0 - e.t_cmd1) * 1e3:.3f} ms"
+            f"| E-Stop frames (t rel. to CMD FF) | CMD pos +{(e.t_cmd_pos - e.t_cmd_ff) * 1e3:.3f} ms"
             f"{echoes} | — |"
         )
     if overlap is not None and overlap.two_hands:
@@ -1289,7 +1295,7 @@ def render_markdown(
                 f"| overlap intrusions (intruder -> victim) | {pairs} | none |",
             ]
         out.append(
-            f"| E-Stop zero-write gap, right CMD F1 -> left CMD F1 | {gap_text} "
+            f"| E-Stop zero-write gap, right CMD FF -> left CMD FF | {gap_text} "
             f"| reported only (D78) |"
         )
     return "\n".join(out) + "\n"

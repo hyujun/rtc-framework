@@ -16,8 +16,22 @@
 //   bit 25..22  msg type   (4)  0 CMD · 1 REQ · 2 RESP
 //   bit 21..14  target     (8)  0x00 host · 0x01 right hand · 0x02 left hand · 0xFF broadcast
 //   bit 13..6   source     (8)  0x00 host · 0x01 right hand · 0x02 left hand
-//   bit  5..0   frame idx  (6)  CMD 0 position · 1 FF current · 2 target current · 3 hand side
+//   bit  5..0   frame idx  (6)  CMD — the table below (0 position and 2 FF current
+//                               are the two the host sends)
 //                               RESP 0 · 1 · 2 (the telemetry burst)
+//
+//   CMD frame index (firmware table "2.2 Frame Index", received 2026-11-10; it
+//   supersedes the numbering the vendor documents above were written with,
+//   where FF current was idx 1, target current 2 and hand side 3):
+//     0 position (rad)            1 velocity (rad/s; cascade speed limit)
+//     2 FF current (A)            3 target current (A; switches to current mode)
+//     4 control mode              5 hand side (→ flash)
+//     6..9 PID gains (position · velocity · cascade position · cascade speed)
+//     10 save gains to flash
+//   There is no version field on the wire: a host and a firmware that disagree
+//   on this table do not fail, they misread each other — an FF current sent as
+//   idx 1 is a velocity command to this firmware, and one sent as idx 2 is a
+//   target current (a mode switch) to the older one.
 //
 //   host → hand   CMD   [0][0][node][0][idx]   right 0x00004000+idx   left 0x00008000+idx
 //                 REQ   [0][1][node][0][0]     right 0x00404000       left 0x00408000
@@ -34,14 +48,15 @@
 //   one node's RESP burst regardless of frame index (W1).
 //
 // ── Payloads (every data frame DLC 64, little-endian, IEEE 754 float32) ─────
-//   CMD Frame 0 (target position, rad) and Frame 1 (feedforward current, A)
+//   CMD Frame 0 (target position, rad) and Frame 2 (feedforward current, A)
 //   share one layout:    0..39 float[10] M0..M9       40..63 reserved (0x00)
 //   The MCU applies a CMD, then — on firmware that acknowledges commands
 //   (`cmd_ack` echo, #945 D61) — echoes its 64 bytes back verbatim (same idx,
 //   target host, source node), the host's write validation (D41); firmware
-//   with `cmd_ack` none applies it and sends nothing back. Frame 2
-//   (target current → current mode) and Frame 3 (hand side → flash) are not
-//   built here (D27: Frame 0 + 1 only); only their ids can be formed.
+//   with `cmd_ack` none applies it and sends nothing back. No other
+//   CMD frame is built here (D27: position + feedforward only — the hand
+//   applies the feedforward in position mode, so no mode frame is sent); only
+//   their ids can be formed.
 //   REQ carries no data (DLC 0, D47) and is answered by the RESP burst idx 0, 1, 2:
 //   RESP F0   0..39  pos   float[10]  rad          40..63  vel M0..M5  float[6]  rad/s
 //   RESP F1   0..15  vel M6..M9  float[4]  rad/s   16..55  cur   float[10]  A
@@ -225,11 +240,10 @@ inline constexpr uint32_t kRespIdMask = kExtIdMask & ~kFrameIndexMask;  // 0x1FF
 
 // The vendor documents' worked ids (Proto §3 · §4, Frame §2.2 · §2.3 · §4.1).
 static_assert(CmdId(kNodeRightHand, 0) == 0x00004000u, "Frame §2.2 CMD Frame 0, right hand");
-static_assert(CmdId(kNodeRightHand, 1) == 0x00004001u, "Frame §2.2 CMD Frame 1, right hand");
 static_assert(CmdId(kNodeLeftHand, 0) == 0x00008000u, "Frame §2.2 CMD Frame 0, left hand");
-static_assert(CmdId(kNodeBroadcast, 3) == 0x003FC003u, "Frame §2.2 CMD Frame 3, broadcast");
+static_assert(CmdId(kNodeBroadcast, 5) == 0x003FC005u, "CMD hand side (idx 5), broadcast");
 static_assert(EchoId(kNodeRightHand, 0) == 0x00000040u, "Proto §3.6 echo Frame 0, right hand");
-static_assert(EchoId(kNodeLeftHand, 1) == 0x00000081u, "Proto §3.6 echo Frame 1, left hand");
+static_assert(EchoId(kNodeLeftHand, 1) == 0x00000081u, "echo idx 1, left hand");
 static_assert(ReqId(kNodeRightHand) == 0x00404000u, "Proto §3.1 REQ, right hand");
 static_assert(ReqId(kNodeLeftHand) == 0x00408000u, "Frame §2.2 REQ, left hand");
 static_assert(ReqId(kNodeBroadcast) == 0x007FC000u,
@@ -258,14 +272,35 @@ inline constexpr std::size_t kVelHiCount = kWireMotorCount - kVelLoCount;
 inline constexpr std::size_t kCmdReservedLen = kFrameLen - kWireMotorCount * sizeof(float);  // 24
 inline constexpr std::size_t kRespFrame2ReservedLen = 20;
 
-/// Command frame index (CmdId's `frame_idx`). Only kPosition / kFeedforward
-/// payloads are built by this header (D27).
+/// Command frame index (CmdId's `frame_idx`) — the firmware's frame-index
+/// table (file header). Only kPosition / kFeedforward payloads are built by
+/// this header and sent by the host (D27); the rest are named so that nothing
+/// spells their numbers.
 enum class CmdFrame : uint8_t {
-  kPosition = 0,       ///< target position, rad — switches the MCU to position mode
-  kFeedforward = 1,    ///< feedforward current, A — added as torque T = kt × i
-  kTargetCurrent = 2,  ///< target current, A — switches the MCU to current mode (unused)
-  kHandSide = 3,       ///< data[0] = 1 right / 2 left → flash (unused)
+  kPosition = 0,             ///< target position, rad (position and cascade modes)
+  kVelocity = 1,             ///< target velocity, rad/s; cascade speed limit (unused)
+  kFeedforward = 2,          ///< feedforward current, A — added as torque T = kt × i
+  kTargetCurrent = 3,        ///< target current, A — switches the MCU to current mode (unused)
+  kControlMode = 4,          ///< 0 position · 1 velocity · 2 cascade · 3 current (unused)
+  kHandSide = 5,             ///< data[0] = 1 right / 2 left → flash (unused)
+  kGainPosition = 6,         ///< position PID gains (unused)
+  kGainVelocity = 7,         ///< velocity PID gains (unused)
+  kGainCascadePosition = 8,  ///< cascade position PID gains (unused)
+  kGainCascadeSpeed = 9,     ///< cascade speed PID gains (unused)
+  kGainSaveFlash = 10,       ///< save the PID gains to flash (unused)
 };
+
+/// The two CMD frame indices the host sends, as CmdId / EchoId take them.
+inline constexpr uint8_t kCmdPositionIdx = static_cast<uint8_t>(CmdFrame::kPosition);
+inline constexpr uint8_t kCmdFeedforwardIdx = static_cast<uint8_t>(CmdFrame::kFeedforward);
+
+// The feedforward frame's ids, spelled out: the id arithmetic above holds for
+// any index, so only these pin WHICH index carries the feedforward current.
+static_assert(CmdId(kNodeRightHand, kCmdFeedforwardIdx) == 0x00004002u, "CMD FF, right hand");
+static_assert(CmdId(kNodeLeftHand, kCmdFeedforwardIdx) == 0x00008002u, "CMD FF, left hand");
+static_assert(EchoId(kNodeRightHand, kCmdFeedforwardIdx) == 0x00000042u, "echo FF, right hand");
+static_assert(EchoId(kNodeLeftHand, kCmdFeedforwardIdx) == 0x00000082u, "echo FF, left hand");
+static_assert(CmdId(kNodeRightHand, kCmdPositionIdx) == 0x00004000u, "CMD position, right hand");
 
 /// Frames in one RESP burst (idx 0 .. kNumRespFrames-1).
 inline constexpr std::size_t kNumRespFrames = 3;
@@ -286,11 +321,11 @@ enum class Fingertip : std::size_t { kThumb = 0, kIndex = 1, kMiddle = 2, kRing 
 
 #pragma pack(push, 1)
 
-/// CMD Frame 0 / Frame 1 payload (64 B). Plain arrays, not std::array: the
+/// CMD position / feedforward payload (64 B). Plain arrays, not std::array: the
 /// struct is packed and taking a packed member's address is what the compiler
 /// warns about — element access is not.
 struct CmdMotorFrame {
-  float values[kWireMotorCount];  ///< Frame 0: rad · Frame 1: A, firmware motor order
+  float values[kWireMotorCount];  ///< position: rad · feedforward: A, firmware motor order
   uint8_t reserved[kCmdReservedLen];
 };
 
@@ -334,7 +369,7 @@ struct RespFrame2 {
 
 #pragma pack(pop)
 
-static_assert(sizeof(CmdMotorFrame) == kFrameLen, "CMD Frame 0/1 is 64 bytes");
+static_assert(sizeof(CmdMotorFrame) == kFrameLen, "a CMD motor frame is 64 bytes");
 static_assert(sizeof(RespFrame0) == kFrameLen, "RESP F0 is 64 bytes");
 static_assert(sizeof(RespFrame1) == kFrameLen, "RESP F1 is 64 bytes");
 static_assert(sizeof(RespFrame2) == kFrameLen, "RESP F2 is 64 bytes");
@@ -353,7 +388,7 @@ static_assert(std::is_trivially_copyable_v<CmdMotorFrame> &&
                   std::is_trivially_copyable_v<RespFrame2>,
               "wire frames are memcpy'd");
 
-/// Build a Frame 0 (rad) or Frame 1 (A) payload; reserved bytes zero.
+/// Build a position (rad) or feedforward (A) payload; reserved bytes zero.
 [[nodiscard]] inline CmdMotorFrame MakeCmdMotorFrame(
     const std::array<float, kWireMotorCount>& values) noexcept {
   CmdMotorFrame frame{};

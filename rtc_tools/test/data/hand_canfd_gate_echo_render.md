@@ -41,4 +41,4 @@
 | CMD frame 0 -> last echo round trip (bus, lower bound) | n=11 p50=0.770 p99=0.770 max=0.770 ms | — |
 | CMD frame 0 -> RESP frame 2, write ticks (bus, lower bound) | n=10 p50=0.660 p99=1.000 max=1.000 ms | — |
 | write attempts (JSON once-per-attempt counters) / bus write pairs | 10 / 11 | about equal |
-| E-Stop frames (t rel. to CMD F1) | CMD F0 +0.100 ms, echo F1 +1.400 ms, echo F0 +1.500 ms | — |
+| E-Stop frames (t rel. to CMD FF) | CMD pos +0.100 ms, echo FF +1.400 ms, echo pos +1.500 ms | — |

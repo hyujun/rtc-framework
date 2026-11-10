@@ -22,15 +22,15 @@
 // proto2 (CAN FD, epic #895 · H1-F04-2b): the same joint model answers the
 // CAN FD wire through BuildCanFdResponse(), the MCU's mirror image for one
 // hand (Config::hand_side → node id, D51). One received frame yields 0..3
-// frames: a CMD Frame 0 / 1 is applied and — under Config::cmd_ack echo, the
-// current firmware — its 64 bytes echoed verbatim (D41); under none (the PDO-
-// like firmware, #945) it is applied and nothing is sent back; a REQ (DLC 0 by D47 — any length is
+// frames: a CMD position (idx 0) / feedforward (idx 2) frame is applied and — under Config::cmd_ack
+// echo, the current firmware — its 64 bytes echoed verbatim (D41); under none (the PDO- like
+// firmware, #945) it is applied and nothing is sent back; a REQ (DLC 0 by D47 — any length is
 // answered, a payload counted) is answered by the RESP burst idx 0, 1, 2 built from the joint model
 // and the 1b tactile channels, with the Proto §4.3 sign flips pre-applied so the host decodes the
-// same positive forces the 1b path yields; everything else (Frame 2 / 3, another node's target,
-// error frames, bad lengths) is dropped and counted (D45). Broadcast (0xFF) is answered like the
-// node's own id. The feedforward frame is kept for inspection only — the LPF model has no torque
-// input, and the kt conversion lives in the driver (D50). All bytes come from
+// same positive forces the 1b path yields; everything else (any other CMD idx, another node's
+// target, error frames, bad lengths) is dropped and counted (D45). Broadcast (0xFF) is answered
+// like the node's own id. The feedforward frame is kept for inspection only — the LPF model has no
+// torque input, and the kt conversion lives in the driver (D50). All bytes come from
 // hand_canfd_packets.hpp; the vcan socket shell is F04-2c, so this header still has no
 // <linux/can.h>.
 //
@@ -98,8 +98,8 @@ class FakeHandFirmware {
     uint64_t error_frames{0};      ///< CAN_ERR_FLAG set — rejected before the id is read
     uint64_t other_target{0};      ///< target another hand (neither this node, host nor broadcast)
     uint64_t unknown_type{0};      ///< msg type other than CMD / REQ (RESP, or an undefined value)
-    uint64_t bad_length{0};        ///< CMD Frame 0 / 1 whose payload is not 64 bytes
-    uint64_t cmd_ignored{0};       ///< CMD Frame 2, 3 or higher (D27 · D45: no model, no echo)
+    uint64_t bad_length{0};  ///< CMD position / feedforward frame whose payload is not 64 bytes
+    uint64_t cmd_ignored{0};  ///< any other CMD idx — velocity, target current, mode, … (D27 · D45)
   };
 
   explicit FakeHandFirmware(const Config& cfg)
@@ -168,12 +168,12 @@ class FakeHandFirmware {
   // an insufficient `cap`, which is the caller's bug and leaves the model and
   // the RNG untouched. `can_id` is taken as the socket delivers it (EFF / ERR
   // flags still set) or as a bare 29-bit id; `data` holds `len` bytes.
-  //   CMD Frame 0 (64 B) → target latched, model stepped once, 64 B echoed (D41)
-  //   CMD Frame 1 (64 B) → kept as last_feedforward(), 64 B echoed (D50)
-  //   CMD Frame 2 / 3 / … → counted, nothing else (D45)
+  //   CMD idx 0 position (64 B)    → target latched, model stepped once, 64 B echoed (D41)
+  //   CMD idx 2 feedforward (64 B) → kept as last_feedforward(), 64 B echoed (D50)
+  //   CMD any other idx            → counted, nothing else (D45)
   //   REQ (DLC 0, D47)    → RESP burst idx 0, 1, 2 — all three or none (D43);
   //                         a REQ with data is answered too, and counted
-  // Not const: mutates the joint model (Frame 0) and the RNG (every burst).
+  // Not const: mutates the joint model (CMD position) and the RNG (every burst).
   std::size_t BuildCanFdResponse(uint32_t can_id, const uint8_t* data, std::size_t len,
                                  CanFdFrame* out, std::size_t cap) {
     if (out == nullptr)
@@ -236,13 +236,13 @@ class FakeHandFirmware {
 
   [[nodiscard]] double alpha() const noexcept { return alpha_; }
 
-  /// Payload of the last CMD Frame 1 (feedforward current, A, firmware motor
+  /// Payload of the last CMD feedforward frame (feedforward current, A, firmware motor
   /// order); zeros until one arrives. Inspection only — not fed to the model.
   [[nodiscard]] const std::array<float, kNumHandMotors>& last_feedforward() const noexcept {
     return last_feedforward_;
   }
 
-  /// CMD Frame 1 frames applied so far.
+  /// CMD feedforward frames applied so far.
   [[nodiscard]] uint64_t feedforward_count() const noexcept { return feedforward_count_; }
 
   [[nodiscard]] CanFdCounters canfd_counters() const noexcept { return canfd_counters_; }
@@ -431,14 +431,17 @@ class FakeHandFirmware {
         std::clamp<long>(sign * DrawCounts(base_1b_[channel]), INT16_MIN, INT16_MAX));
   }
 
-  // CMD Frame `idx`: Frame 0 latches the target and steps the model, Frame 1
-  // is kept; both are echoed verbatim under cmd_ack echo, neither under none.
-  // Higher indices are counted and ignored (D45). A payload that is not 64
-  // bytes is a bad frame, not a command. The command is applied even when
+  // CMD frame `idx`: the position frame latches the target and steps the
+  // model, the feedforward frame is kept; both are echoed verbatim under
+  // cmd_ack echo, neither under none. Every other index — the velocity frame
+  // between the two included — is counted and ignored (D45): the test is
+  // membership, not a range. A payload that is not 64 bytes is a bad frame,
+  // not a command. The command is applied even when
   // `cap` leaves no room for the echo.
   std::size_t HandleCanFdCmd(uint8_t idx, const uint8_t* data, std::size_t len, CanFdFrame* out,
                              std::size_t cap) {
-    if (idx > static_cast<uint8_t>(canfd::CmdFrame::kFeedforward)) {
+    const bool is_position = idx == canfd::kCmdPositionIdx;
+    if (!is_position && idx != canfd::kCmdFeedforwardIdx) {
       ++canfd_counters_.cmd_ignored;
       return 0;
     }
@@ -447,7 +450,7 @@ class FakeHandFirmware {
       ++canfd_counters_.bad_length;
       return 0;
     }
-    if (idx == static_cast<uint8_t>(canfd::CmdFrame::kPosition)) {
+    if (is_position) {
       for (std::size_t i = 0; i < kNumHandMotors; ++i)
         target_[i] = in.values[i];
       StepModel();
@@ -516,7 +519,7 @@ class FakeHandFirmware {
   std::array<float, kNumHandMotors> pos_{};
   std::array<float, kNumHandMotors> vel_{};
   std::array<float, kNumHandMotors> effort_{};
-  std::array<float, kNumHandMotors> last_feedforward_{};  ///< CMD Frame 1, kept only
+  std::array<float, kNumHandMotors> last_feedforward_{};  ///< CMD feedforward frame, kept only
   uint64_t feedforward_count_{0};
   CanFdCounters canfd_counters_{};
 

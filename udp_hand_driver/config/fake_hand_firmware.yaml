@@ -20,7 +20,7 @@
     # -- CAN FD 소켓 (protocol_version 2) --
     can_interface: "vcan0"            # SocketCAN 인터페이스 (MTU 72 — setup_vcan.sh)
     hand_side: "right"                # "right" | "left" — 노드 id (D51). 노드의 hand_side 와 일치
-    # "echo": 구 펌웨어처럼 CMD Frame 0/1 을 echo / "none": 현 펌웨어처럼 적용만 하고
+    # "echo": 구 펌웨어처럼 CMD 프레임 (위치 · FF) 을 echo / "none": 현 펌웨어처럼 적용만 하고
     # 응답 없음 (기본, D62). 노드의 cmd_ack 와 일치 (udp_hand.launch.py 는 같은 값을 넘긴다)
     cmd_ack: "none"
 
@@ -29,7 +29,7 @@
     #       프레임 mode=req[2] mirror.
     # "1b": 핑거당 float32 힘벡터 [fx,fy,fz,Lx,Ly,Temp] (99B bulk 응답). MODE verify
     #       off (arbitrary 허용) 이지만 여기서도 mirror.
-    # "2":  CAN FD (hand_canfd_packets.hpp). CMD Frame 0/1 echo (cmd_ack echo 일 때),
+    # "2":  CAN FD (hand_canfd_packets.hpp). CMD 위치 (idx 0) · FF (idx 2) echo (cmd_ack echo 일 때),
     #       REQ → RESP 3 프레임.
     #       UDP 소켓은 열지 않는다.
     protocol_version: "1a"

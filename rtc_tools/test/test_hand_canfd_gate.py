@@ -48,6 +48,9 @@ from rtc_tools.analysis.hand_canfd_gate import (
 from rtc_tools.utils.session_dir import PRE_F08_HAND_STEMS
 
 NODE = node_id_of("right")
+# CMD frame index of the feedforward current, spelled as a number: the fixtures
+# pin the wire (the firmware's frame-index table), not the judge's constant.
+FF = 2
 TH = Thresholds()
 PERIOD_US = 2000.0
 LIMIT_US = PERIOD_US / 1.1  # 1818.18 us
@@ -150,12 +153,12 @@ def req_resp(t: float, answered: bool = True) -> list[str]:
 
 
 def normal_write(t: float, data_hex: str = NONZERO44) -> list[str]:
-    """Frame 0 then frame 1, both echoed — a WriteCommandWithEcho."""
+    """CMD pos then CMD FF, both echoed — a WriteCommandWithEcho."""
     return [
         line(t, cmd_id(NODE, 0), data_hex),
-        line(t + 0.0001, cmd_id(NODE, 1), data_hex),
+        line(t + 0.0001, cmd_id(NODE, FF), data_hex),
         line(t + 0.0003, echo_id(NODE, 0), data_hex),
-        line(t + 0.0004, echo_id(NODE, 1), data_hex),
+        line(t + 0.0004, echo_id(NODE, FF), data_hex),
     ]
 
 
@@ -167,12 +170,12 @@ def pipelined_write(
     `resp_first`); frame 2 withheld when not `complete`."""
     out = [
         line(t, cmd_id(NODE, 0), data_hex),
-        line(t + 0.00004, cmd_id(NODE, 1), data_hex),
+        line(t + 0.00004, cmd_id(NODE, FF), data_hex),
         line(t + 0.00008, req_id(NODE)),
     ]
     echoes = [
         line(t + 0.0005, echo_id(NODE, 0), data_hex),
-        line(t + 0.00077, echo_id(NODE, 1), data_hex),
+        line(t + 0.00077, echo_id(NODE, FF), data_hex),
     ]
     resp = [line(t + 0.0004 + 0.00013 * i, resp_id(NODE, i), "11" * 8) for i in range(3)]
     if not complete:
@@ -185,11 +188,11 @@ def pipelined_write(
 
 
 def estop(t: float, echo_delay_s: float = 0.0015, with_echoes: bool = True) -> list[str]:
-    """Frame 1 zeros then frame 0 zeros (D26), both echoed `echo_delay_s` after the first."""
-    out = [line(t, cmd_id(NODE, 1), ZERO44), line(t + 0.0001, cmd_id(NODE, 0), ZERO44)]
+    """CMD FF zeros then CMD pos zeros (D26), both echoed `echo_delay_s` after the first."""
+    out = [line(t, cmd_id(NODE, FF), ZERO44), line(t + 0.0001, cmd_id(NODE, 0), ZERO44)]
     if with_echoes:
         out += [
-            line(t + echo_delay_s - 0.0001, echo_id(NODE, 1), ZERO44),
+            line(t + echo_delay_s - 0.0001, echo_id(NODE, FF), ZERO44),
             line(t + echo_delay_s, echo_id(NODE, 0), ZERO44),
         ]
     return out
@@ -408,7 +411,7 @@ def test_estop_requires_both_echoes(tmp_path):
 
 
 def test_normal_zero_writes_are_not_estops(tmp_path):
-    # Run B-2: zeros commanded all along in the NORMAL order (F0 then F1).
+    # Run B-2: zeros commanded all along in the NORMAL order (pos then FF).
     lines: list[str] = []
     for i in range(10):
         lines += normal_write(1.0 + i * 0.002, ZERO44)
@@ -458,8 +461,41 @@ def test_other_hand_traffic_is_ignored(tmp_path):
     assert bus.req == 20
 
 
+def test_fixtures_put_the_ff_frame_on_idx_2():
+    # The builders' ids as candump prints them — the FF frame is 0x4002 / 0x42.
+    write = normal_write(1.0, NONZERO44)
+    assert " 00004000##" in write[0] and " 00004002##" in write[1]
+    assert " 00000040##" in write[2] and " 00000042##" in write[3]
+    stop = estop(1.0)
+    assert " 00004002##" in stop[0] and " 00004000##" in stop[1]
+
+
+def test_ff_on_the_velocity_index_is_neither_a_write_nor_an_estop(tmp_path):
+    # A capture of firmware older than the 2026-11 frame-index table (FF on
+    # idx 1 — the velocity frame now): its pairs are not this host's pairs.
+    def old(lines: list[str]) -> list[str]:
+        return [
+            s.replace(" 00004002##", " 00004001##").replace(" 00000042##", " 00000041##")
+            for s in lines
+        ]
+
+    lines: list[str] = []
+    for i in range(5):
+        lines += normal_write(1.0 + i * 0.002, NONZERO44)
+        lines += req_resp(1.0005 + i * 0.002)
+    lines += estop(1.02)
+    now = bus_from(lines, tmp_path)
+    assert now.write_pairs == 5
+    assert len(now.rtt_cmd_echo_ms) == 5
+    assert now.estop is not None and now.estop_candidates == 1
+    then = bus_from(old(lines), tmp_path)
+    assert then.write_pairs == 0
+    assert then.rtt_cmd_echo_ms == []
+    assert then.estop is None and then.estop_candidates == 0
+
+
 def test_dlc0_command_pair_is_not_an_estop(tmp_path):
-    lines = good_bus_lines()[:-4] + [line(1.04, cmd_id(NODE, 1)), line(1.0401, cmd_id(NODE, 0))]
+    lines = good_bus_lines()[:-4] + [line(1.04, cmd_id(NODE, FF)), line(1.0401, cmd_id(NODE, 0))]
     bus = bus_from(lines, tmp_path)
     assert bus.estop is None
     assert bus.estop_candidates == 0
@@ -501,7 +537,7 @@ def test_none_mode_echo_timeout_not_evaluated_set_timeout_still_judged(tmp_path)
 def test_none_mode_estop_pair_passes_without_echoes(tmp_path):
     c = run_judge(tmp_path, comm=none_comm_stats(), lines=none_bus_lines())["e.estop"]
     assert c.verdict == PASS, c
-    assert "CMD F1 zeros -> CMD F0 zeros" in c.value
+    assert "CMD FF zeros -> CMD pos zeros" in c.value
     assert "0.100 ms" in c.value
     assert "both echoes" not in c.threshold
     # The same bus judged as an echo run is missing its echoes.
@@ -511,18 +547,18 @@ def test_none_mode_estop_pair_passes_without_echoes(tmp_path):
 def test_none_mode_estop_fails_on_wrong_order_or_late_f0_or_cmd_after(tmp_path):
     comm = none_comm_stats()
     head = none_bus_lines()[:-2]  # drop the E-Stop pair
-    # Wrong order: F0 zeros then F1 zeros is a normal write, not an E-Stop.
-    wrong = head + [line(1.04, cmd_id(NODE, 0), ZERO44), line(1.0401, cmd_id(NODE, 1), ZERO44)]
+    # Wrong order: pos zeros then FF zeros is a normal write, not an E-Stop.
+    wrong = head + [line(1.04, cmd_id(NODE, 0), ZERO44), line(1.0401, cmd_id(NODE, FF), ZERO44)]
     assert run_judge(tmp_path, comm=comm, lines=wrong)["e.estop"].verdict == FAIL
-    # F0 zeros 2.1 ms after F1 zeros: outside the window; 1.9 ms is inside.
+    # pos zeros 2.1 ms after FF zeros: outside the window; 1.9 ms is inside.
     for gap, verdict in ((0.0019, PASS), (0.0021, FAIL)):
-        pair = [line(1.04, cmd_id(NODE, 1), ZERO44), line(1.04 + gap, cmd_id(NODE, 0), ZERO44)]
+        pair = [line(1.04, cmd_id(NODE, FF), ZERO44), line(1.04 + gap, cmd_id(NODE, 0), ZERO44)]
         c = run_judge(tmp_path, comm=comm, lines=head + pair)["e.estop"]
         assert c.verdict == verdict, c
     # A command after the pair: the loop did not stop.
     after = none_bus_lines() + [
         line(2.0, cmd_id(NODE, 0), NONZERO44),
-        line(2.0001, cmd_id(NODE, 1), NONZERO44),
+        line(2.0001, cmd_id(NODE, FF), NONZERO44),
     ]
     c = run_judge(tmp_path, comm=comm, lines=after)["e.estop"]
     assert c.verdict == FAIL
@@ -543,7 +579,7 @@ def test_none_mode_report_rows(tmp_path):
     assert "CMD frame 0 -> last echo round trip" not in md
     assert "D42: 2 x T < period (nominal; no echo stage)" in md
     assert "includes the echo handling" not in md
-    assert "echo F1" not in md
+    assert "echo FF" not in md
     assert "NOT_EVALUATED(cmd_ack none: no echo stage)" in md
 
 
@@ -847,30 +883,30 @@ def hand_tx(
     """One comm cycle of `node` in row order: [CMD 0 · CMD 1] · REQ · [echoes] · RESP."""
     out: list[str] = []
     if write:
-        out += [line(t, cmd_id(node, 0), NONZERO44), line(t + 4e-5, cmd_id(node, 1), NONZERO44)]
+        out += [line(t, cmd_id(node, 0), NONZERO44), line(t + 4e-5, cmd_id(node, FF), NONZERO44)]
     out.append(line(t + 8e-5, req_id(node)))
     if write and echo:
         out += [
             line(t + 5e-4, echo_id(node, 0), NONZERO44),
-            line(t + 7.7e-4, echo_id(node, 1), NONZERO44),
+            line(t + 7.7e-4, echo_id(node, FF), NONZERO44),
         ]
     resp = [line(t + 4e-4 + 1.3e-4 * i, resp_id(node, i), "11" * 8) for i in range(3)]
     return out + (resp if complete else resp[:2])
 
 
 def two_hand_estop(t: float, with_echoes: bool = True) -> list[str]:
-    """OnLoopAborted: right F1 · F0 zeros, then left — echoes arrive after both pairs."""
+    """OnLoopAborted: right FF · pos zeros, then left — echoes arrive after both pairs."""
     out = [
-        line(t, cmd_id(RIGHT, 1), ZERO44),
+        line(t, cmd_id(RIGHT, FF), ZERO44),
         line(t + 4e-5, cmd_id(RIGHT, 0), ZERO44),
-        line(t + 2e-4, cmd_id(LEFT, 1), ZERO44),
+        line(t + 2e-4, cmd_id(LEFT, FF), ZERO44),
         line(t + 2.4e-4, cmd_id(LEFT, 0), ZERO44),
     ]
     if with_echoes:
         out += [
-            line(t + 5e-4, echo_id(RIGHT, 1), ZERO44),
+            line(t + 5e-4, echo_id(RIGHT, FF), ZERO44),
             line(t + 6e-4, echo_id(RIGHT, 0), ZERO44),
-            line(t + 7e-4, echo_id(LEFT, 1), ZERO44),
+            line(t + 7e-4, echo_id(LEFT, FF), ZERO44),
             line(t + 8e-4, echo_id(LEFT, 0), ZERO44),
         ]
     return out
@@ -951,7 +987,7 @@ def test_the_estop_echoes_after_the_cut_are_not_judged(tmp_path):
     o = overlap_of(two_hand_lines(n_ticks=2), tmp_path)
     assert o.violations == []
     assert o.estop_line is not None
-    assert set(o.estop_f1_t) == {"right", "left"}
+    assert set(o.estop_ff_t) == {"right", "left"}
 
 
 def test_one_hand_on_the_bus_reads_as_before(tmp_path):
@@ -1009,7 +1045,7 @@ def test_main_judges_one_hand_of_a_two_hand_session(tmp_path, capsys):
         assert "## G-5 verdict: **PASS**" in text
         assert "| `x.no_overlap` | PASS |" in text
         assert "| < 25 |" in text  # silent REQ budget at 250 Hz
-        assert "E-Stop zero-write gap, right CMD F1 -> left CMD F1 | +0.200 ms" in text
+        assert "E-Stop zero-write gap, right CMD FF -> left CMD FF | +0.200 ms" in text
         payload = json.loads(out_json.read_text())
         assert payload["overlap"]["violations"] == 0
         assert payload["thresholds"]["silent_req_max"] == 25
@@ -1034,9 +1070,9 @@ def bcast_tick(
     if write:
         out += [
             line(t, cmd_id(RIGHT, 0), data_hex),
-            line(t + 4e-5, cmd_id(RIGHT, 1), data_hex),
+            line(t + 4e-5, cmd_id(RIGHT, FF), data_hex),
             line(t + 8e-5, cmd_id(LEFT, 0), data_hex),
-            line(t + 1.2e-4, cmd_id(LEFT, 1), data_hex),
+            line(t + 1.2e-4, cmd_id(LEFT, FF), data_hex),
         ]
     out.append(line(t + 1.6e-4, BCAST_REQ))
     nxt = {RIGHT: 0, LEFT: 0}
@@ -1245,7 +1281,7 @@ def test_estop_before_the_left_resp_is_cut_not_judged(tmp_path):
 
 
 def test_left_zero_writes_with_broadcast_reqs_are_not_estops(tmp_path):
-    # Every tick writes zeros (F0 F1 | REQ(0xFF) | F0 F1 ...) and no E-Stop follows.
+    # Every tick writes zeros (pos FF | REQ(0xFF) | pos FF ...) and no E-Stop follows.
     lines: list[str] = []
     for i in range(10):
         lines += bcast_tick(1.0 + i * 0.004, write=True, data_hex=ZERO44)
@@ -1256,7 +1292,7 @@ def test_left_zero_writes_with_broadcast_reqs_are_not_estops(tmp_path):
     assert left.write_pairs == 10
     o = analyse_overlap(frames, "broadcast")
     assert o.estop_line is None
-    assert o.estop_f1_t == {}
+    assert o.estop_ff_t == {}
     # Read per hand, the same bus has no REQ between the pairs: E-Stop look-alikes.
     assert analyse_bus(frames, LEFT).estop_candidates == 9
 

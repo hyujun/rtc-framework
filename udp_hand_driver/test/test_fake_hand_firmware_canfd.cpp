@@ -28,6 +28,10 @@ using Motors = std::array<float, kNumHandMotors>;
 using Frames = std::array<FakeHandFirmware::CanFdFrame, kNumRespFrames>;
 using namespace std::chrono_literals;
 
+// CMD frame indices, spelled as numbers: these tests pin the wire (the
+// firmware's frame-index table), not the header's enum.
+constexpr uint8_t kFf = 2;
+
 constexpr int kBaseMin = 1000;
 constexpr int kBaseMax = 2000;
 constexpr double kNoiseStddev = 5.0;
@@ -59,7 +63,7 @@ Motors Ramp(float start, float step) {
   return m;
 }
 
-// 64-byte CMD Frame 0 / 1 payload carrying `values`, reserved bytes zero.
+// 64-byte CMD position / feedforward payload carrying `values`, reserved bytes zero.
 Bytes CmdBytes(const Motors& values) {
   Bytes b{};
   SerializeFrame(MakeCmdMotorFrame(values), b.data());
@@ -161,9 +165,9 @@ TEST(FakeHandFirmwareCanFd, CmdFrame0_WithSocketEffFlag_StillAccepted) {
   EXPECT_FLOAT_EQ(fw.target()[0], 0.5f);
 }
 
-// ── CMD Frame 1: echo + keep, no model effect (D50) ─────────────────────────
+// ── CMD feedforward (idx 2): echo + keep, no model effect (D50) ─────────────
 
-TEST(FakeHandFirmwareCanFd, CmdFrame1_EchoesVerbatim_KeepsFeedforward_ModelUnchanged) {
+TEST(FakeHandFirmwareCanFd, CmdFeedforward_EchoesVerbatim_KeepsFeedforward_ModelUnchanged) {
   FakeHandFirmware fw(DefaultConfig());
   Frames out{};
   ASSERT_EQ(SendCmd(fw, kNodeRightHand, 0, CmdBytes(Ramp(1.0f, 0.0f)), out), 1u);
@@ -173,17 +177,17 @@ TEST(FakeHandFirmwareCanFd, CmdFrame1_EchoesVerbatim_KeepsFeedforward_ModelUncha
 
   const Motors ff = Ramp(0.05f, 0.01f);
   const Bytes cmd = CmdBytes(ff);
-  ASSERT_EQ(SendCmd(fw, kNodeRightHand, 1, cmd, out), 1u);
-  ExpectBareId(out[0], EchoId(kNodeRightHand, 1));
+  ASSERT_EQ(SendCmd(fw, kNodeRightHand, kFf, cmd, out), 1u);
+  ExpectBareId(out[0], 0x00000042u);
   EXPECT_EQ(std::memcmp(out[0].data.data(), cmd.data(), kFrameLen), 0);
 
   EXPECT_EQ(fw.last_feedforward(), ff);
   EXPECT_EQ(fw.feedforward_count(), 1u);
-  EXPECT_EQ(fw.pos(), pos_before) << "Frame 1 must not step the model";
+  EXPECT_EQ(fw.pos(), pos_before) << "the feedforward frame must not step the model";
   EXPECT_EQ(fw.vel(), vel_before);
   EXPECT_EQ(fw.target(), target_before);
 
-  ASSERT_EQ(SendCmd(fw, kNodeRightHand, 1, CmdBytes(Ramp(0.0f, 0.0f)), out), 1u);
+  ASSERT_EQ(SendCmd(fw, kNodeRightHand, kFf, CmdBytes(Ramp(0.0f, 0.0f)), out), 1u);
   EXPECT_EQ(fw.feedforward_count(), 2u);
   EXPECT_FLOAT_EQ(fw.last_feedforward()[9], 0.0f);
 }
@@ -208,14 +212,14 @@ TEST(FakeHandFirmwareCanFd, CmdFrame0_NoneAck_AppliesWithoutEcho) {
   EXPECT_EQ(SendReq(fw, kNodeRightHand, out), kNumRespFrames);
 }
 
-TEST(FakeHandFirmwareCanFd, CmdFrame1_NoneAck_KeepsFeedforwardWithoutEcho) {
+TEST(FakeHandFirmwareCanFd, CmdFeedforward_NoneAck_KeepsFeedforwardWithoutEcho) {
   FakeHandFirmware::Config cfg = DefaultConfig();
   cfg.cmd_ack = CmdAck::kNone;
   FakeHandFirmware fw(cfg);
   const Motors ff = Ramp(0.05f, 0.01f);
   Frames out{};
 
-  EXPECT_EQ(SendCmd(fw, kNodeRightHand, 1, CmdBytes(ff), out), 0u);
+  EXPECT_EQ(SendCmd(fw, kNodeRightHand, kFf, CmdBytes(ff), out), 0u);
   EXPECT_EQ(out[0].len, 0u) << "no echo written";
   EXPECT_EQ(fw.last_feedforward(), ff);
   EXPECT_EQ(fw.feedforward_count(), 1u);
@@ -398,17 +402,24 @@ TEST(FakeHandFirmwareCanFd, SameSeed_SameBurst) {
   EXPECT_NE(fa2[2].data, fa[2].data);
 }
 
-// ── Drops: Frame 2 / 3, error frames, bad length, unknown type (D45) ────────
+// ── Drops: other CMD indices, error frames, bad length, unknown type (D45) ──
 
-TEST(FakeHandFirmwareCanFd, CmdFrame2And3_NoEcho_NoModel_Counted) {
+// Every CMD index but position (0) and feedforward (2): no echo, no model,
+// counted. Index 1 — velocity, between the two, and the feedforward's index
+// before the firmware's 2026-11 table — must not be taken for a feedforward.
+TEST(FakeHandFirmwareCanFd, CmdOtherIndices_NoEcho_NoModel_Counted) {
   FakeHandFirmware fw(DefaultConfig());
   Frames out{};
   const Bytes cmd = CmdBytes(Ramp(0.7f, 0.0f));
-  EXPECT_EQ(SendCmd(fw, kNodeRightHand, static_cast<uint8_t>(CmdFrame::kTargetCurrent), cmd, out),
-            0u);
-  EXPECT_EQ(SendCmd(fw, kNodeRightHand, static_cast<uint8_t>(CmdFrame::kHandSide), cmd, out), 0u);
-  EXPECT_EQ(SendCmd(fw, kNodeRightHand, 17, cmd, out), 0u);
-  EXPECT_EQ(fw.canfd_counters().cmd_ignored, 3u);
+  for (const uint8_t idx : {1, 3, 4, 5, 6, 10, 17}) {
+    out[0].len = 0;
+    EXPECT_EQ(SendCmd(fw, kNodeRightHand, idx, cmd, out), 0u) << "idx " << int{idx};
+    EXPECT_EQ(out[0].len, 0u) << "idx " << int{idx};
+  }
+  EXPECT_EQ(fw.canfd_counters().cmd_ignored, 7u);
+  // An ignored index is not a command, so its length is not judged either.
+  EXPECT_EQ(Send(fw, CmdId(kNodeRightHand, 1), cmd.data(), 0, out), 0u);
+  EXPECT_EQ(fw.canfd_counters().cmd_ignored, 8u);
   EXPECT_EQ(fw.canfd_counters().bad_length, 0u);
   EXPECT_FLOAT_EQ(fw.target()[0], 0.0f);
   EXPECT_FLOAT_EQ(fw.pos()[0], 0.0f);
@@ -433,7 +444,7 @@ TEST(FakeHandFirmwareCanFd, CmdBadLength_Dropped_Counted) {
   Frames out{};
   const Bytes cmd = CmdBytes(Ramp(0.7f, 0.0f));
   EXPECT_EQ(Send(fw, CmdId(kNodeRightHand, 0), cmd.data(), 8, out), 0u);
-  EXPECT_EQ(Send(fw, CmdId(kNodeRightHand, 1), cmd.data(), 0, out), 0u);
+  EXPECT_EQ(Send(fw, CmdId(kNodeRightHand, kFf), cmd.data(), 0, out), 0u);
   EXPECT_EQ(Send(fw, CmdId(kNodeRightHand, 0), nullptr, kFrameLen, out), 0u);
   EXPECT_EQ(fw.canfd_counters().bad_length, 3u);
   EXPECT_FLOAT_EQ(fw.target()[0], 0.0f);

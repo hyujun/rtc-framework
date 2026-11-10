@@ -126,12 +126,12 @@ ros2 topic echo /hand/calibration/status
 | 응답 MODE byte 검증 | strict | off (펌웨어가 임의값을 echo) | 없음 |
 | `motor_states` | 발행 | 미발행 (motor-space read 스킵) | 미발행 |
 | `sensor_states` | baro · tof + F/T `f` / `u` | `f={fx,fy,fz}` 만 (Lx · Ly · Temp 는 디코드만) | `f={fx,fy,fz}` + `contact_flag` |
-| `feedforward` | 무시 | 무시 | 전송 (Frame 1, `feedforward_kt` 로 Nm → A) |
+| `feedforward` | 무시 | 무시 | 전송 (CMD idx 2, `feedforward_kt` 로 Nm → A) |
 | 통신 모드 | individual / bulk | **bulk 전용** | **bulk 전용** |
 
 `1b` · `2` + `individual` 조합은 `on_configure` 가 FAILURE 를 반환한다. `2` 는 그 밖에도 `can_interface` 가 없을 때 (`loopmodel` 제외), `feedforward_kt` 가 10개가 아니거나 양수가 아닐 때, `cmd_ack` 가 `echo` · `none` 이 아닐 때, 명시한 `req_mode broadcast` 가 `cmd_ack echo` 와 함께일 때, `per_hand` 에서 `손 수 × 2 × recv_timeout_ms` 가 comm 슬롯 (`1000 / loop_rate_hz × comm_decimation` ms) 을 넘을 때, `broadcast` 에서 `0 < broadcast_tail_guard_ms < 슬롯` 이 아닐 때 거부한다. YAML 의 값은 반드시 `"2"` 로 따옴표를 친다 (정수는 파라미터 선언에서 예외).
 
-`2` 의 `JointCommand.feedforward` 는 `values` 와 크기가 같을 때만 같은 이름 맵으로 재정렬되어 전송되고 (joint offset 은 적용하지 않고 `joint_direction_signs` 는 적용), 비어 있으면 0, 그 외 크기면 0 + 경고 + `feedforward_size_mismatch` 카운터, NaN · ±inf 항목은 0 + `feedforward_nonfinite` 카운터다. `command_type` · `kp` · `kd` 는 소비하지 않는다. wire 포맷의 SSoT 는 [hand_canfd_packets.hpp](include/udp_hand_driver/hand_canfd_packets.hpp) 주석이다.
+`2` 의 `JointCommand.feedforward` 는 `values` 와 크기가 같을 때만 같은 이름 맵으로 재정렬되어 전송되고 (joint offset 은 적용하지 않고 `joint_direction_signs` 는 적용), 비어 있으면 0, 그 외 크기면 0 + 경고 + `feedforward_size_mismatch` 카운터, NaN · ±inf 항목은 0 + `feedforward_nonfinite` 카운터다. `command_type` · `kp` · `kd` 는 소비하지 않는다. wire 포맷의 SSoT 는 [hand_canfd_packets.hpp](include/udp_hand_driver/hand_canfd_packets.hpp) 주석이다. 펌웨어는 FF 가 CMD idx 2 인 판이어야 한다 (헤더 주석).
 
 ### 두 손 (`hand_sides`)
 

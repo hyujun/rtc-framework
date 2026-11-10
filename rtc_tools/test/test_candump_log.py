@@ -35,6 +35,11 @@ def test_right_hand_ids_match_the_header_constants():
     assert cmd_id(RIGHT, 1) == 0x00004001
     assert echo_id(RIGHT, 0) == 0x00000040
     assert echo_id(RIGHT, 1) == 0x00000041
+    # The feedforward frame (CMD idx 2 since the firmware's 2026-11 table).
+    assert cmd_id(RIGHT, 2) == 0x00004002
+    assert cmd_id(LEFT, 2) == 0x00008002
+    assert echo_id(RIGHT, 2) == 0x00000042
+    assert echo_id(LEFT, 2) == 0x00000082
     assert req_id(RIGHT) == 0x00404000
     assert resp_id(RIGHT, 2) == 0x00800042
 
