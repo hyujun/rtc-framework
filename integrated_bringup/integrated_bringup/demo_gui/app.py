@@ -10,7 +10,8 @@ their own modules.
 - Gain Apply / Load  → AsyncParameterClient on the active controller's
                        LifecycleNode (params declared in DeclareGainParameters
                        in each demo's source file). Read-only caps
-                       (*_max_traj_velocity) are skipped on Apply.
+                       (*_max_traj_velocity) take no typing and are skipped on
+                       Apply; a refusal's reason is shown in the panel.
 - Force-PI grasp     → /<active>/grasp_command srv (rtc_msgs/GraspCommand)
 - Grasp mode         → `grasp_controller_type` parameter, read back for the
                        Grasp tab readout and writable via Set Mode; the
@@ -136,7 +137,9 @@ from .config import (
     grasp_command_enabled,
     grasp_mode_fg,
     preset_hand_targets,
+    read_only_gain_rows,
     register_scalar_gain_schema,
+    superseded_default_presets,
     target_panel_states,
 )
 from .discovery import RobotProfile, RobotShape, short_joint_labels
@@ -212,6 +215,7 @@ from .latch_clear import (
     summarize_reply,
 )
 from .param_readout import CachedParamReadout
+from .preset_speed import describe_plan, hand_speed_params, plan_hand_speed
 from .preset_toggle import (
     PresetToggleState,
     format_keysym,
@@ -282,6 +286,22 @@ def _toggle_stage(method):
             raise
 
     return wrapper
+
+
+# A preset's hand goal waits for the speed set this long before it is sent
+# anyway — a parameter service that never answers must not hold the goal (or the
+# toggle shortcut, which is released by the send's completion) for ever.
+PRESET_SPEED_TIMEOUT_MS = 1000
+
+
+def _set_entry_text(entry, text: str) -> None:
+    """Replace an Entry's text whatever its state — a read-only Entry ignores
+    insert/delete, so it is opened for the write and put back."""
+    state = str(entry.cget("state"))
+    entry.config(state="normal")
+    entry.delete(0, tk.END)
+    entry.insert(0, text)
+    entry.config(state=state)
 
 
 def _result_fg(ok: bool | None) -> str:
@@ -1083,16 +1103,28 @@ class DemoControllerGUI(Node):
     # ---- Preset persistence -----------------------------------------------------
 
     def _load_presets(self) -> dict:
+        scope = self._profile.preset_token()
         try:
             with open(self._preset_path) as f:
                 data = json.load(f)
             if isinstance(data, dict) and data:
-                return data
+                # A file that is exactly the DoF roster, on a profile that has
+                # since got its own, was never edited: replace it. Anything the
+                # operator saved differs and is kept.
+                own = superseded_default_presets(data, self._shape.hand_dof, scope)
+                if own is None:
+                    return data
+                self.get_logger().info(
+                    f"{self._preset_path} held the generic default presets — "
+                    f"replaced by the '{scope}' defaults"
+                )
+                self._save_presets_to_file(own)
+                return own
         except (FileNotFoundError, json.JSONDecodeError):
             pass
-        # Write robot-appropriate defaults (10-DoF UR5e hand vs 16-DoF LEAP)
-        # so iiwa7_leap gets a length-matched, usable preset set.
-        defaults = default_presets_for(self._shape.hand_dof)
+        # Write robot-appropriate defaults (the profile's own roster, else by
+        # hand DoF) so every robot starts with a length-matched, usable set.
+        defaults = default_presets_for(self._shape.hand_dof, scope)
         self._save_presets_to_file(defaults)
         return defaults
 
@@ -2200,6 +2232,20 @@ class DemoControllerGUI(Node):
             style="Switch.TButton",
             command=self._request_load_gains,
         ).pack(side="left", padx=4)
+        # Outcome of the last Apply / Load: a refusal's reason is shown here,
+        # not only in the log.
+        self._gains_result_var = tk.StringVar(value="")
+        self._gains_result_label = tk.Label(
+            self._gains_frame,
+            textvariable=self._gains_result_var,
+            bg="#1e1e2e",
+            fg=GRASP_MODE_FG_UNKNOWN,
+            font=("Segoe UI", 7),
+            anchor="w",
+            wraplength=900,
+            justify="left",
+        )
+        self._gains_result_label.pack(fill="x", padx=6)
 
         ttk.Separator(self._gains_frame, orient="horizontal").pack(fill="x", pady=(1, 2))
         tk.Label(
@@ -5001,7 +5047,9 @@ class DemoControllerGUI(Node):
                 box["scalar_in_row"] += 1
                 return frm
 
-            for label, size, defaults, is_bool, group in defs:
+            for (label, size, defaults, is_bool, group), row_read_only in zip(
+                defs, read_only_gain_rows(ctrl_idx), strict=True
+            ):
                 in_grasp_tab = group in GAIN_GROUP_PARENT_GRASP
 
                 if size > 1:
@@ -5021,9 +5069,13 @@ class DemoControllerGUI(Node):
 
                 # ---- Editable scalar ----
                 frm = _next_scalar_slot(group_boxes[group])
-                tk.Label(frm, text=label, bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8)).pack(
-                    anchor="w"
-                )
+                tk.Label(
+                    frm,
+                    text=f"{label} (read-only)" if row_read_only else label,
+                    bg="#1e1e2e",
+                    fg="#585b70" if row_read_only else "#cdd6f4",
+                    font=("Segoe UI", 8),
+                ).pack(anchor="w")
                 if is_bool:
                     var = tk.IntVar(value=int(defaults[0]))
                     ttk.Checkbutton(frm, variable=var).pack(anchor="w")
@@ -5031,6 +5083,10 @@ class DemoControllerGUI(Node):
                 else:
                     ent = ttk.Entry(frm, width=8, justify="center")
                     ent.insert(0, str(defaults[0]))
+                    if row_read_only:
+                        # A cap the controller declares read-only: Load Gain
+                        # fills it, Apply never sends it, so it takes no typing.
+                        ent.config(state="readonly")
                     ent.pack()
                     entries.append([ent])
                 is_bool_list.append(is_bool)
@@ -5105,22 +5161,50 @@ class DemoControllerGUI(Node):
         self._applied_label_widgets = panel["applied_labels"]
         self._active_gains_ctrl = ctrl_idx
 
-    def _show_applied_gains(self, ctrl: str, rows: list[list]) -> None:
-        """Write ``rows`` (one list of raw entry values per gain row, as they
-        were when Apply was clicked) into ``ctrl``'s "Currently Applied" mirror."""
+    def _show_applied_gains(self, ctrl: str, rows: list[list | None]) -> None:
+        """Write ``rows`` (one list of raw values per gain row — the entries as
+        they were when Apply was clicked, or what Load Gain read) into ``ctrl``'s
+        "Currently Applied" mirror. A ``None`` row was not sent (a read-only
+        cap) and keeps what the mirror shows."""
         panel = self._gains_panels.get(ctrl)
         if panel is None:
             return
         for values, applied_labels, is_bool in zip(
             rows, panel["applied_labels"], panel["is_bool"], strict=False
         ):
+            if values is None:
+                continue
             for raw, lbl in zip(values, applied_labels, strict=False):
                 if is_bool:
-                    val = int(raw)
+                    val = int(float(raw))
                     lbl.config(text="ON" if val else "OFF", fg="#a6e3a1" if val else "#f38ba8")
                 else:
                     with contextlib.suppress(ValueError):
                         lbl.config(text=f"{float(raw):.4f}", fg="#a6e3a1")
+
+    def _set_gains_result(self, text: str, ok: bool | None) -> None:
+        """Write the Gains panel's outcome line. Tk thread only."""
+        if not hasattr(self, "_gains_result_var"):
+            return  # panel not built yet (startup ordering)
+        self._gains_result_var.set(text)
+        self._gains_result_label.config(fg=_result_fg(ok))
+
+    def _show_param_value(self, ctrl: str, param: str, value: float) -> None:
+        """Show a scalar ``value`` the controller is known to hold for ``param``
+        — in its entry and in the applied mirror — without a re-read that would
+        overwrite the other rows' unapplied edits. Tk thread only."""
+        panel = getattr(self, "_gains_panels", {}).get(ctrl)
+        if panel is None:
+            return
+        dispatch = GAIN_PARAM_DISPATCH.get(ctrl, {})
+        for (label, size, _defaults, is_bool, _group), widgets, applied in zip(
+            GAIN_DEFS.get(ctrl, []), panel["entries"], panel["applied_labels"], strict=False
+        ):
+            if size != 1 or is_bool or dispatch.get(label, ("",))[0] != param:
+                continue
+            _set_entry_text(widgets[0], f"{value:.4f}")
+            for lbl in applied:
+                lbl.config(text=f"{value:.4f}", fg="#a6e3a1")
 
     # ---- Button handlers -----------------------------------------------------
 
@@ -5355,6 +5439,7 @@ class DemoControllerGUI(Node):
         client = self._get_param_client(ctrl)
         if not client.services_are_ready():
             self.get_logger().error(f"parameter services for /{ctrl} unavailable")
+            self._set_gains_result(f"load: parameter services for /{ctrl} unavailable", False)
             return
 
         future = client.get_parameters(param_names)
@@ -5364,6 +5449,7 @@ class DemoControllerGUI(Node):
                 resp = fut.result()
             except Exception as exc:
                 self.get_logger().error(f"get_parameters exception: {exc}")
+                self.root.after(0, self._set_gains_result, f"load failed: {exc}", False)
                 return
             # resp is rcl_interfaces.srv.GetParameters.Response → values list.
             flat: list[float] = []
@@ -5388,7 +5474,7 @@ class DemoControllerGUI(Node):
                     flat.append(p_value.double_value)
                 else:
                     flat.append(0.0)
-            self.root.after(0, self._fill_gains_from_data, flat)
+            self.root.after(0, self._fill_gains_from_data, ctrl, flat)
             if src_idx is not None and src_idx < len(resp.values):
                 src_val = resp.values[src_idx].string_value
                 if src_val in HAND_TAUFF_SOURCES:
@@ -5398,23 +5484,34 @@ class DemoControllerGUI(Node):
         future.add_done_callback(_on_get_done)
         self.get_logger().info(f"Requesting current parameters from /{ctrl}")
 
-    def _fill_gains_from_data(self, data: list[float]):
+    def _fill_gains_from_data(self, ctrl: str, data: list[float]):
+        """Load Gain's answer: fill ``ctrl``'s entries (the controller the read
+        was sent to, whichever panel is on screen by now) and its applied
+        mirror — what was read IS what is applied, read-only caps included."""
+        panel = self._gains_panels.get(ctrl)
+        if panel is None:
+            return
         idx = 0
-        for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool, strict=False):
+        rows: list[list | None] = []
+        for widgets, is_bool in zip(panel["entries"], panel["is_bool"], strict=False):
+            row = []
             for w in widgets:
                 if idx >= len(data):
                     break
                 if is_bool:
                     w.set(1 if data[idx] > 0.5 else 0)
                 else:
-                    w.delete(0, tk.END)
-                    w.insert(0, f"{data[idx]:.4f}")
+                    _set_entry_text(w, f"{data[idx]:.4f}")
+                row.append(data[idx])
                 idx += 1
             else:
+                rows.append(row)
                 continue
             break
+        self._show_applied_gains(ctrl, rows)
+        self._set_gains_result(f"loaded {len(data)} values from /{ctrl}", True)
 
-        ctrl_name = self._catalog.display_label(self.selected_ctrl.get())
+        ctrl_name = self._catalog.display_label(ctrl)
 
         # Sync grasp target force entry from loaded gains.
         # Layout tail (see CLAUDE.md): [..., grasp_command, grasp_target_force].
@@ -5499,25 +5596,36 @@ class DemoControllerGUI(Node):
 
         if not params:
             self.get_logger().warn("Nothing to apply (all entries read-only?)")
+            self._set_gains_result("nothing to apply (every row is read-only)", False)
             return
 
         client = self._get_param_client(ctrl)
         if not client.services_are_ready():
             self.get_logger().error(f"parameter services for /{ctrl} unavailable")
+            self._set_gains_result(f"apply: parameter services for /{ctrl} unavailable", False)
             return
 
         # What the entries hold at the click, per row. The mirror is written
         # from this once the set is accepted — not from the entries as they are
         # by then, and into THIS controller's panel whichever one is on screen.
-        sent_rows = [[w.get() for w in widgets] for widgets in self._gain_entries]
+        # A read-only row was not sent: None, so the mirror never shows a cap
+        # the controller does not hold.
+        sent_rows = [
+            None if row_read_only else [w.get() for w in widgets]
+            for widgets, row_read_only in zip(
+                self._gain_entries, read_only_gain_rows(ctrl), strict=False
+            )
+        ]
         future = client.set_parameters_atomically(params)
         ctrl_label = self._catalog.display_label(ctrl)
+        self._set_gains_result("applying …", None)
 
         def _on_set_done(fut):
             try:
                 resp = fut.result()
             except Exception as exc:
                 self.get_logger().error(f"set_parameters exception: {exc}")
+                self.root.after(0, self._set_gains_result, f"apply failed: {exc}", False)
                 return
             if resp.result.successful:
                 self.get_logger().info(f"Applied {len(params)} gains for {ctrl_label}")
@@ -5525,9 +5633,19 @@ class DemoControllerGUI(Node):
                 # a mirror updated at the click would show the refused values
                 # under "Currently Applied".
                 self.root.after(0, self._show_applied_gains, ctrl, sent_rows)
+                self.root.after(
+                    0, self._set_gains_result, f"applied {len(params)} parameters", True
+                )
             else:
                 self.get_logger().error(
                     f"set_parameters_atomically rejected: {resp.result.reason}"
+                )
+                # Atomic: one refused parameter means none was applied.
+                self.root.after(
+                    0,
+                    self._set_gains_result,
+                    f"refused, nothing applied: {resp.result.reason}",
+                    False,
                 )
 
         future.add_done_callback(_on_set_done)
@@ -6021,73 +6139,150 @@ class DemoControllerGUI(Node):
                 f"Re-create this preset for the current robot."
             )
             return
-        grasp_time = data.get("grasp_time", 1.0)
+        grasp_time = float(data.get("grasp_time", 1.0))
         positions_rad = [math.radians(d) for d in positions_deg]
 
-        # Calculate required hand_trajectory_speed from grasp_time
         max_dist = 0.0
         for target, current in zip(positions_rad, self.current_hand_positions, strict=False):
             max_dist = max(max_dist, abs(target - current))
 
-        if max_dist > 0.001 and grasp_time > 0.01:
-            hand_traj_speed = max_dist / grasp_time
-        else:
-            hand_traj_speed = 1.0
-
-        # Update only the hand_trajectory_speed parameter on the active
-        # controller. set_parameters_atomically with a single typed Parameter
-        # is cheaper + more transparent than the legacy whole-gains-array
-        # publish that used `_HAND_TRAJ_SPEED_IDX` to find the right slot.
-        ctrl = self.selected_ctrl.get()
-        client = self._get_param_client(ctrl)
-        if client.services_are_ready():
-            param = Parameter(
-                name="hand_trajectory_speed",
-                type_=Parameter.Type.DOUBLE,
-                value=float(hand_traj_speed),
-            )
-            future = client.set_parameters_atomically([param])
-
-            def _on_done(fut):
-                try:
-                    resp = fut.result()
-                except Exception as exc:
-                    self.get_logger().error(f"hand_trajectory_speed set exception: {exc}")
-                    return
-                if resp.result.successful:
-                    self.get_logger().info(
-                        f"Preset '{name}': hand_trajectory_speed="
-                        f"{hand_traj_speed:.4f} rad/s "
-                        f"(grasp_time={grasp_time:.2f}s, max_dist={max_dist:.4f})"
-                    )
-                else:
-                    self.get_logger().error(
-                        f"set hand_trajectory_speed rejected: {resp.result.reason}"
-                    )
-
-            future.add_done_callback(_on_done)
-        else:
-            self.get_logger().warn(
-                f"parameter services for /{ctrl} unavailable — hand_trajectory_speed not updated"
-            )
-
-        # Publish hand target
         hand_msg = RobotTarget()
         hand_msg.goal_type = "joint"
         hand_msg.joint_names = list(self._shape.hand_motor_names)
         hand_msg.joint_target = positions_rad
-        if self.hand_cmd_pub is None:
-            self.get_logger().warn("hand_cmd_pub not yet bound — waiting for active controller")
-        elif not self._publish_hand(hand_msg, f"Preset '{name}'"):
-            self.get_logger().info(
-                f"Sent preset '{name}' ({data.get('type', 'open')}): "
-                f"{[f'{v:.2f}' for v in positions_deg]} deg"
+
+        # The hand publisher serves the ACTIVE controller, so that is the one
+        # whose speed the goal will run at.
+        ctrl = self._active_ctrl or selected_ctrl
+
+        def _send_hand_goal() -> None:
+            """Publish the hand goal. Tk thread; runs once the speed set has
+            answered (or was skipped), so everything that could have changed
+            while it was in flight is asked again."""
+            published = False
+            if self.estop_active:
+                self.get_logger().warn(f"Preset '{name}' withheld — E-STOP is active")
+            elif (self._active_ctrl or self.selected_ctrl.get()) != ctrl:
+                self.get_logger().warn(
+                    f"Preset '{name}' withheld — the active controller changed while the "
+                    "hand speed was being set"
+                )
+            elif self.hand_cmd_pub is None:
+                self.get_logger().warn(
+                    "hand_cmd_pub not yet bound — waiting for active controller"
+                )
+            elif not self._publish_hand(hand_msg, f"Preset '{name}'"):
+                published = True
+                self.get_logger().info(
+                    f"Sent preset '{name}' ({data.get('type', 'open')}): "
+                    f"{[f'{v:.2f}' for v in positions_deg]} deg"
+                )
+                # Also update the hand target entries on the Control tab
+                self._set_hand_target_entries(positions_rad)
+            if on_complete is not None:
+                on_complete(published)
+
+        self._set_hand_speed_then(ctrl, max_dist, grasp_time, f"Preset '{name}'", _send_hand_goal)
+
+    def _set_hand_speed_then(
+        self, ctrl: str, max_dist: float, grasp_time: float, what: str, then
+    ) -> None:
+        """Set ``ctrl``'s hand trajectory speed for a move of ``max_dist`` [rad]
+        in ``grasp_time`` [s], then call ``then()`` on the Tk thread — exactly
+        once, whatever the parameter services do.
+
+        The goal used to be published while the set was still in flight, so the
+        trajectory could be planned at the previous speed. The cap is read
+        first: every controller refuses a speed above its read-only cap, and a
+        refused set leaves the previous speed in force.
+        """
+        names = hand_speed_params(ctrl, GAIN_PARAM_DISPATCH, HAND_JOINT_OWNERS)
+        if names is None:
+            then()
+            return
+        speed_param, cap_param = names
+        client = self._get_param_client(ctrl)
+        if not client.services_are_ready():
+            self.get_logger().warn(
+                f"{what}: parameter services for /{ctrl} unavailable — {speed_param} not "
+                "updated, the goal runs at the controller's current speed"
+            )
+            then()
+            return
+
+        state = {"done": False, "timer": None}
+
+        def _finish() -> None:
+            if state["done"]:
+                return
+            state["done"] = True
+            if state["timer"] is not None:
+                self.root.after_cancel(state["timer"])
+            then()
+
+        def _on_timeout() -> None:
+            state["timer"] = None
+            if not state["done"]:
+                self.get_logger().warn(
+                    f"{what}: /{ctrl} did not answer the {speed_param} set within "
+                    f"{PRESET_SPEED_TIMEOUT_MS} ms — the goal runs at the controller's "
+                    "current speed"
+                )
+            _finish()
+
+        state["timer"] = self.root.after(PRESET_SPEED_TIMEOUT_MS, _on_timeout)
+
+        def _after_set(plan, ok: bool, reason: str) -> None:
+            if state["done"]:
+                return
+            if ok:
+                self.get_logger().info(
+                    f"{what}: {speed_param} {describe_plan(plan, grasp_time, max_dist)}"
+                )
+                self._show_param_value(ctrl, speed_param, plan.speed)
+            else:
+                self.get_logger().error(
+                    f"{what}: set {speed_param}={plan.speed:.4f} refused ({reason}) — the "
+                    "goal runs at the controller's current speed"
+                )
+            _finish()
+
+        def _after_cap(cap: float | None) -> None:
+            if state["done"]:
+                return
+            if cap is None:
+                self.get_logger().warn(
+                    f"{what}: /{ctrl} {cap_param} could not be read — speed sent uncapped"
+                )
+            else:
+                self._show_param_value(ctrl, cap_param, cap)
+            plan = plan_hand_speed(max_dist, grasp_time, cap)
+            future = client.set_parameters_atomically(
+                [Parameter(name=speed_param, type_=Parameter.Type.DOUBLE, value=plan.speed)]
             )
 
-        # Also update the hand target entries on the Control tab
-        self._set_hand_target_entries(positions_rad)
-        if on_complete is not None:
-            on_complete(self.hand_cmd_pub is not None)
+            def _on_set_done(fut):
+                try:
+                    result = fut.result().result
+                    ok, reason = bool(result.successful), str(result.reason)
+                except Exception as exc:  # noqa: BLE001 — surfaced in the log
+                    ok, reason = False, str(exc)
+                self.root.after(0, _after_set, plan, ok, reason)
+
+            future.add_done_callback(_on_set_done)
+
+        def _on_cap_done(fut):
+            cap = None
+            try:
+                values = fut.result().values
+                # ParameterType 3 = double; an undeclared name answers empty.
+                if len(values) == 1 and values[0].type == 3:
+                    cap = float(values[0].double_value)
+            except Exception as exc:  # noqa: BLE001 — surfaced in the log
+                self.get_logger().warn(f"{what}: get {cap_param} failed: {exc}")
+            self.root.after(0, _after_cap, cap)
+
+        client.get_parameters([cap_param]).add_done_callback(_on_cap_done)
 
     def _confirm_preset_overwrite(self, name: str) -> bool:
         """True if saving under ``name`` may proceed — either the name is new,
