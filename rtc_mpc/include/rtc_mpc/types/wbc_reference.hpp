@@ -71,7 +71,7 @@ struct WbcReference {
 };
 
 static_assert(std::is_trivially_copyable_v<WbcReference>,
-              "WbcReference must be trivially copyable (SeqLock / memcpy contract)");
+              "WbcReference must be trivially copyable (SeqLock byte-copy contract)");
 
 }  // namespace rtc::mpc
 

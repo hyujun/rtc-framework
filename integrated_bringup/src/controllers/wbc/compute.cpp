@@ -977,7 +977,7 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
     ws.qp_fail_count = dyn_qp_fail_count_;
     ws.tsid_solve_us = static_cast<float>(tsid_output_.solve_time_us);
   }
-  // SeqLock store = two atomic stores + memcpy (wait-free, RT-safe).
+  // SeqLock store = wait-free copy of the payload (RT-safe).
   // Read by PublishNonRtSnapshot.
   wbc_state_lock_.Store(wbc_state_);
 }

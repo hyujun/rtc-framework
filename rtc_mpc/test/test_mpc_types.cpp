@@ -171,7 +171,7 @@ TEST(MpcStateSnapshot, ProvenanceFieldsDefaultInvalidAndSurviveMemcpy) {
 }
 
 TEST(MpcStateSnapshot, MemcpyRoundTrip) {
-  // SeqLock::Store/Load uses memcpy internally — exercise the same path.
+  // SeqLock::Store/Load copy the bytes of T — exercise a byte-copy round trip.
   MPCStateSnapshot src{};
   src.timestamp_ns = 42;
   src.nq = 6;

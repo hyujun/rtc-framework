@@ -1285,7 +1285,7 @@ class UdpHandController final : public HandCommLoopMember {
       }
     }
 
-    // #6 Publish the SeqLock snapshot (~0.5 KB memcpy) conditionally: the
+    // #6 Publish the SeqLock snapshot (~0.5 KB copy) conditionally: the
     // off-loop forensic reader only consults it when the link is unhealthy, so
     // on the steady healthy path the store is redundant work. Store when this
     // cycle failed, when ANY channel is mid-failure-streak, or every kCapacity-th
@@ -1735,7 +1735,7 @@ class UdpHandController final : public HandCommLoopMember {
 
   // Cycle outcome ring (writer: CommLoop; readers: failure detector, stats
   // save). outcome_ring_working_ accumulates across cycles (CommLoop-thread
-  // only); each cycle ends with one Store() into the SeqLock (~0.5 KB memcpy —
+  // only); each cycle ends with one Store() into the SeqLock (~0.5 KB copy —
   // negligible at loop_rate_hz).
   static_assert(std::is_trivially_copyable_v<CycleOutcomeRing>,
                 "SeqLock payload must be trivially copyable");

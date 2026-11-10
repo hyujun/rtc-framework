@@ -14,7 +14,7 @@ namespace rtc {
 //
 // Per-device decoded state. Held in a SeqLock (single-writer, multi-reader)
 // inside RtControllerNode and (Phase 2+) populated by DeviceBackend
-// implementations. Trivially copyable so SeqLock can memcpy.
+// implementations. Trivially copyable so SeqLock can copy it byte-wise.
 struct DeviceStateCache {
   int num_channels{0};
   std::array<double, kMaxDeviceChannels> positions{};

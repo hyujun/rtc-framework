@@ -3,7 +3,10 @@
 // synchronisation primitive.
 //
 // Covers: default construction, store/load, sequence monotonicity, large
-// struct correctness, and concurrent read-during-write consistency.
+// struct correctness, concurrent read-during-write consistency, and the
+// word-by-word payload copy: sizes that are not a multiple of 8 (tail bytes),
+// 4-byte-aligned T, and default construction honouring T's default member
+// initialisers.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <rtc_base/threading/seqlock.hpp>
 
@@ -211,6 +214,86 @@ TEST(SeqLockTest, LoadIntoIsConsistentUnderAConcurrentWriter) {
   sl.LoadInto(out);
   EXPECT_EQ(out.counter, kNumWrites);
   EXPECT_EQ(out.counter, sl.Load().counter);
+}
+
+// ── Word-by-word payload copy ───────────────────────────────────────────────
+// The payload is copied as 8-byte atomic words plus a tail; these pin the
+// tail path, a T whose alignment is below the word size, and default values.
+
+// 4-byte aligned, 20 bytes: two full words + a 4-byte tail.
+struct OddSized {
+  std::array<uint32_t, 5> v{};
+};
+
+static_assert(sizeof(OddSized) % 8 != 0);
+static_assert(alignof(OddSized) == 4);
+
+// 1-byte aligned, 1157 bytes: 144 full words + a 5-byte tail — byte-level
+// layout so a misplaced tail byte is visible.
+struct ByteSized {
+  std::array<uint8_t, 1157> b{};
+};
+
+static_assert(sizeof(ByteSized) % 8 == 5);
+
+TEST(SeqLockTest, OddSizedRoundTripIncludesTailBytes) {
+  rtc::SeqLock<OddSized> sl;
+  OddSized written{};
+  for (std::size_t i = 0; i < written.v.size(); ++i) {
+    written.v[i] = 0xA5A50000u + static_cast<uint32_t>(i);
+  }
+  sl.Store(written);
+  const OddSized loaded = sl.Load();
+  for (std::size_t i = 0; i < written.v.size(); ++i) {
+    EXPECT_EQ(loaded.v[i], written.v[i]) << "index " << i;
+  }
+}
+
+TEST(SeqLockTest, ByteSizedRoundTripThroughLoadAndLoadInto) {
+  rtc::SeqLock<ByteSized> sl;
+  ByteSized written{};
+  for (std::size_t i = 0; i < written.b.size(); ++i) {
+    written.b[i] = static_cast<uint8_t>(i * 7u + 1u);
+  }
+  sl.Store(written);
+
+  const ByteSized by_value = sl.Load();
+  // LoadInto into storage pre-filled with a different pattern, so a tail byte
+  // the copy skips would keep the old value.
+  ByteSized into{};
+  into.b.fill(0xEE);
+  sl.LoadInto(into);
+  for (std::size_t i = 0; i < written.b.size(); ++i) {
+    ASSERT_EQ(by_value.b[i], written.b[i]) << "Load, index " << i;
+    ASSERT_EQ(into.b[i], written.b[i]) << "LoadInto, index " << i;
+  }
+}
+
+TEST(SeqLockTest, InitialValueConstructorHoldsTheValue) {
+  OddSized initial{};
+  initial.v = {1u, 2u, 3u, 4u, 5u};
+  const rtc::SeqLock<OddSized> sl(initial);
+  const OddSized loaded = sl.Load();
+  for (std::size_t i = 0; i < initial.v.size(); ++i) {
+    EXPECT_EQ(loaded.v[i], initial.v[i]) << "index " << i;
+  }
+  EXPECT_EQ(sl.sequence(), 0u);
+}
+
+// Several SeqLock payloads in the tree have non-zero default member
+// initialisers; a default-constructed SeqLock must hold T{}, not zero bytes.
+struct NonZeroDefaults {
+  double gain{1.0};
+  int32_t status{-1};
+  bool stale{true};
+};
+
+TEST(SeqLockTest, DefaultConstructionHoldsValueInitialisedT) {
+  const rtc::SeqLock<NonZeroDefaults> sl;
+  const NonZeroDefaults loaded = sl.Load();
+  EXPECT_DOUBLE_EQ(loaded.gain, 1.0);
+  EXPECT_EQ(loaded.status, -1);
+  EXPECT_TRUE(loaded.stale);
 }
 
 }  // namespace

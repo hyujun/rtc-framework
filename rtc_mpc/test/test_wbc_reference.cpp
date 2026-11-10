@@ -1,7 +1,7 @@
 /// @file test_wbc_reference.cpp
 /// @brief `WbcReference` is the POD handed to a whole-body controller: it
 ///        must stay trivially copyable, default to "invalid", and survive the
-///        memcpy a SeqLock performs with every field intact.
+///        byte copy a SeqLock performs with every field intact.
 
 #include "rtc_mpc/types/wbc_reference.hpp"
 

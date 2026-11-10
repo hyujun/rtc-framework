@@ -371,7 +371,7 @@ TEST_F(FakeHandControllerTest, Mailbox_SequenceIsEvenBetweenWrites) {
       ++odd_observations;
     }
   }
-  // A 500 Hz loop whose Store() is two atomic stores plus one memcpy leaves the
+  // A 500 Hz loop whose Store() is one ~0.5 KB copy between two sequence stores leaves the
   // odd window vanishingly small; catching it in every one of 200 samples would
   // mean the sequence is parked odd, i.e. a Store never completed.
   EXPECT_LT(odd_observations, 200);

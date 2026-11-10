@@ -6,7 +6,7 @@
 // (not rtc_base) because ToF is a hand-domain payload specific to this
 // integration; rtc_base stays robot-agnostic.
 //
-// Trivially copyable so SeqLock<ToFSnapshotData> can memcpy on the RT
+// Trivially copyable so SeqLock<ToFSnapshotData> can copy it byte-wise on the RT
 // publish path.
 
 #include "rtc_base/types/types.hpp"  // rtc::Pose
