@@ -88,6 +88,31 @@ FeedResult FeedRight(RespSetAssembler& a, uint8_t idx, const Bytes& b) {
 
 // ── CAN identifier ──────────────────────────────────────────────────────────
 
+// The firmware's CMD frame-index table (received 2026-11-10), number by
+// number, and the ids of the two frames the host sends. The id arithmetic
+// holds for any index; this is what pins which index means what.
+TEST(HandCanFdId, CmdFrameIndexTable) {
+  const auto idx = [](CmdFrame f) { return static_cast<unsigned>(f); };
+  EXPECT_EQ(idx(CmdFrame::kPosition), 0u);
+  EXPECT_EQ(idx(CmdFrame::kVelocity), 1u);
+  EXPECT_EQ(idx(CmdFrame::kFeedforward), 2u);
+  EXPECT_EQ(idx(CmdFrame::kTargetCurrent), 3u);
+  EXPECT_EQ(idx(CmdFrame::kControlMode), 4u);
+  EXPECT_EQ(idx(CmdFrame::kHandSide), 5u);
+  EXPECT_EQ(idx(CmdFrame::kGainPosition), 6u);
+  EXPECT_EQ(idx(CmdFrame::kGainVelocity), 7u);
+  EXPECT_EQ(idx(CmdFrame::kGainCascadePosition), 8u);
+  EXPECT_EQ(idx(CmdFrame::kGainCascadeSpeed), 9u);
+  EXPECT_EQ(idx(CmdFrame::kGainSaveFlash), 10u);
+
+  EXPECT_EQ(CmdId(kNodeRightHand, kCmdPositionIdx), 0x00004000u);
+  EXPECT_EQ(CmdId(kNodeLeftHand, kCmdPositionIdx), 0x00008000u);
+  EXPECT_EQ(CmdId(kNodeRightHand, kCmdFeedforwardIdx), 0x00004002u);
+  EXPECT_EQ(CmdId(kNodeLeftHand, kCmdFeedforwardIdx), 0x00008002u);
+  EXPECT_EQ(EchoId(kNodeRightHand, kCmdFeedforwardIdx), 0x00000042u);
+  EXPECT_EQ(EchoId(kNodeLeftHand, kCmdFeedforwardIdx), 0x00000082u);
+}
+
 TEST(HandCanFdId, SpecWorkedExamples) {
   // Proto §3 / Frame §2.2 — host → hand
   EXPECT_EQ(CmdId(kNodeRightHand, 0), 0x00004000u);
@@ -106,6 +131,11 @@ TEST(HandCanFdId, SpecWorkedExamples) {
   EXPECT_EQ(EchoId(kNodeLeftHand, 0), 0x00000080u);
   EXPECT_EQ(EchoId(kNodeLeftHand, 3), 0x00000083u);
   // Proto §4 / Frame §4.1 — RESP
+  EXPECT_EQ(EchoId(kNodeRightHand, 2), 0x00000042u);
+  EXPECT_EQ(EchoId(kNodeLeftHand, 2), 0x00000082u);
+  EXPECT_EQ(CmdId(kNodeLeftHand, 2), 0x00008002u);
+  EXPECT_EQ(CmdId(kNodeBroadcast, 5), 0x003FC005u);
+  // Proto §4 / Frame §4.1 — RESP (re-stated below)
   EXPECT_EQ(RespId(kNodeRightHand, 0), 0x00800040u);
   EXPECT_EQ(RespId(kNodeRightHand, 1), 0x00800041u);
   EXPECT_EQ(RespId(kNodeRightHand, 2), 0x00800042u);

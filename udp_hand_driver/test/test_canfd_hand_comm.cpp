@@ -32,7 +32,7 @@
 //              RESP before the echoes is replaced by the real burst (D57),
 //              payload mismatch / bus-off / left-right split / recovery on the
 //              window path, write without a REQ-side change for the E-Stop
-//   D26        E-Stop fire-and-forget: Frame 1 zeros then Frame 0 zeros
+//   D26        E-Stop fire-and-forget: FF (idx 2) zeros then position (idx 0) zeros
 //   D51        a left-hand comm never talks to a right-hand fake
 //   D63 · D64  cmd_ack none (#945): the write is the send (write_ok, not
 //   · D68      write_rx), no echo stage, the set keeps CMD + 2T after a write
@@ -244,7 +244,7 @@ canfd_frame DataFrame(uint32_t bare_id, uint8_t fill) {
 //   kDropFrame2  withholds RESP idx 2 (a partial set every cycle)
 //   kReverse     sends each answer's frames last-first (RESP 2 1 0)
 //   kSilent      answers nothing
-//   kRespFirst   holds the echoes until the REQ, then RESP 0 · echo 0 · echo 1 ·
+//   kRespFirst   holds the echoes until the REQ, then RESP 0 · echo pos · echo FF ·
 //                RESP 1 · RESP 2 — the interleaving a pipelined window must take
 //   kNoEcho      answers the REQ, never echoes
 //   kLate        holds the echoes until 0.6 x `late_unit` after CMD 0 arrived
@@ -931,8 +931,9 @@ TEST_F(CanFdHandCommVcan, D41_EchoWithAnotherPayloadOnlyCounts) {
   auto comm = OpenComm();  // no peer: the injected frames play the hand
   rtc::CanFdTransport injector(InjectorConfig());
   ASSERT_TRUE(injector.Open());
-  // The hand echoes the previous command, idx 1 first — order must not matter.
-  ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 1), 0x55)));
+  // The hand echoes the previous command, the FF echo (idx 2) first — order
+  // must not matter.
+  ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 2), 0x55)));
   ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 0), 0x55)));
 
   EXPECT_TRUE(comm->WriteCommandWithEcho(Ramp(0.3f, 0.1f), Ramp(1.0f, 0.1f)));
@@ -966,7 +967,9 @@ TEST_F(CanFdHandCommVcan, D41_BusOffErrorFrameIsNotAnUnexpectedFrame) {
 
 // ═══════════════════ D59 · D60 — the pipelined cycle (RunCycle) ═════════════
 
-// The normal cycle: CMD 0 · CMD 1 · REQ on the bus back to back, one window.
+// The normal cycle: CMD pos (idx 0) · CMD FF (idx 2) · REQ on the bus back to
+// back, one window. The ids are spelled as numbers: this pins the wire, not
+// the header's enum — nothing goes out on idx 1 (velocity to the firmware).
 // Both echoes and the set validate, each stage counted once, no mismatch.
 TEST_F(CanFdHandCommVcan, D59_RunCycleWritesAndReadsInOneWindow) {
   rtc::CanFdTransport sniffer(TargetedConfig(kNodeRightHand));
@@ -995,9 +998,9 @@ TEST_F(CanFdHandCommVcan, D59_RunCycleWritesAndReadsInOneWindow) {
   const timespec wait{0, 200'000'000};
   canfd_frame rx{};
   ASSERT_EQ(sniffer.RecvFrameWithTimeout(rx, wait), static_cast<ssize_t>(CANFD_MTU));
-  EXPECT_EQ(rx.can_id & kExtIdMask, CmdId(kNodeRightHand, 0));
+  EXPECT_EQ(rx.can_id & kExtIdMask, 0x00004000u);
   ASSERT_EQ(sniffer.RecvFrameWithTimeout(rx, wait), static_cast<ssize_t>(CANFD_MTU));
-  EXPECT_EQ(rx.can_id & kExtIdMask, CmdId(kNodeRightHand, 1));
+  EXPECT_EQ(rx.can_id & kExtIdMask, 0x00004002u);
   ASSERT_GT(sniffer.RecvFrameWithTimeout(rx, wait), 0);
   EXPECT_EQ(rx.can_id & kExtIdMask, ReqId(kNodeRightHand));
   EXPECT_EQ(rx.len, 0);  // D47
@@ -1140,7 +1143,9 @@ TEST_F(CanFdHandCommVcan, D59_SetDeadlineChainsFromTheEchoClose) {
   EXPECT_EQ(comm->canfd_stats().assembler.sets_abandoned, 0u);
 }
 
-// Class ④ in the window: an echo idx 2, a second copy of echo 0 (the first
+// Class ④ in the window: an echo idx 1 (the velocity frame, which the host
+// never sends — the FF echo's index before the firmware's 2026-11 table), a
+// second copy of echo 0 (the first
 // copy, injected with another payload, is the one accepted) and a frame of
 // another type that passes the socket filter. Three mismatches, nothing
 // fails, nothing reaches the assembler as outside_set.
@@ -1149,7 +1154,7 @@ TEST_F(CanFdHandCommVcan, D59_ClassFourFramesOnlyCount) {
   auto comm = OpenComm();
   rtc::CanFdTransport injector(InjectorConfig());
   ASSERT_TRUE(injector.Open());
-  ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 2), 0x22)));
+  ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 1), 0x22)));
   ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 0), 0x55)));
   constexpr uint32_t kOtherType =
       MakeCanId(kPriorityRealtime, static_cast<MsgType>(0x3), kNodeHost, kNodeRightHand, 0);
@@ -1210,7 +1215,7 @@ TEST_F(CanFdHandCommVcan, D59_PayloadMismatchAndErrorFrameOnlyCountInTheWindow) 
   auto comm = OpenComm();
   rtc::CanFdTransport injector(InjectorConfig());
   ASSERT_TRUE(injector.Open());
-  ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 1), 0x55)));
+  ASSERT_TRUE(injector.SendFrame(DataFrame(EchoId(kNodeRightHand, 2), 0x55)));
   can_frame err{};
   err.can_id = CAN_ERR_FLAG | CAN_ERR_BUSOFF;
   err.len = CAN_ERR_DLC;
@@ -1223,7 +1228,7 @@ TEST_F(CanFdHandCommVcan, D59_PayloadMismatchAndErrorFrameOnlyCountInTheWindow) 
 
   comm->PublishCommStats();
   const CanFdCommStats c = comm->canfd_stats();
-  EXPECT_EQ(c.echo_payload_mismatch, 1u);  // the injected idx 1; the real idx 1 is then class ④
+  EXPECT_EQ(c.echo_payload_mismatch, 1u);  // the injected FF echo; the real one is then class ④
   EXPECT_EQ(c.echo_unexpected, 1u);        // … arriving after the echo stage closed
   EXPECT_GE(c.error_frames, 1u);
   EXPECT_GE(c.bus_off, 1u);
@@ -1482,7 +1487,7 @@ TEST_F(CanFdHandCommVcan, D60_NoneRunCycleWithoutCommandIsTheReadCycle) {
   EXPECT_EQ(Kind(s, RequestKind::kJointRead).ok, 1u);
 }
 
-TEST_F(CanFdHandCommVcan, D26_FireAndForgetSendsZeroFrame1ThenZeroFrame0) {
+TEST_F(CanFdHandCommVcan, D26_FireAndForgetSendsZeroFeedforwardThenZeroPosition) {
   rtc::CanFdTransport sniffer(TargetedConfig(kNodeRightHand));
   ASSERT_TRUE(sniffer.Open());
   auto comm = OpenComm();
@@ -1491,14 +1496,14 @@ TEST_F(CanFdHandCommVcan, D26_FireAndForgetSendsZeroFrame1ThenZeroFrame0) {
   const timespec wait{0, 200'000'000};
   canfd_frame rx{};
   ASSERT_EQ(sniffer.RecvFrameWithTimeout(rx, wait), static_cast<ssize_t>(CANFD_MTU));
-  EXPECT_EQ(rx.can_id & kExtIdMask, CmdId(kNodeRightHand, 1));
+  EXPECT_EQ(rx.can_id & kExtIdMask, 0x00004002u);  // FF first (the wire id, not the enum)
   EXPECT_EQ(rx.len, kFrameLen);
   EXPECT_TRUE(rx.flags & CANFD_BRS);
   const std::array<uint8_t, kFrameLen> zeros{};
   EXPECT_EQ(std::memcmp(rx.data, zeros.data(), kFrameLen), 0);
 
   ASSERT_EQ(sniffer.RecvFrameWithTimeout(rx, wait), static_cast<ssize_t>(CANFD_MTU));
-  EXPECT_EQ(rx.can_id & kExtIdMask, CmdId(kNodeRightHand, 0));
+  EXPECT_EQ(rx.can_id & kExtIdMask, 0x00004000u);  // then the position
   EXPECT_EQ(rx.len, kFrameLen);
   EXPECT_EQ(std::memcmp(rx.data, zeros.data(), kFrameLen), 0);
 
