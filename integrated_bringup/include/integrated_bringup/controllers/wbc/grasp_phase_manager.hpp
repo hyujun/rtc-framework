@@ -38,11 +38,14 @@
 ///
 /// Thread-safety contract (per `PhaseManagerBase`):
 /// - `Update` runs on the MPC thread (RT-equivalent SCHED_FIFO).
-/// - `SetTaskTarget` and `SetCommand` may come from any off-MPC thread
-///   (topic callback, BT leaf, test driver). `SetTaskTarget` publishes the
-///   target through @c target_seqlock_ (single-writer wait-free `rtc::SeqLock`
-///   over @ref phase::GraspTargetPOD); the MPC reader is wait-free / lock-
-///   free — see invariants.md RT-4.
+/// - `SetTaskTarget` runs off the MPC thread, and its calls must be
+///   serialised — one thread at a time (in production: the WBC RT tick, on
+///   its APPROACH edge). It is the only writer of @c target_seqlock_
+///   (single-writer wait-free `rtc::SeqLock` over @ref phase::GraspTargetPOD);
+///   the MPC thread only reads it, wait-free / lock-free — see invariants.md
+///   RT-4. A second writer would break the SeqLock (torn target, or every
+///   reader spinning forever).
+/// - `SetCommand` may come from any off-MPC thread (an atomic).
 /// - `ForcePhase` / `CurrentPhaseId` / `CurrentPhaseName` use atomics.
 /// - Per-phase `PhaseCostConfig` / `ContactPlan` slots are built in `Init`
 ///   and stay `const` thereafter — `Update` reads them without locking.
@@ -75,6 +78,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -230,8 +234,21 @@ class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
   // Grasp target — single-writer wait-free publication to the MPC reader.
   // `has_target_` separately tracks whether `target_seqlock_` carries a
   // meaningful payload (zero-initialised identity is treated as "no target").
+  // `target_generation_` belongs to the writer (SetTaskTarget) and stamps
+  // GraspTargetPOD::generation.
   rtc::SeqLock<GraspTargetPOD> target_seqlock_{};
   std::atomic<bool> has_target_{false};
+  std::uint32_t target_generation_{0};
+
+  // TCP recorded on the standalone IDLE → APPROACH edge, used as the RELEASE
+  // target while the target it was recorded against (`approach_generation_`)
+  // is still the published one. MPC-thread only (EvaluateTransition writes,
+  // BuildContext reads, Update / Load invalidate) — kept here instead of
+  // written back into target_seqlock_, which would make the MPC thread a
+  // second writer.
+  pinocchio::SE3 approach_tcp_{pinocchio::SE3::Identity()};
+  std::uint32_t approach_generation_{0};
+  bool approach_tcp_valid_{false};
 };
 
 }  // namespace integrated_bringup::phase

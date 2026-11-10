@@ -2,7 +2,6 @@
 
 #include <array>
 #include <cstdio>
-#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -197,6 +196,9 @@ GraspPhaseInitError GraspPhaseManager::Load(const YAML::Node& cfg) noexcept {
   command_.store(static_cast<int>(GraspCommand::kNone), std::memory_order_relaxed);
   mirror_latched_.store(false, std::memory_order_relaxed);
   failure_count_ = 0;
+  // MPC-thread state, reset here because Load / Init run before the MPC
+  // thread starts.
+  approach_tcp_valid_ = false;
 
   return GraspPhaseInitError::kNoError;
 }
@@ -269,10 +271,13 @@ void GraspPhaseManager::SetTaskTarget(const YAML::Node& target) {
 }
 
 void GraspPhaseManager::SetTaskTarget(const GraspTarget& target) noexcept {
-  // SeqLock writer = wait-free single-producer publication. has_target_'s
+  // SeqLock writer = wait-free single-producer publication; this is the only
+  // Store (callers are serialised, see the header). has_target_'s
   // release-store happens-after the SeqLock Store; the MPC reader pairs that
   // with an acquire-load (see EvaluateTransition / BuildContext).
-  target_seqlock_.Store(ToPOD(target));
+  GraspTargetPOD pod = ToPOD(target);
+  pod.generation = ++target_generation_;
+  target_seqlock_.Store(pod);
   has_target_.store(true, std::memory_order_release);
 }
 
@@ -310,24 +315,21 @@ int GraspPhaseManager::EvaluateTransition(int current_id, const pinocchio::SE3& 
   const auto id = static_cast<GraspPhaseId>(current_id);
 
   // Snapshot target once per tick via the wait-free SeqLock reader path
-  // (RT-equivalent MPC thread; see invariants.md RT-4).
-  const GraspTarget tgt = FromPOD(target_seqlock_.Load());
+  // (RT-equivalent MPC thread; see invariants.md RT-4). has_target_ first:
+  // once it reads true, the Load sees at least the target that set it.
   const bool have_target = has_target_.load(std::memory_order_acquire);
+  const GraspTargetPOD pod = target_seqlock_.Load();
+  const GraspTarget tgt = FromPOD(pod);
 
   switch (id) {
     case GraspPhaseId::kIdle:
       if (cmd == GraspCommand::kApproach && have_target) {
-        // Snapshot TCP as approach_start so RETREAT can come back to it.
-        // Read-modify-write on the SeqLock: this transition fires once per
-        // grasp episode (IDLE → APPROACH edge), so a concurrent
-        // `SetTaskTarget` race here is benign — last writer wins and the
-        // worst case (a new target arriving exactly on the APPROACH entry
-        // tick) overwrites approach_start with the new target's identity
-        // default, which RETREAT would not yet need.
-        GraspTargetPOD pod = target_seqlock_.Load();
-        std::memcpy(pod.approach_rot.data(), tcp.rotation().data(), sizeof(pod.approach_rot));
-        std::memcpy(pod.approach_t.data(), tcp.translation().data(), sizeof(pod.approach_t));
-        target_seqlock_.Store(pod);
+        // Record the TCP so RELEASE can come back to it. Kept MPC-side with
+        // the generation of the target it belongs to; a target set later
+        // brings its own approach_start (see BuildContext).
+        approach_tcp_ = tcp;
+        approach_generation_ = pod.generation;
+        approach_tcp_valid_ = true;
         failure_count_ = 0;
         return static_cast<int>(GraspPhaseId::kApproach);
       }
@@ -400,7 +402,8 @@ rtc::mpc::PhaseContext GraspPhaseManager::BuildContext(int id, bool changed) con
   // EE target: pregrasp_pose for APPROACH, grasp_pose for CLOSURE/HOLD,
   // approach_start for RELEASE, identity for IDLE.
   if (has_target_.load(std::memory_order_acquire)) {
-    const GraspTarget tgt = FromPOD(target_seqlock_.Load());
+    const GraspTargetPOD pod = target_seqlock_.Load();
+    const GraspTarget tgt = FromPOD(pod);
     switch (static_cast<GraspPhaseId>(id)) {
       case GraspPhaseId::kApproach:
         ctx.ee_target = tgt.pregrasp_pose;
@@ -410,7 +413,9 @@ rtc::mpc::PhaseContext GraspPhaseManager::BuildContext(int id, bool changed) con
         ctx.ee_target = tgt.grasp_pose;
         break;
       case GraspPhaseId::kRelease:
-        ctx.ee_target = tgt.approach_start;
+        ctx.ee_target = (approach_tcp_valid_ && approach_generation_ == pod.generation)
+                            ? approach_tcp_
+                            : tgt.approach_start;
         break;
       case GraspPhaseId::kIdle:
       default:
@@ -456,6 +461,11 @@ rtc::mpc::PhaseContext GraspPhaseManager::Update(const Eigen::VectorXd& /*q*/,
   const bool changed = (next_id != prev_id);
   if (changed) {
     current_id_.store(next_id, std::memory_order_relaxed);
+    // Every way back to IDLE (abort, closure failures, release complete,
+    // a forced IDLE) ends the episode the recorded TCP belonged to.
+    if (next_id == static_cast<int>(GraspPhaseId::kIdle)) {
+      approach_tcp_valid_ = false;
+    }
   }
 
   return BuildContext(next_id, changed);

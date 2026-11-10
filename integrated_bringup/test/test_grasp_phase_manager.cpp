@@ -395,4 +395,93 @@ TEST_F(GraspPhaseManagerTest, UninitialisedUpdateYieldsSafeIdleContext) {
   EXPECT_EQ(ctx.ocp_type, "contact_light");
 }
 
+// ── RELEASE target: TCP recorded on APPROACH entry vs target approach_start ──
+// The manager records the TCP of the standalone IDLE → APPROACH edge on the
+// MPC side (it never writes the published target back), and RELEASE drives to
+// it only while that target is still the published one.
+
+// Standalone guards from IDLE (kApproach already set) to RELEASE; returns the
+// RELEASE-edge context. Target: grasp (0.15,0,0), pregrasp (0.1,0,0).
+rtc::mpc::PhaseContext DriveStandaloneToRelease(GraspPhaseManager& m, const pinocchio::SE3& entry,
+                                                const Eigen::VectorXd& q,
+                                                const Eigen::VectorXd& v) {
+  const auto at = [](double x) {
+    return pinocchio::SE3(Eigen::Matrix3d::Identity(), Eigen::Vector3d{x, 0.0, 0.0});
+  };
+  const Eigen::VectorXd no_force = Eigen::VectorXd::Zero(2);
+  Eigen::VectorXd force(2);
+  force << 0.4, 0.3;
+  EXPECT_EQ(m.Update(q, v, no_force, entry, 0.0).phase_id,
+            static_cast<int>(GraspPhaseId::kApproach));
+  EXPECT_EQ(m.Update(q, v, no_force, at(0.1), 0.0).phase_id,
+            static_cast<int>(GraspPhaseId::kClosure));
+  EXPECT_EQ(m.Update(q, v, force, at(0.15), 0.0).phase_id, static_cast<int>(GraspPhaseId::kHold));
+  m.SetCommand(GraspCommand::kRelease);
+  return m.Update(q, v, no_force, at(0.15), 0.0);
+}
+
+TEST_F(GraspPhaseManagerTest, StandaloneReleaseTargetsTheTcpRecordedOnApproachEntry) {
+  ASSERT_EQ(manager_->Load(YAML::Load(kPandaPhaseConfig)),
+            integrated_bringup::phase::GraspPhaseInitError::kNoError);
+  manager_->SetTaskTarget(MakeTarget({0.15, 0, 0}, {0.1, 0, 0}, {9.0, 9.0, 9.0}));
+  manager_->SetCommand(GraspCommand::kApproach);
+
+  const auto ctx = DriveStandaloneToRelease(*manager_, PoseAt({0.02, -0.03, 0.04}), q_, v_);
+  ASSERT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kRelease));
+  EXPECT_TRUE(ctx.ee_target.translation().isApprox(Eigen::Vector3d{0.02, -0.03, 0.04}))
+      << ctx.ee_target.translation().transpose();
+}
+
+TEST_F(GraspPhaseManagerTest, TargetSetAfterApproachEntryBringsItsOwnReleaseTarget) {
+  ASSERT_EQ(manager_->Load(YAML::Load(kPandaPhaseConfig)),
+            integrated_bringup::phase::GraspPhaseInitError::kNoError);
+  manager_->SetTaskTarget(MakeTarget({0.15, 0, 0}, {0.1, 0, 0}, {9.0, 9.0, 9.0}));
+  manager_->SetCommand(GraspCommand::kApproach);
+  ASSERT_EQ(Step(PoseAt({0.02, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kApproach));
+
+  // A new target after the TCP was recorded: its approach_start wins.
+  manager_->SetTaskTarget(MakeTarget({0.15, 0, 0}, {0.1, 0, 0}, {7.0, 7.0, 7.0}));
+  ASSERT_EQ(Step(PoseAt({0.1, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kClosure));
+  Eigen::VectorXd force(2);
+  force << 0.4, 0.3;
+  ASSERT_EQ(Step(PoseAt({0.15, 0, 0}), force).phase_id, static_cast<int>(GraspPhaseId::kHold));
+  manager_->SetCommand(GraspCommand::kRelease);
+  const auto ctx = Step(PoseAt({0.15, 0, 0}));
+  ASSERT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kRelease));
+  EXPECT_TRUE(ctx.ee_target.translation().isApprox(Eigen::Vector3d{7.0, 7.0, 7.0}))
+      << ctx.ee_target.translation().transpose();
+}
+
+TEST_F(GraspPhaseManagerTest, MirrorReleaseTargetsTheTargetApproachStart) {
+  ASSERT_EQ(manager_->Load(YAML::Load(kPandaPhaseConfig)),
+            integrated_bringup::phase::GraspPhaseInitError::kNoError);
+  manager_->SetTaskTarget(MakeTarget({0.15, 0, 0}, {0.1, 0, 0}, {9.0, 9.0, 9.0}));
+
+  // Mirror mode never runs the guards, so nothing is recorded.
+  manager_->ForcePhase(static_cast<int>(GraspPhaseId::kApproach));
+  ASSERT_EQ(Step(PoseAt({0.02, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kApproach));
+  manager_->ForcePhase(static_cast<int>(GraspPhaseId::kRelease));
+  const auto ctx = Step(PoseAt({0.15, 0, 0}));
+  ASSERT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kRelease));
+  EXPECT_TRUE(ctx.ee_target.translation().isApprox(Eigen::Vector3d{9.0, 9.0, 9.0}))
+      << ctx.ee_target.translation().transpose();
+}
+
+TEST_F(GraspPhaseManagerTest, ReturningToIdleForgetsTheRecordedTcp) {
+  ASSERT_EQ(manager_->Load(YAML::Load(kPandaPhaseConfig)),
+            integrated_bringup::phase::GraspPhaseInitError::kNoError);
+  manager_->SetTaskTarget(MakeTarget({0.15, 0, 0}, {0.1, 0, 0}, {9.0, 9.0, 9.0}));
+  manager_->SetCommand(GraspCommand::kApproach);
+  ASSERT_EQ(Step(PoseAt({0.02, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kApproach));
+  manager_->SetCommand(GraspCommand::kAbort);
+  ASSERT_EQ(Step(PoseAt({0.02, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kIdle));
+
+  // Same target, but the episode the TCP belonged to has ended.
+  manager_->ForcePhase(static_cast<int>(GraspPhaseId::kRelease));
+  const auto ctx = Step(PoseAt({0.15, 0, 0}));
+  ASSERT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kRelease));
+  EXPECT_TRUE(ctx.ee_target.translation().isApprox(Eigen::Vector3d{9.0, 9.0, 9.0}))
+      << ctx.ee_target.translation().transpose();
+}
+
 }  // namespace
