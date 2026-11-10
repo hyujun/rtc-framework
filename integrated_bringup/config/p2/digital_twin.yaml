@@ -1,0 +1,60 @@
+# p2/digital_twin.yaml — proto2 (CAN FD) RIGHT hand on its own digital-twin config
+#
+# Layered on top of `rtc_digital_twin/config/digital_twin.yaml`:
+#
+#   ros2 launch rtc_digital_twin digital_twin.launch.py \
+#       config_file:=$(ros2 pkg prefix --share integrated_bringup)/config/p2/digital_twin.yaml
+#
+# Robot identity (URDF, joint topics, sensor topics, fingertip names) lives
+# here per ARCH-1; rtc_digital_twin stays robot-agnostic. The URDF is the
+# private hand_description package's (the same model as _base.yaml).
+#
+# The hand is a genuine 5-loop closed chain (urdf.extended in _base.yaml).
+# `closure_path` makes digital_twin.launch.py spawn a `closure_state_publisher`
+# (rtc_urdf_bridge) that reconstructs the loop-passive joints from the actuated
+# q, so RViz renders the closed chain.
+#
+# The model has no `world` link: its root is `base_link` (fingers +Z, palm
+# face +X — the convention the simulator scene places the hand in). Set RViz's
+# Fixed Frame to `base_link`; the twin's stock rviz config names `world`.
+
+/**:
+  ros__parameters:
+    # ── Robot description (hand_description, proto2 right hand) ─────────
+    # The xacro with its default arguments, as the controller manager loads it.
+    robot_description_package: "hand_description"
+    robot_description_path: "robots/proto2/urdf/proto2_right.urdf.xacro"
+
+    # ── Loop-closure sidecar (enables closure_state_publisher) ─────────
+    # pkg-relative to robot_description_package.
+    closure_path: "robots/proto2/urdf/proto2_right.closure.yaml"
+
+    # ── Joint state sources ────────────────────────────────────────────
+    # The controller manager publishes per-device joint states on
+    # /rtc_cm/<group>/joint_states (one device group: p2_right).
+    num_sources: 1
+
+    source_0.topic: "/rtc_cm/p2_right/joint_states"
+    source_0.joint_names: [""]        # empty/"" = accept all joints from topic
+
+    # ── Sensor visualization (proto2 fingertip sensors, hardware only) ──
+    # The driver's monitor stream (config/p2/udp_hand_node_p2.yaml sensor_topic
+    # + "/monitor"). The simulator publishes no such topic, so this is inert
+    # under sim_p2.launch.py.
+    sensor_viz.sensor_topic: "/p2/right/sensor_states/monitor"
+    # Used verbatim as the marker frame_id, so each must be a link of the URDF.
+    # Order = thumb, index, middle, ring (positional pairing with the data).
+    # These are the model's fingertip end-effector frames, NOT a calibrated
+    # sensor frame: the arrow's origin and magnitude are meaningful, its
+    # direction is not until the sensor axes are checked on the hardware.
+    sensor_viz.fingertip_names:
+      ["thumb_virtual_axis", "index_virtual_axis", "middle_virtual_axis", "ring_virtual_axis"]
+    # N. No contact classifier on this hand (robot.yaml has_native_contact:
+    # false), so the force arrow is gated on the force magnitude. The value is
+    # the proto_1b profiles'. Viz-only — tune freely.
+    sensor_viz.force_display_threshold: 0.7
+
+    # No TCP visualization: there is no arm, so no tool frame
+    # (tcp_viz.source_topic stays at the agnostic default, "" = disabled). The
+    # four `<finger>_virtual_axis_actual` frames hand_joint_controller publishes
+    # under `palm` still reach /tf through the twin's controller_tf re-broadcast.
