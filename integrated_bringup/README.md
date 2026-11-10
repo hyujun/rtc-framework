@@ -325,7 +325,7 @@ ros2 run integrated_bringup demo_controller_gui --robot p2           # proto2 �
 | `demo_dualarm_controller` | Posture gain | `posture.<group>.gain` (자세군마다) | — |
 | `demo_dualarm_controller` | Trajectory speed | `trajectory.linear_speed`, `trajectory.angular_speed`, `trajectory.hand_speed` | `trajectory.linear_speed_max`, `trajectory.angular_speed_max`, `trajectory.hand_speed_max` |
 
-`demo_inference_controller` 는 선택과 전환만 되고 입력 패널은 모두 꺼집니다 (외부 명령 경로 없음). 목록에 뜨는 컨트롤러 집합, Virtual TCP · Target · Pull Force 패널, Preset 단축키, 다중 frame (`g1_p1b`) 동작은 [docs/demo-controller-gui.md](docs/demo-controller-gui.md) 에 있습니다.
+`demo_inference_controller` 는 선택과 전환만 되고 입력 패널은 모두 꺼집니다 (외부 명령 경로 없음). 목록에 뜨는 컨트롤러 집합, Virtual TCP · Target · Pull Force 패널, Preset 단축키, Sequence 탭, 다중 frame (`g1_p1b`) 동작은 [docs/demo-controller-gui.md](docs/demo-controller-gui.md) 에 있습니다.
 
 #### motion_editor_gui
 

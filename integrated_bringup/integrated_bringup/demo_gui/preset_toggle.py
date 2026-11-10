@@ -144,20 +144,25 @@ def load_toggle_settings(path: str) -> dict:
         return default_toggle_settings()
 
 
-def save_toggle_settings(path: str, settings: dict) -> None:
-    """Atomically persist normalized settings beside the preset store."""
-    normalized = normalize_toggle_settings(settings)
+def atomic_write_json(path: str, data: object, prefix: str) -> None:
+    """Write ``data`` to ``path`` through a temporary file in the same
+    directory, so a crash mid-write leaves the previous file intact."""
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
     file_descriptor, temporary_path = tempfile.mkstemp(
-        dir=directory, prefix=".demo_gui_settings_", suffix=".json"
+        dir=directory, prefix=prefix, suffix=".json"
     )
     try:
-        with os.fdopen(file_descriptor, "w") as settings_file:
-            json.dump(normalized, settings_file, indent=2)
-            settings_file.write("\n")
+        with os.fdopen(file_descriptor, "w") as json_file:
+            json.dump(data, json_file, indent=2)
+            json_file.write("\n")
         os.replace(temporary_path, path)
     except Exception:
         with contextlib.suppress(OSError):
             os.unlink(temporary_path)
         raise
+
+
+def save_toggle_settings(path: str, settings: dict) -> None:
+    """Atomically persist normalized settings beside the preset store."""
+    atomic_write_json(path, normalize_toggle_settings(settings), prefix=".demo_gui_settings_")
