@@ -46,6 +46,21 @@ WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mp
 
 
 
+## Gains 패널 공통 동작
+
+- **읽기 전용 행** (`*_max_traj_velocity` 등 컨트롤러가 read-only 로 선언한 상한) 은 라벨에 `(read-only)` 가 붙고 입력을 받지 않습니다. `Load Gain` 이 값을 채우고 `Apply Gains` 는 보내지 않습니다.
+- **`Currently Applied`** 는 컨트롤러가 가진 값입니다: `Apply Gains` 가 받아들여진 뒤 **보낸 행만**, `Load Gain` 뒤에는 읽은 모든 행 (읽기 전용 포함) 이 갱신됩니다.
+- **결과 줄** (버튼 아래) 에 마지막 Apply / Load 의 결과가 남습니다. 거부되면 컨트롤러가 준 사유가 그대로 보이고, set 은 atomic 이라 한 값이 거부되면 아무것도 적용되지 않습니다.
+
+## Preset 의 hand 속도 (`grasp_time`)
+
+`Send Preset` 은 손 목표를 보내기 전에 active controller 의 hand 궤적 속도를 `최대 이동 거리 / grasp_time` 으로 set 합니다. 파라미터 이름은 컨트롤러마다 다릅니다 (`demo_*` 는 `hand_trajectory_speed` / `hand_max_traj_velocity`, `hand_joint_controller` 는 `trajectory_speed` / `max_traj_velocity` — `demo_gui/preset_speed.py`).
+
+- 순서는 **상한 읽기 → 속도 set → 응답 뒤 목표 발행** 입니다. 응답 전에 발행하면 궤적이 이전 속도로 계획될 수 있습니다. 파라미터 서비스가 없거나 1 s 안에 답하지 않으면 경고를 남기고 컨트롤러의 현재 속도로 발행합니다.
+- 계산한 속도가 상한을 넘으면 **상한으로 낮춰** 보냅니다 (넘는 값은 컨트롤러가 거부하고 이전 속도가 남습니다). 이때 실제 소요 시간은 `grasp_time` 보다 깁니다: quintic 의 최고 속도는 평균의 15/8 배라 `max(grasp_time, 1.875 × 거리 / 상한)` 이 하한이고, 로그의 `takes >= … s` 가 그 값입니다. 관절별 한계가 상한보다 낮으면 더 길어집니다.
+- set 한 속도는 Gains 패널의 그 행과 `Currently Applied` 에 바로 반영됩니다. 이 속도는 preset 뒤에도 남아 `Send Command` 에 그대로 쓰입니다.
+- 응답을 기다리는 동안 E-STOP 이 걸리거나 active controller 가 바뀌면 목표를 보내지 않습니다.
+
 ## Preset 단축키 (close / open 토글)
 
 Preset 패널의 `Toggle Close` / `Open` 콤보에 고른 두 preset 을 키 하나로 번갈아 보냅니다 (기본 `Space`, `Set Key` 로 변경 — 캡처 창에서 `Esc` 는 취소). 선택은 preset 파일과 같은 디렉토리의 `demo_gui_settings_<hand_group>.json` 에 저장됩니다.
@@ -102,7 +117,7 @@ phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC pub
 
 이 컨트롤러는 그 YAML 을 싣는 profile 에서만 GUI 에 나타납니다. GUI 가 뜰 때 `config/<robot>/controllers/demo_dualarm_controller.yaml` 을 읽어 과제 · 목표 frame · 자세군을 얻고, 화면의 세 부분을 거기서 만듭니다 — 과제 이름이나 개수는 GUI 코드에 없습니다.
 
-- **Gains 패널** (Control 탭): README 의 컨트롤러별 패널 표의 행이 YAML 의 과제 · 자세군마다 하나씩 생깁니다 (`config.register_scalar_gain_schema`). `Load Gain` · `Apply Gains` 는 다른 컨트롤러와 같습니다. gain 이 [0, 1/dt] 밖이면 컨트롤러가 그 Apply **전체**를 거부하고 (`set_parameters_atomically`) 사유는 GUI 로그에 남습니다. `Currently Applied` 는 컨트롤러가 set 을 받아들인 뒤에만 바뀝니다 (모든 컨트롤러 공통 — 거부된 값이 적용된 것처럼 남지 않습니다).
+- **Gains 패널** (Control 탭): README 의 컨트롤러별 패널 표의 행이 YAML 의 과제 · 자세군마다 하나씩 생깁니다 (`config.register_scalar_gain_schema`). `Load Gain` · `Apply Gains` 는 다른 컨트롤러와 같습니다. gain 이 [0, 1/dt] 밖이면 컨트롤러가 그 Apply **전체**를 거부하고 (`set_parameters_atomically`) 사유는 GUI 로그에 남습니다. `Currently Applied` 는 컨트롤러가 set 을 받아들인 뒤에만 바뀝니다 (모든 컨트롤러 공통 — 거부된 값이 적용된 것처럼 남지 않습니다). 아래 **Gains 패널 공통 동작** 참고.
 - **Dual Arm 탭 — 과제 목표**: 과제마다 패널 하나. `Goal stated in` 에서 목표를 적을 frame (그 과제의 base frame + `clik.target_frames`) 을 고르고, 여섯 값 (m · deg, ZYX) 을 적어 `Send goal` 로 **한 번** 보냅니다 (`<task>/task_goal`). 컨트롤러가 활성일 때만 보냅니다.
   - `Measured` 열은 컨트롤러 TF 의 측정 pose 이고, 그 pose 가 표현된 frame (transforms 의 부모) 이 열 제목에 나옵니다. **목표 frame 이 그 frame 과 같을 때만** 목표 칸이 측정 pose 로 채워지고 `Copy measured → goal` 이 켜집니다. 다른 frame 을 고르면 칸을 비우고 버튼을 끕니다 — 두 frame 사이의 변환은 어느 토픽에도 없고, GUI 는 추측하지 않습니다. 그 frame 의 목표는 직접 적습니다 (`dualarm_diag.csv` 의 `<task>_ref_*` 가 그 과제의 base frame 기준 값입니다).
   - 과제의 base frame 이 아닌 frame 으로 적은 목표는 컨트롤러가 **적용하는 tick 에 한 번** base frame 으로 바꿔 그 값을 붙듭니다. 그 뒤 base frame 이 움직이면 (예: 다른 과제가 몸통을 돌리면) 적은 frame 에서 본 pose 는 목표와 달라집니다 — 패널이 이 경우를 한 줄로 알립니다.
@@ -121,12 +136,12 @@ proto2 손 하나가 bringup 의 전부인 프로파일입니다 — device grou
 
 - **topic 은 손 하나로 모입니다.** GUI 는 (arm, hand) 두 토큰으로 토픽을 만드는데 이 프로파일은 둘 다 `p2_right` 라 (`RobotProfile.arm_group` 이 비면 `/<ctrl>//joint_goal` 이 됩니다) 목표는 `/hand_joint_controller/p2_right/joint_goal`, 상태는 `/rtc_cm/p2_right/joint_states` 입니다. `Send Command` 와 preset 은 **손 절반만** 보내고 robot 절반은 건너뜁니다 — 빈 `RobotTarget` 이 손 토픽으로 나가지 않게 (`app.py` 의 `arm_dof == 0` 가드).
 - **Control 탭**: `Joint Target` · `Joint Positions` 는 행이 없는 빈 열이고 `Task Target` 은 꺼져 있습니다. `Hand Motor Target` 이 `config/p2/_base.yaml` `p2_right.joint_state_names` 순서의 열 개 (Thumb 4 · Index 3 · Middle 2 · Ring 1) 를 싣습니다 — 이름은 `cmc_01_joint` 처럼 접두사 없는 손 description 의 것이며 `b7_loco` 의 `right_*` roster 와 다릅니다.
-- **Gains 패널**은 이 프로파일이 시작할 때 등록한 행을 보여 줍니다 (`GAIN_DEFS` 의 정적 항목이 아니라 `hand_joint.hand_joint_gain_rows()` — 정적 항목이면 radio 가 모든 프로파일에 생깁니다). `gravity_ff.enabled` (체크박스) · `gravity_ff.gain` ([0, 2]) · `trajectory_speed` (> 0, `max_traj_velocity` 이하) 은 `Load Gain` / `Apply Gains` 로 읽고 쓰고, `max_traj_velocity` 는 읽기 전용입니다. 범위 밖 값은 컨트롤러가 거부합니다. `Virtual TCP` 패널은 비활성입니다.
+- **Gains 패널**은 이 프로파일이 시작할 때 등록한 행을 보여 줍니다 (`GAIN_DEFS` 의 정적 항목이 아니라 `hand_joint.hand_joint_gain_rows()` — 정적 항목이면 radio 가 모든 프로파일에 생깁니다). `gravity_ff.enabled` (체크박스) · `gravity_ff.gain` ([0, 2]) · `trajectory_speed` (> 0, `max_traj_velocity` 이하) 은 `Load Gain` / `Apply Gains` 로 읽고 쓰고, `max_traj_velocity` 는 읽기 전용입니다. 범위 밖 값은 컨트롤러가 거부합니다. `max_traj_velocity` 는 `trajectory_speed` 의 상한일 뿐이고, 각 관절의 최고 속도는 `min(max_traj_velocity, 그 관절의 실효 속도 한계)` 로 묶입니다 — 실효 한계는 CM 이 `_base.yaml` 의 `joint_limits` 와 URDF 한계 중 **좁은 쪽**으로 정하므로, 출하 YAML 의 시험용 값 (10 rad/s · ±135°) 은 URDF 도 넓힌 곳에서만 효력이 있고 그 밖에서는 패널의 `max_traj_velocity` 가 실제 관절 상한보다 크게 보입니다. 넓힌 곳에서는 한계가 대칭이라 clamp 가 관절의 굽힘 방향을 지켜 주지 않습니다. `Virtual TCP` 패널은 비활성입니다.
 - **Hand Joint 패널** (Control 탭): `mode` 를 `tracking` (기본 — 목표를 quintic 궤적으로 추종) · `damping` (기준 = 측정 위치, feedforward 0 — 장치 자체의 kd 만 작용) · `damping_feedforward` (기준 = 측정 위치, 중력 feedforward 유지 — feedforward 검증용) 중에서 `Set Mode` 로 바꾸고 `Load Mode` 로 현재 값을 다시 읽습니다. 컨트롤러가 active 여도 · E-STOP 중에도 받으므로 이 패널은 선택한 컨트롤러가 `hand_joint_controller` 인지만 봅니다 (Virtual TCP 처럼 inactive 를 요구하지 않습니다). 거부되면 컨트롤러의 사유가 `refused: <reason>` 으로 그대로 표시됩니다.
 - **`tracking` 이 아닌 동안 컨트롤러는 모든 `joint_goal` 을 거부합니다** (reject 로 셉니다). 그래서 GUI 는 마지막으로 읽은 mode 가 `damping` · `damping_feedforward` 이면 `Send Command` 를 끄고 이유 (`mode is damping: joint goals are refused`) 를 버튼 아래에 보이며, preset 전송 · 단축키 토글 · hand step 도 같은 사유로 보류합니다. mode 를 아직 읽지 못했으면 막지 않습니다.
 - **End-Effector Pose** 는 컨트롤러가 `/hand_joint_controller/transforms` 로 보내는 `palm → index_virtual_axis_actual` 입니다 (`tcp_parent`/`tcp_child`; 엄지 · 중지 · 약지의 `*_virtual_axis_actual` 도 같은 메시지에 실리지만 readout 은 검지 하나를 따릅니다).
 - **Grasp 탭**의 `▶ Grasp` / `■ Release` 는 꺼집니다 — `grasp_command` 서비스가 없습니다 (`config.py` `NO_GRASP_COMMAND_CONTROLLERS`).
-- **preset · 단축키 설정 파일**은 `hand_presets_p2.json` · `demo_gui_settings_p2.json` 입니다 (`preset_scope="p2"`; hand group 토큰 `p2_right` 는 `b7_loco` 와 같아 이름을 나눕니다). preset 에 `hand_joint_controller` 가 적혀도 단축키 토글이 통과합니다 — 이 프로파일이 그 컨트롤러의 gain 스키마를 등록하기 때문입니다.
+- **preset · 단축키 설정 파일**은 `hand_presets_p2.json` · `demo_gui_settings_p2.json` 입니다 (`preset_scope="p2"`; hand group 토큰 `p2_right` 는 `b7_loco` 와 같아 이름을 나눕니다). 기본 preset 은 이 손의 것 (`open_flat` · `mid_pose` = sim 의 `initial_qpos`) 입니다 — 관절 수가 같은 UR5e 손의 기본값은 굽힘 방향이 반대인 관절이 있어 쓰지 않습니다 (`config.default_presets_for` 의 scope 별 roster). 예전에 그 기본값이 그대로 쓰인 파일은 시작할 때 한 번 교체되고, 저장 · 수정 · 삭제한 적이 있는 파일은 그대로 둡니다. preset 에 `hand_joint_controller` 가 적혀도 단축키 토글이 통과합니다 — 이 프로파일이 그 컨트롤러의 gain 스키마를 등록하기 때문입니다.
 
 
 ## 기타 기능

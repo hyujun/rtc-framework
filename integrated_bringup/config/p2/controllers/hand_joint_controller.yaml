@@ -22,8 +22,13 @@ hand_joint_controller:
   # ── Trajectory generation ─────────────────────────────────────────────────
   # Quintic rest-to-rest. Duration = max joint distance / speed, extended
   # until the peak velocity (15/8 × Δq / T) is within max_traj_velocity.
-  trajectory_speed: 1.0       # rad/s, > 0 — half the finger motors' 2 rad/s rating
-  max_traj_velocity: 2.0      # rad/s — the finger motors' rating (read-only parameter)
+  # max_traj_velocity is a TEST VALUE (as devices.p2_right joint_limits
+  # max_velocity in _base.yaml). It is the ceiling of the runtime parameter
+  # `trajectory_speed`; each joint's peak velocity is still held to
+  # min(this, that joint's limit in force), so a speed above the joint limit is
+  # accepted and the move simply takes longer.
+  trajectory_speed: 1.0       # rad/s, > 0
+  max_traj_velocity: 10.0     # rad/s — read-only parameter
 
   # ── Feedforward torque lane ──────────────────────────────────────────────
   # τ_ff = clamp(gain · g_a(q_meas), ±min(max_abs, devices.p2_right max_torque)).

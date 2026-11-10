@@ -84,14 +84,21 @@
           - "middle_pip_joint"
           - "ring_mcp_joint"
         joint_limits:
-          max_velocity: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0] # rad/s — the URDF's rating
+          # TEST VALUES (velocity and position): deliberately wider than the
+          # hand description's limits, to be replaced by measured ones. The CM
+          # merges these with the URDF's limits and the TIGHTER bound applies,
+          # so they take effect only where the URDF is widened too; with the
+          # URDF as shipped the limits in force are the URDF's.
+          max_velocity: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0] # rad/s
           # N·m — the URDF's `effort` (a placeholder, not a measured rating).
           # The feedforward torque bound in force is min(this,
           # hand_joint_controller.yaml gravity_ff.max_abs), so this value alone
           # never bounds the torque.
           max_torque: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-          # rad — the URDF's values (= the MJCF's ranges). Zero is the extended
-          # hand; the driving joints flex toward the negative side except the
+          # rad — ±135° on every joint (test values, see above). Symmetric on
+          # purpose, so where they are in force the clamp no longer keeps a
+          # joint to the side it flexes toward: zero is the extended hand and
+          # the driving joints flex toward the negative side except the
           # index/middle mcp/pip pairs (see the URDF header).
-          position_lower: [-1.5708, -1.5708, -1.5708, -1.5708, -0.2, 0.0, 0.0, 0.0, 0.0, -1.5708]
-          position_upper: [0.0, 0.0, 1.5708, 0.0, 0.0, 1.5708, 1.5708, 1.5708, 1.5708, 0.0]
+          position_lower: [-2.3562, -2.3562, -2.3562, -2.3562, -2.3562, -2.3562, -2.3562, -2.3562, -2.3562, -2.3562]
+          position_upper: [2.3562, 2.3562, 2.3562, 2.3562, 2.3562, 2.3562, 2.3562, 2.3562, 2.3562, 2.3562]
