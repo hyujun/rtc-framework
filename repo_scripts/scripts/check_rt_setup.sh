@@ -153,6 +153,16 @@ check_rt_kernel() {
     _category_update "rt_kernel" "FAIL"
     _category_set_detail "rt_kernel" "Generic ${kernel_ver}"
   fi
+
+  # cpu_shield.sh 의 cset 은 legacy cpuset 파일시스템을 mount 한다. 없으면 RT
+  # 커널이어도 shield 가 서지 않는다 (6.12+ 의 CONFIG_CPUSETS_V1, default n).
+  if kernel_has_cpuset_fs; then
+    _pass "legacy cpuset 파일시스템 사용 가능 (cset shield)"
+  else
+    _fail "legacy cpuset 파일시스템 없음 — cset shield 불가 (CONFIG_CPUSETS_V1 미설정)"
+    _fix "sudo ${SCRIPT_DIR}/build_rt_kernel.sh --batch --force-step 4  # 재빌드 후 재부팅"
+    _category_update "rt_kernel" "FAIL"
+  fi
 }
 
 # ══════════════════════════════════════════════════════════════════════════════

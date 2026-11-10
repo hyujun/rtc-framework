@@ -1128,6 +1128,31 @@ shield_marker_profile() {
   echo "$profile"
 }
 
+# ── Legacy cpuset filesystem (what `cset` mounts) ───────────────────────────
+# `cset` works by `mount -t cpuset`. Linux 6.12 put that filesystem behind
+# CONFIG_CPUSETS_V1 (default n), so a kernel can have CONFIG_CPUSETS=y and a
+# working cgroup-v2 cpuset controller and still refuse every `cset shield`.
+# /proc/filesystems lists the registered type whether or not it is mounted.
+#   $1 = filesystems table to read (default /proc/filesystems; tests pass a file)
+kernel_has_cpuset_fs() {
+  awk '$NF == "cpuset" { found = 1 } END { exit !found }' \
+    "${1:-/proc/filesystems}" 2>/dev/null
+}
+
+# ── Newest file matching a glob ─────────────────────────────────────────────
+# Prints the basename of the most recently modified regular file in dir $1
+# whose name matches glob $2 (optionally excluding glob $3); prints nothing
+# when there is none. A rebuilt kernel leaves the earlier revision's .deb next
+# to the new one, and `find | head -1` picks between them in directory order.
+newest_file_matching() {
+  local dir="$1" glob="$2" exclude="${3:-}"
+  local -a pred=(-maxdepth 1 -type f -name "$glob")
+  [[ -n "$exclude" ]] && pred+=(! -name "$exclude")
+  # `|| true`: a missing dir is "no match", not a pipefail abort in the caller.
+  { find "$dir" "${pred[@]}" -printf '%T@ %f\n' 2>/dev/null || true; } |
+    sort -rn | head -n 1 | cut -d' ' -f2-
+}
+
 # ── Active-isolation detection (issue #349 D14, moved here by #386) ─────────
 #
 # Which cores are ACTUALLY held away from the general scheduler, and by which

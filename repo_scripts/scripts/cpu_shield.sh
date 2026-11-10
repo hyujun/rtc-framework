@@ -227,14 +227,21 @@ do_on() {
 
   # Try cset shield first
   if command -v cset &>/dev/null; then
-    if cset shield --cpu="${shield_cores}" --kthread=on 2>/dev/null; then
+    local cset_err
+    if cset_err=$(cset shield --cpu="${shield_cores}" --kthread=on 2>&1 >/dev/null); then
       shield_marker_write "$mode" "$profile"
       success "cset shield activated: Core ${shield_cores} isolated"
       success "Mode: ${mode} / profile: ${profile} (${phys_cores}-core system)"
       return 0
-    else
-      warn "cset shield failed — trying cpuset fallback"
     fi
+    # cset is installed but refused. Say why, instead of falling through to the
+    # "not installed" message below — that one sends the operator to apt for a
+    # package they already have.
+    local hint=""
+    if ! kernel_has_cpuset_fs; then
+      hint=" 이 커널에는 legacy cpuset 파일시스템이 없다 (6.12+ 는 CONFIG_CPUSETS_V1=y 필요 — 확인: grep CPUSETS_V1 /boot/config-\$(uname -r)). 커널을 다시 빌드한다: sudo build_rt_kernel.sh --batch --force-step 4 후 재부팅."
+    fi
+    fatal "cset shield 실패 (cset 은 설치돼 있다) — CPU shield 를 적용할 수 없다.${hint} cset 출력: ${cset_err:-<없음>} (RT 코어 격리 없이 제어 루프 실행 시 RT-HOST-3 격리 보장이 깨진다)"
   fi
 
   # cset 없이는 실질 격리 불가 — 허상 success 금지 (P1-2).

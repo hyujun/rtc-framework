@@ -2067,6 +2067,55 @@ test_verifier_follows_the_shield_marker_profile() {
   expect_eq "verifier.flag.eq_form" "profile=mpc_off" "$(grep '^profile=' <<<"$out")"
 }
 
+# ── kernel_has_cpuset_fs / newest_file_matching ─────────────────────────────
+test_kernel_has_cpuset_fs_reads_the_registered_types() {
+  local tmp
+  tmp=$(mktemp)
+  # 6.12 + CONFIG_CPUSETS_V1=n 의 실제 모양: cgroup 은 있고 cpuset 만 없다.
+  printf 'nodev\tsysfs\nnodev\tcgroup\nnodev\tcgroup2\n\text4\n' >"$tmp"
+  if kernel_has_cpuset_fs "$tmp"; then
+    fail "[cpusetfs.absent] cpuset 이 없는 표를 있다고 판정했다"
+  else
+    pass
+  fi
+  printf 'nodev\tcgroup2\nnodev\tcpuset\n\text4\n' >"$tmp"
+  if kernel_has_cpuset_fs "$tmp"; then pass; else fail "[cpusetfs.present] 등록된 cpuset 을 못 봤다"; fi
+  # 이름에 cpuset 이 들어간 다른 타입은 cpuset 이 아니다.
+  printf 'nodev\tcpuset2\nnodev\tmycpuset\n' >"$tmp"
+  if kernel_has_cpuset_fs "$tmp"; then
+    fail "[cpusetfs.substring] 부분 문자열을 cpuset 으로 판정했다"
+  else
+    pass
+  fi
+  rm -f "$tmp"
+  if kernel_has_cpuset_fs /nonexistent/filesystems; then
+    fail "[cpusetfs.unreadable] 읽을 수 없는 표를 있다고 판정했다"
+  else
+    pass
+  fi
+}
+
+test_newest_file_matching_prefers_the_latest_build() {
+  local dir
+  dir=$(mktemp -d)
+  # 재빌드 뒤의 빌드 디렉토리: revision -1 (옛 config) 과 -2 가 나란히 있다.
+  # 이름순·생성순 어느 쪽으로도 옛 것이 먼저 오게 둔다.
+  touch -d '2026-08-11 16:00' "$dir/linux-image-6.12.91-rt-custom_6.12.91-1_amd64.deb"
+  touch -d '2026-11-10 12:00' "$dir/linux-image-6.12.91-rt-custom_6.12.91-2_amd64.deb"
+  touch -d '2026-11-10 12:05' "$dir/linux-image-6.12.91-rt-custom-dbg_6.12.91-2_amd64.deb"
+  touch -d '2026-11-10 12:00' "$dir/linux-headers-6.12.91-rt-custom_6.12.91-2_amd64.deb"
+  expect_eq "newest.image" "linux-image-6.12.91-rt-custom_6.12.91-2_amd64.deb" \
+    "$(newest_file_matching "$dir" 'linux-image-6.12.91*.deb' '*dbg*')"
+  expect_eq "newest.headers" "linux-headers-6.12.91-rt-custom_6.12.91-2_amd64.deb" \
+    "$(newest_file_matching "$dir" 'linux-headers-6.12.91*.deb')"
+  expect_eq "newest.none" "" "$(newest_file_matching "$dir" 'linux-image-7.*.deb')"
+  # 옛 revision 이 더 최근에 건드려졌으면 그쪽이 답이다 — 기준은 이름이 아니라 mtime.
+  touch -d '2026-11-10 13:00' "$dir/linux-image-6.12.91-rt-custom_6.12.91-1_amd64.deb"
+  expect_eq "newest.mtime" "linux-image-6.12.91-rt-custom_6.12.91-1_amd64.deb" \
+    "$(newest_file_matching "$dir" 'linux-image-6.12.91*.deb' '*dbg*')"
+  rm -rf "$dir"
+}
+
 # ── check_rt_setup.sh::check_cpu_isolation (issue #386 A) ───────────────────
 # 이동한 shield_isolation_method 의 **새 소비처**. 이동만 검증하면 반쪽이다 —
 # 이 검사가 예전에 틀렸던 이유는 함수가 없어서가 아니라 아무도 안 불러서였고,
@@ -2759,6 +2808,8 @@ test_print_thread_layout_uses_the_slot_helpers
 test_verifier_expected_slots_track_the_helpers
 test_verifier_is_sourceable_without_running
 test_verifier_follows_the_shield_marker_profile
+test_kernel_has_cpuset_fs_reads_the_registered_types
+test_newest_file_matching_prefers_the_latest_build
 test_check_cpu_isolation_sees_a_live_cset_shield
 test_check_process_discovery_judges_by_name
 test_json_output_stays_parseable_when_discovery_fails
