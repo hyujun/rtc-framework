@@ -316,7 +316,7 @@ ros2 run rtc_tools analyze_hand_gravity_ff joint_ff.csv --big cmc_01_joint,… -
 
 - 구간: `ff_enabled` 가 바뀌는 곳마다 자르고, `--min-segment-s` (10 s) 보다 짧은 구간은 버린다. 켠 구간과 끈 구간이 하나씩은 있어야 하며 없으면 UNDECIDED. 통계는 구간 **끝 `--window-s` (3 s)** 의 `readable = 1` · `estop = 0` 행에서만 내고, 관절별 지표는 $|q_{ref} - q|$ 의 창 평균 (최대도 보고). 구간이 여럿이면 켠 쪽은 가장 나쁜 평균, 끈 쪽은 가장 작은 평균을 쓴다.
 - 관절 분류 (`--big` · `--small` · `--exclude`, 쉼표 목록, 열 이름 끝 일치): 큰 관절은 전제 끈 평균 ≥ `--big-off-min-rad` (0.010, 아니면 그 관절 UNDECIDED — 끈 채로 처지지 않는 관절은 판별력이 없다) 뒤에 켠 평균 ≤ `--big-on-max-rad` (0.001) 와 켠 / 끈 ≤ `--big-ratio-max` (0.05). 작은 관절은 전제 ≥ `--small-off-min-rad` (0.003) 뒤에 켠 평균 ≤ `--small-on-max-rad` (0.001). `--exclude` 는 보고만 한다. 기본 목록은 열 손 관절에서 `index_mcp_rotate_joint` 를 뺀 것이고, 목록 이름이 어느 관절과도 안 맞으면 exit 3 이다.
-- 전역: 켠 창의 모든 행이 `ff_finite = 1`, 모든 창 행이 `held = 0` (아니면 FAIL, `held_ticks` 최대를 적는다). `--loop-discriminator` (기본 `ring_mcp_joint`) 는 그 관절 행에 폐루프 일관성 판별자라는 메모만 단다.
+- 전역: 모든 창 행이 `traj_active = 0` (정지 자세만 판정), 켠 창 행이 `ff_finite = 1`, 창 행이 `held = 0` (아니면 FAIL). `--loop-discriminator` (기본 `ring_mcp_joint`) 는 그 관절 행에 폐루프 일관성 판별자라는 메모만 단다.
 - 종료 코드 0 / 1 (FAIL) / 2 (UNDECIDED) / 3 (입력 불가: `joint_ff.csv` 가 없거나 여럿인데 `--csv` 없음, 열 누락, 목록 이름 불일치). 그림은 `plot_rtc_log joint_ff.csv` 가 그린다.
 
 ### joint_command_gui

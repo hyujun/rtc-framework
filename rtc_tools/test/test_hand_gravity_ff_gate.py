@@ -478,6 +478,27 @@ def test_window_rows_must_be_in_tracking_when_mode_is_logged(tmp_path):
     assert early["g.mode"].verdict == PASS
 
 
+def test_window_rows_must_be_at_rest(tmp_path):
+    """A held pose is what is judged: a goal moving inside a window makes e_j
+    tracking error, and the inertia term acts on the on side only."""
+    clean = run_judge(tmp_path, aba())
+    assert clean["g.at_rest"].verdict == PASS
+    assert clean["g.at_rest"].value == "0 / 903 window rows with a goal moving (traj_active = 1)"
+
+    def late(t_in_seg):
+        return {"traj_active": 1} if t_in_seg >= 11.0 else {"traj_active": 0}
+
+    moving = run_judge(tmp_path, aba(per_row=late))
+    assert moving["g.at_rest"].verdict == FAIL
+    assert moving["g.at_rest"].value.startswith("303 / 903")  # 1.0 s + 1 row x 3 segments
+    assert "held pose" in moving["g.at_rest"].note
+    # A goal that finished before the window (the walk to the hold pose) is fine.
+    early = run_judge(
+        tmp_path, aba(per_row=lambda t: {"traj_active": 1} if t < 1.0 else {"traj_active": 0})
+    )
+    assert early["g.at_rest"].verdict == PASS
+
+
 def test_overall_precedence():
     assert overall([Check("a", PASS, "", "")]) == PASS
     assert overall([Check("a", PASS, "", ""), Check("b", NOT_EVALUATED, "", "")]) == PASS

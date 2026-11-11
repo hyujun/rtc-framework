@@ -56,7 +56,7 @@ A/B 비교는 `dynamics_feedforward.enabled` 로만 한다 — command type 을 
 
 ## 로그와 판정
 
-`joint_ff.csv` 의 열은 [controller-logs.md](controller-logs.md#csv-로그) (`mode` 열 = 0 tracking · 1 damping · 2 damping_feedforward). sim 의 hold 게이트는 `ros2 run rtc_tools analyze_hand_gravity_ff <session>` — `ff_enabled` 로 on/off 구간을 나눠 마지막 3 s 의 `|q_ref − q|` 를 관절급별 문턱에 대 본다 (문턱 · 관절 목록은 그 도구의 CLI 기본값, 근거는 [testing.md](../../docs/testing.md) 의 p2 행). 그림은 `plot_rtc_log joint_ff.csv`.
+`joint_ff.csv` 의 열은 [controller-logs.md](controller-logs.md#csv-로그) (`mode` 열 = 0 tracking · 1 damping · 2 damping_feedforward). sim 의 hold 게이트는 `ros2 run rtc_tools analyze_hand_gravity_ff <session>` — `ff_enabled` 로 on/off 구간을 나눠 마지막 3 s 의 `|q_ref − q|` 를 관절급별 문턱에 대 본다 (그 창에 goal 이 움직이는 행 `traj_active = 1` 이 있으면 `g.at_rest` FAIL — goal 은 창 전에 보낸다) (문턱 · 관절 목록은 그 도구의 CLI 기본값, 근거는 [testing.md](../../docs/testing.md) 의 p2 행). 그림은 `plot_rtc_log joint_ff.csv`.
 
 ## 실기 (proto2, CAN FD)
 
