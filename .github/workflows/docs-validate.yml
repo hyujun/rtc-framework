@@ -90,6 +90,29 @@ jobs:
       - name: Validate .claude/rules path globs
         run: python3 repo_scripts/scripts/validate_claude_rules.py
 
+      # Cross-package validators: their input is every package's CMakeLists and
+      # test sources, so they belong where the whole repo is in scope. Self-test
+      # first, as with validate_docs above. Pure Python, so they run before the
+      # apt step: a runner-side apt outage (DNS, 2026-11-11) fails that step and
+      # skips everything after it, and these must still grade.
+      - name: Test DDS domain allocation
+        run: |
+          python3 repo_scripts/scripts/validate_test_domains.py --self-test
+          python3 repo_scripts/scripts/validate_test_domains.py
+
+      - name: Test fixture package resolution
+        run: |
+          python3 repo_scripts/scripts/validate_test_fixtures.py --self-test
+          python3 repo_scripts/scripts/validate_test_fixtures.py
+
+      # A test file no CMakeLists.txt names is a test `colcon test` never runs,
+      # and nothing else reports it (#711: a pytest was registered seven
+      # commits after it was added).
+      - name: Test registration
+        run: |
+          python3 repo_scripts/scripts/validate_test_registration.py --self-test
+          python3 repo_scripts/scripts/validate_test_registration.py
+
       # ── Thread layout manifest (issue #153 M1) ───────────────────────────
       # The C++ artifact is emitted through clang-format so the checked-in file
       # matches what the repo's format hook would produce. Without the tool the
@@ -102,8 +125,8 @@ jobs:
       # shell-corpus step further down.
       - name: Install clang-format + shellcheck
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-format shellcheck
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends clang-format shellcheck
 
       # The Stop hook is a stack of filters, and its failure mode is one layer
       # silently cancelling a fix made in another. These assert the observable
@@ -140,8 +163,9 @@ jobs:
       # opened DDS without a ROS_DOMAIN_ID reached main (fixed in #513), and the
       # shell regression tests were local-only. None of them needs ROS.
       # The hook now also runs the domain and fixture gates itself (its Phase
-      # 1d, after #571 met the same gap on a PR); these steps stay as the
-      # backstop for commits made outside Claude Code.
+      # 1d, after #571 met the same gap on a PR); those steps (moved above the apt
+      # step) and the shell tests below stay as the backstop for commits made
+      # outside Claude Code.
 
       # The Stop hook lints every changed .sh as a whole file rather than just the
       # added lines, because shellcheck reports a finding where the symptom is,
@@ -171,24 +195,3 @@ jobs:
             echo "::endgroup::"
           done
           exit "$fail"
-
-      # Cross-package validators: their input is every package's CMakeLists and
-      # test sources, so they belong where the whole repo is in scope. Self-test
-      # first, as with validate_docs above.
-      - name: Test DDS domain allocation
-        run: |
-          python3 repo_scripts/scripts/validate_test_domains.py --self-test
-          python3 repo_scripts/scripts/validate_test_domains.py
-
-      - name: Test fixture package resolution
-        run: |
-          python3 repo_scripts/scripts/validate_test_fixtures.py --self-test
-          python3 repo_scripts/scripts/validate_test_fixtures.py
-
-      # A test file no CMakeLists.txt names is a test `colcon test` never runs,
-      # and nothing else reports it (#711: a pytest was registered seven
-      # commits after it was added).
-      - name: Test registration
-        run: |
-          python3 repo_scripts/scripts/validate_test_registration.py --self-test
-          python3 repo_scripts/scripts/validate_test_registration.py

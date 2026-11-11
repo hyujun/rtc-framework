@@ -79,6 +79,7 @@ colcon test-result --verbose
 
 규범은 [invariants.md](../agent_docs/invariants.md) PROC-6 · E-6 이고, 여기는 순서만 갖는다.
 
+0. **E-6 에 적을 단언 목록** — 식을 grep 해 고른 추측이 아니라, spec 변경을 `wip/<slug>` 에 한 번 빌드 · 테스트해 나온 red 집합으로 쓴다. `verify-changes.sh --run` 은 의존 순서상 첫 실패 패키지에서 멈추므로 하위 패키지의 red 는 그 패키지 타깃을 따로 빌드 · 테스트해 본다. 리뷰가 spec 을 바꾸면 (수치 반례 등) 목록도 다시 얻는다.
 1. **spec · 법칙 commit** — 코드 · 문서만 바꾼다. 아직 고치지 않은 단언 때문에 red 이므로, 본문에 "의도된 red" 와 다음 commit 이 고칠 단언 목록을 적는다. 이 commit 을 한 번 빌드해 red 집합이 그 목록과 같은지 본다 — 목록 밖의 red 는 E-6 로 escalate 한다.
 2. **E-6 commit** — 단언만 다시 고정하고, 무엇을 무엇으로 바꿨는지 · 왜 회귀 은폐가 아닌지를 본문에 적는다. 두 commit 은 연달아 넣고, 검증은 2 뒤의 트리로 한다.
 3. **red 인 채로 멈출 때** (escalation 으로 사용자 결정을 기다릴 때 등) — 1 을 commit 하기 전의 red 집합 확인에서든 1 과 2 사이에서든, red HEAD 나 red 작업 트리로 멈추지 않는다. escalation 을 보내기 **전에** red 편집을 `wip/<slug>` branch 에 commit 해 보관하고, 작업 branch 를 마지막 green commit 으로 되돌린 뒤 그 트리의 검증을 남긴다. 재개할 때 `wip/<slug>` 의 변경을 가져오고 그 branch 를 지운다.
