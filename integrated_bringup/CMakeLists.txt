@@ -984,6 +984,24 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # rtc_tsid and rtc_mpc agree on which models float (free-flyer root, not a
+  # composite of the same size), and a WbLayout-composed state reaches
+  # PinocchioCache as the base pose and LOCAL twist it describes. Public G1
+  # URDF through ament; no ROS node.
+  ament_add_gtest(test_tsid_mpc_floating_agreement test/test_tsid_mpc_floating_agreement.cpp)
+  target_link_libraries(test_tsid_mpc_floating_agreement
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_tsid_mpc_floating_agreement
+    ament_index_cpp
+    rtc_mpc
+    rtc_tsid
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   # The TSID QP row budget on the shipped demo_wbc configs: the real controller
   # solves one tick with every contact and constraint active, and the rows it
   # used are compared with a count taken from the YAML.
