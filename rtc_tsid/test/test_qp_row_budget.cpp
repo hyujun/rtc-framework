@@ -238,7 +238,7 @@ TEST_P(G1RowBudgetTest, EveryRowOfEveryConstraintIsInTheQp) {
   EXPECT_EQ(r.rows_dropped, 0);
   EXPECT_NE(r.status, kRowBudgetExceeded);
   EXPECT_EQ(r.n_eq_used, 6 + 12);              // unactuated + 2 surface contacts
-  EXPECT_EQ(r.n_ineq_used, 29 + 2 * 11 + 23);  // joint_limit + friction + torque
+  EXPECT_EQ(r.n_ineq_used, 23 + 2 * 11 + 23);  // joint_limit (actuated only) + friction + torque
 }
 
 INSTANTIATE_TEST_SUITE_P(Formulations, G1RowBudgetTest, ::testing::Values("wqp", "hqp"));
