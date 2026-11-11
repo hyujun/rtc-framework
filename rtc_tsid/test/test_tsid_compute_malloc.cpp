@@ -87,11 +87,10 @@ class OneRowTooMany final : public ConstraintBase {
 
 YAML::Node ControllerYaml(const char* formulation_type) {
   YAML::Node cfg;
+  // The HQP runs on its solver defaults (10 outer iterations per level): they
+  // converge this two-level stack on the first tick, checked when a raise to
+  // 200 added in #1015 was found unnecessary (#1017).
   cfg["formulation_type"] = formulation_type;
-  // The HQP's per-level cap defaults to 10 outer iterations; raised so the
-  // full-Compute gate below converges and grades the τ recovery.
-  cfg["hqp"]["solver_per_level"]["max_iter"] = 200;
-  cfg["hqp"]["solver_per_level"]["max_iter_in"] = 500;
   for (const char* foot : {test::kG1LeftFoot, test::kG1RightFoot}) {
     YAML::Node c;
     c["name"] = foot;
