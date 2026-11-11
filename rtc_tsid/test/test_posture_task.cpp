@@ -13,6 +13,7 @@
 
 #include <cstdlib>
 #include <limits>
+#include <stdexcept>
 
 namespace rtc::tsid {
 namespace {
@@ -229,6 +230,55 @@ TEST_F(FloatingPostureTest, ListGainsReachTheBaseKd) {
   const Eigen::VectorXd expected_base =
       3.0 * (ref_.v_des.head(6) - v_.head(6)) + ref_.a_des.head(6);
   EXPECT_LT((r.head(6) - expected_base).cwiseAbs().maxCoeff(), 1e-12);
+}
+
+// An na-long list sets the actuated rows only; any other length throws.
+TEST_F(FloatingPostureTest, AnActuatedLengthListSkipsTheBaseRows) {
+  PostureTask task;
+  YAML::Node cfg;
+  for (int i = 0; i < info_.n_actuated; ++i) {
+    cfg["kd"].push_back(3.0);
+  }
+  task.Init(*model_, info_, cache_, cfg);
+  const Eigen::VectorXd r = Residual(task);
+  const int na = info_.n_actuated;
+  EXPECT_LT((r.head(6) - ref_.a_des.head(6)).cwiseAbs().maxCoeff(), 1e-15) << "base Kd stays 0";
+  const Eigen::VectorXd expected_act = 10.0 * (ref_.q_des.tail(na) - q_.tail(na)) +
+                                       3.0 * (ref_.v_des.tail(na) - v_.tail(na)) +
+                                       ref_.a_des.tail(na);
+  EXPECT_LT((r.tail(na) - expected_act).cwiseAbs().maxCoeff(), 1e-12);
+
+  YAML::Node bad;
+  for (int i = 0; i < na - 1; ++i) {
+    bad["kp"].push_back(1.0);
+  }
+  PostureTask other;
+  EXPECT_THROW(other.Init(*model_, info_, cache_, bad), std::invalid_argument);
+}
+
+// A floating base whose q and v do not pair joint by joint is refused (here
+// a RobotModelInfo claiming one more q entry than a 1-DoF chain has).
+TEST_F(FloatingPostureTest, AFloatingBaseWithUnpairedJointsIsRefused) {
+  RobotModelInfo unpaired = info_;
+  unpaired.nq += 1;
+  PostureTask task;
+  EXPECT_THROW(task.Init(*model_, unpaired, cache_, YAML::Node{}), std::invalid_argument);
+  EXPECT_NO_THROW(task.Init(*model_, info_, cache_, YAML::Node{}));  // control
+}
+
+// SetGains: nv entries each, finite, or refused and the previous gains stay.
+TEST_F(FloatingPostureTest, SetGainsRefusesWrongSizes) {
+  PostureTask task;
+  task.Init(*model_, info_, cache_, YAML::Node{});
+  const Eigen::VectorXd r0 = Residual(task);
+  const Eigen::VectorXd ones = Eigen::VectorXd::Ones(info_.nv);
+  EXPECT_FALSE(task.SetGains(Eigen::VectorXd::Ones(info_.n_actuated), ones));
+  Eigen::VectorXd nan = ones;
+  nan(2) = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(task.SetGains(ones, nan));
+  EXPECT_EQ(Residual(task), r0);
+  EXPECT_TRUE(task.SetGains(ones, ones));
+  EXPECT_NE(Residual(task), r0);
 }
 
 // SetReference: nq / nv / nv sizes and finite values, or refused and the

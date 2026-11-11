@@ -7,6 +7,8 @@
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #pragma GCC diagnostic pop
 
+#include <stdexcept>
+
 namespace rtc::tsid {
 
 void PostureTask::Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
@@ -17,6 +19,12 @@ void PostureTask::Init(const pinocchio::Model& model, const RobotModelInfo& robo
   // The actuated q entries follow the root's: 7 on a free-flyer, none fixed.
   const int nq_base = robot_info.floating_base ? 7 : 0;
   position_error_ = (robot_info.nq - nq_base == na);
+  // On a floating base the position error is the point of the actuated rows;
+  // a model whose q / v do not pair (a non-1-DoF joint) is refused, not run
+  // without stiffness. A fixed base keeps the Kd-only fallback it always had.
+  if (robot_info.floating_base && !position_error_) {
+    throw std::invalid_argument("posture: a floating base needs 1-DoF joints after the root");
+  }
 
   // Default PD gains — the base rows (if any) get none.
   kp_ = Eigen::VectorXd::Constant(nv_, 10.0);
@@ -24,14 +32,19 @@ void PostureTask::Init(const pinocchio::Model& model, const RobotModelInfo& robo
   kp_.head(n_base_).setZero();
   kd_.head(n_base_).setZero();
 
-  // YAML override: a scalar sets the actuated entries, a list sets them all.
+  // YAML override: a scalar sets the actuated entries; a list has nv entries
+  // (all rows) or na (the actuated rows) — anything else throws (init only).
   const auto apply = [&](const YAML::Node& node, Eigen::VectorXd& gain) {
     if (node.IsScalar()) {
       gain.tail(na).setConstant(node.as<double>());
-    } else {
-      for (int i = 0; i < nv_ && i < static_cast<int>(node.size()); ++i) {
-        gain(i) = node[static_cast<size_t>(i)].as<double>();
-      }
+      return;
+    }
+    const int n = static_cast<int>(node.size());
+    if (n != nv_ && n != na) {
+      throw std::invalid_argument("posture: a kp / kd list needs nv or n_actuated entries");
+    }
+    for (int i = 0; i < n; ++i) {
+      gain(nv_ - n + i) = node[static_cast<size_t>(i)].as<double>();
     }
   };
   if (task_config && task_config["kp"]) {
@@ -100,9 +113,13 @@ bool PostureTask::SetReference(const Eigen::VectorXd& q_des, const Eigen::Vector
   return true;
 }
 
-void PostureTask::SetGains(const Eigen::VectorXd& kp, const Eigen::VectorXd& kd) noexcept {
+bool PostureTask::SetGains(const Eigen::VectorXd& kp, const Eigen::VectorXd& kd) noexcept {
+  if (kp.size() != nv_ || kd.size() != nv_ || !kp.allFinite() || !kd.allFinite()) {
+    return false;
+  }
   kp_ = kp;
   kd_ = kd;
+  return true;
 }
 
 }  // namespace rtc::tsid

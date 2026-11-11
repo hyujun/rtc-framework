@@ -642,7 +642,15 @@ void DemoWbcController::ApplyPostureGains() noexcept {
   Eigen::VectorXd kd = Eigen::VectorXd::Constant(nv, posture_kd_arm_);
   AssemblePostureGains(arm_dof_, full_dof_, nv, combined_cache_.ext_to_pin_v_map(), posture_kp_arm_,
                        posture_kd_arm_, posture_kp_hand_, posture_kd_hand_, kp, kd);
-  static_cast<rtc::tsid::PostureTask*>(task)->SetGains(kp, kd);
+  // A free-flyer's six base rows are no device's joints: no posture gain.
+  if (robot_info_.floating_base) {
+    kp.head(6).setZero();
+    kd.head(6).setZero();
+  }
+  if (!static_cast<rtc::tsid::PostureTask*>(task)->SetGains(kp, kd)) {
+    RCLCPP_ERROR(logger_, "[wbc] posture split gains refused (size or non-finite) — kept");
+    return;
+  }
   RCLCPP_INFO(logger_,
               "[wbc] posture split gains applied: arm kp=%.1f kd=%.1f, hand kp=%.1f kd=%.1f",
               posture_kp_arm_, posture_kd_arm_, posture_kp_hand_, posture_kd_hand_);
