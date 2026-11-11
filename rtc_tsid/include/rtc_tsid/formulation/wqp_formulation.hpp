@@ -34,6 +34,9 @@ class WQPFormulation final : public FormulationBase {
   [[nodiscard]] std::string_view Type() const noexcept override { return "wqp"; }
 
  private:
+  // (Re)allocate the QP data and solver at the current row budget (init only).
+  void ResizeQp();
+
   int nv_{0};
   int max_n_vars_{0};
   int max_n_eq_{0};
@@ -41,6 +44,9 @@ class WQPFormulation final : public FormulationBase {
 
   std::vector<std::unique_ptr<TaskBase>> tasks_;
   std::vector<std::unique_ptr<ConstraintBase>> constraints_;
+
+  ContactManagerConfig contact_cfg_;  // the contact set the Max*Dim are taken over
+  QPSolverConfig solver_cfg_;
 
   QPData qp_data_;
   QPSolverWrapper qp_solver_;

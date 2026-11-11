@@ -42,6 +42,10 @@ class HQPFormulation final : public FormulationBase {
   // Level별 task 인덱스 재구성 (active task만)
   void RebuildLevelIndices() noexcept;
 
+  // (Re)allocate every level's QP data and solver at the current row budget
+  // (init only).
+  void ResizeQp();
+
   int nv_{0};
   int max_n_vars_{0};
   int max_levels_{4};
@@ -69,9 +73,12 @@ class HQPFormulation final : public FormulationBase {
   int max_residual_dim_{0};
 
   // Max constraint dimensions
-  int max_n_eq_base_{0};
+  int max_n_eq_base_{0};       // Σ MaxEqDim of the registered constraints
   int max_n_eq_per_level_{0};  // base + max_prev_rows_ (solver init dim)
   int max_n_ineq_{0};
+
+  ContactManagerConfig contact_cfg_;  // the contact set the Max*Dim are taken over
+  QPSolverConfig solver_cfg_;
 
   SolveResult result_;
 };

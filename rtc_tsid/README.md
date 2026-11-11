@@ -99,6 +99,8 @@ const rtc::tsid::CommandOutput out =
 | `TorqueLimitConstraint` | 부등식 | URDF effort limit × YAML `tau_scale` ∈ (0, 1] (범위 위반 시 init throw) |
 | `JointLimitConstraint` | 부등식 | 1-tick 가속도 box. margin 띠 안의 역전 행은 속도 bound 로 collapse (`position_margin` < reference margin) |
 
+QP 행은 등록한 제약의 `MaxEqDim`·`MaxIneqDim` 합이다. 넘치면 풀지 않고 `qp_status` −2 를 낸다.
+
 ### ClikReferenceGenerator
 
 `kinematics/clik_reference.hpp`. TSID 가속도 적분의 대안으로, 측정 상태에 anchor 한 velocity-level CLIK one-step reference `(q_ref, v_ref)` 를 단일 box-constrained QP 로 만든다. Robot-agnostic 이며 arm/hand velocity index 는 컨트롤러가 주입한다. 호출 형태는 단일 SE3 과제 · 위치 + 접근축 과제 · 다중 frame (`MultiFrameInput`) 세 가지다.

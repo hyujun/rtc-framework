@@ -33,8 +33,10 @@ from rtc_tools.plotting.columns import (
 from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
 
 # qp_status code -> name. Source: proxsuite `QPSolverOutput` enum order;
-# the -1 convention (no QP attempt) is from rtc_tsid `SolveResult::status`.
+# the negative codes (-1 no QP attempt, -2 constraint rows over the QP's row
+# budget, not solved) are rtc_tsid `SolveResult::status`.
 _QP_STATUS_NAMES = {
+    -2: "ROW_BUDGET_EXCEEDED",
     -1: "NOT_ATTEMPTED",
     0: "SOLVED",
     1: "MAX_ITER_REACHED",

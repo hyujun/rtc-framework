@@ -42,6 +42,8 @@ class JointLimitConstraint final : public ConstraintBase {
 
   [[nodiscard]] int EqDim(const ContactState& contacts) const noexcept override;
   [[nodiscard]] int IneqDim(const ContactState& contacts) const noexcept override;
+  [[nodiscard]] int MaxEqDim(const ContactManagerConfig& contacts) const noexcept override;
+  [[nodiscard]] int MaxIneqDim(const ContactManagerConfig& contacts) const noexcept override;
 
   void ComputeEquality(const PinocchioCache& cache, const ContactState& contacts,
                        const RobotModelInfo& robot_info, int n_vars,

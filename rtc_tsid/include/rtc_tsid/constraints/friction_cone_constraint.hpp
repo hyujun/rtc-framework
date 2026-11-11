@@ -34,16 +34,18 @@ class FrictionConeConstraint final : public ConstraintBase {
 
   [[nodiscard]] int EqDim(const ContactState& contacts) const noexcept override;
   [[nodiscard]] int IneqDim(const ContactState& contacts) const noexcept override;
+  [[nodiscard]] int MaxEqDim(const ContactManagerConfig& contacts) const noexcept override;
+  [[nodiscard]] int MaxIneqDim(const ContactManagerConfig& contacts) const noexcept override;
 
   void ComputeEquality(const PinocchioCache& cache, const ContactState& contacts,
-                        const RobotModelInfo& robot_info, int n_vars,
-                        Eigen::Ref<Eigen::MatrixXd> A_block,
-                        Eigen::Ref<Eigen::VectorXd> b_block) noexcept override;
+                       const RobotModelInfo& robot_info, int n_vars,
+                       Eigen::Ref<Eigen::MatrixXd> A_block,
+                       Eigen::Ref<Eigen::VectorXd> b_block) noexcept override;
 
   void ComputeInequality(const PinocchioCache& cache, const ContactState& contacts,
-                          const RobotModelInfo& robot_info, int n_vars,
-                          Eigen::Ref<Eigen::MatrixXd> C_block, Eigen::Ref<Eigen::VectorXd> l_block,
-                          Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
+                         const RobotModelInfo& robot_info, int n_vars,
+                         Eigen::Ref<Eigen::MatrixXd> C_block, Eigen::Ref<Eigen::VectorXd> l_block,
+                         Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
 
   void SetContactManager(const ContactManagerConfig* manager) noexcept { manager_ = manager; }
 

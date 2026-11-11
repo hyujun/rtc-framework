@@ -1,5 +1,6 @@
 #include "rtc_tsid/formulation/wqp_formulation.hpp"
 
+#include <algorithm>
 #include <limits>
 
 namespace rtc::tsid {
@@ -8,39 +9,24 @@ void WQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInf
                           const ContactManagerConfig& contact_cfg, const YAML::Node& config) {
   nv_ = robot_info.nv;
   max_n_vars_ = nv_ + contact_cfg.max_contact_vars;
+  contact_cfg_ = contact_cfg;
 
-  // Max equality: EoM (floating-base: nv-na) + contacts (max_contact_vars)
-  // + 여유분
-  const int eom_eq = robot_info.floating_base ? (robot_info.nv - robot_info.n_actuated) : 0;
-  max_n_eq_ = eom_eq + contact_cfg.max_contact_vars + 16;
+  // QP rows = Σ MaxEqDim / MaxIneqDim of the constraints added after Init;
+  // AddConstraint grows them and re-sizes the QP (init only).
+  max_n_eq_ = 0;
+  max_n_ineq_ = 0;
 
-  // Max inequality: torque limits (n_actuated) + friction cones.
-  // Point contact (cdim=3): friction_faces + 1 (cone faces + unilateral).
-  // Surface contact (cdim=6): + 6 (CoP rectangle 4 + yaw moment 2).
-  int max_friction = 0;
-  for (const auto& c : contact_cfg.contacts) {
-    int per_contact = c.friction_faces + 1;
-    if (c.contact_dim == 6) {
-      per_contact += 6;
-    }
-    max_friction += per_contact;
-  }
-  max_n_ineq_ = robot_info.n_actuated + max_friction + 16;
-
-  // QP data pre-allocate
-  qp_data_.Init(max_n_vars_, max_n_eq_, max_n_ineq_);
-
-  // Solver init
-  QPSolverConfig solver_cfg;
+  // Solver config — kept for the re-size in AddConstraint.
+  solver_cfg_ = QPSolverConfig{};
   if (config && config["wqp"] && config["wqp"]["solver"]) {
     const auto& sc = config["wqp"]["solver"];
-    solver_cfg.max_iter = sc["max_iter"].as<int>(20);
-    solver_cfg.max_iter_in = sc["max_iter_in"].as<int>(100);
-    solver_cfg.eps_abs = sc["eps_abs"].as<double>(1e-6);
-    solver_cfg.eps_rel = sc["eps_rel"].as<double>(0.0);
-    solver_cfg.verbose = sc["verbose"].as<bool>(false);
+    solver_cfg_.max_iter = sc["max_iter"].as<int>(20);
+    solver_cfg_.max_iter_in = sc["max_iter_in"].as<int>(100);
+    solver_cfg_.eps_abs = sc["eps_abs"].as<double>(1e-6);
+    solver_cfg_.eps_rel = sc["eps_rel"].as<double>(0.0);
+    solver_cfg_.verbose = sc["verbose"].as<bool>(false);
   }
-  qp_solver_.Init(max_n_vars_, max_n_eq_, max_n_ineq_, solver_cfg);
+  ResizeQp();
 
   // Result buffer
   result_.Init(max_n_vars_);
@@ -62,7 +48,16 @@ void WQPFormulation::AddTask(std::unique_ptr<TaskBase> task) {
 }
 
 void WQPFormulation::AddConstraint(std::unique_ptr<ConstraintBase> constraint) {
+  max_n_eq_ += std::max(0, constraint->MaxEqDim(contact_cfg_));
+  max_n_ineq_ += std::max(0, constraint->MaxIneqDim(contact_cfg_));
   constraints_.push_back(std::move(constraint));
+  ResizeQp();
+}
+
+void WQPFormulation::ResizeQp() {
+  // A new solver object: also drops the warm start, which is init-time only.
+  qp_data_.Init(max_n_vars_, max_n_eq_, max_n_ineq_);
+  qp_solver_.Init(max_n_vars_, max_n_eq_, max_n_ineq_, solver_cfg_);
 }
 
 TaskBase* WQPFormulation::GetTask(std::string_view name) {
@@ -139,6 +134,10 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
   qp_data_.A.topLeftCorner(max_n_eq_, n_vars).setZero();
   qp_data_.b.head(max_n_eq_).setZero();
 
+  // A constraint whose rows do not fit (its EqDim / IneqDim above the
+  // MaxEqDim / MaxIneqDim it reported) is skipped and counted; the QP is then
+  // not solved — one without those rows is not the problem the caller posed.
+  int rows_dropped = 0;
   int n_eq_used = 0;
   for (const auto& con : constraints_) {
     if (!con->IsActive())
@@ -146,8 +145,10 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
     const int ed = con->EqDim(contacts);
     if (ed <= 0)
       continue;
-    if (n_eq_used + ed > max_n_eq_)
-      break;  // overflow guard — Init 시 충분히 잡았으므로 정상 경로에서는 발생하지 않음
+    if (n_eq_used + ed > max_n_eq_) {
+      rows_dropped += ed;
+      continue;
+    }
 
     auto A_view = qp_data_.A.block(n_eq_used, 0, ed, n_vars);
     auto b_view = qp_data_.b.segment(n_eq_used, ed);
@@ -168,8 +169,10 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
     const int id = con->IneqDim(contacts);
     if (id <= 0)
       continue;
-    if (n_ineq_used + id > max_n_ineq_)
-      break;
+    if (n_ineq_used + id > max_n_ineq_) {
+      rows_dropped += id;
+      continue;
+    }
 
     auto C_view = qp_data_.C.block(n_ineq_used, 0, id, n_vars);
     auto l_view = qp_data_.l.segment(n_ineq_used, id);
@@ -184,6 +187,14 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
   qp_data_.n_vars = n_vars;
   qp_data_.n_eq = n_eq_used;
   qp_data_.n_ineq = n_ineq_used;
+  result_.n_eq_used = n_eq_used;
+  result_.n_ineq_used = n_ineq_used;
+  result_.rows_dropped = rows_dropped;
+
+  if (rows_dropped > 0) {
+    result_.MarkNotSolved(kRowBudgetExceeded);
+    return result_;
+  }
 
   // ── Solve ──
   const auto& solver_result = qp_solver_.Solve(qp_data_);

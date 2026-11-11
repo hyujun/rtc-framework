@@ -34,6 +34,14 @@ int TorqueLimitConstraint::IneqDim(const ContactState& /*contacts*/) const noexc
   return na_;
 }
 
+int TorqueLimitConstraint::MaxEqDim(const ContactManagerConfig& /*contacts*/) const noexcept {
+  return 0;
+}
+
+int TorqueLimitConstraint::MaxIneqDim(const ContactManagerConfig& /*contacts*/) const noexcept {
+  return na_;
+}
+
 void TorqueLimitConstraint::ComputeEquality(const PinocchioCache& /*cache*/,
                                             const ContactState& /*contacts*/,
                                             const RobotModelInfo& /*robot_info*/, int /*n_vars*/,

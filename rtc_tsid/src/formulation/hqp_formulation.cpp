@@ -1,5 +1,6 @@
 #include "rtc_tsid/formulation/hqp_formulation.hpp"
 
+#include <algorithm>
 #include <limits>
 
 namespace rtc::tsid {
@@ -8,51 +9,36 @@ void HQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInf
                           const ContactManagerConfig& contact_cfg, const YAML::Node& config) {
   nv_ = robot_info.nv;
   max_n_vars_ = nv_ + contact_cfg.max_contact_vars;
+  contact_cfg_ = contact_cfg;
 
   if (config && config["hqp"] && config["hqp"]["max_levels"]) {
     max_levels_ = config["hqp"]["max_levels"].as<int>();
   }
 
-  // Base equality: EoM + contacts
-  const int eom_eq = robot_info.floating_base ? (robot_info.nv - robot_info.n_actuated) : 0;
-  max_n_eq_base_ = eom_eq + contact_cfg.max_contact_vars + 16;
-
-  // Max inequality — point: friction_faces + 1; surface: + 6 (CoP + yaw).
-  int max_friction = 0;
-  for (const auto& c : contact_cfg.contacts) {
-    int per_contact = c.friction_faces + 1;
-    if (c.contact_dim == 6) {
-      per_contact += 6;
-    }
-    max_friction += per_contact;
-  }
-  max_n_ineq_ = robot_info.n_actuated + max_friction + 16;
+  // Shared constraint rows = Σ MaxEqDim / MaxIneqDim of the constraints added
+  // after Init; AddConstraint grows them and re-sizes every level (init only).
+  max_n_eq_base_ = 0;
+  max_n_ineq_ = 0;
 
   // Max previous-level equality rows = sum of all task residual dims
   // Conservative: max_n_vars * max_levels
   max_prev_rows_ = max_n_vars_ * max_levels_;
-  // Total max equality per level = base + prev stack
-  max_n_eq_per_level_ = max_n_eq_base_ + max_prev_rows_;
 
-  // Solver config
-  QPSolverConfig solver_cfg;
+  // Solver config — kept for the re-size in AddConstraint.
+  solver_cfg_ = QPSolverConfig{};
   if (config && config["hqp"] && config["hqp"]["solver_per_level"]) {
     const auto& sc = config["hqp"]["solver_per_level"];
-    solver_cfg.max_iter = sc["max_iter"].as<int>(10);
-    solver_cfg.max_iter_in = sc["max_iter_in"].as<int>(100);
-    solver_cfg.eps_abs = sc["eps_abs"].as<double>(1e-6);
-    solver_cfg.eps_rel = sc["eps_rel"].as<double>(0.0);
-    solver_cfg.verbose = sc["verbose"].as<bool>(false);
+    solver_cfg_.max_iter = sc["max_iter"].as<int>(10);
+    solver_cfg_.max_iter_in = sc["max_iter_in"].as<int>(100);
+    solver_cfg_.eps_abs = sc["eps_abs"].as<double>(1e-6);
+    solver_cfg_.eps_rel = sc["eps_rel"].as<double>(0.0);
+    solver_cfg_.verbose = sc["verbose"].as<bool>(false);
   }
 
   // Pre-allocate per-level resources
   qp_data_per_level_.resize(static_cast<size_t>(max_levels_));
   qp_solvers_.resize(static_cast<size_t>(max_levels_));
-  for (int k = 0; k < max_levels_; ++k) {
-    qp_data_per_level_[static_cast<size_t>(k)].Init(max_n_vars_, max_n_eq_per_level_, max_n_ineq_);
-    qp_solvers_[static_cast<size_t>(k)].Init(max_n_vars_, max_n_eq_per_level_, max_n_ineq_,
-                                             solver_cfg);
-  }
+  ResizeQp();
 
   // Level index storage
   level_task_indices_.resize(static_cast<size_t>(max_levels_));
@@ -80,7 +66,21 @@ void HQPFormulation::AddTask(std::unique_ptr<TaskBase> task) {
 }
 
 void HQPFormulation::AddConstraint(std::unique_ptr<ConstraintBase> constraint) {
+  max_n_eq_base_ += std::max(0, constraint->MaxEqDim(contact_cfg_));
+  max_n_ineq_ += std::max(0, constraint->MaxIneqDim(contact_cfg_));
   constraints_.push_back(std::move(constraint));
+  ResizeQp();
+}
+
+void HQPFormulation::ResizeQp() {
+  // Total max equality per level = shared constraints + cascaded stack.
+  // New solver objects: also drops the warm start, which is init-time only.
+  max_n_eq_per_level_ = max_n_eq_base_ + max_prev_rows_;
+  for (int k = 0; k < max_levels_; ++k) {
+    qp_data_per_level_[static_cast<size_t>(k)].Init(max_n_vars_, max_n_eq_per_level_, max_n_ineq_);
+    qp_solvers_[static_cast<size_t>(k)].Init(max_n_vars_, max_n_eq_per_level_, max_n_ineq_,
+                                             solver_cfg_);
+  }
 }
 
 TaskBase* HQPFormulation::GetTask(std::string_view name) {
@@ -144,13 +144,10 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
 
   if (active_max_level_ < 0) {
     // No active tasks — no QP was attempted this tick.
-    result_.converged = false;
-    result_.status = -1;
-    result_.non_finite = false;
-    result_.solve_time_us = 0.0;
-    result_.iterations = 0;
-    result_.outer_iterations = 0;
-    result_.levels_solved = 0;
+    result_.MarkNotSolved(-1);
+    result_.n_eq_used = 0;
+    result_.n_ineq_used = 0;
+    result_.rows_dropped = 0;
     return result_;
   }
 
@@ -166,6 +163,10 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
   base_qp.l.head(max_n_ineq_).setConstant(-std::numeric_limits<double>::infinity());
   base_qp.u.head(max_n_ineq_).setConstant(std::numeric_limits<double>::infinity());
 
+  // Rows that do not fit the shared budget (max_n_eq_base_ — the cascaded
+  // rows above it belong to the levels) are skipped and counted, and no level
+  // is solved (see WQPFormulation::Solve).
+  int rows_dropped = 0;
   int base_n_eq = 0;
   for (const auto& con : constraints_) {
     if (!con->IsActive())
@@ -173,8 +174,10 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     const int ed = con->EqDim(contacts);
     if (ed <= 0)
       continue;
-    if (base_n_eq + ed > max_n_eq_per_level_)
-      break;
+    if (base_n_eq + ed > max_n_eq_base_) {
+      rows_dropped += ed;
+      continue;
+    }
 
     auto A_view = base_qp.A.block(base_n_eq, 0, ed, n_vars);
     auto b_view = base_qp.b.segment(base_n_eq, ed);
@@ -189,14 +192,24 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     const int id = con->IneqDim(contacts);
     if (id <= 0)
       continue;
-    if (base_n_ineq + id > max_n_ineq_)
-      break;
+    if (base_n_ineq + id > max_n_ineq_) {
+      rows_dropped += id;
+      continue;
+    }
 
     auto C_view = base_qp.C.block(base_n_ineq, 0, id, n_vars);
     auto l_view = base_qp.l.segment(base_n_ineq, id);
     auto u_view = base_qp.u.segment(base_n_ineq, id);
     con->ComputeInequality(cache, contacts, robot_info, n_vars, C_view, l_view, u_view);
     base_n_ineq += id;
+  }
+
+  result_.n_eq_used = base_n_eq;
+  result_.n_ineq_used = base_n_ineq;
+  result_.rows_dropped = rows_dropped;
+  if (rows_dropped > 0) {
+    result_.MarkNotSolved(kRowBudgetExceeded);
+    return result_;
   }
 
   // ── Cascaded QP solve ──

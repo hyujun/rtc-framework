@@ -254,6 +254,14 @@ class DemoWbcController final : public RTControllerInterface {
 
   [[nodiscard]] FingertipReport GetFingertipReportForTesting(int fingertip_idx) const noexcept;
 
+  /// One TSID formulation solve on the current cache and reference with every
+  /// configured contact fully active and the named constraints switched on
+  /// (their preset state is restored afterwards) — the tick the QP row budget
+  /// must hold. nullptr when the config has no TSID stack or a name is not a
+  /// registered constraint. Test seam: allocates.
+  [[nodiscard]] const rtc::tsid::SolveResult* SolveTsidAllContactsActiveForTesting(
+      const std::vector<std::string>& constraint_names);
+
   [[nodiscard]] int GetNumActiveFingertipsForTesting() const noexcept {
     return num_active_fingertips_;
   }

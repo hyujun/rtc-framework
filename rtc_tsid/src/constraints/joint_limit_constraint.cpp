@@ -102,6 +102,14 @@ int JointLimitConstraint::IneqDim(const ContactState& /*contacts*/) const noexce
   return nv_;
 }
 
+int JointLimitConstraint::MaxEqDim(const ContactManagerConfig& /*contacts*/) const noexcept {
+  return 0;
+}
+
+int JointLimitConstraint::MaxIneqDim(const ContactManagerConfig& /*contacts*/) const noexcept {
+  return nv_;
+}
+
 void JointLimitConstraint::ComputeEquality(const PinocchioCache& /*cache*/,
                                            const ContactState& /*contacts*/,
                                            const RobotModelInfo& /*robot_info*/, int /*n_vars*/,

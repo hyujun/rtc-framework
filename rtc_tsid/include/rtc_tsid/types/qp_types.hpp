@@ -37,6 +37,12 @@ struct QPData {
   }
 };
 
+// SolveResult::status when the active constraints needed more QP rows than the
+// formulation sized from their MaxEqDim / MaxIneqDim: the rows that did not fit
+// were dropped and the QP was NOT solved (converged = false). proxsuite's own
+// QPSolverOutput values are non-negative; −1 means no attempt was made.
+inline constexpr int kRowBudgetExceeded = -2;
+
 // ────────────────────────────────────────────────
 // QP Solve 결과
 // ────────────────────────────────────────────────
@@ -44,7 +50,8 @@ struct SolveResult {
   Eigen::VectorXd x_opt;  // [max_n_vars] pre-allocated
   bool converged{false};
   // proxsuite::proxqp::QPSolverOutput of the last solve as int (0 = SOLVED);
-  // −1 = the wrapper returned before solving (not initialised).
+  // −1 = the wrapper returned before solving (not initialised);
+  // kRowBudgetExceeded = rows were dropped, not solved.
   int status{-1};
   // Solver iterates were non-finite (converged is then false even if status
   // reports SOLVED — see QPSolverWrapper::Solve).
@@ -57,8 +64,27 @@ struct SolveResult {
   // QPSolverConfig::max_iter bounds. 0 when no solve ran.
   int outer_iterations{0};
   int levels_solved{0};  // WQP: 항상 1, HQP: 실제 solve한 level 수
+  // Constraint rows assembled this tick (HQP: the shared constraints, without
+  // the cascaded rows of earlier levels), and the rows of active constraints
+  // that did not fit the formulation's row budget. rows_dropped > 0 comes with
+  // status = kRowBudgetExceeded and converged = false.
+  int n_eq_used{0};
+  int n_ineq_used{0};
+  int rows_dropped{0};
 
   void Init(int max_n_vars) { x_opt.setZero(max_n_vars); }
+
+  // A tick on which no QP was solved: `status` says why (−1 or
+  // kRowBudgetExceeded), the solve diagnostics are zeroed, x_opt is left as is.
+  void MarkNotSolved(int why) noexcept {
+    converged = false;
+    status = why;
+    non_finite = false;
+    solve_time_us = 0.0;
+    iterations = 0;
+    outer_iterations = 0;
+    levels_solved = 0;
+  }
 };
 
 // ────────────────────────────────────────────────
