@@ -7,7 +7,7 @@
 - the pure decisions in ``demo_gui.hand_joint`` (answer parsing, readout text,
   the fail-open send guard) and that the mode tuple agrees with the C++ header,
   read from its source rather than copied,
-- the Gains rows (``gravity_ff.*``, ``trajectory_speed``) and that they reach
+- the Gains rows (``dynamics_feedforward.*``, ``trajectory_speed``) and that they reach
   GAIN_DEFS only through the profile-scoped registration, bool row included,
 - the ``app.py`` wiring pytest can see: the guard in all four hand publish
   paths, the owner-only gate repainted on selection / poll / active change, one
@@ -142,14 +142,14 @@ def test_goal_guard_fails_open_on_unknown():
 def test_gain_rows_cover_the_runtime_parameters():
     rows = {r.param: r for r in hand_joint_gain_rows()}
     assert set(rows) == {
-        "gravity_ff.enabled",
-        "gravity_ff.gain",
-        "gravity_ff.inertia_gain",
+        "dynamics_feedforward.enabled",
+        "dynamics_feedforward.gravity_gain",
+        "dynamics_feedforward.inertia_gain",
         "trajectory_speed",
         "max_traj_velocity",
     }
-    assert rows["gravity_ff.enabled"].is_bool
-    assert not any(r.is_bool for p, r in rows.items() if p != "gravity_ff.enabled")
+    assert rows["dynamics_feedforward.enabled"].is_bool
+    assert not any(r.is_bool for p, r in rows.items() if p != "dynamics_feedforward.enabled")
     assert [p for p, r in rows.items() if r.read_only] == ["max_traj_velocity"]
     groups = {r.group for r in rows.values()}
     assert groups == {g for row in HAND_JOINT_GAIN_LAYOUT for g in row}
@@ -164,16 +164,19 @@ def test_registration_builds_the_bool_row_and_setters():
     try:
         config.register_scalar_gain_schema(ctrl, hand_joint_gain_rows(), HAND_JOINT_GAIN_LAYOUT)
         defs = {label: is_bool for label, _n, _d, is_bool, _g in config.GAIN_DEFS[ctrl]}
-        assert defs["gravity_ff enabled"] is True
-        assert defs["gravity_ff gain [0-2]"] is False
+        assert defs["enabled"] is True
+        assert defs["gravity_gain [0-2]"] is False
         dispatch = config.GAIN_PARAM_DISPATCH[ctrl]
-        name, setter = dispatch["gravity_ff enabled"]
-        assert name == "gravity_ff.enabled"
+        name, setter = dispatch["enabled"]
+        assert name == "dynamics_feedforward.enabled"
         assert setter([1.0]) == (config.Parameter.Type.BOOL, True)
         assert setter([0.0]) == (config.Parameter.Type.BOOL, False)
-        assert dispatch["gravity_ff gain [0-2]"][1] is config._set_double
-        assert dispatch["gravity_ff inertia_gain [0-2]"] == (
-            "gravity_ff.inertia_gain",
+        assert dispatch["gravity_gain [0-2]"] == (
+            "dynamics_feedforward.gravity_gain",
+            config._set_double,
+        )
+        assert dispatch["inertia_gain [0-2]"] == (
+            "dynamics_feedforward.inertia_gain",
             config._set_double,
         )
         assert dispatch["max_traj_velocity [rad/s]"][1] is config._read_only

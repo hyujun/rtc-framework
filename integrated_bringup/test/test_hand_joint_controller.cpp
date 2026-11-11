@@ -1037,7 +1037,7 @@ TEST(HandJointShipped, TheP2YamlParsesAndNamesOneGroup) {
   EXPECT_TRUE(parsed.ff.enabled);
   EXPECT_DOUBLE_EQ(parsed.ff.gravity_gain, 1.0);
   EXPECT_DOUBLE_EQ(parsed.ff.inertia_gain, 1.0) << "the inertia term ships on, spelled out";
-  EXPECT_TRUE(cfg["gravity_ff"]["inertia_gain"]);
+  EXPECT_TRUE(cfg["dynamics_feedforward"]["inertia_gain"]);
   // The bound covers the sum of the gravity and the inertia term.
   EXPECT_DOUBLE_EQ(parsed.ff.max_abs, 0.3);
   // The bound is an explicit choice well under the device's placeholder
@@ -1066,9 +1066,9 @@ TEST(HandJointLifecycle, ConfiguresDeclaresParametersAndCleansUp) {
   const rclcpp_lifecycle::State unconfigured;
   ASSERT_EQ(ctrl->on_configure(unconfigured, node, YAML::Load(rig.yaml)),
             rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS);
-  EXPECT_TRUE(node->has_parameter("gravity_ff.enabled"));
-  EXPECT_TRUE(node->has_parameter("gravity_ff.gain"));
-  EXPECT_TRUE(node->has_parameter("gravity_ff.inertia_gain"));
+  EXPECT_TRUE(node->has_parameter("dynamics_feedforward.enabled"));
+  EXPECT_TRUE(node->has_parameter("dynamics_feedforward.gravity_gain"));
+  EXPECT_TRUE(node->has_parameter("dynamics_feedforward.inertia_gain"));
   EXPECT_TRUE(node->has_parameter("trajectory_speed"));
   EXPECT_TRUE(node->has_parameter("mode"));
   EXPECT_EQ(node->get_parameter("mode").as_string(), "tracking");
@@ -1084,17 +1084,20 @@ TEST(HandJointLifecycle, ConfiguresDeclaresParametersAndCleansUp) {
   EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("mode", "tracking")).successful);
   EXPECT_EQ(ctrl->GetGains().mode, HandJointMode::kTracking);
   // The runtime switch reaches the tick's gains.
-  const auto res = node->set_parameter(rclcpp::Parameter("gravity_ff.enabled", false));
+  const auto res = node->set_parameter(rclcpp::Parameter("dynamics_feedforward.enabled", false));
   EXPECT_TRUE(res.successful) << res.reason;
   EXPECT_FALSE(ctrl->GetGains().ff_enabled);
   // An out-of-range gain is refused and the old one kept.
-  const auto bad = node->set_parameter(rclcpp::Parameter("gravity_ff.gain", 5.0));
+  const auto bad = node->set_parameter(rclcpp::Parameter("dynamics_feedforward.gravity_gain", 5.0));
   EXPECT_FALSE(bad.successful);
+  EXPECT_NE(bad.reason.find("gravity_gain"), std::string::npos) << bad.reason;
   EXPECT_DOUBLE_EQ(ctrl->GetGains().gravity_gain, 1.0);
   // The inertia gain: in range reaches the tick, out of range is refused.
-  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("gravity_ff.inertia_gain", 0.5)).successful);
+  EXPECT_TRUE(
+      node->set_parameter(rclcpp::Parameter("dynamics_feedforward.inertia_gain", 0.5)).successful);
   EXPECT_DOUBLE_EQ(ctrl->GetGains().inertia_gain, 0.5);
-  const auto bad_m = node->set_parameter(rclcpp::Parameter("gravity_ff.inertia_gain", 2.5));
+  const auto bad_m =
+      node->set_parameter(rclcpp::Parameter("dynamics_feedforward.inertia_gain", 2.5));
   EXPECT_FALSE(bad_m.successful);
   EXPECT_NE(bad_m.reason.find("inertia_gain"), std::string::npos) << bad_m.reason;
   EXPECT_DOUBLE_EQ(ctrl->GetGains().inertia_gain, 0.5);
@@ -1120,12 +1123,12 @@ TEST(HandJointLifecycle, AWrongTypedInertiaGainOverrideCostsThatParameterAlone) 
   auto ctrl = BringUp(rig);
   ASSERT_EQ(ctrl->ConfigError(), "");
   rclcpp::NodeOptions opts;
-  opts.parameter_overrides({rclcpp::Parameter("gravity_ff.inertia_gain", 1)});
+  opts.parameter_overrides({rclcpp::Parameter("dynamics_feedforward.inertia_gain", 1)});
   auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("hand_joint_controller", opts);
   const rclcpp_lifecycle::State unconfigured;
   ASSERT_EQ(ctrl->on_configure(unconfigured, node, YAML::Load(rig.yaml)),
             rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS);
-  EXPECT_FALSE(node->has_parameter("gravity_ff.inertia_gain"));
+  EXPECT_FALSE(node->has_parameter("dynamics_feedforward.inertia_gain"));
   EXPECT_DOUBLE_EQ(ctrl->GetGains().inertia_gain, 0.0);
   ASSERT_TRUE(node->has_parameter("mode"));
   EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("mode", "damping")).successful);
