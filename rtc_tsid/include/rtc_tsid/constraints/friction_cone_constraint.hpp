@@ -2,6 +2,9 @@
 
 #include "rtc_tsid/core/constraint_base.hpp"
 
+#include <cstdint>
+#include <vector>
+
 namespace rtc::tsid {
 
 // ────────────────────────────────────────────────
@@ -24,6 +27,18 @@ namespace rtc::tsid {
 // (surface API 로 hemispherical fingertip 같은 effectively-point contact 를 표현.)
 //
 // C_block: a열 = 0, λ_i열에 cone matrix
+//
+// Surface tangent basis (#1018): t1 is the contact frame's x projected on the
+// plane ⊥ n, or — when x is too close to n — t1 = y_p × n from the frame's y.
+// The choice has hysteresis per contact so a frame whose x hovers near the
+// normal does not flip t1 (by up to 90° about n, swapping the CoP rectangle's
+// half-lengths) tick to tick: the x rule is kept while its projection is
+// ≥ kSurfaceBasisXToY (0.08) and the y rule while it is ≤ kSurfaceBasisYToX
+// (0.12). A contact without a branch yet — first tick, or the first active
+// tick after being inactive — splits at kSurfaceBasisFresh (0.1). No blend:
+// the two rules' t1 can point up to 180° apart, where an average vanishes.
+// The branch is the constraint's own state, sized in SetContactManager (init)
+// and written in place on the tick (RT-safe).
 // ────────────────────────────────────────────────
 class FrictionConeConstraint final : public ConstraintBase {
  public:
@@ -47,11 +62,21 @@ class FrictionConeConstraint final : public ConstraintBase {
                          Eigen::Ref<Eigen::MatrixXd> C_block, Eigen::Ref<Eigen::VectorXd> l_block,
                          Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
 
-  void SetContactManager(const ContactManagerConfig* manager) noexcept { manager_ = manager; }
+  // Init-time: also sizes (and resets) the per-contact surface-basis branch.
+  void SetContactManager(const ContactManagerConfig* manager);
+
+  // Hysteresis thresholds on ‖frame x projected ⊥ n‖ (see the class comment).
+  static constexpr double kSurfaceBasisXToY = 0.08;
+  static constexpr double kSurfaceBasisYToX = 0.12;
+  static constexpr double kSurfaceBasisFresh = 0.1;
 
  private:
   int nv_{0};
   const ContactManagerConfig* manager_{nullptr};
+
+  // Per contact: which rule built the last surface basis (0 none, 1 frame x,
+  // 2 frame y). [manager->contacts.size()], sized in SetContactManager.
+  std::vector<std::int8_t> surface_branch_;
 
   // Pre-computed cone matrices per contact (init 시 생성)
   // cone_matrices_[i]: [(n_faces+1) × contact_dim] linearized cone

@@ -10,9 +10,11 @@
 #include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace rtc::tsid {
 namespace {
@@ -750,6 +752,111 @@ TEST_F(SurfaceFrameTest, TheFallbackSwitchesAtATenthOfTheFrameX) {
   const Eigen::Vector3d t1 = C_.block<1, 3>(7, c + 3).transpose();
   EXPECT_LT((t1 - y_p.cross(n)).norm(), 1e-12);
   EXPECT_GT((t1 - x_p).norm(), 0.1) << "control: the two rules give different t1 here";
+}
+
+// Surface-basis hysteresis (#1018). The frame is pitched so that its x
+// projected ⊥ n (n = +Z) has length `proj`, then rolled 0.6 about its x: the
+// x rule then gives t1 = +X for every proj, the y rule y_p × n, which differs
+// from it here (control in TheFallbackSwitchesAtATenthOfTheFrameX).
+class SurfaceBasisHysteresisTest : public SurfaceFrameTest {
+ protected:
+  static Eigen::Matrix3d Frame(double proj) {
+    return (Eigen::AngleAxisd(-std::acos(proj), Eigen::Vector3d::UnitY()) *
+            Eigen::AngleAxisd(0.6, Eigen::Vector3d::UnitX()))
+        .toRotationMatrix();
+  }
+
+  // Assembles at `proj` and returns t1 (row 7's moment columns).
+  Eigen::Vector3d T1At(double proj) {
+    SetFrameRotation(Frame(proj));
+    Assemble();
+    return C_.block<1, 3>(7, info_.nv + 3).transpose();
+  }
+
+  // Which rule built t1 at `proj`: true = the frame-x rule.
+  static bool IsXRule(const Eigen::Vector3d& t1, double proj) {
+    const Eigen::Matrix3d R = Frame(proj);
+    const Eigen::Vector3d n = Eigen::Vector3d::UnitZ();
+    const Eigen::Vector3d x_p = (R.col(0) - n * R.col(0).dot(n)).normalized();
+    const Eigen::Vector3d y_rule = (R.col(1) - n * R.col(1).dot(n)).normalized().cross(n);
+    const bool x = (t1 - x_p).norm() < 1e-12;
+    const bool y = (t1 - y_rule).norm() < 1e-12;
+    EXPECT_NE(x, y) << "t1 matches exactly one rule at proj " << proj;
+    return x;
+  }
+
+  static double Angle(const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
+    return std::acos(std::clamp(a.dot(b), -1.0, 1.0));
+  }
+};
+
+// A frame whose x hovers inside the band (0.085 ↔ 0.115) keeps the rule it
+// started with — fresh at 0.115 (x) or at 0.085 (y) — and t1 never jumps.
+TEST_F(SurfaceBasisHysteresisTest, InsideTheBandTheBasisKeepsItsRule) {
+  for (const double start : {0.115, 0.085}) {
+    fc_.SetContactManager(&mgr_);  // fresh
+    const bool start_x = start >= FrictionConeConstraint::kSurfaceBasisFresh;
+    Eigen::Vector3d prev = T1At(start);
+    ASSERT_EQ(IsXRule(prev, start), start_x);
+    double worst = 0.0;
+    int ticks = 0;
+    for (int cycle = 0; cycle < 3; ++cycle) {
+      for (int k = 0; k <= 12; ++k) {  // start → the other edge → back
+        const double proj =
+            start_x ? 0.115 - 0.005 * std::min(k, 12 - k) : 0.085 + 0.005 * std::min(k, 12 - k);
+        const Eigen::Vector3d t1 = T1At(proj);
+        EXPECT_EQ(IsXRule(t1, proj), start_x) << "start " << start << " proj " << proj;
+        worst = std::max(worst, Angle(prev, t1));
+        prev = t1;
+        ++ticks;
+      }
+    }
+    ASSERT_GT(ticks, 30);
+    EXPECT_LE(worst, 0.05) << "start " << start << ": t1 turned this far in one tick";
+  }
+}
+
+// Across the band (0.125 ↔ 0.075) the rule switches exactly once per
+// crossing: x → y below kSurfaceBasisXToY, y → x above kSurfaceBasisYToX. The
+// path keeps off the thresholds themselves, where the projection's rounding
+// decides.
+TEST_F(SurfaceBasisHysteresisTest, CrossingTheBandSwitchesOncePerCrossing) {
+  fc_.SetContactManager(&mgr_);
+  const std::vector<double> path = {0.125, 0.115, 0.105, 0.095, 0.085, 0.075,
+                                    0.085, 0.095, 0.105, 0.115, 0.125};
+  std::vector<double> switched_at;
+  bool rule_x = IsXRule(T1At(path.front()), path.front());
+  ASSERT_TRUE(rule_x);
+  for (std::size_t k = 1; k < path.size(); ++k) {
+    const bool x = IsXRule(T1At(path[k]), path[k]);
+    if (x != rule_x) {
+      switched_at.push_back(path[k]);
+    }
+    rule_x = x;
+  }
+  ASSERT_EQ(switched_at.size(), 2U);
+  EXPECT_DOUBLE_EQ(switched_at[0], 0.075);
+  EXPECT_DOUBLE_EQ(switched_at[1], 0.125);
+}
+
+// A contact that was inactive for a tick chooses afresh: on the x branch 0.09
+// stays x, after one inactive tick 0.09 gives the y rule.
+TEST_F(SurfaceBasisHysteresisTest, AContactBackFromInactivePicksItsBasisAfresh) {
+  fc_.SetContactManager(&mgr_);
+  ASSERT_TRUE(IsXRule(T1At(0.11), 0.11));
+  ASSERT_TRUE(IsXRule(T1At(0.09), 0.09)) << "premise: the x branch holds inside the band";
+
+  cs_.contacts[0].active = false;
+  cs_.RecomputeActive(mgr_);
+  ASSERT_EQ(fc_.IneqDim(cs_), 0);
+  const int n_vars = info_.nv + 6;
+  Eigen::MatrixXd C = Eigen::MatrixXd::Zero(11, n_vars);
+  Eigen::VectorXd l = Eigen::VectorXd::Zero(11), u = l;
+  fc_.ComputeInequality(cache_, cs_, info_, n_vars, C, l, u);
+  cs_.contacts[0].active = true;
+  cs_.RecomputeActive(mgr_);
+
+  EXPECT_FALSE(IsXRule(T1At(0.09), 0.09)) << "back from inactive: split at 0.1 again";
 }
 
 // Without a cached placement for the contact the world-axis basis stands.
