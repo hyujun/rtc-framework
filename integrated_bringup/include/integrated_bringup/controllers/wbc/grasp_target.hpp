@@ -8,8 +8,8 @@
 /// `GraspTarget` is updated off-MPC-thread (typically from a BT leaf or a
 /// ROS topic callback) and published to the phase manager via
 /// @ref GraspPhaseManager::SetTaskTarget. The manager publishes snapshots
-/// through a wait-free `SeqLock<GraspTarget>` so the MPC thread (RT-equivalent
-/// SCHED_FIFO) never touches a mutex — see invariants.md RT-4.
+/// through a wait-free `SeqLock<GraspTargetPOD>` so the MPC thread
+/// (RT-equivalent SCHED_FIFO) never touches a mutex — see invariants.md RT-4.
 ///
 /// All poses are expressed in the model's world frame (same frame as the
 /// `tcp` argument of `PhaseManagerBase::Update`).

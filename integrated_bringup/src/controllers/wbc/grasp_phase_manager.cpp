@@ -259,8 +259,9 @@ void GraspPhaseManager::SetTaskTarget(const YAML::Node& target) {
     pinocchio::SE3 off_se3(Eigen::Matrix3d::Identity(), offset_local);
     t.pregrasp_pose = t.grasp_pose.act(off_se3);
 
-    // approach_start is snapshotted from TCP at IDLE→APPROACH edge; use
-    // pregrasp as a safe default until then.
+    // RELEASE target for mirror mode, and in standalone mode for a target set
+    // after the IDLE → APPROACH edge (that edge's recorded TCP belongs to the
+    // previous target); pregrasp is the safe default.
     t.approach_start = t.pregrasp_pose;
   } catch (...) {
     std::fprintf(stderr, "[grasp_phase] SetTaskTarget: YAML parse failed; ignored\n");
