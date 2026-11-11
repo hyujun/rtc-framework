@@ -103,7 +103,7 @@ def hand_joint_gain_rows() -> tuple[GainRow, ...]:
         GainRow("gravity_ff enabled", "gravity_ff.enabled", 1.0, False, GAIN_GROUP_FF, True),
         GainRow("gravity_ff gain [0-2]", "gravity_ff.gain", 1.0, False, GAIN_GROUP_FF),
         GainRow(
-            "gravity_ff inertia_gain [0-2]", "gravity_ff.inertia_gain", 0.0, False, GAIN_GROUP_FF
+            "gravity_ff inertia_gain [0-2]", "gravity_ff.inertia_gain", 1.0, False, GAIN_GROUP_FF
         ),
         GainRow("trajectory_speed [rad/s]", "trajectory_speed", 1.0, False, GAIN_GROUP_TRAJ),
         GainRow("max_traj_velocity [rad/s]", "max_traj_velocity", 10.0, True, GAIN_GROUP_TRAJ),

@@ -16,11 +16,12 @@
 // with the Coriolis slot of that law left at 0 (the term is a later addition;
 // the law already carries it). q̈_ref is the quintic's acceleration — 0 off a
 // running trajectory, so the inertia term acts only while a goal is being
-// followed and a held pose sees gravity alone. k_M ships at 0 (`gravity_ff.
-// inertia_gain`): the model inertia is the links' only (a URDF carries no rotor
-// inertia), and with a servo whose D term acts on the measured velocity the
-// tracking error in motion is the servo's viscous lag, not inertia (the
-// commit that added the term records the sim measurement). The purpose of
+// followed and a held pose sees gravity alone. k_M is `gravity_ff.
+// inertia_gain` (absent = 0; the robot's YAML sets it). The model inertia is
+// the links' only (a URDF carries no rotor inertia), and with a servo whose D
+// term acts on the measured velocity the tracking error in motion is mostly
+// the servo's viscous lag, so the term's effect there is small (the commit
+// that added the term records the sim measurement). The purpose of
 // the lane is to make the device's PD hold a pose with no sag at LOW gains —
 // the feedforward carries the weight, the servo only the error — and to be
 // the one place that reference and feedforward are tuned, in the simulator

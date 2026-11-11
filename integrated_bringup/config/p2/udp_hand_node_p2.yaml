@@ -49,7 +49,7 @@
 
     # -- 모터 토크 상수 [Nm/A] (펌웨어 모터 순서 10개; 펌웨어 작성자 제공값) --
     # JointCommand.feedforward (N·m) 를 전류로 바꾸는 상수. hand_joint_controller 의
-    # gravity_ff.max_abs 0.15 N·m 는 0.27 A 다.
+    # gravity_ff.max_abs 0.3 N·m 는 0.55 A 다.
     feedforward_kt: [0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55]
 
     # -- 관절 이름 · offset · 부호 (펌웨어 모터 slot 0..9 순서 = _base.yaml joint_state_names) --

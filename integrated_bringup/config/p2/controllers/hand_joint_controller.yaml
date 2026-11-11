@@ -40,22 +40,24 @@ hand_joint_controller:
   #   gain     — runtime parameter `gravity_ff.gain`, [0, 2]. 1 = the model.
   #   inertia_gain — runtime parameter `gravity_ff.inertia_gain`, [0, 2]. The
   #              reduced model inertia times the quintic's acceleration (0 at
-  #              rest, so a held pose sees gravity alone). Ships 0: the URDF
-  #              carries the links' inertia only, no rotor inertia, and at this
-  #              profile's servo the tracking error in motion is the servo's
-  #              viscous lag — the term measured ≤ 0.1 % on a default goal in
-  #              the simulator. Raise it where the device's D term acts on the
-  #              velocity error and short, fast moves matter.
+  #              rest, so a held pose sees gravity alone). 1 = the model. The
+  #              URDF carries the links' inertia only, no rotor inertia, so the
+  #              term covers that share; in the simulator at this profile's
+  #              servo (D on the measured velocity, viscous lag dominates the
+  #              error in motion) it changed the tracking error by ≈ 0.1 % on a
+  #              default goal and a few % on short, fast ones. 0 = gravity alone.
   #   max_abs  — REQUIRED bound on the SUM of the terms, N·m. The model's
   #              largest gravity torque on this hand is ≈ 0.08 N·m (cmc_01 /
-  #              cmc_02 at the mid pose, fingers up); 0.15 leaves room for gain
-  #              tuning and is 0.27 A
-  #              at the firmware's 0.55 N·m/A — well inside the motors.
+  #              cmc_02 at the mid pose, fingers up) and the inertia term
+  #              peaked at ≈ 0.08 N·m on the shortest goals at the velocity cap
+  #              in the simulator; 0.3 leaves room for both plus gain tuning.
+  #              It is 0.55 A at the firmware's 0.55 N·m/A (udp_hand_node_p2.yaml);
+  #              the motors' current rating is not recorded in this repository.
   gravity_ff:
     enabled: true
     gain: 1.0
-    inertia_gain: 0.0
-    max_abs: 0.15
+    inertia_gain: 1.0
+    max_abs: 0.3
 
   # ‖φ‖ (m) above which a closed-chain projection is not trusted for the
   # fingertip FK (the torque hold follows the projection's own held/singular).
