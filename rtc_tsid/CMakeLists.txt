@@ -250,6 +250,11 @@ if(BUILD_TESTING)
   add_tsid_gtest(test_clik_multiframe_malloc)
   rtc_base_add_test_includes(test_clik_multiframe_malloc)
 
+  # RT-1 for TSIDController::Compute on a free-flyer (assembly and τ recovery;
+  # ProxQP's own allocations are recorded, not asserted) — same gate.
+  add_tsid_gtest(test_tsid_compute_malloc)
+  rtc_base_add_test_includes(test_tsid_compute_malloc)
+
   # The two-frame CLIK against pink's recorded solutions of the same problems
   # (test/golden/clik_pink_reference.inc; recorded by gen_pink_reference.py,
   # which is NOT run by the build — pink is not a dependency).

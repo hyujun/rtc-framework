@@ -18,11 +18,13 @@ class ControllerBase {
   virtual void Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
                     const YAML::Node& config) = 0;
 
-  // 매 tick 호출 (RT-safe)
-  [[nodiscard]] virtual CommandOutput Compute(const ControlState& state,
-                                              const ControlReference& ref,
-                                              const PinocchioCache& cache,
-                                              const ContactState& contacts) noexcept = 0;
+  // 매 tick 호출 (RT-safe). Returns the controller's own output buffer, valid
+  // until the next Compute / Reset — a by-value return would copy its Eigen
+  // vectors, i.e. allocate, on every tick.
+  [[nodiscard]] virtual const CommandOutput& Compute(const ControlState& state,
+                                                     const ControlReference& ref,
+                                                     const PinocchioCache& cache,
+                                                     const ContactState& contacts) noexcept = 0;
 
   virtual void Reset() noexcept = 0;
 
