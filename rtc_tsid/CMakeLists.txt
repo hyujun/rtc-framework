@@ -174,6 +174,13 @@ if(BUILD_TESTING)
     test_tsid_performance
     test_phase3_integration)
 
+  # QP row budget (Σ MaxEqDim / MaxIneqDim, drop reporting). Its free-flyer
+  # fixture is the public floating G1 URDF, looked up through ament at run time
+  # (robot_descriptions is a <test_depend> only — no build-graph edge).
+  find_package(ament_index_cpp REQUIRED)
+  add_tsid_gtest(test_qp_row_budget)
+  target_link_libraries(test_qp_row_budget ament_index_cpp::ament_index_cpp)
+
   # Stage B-1..B-3: ObjectFrame + grasp matrix G + ContactManager, GraspCache
   # (LDLT pinv + P_N) + ObjectWrenchTask, InternalForceTask (rank-based nullity
   # + P_N reference projection).

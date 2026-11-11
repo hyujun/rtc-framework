@@ -48,6 +48,17 @@ inline bool BuildContactBasis(const Eigen::Vector3d& n_in, Eigen::Matrix3d& R_c)
   return false;
 }
 
+// Point contact (cdim=3): n_faces + 1 (cone faces + unilateral -fz ≤ 0)
+// Surface contact (cdim=6): + 4 (CoP rectangle) + 2 (yaw moment) = n_faces + 7.
+// patch=0 / μ_τ=0 인 surface 라도 trivial 행 (0 ≤ 0) 으로 유지 — ineq_dim 일관.
+int RowsPerContact(const ContactConfig& cfg) noexcept {
+  int per_contact = cfg.friction_faces + 1;
+  if (cfg.contact_dim == 6) {
+    per_contact += 6;
+  }
+  return per_contact;
+}
+
 }  // namespace
 
 void FrictionConeConstraint::Init(const pinocchio::Model& /*model*/,
@@ -68,15 +79,19 @@ int FrictionConeConstraint::IneqDim(const ContactState& contacts) const noexcept
   for (size_t i = 0; i < contacts.contacts.size(); ++i) {
     if (!contacts.contacts[i].active)
       continue;
-    const auto& cfg = manager_->contacts[i];
-    // Point contact (cdim=3): n_faces + 1 (cone faces + unilateral -fz ≤ 0)
-    // Surface contact (cdim=6): + 4 (CoP rectangle) + 2 (yaw moment) = n_faces + 7.
-    // patch=0 / μ_τ=0 인 surface 라도 trivial 행 (0 ≤ 0) 으로 유지 — ineq_dim 일관.
-    int per_contact = cfg.friction_faces + 1;
-    if (cfg.contact_dim == 6) {
-      per_contact += 6;
-    }
-    total += per_contact;
+    total += RowsPerContact(manager_->contacts[i]);
+  }
+  return total;
+}
+
+int FrictionConeConstraint::MaxEqDim(const ContactManagerConfig& /*contacts*/) const noexcept {
+  return 0;
+}
+
+int FrictionConeConstraint::MaxIneqDim(const ContactManagerConfig& contacts) const noexcept {
+  int total = 0;
+  for (const auto& cfg : contacts.contacts) {
+    total += RowsPerContact(cfg);
   }
   return total;
 }

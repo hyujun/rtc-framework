@@ -28,6 +28,14 @@ int EomConstraint::IneqDim(const ContactState& /*contacts*/) const noexcept {
   return 0;
 }
 
+int EomConstraint::MaxEqDim(const ContactManagerConfig& /*contacts*/) const noexcept {
+  return n_unactuated_;
+}
+
+int EomConstraint::MaxIneqDim(const ContactManagerConfig& /*contacts*/) const noexcept {
+  return 0;
+}
+
 void EomConstraint::ComputeEquality(const PinocchioCache& cache, const ContactState& contacts,
                                     const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
                                     Eigen::Ref<Eigen::MatrixXd> A_block,

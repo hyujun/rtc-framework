@@ -212,7 +212,9 @@ struct CommandOutput {
   // Failure classification of the last QP attempt (#551). qp_status is the
   // proxsuite QPSolverOutput as int (0 = SOLVED, 1 = MAX_ITER_REACHED,
   // 2 = PRIMAL_INFEASIBLE, …); −1 = nothing was attempted (no active task,
-  // wrapper not initialised, after Reset). HQP: status of the last level
+  // wrapper not initialised, after Reset); kRowBudgetExceeded (−2, qp_types.hpp)
+  // = active constraints needed more rows than the formulation holds, nothing
+  // was solved. HQP: status of the last level
   // tried, iterations summed over every level tried (failed one included).
   int qp_status{-1};
   int qp_iterations{0};
