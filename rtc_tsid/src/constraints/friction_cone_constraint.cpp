@@ -69,15 +69,15 @@ constexpr std::int8_t kBranchY = 2;
 inline void BuildSurfaceBasis(const Eigen::Vector3d& n_in, const Eigen::Matrix3d& oRf,
                               std::int8_t& branch, Eigen::Matrix3d& R_c) noexcept {
   const double nn = n_in.norm();
-  const Eigen::Vector3d n = (nn > 1e-9) ? Eigen::Vector3d(n_in / nn) : Eigen::Vector3d::UnitZ();
-  Eigen::Vector3d t1 = oRf.col(0) - n * oRf.col(0).dot(n);
-  const double len = t1.norm();
-  if (!std::isfinite(len)) {
+  if (!std::isfinite(nn) || !oRf.allFinite()) {
     // A non-finite frame or normal: the rows go non-finite so the solve fails
-    // (never laundered), and the contact's branch is kept as it was.
+    // (never laundered into a +Z basis), and the contact's branch is kept.
     R_c.setConstant(std::numeric_limits<double>::quiet_NaN());
     return;
   }
+  const Eigen::Vector3d n = (nn > 1e-9) ? Eigen::Vector3d(n_in / nn) : Eigen::Vector3d::UnitZ();
+  Eigen::Vector3d t1 = oRf.col(0) - n * oRf.col(0).dot(n);
+  const double len = t1.norm();
   bool use_x = false;
   if (branch == kBranchX) {
     use_x = len >= FrictionConeConstraint::kSurfaceBasisXToY;
@@ -187,10 +187,6 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& cache,
     // when inactive, so active contacts land on stable QP indices. Inactive
     // contacts contribute zero rows (skipped below).
     if (!contacts.contacts[i].active) {
-      // A contact that comes back picks its surface basis afresh.
-      if (i < surface_branch_.size()) {
-        surface_branch_[i] = kBranchNone;
-      }
       lambda_offset += cdim;
       continue;
     }
@@ -201,11 +197,9 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& cache,
     // contact frame's tangent axes).
     bool is_plus_z = false;
     if (cdim == 6 && i < cache.contact_frames.size()) {
-      // No stored branch (not reachable through SetContactManager): fresh rule.
-      std::int8_t no_branch = kBranchNone;
-      std::int8_t& branch = i < surface_branch_.size() ? surface_branch_[i] : no_branch;
-      BuildSurfaceBasis(contacts.contacts[i].normal, cache.contact_frames[i].oMf.rotation(), branch,
-                        R_c);
+      // surface_branch_ has manager_->contacts.size() entries (SetContactManager).
+      BuildSurfaceBasis(contacts.contacts[i].normal, cache.contact_frames[i].oMf.rotation(),
+                        surface_branch_[i], R_c);
     } else {
       is_plus_z = BuildContactBasis(contacts.contacts[i].normal, R_c);
     }

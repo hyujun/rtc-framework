@@ -31,16 +31,19 @@ namespace rtc::tsid {
 // Surface tangent basis (#1018): t1 is the contact frame's x projected on the
 // plane ⊥ n, or — when x is too close to n — t1 = y_p × n from the frame's y.
 // The choice has hysteresis per contact so a frame whose x hovers near the
-// normal does not flip t1 (by up to 90° about n, swapping the CoP rectangle's
-// half-lengths) tick to tick: the x rule is kept while its projection is
-// ≥ kSurfaceBasisXToY (0.08) and the y rule while it is ≤ kSurfaceBasisYToX
-// (0.12). A contact without a branch yet — first tick, or the first active
-// tick after being inactive — splits at kSurfaceBasisFresh (0.1). No blend:
-// the two rules' t1 can point up to 180° apart, where an average vanishes.
-// A non-finite frame keeps the contact's branch (and makes its rows
-// non-finite, so the solve fails).
-// The branch is the constraint's own state, sized in SetContactManager (init)
-// and written in place on the tick (RT-safe).
+// normal does not flip t1 (by up to 180° about n, swapping the CoP
+// rectangle's half-lengths) tick to tick: the x rule is kept while its
+// projection is ≥ kSurfaceBasisXToY (0.08) and the y rule while it is
+// ≤ kSurfaceBasisYToX (0.12). A contact without a branch yet (after
+// SetContactManager) splits at kSurfaceBasisFresh (0.1). The branch survives
+// ticks on which the contact is inactive or not evaluated (a formulation
+// skips a constraint with no rows): inside the band both rules are valid
+// bases, and the rule then changes only when the projection leaves the band,
+// however often the constraint is evaluated. No blend: the two rules' t1 can
+// point up to 180° apart, where an average vanishes. A non-finite frame or
+// normal keeps the branch and makes the contact's rows non-finite, so the
+// solve fails on them. The branch is the constraint's own state, sized in
+// SetContactManager (init) and written in place on the tick (RT-safe).
 // ────────────────────────────────────────────────
 class FrictionConeConstraint final : public ConstraintBase {
  public:

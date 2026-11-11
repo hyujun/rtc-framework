@@ -843,24 +843,34 @@ TEST_F(SurfaceBasisHysteresisTest, CrossingTheBandSwitchesOncePerCrossing) {
   EXPECT_DOUBLE_EQ(switched_at[1], 0.125);
 }
 
-// A contact that was inactive for a tick chooses afresh: on the x branch 0.09
-// stays x, after one inactive tick 0.09 gives the y rule.
-TEST_F(SurfaceBasisHysteresisTest, AContactBackFromInactivePicksItsBasisAfresh) {
+// The branch survives ticks the constraint does not see the contact on: on
+// the x branch, an inactive contact — here every contact, so the WQP skips
+// the constraint (no rows) — comes back at 0.09 on the x rule, exactly as if
+// it had stayed active.
+TEST_F(SurfaceBasisHysteresisTest, AContactBackFromInactiveKeepsItsRule) {
   fc_.SetContactManager(&mgr_);
   ASSERT_TRUE(IsXRule(T1At(0.11), 0.11));
-  ASSERT_TRUE(IsXRule(T1At(0.09), 0.09)) << "premise: the x branch holds inside the band";
 
   cs_.contacts[0].active = false;
   cs_.RecomputeActive(mgr_);
-  ASSERT_EQ(fc_.IneqDim(cs_), 0);
+  ASSERT_EQ(fc_.IneqDim(cs_), 0) << "premise: a formulation skips the constraint this tick";
+  SetFrameRotation(Frame(0.05));  // the frame moves while unseen
+  cs_.contacts[0].active = true;
+  cs_.RecomputeActive(mgr_);
+  EXPECT_TRUE(IsXRule(T1At(0.09), 0.09)) << "the band keeps the last rule seen";
+
+  // The same when the constraint IS evaluated with this contact inactive (on
+  // a tick where another contact gives it rows — the direct call stands for
+  // that tick here).
+  cs_.contacts[0].active = false;
+  cs_.RecomputeActive(mgr_);
   const int n_vars = info_.nv + 6;
   Eigen::MatrixXd C = Eigen::MatrixXd::Zero(11, n_vars);
   Eigen::VectorXd l = Eigen::VectorXd::Zero(11), u = l;
   fc_.ComputeInequality(cache_, cs_, info_, n_vars, C, l, u);
   cs_.contacts[0].active = true;
   cs_.RecomputeActive(mgr_);
-
-  EXPECT_FALSE(IsXRule(T1At(0.09), 0.09)) << "back from inactive: split at 0.1 again";
+  EXPECT_TRUE(IsXRule(T1At(0.09), 0.09)) << "an evaluated inactive tick keeps the rule too";
 }
 
 // A non-finite frame for a tick makes the rows non-finite (the solve fails on
@@ -874,6 +884,21 @@ TEST_F(SurfaceBasisHysteresisTest, ANonFiniteFrameKeepsTheBranch) {
   Assemble();
   EXPECT_FALSE(C_.allFinite()) << "a NaN frame must reach the rows";
   EXPECT_TRUE(IsXRule(T1At(0.09), 0.09)) << "the NaN tick must not move the branch";
+
+  // NaN outside the x column (y), and a NaN normal: the same.
+  bad = Frame(0.09);
+  bad(2, 1) = std::numeric_limits<double>::quiet_NaN();
+  SetFrameRotation(bad);
+  Assemble();
+  EXPECT_FALSE(C_.allFinite()) << "a NaN in the frame's y must reach the rows";
+  EXPECT_TRUE(IsXRule(T1At(0.09), 0.09)) << "a NaN y must not move the branch";
+  const Eigen::Vector3d n0 = cs_.contacts[0].normal;
+  cs_.contacts[0].normal.x() = std::numeric_limits<double>::quiet_NaN();
+  SetFrameRotation(Frame(0.09));
+  Assemble();
+  EXPECT_FALSE(C_.allFinite()) << "a NaN normal must not be laundered into +Z";
+  cs_.contacts[0].normal = n0;
+  EXPECT_TRUE(IsXRule(T1At(0.09), 0.09));
 }
 
 // Without a cached placement for the contact the world-axis basis stands.
