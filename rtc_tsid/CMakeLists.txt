@@ -181,6 +181,10 @@ if(BUILD_TESTING)
   # QP row budget (Σ MaxEqDim / MaxIneqDim, drop reporting).
   add_tsid_gtest(test_qp_row_budget)
 
+  # The floating-base WQP (G1 on both feet) against RNEA, the contact
+  # acceleration, binding torque limits and the free-flyer conventions.
+  add_tsid_gtest(test_floating_wqp_gates)
+
   # Stage B-1..B-3: ObjectFrame + grasp matrix G + ContactManager, GraspCache
   # (LDLT pinv + P_N) + ObjectWrenchTask, InternalForceTask (rank-based nullity
   # + P_N reference projection).
