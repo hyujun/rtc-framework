@@ -112,7 +112,7 @@
 
 **HandJointController** (손 1 군, `pd_feedforward` = 관절 reference + 모델 feedforward — 중력 + 관성 `M(q)·q̈_ref`):
 
-- 관성항은 `gravity_ff.inertia_gain` (출하 0) 이고 q̈_ref 는 진행 중 궤적에서만 0 이 아니다 — 정지 자세는 중력만.
+- 관성항은 `gravity_ff.inertia_gain` (키 생략 = 0, p2 출하 1) 이고 q̈_ref 는 진행 중 궤적에서만 0 이 아니다 — 정지 자세는 중력만.
 - feedforward hold: 첫 유효 모델항 전 0, held · singular · unreadable tick 은 **모델항 (g · M) 을 직전 유효값으로** (walk-in 마다 0 으로 떨어뜨리면 활성화마다 손이 처진다), q̈_ref 는 reference 의 것 (동결된 unreadable 이면 0), 비유한이면 전 관절 0, E-STOP 0.
 - A/B 스위치는 `gravity_ff.enabled` 다 — command type 을 position 으로 바꾸면 sim 이 자기 중력 보상을 다시 켜 plant 가 달라진다. 토크 상한 (항의 합) 은 `gravity_ff.max_abs` (필수) 와 device `max_torque` 의 min.
 - 폐쇄 체인의 독립 관절은 **전부 이 군의 관절**이어야 한다 (이름 브릿지) — 팔까지 닫는 sidecar 의 손만 떼면 거부. 핑거팁 FK 는 같은 사영을 빌린다 (tick 당 1 회).
