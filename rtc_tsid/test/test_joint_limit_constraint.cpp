@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -63,6 +64,47 @@ class JointLimitConstraintTest : public test::PandaNoContactTest {
 
   double AVelUb(int i, double vi) const { return (VLim(i) - vi) / kDt; }
 };
+
+// The coefficient (#1019). A plant holding a over one period in N semi-
+// implicit substeps moves q by v·dt + c·a·dt², c = (1 + 1/N)/2. Commanded the
+// box's bound, every c in [½, 1] lands inside the margin-applied limit, and
+// the tight c lands on it: c = 1 (N = 1) for a joint that would stay inside at
+// a = 0, c = ½ (continuous plant) for one that would cross. Both ends.
+TEST_F(JointLimitConstraintTest, TheBoundKeepsEverySubstepCountInsideTheLimit) {
+  JointLimitConstraint c;
+  InitDefault(c);
+  const auto move = [](double v, double a, double coeff) {
+    return v * kDt + coeff * a * kDt * kDt;
+  };
+  // (gap to the limit, speed toward it): inside at a = 0, then crossing.
+  for (const auto& [gap, toward] : {std::pair{1e-4, 0.02}, std::pair{1e-4, 0.08}}) {
+    const bool crosses = toward * kDt > gap;
+    const double tight = crosses ? 0.5 : 1.0;
+    Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
+    // Upper end.
+    Eigen::VectorXd q = MidConfig();
+    q(0) = QMax(0) - gap;
+    v(0) = toward;
+    Box b = Assemble(c, q, v);
+    ASSERT_LT(b.u(0), AVelUb(0, toward)) << "premise: the position bound binds";
+    ASSERT_GE(b.u(0), AVelLb(0, toward)) << "premise: the row is not inverted";
+    EXPECT_NEAR(q(0) + move(toward, b.u(0), tight), QMax(0), 1e-12) << "toward " << toward;
+    for (const double coeff : {0.5, 0.75, 1.0}) {
+      EXPECT_LE(q(0) + move(toward, b.u(0), coeff), QMax(0) + 1e-12) << coeff << " " << toward;
+    }
+    // Lower end, mirrored.
+    q = MidConfig();
+    q(0) = QMin(0) + gap;
+    v(0) = -toward;
+    b = Assemble(c, q, v);
+    ASSERT_GT(b.l(0), AVelLb(0, -toward)) << "premise: the position bound binds";
+    EXPECT_NEAR(q(0) + move(-toward, b.l(0), tight), QMin(0), 1e-12) << "toward " << toward;
+    for (const double coeff : {0.5, 0.75, 1.0}) {
+      EXPECT_GE(q(0) + move(-toward, b.l(0), coeff), QMin(0) - 1e-12) << coeff << " " << toward;
+    }
+  }
+  EXPECT_DOUBLE_EQ(c.Dt(), kDt);
+}
 
 TEST_F(JointLimitConstraintTest, Dimensions) {
   JointLimitConstraint constraint;

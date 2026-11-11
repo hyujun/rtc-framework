@@ -259,6 +259,10 @@ class DemoWbcController final : public RTControllerInterface {
   /// (their preset state is restored afterwards) — the tick the QP row budget
   /// must hold. nullptr when the config has no TSID stack or a name is not a
   /// registered constraint. Test seam: allocates.
+  // The integration period of the TSID joint_limit box (last `joint_limit`
+  // entry), or -1 without one. Test-only (#1019 dt check).
+  [[nodiscard]] double TsidJointLimitDtForTesting() const noexcept;
+
   [[nodiscard]] const rtc::tsid::SolveResult* SolveTsidAllContactsActiveForTesting(
       const std::vector<std::string>& constraint_names);
 

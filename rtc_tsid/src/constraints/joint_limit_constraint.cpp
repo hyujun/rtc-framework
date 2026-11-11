@@ -139,9 +139,12 @@ void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
     const double vi = cache.v(n_base_ + i);
     const double qi = cache.q(q_index_[static_cast<size_t>(i)]);
 
-    // Position-based bounds: a ≥ 2·(q_min - q - v·dt) / dt²
-    a_pos_lb_(i) = 2.0 * (q_min_(i) - qi - vi * dt_) / dt2;
-    a_pos_ub_(i) = 2.0 * (q_max_(i) - qi - vi * dt_) / dt2;
+    // Position-based bounds (header): Δ / dt², doubled once q would cross the
+    // limit at a = 0 — conservative for every semi-implicit substep count.
+    const double d_lb = q_min_(i) - qi - vi * dt_;
+    const double d_ub = q_max_(i) - qi - vi * dt_;
+    a_pos_lb_(i) = (d_lb > 0.0 ? 2.0 : 1.0) * d_lb / dt2;
+    a_pos_ub_(i) = (d_ub < 0.0 ? 2.0 : 1.0) * d_ub / dt2;
 
     // Velocity-based bounds: a ≥ (v_min - v) / dt
     a_vel_lb_(i) = (v_min_(i) - vi) / dt_;
