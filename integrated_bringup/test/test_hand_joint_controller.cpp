@@ -1009,9 +1009,10 @@ TEST(HandJointShipped, TheP2YamlParsesAndNamesOneGroup) {
   EXPECT_EQ(parsed.mode, HandJointMode::kTracking) << "the shipped mode is spelled out";
   EXPECT_TRUE(parsed.ff.enabled);
   EXPECT_DOUBLE_EQ(parsed.ff.gravity_gain, 1.0);
-  EXPECT_DOUBLE_EQ(parsed.ff.inertia_gain, 0.0) << "the inertia term ships off, spelled out";
+  EXPECT_DOUBLE_EQ(parsed.ff.inertia_gain, 1.0) << "the inertia term ships on, spelled out";
   EXPECT_TRUE(cfg["gravity_ff"]["inertia_gain"]);
-  EXPECT_GT(parsed.ff.max_abs, 0.0);
+  // The bound covers the sum of the gravity and the inertia term.
+  EXPECT_DOUBLE_EQ(parsed.ff.max_abs, 0.3);
   // The bound is an explicit choice well under the device's placeholder
   // rating (1.0 N·m in _base.yaml): the YAML, not the rating, bounds the wire.
   EXPECT_LT(parsed.ff.max_abs, 1.0);
