@@ -1,6 +1,8 @@
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 
 #include <cmath>
+#include <cstdint>
+#include <limits>
 
 namespace rtc::tsid {
 
@@ -48,22 +50,45 @@ inline bool BuildContactBasis(const Eigen::Vector3d& n_in, Eigen::Matrix3d& R_c)
   return false;
 }
 
+constexpr std::int8_t kBranchNone = 0;
+constexpr std::int8_t kBranchX = 1;
+constexpr std::int8_t kBranchY = 2;
+
 // Surface contacts: the tangent axes follow the contact FRAME, so the CoP
 // rectangle (l_x along the frame's x, l_y along its y) turns with the foot.
-// t1 = frame x projected on the plane ⊥ n; when the frame's x is within ~6°
-// of n, its y is projected instead and t1 = t2 × n. R_c = [t1 | t2 | n] is
+// t1 = frame x projected on the plane ⊥ n; when the frame's x is too close to
+// n, its y is projected instead and t1 = t2 × n. R_c = [t1 | t2 | n] is
 // right-handed (t2 = n × t1). Never the +Z short-circuit: on flat ground that
 // would put the rectangle on the world axes whatever the foot's yaw.
-// The switch is not continuous: at the threshold t1 can turn by up to 90°
-// about n (it depends on the frame's roll about n). It only happens with the
-// frame's x within ~6° of the normal — a sole standing on its edge.
+// The two rules' t1 can differ by any angle up to 180° about n (it depends
+// on which way the frame's x leans off n), so which one is used has hysteresis in `branch` (the
+// contact's last rule; see the class comment): the x rule holds down to a
+// projection of kSurfaceBasisXToY, the y rule up to kSurfaceBasisYToX, and a
+// contact without a branch splits at kSurfaceBasisFresh. On the y branch the
+// x projection is ≤ 0.12, so y's projection is ≥ √(1 − 0.12²) ≈ 0.993.
 inline void BuildSurfaceBasis(const Eigen::Vector3d& n_in, const Eigen::Matrix3d& oRf,
-                              Eigen::Matrix3d& R_c) noexcept {
+                              std::int8_t& branch, Eigen::Matrix3d& R_c) noexcept {
   const double nn = n_in.norm();
+  if (!std::isfinite(nn) || !oRf.allFinite()) {
+    // A non-finite frame or normal: the rows go non-finite so the solve fails
+    // (never laundered into a +Z basis), and the contact's branch is kept.
+    R_c.setConstant(std::numeric_limits<double>::quiet_NaN());
+    return;
+  }
   const Eigen::Vector3d n = (nn > 1e-9) ? Eigen::Vector3d(n_in / nn) : Eigen::Vector3d::UnitZ();
   Eigen::Vector3d t1 = oRf.col(0) - n * oRf.col(0).dot(n);
-  if (t1.norm() >= 0.1) {
-    t1.normalize();
+  const double len = t1.norm();
+  bool use_x = false;
+  if (branch == kBranchX) {
+    use_x = len >= FrictionConeConstraint::kSurfaceBasisXToY;
+  } else if (branch == kBranchY) {
+    use_x = len > FrictionConeConstraint::kSurfaceBasisYToX;
+  } else {
+    use_x = len >= FrictionConeConstraint::kSurfaceBasisFresh;
+  }
+  branch = use_x ? kBranchX : kBranchY;
+  if (use_x) {
+    t1 /= len;
   } else {
     Eigen::Vector3d t2 = oRf.col(1) - n * oRf.col(1).dot(n);
     t2.normalize();
@@ -86,6 +111,11 @@ int RowsPerContact(const ContactConfig& cfg) noexcept {
 }
 
 }  // namespace
+
+void FrictionConeConstraint::SetContactManager(const ContactManagerConfig* manager) {
+  manager_ = manager;
+  surface_branch_.assign(manager != nullptr ? manager->contacts.size() : 0, kBranchNone);
+}
 
 void FrictionConeConstraint::Init(const pinocchio::Model& /*model*/,
                                   const RobotModelInfo& robot_info, PinocchioCache& /*cache*/,
@@ -167,7 +197,9 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& cache,
     // contact frame's tangent axes).
     bool is_plus_z = false;
     if (cdim == 6 && i < cache.contact_frames.size()) {
-      BuildSurfaceBasis(contacts.contacts[i].normal, cache.contact_frames[i].oMf.rotation(), R_c);
+      // surface_branch_ has manager_->contacts.size() entries (SetContactManager).
+      BuildSurfaceBasis(contacts.contacts[i].normal, cache.contact_frames[i].oMf.rotation(),
+                        surface_branch_[i], R_c);
     } else {
       is_plus_z = BuildContactBasis(contacts.contacts[i].normal, R_c);
     }
