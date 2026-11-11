@@ -102,8 +102,9 @@ inline std::string Yaml(double max_abs = 10.0, bool enabled = true, double gain 
   const std::string inertia =
       inertia_gain != 0.0 ? "\n  inertia_gain: " + std::to_string(inertia_gain) : std::string();
   return std::string("trajectory_speed: 2.0\nmax_traj_velocity: 4.0\ncommand_type: \"") +
-         command_type + "\"\ngravity_ff:\n  enabled: " + (enabled ? "true" : "false") +
-         "\n  gain: " + std::to_string(gain) + inertia + "\n  max_abs: " + std::to_string(max_abs) +
+         command_type + "\"\ndynamics_feedforward:\n  enabled: " + (enabled ? "true" : "false") +
+         "\n  gravity_gain: " + std::to_string(gain) + inertia +
+         "\n  max_abs: " + std::to_string(max_abs) +
          R"(
 topics:
   hand:

@@ -16,8 +16,9 @@
 // with the Coriolis slot of that law left at 0 (the term is a later addition;
 // the law already carries it). q̈_ref is the quintic's acceleration — 0 off a
 // running trajectory, so the inertia term acts only while a goal is being
-// followed and a held pose sees gravity alone. k_M is `gravity_ff.
-// inertia_gain` (absent = 0; the robot's YAML sets it). The model inertia is
+// followed and a held pose sees gravity alone. k_g is `dynamics_feedforward.
+// gravity_gain`, k_M `dynamics_feedforward.inertia_gain` (absent = 0; the
+// robot's YAML sets it). The model inertia is
 // the links' only (a URDF carries no rotor inertia), and with a servo whose D
 // term acts on the measured velocity the tracking error in motion is mostly
 // the servo's viscous lag, so the term's effect there is small (the commit
@@ -57,7 +58,8 @@
 //     a gain changed during an outage takes effect on it;
 //   - a non-finite term from the law: 0 N·m on every joint (all-or-nothing,
 //     the law's rule);
-//   - `gravity_ff.enabled: false` (YAML or runtime parameter): 0 N·m, the
+//   - `dynamics_feedforward.enabled: false` (YAML or runtime parameter): 0 N·m,
+//     the
 //     command type stays pd_feedforward. This is the A/B switch the sim gate
 //     uses — switching the COMMAND TYPE instead would let the simulator
 //     re-enable its own gravity compensation and change the plant.
@@ -71,8 +73,8 @@
 //     "damping mode" in the sense of the Unitree / MAB motor firmwares: kp
 //     effectively 0, kd as the device has it);
 //   - `damping_feedforward`: `commands` = the measured positions, the
-//     feedforward lane stays as in `tracking` (gravity_ff.enabled, gain,
-//     clamp, hold policy) — the lane under test, with no servo error under it.
+//     feedforward lane stays as in `tracking` (dynamics_feedforward.*: switch,
+//     gains, clamp, hold policy) — the lane under test, with no servo error under it.
 //     There is no trajectory here, so q̈_ref = 0 and the inertia term is 0.
 //   A goal that lands mid-motion restarts the quintic from rest (the
 //   reference velocity steps to 0 for that tick); the inertia term follows the
@@ -165,7 +167,7 @@ inline constexpr std::array<std::string_view, 3> kHandJointModeNames = {"trackin
 struct HandJointConfig {
   double trajectory_speed{1.0};                  ///< [rad/s], > 0
   double max_traj_velocity{2.0};                 ///< [rad/s], ≥ trajectory_speed
-  rtc::params::DynamicsFeedforwardParams ff;     ///< the `gravity_ff` block
+  rtc::params::DynamicsFeedforwardParams ff;     ///< the `dynamics_feedforward` block
   HandJointMode mode{HandJointMode::kTracking};  ///< `mode` key, default tracking
   /// ‖φ‖ above which a closed-chain projection is not trusted for the
   /// fingertip FK (ClosedChainHandFk). The torque hold is the handle's own
@@ -174,10 +176,11 @@ struct HandJointConfig {
 };
 
 /// The block key of the feedforward lane in the controller YAML and in the
-/// runtime parameters (`gravity_ff.enabled`, `gravity_ff.gain`,
-/// `gravity_ff.inertia_gain`). Named for the term it shipped with; it carries
-/// every term of the lane.
-inline constexpr std::string_view kHandJointFfBlockKey = "gravity_ff";
+/// runtime parameters (`dynamics_feedforward.enabled`,
+/// `dynamics_feedforward.gravity_gain`, `dynamics_feedforward.inertia_gain`):
+/// every term of the law this controller ships, plus the switch and the bound.
+/// The demo GUI builds its Gains rows from this literal (its test reads it).
+inline constexpr std::string_view kHandJointFfBlockKey = "dynamics_feedforward";
 
 /// Parse and range-check the controller's YAML node. Throws std::runtime_error
 /// naming the key. `command_type` must be `pd_feedforward`: this controller
@@ -194,7 +197,8 @@ class HandJointController final : public rtc::RTControllerInterface {
     double trajectory_speed{1.0};
     double max_traj_velocity{2.0};
     bool ff_enabled{true};
-    double ff_gain{1.0};
+    /// k_g of the gravity term k_g · g(q_meas).
+    double gravity_gain{1.0};
     HandJointMode mode{HandJointMode::kTracking};
     /// k_M of the inertia term k_M · M(q_meas) · q̈_ref. 0 = gravity alone.
     double inertia_gain{0.0};
@@ -267,7 +271,7 @@ class HandJointController final : public rtc::RTControllerInterface {
 
   void SetGains(const Gains& gains) noexcept { gains_lock_.Store(gains); }
 
-  /// The per-joint torque bound in force (min of gravity_ff.max_abs and the
+  /// The per-joint torque bound in force (min of dynamics_feedforward.max_abs and the
   /// device rating), device order, [0, Dof()).
   [[nodiscard]] std::span<const double> TorqueBounds() const noexcept {
     return {ff_bound_.data(), static_cast<std::size_t>(std::max(dof_, 0))};

@@ -36,9 +36,10 @@ four-bar loops closed in the plant and in the controller's model). The hand is
 mounted fingers up and the simulator's position servos run at a deliberately
 LOW gain (config/p2/mujoco_simulator.yaml): the one controller this profile
 ships, hand_joint_controller, sends `pd_feedforward` — a joint reference plus
-the model's gravity torque — and the hold gate of docs/testing.md (p2 row) is
+the model's dynamics torque — and the hold gate of docs/testing.md (p2 row) is
 that the fingers do not sag with it and do without it
-(`ros2 param set /hand_joint_controller/hand_joint_controller gravity_ff.enabled false`).
+(`ros2 param set /hand_joint_controller/hand_joint_controller
+dynamics_feedforward.enabled false`).
 `enable_mpc` selects the CPU layout and nothing else here, and defaults to
 false.
 

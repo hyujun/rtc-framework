@@ -6,8 +6,8 @@ accepts a set at any time, active or not:
 - ``tracking``: joint goals are followed by a quintic trajectory (the default),
 - ``damping``: the reference is the measured position every tick with no
   feedforward, so only the device's own kd acts,
-- ``damping_feedforward``: the same reference with the gravity feedforward lane
-  left on, to test the feedforward.
+- ``damping_feedforward``: the same reference with the dynamics feedforward
+  lane left on, to test the feedforward.
 
 While the mode is not ``tracking`` the controller refuses every ``joint_goal``.
 This module holds what the Control tab's Hand Joint panel decides: who owns the
@@ -15,7 +15,7 @@ parameter, how a ``get_parameters`` answer reads, and when the GUI should not
 send a hand target at all. The controller's refusal stays the authority; the
 send guard only spares the operator a goal that is counted as a reject.
 
-The other runtime parameters (``gravity_ff.*``, ``trajectory_speed``) need no
+The other runtime parameters (``dynamics_feedforward.*``, ``trajectory_speed``) need no
 panel of their own: ``hand_joint_gain_rows`` registers them with the Gains panel.
 """
 
@@ -35,7 +35,7 @@ HAND_JOINT_MODE_PARAM = "mode"
 _MODE_TEXT = {
     "tracking": "tracking: joint goals are followed",
     "damping": "damping: reference = measured position, no feedforward (device kd only)",
-    "damping_feedforward": "damping_feedforward: reference = measured position, gravity ff on",
+    "damping_feedforward": "damping_feedforward: reference = measured position, feedforward on",
 }
 HAND_JOINT_MODES: tuple[str, ...] = tuple(_MODE_TEXT)
 _TRACKING = HAND_JOINT_MODES[0]
@@ -87,7 +87,14 @@ def goal_block_reason(mode: str | None) -> str:
     return f"mode is {mode}: joint goals are refused"
 
 
-GAIN_GROUP_FF = "Gravity feedforward"
+# The controller's feedforward block (kHandJointFfBlockKey in
+# hand_joint_controller.hpp) and the runtime parameters parameters.cpp declares
+# under it; the Gains rows are built from these, and the test reads both C++
+# files so a rename on one side cannot leave the other behind.
+HAND_JOINT_FF_BLOCK = "dynamics_feedforward"
+HAND_JOINT_FF_LEAVES: tuple[str, ...] = ("enabled", "gravity_gain", "inertia_gain")
+
+GAIN_GROUP_FF = "Dynamics feedforward"
 GAIN_GROUP_TRAJ = "Trajectory"
 # Gains-panel box layout: one row, the two groups side by side.
 HAND_JOINT_GAIN_LAYOUT: list[list[str]] = [[GAIN_GROUP_FF, GAIN_GROUP_TRAJ]]
@@ -99,12 +106,12 @@ def hand_joint_gain_rows() -> tuple[GainRow, ...]:
     Defaults are config/p2/controllers/hand_joint_controller.yaml's; Load Gain
     replaces them with the live values. ``max_traj_velocity`` is read-only.
     """
+    ff = HAND_JOINT_FF_BLOCK
     return (
-        GainRow("gravity_ff enabled", "gravity_ff.enabled", 1.0, False, GAIN_GROUP_FF, True),
-        GainRow("gravity_ff gain [0-2]", "gravity_ff.gain", 1.0, False, GAIN_GROUP_FF),
-        GainRow(
-            "gravity_ff inertia_gain [0-2]", "gravity_ff.inertia_gain", 1.0, False, GAIN_GROUP_FF
-        ),
+        # Labels are the leaf names: the group box carries the block's name.
+        GainRow("enabled", f"{ff}.enabled", 1.0, False, GAIN_GROUP_FF, True),
+        GainRow("gravity_gain [0-2]", f"{ff}.gravity_gain", 1.0, False, GAIN_GROUP_FF),
+        GainRow("inertia_gain [0-2]", f"{ff}.inertia_gain", 1.0, False, GAIN_GROUP_FF),
         GainRow("trajectory_speed [rad/s]", "trajectory_speed", 1.0, False, GAIN_GROUP_TRAJ),
         GainRow("max_traj_velocity [rad/s]", "max_traj_velocity", 10.0, True, GAIN_GROUP_TRAJ),
     )

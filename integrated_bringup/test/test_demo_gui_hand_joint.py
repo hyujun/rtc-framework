@@ -19,6 +19,7 @@ Tk layout is checked at runtime (verify skill), as for every other panel.
 from __future__ import annotations
 
 import inspect
+import re
 import types
 from pathlib import Path
 
@@ -28,6 +29,8 @@ from rcl_interfaces.msg import ParameterType
 from integrated_bringup.demo_gui import config
 from integrated_bringup.demo_gui.discovery import RobotProfile
 from integrated_bringup.demo_gui.hand_joint import (
+    HAND_JOINT_FF_BLOCK,
+    HAND_JOINT_FF_LEAVES,
     HAND_JOINT_GAIN_LAYOUT,
     HAND_JOINT_MODE_PARAM,
     HAND_JOINT_MODES,
@@ -45,6 +48,9 @@ _HEADER = (
     / "integrated_bringup"
     / "controllers"
     / "hand_joint_controller.hpp"
+)
+_PARAMETERS_CPP = (
+    Path(__file__).resolve().parents[1] / "src" / "controllers" / "hand_joint" / "parameters.cpp"
 )
 
 _STRING = ParameterType.PARAMETER_STRING
@@ -64,6 +70,21 @@ def test_modes_are_the_literals_of_the_cpp_header():
     for mode in HAND_JOINT_MODES:
         assert f'"{mode}"' in src, f"{_HEADER.name} does not spell the mode '{mode}'"
     assert HAND_JOINT_MODES[0] == "tracking"  # the default and the only goal-accepting mode
+
+
+def test_ff_names_are_the_literals_of_the_cpp_sources():
+    """kHandJointFfBlockKey owns the block name, parameters.cpp the leaves (it
+    declares and accepts each as ``key + ".<leaf>"``). The constant is matched,
+    not searched for: the header's comments spell the block name too."""
+    m = re.search(r'kHandJointFfBlockKey\s*=\s*"([^"]+)"', _HEADER.read_text())
+    assert m, f"{_HEADER.name} does not define kHandJointFfBlockKey"
+    assert m.group(1) == HAND_JOINT_FF_BLOCK
+    src = _PARAMETERS_CPP.read_text()
+    for leaf in HAND_JOINT_FF_LEAVES:
+        assert f'declare(key + ".{leaf}"' in src, f"parameters.cpp does not declare '{leaf}'"
+        assert f'name == key + ".{leaf}"' in src, f"parameters.cpp does not accept '{leaf}'"
+    params = {r.param for r in hand_joint_gain_rows()}
+    assert {f"{HAND_JOINT_FF_BLOCK}.{leaf}" for leaf in HAND_JOINT_FF_LEAVES} <= params
 
 
 def test_owner_is_the_profile_extra_controller():

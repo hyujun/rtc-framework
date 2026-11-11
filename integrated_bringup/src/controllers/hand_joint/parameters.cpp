@@ -9,16 +9,17 @@
 
 namespace integrated_bringup {
 
-// Runtime-tunable: trajectory_speed, gravity_ff.enabled, gravity_ff.gain,
-// gravity_ff.inertia_gain, mode.
+// Runtime-tunable: trajectory_speed, dynamics_feedforward.enabled,
+// dynamics_feedforward.gravity_gain, dynamics_feedforward.inertia_gain, mode.
 // Read-only: max_traj_velocity (a device rating, not a tuning knob).
 //
 // `mode` (tracking / damping / damping_feedforward) is accepted at any time —
 // active or not, E-STOP or not (E-STOP dominates on the tick anyway); an
 // off-whitelist string is refused with the three values in the reason.
 //
-// `gravity_ff.enabled` is the A/B switch of the sim gate (an operator flips it
-// with `ros2 param set /hand_joint_controller/hand_joint_controller gravity_ff.enabled false`
+// `dynamics_feedforward.enabled` is the A/B switch of the sim gate (an operator
+// flips it with `ros2 param set /hand_joint_controller/hand_joint_controller
+// dynamics_feedforward.enabled false`
 // the hand holds a pose); the command type does not change with it, so the
 // simulator's plant stays the same on both sides of the switch.
 void HandJointController::DeclareGainParameters() noexcept {
@@ -62,11 +63,11 @@ void HandJointController::DeclareGainParametersImpl() {
                          "Feedforward torque lane on/off (off: 0 N·m, command type unchanged)");
   // A stored out-of-range value (set while cleaned up) is clamped, not
   // honoured: this function is noexcept and cannot fail the transition.
-  const double gain = declare(key + ".gain", g.ff_gain,
-                              "Gravity feedforward gain, dimensionless [0, " +
+  const double gain = declare(key + ".gravity_gain", g.gravity_gain,
+                              "Gravity term gain k_g of k_g g(q), dimensionless [0, " +
                                   std::to_string(rtc::params::kDynamicsFeedforwardGainMax) + "]");
   if (std::isfinite(gain)) {
-    g.ff_gain = std::clamp(gain, 0.0, rtc::params::kDynamicsFeedforwardGainMax);
+    g.gravity_gain = std::clamp(gain, 0.0, rtc::params::kDynamicsFeedforwardGainMax);
   }
   // Its own catch, like `mode`: a wrong-typed override (an integer `1` in a
   // params file) must cost this parameter alone, not abort the declares after
@@ -135,15 +136,15 @@ rcl_interfaces::msg::SetParametersResult HandJointController::OnGainParametersSe
       } else if (name == key + ".enabled") {
         g.ff_enabled = p.as_bool();
         dirty = true;
-      } else if (name == key + ".gain") {
+      } else if (name == key + ".gravity_gain") {
         const double v = p.as_double();
         if (!std::isfinite(v) || v < 0.0 || v > rtc::params::kDynamicsFeedforwardGainMax) {
           result.successful = false;
-          result.reason = key + ".gain must be finite and within [0, " +
+          result.reason = key + ".gravity_gain must be finite and within [0, " +
                           std::to_string(rtc::params::kDynamicsFeedforwardGainMax) + "]";
           return result;
         }
-        g.ff_gain = v;
+        g.gravity_gain = v;
         dirty = true;
       } else if (name == key + ".inertia_gain") {
         const double v = p.as_double();

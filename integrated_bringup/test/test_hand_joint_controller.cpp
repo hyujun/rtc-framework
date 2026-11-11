@@ -306,6 +306,33 @@ TEST(HandJointConfigure, TheYamlRefusesWhatItCannotRun) {
   EXPECT_NO_THROW(make(Yaml()));
 }
 
+// The block and its gravity key were renamed (gravity_ff.gain →
+// dynamics_feedforward.gravity_gain). A YAML left on either old spelling must
+// stop at configure: the old block is a missing block, and the old key would
+// otherwise leave k_g at its seed without a word.
+TEST(HandJointConfigure, StaleFeedforwardSpellingsAreRefused) {
+  const std::string good = Yaml();
+  ASSERT_NO_THROW((void)ParseHandJointConfig(YAML::Load(good)));
+  auto replaced = [&](const std::string& from, const std::string& to) {
+    std::string y = good;
+    const auto at = y.find(from);
+    EXPECT_NE(at, std::string::npos) << from;
+    return at == std::string::npos ? y : y.replace(at, from.size(), to);
+  };
+  auto message = [](const std::string& yaml) {
+    try {
+      (void)ParseHandJointConfig(YAML::Load(yaml));
+    } catch (const std::runtime_error& e) {
+      return std::string(e.what());
+    }
+    return std::string("no throw");
+  };
+  const std::string old_block = message(replaced("dynamics_feedforward:", "gravity_ff:"));
+  EXPECT_NE(old_block.find("dynamics_feedforward"), std::string::npos) << old_block;
+  const std::string old_key = message(replaced("  gravity_gain:", "  gain:"));
+  EXPECT_NE(old_key.find("dynamics_feedforward.gain is not a key"), std::string::npos) << old_key;
+}
+
 TEST(HandJointConfigure, TaskGoalsAreNotAccepted) {
   const Rig rig = ClosedRig();
   auto ctrl = BringUp(rig);
@@ -650,7 +677,7 @@ TEST(HandJointHold, TheEnableSwitchZeroesTheTorqueAndKeepsTheLane) {
     EXPECT_DOUBLE_EQ(off.devices[0].feedforward[static_cast<std::size_t>(i)], 0.0);
   }
   gains.ff_enabled = true;
-  gains.ff_gain = 0.5;
+  gains.gravity_gain = 0.5;
   ctrl->SetGains(gains);
   const ControllerOutput half = ctrl->Compute(MakeState(rig.q, true, 1001));
   const auto& tick = ctrl->LastTick();
@@ -1063,7 +1090,7 @@ TEST(HandJointLifecycle, ConfiguresDeclaresParametersAndCleansUp) {
   // An out-of-range gain is refused and the old one kept.
   const auto bad = node->set_parameter(rclcpp::Parameter("gravity_ff.gain", 5.0));
   EXPECT_FALSE(bad.successful);
-  EXPECT_DOUBLE_EQ(ctrl->GetGains().ff_gain, 1.0);
+  EXPECT_DOUBLE_EQ(ctrl->GetGains().gravity_gain, 1.0);
   // The inertia gain: in range reaches the tick, out of range is refused.
   EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("gravity_ff.inertia_gain", 0.5)).successful);
   EXPECT_DOUBLE_EQ(ctrl->GetGains().inertia_gain, 0.5);

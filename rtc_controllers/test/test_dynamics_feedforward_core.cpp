@@ -339,6 +339,36 @@ TEST(DynamicsFeedforwardParams, TheBlockItselfIsRequired) {
                std::runtime_error);
 }
 
+// Only the schema's keys: a misspelt or renamed key (the gravity gain was
+// `gain`) would leave its term at the seed without a word. The Coriolis gain
+// is refused too — the law has the slot, the schema grows the key with a
+// binding that ships the term. The check runs before any value is read.
+TEST(DynamicsFeedforwardParams, AKeyOutsideTheSchemaIsRefused) {
+  for (const char* key : {"gain", "coriolis_gain", "max_torque"}) {
+    DynamicsFeedforwardParams p;
+    const std::string yaml = std::string(key) + ": 0.5\nmax_abs: 0.1";
+    try {
+      ParseDynamicsFeedforwardParams(YAML::Load(yaml), "dynamics_feedforward", p);
+      ADD_FAILURE() << key << ": expected a throw";
+    } catch (const std::runtime_error& e) {
+      const std::string want = std::string("dynamics_feedforward.") + key + " is not a key";
+      EXPECT_NE(std::string(e.what()).find(want), std::string::npos) << e.what();
+    }
+  }
+  // Ahead of the max_abs check: the unknown key is named even with no bound.
+  DynamicsFeedforwardParams p;
+  try {
+    ParseDynamicsFeedforwardParams(YAML::Load("gain: 1.0"), "k", p);
+    ADD_FAILURE() << "expected a throw";
+  } catch (const std::runtime_error& e) {
+    EXPECT_NE(std::string(e.what()).find("k.gain is not a key"), std::string::npos) << e.what();
+  }
+  // Every key of the schema together is accepted.
+  EXPECT_NO_THROW(ParseDynamicsFeedforwardParams(
+      YAML::Load("enabled: true\ngravity_gain: 0.8\ninertia_gain: 0.6\nmax_abs: 0.12"), "k", p));
+  EXPECT_DOUBLE_EQ(p.gravity_gain, 0.8);
+}
+
 TEST(DynamicsFeedforwardParams, MaxAbsMustBePositiveAndFinite) {
   DynamicsFeedforwardParams p;
   EXPECT_THROW(ParseDynamicsFeedforwardParams(YAML::Load("max_abs: 0.0"), "k", p),
