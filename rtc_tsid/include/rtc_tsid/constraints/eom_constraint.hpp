@@ -8,9 +8,10 @@ namespace rtc::tsid {
 // Equations of Motion constraint
 //
 // Fixed-base (S = I): eq_dim = 0 (EoM implicit, τ post-solve 역산)
-// Floating-base:      eq_dim = nv - n_actuated (보통 6)
-//   [I - SᵀS]·(M·a + h - Jcᵀ·λ) = 0
-//   → unactuated DoF의 force balance
+// Floating-base:      eq_dim = 6 — the free-flyer rows of
+//   M·a + h − Jcᵀ·λ = Sᵀτ, i.e. [M_b | −J_c,bᵀ]·[a; λ] = −h_b.
+//   τ is not a QP variable; TSIDController recovers it from the actuated rows.
+//   Init throws unless the root is a free-flyer and S = [0 | I].
 // ────────────────────────────────────────────────
 class EomConstraint final : public ConstraintBase {
  public:
@@ -45,11 +46,6 @@ class EomConstraint final : public ConstraintBase {
   int n_unactuated_{0};  // nv - n_actuated (0 for fixed-base)
   bool floating_base_{false};
   const ContactManagerConfig* manager_{nullptr};
-
-  // Pre-allocated workspace
-  Eigen::MatrixXd P_;   // [nv × nv] projection matrix I - SᵀS
-  Eigen::MatrixXd PM_;  // [n_unactuated × nv] P*M
-  Eigen::VectorXd Ph_;  // [n_unactuated] P*h
 };
 
 }  // namespace rtc::tsid

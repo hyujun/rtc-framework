@@ -142,6 +142,40 @@ TEST_F(FloatingEomTest, ManagerNullGuardPointFallback) {
   EXPECT_GT(A.block(0, info_.nv, n_eq, 3).norm(), 0.0);
 }
 
+// Init refuses a floating RobotModelInfo the base rows would be wrong for.
+TEST_F(FloatingEomTest, InitRejectsWhatTheBaseRowsDoNotDescribe) {
+  PinocchioCache cache;
+  cache.Init(model_, {});
+  EomConstraint eom;
+  EXPECT_NO_THROW(eom.Init(*model_, info_, cache, YAML::Node{}));  // control
+
+  RobotModelInfo passive = info_;  // an actuated joint made passive in S
+  passive.S(0, 6) = 0.0;
+  EXPECT_THROW(eom.Init(*model_, passive, cache, YAML::Node{}), std::invalid_argument);
+
+  RobotModelInfo shifted = info_;  // S = [I | 0]: the base taken as actuated
+  shifted.S.setZero();
+  shifted.S.leftCols(info_.n_actuated).setIdentity();
+  EXPECT_THROW(eom.Init(*model_, shifted, cache, YAML::Node{}), std::invalid_argument);
+
+  // A RobotModelInfo built for another model (nv differs).
+  RobotModelInfo panda;
+  panda.Build(*test::SharedPandaModel(), YAML::Node{});
+  EXPECT_THROW(eom.Init(*model_, panda, cache, YAML::Node{}), std::invalid_argument);
+
+  // Floating with S = [0 | I] but on a composite root of the same size.
+  const auto composite = test::CompositeRootPandaModel();
+  RobotModelInfo fake;
+  fake.Build(*composite, YAML::Node{});
+  fake.floating_base = true;
+  fake.n_actuated = composite->nv - 6;
+  fake.S.setZero(fake.n_actuated, composite->nv);
+  fake.S.rightCols(fake.n_actuated).setIdentity();
+  PinocchioCache composite_cache;
+  composite_cache.Init(composite, {});
+  EXPECT_THROW(eom.Init(*composite, fake, composite_cache, YAML::Node{}), std::invalid_argument);
+}
+
 TEST_F(FloatingEomTest, FloatingBaseMatrixDimensions) {
   PinocchioCache cache;
   cache.Init(model_, {});

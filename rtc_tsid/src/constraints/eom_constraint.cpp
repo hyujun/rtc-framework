@@ -1,23 +1,42 @@
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/multibody/joint/joint-free-flyer.hpp>
+#pragma GCC diagnostic pop
+
+#include <stdexcept>
+
 namespace rtc::tsid {
 
-void EomConstraint::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+void EomConstraint::Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
                          PinocchioCache& /*cache*/, const YAML::Node& /*constraint_config*/) {
+  // The base rows below are the top six rows of M a + h − Jcᵀλ: that is the
+  // unactuated part only when the root is a free-flyer (velocity rows 0..5)
+  // and every other DoF is actuated — S = [0 | I], no passive joints.
+  if (robot_info.nv != model.nv) {
+    throw std::invalid_argument("eom: RobotModelInfo.nv does not match the model");
+  }
+  if (robot_info.floating_base) {
+    const bool free_flyer_root =
+        model.joints.size() > 1 &&
+        model.joints[1].shortname() == pinocchio::JointModelFreeFlyer::classname();
+    const int na = robot_info.n_actuated;
+    const bool s_is_0_i =
+        free_flyer_root && robot_info.S.rows() == na && robot_info.S.cols() == model.nv &&
+        na == model.nv - 6 && robot_info.S.leftCols(6).isZero(0.0) &&
+        robot_info.S.rightCols(na).isApprox(Eigen::MatrixXd::Identity(na, na), 0.0);
+    if (!s_is_0_i) {
+      throw std::invalid_argument(
+          "eom: a floating base needs a free-flyer root and S = [0 | I] (nv − 6 actuated)");
+    }
+  }
+
   nv_ = robot_info.nv;
   floating_base_ = robot_info.floating_base;
   n_unactuated_ = floating_base_ ? (nv_ - robot_info.n_actuated) : 0;
-
-  if (floating_base_) {
-    // Projection matrix P = I - Sᵀ·S
-    // S = [0_{na×6} | I_{na}], Sᵀ·S = [0 0; 0 I_{na}]
-    // P = I - SᵀS = [I_6 0; 0 0]  → 상위 6행만 non-zero
-    P_.setIdentity(nv_, nv_);
-    P_.noalias() -= robot_info.S.transpose() * robot_info.S;
-
-    PM_.setZero(n_unactuated_, nv_);
-    Ph_.setZero(n_unactuated_);
-  }
 }
 
 int EomConstraint::EqDim(const ContactState& /*contacts*/) const noexcept {
