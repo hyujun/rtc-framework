@@ -12,8 +12,11 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/multibody/joint/joint-free-flyer.hpp>
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
+
+#include <string>
 
 namespace rtc::tsid {
 
@@ -24,23 +27,24 @@ void RobotModelInfo::Build(const pinocchio::Model& model, const YAML::Node& conf
   nq = model.nq;
   nv = model.nv;
 
-  // Floating base 판별: YAML 우선, 없으면 모델로부터 추론
-  if (config && config["floating_base"]) {
-    floating_base = config["floating_base"].as<bool>();
-  } else {
-    // Pinocchio: floating-base 모델의 첫 joint가 freeflyer (nq=7, nv=6)
-    floating_base =
-        (model.joints.size() > 1 && model.joints[1].nq() == 7 && model.joints[1].nv() == 6);
-  }
+  // Floating base ⇔ the root joint is a free-flyer — the joint type, not its
+  // nq / nv (a composite 7/6 root is not a free-flyer). Everything after the
+  // root is actuated. YAML floating_base / n_actuated are not overrides: when
+  // given they must agree with the model (non-RT, throws).
+  floating_base = model.joints.size() > 1 &&
+                  model.joints[1].shortname() == pinocchio::JointModelFreeFlyer::classname();
+  n_actuated = floating_base ? nv - 6 : nv;
 
-  if (floating_base) {
-    n_actuated = nv - 6;
-  } else {
-    n_actuated = nv;
+  if (config && config["floating_base"] && config["floating_base"].as<bool>() != floating_base) {
+    throw std::invalid_argument(
+        std::string("RobotModelInfo: YAML floating_base disagrees with the model, whose root "
+                    "joint is ") +
+        (model.joints.size() > 1 ? model.joints[1].shortname() : std::string("absent")));
   }
-
-  if (config && config["n_actuated"]) {
-    n_actuated = config["n_actuated"].as<int>();
+  if (config && config["n_actuated"] && config["n_actuated"].as<int>() != n_actuated) {
+    throw std::invalid_argument("RobotModelInfo: YAML n_actuated " +
+                                std::to_string(config["n_actuated"].as<int>()) +
+                                " disagrees with the model's " + std::to_string(n_actuated));
   }
 
   // Selection matrix S: [n_actuated × nv]

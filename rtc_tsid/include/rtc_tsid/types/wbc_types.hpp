@@ -46,7 +46,10 @@ struct RobotModelInfo {
   Eigen::VectorXd q_lower;  // [nq]
   Eigen::VectorXd v_max;    // [nv]
 
-  // Pinocchio model + YAML config로부터 구성
+  // Pinocchio model + YAML config로부터 구성. floating_base = the root joint
+  // (joints[1]) is a free-flyer; n_actuated = nv − 6 then, else nv. Optional
+  // YAML `floating_base` / `n_actuated` are checked against that — a mismatch
+  // throws std::invalid_argument (init only).
   void Build(const pinocchio::Model& model, const YAML::Node& config);
 };
 
