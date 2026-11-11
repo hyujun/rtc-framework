@@ -19,7 +19,7 @@ RTC 의 컨트롤러는 두 층이다. `rtc_controllers` 는 프레임워크에 
 | `demo_inference_controller` | Position | ONNX 정책. 입출력 텐서·정규화·모델 경로가 전부 YAML 이라 모델 교체에 재컴파일이 없다 | `ur5e_p1b` |
 | `demo_catching_controller` | Position | 날아오는 물체 포획: vision 예측 → 확장 CLIK 팔 + 손 step | `ur5e_p1b` · `iiwa7_leap` |
 | `demo_dualarm_controller` | Position | 양손 frame 과제를 QP 하나로 푸는 상체 제어. 상세: [DemoDualArmController](../integrated_bringup/docs/demo-dualarm-controller.md) | `g1_p1b` |
-| `hand_joint_controller` | PD-feedforward | 손 하나 (device group 1): 관절 quintic 궤적 + 폐쇄 체인 모델의 중력 토크 feedforward. 상세: [HandJointController](../integrated_bringup/docs/hand-joint-controller.md) | `p2` |
+| `hand_joint_controller` | PD-feedforward | 손 하나 (device group 1): 관절 quintic 궤적 + 폐쇄 체인 모델의 중력 토크 feedforward (관성 `M·q̈_ref` 는 선택, 출하 0). 상세: [HandJointController](../integrated_bringup/docs/hand-joint-controller.md) | `p2` |
 
 - 기동 시 활성 컨트롤러는 `config/<robot>/{sim,robot}.yaml` 의 `initial_controller` 가 정한다. 로봇마다 다르니 그 YAML 을 본다.
 - YAML 이 없는 로봇에서는 해당 컨트롤러가 인스턴스화되지 않고 건너뛴다 (모든 컨트롤러가 `_REQUIRING_CONFIG` 등록). 손 하나뿐인 `p2` 는 `hand_joint_controller` 만, 나머지 로봇은 `demo_joint_controller` 를 싣는다.

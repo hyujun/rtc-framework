@@ -123,6 +123,7 @@ def test_gain_rows_cover_the_runtime_parameters():
     assert set(rows) == {
         "gravity_ff.enabled",
         "gravity_ff.gain",
+        "gravity_ff.inertia_gain",
         "trajectory_speed",
         "max_traj_velocity",
     }
@@ -150,6 +151,10 @@ def test_registration_builds_the_bool_row_and_setters():
         assert setter([1.0]) == (config.Parameter.Type.BOOL, True)
         assert setter([0.0]) == (config.Parameter.Type.BOOL, False)
         assert dispatch["gravity_ff gain [0-2]"][1] is config._set_double
+        assert dispatch["gravity_ff inertia_gain [0-2]"] == (
+            "gravity_ff.inertia_gain",
+            config._set_double,
+        )
         assert dispatch["max_traj_velocity [rad/s]"][1] is config._read_only
     finally:
         for table in (

@@ -110,9 +110,10 @@
 
 **DemoCatchingController**: 소비 키가 provisional / TBD 이거나 계획기와 oracle 이 함께 켜지면 configure 는 성공하고 activate 만 거부한다 (park).
 
-**HandJointController** (손 1 군, `pd_feedforward` = 관절 reference + 모델 중력 feedforward):
+**HandJointController** (손 1 군, `pd_feedforward` = 관절 reference + 모델 feedforward — 중력 + 관성 `M(q)·q̈_ref`):
 
-- feedforward hold: 첫 유효 모델항 전 0, held · singular · unreadable tick 은 **직전 유효 토크 유지** (walk-in 마다 0 으로 떨어뜨리면 활성화마다 손이 처진다), 비유한이면 전 관절 0, E-STOP 0.
-- A/B 스위치는 `gravity_ff.enabled` 다 — command type 을 position 으로 바꾸면 sim 이 자기 중력 보상을 다시 켜 plant 가 달라진다. 토크 상한은 `gravity_ff.max_abs` (필수) 와 device `max_torque` 의 min.
+- 관성항은 `gravity_ff.inertia_gain` (출하 0) 이고 q̈_ref 는 진행 중 궤적에서만 0 이 아니다 — 정지 자세는 중력만.
+- feedforward hold: 첫 유효 모델항 전 0, held · singular · unreadable tick 은 **모델항 (g · M) 을 직전 유효값으로** (walk-in 마다 0 으로 떨어뜨리면 활성화마다 손이 처진다), q̈_ref 는 reference 의 것 (동결된 unreadable 이면 0), 비유한이면 전 관절 0, E-STOP 0.
+- A/B 스위치는 `gravity_ff.enabled` 다 — command type 을 position 으로 바꾸면 sim 이 자기 중력 보상을 다시 켜 plant 가 달라진다. 토크 상한 (항의 합) 은 `gravity_ff.max_abs` (필수) 와 device `max_torque` 의 min.
 - 폐쇄 체인의 독립 관절은 **전부 이 군의 관절**이어야 한다 (이름 브릿지) — 팔까지 닫는 sidecar 의 손만 떼면 거부. 핑거팁 FK 는 같은 사영을 빌린다 (tick 당 1 회).
 - `mode` (언제든 설정, E-STOP 우선): `tracking` 외 두 모드는 reference = 측정값이고 (`damping` 은 feedforward 0, `damping_feedforward` 는 lane 유지), goal 을 **거부 + count** 한다 (E-STOP 의 조용한 폐기와 다른 정책). hold 가 seed 를 겸해 비-tracking 활성화도 첫 tick 부터 valid. tick 은 enum 만 비교하고 문자열 parse 는 파라미터 층에만.

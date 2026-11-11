@@ -2,10 +2,12 @@
 // Pins the contract of joint/dynamics_feedforward_law.hpp and its parser:
 //   - the law: gain scaling, the per-channel magnitude clamp and its bit mask,
 //     the all-or-nothing non-finite rule, the tail policy (zero past the model
-//     terms / past the bound span), the Coriolis slot being unread at gain 0,
-//     and allocation-freedom on the tick (RT-1);
-//   - the schema: `max_abs` is required and bounded, `gain` is bounded, the
-//     block itself is required, and absent optional keys keep the seed.
+//     terms / past the bound span), the Coriolis and inertia slots being
+//     unread at gain 0 and sharing the one clamp when read, and
+//     allocation-freedom on the tick (RT-1);
+//   - the schema: `max_abs` is required and bounded, `gain` and `inertia_gain`
+//     are bounded, the block itself is required, and absent optional keys keep
+//     the seed.
 //
 // Each clamp / bound case has a partner just inside the bound, so a deleted
 // check fails here rather than passing on both sides.
@@ -192,6 +194,71 @@ TEST(DynamicsFeedforwardLaw, CoriolisSlotIsUnreadAtGainZeroAndReadOtherwise) {
   }
 }
 
+TEST(DynamicsFeedforwardLaw, InertiaSlotIsUnreadAtGainZeroAndReadOtherwise) {
+  const std::array<double, 2> g = {0.1, 0.1};
+  const std::array<double, 2> m = {kNaN, 0.2};  // NaN in slot 0: only matters when read
+  const std::array<double, 2> lim = {1.0, 1.0};
+  std::array<double, 2> tau{};
+  {
+    // Gain 0, EMPTY span: the slot neither shrinks n nor is read.
+    const auto r = ComputeDynamicsFeedforward({.inertia_gain = 0.0, .max_abs = lim},
+                                              {.gravity = g, .inertia = {}}, 2, tau);
+    EXPECT_TRUE(r.finite);
+    EXPECT_EQ(r.written, 2u);
+    EXPECT_DOUBLE_EQ(tau[0], 0.1);
+    EXPECT_DOUBLE_EQ(tau[1], 0.1);
+  }
+  {
+    // Gain 0, a span WITH a NaN: still unread.
+    const auto r = ComputeDynamicsFeedforward({.inertia_gain = 0.0, .max_abs = lim},
+                                              {.gravity = g, .inertia = m}, 2, tau);
+    EXPECT_TRUE(r.finite);
+  }
+  {
+    // Gain set: the slot is read, so the NaN retracts every channel.
+    const auto r = ComputeDynamicsFeedforward({.inertia_gain = 1.0, .max_abs = lim},
+                                              {.gravity = g, .inertia = m}, 2, tau);
+    EXPECT_FALSE(r.finite);
+    EXPECT_DOUBLE_EQ(tau[0], 0.0);
+    EXPECT_DOUBLE_EQ(tau[1], 0.0);
+  }
+  {
+    // A non-finite inertia GAIN is all-or-nothing too.
+    const std::array<double, 2> m_ok = {0.3, 0.2};
+    const auto r = ComputeDynamicsFeedforward({.inertia_gain = kInf, .max_abs = lim},
+                                              {.gravity = g, .inertia = m_ok}, 2, tau);
+    EXPECT_FALSE(r.finite);
+  }
+  {
+    // Gain set, finite span: the term is added with its gain, and a short span
+    // bounds n like any read span (channel 1 is the tail).
+    const std::array<double, 1> m_short = {0.3};
+    const auto r = ComputeDynamicsFeedforward({.inertia_gain = 0.5, .max_abs = lim},
+                                              {.gravity = g, .inertia = m_short}, 2, tau);
+    EXPECT_TRUE(r.finite);
+    EXPECT_EQ(r.written, 1u);
+    EXPECT_DOUBLE_EQ(tau[0], 0.1 + 0.15);
+    EXPECT_DOUBLE_EQ(tau[1], 0.0);
+  }
+}
+
+TEST(DynamicsFeedforwardLaw, EveryTermSharesTheOneClampOnTheSum) {
+  // Each term alone is inside the bound; their sum is not (channel 0), and
+  // terms of opposite sign cancel before the clamp (channel 1).
+  const std::array<double, 2> g = {0.08, 0.08};
+  const std::array<double, 2> c = {0.04, 0.0};
+  const std::array<double, 2> m = {0.04, -0.12};
+  const std::array<double, 2> lim = {0.15, 0.15};
+  std::array<double, 2> tau{};
+  const auto r = ComputeDynamicsFeedforward(
+      {.gravity_gain = 1.0, .coriolis_gain = 1.0, .inertia_gain = 1.0, .max_abs = lim},
+      {.gravity = g, .coriolis = c, .inertia = m}, 2, tau);
+  EXPECT_TRUE(r.finite);
+  EXPECT_EQ(r.clamped, 0b01u);
+  EXPECT_DOUBLE_EQ(tau[0], 0.15);
+  EXPECT_DOUBLE_EQ(tau[1], 0.08 - 0.12);
+}
+
 TEST(DynamicsFeedforwardLaw, ClampMaskBitsFollowChannelIndexUpToSixtyFour) {
   constexpr std::size_t kN = rtc::kMaxDeviceChannels;  // 64
   std::vector<double> g(kN, 1.0);
@@ -208,14 +275,16 @@ TEST(DynamicsFeedforwardLaw, ComputeIsAllocationFree) {
   const std::array<double, 10> g = {0.07, -0.08, 0.004, 0.005, 0.003,
                                     0.04, 0.006, 0.038, 0.005, 0.03};
   const std::array<double, 10> c = {0.001, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  const std::array<double, 10> m = {0.002, -0.001, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0};
   const std::array<double, 10> lim = {0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.15};
   std::array<double, 10> tau{};
   std::size_t new_calls = 0;
   {
     rtc::testing::ScopedAllocGate heap_gate;
     for (int it = 0; it < 1000; ++it) {
-      (void)ComputeDynamicsFeedforward({.gravity_gain = 1.0, .coriolis_gain = 1.0, .max_abs = lim},
-                                       {.gravity = g, .coriolis = c}, 10, tau);
+      (void)ComputeDynamicsFeedforward(
+          {.gravity_gain = 1.0, .coriolis_gain = 1.0, .inertia_gain = 1.0, .max_abs = lim},
+          {.gravity = g, .coriolis = c, .inertia = m}, 10, tau);
     }
     new_calls = heap_gate.count();
   }
@@ -228,10 +297,11 @@ TEST(DynamicsFeedforwardLaw, ComputeIsAllocationFree) {
 
 TEST(DynamicsFeedforwardParams, ParsesEveryKey) {
   DynamicsFeedforwardParams p;
-  ParseDynamicsFeedforwardParams(YAML::Load("enabled: false\ngain: 0.8\nmax_abs: 0.12"),
-                                 "gravity_ff", p);
+  ParseDynamicsFeedforwardParams(
+      YAML::Load("enabled: false\ngain: 0.8\ninertia_gain: 0.6\nmax_abs: 0.12"), "gravity_ff", p);
   EXPECT_FALSE(p.enabled);
   EXPECT_DOUBLE_EQ(p.gravity_gain, 0.8);
+  EXPECT_DOUBLE_EQ(p.inertia_gain, 0.6);
   EXPECT_DOUBLE_EQ(p.max_abs, 0.12);
 }
 
@@ -239,9 +309,13 @@ TEST(DynamicsFeedforwardParams, AbsentOptionalKeysKeepTheSeed) {
   DynamicsFeedforwardParams p;
   p.enabled = false;
   p.gravity_gain = 0.3;
+  p.inertia_gain = 0.7;
   ParseDynamicsFeedforwardParams(YAML::Load("max_abs: 0.2"), "gravity_ff", p);
   EXPECT_FALSE(p.enabled);
   EXPECT_DOUBLE_EQ(p.gravity_gain, 0.3);
+  EXPECT_DOUBLE_EQ(p.inertia_gain, 0.7);
+  // And the default seed is the term OFF: a block without the key ships gravity alone.
+  EXPECT_DOUBLE_EQ(DynamicsFeedforwardParams{}.inertia_gain, 0.0);
   EXPECT_DOUBLE_EQ(p.max_abs, 0.2);
 }
 
@@ -292,6 +366,29 @@ TEST(DynamicsFeedforwardParams, GainIsBoundedOnBothSides) {
   const std::string edge =
       "gain: " + std::to_string(kDynamicsFeedforwardGainMax) + "\nmax_abs: 0.1";
   EXPECT_NO_THROW(ParseDynamicsFeedforwardParams(YAML::Load(edge), "k", p));
+}
+
+TEST(DynamicsFeedforwardParams, InertiaGainIsBoundedOnBothSides) {
+  DynamicsFeedforwardParams p;
+  EXPECT_THROW(
+      ParseDynamicsFeedforwardParams(YAML::Load("inertia_gain: -0.01\nmax_abs: 0.1"), "k", p),
+      std::runtime_error);
+  const std::string over =
+      "inertia_gain: " + std::to_string(kDynamicsFeedforwardGainMax + 0.01) + "\nmax_abs: 0.1";
+  EXPECT_THROW(ParseDynamicsFeedforwardParams(YAML::Load(over), "k", p), std::runtime_error);
+  EXPECT_THROW(
+      ParseDynamicsFeedforwardParams(YAML::Load("inertia_gain: .nan\nmax_abs: 0.1"), "k", p),
+      std::runtime_error);
+  const std::string edge =
+      "inertia_gain: " + std::to_string(kDynamicsFeedforwardGainMax) + "\nmax_abs: 0.1";
+  EXPECT_NO_THROW(ParseDynamicsFeedforwardParams(YAML::Load(edge), "k", p));
+  EXPECT_DOUBLE_EQ(p.inertia_gain, kDynamicsFeedforwardGainMax);
+  try {
+    ParseDynamicsFeedforwardParams(YAML::Load("inertia_gain: 3.0\nmax_abs: 0.1"), "gravity_ff", p);
+    FAIL() << "expected a throw";
+  } catch (const std::runtime_error& e) {
+    EXPECT_NE(std::string(e.what()).find("gravity_ff.inertia_gain"), std::string::npos) << e.what();
+  }
 }
 
 TEST(DynamicsFeedforwardParams, ErrorNamesTheBlockKey) {

@@ -25,6 +25,14 @@ void ParseDynamicsFeedforwardParams(const YAML::Node& block, std::string_view ke
     }
     out.gravity_gain = g;
   }
+  if (block["inertia_gain"]) {
+    const double g = block["inertia_gain"].as<double>();
+    if (!std::isfinite(g) || g < 0.0 || g > kDynamicsFeedforwardGainMax) {
+      throw std::runtime_error(k + ".inertia_gain must be finite and within [0, " +
+                               std::to_string(kDynamicsFeedforwardGainMax) + "]");
+    }
+    out.inertia_gain = g;
+  }
   // Required: the bound is what keeps a placeholder device rating from being
   // the only thing between a model error and the motors.
   if (!block["max_abs"]) {

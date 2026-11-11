@@ -95,7 +95,13 @@ TEST(HandJointAlloc, EveryTickAfterTheFirstIsAllocationFree) {
   std::vector<double> bad = rig.q;
   bad[0] = std::numeric_limits<double>::quiet_NaN();
   expect_clean(MakeState(bad, true, t++), "non-finite");
-  // A goal: pushed outside the gate (the ingress is non-RT), applied inside.
+  // A goal with the inertia term on: pushed outside the gate (the ingress is
+  // non-RT), applied inside.
+  {
+    auto g = ctrl->GetGains();
+    g.inertia_gain = 1.0;
+    ctrl->SetGains(g);
+  }
   std::vector<double> goal = rig.q;
   for (double& v : goal) {
     v += 0.05;
@@ -138,6 +144,20 @@ TEST(HandJointAlloc, ThePlainPathIsAllocationFreeToo) {
     const Counts c = GatedTick(*ctrl, MakeState(rig.q, true, t));
     EXPECT_EQ(c.op_new, 0u);
     EXPECT_EQ(c.c_malloc, 0u);
+  }
+  // The inertia term on (CRBA every tick) through a goal.
+  auto gains = ctrl->GetGains();
+  gains.inertia_gain = 1.0;
+  ctrl->SetGains(gains);
+  std::vector<double> goal = rig.q;
+  for (double& v : goal) {
+    v += 0.05;
+  }
+  ctrl->SetDeviceTarget(0, goal);
+  for (std::uint64_t t = 12; t < 32; ++t) {
+    const Counts c = GatedTick(*ctrl, MakeState(rig.q, true, t));
+    EXPECT_EQ(c.op_new, 0u) << "inertia on, tick " << t;
+    EXPECT_EQ(c.c_malloc, 0u) << "inertia on, tick " << t;
   }
 }
 

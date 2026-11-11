@@ -2,13 +2,16 @@
 // The per-channel feedforward torque a position-servoed device receives on top
 // of its own PD:
 //
-//     τ_ff[i] = clamp(k_g · g(q)[i] + k_c · (C(q,q̇)·q̇)[i],  −τ_max[i], +τ_max[i])
+//     τ_ff[i] = clamp(k_g · g(q)[i] + k_c · (C(q,q̇)·q̇)[i] + k_M · (M(q)·q̈_ref)[i],
+//                     −τ_max[i], +τ_max[i])
 //
-// and nothing else. The caller owns the model (g and C·q̇ arrive already in
-// DEVICE channel order — for a closed-chain hand that is the reduced g_a =
-// Gᵀ g, projected by the caller), the position reference (it travels on the
-// command lane, not here), the per-channel torque bound, the enable switch
-// and the hold policy on ticks the model could not be evaluated.
+// and nothing else. The caller owns the model (g, C·q̇ and M·q̈_ref arrive
+// already in DEVICE channel order — for a closed-chain hand that is the reduced
+// g_a = Gᵀ g and M_a = Gᵀ M G, projected by the caller), the reference (the
+// position travels on the command lane; its acceleration q̈_ref is multiplied
+// into the inertia term by the caller, so the law sees one vector per term),
+// the per-channel torque bound, the enable switch and the hold policy on ticks
+// the model could not be evaluated.
 //
 // ── Why a second law next to joint_pd_law.hpp ───────────────────────────────
 // ComputeJointPdCommand adds g / C·q̇ into a TORQUE command and refuses them on
@@ -34,10 +37,13 @@
 //    `max_abs` span shorter than nc) get 0: passive is the only tail that is
 //    safe on a torque overlay. Every span length participates in the bound, so
 //    a short input never reads out of range.
-//  - The Coriolis term is a SLOT: `coriolis_gain == 0` leaves the span unread
-//    (an empty span is fine), so a binding that ships gravity alone passes
-//    nothing and pays nothing. The term is here so adding it later changes the
-//    binding's inputs, not the law.
+//  - The Coriolis and inertia terms are SLOTS: a gain of 0 leaves that span
+//    unread (an empty span is fine), so a binding that ships gravity alone
+//    passes nothing and pays nothing. Every term shares the one clamp and the
+//    one finiteness rule — the bound is on what reaches the wire, not per term.
+//  - The inertia term takes the PRODUCT M·q̈_ref, not M and q̈_ref: the matrix
+//    product is the binding's (it owns the matrix layout and the hold of M),
+//    and the law stays a per-channel loop with no matrix in its signature.
 #pragma once
 
 #include <rtc_base/types/types.hpp>
@@ -56,6 +62,7 @@ namespace rtc::joint {
 struct DynamicsFeedforwardGainsView {
   double gravity_gain{1.0};   ///< k_g, dimensionless. 0 switches the term off
   double coriolis_gain{0.0};  ///< k_c, dimensionless. 0 leaves `coriolis` unread
+  double inertia_gain{0.0};   ///< k_M, dimensionless. 0 leaves `inertia` unread
   /// τ_max per channel [N·m], device channel order; applied by magnitude. A
   /// channel past the end of this span gets 0 (tail policy).
   std::span<const double> max_abs{};
@@ -65,6 +72,9 @@ struct DynamicsFeedforwardGainsView {
 struct DynamicsFeedforwardInputs {
   std::span<const double> gravity{};   ///< g(q); for a closed chain the reduced g_a
   std::span<const double> coriolis{};  ///< C(q,q̇)·q̇; unread unless coriolis_gain ≠ 0
+  /// M(q)·q̈_ref (the reference acceleration through the model inertia; for a
+  /// closed chain the reduced M_a); unread unless inertia_gain ≠ 0.
+  std::span<const double> inertia{};
 };
 
 /// Width of DynamicsFeedforwardResult::clamped — one bit per device channel.
@@ -102,17 +112,24 @@ inline DynamicsFeedforwardResult ComputeDynamicsFeedforward(const DynamicsFeedfo
   DynamicsFeedforwardResult r;
   nc = std::min(nc, tau_ff.size());
   const bool use_coriolis = (k.coriolis_gain != 0.0);
-  // Bound by every span the law will READ — the Coriolis span only when its
-  // gain is set, so an intentionally empty span never shrinks n.
+  const bool use_inertia = (k.inertia_gain != 0.0);
+  // Bound by every span the law will READ — a slot's span only when its gain
+  // is set, so an intentionally empty span never shrinks n.
   std::size_t n = std::min({nc, in.gravity.size(), k.max_abs.size()});
   if (use_coriolis) {
     n = std::min(n, in.coriolis.size());
   }
+  if (use_inertia) {
+    n = std::min(n, in.inertia.size());
+  }
 
-  bool finite = std::isfinite(k.gravity_gain) && (!use_coriolis || std::isfinite(k.coriolis_gain));
+  bool finite = std::isfinite(k.gravity_gain) &&
+                (!use_coriolis || std::isfinite(k.coriolis_gain)) &&
+                (!use_inertia || std::isfinite(k.inertia_gain));
   for (std::size_t i = 0; i < n && finite; ++i) {
     finite = std::isfinite(in.gravity[i]) && std::isfinite(k.max_abs[i]) &&
-             (!use_coriolis || std::isfinite(in.coriolis[i]));
+             (!use_coriolis || std::isfinite(in.coriolis[i])) &&
+             (!use_inertia || std::isfinite(in.inertia[i]));
   }
   if (!finite) {
     for (std::size_t i = 0; i < nc; ++i) {
@@ -126,6 +143,9 @@ inline DynamicsFeedforwardResult ComputeDynamicsFeedforward(const DynamicsFeedfo
     double tau = k.gravity_gain * in.gravity[i];
     if (use_coriolis) {
       tau += k.coriolis_gain * in.coriolis[i];
+    }
+    if (use_inertia) {
+      tau += k.inertia_gain * in.inertia[i];
     }
     // A negative bound is read as 0 (passive) rather than inverting the clamp.
     const double lim = std::max(0.0, k.max_abs[i]);

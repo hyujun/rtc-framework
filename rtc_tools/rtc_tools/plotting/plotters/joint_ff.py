@@ -19,6 +19,11 @@ FAIL judgement of such a run is `analyze_hand_gravity_ff`
 judge, and the statistics printed here are whole-segment numbers, not the
 judge's trailing windows.
 
+THE INERTIA COLUMNS ARE OPTIONAL. A file that carries `tau_inertia_<joint>`
+(k_M · M(q) · q̈_ref, the inertia term as the law added it) draws it on the
+torque panel, so tau_ff = clamp(k_g · g + tau_inertia) reads off the figure; a
+file without them renders as before.
+
 THE `mode` COLUMN IS OPTIONAL. When present it is an integer code of the
 controller's run mode: 0 tracking (the reference is the commanded one), 1
 damping (the reference follows the measurement, feedforward zero), 2
@@ -45,6 +50,9 @@ from rtc_tools.analysis.hand_gravity_ff_gate import (
     joint_names_of,
 )
 from rtc_tools.plotting.layout import auto_subplot_grid, hide_unused_axes
+
+# Optional per-joint block (a joint_ff.csv written before the inertia term has none).
+TAU_INERTIA_PREFIX = "tau_inertia_"
 
 # Status lanes of the raster figure, in drawing order: (column, label).
 STATUS_LANES = (
@@ -259,6 +267,15 @@ def plot_joint_ff_torque(df, save_dir=None):
             t, df[f"{G_PREFIX}{j}"], linewidth=1.0, color="C2", linestyle="--", label="g (model)"
         )
         ax.plot(t, df[f"{TAU_FF_PREFIX}{j}"], linewidth=1.2, color="C3", label="tau_ff (wire)")
+        if f"{TAU_INERTIA_PREFIX}{j}" in df.columns:
+            ax.plot(
+                t,
+                df[f"{TAU_INERTIA_PREFIX}{j}"],
+                linewidth=1.0,
+                color="C0",
+                linestyle=":",
+                label="inertia (k_M·M·q̈)",
+            )
         if "clamped_mask" in df.columns:
             clamped = _bit(df["clamped_mask"], k)
             if clamped.any():

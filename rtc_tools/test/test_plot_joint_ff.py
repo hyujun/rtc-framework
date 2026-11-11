@@ -75,9 +75,10 @@ _FIXED = [
     "singular",
     "closure_error",
     "clamped_mask",
+    "inertia_gain",
     "num_joints",
 ]
-_PREFIXES = ("q_", "q_ref_", "g_", "tau_ff_")
+_PREFIXES = ("q_", "q_ref_", "g_", "tau_ff_", "qdd_ref_", "tau_inertia_")
 
 
 def _header(joints, with_mode=True):
@@ -239,6 +240,27 @@ class TestFigures:
         assert captured["visible"] == len(joints)
         joint_ff_plots.plot_joint_ff_torque(df, str(tmp_path))
         assert captured["visible"] == len(joints)
+
+    @pytest.mark.parametrize("with_inertia", [True, False])
+    def test_the_inertia_term_is_drawn_when_logged(self, tmp_path, monkeypatch, with_inertia):
+        """A file with `tau_inertia_*` draws the term on each torque panel; an
+        older file without the block renders the panel as before."""
+        df = _synthetic(tmp_path, ["a", "b"])
+        if not with_inertia:  # a file written before the term had the block
+            df = df.drop(columns=["qdd_ref_a", "qdd_ref_b", "tau_inertia_a", "tau_inertia_b"])
+        captured = {}
+        real_savefig = plt.savefig
+
+        def spy(*args, **kwargs):
+            axes = [ax for ax in plt.gcf().get_axes() if ax.get_visible()]
+            captured["labels"] = [[ln.get_label() for ln in ax.get_lines()] for ax in axes]
+            return real_savefig(*args, **kwargs)
+
+        monkeypatch.setattr(plt, "savefig", spy)
+        joint_ff_plots.plot_joint_ff_torque(df, str(tmp_path))
+        for labels in captured["labels"]:
+            assert ("inertia (k_M·M·q̈)" in labels) is with_inertia, labels
+            assert "tau_ff (wire)" in labels
 
     def test_no_torque_columns_skips_the_joint_figures_only(self, tmp_path, capsys):
         df = _synthetic(tmp_path, ["j1"])
