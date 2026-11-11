@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -447,8 +448,24 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
       c->SetContactManager(&contact_mgr_config_);
       formulation.AddConstraint(std::move(c));
     } else if (type == "joint_limit") {
+      // The box integrates over one control period: a missing `dt` takes
+      // 1/control_rate, a YAML `dt` that disagrees with it fails the
+      // configure (#1019). LoadConfig runs after SetControlRate.
+      const double period = GetDefaultDt();
+      YAML::Node jl_cfg = YAML::Clone(c_cfg);
+      if (!jl_cfg["dt"] || jl_cfg["dt"].IsNull()) {
+        jl_cfg["dt"] = period;
+      }
       auto c = std::make_unique<rtc::tsid::JointLimitConstraint>();
-      c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
+      c->Init(model, robot_info_, combined_cache_.cache(), jl_cfg);
+      if (std::abs(c->Dt() - period) > 1e-9 * period) {
+        char msg[192];
+        std::snprintf(msg, sizeof(msg),
+                      "[wbc] tsid.constraints.%s.dt %.9g s differs from the control period "
+                      "%.9g s (1/control_rate); omit it to take the period",
+                      key.c_str(), c->Dt(), period);
+        throw std::invalid_argument(msg);
+      }
       // Diagnostics view (#551): the formulation owns it; keep a raw pointer
       // for FillWbcDiagLogPod. Last `joint_limit` entry wins.
       joint_limit_constraint_ = c.get();
@@ -1524,6 +1541,10 @@ DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesti
   r.contact_flag = ft.in_contact ? 1.0F : 0.0F;
   r.valid = ft.valid;
   return r;
+}
+
+double DemoWbcController::TsidJointLimitDtForTesting() const noexcept {
+  return joint_limit_constraint_ != nullptr ? joint_limit_constraint_->Dt() : -1.0;
 }
 
 const rtc::tsid::SolveResult* DemoWbcController::SolveTsidAllContactsActiveForTesting(

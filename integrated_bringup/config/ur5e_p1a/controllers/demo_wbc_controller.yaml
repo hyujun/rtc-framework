@@ -170,7 +170,8 @@ demo_wbc_controller:
         type: "eom"
       joint_limit:
         type: "joint_limit"
-        dt: 0.002               # must match control_rate
+        # dt omitted: the box integrates over 1/control_rate; a dt given
+        # here must equal it or configure fails (#1019).
         # Keep this strictly below integration.position_margin: the CLIK
         # position backbone parks a joint at ITS margin, and a wider band here
         # keeps that joint inside it on every tick, pinning its acceleration to

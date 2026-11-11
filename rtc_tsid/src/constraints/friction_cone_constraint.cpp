@@ -206,7 +206,9 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& cache,
 
     // Normal-force bounds on the unilateral row −f_n ∈ [−f_max, −a·f_min]
     // (a = activation, so the floor ramps with the contact). Defaults 0 / +∞
-    // keep the pre-existing row: l = −1e10, u = 0.
+    // keep the pre-existing row: l = −1e10, u = 0. The −1e10 lower bounds in
+    // this file are measured equivalent to −inf in ProxQP (iterations and
+    // solutions bit-identical on the G1 gates and the shipped configs, #1019).
     const double f_min = cfg.normal_force_min * contacts.contacts[i].activation;
     const double uni_l = std::isinf(cfg.normal_force_max) ? -1e10 : -cfg.normal_force_max;
     const double uni_u = (f_min > 0.0) ? -f_min : 0.0;

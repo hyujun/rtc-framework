@@ -13,6 +13,10 @@
 // ur5e_p1a has no model fixture (its hand model is not in this workspace); its
 // TSID block is held to ur5e_p1b's by the config comparison at the bottom:
 // same constraint types and the same contact shapes give the same rows.
+//
+// Also here, on the same shipped block: the joint_limit box integrates over the
+// control period (#1019) — a YAML dt that disagrees with 1/control_rate fails
+// LoadConfig, a missing one takes the period.
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "shipped_config_test_fixture.hpp"
@@ -26,6 +30,7 @@
 
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -166,6 +171,40 @@ TEST(DemoWbcQpRowBudget, Ur5eP1aTsidRowsMatchUr5eP1b) {
   // The nv the count assumes: the joints both profiles' devices declare.
   EXPECT_EQ(ProfileJointCount("ur5e_p1a"), nv);
   EXPECT_EQ(ProfileJointCount("ur5e_p1b"), nv);
+}
+
+// ── joint_limit dt against the control rate (#1019) ──────────────────────────
+// LoadConfig builds the TSID stack (it needs the model, the builder and the
+// rate, as on_configure's caller sets them first).
+void LoadUr5eP1b(DemoWbcController& ctrl, const YAML::Node& cfg, double rate_hz) {
+  ctrl.SetSystemModelConfig(fx::SharedUr5eP1bModelConfig());
+  ctrl.SetSharedModelBuilder(fx::SharedUr5eP1bBuilder());
+  ctrl.SetControlRate(rate_hz);
+  ctrl.LoadConfig(cfg);
+}
+
+TEST(DemoWbcJointLimitDt, AYamlDtThatDisagreesWithTheControlRateFailsTheConfigure) {
+  YAML::Node cfg = YAML::Clone(fx::ShippedControllerNode("ur5e_p1b", "demo_wbc_controller"));
+  cfg["tsid"]["constraints"]["joint_limit"]["dt"] = fx::kUr5eDt;
+  DemoWbcController at_rate("");
+  ASSERT_NO_THROW(LoadUr5eP1b(at_rate, cfg, 1.0 / fx::kUr5eDt));
+  EXPECT_DOUBLE_EQ(at_rate.TsidJointLimitDtForTesting(), fx::kUr5eDt);
+  DemoWbcController twice_as_fast("");
+  EXPECT_THROW(LoadUr5eP1b(twice_as_fast, cfg, 2.0 / fx::kUr5eDt), std::invalid_argument);
+}
+
+// The shipped configs give no dt; a blank `dt:` (null) means the same.
+TEST(DemoWbcJointLimitDt, AMissingDtTakesTheControlPeriod) {
+  YAML::Node cfg = YAML::Clone(fx::ShippedControllerNode("ur5e_p1b", "demo_wbc_controller"));
+  ASSERT_FALSE(cfg["tsid"]["constraints"]["joint_limit"]["dt"]) << "premise: shipped without dt";
+  DemoWbcController ctrl("");
+  ASSERT_NO_THROW(LoadUr5eP1b(ctrl, cfg, 1000.0));
+  EXPECT_DOUBLE_EQ(ctrl.TsidJointLimitDtForTesting(), 1e-3);
+
+  cfg["tsid"]["constraints"]["joint_limit"]["dt"] = YAML::Node(YAML::NodeType::Null);
+  DemoWbcController blank("");
+  ASSERT_NO_THROW(LoadUr5eP1b(blank, cfg, 1000.0));
+  EXPECT_DOUBLE_EQ(blank.TsidJointLimitDtForTesting(), 1e-3);
 }
 
 }  // namespace

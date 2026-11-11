@@ -12,9 +12,18 @@ namespace rtc::tsid {
 // Del Prete 2018: this box only asks that the next sample respect q / v
 // limits, which is why a joint can still be parked inside the margin band.)
 //
-// Position limit → acceleration bound  (q⁺ = q + v·dt + ½·a·dt²):
-//   a_i ≥ 2·(q_min_i - q_i - v_i·dt) / dt²
-//   a_i ≤ 2·(q_max_i - q_i - v_i·dt) / dt²
+// Position limit → acceleration bound. With Δ_u = q_max_i − q_i − v_i·dt and
+// Δ_l = q_min_i − q_i − v_i·dt (where q lands at a = 0):
+//   a_i ≤ Δ_u / dt²   if Δ_u ≥ 0,   a_i ≤ 2·Δ_u / dt²   if Δ_u < 0
+//   a_i ≥ Δ_l / dt²   if Δ_l ≤ 0,   a_i ≥ 2·Δ_l / dt²   if Δ_l > 0
+// Why (#1019): nothing in the stack integrates a_opt — the plant does. A
+// plant that holds a over the control period in N semi-implicit substeps of
+// dt/N moves q by v·dt + c·a·dt², c = (1 + 1/N)/2 ∈ (½, 1] (N = 1: MuJoCo's
+// Euler at one step per period; N → ∞: a continuous plant). The bound that
+// keeps q⁺ inside the limit for every such c is Δ/(c·dt²) at its tightest:
+// c = 1 while the joint would stay inside at a = 0, c = ½ once it would not.
+// Continuous at Δ = 0. Not covered: a plant whose step is longer than the
+// control period, and the step after next (one-tick reachability only).
 // Velocity limit → acceleration bound  (v⁺ = v + a·dt):
 //   a_i ≥ (v_min_i - v_i) / dt
 //   a_i ≤ (v_max_i - v_i) / dt
@@ -29,7 +38,9 @@ namespace rtc::tsid {
 // stays solvable with hard torque limits (the other joints redistribute the
 // coupled torque — test_tsid_wqp pins this), but the collapse is a safety net,
 // not a substitute for keeping joints out of the band. InvertedCount() says
-// how many rows needed it this tick. Config: dt, position_margin, velocity_margin.
+// how many rows needed it this tick. Config: dt (the control period: a
+// consumer that knows its rate passes 1/control_rate and refuses a YAML dt
+// that disagrees — DemoWbcController does), position_margin, velocity_margin.
 // Keep position_margin SMALLER than the margin of whatever generates the
 // position reference — a joint parked at that margin otherwise sits in this
 // band on every tick.
@@ -64,6 +75,9 @@ class JointLimitConstraint final : public ConstraintBase {
   // (l_i > u_i) before any repair. Rows with non-finite q_i / v_i are not
   // counted. Diagnostic only — read by the controller's wbc_diag log (#551).
   [[nodiscard]] int InvertedCount() const noexcept { return inverted_count_; }
+
+  // The period the box integrates over (YAML `dt`, default 0.002 s).
+  [[nodiscard]] double Dt() const noexcept { return dt_; }
 
  private:
   int nv_{0};
