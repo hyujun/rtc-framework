@@ -40,8 +40,11 @@ void HQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInf
   qp_solvers_.resize(static_cast<size_t>(max_levels_));
   ResizeQp();
 
-  // Level index storage
+  // Level index storage: fixed buffers, sized here and at AddTask, never on
+  // the tick (RT-1, #1015).
   level_task_indices_.resize(static_cast<size_t>(max_levels_));
+  level_task_count_.assign(static_cast<size_t>(max_levels_), 0);
+  SizeLevelIndices();
 
   // Cascaded equality buffer
   J_prev_stack_.setZero(max_prev_rows_, max_n_vars_);
@@ -63,6 +66,14 @@ void HQPFormulation::AddTask(std::unique_ptr<TaskBase> task) {
     r_workspace_.setZero(max_residual_dim_);
   }
   tasks_.push_back(std::move(task));
+  SizeLevelIndices();
+}
+
+void HQPFormulation::SizeLevelIndices() {
+  // Every level may hold every task.
+  for (auto& v : level_task_indices_) {
+    v.assign(tasks_.size(), -1);
+  }
 }
 
 void HQPFormulation::AddConstraint(std::unique_ptr<ConstraintBase> constraint) {
@@ -115,8 +126,11 @@ void HQPFormulation::ApplyPreset(const PhasePreset& preset) noexcept {
 }
 
 void HQPFormulation::RebuildLevelIndices() noexcept {
-  for (auto& v : level_task_indices_) {
-    v.clear();
+  // In-place writes into the fixed per-level buffers (sized at AddTask to
+  // the task count, so a level can never overflow): no allocation on the
+  // tick (RT-1, #1015).
+  for (auto& n : level_task_count_) {
+    n = 0;
   }
   active_max_level_ = -1;
 
@@ -125,9 +139,14 @@ void HQPFormulation::RebuildLevelIndices() noexcept {
       continue;
     const int prio = tasks_[static_cast<size_t>(i)]->Priority();
     if (prio >= 0 && prio < max_levels_) {
-      level_task_indices_[static_cast<size_t>(prio)].push_back(i);
-      if (prio > active_max_level_) {
-        active_max_level_ = prio;
+      auto& bucket = level_task_indices_[static_cast<size_t>(prio)];
+      int& n = level_task_count_[static_cast<size_t>(prio)];
+      if (n < static_cast<int>(bucket.size())) {
+        bucket[static_cast<size_t>(n)] = i;
+        ++n;
+        if (prio > active_max_level_) {
+          active_max_level_ = prio;
+        }
       }
     }
   }
@@ -227,7 +246,8 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
 
   for (int k = 0; k <= active_max_level_ && k < max_levels_; ++k) {
     const auto& task_indices = level_task_indices_[static_cast<size_t>(k)];
-    if (task_indices.empty())
+    const int n_level_tasks = level_task_count_[static_cast<size_t>(k)];
+    if (n_level_tasks == 0)
       continue;
 
     auto& qp = qp_data_per_level_[static_cast<size_t>(k)];
@@ -255,7 +275,8 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     // Collect level-k J rows for cascaded equality (store for next level)
     int level_J_rows = 0;
 
-    for (const int ti : task_indices) {
+    for (int t = 0; t < n_level_tasks; ++t) {
+      const int ti = task_indices[static_cast<size_t>(t)];
       const auto& task = tasks_[static_cast<size_t>(ti)];
       const int rdim = task->ResidualDim();
 
@@ -333,8 +354,10 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     // Update J_prev · z* for next level cascaded equality
     // Jz_prev_stack_[prev_stack_rows : prev_stack_rows + level_J_rows]
     //   = J_level_k · z*_k
+    // noalias: a plain `= A * x` into a segment assumes aliasing and takes a
+    // heap temporary on every converged level (RT-1, #1015).
     if (level_J_rows > 0 && prev_stack_rows + level_J_rows <= max_prev_rows_) {
-      Jz_prev_stack_.segment(prev_stack_rows, level_J_rows) =
+      Jz_prev_stack_.segment(prev_stack_rows, level_J_rows).noalias() =
           J_prev_stack_.block(prev_stack_rows, 0, level_J_rows, n_vars) *
           solver_result.x_opt.head(n_vars);
       prev_stack_rows += level_J_rows;

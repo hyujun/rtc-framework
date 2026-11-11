@@ -46,6 +46,10 @@ class HQPFormulation final : public FormulationBase {
   // (init only).
   void ResizeQp();
 
+  // Size every level's index buffer to the task count (Init / AddTask), so
+  // RebuildLevelIndices writes in place on the tick (RT-1, #1015).
+  void SizeLevelIndices();
+
   int nv_{0};
   int max_n_vars_{0};
   int max_levels_{4};
@@ -53,9 +57,11 @@ class HQPFormulation final : public FormulationBase {
   std::vector<std::unique_ptr<TaskBase>> tasks_;
   std::vector<std::unique_ptr<ConstraintBase>> constraints_;
 
-  // Level별 task 인덱스 (RebuildLevelIndices()로 갱신)
-  // level_task_indices_[k] = {task index들}
+  // Level별 task 인덱스 (RebuildLevelIndices()로 갱신): fixed buffers, each
+  // level sized to the task count at AddTask; level k holds
+  // level_task_indices_[k][0 .. level_task_count_[k]).
   std::vector<std::vector<int>> level_task_indices_;
+  std::vector<int> level_task_count_;
   int active_max_level_{0};
 
   // Level별 QP data + solver (pre-allocated)
