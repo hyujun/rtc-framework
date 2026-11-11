@@ -16,7 +16,7 @@ rtc::tsid::ControlReference.{q_des, v_des, a_des += u_fb}
 rtc::tsid::TSIDController::Compute(...)
 ```
 
-`SE3Task` · `PostureTask` · `ForceTask` 의 `set_*_reference()` 는 RT-safe 라 매 tick 시간-가변 reference (MPC 보간 결과) 로 부를 수 있다.
+`SE3Task` · `PostureTask` · `ForceTask` 의 `Set*Reference()` 는 RT-safe 라 매 tick 가변 reference (MPC 보간 결과) 로 부를 수 있다.
 
 ## 빠른 시작
 
@@ -54,7 +54,7 @@ const rtc::tsid::CommandOutput out =
 | 메서드 | 설명 |
 |---|---|
 | `Init(model, robot_info, config)` | Pinocchio 모델 + YAML 로 초기화 (non-RT, 잘못된 설정은 throw) |
-| `Compute(state, ref, cache, contacts)` | QP 를 풀어 `CommandOutput` 반환 (`noexcept`) |
+| `Compute(state, ref, cache, contacts)` | QP 를 풀어 `CommandOutput` 참조 반환 (`noexcept`) |
 | `Reset()` · `Name()` | 내부 상태 초기화 · `"tsid"` |
 | `ApplyPhasePreset(name)` | YAML 의 phase preset 적용 (`noexcept`) |
 | `ActivateContact(idx)` · `DeactivateContact(idx)` | 접촉점 활성화·비활성화 (`noexcept`) |
@@ -157,11 +157,9 @@ joint_limit:
   velocity_margin: 0.1   # [rad/s]
 ```
 
-Floating-base 모델의 처음 6 DoF (free-flyer) 는 무제약이다. margin 은 관절별로 clamp 하므로 범위가 좁은 관절 (gripper finger) 에서도 안전하다. 접촉 활성화 ramp 시간의 기본값 `tsid.contacts_default_ramp_sec` 은 rtc_tsid 가 아니라 소비 컨트롤러가 읽는다.
+Free-flyer root 의 6 DoF 는 행이 없다. margin 은 관절별로 clamp 하므로 범위가 좁은 관절 (gripper finger) 에서도 안전하다. 접촉 활성화 ramp 시간의 기본값 `tsid.contacts_default_ramp_sec` 은 rtc_tsid 가 아니라 소비 컨트롤러가 읽는다.
 
 ## 디렉토리
-
-`include/rtc_tsid/` 하위는 `core` · `controller` · `formulation` · `tasks` · `constraints` · `types` · `contact` · `kinematics` · `solver` 다.
 
 ```
 rtc_tsid/
@@ -180,6 +178,7 @@ rtc_tsid/
 | `SE3Task` init 이 `std::runtime_error` | `base_frame` 누락 (strict) | `base_frame` 을 쓴다. world 기준이면 `"universe"` |
 | 태스크가 reference 를 못 받고 identity 를 추종 | `name` 이 YAML key 와 다르다 | `name` 을 key 와 같게 |
 | `qp_converged == false` | 해가 비유한이다 (ProxQP 가 SOLVED 여도 그렇게 보고하고, 다음 solve 는 warm start 없이 시작한다) | 입력 (`M` · `h` · `q` · `v` · 목표) 의 유한성 확인 |
+| 부동 모델 init throw | YAML `floating_base`·`n_actuated` 가 모델과 다름, root 뒤 관절이 1-DoF 아님, posture `kp`/`kd` 목록 길이 | 키를 맞추거나 지운다 |
 | 거짓 `PRIMAL_INFEASIBLE` | 전처리기가 placeholder 스케일 | `QPSolverConfig::update_preconditioner` (헤더 주석) |
 
 ## 더 읽기
