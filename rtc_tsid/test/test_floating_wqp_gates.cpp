@@ -25,6 +25,19 @@
 //   6. The contact frames' oMf after the cache update equal forward
 //      kinematics (pinocchio 4.1 fills them as a side effect of the frame
 //      Jacobian).
+//   7. Contact acceleration by second-order forward kinematics at the QP's a
+//      (#1017): forwardKinematics(q, v, a) then the foot frame's classical
+//      acceleration (LOCAL_WORLD_ALIGNED), ‖·‖∞ ≤ 2·eps_abs + 64·nv·ε·S7,
+//      S7 = ‖J_c‖∞‖a‖∞ + ‖J̇_c v‖∞. Not independent of the cache's dJv (the
+//      same pinocchio routine at a = 0): it checks that J_c·a + dJv is that
+//      routine's acceleration at a, i.e. that J_c and dJv are one convention.
+//   8. The independent oracle: central differences of the frame velocity
+//      along q(±h) = q ⊕ (±h·v + ½h²·a), v(±h) = v ± h·a, h = 1e-4 — no
+//      Jacobian, no acceleration routine: ‖FD_{h/2}‖∞ ≤ 2·eps_abs
+//      + 2·‖FD_h − FD_{h/2}‖∞ + 16·ε·‖w‖∞/h (Richardson estimate of the
+//      truncation, roundoff of the quotient). Power: ‖J̇_c v‖∞ — what a zeroed
+//      dJv removes — exceeds tol7 on both feet of ≥ 95 % of the converged
+//      samples; control: a zeroed dJv in PinocchioCache (mutation) fails both.
 
 #include <gtest/gtest.h>
 
@@ -32,6 +45,7 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/jacobian.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
@@ -338,6 +352,7 @@ TEST_F(FloatingWqpGates, EomContactAndTorqueMatchRnea) {
     EXPECT_LE(tau_ext.head(6).lpNorm<Eigen::Infinity>(), tol1) << "base rows: gate 1 again";
   }
   n.Report("main");
+  ASSERT_GT(n.converged, 0) << "no converged sample: every gate above is vacuous";
   RecordProperty("eom_ratio_max",
                  std::to_string(*std::max_element(eom_ratio.begin(), eom_ratio.end())));
   RecordProperty("eom_ratio_p99", std::to_string(P99(eom_ratio)));
@@ -345,8 +360,85 @@ TEST_F(FloatingWqpGates, EomContactAndTorqueMatchRnea) {
   RecordProperty("tau_ratio_max",
                  std::to_string(*std::max_element(tau_ratio.begin(), tau_ratio.end())));
   RecordProperty("tau_ratio_p99", std::to_string(P99(tau_ratio)));
-  ASSERT_GT(n.converged, 0) << "no converged sample: every gate above is vacuous";
   EXPECT_EQ(perturbation_caught, n.converged) << "control: a 1e-4 change of a must fail gate 1";
+}
+
+// Gates 7 and 8: the contact acceleration against second-order kinematics at
+// the QP's a (7) and against finite differences that use neither the Jacobian
+// nor an acceleration routine (8); same samples, same rig as gate 2.
+TEST_F(FloatingWqpGates, ContactAccelerationMatchesKinematicOracles) {
+  const Options o;
+  constexpr double kH = 1e-4;
+  Counters n;
+  std::vector<double> r7, r8;
+  int powered_samples = 0;
+  for (const auto& x : samples_) {
+    Rig rig(o, x);
+    const CommandOutput& out = rig.Solve();
+    n.Record(out);
+    if (!out.qp_converged) {
+      continue;
+    }
+    const Eigen::VectorXd& a = out.a_opt;
+    const pinocchio::Model& model = *rig.model;
+    pinocchio::Data d(model);
+    pinocchio::forwardKinematics(model, d, rig.state.q, rig.state.v, a);
+    pinocchio::Data scratch(model);  // the finite-difference evaluations
+    int powered_feet = 0;
+    for (int i = 0; i < 2; ++i) {
+      const auto fid =
+          static_cast<pinocchio::FrameIndex>(rig.mgr.contacts[static_cast<size_t>(i)].frame_id);
+      const auto& fc = rig.cache.contact_frames[static_cast<size_t>(i)];
+
+      // 7. Second-order forward kinematics at the QP's a.
+      const double e7 =
+          pinocchio::getFrameClassicalAcceleration(model, d, fid, pinocchio::LOCAL_WORLD_ALIGNED)
+              .toVector()
+              .lpNorm<Eigen::Infinity>();
+      const double djv_inf = fc.dJv.lpNorm<Eigen::Infinity>();
+      const double S7 =
+          fc.J.cwiseAbs().rowwise().sum().maxCoeff() * a.lpNorm<Eigen::Infinity>() + djv_inf;
+      const double tol7 = 2.0 * o.eps_abs + 64.0 * rig.info.nv * kEps * S7;
+      r7.push_back(e7 / tol7);
+      EXPECT_LE(e7, tol7) << "foot " << i;
+      powered_feet += djv_inf > tol7 ? 1 : 0;
+
+      // 8. Central differences of the frame velocity along the constant-a arc.
+      const auto frame_velocity = [&](double t) -> Eigen::Matrix<double, 6, 1> {
+        const Eigen::VectorXd dq = t * rig.state.v + 0.5 * t * t * a;
+        const Eigen::VectorXd q_t = pinocchio::integrate(model, rig.state.q, dq);
+        const Eigen::VectorXd v_t = rig.state.v + t * a;
+        pinocchio::forwardKinematics(model, scratch, q_t, v_t);
+        return pinocchio::getFrameVelocity(model, scratch, fid, pinocchio::LOCAL_WORLD_ALIGNED)
+            .toVector();
+      };
+      const auto fd = [&](double step) -> Eigen::Matrix<double, 6, 1> {
+        return (frame_velocity(step) - frame_velocity(-step)) / (2.0 * step);
+      };
+      const Eigen::Matrix<double, 6, 1> fd_h = fd(kH);
+      const Eigen::Matrix<double, 6, 1> fd_h2 = fd(0.5 * kH);
+      // w at (q, v): d holds it (forwardKinematics with a fills the velocities).
+      const double w_inf =
+          pinocchio::getFrameVelocity(model, d, fid, pinocchio::LOCAL_WORLD_ALIGNED)
+              .toVector()
+              .lpNorm<Eigen::Infinity>();
+      const double e8 = fd_h2.lpNorm<Eigen::Infinity>();
+      const double tol8 = 2.0 * o.eps_abs + 2.0 * (fd_h - fd_h2).lpNorm<Eigen::Infinity>() +
+                          16.0 * kEps * w_inf / kH;
+      r8.push_back(e8 / tol8);
+      EXPECT_LE(e8, tol8) << "foot " << i;
+    }
+    powered_samples += powered_feet == 2 ? 1 : 0;
+  }
+  n.Report("oracle");
+  ASSERT_GT(n.converged, 0) << "no converged sample: the gates above are vacuous";
+  RecordProperty("classical_ratio_max", std::to_string(*std::max_element(r7.begin(), r7.end())));
+  RecordProperty("classical_ratio_p99", std::to_string(P99(r7)));
+  RecordProperty("fd_ratio_max", std::to_string(*std::max_element(r8.begin(), r8.end())));
+  RecordProperty("fd_ratio_p99", std::to_string(P99(r8)));
+  RecordProperty("powered_samples", std::to_string(powered_samples));
+  EXPECT_GE(powered_samples, static_cast<int>(std::ceil(0.95 * n.converged)))
+      << "power: ‖J̇_c v‖∞ must sit above tol7 on both feet for a zeroed dJv to be caught";
 }
 
 // Gate 1 control: without the EoM constraint the base residual is far above.
