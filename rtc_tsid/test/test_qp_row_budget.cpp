@@ -15,10 +15,9 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/multibody/joint/joint-free-flyer.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "g1_fixture.hpp"
 #include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/contact_constraint.hpp"
 #include "rtc_tsid/constraints/eom_constraint.hpp"
@@ -28,25 +27,12 @@
 #include "rtc_tsid/formulation/formulation_factory.hpp"
 #include "rtc_tsid/tasks/posture_task.hpp"
 
-#include <ament_index_cpp/get_package_share_directory.hpp>
-
 #include <memory>
 #include <string>
 #include <string_view>
 
 namespace rtc::tsid {
 namespace {
-
-std::shared_ptr<const pinocchio::Model> SharedG1Model() {
-  static const std::shared_ptr<const pinocchio::Model> model = [] {
-    auto m = std::make_shared<pinocchio::Model>();
-    const std::string path = ament_index_cpp::get_package_share_directory("robot_descriptions") +
-                             "/robots/g1/urdf/g1_29dof_floating.urdf";
-    pinocchio::urdf::buildModel(path, pinocchio::JointModelFreeFlyer(), *m);
-    return std::shared_ptr<const pinocchio::Model>(std::move(m));
-  }();
-  return model;
-}
 
 ContactConfig MakeContact(const pinocchio::Model& model, const std::string& frame, int dim,
                           int faces) {
@@ -201,7 +187,7 @@ TEST_F(MaxDimTest, EachConstraintReportsItsAllActiveDimension) {
 class G1RowBudgetTest : public ::testing::TestWithParam<const char*> {
  protected:
   void SetUp() override {
-    model_ = SharedG1Model();
+    model_ = test::SharedG1Model();
     robot_info_.Build(*model_, YAML::Node{});
     mgr_.contacts.push_back(MakeContact(*model_, "left_ankle_roll_link", 6, 4));
     mgr_.contacts.push_back(MakeContact(*model_, "right_ankle_roll_link", 6, 4));

@@ -116,6 +116,10 @@ if(BUILD_TESTING)
   # URDF fixtures this package owns (test/tree_fixture.hpp).
   set(RTC_TSID_TEST_URDF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/urdf")
 
+  # Free-flyer fixtures (test/g1_fixture.hpp) look the public G1 URDF up
+  # through ament at run time — robot_descriptions is a <test_depend> only.
+  find_package(ament_index_cpp REQUIRED)
+
   # add_tsid_gtest(<target> [<stem>...]): one test binary linked to rtc_tsid and
   # given the Panda path (test/panda_fixture.hpp) and the fixture directory. Without stems it builds
   # test/<target>.cpp; with stems those files share the binary, so the suite
@@ -134,7 +138,7 @@ if(BUILD_TESTING)
     list(TRANSFORM _stems PREPEND test/)
     list(TRANSFORM _stems APPEND .cpp)
     ament_add_gtest(${name} ${_stems} TIMEOUT ${_timeout})
-    target_link_libraries(${name} rtc_tsid)
+    target_link_libraries(${name} rtc_tsid ament_index_cpp::ament_index_cpp)
     target_compile_definitions(${name} PRIVATE
       RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}"
       RTC_TSID_TEST_URDF_DIR="${RTC_TSID_TEST_URDF_DIR}")
@@ -174,12 +178,8 @@ if(BUILD_TESTING)
     test_tsid_performance
     test_phase3_integration)
 
-  # QP row budget (Σ MaxEqDim / MaxIneqDim, drop reporting). Its free-flyer
-  # fixture is the public floating G1 URDF, looked up through ament at run time
-  # (robot_descriptions is a <test_depend> only — no build-graph edge).
-  find_package(ament_index_cpp REQUIRED)
+  # QP row budget (Σ MaxEqDim / MaxIneqDim, drop reporting).
   add_tsid_gtest(test_qp_row_budget)
-  target_link_libraries(test_qp_row_budget ament_index_cpp::ament_index_cpp)
 
   # Stage B-1..B-3: ObjectFrame + grasp matrix G + ContactManager, GraspCache
   # (LDLT pinv + P_N) + ObjectWrenchTask, InternalForceTask (rank-based nullity
