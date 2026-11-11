@@ -88,8 +88,8 @@ TEST_F(HQPFormulationTest, MultiLevelStrictHierarchy) {
   Eigen::VectorXd q_neutral = pinocchio::neutral(*model_);
   Eigen::VectorXd q_offset = q_neutral;
   q_offset.head(robot_info_.nv) += Eigen::VectorXd::Constant(robot_info_.nv, 0.5);
-  posture_low->SetReference(q_offset, Eigen::VectorXd::Zero(robot_info_.nv),
-                            Eigen::VectorXd::Zero(robot_info_.nv));
+  ASSERT_TRUE(posture_low->SetReference(q_offset, Eigen::VectorXd::Zero(robot_info_.nv),
+                                        Eigen::VectorXd::Zero(robot_info_.nv)));
   formulation->AddTask(std::move(posture_low));
 
   Eigen::VectorXd q = q_neutral;

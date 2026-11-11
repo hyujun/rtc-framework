@@ -13,6 +13,14 @@ namespace rtc::tsid {
 // J_block = [I_{nv} | 0_{nv × n_contact_vars}]
 // r_block = a_des
 // residual_dim = nv
+//
+// Floating base (free-flyer root, every other joint actuated and 1-DoF): the
+// position error is taken on the actuated joints only, q_des.tail(na) −
+// q.tail(na); the six base rows carry the Kd and a_ff terms but no Kp term
+// (base pose tracking is not this task's). Base Kp / Kd default to 0, a
+// scalar YAML `kp` / `kd` sets the actuated entries, an nv-long list sets all
+// (its base Kp entries are unused). The local q_des starts at
+// pinocchio::neutral (a unit quaternion).
 // ────────────────────────────────────────────────
 class PostureTask final : public TaskBase {
  public:
@@ -28,15 +36,21 @@ class PostureTask final : public TaskBase {
                        Eigen::Ref<Eigen::MatrixXd> J_block,
                        Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
 
-  // Per-task reference 설정 (external에서 호출)
-  void SetReference(const Eigen::VectorXd& q_des, const Eigen::VectorXd& v_des,
-                    const Eigen::VectorXd& a_ff) noexcept;
+  // Per-task reference 설정 (external에서 호출). Sizes nq / nv / nv and finite
+  // values, or it is refused (false) and the previous reference stays. Copies
+  // into the buffers Init sized — no allocation.
+  [[nodiscard]] bool SetReference(const Eigen::VectorXd& q_des, const Eigen::VectorXd& v_des,
+                                  const Eigen::VectorXd& a_ff) noexcept;
 
   // PD gains 설정
   void SetGains(const Eigen::VectorXd& kp, const Eigen::VectorXd& kd) noexcept;
 
  private:
   int nv_{0};
+  int n_base_{0};  // rows without a position error: 6 on a floating base, else 0
+  // q.tail(nv − n_base) and v.tail(nv − n_base) pair up joint by joint (every
+  // non-base joint is 1-DoF). When not, only the Kd and a_ff terms are used.
+  bool position_error_{true};
 
   // PD gains
   Eigen::VectorXd kp_;  // [nv]
