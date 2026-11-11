@@ -718,11 +718,14 @@ TEST_F(SurfaceFrameTest, AFrameXAlongTheNormalFallsBackToItsY) {
   EXPECT_LT((R.col(1) - (y - R.col(2) * y.dot(R.col(2))).normalized()).norm(), 1e-12);
 }
 
-// Either side of the switch: a frame x whose projection ⊥ n is 0.11 long is
-// used (t1 along it); at 0.09 the frame's y is used instead.
+// Either side of the switch, for a FRESH contact (no surface-basis branch
+// yet — #1018 hysteresis keeps a contact's last rule inside 0.08 – 0.12): a
+// frame x whose projection ⊥ n is 0.11 long is used (t1 along it); at 0.09
+// the frame's y is used instead.
 TEST_F(SurfaceFrameTest, TheFallbackSwitchesAtATenthOfTheFrameX) {
   const int c = info_.nv;
   for (const double proj : {0.11, 0.09}) {
+    fc_.SetContactManager(&mgr_);  // fresh contact
     // Frame x tilted towards +Z so that its horizontal part has length proj.
     const double pitch = -std::acos(proj);  // about y: x → (cos, 0, −sin(pitch))
     const Eigen::Matrix3d R_f =
@@ -740,7 +743,8 @@ TEST_F(SurfaceFrameTest, TheFallbackSwitchesAtATenthOfTheFrameX) {
     }
   }
   // At 0.09 with the frame rolled about its x (y leaves the world Y axis),
-  // t1 follows y × n, not x's projection.
+  // t1 of a fresh contact follows y × n, not x's projection.
+  fc_.SetContactManager(&mgr_);  // fresh contact
   const Eigen::Matrix3d R_f = (Eigen::AngleAxisd(-std::acos(0.09), Eigen::Vector3d::UnitY()) *
                                Eigen::AngleAxisd(0.6, Eigen::Vector3d::UnitX()))
                                   .toRotationMatrix();
