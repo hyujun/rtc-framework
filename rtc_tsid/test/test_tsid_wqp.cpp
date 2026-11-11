@@ -346,7 +346,8 @@ TEST_F(WQPFormulationTest, ConsecutiveSolvesWarmStart) {
 // up here.
 // ──────────────────────────────────────────────
 TEST_F(WQPFormulationTest, WQPSolveWithSurfaceContact) {
-  // 1 surface contact on panda_link8. patch=0.04, μ_τ=0.02 — CoP/yaw active.
+  // 1 surface contact on panda_link8. patch 0.06 × 0.03 (lx ≠ ly, so the
+  // rectangle's axes matter), μ_τ=0.02 — CoP/yaw active.
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
   mgr.contacts[0].name = "surface0";
@@ -355,8 +356,8 @@ TEST_F(WQPFormulationTest, WQPSolveWithSurfaceContact) {
   mgr.contacts[0].contact_dim = 6;
   mgr.contacts[0].friction_coeff = 0.7;
   mgr.contacts[0].friction_faces = 4;
-  mgr.contacts[0].patch_half_length_x = 0.04;
-  mgr.contacts[0].patch_half_length_y = 0.04;
+  mgr.contacts[0].patch_half_length_x = 0.06;
+  mgr.contacts[0].patch_half_length_y = 0.03;
   mgr.contacts[0].torsional_friction_coeff = 0.02;
   mgr.max_contacts = 1;
   mgr.max_contact_vars = 6;
@@ -404,22 +405,35 @@ TEST_F(WQPFormulationTest, WQPSolveWithSurfaceContact) {
   const auto& result = formulation->Solve(cache, ref, cs, robot_info_);
   ASSERT_TRUE(result.converged) << "WQP solve with surface contact failed";
 
-  // Extract λ = [fx, fy, fz, mx, my, mz] from x_opt segment after a.
+  // Extract λ = [fx, fy, fz, mx, my, mz] (world axes) from x_opt after a.
   const int nv = robot_info_.nv;
-  Eigen::VectorXd lambda = result.x_opt.segment(nv, 6);
+  const Eigen::VectorXd lambda = result.x_opt.segment(nv, 6);
 
-  // Unilateral: fz ≥ 0 (allow tiny solver tolerance).
-  EXPECT_GE(lambda(2), -1e-6) << "fz must be non-negative";
+  // The rectangle is in the contact FRAME's axes: t1 = frame x projected on
+  // the plane ⊥ n (n = world +Z here), t2 = n × t1. λ in those axes:
+  const Eigen::Vector3d n = Eigen::Vector3d::UnitZ();
+  const Eigen::Vector3d x_f = cache.contact_frames[0].oMf.rotation().col(0);
+  ASSERT_GT((x_f - n * x_f.dot(n)).norm(), 0.1) << "premise: the frame's x is not the normal";
+  Eigen::Matrix3d R_c;
+  R_c.col(0) = (x_f - n * x_f.dot(n)).normalized();
+  R_c.col(1) = n.cross(R_c.col(0));
+  R_c.col(2) = n;
+  const Eigen::Vector3d f = R_c.transpose() * lambda.head<3>();
+  const Eigen::Vector3d m = R_c.transpose() * lambda.tail<3>();
 
-  // CoP rectangle: |m_y| ≤ l_x · f_z, |m_x| ≤ l_y · f_z. Solver may pick
-  // λ = 0 in fixed-base / posture-only scenario — both feasibility checks
-  // hold trivially. Assert they hold (no constraint violation).
+  // Unilateral: f_n ≥ 0 (allow tiny solver tolerance).
+  EXPECT_GE(f.z(), -1e-6) << "f_n must be non-negative";
+
+  // CoP rectangle in the frame's axes: |m_y| ≤ l_x · f_n, |m_x| ≤ l_y · f_n.
+  // Solver may pick λ = 0 in this fixed-base / posture-only scenario — the
+  // checks then hold trivially; the row geometry itself is pinned in
+  // test_friction_cone_constraint (SurfaceFrameTest).
   const double lx = mgr.contacts[0].patch_half_length_x;
   const double ly = mgr.contacts[0].patch_half_length_y;
   const double mu_tau = mgr.contacts[0].torsional_friction_coeff;
-  EXPECT_LE(std::abs(lambda(4)), lx * lambda(2) + 1e-6) << "CoP_x violation";
-  EXPECT_LE(std::abs(lambda(3)), ly * lambda(2) + 1e-6) << "CoP_y violation";
-  EXPECT_LE(std::abs(lambda(5)), mu_tau * lambda(2) + 1e-6) << "yaw violation";
+  EXPECT_LE(std::abs(m.y()), lx * f.z() + 1e-6) << "CoP_x violation";
+  EXPECT_LE(std::abs(m.x()), ly * f.z() + 1e-6) << "CoP_y violation";
+  EXPECT_LE(std::abs(m.z()), mu_tau * f.z() + 1e-6) << "yaw violation";
 }
 
 // ──────────────────────────────────────────────
