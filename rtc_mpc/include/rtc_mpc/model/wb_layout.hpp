@@ -58,11 +58,10 @@ namespace rtc::mpc {
 
 class RobotModelHandler;
 
-/// @return true when the model's root (joint 1; joint 0 is the universe) is
-///         a `JointModelFreeFlyer`. A model-level fact, independent of any
-///         YAML. The whole-body QP side decides the same question from joint
-///         dimensions and a YAML override; aligning the two is the floating
-///         base work of that package.
+/// @return `rtc_urdf_bridge::IsFreeFlyerRoot(model)`: the root (joint 1;
+///         joint 0 is the universe) is a `JointModelFreeFlyer` by type. The
+///         one rule rtc_tsid's `RobotModelInfo` uses too (#1016), kept under
+///         this name for the callers here.
 [[nodiscard]] bool IsFloatingBaseModel(const pinocchio::Model& model) noexcept;
 
 /// Most contact frames a layout can describe (each contact has at least a

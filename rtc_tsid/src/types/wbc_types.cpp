@@ -1,6 +1,7 @@
 #include "rtc_tsid/types/wbc_types.hpp"
 
 #include "rtc_tsid/types/qp_types.hpp"
+#include "rtc_urdf_bridge/free_flyer_root.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -13,7 +14,6 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/multibody/joint/joint-free-flyer.hpp>
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
@@ -29,12 +29,14 @@ void RobotModelInfo::Build(const pinocchio::Model& model, const YAML::Node& conf
   nv = model.nv;
 
   // Floating base ⇔ the root joint is a free-flyer — the joint type, not its
-  // nq / nv (a composite 7/6 root is not a free-flyer). Everything after the
-  // root is actuated. YAML floating_base / n_actuated are not overrides: when
-  // given they must agree with the model (non-RT, throws).
-  floating_base = model.joints.size() > 1 &&
-                  model.joints[1].shortname() == pinocchio::JointModelFreeFlyer::classname();
-  n_actuated = floating_base ? nv - 6 : nv;
+  // nq / nv (a composite 7/6 root is not a free-flyer); the one rule in
+  // rtc_urdf_bridge (#1016). Everything after the root is actuated. YAML
+  // floating_base / n_actuated are not overrides: when given they must agree
+  // with the model (non-RT, throws).
+  floating_base = rtc_urdf_bridge::IsFreeFlyerRoot(model);
+  n_base_q = floating_base ? rtc_urdf_bridge::kFreeFlyerNq : 0;
+  n_base_v = floating_base ? rtc_urdf_bridge::kFreeFlyerNv : 0;
+  n_actuated = nv - n_base_v;
 
   if (config && config["floating_base"] && config["floating_base"].as<bool>() != floating_base) {
     throw std::invalid_argument(

@@ -57,6 +57,7 @@ ros2 run rtc_urdf_bridge example_rt_integration $CFG/serial_arm_config.yaml   # 
 | `urdf_analyzer.hpp` | URDF 파싱, 링크-관절 그래프, 관절 분류, 경로 · LCA · 루프 탐지 |
 | `kinematic_chain_extractor.hpp` | 서브모델 (root→tip) · 트리모델 (root→여러 tip) 추출, 잠금 관절 계산 |
 | `pinocchio_model_builder.hpp` | YAML → Full / Reduced / Tree / actuated 모델 + 구속 모델 |
+| `free_flyer_root.hpp` · `free_flyer_dims.hpp` | free-flyer root 판정 `IsFreeFlyerRoot` / 그 치수 `kFreeFlyerNq/Nv` (pinocchio 무관) — `rtc_tsid` · `rtc_mpc` 가 공유하는 단일 정의 |
 | `rt_model_handle.hpp` | RT-safe FK · Jacobian · RNEA · ABA · 질량행렬 · payload regressor |
 | `pinocchio_cache.hpp` / `reduced_dynamics_provider.hpp` | tick 당 1회 FK·J·M·h·g 공유 RT 캐시 / 축약 동역학 주입점 |
 | `closed_chain_model.hpp` | `BuildClosedChainModelFromExtendedUrdf` 통합 loader |

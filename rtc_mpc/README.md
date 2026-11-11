@@ -84,4 +84,4 @@ mimalloc `LD_PRELOAD` 의 경로 해석(`RTC_DEPS_PREFIX` → `aligator_DIR`-상
 
 ## 의존성
 
-[package.xml](package.xml) · MIT. `rtc_base` (SeqLock · threading) · Eigen3 · yaml-cpp · Pinocchio 4.0 (collision 백엔드 coal 은 pinocchio 가 끌어온다) · fmt ≥ 10 · Aligator 0.19.x (ProxDDP). `fmt` · `pinocchio` · `aligator` 는 `deps/install/` 에서 `CMAKE_PREFIX_PATH` 로 찾으므로 `*_DIR` 힌트가 필요 없다.
+[package.xml](package.xml) · MIT. `rtc_base` (SeqLock · threading) · `rtc_urdf_bridge` (free-flyer root 판정 `IsFreeFlyerRoot`, `rtc_tsid` 와 공유) · Eigen3 · yaml-cpp · Pinocchio 4.0 (collision 백엔드 coal 은 pinocchio 가 끌어온다) · fmt ≥ 10 · Aligator 0.19.x (ProxDDP). `fmt` · `pinocchio` · `aligator` 는 `deps/install/` 에서 `CMAKE_PREFIX_PATH` 로 찾으므로 `*_DIR` 힌트가 필요 없다.

@@ -14,15 +14,15 @@ namespace rtc::tsid {
 void PostureTask::Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
                        PinocchioCache& /*cache*/, const YAML::Node& task_config) {
   nv_ = robot_info.nv;
-  n_base_ = robot_info.floating_base ? nv_ - robot_info.n_actuated : 0;
+  n_base_ = robot_info.n_base_v;
   const int na = nv_ - n_base_;
-  // The actuated q entries follow the root's: 7 on a free-flyer, none fixed.
-  const int nq_base = robot_info.floating_base ? 7 : 0;
-  position_error_ = (robot_info.nq - nq_base == na);
+  // The actuated q entries follow the root's (n_base_q on a free-flyer, none
+  // fixed).
+  position_error_ = (robot_info.nq - robot_info.n_base_q == na);
   // On a floating base the position error is the point of the actuated rows;
   // a model whose q / v do not pair (a non-1-DoF joint) is refused, not run
   // without stiffness. A fixed base keeps the Kd-only fallback it always had.
-  if (robot_info.floating_base && !position_error_) {
+  if (n_base_ > 0 && !position_error_) {
     throw std::invalid_argument("posture: a floating base needs 1-DoF joints after the root");
   }
 

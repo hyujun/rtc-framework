@@ -1,11 +1,6 @@
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/multibody/joint/joint-free-flyer.hpp>
-#pragma GCC diagnostic pop
+#include "rtc_urdf_bridge/free_flyer_root.hpp"
 
 #include <stdexcept>
 
@@ -20,23 +15,23 @@ void EomConstraint::Init(const pinocchio::Model& model, const RobotModelInfo& ro
     throw std::invalid_argument("eom: RobotModelInfo.nv does not match the model");
   }
   if (robot_info.floating_base) {
-    const bool free_flyer_root =
-        model.joints.size() > 1 &&
-        model.joints[1].shortname() == pinocchio::JointModelFreeFlyer::classname();
     const int na = robot_info.n_actuated;
+    const int nb = robot_info.n_base_v;
     const bool s_is_0_i =
-        free_flyer_root && robot_info.S.rows() == na && robot_info.S.cols() == model.nv &&
-        na == model.nv - 6 && robot_info.S.leftCols(6).isZero(0.0) &&
+        rtc_urdf_bridge::IsFreeFlyerRoot(model) && nb == rtc_urdf_bridge::kFreeFlyerNv &&
+        robot_info.S.rows() == na && robot_info.S.cols() == model.nv && na == model.nv - nb &&
+        robot_info.S.leftCols(nb).isZero(0.0) &&
         robot_info.S.rightCols(na).isApprox(Eigen::MatrixXd::Identity(na, na), 0.0);
     if (!s_is_0_i) {
       throw std::invalid_argument(
-          "eom: a floating base needs a free-flyer root and S = [0 | I] (nv − 6 actuated)");
+          "eom: a floating base needs a free-flyer root and S = [0 | I] (nv − n_base_v "
+          "actuated)");
     }
   }
 
   nv_ = robot_info.nv;
   floating_base_ = robot_info.floating_base;
-  n_unactuated_ = floating_base_ ? (nv_ - robot_info.n_actuated) : 0;
+  n_unactuated_ = floating_base_ ? robot_info.n_base_v : 0;
 }
 
 int EomConstraint::EqDim(const ContactState& /*contacts*/) const noexcept {

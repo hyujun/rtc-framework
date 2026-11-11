@@ -12,6 +12,8 @@
 /// sized by the capacity constants, and the **actual** sizes of a solve travel
 /// inside each struct.
 
+#include "rtc_urdf_bridge/free_flyer_dims.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -26,9 +28,10 @@ namespace rtc::mpc {
 /// of the primary ones so they cannot drift apart; the asserts below state
 /// the relations a reader may rely on.
 /// A pinocchio free-flyer root: `[p_xyz, quaternion_xyzw]` in the configuration,
-/// a six-dimensional spatial velocity in the tangent.
-inline constexpr int kFreeFlyerNq = 7;
-inline constexpr int kFreeFlyerNv = 6;
+/// a six-dimensional spatial velocity in the tangent — rtc_urdf_bridge's
+/// constants, the one definition shared with rtc_tsid (#1016).
+inline constexpr int kFreeFlyerNq = rtc_urdf_bridge::kFreeFlyerNq;
+inline constexpr int kFreeFlyerNv = rtc_urdf_bridge::kFreeFlyerNv;
 
 inline constexpr int kMaxHorizon = 64;
 inline constexpr int kMaxNv = 36;  ///< max tangent (velocity) dim: free-flyer + joints

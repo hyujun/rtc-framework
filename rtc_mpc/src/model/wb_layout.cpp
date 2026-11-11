@@ -1,6 +1,7 @@
 #include "rtc_mpc/model/wb_layout.hpp"
 
 #include "rtc_mpc/model/robot_model_handler.hpp"
+#include "rtc_urdf_bridge/free_flyer_root.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -97,13 +98,7 @@ bool SplitHeadTail(int n_head, int n_total, const Eigen::Ref<const Eigen::Vector
 }  // namespace
 
 bool IsFloatingBaseModel(const pinocchio::Model& model) noexcept {
-  // Joint 0 is the universe; a floating root is joint 1 and must be the
-  // free-flyer joint itself — a composite joint with the same dimensions
-  // would not share its configuration layout.
-  if (model.joints.size() < 2) {
-    return false;
-  }
-  return model.joints[1].shortname() == pinocchio::JointModelFreeFlyer::classname();
+  return rtc_urdf_bridge::IsFreeFlyerRoot(model);
 }
 
 WbLayout WbLayout::FixedBase(int nq, int nv, int n_contact_vars) noexcept {

@@ -16,6 +16,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rtc_base</depend>
+  <depend>rtc_urdf_bridge</depend>
   <depend>eigen</depend>
   <depend>yaml-cpp</depend>
   <depend>pinocchio</depend>

@@ -46,12 +46,12 @@ rtc_digital_twin/README.md: 11829 strict
 rtc_inference/README.md: 8774 strict
 rtc_math/README.md: 2944 strict  # raised from 2571: skeleton sections the old README lacked (빠른 시작 command, 인터페이스 table, 디렉토리)
 rtc_math/include/rtc_math/se3/README.md: 9116 strict
-rtc_mpc/README.md: 8666 strict  # raised from 8196: wb_layout row + floating-base rules; before: raised from 7737: wbc_reference row + heap-storage promise
+rtc_mpc/README.md: 8753 strict  # raised from 8666: rtc_urdf_bridge dependency (free-flyer root rule, #1016); before: raised from 8196: wb_layout row + floating-base rules; before: raised from 7737: wbc_reference row + heap-storage promise
 rtc_msgs/README.md: 6141 strict
 rtc_mujoco_sim/README.md: 43600 strict  # raised from 43142: the /sim/reset row of the service table (new public surface, #977); before: 42500: the reset_keyframe row of the node-parameter table and its two-sentence note under 초기 자세 (new public surface, #976)
 rtc_tools/README.md: 49000 strict  # raised from 46600: hand_gravity_ff_gate 절 + 도구 표 한 행 + joint_ff 감지 표 한 행 (손 중력 FF A/B/A 판정기 · 새 로그 종류); before: 43992: stance_metrics 절 + 도구 표 두 행 (부동 베이스 정지 지표 recorder · 재판정, #977); before: 42792: joint_command_gui 절에 포즈 목록 · 재생 · SIL 확인 두 항목 (#972); before: raised from 41209: fit_capsules 절 + 도구 표 두 행 (충돌 capsule 초안 · 검사 · MuJoCo oracle, #642); before: raised from 39650: joint_command_gui 절 (실행 · 원격 DDS 점검 · 손 노드 이름 대응표의 사용 조건) — joint_gui 와의 비교는 모듈 docstring 으로; before: 39566 -> 39650 hand_canfd_gate --req-mode 한 줄
 rtc_tsid/README.md: 11550 strict
-rtc_urdf_bridge/README.md: 18991 strict  # raised from 17451: collision capsule core section (CapsuleModel · CapsuleWorkspace public headers, #642)
+rtc_urdf_bridge/README.md: 19193 strict  # raised from 18991: free_flyer_root.hpp · free_flyer_dims.hpp interface row (#1016); before: raised from 17451: collision capsule core section (CapsuleModel · CapsuleWorkspace public headers, #642)
 shape_estimation/README.md: 6548 strict
 shape_estimation_msgs/README.md: 1597 strict
 udp_hand_driver/README.md: 30200 strict  # raised from 29760: joint_direction_signs 파라미터 행 + 손별 키 목록 + feedforward 문장 (#895 proto2 손 단독 실기 준비); before: 29248: hand_cpu_slot — 스레드 모델 표 main/hand_comm 행 · 기본값 출처 · 단독 launch 전용 한 문장 · 파라미터 표 행; before: 28911 -> 29248: broadcast 수신 마감 = slot - broadcast_tail_guard_ms (D89) 파라미터 행 · 거부 조건 · 호스트 rate 문장; before: 28911 -> 28703: 통계 절 phase 한 문장 확장 (proto2 read_all_motor 0 · broadcast tick read_all_sensor = decode · total = tick 전체 · Summary µs); before: 28563 -> 28703 두 손 절에 호스트별 rate · T 포인터 한 줄 (D87, 네이티브 CAN 호스트 450 Hz · 1.0 — 실측은 docs/testing.md); before: 27690 -> 28563 req_mode broadcast — "순서가 버스 직렬화" 가 거짓이 되는 tick 한 단락 · launch 행 · 거부 조건 · 장애 행 · 두 손 기본 auto → broadcast 400 Hz (D86); before: 27657 -> 27690 cmd_ack 기본값 none — echo 펌웨어 명령 주석
