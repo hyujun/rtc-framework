@@ -10,37 +10,50 @@
 // tick it sends `pd_feedforward`: `commands` is a joint-space quintic
 // reference toward the last `<group>/joint_goal`, `feedforward` is
 //
-//     τ_ff = clamp(k_g · g(q_meas), ±τ_max)       (rtc_controllers
-//                                                  joint/dynamics_feedforward_law.hpp)
+//     τ_ff = clamp(k_g · g(q_meas) + k_M · M(q_meas) · q̈_ref, ±τ_max)
+//                                     (rtc_controllers joint/dynamics_feedforward_law.hpp)
 //
 // with the Coriolis slot of that law left at 0 (the term is a later addition;
-// the law already carries it). The purpose is to make the device's PD hold a
-// pose with no sag at LOW gains — the feedforward carries the weight, the
-// servo only the error — and to be the one place that reference and
-// feedforward are tuned, in the simulator and on the hardware.
+// the law already carries it). q̈_ref is the quintic's acceleration — 0 off a
+// running trajectory, so the inertia term acts only while a goal is being
+// followed and a held pose sees gravity alone. k_M ships at 0 (`gravity_ff.
+// inertia_gain`): the model inertia is the links' only (a URDF carries no rotor
+// inertia), and with a servo whose D term acts on the measured velocity the
+// tracking error in motion is the servo's viscous lag, not inertia (the
+// commit that added the term records the sim measurement). The purpose of
+// the lane is to make the device's PD hold a pose with no sag at LOW gains —
+// the feedforward carries the weight, the servo only the error — and to be
+// the one place that reference and feedforward are tuned, in the simulator
+// and on the hardware.
 //
 // Model:
 //   - the group's `urdf.tree_models.<group>` is the hand (root = the link the
 //     fingertip poses are expressed in; tips = the fingertip frames);
 //   - on an EXTENDED URDF (loop closures) the gravity term is the reduced
-//     g_a = Gᵀ g of rtc_urdf_bridge::RtClosedChainHandle, evaluated at the
-//     measured actuated positions — the same projection also serves the
+//     g_a = Gᵀ g of rtc_urdf_bridge::RtClosedChainHandle, and the inertia the
+//     reduced M_a = Gᵀ M G, both evaluated at the measured actuated positions
+//     (UpdateDynamics computes them together) — the same projection also serves the
 //     fingertip FK (ClosedChainHandFk in borrowed mode, fed this controller's
 //     handle every tick) so one projection per tick serves both. The handle's
 //     independent joints must ALL be joints of this device group, in any
 //     order (the bridge is by name); a loop whose independent joint lives on
 //     another group cannot be projected from this one and refuses configure;
-//   - on a plain URDF the tree model is the model: g from the serial handle,
-//     FK from the same handle, the device's joint order installed on it. A
+//   - on a plain URDF the tree model is the model: g (and, while k_M ≠ 0 and
+//     a goal is being followed, M) from the serial handle, FK from the same
+//     handle, the device's joint order installed on it. A
 //     device that does not list every joint of the tree exactly once is
 //     refused (a loop-passive joint left in a plain tree is the usual cause).
 //
 // Hold policy of the feedforward (the device PD has no such choice to make):
 //   - before the first tick with a valid model term: 0 N·m;
-//   - a held / singular projection or an unreadable device: the LAST valid
-//     torque stays on the wire (a walk-in after activation is a run of held
-//     ticks — see RtClosedChainHandle::Status — and zeroing the weight for
-//     them would drop the hand on every activation);
+//   - a held / singular projection or an unreadable device: the model terms
+//     (g and M) keep their LAST valid values (a walk-in after activation is a
+//     run of held ticks — see RtClosedChainHandle::Status — and zeroing the
+//     weight for them would drop the hand on every activation). q̈_ref is
+//     always the reference's own: it follows a running trajectory through a
+//     held projection, and it is 0 on an unreadable tick, where the reference
+//     is frozen — a frozen reference is at rest. The gains are this tick's, so
+//     a gain changed during an outage takes effect on it;
 //   - a non-finite term from the law: 0 N·m on every joint (all-or-nothing,
 //     the law's rule);
 //   - `gravity_ff.enabled: false` (YAML or runtime parameter): 0 N·m, the
@@ -59,6 +72,11 @@
 //   - `damping_feedforward`: `commands` = the measured positions, the
 //     feedforward lane stays as in `tracking` (gravity_ff.enabled, gain,
 //     clamp, hold policy) — the lane under test, with no servo error under it.
+//     There is no trajectory here, so q̈_ref = 0 and the inertia term is 0.
+//   A goal that lands mid-motion restarts the quintic from rest (the
+//   reference velocity steps to 0 for that tick); the inertia term follows the
+//   new quintic and does not feed the step forward — a torque impulse would be
+//   the wrong answer to it, a velocity-continuous retarget the right one.
 //   A joint goal while the mode is not `tracking` is drained and refused
 //   (GoalRejectCount) — unlike E-STOP, which discards pending goals silently.
 //   On the tick the mode returns to `tracking` the reference is re-seeded from
@@ -155,7 +173,9 @@ struct HandJointConfig {
 };
 
 /// The block key of the feedforward lane in the controller YAML and in the
-/// runtime parameters (`gravity_ff.enabled`, `gravity_ff.gain`).
+/// runtime parameters (`gravity_ff.enabled`, `gravity_ff.gain`,
+/// `gravity_ff.inertia_gain`). Named for the term it shipped with; it carries
+/// every term of the lane.
 inline constexpr std::string_view kHandJointFfBlockKey = "gravity_ff";
 
 /// Parse and range-check the controller's YAML node. Throws std::runtime_error
@@ -175,6 +195,8 @@ class HandJointController final : public rtc::RTControllerInterface {
     bool ff_enabled{true};
     double ff_gain{1.0};
     HandJointMode mode{HandJointMode::kTracking};
+    /// k_M of the inertia term k_M · M(q_meas) · q̈_ref. 0 = gravity alone.
+    double inertia_gain{0.0};
   };
 
   static_assert(std::is_trivially_copyable_v<Gains>, "Gains rides a SeqLock");
@@ -250,6 +272,18 @@ class HandJointController final : public rtc::RTControllerInterface {
     return {ff_bound_.data(), static_cast<std::size_t>(std::max(dof_, 0))};
   }
 
+  /// M(q)·q̈_ref of the last Compute() (before k_M and the clamp), device order,
+  /// [0, Dof()) [N·m]. 0 on every tick the lane did not use the term or the
+  /// reference was at rest. RT-owned.
+  [[nodiscard]] std::span<const double> LastInertiaTerm() const noexcept {
+    return {tau_m_.data(), static_cast<std::size_t>(std::max(dof_, 0))};
+  }
+
+  /// The reference acceleration of the last Compute(), device order [rad/s²].
+  [[nodiscard]] std::span<const double> LastReferenceAcceleration() const noexcept {
+    return {qdd_ref_.data(), static_cast<std::size_t>(std::max(dof_, 0))};
+  }
+
  protected:
   void OnDeviceConfigsSet() override;
   void ApplyPendingTarget(int device_idx, std::span<const double> values,
@@ -284,6 +318,10 @@ class HandJointController final : public rtc::RTControllerInterface {
   /// valid from this tick).
   void HoldAtMeasurement(const rtc::ControllerState& state) noexcept;
   void ComputeFeedforward() noexcept;
+  /// tau_m_ = M · q̈_ref in device order, from the handle's own matrix (the
+  /// closed-chain handle keeps its last valid M_a through a held projection;
+  /// the plain handle's M is this tick's).
+  void ComputeInertiaTerm(std::size_t n) noexcept;
   void FillOutput(const rtc::ControllerState& state, rtc::ControllerOutput& out) noexcept;
   void FillTickRecord(const rtc::ControllerState& state) noexcept;
   void PushLogs(const rtc::ControllerState& state, const rtc::ControllerOutput& out) noexcept;
@@ -341,6 +379,21 @@ class HandJointController final : public rtc::RTControllerInterface {
   std::array<double, kHandJointMaxDof> g_dev_{};
   bool have_g_{false};
   bool model_fresh_{false};
+  /// The handle holds a mass matrix the inertia term may use. Closed chain:
+  /// set with g_a (the handle keeps M_a through a hold). Plain: M was computed
+  /// THIS tick — only while k_M ≠ 0 and a goal is being followed, so a matrix
+  /// from another pose is never read.
+  bool have_m_{false};
+  /// Reference acceleration [rad/s²], device order; 0 off a running trajectory.
+  std::array<double, kHandJointMaxDof> qdd_ref_{};
+  /// M · q̈_ref, device order [N·m], before k_M (LastInertiaTerm).
+  std::array<double, kHandJointMaxDof> tau_m_{};
+  /// The k_M the law applied this tick (0 when the term was off or had no M).
+  double inertia_gain_applied_{0.0};
+  /// Model-order scratch of the inertia product (closed: n_a, plain: nv),
+  /// sized in WireDevice.
+  Eigen::VectorXd qdd_model_;
+  Eigen::VectorXd tau_model_;
   std::array<double, kHandJointMaxDof> tau_ff_{};
   bool ff_finite_{false};
   std::uint64_t clamped_mask_{0};

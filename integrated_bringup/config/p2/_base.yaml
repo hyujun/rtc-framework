@@ -4,8 +4,9 @@
 # Loaded first; sim.yaml (MuJoCo) or robot.yaml (hardware) overlays the mode
 # delta on top. The purpose of this profile is the hand's joint controller
 # itself: `hand_joint_controller` sends a joint position reference plus a
-# feedforward torque from the hand's dynamic model (gravity first; the law
-# carries a Coriolis slot for later), to be tuned in the simulator and on the
+# feedforward torque from the hand's dynamic model (gravity, plus an inertia
+# term that ships off; the law carries a Coriolis slot for later), to be
+# tuned in the simulator and on the
 # hardware with the device's PD at LOW gains and no sag.
 #
 # Shape of this robot:

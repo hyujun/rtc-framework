@@ -31,19 +31,30 @@ hand_joint_controller:
   max_traj_velocity: 10.0     # rad/s — read-only parameter
 
   # ── Feedforward torque lane ──────────────────────────────────────────────
-  # τ_ff = clamp(gain · g_a(q_meas), ±min(max_abs, devices.p2_right max_torque)).
+  # τ_ff = clamp(gain · g_a(q_meas) + inertia_gain · M_a(q_meas) · q̈_ref,
+  #              ±min(max_abs, devices.p2_right max_torque)).
   #   enabled  — runtime parameter `gravity_ff.enabled`; false sends 0 N·m with
   #              the command type unchanged (the A/B switch of the sim gate —
   #              switching the command type would let the simulator re-enable
   #              its own gravity compensation and change the plant).
   #   gain     — runtime parameter `gravity_ff.gain`, [0, 2]. 1 = the model.
-  #   max_abs  — REQUIRED bound, N·m. The model's largest gravity torque on
-  #              this hand is ≈ 0.08 N·m (cmc_01 / cmc_02 at the mid pose,
-  #              fingers up); 0.15 leaves room for gain tuning and is 0.27 A
+  #   inertia_gain — runtime parameter `gravity_ff.inertia_gain`, [0, 2]. The
+  #              reduced model inertia times the quintic's acceleration (0 at
+  #              rest, so a held pose sees gravity alone). Ships 0: the URDF
+  #              carries the links' inertia only, no rotor inertia, and at this
+  #              profile's servo the tracking error in motion is the servo's
+  #              viscous lag — the term measured ≤ 0.1 % on a default goal in
+  #              the simulator. Raise it where the device's D term acts on the
+  #              velocity error and short, fast moves matter.
+  #   max_abs  — REQUIRED bound on the SUM of the terms, N·m. The model's
+  #              largest gravity torque on this hand is ≈ 0.08 N·m (cmc_01 /
+  #              cmc_02 at the mid pose, fingers up); 0.15 leaves room for gain
+  #              tuning and is 0.27 A
   #              at the firmware's 0.55 N·m/A — well inside the motors.
   gravity_ff:
     enabled: true
     gain: 1.0
+    inertia_gain: 0.0
     max_abs: 0.15
 
   # ‖φ‖ (m) above which a closed-chain projection is not trusted for the

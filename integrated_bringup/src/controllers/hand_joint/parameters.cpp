@@ -9,7 +9,8 @@
 
 namespace integrated_bringup {
 
-// Runtime-tunable: trajectory_speed, gravity_ff.enabled, gravity_ff.gain, mode.
+// Runtime-tunable: trajectory_speed, gravity_ff.enabled, gravity_ff.gain,
+// gravity_ff.inertia_gain, mode.
 // Read-only: max_traj_velocity (a device rating, not a tuning knob).
 //
 // `mode` (tracking / damping / damping_feedforward) is accepted at any time —
@@ -66,6 +67,21 @@ void HandJointController::DeclareGainParametersImpl() {
                                   std::to_string(rtc::params::kDynamicsFeedforwardGainMax) + "]");
   if (std::isfinite(gain)) {
     g.ff_gain = std::clamp(gain, 0.0, rtc::params::kDynamicsFeedforwardGainMax);
+  }
+  // Its own catch, like `mode`: a wrong-typed override (an integer `1` in a
+  // params file) must cost this parameter alone, not abort the declares after
+  // it. The YAML value stays in force and the parameter is absent.
+  try {
+    const double inertia_gain =
+        declare(key + ".inertia_gain", g.inertia_gain,
+                "Inertia feedforward gain k_M of k_M M(q) qdd_ref, dimensionless [0, " +
+                    std::to_string(rtc::params::kDynamicsFeedforwardGainMax) + "]; 0 = off");
+    if (std::isfinite(inertia_gain)) {
+      g.inertia_gain = std::clamp(inertia_gain, 0.0, rtc::params::kDynamicsFeedforwardGainMax);
+    }
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "[hand_joint] parameter '%s.inertia_gain' not declared (%s); keeping %f",
+                 key.c_str(), e.what(), g.inertia_gain);
   }
   // A stored off-whitelist (or wrong-typed) mode keeps the YAML mode; the
   // catch is local so the gains above are stored whatever happens here.
@@ -128,6 +144,16 @@ rcl_interfaces::msg::SetParametersResult HandJointController::OnGainParametersSe
           return result;
         }
         g.ff_gain = v;
+        dirty = true;
+      } else if (name == key + ".inertia_gain") {
+        const double v = p.as_double();
+        if (!std::isfinite(v) || v < 0.0 || v > rtc::params::kDynamicsFeedforwardGainMax) {
+          result.successful = false;
+          result.reason = key + ".inertia_gain must be finite and within [0, " +
+                          std::to_string(rtc::params::kDynamicsFeedforwardGainMax) + "]";
+          return result;
+        }
+        g.inertia_gain = v;
         dirty = true;
       } else if (name == "mode") {
         const std::string text = p.as_string();

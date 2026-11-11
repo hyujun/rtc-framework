@@ -13,6 +13,14 @@
 // with the RT handle the controller uses. The plain tree's oracle is
 // pinocchio's own gravity vector on the tree model, addressed by joint NAME.
 //
+// The inertia term k_M · M(q) · q̈_ref has its own two oracles, again sharing
+// nothing with the controller's path: the closed chain's reduced inertia is
+// G_fdᵀ · M_full · G_fd, with the reduction map G_fd taken by central
+// differences of the non-RT projection and M_full · x by pinocchio's RNEA at
+// zero velocity (no CRBA, no RT handle); the plain tree's is RNEA on the tree
+// model by joint NAME. q̈_ref itself is checked against the second difference
+// of the reference the controller put on the wire.
+//
 // Everything else: the hold policy (zero before the first valid term, last
 // value through a held / unreadable tick, zero under E-STOP and with the lane
 // off), the clamp against the YAML bound, the goal lane, the three modes
@@ -108,6 +116,128 @@ std::map<std::string, double> PotentialGradient(const Rig& rig,
   return grad;
 }
 
+// ── The closed-chain inertia oracle: G_fdᵀ · M_full · G_fd · a ──────────────
+// `a_by_name` is the reduced acceleration by independent-joint name; the
+// result is the reduced inertia torque by the same names.
+std::map<std::string, double> ReducedInertiaTimes(const Rig& rig,
+                                                  const std::map<std::string, double>& q_by_name,
+                                                  const std::map<std::string, double>& a_by_name) {
+  const auto model = rig.builder->GetFullModel();
+  rub::ClosedChainHandle oracle(model, rig.builder->GetConstraintModels(),
+                                rig.builder->GetClosureActuatedJointIds(), {});
+  const std::vector<std::string> indep = oracle.GetIndependentJointNames();
+  const auto na = static_cast<Eigen::Index>(indep.size());
+  std::vector<double> q_a(indep.size());
+  Eigen::VectorXd a(na);
+  for (std::size_t k = 0; k < indep.size(); ++k) {
+    q_a[k] = q_by_name.at(indep[k]);
+    a[static_cast<Eigen::Index>(k)] = a_by_name.at(indep[k]);
+  }
+  auto project = [&](const std::vector<double>& q) {
+    const auto st = oracle.Update(q);
+    EXPECT_TRUE(st.converged) << "oracle projection did not converge";
+    return Eigen::VectorXd(oracle.GetFullConfiguration());
+  };
+  const Eigen::VectorXd q_full = project(q_a);
+  // G_fd: column k = ∂q_full/∂q_a[k], central differences on the manifold.
+  constexpr double h = 1e-5;
+  Eigen::MatrixXd g_fd(model->nv, na);
+  for (Eigen::Index k = 0; k < na; ++k) {
+    std::vector<double> plus = q_a;
+    std::vector<double> minus = q_a;
+    plus[static_cast<std::size_t>(k)] += h;
+    minus[static_cast<std::size_t>(k)] -= h;
+    const Eigen::VectorXd qp = project(plus);
+    const Eigen::VectorXd qm = project(minus);
+    g_fd.col(k) = pinocchio::difference(*model, qm, qp) / (2.0 * h);
+  }
+  // M_full · x = RNEA(q, 0, x) − RNEA(q, 0, 0).
+  pinocchio::Data data(*model);
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(model->nv);
+  const Eigen::VectorXd a_full = g_fd * a;
+  const Eigen::VectorXd m_a_full = pinocchio::rnea(*model, data, q_full, zero, a_full);
+  const Eigen::VectorXd g_full = pinocchio::rnea(*model, data, q_full, zero, zero);
+  const Eigen::VectorXd tau_a = g_fd.transpose() * (m_a_full - g_full);
+  std::map<std::string, double> out;
+  for (std::size_t k = 0; k < indep.size(); ++k) {
+    out[indep[k]] = tau_a[static_cast<Eigen::Index>(k)];
+  }
+  return out;
+}
+
+/// A goal off `q` by a different amount (and sign) on every joint, so a
+/// swapped joint or a dropped off-diagonal term changes the inertia torque.
+std::vector<double> StaggeredGoal(const std::vector<double>& q) {
+  std::vector<double> goal = q;
+  for (std::size_t i = 0; i < goal.size(); ++i) {
+    goal[i] += 0.1 * static_cast<double>(1 + i % 3) * (i % 2 == 0 ? 1.0 : -1.0);
+  }
+  return goal;
+}
+
+/// Three consecutive ticks a few ticks into the goal: the middle one is where
+/// the term is judged, the outer two give the reference's second difference.
+struct MidMotion {
+  std::vector<double> q_ref_prev, q_ref, q_ref_next;
+  std::vector<double> qdd, tau_m, tau_ff, g;
+  // The tick record of the judged tick.
+  std::vector<double> log_qdd, log_tau_inertia;
+  double log_inertia_gain{0.0};
+};
+
+MidMotion RunIntoAGoal(HandJointController& ctrl, const std::vector<double>& q, std::uint64_t t0,
+                       int ticks_in = 15) {
+  ctrl.SetDeviceTarget(0, StaggeredGoal(q));
+  MidMotion m;
+  const auto n = static_cast<std::size_t>(ctrl.Dof());
+  auto refs = [&](const ControllerOutput& out) {
+    std::vector<double> r(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      r[i] = out.devices[0].commands[i];
+    }
+    return r;
+  };
+  for (int k = 0; k <= ticks_in + 1; ++k) {
+    const ControllerOutput out =
+        ctrl.Compute(MakeState(q, true, t0 + static_cast<std::uint64_t>(k)));
+    EXPECT_TRUE(ctrl.LastTick().traj_active) << "the goal ended before tick " << k;
+    if (k == ticks_in - 1) {
+      m.q_ref_prev = refs(out);
+    } else if (k == ticks_in) {
+      m.q_ref = refs(out);
+      const auto qdd = ctrl.LastReferenceAcceleration();
+      const auto tm = ctrl.LastInertiaTerm();
+      m.qdd.assign(qdd.begin(), qdd.end());
+      m.tau_m.assign(tm.begin(), tm.end());
+      const auto& tick = ctrl.LastTick();
+      for (std::size_t i = 0; i < n; ++i) {
+        m.tau_ff.push_back(tick.tau_ff[i]);
+        m.g.push_back(tick.g[i]);
+        m.log_qdd.push_back(tick.qdd_ref[i]);
+        m.log_tau_inertia.push_back(tick.tau_inertia[i]);
+      }
+      m.log_inertia_gain = tick.inertia_gain;
+    } else if (k == ticks_in + 1) {
+      m.q_ref_next = refs(out);
+    }
+  }
+  return m;
+}
+
+/// q̈_ref is the acceleration of the reference on the wire: its second
+/// difference over the three ticks (O(dt²) truncation, ~1e-4 relative here).
+void ExpectAccelerationIsTheReferences(const MidMotion& m) {
+  double scale = 0.0;
+  for (const double a : m.qdd) {
+    scale = std::max(scale, std::abs(a));
+  }
+  ASSERT_GT(scale, 1.0) << "rad/s² — the judged tick is not inside the motion";
+  for (std::size_t i = 0; i < m.qdd.size(); ++i) {
+    const double fd = (m.q_ref_next[i] - 2.0 * m.q_ref[i] + m.q_ref_prev[i]) / (kDt * kDt);
+    EXPECT_NEAR(m.qdd[i], fd, 1e-3 * scale) << i;
+  }
+}
+
 // ── Configure ───────────────────────────────────────────────────────────────
 
 TEST(HandJointConfigure, ClosedChainRigWires) {
@@ -160,6 +290,9 @@ TEST(HandJointConfigure, TheYamlRefusesWhatItCannotRun) {
     ctrl->LoadConfig(YAML::Load(yaml));
   };
   EXPECT_THROW(make(Yaml(10.0, true, 1.0, "position")), std::runtime_error);
+  // The inertia gain is bounded like the gravity gain.
+  EXPECT_THROW(make(Yaml(10.0, true, 1.0, "pd_feedforward", 2.5)), std::runtime_error);
+  EXPECT_NO_THROW(make(Yaml(10.0, true, 1.0, "pd_feedforward", 2.0)));
   EXPECT_THROW(make(Yaml(10.0, true, 1.0, "torque")), std::runtime_error);
   // No max_abs: the bound is required.
   std::string no_bound = Yaml();
@@ -262,6 +395,204 @@ TEST(HandJointFeedforward, PlainTreeTorqueIsPinocchioGravityInDeviceOrder) {
   // Fingertip poses: valid and root-relative on the plain path too.
   for (std::size_t f = 0; f < kPlainTips.size(); ++f) {
     EXPECT_TRUE(out.task_link_pose_valid[f]) << f;
+  }
+}
+
+// ── Inertia term ────────────────────────────────────────────────────────────
+
+TEST(HandJointInertia, ClosedChainTermIsTheReducedInertiaTimesTheReferenceAcceleration) {
+  const Rig rig = ClosedRig(Yaml(10.0, true, 1.0, "pd_feedforward", 1.0));
+  auto ctrl = BringUp(rig);
+  ASSERT_EQ(ctrl->ConfigError(), "");
+  ASSERT_DOUBLE_EQ(ctrl->GetGains().inertia_gain, 1.0) << "the YAML key reaches the tick";
+  (void)TickUntilFresh(*ctrl, rig.q);
+  // Let the projection settle (it refines by a Newton step per tick).
+  for (std::uint64_t t = 3000; t < 3100; ++t) {
+    (void)ctrl->Compute(MakeState(rig.q, true, t));
+  }
+  // At rest the term is 0 and the torque is gravity alone.
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(ctrl->LastInertiaTerm()[ui], 0.0) << ui;
+    EXPECT_DOUBLE_EQ(ctrl->LastTick().tau_ff[ui], ctrl->LastTick().g[ui]) << ui;
+  }
+  // The measurement stays at rig.q, so M is the one at rig.q throughout.
+  const MidMotion m = RunIntoAGoal(*ctrl, rig.q, 3100);
+  ExpectAccelerationIsTheReferences(m);
+  std::map<std::string, double> q_by_name;
+  std::map<std::string, double> a_by_name;
+  for (std::size_t i = 0; i < rig.joints.size(); ++i) {
+    q_by_name[rig.joints[i]] = rig.q[i];
+    a_by_name[rig.joints[i]] = m.qdd[i];
+  }
+  const auto want = ReducedInertiaTimes(rig, q_by_name, a_by_name);
+  double scale = 0.0;
+  for (const auto& [name, v] : want) {
+    scale = std::max(scale, std::abs(v));
+  }
+  ASSERT_GT(scale, 1e-6) << "N·m — the fixture's inertia term is too small to judge";
+  for (std::size_t i = 0; i < rig.joints.size(); ++i) {
+    EXPECT_NEAR(m.tau_m[i], want.at(rig.joints[i]), 1e-3 * scale) << rig.joints[i];
+    // Gains 1, no clamp: the wire is the sum of the two terms.
+    EXPECT_DOUBLE_EQ(m.tau_ff[i], m.g[i] + m.tau_m[i]) << rig.joints[i];
+    // And the tick record says so: tau_ff = k_g · g + tau_inertia off one row.
+    EXPECT_DOUBLE_EQ(m.log_qdd[i], m.qdd[i]) << rig.joints[i];
+    EXPECT_DOUBLE_EQ(m.log_tau_inertia[i], m.tau_m[i]) << rig.joints[i];
+  }
+  EXPECT_DOUBLE_EQ(m.log_inertia_gain, 1.0);
+}
+
+TEST(HandJointInertia, PlainTreeTermIsPinocchioInertiaInDeviceOrder) {
+  const Rig rig = PlainRig(Yaml(10.0, true, 1.0, "pd_feedforward", 1.0));
+  auto ctrl = BringUp(rig);
+  ASSERT_EQ(ctrl->ConfigError(), "");
+  (void)TickUntilFresh(*ctrl, rig.q, 5);
+  const MidMotion m = RunIntoAGoal(*ctrl, rig.q, 100);
+  ExpectAccelerationIsTheReferences(m);
+  const auto model = rig.builder->GetTreeModel(kGroup);
+  Eigen::VectorXd q = pinocchio::neutral(*model);
+  Eigen::VectorXd a = Eigen::VectorXd::Zero(model->nv);
+  for (std::size_t i = 0; i < rig.joints.size(); ++i) {
+    const auto& joint = model->joints[model->getJointId(rig.joints[i])];
+    q[static_cast<Eigen::Index>(joint.idx_q())] = rig.q[i];
+    a[static_cast<Eigen::Index>(joint.idx_v())] = m.qdd[i];
+  }
+  pinocchio::Data data(*model);
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(model->nv);
+  const Eigen::VectorXd ma = pinocchio::rnea(*model, data, q, zero, a);
+  const Eigen::VectorXd g = pinocchio::rnea(*model, data, q, zero, zero);
+  double scale = 0.0;
+  for (std::size_t i = 0; i < rig.joints.size(); ++i) {
+    const auto vi =
+        static_cast<Eigen::Index>(model->joints[model->getJointId(rig.joints[i])].idx_v());
+    const double want = ma[vi] - g[vi];
+    scale = std::max(scale, std::abs(want));
+    EXPECT_NEAR(m.tau_m[i], want, 1e-9) << rig.joints[i];
+    EXPECT_DOUBLE_EQ(m.tau_ff[i], m.g[i] + m.tau_m[i]) << rig.joints[i];
+  }
+  EXPECT_GT(scale, 1e-6) << "N·m — the fixture's inertia term is too small to judge";
+}
+
+TEST(HandJointInertia, GainZeroIsGravityAloneThroughAMotion) {
+  // The shipped default: during a goal the wire is k_g · g, bit for bit, and
+  // the term reports 0 — the lane is the gravity-only one it was before.
+  for (const bool closed : {true, false}) {
+    const Rig rig = closed ? ClosedRig() : PlainRig();
+    auto ctrl = BringUp(rig);
+    ASSERT_DOUBLE_EQ(ctrl->GetGains().inertia_gain, 0.0) << "absent key → 0";
+    (void)TickUntilFresh(*ctrl, rig.q);
+    const MidMotion m = RunIntoAGoal(*ctrl, rig.q, 3000);
+    ASSERT_FALSE(m.tau_ff.empty());
+    EXPECT_DOUBLE_EQ(m.log_inertia_gain, 0.0) << closed;
+    for (std::size_t i = 0; i < m.tau_ff.size(); ++i) {
+      EXPECT_DOUBLE_EQ(m.tau_m[i], 0.0) << closed << " " << i;
+      EXPECT_DOUBLE_EQ(m.tau_ff[i], m.g[i]) << closed << " " << i;
+      EXPECT_DOUBLE_EQ(m.log_tau_inertia[i], 0.0) << closed << " " << i;
+    }
+  }
+}
+
+TEST(HandJointInertia, AnUnreadableTickFreezesTheReferenceAtRest) {
+  // Mid-motion, the device goes unreadable: the reference is frozen, and a
+  // frozen reference is at rest — q̈_ref and the inertia term are 0 for the
+  // whole outage, the held gravity term stays. When the device is back, the
+  // trajectory resumes and so does the term.
+  for (const bool closed : {true, false}) {
+    const std::string yaml = Yaml(10.0, true, 1.0, "pd_feedforward", 1.0);
+    const Rig rig = closed ? ClosedRig(yaml) : PlainRig(yaml);
+    auto ctrl = BringUp(rig);
+    (void)TickUntilFresh(*ctrl, rig.q);
+    (void)RunIntoAGoal(*ctrl, rig.q, 3000);
+    for (std::uint64_t t = 3100; t < 3110; ++t) {
+      const ControllerOutput frozen = ctrl->Compute(MakeState(rig.q, false, t));
+      ASSERT_FALSE(ctrl->LastTick().readable);
+      ASSERT_TRUE(ctrl->LastTick().traj_active) << "the trajectory is paused, not dropped";
+      for (int i = 0; i < ctrl->Dof(); ++i) {
+        const auto ui = static_cast<std::size_t>(i);
+        EXPECT_DOUBLE_EQ(ctrl->LastReferenceAcceleration()[ui], 0.0) << closed << " " << ui;
+        EXPECT_DOUBLE_EQ(ctrl->LastInertiaTerm()[ui], 0.0) << closed << " " << ui;
+        // Gain 1, no clamp, no inertia: the wire is the held gravity term.
+        EXPECT_DOUBLE_EQ(frozen.devices[0].feedforward[ui], ctrl->LastTick().g[ui])
+            << closed << " " << ui;
+      }
+    }
+    (void)ctrl->Compute(MakeState(rig.q, true, 3110));
+    ASSERT_TRUE(ctrl->LastTick().traj_active);
+    double back = 0.0;
+    for (int i = 0; i < ctrl->Dof(); ++i) {
+      back = std::max(back, std::abs(ctrl->LastInertiaTerm()[static_cast<std::size_t>(i)]));
+    }
+    EXPECT_GT(back, 0.0) << closed;
+  }
+}
+
+TEST(HandJointInertia, HoldPolicy) {
+  const Rig rig = ClosedRig(Yaml(10.0, true, 1.0, "pd_feedforward", 1.0));
+  auto ctrl = BringUp(rig);
+  (void)TickUntilFresh(*ctrl, rig.q);
+  (void)RunIntoAGoal(*ctrl, rig.q, 3000);
+  // A non-finite measurement mid-motion: the projection holds, the model terms
+  // keep their last valid values, and q̈_ref is still the running reference's.
+  std::vector<double> bad = rig.q;
+  bad[3] = std::numeric_limits<double>::quiet_NaN();
+  (void)ctrl->Compute(MakeState(bad, true, 3100));
+  ASSERT_TRUE(ctrl->LastTick().held);
+  ASSERT_TRUE(ctrl->LastTick().traj_active);
+  double through_hold = 0.0;
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    through_hold =
+        std::max(through_hold, std::abs(ctrl->LastInertiaTerm()[static_cast<std::size_t>(i)]));
+  }
+  EXPECT_GT(through_hold, 0.0) << "the term follows the reference through a held projection";
+  // damping_feedforward: no trajectory, so no inertia term — gravity alone.
+  SetMode(*ctrl, HandJointMode::kDampingFeedforward);
+  (void)TickUntilFresh(*ctrl, rig.q);
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(ctrl->LastInertiaTerm()[ui], 0.0) << ui;
+    EXPECT_DOUBLE_EQ(ctrl->LastReferenceAcceleration()[ui], 0.0) << ui;
+    EXPECT_DOUBLE_EQ(ctrl->LastTick().tau_ff[ui], ctrl->LastTick().g[ui]) << ui;
+  }
+  // Back to tracking (re-seeded at rest), into a goal, then E-STOP: every term 0.
+  SetMode(*ctrl, HandJointMode::kTracking);
+  (void)ctrl->Compute(MakeState(rig.q, true, 3103));
+  (void)RunIntoAGoal(*ctrl, rig.q, 3200);
+  ctrl->TriggerEstop();
+  const ControllerOutput stop = ctrl->Compute(MakeState(rig.q, true, 3300));
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(stop.devices[0].feedforward[ui], 0.0) << ui;
+    EXPECT_DOUBLE_EQ(ctrl->LastInertiaTerm()[ui], 0.0) << ui;
+  }
+}
+
+TEST(HandJointInertia, TheGainTakesEffectOnTheTickItIsSet) {
+  // Mid-motion, the gain goes 0 → 1: the plain path computes M on that very
+  // tick (EvaluateModel and the law read the same tick's gains), so the term
+  // is there at once — and 1 → 0 removes it at once.
+  for (const bool closed : {true, false}) {
+    const Rig rig = closed ? ClosedRig() : PlainRig();
+    auto ctrl = BringUp(rig);
+    (void)TickUntilFresh(*ctrl, rig.q);
+    (void)RunIntoAGoal(*ctrl, rig.q, 3000);
+    auto gains = ctrl->GetGains();
+    gains.inertia_gain = 1.0;
+    ctrl->SetGains(gains);
+    (void)ctrl->Compute(MakeState(rig.q, true, 3100));
+    ASSERT_TRUE(ctrl->LastTick().traj_active);
+    double on = 0.0;
+    for (int i = 0; i < ctrl->Dof(); ++i) {
+      on = std::max(on, std::abs(ctrl->LastInertiaTerm()[static_cast<std::size_t>(i)]));
+    }
+    EXPECT_GT(on, 0.0) << closed;
+    gains.inertia_gain = 0.0;
+    ctrl->SetGains(gains);
+    (void)ctrl->Compute(MakeState(rig.q, true, 3101));
+    for (int i = 0; i < ctrl->Dof(); ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      EXPECT_DOUBLE_EQ(ctrl->LastInertiaTerm()[ui], 0.0) << closed << " " << ui;
+      EXPECT_DOUBLE_EQ(ctrl->LastTick().tau_ff[ui], ctrl->LastTick().g[ui]) << closed << " " << ui;
+    }
   }
 }
 
@@ -678,6 +1009,8 @@ TEST(HandJointShipped, TheP2YamlParsesAndNamesOneGroup) {
   EXPECT_EQ(parsed.mode, HandJointMode::kTracking) << "the shipped mode is spelled out";
   EXPECT_TRUE(parsed.ff.enabled);
   EXPECT_DOUBLE_EQ(parsed.ff.gravity_gain, 1.0);
+  EXPECT_DOUBLE_EQ(parsed.ff.inertia_gain, 0.0) << "the inertia term ships off, spelled out";
+  EXPECT_TRUE(cfg["gravity_ff"]["inertia_gain"]);
   EXPECT_GT(parsed.ff.max_abs, 0.0);
   // The bound is an explicit choice well under the device's placeholder
   // rating (1.0 N·m in _base.yaml): the YAML, not the rating, bounds the wire.
@@ -707,6 +1040,7 @@ TEST(HandJointLifecycle, ConfiguresDeclaresParametersAndCleansUp) {
             rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS);
   EXPECT_TRUE(node->has_parameter("gravity_ff.enabled"));
   EXPECT_TRUE(node->has_parameter("gravity_ff.gain"));
+  EXPECT_TRUE(node->has_parameter("gravity_ff.inertia_gain"));
   EXPECT_TRUE(node->has_parameter("trajectory_speed"));
   EXPECT_TRUE(node->has_parameter("mode"));
   EXPECT_EQ(node->get_parameter("mode").as_string(), "tracking");
@@ -729,6 +1063,13 @@ TEST(HandJointLifecycle, ConfiguresDeclaresParametersAndCleansUp) {
   const auto bad = node->set_parameter(rclcpp::Parameter("gravity_ff.gain", 5.0));
   EXPECT_FALSE(bad.successful);
   EXPECT_DOUBLE_EQ(ctrl->GetGains().ff_gain, 1.0);
+  // The inertia gain: in range reaches the tick, out of range is refused.
+  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("gravity_ff.inertia_gain", 0.5)).successful);
+  EXPECT_DOUBLE_EQ(ctrl->GetGains().inertia_gain, 0.5);
+  const auto bad_m = node->set_parameter(rclcpp::Parameter("gravity_ff.inertia_gain", 2.5));
+  EXPECT_FALSE(bad_m.successful);
+  EXPECT_NE(bad_m.reason.find("inertia_gain"), std::string::npos) << bad_m.reason;
+  EXPECT_DOUBLE_EQ(ctrl->GetGains().inertia_gain, 0.5);
   // A speed above the read-only cap (4 rad/s in the rig) is refused too.
   const auto fast = node->set_parameter(rclcpp::Parameter("trajectory_speed", 5.0));
   EXPECT_FALSE(fast.successful);
@@ -739,6 +1080,28 @@ TEST(HandJointLifecycle, ConfiguresDeclaresParametersAndCleansUp) {
             rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS);
   ASSERT_EQ(ctrl->on_deactivate(unconfigured),
             rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl->on_cleanup(unconfigured),
+            rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS);
+}
+
+TEST(HandJointLifecycle, AWrongTypedInertiaGainOverrideCostsThatParameterAlone) {
+  // An integer `1` where a double is declared throws inside declare_parameter.
+  // It must not abort the declares after it: `mode` is still declared and
+  // settable, and the YAML inertia gain stays in force.
+  const Rig rig = ClosedRig();
+  auto ctrl = BringUp(rig);
+  ASSERT_EQ(ctrl->ConfigError(), "");
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides({rclcpp::Parameter("gravity_ff.inertia_gain", 1)});
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("hand_joint_controller", opts);
+  const rclcpp_lifecycle::State unconfigured;
+  ASSERT_EQ(ctrl->on_configure(unconfigured, node, YAML::Load(rig.yaml)),
+            rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(node->has_parameter("gravity_ff.inertia_gain"));
+  EXPECT_DOUBLE_EQ(ctrl->GetGains().inertia_gain, 0.0);
+  ASSERT_TRUE(node->has_parameter("mode"));
+  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("mode", "damping")).successful);
+  EXPECT_EQ(ctrl->GetGains().mode, HandJointMode::kDamping);
   ASSERT_EQ(ctrl->on_cleanup(unconfigured),
             rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS);
 }

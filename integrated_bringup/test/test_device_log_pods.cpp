@@ -733,6 +733,9 @@ TEST(JointFeedforwardLogPod, HeaderColumnsMatchRowAndNameTheJoints) {
   pod.q_ref = {1.25, 1.5, 1.75};
   pod.g = {2.25, 2.5, 2.75};
   pod.tau_ff = {3.25, 3.5, 3.75};
+  pod.inertia_gain = 0.75;
+  pod.qdd_ref = {4.25, 4.5, 4.75};
+  pod.tau_inertia = {5.25, 5.5, 5.75};
   std::ostringstream row_os;
   integrated_bringup::WriteJointFeedforwardLogRow(row_os, pod, cols);
   const std::string row = row_os.str();
@@ -746,13 +749,16 @@ TEST(JointFeedforwardLogPod, HeaderColumnsMatchRowAndNameTheJoints) {
   EXPECT_EQ(ColumnValue(hdr, row, "held_ticks"), "3");
   EXPECT_EQ(ColumnValue(hdr, row, "clamped_mask"), "5");
   EXPECT_EQ(ColumnValue(hdr, row, "num_joints"), "3");
-  // The four per-joint blocks are named by the joint and ordered q, q_ref, g,
-  // tau_ff — a consumer (plot_rtc_log, analyze_hand_gravity_ff) addresses them
-  // by exactly these names.
+  EXPECT_EQ(ColumnValue(hdr, row, "inertia_gain"), "0.75");
+  // The per-joint blocks are named by the joint and ordered q, q_ref, g,
+  // tau_ff, qdd_ref, tau_inertia — a consumer (plot_rtc_log,
+  // analyze_hand_gravity_ff) addresses them by exactly these names.
   EXPECT_EQ(ColumnValue(hdr, row, "q_index_mcp_joint"), "0.5");
   EXPECT_EQ(ColumnValue(hdr, row, "q_ref_index_mcp_joint"), "1.5");
   EXPECT_EQ(ColumnValue(hdr, row, "g_ring_mcp_joint"), "2.75");
   EXPECT_EQ(ColumnValue(hdr, row, "tau_ff_cmc_01_joint"), "3.25");
+  EXPECT_EQ(ColumnValue(hdr, row, "qdd_ref_index_mcp_joint"), "4.5");
+  EXPECT_EQ(ColumnValue(hdr, row, "tau_inertia_ring_mcp_joint"), "5.75");
 }
 
 TEST(JointFeedforwardLogPod, ShortRuntimeJointCountPadsRatherThanNarrowsTheRow) {

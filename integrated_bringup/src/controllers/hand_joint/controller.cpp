@@ -152,6 +152,7 @@ void HandJointController::LoadConfig(const YAML::Node& cfg) {
   gains.max_traj_velocity = cfg_.max_traj_velocity;
   gains.ff_enabled = cfg_.ff.enabled;
   gains.ff_gain = cfg_.ff.gravity_gain;
+  gains.inertia_gain = cfg_.ff.inertia_gain;
   gains.mode = cfg_.mode;
   gains_lock_.Store(gains);
 
@@ -230,6 +231,13 @@ std::string HandJointController::WireDevice() {
            std::to_string(kHandJointMaxDof);
   }
   q_dev_ = Eigen::VectorXd::Zero(dof_);
+  // A reconfigure with another roster must not inherit the old matrix.
+  have_m_ = false;
+  const Eigen::Index n_model = closed_handle_ != nullptr
+                                   ? static_cast<Eigen::Index>(closed_handle_->nv_independent())
+                                   : static_cast<Eigen::Index>(dof_);
+  qdd_model_ = Eigen::VectorXd::Zero(n_model);
+  tau_model_ = Eigen::VectorXd::Zero(n_model);
 
   // Position limits (device, else the model's; the fallback bounds below are
   // wide on purpose — a hand without limits in its YAML is clamped by the
@@ -480,6 +488,9 @@ void HandJointController::EvaluateModel(const ControllerState& state) noexcept {
     for (std::size_t k = 0; k < bridge_.size(); ++k) {
       g_dev_[static_cast<std::size_t>(bridge_[k])] = g_a[static_cast<Eigen::Index>(k)];
     }
+    // M_a comes with g_a from the same UpdateDynamics, and the handle keeps
+    // it through a later held / singular tick, as it keeps g_a.
+    have_m_ = true;
     have_g_ = true;
     model_fresh_ = true;
     return;
@@ -494,11 +505,22 @@ void HandJointController::EvaluateModel(const ControllerState& state) noexcept {
   hand_handle_->ComputeGeneralizedGravity(q_span);
   hand_handle_->ReorderOutput(hand_handle_->GetGeneralizedGravity(),
                               std::span<double>(g_dev_.data(), static_cast<std::size_t>(dof_)));
+  // CRBA only on a tick that can use it: the term is on and a goal is being
+  // followed (a goal drained this tick has already set traj_active_). At rest
+  // q̈_ref is 0 and the gravity-only lane pays nothing; the flag says the
+  // matrix is THIS tick's, so one from another pose is never read.
+  have_m_ = gains_tick_.inertia_gain != 0.0 && traj_active_;
+  if (have_m_) {
+    hand_handle_->ComputeMassMatrix(q_span);
+  }
   have_g_ = true;
   model_fresh_ = true;
 }
 
 void HandJointController::AdvanceReference(const ControllerState& state, double dt) noexcept {
+  // Every branch but a running quintic leaves the reference at rest — a
+  // frozen one included, so an outage never carries the last acceleration.
+  std::fill(qdd_ref_.begin(), qdd_ref_.end(), 0.0);
   if (dof_ <= 0 || !readable_) {
     return;  // frozen: last reference, trajectory clock stopped
   }
@@ -543,6 +565,7 @@ void HandJointController::AdvanceReference(const ControllerState& state, double 
     const auto ui = static_cast<std::size_t>(i);
     q_ref_[ui] = std::clamp(s.positions[ui], q_min_[ui], q_max_[ui]);
     qd_ref_[ui] = s.velocities[ui];
+    qdd_ref_[ui] = s.accelerations[ui];
   }
 }
 
@@ -573,17 +596,49 @@ void HandJointController::ComputeFeedforward() noexcept {
   const auto n = static_cast<std::size_t>(std::max(dof_, 0));
   // One OR chain, appended to: `damping` zeroes the lane like the switch does;
   // `damping_feedforward` leaves it to the switch and the E-STOP.
+  std::fill_n(tau_m_.begin(), n, 0.0);
+  inertia_gain_applied_ = 0.0;
   if (estop_active_ || !have_g_ || !gains_tick_.ff_enabled ||
       gains_tick_.mode == HandJointMode::kDamping) {
     std::fill_n(tau_ff_.begin(), n, 0.0);
     return;
   }
-  const rtc::joint::DynamicsFeedforwardGainsView k{
-      .gravity_gain = gains_tick_.ff_gain, .coriolis_gain = 0.0, .max_abs = {ff_bound_.data(), n}};
-  const rtc::joint::DynamicsFeedforwardInputs in{.gravity = {g_dev_.data(), n}, .coriolis = {}};
+  // Inertia term: the handle's M times this tick's q̈_ref. No matrix → the
+  // term is off this tick (gravity alone). At rest the product is 0 and is
+  // not formed.
+  const double k_m = have_m_ ? gains_tick_.inertia_gain : 0.0;
+  inertia_gain_applied_ = k_m;
+  if (k_m != 0.0 && traj_active_) {
+    ComputeInertiaTerm(n);
+  }
+  const rtc::joint::DynamicsFeedforwardGainsView k{.gravity_gain = gains_tick_.ff_gain,
+                                                   .coriolis_gain = 0.0,
+                                                   .inertia_gain = k_m,
+                                                   .max_abs = {ff_bound_.data(), n}};
+  const rtc::joint::DynamicsFeedforwardInputs in{
+      .gravity = {g_dev_.data(), n}, .coriolis = {}, .inertia = {tau_m_.data(), n}};
   const auto r = rtc::joint::ComputeDynamicsFeedforward(k, in, n, {tau_ff_.data(), n});
   ff_finite_ = r.finite;
   clamped_mask_ = r.clamped;
+}
+
+void HandJointController::ComputeInertiaTerm(std::size_t n) noexcept {
+  if (closed_handle_ != nullptr) {
+    // Device → independent order by the name bridge, M_a · q̈, and back.
+    for (std::size_t k = 0; k < bridge_.size(); ++k) {
+      qdd_model_[static_cast<Eigen::Index>(k)] = qdd_ref_[static_cast<std::size_t>(bridge_[k])];
+    }
+    tau_model_.noalias() = closed_handle_->GetMassMatrix() * qdd_model_;
+    for (std::size_t k = 0; k < bridge_.size(); ++k) {
+      tau_m_[static_cast<std::size_t>(bridge_[k])] = tau_model_[static_cast<Eigen::Index>(k)];
+    }
+    return;
+  }
+  // Plain: the handle's own maps — ReorderInput scatters device order into
+  // v order, ReorderOutput gathers v order back into device order.
+  hand_handle_->ReorderInput(std::span<const double>(qdd_ref_.data(), n), qdd_model_);
+  tau_model_.noalias() = hand_handle_->GetMassMatrix() * qdd_model_;
+  hand_handle_->ReorderOutput(tau_model_, std::span<double>(tau_m_.data(), n));
 }
 
 void HandJointController::FillOutput(const ControllerState& state, ControllerOutput& out) noexcept {
@@ -640,6 +695,7 @@ void HandJointController::FillTickRecord(const ControllerState& state) noexcept 
   tick_.singular = kin_status_.singular;
   tick_.closure_error = kin_status_.closure_error;
   tick_.clamped_mask = clamped_mask_;
+  tick_.inertia_gain = inertia_gain_applied_;
   tick_.num_joints = static_cast<std::uint8_t>(std::clamp(dof_, 0, kHandJointMaxDof));
   const auto n = static_cast<std::size_t>(tick_.num_joints);
   for (std::size_t i = 0; i < n; ++i) {
@@ -647,6 +703,8 @@ void HandJointController::FillTickRecord(const ControllerState& state) noexcept 
     tick_.q_ref[i] = q_ref_[i];
     tick_.g[i] = g_dev_[i];
     tick_.tau_ff[i] = tau_ff_[i];
+    tick_.qdd_ref[i] = qdd_ref_[i];
+    tick_.tau_inertia[i] = inertia_gain_applied_ * tau_m_[i];
   }
 }
 

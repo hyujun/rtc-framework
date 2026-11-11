@@ -95,12 +95,16 @@ inline rub::ModelConfig PlainModelConfig() {
   return cfg;
 }
 
-/// The controller YAML. `max_abs` is the feedforward bound (N·m).
+/// The controller YAML. `max_abs` is the feedforward bound (N·m);
+/// `inertia_gain` is written only when non-zero (absent = the default 0).
 inline std::string Yaml(double max_abs = 10.0, bool enabled = true, double gain = 1.0,
-                        const char* command_type = "pd_feedforward") {
+                        const char* command_type = "pd_feedforward", double inertia_gain = 0.0) {
+  const std::string inertia =
+      inertia_gain != 0.0 ? "\n  inertia_gain: " + std::to_string(inertia_gain) : std::string();
   return std::string("trajectory_speed: 2.0\nmax_traj_velocity: 4.0\ncommand_type: \"") +
          command_type + "\"\ngravity_ff:\n  enabled: " + (enabled ? "true" : "false") +
-         "\n  gain: " + std::to_string(gain) + "\n  max_abs: " + std::to_string(max_abs) + R"(
+         "\n  gain: " + std::to_string(gain) + inertia + "\n  max_abs: " + std::to_string(max_abs) +
+         R"(
 topics:
   hand:
     subscribe:

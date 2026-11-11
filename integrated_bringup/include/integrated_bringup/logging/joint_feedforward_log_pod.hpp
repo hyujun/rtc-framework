@@ -3,8 +3,9 @@
 
 // Per-tick record of a feedforward-torque joint controller (HandJointController):
 // what the model evaluation did this tick, and per joint the measured position,
-// the position reference on the wire, the model gravity term and the
-// feedforward torque that went out.
+// the position reference on the wire, the model gravity term, the reference
+// acceleration and the inertia term it produced, and the feedforward torque
+// that went out.
 //
 // One row per tick this controller RUNS, every such tick — an E-STOP or
 // unreadable tick still writes its row with `ff_finite = 0` / `readable = 0`
@@ -18,7 +19,8 @@
 // error per joint (meaningful in mode 0 only — in the damping modes the
 // reference IS the measurement; plot_rtc_log shades those stretches). The raw model term `g_*` is
 // logged next to `tau_ff_*` so a clamp or a gain below 1 is visible in the file rather than
-// inferred.
+// inferred — and the inertia term `tau_inertia_*` (already times the k_M the law applied) with
+// its `qdd_ref_*`, so tau_ff = clamp(k_g · g + tau_inertia) can be read off a row.
 //
 // SPSC constraint: trivially copyable. No rtc_msgs/.msg — this is
 // controller-internal. YAML `msg_type` id is
@@ -71,13 +73,19 @@ struct JointFeedforwardLogPod {
   double closure_error{0.0};
   /// Bit i: joint i's torque was clamped to its bound this tick.
   std::uint64_t clamped_mask{0};
+  /// k_M the law applied this tick (gravity_ff.inertia_gain; 0 when the lane
+  /// was off or had no mass matrix).
+  double inertia_gain{0.0};
 
   // ── Per joint ─────────────────────────────────────────────────────────────
   std::uint8_t num_joints{0};
-  std::array<double, kMaxJoints> q{};       ///< measured [rad]
-  std::array<double, kMaxJoints> q_ref{};   ///< position target on the wire [rad]
-  std::array<double, kMaxJoints> g{};       ///< model gravity term, device order [N·m]
-  std::array<double, kMaxJoints> tau_ff{};  ///< feedforward on the wire [N·m]
+  std::array<double, kMaxJoints> q{};        ///< measured [rad]
+  std::array<double, kMaxJoints> q_ref{};    ///< position target on the wire [rad]
+  std::array<double, kMaxJoints> g{};        ///< model gravity term, device order [N·m]
+  std::array<double, kMaxJoints> tau_ff{};   ///< feedforward on the wire [N·m]
+  std::array<double, kMaxJoints> qdd_ref{};  ///< reference acceleration [rad/s²]; 0 at rest
+  /// k_M · M(q) · q̈_ref, device order, before the clamp [N·m].
+  std::array<double, kMaxJoints> tau_inertia{};
 };
 
 static_assert(std::is_trivially_copyable_v<JointFeedforwardLogPod>,
@@ -100,8 +108,8 @@ inline void WriteJointFeedforwardLogHeader(std::ostream& os,
                                            const std::vector<std::string>& joint_names,
                                            const JointFeedforwardLogColumns& cols) {
   os << "t_relative_s,tick,estop,readable,seeded,traj_active,ff_enabled,mode,ff_finite,"
-        "model_fresh,held,held_ticks,singular,closure_error,clamped_mask,num_joints";
-  for (const char* prefix : {"q_", "q_ref_", "g_", "tau_ff_"}) {
+        "model_fresh,held,held_ticks,singular,closure_error,clamped_mask,inertia_gain,num_joints";
+  for (const char* prefix : {"q_", "q_ref_", "g_", "tau_ff_", "qdd_ref_", "tau_inertia_"}) {
     for (std::size_t i = 0; i < cols.joints; ++i) {
       os << ',' << prefix << joint_names[i];
     }
@@ -118,7 +126,7 @@ inline void WriteJointFeedforwardLogRow(std::ostream& os, const JointFeedforward
      << ',' << static_cast<unsigned>(p.mode) << ',' << (p.ff_finite ? 1 : 0) << ','
      << (p.model_fresh ? 1 : 0) << ',' << (p.held ? 1 : 0) << ',' << p.held_ticks << ','
      << (p.singular ? 1 : 0) << ',' << p.closure_error << ',' << p.clamped_mask << ','
-     << static_cast<unsigned>(p.num_joints);
+     << p.inertia_gain << ',' << static_cast<unsigned>(p.num_joints);
   const std::size_t reported =
       std::min(static_cast<std::size_t>(p.num_joints), JointFeedforwardLogPod::kMaxJoints);
   auto emit = [&](const std::array<double, JointFeedforwardLogPod::kMaxJoints>& a) {
@@ -130,6 +138,8 @@ inline void WriteJointFeedforwardLogRow(std::ostream& os, const JointFeedforward
   emit(p.q_ref);
   emit(p.g);
   emit(p.tau_ff);
+  emit(p.qdd_ref);
+  emit(p.tau_inertia);
 }
 
 }  // namespace integrated_bringup
