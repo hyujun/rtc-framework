@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 // #unified-kindyn Phase 1: PinocchioCache::Update 이관으로 algorithm 헤더는 불필요.
@@ -140,6 +141,15 @@ void ContactManagerConfig::Load(const YAML::Node& config, const pinocchio::Model
     cc.patch_half_length_x = c["patch_half_length_x"].as<double>(0.0);
     cc.patch_half_length_y = c["patch_half_length_y"].as<double>(0.0);
     cc.torsional_friction_coeff = c["torsional_friction_coeff"].as<double>(0.0);
+
+    // Normal-force bounds (both contact types). 0 ≤ min ≤ max, min finite.
+    cc.normal_force_min = c["normal_force_min"].as<double>(0.0);
+    cc.normal_force_max = c["normal_force_max"].as<double>(std::numeric_limits<double>::infinity());
+    if (!(std::isfinite(cc.normal_force_min) && cc.normal_force_min >= 0.0 &&
+          cc.normal_force_max >= cc.normal_force_min)) {
+      throw std::invalid_argument("Contact '" + cc.name +
+                                  "': need 0 <= normal_force_min <= normal_force_max");
+    }
 
     // Stage A-4: optional `normal: [x, y, z]` world-frame seed. Default
     // (0, 0, 1) preserves pre-A-4 fixed-normal cone behaviour.

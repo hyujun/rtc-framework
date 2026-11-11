@@ -48,6 +48,32 @@ inline bool BuildContactBasis(const Eigen::Vector3d& n_in, Eigen::Matrix3d& R_c)
   return false;
 }
 
+// Surface contacts: the tangent axes follow the contact FRAME, so the CoP
+// rectangle (l_x along the frame's x, l_y along its y) turns with the foot.
+// t1 = frame x projected on the plane ⊥ n; when the frame's x is within ~6°
+// of n, its y is projected instead and t1 = t2 × n. R_c = [t1 | t2 | n] is
+// right-handed (t2 = n × t1). Never the +Z short-circuit: on flat ground that
+// would put the rectangle on the world axes whatever the foot's yaw.
+// The switch is not continuous: at the threshold t1 can turn by up to 90°
+// about n (it depends on the frame's roll about n). It only happens with the
+// frame's x within ~6° of the normal — a sole standing on its edge.
+inline void BuildSurfaceBasis(const Eigen::Vector3d& n_in, const Eigen::Matrix3d& oRf,
+                              Eigen::Matrix3d& R_c) noexcept {
+  const double nn = n_in.norm();
+  const Eigen::Vector3d n = (nn > 1e-9) ? Eigen::Vector3d(n_in / nn) : Eigen::Vector3d::UnitZ();
+  Eigen::Vector3d t1 = oRf.col(0) - n * oRf.col(0).dot(n);
+  if (t1.norm() >= 0.1) {
+    t1.normalize();
+  } else {
+    Eigen::Vector3d t2 = oRf.col(1) - n * oRf.col(1).dot(n);
+    t2.normalize();
+    t1 = t2.cross(n);
+  }
+  R_c.col(0) = t1;
+  R_c.col(1) = n.cross(t1);
+  R_c.col(2) = n;
+}
+
 // Point contact (cdim=3): n_faces + 1 (cone faces + unilateral -fz ≤ 0)
 // Surface contact (cdim=6): + 4 (CoP rectangle) + 2 (yaw moment) = n_faces + 7.
 // patch=0 / μ_τ=0 인 surface 라도 trivial 행 (0 ≤ 0) 으로 유지 — ineq_dim 일관.
@@ -102,7 +128,7 @@ void FrictionConeConstraint::ComputeEquality(const PinocchioCache& /*cache*/,
                                              Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
                                              Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {}
 
-void FrictionConeConstraint::ComputeInequality(const PinocchioCache& /*cache*/,
+void FrictionConeConstraint::ComputeInequality(const PinocchioCache& cache,
                                                const ContactState& contacts,
                                                const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
                                                Eigen::Ref<Eigen::MatrixXd> C_block,
@@ -137,8 +163,21 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& /*cache*/,
 
     const int lambda_col = nv_ + lambda_offset;
 
-    // Build contact basis from the runtime-filtered normal.
-    const bool is_plus_z = BuildContactBasis(contacts.contacts[i].normal, R_c);
+    // Build contact basis from the runtime-filtered normal (surface: and the
+    // contact frame's tangent axes).
+    bool is_plus_z = false;
+    if (cdim == 6 && i < cache.contact_frames.size()) {
+      BuildSurfaceBasis(contacts.contacts[i].normal, cache.contact_frames[i].oMf.rotation(), R_c);
+    } else {
+      is_plus_z = BuildContactBasis(contacts.contacts[i].normal, R_c);
+    }
+
+    // Normal-force bounds on the unilateral row −f_n ∈ [−f_max, −a·f_min]
+    // (a = activation, so the floor ramps with the contact). Defaults 0 / +∞
+    // keep the pre-existing row: l = −1e10, u = 0.
+    const double f_min = cfg.normal_force_min * contacts.contacts[i].activation;
+    const double uni_l = std::isinf(cfg.normal_force_max) ? -1e10 : -cfg.normal_force_max;
+    const double uni_u = (f_min > 0.0) ? -f_min : 0.0;
 
     // Linearized friction cone (force components, common to point & surface):
     //   Contact-local:  [cos θk, sin θk, -μ] · [f_t1, f_t2, f_n]ᵀ ≤ 0
@@ -156,8 +195,8 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& /*cache*/,
       }
       // Unilateral: -f_n ≤ 0 (local) → -fz ≤ 0 (world, since n = +Z).
       C_block(row, lambda_col + 2) = -1.0;
-      l_block(row) = -1e10;
-      u_block(row) = 0.0;
+      l_block(row) = uni_l;
+      u_block(row) = uni_u;
       ++row;
     } else {
       // Rotated cone rows: world coeffs = [cos θ, sin θ, -μ] · R_cᵀ.
@@ -176,8 +215,8 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& /*cache*/,
       C_block(row, lambda_col + 0) = -R_c(0, 2);
       C_block(row, lambda_col + 1) = -R_c(1, 2);
       C_block(row, lambda_col + 2) = -R_c(2, 2);
-      l_block(row) = -1e10;
-      u_block(row) = 0.0;
+      l_block(row) = uni_l;
+      u_block(row) = uni_u;
       ++row;
     }
 

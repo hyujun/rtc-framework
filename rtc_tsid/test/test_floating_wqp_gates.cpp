@@ -464,5 +464,50 @@ TEST_F(FloatingWqpGates, BaseTwistIsLocalAndContactPlacementsAreFresh) {
       << "control: the rotations must move the twist for the check to discriminate";
 }
 
+// Surface contacts on feet in every orientation: the QP's λ, read in each
+// foot's own axes (t1 = foot x projected ⊥ the world-up contact normal, or its
+// y when x is within ~6° of it), keeps f_n ≥ 0 and the CoP / yaw moment
+// inside the foot's 0.12 × 0.05 rectangle, within 10·eps_abs.
+TEST_F(FloatingWqpGates, EachFootHoldsItsCopRectangleInItsOwnAxes) {
+  const Options o;
+  Counters n;
+  double worst = -std::numeric_limits<double>::infinity();
+  int loaded = 0;
+  for (const auto& x : samples_) {
+    Rig rig(o, x);
+    const CommandOutput& out = rig.Solve();
+    n.Record(out);
+    if (!out.qp_converged) {
+      continue;
+    }
+    for (int i = 0; i < 2; ++i) {
+      const Eigen::Vector3d nz = Eigen::Vector3d::UnitZ();
+      const Eigen::Matrix3d oRf = rig.cache.contact_frames[static_cast<size_t>(i)].oMf.rotation();
+      Eigen::Matrix3d R_c;
+      Eigen::Vector3d t1 = oRf.col(0) - nz * oRf.col(0).dot(nz);
+      if (t1.norm() >= 0.1) {
+        t1.normalize();
+      } else {
+        t1 = (oRf.col(1) - nz * oRf.col(1).dot(nz)).normalized().cross(nz);
+      }
+      R_c << t1, nz.cross(t1), nz;
+      const Eigen::Vector3d f = R_c.transpose() * out.lambda_opt.segment<3>(6 * i);
+      const Eigen::Vector3d m = R_c.transpose() * out.lambda_opt.segment<3>(6 * i + 3);
+      const double fn = f.z();
+      loaded += fn > 1.0 ? 1 : 0;
+      for (const double excess : {-fn, std::abs(m.y()) - 0.12 * fn, std::abs(m.x()) - 0.05 * fn,
+                                  std::abs(m.z()) - 0.5 * fn}) {
+        worst = std::max(worst, excess);
+        EXPECT_LE(excess, 10.0 * o.eps_abs) << "foot " << i;
+      }
+    }
+  }
+  n.Report("cop");
+  RecordProperty("cop_worst_excess", std::to_string(worst));
+  RecordProperty("cop_loaded_feet", std::to_string(loaded));
+  ASSERT_GT(n.converged, 0);
+  EXPECT_GT(loaded, 0) << "control: some foot must carry load for the check to bind";
+}
+
 }  // namespace
 }  // namespace rtc::tsid
