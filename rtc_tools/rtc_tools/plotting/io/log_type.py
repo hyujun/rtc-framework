@@ -69,7 +69,7 @@ def detect_log_type(filepath):
         # the reference / commanded / measured pose. Fixed instance stem.
         return "dualarm_diag"
     elif stem.endswith("joint_ff"):
-        # Per-tick gravity-feedforward joint record: what the model evaluation
+        # Per-tick joint feedforward record: what the model evaluation
         # did, and per joint q / q_ref / g / tau_ff. Fixed instance stem
         # (kJointFeedforwardLogInstance), written by the hand joint controller.
         return "joint_ff"
@@ -169,7 +169,7 @@ def detect_log_type_by_columns(columns):
     # every such file has at least one `_err_lin` column.
     if "clik_ran" in cols and any(c.endswith("_err_lin") for c in cols):
         return "dualarm_diag"
-    # Gravity-feedforward joint log: per-tick joint_ff.csv. MUST precede the
+    # Joint feedforward log: per-tick joint_ff.csv. MUST precede the
     # state_log / sensor_log branches — its per-joint blocks are `q_<joint>`,
     # `q_ref_<joint>`, `g_<joint>`, `tau_ff_<joint>`, and a joint name that
     # happens to carry the generic `_raw_` / `_filt_` token would otherwise

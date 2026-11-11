@@ -1,4 +1,4 @@
-"""Plotters for the gravity-feedforward joint log (`joint_ff.csv`).
+"""Plotters for the joint feedforward log (`joint_ff.csv`).
 
 ONE ROW IS ONE TICK THE CONTROLLER RAN. An E-STOP or unreadable tick still
 writes its row, with `ff_finite = 0` / `readable = 0` and the torque columns at
@@ -11,8 +11,8 @@ THE JOINT LIST FOLLOWS THE HEADER. Joint names are read off the `tau_ff_`
 block (`q_` is also the prefix of `q_ref_`, so it cannot name them alone) and
 every figure grows a panel per joint, in device order.
 
-THE A/B/A STRUCTURE IS THE POINT. A gravity-feedforward run switches the lane
-on, off and on again; the figures shade the `ff_enabled = 0` stretches so the
+THE A/B/A STRUCTURE IS THE POINT. A hold run switches the feedforward lane on,
+off and on again; the figures shade the `ff_enabled = 0` stretches so the
 sag without feedforward and its removal with it read side by side. The PASS /
 FAIL judgement of such a run is `analyze_hand_gravity_ff`
 (rtc_tools.analysis.hand_gravity_ff_gate) — these figures show, they do not
@@ -234,7 +234,7 @@ def plot_joint_ff_tracking(df, save_dir=None):
         return
 
     df = _with_line_breaks(df)
-    _, axes = _joint_grid(len(joints), "Gravity Feedforward — Joint Tracking (q vs q_ref)")
+    _, axes = _joint_grid(len(joints), "Joint Feedforward — Joint Tracking (q vs q_ref)")
     t = df["timestamp"]
     for ax, j in zip(axes, joints, strict=False):
         ax.plot(t, df[f"{Q_REF_PREFIX}{j}"], linewidth=1.2, color="C1", label="q_ref")
@@ -259,7 +259,7 @@ def plot_joint_ff_torque(df, save_dir=None):
         return
 
     df = _with_line_breaks(df)
-    _, axes = _joint_grid(len(joints), "Gravity Feedforward — Torque (tau_ff vs model g)")
+    _, axes = _joint_grid(len(joints), "Joint Feedforward — Torque (tau_ff vs model terms)")
     t = df["timestamp"]
     t_np = t.to_numpy(dtype=float)
     for k, (ax, j) in enumerate(zip(axes, joints, strict=False)):
@@ -310,7 +310,7 @@ def plot_joint_ff_status(df, save_dir=None):
     fig, axes = plt.subplots(
         4 if has_mode else 3, 1, figsize=(14, 12 if has_mode else 10), sharex=True
     )
-    fig.suptitle("Gravity Feedforward — Status", fontsize=16, fontweight="bold")
+    fig.suptitle("Joint Feedforward — Status", fontsize=16, fontweight="bold")
     t = df["timestamp"]
     t_np = t.to_numpy(dtype=float)
 
@@ -384,7 +384,7 @@ def _drift_line(name, q, t):
 
 def print_joint_ff_statistics(df):
     """Console summary: segments, per-segment tracking error, flag counts."""
-    print("\n=== Gravity Feedforward Joint Log ===")
+    print("\n=== Joint Feedforward Log ===")
     n = len(df)
     t = df["timestamp"].to_numpy(dtype=float)
     duration = float(t[-1] - t[0]) if n > 1 else 0.0
