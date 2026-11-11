@@ -8,8 +8,8 @@
 /// `GraspTarget` is updated off-MPC-thread (typically from a BT leaf or a
 /// ROS topic callback) and published to the phase manager via
 /// @ref GraspPhaseManager::SetTaskTarget. The manager publishes snapshots
-/// through a wait-free `SeqLock<GraspTarget>` so the MPC thread (RT-equivalent
-/// SCHED_FIFO) never touches a mutex — see invariants.md RT-4.
+/// through a wait-free `SeqLock<GraspTargetPOD>` so the MPC thread
+/// (RT-equivalent SCHED_FIFO) never touches a mutex — see invariants.md RT-4.
 ///
 /// All poses are expressed in the model's world frame (same frame as the
 /// `tcp` argument of `PhaseManagerBase::Update`).
@@ -24,6 +24,7 @@
 #pragma GCC diagnostic pop
 
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <type_traits>
 
@@ -47,8 +48,11 @@ enum class GraspCommand : int {
 ///                     target. Reaching it (within approach_tolerance) enters
 ///                     CLOSURE, which then closes the residual gap to
 ///                     @c grasp_pose under the contact_rich OCP.
-/// @var approach_start TCP pose recorded on APPROACH entry; RELEASE drives
-///                     back toward this pose while opening the hand.
+/// @var approach_start Pose RELEASE drives back toward while opening the
+///                     hand. In standalone mode the manager substitutes the
+///                     TCP it recorded on the IDLE → APPROACH edge, for as
+///                     long as no newer target has been set; in mirror mode
+///                     this value is used as given.
 struct GraspTarget {
   pinocchio::SE3 grasp_pose{pinocchio::SE3::Identity()};
   pinocchio::SE3 pregrasp_pose{pinocchio::SE3::Identity()};
@@ -78,6 +82,11 @@ struct GraspTargetPOD {
   std::array<double, kSE3TransDoubles> pregrasp_t = kZeroTrans3;
   std::array<double, kSE3RotDoubles> approach_rot = kIdentityRot3x3;
   std::array<double, kSE3TransDoubles> approach_t = kZeroTrans3;
+  /// Publication count stamped by the target writer (`GraspPhaseManager::
+  /// SetTaskTarget`), so a reader can tell whether two loads saw the same
+  /// target. Not part of @ref GraspTarget: @ref ToPOD leaves it 0 and
+  /// @ref FromPOD ignores it.
+  std::uint32_t generation = 0;
 };
 
 static_assert(std::is_trivially_copyable_v<GraspTargetPOD>,

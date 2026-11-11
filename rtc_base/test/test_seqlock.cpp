@@ -3,16 +3,21 @@
 // synchronisation primitive.
 //
 // Covers: default construction, store/load, sequence monotonicity, large
-// struct correctness, and concurrent read-during-write consistency.
+// struct correctness, concurrent read-during-write consistency, and the
+// word-by-word payload copy: sizes that are not a multiple of 8 (tail bytes),
+// 4-byte-aligned T, default construction honouring T's default member
+// initialisers, and a one-writer / several-reader stress run.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <rtc_base/threading/seqlock.hpp>
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -211,6 +216,183 @@ TEST(SeqLockTest, LoadIntoIsConsistentUnderAConcurrentWriter) {
   sl.LoadInto(out);
   EXPECT_EQ(out.counter, kNumWrites);
   EXPECT_EQ(out.counter, sl.Load().counter);
+}
+
+// ── Word-by-word payload copy ───────────────────────────────────────────────
+// The payload is copied as 8-byte atomic words plus a tail; these pin the
+// tail path, a T whose alignment is below the word size, and default values.
+
+// 4-byte aligned, 20 bytes: two full words + a 4-byte tail.
+struct OddSized {
+  std::array<uint32_t, 5> v{};
+};
+
+static_assert(sizeof(OddSized) % 8 != 0);
+static_assert(alignof(OddSized) == 4);
+
+// 1-byte aligned, 1157 bytes: 144 full words + a 5-byte tail — byte-level
+// layout so a misplaced tail byte is visible.
+struct ByteSized {
+  std::array<uint8_t, 1157> b{};
+};
+
+static_assert(sizeof(ByteSized) % 8 == 5);
+
+TEST(SeqLockTest, OddSizedRoundTripIncludesTailBytes) {
+  rtc::SeqLock<OddSized> sl;
+  OddSized written{};
+  for (std::size_t i = 0; i < written.v.size(); ++i) {
+    written.v[i] = 0xA5A50000u + static_cast<uint32_t>(i);
+  }
+  sl.Store(written);
+  const OddSized loaded = sl.Load();
+  for (std::size_t i = 0; i < written.v.size(); ++i) {
+    EXPECT_EQ(loaded.v[i], written.v[i]) << "index " << i;
+  }
+}
+
+TEST(SeqLockTest, ByteSizedRoundTripThroughLoadAndLoadInto) {
+  rtc::SeqLock<ByteSized> sl;
+  ByteSized written{};
+  for (std::size_t i = 0; i < written.b.size(); ++i) {
+    written.b[i] = static_cast<uint8_t>(i * 7u + 1u);
+  }
+  sl.Store(written);
+
+  const ByteSized by_value = sl.Load();
+  // LoadInto into storage pre-filled with a different pattern, so a tail byte
+  // the copy skips would keep the old value.
+  ByteSized into{};
+  into.b.fill(0xEE);
+  sl.LoadInto(into);
+  for (std::size_t i = 0; i < written.b.size(); ++i) {
+    ASSERT_EQ(by_value.b[i], written.b[i]) << "Load, index " << i;
+    ASSERT_EQ(into.b[i], written.b[i]) << "LoadInto, index " << i;
+  }
+}
+
+TEST(SeqLockTest, InitialValueConstructorHoldsTheValue) {
+  OddSized initial{};
+  initial.v = {1u, 2u, 3u, 4u, 5u};
+  const rtc::SeqLock<OddSized> sl(initial);
+  const OddSized loaded = sl.Load();
+  for (std::size_t i = 0; i < initial.v.size(); ++i) {
+    EXPECT_EQ(loaded.v[i], initial.v[i]) << "index " << i;
+  }
+  EXPECT_EQ(sl.sequence(), 0u);
+}
+
+// Several SeqLock payloads in the tree have non-zero default member
+// initialisers; a default-constructed SeqLock must hold T{}, not zero bytes.
+struct NonZeroDefaults {
+  double gain{1.0};
+  int32_t status{-1};
+  bool stale{true};
+};
+
+TEST(SeqLockTest, DefaultConstructionHoldsValueInitialisedT) {
+  const rtc::SeqLock<NonZeroDefaults> sl;
+  const NonZeroDefaults loaded = sl.Load();
+  EXPECT_DOUBLE_EQ(loaded.gain, 1.0);
+  EXPECT_EQ(loaded.status, -1);
+  EXPECT_TRUE(loaded.stale);
+}
+
+// ── Multi-reader stress ─────────────────────────────────────────────────────
+// One writer stores a fixed number of payloads whose every word holds the
+// store index; several readers load until the writer is done and count
+// snapshots whose words disagree (a tear) or whose index went backwards.
+//
+// This is not evidence of memory ordering: on x86 (TSO) the hardware does not
+// reorder the accesses the fences order, so the pre-fence implementation
+// passes too. It catches defects of the word-by-word copy (a skipped or
+// misplaced word) under contention, and gives ThreadSanitizer (-O0) a
+// concurrent target in which every payload access must be atomic.
+template <std::size_t kPayloadWords>
+struct Stamped {
+  std::array<uint64_t, kPayloadWords> w{};
+};
+
+struct StressResult {
+  int tears{0};
+  int regressions{0};
+  int64_t loads{0};
+};
+
+template <std::size_t kPayloadWords>
+StressResult RunSeqLockStress(uint64_t num_stores) {
+  using Payload = Stamped<kPayloadWords>;
+  rtc::SeqLock<Payload> sl;
+  const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
+  const unsigned num_readers = std::min(3u, hw - 1u);
+
+  std::atomic<unsigned> readers_ready{0};
+  std::atomic<bool> writer_done{false};
+  std::atomic<int> tears{0};
+  std::atomic<int> regressions{0};
+  std::atomic<int64_t> loads{0};
+
+  std::vector<std::jthread> readers;
+  readers.reserve(num_readers);
+  for (unsigned r = 0; r < num_readers; ++r) {
+    readers.emplace_back([&] {
+      readers_ready.fetch_add(1, std::memory_order_release);
+      Payload snap{};
+      uint64_t last = 0;
+      int64_t n = 0;
+      bool done = false;
+      do {
+        // Read the flag before the snapshot: the last pass then sees the
+        // final store.
+        done = writer_done.load(std::memory_order_acquire);
+        sl.LoadInto(snap);
+        ++n;
+        const uint64_t head = snap.w[0];
+        for (const uint64_t word : snap.w) {
+          if (word != head) {
+            tears.fetch_add(1, std::memory_order_relaxed);
+            break;
+          }
+        }
+        if (head < last) {
+          regressions.fetch_add(1, std::memory_order_relaxed);
+        }
+        last = head;
+      } while (!done);
+      loads.fetch_add(n, std::memory_order_relaxed);
+      if (last != num_stores) {
+        regressions.fetch_add(1, std::memory_order_relaxed);  // missed the final store
+      }
+    });
+  }
+
+  // Start writing only once every reader is looping.
+  while (readers_ready.load(std::memory_order_acquire) < num_readers) {
+    std::this_thread::yield();
+  }
+  Payload p{};
+  for (uint64_t i = 1; i <= num_stores; ++i) {
+    p.w.fill(i);
+    sl.Store(p);
+  }
+  writer_done.store(true, std::memory_order_release);
+  readers.clear();  // joins
+
+  return {tears.load(), regressions.load(), loads.load()};
+}
+
+TEST(SeqLockTest, StressSmallPayloadHasNoTornOrStaleSnapshots) {
+  const StressResult r = RunSeqLockStress<8>(200000);  // 64 B
+  EXPECT_EQ(r.tears, 0);
+  EXPECT_EQ(r.regressions, 0);
+  EXPECT_GT(r.loads, 0);
+}
+
+TEST(SeqLockTest, StressPageSizedPayloadHasNoTornOrStaleSnapshots) {
+  const StressResult r = RunSeqLockStress<512>(20000);  // 4 KB
+  EXPECT_EQ(r.tears, 0);
+  EXPECT_EQ(r.regressions, 0);
+  EXPECT_GT(r.loads, 0);
 }
 
 }  // namespace

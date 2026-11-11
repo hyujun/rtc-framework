@@ -324,6 +324,13 @@ TEST(CatchingIngressSeqLock, AConcurrentWriterNeverProducesATornSnapshot) {
   std::atomic<std::uint64_t> torn{0};
   std::atomic<std::uint64_t> reads{0};
 
+  // The writer waits for the reader to complete a Load between its stores.
+  // A writer that stores back to back starves a seqlock reader as soon as one
+  // Load takes longer than the writer's gap between stores (here: building the
+  // next snapshot), and then the reader only succeeds when the writer happens
+  // to be preempted. Pacing on the reader's progress keeps every store
+  // overlapping the reader's next Load — the overlap that makes a tear
+  // observable — without letting the writer saturate the lock.
   std::thread writer([&] {
     std::uint64_t seq = 1;
     while (!stop.load(std::memory_order_relaxed)) {
@@ -333,8 +340,13 @@ TEST(CatchingIngressSeqLock, AConcurrentWriterNeverProducesATornSnapshot) {
       for (int i = 0; i < snap.n; ++i) {
         snap.s[static_cast<std::size_t>(i)].p[2] = static_cast<double>(seq);
       }
+      const std::uint64_t reads_before = reads.load(std::memory_order_relaxed);
       box.Store(snap);
       ++seq;
+      while (reads.load(std::memory_order_relaxed) == reads_before &&
+             !stop.load(std::memory_order_relaxed)) {
+        std::this_thread::yield();
+      }
     }
   });
 

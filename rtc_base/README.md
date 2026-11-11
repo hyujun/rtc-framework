@@ -207,6 +207,8 @@ CM (`CmTimingBuffer`), MPC (`MpcTimingBuffer`), hand (`HandTimingBuffer`) 가 `R
 
 락-프리 단일 쓰기 / 다중 읽기 프리미티브입니다. **`T` 는 trivially copyable** (`static_assert`) 이어야 하고, **writer 는 하나**여야 합니다 -- `Store` 는 seq 를 RMW 없이 읽고 쓰므로 두 writer 가 겹치면 payload 가 찢기거나 seq 가 홀수로 남아 이후 모든 `Load` 가 영원히 재시도합니다.
 
+payload 는 fence 순서로 보호되는 8 B 원자 word 로 복사되어 memcpy 의 수 배 비용입니다 (실측은 헤더 주석). 기본 생성자는 `T{}` 를 담으며 constant initialization 이 아닙니다.
+
 | 메서드 | 설명 |
 |--------|------|
 | `Store(const T&) noexcept` | Wait-free 쓰기 (홀수 시퀀스 = 쓰기 진행 중) |
