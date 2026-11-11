@@ -984,6 +984,31 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # The TSID QP row budget on the shipped demo_wbc configs: the real controller
+  # solves one tick with every contact and constraint active, and the rows it
+  # used are compared with a count taken from the YAML.
+  ament_add_gtest(test_demo_wbc_qp_row_budget
+    test/test_demo_wbc_qp_row_budget.cpp
+    ENV ROS_DOMAIN_ID=52
+    TIMEOUT 300)
+  target_link_libraries(test_demo_wbc_qp_row_budget
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_demo_wbc_qp_row_budget PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_demo_wbc_qp_row_budget
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    rtc_tsid
+    pinocchio
+    Eigen3
+  )
+
   # ── GraspPhaseManager FSM tests (Phase 7a) ─────────────────────────────────
 
   ament_add_gtest(test_grasp_phase_manager test/test_grasp_phase_manager.cpp)
@@ -2170,6 +2195,7 @@ if(BUILD_TESTING)
     test_demo_wbc_tsid_path
     test_wbc_closed_chain_projection_sharing
     test_wbc_rotated_base
+    test_demo_wbc_qp_row_budget
     test_momentum_observer_embedding
     test_joint_tf_slot_frames
     test_joint_tree_primary_group

@@ -1520,6 +1520,40 @@ DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesti
   return r;
 }
 
+const rtc::tsid::SolveResult* DemoWbcController::SolveTsidAllContactsActiveForTesting(
+    const std::vector<std::string>& constraint_names) {
+  if (!tsid_initialized_) {
+    return nullptr;
+  }
+  auto& formulation = tsid_controller_.Formulation();
+  std::vector<std::pair<rtc::tsid::ConstraintBase*, bool>> was_active;
+  for (const auto& name : constraint_names) {
+    auto* c = formulation.GetConstraint(name);
+    if (c == nullptr) {
+      for (auto it = was_active.rbegin(); it != was_active.rend(); ++it) {
+        it->first->SetActive(it->second);
+      }
+      return nullptr;
+    }
+    was_active.emplace_back(c, c->IsActive());
+    c->SetActive(true);
+  }
+  rtc::tsid::ContactState all_active = contact_state_;
+  for (auto& c : all_active.contacts) {
+    c.active = true;
+    c.activation = 1.0;
+    c.activation_target = 1.0;
+  }
+  all_active.RecomputeActive(contact_mgr_config_);
+  const auto& result =
+      formulation.Solve(combined_cache_.cache(), control_ref_, all_active, robot_info_);
+  // Reverse order: a name given twice must end at the state before the first.
+  for (auto it = was_active.rbegin(); it != was_active.rend(); ++it) {
+    it->first->SetActive(it->second);
+  }
+  return &result;
+}
+
 // ── RT control loop ──────────────────────────────────────────────────────────
 
 ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexcept {

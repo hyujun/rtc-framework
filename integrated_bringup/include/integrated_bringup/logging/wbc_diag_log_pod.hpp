@@ -17,7 +17,8 @@
 //
 // qp_status is proxsuite's QPSolverOutput as int (0 SOLVED · 1 MAX_ITER_REACHED
 // · 2 PRIMAL_INFEASIBLE · 3 SOLVED_CLOSEST_PRIMAL_FEASIBLE · 4 DUAL_INFEASIBLE
-// · 5 NOT_RUN); −1 = no QP attempted. joint_box_inverted = rows of the TSID
+// · 5 NOT_RUN); −1 = no QP attempted; −2 = constraint rows over the QP's row
+// budget, not solved (rtc::tsid::kRowBudgetExceeded). joint_box_inverted = rows of the TSID
 // joint-limit acceleration box with l > u this tick (an empty box makes the
 // QP primal-infeasible — #551); −1 = constraint absent or preset-inactive.
 //
