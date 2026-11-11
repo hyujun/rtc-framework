@@ -3,6 +3,7 @@
 #include <Eigen/Core>
 
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -46,7 +47,10 @@ struct RobotModelInfo {
   Eigen::VectorXd q_lower;  // [nq]
   Eigen::VectorXd v_max;    // [nv]
 
-  // Pinocchio model + YAML config로부터 구성
+  // Pinocchio model + YAML config로부터 구성. floating_base = the root joint
+  // (joints[1]) is a free-flyer; n_actuated = nv − 6 then, else nv. Optional
+  // YAML `floating_base` / `n_actuated` are checked against that — a mismatch
+  // throws std::invalid_argument (init only).
   void Build(const pinocchio::Model& model, const YAML::Node& config);
 };
 
@@ -72,6 +76,19 @@ struct ContactConfig {
   double patch_half_length_x{0.0};
   double patch_half_length_y{0.0};
   double torsional_friction_coeff{0.0};
+  // The CoP rectangle's axes are the contact FRAME's x / y (projected on the
+  // plane ⊥ normal), so it turns with the frame; the rectangle is centred on
+  // the frame origin, where λ's moment is taken.
+
+  // Normal-force bounds, both contact types: activation·min ≤ f_n ≤ max on
+  // the friction cone's unilateral row. YAML `normal_force_min` (default 0)
+  // and `normal_force_max` (default +∞, i.e. unbounded), Load requires
+  // 0 ≤ min ≤ max. The floor scales with the contact's activation so a
+  // ramping-out contact is not held at it. Not the consumer's force
+  // reference clamp (e.g. a force PI's lambda_min / lambda_max): these bound
+  // the QP's λ itself.
+  double normal_force_min{0.0};
+  double normal_force_max{std::numeric_limits<double>::infinity()};
 
   // Stage A-4: world-frame contact normal seed. Default world +Z preserves
   // pre-A-4 fixed-normal behaviour. Runtime override via

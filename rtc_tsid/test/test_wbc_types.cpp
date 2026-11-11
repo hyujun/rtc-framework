@@ -8,6 +8,7 @@
 #include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
+#include "g1_fixture.hpp"
 #include "panda_fixture.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 
@@ -46,19 +47,63 @@ TEST_F(RobotModelInfoTest, PandaFixedBase) {
   EXPECT_EQ(info.v_max.size(), info.nv);
 }
 
-TEST_F(RobotModelInfoTest, FloatingBaseOverride) {
+TEST_F(RobotModelInfoTest, FreeFlyerRootIsFloating) {
+  const auto g1 = test::SharedG1Model();
   RobotModelInfo info;
-  YAML::Node config;
-  config["floating_base"] = true;
-  config["n_actuated"] = 7;
-  info.Build(model_, config);
+  info.Build(*g1, YAML::Node{});
 
   EXPECT_TRUE(info.floating_base);
-  EXPECT_EQ(info.n_actuated, 7);
-  EXPECT_EQ(info.S.rows(), 7);
-  EXPECT_EQ(info.S.cols(), info.nv);
-  EXPECT_TRUE(info.S.rightCols(7).isApprox(Eigen::MatrixXd::Identity(7, 7)));
-  EXPECT_TRUE(info.S.leftCols(info.nv - 7).isZero());
+  EXPECT_EQ(info.nq, test::kG1Nq);
+  EXPECT_EQ(info.nv, test::kG1Nv);
+  EXPECT_EQ(info.n_actuated, test::kG1Actuated);
+  ASSERT_EQ(info.S.rows(), test::kG1Actuated);
+  ASSERT_EQ(info.S.cols(), test::kG1Nv);
+  EXPECT_TRUE(info.S.leftCols(6).isZero());
+  EXPECT_TRUE(info.S.rightCols(test::kG1Actuated)
+                  .isApprox(Eigen::MatrixXd::Identity(test::kG1Actuated, test::kG1Actuated)));
+  EXPECT_EQ(info.tau_max.size(), test::kG1Actuated);
+}
+
+// The root has a free-flyer's nq 7 / nv 6 but is a composite: not floating.
+TEST_F(RobotModelInfoTest, CompositeRootWithFreeFlyerDimensionsIsNotFloating) {
+  const auto m = test::CompositeRootPandaModel();
+  ASSERT_EQ(m->joints[1].nq(), 7);
+  ASSERT_EQ(m->joints[1].nv(), 6);
+  RobotModelInfo info;
+  info.Build(*m, YAML::Node{});
+  EXPECT_FALSE(info.floating_base);
+  EXPECT_EQ(info.n_actuated, m->nv);
+}
+
+// YAML floating_base / n_actuated are checked, not obeyed.
+TEST_F(RobotModelInfoTest, YamlFloatingBaseMustAgreeWithTheModel) {
+  YAML::Node floating;
+  floating["floating_base"] = true;
+  YAML::Node fixed;
+  fixed["floating_base"] = false;
+
+  RobotModelInfo info;
+  EXPECT_THROW(info.Build(model_, floating), std::invalid_argument);
+  EXPECT_THROW(info.Build(*test::SharedG1Model(), fixed), std::invalid_argument);
+  // Agreeing values are accepted.
+  EXPECT_NO_THROW(info.Build(model_, fixed));
+  EXPECT_NO_THROW(info.Build(*test::SharedG1Model(), floating));
+  EXPECT_TRUE(info.floating_base);
+}
+
+TEST_F(RobotModelInfoTest, YamlNActuatedMustAgreeWithTheModel) {
+  YAML::Node seven;
+  seven["n_actuated"] = 7;  // the old override pinned the Panda (nv 9) at 7
+  YAML::Node all;
+  all["n_actuated"] = model_.nv;
+  YAML::Node g1_all;
+  g1_all["n_actuated"] = test::kG1Nv;
+
+  RobotModelInfo info;
+  EXPECT_THROW(info.Build(model_, seven), std::invalid_argument);
+  EXPECT_THROW(info.Build(*test::SharedG1Model(), g1_all), std::invalid_argument);
+  EXPECT_NO_THROW(info.Build(model_, all));
+  EXPECT_EQ(info.n_actuated, model_.nv);
 }
 
 // ──────────────────────────────────────────────

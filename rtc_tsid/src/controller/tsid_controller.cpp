@@ -30,9 +30,10 @@ void TSIDController::Init(const pinocchio::Model& model, const RobotModelInfo& r
   output_.Init(robot_info.nv, robot_info.n_actuated, contact_cfg_.max_contact_vars);
 }
 
-CommandOutput TSIDController::Compute(const ControlState& /*state*/, const ControlReference& ref,
-                                      const PinocchioCache& cache,
-                                      const ContactState& contacts) noexcept {
+const CommandOutput& TSIDController::Compute(const ControlState& /*state*/,
+                                             const ControlReference& ref,
+                                             const PinocchioCache& cache,
+                                             const ContactState& contacts) noexcept {
   // 1. Formulation solve (WQP 또는 HQP)
   const auto& result = formulation_->Solve(cache, ref, contacts, robot_info_);
 
@@ -97,8 +98,9 @@ CommandOutput TSIDController::Compute(const ControlState& /*state*/, const Contr
     tau_full_ -= JcT_lambda_;
   }
 
-  // S projection
-  output_.tau.head(na) = robot_info_.S * tau_full_;
+  // S projection (noalias: the product would otherwise go through a heap
+  // temporary on the RT tick)
+  output_.tau.head(na).noalias() = robot_info_.S * tau_full_;
 
   return output_;
 }

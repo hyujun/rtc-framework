@@ -12,6 +12,7 @@
 #pragma GCC diagnostic pop
 
 #include "box_test_util.hpp"
+#include "g1_fixture.hpp"
 #include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
 
@@ -385,6 +386,114 @@ TEST_F(JointLimitConstraintTest, InitRejectsNonPositiveDtAndNonFiniteMargin) {
     EXPECT_NO_THROW(c.Init(*model_, info, cache_, cfg));
     info.v_max(0) = -1.0;
     EXPECT_THROW(c.Init(*model_, info, cache_, cfg), std::invalid_argument);
+  }
+}
+
+// ── Floating base (G1 free-flyer) ────────────────────────────────────────────
+
+// One row per actuated joint, none for the six free-flyer DoF: row i is
+// e_(6+i) and its box comes from q[7+i], v[6+i].
+TEST(FloatingJointLimitTest, RowsAreTheActuatedJointsOnly) {
+  const auto model = test::SharedG1Model();
+  RobotModelInfo info;
+  info.Build(*model, YAML::Node{});
+  PinocchioCache cache;
+  cache.Init(model, {});
+  ContactState cs;
+  cs.Init(0);
+
+  JointLimitConstraint jl;
+  YAML::Node cfg;
+  cfg["dt"] = 0.002;
+  jl.Init(*model, info, cache, cfg);
+  const int na = test::kG1Actuated;
+  ASSERT_EQ(jl.IneqDim(cs), na);
+  ASSERT_EQ(jl.MaxIneqDim(ContactManagerConfig{}), na);
+
+  // Fixture premise: every actuated joint has a velocity limit (else it would
+  // be a locked joint with a zero box).
+  EXPECT_GT(info.v_max.tail(na).minCoeff(), 0.0);
+
+  // A base pose far from the origin and a spinning base: neither may reach a row.
+  Eigen::VectorXd q = pinocchio::neutral(*model);
+  q.head(3) << 50.0, -20.0, 3.0;
+  q.segment(3, 4) = Eigen::Quaterniond(Eigen::AngleAxisd(2.0, Eigen::Vector3d::UnitX())).coeffs();
+  Eigen::VectorXd v = Eigen::VectorXd::Zero(model->nv);
+  v.head(6) << 1.0, 2.0, 3.0, 4.0, 5.0, 6.0;
+  v(6 + 3) = 0.4;
+  cache.Update(q, v);
+
+  const int n_vars = model->nv;
+  Eigen::MatrixXd C = Eigen::MatrixXd::Zero(na, n_vars);
+  Eigen::VectorXd l(na), u(na);
+  jl.ComputeInequality(cache, cs, info, n_vars, C, l, u);
+
+  Eigen::MatrixXd expected_C = Eigen::MatrixXd::Zero(na, n_vars);
+  expected_C.rightCols(na).setIdentity();
+  EXPECT_EQ(C, expected_C);
+  // Row 3 against the one-tick formulas on q[10], v[9] (default margins 0.05 /
+  // 0.1, clamped to 0 on a range narrower than twice the margin).
+  const double dt = 0.002;
+  const double qi = q(7 + 3);
+  const double vi = v(6 + 3);
+  const double range = info.q_upper(7 + 3) - info.q_lower(7 + 3);
+  const double m_pos = range > 0.1 ? 0.05 : 0.0;
+  const double m_vel = info.v_max(6 + 3) > 0.2 ? 0.1 : 0.0;
+  const double pos_ub = 2.0 * (info.q_upper(7 + 3) - m_pos - qi - vi * dt) / (dt * dt);
+  const double vel_ub = (info.v_max(6 + 3) - m_vel - vi) / dt;
+  EXPECT_NEAR(u(3), std::min(pos_ub, vel_ub), 1e-9 * std::abs(std::min(pos_ub, vel_ub)));
+  EXPECT_TRUE(l.allFinite() && u.allFinite());
+  EXPECT_LT(u.cwiseAbs().maxCoeff(), 1e9) << "no ±1e10 base sentinel rows";
+}
+
+// A joint that is not 1-DoF after the root (here the composite 7/6 root of a
+// model that is therefore fixed-base) is refused: its q / v entries do not pair.
+TEST(FloatingJointLimitTest, ANonOneDofJointIsRefused) {
+  const auto model = test::CompositeRootPandaModel();
+  RobotModelInfo info;
+  info.Build(*model, YAML::Node{});
+  PinocchioCache cache;
+  cache.Init(model, {});
+  JointLimitConstraint jl;
+  EXPECT_THROW(jl.Init(*model, info, cache, YAML::Node{}), std::invalid_argument);
+
+  // Control: the same Panda on its usual fixed root is accepted.
+  const auto panda = test::SharedPandaModel();
+  RobotModelInfo panda_info;
+  panda_info.Build(*panda, YAML::Node{});
+  PinocchioCache panda_cache;
+  panda_cache.Init(panda, {});
+  EXPECT_NO_THROW(jl.Init(*panda, panda_info, panda_cache, YAML::Node{}));
+}
+
+// A continuous joint (nq 2 / nv 1) fills its velocity row like a 1-DoF joint
+// would, but its q entries are cos / sin: refused by name, not boxed on cos.
+TEST(FloatingJointLimitTest, AContinuousJointIsRefused) {
+  auto model = std::make_shared<pinocchio::Model>();
+  const auto inertia = pinocchio::Inertia::FromSphere(1.0, 0.1);
+  const auto wheel =
+      model->addJoint(0, pinocchio::JointModelRUBZ(), pinocchio::SE3::Identity(), "wheel");
+  model->appendBodyToJoint(wheel, inertia);
+  const auto j2 =
+      model->addJoint(wheel, pinocchio::JointModelRZ(), pinocchio::SE3::Identity(), "j2");
+  model->appendBodyToJoint(j2, inertia);
+  model->lowerPositionLimit.setConstant(-1.0);
+  model->upperPositionLimit.setConstant(1.0);
+  model->upperVelocityLimit.setConstant(1.0);
+  model->upperEffortLimit.setConstant(10.0);
+  ASSERT_EQ(model->nq, 3);
+  ASSERT_EQ(model->nv, 2);
+
+  RobotModelInfo info;
+  info.Build(*model, YAML::Node{});
+  PinocchioCache cache;
+  cache.Init(model, {});
+  JointLimitConstraint jl;
+  try {
+    jl.Init(*model, info, cache, YAML::Node{});
+    ADD_FAILURE() << "a continuous joint was accepted";
+  } catch (const std::invalid_argument& e) {
+    EXPECT_NE(std::string(e.what()).find("not 1-DoF"), std::string::npos) << e.what();
   }
 }
 

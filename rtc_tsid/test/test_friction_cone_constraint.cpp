@@ -10,6 +10,10 @@
 #include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+
 namespace rtc::tsid {
 namespace {
 
@@ -585,6 +589,278 @@ TEST_F(FrictionConeTest, NormalLowPassConvergence) {
   cs.UpdateNormal(-1, n_target, 0.1);
   cs.UpdateNormal(99, n_target, 0.1);
   EXPECT_LT((cs.contacts[0].normal - n_before).norm(), 1e-15);
+}
+
+// ── Surface CoP axes follow the contact frame; normal-force bounds ──────────
+//
+// One surface contact, n = +Z, lx 0.12 ≠ ly 0.05, μ_τ 0.5, 4 faces. The cache's
+// contact placement is set by hand (no FK): a foot yawed +90°, or not.
+// Rows (11): [0..3] pyramid, [4] unilateral −f_n, [5,6] ±m_y − lx·f_n,
+// [7,8] ±m_x − ly·f_n, [9,10] ±m_z − μ_τ·f_n (all in contact-frame axes).
+class SurfaceFrameTest : public FrictionConeTest {
+ protected:
+  void SetUp() override {
+    FrictionConeTest::SetUp();
+    mgr_.contacts.resize(1);
+    mgr_.contacts[0].contact_dim = 6;
+    mgr_.contacts[0].friction_coeff = 0.7;
+    mgr_.contacts[0].friction_faces = 4;
+    mgr_.contacts[0].patch_half_length_x = 0.12;
+    mgr_.contacts[0].patch_half_length_y = 0.05;
+    mgr_.contacts[0].torsional_friction_coeff = 0.5;
+    mgr_.max_contacts = 1;
+    mgr_.max_contact_vars = 6;
+    cs_.Init(1);
+    cs_.contacts[0].active = true;
+    cs_.RecomputeActive(mgr_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(mgr_));
+    fc_.Init(*model_, info_, cache_, YAML::Node{});
+    fc_.SetContactManager(&mgr_);
+  }
+
+  void SetFrameRotation(const Eigen::Matrix3d& R) {
+    cache_.contact_frames[0].oMf = pinocchio::SE3(R, Eigen::Vector3d::Zero());
+  }
+
+  void Assemble() {
+    const int n_vars = info_.nv + 6;
+    C_.setZero(11, n_vars);
+    l_.setZero(11);
+    u_.setZero(11);
+    ASSERT_EQ(fc_.IneqDim(cs_), 11);
+    fc_.ComputeInequality(cache_, cs_, info_, n_vars, C_, l_, u_);
+  }
+
+  // C·z for z = [0_a | λ_world]
+  [[nodiscard]] Eigen::VectorXd Rows(const Eigen::Matrix<double, 6, 1>& lambda_world) const {
+    Eigen::VectorXd z = Eigen::VectorXd::Zero(info_.nv + 6);
+    z.tail(6) = lambda_world;
+    return C_ * z;
+  }
+
+  // Largest row excess over [l, u] (> 0 = violated).
+  [[nodiscard]] double Excess(const Eigen::Matrix<double, 6, 1>& lambda_world) const {
+    const Eigen::VectorXd r = Rows(lambda_world);
+    return std::max((r - u_).maxCoeff(), (l_ - r).maxCoeff());
+  }
+
+  static Eigen::Matrix<double, 6, 1> Wrench(double fx, double fy, double fz, double mx, double my,
+                                            double mz) {
+    Eigen::Matrix<double, 6, 1> w;
+    w << fx, fy, fz, mx, my, mz;
+    return w;
+  }
+
+  ContactManagerConfig mgr_;
+  ContactState cs_;
+  PinocchioCache cache_;
+  FrictionConeConstraint fc_;
+  Eigen::MatrixXd C_;
+  Eigen::VectorXd l_, u_;
+};
+
+// CoP x = +0.10 along the foot (inside lx 0.12): λ_local = [0,0,100, 0,−10,0];
+// in world axes with the foot yawed +90° that is [0,0,100, 10,0,0].
+TEST_F(SurfaceFrameTest, TheCopRectangleTurnsWithAYawedFoot) {
+  const Eigen::Matrix3d Rz90 =
+      Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  SetFrameRotation(Rz90);
+  Assemble();
+  const auto w = Wrench(0, 0, 100, 10, 0, 0);
+  EXPECT_LE(Excess(w), 1e-12);
+  // Margin 2 N·m on the foot's x rows: m_y_local = −10, lx·f_n = 12.
+  EXPECT_NEAR(Rows(w)(6), -2.0, 1e-12);
+
+  // The same world wrench on a foot that is NOT yawed: its y half-length 0.05
+  // is now along the world x moment → |m_x| 10 > 5, violated by 5.
+  SetFrameRotation(Eigen::Matrix3d::Identity());
+  Assemble();
+  EXPECT_NEAR(Excess(w), 5.0, 1e-12);
+}
+
+// The tangent basis read back from the rows is right-handed and orthonormal:
+// rows 7 / 5 carry t1 / t2 in the moment columns, row 4 carries −n.
+TEST_F(SurfaceFrameTest, TheBasisIsRightHandedAndTiltsWithTheNormal) {
+  SetFrameRotation(Eigen::AngleAxisd(0.7, Eigen::Vector3d::UnitZ()).toRotationMatrix());
+  cs_.contacts[0].normal = Eigen::Vector3d(0.2, -0.1, 1.0).normalized();
+  Assemble();
+  const int c = info_.nv;
+  Eigen::Matrix3d R;
+  R.col(0) = C_.block<1, 3>(7, c + 3).transpose();
+  R.col(1) = C_.block<1, 3>(5, c + 3).transpose();
+  R.col(2) = -C_.block<1, 3>(4, c).transpose();
+  EXPECT_NEAR(R.determinant(), 1.0, 1e-12);
+  EXPECT_TRUE((R.transpose() * R).isIdentity(1e-12));
+  EXPECT_LT((R.col(2) - cs_.contacts[0].normal).norm(), 1e-12);
+  // t1 is the frame's x projected on the plane ⊥ n.
+  const Eigen::Vector3d x = cache_.contact_frames[0].oMf.rotation().col(0);
+  const Eigen::Vector3d t1 = (x - R.col(2) * x.dot(R.col(2))).normalized();
+  EXPECT_LT((R.col(0) - t1).norm(), 1e-12);
+}
+
+// A frame whose x is (nearly) the normal: its y is projected instead.
+TEST_F(SurfaceFrameTest, AFrameXAlongTheNormalFallsBackToItsY) {
+  const Eigen::Matrix3d R_f =
+      Eigen::AngleAxisd(-M_PI / 2 + 0.01, Eigen::Vector3d::UnitY()).toRotationMatrix();
+  ASSERT_GT(R_f.col(0).z(), 0.99);
+  SetFrameRotation(R_f);
+  Assemble();
+  const int c = info_.nv;
+  Eigen::Matrix3d R;
+  R.col(0) = C_.block<1, 3>(7, c + 3).transpose();
+  R.col(1) = C_.block<1, 3>(5, c + 3).transpose();
+  R.col(2) = -C_.block<1, 3>(4, c).transpose();
+  EXPECT_TRUE(R.allFinite());
+  EXPECT_NEAR(R.determinant(), 1.0, 1e-12);
+  const Eigen::Vector3d y = R_f.col(1);
+  EXPECT_LT((R.col(1) - (y - R.col(2) * y.dot(R.col(2))).normalized()).norm(), 1e-12);
+}
+
+// Either side of the switch: a frame x whose projection ⊥ n is 0.11 long is
+// used (t1 along it); at 0.09 the frame's y is used instead.
+TEST_F(SurfaceFrameTest, TheFallbackSwitchesAtATenthOfTheFrameX) {
+  const int c = info_.nv;
+  for (const double proj : {0.11, 0.09}) {
+    // Frame x tilted towards +Z so that its horizontal part has length proj.
+    const double pitch = -std::acos(proj);  // about y: x → (cos, 0, −sin(pitch))
+    const Eigen::Matrix3d R_f =
+        Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()).toRotationMatrix();
+    ASSERT_NEAR(std::hypot(R_f(0, 0), R_f(1, 0)), proj, 1e-12);
+    SetFrameRotation(R_f);
+    Assemble();
+    const Eigen::Vector3d t1 = C_.block<1, 3>(7, c + 3).transpose();
+    if (proj > 0.1) {
+      EXPECT_LT((t1 - Eigen::Vector3d::UnitX()).norm(), 1e-12) << "x projection used";
+    } else {
+      // The y rule; with this frame (y = +Y) it also gives +X — the roll case
+      // below is where the two rules differ.
+      EXPECT_LT((t1 - Eigen::Vector3d::UnitY().cross(Eigen::Vector3d::UnitZ())).norm(), 1e-12);
+    }
+  }
+  // At 0.09 with the frame rolled about its x (y leaves the world Y axis),
+  // t1 follows y × n, not x's projection.
+  const Eigen::Matrix3d R_f = (Eigen::AngleAxisd(-std::acos(0.09), Eigen::Vector3d::UnitY()) *
+                               Eigen::AngleAxisd(0.6, Eigen::Vector3d::UnitX()))
+                                  .toRotationMatrix();
+  SetFrameRotation(R_f);
+  Assemble();
+  const Eigen::Vector3d n = Eigen::Vector3d::UnitZ();
+  const Eigen::Vector3d y_p = (R_f.col(1) - n * R_f.col(1).dot(n)).normalized();
+  const Eigen::Vector3d x_p = (R_f.col(0) - n * R_f.col(0).dot(n)).normalized();
+  const Eigen::Vector3d t1 = C_.block<1, 3>(7, c + 3).transpose();
+  EXPECT_LT((t1 - y_p.cross(n)).norm(), 1e-12);
+  EXPECT_GT((t1 - x_p).norm(), 0.1) << "control: the two rules give different t1 here";
+}
+
+// Without a cached placement for the contact the world-axis basis stands.
+TEST_F(SurfaceFrameTest, NoCachedPlacementKeepsTheWorldAxes) {
+  PinocchioCache bare;
+  bare.Init(model_, {});
+  const int n_vars = info_.nv + 6;
+  Eigen::MatrixXd C = Eigen::MatrixXd::Zero(11, n_vars);
+  Eigen::VectorXd l = Eigen::VectorXd::Zero(11), u = l;
+  fc_.ComputeInequality(bare, cs_, info_, n_vars, C, l, u);
+  EXPECT_DOUBLE_EQ(C(7, n_vars - 3), 1.0);  // +m_x row on the world x moment
+  EXPECT_DOUBLE_EQ(C(5, n_vars - 2), 1.0);  // +m_y row on the world y moment
+}
+
+// Point contacts keep the world-normal basis whatever the frame's yaw.
+TEST_F(FrictionConeTest, PointRowsIgnoreTheFrameYaw) {
+  ContactManagerConfig mgr;
+  mgr.contacts.resize(1);
+  mgr.contacts[0].contact_dim = 3;
+  mgr.contacts[0].friction_coeff = 0.5;
+  mgr.contacts[0].friction_faces = 8;
+  mgr.max_contacts = 1;
+  mgr.max_contact_vars = 3;
+  ContactState cs;
+  cs.Init(1);
+  cs.contacts[0].active = true;
+  cs.RecomputeActive(mgr);
+  PinocchioCache cache;
+  cache.Init(model_, rtc::tsid::ContactFrameIds(mgr));
+  FrictionConeConstraint fc;
+  fc.Init(*model_, info_, cache, YAML::Node{});
+  fc.SetContactManager(&mgr);
+  const int n_vars = info_.nv + 3;
+  Eigen::MatrixXd C0 = Eigen::MatrixXd::Zero(9, n_vars), C1 = C0;
+  Eigen::VectorXd l0 = Eigen::VectorXd::Zero(9), u0 = l0, l1 = l0, u1 = l0;
+  fc.ComputeInequality(cache, cs, info_, n_vars, C0, l0, u0);
+  cache.contact_frames[0].oMf = pinocchio::SE3(
+      Eigen::AngleAxisd(1.1, Eigen::Vector3d::UnitZ()).toRotationMatrix(), Eigen::Vector3d::Zero());
+  fc.ComputeInequality(cache, cs, info_, n_vars, C1, l1, u1);
+  EXPECT_EQ(C0, C1);
+  EXPECT_EQ(l0, l1);
+  EXPECT_EQ(u0, u1);
+}
+
+// activation·min ≤ f_n ≤ max on the unilateral row (row 4 = −f_n), and the
+// yaw-moment rows at μ_τ·f_n.
+TEST_F(SurfaceFrameTest, NormalForceBoundsAndYawMomentEdges) {
+  mgr_.contacts[0].normal_force_min = 20.0;
+  mgr_.contacts[0].normal_force_max = 300.0;
+  SetFrameRotation(Eigen::Matrix3d::Identity());
+  Assemble();
+  EXPECT_DOUBLE_EQ(l_(4), -300.0);
+  EXPECT_DOUBLE_EQ(u_(4), -20.0);
+  const double e = 1e-9;
+  const auto at = [&](double fn) { return Rows(Wrench(0, 0, fn, 0, 0, 0))(4); };
+  EXPECT_GT(at(20.0 - e), u_(4));  // below the floor
+  EXPECT_LE(at(20.0), u_(4));
+  EXPECT_GE(at(300.0), l_(4));
+  EXPECT_LT(at(300.0 + e), l_(4));  // above the ceiling
+  // |m_z| ≤ μ_τ·f_n: rows 9 / 10.
+  EXPECT_LE(Rows(Wrench(0, 0, 100, 0, 0, 50.0 - e))(9), u_(9));
+  EXPECT_GT(Rows(Wrench(0, 0, 100, 0, 0, 50.0 + e))(9), u_(9));
+  EXPECT_GT(Rows(Wrench(0, 0, 100, 0, 0, -50.0 - e))(10), u_(10));
+
+  // The floor follows the activation ramp.
+  cs_.contacts[0].activation = 0.5;
+  Assemble();
+  EXPECT_DOUBLE_EQ(u_(4), -10.0);
+  EXPECT_DOUBLE_EQ(l_(4), -300.0);
+}
+
+// The defaults (0 / +∞) leave the unilateral row exactly as before.
+TEST_F(SurfaceFrameTest, DefaultBoundsKeepTheUnboundedRow) {
+  SetFrameRotation(Eigen::Matrix3d::Identity());
+  Assemble();
+  EXPECT_EQ(l_(4), -1e10);
+  EXPECT_EQ(u_(4), 0.0);
+  EXPECT_FALSE(std::signbit(u_(4)));
+}
+
+TEST_F(FrictionConeTest, NormalForceBoundsAreCheckedOnLoad) {
+  const auto load = [&](double lo, double hi) {
+    YAML::Node cfg;
+    YAML::Node c;
+    c["name"] = "c0";
+    c["frame"] = "panda_link8";
+    c["type"] = "surface";
+    c["normal_force_min"] = lo;
+    c["normal_force_max"] = hi;
+    cfg["contacts"].push_back(c);
+    ContactManagerConfig mgr;
+    mgr.Load(cfg, *model_);
+    return mgr;
+  };
+  EXPECT_THROW(load(-1.0, 10.0), std::invalid_argument);
+  EXPECT_THROW(load(50.0, 10.0), std::invalid_argument);
+  EXPECT_THROW(load(std::numeric_limits<double>::quiet_NaN(), 10.0), std::invalid_argument);
+  const ContactManagerConfig ok = load(10.0, 50.0);
+  EXPECT_DOUBLE_EQ(ok.contacts[0].normal_force_min, 10.0);
+  EXPECT_DOUBLE_EQ(ok.contacts[0].normal_force_max, 50.0);
+
+  // Absent keys: 0 and +∞.
+  YAML::Node cfg;
+  YAML::Node c;
+  c["name"] = "c0";
+  c["frame"] = "panda_link8";
+  cfg["contacts"].push_back(c);
+  ContactManagerConfig mgr;
+  mgr.Load(cfg, *model_);
+  EXPECT_EQ(mgr.contacts[0].normal_force_min, 0.0);
+  EXPECT_TRUE(std::isinf(mgr.contacts[0].normal_force_max));
 }
 
 }  // namespace

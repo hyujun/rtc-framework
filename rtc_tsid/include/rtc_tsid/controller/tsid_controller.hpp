@@ -22,9 +22,9 @@ class TSIDController final : public ControllerBase {
   void Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
             const YAML::Node& config) override;
 
-  [[nodiscard]] CommandOutput Compute(const ControlState& state, const ControlReference& ref,
-                                      const PinocchioCache& cache,
-                                      const ContactState& contacts) noexcept override;
+  [[nodiscard]] const CommandOutput& Compute(const ControlState& state, const ControlReference& ref,
+                                             const PinocchioCache& cache,
+                                             const ContactState& contacts) noexcept override;
 
   void Reset() noexcept override;
 

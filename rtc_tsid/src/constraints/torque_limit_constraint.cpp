@@ -80,8 +80,10 @@ void TorqueLimitConstraint::ComputeInequality(const PinocchioCache& cache,
 
       const auto& Jc = cache.contact_frames[i].J;
 
+      // −S·Jcᵀ, not −(S·Jcᵀ): a negated product is evaluated into a heap
+      // temporary, a negated factor is folded into the GEMM (same bits).
       C_block.block(0, nv_ + lambda_offset, na_, cdim).noalias() =
-          -(robot_info.S * Jc.topRows(cdim).transpose());
+          -robot_info.S * Jc.topRows(cdim).transpose();
 
       lambda_offset += cdim;
     }

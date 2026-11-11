@@ -2,6 +2,8 @@
 
 #include "rtc_tsid/core/constraint_base.hpp"
 
+#include <vector>
+
 namespace rtc::tsid {
 
 // ────────────────────────────────────────────────
@@ -16,7 +18,8 @@ namespace rtc::tsid {
 // Velocity limit → acceleration bound  (v⁺ = v + a·dt):
 //   a_i ≥ (v_min_i - v_i) / dt
 //   a_i ≤ (v_max_i - v_i) / dt
-// Row i: l_i = max(pos_lb, vel_lb), u_i = min(pos_ub, vel_ub); C = [I_nv | 0].
+// One row per actuated joint: l_i = max(pos_lb, vel_lb), u_i = min(pos_ub,
+// vel_ub), C row i = e_(n_base + i) (C = [I_nv | 0] on a fixed base).
 //
 // Inside the position-margin band the two cross (l_i > u_i). The row is then
 // collapsed onto the velocity bound it crossed (l = u = vel_lb at the upper
@@ -31,7 +34,9 @@ namespace rtc::tsid {
 // position reference — a joint parked at that margin otherwise sits in this
 // band on every tick.
 //
-// Floating-base: the first 6 DoF are unconstrained (l = -∞, u = +∞).
+// Floating-base: the six free-flyer DoF get no row (IneqDim = nv − 6). Init
+// requires every non-root joint (every joint on a fixed base) to be 1-DoF, so
+// joint i's q and v entries pair up; anything else throws.
 // ────────────────────────────────────────────────
 class JointLimitConstraint final : public ConstraintBase {
  public:
@@ -62,23 +67,25 @@ class JointLimitConstraint final : public ConstraintBase {
 
  private:
   int nv_{0};
+  int n_base_{0};  // velocity rows without a limit: 6 on a floating base, else 0
+  int n_rows_{0};  // nv − n_base
   int inverted_count_{0};
-  bool floating_base_{false};
+  std::vector<int> q_index_;  // [n_rows] q entry of row i
 
   double dt_{0.002};         // 제어 주기 (s)
   double margin_pos_{0.05};  // position limit margin (rad)
   double margin_vel_{0.1};   // velocity limit margin (rad/s)
 
-  Eigen::VectorXd q_min_;        // [nv] (margin 적용 후)
-  Eigen::VectorXd q_max_;        // [nv] (margin 적용 후)
-  Eigen::VectorXd v_min_;        // [nv] (margin 적용 후, = -v_max + margin)
-  Eigen::VectorXd v_max_limit_;  // [nv] (margin 적용 후, = v_max - margin)
+  Eigen::VectorXd q_min_;        // [n_rows] (margin 적용 후)
+  Eigen::VectorXd q_max_;        // [n_rows] (margin 적용 후)
+  Eigen::VectorXd v_min_;        // [n_rows] (margin 적용 후, = -v_max + margin)
+  Eigen::VectorXd v_max_limit_;  // [n_rows] (margin 적용 후, = v_max - margin)
 
   // Pre-allocated workspace
-  Eigen::VectorXd a_pos_lb_;  // [nv]
-  Eigen::VectorXd a_pos_ub_;  // [nv]
-  Eigen::VectorXd a_vel_lb_;  // [nv]
-  Eigen::VectorXd a_vel_ub_;  // [nv]
+  Eigen::VectorXd a_pos_lb_;  // [n_rows]
+  Eigen::VectorXd a_pos_ub_;  // [n_rows]
+  Eigen::VectorXd a_vel_lb_;  // [n_rows]
+  Eigen::VectorXd a_vel_ub_;  // [n_rows]
 };
 
 }  // namespace rtc::tsid

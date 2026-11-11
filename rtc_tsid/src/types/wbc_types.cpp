@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 // #unified-kindyn Phase 1: PinocchioCache::Update 이관으로 algorithm 헤더는 불필요.
@@ -12,8 +13,11 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/multibody/joint/joint-free-flyer.hpp>
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
+
+#include <string>
 
 namespace rtc::tsid {
 
@@ -24,23 +28,24 @@ void RobotModelInfo::Build(const pinocchio::Model& model, const YAML::Node& conf
   nq = model.nq;
   nv = model.nv;
 
-  // Floating base 판별: YAML 우선, 없으면 모델로부터 추론
-  if (config && config["floating_base"]) {
-    floating_base = config["floating_base"].as<bool>();
-  } else {
-    // Pinocchio: floating-base 모델의 첫 joint가 freeflyer (nq=7, nv=6)
-    floating_base =
-        (model.joints.size() > 1 && model.joints[1].nq() == 7 && model.joints[1].nv() == 6);
-  }
+  // Floating base ⇔ the root joint is a free-flyer — the joint type, not its
+  // nq / nv (a composite 7/6 root is not a free-flyer). Everything after the
+  // root is actuated. YAML floating_base / n_actuated are not overrides: when
+  // given they must agree with the model (non-RT, throws).
+  floating_base = model.joints.size() > 1 &&
+                  model.joints[1].shortname() == pinocchio::JointModelFreeFlyer::classname();
+  n_actuated = floating_base ? nv - 6 : nv;
 
-  if (floating_base) {
-    n_actuated = nv - 6;
-  } else {
-    n_actuated = nv;
+  if (config && config["floating_base"] && config["floating_base"].as<bool>() != floating_base) {
+    throw std::invalid_argument(
+        std::string("RobotModelInfo: YAML floating_base disagrees with the model, whose root "
+                    "joint is ") +
+        (model.joints.size() > 1 ? model.joints[1].shortname() : std::string("absent")));
   }
-
-  if (config && config["n_actuated"]) {
-    n_actuated = config["n_actuated"].as<int>();
+  if (config && config["n_actuated"] && config["n_actuated"].as<int>() != n_actuated) {
+    throw std::invalid_argument("RobotModelInfo: YAML n_actuated " +
+                                std::to_string(config["n_actuated"].as<int>()) +
+                                " disagrees with the model's " + std::to_string(n_actuated));
   }
 
   // Selection matrix S: [n_actuated × nv]
@@ -136,6 +141,15 @@ void ContactManagerConfig::Load(const YAML::Node& config, const pinocchio::Model
     cc.patch_half_length_x = c["patch_half_length_x"].as<double>(0.0);
     cc.patch_half_length_y = c["patch_half_length_y"].as<double>(0.0);
     cc.torsional_friction_coeff = c["torsional_friction_coeff"].as<double>(0.0);
+
+    // Normal-force bounds (both contact types). 0 ≤ min ≤ max, min finite.
+    cc.normal_force_min = c["normal_force_min"].as<double>(0.0);
+    cc.normal_force_max = c["normal_force_max"].as<double>(std::numeric_limits<double>::infinity());
+    if (!(std::isfinite(cc.normal_force_min) && cc.normal_force_min >= 0.0 &&
+          cc.normal_force_max >= cc.normal_force_min)) {
+      throw std::invalid_argument("Contact '" + cc.name +
+                                  "': need 0 <= normal_force_min <= normal_force_max");
+    }
 
     // Stage A-4: optional `normal: [x, y, z]` world-frame seed. Default
     // (0, 0, 1) preserves pre-A-4 fixed-normal cone behaviour.
