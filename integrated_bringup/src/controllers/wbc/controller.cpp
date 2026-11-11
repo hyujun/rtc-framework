@@ -704,10 +704,8 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
                     "(or friction_faces/n_faces) with different values — the explicit "
                     "friction_coeff/friction_faces wins");
       }
-      int max_cone_rows = 0;
+      const int max_cone_rows = rtc::tsid::FrictionConeConstraint{}.MaxIneqDim(contact_mgr_config_);
       for (const auto& cc : contact_mgr_config_.contacts) {
-        // Per FrictionConeConstraint: point = n_faces+1, surface = n_faces+7.
-        max_cone_rows += cc.friction_faces + (cc.contact_dim == 6 ? 7 : 1);
         RCLCPP_INFO(logger_, "[wbc] contact '%s': mu=%.3f n_faces=%d (%s)", cc.name.c_str(),
                     cc.friction_coeff, cc.friction_faces,
                     cc.contact_dim == 6 ? "surface" : "point");

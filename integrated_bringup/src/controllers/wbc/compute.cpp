@@ -1490,15 +1490,17 @@ void DemoWbcController::FillWbcDiagLogPod(const ControllerState& state,
   pod.clik_manipulability = clik_manip_;
   // Dynamic QP failure classification (#551). joint_box_inverted is read
   // through the non-owning constraint view; −1 when the constraint is absent,
-  // preset-inactive, or no QP was attempted this tick (qp_status −1: HQP with
-  // no active task returns before assembling) — in all three the count would
-  // be stale. Plain int reads on the RT thread, no allocation.
+  // preset-inactive, or no QP was assembled whole this tick (qp_status −1: HQP
+  // with no active task returns before assembling; kRowBudgetExceeded: a
+  // constraint's rows were dropped, possibly joint_limit's) — in all of these
+  // the count would be stale. Plain int reads on the RT thread, no allocation.
   pod.qp_status = tsid_output_.qp_status;
   pod.qp_iterations = tsid_output_.qp_iterations;
-  pod.joint_box_inverted = (joint_limit_constraint_ != nullptr &&
-                            joint_limit_constraint_->IsActive() && tsid_output_.qp_status != -1)
-                               ? joint_limit_constraint_->InvertedCount()
-                               : -1;
+  pod.joint_box_inverted =
+      (joint_limit_constraint_ != nullptr && joint_limit_constraint_->IsActive() &&
+       tsid_output_.qp_status != -1 && tsid_output_.qp_status != rtc::tsid::kRowBudgetExceeded)
+          ? joint_limit_constraint_->InvertedCount()
+          : -1;
   // lambda_opt is the fixed-dim QP contact solution (size == max_contact_vars,
   // matching the header's λ column count registered in on_configure).
   const auto& lam = tsid_output_.lambda_opt;
