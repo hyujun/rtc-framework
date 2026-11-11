@@ -9,7 +9,7 @@ namespace rtc::tsid {
 void JointLimitConstraint::Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
                                 PinocchioCache& /*cache*/, const YAML::Node& constraint_config) {
   nv_ = robot_info.nv;
-  n_base_ = robot_info.floating_base ? 6 : 0;
+  n_base_ = robot_info.n_base_v;
   n_rows_ = nv_ - n_base_;
 
   // YAML config
@@ -34,7 +34,8 @@ void JointLimitConstraint::Init(const pinocchio::Model& model, const RobotModelI
     throw std::invalid_argument("joint_limit: RobotModelInfo does not match the model");
   }
   q_index_.assign(static_cast<size_t>(n_rows_), -1);
-  const std::size_t first = robot_info.floating_base ? 2 : 1;
+  // A root to skip ⇔ base rows (n_base_ > 0): one field decides both.
+  const std::size_t first = n_base_ > 0 ? 2 : 1;
   for (std::size_t k = first; k < model.joints.size(); ++k) {
     const auto& j = model.joints[k];
     if (j.nq() != 1 || j.nv() != 1) {

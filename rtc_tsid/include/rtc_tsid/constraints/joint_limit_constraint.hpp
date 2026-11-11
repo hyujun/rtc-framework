@@ -34,7 +34,7 @@ namespace rtc::tsid {
 // position reference — a joint parked at that margin otherwise sits in this
 // band on every tick.
 //
-// Floating-base: the six free-flyer DoF get no row (IneqDim = nv − 6). Init
+// Floating-base: the free-flyer's DoF get no row (IneqDim = nv − n_base_v). Init
 // requires every non-root joint (every joint on a fixed base) to be 1-DoF, so
 // joint i's q and v entries pair up; anything else throws.
 // ────────────────────────────────────────────────
@@ -67,7 +67,7 @@ class JointLimitConstraint final : public ConstraintBase {
 
  private:
   int nv_{0};
-  int n_base_{0};  // velocity rows without a limit: 6 on a floating base, else 0
+  int n_base_{0};  // velocity rows without a limit: RobotModelInfo::n_base_v
   int n_rows_{0};  // nv − n_base
   int inverted_count_{0};
   std::vector<int> q_index_;  // [n_rows] q entry of row i

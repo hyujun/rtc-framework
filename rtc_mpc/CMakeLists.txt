@@ -26,6 +26,7 @@ endif()
 # ── Dependencies ─────────────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
 find_package(rtc_base REQUIRED)
+find_package(rtc_urdf_bridge REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -85,6 +86,7 @@ target_link_libraries(rtc_mpc PUBLIC
 
 ament_target_dependencies(rtc_mpc PUBLIC
   rtc_base
+  rtc_urdf_bridge  # the free-flyer root rule shared with rtc_tsid (#1016)
 )
 
 # ── RT tracing (opt-in) ──────────────────────────────────────────────────────
@@ -120,7 +122,7 @@ install(EXPORT rtc_mpcTargets
 
 ament_export_targets(rtc_mpcTargets)
 ament_export_include_directories(include)
-ament_export_dependencies(rtc_base Eigen3 yaml-cpp pinocchio fmt aligator)
+ament_export_dependencies(rtc_base rtc_urdf_bridge Eigen3 yaml-cpp pinocchio fmt aligator)
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)

@@ -51,6 +51,8 @@ add_library(${PROJECT_NAME} SHARED
   src/inertial_validation.cpp
   src/rt_model_handle.cpp
   src/xacro_processor.cpp
+  # The one free-flyer root rule rtc_tsid and rtc_mpc share (#1016)
+  src/free_flyer_root.cpp
   # Unified kin&dyn 솔버 캐시 (rtc_tsid 에서 이관 — #unified-kindyn Phase 1)
   src/pinocchio_cache.cpp
   # Extended-URDF closed-chain (sidecar) — 로드 타임 계층
@@ -154,6 +156,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_model_builder test/test_model_builder.cpp)
   target_link_libraries(test_model_builder ${PROJECT_NAME})
+
+  ament_add_gtest(test_free_flyer_root test/test_free_flyer_root.cpp)
+  target_link_libraries(test_free_flyer_root ${PROJECT_NAME})
 
   ament_add_gtest(test_load_model_config test/test_load_model_config.cpp)
   target_link_libraries(test_load_model_config ${PROJECT_NAME})

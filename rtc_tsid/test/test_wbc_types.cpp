@@ -33,6 +33,8 @@ TEST_F(RobotModelInfoTest, PandaFixedBase) {
   EXPECT_EQ(info.nq, model_.nq);
   EXPECT_EQ(info.nv, model_.nv);
   EXPECT_FALSE(info.floating_base);
+  EXPECT_EQ(info.n_base_q, 0);
+  EXPECT_EQ(info.n_base_v, 0);
   EXPECT_EQ(info.n_actuated, info.nv);
 
   // S = Identity for fixed-base
@@ -56,6 +58,11 @@ TEST_F(RobotModelInfoTest, FreeFlyerRootIsFloating) {
   EXPECT_EQ(info.nq, test::kG1Nq);
   EXPECT_EQ(info.nv, test::kG1Nv);
   EXPECT_EQ(info.n_actuated, test::kG1Actuated);
+  // The base sizes are the root joint's own, and the actuated count follows.
+  EXPECT_EQ(info.n_base_q, g1->joints[1].nq());
+  EXPECT_EQ(info.n_base_v, g1->joints[1].nv());
+  EXPECT_EQ(info.n_base_q, test::kG1Nq - test::kG1Actuated);
+  EXPECT_EQ(info.n_base_v, test::kG1Nv - test::kG1Actuated);
   ASSERT_EQ(info.S.rows(), test::kG1Actuated);
   ASSERT_EQ(info.S.cols(), test::kG1Nv);
   EXPECT_TRUE(info.S.leftCols(6).isZero());
@@ -72,6 +79,8 @@ TEST_F(RobotModelInfoTest, CompositeRootWithFreeFlyerDimensionsIsNotFloating) {
   RobotModelInfo info;
   info.Build(*m, YAML::Node{});
   EXPECT_FALSE(info.floating_base);
+  EXPECT_EQ(info.n_base_q, 0);
+  EXPECT_EQ(info.n_base_v, 0);
   EXPECT_EQ(info.n_actuated, m->nv);
 }
 

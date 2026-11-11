@@ -168,7 +168,9 @@ TEST_F(FloatingEomTest, InitRejectsWhatTheBaseRowsDoNotDescribe) {
   RobotModelInfo fake;
   fake.Build(*composite, YAML::Node{});
   fake.floating_base = true;
-  fake.n_actuated = composite->nv - 6;
+  fake.n_base_q = composite->joints[1].nq();  // 7 / 6: a free-flyer's sizes
+  fake.n_base_v = composite->joints[1].nv();
+  fake.n_actuated = composite->nv - fake.n_base_v;
   fake.S.setZero(fake.n_actuated, composite->nv);
   fake.S.rightCols(fake.n_actuated).setIdentity();
   PinocchioCache composite_cache;

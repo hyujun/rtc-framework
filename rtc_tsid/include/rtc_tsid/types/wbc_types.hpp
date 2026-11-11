@@ -37,8 +37,10 @@ namespace rtc::tsid {
 struct RobotModelInfo {
   int nq{0};          // generalized coordinate dim
   int nv{0};          // generalized velocity dim
-  int n_actuated{0};  // actuated DoF count
+  int n_actuated{0};  // actuated DoF count = nv − n_base_v
   bool floating_base{false};
+  int n_base_q{0};  // the free-flyer root's configuration entries (7), else 0
+  int n_base_v{0};  // its tangent entries (6) — the unactuated rows — else 0
 
   Eigen::MatrixXd S;        // [n_actuated × nv] selection matrix
   Eigen::VectorXd tau_max;  // [n_actuated]
@@ -47,10 +49,12 @@ struct RobotModelInfo {
   Eigen::VectorXd q_lower;  // [nq]
   Eigen::VectorXd v_max;    // [nv]
 
-  // Pinocchio model + YAML config로부터 구성. floating_base = the root joint
-  // (joints[1]) is a free-flyer; n_actuated = nv − 6 then, else nv. Optional
-  // YAML `floating_base` / `n_actuated` are checked against that — a mismatch
-  // throws std::invalid_argument (init only).
+  // Pinocchio model + YAML config로부터 구성. floating_base =
+  // rtc_urdf_bridge::IsFreeFlyerRoot (the root joint's type, the rule rtc_mpc
+  // uses too); n_base_q / n_base_v are then kFreeFlyerNq / kFreeFlyerNv and
+  // n_actuated = nv − n_base_v. Optional YAML `floating_base` / `n_actuated`
+  // are checked against that — a mismatch throws std::invalid_argument (init
+  // only).
   void Build(const pinocchio::Model& model, const YAML::Node& config);
 };
 

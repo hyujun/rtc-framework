@@ -2,8 +2,9 @@
 //
 // The WBC stack hands rtc_mpc's floating state ([p, q_xyzw, q_j] and a LOCAL
 // base twist, WbLayout) to rtc_tsid's PinocchioCache, and both packages decide
-// "floating" on their own. This package is the first that sees both, so the
-// agreement is held here:
+// "floating" through rtc_urdf_bridge::IsFreeFlyerRoot (#1016). This package is
+// the first that sees both, so the agreement is still held here, against the
+// day one of them stops calling it:
 //
 //   * rtc::mpc::IsFloatingBaseModel == RobotModelInfo::Build().floating_base
 //     on the public G1 with a free-flyer root (true), with no root joint
