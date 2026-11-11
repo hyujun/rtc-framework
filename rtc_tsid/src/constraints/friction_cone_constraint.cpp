@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace rtc::tsid {
 
@@ -59,8 +60,8 @@ constexpr std::int8_t kBranchY = 2;
 // n, its y is projected instead and t1 = t2 × n. R_c = [t1 | t2 | n] is
 // right-handed (t2 = n × t1). Never the +Z short-circuit: on flat ground that
 // would put the rectangle on the world axes whatever the foot's yaw.
-// The two rules' t1 differ by up to 90° about n (it depends on the frame's
-// roll about n), so which one is used has hysteresis in `branch` (the
+// The two rules' t1 can differ by any angle up to 180° about n (it depends
+// on which way the frame's x leans off n), so which one is used has hysteresis in `branch` (the
 // contact's last rule; see the class comment): the x rule holds down to a
 // projection of kSurfaceBasisXToY, the y rule up to kSurfaceBasisYToX, and a
 // contact without a branch splits at kSurfaceBasisFresh. On the y branch the
@@ -71,6 +72,12 @@ inline void BuildSurfaceBasis(const Eigen::Vector3d& n_in, const Eigen::Matrix3d
   const Eigen::Vector3d n = (nn > 1e-9) ? Eigen::Vector3d(n_in / nn) : Eigen::Vector3d::UnitZ();
   Eigen::Vector3d t1 = oRf.col(0) - n * oRf.col(0).dot(n);
   const double len = t1.norm();
+  if (!std::isfinite(len)) {
+    // A non-finite frame or normal: the rows go non-finite so the solve fails
+    // (never laundered), and the contact's branch is kept as it was.
+    R_c.setConstant(std::numeric_limits<double>::quiet_NaN());
+    return;
+  }
   bool use_x = false;
   if (branch == kBranchX) {
     use_x = len >= FrictionConeConstraint::kSurfaceBasisXToY;
@@ -193,9 +200,12 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& cache,
     // Build contact basis from the runtime-filtered normal (surface: and the
     // contact frame's tangent axes).
     bool is_plus_z = false;
-    if (cdim == 6 && i < cache.contact_frames.size() && i < surface_branch_.size()) {
-      BuildSurfaceBasis(contacts.contacts[i].normal, cache.contact_frames[i].oMf.rotation(),
-                        surface_branch_[i], R_c);
+    if (cdim == 6 && i < cache.contact_frames.size()) {
+      // No stored branch (not reachable through SetContactManager): fresh rule.
+      std::int8_t no_branch = kBranchNone;
+      std::int8_t& branch = i < surface_branch_.size() ? surface_branch_[i] : no_branch;
+      BuildSurfaceBasis(contacts.contacts[i].normal, cache.contact_frames[i].oMf.rotation(), branch,
+                        R_c);
     } else {
       is_plus_z = BuildContactBasis(contacts.contacts[i].normal, R_c);
     }

@@ -37,6 +37,8 @@ namespace rtc::tsid {
 // (0.12). A contact without a branch yet — first tick, or the first active
 // tick after being inactive — splits at kSurfaceBasisFresh (0.1). No blend:
 // the two rules' t1 can point up to 180° apart, where an average vanishes.
+// A non-finite frame keeps the contact's branch (and makes its rows
+// non-finite, so the solve fails).
 // The branch is the constraint's own state, sized in SetContactManager (init)
 // and written in place on the tick (RT-safe).
 // ────────────────────────────────────────────────

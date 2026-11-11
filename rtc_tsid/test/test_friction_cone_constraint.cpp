@@ -863,6 +863,19 @@ TEST_F(SurfaceBasisHysteresisTest, AContactBackFromInactivePicksItsBasisAfresh) 
   EXPECT_FALSE(IsXRule(T1At(0.09), 0.09)) << "back from inactive: split at 0.1 again";
 }
 
+// A non-finite frame for a tick makes the rows non-finite (the solve fails on
+// it) but leaves the contact's branch: back on the x branch at 0.09 it stays x.
+TEST_F(SurfaceBasisHysteresisTest, ANonFiniteFrameKeepsTheBranch) {
+  fc_.SetContactManager(&mgr_);
+  ASSERT_TRUE(IsXRule(T1At(0.11), 0.11));
+  Eigen::Matrix3d bad = Frame(0.09);
+  bad(0, 0) = std::numeric_limits<double>::quiet_NaN();
+  SetFrameRotation(bad);
+  Assemble();
+  EXPECT_FALSE(C_.allFinite()) << "a NaN frame must reach the rows";
+  EXPECT_TRUE(IsXRule(T1At(0.09), 0.09)) << "the NaN tick must not move the branch";
+}
+
 // Without a cached placement for the contact the world-axis basis stands.
 TEST_F(SurfaceFrameTest, NoCachedPlacementKeepsTheWorldAxes) {
   PinocchioCache bare;
