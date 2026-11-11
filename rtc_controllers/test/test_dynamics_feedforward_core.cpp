@@ -298,7 +298,8 @@ TEST(DynamicsFeedforwardLaw, ComputeIsAllocationFree) {
 TEST(DynamicsFeedforwardParams, ParsesEveryKey) {
   DynamicsFeedforwardParams p;
   ParseDynamicsFeedforwardParams(
-      YAML::Load("enabled: false\ngain: 0.8\ninertia_gain: 0.6\nmax_abs: 0.12"), "gravity_ff", p);
+      YAML::Load("enabled: false\ngravity_gain: 0.8\ninertia_gain: 0.6\nmax_abs: 0.12"),
+      "dynamics_feedforward", p);
   EXPECT_FALSE(p.enabled);
   EXPECT_DOUBLE_EQ(p.gravity_gain, 0.8);
   EXPECT_DOUBLE_EQ(p.inertia_gain, 0.6);
@@ -310,7 +311,7 @@ TEST(DynamicsFeedforwardParams, AbsentOptionalKeysKeepTheSeed) {
   p.enabled = false;
   p.gravity_gain = 0.3;
   p.inertia_gain = 0.7;
-  ParseDynamicsFeedforwardParams(YAML::Load("max_abs: 0.2"), "gravity_ff", p);
+  ParseDynamicsFeedforwardParams(YAML::Load("max_abs: 0.2"), "dynamics_feedforward", p);
   EXPECT_FALSE(p.enabled);
   EXPECT_DOUBLE_EQ(p.gravity_gain, 0.3);
   EXPECT_DOUBLE_EQ(p.inertia_gain, 0.7);
@@ -321,22 +322,54 @@ TEST(DynamicsFeedforwardParams, AbsentOptionalKeysKeepTheSeed) {
 
 TEST(DynamicsFeedforwardParams, MaxAbsIsRequired) {
   DynamicsFeedforwardParams p;
-  EXPECT_THROW(
-      ParseDynamicsFeedforwardParams(YAML::Load("enabled: true\ngain: 1.0"), "gravity_ff", p),
-      std::runtime_error);
+  EXPECT_THROW(ParseDynamicsFeedforwardParams(YAML::Load("enabled: true\ngravity_gain: 1.0"),
+                                              "dynamics_feedforward", p),
+               std::runtime_error);
 }
 
 TEST(DynamicsFeedforwardParams, TheBlockItselfIsRequired) {
   DynamicsFeedforwardParams p;
   const YAML::Node cfg = YAML::Load("other: 1");
-  EXPECT_THROW(ParseDynamicsFeedforwardParams(cfg["gravity_ff"], "gravity_ff", p),
-               std::runtime_error);
+  EXPECT_THROW(
+      ParseDynamicsFeedforwardParams(cfg["dynamics_feedforward"], "dynamics_feedforward", p),
+      std::runtime_error);
   // A default-constructed node (what an absent config file yields) is refused
   // the same way — it is Null, not a map.
-  EXPECT_THROW(ParseDynamicsFeedforwardParams(YAML::Node{}, "gravity_ff", p), std::runtime_error);
-  // And a scalar where a map is expected.
-  EXPECT_THROW(ParseDynamicsFeedforwardParams(YAML::Load("0.1"), "gravity_ff", p),
+  EXPECT_THROW(ParseDynamicsFeedforwardParams(YAML::Node{}, "dynamics_feedforward", p),
                std::runtime_error);
+  // And a scalar where a map is expected.
+  EXPECT_THROW(ParseDynamicsFeedforwardParams(YAML::Load("0.1"), "dynamics_feedforward", p),
+               std::runtime_error);
+}
+
+// Only the schema's keys: a misspelt or renamed key (the gravity gain was
+// `gain`) would leave its term at the seed without a word. The Coriolis gain
+// is refused too — the law has the slot, the schema grows the key with a
+// binding that ships the term. The check runs before any value is read.
+TEST(DynamicsFeedforwardParams, AKeyOutsideTheSchemaIsRefused) {
+  for (const char* key : {"gain", "coriolis_gain", "max_torque"}) {
+    DynamicsFeedforwardParams p;
+    const std::string yaml = std::string(key) + ": 0.5\nmax_abs: 0.1";
+    try {
+      ParseDynamicsFeedforwardParams(YAML::Load(yaml), "dynamics_feedforward", p);
+      ADD_FAILURE() << key << ": expected a throw";
+    } catch (const std::runtime_error& e) {
+      const std::string want = std::string("dynamics_feedforward.") + key + " is not a key";
+      EXPECT_NE(std::string(e.what()).find(want), std::string::npos) << e.what();
+    }
+  }
+  // Ahead of the max_abs check: the unknown key is named even with no bound.
+  DynamicsFeedforwardParams p;
+  try {
+    ParseDynamicsFeedforwardParams(YAML::Load("gain: 1.0"), "k", p);
+    ADD_FAILURE() << "expected a throw";
+  } catch (const std::runtime_error& e) {
+    EXPECT_NE(std::string(e.what()).find("k.gain is not a key"), std::string::npos) << e.what();
+  }
+  // Every key of the schema together is accepted.
+  EXPECT_NO_THROW(ParseDynamicsFeedforwardParams(
+      YAML::Load("enabled: true\ngravity_gain: 0.8\ninertia_gain: 0.6\nmax_abs: 0.12"), "k", p));
+  EXPECT_DOUBLE_EQ(p.gravity_gain, 0.8);
 }
 
 TEST(DynamicsFeedforwardParams, MaxAbsMustBePositiveAndFinite) {
@@ -354,17 +387,20 @@ TEST(DynamicsFeedforwardParams, MaxAbsMustBePositiveAndFinite) {
 
 TEST(DynamicsFeedforwardParams, GainIsBoundedOnBothSides) {
   DynamicsFeedforwardParams p;
-  EXPECT_THROW(ParseDynamicsFeedforwardParams(YAML::Load("gain: -0.01\nmax_abs: 0.1"), "k", p),
-               std::runtime_error);
+  EXPECT_THROW(
+      ParseDynamicsFeedforwardParams(YAML::Load("gravity_gain: -0.01\nmax_abs: 0.1"), "k", p),
+      std::runtime_error);
   const std::string over =
-      "gain: " + std::to_string(kDynamicsFeedforwardGainMax + 0.01) + "\nmax_abs: 0.1";
+      "gravity_gain: " + std::to_string(kDynamicsFeedforwardGainMax + 0.01) + "\nmax_abs: 0.1";
   EXPECT_THROW(ParseDynamicsFeedforwardParams(YAML::Load(over), "k", p), std::runtime_error);
-  EXPECT_THROW(ParseDynamicsFeedforwardParams(YAML::Load("gain: .nan\nmax_abs: 0.1"), "k", p),
-               std::runtime_error);
-  EXPECT_NO_THROW(ParseDynamicsFeedforwardParams(YAML::Load("gain: 0.0\nmax_abs: 0.1"), "k", p));
+  EXPECT_THROW(
+      ParseDynamicsFeedforwardParams(YAML::Load("gravity_gain: .nan\nmax_abs: 0.1"), "k", p),
+      std::runtime_error);
+  EXPECT_NO_THROW(
+      ParseDynamicsFeedforwardParams(YAML::Load("gravity_gain: 0.0\nmax_abs: 0.1"), "k", p));
   EXPECT_DOUBLE_EQ(p.gravity_gain, 0.0);
   const std::string edge =
-      "gain: " + std::to_string(kDynamicsFeedforwardGainMax) + "\nmax_abs: 0.1";
+      "gravity_gain: " + std::to_string(kDynamicsFeedforwardGainMax) + "\nmax_abs: 0.1";
   EXPECT_NO_THROW(ParseDynamicsFeedforwardParams(YAML::Load(edge), "k", p));
 }
 
@@ -384,20 +420,23 @@ TEST(DynamicsFeedforwardParams, InertiaGainIsBoundedOnBothSides) {
   EXPECT_NO_THROW(ParseDynamicsFeedforwardParams(YAML::Load(edge), "k", p));
   EXPECT_DOUBLE_EQ(p.inertia_gain, kDynamicsFeedforwardGainMax);
   try {
-    ParseDynamicsFeedforwardParams(YAML::Load("inertia_gain: 3.0\nmax_abs: 0.1"), "gravity_ff", p);
+    ParseDynamicsFeedforwardParams(YAML::Load("inertia_gain: 3.0\nmax_abs: 0.1"),
+                                   "dynamics_feedforward", p);
     FAIL() << "expected a throw";
   } catch (const std::runtime_error& e) {
-    EXPECT_NE(std::string(e.what()).find("gravity_ff.inertia_gain"), std::string::npos) << e.what();
+    EXPECT_NE(std::string(e.what()).find("dynamics_feedforward.inertia_gain"), std::string::npos)
+        << e.what();
   }
 }
 
 TEST(DynamicsFeedforwardParams, ErrorNamesTheBlockKey) {
   DynamicsFeedforwardParams p;
   try {
-    ParseDynamicsFeedforwardParams(YAML::Load("gain: 1.0"), "gravity_ff", p);
+    ParseDynamicsFeedforwardParams(YAML::Load("gravity_gain: 1.0"), "dynamics_feedforward", p);
     FAIL() << "expected a throw";
   } catch (const std::runtime_error& e) {
-    EXPECT_NE(std::string(e.what()).find("gravity_ff.max_abs"), std::string::npos) << e.what();
+    EXPECT_NE(std::string(e.what()).find("dynamics_feedforward.max_abs"), std::string::npos)
+        << e.what();
   }
 }
 

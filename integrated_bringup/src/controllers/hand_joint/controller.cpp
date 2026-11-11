@@ -151,7 +151,7 @@ void HandJointController::LoadConfig(const YAML::Node& cfg) {
   gains.trajectory_speed = cfg_.trajectory_speed;
   gains.max_traj_velocity = cfg_.max_traj_velocity;
   gains.ff_enabled = cfg_.ff.enabled;
-  gains.ff_gain = cfg_.ff.gravity_gain;
+  gains.gravity_gain = cfg_.ff.gravity_gain;
   gains.inertia_gain = cfg_.ff.inertia_gain;
   gains.mode = cfg_.mode;
   gains_lock_.Store(gains);
@@ -611,7 +611,7 @@ void HandJointController::ComputeFeedforward() noexcept {
   if (k_m != 0.0 && traj_active_) {
     ComputeInertiaTerm(n);
   }
-  const rtc::joint::DynamicsFeedforwardGainsView k{.gravity_gain = gains_tick_.ff_gain,
+  const rtc::joint::DynamicsFeedforwardGainsView k{.gravity_gain = gains_tick_.gravity_gain,
                                                    .coriolis_gain = 0.0,
                                                    .inertia_gain = k_m,
                                                    .max_abs = {ff_bound_.data(), n}};

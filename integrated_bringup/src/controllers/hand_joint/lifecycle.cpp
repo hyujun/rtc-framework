@@ -90,11 +90,12 @@ rtc::RTControllerInterface::CallbackReturn HandJointController::on_configure(
   const Gains g = gains_lock_.Load();
   RCLCPP_INFO(logger_,
               "[hand_joint] configured: group '%s' (%d joints), model %s, %zu fingertip frame(s) "
-              "under '%s', mode %s, gravity_ff %s (gain %.3f, max_abs %.4f N·m)",
+              "under '%s', mode %s, dynamics_feedforward %s (gravity_gain %.3f, inertia_gain %.3f, "
+              "max_abs %.4f N·m)",
               GetPrimaryDeviceName().c_str(), dof_,
               closed_handle_ ? "closed-chain (reduced g_a)" : "plain tree", num_tips_,
               root_link_.c_str(), HandJointModeName(g.mode).data(), g.ff_enabled ? "on" : "off",
-              g.ff_gain, cfg_.ff.max_abs);
+              g.gravity_gain, g.inertia_gain, cfg_.ff.max_abs);
   return CallbackReturn::SUCCESS;
 }
 

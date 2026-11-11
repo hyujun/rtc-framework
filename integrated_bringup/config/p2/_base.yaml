@@ -93,7 +93,7 @@
           max_velocity: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0] # rad/s
           # N·m — the URDF's `effort` (a placeholder, not a measured rating).
           # The feedforward torque bound in force is min(this,
-          # hand_joint_controller.yaml gravity_ff.max_abs), so this value alone
+          # hand_joint_controller.yaml dynamics_feedforward.max_abs), so this value alone
           # never bounds the torque.
           max_torque: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
           # rad — ±135° on every joint (test values, see above). Symmetric on

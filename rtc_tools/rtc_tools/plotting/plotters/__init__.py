@@ -131,7 +131,7 @@ __all__ = [
     # grasp diagnostics
     "plot_grasp_diag",
     "print_grasp_diag_statistics",
-    # gravity-feedforward joint log
+    # joint feedforward log (joint_ff.csv)
     "plot_joint_ff_status",
     "plot_joint_ff_torque",
     "plot_joint_ff_tracking",

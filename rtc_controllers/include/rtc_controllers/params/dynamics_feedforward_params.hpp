@@ -5,11 +5,13 @@
 // configure time (non-RT, may throw).
 //
 // The block is named by the BINDING (it passes the key for error messages),
-// because what the block means is the binding's business: a controller that
-// ships gravity alone calls its block `gravity_ff`, and this parser does not
-// care. The Coriolis gain has no key here on purpose — the law carries the
-// slot, the schema grows the key when a binding ships the term (the inertia
-// gain is that case: `inertia_gain`, optional, default 0 = the term off).
+// because where the block sits is the binding's business. The keys are the
+// law's terms (`gravity_gain`, `inertia_gain`) plus the switch and the bound,
+// and nothing else is accepted: a misspelt or renamed key would leave its term
+// at the seed without a word. The Coriolis gain has no key here on purpose —
+// the law carries the slot, the schema grows the key when a binding ships the
+// term (the inertia gain is that case: `inertia_gain`, optional, default 0 =
+// the term off).
 #pragma once
 
 #include <yaml-cpp/yaml.h>
@@ -37,16 +39,18 @@ struct DynamicsFeedforwardParams {
 inline constexpr double kDynamicsFeedforwardGainMax = 2.0;
 
 /// Parse the feedforward block into @p out. Keys present overwrite @p out's
-/// seed; `max_abs` must be present.
+/// seed; `max_abs` must be present; any other key is refused.
 ///
-/// @param block  the block node (e.g. `cfg["gravity_ff"]`); must be a map
+/// @param block  the block node (e.g. `cfg["dynamics_feedforward"]`); must be a map
 /// @param key    the block's YAML key, for error messages only
 /// @param out    seeded with the caller's defaults
 ///
 /// @throws std::runtime_error naming @p key when the block is absent or not a
-///         map, `max_abs` is absent / non-finite / ≤ 0, or `gain` /
-///         `inertia_gain` is non-finite / outside [0, kDynamicsFeedforwardGainMax]. yaml-cpp's own
-///         exceptions (also std::runtime_error) on a wrong scalar type.
+///         map, a key is not one of `enabled` / `gravity_gain` /
+///         `inertia_gain` / `max_abs`, `max_abs` is absent / non-finite / ≤ 0,
+///         or `gravity_gain` / `inertia_gain` is non-finite / outside [0,
+///         kDynamicsFeedforwardGainMax]. yaml-cpp's own exceptions (also std::runtime_error) on a
+///         wrong scalar type.
 ///
 /// Non-RT: configure time only.
 void ParseDynamicsFeedforwardParams(const YAML::Node& block, std::string_view key,

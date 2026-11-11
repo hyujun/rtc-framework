@@ -1,5 +1,7 @@
 #include "rtc_controllers/params/dynamics_feedforward_params.hpp"
 
+#include "catching_yaml_read.hpp"  // FindUnknownKey
+
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -14,13 +16,20 @@ void ParseDynamicsFeedforwardParams(const YAML::Node& block, std::string_view ke
   if (!block || !block.IsMap()) {
     throw std::runtime_error(k + ": required block is missing (needs at least 'max_abs')");
   }
+  // First, before any value is read: a misspelt or renamed key (the gravity
+  // gain was `gain`) would otherwise leave its term at the seed without a word.
+  if (const auto unknown = rtc::catching::params_detail::FindUnknownKey(
+          block, {"enabled", "gravity_gain", "inertia_gain", "max_abs"})) {
+    throw std::runtime_error(k + "." + *unknown + " is not a key of " + k +
+                             " (enabled, gravity_gain, inertia_gain, max_abs)");
+  }
   if (block["enabled"]) {
     out.enabled = block["enabled"].as<bool>();
   }
-  if (block["gain"]) {
-    const double g = block["gain"].as<double>();
+  if (block["gravity_gain"]) {
+    const double g = block["gravity_gain"].as<double>();
     if (!std::isfinite(g) || g < 0.0 || g > kDynamicsFeedforwardGainMax) {
-      throw std::runtime_error(k + ".gain must be finite and within [0, " +
+      throw std::runtime_error(k + ".gravity_gain must be finite and within [0, " +
                                std::to_string(kDynamicsFeedforwardGainMax) + "]");
     }
     out.gravity_gain = g;

@@ -2,8 +2,9 @@
 #
 # Joint goals follow a quintic from the current reference; every tick the
 # command is `pd_feedforward`: the reference as the position target plus the
-# model's gravity torque as the feedforward (N·m, device joint order). The
-# device's PD (simulator <position> servo at the low gains of
+# model's dynamics torque as the feedforward (gravity, and the inertia of the
+# reference acceleration while a goal is followed; N·m, device joint order).
+# The device's PD (simulator <position> servo at the low gains of
 # mujoco_simulator.yaml; the firmware's PD on the hardware) carries the error,
 # the feedforward carries the weight. Columns of the per-tick record are in
 # docs/controller-logs.md (joint_ff.csv).
@@ -11,7 +12,7 @@ hand_joint_controller:
   # ── Mode ──────────────────────────────────────────────────────────────────
   # What the two lanes carry (runtime parameter `mode`, settable any time;
   # E-STOP dominates). The device's PD gains are not this controller's.
-  #   tracking             — joint_goal followed by a quintic + gravity feedforward
+  #   tracking             — joint_goal followed by a quintic + dynamics feedforward
   #   damping              — target = measured position every tick, feedforward 0:
   #                          only the device's kd acts (joint_goal refused)
   #   damping_feedforward  — target = measured position, feedforward lane as in
@@ -31,14 +32,15 @@ hand_joint_controller:
   max_traj_velocity: 10.0     # rad/s — read-only parameter
 
   # ── Feedforward torque lane ──────────────────────────────────────────────
-  # τ_ff = clamp(gain · g_a(q_meas) + inertia_gain · M_a(q_meas) · q̈_ref,
+  # τ_ff = clamp(gravity_gain · g_a(q_meas) + inertia_gain · M_a(q_meas) · q̈_ref,
   #              ±min(max_abs, devices.p2_right max_torque)).
-  #   enabled  — runtime parameter `gravity_ff.enabled`; false sends 0 N·m with
+  #   enabled  — runtime parameter `dynamics_feedforward.enabled`; false sends 0 N·m with
   #              the command type unchanged (the A/B switch of the sim gate —
   #              switching the command type would let the simulator re-enable
   #              its own gravity compensation and change the plant).
-  #   gain     — runtime parameter `gravity_ff.gain`, [0, 2]. 1 = the model.
-  #   inertia_gain — runtime parameter `gravity_ff.inertia_gain`, [0, 2]. The
+  #   gravity_gain — runtime parameter `dynamics_feedforward.gravity_gain`,
+  #              [0, 2]. 1 = the model.
+  #   inertia_gain — runtime parameter `dynamics_feedforward.inertia_gain`, [0, 2]. The
   #              reduced model inertia times the quintic's acceleration (0 at
   #              rest, so a held pose sees gravity alone). 1 = the model. The
   #              URDF carries the links' inertia only, no rotor inertia, so the
@@ -53,9 +55,10 @@ hand_joint_controller:
   #              in the simulator; 0.3 leaves room for both plus gain tuning.
   #              It is 0.55 A at the firmware's 0.55 N·m/A (udp_hand_node_p2.yaml);
   #              the motors' current rating is not recorded in this repository.
-  gravity_ff:
+  # Only these four keys: any other key in the block is refused at configure.
+  dynamics_feedforward:
     enabled: true
-    gain: 1.0
+    gravity_gain: 1.0
     inertia_gain: 1.0
     max_abs: 0.3
 

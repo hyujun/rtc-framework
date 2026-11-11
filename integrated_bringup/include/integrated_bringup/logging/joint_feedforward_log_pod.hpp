@@ -55,7 +55,7 @@ struct JointFeedforwardLogPod {
   bool readable{false};     ///< the device reported every joint this tick
   bool seeded{false};       ///< the reference has been seeded since activation
   bool traj_active{false};  ///< a joint goal is still being followed
-  bool ff_enabled{false};   ///< the lane was switched on (gravity_ff.enabled)
+  bool ff_enabled{false};   ///< the lane was switched on (dynamics_feedforward.enabled)
   /// The controller's mode this tick: 0 tracking, 1 damping (reference =
   /// measurement, torque 0), 2 damping_feedforward (reference = measurement,
   /// lane on). The enum is HandJointMode; the codes are append-only.
@@ -73,7 +73,7 @@ struct JointFeedforwardLogPod {
   double closure_error{0.0};
   /// Bit i: joint i's torque was clamped to its bound this tick.
   std::uint64_t clamped_mask{0};
-  /// k_M the law applied this tick (gravity_ff.inertia_gain; 0 when the lane
+  /// k_M the law applied this tick (dynamics_feedforward.inertia_gain; 0 when the lane
   /// was off or had no mass matrix).
   double inertia_gain{0.0};
 

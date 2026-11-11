@@ -685,7 +685,7 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         hand_group="p2_right",
         arm_group="p2_right",
         # The only controller that ships here. Its gain rows (trajectory_speed,
-        # gravity_ff.*) are registered at GUI start for this profile
+        # dynamics_feedforward.*) are registered at GUI start for this profile
         # (hand_joint.hand_joint_gain_rows), not in GAIN_DEFS, which would put
         # its radio on every robot.
         extra_switchable_controllers=("hand_joint_controller",),
