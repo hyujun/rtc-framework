@@ -21,10 +21,11 @@
 #     arrangement as g1_p1b): without that package installed the controller
 #     and the sim do not start. This is intended — there is no public
 #     surrogate for this robot yet
-#   - the controller model's root is FIXED (`root_joint_type: "fixed"`): the
-#     floating base is the simulator's, and its ground truth reaches the
-#     controller through the `b7` device's base_state lane (sim.yaml), which
-#     is independent of the kinematic model (same reasoning as g1_loco)
+#   - the controller model's root FLOATS (`root_joint_type: "floating"`), as
+#     g1_loco's: the full and actuated models carry a free-flyer on the pelvis —
+#     the frame the `b7` device's base_state lane (sim.yaml) reports pos / quat
+#     of. The tree models lock it and both hands' closed-chain handles hold it at
+#     the seed (identity) pose. The lane is not wired into the model's base yet
 /**:
   ros__parameters:
     config_variant: "b7_loco"
@@ -47,8 +48,8 @@
     urdf:
       package: "hand_description"
       path: "robots/cloid_b7_hand/urdf/cloid_b7_hand.urdf"
-      # Fixed root — see the header. The base lane does not depend on it.
-      root_joint_type: "fixed"
+      # Floating root — see the header.
+      root_joint_type: "floating"
       # Extended URDF: the two hands' loop closures come from the sidecar
       # next to the URDF. Loaded model: 26 body joints + 2 × (10 actuated +
       # 10 loop-passive) hand joints.

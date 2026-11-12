@@ -191,7 +191,7 @@ ros2 service call /sim/reset std_srvs/srv/Trigger                               
 - 모델 (URDF · MJCF · closure sidecar) 은 **비공개 `hand_description` 패키지**의 것이다 (`g1_p1b` 와 같은 방식 — 출하 YAML 의 `package://` URI 가 가리키고 이 패키지는 의존하지 않는다). 그 패키지가 없으면 두 노드가 뜨지 않는 것이 의도다 — 공개 대리 모델은 아직 없다. 그래서 `test_shipped_initial_qpos` 의 keyframe lane 은 이 profile 을 skip 하고, 출하 profile 의 configure gtest (`test_g1_loco_configure` 류) 도 없다.
 - `controllers/locomotion_controller.yaml` (+ `locomotion/model.yaml`) 은 g1_loco 와 같은 `model.*` 계약이다: 발 접촉 `*_toe_link` (이 모델의 발바닥), 양팔 끝 `*_hand_palm`, 몸통 `torso_link`. 모델이 비공개라 in-repo test 는 이 파일을 모델에 대 보지 않는다 — configure 때의 검사가 본다.
 - 서 있는 것은 sim 의 `stand` keyframe (`reset_keyframe`) + MJCF `<position>` servo 다. `demo_joint_controller` (유일한 컨트롤러) 는 세 군의 측정 자세를 `pd_feedforward` 로 hold 하고 feedforward 는 0 이다. 손은 군마다 자기 `<hand>/joint_goal` 을 따르고 자기 측정값으로 hold · E-STOP 한다; 손끝 FK · TF · grasp state 는 **첫 손 (`p2_right`) 만** 이다 ([controllers.md](../docs/controllers.md)).
-- 컨트롤러 모델의 root 는 **고정** (`urdf.root_joint_type: "fixed"`) 이고 부동 베이스의 ground truth 는 `devices.b7.backend.base_state` lane (IMU site 하나) 으로, 발 접촉은 `fingertip_wrench_topics` 의 두 sole 토픽 (`/b7/{left,right}_sole_contact/contact_wrench`) 으로 들어온다 — `g1_loco` 와 같다.
+- 컨트롤러 모델의 root 는 **부동** (`urdf.root_joint_type: "floating"`) 이고 부동 베이스의 ground truth 는 `devices.b7.backend.base_state` lane (IMU site 하나) 으로, 발 접촉은 `fingertip_wrench_topics` 의 두 sole 토픽 (`/b7/{left,right}_sole_contact/contact_wrench`) 으로 들어온다 — `g1_loco` 와 같다.
 - MJCF 의 `<option timestep>` 0.002 는 **제어 주기**다 (sim 이 `n_substeps` 3 으로 나눈다). `use_yaml_servo_gains` 는 `false` 가 기본이고 YAML 은 `servo_kp` / `servo_kd` 를 싣지 않는다.
 - `enable_mpc` 는 CPU layout 만 고른다 (기본 `false`). `mpc_engine` 인자는 없다.
 
