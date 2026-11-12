@@ -18,7 +18,7 @@
 
 ## Code Conventions
 
-- **Namespace**: `rtc` 와 그 하위 (`rtc::tsid` · `rtc::mpc` 처럼 패키지별). 예외 하나: `rtc_urdf_bridge` 는 top-level `rtc_urdf_bridge` — 다른 패키지가 널리 쓰는 공개 API 라 개명하지 않고, 그 패키지 안의 새 코드는 패키지 관례를 따른다
+- **Namespace**: `rtc_*` 패키지는 `rtc` 와 그 하위 (`rtc::tsid` · `rtc::mpc` 처럼 패키지별). 예외 하나: `rtc_urdf_bridge` 는 top-level `rtc_urdf_bridge` — 다른 패키지가 널리 쓰는 공개 API 라 개명하지 않는다. 그 밖의 패키지 (integration · 드라이버 · 도구) 는 자기 top-level namespace 를 갖는다. 어느 쪽이든 새 코드는 그 패키지에 이미 있는 namespace 를 따른다
 - **Naming**: Google C++ — `PascalCase` methods/types/free functions, `snake_case_` private members, `snake_case` local variables/parameters, `kConstant` for constants. 기계 SSoT 는 `.clang-tidy`
 - **C++20**: `jthread` / `stop_token`, `std::span`, `string_view`, concepts, `[[likely]]/[[unlikely]]`, `constexpr`, structured bindings, `optional` / `expected`
 - **RAII**: 모든 리소스 획득은 RAII. Raw `new` / `delete` 금지
