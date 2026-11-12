@@ -27,18 +27,10 @@
 #include <pinocchio/math.hpp>
 #pragma GCC diagnostic pop
 
-#include "rtc_tsid/constraints/contact_constraint.hpp"
-#include "rtc_tsid/constraints/eom_constraint.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
-#include "rtc_tsid/constraints/torque_limit_constraint.hpp"
-#include "rtc_tsid/tasks/contact_consistency_task.hpp"
-#include "rtc_tsid/tasks/force_task.hpp"
-#include "rtc_tsid/tasks/internal_force_task.hpp"
-#include "rtc_tsid/tasks/object_se3_task.hpp"
-#include "rtc_tsid/tasks/object_wrench_task.hpp"
+#include "rtc_tsid/formulation/task_factory.hpp"
 #include "rtc_tsid/tasks/posture_task.hpp"
-#include "rtc_tsid/tasks/se3_task.hpp"
 
 namespace integrated_bringup {
 
@@ -305,111 +297,56 @@ void DemoWbcController::ConfigureReducedDynamicsProvider() {
 
 // ── TSID task/constraint factories ───────────────────────────────────────────
 //
-// Dispatch by YAML `type` string. Tasks/constraints are created with
-// unique_ptr and transferred to formulation via add_task/add_constraint.
-// After construction each is Init()'d with its own sub-node.
+// The `type:` dispatch is rtc_tsid's (formulation/task_factory.hpp, WD-58);
+// this controller supplies its context and post-processes what was built.
+
+rtc::tsid::TaskFactoryContext DemoWbcController::TsidFactoryContext() {
+  rtc::tsid::TaskFactoryContext ctx;
+  ctx.model = combined_cache_.model().get();
+  ctx.robot_info = &robot_info_;
+  ctx.cache = &combined_cache_.cache();
+  ctx.contacts = &contact_mgr_config_;
+  ctx.contacts_runtime = &contact_mgr_;
+  ctx.grasp = &grasp_cache_;
+  ctx.object_frame = &object_frame_;
+  ctx.object_state = &object_state_provider_;
+  // LoadConfig runs after SetControlRate: the period-integrating constraints
+  // take 1/control_rate (#1019).
+  ctx.control_period = GetDefaultDt();
+  return ctx;
+}
+
+void DemoWbcController::LogFactoryMessages(const rtc::tsid::BuildReport& report) {
+  for (const auto& m : report.messages) {
+    if (m.error) {
+      RCLCPP_ERROR(logger_, "[wbc] %s", m.text.c_str());
+    } else {
+      RCLCPP_WARN(logger_, "[wbc] %s", m.text.c_str());
+    }
+  }
+}
 
 void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
   if (!combined_cache_.model() || !tsid_node || !tsid_node["tasks"]) {
     return;
   }
-  const auto& model = *combined_cache_.model();
-  auto& formulation = tsid_controller_.Formulation();
-
-  for (auto it = tsid_node["tasks"].begin(); it != tsid_node["tasks"].end(); ++it) {
-    const auto key = it->first.as<std::string>();
-    // yaml-cpp iterator::operator->() returns a proxy holding a prvalue Node;
-    // binding `it->second` by reference leaves a dangling handle once the
-    // proxy temporary dies. Copy by value — Node is a lightweight handle.
-    const YAML::Node task_cfg = it->second;
-    const auto type = task_cfg["type"].as<std::string>("");
-
-    if (type == "posture") {
-      auto task = std::make_unique<rtc::tsid::PostureTask>();
-      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
-      formulation.AddTask(std::move(task));
-      // Optional arm/hand gain split. The scalar/vector kp/kd in task_cfg are
-      // consumed by PostureTask::Init above; when `arm`/`hand` sub-maps are
-      // present they override per-DoF in ApplyPostureGains (post-reorder).
-      ParsePostureSplitGains(task_cfg);
-    } else if (type == "se3") {
-      auto task = std::make_unique<rtc::tsid::SE3Task>();
-      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
-      // SE3Task's identity comes from its inner `name:` field (default "se3"),
-      // NOT the YAML map key. The phase presets, the per-tick reference push
-      // (GetTask(key)), and se3_task_active_in_phase all look the task up by
-      // the map key — if it diverges from the resolved name the task is
-      // unreachable: never deactivated by a preset, never given a reference, so
-      // it tracks identity and fights every phase. Surface the mismatch loudly.
-      const std::string resolved_name{task->Name()};
-      if (resolved_name != key) {
-        RCLCPP_WARN(logger_,
-                    "[wbc] se3 task '%s' resolves to name '%s' — they must match; add "
-                    "`name: \"%s\"` to the task block or GetTask(\"%s\") returns null",
-                    key.c_str(), resolved_name.c_str(), key.c_str(), key.c_str());
-      }
-      formulation.AddTask(std::move(task));
-      // F-2: capture base_frame for OnDeviceConfigsSet consistency check.
-      // Skip when key absent — universe fallback path stays unchecked here.
-      // (Cache the YAML::Node into a local to avoid yaml-cpp's
-      // unnamed-temporary lifetime trap that GCC flags as dangling.)
-      const YAML::Node base_frame_node = task_cfg["base_frame"];
+  const rtc::tsid::BuildReport report = rtc::tsid::BuildTasks(
+      tsid_node["tasks"], TsidFactoryContext(), tsid_controller_.Formulation());
+  LogFactoryMessages(report);
+  for (const auto& e : report.built) {
+    if (e.type == "posture") {
+      // Optional arm/hand gain split. The scalar/vector kp/kd were consumed by
+      // PostureTask::Init; `arm`/`hand` sub-maps override per-DoF in
+      // ApplyPostureGains (post-reorder).
+      ParsePostureSplitGains(e.config);
+    } else if (e.type == "se3") {
+      // F-2: capture base_frame for the OnDeviceConfigsSet consistency check
+      // (absent key: the universe fallback stays unchecked here).
+      const YAML::Node base_frame_node = e.config["base_frame"];
       if (base_frame_node) {
-        base_frame_yaml_entries_.emplace_back("tsid.tasks." + key + ".base_frame",
+        base_frame_yaml_entries_.emplace_back("tsid.tasks." + e.key + ".base_frame",
                                               base_frame_node.as<std::string>());
       }
-    } else if (type == "force") {
-      auto task = std::make_unique<rtc::tsid::ForceTask>();
-      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
-      task->SetContactManager(&contact_mgr_config_);
-      formulation.AddTask(std::move(task));
-    } else if (type == "contact_consistency") {
-      // Stage A-2: soft task — residual J_c·a + dotJ_c·v. Activated in
-      // closure/hold per phase preset; deactivated in idle/approach.
-      auto task = std::make_unique<rtc::tsid::ContactConsistencyTask>();
-      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
-      task->SetContactManager(&contact_mgr_config_);
-      formulation.AddTask(std::move(task));
-    } else if (type == "object_wrench") {
-      // Stage B-5: drives Σ G·λ → w_obj_des (object-origin wrench). Shares
-      // the controller-owned ContactManager / GraspCache / ObjectFrame
-      // instances so the per-tick cache populated in ComputeTSIDPosition
-      // is reused across all three object-level tasks.
-      auto task = std::make_unique<rtc::tsid::ObjectWrenchTask>();
-      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
-      task->SetContactManager(&contact_mgr_config_);
-      task->SetContactManagerRuntime(&contact_mgr_);
-      task->SetGraspCache(&grasp_cache_);
-      task->SetObjectFrame(&object_frame_);
-      formulation.AddTask(std::move(task));
-    } else if (type == "internal_force") {
-      // Stage B-5: drives the squeeze λ component inside Null(G) toward a
-      // projected reference (P_N · λ_squeeze_des). Stage B-5 keeps the
-      // reference at zero — a future dynamic squeeze planner will write
-      // into squeeze_lambda_des_ on phase entry.
-      auto task = std::make_unique<rtc::tsid::InternalForceTask>();
-      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
-      task->SetContactManager(&contact_mgr_config_);
-      task->SetContactManagerRuntime(&contact_mgr_);
-      task->SetGraspCache(&grasp_cache_);
-      formulation.AddTask(std::move(task));
-    } else if (type == "object_se3") {
-      // Stage B-5: drives the object SE(3) pose toward
-      // object_state_provider_'s placement via the kinematic chain implied
-      // by the active contacts. IdentityObjectStateProvider keeps the pose
-      // at object_frame_ (set in LoadConfig) until a concrete provider is
-      // plumbed in — IsValid() stays true so ResidualDim() = 6 whenever
-      // ≥ 1 contact is active.
-      auto task = std::make_unique<rtc::tsid::ObjectSE3Task>();
-      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
-      task->SetContactManager(&contact_mgr_config_);
-      task->SetContactManagerRuntime(&contact_mgr_);
-      task->SetGraspCache(&grasp_cache_);
-      task->SetObjectStateProvider(&object_state_provider_);
-      formulation.AddTask(std::move(task));
-    } else {
-      RCLCPP_ERROR(logger_, "[wbc] unknown task type '%s' for entry '%s' — skipping", type.c_str(),
-                   key.c_str());
     }
   }
 }
@@ -418,92 +355,20 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
   if (!combined_cache_.model() || !tsid_node || !tsid_node["constraints"]) {
     return;
   }
-  const auto& model = *combined_cache_.model();
-  auto& formulation = tsid_controller_.Formulation();
-
-  for (auto it = tsid_node["constraints"].begin(); it != tsid_node["constraints"].end(); ++it) {
-    const auto key = it->first.as<std::string>();
-    // yaml-cpp iterator::operator->() returns a proxy holding a prvalue Node;
-    // see BuildTsidTasks comment above for the lifetime trap.
-    const YAML::Node c_cfg = it->second;
-    const auto type = c_cfg["type"].as<std::string>("");
-
-    // A constraint that integrates over the control period: a missing `dt`
-    // takes 1/control_rate, a YAML `dt` that disagrees with it fails the
-    // configure (#1019). LoadConfig runs after SetControlRate.
-    const double period = GetDefaultDt();
-    const auto with_period = [&](const YAML::Node& node) {
-      YAML::Node out = YAML::Clone(node);
-      if (!out["dt"] || out["dt"].IsNull()) {
-        out["dt"] = period;
-      }
-      return out;
-    };
-    const auto check_period = [&](double dt) {
-      if (std::abs(dt - period) > 1e-9 * period) {
-        char msg[192];
-        std::snprintf(msg, sizeof(msg),
-                      "[wbc] tsid.constraints.%s.dt %.9g s differs from the control period "
-                      "%.9g s (1/control_rate); omit it to take the period",
-                      key.c_str(), dt, period);
-        throw std::invalid_argument(msg);
-      }
-    };
-
-    if (type == "eom") {
-      auto c = std::make_unique<rtc::tsid::EomConstraint>();
-      c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
-      // Floating-base + surface contact 시 cdim != 3 인 column offset 을 정확히
-      // 잡기 위해 필수. point-only 회로에서는 fallback(cdim=3) 으로도 동작하지만,
-      // mixed point/surface 가 들어오면 무성 alignment 깨짐.
-      c->SetContactManager(&contact_mgr_config_);
-      formulation.AddConstraint(std::move(c));
-    } else if (type == "contact_constraint") {
-      // Stage C-0.3: hard acceleration-level no-slip equality
-      // (Jc_i·a + dJc_i·v = 0) per active contact. Off by default in the
-      // shipped configs — the soft contact_consistency task carries the
-      // no-slip objective there. Opt-in by adding a `contact_constraint`
-      // entry under tsid.constraints. SetContactManager mirrors the eom
-      // branch so the active-contact column offsets (cdim 3/6) align.
-      auto c = std::make_unique<rtc::tsid::ContactConstraint>();
-      c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
-      c->SetContactManager(&contact_mgr_config_);
-      formulation.AddConstraint(std::move(c));
-    } else if (type == "joint_limit") {
-      // The box integrates over one control period (with_period / check_period).
-      auto c = std::make_unique<rtc::tsid::JointLimitConstraint>();
-      c->Init(model, robot_info_, combined_cache_.cache(), with_period(c_cfg));
-      check_period(c->Dt());
+  rtc::tsid::BuildReport report;
+  try {
+    report = rtc::tsid::BuildConstraints(tsid_node["constraints"], TsidFactoryContext(),
+                                         tsid_controller_.Formulation());
+  } catch (const std::invalid_argument& e) {
+    throw std::invalid_argument(std::string("[wbc] ") + e.what());
+  }
+  LogFactoryMessages(report);
+  for (const auto& e : report.built) {
+    if (e.type == "joint_limit") {
       // Diagnostics view (#551): the formulation owns it; keep a raw pointer
       // for FillWbcDiagLogPod. Last `joint_limit` entry wins.
-      joint_limit_constraint_ = c.get();
-      tsid_joint_limit_margin_ = c_cfg["position_margin"].as<double>(0.05);
-      formulation.AddConstraint(std::move(c));
-    } else if (type == "friction_cone") {
-      // Stage C-0.1: FrictionConeConstraint takes its face count from each
-      // contact (contacts[*].n_faces / friction_faces), not from this block.
-      // A `n_faces` here is a dead key — WARN so the misconception that caused
-      // the silent friction_faces=4 fallback does not recur.
-      if (c_cfg["n_faces"]) {
-        RCLCPP_WARN(logger_,
-                    "[wbc] friction_cone.n_faces is ignored — set the face count per "
-                    "contact via contacts[*].n_faces (or friction_faces)");
-      }
-      auto c = std::make_unique<rtc::tsid::FrictionConeConstraint>();
-      c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
-      c->SetContactManager(&contact_mgr_config_);
-      formulation.AddConstraint(std::move(c));
-    } else if (type == "torque_limit") {
-      // Its torque-rate bound integrates over one control period too.
-      auto c = std::make_unique<rtc::tsid::TorqueLimitConstraint>();
-      c->Init(model, robot_info_, combined_cache_.cache(), with_period(c_cfg));
-      check_period(c->Dt());
-      // τ = S·(M·a + h − Jcᵀ·λ) 역산 시 surface(cdim=6) λ 의 column offset 정확.
-      c->SetContactManager(&contact_mgr_config_);
-      formulation.AddConstraint(std::move(c));
-    } else {
-      RCLCPP_ERROR(logger_, "[wbc] unknown constraint type '%s' for entry '%s' — skipping",
-                   type.c_str(), key.c_str());
+      joint_limit_constraint_ = static_cast<rtc::tsid::JointLimitConstraint*>(e.constraint);
+      tsid_joint_limit_margin_ = e.config["position_margin"].as<double>(0.05);
     }
   }
 }

@@ -55,6 +55,7 @@ add_library(rtc_tsid STATIC
   src/formulation/wqp_formulation.cpp
   src/formulation/hqp_formulation.cpp
   src/formulation/formulation_factory.cpp
+  src/formulation/task_factory.cpp
   src/controller/tsid_controller.cpp
 )
 

@@ -41,6 +41,7 @@
 #include "rtc_tsid/contact/grasp_cache.hpp"
 #include "rtc_tsid/contact/object_state_provider.hpp"
 #include "rtc_tsid/controller/tsid_controller.hpp"
+#include "rtc_tsid/formulation/task_factory.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 #include "rtc_tsid/types/object_frame.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
@@ -585,6 +586,10 @@ class DemoWbcController final : public RTControllerInterface {
   // `tsid.constraints`. Supported tasks: posture, se3, force. Supported
   // constraints: eom, joint_limit, friction_cone. Unknown types log ERROR
   // and skip. Called once in LoadConfig after TSIDController::Init().
+  // The rtc_tsid task_factory context of this controller (WD-58) and the
+  // logging of what the factory reported.
+  [[nodiscard]] rtc::tsid::TaskFactoryContext TsidFactoryContext();
+  void LogFactoryMessages(const rtc::tsid::BuildReport& report);
   void BuildTsidTasks(const YAML::Node& tsid_node);
   void BuildTsidConstraints(const YAML::Node& tsid_node);
 
