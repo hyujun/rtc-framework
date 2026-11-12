@@ -10,20 +10,6 @@ namespace {
 
 using internal::FieldRead;
 
-[[nodiscard]] CommandFilterError ToError(FieldRead r) noexcept {
-  switch (r) {
-    case FieldRead::kOk:
-      return CommandFilterError::kNoError;
-    case FieldRead::kMissing:
-      return CommandFilterError::kMissingKey;
-    case FieldRead::kWrongType:
-      return CommandFilterError::kWrongType;
-    case FieldRead::kNonFinite:
-      return CommandFilterError::kNonFinite;
-  }
-  return CommandFilterError::kWrongType;
-}
-
 [[nodiscard]] bool AllFinite(const CommandFilterConfig& c) noexcept {
   bool ok = std::isfinite(c.sample_rate_hz) && std::isfinite(c.cutoff_hz) &&
             std::isfinite(c.t_stale) && std::isfinite(c.base_height) && std::isfinite(c.h_min) &&
@@ -86,7 +72,7 @@ CommandFilterError LoadCommandFilterConfig(const YAML::Node& node,
     };
     for (const FieldRead r : reads) {
       if (r != FieldRead::kOk) {
-        return ToError(r);
+        return internal::ToError<CommandFilterError>(r);
       }
     }
     c.u_max = {v_max[0], v_max[1], v_max[2], hdot_max};
