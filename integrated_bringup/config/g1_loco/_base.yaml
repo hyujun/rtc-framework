@@ -12,13 +12,12 @@
 #     `tree_models`
 #   - the hand, `p1b`, is the synthetic p1b_surrogate (robot_descriptions), not
 #     a real hand; in the sim it is an LPF echo (no hand in the public MJCF)
-#   - the controller model's root is FIXED (`root_joint_type: "fixed"`): the
-#     floating base is the simulator's, and its ground truth reaches the
-#     controller through the `g1` device's base_state lane (sim.yaml), which is
-#     independent of the kinematic model. A free-flyer root would be locked as a
-#     passive joint by the closure builder and the hand's closed-chain handle
-#     refuses (dependent DoF > constraint rows) — the floating controller model
-#     is a later milestone with its own loader
+#   - the controller model's root FLOATS (`root_joint_type: "floating"`): the
+#     full and actuated models carry a free-flyer on the pelvis — the frame the
+#     `g1` device's base_state lane (sim.yaml) reports. The tree models lock it,
+#     and the hand's closed-chain handles hold it at the seed (identity) pose,
+#     so the hand FK and the joint blocks equal a fixed-root model's. The lane
+#     is not wired into the model's base yet
 /**:
   ros__parameters:
     config_variant: "g1_loco"
@@ -42,10 +41,11 @@
     urdf:
       package: "robot_descriptions"
       path: "robots/g1/urdf/g1_29dof_floating_with_p1b_surrogate.urdf.xacro"
-      # Fixed root — see the header. The base lane does not depend on it.
-      root_joint_type: "fixed"
+      # Floating root — see the header.
+      root_joint_type: "floating"
       # Extended URDF: the hand's five loop closures come from the sidecar.
-      # Loaded model: 43 revolute joints, 33 actuated (23 + 10), 10 loop-passive.
+      # Loaded model: the free-flyer + 43 revolute joints, 33 actuated (23 + 10),
+      # 10 loop-passive (full nq 50 / nv 49, actuated model nq 40 / nv 39).
       extended: true
       closure_path: "robots/g1/urdf/g1_29dof_floating_with_p1b_surrogate.closure.yaml"
       tree_models:
