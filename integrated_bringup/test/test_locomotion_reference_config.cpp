@@ -1,12 +1,13 @@
-// locomotion_controller.command.* · gait.* · swing.* · terrain.* (g1_loco): the installed files,
-// composed by the CM's own loader (rtc::LoadControllerConfig — the `include:` merge included), load
-// through rtc_mpc's reference/ loaders and initialise the stage they configure. The schema and
-// every refusal are rtc_mpc's own tests; this one is the wiring between the shipped fragment and
-// that loader. No ROS node.
+// locomotion_controller.command.* · gait.* · swing.* · terrain.* · reference.* (g1_loco): the
+// installed files, composed by the CM's own loader (rtc::LoadControllerConfig — the `include:`
+// merge included), load through rtc_mpc's reference/ loaders and initialise the stage they
+// configure. The schema and every refusal are rtc_mpc's own tests; this one is the wiring between
+// the shipped fragment and that loader. No ROS node.
 #include "rtc_controller_manager/controller_config_loader.hpp"
 #include "rtc_mpc/reference/command_filter.hpp"
 #include "rtc_mpc/reference/gait_scheduler.hpp"
 #include "rtc_mpc/reference/gait_table.hpp"
+#include "rtc_mpc/reference/stage_reference_builder.hpp"
 #include "rtc_mpc/reference/surface_frame.hpp"
 #include "rtc_mpc/reference/swing_trajectory.hpp"
 
@@ -82,6 +83,35 @@ TEST(LocomotionReferenceConfig, TheInstalledSwingAndTerrainSectionsLoadAndBuildA
   EXPECT_NEAR(s.Evaluate(0.3).z,
               rtc::mpc::HeightAt(terrain, 0.0, 0.0) + swing.touch_down_offset + swing.height,
               1e-12);
+}
+
+// reference.* names exactly the actuated joints of the shipped rosters (the body
+// group's 23 in model order, then the hand group's 10) — the joints the CM's
+// actuated model moves; the arm-swing joints are checked even though it is off.
+TEST(LocomotionReferenceConfig, TheInstalledReferenceSectionCoversTheShippedRosters) {
+  const YAML::Node root = InstalledLocomotionConfig();
+  ASSERT_TRUE(root["reference"].IsMap()) << "the include: merge did not bring reference.* in";
+  const std::string base = ament_index_cpp::get_package_share_directory("integrated_bringup") +
+                           "/config/g1_loco/_base.yaml";
+  const YAML::Node devices = YAML::LoadFile(base)["/**"]["ros__parameters"]["devices"];
+  std::vector<std::string> joints;
+  for (const char* group : {"g1", "p1b"}) {
+    ASSERT_TRUE(devices[group]["joint_state_names"].IsSequence()) << group;
+    for (const auto& j : devices[group]["joint_state_names"]) {
+      joints.push_back(j.as<std::string>());
+    }
+  }
+  ASSERT_EQ(joints.size(), 33U);
+  rtc::mpc::ReferenceConfig cfg;
+  ASSERT_EQ(rtc::mpc::LoadReferenceConfig(root["reference"], joints, cfg),
+            rtc::mpc::ReferenceError::kNoError);
+  EXPECT_EQ(cfg.q_default.size(), joints.size());
+  EXPECT_FALSE(cfg.arm_swing_enabled);
+  EXPECT_EQ(cfg.arm_swing_joints.size(), 4U);
+  // One roster joint missing is refused — the loader does check coverage.
+  joints.push_back("left_wrist_roll_joint");
+  EXPECT_EQ(rtc::mpc::LoadReferenceConfig(root["reference"], joints, cfg),
+            rtc::mpc::ReferenceError::kMissingJoint);
 }
 
 }  // namespace
