@@ -11,10 +11,12 @@
 #   locomotion/model.yaml     which frames and device groups it works on (model.*)
 #   locomotion/command.yaml   the operator velocity command filter (command.*)
 #   locomotion/gait.yaml      the gait table and its transition thresholds (gait.*)
+#   locomotion/swing.yaml     the swing foot reference and the support surface (swing.* · terrain.*)
 # The MPC, solver, contact, whole-body QP and runtime sections join as their
 # fragments when the code that reads them lands.
 include:
   - locomotion/model.yaml
   - locomotion/command.yaml
   - locomotion/gait.yaml
+  - locomotion/swing.yaml
 locomotion_controller: {}

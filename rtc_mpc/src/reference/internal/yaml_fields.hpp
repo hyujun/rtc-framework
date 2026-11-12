@@ -27,6 +27,23 @@ namespace rtc::mpc::internal {
 
 enum class FieldRead { kOk, kMissing, kWrongType, kNonFinite };
 
+// A FieldRead as the loader's own error enum — every reference/ loader enum
+// carries the four names below.
+template <class E>
+[[nodiscard]] constexpr E ToError(FieldRead r) noexcept {
+  switch (r) {
+    case FieldRead::kOk:
+      return E::kNoError;
+    case FieldRead::kMissing:
+      return E::kMissingKey;
+    case FieldRead::kWrongType:
+      return E::kWrongType;
+    case FieldRead::kNonFinite:
+      return E::kNonFinite;
+  }
+  return E::kWrongType;
+}
+
 // true when every key of the map `node` is in `allowed` (a non-map is the
 // caller's kNotAMap, checked first).
 [[nodiscard]] inline bool HasOnlyKeys(const YAML::Node& node,

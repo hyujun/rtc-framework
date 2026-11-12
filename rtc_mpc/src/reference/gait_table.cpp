@@ -12,20 +12,6 @@ namespace {
 
 using internal::FieldRead;
 
-[[nodiscard]] GaitTableError ToError(FieldRead r) noexcept {
-  switch (r) {
-    case FieldRead::kOk:
-      return GaitTableError::kNoError;
-    case FieldRead::kMissing:
-      return GaitTableError::kMissingKey;
-    case FieldRead::kWrongType:
-      return GaitTableError::kWrongType;
-    case FieldRead::kNonFinite:
-      return GaitTableError::kNonFinite;
-  }
-  return GaitTableError::kWrongType;
-}
-
 [[nodiscard]] bool NonNegative(const std::array<double, 2>& a) noexcept {
   return a[0] >= 0.0 && a[1] >= 0.0;
 }
@@ -84,7 +70,8 @@ using internal::FieldRead;
   for (std::size_t j = 0; j < times.size(); ++j) {
     const FieldRead r = internal::ReadScalar(times[j], tmp.switching_time[j]);
     if (r != FieldRead::kOk) {
-      return r == FieldRead::kMissing ? GaitTableError::kWrongType : ToError(r);
+      return r == FieldRead::kMissing ? GaitTableError::kWrongType
+                                      : internal::ToError<GaitTableError>(r);
     }
   }
   tmp.period = tmp.switching_time[tmp.n_phases];
@@ -95,7 +82,7 @@ using internal::FieldRead;
   };
   for (const FieldRead r : reads) {
     if (r != FieldRead::kOk) {
-      return ToError(r);
+      return internal::ToError<GaitTableError>(r);
     }
   }
   g = tmp;
@@ -212,7 +199,7 @@ GaitTableError LoadGaitTable(const YAML::Node& node, std::span<const std::string
     };
     for (const FieldRead r : scalars) {
       if (r != FieldRead::kOk) {
-        return ToError(r);
+        return internal::ToError<GaitTableError>(r);
       }
     }
     const YAML::Node seq = internal::Child(node, "sequence");
