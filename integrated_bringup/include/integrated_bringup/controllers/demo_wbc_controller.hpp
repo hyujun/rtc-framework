@@ -266,6 +266,16 @@ class DemoWbcController final : public RTControllerInterface {
   [[nodiscard]] const rtc::tsid::SolveResult* SolveTsidAllContactsActiveForTesting(
       const std::vector<std::string>& constraint_names);
 
+  /// The TSID formulation the YAML built (tasks / constraints by name) and the
+  /// contact state it solves with. Test seam (the dispatch fingerprint).
+  [[nodiscard]] rtc::tsid::FormulationBase& TsidFormulationForTesting() noexcept {
+    return tsid_controller_.Formulation();
+  }
+
+  [[nodiscard]] const rtc::tsid::ContactState& TsidContactStateForTesting() const noexcept {
+    return contact_state_;
+  }
+
   [[nodiscard]] int GetNumActiveFingertipsForTesting() const noexcept {
     return num_active_fingertips_;
   }
