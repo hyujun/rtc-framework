@@ -44,3 +44,25 @@ gait:
       faster_above: [0.5, 0.35]    # must exceed slower_below of the next gait
       slower_below: [0.05, 0.05]   # must stay below faster_above of the previous gait
       measured_tolerance: [0.05, 0.05]
+
+# ── Swing foot (LoadSwingConfig) ─────────────────────────────────────────────
+# The vertical swing reference of a foot over one swing stretch: two cubic
+# Hermite segments meeting at the apex (50 % of the stretch, zero velocity).
+# Short swings are scaled by s = min(1, T / time_scale) — the end rates and the
+# apex height in a closed stretch (header: rtc_mpc/reference/swing_trajectory.hpp).
+swing:
+  height: 0.08                   # [m] > 0 — apex above the lower of lift-off / touch-down
+  lift_off_velocity: 0.05        # [m/s] ż at lift-off
+  touch_down_velocity: 0.0       # [m/s] ż at touch-down
+  touch_down_offset: -0.001      # [m] touch-down height relative to the terrain (≤ 0 presses the foot in)
+  time_scale: 0.4                # [s] > 0 — swings shorter than this are scaled down
+  impact_proximity:              # the weight the foot cost ramps with: 1 at the ends, mid at the apex
+    mid: 0.005                   # in [0, 1]
+    lift_off_velocity: -0.15     # [1/s] rate at lift-off
+    touch_down_velocity: 0.3     # [1/s] rate at touch-down
+
+# ── Support surface (LoadTerrainConfig) ──────────────────────────────────────
+# A flat world plane z = height (rtc_mpc/reference/surface_frame.hpp). A terrain
+# estimator would replace the value, not the schema.
+terrain:
+  height: 0.0                    # [m] finite — the ground under the feet

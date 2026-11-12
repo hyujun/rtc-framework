@@ -49,6 +49,8 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `reference/` | `command_filter.hpp` | 보행 velocity 명령 필터 (non-RT, 고정 주기 — 체인은 헤더) → `FilteredCommand` POD |
 | `reference/` | `gait_table.hpp` · `gait_scheduler.hpp` | YAML gait 표 (접촉 비트마스크, 전환 문턱) · 창 tiling 과 전환 정책 (MPC thread, 할당 0) |
 | `reference/` | `contact_schedule.hpp` | `ContactSchedule` POD (mode 변화 event · `schedule_id` · `epoch`) + `ModeAt` 등 helper |
+| `reference/` | `swing_trajectory.hpp` | swing 발 z 참조 (두 구간 cubic Hermite, apex 50 %, 짧은 swing 은 축소) + impact proximity — YAML `swing:` · `terrain:` 로더, `BuildSwing` · `Evaluate` 는 할당 0 |
+| `reference/` | `surface_frame.hpp` | `SurfaceFrame` — 발이 닿는 world 평면 (지금은 flat 값) 과 `HeightAt` |
 | `logging/` | `mpc_timing_logger.hpp` | `<session>/timing/mpc_timing_log.csv` writer (아래 관측성) |
 
 ### 설계 약속
