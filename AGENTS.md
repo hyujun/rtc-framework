@@ -141,7 +141,7 @@ grep 이 정당한 코드를 잘못 잡았다고 판단되면 **보고 없이 �
 
 상세: [agent_docs/conventions.md](agent_docs/conventions.md). 헌법은 절대 규칙만:
 
-- **Namespace**: `rtc` (하위 `rtc::<pkg>` 포함, 예외는 conventions.md)
+- **Namespace**: `rtc_*` 는 `rtc` (하위 `rtc::<pkg>` 포함), 다른 패키지는 자기 것 (예외는 conventions.md)
 - **Naming**: Google C++ — `PascalCase` methods/types/free functions, `snake_case_` private members, `kConstant` constants
 - **Units**: SI (m, rad, s, kg, N); degree 는 API 경계에서만
 - **Rotation**: quaternion (`Eigen::Quaterniond`, Hamilton) internal, ZYX Euler at boundary
