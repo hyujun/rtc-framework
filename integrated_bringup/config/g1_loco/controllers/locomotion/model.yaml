@@ -1,0 +1,34 @@
+# locomotion_controller — model.* (g1_loco)
+#
+# A fragment of ../locomotion_controller.yaml (its `include:` list). The CM merges
+# it into that file's tree; every key keeps its full path. Schema and checks:
+# integrated_bringup controllers/locomotion/humanoid_model_config.hpp — every key
+# is required, an unknown key is refused.
+#
+# Frames are of the CM model (_base.yaml urdf: the G1 + the p1b surrogate hand on
+# the right wrist). Three roles, kept apart (WD-35):
+#   contacts       carry the load — the soles, at the sole bottom face (URDF
+#                  left_sole / right_sole = MJCF *_sole_ft_site)
+#   end_effectors  the arm ends manipulation will move — the left wrist (no hand)
+#                  and base_adapter, the mount of the right hand (as in _base.yaml's
+#                  tree model g1)
+#   torso_frame    what the torso tracking task follows
+locomotion_controller:
+  model:
+    # Device group of the body: its tree model and its joint_state_names (which
+    # must be the model's joint order — checked at configure).
+    body_group: "g1"
+    # universe: the only base a floating model accepts (WD-19). The CM model keeps a
+    # fixed root until the floating loader (W1-F04); universe is valid for both.
+    base_frame: "universe"
+    torso_frame: "torso_link"
+    # Order = index, {left, right}. At most 2.
+    end_effectors:
+      - {name: "left_hand", frame: "left_wrist_yaw_link"}
+      - {name: "right_hand", frame: "base_adapter"}
+    # Order = rtc_mpc contact index. dim: 6 = surface (wrench), 3 = point (force).
+    contacts:
+      - {name: "left_foot", frame: "left_sole", dim: 6}
+      - {name: "right_foot", frame: "right_sole", dim: 6}
+    # Hand device groups held at their hold pose while walking (WD-12); [] = no hand.
+    hand_groups: ["p1b"]

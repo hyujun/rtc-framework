@@ -1,0 +1,15 @@
+# locomotion_controller — the humanoid whole-body locomotion controller (g1_loco)
+#
+# Not registered yet: the controller itself comes later (W6-F03), so neither the CM
+# nor the GUI reads this file today. What exists is its configuration contract,
+# checked by integrated_bringup's test_humanoid_model_config through the CM's own
+# loader (rtc::LoadControllerConfig — the `include:` merge below included).
+#
+# What each part of the controller is configured with lives in a fragment under
+# locomotion/ (rtc_controller_manager README, `include:`):
+#   locomotion/model.yaml   which frames and device groups it works on (model.*)
+# The MPC, solver, contact, whole-body QP and runtime sections join as their
+# fragments when the code that reads them lands.
+include:
+  - locomotion/model.yaml
+locomotion_controller: {}
