@@ -2,6 +2,8 @@
 
 #include "rtc_tsid/formulation/formulation_factory.hpp"
 
+#include <algorithm>
+
 namespace rtc::tsid {
 
 void TSIDController::Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
@@ -28,6 +30,11 @@ void TSIDController::Init(const pinocchio::Model& model, const RobotModelInfo& r
   JcT_lambda_.setZero(robot_info.nv);
 
   output_.Init(robot_info.nv, robot_info.n_actuated, contact_cfg_.max_contact_vars);
+}
+
+const CommandOutput& TSIDController::SkipTick() noexcept {
+  output_.ResetDiagnostics();  // qp_converged / tau_valid false, qp_status −1
+  return output_;
 }
 
 const CommandOutput& TSIDController::Compute(const ControlState& /*state*/,
@@ -116,6 +123,18 @@ const CommandOutput& TSIDController::Compute(const ControlState& /*state*/,
   output_.a_opt.head(nv) = a;
   if (n_lambda_full > 0) {
     output_.lambda_opt.head(n_lambda_full) = result.x_opt.segment(nv, n_lambda_full);
+    // A slot not in contact carries no force: its λ enters no row but the
+    // 1e-8 regularisation, so the solver leaves it where the warm start put
+    // it. Report zero there, as τ above already assumes.
+    int offset = 0;
+    for (size_t i = 0; i < contacts.contacts.size() && offset < n_lambda_full; ++i) {
+      const int cdim =
+          (i < contact_cfg_.contacts.size()) ? contact_cfg_.contacts[i].contact_dim : 3;
+      if (!contacts.contacts[i].active || i >= cache.contact_frames.size()) {
+        output_.lambda_opt.segment(offset, std::min(cdim, n_lambda_full - offset)).setZero();
+      }
+      offset += cdim;
+    }
   }
   output_.tau.head(na) = tau_actuated_;
   output_.tau_valid = true;

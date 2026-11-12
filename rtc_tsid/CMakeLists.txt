@@ -56,6 +56,8 @@ add_library(rtc_tsid STATIC
   src/formulation/hqp_formulation.cpp
   src/formulation/formulation_factory.cpp
   src/formulation/task_factory.cpp
+  src/locomotion/reference_kinematics.cpp
+  src/locomotion/locomotion_formulation.cpp
   src/controller/tsid_controller.cpp
 )
 
@@ -190,6 +192,11 @@ if(BUILD_TESTING)
   # target + latch, the acceleration and torque-rate boxes, tau_valid, the
   # solver keys — every term off = the gates' bytes.
   add_tsid_gtest(test_floating_bounds)
+
+  # The humanoid whole-body QP assembled by LocomotionFormulationBuilder
+  # (W6-F01 PR B): stance, swing masking and tracking, ReferenceKinematics,
+  # the contact set from the spec, the #1040 / #1041 guards.
+  add_tsid_gtest(test_locomotion_formulation)
 
   # Stage B-1..B-3: ObjectFrame + grasp matrix G + ContactManager, GraspCache
   # (LDLT pinv + P_N) + ObjectWrenchTask, InternalForceTask (rank-based nullity

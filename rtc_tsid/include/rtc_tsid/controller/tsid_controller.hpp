@@ -28,6 +28,11 @@ class TSIDController final : public ControllerBase {
 
   void Reset() noexcept override;
 
+  // A tick the caller refused before the solve (its own input could not be
+  // used): nothing is solved, tau_valid / qp_converged false, qp_status −1,
+  // the last valid tau / a_opt / lambda_opt kept (WD-60). RT-safe.
+  [[nodiscard]] const CommandOutput& SkipTick() noexcept;
+
   [[nodiscard]] std::string_view Name() const noexcept override { return "tsid"; }
 
   // Phase preset 적용

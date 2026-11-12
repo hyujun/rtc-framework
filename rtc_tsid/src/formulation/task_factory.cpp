@@ -5,6 +5,7 @@
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
 #include "rtc_tsid/constraints/torque_limit_constraint.hpp"
+#include "rtc_tsid/tasks/com_task.hpp"
 #include "rtc_tsid/tasks/contact_consistency_task.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
 #include "rtc_tsid/tasks/internal_force_task.hpp"
@@ -77,6 +78,10 @@ BuildReport BuildTasks(const YAML::Node& tasks, const TaskFactoryContext& ctx,
       auto t = std::make_unique<ForceTask>();
       t->Init(model, info, cache, cfg);
       t->SetContactManager(ctx.contacts);
+      task = std::move(t);
+    } else if (type == "com") {
+      auto t = std::make_unique<CoMTask>();
+      t->Init(model, info, cache, cfg);
       task = std::move(t);
     } else if (type == "contact_consistency") {
       auto t = std::make_unique<ContactConsistencyTask>();

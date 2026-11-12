@@ -226,7 +226,7 @@ struct ControlReference {
 struct CommandOutput {
   Eigen::VectorXd tau;         // [n_actuated]
   Eigen::VectorXd a_opt;       // [nv]
-  Eigen::VectorXd lambda_opt;  // [max_contact_vars] (Stage A-5a: fixed-dim QP)
+  Eigen::VectorXd lambda_opt;  // [max_contact_vars] (fixed-dim QP; zero on a slot not in contact)
   bool qp_converged{false};
   double solve_time_us{0.0};
   int solve_levels{0};  // WQP: 1, HQP: 실제 level 수

@@ -20,7 +20,7 @@ namespace rtc::tsid {
 // YAML task / constraint dispatch — the one place a `type:` string becomes a
 // rtc_tsid task or constraint (WD-58). Init time only: allocates and throws.
 //
-//   tasks:        {<key>: {type: posture | se3 | force | contact_consistency |
+//   tasks:        {<key>: {type: posture | se3 | force | com | contact_consistency |
 //                                object_wrench | internal_force | object_se3, …}}
 //   constraints:  {<key>: {type: eom | contact_constraint | joint_limit |
 //                                friction_cone | torque_limit, …}}
@@ -65,6 +65,16 @@ struct BuiltEntry {
 struct BuildReport {
   std::vector<BuiltEntry> built;
   std::vector<FactoryMessage> messages;
+
+  // The entry built under `key`, or nullptr.
+  [[nodiscard]] const BuiltEntry* Find(const std::string& key) const noexcept {
+    for (const BuiltEntry& e : built) {
+      if (e.key == key) {
+        return &e;
+      }
+    }
+    return nullptr;
+  }
 };
 
 // Build every entry of `tasks` (a map) into `formulation`. A null or empty
