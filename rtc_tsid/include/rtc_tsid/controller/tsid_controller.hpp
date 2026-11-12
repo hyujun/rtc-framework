@@ -54,7 +54,9 @@ class TSIDController final : public ControllerBase {
   // Phase presets (YAML에서 로드)
   std::unordered_map<std::string, PhasePreset> presets_;
 
-  // τ 역산용 pre-allocated buffers
+  // τ 역산용 pre-allocated buffers. The outputs are written from these (and
+  // the solver's x_opt) only once the torque is known to be finite
+  // (CommandOutput::tau_valid).
   Eigen::VectorXd tau_full_;      // [nv]
   Eigen::VectorXd tau_actuated_;  // [n_actuated]
   Eigen::VectorXd JcT_lambda_;    // [nv]

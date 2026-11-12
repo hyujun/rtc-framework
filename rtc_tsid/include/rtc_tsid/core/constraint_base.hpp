@@ -51,7 +51,29 @@ class ConstraintBase {
                                  Eigen::Ref<Eigen::VectorXd> l_block,
                                  Eigen::Ref<Eigen::VectorXd> u_block) noexcept = 0;
 
-  void SetActive(bool active) noexcept { active_ = active; }
+  // Lifecycle hooks (WD-65), both no-ops by default and RT-safe.
+  // Reset: drop whatever an earlier tick latched (a contact anchor, the
+  // previous torque) so the next Compute starts as after Init. The
+  // formulation forwards its owner's Reset here.
+  virtual void Reset() noexcept {}
+
+  // The torque the owner actually applied (actuated rows, `n_actuated`),
+  // forwarded only on a tick whose solve converged to a finite torque
+  // (CommandOutput::tau_valid): a constraint bounding the change of τ keeps it.
+  virtual void OnTorqueApplied(const Eigen::VectorXd& /*tau*/) noexcept {}
+
+  // The constraint was turned on after being off (a phase preset): a
+  // constraint holding state latched while it was skipped drops it here.
+  // Fires on every false → true edge of SetActive, the first one included
+  // when a constraint starts inactive.
+  virtual void OnEnabled() noexcept {}
+
+  void SetActive(bool active) noexcept {
+    if (active && !active_) {
+      OnEnabled();
+    }
+    active_ = active;
+  }
 
   [[nodiscard]] bool IsActive() const noexcept { return active_; }
 

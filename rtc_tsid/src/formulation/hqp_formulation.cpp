@@ -25,14 +25,13 @@ void HQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInf
   max_prev_rows_ = max_n_vars_ * max_levels_;
 
   // Solver config — kept for the re-size in AddConstraint.
+  // Without the map: the struct's defaults (as before). With it: a missing
+  // key falls back to the HQP's own 10 outer steps (also as before).
   solver_cfg_ = QPSolverConfig{};
   if (config && config["hqp"] && config["hqp"]["solver_per_level"]) {
-    const auto& sc = config["hqp"]["solver_per_level"];
-    solver_cfg_.max_iter = sc["max_iter"].as<int>(10);
-    solver_cfg_.max_iter_in = sc["max_iter_in"].as<int>(100);
-    solver_cfg_.eps_abs = sc["eps_abs"].as<double>(1e-6);
-    solver_cfg_.eps_rel = sc["eps_rel"].as<double>(0.0);
-    solver_cfg_.verbose = sc["verbose"].as<bool>(false);
+    QPSolverConfig in_map = solver_cfg_;
+    in_map.max_iter = 10;
+    solver_cfg_ = ParseQPSolverConfig(config["hqp"]["solver_per_level"], in_map);
   }
 
   // Pre-allocate per-level resources
@@ -366,6 +365,21 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
 
   result_.levels_solved = levels_solved;
   return result_;
+}
+
+void HQPFormulation::Reset() noexcept {
+  for (const auto& con : constraints_) {
+    con->Reset();
+  }
+  for (auto& solver : qp_solvers_) {
+    solver.ResetWarmStart();
+  }
+}
+
+void HQPFormulation::OnTorqueApplied(const Eigen::VectorXd& tau) noexcept {
+  for (const auto& con : constraints_) {
+    con->OnTorqueApplied(tau);
+  }
 }
 
 }  // namespace rtc::tsid

@@ -239,12 +239,29 @@ struct CommandOutput {
   // tried, iterations summed over every level tried (failed one included).
   int qp_status{-1};
   int qp_iterations{0};
-  // Solver iterates of the last attempt were non-finite. WQP: qp_converged is
-  // then false. HQP: refers to the last level tried; qp_converged may still be
-  // true from an earlier level whose solution is the one in use.
+  // Solver iterates of the last attempt were non-finite, or the solve
+  // converged but the torque recovered from it did not come out finite. WQP:
+  // qp_converged is then false. HQP: refers to the last level tried;
+  // qp_converged may still be true from an earlier level whose solution is
+  // the one in use.
   bool qp_non_finite{false};
+  // The torque of this tick is usable: the solve converged and τ came out
+  // finite (WD-60). On any other tick tau / a_opt / lambda_opt keep the last
+  // valid values (zero after Init / Reset) — the consumer decides what to do
+  // with them; the diagnostics above describe the attempt.
+  bool tau_valid{false};
+  // Copied from SolveResult: the constraint rows assembled, the rows an active
+  // constraint could not fit (then qp_status == kRowBudgetExceeded) and
+  // ProxQP's outer (proximal) steps.
+  int n_eq_used{0};
+  int n_ineq_used{0};
+  int rows_dropped{0};
+  int outer_iterations{0};
 
   void Init(int nv, int n_actuated, int max_contact_vars);
+
+  // Every diagnostic back to "nothing attempted" (the vectors untouched).
+  void ResetDiagnostics() noexcept;
 };
 
 }  // namespace rtc::tsid

@@ -1,5 +1,8 @@
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
 
+#include "rtc_tsid/core/yaml_vector.hpp"
+
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -89,6 +92,15 @@ void JointLimitConstraint::Init(const pinocchio::Model& model, const RobotModelI
     v_max_limit_(i) = vl - eff_margin;
   }
 
+  // acceleration_max: a scalar for every row or one value per row, > 0.
+  has_a_max_ = false;
+  a_max_.setZero(n_rows_);
+  if (constraint_config && constraint_config["acceleration_max"]) {
+    a_max_ = ReadScalarOrVector(constraint_config, "acceleration_max", n_rows_, 0.0,
+                                /*strict=*/true, "joint_limit");
+    has_a_max_ = true;
+  }
+
   // Workspace pre-allocate
   a_pos_lb_.setZero(n_rows_);
   a_pos_ub_.setZero(n_rows_);
@@ -134,6 +146,7 @@ void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
   }
 
   int inverted = 0;
+  int cut = 0;
 
   for (int i = 0; i < n_rows_; ++i) {
     const double vi = cache.v(n_base_ + i);
@@ -172,8 +185,26 @@ void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
       l_block(i) = pinned;
       u_block(i) = pinned;
     }
+
+    // acceleration_max (header): intersect after the collapse. std::max(l, −m)
+    // returns l when l is NaN (the comparison is false), so a NaN row stays
+    // NaN (NUM-7); an infinite one is kept out of the cut by finite_box. A
+    // finite box beyond ±a_max is cut to the edge.
+    if (has_a_max_) {
+      const double m = a_max_(i);
+      const bool finite_box = std::isfinite(l_block(i)) && std::isfinite(u_block(i));
+      l_block(i) = std::max(l_block(i), -m);
+      u_block(i) = std::min(u_block(i), m);
+      if (finite_box && l_block(i) > u_block(i)) {
+        ++cut;
+        const double edge = l_block(i) > m ? m : -m;
+        l_block(i) = edge;
+        u_block(i) = edge;
+      }
+    }
   }
   inverted_count_ = inverted;
+  cut_count_ = cut;
 }
 
 }  // namespace rtc::tsid

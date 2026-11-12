@@ -36,7 +36,13 @@ class HQPFormulation final : public FormulationBase {
                                          const ContactState& contacts,
                                          const RobotModelInfo& robot_info) noexcept override;
 
+  void Reset() noexcept override;
+  void OnTorqueApplied(const Eigen::VectorXd& tau) noexcept override;
+
   [[nodiscard]] std::string_view Type() const noexcept override { return "hqp"; }
+
+  // The solver settings Init read (the `hqp.solver_per_level` keys over the defaults).
+  [[nodiscard]] const QPSolverConfig& SolverConfig() const noexcept { return solver_cfg_; }
 
  private:
   // Level별 task 인덱스 재구성 (active task만)

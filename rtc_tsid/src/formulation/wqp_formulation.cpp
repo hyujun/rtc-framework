@@ -17,14 +17,9 @@ void WQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInf
   max_n_ineq_ = 0;
 
   // Solver config — kept for the re-size in AddConstraint.
-  solver_cfg_ = QPSolverConfig{};
+  solver_cfg_ = QPSolverConfig{};  // max_iter 20 · max_iter_in 100, as before
   if (config && config["wqp"] && config["wqp"]["solver"]) {
-    const auto& sc = config["wqp"]["solver"];
-    solver_cfg_.max_iter = sc["max_iter"].as<int>(20);
-    solver_cfg_.max_iter_in = sc["max_iter_in"].as<int>(100);
-    solver_cfg_.eps_abs = sc["eps_abs"].as<double>(1e-6);
-    solver_cfg_.eps_rel = sc["eps_rel"].as<double>(0.0);
-    solver_cfg_.verbose = sc["verbose"].as<bool>(false);
+    solver_cfg_ = ParseQPSolverConfig(config["wqp"]["solver"], solver_cfg_);
   }
   ResizeQp();
 
@@ -209,6 +204,19 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
   result_.levels_solved = 1;
 
   return result_;
+}
+
+void WQPFormulation::Reset() noexcept {
+  for (const auto& con : constraints_) {
+    con->Reset();
+  }
+  qp_solver_.ResetWarmStart();
+}
+
+void WQPFormulation::OnTorqueApplied(const Eigen::VectorXd& tau) noexcept {
+  for (const auto& con : constraints_) {
+    con->OnTorqueApplied(tau);
+  }
 }
 
 }  // namespace rtc::tsid

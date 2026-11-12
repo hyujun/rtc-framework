@@ -45,6 +45,14 @@ const CommandOutput& TSIDController::Compute(const ControlState& /*state*/,
   output_.qp_status = result.status;
   output_.qp_iterations = result.iterations;
   output_.qp_non_finite = result.non_finite;
+  output_.n_eq_used = result.n_eq_used;
+  output_.n_ineq_used = result.n_ineq_used;
+  output_.rows_dropped = result.rows_dropped;
+  output_.outer_iterations = result.outer_iterations;
+  // Until the torque below is known to be finite, this tick's outputs are the
+  // last valid ones (WD-60). An HQP's solution is that of the last level it
+  // solved, so a lower level failing still leaves a usable torque.
+  output_.tau_valid = false;
 
   if (!result.converged) {
     return output_;
@@ -53,19 +61,14 @@ const CommandOutput& TSIDController::Compute(const ControlState& /*state*/,
   const int nv = robot_info_.nv;
   const int na = robot_info_.n_actuated;
 
-  // 2. Extract a_opt, lambda_opt
-  output_.a_opt.head(nv) = result.x_opt.head(nv);
-
-  // Stage A-5a: fixed-dim QP — extract the full λ block (size =
-  // max_contact_vars). Inactive contacts' λ slots are ≈ 0 by Hessian
-  // regularization (no task/constraint references them).
+  // 2. a and the full λ block live in the solver's x_opt (stable for this
+  // call): [a (nv); λ (max_contact_vars)]. Inactive contacts' λ slots are ≈ 0
+  // by Hessian regularization (no task/constraint references them).
   const int n_lambda_full = contact_cfg_.max_contact_vars;
-  if (n_lambda_full > 0) {
-    output_.lambda_opt.head(n_lambda_full) = result.x_opt.segment(nv, n_lambda_full);
-  }
+  const auto a = result.x_opt.head(nv);
 
   // 3. τ 역산: tau = S · (M·a + h - Jcᵀ·λ)
-  tau_full_.noalias() = cache.M * output_.a_opt.head(nv);
+  tau_full_.noalias() = cache.M * a;
   tau_full_ += cache.h;
 
   // Jcᵀ·λ 조립 — fixed-dim λ index per contact slot. Skip inactive contacts
@@ -90,7 +93,7 @@ const CommandOutput& TSIDController::Compute(const ControlState& /*state*/,
       const auto& Jc = cache.contact_frames[i].J;
       // Jcᵀ·λ_i = Jc[:cdim, :]ᵀ · λ_i
       JcT_lambda_.noalias() +=
-          Jc.topRows(cdim).transpose() * output_.lambda_opt.segment(lambda_offset, cdim);
+          Jc.topRows(cdim).transpose() * result.x_opt.segment(nv + lambda_offset, cdim);
 
       lambda_offset += cdim;
     }
@@ -100,18 +103,32 @@ const CommandOutput& TSIDController::Compute(const ControlState& /*state*/,
 
   // S projection (noalias: the product would otherwise go through a heap
   // temporary on the RT tick)
-  output_.tau.head(na).noalias() = robot_info_.S * tau_full_;
+  tau_actuated_.noalias() = robot_info_.S * tau_full_;
+  if (!tau_actuated_.allFinite() || !result.x_opt.head(nv + n_lambda_full).allFinite()) {
+    // A converged solve whose torque overflowed: reported like any other
+    // non-finite tick, so a consumer gating on qp_converged sees it too.
+    output_.qp_converged = false;
+    output_.qp_non_finite = true;
+    return output_;
+  }
+
+  // 4. Publish the valid tick and tell the constraints what was applied.
+  output_.a_opt.head(nv) = a;
+  if (n_lambda_full > 0) {
+    output_.lambda_opt.head(n_lambda_full) = result.x_opt.segment(nv, n_lambda_full);
+  }
+  output_.tau.head(na) = tau_actuated_;
+  output_.tau_valid = true;
+  formulation_->OnTorqueApplied(output_.tau);
 
   return output_;
 }
 
 void TSIDController::Reset() noexcept {
-  output_.qp_converged = false;
-  output_.solve_time_us = 0.0;
-  output_.solve_levels = 0;
-  output_.qp_status = -1;
-  output_.qp_iterations = 0;
-  output_.qp_non_finite = false;
+  if (formulation_) {
+    formulation_->Reset();
+  }
+  output_.ResetDiagnostics();
   output_.tau.setZero();
   output_.a_opt.setZero();
   output_.lambda_opt.setZero();
