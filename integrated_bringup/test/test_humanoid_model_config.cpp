@@ -3,8 +3,8 @@
 // shipped g1_loco files through the CM's own loader, the CM model and the shipped
 // rosters; then the handoff to rtc_mpc's RobotModelHandler.
 //
-// The model is the g1_loco CM model (G1 + p1b surrogate hand; fixed root until the
-// floating loader, W1-F04), built the way the CM builds it
+// The model is the g1_loco CM model (G1 + p1b surrogate hand; floating root, W1-F04),
+// built the way the CM builds it
 // (shipped_catching_bringup_fixture.hpp). No ROS node.
 #include "integrated_bringup/controllers/locomotion/humanoid_model_config.hpp"
 #include "rtc_controller_manager/controller_config_loader.hpp"
@@ -244,12 +244,12 @@ TEST(HumanoidModelConfig, RefusesAFrameTheModelDoesNotHave) {
                 "model.end_effectors[1].frame: frame 'right_hand_palm' is not in the model");
 }
 
-// The shipped CM model keeps a fixed root until the floating loader (W1-F04); the same
-// urdf: block with a free-flyer root is the model this rule is for.
-const pinocchio::Model& FloatingCmModel() {
+// The shipped CM model has a floating root (W1-F04) — the model this rule is for; the
+// same urdf: block with a fixed root is the model a pelvis base is valid on.
+const pinocchio::Model& FixedCmModel() {
   static const std::shared_ptr<const pinocchio::Model> model = [] {
     rtc_urdf_bridge::ModelConfig cfg = fx::ShippedModelConfig(kProfile);
-    cfg.root_joint_type = "floating";
+    cfg.root_joint_type = "fixed";
     return rtc_urdf_bridge::PinocchioModelBuilder(cfg).GetFullModel();
   }();
   return *model;
@@ -261,17 +261,17 @@ TEST(HumanoidModelConfig, RefusesANonUniverseBaseOnTheFloatingModel) {
   const loco::HumanoidModelConfig on_pelvis = loco::LoadHumanoidModelConfig(pelvis, kContext);
   const loco::HumanoidModelConfig on_universe = loco::LoadHumanoidModelConfig(Rig(), kContext);
   // Floating: universe passes, pelvis is refused.
-  EXPECT_NO_THROW(loco::ValidateAgainstModel(on_universe, FloatingCmModel(), kContext));
+  EXPECT_NO_THROW(loco::ValidateAgainstModel(on_universe, CmModel(), kContext));
   try {
-    loco::ValidateAgainstModel(on_pelvis, FloatingCmModel(), kContext);
+    loco::ValidateAgainstModel(on_pelvis, CmModel(), kContext);
     ADD_FAILURE() << "a floating model with base_frame pelvis was accepted";
   } catch (const std::invalid_argument& e) {
     EXPECT_NE(std::string(e.what()).find("model.base_frame: the model has a floating base"),
               std::string::npos)
         << e.what();
   }
-  // Fixed (the shipped CM model today): pelvis is a valid base.
-  EXPECT_NO_THROW(loco::ValidateAgainstModel(on_pelvis, CmModel(), kContext));
+  // Fixed: pelvis is a valid base.
+  EXPECT_NO_THROW(loco::ValidateAgainstModel(on_pelvis, FixedCmModel(), kContext));
 }
 
 TEST(HumanoidModelConfig, RefusesAContactOnTheBaseFrame) {

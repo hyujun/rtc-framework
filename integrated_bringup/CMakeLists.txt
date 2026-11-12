@@ -2060,9 +2060,9 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_shipped_sim_config rclcpp)
 
   # The shipped g1_loco profile (#977): demo_joint_controller configures on the
-  # whole-body tree + closed-chain surrogate hand with pd_feedforward, and the
-  # same model with a floating root refuses — the premise the profile keeps its
-  # fixed root under. Reads _base.yaml + sim.yaml + controllers/ as the CM does.
+  # whole-body tree + closed-chain surrogate hand with pd_feedforward, on a
+  # floating root (#1031) — a fixed-root override of the same model holds the
+  # stance identically. Reads _base.yaml + sim.yaml + controllers/ as the CM does.
   ament_add_gtest(test_g1_loco_configure test/test_g1_loco_configure.cpp
     TIMEOUT 180
     ENV ROS_DOMAIN_ID=52

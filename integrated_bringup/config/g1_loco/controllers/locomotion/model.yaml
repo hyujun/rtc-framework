@@ -18,8 +18,8 @@ locomotion_controller:
     # Device group of the body: its tree model and its joint_state_names (which
     # must be the model's joint order — checked at configure).
     body_group: "g1"
-    # universe: the only base a floating model accepts (WD-19). The CM model keeps a
-    # fixed root until the floating loader (W1-F04); universe is valid for both.
+    # universe: the only base a floating model accepts (WD-19). The CM model's root
+    # floats (W1-F04); universe is valid on a fixed root too.
     base_frame: "universe"
     torso_frame: "torso_link"
     # Order = index, {left, right}. At most 2.

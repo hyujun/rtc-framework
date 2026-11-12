@@ -1,6 +1,8 @@
 // ── loop_projection 구현 ─────────────────────────────────────────────────────
 #include "rtc_urdf_bridge/loop_projection.hpp"
 
+#include "rtc_urdf_bridge/free_flyer_root.hpp"
+
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -78,14 +80,17 @@ bool IsResidualAcceptable(const ConstraintKinematics& kin, const ProjectionOptio
 
 // Damped least-squares Newton projection over a chosen set of velocity columns.
 // Only the tangent columns in `free_cols` may move; every other column keeps a
-// zero increment, so `integrate` leaves its q exactly unchanged. Shared core of
-// ProjectToConstraint (all columns free) and ProjectPassiveToConstraint (only
-// passive columns free — actuated q held fixed).
+// zero increment, so `integrate` leaves a 1-DoF joint's q exactly unchanged.
+// A free-flyer root is held: its 6 columns leave `free_cols` and its 7 q slots
+// are put back after each integrate (SE3 integrate renormalises the quaternion
+// even for a zero increment). Shared core of ProjectToConstraint (all columns
+// free) and ProjectPassiveToConstraint (only passive columns free — actuated q
+// held fixed).
 //   dv_free = −Jc_freeᵀ (Jc_free Jc_freeᵀ + λ²I)⁻¹ φ(q); q ← integrate(model, q, dq).
 ProjectionResult ProjectOverColumns(const pinocchio::Model& model, pinocchio::Data& data,
                                     const std::vector<pinocchio::RigidConstraintModel>& constraints,
                                     const Eigen::VectorXd& q_init,
-                                    const std::vector<int>& free_cols,
+                                    const std::vector<int>& requested_cols,
                                     const ProjectionOptions& opts) {
   ValidateOptions(opts);
 
@@ -97,6 +102,33 @@ ProjectionResult ProjectOverColumns(const pinocchio::Model& model, pinocchio::Da
     result.converged = true;
     result.acceptable = true;
     return result;
+  }
+
+  // free-flyer root 는 held — 사영 열에서 뺀다 (loop Jc 의 root 열은 해석적으로 0, roundoff 뿐).
+  // held root 로 닫을 수 없는 입력은 조용히 미수렴하게 두지 않고 거부한다.
+  const bool held_root = IsFreeFlyerRoot(model);
+  if (held_root) {
+    if (q_init.size() != model.nq) {
+      throw std::invalid_argument("loop_projection: q_init 크기(" + std::to_string(q_init.size()) +
+                                  ") 가 model.nq(" + std::to_string(model.nq) + ") 와 다릅니다");
+    }
+    if (HasWorldAnchoredConstraint(constraints)) {
+      throw std::invalid_argument(
+          "loop_projection: free-flyer root 모델에 world 에 걸린 loop 가 있습니다 — held root 로는 "
+          "닫을 수 없습니다");
+    }
+    if (!HasNormalizedFreeFlyerRoot(model, q_init)) {
+      throw std::invalid_argument(
+          "loop_projection: free-flyer root 의 quaternion 이 정규화돼 있지 않습니다 (held root 는 "
+          "사영이 다시 정규화하지 않는다)");
+    }
+  }
+  std::vector<int> free_cols;
+  free_cols.reserve(requested_cols.size());
+  for (const int c : requested_cols) {
+    if (!held_root || c >= kFreeFlyerNv) {
+      free_cols.push_back(c);
+    }
   }
 
   const int n_free = static_cast<int>(free_cols.size());
@@ -144,7 +176,7 @@ ProjectionResult ProjectOverColumns(const pinocchio::Model& model, pinocchio::Da
     const Eigen::VectorXd y = JJt.ldlt().solve(kin.phi);
     const Eigen::VectorXd dv_free = -Jc_free.transpose() * y;  // n_free
 
-    // 전체 tangent 로 scatter: 미포함(고정) 열 = 0 → integrate 시 해당 q 정확히 불변.
+    // 전체 tangent 로 scatter: 미포함(고정) 열 = 0 → integrate 시 1-DoF 관절 q 는 정확히 불변.
     Eigen::VectorXd dq = Eigen::VectorXd::Zero(model.nv);
     for (int j = 0; j < n_free; ++j) {
       dq[free_cols[static_cast<std::size_t>(j)]] = dv_free[j];
@@ -152,6 +184,10 @@ ProjectionResult ProjectOverColumns(const pinocchio::Model& model, pinocchio::Da
 
     Eigen::VectorXd q_next(model.nq);
     pinocchio::integrate(model, result.q, dq, q_next);
+    if (held_root) {
+      // 증분 0 이어도 SE3 integrate 는 quaternion 을 다시 정규화한다 — root 칸을 bit 그대로 둔다.
+      q_next.head<kFreeFlyerNq>() = result.q.head<kFreeFlyerNq>();
+    }
     result.q = q_next;
   }
 
@@ -212,6 +248,13 @@ ProjectionResult ProjectPassiveWithContinuation(
   const bool sizes_ok = (q_prev.size() == model.nq) && (q_target.size() == model.nq);
   if (!sizes_ok || max_actuated_increment <= 0.0) {
     return ProjectPassiveToConstraint(model, data, constraints, q_target, actuated_joint_ids, opts);
+  }
+  // difference · interpolate 도 root quaternion 정규화를 전제한다 (Debug assert) — 먼저 거부.
+  if (TotalConstraintDim(constraints) > 0 && (!HasNormalizedFreeFlyerRoot(model, q_prev) ||
+                                              !HasNormalizedFreeFlyerRoot(model, q_target))) {
+    throw std::invalid_argument(
+        "loop_projection: free-flyer root 의 quaternion 이 정규화돼 있지 않습니다 "
+        "(q_prev/q_target)");
   }
 
   // actuated 열에서의 seed 증분 크기. difference() 는 continuous(cos,sin)·multi-DoF 관절도
@@ -279,7 +322,12 @@ Eigen::VectorXd ProjectVelocity(const pinocchio::Model& model, pinocchio::Data& 
   if (m == 0) {
     return v;
   }
-  const ConstraintKinematics kin = ComputeConstraintKinematics(model, data, constraints, q);
+  ConstraintKinematics kin = ComputeConstraintKinematics(model, data, constraints, q);
+  // free-flyer root 는 position-level 사영과 같이 held — root 열을 빼면 v 의 root 성분이 그대로
+  // 남는다.
+  if (IsFreeFlyerRoot(model)) {
+    kin.Jc.leftCols<kFreeFlyerNv>().setZero();
+  }
   const Eigen::MatrixXd I = Eigen::MatrixXd::Identity(m, m);
   const Eigen::MatrixXd JJt = kin.Jc * kin.Jc.transpose() + (damping * damping) * I;
   const Eigen::VectorXd Jv = kin.Jc * v;

@@ -4,7 +4,16 @@
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/types/types.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
+#include "rtc_urdf_bridge/free_flyer_root.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/joint-configuration.hpp>
+#pragma GCC diagnostic pop
 
 #include <rclcpp/logging.hpp>
 
@@ -40,7 +49,11 @@ bool CombinedModelCache::SelectModel(rtc_urdf_bridge::PinocchioModelBuilder& bui
   if (!full_model_ptr_) {
     return false;
   }
-  q_curr_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nq);
+  // Neutral, not zero: the reorder scatters device joints only, so the slots no
+  // device reports keep this value — a free-flyer root's quaternion must start as
+  // a unit one (NUM-3). Neutral is 0 for a revolute / prismatic joint and
+  // (cos, sin) = (1, 0) for a continuous one.
+  q_curr_full_ = pinocchio::neutral(*full_model_ptr_);
   v_curr_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nv);
   return true;
 }
@@ -83,9 +96,14 @@ void CombinedModelCache::BuildReorderMap(const std::vector<std::string>* arm_joi
   if (arm_joint_names == nullptr) {
     RCLCPP_WARN(logger, "%.*s primary device config unavailable — identity reorder map",
                 static_cast<int>(log_prefix.size()), log_prefix.data());
+    // Identity over the JOINTS: a free-flyer root's slots lead q / v and no device
+    // reports them, so the device order starts after it.
+    const bool floating = rtc_urdf_bridge::IsFreeFlyerRoot(model);
+    const int q0 = floating ? rtc_urdf_bridge::kFreeFlyerNq : 0;
+    const int v0 = floating ? rtc_urdf_bridge::kFreeFlyerNv : 0;
     for (int i = 0; i < full_dof_; ++i) {
-      ext_to_pin_q_[static_cast<std::size_t>(i)] = i;
-      ext_to_pin_v_[static_cast<std::size_t>(i)] = i;
+      ext_to_pin_q_[static_cast<std::size_t>(i)] = q0 + i;
+      ext_to_pin_v_[static_cast<std::size_t>(i)] = v0 + i;
     }
     joint_reorder_valid_ = (full_dof_ > 0);
     return;
@@ -131,7 +149,7 @@ void CombinedModelCache::ExtractFullState(const rtc::ControllerState& state, int
   // F5 gate, INSIDE the helper (#236 S7b). Six call sites across three
   // controllers scatter through here, and the bound below cannot make a narrow
   // device safe — q_curr_full_ PERSISTS across ticks, so the slots the bound
-  // skips keep their previous value (zero before the first readable tick) and
+  // skips keep their previous value (neutral before the first readable tick) and
   // the model runs at a configuration numerically identical to reading the
   // unreported channels outright (#265 comment 2 §2). Every caller gates as
   // well; this one is what makes the seventh caller safe by construction.
@@ -178,8 +196,8 @@ void CombinedModelCache::ExtractFullState(const rtc::ControllerState& state, int
   //
   // q_curr_full_ PERSISTS, so with the bound alone a narrow hand produces a
   // SPLICED configuration — slots [0, nc1) fresh from this tick, slots
-  // [nc1, hand_dof) still holding whatever was there before (zero until the
-  // first readable tick). That is not a stale model, it is a model of a hand
+  // [nc1, hand_dof) still holding whatever was there before (neutral until
+  // the first readable tick). That is not a stale model, it is a model of a hand
   // posture the robot was never in, and every consumer downstream — fingertip
   // FK, the Delassus/constraint blocks of the closed-chain path — is a
   // kinematic function of the WHOLE hand block. A coherent configuration one

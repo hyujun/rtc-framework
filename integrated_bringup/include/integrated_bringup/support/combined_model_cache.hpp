@@ -112,8 +112,9 @@ class CombinedModelCache {
   void InitCacheDeferred(const std::vector<pinocchio::FrameIndex>& contact_frame_ids);
 
   /// ext(device joint-state 순서) → Pinocchio q/v reorder map 구성. @p arm_joint_names 가
-  /// nullptr(primary device config 부재)이면 identity fallback. @p hand_joint_names 가 nullptr
-  /// 이면 hand 관절 없음. @p full_dof = arm_dof + hand_dof. 완료 후 @ref reorder_valid() 갱신.
+  /// nullptr(primary device config 부재)이면 identity fallback (free-flyer root 면 root 뒤의
+  /// 관절부터). @p hand_joint_names 가 nullptr 이면 hand 관절 없음. @p full_dof = arm_dof +
+  /// hand_dof. 완료 후 @ref reorder_valid() 갱신.
   void BuildReorderMap(const std::vector<std::string>* arm_joint_names,
                        const std::vector<std::string>* hand_joint_names, int full_dof,
                        std::string_view log_prefix, const rclcpp::Logger& logger);
@@ -124,9 +125,9 @@ class CombinedModelCache {
   ///
   /// **F5 게이트 내장** (#236 S7b): `rtc::IsDeviceReadable(devices[0], arm_dof)` 가 false 면
   /// arm scatter 를 아예 하지 않는다 (no-op). clamp 만으로는 안전해지지 않기 때문이다 —
-  /// `q_curr_full_` 은 tick 을 넘어 **지속**하므로 건너뛴 슬롯이 이전값(첫 tick 엔 0)을
-  /// 유지하고, 모델이 보는 configuration 은 미보고 채널을 그냥 읽은 것과 수치적으로 같아진다.
-  /// 계약·근거는 `rtc_controller_interface/device_readability.hpp` 와
+  /// `q_curr_full_` 은 tick 을 넘어 **지속**하므로 건너뛴 슬롯이 이전값(첫 tick 엔 neutral —
+  /// 1-DoF 관절은 0)을 유지하고, 모델이 보는 configuration 은 미보고 채널을 그냥 읽은 것과
+  /// 수치적으로 같아진다. 계약·근거는 `rtc_controller_interface/device_readability.hpp` 와
   /// `rtc_controllers/docs/compliance-conventions.md` §3.7.
   void ExtractFullState(const rtc::ControllerState& state, int arm_dof, int hand_dof) noexcept;
 
@@ -181,7 +182,9 @@ class CombinedModelCache {
   /// @ref ArmTcpPoseFromCache 의 self-enforcing 게이트 — un-init cache_ 소비를 막는다.
   bool cache_initialized_{false};
   int full_dof_{0};
-  Eigen::VectorXd q_curr_full_;  ///< [nq] current q in Pinocchio order (per tick)
+  /// [nq] current q in Pinocchio order (per tick). Seeded with `pinocchio::neutral`: slots no
+  /// device reports (a free-flyer root) keep it.
+  Eigen::VectorXd q_curr_full_;
   Eigen::VectorXd v_curr_full_;  ///< [nv] current v in Pinocchio order (per tick)
 };
 

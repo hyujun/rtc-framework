@@ -48,6 +48,18 @@ class PinocchioModelBuilder;
 ///   가속(종속 성분 `= −Jc_D⁻¹·γ`, `γ = J̇c·v_full` 은 동일 Jc 함수의 유한차분으로 산출해
 ///   규약 정합을 보장). `h_a = C_a·v_a + g_a` (비선형 bias) 이며 v=0 이면 `h_a = g_a`.
 ///
+/// ### free-flyer root (WD-38)
+/// full 모델의 root 가 free-flyer (@ref IsFreeFlyerRoot) 면 root 는 **held** 다 — 독립도 종속도
+/// 아니고 (`n_a` · 종속 수에 들지 않는다), 사영이 움직이지 않으며 (@ref ProjectToConstraint 의
+/// "free-flyer root" 절), q 의 root 7 칸은 seed (`q_ref`) 값 그대로다. G 의 root 6 행은 0 이다.
+/// 따라서 M_a · g_a · h_a 는 **base 를 seed 자세에 고정한 값** (관절 블록) 이고 base 와의 결합은
+/// 담지 않는다 — floating-base 동역학이 필요한 소비자는 이 축약을 쓰지 않는다. 구속이 있으면
+/// FK 는 seed base 기준 world 좌표다. 거부: 구속 없는 (항등) 축약은 free-flyer 가 독립 관절이 되어
+/// 단일-DoF 검사에서 throw 하고, world 에 걸린 loop (@ref HasWorldAnchoredConstraint) 도 throw
+/// 한다.
+/// root 는 다시 정규화되지 않으므로 seed 의 root quaternion 이 정규화돼 있지 않으면
+/// (@ref HasNormalizedFreeFlyerRoot) std::invalid_argument 로 거부한다.
+///
 /// ### 사용 패턴
 /// @code
 ///   PinocchioModelBuilder builder(config);           // closure_yaml_path 설정
@@ -200,9 +212,10 @@ class ClosedChainHandle {
   ProjectionOptions projection_opts_;
 
   int nv_{0};
-  int m_{0};       ///< 총 구속 차원
-  int n_a_{0};     ///< 독립 좌표 수 (= nv − m)
-  bool identity_;  ///< 구속 없음 → 항등 축약 (serial 등가)
+  int m_{0};               ///< 총 구속 차원
+  int n_a_{0};             ///< 독립 좌표 수 (= nv − m)
+  bool identity_;          ///< 구속 없음 → 항등 축약 (serial 등가)
+  bool held_root_{false};  ///< free-flyer root 를 held 로 둔다 (Initialize 에서 1 회 판정)
 
   std::vector<IndependentSlot> independent_;  ///< 독립 관절 슬롯 (v_idx 오름차순)
   std::vector<int> indep_v_idx_;              ///< 독립 velocity 인덱스 (오름차순)

@@ -50,6 +50,12 @@ namespace rtc_urdf_bridge {
 /// 강제하는 well-posedness `dep ≤ m` 덕에 정의된다. 특이(조립형상 근접)는 LDLT 최소 pivot
 /// 을 σ_min(Jc_D) 대리로 사용해 `Status.singular` 로 flag 한다.
 ///
+/// ### free-flyer root (WD-38)
+/// @ref ClosedChainHandle 의 "free-flyer root" 절과 같은 계약이다 — root 는 held (독립 · 종속
+/// 아님, seed 값 그대로, G 의 root 행 0), 축약 동역학은 base 를 seed 자세에 고정한 값, 항등 경로와
+/// world 에 걸린 loop 는 생성에서 거부. Newton loop 는 integrate 마다 root 7 칸을 되돌려 base 를
+/// bit 단위로 보존한다 (7 double 복사 — RT-safe). held 여부는 생성자에서 1 회 판정한다.
+///
 /// ### RT 계약
 /// - `Update()` / getter / `GetFrameJacobian()` 는 모두 `noexcept`, 힙 할당 없음, thread-per-
 ///   handle (하나의 handle 은 하나의 스레드에서만). 복사 금지, 이동 허용.
@@ -134,9 +140,11 @@ class RtClosedChainHandle {
   ///   움직이면 분기 이탈로 보고 `held=true` + q_full_ 미커밋 (기본
   ///   @ref kDefaultMaxPassiveDeviation, ≤0 → 비활성). seed clamp 를 통과했더라도 near-singular
   ///   조립형상에서 DLS 스텝이 폭주할 수 있어 남겨 두는 2차 가드다.
-  /// @throws std::invalid_argument model 이 null, 또는 q_seed 가 비어있지 않은데 크기≠nq
+  /// @throws std::invalid_argument model 이 null, 또는 q_seed 가 비어있지 않은데 크기≠nq, 또는
+  ///   free-flyer root 의 quaternion 이 정규화돼 있지 않음 (@ref HasNormalizedFreeFlyerRoot)
   /// @throws std::runtime_error 독립 관절 non-single-DoF, 구속 有인데 독립 관절 無,
-  ///   종속 DoF > 구속 rows m (reduction underdetermined)
+  ///   종속 DoF > 구속 rows m (reduction underdetermined), free-flyer root 모델에 world 에 걸린
+  ///   loop
   RtClosedChainHandle(std::shared_ptr<const pinocchio::Model> model,
                       std::vector<pinocchio::RigidConstraintModel> constraints,
                       std::vector<pinocchio::JointIndex> actuated_joint_ids,
@@ -298,7 +306,7 @@ class RtClosedChainHandle {
   int nv_{0};
   int m_{0};    ///< 총 구속 차원
   int n_a_{0};  ///< 독립 좌표 수
-  int dep_{0};  ///< 종속(=passive) DoF 수 = nv − n_a
+  int dep_{0};  ///< 종속(=passive) DoF 수 = nv − n_a (− held free-flyer root 6)
   int num_iterations_{2};
   double proj_lambda2_{0.0};        ///< 사영 λ²
   double reduction_lambda_{0.0};    ///< G left-pinv λ
@@ -306,6 +314,7 @@ class RtClosedChainHandle {
   double max_passive_deviation_{0.0};  ///< 사영 후 passive 이탈 상한 (≤0 → 비활성)
   int consecutive_held_ticks_{0};  ///< 연속 held Update() tick 수 (Status::held_ticks 원천)
   bool identity_{false};           ///< 구속 없음 → 항등 (serial 등가)
+  bool held_root_{false};  ///< free-flyer root 를 held 로 둔다 (Initialize 에서 1 회 판정, RT-1)
 
   std::vector<IndependentSlot> independent_;  ///< 독립 관절 슬롯 (v_idx 오름차순)
   std::vector<int> dep_v_idx_;  ///< 종속(=passive) velocity 인덱스 (오름차순)

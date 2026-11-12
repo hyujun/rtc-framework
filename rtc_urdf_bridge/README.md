@@ -132,6 +132,8 @@ const auto & M = handle.GetMassMatrix();      // n_a × n_a
 
 > **`ClosedChainHandle::Update()` 는 non-RT** 다. 반복 사영 · SVD 를 하므로 RT 핫패스에서 매 tick 호출하지 않는다. RT 에서는 `RtClosedChainHandle::UpdateDynamics(v_a)` 를 쓰고, 개방 체인은 `RtModelHandle` 이다.
 
+full 모델의 root 가 free-flyer 면 root 는 held 다. 독립도 종속도 아니고 seed 자세를 bit 그대로 지키며, `M_a` · `g_a` · `h_a` 는 base 를 그 자세에 고정한 값이다. world 에 걸린 loop 와 구속 없는 handle 은 이때 생성을 거부한다.
+
 소비자 배선용으로 `IsFrameDownstreamOfLoop(fid)` 는 프레임 상류에 loop-passive 관절이 있는지 알려 준다. loop 상류가 없는 프레임은 `RtModelHandle` 로 두고, 있는 프레임만 closed-chain FK 로 배선한다.
 
 ### 충돌 capsule (`CapsuleModel` · `CapsuleWorkspace`)
@@ -154,7 +156,7 @@ ws.EvaluateDistances();  ws.EvaluateGradients(model, data);   // Distance(j) · 
 
 ```yaml
 urdf_path: "path/to/robot.urdf"      # 상대 경로는 이 YAML 위치 기준
-root_joint_type: "fixed"             # fixed | floating
+root_joint_type: "fixed"             # fixed | floating (free-flyer 는 full · actuated 만, sub · tree 는 잠금)
 
 sub_models:                          # root → tip 단일 체인
   - {name: arm, root_link: base_link, tip_link: tool_link}

@@ -10,13 +10,17 @@
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
+#include <boost/variant/get.hpp>
+
 namespace rtc_urdf_bridge {
 
 bool IsFreeFlyerRoot(const pinocchio::Model& model) noexcept {
   if (model.joints.size() < 2) {
     return false;
   }
-  return model.joints[1].shortname() == pinocchio::JointModelFreeFlyer::classname();
+  // A variant type check, not `shortname()` (which builds a std::string): this
+  // keeps the predicate allocation-free, so RT-callable helpers may use it.
+  return boost::get<pinocchio::JointModelFreeFlyer>(&model.joints[1].toVariant()) != nullptr;
 }
 
 }  // namespace rtc_urdf_bridge

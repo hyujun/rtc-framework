@@ -97,11 +97,28 @@ inline constexpr double kJacobianRankRelTol = 1e-9;
 
 /// @brief 위 + loop-passive 열 Jc_D 의 σ_min 으로 조립 특이 판정 (@ref LoopPassiveVelocityIndices).
 ///   @p actuated_joint_ids 가 비면 열 판정 필드는 기본값 (0 / +inf / false) 으로 남는다.
+///   free-flyer root 모델 (@ref IsFreeFlyerRoot) 에서도 rank · σ_min(Jc_D) 판정은 fixed 와 같다 —
+///   loop 멤버는 두 끝 support 의 대칭차라 root 는 들어가지 않는다. `delassus_condition` 만
+///   free-floating M⁻¹ 로 계산돼 fixed root 와 값이 다르다 (진단 전용 — 어떤 판정도 쓰지 않는다).
 /// @note 로드 타임 전용.
 [[nodiscard]] JacobianReport AnalyzeConstraintJacobian(
     const pinocchio::Model& model, pinocchio::Data& data,
     const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q,
     std::span<const pinocchio::JointIndex> actuated_joint_ids);
+
+/// @brief 어느 constraint 든 한 끝이 world (universe, joint 0) 인가. free-flyer root 모델에서
+///   그런 loop 는 free-flyer 를 loop 멤버로 만든다 — 폐쇄 체인 handle 은 free-flyer 를 held 로
+///   두므로 이 경우 생성을 거부한다. 할당 없음.
+[[nodiscard]] bool HasWorldAnchoredConstraint(
+    const std::vector<pinocchio::RigidConstraintModel>& constraints) noexcept;
+
+/// @brief free-flyer root (@ref IsFreeFlyerRoot) 모델이면 @p q 의 root quaternion 이 유한하고
+///   pinocchio 의 정규화 판정 (`quaternion::isNormalized` 기본 정밀도 — SE3 integrate ·
+///   difference · interpolate 의 Debug assert 와 같은 임계) 을 통과하는가. 그 외 모델이면 true.
+///   폐쇄 체인 handle · 사영은 root 를 held 로 두어 다시 정규화하지 않으므로 (seed 값 그대로)
+///   진입에서 이것으로 seed 를 거부한다. @p q 크기가 model.nq 와 다르면 false. 할당 없음.
+[[nodiscard]] bool HasNormalizedFreeFlyerRoot(const pinocchio::Model& model,
+                                              const Eigen::VectorXd& q) noexcept;
 
 /// @brief 모든 constraint dim 합 (CONTACT_6D→6, else 3).
 [[nodiscard]] int TotalConstraintDim(
@@ -112,7 +129,11 @@ inline constexpr double kJacobianRankRelTol = 1e-9;
 
 /// @brief frame @p frame_id 가 loop-passive(movable & non-actuated) 관절의 하류인가.
 ///   frame → 부모 joint → universe 의 support(조상) 경로에 movable non-actuated 관절이 하나라도
-///   있으면 true. @p frame_id 가 model.frames 범위 밖이면 false. **RT/non-RT 공용 pure 함수**
+///   있으면 true. free-flyer root (@ref IsFreeFlyerRoot) 는 모든 frame 의 조상이지만 loop 멤버가
+///   아니고 handle 이 held 로 두므로 세지 않는다 (WD-38). world 에 걸린 loop 가 있으면 free-flyer
+///   가 loop 멤버가 되지만, floating 모델에서 그런 구속은 handle · 사영이 거부하므로 고려하지
+///   않는다.
+///   @p frame_id 가 model.frames 범위 밖이면 false. **RT/non-RT 공용 pure 함수**
 ///   (topology-driven wiring). @ref ClosedChainHandle 과 @ref RtClosedChainHandle 이 공유한다 —
 ///   두 곳에 복제하면 loop-membership 규칙이 한쪽만 바뀌어 closed FK 활성화가 조용히 desync 된다.
 [[nodiscard]] bool IsFrameDownstreamOfLoop(

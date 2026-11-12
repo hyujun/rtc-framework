@@ -4,6 +4,7 @@
 #include "rtc_urdf_bridge/closed_chain_model.hpp"
 #include "rtc_urdf_bridge/closure_yaml_loader.hpp"
 #include "rtc_urdf_bridge/constraint_builder.hpp"
+#include "rtc_urdf_bridge/free_flyer_root.hpp"
 #include "rtc_urdf_bridge/inertial_validation.hpp"
 #include "rtc_urdf_bridge/urdf_logging.hpp"
 #include "rtc_urdf_bridge/xacro_processor.hpp"
@@ -106,6 +107,8 @@ void PinocchioModelBuilder::Build() {
 // sidecar 의 계약은 "actuated_joints 외 모든 non-fixed movable 관절 = passive" 이므로
 // full model 의 movable 관절 집합에서 actuated_joints 를 뺀 나머지가 loop-passive 다
 // (fixed 관절은 이미 Pinocchio 모델에서 흡수되어 names 에 없으므로 자동 제외).
+// free-flyer root 는 URDF 관절이 아니고 loop 구속 밖이라 loop-passive 가 아니다 — 잠그면 actuated
+// 모델이 고정 root 가 된다 (WD-37: 부동은 full · actuated 모델, sub · tree 는 별도로 잠근다).
 void PinocchioModelBuilder::LoadClosureSpecAndComputePassiveLocks() {
   if (config_.closure_yaml_path.empty()) {
     return;
@@ -113,8 +116,9 @@ void PinocchioModelBuilder::LoadClosureSpecAndComputePassiveLocks() {
   closure_spec_ = LoadClosureYaml(config_.closure_yaml_path);
 
   const auto& actuated = closure_spec_->actuated_joints;
-  // index 0 은 universe (root) 관절 — movable 아님, 건너뛴다.
-  for (std::size_t jid = 1; jid < full_model_->names.size(); ++jid) {
+  // index 0 은 universe 관절 — movable 아님, 건너뛴다. free-flyer root (jid 1) 도 건너뛴다.
+  const std::size_t first_jid = IsFreeFlyerRoot(*full_model_) ? 2 : 1;
+  for (std::size_t jid = first_jid; jid < full_model_->names.size(); ++jid) {
     const std::string& jname = full_model_->names[jid];
     if (std::find(actuated.begin(), actuated.end(), jname) != actuated.end()) {
       continue;
@@ -127,8 +131,8 @@ void PinocchioModelBuilder::LoadClosureSpecAndComputePassiveLocks() {
   RCLCPP_INFO(logger(),
               "Extended-URDF closure passive-lock: %zu joint 잠금 "
               "(movable %zu − actuated %zu), sidecar='%s'",
-              closure_passive_lock_names_.size(), full_model_->names.size() - 1, actuated.size(),
-              config_.closure_yaml_path.c_str());
+              closure_passive_lock_names_.size(), full_model_->names.size() - first_jid,
+              actuated.size(), config_.closure_yaml_path.c_str());
 }
 
 // ── 전체 모델 구축 ──────────────────────────────────────────────────────────
@@ -232,6 +236,20 @@ std::vector<std::string> PinocchioModelBuilder::CollectPassiveLockNames() const 
   return names;
 }
 
+// ── sub · tree 모델의 free-flyer 잠금 (WD-37) ─────────────────────────────────
+// root_joint 는 pinocchio 가 붙인 관절이라 URDF 기반 ComputeJointsToLock 에 없다. sub · tree 는
+// 직렬 체인 · 가지 모델이라 base 를 갖지 않는다 — neutral (단위 자세) 로 잠가 fixed root 빌드와
+// 같은 모델을 만든다. 부동 base 는 full · actuated 모델만 갖는다.
+void PinocchioModelBuilder::AppendFreeFlyerLock(std::vector<std::string>& names) const {
+  if (!IsFreeFlyerRoot(*full_model_)) {
+    return;
+  }
+  const std::string& root = full_model_->names[1];
+  if (std::find(names.begin(), names.end(), root) == names.end()) {
+    names.push_back(root);
+  }
+}
+
 // ── 축소 모델 구축 ──────────────────────────────────────────────────────────
 void PinocchioModelBuilder::BuildReducedModels() {
   auto ref_config = MakeReferenceConfig();
@@ -254,6 +272,7 @@ void PinocchioModelBuilder::BuildReducedModels() {
       }
     }
 
+    AppendFreeFlyerLock(joints_to_lock_names);
     auto joints_to_lock = ResolveJointIndicesToLock(joints_to_lock_names);
 
     auto reduced = std::make_shared<pinocchio::Model>();
@@ -291,6 +310,7 @@ void PinocchioModelBuilder::BuildTreeModels() {
       }
     }
 
+    AppendFreeFlyerLock(joints_to_lock_names);
     auto joints_to_lock = ResolveJointIndicesToLock(joints_to_lock_names);
 
     auto tree_model = std::make_shared<pinocchio::Model>();
