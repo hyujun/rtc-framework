@@ -36,6 +36,7 @@ URDF 기반 매니퓰레이터용 제어 법칙·궤적·estimator 라이브러�
 | trajectory | `trajectory/*.hpp` | 5차 다항식 궤적 ([아래](#궤적-생성기)) |
 | inference | `inference/policy_io.hpp` · `reach_gate.hpp` · `params/policy_io_params.hpp` · `params/reach_gate_params.hpp` | 학습 정책 tensor marshalling · reach gate |
 | 공용 | `gain_floor.hpp` | 비음수 게인 floor `FloorNonNegativeGain` (NUM-6) |
+| 공용 | `params/yaml_read.hpp` | YAML 노드 읽기 — section · unknown/missing key · 고정 길이 벡터 · 이름 집합. 분류만 돌려주고 throw 하지 않는다 (문구는 각 `ParseXxxParams`) |
 
 `catching/` 은 공 포구 플래너·감독자의 수치 코어입니다 (수식은 각 헤더).
 

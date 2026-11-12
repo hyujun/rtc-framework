@@ -75,6 +75,8 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/wbc/phase.cpp
   src/controllers/wbc/grasp_phase_manager.cpp
   src/controllers/wbc/force_reference_updater.cpp
+  # Humanoid locomotion controller config (W1-F03 #1026; the controller is W6-F03)
+  src/controllers/locomotion/humanoid_model_config.cpp
   # Learned-policy binding. Its law half lives in rtc_controllers/inference
   # (tensor marshalling) — this side owns the ControllerState/engine contract.
   src/controllers/inference/controller.cpp
@@ -93,6 +95,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/hand_joint/controller.cpp
   src/controllers/hand_joint/lifecycle.cpp
   src/controllers/hand_joint/parameters.cpp
+  src/controllers/locomotion/original_layout_adapter.cpp
   src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
   src/support/pull_estimator_wiring.cpp
@@ -1683,6 +1686,21 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # Original (OCS2) ↔ pinocchio free-flyer layout adapter (W1-F03, #1026): no
+  # ROS. Weight one-hot vs a literal table, rpy / twist vs pinocchio kinematics
+  # and a finite difference, 200 seeded round trips at 1e-12.
+  ament_add_gtest(test_original_layout_adapter test/test_original_layout_adapter.cpp)
+  target_link_libraries(test_original_layout_adapter
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_original_layout_adapter
+    rtc_base
+    rtc_math
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   # ── Vision ingress decode ──────────────────────────────────────────────────
   # Owns the wire format: the ball_perception layout is reproduced in the
   # fixture on purpose, so this suite is what fails when the publisher moves.
@@ -2058,6 +2076,63 @@ if(BUILD_TESTING)
     yaml-cpp
   )
   ament_target_dependencies(test_g1_loco_configure
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # locomotion_controller.model.* (W1-F03): every refusal against a passing twin,
+  # the shipped g1_loco files through rtc::LoadControllerConfig + the CM model +
+  # the shipped rosters, and the handoff to rtc_mpc RobotModelHandler. No node.
+  ament_add_gtest(test_humanoid_model_config test/test_humanoid_model_config.cpp
+    TIMEOUT 120
+  )
+  target_include_directories(test_humanoid_model_config PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_humanoid_model_config PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_humanoid_model_config
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_humanoid_model_config
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_mpc
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # g1_loco body joint order: CM tree model == device rosters == MJCF actuators
+  # (W1-F03 WG-1), through the same comparison ValidateDevices refuses with.
+  find_package(tinyxml2_vendor QUIET)
+  find_package(tinyxml2 REQUIRED)
+  ament_add_gtest(test_g1_loco_joint_order test/test_g1_loco_joint_order.cpp
+    TIMEOUT 120
+  )
+  target_include_directories(test_g1_loco_joint_order PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_g1_loco_joint_order PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_g1_loco_joint_order
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+    tinyxml2::tinyxml2
+  )
+  ament_target_dependencies(test_g1_loco_joint_order
     ament_index_cpp
     rclcpp
     rclcpp_lifecycle

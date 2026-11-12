@@ -2,8 +2,9 @@
 
 // For kCap: `io.n_min` above the snapshot capacity is unsatisfiable, and the
 // capacity is owned by trajectory.hpp (one definition, not a second literal).
-#include "catching_yaml_read.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
+#include "rtc_controllers/params/yaml_read.hpp"
+#include "tbd_scalar_read.hpp"
 #include <rtc_base/types/types.hpp>
 
 #include <cmath>
@@ -60,11 +61,11 @@ T ReadOptional(const YAML::Node& node, const char* key, T fallback) {
 /// as an empty node, so every key under it takes its doc default — itself TBD
 /// where the doc leaves it open, which the validator then refuses in the
 /// active configuration (fail-closed). A present section that is not a map is
-/// refused. The READING is `params_detail::ReadSectionNode`, shared with
+/// refused. The READING is `rtc::params::ReadSectionNode`, shared with
 /// catch_pose_ik_params.cpp; only the refusal's wording is this parser's.
 YAML::Node ReadSection(const YAML::Node& parent, const char* key) {
-  const params_detail::SectionRead sec = params_detail::ReadSectionNode(parent, key);
-  if (sec.kind == params_detail::SectionKind::kNotAMap) {
+  const rtc::params::SectionRead sec = rtc::params::ReadSectionNode(parent, key);
+  if (sec.kind == rtc::params::SectionKind::kNotAMap) {
     Reject("section '", key, "' must be a map");
   }
   return sec.node;
@@ -103,7 +104,7 @@ int ReadPositiveCount(const YAML::Node& node, const char* key, int fallback = 0)
   }
   const double v = read.value.value;
   if (!(v > 0.0) || std::floor(v) != v) {
-    Reject("'", key, "' must be a positive whole number, got ", params_detail::Spelling(read.node));
+    Reject("'", key, "' must be a positive whole number, got ", rtc::params::Spelling(read.node));
   }
   return static_cast<int>(v);
 }
@@ -423,7 +424,7 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
     if (!(std::isfinite(o.planner_segment_mpc_switch_margin) &&
           o.planner_segment_mpc_switch_margin > 0.0)) {
       Reject("'planner.segment.mpc.switch_margin' must be a positive number, got ",
-             params_detail::Spelling(mpc["switch_margin"]));
+             rtc::params::Spelling(mpc["switch_margin"]));
     }
     o.planner_segment_mpc_eta_v = ReadTbdDouble(mpc, "eta_v", o.planner_segment_mpc_eta_v);
   });

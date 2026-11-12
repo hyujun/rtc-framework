@@ -1,6 +1,6 @@
 #include "rtc_controllers/params/dynamics_feedforward_params.hpp"
 
-#include "catching_yaml_read.hpp"  // FindUnknownKey
+#include "rtc_controllers/params/yaml_read.hpp"
 
 #include <cmath>
 #include <stdexcept>
@@ -18,8 +18,8 @@ void ParseDynamicsFeedforwardParams(const YAML::Node& block, std::string_view ke
   }
   // First, before any value is read: a misspelt or renamed key (the gravity
   // gain was `gain`) would otherwise leave its term at the seed without a word.
-  if (const auto unknown = rtc::catching::params_detail::FindUnknownKey(
-          block, {"enabled", "gravity_gain", "inertia_gain", "max_abs"})) {
+  if (const auto unknown =
+          FindUnknownKey(block, {"enabled", "gravity_gain", "inertia_gain", "max_abs"})) {
     throw std::runtime_error(k + "." + *unknown + " is not a key of " + k +
                              " (enabled, gravity_gain, inertia_gain, max_abs)");
   }

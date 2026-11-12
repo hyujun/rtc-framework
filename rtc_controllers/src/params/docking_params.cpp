@@ -1,7 +1,7 @@
 // Parser for the docking keys. See docking_params.hpp.
 #include "rtc_controllers/catching/docking_params.hpp"
 
-#include "catching_yaml_read.hpp"
+#include "rtc_controllers/params/yaml_read.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,10 +19,10 @@ namespace rtc::catching {
 
 namespace {
 
-using params_detail::FindUnknownKey;
-using params_detail::ReadSectionNode;
-using params_detail::SectionKind;
-using params_detail::Spelling;
+using rtc::params::FindUnknownKey;
+using rtc::params::ReadSectionNode;
+using rtc::params::SectionKind;
+using rtc::params::Spelling;
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();

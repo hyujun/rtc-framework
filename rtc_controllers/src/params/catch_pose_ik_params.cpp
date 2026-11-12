@@ -1,6 +1,7 @@
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 
-#include "catching_yaml_read.hpp"
+#include "rtc_controllers/params/yaml_read.hpp"
+#include "tbd_scalar_read.hpp"
 
 #include <cmath>
 #include <limits>
@@ -49,16 +50,16 @@ std::string IkKey(const std::string& base, const char* key) {
   return base + ".ik." + key;
 }
 
-using params_detail::Spelling;
+using rtc::params::Spelling;
 
 /// Child section `key` of `parent`, named by its full dotted `path` in any
 /// rejection. An absent (or empty `key:`) section reads as an empty node, so
 /// every key under it takes its in-code default; a present section that is not
-/// a map is refused. The READING is `params_detail::ReadSectionNode`, shared
+/// a map is refused. The READING is `rtc::params::ReadSectionNode`, shared
 /// with catching_params.cpp; only the refusal's wording is this parser's.
 YAML::Node ReadSection(const YAML::Node& parent, const char* key, const std::string& path) {
-  const params_detail::SectionRead sec = params_detail::ReadSectionNode(parent, key);
-  if (sec.kind == params_detail::SectionKind::kNotAMap) {
+  const rtc::params::SectionRead sec = rtc::params::ReadSectionNode(parent, key);
+  if (sec.kind == rtc::params::SectionKind::kNotAMap) {
     RejectMsg("section '" + path + "' must be a map");
   }
   return sec.node;
