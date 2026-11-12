@@ -28,8 +28,11 @@
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <cstdint>
+#include <cstdio>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -140,6 +143,127 @@ TEST(DemoWbcQpRowBudget, Ur5eP1bHoldsEveryRowWithAllContactsActive) {
   ExpectNoRowsDropped({"ur5e_p1b", fx::SharedUr5eP1bModelConfig(), fx::SharedUr5eP1bBuilder(),
                        fx::MakeUr5eP1bDeviceConfigs(), fx::MakeUr5eP1bState(), fx::kUr5eDt,
                        fx::kUr5eArmDof + fx::kP1bHandDof});
+}
+
+// ── The YAML dispatch fingerprint (WD-58) ────────────────────────────────────
+//
+// What the tsid.tasks / tsid.constraints dispatch builds on a shipped config,
+// in YAML order — each entry's key, type, resolved Name, priority, weight,
+// active flag and row counts — plus an FNV-1a digest of five ticks of the
+// all-contacts solve's x_opt. Pinned before the dispatch moved into rtc_tsid
+// (task_factory) and unchanged by the move: the move is a refactor.
+
+std::uint64_t Fnv1a(std::uint64_t h, const Eigen::VectorXd& v) {
+  const auto* bytes = reinterpret_cast<const unsigned char*>(v.data());
+  for (std::size_t i = 0; i < static_cast<std::size_t>(v.size()) * sizeof(double); ++i) {
+    h ^= bytes[i];
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+std::string DispatchFingerprint(Profile p) {
+  const YAML::Node cfg = fx::ShippedControllerNode(p.name, "demo_wbc_controller");
+  auto ctrl = std::make_unique<DemoWbcController>("");
+  auto node =
+      std::make_shared<rclcpp_lifecycle::LifecycleNode>(std::string("tsid_dispatch_") + p.name);
+  ctrl->SetSystemModelConfig(p.model);
+  ctrl->SetSharedModelBuilder(p.builder);
+  ctrl->SetControlRate(1.0 / p.dt);
+  ctrl->LoadConfig(cfg);
+  ctrl->SetDeviceNameConfigs(p.devices);
+  if (ctrl->on_configure(rclcpp_lifecycle::State{}, node, cfg) !=
+      DemoWbcController::CallbackReturn::SUCCESS) {
+    ADD_FAILURE() << "configure failed";
+    return {};
+  }
+  (void)ctrl->Compute(p.state);
+  auto& f = ctrl->TsidFormulationForTesting();
+  const auto& contacts = ctrl->TsidContactStateForTesting();
+  std::ostringstream out;
+  out.precision(17);
+  const YAML::Node tsid = cfg["tsid"];
+  for (auto it = tsid["tasks"].begin(); it != tsid["tasks"].end(); ++it) {
+    const std::string key = it->first.as<std::string>();
+    const YAML::Node entry = it->second;
+    const rtc::tsid::TaskBase* t = f.GetTask(key);
+    out << "task " << key << " " << entry["type"].as<std::string>("") << " ";
+    if (t == nullptr) {
+      out << "null\n";
+      continue;
+    }
+    out << t->Name() << " p" << t->Priority() << " w" << t->Weight() << " a" << t->IsActive()
+        << " r" << t->ResidualDim() << "\n";
+  }
+  const ExpectedRows rows = CountRows(tsid, p.nv);
+  for (const auto& name : rows.constraint_names) {
+    const rtc::tsid::ConstraintBase* c = f.GetConstraint(name);
+    out << "constraint " << name << " ";
+    if (c == nullptr) {
+      out << "null\n";
+      continue;
+    }
+    out << "a" << c->IsActive() << " eq" << c->EqDim(contacts) << " in" << c->IneqDim(contacts)
+        << "\n";
+  }
+  std::uint64_t digest = 14695981039346656037ULL;
+  for (int tick = 0; tick < 5; ++tick) {
+    (void)ctrl->Compute(p.state);
+    const auto* result = ctrl->SolveTsidAllContactsActiveForTesting(rows.constraint_names);
+    if (result == nullptr) {
+      ADD_FAILURE() << "no TSID stack";
+      return {};
+    }
+    digest = Fnv1a(digest, result->x_opt);
+  }
+  char hex[32];
+  std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(digest));
+  out << "digest " << hex << "\n";
+  return out.str();
+}
+
+// Recorded on main before the move (2026-11-12, this workspace's build).
+const char* const kIiwa7LeapFingerprint =
+    "task posture posture posture p0 w1 a1 r23\n"
+    "task se3_tcp se3 se3_tcp p0 w50 a0 r6\n"
+    "task force force force p1 w0 a0 r0\n"
+    "task contact_consistency contact_consistency contact_consistency p1 w0 a0 r0\n"
+    "task object_wrench object_wrench object_wrench p1 w0 a0 r0\n"
+    "task internal_force internal_force internal_force p1 w0 a0 r0\n"
+    "task object_se3 object_se3 object_se3 p0 w0 a0 r0\n"
+    "constraint eom a1 eq0 in0\n"
+    "constraint joint_limit a1 eq0 in23\n"
+    "constraint friction_cone a0 eq0 in0\n"
+    "constraint torque_limit a1 eq0 in23\n"
+    "digest fdf3aabec5c58e85\n";
+const char* const kUr5eP1bFingerprint =
+    "task posture posture posture p0 w1 a1 r16\n"
+    "task se3_tcp se3 se3_tcp p0 w50 a1 r6\n"
+    "task force force force p1 w0 a0 r0\n"
+    "task contact_consistency contact_consistency contact_consistency p1 w0 a0 r0\n"
+    "task object_wrench object_wrench object_wrench p1 w0 a0 r0\n"
+    "task internal_force internal_force internal_force p1 w0 a0 r0\n"
+    "task object_se3 object_se3 object_se3 p0 w0 a0 r0\n"
+    "constraint eom a1 eq0 in0\n"
+    "constraint joint_limit a1 eq0 in16\n"
+    "constraint friction_cone a0 eq0 in0\n"
+    "constraint torque_limit a1 eq0 in16\n"
+    "digest 5f31a08fb80ff1bd\n";
+
+TEST(DemoWbcTsidDispatch, TheShippedConfigsBuildTheSameStack) {
+  for (Profile p : {Profile{"iiwa7_leap", fx::SharedIiwa7LeapModelConfig(),
+                            fx::SharedIiwa7LeapBuilder(), fx::MakeIiwa7LeapDeviceConfigs(),
+                            fx::MakeIiwa7LeapState(), fx::kDt, fx::kArmDof + fx::kHandDof},
+                    Profile{"ur5e_p1b", fx::SharedUr5eP1bModelConfig(), fx::SharedUr5eP1bBuilder(),
+                            fx::MakeUr5eP1bDeviceConfigs(), fx::MakeUr5eP1bState(), fx::kUr5eDt,
+                            fx::kUr5eArmDof + fx::kP1bHandDof}}) {
+    SCOPED_TRACE(p.name);
+    const std::string fp = DispatchFingerprint(p);
+    std::printf("dispatch fingerprint %s:\n%s", p.name, fp.c_str());
+    ::testing::Test::RecordProperty(std::string(p.name) + "_dispatch", fp);
+    EXPECT_EQ(fp,
+              std::string(p.name) == "iiwa7_leap" ? kIiwa7LeapFingerprint : kUr5eP1bFingerprint);
+  }
 }
 
 // Σ joint_state_names over the devices of a profile's _base.yaml.

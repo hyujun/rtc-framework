@@ -41,6 +41,7 @@
 #include "rtc_tsid/contact/grasp_cache.hpp"
 #include "rtc_tsid/contact/object_state_provider.hpp"
 #include "rtc_tsid/controller/tsid_controller.hpp"
+#include "rtc_tsid/formulation/task_factory.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 #include "rtc_tsid/types/object_frame.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
@@ -265,6 +266,16 @@ class DemoWbcController final : public RTControllerInterface {
 
   [[nodiscard]] const rtc::tsid::SolveResult* SolveTsidAllContactsActiveForTesting(
       const std::vector<std::string>& constraint_names);
+
+  /// The TSID formulation the YAML built (tasks / constraints by name) and the
+  /// contact state it solves with. Test seam (the dispatch fingerprint).
+  [[nodiscard]] rtc::tsid::FormulationBase& TsidFormulationForTesting() noexcept {
+    return tsid_controller_.Formulation();
+  }
+
+  [[nodiscard]] const rtc::tsid::ContactState& TsidContactStateForTesting() const noexcept {
+    return contact_state_;
+  }
 
   [[nodiscard]] int GetNumActiveFingertipsForTesting() const noexcept {
     return num_active_fingertips_;
@@ -571,10 +582,11 @@ class DemoWbcController final : public RTControllerInterface {
 
   // ── TSID task/constraint YAML factory ───────────────────────────────────
   //
-  // Dispatches on the `type:` field of each entry under `tsid.tasks` /
-  // `tsid.constraints`. Supported tasks: posture, se3, force. Supported
-  // constraints: eom, joint_limit, friction_cone. Unknown types log ERROR
-  // and skip. Called once in LoadConfig after TSIDController::Init().
+  // `tsid.tasks` / `tsid.constraints` through rtc_tsid's task_factory (WD-58;
+  // its header lists the types): what it reports is logged as ERROR and the
+  // entry skipped. Called once in LoadConfig after TSIDController::Init().
+  [[nodiscard]] rtc::tsid::TaskFactoryContext TsidFactoryContext();
+  void LogFactoryMessages(const rtc::tsid::BuildReport& report);
   void BuildTsidTasks(const YAML::Node& tsid_node);
   void BuildTsidConstraints(const YAML::Node& tsid_node);
 

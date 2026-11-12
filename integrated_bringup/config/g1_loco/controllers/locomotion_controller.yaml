@@ -13,7 +13,8 @@
 #   locomotion/gait.yaml      the gait table and its transition thresholds (gait.*)
 #   locomotion/swing.yaml     the swing foot reference and the support surface (swing.* · terrain.*)
 #   locomotion/reference.yaml the stage reference the OCP tracks (reference.*)
-# The MPC, solver, contact, whole-body QP and runtime sections join as their
+#   locomotion/whole_body_qp.yaml the whole-body QP it solves each tick (whole_body_qp.*)
+# The MPC, solver, contact and runtime sections join as their
 # fragments when the code that reads them lands.
 include:
   - locomotion/model.yaml
@@ -21,4 +22,5 @@ include:
   - locomotion/gait.yaml
   - locomotion/swing.yaml
   - locomotion/reference.yaml
+  - locomotion/whole_body_qp.yaml
 locomotion_controller: {}

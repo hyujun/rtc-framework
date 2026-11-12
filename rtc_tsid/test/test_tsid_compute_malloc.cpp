@@ -37,6 +37,7 @@
 
 #include "g1_fixture.hpp"
 #include "g1_wqp_fixture.hpp"
+#include "loco_wbc_fixture.hpp"
 #include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_tsid/constraints/contact_constraint.hpp"
 #include "rtc_tsid/constraints/eom_constraint.hpp"
@@ -229,6 +230,51 @@ TEST(TsidComputeMallocTest, TheLocomotionTermsAddNothingOnAnEdgeTick) {
   EXPECT_TRUE(valid);
   EXPECT_EQ(compute, solve_only);
   RecordProperty("proxqp_solve_mallocs", std::to_string(solve_only));
+}
+
+// The humanoid QP the locomotion builder assembles (W6-F01 PR B: three SE3
+// tasks, force, posture; PrimalDualLDLT): on the tick a foot leaves the ground
+// (its task switches on, the force rows shrink, the reference kinematics run)
+// UpdateReferences allocates nothing, and the whole Compute adds nothing to
+// ProxQP's own count (the twin measures its Solve alone on the same tick).
+TEST(TsidComputeMallocTest, TheLocomotionBuilderAddsNothingOnALiftOffTick) {
+  test::LocoRig a, b;
+  const Eigen::VectorXd q = test::QStand(*a.model);
+  for (test::LocoRig* r : {&a, &b}) {
+    r->Set(q, Eigen::VectorXd::Zero(r->model->nv));
+    r->ref.v_des(6 + 9) = 0.3;
+    r->ref.a_des(6 + 9) = 1.0;
+    for (int i = 0; i < 3; ++i) {
+      ASSERT_TRUE(r->Solve().tau_valid);
+    }
+    r->Release(1);
+  }
+  std::size_t update = 0;
+  bool updated = false;
+  std::size_t solve_only = 0;
+  {
+    rtc::testing::ScopedMallocGate gate;
+    updated = a.b.UpdateReferences(a.ref, a.contacts);
+    update = gate.count();
+  }
+  {
+    rtc::testing::ScopedMallocGate gate;
+    (void)a.b.Controller().Formulation().Solve(a.cache, a.ref, a.contacts, a.info);
+    solve_only = gate.count();
+  }
+  std::size_t compute = 0;
+  bool valid = false;
+  {
+    rtc::testing::ScopedMallocGate gate;
+    valid = b.Solve().tau_valid;
+    compute = gate.count();
+  }
+  EXPECT_TRUE(updated);
+  EXPECT_TRUE(a.b.FootTask(1)->IsActive()) << "premise: the measured tick switched the task on";
+  EXPECT_EQ(update, 0U);
+  EXPECT_TRUE(valid);
+  EXPECT_EQ(compute, solve_only);
+  RecordProperty("proxqp_solve_mallocs_loco", std::to_string(solve_only));
 }
 
 TEST(TsidComputeMallocTest, TorqueRecoveryAroundTheSolveAllocatesNothing) {

@@ -2111,6 +2111,7 @@ if(BUILD_TESTING)
     rtc_controllers
     rtc_urdf_bridge
     rtc_mpc
+    rtc_tsid
     rtc_base
     pinocchio
     Eigen3

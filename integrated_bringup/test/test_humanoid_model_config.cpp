@@ -1,7 +1,8 @@
 // locomotion_controller.model.* (humanoid_model_config.hpp): every refusal next to the
 // same rig accepted, so a check that accepts everything (or nothing) is red; then the
 // shipped g1_loco files through the CM's own loader, the CM model and the shipped
-// rosters; then the handoff to rtc_mpc's RobotModelHandler.
+// rosters; then the handoff to rtc_mpc's RobotModelHandler, and the shipped
+// whole_body_qp.* building rtc_tsid's humanoid QP on the CM models.
 //
 // The model is the g1_loco CM model (G1 + p1b surrogate hand; floating root, W1-F04),
 // built the way the CM builds it
@@ -13,6 +14,7 @@
 #include "rtc_mpc/reference/stage_reference_builder.hpp"
 #include "rtc_mpc/reference/surface_frame.hpp"
 #include "rtc_mpc/reference/swing_trajectory.hpp"
+#include "rtc_tsid/locomotion/locomotion_formulation.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "shipped_catching_bringup_fixture.hpp"
 
@@ -23,6 +25,8 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/center-of-mass.hpp>
+#include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/algorithm/model.hpp>
 #pragma GCC diagnostic pop
@@ -32,6 +36,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -417,6 +422,79 @@ TEST(HumanoidModelConfig, TheShippedReferenceCoversTheActuatedJointsAndInitsTheB
   rtc::mpc::StageReferenceBuilder builder;
   EXPECT_EQ(builder.Init(handler, cfg, swing, terrain, 51, 0.02),
             rtc::mpc::ReferenceError::kNoError);
+}
+
+// The shipped whole_body_qp.* with model.*'s contact set and torso frame
+// builds the humanoid QP (rtc_tsid LocomotionFormulationBuilder) on the CM's
+// actuated model and on the body model (hand joints held, WD-12) — which one
+// the controller runs on is the controller feature's call — and standing on
+// both soles at half the weight each it solves on the first tick with every
+// row in its budget. The contact order is model.contacts'.
+TEST(HumanoidModelConfig, TheShippedWholeBodyQpBuildsAndSolvesOnTheCmModels) {
+  const YAML::Node root =
+      rtc::LoadControllerConfig(ament_index_cpp::get_package_share_directory("integrated_bringup") +
+                                    "/config/g1_loco/controllers/locomotion_controller.yaml",
+                                "locomotion_controller");
+  ASSERT_TRUE(root["whole_body_qp"].IsMap()) << "the include: merge did not bring it in";
+  const loco::HumanoidModelConfig model_cfg =
+      loco::LoadHumanoidModelConfig(root["model"], kContext);
+  rtc::tsid::LocomotionModelSpec spec;
+  for (const auto& c : model_cfg.contacts) {
+    spec.contacts.push_back({c.name, c.frame, c.dim});
+  }
+  spec.torso_frame = model_cfg.torso_frame;
+
+  const std::shared_ptr<const pinocchio::Model> actuated =
+      fx::ShippedModelBuilder(kProfile)->GetActuatedModel();
+  ASSERT_TRUE(actuated);
+  std::vector<pinocchio::JointIndex> lock;
+  for (const std::string& name : ShippedRosters().at("p1b").joint_state_names) {
+    lock.push_back(actuated->getJointId(name));
+  }
+  const auto body = std::make_shared<const pinocchio::Model>(
+      pinocchio::buildReducedModel(*actuated, lock, pinocchio::neutral(*actuated)));
+
+  for (const std::shared_ptr<const pinocchio::Model>& model : {actuated, body}) {
+    SCOPED_TRACE("nv " + std::to_string(model->nv));
+    rtc::tsid::RobotModelInfo info;
+    info.Build(*model, YAML::Node{});
+    rtc::tsid::PinocchioCache cache;
+    cache.Init(model, rtc::tsid::LocomotionFormulationBuilder::ContactFrameIds(*model, spec));
+    rtc::tsid::LocomotionFormulationBuilder builder;
+    ASSERT_NO_THROW(builder.Init(*model, info, cache, spec, root["whole_body_qp"], 0.002));
+    ASSERT_EQ(builder.NumFeet(), model_cfg.contacts.size());
+    for (std::size_t i = 0; i < model_cfg.contacts.size(); ++i) {
+      EXPECT_EQ(builder.Contacts().contacts[i].frame_name, model_cfg.contacts[i].frame) << i;
+    }
+
+    // Neutral joints, the base lowered so the lower sole touches z = 0.
+    Eigen::VectorXd q = pinocchio::neutral(*model);
+    pinocchio::Data d(*model);
+    pinocchio::framesForwardKinematics(*model, d, q);
+    double z_min = std::numeric_limits<double>::infinity();
+    for (const auto& c : model_cfg.contacts) {
+      z_min = std::min(z_min, d.oMf[model->getFrameId(c.frame)].translation().z());
+    }
+    q(2) -= z_min;
+    rtc::tsid::ControlState state;
+    state.q = q;
+    state.v = Eigen::VectorXd::Zero(model->nv);
+    cache.Update(state.q, state.v);
+    rtc::tsid::ControlReference ref;
+    ref.Init(info.nq, info.nv, info.n_actuated, builder.Contacts().max_contact_vars);
+    ref.q_des = q;
+    const double weight = pinocchio::computeTotalMass(*model) * 9.81;
+    Eigen::Index offset = 0;  // the normal force is each slot's z (point or surface)
+    for (const auto& c : model_cfg.contacts) {
+      ref.lambda_des(offset + 2) = weight / static_cast<double>(model_cfg.contacts.size());
+      offset += c.dim;
+    }
+    rtc::tsid::ContactState contacts = builder.MakeContactState();
+    const rtc::tsid::CommandOutput& out = builder.Compute(state, ref, cache, contacts);
+    EXPECT_TRUE(out.qp_converged);
+    EXPECT_TRUE(out.tau_valid);
+    EXPECT_EQ(out.rows_dropped, 0);
+  }
 }
 
 }  // namespace

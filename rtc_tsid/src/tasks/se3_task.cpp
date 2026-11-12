@@ -32,6 +32,7 @@ BaseFrameResolution ResolveBaseFrame(const pinocchio::Model& model, PinocchioCac
   if (base_id == 0) {
     return {-1, true};
   }
+  // The tip registered just before: the cache is not locked (#1041).
   return {cache.RegisterFrame(base_name, base_id), false};
 }
 
@@ -54,6 +55,11 @@ void SE3Task::Init(const pinocchio::Model& model, const RobotModelInfo& robot_in
     throw std::runtime_error("SE3Task: frame '" + frame_name + "' not found in model");
   }
   registered_frame_idx_ = cache.RegisterFrame(frame_name, frame_id);
+  if (registered_frame_idx_ < 0) {  // #1041: the cache locked at its first Update
+    throw std::runtime_error("SE3Task '" + name_ + "': frame '" + frame_name +
+                             "' cannot be registered — the PinocchioCache is locked (Init every "
+                             "task before the cache's first Update)");
+  }
 
   // Base frame 등록 (선택). 미지정 시 universe(world) 기준으로 동작.
   const auto base_res = ResolveBaseFrame(model, cache, task_config, name_);
