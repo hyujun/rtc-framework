@@ -1,7 +1,7 @@
 // Parser for `catching.planner.*`. See planner_params.hpp.
 #include "rtc_controllers/catching/planner_params.hpp"
 
-#include "catching_yaml_read.hpp"
+#include "rtc_controllers/params/yaml_read.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,10 +19,10 @@ namespace rtc::catching {
 
 namespace {
 
-using params_detail::FindUnknownKey;
-using params_detail::ReadSectionNode;
-using params_detail::SectionKind;
-using params_detail::Spelling;
+using rtc::params::FindUnknownKey;
+using rtc::params::ReadSectionNode;
+using rtc::params::SectionKind;
+using rtc::params::Spelling;
 
 [[noreturn]] void Reject(const std::string& what) {
   throw std::invalid_argument("ParsePlannerParams: " + what);
@@ -493,7 +493,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
             {"max_iter", "max_iter_in", "max_iter_warm", "eps_abs", "eps_rel", "eps_primal_inf"});
   const YAML::Node horizon = Section(mpc, "horizon", "segment.mpc.horizon");
   // From the section's kind, not the node: an absent section reads as an
-  // empty but DEFINED node (catching_yaml_read.hpp).
+  // empty but DEFINED node (rtc_controllers/params/yaml_read.hpp).
   d.horizon_explicit = ReadSectionNode(mpc, "horizon").kind == SectionKind::kMap;
   d.n_nodes =
       ReadInt(horizon, "n_nodes", "segment.mpc.horizon.n_nodes", d.n_nodes, 3, kMaxSegmentNodes);

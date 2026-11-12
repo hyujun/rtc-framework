@@ -2,8 +2,8 @@
 
 // For kCap: `io.n_min` above the snapshot capacity is unsatisfiable, and the
 // capacity is owned by trajectory.hpp (one definition, not a second literal).
-#include "catching_yaml_read.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
+#include "tbd_scalar_read.hpp"
 #include <rtc_base/types/types.hpp>
 
 #include <cmath>

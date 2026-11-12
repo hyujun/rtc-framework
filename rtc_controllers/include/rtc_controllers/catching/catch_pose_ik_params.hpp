@@ -29,7 +29,7 @@
 // threshold `CatchPoseIkOptions` must carry. Precisely what the two share and
 // what they do not:
 //   - SHARED — how the key is READ. Both go through the one private helper
-//     (`params_detail::ReadTbdScalar`, src/params/catching_yaml_read.hpp): an
+//     (`params_detail::ReadTbdScalar`, src/params/tbd_scalar_read.hpp): an
 //     absent key takes the default, the literal `TBD` and a non-finite number
 //     are still-TBD, a finite number is resolved, and anything else is refused
 //     with `std::invalid_argument`. The default is the same number.

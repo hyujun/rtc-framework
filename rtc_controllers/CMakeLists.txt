@@ -493,6 +493,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_params_schema test/test_params_schema.cpp)
   target_link_libraries(test_params_schema rtc_controllers)
 
+  # Shared YAML readers (params/yaml_read.hpp): each refusal against a passing twin.
+  ament_add_gtest(test_yaml_read test/test_yaml_read.cpp)
+  target_link_libraries(test_yaml_read rtc_controllers)
+
   # QuinticPolynomial boundary math + T<=0 short-circuit (trajectory_utils.hpp).
   ament_add_gtest(test_trajectory_utils test/test_trajectory_utils.cpp)
   target_link_libraries(test_trajectory_utils rtc_controllers)
