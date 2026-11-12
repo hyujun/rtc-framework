@@ -10,10 +10,22 @@
 #include "rtc_controller_manager/controller_config_loader.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/model/wb_layout.hpp"
+#include "rtc_mpc/reference/stage_reference_builder.hpp"
+#include "rtc_mpc/reference/surface_frame.hpp"
+#include "rtc_mpc/reference/swing_trajectory.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "shipped_catching_bringup_fixture.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/joint-configuration.hpp>
+#include <pinocchio/algorithm/model.hpp>
+#pragma GCC diagnostic pop
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
@@ -356,6 +368,55 @@ TEST(HumanoidModelConfig, TheHandlerYamlInitsRobotModelHandlerWithTheContactOrde
     EXPECT_EQ(info.frame_id, static_cast<int>(CmModel().getFrameId(cfg.contacts[i].frame))) << i;
     EXPECT_EQ(info.dim, cfg.contacts[i].dim) << i;
   }
+}
+
+// The shipped reference.* q_default names every 1-DoF joint of the CM's actuated
+// model (the loop-passive joints are locked there), and the stage reference
+// builder inits on the floating body model — the actuated model with the hand
+// group's joints locked at their hold pose (WD-12): the actuated model itself
+// (nv 39) is over rtc_mpc's kMaxNv, so which floating model the locomotion MPC
+// runs on is the MPC feature's call; this pins the config, not that choice.
+TEST(HumanoidModelConfig, TheShippedReferenceCoversTheActuatedJointsAndInitsTheBuilder) {
+  const YAML::Node root =
+      rtc::LoadControllerConfig(ament_index_cpp::get_package_share_directory("integrated_bringup") +
+                                    "/config/g1_loco/controllers/locomotion_controller.yaml",
+                                "locomotion_controller");
+  const std::shared_ptr<const pinocchio::Model> actuated =
+      fx::ShippedModelBuilder(kProfile)->GetActuatedModel();
+  ASSERT_TRUE(actuated);
+  std::vector<std::string> joints;
+  for (pinocchio::JointIndex j = 2; j < static_cast<pinocchio::JointIndex>(actuated->njoints);
+       ++j) {
+    ASSERT_EQ(actuated->joints[j].nq(), 1) << actuated->names[j];
+    joints.push_back(actuated->names[j]);
+  }
+  ASSERT_EQ(joints.size(), 33U);
+  rtc::mpc::ReferenceConfig cfg;
+  ASSERT_EQ(rtc::mpc::LoadReferenceConfig(root["reference"], joints, cfg),
+            rtc::mpc::ReferenceError::kNoError);
+  rtc::mpc::SwingConfig swing;
+  ASSERT_EQ(rtc::mpc::LoadSwingConfig(root["swing"], swing), rtc::mpc::SwingError::kNoError);
+  rtc::mpc::SurfaceFrame terrain;
+  ASSERT_EQ(rtc::mpc::LoadTerrainConfig(root["terrain"], terrain),
+            rtc::mpc::SurfaceFrameError::kNoError);
+
+  // The body model: lock the hand group's joints of the actuated model.
+  std::vector<pinocchio::JointIndex> lock;
+  for (const std::string& name : ShippedRosters().at("p1b").joint_state_names) {
+    ASSERT_TRUE(actuated->existJointName(name)) << name;
+    lock.push_back(actuated->getJointId(name));
+  }
+  const pinocchio::Model body =
+      pinocchio::buildReducedModel(*actuated, lock, pinocchio::neutral(*actuated));
+  ASSERT_EQ(body.nv, 6 + 23);
+  const loco::HumanoidModelConfig model_cfg =
+      loco::LoadHumanoidModelConfig(InstalledModelSection(), kContext);
+  rtc::mpc::RobotModelHandler handler;
+  ASSERT_EQ(handler.Init(body, loco::ToRobotModelHandlerYaml(model_cfg)),
+            rtc::mpc::RobotModelInitError::kNoError);
+  rtc::mpc::StageReferenceBuilder builder;
+  EXPECT_EQ(builder.Init(handler, cfg, swing, terrain, 51, 0.02),
+            rtc::mpc::ReferenceError::kNoError);
 }
 
 }  // namespace

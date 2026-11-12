@@ -51,6 +51,8 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `reference/` | `contact_schedule.hpp` | `ContactSchedule` POD (mode 변화 event · `schedule_id` · `epoch`) + `ModeAt` 등 helper |
 | `reference/` | `swing_trajectory.hpp` | swing 발 z 참조 (두 구간 cubic Hermite, apex 50 %, 짧은 swing 은 축소) + impact proximity — YAML `swing:` · `terrain:` 로더, `BuildSwing` · `Evaluate` 는 할당 0 |
 | `reference/` | `surface_frame.hpp` | `SurfaceFrame` — 발이 닿는 world 평면 (지금은 flat 값) 과 `HeightAt` |
+| `reference/` | `stage_reference.hpp` | `StageReference` · `HorizonReference` POD — 노드별 q · v (base 3 knot) · 접촉 pose · twist · wrench · impact proximity (padding 없음, 두 slot) |
+| `reference/` | `stage_reference_builder.hpp` | `StageReferenceBuilder` (MPC thread, 할당 0) — scheduler 창 + snapshot + 명령 → horizon, 완성 뒤 slot swap · YAML `reference:` (q_default · arm swing) |
 | `logging/` | `mpc_timing_logger.hpp` | `<session>/timing/mpc_timing_log.csv` writer (아래 관측성) |
 
 ### 설계 약속

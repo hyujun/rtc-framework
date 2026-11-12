@@ -1,0 +1,59 @@
+# locomotion_controller — reference.* (g1_loco)
+#
+# A fragment of ../locomotion_controller.yaml (its `include:` list). The stage
+# reference the locomotion OCP tracks: schema, units and checks in rtc_mpc
+# reference/stage_reference_builder.hpp (LoadReferenceConfig — every key required,
+# an unknown key refused; q_default must name exactly the actuated 1-DoF joints);
+# the template is rtc_mpc/config/reference_default.yaml.
+#
+# q_default is the original whole-body MPC's default joint state (hip pitch
+# −0.05, knee 0.1, ankle pitch −0.05, everything else 0; the hand held at 0,
+# WD-12) and intermediate_fraction its 70 % averaged-velocity knot. Arm swing
+# is off (the original swings shoulder pitch and elbow with its left / right
+# phase; here the phase is the gait's, so it is a tuning item — W8).
+locomotion_controller:
+  reference:
+    intermediate_fraction: 0.7
+    q_default:                   # [rad] body (23, model order) then hand (10)
+      left_hip_pitch_joint: -0.05
+      left_hip_roll_joint: 0.0
+      left_hip_yaw_joint: 0.0
+      left_knee_joint: 0.1
+      left_ankle_pitch_joint: -0.05
+      left_ankle_roll_joint: 0.0
+      right_hip_pitch_joint: -0.05
+      right_hip_roll_joint: 0.0
+      right_hip_yaw_joint: 0.0
+      right_knee_joint: 0.1
+      right_ankle_pitch_joint: -0.05
+      right_ankle_roll_joint: 0.0
+      waist_yaw_joint: 0.0
+      waist_roll_joint: 0.0
+      waist_pitch_joint: 0.0
+      left_shoulder_pitch_joint: 0.0
+      left_shoulder_roll_joint: 0.0
+      left_shoulder_yaw_joint: 0.0
+      left_elbow_joint: 0.0
+      right_shoulder_pitch_joint: 0.0
+      right_shoulder_roll_joint: 0.0
+      right_shoulder_yaw_joint: 0.0
+      right_elbow_joint: 0.0
+      thumb_cmc_aa_joint: 0.0
+      thumb_cmc_fe_joint: 0.0
+      thumb_mcp_joint: 0.0
+      thumb_dip_fe_joint: 0.0
+      index_mcp_aa_joint: 0.0
+      index_mcp_fe_joint: 0.0
+      index_dip_fe_joint: 0.0
+      middle_mcp_fe_joint: 0.0
+      middle_dip_fe_joint: 0.0
+      ring_mcp_fe_joint: 0.0
+    arm_swing:
+      enabled: false
+      gain: 0.15                 # [rad·s/m]
+      phase_offset: 0.15
+      joints:
+        - {name: left_shoulder_pitch_joint, sign: -1}
+        - {name: left_elbow_joint, sign: -1}
+        - {name: right_shoulder_pitch_joint, sign: 1}
+        - {name: right_elbow_joint, sign: 1}

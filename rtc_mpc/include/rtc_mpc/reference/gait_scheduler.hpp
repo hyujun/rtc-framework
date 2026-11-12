@@ -41,15 +41,43 @@
 ///
 /// Tiling: phase j of tile k starts at `anchor + k·T + switching_time[j]`
 /// (integer tile index, no accumulated sums).
+///
+/// Two owner-thread readers for the reference builder: @ref PhaseInfo (the
+/// running and pending gaits' anchors and periods, for @ref GaitPhase at any
+/// node time) and @ref SwingStart (the lift-off of a swing already under way
+/// at `t`, which the window — it starts at `t` — cannot show).
 
 #include "rtc_mpc/reference/command_filter.hpp"
 #include "rtc_mpc/reference/contact_schedule.hpp"
 #include "rtc_mpc/reference/gait_table.hpp"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 namespace rtc::mpc {
+
+/// @brief What @ref GaitPhase needs: the running gait's tiling, and the
+///        pending switch's (its target applies from `t_switch` on).
+struct GaitPhaseInfo {
+  double anchor{0.0};       ///< [s] running gait, phase 0 of tile 0
+  double period{0.0};       ///< [s] running gait
+  double t_switch{0.0};     ///< [s] valid when `pending`
+  double next_anchor{0.0};  ///< [s] target gait, valid when `pending`
+  double next_period{0.0};  ///< [s] target gait, valid when `pending`
+  bool pending{false};
+  bool single_mode{false};       ///< running gait has one mode (no stride to phase)
+  bool next_single_mode{false};  ///< target gait has one mode
+};
+
+/// @brief The gait phase at `t`: `((t − anchor) mod period) / period ∈ [0, 1)`
+///        of the running gait, or of the target gait for `t ≥ t_switch` when a
+///        switch is pending. Tile-index arithmetic, strictly inside `[0, 1)`.
+[[nodiscard]] double GaitPhase(const GaitPhaseInfo& info, double t) noexcept;
+
+/// @brief Whether the gait in force at `t` (the target from `t_switch` on
+///        when a switch is pending, else the running one) has a single mode.
+[[nodiscard]] bool SingleModeAt(const GaitPhaseInfo& info, double t) noexcept;
 
 /// @brief Measured planar base velocity (v_x, v_y in the yaw-aligned base frame).
 struct PlanarVelocity {
@@ -107,6 +135,22 @@ class GaitScheduler {
 
   [[nodiscard]] const GaitTable& table() const noexcept { return table_; }
 
+  /// @brief The tiling @ref GaitPhase reads. false (out untouched) before the
+  ///        first Advance anchored a gait.
+  [[nodiscard]] bool PhaseInfo(GaitPhaseInfo& out) const noexcept;
+
+  /// @brief When contact `contact` is in swing at `t` (its bit off in the
+  ///        running gait's mode), the time that swing started: the last phase
+  ///        start in `(since, t]` where the bit went off, `since` being when
+  ///        the running gait took over (its first anchoring, a reset, or the
+  ///        last completed switch). If the bit was already off at `since` and
+  ///        never went on → off after it, `t_lo = since` and `clamped` is set
+  ///        (a gait without full support, or a reset into a swing phase).
+  ///        false (outputs untouched) when the contact is in stance at `t`,
+  ///        out of range, or nothing is anchored yet.
+  [[nodiscard]] bool SwingStart(std::size_t contact, double t, double& t_lo,
+                                bool& clamped) const noexcept;
+
  private:
   void Commit(std::uint32_t gait, double t) noexcept;
   [[nodiscard]] double SwitchTime(double t_r) const noexcept;
@@ -127,6 +171,7 @@ class GaitScheduler {
   double anchor_{0.0};
   double t_switch_{0.0};
   double next_anchor_{0.0};  ///< EntryAnchor() of the pending switch, set at commit
+  double since_{0.0};        ///< when the running gait took over (SwingStart's floor)
   double last_commit_{0.0};
   double last_t_{0.0};
   std::uint64_t epoch_{0};

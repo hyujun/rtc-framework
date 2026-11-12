@@ -65,6 +65,7 @@ add_library(rtc_mpc STATIC
   src/reference/gait_scheduler.cpp
   src/reference/gait_table.cpp
   src/reference/surface_frame.cpp
+  src/reference/stage_reference_builder.cpp
   src/reference/swing_trajectory.cpp
 )
 
@@ -218,6 +219,13 @@ if(BUILD_TESTING)
         RTC_MPC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   endif()
   add_mpc_gtest(test_swing_trajectory_alloc_gate)
+  add_mpc_gtest(test_gait_phase)
+  add_mpc_gtest(test_stage_reference)
+  if(TARGET test_stage_reference)
+    target_compile_definitions(test_stage_reference PRIVATE
+        RTC_MPC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  endif()
+  add_mpc_gtest(test_stage_reference_alloc_gate)
 
   # Aligator's ProxDDP solve path allocates via mimalloc but frees can route
   # through glibc (and vice-versa) across the pinocchio/aligator boundary; with
