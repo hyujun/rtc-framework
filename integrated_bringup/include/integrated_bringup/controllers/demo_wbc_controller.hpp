@@ -582,12 +582,9 @@ class DemoWbcController final : public RTControllerInterface {
 
   // ── TSID task/constraint YAML factory ───────────────────────────────────
   //
-  // Dispatches on the `type:` field of each entry under `tsid.tasks` /
-  // `tsid.constraints`. Supported tasks: posture, se3, force. Supported
-  // constraints: eom, joint_limit, friction_cone. Unknown types log ERROR
-  // and skip. Called once in LoadConfig after TSIDController::Init().
-  // The rtc_tsid task_factory context of this controller (WD-58) and the
-  // logging of what the factory reported.
+  // `tsid.tasks` / `tsid.constraints` through rtc_tsid's task_factory (WD-58;
+  // its header lists the types): what it reports is logged as ERROR and the
+  // entry skipped. Called once in LoadConfig after TSIDController::Init().
   [[nodiscard]] rtc::tsid::TaskFactoryContext TsidFactoryContext();
   void LogFactoryMessages(const rtc::tsid::BuildReport& report);
   void BuildTsidTasks(const YAML::Node& tsid_node);

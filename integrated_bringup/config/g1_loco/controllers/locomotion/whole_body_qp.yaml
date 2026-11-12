@@ -1,0 +1,42 @@
+# locomotion_controller — whole_body_qp.* (g1_loco)
+#
+# A fragment of ../locomotion_controller.yaml (its `include:` list). The
+# whole-body QP the controller solves each tick: schema, units and checks in
+# rtc_tsid locomotion/locomotion_formulation.hpp (LocomotionFormulationBuilder —
+# an unknown key is refused). The contact set and the torso frame are model.*'s;
+# this file only parameterises them (contact_overrides.<contact name> per foot).
+#
+# Values are those the W6-F01 gates were registered on (#1039): every foot
+# task works while its contact is released (swing), the torso task holds the
+# orientation only, the force task pulls λ toward the MPC's. Retuning belongs to
+# the sim evaluation (W8).
+locomotion_controller:
+  whole_body_qp:
+    formulation_type: wqp
+    solver: {eps_abs: 1.0e-6, max_iter: 200, max_iter_in: 500, dense_backend: PrimalDualLDLT}
+    contact:
+      friction_coeff: 0.4
+      friction_faces: 4
+      patch_half_length_x: 0.09        # [m] sole half length
+      patch_half_length_y: 0.03        # [m] sole half width
+      torsional_friction_coeff: 0.0
+      t_ramp: 0.0                      # [s] force ramp on a support change
+    tasks:
+      posture: {kp: 50.0, kd: 10.0, weight: 1.0}
+      feet:                            # [lin; ang], world axes
+        kp: [400, 400, 400, 400, 400, 400]
+        kd: [40, 40, 40, 40, 40, 40]
+        weight: 100.0
+      torso:
+        kp: [0, 0, 0, 80, 80, 80]
+        kd: [0, 0, 0, 20, 20, 20]
+        mask: [0, 0, 0, 1, 1, 1]
+        weight: 10.0
+      force: {weight: 1.0e-3}
+    constraints:
+      eom: {}
+      contact:                         # Baumgarte on the stance feet, [lin; ang]
+        baumgarte: {kp: [0, 0, 100, 80, 80, 80], kd: [20, 20, 10, 20, 20, 20]}
+      friction_cone: {}
+      joint_limit: {position_margin: 0.05, velocity_margin: 0.1}
+      torque_limit: {tau_scale: 1.0}
