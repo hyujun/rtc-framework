@@ -13,8 +13,9 @@
 /// 1. @ref Init once, with a YAML config tree.
 /// 2. Optionally @ref SetTaskTarget when the upstream planner updates the
 ///    goal (non-RT, event-driven — topic callback, BT leaf, etc.).
-/// 3. Each MPC tick (non-RT — phase decisions are evaluated off the RT
-///    control loop): call @ref Update with the current state + elapsed time.
+/// 3. Each MPC tick: call @ref Update with the current state + elapsed time.
+///    It runs on the MPC thread — off the control loop, but SCHED_FIFO on a
+///    dedicated core, an RT path (agent_docs/architecture.md §Execution Contexts).
 /// 4. Observe @ref PhaseContext::phase_changed to decide OCP rebuild vs
 ///    warm-start.
 ///

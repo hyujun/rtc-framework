@@ -123,7 +123,7 @@ struct FilteredCommand {
   double omega_z{0.0};        ///< [rad/s], |ω_z| ≤ u_max[2]
   double base_height{0.0};    ///< [m] in [h_min, h_max]
   std::int64_t stamp_ns{0};   ///< `now_ns` of the producing Step (producer clock, diagnostic only)
-  std::uint64_t sequence{0};  ///< +1 per Step, 0 right after Reset
+  std::uint64_t sequence{0};  ///< +1 per Step, 0 just after Reset
   std::uint64_t nonfinite_count{0};     ///< ticks with a non-finite used axis
   std::uint64_t stale_count{0};         ///< ticks the input was stale
   std::uint64_t ignored_axis_count{0};  ///< ticks with a non-zero angular.x / angular.y

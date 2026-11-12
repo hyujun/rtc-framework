@@ -61,6 +61,9 @@ add_library(rtc_mpc STATIC
   src/handler/contact_rich_mpc.cpp
   src/handler/mpc_factory.cpp
   src/reference/command_filter.cpp
+  src/reference/contact_schedule.cpp
+  src/reference/gait_scheduler.cpp
+  src/reference/gait_table.cpp
 )
 
 target_include_directories(rtc_mpc PUBLIC
@@ -201,6 +204,12 @@ if(BUILD_TESTING)
     target_compile_definitions(test_command_filter PRIVATE
         RTC_MPC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   endif()
+  add_mpc_gtest(test_gait_schedule)
+  if(TARGET test_gait_schedule)
+    target_compile_definitions(test_gait_schedule PRIVATE
+        RTC_MPC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  endif()
+  add_mpc_gtest(test_gait_schedule_alloc_gate)
 
   # Aligator's ProxDDP solve path allocates via mimalloc but frees can route
   # through glibc (and vice-versa) across the pinocchio/aligator boundary; with
