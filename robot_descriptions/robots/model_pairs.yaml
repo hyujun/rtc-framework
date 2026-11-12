@@ -107,6 +107,9 @@ pairs:
     align_frames: [pelvis, pelvis]
     # 원본 MJCF 가 접어 둔 fixed 자식 5 개 (head · logo · pelvis_contour · rubber_hand ×2).
     link_map: g1/g1.link_map.yaml
+    # 접촉 frame (W1-F03): URDF 의 bare link `left_sole` 이 MJCF 바닥면 site 와 같은 점인가.
+    # 오른쪽은 rtc_urdf_bridge test_g1_sole_frames 의 좌우 동일 단언이 본다.
+    tip_frames: [left_sole_ft_site, left_sole]
     # 2026-11-04 확인. free 관절 (MJCF 1 · URDF 0 — root 는 loader 가 붙인다) 1 건과
     # URDF 쪽 사실 셋: geom 수 (URDF visual+collision 71 vs
     # MJCF 66 — 발 sphere 4 × 2 → sole box 1 × 2, 접힌 link 의 geom) 1 건과 양 발목
