@@ -8,11 +8,11 @@
 // YAML through the CM's loader, demo_shared merged in — so a profile edit that
 // production would refuse at on_configure is refused here, not at launch.
 //
-// The control case at the bottom is the premise this profile changed under: a
-// free-flyer root on the same model is locked as a passive joint by the closure
-// builder, the hand's closed-chain handle refuses, and on_configure FAILS. The
-// shipped `root_joint_type: "fixed"` is what makes the case above succeed, and
-// this is the test that would have said so before a launch did.
+// The controller model's root floats (W1-F04). The control case at the bottom
+// is the root the profile shipped before: the same model with a fixed root must
+// hold the stance with the same commands and poses, tick for tick — the free-
+// flyer is held at the identity seed, so it changes nothing the controller
+// computes until a base pose is wired into the model.
 // ──────────────────────────────────────────────────────────────────────────────
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
@@ -36,6 +36,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <map>
 #include <memory>
@@ -51,13 +52,12 @@ using integrated_bringup::DemoJointController;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
 
-constexpr const char *kProfile = "g1_loco";
-constexpr const char *kController = "demo_joint_controller";
+constexpr const char* kProfile = "g1_loco";
+constexpr const char* kController = "demo_joint_controller";
 constexpr int kBodyDof = 23;
 constexpr int kHandDof = 10;
 constexpr int kActuated = kBodyDof + kHandDof;
-constexpr int kHandPassive =
-    10; // the five four-bar loops, two passive joints each
+constexpr int kHandPassive = 10;  // the five four-bar loops, two passive joints each
 constexpr double kDt = 1.0 / fx::kShippedProfileControlRateHz;
 
 /// The controller's YAML as the CM hands it over: the profile's file through
@@ -70,11 +70,9 @@ YAML::Node ShippedJointConfig() {
 
 /// Device configs of the two groups the controller claims, from the shipped
 /// YAML, tagged as the simulator.
-std::map<std::string, rtc::DeviceNameConfig>
-ShippedDevices(const YAML::Node &cfg) {
-  std::map<std::string, rtc::DeviceNameConfig> configs =
-      fx::ShippedSimConfigs(kProfile, cfg);
-  for (auto &[group, device] : configs) {
+std::map<std::string, rtc::DeviceNameConfig> ShippedDevices(const YAML::Node& cfg) {
+  std::map<std::string, rtc::DeviceNameConfig> configs = fx::ShippedSimConfigs(kProfile, cfg);
+  for (auto& [group, device] : configs) {
     rtc::DeviceBackendBinding backend;
     backend.type = "mujoco_native";
     device.backend = backend;
@@ -84,20 +82,20 @@ ShippedDevices(const YAML::Node &cfg) {
 
 /// A measured state at the profile's E-STOP safe position (the `stand`
 /// keyframe), hand open.
-ControllerState StandState(const YAML::Node &cfg) {
+ControllerState StandState(const YAML::Node& cfg) {
   ControllerState state{};
   state.num_devices = 2;
   state.dt = kDt;
   state.iteration = 1;
   const auto safe = cfg["estop"]["arm_safe_position"].as<std::vector<double>>();
-  auto &body = state.devices[0];
+  auto& body = state.devices[0];
   body.num_channels = static_cast<int>(safe.size());
   body.valid = true;
   body.hole_mask = 0;
   for (std::size_t i = 0; i < safe.size(); ++i) {
     body.positions[i] = safe[i];
   }
-  auto &hand = state.devices[1];
+  auto& hand = state.devices[1];
   hand.num_channels = kHandDof;
   hand.valid = true;
   hand.hole_mask = 0;
@@ -105,7 +103,7 @@ ControllerState StandState(const YAML::Node &cfg) {
 }
 
 class G1LocoConfigure : public ::testing::Test {
-protected:
+ protected:
   static void SetUpTestSuite() {
     if (!rclcpp::ok()) {
       rclcpp::init(0, nullptr);
@@ -120,27 +118,24 @@ protected:
 
   /// The CM's bring-up order: model + builder + rate, PreConfigure (node +
   /// LoadConfig), device configs, on_configure.
-  std::unique_ptr<DemoJointController>
-  BringUp(const rub::ModelConfig &model,
-          std::shared_ptr<rub::PinocchioModelBuilder> builder,
-          const char *node_name) {
+  std::unique_ptr<DemoJointController> BringUp(const rub::ModelConfig& model,
+                                               std::shared_ptr<rub::PinocchioModelBuilder> builder,
+                                               const char* node_name) {
     cfg_ = ShippedJointConfig();
     rclcpp::NodeOptions opts;
     opts.use_global_arguments(false);
-    node_ =
-        std::make_shared<rclcpp_lifecycle::LifecycleNode>(node_name, "", opts);
+    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>(node_name, "", opts);
     auto ctrl = std::make_unique<DemoJointController>("");
     ctrl->SetSystemModelConfig(model);
     ctrl->SetSharedModelBuilder(std::move(builder));
     ctrl->SetControlRate(fx::kShippedProfileControlRateHz);
-    EXPECT_EQ(ctrl->PreConfigure(node_, cfg_),
-              DemoJointController::CallbackReturn::SUCCESS)
+    EXPECT_EQ(ctrl->PreConfigure(node_, cfg_), DemoJointController::CallbackReturn::SUCCESS)
         << node_name;
     ctrl->SetDeviceNameConfigs(ShippedDevices(cfg_));
     return ctrl;
   }
 
-  DemoJointController::CallbackReturn Configure(DemoJointController &ctrl) {
+  DemoJointController::CallbackReturn Configure(DemoJointController& ctrl) {
     return ctrl.on_configure(rclcpp_lifecycle::State{}, node_, cfg_);
   }
 
@@ -150,10 +145,9 @@ protected:
 
 // ── The shipped profile ──────────────────────────────────────────────────────
 
-TEST_F(G1LocoConfigure,
-       TheShippedModelIsAFixedRootWholeBodyWithAClosedChainHand) {
+TEST_F(G1LocoConfigure, TheShippedModelIsAFloatingRootWholeBodyWithAClosedChainHand) {
   const rub::ModelConfig model = fx::ShippedModelConfig(kProfile);
-  EXPECT_EQ(model.root_joint_type, "fixed");
+  EXPECT_EQ(model.root_joint_type, "floating");
   EXPECT_TRUE(model.sub_models.empty()) << "no serial arm: the body is a tree";
   ASSERT_EQ(model.tree_models.size(), 2U);
   EXPECT_EQ(model.tree_models[0].name, "g1");
@@ -161,26 +155,26 @@ TEST_F(G1LocoConfigure,
   EXPECT_EQ(model.tree_models[1].name, "p1b");
   EXPECT_EQ(model.tree_models[1].root_link, "base_adapter");
   // The hand mount is where the body tree's right branch ends.
-  const auto &body_tips = model.tree_models[0].tip_links;
-  EXPECT_NE(std::find(body_tips.begin(), body_tips.end(), "base_adapter"),
-            body_tips.end());
+  const auto& body_tips = model.tree_models[0].tip_links;
+  EXPECT_NE(std::find(body_tips.begin(), body_tips.end(), "base_adapter"), body_tips.end());
 
   const auto builder = fx::ShippedModelBuilder(kProfile);
   ASSERT_NE(builder->GetFullModel(), nullptr);
-  EXPECT_EQ(builder->GetFullModel()->nq, kActuated + kHandPassive);
+  EXPECT_EQ(builder->GetFullModel()->nq, rub::kFreeFlyerNq + kActuated + kHandPassive);
+  EXPECT_EQ(builder->GetFullModel()->nv, rub::kFreeFlyerNv + kActuated + kHandPassive);
+  // The tree models lock the free-flyer: the body group is the 23 joints.
   ASSERT_NE(builder->GetTreeModel("g1"), nullptr);
   EXPECT_EQ(builder->GetTreeModel("g1")->nv, kBodyDof);
   // The closure sidecar lists every driven joint: the actuated model is the
-  // whole body plus the hand's ten, nothing locked that a device drives.
-  ASSERT_NE(builder->GetActuatedModel(), nullptr)
-      << "the hand's loops must be loaded";
-  EXPECT_EQ(builder->GetActuatedModel()->nv, kActuated);
+  // base plus the whole body plus the hand's ten, nothing locked that a device
+  // drives.
+  ASSERT_NE(builder->GetActuatedModel(), nullptr) << "the hand's loops must be loaded";
+  EXPECT_EQ(builder->GetActuatedModel()->nv, rub::kFreeFlyerNv + kActuated);
 }
 
 TEST_F(G1LocoConfigure, TheShippedControllerConfigures) {
   const rub::ModelConfig model = fx::ShippedModelConfig(kProfile);
-  auto ctrl =
-      BringUp(model, fx::ShippedModelBuilder(kProfile), "g1_loco_configure");
+  auto ctrl = BringUp(model, fx::ShippedModelBuilder(kProfile), "g1_loco_configure");
   ASSERT_EQ(Configure(*ctrl), DemoJointController::CallbackReturn::SUCCESS)
       << "hand FK wiring: " << ctrl->HandFkWiringErrorForTesting()
       << "\narm tip: " << ctrl->ArmTipConfigError();
@@ -192,12 +186,9 @@ TEST_F(G1LocoConfigure, TheShippedControllerConfigures) {
   // TF slots: the hand mount, the four fingertips and the virtual TCP, all in
   // the tree root — the same shape as g1_p1b's, on the other body.
   const std::vector<std::pair<std::string, std::string>> expected = {
-      {"pelvis", "base_adapter_actual"},
-      {"pelvis", "l_thumb_tip_bracket_actual"},
-      {"pelvis", "l_index_tip_bracket_actual"},
-      {"pelvis", "l_middle_tip_bracket_actual"},
-      {"pelvis", "l_ring_tip_bracket_actual"},
-      {"pelvis", "virtual_tcp_actual"},
+      {"pelvis", "base_adapter_actual"},        {"pelvis", "l_thumb_tip_bracket_actual"},
+      {"pelvis", "l_index_tip_bracket_actual"}, {"pelvis", "l_middle_tip_bracket_actual"},
+      {"pelvis", "l_ring_tip_bracket_actual"},  {"pelvis", "virtual_tcp_actual"},
   };
   EXPECT_EQ(ctrl->TfSlotFramesForTesting(), expected);
 }
@@ -230,11 +221,9 @@ TEST_F(G1LocoConfigure, TheConfiguredControllerHoldsTheStanceWithValidPoses) {
   ASSERT_EQ(out.num_devices, 2);
   EXPECT_EQ(out.devices[0].num_channels, kBodyDof);
   EXPECT_EQ(out.devices[1].num_channels, kHandDof);
-  const auto safe =
-      cfg_["estop"]["arm_safe_position"].as<std::vector<double>>();
+  const auto safe = cfg_["estop"]["arm_safe_position"].as<std::vector<double>>();
   for (std::size_t i = 0; i < safe.size(); ++i) {
-    EXPECT_NEAR(out.devices[0].commands[i], safe[i], 1e-9)
-        << "body joint " << i;
+    EXPECT_NEAR(out.devices[0].commands[i], safe[i], 1e-9) << "body joint " << i;
     EXPECT_DOUBLE_EQ(out.devices[0].feedforward[i], 0.0) << "body joint " << i;
   }
   EXPECT_TRUE(out.arm_tip_pose_valid);
@@ -243,22 +232,20 @@ TEST_F(G1LocoConfigure, TheConfiguredControllerHoldsTheStanceWithValidPoses) {
   }
 }
 
-// ── The control model's cache on a floating root (W1-F04)
-// ─────────────────────
+// ── The control model's cache on a floating root (W1-F04) ─────────────────────
 //
 // The cache scatters device joints only, so a free-flyer root keeps the value
 // SelectModel seeded: neutral (a unit quaternion), not zero. With the base at
 // identity the joint block of M and g and every registered frame's pose equal
 // the fixed-root model's.
-TEST_F(G1LocoConfigure,
-       AFloatingCacheSeedsANeutralBaseAndMatchesTheFixedJointBlock) {
+TEST_F(G1LocoConfigure, AFloatingCacheSeedsANeutralBaseAndMatchesTheFixedJointBlock) {
   const YAML::Node cfg = ShippedJointConfig();
   const auto devices = ShippedDevices(cfg);
-  const std::vector<std::string> &body = devices.at("g1").joint_state_names;
-  const std::vector<std::string> &hand = devices.at("p1b").joint_state_names;
-  const std::vector<std::string> frames = {
-      "base_adapter",        "left_sole",           "right_sole",
-      "l_thumb_tip_bracket", "l_index_tip_bracket", "l_ring_tip_bracket"};
+  const std::vector<std::string>& body = devices.at("g1").joint_state_names;
+  const std::vector<std::string>& hand = devices.at("p1b").joint_state_names;
+  const std::vector<std::string> frames = {"base_adapter",        "left_sole",
+                                           "right_sole",          "l_thumb_tip_bracket",
+                                           "l_index_tip_bracket", "l_ring_tip_bracket"};
   const rclcpp::Logger logger = rclcpp::get_logger("g1_loco_cache_test");
   const ControllerState state = StandState(cfg);
 
@@ -267,7 +254,7 @@ TEST_F(G1LocoConfigure,
     std::unique_ptr<integrated_bringup::CombinedModelCache> cache;
   };
 
-  const auto build = [&](const std::string &root) {
+  const auto build = [&](const std::string& root) {
     rub::ModelConfig model = fx::ShippedModelConfig(kProfile);
     model.root_joint_type = root;
     Built b{std::make_shared<rub::PinocchioModelBuilder>(model),
@@ -275,9 +262,8 @@ TEST_F(G1LocoConfigure,
     EXPECT_TRUE(b.cache->InitModel(*b.builder, {}, "[test]", logger)) << root;
     b.cache->BuildReorderMap(&body, &hand, kActuated, "[test]", logger);
     EXPECT_TRUE(b.cache->reorder_valid()) << root;
-    for (const auto &f : frames) {
-      static_cast<void>(
-          b.cache->cache().RegisterFrame(f, b.cache->model()->getFrameId(f)));
+    for (const auto& f : frames) {
+      static_cast<void>(b.cache->cache().RegisterFrame(f, b.cache->model()->getFrameId(f)));
     }
     b.cache->ExtractFullState(state, kBodyDof, kHandDof);
     b.cache->Update();
@@ -285,7 +271,7 @@ TEST_F(G1LocoConfigure,
   };
   const Built fixed = build("fixed");
   const Built floating = build("floating");
-  const pinocchio::Model &ml = *floating.cache->model();
+  const pinocchio::Model& ml = *floating.cache->model();
   ASSERT_EQ(ml.nv, kActuated + rub::kFreeFlyerNv)
       << "the floating control model is the actuated one, plus the base";
   ASSERT_EQ(fixed.cache->model()->nv, kActuated);
@@ -294,24 +280,20 @@ TEST_F(G1LocoConfigure,
   for (int i = 0; i < rub::kFreeFlyerNq; ++i) {
     EXPECT_EQ(floating.cache->q()[i], neutral[i]) << "base slot " << i;
   }
-  const auto &cl = floating.cache->cache();
-  const auto &cx = fixed.cache->cache();
-  EXPECT_LE((cl.M.bottomRightCorner(kActuated, kActuated) - cx.M)
-                .cwiseAbs()
-                .maxCoeff(),
-            1e-12);
+  const auto& cl = floating.cache->cache();
+  const auto& cx = fixed.cache->cache();
+  EXPECT_LE((cl.M.bottomRightCorner(kActuated, kActuated) - cx.M).cwiseAbs().maxCoeff(), 1e-12);
   EXPECT_LE((cl.g.tail(kActuated) - cx.g).cwiseAbs().maxCoeff(), 1e-12);
   ASSERT_EQ(cl.registered_frames.size(), frames.size());
   for (std::size_t k = 0; k < frames.size(); ++k) {
     EXPECT_EQ(cl.registered_frames[k].name, frames[k]);
-    const pinocchio::SE3 &a = cl.registered_frames[k].oMf;
-    const pinocchio::SE3 &b = cx.registered_frames[k].oMf;
+    const pinocchio::SE3& a = cl.registered_frames[k].oMf;
+    const pinocchio::SE3& b = cx.registered_frames[k].oMf;
     EXPECT_LE((a.translation() - b.translation()).norm(), 1e-12) << frames[k];
     EXPECT_LE((a.rotation() - b.rotation()).norm(), 1e-12) << frames[k];
   }
 
-  // The identity reorder fallback (no primary device config) starts after the
-  // base.
+  // The identity reorder fallback (no primary device config) starts after the base.
   integrated_bringup::CombinedModelCache identity;
   ASSERT_TRUE(identity.SelectModel(*floating.builder, "[test]", logger));
   identity.BuildReorderMap(nullptr, nullptr, kActuated, "[test]", logger);
@@ -320,23 +302,77 @@ TEST_F(G1LocoConfigure,
   EXPECT_EQ(identity.ext_to_pin_q(kActuated - 1), ml.nq - 1);
 }
 
-// ── The premise: a floating root refuses ─────────────────────────────────────
+// ── The previous root: a fixed override computes the same ────────────────────
 //
-// The same model with `root_joint_type: "floating"`. The closure builder locks
-// every joint the sidecar does not list as actuated, the free-flyer among them,
-// and the hand's closed-chain handle refuses (more dependent DoF than
-// constraint rows) — the serial fallback cannot carry the hand's device joints,
-// so on_configure FAILS. This is why the shipped profile keeps a fixed root and
-// takes the floating base from the simulator's lane instead.
-TEST_F(G1LocoConfigure, AFloatingRootOnTheSameModelRefusesConfigure) {
-  rub::ModelConfig model = fx::ShippedModelConfig(kProfile);
-  model.root_joint_type = "floating";
-  auto builder = std::make_shared<rub::PinocchioModelBuilder>(model);
-  auto ctrl = BringUp(model, builder, "g1_loco_floating_root");
-  EXPECT_EQ(Configure(*ctrl), DemoJointController::CallbackReturn::FAILURE);
-  EXPECT_NE(ctrl->HandFkWiringErrorForTesting(), "")
-      << "the refusal must come from the hand FK wiring, not from somewhere "
-         "else";
+// The same model with `root_joint_type: "fixed"` — the root the profile shipped
+// until the floating loader. Both bring-ups configure, and over the stance hold
+// every output the sim bring-up reads (commands, feedforward, arm tip, the four
+// fingertips) agrees to 1e-12 on every tick, the walk-in ticks included.
+TEST_F(G1LocoConfigure, AFixedRootOverrideHoldsTheStanceIdentically) {
+  constexpr int kTicks = 41;
+  const auto hold = [&](const rub::ModelConfig& model,
+                        std::shared_ptr<rub::PinocchioModelBuilder> builder,
+                        const char* node_name) {
+    std::vector<ControllerOutput> outs;
+    auto ctrl = BringUp(model, std::move(builder), node_name);
+    EXPECT_EQ(Configure(*ctrl), DemoJointController::CallbackReturn::SUCCESS)
+        << node_name << ": " << ctrl->HandFkWiringErrorForTesting();
+    EXPECT_EQ(ctrl->HandFkWiringErrorForTesting(), "") << node_name;
+    ControllerState state = StandState(cfg_);
+    for (int i = 0; i < kTicks; ++i) {
+      outs.push_back(ctrl->Compute(state));
+      state.iteration += 1;
+    }
+    return outs;
+  };
+  const auto pose_gap = [](const rtc::Pose& a, const rtc::Pose& b) {
+    double gap = 0.0;
+    for (std::size_t k = 0; k < 3; ++k) {
+      gap = std::max(gap, std::abs(a.position[k] - b.position[k]));
+    }
+    for (std::size_t k = 0; k < 4; ++k) {
+      gap = std::max(gap, std::abs(a.quaternion[k] - b.quaternion[k]));
+    }
+    return gap;
+  };
+
+  const rub::ModelConfig shipped = fx::ShippedModelConfig(kProfile);
+  ASSERT_EQ(shipped.root_joint_type, "floating");
+  rub::ModelConfig fixed = shipped;
+  fixed.root_joint_type = "fixed";
+  const auto floating_out = hold(shipped, fx::ShippedModelBuilder(kProfile), "g1_loco_floating");
+  const auto fixed_out =
+      hold(fixed, std::make_shared<rub::PinocchioModelBuilder>(fixed), "g1_loco_fixed_root");
+  ASSERT_EQ(floating_out.size(), fixed_out.size());
+
+  for (int t = 0; t < kTicks; ++t) {
+    SCOPED_TRACE("tick " + std::to_string(t));
+    const ControllerOutput& a = floating_out[static_cast<std::size_t>(t)];
+    const ControllerOutput& b = fixed_out[static_cast<std::size_t>(t)];
+    ASSERT_EQ(a.valid, b.valid);
+    ASSERT_EQ(a.num_devices, b.num_devices);
+    for (int d = 0; d < a.num_devices; ++d) {
+      const auto& da = a.devices[static_cast<std::size_t>(d)];
+      const auto& db = b.devices[static_cast<std::size_t>(d)];
+      ASSERT_EQ(da.num_channels, db.num_channels) << "device " << d;
+      for (int c = 0; c < da.num_channels; ++c) {
+        const auto ci = static_cast<std::size_t>(c);
+        EXPECT_LE(std::abs(da.commands[ci] - db.commands[ci]), 1e-12) << d << "/" << c;
+        EXPECT_LE(std::abs(da.feedforward[ci] - db.feedforward[ci]), 1e-12) << d << "/" << c;
+      }
+    }
+    EXPECT_EQ(a.arm_tip_pose_valid, b.arm_tip_pose_valid);
+    EXPECT_LE(pose_gap(a.arm_tip_pose, b.arm_tip_pose), 1e-12);
+    for (std::size_t f = 0; f < 4; ++f) {
+      EXPECT_EQ(a.task_link_pose_valid[f], b.task_link_pose_valid[f]) << "fingertip " << f;
+      EXPECT_LE(pose_gap(a.task_link_poses[f], b.task_link_poses[f]), 1e-12) << "fingertip " << f;
+    }
+  }
+  // Non-vacuity: the last tick has every pose valid (the walk-in ended inside the hold).
+  EXPECT_TRUE(floating_out.back().arm_tip_pose_valid);
+  for (std::size_t f = 0; f < 4; ++f) {
+    EXPECT_TRUE(floating_out.back().task_link_pose_valid[f]) << "fingertip " << f;
+  }
 }
 
-} // namespace
+}  // namespace
