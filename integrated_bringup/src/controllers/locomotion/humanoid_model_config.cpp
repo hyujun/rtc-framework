@@ -47,12 +47,15 @@ void CheckKeys(const YAML::Node& map, const std::string& where,
   }
 }
 
-std::string ReadName(const YAML::Node& map, const char* key, const std::string& where) {
-  const YAML::Node v = map[key];
+std::string ReadNameNode(const YAML::Node& v, const std::string& where) {
   if (!v.IsScalar() || v.Scalar().empty()) {
-    Refuse(where + "." + key, "expected a non-empty name, got " + Spelling(v));
+    Refuse(where, "expected a non-empty name, got " + Spelling(v));
   }
   return v.Scalar();
+}
+
+std::string ReadName(const YAML::Node& map, const char* key, const std::string& where) {
+  return ReadNameNode(map[key], where + "." + key);
 }
 
 YAML::Node ReadList(const YAML::Node& map, const char* key, const std::string& where) {
@@ -143,12 +146,9 @@ HumanoidModelConfig LoadHumanoidModelConfig(const YAML::Node& model, const std::
   std::set<std::string> groups{cfg.body_group};
   for (std::size_t i = 0; i < hands.size(); ++i) {
     const std::string where = Item(context, "hand_groups", i);
-    const YAML::Node h = hands[i];
-    if (!h.IsScalar() || h.Scalar().empty()) {
-      Refuse(where, "expected a non-empty device group name, got " + Spelling(h));
-    }
-    Claim(groups, h.Scalar(), where, "device group");
-    cfg.hand_groups.push_back(h.Scalar());
+    std::string group = ReadNameNode(hands[i], where);
+    Claim(groups, group, where, "device group");
+    cfg.hand_groups.push_back(std::move(group));
   }
   return cfg;
 }
@@ -210,30 +210,27 @@ std::string Describe(const JointOrderMismatch& mismatch) {
 void ValidateDevices(const HumanoidModelConfig& cfg,
                      const std::vector<std::string>& body_joint_order, const DeviceLookup& lookup,
                      const std::string& context) {
-  const rtc::DeviceNameConfig* body = lookup ? lookup(cfg.body_group) : nullptr;
-  if (body == nullptr) {
-    Refuse(context + ".body_group", "no device group '" + cfg.body_group + "'");
-  }
-  if (body->joint_state_names.empty()) {
-    Refuse(context + ".body_group", "device group '" + cfg.body_group +
-                                        "' has no joint_state_names — the roster is required, "
-                                        "not taken as the model order");
-  }
-  if (const auto mismatch = CompareJointOrder(body_joint_order, body->joint_state_names)) {
+  // Every group the config names must be a device with a roster: a missing roster is
+  // refused, never taken as the model order (AP-CTRL-5).
+  const auto roster = [&](const std::string& group,
+                          const std::string& where) -> const std::vector<std::string>& {
+    const rtc::DeviceNameConfig* device = lookup ? lookup(group) : nullptr;
+    if (device == nullptr) {
+      Refuse(where, "no device group '" + group + "'");
+    }
+    if (device->joint_state_names.empty()) {
+      Refuse(where, "device group '" + group + "' has no joint_state_names");
+    }
+    return device->joint_state_names;
+  };
+  const auto& body = roster(cfg.body_group, context + ".body_group");
+  if (const auto mismatch = CompareJointOrder(body_joint_order, body)) {
     Refuse(context + ".body_group", "joint_state_names of '" + cfg.body_group +
                                         "' is not the model's joint order (" + Describe(*mismatch) +
                                         ")");
   }
   for (std::size_t i = 0; i < cfg.hand_groups.size(); ++i) {
-    const rtc::DeviceNameConfig* hand = lookup(cfg.hand_groups[i]);
-    if (hand == nullptr) {
-      Refuse(Item(context, "hand_groups", i), "no device group '" + cfg.hand_groups[i] + "'");
-    }
-    // A hand is held at its hold pose by joint name; no roster is no hand to hold.
-    if (hand->joint_state_names.empty()) {
-      Refuse(Item(context, "hand_groups", i),
-             "device group '" + cfg.hand_groups[i] + "' has no joint_state_names");
-    }
+    (void)roster(cfg.hand_groups[i], Item(context, "hand_groups", i));
   }
 }
 

@@ -95,11 +95,10 @@ void RunAll(const YAML::Node& node, const std::map<std::string, rtc::DeviceNameC
 }
 
 // `edit` applied to the rig, on `rosters`, must be refused with a message containing
-// `expect` (so the RIGHT check fired). The twin: the unedited rig on the SHIPPED
-// rosters is accepted — for a roster edit, the shipped rosters are the passing twin.
+// `expect` (so the RIGHT check fired). The passing twin of every refusal is the
+// unedited rig on the shipped rosters (AcceptedRig).
 void ExpectRefused(const std::function<void(YAML::Node&)>& edit, const std::string& expect,
                    const std::map<std::string, rtc::DeviceNameConfig>& rosters = ShippedRosters()) {
-  ASSERT_NO_THROW(RunAll(Rig(), ShippedRosters())) << "the rig itself must pass";
   YAML::Node node = Rig();
   edit(node);
   try {
@@ -159,7 +158,7 @@ TEST(HumanoidModelConfig, RefusesANonNameAndANonList) {
   ExpectRefused([](YAML::Node& n) { n["contacts"] = "left_sole"; },
                 "model.contacts: expected a list");
   ExpectRefused([](YAML::Node& n) { n["hand_groups"] = YAML::Load("[{a: 1}]"); },
-                "model.hand_groups[0]: expected a non-empty device group name");
+                "model.hand_groups[0]: expected a non-empty name");
 }
 
 TEST(HumanoidModelConfig, RefusesAContactCountOutsideOneToTheMpcCapacity) {

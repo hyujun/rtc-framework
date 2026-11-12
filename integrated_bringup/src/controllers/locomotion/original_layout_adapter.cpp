@@ -29,6 +29,7 @@
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <utility>
 
 namespace integrated_bringup::locomotion {
 
@@ -40,12 +41,6 @@ constexpr int kNv = rtc_urdf_bridge::kFreeFlyerNv;
 // Offsets inside one original half: position / linear velocity at 0..2, the
 // Euler triple (ψ, θ, φ) or its rates at 3..5.
 constexpr int kEulerOffset = 3;
-
-// Original (ψ, θ, φ) at `offset` → pinocchio / rtc_math (r, p, y) = (φ, θ, ψ).
-Eigen::Vector3d ReversedTriple(const Eigen::Ref<const Eigen::VectorXd>& x,
-                               Eigen::Index offset) noexcept {
-  return Eigen::Vector3d(x[offset + 2], x[offset + 1], x[offset]);
-}
 
 }  // namespace
 
@@ -60,8 +55,9 @@ bool OriginalToFreeFlyer(const Eigen::Ref<const Eigen::VectorXd>& q_o,
     return false;
   }
 
-  const Eigen::Vector3d rpy = ReversedTriple(q_o, kEulerOffset);
-  const Eigen::Vector3d rpy_dot = ReversedTriple(v_o, kEulerOffset);
+  // Original (ψ, θ, φ) → pinocchio / rtc_math (r, p, y) = (φ, θ, ψ).
+  const Eigen::Vector3d rpy = q_o.segment<3>(kEulerOffset).reverse();
+  const Eigen::Vector3d rpy_dot = v_o.segment<3>(kEulerOffset).reverse();
   const Eigen::Matrix3d R = rtc::math::se3::RpyToRotationZyx(rpy);
   Eigen::Quaterniond quat(R);
   if (quat.w() < 0.0) {
@@ -73,10 +69,7 @@ bool OriginalToFreeFlyer(const Eigen::Ref<const Eigen::VectorXd>& q_o,
   const Eigen::Vector3d w_b = E_b * rpy_dot;
 
   q.head<3>() = p_w;
-  q[3] = quat.x();
-  q[4] = quat.y();
-  q[5] = quat.z();
-  q[6] = quat.w();  // w last in pinocchio
+  q.segment<4>(3) = quat.coeffs();  // Eigen's storage is (x, y, z, w), pinocchio's order
   q.tail(nj) = q_o.tail(nj);
   v.head<3>() = v_b;
   v.segment<3>(3) = w_b;
@@ -114,14 +107,10 @@ bool FreeFlyerToOriginal(const Eigen::Ref<const Eigen::VectorXd>& q,
   const Eigen::Vector3d rpy_dot = E_b_inv * v.segment<3>(3);
 
   q_o.head<3>() = p_w;
-  q_o[3] = rpy[2];  // ψ
-  q_o[4] = rpy[1];  // θ
-  q_o[5] = rpy[0];  // φ
+  q_o.segment<3>(kEulerOffset) = rpy.reverse();  // (ψ, θ, φ)
   q_o.tail(nj) = q.tail(nj);
   v_o.head<3>() = v_w;
-  v_o[3] = rpy_dot[2];  // ψ̇
-  v_o[4] = rpy_dot[1];  // θ̇
-  v_o[5] = rpy_dot[0];  // φ̇
+  v_o.segment<3>(kEulerOffset) = rpy_dot.reverse();  // (ψ̇, θ̇, φ̇)
   v_o.tail(nj) = v.tail(nj);
   return true;
 }
@@ -132,21 +121,16 @@ bool OriginalWeightsToTangent(const Eigen::Ref<const Eigen::VectorXd>& w_o,
   if (w.size() != n || n % 2 != 0 || n < 2 * kOriginalBaseDim) {
     return false;
   }
-  for (Eigen::Index i = 0; i < n; ++i) {
-    if (!std::isfinite(w_o[i]) || w_o[i] < 0.0) {
-      return false;
-    }
+  if (!w_o.allFinite() || (w_o.array() < 0.0).any()) {
+    return false;
   }
 
+  // Identity copy (w and w_o may be one buffer), then per half swap ψ ↔ φ: tangent
+  // x ← φ, z ← ψ; θ stays on y.
+  w = w_o;
   const Eigen::Index half = n / 2;  // = 6 + nj = nv
-  for (const Eigen::Index off : std::array<Eigen::Index, 2>{0, half}) {
-    // Read before the identity copy so w_o and w may be one buffer.
-    const double w_yaw = w_o[off + kEulerOffset];       // ψ / ψ̇
-    const double w_roll = w_o[off + kEulerOffset + 2];  // φ / φ̇
-    w.segment(off, half) = w_o.segment(off, half);
-    w[off + kEulerOffset] = w_roll;     // tangent x ← φ
-    w[off + kEulerOffset + 2] = w_yaw;  // tangent z ← ψ (y ← θ by the copy)
-  }
+  std::swap(w[kEulerOffset], w[kEulerOffset + 2]);
+  std::swap(w[half + kEulerOffset], w[half + kEulerOffset + 2]);
   return true;
 }
 

@@ -40,7 +40,8 @@
 
 namespace integrated_bringup::locomotion {
 
-/// The arm ends a humanoid has. More is a schema error, not a capacity limit.
+/// Policy cap, not a capacity: a humanoid has two arm ends. A third end-effector
+/// (a head camera, say) is a deliberate schema change here.
 inline constexpr std::size_t kMaxEndEffectors = 2;
 
 /// @brief A named frame role (an end-effector).

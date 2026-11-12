@@ -35,24 +35,32 @@ namespace loco = integrated_bringup::locomotion;
 constexpr const char* kProfile = "g1_loco";
 constexpr const char* kBody = "g1";
 
-std::vector<std::string> ModelOrder() {
-  return loco::JointOrder(*fx::ShippedModelBuilder(kProfile)->GetTreeModel(kBody));
+const std::vector<std::string>& ModelOrder() {
+  static const std::vector<std::string> order =
+      loco::JointOrder(*fx::ShippedModelBuilder(kProfile)->GetTreeModel(kBody));
+  return order;
 }
 
 int ModelNv() {
   return fx::ShippedModelBuilder(kProfile)->GetTreeModel(kBody)->nv;
 }
 
-std::vector<std::string> DeviceRoster() {
-  return fx::ShippedSimParams(kProfile)["devices"][kBody]["joint_state_names"]
-      .as<std::vector<std::string>>();
+const std::vector<std::string>& DeviceRoster() {
+  static const std::vector<std::string> roster =
+      fx::ShippedSimParams(kProfile)["devices"][kBody]["joint_state_names"]
+          .as<std::vector<std::string>>();
+  return roster;
 }
 
-std::vector<std::string> SimulatorRoster() {
-  const YAML::Node sim =
-      YAML::LoadFile(fx::ShippedProfilesDir() + "/" + kProfile + "/mujoco_simulator.yaml");
-  return sim["mujoco_simulator"]["ros__parameters"]["robot_response"][kBody]["command_joint_names"]
-      .as<std::vector<std::string>>();
+const std::vector<std::string>& SimulatorRoster() {
+  static const std::vector<std::string> roster = [] {
+    const YAML::Node sim =
+        YAML::LoadFile(fx::ShippedProfilesDir() + "/" + kProfile + "/mujoco_simulator.yaml");
+    return sim["mujoco_simulator"]["ros__parameters"]["robot_response"][kBody]
+              ["command_joint_names"]
+                  .as<std::vector<std::string>>();
+  }();
+  return roster;
 }
 
 std::string PlantMjcf() {
@@ -104,6 +112,12 @@ Plant ReadPlant() {
   return plant;
 }
 
+// Parsed once per process; ReadPlant reports a load failure on the first caller.
+const Plant& ShippedPlant() {
+  static const Plant plant = ReadPlant();
+  return plant;
+}
+
 void ExpectSameOrder(const std::vector<std::string>& expected,
                      const std::vector<std::string>& actual, const char* what) {
   const auto mismatch = loco::CompareJointOrder(expected, actual);
@@ -117,7 +131,7 @@ TEST(G1LocoJointOrder, TheModelHasTheBodysDofAndNoEmptySource) {
   EXPECT_EQ(ModelNv(), 23);
   EXPECT_EQ(DeviceRoster().size(), ModelOrder().size());
   EXPECT_EQ(SimulatorRoster().size(), ModelOrder().size());
-  EXPECT_EQ(ReadPlant().actuator_joints.size(), ModelOrder().size());
+  EXPECT_EQ(ShippedPlant().actuator_joints.size(), ModelOrder().size());
 }
 
 TEST(G1LocoJointOrder, TheRostersAreTheModelOrder) {
@@ -127,7 +141,7 @@ TEST(G1LocoJointOrder, TheRostersAreTheModelOrder) {
 }
 
 TEST(G1LocoJointOrder, ThePlantsActuatorsAreTheModelOrder) {
-  const Plant plant = ReadPlant();
+  const Plant& plant = ShippedPlant();
   ExpectSameOrder(ModelOrder(), plant.actuator_joints, "the MJCF <actuator> order");
   // The keyframe the simulator resets to drives every actuator, over the plant's nq
   // (free joint 7 + the actuated joints).
