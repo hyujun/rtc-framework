@@ -1,6 +1,7 @@
 // ── RtClosedChainHandle 구현 ─────────────────────────────────────────────────
 #include "rtc_urdf_bridge/rt_closed_chain_handle.hpp"
 
+#include "rtc_urdf_bridge/free_flyer_root.hpp"
 #include "rtc_urdf_bridge/loop_verification.hpp"
 
 // Pinocchio 헤더 (경고 억제)
@@ -81,6 +82,12 @@ RtClosedChainHandle::RtClosedChainHandle(std::shared_ptr<const pinocchio::Model>
                                 std::to_string(model_->nq) + ") 와 다릅니다.");
   }
   q_full_ = (q_seed.size() == model_->nq) ? std::move(q_seed) : pinocchio::neutral(*model_);
+  // free-flyer root 는 held 라 다시 정규화되지 않는다 — 정규화되지 않은 seed 는 여기서 거부한다
+  // (그대로 두면 Debug 의 pinocchio assert 로 RT Update 가 abort, Release 는 closure 가 편향).
+  if (!HasNormalizedFreeFlyerRoot(*model_, q_full_)) {
+    throw std::invalid_argument(
+        "RtClosedChainHandle: q_seed 의 free-flyer root quaternion 이 정규화돼 있지 않습니다.");
+  }
   Initialize();
 }
 
@@ -106,6 +113,15 @@ void RtClosedChainHandle::Initialize() {
     }
   }
 
+  // free-flyer root 는 held (WD-38, ClosedChainHandle 과 같은 계약): 독립 · 종속 어느 쪽도 아니다.
+  // 항등 경로는 free-flyer 가 독립으로 들어가 아래 단일-DoF 검사에서 거부된다.
+  held_root_ = !identity_ && IsFreeFlyerRoot(model);
+  if (held_root_ && HasWorldAnchoredConstraint(constraints_)) {
+    throw std::runtime_error(
+        "RtClosedChainHandle: free-flyer root 모델에 world 에 걸린 loop 가 있습니다 — free-flyer "
+        "가 loop 멤버가 되므로 held root 로 축약할 수 없습니다.");
+  }
+
   // 독립 슬롯 (단일-DoF 만 지원 — 스칼라 q_a).
   independent_.reserve(indep_joints.size());
   for (const auto jid : indep_joints) {
@@ -125,14 +141,15 @@ void RtClosedChainHandle::Initialize() {
             [](const IndependentSlot& a, const IndependentSlot& b) { return a.v_idx < b.v_idx; });
   n_a_ = static_cast<int>(independent_.size());
 
-  // 종속(=passive) velocity 인덱스 = 전체 − 독립 (오름차순).
+  // 종속(=passive) velocity 인덱스 = 전체 − 독립 − held root (오름차순).
   {
     std::vector<char> is_indep(static_cast<std::size_t>(nv_), 0);
     for (const auto& s : independent_) {
       is_indep[static_cast<std::size_t>(s.v_idx)] = 1;
     }
-    dep_v_idx_.reserve(static_cast<std::size_t>(nv_ - n_a_));
-    for (int vi = 0; vi < nv_; ++vi) {
+    const int first_v = held_root_ ? kFreeFlyerNv : 0;
+    dep_v_idx_.reserve(static_cast<std::size_t>(nv_ - n_a_ - first_v));
+    for (int vi = first_v; vi < nv_; ++vi) {
       if (!is_indep[static_cast<std::size_t>(vi)]) {
         dep_v_idx_.push_back(vi);
       }
@@ -392,6 +409,10 @@ RtClosedChainHandle::Status RtClosedChainHandle::Update(std::span<const double> 
       dq_[dep_v_idx_[static_cast<std::size_t>(r)]] = dv_free_[r];
     }
     pinocchio::integrate(model, q_work_, dq_, q_next_);
+    if (held_root_) {
+      // root 증분 0 이어도 SE3 integrate 가 quaternion 을 재정규화한다 — base 를 bit 그대로 둔다.
+      q_next_.head<kFreeFlyerNq>() = q_work_.head<kFreeFlyerNq>();
+    }
     q_work_ = q_next_;
   }
   // 최종 형상에서 closure residual + Jc (G 재계산에 재사용). data_ 도 q_work_ 로 채워짐.
@@ -513,6 +534,10 @@ void RtClosedChainHandle::RebuildReducedDynamics(bool have_velocity) noexcept {
       pinocchio::integrate(model, q_full_, dq_drift_, q_plus_);
       dq_drift_ *= -1.0;
       pinocchio::integrate(model, q_full_, dq_drift_, q_minus_);
+      if (held_root_) {  // root 행 G = 0 → 증분 0 — SE3 integrate 의 재정규화만 되돌린다
+        q_plus_.head<kFreeFlyerNq>() = q_full_.head<kFreeFlyerNq>();
+        q_minus_.head<kFreeFlyerNq>() = q_full_.head<kFreeFlyerNq>();
+      }
       ComputeConstraintKinematicsRt(q_plus_);  // Jc_ = Jc(q_plus)
       gamma_.noalias() = Jc_ * v_full_;
       ComputeConstraintKinematicsRt(q_minus_);  // Jc_ = Jc(q_minus)

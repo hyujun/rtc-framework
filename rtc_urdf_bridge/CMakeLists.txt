@@ -192,6 +192,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_g1_sole_frames test/test_g1_sole_frames.cpp)
   target_link_libraries(test_g1_sole_frames ${PROJECT_NAME} ament_index_cpp::ament_index_cpp)
 
+  # Floating CM model with the closed-chain hand: free-flyer held in loop locks · handles (W1-F04)
+  ament_add_gtest(test_floating_closed_chain test/test_floating_closed_chain.cpp)
+  target_link_libraries(test_floating_closed_chain ${PROJECT_NAME} ament_index_cpp::ament_index_cpp)
+
   ament_add_gtest(test_xacro_processor test/test_xacro_processor.cpp)
   target_link_libraries(test_xacro_processor ${PROJECT_NAME})
 

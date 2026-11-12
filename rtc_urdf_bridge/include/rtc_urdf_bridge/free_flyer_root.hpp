@@ -18,7 +18,8 @@ namespace rtc_urdf_bridge {
 ///         composite translation + spherical root has the same nq 7 / nv 6
 ///         but not the free-flyer's configuration layout, and is not floating
 ///         here. A model without a root joint is not floating. A model-level
-///         fact, independent of any YAML. Init-time (compares type names).
+///         fact, independent of any YAML. Allocation-free (a joint-variant type
+///         check), so RT-callable helpers may use it.
 [[nodiscard]] bool IsFreeFlyerRoot(const pinocchio::Model& model) noexcept;
 
 }  // namespace rtc_urdf_bridge

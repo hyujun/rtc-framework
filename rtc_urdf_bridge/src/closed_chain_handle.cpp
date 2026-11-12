@@ -1,6 +1,7 @@
 // ── ClosedChainHandle 구현 ──────────────────────────────────────────────────────
 #include "rtc_urdf_bridge/closed_chain_handle.hpp"
 
+#include "rtc_urdf_bridge/free_flyer_root.hpp"
 #include "rtc_urdf_bridge/loop_verification.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
@@ -83,6 +84,11 @@ ClosedChainHandle::ClosedChainHandle(std::shared_ptr<const pinocchio::Model> mod
   m_ = TotalConstraintDim(constraints_);
   identity_ = constraints_.empty();
   q_full_ = (q_ref.size() == model_->nq) ? std::move(q_ref) : pinocchio::neutral(*model_);
+  // free-flyer root 는 held 라 다시 정규화되지 않는다 — 정규화되지 않은 seed 는 거부한다.
+  if (!HasNormalizedFreeFlyerRoot(*model_, q_full_)) {
+    throw std::invalid_argument(
+        "ClosedChainHandle: q_ref 의 free-flyer root quaternion 이 정규화돼 있지 않습니다.");
+  }
   Initialize();
 }
 
@@ -108,6 +114,15 @@ void ClosedChainHandle::Initialize() {
       }
       indep_joints.push_back(jid);
     }
+  }
+
+  // free-flyer root 는 held (WD-38): 독립 · 종속 어느 쪽도 아니다. 구속 없는 항등 축약은 모든
+  // movable 이 독립이라 free-flyer 가 아래 단일-DoF 검사에서 거부된다 (G = I 가 n_a == nv 전제).
+  held_root_ = !identity_ && IsFreeFlyerRoot(model);
+  if (held_root_ && HasWorldAnchoredConstraint(constraints_)) {
+    throw std::runtime_error(
+        "ClosedChainHandle: free-flyer root 모델에 world 에 걸린 loop 가 있습니다 — free-flyer 가 "
+        "loop 멤버가 되므로 held root 로 축약할 수 없습니다.");
   }
 
   // 독립 관절 슬롯 구성 (단일-DoF 만 지원: q_a/v_a 를 스칼라로 해석).
@@ -136,24 +151,25 @@ void ClosedChainHandle::Initialize() {
   }
   n_a_ = static_cast<int>(indep_v_idx_.size());
 
-  // 종속 velocity 인덱스 = 전체 − 독립 (오름차순).
+  // 종속 velocity 인덱스 = 전체 − 독립 − held root (오름차순).
   {
     std::vector<char> is_indep(static_cast<std::size_t>(nv_), 0);
     for (const int vi : indep_v_idx_) {
       is_indep[static_cast<std::size_t>(vi)] = 1;
     }
-    dep_v_idx_.reserve(static_cast<std::size_t>(nv_ - n_a_));
-    for (int vi = 0; vi < nv_; ++vi) {
+    const int first_v = held_root_ ? kFreeFlyerNv : 0;
+    dep_v_idx_.reserve(static_cast<std::size_t>(nv_ - n_a_ - first_v));
+    for (int vi = first_v; vi < nv_; ++vi) {
       if (!is_indep[static_cast<std::size_t>(vi)]) {
         dep_v_idx_.push_back(vi);
       }
     }
   }
 
-  // 종속 DoF 수 = nv − n_a. Jc_D 는 (m × dep) 로 tall 일 수 있다 (planar contact_3d 처럼
-  // 구속이 redundant → rank < m). 축약은 n_a = nv − rank(Jc) 일 때 정의되며, rank 는
-  // 형상 의존이라 여기서 정방 가정을 강제하지 않고 RebuildReducedDynamics 에서 damped
-  // pseudo-inverse + singular flag 로 처리한다. 구속이 있는데 독립 좌표가 없으면 축약 불가.
+  // 종속 DoF 수 = nv − n_a (− held root 6). Jc_D 는 (m × dep) 로 tall 일 수 있다 (planar contact_3d
+  // 처럼 구속이 redundant → rank < m). 축약은 n_a = nv − rank(Jc) 일 때 정의되며, rank 는 형상
+  // 의존이라 여기서 정방 가정을 강제하지 않고 RebuildReducedDynamics 에서 damped pseudo-inverse +
+  // singular flag 로 처리한다. 구속이 있는데 독립 좌표가 없으면 축약 불가.
   if (!identity_ && n_a_ == 0) {
     throw std::runtime_error(
         "ClosedChainHandle: 구속이 있으나 actuated(독립) 관절이 없습니다 — 축약 불가. "
@@ -336,8 +352,12 @@ void ClosedChainHandle::RebuildReducedDynamics(bool have_velocity, const Eigen::
       Eigen::VectorXd a_drift = Eigen::VectorXd::Zero(nv_);
       if (dep > 0) {
         const Eigen::VectorXd dq = kDriftEps * v_full_;
-        const Eigen::VectorXd q_plus = pinocchio::integrate(model, q_full_, dq);
-        const Eigen::VectorXd q_minus = pinocchio::integrate(model, q_full_, (-dq).eval());
+        Eigen::VectorXd q_plus = pinocchio::integrate(model, q_full_, dq);
+        Eigen::VectorXd q_minus = pinocchio::integrate(model, q_full_, (-dq).eval());
+        if (held_root_) {  // root 행 G = 0 → 증분 0 — SE3 integrate 의 재정규화만 되돌린다
+          q_plus.head<kFreeFlyerNq>() = q_full_.head<kFreeFlyerNq>();
+          q_minus.head<kFreeFlyerNq>() = q_full_.head<kFreeFlyerNq>();
+        }
         const ConstraintKinematics ck_p =
             ComputeConstraintKinematics(model, data_, constraints_, q_plus);
         const ConstraintKinematics ck_m =

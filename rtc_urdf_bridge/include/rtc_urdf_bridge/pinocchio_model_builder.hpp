@@ -46,25 +46,28 @@ class PinocchioModelBuilder {
 
   // ── 모델 접근 ──────────────────────────────────────────────────────────────
 
-  /// 전체(full) Pinocchio 모델
+  /// 전체(full) Pinocchio 모델. `root_joint_type: "floating"` 이면 joint 1 이 free-flyer
+  /// (`root_joint`, URDF root link 에 붙는다) 다.
   [[nodiscard]] std::shared_ptr<const pinocchio::Model> GetFullModel() const noexcept;
 
-  /// 이름으로 축소(reduced) 서브모델 조회
+  /// 이름으로 축소(reduced) 서브모델 조회. free-flyer root 는 항상 neutral (단위 자세) 로
+  /// 잠긴다 — sub · tree 모델은 root 와 무관하게 fixed root 빌드와 같다 (WD-37).
   /// @throws std::out_of_range 이름 미등록 시
   [[nodiscard]] std::shared_ptr<const pinocchio::Model> GetReducedModel(
       std::string_view sub_model_name) const;
 
-  /// 이름으로 트리모델 조회
+  /// 이름으로 트리모델 조회. free-flyer root 는 sub 모델과 같이 잠긴다 (WD-37).
   /// @throws std::out_of_range 이름 미등록 시
   [[nodiscard]] std::shared_ptr<const pinocchio::Model> GetTreeModel(
       std::string_view tree_model_name) const;
 
   /// 폐쇄 체인(extended URDF) 제어용 actuated 모델. loop-passive 관절(sidecar 가
   /// passive 로 규정한 것)만 잠그고 actuated 관절을 전부 movable 로 유지한 축소 모델
-  /// 이라 nq==nv 이며 device 가 선언한 actuated 집합과 1:1 대응한다. tree/reduced 모델
-  /// 과 달리 root→tip 직렬 경로 밖의 actuated 관절(예: 4-bar 손가락의 active DIP —
-  /// passive coupler 가지로 tip 에 도달)도 보존한다. lock 기준값은 tree/reduced 와 동일
-  /// 한 MakeReferenceConfig() 이므로 frozen passive 기하가 tree 모델과 일치한다.
+  /// 이라 (fixed root 면) nq==nv 이며 device 가 선언한 actuated 집합과 1:1 대응한다. tree/reduced
+  /// 모델 과 달리 root→tip 직렬 경로 밖의 actuated 관절(예: 4-bar 손가락의 active DIP — passive
+  /// coupler 가지로 tip 에 도달)도 보존한다. lock 기준값은 tree/reduced 와 동일 한
+  /// MakeReferenceConfig() 이므로 frozen passive 기하가 tree 모델과 일치한다. free-flyer root 는
+  /// 잠그지 않는다 — floating 이면 이 모델도 부동 (nq == nv + 1).
   /// @return closure sidecar 미사용(plain/mimic URDF)이면 nullptr — 소비자는 기존
   ///   tree/full 경로로 fallback (byte-for-byte).
   [[nodiscard]] std::shared_ptr<const pinocchio::Model> GetActuatedModel() const noexcept;
@@ -86,7 +89,8 @@ class PinocchioModelBuilder {
   [[nodiscard]] const std::vector<pinocchio::JointIndex>& GetClosureActuatedJointIds()
       const noexcept;
 
-  /// sidecar 가 passive 로 규정한 full-model movable 관절 이름 (= movable − actuated).
+  /// sidecar 가 passive 로 규정한 full-model movable 관절 이름 (= movable − actuated; free-flyer
+  /// root 는 loop 밖이라 들지 않는다).
   /// 모든 reduced/tree 서브모델에서 잠기는 loop-passive 관절이다 — topology 판정
   /// (프레임이 loop-passive 하류인가) 에 쓴다. closure sidecar 미사용 시 빈 목록.
   [[nodiscard]] const std::vector<std::string>& GetClosurePassiveLockNames() const noexcept;
@@ -195,6 +199,9 @@ class PinocchioModelBuilder {
   ///   - yaml_passive_override == true : config_.passive_joints 그대로 사용
   /// 두 경우 모두 closure_passive_lock_names_ (Extended-URDF loop-passive) 를 합집합.
   [[nodiscard]] std::vector<std::string> CollectPassiveLockNames() const;
+
+  /// full 모델이 free-flyer root 면 그 이름을 sub · tree 잠금 목록에 더한다 (WD-37).
+  void AppendFreeFlyerLock(std::vector<std::string>& names) const;
 
   /// 잠금 관절의 기준 설정값 구성
   [[nodiscard]] Eigen::VectorXd MakeReferenceConfig() const;

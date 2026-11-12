@@ -1,6 +1,8 @@
 // ── loop_verification 구현 ───────────────────────────────────────────────────
 #include "rtc_urdf_bridge/loop_verification.hpp"
 
+#include "rtc_urdf_bridge/free_flyer_root.hpp"
+
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -10,6 +12,7 @@
 #include <pinocchio/algorithm/crba.hpp>
 #include <pinocchio/algorithm/jacobian.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/math/quaternion.hpp>
 #include <pinocchio/spatial/explog.hpp>
 #pragma GCC diagnostic pop
 
@@ -38,6 +41,23 @@ int TotalConstraintDim(const std::vector<pinocchio::RigidConstraintModel>& const
   return total;
 }
 
+bool HasWorldAnchoredConstraint(
+    const std::vector<pinocchio::RigidConstraintModel>& constraints) noexcept {
+  return std::any_of(constraints.begin(), constraints.end(),
+                     [](const auto& cm) { return cm.joint1_id == 0 || cm.joint2_id == 0; });
+}
+
+bool HasNormalizedFreeFlyerRoot(const pinocchio::Model& model, const Eigen::VectorXd& q) noexcept {
+  if (q.size() != model.nq) {
+    return false;
+  }
+  if (!IsFreeFlyerRoot(model)) {
+    return true;
+  }
+  const Eigen::Quaterniond quat(q.segment<4>(3));
+  return quat.coeffs().allFinite() && pinocchio::quaternion::isNormalized(quat);
+}
+
 bool IsFrameDownstreamOfLoop(const pinocchio::Model& model,
                              std::span<const pinocchio::JointIndex> actuated_joint_ids,
                              pinocchio::FrameIndex frame_id) noexcept {
@@ -47,11 +67,13 @@ bool IsFrameDownstreamOfLoop(const pinocchio::Model& model,
   // frame → 부모 joint → universe 까지의 support(조상) 경로.
   const auto parent_joint = model.frames[frame_id].parentJoint;
   const auto& support = model.supports[parent_joint];
+  // free-flyer root 는 held (handle 이 독립 · 종속 어느 쪽에도 넣지 않는다) — loop-passive 아님.
+  const pinocchio::JointIndex held_root = IsFreeFlyerRoot(model) ? 1 : 0;
   // 조상 중 movable & non-actuated(=loop-passive) 가 하나라도 있으면 하류다.
   for (const auto jid : support) {
     const auto jidx = static_cast<std::size_t>(jid);
-    if (jid == 0 || model.nvs[jidx] == 0) {
-      continue;  // universe / fixed
+    if (jid == 0 || jid == held_root || model.nvs[jidx] == 0) {
+      continue;  // universe / held free-flyer root / fixed
     }
     const bool is_actuated = std::find(actuated_joint_ids.begin(), actuated_joint_ids.end(), jid) !=
                              actuated_joint_ids.end();
@@ -254,7 +276,8 @@ JacobianReport AnalyzeConstraintJacobian(
     report.reduction_singular = report.sigma_min_reduction < kClosedChainSingularSvThreshold;
   }
 
-  // Delassus D = Jc M⁻¹ Jcᵀ 의 조건수. crba 는 upper 만 채우므로 대칭화.
+  // Delassus D = Jc M⁻¹ Jcᵀ 의 조건수. crba 는 upper 만 채우므로 대칭화. free-flyer root 면
+  // free-floating M 이라 fixed root 와 값이 다르다 — 진단 전용 (어떤 판정도 쓰지 않는다).
   pinocchio::crba(model, data, q);
   Eigen::MatrixXd M = data.M;
   M.triangularView<Eigen::StrictlyLower>() = M.transpose().triangularView<Eigen::StrictlyLower>();
