@@ -428,6 +428,28 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
     const YAML::Node c_cfg = it->second;
     const auto type = c_cfg["type"].as<std::string>("");
 
+    // A constraint that integrates over the control period: a missing `dt`
+    // takes 1/control_rate, a YAML `dt` that disagrees with it fails the
+    // configure (#1019). LoadConfig runs after SetControlRate.
+    const double period = GetDefaultDt();
+    const auto with_period = [&](const YAML::Node& node) {
+      YAML::Node out = YAML::Clone(node);
+      if (!out["dt"] || out["dt"].IsNull()) {
+        out["dt"] = period;
+      }
+      return out;
+    };
+    const auto check_period = [&](double dt) {
+      if (std::abs(dt - period) > 1e-9 * period) {
+        char msg[192];
+        std::snprintf(msg, sizeof(msg),
+                      "[wbc] tsid.constraints.%s.dt %.9g s differs from the control period "
+                      "%.9g s (1/control_rate); omit it to take the period",
+                      key.c_str(), dt, period);
+        throw std::invalid_argument(msg);
+      }
+    };
+
     if (type == "eom") {
       auto c = std::make_unique<rtc::tsid::EomConstraint>();
       c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
@@ -448,24 +470,10 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
       c->SetContactManager(&contact_mgr_config_);
       formulation.AddConstraint(std::move(c));
     } else if (type == "joint_limit") {
-      // The box integrates over one control period: a missing `dt` takes
-      // 1/control_rate, a YAML `dt` that disagrees with it fails the
-      // configure (#1019). LoadConfig runs after SetControlRate.
-      const double period = GetDefaultDt();
-      YAML::Node jl_cfg = YAML::Clone(c_cfg);
-      if (!jl_cfg["dt"] || jl_cfg["dt"].IsNull()) {
-        jl_cfg["dt"] = period;
-      }
+      // The box integrates over one control period (with_period / check_period).
       auto c = std::make_unique<rtc::tsid::JointLimitConstraint>();
-      c->Init(model, robot_info_, combined_cache_.cache(), jl_cfg);
-      if (std::abs(c->Dt() - period) > 1e-9 * period) {
-        char msg[192];
-        std::snprintf(msg, sizeof(msg),
-                      "[wbc] tsid.constraints.%s.dt %.9g s differs from the control period "
-                      "%.9g s (1/control_rate); omit it to take the period",
-                      key.c_str(), c->Dt(), period);
-        throw std::invalid_argument(msg);
-      }
+      c->Init(model, robot_info_, combined_cache_.cache(), with_period(c_cfg));
+      check_period(c->Dt());
       // Diagnostics view (#551): the formulation owns it; keep a raw pointer
       // for FillWbcDiagLogPod. Last `joint_limit` entry wins.
       joint_limit_constraint_ = c.get();
@@ -486,8 +494,10 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
       c->SetContactManager(&contact_mgr_config_);
       formulation.AddConstraint(std::move(c));
     } else if (type == "torque_limit") {
+      // Its torque-rate bound integrates over one control period too.
       auto c = std::make_unique<rtc::tsid::TorqueLimitConstraint>();
-      c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
+      c->Init(model, robot_info_, combined_cache_.cache(), with_period(c_cfg));
+      check_period(c->Dt());
       // τ = S·(M·a + h − Jcᵀ·λ) 역산 시 surface(cdim=6) λ 의 column offset 정확.
       c->SetContactManager(&contact_mgr_config_);
       formulation.AddConstraint(std::move(c));
