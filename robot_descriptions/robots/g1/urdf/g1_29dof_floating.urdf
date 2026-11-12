@@ -4,6 +4,8 @@
     - mesh filenames -> package://robot_descriptions/robots/g1/unitree_g1_29dof/meshes/…
     - wrist joints (6) -> fixed: wrists are rigid, 23 actuated joints remain (same as the MJCF)
     - root stays pelvis: the floating base is supplied by the loader (urdf.root_joint_type: floating)
+    - left_sole / right_sole: bare fixed links on *_ankle_roll_link at the MJCF *_sole_ft_site (sole bottom
+      face, 0.035 0 -0.035; x = foot forward) — the contact frames. No inertial/visual/collision
 -->
 <robot name="g1_29dof_floating">
   <material name="dark">
@@ -244,6 +246,12 @@
     <axis xyz="1 0 0"/>
     <limit lower="-0.2618" upper="0.2618" effort="35" velocity="30"/>
   </joint>
+  <link name="left_sole"></link>
+  <joint name="left_sole_joint" type="fixed">
+    <origin xyz="0.035 0 -0.035" rpy="0 0 0"/>
+    <parent link="left_ankle_roll_link"/>
+    <child link="left_sole"/>
+  </joint>
   <link name="right_hip_pitch_link">
     <inertial>
       <origin xyz="0.002741 -0.047791 -0.02606" rpy="0 0 0"/>
@@ -423,6 +431,12 @@
     <child link="right_ankle_roll_link"/>
     <axis xyz="1 0 0"/>
     <limit lower="-0.2618" upper="0.2618" effort="35" velocity="30"/>
+  </joint>
+  <link name="right_sole"></link>
+  <joint name="right_sole_joint" type="fixed">
+    <origin xyz="0.035 0 -0.035" rpy="0 0 0"/>
+    <parent link="right_ankle_roll_link"/>
+    <child link="right_sole"/>
   </joint>
 
   <!-- Torso -->

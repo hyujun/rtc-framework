@@ -10,6 +10,7 @@ Unitree G1 29-DoF 휴머노이드. 공개 원본 (전신) 과 그 파생 부동 
 
 - 손목 6 관절을 없애 강체로 (actuated 23). URDF 는 root 가 pelvis 그대로다 — 부동 관절은 loader 가 붙인다 (`rtc_urdf_bridge` `urdf.root_joint_type`)
 - 발 sphere 4 점 → sole box 1 개. sole 마다 `<contact>` 센서 (`*_sole_contact`, netforce 17 값 — sim 의 contact wrench lane 이 자동 발견) · `<framepos>` (`*_sole_pos`) · 바닥면의 `*_sole_ft_site` (wrench 기준 site)
+- URDF 접촉 frame: `*_ankle_roll_link` 아래 bare link `left_sole` · `right_sole` (`*_sole_ft_site` 와 같은 점; MJCF 의 `*_sole` 은 geom). 일치는 `model_pairs.yaml` `tip_frames` 가 본다
 - `<motor>` → `<position>` (다리 · 허리 kp 200 / kv 5, 팔 100 / 2), keyframe `stand`
 - pelvis 의 framepos · framequat · framelinvel · frameangvel (`objtype="xbody"` — body 프레임; `body` 는 관성 프레임) + IMU 4 → sensor 12
 - `implicitfast` · timestep 0.002 = **제어 주기** (sim 은 `<option timestep>` 을 제어 주기로 읽어 `n_substeps` 로 나눈다; 단독 `mj_step` 은 0.002/3 로 덮어 쓴다)
