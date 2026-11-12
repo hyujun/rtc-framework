@@ -45,6 +45,14 @@ class FormulationBase {
                                                  const ContactState& contacts,
                                                  const RobotModelInfo& robot_info) noexcept = 0;
 
+  // Reset every constraint's latched state (ConstraintBase::Reset) and the
+  // solver warm start — the owner's Reset (WD-65). RT-safe.
+  virtual void Reset() noexcept = 0;
+
+  // Forward the applied torque to every constraint (ConstraintBase::
+  // OnTorqueApplied). The owner calls it only on tau_valid ticks. RT-safe.
+  virtual void OnTorqueApplied(const Eigen::VectorXd& tau) noexcept = 0;
+
   // Formulation 종류 식별
   [[nodiscard]] virtual std::string_view Type() const noexcept = 0;
 };

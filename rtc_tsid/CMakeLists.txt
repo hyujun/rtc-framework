@@ -185,6 +185,11 @@ if(BUILD_TESTING)
   # acceleration, binding torque limits and the free-flyer conventions.
   add_tsid_gtest(test_floating_wqp_gates)
 
+  # The locomotion QP's terms on the same rig (W6-F01 PR A): Baumgarte contact
+  # target + latch, the acceleration and torque-rate boxes, tau_valid, the
+  # solver keys — every term off = the gates' bytes.
+  add_tsid_gtest(test_floating_bounds)
+
   # Stage B-1..B-3: ObjectFrame + grasp matrix G + ContactManager, GraspCache
   # (LDLT pinv + P_N) + ObjectWrenchTask, InternalForceTask (rank-based nullity
   # + P_N reference projection).

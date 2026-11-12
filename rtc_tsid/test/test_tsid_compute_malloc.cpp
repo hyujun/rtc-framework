@@ -36,6 +36,7 @@
 #pragma GCC diagnostic pop
 
 #include "g1_fixture.hpp"
+#include "g1_wqp_fixture.hpp"
 #include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_tsid/constraints/contact_constraint.hpp"
 #include "rtc_tsid/constraints/eom_constraint.hpp"
@@ -53,37 +54,7 @@
 namespace rtc::tsid {
 namespace {
 
-// Asks for one inequality row more than it reports (the row-budget trip).
-class OneRowTooMany final : public ConstraintBase {
- public:
-  [[nodiscard]] std::string_view Name() const noexcept override { return "one_row_too_many"; }
-
-  void Init(const pinocchio::Model& /*model*/, const RobotModelInfo& /*robot_info*/,
-            PinocchioCache& /*cache*/, const YAML::Node& /*constraint_config*/) override {}
-
-  [[nodiscard]] int EqDim(const ContactState& /*contacts*/) const noexcept override { return 0; }
-
-  [[nodiscard]] int IneqDim(const ContactState& /*contacts*/) const noexcept override { return 1; }
-
-  [[nodiscard]] int MaxEqDim(const ContactManagerConfig& /*contacts*/) const noexcept override {
-    return 0;
-  }
-
-  [[nodiscard]] int MaxIneqDim(const ContactManagerConfig& /*contacts*/) const noexcept override {
-    return 0;
-  }
-
-  void ComputeEquality(const PinocchioCache& /*cache*/, const ContactState& /*contacts*/,
-                       const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
-                       Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
-                       Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept override {}
-
-  void ComputeInequality(const PinocchioCache& /*cache*/, const ContactState& /*contacts*/,
-                         const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
-                         Eigen::Ref<Eigen::MatrixXd> /*C_block*/,
-                         Eigen::Ref<Eigen::VectorXd> /*l_block*/,
-                         Eigen::Ref<Eigen::VectorXd> /*u_block*/) noexcept override {}
-};
+using test::OneRowTooMany;
 
 YAML::Node ControllerYaml(const char* formulation_type) {
   YAML::Node cfg;
@@ -110,11 +81,17 @@ YAML::Node ControllerYaml(const char* formulation_type) {
 // contact, friction, torque and joint limits; the state, cache and reference
 // it is run with.
 struct Rig {
-  explicit Rig(bool trip_row_budget, const char* formulation_type = "wqp",
-               int n_posture_tasks = 1) {
+  explicit Rig(bool trip_row_budget, const char* formulation_type = "wqp", int n_posture_tasks = 1,
+               bool locomotion_terms = false) {
     model = test::SharedG1Model();
     info.Build(*model, YAML::Node{});
-    const YAML::Node cfg = ControllerYaml(formulation_type);
+    YAML::Node cfg = ControllerYaml(formulation_type);
+    if (locomotion_terms) {
+      // The extra terms need more than the shipped 20 outer steps on a cold
+      // start; the gate measures allocations, not the iteration budget.
+      cfg["wqp"]["solver"]["max_iter"] = 200;
+      cfg["wqp"]["solver"]["max_iter_in"] = 500;
+    }
     mgr.Load(cfg, *model);
     ctrl.Init(*model, info, cfg);
 
@@ -133,8 +110,18 @@ struct Rig {
     eom->Init(*model, info, cache, YAML::Node{});
     eom->SetContactManager(&mgr);
     f.AddConstraint(std::move(eom));
+    // The locomotion terms (W6-F01 PR A): Baumgarte with latch, the torque
+    // rate (needs an applied torque), the acceleration box.
+    YAML::Node ccfg, tcfg, jcfg;
+    if (locomotion_terms) {
+      ccfg["baumgarte"]["kp"] = 10.0;
+      ccfg["baumgarte"]["kd"] = 2.0;
+      tcfg["rate_max"] = 1e5;  // ±200 N·m per tick: a bound the support change can meet
+      tcfg["dt"] = 0.002;
+      jcfg["acceleration_max"] = 500.0;
+    }
     auto cc = std::make_unique<ContactConstraint>();
-    cc->Init(*model, info, cache, YAML::Node{});
+    cc->Init(*model, info, cache, ccfg);
     cc->SetContactManager(&mgr);
     f.AddConstraint(std::move(cc));
     auto fc = std::make_unique<FrictionConeConstraint>();
@@ -142,11 +129,11 @@ struct Rig {
     fc->SetContactManager(&mgr);
     f.AddConstraint(std::move(fc));
     auto tl = std::make_unique<TorqueLimitConstraint>();
-    tl->Init(*model, info, cache, YAML::Node{});
+    tl->Init(*model, info, cache, tcfg);
     tl->SetContactManager(&mgr);
     f.AddConstraint(std::move(tl));
     auto jl = std::make_unique<JointLimitConstraint>();
-    jl->Init(*model, info, cache, YAML::Node{});
+    jl->Init(*model, info, cache, jcfg);
     f.AddConstraint(std::move(jl));
     if (trip_row_budget) {
       f.AddConstraint(std::make_unique<OneRowTooMany>());
@@ -207,6 +194,41 @@ TEST(TsidComputeMallocTest, AssemblingTheQpAllocatesNothing) {
   }
   EXPECT_EQ(status, kRowBudgetExceeded) << "premise: every row assembled, then no solve";
   EXPECT_EQ(count, 0U);
+}
+
+// Every locomotion term on, on a tick that latches an anchor (contact 1 comes
+// back active) with a previous valid torque bounding the rate: the recovery,
+// the latch and the notification around the solve add nothing to ProxQP's own
+// count (the twin rig measures its Solve alone on the same tick).
+TEST(TsidComputeMallocTest, TheLocomotionTermsAddNothingOnAnEdgeTick) {
+  Rig a(false, "wqp", 1, /*locomotion_terms=*/true);
+  Rig b(false, "wqp", 1, /*locomotion_terms=*/true);
+  for (Rig* r : {&a, &b}) {
+    for (int i = 0; i < 3; ++i) {
+      ASSERT_TRUE(r->ctrl.Compute(r->state, r->ref, r->cache, r->contacts).tau_valid);
+    }
+    r->contacts.contacts[1].active = false;
+    r->contacts.RecomputeActive(r->mgr);
+    ASSERT_TRUE(r->ctrl.Compute(r->state, r->ref, r->cache, r->contacts).tau_valid);
+    r->contacts.contacts[1].active = true;  // the measured tick latches it again
+    r->contacts.RecomputeActive(r->mgr);
+  }
+  std::size_t solve_only = 0;
+  {
+    rtc::testing::ScopedMallocGate gate;
+    (void)a.ctrl.Formulation().Solve(a.cache, a.ref, a.contacts, a.info);
+    solve_only = gate.count();
+  }
+  std::size_t compute = 0;
+  bool valid = false;
+  {
+    rtc::testing::ScopedMallocGate gate;
+    valid = b.ctrl.Compute(b.state, b.ref, b.cache, b.contacts).tau_valid;
+    compute = gate.count();
+  }
+  EXPECT_TRUE(valid);
+  EXPECT_EQ(compute, solve_only);
+  RecordProperty("proxqp_solve_mallocs", std::to_string(solve_only));
 }
 
 TEST(TsidComputeMallocTest, TorqueRecoveryAroundTheSolveAllocatesNothing) {

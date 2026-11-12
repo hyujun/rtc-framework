@@ -59,6 +59,17 @@ struct QPSolverConfig {
   double eps_primal_inf{1e-4};
 };
 
+// The solver keys of a YAML map over `defaults` — a missing key keeps the
+// default: max_iter, max_iter_in, eps_abs, eps_rel, verbose,
+// update_preconditioner, dense_backend ("Automatic" | "PrimalDualLDLT" |
+// "PrimalLDLT") and eps_primal_inf (≥ 0). A node that is not a map, a value
+// that does not convert, max_iter / max_iter_in ≤ 0, eps_abs ≤ 0, eps_rel < 0,
+// a non-finite tolerance, an unknown backend name or a negative eps_primal_inf
+// throw std::invalid_argument (init time). Used by the WQP (`wqp.solver`) and the HQP
+// (`hqp.solver_per_level`).
+[[nodiscard]] QPSolverConfig ParseQPSolverConfig(const YAML::Node& node,
+                                                 const QPSolverConfig& defaults);
+
 // ────────────────────────────────────────────────
 // ProxSuite dense QP solver 래핑
 //

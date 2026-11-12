@@ -31,7 +31,13 @@ class WQPFormulation final : public FormulationBase {
                                          const ContactState& contacts,
                                          const RobotModelInfo& robot_info) noexcept override;
 
+  void Reset() noexcept override;
+  void OnTorqueApplied(const Eigen::VectorXd& tau) noexcept override;
+
   [[nodiscard]] std::string_view Type() const noexcept override { return "wqp"; }
+
+  // The solver settings Init read (the `wqp.solver` keys over the defaults).
+  [[nodiscard]] const QPSolverConfig& SolverConfig() const noexcept { return solver_cfg_; }
 
  private:
   // (Re)allocate the QP data and solver at the current row budget (init only).

@@ -1,9 +1,63 @@
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <limits>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
 
 namespace rtc::tsid {
+
+QPSolverConfig ParseQPSolverConfig(const YAML::Node& node, const QPSolverConfig& defaults) {
+  QPSolverConfig c = defaults;
+  if (!node.IsDefined() || node.IsNull()) {
+    return c;
+  }
+  if (!node.IsMap()) {
+    throw std::invalid_argument("solver: must be a map of keys");
+  }
+  // Read every key first (a present key must convert — a typo is an error,
+  // not the default), then validate the whole config once.
+  auto read = [&node](const char* key, auto& out) {
+    if (node[key]) {
+      out = node[key].as<std::remove_reference_t<decltype(out)>>();
+    }
+  };
+  read("max_iter", c.max_iter);
+  read("max_iter_in", c.max_iter_in);
+  read("eps_abs", c.eps_abs);
+  read("eps_rel", c.eps_rel);
+  read("verbose", c.verbose);
+  read("update_preconditioner", c.update_preconditioner);
+  read("eps_primal_inf", c.eps_primal_inf);
+  std::string backend;
+  read("dense_backend", backend);
+
+  if (c.max_iter <= 0 || c.max_iter_in <= 0) {
+    throw std::invalid_argument("solver.max_iter / max_iter_in must be > 0");
+  }
+  if (!(std::isfinite(c.eps_abs) && c.eps_abs > 0.0) ||
+      !(std::isfinite(c.eps_rel) && c.eps_rel >= 0.0)) {
+    throw std::invalid_argument("solver.eps_abs must be > 0 and eps_rel >= 0 (finite)");
+  }
+  if (!(std::isfinite(c.eps_primal_inf) && c.eps_primal_inf >= 0.0)) {
+    throw std::invalid_argument("solver.eps_primal_inf must be finite and >= 0");
+  }
+  if (!backend.empty()) {
+    if (backend == "Automatic") {
+      c.dense_backend = proxsuite::proxqp::DenseBackend::Automatic;
+    } else if (backend == "PrimalDualLDLT") {
+      c.dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT;
+    } else if (backend == "PrimalLDLT") {
+      c.dense_backend = proxsuite::proxqp::DenseBackend::PrimalLDLT;
+    } else {
+      throw std::invalid_argument("solver.dense_backend: unknown backend '" + backend +
+                                  "' (Automatic | PrimalDualLDLT | PrimalLDLT)");
+    }
+  }
+  return c;
+}
 
 void QPSolverWrapper::Init(int max_n_vars, int max_n_eq, int max_n_ineq,
                            const QPSolverConfig& config) {

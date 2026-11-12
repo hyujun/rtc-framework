@@ -127,9 +127,12 @@ tsid:
       eps_abs: 1.0e-6
       eps_rel: 0.0            # 0 → abs-only
       verbose: false          # per-iteration log (debug 전용)
+      update_preconditioner: false   # 매 Solve 에 Ruiz 재평형 (헤더 주석)
+      dense_backend: Automatic       # Automatic | PrimalDualLDLT | PrimalLDLT — 부등식 행 > 변수면 명시 (#627)
+      eps_primal_inf: 1.0e-4         # ≥ 0; 0 = 정확한 Farkas 증명만
 ```
 
-5개 키는 `WQPFormulation::init` / `HQPFormulation::init` 이 읽고, 누락하면 코드 기본값을 쓴다.
+8개 키는 `ParseQPSolverConfig` 가 읽고 (WQP `wqp.solver` · HQP `hqp.solver_per_level`), 누락하면 코드 기본값을 쓴다. 모르는 backend 이름 · 음수 `eps_primal_inf` 는 init 에서 throw.
 
 ### 태스크 키
 
@@ -155,9 +158,17 @@ joint_limit:
   dt: 0.002              # 제어 주기 [s]
   position_margin: 0.05  # [rad]
   velocity_margin: 0.1   # [rad/s]
+  acceleration_max: 50.0 # 선택 [rad/s²] scalar 또는 관절별 — 같은 행에 |a| ≤ a_max 를 교차 (collapse 뒤, 상한 밖 box 는 ±a_max 로 절단)
+torque_limit:
+  tau_scale: 1.0         # (0, 1] effort 한계 배율
+  rate_max: 1000.0       # 선택 [N·m/s] scalar 또는 관절별 — 같은 행에 τ_prev ± rate·dt (τ_prev 는 tau_valid tick 의 τ, 첫 tick 은 effort 만)
+  dt: 0.002              # rate 의 제어 주기 [s]
+contact_accel:
+  baumgarte: {kp: [..6], kd: [..6]}   # 선택 — a_c* = −Kp⊙e − Kd⊙v_c, anchor 는 접촉 활성화 edge 에 latch (Reset · preset 재활성에 재 latch, 헤더)
+  terrain_height: 0.0    # 선택 [m] — anchor z 를 이 값으로
 ```
 
-Free-flyer root 의 6 DoF 는 행이 없다. margin 은 관절별로 clamp 하므로 범위가 좁은 관절 (gripper finger) 에서도 안전하다. 접촉 활성화 ramp 시간의 기본값 `tsid.contacts_default_ramp_sec` 은 rtc_tsid 가 아니라 소비 컨트롤러가 읽는다.
+Free-flyer root 의 6 DoF 는 행이 없다. margin 은 관절별로 clamp 하므로 범위가 좁은 관절 (gripper finger) 에서도 안전하다. 선택 키는 키가 없으면 행을 더하지 않고 기존 바이트 그대로다; preset 으로 `torque_limit` 을 끄면 rate 도 꺼진다. 접촉 활성화 ramp 시간의 기본값 `tsid.contacts_default_ramp_sec` 은 rtc_tsid 가 아니라 소비 컨트롤러가 읽는다.
 
 ## 디렉토리
 
@@ -178,6 +189,7 @@ rtc_tsid/
 | `SE3Task` init 이 `std::runtime_error` | `base_frame` 누락 (strict) | `base_frame` 을 쓴다. world 기준이면 `"universe"` |
 | 태스크가 reference 를 못 받고 identity 를 추종 | `name` 이 YAML key 와 다르다 | `name` 을 key 와 같게 |
 | `qp_converged == false` | 해가 비유한이다 (ProxQP 가 SOLVED 여도 그렇게 보고하고, 다음 solve 는 warm start 없이 시작한다) | 입력 (`M` · `h` · `q` · `v` · 목표) 의 유한성 확인 |
+| `tau_valid == false` | 그 tick 의 solve 가 비수렴 (`qp_status` 1 · 2 · −2) 또는 τ 비유한 — `tau` · `a_opt` · `lambda_opt` 는 직전 valid 값 | `qp_status` · `rows_dropped` · `n_eq_used` · `n_ineq_used` 로 분류, 소비자가 fallback |
 | 부동 모델 init throw | YAML `floating_base`·`n_actuated` 가 모델과 다름, root 뒤 관절이 1-DoF 아님, posture `kp`/`kd` 목록 길이 | 키를 맞추거나 지운다 |
 | 거짓 `PRIMAL_INFEASIBLE` | 전처리기가 placeholder 스케일 | `QPSolverConfig::update_preconditioner` (헤더 주석) |
 

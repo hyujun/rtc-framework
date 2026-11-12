@@ -297,12 +297,21 @@ void CommandOutput::Init(int nv, int n_actuated, int max_contact_vars) {
   tau.setZero(n_actuated);
   a_opt.setZero(nv);
   lambda_opt.setZero(max_contact_vars);
+  ResetDiagnostics();
+}
+
+void CommandOutput::ResetDiagnostics() noexcept {
   qp_converged = false;
   solve_time_us = 0.0;
   solve_levels = 0;
   qp_status = -1;
   qp_iterations = 0;
   qp_non_finite = false;
+  tau_valid = false;
+  n_eq_used = 0;
+  n_ineq_used = 0;
+  rows_dropped = 0;
+  outer_iterations = 0;
 }
 
 // ════════════════════════════════════════════════

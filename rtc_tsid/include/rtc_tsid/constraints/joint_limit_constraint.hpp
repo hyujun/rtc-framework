@@ -45,6 +45,13 @@ namespace rtc::tsid {
 // position reference — a joint parked at that margin otherwise sits in this
 // band on every tick.
 //
+// `acceleration_max` (optional, scalar or one value per row, > 0): a plain
+// |a_i| ≤ a_max_i cut into the same row — the box is intersected AFTER the
+// collapse above, the lower side first (std::max keeps a non-finite l, NUM-7).
+// A collapsed row pinned beyond ±a_max is cut to ±a_max (CutCount()), as is
+// a box that lies entirely beyond it; a non-finite box (NaN or ±inf from the
+// state) is left as it is (NUM-7). Without the key nothing changes.
+//
 // Floating-base: the free-flyer's DoF get no row (IneqDim = nv − n_base_v). Init
 // requires every non-root joint (every joint on a fixed base) to be 1-DoF, so
 // joint i's q and v entries pair up; anything else throws.
@@ -79,11 +86,20 @@ class JointLimitConstraint final : public ConstraintBase {
   // The period the box integrates over (YAML `dt`, default 0.002 s).
   [[nodiscard]] double Dt() const noexcept { return dt_; }
 
+  // Rows of the last ComputeInequality whose box was cut to ±acceleration_max
+  // because it lay beyond it (a collapsed row included). 0 without the key.
+  [[nodiscard]] int CutCount() const noexcept { return cut_count_; }
+
+  [[nodiscard]] bool AccelerationMaxEnabled() const noexcept { return has_a_max_; }
+
  private:
   int nv_{0};
   int n_base_{0};  // velocity rows without a limit: RobotModelInfo::n_base_v
   int n_rows_{0};  // nv − n_base
   int inverted_count_{0};
+  int cut_count_{0};
+  bool has_a_max_{false};
+  Eigen::VectorXd a_max_;     // [n_rows] when has_a_max_
   std::vector<int> q_index_;  // [n_rows] q entry of row i
 
   double dt_{0.002};         // 제어 주기 (s)
