@@ -1,12 +1,14 @@
-// locomotion_controller.command.* · gait.* (g1_loco): the installed files, composed by the
-// CM's own loader (rtc::LoadControllerConfig — the `include:` merge included),
-// load through rtc_mpc's reference/ loaders and initialise the stage they
-// configure. The schema and every refusal are rtc_mpc's own tests; this one is
-// the wiring between the shipped fragment and that loader. No ROS node.
+// locomotion_controller.command.* · gait.* · swing.* · terrain.* (g1_loco): the installed files,
+// composed by the CM's own loader (rtc::LoadControllerConfig — the `include:` merge included), load
+// through rtc_mpc's reference/ loaders and initialise the stage they configure. The schema and
+// every refusal are rtc_mpc's own tests; this one is the wiring between the shipped fragment and
+// that loader. No ROS node.
 #include "rtc_controller_manager/controller_config_loader.hpp"
 #include "rtc_mpc/reference/command_filter.hpp"
 #include "rtc_mpc/reference/gait_scheduler.hpp"
 #include "rtc_mpc/reference/gait_table.hpp"
+#include "rtc_mpc/reference/surface_frame.hpp"
+#include "rtc_mpc/reference/swing_trajectory.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -59,6 +61,27 @@ TEST(LocomotionReferenceConfig, TheInstalledGaitSectionBitsFollowTheModelContact
   EXPECT_EQ(table.gaits[0].mode[0], 0b11U);
   rtc::mpc::GaitScheduler scheduler;
   EXPECT_EQ(scheduler.Init(table, 1.0), rtc::mpc::GaitSchedulerError::kNoError);
+}
+
+TEST(LocomotionReferenceConfig, TheInstalledSwingAndTerrainSectionsLoadAndBuildASwing) {
+  const YAML::Node root = InstalledLocomotionConfig();
+  ASSERT_TRUE(root["swing"].IsMap()) << "the include: merge did not bring swing.* in";
+  ASSERT_TRUE(root["terrain"].IsMap()) << "the include: merge did not bring terrain.* in";
+  rtc::mpc::SwingConfig swing;
+  ASSERT_EQ(rtc::mpc::LoadSwingConfig(root["swing"], swing), rtc::mpc::SwingError::kNoError);
+  rtc::mpc::SurfaceFrame terrain;
+  ASSERT_EQ(rtc::mpc::LoadTerrainConfig(root["terrain"], terrain),
+            rtc::mpc::SurfaceFrameError::kNoError);
+  // The shipped values plan a walk-length swing above the shipped ground.
+  rtc::mpc::SwingInterval stretch;
+  stretch.lift_off = 0.0;
+  stretch.touch_down = 0.6;
+  rtc::mpc::SwingTrajectory s = rtc::mpc::SwingTrajectory::Stance(0.0);
+  ASSERT_EQ(rtc::mpc::BuildSwing(stretch, swing, rtc::mpc::HeightAt(terrain, 0.0, 0.0), s),
+            rtc::mpc::SwingError::kNoError);
+  EXPECT_NEAR(s.Evaluate(0.3).z,
+              rtc::mpc::HeightAt(terrain, 0.0, 0.0) + swing.touch_down_offset + swing.height,
+              1e-12);
 }
 
 }  // namespace

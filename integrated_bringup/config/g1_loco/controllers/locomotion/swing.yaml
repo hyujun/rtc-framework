@@ -1,0 +1,26 @@
+# locomotion_controller — swing.* · terrain.* (g1_loco)
+#
+# A fragment of ../locomotion_controller.yaml (its `include:` list). The swing
+# foot vertical reference and the support surface: schema, units and checks in
+# rtc_mpc reference/swing_trajectory.hpp (LoadSwingConfig · LoadTerrainConfig —
+# every key required, an unknown key refused); the template is
+# rtc_mpc/config/reference_default.yaml.
+#
+# Values are the original whole-body MPC's swing planner (swing_trajectory_planner
+# section: apex 0.08 m at 50 % of the swing, lift-off 0.05 m/s, touch-down 0 m/s
+# and −1 mm below the ground, swings shorter than 0.4 s scaled down; impact
+# proximity 0.005 at the apex, rates −0.15 / 0.3). Its terrain height is the
+# flat ground at 0. Retuning belongs to the sim evaluation (W8).
+locomotion_controller:
+  swing:
+    height: 0.08                 # [m]
+    lift_off_velocity: 0.05      # [m/s]
+    touch_down_velocity: 0.0     # [m/s]
+    touch_down_offset: -0.001    # [m]
+    time_scale: 0.4              # [s]
+    impact_proximity:
+      mid: 0.005
+      lift_off_velocity: -0.15   # [1/s]
+      touch_down_velocity: 0.3   # [1/s]
+  terrain:
+    height: 0.0                  # [m] flat ground
