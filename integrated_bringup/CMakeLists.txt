@@ -2116,6 +2116,18 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # locomotion_controller.command.* (W2-F01): the shipped g1_loco fragment through
+  # rtc::LoadControllerConfig into rtc_mpc's reference/ loaders. No node.
+  ament_add_gtest(test_locomotion_reference_config test/test_locomotion_reference_config.cpp
+    TIMEOUT 60
+  )
+  target_link_libraries(test_locomotion_reference_config yaml-cpp)
+  ament_target_dependencies(test_locomotion_reference_config
+    ament_index_cpp
+    rtc_controller_manager
+    rtc_mpc
+  )
+
   # g1_loco body joint order: CM tree model == device rosters == MJCF actuators
   # (W1-F03 WG-1), through the same comparison ValidateDevices refuses with.
   find_package(tinyxml2_vendor QUIET)

@@ -1,0 +1,23 @@
+# locomotion_controller — command.* (g1_loco)
+#
+# A fragment of ../locomotion_controller.yaml (its `include:` list). The operator
+# velocity command filter: schema, units and checks in rtc_mpc
+# reference/command_filter.hpp (LoadCommandFilterConfig — every key required, an
+# unknown key refused); the template is rtc_mpc/config/reference_default.yaml.
+#
+# Twist in: linear.x / linear.y / angular.z = v_x / v_y / yaw rate, linear.z =
+# pelvis height RATE (integrated into base_height). Limits are the original
+# whole-body MPC's (2.0 / 1.2 / 1.0); the height range is its reference.info
+# defaultBaseHeight 0.7925 − maxDeltaPelvisHeight 0.4 up to the 1.0 clamp of
+# its velocity command. Retuning belongs to the sim evaluation (W8).
+locomotion_controller:
+  command:
+    sample_rate_hz: 100.0            # [Hz] the consumer timer's rate
+    cutoff_hz: 2.4                   # [Hz] Bessel −3 dB
+    v_max: [2.0, 1.2, 1.0]           # [m/s, m/s, rad/s]
+    hdot_max: 0.1                    # [m/s]
+    accel_max: [0.0, 0.0, 0.0, 0.0]  # slew off
+    t_stale: 0.5                     # [s]
+    base_height: 0.7925              # [m] nominal pelvis height
+    h_min: 0.3925                    # [m]
+    h_max: 1.0                       # [m]
