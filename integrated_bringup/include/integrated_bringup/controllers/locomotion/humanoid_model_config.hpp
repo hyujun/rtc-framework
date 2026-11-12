@@ -110,7 +110,7 @@ using DeviceLookup = std::function<const rtc::DeviceNameConfig*(const std::strin
 /// @brief Pass 3, device-derived: check the groups `cfg` names against the devices.
 /// @param body_joint_order  the body model's @ref JointOrder
 /// @throws std::invalid_argument when the body group or a hand group has no device,
-///         or the body roster (joint_state_names) is
+///         a hand group's roster (joint_state_names) is empty, or the body roster is
 ///         empty or not `body_joint_order` element by element — a missing roster is
 ///         refused, never taken as identity (AP-CTRL-5).
 void ValidateDevices(const HumanoidModelConfig& cfg,
@@ -125,6 +125,8 @@ void ValidateDevices(const HumanoidModelConfig& cfg,
 /// nothing to locomotion; the loco-manipulation work (W4) generalises the handler to
 /// `end_effector_frames[]`. Contacts keep their order, so contact index i is
 /// `cfg.contacts[i]`.
+/// @throws std::invalid_argument when `cfg.end_effectors` is empty (a config not
+///         made by @ref LoadHumanoidModelConfig).
 [[nodiscard]] YAML::Node ToRobotModelHandlerYaml(const HumanoidModelConfig& cfg);
 
 }  // namespace integrated_bringup::locomotion

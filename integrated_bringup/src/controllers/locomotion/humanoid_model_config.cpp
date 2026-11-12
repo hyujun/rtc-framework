@@ -25,6 +25,7 @@ namespace {
 
 using rtc::params::FindMissingKey;
 using rtc::params::FindUnknownKey;
+using rtc::params::ReadEnum;
 using rtc::params::Spelling;
 
 [[noreturn]] void Refuse(const std::string& where, const std::string& what) {
@@ -118,10 +119,11 @@ HumanoidModelConfig LoadHumanoidModelConfig(const YAML::Node& model, const std::
     CheckKeys(c, where, {"name", "frame", "dim"});
     ContactSpec contact{ReadName(c, "name", where), ReadName(c, "frame", where), 0};
     const YAML::Node dim = c["dim"];
-    if (!dim.IsScalar() || (dim.Scalar() != "3" && dim.Scalar() != "6")) {
+    const auto dim_index = ReadEnum(dim, {"3", "6"});
+    if (!dim_index) {
       Refuse(where + ".dim", "expected 3 (point) or 6 (surface), got " + Spelling(dim));
     }
-    contact.dim = dim.Scalar() == "3" ? 3 : 6;
+    contact.dim = *dim_index == 0 ? 3 : 6;
     contact_vars += contact.dim;
     Claim(names, contact.name, where + ".name", "name");
     Claim(frames, contact.frame, where + ".frame", "frame");
@@ -223,13 +225,24 @@ void ValidateDevices(const HumanoidModelConfig& cfg,
                                         ")");
   }
   for (std::size_t i = 0; i < cfg.hand_groups.size(); ++i) {
-    if (lookup(cfg.hand_groups[i]) == nullptr) {
+    const rtc::DeviceNameConfig* hand = lookup(cfg.hand_groups[i]);
+    if (hand == nullptr) {
       Refuse(Item(context, "hand_groups", i), "no device group '" + cfg.hand_groups[i] + "'");
+    }
+    // A hand is held at its hold pose by joint name; no roster is no hand to hold.
+    if (hand->joint_state_names.empty()) {
+      Refuse(Item(context, "hand_groups", i),
+             "device group '" + cfg.hand_groups[i] + "' has no joint_state_names");
     }
   }
 }
 
 YAML::Node ToRobotModelHandlerYaml(const HumanoidModelConfig& cfg) {
+  if (cfg.end_effectors.empty()) {
+    throw std::invalid_argument(
+        "ToRobotModelHandlerYaml: no end-effector (the handler requires one) — "
+        "build the config with LoadHumanoidModelConfig");
+  }
   YAML::Node out;
   out["end_effector_frame"] = cfg.end_effectors.front().frame;  // WD-36
   out["base_frame"] = cfg.base_frame;

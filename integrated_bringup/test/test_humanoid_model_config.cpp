@@ -61,19 +61,23 @@ std::vector<std::string> BodyOrder() {
   return loco::JointOrder(*fx::ShippedModelBuilder(kProfile)->GetTreeModel("g1"));
 }
 
-// The shipped rosters (_base.yaml + sim.yaml devices.<group>.joint_state_names).
-std::map<std::string, rtc::DeviceNameConfig> ShippedRosters() {
-  std::map<std::string, rtc::DeviceNameConfig> rosters;
-  const YAML::Node devices = fx::ShippedSimParams(kProfile)["devices"];
-  for (auto it = devices.begin(); it != devices.end(); ++it) {
-    rtc::DeviceNameConfig cfg;
-    cfg.device_name = it->first.as<std::string>();
-    if (it->second["joint_state_names"]) {
-      cfg.joint_state_names = it->second["joint_state_names"].as<std::vector<std::string>>();
+// The shipped rosters (_base.yaml + sim.yaml devices.<group>.joint_state_names), read
+// once; callers that edit them take a copy.
+const std::map<std::string, rtc::DeviceNameConfig>& ShippedRosters() {
+  static const std::map<std::string, rtc::DeviceNameConfig> shipped = [] {
+    std::map<std::string, rtc::DeviceNameConfig> rosters;
+    const YAML::Node devices = fx::ShippedSimParams(kProfile)["devices"];
+    for (auto it = devices.begin(); it != devices.end(); ++it) {
+      rtc::DeviceNameConfig cfg;
+      cfg.device_name = it->first.as<std::string>();
+      if (it->second["joint_state_names"]) {
+        cfg.joint_state_names = it->second["joint_state_names"].as<std::vector<std::string>>();
+      }
+      rosters[cfg.device_name] = std::move(cfg);
     }
-    rosters[cfg.device_name] = std::move(cfg);
-  }
-  return rosters;
+    return rosters;
+  }();
+  return shipped;
 }
 
 loco::DeviceLookup LookupIn(const std::map<std::string, rtc::DeviceNameConfig>& rosters) {
@@ -90,8 +94,9 @@ void RunAll(const YAML::Node& node, const std::map<std::string, rtc::DeviceNameC
   loco::ValidateDevices(cfg, BodyOrder(), LookupIn(rosters), kContext);
 }
 
-// `edit` applied to the rig must be refused with a message containing `expect`
-// (so the RIGHT check fired), and the rig itself is accepted on the same rosters.
+// `edit` applied to the rig, on `rosters`, must be refused with a message containing
+// `expect` (so the RIGHT check fired). The twin: the unedited rig on the SHIPPED
+// rosters is accepted — for a roster edit, the shipped rosters are the passing twin.
 void ExpectRefused(const std::function<void(YAML::Node&)>& edit, const std::string& expect,
                    const std::map<std::string, rtc::DeviceNameConfig>& rosters = ShippedRosters()) {
   ASSERT_NO_THROW(RunAll(Rig(), ShippedRosters())) << "the rig itself must pass";
@@ -287,20 +292,34 @@ TEST(HumanoidModelConfig, RefusesAMissingDeviceGroup) {
 }
 
 TEST(HumanoidModelConfig, RefusesAnEmptyRosterInsteadOfTakingTheModelOrder) {
-  auto rosters = ShippedRosters();
+  std::map<std::string, rtc::DeviceNameConfig> rosters = ShippedRosters();
   rosters["g1"].joint_state_names.clear();
   ExpectRefused([](YAML::Node&) {}, "has no joint_state_names", rosters);
 }
 
+TEST(HumanoidModelConfig, RefusesAHandGroupWithoutARoster) {
+  std::map<std::string, rtc::DeviceNameConfig> rosters = ShippedRosters();
+  rosters["p1b"].joint_state_names.clear();
+  ExpectRefused([](YAML::Node&) {},
+                "model.hand_groups[0]: device group 'p1b' has no joint_state_names", rosters);
+}
+
+TEST(HumanoidModelConfig, HandlerYamlRefusesAConfigWithoutAnEndEffector) {
+  loco::HumanoidModelConfig cfg = loco::LoadHumanoidModelConfig(Rig(), kContext);
+  EXPECT_NO_THROW((void)loco::ToRobotModelHandlerYaml(cfg));
+  cfg.end_effectors.clear();
+  EXPECT_THROW((void)loco::ToRobotModelHandlerYaml(cfg), std::invalid_argument);
+}
+
 TEST(HumanoidModelConfig, RefusesARosterOutOfTheModelOrderAndSaysWhere) {
-  auto rosters = ShippedRosters();
+  std::map<std::string, rtc::DeviceNameConfig> rosters = ShippedRosters();
   auto& names = rosters["g1"].joint_state_names;
   ASSERT_GT(names.size(), 5U);
   std::swap(names[3], names[5]);
   const std::vector<std::string> order = BodyOrder();
   ExpectRefused([](YAML::Node&) {},
                 "(index 3: expected '" + order[3] + "', actual '" + order[5] + "')", rosters);
-  auto shorter = ShippedRosters();
+  std::map<std::string, rtc::DeviceNameConfig> shorter = ShippedRosters();
   shorter["g1"].joint_state_names.pop_back();
   ExpectRefused([](YAML::Node&) {},
                 "(index " + std::to_string(order.size() - 1) + ": expected '" + order.back() +

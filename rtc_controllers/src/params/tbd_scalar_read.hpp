@@ -10,15 +10,13 @@
 // non-finite number is still-TBD. How a problem is REPORTED stays with each parser
 // (ParseCatchingParams defers a range violation to ValidateCatchingParams' report;
 // ParseCatchPoseIkParams throws). The generic readers — section access, unknown
-// keys, spelling — are the public `rtc_controllers/params/yaml_read.hpp`; only the
-// reader bound to `TbdDouble` lives here, and the generic names are re-exported into
-// `params_detail` so the catching parsers read as before.
+// keys, spelling — are the public `rtc_controllers/params/yaml_read.hpp`
+// (`rtc::params`); only the reader bound to `TbdDouble` lives here.
 //
 // Private to `src/params/`: never installed, included by relative path.
 #pragma once
 
 #include "rtc_controllers/catching/catching_params.hpp"  // TbdDouble
-#include "rtc_controllers/params/yaml_read.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -26,12 +24,6 @@
 #include <limits>
 
 namespace rtc::catching::params_detail {
-
-using rtc::params::FindUnknownKey;
-using rtc::params::ReadSectionNode;
-using rtc::params::SectionKind;
-using rtc::params::SectionRead;
-using rtc::params::Spelling;
 
 // ── TBD-capable double ──────────────────────────────────────────────────────
 
