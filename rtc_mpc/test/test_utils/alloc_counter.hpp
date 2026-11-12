@@ -3,7 +3,8 @@
 /// @file alloc_counter.hpp
 /// @brief Test-only malloc/free counter backing the Phase 6 Step 5 alloc
 ///        tracer. Provides an arm/disarm window and atomic counters; the
-///        operator new/delete overrides live in each consuming TU.
+///        operator new/delete overrides are test_utils/alloc_counter_overrides.hpp
+///        (one consuming TU per binary).
 ///
 /// Usage pattern:
 ///   1. Warm up any static / thread-local state that would allocate on first
