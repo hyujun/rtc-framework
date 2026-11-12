@@ -1,0 +1,21 @@
+# rtc_mpc — reference/ configuration template (robot-agnostic).
+#
+# The locomotion reference stages that turn an operator command into what the
+# MPC tracks. Each top-level section is read by its own loader; robot-specific
+# copies live in downstream packages (integrated_bringup/config/<robot>/...).
+# Every key is required and an unknown key is refused.
+
+# ── Velocity command filter (LoadCommandFilterConfig) ────────────────────────
+# Twist in: linear.x / linear.y / angular.z = v_x / v_y / ω_z, linear.z = base
+# height RATE. Chain: finite gate → stale → clamp → slew → 4th-order Bessel →
+# clamp → height integral (header: rtc_mpc/reference/command_filter.hpp).
+command:
+  sample_rate_hz: 100.0          # [Hz] > 0 — the caller must Step at exactly this rate
+  cutoff_hz: 2.4                 # [Hz] in (0, sample_rate_hz / 2) — Bessel −3 dB
+  v_max: [2.0, 1.2, 1.0]         # [m/s, m/s, rad/s] ≥ 0 — |v_x|, |v_y|, |ω_z|
+  hdot_max: 0.1                  # [m/s] ≥ 0 — |ḣ|
+  accel_max: [0.0, 0.0, 0.0, 0.0]  # [m/s², m/s², rad/s², m/s²] ≥ 0 — slew per axis, 0 = off
+  t_stale: 0.5                   # [s] in [1 / sample_rate_hz, 1e6] — an older (or that much newer) command reads as zero
+  base_height: 0.8               # [m] in [h_min, h_max] — the height after Init
+  h_min: 0.5                     # [m]
+  h_max: 1.0                     # [m] ≥ h_min

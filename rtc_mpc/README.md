@@ -46,6 +46,7 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `handler/` | `mpc_handler_base.hpp` | solve orchestrator (`Init` / `Solve` / `SeedWarmStart`), `MPCSolverConfig` |
 | `handler/` | `contact_light_mpc.hpp` · `contact_rich_mpc.hpp` | 각 OCP 를 감싼 구체 handler |
 | `handler/` | `mpc_factory.hpp` | `ocp_type` 으로 dispatch 하는 YAML factory (`MPCFactory::Create`) |
+| `reference/` | `command_filter.hpp` | 보행 velocity 명령 필터 (non-RT, 고정 주기 — 체인은 헤더) → `FilteredCommand` POD |
 | `logging/` | `mpc_timing_logger.hpp` | `<session>/timing/mpc_timing_log.csv` writer (아래 관측성) |
 
 ### 설계 약속
@@ -64,7 +65,7 @@ CSV 는 MPC tick 마다 한 행이고 CM RT loop 와 같은 8열 스키마다: `
 
 ## 설정
 
-[config/mpc_default.yaml](config/mpc_default.yaml) 은 robot-agnostic 참조 템플릿이다. `<...>` placeholder 는 로봇별 설정에서 덮어쓰며, 값은 `PhaseCostConfig::LoadFromYaml` 과 `RobotModelHandler::Init` 이 읽는다. 기본값은 파일이 갖는다. 로봇별 실제 설정은 `integrated_bringup/config/<robot>/controllers/mpc/` 에 있다.
+[config/mpc_default.yaml](config/mpc_default.yaml) 은 robot-agnostic 참조 템플릿이다. `<...>` placeholder 는 로봇별 설정에서 덮어쓰며, 값은 `PhaseCostConfig::LoadFromYaml` 과 `RobotModelHandler::Init` 이 읽는다. 기본값은 파일이 갖는다. 로봇별 실제 설정은 `integrated_bringup/config/<robot>/controllers/mpc/` 에 있다. `reference/` 로더의 템플릿은 [config/reference_default.yaml](config/reference_default.yaml) 이다 (모든 키 필수).
 
 ## 문제 해결
 

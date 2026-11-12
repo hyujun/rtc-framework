@@ -60,6 +60,7 @@ add_library(rtc_mpc STATIC
   src/handler/contact_light_mpc.cpp
   src/handler/contact_rich_mpc.cpp
   src/handler/mpc_factory.cpp
+  src/reference/command_filter.cpp
 )
 
 target_include_directories(rtc_mpc PUBLIC
@@ -67,8 +68,8 @@ target_include_directories(rtc_mpc PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-# Private build-tree include so TUs under src/ocp/ can #include
-# "ocp/internal/..." shared helpers. Not installed or exported.
+# Private build-tree include so TUs under src/ can #include the shared helpers
+# of "ocp/internal/..." and "reference/internal/...". Not installed or exported.
 target_include_directories(rtc_mpc PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
 )
@@ -195,6 +196,11 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_mpc_thread_integration)
   add_mpc_gtest(test_mpc_handler_alloc_tracer)
   add_mpc_gtest(test_aligator_api)
+  add_mpc_gtest(test_command_filter)
+  if(TARGET test_command_filter)
+    target_compile_definitions(test_command_filter PRIVATE
+        RTC_MPC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  endif()
 
   # Aligator's ProxDDP solve path allocates via mimalloc but frees can route
   # through glibc (and vice-versa) across the pinocchio/aligator boundary; with
