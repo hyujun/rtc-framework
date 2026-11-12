@@ -66,3 +66,24 @@ swing:
 # estimator would replace the value, not the schema.
 terrain:
   height: 0.0                    # [m] finite — the ground under the feet
+
+# ── Stage reference (LoadReferenceConfig) ────────────────────────────────────
+# What the locomotion OCP tracks at each node: the base from three knots (the
+# measured pose, an averaged-velocity knot at intermediate_fraction of the
+# horizon, the commanded velocity at the end), the joints at q_default, the
+# feet where they are measured with the swing plan above in z. Header:
+# rtc_mpc/reference/stage_reference_builder.hpp. q_default must name exactly
+# the 1-DoF joints the caller lists (the model's, in a robot config); the
+# arm_swing joints are checked even when it is off.
+reference:
+  intermediate_fraction: 0.7     # in (0, 1)
+  q_default:                     # [rad or m] one per joint, inside the model's limits
+    joint_a: 0.0
+    joint_b: 0.0
+  arm_swing:
+    enabled: false
+    gain: 0.15                   # [rad·s/m] amplitude per m/s of commanded v_x
+    phase_offset: 0.15           # gait-phase offset of the sine
+    joints:                      # sign ±1 per joint
+      - {name: joint_a, sign: 1}
+      - {name: joint_b, sign: -1}
