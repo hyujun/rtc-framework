@@ -93,6 +93,21 @@ template <class E>
   return FieldRead::kOk;
 }
 
+[[nodiscard]] inline FieldRead ReadBool(const YAML::Node& v, bool& out) {
+  if (!Present(v)) {
+    return FieldRead::kMissing;
+  }
+  if (!v.IsScalar()) {
+    return FieldRead::kWrongType;
+  }
+  try {
+    out = v.as<bool>();
+  } catch (...) {
+    return FieldRead::kWrongType;
+  }
+  return FieldRead::kOk;
+}
+
 template <std::size_t N>
 [[nodiscard]] FieldRead ReadArray(const YAML::Node& v, std::array<double, N>& out) {
   if (!Present(v)) {

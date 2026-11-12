@@ -200,9 +200,90 @@ void GaitScheduler::Commit(std::uint32_t gait, double t) noexcept {
 void GaitScheduler::CompleteIfDue(double t) noexcept {
   if (pending_ && t_switch_ <= t) {
     anchor_ = next_anchor_;
+    since_ = t_switch_;
     current_ = target_;
     pending_ = false;
   }
+}
+
+bool GaitScheduler::PhaseInfo(GaitPhaseInfo& out) const noexcept {
+  if (!anchored_) {
+    return false;
+  }
+  const GaitTemplate& run = table_.gaits[current_];
+  out.anchor = anchor_;
+  out.period = run.period;
+  out.pending = pending_;
+  out.single_mode = SingleMode(run);
+  out.t_switch = pending_ ? t_switch_ : 0.0;
+  out.next_anchor = pending_ ? next_anchor_ : 0.0;
+  out.next_period = pending_ ? table_.gaits[target_].period : 0.0;
+  out.next_single_mode = pending_ && SingleMode(table_.gaits[target_]);
+  return true;
+}
+
+bool SingleModeAt(const GaitPhaseInfo& info, double t) noexcept {
+  return (info.pending && t >= info.t_switch) ? info.next_single_mode : info.single_mode;
+}
+
+double GaitPhase(const GaitPhaseInfo& info, double t) noexcept {
+  const bool next = info.pending && t >= info.t_switch;
+  const double anchor = next ? info.next_anchor : info.anchor;
+  const double period = next ? info.next_period : info.period;
+  if (!(period > 0.0) || !std::isfinite(t)) {
+    return 0.0;
+  }
+  const double k = std::floor((t - anchor) / period);
+  double r = t - anchor - k * period;  // the tile's residue, no accumulated sums
+  if (r < 0.0) {
+    r += period;
+  } else if (r >= period) {
+    r -= period;
+  }
+  const double phi = r / period;
+  return (phi >= 0.0 && phi < 1.0) ? phi : 0.0;
+}
+
+bool GaitScheduler::SwingStart(std::size_t contact, double t, double& t_lo,
+                               bool& clamped) const noexcept {
+  if (!anchored_ || !std::isfinite(t) || contact >= table_.n_contacts) {
+    return false;
+  }
+  const GaitTemplate& g = table_.gaits[current_];
+  const std::uint32_t bit = 1U << contact;
+  if ((GaitModeAt(g, anchor_, t) & bit) != 0) {
+    return false;
+  }
+  double start_of_swing = since_;
+  bool at_floor = true;  // off at `since` and never on → off after it
+  // The swing under way began at the last on → off edge of this bit, which
+  // lies within one stride of t when the template has one: start one tile
+  // before t (never before the take-over) — O(1), not O(time since it).
+  const std::int64_t k_t = FirstTile(anchor_, g.period, t);
+  const std::int64_t k_since = FirstTile(anchor_, g.period, since_);
+  for (std::int64_t k = k_t > k_since ? k_t : k_since;; ++k) {
+    bool past = false;
+    for (std::size_t j = 0; j < g.n_phases; ++j) {
+      const double start = PhaseStart(g, anchor_, k, j);
+      if (start > t) {
+        past = true;
+        break;
+      }
+      if (start <= since_) {
+        continue;  // the running gait's tiling before it took over is fiction
+      }
+      if ((g.mode[j] & bit) == 0 && (ModeBefore(g, j) & bit) != 0) {
+        start_of_swing = start;
+        at_floor = false;
+      }
+    }
+    if (past) {
+      break;
+    }
+  }
+  t_lo = start_of_swing;
+  clamped = at_floor;
+  return true;
 }
 
 double GaitScheduler::EntryAnchor() const noexcept {
@@ -246,6 +327,7 @@ GaitSchedulerError GaitScheduler::Advance(double t, const FilteredCommand& cmd,
   const bool reset = reset_requested_.exchange(false, std::memory_order_acq_rel);
   if (!anchored_ || reset) {
     anchor_ = t;
+    since_ = t;
     current_ = target_ = 0;
     pending_ = false;
     last_commit_ = t;
