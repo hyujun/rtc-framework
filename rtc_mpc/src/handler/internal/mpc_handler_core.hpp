@@ -136,12 +136,13 @@ class MPCHandlerCore {
   int ndx_{0};  // state-tangent dim for Riccati feedback columns
   int n_contact_vars_{0};
   double dt_{0.0};                     // node spacing (propagated to MPCSolution)
-  bool use_gravity_comp_seed_{false};  // true iff ocp_type == "contact_rich"
+  bool use_gravity_comp_seed_{false};  // the OCP asked for a gravity-comp cold seed
+  ControlModel control_model_{ControlModel::kJointTorque};
 
   // Pre-allocated scratch for the solve path.
   Eigen::VectorXd x_current_{};  // nq+nv
   Eigen::VectorXd q_current_{};  // nq
-  Eigen::VectorXd tau_g_{};      // nv — gravity-comp buffer
+  Eigen::VectorXd tau_g_{};      // nv — gravity-comp buffer (joint torque: nu == nv)
 
   // Separate warm-start buffers passed to Aligator's `run(problem, xs, us)`
   // to avoid xs_in == xs_out aliasing quirks in assign_no_resize.

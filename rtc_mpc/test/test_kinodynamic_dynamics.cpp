@@ -61,7 +61,6 @@ using Vec6 = Eigen::Matrix<double, 6, 1>;
 
 constexpr std::uint32_t kGateSeed = 20261114U;
 constexpr std::uint32_t kControlSeed = 20261113U;
-constexpr int kDraws = 200;
 constexpr double kEps = std::numeric_limits<double>::epsilon();
 
 [[nodiscard]] bool BitEqual(const Eigen::MatrixXd& a, const Eigen::MatrixXd& b) {
@@ -107,57 +106,8 @@ class KinodynamicDynamicsTest : public ::testing::Test {
 
   Vec6 BaseAccel(const Eval& e) const { return e.xdot.segment<6>(model_.nv); }
 
-  /// 200 seeded draws (mode = i mod 4) plus the 40-sample edge set.
-  std::vector<KinoSample> GateSamples(std::uint32_t seed) {
-    std::mt19937 rng(seed);
-    std::vector<KinoSample> out;
-    for (int i = 0; i < kDraws; ++i) {
-      out.push_back(oracle_->Draw(rng, static_cast<std::uint32_t>(i % 4)));
-    }
-    AppendEdgeSet(rng, out);
-    return out;
-  }
-
-  /// 20 knees-at-lower-limit, 10 high-speed, 10 near-π attitude (5 ±q
-  /// pairs), then 10 knees at exactly zero (added after registration, at the
-  /// end so the registered draws are unchanged).
-  void AppendEdgeSet(std::mt19937& rng, std::vector<KinoSample>& out) {
-    const int nq = model_.nq;
-    const std::array<int, 2> knees{rtc::mpc::test_utils::JointQIndex(model_, "left_knee_joint"),
-                                   rtc::mpc::test_utils::JointQIndex(model_, "right_knee_joint")};
-    for (int i = 0; i < 20; ++i) {
-      KinoSample s = oracle_->Draw(rng, static_cast<std::uint32_t>(i % 4));
-      for (const int k : knees) {
-        s.x[k] = model_.lowerPositionLimit[k];
-      }
-      out.push_back(s);
-    }
-    KinoRanges fast;
-    fast.v_lin = 3.0 / std::sqrt(3.0);
-    fast.v_ang = 5.0 / std::sqrt(3.0);
-    fast.v_joint = 10.0;
-    for (int i = 0; i < 10; ++i) {
-      out.push_back(oracle_->Draw(rng, static_cast<std::uint32_t>(i % 4), fast));
-    }
-    std::normal_distribution<double> gauss(0.0, 1.0);
-    for (int i = 0; i < 5; ++i) {
-      KinoSample s = oracle_->Draw(rng, static_cast<std::uint32_t>((i + 1) % 4));
-      Eigen::Vector3d axis(gauss(rng), gauss(rng), gauss(rng));
-      axis.normalize();
-      const Eigen::Quaterniond quat(Eigen::AngleAxisd(M_PI - 1e-6 * (i + 1), axis));
-      s.x.segment<4>(3) = quat.coeffs();  // (x, y, z, w)
-      out.push_back(s);
-      s.x.segment<4>(3) = -quat.coeffs();
-      out.push_back(s);
-    }
-    for (int i = 0; i < 10; ++i) {
-      KinoSample s = oracle_->Draw(rng, static_cast<std::uint32_t>(i % 4));
-      for (const int k : knees) {
-        s.x[k] = 0.0;
-      }
-      out.push_back(s);
-    }
-    (void)nq;
+  std::vector<KinoSample> GateSamples(std::uint32_t seed) const {
+    return rtc::mpc::test_utils::G1GateSamples(*oracle_, seed);
   }
 
   pinocchio::Model model_;

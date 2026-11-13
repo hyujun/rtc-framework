@@ -153,6 +153,12 @@ class ContactRichOCP : public OCPHandlerBase {
     return std::string_view{"contact_rich"};
   }
 
+  /// @return gravity compensation: the zero-control guess drives this OCP's
+  ///         constraint forces off equilibrium on a cold solve.
+  [[nodiscard]] ColdSeed cold_seed() const noexcept override {
+    return ColdSeed::kGravityCompensation;
+  }
+
   /// @brief Install a non-owning grasp-quality provider.
   ///
   /// Default is null, which matches the Phase 4 baseline behaviour: no

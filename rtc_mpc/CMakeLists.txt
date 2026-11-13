@@ -225,8 +225,19 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
   endif()
   add_mpc_gtest(test_aligator_api)
+  add_mpc_gtest(test_mpc_handler_core_floating)
+  if(TARGET test_mpc_handler_core_floating)
+    target_include_directories(test_mpc_handler_core_floating PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  endif()
   add_mpc_gtest(test_kinodynamic_dynamics)
   add_mpc_gtest(test_kinodynamic_alloc_gate)
+  add_mpc_gtest(test_kinodynamic_derivatives)
+  add_mpc_gtest(test_kinodynamic_integrator)
+  if(TEST test_kinodynamic_integrator)
+    # The order gate integrates a 1024-sub-step reference; past the 60 s default.
+    set_tests_properties(test_kinodynamic_integrator PROPERTIES TIMEOUT 300)
+  endif()
   add_mpc_gtest(test_command_filter)
   if(TARGET test_command_filter)
     target_compile_definitions(test_command_filter PRIVATE
@@ -266,7 +277,8 @@ if(BUILD_TESTING)
     foreach(_solve_test
         test_contact_light_ocp test_contact_rich_ocp test_contact_light_mpc
         test_contact_rich_mpc test_mpc_factory test_mpc_thread_integration
-        test_mpc_handler_alloc_tracer test_mpc_handler_core_guards test_aligator_api)
+        test_mpc_handler_alloc_tracer test_mpc_handler_core_guards test_aligator_api
+        test_kinodynamic_integrator test_mpc_handler_core_floating)
       if(TEST ${_solve_test})
         set_property(TEST ${_solve_test} APPEND PROPERTY
             ENVIRONMENT "LD_PRELOAD=${RTC_MPC_MIMALLOC}")

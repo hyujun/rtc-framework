@@ -26,14 +26,19 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <aligator/core/stage-model.hpp>
+#include <aligator/core/traj-opt-data.hpp>
+#include <aligator/core/traj-opt-problem.hpp>
 #include <aligator/modelling/costs/sum-of-costs.hpp>
 #include <aligator/modelling/dynamics/integrator-semi-euler.hpp>
 #pragma GCC diagnostic pop
+
+#include <malloc.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <random>
 #include <string>
@@ -140,6 +145,45 @@ TEST_F(KinodynamicAllocGate, LibraryEvaluationAllocationsAreRecordedAndSteady) {
   std::printf("per call: forward new %lld malloc %zu, dForward new %lld malloc %zu\n",
               static_cast<long long>(f1.first), f1.second, static_cast<long long>(d1.first),
               d1.second);
+}
+
+// Report only: heap held per stage once a problem and its data are built
+// (glibc's in-use bytes; this binary keeps glibc's allocator).
+TEST_F(KinodynamicAllocGate, ReportsHeapPerStage) {
+  using Stage = aligator::StageModelTpl<double>;
+  using Problem = aligator::TrajOptProblemTpl<double>;
+  const KinodynamicDynamics::Space& space = *dyn_.space();
+  const aligator::CostStackTpl<double> cost(space, dyn_.nu());
+  auto in_use = [] { return static_cast<long long>(mallinfo2().uordblks); };
+  auto build = [&](int n, KinodynamicDynamics::StageDynamics* const proto) {
+    std::vector<xyz::polymorphic<Stage>> stages;
+    for (int k = 0; k < n; ++k) {
+      stages.emplace_back(Stage(cost, *proto));
+    }
+    auto problem = std::make_unique<Problem>(space.neutral(), stages, cost);
+    auto data = std::make_unique<aligator::TrajOptDataTpl<double>>(*problem);
+    return std::make_pair(std::move(problem), std::move(data));
+  };
+  for (const auto integrator : {rtc::mpc::KinodynamicIntegrator::kSemiImplicitEuler,
+                                rtc::mpc::KinodynamicIntegrator::kRk2}) {
+    std::optional<KinodynamicDynamics::StageDynamics> proto;
+    ASSERT_EQ(dyn_.MakeStageDynamics(0b11, 0.035, integrator, proto),
+              rtc::mpc::KinodynamicError::kNoError);
+    const long long base = in_use();
+    auto small = build(4, &*proto);
+    const long long with_small = in_use();
+    auto large = build(36, &*proto);
+    const long long with_large = in_use();
+    const double per_stage = static_cast<double>((with_large - with_small) - (with_small - base)) /
+                             32.0;  // 36 − 4 stages
+    std::printf("heap per stage (%s, problem + data): %.0f bytes\n",
+                integrator == rtc::mpc::KinodynamicIntegrator::kRk2 ? "rk2" : "semi_implicit_euler",
+                per_stage);
+    RecordProperty(integrator == rtc::mpc::KinodynamicIntegrator::kRk2 ? "heap_per_stage_rk2"
+                                                                       : "heap_per_stage_sie",
+                   std::to_string(per_stage));
+    EXPECT_GT(per_stage, 0.0);
+  }
 }
 
 }  // namespace

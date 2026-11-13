@@ -65,6 +65,20 @@ enum class OCPBuildError {
   kAligatorInstantiationFailure,  ///< an Aligator ctor threw (caught internally)
 };
 
+/// @brief What the OCP's control vector `u` is — the handler core sizes,
+///        refuses and packs by it.
+enum class ControlModel {
+  kJointTorque,        ///< `u = τ` (size `nv`) on a fixed base
+  kKinodynamicWrench,  ///< `u = [W_0 … W_{nc−1}; q̈_j]` on a floating base (`WbLayout`)
+};
+
+/// @brief The initial guess the handler core gives the solver after a build.
+enum class ColdSeed {
+  kZeroControl,          ///< measured state at every node, `u = 0`
+  kGravityCompensation,  ///< measured state at every node, `u = g(q)` — joint torque
+                         ///< only; a kinodynamic OCP gets the zero-control seed
+};
+
 /// @brief Abstract OCP builder. Concrete implementations map the OCP onto a
 ///        specific dynamics class (e.g. ContactLightOCP, ContactRichOCP).
 class OCPHandlerBase {
@@ -111,6 +125,16 @@ class OCPHandlerBase {
   /// @return dispatch key string literal (`"contact_light"`, `"contact_rich"`).
   ///         Must match `PhaseContext::ocp_type` for Build to succeed.
   [[nodiscard]] virtual std::string_view ocp_type() const noexcept = 0;
+
+  /// @return what `u` is. A handler refuses a floating-base model for a
+  ///         joint-torque OCP (`kFloatingBaseUnsupported`) and a fixed-base
+  ///         one for a kinodynamic OCP (`kFixedBaseUnsupported`).
+  [[nodiscard]] virtual ControlModel control_model() const noexcept {
+    return ControlModel::kJointTorque;
+  }
+
+  /// @return the cold-start guess this OCP wants after a build.
+  [[nodiscard]] virtual ColdSeed cold_seed() const noexcept { return ColdSeed::kZeroControl; }
 };
 
 }  // namespace rtc::mpc

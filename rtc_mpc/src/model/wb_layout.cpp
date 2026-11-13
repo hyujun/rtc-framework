@@ -161,6 +161,13 @@ bool WbLayout::SplitU(const Eigen::Ref<const Eigen::VectorXd>& u,
   return valid() && SplitHeadTail(n_wrench_u, nu, u, wrench, qdd_j);
 }
 
+bool WbLayout::BaseQuaternionIsUnit(const Eigen::Ref<const Eigen::VectorXd>& q) const noexcept {
+  if (!floating_base()) {
+    return true;
+  }
+  return q.size() == nq && FreeFlyerQuaternionIsUnit(q);
+}
+
 bool WbLayout::StateDifference(const pinocchio::Model& model,
                                const Eigen::Ref<const Eigen::VectorXd>& q_ref,
                                const Eigen::Ref<const Eigen::VectorXd>& v_ref,
@@ -173,7 +180,7 @@ bool WbLayout::StateDifference(const pinocchio::Model& model,
       v_ref.size() != nv || v_cur.size() != nv || dx.size() != ndx) {
     return false;
   }
-  if (floating_base() && (!FreeFlyerQuaternionIsUnit(q_ref) || !FreeFlyerQuaternionIsUnit(q_cur))) {
+  if (!BaseQuaternionIsUnit(q_ref) || !BaseQuaternionIsUnit(q_cur)) {
     return false;
   }
   pinocchio::difference(model, q_ref, q_cur, dx.head(nv));

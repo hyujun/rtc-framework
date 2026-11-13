@@ -57,6 +57,15 @@
 /// behind (the inverse of `A_b`, `ẋ`, the active contact placements). After
 /// `SetMode`, or for a new `(x, u)`, call `forward` before `dForward`.
 ///
+/// ## Discretisation
+///
+/// `MakeStageDynamics` wraps the ODE in an explicit integrator over the
+/// phase-space manifold (`x ⊕ dt·ẋ` with pinocchio's `integrate`, which
+/// renormalises the base quaternion at every step):
+/// - semi-implicit Euler — one ODE evaluation per step; `v` first, then `q`
+///   with the new `v` (first order);
+/// - RK2 (explicit midpoint) — two evaluations per step (second order).
+///
 /// Gravity is taken once, from the model (`model.gravity`), at `MakeOde`.
 ///
 /// Lifetime: `MakeOde` reads the handler's model, so that model must outlive
@@ -73,6 +82,7 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#include <aligator/core/explicit-dynamics.hpp>
 #include <aligator/core/stage-model.hpp>
 #include <aligator/modelling/dynamics/kinodynamics-fwd.hpp>
 #include <aligator/modelling/spaces/multibody.hpp>
@@ -81,6 +91,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 namespace rtc::mpc {
@@ -97,7 +108,22 @@ enum class KinodynamicError {
   kLayoutMismatch,         ///< the handler's input layout is not the ODE's; a
                            ///< handler builds its layout so, today, never
   kAligatorFailure,        ///< an Aligator constructor threw (caught)
+  kNotInitialised,         ///< called before a successful `Init`
+  kInvalidMode,            ///< a mode naming a contact that does not exist
+  kInvalidDt,              ///< a step that is not finite and positive
+  kUnknownIntegrator,      ///< an integrator name or value this module does not know
 };
+
+/// @brief The explicit integrator a stage discretises the ODE with.
+enum class KinodynamicIntegrator {
+  kSemiImplicitEuler,  ///< name `semi_implicit_euler` — one ODE evaluation per step
+  kRk2,                ///< name `rk2` — explicit midpoint, two evaluations per step
+};
+
+/// @brief Parse an integrator name (`semi_implicit_euler`, `rk2`).
+/// @return kUnknownIntegrator, leaving @p out untouched, for any other name.
+[[nodiscard]] KinodynamicError ParseKinodynamicIntegrator(std::string_view name,
+                                                          KinodynamicIntegrator& out) noexcept;
 
 /// @brief Builds and drives the kinodynamic ODE of one floating-base model.
 ///
@@ -108,6 +134,7 @@ class KinodynamicDynamics {
   using Ode = aligator::dynamics::KinodynamicsFwdDynamicsTpl<double>;
   using OdeData = aligator::dynamics::KinodynamicsFwdDataTpl<double>;
   using Space = aligator::MultibodyPhaseSpace<double>;
+  using StageDynamics = xyz::polymorphic<aligator::ExplicitDynamicsModelTpl<double>>;
 
   /// @brief Check @p handler and cache what every ODE of it shares. Allocates.
   [[nodiscard]] KinodynamicError Init(const RobotModelHandler& handler) noexcept;
@@ -118,6 +145,14 @@ class KinodynamicDynamics {
   ///         naming a contact that does not exist, or if Aligator threw.
   ///         Allocates (copies the model).
   [[nodiscard]] std::optional<Ode> MakeOde(std::uint32_t mode) const noexcept;
+
+  /// @brief The discrete dynamics of one stage: @p mode's ODE under
+  ///        @p integrator with step @p dt (s). Allocates; @p out is emptied
+  ///        first and set only on success. `OdeOf` finds the ODE again inside a stage built from
+  ///        it.
+  [[nodiscard]] KinodynamicError MakeStageDynamics(
+      std::uint32_t mode, double dt, KinodynamicIntegrator integrator,
+      std::optional<StageDynamics>& out) const noexcept;
 
   /// @return the kinodynamic ODE inside @p stage's integrator — the copy the
   ///         stage evaluates — or null when the stage's dynamics is not an
