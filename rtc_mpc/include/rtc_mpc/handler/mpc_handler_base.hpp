@@ -25,9 +25,20 @@
 ///   `ResultsTpl::cycleAppend(problem, x_current)` and call
 ///   `solver.run(problem)` with empty inits so the solver re-uses
 ///   `results_.xs/us/vs/lams` directly — this is Aligator's canonical MPC
-///   shift-warm-start path and does not allocate. After the shift the OCP
-///   clears the multipliers of the rows its current modes make inactive
-///   (`OCPHandlerBase::ClearInactiveMultipliers`).
+///   shift-warm-start path and does not allocate. One node a tick, or — for
+///   a context on a node grid (`PhaseContext::on_node_grid`) — as many as
+///   the grid index advanced since the last solve: none (node 0 takes the
+///   measured state, nothing else moves), two or more after an overrun, a
+///   cold seed when it went back or by the horizon or more (on the budget it
+///   was on: a converged standing solve is not re-armed, or a long standing
+///   solve on a walking window would jump the index again; such a plan is
+///   marked `MPCSolution::cold_start`, and the MPC thread publishes it only
+///   once converged). After the shift
+///   the OCP clears the multipliers of the rows its current modes make
+///   inactive (`OCPHandlerBase::ClearInactiveMultipliers`), and an OCP whose
+///   cold seed is its reference control seeds the controls of the nodes the
+///   shift appended with it (the states stay the last node's, the
+///   multipliers 0).
 /// - Budget: until a solve converges after `Init`, a rebuild or a rejected
 ///   solve, every solve runs on the standing budget (`max_initial_iters`,
 ///   `max_al_iters`) and is marked `MPCSolution::initial_solve`; then on the
@@ -87,6 +98,15 @@ enum class MPCLinearSolver {
 ///
 /// The step acceptance (non-monotone line search) and the Hessian
 /// approximation (Gauss-Newton) are Aligator's defaults and are not keys.
+///
+/// Two publish rules, applied by the MPC thread (`HandlerMPCThread`), both off
+/// at 0: a solve whose tick took longer than `publish_deadline_ms` since the
+/// thread's `Solve` entry is not published (the standing solve is exempt — it
+/// runs to convergence by design); a budget-exhausted solve (`kMaxIters`) is
+/// published only when the primal residual of the segment the consumer reads
+/// (`MPCSolution::node_prim_inf`, nodes 0 … ⌈period/dt⌉ + 1) is at most
+/// `publish_prim_tol` — a converged one always is. Either way the iterates
+/// stay the next tick's warm start.
 struct MPCSolverConfig {
   double prim_tol{1e-3};  ///< primal infeasibility target
   double dual_tol{1e-2};  ///< dual infeasibility target
@@ -102,6 +122,8 @@ struct MPCSolverConfig {
   int num_threads{1};                  ///< any other value is refused (one solver thread)
   bool force_initial_condition{true};  ///< false is refused: node 0 is the measured state
   bool verbose{false};                 ///< route Aligator's own stdout log
+  double publish_deadline_ms{0.0};     ///< [ms] ≥ 0; 0 = no deadline
+  double publish_prim_tol{0.0};        ///< ≥ 0; 0 = publish every finite solve
 
   /// @return the standing solve's iteration ceiling.
   [[nodiscard]] constexpr int InitialIters() const noexcept {
@@ -125,7 +147,8 @@ enum class MPCInitError {
                              ///< context's node dt is not finite and positive
   kSolverSetupFailed,        ///< Aligator's setup() threw (caught internally)
   kInvalidSolverConfig,      ///< tolerances / iteration ceilings out of range, or a
-                             ///< parallel LQ backend, more than one thread, a free node 0
+                             ///< parallel LQ backend, more than one thread, a free node 0,
+                             ///< a negative or non-finite publish deadline or tolerance
   kOcpTypeMismatch,          ///< ctx.ocp_type != this handler's dispatch key
   kFloatingBaseUnsupported,  ///< free-flyer root under a joint-torque OCP (the shipped OCPs)
   kFixedBaseUnsupported,     ///< fixed base under a kinodynamic-wrench OCP
@@ -203,6 +226,16 @@ class MPCHandlerBase {
 
   /// @return true once `Init` has succeeded.
   [[nodiscard]] virtual bool Initialised() const noexcept = 0;
+
+  /// @return the solver configuration `Init` accepted (the defaults before)
+  ///         — the MPC thread reads its publish rules from it.
+  [[nodiscard]] virtual const MPCSolverConfig& solver_config() const noexcept = 0;
+
+  /// @return true while the next solve runs on the standing budget (no solve
+  ///         has converged since `Init`, a rebuild or a rejected solve) — the
+  ///         MPC thread marks the tick for its overrun split before solving,
+  ///         whatever the solve then returns.
+  [[nodiscard]] virtual bool InitialSolvePending() const noexcept = 0;
 
   /// @return `"contact_light"` or `"contact_rich"` — matches the underlying
   ///         OCP handler. Used by `MPCFactory` for cross-handler dispatch.

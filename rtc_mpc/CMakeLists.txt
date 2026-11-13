@@ -224,6 +224,7 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_contact_rich_mpc)
   add_mpc_gtest(test_mpc_factory)
   add_mpc_gtest(test_mpc_thread_integration)
+  add_mpc_gtest(test_mpc_thread_publish)
   add_mpc_gtest(test_mpc_handler_alloc_tracer)
   # Drives the handler core directly with a stub OCP, so it needs the
   # package-private src/ headers.
@@ -257,6 +258,15 @@ if(BUILD_TESTING)
   endif()
   if(TEST test_kinodynamic_receding)
     set_tests_properties(test_kinodynamic_receding PROPERTIES TIMEOUT 600)
+  endif()
+  # The headless soak: a 3 s smoke of each of its twelve combinations by
+  # default; armed (RTC_RUN_MPC_SOAK=1, docs/testing.md) it runs
+  # RTC_MPC_SOAK_SECONDS each, by hand and outside the verification hook.
+  # It defines the C allocator to count allocations, so it stays out of the
+  # mimalloc preload list below.
+  add_mpc_gtest(test_kinodynamic_mpc_soak)
+  if(TEST test_kinodynamic_mpc_soak)
+    set_tests_properties(test_kinodynamic_mpc_soak PROPERTIES TIMEOUT 10800)
   endif()
   add_mpc_gtest(test_kinodynamic_integrator)
   if(TEST test_kinodynamic_integrator)

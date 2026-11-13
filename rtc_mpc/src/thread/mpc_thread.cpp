@@ -36,8 +36,13 @@ void MPCThread::Start() {
   PeriodicRtThread::Start(pcfg);
 }
 
+void MPCThread::OnOverrun(std::uint64_t /*consecutive*/) noexcept {
+  (standing_tick_ ? standing_overruns_ : online_overruns_).fetch_add(1, std::memory_order_relaxed);
+}
+
 void MPCThread::OnTick() noexcept {
   RTC_TRACE_SCOPE("mpc_tick");
+  standing_tick_ = false;
 
   // Phase 1: state acquisition.
   MPCStateSnapshot state;

@@ -17,8 +17,21 @@
 ///                                    ▼ ctx
 ///                                  handler_->Solve(ctx, state, out) (noexcept)
 ///                                    │
-///                                    ▼
+///                                    ▼ publish rules (deadline, residual)
 ///   ComputeReference ◄──TripleBuffer─ PublishSolution(out)
+///
+/// Publish rules — read each tick from the handler's `solver_config()`
+/// (`MPCSolverConfig`, both off at 0): a solve that returned after
+/// `publish_deadline_ms` since this class's `Solve` entry (after the state
+/// read, before FK and the phase manager) is not published
+/// (@ref DeadlineMissCount; the standing solve is exempt); a budget-exhausted
+/// solve whose consumed segment's residual exceeds `publish_prim_tol` is not
+/// either (@ref WithheldCount), nor an online solve that started cold and did
+/// not converge (@ref ColdWithheldCount). None is a failed solve, and none
+/// touches the handler: its iterates warm-start the next tick. A tick whose
+/// handler reports the standing budget pending (`InitialSolvePending`, read
+/// before the solve, so a failed standing solve counts too) or whose solve ran
+/// on it is marked for the overrun split (`MPCThread::StandingOverrunCount`).
 ///
 /// Ownership — `HandlerMPCThread` takes unique-ownership of both the handler
 /// and the phase manager via `Configure`. The `RobotModelHandler` reference
@@ -139,6 +152,38 @@ class HandlerMPCThread final : public MPCThread {
     return initial_solve_ticks_.load(std::memory_order_relaxed);
   }
 
+  /// @return solves not published because the tick ran past the handler's
+  ///        `publish_deadline_ms` (counted from this thread's `Solve` entry;
+  ///        the standing solve is exempt) — not failed solves: the iterates
+  ///        stay the next tick's warm start.
+  [[nodiscard]] std::uint64_t DeadlineMissCount() const noexcept {
+    return deadline_misses_.load(std::memory_order_relaxed);
+  }
+
+  /// @return budget-exhausted solves not published because the primal
+  ///        residual of the segment the consumer reads exceeded the handler's
+  ///        `publish_prim_tol` (@ref ConsumedPrimInf) — not failed solves
+  ///        either.
+  [[nodiscard]] std::uint64_t WithheldCount() const noexcept {
+    return withheld_.load(std::memory_order_relaxed);
+  }
+
+  /// @return online solves started from a cold seed (`MPCSolution::cold_start`,
+  ///         a node-grid jump) that were not published because they had not
+  ///         converged — a plan without a warm start is consumed only once
+  ///         it meets the tolerance. Not in @ref WithheldCount, not failed.
+  [[nodiscard]] std::uint64_t ColdWithheldCount() const noexcept {
+    return cold_withheld_.load(std::memory_order_relaxed);
+  }
+
+  /// @return the largest `node_prim_inf` over nodes `0 … n` of @p sol,
+  ///         `n = ⌈period / dt_node⌉ + 1` (a period within 1e-9 of a whole
+  ///         number of nodes counts as that number) clamped to its horizon —
+  ///         the nodes a consumer samples before the next plan can arrive.
+  ///         +inf for a solution without a valid horizon or node spacing.
+  [[nodiscard]] static double ConsumedPrimInf(const MPCSolution& sol,
+                                              std::uint64_t period_ns) noexcept;
+
   /// @return true once the null-handler guard has rejected a solve.
   [[nodiscard]] bool NullHandlerHit() const noexcept {
     return null_handler_hit_.load(std::memory_order_relaxed);
@@ -183,6 +228,9 @@ class HandlerMPCThread final : public MPCThread {
   std::atomic<std::uint64_t> total_solves_{0};
   std::atomic<std::uint64_t> failed_solves_{0};
   std::atomic<std::uint64_t> initial_solve_ticks_{0};
+  std::atomic<std::uint64_t> deadline_misses_{0};
+  std::atomic<std::uint64_t> withheld_{0};
+  std::atomic<std::uint64_t> cold_withheld_{0};
   std::atomic<bool> null_handler_hit_{false};
 };
 

@@ -33,6 +33,9 @@
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
+#include <atomic>
+#include <cstdint>
+
 namespace rtc::mpc {
 
 /// Configuration struct for launching an MPC thread. Populated by the
@@ -84,6 +87,26 @@ class MPCThread : public rtc::PeriodicRtThread {
     return timing_producer_;
   }
 
+  // ── Overruns by budget ─────────────────────────────────────────────────
+  //
+  // The base counts an overrun (OverrunCount: the wait found the deadline
+  // missed by more than one period) after the tick that caused it. A tick
+  // the subclass marked as a standing-solve tick (MarkStandingTick — a solve
+  // that runs to convergence by design) is not an online overrun: the two
+  // are counted apart here, and their sum is OverrunCount once the thread is
+  // joined (while it runs, a reader can see the base's count before this
+  // split's). Any thread.
+
+  /// @return overruns after a tick on the online budget.
+  [[nodiscard]] std::uint64_t OnlineOverrunCount() const noexcept {
+    return online_overruns_.load(std::memory_order_relaxed);
+  }
+
+  /// @return overruns after a standing-solve tick.
+  [[nodiscard]] std::uint64_t StandingOverrunCount() const noexcept {
+    return standing_overruns_.load(std::memory_order_relaxed);
+  }
+
  protected:
   /// @brief Perform one MPC solve.
   ///
@@ -98,6 +121,14 @@ class MPCThread : public rtc::PeriodicRtThread {
   // side has never stored (`valid == false`) skips the solve.
   void OnTick() noexcept override;
 
+  /// @brief Mark the current tick as a standing-solve tick, from inside
+  ///        Solve(): an overrun it causes is counted in StandingOverrunCount.
+  ///        Loop thread only.
+  void MarkStandingTick() noexcept { standing_tick_ = true; }
+
+  // PeriodicRtThread hook: attribute the overrun to the tick before it.
+  void OnOverrun(std::uint64_t consecutive) noexcept override;
+
  private:
   MPCSolutionManager* manager_{nullptr};
   MpcThreadLaunchConfig launch_config_{};
@@ -109,6 +140,12 @@ class MPCThread : public rtc::PeriodicRtThread {
   // Per-tick timing SPSC ring. Producer is the base main loop (inside
   // OnTick), consumer is the non-RT drain thread.
   rtc::MpcTimingBuffer timing_producer_;
+
+  // Loop thread only: set by MarkStandingTick, cleared at the top of OnTick —
+  // so the wait after a tick still reads that tick's mark.
+  bool standing_tick_{false};
+  std::atomic<std::uint64_t> online_overruns_{0};
+  std::atomic<std::uint64_t> standing_overruns_{0};
 };
 
 }  // namespace rtc::mpc

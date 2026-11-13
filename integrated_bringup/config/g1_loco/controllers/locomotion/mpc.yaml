@@ -13,7 +13,11 @@
 # (after the build, a rebuild or a rejected solve) the MPC solves with
 # max_initial_iters and max_al_iters — the standing solve; after that with
 # max_iters and max_online_al_iters. The online pair here is provisional: it is
-# decided by the soak on the control PCs, not on this value.
+# decided by the soak on the control PCs, not on this value. So are the two
+# publish rules: a solve whose tick ran past publish_deadline_ms (one node
+# interval) is not published, nor is a budget-exhausted one whose first nodes
+# — those read before the next plan — have a primal residual above
+# publish_prim_tol; both are decided by the control-PC soak.
 #
 # The weights are the reference whole-body task's, unchanged:
 #   - state / terminal: its Q and Q_final diagonals. The base orientation is
@@ -58,6 +62,8 @@ locomotion_controller:
       max_al_iters: 20
       max_initial_iters: 300
       max_online_al_iters: 20
+      publish_deadline_ms: 35.0       # [ms] provisional — the control-PC soak decides
+      publish_prim_tol: 0.05          # provisional — the control-PC soak decides
     kinodynamic:
       horizon_nodes: 32
       dt: 0.035                      # [s]

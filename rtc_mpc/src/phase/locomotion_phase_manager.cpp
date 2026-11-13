@@ -122,6 +122,9 @@ LocomotionPhaseError LocomotionPhaseManager::Load(const YAML::Node& cfg) noexcep
     gait_names_ = std::move(gait_names);
     horizon_nodes_ = nodes;
     dt_ = dt;
+    grid_ = NodeGrid{0.0, dt};
+    node_index_ = 0;
+    anchored_ = false;
   } catch (...) {
     return LocomotionPhaseError::kNotAMap;  // only an allocation failure reaches here
   }
@@ -182,17 +185,37 @@ PhaseContext LocomotionPhaseManager::Update(const MPCStateSnapshot& state,
   }
   command_slot_.LoadInto(command_);
   measured_ = MeasuredPlanarVelocity(state);
-  if (scheduler_.Advance(t, command_, measured_) != GaitSchedulerError::kNoError) {
+  if (!anchored_ && std::isfinite(t)) {
+    grid_.anchor = t;
+    anchored_ = true;
+  }
+  std::int64_t m = 0;
+  if (!anchored_ || !NodeIndexAt(grid_, t, m)) {
+    SetLastError(LocomotionPhaseError::kAdvanceFailed);  // a non-finite tick time
+    return Context(nullptr);
+  }
+  const double t_q = grid_.Time(m);
+  if (scheduler_.Advance(t_q, command_, measured_) != GaitSchedulerError::kNoError) {
     SetLastError(LocomotionPhaseError::kAdvanceFailed);
     return Context(nullptr);
   }
   current_gait_.store(scheduler_.current_gait(), std::memory_order_relaxed);
-  if (builder_.Build(scheduler_, state, command_) != ReferenceError::kNoError) {
+  if (builder_.Build(scheduler_, state, command_, grid_, m) != ReferenceError::kNoError) {
     SetLastError(LocomotionPhaseError::kReferenceBuildFailed);
     return Context(nullptr);
   }
+  node_index_ = m;
   SetLastError(LocomotionPhaseError::kNoError);
-  return Context(&builder_.active());
+  return GridContext(&builder_.active(), m, t - t_q);
+}
+
+PhaseContext LocomotionPhaseManager::GridContext(const HorizonReference* horizon,
+                                                 std::int64_t index, double offset) const {
+  PhaseContext ctx = Context(horizon);
+  ctx.on_node_grid = true;
+  ctx.node_index = index;
+  ctx.horizon_offset = offset;
+  return ctx;
 }
 
 PhaseContext LocomotionPhaseManager::Update(const Eigen::VectorXd& /*q*/,

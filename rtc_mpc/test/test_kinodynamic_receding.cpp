@@ -25,26 +25,50 @@
 /// block is 2 or 3 nodes wide). The shift then carries multipliers into
 /// rows the node's new mode does not bind — what the OCP's
 /// ClearInactiveMultipliers clears. The report prints the flips.
+///
+/// The same window through the locomotion phase manager (its node grid: node
+/// times from the grid index, the warm start shifted by the index difference)
+/// has no flip: a node keeps its mode from tick to tick, the hook clears
+/// nothing, every stage's dynamics and constraint data carry the node's mode
+/// through touch-downs and lift-offs, and the shift itself is checked bit for
+/// bit (0, 1 and 2 nodes; the nodes it appends start from the reference
+/// control). Those runs also report the online residual of the whole horizon
+/// and of the segment a consumer reads (the publish rule's input).
 
 #include "handler/internal/mpc_handler_core.hpp"
+#include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/ocp/contact_constraints.hpp"
 #include "rtc_mpc/ocp/kinodynamic_ocp.hpp"
 #include "rtc_mpc/ocp/kinodynamic_ocp_config.hpp"
+#include "rtc_mpc/phase/locomotion_phase_manager.hpp"
 #include "rtc_mpc/reference/contact_schedule.hpp"
 #include "rtc_mpc/reference/stage_reference.hpp"
+#include "rtc_mpc/thread/handler_mpc_thread.hpp"
 #include "test_utils/g1_fixture.hpp"
 #include "test_utils/kinodynamic_ocp_fixture.hpp"
 #include "test_utils/shipped_walk_fixture.hpp"
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#include <aligator/core/stage-data.hpp>
+#include <aligator/core/traj-opt-data.hpp>
+#pragma GCC diagnostic pop
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -227,11 +251,201 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
     }
   }
 
+  /// The phase manager on the shipped walk: anchored at 16 s in stance, the
+  /// walk requested at once and run until it has taken over (no solve).
+  /// Returns the grid index of the last tick.
+  std::int64_t WalkManager(rtc::mpc::LocomotionPhaseManager& m) const {
+    EXPECT_EQ(m.Load(tu::ShippedLocomotionYaml()), rtc::mpc::LocomotionPhaseError::kNoError);
+    rtc::mpc::FilteredCommand cmd = tu::RegisteredCommand();
+    cmd.v_x = 0.5;
+    cmd.v_y = 0.0;
+    cmd.omega_z = 0.0;
+    cmd.base_height = 0.7925;
+    m.SetCommand(cmd);
+    m.SetPolicyEnabled(false);
+    const MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
+    EXPECT_NE(GridTick(m, snap, 16.0).horizon, nullptr);
+    m.RequestGait(2);
+    std::int64_t index = 0;
+    while (m.scheduler().current_gait() != 2U || m.scheduler().switch_pending() || index < 115) {
+      ++index;
+      EXPECT_NE(GridTick(m, snap, m.grid().Time(index)).horizon, nullptr);
+    }
+    return index;
+  }
+
+  [[nodiscard]] PhaseContext GridTick(rtc::mpc::LocomotionPhaseManager& m,
+                                      const MPCStateSnapshot& snap, double t) const {
+    const Eigen::VectorXd q = Eigen::Map<const Eigen::VectorXd>(snap.q.data(), model_.nq);
+    const Eigen::VectorXd v = Eigen::Map<const Eigen::VectorXd>(snap.v.data(), model_.nv);
+    rtc::mpc::PhaseManagerBase& base = m;
+    return base.Update(snap, q, v, Eigen::VectorXd(), pinocchio::SE3::Identity(), t);
+  }
+
+  /// The snapshot at the solution's node @p k.
+  [[nodiscard]] MPCStateSnapshot NodeAt(const MPCSolution& out, int k,
+                                        std::uint64_t sequence) const {
+    MPCStateSnapshot s = NodeOne(out, sequence);
+    for (int i = 0; i < model_.nq; ++i) {
+      s.q[static_cast<std::size_t>(i)] =
+          out.q_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)];
+    }
+    for (int i = 0; i < model_.nv; ++i) {
+      s.v[static_cast<std::size_t>(i)] =
+          out.v_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)];
+    }
+    return s;
+  }
+
+  /// Stages whose dynamics or constraint data do not carry the horizon's
+  /// mode of their node, after the last solve.
+  [[nodiscard]] static int ModeLeaks(const Core& core, KinodynamicOCP& ocp,
+                                     const HorizonReference& h, int n_contacts) {
+    int leaks = 0;
+    auto& problem = ocp.problem();
+    const auto& data = core.solver()->workspace_.problem_data;
+    for (std::size_t k = 0; k < problem.stages_.size(); ++k) {
+      const std::uint32_t mode = h.stages[k].mode;
+      const auto* ode = rtc::mpc::KinodynamicDynamics::OdeOf(*problem.stages_[k]);
+      const auto* cd = dynamic_cast<const rtc::mpc::ContactConstraintData*>(
+          data.stage_data[k]->constraint_data[0].get());
+      if (ode == nullptr || cd == nullptr ||
+          cd->stance.size() != static_cast<std::size_t>(n_contacts)) {
+        ++leaks;
+        continue;
+      }
+      for (int c = 0; c < n_contacts; ++c) {
+        const bool stance = ((mode >> c) & 1U) != 0U;
+        leaks += ode->contact_states_[static_cast<std::size_t>(c)] != stance;
+        leaks += (cd->stance[static_cast<std::size_t>(c)] != 0) != stance;
+      }
+    }
+    return leaks;
+  }
+
+  /// One tick of a grid run.
+  struct GridTickReport {
+    int shift{0};
+    int iterations{0};
+    bool converged{false};
+    double prim{0.0};
+    double consumed{0.0};  ///< over the nodes a consumer at 1/dt reads
+    double node_max{0.0};  ///< max of node_prim_inf
+    std::int64_t offset_ns{0};
+    double expected_offset_ns{0.0};
+    std::size_t cleared{0};
+    int leaks{0};
+    int flips{0};
+  };
+
+  /// The shipped walk through the phase manager: a standing solve on the
+  /// walk window, then one tick per entry of @p shifts (the grid index moving
+  /// by it), each tick 0.4·dt into its node interval, the state the previous
+  /// solution's node at the shift.
+  std::vector<GridTickReport> GridRun(const MPCSolverConfig& solver,
+                                      const std::vector<int>& shifts) {
+    rtc::mpc::LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
+    std::int64_t index = WalkManager(m);
+    const double dt = tu::kKinoDt;
+    MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
+    PhaseContext ctx = GridTick(m, snap, m.grid().Time(index) + 0.4 * dt);
+    KinodynamicOCP ocp(cfg_);
+    Core core;
+    EXPECT_EQ(core.Init(solver, handler_, {}, ctx, ocp), rtc::mpc::MPCInitError::kNoError);
+    auto out = std::make_unique<MPCSolution>();
+    auto prev_h = std::make_unique<HorizonReference>();
+    std::vector<GridTickReport> ticks;
+    const auto period_ns = static_cast<std::uint64_t>(std::llround(dt * 1e9));
+    for (std::size_t n = 0; n <= shifts.size(); ++n) {
+      int shift = 0;
+      if (n > 0) {
+        shift = shifts[n - 1];
+        snap = NodeAt(*out, shift, n);
+        index += shift;
+        ctx = GridTick(m, snap, m.grid().Time(index) + 0.4 * dt);
+      }
+      EXPECT_NE(ctx.horizon, nullptr);
+      if (ctx.horizon == nullptr) {
+        break;
+      }
+      const HorizonReference& h = *ctx.horizon;
+      GridTickReport r;
+      r.shift = shift;
+      if (n > 0) {
+        for (std::uint32_t k = 0; k + static_cast<std::uint32_t>(shift) < h.n_stages; ++k) {
+          r.flips += prev_h->stages[k + static_cast<std::uint32_t>(shift)].mode != h.stages[k].mode;
+        }
+      }
+      const MPCSolveError e = core.Solve(ctx, snap, ocp, *out);
+      EXPECT_EQ(e, MPCSolveError::kNoError) << "tick " << n;
+      if (e != MPCSolveError::kNoError) {
+        break;
+      }
+      EXPECT_EQ(core.LastNodeShift(), shift) << "tick " << n;
+      r.iterations = out->iterations;
+      r.converged = out->converged;
+      r.prim = out->residuals.prim_inf;
+      r.consumed = rtc::mpc::HandlerMPCThread::ConsumedPrimInf(*out, period_ns);
+      for (int k = 0; k <= out->horizon_length; ++k) {
+        r.node_max = std::max(r.node_max, out->node_prim_inf[static_cast<std::size_t>(k)]);
+      }
+      r.offset_ns = out->horizon_offset_ns;
+      r.expected_offset_ns = ctx.horizon_offset * 1e9;
+      r.cleared = core.ClearedMultipliers();
+      r.leaks = ModeLeaks(core, ocp, h, handler_.n_contacts());
+      ticks.push_back(r);
+      std::memcpy(static_cast<void*>(prev_h.get()), &h, sizeof(HorizonReference));
+    }
+    return ticks;
+  }
+
+  static void ReportGrid(const char* name, const char* what,
+                         const std::vector<GridTickReport>& ticks) {
+    for (std::size_t n = 0; n < ticks.size(); ++n) {
+      const GridTickReport& t = ticks[n];
+      std::printf(
+          "[report] %s %s tick %2zu: shift %d it %3d conv %d prim %.3g consumed %.3g "
+          "cleared %zu flips %d leaks %d\n",
+          name, what, n, t.shift, t.iterations, t.converged ? 1 : 0, t.prim, t.consumed, t.cleared,
+          t.flips, t.leaks);
+    }
+  }
+
   pinocchio::Model model_;
   rtc::mpc::RobotModelHandler handler_;
   Eigen::VectorXd stand_;
   KinodynamicOCPConfig cfg_;
 };
+
+/// Bit equality of two iterate lists over entries `[from, to)`.
+bool SameBits(const std::vector<Eigen::VectorXd>& a, const std::vector<Eigen::VectorXd>& b,
+              std::size_t from = 0, std::size_t to = static_cast<std::size_t>(-1)) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = from; i < std::min(to, a.size()); ++i) {
+    if (a[i].size() != b[i].size() ||
+        std::memcmp(a[i].data(), b[i].data(),
+                    sizeof(double) * static_cast<std::size_t>(a[i].size())) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool SameBits(const Eigen::VectorXd& a, const Eigen::VectorXd& b) {
+  return a.size() == b.size() &&
+         std::memcmp(a.data(), b.data(), sizeof(double) * static_cast<std::size_t>(a.size())) == 0;
+}
+
+bool AllPlusZero(const Eigen::VectorXd& v) {
+  for (Eigen::Index i = 0; i < v.size(); ++i) {
+    if (v[i] != 0.0 || std::signbit(v[i])) {
+      return false;
+    }
+  }
+  return true;
+}
 
 // ── Standing solve ──────────────────────────────────────────────────────────
 
@@ -361,6 +575,215 @@ TEST_P(KinodynamicReceding, TheOnlineBudgetKeepsThePrimalResidualBounded) {
     std::printf("[report] %s online prim max %.3g against the probe's 2 x 1.25 (not gated)\n",
                 GetParam(), worst);
   }
+}
+
+// ── Node grid ───────────────────────────────────────────────────────────────
+
+// The warm start shifted by 0, 1 and 2 nodes, bit for bit, on the iterates of
+// a solved walk tick and the references of the next one: one node moves
+// every state, control and multiplier one node on (node 0 the measured
+// state, the last control the node's reference control, the multipliers
+// that fall off zero); none moves only node 0's state; two is two rotations,
+// the last two controls their reference controls.
+TEST_P(KinodynamicReceding, TheWarmStartShiftsByTheGridIndexBitForBit) {
+  rtc::mpc::LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
+  std::int64_t index = WalkManager(m);
+  MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
+  PhaseContext ctx = GridTick(m, snap, m.grid().Time(index));
+  KinodynamicOCP ocp(cfg_);
+  Core core;
+  MPCSolverConfig solver = ShippedSolver();
+  solver.max_iters = 10;
+  solver.max_online_al_iters = 1;
+  ASSERT_EQ(core.Init(solver, handler_, {}, ctx, ocp), rtc::mpc::MPCInitError::kNoError);
+  auto out = std::make_unique<MPCSolution>();
+  for (int n = 0; n < 4; ++n) {  // the standing solve, then three online ticks
+    if (n > 0) {
+      snap = NodeOne(*out, static_cast<std::uint64_t>(n));
+      ctx = GridTick(m, snap, m.grid().Time(++index));
+    }
+    ASSERT_EQ(core.Solve(ctx, snap, ocp, *out), MPCSolveError::kNoError);
+  }
+  const aligator::ResultsTpl<double> prev = core.solver()->results_;
+  snap = NodeOne(*out, 9);
+  Eigen::VectorXd x0(model_.nq + model_.nv);
+  x0.head(model_.nq) = Eigen::Map<const Eigen::VectorXd>(snap.q.data(), model_.nq);
+  x0.tail(model_.nv) = Eigen::Map<const Eigen::VectorXd>(snap.v.data(), model_.nv);
+  const auto& problem = ocp.problem();
+  const std::size_t N = prev.us.size();
+  Eigen::VectorXd u_ref(prev.us[0].size());
+
+  // No node: the same grid index (the OCP still holds its references).
+  aligator::ResultsTpl<double> r0 = prev;
+  EXPECT_EQ(rtc::mpc::internal::ShiftWarmStart(r0, problem, x0, 0, ocp, true), 0U);
+  EXPECT_TRUE(SameBits(r0.xs[0], x0));
+  EXPECT_TRUE(SameBits(r0.xs, prev.xs, 1));
+  EXPECT_TRUE(SameBits(r0.us, prev.us));
+  EXPECT_TRUE(SameBits(r0.vs, prev.vs));
+  EXPECT_TRUE(SameBits(r0.lams, prev.lams));
+
+  ctx = GridTick(m, snap, m.grid().Time(index + 1));
+  ASSERT_EQ(ocp.UpdateReferences(ctx), rtc::mpc::OCPBuildError::kNoError);
+
+  // One node.
+  aligator::ResultsTpl<double> r1 = prev;
+  EXPECT_EQ(rtc::mpc::internal::ShiftWarmStart(r1, problem, x0, 1, ocp, true), 0U)
+      << "a grid node keeps its mode: nothing to clear";
+  EXPECT_TRUE(SameBits(r1.xs[0], x0));
+  for (std::size_t i = 1; i < N; ++i) {
+    EXPECT_TRUE(SameBits(r1.xs[i], prev.xs[i + 1])) << "xs " << i;
+    EXPECT_TRUE(SameBits(r1.lams[i], prev.lams[i + 1])) << "lams " << i;
+  }
+  EXPECT_TRUE(SameBits(r1.xs[N], prev.xs[N])) << "the appended node keeps the last state";
+  for (std::size_t i = 0; i + 1 < N; ++i) {
+    EXPECT_TRUE(SameBits(r1.us[i], prev.us[i + 1])) << "us " << i;
+    EXPECT_TRUE(SameBits(r1.vs[i], prev.vs[i + 1])) << "vs " << i;
+  }
+  ASSERT_TRUE(ocp.ReferenceControl(static_cast<int>(N - 1), u_ref));
+  EXPECT_TRUE(SameBits(r1.us[N - 1], u_ref)) << "the appended control is the reference";
+  EXPECT_TRUE(AllPlusZero(r1.vs[N - 1]));
+  EXPECT_TRUE(AllPlusZero(r1.lams[0]));
+  EXPECT_TRUE(AllPlusZero(r1.lams[N]));
+
+  // Two nodes: two rotations, the references two nodes on.
+  ASSERT_EQ(ocp.UpdateReferences(GridTick(m, snap, m.grid().Time(index + 2))),
+            rtc::mpc::OCPBuildError::kNoError);
+  aligator::ResultsTpl<double> r2 = prev;
+  aligator::ResultsTpl<double> twice = prev;
+  EXPECT_EQ(rtc::mpc::internal::ShiftWarmStart(r2, problem, x0, 2, ocp, false), 0U);
+  twice.cycleAppend(problem, x0);
+  twice.cycleAppend(problem, x0);
+  EXPECT_TRUE(SameBits(r2.xs, twice.xs));
+  EXPECT_TRUE(SameBits(r2.us, twice.us));
+  EXPECT_TRUE(SameBits(r2.vs, twice.vs));
+  EXPECT_TRUE(SameBits(r2.lams, twice.lams));
+  aligator::ResultsTpl<double> r2s = prev;
+  static_cast<void>(rtc::mpc::internal::ShiftWarmStart(r2s, problem, x0, 2, ocp, true));
+  EXPECT_TRUE(SameBits(r2s.us, twice.us, 0, N - 2));
+  for (std::size_t i = N - 2; i < N; ++i) {
+    ASSERT_TRUE(ocp.ReferenceControl(static_cast<int>(i), u_ref));
+    EXPECT_TRUE(SameBits(r2s.us[i], u_ref)) << "us " << i;
+  }
+  EXPECT_TRUE(SameBits(r2s.xs, twice.xs));
+}
+
+// Through the phase manager with the online budget, a tick each node (the
+// rate 1/dt), as the receding run above: no mode flip, nothing cleared, no
+// stage whose dynamics or constraint data miss its node's mode; the shift,
+// the horizon offset and the per-node residuals as packed. Reports the tick
+// primal residual of the whole horizon and of the consumed segment.
+TEST_P(KinodynamicReceding, OnTheGridTheWalkRecedesWithoutAModeFlip) {
+  MPCSolverConfig solver = ShippedSolver();
+  solver.max_iters = 10;
+  solver.max_online_al_iters = 1;
+  const std::vector<GridTickReport> ticks = GridRun(solver, std::vector<int>(kTicks, 1));
+  ASSERT_EQ(ticks.size(), static_cast<std::size_t>(kTicks + 1));
+  ReportGrid(GetParam(), "grid 1/dt", ticks);
+  ASSERT_TRUE(ticks[0].converged) << "the standing solve converges first";
+  std::vector<double> prims;
+  std::vector<double> consumed;
+  int flips = 0;
+  int leaks = 0;
+  std::size_t cleared = 0;
+  for (std::size_t n = 0; n < ticks.size(); ++n) {
+    const GridTickReport& t = ticks[n];
+    if (n > 0) {
+      prims.push_back(t.prim);
+      consumed.push_back(t.consumed);
+    }
+    flips += t.flips;
+    leaks += t.leaks;
+    cleared += t.cleared;
+    EXPECT_EQ(t.node_max, t.prim) << "tick " << n << ": the node residuals' max is prim_inf";
+    EXPECT_LE(std::abs(static_cast<double>(t.offset_ns) - t.expected_offset_ns), 1.0)
+        << "tick " << n;
+  }
+  std::printf(
+      "[report] %s grid 1/dt online (10 / 1): standing %d iterations; prim median %.3g max %.3g; "
+      "consumed (nodes 0-2) median %.3g max %.3g; flips %d cleared %zu leaks %d\n",
+      GetParam(), ticks[0].iterations, Median(prims), *std::max_element(prims.begin(), prims.end()),
+      Median(consumed), *std::max_element(consumed.begin(), consumed.end()), flips, cleared, leaks);
+  EXPECT_EQ(flips, 0);
+  EXPECT_EQ(cleared, 0U);
+  EXPECT_EQ(leaks, 0);
+}
+
+// Shifts of 1, 1, 0, 2, 1 nodes (an MPC period that is not the node spacing,
+// an overrun): the warm start moves by each, and through the touch-downs and
+// lift-offs of a stride no stage carries another mode than its node's.
+TEST_P(KinodynamicReceding, OnTheGridAnOverrunShiftsTwoNodesWithoutAModeLeak) {
+  MPCSolverConfig solver = ShippedSolver();
+  solver.max_iters = 10;
+  solver.max_online_al_iters = 1;
+  constexpr std::array<int, 5> kPattern = {1, 1, 0, 2, 1};
+  std::vector<int> shifts;
+  for (std::size_t n = 0; n < 50; ++n) {
+    shifts.push_back(kPattern[n % kPattern.size()]);
+  }
+  const std::vector<GridTickReport> ticks = GridRun(solver, shifts);
+  ASSERT_EQ(ticks.size(), shifts.size() + 1);
+  ReportGrid(GetParam(), "grid overrun", ticks);
+  std::vector<double> prims;
+  std::vector<double> consumed;
+  int flips = 0;
+  int leaks = 0;
+  for (std::size_t n = 0; n < ticks.size(); ++n) {
+    flips += ticks[n].flips;
+    leaks += ticks[n].leaks;
+    if (n > 0) {
+      prims.push_back(ticks[n].prim);
+      consumed.push_back(ticks[n].consumed);
+    }
+  }
+  std::printf(
+      "[report] %s grid overrun online (10 / 1): prim median %.3g max %.3g; consumed median "
+      "%.3g max %.3g; flips %d leaks %d\n",
+      GetParam(), Median(prims), *std::max_element(prims.begin(), prims.end()), Median(consumed),
+      *std::max_element(consumed.begin(), consumed.end()), flips, leaks);
+  EXPECT_EQ(flips, 0);
+  EXPECT_EQ(leaks, 0);
+}
+
+// The index the core shifts by: the difference from its last solve's, a cold
+// seed (shift 0) when it goes back or moves by the horizon or more, one node
+// a tick off the grid (and no horizon offset).
+TEST_P(KinodynamicReceding, AGridIndexThatGoesBackOrJumpsColdSeeds) {
+  rtc::mpc::LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
+  const std::int64_t index = WalkManager(m);
+  const MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
+  PhaseContext ctx = GridTick(m, snap, m.grid().Time(index));
+  KinodynamicOCP ocp(cfg_);
+  Core core;
+  MPCSolverConfig solver = ShippedSolver();
+  solver.max_iters = 3;
+  solver.max_initial_iters = 3;
+  solver.max_online_al_iters = 1;
+  ASSERT_EQ(core.Init(solver, handler_, {}, ctx, ocp), rtc::mpc::MPCInitError::kNoError);
+  auto out = std::make_unique<MPCSolution>();
+  ASSERT_EQ(core.Solve(ctx, snap, ocp, *out), MPCSolveError::kNoError);
+  EXPECT_EQ(core.LastNodeShift(), 0) << "the first solve is cold";
+
+  struct Case {
+    const char* name;
+    std::int64_t delta;
+    int shift;
+  };
+
+  for (const Case c : {Case{"same node", 0, 0}, Case{"next node", 1, 1}, Case{"three", 3, 3},
+                       Case{"back", -1, 0}, Case{"a horizon on", tu::kKinoNodes, 0},
+                       Case{"just inside", tu::kKinoNodes - 1, tu::kKinoNodes - 1}}) {
+    PhaseContext moved = ctx;
+    moved.node_index = ctx.node_index + c.delta;
+    ASSERT_EQ(core.Solve(moved, snap, ocp, *out), MPCSolveError::kNoError) << c.name;
+    EXPECT_EQ(core.LastNodeShift(), c.shift) << c.name;
+    EXPECT_EQ(out->cold_start, c.delta < 0 || c.delta >= tu::kKinoNodes) << c.name;
+    ctx = moved;
+  }
+  PhaseContext off = ctx;
+  off.on_node_grid = false;
+  ASSERT_EQ(core.Solve(off, snap, ocp, *out), MPCSolveError::kNoError);
+  EXPECT_EQ(core.LastNodeShift(), 1) << "off the grid: a node a tick";
+  EXPECT_EQ(out->horizon_offset_ns, 0);
 }
 
 INSTANTIATE_TEST_SUITE_P(Integrators, KinodynamicReceding,

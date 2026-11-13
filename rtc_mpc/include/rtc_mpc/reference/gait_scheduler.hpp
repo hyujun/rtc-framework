@@ -155,8 +155,8 @@ class GaitScheduler {
   void Commit(std::uint32_t gait, double t) noexcept;
   [[nodiscard]] double SwitchTime(double t_r) const noexcept;
   [[nodiscard]] bool Build(double t, ContactSchedule& out) const noexcept;
-  /// Anchor of the pending target: its entry phase (see file comment) starts at t_s.
-  [[nodiscard]] double EntryAnchor() const noexcept;
+  /// The pending target's entry phase (see file comment), which starts at t_s.
+  [[nodiscard]] std::size_t EntryPhaseOfTarget() const noexcept;
   void CompleteIfDue(double t) noexcept;
 
   /// `t + horizon + switch_lead`, summed in that order (the documented window end).
@@ -170,8 +170,14 @@ class GaitScheduler {
   double horizon_{0.0};
   double anchor_{0.0};
   double t_switch_{0.0};
-  double next_anchor_{0.0};  ///< EntryAnchor() of the pending switch, set at commit
-  double since_{0.0};        ///< when the running gait took over (SwingStart's floor)
+  double next_anchor_{0.0};     ///< the pending target's anchor (its entry phase at t_s)
+  std::size_t entry_phase_{0};  ///< the pending target's entry phase, set at commit
+  /// After a completed switch: the running gait's entry phase starts at
+  /// exactly `taken_start_` (t_s), not at the anchor's recomputation of it.
+  bool entry_taken_{false};
+  std::size_t taken_phase_{0};
+  double taken_start_{0.0};
+  double since_{0.0};  ///< when the running gait took over (SwingStart's floor)
   double last_commit_{0.0};
   double last_t_{0.0};
   std::uint64_t epoch_{0};

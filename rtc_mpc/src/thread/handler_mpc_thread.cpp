@@ -15,7 +15,11 @@
 #include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <utility>
 
@@ -55,6 +59,9 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   total_solves_.store(0, std::memory_order_relaxed);
   failed_solves_.store(0, std::memory_order_relaxed);
   initial_solve_ticks_.store(0, std::memory_order_relaxed);
+  deadline_misses_.store(0, std::memory_order_relaxed);
+  withheld_.store(0, std::memory_order_relaxed);
+  cold_withheld_.store(0, std::memory_order_relaxed);
   null_handler_hit_.store(false, std::memory_order_relaxed);
   has_prev_out_ = false;
 }
@@ -87,12 +94,34 @@ bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext& ctx) {
   return true;
 }
 
+double HandlerMPCThread::ConsumedPrimInf(const MPCSolution& sol, std::uint64_t period_ns) noexcept {
+  if (sol.horizon_length <= 0 || sol.horizon_length > kMaxHorizon || !(sol.dt_node > 0.0)) {
+    return std::numeric_limits<double>::infinity();
+  }
+  const double nodes = static_cast<double>(period_ns) * 1e-9 / sol.dt_node;
+  const double whole = std::ceil(nodes - 1e-9);
+  const int last = std::isfinite(whole) && whole < static_cast<double>(sol.horizon_length)
+                       ? static_cast<int>(whole) + 1
+                       : sol.horizon_length;
+  double r = 0.0;
+  for (int k = 0; k <= std::min(last, sol.horizon_length); ++k) {
+    r = std::max(r, sol.node_prim_inf[static_cast<std::size_t>(k)]);
+  }
+  return r;
+}
+
 bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
+  const auto entry = std::chrono::steady_clock::now();
   // ── Null-handler guard ────────────────────────────────────────────────
   if (handler_ == nullptr || phase_manager_ == nullptr || model_ == nullptr) {
     null_handler_hit_.store(true, std::memory_order_relaxed);
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
     return false;
+  }
+  // The standing solve's ticks are counted apart from the online ones in the
+  // overrun split, whether or not the solve then succeeds.
+  if (handler_->InitialSolvePending()) {
+    MarkStandingTick();
   }
 
   // ── Copy snapshot → Eigen scratch via Map (zero-alloc view) ───────────
@@ -122,8 +151,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
           : pdata_->oMf[static_cast<std::size_t>(model_->base_frame_id())].actInv(ee_in_world);
 
   // ── Phase manager tick ────────────────────────────────────────────────
-  const double t =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count();
+  const double t = std::chrono::duration<double>(entry - start_time_).count();
   const PhaseContext ctx =
       phase_manager_->Update(state, q_scratch_, v_scratch_, sensor_scratch_, tcp, t);
   last_phase_id_.store(ctx.phase_id, std::memory_order_relaxed);
@@ -159,8 +187,25 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
     return false;
   }
 
+  const MPCSolverConfig& cfg = handler_->solver_config();
   if (out.initial_solve) {
     initial_solve_ticks_.fetch_add(1, std::memory_order_relaxed);
+    MarkStandingTick();
+  } else if (cfg.publish_deadline_ms > 0.0) {
+    const auto elapsed = std::chrono::steady_clock::now() - entry;
+    if (std::chrono::duration<double, std::milli>(elapsed).count() > cfg.publish_deadline_ms) {
+      deadline_misses_.fetch_add(1, std::memory_order_relaxed);
+      return false;
+    }
+  }
+  if (out.cold_start && !out.initial_solve && !out.converged) {
+    cold_withheld_.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+  if (!out.converged && cfg.publish_prim_tol > 0.0 &&
+      !(ConsumedPrimInf(out, PeriodNs()) <= cfg.publish_prim_tol)) {
+    withheld_.fetch_add(1, std::memory_order_relaxed);
+    return false;
   }
 
   // Save for next tick's cross-mode seed (trivially-copyable memcpy).

@@ -113,6 +113,10 @@ struct MPCSolution {
   /// The solve ran on the standing budget: no solve had converged since the
   /// handler's build, rebuild or last rejected solve.
   bool initial_solve{false};
+  /// The solve started from the cold seed, not from a shifted earlier plan
+  /// (the first solve after a build or a rejection, or a node-grid index that
+  /// went back or moved by the horizon or more).
+  bool cold_start{false};
   int iterations{0};  ///< solver iteration count
 
   // ── Provenance ──────────────────────────────────────────────────────
@@ -122,6 +126,18 @@ struct MPCSolution {
   uint32_t model_epoch{0};           ///< model generation the plan was computed against
   SolverStatus status{SolverStatus::kOk};
   ResidualSummary residuals{};
+  /// [ns] the tick time the solve ran at minus the time of its node 0. The
+  /// horizon's references sit on a node grid (`PhaseContext::on_node_grid`),
+  /// node 0 up to one node interval before the tick, while node 0's state is
+  /// the measured one; a consumer sampling the plan by time shifts by this.
+  /// 0 off a grid.
+  int64_t horizon_offset_ns{0};
+  /// Primal residual of each node, first `horizon_length + 1` entries: the
+  /// infinity norm of its stage constraint violation and of the dynamics
+  /// defect into it (node 0: the initial condition's). Their maximum is
+  /// `residuals.prim_inf`; the MPC thread's publish rule reads the leading
+  /// nodes (`MPCSolverConfig::publish_prim_tol`).
+  std::array<double, kMaxHorizon + 1> node_prim_inf{};
 
   // ── Dimensions of this solve ────────────────────────────────────────
   int nq{0};

@@ -299,6 +299,15 @@ TEST_F(LocomotionMpcConfig, TheInstalledSolverSectionIsTheRegisteredOne) {
   EXPECT_FALSE(s.verbose);
 }
 
+// The installed publish rules: the provisional values the control-PC soak
+// decides (a deadline of one node interval, the consumed-segment tolerance).
+TEST_F(LocomotionMpcConfig, TheInstalledPublishRulesAreTheProvisionalOnes) {
+  rtc::mpc::MPCSolverConfig s;
+  ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(root_["mpc"]["solver"], s));
+  EXPECT_EQ(s.publish_deadline_ms, 35.0);
+  EXPECT_EQ(s.publish_prim_tol, 0.05);
+}
+
 TEST_F(LocomotionMpcConfig, TheFactoryCreatesTheMpcOnTheBodyModel) {
   rtc::mpc::PhaseContext ctx;
   ctx.ocp_type = "kinodynamic";

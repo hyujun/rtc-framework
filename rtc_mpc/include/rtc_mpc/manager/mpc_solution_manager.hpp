@@ -150,6 +150,21 @@ class MPCSolutionManager {
                                       Eigen::Ref<Eigen::VectorXd> u_fb,
                                       InterpMeta& meta_out) noexcept;
 
+  /// @brief The latest published solution not yet taken, as published (no
+  ///        epoch, dimension or validity check, no interpolation), or null
+  ///        when none arrived since the last call. Valid until a later call
+  ///        returns another.
+  ///        For a consumer that samples the plan itself — on a floating-base
+  ///        layout, which @ref ComputeReference refuses. Consumer thread; the
+  ///        buffer has one consumer, so a caller of this does not also call
+  ///        @ref ComputeReference. It keeps none of ComputeReference's state:
+  ///        not @ref StaleCount, not the active plan's provenance — the
+  ///        caller judges the plan's age itself (its `observation_stamp_ns`
+  ///        against its own clock).
+  [[nodiscard]] const MPCSolution* TryAcquireLatestSolution() noexcept {
+    return solution_buffer_.TryAcquireLatest();
+  }
+
   /// @return number of consecutive RT ticks without a fresh solution.
   [[nodiscard]] int StaleCount() const noexcept { return stale_count_; }
 

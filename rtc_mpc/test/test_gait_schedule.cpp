@@ -20,6 +20,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -968,6 +969,133 @@ TEST(ContactSchedule, ToContactPlanMapsBitsToTheModelContactFrames) {
   three.n_contacts = 3;
   EXPECT_EQ(rtc::mpc::ToContactPlan(three, handler, plan),
             rtc::mpc::ContactPlanError::kContactCountMismatch);
+}
+
+// A switch at an arbitrary request time: the target gait enters at its entry
+// phase at t_s, and the next phase starts a phase length later — no interval
+// of a few ulp around t_s, whose start the anchor arithmetic rounds to either
+// side of it (a swing that short is refused by the swing planner). The
+// shipped table (stance → walk, the walk entering at double support), 1000
+// request times in [0.5, 1) s (seed 20261114; at that magnitude the anchor
+// arithmetic rounds above t_s for about one request in five), every window
+// until the switch completes.
+TEST(GaitSchedulerSwitch, TheEntryPhaseStartsExactlyAtTheSwitch) {
+  rtc::mpc::GaitTable table;
+  const std::vector<std::string> contacts = {"left_foot", "right_foot"};
+  ASSERT_EQ(rtc::mpc::LoadGaitTable(YAML::Load(R"(
+sequence: [stance, slow_walk, walk]
+min_dwell: 0.2
+switch_lead: 1.0
+gaits:
+  stance:
+    modes: [[left_foot, right_foot]]
+    switching_times: [0.0, 0.5]
+    faster_above: [0.1, 0.1]
+    slower_below: [0.0, 0.0]
+    measured_tolerance: [10.0, 10.0]
+  slow_walk:
+    modes: [[left_foot], [left_foot, right_foot], [right_foot], [left_foot, right_foot]]
+    switching_times: [0.0, 0.65, 0.85, 1.5, 1.7]
+    faster_above: [0.3, 0.2]
+    slower_below: [0.05, 0.05]
+    measured_tolerance: [0.05, 0.05]
+  walk:
+    modes: [[left_foot], [left_foot, right_foot], [right_foot], [left_foot, right_foot]]
+    switching_times: [0.0, 0.6, 0.7, 1.3, 1.4]
+    faster_above: [0.5, 0.35]
+    slower_below: [0.25, 0.15]
+    measured_tolerance: [0.05, 0.05]
+)"),
+                                    contacts, table),
+            rtc::mpc::GaitTableError::kNoError);
+  std::mt19937_64 rng(20261114);
+  std::uniform_real_distribution<double> uniform(0.5, 1.0);
+  int short_intervals = 0;
+  int windows = 0;
+  for (int n = 0; n < 1000; ++n) {
+    GaitScheduler s;
+    ASSERT_EQ(s.Init(table, 1.12), rtc::mpc::GaitSchedulerError::kNoError);
+    s.SetPolicyEnabled(false);
+    const double t_r = uniform(rng);
+    ASSERT_EQ(s.Advance(0.0, FilteredCommand{}, rtc::mpc::PlanarVelocity{}),
+              rtc::mpc::GaitSchedulerError::kNoError);
+    s.RequestGait(2);
+    for (double t = t_r; t < t_r + 1.2; t += 0.035) {
+      ASSERT_EQ(s.Advance(t, FilteredCommand{}, rtc::mpc::PlanarVelocity{}),
+                rtc::mpc::GaitSchedulerError::kNoError);
+      const ContactSchedule& w = s.schedule();
+      ++windows;
+      for (std::uint32_t i = 1; i < w.n_events; ++i) {
+        short_intervals += w.event_time[i] - w.event_time[i - 1] < 0.05;
+      }
+    }
+  }
+  EXPECT_GT(windows, 30000);
+  EXPECT_EQ(short_intervals, 0);
+}
+
+// The switch completing on a grid node: with the switch lead a whole number
+// of node intervals (0.7 s = 20 × 0.035 s), t_s falls on a grid node, and the
+// tick that completes the switch must give that node the mode the ticks
+// before it gave (the entry phase's): a node shared by two consecutive
+// windows keeps its mode through the take-over. 1000 grid anchors and
+// request ticks (seed 20261114).
+TEST(GaitSchedulerSwitch, AGridNodeKeepsItsModeThroughTheSwitchCompletion) {
+  rtc::mpc::GaitTable table;
+  const std::vector<std::string> contacts = {"left_foot", "right_foot"};
+  ASSERT_EQ(rtc::mpc::LoadGaitTable(YAML::Load(R"(
+sequence: [stance, walk]
+min_dwell: 0.2
+switch_lead: 0.7
+gaits:
+  stance:
+    modes: [[left_foot, right_foot]]
+    switching_times: [0.0, 0.5]
+    faster_above: [0.1, 0.1]
+    slower_below: [0.0, 0.0]
+    measured_tolerance: [10.0, 10.0]
+  walk:
+    modes: [[left_foot], [left_foot, right_foot], [right_foot], [left_foot, right_foot]]
+    switching_times: [0.0, 0.6, 0.7, 1.3, 1.4]
+    faster_above: [0.5, 0.35]
+    slower_below: [0.05, 0.05]
+    measured_tolerance: [0.05, 0.05]
+)"),
+                                    contacts, table),
+            rtc::mpc::GaitTableError::kNoError);
+  constexpr double kDt = 0.035;
+  constexpr std::size_t kNodes = 32;
+  std::mt19937_64 rng(20261114);
+  std::uniform_real_distribution<double> anchor(0.0, 40.0);
+  std::uniform_int_distribution<int> request(1, 40);
+  int flips = 0;
+  int compared = 0;
+  for (int n = 0; n < 1000; ++n) {
+    const rtc::mpc::NodeGrid grid{anchor(rng), kDt};
+    const int r = request(rng);
+    GaitScheduler s;
+    ASSERT_EQ(s.Init(table, kNodes * kDt), GaitSchedulerError::kNoError);
+    s.SetPolicyEnabled(false);
+    std::array<std::uint32_t, kNodes + 1> prev{};
+    std::array<std::uint32_t, kNodes + 1> modes{};
+    for (int i = 0; i <= r + 60; ++i) {
+      if (i == r) {
+        s.RequestGait(1);
+      }
+      ASSERT_EQ(s.Advance(grid.Time(i), FilteredCommand{}, PlanarVelocity{}),
+                GaitSchedulerError::kNoError);
+      ASSERT_TRUE(rtc::mpc::SampleGridNodes(s.schedule(), grid, i, kNodes, modes));
+      if (i > 0 && i != r) {  // the commit tick changes the window's future
+        for (std::size_t k = 0; k < kNodes; ++k) {
+          ++compared;
+          flips += modes[k] != prev[k + 1];
+        }
+      }
+      prev = modes;
+    }
+  }
+  EXPECT_GT(compared, 1000000);
+  EXPECT_EQ(flips, 0);
 }
 
 }  // namespace

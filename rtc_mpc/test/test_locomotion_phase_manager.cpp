@@ -4,7 +4,9 @@
 ///        equal byte for byte to the scheduler and builder driven directly
 ///        with the same inputs, accepted by the kinodynamic OCP), the ticks
 ///        that give no horizon, the command slot written from another thread,
-///        the forwarded requests and the measured planar velocity.
+///        the forwarded requests, the measured planar velocity, and the node
+///        grid the tick time is quantised to (node times from the grid index,
+///        a node's time and mode the same on every tick that holds it).
 
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/ocp/kinodynamic_ocp.hpp"
@@ -29,11 +31,14 @@
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -152,8 +157,9 @@ TEST_F(LocomotionPhaseManagerTest, ABadValueIsRefusedByItsSection) {
 // ── Per tick ────────────────────────────────────────────────────────────────
 
 // The manager's horizon is the one the scheduler and the builder give when
-// driven directly with the same table, configs, times, snapshot and command
-// (the shipped walk taken over from stance), byte for byte, tick after tick.
+// driven directly with the same table, configs, snapshot and command (the
+// shipped walk taken over from stance) at the tick's grid time and node index,
+// byte for byte, tick after tick.
 TEST_F(LocomotionPhaseManagerTest, TheHorizonIsTheDirectlyBuiltOne) {
   LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
   ASSERT_EQ(m.Load(tu::ShippedLocomotionYaml()), LocomotionPhaseError::kNoError);
@@ -190,9 +196,14 @@ TEST_F(LocomotionPhaseManagerTest, TheHorizonIsTheDirectlyBuiltOne) {
     }
     snap.sequence = 100 + i;
     const PhaseContext ctx = Tick(m, snap, times[i]);
-    ASSERT_EQ(scheduler.Advance(times[i], cmd, rtc::mpc::PlanarVelocity{}),
+    // The manager ticks on its node grid (anchored at the first tick): the
+    // direct drive gets the same grid time and node index.
+    const rtc::mpc::NodeGrid grid{times[0], tu::kKinoDt};
+    std::int64_t index = 0;
+    ASSERT_TRUE(rtc::mpc::NodeIndexAt(grid, times[i], index));
+    ASSERT_EQ(scheduler.Advance(grid.Time(index), cmd, rtc::mpc::PlanarVelocity{}),
               GaitSchedulerError::kNoError);
-    ASSERT_EQ(builder.Build(scheduler, snap, cmd), ReferenceError::kNoError);
+    ASSERT_EQ(builder.Build(scheduler, snap, cmd, grid, index), ReferenceError::kNoError);
 
     ASSERT_EQ(m.LastUpdateError(), LocomotionPhaseError::kNoError) << "t " << times[i];
     ASSERT_NE(ctx.horizon, nullptr);
@@ -210,6 +221,144 @@ TEST_F(LocomotionPhaseManagerTest, TheHorizonIsTheDirectlyBuiltOne) {
   }
   EXPECT_EQ(m.CurrentPhaseId(), 2);
   EXPECT_EQ(m.CurrentPhaseName(), "walk");
+}
+
+// ── Node grid ───────────────────────────────────────────────────────────────
+
+// The tick time is quantised to the node grid anchored at the first tick:
+// node 0 sits at the grid node at or before t, within one node interval, and
+// every node's time is the grid's own (from the integer index). 1000 random
+// tick times (seed 20261114) and the grid nodes themselves, in time order.
+TEST_F(LocomotionPhaseManagerTest, TheTickTimeIsQuantisedToTheNodeGrid) {
+  LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
+  ASSERT_EQ(m.Load(tu::ShippedLocomotionYaml()), LocomotionPhaseError::kNoError);
+  m.SetCommand(WalkCommand());
+  const rtc::mpc::MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
+  const double anchor = 3.0;
+  const double dt = tu::kKinoDt;
+  ASSERT_NE(Tick(m, snap, anchor).horizon, nullptr);
+  const rtc::mpc::NodeGrid grid = m.grid();
+  EXPECT_EQ(grid.anchor, anchor);
+  EXPECT_EQ(grid.dt, dt);
+
+  std::mt19937_64 rng(20261114);
+  std::uniform_real_distribution<double> uniform(0.0, 100.0);
+  std::uniform_int_distribution<int> node(1, 2800);
+  std::vector<double> times;
+  for (int i = 0; i < 1000; ++i) {
+    times.push_back(anchor + uniform(rng));
+    times.push_back(grid.Time(node(rng)));  // a tick exactly on a grid node
+  }
+  std::sort(times.begin(), times.end());
+  int bad = 0;
+  for (const double t : times) {
+    const PhaseContext ctx = Tick(m, snap, t);
+    ASSERT_NE(ctx.horizon, nullptr)
+        << "t " << t << " error " << static_cast<int>(m.LastUpdateError());
+    ASSERT_TRUE(ctx.on_node_grid);
+    const double t0 = ctx.horizon->t0;
+    bad += !(t0 == grid.Time(ctx.node_index));
+    bad += !(t - t0 >= 0.0 && t - t0 < dt * (1.0 - 1e-12));
+    bad += !(ctx.horizon_offset == t - t0);
+    bad += !(m.scheduler().schedule().t0 == t0);
+    for (std::uint32_t k = 0; k < ctx.horizon->n_stages; ++k) {
+      bad += !(ctx.horizon->stages[k].time == grid.Time(ctx.node_index + k));
+    }
+  }
+  EXPECT_EQ(bad, 0);
+}
+
+// At 60 Hz (t = n/60 from 0) the horizon moves 0 or 1 node a tick and, over
+// ten seconds, by as many nodes as the grid index of the last tick.
+TEST_F(LocomotionPhaseManagerTest, AtSixtyHertzTheHorizonMovesZeroOrOneNode) {
+  LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
+  ASSERT_EQ(m.Load(tu::ShippedLocomotionYaml()), LocomotionPhaseError::kNoError);
+  m.SetCommand(WalkCommand());
+  const rtc::mpc::MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
+  std::int64_t prev = 0;
+  std::int64_t sum = 0;
+  int zeros = 0;
+  int ones = 0;
+  int other = 0;
+  int floor_mismatch = 0;
+  int floor_ties = 0;
+  for (int n = 0; n <= 600; ++n) {
+    const double t = n / 60.0;
+    const PhaseContext ctx = Tick(m, snap, t);
+    ASSERT_NE(ctx.horizon, nullptr)
+        << "n " << n << " error " << static_cast<int>(m.LastUpdateError());
+    if (n > 0) {
+      const std::int64_t k = ctx.node_index - prev;
+      zeros += k == 0;
+      ones += k == 1;
+      other += k != 0 && k != 1;
+      sum += k;
+    }
+    prev = ctx.node_index;
+    // ⌊t / dt⌋ rounds in the division: at a tick exactly on a node's grid time
+    // (Time(i) == t) it may say i − 1; the cell is i there.
+    if (ctx.node_index != static_cast<std::int64_t>(std::floor(t / tu::kKinoDt))) {
+      ++(m.grid().Time(ctx.node_index) == t ? floor_ties : floor_mismatch);
+    }
+  }
+  std::printf(
+      "[report] 60 Hz over 10 s: %d ticks moved 0 nodes, %d moved 1, sum %lld; ticks on a node "
+      "time where floor(t / dt) rounds one below: %d\n",
+      zeros, ones, static_cast<long long>(sum), floor_ties);
+  EXPECT_EQ(other, 0);
+  EXPECT_EQ(sum, prev);
+  EXPECT_EQ(prev, static_cast<std::int64_t>(std::floor(10.0 / tu::kKinoDt)));
+  EXPECT_EQ(floor_mismatch, 0) << "the cell is floor(t / dt) except on a node's own time";
+}
+
+// The shipped walk ticked on the grid with shifts of 0, 1 and 2 nodes: a node
+// index keeps its time and its mode from one tick to the next (the events of
+// a gait whose phases are not multiples of dt still fall on some grid nodes;
+// computed from the index, such a node can no longer read either side).
+TEST_F(LocomotionPhaseManagerTest, AGridNodeKeepsItsTimeAndModeFromTickToTick) {
+  LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
+  ASSERT_EQ(m.Load(tu::ShippedLocomotionYaml()), LocomotionPhaseError::kNoError);
+  m.SetCommand(WalkCommand());
+  m.SetPolicyEnabled(false);
+  const rtc::mpc::MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
+  const double dt = tu::kKinoDt;
+  ASSERT_NE(Tick(m, snap, 16.0).horizon, nullptr);
+  m.RequestGait(2);
+  rtc::mpc::HorizonReference prev{};
+  std::int64_t prev_index = 0;
+  bool have_prev = false;
+  std::int64_t index = 1;
+  int compared = 0;
+  int changed = 0;
+  int mode_changes_in_window = 0;
+  const int steps[] = {1, 1, 0, 2, 1};
+  for (int n = 0; n < 400; ++n) {
+    index += steps[n % 5];
+    const PhaseContext ctx = Tick(m, snap, m.grid().Time(index) + 0.4 * dt);
+    ASSERT_NE(ctx.horizon, nullptr) << "n " << n;
+    ASSERT_EQ(ctx.node_index, index);
+    const rtc::mpc::HorizonReference& h = *ctx.horizon;
+    for (std::uint32_t k = 1; k < h.n_stages; ++k) {
+      mode_changes_in_window += h.stages[k].mode != h.stages[k - 1].mode;
+    }
+    // From the tick after the walk's switch is committed the window only moves.
+    if (have_prev && m.scheduler().current_gait() == 2U && !m.scheduler().switch_pending()) {
+      const std::int64_t shift = index - prev_index;
+      for (std::uint32_t k = 0; k + shift < h.n_stages; ++k) {
+        const auto& was = prev.stages[k + static_cast<std::uint32_t>(shift)];
+        ++compared;
+        changed += was.time != h.stages[k].time || was.mode != h.stages[k].mode;
+      }
+    }
+    std::memcpy(&prev, &h, sizeof(prev));
+    prev_index = index;
+    have_prev = true;
+  }
+  std::printf("[report] grid walk: %d node pairs compared, %d mode changes inside windows\n",
+              compared, mode_changes_in_window);
+  EXPECT_GT(compared, 5000);
+  EXPECT_GT(mode_changes_in_window, 0);
+  EXPECT_EQ(changed, 0);
 }
 
 // What the manager hands over is what the kinodynamic OCP takes: the same

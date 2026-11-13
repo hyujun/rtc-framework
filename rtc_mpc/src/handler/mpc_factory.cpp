@@ -115,6 +115,10 @@ bool MPCFactory::LoadSolverConfig(const YAML::Node& solver_node, MPCSolverConfig
       cfg.force_initial_condition = solver_node["force_initial_condition"].as<bool>();
     if (solver_node["verbose"])
       cfg.verbose = solver_node["verbose"].as<bool>();
+    if (solver_node["publish_deadline_ms"])
+      cfg.publish_deadline_ms = solver_node["publish_deadline_ms"].as<double>();
+    if (solver_node["publish_prim_tol"])
+      cfg.publish_prim_tol = solver_node["publish_prim_tol"].as<double>();
   } catch (...) {
     return false;
   }

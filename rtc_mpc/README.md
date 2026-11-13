@@ -24,14 +24,14 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 
 | 모듈 | 헤더 | 역할 |
 |---|---|---|
-| `types/` | `mpc_solution_types.hpp` | `MPCSolution` · `MPCStateSnapshot` (trivially copyable, 고정 용량 — free-flyer + 관절 + 접촉 변수 상한, `SolverStatus` · 잔차 · provenance 포함) |
+| `types/` | `mpc_solution_types.hpp` | `MPCSolution` · `MPCStateSnapshot` (trivially copyable, 고정 용량, `SolverStatus` · 잔차 · provenance · 노드 0 의 tick 대비 시차 `horizon_offset_ns` · 노드별 primal 잔차 `node_prim_inf`) |
 | `types/` | `wbc_reference.hpp` | `WbcReference` — 하류 whole-body 컨트롤러에 넘기는 tick 당 참조 POD (규약은 헤더) |
 | `types/` | `contact_plan_types.hpp` | `ContactFrameInfo` · `ContactPhase` · `ContactPlan` (non-RT, OCP 빌드 경로) |
 | `model/` | `robot_model_handler.hpp` | `pinocchio::Model` 래퍼 + YAML frame 해석 (부동 베이스 감지, kinodynamic `nu`) |
 | `model/` | `wb_layout.hpp` | 전신 상태 · 입력 layout 한 곳 — free-flyer `[p, q_xyzw]` · LOCAL twist · `[W_1 … W_nc; q̈_j]` · tangent 상태 차 (`StateDifference`) |
 | `dynamics/` | `kinodynamic_dynamics.hpp` | 부동 베이스 kinodynamic ODE 와 stage 이산화 (`semi_implicit_euler` · `rk2`) 생성 · stage 안 사본의 접촉 mode 를 제자리 전환 (`OdeOf` · `SetMode`, 할당 0) |
 | `phase/` | `phase_manager_base.hpp` | 순수 가상 FSM 경계 (MPC thread 는 snapshot overload 를 부른다). 작업 FSM 은 하위 bringup 패키지가 갖는다 |
-| `phase/` | `locomotion_phase_manager.hpp` | gait scheduler + reference builder → `PhaseContext::horizon` (MPC thread, 할당 0) · 명령 slot (SeqLock) |
+| `phase/` | `locomotion_phase_manager.hpp` | gait scheduler + reference builder → `PhaseContext::horizon` (MPC thread, 할당 0) · 명령 slot (SeqLock) · tick 시각을 node grid 로 양자화 (warm start 는 grid index 차만큼 shift) |
 | `phase/` | `phase_cost_config.hpp` | cost POD + no-throw YAML factory |
 | `phase/` | `phase_context.hpp` | manager → OCP builder 묶음 (dispatch key `ocp_type` · `horizon`) |
 | `ocp/` | `ocp_handler_base.hpp` | 추상 OCP builder (`Build` / `UpdateReferences`) · `control_model()` (joint torque / kinodynamic wrench — handler 가 이 값으로 base 를 거부 · `u` 를 pack) · `cold_seed()` |
@@ -45,9 +45,9 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `comm/` | `triple_buffer.hpp` | lock-free triple buffer, zero-copy consumer |
 | `interpolation/` | `trajectory_interpolator.hpp` | OCP 노드 사이 cubic Hermite 보간 |
 | `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` (accel-only 모드 선택) · 평탄화된 gain layout 의 writer `PackRiccatiGainRowMajor` ↔ reader `SetGain` |
-| `manager/` | `mpc_solution_manager.hpp` | TripleBuffer + Interpolator + Feedback + SeqLock facade |
+| `manager/` | `mpc_solution_manager.hpp` | TripleBuffer + Interpolator + Feedback + SeqLock facade (부동 layout 소비자는 `TryAcquireLatestSolution`) |
 | `thread/` | `mpc_thread.hpp` | `PeriodicRtThread` 기반 solve loop. 서브클래스가 `Solve(state, out)` 구현, `MockMPCThread` 는 테스트용 |
-| `thread/` | `handler_mpc_thread.hpp` | `PhaseManagerBase` FSM 과 `MPCHandlerBase` solver 를 묶는 구체 thread |
+| `thread/` | `handler_mpc_thread.hpp` | `PhaseManagerBase` FSM 과 `MPCHandlerBase` solver 를 묶는 구체 thread · publish 규칙 (deadline · 소비 구간 잔차) |
 | `handler/` | `mpc_handler_base.hpp` | solve orchestrator (`Init` / `Solve` / `SeedWarmStart`), `MPCSolverConfig` |
 | `handler/` | `contact_light_mpc.hpp` · `contact_rich_mpc.hpp` | 각 OCP 를 감싼 구체 handler |
 | `handler/` | `mpc_factory.hpp` | `ocp_type` 으로 dispatch 하는 YAML factory (`MPCFactory::Create`) |
@@ -71,7 +71,7 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 
 ### 관측성
 
-MPC thread 는 RT 컨텍스트라 `HandlerMPCThread::Solve` 는 I/O 를 하지 않는다. 실패 경로는 lock-free atomic (`FailedSolves()` · `TotalSolves()` · `LastSolveErrorCode()` · `LastPhaseId()` · `NullHandlerHit()`) 만 올리고, 소유 컨트롤러의 non-RT 1 Hz aux timer 가 증분을 보고한다. 같은 timer 가 `MPCThread::TimingProducer()` 의 per-tick SPSC 를 CSV 로 비운다.
+MPC thread 는 RT 컨텍스트라 `HandlerMPCThread::Solve` 는 I/O 를 하지 않는다. 실패 경로는 lock-free atomic (`FailedSolves()` · `TotalSolves()` · `LastSolveErrorCode()` · `LastPhaseId()` · `NullHandlerHit()`; publish 하지 않은 해는 실패와 따로 `DeadlineMissCount()` · `WithheldCount()` · `ColdWithheldCount()`, overrun 은 `OnlineOverrunCount()` · `StandingOverrunCount()`) 만 올리고, 소유 컨트롤러의 non-RT 1 Hz aux timer 가 증분을 보고한다. 같은 timer 가 `MPCThread::TimingProducer()` 의 per-tick SPSC 를 CSV 로 비운다.
 
 CSV 는 MPC tick 마다 한 행이고 CM RT loop 와 같은 8열 스키마다: `t_wall_ns,tick_count,run_id,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`. `Solve` 가 계속 실패해도 행은 계속 늘어난다 (publish 시간만 0). consumer 가 뒤처지면 `DropCount()` 가 올라간다. cross-mode swap 은 이 thread 에서 할당하는 기록된 알려진 위반이다 ([invariants.md](../agent_docs/invariants.md) §RT Path Invariants).
 
@@ -79,7 +79,7 @@ CSV 는 MPC tick 마다 한 행이고 CM RT loop 와 같은 8열 스키마다: `
 
 [config/mpc_default.yaml](config/mpc_default.yaml) 은 robot-agnostic 참조 템플릿이다. `<...>` placeholder 는 로봇별 설정에서 덮어쓰며, 값은 `PhaseCostConfig::LoadFromYaml` 과 `RobotModelHandler::Init` 이 읽는다. 기본값은 파일이 갖는다. 로봇별 실제 설정은 `integrated_bringup/config/<robot>/controllers/mpc/` 에 있다. `reference/` 로더의 템플릿은 [config/reference_default.yaml](config/reference_default.yaml) 이다 (모든 키 필수).
 
-`mpc.solver:` 키 (standing · online iteration 예산, rollout, LQ backend, thread 수) 의 스키마는 `mpc_factory.hpp` 가 갖는다. step acceptance (non-monotone line search) 와 Hessian 근사 (Gauss-Newton) 는 Aligator 기본값이며 키가 없다.
+`mpc.solver:` 키 (standing · online iteration 예산, rollout, LQ backend, thread 수, publish 규칙 `publish_deadline_ms` · `publish_prim_tol` — 0 이면 끔) 의 스키마는 `mpc_factory.hpp` 가 갖는다. step acceptance (non-monotone line search) 와 Hessian 근사 (Gauss-Newton) 는 Aligator 기본값이며 키가 없다.
 
 ## 문제 해결
 
