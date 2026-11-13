@@ -54,6 +54,7 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   last_phase_id_.store(-1, std::memory_order_relaxed);
   total_solves_.store(0, std::memory_order_relaxed);
   failed_solves_.store(0, std::memory_order_relaxed);
+  initial_solve_ticks_.store(0, std::memory_order_relaxed);
   null_handler_hit_.store(false, std::memory_order_relaxed);
   has_prev_out_ = false;
 }
@@ -155,6 +156,10 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   if (err != MPCSolveError::kNoError) {
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
     return false;
+  }
+
+  if (out.initial_solve) {
+    initial_solve_ticks_.fetch_add(1, std::memory_order_relaxed);
   }
 
   // Save for next tick's cross-mode seed (trivially-copyable memcpy).

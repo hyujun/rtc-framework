@@ -48,6 +48,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -241,6 +242,35 @@ TEST_F(MpcThreadIntegrationTest, DefaultPhaseConvergesFreeFlight) {
       << "Baseline contact_light solve loop must not fail on neutral pose";
   EXPECT_EQ(thread.LastSolveErrorCode(), 0);
   EXPECT_EQ(thread.LastPhaseId(), 0);
+}
+
+// ── 2b. Standing-solve ticks are counted apart ──────────────────────────
+
+TEST_F(MpcThreadIntegrationTest, StandingSolveTicksAreCountedApart) {
+  rtc::mpc::MPCSolutionManager mgr;
+  mgr.Init(MinimalManagerConfig(), model_handler_.nq(), model_handler_.nv(), 6);
+  WriteNeutralState(mgr);
+
+  auto mock = std::make_unique<rtc::mpc::test_utils::MockPhaseManager>(
+      MakeMockParams(/*transition_tick=*/-1));
+  auto handler = MakeInitialisedLightHandler();
+
+  rtc::mpc::HandlerMPCThread thread;
+  thread.Configure(model_handler_, std::move(handler), std::move(mock));
+  EXPECT_EQ(thread.InitialSolveTicks(), 0u);
+  thread.Init(mgr, MakeLaunchCfg(20.0));
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.TotalSolves() >= 5u; }));
+  thread.RequestStop();
+  thread.Join();
+
+  // The first tick is a standing solve; this window converges, so the ticks
+  // after it run on the online budget.
+  std::printf("[report] standing ticks %llu of %llu solves\n",
+              static_cast<unsigned long long>(thread.InitialSolveTicks()),
+              static_cast<unsigned long long>(thread.TotalSolves()));
+  EXPECT_GE(thread.InitialSolveTicks(), 1u);
+  EXPECT_LT(thread.InitialSolveTicks(), thread.TotalSolves());
 }
 
 // ── 3. Phase transition picked up within one tick ────────────────────────

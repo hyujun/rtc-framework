@@ -148,6 +148,13 @@ class OCPHandlerBase {
     return ControlModel::kJointTorque;
   }
 
+  /// @return whether a `kInvalidPhaseContext` from `UpdateReferences` can be
+  ///        met by a `Build` of the same context (the default). An OCP whose
+  ///        configuration fixes its topology returns false: the handler core
+  ///        then refuses the tick (`kOCPRebuildFailed`) without a `Build` or a
+  ///        solver setup, both of which allocate.
+  [[nodiscard]] virtual bool RebuildsOnContextChange() const noexcept { return true; }
+
   /// @return the cold-start guess this OCP wants after a build.
   [[nodiscard]] virtual ColdSeed cold_seed() const noexcept { return ColdSeed::kZeroControl; }
 

@@ -26,6 +26,10 @@
 ///   `solver.run(problem)` with empty inits so the solver re-uses
 ///   `results_.xs/us/vs/lams` directly — this is Aligator's canonical MPC
 ///   shift-warm-start path and does not allocate.
+/// - Budget: until a solve converges after `Init`, a rebuild or a rejected
+///   solve, every solve runs on the standing budget (`max_initial_iters`,
+///   `max_al_iters`) and is marked `MPCSolution::initial_solve`; then on the
+///   online one (`max_iters`, `max_online_al_iters`) — `MPCSolverConfig`.
 /// - On topology change (`ctx.phase_changed` with new horizon / active
 ///   contacts / weight-zero crossing): concrete handler re-Builds the OCP
 ///   and re-`setup`s the solver, then seeds the new workspace from the

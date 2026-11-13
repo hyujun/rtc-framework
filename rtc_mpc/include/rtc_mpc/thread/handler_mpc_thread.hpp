@@ -132,6 +132,13 @@ class HandlerMPCThread final : public MPCThread {
     return failed_solves_.load(std::memory_order_relaxed);
   }
 
+  /// @return successful solves that ran on the standing budget
+  ///        (`MPCSolution::initial_solve`) — the standing solve's ticks, which
+  ///        a timing judgement counts apart from the online ones.
+  [[nodiscard]] std::uint64_t InitialSolveTicks() const noexcept {
+    return initial_solve_ticks_.load(std::memory_order_relaxed);
+  }
+
   /// @return true once the null-handler guard has rejected a solve.
   [[nodiscard]] bool NullHandlerHit() const noexcept {
     return null_handler_hit_.load(std::memory_order_relaxed);
@@ -175,6 +182,7 @@ class HandlerMPCThread final : public MPCThread {
   std::atomic<int> last_phase_id_{-1};
   std::atomic<std::uint64_t> total_solves_{0};
   std::atomic<std::uint64_t> failed_solves_{0};
+  std::atomic<std::uint64_t> initial_solve_ticks_{0};
   std::atomic<bool> null_handler_hit_{false};
 };
 

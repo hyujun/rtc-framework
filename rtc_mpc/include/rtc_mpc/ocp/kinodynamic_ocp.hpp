@@ -64,9 +64,10 @@
 /// another size, a control box (`OCPLimits::u_min` / `u_max`: this
 /// formulation has no input box — hard joint and torque limits belong to the
 /// whole-body QP — so a box is refused rather than dropped,
-/// `kLimitsDimMismatch`) — changes nothing and allocates nothing, so a built
-/// problem survives the handler core's rebuild attempt on `kInvalidPhaseContext`
-/// (which no rebuild can satisfy: this OCP's config fixes the horizon).
+/// `kLimitsDimMismatch`) — changes nothing and allocates nothing. No rebuild
+/// can satisfy a `kInvalidPhaseContext` (this OCP's config fixes the horizon),
+/// so `RebuildsOnContextChange()` is false and the handler core refuses such a
+/// tick without trying one.
 ///
 /// ## Cold seed
 ///
@@ -167,6 +168,9 @@ class KinodynamicOCP final : public OCPHandlerBase {
   }
 
   [[nodiscard]] ColdSeed cold_seed() const noexcept override { return ColdSeed::kReferenceControl; }
+
+  /// @return false: the horizon and node spacing come from this OCP's config.
+  [[nodiscard]] bool RebuildsOnContextChange() const noexcept override { return false; }
 
   /// @brief Stage @p k's `u_ref = [wrench; 0]`.
   [[nodiscard]] bool ReferenceControl(int k, Eigen::Ref<Eigen::VectorXd> u) const noexcept override;
