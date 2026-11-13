@@ -20,8 +20,15 @@
 ///   order (the first knot is never moved off the guess).
 ///
 /// Convergence is not asserted — the OCP is a stand-in, not a controller.
+///
+/// On the public G1 (two 6-D soles, 32 nodes, dt 0.035 s, one thread): a
+/// constraint row whose value is 0 (equality) or −1 (negative orthant) and
+/// whose Jacobian is zero leaves the ProxDDP solution and its iteration count
+/// unchanged — the premise of keeping every contact's rows on every stage and
+/// switching the inactive ones off by value instead of by row count.
 
 #include <gtest/gtest.h>
+#include <yaml-cpp/yaml.h>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -30,9 +37,12 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <Eigen/Core>
+#include <aligator/core/function-abstract.hpp>
 #include <aligator/core/stage-model.hpp>
 #include <aligator/core/traj-opt-problem.hpp>
 #include <aligator/modelling/constraints/box-constraint.hpp>
+#include <aligator/modelling/constraints/equality-constraint.hpp>
+#include <aligator/modelling/constraints/negative-orthant.hpp>
 #include <aligator/modelling/costs/quad-state-cost.hpp>
 #include <aligator/modelling/costs/sum-of-costs.hpp>
 #include <aligator/modelling/dynamics/integrator-semi-euler.hpp>
@@ -46,16 +56,52 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
+#include "rtc_mpc/model/robot_model_handler.hpp"
+#include "test_utils/g1_fixture.hpp"
+#include "test_utils/kinodynamic_fixture.hpp"
 #include "test_utils/panda_fixture.hpp"
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
+#include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace {
+
+// SolverProxDDP::setNumThreads sets the process-wide OpenMP defaults; a
+// fixture member saves them before SetUp and puts them back after TearDown
+// (skipped tests included), so test order does not matter.
+class OpenMpDefaultsGuard {
+ public:
+  OpenMpDefaultsGuard() {
+#ifdef ALIGATOR_MULTITHREADING
+    threads_ = omp_get_max_threads();
+    dynamic_ = omp_get_dynamic();
+#endif
+  }
+
+  ~OpenMpDefaultsGuard() {
+#ifdef ALIGATOR_MULTITHREADING
+    omp_set_num_threads(threads_);
+    omp_set_dynamic(dynamic_);
+#endif
+  }
+
+  OpenMpDefaultsGuard(const OpenMpDefaultsGuard&) = delete;
+  OpenMpDefaultsGuard& operator=(const OpenMpDefaultsGuard&) = delete;
+
+ private:
+  int threads_{1};
+  int dynamic_{0};
+};
 
 using Space = aligator::MultibodyPhaseSpace<double>;
 using Kinodynamics = aligator::dynamics::KinodynamicsFwdDynamicsTpl<double>;
@@ -89,19 +135,6 @@ class AligatorApiTest : public ::testing::Test {
     ASSERT_LT(contact_ids_[1], model_.frames.size());
     space_ = std::make_unique<Space>(model_);
     x0_ = space_->neutral();
-#ifdef ALIGATOR_MULTITHREADING
-    omp_threads_ = omp_get_max_threads();
-    omp_dynamic_ = omp_get_dynamic();
-#endif
-  }
-
-  // SolverProxDDP::setNumThreads sets the process-wide OpenMP defaults; put
-  // them back so test order does not matter.
-  void TearDown() override {
-#ifdef ALIGATOR_MULTITHREADING
-    omp_set_num_threads(omp_threads_);
-    omp_set_dynamic(omp_dynamic_);
-#endif
   }
 
   Kinodynamics MakeOde(const std::vector<bool>& contact_states) const {
@@ -140,8 +173,7 @@ class AligatorApiTest : public ::testing::Test {
   std::vector<pinocchio::FrameIndex> contact_ids_;
   std::unique_ptr<Space> space_;
   Eigen::VectorXd x0_;
-  int omp_threads_{1};
-  int omp_dynamic_{0};
+  OpenMpDefaultsGuard omp_guard_;
 };
 
 TEST_F(AligatorApiTest, KinodynamicsDimensionsOnFloatingBase) {
@@ -344,5 +376,184 @@ INSTANTIATE_TEST_SUITE_P(ValidCombos, AligatorApiSolveTest,
                                       ? std::string("NonlinearSerial")
                                       : std::string("LinearParallel");
                          });
+
+// ── Inactive constraint rows by value (public G1) ────────────────────────────
+
+/// `nr` rows of constant value and zero Jacobian: an inactive block of a
+/// fixed-size constraint mask.
+struct ConstantRows final : aligator::StageFunctionTpl<double> {
+  ConstantRows(int ndx, int nu_in, int nr_in, double value)
+      : aligator::StageFunctionTpl<double>(ndx, nu_in, nr_in), value_(value) {}
+
+  void evaluate(const ConstVectorRef& /*x*/, const ConstVectorRef& /*u*/,
+                Data& data) const override {
+    data.value_.setConstant(value_);
+  }
+
+  void computeJacobians(const ConstVectorRef& /*x*/, const ConstVectorRef& /*u*/,
+                        Data& data) const override {
+    data.Jx_.setZero();
+    data.Ju_.setZero();
+  }
+
+  double value_;
+};
+
+class AligatorMaskRowsTest : public ::testing::Test {
+ protected:
+  static constexpr int kNodes = 32;
+  static constexpr double kNodeDt = 0.035;
+  static constexpr std::uint32_t kStance = 0b11;
+  static constexpr int kEqualityRows = 12;
+  static constexpr int kInequalityRows = 10;
+
+  void SetUp() override {
+    namespace tu = rtc::mpc::test_utils;
+    if (!std::filesystem::exists(tu::kG1Urdf)) {
+      GTEST_SKIP() << "G1 URDF not found at " << tu::kG1Urdf;
+    }
+    model_ = tu::BuildG1Floating();
+    ASSERT_EQ(handler_.Init(model_, YAML::Load(tu::kG1SolesYaml)),
+              rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(dyn_.Init(handler_), rtc::mpc::KinodynamicError::kNoError);
+    tu::KinoOracle oracle(model_, tu::G1SoleFrames(model_), 6);
+    x_ref_ = dyn_.space()->neutral();
+    u_ref_ = oracle.WeightCompensation(x_ref_.head(model_.nq), kStance);
+    // A start 0.1 (tangent, every entry) away from the reference.
+    std::mt19937 rng(20261114U);
+    std::uniform_real_distribution<double> sym(-1.0, 1.0);
+    const Eigen::VectorXd dx =
+        0.1 * Eigen::VectorXd::NullaryExpr(dyn_.space()->ndx(), [&] { return sym(rng); });
+    x_off_.resize(x_ref_.size());
+    dyn_.space()->integrate(x_ref_, dx, x_off_);
+  }
+
+  /// Standing in double support from @p x0: track the neutral state and the
+  /// weight-compensating input;
+  /// with @p masked every stage also carries the inactive rows.
+  Problem Make(rtc::mpc::KinodynamicIntegrator integrator, bool masked,
+               const Eigen::VectorXd& x0) const {
+    const Space& space = *dyn_.space();
+    const int nu = dyn_.nu();
+    const int ndx = space.ndx();
+    const int nv = model_.nv;
+    Eigen::VectorXd q_w(ndx);
+    q_w << Eigen::VectorXd::Constant(6, 10.0), Eigen::VectorXd::Constant(nv - 6, 1.0),
+        Eigen::VectorXd::Constant(nv, 0.1);
+    const Eigen::MatrixXd q_mat = q_w.asDiagonal();
+    const Eigen::MatrixXd r_mat = Eigen::VectorXd::Constant(nu, 1e-4).asDiagonal();
+    CostStack cost(space, nu);
+    cost.addCost("x", StateCost(space, nu, x_ref_, q_mat));
+    cost.addCost("u", ControlCost(space, u_ref_, r_mat));
+    std::vector<PolyStage> stages;
+    for (int k = 0; k < kNodes; ++k) {
+      std::optional<rtc::mpc::KinodynamicDynamics::StageDynamics> sd;
+      EXPECT_EQ(dyn_.MakeStageDynamics(kStance, kNodeDt, integrator, sd),
+                rtc::mpc::KinodynamicError::kNoError);
+      StageModel stage(cost, sd.value());
+      if (masked) {
+        stage.addConstraint(ConstantRows(ndx, nu, kEqualityRows, 0.0),
+                            aligator::EqualityConstraintTpl<double>());
+        stage.addConstraint(ConstantRows(ndx, nu, kInequalityRows, -1.0),
+                            aligator::NegativeOrthantTpl<double>());
+      }
+      stages.emplace_back(stage);
+    }
+    CostStack terminal(space, nu);
+    terminal.addCost("x", StateCost(space, nu, x_ref_, 4.0 * q_mat));
+    return Problem(x0, stages, terminal);
+  }
+
+  struct Solved {
+    std::vector<Eigen::VectorXd> xs;
+    std::vector<Eigen::VectorXd> us;
+    std::size_t iters{0};
+    bool conv{false};
+  };
+
+  Solved Solve(const Problem& problem, const Eigen::VectorXd& x0,
+               const Eigen::VectorXd& u_seed) const {
+    Solver solver(1e-4, 1e-2, 50);
+    solver.setDualTolerance(1e-4);
+    solver.setNumThreads(1);
+    solver.setup(problem);
+    const std::vector<Eigen::VectorXd> xs(static_cast<std::size_t>(kNodes + 1), x0);
+    const std::vector<Eigen::VectorXd> us(static_cast<std::size_t>(kNodes), u_seed);
+    (void)solver.run(problem, xs, us);
+    return {solver.results_.xs, solver.results_.us, solver.results_.num_iters,
+            solver.results_.conv};
+  }
+
+  static const char* Name(rtc::mpc::KinodynamicIntegrator integrator) {
+    return integrator == rtc::mpc::KinodynamicIntegrator::kRk2 ? "rk2" : "semi_implicit_euler";
+  }
+
+  static double MaxDiff(const std::vector<Eigen::VectorXd>& a,
+                        const std::vector<Eigen::VectorXd>& b) {
+    double m = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      m = std::max(m, (a[i] - b[i]).cwiseAbs().maxCoeff());
+    }
+    return m;
+  }
+
+  pinocchio::Model model_;
+  rtc::mpc::RobotModelHandler handler_;
+  rtc::mpc::KinodynamicDynamics dyn_;
+  Eigen::VectorXd x_ref_;
+  Eigen::VectorXd x_off_;
+  Eigen::VectorXd u_ref_;
+  OpenMpDefaultsGuard omp_guard_;
+};
+
+// Starting on the reference, from a zero and a weight-compensating input
+// guess: the same solution (to 1e-9) in the same number of iterations.
+TEST_F(AligatorMaskRowsTest, InactiveRowsByValueLeaveTheSolutionUnchanged) {
+  for (const auto integrator : {rtc::mpc::KinodynamicIntegrator::kSemiImplicitEuler,
+                                rtc::mpc::KinodynamicIntegrator::kRk2}) {
+    const Problem plain = Make(integrator, false, x_ref_);
+    const Problem masked = Make(integrator, true, x_ref_);
+    ASSERT_EQ(masked.stages_.front()->nc(), kEqualityRows + kInequalityRows);
+    for (const bool wc_seed : {false, true}) {
+      const Eigen::VectorXd seed = wc_seed ? u_ref_ : Eigen::VectorXd::Zero(dyn_.nu());
+      const Solved a = Solve(plain, x_ref_, seed);
+      const Solved b = Solve(masked, x_ref_, seed);
+      const std::string what =
+          std::string(Name(integrator)) + (wc_seed ? " wc seed" : " zero seed");
+      ASSERT_EQ(a.xs.size(), b.xs.size());
+      ASSERT_EQ(a.us.size(), b.us.size());
+      const double dx = MaxDiff(a.xs, b.xs);
+      const double du = MaxDiff(a.us, b.us);
+      std::printf("%s: iters %zu / %zu  conv %d / %d  max|dxs| %.3e  max|dus| %.3e\n", what.c_str(),
+                  a.iters, b.iters, a.conv, b.conv, dx, du);
+      EXPECT_TRUE(a.conv) << what;
+      EXPECT_EQ(a.iters, b.iters) << what;
+      EXPECT_EQ(a.conv, b.conv) << what;
+      EXPECT_LE(dx, 1e-9) << what;
+      EXPECT_LE(du, 1e-9) << what;
+    }
+  }
+}
+
+// Starting away from the reference (several steps): the iteration count and
+// the convergence flag are the same; the difference of the solutions is
+// round-off of the two factorisations, reported (it grows with the steps
+// taken and the input's scale, |u| ≈ m·g).
+TEST_F(AligatorMaskRowsTest, InactiveRowsByValueKeepTheIterationsFromAnOffsetStart) {
+  for (const auto integrator : {rtc::mpc::KinodynamicIntegrator::kSemiImplicitEuler,
+                                rtc::mpc::KinodynamicIntegrator::kRk2}) {
+    const Solved a = Solve(Make(integrator, false, x_off_), x_off_, u_ref_);
+    const Solved b = Solve(Make(integrator, true, x_off_), x_off_, u_ref_);
+    const double dx = MaxDiff(a.xs, b.xs);
+    const double du = MaxDiff(a.us, b.us);
+    std::printf("%s offset start: iters %zu / %zu  conv %d / %d  max|dxs| %.3e  max|dus| %.3e\n",
+                Name(integrator), a.iters, b.iters, a.conv, b.conv, dx, du);
+    RecordProperty(std::string("offset_max_dus_") + Name(integrator), std::to_string(du));
+    EXPECT_TRUE(a.conv) << Name(integrator);
+    EXPECT_GT(a.iters, 1U) << Name(integrator);
+    EXPECT_EQ(a.iters, b.iters) << Name(integrator);
+    EXPECT_EQ(a.conv, b.conv) << Name(integrator);
+  }
+}
 
 }  // namespace

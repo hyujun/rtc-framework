@@ -6,16 +6,21 @@
 ///
 /// `OCPHandlerBase` is the boundary between the phase-agnostic MPC
 /// orchestration layer (Phase 5 `MPCHandler`) and concrete solver-specific
-/// OCP assembly (Aligator-backed `ContactLightOCP`, `ContactRichOCP`). It
+/// OCP assembly (Aligator-backed `ContactLightOCP`, `ContactRichOCP`,
+/// `KinodynamicOCP`). It
 /// lives on the **OCP build / reconfigure path**, not the RT loop.
 ///
 /// Two-method API split:
 /// - `Build` — full topology rebuild (allocates). Called on first init and
-///   whenever stage topology changes (horizon_length, per-stage active
-///   contact set, `ocp_type`, nq / nv).
+///   whenever stage topology changes.
 /// - `UpdateReferences` — mutate per-stage cost targets in place, no
 ///   allocation after first `Build`. Rejects topology changes so callers
 ///   must `Build` when topology diverges.
+///
+/// What counts as topology is the concrete OCP's to define: horizon_length,
+/// dt, `ocp_type` and nq / nv always; the joint-torque OCPs also count the
+/// per-stage active contact set, while `KinodynamicOCP` switches contact
+/// modes in place (every mode has the same rows and columns).
 ///
 /// All methods are `noexcept`. Aligator ctors may throw; concrete handlers
 /// wrap those calls in try/catch and convert to
@@ -59,10 +64,14 @@ enum class OCPBuildError {
                                   ///< UpdateReferences
   kInvalidCostConfig,             ///< PhaseCostConfig sizes / horizon / dt invalid
   kContactPlanModelMismatch,      ///< frame_id in contact plan not present in model
-  kLimitsDimMismatch,             ///< u_min/u_max non-empty with size != nu
+  kLimitsDimMismatch,             ///< u_min/u_max non-empty with size != nu, or
+                                  ///< non-empty for an OCP without a control box
   kOverlappingContactPhases,      ///< ContactPlan::phases have overlapping time
                                   ///< intervals
   kAligatorInstantiationFailure,  ///< an Aligator ctor threw (caught internally)
+  kMissingHorizonReference,       ///< an OCP that tracks `PhaseContext::horizon` got null
+  kInvalidHorizonReference,       ///< a horizon of the right shape with a value the OCP
+                                  ///< refuses (non-finite, non-unit, out of range)
 };
 
 /// @brief What the OCP's control vector `u` is — the handler core sizes,
@@ -105,10 +114,12 @@ class OCPHandlerBase {
   /// @brief Mutate per-stage cost references without touching stage topology.
   ///
   /// Contract: **must not allocate** after the first successful `Build`. If
-  /// `ctx` implies a topology change (horizon_length, dt, active-contact set,
-  /// ocp_type), returns `kInvalidPhaseContext` **without** modifying stored
-  /// state — caller must `Build` again. Weight crossings (0 ↔ positive)
-  /// also count as topology changes because they add or remove cost terms.
+  /// `ctx` implies a topology change (as this OCP defines it — file comment),
+  /// returns `kInvalidPhaseContext` **without** modifying stored state —
+  /// caller must `Build` again. In the joint-torque OCPs weight crossings
+  /// (0 ↔ positive) also count, because they add or remove cost terms. Any
+  /// other error also leaves the stored state unchanged; the caller does not
+  /// rebuild for it.
   [[nodiscard]] virtual OCPBuildError UpdateReferences(const PhaseContext& ctx) noexcept = 0;
 
   /// @return true once a successful `Build` has completed.
@@ -122,7 +133,8 @@ class OCPHandlerBase {
   /// @return horizon length used by the last successful Build.
   [[nodiscard]] virtual int horizon_length() const noexcept = 0;
 
-  /// @return dispatch key string literal (`"contact_light"`, `"contact_rich"`).
+  /// @return dispatch key string literal (`"contact_light"`, `"contact_rich"`,
+  ///         `"kinodynamic"`).
   ///         Must match `PhaseContext::ocp_type` for Build to succeed.
   [[nodiscard]] virtual std::string_view ocp_type() const noexcept = 0;
 
