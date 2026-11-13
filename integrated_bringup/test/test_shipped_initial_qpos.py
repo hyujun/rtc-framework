@@ -63,7 +63,16 @@ from robot_descriptions_scenes import is_scene_case, not_a_case_reason, scene_fi
 # Profile -> the MJCF that profile's mujoco_simulator.yaml loads. The path is
 # read out of the config itself rather than listed here, so this map only needs
 # to name the profiles.
-PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap", "g1_p1b", "g1_loco", "b7_loco", "p2"]
+PROFILES = [
+    "ur5e_p1a",
+    "ur5e_p1b",
+    "iiwa7_leap",
+    "g1_p1b",
+    "g1_loco",
+    "b7_loco",
+    "p2",
+    "p2_left",
+]
 
 
 def _config_path(profile: str) -> str:

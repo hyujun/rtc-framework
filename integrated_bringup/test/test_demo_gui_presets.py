@@ -22,7 +22,7 @@ from integrated_bringup.demo_gui.config import (
 )
 from integrated_bringup.demo_gui.discovery import RobotProfile, RobotShape
 
-_P2_CONFIG = Path(__file__).resolve().parents[1] / "config" / "p2"
+_CONFIG = Path(__file__).resolve().parents[1] / "config"
 
 
 def test_default_presets_10dof_lengths():
@@ -80,13 +80,19 @@ def test_leap_defaults_match_profile_hand_dof():
 # ── p2: a 10-joint hand that is not the 10-DoF roster's hand ─────────────────
 
 
-def _p2():
-    profile = RobotProfile.for_robot("p2")
+# Both hands of the pair, one profile each (p2 = the right hand).
+@pytest.fixture(params=["p2", "p2_left"])
+def p2_robot(request) -> str:
+    return request.param
+
+
+def _p2(robot: str):
+    profile = RobotProfile.for_robot(robot)
     return profile.preset_token(), profile.shape.hand_dof
 
 
-def test_p2_has_its_own_roster_of_the_right_length():
-    scope, hand_dof = _p2()
+def test_p2_has_its_own_roster_of_the_right_length(p2_robot):
+    scope, hand_dof = _p2(p2_robot)
     presets = default_presets_for(hand_dof, scope)
     assert presets != default_presets_for(hand_dof)
     assert {data["type"] for data in presets.values()} == {"open", "close"}
@@ -94,11 +100,11 @@ def test_p2_has_its_own_roster_of_the_right_length():
         assert preset_hand_targets(data, hand_dof) is not None, name
 
 
-def test_p2_mid_pose_is_the_simulators_initial_qpos():
+def test_p2_mid_pose_is_the_simulators_initial_qpos(p2_robot):
     """The roster's flexed pose is a pose the hand is known to reach, not
     numbers written for another hand."""
-    scope, hand_dof = _p2()
-    sim = yaml.safe_load((_P2_CONFIG / "mujoco_simulator.yaml").read_text())
+    scope, hand_dof = _p2(p2_robot)
+    sim = yaml.safe_load((_CONFIG / p2_robot / "mujoco_simulator.yaml").read_text())
     found = []
 
     def _walk(node):
@@ -117,11 +123,11 @@ def test_p2_mid_pose_is_the_simulators_initial_qpos():
     assert [math.radians(d) for d in mid] == [pytest.approx(q, abs=1e-3) for q in found[0]]
 
 
-def test_p2_roster_never_asks_a_joint_past_the_side_it_flexes_toward():
+def test_p2_roster_never_asks_a_joint_past_the_side_it_flexes_toward(p2_robot):
     """Sign per joint = the sign of the simulator's mid pose (0 = either). The
     10-DoF roster fails this on the joints that flex negative, which is why p2
     may not inherit it once its limits stop being one-sided."""
-    scope, hand_dof = _p2()
+    scope, hand_dof = _p2(p2_robot)
     presets = default_presets_for(hand_dof, scope)
     mid = presets["mid_pose"]["positions_deg"]
     for name, data in presets.items():
@@ -131,8 +137,8 @@ def test_p2_roster_never_asks_a_joint_past_the_side_it_flexes_toward():
     assert any(v * r < 0.0 for v, r in zip(generic, mid, strict=True))
 
 
-def test_scope_roster_is_a_deep_copy_and_unknown_scope_falls_back_to_dof():
-    scope, hand_dof = _p2()
+def test_scope_roster_is_a_deep_copy_and_unknown_scope_falls_back_to_dof(p2_robot):
+    scope, hand_dof = _p2(p2_robot)
     a = default_presets_for(hand_dof, scope)
     a["open_flat"]["positions_deg"][0] = 99.0
     assert default_presets_for(hand_dof, scope)["open_flat"]["positions_deg"][0] == 0.0
@@ -140,8 +146,8 @@ def test_scope_roster_is_a_deep_copy_and_unknown_scope_falls_back_to_dof():
     assert default_presets_for(16, "") == default_presets_for(16)
 
 
-def test_only_an_untouched_generic_file_is_replaced():
-    scope, hand_dof = _p2()
+def test_only_an_untouched_generic_file_is_replaced(p2_robot):
+    scope, hand_dof = _p2(p2_robot)
     generic = default_presets_for(hand_dof)
     assert superseded_default_presets(generic, hand_dof, scope) == default_presets_for(
         hand_dof, scope

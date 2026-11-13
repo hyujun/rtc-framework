@@ -1,0 +1,104 @@
+# MuJoCo Simulator — proto2 left hand on its own (fingers up)
+# ──────────────────────────────────────────────────────────────────────────
+# Robot-specific overrides for the agnostic mujoco_simulator_node.
+# Loaded by integrated_bringup/launch/sim_p2.launch.py side:=left.
+#
+# Agnostic defaults + solver SSoT live in rtc_mujoco_sim/config/solver_param.yaml
+# (loaded first; this file overrides the robot-specific keys).
+# RTC controller param overrides live in integrated_bringup/config/p2_left/sim.yaml.
+#
+# Every numeric array below is written with decimal points: a ROS 2 params
+# sequence takes its type from its entries, and one integer literal turns a
+# double array into an integer array the node refuses at construction.
+
+mujoco_simulator:
+  ros__parameters:
+    # ── Model ────────────────────────────────────────────────────────────────
+    # The private hand_description package's hand-only scene: the left hand's
+    # MJCF with its four-bar loops closed at the p1b pins (the same loops as
+    # the URDF sidecar the controller's model uses), palm fixed at the world
+    # origin in the URDF root convention — fingers +Z, palm face +X — so the
+    # scene's DEFAULT gravity (0, 0, −9.81) is the FINGERS-UP mount the
+    # controller's model implies (p2_left/_base.yaml). The scene overrides one thing
+    # AFTER the hand's <include> (MuJoCo merges repeated <option> in document
+    # order): timestep 0.002 (the hand file's own is 0.001), so that one
+    # control period is one timestep at 500 Hz — the node refuses a scene
+    # whose timestep × control_rate ≠ 1. The physics substep below is 0.001.
+    # Without that package the node does not start — intended; there is no
+    # public surrogate for this hand.
+    model_path: "package://hand_description/robots/proto2/mjcf/scene_left_p2.xml"
+
+    # ── Sync timeout ─────────────────────────────────────────────────────────
+    # ms. Max time to wait for a controller command per step.
+    sync_timeout_ms: 50.0
+
+    # ── Max Real-Time Factor ──────────────────────────────────────────────────
+    max_rtf: 1.0 # 0.0 = unlimited
+
+    # ── Viewer ───────────────────────────────────────────────────────────────
+    enable_viewer: true
+    viewer_refresh_rate: 60.0  # Hz
+
+    # ── Physics Timestep ──────────────────────────────────────────────────────
+    physics_timestep: 0.002 # s — control period (= 1 / control_rate)
+    n_substeps: 2           # physics substeps per control cycle (substep = 0.001, the hand file's own)
+
+    # ── Position Servo Gains ─────────────────────────────────────────────────
+    # The point of this profile is a LOW servo gain with no sag: the MJCF's own
+    # <position kp=20 kv=0.4> would hold the fingers up by itself and hide a
+    # missing feedforward. At kp = 1 the hand sags by ≥ 10 mrad on the five
+    # heaviest joints without the feedforward torque and by ≤ 1 mrad with it —
+    # the pre-registered gate of docs/testing.md (p2 row). kd keeps the same
+    # kv/kp ratio scaled for the lower stiffness. SIM choices, not the firmware's
+    # PD; retune here, never in the MJCF.
+    use_yaml_servo_gains: true
+
+    # No projectile ball on this profile (the default is disabled): there is
+    # nothing to catch it with. /sim/launch_ball answers success: false.
+
+    # ── Robot Response (MuJoCo physics) ──────────────────────────────────────
+    # command_joint_names: matched to actuators by XML joint name (the ten
+    #   <position> actuators of the hand file = the ten firmware motors).
+    # state_joint_names:   published joints — spelled out so the hands'
+    #   loop-passive joints do not land on the topic.
+    robot_response:
+      groups: ["p2_left"]
+      p2_left:
+        command_joint_names:
+          - cmc_01_joint
+          - cmc_02_joint
+          - thumb_mcp_joint
+          - thumb_pip_link02_joint
+          - index_mcp_rotate_joint
+          - index_mcp_joint
+          - index_pip_link02_joint
+          - middle_mcp_joint
+          - middle_pip_link02_joint
+          - ring_mcp_joint
+        state_joint_names:
+          - cmc_01_joint
+          - cmc_02_joint
+          - thumb_mcp_joint
+          - thumb_pip_link02_joint
+          - index_mcp_rotate_joint
+          - index_mcp_joint
+          - index_pip_link02_joint
+          - middle_mcp_joint
+          - middle_pip_link02_joint
+          - ring_mcp_joint
+        command_topic: "/p2/left/joint_command"
+        state_topic: "/p2/left/joint_states"
+        # Startup + reset pose (rad, command_joint_names order): the MID pose
+        # of every range, which is also the hold pose the gate is measured at.
+        # NOT the extended hand (all zeros): zero sits ON the range end of five
+        # joints. Reset places only the command joints here and leaves the loop
+        # passives at the model's qpos0, so the four-bar loops start open and
+        # the equality constraints snap them shut in the first few ms: a
+        # velocity spike in the first logged samples, over within ~0.2 s, and
+        # the controller holds its feedforward through the walk-in anyway.
+        initial_qpos: [0.785, -0.785, 0.0, -0.785, 0.1, -0.785, -0.785, -0.785, -0.785, 0.785]
+        # Per-group servo PD, one per command joint (use_yaml_servo_gains).
+        servo_kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        servo_kd: [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
+
+    # No fake_response groups: the one device of this profile is physics.

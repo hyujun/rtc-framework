@@ -331,9 +331,26 @@ _DEFAULT_PRESETS_P2 = {
     },
 }
 
+# The left hand of the same pair (profile p2_left): seven of the ten joints
+# flex toward the other side than the right hand's, so its roster is its own.
+# `mid_pose` is config/p2_left/mujoco_simulator.yaml's initial_qpos
+# (test_demo_gui_presets pins the two together).
+_DEFAULT_PRESETS_P2_LEFT = {
+    "open_flat": {
+        "type": "open",
+        "positions_deg": [0.0] * 10,
+        "grasp_time": 1.0,
+    },
+    "mid_pose": {
+        "type": "close",
+        "positions_deg": [44.98, -44.98, 0.0, -44.98, 5.73, -44.98, -44.98, -44.98, -44.98, 44.98],
+        "grasp_time": 2.0,
+    },
+}
+
 # Rosters keyed by RobotProfile.preset_token() — a hand whose joint directions
 # the DoF count alone does not tell apart.
-_DEFAULT_PRESETS_BY_SCOPE = {"p2": _DEFAULT_PRESETS_P2}
+_DEFAULT_PRESETS_BY_SCOPE = {"p2": _DEFAULT_PRESETS_P2, "p2_left": _DEFAULT_PRESETS_P2_LEFT}
 
 
 def default_presets_for(hand_dof: int, scope: str = "") -> dict:

@@ -141,6 +141,17 @@ _P2_HAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Ring", ("ring_mcp_joint",)),
 )
 
+# The left hand of the same pair on its own (profile p2_left): the same ten
+# motors in the same slot order, and the left description names two of them
+# differently (``*_pip_link02_joint``). Names mirror config/p2_left/_base.yaml
+# p2_left ``joint_state_names``.
+_P2_LEFT_HAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    _P2_HAND_GROUPS[0],
+    ("Index", ("index_mcp_rotate_joint", "index_mcp_joint", "index_pip_link02_joint")),
+    ("Middle", ("middle_mcp_joint", "middle_pip_link02_joint")),
+    _P2_HAND_GROUPS[3],
+)
+
 
 def short_joint_labels(joint_names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
     """Row labels for one on-screen joint group: each name without the
@@ -464,6 +475,13 @@ class RobotShape:
         return cls._from_groups((), _P2_HAND_GROUPS)
 
     @classmethod
+    def default_p2_left(cls) -> RobotShape:
+        """The left hand of the proto2 pair alone — :meth:`default_p2`'s layout
+        with ``_P2_LEFT_HAND_GROUPS`` (``config/p2_left/_base.yaml`` p2_left
+        ``joint_state_names``)."""
+        return cls._from_groups((), _P2_LEFT_HAND_GROUPS)
+
+    @classmethod
     def from_joint_names(
         cls,
         arm_joint_names: list[str] | tuple[str, ...] | None,
@@ -693,6 +711,20 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # another roster spelling: its presets must not be read as that
         # robot's, nor the reverse.
         preset_scope="p2",
+    ),
+    "p2_left": RobotProfile(
+        shape=RobotShape.default_p2_left(),
+        # The left hand alone: the same frames, groups and controller as p2 under
+        # its own device group. One hand per bringup (the controller manager's
+        # topics are absolute), so the side is the profile.
+        tcp_parent="palm",
+        tcp_child="index_virtual_axis_actual",
+        hand_group="p2_left",
+        arm_group="p2_left",
+        extra_switchable_controllers=("hand_joint_controller",),
+        # Its own preset, sequence and settings files: the right hand's joint
+        # targets point the other way on seven of the ten joints.
+        preset_scope="p2_left",
     ),
 }
 
