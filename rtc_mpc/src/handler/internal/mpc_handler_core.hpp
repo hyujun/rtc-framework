@@ -30,10 +30,26 @@
 #pragma GCC diagnostic pop
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
 namespace rtc::mpc::internal {
+
+/// @brief Move @p results on by @p shift nodes for the next solve's warm
+///        start: `shift` times `cycleAppend(problem, x0)` (0: node 0's state
+///        becomes @p x0, nothing else moves), then the OCP clears the
+///        multipliers of the rows its current modes make inactive, then —
+///        with @p reference_seed — the controls of the `shift` nodes appended
+///        at the end are the OCP's reference control of those nodes (where it
+///        has one); their states stay the last node's and their multipliers 0.
+///        Does not allocate. May throw (Aligator's `cycleAppend`).
+/// @pre `0 ≤ shift < ` the problem's stage count.
+/// @return the multiplier entries the OCP cleared.
+std::size_t ShiftWarmStart(aligator::ResultsTpl<double>& results,
+                           const aligator::TrajOptProblemTpl<double>& problem,
+                           const Eigen::VectorXd& x0, int shift, const OCPHandlerBase& ocp,
+                           bool reference_seed);
 
 /// @brief Non-owning, non-copyable helper holding the solver and warm-start
 ///        workspace used by the concrete `MPCHandlerBase` subclasses.
@@ -88,6 +104,11 @@ class MPCHandlerCore {
   ///         tick).
   [[nodiscard]] std::size_t ClearedMultipliers() const noexcept { return cleared_multipliers_; }
 
+  /// @return the nodes the last solve shifted its warm start by (0 on a
+  ///         cold-seeded solve — after a build, a rejection, or a node-grid
+  ///         index that went back or by the horizon or more).
+  [[nodiscard]] int LastNodeShift() const noexcept { return last_node_shift_; }
+
   /// @return the solver (null before a successful `Init`) — for tests and
   ///         diagnostics: its iterates, multipliers and settings as the last
   ///         call left them.
@@ -111,6 +132,14 @@ class MPCHandlerCore {
   ///        next tick, so nothing non-finite survives into a later warm
   ///        start. Non-allocating.
   void DiscardIterates() noexcept;
+
+  /// @brief Zero every multiplier and gain in `results_` — a cold seed after
+  ///        a node-grid jump keeps no dual of another horizon. Non-allocating.
+  void ClearDuals() noexcept;
+
+  /// @brief Write `out.node_prim_inf` from the solver workspace (the last
+  ///        evaluated iterate's stage violations and dynamics defects).
+  void PackNodeResiduals(MPCSolution& out) const noexcept;
 
   /// @brief Recompute @p n_contact_vars_ from the model's configured
   ///        `ContactFrameInfo` list — the sum of per-frame `dim` values.
@@ -149,6 +178,9 @@ class MPCHandlerCore {
   bool first_solve_after_build_{true};
   std::size_t cleared_multipliers_{0};  // by the OCP after the last shift
   bool initial_solve_pending_{true};    // no solve converged since build / rebuild / rejection
+  int last_node_shift_{0};              // nodes the last solve's warm start moved by
+  bool have_node_index_{false};         // last_node_index_ names the iterates' node grid index
+  std::int64_t last_node_index_{0};
 
   const RobotModelHandler* model_{nullptr};  // non-owning; set at Init
   OCPLimits limits_{};

@@ -12,6 +12,7 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <aligator/core/traj-opt-problem.hpp>
 #include <aligator/fwd.hpp>
+#include <aligator/math.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
 #include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
@@ -60,6 +61,27 @@ using Solver = aligator::SolverProxDDPTpl<double>;
 }
 
 }  // namespace
+
+std::size_t ShiftWarmStart(aligator::ResultsTpl<double>& results,
+                           const aligator::TrajOptProblemTpl<double>& problem,
+                           const Eigen::VectorXd& x0, int shift, const OCPHandlerBase& ocp,
+                           bool reference_seed) {
+  if (shift == 0) {
+    results.xs.front() = x0;
+  }
+  for (int i = 0; i < shift; ++i) {
+    results.cycleAppend(problem, x0);
+  }
+  const std::size_t cleared = ocp.ClearInactiveMultipliers(results.vs);
+  if (reference_seed) {
+    const auto n = static_cast<int>(results.us.size());
+    for (int k = std::max(0, n - shift); k < n; ++k) {
+      // Written only on success: a node without a reference keeps the copy.
+      static_cast<void>(ocp.ReferenceControl(k, results.us[static_cast<std::size_t>(k)]));
+    }
+  }
+  return cleared;
+}
 
 void MPCHandlerCore::RecomputeContactVarDim(const RobotModelHandler& model) noexcept {
   int total = 0;
@@ -152,6 +174,8 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
 
   first_solve_after_build_ = true;
   initial_solve_pending_ = true;
+  have_node_index_ = false;
+  last_node_shift_ = 0;
   initialised_ = true;
   return MPCInitError::kNoError;
 }
@@ -284,6 +308,7 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     horizon_length_ = ocp.horizon_length();
     first_solve_after_build_ = true;
     initial_solve_pending_ = true;
+    have_node_index_ = false;
     // Re-size warm buffers in case horizon changed.
     xs_warm_.assign(static_cast<std::size_t>(horizon_length_ + 1),
                     Eigen::VectorXd::Zero(nq_ + nv_));
@@ -301,24 +326,42 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     return MPCSolveError::kSolverException;
   }
 
-  const bool cold_seeded = first_solve_after_build_;
+  // How far the warm start moves: one node a tick, or on a node grid the
+  // index difference since the iterates' solve. Going back, or by the horizon
+  // or more, leaves nothing to shift: a cold seed on the current budget.
+  bool cold_seeded = first_solve_after_build_;
+  int shift = 1;
+  if (!cold_seeded && ctx.on_node_grid && have_node_index_) {
+    const std::int64_t d = ctx.node_index - last_node_index_;
+    if (d < 0 || d >= static_cast<std::int64_t>(horizon_length_)) {
+      ClearDuals();
+      cold_seeded = true;
+    } else {
+      shift = static_cast<int>(d);
+    }
+  }
   cleared_multipliers_ = 0;
+  last_node_shift_ = 0;
   if (cold_seeded) {
     ColdSeedGuess(ocp, q_current_, x_current_);
     first_solve_after_build_ = false;
   } else {
-    // Aligator's canonical shift-warm-start: rotates xs/us/vs/lams/gains
-    // left by one node in-place (no alloc), re-seeds xs.front() = x0.
+    // Aligator's canonical shift-warm-start, `shift` times: rotates
+    // xs/us/vs/lams/gains left by one node in-place (no alloc), re-seeds
+    // xs.front() = x0. A node whose mode changed since its multipliers were
+    // solved must not carry them into rows its new mode does not bind; the
+    // nodes appended at the end start from the reference control.
     try {
-      solver_->results_.cycleAppend(ocp.problem(), x_current_);
+      cleared_multipliers_ = ShiftWarmStart(solver_->results_, ocp.problem(), x_current_, shift,
+                                            ocp, use_reference_control_seed_);
     } catch (...) {
       DiscardIterates();  // the rotation may have stopped partway
       return MPCSolveError::kSolverException;
     }
-    // A node whose mode changed since its multipliers were solved must not
-    // carry them into rows its new mode does not bind.
-    cleared_multipliers_ = ocp.ClearInactiveMultipliers(solver_->results_.vs);
+    last_node_shift_ = shift;
   }
+  have_node_index_ = ctx.on_node_grid;
+  last_node_index_ = ctx.node_index;
 
   // Stage the warm-start in separate xs_warm_ / us_warm_ buffers so
   // Aligator's assign_no_resize doesn't alias results_.xs onto itself
@@ -369,6 +412,8 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   }
 
   PackSolution(ocp, state, out, converged, initial_solve, dur_ns);
+  out.horizon_offset_ns =
+      ctx.on_node_grid ? static_cast<std::int64_t>(std::llround(ctx.horizon_offset * 1e9)) : 0;
   if (converged) {
     initial_solve_pending_ = false;
   }
@@ -413,6 +458,15 @@ bool MPCHandlerCore::SolutionFinite() const noexcept {
       return false;
     }
   }
+  // The per-node residuals are shipped too.
+  for (const Eigen::VectorXd& f : solver_->workspace_.dyn_slacks) {
+    if (!f.allFinite()) {
+      return false;
+    }
+  }
+  if (!solver_->workspace_.stage_cstr_violations.allFinite()) {
+    return false;
+  }
   // Only the gain block PackRiccatiGain copies is shipped.
   const std::size_t gain_nodes = std::min(
       static_cast<std::size_t>(std::min(horizon_length_, kMaxGainNodes)), results.gains_.size());
@@ -440,6 +494,14 @@ void MPCHandlerCore::DiscardIterates() noexcept {
   for (Eigen::VectorXd& u : results.us) {
     u.setZero();
   }
+  ClearDuals();
+  first_solve_after_build_ = true;
+  initial_solve_pending_ = true;
+  have_node_index_ = false;
+}
+
+void MPCHandlerCore::ClearDuals() noexcept {
+  auto& results = solver_->results_;
   for (Eigen::VectorXd& l : results.lams) {
     l.setZero();
   }
@@ -449,8 +511,23 @@ void MPCHandlerCore::DiscardIterates() noexcept {
   for (Eigen::MatrixXd& g : results.gains_) {
     g.setZero();
   }
-  first_solve_after_build_ = true;
-  initial_solve_pending_ = true;
+}
+
+void MPCHandlerCore::PackNodeResiduals(MPCSolution& out) const noexcept {
+  const auto& ws = solver_->workspace_;
+  const auto n_nodes = static_cast<std::size_t>(horizon_length_) + 1;
+  for (std::size_t k = 0; k < out.node_prim_inf.size(); ++k) {
+    double r = 0.0;
+    if (k < n_nodes) {
+      if (k < ws.dyn_slacks.size()) {
+        r = aligator::math::infty_norm(ws.dyn_slacks[k]);
+      }
+      if (static_cast<Eigen::Index>(k) < ws.stage_cstr_violations.size()) {
+        r = std::max(r, ws.stage_cstr_violations[static_cast<Eigen::Index>(k)]);
+      }
+    }
+    out.node_prim_inf[k] = r;
+  }
 }
 
 void MPCHandlerCore::SeedWarmStart(const MPCSolution& prev, OCPHandlerBase& ocp) noexcept {
@@ -490,8 +567,10 @@ void MPCHandlerCore::SeedWarmStart(const MPCSolution& prev, OCPHandlerBase& ocp)
     }
   }
 
-  // Skip the cold-seed on the very next Solve — we have a warm trajectory.
+  // Skip the cold-seed on the very next Solve — we have a warm trajectory
+  // (of another handler: no node grid index to shift by).
   first_solve_after_build_ = false;
+  have_node_index_ = false;
   (void)ocp;
 }
 
@@ -596,6 +675,8 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const MPCStateSnaps
       out.lambda_traj[k][i] = kinodynamic ? out.u_traj[k][i] : 0.0;
     }
   }
+
+  PackNodeResiduals(out);
 
   // Riccati gains — only the leading nodes are shipped (see kMaxGainNodes).
   out.gain_nodes = std::min(horizon_length_, kMaxGainNodes);
