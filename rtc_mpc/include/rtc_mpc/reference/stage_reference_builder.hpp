@@ -14,7 +14,12 @@
 /// (`active()` · `reference_id` as they were). The reference `active()`
 /// returns is valid until the next Build (it then names the other slot).
 ///
-/// Per node `k` at `t_k = t0 + k·dt` (`t0` = the schedule's, `H = (n_nodes − 1)·dt`):
+/// Per node `k` at `t_k = t0 + k·dt` (`t0` = the schedule's, `H = (n_nodes − 1)·dt`)
+/// — or, built on a @ref NodeGrid, at `t_k = grid.Time(m + k)` with the window
+/// starting at `grid.Time(m)`: every tick then gives a node its time from the
+/// integer index, so an event on the grid falls on the same side of a node on
+/// every tick (with `t0 + k·dt` the same instant rounds to either side from one
+/// tick to the next, and the half-open mode lookup gives it either mode):
 ///  - **mode** = `SampleNodes` of the schedule (half-open at an event).
 ///  - **base** (three knots, linear between them): the measured planar pose
 ///    `(p, ψ)` from the snapshot's free-flyer, the measured world velocity
@@ -56,6 +61,7 @@
 /// ```
 
 #include "rtc_mpc/model/robot_model_handler.hpp"
+#include "rtc_mpc/reference/contact_schedule.hpp"
 #include "rtc_mpc/reference/gait_scheduler.hpp"
 #include "rtc_mpc/reference/stage_reference.hpp"
 #include "rtc_mpc/reference/swing_trajectory.hpp"
@@ -118,6 +124,8 @@ enum class ReferenceError {
   kBaseBelowTerrain,  ///< `base_height ≤` the terrain height under the base
   kSwingCapacity,     ///< more swing stretches than @ref kMaxSwingsPerContact
   kSwingFailed,       ///< @ref BuildSwing refused a stretch
+  kOffGrid,           ///< the grid's spacing is not the builder's, or the window does not
+                      ///< start at the grid node (@ref NodeGrid)
 };
 
 struct ArmSwingJoint {
@@ -173,6 +181,14 @@ class StageReferenceBuilder {
                                      const MPCStateSnapshot& snapshot,
                                      const FilteredCommand& cmd) noexcept;
 
+  /// @brief As above, with node `k` at `grid.Time(first_index + k)`. The
+  ///        scheduler's window must start at `grid.Time(first_index)` and
+  ///        `grid.dt` must be the builder's (`kOffGrid` otherwise). The base
+  ///        knots stay relative to node 0 (`k·dt`).
+  [[nodiscard]] ReferenceError Build(const GaitScheduler& scheduler,
+                                     const MPCStateSnapshot& snapshot, const FilteredCommand& cmd,
+                                     const NodeGrid& grid, std::int64_t first_index) noexcept;
+
   /// @brief The last successfully built horizon (zeroed before the first).
   ///        Valid until the next Build.
   [[nodiscard]] const HorizonReference& active() const noexcept { return *slots_[active_]; }
@@ -182,6 +198,12 @@ class StageReferenceBuilder {
   [[nodiscard]] int n_nodes() const noexcept { return n_nodes_; }
 
  private:
+  /// The body of both Builds; node times on @p grid when it is not null.
+  [[nodiscard]] ReferenceError BuildImpl(const GaitScheduler& scheduler,
+                                         const MPCStateSnapshot& snapshot,
+                                         const FilteredCommand& cmd, const NodeGrid* grid,
+                                         std::int64_t first_index) noexcept;
+
   struct ArmJoint {
     int idx_q{0};
     double sign{1.0};

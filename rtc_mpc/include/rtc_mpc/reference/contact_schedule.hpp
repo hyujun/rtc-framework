@@ -66,6 +66,34 @@ static_assert(sizeof(ContactSchedule) == sizeof(double) * (2 + kMaxScheduleEvent
 [[nodiscard]] bool SampleNodes(const ContactSchedule& s, double t_start, double dt,
                                std::size_t horizon, std::span<std::uint32_t> out) noexcept;
 
+/// @brief A fixed grid of node times: node `i` at `anchor + i·dt`, computed
+///        from the integer index and never accumulated, so one index names one
+///        time bit for bit whichever tick computes it. A horizon whose node 0
+///        is grid node `m` has its node `k` at `Time(m + k)`.
+struct NodeGrid {
+  double anchor{0.0};  ///< [s] time of node index 0
+  double dt{0.0};      ///< [s] node spacing
+
+  [[nodiscard]] constexpr double Time(std::int64_t index) const noexcept {
+    return anchor + static_cast<double>(index) * dt;
+  }
+};
+
+/// @brief The grid cell holding `t`: the largest `i` with `Time(i) ≤ t`, so
+///        `Time(i) ≤ t < Time(i + 1)` with both sides computed by `Time`.
+///        false (out untouched) for a non-finite input, `dt ≤ 0`, or an index
+///        beyond ±2^52.
+[[nodiscard]] bool NodeIndexAt(const NodeGrid& grid, double t, std::int64_t& out) noexcept;
+
+/// @brief `out[k] = ModeAt(grid.Time(first + k))` for `k = 0 … horizon`.
+///        false (out untouched) when `out` is shorter than `horizon + 1`, the
+///        grid is not valid, node 0 is before `t0`, or the last node is past
+///        `t_end` by more than rounding (a few ulp — such a node reads the end
+///        mode, as any time past the window does).
+[[nodiscard]] bool SampleGridNodes(const ContactSchedule& s, const NodeGrid& grid,
+                                   std::int64_t first, std::size_t horizon,
+                                   std::span<std::uint32_t> out) noexcept;
+
 /// @brief One stretch without contact `k`. An end cut by the window is flagged.
 struct SwingInterval {
   double lift_off{0.0};    ///< [s] (t0 when `open_start`)

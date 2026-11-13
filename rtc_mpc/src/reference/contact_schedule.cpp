@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace rtc::mpc {
@@ -52,6 +53,48 @@ bool SampleNodes(const ContactSchedule& s, double t_start, double dt, std::size_
   }
   for (std::size_t k = 0; k <= horizon; ++k) {
     out[k] = ModeAt(s, t_start + static_cast<double>(k) * dt);
+  }
+  return true;
+}
+
+bool NodeIndexAt(const NodeGrid& grid, double t, std::int64_t& out) noexcept {
+  if (!std::isfinite(t) || !std::isfinite(grid.anchor) || !std::isfinite(grid.dt) ||
+      grid.dt <= 0.0) {
+    return false;
+  }
+  const double x = std::floor((t - grid.anchor) / grid.dt);
+  constexpr double kMaxIndex = 4503599627370496.0;  // 2^52: every integer below is exact
+  if (!(std::fabs(x) < kMaxIndex)) {
+    return false;
+  }
+  // The division rounds; settle the cell on the times Time() itself gives.
+  auto i = static_cast<std::int64_t>(x);
+  while (grid.Time(i) > t) {
+    --i;
+  }
+  while (grid.Time(i + 1) <= t) {
+    ++i;
+  }
+  out = i;
+  return true;
+}
+
+bool SampleGridNodes(const ContactSchedule& s, const NodeGrid& grid, std::int64_t first,
+                     std::size_t horizon, std::span<std::uint32_t> out) noexcept {
+  if (horizon >= out.size() || !std::isfinite(grid.anchor) || !std::isfinite(grid.dt) ||
+      grid.dt <= 0.0) {
+    return false;
+  }
+  const double t_first = grid.Time(first);
+  const double t_last = grid.Time(first + static_cast<std::int64_t>(horizon));
+  const double slack =
+      8.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::fabs(s.t_end));
+  if (!std::isfinite(t_first) || !std::isfinite(t_last) || t_first < s.t0 ||
+      !(t_last <= s.t_end + slack)) {
+    return false;
+  }
+  for (std::size_t k = 0; k <= horizon; ++k) {
+    out[k] = ModeAt(s, grid.Time(first + static_cast<std::int64_t>(k)));
   }
   return true;
 }

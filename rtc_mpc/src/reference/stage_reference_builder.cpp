@@ -288,6 +288,23 @@ ReferenceError StageReferenceBuilder::Init(const RobotModelHandler& handler,
 ReferenceError StageReferenceBuilder::Build(const GaitScheduler& scheduler,
                                             const MPCStateSnapshot& snapshot,
                                             const FilteredCommand& cmd) noexcept {
+  return BuildImpl(scheduler, snapshot, cmd, nullptr, 0);
+}
+
+ReferenceError StageReferenceBuilder::Build(const GaitScheduler& scheduler,
+                                            const MPCStateSnapshot& snapshot,
+                                            const FilteredCommand& cmd, const NodeGrid& grid,
+                                            std::int64_t first_index) noexcept {
+  if (initialized_ && (grid.dt != dt_ || scheduler.schedule().t0 != grid.Time(first_index))) {
+    return ReferenceError::kOffGrid;
+  }
+  return BuildImpl(scheduler, snapshot, cmd, &grid, first_index);
+}
+
+ReferenceError StageReferenceBuilder::BuildImpl(const GaitScheduler& scheduler,
+                                                const MPCStateSnapshot& snapshot,
+                                                const FilteredCommand& cmd, const NodeGrid* grid,
+                                                std::int64_t first_index) noexcept {
   if (!initialized_) {
     return ReferenceError::kNotInitialised;
   }
@@ -329,8 +346,11 @@ ReferenceError StageReferenceBuilder::Build(const GaitScheduler& scheduler,
     return ReferenceError::kSnapshotMismatch;
   }
   const auto horizon_nodes = static_cast<std::size_t>(n_nodes_ - 1);
-  if (!SampleNodes(schedule, schedule.t0, dt_, horizon_nodes,
-                   std::span<std::uint32_t>(modes_.data(), static_cast<std::size_t>(n_nodes_)))) {
+  const std::span<std::uint32_t> modes(modes_.data(), static_cast<std::size_t>(n_nodes_));
+  const bool sampled = grid != nullptr
+                           ? SampleGridNodes(schedule, *grid, first_index, horizon_nodes, modes)
+                           : SampleNodes(schedule, schedule.t0, dt_, horizon_nodes, modes);
+  if (!sampled) {
     return ReferenceError::kWindowTooShort;
   }
   const double p0x = snapshot.q[0];
@@ -361,6 +381,12 @@ ReferenceError StageReferenceBuilder::Build(const GaitScheduler& scheduler,
   // is closed at the lift-off the scheduler reports; one clamped at the
   // gait's take-over (a reset or a switch into a swing phase) keeps the
   // open-start plan — the foot is in the air with no lift-off to plan from.
+  // A stretch lifting off after the last node is never sampled and is not
+  // planned: the window runs past the horizon, and an event that lands
+  // within rounding of the window's end would leave a degenerate stretch
+  // there.
+  const double t_last = grid != nullptr ? grid->Time(first_index + n_nodes_ - 1)
+                                        : schedule.t0 + static_cast<double>(n_nodes_ - 1) * dt_;
   std::array<std::array<SwingInterval, kMaxSwingsPerContact>, kMaxContacts> intervals{};
   std::array<std::size_t, kMaxContacts> n_swings{};
   for (std::size_t c = 0; c < n_contacts; ++c) {
@@ -371,6 +397,9 @@ ReferenceError StageReferenceBuilder::Build(const GaitScheduler& scheduler,
     n_swings[c] = count;
     for (std::size_t i = 0; i < count; ++i) {
       SwingInterval iv = intervals[c][i];
+      if (iv.lift_off > t_last) {
+        break;  // stretches are in time order: none after this one is sampled either
+      }
       if (iv.open_start) {
         double t_lo = 0.0;
         bool clamped = false;
@@ -420,7 +449,7 @@ ReferenceError StageReferenceBuilder::Build(const GaitScheduler& scheduler,
   for (int k = 0; k < n_nodes_; ++k) {
     StageReference& st = out.stages[static_cast<std::size_t>(k)];
     const double tk = static_cast<double>(k) * dt_;
-    st.time = schedule.t0 + tk;
+    st.time = grid != nullptr ? grid->Time(first_index + k) : schedule.t0 + tk;
     st.mode = modes_[static_cast<std::size_t>(k)];
     st.n_stance = static_cast<std::uint32_t>(std::popcount(st.mode));
 

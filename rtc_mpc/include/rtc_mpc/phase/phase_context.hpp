@@ -27,6 +27,7 @@
 #include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
+#include <cstdint>
 #include <string>
 
 namespace rtc::mpc {
@@ -62,6 +63,18 @@ struct PhaseContext {
   /// `UpdateReferences` / `Solve` call that reads it. The joint-torque OCPs
   /// do not read it.
   const HorizonReference* horizon{nullptr};
+
+  /// Whether the horizon's node 0 sits on a fixed node grid (a manager that
+  /// quantises its tick time to the node spacing). Then the handler shifts
+  /// its warm start by `node_index` minus that of its last solve — 0 when
+  /// the tick stayed in the same node interval, 2 or more after an overrun,
+  /// a cold start when it went back or past the horizon. Off: one node a
+  /// tick.
+  bool on_node_grid{false};
+  std::int64_t node_index{0};  ///< grid index of node 0, read when `on_node_grid`
+  /// [s] the tick time minus node 0's time (in `[0, dt)` on a grid; 0 off
+  /// it) — carried into `MPCSolution::horizon_offset_ns`.
+  double horizon_offset{0.0};
 };
 
 }  // namespace rtc::mpc

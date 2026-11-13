@@ -11,15 +11,21 @@
 ///
 ///  1. the command: the latest @ref SetCommand (before the first, a
 ///     `FilteredCommand{}` — not valid, base height 0);
-///  2. `GaitScheduler::Advance(t, command, measured)`, `measured` the
+///  2. the node grid: anchored at the first tick's `t` (until the next
+///     `Load`), node spacing `dt`; the tick runs at `t_q = Time(m)`, `m` the
+///     grid cell holding `t` (@ref NodeIndexAt) — the horizon moves in whole
+///     nodes whatever the MPC period;
+///  3. `GaitScheduler::Advance(t_q, command, measured)`, `measured` the
 ///     snapshot's base velocity on the yaw-aligned axes (`v_x`, `v_y`) and its
 ///     world yaw rate (`omega_z`);
-///  3. `StageReferenceBuilder::Build(scheduler, state, command)`;
-///  4. the context: `ocp_type` `"kinodynamic"`, `cost_config.horizon_length` /
+///  4. `StageReferenceBuilder::Build(scheduler, state, command, grid, m)` —
+///     node `k` at `Time(m + k)`;
+///  5. the context: `ocp_type` `"kinodynamic"`, `cost_config.horizon_length` /
 ///     `dt` the configured ones, `horizon` the builder's active slot,
 ///     `phase_changed` false (a contact mode change is not a topology change
 ///     for this OCP), `phase_id` the running gait's index, `phase_name` empty
-///     (no per-tick string).
+///     (no per-tick string), `on_node_grid` true with `node_index` `m` and
+///     `horizon_offset` `t − t_q`.
 ///
 /// A failure of step 2 or 3 gives a context with a null `horizon` (the OCP
 /// refuses it, so nothing is solved from a stale reference) and is kept in
@@ -59,6 +65,7 @@
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_manager_base.hpp"
 #include "rtc_mpc/reference/command_filter.hpp"
+#include "rtc_mpc/reference/contact_schedule.hpp"
 #include "rtc_mpc/reference/gait_scheduler.hpp"
 #include "rtc_mpc/reference/stage_reference_builder.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
@@ -107,6 +114,10 @@ class LocomotionPhaseManager final : public PhaseManagerBase {
 
   /// @brief Load the YAML (file comment) and set the scheduler and the builder
   ///        up. Allocates. On failure the manager is uninitialised.
+  ///        Configure time only: a Load restarts the node grid (anchored
+  ///        again at the next Update), so re-loading while a handler keeps
+  ///        iterates solved on the old grid is not supported — rebuild or
+  ///        reset the handler with it.
   [[nodiscard]] LocomotionPhaseError Load(const YAML::Node& cfg) noexcept;
 
   /// @brief `Load`, throwing `std::runtime_error` on any error (this entry
@@ -171,6 +182,12 @@ class LocomotionPhaseManager final : public PhaseManagerBase {
 
   [[nodiscard]] double dt() const noexcept { return dt_; }
 
+  /// @return the node grid (its anchor valid once an `Update` ran after `Load`).
+  [[nodiscard]] const NodeGrid& grid() const noexcept { return grid_; }
+
+  /// @return the grid index of the last successful `Update`'s node 0.
+  [[nodiscard]] std::int64_t node_index() const noexcept { return node_index_; }
+
   /// @return the snapshot's base velocity as the scheduler reads it: the
   ///        LOCAL linear velocity rotated to the yaw-aligned axes, and the
   ///        world z of the angular velocity. Zero for a snapshot whose base
@@ -180,6 +197,8 @@ class LocomotionPhaseManager final : public PhaseManagerBase {
 
  private:
   [[nodiscard]] PhaseContext Context(const HorizonReference* horizon) const;
+  [[nodiscard]] PhaseContext GridContext(const HorizonReference* horizon, std::int64_t index,
+                                         double offset) const;
 
   void SetLastError(LocomotionPhaseError e) noexcept {
     last_update_error_.store(static_cast<int>(e), std::memory_order_relaxed);
@@ -197,6 +216,9 @@ class LocomotionPhaseManager final : public PhaseManagerBase {
 
   int horizon_nodes_{0};
   double dt_{0.0};
+  NodeGrid grid_{};
+  std::int64_t node_index_{0};
+  bool anchored_{false};  ///< the grid's anchor is set (first Update after Load)
   bool initialised_{false};
 
   std::atomic<std::uint32_t> current_gait_{0};
