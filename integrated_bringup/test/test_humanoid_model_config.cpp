@@ -363,9 +363,14 @@ TEST(HumanoidModelConfig, TheHandlerYamlInitsRobotModelHandlerWithTheContactOrde
   rtc::mpc::RobotModelHandler handler;
   ASSERT_EQ(handler.Init(CmModel(), loco::ToRobotModelHandlerYaml(cfg)),
             rtc::mpc::RobotModelInitError::kNoError);
-  // WD-36: the handler's one end-effector is end_effectors[0].
-  EXPECT_EQ(handler.end_effector_frame_id(),
-            static_cast<int>(CmModel().getFrameId(cfg.end_effectors.front().frame)));
+  // Every end-effector reaches the handler in order; the single id is the first.
+  ASSERT_EQ(handler.end_effector_frame_ids().size(), cfg.end_effectors.size());
+  for (std::size_t i = 0; i < cfg.end_effectors.size(); ++i) {
+    EXPECT_EQ(handler.end_effector_frame_ids()[i],
+              static_cast<int>(CmModel().getFrameId(cfg.end_effectors[i].frame)))
+        << i;
+  }
+  EXPECT_EQ(handler.end_effector_frame_id(), handler.end_effector_frame_ids().front());
   ASSERT_EQ(handler.n_contacts(), static_cast<int>(cfg.contacts.size()));
   for (std::size_t i = 0; i < cfg.contacts.size(); ++i) {
     const auto& info = handler.contact_frames()[i];
