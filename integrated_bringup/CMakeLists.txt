@@ -2129,6 +2129,30 @@ if(BUILD_TESTING)
     rtc_mpc
   )
 
+  # locomotion_controller.mpc.* (W4-F01): the installed fragment loads onto the
+  # MPC model (the shipped floating body, hand locked), its weights equal the
+  # reference task's Q / Q_final / R through the layout adapter, and MPCFactory
+  # creates the kinodynamic MPC.
+  ament_add_gtest(test_locomotion_mpc_config test/test_locomotion_mpc_config.cpp
+    TIMEOUT 120
+  )
+  target_include_directories(test_locomotion_mpc_config PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_locomotion_mpc_config PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_locomotion_mpc_config
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_mpc_config
+    ament_index_cpp
+    rtc_controller_manager
+    rtc_mpc
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   # g1_loco body joint order: CM tree model == device rosters == MJCF actuators
   # (W1-F03 WG-1), through the same comparison ValidateDevices refuses with.
   find_package(tinyxml2_vendor QUIET)
