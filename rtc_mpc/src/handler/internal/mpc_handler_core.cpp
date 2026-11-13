@@ -231,7 +231,8 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     return MPCSolveError::kSolverException;
   }
 
-  if (first_solve_after_build_) {
+  const bool cold_seeded = first_solve_after_build_;
+  if (cold_seeded) {
     ColdSeedGuess(q_current_, x_current_);
     first_solve_after_build_ = false;
   } else {
@@ -250,8 +251,7 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   {
     auto& xs_r = solver_->results_.xs;
     auto& us_r = solver_->results_.us;
-    if (first_solve_after_build_ || xs_warm_.size() != xs_r.size() ||
-        us_warm_.size() != us_r.size()) {
+    if (cold_seeded || xs_warm_.size() != xs_r.size() || us_warm_.size() != us_r.size()) {
       // Cold path populated xs_warm_/us_warm_ directly (ColdSeedGuess).
       // Nothing extra to do.
     } else {
