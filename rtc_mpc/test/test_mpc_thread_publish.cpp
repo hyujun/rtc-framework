@@ -4,8 +4,10 @@
 ///        budget-exhausted solve whose consumed segment is over the
 ///        tolerance are not published and not counted as failures; the
 ///        standing solve is exempt from the deadline; a converged solve is
-///        always published; both rules are off by default; an overrun after
-///        a standing-solve tick is counted apart from an online one.
+///        always published; both rules are off by default; an online solve
+///        that started cold is published only once converged; an overrun
+///        after a standing-solve tick — failed or not — is counted apart
+///        from an online one.
 ///
 /// The model is the generic Panda fixture (the thread runs forward
 /// kinematics every tick); nothing here solves an OCP.
@@ -71,6 +73,10 @@ class StubHandler final : public rtc::mpc::MPCHandlerBase {
   MPCSolveError Solve(const PhaseContext&, const MPCStateSnapshot&,
                       MPCSolution& out) noexcept override {
     std::this_thread::sleep_for(std::chrono::microseconds(sleep_us.load()));
+    calls.fetch_add(1);
+    if (error.load() != 0) {
+      return static_cast<MPCSolveError>(error.load());
+    }
     out.horizon_length = kStubHorizon;
     out.dt_node = kStubDt;
     out.nq = nq_;
@@ -80,16 +86,18 @@ class StubHandler final : public rtc::mpc::MPCHandlerBase {
     out.ndx = 2 * nv_;
     rtc::mpc::MarkSolved(out, converged.load());
     out.initial_solve = initial.load();
+    out.cold_start = cold.load();
     for (std::size_t k = 0; k < out.node_prim_inf.size(); ++k) {
       out.node_prim_inf[k] = static_cast<int>(k) < big_from.load() ? small_residual.load() : 5.0;
     }
-    calls.fetch_add(1);
     return MPCSolveError::kNoError;
   }
 
   [[nodiscard]] bool Initialised() const noexcept override { return true; }
 
   [[nodiscard]] const MPCSolverConfig& solver_config() const noexcept override { return cfg_; }
+
+  [[nodiscard]] bool InitialSolvePending() const noexcept override { return initial.load(); }
 
   [[nodiscard]] std::string_view ocp_type() const noexcept override { return "stub"; }
 
@@ -107,7 +115,9 @@ class StubHandler final : public rtc::mpc::MPCHandlerBase {
 
   std::atomic<int> sleep_us{0};
   std::atomic<bool> converged{false};
-  std::atomic<bool> initial{false};
+  std::atomic<bool> initial{false};  ///< the standing budget pending, and the solve's flag
+  std::atomic<bool> cold{false};
+  std::atomic<int> error{0};  ///< an MPCSolveError to return instead of a solution
   std::atomic<int> big_from{kStubHorizon + 1};  ///< first node with residual 5.0
   std::atomic<double> small_residual{0.01};
   std::atomic<std::uint64_t> calls{0};
@@ -296,6 +306,45 @@ TEST_F(MpcThreadPublishTest, AStandingTicksOverrunIsCountedApart) {
   stub->initial = false;
   EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.OnlineOverrunCount() >= 2U; }));
   thread.StopAndJoin();
+  EXPECT_EQ(thread.OnlineOverrunCount() + thread.StandingOverrunCount(), thread.OverrunCount());
+}
+
+// An online solve that started from a cold seed (a node-grid jump) and did
+// not converge is not published and is counted apart; once converged it is.
+TEST_F(MpcThreadPublishTest, AColdOnlineSolveIsPublishedOnlyOnceConverged) {
+  HandlerMPCThread thread;
+  StubHandler* stub = Start(thread, MPCSolverConfig{}, 50.0);
+  stub->cold = true;
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.ColdWithheldCount() >= 3U; }));
+  EXPECT_EQ(Published(), 0U);
+  stub->converged = true;
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return Published() >= 3U; }));
+  const std::uint64_t cold_withheld = thread.ColdWithheldCount();
+  stub->converged = false;
+  stub->cold = false;  // warm again: published as before
+  const std::uint64_t published = Published();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return Published() >= published + 3U; }));
+  thread.StopAndJoin();
+  EXPECT_LE(thread.ColdWithheldCount(), cold_withheld + 1U) << "at most the tick in flight";
+  EXPECT_EQ(thread.WithheldCount(), 0U);
+  EXPECT_EQ(thread.FailedSolves(), 0U);
+}
+
+// A standing-solve tick whose solve fails still counts its overrun as a
+// standing one: the tick is marked from the handler's pending standing
+// budget before it solves.
+TEST_F(MpcThreadPublishTest, AFailedStandingTicksOverrunIsCountedApart) {
+  HandlerMPCThread thread;
+  StubHandler* stub = Start(thread, MPCSolverConfig{}, 100.0);
+  stub->sleep_us = 25000;
+  stub->initial = true;
+  stub->error = static_cast<int>(MPCSolveError::kSolverException);
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.StandingOverrunCount() >= 2U; }));
+  thread.StopAndJoin();
+  EXPECT_EQ(thread.OnlineOverrunCount(), 0U);
+  EXPECT_GT(thread.FailedSolves(), 0U);
   EXPECT_EQ(thread.OnlineOverrunCount() + thread.StandingOverrunCount(), thread.OverrunCount());
 }
 

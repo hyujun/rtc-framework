@@ -776,6 +776,7 @@ TEST_P(KinodynamicReceding, AGridIndexThatGoesBackOrJumpsColdSeeds) {
     moved.node_index = ctx.node_index + c.delta;
     ASSERT_EQ(core.Solve(moved, snap, ocp, *out), MPCSolveError::kNoError) << c.name;
     EXPECT_EQ(core.LastNodeShift(), c.shift) << c.name;
+    EXPECT_EQ(out->cold_start, c.delta < 0 || c.delta >= tu::kKinoNodes) << c.name;
     ctx = moved;
   }
   PhaseContext off = ctx;

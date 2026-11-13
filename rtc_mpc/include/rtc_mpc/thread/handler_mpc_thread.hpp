@@ -26,9 +26,12 @@
 /// read, before FK and the phase manager) is not published
 /// (@ref DeadlineMissCount; the standing solve is exempt); a budget-exhausted
 /// solve whose consumed segment's residual exceeds `publish_prim_tol` is not
-/// either (@ref WithheldCount). Neither is a failed solve, and neither touches
-/// the handler: its iterates warm-start the next tick. A standing-solve tick
-/// is marked for the overrun split (`MPCThread::StandingOverrunCount`).
+/// either (@ref WithheldCount), nor an online solve that started cold and did
+/// not converge (@ref ColdWithheldCount). None is a failed solve, and none
+/// touches the handler: its iterates warm-start the next tick. A tick whose
+/// handler reports the standing budget pending (`InitialSolvePending`, read
+/// before the solve, so a failed standing solve counts too) or whose solve ran
+/// on it is marked for the overrun split (`MPCThread::StandingOverrunCount`).
 ///
 /// Ownership — `HandlerMPCThread` takes unique-ownership of both the handler
 /// and the phase manager via `Configure`. The `RobotModelHandler` reference
@@ -165,6 +168,14 @@ class HandlerMPCThread final : public MPCThread {
     return withheld_.load(std::memory_order_relaxed);
   }
 
+  /// @return online solves started from a cold seed (`MPCSolution::cold_start`,
+  ///         a node-grid jump) that were not published because they had not
+  ///         converged — a plan without a warm start is consumed only once
+  ///         it meets the tolerance. Not in @ref WithheldCount, not failed.
+  [[nodiscard]] std::uint64_t ColdWithheldCount() const noexcept {
+    return cold_withheld_.load(std::memory_order_relaxed);
+  }
+
   /// @return the largest `node_prim_inf` over nodes `0 … n` of @p sol,
   ///         `n = ⌈period / dt_node⌉ + 1` (a period within 1e-9 of a whole
   ///         number of nodes counts as that number) clamped to its horizon —
@@ -219,6 +230,7 @@ class HandlerMPCThread final : public MPCThread {
   std::atomic<std::uint64_t> initial_solve_ticks_{0};
   std::atomic<std::uint64_t> deadline_misses_{0};
   std::atomic<std::uint64_t> withheld_{0};
+  std::atomic<std::uint64_t> cold_withheld_{0};
   std::atomic<bool> null_handler_hit_{false};
 };
 

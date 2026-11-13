@@ -113,6 +113,10 @@ struct MPCSolution {
   /// The solve ran on the standing budget: no solve had converged since the
   /// handler's build, rebuild or last rejected solve.
   bool initial_solve{false};
+  /// The solve started from the cold seed, not from a shifted earlier plan
+  /// (the first solve after a build or a rejection, or a node-grid index that
+  /// went back or moved by the horizon or more).
+  bool cold_start{false};
   int iterations{0};  ///< solver iteration count
 
   // ── Provenance ──────────────────────────────────────────────────────

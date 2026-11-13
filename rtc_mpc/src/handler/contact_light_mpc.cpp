@@ -30,6 +30,10 @@ const MPCSolverConfig& ContactLightMPC::solver_config() const noexcept {
   return core_->solver_config();
 }
 
+bool ContactLightMPC::InitialSolvePending() const noexcept {
+  return core_->InitialSolvePending();
+}
+
 int ContactLightMPC::horizon_length() const noexcept {
   return core_->horizon_length();
 }

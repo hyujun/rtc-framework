@@ -416,6 +416,7 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   }
 
   PackSolution(ocp, state, out, converged, initial_solve, dur_ns);
+  out.cold_start = cold_seeded;
   out.horizon_offset_ns =
       ctx.on_node_grid ? static_cast<std::int64_t>(std::llround(ctx.horizon_offset * 1e9)) : 0;
   if (converged) {

@@ -61,6 +61,7 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   initial_solve_ticks_.store(0, std::memory_order_relaxed);
   deadline_misses_.store(0, std::memory_order_relaxed);
   withheld_.store(0, std::memory_order_relaxed);
+  cold_withheld_.store(0, std::memory_order_relaxed);
   null_handler_hit_.store(false, std::memory_order_relaxed);
   has_prev_out_ = false;
 }
@@ -116,6 +117,11 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
     null_handler_hit_.store(true, std::memory_order_relaxed);
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
     return false;
+  }
+  // The standing solve's ticks are counted apart from the online ones in the
+  // overrun split, whether or not the solve then succeeds.
+  if (handler_->InitialSolvePending()) {
+    MarkStandingTick();
   }
 
   // ── Copy snapshot → Eigen scratch via Map (zero-alloc view) ───────────
@@ -191,6 +197,10 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
       deadline_misses_.fetch_add(1, std::memory_order_relaxed);
       return false;
     }
+  }
+  if (out.cold_start && !out.initial_solve && !out.converged) {
+    cold_withheld_.fetch_add(1, std::memory_order_relaxed);
+    return false;
   }
   if (!out.converged && cfg.publish_prim_tol > 0.0 &&
       !(ConsumedPrimInf(out, PeriodNs()) <= cfg.publish_prim_tol)) {

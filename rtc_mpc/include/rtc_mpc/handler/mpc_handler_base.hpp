@@ -29,7 +29,11 @@
 ///   a context on a node grid (`PhaseContext::on_node_grid`) — as many as
 ///   the grid index advanced since the last solve: none (node 0 takes the
 ///   measured state, nothing else moves), two or more after an overrun, a
-///   cold seed when it went back or by the horizon or more. After the shift
+///   cold seed when it went back or by the horizon or more (on the budget it
+///   was on: a converged standing solve is not re-armed, or a long standing
+///   solve on a walking window would jump the index again; such a plan is
+///   marked `MPCSolution::cold_start`, and the MPC thread publishes it only
+///   once converged). After the shift
 ///   the OCP clears the multipliers of the rows its current modes make
 ///   inactive (`OCPHandlerBase::ClearInactiveMultipliers`), and an OCP whose
 ///   cold seed is its reference control seeds the controls of the nodes the
@@ -226,6 +230,12 @@ class MPCHandlerBase {
   /// @return the solver configuration `Init` accepted (the defaults before)
   ///         — the MPC thread reads its publish rules from it.
   [[nodiscard]] virtual const MPCSolverConfig& solver_config() const noexcept = 0;
+
+  /// @return true while the next solve runs on the standing budget (no solve
+  ///         has converged since `Init`, a rebuild or a rejected solve) — the
+  ///         MPC thread marks the tick for its overrun split before solving,
+  ///         whatever the solve then returns.
+  [[nodiscard]] virtual bool InitialSolvePending() const noexcept = 0;
 
   /// @return `"contact_light"` or `"contact_rich"` — matches the underlying
   ///         OCP handler. Used by `MPCFactory` for cross-handler dispatch.

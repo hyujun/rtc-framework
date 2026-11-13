@@ -33,6 +33,10 @@ const MPCSolverConfig& KinodynamicMPC::solver_config() const noexcept {
   return core_->solver_config();
 }
 
+bool KinodynamicMPC::InitialSolvePending() const noexcept {
+  return core_->InitialSolvePending();
+}
+
 int KinodynamicMPC::horizon_length() const noexcept {
   return core_->horizon_length();
 }
