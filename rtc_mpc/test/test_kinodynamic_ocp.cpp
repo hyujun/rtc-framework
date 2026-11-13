@@ -381,7 +381,11 @@ TEST_F(KinodynamicOCPTest, BuildChecksTheCostConfigAndShapesTheProblem) {
   for (auto& stage : p.stages_) {
     EXPECT_EQ(stage->ndx1(), 58);
     EXPECT_EQ(stage->nu(), 35);
-    EXPECT_EQ(stage->numConstraints(), 0U);
+    // The contact equality and the wrench cone, every contact's rows of both
+    // phases whatever the mode.
+    EXPECT_EQ(stage->numConstraints(), 2U);
+    EXPECT_EQ(stage->nc(), 2 * (rtc::mpc::ContactConstraintResidual::EqualityRows(6) +
+                                rtc::mpc::ContactWrenchConeResidual::InequalityRows(6)));
     // Full stance until a horizon arrives.
     const auto* ode = KinodynamicDynamics::OdeOf(*stage);
     ASSERT_NE(ode, nullptr);
@@ -609,7 +613,8 @@ TEST_F(KinodynamicOCPTest, BuildWithAHorizonAppliesItAndARefusedBuildChangesNoth
   PhaseContext other = Context(&walk.horizon());
   other.cost_config.horizon_length = 20;
   EXPECT_EQ(built_with.Build(other, handler_, {}), OCPBuildError::kInvalidCostConfig);
-  // No constraint rows, so a control box is refused rather than dropped.
+  // No input box in this formulation, so a control box is refused rather
+  // than dropped.
   rtc::mpc::OCPLimits box;
   box.u_min = Eigen::VectorXd::Constant(handler_.nu(), -1.0);
   box.u_max = Eigen::VectorXd::Constant(handler_.nu(), 1.0);
@@ -623,9 +628,10 @@ TEST_F(KinodynamicOCPTest, BuildWithAHorizonAppliesItAndARefusedBuildChangesNoth
 
 // ── Cost values ─────────────────────────────────────────────────────────────
 
-// Stage cost == dt · (½‖x ⊖ x_ref‖²_Q + ½‖u − u_ref‖²_R + ½ Σ w r²), the
-// difference from pinocchio and the residual from a separate instance on a
-// separate ODE of the stage's mode; terminal == ½‖x ⊖ x_ref‖² over 4·Q_f.
+// Stage cost == dt · (½‖x ⊖ x_ref‖²_Q + ½‖u − u_ref‖²_R + ½ Σ w r² + J(q)),
+// the difference from pinocchio, the residual from a separate instance on a
+// separate ODE of the stage's mode, and J the joint-limit barrier written out
+// here from the model's limits; terminal == ½‖x ⊖ x_ref‖² over 4·Q_f.
 TEST_F(KinodynamicOCPTest, StageAndTerminalCostsAreTheIndependentSums) {
   const WalkWindow walk(model_, handler_, stand_, 20.0);
   const HorizonReference& h = walk.horizon();
@@ -639,6 +645,30 @@ TEST_F(KinodynamicOCPTest, StageAndTerminalCostsAreTheIndependentSums) {
   const int nv = model_.nv;
   const int ncv = handler_.layout().n_contact_vars;
   const Eigen::VectorXd w_track = cfg_.contact_tracking_weights.replicate(2, 1);
+  // The piecewise-polynomial barrier on both sides of every limited
+  // one-entry joint (the fixture's mu 1200, delta 0.1).
+  const double bmu = cfg_.constraints.joint_limits.mu;
+  const double bdelta = cfg_.constraints.joint_limits.delta;
+  const auto barrier = [&](double m) {
+    if (m >= bdelta) {
+      return 0.0;
+    }
+    const double quad = 0.5 * m * m - 0.5 * bdelta * m + bdelta * bdelta / 6.0;
+    return m <= 0.0 ? bmu * quad : bmu * (quad - m * m * m / (6.0 * bdelta));
+  };
+  const auto joint_barrier = [&](const Eigen::VectorXd& q) {
+    double sum = 0.0;
+    for (int j = 1; j < model_.njoints; ++j) {
+      const auto& joint = model_.joints[static_cast<std::size_t>(j)];
+      const double lo = model_.lowerPositionLimit[joint.idx_q()];
+      const double hi = model_.upperPositionLimit[joint.idx_q()];
+      if (joint.nq() != 1 || joint.nv() != 1 || !std::isfinite(lo) || !std::isfinite(hi)) {
+        continue;
+      }
+      sum += barrier(q[joint.idx_q()] - lo) + barrier(hi - q[joint.idx_q()]);
+    }
+    return sum;
+  };
   double worst = 0.0;
   double worst_term = 0.0;
   auto& p = ocp.problem();
@@ -661,7 +691,8 @@ TEST_F(KinodynamicOCPTest, StageAndTerminalCostsAreTheIndependentSums) {
     r.evaluate(smp.x, smp.u, *rd);
     const double expect = tu::kKinoDt * (0.5 * dx.dot(cfg_.state_weights.cwiseProduct(dx)) +
                                          0.5 * du.dot(cfg_.input_weights.cwiseProduct(du)) +
-                                         0.5 * rd->value_.dot(w_track.cwiseProduct(rd->value_)));
+                                         0.5 * rd->value_.dot(w_track.cwiseProduct(rd->value_)) +
+                                         joint_barrier(smp.x.head(nq)));
     auto& stage = *p.stages_[static_cast<std::size_t>(k)];
     auto cd = stage.cost_->createData();
     stage.cost_->evaluate(smp.x, smp.u, *cd);
@@ -755,7 +786,8 @@ class KinodynamicSolve : public KinodynamicOCPTest,
     return s;
   }
 
-  /// Init on @p h, one Solve from the stand state (zero-control cold seed).
+  /// Init on @p h, one Solve from the stand state (the OCP's cold seed: each
+  /// node's reference control).
   rtc::mpc::MPCSolveError SolveOnce(const HorizonReference& h, rtc::mpc::MPCSolution& out,
                                     double* ms = nullptr) {
     KinodynamicOCPConfig cfg;
@@ -801,7 +833,7 @@ class KinodynamicSolve : public KinodynamicOCPTest,
   std::unique_ptr<KinodynamicMPC> mpc_;
 };
 
-TEST_P(KinodynamicSolve, StandingConvergesFromTheZeroSeed) {
+TEST_P(KinodynamicSolve, StandingConvergesFromTheReferenceSeed) {
   const auto h = tu::StanceHorizon(handler_, stand_);
   auto out = std::make_unique<rtc::mpc::MPCSolution>();
   double ms = 0.0;
