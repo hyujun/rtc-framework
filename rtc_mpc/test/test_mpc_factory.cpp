@@ -338,6 +338,35 @@ TEST_F(MPCFactoryKinodynamicTest, ABadOrMissingKinodynamicSectionIsRefused) {
   EXPECT_EQ(status.init_error, rtc::mpc::MPCInitError::kOCPBuildFailed);
 }
 
+// The kinodynamic OCP takes its friction coefficient from its own
+// constraints section: a limits.friction_mu next to it is refused, limits
+// without one are not, and a control box is still refused at the build.
+TEST_F(MPCFactoryKinodynamicTest, AFrictionCoefficientInTheLimitsIsRefused) {
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  YAML::Node mu = Config();
+  mu["mpc"]["limits"]["friction_mu"] = 0.7;
+  auto status = rtc::mpc::MPCFactory::Create(mu, g1_handler_, Context(), h);
+  EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kInvalidLimits);
+  EXPECT_EQ(h, nullptr);
+
+  YAML::Node empty = Config();
+  empty["mpc"]["limits"]["u_min"] = YAML::Node(YAML::NodeType::Sequence);
+  status = rtc::mpc::MPCFactory::Create(empty, g1_handler_, Context(), h);
+  EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kNoError);
+  EXPECT_NE(h, nullptr);
+
+  YAML::Node box = Config();
+  for (const char* side : {"u_min", "u_max"}) {
+    for (int i = 0; i < g1_handler_.nu(); ++i) {
+      box["mpc"]["limits"][side].push_back(i % 2 == 0 ? -1.0 : 1.0);
+    }
+  }
+  h.reset();
+  status = rtc::mpc::MPCFactory::Create(box, g1_handler_, Context(), h);
+  EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kHandlerInitFailed);
+  EXPECT_EQ(status.init_error, rtc::mpc::MPCInitError::kOCPBuildFailed);
+}
+
 // The base checks hold both ways: a kinodynamic OCP refuses a fixed base, the
 // joint-torque OCPs a floating one.
 TEST_F(MPCFactoryKinodynamicTest, EachOcpRefusesTheOtherBase) {

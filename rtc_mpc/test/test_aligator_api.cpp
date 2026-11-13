@@ -431,8 +431,8 @@ class AligatorMaskRowsTest : public ::testing::Test {
   /// Standing in double support from @p x0: track the neutral state and the
   /// weight-compensating input;
   /// with @p masked every stage also carries the inactive rows.
-  Problem Make(rtc::mpc::KinodynamicIntegrator integrator, bool masked,
-               const Eigen::VectorXd& x0) const {
+  Problem Make(rtc::mpc::KinodynamicIntegrator integrator, bool masked, const Eigen::VectorXd& x0,
+               int eq_rows = kEqualityRows, int in_rows = kInequalityRows) const {
     const Space& space = *dyn_.space();
     const int nu = dyn_.nu();
     const int ndx = space.ndx();
@@ -452,9 +452,9 @@ class AligatorMaskRowsTest : public ::testing::Test {
                 rtc::mpc::KinodynamicError::kNoError);
       StageModel stage(cost, sd.value());
       if (masked) {
-        stage.addConstraint(ConstantRows(ndx, nu, kEqualityRows, 0.0),
+        stage.addConstraint(ConstantRows(ndx, nu, eq_rows, 0.0),
                             aligator::EqualityConstraintTpl<double>());
-        stage.addConstraint(ConstantRows(ndx, nu, kInequalityRows, -1.0),
+        stage.addConstraint(ConstantRows(ndx, nu, in_rows, -1.0),
                             aligator::NegativeOrthantTpl<double>());
       }
       stages.emplace_back(stage);
@@ -532,6 +532,38 @@ TEST_F(AligatorMaskRowsTest, InactiveRowsByValueLeaveTheSolutionUnchanged) {
       EXPECT_LE(dx, 1e-9) << what;
       EXPECT_LE(du, 1e-9) << what;
     }
+  }
+}
+
+// The kinodynamic OCP's own mask on two 6-D contacts — 14 equality rows
+// (stance 6 + swing 1 per contact) and 10 inequality rows (friction 1 + CoP 4)
+// — from the reference with a zero input guess: the same solution and the
+// same iterations.
+TEST_F(AligatorMaskRowsTest, TheContactConstraintMaskLeavesTheSolutionUnchanged) {
+  constexpr int kContactEquality = 14;
+  constexpr int kContactInequality = 10;
+  for (const auto integrator : {rtc::mpc::KinodynamicIntegrator::kSemiImplicitEuler,
+                                rtc::mpc::KinodynamicIntegrator::kRk2}) {
+    const Problem plain = Make(integrator, false, x_ref_);
+    const Problem masked = Make(integrator, true, x_ref_, kContactEquality, kContactInequality);
+    ASSERT_EQ(masked.stages_.front()->nc(), kContactEquality + kContactInequality);
+    const Eigen::VectorXd seed = Eigen::VectorXd::Zero(dyn_.nu());
+    const Solved a = Solve(plain, x_ref_, seed);
+    const Solved b = Solve(masked, x_ref_, seed);
+    ASSERT_EQ(a.us.size(), b.us.size());
+    const double dx = MaxDiff(a.xs, b.xs);
+    const double du = MaxDiff(a.us, b.us);
+    double u_max = 1.0;
+    for (const auto& u : a.us) {
+      u_max = std::max(u_max, u.cwiseAbs().maxCoeff());
+    }
+    std::printf("%s 14 + 10 rows: iters %zu / %zu  conv %d / %d  max|dxs| %.3e  max|dus| %.3e\n",
+                Name(integrator), a.iters, b.iters, a.conv, b.conv, dx, du);
+    EXPECT_TRUE(a.conv) << Name(integrator);
+    EXPECT_EQ(a.iters, b.iters) << Name(integrator);
+    EXPECT_EQ(a.conv, b.conv) << Name(integrator);
+    EXPECT_LE(dx, 1e-9) << Name(integrator);
+    EXPECT_LE(du, 1e-9 * u_max) << Name(integrator);
   }
 }
 

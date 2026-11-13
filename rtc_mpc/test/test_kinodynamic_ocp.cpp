@@ -1247,6 +1247,13 @@ class KinodynamicSolve : public KinodynamicOCPTest,
   /// node's reference control).
   rtc::mpc::MPCSolveError SolveOnce(const HorizonReference& h, rtc::mpc::MPCSolution& out,
                                     double* ms = nullptr) {
+    return SolveOnceFrom(h, tu::SnapshotAt(model_, stand_), out, ms);
+  }
+
+  /// As `SolveOnce`, from @p state.
+  rtc::mpc::MPCSolveError SolveOnceFrom(const HorizonReference& h,
+                                        const rtc::mpc::MPCStateSnapshot& state,
+                                        rtc::mpc::MPCSolution& out, double* ms = nullptr) {
     KinodynamicOCPConfig cfg;
     EXPECT_EQ(LoadKinodynamicOCPConfig(tu::G1KinodynamicNode(GetParam()), handler_, cfg),
               Err::kNoError);
@@ -1254,7 +1261,7 @@ class KinodynamicSolve : public KinodynamicOCPTest,
     const PhaseContext ctx = Context(&h);
     EXPECT_EQ(mpc_->Init(Solver(), handler_, {}, ctx), rtc::mpc::MPCInitError::kNoError);
     const auto t0 = std::chrono::steady_clock::now();
-    const rtc::mpc::MPCSolveError e = mpc_->Solve(ctx, tu::SnapshotAt(model_, stand_), out);
+    const rtc::mpc::MPCSolveError e = mpc_->Solve(ctx, state, out);
     if (ms != nullptr) {
       *ms =
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -1287,8 +1294,123 @@ class KinodynamicSolve : public KinodynamicOCPTest,
     return true;
   }
 
+  /// The solution's trajectory as solver vectors.
+  void Trajectory(const rtc::mpc::MPCSolution& out, std::vector<Eigen::VectorXd>& xs,
+                  std::vector<Eigen::VectorXd>& us) const {
+    const int n = out.horizon_length;
+    xs.assign(static_cast<std::size_t>(n + 1), Eigen::VectorXd::Zero(model_.nq + model_.nv));
+    us.assign(static_cast<std::size_t>(n), Eigen::VectorXd::Zero(handler_.nu()));
+    for (int k = 0; k <= n; ++k) {
+      const auto i = static_cast<std::size_t>(k);
+      xs[i].head(model_.nq) = Eigen::Map<const Eigen::VectorXd>(out.q_traj[i].data(), model_.nq);
+      xs[i].tail(model_.nv) = Eigen::Map<const Eigen::VectorXd>(out.v_traj[i].data(), model_.nv);
+      if (k < n) {
+        us[i] = Eigen::Map<const Eigen::VectorXd>(out.u_traj[i].data(), handler_.nu());
+      }
+    }
+  }
+
+  /// The pass criterion of a converged solve: every constraint residual, as
+  /// the OCP evaluates it on the solution, is within the solver's primal
+  /// infeasibility, which is within its tolerance. Reports the residuals,
+  /// the physical margins and the smallest joint margin to its limits.
+  void ExpectResidualsWithinTolerance(const rtc::mpc::MPCSolution& out, const char* name,
+                                      rtc::mpc::ConstraintResidualReport* report = nullptr) {
+    std::vector<Eigen::VectorXd> xs;
+    std::vector<Eigen::VectorXd> us;
+    Trajectory(out, xs, us);
+    rtc::mpc::ConstraintResidualReport r;
+    ASSERT_TRUE(mpc_->ocp().ConstraintResiduals(xs, us, r));
+    const double prim = out.residuals.prim_inf;
+    std::printf(
+        "[report] %s %s: prim %.3g, stance eq %.3g, swing eq %.3g, ineq violation %.3g; "
+        "friction margin [N] %.1f / %.1f, CoP margin [m] %.4f / %.4f\n",
+        GetParam(), name, prim, r.stance_equality_max, r.swing_equality_max,
+        r.inequality_violation_max, r.min_friction_margin[0], r.min_friction_margin[1],
+        r.min_cop_margin[0], r.min_cop_margin[1]);
+    // The same values the solver measured, recomputed in another order: equal
+    // to within rounding (relative 1e-12), not bit for bit.
+    const double bound = prim * (1.0 + 1e-12);
+    EXPECT_LE(r.stance_equality_max, bound) << name;
+    EXPECT_LE(r.swing_equality_max, bound) << name;
+    EXPECT_LE(r.inequality_violation_max, bound) << name;
+    EXPECT_LE(prim, Solver().prim_tol) << name;
+    double joint_margin = std::numeric_limits<double>::infinity();
+    for (const auto& x : xs) {
+      for (int j = 1; j < model_.njoints; ++j) {
+        const auto& joint = model_.joints[static_cast<std::size_t>(j)];
+        if (joint.nq() != 1 || joint.nv() != 1) {
+          continue;
+        }
+        const double q = x[joint.idx_q()];
+        joint_margin = std::min({joint_margin, q - model_.lowerPositionLimit[joint.idx_q()],
+                                 model_.upperPositionLimit[joint.idx_q()] - q});
+      }
+    }
+    std::printf("[report] %s %s: smallest joint margin %.4f rad\n", GetParam(), name, joint_margin);
+    if (report != nullptr) {
+      *report = r;
+    }
+  }
+
+  /// Report: contact @p c's height error over the swing nodes, its vertical
+  /// velocity at touchdown (node @p last + 1) and how far it goes below its
+  /// stance height after that.
+  void ReportSwing(const rtc::mpc::MPCSolution& out, const HorizonReference& h, int c, int first,
+                   int last, const char* name) const {
+    pinocchio::Data data(model_);
+    const auto foot = static_cast<pinocchio::FrameIndex>(
+        handler_.contact_frames()[static_cast<std::size_t>(c)].frame_id);
+    const double z0 = h.stages[0].contact_pose[7 * static_cast<std::size_t>(c) + 2];
+    double worst_z = 0.0;
+    double lowest = std::numeric_limits<double>::infinity();
+    double vz_touch = 0.0;
+    for (int k = first; k <= out.horizon_length; ++k) {
+      const auto i = static_cast<std::size_t>(k);
+      const Eigen::Map<const Eigen::VectorXd> q(out.q_traj[i].data(), model_.nq);
+      const Eigen::Map<const Eigen::VectorXd> v(out.v_traj[i].data(), model_.nv);
+      pinocchio::forwardKinematics(model_, data, q, v);
+      pinocchio::updateFramePlacements(model_, data);
+      const double z = data.oMf[foot].translation().z();
+      if (k <= last) {
+        worst_z = std::max(
+            worst_z, std::abs(z - h.stages[i].contact_pose[7 * static_cast<std::size_t>(c) + 2]));
+      } else {
+        lowest = std::min(lowest, z);
+      }
+      if (k == last + 1) {
+        vz_touch = pinocchio::getFrameVelocity(model_, data, foot, pinocchio::LOCAL_WORLD_ALIGNED)
+                       .linear()
+                       .z();
+      }
+    }
+    std::printf(
+        "[report] %s %s: swing z error max %.4f m, touchdown v_z %.3f m/s, lowest z after "
+        "touchdown %.4f m below the stance height\n",
+        GetParam(), name, worst_z, vz_touch, z0 - lowest);
+  }
+
   std::unique_ptr<KinodynamicMPC> mpc_;
 };
+
+/// Contact @p swing lifted over nodes `[first, last]` like `tu::SwingContact`,
+/// but on a `1 − cos` height profile: it leaves and lands at zero vertical
+/// velocity (the reference planner's touchdown velocity).
+void SwingContactCosine(const rtc::mpc::RobotModelHandler& handler, HorizonReference& h, int swing,
+                        int first, int last, double height, double impact) {
+  tu::SwingContact(handler, h, swing, first, last, height, impact);
+  const double T = (last - first + 2) * h.dt;
+  const double w = 2.0 * std::acos(-1.0) / T;
+  const auto i = static_cast<std::size_t>(swing);
+  const double z0 = h.stages[0].contact_pose[7 * i + 2];
+  for (int k = first; k <= last; ++k) {
+    rtc::mpc::StageReference& s = h.stages[static_cast<std::size_t>(k)];
+    const double t = (k - first + 1) * h.dt;
+    s.contact_pose[7 * i + 2] = z0 + 0.5 * height * (1.0 - std::cos(w * t));
+    s.contact_twist[6 * i + 2] = 0.5 * height * w * std::sin(w * t);
+    s.contact_acceleration[6 * i + 2] = 0.5 * height * w * w * std::cos(w * t);
+  }
+}
 
 TEST_P(KinodynamicSolve, StandingConvergesFromTheReferenceSeed) {
   const auto h = tu::StanceHorizon(handler_, stand_);
@@ -1300,6 +1422,7 @@ TEST_P(KinodynamicSolve, StandingConvergesFromTheReferenceSeed) {
   EXPECT_TRUE(out->converged);
   EXPECT_LE(out->iterations, 10);
   EXPECT_TRUE(Finite(*out));
+  ExpectResidualsWithinTolerance(*out, "stance");
 }
 
 TEST_P(KinodynamicSolve, OneFootSwingingConvergesAndItsWrenchStaysAtTheReference) {
@@ -1340,6 +1463,80 @@ TEST_P(KinodynamicSolve, OneFootSwingingConvergesAndItsWrenchStaysAtTheReference
   }
   std::printf("[report] %s swing: foot height max |z - z_ref| %.3g m (reference peak 0.05)\n",
               GetParam(), worst_z);
+  ExpectResidualsWithinTolerance(*out, "swing");
+}
+
+TEST_P(KinodynamicSolve, OneFootSwingingWithZeroTouchdownVelocityConverges) {
+  auto h = tu::StanceHorizon(handler_, stand_);
+  SwingContactCosine(handler_, *h, 0, 8, 19, 0.05, 1.0);
+  auto out = std::make_unique<rtc::mpc::MPCSolution>();
+  double ms = 0.0;
+  ASSERT_EQ(SolveOnce(*h, *out, &ms), rtc::mpc::MPCSolveError::kNoError);
+  std::printf("[report] %s swing (1 - cos, left): %d iterations, %.1f ms per iteration\n",
+              GetParam(), out->iterations, ms / std::max(1, out->iterations));
+  EXPECT_TRUE(out->converged);
+  EXPECT_LE(out->iterations, Solver().max_iters);
+  ASSERT_TRUE(Finite(*out));
+  ExpectResidualsWithinTolerance(*out, "swing (1 - cos)");
+  ReportSwing(*out, *h, 0, 8, 19, "swing (1 - cos)");
+
+  // Report: the next tick, warm-started — the schedule one node further on,
+  // so liftoff and touchdown move by one node.
+  auto next = tu::StanceHorizon(handler_, stand_);
+  SwingContactCosine(handler_, *next, 0, 7, 18, 0.05, 1.0);
+  rtc::mpc::MPCStateSnapshot state = tu::SnapshotAt(model_, stand_);
+  state.sequence = 1;
+  auto out2 = std::make_unique<rtc::mpc::MPCSolution>();
+  const rtc::mpc::MPCSolveError e2 = mpc_->Solve(Context(next.get()), state, *out2);
+  std::printf(
+      "[report] %s two ticks: tick 1 %d iterations (prim %.3g), tick 2 %s %d iterations "
+      "(prim %.3g, converged %d)\n",
+      GetParam(), out->iterations, out->residuals.prim_inf,
+      e2 == rtc::mpc::MPCSolveError::kNoError ? "ok" : "error", out2->iterations,
+      out2->residuals.prim_inf, out2->converged ? 1 : 0);
+}
+
+// Report only: the half-sine reference lands at a non-zero vertical velocity.
+TEST_P(KinodynamicSolve, HalfSineSwingReport) {
+  auto h = tu::StanceHorizon(handler_, stand_);
+  tu::SwingContact(handler_, *h, 0, 8, 19, 0.05, 1.0);
+  auto out = std::make_unique<rtc::mpc::MPCSolution>();
+  ASSERT_EQ(SolveOnce(*h, *out), rtc::mpc::MPCSolveError::kNoError);
+  std::printf("[report] %s swing (half sine, left): %d iterations, converged %d\n", GetParam(),
+              out->iterations, out->converged ? 1 : 0);
+  if (out->converged && Finite(*out)) {
+    ReportSwing(*out, *h, 0, 8, 19, "swing (half sine)");
+  }
+}
+
+TEST_P(KinodynamicSolve, StandingConvergesFromAMovingBase) {
+  const auto h = tu::StanceHorizon(handler_, stand_);
+  rtc::mpc::MPCStateSnapshot state = tu::SnapshotAt(model_, stand_);
+  // Base LOCAL linear velocity; the stand base is level, so these are world axes too.
+  state.v[0] = 0.05;
+  state.v[1] = 0.05;
+  state.v[2] = 0.05;
+  auto out = std::make_unique<rtc::mpc::MPCSolution>();
+  ASSERT_EQ(SolveOnceFrom(*h, state, *out), rtc::mpc::MPCSolveError::kNoError);
+  std::printf("[report] %s moving base: %d iterations\n", GetParam(), out->iterations);
+  EXPECT_TRUE(out->converged);
+  EXPECT_LE(out->iterations, 10);
+  ASSERT_TRUE(Finite(*out));
+  ExpectResidualsWithinTolerance(*out, "moving base");
+
+  // The initial node's stance rows: the node the solver cannot move.
+  std::vector<Eigen::VectorXd> xs;
+  std::vector<Eigen::VectorXd> us;
+  Trajectory(*out, xs, us);
+  auto& stage0 = *mpc_->ocp().problem().stages_[0];
+  const auto* eq = stage0.constraints_.getConstraint<rtc::mpc::ContactConstraintResidual>(
+      KinodynamicOCP::kEqualityConstraint);
+  ASSERT_NE(eq, nullptr);
+  auto d = eq->createData();
+  eq->evaluate(xs[0], us[0], *d);
+  const double stage0_eq = d->value_.cwiseAbs().maxCoeff();
+  std::printf("[report] %s moving base: stage-0 stance equality %.3g\n", GetParam(), stage0_eq);
+  EXPECT_LE(stage0_eq, 1e-4);
 }
 
 // A tick whose horizon has another shape is refused through the core — whose
