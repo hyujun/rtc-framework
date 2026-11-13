@@ -157,8 +157,9 @@ TEST_F(LocomotionPhaseManagerTest, ABadValueIsRefusedByItsSection) {
 // ── Per tick ────────────────────────────────────────────────────────────────
 
 // The manager's horizon is the one the scheduler and the builder give when
-// driven directly with the same table, configs, times, snapshot and command
-// (the shipped walk taken over from stance), byte for byte, tick after tick.
+// driven directly with the same table, configs, snapshot and command (the
+// shipped walk taken over from stance) at the tick's grid time and node index,
+// byte for byte, tick after tick.
 TEST_F(LocomotionPhaseManagerTest, TheHorizonIsTheDirectlyBuiltOne) {
   LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
   ASSERT_EQ(m.Load(tu::ShippedLocomotionYaml()), LocomotionPhaseError::kNoError);
@@ -195,9 +196,14 @@ TEST_F(LocomotionPhaseManagerTest, TheHorizonIsTheDirectlyBuiltOne) {
     }
     snap.sequence = 100 + i;
     const PhaseContext ctx = Tick(m, snap, times[i]);
-    ASSERT_EQ(scheduler.Advance(times[i], cmd, rtc::mpc::PlanarVelocity{}),
+    // The manager ticks on its node grid (anchored at the first tick): the
+    // direct drive gets the same grid time and node index.
+    const rtc::mpc::NodeGrid grid{times[0], tu::kKinoDt};
+    std::int64_t index = 0;
+    ASSERT_TRUE(rtc::mpc::NodeIndexAt(grid, times[i], index));
+    ASSERT_EQ(scheduler.Advance(grid.Time(index), cmd, rtc::mpc::PlanarVelocity{}),
               GaitSchedulerError::kNoError);
-    ASSERT_EQ(builder.Build(scheduler, snap, cmd), ReferenceError::kNoError);
+    ASSERT_EQ(builder.Build(scheduler, snap, cmd, grid, index), ReferenceError::kNoError);
 
     ASSERT_EQ(m.LastUpdateError(), LocomotionPhaseError::kNoError) << "t " << times[i];
     ASSERT_NE(ctx.horizon, nullptr);
