@@ -1020,6 +1020,33 @@ bool SameTargets(const std::vector<std::vector<rtc::mpc::ContactHeightTarget>>& 
   return true;
 }
 
+// A non-finite trajectory has no residual report: max and min would skip its
+// NaNs and report it as clean.
+TEST_F(KinodynamicOCPTest, ConstraintResidualsRefuseANonFiniteTrajectory) {
+  const auto h = tu::StanceHorizon(handler_, stand_);
+  KinodynamicOCP ocp(cfg_);
+  ASSERT_EQ(ocp.Build(Context(h.get()), handler_, {}), OCPBuildError::kNoError);
+  Eigen::VectorXd x0(model_.nq + model_.nv);
+  x0 << stand_, Eigen::VectorXd::Zero(model_.nv);
+  std::vector<Eigen::VectorXd> xs(static_cast<std::size_t>(tu::kKinoNodes + 1), x0);
+  std::vector<Eigen::VectorXd> us(static_cast<std::size_t>(tu::kKinoNodes),
+                                  Eigen::VectorXd::Zero(handler_.nu()));
+  for (int k = 0; k < tu::kKinoNodes; ++k) {
+    ASSERT_TRUE(ocp.ReferenceControl(k, us[static_cast<std::size_t>(k)]));
+  }
+  rtc::mpc::ConstraintResidualReport r;
+  ASSERT_TRUE(ocp.ConstraintResiduals(xs, us, r));
+  r.stance_equality_max = -1.0;
+  us[7][2] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(ocp.ConstraintResiduals(xs, us, r));
+  EXPECT_EQ(r.stance_equality_max, -1.0);  // written nothing
+  us[7][2] = 0.0;
+  xs[3][model_.nq + 2] = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(ocp.ConstraintResiduals(xs, us, r));
+  xs.pop_back();
+  EXPECT_FALSE(ocp.ConstraintResiduals(xs, us, r));
+}
+
 TEST_F(KinodynamicOCPTest, UpdateReferencesWritesTheContactEqualityTargets) {
   auto h = tu::StanceHorizon(handler_, stand_);
   tu::SwingContact(handler_, *h, 1, 8, 19, 0.05, 0.5);

@@ -188,6 +188,15 @@ void ContactConstraintResidual::computeJacobians(const ConstVectorRef& x, const 
   if (!d.evaluated) {
     return;
   }
+  // The rows follow the mode of the evaluation, the ODE derivatives the mode
+  // the ODE has now: a mode switched in between would mix the two.
+  for (std::size_t k = 0; k < d.stance.size(); ++k) {
+    if ((d.stance[k] != 0) != static_cast<bool>(ode_->contact_states_[k])) {
+      d.Jx_.setConstant(kNaN);
+      d.Ju_.setConstant(kNaN);
+      return;
+    }
+  }
   const pinocchio::Model& model = ode_->pin_model_;
   const int nv = model.nv;
   d.kin.Derivatives(*ode_, x, u);

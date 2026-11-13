@@ -186,6 +186,8 @@ class ContactConstraintResidual final : public aligator::StageFunctionTpl<double
   void evaluate(const ConstVectorRef& x, const ConstVectorRef& u, BaseData& data) const override;
 
   /// @brief Needs the `evaluate` of the same `(x, u)` on the same data first.
+  ///        A bound ODE whose mode changed since that `evaluate` gives a NaN
+  ///        Jacobian (the rows and the ODE derivatives would disagree).
   void computeJacobians(const ConstVectorRef& x, const ConstVectorRef& u,
                         BaseData& data) const override;
 

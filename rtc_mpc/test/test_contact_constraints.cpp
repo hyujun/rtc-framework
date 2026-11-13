@@ -394,6 +394,28 @@ TEST_F(ContactConstraintsTest, InactiveRowsHoldTheInactiveValueForEveryMode3D) {
 // The mode is read from the bound ODE at evaluate: a SetMode after binding
 // moves the active rows, and the result is that of a residual bound to an
 // ODE made in the new mode.
+// A mode switched on the bound ODE between `evaluate` and
+// `computeJacobians` would pair the evaluated rows with the other mode's ODE
+// derivatives: the equality refuses it with a NaN Jacobian.
+TEST_F(ContactConstraintsTest, AModeSwitchBetweenEvaluateAndJacobiansGivesANaNJacobian) {
+  Rig& rig = rig6_;
+  const KinoSample& s = rig.samples[5];
+  Ode ode = rig.dyn.MakeOde(0b11).value();
+  ContactConstraintResidual eq(ode, RegisteredGains());
+  ASSERT_TRUE(eq.Bind(&ode));
+  auto d = eq.createData();
+  eq.evaluate(s.x, s.u, *d);
+  ASSERT_TRUE(rig.dyn.SetMode(ode, 0b01));
+  eq.computeJacobians(s.x, s.u, *d);
+  EXPECT_TRUE(d->Jx_.array().isNaN().all());
+  EXPECT_TRUE(d->Ju_.array().isNaN().all());
+  // Evaluated again in the new mode, the Jacobian is finite.
+  eq.evaluate(s.x, s.u, *d);
+  eq.computeJacobians(s.x, s.u, *d);
+  EXPECT_TRUE(d->Jx_.allFinite());
+  EXPECT_TRUE(d->Ju_.allFinite());
+}
+
 TEST_F(ContactConstraintsTest, SetModeAfterBindingMovesTheActiveRows) {
   Rig& rig = rig6_;
   const KinoSample& s = rig.samples[3];

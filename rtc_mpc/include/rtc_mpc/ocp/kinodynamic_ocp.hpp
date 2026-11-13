@@ -115,7 +115,8 @@ struct ConstraintResidualReport {
   /// Per contact, over the nodes it is in stance: the smallest friction
   /// margin `μ(f_z + f_grip) − √(f_x² + f_y² + ε)` [N], and the smallest
   /// distance [m] of the centre of pressure inside its rectangle (negative
-  /// outside; 6-D contacts). `+inf` for a contact never in stance.
+  /// outside, `−inf` at a node with no positive normal force; 6-D contacts).
+  /// `+inf` for a contact never in stance.
   std::array<double, kMaxContacts> min_friction_margin{};
   std::array<double, kMaxContacts> min_cop_margin{};
 };
@@ -166,7 +167,8 @@ class KinodynamicOCP final : public OCPHandlerBase {
   /// @brief Evaluate every stage's constraints at `(xs[k], us[k])` with the
   ///        stage's current mode and targets, into @p out.
   /// @return false, writing nothing, before a `Build`, for `xs` / `us` of
-  ///         another length or entry size, or if an evaluation threw.
+  ///         another length or entry size, for a non-finite entry or
+  ///         residual, or if an evaluation threw.
   [[nodiscard]] bool ConstraintResiduals(const std::vector<Eigen::VectorXd>& xs,
                                          const std::vector<Eigen::VectorXd>& us,
                                          ConstraintResidualReport& out) noexcept;

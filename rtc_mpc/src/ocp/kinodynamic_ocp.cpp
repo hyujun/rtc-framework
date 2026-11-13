@@ -296,7 +296,10 @@ bool KinodynamicOCP::ConstraintResiduals(const std::vector<Eigen::VectorXd>& xs,
     return false;
   }
   for (std::size_t k = 0; k < stages_.size(); ++k) {
-    if (xs[k].size() != nq_ + nv_ || us[k].size() != nu_) {
+    // A non-finite trajectory has no residual: max / min would skip its NaNs
+    // and report it as clean.
+    if (xs[k].size() != nq_ + nv_ || us[k].size() != nu_ || !xs[k].allFinite() ||
+        !us[k].allFinite()) {
       return false;
     }
   }
@@ -311,6 +314,9 @@ bool KinodynamicOCP::ConstraintResiduals(const std::vector<Eigen::VectorXd>& xs,
       const StageHandles& st = stages_[k];
       st.equality->evaluate(xs[k], us[k], eq);
       st.inequality->evaluate(xs[k], us[k], ineq);
+      if (!eq.value_.allFinite() || !ineq.value_.allFinite()) {
+        return false;
+      }
       const int eq_rows = st.equality->rows_per_contact();
       const int in_rows = st.inequality->rows_per_contact();
       const int nc = st.equality->n_contacts();
