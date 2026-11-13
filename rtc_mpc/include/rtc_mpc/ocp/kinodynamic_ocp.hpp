@@ -16,13 +16,19 @@
 ///   = `contact_tracking_weights` on every contact block) — the running cost
 ///   integrated over the node interval, as the reference formulation does;
 ///
-///   plus the soft limits, also `× dt`: the joint position barrier
-///   (`JointLimitBarrierCost`) and, when `constraints.collision.enabled`, the
-///   sphere-pair barrier (`CollisionBarrierCost`);
-/// - constraints (`ContactConstraintResidual` as an equality,
-///   `ContactWrenchConeResidual` as a negative orthant): every contact's
-///   rows of both phases, active by the stage's mode — the row count is the
-///   same for every mode;
+///   plus the soft terms, also `× dt`: the contact wrench cone barrier
+///   (`ContactConeBarrierCost` — friction and centre of pressure of the
+///   stance contacts, the reference formulation's relaxed log barrier), the
+///   joint position barrier (`JointLimitBarrierCost`) and, when
+///   `constraints.collision.enabled`, the sphere-pair barrier
+///   (`CollisionBarrierCost`);
+/// - one constraint, `ContactConstraintResidual` as an equality: every
+///   contact's rows of both phases, active by the stage's mode — the row
+///   count is the same for every mode. Friction and centre of pressure are
+///   not hard rows: as hard rows they stall a walking window (the solver
+///   drives the rear foot's normal force of a double-support node to zero,
+///   where the CoP rows hold trivially and the friction row stays violated by
+///   `√ε`), as the barrier they do not;
 ///
 /// and the terminal cost is `½‖x ⊖ x_ref,H‖²` weighted by
 /// `terminal_scaling · terminal_weights` (not multiplied by `dt`; no soft
@@ -65,9 +71,9 @@
 /// ## Cold seed
 ///
 /// `cold_seed()` is `kReferenceControl`: the handler core starts a cold
-/// solve from each node's `u_ref` (`ReferenceControl`) — with hard friction
-/// and centre-of-pressure rows, `u = 0` violates the friction cone of every
-/// stance contact and sits all four CoP rows on the cone's apex.
+/// solve from each node's `u_ref` (`ReferenceControl`) — `u = 0` puts every
+/// stance contact outside its friction cone (margin `−√ε`) and all four CoP
+/// margins at zero, deep in the barrier's quadratic branch.
 ///
 /// ## Threads and real time
 ///
@@ -110,7 +116,8 @@ struct ConstraintResidualReport {
   double stance_equality_max{0.0};
   /// Largest `|c|` over the swing rows.
   double swing_equality_max{0.0};
-  /// Largest `max(0, c)` over the active inequality rows.
+  /// Largest `max(0, c)` over the wrench cone rows of the stance contacts
+  /// (the barrier penalises, it does not forbid, an iterate outside).
   double inequality_violation_max{0.0};
   /// Per contact, over the nodes it is in stance: the smallest friction
   /// margin `μ(f_z + f_grip) − √(f_x² + f_y² + ε)` [N], and the smallest
@@ -125,16 +132,16 @@ class KinodynamicOCP final : public OCPHandlerBase {
  public:
   static constexpr std::string_view kType{"kinodynamic"};
 
-  /// Keys of the three terms of every stage's `CostStack`.
+  /// Keys of the terms of every stage's `CostStack` (collision only when enabled).
   static constexpr std::string_view kStateCostKey{"state"};
   static constexpr std::string_view kInputCostKey{"input"};
   static constexpr std::string_view kContactTrackingCostKey{"contact_tracking"};
+  static constexpr std::string_view kContactConeCostKey{"contact_cone"};
   static constexpr std::string_view kJointLimitCostKey{"joint_limits"};
   static constexpr std::string_view kCollisionCostKey{"collision"};
 
-  /// Indices of the two constraints of every stage.
+  /// Index of the one constraint of every stage.
   static constexpr std::size_t kEqualityConstraint = 0;
-  static constexpr std::size_t kInequalityConstraint = 1;
 
   using QuadStateCost = aligator::QuadraticStateCostTpl<double>;
   using QuadControlCost = aligator::QuadraticControlCostTpl<double>;
@@ -184,7 +191,7 @@ class KinodynamicOCP final : public OCPHandlerBase {
     QuadControlCost* input{nullptr};
     ContactTrackingResidual* tracking{nullptr};
     ContactConstraintResidual* equality{nullptr};
-    ContactWrenchConeResidual* inequality{nullptr};
+    ContactConeBarrierCost* cone{nullptr};
     CollisionBarrierCost* collision{nullptr};  ///< null when collision is disabled
   };
 

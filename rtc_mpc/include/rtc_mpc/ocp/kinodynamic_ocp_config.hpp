@@ -47,11 +47,15 @@
 ///       mu: 0.4              # > 0
 ///       grip_force: 0.0      # [N] ≥ 0
 ///       regularization: 25.0 # ε [N²] > 0
+///       barrier_mu: 0.2      # relaxed log barrier on the margin [N]; > 0
+///       barrier_delta: 5.0   # [N] > 0
 ///     contact_rectangle:     # CoP bounds on each 6-D contact frame's x-y plane [m];
 ///       x_min: -0.09         # must contain the frame origin:
 ///       x_max: 0.09          # x_min < 0 < x_max, y_min < 0 < y_max
 ///       y_min: -0.03
 ///       y_max: 0.03
+///       barrier_mu: 0.6      # relaxed log barrier on the margins [N·m]; > 0
+///       barrier_delta: 0.03  # [N·m] > 0
 ///     joint_limits: {mu: 1200.0, delta: 0.1}   # barrier on the model's limits; δ > 0
 ///     collision:             # sphere-pair barrier, active outside full stance
 ///       enabled: false
@@ -126,7 +130,9 @@ inline constexpr int kContactTrackingRows = 18;
 struct KinodynamicConstraintsConfig {
   FootConstraintGains foot_constraint{};
   FrictionCone friction{};
+  RelaxedLogBarrier friction_barrier{};
   ContactRectangle contact_rectangle{};
+  RelaxedLogBarrier cop_barrier{};
   PolynomialBarrier joint_limits{};
   bool collision_enabled{false};
   PolynomialBarrier collision{};

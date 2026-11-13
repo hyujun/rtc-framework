@@ -1,6 +1,6 @@
 /// @file contact_constraints.cpp
 /// @brief Values and analytic Jacobians of the contact equality and the
-///        wrench cone inequality (see the header for the rows).
+///        wrench cone residual (see the header for the rows).
 
 #include "rtc_mpc/ocp/contact_constraints.hpp"
 

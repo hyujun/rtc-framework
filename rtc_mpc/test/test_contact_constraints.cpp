@@ -1,5 +1,5 @@
 /// @file test_contact_constraints.cpp
-/// @brief The contact equality and the wrench cone inequality of the
+/// @brief The contact equality and the wrench cone residual of the
 ///        kinodynamic OCP on the public G1 (two 6-D soles, and the same soles
 ///        declared 3-D), and the frame kinematics they share: row counts from
 ///        the force size, the mode mask read from the bound ODE, sign fixtures

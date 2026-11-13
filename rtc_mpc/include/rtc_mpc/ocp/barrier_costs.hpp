@@ -4,9 +4,11 @@
 /// @file barrier_costs.hpp
 /// @brief The soft limits of the kinodynamic OCP: a piecewise-polynomial
 ///        barrier on a margin `h` (`h ≥ 0` inside), applied to the joint
-///        position limits and to sphere pairs (self-collision).
+///        position limits and to sphere pairs (self-collision), and a relaxed
+///        log barrier on the contact wrench cone (friction and centre of
+///        pressure).
 ///
-/// ## Barrier
+/// ## Polynomial barrier
 ///
 ///   B(h) = μ·(½h² − δh/2 + δ²/6)                   h ≤ 0
 ///          μ·(−h³/(6δ) + ½h² − δh/2 + δ²/6)        0 < h < δ
@@ -33,12 +35,38 @@
 /// ∇h_iᵀ` (PSD; the exact one is not). Below `kMinDistance` the direction is
 /// undefined and the pair's gradient is zero.
 ///
+/// ## Relaxed log barrier (`RelaxedLogBarrier`)
+///
+///   B(h) = −μ·ln h                                  h > δ
+///          μ·(−ln δ + ½((h − 2δ)/δ)² − ½)           h ≤ δ
+///
+/// — the log barrier, continued below `δ` by the quadratic that matches its
+/// value, slope and curvature at `h = δ` (`C²`): finite everywhere, so an
+/// iterate outside the set (`h ≤ 0`) is penalised, not refused.
+///
+/// ## Contact wrench cone (`ContactConeBarrierCost`)
+///
+/// `Σ_rows B(h_i)` over the rows of `ContactWrenchConeResidual` of the
+/// contacts in stance at the node (`h = −c`: the friction margin
+/// `μ(f_z + f_grip) − √(f_x² + f_y² + ε)` [N] with the friction barrier, and
+/// the four centre-of-pressure margins `h = a·τ_L + b·F_z` [N·m] with the CoP
+/// barrier); a swing contact's rows add nothing. The mode is the bound ODE's
+/// at `evaluate` (the residual reads it). Gradient `Σ B'(h_i)·∇h_i`. Hessian
+/// Gauss–Newton `Σ B''(h_i)·∇h_i ∇h_iᵀ` plus, for each friction row, the
+/// curvature of its square root, `B'(h)·∇²h` with `∇²_{f_xy} h = −(I −
+/// f_xy f_xyᵀ/s²)/s`, `s = √(f_x² + f_y² + ε)` (PSD: `B' < 0`). The other
+/// second-order terms of the CoP margins — through the frame rotation, in
+/// `q` and across `q` and `[f; τ]` — are dropped: the gradient is exact,
+/// the Hessian a PSD approximation (the friction row's is exact).
+///
 /// ## Real time
 ///
 /// Construction and `createData` allocate (configure time). `evaluate`,
-/// `computeGradients`, `computeHessians` and the setters do not.
+/// `computeGradients`, `computeHessians` and the setters allocate nothing of
+/// their own.
 
 #include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
+#include "rtc_mpc/ocp/contact_constraints.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -61,6 +89,16 @@ namespace rtc::mpc {
 struct PolynomialBarrier {
   double mu{0.0};     ///< curvature below 0, ≥ 0
   double delta{0.0};  ///< width of the polynomial band, > 0
+
+  [[nodiscard]] double Value(double h) const noexcept;
+  [[nodiscard]] double Derivative(double h) const noexcept;
+  [[nodiscard]] double SecondDerivative(double h) const noexcept;
+};
+
+/// @brief The relaxed log barrier `B(h)` (file comment).
+struct RelaxedLogBarrier {
+  double mu{0.0};     ///< scale, > 0
+  double delta{0.0};  ///< where the log turns quadratic, > 0
 
   [[nodiscard]] double Value(double h) const noexcept;
   [[nodiscard]] double Derivative(double h) const noexcept;
@@ -177,6 +215,64 @@ class CollisionBarrierCost final : public aligator::CostAbstractTpl<double> {
   int njoints_{0};
   int nframes_{0};
   const Ode* ode_{nullptr};  // non-owning; the stage's ODE
+};
+
+/// @brief Evaluation buffers of one @ref ContactConeBarrierCost.
+struct ContactConeBarrierData : aligator::CostDataAbstractTpl<double> {
+  using Base = aligator::CostDataAbstractTpl<double>;
+
+  ContactConeBarrierData(int ndx, int nu, int nv,
+                         std::shared_ptr<aligator::StageFunctionDataTpl<double>> cone);
+
+  /// The wrench cone residual's own data (values, Jacobians, modes).
+  std::shared_ptr<aligator::StageFunctionDataTpl<double>> cone;
+  Eigen::VectorXd jx;           ///< `nv` — one row's configuration Jacobian
+  Eigen::VectorXd jx_scaled;    ///< `nv` — the same times `B''`
+  bool jacobians_fresh{false};  ///< `computeGradients` ran after the last `evaluate`
+};
+
+/// @brief The soft contact wrench cone (file comment).
+class ContactConeBarrierCost final : public aligator::CostAbstractTpl<double> {
+ public:
+  using Base = aligator::CostAbstractTpl<double>;
+  using Space = KinodynamicDynamics::Space;
+  using Ode = KinodynamicDynamics::Ode;
+  using CostData = aligator::CostDataAbstractTpl<double>;
+
+  /// @brief Over a copy of @p residual (its binding included). Allocates.
+  /// @throws std::invalid_argument for a barrier `μ` or `δ` not finite and > 0.
+  ContactConeBarrierCost(const Space& space, const ContactWrenchConeResidual& residual,
+                         const RelaxedLogBarrier& friction, const RelaxedLogBarrier& cop);
+
+  /// @return as `ContactWrenchConeResidual::Bind` (this cost's copy).
+  [[nodiscard]] bool Bind(const Ode* ode) noexcept { return residual_.Bind(ode); }
+
+  [[nodiscard]] const Ode* bound_ode() const noexcept { return residual_.bound_ode(); }
+
+  /// @return the residual whose margins this cost penalises.
+  [[nodiscard]] const ContactWrenchConeResidual& residual() const noexcept { return residual_; }
+
+  [[nodiscard]] const RelaxedLogBarrier& friction_barrier() const noexcept { return friction_; }
+
+  [[nodiscard]] const RelaxedLogBarrier& cop_barrier() const noexcept { return cop_; }
+
+  /// @brief Unbound: NaN.
+  void evaluate(const ConstVectorRef& x, const ConstVectorRef& u, CostData& data) const override;
+  /// @brief After the `evaluate` of the same `(x, u)` on the same data.
+  void computeGradients(const ConstVectorRef& x, const ConstVectorRef& u,
+                        CostData& data) const override;
+  /// @brief After `computeGradients` (it reuses the Jacobians that left);
+  ///        without it since the last `evaluate`, NaN.
+  void computeHessians(const ConstVectorRef& x, const ConstVectorRef& u,
+                       CostData& data) const override;
+
+  /// @throws std::logic_error while unbound. Allocates.
+  [[nodiscard]] std::shared_ptr<CostData> createData() const override;
+
+ private:
+  ContactWrenchConeResidual residual_;
+  RelaxedLogBarrier friction_;
+  RelaxedLogBarrier cop_;
 };
 
 }  // namespace rtc::mpc

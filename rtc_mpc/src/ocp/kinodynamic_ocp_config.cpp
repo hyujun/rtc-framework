@@ -236,6 +236,14 @@ using Error = KinodynamicOCPConfigError;
   return ReadValue(map, "delta", true, out.delta);
 }
 
+[[nodiscard]] Error ReadLogBarrier(const YAML::Node& map, RelaxedLogBarrier& out) {
+  Error e = ReadValue(map, "barrier_mu", true, out.mu);
+  if (e != Error::kNoError) {
+    return e;
+  }
+  return ReadValue(map, "barrier_delta", true, out.delta);
+}
+
 [[nodiscard]] Error ReadFrame(const YAML::Node& pair, const char* key,
                               const pinocchio::Model& model, pinocchio::FrameIndex& out) {
   const YAML::Node v = Child(pair, key);
@@ -339,7 +347,7 @@ using Error = KinodynamicOCPConfigError;
   }
 
   const YAML::Node friction = Child(map, "friction");
-  e = CheckSection(friction, {"mu", "grip_force", "regularization"});
+  e = CheckSection(friction, {"mu", "grip_force", "regularization", "barrier_mu", "barrier_delta"});
   if (e == Error::kNoError) {
     e = ReadValue(friction, "mu", true, c.friction.mu);
   }
@@ -349,12 +357,15 @@ using Error = KinodynamicOCPConfigError;
   if (e == Error::kNoError) {
     e = ReadValue(friction, "regularization", true, c.friction.regularization);
   }
+  if (e == Error::kNoError) {
+    e = ReadLogBarrier(friction, c.friction_barrier);
+  }
   if (e != Error::kNoError) {
     return e;
   }
 
   const YAML::Node rectangle = Child(map, "contact_rectangle");
-  e = CheckSection(rectangle, {"x_min", "x_max", "y_min", "y_max"});
+  e = CheckSection(rectangle, {"x_min", "x_max", "y_min", "y_max", "barrier_mu", "barrier_delta"});
   if (e != Error::kNoError) {
     return e;
   }
@@ -367,6 +378,10 @@ using Error = KinodynamicOCPConfigError;
     if (r != FieldRead::kOk) {
       return ToError<Error>(r);
     }
+  }
+  e = ReadLogBarrier(rectangle, c.cop_barrier);
+  if (e != Error::kNoError) {
+    return e;
   }
   if (!(rect.x_min < 0.0 && 0.0 < rect.x_max && rect.y_min < 0.0 && 0.0 < rect.y_max)) {
     return Error::kInvalidRectangle;
