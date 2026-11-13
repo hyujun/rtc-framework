@@ -145,6 +145,7 @@ from .config import (
     preset_hand_targets,
     presets_refused_for_side,
     read_only_gain_rows,
+    refused_preset_path,
     register_scalar_gain_schema,
     superseded_default_presets,
     target_panel_states,
@@ -1167,7 +1168,7 @@ class DemoControllerGUI(Node):
                 # One preset of the other hand points seven joints the wrong
                 # way: refuse the whole file, but keep it (set aside, not
                 # overwritten by the defaults written below).
-                aside = self._preset_path + ".refused"
+                aside = refused_preset_path(self._preset_path)
                 reason = (
                     f"{self._preset_path}: presets {refused} are tagged for another hand "
                     f"than '{self._profile.side}' — file refused"
@@ -7079,11 +7080,17 @@ class DemoControllerGUI(Node):
             "Overwrite them? (No = import only the new names)",
         ):
             mirrored = {k: v for k, v in mirrored.items() if k not in clashes}
-        self._presets.update(mirrored)
-        self._save_presets_to_file()
-        self._refresh_preset_tree()
+        if mirrored:
+            self._presets.update(mirrored)
+            self._save_presets_to_file()
+            self._refresh_preset_tree()
         self.get_logger().info(
             f"Imported {len(mirrored)} mirrored preset(s) from {source_path}"
+            + (
+                f"; kept this hand's {clashes}"
+                if clashes and not set(clashes) & set(mirrored)
+                else ""
+            )
             + (f"; skipped {skipped}" if skipped else "")
         )
         sequence_path = os.path.join(

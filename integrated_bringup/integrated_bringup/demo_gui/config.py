@@ -406,6 +406,18 @@ def presets_refused_for_side(presets: dict, side: str) -> list[str]:
     )
 
 
+def refused_preset_path(path: str) -> str:
+    """Where a refused preset file is set aside: ``<path>.refused``, or the
+    first free ``<path>.refused.<n>`` — a second refusal must not overwrite
+    the first one's file."""
+    candidate = path + ".refused"
+    n = 1
+    while os.path.exists(candidate):
+        candidate = f"{path}.refused.{n}"
+        n += 1
+    return candidate
+
+
 def mirror_presets(
     presets: dict, signs: tuple[float, ...] | list[float], from_side: str, to_side: str
 ) -> tuple[dict, list[str]]:

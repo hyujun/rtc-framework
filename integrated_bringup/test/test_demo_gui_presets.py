@@ -266,6 +266,15 @@ def test_presets_tagged_for_the_other_hand_are_refused():
         assert config.presets_refused_for_side(default_presets_for(hand_dof, scope), "left") == []
 
 
+def test_a_second_refusal_does_not_overwrite_the_first_set_aside_file(tmp_path):
+    path = str(tmp_path / "hand_presets_p2_left.json")
+    assert config.refused_preset_path(path) == path + ".refused"
+    (tmp_path / "hand_presets_p2_left.json.refused").write_text("{}")
+    assert config.refused_preset_path(path) == path + ".refused.1"
+    (tmp_path / "hand_presets_p2_left.json.refused.1").write_text("{}")
+    assert config.refused_preset_path(path) == path + ".refused.2"
+
+
 def test_the_gui_tags_what_it_saves_and_imports_without_publishing():
     import inspect
 
@@ -276,7 +285,9 @@ def test_the_gui_tags_what_it_saves_and_imports_without_publishing():
     imported = inspect.getsource(DemoControllerGUI._import_mirrored_presets)
     assert "mirror_presets(" in imported
     assert "publish(" not in imported
-    assert "presets_refused_for_side(" in inspect.getsource(DemoControllerGUI._load_presets)
+    loader = inspect.getsource(DemoControllerGUI._load_presets)
+    assert "presets_refused_for_side(" in loader
+    assert "refused_preset_path(" in loader
 
 
 # ── Gains panel: read-only rows ──────────────────────────────────────────────
