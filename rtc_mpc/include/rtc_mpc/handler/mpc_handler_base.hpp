@@ -77,7 +77,8 @@ enum class MPCInitError {
   kSolverSetupFailed,        ///< Aligator's setup() threw (caught internally)
   kInvalidSolverConfig,      ///< tolerances / max_iters out of range
   kOcpTypeMismatch,          ///< ctx.ocp_type != this handler's dispatch key
-  kFloatingBaseUnsupported,  ///< free-flyer root; the shipped OCPs are fixed-base torque models
+  kFloatingBaseUnsupported,  ///< free-flyer root under a joint-torque OCP (the shipped OCPs)
+  kFixedBaseUnsupported,     ///< fixed base under a kinodynamic-wrench OCP
 };
 
 /// @brief Failure modes for @ref MPCHandlerBase::Solve. **Never thrown** —
@@ -85,8 +86,9 @@ enum class MPCInitError {
 enum class MPCSolveError {
   kNoError = 0,
   kNotInitialised,     ///< Solve called before successful Init
-  kStateDimMismatch,   ///< snapshot.{nq,nv} differ from handler's model, or
-                       ///< its q / v hold a non-finite value
+  kStateDimMismatch,   ///< snapshot.{nq,nv} differ from handler's model, its
+                       ///< q / v hold a non-finite value, or its free-flyer
+                       ///< quaternion is not unit length
   kRebuildRequired,    ///< phase_changed with cross-mode OCP type — the
                        ///< MPCFactory / orchestration layer must swap the
                        ///< handler, not this instance

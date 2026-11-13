@@ -130,6 +130,13 @@ struct WbLayout {
                             Eigen::Ref<Eigen::VectorXd> wrench,
                             Eigen::Ref<Eigen::VectorXd> qdd_j) const noexcept;
 
+  /// @brief True for a fixed base; on a floating base, when the free-flyer
+  ///        quaternion in @p q (size `nq`) is finite and unit length — the
+  ///        one tolerance every consumer of this layout uses. False on a size
+  ///        mismatch.
+  [[nodiscard]] bool BaseQuaternionIsUnit(
+      const Eigen::Ref<const Eigen::VectorXd>& q) const noexcept;
+
   /// @brief State-tangent difference `dx = [difference(q_ref, q_cur); v_cur − v_ref]`.
   /// @param model  the model this layout was built from (`model.nv == nv`)
   /// @param dx     output, size `ndx`

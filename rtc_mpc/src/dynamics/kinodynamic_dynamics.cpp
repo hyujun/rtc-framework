@@ -15,9 +15,13 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <aligator/modelling/dynamics/integrator-explicit.hpp>
+#include <aligator/modelling/dynamics/integrator-rk2.hpp>
+#include <aligator/modelling/dynamics/integrator-semi-euler.hpp>
 #pragma GCC diagnostic pop
 
+#include <cmath>
 #include <cstddef>
+#include <utility>
 
 namespace rtc::mpc {
 
@@ -25,6 +29,19 @@ namespace rtc::mpc {
 // with `2^n_contacts` still representable.
 static_assert(static_cast<std::size_t>(kMaxContacts) < kMaxContactBits,
               "a contact mode must name every contact of a layout");
+
+KinodynamicError ParseKinodynamicIntegrator(std::string_view name,
+                                            KinodynamicIntegrator& out) noexcept {
+  if (name == "semi_implicit_euler") {
+    out = KinodynamicIntegrator::kSemiImplicitEuler;
+    return KinodynamicError::kNoError;
+  }
+  if (name == "rk2") {
+    out = KinodynamicIntegrator::kRk2;
+    return KinodynamicError::kNoError;
+  }
+  return KinodynamicError::kUnknownIntegrator;
+}
 
 KinodynamicError KinodynamicDynamics::Init(const RobotModelHandler& handler) noexcept {
   model_ = nullptr;
@@ -108,6 +125,44 @@ std::optional<KinodynamicDynamics::Ode> KinodynamicDynamics::MakeOde(
   } catch (...) {
     return std::nullopt;
   }
+}
+
+KinodynamicError KinodynamicDynamics::MakeStageDynamics(
+    std::uint32_t mode, double dt, KinodynamicIntegrator integrator,
+    std::optional<StageDynamics>& out) const noexcept {
+  using SemiImplicitEuler = aligator::dynamics::IntegratorSemiImplEulerTpl<double>;
+  using Rk2 = aligator::dynamics::IntegratorRK2Tpl<double>;
+  using PolyOde = xyz::polymorphic<aligator::dynamics::ODEAbstractTpl<double>>;
+  out.reset();
+  if (!Initialised()) {
+    return KinodynamicError::kNotInitialised;
+  }
+  if (mode >= n_modes_) {
+    return KinodynamicError::kInvalidMode;
+  }
+  if (!std::isfinite(dt) || dt <= 0.0) {
+    return KinodynamicError::kInvalidDt;
+  }
+  if (integrator != KinodynamicIntegrator::kSemiImplicitEuler &&
+      integrator != KinodynamicIntegrator::kRk2) {
+    return KinodynamicError::kUnknownIntegrator;
+  }
+  std::optional<Ode> ode = MakeOde(mode);
+  if (!ode.has_value()) {
+    return KinodynamicError::kAligatorFailure;
+  }
+  try {
+    const PolyOde poly(std::move(*ode));
+    if (integrator == KinodynamicIntegrator::kSemiImplicitEuler) {
+      out.emplace(SemiImplicitEuler(poly, dt));
+    } else {
+      out.emplace(Rk2(poly, dt));
+    }
+  } catch (...) {
+    out.reset();
+    return KinodynamicError::kAligatorFailure;
+  }
+  return KinodynamicError::kNoError;
 }
 
 KinodynamicDynamics::Ode* KinodynamicDynamics::OdeOf(

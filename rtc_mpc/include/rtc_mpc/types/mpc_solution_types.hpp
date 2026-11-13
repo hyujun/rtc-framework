@@ -132,8 +132,17 @@ struct MPCSolution {
   // ── Trajectories (see header-level comment for index conventions) ──
   std::array<std::array<double, kMaxNq>, kMaxHorizon + 1> q_traj{};
   std::array<std::array<double, kMaxNv>, kMaxHorizon + 1> v_traj{};
-  std::array<std::array<double, kMaxNu>, kMaxHorizon> u_traj{};
+  std::array<std::array<double, kMaxNu>, kMaxHorizon> u_traj{};  ///< first `nu` entries
+  /// Contact forces, first `n_contact_vars` entries. A kinodynamic OCP fills
+  /// it with the wrench block of `u` — including the slots of contacts that
+  /// are inactive at that node, which hold whatever the cost left there. This
+  /// struct does not carry the node modes yet: a consumer masks the inactive
+  /// slots with the contact schedule the solve used. A joint-torque OCP
+  /// leaves it 0.
   std::array<std::array<double, kMaxContactVars>, kMaxHorizon> lambda_traj{};
+  /// Feed-forward acceleration, first `nv` entries: a copy of `u` for a
+  /// joint-torque OCP; 0 for a kinodynamic one (its meaning there is not
+  /// defined yet).
   std::array<std::array<double, kMaxNv>, kMaxHorizon> a_ff_traj{};
 
   /// Riccati gains K[k] (nu × ndx, row-major, stride = actual ndx — see the

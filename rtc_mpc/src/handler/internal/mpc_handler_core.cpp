@@ -61,10 +61,14 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   if (!model.Initialised()) {
     return MPCInitError::kModelNotInitialised;
   }
-  // The shipped OCPs are fixed-base torque models (nu == nv); a free-flyer
-  // model's kinodynamic nu would not match their control dimension.
-  if (model.floating_base()) {
+  // A joint-torque OCP (u = τ, nu == nv) cannot drive a free-flyer, and a
+  // kinodynamic OCP has no wrench block without one.
+  const ControlModel control = ocp.control_model();
+  if (control == ControlModel::kJointTorque && model.floating_base()) {
     return MPCInitError::kFloatingBaseUnsupported;
+  }
+  if (control == ControlModel::kKinodynamicWrench && !model.floating_base()) {
+    return MPCInitError::kFixedBaseUnsupported;
   }
   if (solver_cfg.prim_tol <= 0.0 || solver_cfg.dual_tol <= 0.0 || solver_cfg.mu_init <= 0.0 ||
       solver_cfg.max_iters <= 0 || solver_cfg.max_al_iters <= 0) {
@@ -102,7 +106,8 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   nq_ = model.nq();
   nv_ = model.nv();
   nu_ = model.nu();
-  ndx_ = 2 * nv_;  // fixed-base: state-tangent is [v; a]
+  ndx_ = 2 * nv_;  // state tangent [dq; dv], fixed or floating base
+  control_model_ = control;
   RecomputeContactVarDim(model);
 
   x_current_ = Eigen::VectorXd::Zero(nq_ + nv_);
@@ -114,14 +119,13 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   // spacing; UpdateReferences / Build on later ticks may update it.
   dt_ = initial_ctx.cost_config.dt;
 
-  // Only ContactRich needs gravity-comp τ to skirt Risk #14. ContactLight's
-  // rigid-contact prox solve doesn't need it and is actually faster to
-  // converge from zero controls.
-  use_gravity_comp_seed_ = (ocp.ocp_type() == std::string_view{"contact_rich"});
+  // The OCP names its cold seed (gravity compensation is joint-torque only).
+  use_gravity_comp_seed_ =
+      ocp.cold_seed() == ColdSeed::kGravityCompensation && control == ControlModel::kJointTorque;
 
   // Allocate warm-start buffers matching the solver's internal shapes.
   xs_warm_.assign(static_cast<std::size_t>(horizon_length_ + 1), Eigen::VectorXd::Zero(nq_ + nv_));
-  us_warm_.assign(static_cast<std::size_t>(horizon_length_), Eigen::VectorXd::Zero(nv_));
+  us_warm_.assign(static_cast<std::size_t>(horizon_length_), Eigen::VectorXd::Zero(nu_));
 
   first_solve_after_build_ = true;
   initialised_ = true;
@@ -211,6 +215,12 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   if (!StateFinite(state)) {
     return MPCSolveError::kStateDimMismatch;
   }
+  // A non-unit base quaternion gives a finite but wrong state, so it is
+  // refused, not normalised (the solver's own steps renormalise).
+  if (!model_->layout().BaseQuaternionIsUnit(
+          Eigen::Map<const Eigen::VectorXd>(state.q.data(), nq_))) {
+    return MPCSolveError::kStateDimMismatch;
+  }
 
   // Copy RT-side state into pre-allocated Eigen buffers.
   for (int i = 0; i < nq_; ++i)
@@ -239,7 +249,7 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     // Re-size warm buffers in case horizon changed.
     xs_warm_.assign(static_cast<std::size_t>(horizon_length_ + 1),
                     Eigen::VectorXd::Zero(nq_ + nv_));
-    us_warm_.assign(static_cast<std::size_t>(horizon_length_), Eigen::VectorXd::Zero(nv_));
+    us_warm_.assign(static_cast<std::size_t>(horizon_length_), Eigen::VectorXd::Zero(nu_));
   } else if (upd != OCPBuildError::kNoError) {
     return MPCSolveError::kOCPRebuildFailed;
   }
@@ -414,7 +424,7 @@ void MPCHandlerCore::SeedWarmStart(const MPCSolution& prev, OCPHandlerBase& ocp)
   // Copy controls (nodes 0..Hp-1).
   const int nu_copy = std::min(prev.nu, nu_);
   for (int k = 0; k < Hp && static_cast<std::size_t>(k) < us.size(); ++k) {
-    if (us[static_cast<std::size_t>(k)].size() != nv_)
+    if (us[static_cast<std::size_t>(k)].size() != nu_)
       continue;
     for (int i = 0; i < nu_copy; ++i) {
       us[static_cast<std::size_t>(k)][i] =
@@ -501,36 +511,30 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const MPCStateSnaps
   }
   for (std::size_t k = 0; k < H && k < us.size(); ++k) {
     const auto& u = us[k];
-    if (u.size() == nv_) {
-      for (int i = 0; i < nv_; ++i) {
+    if (u.size() == nu_) {
+      for (int i = 0; i < nu_; ++i) {
         out.u_traj[k][static_cast<std::size_t>(i)] = u[i];
       }
     }
   }
 
-  // Feedforward acceleration is identical to τ for the fixed-base
-  // `u = τ` actuation model used by both OCPs (identity M·a = τ - h in
-  // the kinematic sense after dividing by mass matrix; the TSID
-  // downstream layer recomputes the mapping). For Phase 5 we duplicate
-  // the u trajectory into a_ff_traj so MPCSolutionManager has a
-  // well-formed interpolation source; a more principled mapping lands
-  // in Phase 6.
+  // Feed-forward acceleration: a copy of τ for the joint-torque OCPs (the
+  // whole-body layer downstream recomputes the mapping); not defined yet for
+  // a kinodynamic one, so it is shipped as 0 rather than left stale.
+  // Contact forces: the wrench block at the front of a kinodynamic `u`
+  // (inactive slots included — the consumer masks them by node mode); a
+  // joint-torque OCP ships none.
+  (void)ocp;
+  const bool kinodynamic = control_model_ == ControlModel::kKinodynamicWrench;
+  const std::size_t n_lambda = std::min(static_cast<std::size_t>(n_contact_vars_),
+                                        static_cast<std::size_t>(kMaxContactVars));
   for (std::size_t k = 0; k < H; ++k) {
     for (int i = 0; i < nv_; ++i) {
-      out.a_ff_traj[k][static_cast<std::size_t>(i)] = out.u_traj[k][static_cast<std::size_t>(i)];
+      out.a_ff_traj[k][static_cast<std::size_t>(i)] =
+          (kinodynamic || i >= nu_) ? 0.0 : out.u_traj[k][static_cast<std::size_t>(i)];
     }
-  }
-
-  // λ trajectories: Aligator's proximal-constraint forces live inside
-  // `results.lams` (per-stage dynamics multipliers). We flatten active
-  // contact-force slots into `lambda_traj`. For Phase 5 we leave this
-  // zero — Phase 6 will wire it once MPCSolutionManager's contact
-  // interpolation is exercised end-to-end.
-  (void)ocp;
-  for (std::size_t k = 0; k < H; ++k) {
-    for (std::size_t i = 0; i < static_cast<std::size_t>(n_contact_vars_) && i < kMaxContactVars;
-         ++i) {
-      out.lambda_traj[k][i] = 0.0;
+    for (std::size_t i = 0; i < n_lambda; ++i) {
+      out.lambda_traj[k][i] = kinodynamic ? out.u_traj[k][i] : 0.0;
     }
   }
 
