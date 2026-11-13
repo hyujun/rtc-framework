@@ -33,11 +33,14 @@ import pytest
 import yaml
 from ament_index_python.packages import get_package_share_directory
 
-# Robot profile → overlay file a robot launch hands to udp_hand_node (namespace="").
+# Robot profile → (overlay file a robot launch hands to udp_hand_node
+# (namespace=""), the robot namespace every topic in it must sit under). The
+# namespace is the robot's, not the profile key's: p2_left is the p2 robot.
 OVERLAYS = {
-    "ur5e_p1a": "udp_hand_node_p1a.yaml",
-    "ur5e_p1b": "udp_hand_node_p1b.yaml",
-    "p2": "udp_hand_node_p2.yaml",
+    "ur5e_p1a": ("udp_hand_node_p1a.yaml", "/p1a/"),
+    "ur5e_p1b": ("udp_hand_node_p1b.yaml", "/p1b/"),
+    "p2": ("udp_hand_node_p2.yaml", "/p2/"),
+    "p2_left": ("udp_hand_node_p2.yaml", "/p2/"),
 }
 
 # Profile → hand config run through udp_hand.launch.py params_file with namespace:=.
@@ -88,17 +91,17 @@ def _params(profile: str, filename: str) -> dict:
 def test_every_declared_topic_is_set_under_the_robot_namespace(
     profile: str, declared_topics: set[str]
 ) -> None:
-    params = _params(profile, OVERLAYS[profile])
-    prefix = f"/{profile.split('_')[-1]}/"
+    filename, prefix = OVERLAYS[profile]
+    params = _params(profile, filename)
     for key in sorted(declared_topics):
         assert key in params, (
-            f"{OVERLAYS[profile]}: '{key}' is not set — under namespace=\"\" the "
+            f"{filename}: '{key}' is not set — under namespace=\"\" the "
             "node's relative default resolves to a global topic nothing on this "
             "robot uses"
         )
         value = params[key]
         assert isinstance(value, str) and value.startswith(prefix), (
-            f"{OVERLAYS[profile]}: '{key}' = {value!r} must be an absolute name under {prefix}"
+            f"{filename}: '{key}' = {value!r} must be an absolute name under {prefix}"
         )
 
 
@@ -116,4 +119,24 @@ def test_namespaced_config_leaves_every_topic_relative(
     assert not absolute, (
         f"{filename}: {absolute} — this file runs under namespace:=, where an absolute "
         "topic escapes the namespace (and two hands refuse it at configure)"
+    )
+
+
+def test_p2_sides_agree_on_the_launch_build_time_values() -> None:
+    """robot_p2 / sim_p2 ``side:=`` picks config/p2 or config/p2_left at run
+    time, but a launch argument's default is built before any argument is read,
+    so the right hand's files supply ``sil_mode`` / ``max_log_sessions`` and
+    the fake firmware's ``protocol_version`` / ``cmd_ack`` for both sides. That
+    holds only while the two profiles agree on them; the fake's ``hand_side``
+    is the ``side`` argument itself, so each profile's driver must name its
+    own side."""
+    right = _params("p2", "udp_hand_node_p2.yaml")
+    left = _params("p2_left", "udp_hand_node_p2.yaml")
+    for key in ("sil_mode", "protocol_version", "cmd_ack"):
+        assert right[key] == left[key], key
+    assert right["hand_sides"] == ["right"]
+    assert left["hand_sides"] == ["left"]
+    assert (
+        _params("p2", "_base.yaml")["max_log_sessions"]
+        == _params("p2_left", "_base.yaml")["max_log_sessions"]
     )

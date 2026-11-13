@@ -37,7 +37,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 
 PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap"]
-NO_WORLD = ["g1_p1b", "g1_loco", "b7_loco", "p2"]
+NO_WORLD = ["g1_p1b", "g1_loco", "b7_loco", "p2", "p2_left"]
 RT_NODE = "integrated_rt_controller"
 
 

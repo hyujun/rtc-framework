@@ -1,0 +1,94 @@
+# HandJointController — p2_left (proto2 left hand on its own, fingers up)
+#
+# Joint goals follow a quintic from the current reference; every tick the
+# command is `pd_feedforward`: the reference as the position target plus the
+# model's dynamics torque as the feedforward (gravity, and the inertia of the
+# reference acceleration while a goal is followed; N·m, device joint order).
+# The device's PD (simulator <position> servo at the low gains of
+# mujoco_simulator.yaml; the firmware's PD on the hardware) carries the error,
+# the feedforward carries the weight. Columns of the per-tick record are in
+# docs/controller-logs.md (joint_ff.csv).
+hand_joint_controller:
+  # ── Mode ──────────────────────────────────────────────────────────────────
+  # What the two lanes carry (runtime parameter `mode`, settable any time;
+  # E-STOP dominates). The device's PD gains are not this controller's.
+  #   tracking             — joint_goal followed by a quintic + dynamics feedforward
+  #   damping              — target = measured position every tick, feedforward 0:
+  #                          only the device's kd acts (joint_goal refused)
+  #   damping_feedforward  — target = measured position, feedforward lane as in
+  #                          tracking: the lane under test (joint_goal refused)
+  # Omitted → tracking. A/B/A gate runs (analyze_hand_gravity_ff) stay in tracking.
+  mode: tracking
+
+  # ── Trajectory generation ─────────────────────────────────────────────────
+  # Quintic rest-to-rest. Duration = max joint distance / speed, extended
+  # until the peak velocity (15/8 × Δq / T) is within max_traj_velocity.
+  # max_traj_velocity is a TEST VALUE (as devices.p2_left joint_limits
+  # max_velocity in _base.yaml). It is the ceiling of the runtime parameter
+  # `trajectory_speed`; each joint's peak velocity is still held to
+  # min(this, that joint's limit in force), so a speed above the joint limit is
+  # accepted and the move simply takes longer.
+  trajectory_speed: 1.0       # rad/s, > 0
+  max_traj_velocity: 10.0     # rad/s — read-only parameter
+
+  # ── Feedforward torque lane ──────────────────────────────────────────────
+  # τ_ff = clamp(gravity_gain · g_a(q_meas) + inertia_gain · M_a(q_meas) · q̈_ref,
+  #              ±min(max_abs, devices.p2_left max_torque)).
+  #   enabled  — runtime parameter `dynamics_feedforward.enabled`; false sends 0 N·m with
+  #              the command type unchanged (the A/B switch of the sim gate —
+  #              switching the command type would let the simulator re-enable
+  #              its own gravity compensation and change the plant).
+  #   gravity_gain — runtime parameter `dynamics_feedforward.gravity_gain`,
+  #              [0, 2]. 1 = the model.
+  #   inertia_gain — runtime parameter `dynamics_feedforward.inertia_gain`, [0, 2]. The
+  #              reduced model inertia times the quintic's acceleration (0 at
+  #              rest, so a held pose sees gravity alone). 1 = the model. The
+  #              URDF carries the links' inertia only, no rotor inertia, so the
+  #              term covers that share; in the simulator at this profile's
+  #              servo (D on the measured velocity, viscous lag dominates the
+  #              error in motion) it changed the tracking error by ≈ 0.1 % on a
+  #              default goal and a few % on short, fast ones. 0 = gravity alone.
+  #   max_abs  — REQUIRED bound on the SUM of the terms, N·m. The model's
+  #              largest gravity torque on the right hand (config/p2; this hand
+  #              is its mirror) is ≈ 0.08 N·m (cmc_01 /
+  #              cmc_02 at the mid pose, fingers up) and the inertia term
+  #              peaked at ≈ 0.08 N·m on the shortest goals at the velocity cap
+  #              in the simulator; 0.3 leaves room for both plus gain tuning.
+  #              It is 0.55 A at the firmware's 0.55 N·m/A (udp_hand_node_p2.yaml);
+  #              the motors' current rating is not recorded in this repository.
+  # Only these four keys: any other key in the block is refused at configure.
+  dynamics_feedforward:
+    enabled: true
+    gravity_gain: 1.0
+    inertia_gain: 1.0
+    max_abs: 0.3
+
+  # ‖φ‖ (m) above which a closed-chain projection is not trusted for the
+  # fingertip FK (the torque hold follows the projection's own held/singular).
+  closure_error_threshold: 0.001
+
+  # The only lane this controller speaks. Anything else is refused.
+  command_type: "pd_feedforward"
+
+  # ── Topics ────────────────────────────────────────────────────────────────
+  # One group. The controller's LifecycleNode lives under /hand_joint_controller/.
+  topics:
+    p2_left:
+      subscribe:
+        - topic: "p2_left/joint_goal"
+          role: "target"
+      publish:
+        # One TF publisher per controller. Frames (parent `palm`):
+        #   <finger>_virtual_axis_actual × 4 — the fingertips, closed-chain FK
+        - topic: "transforms"
+          role: "robot_transforms"
+
+  # ── Controller-owned CSV logs ─────────────────────────────────────────────
+  # p2_left_state: the generic per-device state file. joint_ff: this
+  # controller's per-tick feedforward record (q, q_ref, g, tau_ff per joint +
+  # the projection status) — what analyze_hand_gravity_ff judges.
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p2_left_state
+    - msg_type: integrated_bringup/JointFeedforwardLog
+      instance: joint_ff

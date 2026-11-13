@@ -1,17 +1,21 @@
-# robot_p2.launch.py - proto2 right hand on its own (CAN FD), real-hardware bringup
+# robot_p2.launch.py - one proto2 hand on its own (CAN FD), real-hardware bringup
+#
+# side:=right (default) → config/p2, group p2_right, /p2/right/*;
+# side:=left → config/p2_left, group p2_left, /p2/left/*. One hand per bringup:
+# the controller manager's topics and services are absolute names.
 #
 # Launch order (event-driven):
 #   1. Environment vars (RMW, CycloneDDS, session dir)
 #   2. CPU shield — alone. udp_hand_node starts from its exit, not beside it: a
 #      cpuset attach overwrites affinity, so a shield that lands after a pin
 #      silently undoes it (#405).
-#   3. udp_hand_node (LifecycleNode, namespace "", absolute /p2/right/* topics
-#      from config/p2/udp_hand_node_p2.yaml) → auto configure → activate.
+#   3. udp_hand_node (LifecycleNode, namespace "", absolute /p2/<side>/* topics
+#      from config/<profile>/udp_hand_node_p2.yaml) → auto configure → activate.
 #      sil_mode:=firmware adds the CAN FD fake firmware on vcan0 beside it.
-#   4. Readiness gate waits for the /p2/right/joint_states publisher.
+#   4. Readiness gate waits for the /p2/<side>/joint_states publisher.
 #   5. integrated_rt_controller (LifecycleNode) → configure → shield adopt →
 #      activate; `hand_joint_controller` is the only controller this profile
-#      ships (config/p2/robot.yaml initial_controller).
+#      ships (config/<profile>/robot.yaml initial_controller).
 #
 # No arm driver: there is no ros2_control controller_manager here, so none of
 # the UR arguments (robot_ip, kinematics_params_file, …) exist. `use_mock_hardware`
@@ -19,9 +23,9 @@
 # it selects the driver's in-process loop model (sil_mode loopmodel) unless
 # `sil_mode:=` is given explicitly.
 #
-# Topics: /p2/right/{joint_states, joint_command, motor_states, sensor_states,
+# Topics: /p2/<side>/{joint_states, joint_command, motor_states, sensor_states,
 # link_status}, /p2/estop. The controller's own topics live under
-# /hand_joint_controller/ (p2_right/joint_goal, transforms).
+# /hand_joint_controller/ (p2_<side>/joint_goal, transforms).
 
 import os
 
@@ -64,6 +68,11 @@ from rtc_tools.launch.thread_layout import (
 from rtc_tools.launch.trace_action import make_trace_action
 
 PROFILE = "p2"
+# side:= → the config profile that holds that hand. PROFILE (the right hand)
+# also supplies the build-time argument defaults and the fake firmware's
+# protocol / cmd_ack below; the two profiles keep those values equal
+# (test_hand_overlay_topics: test_p2_sides_agree_on_the_launch_build_time_values).
+SIDE_PROFILES = {"right": PROFILE, "left": "p2_left"}
 HAND_YAML = "udp_hand_node_p2.yaml"
 # The driver forces this device in firmware SIL mode (udp_hand.launch.py
 # _FW_CAN_INTERFACE); the fake has to sit on the same one.
@@ -112,6 +121,19 @@ def generate_launch_description():
     yaml_sil_mode = str(hand_params.get("sil_mode", "off"))
 
     # ── Arguments ──────────────────────────────────────────────────────────────
+    side_arg = DeclareLaunchArgument(
+        "side",
+        default_value="right",
+        choices=sorted(SIDE_PROFILES),
+        description=(
+            "Which hand: right → config/p2 (group p2_right), left → config/p2_left "
+            "(group p2_left). One hand per bringup."
+        ),
+    )
+    side = LaunchConfiguration("side")
+    # The profile directory as a substitution, so the node definitions below
+    # stay static (the shield-first ordering hangs them off event handlers).
+    profile = PythonExpression([repr(SIDE_PROFILES), "['", side, "']"])
     use_mock_hardware_arg = DeclareLaunchArgument(
         "use_mock_hardware",
         default_value="false",
@@ -185,13 +207,13 @@ def generate_launch_description():
 
     # ── Paths ──────────────────────────────────────────────────────────────────
     base_config = PathJoinSubstitution(
-        [FindPackageShare("integrated_bringup"), "config", PROFILE, "_base.yaml"]
+        [FindPackageShare("integrated_bringup"), "config", profile, "_base.yaml"]
     )
     robot_config = PathJoinSubstitution(
-        [FindPackageShare("integrated_bringup"), "config", PROFILE, "robot.yaml"]
+        [FindPackageShare("integrated_bringup"), "config", profile, "robot.yaml"]
     )
     hand_config = PathJoinSubstitution(
-        [FindPackageShare("integrated_bringup"), "config", PROFILE, HAND_YAML]
+        [FindPackageShare("integrated_bringup"), "config", profile, HAND_YAML]
     )
     cyclone_dds_xml = PathJoinSubstitution(
         [FindPackageShare("rtc_controller_manager"), "config", "cyclone_dds.xml"]
@@ -325,7 +347,8 @@ def generate_launch_description():
                 "protocol_version": str(hand_params.get("protocol_version", "2")),
                 "can_interface": FIRMWARE_CAN_INTERFACE,
                 "cmd_ack": str(hand_params.get("cmd_ack", "none")),
-                "hand_side": str((hand_params.get("hand_sides") or ["right"])[0]),
+                # = the profile's hand_sides[0] (test_hand_overlay_topics)
+                "hand_side": side,
             },
         ],
         emulate_tty=True,
@@ -370,13 +393,20 @@ def generate_launch_description():
         cmd=[
             "bash",
             "-c",
-            'echo "[RT] Readiness gate: waiting for the hand driver..."; '
-            "timeout 30 bash -c '"
-            "while ! ros2 topic info /p2/right/joint_states 2>/dev/null "
-            '  | grep -q "Publisher count: [1-9]"; do sleep 0.5; done\' '
-            '  && echo "[RT]   /p2/right/joint_states publisher OK" '
-            '  || { echo "[RT] FATAL: /p2/right/joint_states not available after 30 s"; exit 1; }; '
-            'echo "[RT] Hand driver ready"',
+            [
+                'echo "[RT] Readiness gate: waiting for the hand driver..."; '
+                "timeout 30 bash -c '"
+                "while ! ros2 topic info /p2/",
+                side,
+                "/joint_states 2>/dev/null "
+                '  | grep -q "Publisher count: [1-9]"; do sleep 0.5; done\' '
+                '  && echo "[RT]   /p2/',
+                side,
+                '/joint_states publisher OK"   || { echo "[RT] FATAL: /p2/',
+                side,
+                '/joint_states not available after 30 s"; exit 1; }; '
+                'echo "[RT] Hand driver ready"',
+            ],
         ],
         output="screen",
     )
@@ -427,6 +457,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             # 1) Arguments
+            side_arg,
             use_mock_hardware_arg,
             sil_mode_arg,
             use_cpu_affinity_arg,

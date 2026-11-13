@@ -128,6 +128,7 @@ from .config import (
     HAND_TAUFF_SOURCES,
     JOINT_SPACE,
     NO_EXTERNAL_COMMAND_CONTROLLERS,
+    PRESET_SIDE_KEY,
     SENSOR_CALIBRATIONS,
     TARGET_LABELS,  # noqa: F401  (preserved for downstream compat)
     WBC_PHASE_NAMES,
@@ -140,13 +141,16 @@ from .config import (
     default_presets_for,
     grasp_command_enabled,
     grasp_mode_fg,
+    mirror_presets,
     preset_hand_targets,
+    presets_refused_for_side,
     read_only_gain_rows,
+    refused_preset_path,
     register_scalar_gain_schema,
     superseded_default_presets,
     target_panel_states,
 )
-from .discovery import RobotProfile, RobotShape, short_joint_labels
+from .discovery import ROBOT_PROFILES, RobotProfile, RobotShape, short_joint_labels
 from .dualarm import (
     DUALARM_CONFIG_KEY,
     GOAL_AXIS_LABELS,
@@ -1155,6 +1159,29 @@ class DemoControllerGUI(Node):
         try:
             with open(self._preset_path) as f:
                 data = json.load(f)
+            refused = (
+                presets_refused_for_side(data, self._profile.side)
+                if isinstance(data, dict)
+                else []
+            )
+            if refused:
+                # One preset of the other hand points seven joints the wrong
+                # way: refuse the whole file, but keep it (set aside, not
+                # overwritten by the defaults written below).
+                aside = refused_preset_path(self._preset_path)
+                reason = (
+                    f"{self._preset_path}: presets {refused} are tagged for another hand "
+                    f"than '{self._profile.side}' — file refused"
+                )
+                try:
+                    os.replace(self._preset_path, aside)
+                except OSError as exc:
+                    # Could not set it aside: run on the defaults without
+                    # writing them over the operator's file.
+                    self.get_logger().error(f"{reason}, and left in place ({exc})")
+                    return default_presets_for(self._shape.hand_dof, scope)
+                self.get_logger().error(f"{reason} and moved to {aside}")
+                data = None
             if isinstance(data, dict) and data:
                 # A file that is exactly the DoF roster, on a profile that has
                 # since got its own, was never edited: replace it. Anything the
@@ -2016,7 +2043,8 @@ class DemoControllerGUI(Node):
 
     def _run_gui(self):
         self.root = tk.Tk()
-        self.root.title("Demo Controller GUI")
+        side = f" — {self._profile.side} hand" if self._profile.side else ""
+        self.root.title(f"Demo Controller GUI{side}")
         # One joint column fits the historical width; a shape that lays its
         # joints out as several limbs needs room for each beside the task panel.
         joint_groups = self._shape.arm_joint_groups
@@ -4557,6 +4585,12 @@ class DemoControllerGUI(Node):
         ttk.Button(action_frame, text="Delete", command=self._delete_preset).pack(
             side="left", padx=4
         )
+        if self._profile.mirror_robot:
+            ttk.Button(
+                action_frame,
+                text=f"Import Mirrored ({self._mirror_profile().side or self._profile.mirror_robot})",
+                command=self._unless_sequence(self._import_mirrored_presets, "Import Mirrored"),
+            ).pack(side="left", padx=4)
 
         toggle_frame = tk.Frame(preset_frame, bg="#1e1e2e")
         toggle_frame.pack(fill="x", padx=4, pady=(4, 0))
@@ -6923,6 +6957,8 @@ class DemoControllerGUI(Node):
             "positions_deg": [round(v, 2) for v in positions_deg],
             "grasp_time": round(grasp_time, 3),
         }
+        if self._profile.side:
+            preset_data[PRESET_SIDE_KEY] = self._profile.side
         if self._preset_include_robot_var.get():
             ctrl = self._preset_ctrl_var.get()
             goal_type = self._preset_goal_type_var.get()
@@ -6976,6 +7012,8 @@ class DemoControllerGUI(Node):
             "positions_deg": [round(v, 2) for v in positions_deg],
             "grasp_time": round(grasp_time, 3),
         }
+        if self._profile.side:
+            preset_data[PRESET_SIDE_KEY] = self._profile.side
         if self._preset_include_robot_var.get():
             ctrl = self._preset_ctrl_var.get()
             goal_type = self._preset_goal_type_var.get()
@@ -7005,6 +7043,67 @@ class DemoControllerGUI(Node):
         self._save_presets_to_file()
         self._refresh_preset_tree()
         self.get_logger().info(f"Saved preset '{name}' from target entries")
+
+    def _mirror_profile(self) -> RobotProfile:
+        return ROBOT_PROFILES[self._profile.mirror_robot]
+
+    def _import_mirrored_presets(self):
+        """The other hand's presets, mirrored joint by joint into this hand's
+        (RobotProfile.mirror_signs), and optionally its sequence — the same
+        preset names, so a sequence written for one hand plays on the other."""
+        other = self._mirror_profile()
+        token = other.preset_token()
+        source_path = _resolve_preset_path(token)
+        try:
+            with open(source_path) as f:
+                source = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            messagebox.showwarning(
+                "Import Mirrored", f"No presets of '{self._profile.mirror_robot}': {exc}"
+            )
+            return
+        if not isinstance(source, dict):
+            messagebox.showwarning("Import Mirrored", f"{source_path} holds no preset table.")
+            return
+        mirrored, skipped = mirror_presets(
+            source, self._profile.mirror_signs, other.side, self._profile.side
+        )
+        if not mirrored:
+            messagebox.showwarning(
+                "Import Mirrored", f"Nothing to import from {source_path} (skipped: {skipped})."
+            )
+            return
+        clashes = sorted(set(mirrored) & set(self._presets))
+        if clashes and not messagebox.askyesno(
+            "Import Mirrored",
+            f"{len(clashes)} preset(s) already exist here: {', '.join(clashes)}.\n"
+            "Overwrite them? (No = import only the new names)",
+        ):
+            mirrored = {k: v for k, v in mirrored.items() if k not in clashes}
+        if mirrored:
+            self._presets.update(mirrored)
+            self._save_presets_to_file()
+            self._refresh_preset_tree()
+        self.get_logger().info(
+            f"Imported {len(mirrored)} mirrored preset(s) from {source_path}"
+            + (
+                f"; kept this hand's {clashes}"
+                if clashes and not set(clashes) & set(mirrored)
+                else ""
+            )
+            + (f"; skipped {skipped}" if skipped else "")
+        )
+        sequence_path = os.path.join(
+            os.path.dirname(self._preset_path), f"demo_gui_sequences_{token}.json"
+        )
+        sequence = load_sequence_file(sequence_path)
+        if sequence.steps and messagebox.askyesno(
+            "Import Mirrored",
+            f"Also replace this hand's sequence ({len(self._sequence.steps)} step(s)) with "
+            f"'{self._profile.mirror_robot}''s ({len(sequence.steps)} step(s))?",
+        ):
+            self._commit_sequence(sequence.steps, tolerance_deg=sequence.tolerance_deg)
+            self.get_logger().info(f"Copied the sequence of {sequence_path}")
 
     def _delete_preset(self):
         result = self._get_selected_preset()
@@ -7063,7 +7162,7 @@ def _parse_args(argv):
         "--robot",
         default="ur5e_p1a",
         help="robot profile selecting arm/hand joint schema + TCP frames "
-        "(ur5e_p1a | ur5e_p1b | iiwa7_leap | g1_p1b | g1_loco | b7_loco | p2)",
+        "(ur5e_p1a | ur5e_p1b | iiwa7_leap | g1_p1b | g1_loco | b7_loco | p2 | p2_left)",
     )
     parser.add_argument(
         "--session",

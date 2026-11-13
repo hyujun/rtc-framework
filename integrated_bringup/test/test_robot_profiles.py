@@ -427,17 +427,18 @@ def test_b7_loco_profile_frames_and_groups():
 # ── p2: the proto2 hand alone (one device group, no arm) ────────────────────
 
 
-def test_p2_shape_matches_the_wire_roster():
+@pytest.mark.parametrize("robot", ["p2", "p2_left"])
+def test_p2_shape_matches_the_wire_roster(robot):
     """Same failure mode as b7_loco's hand: a roster that drifts from the YAML
     reads zeros and commands the wrong motor without any error. The names are
     the hand description's own (unprefixed) — not the right_* spelling b7_loco
     mounts it under — so the two rosters are checked against their own YAML
     and asserted disjoint, not shared."""
-    profile = RobotProfile.for_robot("p2")
+    profile = RobotProfile.for_robot(robot)
     shape = profile.shape
     assert (shape.arm_dof, shape.hand_dof) == (0, 10)
     assert shape.arm_joint_names == ()
-    assert shape.hand_motor_names == _base_joint_state_names("p2", profile.hand_group)
+    assert shape.hand_motor_names == _base_joint_state_names(robot, profile.hand_group)
     assert [(label, len(m)) for label, m in shape.hand_finger_groups] == [
         ("Thumb", 4),
         ("Index", 3),
@@ -448,11 +449,12 @@ def test_p2_shape_matches_the_wire_roster():
     assert set(shape.hand_name_to_idx) == set(shape.hand_motor_names)
 
 
-def test_p2_has_an_empty_unlabelled_joint_column():
+@pytest.mark.parametrize("shape_of", [RobotShape.default_p2, RobotShape.default_p2_left])
+def test_p2_has_an_empty_unlabelled_joint_column(shape_of):
     """What keeps the joint widgets from failing on a shape with no arm: one
     unlabelled group with no joints, the same layout a serial arm gets, so the
     builders loop zero times instead of taking the labelled-limb branch."""
-    shape = RobotShape.default_p2()
+    shape = shape_of()
     assert shape.arm_joint_groups == (("", ()),)
     assert shape.arm_name_to_idx == {}
 
@@ -467,6 +469,32 @@ def test_p2_profile_frames_and_groups():
     # Same hand group token as b7_loco; the preset files must still be its own.
     assert p2.preset_token() == "p2"
     assert p2.preset_token() != RobotProfile.for_robot("b7_loco").preset_token()
+
+
+def test_p2_left_is_p2_on_the_left_hands_group():
+    """The same bringup on the other hand: frames, extras and layout as p2, its
+    own device group, roster spelling and preset files."""
+    p2, left = RobotProfile.for_robot("p2"), RobotProfile.for_robot("p2_left")
+    assert left.fallback_groups() == ("p2_left", "p2_left")
+    assert (left.tcp_parent, left.tcp_child) == (p2.tcp_parent, p2.tcp_child)
+    assert left.extra_switchable_controllers == p2.extra_switchable_controllers
+    assert left.preset_token() == "p2_left"
+    assert [(g, len(m)) for g, m in left.shape.hand_finger_groups] == [
+        (g, len(m)) for g, m in p2.shape.hand_finger_groups
+    ]
+    # Same slot order; the two pip joints of index and middle carry the left
+    # description's names.
+    renamed = [
+        (right, other)
+        for right, other in zip(
+            p2.shape.hand_motor_names, left.shape.hand_motor_names, strict=True
+        )
+        if right != other
+    ]
+    assert renamed == [
+        ("index_pip_joint", "index_pip_link02_joint"),
+        ("middle_pip_joint", "middle_pip_link02_joint"),
+    ]
 
 
 def test_preset_files_are_not_shared_between_different_robots():

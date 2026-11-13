@@ -25,9 +25,10 @@
 | `g1_loco` | — | `sim_g1_loco.launch.py` | `demo_joint_controller` | joint |
 | `b7_loco` | — | `sim_b7_loco.launch.py` | `demo_joint_controller` | joint |
 | `p2` | `robot_p2.launch.py` | `sim_p2.launch.py` | `hand_joint_controller` | hand_joint |
+| `p2_left` | `robot_p2.launch.py side:=left` | `sim_p2.launch.py side:=left` | `hand_joint_controller` | hand_joint |
 
-- 실로봇은 UR5e 두 종 (`ur5e_p1a`, `ur5e_p1b`) 과 proto2 오른손 단독 (`p2`, CAN FD) 입니다. `iiwa7_leap` · `g1_p1b` · `g1_loco` · `b7_loco` 는 sim 전용입니다. `g1_p1b` · `b7_loco` · `p2` 의 모델은 비공개 `hand_description` 패키지의 것이라 그 패키지가 설치되어 있어야 뜹니다.
-- YAML 이 없는 로봇에서는 그 컨트롤러가 인스턴스화되지 않고 목록에도 나타나지 않습니다 (`p2` 는 `hand_joint_controller` 만, 나머지는 `demo_joint_controller` 를 싣는다).
+- 실로봇은 UR5e 두 종 (`ur5e_p1a`, `ur5e_p1b`) 과 proto2 손 단독 (`p2` 오른손 · `p2_left` 왼손, CAN FD — 한 bringup 에 한 손) 입니다. `iiwa7_leap` · `g1_p1b` · `g1_loco` · `b7_loco` 는 sim 전용입니다. `g1_p1b` · `b7_loco` · `p2` · `p2_left` 의 모델은 비공개 `hand_description` 패키지의 것이라 그 패키지가 설치되어 있어야 뜹니다.
+- YAML 이 없는 로봇에서는 그 컨트롤러가 인스턴스화되지 않고 목록에도 나타나지 않습니다 (`p2` · `p2_left` 는 `hand_joint_controller` 만, 나머지는 `demo_joint_controller` 를 싣는다).
 - 시작 컨트롤러는 `initial_controller:=<key>` 로 바꿉니다 (sim launch 공통 인자).
 
 ### 로봇 vs 시뮬레이션 모드 비교
@@ -50,7 +51,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
 # viewer 없이: enable_viewer:=false
 ```
 
-다른 터미널에서 GUI 를 엽니다. 로봇을 바꿨으면 `--robot` 을 맞춥니다 (`ur5e_p1a` | `ur5e_p1b` | `iiwa7_leap` | `g1_p1b` | `g1_loco` | `b7_loco` | `p2`).
+다른 터미널에서 GUI 를 엽니다. 로봇을 바꿨으면 `--robot` 을 맞춥니다 (`ur5e_p1a` | `ur5e_p1b` | `iiwa7_leap` | `g1_p1b` | `g1_loco` | `b7_loco` | `p2` | `p2_left`).
 
 ```bash
 ros2 run integrated_bringup demo_controller_gui                  # ur5e_p1a
@@ -75,8 +76,8 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 | `sim_g1_p1b.launch.py` | MuJoCo sim 의 Unitree G1 상체 (fixed base) + proto_1b 오른손. 실기 launch 없음 | `ros2 launch integrated_bringup sim_g1_p1b.launch.py use_cpu_affinity:=false` |
 | `sim_g1_loco.launch.py` | MuJoCo sim 의 Unitree G1 전신 (부동 베이스, `stand` keyframe 에서 servo PD 로 서 있음) + 합성 손 (LPF). 보행 MPC 의 plant. 실기 launch 없음 | `ros2 launch integrated_bringup sim_g1_loco.launch.py use_cpu_affinity:=false` |
 | `sim_b7_loco.launch.py` | MuJoCo sim 의 b7 전신 (부동 베이스, `stand` keyframe 에서 servo PD) + proto2 두 손 (물리, device group 셋). 보행 MPC 의 둘째 plant. 모델은 비공개 패키지. 실기 launch 없음 | `ros2 launch integrated_bringup sim_b7_loco.launch.py use_cpu_affinity:=false` |
-| `sim_p2.launch.py` | MuJoCo sim 의 proto2 오른손 단독 (손가락 위, 낮은 servo PD) — `hand_joint_controller` 의 중력 feedforward 를 재는 plant. 모델은 비공개 패키지 | `ros2 launch integrated_bringup sim_p2.launch.py use_cpu_affinity:=false` |
-| `robot_p2.launch.py` | 실기 proto2 오른손 단독 (CAN FD `udp_hand_node` + RT 컨트롤러, 팔 없음). `sil_mode:=firmware` 면 vcan0 의 가짜 펌웨어 | `ros2 launch integrated_bringup robot_p2.launch.py` |
+| `sim_p2.launch.py` | MuJoCo sim 의 proto2 손 하나 (`side:=right` 기본 · `left`) (손가락 위, 낮은 servo PD) — `hand_joint_controller` 의 중력 feedforward 를 재는 plant. 모델은 비공개 패키지 | `ros2 launch integrated_bringup sim_p2.launch.py use_cpu_affinity:=false` |
+| `robot_p2.launch.py` | 실기 proto2 손 하나 (`side:=right` 기본 · `left`) (CAN FD `udp_hand_node` + RT 컨트롤러, 팔 없음). `sil_mode:=firmware` 면 vcan0 의 가짜 펌웨어 | `ros2 launch integrated_bringup robot_p2.launch.py` |
 
 실기 launch 의 `use_mock_hardware:=true` 는 모의 하드웨어로 띄운다 (UR 드라이버의 mock). sudo 없는 머신은 sim 에 `use_cpu_affinity:=false` 를 준다. launch 가 선언하지 않은 인자는 에러 없이 무시된다 — 이름을 `ros2 launch <pkg> <file> --show-args` 로 확인한다.
 
@@ -111,7 +112,7 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 | `sync_timeout_ms` · `max_rtf` · `use_yaml_servo_gains` | `""` (YAML) | sync 타임아웃 (ms) · 최대 실시간 배율 (0 = 무제한) · YAML vs XML 서보 게인 |
 | `use_cpu_affinity` | `true` | Tier 1 CPU 격리 + MuJoCo 핀닝 |
 | `max_log_sessions` | `10` (그 profile 의 YAML) | 세션 폴더 최대 보관 수 |
-| `initial_controller` | `""` (YAML) | 시작 컨트롤러. 기본은 profile 의 `sim.yaml` (`ur5e_p1a` · `iiwa7_leap` 은 wbc, `p2` 는 `hand_joint_controller`, 나머지는 `demo_joint_controller`). 기동 완료 신호는 `RtControllerNode reached Active state` 로그 |
+| `initial_controller` | `""` (YAML) | 시작 컨트롤러. 기본은 profile 의 `sim.yaml` (`ur5e_p1a` · `iiwa7_leap` 은 wbc, `p2` · `p2_left` 는 `hand_joint_controller`, 나머지는 `demo_joint_controller`). 기동 완료 신호는 `RtControllerNode reached Active state` 로그 |
 | `enable_mpc` | `""` (YAML) | `demo_wbc_controller` 의 `mpc.enabled` 를 launch 시점에 덮는다. `sim_iiwa7_leap` 은 `false` 가 YAML 기본, `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2` 는 CPU layout 만 고르고 기본 `false` |
 | `mpc_engine` | `""` (YAML) | `mock` / `handler` (`demo_wbc_controller` 의 MPC 엔진). `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2` 에는 없다 |
 | `sim_overlay` | `""` | 출하 씬을 건드리지 않고 바꾸는 overlay (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2`). [Scene overlay](#scene-overlay-sim_overlay--출하-씬을-건드리지-않고-바꾸기) |
@@ -198,19 +199,21 @@ ros2 service call /sim/reset std_srvs/srv/Trigger                               
 
 GUI 는 `ros2 run integrated_bringup demo_controller_gui --robot b7_loco` (오른손만 — 왼손은 `p2_left/joint_goal` 을 직접 publish).
 
-#### `sim_p2` — proto2 오른손 단독 (손가락 위, 중력 feedforward)
+#### `sim_p2` — proto2 손 단독 (손가락 위, 중력 feedforward)
 
 ```bash
 ros2 launch integrated_bringup sim_p2.launch.py                                              # viewer
 ros2 launch integrated_bringup sim_p2.launch.py enable_viewer:=false use_cpu_affinity:=false   # headless · sudo 없음
+ros2 launch integrated_bringup sim_p2.launch.py side:=left                                    # 왼손 (config/p2_left)
 ros2 param set /hand_joint_controller/hand_joint_controller dynamics_feedforward.enabled false # feedforward A/B 스위치
 ros2 param set /hand_joint_controller/hand_joint_controller mode damping                     # tracking | damping | damping_feedforward
 ```
 
+- `side:=left` 는 `config/p2_left` (group `p2_left`, `/p2/left/*`, 왼손 모델 · scene · mid 자세) 를 싣고 나머지는 같다. 두 손을 한 번에 띄우지는 않는다 — controller manager 의 토픽 · 서비스가 절대 이름이다. 왼손은 `index_pip` · `middle_pip` 의 관절 이름이 `*_pip_link02_joint` 이고 열 관절 중 일곱의 굽힘 방향이 오른손과 반대다.
 - device group 은 `p2_right` 하나 (관절 10, URDF 의 접두 없는 이름 — `b7_loco` 의 `right_*` roster 와 다르다). 컨트롤러는 `hand_joint_controller` 뿐이다 ([hand-joint-controller.md](docs/hand-joint-controller.md)): `joint_goal` 을 quintic 으로 따르고 매 tick `pd_feedforward` 로 폐쇄 체인 모델의 중력·관성 토크를 feedforward 에 싣는다.
 - 모델은 비공개 `hand_description` 의 `robots/proto2` (xacro 기본 인자 → 손가락 +Z, 손바닥 +X, 기본 중력 −Z = **손가락 위** 장착). sim scene (`scene_right_p2.xml`) 도 같은 규약이라 기본 중력 −Z 가 같은 장착이고, timestep 만 0.002 로 덮어 500 Hz 를 만든다. 그 패키지가 없으면 두 노드가 뜨지 않는 것이 의도다 — configure gtest 는 in-repo 대리 손 (`robots/p1b_surrogate` 단독 sidecar) 위에서 돈다.
 - sim 의 servo 는 **일부러 낮다** (`servo_kp` 1 · `servo_kd` 0.05, `use_yaml_servo_gains: true`): MJCF 자체의 kp 20 은 feedforward 없이도 손가락을 들어 올려 결함을 가린다. 판정은 mid 자세 hold 에서 `dynamics_feedforward.enabled` 를 on/off/on 으로 돌린 `joint_ff.csv` 를 `analyze_hand_gravity_ff <session>` 이 읽는다 (큰 5 관절 |e| ≤ 1 mrad 이고 off 의 5 % 이하 등 — 문턱은 도구 기본값, 근거는 [testing.md](../docs/testing.md)).
-- `enable_mpc` 는 CPU layout 만 고른다 (기본 `false`). `mpc_engine` 인자는 없다. GUI 는 `--robot p2` (팔 열이 비고 손 10 개만; Hand Joint 패널이 `mode` 를, Gains 패널이 `dynamics_feedforward.*` · `trajectory_speed` 를 쓴다).
+- `enable_mpc` 는 CPU layout 만 고른다 (기본 `false`). `mpc_engine` 인자는 없다. GUI 는 `--robot p2` / `--robot p2_left` (팔 열이 비고 손 10 개만; preset · sequence 파일은 손마다 따로, `Import Mirrored` 가 다른 손의 preset 을 관절 부호대로 뒤집어 가져온다; Hand Joint 패널이 `mode` 를, Gains 패널이 `dynamics_feedforward.*` · `trajectory_speed` 를 쓴다).
 
 #### 기동 자세
 
@@ -228,7 +231,7 @@ ros2 param set /hand_joint_controller/hand_joint_controller mode damping        
 | `demo_wbc_controller` | TSID / CLIK-QP whole-body + 손 phase FSM (+ 선택적 MPC) | `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` | [demo-wbc-controller.md](docs/demo-wbc-controller.md) |
 | `demo_inference_controller` | ONNX 정책. 텐서 · 정규화 · 모델 경로가 전부 YAML | `ur5e_p1b` | [demo-inference-controller.md](docs/demo-inference-controller.md) |
 | `demo_catching_controller` | 날아오는 물체 포획: vision 예측 → 계획기 → 확장 CLIK 팔 + 손 시퀀서 | `ur5e_p1b` · `iiwa7_leap` | [demo-catching-controller.md](docs/demo-catching-controller.md) |
-| `hand_joint_controller` | 손 하나: 관절 quintic 궤적 + 모델 중력 토크 feedforward (`pd_feedforward`) | `p2` | [hand-joint-controller.md](docs/hand-joint-controller.md) |
+| `hand_joint_controller` | 손 하나: 관절 quintic 궤적 + 모델 중력 토크 feedforward (`pd_feedforward`) | `p2` · `p2_left` | [hand-joint-controller.md](docs/hand-joint-controller.md) |
 | `demo_dualarm_controller` | 두 손 frame 과제 + 자세를 QP 하나로 푸는 상체 제어 | `g1_p1b` | [demo-dualarm-controller.md](docs/demo-dualarm-controller.md) |
 
 컨트롤러가 지켜야 하는 계약은 [agent_docs/controllers.md](../agent_docs/controllers.md), 컨트롤러별 게인 · 토픽 카탈로그는 [docs/controllers.md](../docs/controllers.md) 에 있다. 공통 파라미터 · 팔 끝 frame · 손끝 FK 배선 · grasp mode 전환은 [demo-shared-params.md](docs/demo-shared-params.md), 컨트롤러가 남기는 CSV 는 [controller-logs.md](docs/controller-logs.md) 가 갖는다.
@@ -303,6 +306,7 @@ ros2 run integrated_bringup demo_controller_gui --robot g1_p1b       # G1 상체
 ros2 run integrated_bringup demo_controller_gui --robot g1_loco      # G1 전신 (부동 베이스 sim) + 합성 손
 ros2 run integrated_bringup demo_controller_gui --robot b7_loco      # b7 전신 (부동 베이스 sim) + proto2 오른손
 ros2 run integrated_bringup demo_controller_gui --robot p2           # proto2 오른손 단독 (팔 없음)
+ros2 run integrated_bringup demo_controller_gui --robot p2_left      # proto2 왼손 단독
 ```
 
 - `--robot <key>` 는 arm / hand joint 스키마와 TCP tf frame 을 고릅니다. `key` 는 `controllers/` 가 있는 `config/<key>/` 디렉토리명과 같고, 잘못된 key 는 즉시 에러로 종료합니다. 별칭은 `--ur5e` · `--p1b` · `--iiwa` · `--g1` 입니다.
@@ -476,6 +480,7 @@ integrated_bringup/
 │   ├── g1_loco/     # 부동 베이스 전신 sim
 │   ├── b7_loco/     # 부동 베이스 전신 sim, 군 셋 (모델은 비공개 패키지)
 │   ├── p2/          # proto2 오른손 단독 (sim + 실기 CAN FD)
+│   ├── p2_left/     # proto2 왼손 단독 (side:=left)
 │   └── b7_p2/       # 손 설정만 (params_file · 명령 GUI)
 ├── launch/          # robot_* / sim_* launch
 ├── include/         # 공개 헤더

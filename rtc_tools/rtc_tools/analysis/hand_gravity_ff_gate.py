@@ -85,8 +85,9 @@ REQUIRED_COLUMNS = (
 )
 
 # The joint classes of the shipped hand, matched by suffix against the joints
-# the file names (see `classify`). Overridden per run with --big / --small /
-# --exclude.
+# the file names (see `classify`). An entry may list alternatives as
+# `a|b` — one class entry for a joint whose name differs between the two
+# hands of a pair. Overridden per run with --big / --small / --exclude.
 DEFAULT_BIG = (
     "cmc_01_joint",
     "cmc_02_joint",
@@ -97,8 +98,8 @@ DEFAULT_BIG = (
 DEFAULT_SMALL = (
     "thumb_mcp_joint",
     "thumb_pip_link02_joint",
-    "index_pip_joint",
-    "middle_pip_joint",
+    "index_pip_joint|index_pip_link02_joint",
+    "middle_pip_joint|middle_pip_link02_joint",
 )
 DEFAULT_EXCLUDE = ("index_mcp_rotate_joint",)
 DEFAULT_LOOP_DISCRIMINATOR = "ring_mcp_joint"
@@ -378,7 +379,8 @@ def summarise(table: Table, th: Thresholds) -> Summary:
 
 
 def _matches(joint: str, name: str) -> bool:
-    return joint == name or joint.endswith(name)
+    """Exact or suffix match against any `|`-separated alternative of `name`."""
+    return any(joint == alt or joint.endswith(alt) for alt in name.split("|") if alt)
 
 
 def classify(
@@ -387,8 +389,9 @@ def classify(
     small: tuple[str, ...] | list[str],
     exclude: tuple[str, ...] | list[str],
 ) -> dict[str, str]:
-    """joint -> class. A list name that matches no joint, or a joint claimed by
-    two lists, is a ValueError (a typo must not quietly judge nothing)."""
+    """joint -> class. A list name none of whose alternatives matches a joint,
+    or a joint claimed by two lists, is a ValueError (a typo must not quietly
+    judge nothing)."""
     classes: dict[str, str] = {}
     for label, names in ((CLASS_BIG, big), (CLASS_SMALL, small), (CLASS_EXCLUDED, exclude)):
         for name in names:

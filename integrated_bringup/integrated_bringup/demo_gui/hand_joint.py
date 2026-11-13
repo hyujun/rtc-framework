@@ -1,6 +1,6 @@
 """Hand Joint panel logic for demo_controller_gui — Tk- and rclpy-free.
 
-``hand_joint_controller`` (profile ``p2``) declares a ``mode`` parameter and
+``hand_joint_controller`` (profiles ``p2`` · ``p2_left``) declares a ``mode`` parameter and
 accepts a set at any time, active or not:
 
 - ``tracking``: joint goals are followed by a quintic trajectory (the default),
@@ -103,7 +103,8 @@ HAND_JOINT_GAIN_LAYOUT: list[list[str]] = [[GAIN_GROUP_FF, GAIN_GROUP_TRAJ]]
 def hand_joint_gain_rows() -> tuple[GainRow, ...]:
     """The controller's numeric/bool runtime parameters as Gains-panel rows.
 
-    Defaults are config/p2/controllers/hand_joint_controller.yaml's; Load Gain
+    Defaults are config/p2/controllers/hand_joint_controller.yaml's (p2_left
+    ships the same values); Load Gain
     replaces them with the live values. ``max_traj_velocity`` is read-only.
     """
     ff = HAND_JOINT_FF_BLOCK

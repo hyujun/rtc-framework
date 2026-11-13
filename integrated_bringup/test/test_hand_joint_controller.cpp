@@ -54,6 +54,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifndef RTC_DEMO_SHARED_CONFIG_DIR
@@ -1023,10 +1024,15 @@ TEST(HandJointModes, TheModeParsesFromTheYamlAndATypoIsRefused) {
   EXPECT_THROW((void)ParseHandJointConfig(YAML::Load(Yaml() + "mode: hold\n")), std::runtime_error);
 }
 
-// ── The shipped p2 YAML ─────────────────────────────────────────────────────
+// ── The shipped p2 / p2_left YAML ───────────────────────────────────────────
 
-TEST(HandJointShipped, TheP2YamlParsesAndNamesOneGroup) {
-  const std::filesystem::path path = std::filesystem::path(RTC_DEMO_SHARED_CONFIG_DIR) / "p2" /
+// One hand per profile: the right hand's p2 (group p2_right) and the left
+// hand's p2_left (group p2_left) ship the same controller values.
+class HandJointShipped : public ::testing::TestWithParam<std::pair<const char*, const char*>> {};
+
+TEST_P(HandJointShipped, TheYamlParsesAndNamesOneGroup) {
+  const auto [profile, group] = GetParam();
+  const std::filesystem::path path = std::filesystem::path(RTC_DEMO_SHARED_CONFIG_DIR) / profile /
                                      "controllers" / "hand_joint_controller.yaml";
   ASSERT_TRUE(std::filesystem::exists(path)) << path;
   const YAML::Node root = YAML::LoadFile(path.string());
@@ -1045,16 +1051,26 @@ TEST(HandJointShipped, TheP2YamlParsesAndNamesOneGroup) {
   EXPECT_LT(parsed.ff.max_abs, 1.0);
   ASSERT_TRUE(cfg["topics"]);
   EXPECT_EQ(cfg["topics"].size(), 1u);
-  EXPECT_TRUE(cfg["topics"]["p2_right"]);
-  // The log instances the judge and the plotter look for.
+  EXPECT_TRUE(cfg["topics"][group]);
+  // The log instances the judge and the plotter look for, and the generic
+  // per-device state file the controller requires as <group>_state.
   bool has_joint_ff = false;
+  bool has_state = false;
   for (const auto& e : cfg["logs"]) {
     if (e["instance"] && e["instance"].as<std::string>() == "joint_ff") {
       has_joint_ff = true;
     }
+    if (e["instance"] && e["instance"].as<std::string>() == std::string(group) + "_state") {
+      has_state = true;
+    }
   }
   EXPECT_TRUE(has_joint_ff);
+  EXPECT_TRUE(has_state);
 }
+
+INSTANTIATE_TEST_SUITE_P(Profiles, HandJointShipped,
+                         ::testing::Values(std::make_pair("p2", "p2_right"),
+                                           std::make_pair("p2_left", "p2_left")));
 
 // ── Lifecycle on a real node ────────────────────────────────────────────────
 

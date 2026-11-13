@@ -1,11 +1,15 @@
 """
-sim_p2.launch.py — MuJoCo simulation launch file for the proto2 right hand on
-its own (hand_joint_controller: joint goals + model feedforward torque)
+sim_p2.launch.py — MuJoCo simulation launch file for one proto2 hand on its
+own, right (default) or left (hand_joint_controller: joint goals + model
+feedforward torque)
 ======================================================
 
 Usage:
-  # Default (uses YAML config)
+  # Default (uses YAML config): the right hand, config/p2
   ros2 launch integrated_bringup sim_p2.launch.py
+
+  # The left hand: config/p2_left (device group p2_left, /p2/left/* topics)
+  ros2 launch integrated_bringup sim_p2.launch.py side:=left
 
   # Headless mode (no display)
   ros2 launch integrated_bringup sim_p2.launch.py enable_viewer:=false
@@ -32,7 +36,9 @@ Nodes launched:
   2. integrated_rt_controller  — 500Hz controller (CV-based wakeup in sim mode)
 
 One device group: `p2_right` (the proto2 right hand, 10 actuated joints, its
-four-bar loops closed in the plant and in the controller's model). The hand is
+four-bar loops closed in the plant and in the controller's model), or
+`p2_left` with `side:=left` — one hand per bringup, because the controller
+manager's topics and services are absolute names. The hand is
 mounted fingers up and the simulator's position servos run at a deliberately
 LOW gain (config/p2/mujoco_simulator.yaml): the one controller this profile
 ships, hand_joint_controller, sends `pd_feedforward` — a joint reference plus
@@ -81,10 +87,16 @@ from rtc_tools.launch.thread_layout import get_rt_callback_core, get_sim_core
 from rtc_tools.launch.trace_action import make_trace_action
 
 PROFILE = "p2"
+# side:= → the config profile that holds that hand. PROFILE (the right hand)
+# also supplies the build-time argument defaults below; the two profiles keep
+# those values equal (test_hand_overlay_topics:
+# test_p2_sides_agree_on_the_launch_build_time_values).
+SIDE_PROFILES = {"right": PROFILE, "left": "p2_left"}
 
 
 def launch_setup(context, *args, **kwargs):
     """Setup function executed with launch context for conditional parameter loading."""
+    profile = SIDE_PROFILES[LaunchConfiguration("side").perform(context)]
 
     # ── Session directory (YYMMDD_HHMM) ──────────────────────────────────────
     session = open_session(context)
@@ -99,17 +111,17 @@ def launch_setup(context, *args, **kwargs):
     # names, topics, model_path (integrated_bringup/config/p2/
     # mujoco_simulator.yaml — overlaid on top).
     sim_default = PathJoinSubstitution([pkg_sim, "config", "solver_param.yaml"])
-    sim_config = PathJoinSubstitution([pkg_bringup, "config", PROFILE, "mujoco_simulator.yaml"])
+    sim_config = PathJoinSubstitution([pkg_bringup, "config", profile, "mujoco_simulator.yaml"])
     # Mode-agnostic base (URDF/model topology, rosters, limits, control_rate);
     # sim.yaml overlays only the sim-specific delta on top.
-    base_config = PathJoinSubstitution([pkg_bringup, "config", PROFILE, "_base.yaml"])
-    ctrl_config = PathJoinSubstitution([pkg_bringup, "config", PROFILE, "sim.yaml"])
+    base_config = PathJoinSubstitution([pkg_bringup, "config", profile, "_base.yaml"])
+    ctrl_config = PathJoinSubstitution([pkg_bringup, "config", profile, "sim.yaml"])
 
     # ── Build simulator parameters (defaults → robot YAML → overlay → CLI) ──
     # The overlay sits between the shipped YAML and the per-argument overrides
     # so it can replace the scene while `model_path:=` & co. still win over it.
     # Both nodes get it; each reads only its own section.
-    sim_overlay = resolve_sim_overlay(LaunchConfiguration("sim_overlay").perform(context), PROFILE)
+    sim_overlay = resolve_sim_overlay(LaunchConfiguration("sim_overlay").perform(context), profile)
     sim_params = [sim_default, sim_config]
     if sim_overlay is not None:
         sim_params.append(sim_overlay)
@@ -161,7 +173,7 @@ def launch_setup(context, *args, **kwargs):
         # _base so the simulator's rate stays locked to the RT node's rate
         # instead of silently defaulting to 500.0.
         ctrl_yaml_path = os.path.join(
-            get_package_share_directory("integrated_bringup"), "config", PROFILE, "_base.yaml"
+            get_package_share_directory("integrated_bringup"), "config", profile, "_base.yaml"
         )
         with open(ctrl_yaml_path) as f:
             ctrl_yaml = yaml.safe_load(f)
@@ -390,6 +402,15 @@ def launch_setup(context, *args, **kwargs):
 
 
 def generate_launch_description():
+    side_arg = DeclareLaunchArgument(
+        "side",
+        default_value="right",
+        choices=sorted(SIDE_PROFILES),
+        description=(
+            "Which hand: right → config/p2 (group p2_right), left → config/p2_left "
+            "(group p2_left). One hand per bringup."
+        ),
+    )
     # ── Launch arguments with empty defaults (YAML values take precedence) ───
     model_path_arg = DeclareLaunchArgument(
         "model_path",
@@ -565,6 +586,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             # Arguments
+            side_arg,
             model_path_arg,
             enable_viewer_arg,
             viewer_input_enabled_arg,

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from rtc_tools.analysis.hand_gravity_ff_gate import (
+    CLASS_UNLISTED,
     DEFAULT_BIG,
     DEFAULT_EXCLUDE,
     DEFAULT_LOOP_DISCRIMINATOR,
@@ -50,6 +51,13 @@ JOINTS = [
     "middle_mcp_joint",
     "middle_pip_joint",
     "ring_mcp_joint",
+]
+# The other hand of the pair: two joints carry a different name.
+LEFT_JOINTS = [
+    j.replace("index_pip_joint", "index_pip_link02_joint").replace(
+        "middle_pip_joint", "middle_pip_link02_joint"
+    )
+    for j in JOINTS
 ]
 FIXED = [
     "t_relative_s",
@@ -161,7 +169,13 @@ def per_joint(value: float, joint: str, others: float) -> dict[str, float]:
 
 
 def test_default_lists_cover_the_hand_minus_the_excluded_joint():
-    assert set(DEFAULT_BIG) | set(DEFAULT_SMALL) == set(JOINTS) - set(DEFAULT_EXCLUDE)
+    # every default entry claims a joint (classify raises otherwise) and every
+    # joint lands in a judged class except the excluded one
+    classes = classify(JOINTS, DEFAULT_BIG, DEFAULT_SMALL, DEFAULT_EXCLUDE)
+    assert {j for j, c in classes.items() if c in ("big", "small")} == set(JOINTS) - set(
+        DEFAULT_EXCLUDE
+    )
+    assert [j for j, c in classes.items() if c == "excluded"] == list(DEFAULT_EXCLUDE)
     assert not set(DEFAULT_BIG) & set(DEFAULT_SMALL)
     assert DEFAULT_EXCLUDE == ("index_mcp_rotate_joint",)
     assert DEFAULT_LOOP_DISCRIMINATOR in DEFAULT_BIG
@@ -388,6 +402,42 @@ def test_classify_matches_by_suffix_and_rejects_typos_and_overlaps():
         classify(JOINTS, ("cmc_99_joint",), (), ())
     with pytest.raises(ValueError, match="both"):
         classify(JOINTS, ("cmc_01_joint",), ("cmc_01_joint",), ())
+
+
+def test_classify_alternatives_cover_both_hands_of_the_pair():
+    right = classify(JOINTS, DEFAULT_BIG, DEFAULT_SMALL, DEFAULT_EXCLUDE)
+    left = classify(LEFT_JOINTS, DEFAULT_BIG, DEFAULT_SMALL, DEFAULT_EXCLUDE)
+    assert list(left.values()) == list(right.values())
+    assert left["index_pip_link02_joint"] == "small"
+    assert left["middle_pip_link02_joint"] == "small"
+    assert CLASS_UNLISTED not in left.values()
+    # an alternative list still refuses a name none of whose alternatives exists
+    with pytest.raises(ValueError, match="matches no joint"):
+        classify(JOINTS, ("cmc_99_joint|cmc_98_joint",), (), ())
+    # an empty alternative matches nothing (no "" suffix catch-all)
+    with pytest.raises(ValueError, match="matches no joint"):
+        classify(JOINTS, ("|",), (), ())
+
+
+def test_main_judges_the_other_hand_with_the_default_lists(tmp_path, capsys):
+    header = FIXED + [f"{p}{j}" for p in ("q_", "q_ref_", "g_", "tau_ff_") for j in LEFT_JOINTS]
+    rename = dict(zip(JOINTS, LEFT_JOINTS, strict=True))
+
+    def relabel(r: dict) -> dict:
+        out = {}
+        for k, v in r.items():
+            for p in ("q_ref_", "q_", "g_", "tau_ff_"):
+                if k.startswith(p) and k[len(p) :] in rename:
+                    k = p + rename[k[len(p) :]]
+                    break
+            out[k] = v
+        return out
+
+    path = write_csv(tmp_path / "joint_ff.csv", [relabel(r) for r in aba()], header)
+    assert main([str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "## hand gravity FF verdict: **PASS**" in out
+    assert "| `index_pip_link02_joint.on_abs` | PASS |" in out
 
 
 def test_unlisted_joint_is_info_only(tmp_path):
