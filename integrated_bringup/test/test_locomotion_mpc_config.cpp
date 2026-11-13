@@ -279,6 +279,26 @@ TEST_F(LocomotionMpcConfig, TheInstalledConstraintsAreTheReferenceTasks) {
   }
 }
 
+// The installed solver section: the tolerances the OCP's tests solve to, the
+// standing budget and the (provisional) online one, the rest at its default.
+TEST_F(LocomotionMpcConfig, TheInstalledSolverSectionIsTheRegisteredOne) {
+  ASSERT_TRUE(root_["mpc"]["solver"].IsMap());
+  rtc::mpc::MPCSolverConfig s;
+  ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(root_["mpc"]["solver"], s));
+  EXPECT_EQ(s.prim_tol, 1e-4);
+  EXPECT_EQ(s.dual_tol, 1e-4);
+  EXPECT_EQ(s.mu_init, 1e-2);
+  EXPECT_EQ(s.max_iters, 50);
+  EXPECT_EQ(s.max_al_iters, 20);
+  EXPECT_EQ(s.max_initial_iters, 300);
+  EXPECT_EQ(s.max_online_al_iters, 20);
+  EXPECT_EQ(s.rollout_type, rtc::mpc::MPCRolloutType::kLinear);
+  EXPECT_EQ(s.linear_solver, rtc::mpc::MPCLinearSolver::kSerial);
+  EXPECT_EQ(s.num_threads, 1);
+  EXPECT_TRUE(s.force_initial_condition);
+  EXPECT_FALSE(s.verbose);
+}
+
 TEST_F(LocomotionMpcConfig, TheFactoryCreatesTheMpcOnTheBodyModel) {
   rtc::mpc::PhaseContext ctx;
   ctx.ocp_type = "kinodynamic";

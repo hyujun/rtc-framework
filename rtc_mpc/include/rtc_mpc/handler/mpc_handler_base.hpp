@@ -25,7 +25,13 @@
 ///   `ResultsTpl::cycleAppend(problem, x_current)` and call
 ///   `solver.run(problem)` with empty inits so the solver re-uses
 ///   `results_.xs/us/vs/lams` directly — this is Aligator's canonical MPC
-///   shift-warm-start path and does not allocate.
+///   shift-warm-start path and does not allocate. After the shift the OCP
+///   clears the multipliers of the rows its current modes make inactive
+///   (`OCPHandlerBase::ClearInactiveMultipliers`).
+/// - Budget: until a solve converges after `Init`, a rebuild or a rejected
+///   solve, every solve runs on the standing budget (`max_initial_iters`,
+///   `max_al_iters`) and is marked `MPCSolution::initial_solve`; then on the
+///   online one (`max_iters`, `max_online_al_iters`) — `MPCSolverConfig`.
 /// - On topology change (`ctx.phase_changed` with new horizon / active
 ///   contacts / weight-zero crossing): concrete handler re-Builds the OCP
 ///   and re-`setup`s the solver, then seeds the new workspace from the
@@ -51,19 +57,61 @@
 
 namespace rtc::mpc {
 
+/// @brief How the solver rolls a step out along the horizon (Aligator's
+///        `RolloutType`).
+enum class MPCRolloutType {
+  kLinear,     ///< the step of the linearised dynamics
+  kNonlinear,  ///< the step re-simulated through the dynamics
+};
+
+/// @brief Aligator's LQ backend. Only the serial one is accepted: the parallel
+///        one needs worker threads the MPC thread model does not have.
+enum class MPCLinearSolver {
+  kSerial,
+  kParallel,  ///< refused (`kInvalidSolverConfig`)
+};
+
 /// @brief Non-cost solver + handler configuration loaded once at
 ///        `MPCHandlerBase::Init`.
 ///
 /// Proximal-DDP tolerances mirror Aligator's `SolverProxDDPTpl` ctor args.
 /// Defaults are intentionally looser than Phase 3/4 fixtures so the typical
 /// 20-node Panda solve converges in tens of iterations rather than hundreds.
+///
+/// Two budgets: until a solve converges — after `Init`, a rebuild, or a
+/// rejected solve that cold-seeds the next tick — the handler solves with
+/// (`max_initial_iters`, `max_al_iters`), the standing solve; after that with
+/// (`max_iters`, `max_online_al_iters`). `max_iters` counts Newton iterations
+/// over the whole solve; every AL outer iteration re-evaluates the problem
+/// and its derivatives, so `max_online_al_iters` is a budget too.
+///
+/// The step acceptance (non-monotone line search) and the Hessian
+/// approximation (Gauss-Newton) are Aligator's defaults and are not keys.
 struct MPCSolverConfig {
   double prim_tol{1e-3};  ///< primal infeasibility target
   double dual_tol{1e-2};  ///< dual infeasibility target
   double mu_init{1e-2};   ///< AL penalty initial value
-  int max_iters{30};      ///< per-solve iteration ceiling
-  int max_al_iters{20};   ///< AL outer-loop ceiling
-  bool verbose{false};    ///< route Aligator's own stdout log
+  int max_iters{30};      ///< per-solve iteration ceiling once a solve has converged
+  int max_al_iters{20};   ///< AL outer-loop ceiling of the standing solve
+  /// Iteration ceiling of the standing solve; 0 = `max_iters`, otherwise at
+  /// least `max_iters`.
+  int max_initial_iters{0};
+  int max_online_al_iters{0};  ///< AL outer-loop ceiling once converged; 0 = `max_al_iters`
+  MPCRolloutType rollout_type{MPCRolloutType::kLinear};
+  MPCLinearSolver linear_solver{MPCLinearSolver::kSerial};  ///< `kParallel` is refused
+  int num_threads{1};                  ///< any other value is refused (one solver thread)
+  bool force_initial_condition{true};  ///< false is refused: node 0 is the measured state
+  bool verbose{false};                 ///< route Aligator's own stdout log
+
+  /// @return the standing solve's iteration ceiling.
+  [[nodiscard]] constexpr int InitialIters() const noexcept {
+    return max_initial_iters > 0 ? max_initial_iters : max_iters;
+  }
+
+  /// @return the AL outer-loop ceiling once a solve has converged.
+  [[nodiscard]] constexpr int OnlineAlIters() const noexcept {
+    return max_online_al_iters > 0 ? max_online_al_iters : max_al_iters;
+  }
 };
 
 /// @brief Failure modes for @ref MPCHandlerBase::Init. Allocation is
@@ -76,7 +124,8 @@ enum class MPCInitError {
   kOCPBuildFailed,           ///< underlying OCPHandlerBase::Build rejected, or the
                              ///< context's node dt is not finite and positive
   kSolverSetupFailed,        ///< Aligator's setup() threw (caught internally)
-  kInvalidSolverConfig,      ///< tolerances / max_iters out of range
+  kInvalidSolverConfig,      ///< tolerances / iteration ceilings out of range, or a
+                             ///< parallel LQ backend, more than one thread, a free node 0
   kOcpTypeMismatch,          ///< ctx.ocp_type != this handler's dispatch key
   kFloatingBaseUnsupported,  ///< free-flyer root under a joint-torque OCP (the shipped OCPs)
   kFixedBaseUnsupported,     ///< fixed base under a kinodynamic-wrench OCP

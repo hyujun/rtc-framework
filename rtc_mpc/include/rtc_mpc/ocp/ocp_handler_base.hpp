@@ -39,7 +39,9 @@
 #include <aligator/core/traj-opt-problem.hpp>
 #pragma GCC diagnostic pop
 
+#include <cstddef>
 #include <string_view>
+#include <vector>
 
 namespace rtc::mpc {
 
@@ -146,6 +148,32 @@ class OCPHandlerBase {
   ///         one for a kinodynamic OCP (`kFixedBaseUnsupported`).
   [[nodiscard]] virtual ControlModel control_model() const noexcept {
     return ControlModel::kJointTorque;
+  }
+
+  /// @return whether a `kInvalidPhaseContext` from `UpdateReferences` can be
+  ///        met by a `Build` of the same context (the default). An OCP whose
+  ///        configuration fixes its topology returns false: the handler core
+  ///        then refuses the tick (`kOCPRebuildFailed`) without a `Build` or a
+  ///        solver setup, both of which allocate.
+  [[nodiscard]] virtual bool RebuildsOnContextChange() const noexcept { return true; }
+
+  /// @brief Called by the handler core right after it shifted the previous
+  ///        solve's iterates one node on, before the solve: set to `+0.0` the
+  ///        multipliers of the constraint rows that the stages' current modes
+  ///        (as of this tick's `UpdateReferences`) make inactive. A node whose
+  ///        mode differs from the one its shifted multipliers were solved under
+  ///        would otherwise carry them into rows that no longer bind (an
+  ///        inactive row has value and Jacobian zero, so the solver leaves its
+  ///        multiplier where it is). Does not allocate.
+  /// @param stage_multipliers  the solver's per-stage constraint multipliers
+  ///                           (`vs`; entry k is stage k's rows, a terminal
+  ///                           entry past the stages is left alone)
+  /// @return how many entries it changed (the default: none — every row of
+  ///         an OCP without modes is always active)
+  virtual std::size_t ClearInactiveMultipliers(
+      std::vector<Eigen::VectorXd>& stage_multipliers) const noexcept {
+    static_cast<void>(stage_multipliers);
+    return 0;
   }
 
   /// @return the cold-start guess this OCP wants after a build.

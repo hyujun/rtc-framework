@@ -14,9 +14,9 @@
 #   locomotion/swing.yaml     the swing foot reference and the support surface (swing.* · terrain.*)
 #   locomotion/reference.yaml the stage reference the OCP tracks (reference.*)
 #   locomotion/whole_body_qp.yaml the whole-body QP it solves each tick (whole_body_qp.*)
-#   locomotion/mpc.yaml       the whole-body MPC's OCP and its weights (mpc.*)
-# The solver, contact and runtime sections join as their
-# fragments when the code that reads them lands.
+#   locomotion/mpc.yaml       the whole-body MPC's OCP, its weights and solver budgets (mpc.*)
+# The contact and runtime sections join as their fragments when the code that
+# reads them lands.
 include:
   - locomotion/model.yaml
   - locomotion/command.yaml

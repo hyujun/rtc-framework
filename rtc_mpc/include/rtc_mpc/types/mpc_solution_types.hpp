@@ -110,7 +110,10 @@ struct MPCSolution {
   int horizon_length{0};          ///< valid node count (≤ kMaxHorizon)
   double dt_node{0.0};            ///< OCP node spacing [s]
   bool converged{false};  ///< solver convergence flag; producers keep it equal to `status == kOk`
-  int iterations{0};      ///< solver iteration count
+  /// The solve ran on the standing budget: no solve had converged since the
+  /// handler's build, rebuild or last rejected solve.
+  bool initial_solve{false};
+  int iterations{0};  ///< solver iteration count
 
   // ── Provenance ──────────────────────────────────────────────────────
   uint64_t observation_stamp_ns{0};  ///< `MPCStateSnapshot::timestamp_ns` the solve used

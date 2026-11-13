@@ -46,11 +46,15 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <string>
 #include <thread>
 
 namespace {
@@ -98,6 +102,54 @@ YAML::Node MinimalManagerConfig() {
   cfg["riccati"] = r;
   return cfg;
 }
+
+/// The mock FSM behind the snapshot overload: records what the thread
+/// passes, and how often the overload without a snapshot is reached.
+class SnapshotRecordingPhaseManager final : public rtc::mpc::PhaseManagerBase {
+ public:
+  explicit SnapshotRecordingPhaseManager(const rtc::mpc::test_utils::MockPhaseManager::Params& p)
+      : inner_(p) {}
+
+  void Init(const YAML::Node& cfg) override { inner_.Init(cfg); }
+
+  rtc::mpc::PhaseContext Update(const rtc::mpc::MPCStateSnapshot& state, const Eigen::VectorXd& q,
+                                const Eigen::VectorXd& v, const Eigen::VectorXd& sensor,
+                                const pinocchio::SE3& tcp, double t) override {
+    snapshot_calls.fetch_add(1, std::memory_order_relaxed);
+    last_sequence.store(state.sequence, std::memory_order_relaxed);
+    bool same = state.nq == q.size() && state.nv == v.size();
+    for (int i = 0; same && i < q.size(); ++i) {
+      same = state.q[static_cast<std::size_t>(i)] == q[i];
+    }
+    if (!same) {
+      mismatches.fetch_add(1, std::memory_order_relaxed);
+    }
+    return inner_.Update(q, v, sensor, tcp, t);
+  }
+
+  rtc::mpc::PhaseContext Update(const Eigen::VectorXd& q, const Eigen::VectorXd& v,
+                                const Eigen::VectorXd& sensor, const pinocchio::SE3& tcp,
+                                double t) override {
+    plain_calls.fetch_add(1, std::memory_order_relaxed);
+    return inner_.Update(q, v, sensor, tcp, t);
+  }
+
+  void SetTaskTarget(const YAML::Node& target) override { inner_.SetTaskTarget(target); }
+
+  [[nodiscard]] int CurrentPhaseId() const override { return inner_.CurrentPhaseId(); }
+
+  [[nodiscard]] std::string CurrentPhaseName() const override { return inner_.CurrentPhaseName(); }
+
+  void ForcePhase(int phase_id) override { inner_.ForcePhase(phase_id); }
+
+  std::atomic<std::uint64_t> snapshot_calls{0};
+  std::atomic<std::uint64_t> plain_calls{0};
+  std::atomic<std::uint64_t> mismatches{0};
+  std::atomic<std::uint64_t> last_sequence{0};
+
+ private:
+  rtc::mpc::test_utils::MockPhaseManager inner_;
+};
 
 class MpcThreadIntegrationTest : public ::testing::Test {
  protected:
@@ -241,6 +293,59 @@ TEST_F(MpcThreadIntegrationTest, DefaultPhaseConvergesFreeFlight) {
       << "Baseline contact_light solve loop must not fail on neutral pose";
   EXPECT_EQ(thread.LastSolveErrorCode(), 0);
   EXPECT_EQ(thread.LastPhaseId(), 0);
+}
+
+// ── 2b. Standing-solve ticks are counted apart ──────────────────────────
+
+TEST_F(MpcThreadIntegrationTest, StandingSolveTicksAreCountedApart) {
+  rtc::mpc::MPCSolutionManager mgr;
+  mgr.Init(MinimalManagerConfig(), model_handler_.nq(), model_handler_.nv(), 6);
+  WriteNeutralState(mgr);
+
+  auto mock = std::make_unique<rtc::mpc::test_utils::MockPhaseManager>(
+      MakeMockParams(/*transition_tick=*/-1));
+  auto handler = MakeInitialisedLightHandler();
+
+  rtc::mpc::HandlerMPCThread thread;
+  thread.Configure(model_handler_, std::move(handler), std::move(mock));
+  EXPECT_EQ(thread.InitialSolveTicks(), 0u);
+  thread.Init(mgr, MakeLaunchCfg(20.0));
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.TotalSolves() >= 5u; }));
+  thread.RequestStop();
+  thread.Join();
+
+  // The first tick is a standing solve; this window converges, so the ticks
+  // after it run on the online budget.
+  std::printf("[report] standing ticks %llu of %llu solves\n",
+              static_cast<unsigned long long>(thread.InitialSolveTicks()),
+              static_cast<unsigned long long>(thread.TotalSolves()));
+  EXPECT_GE(thread.InitialSolveTicks(), 1u);
+  EXPECT_LT(thread.InitialSolveTicks(), thread.TotalSolves());
+}
+
+// ── 2c. The thread hands the phase manager its snapshot ─────────────────
+
+TEST_F(MpcThreadIntegrationTest, ThePhaseManagerGetsTheSnapshot) {
+  rtc::mpc::MPCSolutionManager mgr;
+  mgr.Init(MinimalManagerConfig(), model_handler_.nq(), model_handler_.nv(), 6);
+  WriteNeutralState(mgr);
+
+  auto fsm = std::make_unique<SnapshotRecordingPhaseManager>(MakeMockParams(-1));
+  SnapshotRecordingPhaseManager* const probe = fsm.get();
+  rtc::mpc::HandlerMPCThread thread;
+  thread.Configure(model_handler_, MakeInitialisedLightHandler(), std::move(fsm));
+  thread.Init(mgr, MakeLaunchCfg(20.0));
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.TotalSolves() >= 3u; }));
+  thread.RequestStop();
+  thread.Join();
+
+  EXPECT_EQ(probe->snapshot_calls.load(), thread.TotalSolves());
+  EXPECT_EQ(probe->plain_calls.load(), 0u) << "the thread calls the snapshot overload only";
+  EXPECT_EQ(probe->mismatches.load(), 0u) << "q is the snapshot's";
+  EXPECT_EQ(probe->last_sequence.load(), mgr.ReadState().sequence);
+  EXPECT_EQ(thread.FailedSolves(), 0u);
 }
 
 // ── 3. Phase transition picked up within one tick ────────────────────────

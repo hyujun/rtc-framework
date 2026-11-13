@@ -64,9 +64,10 @@
 /// another size, a control box (`OCPLimits::u_min` / `u_max`: this
 /// formulation has no input box — hard joint and torque limits belong to the
 /// whole-body QP — so a box is refused rather than dropped,
-/// `kLimitsDimMismatch`) — changes nothing and allocates nothing, so a built
-/// problem survives the handler core's rebuild attempt on `kInvalidPhaseContext`
-/// (which no rebuild can satisfy: this OCP's config fixes the horizon).
+/// `kLimitsDimMismatch`) — changes nothing and allocates nothing. No rebuild
+/// can satisfy a `kInvalidPhaseContext` (this OCP's config fixes the horizon),
+/// so `RebuildsOnContextChange()` is false and the handler core refuses such a
+/// tick without trying one.
 ///
 /// ## Cold seed
 ///
@@ -101,6 +102,8 @@
 #pragma GCC diagnostic pop
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -168,6 +171,20 @@ class KinodynamicOCP final : public OCPHandlerBase {
 
   [[nodiscard]] ColdSeed cold_seed() const noexcept override { return ColdSeed::kReferenceControl; }
 
+  /// @brief Each stage's contact equality rows of the phase its contact is
+  ///        not in, as of the last `Build` / `UpdateReferences`: the stance
+  ///        block of a swing contact, the swing row of a stance contact. An
+  ///        entry of another size than the stage's row count is skipped.
+  [[nodiscard]] std::size_t ClearInactiveMultipliers(
+      std::vector<Eigen::VectorXd>& stage_multipliers) const noexcept override;
+
+  /// @return the contact mode of stage @p k as of the last `Build` /
+  ///         `UpdateReferences` (0 for a stage out of range).
+  [[nodiscard]] std::uint32_t StageMode(int k) const noexcept;
+
+  /// @return false: the horizon and node spacing come from this OCP's config.
+  [[nodiscard]] bool RebuildsOnContextChange() const noexcept override { return false; }
+
   /// @brief Stage @p k's `u_ref = [wrench; 0]`.
   [[nodiscard]] bool ReferenceControl(int k, Eigen::Ref<Eigen::VectorXd> u) const noexcept override;
 
@@ -193,6 +210,7 @@ class KinodynamicOCP final : public OCPHandlerBase {
     ContactConstraintResidual* equality{nullptr};
     ContactConeBarrierCost* cone{nullptr};
     CollisionBarrierCost* collision{nullptr};  ///< null when collision is disabled
+    std::uint32_t mode{0};                     ///< the mode last written to `ode`
   };
 
   /// The checks of `UpdateReferences` against @p model, before any write.

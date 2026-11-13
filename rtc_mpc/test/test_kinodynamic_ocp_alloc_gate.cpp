@@ -192,6 +192,21 @@ TEST_F(KinodynamicOCPAllocGate, ResidualsAndTheReferenceControlAllocateOnlyWhatT
   EXPECT_EQ(mallocs2, mallocs1);
 }
 
+// The multipliers of the rows a mode makes inactive are cleared in place.
+TEST_F(KinodynamicOCPAllocGate, ClearingInactiveMultipliersAllocatesNothing) {
+  auto right = tu::StanceHorizon(handler_, stand_);
+  tu::SwingContact(handler_, *right, 1, 8, 19, 0.05, 0.5);
+  KinodynamicOCP ocp(cfg_);
+  ASSERT_EQ(ocp.Build(Context(right.get()), handler_, {}), OCPBuildError::kNoError);
+  const int rows = handler_.n_contacts() * rtc::mpc::ContactConstraintResidual::EqualityRows(6);
+  std::vector<Eigen::VectorXd> vs(tu::kKinoNodes + 1, Eigen::VectorXd::Ones(rows));
+  std::size_t cleared = 0;
+  const auto [news, mallocs] = Count([&] { cleared = ocp.ClearInactiveMultipliers(vs); });
+  EXPECT_GT(cleared, 0U);
+  EXPECT_EQ(news, 0);
+  EXPECT_EQ(mallocs, 0U);
+}
+
 // Through the handler core: a tick whose horizon has another shape makes the
 // core try a rebuild, which the OCP refuses before it touches anything — the
 // tick allocates nothing.

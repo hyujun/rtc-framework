@@ -149,6 +149,7 @@ OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHan
     for (std::size_t k = 0; k < stages_.size(); ++k) {
       StageModel& stage = *problem_->stages_[k];
       StageHandles& h = stages_[k];
+      h.mode = stance;
       h.ode = KinodynamicDynamics::OdeOf(stage);
       auto* stack = stage.getCost<CostStack>();
       if (h.ode == nullptr || stack == nullptr) {
@@ -256,6 +257,7 @@ void KinodynamicOCP::WriteHorizon(const HorizonReference& h) noexcept {
     StageHandles& st = stages_[k];
     // CheckContext ran every test these make, so none of them refuses.
     static_cast<void>(dyn_.SetMode(*st.ode, s.mode));
+    st.mode = s.mode;
     WriteStateTarget(s, *st.state);
     u_buf_.head(n_contact_vars_) =
         Eigen::Map<const Eigen::VectorXd>(s.wrench.data(), n_contact_vars_);
@@ -276,6 +278,39 @@ OCPBuildError KinodynamicOCP::UpdateReferences(const PhaseContext& ctx) noexcept
   }
   WriteHorizon(*ctx.horizon);
   return OCPBuildError::kNoError;
+}
+
+std::size_t KinodynamicOCP::ClearInactiveMultipliers(
+    std::vector<Eigen::VectorXd>& stage_multipliers) const noexcept {
+  std::size_t changed = 0;
+  const std::size_t n = std::min(stage_multipliers.size(), stages_.size());
+  for (std::size_t k = 0; k < n; ++k) {
+    const ContactConstraintResidual& eq = *stages_[k].equality;
+    const int rows = eq.rows_per_contact();
+    const int stance_rows = rows - 1;  // the swing row is each contact's last
+    Eigen::VectorXd& v = stage_multipliers[k];
+    if (v.size() != eq.n_contacts() * rows) {
+      continue;
+    }
+    for (int c = 0; c < eq.n_contacts(); ++c) {
+      const bool stance = ((stages_[k].mode >> static_cast<unsigned>(c)) & 1U) != 0U;
+      const int first = c * rows + (stance ? stance_rows : 0);
+      const int count = stance ? 1 : stance_rows;
+      for (int r = first; r < first + count; ++r) {
+        // −0.0 too: the gate is the +0.0 bit pattern.
+        if (v[r] != 0.0 || std::signbit(v[r])) {
+          v[r] = 0.0;
+          ++changed;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+std::uint32_t KinodynamicOCP::StageMode(int k) const noexcept {
+  return k >= 0 && k < static_cast<int>(stages_.size()) ? stages_[static_cast<std::size_t>(k)].mode
+                                                        : 0U;
 }
 
 bool KinodynamicOCP::ReferenceControl(int k, Eigen::Ref<Eigen::VectorXd> u) const noexcept {

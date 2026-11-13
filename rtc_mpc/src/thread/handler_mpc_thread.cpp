@@ -54,6 +54,7 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   last_phase_id_.store(-1, std::memory_order_relaxed);
   total_solves_.store(0, std::memory_order_relaxed);
   failed_solves_.store(0, std::memory_order_relaxed);
+  initial_solve_ticks_.store(0, std::memory_order_relaxed);
   null_handler_hit_.store(false, std::memory_order_relaxed);
   has_prev_out_ = false;
 }
@@ -123,7 +124,8 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   // ── Phase manager tick ────────────────────────────────────────────────
   const double t =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count();
-  const PhaseContext ctx = phase_manager_->Update(q_scratch_, v_scratch_, sensor_scratch_, tcp, t);
+  const PhaseContext ctx =
+      phase_manager_->Update(state, q_scratch_, v_scratch_, sensor_scratch_, tcp, t);
   last_phase_id_.store(ctx.phase_id, std::memory_order_relaxed);
 
   // ── Cross-mode swap branch (try-wrapped; Solve stays noexcept) ────────
@@ -155,6 +157,10 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   if (err != MPCSolveError::kNoError) {
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
     return false;
+  }
+
+  if (out.initial_solve) {
+    initial_solve_ticks_.fetch_add(1, std::memory_order_relaxed);
   }
 
   // Save for next tick's cross-mode seed (trivially-copyable memcpy).

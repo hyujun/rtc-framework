@@ -29,6 +29,7 @@
 #include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -68,6 +69,10 @@ class MPCHandlerCore {
 
   [[nodiscard]] bool Initialised() const noexcept { return initialised_; }
 
+  /// @return true until a solve converges after `Init`, a rebuild or a
+  ///         rejected solve: the next solve runs on the standing budget.
+  [[nodiscard]] bool InitialSolvePending() const noexcept { return initial_solve_pending_; }
+
   [[nodiscard]] int horizon_length() const noexcept { return horizon_length_; }
 
   [[nodiscard]] int nq() const noexcept { return nq_; }
@@ -77,6 +82,18 @@ class MPCHandlerCore {
   [[nodiscard]] int nu() const noexcept { return nu_; }
 
   [[nodiscard]] int n_contact_vars() const noexcept { return n_contact_vars_; }
+
+  /// @return how many multiplier entries the OCP cleared after the last
+  ///         shift (`OCPHandlerBase::ClearInactiveMultipliers`; 0 on a cold
+  ///         tick).
+  [[nodiscard]] std::size_t ClearedMultipliers() const noexcept { return cleared_multipliers_; }
+
+  /// @return the solver (null before a successful `Init`) — for tests and
+  ///         diagnostics: its iterates, multipliers and settings as the last
+  ///         call left them.
+  [[nodiscard]] const aligator::SolverProxDDPTpl<double>* solver() const noexcept {
+    return solver_.get();
+  }
 
  private:
   /// @brief Solve body; `Solve` wraps it to stamp `out.status` once from the
@@ -116,15 +133,22 @@ class MPCHandlerCore {
   ///        cannot be packed is zeroed, never left stale.
   void PackRiccatiGain(std::size_t k, MPCSolution& out) const noexcept;
 
+  /// @brief Set the solver's iteration ceilings for this solve: the standing
+  ///        budget while `initial_solve_pending_`, else the online one.
+  void ApplyBudget() noexcept;
+
   /// @brief Pack xs/us/lams/K_riccati + metadata (status, residuals, the
   ///        provenance of @p state) into @p out after a successful solve.
   ///        Non-allocating.
   void PackSolution(const OCPHandlerBase& ocp, const MPCStateSnapshot& state, MPCSolution& out,
-                    bool converged, std::uint64_t solve_duration_ns) const noexcept;
+                    bool converged, bool initial_solve,
+                    std::uint64_t solve_duration_ns) const noexcept;
 
   // ── State ────────────────────────────────────────────────────────────
   bool initialised_{false};
   bool first_solve_after_build_{true};
+  std::size_t cleared_multipliers_{0};  // by the OCP after the last shift
+  bool initial_solve_pending_{true};    // no solve converged since build / rebuild / rejection
 
   const RobotModelHandler* model_{nullptr};  // non-owning; set at Init
   OCPLimits limits_{};

@@ -43,6 +43,22 @@ using Solver = aligator::SolverProxDDPTpl<double>;
   return std::isfinite(dt) && dt > 0.0;
 }
 
+/// @brief The ranges of `MPCSolverConfig` (its field comments). A NaN
+///        tolerance fails the `> 0` tests.
+[[nodiscard]] bool SolverConfigValid(const MPCSolverConfig& cfg) noexcept {
+  if (!(cfg.prim_tol > 0.0) || !(cfg.dual_tol > 0.0) || !(cfg.mu_init > 0.0) ||
+      cfg.max_iters <= 0 || cfg.max_al_iters <= 0) {
+    return false;
+  }
+  if (cfg.max_initial_iters < 0 ||
+      (cfg.max_initial_iters > 0 && cfg.max_initial_iters < cfg.max_iters) ||
+      cfg.max_online_al_iters < 0) {
+    return false;
+  }
+  return cfg.linear_solver == MPCLinearSolver::kSerial && cfg.num_threads == 1 &&
+         cfg.force_initial_condition;
+}
+
 }  // namespace
 
 void MPCHandlerCore::RecomputeContactVarDim(const RobotModelHandler& model) noexcept {
@@ -70,8 +86,7 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   if (control == ControlModel::kKinodynamicWrench && !model.floating_base()) {
     return MPCInitError::kFixedBaseUnsupported;
   }
-  if (solver_cfg.prim_tol <= 0.0 || solver_cfg.dual_tol <= 0.0 || solver_cfg.mu_init <= 0.0 ||
-      solver_cfg.max_iters <= 0 || solver_cfg.max_al_iters <= 0) {
+  if (!SolverConfigValid(solver_cfg)) {
     return MPCInitError::kInvalidSolverConfig;
   }
   if (initial_ctx.ocp_type != ocp.ocp_type()) {
@@ -92,6 +107,13 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
     solver_->setDualTolerance(solver_cfg.dual_tol);
     solver_->max_al_iters = static_cast<std::size_t>(solver_cfg.max_al_iters);
     solver_->verbose_ = solver_cfg.verbose ? aligator::VERBOSE : aligator::QUIET;
+    // Set before setup(), which picks the LQ backend; the thread count stays
+    // Aligator's default of one (the config check refused anything else).
+    solver_->rollout_type_ = solver_cfg.rollout_type == MPCRolloutType::kNonlinear
+                                 ? aligator::RolloutType::NONLINEAR
+                                 : aligator::RolloutType::LINEAR;
+    solver_->linear_solver_choice = aligator::LQSolverChoice::SERIAL;
+    solver_->force_initial_condition_ = true;
     solver_->setup(ocp.problem());
   } catch (...) {
     solver_.reset();
@@ -129,6 +151,7 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   us_warm_.assign(static_cast<std::size_t>(horizon_length_), Eigen::VectorXd::Zero(nu_));
 
   first_solve_after_build_ = true;
+  initial_solve_pending_ = true;
   initialised_ = true;
   return MPCInitError::kNoError;
 }
@@ -244,6 +267,11 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   // references (EE target slewing within a phase) stay in sync.
   const OCPBuildError upd = ocp.UpdateReferences(ctx);
   if (upd == OCPBuildError::kInvalidPhaseContext) {
+    // An OCP whose config fixes its topology cannot be rebuilt into another
+    // one; trying would only allocate.
+    if (!ocp.RebuildsOnContextChange()) {
+      return MPCSolveError::kOCPRebuildFailed;
+    }
     const OCPBuildError be = ocp.Build(ctx, *model_, limits_);
     if (be != OCPBuildError::kNoError) {
       return MPCSolveError::kOCPRebuildFailed;
@@ -255,6 +283,7 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     }
     horizon_length_ = ocp.horizon_length();
     first_solve_after_build_ = true;
+    initial_solve_pending_ = true;
     // Re-size warm buffers in case horizon changed.
     xs_warm_.assign(static_cast<std::size_t>(horizon_length_ + 1),
                     Eigen::VectorXd::Zero(nq_ + nv_));
@@ -273,6 +302,7 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   }
 
   const bool cold_seeded = first_solve_after_build_;
+  cleared_multipliers_ = 0;
   if (cold_seeded) {
     ColdSeedGuess(ocp, q_current_, x_current_);
     first_solve_after_build_ = false;
@@ -285,6 +315,9 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
       DiscardIterates();  // the rotation may have stopped partway
       return MPCSolveError::kSolverException;
     }
+    // A node whose mode changed since its multipliers were solved must not
+    // carry them into rows its new mode does not bind.
+    cleared_multipliers_ = ocp.ClearInactiveMultipliers(solver_->results_.vs);
   }
 
   // Stage the warm-start in separate xs_warm_ / us_warm_ buffers so
@@ -310,6 +343,8 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     }
   }
 
+  const bool initial_solve = initial_solve_pending_;
+  ApplyBudget();
   const auto t0 = std::chrono::steady_clock::now();
   bool converged = false;
   try {
@@ -333,8 +368,21 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     return MPCSolveError::kSolverDiverged;
   }
 
-  PackSolution(ocp, state, out, converged, dur_ns);
+  PackSolution(ocp, state, out, converged, initial_solve, dur_ns);
+  if (converged) {
+    initial_solve_pending_ = false;
+  }
   return MPCSolveError::kNoError;
+}
+
+void MPCHandlerCore::ApplyBudget() noexcept {
+  if (initial_solve_pending_) {
+    solver_->max_iters = static_cast<std::size_t>(solver_cfg_.InitialIters());
+    solver_->max_al_iters = static_cast<std::size_t>(solver_cfg_.max_al_iters);
+  } else {
+    solver_->max_iters = static_cast<std::size_t>(solver_cfg_.max_iters);
+    solver_->max_al_iters = static_cast<std::size_t>(solver_cfg_.OnlineAlIters());
+  }
 }
 
 bool MPCHandlerCore::SolutionFinite() const noexcept {
@@ -402,6 +450,7 @@ void MPCHandlerCore::DiscardIterates() noexcept {
     g.setZero();
   }
   first_solve_after_build_ = true;
+  initial_solve_pending_ = true;
 }
 
 void MPCHandlerCore::SeedWarmStart(const MPCSolution& prev, OCPHandlerBase& ocp) noexcept {
@@ -473,7 +522,7 @@ void MPCHandlerCore::PackRiccatiGain(std::size_t k, MPCSolution& out) const noex
 }
 
 void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const MPCStateSnapshot& state,
-                                  MPCSolution& out, bool converged,
+                                  MPCSolution& out, bool converged, bool initial_solve,
                                   std::uint64_t solve_duration_ns) const noexcept {
   const auto& results = solver_->results_;
   const auto& xs = results.xs;
@@ -489,6 +538,7 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const MPCStateSnaps
   // The solver returned finite iterates (the caller rejected NaN), so a
   // non-converged solve is a budget-exhausted, still-usable one.
   MarkSolved(out, converged);
+  out.initial_solve = initial_solve;
   out.iterations = static_cast<int>(results.num_iters);
   out.residuals.prim_inf = results.prim_infeas;
   out.residuals.dual_inf = results.dual_infeas;

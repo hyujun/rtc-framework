@@ -5,8 +5,15 @@
 # `kinodynamic:` is the OCP's static configuration — schema, units and checks in
 # rtc_mpc ocp/kinodynamic_ocp_config.hpp (every key required, an unknown key
 # refused, every joint of the MPC model named, a name the model lacks ignored).
-# The solver and runtime sections join when the code that reads them lands
-# (defaults until then).
+# `solver:` is the factory's (rtc_mpc handler/mpc_factory.hpp — key meanings and
+# the values Init refuses); the runtime section joins when the code that reads
+# it lands.
+#
+# solver: the tolerances the OCP's tests solve to. Until one solve converges
+# (after the build, a rebuild or a rejected solve) the MPC solves with
+# max_initial_iters and max_al_iters — the standing solve; after that with
+# max_iters and max_online_al_iters. The online pair here is provisional: it is
+# decided by the soak on the control PCs, not on this value.
 #
 # The weights are the reference whole-body task's, unchanged:
 #   - state / terminal: its Q and Q_final diagonals. The base orientation is
@@ -43,6 +50,14 @@
 locomotion_controller:
   mpc:
     ocp_type: "kinodynamic"
+    solver:
+      prim_tol: 1.0e-4
+      dual_tol: 1.0e-4
+      mu_init: 1.0e-2
+      max_iters: 50
+      max_al_iters: 20
+      max_initial_iters: 300
+      max_online_al_iters: 20
     kinodynamic:
       horizon_nodes: 32
       dt: 0.035                      # [s]
