@@ -145,7 +145,7 @@ phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC pub
 
 ## 손 전용 프로파일 (`hand_joint_controller`, `--robot p2`)
 
-proto2 손 하나가 bringup 의 전부인 프로파일입니다 — device group 은 `p2_right` 하나이고 팔이 없습니다 (`RobotShape.default_p2()`, `arm_dof == 0`). 이 bringup 이 싣는 컨트롤러는 `hand_joint_controller` 뿐이며, 나머지 radio 는 catalog 가 오면 사라집니다 (그 프로파일에 YAML 이 없는 컨트롤러는 인스턴스화되지 않습니다).
+proto2 손 하나가 bringup 의 전부인 프로파일입니다 — device group 은 `p2_right` 하나이고 팔이 없습니다 (`RobotShape.default_p2()`, `arm_dof == 0`). 왼손은 `--robot p2_left` (bringup 은 `side:=left`) 로, 아래가 전부 `p2_left` 군 · `/p2/left/*` · 왼손 roster (`index_pip_link02_joint` · `middle_pip_link02_joint`) 로 바뀌어 성립합니다. 한 GUI 는 한 손만 봅니다 — bringup 이 한 번에 한 손이기 때문입니다. 이 bringup 이 싣는 컨트롤러는 `hand_joint_controller` 뿐이며, 나머지 radio 는 catalog 가 오면 사라집니다 (그 프로파일에 YAML 이 없는 컨트롤러는 인스턴스화되지 않습니다).
 
 - **topic 은 손 하나로 모입니다.** GUI 는 (arm, hand) 두 토큰으로 토픽을 만드는데 이 프로파일은 둘 다 `p2_right` 라 (`RobotProfile.arm_group` 이 비면 `/<ctrl>//joint_goal` 이 됩니다) 목표는 `/hand_joint_controller/p2_right/joint_goal`, 상태는 `/rtc_cm/p2_right/joint_states` 입니다. `Send Command` 와 preset 은 **손 절반만** 보내고 robot 절반은 건너뜁니다 — 빈 `RobotTarget` 이 손 토픽으로 나가지 않게 (`app.py` 의 `arm_dof == 0` 가드).
 - **Control 탭**: `Joint Target` · `Joint Positions` 는 행이 없는 빈 열이고 `Task Target` 은 꺼져 있습니다. `Hand Motor Target` 이 `config/p2/_base.yaml` `p2_right.joint_state_names` 순서의 열 개 (Thumb 4 · Index 3 · Middle 2 · Ring 1) 를 싣습니다 — 이름은 `cmc_01_joint` 처럼 접두사 없는 손 description 의 것이며 `b7_loco` 의 `right_*` roster 와 다릅니다.
@@ -154,7 +154,8 @@ proto2 손 하나가 bringup 의 전부인 프로파일입니다 — device grou
 - **`tracking` 이 아닌 동안 컨트롤러는 모든 `joint_goal` 을 거부합니다** (reject 로 셉니다). 그래서 GUI 는 마지막으로 읽은 mode 가 `damping` · `damping_feedforward` 이면 `Send Command` 를 끄고 이유 (`mode is damping: joint goals are refused`) 를 버튼 아래에 보이며, preset 전송 · 단축키 토글 · hand step 도 같은 사유로 보류합니다. mode 를 아직 읽지 못했으면 막지 않습니다.
 - **End-Effector Pose** 는 컨트롤러가 `/hand_joint_controller/transforms` 로 보내는 `palm → index_virtual_axis_actual` 입니다 (`tcp_parent`/`tcp_child`; 엄지 · 중지 · 약지의 `*_virtual_axis_actual` 도 같은 메시지에 실리지만 readout 은 검지 하나를 따릅니다).
 - **Grasp 탭**의 `▶ Grasp` / `■ Release` 는 꺼집니다 — `grasp_command` 서비스가 없습니다 (`config.py` `NO_GRASP_COMMAND_CONTROLLERS`).
-- **preset · 단축키 설정 파일**은 `hand_presets_p2.json` · `demo_gui_settings_p2.json` 입니다 (`preset_scope="p2"`; hand group 토큰 `p2_right` 는 `b7_loco` 와 같아 이름을 나눕니다). 기본 preset 은 이 손의 것 (`open_flat` · `mid_pose` = sim 의 `initial_qpos`) 입니다 — 관절 수가 같은 UR5e 손의 기본값은 굽힘 방향이 반대인 관절이 있어 쓰지 않습니다 (`config.default_presets_for` 의 scope 별 roster). 예전에 그 기본값이 그대로 쓰인 파일은 시작할 때 한 번 교체되고, 저장 · 수정 · 삭제한 적이 있는 파일은 그대로 둡니다. preset 에 `hand_joint_controller` 가 적혀도 단축키 토글이 통과합니다 — 이 프로파일이 그 컨트롤러의 gain 스키마를 등록하기 때문입니다.
+- **preset · 단축키 설정 파일**은 `hand_presets_p2.json` · `demo_gui_settings_p2.json` 입니다 (`preset_scope="p2"`; hand group 토큰 `p2_right` 는 `b7_loco` 와 같아 이름을 나눕니다). 기본 preset 은 이 손의 것 (`open_flat` · `mid_pose` = sim 의 `initial_qpos`) 입니다 — 관절 수가 같은 UR5e 손의 기본값은 굽힘 방향이 반대인 관절이 있어 쓰지 않습니다 (`config.default_presets_for` 의 scope 별 roster). 예전에 그 기본값이 그대로 쓰인 파일은 시작할 때 한 번 교체되고, 저장 · 수정 · 삭제한 적이 있는 파일은 그대로 둡니다. `p2_left` 는 `hand_presets_p2_left.json` · `demo_gui_sequences_p2_left.json` · `demo_gui_settings_p2_left.json` 을 따로 갖습니다 (관절 일곱의 굽힘 방향이 반대라 오른손 preset 은 왼손에서 틀린 자세다).
+- **손 tag 와 거울 import.** 두 프로파일에서 저장한 preset 에는 `side` (`right` / `left`) 가 붙고, 다른 손 tag 의 preset 이 하나라도 든 preset 파일은 시작할 때 **거부**되어 `<파일>.refused` 로 옮겨지고 기본값으로 시작합니다 (tag 없는 예전 파일 · 기본 roster 는 양쪽에서 받습니다). `Import Mirrored` 버튼이 다른 손의 preset 파일을 읽어 관절마다 `discovery.P2_MIRROR_SIGNS` 를 곱하고 이 손 tag 를 붙여 합칩니다 (같은 이름은 덮을지 묻습니다). sequence 는 preset 이름만 담으므로, 이어서 다른 손의 sequence 를 그대로 가져올지 묻습니다 — 같은 이름의 거울 preset 위에서 그 sequence 가 이 손으로 재생됩니다. 거울은 두 모델의 부호에서 온 출발점이고, 실기 부호는 드라이버의 `joint_direction_signs` 가 정합니다 ([hand-joint-controller.md](hand-joint-controller.md)). preset 에 `hand_joint_controller` 가 적혀도 단축키 토글이 통과합니다 — 이 프로파일이 그 컨트롤러의 gain 스키마를 등록하기 때문입니다.
 
 
 ## 기타 기능
@@ -165,4 +166,4 @@ proto2 손 하나가 bringup 의 전부인 프로파일입니다 — device grou
 - E-STOP 상태 (`/system/estop_status`), 실시간 TCP/관절 위치 표시
 - 헤더의 **Clear E-STOP** / **Reset fault** (S9a) — 모든 탭 공용. Clear E-STOP 은 두 번 부른다: 빈 `reason_ack` 로 `/rtc_cm/clear_estop` 의 거부 메시지에서 latch 사유를 읽어 보여주고, 운영자가 확인하면 그 사유를 그대로 echo 한다 (사유는 어느 토픽에도 없다; 읽을 수 없는 응답이면 추측하지 않고 멈춘다). Reset fault 는 활성 컨트롤러의 `Name()` (`list_controllers` 의 `name`, config key 아님) 으로 `/rtc_cm/reset_fault` 를 부른다. 둘 다 응답을 그대로 표시하며 다른 latch 가 남았다는 문구가 있으면 경고색이다. 어느 것도 무장을 되살리지 않는다 — 구현 [demo_gui/latch_clear.py](../integrated_bringup/demo_gui/latch_clear.py)
 - 핸드 자세 프리셋 저장/로드 (JSON)
-- 센서 캘리브레이션 (`/<hand_group>/calibration/command` — `--robot` 프로파일의 hand group 으로 파생: p1a→`/p1a/`, p1b→`/p1b/`, p2→`/p2_right/`)
+- 센서 캘리브레이션 (`/<hand_group>/calibration/command` — `--robot` 프로파일의 hand group 으로 파생: p1a→`/p1a/`, p1b→`/p1b/`, p2→`/p2_right/`, p2_left→`/p2_left/`)
