@@ -53,6 +53,7 @@ add_library(rtc_mpc STATIC
   src/model/robot_model_handler.cpp
   src/model/wb_layout.cpp
   src/dynamics/kinodynamic_dynamics.cpp
+  src/ocp/contact_kinematics.cpp
   src/ocp/contact_tracking_residual.cpp
   src/ocp/kinodynamic_ocp_config.cpp
   src/ocp/kinodynamic_ocp.cpp
