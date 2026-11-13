@@ -292,7 +292,8 @@ bool KinodynamicOCP::ReferenceControl(int k, Eigen::Ref<Eigen::VectorXd> u) cons
 bool KinodynamicOCP::ConstraintResiduals(const std::vector<Eigen::VectorXd>& xs,
                                          const std::vector<Eigen::VectorXd>& us,
                                          ConstraintResidualReport& out) noexcept {
-  if (!Built() || xs.size() != stages_.size() + 1 || us.size() != stages_.size()) {
+  if (!Built() || xs.size() != stages_.size() + 1 || us.size() != stages_.size() ||
+      xs.back().size() != nq_ + nv_ || !xs.back().allFinite()) {
     return false;
   }
   for (std::size_t k = 0; k < stages_.size(); ++k) {

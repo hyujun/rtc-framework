@@ -50,6 +50,10 @@
 /// differentiable at its apex (a normal force of at least `√ε/μ − f_grip`).
 /// No `τ_z` bound.
 ///
+/// The friction cone is on world axes (normal `+z`), as the reference
+/// formulation has it: flat ground. A cone about a sloped terrain normal is
+/// not modelled.
+///
 /// ## Lifetime, binding and real time
 ///
 /// As `ContactTrackingResidual`: bind each stage's copy to that stage's ODE

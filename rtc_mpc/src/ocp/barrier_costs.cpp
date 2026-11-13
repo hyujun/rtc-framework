@@ -61,9 +61,8 @@ double PolynomialBarrier::SecondDerivative(double h) const noexcept {
 
 // ── Joint limits ────────────────────────────────────────────────────────────
 
-namespace {
-
-bool LimitedOneEntryJoint(const pinocchio::Model& model, pinocchio::JointIndex j) noexcept {
+bool JointLimitBarrierCost::IsLimitedJoint(const pinocchio::Model& model,
+                                           pinocchio::JointIndex j) noexcept {
   const auto& joint = model.joints[j];
   if (joint.nq() != 1 || joint.nv() != 1) {
     return false;
@@ -73,14 +72,12 @@ bool LimitedOneEntryJoint(const pinocchio::Model& model, pinocchio::JointIndex j
   return std::isfinite(lo) && std::isfinite(hi);
 }
 
-}  // namespace
-
 JointLimitBarrierCost::JointLimitBarrierCost(const Space& space, int nu,
                                              const pinocchio::Model& model,
                                              const PolynomialBarrier& barrier)
     : Base(space, nu), barrier_(barrier) {
   for (pinocchio::JointIndex j = 1; j < static_cast<pinocchio::JointIndex>(model.njoints); ++j) {
-    if (!LimitedOneEntryJoint(model, j)) {
+    if (!IsLimitedJoint(model, j)) {
       continue;
     }
     const auto& joint = model.joints[j];
@@ -94,7 +91,7 @@ JointLimitBarrierCost::JointLimitBarrierCost(const Space& space, int nu,
 int JointLimitBarrierCost::CountLimitedJoints(const pinocchio::Model& model) noexcept {
   int n = 0;
   for (pinocchio::JointIndex j = 1; j < static_cast<pinocchio::JointIndex>(model.njoints); ++j) {
-    n += LimitedOneEntryJoint(model, j) ? 1 : 0;
+    n += IsLimitedJoint(model, j) ? 1 : 0;
   }
   return n;
 }
@@ -154,8 +151,9 @@ CollisionBarrierCost::CollisionBarrierCost(const Space& space, const Ode& ode,
 
 bool CollisionBarrierCost::Bind(const Ode* ode) noexcept {
   if (ode != nullptr &&
-      (ode->nu() != nu || ode->contact_ids_ != contact_ids_ || ode->pin_model_.nq != nq_ ||
-       ode->pin_model_.njoints != njoints_ || ode->pin_model_.nframes != nframes_)) {
+      (ode->ndx() != ndx() || ode->nu() != nu || ode->contact_ids_ != contact_ids_ ||
+       ode->pin_model_.nq != nq_ || ode->pin_model_.njoints != njoints_ ||
+       ode->pin_model_.nframes != nframes_)) {
     return false;
   }
   ode_ = ode;
@@ -255,6 +253,10 @@ void CollisionBarrierCost::computeHessians(const ConstVectorRef& /*x*/, const Co
   auto& d = static_cast<CollisionBarrierData&>(data);
   const int nv = static_cast<int>(d.grad_h.cols());
   data.Lxx_.topLeftCorner(nv, nv).setZero();
+  if (ode_ == nullptr) {
+    data.Lxx_.topLeftCorner(nv, nv).setConstant(std::nan(""));
+    return;
+  }
   if (!d.evaluated || !d.active) {
     return;
   }

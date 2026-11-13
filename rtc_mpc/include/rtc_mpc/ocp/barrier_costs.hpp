@@ -82,6 +82,11 @@ class JointLimitBarrierCost final : public aligator::CostAbstractTpl<double> {
   /// @return the joints this cost limits: one entry each, finite limits.
   [[nodiscard]] static int CountLimitedJoints(const pinocchio::Model& model) noexcept;
 
+  /// @return whether this cost limits joint @p j of @p model (one
+  ///         configuration and one velocity entry, both limits finite).
+  [[nodiscard]] static bool IsLimitedJoint(const pinocchio::Model& model,
+                                           pinocchio::JointIndex j) noexcept;
+
   [[nodiscard]] int n_joints() const noexcept { return static_cast<int>(idx_q_.size()); }
 
   [[nodiscard]] const PolynomialBarrier& barrier() const noexcept { return barrier_; }

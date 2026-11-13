@@ -381,14 +381,13 @@ using Error = KinodynamicOCPConfigError;
     return e;
   }
   const pinocchio::Model& m = model.model();
+  // The joints the barrier limits need a non-empty range.
   for (pinocchio::JointIndex j = 1; j < static_cast<pinocchio::JointIndex>(m.njoints); ++j) {
-    const auto& joint = m.joints[j];
-    if (joint.nq() != 1 || joint.nv() != 1) {
+    if (!JointLimitBarrierCost::IsLimitedJoint(m, j)) {
       continue;
     }
-    const double lo = m.lowerPositionLimit[joint.idx_q()];
-    const double hi = m.upperPositionLimit[joint.idx_q()];
-    if (std::isfinite(lo) && std::isfinite(hi) && !(lo < hi)) {
+    const auto iq = m.joints[j].idx_q();
+    if (!(m.lowerPositionLimit[iq] < m.upperPositionLimit[iq])) {
       return Error::kInvalidJointLimit;
     }
   }

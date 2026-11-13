@@ -1043,6 +1043,11 @@ TEST_F(KinodynamicOCPTest, ConstraintResidualsRefuseANonFiniteTrajectory) {
   us[7][2] = 0.0;
   xs[3][model_.nq + 2] = std::numeric_limits<double>::infinity();
   EXPECT_FALSE(ocp.ConstraintResiduals(xs, us, r));
+  xs[3][model_.nq + 2] = 0.0;
+  xs.back()[0] = std::numeric_limits<double>::quiet_NaN();  // the terminal node too
+  EXPECT_FALSE(ocp.ConstraintResiduals(xs, us, r));
+  xs.back() = Eigen::VectorXd::Zero(3);
+  EXPECT_FALSE(ocp.ConstraintResiduals(xs, us, r));
   xs.pop_back();
   EXPECT_FALSE(ocp.ConstraintResiduals(xs, us, r));
 }
