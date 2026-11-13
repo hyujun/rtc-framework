@@ -11,6 +11,8 @@
 #include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
 #include "rtc_mpc/handler/kinodynamic_mpc.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
+#include "rtc_mpc/ocp/barrier_costs.hpp"
+#include "rtc_mpc/ocp/contact_constraints.hpp"
 #include "rtc_mpc/ocp/contact_tracking_residual.hpp"
 #include "rtc_mpc/ocp/kinodynamic_ocp.hpp"
 #include "rtc_mpc/ocp/kinodynamic_ocp_config.hpp"
@@ -34,8 +36,10 @@
 #include <aligator/core/traj-opt-problem.hpp>
 #include <aligator/modelling/costs/quad-residual-cost.hpp>
 #include <aligator/modelling/costs/sum-of-costs.hpp>
+#include <aligator/solvers/proxddp/solver-proxddp.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
@@ -59,8 +63,12 @@
 namespace {
 
 namespace tu = rtc::mpc::test_utils;
+using rtc::mpc::CollisionBarrierCost;
+using rtc::mpc::ContactConstraintResidual;
 using rtc::mpc::ContactTrackingResidual;
+using rtc::mpc::ContactWrenchConeResidual;
 using rtc::mpc::HorizonReference;
+using rtc::mpc::JointLimitBarrierCost;
 using rtc::mpc::KinodynamicDynamics;
 using rtc::mpc::KinodynamicIntegrator;
 using rtc::mpc::KinodynamicMPC;
@@ -80,6 +88,26 @@ constexpr int kRows = ContactTrackingResidual::kRowsPerContact;
 bool BitEqual(const Eigen::VectorXd& a, const Eigen::VectorXd& b) {
   return a.size() == b.size() &&
          std::memcmp(a.data(), b.data(), sizeof(double) * static_cast<std::size_t>(a.size())) == 0;
+}
+
+/// As `tu::SwingContact` (mode bits, wrench redistribution, impact
+/// proximity), with a 1 − cos height reference instead of the half sine:
+/// `z = z0 + (h/2)(1 − cos(2π t/T))` with ż, z̈, `T = (last − first + 2)·dt`,
+/// `t = (k − first + 1)·dt` — zero vertical velocity at liftoff and touchdown.
+void SwingContactCos(const rtc::mpc::RobotModelHandler& handler, HorizonReference& h, int swing,
+                     int first, int last, double height, double impact) {
+  tu::SwingContact(handler, h, swing, first, last, height, impact);
+  const double T = (last - first + 2) * h.dt;
+  const double w = 2.0 * std::acos(-1.0) / T;
+  const auto i = static_cast<std::size_t>(swing);
+  const double z0 = h.stages[0].contact_pose[7 * i + 2];
+  for (int k = first; k <= last; ++k) {
+    rtc::mpc::StageReference& s = h.stages[static_cast<std::size_t>(k)];
+    const double t = (k - first + 1) * h.dt;
+    s.contact_pose[7 * i + 2] = z0 + 0.5 * height * (1.0 - std::cos(w * t));
+    s.contact_twist[6 * i + 2] = 0.5 * height * w * std::sin(w * t);
+    s.contact_acceleration[6 * i + 2] = 0.5 * height * w * w * std::cos(w * t);
+  }
 }
 
 class KinodynamicOCPTest : public ::testing::Test {
@@ -133,7 +161,8 @@ TEST_F(KinodynamicOCPTest, EveryKeyIsRequired) {
   const char* top[] = {"horizon_nodes", "dt",
                        "integrator",    "terminal_scaling",
                        "state_weights", "terminal_weights",
-                       "input_weights", "contact_tracking"};
+                       "input_weights", "contact_tracking",
+                       "constraints"};
   for (const char* k : top) {
     YAML::Node n = YAML::Clone(tu::G1KinodynamicNode());
     n.remove(k);
@@ -265,6 +294,252 @@ TEST_F(KinodynamicOCPTest, AFixedBaseOrUninitialisedModelIsRefused) {
   ASSERT_EQ(fixed.Init(panda, YAML::Load(tu::kPandaTwoFingerYaml)),
             rtc::mpc::RobotModelInitError::kNoError);
   EXPECT_EQ(LoadKinodynamicOCPConfig(tu::G1KinodynamicNode(), fixed, out), Err::kFixedBase);
+}
+
+// ── Loader: constraints ─────────────────────────────────────────────────────
+
+/// The keys of each `constraints:` sub-map.
+const std::vector<std::pair<const char*, std::vector<const char*>>>& ConstraintSections() {
+  static const std::vector<std::pair<const char*, std::vector<const char*>>> kSections = {
+      {"foot_constraint",
+       {"position_z", "orientation", "linear_velocity_xy", "linear_velocity_z", "angular_velocity",
+        "linear_acceleration_xy", "linear_acceleration_z", "angular_acceleration"}},
+      {"friction", {"mu", "grip_force", "regularization"}},
+      {"contact_rectangle", {"x_min", "x_max", "y_min", "y_max"}},
+      {"joint_limits", {"mu", "delta"}},
+      {"collision", {"enabled", "mu", "delta", "pairs"}},
+  };
+  return kSections;
+}
+
+/// The keys of one collision pair.
+const std::vector<const char*>& PairKeys() {
+  static const std::vector<const char*> kKeys = {"frame_a", "offset_a", "radius_a",
+                                                 "frame_b", "offset_b", "radius_b"};
+  return kKeys;
+}
+
+/// The fixture node with `constraints.<section>.<key>` set to @p v.
+YAML::Node WithConstraint(const char* section, const char* key, const YAML::Node& v) {
+  YAML::Node n = YAML::Clone(tu::G1KinodynamicNode());
+  n["constraints"][section][key] = v;
+  return n;
+}
+
+/// The fixture node with `constraints.collision.pairs[pair].<key>` set to @p v.
+YAML::Node WithPairValue(std::size_t pair, const char* key, const YAML::Node& v) {
+  YAML::Node n = YAML::Clone(tu::G1KinodynamicNode());
+  n["constraints"]["collision"]["pairs"][pair][key] = v;
+  return n;
+}
+
+TEST_F(KinodynamicOCPTest, EveryConstraintsKeyIsRequired) {
+  for (const auto& [section, keys] : ConstraintSections()) {
+    YAML::Node whole = YAML::Clone(tu::G1KinodynamicNode());
+    whole["constraints"].remove(section);
+    EXPECT_EQ(Load(whole), Err::kMissingKey) << section;
+    for (const char* k : keys) {
+      YAML::Node n = YAML::Clone(tu::G1KinodynamicNode());
+      n["constraints"][section].remove(k);
+      EXPECT_EQ(Load(n), Err::kMissingKey) << section << "." << k;
+      EXPECT_EQ(Load(WithConstraint(section, k, YAML::Node(YAML::NodeType::Null))),
+                Err::kMissingKey)
+          << section << "." << k << ": null";
+    }
+  }
+  const std::size_t n_pairs = tu::G1KinodynamicNode()["constraints"]["collision"]["pairs"].size();
+  ASSERT_EQ(n_pairs, 16U);
+  for (const std::size_t pair : {std::size_t{0}, n_pairs - 1}) {
+    for (const char* k : PairKeys()) {
+      YAML::Node n = YAML::Clone(tu::G1KinodynamicNode());
+      n["constraints"]["collision"]["pairs"][pair].remove(k);
+      EXPECT_EQ(Load(n), Err::kMissingKey) << "pair " << pair << "." << k;
+    }
+  }
+}
+
+TEST_F(KinodynamicOCPTest, AnUnknownConstraintsKeyIsRefusedAtEveryLevel) {
+  YAML::Node top = YAML::Clone(tu::G1KinodynamicNode());
+  top["constraints"]["typo"] = 1.0;
+  EXPECT_EQ(Load(top), Err::kUnknownKey) << "constraints";
+  for (const auto& section : ConstraintSections()) {
+    EXPECT_EQ(Load(WithConstraint(section.first, "typo", YAML::Node(1.0))), Err::kUnknownKey)
+        << section.first;
+  }
+  for (const std::size_t pair : {std::size_t{0}, std::size_t{7}, std::size_t{15}}) {
+    EXPECT_EQ(Load(WithPairValue(pair, "typo", YAML::Node(1.0))), Err::kUnknownKey)
+        << "pair " << pair;
+  }
+}
+
+TEST_F(KinodynamicOCPTest, ANonFiniteConstraintsValueIsRefused) {
+  for (const char* bad : {".nan", ".inf", "-.inf"}) {
+    for (const auto& [section, keys] : ConstraintSections()) {
+      for (const char* k : keys) {
+        const std::string key(k);
+        if (key == "enabled" || key == "pairs") {
+          continue;
+        }
+        EXPECT_EQ(Load(WithConstraint(section, k, YAML::Load(bad))), Err::kNonFinite)
+            << section << "." << k << " = " << bad;
+      }
+    }
+    for (const char* k : {"radius_a", "radius_b"}) {
+      EXPECT_EQ(Load(WithPairValue(3, k, YAML::Load(bad))), Err::kNonFinite) << k << " " << bad;
+    }
+    const std::string seq = std::string("[0.0, ") + bad + ", 0.0]";
+    for (const char* k : {"offset_a", "offset_b"}) {
+      EXPECT_EQ(Load(WithPairValue(3, k, YAML::Load(seq))), Err::kNonFinite) << k << " " << bad;
+    }
+  }
+}
+
+// The values marked > 0 refuse 0 (and negatives); the rest accept 0 and
+// refuse negatives.
+TEST_F(KinodynamicOCPTest, ConstraintsValuesHaveTheirSigns) {
+  const std::vector<std::pair<const char*, const char*>> positive = {
+      {"friction", "regularization"},
+      {"friction", "mu"},
+      {"joint_limits", "delta"},
+      {"collision", "delta"},
+      {"foot_constraint", "linear_acceleration_xy"},
+      {"foot_constraint", "linear_acceleration_z"},
+      {"foot_constraint", "angular_acceleration"},
+  };
+  for (const auto& [section, key] : positive) {
+    EXPECT_EQ(Load(WithConstraint(section, key, YAML::Node(0.0))), Err::kNonPositive)
+        << section << "." << key << " = 0";
+    EXPECT_EQ(Load(WithConstraint(section, key, YAML::Node(-1e-9))), Err::kNonPositive)
+        << section << "." << key << " < 0";
+  }
+  const std::vector<std::pair<const char*, const char*>> non_negative = {
+      {"foot_constraint", "position_z"},
+      {"foot_constraint", "orientation"},
+      {"foot_constraint", "linear_velocity_xy"},
+      {"foot_constraint", "linear_velocity_z"},
+      {"foot_constraint", "angular_velocity"},
+      {"friction", "grip_force"},
+      {"joint_limits", "mu"},
+      {"collision", "mu"},
+  };
+  for (const auto& [section, key] : non_negative) {
+    EXPECT_EQ(Load(WithConstraint(section, key, YAML::Node(-1e-9))), Err::kNegativeWeight)
+        << section << "." << key << " < 0";
+    EXPECT_EQ(Load(WithConstraint(section, key, YAML::Node(0.0))), Err::kNoError)
+        << section << "." << key << " = 0";
+  }
+  for (const char* k : {"radius_a", "radius_b"}) {
+    EXPECT_EQ(Load(WithPairValue(5, k, YAML::Node(-0.01))), Err::kNegativeWeight) << k;
+    EXPECT_EQ(Load(WithPairValue(5, k, YAML::Node(0.0))), Err::kNoError) << k;
+  }
+}
+
+TEST_F(KinodynamicOCPTest, ARectangleNotContainingItsOriginIsRefused) {
+  EXPECT_EQ(Load(WithConstraint("contact_rectangle", "x_min", YAML::Node(0.01))),
+            Err::kInvalidRectangle);
+  EXPECT_EQ(Load(WithConstraint("contact_rectangle", "y_max", YAML::Node(-0.01))),
+            Err::kInvalidRectangle);
+  // The origin on an edge is not inside.
+  for (const char* k : {"x_min", "x_max", "y_min", "y_max"}) {
+    EXPECT_EQ(Load(WithConstraint("contact_rectangle", k, YAML::Node(0.0))), Err::kInvalidRectangle)
+        << k;
+  }
+}
+
+TEST_F(KinodynamicOCPTest, AnUnknownCollisionFrameIsRefusedEvenWhenDisabled) {
+  for (const bool enabled : {false, true}) {
+    for (const char* k : {"frame_a", "frame_b"}) {
+      YAML::Node n = WithPairValue(9, k, YAML::Node("no_such_frame"));
+      n["constraints"]["collision"]["enabled"] = enabled;
+      EXPECT_EQ(Load(n), Err::kUnknownFrame) << k << " enabled " << enabled;
+    }
+  }
+  EXPECT_EQ(Load(WithPairValue(0, "frame_a", YAML::Load("[left_knee_joint]"))), Err::kWrongType);
+  EXPECT_EQ(Load(WithPairValue(0, "offset_b", YAML::Load("[0.0, 0.0]"))), Err::kWrongType);
+  EXPECT_EQ(Load(WithConstraint("collision", "enabled", YAML::Node("maybe"))), Err::kWrongType);
+  EXPECT_EQ(Load(WithConstraint("collision", "pairs", YAML::Load("{a: 1}"))), Err::kWrongType);
+}
+
+// A model whose limited one-entry joint has lower ≥ upper.
+TEST_F(KinodynamicOCPTest, AModelJointWithAnEmptyLimitRangeIsRefused) {
+  const auto idx =
+      static_cast<Eigen::Index>(model_.joints[model_.getJointId("left_knee_joint")].idx_q());
+  for (const double gap : {0.0, -0.1}) {
+    pinocchio::Model bad = model_;
+    bad.upperPositionLimit[idx] = bad.lowerPositionLimit[idx] + gap;
+    rtc::mpc::RobotModelHandler h;
+    ASSERT_EQ(h.Init(bad, YAML::Load(tu::kG1SolesYaml)), rtc::mpc::RobotModelInitError::kNoError);
+    KinodynamicOCPConfig out;
+    EXPECT_EQ(LoadKinodynamicOCPConfig(tu::G1KinodynamicNode(), h, out), Err::kInvalidJointLimit)
+        << "upper - lower = " << gap;
+  }
+}
+
+// The loader reads its input without touching it: the tree dumps the same
+// after a load, and a second load of it gives the same config.
+TEST_F(KinodynamicOCPTest, TheLoaderLeavesItsInputUnchanged) {
+  const YAML::Node n = YAML::Clone(tu::G1KinodynamicNode());
+  const std::string before = YAML::Dump(n);
+  KinodynamicOCPConfig a;
+  KinodynamicOCPConfig b;
+  ASSERT_EQ(LoadKinodynamicOCPConfig(n, handler_, a), Err::kNoError);
+  EXPECT_EQ(YAML::Dump(n), before);
+  ASSERT_EQ(LoadKinodynamicOCPConfig(n, handler_, b), Err::kNoError);
+  EXPECT_EQ(a.constraints.foot_constraint.position_z, b.constraints.foot_constraint.position_z);
+  EXPECT_EQ(a.constraints.friction.mu, b.constraints.friction.mu);
+  EXPECT_EQ(a.constraints.collision_pairs.size(), b.constraints.collision_pairs.size());
+}
+
+TEST_F(KinodynamicOCPTest, LoadsTheConstraintsAsWritten) {
+  const rtc::mpc::KinodynamicConstraintsConfig& c = cfg_.constraints;
+  EXPECT_EQ(c.foot_constraint.position_z, 100.0);
+  EXPECT_EQ(c.foot_constraint.orientation, 80.0);
+  EXPECT_EQ(c.foot_constraint.linear_velocity_xy, 20.0);
+  EXPECT_EQ(c.foot_constraint.linear_velocity_z, 10.0);
+  EXPECT_EQ(c.foot_constraint.angular_velocity, 20.0);
+  EXPECT_EQ(c.foot_constraint.linear_acceleration_xy, 1.0);
+  EXPECT_EQ(c.foot_constraint.linear_acceleration_z, 1.0);
+  EXPECT_EQ(c.foot_constraint.angular_acceleration, 1.0);
+  EXPECT_EQ(c.friction.mu, 0.4);
+  EXPECT_EQ(c.friction.grip_force, 0.0);
+  EXPECT_EQ(c.friction.regularization, 25.0);
+  EXPECT_EQ(c.contact_rectangle.x_min, -0.09);
+  EXPECT_EQ(c.contact_rectangle.x_max, 0.09);
+  EXPECT_EQ(c.contact_rectangle.y_min, -0.03);
+  EXPECT_EQ(c.contact_rectangle.y_max, 0.03);
+  EXPECT_EQ(c.joint_limits.mu, 1200.0);
+  EXPECT_EQ(c.joint_limits.delta, 0.1);
+  EXPECT_FALSE(c.collision_enabled);
+  EXPECT_EQ(c.collision.mu, 1500.0);
+  EXPECT_EQ(c.collision.delta, 0.04);
+  const YAML::Node pairs = tu::G1KinodynamicNode()["constraints"]["collision"]["pairs"];
+  ASSERT_EQ(c.collision_pairs.size(), 16U);
+  ASSERT_EQ(pairs.size(), 16U);
+  for (std::size_t i = 0; i < c.collision_pairs.size(); ++i) {
+    const rtc::mpc::SpherePair& p = c.collision_pairs[i];
+    const YAML::Node y = pairs[i];
+    const std::string fa = y["frame_a"].as<std::string>();
+    const std::string fb = y["frame_b"].as<std::string>();
+    ASSERT_TRUE(model_.existFrame(fa)) << fa;
+    ASSERT_TRUE(model_.existFrame(fb)) << fb;
+    EXPECT_EQ(p.frame_a, model_.getFrameId(fa)) << "pair " << i;
+    EXPECT_EQ(p.frame_b, model_.getFrameId(fb)) << "pair " << i;
+    EXPECT_EQ(model_.frames[p.frame_a].name, fa) << "pair " << i;
+    EXPECT_EQ(model_.frames[p.frame_b].name, fb) << "pair " << i;
+    EXPECT_EQ(p.radius_a, y["radius_a"].as<double>()) << "pair " << i;
+    EXPECT_EQ(p.radius_b, y["radius_b"].as<double>()) << "pair " << i;
+    for (int j = 0; j < 3; ++j) {
+      EXPECT_EQ(p.offset_a[j], y["offset_a"][j].as<double>()) << "pair " << i << " a" << j;
+      EXPECT_EQ(p.offset_b[j], y["offset_b"][j].as<double>()) << "pair " << i << " b" << j;
+    }
+  }
+  // Enabled loads the same pairs.
+  YAML::Node on = YAML::Clone(tu::G1KinodynamicNode());
+  on["constraints"]["collision"]["enabled"] = true;
+  KinodynamicOCPConfig cfg_on;
+  ASSERT_EQ(LoadKinodynamicOCPConfig(on, handler_, cfg_on), Err::kNoError);
+  EXPECT_TRUE(cfg_on.constraints.collision_enabled);
+  EXPECT_EQ(cfg_on.constraints.collision_pairs.size(), 16U);
 }
 
 // ── Where each weight lands ─────────────────────────────────────────────────
@@ -624,6 +899,188 @@ TEST_F(KinodynamicOCPTest, BuildWithAHorizonAppliesItAndARefusedBuildChangesNoth
   EXPECT_EQ(&built_with.problem(), problem);
   EXPECT_EQ(&*built_with.problem().stages_[0], stage0);
   EXPECT_TRUE(ReadBack(built_with) == before);
+}
+
+// ── Constraint and soft-limit layout ────────────────────────────────────────
+
+/// A full-stance horizon at @p q whose stage k is in mode (k + shift) mod 2^nc.
+std::unique_ptr<HorizonReference> EveryModeHorizon(const rtc::mpc::RobotModelHandler& handler,
+                                                   const Eigen::VectorXd& q, std::uint32_t shift) {
+  auto h = tu::StanceHorizon(handler, q);
+  const std::uint32_t n_modes = 1U << static_cast<unsigned>(handler.n_contacts());
+  for (int k = 0; k < tu::kKinoNodes; ++k) {
+    h->stages[static_cast<std::size_t>(k)].mode = (static_cast<std::uint32_t>(k) + shift) % n_modes;
+  }
+  return h;
+}
+
+// Every stage, in every mode: both constraints with the model's row count,
+// bound to the stage's own ODE; the joint-limit barrier (and the collision
+// barrier when enabled) in the cost stack at weight dt; nothing terminal.
+TEST_F(KinodynamicOCPTest, EveryStageCarriesTheFixedConstraintRowsAndTheSoftLimits) {
+  int expect_nc = 0;
+  for (const auto& f : handler_.contact_frames()) {
+    expect_nc += ContactConstraintResidual::EqualityRows(f.dim) +
+                 ContactWrenchConeResidual::InequalityRows(f.dim);
+  }
+  EXPECT_EQ(expect_nc, 24);
+  const int n_limited = JointLimitBarrierCost::CountLimitedJoints(model_);
+  EXPECT_EQ(n_limited, 23);
+
+  for (const bool collision : {false, true}) {
+    YAML::Node node = YAML::Clone(tu::G1KinodynamicNode());
+    node["constraints"]["collision"]["enabled"] = collision;
+    KinodynamicOCPConfig cfg;
+    ASSERT_EQ(LoadKinodynamicOCPConfig(node, handler_, cfg), Err::kNoError);
+    KinodynamicOCP ocp(cfg);
+    ASSERT_EQ(ocp.Build(Context(), handler_, {}), OCPBuildError::kNoError);
+    auto& p = ocp.problem();
+    EXPECT_EQ(p.term_cstrs_.size(), 0U) << "a terminal constraint";
+    const std::uint32_t n_modes = 1U << static_cast<unsigned>(handler_.n_contacts());
+    for (std::uint32_t shift = 0; shift < n_modes; ++shift) {
+      const auto h = EveryModeHorizon(handler_, stand_, shift);
+      ASSERT_EQ(ocp.UpdateReferences(Context(h.get())), OCPBuildError::kNoError);
+      for (std::size_t k = 0; k < p.stages_.size(); ++k) {
+        const std::string what = "collision " + std::to_string(collision) + " shift " +
+                                 std::to_string(shift) + " stage " + std::to_string(k);
+        auto& stage = *p.stages_[k];
+        const auto* ode = KinodynamicDynamics::OdeOf(stage);
+        ASSERT_NE(ode, nullptr) << what;
+        const std::uint32_t mode = h->stages[k].mode;
+        for (int c = 0; c < handler_.n_contacts(); ++c) {
+          EXPECT_EQ(ode->contact_states_[static_cast<std::size_t>(c)], ((mode >> c) & 1U) != 0U)
+              << what;
+        }
+        EXPECT_EQ(stage.numConstraints(), 2U) << what;
+        EXPECT_EQ(stage.nc(), expect_nc) << what;
+        const auto* eq = stage.constraints_.getConstraint<ContactConstraintResidual>(
+            KinodynamicOCP::kEqualityConstraint);
+        const auto* in = stage.constraints_.getConstraint<ContactWrenchConeResidual>(
+            KinodynamicOCP::kInequalityConstraint);
+        ASSERT_NE(eq, nullptr) << what;
+        ASSERT_NE(in, nullptr) << what;
+        EXPECT_EQ(eq->bound_ode(), ode) << what;
+        EXPECT_EQ(in->bound_ode(), ode) << what;
+
+        auto* stack = stage.getCost<CostStack>();
+        ASSERT_NE(stack, nullptr) << what;
+        const std::string jl_key(KinodynamicOCP::kJointLimitCostKey);
+        const std::string col_key(KinodynamicOCP::kCollisionCostKey);
+        const auto* jl = stack->getComponent<JointLimitBarrierCost>(jl_key);
+        ASSERT_NE(jl, nullptr) << what;
+        EXPECT_EQ(jl->n_joints(), n_limited) << what;
+        EXPECT_EQ(stack->components_.at(jl_key).second, tu::kKinoDt) << what;
+        const bool has_collision = stack->components_.find(col_key) != stack->components_.end();
+        EXPECT_EQ(has_collision, collision) << what;
+        EXPECT_EQ(stack->size(), collision ? 5U : 4U) << what;
+        if (has_collision) {
+          const auto* col = stack->getComponent<CollisionBarrierCost>(col_key);
+          ASSERT_NE(col, nullptr) << what;
+          EXPECT_EQ(col->n_pairs(), 16) << what;
+          EXPECT_EQ(col->bound_ode(), ode) << what;
+          EXPECT_EQ(stack->components_.at(col_key).second, tu::kKinoDt) << what;
+        }
+      }
+    }
+  }
+}
+
+/// Every stage's contact equality targets, read back out of the problem.
+std::vector<std::vector<rtc::mpc::ContactHeightTarget>> ReadTargets(KinodynamicOCP& ocp) {
+  std::vector<std::vector<rtc::mpc::ContactHeightTarget>> out;
+  for (auto& stage : ocp.problem().stages_) {
+    const auto* eq = stage->constraints_.getConstraint<ContactConstraintResidual>(
+        KinodynamicOCP::kEqualityConstraint);
+    std::vector<rtc::mpc::ContactHeightTarget> t;
+    for (int c = 0; c < eq->n_contacts(); ++c) {
+      t.push_back(eq->target(c));
+    }
+    out.push_back(t);
+  }
+  return out;
+}
+
+bool SameTargets(const std::vector<std::vector<rtc::mpc::ContactHeightTarget>>& a,
+                 const std::vector<std::vector<rtc::mpc::ContactHeightTarget>>& b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t k = 0; k < a.size(); ++k) {
+    if (a[k].size() != b[k].size()) {
+      return false;
+    }
+    for (std::size_t c = 0; c < a[k].size(); ++c) {
+      if (std::memcmp(&a[k][c].z, &b[k][c].z, sizeof(double)) != 0 ||
+          std::memcmp(&a[k][c].vz, &b[k][c].vz, sizeof(double)) != 0 ||
+          std::memcmp(&a[k][c].az, &b[k][c].az, sizeof(double)) != 0) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+TEST_F(KinodynamicOCPTest, UpdateReferencesWritesTheContactEqualityTargets) {
+  auto h = tu::StanceHorizon(handler_, stand_);
+  tu::SwingContact(handler_, *h, 1, 8, 19, 0.05, 0.5);
+  SwingContactCos(handler_, *h, 0, 22, 29, 0.04, 1.0);
+  KinodynamicOCP ocp(cfg_);
+  ASSERT_EQ(ocp.Build(Context(), handler_, {}), OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.UpdateReferences(Context(h.get())), OCPBuildError::kNoError);
+  const auto written = ReadTargets(ocp);
+  ASSERT_EQ(written.size(), static_cast<std::size_t>(tu::kKinoNodes));
+  for (int k = 0; k < tu::kKinoNodes; ++k) {
+    const auto& s = h->stages[static_cast<std::size_t>(k)];
+    for (int c = 0; c < handler_.n_contacts(); ++c) {
+      const auto i = static_cast<std::size_t>(c);
+      const rtc::mpc::ContactHeightTarget& t = written[static_cast<std::size_t>(k)][i];
+      EXPECT_EQ(std::memcmp(&t.z, &s.contact_pose[7 * i + 2], sizeof(double)), 0)
+          << "stage " << k << " contact " << c;
+      EXPECT_EQ(std::memcmp(&t.vz, &s.contact_twist[6 * i + 2], sizeof(double)), 0)
+          << "stage " << k << " contact " << c;
+      EXPECT_EQ(std::memcmp(&t.az, &s.contact_acceleration[6 * i + 2], sizeof(double)), 0)
+          << "stage " << k << " contact " << c;
+    }
+    const auto* eq = ocp.problem()
+                         .stages_[static_cast<std::size_t>(k)]
+                         ->constraints_.getConstraint<ContactConstraintResidual>(
+                             KinodynamicOCP::kEqualityConstraint);
+    EXPECT_EQ(eq->plane_normal(),
+              Eigen::Vector3d(h->terrain.normal[0], h->terrain.normal[1], h->terrain.normal[2]))
+        << "stage " << k;
+  }
+  // The swing windows are in the targets (not all one stance height).
+  EXPECT_GT(written[13][1].z, written[0][1].z + 0.04);
+  EXPECT_GT(written[25][0].z, written[0][0].z + 0.02);
+  EXPECT_NE(written[10][1].vz, 0.0);
+  EXPECT_NE(written[10][1].az, 0.0);
+
+  // A refused horizon — other targets everywhere, one bad value at the last
+  // stage — leaves every target as it was.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const auto refused = [&](auto&& edit) {
+    auto bad = tu::StanceHorizon(handler_, stand_);
+    tu::SwingContact(handler_, *bad, 0, 2, 12, 0.08, 1.0);
+    for (auto& s : bad->stages) {
+      s.contact_pose[2] += 0.01;
+      s.contact_pose[9] -= 0.01;
+    }
+    edit(*bad);
+    return ocp.UpdateReferences(Context(bad.get()));
+  };
+  const auto last = static_cast<std::size_t>(tu::kKinoNodes - 1);
+  EXPECT_EQ(refused([&](HorizonReference& b) { b.stages[last].contact_acceleration[8] = nan; }),
+            OCPBuildError::kInvalidHorizonReference);
+  EXPECT_EQ(refused([&](HorizonReference& b) { b.stages[last].contact_pose[9] = nan; }),
+            OCPBuildError::kInvalidHorizonReference);
+  EXPECT_EQ(refused([&](HorizonReference& b) { b.stages[last].contact_twist[2] = nan; }),
+            OCPBuildError::kInvalidHorizonReference);
+  EXPECT_EQ(refused([&](HorizonReference& b) { b.terrain.normal = {0.0, 0.0, 0.9}; }),
+            OCPBuildError::kInvalidHorizonReference);
+  EXPECT_TRUE(SameTargets(ReadTargets(ocp), written));
+  // The same edits without the bad value are written.
+  EXPECT_EQ(refused([](HorizonReference&) {}), OCPBuildError::kNoError);
+  EXPECT_FALSE(SameTargets(ReadTargets(ocp), written));
 }
 
 // ── Cost values ─────────────────────────────────────────────────────────────
