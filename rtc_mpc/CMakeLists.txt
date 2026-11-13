@@ -201,6 +201,13 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_mpc_factory)
   add_mpc_gtest(test_mpc_thread_integration)
   add_mpc_gtest(test_mpc_handler_alloc_tracer)
+  # Drives the handler core directly with a stub OCP, so it needs the
+  # package-private src/ headers.
+  add_mpc_gtest(test_mpc_handler_core_guards)
+  if(TARGET test_mpc_handler_core_guards)
+    target_include_directories(test_mpc_handler_core_guards PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  endif()
   add_mpc_gtest(test_aligator_api)
   add_mpc_gtest(test_command_filter)
   if(TARGET test_command_filter)
@@ -241,7 +248,7 @@ if(BUILD_TESTING)
     foreach(_solve_test
         test_contact_light_ocp test_contact_rich_ocp test_contact_light_mpc
         test_contact_rich_mpc test_mpc_factory test_mpc_thread_integration
-        test_mpc_handler_alloc_tracer test_aligator_api)
+        test_mpc_handler_alloc_tracer test_mpc_handler_core_guards test_aligator_api)
       if(TEST ${_solve_test})
         set_property(TEST ${_solve_test} APPEND PROPERTY
             ENVIRONMENT "LD_PRELOAD=${RTC_MPC_MIMALLOC}")

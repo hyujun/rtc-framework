@@ -97,7 +97,9 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   // ── Copy snapshot → Eigen scratch via Map (zero-alloc view) ───────────
   const int nq = model_->nq();
   const int nv = model_->nv();
-  if (state.nq != nq || state.nv != nv) {
+  // A non-finite state must not reach FK or the phase manager; the handler
+  // refuses it with the same code.
+  if (state.nq != nq || state.nv != nv || !StateFinite(state)) {
     last_err_.store(static_cast<int>(MPCSolveError::kStateDimMismatch), std::memory_order_relaxed);
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
     total_solves_.fetch_add(1, std::memory_order_relaxed);

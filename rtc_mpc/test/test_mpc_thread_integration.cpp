@@ -49,6 +49,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <thread>
 
@@ -339,6 +340,35 @@ TEST_F(MpcThreadIntegrationTest, HandlerSurvivesStateDimMismatch) {
   EXPECT_GT(thread.FailedSolves(), 0u);
   EXPECT_EQ(thread.LastSolveErrorCode(),
             static_cast<int>(rtc::mpc::MPCSolveError::kStateDimMismatch));
+}
+
+// ── 5b. A non-finite state is refused before FK and the phase machine ───
+
+TEST_F(MpcThreadIntegrationTest, HandlerRefusesNonFiniteStateAtEntry) {
+  rtc::mpc::MPCSolutionManager mgr;
+  mgr.Init(MinimalManagerConfig(), model_handler_.nq(), model_handler_.nv(), 6);
+  Eigen::VectorXd q = Eigen::VectorXd::Zero(model_handler_.nq());
+  const Eigen::VectorXd v = Eigen::VectorXd::Zero(model_handler_.nv());
+  q[0] = std::numeric_limits<double>::quiet_NaN();
+  mgr.WriteState(q, v, 0);
+
+  auto mock = std::make_unique<rtc::mpc::test_utils::MockPhaseManager>(
+      MakeMockParams(/*transition_tick=*/-1));
+  const auto* mock_raw = mock.get();
+  auto handler = MakeInitialisedLightHandler();
+
+  rtc::mpc::HandlerMPCThread thread;
+  thread.Configure(model_handler_, std::move(handler), std::move(mock));
+  thread.Init(mgr, MakeLaunchCfg(50.0));
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.FailedSolves() > 1u; }))
+      << "a non-finite state never produced a failed solve within timeout";
+  thread.RequestStop();
+  thread.Join();
+
+  EXPECT_EQ(thread.LastSolveErrorCode(),
+            static_cast<int>(rtc::mpc::MPCSolveError::kStateDimMismatch));
+  EXPECT_EQ(mock_raw->TickCounter(), 0) << "the phase machine saw the non-finite state";
 }
 
 // ── 6. End-to-end: solution manager → RT-poll consumption ───────────────

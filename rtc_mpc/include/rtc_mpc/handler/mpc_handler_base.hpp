@@ -72,7 +72,8 @@ struct MPCSolverConfig {
 enum class MPCInitError {
   kNoError = 0,
   kModelNotInitialised,      ///< RobotModelHandler.Initialised() == false
-  kOCPBuildFailed,           ///< underlying OCPHandlerBase::Build rejected
+  kOCPBuildFailed,           ///< underlying OCPHandlerBase::Build rejected, or the
+                             ///< context's node dt is not finite and positive
   kSolverSetupFailed,        ///< Aligator's setup() threw (caught internally)
   kInvalidSolverConfig,      ///< tolerances / max_iters out of range
   kOcpTypeMismatch,          ///< ctx.ocp_type != this handler's dispatch key
@@ -84,18 +85,21 @@ enum class MPCInitError {
 enum class MPCSolveError {
   kNoError = 0,
   kNotInitialised,     ///< Solve called before successful Init
-  kStateDimMismatch,   ///< snapshot.{nq,nv} differ from handler's model
+  kStateDimMismatch,   ///< snapshot.{nq,nv} differ from handler's model, or
+                       ///< its q / v hold a non-finite value
   kRebuildRequired,    ///< phase_changed with cross-mode OCP type — the
                        ///< MPCFactory / orchestration layer must swap the
                        ///< handler, not this instance
   kOCPRebuildFailed,   ///< in-handler topology rebuild (horizon / contacts
-                       ///< / weight-zero crossing) failed
+                       ///< / weight-zero crossing) failed, or the context's
+                       ///< node dt is not finite and positive
   kSolverException,    ///< Aligator threw during `run()` (caught, logged
                        ///< once in Debug builds, returned as an error so
                        ///< the RT thread can fall back to its last valid
                        ///< solution)
-  kSolverDiverged,     ///< `run()` returned `false` AND NaN state — the
-                       ///< produced `out` is NOT valid
+  kSolverDiverged,     ///< `run()` returned a non-finite state, control,
+                       ///< multiplier, shipped gain or residual (converged or
+                       ///< not) — the produced `out` is NOT valid
   kSolutionTruncated,  ///< horizon_length or a dim exceeds the fixed
                        ///< `MPCSolution` capacity (kMaxHorizon, kMaxNu,
                        ///< …). Indicates a configuration mistake, not a
