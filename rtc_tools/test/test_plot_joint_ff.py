@@ -47,6 +47,14 @@ HAND_JOINTS = [
     "middle_pip_joint",
     "ring_mcp_joint",
 ]
+# The other hand of the pair: same order, two joints named differently.
+LEFT_HAND_JOINTS = [
+    {
+        "index_pip_joint": "index_pip_link02_joint",
+        "middle_pip_joint": "middle_pip_link02_joint",
+    }.get(j, j)
+    for j in HAND_JOINTS
+]
 
 
 @pytest.fixture(autouse=True)
@@ -146,7 +154,9 @@ class TestDetection:
     def test_filename_with_prefix(self):
         assert detect_log_type("/tmp/run3_joint_ff.csv") == "joint_ff"
 
-    @pytest.mark.parametrize("joints", [["j1"], HAND_JOINTS, [f"q{i}" for i in range(20)]])
+    @pytest.mark.parametrize(
+        "joints", [["j1"], HAND_JOINTS, LEFT_HAND_JOINTS, [f"q{i}" for i in range(20)]]
+    )
     def test_any_joint_count_by_columns(self, joints):
         assert detect_log_type_by_columns(_header(joints)) == "joint_ff"
 
@@ -217,7 +227,7 @@ class TestFigures:
         assert ALL_FIGURES == ["joint_ff_tracking", "joint_ff_torque", "joint_ff_status"]
         assert [e.name for e in STATS_PRINTERS["joint_ff"]] == ["print_joint_ff_stats"]
 
-    @pytest.mark.parametrize("joints", [["j1"], HAND_JOINTS])
+    @pytest.mark.parametrize("joints", [["j1"], HAND_JOINTS, LEFT_HAND_JOINTS])
     def test_renders_every_figure(self, tmp_path, joints):
         df = _synthetic(tmp_path, joints)
         out = tmp_path / "png"
