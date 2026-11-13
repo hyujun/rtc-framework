@@ -248,6 +248,16 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_barrier_costs)
   add_mpc_gtest(test_kinodynamic_ocp)
   add_mpc_gtest(test_kinodynamic_ocp_alloc_gate)
+  # The receding walk window through the handler core (package-private src/
+  # headers): four 40-tick runs, past the 60 s default.
+  add_mpc_gtest(test_kinodynamic_receding)
+  if(TARGET test_kinodynamic_receding)
+    target_include_directories(test_kinodynamic_receding PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  endif()
+  if(TEST test_kinodynamic_receding)
+    set_tests_properties(test_kinodynamic_receding PROPERTIES TIMEOUT 600)
+  endif()
   add_mpc_gtest(test_kinodynamic_integrator)
   if(TEST test_kinodynamic_integrator)
     # The order gate integrates a 1024-sub-step reference; past the 60 s default.
