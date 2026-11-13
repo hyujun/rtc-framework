@@ -706,6 +706,120 @@ struct WalkWindow {
   [[nodiscard]] const HorizonReference& horizon() const { return builder.active(); }
 };
 
+/// The g1_loco profile's walk gait and reference, as shipped (copies — this
+/// package reads no profile file): single support 0.6 s, double support
+/// 0.1 s; q_default knees 0.1, hips and ankles −0.05, arm swing off.
+constexpr const char* kShippedGaitYaml = R"(
+sequence: [stance, slow_walk, walk]
+min_dwell: 0.2
+switch_lead: 1.0
+gaits:
+  stance:
+    modes: [[left_foot, right_foot]]
+    switching_times: [0.0, 0.5]
+    faster_above: [0.1, 0.1]
+    slower_below: [0.0, 0.0]
+    measured_tolerance: [10.0, 10.0]
+  slow_walk:
+    modes: [[left_foot], [left_foot, right_foot], [right_foot], [left_foot, right_foot]]
+    switching_times: [0.0, 0.65, 0.85, 1.5, 1.7]
+    faster_above: [0.3, 0.2]
+    slower_below: [0.05, 0.05]
+    measured_tolerance: [0.05, 0.05]
+  walk:
+    modes: [[left_foot], [left_foot, right_foot], [right_foot], [left_foot, right_foot]]
+    switching_times: [0.0, 0.6, 0.7, 1.3, 1.4]
+    faster_above: [0.5, 0.35]
+    slower_below: [0.25, 0.15]
+    measured_tolerance: [0.05, 0.05]
+)";
+
+constexpr const char* kShippedReferenceYaml = R"(
+intermediate_fraction: 0.7
+q_default:
+  left_hip_pitch_joint: -0.05
+  left_hip_roll_joint: 0.0
+  left_hip_yaw_joint: 0.0
+  left_knee_joint: 0.1
+  left_ankle_pitch_joint: -0.05
+  left_ankle_roll_joint: 0.0
+  right_hip_pitch_joint: -0.05
+  right_hip_roll_joint: 0.0
+  right_hip_yaw_joint: 0.0
+  right_knee_joint: 0.1
+  right_ankle_pitch_joint: -0.05
+  right_ankle_roll_joint: 0.0
+  waist_yaw_joint: 0.0
+  waist_roll_joint: 0.0
+  waist_pitch_joint: 0.0
+  left_shoulder_pitch_joint: 0.0
+  left_shoulder_roll_joint: 0.0
+  left_shoulder_yaw_joint: 0.0
+  left_elbow_joint: 0.0
+  right_shoulder_pitch_joint: 0.0
+  right_shoulder_roll_joint: 0.0
+  right_shoulder_yaw_joint: 0.0
+  right_elbow_joint: 0.0
+arm_swing:
+  enabled: false
+  gain: 0.15
+  phase_offset: 0.15
+  joints:
+    - {name: left_shoulder_pitch_joint, sign: -1}
+    - {name: left_elbow_joint, sign: -1}
+    - {name: right_shoulder_pitch_joint, sign: 1}
+    - {name: right_elbow_joint, sign: 1}
+)";
+
+/// A window of the shipped walk at @p t0, straight at @p v_x [m/s], the
+/// shipped nominal pelvis height (0.7925 m): stance from `t0 − 4`, walk
+/// requested at once, taken over before `t0` (policy off).
+struct ShippedWalkWindow {
+  rtc::mpc::GaitScheduler scheduler;
+  rtc::mpc::StageReferenceBuilder builder;
+
+  ShippedWalkWindow(const pinocchio::Model& model, const rtc::mpc::RobotModelHandler& handler,
+                    const Eigen::VectorXd& stand, double t0, double v_x) {
+    rtc::mpc::GaitTable table;
+    const std::vector<std::string> contacts = {"left_foot", "right_foot"};
+    EXPECT_EQ(rtc::mpc::LoadGaitTable(YAML::Load(kShippedGaitYaml), contacts, table),
+              rtc::mpc::GaitTableError::kNoError);
+    EXPECT_EQ(scheduler.Init(table, tu::kKinoNodes * tu::kKinoDt),
+              rtc::mpc::GaitSchedulerError::kNoError);
+    rtc::mpc::ReferenceConfig ref;
+    EXPECT_EQ(rtc::mpc::LoadReferenceConfig(YAML::Load(kShippedReferenceYaml),
+                                            tu::ActuatedJointNames(model), ref),
+              rtc::mpc::ReferenceError::kNoError);
+    EXPECT_EQ(builder.Init(handler, ref, tu::ShippedSwing(), rtc::mpc::FlatSurface(0.0),
+                           tu::kKinoNodes + 1, tu::kKinoDt),
+              rtc::mpc::ReferenceError::kNoError);
+    scheduler.SetPolicyEnabled(false);
+    rtc::mpc::FilteredCommand walk;
+    walk.v_x = 0.5;
+    walk.valid = true;
+    EXPECT_EQ(scheduler.Advance(t0 - 4.0, walk, rtc::mpc::PlanarVelocity{}),
+              rtc::mpc::GaitSchedulerError::kNoError);
+    scheduler.RequestGait(2);
+    for (const double t : {t0 - 3.9, t0 - 3.0, t0 - 2.0, t0 - 1.0, t0}) {
+      EXPECT_EQ(scheduler.Advance(t, walk, rtc::mpc::PlanarVelocity{}),
+                rtc::mpc::GaitSchedulerError::kNoError);
+    }
+    EXPECT_EQ(scheduler.current_gait(), 2U);
+    EXPECT_FALSE(scheduler.switch_pending());
+    rtc::mpc::FilteredCommand cmd = tu::RegisteredCommand();
+    cmd.v_x = v_x;
+    cmd.v_y = 0.0;
+    cmd.omega_z = 0.0;
+    cmd.base_height = 0.7925;
+    EXPECT_EQ(scheduler.Advance(t0, cmd, rtc::mpc::PlanarVelocity{}),
+              rtc::mpc::GaitSchedulerError::kNoError);
+    EXPECT_EQ(builder.Build(scheduler, tu::SnapshotAt(model, stand), cmd),
+              rtc::mpc::ReferenceError::kNoError);
+  }
+
+  [[nodiscard]] const HorizonReference& horizon() const { return builder.active(); }
+};
+
 /// What UpdateReferences wrote, read back out of the problem.
 struct Written {
   std::vector<std::vector<bool>> modes;
@@ -1617,6 +1731,56 @@ TEST_P(KinodynamicSolve, StandingConvergesFromAMovingBase) {
   const double stage0_eq = d->value_.cwiseAbs().maxCoeff();
   std::printf("[report] %s moving base: stage-0 stance equality %.3g\n", GetParam(), stage0_eq);
   EXPECT_LE(stage0_eq, 1e-4);
+}
+
+// The shipped walk's window from cold: as hard rows the friction and CoP
+// stall it (the rear foot's normal force of the double-support nodes goes
+// to zero); under the barrier it converges and both feet keep their load.
+// Pre-registered on the out-of-tree probe of the same window: 138 / 238
+// iterations (v_x 0: 89 / 186), double-support normal forces ≥ 164 N.
+TEST_P(KinodynamicSolve, TheShippedWalkWindowConvergesFromColdWithBothFeetLoaded) {
+  const bool sie = std::string_view(GetParam()) == "semi_implicit_euler";
+  for (const double v_x : {0.5, 0.0}) {
+    const ShippedWalkWindow walk(model_, handler_, stand_, 20.0, v_x);
+    const HorizonReference& h = walk.horizon();
+    auto out = std::make_unique<rtc::mpc::MPCSolution>();
+    double ms = 0.0;
+    ASSERT_EQ(SolveOnce(h, *out, &ms), rtc::mpc::MPCSolveError::kNoError);
+    const int nc = handler_.n_contacts();
+    const int fs = handler_.contact_frames()[0].dim;
+    double fz_min = std::numeric_limits<double>::infinity();
+    int ds_nodes = 0;
+    // The double-support nodes after a single support (not a stance the
+    // window may open with).
+    bool after_single = false;
+    for (int k = 0; k < tu::kKinoNodes; ++k) {
+      if (h.stages[static_cast<std::size_t>(k)].mode != (1U << nc) - 1U) {
+        after_single = true;
+        continue;
+      }
+      if (!after_single) {
+        continue;
+      }
+      ++ds_nodes;
+      for (int c = 0; c < nc; ++c) {
+        fz_min = std::min(
+            fz_min, out->u_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(c * fs + 2)]);
+      }
+    }
+    std::printf(
+        "[report] %s shipped walk v_x %.1f: %d iterations, converged %d, prim %.3g, %.1f ms per "
+        "iteration; double support %d nodes, smallest normal force %.1f N\n",
+        GetParam(), v_x, out->iterations, out->converged ? 1 : 0, out->residuals.prim_inf,
+        ms / std::max(1, out->iterations), ds_nodes, fz_min);
+    EXPECT_TRUE(out->converged) << "v_x " << v_x;
+    if (sie) {
+      EXPECT_LE(out->iterations, v_x > 0.0 ? 276 : 178) << "v_x " << v_x;
+    }
+    ASSERT_TRUE(Finite(*out));
+    EXPECT_GT(ds_nodes, 0);
+    EXPECT_GE(fz_min, 100.0) << "v_x " << v_x;
+    ExpectResidualsWithinTolerance(*out, v_x > 0.0 ? "shipped walk" : "shipped walk v_x 0");
+  }
 }
 
 // A tick whose horizon has another shape is refused through the core — whose
