@@ -1042,9 +1042,32 @@ TEST_F(BarrierCostsTest, ContactConeBindingContracts) {
   EXPECT_EQ(cost.friction_barrier().delta, kFrictionBarrier.delta);
   EXPECT_EQ(cost.cop_barrier().mu, kCopBarrier.mu);
   auto d = cost.createData();
+  // A Hessian without the gradient of the same evaluate reuses no Jacobian.
+  const KinoSample& s = samples_[0];
+  cost.evaluate(s.x, s.u, *d);
+  cost.computeHessians(s.x, s.u, *d);
+  EXPECT_TRUE(d->hess_.array().isNaN().all());
+  cost.computeGradients(s.x, s.u, *d);
+  cost.computeHessians(s.x, s.u, *d);
+  EXPECT_TRUE(d->hess_.allFinite());
+  cost.evaluate(s.x, s.u, *d);
+  cost.computeHessians(s.x, s.u, *d);
+  EXPECT_TRUE(d->hess_.array().isNaN().all());
+  // Unbound: every value, gradient and Hessian entry NaN.
   ASSERT_TRUE(cost.Bind(nullptr));
-  cost.evaluate(samples_[0].x, samples_[0].u, *d);
+  cost.evaluate(s.x, s.u, *d);
+  cost.computeGradients(s.x, s.u, *d);
+  cost.computeHessians(s.x, s.u, *d);
   EXPECT_TRUE(std::isnan(d->value_));
+  EXPECT_TRUE(d->grad_.array().isNaN().all());
+  EXPECT_TRUE(d->hess_.array().isNaN().all());
+  // A barrier without a positive, finite μ and δ is refused.
+  for (const RelaxedLogBarrier& bad :
+       {RelaxedLogBarrier{0.0, 5.0}, RelaxedLogBarrier{0.2, 0.0}, RelaxedLogBarrier{0.2, -1.0},
+        RelaxedLogBarrier{std::nan(""), 5.0}}) {
+    EXPECT_THROW(ContactConeBarrierCost(space, res, bad, kCopBarrier), std::invalid_argument);
+    EXPECT_THROW(ContactConeBarrierCost(space, res, kFrictionBarrier, bad), std::invalid_argument);
+  }
 }
 
 }  // namespace

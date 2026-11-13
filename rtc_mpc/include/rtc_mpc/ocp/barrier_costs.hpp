@@ -54,8 +54,10 @@
 /// at `evaluate` (the residual reads it). Gradient `Σ B'(h_i)·∇h_i`. Hessian
 /// Gauss–Newton `Σ B''(h_i)·∇h_i ∇h_iᵀ` plus, for each friction row, the
 /// curvature of its square root, `B'(h)·∇²h` with `∇²_{f_xy} h = −(I −
-/// f_xy f_xyᵀ/s²)/s`, `s = √(f_x² + f_y² + ε)` (PSD: `B' < 0`); the other
-/// second-order terms of `h` (the frame rotation's in `q`) are dropped.
+/// f_xy f_xyᵀ/s²)/s`, `s = √(f_x² + f_y² + ε)` (PSD: `B' < 0`). The other
+/// second-order terms of the CoP margins — through the frame rotation, in
+/// `q` and across `q` and `[f; τ]` — are dropped: the gradient is exact,
+/// the Hessian a PSD approximation (the friction row's is exact).
 ///
 /// ## Real time
 ///
@@ -224,8 +226,9 @@ struct ContactConeBarrierData : aligator::CostDataAbstractTpl<double> {
 
   /// The wrench cone residual's own data (values, Jacobians, modes).
   std::shared_ptr<aligator::StageFunctionDataTpl<double>> cone;
-  Eigen::VectorXd jx;         ///< `nv` — one row's configuration Jacobian
-  Eigen::VectorXd jx_scaled;  ///< `nv` — the same times `B''`
+  Eigen::VectorXd jx;           ///< `nv` — one row's configuration Jacobian
+  Eigen::VectorXd jx_scaled;    ///< `nv` — the same times `B''`
+  bool jacobians_fresh{false};  ///< `computeGradients` ran after the last `evaluate`
 };
 
 /// @brief The soft contact wrench cone (file comment).
@@ -237,6 +240,7 @@ class ContactConeBarrierCost final : public aligator::CostAbstractTpl<double> {
   using CostData = aligator::CostDataAbstractTpl<double>;
 
   /// @brief Over a copy of @p residual (its binding included). Allocates.
+  /// @throws std::invalid_argument for a barrier `μ` or `δ` not finite and > 0.
   ContactConeBarrierCost(const Space& space, const ContactWrenchConeResidual& residual,
                          const RelaxedLogBarrier& friction, const RelaxedLogBarrier& cop);
 
@@ -257,7 +261,8 @@ class ContactConeBarrierCost final : public aligator::CostAbstractTpl<double> {
   /// @brief After the `evaluate` of the same `(x, u)` on the same data.
   void computeGradients(const ConstVectorRef& x, const ConstVectorRef& u,
                         CostData& data) const override;
-  /// @brief After `computeGradients` (it reuses the Jacobians that left).
+  /// @brief After `computeGradients` (it reuses the Jacobians that left);
+  ///        without it since the last `evaluate`, NaN.
   void computeHessians(const ConstVectorRef& x, const ConstVectorRef& u,
                        CostData& data) const override;
 

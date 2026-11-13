@@ -314,11 +314,18 @@ ContactConeBarrierCost::ContactConeBarrierCost(const Space& space,
                                                const ContactWrenchConeResidual& residual,
                                                const RelaxedLogBarrier& friction,
                                                const RelaxedLogBarrier& cop)
-    : Base(space, residual.nu), residual_(residual), friction_(friction), cop_(cop) {}
+    : Base(space, residual.nu), residual_(residual), friction_(friction), cop_(cop) {
+  for (const RelaxedLogBarrier& b : {friction_, cop_}) {
+    if (!(std::isfinite(b.mu) && b.mu > 0.0 && std::isfinite(b.delta) && b.delta > 0.0)) {
+      throw std::invalid_argument("ContactConeBarrierCost: barrier mu and delta must be > 0");
+    }
+  }
+}
 
 void ContactConeBarrierCost::evaluate(const ConstVectorRef& x, const ConstVectorRef& u,
                                       CostData& data) const {
   auto& d = static_cast<ContactConeBarrierData&>(data);
+  d.jacobians_fresh = false;
   if (residual_.bound_ode() == nullptr) {
     data.value_ = std::nan("");
     return;
@@ -355,6 +362,7 @@ void ContactConeBarrierCost::computeGradients(const ConstVectorRef& x, const Con
     return;
   }
   residual_.computeJacobians(x, u, *d.cone);
+  d.jacobians_fresh = true;
   const auto& rd = static_cast<const ContactWrenchConeData&>(*d.cone);
   const int rows = residual_.rows_per_contact();
   const int fs = residual_.force_size();
@@ -384,8 +392,12 @@ void ContactConeBarrierCost::computeHessians(const ConstVectorRef& /*x*/, const 
   data.Lxu_.setZero();
   data.Lux_.setZero();
   data.Luu_.setZero();
-  if (residual_.bound_ode() == nullptr) {
+  // Unbound, or without the computeGradients of this evaluate (the
+  // Jacobians it reuses would belong to another point): NaN.
+  if (residual_.bound_ode() == nullptr || !d.jacobians_fresh) {
     data.Lxx_.setConstant(std::nan(""));
+    data.Lxu_.setConstant(std::nan(""));
+    data.Lux_.setConstant(std::nan(""));
     data.Luu_.setConstant(std::nan(""));
     return;
   }

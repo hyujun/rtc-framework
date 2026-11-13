@@ -306,8 +306,8 @@ const std::vector<std::pair<const char*, std::vector<const char*>>>& ConstraintS
       {"foot_constraint",
        {"position_z", "orientation", "linear_velocity_xy", "linear_velocity_z", "angular_velocity",
         "linear_acceleration_xy", "linear_acceleration_z", "angular_acceleration"}},
-      {"friction", {"mu", "grip_force", "regularization"}},
-      {"contact_rectangle", {"x_min", "x_max", "y_min", "y_max"}},
+      {"friction", {"mu", "grip_force", "regularization", "barrier_mu", "barrier_delta"}},
+      {"contact_rectangle", {"x_min", "x_max", "y_min", "y_max", "barrier_mu", "barrier_delta"}},
       {"joint_limits", {"mu", "delta"}},
       {"collision", {"enabled", "mu", "delta", "pairs"}},
   };
@@ -402,6 +402,10 @@ TEST_F(KinodynamicOCPTest, ConstraintsValuesHaveTheirSigns) {
   const std::vector<std::pair<const char*, const char*>> positive = {
       {"friction", "regularization"},
       {"friction", "mu"},
+      {"friction", "barrier_mu"},
+      {"friction", "barrier_delta"},
+      {"contact_rectangle", "barrier_mu"},
+      {"contact_rectangle", "barrier_delta"},
       {"joint_limits", "delta"},
       {"collision", "delta"},
       {"foot_constraint", "linear_acceleration_xy"},
@@ -509,6 +513,10 @@ TEST_F(KinodynamicOCPTest, LoadsTheConstraintsAsWritten) {
   EXPECT_EQ(c.contact_rectangle.x_max, 0.09);
   EXPECT_EQ(c.contact_rectangle.y_min, -0.03);
   EXPECT_EQ(c.contact_rectangle.y_max, 0.03);
+  EXPECT_EQ(c.friction_barrier.mu, 0.2);
+  EXPECT_EQ(c.friction_barrier.delta, 5.0);
+  EXPECT_EQ(c.cop_barrier.mu, 0.6);
+  EXPECT_EQ(c.cop_barrier.delta, 0.03);
   EXPECT_EQ(c.joint_limits.mu, 1200.0);
   EXPECT_EQ(c.joint_limits.delta, 0.1);
   EXPECT_FALSE(c.collision_enabled);
