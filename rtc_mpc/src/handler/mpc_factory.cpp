@@ -3,10 +3,12 @@
 
 #include "rtc_mpc/handler/mpc_factory.hpp"
 
-#include "rtc_mpc/handler/contact_rich_mpc.hpp"
 #include "rtc_mpc/handler/contact_light_mpc.hpp"
+#include "rtc_mpc/handler/contact_rich_mpc.hpp"
+#include "rtc_mpc/handler/kinodynamic_mpc.hpp"
 
 #include <string>
+#include <utility>
 
 namespace rtc::mpc {
 
@@ -123,12 +125,34 @@ MPCFactoryStatus MPCFactory::Create(const YAML::Node& cfg, const RobotModelHandl
   }
 
   std::unique_ptr<MPCHandlerBase> handler;
-  if (yaml_ocp_type == "contact_light") {
-    handler = std::make_unique<ContactLightMPC>();
-  } else if (yaml_ocp_type == "contact_rich") {
-    handler = std::make_unique<ContactRichMPC>();
-  } else {
+  if (yaml_ocp_type != "contact_light" && yaml_ocp_type != "contact_rich" &&
+      yaml_ocp_type != KinodynamicOCP::kType) {
     status.error = MPCFactoryError::kUnknownOcpType;
+    return status;
+  }
+  // The weights are laid onto a floating model's tangent; a fixed base has
+  // none to lay them onto, and the handler's Init refuses it
+  // (kFixedBaseUnsupported) before the OCP reads its config.
+  KinodynamicOCPConfig ocp_cfg;
+  if (yaml_ocp_type == KinodynamicOCP::kType && model.Initialised() && model.floating_base()) {
+    const KinodynamicOCPConfigError ce =
+        LoadKinodynamicOCPConfig(mpc["kinodynamic"], model, ocp_cfg);
+    if (ce != KinodynamicOCPConfigError::kNoError) {
+      status.error = MPCFactoryError::kInvalidOcpConfig;
+      status.ocp_config_error = ce;
+      return status;
+    }
+  }
+  try {
+    if (yaml_ocp_type == "contact_light") {
+      handler = std::make_unique<ContactLightMPC>();
+    } else if (yaml_ocp_type == "contact_rich") {
+      handler = std::make_unique<ContactRichMPC>();
+    } else {
+      handler = std::make_unique<KinodynamicMPC>(std::move(ocp_cfg));
+    }
+  } catch (...) {
+    status.error = MPCFactoryError::kHandlerInitFailed;  // an allocation failed
     return status;
   }
 

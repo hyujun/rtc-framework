@@ -50,8 +50,8 @@
 ///
 /// ## Real-time
 ///
-/// `SetTarget`, `SetScale`, `SetPlaneNormal`, `SetFromStage`, `Bind` and the
-/// accessors are noexcept and do not allocate. `evaluate` and
+/// `SetTarget`, `SetScale`, `SetPlaneNormal`, `SetFromStage`, `AcceptsStage`,
+/// `Bind` and the accessors are noexcept and do not allocate. `evaluate` and
 /// `computeJacobians` allocate nothing of their own; the ODE's `dForward`
 /// allocates inside the library (counted by the allocation gate). The
 /// targets live on the function, the evaluation on the data: write targets
@@ -166,6 +166,12 @@ class ContactTrackingResidual final : public aligator::StageFunctionTpl<double> 
   ///         the setters above.
   [[nodiscard]] bool SetFromStage(const StageReference& stage,
                                   const SurfaceFrame& terrain) noexcept;
+
+  /// @return whether `SetFromStage` would accept @p stage and @p terrain on a
+  ///         residual of @p n_contacts contacts — the check it runs before
+  ///         writing, for a caller that must validate many nodes first.
+  [[nodiscard]] static bool AcceptsStage(const StageReference& stage, const SurfaceFrame& terrain,
+                                         int n_contacts) noexcept;
 
   [[nodiscard]] int n_contacts() const noexcept { return static_cast<int>(contact_ids_.size()); }
 

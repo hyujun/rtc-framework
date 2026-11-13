@@ -1,6 +1,6 @@
 /// @file test_mpc_factory.cpp
 /// @brief Phase 5 factory tests: YAML dispatch and cross-mode handler swap
-///        with warm-start transfer.
+///        with warm-start transfer; the kinodynamic dispatch on the public G1.
 
 #include <gtest/gtest.h>
 
@@ -22,6 +22,8 @@
 #include "rtc_mpc/phase/phase_context.hpp"
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
+#include "test_utils/g1_fixture.hpp"
+#include "test_utils/kinodynamic_ocp_fixture.hpp"
 #include "test_utils/panda_fixture.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -269,6 +271,97 @@ mpc:
   if (err == rtc::mpc::MPCSolveError::kSolverException) {
     GTEST_SKIP() << "ContactRich cross-mode cold-solve hit known Risk #14 NaN "
                     "(Pinocchio 4.0) — see MIGRATION_TODO.md (a).";
+  }
+}
+
+// ── kinodynamic ─────────────────────────────────────────────────────────────
+
+class MPCFactoryKinodynamicTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    if (!std::filesystem::exists(rtc::mpc::test_utils::kG1Urdf)) {
+      GTEST_SKIP() << "G1 URDF not found at " << rtc::mpc::test_utils::kG1Urdf;
+    }
+    g1_ = rtc::mpc::test_utils::BuildG1Floating();
+    ASSERT_EQ(g1_handler_.Init(g1_, YAML::Load(rtc::mpc::test_utils::kG1SolesYaml)),
+              rtc::mpc::RobotModelInitError::kNoError);
+  }
+
+  [[nodiscard]] static YAML::Node Config(const char* ocp_type = "kinodynamic") {
+    YAML::Node root;
+    root["mpc"]["ocp_type"] = ocp_type;
+    root["mpc"]["kinodynamic"] = rtc::mpc::test_utils::G1KinodynamicNode();
+    return root;
+  }
+
+  [[nodiscard]] static rtc::mpc::PhaseContext Context(const char* ocp_type = "kinodynamic") {
+    rtc::mpc::PhaseContext ctx{};
+    ctx.ocp_type = ocp_type;
+    ctx.cost_config.horizon_length = rtc::mpc::test_utils::kKinoNodes;
+    ctx.cost_config.dt = rtc::mpc::test_utils::kKinoDt;
+    return ctx;
+  }
+
+  pinocchio::Model g1_;
+  rtc::mpc::RobotModelHandler g1_handler_;
+};
+
+TEST_F(MPCFactoryKinodynamicTest, DispatchesKinodynamic) {
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  const auto status = rtc::mpc::MPCFactory::Create(Config(), g1_handler_, Context(), h);
+  ASSERT_EQ(status.error, rtc::mpc::MPCFactoryError::kNoError);
+  ASSERT_NE(h, nullptr);
+  EXPECT_EQ(h->ocp_type(), std::string_view("kinodynamic"));
+  EXPECT_TRUE(h->Initialised());
+  EXPECT_EQ(h->horizon_length(), rtc::mpc::test_utils::kKinoNodes);
+  EXPECT_EQ(h->nu(), g1_handler_.nu());
+}
+
+TEST_F(MPCFactoryKinodynamicTest, ABadOrMissingKinodynamicSectionIsRefused) {
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  YAML::Node missing = Config();
+  missing["mpc"].remove("kinodynamic");
+  auto status = rtc::mpc::MPCFactory::Create(missing, g1_handler_, Context(), h);
+  EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kInvalidOcpConfig);
+  EXPECT_EQ(status.ocp_config_error, rtc::mpc::KinodynamicOCPConfigError::kMissingKey);
+  EXPECT_EQ(h, nullptr);
+  YAML::Node typo = Config();
+  typo["mpc"]["kinodynamic"]["horizon"] = 32;
+  status = rtc::mpc::MPCFactory::Create(typo, g1_handler_, Context(), h);
+  EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kInvalidOcpConfig);
+  EXPECT_EQ(status.ocp_config_error, rtc::mpc::KinodynamicOCPConfigError::kUnknownKey);
+  // A cost config of another horizon fails the build.
+  rtc::mpc::PhaseContext ctx = Context();
+  ctx.cost_config.horizon_length = 20;
+  status = rtc::mpc::MPCFactory::Create(Config(), g1_handler_, ctx, h);
+  EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kHandlerInitFailed);
+  EXPECT_EQ(status.init_error, rtc::mpc::MPCInitError::kOCPBuildFailed);
+}
+
+// The base checks hold both ways: a kinodynamic OCP refuses a fixed base, the
+// joint-torque OCPs a floating one.
+TEST_F(MPCFactoryKinodynamicTest, EachOcpRefusesTheOtherBase) {
+  if (!std::filesystem::exists(kPandaUrdf)) {
+    GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
+  }
+  pinocchio::Model panda;
+  pinocchio::urdf::buildModel(kPandaUrdf, panda);
+  rtc::mpc::RobotModelHandler fixed;
+  ASSERT_EQ(fixed.Init(panda, YAML::Load(kPandaTwoFingerYaml)),
+            rtc::mpc::RobotModelInitError::kNoError);
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  auto status = rtc::mpc::MPCFactory::Create(Config(), fixed, Context(), h);
+  EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kHandlerInitFailed);
+  EXPECT_EQ(status.init_error, rtc::mpc::MPCInitError::kFixedBaseUnsupported);
+  EXPECT_EQ(h, nullptr);
+
+  for (const char* type : {"contact_light", "contact_rich"}) {
+    rtc::mpc::PhaseContext ctx = Context(type);
+    ctx.cost_config = rtc::mpc::PhaseCostConfig{};
+    status = rtc::mpc::MPCFactory::Create(Config(type), g1_handler_, ctx, h);
+    EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kHandlerInitFailed) << type;
+    EXPECT_EQ(status.init_error, rtc::mpc::MPCInitError::kFloatingBaseUnsupported) << type;
+    EXPECT_EQ(h, nullptr);
   }
 }
 

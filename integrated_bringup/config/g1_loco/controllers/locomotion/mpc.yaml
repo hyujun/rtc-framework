@@ -1,0 +1,176 @@
+# locomotion_controller — mpc.* (g1_loco)
+#
+# A fragment of ../locomotion_controller.yaml (its `include:` list). The
+# whole-body MPC's OCP: rtc_mpc's MPCFactory reads `ocp_type`, and
+# `kinodynamic:` is the OCP's static configuration — schema, units and checks in
+# rtc_mpc ocp/kinodynamic_ocp_config.hpp (every key required, an unknown key
+# refused, every joint of the MPC model named, a name the model lacks ignored).
+# The solver, contact-constraint and runtime sections join when the code that
+# reads them lands (defaults until then).
+#
+# The weights are the reference whole-body task's, unchanged:
+#   - state / terminal: its Q and Q_final diagonals. The base orientation is
+#     written in this OCP's tangent order (roll, pitch, yaw); the reference lists
+#     yaw, pitch, roll. Its base angular entries weigh Euler-angle rates, here
+#     the base LOCAL angular velocity (equal weights, so the same numbers).
+#   - input: its R with the task's `scaling 1e-3` folded in.
+#   - contact_tracking: the foot weights its loader actually applies — the
+#     velocity rows carry the file's acceleration values and the acceleration
+#     rows the loader's defaults (0.01), so these are the weights the reference
+#     controller ran with, not the ones its file lists.
+# The running cost is integrated over each node interval (× dt); the terminal
+# cost is terminal_scaling × terminal_weights. The joints are the body's 23 —
+# the MPC model is the floating body with the hand locked (it has no MPC weight
+# in the reference).
+#
+# 32 nodes × 0.035 s = 1.12 s (the reference: 1.1 s, its last interval 0.015 s).
+# The reference integrates with RK4; the two offered here are semi-implicit
+# Euler (the starting value) and RK2.
+locomotion_controller:
+  mpc:
+    ocp_type: "kinodynamic"
+    kinodynamic:
+      horizon_nodes: 32
+      dt: 0.035                      # [s]
+      integrator: "semi_implicit_euler"
+      terminal_scaling: 4.0
+      state_weights:
+        base_position: [0.0, 0.0, 10.0]
+        base_orientation: [20.0, 20.0, 0.0]
+        joints:
+          left_hip_pitch_joint: 0.05
+          left_hip_roll_joint: 0.2
+          left_hip_yaw_joint: 0.2
+          left_knee_joint: 0.1
+          left_ankle_pitch_joint: 0.1
+          left_ankle_roll_joint: 0.1
+          right_hip_pitch_joint: 0.05
+          right_hip_roll_joint: 0.2
+          right_hip_yaw_joint: 0.2
+          right_knee_joint: 0.1
+          right_ankle_pitch_joint: 0.1
+          right_ankle_roll_joint: 0.1
+          waist_yaw_joint: 2.0
+          waist_roll_joint: 2.0
+          waist_pitch_joint: 2.0
+          left_shoulder_pitch_joint: 0.4
+          left_shoulder_roll_joint: 2.0
+          left_shoulder_yaw_joint: 0.4
+          left_elbow_joint: 0.4
+          right_shoulder_pitch_joint: 0.4
+          right_shoulder_roll_joint: 2.0
+          right_shoulder_yaw_joint: 0.4
+          right_elbow_joint: 0.4
+        base_linear_velocity: [3.0, 3.0, 3.0]
+        base_angular_velocity: [3.0, 3.0, 3.0]
+        joint_velocities:
+          left_hip_pitch_joint: 0.001
+          left_hip_roll_joint: 0.001
+          left_hip_yaw_joint: 0.001
+          left_knee_joint: 0.001
+          left_ankle_pitch_joint: 0.001
+          left_ankle_roll_joint: 0.001
+          right_hip_pitch_joint: 0.001
+          right_hip_roll_joint: 0.001
+          right_hip_yaw_joint: 0.001
+          right_knee_joint: 0.001
+          right_ankle_pitch_joint: 0.001
+          right_ankle_roll_joint: 0.001
+          waist_yaw_joint: 0.2
+          waist_roll_joint: 0.2
+          waist_pitch_joint: 0.2
+          left_shoulder_pitch_joint: 0.02
+          left_shoulder_roll_joint: 0.02
+          left_shoulder_yaw_joint: 0.02
+          left_elbow_joint: 0.02
+          right_shoulder_pitch_joint: 0.02
+          right_shoulder_roll_joint: 0.02
+          right_shoulder_yaw_joint: 0.02
+          right_elbow_joint: 0.02
+      terminal_weights:
+        base_position: [0.0, 0.0, 10.0]
+        base_orientation: [20.0, 20.0, 0.0]
+        joints:
+          left_hip_pitch_joint: 0.05
+          left_hip_roll_joint: 0.1
+          left_hip_yaw_joint: 0.1
+          left_knee_joint: 0.1
+          left_ankle_pitch_joint: 0.1
+          left_ankle_roll_joint: 0.1
+          right_hip_pitch_joint: 0.05
+          right_hip_roll_joint: 0.1
+          right_hip_yaw_joint: 0.1
+          right_knee_joint: 0.1
+          right_ankle_pitch_joint: 0.1
+          right_ankle_roll_joint: 0.1
+          waist_yaw_joint: 2.0
+          waist_roll_joint: 2.0
+          waist_pitch_joint: 2.0
+          left_shoulder_pitch_joint: 0.4
+          left_shoulder_roll_joint: 2.0
+          left_shoulder_yaw_joint: 0.4
+          left_elbow_joint: 0.4
+          right_shoulder_pitch_joint: 0.4
+          right_shoulder_roll_joint: 2.0
+          right_shoulder_yaw_joint: 0.4
+          right_elbow_joint: 0.4
+        base_linear_velocity: [3.0, 3.0, 3.0]
+        base_angular_velocity: [3.0, 3.0, 3.0]
+        joint_velocities:
+          left_hip_pitch_joint: 0.001
+          left_hip_roll_joint: 0.001
+          left_hip_yaw_joint: 0.001
+          left_knee_joint: 0.001
+          left_ankle_pitch_joint: 0.001
+          left_ankle_roll_joint: 0.001
+          right_hip_pitch_joint: 0.001
+          right_hip_roll_joint: 0.001
+          right_hip_yaw_joint: 0.001
+          right_knee_joint: 0.001
+          right_ankle_pitch_joint: 0.001
+          right_ankle_roll_joint: 0.001
+          waist_yaw_joint: 0.2
+          waist_roll_joint: 0.2
+          waist_pitch_joint: 0.2
+          left_shoulder_pitch_joint: 0.02
+          left_shoulder_roll_joint: 0.02
+          left_shoulder_yaw_joint: 0.02
+          left_elbow_joint: 0.02
+          right_shoulder_pitch_joint: 0.02
+          right_shoulder_roll_joint: 0.02
+          right_shoulder_yaw_joint: 0.02
+          right_elbow_joint: 0.02
+      input_weights:
+        contact_force: [3.0e-6, 3.0e-6, 1.0e-6]
+        contact_moment: [1.0e-5, 1.0e-5, 1.0e-4]
+        joint_accelerations:
+          left_hip_pitch_joint: 5.0e-6
+          left_hip_roll_joint: 5.0e-6
+          left_hip_yaw_joint: 5.0e-6
+          left_knee_joint: 5.0e-6
+          left_ankle_pitch_joint: 5.0e-6
+          left_ankle_roll_joint: 5.0e-6
+          right_hip_pitch_joint: 5.0e-6
+          right_hip_roll_joint: 5.0e-6
+          right_hip_yaw_joint: 5.0e-6
+          right_knee_joint: 5.0e-6
+          right_ankle_pitch_joint: 5.0e-6
+          right_ankle_roll_joint: 5.0e-6
+          waist_yaw_joint: 5.0e-6
+          waist_roll_joint: 5.0e-6
+          waist_pitch_joint: 5.0e-6
+          left_shoulder_pitch_joint: 5.0e-6
+          left_shoulder_roll_joint: 5.0e-6
+          left_shoulder_yaw_joint: 5.0e-6
+          left_elbow_joint: 5.0e-6
+          right_shoulder_pitch_joint: 5.0e-6
+          right_shoulder_roll_joint: 5.0e-6
+          right_shoulder_yaw_joint: 5.0e-6
+          right_elbow_joint: 5.0e-6
+      contact_tracking:              # per contact; zero rows are not tracked
+        position: [0.0, 0.0, 0.0]
+        orientation: [10000.0, 10000.0, 0.0]
+        linear_velocity: [5.0, 5.0, 0.0]
+        angular_velocity: [2.0, 2.0, 2.0]
+        linear_acceleration: [0.01, 0.01, 0.01]
+        angular_acceleration: [0.01, 0.01, 0.01]
