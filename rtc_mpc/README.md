@@ -35,7 +35,7 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `phase/` | `phase_context.hpp` | manager → OCP builder 묶음 (dispatch key `ocp_type` · `horizon`) |
 | `ocp/` | `ocp_handler_base.hpp` | 추상 OCP builder (`Build` / `UpdateReferences`) · `control_model()` (joint torque / kinodynamic wrench — handler 가 이 값으로 base 를 거부 · `u` 를 pack) · `cold_seed()` |
 | `ocp/` | `contact_{kinematics,tracking_residual}.hpp` | 접촉 frame 기구학 · 추종 residual (가속도는 stage ODE) |
-| `ocp/` | `contact_constraints.hpp` · `barrier_costs.hpp` | mode 무관 고정 행 접촉 제약 (stance · swing 등식, 마찰 · CoP) · joint limit · 구 쌍 충돌 barrier |
+| `ocp/` | `contact_constraints.hpp` · `barrier_costs.hpp` | mode 무관 고정 행 접촉 등식 (stance · swing) · 마찰 · CoP · joint limit · 구 쌍 충돌 barrier |
 | `ocp/` | `kinodynamic_ocp{,_config}.hpp` | kinodynamic OCP · `mpc.kinodynamic:` 로더 (`horizon` 의 mode · 참조를 할당 없이, cold seed 는 노드 `u_ref`) |
 | `ocp/` | `cost_factory.hpp` | stage 별 `aligator::CostStack` 생성 (weight-gated, no-throw) |
 | `ocp/` | `contact_light_ocp.hpp` | `OCPHandlerBase` 구현, dispatch key `"contact_light"` |

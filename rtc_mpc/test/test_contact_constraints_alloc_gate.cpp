@@ -1,7 +1,8 @@
 /// @file test_contact_constraints_alloc_gate.cpp
 /// @brief Heap allocations of the contact constraints and the barrier costs
-///        on the public G1: the wrench cone inequality, the joint-limit and
-///        the sphere-pair barriers (active) allocate nothing at all; the
+///        on the public G1: the wrench cone residual, its barrier cost (every
+///        mode), the joint-limit and the sphere-pair barriers (active)
+///        allocate nothing at all; the
 ///        contact equality makes no C++ allocation and its C allocations are
 ///        exactly those of the ODE calls it makes (`forward`, `dForward` —
 ///        the library's own, measured on the same ODE and steady call to
@@ -50,6 +51,7 @@ namespace {
 
 namespace tu = rtc::mpc::test_utils;
 using rtc::mpc::CollisionBarrierCost;
+using rtc::mpc::ContactConeBarrierCost;
 using rtc::mpc::ContactConstraintResidual;
 using rtc::mpc::ContactRectangle;
 using rtc::mpc::ContactWrenchConeResidual;
@@ -58,6 +60,7 @@ using rtc::mpc::FrictionCone;
 using rtc::mpc::JointLimitBarrierCost;
 using rtc::mpc::KinodynamicDynamics;
 using rtc::mpc::PolynomialBarrier;
+using rtc::mpc::RelaxedLogBarrier;
 using rtc::mpc::SpherePair;
 using tu::AllocCounter;
 using Ode = KinodynamicDynamics::Ode;
@@ -277,6 +280,34 @@ TEST_F(ContactConstraintsAllocGate, BarrierCostsAllocateNothing) {
   std::printf(
       "barriers per call: joint limit new %lld malloc %zu; sphere pairs new %lld malloc %zu\n",
       static_cast<long long>(cj.first), cj.second, static_cast<long long>(cc.first), cc.second);
+}
+
+// The wrench cone barrier in every mode (both contacts' rows, one, none).
+TEST_F(ContactConstraintsAllocGate, ContactConeBarrierAllocatesNothing) {
+  const auto& space = *dyn_.space();
+  std::mt19937 rng(20261114U);
+  for (std::uint32_t mode = 0; mode < dyn_.n_modes(); ++mode) {
+    const tu::KinoSample s = oracle_->Draw(rng, mode);
+    const Ode ode = dyn_.MakeOde(mode).value();
+    const ContactWrenchConeResidual res(ode, Friction(), Rectangle());
+    ContactConeBarrierCost cost(space, res, RelaxedLogBarrier{0.2, 5.0},
+                                RelaxedLogBarrier{0.6, 0.03});
+    ASSERT_TRUE(cost.Bind(&ode));
+    auto d = cost.createData();
+    cost.evaluate(s.x, s.u, *d);
+    cost.computeGradients(s.x, s.u, *d);
+    cost.computeHessians(s.x, s.u, *d);
+    ASSERT_EQ(d->value_ != 0.0, mode != 0U) << "mode " << mode;
+    const auto c = Count([&] {
+      cost.evaluate(s.x, s.u, *d);
+      cost.computeGradients(s.x, s.u, *d);
+      cost.computeHessians(s.x, s.u, *d);
+    });
+    EXPECT_EQ(c.first, 0) << "mode " << mode;
+    EXPECT_EQ(c.second, 0U) << "mode " << mode;
+    std::printf("contact cone barrier mode %u per call: new %lld malloc %zu\n", mode,
+                static_cast<long long>(c.first), c.second);
+  }
 }
 
 }  // namespace

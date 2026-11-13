@@ -194,8 +194,9 @@ constraints:
     linear_acceleration_xy: 1.0
     linear_acceleration_z: 1.0
     angular_acceleration: 1.0
-  friction: {mu: 0.4, grip_force: 0.0, regularization: 25.0}
-  contact_rectangle: {x_min: -0.09, x_max: 0.09, y_min: -0.03, y_max: 0.03}
+  friction: {mu: 0.4, grip_force: 0.0, regularization: 25.0, barrier_mu: 0.2, barrier_delta: 5.0}
+  contact_rectangle: {x_min: -0.09, x_max: 0.09, y_min: -0.03, y_max: 0.03, barrier_mu: 0.6,
+                      barrier_delta: 0.03}
   joint_limits: {mu: 1200.0, delta: 0.1}
   collision:
     enabled: false

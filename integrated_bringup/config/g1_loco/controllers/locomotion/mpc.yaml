@@ -24,11 +24,14 @@
 # in the reference).
 #
 #
-# constraints: the reference task's contact constraints, as hard rows here —
-# the stance foot's stabilised acceleration and the swing foot's vertical
-# motion (its foot_constraint gains), the friction cone (mu, grip, its
-# regularisation) and the CoP rectangle; the reference adds friction and CoP
-# as soft barriers, this OCP as inequalities. The joint-limit and foot / knee
+# constraints: the reference task's contact constraints — as hard rows the
+# stance foot's stabilised acceleration and the swing foot's vertical motion
+# (its foot_constraint gains); as soft barriers, as in the reference, the
+# friction cone (mu, grip, its regularisation) and the CoP rectangle, each
+# with its relaxed log barrier (barrier_mu, barrier_delta: the reference's
+# values; the friction margin in N, the CoP margins in N·m). As hard rows
+# those two stall a walking window: the solver drops the rear foot's normal
+# force of a double-support node to zero. The joint-limit and foot / knee
 # collision barriers are the reference's (its code's piecewise-polynomial
 # form; mu, delta from its task). The 16 sphere pairs are its foot centre, the
 # two points ±0.6·x_max along the sole and the ankle (r 0.05), and the knees
@@ -195,8 +198,19 @@ locomotion_controller:
           linear_acceleration_xy: 1.0
           linear_acceleration_z: 1.0
           angular_acceleration: 1.0
-        friction: {mu: 0.4, grip_force: 0.0, regularization: 25.0}   # [-], [N], [N²]
-        contact_rectangle: {x_min: -0.09, x_max: 0.09, y_min: -0.03, y_max: 0.03}   # [m]
+        friction:
+          mu: 0.4                    # [-]
+          grip_force: 0.0            # [N]
+          regularization: 25.0       # [N²]
+          barrier_mu: 0.2
+          barrier_delta: 5.0         # [N]
+        contact_rectangle:
+          x_min: -0.09               # [m]
+          x_max: 0.09
+          y_min: -0.03
+          y_max: 0.03
+          barrier_mu: 0.6
+          barrier_delta: 0.03        # [N·m]
         joint_limits: {mu: 1200.0, delta: 0.1}
         collision:
           enabled: false

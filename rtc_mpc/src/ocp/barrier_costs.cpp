@@ -1,6 +1,7 @@
 /// @file barrier_costs.cpp
 /// @brief The piecewise-polynomial barrier and the joint-limit and
-///        sphere-pair costs built on it (see the header).
+///        sphere-pair costs built on it, and the relaxed log barrier and the
+///        contact wrench cone cost built on it (see the header).
 
 #include "rtc_mpc/ocp/barrier_costs.hpp"
 
@@ -57,6 +58,28 @@ double PolynomialBarrier::SecondDerivative(double h) const noexcept {
     return mu;
   }
   return mu * (1.0 - h / d);
+}
+
+double RelaxedLogBarrier::Value(double h) const noexcept {
+  if (h > delta) {
+    return -mu * std::log(h);
+  }
+  const double r = (h - 2.0 * delta) / delta;
+  return mu * (-std::log(delta) + 0.5 * r * r - 0.5);
+}
+
+double RelaxedLogBarrier::Derivative(double h) const noexcept {
+  if (h > delta) {
+    return -mu / h;
+  }
+  return mu * (h - 2.0 * delta) / (delta * delta);
+}
+
+double RelaxedLogBarrier::SecondDerivative(double h) const noexcept {
+  if (h > delta) {
+    return mu / (h * h);
+  }
+  return mu / (delta * delta);
 }
 
 // ── Joint limits ────────────────────────────────────────────────────────────
@@ -276,6 +299,139 @@ std::shared_ptr<CollisionBarrierCost::CostData> CollisionBarrierCost::createData
     throw std::logic_error("CollisionBarrierCost::createData: Bind the stage's ODE first");
   }
   return std::make_shared<CollisionBarrierData>(ndx(), nu, ode_->pin_model_, n_pairs());
+}
+
+// ── Contact wrench cone ─────────────────────────────────────────────────────
+
+ContactConeBarrierData::ContactConeBarrierData(
+    int ndx, int nu, int nv, std::shared_ptr<aligator::StageFunctionDataTpl<double>> cone_data)
+    : Base(ndx, nu),
+      cone(std::move(cone_data)),
+      jx(Eigen::VectorXd::Zero(nv)),
+      jx_scaled(Eigen::VectorXd::Zero(nv)) {}
+
+ContactConeBarrierCost::ContactConeBarrierCost(const Space& space,
+                                               const ContactWrenchConeResidual& residual,
+                                               const RelaxedLogBarrier& friction,
+                                               const RelaxedLogBarrier& cop)
+    : Base(space, residual.nu), residual_(residual), friction_(friction), cop_(cop) {}
+
+void ContactConeBarrierCost::evaluate(const ConstVectorRef& x, const ConstVectorRef& u,
+                                      CostData& data) const {
+  auto& d = static_cast<ContactConeBarrierData&>(data);
+  if (residual_.bound_ode() == nullptr) {
+    data.value_ = std::nan("");
+    return;
+  }
+  residual_.evaluate(x, u, *d.cone);
+  const auto& rd = static_cast<const ContactWrenchConeData&>(*d.cone);
+  const int rows = residual_.rows_per_contact();
+  double v = 0.0;
+  for (int c = 0; c < residual_.n_contacts(); ++c) {
+    if (rd.stance[static_cast<std::size_t>(c)] == 0) {
+      continue;
+    }
+    const Eigen::Index o = static_cast<Eigen::Index>(c) * rows;
+    v += friction_.Value(-rd.value_[o]);
+    for (int r = 1; r < rows; ++r) {
+      v += cop_.Value(-rd.value_[o + r]);
+    }
+  }
+  data.value_ = v;
+}
+
+// The residual's Jacobian rows are sparse by construction: the friction row
+// has `∂/∂f` only (3 entries), a CoP row `∂/∂q` (first nv tangent entries)
+// and `∂/∂[f; τ]` of its own contact (6 entries). The products below are
+// written on those blocks, in fixed sizes or into the data's buffers.
+void ContactConeBarrierCost::computeGradients(const ConstVectorRef& x, const ConstVectorRef& u,
+                                              CostData& data) const {
+  auto& d = static_cast<ContactConeBarrierData&>(data);
+  data.Lx_.setZero();
+  data.Lu_.setZero();
+  if (residual_.bound_ode() == nullptr) {
+    data.Lx_.setConstant(std::nan(""));
+    data.Lu_.setConstant(std::nan(""));
+    return;
+  }
+  residual_.computeJacobians(x, u, *d.cone);
+  const auto& rd = static_cast<const ContactWrenchConeData&>(*d.cone);
+  const int rows = residual_.rows_per_contact();
+  const int fs = residual_.force_size();
+  const auto nv = static_cast<Eigen::Index>(d.jx.size());
+  for (int c = 0; c < residual_.n_contacts(); ++c) {
+    if (rd.stance[static_cast<std::size_t>(c)] == 0) {
+      continue;
+    }
+    const Eigen::Index o = static_cast<Eigen::Index>(c) * rows;
+    const Eigen::Index w = static_cast<Eigen::Index>(c) * fs;
+    // ∇h = −∇c.
+    const double gf = friction_.Derivative(-rd.value_[o]);
+    data.Lu_.segment<3>(w).noalias() -= gf * rd.Ju_.row(o).segment<3>(w).transpose();
+    for (int r = 1; r < rows; ++r) {
+      const Eigen::Index i = o + r;
+      const double g = cop_.Derivative(-rd.value_[i]);
+      data.Lx_.head(nv).noalias() -= g * rd.Jx_.row(i).head(nv).transpose();
+      data.Lu_.segment<6>(w).noalias() -= g * rd.Ju_.row(i).segment<6>(w).transpose();
+    }
+  }
+}
+
+void ContactConeBarrierCost::computeHessians(const ConstVectorRef& /*x*/, const ConstVectorRef& u,
+                                             CostData& data) const {
+  auto& d = static_cast<ContactConeBarrierData&>(data);
+  data.Lxx_.setZero();
+  data.Lxu_.setZero();
+  data.Lux_.setZero();
+  data.Luu_.setZero();
+  if (residual_.bound_ode() == nullptr) {
+    data.Lxx_.setConstant(std::nan(""));
+    data.Luu_.setConstant(std::nan(""));
+    return;
+  }
+  const auto& rd = static_cast<const ContactWrenchConeData&>(*d.cone);
+  const int rows = residual_.rows_per_contact();
+  const int fs = residual_.force_size();
+  const auto nv = static_cast<Eigen::Index>(d.jx.size());
+  const double eps = residual_.friction().regularization;
+  for (int c = 0; c < residual_.n_contacts(); ++c) {
+    if (rd.stance[static_cast<std::size_t>(c)] == 0) {
+      continue;
+    }
+    const Eigen::Index o = static_cast<Eigen::Index>(c) * rows;
+    const Eigen::Index w = static_cast<Eigen::Index>(c) * fs;
+    // Friction: Gauss–Newton on ∂h/∂f, plus B'(h)·∇²h on (f_x, f_y).
+    const double hf = -rd.value_[o];
+    const Eigen::Vector3d jf = rd.Ju_.row(o).segment<3>(w).transpose();
+    data.Luu_.block<3, 3>(w, w).noalias() += friction_.SecondDerivative(hf) * jf * jf.transpose();
+    const Eigen::Vector2d fxy = u.segment<2>(w);
+    const double s2 = fxy.squaredNorm() + eps;
+    const double s = std::sqrt(s2);
+    const Eigen::Matrix2d hess_sqrt =
+        (Eigen::Matrix2d::Identity() - fxy * fxy.transpose() / s2) / s;
+    data.Luu_.block<2, 2>(w, w).noalias() -= friction_.Derivative(hf) * hess_sqrt;
+    // CoP: Gauss–Newton on ∂h/∂q and ∂h/∂[f; τ].
+    for (int r = 1; r < rows; ++r) {
+      const Eigen::Index i = o + r;
+      const double g2 = cop_.SecondDerivative(-rd.value_[i]);
+      d.jx = -rd.Jx_.row(i).head(nv).transpose();
+      d.jx_scaled = g2 * d.jx;
+      const Eigen::Matrix<double, 6, 1> ju = -rd.Ju_.row(i).segment<6>(w).transpose();
+      data.Lxx_.topLeftCorner(nv, nv).noalias() += d.jx_scaled * d.jx.transpose();
+      data.Lxu_.block(0, w, nv, 6).noalias() += d.jx_scaled * ju.transpose();
+      data.Luu_.block<6, 6>(w, w).noalias() += g2 * ju * ju.transpose();
+    }
+  }
+  data.Lux_ = data.Lxu_.transpose();
+}
+
+std::shared_ptr<ContactConeBarrierCost::CostData> ContactConeBarrierCost::createData() const {
+  const Ode* ode = residual_.bound_ode();
+  if (ode == nullptr) {
+    throw std::logic_error("ContactConeBarrierCost::createData: Bind the stage's ODE first");
+  }
+  return std::make_shared<ContactConeBarrierData>(ndx(), nu, ode->pin_model_.nv,
+                                                  residual_.createData());
 }
 
 }  // namespace rtc::mpc

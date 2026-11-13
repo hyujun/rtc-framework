@@ -5,7 +5,12 @@
 ///        gradient lands, its derivatives against central differences), and
 ///        the sphere-pair barrier (gradient against central differences, the
 ///        Gauss–Newton Hessian against an independent outer-product sum,
-///        full stance and coincident points).
+///        full stance and coincident points); the relaxed log barrier
+///        against its closed form and at its knot, and the contact wrench
+///        cone barrier (value against an independent sum over the residual,
+///        gradient against central differences, the input Hessian against
+///        central differences of the gradient, the whole Hessian against an
+///        independent Gauss–Newton sum, swing rows empty).
 ///
 /// Pre-registered: barrier μ 1200, δ 0.1 (joint limits) and δ 0.04 (sphere
 /// pairs); closed form and knot continuity to rel 1e-12 (the zero band to
@@ -15,6 +20,16 @@
 /// `|g − g_fd| ≤ 1e-6 + 1e-5·|g_fd|`, every sample (sphere pairs: samples
 /// with a pair closer than 1e-3 m skipped); the sphere-pair Hessian against
 /// `Σ B''·∇h ∇hᵀ` from `LOCAL_WORLD_ALIGNED` point Jacobians, rel 1e-12.
+/// Relaxed log barrier: friction μ 0.2, δ 5 N and CoP μ 0.6, δ 0.03 N·m (the
+/// reference's); closed form rel 1e-12; at `h = δ` the value, first and
+/// second derivative jump ≤ 1e-12·μ·max(1, 1/δ²); the wrench cone barrier
+/// on the gate set (every mode in turn): value rel 1e-12, gradient (state
+/// tangent and input) and input Hessian against central differences with
+/// the tolerances above plus 1e-9 times the differenced value (|B| or
+/// |∇B|∞: the rounding of a difference of a large barrier value), the
+/// whole Hessian rel 1e-12 of its largest entry;
+/// a swing contact's rows add nothing (value, gradient, Hessian bit zero in
+/// flight).
 
 #include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
@@ -56,9 +71,15 @@ namespace {
 
 namespace tu = rtc::mpc::test_utils;
 using rtc::mpc::CollisionBarrierCost;
+using rtc::mpc::ContactConeBarrierCost;
+using rtc::mpc::ContactRectangle;
+using rtc::mpc::ContactWrenchConeData;
+using rtc::mpc::ContactWrenchConeResidual;
+using rtc::mpc::FrictionCone;
 using rtc::mpc::JointLimitBarrierCost;
 using rtc::mpc::KinodynamicDynamics;
 using rtc::mpc::PolynomialBarrier;
+using rtc::mpc::RelaxedLogBarrier;
 using rtc::mpc::SpherePair;
 using tu::ColumnErr;
 using tu::CompareColumns;
@@ -257,6 +278,90 @@ TEST(PolynomialBarrierTest, DerivativesMatchCentralDifferences) {
     EXPECT_LE(r2, 1.0) << "h " << h;
   }
   std::printf("barrier derivatives vs FD: worst err/tol %.3e\n", worst);
+}
+
+// ── Relaxed log barrier ─────────────────────────────────────────────────────
+
+/// The reference's relaxed log barrier, written out.
+struct LogClosedForm {
+  double mu;
+  double d;
+
+  [[nodiscard]] double Value(double h) const {
+    if (h > d) {
+      return -mu * std::log(h);
+    }
+    return mu * (-std::log(d) + 0.5 * std::pow((h - 2.0 * d) / d, 2) - 0.5);
+  }
+
+  [[nodiscard]] double First(double h) const {
+    return h > d ? -mu / h : mu * (h - 2.0 * d) / (d * d);
+  }
+
+  [[nodiscard]] double Second(double h) const { return h > d ? mu / (h * h) : mu / (d * d); }
+};
+
+constexpr RelaxedLogBarrier kFrictionBarrier{0.2, 5.0};
+constexpr RelaxedLogBarrier kCopBarrier{0.6, 0.03};
+
+TEST(RelaxedLogBarrierTest, MatchesTheClosedForm) {
+  double worst = 0.0;
+  for (const RelaxedLogBarrier& b : {kFrictionBarrier, kCopBarrier}) {
+    const LogClosedForm cf{b.mu, b.delta};
+    const double d = b.delta;
+    for (const double h : {-10.0 * d, -d, 0.0, 0.5 * d, d, 1.5 * d, 10.0 * d}) {
+      const double r0 = RelDiff(b.Value(h), cf.Value(h));
+      const double r1 = RelDiff(b.Derivative(h), cf.First(h));
+      const double r2 = RelDiff(b.SecondDerivative(h), cf.Second(h));
+      worst = std::max({worst, r0, r1, r2});
+      EXPECT_LE(r0, 1e-12) << "delta " << d << " h " << h;
+      EXPECT_LE(r1, 1e-12) << "delta " << d << " h " << h;
+      EXPECT_LE(r2, 1e-12) << "delta " << d << " h " << h;
+    }
+  }
+  std::printf("relaxed log barrier vs closed form: worst rel %.3e\n", worst);
+}
+
+// C² at the knot: the log branch just above δ against the quadratic at δ.
+TEST(RelaxedLogBarrierTest, ContinuousToTheSecondDerivativeAtDelta) {
+  double worst = 0.0;
+  for (const RelaxedLogBarrier& b : {kFrictionBarrier, kCopBarrier}) {
+    const double d = b.delta;
+    const double tol = 1e-12 * b.mu * std::max(1.0, 1.0 / (d * d));
+    const double above = std::nextafter(d, 2.0 * d);
+    const std::array<std::pair<const char*, double>, 3> jumps = {{
+        {"B", b.Value(above) - b.Value(d)},
+        {"B'", b.Derivative(above) - b.Derivative(d)},
+        {"B''", b.SecondDerivative(above) - b.SecondDerivative(d)},
+    }};
+    for (const auto& [what, jump] : jumps) {
+      worst = std::max(worst, std::abs(jump) / tol);
+      EXPECT_LE(std::abs(jump), tol) << what << " at delta " << d;
+    }
+  }
+  std::printf("relaxed log barrier knot: worst jump / tol %.3e\n", worst);
+}
+
+TEST(RelaxedLogBarrierTest, DerivativesMatchCentralDifferences) {
+  double worst = 0.0;
+  for (const RelaxedLogBarrier& b : {kFrictionBarrier, kCopBarrier}) {
+    const double d = b.delta;
+    const double step = kH * std::max(1.0, d);
+    for (int i = 0; i <= 400; ++i) {
+      const double h = -2.0 * d + 6.0 * d * i / 400.0;
+      if (std::abs(h - d) < 10.0 * step) {
+        continue;  // the third derivative jumps within the step
+      }
+      const double d1 = (b.Value(h + step) - b.Value(h - step)) / (2.0 * step);
+      const double d2 = (b.Derivative(h + step) - b.Derivative(h - step)) / (2.0 * step);
+      const double r1 = std::abs(b.Derivative(h) - d1) / (kAbsTol + kRelTol * std::abs(d1));
+      const double r2 = std::abs(b.SecondDerivative(h) - d2) / (kAbsTol + kRelTol * std::abs(d2));
+      worst = std::max({worst, r1, r2});
+      EXPECT_LE(r1, 1.0) << "delta " << d << " h " << h;
+      EXPECT_LE(r2, 1.0) << "delta " << d << " h " << h;
+    }
+  }
+  std::printf("relaxed log barrier derivatives vs FD: worst err/tol %.3e\n", worst);
 }
 
 // ── G1 fixture ──────────────────────────────────────────────────────────────
@@ -739,6 +844,203 @@ TEST_F(BarrierCostsTest, CollisionBindingContracts) {
   EXPECT_EQ(cost.bound_ode(), nullptr);
   ASSERT_TRUE(cost.Bind(&ode));
   EXPECT_EQ(cost.bound_ode(), &ode);
+  auto d = cost.createData();
+  ASSERT_TRUE(cost.Bind(nullptr));
+  cost.evaluate(samples_[0].x, samples_[0].u, *d);
+  EXPECT_TRUE(std::isnan(d->value_));
+}
+
+// ── Contact wrench cone barrier ─────────────────────────────────────────────
+
+constexpr FrictionCone kCone{0.4, 0.0, 25.0};
+constexpr double kRoundoff = 1e-9;  ///< FD absolute bound per unit of the differenced value
+constexpr ContactRectangle kRect{-0.09, 0.09, -0.03, 0.03};
+
+/// The cost's value, gradient and Hessian at one `(x, u)`.
+struct ConeEval {
+  double value{0.0};
+  Eigen::VectorXd grad;
+  Eigen::MatrixXd hess;
+};
+
+ConeEval EvalCone(const ContactConeBarrierCost& cost, const Eigen::VectorXd& x,
+                  const Eigen::VectorXd& u) {
+  auto d = cost.createData();
+  cost.evaluate(x, u, *d);
+  cost.computeGradients(x, u, *d);
+  cost.computeHessians(x, u, *d);
+  return {d->value_, d->grad_, d->hess_};
+}
+
+std::string DescribeErr(const ColumnErr& e) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "err/tol %.3e abs %.3e", e.ratio, e.abs);
+  return buf;
+}
+
+// Value: Σ B(−c) over the stance contacts' rows of an independently
+// evaluated residual. Gradient: central differences in the state tangent and
+// the input. Input Hessian: central differences of the input gradient (the
+// margins are linear in the CoP torques and forces at a fixed q, and the
+// friction margin's √ curvature is kept, so the input block is exact). The
+// whole Hessian: the Gauss–Newton sum over the residual's own Jacobian rows
+// plus the friction √ curvature, assembled here.
+TEST_F(BarrierCostsTest, ContactConeMatchesTheResidualAndCentralDifferences) {
+  const Space& space = *dyn_.space();
+  const int ndx = space.ndx();
+  const int nu = dyn_.nu();
+  const int fs = dyn_.force_size();
+  const int nc = handler_.n_contacts();
+  const LogClosedForm cff{kFrictionBarrier.mu, kFrictionBarrier.delta};
+  const LogClosedForm cfc{kCopBarrier.mu, kCopBarrier.delta};
+  double worst_value = 0.0;
+  double worst_hess = 0.0;
+  ColumnErr worst_gx;
+  ColumnErr worst_gu;
+  ColumnErr worst_huu;
+  int pass_g = 0;
+  int pass_h = 0;
+  int friction_quadratic = 0;
+  int cop_quadratic = 0;
+  int stance_contacts = 0;
+  for (std::size_t i = 0; i < samples_.size(); ++i) {
+    const KinoSample& s = samples_[i];
+    const auto mode = static_cast<std::uint32_t>(i % dyn_.n_modes());
+    const Ode ode = dyn_.MakeOde(mode).value();
+    ContactWrenchConeResidual res(ode, kCone, kRect);
+    ASSERT_TRUE(res.Bind(&ode));
+    const ContactConeBarrierCost cost(space, res, kFrictionBarrier, kCopBarrier);
+    ASSERT_EQ(cost.bound_ode(), &ode);
+    const ConeEval e = EvalCone(cost, s.x, s.u);
+
+    // Independent value and Gauss–Newton Hessian from the residual.
+    auto rd = res.createData();
+    res.evaluate(s.x, s.u, *rd);
+    res.computeJacobians(s.x, s.u, *rd);
+    const auto& r = static_cast<const ContactWrenchConeData&>(*rd);
+    const int rows = res.rows_per_contact();
+    double v = 0.0;
+    Eigen::MatrixXd hess = Eigen::MatrixXd::Zero(ndx + nu, ndx + nu);
+    for (int c = 0; c < nc; ++c) {
+      if (((mode >> c) & 1U) == 0U) {
+        continue;
+      }
+      ++stance_contacts;
+      for (int k = 0; k < rows; ++k) {
+        const int row = c * rows + k;
+        const double h = -r.value_[row];
+        const LogClosedForm& cf = k == 0 ? cff : cfc;
+        (k == 0 ? friction_quadratic : cop_quadratic) += h <= cf.d ? 1 : 0;
+        v += cf.Value(h);
+        Eigen::RowVectorXd jac(ndx + nu);
+        jac << -r.Jx_.row(row), -r.Ju_.row(row);
+        hess += cf.Second(h) * jac.transpose() * jac;
+        if (k == 0) {
+          const Eigen::Vector2d f = s.u.segment<2>(c * fs);
+          const double sq2 = f.squaredNorm() + kCone.regularization;
+          const double sq = std::sqrt(sq2);
+          const Eigen::Matrix2d hs = (Eigen::Matrix2d::Identity() - f * f.transpose() / sq2) / sq;
+          hess.block<2, 2>(ndx + c * fs, ndx + c * fs) -= cf.First(h) * hs;
+        }
+      }
+    }
+    worst_value = std::max(worst_value, RelDiff(e.value, v));
+    EXPECT_LE(RelDiff(e.value, v), 1e-12) << "sample " << i << " mode " << mode;
+    const double scale = std::max(1.0, hess.cwiseAbs().maxCoeff());
+    const double herr = (e.hess - hess).cwiseAbs().maxCoeff() / scale;
+    worst_hess = std::max(worst_hess, herr);
+    EXPECT_LE(herr, 1e-12) << "sample " << i << " mode " << mode;
+
+    // Gradient and input Hessian against central differences.
+    const auto value_at = [&](const Eigen::VectorXd& x, const Eigen::VectorXd& u) {
+      auto d = cost.createData();
+      cost.evaluate(x, u, *d);
+      return d->value_;
+    };
+    const Eigen::VectorXd gx_fd =
+        TangentGradientFd(space, s.x, [&](const Eigen::VectorXd& x) { return value_at(x, s.u); });
+    Eigen::VectorXd gu_fd(nu);
+    Eigen::MatrixXd huu_fd(nu, nu);
+    for (int j = 0; j < nu; ++j) {
+      Eigen::VectorXd up = s.u;
+      Eigen::VectorXd um = s.u;
+      up[j] += kH;
+      um[j] -= kH;
+      gu_fd[j] = (value_at(s.x, up) - value_at(s.x, um)) / (2.0 * kH);
+      huu_fd.col(j) =
+          (EvalCone(cost, s.x, up).grad.tail(nu) - EvalCone(cost, s.x, um).grad.tail(nu)) /
+          (2.0 * kH);
+    }
+    // The barrier's deep quadratic branch reaches |B| ~ 1e6 on this draw;
+    // a central difference of it carries a rounding error of ~ε·|B|/h
+    // (2e-10·|B|), so the absolute part of the bound grows with the value
+    // differenced (the gradient's for the Hessian).
+    const double tol_g = kAbsTol + kRoundoff * std::abs(e.value);
+    const double tol_h = kAbsTol + kRoundoff * e.grad.cwiseAbs().maxCoeff();
+    const ColumnErr ex = CompareColumns(Eigen::MatrixXd(e.grad.head(ndx)), Eigen::MatrixXd(gx_fd),
+                                        0, 1, tol_g, kRelTol);
+    const ColumnErr eu = CompareColumns(Eigen::MatrixXd(e.grad.tail(nu)), Eigen::MatrixXd(gu_fd), 0,
+                                        1, tol_g, kRelTol);
+    const ColumnErr eh = CompareColumns(Eigen::MatrixXd(e.hess.bottomRightCorner(nu, nu)), huu_fd,
+                                        0, nu, tol_h, kRelTol);
+    worst_gx.Fold(ex);
+    worst_gu.Fold(eu);
+    worst_huu.Fold(eh);
+    pass_g += ex.ratio <= 1.0 && eu.ratio <= 1.0 ? 1 : 0;
+    pass_h += eh.ratio <= 1.0 ? 1 : 0;
+    EXPECT_LE(ex.ratio, 1.0) << "sample " << i << " mode " << mode << " grad x " << DescribeErr(ex);
+    EXPECT_LE(eu.ratio, 1.0) << "sample " << i << " mode " << mode << " grad u " << DescribeErr(eu);
+    EXPECT_LE(eh.ratio, 1.0) << "sample " << i << " mode " << mode << " hess uu "
+                             << DescribeErr(eh);
+  }
+  std::printf(
+      "contact cone barrier: %zu samples, %d stance contacts (quadratic branch: friction %d, "
+      "CoP rows %d); value worst rel %.3e; Hessian vs Gauss-Newton sum worst %.3e; gradient vs "
+      "FD %d/%zu (x %s; u %s); input Hessian vs FD %d/%zu (%s)\n",
+      samples_.size(), stance_contacts, friction_quadratic, cop_quadratic, worst_value, worst_hess,
+      pass_g, samples_.size(), DescribeErr(worst_gx).c_str(), DescribeErr(worst_gu).c_str(), pass_h,
+      samples_.size(), DescribeErr(worst_huu).c_str());
+}
+
+TEST_F(BarrierCostsTest, ContactConeIsEmptyForASwingContactAndInFlight) {
+  const Space& space = *dyn_.space();
+  const KinoSample& s = samples_[0];
+  Ode ode = dyn_.MakeOde(0b00).value();
+  const ContactWrenchConeResidual res(ode, kCone, kRect);
+  ContactConeBarrierCost cost(space, res, kFrictionBarrier, kCopBarrier);
+  ASSERT_TRUE(cost.Bind(&ode));
+  ConeEval e = EvalCone(cost, s.x, s.u);
+  EXPECT_TRUE(BitwiseZero(e.value));
+  EXPECT_TRUE(AllBitwiseZero(e.grad));
+  EXPECT_TRUE(AllBitwiseZero(e.hess));
+  // One contact in stance: the other's input columns carry nothing.
+  ASSERT_TRUE(dyn_.SetMode(ode, 0b01));
+  e = EvalCone(cost, s.x, s.u);
+  EXPECT_NE(e.value, 0.0);
+  const int ndx = space.ndx();
+  const int nu = dyn_.nu();
+  const int fs = dyn_.force_size();
+  EXPECT_FALSE(e.grad.segment(ndx, fs).isZero());
+  EXPECT_TRUE(AllBitwiseZero(e.grad.segment(ndx + fs, fs)));
+  EXPECT_TRUE(AllBitwiseZero(e.hess.block(ndx + fs, 0, fs, ndx + nu)));
+  EXPECT_TRUE(AllBitwiseZero(e.grad.tail(nu - 2 * fs)));
+}
+
+TEST_F(BarrierCostsTest, ContactConeBindingContracts) {
+  const Space& space = *dyn_.space();
+  const Ode ode = dyn_.MakeOde(0b11).value();
+  const ContactWrenchConeResidual res(ode, kCone, kRect);
+  ContactConeBarrierCost cost(space, res, kFrictionBarrier, kCopBarrier);
+  EXPECT_EQ(cost.bound_ode(), nullptr);
+  EXPECT_THROW((void)cost.createData(), std::logic_error);
+  const Ode one(space, model_, model_.gravity.linear(), std::vector<bool>{true},
+                std::vector<pinocchio::FrameIndex>{oracle_->contacts()[0]}, 6);
+  EXPECT_FALSE(cost.Bind(&one));
+  EXPECT_EQ(cost.bound_ode(), nullptr);
+  ASSERT_TRUE(cost.Bind(&ode));
+  EXPECT_EQ(cost.residual().bound_ode(), &ode);
+  EXPECT_EQ(cost.friction_barrier().delta, kFrictionBarrier.delta);
+  EXPECT_EQ(cost.cop_barrier().mu, kCopBarrier.mu);
   auto d = cost.createData();
   ASSERT_TRUE(cost.Bind(nullptr));
   cost.evaluate(samples_[0].x, samples_[0].u, *d);

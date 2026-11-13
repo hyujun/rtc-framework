@@ -2,10 +2,11 @@
 #define RTC_MPC_OCP_CONTACT_CONSTRAINTS_HPP_
 
 /// @file contact_constraints.hpp
-/// @brief The hard contact constraints of the kinodynamic OCP, at a row count
-///        that never depends on the contact mode: the per-contact equality
-///        (stance foot held, swing foot on its height plan) and the wrench
-///        cone inequality (friction and centre of pressure).
+/// @brief The contact residuals of the kinodynamic OCP, at a row count that
+///        never depends on the contact mode: the per-contact equality (a hard
+///        constraint — stance foot held, swing foot on its height plan) and
+///        the wrench cone (friction and centre of pressure, `c ≤ 0` inside;
+///        the OCP penalises its margins with `ContactConeBarrierCost`).
 ///
 /// ## Fixed rows, active by mode
 ///
@@ -34,7 +35,7 @@
 /// tilt, held at the reference height), and the swing foot's vertical motion
 /// to its plan. The targets `z*, ż*, z̈*` are per node (`SetFromStage`).
 ///
-/// ## Inequality (`ContactWrenchConeResidual`, `c ≤ 0`)
+/// ## Wrench cone (`ContactWrenchConeResidual`, `c ≤ 0` inside)
 ///
 /// Contact k owns `InequalityRows(force_size)` rows, active in stance. With
 /// the wrench `W_k = [f; τ]` (world axes, moment about the frame origin — the

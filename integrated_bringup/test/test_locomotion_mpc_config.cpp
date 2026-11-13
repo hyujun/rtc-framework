@@ -171,7 +171,7 @@ TEST_F(LocomotionMpcConfig, TheInstalledWeightsAreTheReferenceTasks) {
 }
 
 // The installed contact constraints equal the reference task's: its
-// foot_constraint gains, friction cone and CoP rectangle, its joint-limit and
+// foot_constraint gains, friction cone and CoP rectangle with their barriers, its joint-limit and
 // collision barriers, and its 16 foot / knee sphere pairs rebuilt here from
 // its definition (foot centre, centre ± 0.6·x_max along the sole, ankle; the
 // knees) — with the sole frame of this model as the foot centre.
@@ -196,6 +196,10 @@ TEST_F(LocomotionMpcConfig, TheInstalledConstraintsAreTheReferenceTasks) {
   EXPECT_EQ(c.contact_rectangle.x_max, 0.09);
   EXPECT_EQ(c.contact_rectangle.y_min, -0.03);
   EXPECT_EQ(c.contact_rectangle.y_max, 0.03);
+  EXPECT_EQ(c.friction_barrier.mu, 0.2);
+  EXPECT_EQ(c.friction_barrier.delta, 5.0);
+  EXPECT_EQ(c.cop_barrier.mu, 0.6);
+  EXPECT_EQ(c.cop_barrier.delta, 0.03);
   EXPECT_EQ(c.joint_limits.mu, 1200.0);
   EXPECT_EQ(c.joint_limits.delta, 0.1);
   EXPECT_FALSE(c.collision_enabled);
