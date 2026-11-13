@@ -120,3 +120,23 @@ def test_namespaced_config_leaves_every_topic_relative(
         f"{filename}: {absolute} — this file runs under namespace:=, where an absolute "
         "topic escapes the namespace (and two hands refuse it at configure)"
     )
+
+
+def test_p2_sides_agree_on_the_launch_build_time_values() -> None:
+    """robot_p2 / sim_p2 ``side:=`` picks config/p2 or config/p2_left at run
+    time, but a launch argument's default is built before any argument is read,
+    so the right hand's files supply ``sil_mode`` / ``max_log_sessions`` and
+    the fake firmware's ``protocol_version`` / ``cmd_ack`` for both sides. That
+    holds only while the two profiles agree on them; the fake's ``hand_side``
+    is the ``side`` argument itself, so each profile's driver must name its
+    own side."""
+    right = _params("p2", "udp_hand_node_p2.yaml")
+    left = _params("p2_left", "udp_hand_node_p2.yaml")
+    for key in ("sil_mode", "protocol_version", "cmd_ack"):
+        assert right[key] == left[key], key
+    assert right["hand_sides"] == ["right"]
+    assert left["hand_sides"] == ["left"]
+    assert (
+        _params("p2", "_base.yaml")["max_log_sessions"]
+        == _params("p2_left", "_base.yaml")["max_log_sessions"]
+    )

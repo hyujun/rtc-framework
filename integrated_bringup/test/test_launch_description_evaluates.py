@@ -156,6 +156,11 @@ EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     ],
     "sim_p2.launch.py": [
         ("sim_lanes", {"sim_lanes": "true"}),
+        ("side_left", {"side": "left"}),
+    ],
+    "robot_p2.launch.py": [
+        ("side_left", {"side": "left"}),
+        ("side_left_firmware", {"side": "left", "sil_mode": "firmware"}),
     ],
 }
 
@@ -577,6 +582,31 @@ def test_no_sim_overlay_adds_no_parameter_file():
         sources = _node_parameter_sources(nodes[name], context)
         stray = [s for s in sources if isinstance(s, str) and "/sim_overlays/" in s]
         assert not stray, f"{name}: an overlay was applied without sim_overlay:= — {stray}"
+
+
+# ── p2: side:= picks the hand's profile directory ────────────────────────────
+
+
+@pytest.mark.parametrize("filename", [P2_SIM, "robot_p2.launch.py"])
+@pytest.mark.parametrize(("side", "profile"), [("right", "p2"), ("left", "p2_left")])
+def test_p2_side_selects_every_profile_file(filename, side, profile):
+    """Every integrated_bringup parameter file each node gets comes from the
+    side's profile directory — one stray right-hand file under side:=left would
+    configure the left hand with the right hand's roster or topics."""
+    overrides = {"use_cpu_affinity": "false"}
+    if side != "right":
+        overrides["side"] = side
+    nodes, context = _nodes_by_name(overrides, filename)
+    share = os.path.join(get_package_share_directory("integrated_bringup"), "config")
+    seen = []
+    for name, node in nodes.items():
+        for source in _node_parameter_sources(node, context):
+            if isinstance(source, str) and source.startswith(share + os.sep):
+                seen.append((name, os.path.relpath(source, share)))
+    assert seen, f"{filename}: no integrated_bringup parameter file resolved"
+    stray = [(n, rel) for n, rel in seen if rel.split(os.sep)[0] != profile]
+    assert not stray, f"{filename} side:={side}: files outside config/{profile}: {stray}"
+    assert "integrated_rt_controller" in {n for n, _ in seen}
 
 
 @pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)
