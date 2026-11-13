@@ -13,6 +13,7 @@
 #include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "test_utils/g1_fixture.hpp"
+#include "test_utils/jacobian_compare.hpp"
 #include "test_utils/kinodynamic_fixture.hpp"
 
 #include <gtest/gtest.h>
@@ -40,25 +41,9 @@ constexpr std::uint32_t kGateSeed = 20261114U;
 constexpr double kH = 1e-6;
 constexpr double kDt = 0.035;
 
-/// Worst element-wise `|J − J_fd| / (abs + rel·|J_fd|)` over a column range,
-/// and the worst absolute error there.
-struct ColumnErr {
-  double ratio = 0.0;
-  double abs = 0.0;
-};
+using rtc::mpc::test_utils::ColumnErr;
 
-ColumnErr Compare(const Eigen::MatrixXd& j, const Eigen::MatrixXd& j_fd, int col0, int ncols,
-                  double abs_tol, double rel_tol) {
-  ColumnErr e;
-  if (ncols <= 0) {
-    return e;
-  }
-  const Eigen::MatrixXd d = (j.middleCols(col0, ncols) - j_fd.middleCols(col0, ncols)).cwiseAbs();
-  const Eigen::ArrayXXd bound = abs_tol + rel_tol * j_fd.middleCols(col0, ncols).cwiseAbs().array();
-  e.ratio = (d.array() / bound).maxCoeff();
-  e.abs = d.maxCoeff();
-  return e;
-}
+using rtc::mpc::test_utils::CompareColumns;
 
 class KinodynamicDerivativesTest : public ::testing::Test {
  protected:
@@ -90,13 +75,13 @@ class KinodynamicDerivativesTest : public ::testing::Test {
                   double rel_tol) {
     const int nv = model_.nv;
     const int fs = dyn_.force_size();
-    g.Fold(0, Compare(jx, jx_fd, 0, nv, abs_tol, rel_tol));
-    g.Fold(1, Compare(jx, jx_fd, nv, nv, abs_tol, rel_tol));
+    g.Fold(0, CompareColumns(jx, jx_fd, 0, nv, abs_tol, rel_tol));
+    g.Fold(1, CompareColumns(jx, jx_fd, nv, nv, abs_tol, rel_tol));
     for (int c = 0; c < dyn_.n_contacts(); ++c) {
-      g.Fold(2, Compare(ju, ju_fd, c * fs, 3, abs_tol, rel_tol));
-      g.Fold(3, Compare(ju, ju_fd, c * fs + 3, fs - 3, abs_tol, rel_tol));
+      g.Fold(2, CompareColumns(ju, ju_fd, c * fs, 3, abs_tol, rel_tol));
+      g.Fold(3, CompareColumns(ju, ju_fd, c * fs + 3, fs - 3, abs_tol, rel_tol));
     }
-    g.Fold(4, Compare(ju, ju_fd, dyn_.n_contacts() * fs, model_.nv - 6, abs_tol, rel_tol));
+    g.Fold(4, CompareColumns(ju, ju_fd, dyn_.n_contacts() * fs, model_.nv - 6, abs_tol, rel_tol));
   }
 
   static void Report(const char* what, const Groups& g) {
@@ -154,8 +139,8 @@ TEST_F(KinodynamicDerivativesTest, ContinuousJacobiansMatchCentralDifferences) {
       ode.forward(s.x, um, *fd);
       ju_fd.col(j) = (fp - fd->xdot_) / (2.0 * kH);
     }
-    const ColumnErr ex = Compare(data->Jx_, jx_fd, 0, ndx, 1e-6, 1e-5);
-    const ColumnErr eu = Compare(data->Ju_, ju_fd, 0, nu, 1e-6, 1e-5);
+    const ColumnErr ex = CompareColumns(data->Jx_, jx_fd, 0, ndx, 1e-6, 1e-5);
+    const ColumnErr eu = CompareColumns(data->Ju_, ju_fd, 0, nu, 1e-6, 1e-5);
     FoldGroups(groups, data->Jx_, jx_fd, data->Ju_, ju_fd, 1e-6, 1e-5);
     const bool ok = ex.ratio <= 1.0 && eu.ratio <= 1.0;
     pass += ok ? 1 : 0;
@@ -218,8 +203,8 @@ TEST_F(KinodynamicDerivativesTest, DiscreteJacobiansMatchCentralDifferences) {
       }
       const Eigen::MatrixXd jx = data->Jx();
       const Eigen::MatrixXd ju = data->Ju();
-      const ColumnErr ex = Compare(jx, jx_fd, 0, ndx, 1e-7, 1e-5);
-      const ColumnErr eu = Compare(ju, ju_fd, 0, nu, 1e-7, 1e-5);
+      const ColumnErr ex = CompareColumns(jx, jx_fd, 0, ndx, 1e-7, 1e-5);
+      const ColumnErr eu = CompareColumns(ju, ju_fd, 0, nu, 1e-7, 1e-5);
       FoldGroups(groups, jx, jx_fd, ju, ju_fd, 1e-7, 1e-5);
       const bool ok = ex.ratio <= 1.0 && eu.ratio <= 1.0;
       pass += ok ? 1 : 0;

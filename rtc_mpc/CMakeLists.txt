@@ -53,6 +53,7 @@ add_library(rtc_mpc STATIC
   src/model/robot_model_handler.cpp
   src/model/wb_layout.cpp
   src/dynamics/kinodynamic_dynamics.cpp
+  src/ocp/contact_tracking_residual.cpp
   src/phase/phase_cost_config.cpp
   src/ocp/cost_factory.cpp
   src/ocp/contact_light_ocp.cpp
@@ -233,6 +234,8 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_kinodynamic_dynamics)
   add_mpc_gtest(test_kinodynamic_alloc_gate)
   add_mpc_gtest(test_kinodynamic_derivatives)
+  add_mpc_gtest(test_contact_tracking_residual)
+  add_mpc_gtest(test_contact_tracking_alloc_gate)
   add_mpc_gtest(test_kinodynamic_integrator)
   if(TEST test_kinodynamic_integrator)
     # The order gate integrates a 1024-sub-step reference; past the 60 s default.
