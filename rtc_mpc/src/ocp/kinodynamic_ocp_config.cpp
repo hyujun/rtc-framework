@@ -211,17 +211,18 @@ using Error = KinodynamicOCPConfigError;
   return Error::kNoError;
 }
 
-/// A map child of @p node with exactly @p keys present.
-[[nodiscard]] Error Section(const YAML::Node& node, const char* key,
-                            std::initializer_list<const char*> keys, YAML::Node& out) {
-  out = Child(node, key);
-  if (!Present(out)) {
+/// @p section (a child just read) is a map with only @p keys. Each section is
+/// bound to a node of its own: assigning one yaml-cpp node to another
+/// rebinds the assigned node inside the caller's tree.
+[[nodiscard]] Error CheckSection(const YAML::Node& section,
+                                 std::initializer_list<const char*> keys) {
+  if (!Present(section)) {
     return Error::kMissingKey;
   }
-  if (!out.IsMap()) {
+  if (!section.IsMap()) {
     return Error::kNotAMap;
   }
-  if (!HasOnlyKeys(out, keys)) {
+  if (!HasOnlyKeys(section, keys)) {
     return Error::kUnknownKey;
   }
   return Error::kNoError;
@@ -304,21 +305,18 @@ using Error = KinodynamicOCPConfigError;
 
 [[nodiscard]] Error ReadConstraints(const YAML::Node& node, const RobotModelHandler& model,
                                     KinodynamicConstraintsConfig& out) {
-  YAML::Node map;
-  Error e = Section(
-      node, "constraints",
-      {"foot_constraint", "friction", "contact_rectangle", "joint_limits", "collision"}, map);
+  const YAML::Node map = Child(node, "constraints");
+  Error e = CheckSection(
+      map, {"foot_constraint", "friction", "contact_rectangle", "joint_limits", "collision"});
   if (e != Error::kNoError) {
     return e;
   }
   KinodynamicConstraintsConfig c;
 
-  YAML::Node sub;
-  e = Section(
-      map, "foot_constraint",
-      {"position_z", "orientation", "linear_velocity_xy", "linear_velocity_z", "angular_velocity",
-       "linear_acceleration_xy", "linear_acceleration_z", "angular_acceleration"},
-      sub);
+  const YAML::Node foot = Child(map, "foot_constraint");
+  e = CheckSection(foot, {"position_z", "orientation", "linear_velocity_xy", "linear_velocity_z",
+                          "angular_velocity", "linear_acceleration_xy", "linear_acceleration_z",
+                          "angular_acceleration"});
   if (e != Error::kNoError) {
     return e;
   }
@@ -334,27 +332,29 @@ using Error = KinodynamicOCPConfigError;
       {"angular_acceleration", true, &g.angular_acceleration},
   }};
   for (const auto& [key, positive, dst] : gains) {
-    e = ReadValue(sub, key, positive, *dst);
+    e = ReadValue(foot, key, positive, *dst);
     if (e != Error::kNoError) {
       return e;
     }
   }
 
-  e = Section(map, "friction", {"mu", "grip_force", "regularization"}, sub);
+  const YAML::Node friction = Child(map, "friction");
+  e = CheckSection(friction, {"mu", "grip_force", "regularization"});
   if (e == Error::kNoError) {
-    e = ReadValue(sub, "mu", true, c.friction.mu);
+    e = ReadValue(friction, "mu", true, c.friction.mu);
   }
   if (e == Error::kNoError) {
-    e = ReadValue(sub, "grip_force", false, c.friction.grip_force);
+    e = ReadValue(friction, "grip_force", false, c.friction.grip_force);
   }
   if (e == Error::kNoError) {
-    e = ReadValue(sub, "regularization", true, c.friction.regularization);
+    e = ReadValue(friction, "regularization", true, c.friction.regularization);
   }
   if (e != Error::kNoError) {
     return e;
   }
 
-  e = Section(map, "contact_rectangle", {"x_min", "x_max", "y_min", "y_max"}, sub);
+  const YAML::Node rectangle = Child(map, "contact_rectangle");
+  e = CheckSection(rectangle, {"x_min", "x_max", "y_min", "y_max"});
   if (e != Error::kNoError) {
     return e;
   }
@@ -363,7 +363,7 @@ using Error = KinodynamicOCPConfigError;
                                  std::pair<const char*, double*>{"x_max", &rect.x_max},
                                  std::pair<const char*, double*>{"y_min", &rect.y_min},
                                  std::pair<const char*, double*>{"y_max", &rect.y_max}}) {
-    const FieldRead r = ReadScalar(Child(sub, key), *dst);
+    const FieldRead r = ReadScalar(Child(rectangle, key), *dst);
     if (r != FieldRead::kOk) {
       return ToError<Error>(r);
     }
@@ -372,9 +372,10 @@ using Error = KinodynamicOCPConfigError;
     return Error::kInvalidRectangle;
   }
 
-  e = Section(map, "joint_limits", {"mu", "delta"}, sub);
+  const YAML::Node limits = Child(map, "joint_limits");
+  e = CheckSection(limits, {"mu", "delta"});
   if (e == Error::kNoError) {
-    e = ReadBarrier(sub, c.joint_limits);
+    e = ReadBarrier(limits, c.joint_limits);
   }
   if (e != Error::kNoError) {
     return e;
@@ -392,17 +393,18 @@ using Error = KinodynamicOCPConfigError;
     }
   }
 
-  e = Section(map, "collision", {"enabled", "mu", "delta", "pairs"}, sub);
+  const YAML::Node collision = Child(map, "collision");
+  e = CheckSection(collision, {"enabled", "mu", "delta", "pairs"});
   if (e != Error::kNoError) {
     return e;
   }
-  const FieldRead r = ReadBool(Child(sub, "enabled"), c.collision_enabled);
+  const FieldRead r = ReadBool(Child(collision, "enabled"), c.collision_enabled);
   if (r != FieldRead::kOk) {
     return ToError<Error>(r);
   }
-  e = ReadBarrier(sub, c.collision);
+  e = ReadBarrier(collision, c.collision);
   if (e == Error::kNoError) {
-    e = ReadPairs(sub, m, c.collision_pairs);
+    e = ReadPairs(collision, m, c.collision_pairs);
   }
   if (e != Error::kNoError) {
     return e;
