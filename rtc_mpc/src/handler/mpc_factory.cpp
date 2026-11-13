@@ -26,25 +26,23 @@ namespace {
   return cfg;
 }
 
-[[nodiscard]] bool ParseSolverConfig(const YAML::Node& solver_node, MPCSolverConfig& out) noexcept {
-  if (!solver_node.IsDefined())
-    return true;  // leave defaults
-  if (!solver_node.IsMap())
+[[nodiscard]] bool ParseRolloutType(const std::string& name, MPCRolloutType& out) noexcept {
+  if (name == "linear") {
+    out = MPCRolloutType::kLinear;
+  } else if (name == "nonlinear") {
+    out = MPCRolloutType::kNonlinear;
+  } else {
     return false;
-  try {
-    if (solver_node["prim_tol"])
-      out.prim_tol = solver_node["prim_tol"].as<double>();
-    if (solver_node["dual_tol"])
-      out.dual_tol = solver_node["dual_tol"].as<double>();
-    if (solver_node["mu_init"])
-      out.mu_init = solver_node["mu_init"].as<double>();
-    if (solver_node["max_iters"])
-      out.max_iters = solver_node["max_iters"].as<int>();
-    if (solver_node["max_al_iters"])
-      out.max_al_iters = solver_node["max_al_iters"].as<int>();
-    if (solver_node["verbose"])
-      out.verbose = solver_node["verbose"].as<bool>();
-  } catch (...) {
+  }
+  return true;
+}
+
+[[nodiscard]] bool ParseLinearSolver(const std::string& name, MPCLinearSolver& out) noexcept {
+  if (name == "serial") {
+    out = MPCLinearSolver::kSerial;
+  } else if (name == "parallel") {
+    out = MPCLinearSolver::kParallel;
+  } else {
     return false;
   }
   return true;
@@ -84,6 +82,46 @@ namespace {
 
 }  // namespace
 
+bool MPCFactory::LoadSolverConfig(const YAML::Node& solver_node, MPCSolverConfig& out) noexcept {
+  if (!solver_node.IsDefined())
+    return true;  // leave defaults
+  if (!solver_node.IsMap())
+    return false;
+  MPCSolverConfig cfg = out;
+  try {
+    if (solver_node["prim_tol"])
+      cfg.prim_tol = solver_node["prim_tol"].as<double>();
+    if (solver_node["dual_tol"])
+      cfg.dual_tol = solver_node["dual_tol"].as<double>();
+    if (solver_node["mu_init"])
+      cfg.mu_init = solver_node["mu_init"].as<double>();
+    if (solver_node["max_iters"])
+      cfg.max_iters = solver_node["max_iters"].as<int>();
+    if (solver_node["max_al_iters"])
+      cfg.max_al_iters = solver_node["max_al_iters"].as<int>();
+    if (solver_node["max_initial_iters"])
+      cfg.max_initial_iters = solver_node["max_initial_iters"].as<int>();
+    if (solver_node["max_online_al_iters"])
+      cfg.max_online_al_iters = solver_node["max_online_al_iters"].as<int>();
+    if (solver_node["rollout_type"] &&
+        !ParseRolloutType(solver_node["rollout_type"].as<std::string>(), cfg.rollout_type))
+      return false;
+    if (solver_node["linear_solver"] &&
+        !ParseLinearSolver(solver_node["linear_solver"].as<std::string>(), cfg.linear_solver))
+      return false;
+    if (solver_node["num_threads"])
+      cfg.num_threads = solver_node["num_threads"].as<int>();
+    if (solver_node["force_initial_condition"])
+      cfg.force_initial_condition = solver_node["force_initial_condition"].as<bool>();
+    if (solver_node["verbose"])
+      cfg.verbose = solver_node["verbose"].as<bool>();
+  } catch (...) {
+    return false;
+  }
+  out = cfg;
+  return true;
+}
+
 MPCFactoryStatus MPCFactory::Create(const YAML::Node& cfg, const RobotModelHandler& model,
                                     const PhaseContext& initial_ctx,
                                     std::unique_ptr<MPCHandlerBase>& handler_out) noexcept {
@@ -113,7 +151,7 @@ MPCFactoryStatus MPCFactory::Create(const YAML::Node& cfg, const RobotModelHandl
   }
 
   MPCSolverConfig solver_cfg{};
-  if (!ParseSolverConfig(mpc["solver"], solver_cfg)) {
+  if (!LoadSolverConfig(mpc["solver"], solver_cfg)) {
     status.error = MPCFactoryError::kInvalidSolverConfig;
     return status;
   }

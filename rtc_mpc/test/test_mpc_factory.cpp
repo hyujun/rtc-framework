@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <string>
 
 namespace {
 
@@ -195,6 +196,126 @@ mpc:
   const auto status = rtc::mpc::MPCFactory::Create(cfg, handler_, ctx, h);
   EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kMissingOcpTypeKey);
 }
+
+// ── solver: keys ────────────────────────────────────────────────────────────
+
+TEST(MPCSolverConfigKeys, AnAbsentSectionKeepsTheDefaults) {
+  rtc::mpc::MPCSolverConfig cfg;
+  const YAML::Node root = YAML::Load("ocp_type: contact_light");
+  ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(root["solver"], cfg));
+  EXPECT_EQ(cfg.max_initial_iters, 0);
+  EXPECT_EQ(cfg.max_online_al_iters, 0);
+  EXPECT_EQ(cfg.rollout_type, rtc::mpc::MPCRolloutType::kLinear);
+  EXPECT_EQ(cfg.linear_solver, rtc::mpc::MPCLinearSolver::kSerial);
+  EXPECT_EQ(cfg.num_threads, 1);
+  EXPECT_TRUE(cfg.force_initial_condition);
+  // 0 means "the same as": the standing solve runs on max_iters and the online
+  // one on max_al_iters.
+  EXPECT_EQ(cfg.InitialIters(), cfg.max_iters);
+  EXPECT_EQ(cfg.OnlineAlIters(), cfg.max_al_iters);
+}
+
+TEST(MPCSolverConfigKeys, EveryKeyIsReadAndAnUnknownOneIgnored) {
+  rtc::mpc::MPCSolverConfig cfg;
+  ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(YAML::Load(R"(
+prim_tol: 1.0e-4
+dual_tol: 2.0e-4
+mu_init: 1.0e-1
+max_iters: 50
+max_al_iters: 20
+max_initial_iters: 300
+max_online_al_iters: 3
+rollout_type: nonlinear
+linear_solver: serial
+num_threads: 1
+force_initial_condition: true
+verbose: false
+some_other_key: 7
+)"),
+                                                     cfg));
+  EXPECT_EQ(cfg.prim_tol, 1e-4);
+  EXPECT_EQ(cfg.dual_tol, 2e-4);
+  EXPECT_EQ(cfg.mu_init, 1e-1);
+  EXPECT_EQ(cfg.max_iters, 50);
+  EXPECT_EQ(cfg.max_al_iters, 20);
+  EXPECT_EQ(cfg.max_initial_iters, 300);
+  EXPECT_EQ(cfg.max_online_al_iters, 3);
+  EXPECT_EQ(cfg.InitialIters(), 300);
+  EXPECT_EQ(cfg.OnlineAlIters(), 3);
+  EXPECT_EQ(cfg.rollout_type, rtc::mpc::MPCRolloutType::kNonlinear);
+  EXPECT_EQ(cfg.linear_solver, rtc::mpc::MPCLinearSolver::kSerial);
+
+  ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(YAML::Load("linear_solver: parallel"), cfg));
+  EXPECT_EQ(cfg.linear_solver, rtc::mpc::MPCLinearSolver::kParallel);  // refused at Init
+}
+
+TEST(MPCSolverConfigKeys, AnUnknownNameOrAWrongKindFailsTheParseAndChangesNothing) {
+  for (const char* yaml : {"rollout_type: euler", "linear_solver: dense", "num_threads: two",
+                           "force_initial_condition: maybe", "max_initial_iters: [1]"}) {
+    rtc::mpc::MPCSolverConfig cfg;
+    cfg.max_iters = 41;
+    EXPECT_FALSE(rtc::mpc::MPCFactory::LoadSolverConfig(
+        YAML::Load(std::string("max_iters: 7\n") + yaml), cfg))
+        << yaml;
+    EXPECT_EQ(cfg.max_iters, 41) << yaml;
+    EXPECT_EQ(cfg.rollout_type, rtc::mpc::MPCRolloutType::kLinear) << yaml;
+  }
+}
+
+TEST_F(MPCFactoryTest, ABadSolverNameIsAnInvalidSolverConfig) {
+  auto cfg = YAML::Load(R"(
+mpc:
+  ocp_type: contact_light
+  solver:
+    rollout_type: exact
+)");
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  const auto status = rtc::mpc::MPCFactory::Create(cfg, handler_, MakeLightContext(), h);
+  EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kInvalidSolverConfig);
+  EXPECT_EQ(h, nullptr);
+}
+
+TEST_F(MPCFactoryTest, ANonlinearRolloutCreatesAndSolves) {
+  auto cfg = YAML::Load(R"(
+mpc:
+  ocp_type: contact_light
+  solver:
+    max_iters: 30
+    max_initial_iters: 60
+    rollout_type: nonlinear
+)");
+  auto ctx = MakeLightContext();
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  ASSERT_EQ(rtc::mpc::MPCFactory::Create(cfg, handler_, ctx, h).error,
+            rtc::mpc::MPCFactoryError::kNoError);
+  auto out = std::make_unique<rtc::mpc::MPCSolution>();
+  EXPECT_EQ(h->Solve(ctx, MakeStateSnapshot(), *out), rtc::mpc::MPCSolveError::kNoError);
+  EXPECT_TRUE(out->IsValid());
+}
+
+/// One refused `solver:` value per case: Init refuses it, the factory
+/// reports the handler's error.
+class MPCSolverConfigRefusal : public MPCFactoryTest,
+                               public ::testing::WithParamInterface<const char*> {};
+
+TEST_P(MPCSolverConfigRefusal, InitRefusesIt) {
+  auto cfg = YAML::Load(std::string("mpc:\n  ocp_type: contact_light\n  solver:\n    "
+                                    "max_iters: 30\n    ") +
+                        GetParam());
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  const auto status = rtc::mpc::MPCFactory::Create(cfg, handler_, MakeLightContext(), h);
+  EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kHandlerInitFailed);
+  EXPECT_EQ(status.init_error, rtc::mpc::MPCInitError::kInvalidSolverConfig);
+  EXPECT_EQ(h, nullptr);
+}
+
+INSTANTIATE_TEST_SUITE_P(Values, MPCSolverConfigRefusal,
+                         ::testing::Values("num_threads: 2", "num_threads: 0",
+                                           "linear_solver: parallel",
+                                           "force_initial_condition: false",
+                                           "max_initial_iters: 29", "max_initial_iters: -1",
+                                           "max_online_al_iters: -1", "prim_tol: 0.0",
+                                           "prim_tol: .nan", "max_al_iters: 0"));
 
 TEST_F(MPCFactoryTest, RejectsULimitsDimMismatch) {
   // u_min with wrong size.

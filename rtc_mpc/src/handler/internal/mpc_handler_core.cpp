@@ -43,6 +43,22 @@ using Solver = aligator::SolverProxDDPTpl<double>;
   return std::isfinite(dt) && dt > 0.0;
 }
 
+/// @brief The ranges of `MPCSolverConfig` (its field comments). A NaN
+///        tolerance fails the `> 0` tests.
+[[nodiscard]] bool SolverConfigValid(const MPCSolverConfig& cfg) noexcept {
+  if (!(cfg.prim_tol > 0.0) || !(cfg.dual_tol > 0.0) || !(cfg.mu_init > 0.0) ||
+      cfg.max_iters <= 0 || cfg.max_al_iters <= 0) {
+    return false;
+  }
+  if (cfg.max_initial_iters < 0 ||
+      (cfg.max_initial_iters > 0 && cfg.max_initial_iters < cfg.max_iters) ||
+      cfg.max_online_al_iters < 0) {
+    return false;
+  }
+  return cfg.linear_solver == MPCLinearSolver::kSerial && cfg.num_threads == 1 &&
+         cfg.force_initial_condition;
+}
+
 }  // namespace
 
 void MPCHandlerCore::RecomputeContactVarDim(const RobotModelHandler& model) noexcept {
@@ -70,8 +86,7 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   if (control == ControlModel::kKinodynamicWrench && !model.floating_base()) {
     return MPCInitError::kFixedBaseUnsupported;
   }
-  if (solver_cfg.prim_tol <= 0.0 || solver_cfg.dual_tol <= 0.0 || solver_cfg.mu_init <= 0.0 ||
-      solver_cfg.max_iters <= 0 || solver_cfg.max_al_iters <= 0) {
+  if (!SolverConfigValid(solver_cfg)) {
     return MPCInitError::kInvalidSolverConfig;
   }
   if (initial_ctx.ocp_type != ocp.ocp_type()) {
@@ -92,6 +107,13 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
     solver_->setDualTolerance(solver_cfg.dual_tol);
     solver_->max_al_iters = static_cast<std::size_t>(solver_cfg.max_al_iters);
     solver_->verbose_ = solver_cfg.verbose ? aligator::VERBOSE : aligator::QUIET;
+    // Set before setup(), which picks the LQ backend; the thread count stays
+    // Aligator's default of one (the config check refused anything else).
+    solver_->rollout_type_ = solver_cfg.rollout_type == MPCRolloutType::kNonlinear
+                                 ? aligator::RolloutType::NONLINEAR
+                                 : aligator::RolloutType::LINEAR;
+    solver_->linear_solver_choice = aligator::LQSolverChoice::SERIAL;
+    solver_->force_initial_condition_ = true;
     solver_->setup(ocp.problem());
   } catch (...) {
     solver_.reset();

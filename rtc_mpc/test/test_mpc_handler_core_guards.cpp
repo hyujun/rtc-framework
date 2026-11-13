@@ -212,6 +212,24 @@ class MPCHandlerCoreGuardTest : public ::testing::Test {
   MPCStateSnapshot state_{};
 };
 
+TEST_F(MPCHandlerCoreGuardTest, SetupAppliesTheSolverSettings) {
+  const aligator::SolverProxDDPTpl<double>* solver = core_.solver();
+  ASSERT_NE(solver, nullptr);
+  EXPECT_EQ(solver->rollout_type_, aligator::RolloutType::LINEAR);
+  EXPECT_EQ(solver->linear_solver_choice, aligator::LQSolverChoice::SERIAL);
+  EXPECT_TRUE(solver->force_initial_condition_);
+  EXPECT_EQ(solver->getNumThreads(), 1U);
+
+  rtc::mpc::MPCSolverConfig nonlinear = solver_cfg_;
+  nonlinear.rollout_type = rtc::mpc::MPCRolloutType::kNonlinear;
+  InertOCP ocp;
+  rtc::mpc::internal::MPCHandlerCore core;
+  ASSERT_EQ(core.Init(nonlinear, handler_, limits_, ctx_, ocp), rtc::mpc::MPCInitError::kNoError);
+  EXPECT_EQ(core.solver()->rollout_type_, aligator::RolloutType::NONLINEAR);
+  MPCSolution out{};
+  EXPECT_EQ(core.Solve(ctx_, state_, ocp, out), MPCSolveError::kNoError);
+}
+
 TEST_F(MPCHandlerCoreGuardTest, FirstSolveStartsFromTheColdSeed) {
   // Away from the problem's placeholder initial state, so a guess that is
   // not the cold seed cannot pass for it.

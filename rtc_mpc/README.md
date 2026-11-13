@@ -78,6 +78,8 @@ CSV 는 MPC tick 마다 한 행이고 CM RT loop 와 같은 8열 스키마다: `
 
 [config/mpc_default.yaml](config/mpc_default.yaml) 은 robot-agnostic 참조 템플릿이다. `<...>` placeholder 는 로봇별 설정에서 덮어쓰며, 값은 `PhaseCostConfig::LoadFromYaml` 과 `RobotModelHandler::Init` 이 읽는다. 기본값은 파일이 갖는다. 로봇별 실제 설정은 `integrated_bringup/config/<robot>/controllers/mpc/` 에 있다. `reference/` 로더의 템플릿은 [config/reference_default.yaml](config/reference_default.yaml) 이다 (모든 키 필수).
 
+`mpc.solver:` 키 (standing · online iteration 예산, rollout, LQ backend, thread 수) 의 스키마는 `mpc_factory.hpp` 가 갖는다. step acceptance (non-monotone line search) 와 Hessian 근사 (Gauss-Newton) 는 Aligator 기본값이며 키가 없다.
+
 ## 문제 해결
 
 | 증상 | 원인 | 조치 |

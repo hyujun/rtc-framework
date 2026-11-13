@@ -78,6 +78,13 @@ class MPCHandlerCore {
 
   [[nodiscard]] int n_contact_vars() const noexcept { return n_contact_vars_; }
 
+  /// @return the solver (null before a successful `Init`) — for tests and
+  ///         diagnostics: its iterates, multipliers and settings as the last
+  ///         call left them.
+  [[nodiscard]] const aligator::SolverProxDDPTpl<double>* solver() const noexcept {
+    return solver_.get();
+  }
+
  private:
   /// @brief Solve body; `Solve` wraps it to stamp `out.status` once from the
   ///        returned error.

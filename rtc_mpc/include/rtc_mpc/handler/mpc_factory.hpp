@@ -14,8 +14,14 @@
 ///     prim_tol: 1.0e-3
 ///     dual_tol: 1.0e-2
 ///     mu_init: 1.0e-2
-///     max_iters: 30
-///     max_al_iters: 20
+///     max_iters: 30             # once a solve has converged
+///     max_al_iters: 20          # the standing solve's AL ceiling
+///     max_initial_iters: 0      # standing solve; 0 = max_iters, else >= max_iters
+///     max_online_al_iters: 0    # once converged; 0 = max_al_iters
+///     rollout_type: "linear"    # or "nonlinear"
+///     linear_solver: "serial"   # "parallel" is refused at Init
+///     num_threads: 1            # anything else is refused at Init
+///     force_initial_condition: true   # false is refused at Init
 ///     verbose: false
 ///   limits:
 ///     friction_mu: 0.7          # only read by contact_rich; refused for
@@ -26,7 +32,11 @@
 ///                               # rtc_mpc/ocp/kinodynamic_ocp_config.hpp
 /// ```
 ///
-/// Unknown `ocp_type` strings are rejected — never silently fall back.
+/// Unknown `ocp_type` strings are rejected — never silently fall back. Keys
+/// of `solver:` other than those above are ignored; a value of the wrong
+/// kind, or a rollout / LQ backend name outside the two above, fails the
+/// parse (`kInvalidSolverConfig`). The value ranges are the handler's `Init`
+/// checks (`MPCInitError::kInvalidSolverConfig`).
 /// Robot identity is not part of this YAML; the caller supplies the
 /// already-constructed `RobotModelHandler` + `PhaseContext`.
 
@@ -81,6 +91,14 @@ class MPCFactory {
   ///                      drift between phase manager and solver).
   /// @param handler_out   out-param: the created handler on success.
   /// @return              structured status; `kNoError` on success.
+  /// @brief Read the `solver:` subtree onto @p out (keys it lacks keep
+  ///        their value in @p out; an undefined node leaves all of them).
+  /// @return false, leaving @p out unchanged, for a node that is not a map,
+  ///         a value of the wrong kind or an unknown rollout / LQ backend
+  ///         name. Value ranges are not checked here.
+  [[nodiscard]] static bool LoadSolverConfig(const YAML::Node& solver_node,
+                                             MPCSolverConfig& out) noexcept;
+
   [[nodiscard]] static MPCFactoryStatus Create(
       const YAML::Node& cfg, const RobotModelHandler& model, const PhaseContext& initial_ctx,
       std::unique_ptr<MPCHandlerBase>& handler_out) noexcept;
