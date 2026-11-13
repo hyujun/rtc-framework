@@ -21,6 +21,8 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
 #include <vector>
 
 namespace rtc::mpc::internal {
@@ -33,6 +35,12 @@ using Solver = aligator::SolverProxDDPTpl<double>;
 ///        returning true when the input fit.
 [[nodiscard]] bool CapacityOk(int v, int cap) noexcept {
   return v >= 0 && v <= cap;
+}
+
+/// @brief A node spacing the solution can carry: finite and positive. A NaN
+///        passes every `dt <= 0` check downstream, so it is caught here.
+[[nodiscard]] bool NodeDtValid(double dt) noexcept {
+  return std::isfinite(dt) && dt > 0.0;
 }
 
 }  // namespace
@@ -64,6 +72,9 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   }
   if (initial_ctx.ocp_type != ocp.ocp_type()) {
     return MPCInitError::kOcpTypeMismatch;
+  }
+  if (!NodeDtValid(initial_ctx.cost_config.dt)) {
+    return MPCInitError::kOCPBuildFailed;
   }
 
   const OCPBuildError be = ocp.Build(initial_ctx, model, limits);
@@ -184,10 +195,21 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   if (ctx.ocp_type != ocp.ocp_type()) {
     return MPCSolveError::kRebuildRequired;
   }
+  // Checked before the context reaches the OCP: its own validation is a
+  // `dt <= 0` test, which a NaN passes.
+  if (!NodeDtValid(ctx.cost_config.dt)) {
+    return MPCSolveError::kOCPRebuildFailed;
+  }
   if (!CapacityOk(horizon_length_, kMaxHorizon) || !CapacityOk(nq_, kMaxNq) ||
       !CapacityOk(nv_, kMaxNv) || !CapacityOk(nu_, kMaxNu) || !CapacityOk(ndx_, kMaxNdx) ||
       !CapacityOk(n_contact_vars_, kMaxContactVars)) {
     return MPCSolveError::kSolutionTruncated;
+  }
+  // A non-finite state would become the problem's initial condition, and the
+  // solver can hand such a trajectory back as converged. Reject it before
+  // anything is written, so the warm start of the next tick stays intact.
+  if (!StateFinite(state)) {
+    return MPCSolveError::kStateDimMismatch;
   }
 
   // Copy RT-side state into pre-allocated Eigen buffers.
@@ -241,6 +263,7 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     try {
       solver_->results_.cycleAppend(ocp.problem(), x_current_);
     } catch (...) {
+      DiscardIterates();  // the rotation may have stopped partway
       return MPCSolveError::kSolverException;
     }
   }
@@ -273,22 +296,93 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   try {
     converged = solver_->run(ocp.problem(), xs_warm_, us_warm_);
   } catch (...) {
+    // Aligator accepts a step into results_ before its own NaN checks throw,
+    // so a throw can leave the rejected iterate behind.
+    DiscardIterates();
     return MPCSolveError::kSolverException;
   }
   const auto t1 = std::chrono::steady_clock::now();
   const auto dur_ns = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
 
-  // Divergence with NaN state invalidates the solution. `converged` means
-  // the solver met its tolerance; false without NaN means "used the budget,
-  // still usable as a warm-start".
-  const auto& xs = solver_->results_.xs;
-  if (!converged && !xs.empty() && xs.front().hasNaN()) {
+  // A non-finite value anywhere in what PackSolution ships invalidates the
+  // solve, converged or not: the solver's own criteria can pass with a
+  // non-finite iterate (a control the dynamics never read, for one). A
+  // finite, non-converged solve used its budget and is still usable.
+  if (!SolutionFinite()) {
+    DiscardIterates();
     return MPCSolveError::kSolverDiverged;
   }
 
   PackSolution(ocp, state, out, converged, dur_ns);
   return MPCSolveError::kNoError;
+}
+
+bool MPCHandlerCore::SolutionFinite() const noexcept {
+  const auto& results = solver_->results_;
+  // The residual summary is shipped too.
+  if (!std::isfinite(results.prim_infeas) || !std::isfinite(results.dual_infeas) ||
+      !std::isfinite(results.traj_cost_) || !std::isfinite(results.merit_value_)) {
+    return false;
+  }
+  for (const Eigen::VectorXd& x : results.xs) {
+    if (!x.allFinite()) {
+      return false;
+    }
+  }
+  for (const Eigen::VectorXd& u : results.us) {
+    if (!u.allFinite()) {
+      return false;
+    }
+  }
+  // Not shipped, but the next tick's warm start shifts them in.
+  for (const Eigen::VectorXd& l : results.lams) {
+    if (!l.allFinite()) {
+      return false;
+    }
+  }
+  for (const Eigen::VectorXd& v : results.vs) {
+    if (!v.allFinite()) {
+      return false;
+    }
+  }
+  // Only the gain block PackRiccatiGain copies is shipped.
+  const std::size_t gain_nodes = std::min(
+      static_cast<std::size_t>(std::min(horizon_length_, kMaxGainNodes)), results.gains_.size());
+  for (std::size_t k = 0; k < gain_nodes; ++k) {
+    const Eigen::MatrixXd& gk = results.gains_[k];
+    if (gk.rows() >= nu_ && gk.cols() >= ndx_ + 1 && !gk.topRightCorner(nu_, ndx_).allFinite()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void MPCHandlerCore::DiscardIterates() noexcept {
+  // run() keeps results_' multipliers when it is given none, and a later
+  // SeedWarmStart may overwrite only part of xs / us — so every slot is reset,
+  // not just flagged: the measured state at every node, zero elsewhere.
+  auto& results = solver_->results_;
+  for (Eigen::VectorXd& x : results.xs) {
+    if (x.size() == x_current_.size()) {
+      x = x_current_;
+    } else {
+      x.setZero();
+    }
+  }
+  for (Eigen::VectorXd& u : results.us) {
+    u.setZero();
+  }
+  for (Eigen::VectorXd& l : results.lams) {
+    l.setZero();
+  }
+  for (Eigen::VectorXd& v : results.vs) {
+    v.setZero();
+  }
+  for (Eigen::MatrixXd& g : results.gains_) {
+    g.setZero();
+  }
+  first_solve_after_build_ = true;
 }
 
 void MPCHandlerCore::SeedWarmStart(const MPCSolution& prev, OCPHandlerBase& ocp) noexcept {

@@ -83,6 +83,17 @@ class MPCHandlerCore {
   [[nodiscard]] MPCSolveError SolveImpl(const PhaseContext& ctx, const MPCStateSnapshot& state,
                                         OCPHandlerBase& ocp, MPCSolution& out) noexcept;
 
+  /// @brief True when every state, control and multiplier in `results_`, the
+  ///        shipped part of every gain node and the residual summary are
+  ///        finite. Non-allocating.
+  [[nodiscard]] bool SolutionFinite() const noexcept;
+
+  /// @brief Overwrite a rejected solve's iterates in `results_` (states with
+  ///        the measured state, everything else with zero) and cold-seed the
+  ///        next tick, so nothing non-finite survives into a later warm
+  ///        start. Non-allocating.
+  void DiscardIterates() noexcept;
+
   /// @brief Recompute @p n_contact_vars_ from the model's configured
   ///        `ContactFrameInfo` list — the sum of per-frame `dim` values.
   void RecomputeContactVarDim(const RobotModelHandler& model) noexcept;

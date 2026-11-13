@@ -14,7 +14,9 @@
 
 #include "rtc_urdf_bridge/free_flyer_dims.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -62,7 +64,7 @@ static_assert(kMaxGainNodes >= 1 && kMaxGainNodes <= kMaxHorizon,
 enum class SolverStatus : std::uint8_t {
   kOk = 0,     ///< converged to tolerance
   kMaxIters,   ///< iteration budget exhausted, trajectory finite and usable
-  kDiverged,   ///< non-finite state — do not consume
+  kDiverged,   ///< non-finite state, control or gain — do not consume
   kException,  ///< solver threw — do not consume
   kTruncated,  ///< a dimension exceeded a capacity constant — do not consume
   kNotSolved,  ///< no solve ran for this slot (not initialised, state dim mismatch, rebuild needed)
@@ -182,6 +184,26 @@ struct MPCStateSnapshot {
 
 static_assert(std::is_trivially_copyable_v<MPCStateSnapshot>,
               "MPCStateSnapshot must be trivially copyable (SeqLock contract)");
+
+/// @brief True when the first `nq` / `nv` entries of @p s are finite. The
+///        counts are clamped to the capacities, so a corrupt count never
+///        reads past the arrays. A non-finite state must not reach the
+///        solver, kinematics or a phase machine; reject it at the entry.
+[[nodiscard]] inline bool StateFinite(const MPCStateSnapshot& s) noexcept {
+  const int nq = std::clamp(s.nq, 0, kMaxNq);
+  const int nv = std::clamp(s.nv, 0, kMaxNv);
+  for (int i = 0; i < nq; ++i) {
+    if (!std::isfinite(s.q[static_cast<std::size_t>(i)])) {
+      return false;
+    }
+  }
+  for (int i = 0; i < nv; ++i) {
+    if (!std::isfinite(s.v[static_cast<std::size_t>(i)])) {
+      return false;
+    }
+  }
+  return true;
+}
 
 }  // namespace rtc::mpc
 
