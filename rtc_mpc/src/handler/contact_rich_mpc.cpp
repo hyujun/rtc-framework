@@ -26,6 +26,10 @@ bool ContactRichMPC::Initialised() const noexcept {
   return core_->Initialised();
 }
 
+const MPCSolverConfig& ContactRichMPC::solver_config() const noexcept {
+  return core_->solver_config();
+}
+
 int ContactRichMPC::horizon_length() const noexcept {
   return core_->horizon_length();
 }

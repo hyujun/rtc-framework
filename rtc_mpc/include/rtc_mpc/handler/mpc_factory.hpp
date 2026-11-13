@@ -23,6 +23,8 @@
 ///     num_threads: 1            # anything else is refused at Init
 ///     force_initial_condition: true   # false is refused at Init
 ///     verbose: false
+///     publish_deadline_ms: 0.0  # >= 0; 0 = off — the MPC thread's publish rules
+///     publish_prim_tol: 0.0     # >= 0; 0 = off   (MPCSolverConfig)
 ///   limits:
 ///     friction_mu: 0.7          # only read by contact_rich; refused for
 ///                               # "kinodynamic" (its own constraints.friction.mu)

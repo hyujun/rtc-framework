@@ -56,6 +56,10 @@ using Solver = aligator::SolverProxDDPTpl<double>;
       cfg.max_online_al_iters < 0) {
     return false;
   }
+  if (!std::isfinite(cfg.publish_deadline_ms) || cfg.publish_deadline_ms < 0.0 ||
+      !std::isfinite(cfg.publish_prim_tol) || cfg.publish_prim_tol < 0.0) {
+    return false;
+  }
   return cfg.linear_solver == MPCLinearSolver::kSerial && cfg.num_threads == 1 &&
          cfg.force_initial_condition;
 }

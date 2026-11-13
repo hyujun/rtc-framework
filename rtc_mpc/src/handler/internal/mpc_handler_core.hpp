@@ -109,6 +109,9 @@ class MPCHandlerCore {
   ///         index that went back or by the horizon or more).
   [[nodiscard]] int LastNodeShift() const noexcept { return last_node_shift_; }
 
+  /// @return the configuration `Init` accepted (the defaults before).
+  [[nodiscard]] const MPCSolverConfig& solver_config() const noexcept { return solver_cfg_; }
+
   /// @return the solver (null before a successful `Init`) — for tests and
   ///         diagnostics: its iterates, multipliers and settings as the last
   ///         call left them.

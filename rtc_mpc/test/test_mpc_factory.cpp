@@ -317,6 +317,44 @@ INSTANTIATE_TEST_SUITE_P(Values, MPCSolverConfigRefusal,
                                            "max_online_al_iters: -1", "prim_tol: 0.0",
                                            "prim_tol: .nan", "max_al_iters: 0"));
 
+// The publish rules: off (0) by default, read when present, a negative or
+// non-finite value refused at Init; the handler hands back what Init took.
+TEST(MPCSolverConfigKeys, ThePublishRulesAreOffByDefaultAndRead) {
+  rtc::mpc::MPCSolverConfig cfg;
+  EXPECT_EQ(cfg.publish_deadline_ms, 0.0);
+  EXPECT_EQ(cfg.publish_prim_tol, 0.0);
+  ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(
+      YAML::Load("publish_deadline_ms: 35.0\npublish_prim_tol: 0.05"), cfg));
+  EXPECT_EQ(cfg.publish_deadline_ms, 35.0);
+  EXPECT_EQ(cfg.publish_prim_tol, 0.05);
+  rtc::mpc::MPCSolverConfig bad;
+  EXPECT_FALSE(
+      rtc::mpc::MPCFactory::LoadSolverConfig(YAML::Load("publish_deadline_ms: soon"), bad));
+  EXPECT_EQ(bad.publish_deadline_ms, 0.0);
+}
+
+TEST_F(MPCFactoryTest, TheHandlerReportsTheSolverConfigItTook) {
+  auto cfg = YAML::Load(R"(
+mpc:
+  ocp_type: contact_light
+  solver:
+    max_iters: 30
+    publish_deadline_ms: 12.5
+    publish_prim_tol: 0.2
+)");
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  ASSERT_EQ(rtc::mpc::MPCFactory::Create(cfg, handler_, MakeLightContext(), h).error,
+            rtc::mpc::MPCFactoryError::kNoError);
+  EXPECT_EQ(h->solver_config().max_iters, 30);
+  EXPECT_EQ(h->solver_config().publish_deadline_ms, 12.5);
+  EXPECT_EQ(h->solver_config().publish_prim_tol, 0.2);
+}
+
+INSTANTIATE_TEST_SUITE_P(PublishRules, MPCSolverConfigRefusal,
+                         ::testing::Values("publish_deadline_ms: -1.0", "publish_deadline_ms: .nan",
+                                           "publish_deadline_ms: .inf", "publish_prim_tol: -0.1",
+                                           "publish_prim_tol: .nan"));
+
 TEST_F(MPCFactoryTest, RejectsULimitsDimMismatch) {
   // u_min with wrong size.
   auto cfg = YAML::Load(R"(

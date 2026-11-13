@@ -36,6 +36,8 @@ class ContactLightMPC : public MPCHandlerBase {
 
   [[nodiscard]] bool Initialised() const noexcept override;
 
+  [[nodiscard]] const MPCSolverConfig& solver_config() const noexcept override;
+
   [[nodiscard]] std::string_view ocp_type() const noexcept override { return ocp_.ocp_type(); }
 
   [[nodiscard]] int horizon_length() const noexcept override;

@@ -224,6 +224,7 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_contact_rich_mpc)
   add_mpc_gtest(test_mpc_factory)
   add_mpc_gtest(test_mpc_thread_integration)
+  add_mpc_gtest(test_mpc_thread_publish)
   add_mpc_gtest(test_mpc_handler_alloc_tracer)
   # Drives the handler core directly with a stub OCP, so it needs the
   # package-private src/ headers.
