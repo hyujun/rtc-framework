@@ -2,13 +2,14 @@
 #define RTC_MPC_SRC_HANDLER_INTERNAL_MPC_HANDLER_CORE_HPP_
 
 /// @file mpc_handler_core.hpp
-/// @brief Shared impl for `ContactLightMPC` / `ContactRichMPC`. Internal —
+/// @brief Shared impl for `ContactLightMPC` / `ContactRichMPC` /
+///        `KinodynamicMPC`. Internal —
 ///        not installed, not exported, only pulled by files under
 ///        `rtc_mpc/src/handler/`.
 ///
 /// Owns the Aligator `SolverProxDDP` + warm-start bookkeeping and drives
 /// the per-tick solve pipeline against an arbitrary `OCPHandlerBase`. The
-/// two concrete handler subclasses delegate their virtual methods into
+/// concrete handler subclasses delegate their virtual methods into
 /// this core so mode-specific code stays minimal.
 
 #include "rtc_mpc/handler/mpc_handler_base.hpp"

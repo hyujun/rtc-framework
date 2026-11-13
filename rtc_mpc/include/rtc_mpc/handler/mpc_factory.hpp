@@ -9,7 +9,7 @@
 ///
 /// ```yaml
 /// mpc:
-///   ocp_type: "contact_light"   # or "contact_rich"
+///   ocp_type: "contact_light"   # or "contact_rich", "kinodynamic"
 ///   solver:
 ///     prim_tol: 1.0e-3
 ///     dual_tol: 1.0e-2
@@ -21,6 +21,8 @@
 ///     friction_mu: 0.7          # only read by contact_rich
 ///     u_min: []                 # optional; size nu or empty
 ///     u_max: []                 # optional; size nu or empty
+///   kinodynamic: { ... }        # required by (and only read for) "kinodynamic":
+///                               # rtc_mpc/ocp/kinodynamic_ocp_config.hpp
 /// ```
 ///
 /// Unknown `ocp_type` strings are rejected — never silently fall back.
@@ -28,6 +30,7 @@
 /// already-constructed `RobotModelHandler` + `PhaseContext`.
 
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
+#include "rtc_mpc/ocp/kinodynamic_ocp_config.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -44,6 +47,7 @@ enum class MPCFactoryError {
   kInvalidLimits,        ///< u_min / u_max size mismatch vs. model
   kHandlerInitFailed,    ///< concrete handler's `Init` rejected (embedded
                          ///< MPCInitError available via the `last_*` probes)
+  kInvalidOcpConfig,     ///< the OCP's own section (`mpc.kinodynamic:`) failed to load
 };
 
 /// @brief Holder for the out-of-band error context the factory cannot fit
@@ -51,6 +55,8 @@ enum class MPCFactoryError {
 struct MPCFactoryStatus {
   MPCFactoryError error{MPCFactoryError::kNoError};
   MPCInitError init_error{MPCInitError::kNoError};  ///< set on kHandlerInitFailed
+  /// Set on kInvalidOcpConfig.
+  KinodynamicOCPConfigError ocp_config_error{KinodynamicOCPConfigError::kNoError};
 };
 
 /// @brief Static factory — no state, no instance.

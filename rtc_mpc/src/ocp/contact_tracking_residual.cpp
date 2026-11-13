@@ -132,15 +132,16 @@ bool ContactTrackingResidual::SetPlaneNormal(const Eigen::Vector3d& normal) noex
   return true;
 }
 
-bool ContactTrackingResidual::SetFromStage(const StageReference& stage,
-                                           const SurfaceFrame& terrain) noexcept {
-  const int nc = n_contacts();
+bool ContactTrackingResidual::AcceptsStage(const StageReference& stage, const SurfaceFrame& terrain,
+                                           int n_contacts) noexcept {
+  if (n_contacts < 0 || n_contacts > kMaxContacts) {
+    return false;
+  }
   const Eigen::Vector3d normal(terrain.normal[0], terrain.normal[1], terrain.normal[2]);
   if (!UnitNormal(normal)) {
     return false;
   }
-  // Check everything first: a refused node writes nothing.
-  for (int k = 0; k < nc; ++k) {
+  for (int k = 0; k < n_contacts; ++k) {
     const auto i = static_cast<std::size_t>(k);
     const bool stance = ((stage.mode >> static_cast<unsigned>(k)) & 1U) != 0U;
     if (!stance && !ValidScale(stage.impact_proximity[i])) {
@@ -158,6 +159,16 @@ bool ContactTrackingResidual::SetFromStage(const StageReference& stage,
       }
     }
   }
+  return true;
+}
+
+bool ContactTrackingResidual::SetFromStage(const StageReference& stage,
+                                           const SurfaceFrame& terrain) noexcept {
+  const int nc = n_contacts();
+  // Check everything first: a refused node writes nothing.
+  if (!AcceptsStage(stage, terrain, nc)) {
+    return false;
+  }
   for (int k = 0; k < nc; ++k) {
     const auto i = static_cast<std::size_t>(k);
     ContactTrackingTarget& t = targets_[i];
@@ -170,7 +181,7 @@ bool ContactTrackingResidual::SetFromStage(const StageReference& stage,
     const bool stance = ((stage.mode >> static_cast<unsigned>(k)) & 1U) != 0U;
     scales_[i] = stance ? 0.0 : stage.impact_proximity[i];
   }
-  normal_ = normal.normalized();
+  normal_ = Eigen::Vector3d(terrain.normal[0], terrain.normal[1], terrain.normal[2]).normalized();
   return true;
 }
 

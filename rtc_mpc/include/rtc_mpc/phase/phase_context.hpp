@@ -31,6 +31,8 @@
 
 namespace rtc::mpc {
 
+struct HorizonReference;  // rtc_mpc/reference/stage_reference.hpp
+
 /// @brief Snapshot of the phase state for one OCP build / reconfigure.
 struct PhaseContext {
   int phase_id{0};            ///< opaque id, assigned by concrete FSM
@@ -42,7 +44,8 @@ struct PhaseContext {
 
   /// Dispatch key for @ref MPCFactory (Phase 5). Current values:
   /// `"contact_light"` (Phase 3, renamed in 4.-1), `"contact_rich"` (Phase
-  /// 4). Unknown strings cause factory rejection — never silently fall back.
+  /// 4), `"kinodynamic"`. Unknown strings cause factory rejection — never
+  /// silently fall back.
   std::string ocp_type{"contact_light"};
 
   /// End-effector SE3 target expressed in `RobotModelHandler::base_frame_id()`.
@@ -52,6 +55,13 @@ struct PhaseContext {
   /// Identity means "no target set" (track current pose); concrete managers
   /// overwrite.
   pinocchio::SE3 ee_target{pinocchio::SE3::Identity()};
+
+  /// Per-node references and contact modes over the horizon, for an OCP that
+  /// tracks them (`"kinodynamic"`); non-owning, null when there are none.
+  /// The pointee must stay unchanged and alive through the `Build` /
+  /// `UpdateReferences` / `Solve` call that reads it. The joint-torque OCPs
+  /// do not read it.
+  const HorizonReference* horizon{nullptr};
 };
 
 }  // namespace rtc::mpc
