@@ -62,7 +62,7 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 - RT 데이터는 trivially copyable 이다: `MPCSolution` · `MPCStateSnapshot` · `WbcReference` 는 SeqLock / TripleBuffer 로 건너가므로 동적 멤버가 없다. `TripleBuffer` 슬롯과 보간기의 사본은 생성 · Init 때 heap 에 한 번 잡고 (MPC thread 의 scratch · 이전 해는 인라인), 매 solve 는 Riccati gain 을 앞 노드 몇 개만 싣는다.
 - 계약 (타입 · layout · Riccati) 은 부동 베이스를 포함하지만 **보간은 fixed-base 만**이다: cubic Hermite 는 Euclidean `q` 를 가정하므로 부동 layout 으로 `Init` 된 manager 는 `ComputeReference` 를 거부한다 (`InterpMeta::floating_unsupported`).
 - `RobotModelHandler::Init` 은 throw 하지 않고 `RobotModelInitError` 를 돌려준다.
-- `end_effector_frame` 과 `base_frame` 이 모두 필수다. `base_frame` 누락은 `kInvalidYamlSchema`, 해석 불가 이름은 `kMissingBaseFrame` 이며 world 기준은 `base_frame: "universe"` 로 명시한다. 부동 베이스 모델은 `universe` 만 받는다 (`kBaseFrameNotUniverseOnFloating`). `PhaseContext::ee_target` 은 `base_frame` 기준이다.
+- end-effector (`end_effector_frame` 또는 목록 `end_effector_frames`) 와 `base_frame` 이 모두 필수다. `base_frame` 누락은 `kInvalidYamlSchema`, 해석 불가 이름은 `kMissingBaseFrame` 이며 world 기준은 `base_frame: "universe"` 로 명시한다. 부동 베이스 모델은 `universe` 만 받는다 (`kBaseFrameNotUniverseOnFloating`). `PhaseContext::ee_target` 은 `base_frame` 기준이다.
 
 ### 관측성
 

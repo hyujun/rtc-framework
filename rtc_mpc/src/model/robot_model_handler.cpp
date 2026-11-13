@@ -12,6 +12,11 @@
 #include <pinocchio/multibody/fwd.hpp>
 #pragma GCC diagnostic pop
 
+#include <algorithm>
+#include <string>
+#include <utility>
+#include <vector>
+
 namespace rtc::mpc {
 
 namespace {
@@ -24,6 +29,39 @@ std::optional<int> FindFrameId(const pinocchio::Model& m, const std::string& nam
     return std::nullopt;
   }
   return static_cast<int>(id);
+}
+
+// Read the end-effector names: exactly one of the scalar `end_effector_frame`
+// (a one-element list) and the sequence `end_effector_frames` (≥ 1 distinct
+// strings). Returns false on any schema violation.
+bool ReadEndEffectorNames(const YAML::Node& cfg, std::vector<std::string>& names) {
+  const YAML::Node one = cfg["end_effector_frame"];
+  const YAML::Node many = cfg["end_effector_frames"];
+  if (one.IsDefined() == many.IsDefined()) {
+    return false;
+  }
+  if (one.IsDefined()) {
+    if (!one.IsScalar()) {
+      return false;
+    }
+    names.push_back(one.as<std::string>());
+    return true;
+  }
+  if (!many.IsSequence() || many.size() == 0) {
+    return false;
+  }
+  names.reserve(many.size());
+  for (const auto& entry : many) {
+    if (!entry.IsScalar()) {
+      return false;
+    }
+    std::string name = entry.as<std::string>();
+    if (std::find(names.begin(), names.end(), name) != names.end()) {
+      return false;
+    }
+    names.push_back(std::move(name));
+  }
+  return true;
 }
 
 }  // namespace
@@ -40,19 +78,22 @@ RobotModelInitError RobotModelHandler::Init(const pinocchio::Model& model,
     return RobotModelInitError::kInvalidYamlSchema;
   }
 
-  const YAML::Node ee_node = cfg["end_effector_frame"];
-  if (!ee_node.IsDefined() || !ee_node.IsScalar()) {
-    return RobotModelInitError::kInvalidYamlSchema;
-  }
-  std::string ee_name;
+  std::vector<int> ee_ids;
   try {
-    ee_name = ee_node.as<std::string>();
+    std::vector<std::string> ee_names;
+    if (!ReadEndEffectorNames(cfg, ee_names)) {
+      return RobotModelInitError::kInvalidYamlSchema;
+    }
+    ee_ids.reserve(ee_names.size());
+    for (const auto& name : ee_names) {
+      const auto id = FindFrameId(model, name);
+      if (!id.has_value()) {
+        return RobotModelInitError::kMissingEndEffectorFrame;
+      }
+      ee_ids.push_back(*id);
+    }
   } catch (...) {
     return RobotModelInitError::kInvalidYamlSchema;
-  }
-  const auto ee_id = FindFrameId(model, ee_name);
-  if (!ee_id.has_value()) {
-    return RobotModelInitError::kMissingEndEffectorFrame;
   }
 
   // Base frame (필수). 누락 시 kInvalidYamlSchema로 거부 — silent universe
@@ -129,7 +170,7 @@ RobotModelInitError RobotModelHandler::Init(const pinocchio::Model& model,
 
   // All validation passed — commit.
   model_ = &model;
-  ee_frame_id_ = *ee_id;
+  ee_frame_ids_ = std::move(ee_ids);
   base_frame_id_ = base_id;
   base_is_universe_ = base_is_universe;
   base_oMf_ = base_oMf;
