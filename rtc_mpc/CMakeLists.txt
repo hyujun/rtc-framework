@@ -52,6 +52,7 @@ add_library(rtc_mpc STATIC
   src/thread/handler_mpc_thread.cpp
   src/model/robot_model_handler.cpp
   src/model/wb_layout.cpp
+  src/dynamics/kinodynamic_dynamics.cpp
   src/phase/phase_cost_config.cpp
   src/ocp/cost_factory.cpp
   src/ocp/contact_light_ocp.cpp
@@ -158,6 +159,19 @@ if(BUILD_TESTING)
         "Path to panda.urdf used by rtc_mpc tests" FORCE)
   endif()
 
+  # The public G1 floating-base URDF (23 actuated joints, sole frames): the
+  # floating-base fixture of the dynamics tests. Same configure-time path rule
+  # as the Panda above.
+  get_filename_component(_rtc_g1_default
+      "${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots/g1/urdf/g1_29dof_floating.urdf"
+      ABSOLUTE)
+  set(RTC_G1_URDF_PATH "${_rtc_g1_default}"
+      CACHE FILEPATH "Path to the floating G1 URDF used by rtc_mpc tests")
+  if(DEFINED ENV{RTC_G1_URDF_PATH})
+    set(RTC_G1_URDF_PATH "$ENV{RTC_G1_URDF_PATH}" CACHE FILEPATH
+        "Path to the floating G1 URDF used by rtc_mpc tests" FORCE)
+  endif()
+
   # rtc_base/testing/wait_until.hpp: the sleep-poll wait the thread tests use,
   # a test-only, never-installed header (#356 — promoted out of this package's
   # own test/wait_until.hpp). rtc_base owns the path and fails loudly if its
@@ -165,7 +179,8 @@ if(BUILD_TESTING)
   rtc_base_test_include_dir(rtc_base_test_include)
 
   # One test binary per file: linked to rtc_mpc, with the test-local headers
-  # (test_utils/), wait_until.hpp and the Panda path (test_utils/panda_fixture.hpp).
+  # (test_utils/), wait_until.hpp and the Panda / G1 paths (test_utils/panda_fixture.hpp,
+  # test_utils/g1_fixture.hpp).
   function(add_mpc_gtest name)
     ament_add_gtest(${name} test/${name}.cpp)
     if(TARGET ${name})
@@ -173,7 +188,8 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/test ${rtc_base_test_include})
       target_link_libraries(${name} rtc_mpc)
       target_compile_definitions(${name} PRIVATE
-        RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
+        RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}"
+        RTC_G1_URDF_PATH="${RTC_G1_URDF_PATH}")
     endif()
   endfunction()
 
@@ -209,6 +225,8 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
   endif()
   add_mpc_gtest(test_aligator_api)
+  add_mpc_gtest(test_kinodynamic_dynamics)
+  add_mpc_gtest(test_kinodynamic_alloc_gate)
   add_mpc_gtest(test_command_filter)
   if(TARGET test_command_filter)
     target_compile_definitions(test_command_filter PRIVATE

@@ -8,6 +8,7 @@
 /// - `MultibodyPhaseSpace` + `KinodynamicsFwdDynamicsTpl` dimensions, and the
 ///   centroidal law at rest (no contact force, no joint acceleration → the
 ///   base falls with gravity).
+/// - A stage's ODE is its own copy, and its contact mask switches in place.
 /// - `StageModel::addConstraint`.
 /// - `SolverProxDDP` settings (tol · mu_init · rollout · linear solver ·
 ///   threads) round-trip, `setup` + `run` for each valid rollout × linear
@@ -172,6 +173,38 @@ TEST_F(AligatorApiTest, KinodynamicsBaseFallsWithGravityAtRest) {
   EXPECT_TRUE(xdot.segment(model_.nv, 6).isApprox(expected_base, 1e-9))
       << xdot.segment(model_.nv, 6).transpose();
   EXPECT_TRUE(xdot.tail(model_.nv - 6).isZero(1e-12));  // commanded a_j = 0
+}
+
+// A stage owns its own copy of the ODE (integrator and stage hold it by
+// value). Writing that copy's contact flags switches the mode in place — no
+// rebuild — and the stage's integrator follows; the ODE the stage was built
+// from is a separate object.
+TEST_F(AligatorApiTest, StageOdeContactMaskSwitchesInPlace) {
+  Kinodynamics source = MakeOde({true, true});
+  StageModel stage(CostStack(*space_, Nu()), Integrator(source, kDt));
+  auto* integrator = stage.getDynamics<Integrator>();
+  ASSERT_NE(integrator, nullptr);
+  auto* in_stage = integrator->getDynamics<Kinodynamics>();
+  ASSERT_NE(in_stage, nullptr);
+  ASSERT_NE(in_stage, &source);
+
+  Eigen::VectorXd u = Eigen::VectorXd::Zero(Nu());
+  u.segment<3>(0) << 1.0, -2.0, 30.0;  // contact 0 only
+  auto step = [&](const Integrator& integ) {
+    auto d = integ.createData();
+    integ.forward(x0_, u, *d);
+    return Eigen::VectorXd(d->xnext_);
+  };
+  const Eigen::VectorXd both = step(*integrator);
+  in_stage->contact_states_[0] = false;
+  const Eigen::VectorXd second_only = step(*integrator);
+  EXPECT_FALSE(second_only.isApprox(both));
+  // Same as an integrator built for that mode from the start.
+  EXPECT_EQ(second_only, step(Integrator(MakeOde({false, true}), kDt)));
+  // The source ODE was not touched, nor does writing it reach the stage.
+  EXPECT_TRUE(source.contact_states_[0]);
+  source.contact_states_[1] = false;
+  EXPECT_TRUE(in_stage->contact_states_[1]);
 }
 
 TEST_F(AligatorApiTest, StageAddConstraint) {
