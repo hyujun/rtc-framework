@@ -20,7 +20,12 @@ from integrated_bringup.demo_gui.config import (
     read_only_gain_rows,
     superseded_default_presets,
 )
-from integrated_bringup.demo_gui.discovery import RobotProfile, RobotShape
+from integrated_bringup.demo_gui.discovery import (
+    P2_MIRROR_SIGNS,
+    ROBOT_PROFILES,
+    RobotProfile,
+    RobotShape,
+)
 
 _CONFIG = Path(__file__).resolve().parents[1] / "config"
 
@@ -163,6 +168,115 @@ def test_only_an_untouched_generic_file_is_replaced(p2_robot):
         superseded_default_presets(default_presets_for(hand_dof, scope), hand_dof, scope) is None
     )
     assert superseded_default_presets(generic, hand_dof, "ur5e_p1b") is None
+
+
+# ── The two hands of the pair: side tag and mirror import ────────────────────
+
+
+def test_each_p2_side_mirrors_from_the_other():
+    right, left = RobotProfile.for_robot("p2"), RobotProfile.for_robot("p2_left")
+    assert (right.side, left.side) == ("right", "left")
+    assert (right.mirror_robot, left.mirror_robot) == ("p2_left", "p2")
+    assert right.mirror_signs == left.mirror_signs == P2_MIRROR_SIGNS
+    assert len(P2_MIRROR_SIGNS) == right.shape.hand_dof == left.shape.hand_dof
+    assert set(P2_MIRROR_SIGNS) == {-1.0, 1.0}
+    # Every other profile has neither a side nor a mirror.
+    for key, profile in ROBOT_PROFILES.items():
+        if key not in ("p2", "p2_left"):
+            assert (profile.side, profile.mirror_robot, profile.mirror_signs) == ("", "", ())
+        elif profile.mirror_robot:
+            assert ROBOT_PROFILES[profile.mirror_robot].mirror_robot == key
+
+
+def test_the_mirror_maps_one_simulators_mid_pose_onto_the_others():
+    """The sign vector checked against both hands' models at once: the two
+    scenes' mid-range initial_qpos (each pinned to that profile's mid_pose
+    preset above) are each other's mirror. A joint whose mid is 0 cannot tell
+    the sign apart; the hardware's sign is the driver's own."""
+
+    def mid(robot):
+        scope, hand_dof = _p2(robot)
+        return {"mid_pose": default_presets_for(hand_dof, scope)["mid_pose"]}
+
+    to_left, skipped = config.mirror_presets(mid("p2"), P2_MIRROR_SIGNS, "right", "left")
+    assert not skipped
+    assert to_left["mid_pose"]["positions_deg"] == mid("p2_left")["mid_pose"]["positions_deg"]
+    to_right, _ = config.mirror_presets(mid("p2_left"), P2_MIRROR_SIGNS, "left", "right")
+    assert to_right["mid_pose"]["positions_deg"] == mid("p2")["mid_pose"]["positions_deg"]
+
+
+def test_mirror_presets_tags_copies_and_round_trips():
+    source = {
+        "pose": {
+            "type": "close",
+            "positions_deg": [10.0, -20.0, 0.0, 5.0, 0.0, 30.0, -1.5, 2.0, 3.0, 4.0],
+            "grasp_time": 1.5,
+            "controller": "hand_joint_controller",
+        }
+    }
+    mirrored, skipped = config.mirror_presets(source, P2_MIRROR_SIGNS, "right", "left")
+    assert not skipped
+    pose = mirrored["pose"]
+    assert pose["positions_deg"] == [-10.0, -20.0, 0.0, 5.0, 0.0, -30.0, 1.5, -2.0, -3.0, -4.0]
+    # no -0.0 in the file
+    assert all(math.copysign(1.0, v) > 0 for v in pose["positions_deg"] if v == 0.0)
+    assert pose[config.PRESET_SIDE_KEY] == "left"
+    assert {k: v for k, v in pose.items() if k not in ("positions_deg", "side")} == {
+        k: v for k, v in source["pose"].items() if k != "positions_deg"
+    }
+    assert config.PRESET_SIDE_KEY not in source["pose"]  # the source is untouched
+    back, _ = config.mirror_presets(mirrored, P2_MIRROR_SIGNS, "left", "right")
+    assert back["pose"]["positions_deg"] == source["pose"]["positions_deg"]
+    assert back["pose"][config.PRESET_SIDE_KEY] == "right"
+
+
+@pytest.mark.parametrize(
+    "preset",
+    [
+        {"positions_deg": [0.0] * 9},
+        {"positions_deg": [0.0] * 9 + [float("nan")]},
+        {"positions_deg": [0.0] * 9 + [True]},
+        {"positions_deg": [0.0] * 9 + ["1"]},
+        {"positions_deg": [0.0] * 10, "side": "left"},  # already the target hand's
+        {"grasp_time": 1.0},
+        "not a preset",
+    ],
+)
+def test_mirror_presets_skips_what_it_cannot_mirror(preset):
+    mirrored, skipped = config.mirror_presets(
+        {"bad": preset, "ok": {"positions_deg": [1.0] * 10}}, P2_MIRROR_SIGNS, "right", "left"
+    )
+    assert skipped == ["bad"]
+    assert list(mirrored) == ["ok"]
+
+
+def test_presets_tagged_for_the_other_hand_are_refused():
+    presets = {
+        "legacy": {"positions_deg": [0.0] * 10},
+        "mine": {"positions_deg": [0.0] * 10, "side": "left"},
+        "theirs": {"positions_deg": [0.0] * 10, "side": "right"},
+    }
+    assert config.presets_refused_for_side(presets, "left") == ["theirs"]
+    assert config.presets_refused_for_side(presets, "right") == ["mine"]
+    # A profile that is not one side of a pair compares nothing.
+    assert config.presets_refused_for_side(presets, "") == []
+    # The shipped rosters are untagged: accepted on either side.
+    for robot in ("p2", "p2_left"):
+        scope, hand_dof = _p2(robot)
+        assert config.presets_refused_for_side(default_presets_for(hand_dof, scope), "left") == []
+
+
+def test_the_gui_tags_what_it_saves_and_imports_without_publishing():
+    import inspect
+
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    for handler in ("_save_current_as_preset", "_save_target_as_preset"):
+        assert "PRESET_SIDE_KEY" in inspect.getsource(getattr(DemoControllerGUI, handler))
+    imported = inspect.getsource(DemoControllerGUI._import_mirrored_presets)
+    assert "mirror_presets(" in imported
+    assert "publish(" not in imported
+    assert "presets_refused_for_side(" in inspect.getsource(DemoControllerGUI._load_presets)
 
 
 # ── Gains panel: read-only rows ──────────────────────────────────────────────

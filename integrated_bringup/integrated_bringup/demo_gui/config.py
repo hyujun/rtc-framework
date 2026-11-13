@@ -27,6 +27,7 @@ Public surface (imported by app.py):
 """
 
 import copy
+import math
 import os
 
 from rclpy.parameter import Parameter
@@ -382,6 +383,62 @@ def superseded_default_presets(loaded: dict, hand_dof: int, scope: str) -> dict 
     if loaded != default_presets_for(hand_dof):
         return None
     return default_presets_for(hand_dof, scope)
+
+
+# ── Hand side tag and the mirror import ──────────────────────────────────────
+
+# Key of the hand-side tag a preset carries on a profile that is one side of a
+# pair (RobotProfile.side). An untagged preset — every file written before the
+# tag, and the default rosters — is accepted on either side.
+PRESET_SIDE_KEY = "side"
+
+
+def presets_refused_for_side(presets: dict, side: str) -> list[str]:
+    """Names of the presets in ``presets`` tagged for another hand than
+    ``side`` (sorted). Empty when ``side`` is empty: a profile that is not one
+    side of a pair has no tag to compare."""
+    if not side:
+        return []
+    return sorted(
+        name
+        for name, preset in presets.items()
+        if isinstance(preset, dict) and preset.get(PRESET_SIDE_KEY, side) != side
+    )
+
+
+def mirror_presets(
+    presets: dict, signs: tuple[float, ...] | list[float], from_side: str, to_side: str
+) -> tuple[dict, list[str]]:
+    """The other hand's presets as this hand's: ``positions_deg`` times
+    ``signs`` (per joint), tagged ``to_side``; every other field copied.
+
+    Returns ``(mirrored, skipped)``. A preset is skipped — never guessed at —
+    when its positions are not ``len(signs)`` finite numbers or when it is
+    tagged for a hand other than ``from_side``.
+    """
+    mirrored: dict = {}
+    skipped: list[str] = []
+    for name, preset in presets.items():
+        positions = preset.get("positions_deg") if isinstance(preset, dict) else None
+        if (
+            not isinstance(positions, list)
+            or len(positions) != len(signs)
+            or not all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                for v in positions
+            )
+            or preset.get(PRESET_SIDE_KEY, from_side) != from_side
+        ):
+            skipped.append(name)
+            continue
+        out = copy.deepcopy(preset)
+        # + 0.0 turns a mirrored -0.0 into 0.0 (the file would read "-0.0").
+        out["positions_deg"] = [
+            round(s * float(v), 2) + 0.0 for s, v in zip(signs, positions, strict=True)
+        ]
+        out[PRESET_SIDE_KEY] = to_side
+        mirrored[name] = out
+    return mirrored, sorted(skipped)
 
 
 def read_only_gain_rows(ctrl: str) -> list[bool]:

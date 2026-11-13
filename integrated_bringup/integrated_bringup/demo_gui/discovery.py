@@ -152,6 +152,15 @@ _P2_LEFT_HAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     _P2_HAND_GROUPS[3],
 )
 
+# Right → left joint sign of the proto2 pair, per motor slot (the roster order
+# above): the left description flexes seven of the ten joints toward the other
+# side (its URDF limits and MJCF ctrlrange), so a pose of one hand is the other
+# hand's pose times this vector — and back, the signs being ±1. A mirrored
+# preset is a starting point drawn from the models, not a measured pose: the
+# hardware's own signs are the driver's joint_direction_signs
+# (docs/hand-joint-controller.md).
+P2_MIRROR_SIGNS: tuple[float, ...] = (-1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0)
+
 
 def short_joint_labels(joint_names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
     """Row labels for one on-screen joint group: each name without the
@@ -551,6 +560,15 @@ class RobotProfile:
     # with a different body — a preset also stores a robot target and a
     # controller name, and neither means anything on the other robot.
     preset_scope: str = ""
+    # Which hand of a pair this profile drives ("right" / "left"); empty for a
+    # profile that is not one side of a pair. Presets saved here are tagged
+    # with it, and a preset file tagged for the other hand is refused.
+    side: str = ""
+    # The ``--robot`` key of the same bringup on the other hand, and the
+    # per-joint sign that turns that hand's presets into this one's (the GUI's
+    # "Import Mirrored" button). Empty: no mirror import.
+    mirror_robot: str = ""
+    mirror_signs: tuple[float, ...] = ()
 
     def preset_token(self) -> str:
         """Name token of this profile's preset / settings files."""
@@ -711,6 +729,9 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # another roster spelling: its presets must not be read as that
         # robot's, nor the reverse.
         preset_scope="p2",
+        side="right",
+        mirror_robot="p2_left",
+        mirror_signs=P2_MIRROR_SIGNS,
     ),
     "p2_left": RobotProfile(
         shape=RobotShape.default_p2_left(),
@@ -725,6 +746,9 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # Its own preset, sequence and settings files: the right hand's joint
         # targets point the other way on seven of the ten joints.
         preset_scope="p2_left",
+        side="left",
+        mirror_robot="p2",
+        mirror_signs=P2_MIRROR_SIGNS,
     ),
 }
 
