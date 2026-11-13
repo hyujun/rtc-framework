@@ -29,11 +29,12 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `types/` | `contact_plan_types.hpp` | `ContactFrameInfo` · `ContactPhase` · `ContactPlan` (non-RT, OCP 빌드 경로) |
 | `model/` | `robot_model_handler.hpp` | `pinocchio::Model` 래퍼 + YAML frame 해석 (부동 베이스 감지, kinodynamic `nu`) |
 | `model/` | `wb_layout.hpp` | 전신 상태 · 입력 layout 한 곳 — free-flyer `[p, q_xyzw]` · LOCAL twist · `[W_1 … W_nc; q̈_j]` · tangent 상태 차 (`StateDifference`) |
-| `dynamics/` | `kinodynamic_dynamics.hpp` | 부동 베이스 kinodynamic ODE (Aligator `KinodynamicsFwdDynamics`) 와 stage 이산화 (`semi_implicit_euler` · `rk2`) 생성 · stage 안 사본의 접촉 mode 를 제자리 전환 (`OdeOf` · `SetMode`, 할당 0) |
+| `dynamics/` | `kinodynamic_dynamics.hpp` | 부동 베이스 kinodynamic ODE 와 stage 이산화 (`semi_implicit_euler` · `rk2`) 생성 · stage 안 사본의 접촉 mode 를 제자리 전환 (`OdeOf` · `SetMode`, 할당 0) |
 | `phase/` | `phase_manager_base.hpp` | 순수 가상 FSM 경계. 구체 구현은 하위 bringup 패키지가 갖는다 |
 | `phase/` | `phase_cost_config.hpp` | cost POD + no-throw YAML factory |
 | `phase/` | `phase_context.hpp` | manager 가 OCP builder 에 넘기는 묶음 (`ocp_type` dispatch key 포함) |
 | `ocp/` | `ocp_handler_base.hpp` | 추상 OCP builder (`Build` / `UpdateReferences`) · `control_model()` (joint torque / kinodynamic wrench — handler 가 이 값으로 base 를 거부 · `u` 를 pack) · `cold_seed()` |
+| `ocp/` | `contact_tracking_residual.hpp` | 접촉 추종 residual (가속도는 stage ODE) |
 | `ocp/` | `cost_factory.hpp` | stage 별 `aligator::CostStack` 생성 (weight-gated, no-throw) |
 | `ocp/` | `contact_light_ocp.hpp` | `OCPHandlerBase` 구현, dispatch key `"contact_light"` |
 | `ocp/` | `contact_rich_ocp.hpp` | 접촉력 cost + 마찰 원뿔 부등식 추가, key `"contact_rich"` (cold start 는 호출자가 seed) |
