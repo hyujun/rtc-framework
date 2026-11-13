@@ -33,6 +33,33 @@
 ///     angular_velocity: [wx, wy, wz]
 ///     linear_acceleration: [wx, wy, wz]
 ///     angular_acceleration: [wx, wy, wz]
+///   constraints:             # the contact constraints and soft limits
+///     foot_constraint:       # ContactConstraintResidual gains (stance and
+///       position_z: 100.0    # swing share them; swing uses the three z ones)
+///       orientation: 80.0
+///       linear_velocity_xy: 20.0
+///       linear_velocity_z: 10.0
+///       angular_velocity: 20.0
+///       linear_acceleration_xy: 1.0     # > 0
+///       linear_acceleration_z: 1.0      # > 0
+///       angular_acceleration: 1.0       # > 0
+///     friction:              # every contact, world axes (ContactWrenchConeResidual)
+///       mu: 0.4              # > 0
+///       grip_force: 0.0      # [N] ≥ 0
+///       regularization: 25.0 # ε [N²] > 0
+///     contact_rectangle:     # CoP bounds on each 6-D contact frame's x-y plane [m];
+///       x_min: -0.09         # must contain the frame origin:
+///       x_max: 0.09          # x_min < 0 < x_max, y_min < 0 < y_max
+///       y_min: -0.03
+///       y_max: 0.03
+///     joint_limits: {mu: 1200.0, delta: 0.1}   # barrier on the model's limits; δ > 0
+///     collision:             # sphere-pair barrier, active outside full stance
+///       enabled: false
+///       mu: 1500.0
+///       delta: 0.04          # > 0
+///       pairs:               # frames of the model; offsets in the frame [m]
+///         - {frame_a: <frame>, offset_a: [x, y, z], radius_a: r,
+///            frame_b: <frame>, offset_b: [x, y, z], radius_b: r}
 /// ```
 ///
 /// Joints are named (ARCH-1): every joint of the model after its free-flyer
@@ -41,10 +68,20 @@
 /// joints). The loader lays the weights onto the model's tangent and input
 /// layout (`WbLayout`), so a config belongs to the model it was loaded for.
 ///
+/// Every value of `constraints:` is finite; the ones marked `> 0` refuse 0
+/// (a zero regularisation has no cone derivative at the apex, a zero `δ`
+/// divides, a zero acceleration gain turns the equality into one the
+/// initial node cannot meet); the rest refuse negatives. The model's joint
+/// limits are checked too: a limited one-entry joint with `lower ≥ upper` is
+/// refused. Collision frames are model frame names; one the model lacks is
+/// refused, whether or not `enabled`.
+///
 /// Configure time: the loader allocates and never throws.
 
 #include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
+#include "rtc_mpc/ocp/barrier_costs.hpp"
+#include "rtc_mpc/ocp/contact_constraints.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -55,6 +92,8 @@
 #pragma GCC diagnostic pop
 
 #include <yaml-cpp/yaml.h>
+
+#include <vector>
 
 namespace rtc::mpc {
 
@@ -68,15 +107,31 @@ enum class KinodynamicOCPConfigError {
   kMissingKey,           ///< a required key is absent or null
   kWrongType,            ///< a value of the wrong kind or length
   kNonFinite,            ///< a NaN or infinite number
-  kNegativeWeight,       ///< a weight (or `terminal_scaling`) below 0
+  kNegativeWeight,       ///< a weight, gain, barrier μ, radius or grip force (or
+                         ///< `terminal_scaling`) below 0
   kInvalidHorizon,       ///< `horizon_nodes` outside `[1, kMaxHorizon]`
   kInvalidDt,            ///< `dt` not positive
   kUnknownIntegrator,    ///< an integrator name other than the two
   kMissingJoint,         ///< a model joint with no entry in a joint map
+  kNonPositive,          ///< a `constraints:` value that must be > 0 is not
+  kInvalidRectangle,     ///< a contact rectangle that does not contain its origin
+  kUnknownFrame,         ///< a collision frame the model does not have
+  kInvalidJointLimit,    ///< a limited one-entry model joint with lower ≥ upper
 };
 
 /// @brief Rows of one contact's tracking weight (`ContactTrackingResidual`).
 inline constexpr int kContactTrackingRows = 18;
+
+/// @brief The `constraints:` section, laid onto one model.
+struct KinodynamicConstraintsConfig {
+  FootConstraintGains foot_constraint{};
+  FrictionCone friction{};
+  ContactRectangle contact_rectangle{};
+  PolynomialBarrier joint_limits{};
+  bool collision_enabled{false};
+  PolynomialBarrier collision{};
+  std::vector<SpherePair> collision_pairs{};  ///< frames resolved in the model
+};
 
 /// @brief What @ref KinodynamicOCP is built with, laid onto one model.
 struct KinodynamicOCPConfig {
@@ -90,6 +145,7 @@ struct KinodynamicOCPConfig {
   /// One contact's rows `[p; e_R; v; ω; a; α]`, the same for every contact.
   Eigen::Matrix<double, kContactTrackingRows, 1> contact_tracking_weights{
       Eigen::Matrix<double, kContactTrackingRows, 1>::Zero()};
+  KinodynamicConstraintsConfig constraints{};
 };
 
 /// @brief Read `mpc.kinodynamic:` (the file comment's schema) for @p model.

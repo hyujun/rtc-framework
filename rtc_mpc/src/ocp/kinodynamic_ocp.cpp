@@ -10,13 +10,17 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <aligator/core/stage-model.hpp>
 #include <aligator/core/traj-opt-problem.hpp>
+#include <aligator/modelling/constraints/equality-constraint.hpp>
+#include <aligator/modelling/constraints/negative-orthant.hpp>
 #include <aligator/modelling/costs/quad-residual-cost.hpp>
 #include <aligator/modelling/costs/sum-of-costs.hpp>
 #pragma GCC diagnostic pop
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -29,6 +33,8 @@ using CostStack = aligator::CostStackTpl<double>;
 using QuadResidualCost = aligator::QuadraticResidualCostTpl<double>;
 using StageModel = aligator::StageModelTpl<double>;
 using StageFunction = aligator::StageFunctionTpl<double>;
+using EqualitySet = aligator::EqualityConstraintTpl<double>;
+using NegativeOrthant = aligator::NegativeOrthantTpl<double>;
 
 [[nodiscard]] bool AllFinite(const double* p, int n) noexcept {
   for (int i = 0; i < n; ++i) {
@@ -59,7 +65,8 @@ OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHan
       cfg_.terminal_weights.size() != 2 * model.nv() || cfg_.input_weights.size() != model.nu()) {
     return OCPBuildError::kInvalidCostConfig;
   }
-  // No constraint rows yet, so no control box: one is refused, not dropped.
+  // No input box in this formulation (hard limits are the whole-body QP's):
+  // one is refused, not dropped.
   if (limits.u_min.size() != 0 || limits.u_max.size() != 0) {
     return OCPBuildError::kLimitsDimMismatch;
   }
@@ -74,6 +81,8 @@ OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHan
   stages_.clear();
   terminal_ = nullptr;
   model_ = nullptr;
+  eq_data_.reset();
+  ineq_data_.reset();
   if (dyn_.Init(model) != KinodynamicError::kNoError) {
     return OCPBuildError::kModelNotInitialised;
   }
@@ -101,7 +110,10 @@ OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHan
       return OCPBuildError::kAligatorInstantiationFailure;
     }
     // Unbound here; each stage's copy is bound to that stage's ODE below.
+    const KinodynamicConstraintsConfig& cc = cfg_.constraints;
     const ContactTrackingResidual tracking(*ode);
+    const ContactConstraintResidual equality(*ode, cc.foot_constraint);
+    const ContactWrenchConeResidual inequality(*ode, cc.friction, cc.contact_rectangle);
 
     // The running cost is integrated over the node interval (× dt).
     CostStack cost(space, nu);
@@ -111,6 +123,12 @@ OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHan
     cost.addCost(std::string(kContactTrackingCostKey),
                  QuadResidualCost(space, xyz::polymorphic<StageFunction>(tracking), track_w),
                  cfg_.dt);
+    cost.addCost(std::string(kJointLimitCostKey),
+                 JointLimitBarrierCost(space, nu, model.model(), cc.joint_limits), cfg_.dt);
+    if (cc.collision_enabled) {
+      cost.addCost(std::string(kCollisionCostKey),
+                   CollisionBarrierCost(space, *ode, cc.collision_pairs, cc.collision), cfg_.dt);
+    }
 
     std::vector<xyz::polymorphic<StageModel>> stages;
     stages.reserve(static_cast<std::size_t>(cfg_.horizon_nodes));
@@ -120,7 +138,10 @@ OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHan
           KinodynamicError::kNoError) {
         return OCPBuildError::kInvalidCostConfig;
       }
-      stages.emplace_back(StageModel(cost, *dyn));
+      StageModel stage(cost, *dyn);
+      stage.addConstraint(xyz::polymorphic<StageFunction>(equality), EqualitySet());
+      stage.addConstraint(xyz::polymorphic<StageFunction>(inequality), NegativeOrthant());
+      stages.emplace_back(std::move(stage));
     }
     problem_.emplace(x0, stages, QuadStateCost(space, nu, x0, qf_w));
 
@@ -142,15 +163,32 @@ OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHan
           !h.tracking->Bind(h.ode)) {
         throw std::logic_error("stage layout");
       }
+      h.equality = stage.constraints_.getConstraint<ContactConstraintResidual>(kEqualityConstraint);
+      h.inequality =
+          stage.constraints_.getConstraint<ContactWrenchConeResidual>(kInequalityConstraint);
+      if (h.equality == nullptr || h.inequality == nullptr || !h.equality->Bind(h.ode) ||
+          !h.inequality->Bind(h.ode)) {
+        throw std::logic_error("constraint layout");
+      }
+      if (cc.collision_enabled) {
+        h.collision = stack->getComponent<CollisionBarrierCost>(std::string(kCollisionCostKey));
+        if (h.collision == nullptr || !h.collision->Bind(h.ode)) {
+          throw std::logic_error("collision layout");
+        }
+      }
     }
     terminal_ = dynamic_cast<QuadStateCost*>(&*problem_->term_cost_);
     if (terminal_ == nullptr) {
       throw std::logic_error("terminal layout");
     }
+    eq_data_ = stages_.front().equality->createData();
+    ineq_data_ = stages_.front().inequality->createData();
   } catch (...) {
     problem_.reset();
     stages_.clear();
     terminal_ = nullptr;
+    eq_data_.reset();
+    ineq_data_.reset();
     return OCPBuildError::kAligatorInstantiationFailure;
   }
 
@@ -201,7 +239,8 @@ OCPBuildError KinodynamicOCP::CheckContext(const PhaseContext& ctx,
     // The mode SetMode takes, the wrench u_ref takes, and what SetFromStage
     // takes (its own check).
     if (s.mode >= n_modes || !AllFinite(s.wrench.data(), ncv) ||
-        !ContactTrackingResidual::AcceptsStage(s, h.terrain, nc)) {
+        !ContactTrackingResidual::AcceptsStage(s, h.terrain, nc) ||
+        !ContactConstraintResidual::AcceptsStage(s, h.terrain, nc)) {
       return OCPBuildError::kInvalidHorizonReference;
     }
   }
@@ -225,6 +264,7 @@ void KinodynamicOCP::WriteHorizon(const HorizonReference& h) noexcept {
         Eigen::Map<const Eigen::VectorXd>(s.wrench.data(), n_contact_vars_);
     st.input->setTarget(u_buf_);
     static_cast<void>(st.tracking->SetFromStage(s, h.terrain));
+    static_cast<void>(st.equality->SetFromStage(s, h.terrain));
   }
   WriteStateTarget(h.stages[stages_.size()], *terminal_);
 }
@@ -239,6 +279,71 @@ OCPBuildError KinodynamicOCP::UpdateReferences(const PhaseContext& ctx) noexcept
   }
   WriteHorizon(*ctx.horizon);
   return OCPBuildError::kNoError;
+}
+
+bool KinodynamicOCP::ReferenceControl(int k, Eigen::Ref<Eigen::VectorXd> u) const noexcept {
+  if (!Built() || k < 0 || k >= static_cast<int>(stages_.size()) || u.size() != nu_) {
+    return false;
+  }
+  u = stages_[static_cast<std::size_t>(k)].input->getTarget();
+  return true;
+}
+
+bool KinodynamicOCP::ConstraintResiduals(const std::vector<Eigen::VectorXd>& xs,
+                                         const std::vector<Eigen::VectorXd>& us,
+                                         ConstraintResidualReport& out) noexcept {
+  if (!Built() || xs.size() != stages_.size() + 1 || us.size() != stages_.size()) {
+    return false;
+  }
+  for (std::size_t k = 0; k < stages_.size(); ++k) {
+    if (xs[k].size() != nq_ + nv_ || us[k].size() != nu_) {
+      return false;
+    }
+  }
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  ConstraintResidualReport r;
+  r.min_friction_margin.fill(kInf);
+  r.min_cop_margin.fill(kInf);
+  auto& eq = static_cast<ContactConstraintData&>(*eq_data_);
+  auto& ineq = static_cast<ContactWrenchConeData&>(*ineq_data_);
+  try {
+    for (std::size_t k = 0; k < stages_.size(); ++k) {
+      const StageHandles& st = stages_[k];
+      st.equality->evaluate(xs[k], us[k], eq);
+      st.inequality->evaluate(xs[k], us[k], ineq);
+      const int eq_rows = st.equality->rows_per_contact();
+      const int in_rows = st.inequality->rows_per_contact();
+      const int nc = st.equality->n_contacts();
+      for (int c = 0; c < nc; ++c) {
+        const auto ci = static_cast<std::size_t>(c);
+        const Eigen::Index eo = static_cast<Eigen::Index>(c) * eq_rows;
+        if (eq.stance[ci] == 0) {
+          r.swing_equality_max =
+              std::max(r.swing_equality_max, std::fabs(eq.value_[eo + eq_rows - 1]));
+          continue;
+        }
+        r.stance_equality_max = std::max(r.stance_equality_max,
+                                         eq.value_.segment(eo, eq_rows - 1).cwiseAbs().maxCoeff());
+        const Eigen::Index io = static_cast<Eigen::Index>(c) * in_rows;
+        r.inequality_violation_max =
+            std::max(r.inequality_violation_max, ineq.value_.segment(io, in_rows).maxCoeff());
+        r.min_friction_margin[ci] = std::min(r.min_friction_margin[ci], -ineq.value_[io]);
+        if (in_rows > 1) {
+          // CoP rows are −(distance · F_z) with F_z on the frame's own axes.
+          const Eigen::Index w = static_cast<Eigen::Index>(c) * st.inequality->force_size();
+          const Eigen::Matrix3d& rot = ineq.pin_data.oMf[st.ode->contact_ids_[ci]].rotation();
+          const double fz = rot.col(2).dot(Eigen::Vector3d(us[k].segment<3>(w)));
+          const double worst = ineq.value_.segment(io + 1, in_rows - 1).maxCoeff();
+          const double margin = fz > 0.0 ? -worst / fz : -kInf;
+          r.min_cop_margin[ci] = std::min(r.min_cop_margin[ci], margin);
+        }
+      }
+    }
+  } catch (...) {
+    return false;
+  }
+  out = r;
+  return true;
 }
 
 }  // namespace rtc::mpc

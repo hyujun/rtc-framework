@@ -119,7 +119,12 @@ MPCFactoryStatus MPCFactory::Create(const YAML::Node& cfg, const RobotModelHandl
   }
 
   OCPLimits limits{};
-  if (!ParseLimits(mpc["limits"], model.nu(), limits)) {
+  // The kinodynamic OCP takes its friction coefficient from its own
+  // constraints section; a second one here would be silently ignored.
+  const YAML::Node limits_node = static_cast<const YAML::Node&>(mpc)["limits"];
+  if (!ParseLimits(limits_node, model.nu(), limits) ||
+      (yaml_ocp_type == KinodynamicOCP::kType && limits_node.IsDefined() && limits_node.IsMap() &&
+       static_cast<const YAML::Node&>(limits_node)["friction_mu"].IsDefined())) {
     status.error = MPCFactoryError::kInvalidLimits;
     return status;
   }

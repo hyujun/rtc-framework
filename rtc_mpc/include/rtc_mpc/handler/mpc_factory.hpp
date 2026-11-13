@@ -18,7 +18,8 @@
 ///     max_al_iters: 20
 ///     verbose: false
 ///   limits:
-///     friction_mu: 0.7          # only read by contact_rich
+///     friction_mu: 0.7          # only read by contact_rich; refused for
+///                               # "kinodynamic" (its own constraints.friction.mu)
 ///     u_min: []                 # optional; size nu or empty
 ///     u_max: []                 # optional; size nu or empty
 ///   kinodynamic: { ... }        # required by (and only read for) "kinodynamic":
@@ -44,7 +45,8 @@ enum class MPCFactoryError {
   kMissingOcpTypeKey,    ///< YAML has no `mpc.ocp_type` entry
   kUnknownOcpType,       ///< `ocp_type` string not in the dispatch table
   kInvalidSolverConfig,  ///< nested `solver:` subtree failed validation
-  kInvalidLimits,        ///< u_min / u_max size mismatch vs. model
+  kInvalidLimits,        ///< u_min / u_max size mismatch vs. model, or a
+                         ///< `friction_mu` for the kinodynamic OCP
   kHandlerInitFailed,    ///< concrete handler's `Init` rejected (embedded
                          ///< MPCInitError available via the `last_*` probes)
   kInvalidOcpConfig,     ///< the OCP's own section (`mpc.kinodynamic:`) failed to load

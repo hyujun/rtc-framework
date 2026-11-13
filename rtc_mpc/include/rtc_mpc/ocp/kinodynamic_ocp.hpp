@@ -16,17 +16,27 @@
 ///   = `contact_tracking_weights` on every contact block) — the running cost
 ///   integrated over the node interval, as the reference formulation does;
 ///
+///   plus the soft limits, also `× dt`: the joint position barrier
+///   (`JointLimitBarrierCost`) and, when `constraints.collision.enabled`, the
+///   sphere-pair barrier (`CollisionBarrierCost`);
+/// - constraints (`ContactConstraintResidual` as an equality,
+///   `ContactWrenchConeResidual` as a negative orthant): every contact's
+///   rows of both phases, active by the stage's mode — the row count is the
+///   same for every mode;
+///
 /// and the terminal cost is `½‖x ⊖ x_ref,H‖²` weighted by
-/// `terminal_scaling · terminal_weights` (not multiplied by `dt`). No
-/// constraint rows — those are a later addition, at a fixed row count.
+/// `terminal_scaling · terminal_weights` (not multiplied by `dt`; no soft
+/// limit and no constraint on the terminal node).
 ///
 /// ## Per tick
 ///
 /// `UpdateReferences` reads `PhaseContext::horizon` (a `HorizonReference`,
 /// one `StageReference` per node) and writes, per stage: the ODE's contact
 /// mode (`SetMode` on the stage's own copy), `x_ref = [q; v]`, `u_ref =
-/// [wrench; 0]`, and the residual's targets, scales and plane normal
-/// (`SetFromStage`); the terminal node's `x_ref`. A mode change is not a
+/// [wrench; 0]`, the tracking residual's targets, scales and plane normal
+/// and the contact equality's height targets and plane normal
+/// (`SetFromStage`); the terminal node's `x_ref`. The constraints and the
+/// collision barrier read the mode from the same ODE. A mode change is not a
 /// topology change: the row and column counts of every stage are the same
 /// for every mode, so nothing is rebuilt and nothing allocates.
 ///
@@ -45,18 +55,31 @@
 /// `Build` without one leaves every stage in full stance, `x_ref` the model's
 /// neutral state, `u_ref = 0` and every contact scale 0. A `Build` refused by
 /// any check — those above, a cost config of another horizon, a model of
-/// another size, a control box (`OCPLimits::u_min` / `u_max`: there are no
-/// constraint rows yet, so a box is refused rather than dropped,
+/// another size, a control box (`OCPLimits::u_min` / `u_max`: this
+/// formulation has no input box — hard joint and torque limits belong to the
+/// whole-body QP — so a box is refused rather than dropped,
 /// `kLimitsDimMismatch`) — changes nothing and allocates nothing, so a built
 /// problem survives the handler core's rebuild attempt on `kInvalidPhaseContext`
 /// (which no rebuild can satisfy: this OCP's config fixes the horizon).
 ///
+/// ## Cold seed
+///
+/// `cold_seed()` is `kReferenceControl`: the handler core starts a cold
+/// solve from each node's `u_ref` (`ReferenceControl`) — with hard friction
+/// and centre-of-pressure rows, `u = 0` violates the friction cone of every
+/// stance contact and sits all four CoP rows on the cone's apex.
+///
 /// ## Threads and real time
 ///
-/// `Build` is configure time (allocates). `UpdateReferences` runs on the MPC
-/// thread between solves: noexcept, no allocation, no throw.
+/// `Build` is configure time (allocates). `UpdateReferences`,
+/// `ReferenceControl` and `ConstraintResiduals` run on the MPC thread
+/// between solves: noexcept, no throw; the first two allocate nothing, the
+/// last nothing of its own (the ODE `forward` it evaluates allocates inside
+/// the library).
 
 #include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
+#include "rtc_mpc/ocp/barrier_costs.hpp"
+#include "rtc_mpc/ocp/contact_constraints.hpp"
 #include "rtc_mpc/ocp/contact_tracking_residual.hpp"
 #include "rtc_mpc/ocp/kinodynamic_ocp_config.hpp"
 #include "rtc_mpc/ocp/ocp_handler_base.hpp"
@@ -71,11 +94,31 @@
 #include <aligator/modelling/costs/quad-state-cost.hpp>
 #pragma GCC diagnostic pop
 
+#include <array>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <vector>
 
 namespace rtc::mpc {
+
+/// @brief The constraint residuals of one trajectory, stage by stage, as the
+///        solver sees them (`KinodynamicOCP::ConstraintResiduals`).
+struct ConstraintResidualReport {
+  /// Largest `|c|` over the rows of the stance contacts (gain-weighted, the
+  /// solver's own units).
+  double stance_equality_max{0.0};
+  /// Largest `|c|` over the swing rows.
+  double swing_equality_max{0.0};
+  /// Largest `max(0, c)` over the active inequality rows.
+  double inequality_violation_max{0.0};
+  /// Per contact, over the nodes it is in stance: the smallest friction
+  /// margin `μ(f_z + f_grip) − √(f_x² + f_y² + ε)` [N], and the smallest
+  /// distance [m] of the centre of pressure inside its rectangle (negative
+  /// outside; 6-D contacts). `+inf` for a contact never in stance.
+  std::array<double, kMaxContacts> min_friction_margin{};
+  std::array<double, kMaxContacts> min_cop_margin{};
+};
 
 class KinodynamicOCP final : public OCPHandlerBase {
  public:
@@ -85,6 +128,12 @@ class KinodynamicOCP final : public OCPHandlerBase {
   static constexpr std::string_view kStateCostKey{"state"};
   static constexpr std::string_view kInputCostKey{"input"};
   static constexpr std::string_view kContactTrackingCostKey{"contact_tracking"};
+  static constexpr std::string_view kJointLimitCostKey{"joint_limits"};
+  static constexpr std::string_view kCollisionCostKey{"collision"};
+
+  /// Indices of the two constraints of every stage.
+  static constexpr std::size_t kEqualityConstraint = 0;
+  static constexpr std::size_t kInequalityConstraint = 1;
 
   using QuadStateCost = aligator::QuadraticStateCostTpl<double>;
   using QuadControlCost = aligator::QuadraticControlCostTpl<double>;
@@ -109,6 +158,19 @@ class KinodynamicOCP final : public OCPHandlerBase {
     return ControlModel::kKinodynamicWrench;
   }
 
+  [[nodiscard]] ColdSeed cold_seed() const noexcept override { return ColdSeed::kReferenceControl; }
+
+  /// @brief Stage @p k's `u_ref = [wrench; 0]`.
+  [[nodiscard]] bool ReferenceControl(int k, Eigen::Ref<Eigen::VectorXd> u) const noexcept override;
+
+  /// @brief Evaluate every stage's constraints at `(xs[k], us[k])` with the
+  ///        stage's current mode and targets, into @p out.
+  /// @return false, writing nothing, before a `Build`, for `xs` / `us` of
+  ///         another length or entry size, or if an evaluation threw.
+  [[nodiscard]] bool ConstraintResiduals(const std::vector<Eigen::VectorXd>& xs,
+                                         const std::vector<Eigen::VectorXd>& us,
+                                         ConstraintResidualReport& out) noexcept;
+
   [[nodiscard]] const KinodynamicOCPConfig& config() const noexcept { return cfg_; }
 
  private:
@@ -119,6 +181,9 @@ class KinodynamicOCP final : public OCPHandlerBase {
     QuadStateCost* state{nullptr};
     QuadControlCost* input{nullptr};
     ContactTrackingResidual* tracking{nullptr};
+    ContactConstraintResidual* equality{nullptr};
+    ContactWrenchConeResidual* inequality{nullptr};
+    CollisionBarrierCost* collision{nullptr};  ///< null when collision is disabled
   };
 
   /// The checks of `UpdateReferences` against @p model, before any write.
@@ -139,6 +204,9 @@ class KinodynamicOCP final : public OCPHandlerBase {
   int n_contact_vars_{0};
   Eigen::VectorXd x_buf_{};  ///< nq + nv — one node's x_ref
   Eigen::VectorXd u_buf_{};  ///< nu — one stage's u_ref (joint accelerations stay 0)
+  /// `ConstraintResiduals` evaluation buffers (one of each, reused per stage).
+  std::shared_ptr<aligator::StageFunctionDataTpl<double>> eq_data_{};
+  std::shared_ptr<aligator::StageFunctionDataTpl<double>> ineq_data_{};
 };
 
 }  // namespace rtc::mpc

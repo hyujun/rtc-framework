@@ -122,6 +122,7 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   // The OCP names its cold seed (gravity compensation is joint-torque only).
   use_gravity_comp_seed_ =
       ocp.cold_seed() == ColdSeed::kGravityCompensation && control == ControlModel::kJointTorque;
+  use_reference_control_seed_ = ocp.cold_seed() == ColdSeed::kReferenceControl;
 
   // Allocate warm-start buffers matching the solver's internal shapes.
   xs_warm_.assign(static_cast<std::size_t>(horizon_length_ + 1), Eigen::VectorXd::Zero(nq_ + nv_));
@@ -132,7 +133,7 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   return MPCInitError::kNoError;
 }
 
-void MPCHandlerCore::ColdSeedGuess(const Eigen::VectorXd& q_current,
+void MPCHandlerCore::ColdSeedGuess(const OCPHandlerBase& ocp, const Eigen::VectorXd& q_current,
                                    const Eigen::VectorXd& x_current) noexcept {
   // Populate xs_warm_: broadcast current state across every node.
   for (auto& x : xs_warm_) {
@@ -148,6 +149,14 @@ void MPCHandlerCore::ColdSeedGuess(const Eigen::VectorXd& q_current,
     for (auto& u : us_warm_) {
       if (u.size() == tau_g_.size()) {
         u = tau_g_;
+      }
+    }
+  } else if (use_reference_control_seed_) {
+    // The OCP's own per-node reference (UpdateReferences ran this tick):
+    // a start that satisfies what its constraints ask of the input.
+    for (std::size_t k = 0; k < us_warm_.size(); ++k) {
+      if (!ocp.ReferenceControl(static_cast<int>(k), us_warm_[k])) {
+        us_warm_[k].setZero();
       }
     }
   } else {
@@ -265,7 +274,7 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
 
   const bool cold_seeded = first_solve_after_build_;
   if (cold_seeded) {
-    ColdSeedGuess(q_current_, x_current_);
+    ColdSeedGuess(ocp, q_current_, x_current_);
     first_solve_after_build_ = false;
   } else {
     // Aligator's canonical shift-warm-start: rotates xs/us/vs/lams/gains
