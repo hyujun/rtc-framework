@@ -302,6 +302,7 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   }
 
   const bool cold_seeded = first_solve_after_build_;
+  cleared_multipliers_ = 0;
   if (cold_seeded) {
     ColdSeedGuess(ocp, q_current_, x_current_);
     first_solve_after_build_ = false;
@@ -314,6 +315,9 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
       DiscardIterates();  // the rotation may have stopped partway
       return MPCSolveError::kSolverException;
     }
+    // A node whose mode changed since its multipliers were solved must not
+    // carry them into rows its new mode does not bind.
+    cleared_multipliers_ = ocp.ClearInactiveMultipliers(solver_->results_.vs);
   }
 
   // Stage the warm-start in separate xs_warm_ / us_warm_ buffers so

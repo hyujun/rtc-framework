@@ -914,6 +914,78 @@ TEST_F(KinodynamicOCPTest, BuildWithAHorizonAppliesItAndARefusedBuildChangesNoth
   EXPECT_TRUE(ReadBack(built_with) == before);
 }
 
+// The multipliers of a stage's inactive rows — a swing contact's stance
+// block, a stance contact's swing row — become +0.0 (a −0.0 too), every
+// other entry keeps its bits; a second pass changes nothing; an entry of
+// another size and the terminal one are left alone.
+TEST_F(KinodynamicOCPTest, ClearInactiveMultipliersZeroesExactlyTheInactiveRows) {
+  const WalkWindow walk(model_, handler_, stand_, 20.0);
+  const HorizonReference& h = walk.horizon();
+  KinodynamicOCP ocp(cfg_);
+  ASSERT_EQ(ocp.Build(Context(&h), handler_, {}), OCPBuildError::kNoError);
+  const int nc = handler_.n_contacts();
+  const int rows = rtc::mpc::ContactConstraintResidual::EqualityRows(6);
+  std::vector<Eigen::VectorXd> vs(tu::kKinoNodes + 1);
+  for (std::size_t k = 0; k < vs.size(); ++k) {
+    vs[k] = Eigen::VectorXd::LinSpaced(nc * rows, 1.0 + static_cast<double>(k), 2.0 + k);
+  }
+  vs[5][rows - 1] = -0.0;  // contact 0's swing row
+  vs[7].resize(3);         // another size: skipped
+  vs[7].setConstant(4.0);
+  const std::vector<Eigen::VectorXd> before = vs;
+
+  std::size_t expected = 0;
+  bool modes_mixed = false;
+  for (int k = 0; k < tu::kKinoNodes; ++k) {
+    ASSERT_EQ(ocp.StageMode(k), h.stages[static_cast<std::size_t>(k)].mode) << "stage " << k;
+    modes_mixed = modes_mixed || ocp.StageMode(k) != ocp.StageMode(0);
+  }
+  ASSERT_TRUE(modes_mixed) << "the walk window must hold more than one mode";
+  for (int k = 0; k < tu::kKinoNodes; ++k) {
+    if (k == 7) {
+      continue;
+    }
+    for (int c = 0; c < nc; ++c) {
+      const bool stance = ((ocp.StageMode(k) >> c) & 1U) != 0U;
+      // Entries that are already the +0.0 bit pattern are not counted.
+      for (int r = 0; r < rows; ++r) {
+        const bool swing_row = r == rows - 1;
+        const double b = before[static_cast<std::size_t>(k)][c * rows + r];
+        if (stance == swing_row && (b != 0.0 || std::signbit(b))) {
+          ++expected;
+        }
+      }
+    }
+  }
+  EXPECT_EQ(ocp.ClearInactiveMultipliers(vs), expected);
+  for (int k = 0; k <= tu::kKinoNodes; ++k) {
+    const auto i = static_cast<std::size_t>(k);
+    if (k == 7 || k == tu::kKinoNodes) {
+      EXPECT_TRUE(BitEqual(vs[i], before[i])) << "stage " << k;
+      continue;
+    }
+    for (int c = 0; c < nc; ++c) {
+      const bool stance = ((ocp.StageMode(k) >> c) & 1U) != 0U;
+      for (int r = 0; r < rows; ++r) {
+        const bool swing_row = r == rows - 1;
+        const double got = vs[i][c * rows + r];
+        if (stance == swing_row) {
+          EXPECT_EQ(got, 0.0) << "stage " << k << " contact " << c << " row " << r;
+          EXPECT_FALSE(std::signbit(got)) << "stage " << k << " contact " << c << " row " << r;
+        } else {
+          EXPECT_EQ(std::memcmp(&got, &before[i][c * rows + r], sizeof(double)), 0)
+              << "stage " << k << " contact " << c << " row " << r;
+        }
+      }
+    }
+  }
+  EXPECT_EQ(ocp.ClearInactiveMultipliers(vs), 0U);
+
+  KinodynamicOCP unbuilt(cfg_);
+  EXPECT_EQ(unbuilt.ClearInactiveMultipliers(vs), 0U);
+  EXPECT_EQ(unbuilt.StageMode(0), 0U);
+}
+
 // ── Constraint and soft-limit layout ────────────────────────────────────────
 
 /// A full-stance horizon at @p q whose stage k is in mode (k + shift) mod 2^nc.

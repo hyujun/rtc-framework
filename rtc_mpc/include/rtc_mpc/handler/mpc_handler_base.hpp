@@ -25,7 +25,9 @@
 ///   `ResultsTpl::cycleAppend(problem, x_current)` and call
 ///   `solver.run(problem)` with empty inits so the solver re-uses
 ///   `results_.xs/us/vs/lams` directly — this is Aligator's canonical MPC
-///   shift-warm-start path and does not allocate.
+///   shift-warm-start path and does not allocate. After the shift the OCP
+///   clears the multipliers of the rows its current modes make inactive
+///   (`OCPHandlerBase::ClearInactiveMultipliers`).
 /// - Budget: until a solve converges after `Init`, a rebuild or a rejected
 ///   solve, every solve runs on the standing budget (`max_initial_iters`,
 ///   `max_al_iters`) and is marked `MPCSolution::initial_solve`; then on the

@@ -29,6 +29,7 @@
 #include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -81,6 +82,11 @@ class MPCHandlerCore {
   [[nodiscard]] int nu() const noexcept { return nu_; }
 
   [[nodiscard]] int n_contact_vars() const noexcept { return n_contact_vars_; }
+
+  /// @return how many multiplier entries the OCP cleared after the last
+  ///         shift (`OCPHandlerBase::ClearInactiveMultipliers`; 0 on a cold
+  ///         tick).
+  [[nodiscard]] std::size_t ClearedMultipliers() const noexcept { return cleared_multipliers_; }
 
   /// @return the solver (null before a successful `Init`) — for tests and
   ///         diagnostics: its iterates, multipliers and settings as the last
@@ -141,7 +147,8 @@ class MPCHandlerCore {
   // ── State ────────────────────────────────────────────────────────────
   bool initialised_{false};
   bool first_solve_after_build_{true};
-  bool initial_solve_pending_{true};  // no solve converged since build / rebuild / rejection
+  std::size_t cleared_multipliers_{0};  // by the OCP after the last shift
+  bool initial_solve_pending_{true};    // no solve converged since build / rebuild / rejection
 
   const RobotModelHandler* model_{nullptr};  // non-owning; set at Init
   OCPLimits limits_{};
