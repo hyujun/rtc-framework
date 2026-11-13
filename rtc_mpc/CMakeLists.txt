@@ -60,6 +60,7 @@ add_library(rtc_mpc STATIC
   src/ocp/kinodynamic_ocp_config.cpp
   src/ocp/kinodynamic_ocp.cpp
   src/phase/phase_cost_config.cpp
+  src/phase/locomotion_phase_manager.cpp
   src/ocp/cost_factory.cpp
   src/ocp/contact_light_ocp.cpp
   src/ocp/contact_rich_ocp.cpp
@@ -276,6 +277,8 @@ if(BUILD_TESTING)
         RTC_MPC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   endif()
   add_mpc_gtest(test_stage_reference_alloc_gate)
+  add_mpc_gtest(test_locomotion_phase_manager)
+  add_mpc_gtest(test_locomotion_phase_manager_alloc_gate)
 
   # Aligator's ProxDDP solve path allocates via mimalloc but frees can route
   # through glibc (and vice-versa) across the pinocchio/aligator boundary; with

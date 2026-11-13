@@ -13,7 +13,8 @@
 /// 1. @ref Init once, with a YAML config tree.
 /// 2. Optionally @ref SetTaskTarget when the upstream planner updates the
 ///    goal (non-RT, event-driven — topic callback, BT leaf, etc.).
-/// 3. Each MPC tick: call @ref Update with the current state + elapsed time.
+/// 3. Each MPC tick: the MPC thread calls the @ref Update overload that takes
+///    the state snapshot (its default forwards to the one with q · v only).
 ///    It runs on the MPC thread — off the control loop, but SCHED_FIFO on a
 ///    dedicated core, an RT path (agent_docs/architecture.md §Execution Contexts).
 /// 4. Observe @ref PhaseContext::phase_changed to decide OCP rebuild vs
@@ -24,6 +25,7 @@
 /// responsible for its own synchronisation in concrete implementations.
 
 #include "rtc_mpc/phase/phase_context.hpp"
+#include "rtc_mpc/types/mpc_solution_types.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -70,6 +72,20 @@ class PhaseManagerBase {
   virtual PhaseContext Update(const Eigen::VectorXd& q, const Eigen::VectorXd& v,
                               const Eigen::VectorXd& sensor, const pinocchio::SE3& tcp,
                               double t) = 0;
+
+  /// @brief The tick as the MPC thread calls it: as the overload above, with
+  ///        the snapshot the tick solves from (its sequence, stamp and model
+  ///        epoch included — a manager that builds a per-node reference needs
+  ///        that provenance). The default forwards to the overload above, so a
+  ///        manager that reads only q · v overrides that one alone.
+  ///
+  /// @param state  the snapshot `q` and `v` were copied from.
+  virtual PhaseContext Update(const MPCStateSnapshot& state, const Eigen::VectorXd& q,
+                              const Eigen::VectorXd& v, const Eigen::VectorXd& sensor,
+                              const pinocchio::SE3& tcp, double t) {
+    static_cast<void>(state);
+    return Update(q, v, sensor, tcp, t);
+  }
 
   /// @brief Update the task target (e.g. goal SE3 + per-target weights).
   ///

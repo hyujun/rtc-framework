@@ -12,7 +12,7 @@
 ///   WriteState ──► SeqLock ──►     ReadState
 ///                                    │
 ///                                    ▼
-///                                  phase_manager_->Update(q,v,sensor,tcp,t)
+///                                  phase_manager_->Update(state,q,v,sensor,tcp,t)
 ///                                    │                    (non-RT)
 ///                                    ▼ ctx
 ///                                  handler_->Solve(ctx, state, out) (noexcept)
