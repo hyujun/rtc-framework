@@ -161,7 +161,13 @@ def per_joint(value: float, joint: str, others: float) -> dict[str, float]:
 
 
 def test_default_lists_cover_the_hand_minus_the_excluded_joint():
-    assert set(DEFAULT_BIG) | set(DEFAULT_SMALL) == set(JOINTS) - set(DEFAULT_EXCLUDE)
+    # every default entry claims a joint (classify raises otherwise) and every
+    # joint lands in a judged class except the excluded one
+    classes = classify(JOINTS, DEFAULT_BIG, DEFAULT_SMALL, DEFAULT_EXCLUDE)
+    assert {j for j, c in classes.items() if c in ("big", "small")} == set(JOINTS) - set(
+        DEFAULT_EXCLUDE
+    )
+    assert [j for j, c in classes.items() if c == "excluded"] == list(DEFAULT_EXCLUDE)
     assert not set(DEFAULT_BIG) & set(DEFAULT_SMALL)
     assert DEFAULT_EXCLUDE == ("index_mcp_rotate_joint",)
     assert DEFAULT_LOOP_DISCRIMINATOR in DEFAULT_BIG
