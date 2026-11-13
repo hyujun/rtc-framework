@@ -77,6 +77,14 @@ class MPCFactory {
   MPCFactory() = delete;
   ~MPCFactory() = delete;
 
+  /// @brief Read the `solver:` subtree onto @p out (keys it lacks keep
+  ///        their value in @p out; an undefined node leaves all of them).
+  /// @return false, leaving @p out unchanged, for a node that is not a map,
+  ///         a value of the wrong kind or an unknown rollout / LQ backend
+  ///         name. Value ranges are not checked here.
+  [[nodiscard]] static bool LoadSolverConfig(const YAML::Node& solver_node,
+                                             MPCSolverConfig& out) noexcept;
+
   /// @brief Parse YAML, construct the matching `MPCHandlerBase` subclass,
   ///        and run its `Init` against the supplied model + initial
   ///        phase context. On failure, `handler_out` stays null and the
@@ -91,14 +99,6 @@ class MPCFactory {
   ///                      drift between phase manager and solver).
   /// @param handler_out   out-param: the created handler on success.
   /// @return              structured status; `kNoError` on success.
-  /// @brief Read the `solver:` subtree onto @p out (keys it lacks keep
-  ///        their value in @p out; an undefined node leaves all of them).
-  /// @return false, leaving @p out unchanged, for a node that is not a map,
-  ///         a value of the wrong kind or an unknown rollout / LQ backend
-  ///         name. Value ranges are not checked here.
-  [[nodiscard]] static bool LoadSolverConfig(const YAML::Node& solver_node,
-                                             MPCSolverConfig& out) noexcept;
-
   [[nodiscard]] static MPCFactoryStatus Create(
       const YAML::Node& cfg, const RobotModelHandler& model, const PhaseContext& initial_ctx,
       std::unique_ptr<MPCHandlerBase>& handler_out) noexcept;

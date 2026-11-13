@@ -22,7 +22,8 @@
 ///
 /// Thread-safety: an instance is owned by the MPC thread; no calls are
 /// expected to race. `SetTaskTarget` may come from another thread and is
-/// responsible for its own synchronisation in concrete implementations.
+/// responsible for its own synchronisation in concrete implementations; a
+/// subclass may declare further entry points safe from other threads.
 
 #include "rtc_mpc/phase/phase_context.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"

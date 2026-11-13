@@ -46,6 +46,11 @@
 /// thread starts. `Update` runs on the MPC thread (an RT path): it allocates,
 /// throws and locks nothing. `SetCommand` may be called from one other thread
 /// at a time (a seqlock slot: single writer, the reader never blocks it).
+/// `Update`'s read of that slot retries while a store is in progress, so
+/// the writer must never be scheduled on the MPC thread's core: preempted
+/// mid-store by the higher-priority reader, it would stall the tick. Two
+/// concurrent writers can tear the slot — wire one caller only (a timer in
+/// a mutually exclusive callback group).
 /// `RequestGait`, `SetPolicyEnabled`, `RequestReset` and `ForcePhase` may be
 /// called from any thread (the scheduler's atomics, applied by the next
 /// `Update`); `CurrentPhaseId`, `CurrentPhaseName` and `LastUpdateError` too.
