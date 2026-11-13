@@ -15,17 +15,29 @@ namespace {
   return k > 0.0 ? static_cast<std::int64_t>(k) : 0;
 }
 
-[[nodiscard]] double PhaseStart(const GaitTemplate& g, double anchor, std::int64_t k,
-                                std::size_t j) noexcept {
+// The phase a switched-to gait took over at, with its exact start (t_s): the
+// anchor is t_s − switching_time[phase], and recomputing t_s from it rounds
+// to either side.
+struct EntryStart {
+  std::size_t phase{0};
+  double start{0.0};
+};
+
+[[nodiscard]] double PhaseStart(const GaitTemplate& g, double anchor, std::int64_t k, std::size_t j,
+                                const EntryStart* entry = nullptr) noexcept {
+  if (entry != nullptr && k == 0 && j == entry->phase) {
+    return entry->start;
+  }
   return anchor + static_cast<double>(k) * g.period + g.switching_time[j];
 }
 
 // Mode of gait `g` (anchored at `anchor`) at time `x ≥ anchor`.
-[[nodiscard]] std::uint32_t GaitModeAt(const GaitTemplate& g, double anchor, double x) noexcept {
+[[nodiscard]] std::uint32_t GaitModeAt(const GaitTemplate& g, double anchor, double x,
+                                       const EntryStart* entry = nullptr) noexcept {
   std::uint32_t mode = g.mode[0];
   for (std::int64_t k = FirstTile(anchor, g.period, x);; ++k) {
     for (std::size_t j = 0; j < g.n_phases; ++j) {
-      if (PhaseStart(g, anchor, k, j) > x) {
+      if (PhaseStart(g, anchor, k, j, entry) > x) {
         return mode;
       }
       mode = g.mode[j];
@@ -53,17 +65,33 @@ struct EventWriter {
 };
 
 // Phase starts of `g` strictly inside (from, to), pushed in order.
-void TileEvents(const GaitTemplate& g, double anchor, double from, double to,
-                EventWriter& w) noexcept {
+void TileEvents(const GaitTemplate& g, double anchor, double from, double to, EventWriter& w,
+                const EntryStart* entry = nullptr) noexcept {
   for (std::int64_t k = FirstTile(anchor, g.period, from);; ++k) {
     for (std::size_t j = 0; j < g.n_phases; ++j) {
-      const double start = PhaseStart(g, anchor, k, j);
+      const double start = PhaseStart(g, anchor, k, j, entry);
       if (start >= to) {
         return;
       }
       if (start > from) {
         w.Push(start, g.mode[j]);
       }
+    }
+  }
+}
+
+// Phase starts of `g` after phase `entry` of tile 0 (by index, not by time),
+// below `to`, pushed in order: the gait entered at that phase's start, whose
+// time is the switch time only up to rounding.
+void TileEventsAfterEntry(const GaitTemplate& g, double anchor, std::size_t entry, double to,
+                          EventWriter& w) noexcept {
+  for (std::int64_t k = 0;; ++k) {
+    for (std::size_t j = k == 0 ? entry + 1 : 0; j < g.n_phases; ++j) {
+      const double start = PhaseStart(g, anchor, k, j);
+      if (start >= to) {
+        return;
+      }
+      w.Push(start, g.mode[j]);
     }
   }
 }
@@ -127,7 +155,7 @@ GaitSchedulerError GaitScheduler::Init(const GaitTable& table, double horizon_s)
   schedule_.schedule_id = id;
   schedule_.epoch = epoch_;
   current_ = target_ = 0;
-  pending_ = anchored_ = false;
+  pending_ = anchored_ = entry_taken_ = false;
   last_t_ = 0.0;
   requested_gait_.store(-1, std::memory_order_release);
   reset_requested_.store(false, std::memory_order_release);
@@ -150,6 +178,8 @@ void GaitScheduler::RequestReset() noexcept {
 }
 
 double GaitScheduler::SwitchTime(double t_r) const noexcept {
+  const EntryStart taken{taken_phase_, taken_start_};
+  const EntryStart* const entry = entry_taken_ ? &taken : nullptr;
   const GaitTemplate& g = table_.gaits[current_];
   const double earliest = t_r + table_.switch_lead;
   const double limit = WindowEnd(t_r);
@@ -159,7 +189,7 @@ double GaitScheduler::SwitchTime(double t_r) const noexcept {
   }
   for (std::int64_t k = FirstTile(anchor_, g.period, earliest);; ++k) {
     for (std::size_t j = 0; j < g.n_phases; ++j) {
-      const double start = PhaseStart(g, anchor_, k, j);
+      const double start = PhaseStart(g, anchor_, k, j, entry);
       if (start >= limit) {
         return limit;
       }
@@ -192,7 +222,8 @@ void GaitScheduler::Commit(std::uint32_t gait, double t) noexcept {
   ++epoch_;
   last_commit_ = t;
   if (pending_) {
-    next_anchor_ = EntryAnchor();
+    entry_phase_ = EntryPhaseOfTarget();
+    next_anchor_ = t_switch_ - table_.gaits[target_].switching_time[entry_phase_];
     CompleteIfDue(t);  // a single-mode gait with zero lead switches at once
   }
 }
@@ -203,6 +234,9 @@ void GaitScheduler::CompleteIfDue(double t) noexcept {
     since_ = t_switch_;
     current_ = target_;
     pending_ = false;
+    entry_taken_ = true;  // the running gait's entry phase starts at t_s exactly
+    taken_phase_ = entry_phase_;
+    taken_start_ = t_switch_;
   }
 }
 
@@ -246,12 +280,14 @@ double GaitPhase(const GaitPhaseInfo& info, double t) noexcept {
 
 bool GaitScheduler::SwingStart(std::size_t contact, double t, double& t_lo,
                                bool& clamped) const noexcept {
+  const EntryStart taken{taken_phase_, taken_start_};
+  const EntryStart* const entry = entry_taken_ ? &taken : nullptr;
   if (!anchored_ || !std::isfinite(t) || contact >= table_.n_contacts) {
     return false;
   }
   const GaitTemplate& g = table_.gaits[current_];
   const std::uint32_t bit = 1U << contact;
-  if ((GaitModeAt(g, anchor_, t) & bit) != 0) {
+  if ((GaitModeAt(g, anchor_, t, entry) & bit) != 0) {
     return false;
   }
   double start_of_swing = since_;
@@ -264,7 +300,7 @@ bool GaitScheduler::SwingStart(std::size_t contact, double t, double& t_lo,
   for (std::int64_t k = k_t > k_since ? k_t : k_since;; ++k) {
     bool past = false;
     for (std::size_t j = 0; j < g.n_phases; ++j) {
-      const double start = PhaseStart(g, anchor_, k, j);
+      const double start = PhaseStart(g, anchor_, k, j, entry);
       if (start > t) {
         past = true;
         break;
@@ -286,29 +322,35 @@ bool GaitScheduler::SwingStart(std::size_t contact, double t, double& t_lo,
   return true;
 }
 
-double GaitScheduler::EntryAnchor() const noexcept {
+std::size_t GaitScheduler::EntryPhaseOfTarget() const noexcept {
+  const EntryStart taken{taken_phase_, taken_start_};
+  const EntryStart* const entry = entry_taken_ ? &taken : nullptr;
   const GaitTemplate& run = table_.gaits[current_];
-  const GaitTemplate& next = table_.gaits[target_];
-  const std::uint32_t before =
-      GaitModeAt(run, anchor_, std::nextafter(t_switch_, -std::numeric_limits<double>::infinity()));
-  return t_switch_ - next.switching_time[EntryPhase(next, before)];
+  const std::uint32_t before = GaitModeAt(
+      run, anchor_, std::nextafter(t_switch_, -std::numeric_limits<double>::infinity()), entry);
+  return EntryPhase(table_.gaits[target_], before);
 }
 
 bool GaitScheduler::Build(double t, ContactSchedule& out) const noexcept {
+  const EntryStart taken{taken_phase_, taken_start_};
+  const EntryStart* const entry = entry_taken_ ? &taken : nullptr;
   out = ContactSchedule{};
   out.t0 = t;
   out.t_end = WindowEnd(t);
   out.n_contacts = table_.n_contacts;
   out.epoch = epoch_;
   const GaitTemplate& run = table_.gaits[current_];
-  out.mode[0] = GaitModeAt(run, anchor_, t);
+  out.mode[0] = GaitModeAt(run, anchor_, t, entry);
   EventWriter w{out};
   const bool switching = pending_ && t_switch_ < out.t_end;
-  TileEvents(run, anchor_, t, switching ? t_switch_ : out.t_end, w);
+  TileEvents(run, anchor_, t, switching ? t_switch_ : out.t_end, w, entry);
   if (switching) {
+    // The entry phase starts at t_s: its mode, then the phases after it by
+    // index — by time, their starts computed from the anchor can round to
+    // either side of t_s and leave an interval of a few ulp around it.
     const GaitTemplate& next = table_.gaits[target_];
-    w.Push(t_switch_, GaitModeAt(next, next_anchor_, t_switch_));
-    TileEvents(next, next_anchor_, t_switch_, out.t_end, w);
+    w.Push(t_switch_, next.mode[entry_phase_]);
+    TileEventsAfterEntry(next, next_anchor_, entry_phase_, out.t_end, w);
   }
   return !w.overflow;
 }
@@ -330,6 +372,7 @@ GaitSchedulerError GaitScheduler::Advance(double t, const FilteredCommand& cmd,
     since_ = t;
     current_ = target_ = 0;
     pending_ = false;
+    entry_taken_ = false;
     last_commit_ = t;
     ++epoch_;
     anchored_ = true;
