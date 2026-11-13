@@ -6,7 +6,7 @@
 ///
 /// `RobotModelHandler` consumes a pre-built `pinocchio::Model` (typically
 /// produced by `rtc_urdf_bridge::PinocchioModelBuilder`) and a YAML config
-/// describing MPC-relevant frames (contact frames, end-effector). It
+/// describing MPC-relevant frames (contact frames, end-effectors). It
 /// resolves frame-name strings to Pinocchio frame ids **once**, at Init
 /// time, so the solve path can work purely with integer indices.
 ///
@@ -42,7 +42,7 @@ namespace rtc::mpc {
 enum class RobotModelInitError {
   kNoError = 0,
   kModelAlreadyInitialised,
-  kMissingEndEffectorFrame,         ///< YAML `end_effector_frame` not in model
+  kMissingEndEffectorFrame,         ///< a YAML end-effector frame not in model
   kMissingContactFrame,             ///< a YAML `contact_frames[i].name` not in model
   kInvalidContactDim,               ///< contact frame dim ∉ {3, 6}
   kInvalidYamlSchema,               ///< structure missing required keys
@@ -53,7 +53,10 @@ enum class RobotModelInitError {
 /// YAML schema expected by @ref RobotModelHandler::Init:
 ///
 /// ```yaml
-/// end_effector_frame: "<ee_frame_name>"  # required — URDF frame name
+/// end_effector_frame: "<ee_frame_name>"  # one end-effector (URDF frame name), or
+/// end_effector_frames:                   # several, in order — exactly one of the
+///   - "<ee_frame_0>"                     # two keys is required; the list holds
+///   - "<ee_frame_1>"                     # ≥ 1 distinct names
 /// base_frame: "<base_frame_name>"        # required (F-4 strict). Pass
 ///                                        # "universe" to opt into the
 ///                                        # world-frame fast path.
@@ -64,7 +67,10 @@ enum class RobotModelInitError {
 ///     dim: 3
 /// ```
 ///
-/// All frame names must exist in the `pinocchio::Model` passed to `Init`.
+/// All frame names must exist in the `pinocchio::Model` passed to `Init`. Both
+/// end-effector keys, neither, an empty list, a repeated name or a non-string
+/// entry is @c kInvalidYamlSchema; an unknown end-effector name is
+/// @c kMissingEndEffectorFrame. The scalar key is the one-element list.
 /// Missing `base_frame` is reported as @c kInvalidYamlSchema (no implicit
 /// universe fallback — that was removed in F-4). On a floating-base model
 /// `base_frame` must be `universe`: the base pose is part of the state, so no
@@ -120,7 +126,18 @@ class RobotModelHandler {
     return contact_frames_;
   }
 
-  [[nodiscard]] int end_effector_frame_id() const noexcept { return ee_frame_id_; }
+  /// @return frame id of the first end-effector (the only one under the scalar
+  ///         key), or −1 before @ref Init. Consumers that track one end-effector
+  ///         (frame placement cost, grasp phase manager) read this.
+  [[nodiscard]] int end_effector_frame_id() const noexcept {
+    return ee_frame_ids_.empty() ? -1 : ee_frame_ids_.front();
+  }
+
+  /// @return frame ids of every end-effector in YAML order (≥ 1 after
+  ///         @ref Init, empty before); the front is @ref end_effector_frame_id.
+  [[nodiscard]] const std::vector<int>& end_effector_frame_ids() const noexcept {
+    return ee_frame_ids_;
+  }
 
   /// @return Base frame id used as the reference for SE3 control. Always
   /// the resolved frame id of YAML `base_frame` — F-4 strict mode rejects a
@@ -148,7 +165,7 @@ class RobotModelHandler {
 
  private:
   const pinocchio::Model* model_{nullptr};
-  int ee_frame_id_{-1};
+  std::vector<int> ee_frame_ids_{};
   WbLayout layout_{};
   // Base frame for SE3 control. Always 0..nframes-1 after Init (F-4 strict).
   // base_is_universe_=true ⇔ base_frame_id_=0 (Pinocchio universe).

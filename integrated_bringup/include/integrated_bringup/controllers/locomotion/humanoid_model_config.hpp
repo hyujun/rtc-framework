@@ -120,12 +120,10 @@ void ValidateDevices(const HumanoidModelConfig& cfg,
 
 /// @brief The `RobotModelHandler::Init` YAML for `cfg` (rtc_mpc).
 ///
-/// The handler takes ONE `end_effector_frame` (required, existence-checked); this
-/// passes `end_effectors[0]` (WD-36). Its two consumers — the frame placement cost
-/// (off at `w_frame_placement <= 0`) and the grasp phase manager's TCP — mean
-/// nothing to locomotion; the loco-manipulation work (W4) generalises the handler to
-/// `end_effector_frames[]`. Contacts keep their order, so contact index i is
-/// `cfg.contacts[i]`.
+/// Every `end_effectors[i].frame` goes to the handler's `end_effector_frames` list in
+/// order, so its `end_effector_frame_ids()[i]` is `cfg.end_effectors[i]` and its single
+/// `end_effector_frame_id()` is the first. Contacts keep their order too, so contact
+/// index i is `cfg.contacts[i]`.
 /// @throws std::invalid_argument when `cfg.end_effectors` is empty (a config not
 ///         made by @ref LoadHumanoidModelConfig).
 [[nodiscard]] YAML::Node ToRobotModelHandlerYaml(const HumanoidModelConfig& cfg);

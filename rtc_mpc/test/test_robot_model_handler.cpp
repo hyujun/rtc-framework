@@ -26,6 +26,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include <filesystem>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -146,6 +148,70 @@ base_frame: panda_link0
   EXPECT_FALSE(handler.FrameId("no_such_frame").has_value());
 }
 
+// ── End-effector list ───────────────────────────────────────────────────────
+
+TEST_F(RobotModelHandlerTest, ScalarEndEffectorKeyIsAOneElementList) {
+  auto cfg = YAML::Load(R"(
+end_effector_frame: panda_hand_tcp
+base_frame: panda_link0
+)");
+  rtc::mpc::RobotModelHandler handler;
+  ASSERT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kNoError);
+  const int tcp = static_cast<int>(model_.getFrameId("panda_hand_tcp"));
+  ASSERT_EQ(handler.end_effector_frame_ids().size(), 1U);
+  EXPECT_EQ(handler.end_effector_frame_ids().front(), tcp);
+  EXPECT_EQ(handler.end_effector_frame_id(), tcp);
+}
+
+TEST_F(RobotModelHandlerTest, EndEffectorListKeepsOrderAndTheFirstIsTheSingleId) {
+  auto cfg = YAML::Load(R"(
+end_effector_frames: [panda_link7, panda_hand_tcp]
+base_frame: panda_link0
+)");
+  rtc::mpc::RobotModelHandler handler;
+  ASSERT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kNoError);
+  const std::vector<int> expected{static_cast<int>(model_.getFrameId("panda_link7")),
+                                  static_cast<int>(model_.getFrameId("panda_hand_tcp"))};
+  EXPECT_EQ(handler.end_effector_frame_ids(), expected);
+  EXPECT_EQ(handler.end_effector_frame_id(), expected.front());
+}
+
+TEST_F(RobotModelHandlerTest, EndEffectorSchemaViolationsAreRefusedAndLeaveItUninitialised) {
+  const char* const kBadSchemas[] = {
+      // both keys
+      "end_effector_frame: panda_hand_tcp\nend_effector_frames: [panda_link7]\n",
+      // empty list
+      "end_effector_frames: []\n",
+      // a repeated name
+      "end_effector_frames: [panda_hand_tcp, panda_hand_tcp]\n",
+      // a non-string entry
+      "end_effector_frames: [panda_hand_tcp, {name: panda_link7}]\n",
+      // the list key given a scalar
+      "end_effector_frames: panda_hand_tcp\n",
+      // the scalar key given a list
+      "end_effector_frame: [panda_hand_tcp]\n",
+  };
+  for (const char* body : kBadSchemas) {
+    YAML::Node cfg = YAML::Load(std::string(body) + "base_frame: panda_link0\n");
+    rtc::mpc::RobotModelHandler handler;
+    EXPECT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kInvalidYamlSchema) << body;
+    EXPECT_FALSE(handler.Initialised()) << body;
+    EXPECT_TRUE(handler.end_effector_frame_ids().empty()) << body;
+    EXPECT_EQ(handler.end_effector_frame_id(), -1) << body;
+  }
+}
+
+TEST_F(RobotModelHandlerTest, AnUnknownNameInTheEndEffectorListIsAMissingFrame) {
+  auto cfg = YAML::Load(R"(
+end_effector_frames: [panda_hand_tcp, not_a_real_frame]
+base_frame: panda_link0
+)");
+  rtc::mpc::RobotModelHandler handler;
+  EXPECT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kMissingEndEffectorFrame);
+  EXPECT_FALSE(handler.Initialised());
+  EXPECT_TRUE(handler.end_effector_frame_ids().empty());
+}
+
 TEST(RobotModelHandlerStandaloneTest, UninitialisedAccessorsSafe) {
   rtc::mpc::RobotModelHandler handler;
   EXPECT_FALSE(handler.Initialised());
@@ -153,6 +219,8 @@ TEST(RobotModelHandlerStandaloneTest, UninitialisedAccessorsSafe) {
   EXPECT_EQ(handler.nv(), 0);
   EXPECT_EQ(handler.nu(), 0);
   EXPECT_EQ(handler.n_contacts(), 0);
+  EXPECT_EQ(handler.end_effector_frame_id(), -1);
+  EXPECT_TRUE(handler.end_effector_frame_ids().empty());
   EXPECT_FALSE(handler.FrameId("anything").has_value());
 }
 

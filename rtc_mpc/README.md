@@ -32,10 +32,10 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `dynamics/` | `kinodynamic_dynamics.hpp` | 부동 베이스 kinodynamic ODE 와 stage 이산화 (`semi_implicit_euler` · `rk2`) 생성 · stage 안 사본의 접촉 mode 를 제자리 전환 (`OdeOf` · `SetMode`, 할당 0) |
 | `phase/` | `phase_manager_base.hpp` | 순수 가상 FSM 경계. 구체 구현은 하위 bringup 패키지가 갖는다 |
 | `phase/` | `phase_cost_config.hpp` | cost POD + no-throw YAML factory |
-| `phase/` | `phase_context.hpp` | manager 가 OCP builder 에 넘기는 묶음 (`ocp_type` dispatch key · `horizon` 포함) |
+| `phase/` | `phase_context.hpp` | manager → OCP builder 묶음 (dispatch key `ocp_type` · `horizon`) |
 | `ocp/` | `ocp_handler_base.hpp` | 추상 OCP builder (`Build` / `UpdateReferences`) · `control_model()` (joint torque / kinodynamic wrench — handler 가 이 값으로 base 를 거부 · `u` 를 pack) · `cold_seed()` |
 | `ocp/` | `contact_tracking_residual.hpp` | 접촉 추종 residual (가속도는 stage ODE) |
-| `ocp/` | `kinodynamic_ocp{,_config}.hpp` | kinodynamic OCP · `mpc.kinodynamic:` 로더 (mode · 참조는 `horizon` 에서 제자리, 할당 0) |
+| `ocp/` | `kinodynamic_ocp{,_config}.hpp` | kinodynamic OCP · `mpc.kinodynamic:` 로더 (`horizon` 의 mode · 참조를 할당 없이) |
 | `ocp/` | `cost_factory.hpp` | stage 별 `aligator::CostStack` 생성 (weight-gated, no-throw) |
 | `ocp/` | `contact_light_ocp.hpp` | `OCPHandlerBase` 구현, dispatch key `"contact_light"` |
 | `ocp/` | `contact_rich_ocp.hpp` | 접촉력 cost + 마찰 원뿔 부등식 추가, key `"contact_rich"` (cold start 는 호출자가 seed) |
@@ -65,7 +65,7 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 - RT 데이터는 trivially copyable 이다: `MPCSolution` · `MPCStateSnapshot` · `WbcReference` 는 SeqLock / TripleBuffer 로 건너가므로 동적 멤버가 없다. `TripleBuffer` 슬롯과 보간기의 사본은 생성 · Init 때 heap 에 한 번 잡고 (MPC thread 의 scratch · 이전 해는 인라인), 매 solve 는 Riccati gain 을 앞 노드 몇 개만 싣는다.
 - 계약 (타입 · layout · Riccati) 은 부동 베이스를 포함하지만 **보간은 fixed-base 만**이다: cubic Hermite 는 Euclidean `q` 를 가정하므로 부동 layout 으로 `Init` 된 manager 는 `ComputeReference` 를 거부한다 (`InterpMeta::floating_unsupported`).
 - `RobotModelHandler::Init` 은 throw 하지 않고 `RobotModelInitError` 를 돌려준다.
-- `end_effector_frame` 과 `base_frame` 이 모두 필수다. `base_frame` 누락은 `kInvalidYamlSchema`, 해석 불가 이름은 `kMissingBaseFrame` 이며 world 기준은 `base_frame: "universe"` 로 명시한다. 부동 베이스 모델은 `universe` 만 받는다 (`kBaseFrameNotUniverseOnFloating`). `PhaseContext::ee_target` 은 `base_frame` 기준이다.
+- `end_effector_frame` (또는 목록 `end_effector_frames`) 과 `base_frame` 이 필수다. `base_frame` 누락은 `kInvalidYamlSchema`, 해석 불가 이름은 `kMissingBaseFrame` 이며 world 기준은 `base_frame: "universe"` 로 명시한다. 부동 베이스 모델은 `universe` 만 받는다 (`kBaseFrameNotUniverseOnFloating`). `PhaseContext::ee_target` 은 `base_frame` 기준이다.
 
 ### 관측성
 

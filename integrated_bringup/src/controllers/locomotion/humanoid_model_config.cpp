@@ -241,7 +241,11 @@ YAML::Node ToRobotModelHandlerYaml(const HumanoidModelConfig& cfg) {
         "build the config with LoadHumanoidModelConfig");
   }
   YAML::Node out;
-  out["end_effector_frame"] = cfg.end_effectors.front().frame;  // WD-36
+  YAML::Node end_effectors(YAML::NodeType::Sequence);
+  for (const auto& ee : cfg.end_effectors) {
+    end_effectors.push_back(ee.frame);
+  }
+  out["end_effector_frames"] = end_effectors;
   out["base_frame"] = cfg.base_frame;
   YAML::Node contacts(YAML::NodeType::Sequence);
   for (const auto& c : cfg.contacts) {
