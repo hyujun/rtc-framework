@@ -58,6 +58,7 @@
 /// between solves, on the thread that runs them.
 
 #include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
+#include "rtc_mpc/ocp/contact_kinematics.hpp"
 #include "rtc_mpc/reference/stage_reference.hpp"
 #include "rtc_mpc/reference/surface_frame.hpp"
 
@@ -69,7 +70,6 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <Eigen/Core>
 #include <aligator/core/function-abstract.hpp>
-#include <pinocchio/multibody/data.hpp>
 #pragma GCC diagnostic pop
 
 #include <memory>
@@ -91,26 +91,14 @@ struct ContactTrackingTarget {
 /// @brief Evaluation buffers of one @ref ContactTrackingResidual.
 struct ContactTrackingData : aligator::StageFunctionDataTpl<double> {
   using Base = aligator::StageFunctionDataTpl<double>;
-  using Matrix6x = Eigen::Matrix<double, 6, Eigen::Dynamic>;
-  using Matrix3x = Eigen::Matrix<double, 3, Eigen::Dynamic>;
 
   ContactTrackingData(int ndx, int nu, int nr, const KinodynamicDynamics::Ode& ode);
 
-  pinocchio::Data pin_data;
-  std::shared_ptr<aligator::dynamics::ContinuousDynamicsDataTpl<double>> ode_data;
-  Eigen::VectorXd vdot;  ///< `[v̇_b; q̈_j]` of the last `evaluate`
+  ContactKinematics kin;  ///< the frame kinematics through the stage ODE
   /// The scale each contact was evaluated with (0 = block skipped): the
   /// Jacobian uses the same, so value and Jacobian always belong together.
   std::vector<double> scale_used;
   bool evaluated{false};  ///< an `evaluate` with a non-zero scale ran on this data
-  Matrix6x v_dq;          ///< frame velocity derivatives (LOCAL)
-  Matrix6x v_dv;          ///< also the frame Jacobian (LOCAL)
-  Matrix6x a_dq;          ///< frame spatial acceleration derivatives (LOCAL)
-  Matrix6x a_dv;
-  Matrix6x a_da;
-  Matrix3x jw;       ///< world angular Jacobian `J_ω` (rotation of the frame)
-  Matrix3x lin;      ///< scratch: a LOCAL classical-acceleration derivative
-  Matrix6x acc_jac;  ///< `∂(a, α)/∂v̇` on world axes
 };
 
 /// @brief The `18·n_contacts` contact tracking residual over the kinodynamic

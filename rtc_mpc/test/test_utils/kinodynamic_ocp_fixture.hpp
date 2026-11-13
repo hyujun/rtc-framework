@@ -38,8 +38,11 @@ inline constexpr int kKinoNodes = 32;     ///< stages
 inline constexpr double kKinoDt = 0.035;  ///< [s]
 
 /// The reference task's state, terminal and input weights (its R scaling
-/// 1e-3 folded in; the base orientation in tangent order roll, pitch, yaw)
-/// and the foot weights it applies.
+/// 1e-3 folded in; the base orientation in tangent order roll, pitch, yaw),
+/// the foot weights it applies, and its contact constraint gains, friction,
+/// CoP rectangle, joint-limit barrier and the 16 foot / knee sphere pairs
+/// (collision off, as shipped). The foot spheres sit in the ankle-roll frame
+/// at the sole centre and ±0.6·x_max along x from it.
 inline constexpr const char* kG1KinodynamicWeights = R"(
 state_weights:
   base_position: [0.0, 0.0, 10.0]
@@ -181,6 +184,56 @@ contact_tracking:
   angular_velocity: [2.0, 2.0, 2.0]
   linear_acceleration: [0.01, 0.01, 0.01]
   angular_acceleration: [0.01, 0.01, 0.01]
+constraints:
+  foot_constraint:
+    position_z: 100.0
+    orientation: 80.0
+    linear_velocity_xy: 20.0
+    linear_velocity_z: 10.0
+    angular_velocity: 20.0
+    linear_acceleration_xy: 1.0
+    linear_acceleration_z: 1.0
+    angular_acceleration: 1.0
+  friction: {mu: 0.4, grip_force: 0.0, regularization: 25.0}
+  contact_rectangle: {x_min: -0.09, x_max: 0.09, y_min: -0.03, y_max: 0.03}
+  joint_limits: {mu: 1200.0, delta: 0.1}
+  collision:
+    enabled: false
+    mu: 1500.0
+    delta: 0.04
+    pairs:
+    - {frame_a: left_ankle_roll_joint, offset_a: [0.089, 0.0, -0.035], radius_a: 0.05,
+       frame_b: right_ankle_roll_joint, offset_b: [0.089, 0.0, -0.035], radius_b: 0.05}
+    - {frame_a: left_ankle_roll_joint, offset_a: [0.089, 0.0, -0.035], radius_a: 0.05,
+       frame_b: right_ankle_roll_joint, offset_b: [-0.019, 0.0, -0.035], radius_b: 0.05}
+    - {frame_a: left_ankle_roll_joint, offset_a: [-0.019, 0.0, -0.035], radius_a: 0.05,
+       frame_b: right_ankle_roll_joint, offset_b: [0.089, 0.0, -0.035], radius_b: 0.05}
+    - {frame_a: left_ankle_roll_joint, offset_a: [-0.019, 0.0, -0.035], radius_a: 0.05,
+       frame_b: right_ankle_roll_joint, offset_b: [-0.019, 0.0, -0.035], radius_b: 0.05}
+    - {frame_a: left_ankle_roll_joint, offset_a: [0.035, 0.0, -0.035], radius_a: 0.05,
+       frame_b: right_ankle_roll_joint, offset_b: [0.089, 0.0, -0.035], radius_b: 0.05}
+    - {frame_a: left_ankle_roll_joint, offset_a: [0.035, 0.0, -0.035], radius_a: 0.05,
+       frame_b: right_ankle_roll_joint, offset_b: [-0.019, 0.0, -0.035], radius_b: 0.05}
+    - {frame_a: right_ankle_roll_joint, offset_a: [0.035, 0.0, -0.035], radius_a: 0.05,
+       frame_b: left_ankle_roll_joint, offset_b: [0.089, 0.0, -0.035], radius_b: 0.05}
+    - {frame_a: right_ankle_roll_joint, offset_a: [0.035, 0.0, -0.035], radius_a: 0.05,
+       frame_b: left_ankle_roll_joint, offset_b: [-0.019, 0.0, -0.035], radius_b: 0.05}
+    - {frame_a: left_ankle_roll_joint, offset_a: [0.035, 0.0, -0.035], radius_a: 0.05,
+       frame_b: right_ankle_roll_joint, offset_b: [0.035, 0.0, -0.035], radius_b: 0.05}
+    - {frame_a: left_knee_joint, offset_a: [0.0, 0.0, 0.0], radius_a: 0.075,
+       frame_b: right_knee_joint, offset_b: [0.0, 0.0, 0.0], radius_b: 0.075}
+    - {frame_a: left_ankle_roll_joint, offset_a: [0.035, 0.0, -0.035], radius_a: 0.05,
+       frame_b: right_ankle_roll_joint, offset_b: [0.0, 0.0, 0.0], radius_b: 0.05}
+    - {frame_a: left_ankle_roll_joint, offset_a: [0.089, 0.0, -0.035], radius_a: 0.05,
+       frame_b: right_ankle_roll_joint, offset_b: [0.0, 0.0, 0.0], radius_b: 0.05}
+    - {frame_a: left_ankle_roll_joint, offset_a: [-0.019, 0.0, -0.035], radius_a: 0.05,
+       frame_b: right_ankle_roll_joint, offset_b: [0.0, 0.0, 0.0], radius_b: 0.05}
+    - {frame_a: right_ankle_roll_joint, offset_a: [0.035, 0.0, -0.035], radius_a: 0.05,
+       frame_b: left_ankle_roll_joint, offset_b: [0.0, 0.0, 0.0], radius_b: 0.05}
+    - {frame_a: right_ankle_roll_joint, offset_a: [0.089, 0.0, -0.035], radius_a: 0.05,
+       frame_b: left_ankle_roll_joint, offset_b: [0.0, 0.0, 0.0], radius_b: 0.05}
+    - {frame_a: right_ankle_roll_joint, offset_a: [-0.019, 0.0, -0.035], radius_a: 0.05,
+       frame_b: left_ankle_roll_joint, offset_b: [0.0, 0.0, 0.0], radius_b: 0.05}
 )";
 
 /// `mpc.kinodynamic:` for the G1 (32 nodes, dt 0.035, terminal scaling 4).

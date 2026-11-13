@@ -4,8 +4,12 @@
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
+#include <initializer_list>
+#include <tuple>
 #include <utility>
+#include <vector>
 
 namespace rtc::mpc {
 
@@ -16,6 +20,7 @@ using internal::FieldRead;
 using internal::HasOnlyKeys;
 using internal::Present;
 using internal::ReadArray;
+using internal::ReadBool;
 using internal::ReadScalar;
 using internal::ToError;
 using Error = KinodynamicOCPConfigError;
@@ -191,6 +196,222 @@ using Error = KinodynamicOCPConfigError;
   return Error::kNoError;
 }
 
+/// A `constraints:` scalar: finite, then `> 0` (@p positive) or `≥ 0`.
+[[nodiscard]] Error ReadValue(const YAML::Node& map, const char* key, bool positive, double& out) {
+  const FieldRead r = ReadScalar(Child(map, key), out);
+  if (r != FieldRead::kOk) {
+    return ToError<Error>(r);
+  }
+  if (positive && !(out > 0.0)) {
+    return Error::kNonPositive;
+  }
+  if (!positive && out < 0.0) {
+    return Error::kNegativeWeight;
+  }
+  return Error::kNoError;
+}
+
+/// @p section (a child just read) is a map with only @p keys. Each section is
+/// bound to a node of its own: assigning one yaml-cpp node to another
+/// rebinds the assigned node inside the caller's tree.
+[[nodiscard]] Error CheckSection(const YAML::Node& section,
+                                 std::initializer_list<const char*> keys) {
+  if (!Present(section)) {
+    return Error::kMissingKey;
+  }
+  if (!section.IsMap()) {
+    return Error::kNotAMap;
+  }
+  if (!HasOnlyKeys(section, keys)) {
+    return Error::kUnknownKey;
+  }
+  return Error::kNoError;
+}
+
+[[nodiscard]] Error ReadBarrier(const YAML::Node& map, PolynomialBarrier& out) {
+  Error e = ReadValue(map, "mu", false, out.mu);
+  if (e != Error::kNoError) {
+    return e;
+  }
+  return ReadValue(map, "delta", true, out.delta);
+}
+
+[[nodiscard]] Error ReadFrame(const YAML::Node& pair, const char* key,
+                              const pinocchio::Model& model, pinocchio::FrameIndex& out) {
+  const YAML::Node v = Child(pair, key);
+  if (!Present(v)) {
+    return Error::kMissingKey;
+  }
+  if (!v.IsScalar()) {
+    return Error::kWrongType;
+  }
+  if (!model.existFrame(v.Scalar())) {
+    return Error::kUnknownFrame;
+  }
+  out = model.getFrameId(v.Scalar());
+  return Error::kNoError;
+}
+
+[[nodiscard]] Error ReadPairs(const YAML::Node& collision, const pinocchio::Model& model,
+                              std::vector<SpherePair>& out) {
+  const YAML::Node pairs = Child(collision, "pairs");
+  if (!Present(pairs)) {
+    return Error::kMissingKey;
+  }
+  if (!pairs.IsSequence()) {
+    return Error::kWrongType;
+  }
+  std::vector<SpherePair> read;
+  read.reserve(pairs.size());
+  for (const auto& p : pairs) {
+    if (!p.IsMap()) {
+      return Error::kNotAMap;
+    }
+    if (!HasOnlyKeys(p, {"frame_a", "offset_a", "radius_a", "frame_b", "offset_b", "radius_b"})) {
+      return Error::kUnknownKey;
+    }
+    SpherePair sp;
+    std::array<double, 3> oa{};
+    std::array<double, 3> ob{};
+    Error e = ReadFrame(p, "frame_a", model, sp.frame_a);
+    if (e == Error::kNoError) {
+      e = ReadFrame(p, "frame_b", model, sp.frame_b);
+    }
+    if (e != Error::kNoError) {
+      return e;
+    }
+    for (const auto& [key, arr] :
+         {std::pair<const char*, std::array<double, 3>*>{"offset_a", &oa},
+          std::pair<const char*, std::array<double, 3>*>{"offset_b", &ob}}) {
+      const FieldRead r = ReadArray(Child(p, key), *arr);
+      if (r != FieldRead::kOk) {
+        return ToError<Error>(r);
+      }
+    }
+    e = ReadValue(p, "radius_a", false, sp.radius_a);
+    if (e == Error::kNoError) {
+      e = ReadValue(p, "radius_b", false, sp.radius_b);
+    }
+    if (e != Error::kNoError) {
+      return e;
+    }
+    sp.offset_a = Eigen::Map<const Eigen::Vector3d>(oa.data());
+    sp.offset_b = Eigen::Map<const Eigen::Vector3d>(ob.data());
+    read.push_back(sp);
+  }
+  out = std::move(read);
+  return Error::kNoError;
+}
+
+[[nodiscard]] Error ReadConstraints(const YAML::Node& node, const RobotModelHandler& model,
+                                    KinodynamicConstraintsConfig& out) {
+  const YAML::Node map = Child(node, "constraints");
+  Error e = CheckSection(
+      map, {"foot_constraint", "friction", "contact_rectangle", "joint_limits", "collision"});
+  if (e != Error::kNoError) {
+    return e;
+  }
+  KinodynamicConstraintsConfig c;
+
+  const YAML::Node foot = Child(map, "foot_constraint");
+  e = CheckSection(foot, {"position_z", "orientation", "linear_velocity_xy", "linear_velocity_z",
+                          "angular_velocity", "linear_acceleration_xy", "linear_acceleration_z",
+                          "angular_acceleration"});
+  if (e != Error::kNoError) {
+    return e;
+  }
+  FootConstraintGains& g = c.foot_constraint;
+  const std::array<std::tuple<const char*, bool, double*>, 8> gains = {{
+      {"position_z", false, &g.position_z},
+      {"orientation", false, &g.orientation},
+      {"linear_velocity_xy", false, &g.linear_velocity_xy},
+      {"linear_velocity_z", false, &g.linear_velocity_z},
+      {"angular_velocity", false, &g.angular_velocity},
+      {"linear_acceleration_xy", true, &g.linear_acceleration_xy},
+      {"linear_acceleration_z", true, &g.linear_acceleration_z},
+      {"angular_acceleration", true, &g.angular_acceleration},
+  }};
+  for (const auto& [key, positive, dst] : gains) {
+    e = ReadValue(foot, key, positive, *dst);
+    if (e != Error::kNoError) {
+      return e;
+    }
+  }
+
+  const YAML::Node friction = Child(map, "friction");
+  e = CheckSection(friction, {"mu", "grip_force", "regularization"});
+  if (e == Error::kNoError) {
+    e = ReadValue(friction, "mu", true, c.friction.mu);
+  }
+  if (e == Error::kNoError) {
+    e = ReadValue(friction, "grip_force", false, c.friction.grip_force);
+  }
+  if (e == Error::kNoError) {
+    e = ReadValue(friction, "regularization", true, c.friction.regularization);
+  }
+  if (e != Error::kNoError) {
+    return e;
+  }
+
+  const YAML::Node rectangle = Child(map, "contact_rectangle");
+  e = CheckSection(rectangle, {"x_min", "x_max", "y_min", "y_max"});
+  if (e != Error::kNoError) {
+    return e;
+  }
+  ContactRectangle& rect = c.contact_rectangle;
+  for (const auto& [key, dst] : {std::pair<const char*, double*>{"x_min", &rect.x_min},
+                                 std::pair<const char*, double*>{"x_max", &rect.x_max},
+                                 std::pair<const char*, double*>{"y_min", &rect.y_min},
+                                 std::pair<const char*, double*>{"y_max", &rect.y_max}}) {
+    const FieldRead r = ReadScalar(Child(rectangle, key), *dst);
+    if (r != FieldRead::kOk) {
+      return ToError<Error>(r);
+    }
+  }
+  if (!(rect.x_min < 0.0 && 0.0 < rect.x_max && rect.y_min < 0.0 && 0.0 < rect.y_max)) {
+    return Error::kInvalidRectangle;
+  }
+
+  const YAML::Node limits = Child(map, "joint_limits");
+  e = CheckSection(limits, {"mu", "delta"});
+  if (e == Error::kNoError) {
+    e = ReadBarrier(limits, c.joint_limits);
+  }
+  if (e != Error::kNoError) {
+    return e;
+  }
+  const pinocchio::Model& m = model.model();
+  // The joints the barrier limits need a non-empty range.
+  for (pinocchio::JointIndex j = 1; j < static_cast<pinocchio::JointIndex>(m.njoints); ++j) {
+    if (!JointLimitBarrierCost::IsLimitedJoint(m, j)) {
+      continue;
+    }
+    const auto iq = m.joints[j].idx_q();
+    if (!(m.lowerPositionLimit[iq] < m.upperPositionLimit[iq])) {
+      return Error::kInvalidJointLimit;
+    }
+  }
+
+  const YAML::Node collision = Child(map, "collision");
+  e = CheckSection(collision, {"enabled", "mu", "delta", "pairs"});
+  if (e != Error::kNoError) {
+    return e;
+  }
+  const FieldRead r = ReadBool(Child(collision, "enabled"), c.collision_enabled);
+  if (r != FieldRead::kOk) {
+    return ToError<Error>(r);
+  }
+  e = ReadBarrier(collision, c.collision);
+  if (e == Error::kNoError) {
+    e = ReadPairs(collision, m, c.collision_pairs);
+  }
+  if (e != Error::kNoError) {
+    return e;
+  }
+  out = std::move(c);
+  return Error::kNoError;
+}
+
 [[nodiscard]] Error Load(const YAML::Node& node, const RobotModelHandler& model,
                          KinodynamicOCPConfig& out) {
   if (!model.Initialised()) {
@@ -206,8 +427,9 @@ using Error = KinodynamicOCPConfigError;
   if (!node.IsMap()) {
     return Error::kNotAMap;
   }
-  if (!HasOnlyKeys(node, {"horizon_nodes", "dt", "integrator", "terminal_scaling", "state_weights",
-                          "terminal_weights", "input_weights", "contact_tracking"})) {
+  if (!HasOnlyKeys(node,
+                   {"horizon_nodes", "dt", "integrator", "terminal_scaling", "state_weights",
+                    "terminal_weights", "input_weights", "contact_tracking", "constraints"})) {
     return Error::kUnknownKey;
   }
   KinodynamicOCPConfig cfg;
@@ -269,6 +491,10 @@ using Error = KinodynamicOCPConfigError;
     return e;
   }
   e = ReadContactTracking(node, cfg.contact_tracking_weights);
+  if (e != Error::kNoError) {
+    return e;
+  }
+  e = ReadConstraints(node, model, cfg.constraints);
   if (e != Error::kNoError) {
     return e;
   }

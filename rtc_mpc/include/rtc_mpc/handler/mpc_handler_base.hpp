@@ -18,8 +18,9 @@
 ///   converted into `MPCSolveError` enum values.
 ///
 /// Warm-start strategy (common across concrete handlers):
-/// - First solve after `Init`: cold seed via gravity-comp τ (closes Risk
-///   #14 for contact-rich handlers) + `solver.run(problem, xs, us)`.
+/// - First solve after `Init`: the OCP's cold seed (`ColdSeed` — zero,
+///   gravity-comp τ for contact-rich handlers, or the kinodynamic OCP's
+///   per-node reference control) + `solver.run(problem, xs, us)`.
 /// - Subsequent solves on unchanged topology: shift `results_` left via
 ///   `ResultsTpl::cycleAppend(problem, x_current)` and call
 ///   `solver.run(problem)` with empty inits so the solver re-uses

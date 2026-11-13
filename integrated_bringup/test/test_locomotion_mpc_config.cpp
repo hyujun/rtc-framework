@@ -33,9 +33,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -166,6 +168,111 @@ TEST_F(LocomotionMpcConfig, TheInstalledWeightsAreTheReferenceTasks) {
   foot << 0.0, 0.0, 0.0, 1e4, 1e4, 0.0, 5.0, 5.0, 0.0, 2.0, 2.0, 2.0, 0.01, 0.01, 0.01, 0.01, 0.01,
       0.01;
   EXPECT_TRUE(BitEqual(cfg.contact_tracking_weights, foot));
+}
+
+// The installed contact constraints equal the reference task's: its
+// foot_constraint gains, friction cone and CoP rectangle, its joint-limit and
+// collision barriers, and its 16 foot / knee sphere pairs rebuilt here from
+// its definition (foot centre, centre ± 0.6·x_max along the sole, ankle; the
+// knees) — with the sole frame of this model as the foot centre.
+TEST_F(LocomotionMpcConfig, TheInstalledConstraintsAreTheReferenceTasks) {
+  rtc::mpc::KinodynamicOCPConfig cfg;
+  ASSERT_EQ(rtc::mpc::LoadKinodynamicOCPConfig(root_["mpc"]["kinodynamic"], handler_, cfg),
+            rtc::mpc::KinodynamicOCPConfigError::kNoError);
+  const rtc::mpc::KinodynamicConstraintsConfig& c = cfg.constraints;
+  const rtc::mpc::FootConstraintGains& g = c.foot_constraint;
+  EXPECT_EQ(g.position_z, 100.0);
+  EXPECT_EQ(g.orientation, 80.0);
+  EXPECT_EQ(g.linear_velocity_xy, 20.0);
+  EXPECT_EQ(g.linear_velocity_z, 10.0);
+  EXPECT_EQ(g.angular_velocity, 20.0);
+  EXPECT_EQ(g.linear_acceleration_xy, 1.0);
+  EXPECT_EQ(g.linear_acceleration_z, 1.0);
+  EXPECT_EQ(g.angular_acceleration, 1.0);
+  EXPECT_EQ(c.friction.mu, 0.4);
+  EXPECT_EQ(c.friction.grip_force, 0.0);
+  EXPECT_EQ(c.friction.regularization, 25.0);
+  EXPECT_EQ(c.contact_rectangle.x_min, -0.09);
+  EXPECT_EQ(c.contact_rectangle.x_max, 0.09);
+  EXPECT_EQ(c.contact_rectangle.y_min, -0.03);
+  EXPECT_EQ(c.contact_rectangle.y_max, 0.03);
+  EXPECT_EQ(c.joint_limits.mu, 1200.0);
+  EXPECT_EQ(c.joint_limits.delta, 0.1);
+  EXPECT_FALSE(c.collision_enabled);
+  EXPECT_EQ(c.collision.mu, 1500.0);
+  EXPECT_EQ(c.collision.delta, 0.04);
+
+  // The sole frames sit in their ankle-roll joint frames, unrotated.
+  std::array<Eigen::Vector3d, 2> centre;
+  const std::array<const char*, 2> side = {"left", "right"};
+  for (std::size_t s = 0; s < 2; ++s) {
+    const pinocchio::Frame& sole = model_.frames[model_.getFrameId(std::string(side[s]) + "_sole")];
+    const pinocchio::Frame& ankle =
+        model_.frames[model_.getFrameId(std::string(side[s]) + "_ankle_roll_joint")];
+    ASSERT_EQ(sole.parentJoint, ankle.parentJoint);
+    const pinocchio::SE3 rel = ankle.placement.actInv(sole.placement);
+    EXPECT_TRUE(rel.rotation().isIdentity(1e-12));
+    centre[s] = rel.translation();
+  }
+
+  struct Point {
+    std::size_t side;
+    char what;  // c centre, 1 / 2 the sole's front / back point, a ankle, k knee
+  };
+
+  const auto where = [&](const Point& p, std::string& frame, Eigen::Vector3d& offset, double& r) {
+    const std::string s(side[p.side]);
+    frame = s + (p.what == 'k' ? "_knee_joint" : "_ankle_roll_joint");
+    r = p.what == 'k' ? 0.075 : 0.05;
+    offset = Eigen::Vector3d::Zero();
+    if (p.what == 'c' || p.what == '1' || p.what == '2') {
+      offset = centre[p.side];
+    }
+    if (p.what == '1') {
+      offset.x() += 0.6 * c.contact_rectangle.x_max;
+    }
+    if (p.what == '2') {
+      offset.x() += 0.6 * c.contact_rectangle.x_min;
+    }
+  };
+  const std::size_t L = 0;
+  const std::size_t R = 1;
+  const std::array<std::pair<Point, Point>, 16> expect = {{
+      {{L, '1'}, {R, '1'}},
+      {{L, '1'}, {R, '2'}},
+      {{L, '2'}, {R, '1'}},
+      {{L, '2'}, {R, '2'}},
+      {{L, 'c'}, {R, '1'}},
+      {{L, 'c'}, {R, '2'}},
+      {{R, 'c'}, {L, '1'}},
+      {{R, 'c'}, {L, '2'}},
+      {{L, 'c'}, {R, 'c'}},
+      {{L, 'k'}, {R, 'k'}},
+      {{L, 'c'}, {R, 'a'}},
+      {{L, '1'}, {R, 'a'}},
+      {{L, '2'}, {R, 'a'}},
+      {{R, 'c'}, {L, 'a'}},
+      {{R, '1'}, {L, 'a'}},
+      {{R, '2'}, {L, 'a'}},
+  }};
+  ASSERT_EQ(c.collision_pairs.size(), expect.size());
+  for (std::size_t i = 0; i < expect.size(); ++i) {
+    const rtc::mpc::SpherePair& got = c.collision_pairs[i];
+    std::string fa;
+    std::string fb;
+    Eigen::Vector3d oa;
+    Eigen::Vector3d ob;
+    double ra = 0.0;
+    double rb = 0.0;
+    where(expect[i].first, fa, oa, ra);
+    where(expect[i].second, fb, ob, rb);
+    EXPECT_EQ(got.frame_a, model_.getFrameId(fa)) << "pair " << i;
+    EXPECT_EQ(got.frame_b, model_.getFrameId(fb)) << "pair " << i;
+    EXPECT_LE((got.offset_a - oa).cwiseAbs().maxCoeff(), 1e-12) << "pair " << i;
+    EXPECT_LE((got.offset_b - ob).cwiseAbs().maxCoeff(), 1e-12) << "pair " << i;
+    EXPECT_EQ(got.radius_a, ra) << "pair " << i;
+    EXPECT_EQ(got.radius_b, rb) << "pair " << i;
+  }
 }
 
 TEST_F(LocomotionMpcConfig, TheFactoryCreatesTheMpcOnTheBodyModel) {

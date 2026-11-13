@@ -99,11 +99,14 @@ class MPCHandlerCore {
   ///        `ContactFrameInfo` list — the sum of per-frame `dim` values.
   void RecomputeContactVarDim(const RobotModelHandler& model) noexcept;
 
-  /// @brief Fill `results_.xs` with broadcast x0 and `results_.us` with
-  ///        gravity-comp τ (Risk #14 cold-seed). Called on first solve
-  ///        after Init or a topology rebuild. Non-allocating — uses the
-  ///        pre-built `pdata_` and pre-allocated tau buffer.
-  void ColdSeedGuess(const Eigen::VectorXd& q_current, const Eigen::VectorXd& x_current) noexcept;
+  /// @brief Fill `xs_warm_` with broadcast x0 and `us_warm_` with the
+  ///        OCP's cold seed (`ColdSeed`: zero, gravity-comp τ, or @p ocp's
+  ///        per-node reference control). Called on first solve after Init
+  ///        or a topology rebuild, after this tick's `UpdateReferences`.
+  ///        Non-allocating — uses the pre-built `pdata_` and the
+  ///        pre-allocated warm buffers.
+  void ColdSeedGuess(const OCPHandlerBase& ocp, const Eigen::VectorXd& q_current,
+                     const Eigen::VectorXd& x_current) noexcept;
 
   /// @brief Copy the top-nu × right-ndx block of `results_.gains_[k]`
   ///        (ColMajor) into `out.K_riccati[k]` in the shared row-major
@@ -136,8 +139,9 @@ class MPCHandlerCore {
   int nu_{0};
   int ndx_{0};  // state-tangent dim for Riccati feedback columns
   int n_contact_vars_{0};
-  double dt_{0.0};                     // node spacing (propagated to MPCSolution)
-  bool use_gravity_comp_seed_{false};  // the OCP asked for a gravity-comp cold seed
+  double dt_{0.0};                          // node spacing (propagated to MPCSolution)
+  bool use_gravity_comp_seed_{false};       // the OCP asked for a gravity-comp cold seed
+  bool use_reference_control_seed_{false};  // the OCP asked for its reference-control seed
   ControlModel control_model_{ControlModel::kJointTorque};
 
   // Pre-allocated scratch for the solve path.

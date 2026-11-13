@@ -53,6 +53,9 @@ add_library(rtc_mpc STATIC
   src/model/robot_model_handler.cpp
   src/model/wb_layout.cpp
   src/dynamics/kinodynamic_dynamics.cpp
+  src/ocp/barrier_costs.cpp
+  src/ocp/contact_constraints.cpp
+  src/ocp/contact_kinematics.cpp
   src/ocp/contact_tracking_residual.cpp
   src/ocp/kinodynamic_ocp_config.cpp
   src/ocp/kinodynamic_ocp.cpp
@@ -239,6 +242,9 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_kinodynamic_derivatives)
   add_mpc_gtest(test_contact_tracking_residual)
   add_mpc_gtest(test_contact_tracking_alloc_gate)
+  add_mpc_gtest(test_contact_constraints)
+  add_mpc_gtest(test_contact_constraints_alloc_gate)
+  add_mpc_gtest(test_barrier_costs)
   add_mpc_gtest(test_kinodynamic_ocp)
   add_mpc_gtest(test_kinodynamic_ocp_alloc_gate)
   add_mpc_gtest(test_kinodynamic_integrator)

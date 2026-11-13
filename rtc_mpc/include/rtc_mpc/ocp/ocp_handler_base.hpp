@@ -86,6 +86,9 @@ enum class ColdSeed {
   kZeroControl,          ///< measured state at every node, `u = 0`
   kGravityCompensation,  ///< measured state at every node, `u = g(q)` — joint torque
                          ///< only; a kinodynamic OCP gets the zero-control seed
+  kReferenceControl,     ///< measured state at every node, `u` the OCP's own
+                         ///< reference control of each node (`ReferenceControl`);
+                         ///< a node it cannot give gets `u = 0`
 };
 
 /// @brief Abstract OCP builder. Concrete implementations map the OCP onto a
@@ -147,6 +150,17 @@ class OCPHandlerBase {
 
   /// @return the cold-start guess this OCP wants after a build.
   [[nodiscard]] virtual ColdSeed cold_seed() const noexcept { return ColdSeed::kZeroControl; }
+
+  /// @brief For `ColdSeed::kReferenceControl`: write stage @p k's reference
+  ///        control (what its cost drives `u` toward, as of the last
+  ///        `Build` / `UpdateReferences`) into @p u. Does not allocate.
+  /// @return false, writing nothing, for an OCP without one, a stage out of
+  ///         range or a @p u of another size (the default: always false).
+  [[nodiscard]] virtual bool ReferenceControl(int k, Eigen::Ref<Eigen::VectorXd> u) const noexcept {
+    static_cast<void>(k);
+    static_cast<void>(u);
+    return false;
+  }
 };
 
 }  // namespace rtc::mpc

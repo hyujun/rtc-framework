@@ -10,10 +10,6 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#include <pinocchio/algorithm/frames-derivatives.hpp>
-#include <pinocchio/algorithm/frames.hpp>
-#include <pinocchio/algorithm/kinematics-derivatives.hpp>
-#include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/spatial/skew.hpp>
 #pragma GCC diagnostic pop
 
@@ -31,30 +27,6 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 /// What `target` returns for a contact that does not exist.
 const ContactTrackingTarget kNoTarget{};
-
-/// The tilt `e = −c / N` of a frame whose z axis is @p a against the plane
-/// normal @p n (`c = a × n`, `w = 1 + a·n`, `N = ‖(c, w)‖` floored at
-/// `ContactTrackingResidual::kMinArcNorm`) and, when @p de_da is given,
-/// `∂e/∂a` (zero change of `N` once floored).
-void Tilt(const Eigen::Vector3d& a, const Eigen::Vector3d& n, Eigen::Vector3d& e,
-          Eigen::Matrix3d* de_da) noexcept {
-  const Eigen::Vector3d c = a.cross(n);
-  const double w = 1.0 + a.dot(n);
-  const double raw = std::sqrt(c.squaredNorm() + w * w);
-  const bool floored = !(raw >= ContactTrackingResidual::kMinArcNorm);
-  const double norm = floored ? ContactTrackingResidual::kMinArcNorm : raw;
-  e = -c / norm;
-  if (de_da == nullptr) {
-    return;
-  }
-  // ∂c/∂a = −[n]×, ∂w/∂a = nᵀ.
-  const Eigen::Matrix3d dc = -pinocchio::skew(n);
-  Eigen::RowVector3d dnorm = Eigen::RowVector3d::Zero();
-  if (!floored) {
-    dnorm = (c.transpose() * dc + w * n.transpose()) / norm;
-  }
-  *de_da = -dc / norm + (c / (norm * norm)) * dnorm;
-}
 
 bool AllFinite(const ContactTrackingTarget& t) noexcept {
   return t.position.allFinite() && t.linear_velocity.allFinite() &&
@@ -74,19 +46,7 @@ bool ValidScale(double s) noexcept {
 
 ContactTrackingData::ContactTrackingData(int ndx, int nu, int nr,
                                          const KinodynamicDynamics::Ode& ode)
-    : Base(ndx, nu, nr),
-      pin_data(ode.pin_model_),
-      ode_data(ode.createData()),
-      vdot(Eigen::VectorXd::Zero(ode.pin_model_.nv)),
-      scale_used(ode.contact_ids_.size(), 0.0),
-      v_dq(Matrix6x::Zero(6, ode.pin_model_.nv)),
-      v_dv(Matrix6x::Zero(6, ode.pin_model_.nv)),
-      a_dq(Matrix6x::Zero(6, ode.pin_model_.nv)),
-      a_dv(Matrix6x::Zero(6, ode.pin_model_.nv)),
-      a_da(Matrix6x::Zero(6, ode.pin_model_.nv)),
-      jw(Matrix3x::Zero(3, ode.pin_model_.nv)),
-      lin(Matrix3x::Zero(3, ode.pin_model_.nv)),
-      acc_jac(Matrix6x::Zero(6, ode.pin_model_.nv)) {}
+    : Base(ndx, nu, nr), kin(ode), scale_used(ode.contact_ids_.size(), 0.0) {}
 
 ContactTrackingResidual::ContactTrackingResidual(const Ode& ode)
     : Base(ode.ndx(), ode.nu(), kRowsPerContact * static_cast<int>(ode.contact_ids_.size())),
@@ -213,35 +173,27 @@ void ContactTrackingResidual::evaluate(const ConstVectorRef& x, const ConstVecto
   }
 
   const pinocchio::Model& model = ode_->pin_model_;
-  const ConstVectorRef q = x.head(model.nq);
-  const ConstVectorRef v = x.segment(model.nq, model.nv);
-  ode_->forward(x, u, *d.ode_data);
-  d.vdot = d.ode_data->xdot_.segment(model.nv, model.nv);
-  pinocchio::forwardKinematics(model, d.pin_data, q, v, d.vdot);
+  d.kin.Forward(*ode_, x, u);
   d.evaluated = true;
 
+  FrameMotion f;
   for (std::size_t k = 0; k < contact_ids_.size(); ++k) {
     const double s = d.scale_used[k];
     if (s == 0.0) {
       continue;
     }
-    const pinocchio::FrameIndex fid = contact_ids_[k];
     const ContactTrackingTarget& t = targets_[k];
-    const pinocchio::SE3& oMf = pinocchio::updateFramePlacement(model, d.pin_data, fid);
-    const pinocchio::Motion vel =
-        pinocchio::getFrameVelocity(model, d.pin_data, fid, pinocchio::LOCAL_WORLD_ALIGNED);
-    const pinocchio::Motion acc = pinocchio::getFrameClassicalAcceleration(
-        model, d.pin_data, fid, pinocchio::LOCAL_WORLD_ALIGNED);
+    d.kin.FrameMotionOf(model, contact_ids_[k], f);
     Eigen::Vector3d tilt;
-    Tilt(oMf.rotation().col(2), normal_, tilt, nullptr);
+    FrameTilt(f.rotation.col(2), normal_, kMinArcNorm, tilt, nullptr);
 
     VectorRef r = d.value_.segment<kRowsPerContact>(static_cast<Eigen::Index>(k) * kRowsPerContact);
-    r.segment<3>(0) = s * (oMf.translation() - t.position);
+    r.segment<3>(0) = s * (f.position - t.position);
     r.segment<3>(3) = s * tilt;
-    r.segment<3>(6) = s * (vel.linear() - t.linear_velocity);
-    r.segment<3>(9) = s * (vel.angular() - t.angular_velocity);
-    r.segment<3>(12) = s * (acc.linear() - t.linear_acceleration);
-    r.segment<3>(15) = s * (acc.angular() - t.angular_acceleration);
+    r.segment<3>(6) = s * (f.linear_velocity - t.linear_velocity);
+    r.segment<3>(9) = s * (f.angular_velocity - t.angular_velocity);
+    r.segment<3>(12) = s * (f.linear_acceleration - t.linear_acceleration);
+    r.segment<3>(15) = s * (f.angular_acceleration - t.angular_acceleration);
   }
 }
 
@@ -261,13 +213,7 @@ void ContactTrackingResidual::computeJacobians(const ConstVectorRef& x, const Co
 
   const pinocchio::Model& model = ode_->pin_model_;
   const int nv = model.nv;
-  const ConstVectorRef q = x.head(model.nq);
-  const ConstVectorRef v = x.segment(model.nq, nv);
-  ode_->dForward(x, u, *d.ode_data);
-  // ∂v̇/∂x and ∂v̇/∂u: the velocity-derivative rows of the ODE Jacobians.
-  const ConstMatrixRef dvdot_dx = d.ode_data->Jx_.bottomRows(nv);
-  const ConstMatrixRef dvdot_du = d.ode_data->Ju_.bottomRows(nv);
-  pinocchio::computeForwardKinematicsDerivatives(model, d.pin_data, q, v, d.vdot);
+  d.kin.Derivatives(*ode_, x, u);
 
   for (std::size_t k = 0; k < contact_ids_.size(); ++k) {
     const double s = d.scale_used[k];
@@ -275,81 +221,18 @@ void ContactTrackingResidual::computeJacobians(const ConstVectorRef& x, const Co
       continue;
     }
     const pinocchio::FrameIndex fid = contact_ids_[k];
-    // The derivative routines write only the columns of the frame's support.
-    d.v_dq.setZero();
-    d.v_dv.setZero();
-    d.a_dq.setZero();
-    d.a_dv.setZero();
-    d.a_da.setZero();
-    // In LOCAL, then rotated to world axes: x_w = R·x_L, so
-    // δx_w = R·δx_L − [x_w]× δθ with δθ = J_ω δq the world rotation.
-    // (pinocchio's LOCAL_WORLD_ALIGNED derivatives disagree with central
-    // differences of the LOCAL_WORLD_ALIGNED quantities in the q columns —
-    // the base-translation columns of the linear rows come out non-zero.)
-    pinocchio::getFrameAccelerationDerivatives(model, d.pin_data, fid, pinocchio::LOCAL, d.v_dq,
-                                               d.v_dv, d.a_dq, d.a_dv, d.a_da);
-    const Eigen::Matrix3d& rot = d.pin_data.oMf[fid].rotation();
-    const pinocchio::Motion vel_l =
-        pinocchio::getFrameVelocity(model, d.pin_data, fid, pinocchio::LOCAL);
-    const pinocchio::Motion acc_l =
-        pinocchio::getFrameAcceleration(model, d.pin_data, fid, pinocchio::LOCAL);
-    const Eigen::Vector3d v_l = vel_l.linear();
-    const Eigen::Vector3d w_l = vel_l.angular();
-    const Eigen::Vector3d acc_cl = acc_l.linear() + w_l.cross(v_l);  // classical, LOCAL
-    const Eigen::Matrix3d skew_v_w = pinocchio::skew(Eigen::Vector3d(rot * v_l));
-    const Eigen::Matrix3d skew_w_w = pinocchio::skew(Eigen::Vector3d(rot * w_l));
-    const Eigen::Matrix3d skew_a_w = pinocchio::skew(Eigen::Vector3d(rot * acc_cl));
-    const Eigen::Matrix3d skew_alpha_w = pinocchio::skew(Eigen::Vector3d(rot * acc_l.angular()));
-    const Eigen::Matrix3d skew_vl = pinocchio::skew(v_l);
-    const Eigen::Matrix3d skew_wl = pinocchio::skew(w_l);
-    d.jw.noalias() = rot.lazyProduct(d.v_dv.bottomRows<3>());
-
     const Eigen::Index o = static_cast<Eigen::Index>(k) * kRowsPerContact;
-    MatrixRef jq = d.Jx_.block(o, 0, kRowsPerContact, nv);
-    MatrixRef jv = d.Jx_.block(o, nv, kRowsPerContact, nv);
-
-    // Position: the linear part of the frame Jacobian, on world axes.
-    jq.middleRows<3>(0).noalias() = rot.lazyProduct(d.v_dv.topRows<3>());
+    d.kin.FrameJacobian(model, fid, d.Jx_.middleRows<kRowsPerContact>(o),
+                        d.Ju_.middleRows<kRowsPerContact>(o));
 
     // Tilt: the frame z axis a = R·e_z turns with δθ, δa = δθ × a.
-    const Eigen::Vector3d axis = rot.col(2);
+    const Eigen::Vector3d axis = d.kin.pin_data.oMf[fid].rotation().col(2);
     Eigen::Vector3d tilt;
     Eigen::Matrix3d de_da;
-    Tilt(axis, normal_, tilt, &de_da);
+    FrameTilt(axis, normal_, kMinArcNorm, tilt, &de_da);
     const Eigen::Matrix3d de_dtheta = -de_da * pinocchio::skew(axis);
-    jq.middleRows<3>(3).noalias() = de_dtheta.lazyProduct(d.jw);
-
-    // Velocity.
-    jq.middleRows<3>(6).noalias() = rot.lazyProduct(d.v_dq.topRows<3>());
-    jq.middleRows<3>(6).noalias() -= skew_v_w.lazyProduct(d.jw);
-    jv.middleRows<3>(6).noalias() = rot.lazyProduct(d.v_dv.topRows<3>());
-    jq.middleRows<3>(9).noalias() = rot.lazyProduct(d.v_dq.bottomRows<3>());
-    jq.middleRows<3>(9).noalias() -= skew_w_w.lazyProduct(d.jw);
-    jv.middleRows<3>(9).noalias() = rot.lazyProduct(d.v_dv.bottomRows<3>());
-
-    // Linear acceleration at fixed v̇: the LOCAL classical acceleration
-    // a_L + ω_L × v_L (δ(ω × v) = [ω]× δv − [v]× δω), rotated.
-    d.lin.noalias() = d.a_dq.topRows<3>();
-    d.lin.noalias() += skew_wl.lazyProduct(d.v_dq.topRows<3>());
-    d.lin.noalias() -= skew_vl.lazyProduct(d.v_dq.bottomRows<3>());
-    jq.middleRows<3>(12).noalias() = rot.lazyProduct(d.lin);
-    jq.middleRows<3>(12).noalias() -= skew_a_w.lazyProduct(d.jw);
-    d.lin.noalias() = d.a_dv.topRows<3>();
-    d.lin.noalias() += skew_wl.lazyProduct(d.v_dv.topRows<3>());
-    d.lin.noalias() -= skew_vl.lazyProduct(d.v_dv.bottomRows<3>());
-    jv.middleRows<3>(12).noalias() = rot.lazyProduct(d.lin);
-
-    // Angular acceleration at fixed v̇.
-    jq.middleRows<3>(15).noalias() = rot.lazyProduct(d.a_dq.bottomRows<3>());
-    jq.middleRows<3>(15).noalias() -= skew_alpha_w.lazyProduct(d.jw);
-    jv.middleRows<3>(15).noalias() = rot.lazyProduct(d.a_dv.bottomRows<3>());
-
-    // Through v̇(x, u): ∂a/∂v̇ is the frame Jacobian on world axes (the
-    // classical term has no v̇).
-    d.acc_jac.topRows<3>().noalias() = rot.lazyProduct(d.a_da.topRows<3>());
-    d.acc_jac.bottomRows<3>().noalias() = rot.lazyProduct(d.a_da.bottomRows<3>());
-    d.Jx_.middleRows<6>(o + 12).noalias() += d.acc_jac * dvdot_dx;
-    d.Ju_.middleRows<6>(o + 12).noalias() = d.acc_jac * dvdot_du;
+    d.kin.lin = d.Jx_.block(o + 3, 0, 3, nv);  // J_ω
+    d.Jx_.block(o + 3, 0, 3, nv).noalias() = de_dtheta.lazyProduct(d.kin.lin);
 
     if (s != 1.0) {
       d.Jx_.middleRows<kRowsPerContact>(o) *= s;
