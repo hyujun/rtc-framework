@@ -38,10 +38,8 @@ void RiccatiFeedback::Init(int max_nv, int max_nu, int max_ndx) {
   max_ndx_ = max_ndx;
   view_ = nullptr;
   block_caps_ = false;
-  floating_ = false;
   K_.setZero(max_nu, max_ndx);
   dx_.setZero(max_ndx);
-  u_fb_raw_.setZero(max_nu);
   nu_ = 0;
   ndx_ = 0;
   // Fixed-base torque default: the accelerations are the first nv rows.
@@ -72,7 +70,6 @@ bool RiccatiFeedback::SetBlockCaps(const RiccatiBlockCaps& caps, int nv, bool fl
     return false;
   }
   caps_ = caps;
-  floating_ = floating;
   block_start_ = {0, nb, 2 * nb, nv, nv + nb, nv + 2 * nb, 2 * nv};
   block_caps_ = true;
   return true;
@@ -166,14 +163,14 @@ double RiccatiFeedback::CapScale() const noexcept {
       s = std::min(s, caps_[bb] / nb);
     }
   }
-  if (floating_) {
-    // The rotation block is a log map: its norm is at most π, where its
-    // axis flips.
-    constexpr double kPi = std::numbers::pi;
-    const auto rot = static_cast<std::size_t>(RiccatiBlock::kBaseOrientation);
-    const double theta = dx_.segment(block_start_[rot], 3).norm();
-    if (theta > kPi - kRotationFadeRad) {
-      s *= std::max(0.0, (kPi - theta) / kRotationFadeRad);
+  // A floating base has a rotation block: a log map, its norm at most π,
+  // where its axis flips.
+  const auto rot = static_cast<std::size_t>(RiccatiBlock::kBaseOrientation);
+  const int n_rot = block_start_[rot + 1] - block_start_[rot];
+  if (n_rot > 0) {
+    const double theta = dx_.segment(block_start_[rot], n_rot).norm();
+    if (theta > std::numbers::pi - kRotationFadeRad) {
+      s *= std::max(0.0, (std::numbers::pi - theta) / kRotationFadeRad);
     }
   }
   return s;
@@ -202,12 +199,11 @@ bool RiccatiFeedback::Apply(Eigen::Ref<Eigen::VectorXd> u_fb_out) noexcept {
       using RowMajorConstMap =
           Eigen::Map<const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>;
       const RowMajorConstMap K(view_, nu_, ndx_);
-      u_fb_raw_.head(n_write).noalias() = K.middleRows(row0, n_write) * dx_.head(ndx_);
+      u_fb_out.head(n_write).noalias() = K.middleRows(row0, n_write) * dx_.head(ndx_);
     } else {
-      u_fb_raw_.head(n_write).noalias() = K_.block(row0, 0, n_write, ndx_) * dx_.head(ndx_);
+      u_fb_out.head(n_write).noalias() = K_.block(row0, 0, n_write, ndx_) * dx_.head(ndx_);
     }
-    u_fb_raw_.head(n_write) *= effective_scale;
-    u_fb_out.head(n_write) = u_fb_raw_.head(n_write);
+    u_fb_out.head(n_write) *= effective_scale;
   }
   if (out_size > n_write) {
     u_fb_out.tail(out_size - n_write).setZero();

@@ -62,6 +62,20 @@ int64_t NodeSpacingNs(double dt_node) noexcept {
   return (ns >= 1.0 && ns <= 1e16) ? static_cast<int64_t>(ns) : 0;
 }
 
+/// A node's free-flyer orientation: pinocchio stores the quaternion xyzw,
+/// Eigen's constructor takes wxyz.
+Eigen::Quaterniond NodeOrientation(const std::array<double, kMaxNq>& q) noexcept {
+  constexpr auto kX = static_cast<std::size_t>(kFreeFlyerQuatOffset);
+  return Eigen::Quaterniond(q[kX + 3], q[kX], q[kX + 1], q[kX + 2]);
+}
+
+/// A node's base position slope in world: its LOCAL linear velocity rotated
+/// by its (normalised) orientation.
+Eigen::Vector3d WorldBaseSlope(const Eigen::Quaterniond& r,
+                               const std::array<double, kMaxNv>& v) noexcept {
+  return r.normalized().toRotationMatrix() * Eigen::Vector3d(v[0], v[1], v[2]);
+}
+
 }  // namespace
 
 void TrajectoryInterpolator::Init(int nq, int nv, int n_contact_vars) {
@@ -203,8 +217,9 @@ SampleSpot TrajectoryInterpolator::Sample(int64_t now_ns, const WbLayout& layout
     v[nbv + i] = r.xd;
     a[nbv + i] = r.xdd;
   }
-  // A configuration entry without a velocity: linear position. A velocity
-  // entry without a configuration entry: zero.
+  // Fixed base only (a floating one was refused above): a configuration
+  // entry without a velocity gets a linear position, a velocity entry
+  // without a configuration entry zero.
   for (int i = n_coupled; i < nj_q; ++i) {
     const auto iq = static_cast<std::size_t>(nbq + i);
     q[nbq + i] = (1.0 - alpha) * q0[iq] + alpha * q1[iq];
@@ -217,9 +232,8 @@ SampleSpot TrajectoryInterpolator::Sample(int64_t now_ns, const WbLayout& layout
   if (floating) {
     constexpr int kQ = kFreeFlyerQuatOffset;
     constexpr auto kX = static_cast<std::size_t>(kQ);
-    // pinocchio stores the quaternion xyzw; Eigen's constructor takes wxyz.
-    const Eigen::Quaterniond r0(q0[kX + 3], q0[kX], q0[kX + 1], q0[kX + 2]);
-    const Eigen::Quaterniond r1(q1[kX + 3], q1[kX], q1[kX + 1], q1[kX + 2]);
+    const Eigen::Quaterniond r0 = NodeOrientation(q0);
+    const Eigen::Quaterniond r1 = NodeOrientation(q1);
     if (rem == 0) {
       // The node itself: no slerp, no renormalisation.
       for (int j = 0; j < kFreeFlyerQuatSize; ++j) {
@@ -234,10 +248,8 @@ SampleSpot TrajectoryInterpolator::Sample(int64_t now_ns, const WbLayout& layout
       q[kQ + 3] = r.w();
     }
     // World-frame slopes of the base position: R · v_lin of each node.
-    const Eigen::Vector3d pd0 =
-        r0.normalized().toRotationMatrix() * Eigen::Vector3d(v0[0], v0[1], v0[2]);
-    const Eigen::Vector3d pd1 =
-        r1.normalized().toRotationMatrix() * Eigen::Vector3d(v1[0], v1[1], v1[2]);
+    const Eigen::Vector3d pd0 = WorldBaseSlope(r0, v0);
+    const Eigen::Vector3d pd1 = WorldBaseSlope(r1, v1);
     for (int j = 0; j < 3; ++j) {
       const auto jj = static_cast<std::size_t>(j);
       q[j] = EvalHermite(b, q0[jj], q1[jj], pd0[j], pd1[j], dt, inv_dt, inv_dt2).x;

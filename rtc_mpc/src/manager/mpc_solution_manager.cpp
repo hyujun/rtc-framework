@@ -14,27 +14,13 @@ void Bump(std::atomic<uint64_t>& c) noexcept {
   c.store(c.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 }
 
-/// The YAML names of the Riccati Δx blocks, in `RiccatiBlock` order.
-constexpr std::array<const char*, kRiccatiBlockCount> kBlockNames = {
-    "base_position",        "base_orientation",      "joint_position",
-    "base_linear_velocity", "base_angular_velocity", "joint_velocity"};
-
-bool IsBaseBlock(int b) noexcept {
-  return b == static_cast<int>(RiccatiBlock::kBasePosition) ||
-         b == static_cast<int>(RiccatiBlock::kBaseOrientation) ||
-         b == static_cast<int>(RiccatiBlock::kBaseLinearVelocity) ||
-         b == static_cast<int>(RiccatiBlock::kBaseAngularVelocity);
-}
-
 /// Every gain node the plan ships is finite (checked once per plan).
 bool GainsFinite(const MPCSolution& s) noexcept {
-  const std::size_t n = static_cast<std::size_t>(s.nu) * static_cast<std::size_t>(s.ndx);
+  const Eigen::Index n = static_cast<Eigen::Index>(s.nu) * s.ndx;
   for (int g = 0; g < s.gain_nodes; ++g) {
-    const auto& K = s.K_riccati[static_cast<std::size_t>(g)];
-    for (std::size_t i = 0; i < n; ++i) {
-      if (!std::isfinite(K[i])) {
-        return false;
-      }
+    if (!Eigen::Map<const Eigen::VectorXd>(s.K_riccati[static_cast<std::size_t>(g)].data(), n)
+             .allFinite()) {
+      return false;
     }
   }
   return true;
@@ -97,19 +83,16 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout,
     if (have_blocks) {
       for (const auto& kv : blocks) {
         const std::string name = kv.first.as<std::string>();
-        int b = -1;
-        for (int i = 0; i < kRiccatiBlockCount; ++i) {
-          if (name == kBlockNames[static_cast<std::size_t>(i)]) {
-            b = i;
-          }
-        }
+        const auto* it = std::find_if(kRiccatiBlockNames.begin(), kRiccatiBlockNames.end(),
+                                      [&name](const char* n) { return name == n; });
         const double cap = kv.second.as<double>();
-        if (b < 0 || !(cap > 0.0) || !std::isfinite(cap) ||
-            (IsBaseBlock(b) && !layout.floating_base())) {
+        const auto b = static_cast<std::size_t>(it - kRiccatiBlockNames.begin());
+        if (it == kRiccatiBlockNames.end() || !(cap > 0.0) || !std::isfinite(cap) ||
+            (IsBaseBlock(static_cast<RiccatiBlock>(b)) && !layout.floating_base())) {
           config_valid_ = false;
-          continue;
+        } else {
+          caps[b] = cap;
         }
-        caps[static_cast<std::size_t>(b)] = cap;
       }
     }
     if (config_valid_ && !riccati_.SetBlockCaps(caps, nv, layout.floating_base())) {
@@ -345,12 +328,13 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
   // Riccati feedback: the gain node nearest the sample time, read in place.
   u_fb_.setZero();
   if (gain_installed_) {
+    // gain_nodes ≤ kMaxGainNodes was checked at acceptance.
     const int64_t nearest = (spot.tau_ns + spot.dt_ns / 2) / spot.dt_ns;
-    int g = static_cast<int>(std::min<int64_t>(nearest, kMaxGainNodes - 1));
-    if (nearest > s.gain_nodes - 1) {
+    const int64_t last = s.gain_nodes - 1;
+    if (nearest > last) {
       Bump(gain_node_clamps_);
     }
-    g = std::min(g, s.gain_nodes - 1);
+    const int g = static_cast<int>(std::min(nearest, last));
     riccati_.UseGain(s.K_riccati[static_cast<std::size_t>(g)].data(), s.nu, s.ndx);
     const Eigen::Map<const Eigen::VectorXd> q_ref(out.q_ref.data(), layout_.nq);
     const Eigen::Map<const Eigen::VectorXd> v_ref(out.v_ref.data(), layout_.nv);

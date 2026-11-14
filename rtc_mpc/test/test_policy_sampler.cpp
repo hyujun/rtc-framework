@@ -49,6 +49,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <numbers>
 #include <random>
 #include <string>
 #include <vector>
@@ -57,7 +58,7 @@ namespace rtc::mpc {
 namespace {
 
 constexpr double kEps = std::numeric_limits<double>::epsilon();
-constexpr double kPi = 3.14159265358979323846;
+constexpr double kPi = std::numbers::pi;
 constexpr int kH = 8;
 constexpr double kDt = 0.035;
 constexpr int64_t kDtNs = 35'000'000;
@@ -401,6 +402,23 @@ TEST_F(SamplerTest, AnOppositeHemispherePairStillTakesTheShortWay) {
   EXPECT_GE(got.dot(a), 0.0);
 }
 
+// A floating layout whose joints have more configuration than tangent
+// entries (a continuous joint) cannot be paired row by row: refused.
+TEST(SamplerLayout, AFloatingLayoutWithUnpairedJointsIsRefused) {
+  WbLayout l = FloatingLayout();
+  l.nq += 1;
+  MPCSolutionManager mgr;
+  mgr.Init(Config(), l);
+  MPCSolution plan = FloatingPlan();
+  plan.nq = l.nq;
+  plan.nx = l.nq + l.nv;
+  mgr.PublishSolution(plan);
+  const Eigen::VectorXd q = Eigen::VectorXd::Zero(l.nq), v = Eigen::VectorXd::Zero(l.nv);
+  WbcReference ref{};
+  EXPECT_FALSE(mgr.SampleReference(q, v, At(kOrigin), ref));
+  EXPECT_TRUE(mgr.HasEverReceivedSolution()) << "taken, but not sampled";
+}
+
 // A node spacing whose horizon would not fit an int64 of nanoseconds is
 // refused, not sampled with an overflowed horizon.
 TEST_F(SamplerTest, ANodeSpacingTooLargeForTheClockIsRefused) {
@@ -522,7 +540,8 @@ TEST_F(SamplerTest, TheLastIntervalAtTheFullHorizonReadsRowHMinusOne) {
 
 TEST_F(SamplerTest, ANonFiniteSampleIsRefusedAndTheRestStillSamples) {
   MPCSolution plan = FloatingPlan();
-  plan.q_traj[3][8] = std::numeric_limits<double>::quiet_NaN();
+  // In the base quaternion: only the configuration reference turns NaN.
+  plan.q_traj[3][4] = std::numeric_limits<double>::quiet_NaN();
   mgr_.PublishSolution(plan);
   EXPECT_FALSE(Sample(kOrigin + 2 * kDtNs + kDtNs / 2)) << "interval 2 reads node 3";
   EXPECT_FALSE(ref_.valid);
@@ -787,8 +806,7 @@ TEST_F(FloatingRiccatiTest, TheNearestGainNodeIsUsedAndAClampIsCounted) {
 // One block perturbed at a time, its cap set below the perturbation: the
 // whole feedback scales by cap / ‖Δx_b‖; with the cap above it, by 1.
 TEST_F(FloatingRiccatiTest, EachBlockCapScalesTheWholeFeedback) {
-  const char* names[] = {"base_position",        "base_orientation",      "joint_position",
-                         "base_linear_velocity", "base_angular_velocity", "joint_velocity"};
+  const auto& names = kRiccatiBlockNames;
   const int nv = model_.nv;
   for (int b = 0; b < 6; ++b) {
     Eigen::VectorXd dq = Eigen::VectorXd::Zero(nv);
@@ -804,12 +822,13 @@ TEST_F(FloatingRiccatiTest, EachBlockCapScalesTheWholeFeedback) {
     };
     for (const double cap : {0.005, 1.0}) {
       const std::string yaml = std::string("{max_delta_x_norm: 1.0e6, max_delta_blocks: {") +
-                               names[b] + ": " + std::to_string(cap) + "}}";
+                               names[static_cast<std::size_t>(b)] + ": " + std::to_string(cap) +
+                               "}}";
       Init(yaml);
       ASSERT_TRUE(mgr_.SampleReference(q, v, At(kObs), ref_));
       const double nb = block(b);
       const double scale = nb > cap ? cap / nb : 1.0;
-      Expect(0, dx, scale, ref_, names[b]);
+      Expect(0, dx, scale, ref_, names[static_cast<std::size_t>(b)]);
     }
   }
 }

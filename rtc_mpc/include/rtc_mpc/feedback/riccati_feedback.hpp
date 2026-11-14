@@ -91,6 +91,16 @@ enum class RiccatiBlock : int {
 inline constexpr int kRiccatiBlockCount = 6;
 using RiccatiBlockCaps = std::array<double, kRiccatiBlockCount>;
 
+/// The YAML names of the blocks, in @ref RiccatiBlock order.
+inline constexpr std::array<const char*, kRiccatiBlockCount> kRiccatiBlockNames = {
+    "base_position",        "base_orientation",      "joint_position",
+    "base_linear_velocity", "base_angular_velocity", "joint_velocity"};
+
+/// @return true for a block that is empty on a fixed base.
+[[nodiscard]] constexpr bool IsBaseBlock(RiccatiBlock b) noexcept {
+  return b != RiccatiBlock::kJointPosition && b != RiccatiBlock::kJointVelocity;
+}
+
 /// Width of the fade before a base rotation error of π [rad].
 inline constexpr double kRotationFadeRad = 0.2;
 
@@ -213,7 +223,6 @@ class RiccatiFeedback {
   Eigen::MatrixXd K_;            // nu × ndx (allocated max_nu × max_ndx)
   const double* view_{nullptr};  // UseGain: row-major nu × ndx, not owned
   Eigen::VectorXd dx_;           // ndx    (allocated max_ndx)
-  Eigen::VectorXd u_fb_raw_;     // nu     (allocated max_nu)
 
   int max_nv_{0};
   int max_nu_{0};
@@ -229,7 +238,6 @@ class RiccatiFeedback {
   double max_delta_x_norm_{100.0};
 
   bool block_caps_{false};
-  bool floating_{false};
   RiccatiBlockCaps caps_{};
   std::array<int, kRiccatiBlockCount + 1> block_start_{};  // block b is [start_b, start_{b+1})
   double last_scale_{0.0};
