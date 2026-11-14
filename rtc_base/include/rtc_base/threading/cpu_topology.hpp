@@ -56,11 +56,11 @@ enum class NucGeneration {
 // A `DegradationMode { NONE, SERIAL_MPC }` enum sat here from Stage A until
 // #379 removed it. It declared an Aligator fallback "when the P-core worker
 // budget is insufficient", to be wired by a Stage C that never came — and #380
-// dissolved its premise: MPC solve is single-threaded on every tier, and
-// parallel solving would go through the solver's own OpenMP pool
-// (`SolverProxDDP::setNumThreads`), which no code calls. "Serial MPC" was
-// therefore not a degraded state but the unconditional current one, so nothing
-// could branch on it; it never gained a consumer in either meaning.
+// dissolved its premise: MPC solve was single-threaded on every tier. Parallel
+// solves came later as an explicit choice instead — the solver's thread count
+// in the controller YAML, its OpenMP pool pinned to the slots a launch profile
+// reserves — so there is still no "insufficient budget" state to degrade from:
+// a pool the layout cannot host is refused, never quietly run serial.
 //
 // If a degradation axis returns, it is derived from the solver's OpenMP thread
 // budget and belongs next to that budget, not in CPU topology detection. The
