@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <memory>
 #include <set>
 
@@ -637,6 +638,100 @@ void MuJoCoSimulator::MapSensorInfos(JointGroup& group,
   group.sensor_buffer.resize(static_cast<std::size_t>(total_dim), 0.0);
 }
 
+// ── IMU export noise ─────────────────────────────────────────────────────
+
+namespace {
+
+[[nodiscard]] bool ValidImuNoiseParams(const ImuNoiseParams& p) noexcept {
+  for (const double v : {p.white_sigma, p.bias_sigma, p.bias_walk_sigma}) {
+    if (!std::isfinite(v) || v < 0.0)
+      return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+bool MuJoCoSimulator::ConfigureImuNoise(JointGroup& group, const ImuNoiseConfig& cfg) noexcept {
+  group.imu_noise_enabled = false;
+  group.imu_noise_offsets.clear();
+
+  // The MJCF's noise= reads like a noisy sensor and is not one: MuJoCo keeps
+  // it as metadata only. Every exported sensor that declares it and that this
+  // group does not noise itself (all of them when imu_noise is off; the
+  // non-IMU ones when it is on) is said once per group, and counted, so a run
+  // judged on "the sim sensors are noisy" can be checked to have been.
+  int exact_despite_noise = 0;
+  for (const auto& si : group.sensor_infos) {
+    const int sid = mj_name2id(model_, mjOBJ_SENSOR, si.name.c_str());
+    const bool imu = si.type == mjSENS_GYRO || si.type == mjSENS_ACCELEROMETER;
+    if (sid >= 0 && model_->sensor_noise[sid] > 0.0 && !(cfg.enabled && imu))
+      ++exact_despite_noise;
+  }
+  if (group.is_robot && exact_despite_noise > 0) {
+    ++imu_noise_warnings_;
+    fprintf(stderr,
+            "[MuJoCoSimulator] WARN: group '%s' exports %d sensor(s) whose MJCF noise= > 0 "
+            "that stay exact — MuJoCo does not apply noise=, and imu_noise (%s) noises only "
+            "gyros and accelerometers\n",
+            group.name.c_str(), exact_despite_noise, cfg.enabled ? "on" : "off");
+  }
+
+  if (!cfg.enabled) {
+    return true;
+  }
+  if (!group.is_robot) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] ERROR: group '%s' — imu_noise applies to robot_response "
+            "groups only\n",
+            group.name.c_str());
+    return false;
+  }
+  if (!ValidImuNoiseParams(cfg.gyro) || !ValidImuNoiseParams(cfg.accel)) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] ERROR: group '%s' — imu_noise sigmas must be finite and >= 0\n",
+            group.name.c_str());
+    return false;
+  }
+
+  std::vector<ImuNoiseKind> kinds;
+  std::size_t offset = 0;
+  for (const auto& si : group.sensor_infos) {
+    const bool gyro = si.type == mjSENS_GYRO;
+    if ((gyro || si.type == mjSENS_ACCELEROMETER) &&
+        si.dim == static_cast<int>(ImuNoiseModel::kAxes)) {
+      kinds.push_back(gyro ? ImuNoiseKind::kGyro : ImuNoiseKind::kAccel);
+      group.imu_noise_offsets.push_back(offset);
+    }
+    offset += static_cast<std::size_t>(si.dim);
+  }
+  if (kinds.empty()) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] WARN: group '%s' — imu_noise.enabled but the group exports no "
+            "gyro or accelerometer; nothing to apply\n",
+            group.name.c_str());
+  }
+  // Configure allocates and, for seed 0, opens std::random_device — either
+  // can throw, and this runs inside a noexcept Initialize.
+  try {
+    group.imu_noise.Configure(cfg, xml_timestep_, std::move(kinds));
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[MuJoCoSimulator] ERROR: group '%s' — imu_noise setup failed: %s\n",
+            group.name.c_str(), e.what());
+    group.imu_noise_offsets.clear();
+    return false;
+  }
+  group.imu_noise_enabled = true;
+  fprintf(stdout,
+          "[MuJoCoSimulator] [%s] imu_noise: %zu channel(s), seed %llu, dt %.6f s — "
+          "gyro (%.3g, %.3g, %.3g) accel (%.3g, %.3g, %.3g) [white, bias, walk]\n",
+          group.name.c_str(), group.imu_noise.NumChannels(),
+          static_cast<unsigned long long>(group.imu_noise.Seed()), xml_timestep_,
+          cfg.gyro.white_sigma, cfg.gyro.bias_sigma, cfg.gyro.bias_walk_sigma,
+          cfg.accel.white_sigma, cfg.accel.bias_sigma, cfg.accel.bias_walk_sigma);
+  return true;
+}
+
 // ── Contact wrench auto-discovery ────────────────────────────────────────
 // Scans group.sensor_infos for mjSENS_CONTACT entries (dim==17 expected for
 // data="found force torque dist pos normal tangent" with num=1). For each
@@ -1220,6 +1315,18 @@ bool MuJoCoSimulator::Initialize() noexcept {
 
   // Restitution calibration depends on the final substep.
   ApplyProjectileBallContact();
+
+  // ── IMU export noise ────────────────────────────────────────────────────
+  // After the timestep block: the walk's dt is the control period (one
+  // ReadSensors per step), not the substep.
+  imu_noise_warnings_ = 0;
+  for (std::size_t gi = 0; gi < n_paired; ++gi) {
+    if (!ConfigureImuNoise(*groups_[gi], cfg_.groups[gi].imu_noise)) {
+      fprintf(stderr, "[MuJoCoSimulator] Initialize aborted: invalid imu_noise for group '%s'\n",
+              groups_[gi]->name.c_str());
+      return false;
+    }
+  }
 
   // ── Viewer refresh rate ─────────────────────────────────────────────────
   if (cfg_.viewer_refresh_rate <= 0.0) {
@@ -1822,6 +1929,22 @@ bool MuJoCoSimulator::HasSensors(std::size_t group_idx) const noexcept {
   return !groups_[group_idx]->sensor_infos.empty();
 }
 
+std::vector<double> MuJoCoSimulator::GetSensorExportForTest(std::size_t group_idx) const noexcept {
+  if (group_idx >= groups_.size())
+    return {};
+  return groups_[group_idx]->sensor_buffer;
+}
+
+std::vector<double> MuJoCoSimulator::GetSensorDataForTest(std::size_t group_idx) const noexcept {
+  if (!data_ || group_idx >= groups_.size())
+    return {};
+  std::vector<double> out;
+  for (const auto& si : groups_[group_idx]->sensor_infos) {
+    out.insert(out.end(), data_->sensordata + si.adr, data_->sensordata + si.adr + si.dim);
+  }
+  return out;
+}
+
 void MuJoCoSimulator::SetContactWrenchCallback(
     std::size_t group_idx, JointGroup::ContactWrenchCallback callback) noexcept {
   if (group_idx >= groups_.size())
@@ -2000,6 +2123,7 @@ void MuJoCoSimulator::StepForTest() noexcept {
   AccumulateBallContacts(step_for_test_count_ + 1, model_->opt.timestep);
   RecordClockSample(++step_for_test_count_);
   ReadState();
+  ReadSensors();
   ReadContactWrenches();
   ReadObjectStates();
   ReadProjectileBallState();

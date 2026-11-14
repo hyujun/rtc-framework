@@ -328,6 +328,17 @@ if(mujoco_FOUND)
         mujoco::mujoco ament_index_cpp::ament_index_cpp)
     endif()
 
+    # imu_noise in the simulator: needs a scene whose export mixes a gyro and
+    # an accelerometer (with MJCF noise=) with frame and contact sensors, so
+    # the noised and the must-stay-raw entries share one export.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_imu_noise_export.cpp")
+      ament_add_gtest(test_imu_noise_export test/test_imu_noise_export.cpp)
+      target_link_libraries(test_imu_noise_export mujoco_simulator_lib)
+      target_compile_definitions(test_imu_noise_export PRIVATE
+        IMU_NOISE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/imu_noise_scene.xml"
+        CONTACT_MJCF_PATH="${MJCF_CONTACT_FIXTURE}")
+    endif()
+
     # Object pool against a compiled model: needs a scene with a floor and a
     # keyframe, plus a directory of candidate objects.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_object_pool.cpp")

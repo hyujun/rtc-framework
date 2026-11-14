@@ -125,6 +125,13 @@ void MuJoCoSimulator::ReadSensors() noexcept {
         g->sensor_buffer[offset++] = data_->sensordata[si.adr + d];
       }
     }
+    // On the exported copy only, every step (the publish decimation is
+    // applied later, at the callback), so one step is one noise sample.
+    if (g->imu_noise_enabled) {
+      for (std::size_t c = 0; c < g->imu_noise_offsets.size(); ++c) {
+        g->imu_noise.Apply(c, g->sensor_buffer.data() + g->imu_noise_offsets[c]);
+      }
+    }
   }
 }
 
@@ -827,6 +834,11 @@ void MuJoCoSimulator::HandleReset() noexcept {
   throttle_wall_start_ = now;
   throttle_sim_start_ = data_->time;
   throttle_rtf_ = current_max_rtf_.load(std::memory_order_relaxed);
+  // The same noise realisation as from Initialize: re-seeded, biases redrawn.
+  for (auto& g : groups_) {
+    if (g->imu_noise_enabled)
+      g->imu_noise.Reset();
+  }
   ReadState();
   fprintf(stdout, "[SimLoop] Reset to initial pose\n");
 }
