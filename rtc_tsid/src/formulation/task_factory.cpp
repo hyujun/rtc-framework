@@ -5,6 +5,8 @@
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
 #include "rtc_tsid/constraints/torque_limit_constraint.hpp"
+#include "rtc_tsid/formulation/hqp_formulation.hpp"
+#include "rtc_tsid/formulation/wqp_formulation.hpp"
 #include "rtc_tsid/tasks/com_task.hpp"
 #include "rtc_tsid/tasks/contact_consistency_task.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
@@ -34,6 +36,17 @@ void RequireObjectContext(const TaskFactoryContext& ctx, const std::string& key)
     throw std::invalid_argument("task_factory: task '" + key +
                                 "' needs the runtime contact manager and the grasp cache");
   }
+}
+
+// The warm start of `formulation`'s solver(s), when it is one of rtc_tsid's.
+const QPSolverConfig* SolverConfigOf(const FormulationBase& formulation) {
+  if (const auto* w = dynamic_cast<const WQPFormulation*>(&formulation)) {
+    return &w->SolverConfig();
+  }
+  if (const auto* h = dynamic_cast<const HQPFormulation*>(&formulation)) {
+    return &h->SolverConfig();
+  }
+  return nullptr;
 }
 
 }  // namespace
@@ -172,6 +185,13 @@ BuildReport BuildConstraints(const YAML::Node& constraints, const TaskFactoryCon
     } else if (type == "contact_constraint") {
       auto c = std::make_unique<ContactConstraint>();
       c->Init(model, info, cache, cfg);
+      const QPSolverConfig* solver = SolverConfigOf(formulation);
+      if (c->InactiveLambdaMode() == ContactConstraint::InactiveLambda::kZero &&
+          solver != nullptr && solver->warm_start == WarmStartMode::kPreviousResult) {
+        throw std::invalid_argument(
+            "tsid.constraints." + key +
+            ".inactive_lambda: zero needs solver.warm_start: previous_result_reset_mu");
+      }
       c->SetContactManager(ctx.contacts);
       constraint = std::move(c);
     } else if (type == "joint_limit") {

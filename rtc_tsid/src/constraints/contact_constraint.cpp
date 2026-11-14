@@ -5,11 +5,27 @@
 #include "rtc_tsid/core/yaml_vector.hpp"
 
 #include <cmath>
+#include <initializer_list>
 #include <stdexcept>
 #include <string>
 
 namespace rtc::tsid {
 namespace {
+
+// `map`'s keys must be among `allowed` (a typo is an error, not a default).
+void RefuseUnknownKeys(const YAML::Node& map, std::initializer_list<const char*> allowed,
+                       const char* where) {
+  for (auto it = map.begin(); it != map.end(); ++it) {
+    const std::string key = it->first.as<std::string>();
+    bool known = false;
+    for (const char* a : allowed) {
+      known = known || key == a;
+    }
+    if (!known) {
+      throw std::invalid_argument(std::string(where) + ": unknown key '" + key + "'");
+    }
+  }
+}
 
 // A gain key: a scalar for every axis or exactly six values, finite and ≥ 0.
 Eigen::Matrix<double, 6, 1> ReadGain(const YAML::Node& node, const char* key) {
@@ -26,13 +42,20 @@ void ContactConstraint::Init(const pinocchio::Model& /*model*/, const RobotModel
   nv_ = robot_info.nv;
   baumgarte_ = false;
   use_terrain_ = false;
+  inactive_lambda_ = InactiveLambda::kRegularize;
   kp_.setZero();
   kd_.setZero();
+  if (constraint_config && constraint_config.IsMap()) {
+    // `type` is the factory's entry key.
+    RefuseUnknownKeys(constraint_config, {"type", "baumgarte", "terrain_height", "inactive_lambda"},
+                      "contact_accel");
+  }
   if (constraint_config && constraint_config["baumgarte"]) {
     const YAML::Node b = constraint_config["baumgarte"];
     if (!b.IsMap()) {
       throw std::invalid_argument("contact_accel.baumgarte: must be a map {kp, kd}");
     }
+    RefuseUnknownKeys(b, {"kp", "kd"}, "contact_accel.baumgarte");
     kp_ = ReadGain(b, "kp");
     kd_ = ReadGain(b, "kd");
     // All-zero gains: the plain rows, bit for bit, and no anchor.
@@ -44,6 +67,17 @@ void ContactConstraint::Init(const pinocchio::Model& /*model*/, const RobotModel
       throw std::invalid_argument("contact_accel.terrain_height must be finite");
     }
     use_terrain_ = true;
+  }
+  if (constraint_config && constraint_config["inactive_lambda"]) {
+    const auto mode = constraint_config["inactive_lambda"].as<std::string>();
+    if (mode == "regularize") {
+      inactive_lambda_ = InactiveLambda::kRegularize;
+    } else if (mode == "zero") {
+      inactive_lambda_ = InactiveLambda::kZero;
+    } else {
+      throw std::invalid_argument("contact_accel.inactive_lambda: unknown mode '" + mode +
+                                  "' (regularize | zero)");
+    }
   }
 }
 
@@ -88,7 +122,10 @@ void ContactConstraint::ComputeEquality(const PinocchioCache& cache, const Conta
 
   // Stage A-5a: fixed-dim equality block. Active contacts get the
   // Jc_i·a = -dotJc_i·v (+ a_c*) rows; inactive contacts get zero rows (left
-  // as the caller's zero-init, so 0·a = 0 is trivially satisfied).
+  // as the caller's zero-init, so 0·a = 0 is trivially satisfied) or, with
+  // inactive_lambda zero, I·λ_i = 0. A slot's rows and its λ columns follow
+  // the same contact order and dimensions, so λ_i sits at column nv + row.
+  const bool zero_inactive = inactive_lambda_ == InactiveLambda::kZero;
   int row = 0;
   for (size_t i = 0; i < contacts.contacts.size(); ++i) {
     const int cdim = manager_->contacts[i].contact_dim;
@@ -98,6 +135,9 @@ void ContactConstraint::ComputeEquality(const PinocchioCache& cache, const Conta
     if (!active) {
       slot.latched = false;  // the next activation latches a new anchor
       slot.a_star.setZero();
+      if (zero_inactive && nv_ + row + cdim <= A_block.cols()) {
+        A_block.block(row, nv_ + row, cdim, cdim).setIdentity();
+      }
       row += cdim;
       continue;
     }

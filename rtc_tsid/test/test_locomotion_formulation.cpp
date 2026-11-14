@@ -591,6 +591,27 @@ TEST(LocomotionFormulation, YamlRefusalsHaveAnAcceptedTwin) {
   EXPECT_THROW((LocoRig{YAML::Load(kLocoWbq), dim5}), std::invalid_argument);
 }
 
+// inactive_lambda zero needs the warm start that resets the proximal step;
+// with it (and with regularize under either warm start) the QP builds.
+TEST(LocomotionFormulation, ZeroInactiveForcesNeedTheResetMuWarmStart) {
+  for (const char* formulation : {"wqp", "hqp"}) {
+    SCOPED_TRACE(formulation);
+    YAML::Node n = YAML::Load(kLocoWbq);
+    n["formulation_type"] = formulation;
+    n["constraints"]["contact"]["inactive_lambda"] = "zero";
+    EXPECT_THROW(LocoRig{n}, std::invalid_argument);
+    n["solver"]["warm_start"] = "previous_result";
+    EXPECT_THROW(LocoRig{n}, std::invalid_argument);
+    n["solver"]["warm_start"] = "previous_result_reset_mu";
+    LocoRig zero(n);
+    EXPECT_EQ(zero.b.ContactRows()->InactiveLambdaMode(), ContactConstraint::InactiveLambda::kZero);
+    n["constraints"]["contact"]["inactive_lambda"] = "regularize";
+    EXPECT_NO_THROW(LocoRig{n});
+    n["solver"]["warm_start"] = "previous_result";
+    EXPECT_NO_THROW(LocoRig{n});
+  }
+}
+
 // The built terms point into the builder: it cannot be copied or moved.
 static_assert(!std::is_copy_constructible_v<LocomotionFormulationBuilder>);
 static_assert(!std::is_move_constructible_v<LocomotionFormulationBuilder>);

@@ -9,6 +9,7 @@
 #include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
+#include <cstdint>
 #include <vector>
 
 namespace rtc::tsid {
@@ -40,12 +41,29 @@ namespace rtc::tsid {
 // bytes as before, no latch. Near a rotation error of π log3 flips its axis
 // (the SplitWorld cut): a stance foot does not get there.
 //
-// YAML (`contact_accel`, every key optional):
+// The rows of a contact that is not active (`active` false — a ramping
+// contact with activation > 0 is active) are `inactive_lambda`'s:
+//   regularize (default) — 0 = 0. No row touches that contact's λ; only the
+//                          formulation's 1e-8 Hessian regularisation does, so
+//                          the solver leaves it wherever its start put it.
+//   zero                 — I · λ_i = 0 on the same rows (the row count does not
+//                          change): the contact carries no force in the QP
+//                          itself, not only in the τ recovered from it. Needs a
+//                          solver whose warm start resets its proximal step
+//                          (solver.warm_start: previous_result_reset_mu —
+//                          BuildConstraints refuses the pair otherwise): with
+//                          the previous-result warm start these rows switching
+//                          on and off make ProxQP return non-optimal solutions.
+//
+// YAML (`contact_accel`, every key optional; another key is refused):
 //   baumgarte: {kp: <scalar | 6>, kd: <scalar | 6>}   # ≥ 0, finite
 //   terrain_height: 0.0                                # [m]
+//   inactive_lambda: regularize                        # regularize | zero
 // ────────────────────────────────────────────────
 class ContactConstraint final : public ConstraintBase {
  public:
+  enum class InactiveLambda : std::uint8_t { kRegularize, kZero };
+
   [[nodiscard]] std::string_view Name() const noexcept override { return "contact_accel"; }
 
   void Init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
@@ -77,6 +95,8 @@ class ContactConstraint final : public ConstraintBase {
 
   [[nodiscard]] bool BaumgarteEnabled() const noexcept { return baumgarte_; }
 
+  [[nodiscard]] InactiveLambda InactiveLambdaMode() const noexcept { return inactive_lambda_; }
+
   // The anchor of contact `i` and whether one is latched (diagnostics / tests).
   [[nodiscard]] bool AnchorLatched(std::size_t i) const noexcept {
     return i < slots_.size() && slots_[i].latched;
@@ -97,6 +117,7 @@ class ContactConstraint final : public ConstraintBase {
   const ContactManagerConfig* manager_{nullptr};
   bool baumgarte_{false};
   bool use_terrain_{false};
+  InactiveLambda inactive_lambda_{InactiveLambda::kRegularize};
   double terrain_height_{0.0};
   Eigen::Matrix<double, 6, 1> kp_{Eigen::Matrix<double, 6, 1>::Zero()};
   Eigen::Matrix<double, 6, 1> kd_{Eigen::Matrix<double, 6, 1>::Zero()};
