@@ -45,7 +45,7 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `comm/` | `triple_buffer.hpp` | lock-free triple buffer, zero-copy consumer |
 | `interpolation/` | `trajectory_interpolator.hpp` | OCP 노드 사이 cubic Hermite 보간 |
 | `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` (accel-only 모드 선택) · 평탄화된 gain layout 의 writer `PackRiccatiGainRowMajor` ↔ reader `SetGain` |
-| `manager/` | `mpc_solution_manager.hpp` | TripleBuffer + Interpolator + Feedback + SeqLock facade (부동 layout 소비자는 `TryAcquireLatestSolution`) |
+| `manager/` | `mpc_solution_manager.hpp` | TripleBuffer + Interpolator + Feedback + SeqLock facade — `SampleReference` (→ `WbcReference`) · `ComputeReference` |
 | `thread/` | `mpc_thread.hpp` | `PeriodicRtThread` 기반 solve loop. 서브클래스가 `Solve(state, out)` 구현, `MockMPCThread` 는 테스트용 |
 | `thread/` | `handler_mpc_thread.hpp` | `PhaseManagerBase` FSM 과 `MPCHandlerBase` solver 를 묶는 구체 thread · publish 규칙 (deadline · 소비 구간 잔차) |
 | `handler/` | `mpc_handler_base.hpp` | solve orchestrator (`Init` / `Solve` / `SeedWarmStart`), `MPCSolverConfig` |
@@ -65,14 +65,14 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 
 - Robot-agnostic: 고정 DoF · 로봇 이름 · frame 문자열 하드코딩이 없다. 토폴로지는 `pinocchio::Model` + YAML 에서만 온다 (ARCH-1).
 - RT 데이터는 trivially copyable 이다: `MPCSolution` · `MPCStateSnapshot` · `WbcReference` 는 SeqLock / TripleBuffer 로 건너가므로 동적 멤버가 없다. `TripleBuffer` 슬롯과 보간기의 사본은 생성 · Init 때 heap 에 한 번 잡고, 매 solve 는 Riccati gain 을 앞 노드 몇 개만 싣는다.
-- 계약 (타입 · layout · Riccati) 은 부동 베이스를 포함하지만 **보간은 fixed-base 만**이다: cubic Hermite 는 Euclidean `q` 를 가정하므로 부동 layout 으로 `Init` 된 manager 는 `ComputeReference` 를 거부한다 (`InterpMeta::floating_unsupported`).
+- 보간 커널은 고정 · 부동 베이스에 하나다 (`TrajectoryInterpolator::Sample`): 관절 Hermite, base 쿼터니언 slerp, wrench · mode 는 노드 구간마다 유지 (시간축은 헤더).
 - `RobotModelHandler::Init` 은 throw 하지 않고 `RobotModelInitError` 를 돌려준다.
 - `end_effector_frame` (또는 목록 `end_effector_frames`) 과 `base_frame` 이 필수다. `base_frame` 누락은 `kInvalidYamlSchema`, 해석 불가 이름은 `kMissingBaseFrame` 이며 world 기준은 `base_frame: "universe"` 로 명시한다. 부동 베이스 모델은 `universe` 만 받는다 (`kBaseFrameNotUniverseOnFloating`). `PhaseContext::ee_target` 은 `base_frame` 기준이다.
 
 ### 관측성
 
 MPC thread 는 RT 컨텍스트라 `HandlerMPCThread::Solve` 는 I/O 를 하지 않는다. 실패 경로는 lock-free atomic (`FailedSolves()` · `TotalSolves()` · `LastSolveErrorCode()` · `LastPhaseId()` · `NullHandlerHit()`; publish 하지 않은 해는 실패와 따로 `DeadlineMissCount()` · `WithheldCount()` · `ColdWithheldCount()` · 같은 관측이라 건너뛴 tick `RepeatedObservationSkips()` · `StandingRepeatSolves()`, overrun 은 `OnlineOverrunCount()` · `StandingOverrunCount()`) 만 올리고,
-소유 컨트롤러의 non-RT 1 Hz aux timer 가 증분을 보고한다. 같은 timer 가 `MPCThread::TimingProducer()` 의 per-tick SPSC 를 CSV 로 비운다. 버린 plan 은 `MPCSolutionManager::*Rejections()` 가 센다.
+소유 컨트롤러의 non-RT 1 Hz aux timer 가 증분을 보고한다. 같은 timer 가 `MPCThread::TimingProducer()` 의 per-tick SPSC 를 CSV 로 비운다. 버린 plan · gain 노드 clamp 는 `MPCSolutionManager::*Rejections()` · `GainNodeClamps()` 가 센다.
 
 CSV 는 MPC tick 마다 한 행이고 CM RT loop 와 같은 8열 스키마다: `t_wall_ns,tick_count,run_id,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`. `Solve` 가 계속 실패해도 행은 계속 늘어난다 (publish 시간만 0). consumer 가 뒤처지면 `DropCount()` 가 올라간다. cross-mode swap 은 이 thread 에서 할당하는 기록된 알려진 위반이다 ([invariants.md](../agent_docs/invariants.md) §RT Path Invariants).
 
@@ -80,7 +80,7 @@ CSV 는 MPC tick 마다 한 행이고 CM RT loop 와 같은 8열 스키마다: `
 
 [config/mpc_default.yaml](config/mpc_default.yaml) 은 robot-agnostic 참조 템플릿이다. `<...>` placeholder 는 로봇별 설정에서 덮어쓰며, 값은 `PhaseCostConfig::LoadFromYaml` 과 `RobotModelHandler::Init` 이 읽는다. 기본값은 파일이 갖는다. 로봇별 실제 설정은 `integrated_bringup/config/<robot>/controllers/mpc/` 에 있다. `reference/` 로더의 템플릿은 [config/reference_default.yaml](config/reference_default.yaml) 이다 (모든 키 필수).
 
-`mpc.solver:` 키 (standing · online iteration 예산, rollout, LQ backend, thread 수, publish 규칙 `publish_deadline_ms` · `publish_prim_tol` — 0 이면 끔, 관측마다 한 번 푸는 `require_fresh_state`) 의 스키마는 `mpc_factory.hpp` 가 갖는다. non-monotone line search · Gauss-Newton Hessian 은 Aligator 기본값이다 (키 없음).
+`mpc.solver:` 키 (standing · online iteration 예산, rollout, LQ backend, thread 수, publish 규칙 `publish_deadline_ms` · `publish_prim_tol` — 0 이면 끔, 관측마다 한 번 푸는 `require_fresh_state`) 의 스키마는 `mpc_factory.hpp` 가, 소비자 키 (`max_policy_age_s` · `riccati.*`) 는 `mpc_solution_manager.hpp` 가 갖는다. non-monotone line search · Gauss-Newton Hessian 은 Aligator 기본값이다 (키 없음).
 
 ## 문제 해결
 

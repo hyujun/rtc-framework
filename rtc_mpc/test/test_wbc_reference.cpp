@@ -46,6 +46,10 @@ TEST(WbcReference, MemcpyRoundTripKeepsEveryField) {
   src.receive_stamp_ns = 23;
   src.plan_id = 24;
   src.model_epoch = 25;
+  src.state_epoch = 0xFFFFFFF0u;
+  src.observation_source_sequence = 0xFFFFFFFFFFFFFFF1ULL;
+  src.schedule_id = 0x8000000000000002ULL;
+  src.schedule_epoch = 27;
   src.progress = 0.25;
   src.beyond_horizon = true;
   src.valid = true;
@@ -72,6 +76,10 @@ TEST(WbcReference, MemcpyRoundTripKeepsEveryField) {
   EXPECT_EQ(dst.receive_stamp_ns, 23u);
   EXPECT_EQ(dst.plan_id, 24u);
   EXPECT_EQ(dst.model_epoch, 25u);
+  EXPECT_EQ(dst.state_epoch, 0xFFFFFFF0u);
+  EXPECT_EQ(dst.observation_source_sequence, 0xFFFFFFFFFFFFFFF1ULL);
+  EXPECT_EQ(dst.schedule_id, 0x8000000000000002ULL);
+  EXPECT_EQ(dst.schedule_epoch, 27u);
   EXPECT_DOUBLE_EQ(dst.progress, 0.25);
   EXPECT_TRUE(dst.beyond_horizon);
   EXPECT_TRUE(dst.valid);

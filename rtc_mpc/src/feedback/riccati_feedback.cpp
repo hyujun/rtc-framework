@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace rtc::mpc {
 
@@ -35,9 +36,10 @@ void RiccatiFeedback::Init(int max_nv, int max_nu, int max_ndx) {
   max_nv_ = max_nv;
   max_nu_ = max_nu;
   max_ndx_ = max_ndx;
+  view_ = nullptr;
+  block_caps_ = false;
   K_.setZero(max_nu, max_ndx);
   dx_.setZero(max_ndx);
-  u_fb_raw_.setZero(max_nu);
   nu_ = 0;
   ndx_ = 0;
   // Fixed-base torque default: the accelerations are the first nv rows.
@@ -45,7 +47,36 @@ void RiccatiFeedback::Init(int max_nv, int max_nu, int max_ndx) {
   acc_rows_ = std::min(max_nv, max_nu);
 }
 
+void RiccatiFeedback::UseGain(const double* K_data, int nu, int ndx) noexcept {
+  if (K_data == nullptr || nu <= 0 || ndx <= 0 || nu > max_nu_ || ndx > max_ndx_) {
+    view_ = nullptr;
+    nu_ = 0;
+    ndx_ = 0;
+    return;
+  }
+  view_ = K_data;
+  nu_ = nu;
+  ndx_ = ndx;
+}
+
+bool RiccatiFeedback::SetBlockCaps(const RiccatiBlockCaps& caps, int nv, bool floating) noexcept {
+  for (const double c : caps) {
+    if (!(c > 0.0) || !std::isfinite(c)) {
+      return false;
+    }
+  }
+  const int nb = floating ? 3 : 0;
+  if (nv < 2 * nb || nv <= 0 || 2 * nv > max_ndx_) {
+    return false;
+  }
+  caps_ = caps;
+  block_start_ = {0, nb, 2 * nb, nv, nv + nb, nv + 2 * nb, 2 * nv};
+  block_caps_ = true;
+  return true;
+}
+
 void RiccatiFeedback::SetGain(const double* K_data, int nu, int ndx) noexcept {
+  view_ = nullptr;
   if (K_data == nullptr || nu <= 0 || ndx <= 0 || nu > max_nu_ || ndx > max_ndx_) {
     nu_ = 0;
     ndx_ = 0;
@@ -111,38 +142,69 @@ bool RiccatiFeedback::ComputeFromDelta(const Eigen::Ref<const Eigen::VectorXd>& 
   return Apply(u_fb_out);
 }
 
-bool RiccatiFeedback::Apply(Eigen::Ref<Eigen::VectorXd> u_fb_out) noexcept {
-  // Magnitude guard: linearly scale Δx down when its norm exceeds the cap.
-  // A non-finite Δx would slip past the comparison, so it is refused here —
-  // this is the last stage before the controller's acceleration reference.
+double RiccatiFeedback::CapScale() const noexcept {
   const double dx_norm = dx_.head(ndx_).norm();
   if (!std::isfinite(dx_norm)) {
+    return -1.0;
+  }
+  if (!block_caps_ || block_start_[kRiccatiBlockCount] != ndx_) {
+    return dx_norm > max_delta_x_norm_ ? max_delta_x_norm_ / dx_norm : 1.0;
+  }
+  double s = 1.0;
+  for (int b = 0; b < kRiccatiBlockCount; ++b) {
+    const auto bb = static_cast<std::size_t>(b);
+    const int start = block_start_[bb];
+    const int n = block_start_[bb + 1] - start;
+    if (n <= 0) {
+      continue;
+    }
+    const double nb = dx_.segment(start, n).norm();
+    if (nb > caps_[bb]) {
+      s = std::min(s, caps_[bb] / nb);
+    }
+  }
+  // A floating base has a rotation block: a log map, its norm at most π,
+  // where its axis flips.
+  const auto rot = static_cast<std::size_t>(RiccatiBlock::kBaseOrientation);
+  const int n_rot = block_start_[rot + 1] - block_start_[rot];
+  if (n_rot > 0) {
+    const double theta = dx_.segment(block_start_[rot], n_rot).norm();
+    if (theta > std::numbers::pi - kRotationFadeRad) {
+      s *= std::max(0.0, (std::numbers::pi - theta) / kRotationFadeRad);
+    }
+  }
+  return s;
+}
+
+bool RiccatiFeedback::Apply(Eigen::Ref<Eigen::VectorXd> u_fb_out) noexcept {
+  // Magnitude guard. A non-finite Δx would slip past the comparisons, so it
+  // is refused here — this is the last stage before the controller's
+  // acceleration reference.
+  const double cap = CapScale();
+  if (cap < 0.0) {
     u_fb_out.setZero();
+    last_scale_ = 0.0;
     return false;
   }
-  double effective_scale = gain_scale_;
-  if (dx_norm > max_delta_x_norm_) {
-    effective_scale *= max_delta_x_norm_ / dx_norm;
-  }
+  const double effective_scale = gain_scale_ * cap;
+  last_scale_ = effective_scale;
 
-  // u_fb = scale * K * Δx  (noalias: avoid Eigen temporaries).
-  u_fb_raw_.head(nu_).noalias() = effective_scale * K_.topLeftCorner(nu_, ndx_) * dx_.head(ndx_);
-
+  // Only the rows written out are multiplied: u = (K_rows · Δx) · scale.
   const int out_size = static_cast<int>(u_fb_out.size());
-  if (!accel_only_) {
-    const int n_write = std::min(out_size, nu_);
-    u_fb_out.head(n_write) = u_fb_raw_.head(n_write);
-    if (out_size > n_write) {
-      u_fb_out.tail(out_size - n_write).setZero();
+  const int row0 = accel_only_ ? acc_row_offset_ : 0;
+  const int rows = accel_only_ ? std::min(acc_rows_, std::max(0, nu_ - acc_row_offset_)) : nu_;
+  const int n_write = std::min(rows, out_size);
+  if (n_write > 0) {
+    if (view_ != nullptr) {
+      using RowMajorConstMap =
+          Eigen::Map<const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>;
+      const RowMajorConstMap K(view_, nu_, ndx_);
+      u_fb_out.head(n_write).noalias() = K.middleRows(row0, n_write) * dx_.head(ndx_);
+    } else {
+      u_fb_out.head(n_write).noalias() = K_.block(row0, 0, n_write, ndx_) * dx_.head(ndx_);
     }
-    return true;
+    u_fb_out.head(n_write) *= effective_scale;
   }
-
-  // Accel-only: the acceleration rows of the gain output go to the front of
-  // the caller's buffer; everything else is zero.
-  const int available = std::max(0, nu_ - acc_row_offset_);
-  const int n_write = std::min({acc_rows_, available, out_size});
-  u_fb_out.head(n_write) = u_fb_raw_.segment(acc_row_offset_, n_write);
   if (out_size > n_write) {
     u_fb_out.tail(out_size - n_write).setZero();
   }

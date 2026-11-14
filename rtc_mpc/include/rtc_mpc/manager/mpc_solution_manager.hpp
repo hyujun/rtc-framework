@@ -7,19 +7,35 @@
 ///
 /// Ownership:
 /// - Producer side (MPC thread): @ref PublishSolution, @ref ReadState.
-/// - Consumer side (RT thread): @ref WriteState, @ref ComputeReference.
+/// - Consumer side (RT thread): @ref WriteState, then @ref SampleReference
+///   (or @ref ComputeReference) — both sample the one plan the manager
+///   holds, through one kernel (`TrajectoryInterpolator::Sample`), on a fixed
+///   or a floating base.
 ///
-/// Staleness policy: every call to @ref ComputeReference increments
-/// `stale_count_` if no new solution has arrived since the previous call.
-/// Once `stale_count_` reaches @ref max_stale_solutions_, the manager
-/// reports "not valid" via @ref InterpMeta and the downstream controller
-/// should fall back to a safe reference (e.g. the Phase 4 fixed pose).
-/// A fresh @ref PublishSolution resets the counter.
+/// Time: a plan's node 0 sits at `observation_stamp_ns − horizon_offset_ns`
+/// in the clock given to @ref WriteState (the state it started from, moved
+/// back onto the node grid), not at the time the consumer received it.
+/// Policy age is `receive − observation` (@ref ActivePolicyAgeNs).
+///
+/// Riccati feedback: the gain of the node nearest to the sample time,
+/// `min(round(τ / dt_node), gain_nodes − 1)` (a clamp is counted,
+/// @ref GainNodeClamps), read in place from the held plan. `Δx` is
+/// `WbLayout::StateDifference` on a floating base (needs the model given to
+/// @ref Init — without one the feedback is 0), the Euclidean difference on a
+/// fixed one.
+///
+/// Staleness policy: every sample increments `stale_count_` if no new
+/// solution has arrived since the previous one. Once it reaches
+/// @ref max_stale_solutions_, @ref ComputeReference reports "not valid" and
+/// the downstream controller should fall back to a safe reference (e.g. the
+/// Phase 4 fixed pose); @ref SampleReference judges staleness by age instead
+/// (`max_policy_age_s`, below). A fresh @ref PublishSolution resets it.
 ///
 /// Eviction: the plan being sampled is dropped — the consumer falls back
 /// until the next accepted plan — at the first @ref ComputeReference that
 /// finds (1) its `model_epoch` or `state_epoch` no longer the current one,
-/// (2) its age past the horizon by more than one node either way
+/// (2) its age past `max_policy_age_s` (when positive) or past the horizon
+/// by more than one node either way
 /// (`|now − observation_stamp_ns| > (horizon_length + 1) · dt_node`; a
 /// stamp that far ahead means the consumer's clock went back), or (3) that
 /// @ref SetEnabled re-enabled the manager since the previous call. After a
@@ -35,6 +51,7 @@
 #include "rtc_mpc/interpolation/trajectory_interpolator.hpp"
 #include "rtc_mpc/model/wb_layout.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
+#include "rtc_mpc/types/wbc_reference.hpp"
 
 #include <Eigen/Core>
 #include <yaml-cpp/yaml.h>
@@ -58,18 +75,31 @@ class MPCSolutionManager {
 
   /// @brief Configure the manager and allocate all buffers.
   /// @param cfg     YAML node with `mpc:` keys:
-  ///                `enabled`, `max_stale_solutions`,
-  ///                `riccati.{enabled, gain_scale, accel_only,
-  ///                 max_delta_x_norm}`.
+  ///                `enabled`, `max_stale_solutions`, `max_policy_age_s`
+  ///                (≥ 0 s, 0 = off), `riccati.{enabled, gain_scale,
+  ///                accel_only, max_delta_x_norm, max_delta_blocks}`.
+  ///                `max_delta_blocks` maps a block name (`base_position`,
+  ///                `base_orientation`, `joint_position`,
+  ///                `base_linear_velocity`, `base_angular_velocity`,
+  ///                `joint_velocity`) to its own cap; a floating base caps
+  ///                every block (default `max_delta_x_norm` each), a fixed
+  ///                base only when the map is given (joint blocks only).
+  ///                A plan whose `gain_nodes`, `nu` or `ndx` exceed the
+  ///                capacities is refused as a dimension mismatch.
   /// @param layout  state / input layout of the model the consumer runs
-  ///                (`WbLayout::FromModel` or `FromHandler`). A floating
-  ///                layout is accepted but @ref ComputeReference refuses to
-  ///                produce a reference for it (`InterpMeta::floating_unsupported`)
-  ///                until a manifold-aware sampler replaces the Euclidean
-  ///                interpolator; the fixed-base path is unchanged. A layout
-  ///                that is not `valid()` (a failed factory) leaves the
-  ///                manager disabled.
-  void Init(const YAML::Node& cfg, const WbLayout& layout);
+  ///                (`WbLayout::FromModel` or `FromHandler`). A layout that
+  ///                is not `valid()` (a failed factory) leaves the manager
+  ///                disabled.
+  /// @param model   the model of @p layout, for the floating-base Riccati
+  ///                `Δx` — non-owning, read on the RT tick, so it must stay
+  ///                where it is and unchanged until the next Init; optional.
+  /// @note A value out of range — a negative or non-finite age, a cap that
+  ///       is not positive and finite, an unknown block name, a base block
+  ///       on a fixed base — leaves the manager disabled (@ref ConfigValid).
+  void Init(const YAML::Node& cfg, const WbLayout& layout, const pinocchio::Model* model = nullptr);
+
+  /// @return false when the last @ref Init refused its YAML.
+  [[nodiscard]] bool ConfigValid() const noexcept { return config_valid_; }
 
   /// @brief Fixed-base convenience: `Init(cfg, WbLayout::FixedBase(nq, nv, n_contact_vars))`.
   void Init(const YAML::Node& cfg, int nq, int nv, int n_contact_vars) {
@@ -81,11 +111,16 @@ class MPCSolutionManager {
   /// @brief Runtime toggle for MPC consumption. When false,
   ///        @ref ComputeReference reports invalid immediately; after a switch
   ///        back to true the consumer samples no plan computed from a state
-  ///        written before it (see the file comment). One setter thread at a
-  ///        time (parameter or lifecycle callbacks); the RT tick reads it.
+  ///        written before it (see the file comment). `true` is ignored
+  ///        after an @ref Init that refused its layout or YAML. One setter
+  ///        thread at a time (parameter or lifecycle callbacks); the RT tick
+  ///        reads it.
   ///        Two setters racing can merge a short disable into none — the
   ///        consumer then never stopped, and the age rules still apply.
   void SetEnabled(bool enabled) noexcept {
+    if (enabled && (!config_valid_ || !layout_.valid())) {
+      return;  // a refused configuration stays off until a valid Init
+    }
     if (enabled && !enabled_.load(std::memory_order_acquire)) {
       // Ordered before the flag: a consumer that sees `true` from this call
       // sees the new generation too.
@@ -189,12 +224,31 @@ class MPCSolutionManager {
     return dimension_rejections_.load(std::memory_order_relaxed);
   }
 
+  /// @brief Sample the held plan for this tick into @p out (see the file
+  ///        comment), taking a newly published plan first.
+  ///
+  /// `u_fb_acc` holds the joint-acceleration rows of the Riccati feedback
+  /// at their tangent entries (the base rows 0); `receive_stamp_ns` is the
+  /// @p now_ns the plan was taken at. @p out must not alias @p q_curr or
+  /// @p v_curr (it is cleared first).
+  /// @return true with `out.valid`; false (`out.valid` false, the rest of
+  ///         @p out zero) when disabled, without a plan, with the plan
+  ///         evicted or with a sample that is not finite — not on a
+  ///         stale-tick count.
+  /// @note Consumer thread. Allocation-free.
+  [[nodiscard]] bool SampleReference(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
+                                     const Eigen::Ref<const Eigen::VectorXd>& v_curr,
+                                     uint64_t now_ns, WbcReference& out) noexcept;
+
   /// @brief Try to compute the MPC-derived reference for the current tick.
   ///
   /// On success writes q_ref / v_ref / a_ff / lambda_ref / u_fb and returns
-  /// true. On fallback (MPC disabled, floating-base layout, no solution yet,
-  /// the plan evicted — see the file comment — or too many stale cycles)
-  /// returns false and sets @p meta_out.valid = false.
+  /// true. On fallback (MPC disabled, no solution yet, the plan evicted —
+  /// see the file comment — or too many stale cycles) returns false and sets
+  /// @p meta_out.valid = false. The same sample as @ref SampleReference;
+  /// in accel-only mode `u_fb` gets the joint-acceleration rows at their
+  /// tangent entries (the front on a fixed base), otherwise the input-sized
+  /// feedback at its front.
   ///
   /// @param q_curr     current position (size nq)
   /// @param v_curr     current velocity (size nv)
@@ -213,21 +267,6 @@ class MPCSolutionManager {
                                       Eigen::Ref<Eigen::VectorXd> lambda_ref,
                                       Eigen::Ref<Eigen::VectorXd> u_fb,
                                       InterpMeta& meta_out) noexcept;
-
-  /// @brief The latest published solution not yet taken, as published (no
-  ///        epoch, dimension or validity check, no interpolation), or null
-  ///        when none arrived since the last call. Valid until a later call
-  ///        returns another.
-  ///        For a consumer that samples the plan itself — on a floating-base
-  ///        layout, which @ref ComputeReference refuses. Consumer thread; the
-  ///        buffer has one consumer, so a caller of this does not also call
-  ///        @ref ComputeReference. It keeps none of ComputeReference's state:
-  ///        not @ref StaleCount, not the active plan's provenance — the
-  ///        caller judges the plan's age itself (its `observation_stamp_ns`
-  ///        against its own clock).
-  [[nodiscard]] const MPCSolution* TryAcquireLatestSolution() noexcept {
-    return solution_buffer_.TryAcquireLatest();
-  }
 
   /// @return number of consecutive RT ticks without a fresh solution.
   [[nodiscard]] int StaleCount() const noexcept { return stale_count_; }
@@ -252,6 +291,29 @@ class MPCSolutionManager {
   }
 
   [[nodiscard]] uint64_t ActiveReceiveStampNs() const noexcept { return active_receive_stamp_ns_; }
+
+  /// @return the held plan's policy age, receive − observation stamp [ns]
+  ///         (0 without one).
+  [[nodiscard]] int64_t ActivePolicyAgeNs() const noexcept {
+    const MPCSolution* s = interpolator_.Solution();
+    return s != nullptr ? static_cast<int64_t>(active_receive_stamp_ns_) -
+                              static_cast<int64_t>(s->observation_stamp_ns)
+                        : 0;
+  }
+
+  /// @return samples whose nearest gain node was past the plan's last
+  ///         shipped gain node (the last one was used). Any thread.
+  [[nodiscard]] uint64_t GainNodeClamps() const noexcept {
+    return gain_node_clamps_.load(std::memory_order_relaxed);
+  }
+
+  /// @return samples with a gain but no feedback: a floating base without
+  ///         the model given to @ref Init, a state `WbLayout::StateDifference`
+  ///         refused (a non-unit quaternion on either side), or a non-finite
+  ///         state. The reference is still valid. Any thread.
+  [[nodiscard]] uint64_t FeedbackSkips() const noexcept {
+    return feedback_skips_.load(std::memory_order_relaxed);
+  }
 
   [[nodiscard]] uint64_t ActiveObservationStampNs() const noexcept {
     const MPCSolution* s = interpolator_.Solution();
@@ -343,6 +405,22 @@ class MPCSolutionManager {
   std::atomic<uint64_t> state_epoch_rejections_{0};
   std::atomic<uint64_t> policy_age_rejections_{0};
   std::atomic<uint64_t> dimension_rejections_{0};
+  std::atomic<uint64_t> gain_node_clamps_{0};
+  std::atomic<uint64_t> feedback_skips_{0};
+
+  const pinocchio::Model* model_{nullptr};  // Init's; floating-base Riccati Δx
+  int64_t max_policy_age_ns_{0};            // 0 = off
+  bool config_valid_{true};
+  Eigen::VectorXd dx_{};    // ndx, floating-base Riccati Δx
+  Eigen::VectorXd u_fb_{};  // max(nu, nv), the feedback rows the tick wrote
+  WbcReference sample_{};   // ComputeReference's sample (SampleReference writes the caller's)
+
+  /// The tick both public paths share: take a fresh plan, evict, sample into
+  /// @p out, compute the feedback into `u_fb_`. @p count_stale applies the
+  /// stale-tick rule. Consumer thread.
+  bool Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
+            const Eigen::Ref<const Eigen::VectorXd>& v_curr, uint64_t now_ns, bool count_stale,
+            WbcReference& out) noexcept;
 
   /// Drop the active plan when it is no longer the current epochs' or has
   /// outlived its horizon (see the file comment). Consumer thread.

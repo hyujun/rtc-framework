@@ -229,7 +229,7 @@ TEST_F(MpcSolutionManagerTest, InvalidLayoutLeavesTheManagerDisabled) {
       mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
 }
 
-TEST_F(MpcSolutionManagerTest, FloatingLayoutIsRefusedBeforeInterpolation) {
+TEST_F(MpcSolutionManagerTest, FloatingLayoutIsSampled) {
   WbLayout floating = WbLayout::FixedBase(kNq + 7, kNv + 6, kNc);
   floating.n_base_q = 7;
   floating.n_base_v = 6;
@@ -243,15 +243,21 @@ TEST_F(MpcSolutionManagerTest, FloatingLayoutIsRefusedBeforeInterpolation) {
   MPCSolution sol = MakeSolution();
   sol.nq = kNq + 7;
   sol.nv = kNv + 6;
+  sol.nu = floating.nu;
+  sol.ndx = floating.ndx;
+  sol.gain_nodes = 0;
+  for (auto& row : sol.q_traj) {
+    row[6] = 1.0;  // identity base orientation, xyzw
+  }
   mgr_.PublishSolution(sol);
   Eigen::VectorXd q(kNq + 7), v(kNv + 6), q_ref(kNq + 7), v_ref(kNv + 6), a_ff(kNv + 6),
       u_fb(kNv + 6);
   q.setZero();
   v.setZero();
-  EXPECT_FALSE(mgr_.ComputeReference(q, v, 0, q_ref, v_ref, a_ff, lambda_ref_, u_fb, meta_));
-  EXPECT_TRUE(meta_.floating_unsupported);
-  EXPECT_FALSE(meta_.valid);
-  EXPECT_FALSE(mgr_.HasEverReceivedSolution()) << "refused before any plan is acquired";
+  EXPECT_TRUE(mgr_.ComputeReference(q, v, 1, q_ref, v_ref, a_ff, lambda_ref_, u_fb, meta_));
+  EXPECT_TRUE(meta_.valid);
+  EXPECT_TRUE(mgr_.HasEverReceivedSolution());
+  EXPECT_EQ(q_ref[6], 1.0) << "the node's own base orientation";
 }
 
 TEST_F(MpcSolutionManagerTest, PlanWhoseDimensionsDisagreeWithTheLayoutIsRejected) {

@@ -25,8 +25,12 @@
 ///   contact-frame order, each of that frame's dimension (force, then torque
 ///   for a six-dimensional contact). Expressed on **world axes**, acting at
 ///   the contact frame origin — the kinodynamic input convention.
-/// - `contact_mask`: one bit per contact frame, same order. No left/right
-///   semantics (ARCH-1).
+/// - `contact_mask`: one bit per contact frame, same order — the plan's mode
+///   of the node interval this tick falls in (its wrench is held over the
+///   interval, the slots of inactive contacts 0). No left/right semantics
+///   (ARCH-1).
+/// - `schedule_id` changes every tick; a consumer that reacts to a gait
+///   change compares `schedule_epoch` or the mode.
 /// - Both stamps are in the consumer's clock (the one it hands to the
 ///   manager): `observation_stamp_ns` is when the state the plan started
 ///   from was observed, `receive_stamp_ns` is when the consumer acquired the
@@ -63,6 +67,10 @@ struct WbcReference {
   uint64_t receive_stamp_ns{0};
   uint64_t plan_id{0};
   uint32_t model_epoch{0};
+  uint32_t state_epoch{0};
+  uint64_t observation_source_sequence{0};  ///< the caller's own sequence of that state
+  uint64_t schedule_id{0};                  ///< contact schedule the plan's horizon sampled
+  uint64_t schedule_epoch{0};               ///< its gait commit count
 
   // ── Sampling status ─────────────────────────────────────────────────
   double progress{0.0};        ///< normalized position in the horizon, `[0, 1]`
