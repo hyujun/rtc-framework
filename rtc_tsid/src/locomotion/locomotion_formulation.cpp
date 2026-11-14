@@ -181,6 +181,10 @@ void LocomotionFormulationBuilder::Init(const pinocchio::Model& model,
   const YAML::Node constraints = wbq["constraints"];
   RefuseUnknownKeys(constraints, {"eom", "contact", "friction_cone", "joint_limit", "torque_limit"},
                     "whole_body_qp.constraints");
+  if (constraints) {  // a map by now
+    RefuseUnknownKeys(constraints["contact"], {"baumgarte", "terrain_height", "inactive_lambda"},
+                      "whole_body_qp.constraints.contact");
+  }
   if (!tasks || !tasks["posture"] || !tasks["feet"] || !tasks["torso"] || !tasks["force"]) {
     throw std::invalid_argument("whole_body_qp.tasks: posture, feet, torso and force are required");
   }

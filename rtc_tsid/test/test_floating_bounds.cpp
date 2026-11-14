@@ -675,6 +675,8 @@ TEST_F(FloatingBounds, ANonValidTickKeepsTheLastValidOutputsAndReportsWhy) {
   EXPECT_FALSE(o1.tau_valid);
   EXPECT_FALSE(o1.qp_converged);
   EXPECT_EQ(o1.qp_status, 2);
+  EXPECT_TRUE(std::isnan(o1.qp_pri_res)) << "a certificate, not an iterate: no residuals";
+  EXPECT_TRUE(std::isnan(o1.eom_residual_inf));
   EXPECT_TRUE(SameBytes(o1.tau, tau));
   EXPECT_TRUE(SameBytes(o1.a_opt, a));
   EXPECT_TRUE(SameBytes(o1.lambda_opt, lambda));
@@ -721,9 +723,11 @@ TEST_F(FloatingBounds, ANonValidTickKeepsTheLastValidOutputsAndReportsWhy) {
   EXPECT_EQ(again.outer_iterations, sr.outer_iterations);
   EXPECT_EQ(again.qp_status, sr.status);
   EXPECT_EQ(again.qp_warm_started, sr.warm_started);
-  EXPECT_EQ(again.qp_pri_res, sr.pri_res);
-  EXPECT_EQ(again.qp_dua_res, sr.dua_res);
-  EXPECT_EQ(again.eom_residual_inf, sr.eom_residual_inf);
+  // Bytes, so NaN (this rig's QP is the contradictory one) compares too.
+  const auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
+  EXPECT_TRUE(same(again.qp_pri_res, sr.pri_res));
+  EXPECT_TRUE(same(again.qp_dua_res, sr.dua_res));
+  EXPECT_TRUE(same(again.eom_residual_inf, sr.eom_residual_inf));
   // A failed solve still reports how far it got.
   EXPECT_TRUE(std::isfinite(c1.qp_pri_res));
   EXPECT_TRUE(std::isfinite(c1.eom_residual_inf));

@@ -142,6 +142,7 @@ void QPSolverWrapper::Init(int max_n_vars, int max_n_eq, int max_n_ineq,
   qp_->settings.initial_guess =
       proxsuite::proxqp::InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT;
   cold_next_ = true;
+  solved_once_ = false;
 
   initialized_ = true;
 }
@@ -161,8 +162,10 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
                                       : InitialGuessStatus::COLD_START_WITH_PREVIOUS_RESULT;
   }
   result_.warm_started =
-      qp_->settings.initial_guess == InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT ||
-      qp_->settings.initial_guess == InitialGuessStatus::COLD_START_WITH_PREVIOUS_RESULT;
+      solved_once_ &&
+      (qp_->settings.initial_guess == InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT ||
+       qp_->settings.initial_guess == InitialGuessStatus::COLD_START_WITH_PREVIOUS_RESULT);
+  solved_once_ = true;
 
   const auto t_start = std::chrono::steady_clock::now();
 
@@ -233,8 +236,15 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   result_.non_finite = !iterates_finite;
   result_.iterations = static_cast<int>(qp_->results.info.iter);
   result_.outer_iterations = static_cast<int>(qp_->results.info.iter_ext);
-  result_.pri_res = qp_->results.info.pri_res;
-  result_.dua_res = qp_->results.info.dua_res;
+  // An infeasibility verdict replaces x, y, z with the certificate direction
+  // after the residuals were taken: they describe no returned iterate.
+  const bool certificate =
+      qp_->results.info.status == proxsuite::proxqp::QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE ||
+      qp_->results.info.status == proxsuite::proxqp::QPSolverOutput::PROXQP_DUAL_INFEASIBLE;
+  result_.pri_res =
+      certificate ? std::numeric_limits<double>::quiet_NaN() : qp_->results.info.pri_res;
+  result_.dua_res =
+      certificate ? std::numeric_limits<double>::quiet_NaN() : qp_->results.info.dua_res;
 
   const int active_n = (qp.n_vars > 0 && qp.n_vars <= n) ? qp.n_vars : n;
   if (result_.converged) {

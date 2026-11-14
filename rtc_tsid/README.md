@@ -174,7 +174,7 @@ torque_limit:
 contact_accel:
   baumgarte: {kp: [..6], kd: [..6]}   # 선택 — a_c* = −Kp⊙e − Kd⊙v_c, anchor 는 접촉 활성화 edge 에 latch (Reset · preset 재활성에 재 latch, 헤더)
   terrain_height: 0.0    # 선택 [m] — anchor z 를 이 값으로
-  inactive_lambda: regularize   # | zero — 비활성 접촉의 예약 행에 I·λ = 0 (warm_start: previous_result_reset_mu 필요); 모르는 키는 throw
+  inactive_lambda: regularize   # | zero — 비활성 접촉의 예약 행에 I·λ = 0 (warm_start: previous_result_reset_mu 필요)
 ```
 
 Free-flyer root 의 6 DoF 는 행이 없다. margin 은 관절별로 clamp 하므로 범위가 좁은 관절 (gripper finger) 에서도 안전하다. 선택 키는 키가 없으면 행을 더하지 않고 기존 바이트 그대로다; preset 으로 `torque_limit` 을 끄면 rate 도 꺼진다. 접촉 활성화 ramp 시간의 기본값 `tsid.contacts_default_ramp_sec` 은 rtc_tsid 가 아니라 소비 컨트롤러가 읽는다.

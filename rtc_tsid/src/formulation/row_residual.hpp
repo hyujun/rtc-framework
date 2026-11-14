@@ -11,10 +11,13 @@
 namespace rtc::tsid {
 
 // max |A_r · x − b_r| over the equality rows [row, row + dim) of `qp`, at the
-// iterate `x` (sized to A's columns). 0 for no rows; NaN when x (or the rows)
-// are not finite. No allocation.
+// iterate `x` (sized to A's columns). NaN when x (or the rows) are not finite,
+// else 0 for no rows. No allocation.
 [[nodiscard]] inline double EqualityRowResidualInf(const QPData& qp, int row, int dim,
                                                    const Eigen::VectorXd& x) noexcept {
+  if (!x.allFinite()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
   if (dim <= 0) {
     return 0.0;
   }

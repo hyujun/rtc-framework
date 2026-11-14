@@ -202,24 +202,22 @@ TEST_F(InactiveLambdaTest, TheDefaultIsRegularizeAndBothModesParse) {
   }
 }
 
-TEST_F(InactiveLambdaTest, AnUnknownValueOrKeyIsRefused) {
+// An unknown mode is refused. An unknown KEY is not the constraint's to
+// refuse: a factory entry may carry its caller's own keys (the locomotion
+// builder refuses its own schema's).
+TEST_F(InactiveLambdaTest, AnUnknownModeIsRefusedAndACallersKeyIsNot) {
   for (const char* bad : {"Zero", "cached", "", "0"}) {
     YAML::Node y;
     y["inactive_lambda"] = bad;
     ContactConstraint c;
     EXPECT_THROW(c.Init(*model_, robot_info_, cache_, y), std::invalid_argument) << bad;
   }
-  for (const char* yaml :
-       {"{inactive_lambdas: zero}", "{terrain_hieght: 0.0}", "{baumgarte: {kp: 1.0, kv: 1.0}}"}) {
-    ContactConstraint c;
-    EXPECT_THROW(c.Init(*model_, robot_info_, cache_, YAML::Load(yaml)), std::invalid_argument)
-        << yaml;
-  }
-  // The factory's own entry key and every documented key are accepted.
   ContactConstraint c;
   EXPECT_NO_THROW(c.Init(*model_, robot_info_, cache_,
                          YAML::Load("{type: contact_constraint, terrain_height: 0.0, "
-                                    "inactive_lambda: zero, baumgarte: {kp: 1.0, kd: 2.0}}")));
+                                    "inactive_lambda: zero, baumgarte: {kp: 1.0, kd: 2.0}, "
+                                    "caller_tag: 3}")));
+  EXPECT_EQ(c.InactiveLambdaMode(), ContactConstraint::InactiveLambda::kZero);
 }
 
 // Every contact active: both modes write the same bytes.
@@ -276,6 +274,24 @@ TEST_F(InactiveLambdaTest, EveryReleasedSlotGetsItsOwnBlock) {
   EXPECT_TRUE(SameBytes(A.rightCols(12), lam));
   EXPECT_EQ(A.block(3, 0, 9, nv).cwiseAbs().maxCoeff(), 0.0);
   EXPECT_GT(A.block(0, 0, 3, nv).cwiseAbs().maxCoeff(), 0.0) << "slot 0 keeps its Jc rows";
+}
+
+// The contact state decides: a slot marked active keeps 0 = 0 rather than the
+// zero rows even when the cache has no frame for it.
+TEST_F(InactiveLambdaTest, ASlotMarkedActiveWithoutACacheFrameIsNotPinned) {
+  ContactManagerConfig two = cfg_;
+  two.contacts.resize(2);  // the cache below holds frames for slots 0 and 1 only
+  PinocchioCache cache;
+  cache.Init(model_, rtc::tsid::ContactFrameIds(two));
+  cache.Update(cache_.q, cache_.v);
+  ContactConstraint cc;
+  cc.Init(*model_, robot_info_, cache, YAML::Load("{inactive_lambda: zero}"));
+  cc.SetContactManager(&cfg_);
+  Eigen::MatrixXd A = Eigen::MatrixXd::Zero(12, NVars());
+  Eigen::VectorXd b = Eigen::VectorXd::Zero(12);
+  cc.ComputeEquality(cache, contacts_, robot_info_, NVars(), A, b);
+  EXPECT_EQ(A.middleRows(9, 3).cwiseAbs().maxCoeff(), 0.0);
+  EXPECT_GT(A.middleRows(0, 3).cwiseAbs().maxCoeff(), 0.0) << "premise: slots with frames solve";
 }
 
 // A contact ramping in (active, activation < 1) is active: it keeps its Jc

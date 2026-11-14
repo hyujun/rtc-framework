@@ -448,6 +448,8 @@ TEST_F(QPSolverWrapperTest, ZeroPrimalInfeasibilityThresholdStillRejectsAContrad
   const auto& result = wrapper.Solve(qp);
   EXPECT_FALSE(result.converged);
   EXPECT_EQ(result.status, kPrimalInfeasible);
+  EXPECT_TRUE(std::isnan(result.pri_res)) << "x is the certificate, not an iterate";
+  EXPECT_TRUE(std::isnan(result.dua_res));
 
   // The default threshold does not call it solved either.
   QPSolverConfig standard;
@@ -646,8 +648,8 @@ TEST_F(QPSolverWrapperTest, ResidualsAreNanWhenNothingWasSolved) {
   EXPECT_TRUE(std::isnan(r.dua_res));
 }
 
-// Where each solve starts, per mode. The shipped mode starts every solve from
-// the previous iterates — the first one from Init's placeholder problem — and
+// Where each solve starts, per mode. The shipped mode starts every solve but
+// the first (which has nothing to start from) from the previous iterates, and
 // only non-finite iterates or ResetWarmStart() make one start from zero; a
 // solve that ran out of iterations still seeds the next. The reset-μ mode
 // starts the first solve, the one after any miss and the one after
@@ -662,7 +664,7 @@ TEST_F(QPSolverWrapperTest, WarmStartedSaysWhereEachSolveStarted) {
     QPSolverConfig c = WithMode(mode);
     QPSolverWrapper w;
     w.Init(3, 1, 3, c);
-    EXPECT_EQ(w.Solve(qp).warm_started, !reset_mu) << "first solve";
+    EXPECT_FALSE(w.Solve(qp).warm_started) << "first solve: nothing to start from";
     EXPECT_TRUE(w.Solve(qp).warm_started);
     w.ResetWarmStart();
     EXPECT_FALSE(w.Solve(qp).warm_started) << "after ResetWarmStart";
@@ -708,9 +710,14 @@ TEST_F(QPSolverWrapperTest, ResetMuModeRestartsAfterAnInfeasibleSolve) {
   qp.u.head(2) << -1.0, inf;  // x0 ≤ −1 and x0 ≥ 1
   QPSolverConfig c = WithMode(WarmStartMode::kPreviousResultResetMu);
   c.max_iter = 50;
+  c.eps_primal_inf = 0.0;  // the exact certificate this QP has (see the test above)
   QPSolverWrapper w;
   w.Init(2, 0, 2, c);
-  ASSERT_FALSE(w.Solve(qp).converged);
+  const auto& verdict = w.Solve(qp);
+  ASSERT_FALSE(verdict.converged);
+  ASSERT_EQ(verdict.status, 2) << "premise: an infeasibility certificate";
+  EXPECT_TRUE(std::isnan(verdict.pri_res)) << "x is the certificate, not an iterate";
+  EXPECT_TRUE(std::isnan(verdict.dua_res));
 
   qp.l(1) = -3.0;
   qp.g.head(2) << 0.0, -2.0;

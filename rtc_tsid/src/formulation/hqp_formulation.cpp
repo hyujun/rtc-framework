@@ -3,6 +3,7 @@
 #include "row_residual.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace rtc::tsid {
@@ -385,8 +386,10 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
 
   if (last_tried >= 0) {
     const auto lt = static_cast<size_t>(last_tried);
-    result_.eom_residual_inf = EqualityRowResidualInf(qp_data_per_level_[lt], eom_row_, eom_dim_,
-                                                      qp_solvers_[lt].Primal());
+    result_.eom_residual_inf = std::isnan(result_.pri_res)
+                                   ? std::numeric_limits<double>::quiet_NaN()
+                                   : EqualityRowResidualInf(qp_data_per_level_[lt], eom_row_,
+                                                            eom_dim_, qp_solvers_[lt].Primal());
   }
   result_.levels_solved = levels_solved;
   return result_;

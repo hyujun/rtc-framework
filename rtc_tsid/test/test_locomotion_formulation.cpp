@@ -571,6 +571,8 @@ TEST(LocomotionFormulation, YamlRefusalsHaveAnAcceptedTwin) {
   refused([](YAML::Node& n) { n["tasks"]["feet"]["frame"] = "left_sole"; });  // the builder's key
   refused([](YAML::Node& n) { n["tasks"]["torso"] = YAML::Load("[0, 0, 0, 1, 1, 1]"); });
   refused([](YAML::Node& n) { n["constraints"].remove("eom"); });
+  refused([](YAML::Node& n) { n["constraints"]["contact"]["inactive_lambdas"] = "zero"; });
+  refused([](YAML::Node& n) { n["constraints"]["contact"]["terrain_hieght"] = 0.0; });
   YAML::Node no_limits = YAML::Load(kLocoWbq);  // the optional constraints are optional
   no_limits["constraints"].remove("joint_limit");
   no_limits["constraints"].remove("torque_limit");
@@ -666,7 +668,7 @@ TEST(LocomotionFormulation, TheSolveReportIsTheReturnedIteratesAndEveryResetClea
     for (int k = 0; k < 3; ++k) {
       const CommandOutput& o = r.Solve();
       ASSERT_TRUE(o.tau_valid) << k;
-      EXPECT_TRUE(o.qp_warm_started) << "the shipped warm start, every solve";
+      EXPECT_EQ(o.qp_warm_started, k > 0) << "the shipped warm start, from the second solve";
       EXPECT_LE(o.qp_pri_res, kEpsAbs);
       EXPECT_LE(o.qp_dua_res, kEpsAbs);
       // M a + h − Jcᵀ λ on the base rows, from the published solution.
@@ -683,7 +685,9 @@ TEST(LocomotionFormulation, TheSolveReportIsTheReturnedIteratesAndEveryResetClea
           64.0 * (2 * nv + 12) * kEps *
           (r.cache.M.cwiseAbs().rowwise().sum().maxCoeff() * o.a_opt.lpNorm<Eigen::Infinity>() +
            r.cache.h.lpNorm<Eigen::Infinity>() +
-           6.0 * r.cache.contact_frames[0].J.cwiseAbs().maxCoeff() *
+           6.0 *
+               std::max(r.cache.contact_frames[0].J.cwiseAbs().maxCoeff(),
+                        r.cache.contact_frames[1].J.cwiseAbs().maxCoeff()) *
                o.lambda_opt.lpNorm<Eigen::Infinity>());
       EXPECT_LE(std::abs(o.eom_residual_inf - dyn.head(6).lpNorm<Eigen::Infinity>()), tol);
       EXPECT_LE(o.eom_residual_inf, o.qp_pri_res + tol) << "the EOM rows are among the rows";
@@ -726,7 +730,9 @@ TEST(LocomotionFormulation, TheEomResidualIsThatOfTheBaseRowsOfTheDynamics) {
           64.0 * (2 * nv + 12) * kEps *
           (r.cache.M.cwiseAbs().rowwise().sum().maxCoeff() * o.a_opt.lpNorm<Eigen::Infinity>() +
            r.cache.h.lpNorm<Eigen::Infinity>() +
-           6.0 * r.cache.contact_frames[0].J.cwiseAbs().maxCoeff() *
+           6.0 *
+               std::max(r.cache.contact_frames[0].J.cwiseAbs().maxCoeff(),
+                        r.cache.contact_frames[1].J.cwiseAbs().maxCoeff()) *
                o.lambda_opt.lpNorm<Eigen::Infinity>());
       EXPECT_LE(std::abs(o.eom_residual_inf - dyn.head(6).lpNorm<Eigen::Infinity>()), tol) << k;
       if (std::string(formulation) == "wqp") {

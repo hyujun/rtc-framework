@@ -48,10 +48,12 @@ std::uint64_t Fnv1a(std::uint64_t h, const Eigen::VectorXd& v) {
 }
 
 // The digest of six cycles of the default settings (regularised inactive
-// forces, the previous-result warm start), on GCC / x86-64 in Release when it
-// was pinned — the repo sets no -march, -ffast-math or -ffp-contract. It is a number to compare
-// against, not a claim that these torques are right: a change meant to alter the default trace
-// replaces it in a commit of its own that says why.
+// forces, the previous-result warm start), pinned on GCC / x86-64 in Release.
+// Other targets (aarch64's fused multiply-add, a Debug or sanitizer build)
+// give other bits for the same source, so there it is recorded, not compared.
+// It is a number to compare against, not a claim that these torques are
+// right: a change meant to alter the default trace replaces it in a commit of
+// its own that says why.
 constexpr std::uint64_t kDefaultTraceDigest = 0x206fed7e0217ef60ULL;
 
 // Six cycles: enough for the default warm start to miss on some ticks, so the
@@ -77,10 +79,12 @@ TEST(LocomotionGaitTest, TheDefaultSettingsTraceIsUnchanged) {
   std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(h));
   RecordProperty("default_trace_digest", hex);
   RecordProperty("default_trace_valid_ticks", std::to_string(valid));
+#if defined(__x86_64__) && defined(NDEBUG) && !defined(__SANITIZE_ADDRESS__)
   EXPECT_EQ(h, kDefaultTraceDigest)
       << "the default trace changed: digest " << hex
       << ". If the change is meant to alter it, replace the constant in its own commit with "
          "the reason; otherwise the defaults are not preserved.";
+#endif
 }
 
 // ── The reset-μ warm start with zero inactive forces ─────────────────────────

@@ -19,12 +19,14 @@ namespace rtc::tsid {
 // Where each Solve() starts from (QPSolverConfig::warm_start).
 //
 //   kPreviousResult        — the previous solve's iterates AND its proximal
-//                            parameters (ProxQP WARM_START_WITH_PREVIOUS_RESULT),
-//                            whatever that solve's outcome; after non-finite
-//                            iterates or ResetWarmStart() one start from zero.
-//   kPreviousResultResetMu — the previous solve's iterates with the proximal
-//                            parameters reset to their initial values (ProxQP
-//                            COLD_START_WITH_PREVIOUS_RESULT). The first solve,
+//                            penalties μ_eq, μ_in (ProxQP
+//                            WARM_START_WITH_PREVIOUS_RESULT), whatever that
+//                            solve's outcome; after non-finite iterates or
+//                            ResetWarmStart() one start from zero.
+//   kPreviousResultResetMu — the previous solve's iterates with μ_eq, μ_in
+//                            reset to their initial values (ProxQP
+//                            COLD_START_WITH_PREVIOUS_RESULT; ρ is reset on
+//                            every update in both modes). The first solve,
 //                            the one after a solve that did not converge and
 //                            the one after ResetWarmStart() start from the
 //                            equality-constrained solution instead.
@@ -33,7 +35,7 @@ namespace rtc::tsid {
 // contact-switching controller), kPreviousResult can stop at a point that
 // passes ProxQP's residual test with multipliers of the wrong sign on inactive
 // rows — a solution that is not the optimum — and a failed solve's iterates
-// seed the next one. Resetting the proximal parameters and restarting from the
+// seed the next one. Resetting the proximal penalties and restarting from the
 // equality-constrained solution after a failure removes both on such
 // sequences; it costs nothing per solve (a settings enum, no buffer).
 enum class WarmStartMode : std::uint8_t { kPreviousResult, kPreviousResultResetMu };
@@ -156,7 +158,9 @@ class QPSolverWrapper {
 
   // The primal iterate the LAST Solve() stopped at, in the caller's units —
   // SolveResult::x_opt only on a converged solve, the failed iterate (or NaN)
-  // otherwise. Same sizing and lifetime as the duals.
+  // otherwise; after an infeasibility verdict (status 2 or 4) ProxQP leaves its
+  // certificate direction here, not an iterate. Same sizing and lifetime as
+  // the duals.
   [[nodiscard]] const Eigen::VectorXd& Primal() const noexcept;
 
   // 설정 변경 (non-RT)
@@ -176,6 +180,8 @@ class QPSolverWrapper {
   // kPreviousResultResetMu: the next Solve() starts from the equality-
   // constrained solution (no previous solve, a miss, or ResetWarmStart()).
   bool cold_next_{true};
+  // A Solve() has run since Init(): there are iterates to start from.
+  bool solved_once_{false};
 
   // Persistent inequality placeholder, allocated once in Init() and reused for
   // (a) the init model and (b) any Solve() tick with zero active inequality rows.

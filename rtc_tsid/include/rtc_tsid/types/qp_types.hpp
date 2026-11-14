@@ -65,18 +65,22 @@ struct SolveResult {
   // QPSolverConfig::max_iter bounds. 0 when no solve ran.
   int outer_iterations{0};
   // The solve started from the previous solve's iterates (either
-  // WarmStartMode), not from zero or the equality-constrained solution.
+  // WarmStartMode), not from zero or the equality-constrained solution — false
+  // on the first solve after Init.
   bool warm_started{false};
   // ProxQP's primal residual max(‖A x − b‖∞, ‖[C x − u]₊ + [C x − l]₋‖∞) and dual
   // residual ‖H x + g + Aᵀ y + Cᵀ z‖∞ at the iterate it stopped at, in the
   // caller's units — reported whether or not it converged (a failed solve
-  // tells how far it got). NaN when no solve ran.
+  // tells how far it got; its dual residual may be of multipliers ProxQP has
+  // since reset). NaN when no solve ran, or when ProxQP returned an
+  // infeasibility certificate instead of an iterate (status 2 or 4).
   double pri_res{std::numeric_limits<double>::quiet_NaN()};
   double dua_res{std::numeric_limits<double>::quiet_NaN()};
   // max |A x − b| over the rows of the constraint named "eom" (the floating
   // base's equations of motion) at the same iterate — what a dynamics check
   // reads, apart from the contact and task rows pri_res mixes in. 0 when the
-  // QP has no such rows; NaN when no solve ran or the iterate is not finite.
+  // QP has no such rows (none added, or switched off); NaN when pri_res is NaN
+  // or the iterate is not finite.
   double eom_residual_inf{std::numeric_limits<double>::quiet_NaN()};
   int levels_solved{0};  // WQP: 항상 1, HQP: 실제 solve한 level 수
   // Constraint rows assembled this tick (HQP: the shared constraints, without

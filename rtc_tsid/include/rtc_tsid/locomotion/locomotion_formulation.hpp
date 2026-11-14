@@ -41,8 +41,9 @@ namespace rtc::tsid {
 // contacts (before the solve, so a touch-down tick has its rows), then the
 // controller's Compute. Posture and force read the ControlReference directly.
 //
-// YAML (`whole_body_qp:`; an unknown key here or in contact / overrides is
-// refused, a task / constraint map takes its own task's keys):
+// YAML (`whole_body_qp:`; an unknown key here, in contact / overrides or in
+// constraints.contact is refused, a task / constraint map takes its own
+// task's keys):
 //   formulation_type: wqp | hqp
 //   solver: {…}                       # ParseQPSolverConfig keys
 //   contact: {friction_coeff, friction_faces, patch_half_length_x,
@@ -53,7 +54,8 @@ namespace rtc::tsid {
 //   constraints: {eom: {}, contact: {…}, friction_cone: {}, joint_limit: {…},
 //                 torque_limit: {…}}
 // Each task / constraint map takes its rtc_tsid keys (kp, kd, weight,
-// priority, mask; baumgarte, terrain_height; position_margin, …), never type /
+// priority, mask; baumgarte, terrain_height, inactive_lambda; position_margin,
+// …), never type /
 // name / frame / base_frame (the builder sets those). eom and contact are
 // required; the other constraints are optional.
 // ────────────────────────────────────────────────

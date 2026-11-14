@@ -55,7 +55,7 @@ namespace rtc::tsid {
 //                          the previous-result warm start these rows switching
 //                          on and off make ProxQP return non-optimal solutions.
 //
-// YAML (`contact_accel`, every key optional; another key is refused):
+// YAML (`contact_accel`, every key optional):
 //   baumgarte: {kp: <scalar | 6>, kd: <scalar | 6>}   # ≥ 0, finite
 //   terrain_height: 0.0                                # [m]
 //   inactive_lambda: regularize                        # regularize | zero

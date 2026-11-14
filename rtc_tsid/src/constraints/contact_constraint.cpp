@@ -5,27 +5,11 @@
 #include "rtc_tsid/core/yaml_vector.hpp"
 
 #include <cmath>
-#include <initializer_list>
 #include <stdexcept>
 #include <string>
 
 namespace rtc::tsid {
 namespace {
-
-// `map`'s keys must be among `allowed` (a typo is an error, not a default).
-void RefuseUnknownKeys(const YAML::Node& map, std::initializer_list<const char*> allowed,
-                       const char* where) {
-  for (auto it = map.begin(); it != map.end(); ++it) {
-    const std::string key = it->first.as<std::string>();
-    bool known = false;
-    for (const char* a : allowed) {
-      known = known || key == a;
-    }
-    if (!known) {
-      throw std::invalid_argument(std::string(where) + ": unknown key '" + key + "'");
-    }
-  }
-}
 
 // A gain key: a scalar for every axis or exactly six values, finite and ≥ 0.
 Eigen::Matrix<double, 6, 1> ReadGain(const YAML::Node& node, const char* key) {
@@ -45,17 +29,11 @@ void ContactConstraint::Init(const pinocchio::Model& /*model*/, const RobotModel
   inactive_lambda_ = InactiveLambda::kRegularize;
   kp_.setZero();
   kd_.setZero();
-  if (constraint_config && constraint_config.IsMap()) {
-    // `type` is the factory's entry key.
-    RefuseUnknownKeys(constraint_config, {"type", "baumgarte", "terrain_height", "inactive_lambda"},
-                      "contact_accel");
-  }
   if (constraint_config && constraint_config["baumgarte"]) {
     const YAML::Node b = constraint_config["baumgarte"];
     if (!b.IsMap()) {
       throw std::invalid_argument("contact_accel.baumgarte: must be a map {kp, kd}");
     }
-    RefuseUnknownKeys(b, {"kp", "kd"}, "contact_accel.baumgarte");
     kp_ = ReadGain(b, "kp");
     kd_ = ReadGain(b, "kd");
     // All-zero gains: the plain rows, bit for bit, and no anchor.
@@ -135,7 +113,9 @@ void ContactConstraint::ComputeEquality(const PinocchioCache& cache, const Conta
     if (!active) {
       slot.latched = false;  // the next activation latches a new anchor
       slot.a_star.setZero();
-      if (zero_inactive && nv_ + row + cdim <= A_block.cols()) {
+      // The contact state decides (as the EOM and friction rows do); a slot
+      // marked active without a cache frame keeps 0 = 0.
+      if (zero_inactive && !contacts.contacts[i].active && nv_ + row + cdim <= A_block.cols()) {
         A_block.block(row, nv_ + row, cdim, cdim).setIdentity();
       }
       row += cdim;
