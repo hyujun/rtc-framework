@@ -52,8 +52,10 @@
 ///
 /// Ownership — `HandlerMPCThread` takes unique-ownership of both the handler
 /// and the phase manager via `Configure`. The `RobotModelHandler` reference
-/// is non-owning and must outlive this thread. `Solve` is single-threaded —
-/// Aligator's shift-warm-start path runs on the calling thread.
+/// is non-owning and must outlive this thread. `Solve` runs on this thread —
+/// Aligator's shift-warm-start path included — and, for a handler with
+/// `num_threads` > 1, on the pool the base thread pinned at loop entry
+/// (`MPCThread`); the handler's count must equal the launch config's.
 ///
 /// Cross-mode swap (stretch scope, §Phase 6 Step 6) — on phase transition
 /// where `ctx.ocp_type` differs from the current handler's dispatch key,
@@ -219,6 +221,10 @@ class HandlerMPCThread final : public MPCThread {
 
  protected:
   bool Solve(const MPCStateSnapshot& state, MPCSolution& out) override;
+
+  // The handler's MPCSolverConfig::num_threads against the launch config's
+  // solver_threads: the pool is built for the latter, the solver runs the former.
+  [[nodiscard]] bool SolverThreadsMatch() const noexcept override;
 
  private:
   /// @brief Execute the cross-mode handler swap. Non-noexcept internally;

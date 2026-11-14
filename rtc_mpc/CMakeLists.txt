@@ -218,6 +218,16 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_mpc_timing_logger)
   add_mpc_gtest(test_mpc_thread_skeleton)
   add_mpc_gtest(test_mpc_thread_mock)
+  # Pins threads to slots and reads them back by name: alone, so another
+  # test's threads neither share its cores nor its /proc/self view.
+  add_mpc_gtest(test_mpc_solver_pool)
+  if(TEST test_mpc_solver_pool)
+    # A hostile OpenMP environment on purpose: dynamic teams on, and a default
+    # team size above one. The loop entry must override both on the MPC thread
+    # (the pool's exact size, and no Eigen team on the one-thread path).
+    set_tests_properties(test_mpc_solver_pool PROPERTIES RUN_SERIAL TRUE
+        ENVIRONMENT "OMP_DYNAMIC=true;OMP_NUM_THREADS=8")
+  endif()
   add_mpc_gtest(test_robot_model_handler)
   add_mpc_gtest(test_phase_cost_config)
   add_mpc_gtest(test_cost_factory)
@@ -265,7 +275,9 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
   endif()
   if(TEST test_kinodynamic_receding)
-    set_tests_properties(test_kinodynamic_receding PROPERTIES TIMEOUT 600)
+    # RUN_SERIAL: its stage-parallel cases spawn solver teams, and the armed
+    # speed-up case (RTC_RUN_TIMING_GATES=1) needs the host to itself.
+    set_tests_properties(test_kinodynamic_receding PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE)
   endif()
   # The headless soak: a 3 s smoke of each of its twelve combinations by
   # default; armed (RTC_RUN_MPC_SOAK=1, docs/testing.md) it runs

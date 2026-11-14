@@ -130,7 +130,8 @@ bool MPCFactory::LoadSolverConfig(const YAML::Node& solver_node, MPCSolverConfig
 
 MPCFactoryStatus MPCFactory::Create(const YAML::Node& cfg, const RobotModelHandler& model,
                                     const PhaseContext& initial_ctx,
-                                    std::unique_ptr<MPCHandlerBase>& handler_out) noexcept {
+                                    std::unique_ptr<MPCHandlerBase>& handler_out,
+                                    int worker_capacity) noexcept {
   handler_out.reset();
   MPCFactoryStatus status{};
 
@@ -161,6 +162,8 @@ MPCFactoryStatus MPCFactory::Create(const YAML::Node& cfg, const RobotModelHandl
     status.error = MPCFactoryError::kInvalidSolverConfig;
     return status;
   }
+  solver_cfg.worker_capacity = worker_capacity;
+  status.requested_threads = solver_cfg.num_threads;
 
   OCPLimits limits{};
   // The kinodynamic OCP takes its friction coefficient from its own

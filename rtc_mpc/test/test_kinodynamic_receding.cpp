@@ -59,7 +59,9 @@
 #include <aligator/core/traj-opt-data.hpp>
 #pragma GCC diagnostic pop
 
+#include <gtest/gtest-spi.h>
 #include <gtest/gtest.h>
+#include <omp.h>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -68,8 +70,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -103,6 +107,12 @@ MPCSolverConfig ShippedSolver() {
   s.max_online_al_iters = 20;
   return s;
 }
+
+/// What a solve left behind, for comparing two runs tick by tick.
+struct Capture {
+  aligator::ResultsTpl<double> results;
+  std::array<double, rtc::mpc::kMaxHorizon + 1> node_prim_inf{};
+};
 
 /// One tick of a receding run.
 struct Tick {
@@ -187,7 +197,7 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
   /// Ticks 0 … kTicks of the shipped walk from the stand pose, each tick's
   /// state the previous solution's node 1. Tick 0 is the cold start (the
   /// standing solve); `solver` sets both budgets.
-  std::vector<Tick> Run(const MPCSolverConfig& solver) {
+  std::vector<Tick> Run(const MPCSolverConfig& solver, std::vector<Capture>* captures = nullptr) {
     tu::ShippedWalkWindow walk(model_, handler_, stand_, kT0, 0.5);
     KinodynamicOCP ocp(cfg_);
     Core core;
@@ -236,6 +246,9 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
       tick.cleared = core.ClearedMultipliers();
       tick.inactive_nonzero = InactiveNonZero(core, ocp);
       ticks.push_back(tick);
+      if (captures != nullptr) {
+        captures->push_back(Capture{core.solver()->results_, out->node_prim_inf});
+      }
     }
     return ticks;
   }
@@ -790,3 +803,236 @@ INSTANTIATE_TEST_SUITE_P(Integrators, KinodynamicReceding,
                          ::testing::Values("semi_implicit_euler", "rk2"));
 
 }  // namespace
+
+// ── Stage-parallel solves ───────────────────────────────────────────────────
+
+namespace {
+
+bool AllFinite(const std::vector<Eigen::VectorXd>& v) {
+  return std::all_of(v.begin(), v.end(), [](const Eigen::VectorXd& x) { return x.allFinite(); });
+}
+
+bool AllFinite(const std::vector<Eigen::MatrixXd>& v) {
+  return std::all_of(v.begin(), v.end(), [](const Eigen::MatrixXd& x) { return x.allFinite(); });
+}
+
+bool SameBits(const std::vector<Eigen::MatrixXd>& a, const std::vector<Eigen::MatrixXd>& b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a[i].rows() != b[i].rows() || a[i].cols() != b[i].cols() ||
+        std::memcmp(a[i].data(), b[i].data(),
+                    sizeof(double) * static_cast<std::size_t>(a[i].size())) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool SameBits(double a, double b) {
+  return std::memcmp(&a, &b, sizeof(double)) == 0;
+}
+
+/// Every quantity a solve hands on — iterates, multipliers, every node's
+/// feedback gain, the residuals, the cost, the per-node defects — finite on
+/// both sides first (two NaNs can share a bit pattern), then bit for bit.
+void ExpectSameSolve(const Capture& par, const Capture& ser, const std::string& where) {
+  const auto& p = par.results;
+  const auto& q = ser.results;
+  const auto finite = [](const aligator::ResultsTpl<double>& r) {
+    return AllFinite(r.xs) && AllFinite(r.us) && AllFinite(r.vs) && AllFinite(r.lams) &&
+           AllFinite(r.gains_) && std::isfinite(r.prim_infeas) && std::isfinite(r.dual_infeas) &&
+           std::isfinite(r.traj_cost_) && std::isfinite(r.merit_value_);
+  };
+  EXPECT_TRUE(finite(p) && finite(q)) << where << ": a non-finite value";
+  for (std::size_t k = 0; k < par.node_prim_inf.size(); ++k) {
+    EXPECT_TRUE(std::isfinite(par.node_prim_inf[k]) && std::isfinite(ser.node_prim_inf[k]))
+        << where << ": node_prim_inf " << k << " is not finite";
+  }
+  EXPECT_TRUE(SameBits(p.xs, q.xs)) << where << ": xs";
+  EXPECT_TRUE(SameBits(p.us, q.us)) << where << ": us";
+  EXPECT_TRUE(SameBits(p.vs, q.vs)) << where << ": vs";
+  // Every constraint's multipliers, the terminal one included (one per node).
+  EXPECT_EQ(p.lams.size(), p.xs.size()) << where << ": lams";
+  EXPECT_TRUE(SameBits(p.lams, q.lams)) << where << ": lams";
+  EXPECT_TRUE(SameBits(p.gains_, q.gains_)) << where << ": gains (every node)";
+  EXPECT_TRUE(SameBits(p.prim_infeas, q.prim_infeas)) << where << ": prim";
+  EXPECT_TRUE(SameBits(p.dual_infeas, q.dual_infeas)) << where << ": dual";
+  EXPECT_TRUE(SameBits(p.traj_cost_, q.traj_cost_)) << where << ": cost";
+  // The next tick's line search starts from it.
+  EXPECT_TRUE(SameBits(p.merit_value_, q.merit_value_)) << where << ": merit";
+  EXPECT_EQ(p.num_iters, q.num_iters) << where << ": iterations";
+  EXPECT_EQ(p.conv, q.conv) << where << ": converged";
+  EXPECT_EQ(std::memcmp(par.node_prim_inf.data(), ser.node_prim_inf.data(),
+                        sizeof(double) * par.node_prim_inf.size()),
+            0)
+      << where << ": node_prim_inf";
+}
+
+/// Sets the calling thread's OpenMP ICVs as the MPC thread does (dynamic off,
+/// default team size 1 — the solver's regions name their own size) and puts
+/// them back on scope exit, however the test leaves.
+class SolverThreadIcvs {
+ public:
+  SolverThreadIcvs() noexcept : max_(omp_get_max_threads()), dynamic_(omp_get_dynamic()) {
+    omp_set_num_threads(1);
+    omp_set_dynamic(0);
+  }
+
+  ~SolverThreadIcvs() {
+    omp_set_num_threads(max_);
+    omp_set_dynamic(dynamic_);
+  }
+
+  SolverThreadIcvs(const SolverThreadIcvs&) = delete;
+  SolverThreadIcvs& operator=(const SolverThreadIcvs&) = delete;
+  SolverThreadIcvs(SolverThreadIcvs&&) = delete;
+  SolverThreadIcvs& operator=(SolverThreadIcvs&&) = delete;
+
+ private:
+  int max_;
+  int dynamic_;
+};
+
+/// The online budget the serial reference was measured with on the dev PC.
+MPCSolverConfig MeasuredOnlineBudget() {
+  MPCSolverConfig s = ShippedSolver();
+  s.max_iters = 3;
+  s.max_online_al_iters = 1;
+  return s;
+}
+
+}  // namespace
+
+// The comparison itself: two solves that share a NaN share its bit pattern, so
+// bit equality alone would call them the same. The finiteness checks must fail.
+TEST(StageParallelComparison, TwoNonFiniteSolvesAreNotTheSameSolve) {
+  Capture a;
+  a.results.xs = {Eigen::VectorXd::Constant(3, std::numeric_limits<double>::quiet_NaN())};
+  a.results.us = {Eigen::VectorXd::Zero(2)};
+  a.results.vs = a.results.us;
+  a.results.lams = a.results.us;
+  a.results.gains_ = {Eigen::MatrixXd::Zero(2, 3)};
+  const Capture b = a;
+  EXPECT_NONFATAL_FAILURE(ExpectSameSolve(a, b, "nan"), "non-finite");
+}
+
+// The stage loops (evaluation and derivatives) split across threads; the
+// Riccati recursion stays serial. Every tick of the walk window — the standing
+// solve, the online ticks, and the mode changes the window crosses — must
+// reproduce the serial solve exactly, for every thread count the layout can
+// give the solver. The threads here are unpinned: equivalence does not depend
+// on placement, and a host with fewer cores still runs every count.
+TEST_P(KinodynamicReceding, StageParallelSolvesReproduceTheSerialSolveBitForBit) {
+  const SolverThreadIcvs icvs;
+  const MPCSolverConfig serial = MeasuredOnlineBudget();
+  std::vector<Capture> ser;
+  const std::vector<Tick> ser_ticks = Run(serial, &ser);
+  ASSERT_EQ(ser.size(), static_cast<std::size_t>(kTicks + 1));
+  int flips = 0;
+  for (const Tick& t : ser_ticks) {
+    flips += t.mode_flips;
+  }
+  std::printf("[report] %s: %zu ticks compared per thread count, %d mode flips crossed\n",
+              GetParam(), ser.size(), flips);
+  for (int n = 2; n <= 4; ++n) {
+    MPCSolverConfig par = serial;
+    par.num_threads = n;
+    par.worker_capacity = n - 1;
+    std::vector<Capture> got;
+    const std::vector<Tick> ticks = Run(par, &got);
+    ASSERT_EQ(got.size(), ser.size()) << n << " threads";
+    for (std::size_t k = 0; k < got.size(); ++k) {
+      ExpectSameSolve(got[k], ser[k], std::to_string(n) + " threads, tick " + std::to_string(k));
+      EXPECT_EQ(ticks[k].inactive_nonzero, 0) << n << " threads, tick " << k;
+    }
+  }
+}
+
+// The quality frame a non-bit-identical backend would be judged by, run live
+// against the serial solve in the same process: the consumed segment's
+// residual (nodes 0-2) by median and p95, and the standing solve's
+// convergence and iteration count. Bit-identical solves meet it trivially;
+// it is kept so the bound exists before such a backend does.
+TEST_P(KinodynamicReceding, AStageParallelSolveMeetsTheSerialQualityFrame) {
+  const SolverThreadIcvs icvs;
+  const MPCSolverConfig serial = MeasuredOnlineBudget();
+  MPCSolverConfig par = serial;
+  par.num_threads = 4;
+  par.worker_capacity = 3;
+  std::vector<Capture> ser;
+  std::vector<Capture> got;
+  const std::vector<Tick> ser_ticks = Run(serial, &ser);
+  const std::vector<Tick> par_ticks = Run(par, &got);
+  ASSERT_EQ(got.size(), ser.size());
+  ASSERT_FALSE(ser_ticks.empty());
+  const auto consumed = [](const std::vector<Capture>& c) {
+    std::vector<double> r;
+    for (std::size_t k = 1; k < c.size(); ++k) {  // online ticks
+      r.push_back(std::max({c[k].node_prim_inf[0], c[k].node_prim_inf[1], c[k].node_prim_inf[2]}));
+    }
+    return r;
+  };
+  const auto p95 = [](std::vector<double> v) {
+    std::sort(v.begin(), v.end());
+    return v[static_cast<std::size_t>(std::lround(0.95 * static_cast<double>(v.size() - 1)))];
+  };
+  const std::vector<double> rs = consumed(ser);
+  const std::vector<double> rp = consumed(got);
+  ASSERT_FALSE(rs.empty());
+  const auto all_finite = [](const std::vector<double>& v) {
+    return std::all_of(v.begin(), v.end(), [](double x) { return std::isfinite(x); });
+  };
+  ASSERT_TRUE(all_finite(rs) && all_finite(rp)) << "a consumed-segment residual is not finite";
+  const double med_s = Median(rs);
+  const double med_p = Median(rp);
+  // Ratios against a floor: a serial residual at round-off makes a ratio noise.
+  constexpr double kFloor = 1e-9;
+  EXPECT_GE(med_p, 0.9 * std::max(med_s, kFloor) - kFloor);
+  EXPECT_LE(med_p, 1.1 * std::max(med_s, kFloor));
+  EXPECT_LE(p95(rp), 2.0 * std::max(p95(rs), kFloor));
+  EXPECT_TRUE(ser_ticks.front().converged && par_ticks.front().converged);
+  EXPECT_LE(par_ticks.front().prim, serial.prim_tol);
+  const int it_s = ser_ticks.front().iterations;
+  const int it_p = par_ticks.front().iterations;
+  EXPECT_LE(std::abs(it_p - it_s), std::max(5, static_cast<int>(std::ceil(0.1 * it_s))));
+  std::printf(
+      "[report] %s quality: consumed median %.3g vs %.3g, p95 %.3g vs %.3g, standing "
+      "iterations %d vs %d\n",
+      GetParam(), med_p, med_s, p95(rp), p95(rs), it_p, it_s);
+}
+
+// Wall-clock speed-up of the online budget on this host, serial vs four
+// threads, measured in one process (same run A/B). Armed only with
+// RTC_RUN_TIMING_GATES=1 (Release, idle host): an unarmed run reports the
+// ratio and grades nothing. The bound is the dev PC's measured 2.03x less 12 %;
+// the control PCs judge the absolute times (soak).
+TEST_P(KinodynamicReceding, FourThreadsSpeedUpTheOnlineBudget) {
+  if (std::string(GetParam()) != "semi_implicit_euler") {
+    GTEST_SKIP() << "measured on the shipped integrator only";
+  }
+  const char* armed = std::getenv("RTC_RUN_TIMING_GATES");
+  const MPCSolverConfig serial = MeasuredOnlineBudget();
+  MPCSolverConfig par = serial;
+  par.num_threads = 4;
+  par.worker_capacity = 3;
+  const auto online_p50 = [](const std::vector<Tick>& ticks) {
+    std::vector<double> ms;
+    for (std::size_t k = 1; k < ticks.size(); ++k) {
+      ms.push_back(ticks[k].ms);
+    }
+    return Median(ms);
+  };
+  const SolverThreadIcvs icvs;
+  const double ser_ms = online_p50(Run(serial));
+  const double par_ms = online_p50(Run(par));
+  ASSERT_GT(par_ms, 0.0);
+  std::printf("[report] online solve p50: serial %.2f ms, 4 threads %.2f ms, ratio %.2f (%s)\n",
+              ser_ms, par_ms, ser_ms / par_ms,
+              armed != nullptr && std::string(armed) == "1" ? "armed" : "report only");
+  if (armed == nullptr || std::string(armed) != "1") {
+    return;
+  }
+  EXPECT_GE(ser_ms / par_ms, 1.8);
+}

@@ -75,8 +75,15 @@ enum class MPCRolloutType {
   kNonlinear,  ///< the step re-simulated through the dynamics
 };
 
-/// @brief Aligator's LQ backend. Only the serial one is accepted: the parallel
-///        one needs worker threads the MPC thread model does not have.
+/// @brief Aligator's LQ backend. Only the serial one is accepted.
+///
+/// A multi-threaded solve (`num_threads` > 1) parallelises the per-stage
+/// evaluation and derivatives, which reproduce the serial solve bit for bit,
+/// and keeps the serial Riccati recursion. Aligator 0.19's parallel LQ backend
+/// stays refused: its feedback gains are wrong past node 0 (only the first
+/// block's gain is assembled), every backward pass leaks a small heap block
+/// per worker, two runs of one solver on one iterate differ, and an exception
+/// inside its parallel region terminates the process.
 enum class MPCLinearSolver {
   kSerial,
   kParallel,  ///< refused (`kInvalidSolverConfig`)
@@ -125,7 +132,16 @@ struct MPCSolverConfig {
   int max_online_al_iters{0};  ///< AL outer-loop ceiling once converged; 0 = `max_al_iters`
   MPCRolloutType rollout_type{MPCRolloutType::kLinear};
   MPCLinearSolver linear_solver{MPCLinearSolver::kSerial};  ///< `kParallel` is refused
-  int num_threads{1};                  ///< any other value is refused (one solver thread)
+  /// Solver threads, the calling (MPC) thread included. 1 = the serial solve,
+  /// untouched. More is accepted only when `num_threads - 1 <= worker_capacity`
+  /// and the OpenMP runtime allows that many threads; the extra threads are
+  /// the OpenMP pool the MPC thread pins at its loop entry.
+  int num_threads{1};
+  /// OpenMP worker slots the launch layout profile reserves for this solver
+  /// (`rtc::SelectMpcWorkerSlots(profile).count`). Not a YAML key: the caller
+  /// that knows the profile sets it (`MPCFactory::Create`'s argument). 0 —
+  /// the default, and every profile without workers — admits only 1 thread.
+  int worker_capacity{0};
   bool force_initial_condition{true};  ///< false is refused: node 0 is the measured state
   bool verbose{false};                 ///< route Aligator's own stdout log
   double publish_deadline_ms{0.0};     ///< [ms] ≥ 0; 0 = no deadline
@@ -154,8 +170,10 @@ enum class MPCInitError {
                              ///< context's node dt is not finite and positive
   kSolverSetupFailed,        ///< Aligator's setup() threw (caught internally)
   kInvalidSolverConfig,      ///< tolerances / iteration ceilings out of range, or a
-                             ///< parallel LQ backend, more than one thread, a free node 0,
-                             ///< a negative or non-finite publish deadline or tolerance
+                             ///< parallel LQ backend, more threads than the worker
+                             ///< capacity / OpenMP allows (or a call from inside a
+                             ///< parallel region), a free node 0, a negative or
+                             ///< non-finite publish deadline or tolerance
   kOcpTypeMismatch,          ///< ctx.ocp_type != this handler's dispatch key
   kFloatingBaseUnsupported,  ///< free-flyer root under a joint-torque OCP (the shipped OCPs)
   kFixedBaseUnsupported,     ///< fixed base under a kinodynamic-wrench OCP
