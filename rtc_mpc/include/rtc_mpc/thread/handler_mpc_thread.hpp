@@ -13,7 +13,7 @@
 ///                                    │
 ///                                    ▼
 ///                                  phase_manager_->Update(state,q,v,sensor,tcp,t)
-///                                    │                    (non-RT)
+///                                    │      (t: the snapshot's stamp, consumer clock)
 ///                                    ▼ ctx
 ///                                  handler_->Solve(ctx, state, out) (noexcept)
 ///                                    │
@@ -32,6 +32,23 @@
 /// handler reports the standing budget pending (`InitialSolvePending`, read
 /// before the solve, so a failed standing solve counts too) or whose solve ran
 /// on it is marked for the overrun split (`MPCThread::StandingOverrunCount`).
+///
+/// Phase time — the `t` handed to the phase manager is the snapshot's
+/// `timestamp_ns` (the consumer's clock) since the first snapshot, in
+/// seconds, so the node grid, the gait and `horizon_offset` all run on the
+/// clock the consumer samples the plan with (a simulator slower or faster
+/// than wall time included). A snapshot of a new `state_epoch`, or a stamp
+/// earlier than the last tick's, re-anchors it where the last tick left it, so
+/// the phase time never goes back. The publish deadline stays on the steady
+/// clock.
+///
+/// Repeated observations — with `MPCSolverConfig::require_fresh_state` of
+/// the handler given to @ref Configure (a handler swapped in later does not
+/// change it), a
+/// tick whose snapshot `sequence` is the last attempted one returns before
+/// FK and the solve (@ref RepeatedObservationSkips; not a solve, not
+/// failed), unless the handler's standing solve is pending and the last
+/// attempt returned iterates (@ref StandingRepeatSolves).
 ///
 /// Ownership — `HandlerMPCThread` takes unique-ownership of both the handler
 /// and the phase manager via `Configure`. The `RobotModelHandler` reference
@@ -82,7 +99,6 @@
 #include <yaml-cpp/yaml.h>
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <memory>
 
@@ -184,6 +200,18 @@ class HandlerMPCThread final : public MPCThread {
   [[nodiscard]] static double ConsumedPrimInf(const MPCSolution& sol,
                                               std::uint64_t period_ns) noexcept;
 
+  /// @return ticks skipped because their snapshot was already attempted
+  ///         (`require_fresh_state`).
+  [[nodiscard]] std::uint64_t RepeatedObservationSkips() const noexcept {
+    return repeated_skips_.load(std::memory_order_relaxed);
+  }
+
+  /// @return ticks that solved an already attempted snapshot again because
+  ///         the standing solve was still pending (`require_fresh_state`).
+  [[nodiscard]] std::uint64_t StandingRepeatSolves() const noexcept {
+    return standing_repeats_.load(std::memory_order_relaxed);
+  }
+
   /// @return true once the null-handler guard has rejected a solve.
   [[nodiscard]] bool NullHandlerHit() const noexcept {
     return null_handler_hit_.load(std::memory_order_relaxed);
@@ -220,7 +248,18 @@ class HandlerMPCThread final : public MPCThread {
   MPCSolution prev_out_{};
   bool has_prev_out_{false};
 
-  std::chrono::steady_clock::time_point start_time_{};
+  // Phase time on the snapshot clock (loop thread only).
+  bool have_time_anchor_{false};
+  std::uint64_t anchor_stamp_ns_{0};
+  std::uint64_t last_stamp_ns_{0};
+  std::uint32_t anchor_state_epoch_{0};
+  double time_base_s_{0.0};
+  double last_phase_t_{0.0};
+
+  // Repeated-observation rule (loop thread only; the switch set at Configure).
+  bool require_fresh_state_{false};
+  std::uint64_t last_attempted_sequence_{0};  // 0: none (sequences start at 1)
+  bool last_attempt_returned_iterates_{false};
 
   // Observability counters (all `relaxed`).
   std::atomic<int> last_err_{0};
@@ -231,6 +270,8 @@ class HandlerMPCThread final : public MPCThread {
   std::atomic<std::uint64_t> deadline_misses_{0};
   std::atomic<std::uint64_t> withheld_{0};
   std::atomic<std::uint64_t> cold_withheld_{0};
+  std::atomic<std::uint64_t> repeated_skips_{0};
+  std::atomic<std::uint64_t> standing_repeats_{0};
   std::atomic<bool> null_handler_hit_{false};
 };
 

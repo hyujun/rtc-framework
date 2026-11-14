@@ -30,10 +30,12 @@ constexpr int kNc = 0;
 constexpr int kHorizon = 10;
 constexpr double kDtNode = 0.01;
 
-/// Build a trivially valid solution whose q(t) is linear, identity Riccati.
+/// Build a trivially valid solution whose q(t) is linear, identity Riccati,
+/// observed at @p timestamp (the consumer clock the tests sample with).
 MPCSolution MakeSolution(uint64_t timestamp = 1) {
   MPCSolution sol{};
   sol.timestamp_ns = timestamp;
+  sol.observation_stamp_ns = timestamp;
   sol.horizon_length = kHorizon;
   sol.dt_node = kDtNode;
   sol.converged = true;
@@ -491,6 +493,235 @@ TEST_F(MpcSolutionManagerTest, SolveStatsSnapshotIsConsistentUnderConcurrentPubl
 
   EXPECT_EQ(inconsistent, 0u) << "torn snapshots out of " << reads << " reads";
   EXPECT_EQ(mgr_.GetSolveStats().count, kPublishes);
+}
+
+// ── State epoch, eviction, the age cap and re-enable ───────────────────────
+
+TEST_F(MpcSolutionManagerTest, WriteStateCarriesTheSourceSequenceAndTheStateEpoch) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  mgr_.SetStateEpoch(9);
+  EXPECT_EQ(mgr_.StateEpoch(), 9u);
+  mgr_.WriteState(q_curr_, v_curr_, 100, 0xABCDEF0123456789ULL);
+  const MPCStateSnapshot a = mgr_.ReadState();
+  EXPECT_EQ(a.source_sequence, 0xABCDEF0123456789ULL);
+  EXPECT_EQ(a.state_epoch, 9u);
+  EXPECT_EQ(a.sequence, 1u) << "the manager's own count is independent of the source's";
+
+  mgr_.WriteState(q_curr_, v_curr_, 200);  // the default: no source sequence
+  const MPCStateSnapshot b = mgr_.ReadState();
+  EXPECT_EQ(b.source_sequence, 0u);
+  EXPECT_EQ(b.sequence, 2u);
+  EXPECT_EQ(b.state_epoch, 9u);
+}
+
+TEST_F(MpcSolutionManagerTest, PlanFromAnotherStateEpochIsNotInstalled) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  mgr_.SetStateEpoch(2);
+  MPCSolution sol = MakeSolution();
+  sol.state_epoch = 1;
+  mgr_.PublishSolution(sol);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u);
+  EXPECT_EQ(mgr_.EpochRejections(), 0u) << "a state epoch is not a model epoch";
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_FALSE(mgr_.HasEverReceivedSolution()) << "refused at arrival, never installed";
+
+  // The same plan under the current state epoch installs.
+  sol.state_epoch = 2;
+  mgr_.PublishSolution(sol);
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u);
+}
+
+// The plan being sampled is dropped at the first sample after a bump, with
+// no newer plan arriving — the gate does not wait for one.
+TEST_F(MpcSolutionManagerTest, AStateEpochBumpEvictsTheActivePlan) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.PublishSolution(MakeSolution());
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  // Pass control: without a bump the held plan keeps sampling.
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+
+  mgr_.SetStateEpoch(1);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 3, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_FALSE(meta_.valid);
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 4, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u) << "counted once per evicted plan";
+
+  // A plan of the new epoch is accepted again.
+  MPCSolution next = MakeSolution();
+  next.state_epoch = 1;
+  mgr_.PublishSolution(next);
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 5, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+}
+
+TEST_F(MpcSolutionManagerTest, AModelEpochBumpEvictsTheActivePlan) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.PublishSolution(MakeSolution());
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  mgr_.SetModelEpoch(5);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.EpochRejections(), 1u);
+  EXPECT_EQ(mgr_.StateEpochRejections(), 0u);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+}
+
+// Age = now − observation stamp, cap = (horizon + 1) node intervals: at the
+// cap the plan still samples (held on its last node), one nanosecond past it
+// the plan is dropped and counted once.
+TEST_F(MpcSolutionManagerTest, APlanOlderThanItsHorizonPlusOneNodeIsDropped) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  const uint64_t obs = 7'000'000'000ULL;
+  const uint64_t cap = static_cast<uint64_t>(kHorizon + 1) * 10'000'000ULL;  // kDtNode = 10 ms
+  MPCSolution sol = MakeSolution(obs);
+  sol.observation_stamp_ns = obs;
+  mgr_.PublishSolution(sol);
+  ASSERT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, obs, q_ref_, v_ref_, a_ff_, lambda_ref_,
+                                    u_fb_, meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, obs + cap, q_ref_, v_ref_, a_ff_, lambda_ref_,
+                                    u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 0u);
+
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, obs + cap + 1, q_ref_, v_ref_, a_ff_,
+                                     lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 1u);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, obs + cap + 2, q_ref_, v_ref_, a_ff_,
+                                     lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 1u);
+}
+
+// A plan that arrives already past the cap is installed and dropped in the
+// same call; an observation stamp ahead of `now` is a negative age, not a
+// wrapped one.
+TEST_F(MpcSolutionManagerTest, TheAgeCapAppliesOnArrivalAndNeverWraps) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  MPCSolution old = MakeSolution();
+  old.observation_stamp_ns = 0;
+  mgr_.PublishSolution(old);
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, 1'000'000'000ULL, q_ref_, v_ref_, a_ff_,
+                                     lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 1u);
+
+  MPCSolution ahead = MakeSolution();
+  ahead.observation_stamp_ns = 1'000'000'055ULL;
+  mgr_.PublishSolution(ahead);
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, 1'000'000'000ULL, q_ref_, v_ref_, a_ff_,
+                                    lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 1u);
+}
+
+// Disable → enable: the first sample after the re-enable has no plan, even
+// though the held one is young; a plan published after it is taken.
+TEST_F(MpcSolutionManagerTest, ReEnablingDropsThePlanHeldFromBefore) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.PublishSolution(MakeSolution());
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+
+  mgr_.SetEnabled(false);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  mgr_.SetEnabled(true);
+  mgr_.SetEnabled(true);  // a repeated `true` is not another re-enable
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 3, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+
+  mgr_.PublishSolution(MakeSolution());
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 4, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 5, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_))
+      << "the plan taken after the re-enable is kept";
+}
+
+// After a re-enable, a plan computed from a state written before it is not
+// taken — one published while disabled (the triple buffer keeps it) nor one
+// the MPC side publishes afterwards from the frozen snapshot; a plan of the
+// first state written after the re-enable is.
+TEST_F(MpcSolutionManagerTest, APlanOfAStateFromBeforeTheReEnableIsNotTaken) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.WriteState(q_curr_, v_curr_, 1);
+  const uint64_t before = mgr_.ReadState().sequence;
+  MPCSolution old_plan = MakeSolution(1);
+  old_plan.observation_sequence = before;
+  mgr_.SetEnabled(false);
+  mgr_.PublishSolution(old_plan);  // published while disabled
+  mgr_.SetEnabled(true);
+  mgr_.WriteState(q_curr_, v_curr_, 2);  // the consumer's order: state, then sample
+  const uint64_t after = mgr_.ReadState().sequence;
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u);
+  mgr_.PublishSolution(old_plan);  // the frozen snapshot, solved again after the re-enable
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 3, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StateEpochRejections(), 2u);
+
+  MPCSolution fresh = MakeSolution(2);
+  fresh.observation_sequence = after;
+  mgr_.PublishSolution(fresh);
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 4, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+}
+
+// A plan observed far ahead of `now` — the consumer's clock went back (a
+// reset that restarts its tick count) — is dropped, not held at node 0.
+TEST_F(MpcSolutionManagerTest, APlanFromAheadOfAClockThatWentBackIsDropped) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  const uint64_t cap = static_cast<uint64_t>(kHorizon + 1) * 10'000'000ULL;
+  mgr_.PublishSolution(MakeSolution(5'000'000'000ULL));
+  ASSERT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, 5'000'000'000ULL - cap, q_ref_, v_ref_, a_ff_,
+                                    lambda_ref_, u_fb_, meta_))
+      << "at the cap ahead the plan still samples";
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, 5'000'000'000ULL - cap - 1, q_ref_, v_ref_,
+                                     a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 1u);
+}
+
+// An evicted plan's gain is not applied to the next plan when that one
+// ships none; pass control: a plan with a gain feeds the error back.
+TEST_F(MpcSolutionManagerTest, AnEvictedPlansGainIsNotAppliedToTheNextPlan) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  q_curr_.setConstant(0.5);  // a position error the identity gain would feed back
+  mgr_.PublishSolution(MakeSolution());
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_NE(u_fb_.norm(), 0.0);
+
+  mgr_.SetStateEpoch(1);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.ActiveReceiveStampNs(), 0u) << "the evicted plan's provenance goes with it";
+  MPCSolution no_gain = MakeSolution();
+  no_gain.state_epoch = 1;
+  no_gain.gain_nodes = 0;
+  mgr_.PublishSolution(no_gain);
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 3, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(u_fb_.norm(), 0.0);
+}
+
+// Pass control for the re-enable rule: enabling a manager that was
+// initialised disabled, before any plan, takes the first plan published.
+TEST_F(MpcSolutionManagerTest, EnablingBeforeTheFirstPlanTakesIt) {
+  mgr_.Init(MakeConfig(false), kNq, kNv, kNc);
+  mgr_.SetEnabled(true);
+  mgr_.PublishSolution(MakeSolution());
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
 }
 
 // Per-tick raw-sample stream is no longer owned by MPCSolutionManager — it

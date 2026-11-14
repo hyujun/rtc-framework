@@ -135,6 +135,35 @@ TEST(MpcSolutionTypes, ProvenanceSurvivesMemcpy) {
   EXPECT_DOUBLE_EQ(dst.K_riccati[kMaxGainNodes - 1][0], 0.5);
 }
 
+TEST(MpcSolutionTypes, SchedulingProvenanceSurvivesMemcpy) {
+  MPCSolution src{};
+  src.state_epoch = 0xFEDCBA98u;
+  src.observation_source_sequence = 0x0123456789ABCDEFULL;
+  src.schedule_id = 0xFFFFFFFFFFFFFFFFULL;
+  src.schedule_epoch = 0x8000000000000001ULL;
+  for (std::size_t k = 0; k < src.node_mode.size(); ++k) {
+    src.node_mode[k] = static_cast<uint32_t>(0x9E3779B9u * (k + 1));
+  }
+
+  MPCSolution dst{};
+  std::memcpy(&dst, &src, sizeof(MPCSolution));
+  EXPECT_EQ(dst.state_epoch, 0xFEDCBA98u);
+  EXPECT_EQ(dst.observation_source_sequence, 0x0123456789ABCDEFULL);
+  EXPECT_EQ(dst.schedule_id, 0xFFFFFFFFFFFFFFFFULL);
+  EXPECT_EQ(dst.schedule_epoch, 0x8000000000000001ULL);
+  for (std::size_t k = 0; k < dst.node_mode.size(); ++k) {
+    EXPECT_EQ(dst.node_mode[k], static_cast<uint32_t>(0x9E3779B9u * (k + 1))) << "node " << k;
+  }
+  EXPECT_EQ(dst.node_mode.size(), static_cast<std::size_t>(kMaxHorizon + 1));
+
+  const MPCSolution zero{};
+  EXPECT_EQ(zero.state_epoch, 0u);
+  EXPECT_EQ(zero.observation_source_sequence, 0u);
+  EXPECT_EQ(zero.schedule_id, 0u);
+  EXPECT_EQ(zero.schedule_epoch, 0u);
+  EXPECT_EQ(zero.node_mode[kMaxHorizon], 0u);
+}
+
 TEST(MpcSolutionTypes, SizeofFitsExpectedBudget) {
   // Memory budget check: triple-buffer (×3) should stay under ~5 MB.
   // If this test fails after a capacity bump, make the change deliberate.
@@ -157,14 +186,20 @@ TEST(MpcStateSnapshot, ProvenanceFieldsDefaultInvalidAndSurviveMemcpy) {
   MPCStateSnapshot src{};
   EXPECT_FALSE(src.valid) << "a never-stored snapshot must read as invalid";
   EXPECT_EQ(src.sequence, 0u);
+  EXPECT_EQ(src.source_sequence, 0u);
+  EXPECT_EQ(src.state_epoch, 0u);
   src.sequence = 7;
+  src.source_sequence = 0xFFFFFFFFFFFFFFFEULL;
   src.model_epoch = 3;
+  src.state_epoch = 0xFFFFFFFFu;
   src.contact_mask = 0b101u;
   src.valid = true;
 
   MPCStateSnapshot dst{};
   std::memcpy(&dst, &src, sizeof(MPCStateSnapshot));
   EXPECT_EQ(dst.sequence, 7u);
+  EXPECT_EQ(dst.source_sequence, 0xFFFFFFFFFFFFFFFEULL);
+  EXPECT_EQ(dst.state_epoch, 0xFFFFFFFFu);
   EXPECT_EQ(dst.model_epoch, 3u);
   EXPECT_EQ(dst.contact_mask, 0b101u);
   EXPECT_TRUE(dst.valid);

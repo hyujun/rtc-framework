@@ -1,9 +1,19 @@
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace rtc::mpc {
+
+namespace {
+
+// Single-writer counter: a plain load + store, visible to readers on any thread.
+void Bump(std::atomic<uint64_t>& c) noexcept {
+  c.store(c.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+}
+
+}  // namespace
 
 void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout) {
   layout_ = layout;
@@ -49,8 +59,14 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout) {
   state_sequence_ = 0;
   plan_counter_ = 0;
   active_receive_stamp_ns_ = 0;
-  epoch_rejections_ = 0;
-  dimension_rejections_ = 0;
+  gain_installed_ = false;
+  epoch_rejections_.store(0, std::memory_order_relaxed);
+  state_epoch_rejections_.store(0, std::memory_order_relaxed);
+  policy_age_rejections_.store(0, std::memory_order_relaxed);
+  dimension_rejections_.store(0, std::memory_order_relaxed);
+  seen_enable_generation_ = enable_generation_.load(std::memory_order_acquire);
+  written_enable_generation_ = seen_enable_generation_;
+  first_sequence_after_enable_ = 0;
 }
 
 void MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
@@ -128,7 +144,7 @@ MPCStateSnapshot MPCSolutionManager::ReadState() const noexcept {
 
 void MPCSolutionManager::WriteState(const Eigen::Ref<const Eigen::VectorXd>& q,
                                     const Eigen::Ref<const Eigen::VectorXd>& v,
-                                    uint64_t timestamp_ns) noexcept {
+                                    uint64_t timestamp_ns, uint64_t source_sequence) noexcept {
   MPCStateSnapshot snap{};
   const int nq = std::min(static_cast<int>(q.size()), static_cast<int>(kMaxNq));
   const int nv = std::min(static_cast<int>(v.size()), static_cast<int>(kMaxNv));
@@ -142,7 +158,16 @@ void MPCSolutionManager::WriteState(const Eigen::Ref<const Eigen::VectorXd>& q,
   snap.nv = nv;
   snap.timestamp_ns = timestamp_ns;
   snap.sequence = ++state_sequence_;
-  snap.model_epoch = model_epoch_.load(std::memory_order_relaxed);
+  // The first state written after a re-enable fences off the plans of the
+  // states before it.
+  const uint64_t generation = enable_generation_.load(std::memory_order_acquire);
+  if (generation != written_enable_generation_) {
+    written_enable_generation_ = generation;
+    first_sequence_after_enable_ = snap.sequence;
+  }
+  snap.source_sequence = source_sequence;
+  snap.model_epoch = model_epoch_.load(std::memory_order_acquire);
+  snap.state_epoch = state_epoch_.load(std::memory_order_acquire);
   snap.contact_mask = contact_mask_;
   snap.valid = true;
   state_lock_.Store(snap);
@@ -162,8 +187,15 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
   meta_out.progress = 0.0;
   u_fb.setZero();
 
-  if (!enabled_.load(std::memory_order_relaxed)) {
+  if (!enabled_.load(std::memory_order_acquire)) {
     return false;
+  }
+  // Re-enabled since the last call: the held plan predates it (the plans
+  // still to come from older states are fenced at acceptance).
+  const uint64_t generation = enable_generation_.load(std::memory_order_acquire);
+  if (generation != seen_enable_generation_) {
+    seen_enable_generation_ = generation;
+    DropActivePlan();
   }
   // The interpolator is Euclidean in q: on a floating base it would blend
   // the quaternion with the angular velocity. Refuse explicitly rather than
@@ -178,14 +210,19 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
   // side runs now, and laid out like this manager's layout; only an accepted
   // plan touches the interpolator, the gain, the stale counter and the
   // provenance.
+  const uint32_t model_epoch = model_epoch_.load(std::memory_order_acquire);
+  const uint32_t state_epoch = state_epoch_.load(std::memory_order_acquire);
   const MPCSolution* fresh = solution_buffer_.TryAcquireLatest();
   bool accepted = false;
   if (fresh != nullptr) {
-    if (fresh->model_epoch != model_epoch_.load(std::memory_order_acquire)) {
-      ++epoch_rejections_;
+    if (fresh->model_epoch != model_epoch) {
+      Bump(epoch_rejections_);
+    } else if (fresh->state_epoch != state_epoch ||
+               fresh->observation_sequence < first_sequence_after_enable_) {
+      Bump(state_epoch_rejections_);
     } else if (fresh->nq != layout_.nq || fresh->nv != layout_.nv || fresh->ndx != layout_.ndx ||
                fresh->nu != layout_.nu) {
-      ++dimension_rejections_;
+      Bump(dimension_rejections_);
     } else {
       accepted = interpolator_.SetSolution(*fresh, now_ns);
     }
@@ -195,15 +232,17 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
     // Install the first node's gain (nearest-node policy). The column count
     // is the state-tangent dim the writer packed with, not the state vector
     // length — they differ as soon as a joint has nq != nv.
-    if (riccati_enabled_ && fresh->gain_nodes > 0) {
+    gain_installed_ = riccati_enabled_ && fresh->gain_nodes > 0;
+    if (gain_installed_) {
       riccati_.SetGain(fresh->K_riccati[0].data(), fresh->nu, fresh->ndx);
     }
     stale_count_ = 0;
     has_ever_received_solution_ = true;
-  } else if (has_ever_received_solution_) {
-    ++stale_count_;
+  } else if (has_ever_received_solution_ && stale_count_ < max_stale_solutions_) {
+    ++stale_count_;  // saturates at the threshold
   }
 
+  EvictIfExpired(now_ns, model_epoch, state_epoch);
   if (!interpolator_.HasSolution()) {
     return false;
   }
@@ -216,10 +255,42 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
     return false;
   }
 
-  if (riccati_enabled_ && riccati_.HasGain()) {
+  if (gain_installed_ && riccati_.HasGain()) {
     riccati_.Compute(q_curr, v_curr, q_ref, v_ref, u_fb);
   }
   return true;
+}
+
+void MPCSolutionManager::DropActivePlan() noexcept {
+  interpolator_.Clear();
+  active_receive_stamp_ns_ = 0;
+}
+
+void MPCSolutionManager::EvictIfExpired(uint64_t now_ns, uint32_t model_epoch,
+                                        uint32_t state_epoch) noexcept {
+  const MPCSolution* s = interpolator_.Solution();
+  if (s == nullptr) {
+    return;
+  }
+  if (s->model_epoch != model_epoch) {
+    Bump(epoch_rejections_);
+    DropActivePlan();
+    return;
+  }
+  if (s->state_epoch != state_epoch) {
+    Bump(state_epoch_rejections_);
+    DropActivePlan();
+    return;
+  }
+  // Integer age: the two stamps are in one clock, so a stamp ahead of `now`
+  // by more than the cap means that clock went back.
+  const int64_t age_ns =
+      static_cast<int64_t>(now_ns) - static_cast<int64_t>(s->observation_stamp_ns);
+  const double cap_ns = static_cast<double>(s->horizon_length + 1) * s->dt_node * 1e9;
+  if (std::abs(static_cast<double>(age_ns)) > cap_ns) {
+    Bump(policy_age_rejections_);
+    DropActivePlan();
+  }
 }
 
 }  // namespace rtc::mpc

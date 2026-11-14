@@ -97,9 +97,11 @@ struct ResidualSummary {
 ///
 /// Provenance: `observation_*` identify the state snapshot the solve started
 /// from (`observation_stamp_ns` is in the **consumer's clock**, the one
-/// handed to `WriteState`), `plan_id` is stamped by the publisher (monotonic
-/// per manager), `model_epoch` is copied from that snapshot so the consumer
-/// can reject a plan computed against a model it no longer runs. The time
+/// handed to `WriteState`; `observation_source_sequence` is the caller's own
+/// sequence of that observation), `plan_id` is stamped by the publisher
+/// (monotonic per manager), `model_epoch` and `state_epoch` are copied from
+/// that snapshot so the consumer can reject a plan computed against a model
+/// it no longer runs or a state stream it has since reset. The time
 /// the consumer received the plan is recorded on the consumer side in the
 /// same clock, so policy age never mixes clock domains; `timestamp_ns` is
 /// the producer's own steady clock and is for profiling only.
@@ -120,10 +122,16 @@ struct MPCSolution {
   int iterations{0};  ///< solver iteration count
 
   // ── Provenance ──────────────────────────────────────────────────────
-  uint64_t observation_stamp_ns{0};  ///< `MPCStateSnapshot::timestamp_ns` the solve used
-  uint64_t observation_sequence{0};  ///< `MPCStateSnapshot::sequence` the solve used
-  uint64_t plan_id{0};               ///< monotonic publish counter (0 == never published)
-  uint32_t model_epoch{0};           ///< model generation the plan was computed against
+  uint64_t observation_stamp_ns{0};         ///< `MPCStateSnapshot::timestamp_ns` the solve used
+  uint64_t observation_sequence{0};         ///< `MPCStateSnapshot::sequence` the solve used
+  uint64_t plan_id{0};                      ///< monotonic publish counter (0 == never published)
+  uint32_t model_epoch{0};                  ///< model generation the plan was computed against
+  uint32_t state_epoch{0};                  ///< `MPCStateSnapshot::state_epoch` the solve used
+  uint64_t observation_source_sequence{0};  ///< `MPCStateSnapshot::source_sequence` the solve used
+  /// The contact schedule the horizon sampled (`HorizonReference::schedule_id`)
+  /// and its gait commit count (`schedule_epoch`); 0 for an OCP without one.
+  uint64_t schedule_id{0};
+  uint64_t schedule_epoch{0};
   SolverStatus status{SolverStatus::kOk};
   ResidualSummary residuals{};
   /// [ns] the tick time the solve ran at minus the time of its node 0. The
@@ -138,6 +146,11 @@ struct MPCSolution {
   /// `residuals.prim_inf`; the MPC thread's publish rule reads the leading
   /// nodes (`MPCSolverConfig::publish_prim_tol`).
   std::array<double, kMaxHorizon + 1> node_prim_inf{};
+  /// Contact mode of each node, first `horizon_length + 1` entries (bit c set
+  /// = contact c of the model handler's order is active at that node — the
+  /// horizon's `StageReference::mode`), the rest 0. All 0 for an OCP without
+  /// a contact schedule.
+  std::array<uint32_t, kMaxHorizon + 1> node_mode{};
 
   // ── Dimensions of this solve ────────────────────────────────────────
   int nq{0};
@@ -154,14 +167,15 @@ struct MPCSolution {
   std::array<std::array<double, kMaxNu>, kMaxHorizon> u_traj{};  ///< first `nu` entries
   /// Contact forces, first `n_contact_vars` entries. A kinodynamic OCP fills
   /// it with the wrench block of `u` — including the slots of contacts that
-  /// are inactive at that node, which hold whatever the cost left there. This
-  /// struct does not carry the node modes yet: a consumer masks the inactive
-  /// slots with the contact schedule the solve used. A joint-torque OCP
-  /// leaves it 0.
+  /// are inactive at that node, which hold whatever the cost left there: a
+  /// consumer masks them with `node_mode[k]`. A joint-torque OCP leaves it 0.
   std::array<std::array<double, kMaxContactVars>, kMaxHorizon> lambda_traj{};
   /// Feed-forward acceleration, first `nv` entries: a copy of `u` for a
-  /// joint-torque OCP; 0 for a kinodynamic one (its meaning there is not
-  /// defined yet).
+  /// joint-torque OCP; for a kinodynamic one the mean acceleration over the
+  /// interval `(v_{k+1} − v_k) / dt_node` of every tangent row (the base
+  /// rows are the LOCAL twist's difference) — the semi-implicit Euler step's
+  /// own, which equals the input's joint accelerations up to the dynamics
+  /// defect `node_prim_inf[k + 1]`.
   std::array<std::array<double, kMaxNv>, kMaxHorizon> a_ff_traj{};
 
   /// Riccati gains K[k] (nu × ndx, row-major, stride = actual ndx — see the
@@ -196,14 +210,19 @@ constexpr void MarkSolved(MPCSolution& sol, bool converged) noexcept {
 /// Written by the RT thread via `rtc::SeqLock<MPCStateSnapshot>::Store()`,
 /// read by the MPC thread at the top of each solve via `Load()`.
 /// `sequence` increments per store, `model_epoch` names the model the RT
-/// side runs, `contact_mask` is one bit per contact frame in the model
-/// handler's frame order (no left/right semantics here — ARCH-1).
+/// side runs, `state_epoch` the state stream (bumped by the consumer on a
+/// reset or a change of state source), `source_sequence` is the caller's own
+/// sequence of the observation (0 when it has none), `contact_mask` is one
+/// bit per contact frame in the model handler's frame order (no left/right
+/// semantics here — ARCH-1).
 struct MPCStateSnapshot {
   std::array<double, kMaxNq> q{};
   std::array<double, kMaxNv> v{};
   uint64_t timestamp_ns{0};
   uint64_t sequence{0};
+  uint64_t source_sequence{0};
   uint32_t model_epoch{0};
+  uint32_t state_epoch{0};
   uint32_t contact_mask{0};
   int nq{0};
   int nv{0};

@@ -15,6 +15,19 @@
 /// reports "not valid" via @ref InterpMeta and the downstream controller
 /// should fall back to a safe reference (e.g. the Phase 4 fixed pose).
 /// A fresh @ref PublishSolution resets the counter.
+///
+/// Eviction: the plan being sampled is dropped — the consumer falls back
+/// until the next accepted plan — at the first @ref ComputeReference that
+/// finds (1) its `model_epoch` or `state_epoch` no longer the current one,
+/// (2) its age past the horizon by more than one node either way
+/// (`|now − observation_stamp_ns| > (horizon_length + 1) · dt_node`; a
+/// stamp that far ahead means the consumer's clock went back), or (3) that
+/// @ref SetEnabled re-enabled the manager since the previous call. After a
+/// re-enable, a plan whose observation predates the first @ref WriteState
+/// after it is refused (counted with the state-epoch rejections: another
+/// state stream) — whether it was published before or after the re-enable.
+///
+/// Threads: @ref Init runs before the producer and consumer start.
 
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_mpc/comm/triple_buffer.hpp"
@@ -66,11 +79,22 @@ class MPCSolutionManager {
   [[nodiscard]] const WbLayout& Layout() const noexcept { return layout_; }
 
   /// @brief Runtime toggle for MPC consumption. When false,
-  ///        @ref ComputeReference reports invalid immediately. Any thread
-  ///        (atomic): parameter callbacks set it, the RT tick reads it.
-  void SetEnabled(bool enabled) noexcept { enabled_.store(enabled, std::memory_order_relaxed); }
+  ///        @ref ComputeReference reports invalid immediately; after a switch
+  ///        back to true the consumer samples no plan computed from a state
+  ///        written before it (see the file comment). One setter thread at a
+  ///        time (parameter or lifecycle callbacks); the RT tick reads it.
+  ///        Two setters racing can merge a short disable into none — the
+  ///        consumer then never stopped, and the age rules still apply.
+  void SetEnabled(bool enabled) noexcept {
+    if (enabled && !enabled_.load(std::memory_order_acquire)) {
+      // Ordered before the flag: a consumer that sees `true` from this call
+      // sees the new generation too.
+      enable_generation_.fetch_add(1, std::memory_order_release);
+    }
+    enabled_.store(enabled, std::memory_order_release);
+  }
 
-  [[nodiscard]] bool Enabled() const noexcept { return enabled_.load(std::memory_order_relaxed); }
+  [[nodiscard]] bool Enabled() const noexcept { return enabled_.load(std::memory_order_acquire); }
 
   /// @brief Runtime tuning of the Riccati scale (0..1).
   void SetRiccatiGainScale(double scale) noexcept { riccati_.SetGainScale(scale); }
@@ -91,11 +115,15 @@ class MPCSolutionManager {
   // ── Consumer (RT thread) ───────────────────────────────────────────
 
   /// @brief Publish the current RT-thread state for the MPC thread. Each
-  ///        store carries an incrementing `sequence`, the current model
-  ///        epoch and contact mask, and `valid = true`.
+  ///        store carries an incrementing `sequence`, the current model and
+  ///        state epochs and contact mask, @p source_sequence (the caller's
+  ///        own sequence of this observation, carried back in the plan as
+  ///        `observation_source_sequence`; 0 when it has none) and
+  ///        `valid = true`.
   /// @note Called on the RT thread. Wait-free.
   void WriteState(const Eigen::Ref<const Eigen::VectorXd>& q,
-                  const Eigen::Ref<const Eigen::VectorXd>& v, uint64_t timestamp_ns) noexcept;
+                  const Eigen::Ref<const Eigen::VectorXd>& v, uint64_t timestamp_ns,
+                  uint64_t source_sequence = 0) noexcept;
 
   /// @brief Contact mask stamped into the next @ref WriteState (one bit per
   ///        contact frame, model-handler order). Same thread as WriteState.
@@ -116,25 +144,61 @@ class MPCSolutionManager {
     return model_epoch_.load(std::memory_order_acquire);
   }
 
-  /// @return plans refused by @ref ComputeReference because their
-  ///         `model_epoch` was not the current one. Consumer thread.
-  [[nodiscard]] uint64_t EpochRejections() const noexcept { return epoch_rejections_; }
+  /// @brief State-stream generation: the consumer bumps it when the state it
+  ///        writes stops continuing the earlier one (a reset, a change of
+  ///        state source, a time base that went back). Stamped into every
+  ///        state snapshot and carried back in the plan; a plan of another
+  ///        state epoch is neither installed nor kept (@ref
+  ///        StateEpochRejections), and the MPC side starts its next solve
+  ///        cold. Epochs only grow: a value used again would let a plan of
+  ///        the earlier stream back in. Call it on the consumer thread,
+  ///        between the last @ref WriteState of the old stream and the first
+  ///        of the new one — from another thread, a state written around the
+  ///        bump can carry either epoch. Release / acquire like
+  ///        @ref SetModelEpoch.
+  void SetStateEpoch(uint32_t epoch) noexcept {
+    state_epoch_.store(epoch, std::memory_order_release);
+  }
+
+  [[nodiscard]] uint32_t StateEpoch() const noexcept {
+    return state_epoch_.load(std::memory_order_acquire);
+  }
+
+  /// @return plans refused or dropped by @ref ComputeReference because their
+  ///         `model_epoch` was not the current one. Any thread.
+  [[nodiscard]] uint64_t EpochRejections() const noexcept {
+    return epoch_rejections_.load(std::memory_order_relaxed);
+  }
+
+  /// @return plans refused or dropped by @ref ComputeReference because their
+  ///         `state_epoch` was not the current one. Any thread.
+  [[nodiscard]] uint64_t StateEpochRejections() const noexcept {
+    return state_epoch_rejections_.load(std::memory_order_relaxed);
+  }
+
+  /// @return plans dropped by @ref ComputeReference because their age passed
+  ///         the horizon by more than one node. Any thread.
+  [[nodiscard]] uint64_t PolicyAgeRejections() const noexcept {
+    return policy_age_rejections_.load(std::memory_order_relaxed);
+  }
 
   /// @return plans refused by @ref ComputeReference because their `nq` / `nv`
   ///         / `ndx` / `nu` disagree with the layout given to @ref Init.
-  ///         Consumer thread.
-  [[nodiscard]] uint64_t DimensionRejections() const noexcept { return dimension_rejections_; }
+  ///         Any thread.
+  [[nodiscard]] uint64_t DimensionRejections() const noexcept {
+    return dimension_rejections_.load(std::memory_order_relaxed);
+  }
 
   /// @brief Try to compute the MPC-derived reference for the current tick.
   ///
   /// On success writes q_ref / v_ref / a_ff / lambda_ref / u_fb and returns
   /// true. On fallback (MPC disabled, floating-base layout, no solution yet,
-  /// or too many stale cycles) returns false and sets @p meta_out.valid =
-  /// false.
+  /// the plan evicted — see the file comment — or too many stale cycles)
+  /// returns false and sets @p meta_out.valid = false.
   ///
   /// @param q_curr     current position (size nq)
   /// @param v_curr     current velocity (size nv)
-  /// @param now_ns     current wall-clock time
+  /// @param now_ns     current time, in the clock given to @ref WriteState
   /// @param q_ref      out: position reference (size nq)
   /// @param v_ref      out: velocity reference (size nv)
   /// @param a_ff       out: feedforward acceleration (size nv)
@@ -199,6 +263,11 @@ class MPCSolutionManager {
     return s != nullptr ? s->model_epoch : 0;
   }
 
+  [[nodiscard]] uint32_t ActiveStateEpoch() const noexcept {
+    const MPCSolution* s = interpolator_.Solution();
+    return s != nullptr ? s->state_epoch : 0;
+  }
+
   // ── Solve-timing probe (consumer-side perf monitor) ────────────────────
   //
   // Each call to @ref PublishSolution appends the incoming solution's
@@ -249,7 +318,12 @@ class MPCSolutionManager {
 
  private:
   std::atomic<bool> enabled_{false};
+  std::atomic<uint64_t> enable_generation_{0};  // SetEnabled false → true transitions
+  uint64_t seen_enable_generation_{0};          // consumer thread only (ComputeReference)
+  uint64_t written_enable_generation_{0};       // consumer thread only (WriteState)
+  uint64_t first_sequence_after_enable_{0};     // plans observed before it are refused
   bool riccati_enabled_{true};
+  bool gain_installed_{false};  // the active plan's gain is in riccati_ (consumer thread)
   int max_stale_solutions_{5};
   int stale_count_{0};
   bool has_ever_received_solution_{false};
@@ -259,12 +333,24 @@ class MPCSolutionManager {
   uint64_t state_sequence_{0};  // RT thread only (WriteState)
   uint32_t contact_mask_{0};    // RT thread only (SetContactMask / WriteState)
   std::atomic<uint32_t> model_epoch_{0};
+  std::atomic<uint32_t> state_epoch_{0};
   uint64_t plan_counter_{0};  // MPC thread only (PublishSolution)
 
   // Consumer-side provenance not carried by the plan itself (consumer thread only).
   uint64_t active_receive_stamp_ns_{0};
-  uint64_t epoch_rejections_{0};
-  uint64_t dimension_rejections_{0};
+  // Written by the consumer thread only (load + 1, store); read from any.
+  std::atomic<uint64_t> epoch_rejections_{0};
+  std::atomic<uint64_t> state_epoch_rejections_{0};
+  std::atomic<uint64_t> policy_age_rejections_{0};
+  std::atomic<uint64_t> dimension_rejections_{0};
+
+  /// Drop the active plan when it is no longer the current epochs' or has
+  /// outlived its horizon (see the file comment). Consumer thread.
+  void EvictIfExpired(uint64_t now_ns, uint32_t model_epoch, uint32_t state_epoch) noexcept;
+
+  /// Forget the active plan and its receive stamp (the next accepted plan
+  /// sets `gain_installed_`). Consumer thread.
+  void DropActivePlan() noexcept;
 
   TripleBuffer<MPCSolution> solution_buffer_;
   TrajectoryInterpolator interpolator_;

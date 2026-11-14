@@ -333,6 +333,19 @@ TEST(MPCSolverConfigKeys, ThePublishRulesAreOffByDefaultAndRead) {
   EXPECT_EQ(bad.publish_deadline_ms, 0.0);
 }
 
+// One solve per snapshot: off by default, read when present, a value that is
+// not a bool fails the parse and leaves the config untouched.
+TEST(MPCSolverConfigKeys, TheFreshStateRuleIsOffByDefaultAndRead) {
+  rtc::mpc::MPCSolverConfig cfg;
+  EXPECT_FALSE(cfg.require_fresh_state);
+  ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(YAML::Load("require_fresh_state: true"), cfg));
+  EXPECT_TRUE(cfg.require_fresh_state);
+  rtc::mpc::MPCSolverConfig bad;
+  EXPECT_FALSE(
+      rtc::mpc::MPCFactory::LoadSolverConfig(YAML::Load("require_fresh_state: sometimes"), bad));
+  EXPECT_FALSE(bad.require_fresh_state);
+}
+
 TEST_F(MPCFactoryTest, TheHandlerReportsTheSolverConfigItTook) {
   auto cfg = YAML::Load(R"(
 mpc:
@@ -341,6 +354,7 @@ mpc:
     max_iters: 30
     publish_deadline_ms: 12.5
     publish_prim_tol: 0.2
+    require_fresh_state: true
 )");
   std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
   ASSERT_EQ(rtc::mpc::MPCFactory::Create(cfg, handler_, MakeLightContext(), h).error,
@@ -348,6 +362,7 @@ mpc:
   EXPECT_EQ(h->solver_config().max_iters, 30);
   EXPECT_EQ(h->solver_config().publish_deadline_ms, 12.5);
   EXPECT_EQ(h->solver_config().publish_prim_tol, 0.2);
+  EXPECT_TRUE(h->solver_config().require_fresh_state);
 }
 
 INSTANTIATE_TEST_SUITE_P(PublishRules, MPCSolverConfigRefusal,

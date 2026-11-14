@@ -107,6 +107,12 @@ enum class MPCLinearSolver {
 /// (`MPCSolution::node_prim_inf`, nodes 0 … ⌈period/dt⌉ + 1) is at most
 /// `publish_prim_tol` — a converged one always is. Either way the iterates
 /// stay the next tick's warm start.
+///
+/// `require_fresh_state` (default false) makes the MPC thread solve each
+/// state snapshot once: a tick whose snapshot carries the `sequence` of the
+/// last attempted one is skipped (`HandlerMPCThread::RepeatedObservationSkips`)
+/// — except while the standing solve is pending and the last attempt
+/// returned iterates, which continue on the same observation.
 struct MPCSolverConfig {
   double prim_tol{1e-3};  ///< primal infeasibility target
   double dual_tol{1e-2};  ///< dual infeasibility target
@@ -124,6 +130,7 @@ struct MPCSolverConfig {
   bool verbose{false};                 ///< route Aligator's own stdout log
   double publish_deadline_ms{0.0};     ///< [ms] ≥ 0; 0 = no deadline
   double publish_prim_tol{0.0};        ///< ≥ 0; 0 = publish every finite solve
+  bool require_fresh_state{false};     ///< skip a snapshot already attempted
 
   /// @return the standing solve's iteration ceiling.
   [[nodiscard]] constexpr int InitialIters() const noexcept {

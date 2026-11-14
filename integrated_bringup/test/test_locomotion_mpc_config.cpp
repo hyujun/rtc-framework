@@ -308,6 +308,15 @@ TEST_F(LocomotionMpcConfig, TheInstalledPublishRulesAreTheProvisionalOnes) {
   EXPECT_EQ(s.publish_prim_tol, 0.05);
 }
 
+// The installed loop solves each state snapshot once: a stalled state
+// stream does not keep a core busy re-solving the same observation.
+TEST_F(LocomotionMpcConfig, TheInstalledLoopSolvesEachSnapshotOnce) {
+  rtc::mpc::MPCSolverConfig s;
+  EXPECT_FALSE(s.require_fresh_state) << "the default stays off";
+  ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(root_["mpc"]["solver"], s));
+  EXPECT_TRUE(s.require_fresh_state);
+}
+
 TEST_F(LocomotionMpcConfig, TheFactoryCreatesTheMpcOnTheBodyModel) {
   rtc::mpc::PhaseContext ctx;
   ctx.ocp_type = "kinodynamic";

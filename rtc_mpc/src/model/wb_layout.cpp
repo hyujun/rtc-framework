@@ -18,17 +18,13 @@ namespace rtc::mpc {
 
 namespace {
 
-/// Free-flyer configuration: a position then the quaternion.
-constexpr int kBasePositionSize = 3;
-constexpr int kQuatSize = kFreeFlyerNq - kBasePositionSize;
-
 /// Unit-norm tolerance for a free-flyer quaternion fed to pinocchio: a
 /// non-unit quaternion yields a finite but wrong tangent step, never a NaN,
 /// so it has to be refused here.
 constexpr double kQuatUnitTol = 1e-6;
 
 bool FreeFlyerQuaternionIsUnit(const Eigen::Ref<const Eigen::VectorXd>& q) noexcept {
-  const double n2 = q.segment(kBasePositionSize, kQuatSize).squaredNorm();
+  const double n2 = q.segment(kFreeFlyerQuatOffset, kFreeFlyerQuatSize).squaredNorm();
   return std::isfinite(n2) && std::abs(n2 - 1.0) < kQuatUnitTol;
 }
 

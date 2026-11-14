@@ -80,7 +80,9 @@ class MPCHandlerCore {
 
   /// @brief Copy xs/us from @p prev into the solver's `results_` so the
   ///        next `Solve` warm-starts from it. Used by `MPCFactory` to
-  ///        transfer a trajectory across a cross-mode handler swap.
+  ///        transfer a trajectory across a cross-mode handler swap. The next
+  ///        solve still starts cold when its snapshot's state epoch is not
+  ///        @p prev's.
   void SeedWarmStart(const MPCSolution& prev, OCPHandlerBase& ocp) noexcept;
 
   [[nodiscard]] bool Initialised() const noexcept { return initialised_; }
@@ -170,11 +172,15 @@ class MPCHandlerCore {
   void ApplyBudget() noexcept;
 
   /// @brief Pack xs/us/lams/K_riccati + metadata (status, residuals, the
-  ///        provenance of @p state) into @p out after a successful solve.
+  ///        provenance of @p state, the node modes and schedule ids of
+  ///        @p ctx's horizon) into @p out after a successful solve. Every
+  ///        free-flyer quaternion after node 0 is put on the hemisphere of
+  ///        the node before it (same rotation, non-negative dot product), so
+  ///        a consumer interpolating between nodes never takes the long way.
   ///        Non-allocating.
-  void PackSolution(const OCPHandlerBase& ocp, const MPCStateSnapshot& state, MPCSolution& out,
-                    bool converged, bool initial_solve,
-                    std::uint64_t solve_duration_ns) const noexcept;
+  void PackSolution(const OCPHandlerBase& ocp, const PhaseContext& ctx,
+                    const MPCStateSnapshot& state, MPCSolution& out, bool converged,
+                    bool initial_solve, std::uint64_t solve_duration_ns) const noexcept;
 
   // ── State ────────────────────────────────────────────────────────────
   bool initialised_{false};
@@ -184,6 +190,8 @@ class MPCHandlerCore {
   int last_node_shift_{0};              // nodes the last solve's warm start moved by
   bool have_node_index_{false};         // last_node_index_ names the iterates' node grid index
   std::int64_t last_node_index_{0};
+  bool have_state_epoch_{false};  // last_state_epoch_ names the iterates' state stream
+  std::uint32_t last_state_epoch_{0};
 
   const RobotModelHandler* model_{nullptr};  // non-owning; set at Init
   OCPLimits limits_{};

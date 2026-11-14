@@ -64,7 +64,9 @@ bool MockMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out_sol) {
   MarkSolved(out_sol, true);
   out_sol.observation_stamp_ns = state.timestamp_ns;
   out_sol.observation_sequence = state.sequence;
+  out_sol.observation_source_sequence = state.source_sequence;
   out_sol.model_epoch = state.model_epoch;
+  out_sol.state_epoch = state.state_epoch;
   out_sol.nq = nq;
   out_sol.nv = nv;
   out_sol.nu = nv;

@@ -52,7 +52,15 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   // `GraspPhaseManager` will introduce a `SensorSource` seam.
   sensor_scratch_.resize(0);
 
-  start_time_ = std::chrono::steady_clock::now();
+  have_time_anchor_ = false;
+  anchor_stamp_ns_ = 0;
+  last_stamp_ns_ = 0;
+  anchor_state_epoch_ = 0;
+  time_base_s_ = 0.0;
+  last_phase_t_ = 0.0;
+  last_attempted_sequence_ = 0;
+  last_attempt_returned_iterates_ = false;
+  require_fresh_state_ = handler_ != nullptr && handler_->solver_config().require_fresh_state;
 
   last_err_.store(0, std::memory_order_relaxed);
   last_phase_id_.store(-1, std::memory_order_relaxed);
@@ -62,6 +70,8 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   deadline_misses_.store(0, std::memory_order_relaxed);
   withheld_.store(0, std::memory_order_relaxed);
   cold_withheld_.store(0, std::memory_order_relaxed);
+  repeated_skips_.store(0, std::memory_order_relaxed);
+  standing_repeats_.store(0, std::memory_order_relaxed);
   null_handler_hit_.store(false, std::memory_order_relaxed);
   has_prev_out_ = false;
 }
@@ -118,6 +128,17 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
+  // One solve per observation: decided before any work, recorded at the
+  // attempt so a withheld or failed solve is not retried on the same state.
+  if (require_fresh_state_ && state.sequence == last_attempted_sequence_) {
+    if (!(handler_->InitialSolvePending() && last_attempt_returned_iterates_)) {
+      repeated_skips_.fetch_add(1, std::memory_order_relaxed);
+      return false;
+    }
+    standing_repeats_.fetch_add(1, std::memory_order_relaxed);
+  }
+  last_attempted_sequence_ = state.sequence;
+  last_attempt_returned_iterates_ = false;
   // The standing solve's ticks are counted apart from the online ones in the
   // overrun split, whether or not the solve then succeeds.
   if (handler_->InitialSolvePending()) {
@@ -151,7 +172,18 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
           : pdata_->oMf[static_cast<std::size_t>(model_->base_frame_id())].actInv(ee_in_world);
 
   // ── Phase manager tick ────────────────────────────────────────────────
-  const double t = std::chrono::duration<double>(entry - start_time_).count();
+  // Phase time on the snapshot's clock; a new state stream or a stamp that
+  // went back continues from the last tick's time.
+  if (!have_time_anchor_ || state.state_epoch != anchor_state_epoch_ ||
+      state.timestamp_ns < last_stamp_ns_) {
+    time_base_s_ = have_time_anchor_ ? last_phase_t_ : 0.0;
+    anchor_stamp_ns_ = state.timestamp_ns;
+    anchor_state_epoch_ = state.state_epoch;
+    have_time_anchor_ = true;
+  }
+  const double t = time_base_s_ + static_cast<double>(state.timestamp_ns - anchor_stamp_ns_) * 1e-9;
+  last_phase_t_ = t;
+  last_stamp_ns_ = state.timestamp_ns;
   const PhaseContext ctx =
       phase_manager_->Update(state, q_scratch_, v_scratch_, sensor_scratch_, tcp, t);
   last_phase_id_.store(ctx.phase_id, std::memory_order_relaxed);
@@ -186,6 +218,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
+  last_attempt_returned_iterates_ = true;
 
   const MPCSolverConfig& cfg = handler_->solver_config();
   if (out.initial_solve) {

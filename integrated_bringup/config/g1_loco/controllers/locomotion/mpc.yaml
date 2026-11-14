@@ -64,6 +64,7 @@ locomotion_controller:
       max_online_al_iters: 20
       publish_deadline_ms: 35.0       # [ms] provisional — the control-PC soak decides
       publish_prim_tol: 0.05          # provisional — the control-PC soak decides
+      require_fresh_state: true       # one solve per state snapshot
     kinodynamic:
       horizon_nodes: 32
       dt: 0.035                      # [s]
