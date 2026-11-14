@@ -47,7 +47,7 @@ PROFILES = [
 # Blocks whose keys are checked. Both are nested dictionaries in YAML but flat
 # dotted names in declare_parameter, which is exactly the seam a key falls
 # through: the YAML nesting looks right on its own.
-GROUP_BLOCKS = ["contact_wrench"]
+GROUP_BLOCKS = ["contact_wrench", "imu_noise"]
 TOPLEVEL_BLOCKS = ["object_state", "object_pool"]
 
 # Nodes a sim overlay is layered onto (the sim launches append it to both nodes'
@@ -115,7 +115,8 @@ def test_group_block_keys_are_declared(profile: str, declared: set[str]) -> None
     checked = 0
     for group in response.get("groups", []):
         for block in GROUP_BLOCKS:
-            for key in response.get(group, {}).get(block, {}):
+            # Flattened: imu_noise nests a level deeper (gyro.white_sigma).
+            for key in _flatten(response.get(group, {}).get(block, {})):
                 name = f"{block}.{key}"
                 assert name in declared, (
                     f"{profile}/{group}: '{name}' is in the shipped YAML but "
@@ -140,6 +141,52 @@ def test_toplevel_block_keys_are_declared(profile: str, declared: set[str]) -> N
                 "mujoco_simulator_node never declares it — the value is "
                 "silently ignored and the compiled default is used instead"
             )
+
+
+LOCO_PROFILES = ["g1_loco", "b7_loco"]
+
+
+def _imu_noise_blocks(profile: str) -> list[dict]:
+    response = _params(profile).get("robot_response", {})
+    return [
+        response[group]["imu_noise"]
+        for group in response.get("groups", [])
+        if "imu_noise" in response.get(group, {})
+    ]
+
+
+def test_loco_profiles_share_one_imu_noise_block() -> None:
+    """Both loco profiles inject the same IMU noise.
+
+    The block is a simulation test condition the two robots are evaluated
+    under, and its keys name no sensor or robot precisely so that one block
+    fits both. A value edited in one file only would compare the robots under
+    different conditions without anything saying so.
+    """
+    blocks = {profile: _imu_noise_blocks(profile) for profile in LOCO_PROFILES}
+    for profile, found in blocks.items():
+        assert len(found) == 1, (
+            f"{profile}: expected one robot group with imu_noise, got {len(found)}"
+        )
+        assert found[0].get("enabled") is True, f"{profile}: imu_noise is not enabled"
+    first, second = (blocks[p][0] for p in LOCO_PROFILES)
+    assert first == second, (
+        f"imu_noise differs: {LOCO_PROFILES[0]} {first} vs {LOCO_PROFILES[1]} {second}"
+    )
+    # Every leaf is a key the node declares (the block test above checks the
+    # spelling); here, that none of them was left out.
+    assert sorted(_flatten(first)) == sorted(
+        [
+            "enabled",
+            "seed",
+            "gyro.white_sigma",
+            "gyro.bias_sigma",
+            "gyro.bias_walk_sigma",
+            "accel.white_sigma",
+            "accel.bias_sigma",
+            "accel.bias_walk_sigma",
+        ]
+    )
 
 
 def _overlay_paths(profile: str) -> list[str]:

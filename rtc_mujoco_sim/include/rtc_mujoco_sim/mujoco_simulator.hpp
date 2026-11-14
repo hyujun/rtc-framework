@@ -2,6 +2,7 @@
 #define RTC_MUJOCO_SIM_MUJOCO_SIMULATOR_HPP_
 
 // ── Includes: project, then MuJoCo, then C++ stdlib ───────────────────────────
+#include "rtc_mujoco_sim/imu_noise_model.hpp"
 #include "rtc_mujoco_sim/object_pool.hpp"
 #include "rtc_mujoco_sim/projectile_ball.hpp"
 #include <rtc_base/concurrency/spsc_queue.hpp>
@@ -332,6 +333,18 @@ struct JointGroupConfig {
   std::string sensor_topic;               // 빈 문자열이면 센서 publish 안 함
   std::vector<std::string> sensor_names;  // XML sensor names (빈 경우 = 그룹에 센서 없음)
 
+  // ── IMU export noise (robot groups only, optional) ───────────────────────
+  // White noise + bias + bias walk on every mjSENS_GYRO and
+  // mjSENS_ACCELEROMETER this group exports (ImuNoiseModel). Only the exported
+  // copy (sensor_buffer → sensor topic) is changed: mjData::sensordata, the
+  // other sensors in the export and the contact wrench lane are untouched.
+  // Advanced once per simulator step whether or not the step publishes
+  // (state_publish_divisor), so the realisation does not depend on the
+  // publish rate. Reset (the R key) re-seeds it: the same realisation again.
+  // Each group seeds its own stream from its own `seed`: two groups given the
+  // same seed and the same IMU layout draw identical noise.
+  ImuNoiseConfig imu_noise;
+
   // ── Contact wrench publishing (optional, mjSENS_CONTACT auto-discovery) ──
   // Scans this group's sensor_infos for mjSENS_CONTACT entries (dim==17,
   // data="found force torque dist pos normal tangent" reduce="netforce"), then
@@ -504,6 +517,14 @@ struct JointGroup {
 
   std::vector<SensorInfo> sensor_infos;
   std::vector<double> sensor_buffer;  // flat readback buffer [sum(dims)]
+
+  // ── IMU export noise (SimLoop-only after Initialize) ───────────────────
+  // One channel per gyro / accelerometer in sensor_infos; channel c covers
+  // sensor_buffer[imu_noise_offsets[c] .. +3]. Empty / disabled = the export
+  // is sensordata bit for bit.
+  bool imu_noise_enabled{false};
+  ImuNoiseModel imu_noise;
+  std::vector<std::size_t> imu_noise_offsets;
 
   using SensorCallback =
       std::function<void(const std::vector<SensorInfo>& infos, const std::vector<double>& values)>;
@@ -707,6 +728,20 @@ class MuJoCoSimulator {
       std::size_t group_idx) const noexcept;
   [[nodiscard]] bool HasSensors(std::size_t group_idx) const noexcept;
 
+  /// How many imu_noise warnings Initialize issued: one per robot group that
+  /// exports a sensor whose MJCF declares noise= > 0 and that the group does
+  /// not noise itself — any such sensor while imu_noise is disabled, a non-IMU
+  /// one while it is enabled (MuJoCo does not apply noise=, so that export is
+  /// exact). A count rather than only a log line so the warning is observable.
+  [[nodiscard]] int ImuNoiseWarningCount() const noexcept { return imu_noise_warnings_; }
+
+  /// The group's sensor export (what the sensor callback receives) and the
+  /// raw mjData::sensordata in the same flat layout, as of the last
+  /// StepForTest. Their difference is the injected IMU noise. Test-only:
+  /// SimLoop owns both buffers while it runs.
+  [[nodiscard]] std::vector<double> GetSensorExportForTest(std::size_t group_idx) const noexcept;
+  [[nodiscard]] std::vector<double> GetSensorDataForTest(std::size_t group_idx) const noexcept;
+
   // Register the contact wrench callback for a specific group.
   void SetContactWrenchCallback(std::size_t group_idx,
                                 JointGroup::ContactWrenchCallback callback) noexcept;
@@ -884,9 +919,9 @@ class MuJoCoSimulator {
 
   // ── Test-only synchronous step + observers ────────────────────────────────
   // The SimLoop thread normally owns all mjData mutation; these run one full
-  // tick (ApplyCommand → PreparePhysicsStep → mj_step → ReadState) inline so a
-  // test can stage a command and observe the resulting joint forces. Do NOT
-  // call while SimLoop is running.
+  // tick (ApplyCommand → PreparePhysicsStep → mj_step → ReadState →
+  // ReadSensors) inline so a test can stage a command and observe the
+  // resulting joint forces. Do NOT call while SimLoop is running.
   void StepForTest() noexcept;
   // Run the object refresh the 'o' key triggers, synchronously and WITHOUT
   // stepping physics, so a test can assert the exact spawn pose rather than
@@ -1184,6 +1219,8 @@ class MuJoCoSimulator {
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> step_count_{0};
   std::atomic<uint64_t> partial_command_steps_{0};
+  // ImuNoiseWarningCount(). Written by Initialize only.
+  int imu_noise_warnings_{0};
   std::atomic<double> sim_time_sec_{0.0};
 
   // ── Multi-group storage ─────────────────────────────────────────────────
@@ -1397,6 +1434,9 @@ class MuJoCoSimulator {
   std::vector<std::string> CollectAllXmlSensorNames() const noexcept;
   // 그룹의 sensor_names를 XML 센서와 매핑
   void MapSensorInfos(JointGroup& group, const std::vector<std::string>& sensor_names) noexcept;
+  // Validate imu_noise and build the group's ImuNoiseModel over its gyro /
+  // accelerometer exports; counts the noise= warning. False = invalid config.
+  [[nodiscard]] bool ConfigureImuNoise(JointGroup& group, const ImuNoiseConfig& cfg) noexcept;
   // 그룹의 sensor_infos 에서 mjSENS_CONTACT 만 추려 contact_wrench_infos 생성.
   // sensor name suffix 와 site name suffix 로 target/site/body 를 자동 resolve.
   // allow_partial_discovery=false 면 unresolved 1건이라도 있으면 false 반환.

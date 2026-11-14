@@ -89,6 +89,7 @@ if(mujoco_FOUND)
   add_library(mujoco_simulator_lib STATIC
     src/mujoco_simulator.cpp
     src/mujoco_sim_loop.cpp
+    src/imu_noise_model.cpp
     src/object_pool.cpp
     src/projectile_ball.cpp
     src/ros2_resource_provider.cpp
@@ -170,6 +171,12 @@ if(mujoco_FOUND)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pure_helpers.cpp")
       ament_add_gtest(test_pure_helpers test/test_pure_helpers.cpp)
       target_link_libraries(test_pure_helpers mujoco_simulator_lib)
+    endif()
+
+    # IMU export noise: pure helper (white + bias + bias walk), no MJCF needed.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_imu_noise_model.cpp")
+      ament_add_gtest(test_imu_noise_model test/test_imu_noise_model.cpp)
+      target_link_libraries(test_imu_noise_model mujoco_simulator_lib)
     endif()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_projectile_ball.cpp")
@@ -319,6 +326,17 @@ if(mujoco_FOUND)
       ament_add_gtest(test_g1_floating_stance test/test_g1_floating_stance.cpp TIMEOUT 120)
       target_link_libraries(test_g1_floating_stance
         mujoco::mujoco ament_index_cpp::ament_index_cpp)
+    endif()
+
+    # imu_noise in the simulator: needs a scene whose export mixes a gyro and
+    # an accelerometer (with MJCF noise=) with frame and contact sensors, so
+    # the noised and the must-stay-raw entries share one export.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_imu_noise_export.cpp")
+      ament_add_gtest(test_imu_noise_export test/test_imu_noise_export.cpp)
+      target_link_libraries(test_imu_noise_export mujoco_simulator_lib)
+      target_compile_definitions(test_imu_noise_export PRIVATE
+        IMU_NOISE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/imu_noise_scene.xml"
+        CONTACT_MJCF_PATH="${MJCF_CONTACT_FIXTURE}")
     endif()
 
     # Object pool against a compiled model: needs a scene with a floor and a

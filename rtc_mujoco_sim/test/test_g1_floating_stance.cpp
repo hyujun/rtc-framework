@@ -17,6 +17,9 @@
 //            feet do not slip, the pelvis stays up and level, both feet carry
 //            load, no joint sags away from its target, no actuator saturates,
 //            and the run is bit-reproducible
+//   IMU    — the same stance at rest: both accelerometers read the specific
+//            force R_siteᵀ·(0, 0, g₀) and both gyros ~0, within controls
+//            measured once on this MJCF
 // The thresholds are the Sprint Contract numbers (#975 v3) and do not move
 // with the measurement; the pilot that sized them is recorded in the issue.
 // ──────────────────────────────────────────────────────────────────────────────
@@ -29,8 +32,10 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -420,6 +425,98 @@ TEST_F(G1FloatingModel, ThreeRunsAreDeterministic) {
                           sizeof(mjtNum) * runs[0].final_qpos.size()),
               0)
         << "run " << i << " final qpos differs bit-wise";
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IMU frame under static gravity
+// ═══════════════════════════════════════════════════════════════════════════
+// The robot held on the "stand" keyframe by its own position servos (the
+// stance above, noise-free: MuJoCo does not add the MJCF noise= values). Once
+// it has settled, each IMU site is at rest, so its accelerometer reads the
+// specific force R_siteᵀ·(0, 0, g₀) — up in the site frame, not down — and its
+// gyro reads zero. What is pinned is the frame and sign convention a consumer
+// relies on; the residual motion of the servoed stance is what the bounds
+// leave room for.
+
+constexpr double kFrameSettleSeconds = 1.0;
+constexpr double kFrameWindowSeconds = 2.0;
+// Controls, measured once on this MJCF (MuJoCo 3.7.0, every physics substep of
+// the 2 s window, pelvis then torso) before the bounds were written, and not
+// moved since: the residual sway of the servoed stance. A change to the asset,
+// the servos or MuJoCo that moves the robot more at rest fails here first.
+constexpr std::array<double, 2> kStaticAccelErrMax{0.0066830339849574764, 0.011104294788760453};
+constexpr std::array<double, 2> kStaticGyroNormMax{0.010827915362533231, 0.012966093697911824};
+constexpr double kStaticBoundTol = 1e-9;
+
+struct ImuFrameMetrics {
+  double accel_err_max = 0.0;  // max ‖a_site − R_siteᵀ·(0, 0, g₀)‖ [m/s²]
+  double gyro_norm_max = 0.0;  // max ‖ω_site‖ [rad/s]
+  double accel_z_min = 0.0;    // min site-z component of the specific force [m/s²]
+  int samples = 0;
+};
+
+std::array<ImuFrameMetrics, 2> RunStaticImuFrame(const mjModel* m, mjData* d) {
+  const std::array<const char*, 2> sites{"imu_in_pelvis", "imu_in_torso"};
+  const std::array<const char*, 2> gyros{"imu-pelvis-angular-velocity",
+                                         "imu-torso-angular-velocity"};
+  const std::array<const char*, 2> accels{"imu-pelvis-linear-acceleration",
+                                          "imu-torso-linear-acceleration"};
+  std::array<int, 2> site_id{}, gyro_adr{}, accel_adr{};
+  for (std::size_t k = 0; k < 2; ++k) {
+    site_id[k] = mj_name2id(m, mjOBJ_SITE, sites[k]);
+    gyro_adr[k] = m->sensor_adr[mj_name2id(m, mjOBJ_SENSOR, gyros[k])];
+    accel_adr[k] = m->sensor_adr[mj_name2id(m, mjOBJ_SENSOR, accels[k])];
+  }
+  const double g0 = -m->opt.gravity[2];
+
+  mj_resetDataKeyframe(m, d, mj_name2id(m, mjOBJ_KEY, "stand"));
+  mj_forward(m, d);
+  const int settle = static_cast<int>(std::lround(kFrameSettleSeconds / m->opt.timestep));
+  const int window = static_cast<int>(std::lround(kFrameWindowSeconds / m->opt.timestep));
+  for (int i = 0; i < settle; ++i)
+    mj_step(m, d);
+
+  std::array<ImuFrameMetrics, 2> r{};
+  for (auto& s : r)
+    s.accel_z_min = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < window; ++i) {
+    // mj_step evaluates the sensors and site_xmat on the same pre-integration
+    // state, so the pair read after it belongs together.
+    mj_step(m, d);
+    for (std::size_t k = 0; k < 2; ++k) {
+      // site_xmat is R_world←site, row-major: (R_siteᵀ·(0, 0, g₀))_c = R[2][c]·g₀.
+      const mjtNum* rot = d->site_xmat + 9 * site_id[k];
+      const mjtNum* acc = d->sensordata + accel_adr[k];
+      const mjtNum* gyr = d->sensordata + gyro_adr[k];
+      double err2 = 0.0, w2 = 0.0;
+      for (int c = 0; c < 3; ++c) {
+        const double diff = acc[c] - rot[6 + c] * g0;
+        err2 += diff * diff;
+        w2 += gyr[c] * gyr[c];
+      }
+      r[k].accel_err_max = std::max(r[k].accel_err_max, std::sqrt(err2));
+      r[k].gyro_norm_max = std::max(r[k].gyro_norm_max, std::sqrt(w2));
+      r[k].accel_z_min = std::min(r[k].accel_z_min, static_cast<double>(acc[2]));
+      ++r[k].samples;
+    }
+  }
+  return r;
+}
+
+TEST_F(G1FloatingModel, ImuReadsStaticGravityInTheSiteFrame) {
+  const auto r = RunStaticImuFrame(m_, d_);
+  const std::array<const char*, 2> label{"pelvis", "torso"};
+  for (std::size_t k = 0; k < 2; ++k) {
+    std::printf(
+        "[  METRIC ] imu %s: accel_err_max = %.17g m/s^2, gyro_norm_max = %.17g rad/s, "
+        "accel_z_min = %.17g m/s^2, samples = %d\n",
+        label[k], r[k].accel_err_max, r[k].gyro_norm_max, r[k].accel_z_min, r[k].samples);
+    EXPECT_EQ(r[k].samples, static_cast<int>(std::lround(kFrameWindowSeconds / kTimestep)));
+    EXPECT_LE(r[k].accel_err_max, kStaticAccelErrMax[k] + kStaticBoundTol)
+        << label[k] << ": accelerometer is not R_siteᵀ·(0, 0, g₀) at rest";
+    EXPECT_LE(r[k].gyro_norm_max, kStaticGyroNormMax[k] + kStaticBoundTol) << label[k];
+    EXPECT_GT(r[k].accel_z_min, 0.0) << label[k] << ": specific force must point up the site z";
   }
 }
 

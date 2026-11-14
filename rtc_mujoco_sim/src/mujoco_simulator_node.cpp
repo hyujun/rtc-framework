@@ -711,6 +711,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
           get_parameter("robot_response." + gname + ".wait_for_command").as_bool();
 
       LoadContactWrenchConfig("robot_response", gname, gc.contact_wrench);
+      LoadImuNoiseConfig("robot_response", gname, gc.imu_noise);
 
       group_configs_.push_back(std::move(gc));
     }
@@ -804,6 +805,36 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     // see ContactWrenchConfig::visualize.
     declare_parameter(prefix + "contact_wrench.visualize", true);
     declare_parameter(prefix + "contact_wrench.visualize_scale", 0.005);
+    // IMU export noise (robot groups; off by default = the export is the raw
+    // sensordata). One block for every gyro / accelerometer the group
+    // exports — see ImuNoiseConfig. Each key is spelled out in full so the
+    // shipped-YAML declaration check can see it.
+    declare_parameter(prefix + "imu_noise.enabled", false);
+    declare_parameter(prefix + "imu_noise.seed", 0);
+    declare_parameter(prefix + "imu_noise.gyro.white_sigma", 0.0);
+    declare_parameter(prefix + "imu_noise.gyro.bias_sigma", 0.0);
+    declare_parameter(prefix + "imu_noise.gyro.bias_walk_sigma", 0.0);
+    declare_parameter(prefix + "imu_noise.accel.white_sigma", 0.0);
+    declare_parameter(prefix + "imu_noise.accel.bias_sigma", 0.0);
+    declare_parameter(prefix + "imu_noise.accel.bias_walk_sigma", 0.0);
+  }
+
+  void LoadImuNoiseConfig(const std::string& section, const std::string& gname,
+                          urtc::ImuNoiseConfig& cfg) {
+    const auto prefix = section + "." + gname + ".imu_noise.";
+    cfg.enabled = get_parameter(prefix + "enabled").as_bool();
+    const auto seed = get_parameter(prefix + "seed").as_int();
+    if (seed < 0) {
+      throw std::runtime_error(prefix + "seed must be >= 0 (0 = random_device)");
+    }
+    cfg.seed = static_cast<std::uint64_t>(seed);
+    const auto load = [&](const std::string& kind, urtc::ImuNoiseParams& p) {
+      p.white_sigma = get_parameter(prefix + kind + ".white_sigma").as_double();
+      p.bias_sigma = get_parameter(prefix + kind + ".bias_sigma").as_double();
+      p.bias_walk_sigma = get_parameter(prefix + kind + ".bias_walk_sigma").as_double();
+    };
+    load("gyro", cfg.gyro);
+    load("accel", cfg.accel);
   }
 
   void LoadContactWrenchConfig(const std::string& section, const std::string& gname,

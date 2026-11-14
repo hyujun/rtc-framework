@@ -69,7 +69,7 @@ launch 인자 (빈 값 = YAML 값 사용):
 |---|---|---|---|
 | `<group.state_topic>` | `sensor_msgs/JointState` | 매 step ÷ `state_publish_divisor` | robot 그룹: 위치 / 속도 / 토크 |
 | `<group.state_topic>` | `sensor_msgs/JointState` | 100 Hz | fake 그룹: LPF 상태 |
-| `<group.sensor_topic>` | `rtc_msgs/SimSensorState` | 매 step ÷ divisor | MJCF 센서 (`sensor_topic` + `sensor_names` 설정 시) |
+| `<group.sensor_topic>` | `rtc_msgs/SimSensorState` | 매 step ÷ divisor | MJCF 센서 (`sensor_topic` + `sensor_names` 설정 시). [`imu_noise`](#imu-export-노이즈-imu_noise) 는 **이 export 에만** 더해진다 — `sensordata` · 다른 센서 · contact wrench 는 raw |
 | `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 step ÷ divisor | MJCF contact 센서 자동 발견. 비접촉 시 0 발행. [부호](#contact-wrench-자동-발견) 는 link-on-environment |
 | `.../<target>/contact_state` | `std_msgs/Bool` | 전이 시 | `publish_state: true` 일 때. 값이 바뀔 때만 |
 | `.../<target>/contact_point` | `geometry_msgs/PointStamped` | 매 step | `publish_debug: true` 일 때. **world frame** 접촉점 |
@@ -78,6 +78,8 @@ launch 인자 (빈 값 = YAML 값 사용):
 | `<projectile_ball.publish.ground_truth_topic>` | `nav_msgs/Odometry` | `sample_rate_hz` (sim 시간) | 발사된 공의 참값. twist 는 world 프레임. park 중에는 발행하지 않는다 |
 | `<projectile_ball.publish.camera_topic>` | `geometry_msgs/PointStamped` | 〃 | 위 위치 + 축별 가우시안 노이즈 (카메라 관측 모사) |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1 Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
+
+한 step 안의 발행 순서는 sensor → contact wrench → joint state 다. joint state 가 sim-sync tick 을 깨우므로 그 tick 이 같은 step 의 센서를 보는 경우가 보통이 되게 한 순서이고, 토픽 간 순서 보장은 아니다 (필요하면 소비자가 lane 의 stamp · sequence 로 판정).
 
 ### 구독 토픽
 
@@ -231,6 +233,7 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 | [mujoco_simulator.hpp](include/rtc_mujoco_sim/mujoco_simulator.hpp) | `MuJoCoSimulator` — 그룹 인덱스 기반 `SetCommand` / `GetPositions` / 콜백 등록 / `Pause` · `Resume` · `StepOnce` · `RequestReset` |
 | [ros2_resource_provider.hpp](include/rtc_mujoco_sim/ros2_resource_provider.hpp) | `rtc::RegisterRos2ResourceProvider()` — MJCF 안의 `package://` URI 를 `ament_index_cpp` 로 해석 |
 | [object_pool.hpp](include/rtc_mujoco_sim/object_pool.hpp) · [projectile_ball.hpp](include/rtc_mujoco_sim/projectile_ball.hpp) | pool / 공 설정 · 샘플링 순수 로직 |
+| [imu_noise_model.hpp](include/rtc_mujoco_sim/imu_noise_model.hpp) | `ImuNoiseModel` — IMU export 노이즈 (white · bias · bias walk) 순수 로직 |
 
 ## 설정
 
@@ -275,6 +278,7 @@ robot-specific 값 (`model_path`, `robot_response.groups`, joint 이름, 토픽,
 | `command_topic` / `state_topic` | 구독 / 발행 토픽 |
 | `sensor_topic` / `sensor_names` | MJCF 센서 발행 (빈 문자열 = 비활성, 이름 `["auto"]` = XML 전체) |
 | `contact_wrench.*` | `enabled` · `topic_prefix` · `sensor_name_suffixes` · `reference_site_suffixes` · `reference_frame` · `publish_state` · `publish_debug` · `allow_partial_discovery` · `visualize` · `visualize_scale` |
+| `imu_noise.*` | robot 전용, 기본 off — [IMU export 노이즈](#imu-export-노이즈-imu_noise) |
 | `filter_alpha` | fake 전용 LPF 계수 (기본 `0.1`) |
 | `servo_kp` / `servo_kd` | 그룹별 servo 게인 (미지정 시 글로벌 상속) |
 | `initial_qpos` | 기동 · 리셋 자세. **robot 전용** ([초기 자세](#초기-자세-initial_qpos)) |
@@ -282,6 +286,22 @@ robot-specific 값 (`model_path`, `robot_response.groups`, joint 이름, 토픽,
 | `state_publish_divisor` | 기본 `1`. state · sensor · contact wrench 를 N step 에 한 번 발행 (물리는 매 step). fake 그룹은 1 만 |
 
 `state_publish_divisor` > 1 인 그룹과 fake 그룹은 controller manager 의 `sim_sync_tick_devices` 에서 빼야 한다 — 넣으면 tick 이 그 그룹을 기다리느라 N−1 step 을 멈춘다. `wait_for_command: false` 인 그룹도 명령이 오면 적용한다.
+
+### IMU export 노이즈 (`imu_noise`)
+
+MuJoCo 는 MJCF sensor 의 `noise=` 를 출력에 더하지 않는다. `robot_response.<그룹>.imu_noise` 는 그 그룹이 export 하는 **모든** `gyro` · `accelerometer` 에 축마다 `y = x + b + n` 을 더한다 (센서 · 로봇 이름은 키에 없다).
+
+| 키 | 기본값 | 설명 |
+|---|---|---|
+| `enabled` | `false` | `false` 면 export 가 `sensordata` 와 bit 동일 |
+| `seed` | `0` | `0` = `random_device`, 그 외 고정. 리셋은 같은 seed 로 다시 시작 — 같은 realization |
+| `gyro.white_sigma` / `accel.white_sigma` | `0.0` | n ~ N(0, σ²), step 마다 독립 [rad/s · m/s²] |
+| `gyro.bias_sigma` / `accel.bias_sigma` | `0.0` | b ~ N(0, σ²), 기동 · 리셋 때 뽑는다 |
+| `gyro.bias_walk_sigma` / `accel.bias_walk_sigma` | `0.0` | b += N(0, σ²·dt) step 마다 [단위/√s] |
+
+- sample 은 step 당 1 회, `dt` = `physics_timestep` (substep 이 아니다). `state_publish_divisor` 와 무관하게 매 step 전진한다.
+- 바뀌는 것은 발행 사본뿐이다 — `mjData::sensordata`, 같은 export 의 다른 센서, contact wrench lane 은 그대로다.
+- `noise= > 0` 인데 exact 로 나가는 센서 (`enabled: false` 면 전부, `true` 면 IMU 가 아닌 것) 를 export 하는 그룹은 Initialize 가 한 번 WARN 한다 (`ImuNoiseWarningCount()`). σ 가 음수 · 비유한이면 Initialize 실패. 그룹마다 자기 `seed` 로 뽑으므로 같은 seed 의 두 그룹은 같은 노이즈다.
 
 ### bringup YAML 예시
 

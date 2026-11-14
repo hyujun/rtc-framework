@@ -158,6 +158,28 @@ mujoco_simulator:
           publish_debug: false  # true also emits contact_point + contact_depth
           visualize: true         # orange force arrows in the viewer (Shift+F toggles)
           visualize_scale: 0.001  # m/N — a standing foot (≈ 160 N) draws 16 cm
+        # ── IMU export noise ─────────────────────────────────────────────────
+        # MuJoCo does not apply an MJCF sensor's noise=, so without this the
+        # gyro / accelerometer values on /g1/sim_sensors are exact. Added to the
+        # exported copy only (sensordata, the ground-truth and sole sensors
+        # and the contact wrench lane stay raw): per axis y = x + b + n, white
+        # n ~ N(0, white²) per step, bias b ~ N(0, bias²) at start and on
+        # reset, b += N(0, walk² · dt) per step (dt = physics_timestep). A
+        # fixed seed makes the realisation repeatable, reset included.
+        # These are a simulation test condition, not a datasheet, and the
+        # g1_loco and b7_loco blocks are kept identical (installed-config test).
+        # Units: gyro rad/s · rad/s/√s, accel m/s² · m/s²/√s.
+        imu_noise:
+          enabled: true
+          seed: 20261114
+          gyro:
+            white_sigma: 5.0e-4      # the G1 MJCF's declared gyro noise=
+            bias_sigma: 1.0e-3
+            bias_walk_sigma: 1.0e-5
+          accel:
+            white_sigma: 1.0e-2      # the G1 MJCF's declared accelerometer noise=
+            bias_sigma: 5.0e-2
+            bias_walk_sigma: 1.0e-4
 
     # ── Fake Response (LPF echo, no physics) ─────────────────────────────────
     # The public scene has no hand; the hand group echoes its command through a

@@ -125,6 +125,13 @@ void MuJoCoSimulator::ReadSensors() noexcept {
         g->sensor_buffer[offset++] = data_->sensordata[si.adr + d];
       }
     }
+    // On the exported copy only, every step (the publish decimation is
+    // applied later, at the callback), so one step is one noise sample.
+    if (g->imu_noise_enabled) {
+      for (std::size_t c = 0; c < g->imu_noise_offsets.size(); ++c) {
+        g->imu_noise.Apply(c, g->sensor_buffer.data() + g->imu_noise_offsets[c]);
+      }
+    }
   }
 }
 
@@ -827,6 +834,11 @@ void MuJoCoSimulator::HandleReset() noexcept {
   throttle_wall_start_ = now;
   throttle_sim_start_ = data_->time;
   throttle_rtf_ = current_max_rtf_.load(std::memory_order_relaxed);
+  // The same noise realisation as from Initialize: re-seeded, biases redrawn.
+  for (auto& g : groups_) {
+    if (g->imu_noise_enabled)
+      g->imu_noise.Reset();
+  }
   ReadState();
   fprintf(stdout, "[SimLoop] Reset to initial pose\n");
 }
@@ -1195,7 +1207,8 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     if (DrainPendingObjectRefresh()) {
       continue;
     }
-    // 1. Publish current state (and sensors) for ALL robot groups
+    // 1. Publish this step's sensors, contact wrenches and state for ALL robot
+    //    groups (sensors first — see the order below)
     // Per-iteration span (one sim step of the raw sim_thread). All the
     // MuJoCoSimulator member-function spans below nest under this; the
     // sync_cv_ wait for the controller's command (sim lock-step) shows up as
@@ -1208,9 +1221,15 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     ReadContactWrenches();
     ReadObjectStates();
     ReadProjectileBallState();
-    InvokeStateCallback();
+    // Sensors and contact wrenches go out BEFORE the joint state: the joint
+    // state is what wakes a sim-synced controller tick, and a sensor message
+    // queued behind it may not yet be taken when that tick reads its inputs.
+    // Publishing it first makes "the tick sees this step's sensors" the
+    // usual case. It is not a guarantee (no FIFO holds across topics); a
+    // consumer that needs one compares the lanes' stamps and sequences.
     InvokeSensorCallback();
     InvokeContactWrenchCallback();
+    InvokeStateCallback();
     InvokeObjectStateCallback();
     InvokeProjectileBallCallback();
 
